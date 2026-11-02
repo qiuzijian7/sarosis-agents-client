@@ -1,4 +1,4 @@
-// @vssaros/dsh-kb — 导航文件（`笔记/index.md`、`笔记/overview.md`）的**纯生成逻辑**（零 I/O ✓）。
+// @vssaros/dsh-kb — 导航文件（`知识库列表/index.md`、`知识库列表/overview.md`）的**纯生成逻辑**（零 I/O ✓）。
 //
 // ## 口径来源：逐字照 VsSaros 真源，不是"我理解的样子"
 // 真源 = `KbImportController.maintainKbIndex` / `maintainKbOverview`
@@ -69,7 +69,7 @@ function segmentsOf(rel) {
 const dirTypeOf = segs => (segs.length > 1 ? segs[0] : '(root)');
 
 /**
- * 生成 `笔记/index.md` 的内容（真源 `maintainKbIndex` 逐字 ✓）。
+ * 生成 `知识库列表/index.md` 的内容（真源 `maintainKbIndex` 逐字 ✓）。
  *
  * ⚠ 排序口径要**分开**照抄 ✗：分组键（类型）用 **默认 `sort()`**（UTF-16 码元序 ✓），
  *   而组内条目用 **`localeCompare`**（本地化序 ✓）—— 两者换用会让同一份笔记生成不同顺序 ✓。
@@ -103,7 +103,7 @@ export function buildIndexFile(notes) {
 }
 
 /**
- * 生成 `笔记/overview.md` 的内容（真源 `maintainKbOverview` 逐字 ✓）。
+ * 生成 `知识库列表/overview.md` 的内容（真源 `maintainKbOverview` 逐字 ✓）。
  *
  * ⚠ 主题取的是**第二层目录名**；层级 ≤ 2 时算 `(直接)` ✓；`(直接)` 的链接指回 `[[index#<类型>]]` ✓
  *   （其余指 `[[<类型>/<主题>]]` ✓）。主题排序 = **篇数降序、同数按名字 `localeCompare`** ✓。

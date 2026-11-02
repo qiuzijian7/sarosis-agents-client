@@ -12,6 +12,7 @@
  *  3. `test/reactDetailSmoke.mjs`          — 详情页 **真渲染** 18 项（10 页签/空态/tier/筛选/固化计数）
  *  4. `test/turnDistill.test.mjs`          — 按回合摘要自动沉淀 6 项（阈值/去重/截断/压缩检查点）
  *  5. `test/writeScope.test.mjs`           — preset ⇒ 人设 ⇒ 写分区 6 项
+ *  5b. `test/autoPromote.test.mjs`         — 自动提升门控 13 项（fail-closed / hits / 审计区分）
  *  6. 引擎单测 `extensions/agentmemory-memory` 的 `npm run test:unit`（跨分区兜底 / observe / 作用域解析）
  *  7. `src/.../dshHarness/test/.../run-all-common-tests.mjs dshView`（导航守卫：主帧/子帧/手势/hash）
  *
@@ -36,6 +37,13 @@ const steps = [
   { name: '测试：跨进程作用域真源（5 项）', cmd: 'node', args: [path.join('dsh-plugins', 'vssaros-memory', 'test', 'scopeParity.test.mjs')] },
   { name: '测试：回合观测（dsh 侧，7 项）', cmd: 'node', args: [path.join('dsh-plugins', 'vssaros-memory', 'test', 'turnObserve.test.mjs')] },
   { name: '测试：preset⇒人设⇒写分区（6 项）', cmd: 'node', args: [path.join('dsh-plugins', 'vssaros-memory', 'test', 'writeScope.test.mjs')] },
+  { name: '测试：自动提升门控（19 项）', cmd: 'node', args: [path.join('dsh-plugins', 'vssaros-memory', 'test', 'autoPromote.test.mjs')] },
+  { name: '测试：收件箱（视图 / 撤销 / 批量 / 真 HTTP，9 项）', cmd: 'node', args: [path.join('dsh-plugins', 'vssaros-memory', 'test', 'inbox.test.mjs')] },
+  { name: '测试：收件箱组件（真 React 渲染，5 项）', cmd: 'node', args: [path.join('dsh-plugins', 'vssaros-memory', 'test', 'inboxView.test.mjs')] },
+  { name: '测试：注入预览 + 沉淀统计（纯逻辑，14 项）', cmd: 'node', args: [path.join('dsh-plugins', 'vssaros-memory', 'test', 'overviewCore.test.mjs')] },
+  { name: '测试：总览 / 归档恢复路由（真 HTTP + 假网关，8 项）', cmd: 'node', args: [path.join('dsh-plugins', 'vssaros-memory', 'test', 'overviewRoutes.test.mjs')] },
+  { name: '测试：状态条 / 注入预览 / 漏斗 / 详情页重排（真 React 渲染，13 项）', cmd: 'node', args: [path.join('dsh-plugins', 'vssaros-memory', 'test', 'overviewView.test.mjs')] },
+  { name: '测试：网关 /health 附加信息（6 项）', cmd: 'node', args: ['--test', path.join('extensions', 'agentmemory-gateway', 'test', 'healthInfo.test.mjs')] },
   {
     name: '单测：引擎（跨分区兜底 / observe / 作用域）',
     cmd: 'npm',

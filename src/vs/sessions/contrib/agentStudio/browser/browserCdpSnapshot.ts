@@ -473,7 +473,7 @@ export function formatImages(raw: IRawImages): string {
 		'Notes: only rendered `<img>` elements (incl. same-origin iframes); CSS background images are NOT listed; '
 		+ 'deduplicated by URL; images smaller than both dimensions of the filter are treated as icons.',
 		'To read text inside an image: call `vision_analyze` with the image URL directly (one image per call). '
-		+ 'To keep it in a note: download it with `execute_code` into `库/raw/assets/<slug>/` and reference it as a **relative** path.',
+		+ 'To keep it in a note: download it with `execute_code` into `数据源/raw/assets/<slug>/` and reference it as a **relative** path.',
 	);
 
 	// 登录墙自诊断（2026-09-24，见 `common/webPageQuality.ts`）—— **图片这条路上尤其必要**：

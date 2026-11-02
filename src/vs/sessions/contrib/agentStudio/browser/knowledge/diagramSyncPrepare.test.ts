@@ -22,8 +22,8 @@ import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { prepareDiagramsForSync } from './diagramSyncPrepare.js';
 
 const VAULT = URI.file(path.join('C:', 'tmp', 'vault'));
-const NOTES = URI.joinPath(VAULT, '笔记');
-const LIB = URI.joinPath(VAULT, '库');
+const NOTES = URI.joinPath(VAULT, '知识库列表');
+const LIB = URI.joinPath(VAULT, '数据源');
 
 const quietLog = { info() { }, warn() { }, error() { }, debug() { }, trace() { } };
 
@@ -135,7 +135,7 @@ suite('同步前图表准备（prepareDiagramsForSync）', () => {
 		fs.put(NOTE_B, md('# 纯文字', '', '没有图表。'));
 		fs.put(URI.joinPath(NOTES, 'live-demo.html'), '<html/>');
 
-		const t = run(fs, ['笔记'], { dryRun: true });
+		const t = run(fs, ['知识库列表'], { dryRun: true });
 		const r = await t.promise;
 
 		assert.strictEqual(r.dryRun, true);
@@ -170,7 +170,7 @@ suite('同步前图表准备（prepareDiagramsForSync）', () => {
 		fs.put(URI.joinPath(NOTES, '流程.mermaid'), md('graph LR', '  X-->Y'));
 		fs.put(URI.joinPath(NOTES, 'live-demo.html'), '<html><body>hi</body></html>');
 
-		const t = run(fs, ['笔记']);
+		const t = run(fs, ['知识库列表']);
 		const r = await t.promise;
 
 		assert.strictEqual(r.dryRun, false);
@@ -199,7 +199,7 @@ suite('同步前图表准备（prepareDiagramsForSync）', () => {
 		fs.put(NOTE_C, md('```drawio', '<mxfile><diagram name="b">y</diagram></mxfile>', '```'));
 		fs.throwOnRead.add('设计.md');
 
-		const t = run(fs, ['笔记'], { dryRun: true });
+		const t = run(fs, ['知识库列表'], { dryRun: true });
 		const r = await t.promise;   // 不得抛出
 
 		assert.strictEqual(r.scanned, 2);
@@ -213,7 +213,7 @@ suite('同步前图表准备（prepareDiagramsForSync）', () => {
 		fs.put(NOTE_B, md('# 纯文字', '', '没有图表。'));
 		fs.put(URI.joinPath(NOTES, '附件.png.txt'), 'not markdown');
 
-		const t = run(fs, ['笔记'], { dryRun: true });
+		const t = run(fs, ['知识库列表'], { dryRun: true });
 		const r = await t.promise;
 
 		assert.strictEqual(r.scanned, 2, '只统计 .md / .markdown');
@@ -235,7 +235,7 @@ suite('同步前图表准备（prepareDiagramsForSync）', () => {
 		const fs = new MemFs();
 		fs.put(NOTE_A, md('```drawio', '<mxfile><diagram name="a">x</diagram></mxfile>', '```'));
 
-		const r = await run(fs, ['笔记'], { failRender: true }).promise;
+		const r = await run(fs, ['知识库列表'], { failRender: true }).promise;
 
 		assert.strictEqual(r.charts, 0);
 		assert.ok(r.failures >= 1, '失败必须如实计数（工具据此告诉用户「已保留源码」）');

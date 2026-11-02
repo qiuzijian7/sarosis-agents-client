@@ -38,6 +38,8 @@ export class DshTofAuthService extends Disposable implements ITofAuthService {
 	private _isLoggingIn = false;
 	private _restoring: Promise<ITofUser | null> | null = null;
 	private _bridgeConnected = false;
+	/** 老 Host 的 method not found 只提示一次（见 `_warnLegacyHost`）。 */
+	private _legacyHostWarned = false;
 
 	private readonly _onDidChangeUser = this._register(new Emitter<ITofUser | null>());
 	readonly onDidChangeUser = this._onDidChangeUser.event;
@@ -132,6 +134,7 @@ export class DshTofAuthService extends Disposable implements ITofAuthService {
 		try {
 			status = await this._channel.call<IBridgeTofStatus>(DshHarnessChannelCommand.TofStatus, {});
 		} catch (e) {
+			this._warnLegacyHost(e);
 			this._log.info(`[TofAuth] 读 dsh 侧企业身份失败（${reason}），保持现状：${String((e as Error)?.message ?? e)}`);
 			return this._user;
 		}
@@ -146,7 +149,8 @@ export class DshTofAuthService extends Disposable implements ITofAuthService {
 		let ticket: string | null = null;
 		try {
 			ticket = (await this._channel.call<IBridgeTofTicketResult>(DshHarnessChannelCommand.TofTicket)).ticket ?? null;
-		} catch {
+		} catch (e) {
+			this._warnLegacyHost(e);
 			ticket = this._ticket;   // 取票失败 ⇒ 沿用手上那张（身份以状态为准）
 		}
 		const user: ITofUser = {
@@ -159,6 +163,20 @@ export class DshTofAuthService extends Disposable implements ITofAuthService {
 		};
 		this._setUser(user, ticket);
 		return user;
+	}
+
+	/**
+	 * 老 Host（dsh 版本比 IDE 旧）不认 `tof.*` 反向方法，RPC 回 `method not found`。
+	 *
+	 * 为什么要专门识别：不识别时表现是"读状态失败 ⇒ 保持现状"——**看起来没坏**，但
+	 * 用户在新 IDE 里登录后，IDE 侧永远拿不到身份（企业协作/租户能力静默失效），
+	 * 且日志里只有一句含糊的"读失败"。识别后给一条**明确**的版本错配说明，只提示一次。
+	 */
+	private _warnLegacyHost(error: unknown): void {
+		if (this._legacyHostWarned) { return; }
+		if (!/method not found|-32601/i.test(String((error as Error)?.message ?? error))) { return; }
+		this._legacyHostWarned = true;
+		this._log.warn('[TofAuth] dsh Host 版本过旧：它不认 tof.* 方法（method not found）⇒ 企业身份按"未知"处理，IDE 侧不会再拿到身份。请升级 VsSaros，或重启 Host 让两侧版本一致。');
 	}
 
 	private _setUser(user: ITofUser | null, ticket: string | null): void {

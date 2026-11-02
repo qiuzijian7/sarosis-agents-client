@@ -333,6 +333,18 @@ export class AgentMemoryProviderV2 {
 		return fn.reinforceMemory(this._kv, agentId, memId);
 	}
 
+	/** 归档列表（2026-11-02，工作台「归档」页签；只读）。 */
+	async listArchive(agentId: string, limit?: number): Promise<{ total: number; items: fn.ArchivedMemoryView[] }> {
+		await this._ensureServer();
+		return fn.listArchive(this._kv, agentId, Date.now(), typeof limit === 'number' && limit > 0 ? limit : 200);
+	}
+
+	/** 把一条归档恢复回长期记忆（2026-11-02；语义见 `restoreArchived`）。 */
+	async restoreArchived(agentId: string, id: string): Promise<{ success: boolean; id?: string; error?: string }> {
+		await this._ensureServer();
+		return fn.restoreArchived(this._kv, agentId, id);
+	}
+
 	async forgetMemory(agentId: string, memId: string): Promise<boolean> {
 		await this._ensureServer();
 		// Plan C: forgetMemory 仅置 isLatest=false 并写回 KV；
@@ -1347,7 +1359,13 @@ export class AgentMemoryProviderV2 {
 		if (typeof updates.type === 'string' && ['pattern', 'preference', 'architecture', 'bug', 'workflow', 'fact'].includes(updates.type)) { entry.type = updates.type; }
 		if (Array.isArray(updates.concepts)) { entry.concepts = updates.concepts; }
 		if (Array.isArray(updates.files)) { entry.files = updates.files; }
-		if (typeof updates.strength === 'number' && updates.strength >= 0 && updates.strength <= 1) { entry.strength = updates.strength; }
+		// strength 主口径 = **0–10**（2026-11-02 统一；与 `rememberMemory` 的 7、
+		// `reinforceMemory` 的 +1、`autoPage` 的 importance 一致）。
+		// 兼容旧的 0–1 输入：`<1` 视为旧刻度 ×10（恰好 =1 按新刻度当"很低"，不放大 10 倍）。
+		if (typeof updates.strength === 'number' && Number.isFinite(updates.strength) && updates.strength >= 0) {
+			const raw = updates.strength;
+			entry.strength = raw < 1 ? Math.round(raw * 1000) / 100 : Math.min(10, raw);
+		}
 		entry.updatedAt = new Date().toISOString();
 		entry.version = (entry.version ?? 1) + 1;
 		await this._kv.set(KV.memories(agentId), id, entry);

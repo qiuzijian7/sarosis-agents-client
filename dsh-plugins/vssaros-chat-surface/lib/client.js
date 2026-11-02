@@ -1,3 +1,10 @@
+// 2026-11-02 touch⑱: 主题守卫落地 —— client.subagents.js 的弹层底 #1c1c1c 改 var(--dsw-alias-bg-layer-2)、
+//   空闲状态灯改 var(--dsw-alias-label-dimmed)（原来写死深色/半透明白 ⇒ 切浅色外观时不跟）⇒ 动入口刷新 chunk rev。
+// 2026-11-02 touch⑰（反向突变复核后重刷）: 点 bot 新建会话成功后重拉 Bots 名册
+// 2026-11-02 touch⑯: 点 bot 新建会话成功后重拉 Bots 名册（否则再点同一个 bot 又新建一条）⇒ 动入口刷新 chunk rev。
+// 2026-11-02 touch⑮: 点 bot 新建会话改传 workspaceId（官方 attachSession 登记进工作区账本；只传 cwd 不登记 ⇒ hero 判 chipTitle 空 ⇒ 输入框灰）+ 复用前须已登记 ⇒ 动入口刷新 chunk rev。
+// 2026-11-02 touch⑭（反向突变复核后重刷）: 点 bot 新建会话必带工作区 cwd（已被 touch⑮ 取代：方向错） + 复用会话时跳过无工作区的（修「bot 聊天框灰着、选择一个工作区开始」）⇒ 动入口刷新 chunk rev。
+// 2026-11-02 touch⑫: 中栏页签支持组件页签（comp + props，点群聊 ⇒ 直接挂 agents 插件的 React 群聊面板，iframe 只兜底）⇒ 动入口刷新 chunk rev。
 // 2026-10-29 touch⑥: workbenchNav 的「隐藏官方行」IIFE 兜住异常 + 失败摘幂等标记（主页行不再永久丢失）⇒ 动入口刷新 chunk rev。
 // 2026-10-29 touch⑤: 移除聊天框 header 的「＋ 新建会话」（与顶部＋重复、易点错）⇒ 动入口刷新 chunk rev。
 // 2026-10-30 touch⑪: 对齐官方空会话口径（subagent 永不列 / current=mainView retain）⇒ 动入口刷新 chunk rev。
@@ -14,7 +21,9 @@
 // 2026-10-29 touch: 品牌名统一为 VsSaros（client.brand.js 的 TITLE 与两处「回到 … 窗口」）⇒ 动入口刷新 chunk rev。
 // 2026-10-30 touch: 左下角更新行改为两行 —— 第一行摘要，第二行直接列"更新内容"（具体项 + 版本），
 //   ROW_H 30→52（client.upgrade.js 的 upcomingItems / .vu-sub）⇒ 动入口刷新 chunk rev。
-// CLIENT_BUILD_STAMP 缺依赖不重试 @ 2026-10-27T11:11 + 2026-10-27T22:55 工作台导航登记萨罗斯中转站(relay) + 2026-10-28T00:30 渠道页按 inboundMode 决定启停按钮与状态文案/02 + 2026-10-29 死信一键加入白名单/02
+// CLIENT_BUILD_STAMP 2026-11-02T10:00 工作台图标映射加 codicon:sync（循环任务）/ 缺依赖不重试 @ 2026-10-27T11:11 + 2026-10-27T22:55 工作台导航登记萨罗斯中转站(relay) + 2026-10-28T00:30 渠道页按 inboundMode 决定启停按钮与状态文案/02 + 2026-10-29 死信一键加入白名单/02
+// 2026-11-02 touch: 新增 client.conversationViews.js（会话区「记忆 / 技能 / 待办 / 记忆设置」
+//   四个 conversation.view 页签，order 20/30/40/50 落在官方轨迹 10 的右侧）⇒ 动入口刷新 chunk rev。
 // CHUNK_BUILD_STAMP 2026-10-27T18:22：渠道页可编辑凭据（写 dsh 侧 agent-im-accounts.json）
 // @vssaros/dsh-chat-surface — client half (hand-written dsh client module).
 // Binds the chat surface to the session VsSaros created for this chat tab:
@@ -24,6 +33,8 @@
 // dsh web 没有会话深链（无 /session/<id> 路由）：切会话只能调 ctx.uiWorkspace.openSession(target)。
 // "已打开+2026-10-31/独立格子(dsh-desk-split-)不装更新入口(用户截图)+2026-10-31/移除并行工作台条目+2026-10-30/移除顶部「布局▾」菜单"用 DOM 事实判定：会话打开后右栏会话面板带 [data-sidebar-right-session="<id>"]
 // （该元素被 VsSaros 的裁剪样式隐藏，但仍在 DOM 里）。
+// ★ touch 2026-11-02 03:11:24：chunk 改过之后必须动入口 ⇒ ?rev 才会变（守卫查 mtime）。
+// ★ touch 2026-11-02 03:21:57：chunk 改过之后必须动入口 ⇒ ?rev 才会变（守卫查 mtime）。
 window.__ModuleLoader__.load({
 	id: "@vssaros/dsh-chat-surface",
 	factory: (require) => {
@@ -38,7 +49,12 @@ window.__ModuleLoader__.load({
 		//   （今天就因此丢了侧栏「主页」那一行：18:15 改了 client.workbenchNav.js，没动入口 ⇒
 		//    rev 没变 ⇒ 用户窗口里侧栏仍是旧版；22:17 补改入口后才恢复。）
 		// ⇒ 规矩：**改任何 `client.*.js` 之后，把下面这个 stamp 改掉**（守卫会查 ⇒ 漏了必红）✓
-		const CLIENT_BUILD_STAMP = "2026-10-22/模式chip当前名称不冒充(P0-1)/03+第三方工作台固定到侧栏+空白会话预选Bot(P0-2)/04+固定行启动兜底也同步(重启后固定图标不丢)+2026-10-22/工作流页改左右两档(左列表右画布)+2026-10-22/工作台导航登记商城(主页不显示商城的修复)+2026-10-22/DEFAULT_ITEMS登记并行工作台+2026-10-22/模型下拉框加创作模型三行(S2)/07+2026-10-22/品牌改名Saroasis-harness(品牌位+页面title)+2026-10-23/中栏工作台面板不被救援抢回会话+2026-10-23/desktop窗口加更新入口(随包插件+一键升级应用)/02+2026-10-23/更新面板加五类资产升级检查(skill/mcp/agent/工作流/工作台)+2026-10-23/工作台导航登记萨罗斯平台(studio)+2026-10-23/页签支持拖拽排序/02+2026-10-23/更新行不透明且不压状态行+2026-10-23/LLM模型下拉移除创作模型三行(SHOW_IN_LLM_MENU=false)+2026-10-23/模型chip按方案B恢复创作模型分组(文字vs图片视频音频+二级面板搜索+首开聚焦)+2026-10-23/创作模型行直接绑click(文档级委托没命中的兜底)+2026-10-23/模型菜单选择器加结构匹配兜底(window.__vssarosCreative.probe)+2026-10-23/scan走findMenu(不再只认中文aria-label)+2026-10-23/更新行不透明不压状态行+无可升级内容时不显示更新UI+2026-10-24/账号行在所有surface接管(插件页不再露官方DeepSeek登录)+2026-10-24/侧栏隐藏官方插件行+2026-10-24/自动化任务收进工作台(侧栏那行隐藏)/02+2026-10-26/更新入口只算升级(未安装不计)+2026-10-26/侧栏工作区+按钮改走uiWorkspace.pickDirectory(修窗口模式点了没反应:旧读未声明的ctx.remote.directoryPicker+读res.value.path)+侧栏隐藏空会话(官方blank位)+页脚口径跟着剔空会话/03+2026-10-26/侧栏+变菜单:加单目录+从.code-workspace导入多根(走宿主桥importCodeWorkspace)+2026-10-28/侧栏会话item高亮跟随当前会话(官方selection优先+乐观高亮+失败撤回)/02+2026-10-28/启动不再自动展开右栏(删掉自动点expand:官方右栏默认收起,「开始」页是空栏被展开时播种的,且展开态会被持久化⇒每次启动都自动展开)+2026-10-28/「当前工作区」统一按会话cwd判(侧栏hover卡片根标记/chip名称/chip下拉三者同口径;dsh快照sessionIds只是分组记录,会话换过目录后可能挂在旧条目上)/02+2026-10-28/弹层夹视口(capsule菜单原right:0越左缘被裁+preset菜单原left:0越右缘⇒统一fitMenuBox)/02+2026-10-28/弹层改position:fixed(absolute的zIndex只在祖先层叠上下文内比较⇒被页签条压住=层级错误)/03+2026-10-29/升级面板与工作区选择器微调/04+2026-10-29/消息底部加导入到知识库按钮(client.msgImport)+endInfo)+2026-10-29/会话动作组加「新窗格」按钮(桥23 splitChatPane/同窗口左右分屏)+2026-10-29/hero空会话屏补「新窗格」入口(品牌行/只在blank时显示)+2026-10-29/会话动作组加「⋯」栏菜单(桥24 paneAction/移到最左最右最上最下+关闭这一栏)+2026-10-29/再加「⇔」拖动把手(页内拖拽移到方向)+菜单加比例项(左1/3|各半|左2/3)+2026-10-29/分屏右栏(chat-only)也装⇔与⋯(viewId前缀dsh-desk-split-识别/否则右栏无法移动关闭)+2026-10-30/按效果图:右侧格子操作移到宿主标题栏;页面去掉⇔与右栏⋯;主栏⋯改为「布局▾」(新窗格/主栏宽度/自动排列/平均分配/关闭全部)+2026-10-30/桌面独立格子(dsh-desk-split-)不显示会话页签条+2026-10-30/hero右上角新增窗口入口(判据data-content-phase=hero/贴官方打开侧边栏左侧不遮挡/几何自证)+移除顶部「布局▾」菜单(用户要求)+2026-10-29/导入落点改为库/raw+2026-10-29/导入落点库raw+修复body行+2026-10-29/导入落点库raw+修复body行+2026-10-30/侧栏工作区会话item加状态灯(运行中绿脉动/等你回答黄/空闲灰/读不到不画)+2026-10-30/desktop走dsh原生·IDE走IDE分流(shell.ide 唯一判据:tools/fileCards/cardActions/openInApp/subagents 五处早退+changes-review放行官方右栏)+2026-10-31/hero「新增窗口」改事件驱动(切工作台页同帧隐藏:workbenchPanelActive快速否+TAB_CHANGE_EVENT订阅,轮询400ms兜底)+";
+		const CLIENT_BUILD_STAMP = "2026-11-02/会话视图四页签(记忆/技能/待办/记忆设置)/01+2026-10-22/模式chip当前名称不冒充(P0-1)/03+第三方工作台固定到侧栏+空白会话预选Bot(P0-2)/04+固定行启动兜底也同步(重启后固定图标不丢)+2026-10-22/工作流页改左右两档(左列表右画布)+2026-10-22/工作台导航登记商城(主页不显示商城的修复)+2026-10-22/DEFAULT_ITEMS登记并行工作台+2026-10-22/模型下拉框加创作模型三行(S2)/07+2026-10-22/品牌改名Saroasis-harness(品牌位+页面title)+2026-10-23/中栏工作台面板不被救援抢回会话+2026-10-23/desktop窗口加更新入口(随包插件+一键升级应用)/02+2026-10-23/更新面板加五类资产升级检查(skill/mcp/agent/工作流/工作台)+2026-10-23/工作台导航登记萨罗斯平台(studio)+2026-10-23/页签支持拖拽排序/02+2026-10-23/更新行不透明且不压状态行+2026-10-23/LLM模型下拉移除创作模型三行(SHOW_IN_LLM_MENU=false)+2026-10-23/模型chip按方案B恢复创作模型分组(文字vs图片视频音频+二级面板搜索+首开聚焦)+2026-10-23/创作模型行直接绑click(文档级委托没命中的兜底)+2026-10-23/模型菜单选择器加结构匹配兜底(window.__vssarosCreative.probe)+2026-10-23/scan走findMenu(不再只认中文aria-label)+2026-10-23/更新行不透明不压状态行+无可升级内容时不显示更新UI+2026-10-24/账号行在所有surface接管(插件页不再露官方DeepSeek登录)+2026-10-24/侧栏隐藏官方插件行+2026-10-24/自动化任务收进工作台(侧栏那行隐藏)/02+2026-10-26/更新入口只算升级(未安装不计)+2026-10-26/侧栏工作区+按钮改走uiWorkspace.pickDirectory(修窗口模式点了没反应:旧读未声明的ctx.remote.directoryPicker+读res.value.path)+侧栏隐藏空会话(官方blank位)+页脚口径跟着剔空会话/03+2026-10-26/侧栏+变菜单:加单目录+从.code-workspace导入多根(走宿主桥importCodeWorkspace)+2026-10-28/侧栏会话item高亮跟随当前会话(官方selection优先+乐观高亮+失败撤回)/02+2026-10-28/启动不再自动展开右栏(删掉自动点expand:官方右栏默认收起,「开始」页是空栏被展开时播种的,且展开态会被持久化⇒每次启动都自动展开)+2026-10-28/「当前工作区」统一按会话cwd判(侧栏hover卡片根标记/chip名称/chip下拉三者同口径;dsh快照sessionIds只是分组记录,会话换过目录后可能挂在旧条目上)/02+2026-10-28/弹层夹视口(capsule菜单原right:0越左缘被裁+preset菜单原left:0越右缘⇒统一fitMenuBox)/02+2026-10-28/弹层改position:fixed(absolute的zIndex只在祖先层叠上下文内比较⇒被页签条压住=层级错误)/03+2026-10-29/升级面板与工作区选择器微调/04+2026-10-29/消息底部加导入到知识库按钮(client.msgImport)+endInfo)+2026-10-29/会话动作组加「新窗格」按钮(桥23 splitChatPane/同窗口左右分屏)+2026-10-29/hero空会话屏补「新窗格」入口(品牌行/只在blank时显示)+2026-10-29/会话动作组加「⋯」栏菜单(桥24 paneAction/移到最左最右最上最下+关闭这一栏)+2026-10-29/再加「⇔」拖动把手(页内拖拽移到方向)+菜单加比例项(左1/3|各半|左2/3)+2026-10-29/分屏右栏(chat-only)也装⇔与⋯(viewId前缀dsh-desk-split-识别/否则右栏无法移动关闭)+2026-10-30/按效果图:右侧格子操作移到宿主标题栏;页面去掉⇔与右栏⋯;主栏⋯改为「布局▾」(新窗格/主栏宽度/自动排列/平均分配/关闭全部)+2026-10-30/桌面独立格子(dsh-desk-split-)不显示会话页签条+2026-10-30/hero右上角新增窗口入口(判据data-content-phase=hero/贴官方打开侧边栏左侧不遮挡/几何自证)+移除顶部「布局▾」菜单(用户要求)+2026-10-29/导入落点改为库/raw+2026-10-29/导入落点库raw+修复body行+2026-10-29/导入落点库raw+修复body行+2026-10-30/侧栏工作区会话item加状态灯(运行中绿脉动/等你回答黄/空闲灰/读不到不画)+2026-10-30/desktop走dsh原生·IDE走IDE分流(shell.ide 唯一判据:tools/fileCards/cardActions/openInApp/subagents 五处早退+changes-review放行官方右栏)+2026-10-31/hero「新增窗口」改事件驱动(切工作台页同帧隐藏:workbenchPanelActive快速否+TAB_CHANGE_EVENT订阅,轮询400ms兜底)+2026-11-02/会话行UI对齐dsh-desktop(圆点状态灯+未读点+双击就地改名+时间戳绝对时间)+未读(本地集合/打开即已读/右键可切)+删除改用detachSession摘账本(不再污染归档)+菜单补分叉+2026-11-02/复刻官方会话行itemUI(行32px/leading16×20格/标题14px/时间10px悬停隐藏/图钉改SVG+悬停隐藏/悬停才出行尾⋯并接同一菜单/idle不画状态点/分组行34px)+2026-11-02/补官方会话行hover卡片(800ms延迟/标题+相对时间+绝对时间+根名+状态行+复制标题;菜单开或拖拽中禁用)+2026-11-02/会话行标题回落改官方口径「未命名」(不再显示session-uuid)+行原生title去掉(避免与hover卡片双浮层,id移进卡片)+工作区行改官方projectRow(folder图标hover换三角箭头,去掉「N个根」徽标)+2026-11-02/会话行标题回落改官方口径「未命名」(不再显示session-uuid)+行原生title去掉(避免与hover卡片双浮层,id移进卡片)+工作区行改官方projectRow(folder图标hover换三角箭头,去掉「N个根」徽标)+2026-11-02/会话行标题回落改官方口径「未命名」(不再显示session-uuid)+行原生title去掉(避免与hover卡片双浮层,id移进卡片)+工作区行改官方projectRow(folder图标hover换三角箭头,去掉「N个根」徽标)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+2026-11-02/会话/工作区行补齐官方细节(标题溢出两端12px淡出data-scrolled/clipped+悬停横向滚动+官方data-row-key锚点)+";
+		// ★ 2026-11-02（Bots 工作台重构 · touch#3：点群聊改走中栏页签 `__vssarosOpenPageTab` + `?embed=1`，
+		//   修"点群聊中栏不切换"）：侧栏「工作区」区改成 **会话 / Bots** 两个页签
+		//   （`client.workspaces.js`：Bots 页签列 bot 名册 + 群聊，点 bot ⇒ 中栏打开它最近一条会话）；
+		//   聊天框右上角新增 **Bot ⚙**（`client.botSettingsBtn.js`：撑开官方右侧栏并选中
+		//   `vssaros-bot-settings` 页签，设置页由 agents 插件的 `client.botSettings.js` 提供）。
 		// 挂到 window 上 ⇒ 真机取证能一眼看出"这个窗口跑的是哪一版"（`window.__vssarosChatSurfaceBuild`）✓
 		try { window.__vssarosChatSurfaceBuild = CLIENT_BUILD_STAMP; } catch { /* 极端环境 */ }
 		// 注意：**不**把 `workspaces` 加进 inject —— 本仓库实测结论是 Cordis 4 的 inject 数组是
@@ -87,7 +103,11 @@ window.__ModuleLoader__.load({
 			"./client.brand.js",
 			// 工作流执行进度条（dock，2026-10-20）：消费 Host 的 `/x/workflow/api/run/status`。
 			// 没有 running 时组件自己 return null ⇒ dock 不占位 ✓。
-			"./client.workflowRun.js", "./client.msgImport.js"];
+			"./client.workflowRun.js", "./client.msgImport.js",
+			// ★ 2026-11-02（用户要求「在轨迹右侧加 记忆 / 技能 / 待办 / 记忆设置 四个页签」）：
+			//   槽 `conversation.view`（list/session）—— 官方 chat=0、trajectory=10，
+			//   我们取 20/30/40/50，稳定排在轨迹右侧 ✓（明细见该 chunk 头注释）。
+			"./client.conversationViews.js"];
 
 		/** 菜单最小宽度（px）——见 fitMenuSize 里 minWidth 的说明。 */
 		const MENU_MIN_WIDTH = 220;
@@ -313,14 +333,30 @@ window.__ModuleLoader__.load({
 			}
 			// 主题同步（方案 5.13.2 P2）：VsSaros 把当前主题映射成 dsh token 覆盖层推过来，
 			// 经 theme 服务的 overrideTokens 叠到活动调色板上（dsh 官方扩展点；浅/深两形态同值）。
+			//
+			// ★ 2026-11-02（"dsh 侧切换外观，跟随系统 → 浅色，部分页面没有一起切换"）：
+			//   **空集 = 撤掉覆盖层**。宿主在 dsh 自主窗口（桌面 / 分屏 / 全窗）里不再钉 IDE 主题色
+			//   ——那些窗口的明暗由用户在 dsh「外观」里定，钉死就会只剩"非 alias 部分"跟着变
+			//   （侧栏 `--dsw-specific-sidebar-fill` 变浅、弹窗/正文仍是 IDE 深色）✗。
+			//   `overrideTokens` 返回的 disposer 按 source 撤销**本层**（官方语义），所以这里
+			//   自己记着它、空集时主动调 —— 不依赖"再叠一个空层"的副作用 ✓。
 			const THEME_EVENT = "vssaros-dsh-theme";
 			const applyTheme = (tokens) => {
 				if (!tokens || typeof tokens !== "object") {
 					return;
 				}
+				const names = Object.keys(tokens);
 				try {
-					ctx.theme.overrideTokens("vssaros", tokens);
-					state.themeTokens = Object.keys(tokens).length;
+					if (state.themeDisposer) {
+						state.themeDisposer();
+						state.themeDisposer = undefined;
+					}
+					if (!names.length) {
+						state.themeTokens = 0;
+						return;
+					}
+					state.themeDisposer = ctx.theme.overrideTokens("vssaros", tokens);
+					state.themeTokens = names.length;
 				} catch (e) {
 					state.error = String((e && e.message) || e);
 				}
@@ -598,7 +634,11 @@ window.__ModuleLoader__.load({
 			//   （`/x/skills/?surface=editor`，无 sessionId ⇒ 走 BLANK_SESSION_PARTS）里压根没被 require
 			//   ⇒ 左下角是**官方账号行**，点它就走 dsh 官方 DeepSeek 授权 ✗✗。
 			//   它自己用 `state.accountInstalled` 防重复 + `chrome` 判据决定是否真的注册 ⇒ 无条件装载是安全的 ✓。
-			const ALWAYS_CHUNKS = ["./client.preset.js", "./client.botEntry.js", "./client.modelAccounts.js", "./client.creative.js", "./client.upgrade.js", "./client.account.js", "./client.channel.js"];
+			const ALWAYS_CHUNKS = ["./client.preset.js", "./client.botEntry.js", "./client.modelAccounts.js", "./client.creative.js", "./client.upgrade.js", "./client.account.js", "./client.channel.js",
+				// ★ 2026-11-02（Bots 工作台重构）：聊天框右上角「Bot ⚙」—— 点它撑开官方右侧栏并选中
+				//   「Bot 设置」页签。走 ALWAYS 是因为它**不依赖宿主桥**（只用 ctx.sidebarRight + DOM），
+				//   而 PART_CHUNKS 那批在无桥环境整批不装（dsh 纯浏览器里也该有它 ✓）。
+				"./client.botSettingsBtn.js"];
 			Promise.all(ALWAYS_CHUNKS.map((p) => require.async(p)))
 				.then((parts) => {
 					for (const part of parts) {

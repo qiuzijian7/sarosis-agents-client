@@ -6,8 +6,8 @@
  *
  *  与同目录 `kbFeishuSyncScript.test.ts` 的分工：
  *    · 那份测的是**纯函数语义**（categoryOf / applyExplicitMappings / migrateSpaceMappings …），
- *      fixture 统一用 `库/AI` 作同步源、笔记都**已同步过**（有 token/历史落点）；
- *    · 本份测**用户视角的完整链路**：同步源是产品默认的 `笔记`、分类**从零新建**、
+ *      fixture 统一用 `数据源/AI` 作同步源、笔记都**已同步过**（有 token/历史落点）；
+ *    · 本份测**用户视角的完整链路**：同步源是产品默认的 `知识库列表`、分类**从零新建**、
  *      笔记**从未同步**（无 token），并**真跑内置脚本 dry-run** 校验最终落点与用户意图一致。
  *
  *  ⚠ 真跑脚本（`resources/.agents/kb/feishu-sync.mjs --dry-run`）之所以可行：
@@ -33,7 +33,7 @@ import * as path from 'path';
 const sync: any = syncModule;
 
 /** 产品默认同步源目录（`kb_feishu_sync` 工具与设置面板的默认值都是「笔记」）。 */
-const SRC = '笔记';
+const SRC = '知识库列表';
 /** 用户口中「飞书 "xxx" 知识库」的 spaceId（真实取值来自知识库 URL 或面板列表）。 */
 const SPACE_AI = '7691234567890abc';
 const SPACE_NAME = '我的AI库';
@@ -66,7 +66,7 @@ function writeNote(vault: string, relFromNotes: string, title: string): string {
 
 /** 写「本地目录 → 飞书知识库」显式映射（契约见技能手册与 feishuSyncCore）。 */
 function writeSpaceMap(vault: string, mappings: Array<{ dir: string; spaceId?: string; spaceName?: string }>): void {
-	fs.writeFileSync(path.join(vault, '.feishu-space-map.json'),
+	fs.writeFileSync(path.join(vault, '.kb/space-map.json'),
 		JSON.stringify({ version: 1, mappings }, null, 2), 'utf8');
 }
 
@@ -107,7 +107,7 @@ suite('用户场景：笔记中新建分类文件夹 → 同步到飞书知识�
 		writeNote(vault, '已有分类/旧笔记.md', '旧笔记');
 		writeNote(vault, '根笔记.md', '根笔记');   // 无类别（直接在笔记区根）⇒ 走 parent 落点
 		// 既有分类上次同步已经建过库 ⇒ 写进索引，验证「新建分类不会波及它」
-		fs.writeFileSync(path.join(vault, '.feishu-sync.json'), JSON.stringify({
+		fs.writeFileSync(path.join(vault, '.kb/feishu-sync.json'), JSON.stringify({
 			version: 2,
 			spaces: { '已有分类': { spaceId: SPACE_EXISTING, name: '已有分类' } },
 			files: {}, mindmaps: {},
@@ -172,7 +172,7 @@ suite('用户场景：笔记中新建分类文件夹 → 同步到飞书知识�
 
 		assert.strictEqual(status, 0);
 		assert.deepStrictEqual([...after.entries()], [...before.entries()], 'dry-run 不得改动 vault 内任何文件');
-		assert.ok(!fs.existsSync(path.join(vault, '.feishu-sync.json')), 'dry-run 不得写同步索引');
+		assert.ok(!fs.existsSync(path.join(vault, '.kb/feishu-sync.json')), 'dry-run 不得写同步索引');
 	});
 
 	test('categoryDepth=2 ⇒ 二级目录成为知识库单位（分类层级较深时的配置）', () => {
@@ -209,7 +209,7 @@ suite('技能手册（kb-category-feishu）与机制一致', () => {
 
 		// 照抄进 vault → 必须被脚本原样读回（字段名/层级写错的话这里会红）
 		const vault = tmpVault();
-		fs.writeFileSync(path.join(vault, '.feishu-space-map.json'), mappingBlock, 'utf8');
+		fs.writeFileSync(path.join(vault, '.kb/space-map.json'), mappingBlock, 'utf8');
 		const parsed = JSON.parse(mappingBlock);
 		const back = sync.loadSpaceMap(vault);
 		assert.deepStrictEqual(back, parsed.mappings.map((m: { dir: string; spaceId: string; spaceName?: string }) => ({
@@ -221,7 +221,7 @@ suite('技能手册（kb-category-feishu）与机制一致', () => {
 		const script = fs.readFileSync(path.join(process.cwd(), SCRIPT_REL), 'utf8');
 		const mapFile = /const SPACE_MAP_FILE = '([^']+)'/.exec(script)?.[1];
 		assert.strictEqual(sync.SPACE_MAP_FILE, mapFile, '脚本导出常量应与内部字面量一致');
-		assert.strictEqual(sync.SPACE_MAP_FILE, '.feishu-space-map.json');
+		assert.strictEqual(sync.SPACE_MAP_FILE, '.kb/space-map.json');
 
 		const skillText = fs.readFileSync(path.join(process.cwd(), SKILL_REL), 'utf8');
 		assert.ok(skillText.includes(sync.SPACE_MAP_FILE), '手册必须写明映射文件名');

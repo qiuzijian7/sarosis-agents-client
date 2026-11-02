@@ -152,6 +152,23 @@ console.log('── 新建自动化任务（Host 侧 /api/create 与规则转换
 	check('every ⇒ everySeconds 原样给出', every.everySeconds === 3600 && every.kind === 'every');
 }
 
+console.log('── 循环任务并进「任务」页（0.6.0）──');
+{
+	// 用户 2026-11-02：循环不再单独占工作台入口 ⇒ 收进自动化任务的两个页签（任务 / 运行记录）。
+	check('页签收成两个（任务 / 运行记录，带计数）',
+		/taskTotal/.test(entry) && /运行记录 \(\$\{allRecords\.length\}\)/.test(entry) && !/}, '定时任务'\)/.test(entry));
+	check('循环数据走 loop 插件的同源路由（不需要 Host 转发）',
+		/\/x\/loop\/api\/list/.test(entry) && /\/x\/loop\/api\/show/.test(entry));
+	check('循环动作：干跑 / 跑一轮 / 放回 blocked',
+		/\/x\/loop\/api\/dry-run/.test(entry) && /\/x\/loop\/api\/run/.test(entry) && /\/x\/loop\/api\/answer/.test(entry));
+	check('循环卡片混排进任务页（类型徽标 + 账本计数）',
+		/vssSchedKind/.test(entry) && /账本 \$\{counts\.done/.test(entry) && /is-loop/.test(entry));
+	check('循环详情弹窗（护栏摘要 + 账本表 + 回答）',
+		/data-sched-loop-detail/.test(entry) && /data-sched-loop-ledger/.test(entry) && /'data-sched-act': 'loop-answer'/.test(entry));
+	check('loop 不可用时降级（只少循环卡片，不把页面弄红）',
+		/reloadLoops/.test(entry) && /setLoops\(\{ ok: data\?\.ok === true/.test(entry) && /loops\.items/.test(entry));
+}
+
 console.log('── 装载契约：入口在假 loader + 假 React 下真跑一遍 ──');
 {
 	// 为什么要有这一段：工作台出问题的形态全是"装得上但静默不生效" —— id 写错、factory 里的

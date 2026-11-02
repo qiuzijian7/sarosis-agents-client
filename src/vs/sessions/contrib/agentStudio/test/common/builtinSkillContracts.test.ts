@@ -291,7 +291,7 @@ suite('内置技能契约（builtinSkillContracts）', () => {
  *      `activation: auto` 的关键词 —— 技能写得再好，触发不了等于不存在；
  *   ② 能力诚实性：产品**拿不到视频画面**（只有封面一张图）、**agent 不能自己触发 URL 导入**
  *      —— 手册若不写清这两条，模型会「看图说话」编出实机 UI/战斗细节（这是本技能最大的幻觉风险）；
- *   ③ 落盘契约：产物必须是**素材层**（`库/raw`、无 frontmatter），而不是自己写 `笔记/`
+ *   ③ 落盘契约：产物必须是**素材层**（`数据源/raw`、无 frontmatter），而不是自己写 `知识库列表/`
  *      —— 写错层会造成素材/产物混淆与重复笔记；
  *   ④ 交接契约：素材落盘后必须**先问用户是否构建**，同意则用 `kb_build`（2026-09-24 起 agent
  *      才能自己发起构建；此前只能让用户点视图按钮）并把构建规则交给 kb-build
@@ -387,12 +387,12 @@ suite('游戏拆解技能（kb-game-teardown）', () => {
 		assert.match(text, /extract_video_frames/, '逐帧证据路径仍要保留');
 	});
 
-	test('★ 落盘契约：产物进素材层 `库/raw`（无 frontmatter），不得自己写 `笔记/`', () => {
+	test('★ 落盘契约：产物进素材层 `数据源/raw`（无 frontmatter），不得自己写 `知识库列表/`', () => {
 		const text = skillText();
-		assert.match(text, /库\/raw/, '必须写明落点是知识库的 `库/raw`（素材层）');
-		assert.match(text, /笔记\//, '必须写明不要自己往 `笔记/` 写（那是构建的活）');
+		assert.match(text, /库\/raw/, '必须写明落点是知识库的 `数据源/raw`（素材层）');
+		assert.match(text, /笔记\//, '必须写明不要自己往 `知识库列表/` 写（那是构建的活）');
 		assert.match(text, /frontmatter/, '必须交代素材**不写** frontmatter（type/title/sources 是构建产物字段）');
-		assert.match(text, /assets\//, '帧图必须落到 `库/raw/assets/<游戏名>/` 并用相对路径引用');
+		assert.match(text, /assets\//, '帧图必须落到 `数据源/raw/assets/<游戏名>/` 并用相对路径引用');
 	});
 
 	test('★ 交接契约（2026-09-24 更新）：**先问用户**，同意后用 `kb_build` 发起，构建规则交棒 kb-build', () => {
@@ -463,7 +463,7 @@ suite('游戏拆解技能（kb-game-teardown）', () => {
  *      连在一起说的片段（写成 `抓取链接` 反而漏掉「抓取**这个**链接」）。
  *   ② 能力诚实性：agent **不能**触发视图的「导入链接」按钮、**没有**页面内执行 JS 的能力、
  *      视频**不下本体**、登录墙只能请用户在那个窗口登录一次（不得索要凭据）—— 不写清就是"假成功"。
- *   ③ 落盘契约：`库/raw`（素材层、**无 frontmatter**）+ 图片**相对路径** `assets/<slug>/…`
+ *   ③ 落盘契约：`数据源/raw`（素材层、**无 frontmatter**）+ 图片**相对路径** `assets/<slug>/…`
  *      （绝对路径会让笔记预览与飞书同步双双失效）。
  *   ④ 形状一致性：两种产物骨架必须与宿主 `compose{Article,Video}Markdown` 对齐，
  *      且 `references/output-template.md` 必须真实存在（断链 = 模型无从下笔）。
@@ -565,7 +565,7 @@ suite('多平台内容导入技能（web-content-import）', () => {
 			'素材层不得写 frontmatter（type/title/sources 是笔记才有的字段）');
 		assert.match(text, /assets\/<slug>\//,
 			'图片必须是相对路径 assets/<slug>/…（绝对路径会让笔记预览与飞书同步双双失效）');
-		assert.match(text, /不要\*\*自己往 `笔记\/` 写/,
+		assert.match(text, /不要\*\*自己往 `知识库列表\/` 写/,
 			'必须禁止自己往 笔记/ 写（会绕过补链/门控/台账）');
 	});
 

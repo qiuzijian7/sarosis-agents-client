@@ -8,8 +8,8 @@
  *  覆盖：
  *   · 平台分流：知乎(article) vs B站/YouTube/抖音(video) vs 小红书(mixed)
  *   · 正文/元信息组装（标题、`> 原文：`、`> 平台：`）
- *   · 图片本地化：下载到 `库/raw/assets/<slug>/` 并**改写正文远程引用**为相对路径
- *   · 落盘：`库/raw/<slug>.md` + 同名防覆盖 `-2`
+ *   · 图片本地化：下载到 `数据源/raw/assets/<slug>/` 并**改写正文远程引用**为相对路径
+ *   · 落盘：`数据源/raw/<slug>.md` + 同名防覆盖 `-2`
  *   · yt-dlp 不可用 ⇒ 降级不中断，且字幕临时目录不留垃圾
  *   · 错误路径：非法 URL / 提取器报错 / 无可读内容
  *
@@ -81,7 +81,7 @@ function makeExtractor(out: { body: string; title?: string } | { error: string; 
 }
 
 /**
- * 取知识库内的**正文文件**内容（`库/raw/*.md`）。
+ * 取知识库内的**正文文件**内容（`数据源/raw/*.md`）。
  *
  * ⚠ 不要用 `relPaths()[0]`：图片文件也在该列表里，而且**先于正文写入**
  *   （先落 `assets/<slug>/<i>-x.png`，最后才写 `<slug>.md`）⇒ 直接取 `[0]` 会读到
@@ -141,9 +141,9 @@ suite('KB importUrl —— 平台 URL 抓取与落盘', () => {
 
 		assert.strictEqual(r.ok, true);
 		const slug = slugifyTitle('知乎：如何理解 Agent', url);
-		assert.deepStrictEqual(fs.relPaths(), [`库/raw/${slug}.md`], '应只落一个文件到 库/raw/');
+		assert.deepStrictEqual(fs.relPaths(), [`数据源/raw/${slug}.md`], '应只落一个文件到 库/raw/');
 
-		const md = fs.textOf(`库/raw/${slug}.md`);
+		const md = fs.textOf(`数据源/raw/${slug}.md`);
 		assert.ok(md.startsWith('# 知乎：如何理解 Agent'), '应以标题起头');
 		assert.ok(md.includes(`原文：${url}`), '应保留原文链接（溯源）');
 		assert.ok(md.includes('这是知乎专栏的正文第一段'), '正文应写入');
@@ -202,17 +202,17 @@ suite('KB importUrl —— 平台 URL 抓取与落盘', () => {
 
 		const slug = slugifyTitle('示例博客文章', url);
 		const rel = fs.relPaths();
-		assert.ok(rel.includes(`库/raw/${slug}.md`), '正文应落盘');
+		assert.ok(rel.includes(`数据源/raw/${slug}.md`), '正文应落盘');
 		assert.strictEqual(r.images > 0, true, '应统计到已下载图片数');
 		assert.ok(r.message.includes('图片'), '结果消息应包含图片数量');
 
 		// 图片落进 assets/<slug>/，文件名带序号且保留扩展名
-		const assetFiles = rel.filter(p => p.startsWith(`库/raw/assets/${slug}/`));
+		const assetFiles = rel.filter(p => p.startsWith(`数据源/raw/assets/${slug}/`));
 		assert.strictEqual(assetFiles.length, r.images, '图片文件数应与统计一致');
 		assert.ok(assetFiles.some(p => /\/1-pic-one\.png$/.test(p)), `应含 1-pic-one.png，实际 ${assetFiles.join(', ')}`);
 
 		// ★ 关键：正文里的远程 URL 必须被替换为**相对路径**（否则飞书同步/笔记预览都拿不到本地图）
-		const md = fs.textOf(`库/raw/${slug}.md`);
+		const md = fs.textOf(`数据源/raw/${slug}.md`);
 		assert.ok(!md.includes(imgRemote), '正文中的远程图片 URL 应被改写掉');
 		assert.ok(md.includes(`assets/${slug}/1-pic-one.png`), '应改为 assets/<slug>/ 相对路径');
 	});
@@ -226,9 +226,9 @@ suite('KB importUrl —— 平台 URL 抓取与落盘', () => {
 		const second = await run(fs, url, makeExtractor({ body: '第二次', title: '重复标题' }));
 		assert.strictEqual(second.ok, true);
 
-		assert.deepStrictEqual(fs.relPaths().sort(), [`库/raw/${slug}-2.md`, `库/raw/${slug}.md`].sort());
-		assert.ok(fs.textOf(`库/raw/${slug}.md`).includes('第一次'), '既有文件内容不得被覆盖');
-		assert.ok(fs.textOf(`库/raw/${slug}-2.md`).includes('第二次'), '第二次应写进 -2 文件');
+		assert.deepStrictEqual(fs.relPaths().sort(), [`数据源/raw/${slug}-2.md`, `数据源/raw/${slug}.md`].sort());
+		assert.ok(fs.textOf(`数据源/raw/${slug}.md`).includes('第一次'), '既有文件内容不得被覆盖');
+		assert.ok(fs.textOf(`数据源/raw/${slug}-2.md`).includes('第二次'), '第二次应写进 -2 文件');
 	});
 
 	test('yt-dlp 不可用（视频平台）⇒ 降级不中断，且字幕临时目录不留垃圾', async () => {
@@ -412,10 +412,10 @@ suite('KB importUrl —— 平台 URL 抓取与落盘', () => {
 		}
 		assert.deepStrictEqual(
 			fs.relPaths().sort(),
-			[`库/raw/${slug}.md`, `库/raw/${slug}-2.md`, `库/raw/${slug}-3.md`].sort(),
+			[`数据源/raw/${slug}.md`, `数据源/raw/${slug}-2.md`, `数据源/raw/${slug}-3.md`].sort(),
 		);
-		assert.ok(fs.textOf(`库/raw/${slug}.md`).includes('第 1 次'), '首次内容不得被覆盖');
-		assert.ok(fs.textOf(`库/raw/${slug}-3.md`).includes('第 3 次'), '第三次应进 -3');
+		assert.ok(fs.textOf(`数据源/raw/${slug}.md`).includes('第 1 次'), '首次内容不得被覆盖');
+		assert.ok(fs.textOf(`数据源/raw/${slug}-3.md`).includes('第 3 次'), '第三次应进 -3');
 	});
 
 	test('slugifyTitle 边界：非法字符折叠 / 超长截断 / 空标题兜底', () => {

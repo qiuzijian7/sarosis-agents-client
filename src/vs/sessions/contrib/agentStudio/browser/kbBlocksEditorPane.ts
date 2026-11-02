@@ -102,7 +102,7 @@ export class KbBlocksEditorPane extends EditorPane {
 	 * `_workspaceFiles` 的**按 vault 缓存**（2026-09-23）。
 	 *
 	 * 为什么需要：解析 `[[wikilink]]` 只要「文件名清单」，但此前**每次打开笔记**都会
-	 * 全量递归枚举磁盘（`库` + `笔记`，外加逐级 `_findVaultRoot` stat）+ 查询内核索引，
+	 * 全量递归枚举磁盘（`数据源` + `知识库列表`，外加逐级 `_findVaultRoot` stat）+ 查询内核索引，
 	 * 而这些都发生在 `_ensureWebview()` **之前** ⇒ 直接加在首屏关键路径上。
 	 * 同一 vault 内连续打开多篇笔记时，这份清单几乎不变 ⇒ 缓存 30s 足以消除重复开销。
 	 */
@@ -197,7 +197,7 @@ export class KbBlocksEditorPane extends EditorPane {
 
 		// Enumerate the vault notes so the webview can resolve `[[wikilinks]]`.
 		//
-		// ⚠ 2026-09-22：内核索引**不保证完整**。实测某 vault：`.kbkernel.json` 里
+		// ⚠ 2026-09-22：内核索引**不保证完整**。实测某 vault：`.kb/kernel.json` 里
 		// `totalDocs: 1`，而磁盘上有 15 篇 md（同一份数据跑真实 `KbFullTextIndex.build()`
 		// 得到 15 篇 ⇒ 构建逻辑没问题，是运行时拿到的是残缺/陈旧索引）。
 		// 后果：所有 `[[链接]]` 被判为断链 ⇒ 点击**静默无反应**、出链面板只能显示
@@ -321,11 +321,11 @@ export class KbBlocksEditorPane extends EditorPane {
 		return out;
 	}
 
-	/** 枚举 vault 的 `库` / `笔记` 两个分区下的 markdown 与 html（`root` 为空 ⇒ 返回空）。 */
+	/** 枚举 vault 的 `数据源` / `知识库列表` 两个分区下的 markdown 与 html（`root` 为空 ⇒ 返回空）。 */
 	private async _enumerateVaultNotes(root: URI | undefined): Promise<{ uri: string; name: string }[]> {
 		if (!root) { return []; }
 		const files: { uri: string; name: string }[] = [];
-		for (const section of ['库', '笔记']) {
+		for (const section of ['数据源', '知识库列表']) {
 			await this._collectMarkdownFiles(URI.joinPath(root, section), files);
 		}
 		return files;
@@ -350,15 +350,15 @@ export class KbBlocksEditorPane extends EditorPane {
 	}
 
 	/**
-	 * 从笔记 URI 向上找 vault 根：**含 `笔记` 子目录的最近祖先**。
+	 * 从笔记 URI 向上找 vault 根：**含 `知识库列表` 子目录的最近祖先**。
 	 *
-	 * 与 `kbNativeKernelService._inferBuildContext` 同规则，但**不依赖 `.kbkernel.json`**
+	 * 与 `kbNativeKernelService._inferBuildContext` 同规则，但**不依赖 `.kb/kernel.json`**
 	 * （该缓存文件可能不存在 —— 例如刚被清理或从未生成，此时内核侧的根推断会失败）。
 	 */
 	private async _findVaultRoot(resource: URI): Promise<URI | undefined> {
 		let cur: URI | undefined = URI.joinPath(resource, '..');
 		for (let depth = 0; depth < 12 && cur; depth++) {
-			if (await this._isDirectory(URI.joinPath(cur, '笔记'))) { return cur; }
+			if (await this._isDirectory(URI.joinPath(cur, '知识库列表'))) { return cur; }
 			const parent = URI.joinPath(cur, '..');
 			if (parent.toString() === cur.toString()) { break; }
 			cur = parent;

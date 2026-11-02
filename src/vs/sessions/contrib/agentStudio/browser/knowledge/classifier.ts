@@ -2,7 +2,7 @@
  *  Hyper-Extract (TS port) — LLM-driven content classifier
  *
  *  Replicates Hyper-Extract's `guideline.target` role-playing + structured-output
- *  classification pattern. 给定一段内容，用 LLM 依据知识库 schema（kb-schema.json，
+ *  classification pattern. 给定一段内容，用 LLM 依据知识库 schema（.kb/schema.json，
  *  用户可编辑）进行语义类型判断 —— **唯一的分类路径**。
  *
  *  Fallback 语义（对齐 llm_wiki）：LLM 不可用/输出无效时**不做关键词猜测**，

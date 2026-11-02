@@ -1,15 +1,15 @@
 // @vssaros/dsh-kb — 「当前目录」的持久化 + 写笔记路径兜底（★ 2026-10-19）。
 //
 // **为什么需要它**（用户报的真机 bug）：
-//   模型调 `kb_write_note` 时只知道自己编的路径（`笔记/xxx.md`），**不知道用户在页面上正待在哪个目录**
+//   模型调 `kb_write_note` 时只知道自己编的路径（`知识库列表/xxx.md`），**不知道用户在页面上正待在哪个目录**
 //   ⇒ 写出来的笔记全落在「笔记」区**根**，而用户当前在 `01_学习` 里工作 ⇒ 位置不对 ✗。
 //   dsh 的工具是**无状态**的（每次调用独立），页面状态也传不进工具 ⇒ 只能：
 //     ① 页面把「当前目录」**上报**到磁盘（sidecar 文件，服务端可读）；
 //     ② 写笔记时若**模型没给目录层级**，就用它兜底。
 //
 // **兜底规则（刻意保守）**：
-//   只在「路径直接落在笔记区根」时改写（`笔记/xxx.md` ⇒ `笔记/<当前目录>/xxx.md`）。
-//   一旦模型自己带了子目录（`笔记/UE5/xxx.md`）就**原样不动** —— 那是它明确表达的位置，
+//   只在「路径直接落在笔记区根」时改写（`知识库列表/xxx.md` ⇒ `知识库列表/<当前目录>/xxx.md`）。
+//   一旦模型自己带了子目录（`知识库列表/UE5/xxx.md`）就**原样不动** —— 那是它明确表达的位置，
 //   替它改会变成"我让它写这儿、它写到别处"那种最难查的形态 ✗。
 //
 // **必须可观测**：改写后返回 `redirected/from/resolved`，调用方要把它们放进工具结果
@@ -21,21 +21,21 @@ export const ACTIVE_DIR_FILE = '.active-dir.json';
 /**
  * 纯函数：按「当前目录」改写写笔记的相对路径。
  *
- * @param {string} relPath 模型给的路径（vault 相对，形如 `笔记/xxx.md`）
- * @param {string} activeDir 当前目录 —— **vault 相对**（形如 `笔记/01_学习`，与页面 `data-dir-rel` 同口径 ✓）；
+ * @param {string} relPath 模型给的路径（vault 相对，形如 `知识库列表/xxx.md`）
+ * @param {string} activeDir 当前目录 —— **vault 相对**（形如 `知识库列表/01_学习`，与页面 `data-dir-rel` 同口径 ✓）；
  *   空 = 不兜底。⚠ 不要再接受"笔记区相对"（`01_学习`）那种形态：两种口径混用必然拼出
- *   `笔记/笔记/...` 这种路径（本文件第一版就差点这么写 ✓）。
- * @param {string} [notesDir] 笔记区目录名（默认 `笔记`）
+ *   `知识库列表/笔记/...` 这种路径（本文件第一版就差点这么写 ✓）。
+ * @param {string} [notesDir] 笔记区目录名（默认 `知识库列表`）
  * @returns {{ relPath: string, redirected: boolean, from?: string, resolved?: string }}
  */
-export function applyActiveDir(relPath, activeDir, notesDir = '笔记') {
+export function applyActiveDir(relPath, activeDir, notesDir = '知识库列表') {
 	const raw = typeof relPath === 'string' ? relPath.trim().replace(/\\/g, '/') : '';
 	const dir = typeof activeDir === 'string' ? activeDir.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') : '';
 	// 不兜底的情形：路径空 / 没写当前目录 / 不在笔记区（库区有围栏，改写没意义）
 	if (!raw || !dir) { return { relPath: raw, redirected: false }; }
 	if (raw !== notesDir && !raw.startsWith(notesDir + '/')) { return { relPath: raw, redirected: false }; }
 	if (dir !== notesDir && !dir.startsWith(notesDir + '/')) { return { relPath: raw, redirected: false }; }
-	// 当前目录就是笔记区根 ⇒ 落到根，改不改一样（避免产出 `笔记//x.md`）
+	// 当前目录就是笔记区根 ⇒ 落到根，改不改一样（避免产出 `知识库列表//x.md`）
 	if (dir === notesDir) { return { relPath: raw, redirected: false }; }
 	const tail = raw === notesDir ? '' : raw.slice(notesDir.length + 1);
 	// 模型已经给了子目录（`UE5/xxx.md`）⇒ 尊重它，不改 ✗

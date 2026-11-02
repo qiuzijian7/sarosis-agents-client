@@ -170,11 +170,43 @@ export function toCandidate(skill) {
 	};
 }
 
+/**
+ * 宿主统一追加的**执行纪律**（2026-11-02，做法对齐 dsh-desktop 的 `business-skills.js`）。
+ *
+ * 为什么收口在宿主而不是让 166 个 SKILL.md 各写一遍：
+ *   · 这些约定（绝对路径、产出物落盘位置、不要假设 PATH、长任务先说明）**对所有技能都成立**，
+ *     逐份手抄必然漂移 —— 真源一改，绝大多数技能不会跟着改；
+ *   · 只有被真正 `get()` 取用的技能才会带上它 ⇒ 不取用就不花 token（与 dsh-desktop 同一取舍）。
+ * ⚠ 放在正文**末尾**：技能自己的步骤在前，纪律在后（模型读完任务再读约束，顺序更自然）。
+ * ⚠ 不要写具体工具名/命令名：那些会随版本变（写死就会变成"文档骗模型"）。
+ */
+export const DELIVERY_NOTE_HEADING = '## 本机执行约定（宿主追加）';
+
+/** 按技能 category 追加的交付纪律（目前只有一段通用；留参数是为了分族以后不破坏签名）。 */
+export function deliveryNoteFor(skill) {
+	const category = skill && skill.metadata && typeof skill.metadata.category === 'string' ? skill.metadata.category : '';
+	const lines = [
+		DELIVERY_NOTE_HEADING,
+		'',
+		'以下由 VsSaros 宿主统一追加，适用于本技能的所有步骤：',
+		'',
+		'- **脚本路径一律用绝对路径**：技能目录与会话工作区不是同一个目录，写相对路径会找不到文件。',
+		'- **产出物写到会话工作区**（当前 cwd 或其下新建的目录），不要写进技能目录、也不要写进宿主安装目录。',
+		'- **不要假设命令行工具在 PATH 里**：先用一次探测确认（例如问版本号）；缺失时如实说明缺什么，不要改成"假装成功"。',
+		'- **长任务先说明预计耗时与产物位置**，再开始执行；中途失败要给出失败步骤与可重试的位置。',
+		'- 涉及删除、覆盖、发布、安装等有副作用的动作，先说明影响范围；宿主会为这类动作单独要用户确认。',
+	];
+	if (category === 'workbench') {
+		lines.push('- 工作台类技能：开发规范以 `GET /api/vssaros-workbenches/development-guide` 为准（随产品版本走），不要凭记忆写注册字段。');
+	}
+	return lines.join('\n');
+}
+
 /** core 技能 → dsh `SkillDefinition`（`get()` 的返回值，带正文）。 */
 export function toDefinition(skill) {
 	return {
 		...toCandidate(skill),
-		content: skill.content,
+		content: skill.content + '\n\n' + deliveryNoteFor(skill),
 	};
 }
 

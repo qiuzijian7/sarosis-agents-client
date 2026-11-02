@@ -17,7 +17,7 @@
 import { mkdir, readdir, readFile, rename, copyFile, cp, stat, rm, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { backupDirFor, incrementalCopyName, resolveOrganizePath, stampOf } from './core/kbOrganize.js';
-// 导航文件（`笔记/index.md` / `笔记/overview.md`）：生成逻辑逐字照真源，见 core/kbNavigation.js 文件头 ✓
+// 导航文件（`知识库列表/index.md` / `知识库列表/overview.md`）：生成逻辑逐字照真源，见 core/kbNavigation.js 文件头 ✓
 import { buildNavigationFiles, selectNoteFiles } from './core/kbNavigation.js';
 // 去抽象化门控（导航之后跑，真源同序 ✓）：纯逻辑见 core/kbGating.js 文件头 ✓
 import { EMPTY_ALIASES, KB_ALIASES_FILE } from './core/kbAliases.js';
@@ -166,7 +166,7 @@ export async function runOrganize({ vaultRoot, moves = [], creates = [], copies 
 	// 备份目录建了却没放东西 ⇒ 收掉（不留空目录噪音 ✓；只在**确实建过**时才动 ✓）。
 	//
 	// ★★ 2026-10-12 修：原先只判 `!backupUsed` ⇒ 把"**别人**（同一分钟内的前一次调用）写过东西的备份目录"
-	//	也一起删了 ✗✗。实测（两次调用用同一个 `now`）：第一次删除入备份 ⇒ 备份里有 `笔记/旧目录/丙.md`；
+	//	也一起删了 ✗✗。实测（两次调用用同一个 `now`）：第一次删除入备份 ⇒ 备份里有 `知识库列表/旧目录/丙.md`；
 	//	紧接着一次**只建目录**（backupUsed=false）的调用 ⇒ 那条备份**整个消失** ✗。
 	//	为什么这是最坏的一档：dsh 侧**没有**聊天页签的 undoAll ⇒ 那个备份目录是**唯一的还原点** ✓
 	//	（本文件开头第 ③ 条）⇒ 删掉它 = 已执行的删除/移动**不可挽回** ✗。
@@ -175,7 +175,7 @@ export async function runOrganize({ vaultRoot, moves = [], creates = [], copies 
 	return { moved, copied, created, deletedToBackup, skipped, backupDir: backupUsed ? backupDir : '', backupUsed };
 }
 
-/** 备份目标路径 = 备份目录 + 该文件**相对 vault 根**的路径 ✓（保留 `笔记/01_学习/…` 结构 ⇒ 可原样放回 ✓）。 */
+/** 备份目标路径 = 备份目录 + 该文件**相对 vault 根**的路径 ✓（保留 `知识库列表/01_学习/…` 结构 ⇒ 可原样放回 ✓）。 */
 function backupDirOf(backupDir, vaultRoot, abs) {
 	const root = String(vaultRoot).replace(/\\/g, '/').replace(/\/+$/, '');
 	const rest = String(abs).replace(/\\/g, '/').replace(root, '').replace(/^\/+/, '');
@@ -273,7 +273,7 @@ export async function uniqueChildName(dir, base, ext = '') {
 }
 
 /**
- * 在 `笔记/` 区内建目录（递归建父目录 ✓）。
+ * 在 `知识库列表/` 区内建目录（递归建父目录 ✓）。
  * 为什么不并进 `kb_write_note`：两者拒绝语义不同（目录重名**不是**错误：`mkdir -p` 本来就幂等 ✓），
  * 混成一个工具会让"要不要报错"这件事变得含混 ✓。
  */
@@ -346,7 +346,7 @@ export async function readNotesForGraph(notesDir) {
 }
 
 /**
- * 刷新导航两件：`笔记/index.md` 与 `笔记/overview.md`（内容生成见 `core/kbNavigation.js` ✓）。
+ * 刷新导航两件：`知识库列表/index.md` 与 `知识库列表/overview.md`（内容生成见 `core/kbNavigation.js` ✓）。
  *
  * 为什么由**我们**写（而不是留给 IDE）：它们是两侧视图共读的导航文件 ⇒ dsh 构建完不刷，
  * 用户在 IDE 侧看到的就是"旧索引 + 新笔记" ✗（P2 的验收判据正是"两侧同形" ✓）。
@@ -371,8 +371,24 @@ export async function maintainNavigation(notesDir) {
 	//   少维护 insights 的话，dsh 构建出来的库在 IDE 的「图谱洞察」里是空的 ✗（只能靠回执让人去 IDE 刷 ✗）。
 	// ⚠ dsh 侧**不传 chatModel** ⇒ 就是真源"无模型"那一档（纯成员列表 ✓，不是阉割版 ✓，见 core/kbInsights.js 文件头）。
 	const insights = buildInsightsFile(notes);
+	/*
+	 * ★ 2026-11-02（用户：中间文件应仿 Obsidian 收进一个目录）：
+	 *   导航三件（index / overview / insights）原来是**写进 `知识库列表/` 根**的 ——
+	 *   它们是每次写入后重新生成的派生物，却在树里长得像"用户笔记"，还会被搜索/统计带上 ✗。
+	 *   ⇒ 改写到 `<vault>/.kb/nav/`（点开头目录：树里不显示、扫描天然跳过）。
+	 *   `notesDir` 恒为 `<vault>/知识库列表`（调用点 `refreshDerived` 唯一）⇒ 上跳一层即库根。
+	 *   ⚠ 家目录计算失败（非标准布局）时退回原位置，宁可位置旧也不能丢功能。
+	 */
+	let navDir = notesDir;
+	try {
+		const vaultRoot = dirname(notesDir);
+		navDir = join(vaultRoot, '.kb', 'nav');
+		await mkdir(navDir, { recursive: true });
+	} catch {
+		navDir = notesDir;
+	}
 	for (const [name, content] of [['index.md', files.index], ['overview.md', files.overview], ['insights.md', insights.content]]) {
-		const target = join(notesDir, name);
+		const target = join(navDir, name);
 		const previous = await readFile(target, 'utf8').catch(() => undefined);
 		if (previous === content) {
 			unchanged.push(name);

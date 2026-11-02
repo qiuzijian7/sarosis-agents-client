@@ -48,6 +48,10 @@ export function createPromoter(deps) {
 	//   原来在 `apply` 时取值并冻结 ⇒ 运行期切换工作区后，页面上「提升」写进的是**旧**工作区分区 ✗
 	//   （分区由运行期工作区上下文决定，见 `lib/index.js` 的 `workspaceScoped`）。传值仍兼容（探针用法）。
 	const current = value => (typeof value === 'function' ? value() : value);
+	// ★ 2026-11-02：人工动作记进沉淀统计（漏斗的"人工提升 / 丢弃 / 撤销"）。
+	//   自动提升**不在这里计**：它已在钩子里随 `state.distill.autoPromoted` 同步，这里再计就是两份。
+	//   统计绝不拖累动作本身：整段吞异常，也不 await。
+	const note = key => { try { void deps.stats?.event?.(key); } catch { /* 统计失败不影响提升/丢弃 */ } };
 
 	/**
 	 * 把一条草稿提升成长期记忆。
@@ -55,8 +59,13 @@ export function createPromoter(deps) {
 	 * 顺序刻意是 **写网关成功之后才改草稿状态** ✓ —— 反过来（先标 promoted 再写）一旦写失败，
 	 * 草稿就"看起来已经提升过了"，而长期层里根本没有它 ✗（这类"记录与事实不一致"是最难发现的坏法 ✓）。
 	 */
-	async function promote(id) {
+	async function promote(id, options = {}) {
 		if (typeof id !== 'string' || !id) { return { ok: false, error: '缺少草稿 id' }; }
+		// ★ 2026-11-02：多一条 `auto-distill` 来源。它**不是**人按的，所以审计里必须分得清
+		//   （`policy: 'human'` 的语义是"这一笔等于人的确认"；自动提升只是"门控判定"）。
+		const auto = options?.policy === 'auto-distill';
+		const policy = auto ? 'auto-distill' : 'human';
+		const tool = auto ? 'memory_promote(auto)' : 'memory_promote(page)';
 		const gatewayBase = current(deps.gatewayBase);
 		const agentId = current(deps.agentId);
 		if (!gatewayBase) {
@@ -81,12 +90,15 @@ export function createPromoter(deps) {
 		};
 
 		const auditBase = {
-			tool: 'memory_promote(page)', agentId, sessionId: row.sessionId,
+			tool, agentId, sessionId: row.sessionId,
 			target: 'long', memoryType: entry.type,
 			// `policy: 'human'` —— 这一笔的来源是**人的显式动作**（见文件头 ✓），
 			// 与工具闸那三段的 `ask`/`auto`/`off` 刻意区分开 ✓。
-			policy: 'human',
+			// `auto-distill` —— 门控判定（`core/promotion.js`）自动提升，**不是**人的确认。
+			policy,
 			content: entry.content,
+			// ⚠ 证据走 `policyKey`（`buildAuditRow` 是字段白名单，未知键会被静默丢弃）
+			...(auto ? { policyKey: `auto-distill/hits=${Number.isFinite(row.hits) ? row.hits : 1}/${String(row.matched ?? '')}` } : {}),
 		};
 
 		let reply = null;
@@ -103,8 +115,95 @@ export function createPromoter(deps) {
 			return { ok: false, error: `网关未确认成功：${String(JSON.stringify(reply)).slice(0, 160)}` };
 		}
 
-		const marked = await draftStore.mark(id, 'promoted');
+		// ★ 2026-11-02：记下"谁提升的 + 写进长期层的 id" ⇒ 收件箱能区分自动/人工，撤销知道该忘哪条
+		const marked = await draftStore.mark(id, 'promoted', { promotedBy: policy, memoryId: entry.id });
+		if (!auto) { note('humanPromoted'); }
 		return { ok: true, id, memoryId: entry.id, text: entry.content, ...(marked.ok ? {} : { marked: false, markError: marked.error }) };
+	}
+
+	/**
+	 * 改写后提升（"改写后提升"，2026-11-02）：先改草稿正文，再走**同一条** `promote`。
+	 *
+	 * 顺序：改写失败 ⇒ 不提升；提升失败 ⇒ 草稿保留**已改写**的正文（人写的字不该因为网关抖一下就丢）。
+	 */
+	async function promoteEdited(id, text) {
+		const edited = await draftStore.edit(id, text);
+		if (!edited.ok) { return { ok: false, id, error: edited.error }; }
+		const result = await promote(id);
+		if (result.ok) { note('edited'); } // `edited` 是 `humanPromoted` 的子集（改写后提升也算一次人工提升）
+		return result;
+	}
+
+	/**
+	 * 撤销一次处理（2026-11-02）：
+	 *  · `rejected` → 回到 `draft`（丢弃的撤销，不碰网关）；
+	 *  · `promoted` → **软删长期层那条**（`forgetMemory`：`isLatest=false`，7 天后由 evict 进归档，
+	 *    期间仍可由归档恢复）+ 草稿回到 `draft`。
+	 *
+	 * ⚠ 顺序同提升的镜像：**先让长期层确认忘掉，再改草稿状态** —— 反过来先把草稿改回待审，
+	 * 一旦忘记失败，就会出现"草稿显示待审、长期层却还有这条"，再次提升又会写出重复。
+	 * ⚠ `forget` 依赖未注入（旧探针）⇒ 提升态不支持撤销，明确报错而不是假装成功。
+	 */
+	async function restore(id) {
+		if (typeof id !== 'string' || !id) { return { ok: false, error: '缺少草稿 id' }; }
+		const agentId = current(deps.agentId);
+		const rows = await draftStore.read();
+		const row = rows.find(candidate => candidate.id === id);
+		if (!row) { return { ok: false, error: `草稿不存在：${id}` }; }
+		if (row.status === 'draft') { return { ok: false, error: '已经是待审状态' }; }
+
+		if (row.status === 'promoted') {
+			const gatewayBase = current(deps.gatewayBase);
+			if (!gatewayBase) { return { ok: false, error: '记忆网关未配置，无法撤销提升' }; }
+			if (typeof deps.forget !== 'function') { return { ok: false, error: '当前版本未接入撤销提升（缺 forget）' }; }
+			const memoryId = typeof row.memoryId === 'string' && row.memoryId ? row.memoryId : promotedMemoryIdOf(row);
+			let reply = null;
+			try {
+				reply = await deps.forget(gatewayBase, agentId, memoryId, '撤销提升（记忆工作台）');
+			} catch (error) {
+				await auditAppend?.({ action: 'executed', tool: 'memory_undo_promote(page)', agentId, sessionId: row.sessionId, target: 'long', memoryType: PROMOTE_MEMORY_TYPE, policy: 'human', outcome: 'failed', content: row.text, error });
+				return { ok: false, id, error: String(error?.message ?? error) };
+			}
+			const ok = reply === true || reply?.ok === true || reply?.success === true;
+			await auditAppend?.({ action: 'executed', tool: 'memory_undo_promote(page)', agentId, sessionId: row.sessionId, target: 'long', memoryType: PROMOTE_MEMORY_TYPE, policy: 'human', outcome: ok ? 'ok' : 'rejected-by-gateway', content: row.text });
+			if (!ok) { return { ok: false, id, error: `长期记忆未确认已忘记：${String(JSON.stringify(reply)).slice(0, 120)}` }; }
+		}
+
+		const marked = await draftStore.mark(id, 'draft');
+		if (!marked.ok) { return { ok: false, id, error: marked.error }; }
+		if (row.status === 'rejected') {
+			await auditAppend?.({ action: 'executed', tool: 'memory_undo_discard(page)', agentId, sessionId: row.sessionId, target: 'long', memoryType: PROMOTE_MEMORY_TYPE, policy: 'human', outcome: 'restored', content: row.text });
+		}
+		note('undone');
+		return { ok: true, id, text: row.text, from: row.status };
+	}
+
+	/**
+	 * 批量执行（2026-11-02）。**逐条**处理、互不影响：一条失败不拖累其它（返回每条的结果，页面据此提示
+	 * "成功 N 条，失败 M 条"）。串行而非并行：每条都要读-改-写整份草稿文件，并行会互相覆盖。
+	 *
+	 * @param {'promote'|'discard'|'restore'|'edit-promote'} action 动作
+	 * @param {readonly string[]} ids 草稿 id
+	 * @param {{text?: string}} [options] `edit-promote` 的新正文
+	 * @returns {Promise<{ok: boolean, done: number, failed: number, results: object[]}>} 汇总
+	 */
+	async function batch(action, ids, options = {}) {
+		const results = [];
+		for (const id of Array.isArray(ids) ? ids : []) {
+			let result;
+			try {
+				if (action === 'promote') { result = await promote(id); }
+				else if (action === 'discard') { result = await discard(id); }
+				else if (action === 'restore') { result = await restore(id); }
+				else if (action === 'edit-promote') { result = await promoteEdited(id, options.text ?? ''); }
+				else { result = { ok: false, id, error: `不认识的动作：${String(action)}` }; }
+			} catch (error) {
+				result = { ok: false, id, error: String(error?.message ?? error) };
+			}
+			results.push({ id, ...result });
+		}
+		const done = results.filter(r => r.ok).length;
+		return { ok: done === results.length && results.length > 0, done, failed: results.length - done, results };
 	}
 
 	/**
@@ -131,6 +230,7 @@ export function createPromoter(deps) {
 		if (!row) { return { ok: false, error: `草稿不存在：${id}` }; }
 		if (row.status !== 'draft') { return { ok: false, error: `草稿已是 ${row.status} 状态，不再操作` }; }
 		const marked = await draftStore.mark(id, 'rejected');
+		if (marked.ok) { note('discarded'); }
 		await auditAppend?.({
 			action: 'executed',
 			tool: 'memory_discard(page)',
@@ -145,5 +245,5 @@ export function createPromoter(deps) {
 		return { ok: marked.ok, id, text: row.text, ...(marked.ok ? {} : { error: marked.error }) };
 	}
 
-	return { promote, discard };
+	return { promote, discard, promoteEdited, restore, batch };
 }

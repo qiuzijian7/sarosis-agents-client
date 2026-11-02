@@ -18,6 +18,7 @@ import {
 	lockFileFor, isPidAlive, acquireFileLock, atomicWriteFile,
 } from './lock.js';
 import { createWorkspaceContextStore, normalizeWorkspaceContext, sameWorkspaceContext } from './workspaceContext.js';
+import { installLogBridge } from './logBridge.js';
 
 export const name = 'vssaros-foundation';
 // 无依赖：这是所有 @vssaros/* 插件的底座，自己谁都不等。
@@ -50,6 +51,9 @@ export function createFoundationService() {
 }
 
 export function apply(ctx) {
+	// 日志桥放在最前：foundation 是最早加载的 @vssaros 插件，越早挂上，漏掉的 warn 越少
+	// （理由与机制见 lib/logBridge.js；失败不抛，不拖垮底座）。
+	installLogBridge(ctx);
 	const service = createFoundationService();
 	// tracker 约定与 bridge 一致（cordis 注入时挂上真实 ctx）。
 	Object.defineProperty(service, Symbol.for('cordis.tracker'), {

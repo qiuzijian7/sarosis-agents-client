@@ -236,6 +236,7 @@ export const MEDIA_CSS = `
 	color: var(--vscode-list-activeSelectionForeground, #fff); }
 .m-btn { display: inline-flex; align-items: center; justify-content: center; gap: 4px;
 	padding: 3px 9px; border-radius: 4px; font: inherit; font-size: 11.5px; cursor: pointer;
+	white-space: nowrap;   /* ★ 2026-11-02：窄窗口里按钮文字不许被压成逐字竖排（见下方「窄窗口」小节） */
 	background: var(--vscode-button-secondaryBackground, rgba(128,128,128,.16));
 	color: var(--vscode-button-secondaryForeground, inherit);
 	border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.35)); }
@@ -335,7 +336,9 @@ export const MEDIA_CSS = `
 .m-prompt { font-family: var(--vscode-editor-font-family, monospace); font-size: 10px; line-height: 1.5;
 	background: var(--vscode-textCodeBlock-background, rgba(128,128,128,.12)); border-radius: 4px;
 	padding: 5px 6px; max-height: 76px; overflow: auto; word-break: break-word; }
-.m-acts { display: flex; gap: 5px; margin-top: 8px; }
+/* 检查器里的动作行：按钮不许被压扁 ⇒ 换行而不是挤成竖排 */
+.m-acts { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.m-acts .m-btn { flex: 0 0 auto; }
 .m-dim { color: var(--vscode-descriptionForeground, #999); font-size: 11px; }
 .m-status { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 4px 10px; font-size: 10px;
 	color: var(--vscode-descriptionForeground, #999);
@@ -421,6 +424,47 @@ export const MEDIA_CSS = `
 	.m-side { flex-basis: 168px; width: 168px; }
 	.m-insp { flex-basis: 240px; width: 240px; }
 }
+/* ── 窄窗口：工具条两段式（2026-11-02，用户报「窗口大小不足时 UI 布局不合理」）──────────
+   病灶：4 个动作按钮和筛选项挤在**同一条 overflow-x:auto 的行**里，而 .m-btn 没有 flex:0 0 auto
+   ⇒ 空间不足时按钮被压到 41~45px 宽、中文**逐字换行**，堆成 65~94px 高的竖排文字，整行还被顶出横向滚动条。
+   实测容器 1100（此时中栏只有 ~608px）就有 182px 溢出 —— 不是「极小窗口」才有的问题。
+   修法三条：
+     ① 筛选区 .m-filters 自己换行，取消横向滚动；
+     ② 动作组 .m-actions 不参与收缩，窄了只留图标（title 兜住语义）；
+     ③ 顶栏 / 状态栏改成「唯一的弹性项 + 固定宽度控件」两组，顶栏死守单行、状态栏整体换行。
+   （动手前先用 mockup 比过 3 个方案，见 doc/media-library-responsive/） */
+.m-chips { flex-wrap: wrap; row-gap: 4px; overflow: visible; }
+.m-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 5px; flex: 1 1 auto; min-width: 0; }
+.m-actions { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; margin-left: auto; }
+.m-actions .m-btn { flex: 0 0 auto; }
+/* 顶栏：只有面包屑可收缩（长分组名省略），其余控件固定宽度 ⇒ 永远不会挤扁或换行 */
+.m-top .m-crumb { flex: 1 1 0; min-width: 40px; max-width: 260px; }
+.m-top .m-search { flex: 0 1 170px; min-width: 84px; max-width: 220px; }
+.m-top .m-grow { flex: 0 0 auto; }
+.m-top .m-seg, .m-top .m-density, .m-top .m-btn { flex: 0 0 auto; }
+/* 状态栏：左右两段各自成组，放不下就整体换行（段内也允许再换行） */
+.m-status { flex-wrap: wrap; row-gap: 3px; }
+.m-stat-left, .m-stat-right { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; min-width: 0; }
+.m-stat-left { flex-wrap: wrap; row-gap: 3px; }
+.m-stat-right { margin-left: auto; }
+.m-stat-right .m-btn { flex: 0 0 auto; }
+.m-linkbar { flex: 1 0 100%; }   /* 链接/导出输入条独占一整行 */
+@media (max-width: 900px) {
+	/* 动作按钮：只留图标 + title，绝不缩成竖排文字 */
+	.m-actions .m-btn .lbl { display: none; }
+	.m-actions .m-btn { padding: 2px 7px; min-width: 26px; }
+	.m-top .m-density { display: none; }
+}
+@media (max-width: 760px) {
+	.m-chips .glabel { display: none; }        /* 「类型 / 来源」组标签让位 */
+	.m-chips .m-chip .lbl { display: none; }   /* 类型 chip 只留字形：▣ ▶ ♪ ¶ */
+	.m-stat-extra { display: none; }           /* 「506 MB · 回收站 6」 */
+}
+/* 「↗ 编辑区」只在**窄侧栏**里才有意义（工作台/编辑区面板本身就是编辑区）⇒ 宽了就收起来，
+   省下 59px 给搜索与筛选。窄侧栏（<620）仍然保留这个出口。 */
+@media (min-width: 620px) {
+	.m-top [data-vssaros-media-open] { display: none; }
+}
 /* 窄容器（IDE 中栏 ~700 / 侧栏 ~340）：导航与检查器都改成浮层，列表独占整宽。
    ⚠ 不这样做的话三栏在 300 多像素下会挤成"卡片被压到几十像素、文字逐字换行"（本仓踩过）。
    ★ 2026-10-28（用户：「缺少右侧编辑区」）：断点从 820 收到 640 —— 工作台面板（=中栏 700~900）
@@ -477,8 +521,15 @@ export function renderMediaPage(opts) {
 			: '<div class="m-dim" style="padding:2px 12px 4px">（还没有标签）</div>')
 		+ '</aside>';
 
+	// ★ 2026-11-02：类型 chip 带「字形 + 文字」两截 —— 窄窗口（≤760）只留字形，省掉 4×3 个汉字宽，
+	//   否则筛选区要三行才排得下（见下方「窄窗口」小节的 .m-chip .lbl 规则）。title 兜住语义。
+	const KIND_ICON = { image: '▣', video: '▶', audio: '♪', text: '¶' };
 	const kindChips = [['', '全部'], ['image', '图片'], ['video', '视频'], ['audio', '音频'], ['text', '文本']]
-		.map(([v, label]) => `<button type="button" class="m-chip${(filter.kind || '') === v ? ' on' : ''}" data-kind="${v}">${label}</button>`)
+		.map(([v, label]) => {
+			const ico = KIND_ICON[v];
+			const body = ico ? `<span class="ico">${ico}</span><span class="lbl">${label}</span>` : label;
+			return `<button type="button" class="m-chip${(filter.kind || '') === v ? ' on' : ''}" data-kind="${v}" title="${label}">${body}</button>`;
+		})
 		.join('');
 	const providerChips = [['', '全部']].concat(providers.map(p => [p.name, p.name]))
 		.map(([v, label]) => `<button type="button" class="m-chip${(filter.provider || '') === v ? ' on' : ''}" data-provider="${escapeHtml(v)}">${escapeHtml(label)}</button>`)
@@ -509,10 +560,11 @@ export function renderMediaPage(opts) {
 	}
 
 	const mainHtml = `<section class="m-main">`
+		// ★ 2026-11-02：顶栏**死守单行** —— 面包屑是唯一的弹性项（长分组名省略），其余控件固定宽度。
+		//   ⚠ 别在这里再加 .m-grow：它会和变宽的搜索框一起把整行吃满 ⇒ 右侧按钮被迫换行/被压扁。
 		+ '<div class="m-top">'
 		+ `<div class="m-crumb">媒体库<span class="sep">/</span><b data-vssaros-media-crumb>${escapeHtml(filter.label)}</b>`
 		+ `<span class="cnt" data-vssaros-media-crumb-count>${escapeHtml(String(stats.assetCount))} 项</span></div>`
-		+ '<div class="m-grow"></div>'
 		+ '<button type="button" class="m-btn sm m-side-toggle" data-media-side-toggle title="导航">☰</button>'
 		+ '<div class="m-search"><span>⌕</span><input type="search" name="q" data-media-search placeholder="搜索名称 / 标签 / prompt"'
 		+ ` value="${escapeHtml(filter.query || '')}"></div>`
@@ -523,21 +575,27 @@ export function renderMediaPage(opts) {
 		+ '</div>'
 		+ '<input type="range" class="m-density" name="density" data-media-density min="112" max="248" value="168" title="缩略图大小">'
 		+ '<button type="button" class="m-btn sm" data-media-insp-toggle title="显示/隐藏检查器">⧉</button>'
-		+ '<button type="button" class="m-btn sm" data-vssaros-media-open title="在编辑区打开（只有侧栏太窄时用）">↗ 编辑区</button>'
+		+ '<button type="button" class="m-btn sm" data-vssaros-media-open title="在编辑区打开（只有侧栏太窄时用）"><span class="ico">↗</span><span class="lbl">编辑区</span></button>'
 		+ '</div>'
+		// ★ 2026-11-02：工具条拆成两段（用户报「窗口不足时布局不合理」）——
+		//   左段 .m-filters 自己换行（不再横向滚），右段 .m-actions 永不压缩（窄了只留图标）。
 		+ '<div class="m-chips">'
+		+ '<div class="m-filters">'
 		+ '<span class="glabel">类型</span>' + kindChips
-		+ '<span class="vsep"></span><span class="glabel">来源</span>' + providerChips
-		+ '<span class="vsep"></span>'
+		+ '<span class="m-vsep"></span><span class="glabel">来源</span>' + providerChips
+		+ '<span class="m-vsep"></span>'
 		+ `<button type="button" class="m-chip${filter.favorite ? ' on' : ''}" data-fav="1">★ 仅收藏</button>`
-		// ★ 2026-10-26：右端三个动作（放在这一行而不是顶栏 —— 顶栏已经满，这行本来就能横向滚）
-		+ '<div class="m-grow"></div>'
-		+ (writable ? '<button type="button" class="m-btn sm" data-media-import="file" title="从本地选图片/视频导入（可多选）">＋ 导入文件</button>' : '')
-		+ (writable ? '<button type="button" class="m-btn sm" data-media-import="folder" title="导入整个文件夹（复制进库，可脱源）">📁 导入文件夹</button>' : '')
+		+ '</div>'
+		+ '<div class="m-actions">'
+		// ★ 2026-10-26：右端四个动作（放在这一行而不是顶栏）。图标 + 文字两截：
+		//   ≤900 只留图标（title 兜住语义），否则窄窗口里按钮会被压成 40px 宽的竖排文字。
+		+ (writable ? '<button type="button" class="m-btn sm" data-media-import="file" title="从本地选图片/视频导入（可多选）"><span class="ico">＋</span><span class="lbl">导入文件</span></button>' : '')
+		+ (writable ? '<button type="button" class="m-btn sm" data-media-import="folder" title="导入整个文件夹（复制进库，可脱源）"><span class="ico">📁</span><span class="lbl">导入文件夹</span></button>' : '')
 		// ★ 2026-10-27：**链接**文件夹（只登记路径、不复制字节）—— 与"导入"是两件事
-		+ (writable ? '<button type="button" class="m-btn sm" data-media-link-folder title="把一个本地文件夹里的文件登记进库：不复制、不移动原文件（源文件被移走就看不到图）">🔗 链接文件夹</button>' : '')
+		+ (writable ? '<button type="button" class="m-btn sm" data-media-link-folder title="把一个本地文件夹里的文件登记进库：不复制、不移动原文件（源文件被移走就看不到图）"><span class="ico">🔗</span><span class="lbl">链接文件夹</span></button>' : '')
 		// ★ 2026-10-27：**导出**到文件夹（把库里的字节再落一份可读文件；同卷硬链接，不占额外空间）
-		+ (writable ? '<button type="button" class="m-btn sm" data-media-export-folder title="把当前筛选（或选中的）素材另存成可读文件名到指定文件夹：同卷硬链接不占空间，已存在则跳过">📤 导出到文件夹</button>' : '')
+		+ (writable ? '<button type="button" class="m-btn sm" data-media-export-folder title="把当前筛选（或选中的）素材另存成可读文件名到指定文件夹：同卷硬链接不占空间，已存在则跳过"><span class="ico">📤</span><span class="lbl">导出到文件夹</span></button>' : '')
+		+ '</div>'
 		// ★ 2026-10-27（用户要求）：「AI 助手」与「外开」从动作行搬下来，做成**浮动胶囊**
 		//   （与「萨罗斯工作台」的 S2 一体条同一套形态与交互：竖直胶囊 / 可拖 / hover 出标签）。
 		+ '</div>'
@@ -549,15 +607,20 @@ export function renderMediaPage(opts) {
 			: '<div class="m-empty">这个范围下没有素材（生图或导入后会出现在这里）。</div>')
 		+ '</div>'
 		+ '<div class="m-status">'
+		// ★ 2026-11-02：左段数字 / 右段按钮各成一组 —— 窄了整体换行，按钮不再被压成一字一行（原来能撑到 88px 高）
+		+ '<div class="m-stat-left">'
 		+ `<span><b data-media-count>${escapeHtml(String(views.length))}</b> / ${escapeHtml(String(stats.assetCount))} 项</span><span>·</span>`
 		+ '<span>已选 <b data-media-sel>0</b></span><span>·</span>'
-		+ `<span>${escapeHtml(formatBytes(stats.totalBytes))} · 回收站 ${escapeHtml(String(stats.deletedCount))}</span>`
+		+ `<span class="m-stat-extra">${escapeHtml(formatBytes(stats.totalBytes))} · 回收站 ${escapeHtml(String(stats.deletedCount))}</span>`
+		+ '</div>'
 		+ '<div class="m-grow"></div>'
+		+ '<div class="m-stat-right">'
 		// ★ 2026-10-26：「清空回收站」只在回收站视图出现（照 Eagle 的回收站工具条）；
 		//   「清理孤儿文件」= objects/thumbs 里没有任何行引用的残留（IDE 侧那套 cleanOrphaned 的对应物）。
 		+ (writable ? '<button type="button" class="m-btn sm danger" data-media-purge-deleted hidden>清空回收站</button>' : '')
 		+ (writable ? '<button type="button" class="m-btn sm" data-media-clean-orphans title="删掉 objects/thumbs 里没有任何资产引用的残留文件">清理孤儿文件</button>' : '')
 		+ '<button type="button" class="m-btn sm" data-media-more>加载更多</button>'
+		+ '</div>'
 		// 链接/导出：都要绝对路径 ⇒ 共用一个内联输入条（浏览器不给 `<input webkitdirectory>` 的绝对路径）
 		//   `data-mode` = link | export，由客户端按点了哪个按钮切换文案与提交端点。
 		+ '<div class="m-linkbar" data-media-linkbar data-mode="link" hidden>'

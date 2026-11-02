@@ -1,0 +1,28 @@
+{
+  "name": "@vssaros/dsh-office-template",
+  "version": "0.1.0",
+  "description": "VsSaros Office template module: edits a user-supplied DOCX at paragraph/run granularity and verifies native layout retention. No bundled cases; the user's own file is the template.",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/docx-template.py",
+    "cordis.patch.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
+  "license": "MIT"
+}

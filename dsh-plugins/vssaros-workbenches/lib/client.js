@@ -21,7 +21,7 @@
 //     （"只许 @vssaros/* 用"由清单解析器 `vssarosPluginManifest.ts` 在安装面钉住，客户端拿不到调用方包名）；
 //   · 标准分栏（customFrame=false）P1 暂按整页渲染（右栏承载在 P2 做，方案 §4.3）。
 // 构建标记：在页面 console 里输入 __vssarosWorkbenchBuild 即可知道窗口加载的是哪个版本
-globalThis.__vssarosWorkbenchBuild = '0.2.39';
+globalThis.__vssarosWorkbenchBuild = '0.3.24';
 window.__ModuleLoader__.load({
 	id: '@vssaros/dsh-workbenches',
 	factory: (require) => {
@@ -35,27 +35,53 @@ window.__ModuleLoader__.load({
 		const LINK_PATH_PREFIX = '/api/vssaros-workbenches/link';
 		const PANEL_PREFIX = 'vssaros-wb:';
 		const VSSAROS_SCHEME = 'vssaros:';
+		const LOCAL_SCHEME = 'local:';
 		const GITHUB_RE = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/;
 		const MODULE_RE = /^[a-z][a-z0-9-]{0,31}$/;
+		/** npm 包名（官方本地身份用 `local:<包名>`，scoped 包为 `local:@scope/name`）。 */
+		const PACKAGE_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 
-		/** 与 `vssarosPluginManifest.ts` 的 `workbenchIdentityOf` 同口径（小写 owner/repo）。 */
-		function identityOf(repository) {
-			if (typeof repository !== 'string' || !repository.trim()) { throw new Error('Invalid workbench repository'); }
-			const value = repository.trim();
-			if (value.startsWith(VSSAROS_SCHEME)) {
-				const mod = value.slice(VSSAROS_SCHEME.length);
-				if (!MODULE_RE.test(mod)) { throw new Error('Invalid workbench repository: ' + value); }
-				return 'vssaros/' + mod;
+		/**
+		 * 与 `vssarosPluginManifest.ts` 的 `workbenchIdentityOf` 同口径（小写 owner/repo）。
+		 *
+		 * 2026-11-02 对齐 dsh-desktop：本地开发的工作台**不再强制**填 `repository`。
+		 * 身份优先级（与官方 §2 身份表一致）：
+		 *   ① `repository: 'https://github.com/<owner>/<repo>'` ⇒ `owner/repo`
+		 *   ② `repository: 'vssaros:<module>'`                  ⇒ `vssaros/<module>`（本仓内置保留命名空间）
+		 *   ③ 省略 repository ⇒ `local:<npm 包名>`：
+		 *        · 显式 `package` 字段（工作台作者写真实包名，最稳）
+		 *        · 否则用调用方客户端包名（`ctx.fiber.entry.options.name`，官方同款取法）
+		 * 三者都拿不到 ⇒ 仍然抛（没有稳定身份就无法做会话归属，不能猜）。
+		 */
+		function identityOf(repository, packageName) {
+			const value = typeof repository === 'string' ? repository.trim() : '';
+			if (value) {
+				if (value.startsWith(LOCAL_SCHEME)) {
+					// 显式写 `local:<pkg>` 也接受（便于测试与手工登记）
+					const name = value.slice(LOCAL_SCHEME.length);
+					if (!PACKAGE_RE.test(name)) { throw new Error('Invalid workbench local identity: ' + value); }
+					return LOCAL_SCHEME + name;
+				}
+				if (value.startsWith(VSSAROS_SCHEME)) {
+					const mod = value.slice(VSSAROS_SCHEME.length);
+					if (!MODULE_RE.test(mod)) { throw new Error('Invalid workbench repository: ' + value); }
+					return 'vssaros/' + mod;
+				}
+				const m = GITHUB_RE.exec(value);
+				if (!m) { throw new Error('Workbench repository must be https://github.com/<owner>/<repo> or vssaros:<module>: ' + value); }
+				return (m[1] + '/' + m[2]).toLowerCase();
 			}
-			const m = GITHUB_RE.exec(value);
-			if (!m) { throw new Error('Workbench repository must be https://github.com/<owner>/<repo>: ' + value); }
-			return (m[1] + '/' + m[2]).toLowerCase();
+			const name = typeof packageName === 'string' ? packageName.trim().toLowerCase() : '';
+			if (!name || !PACKAGE_RE.test(name)) {
+				throw new Error('Workbench registration needs a repository (https://github.com/<owner>/<repo> or vssaros:<module>) or a package name for a local identity');
+			}
+			return LOCAL_SCHEME + name;
 		}
 
 		/** 校验逐条照官方 register()（client.js:856-869）；失败一律抛。返回规范化后的条目（不含 Component）。 */
-		function normalize(descriptor, Component) {
+		function normalize(descriptor, Component, packageName) {
 			if (!descriptor || !descriptor.title || typeof Component !== 'function') { throw new Error('Invalid workbench registration'); }
-			const id = identityOf(descriptor.repository);
+			const id = identityOf(descriptor.repository, descriptor.package || packageName);
 			if (descriptor.customFrame !== undefined && typeof descriptor.customFrame !== 'boolean') { throw new Error('Invalid custom frame flag'); }
 			if (descriptor.headerLayout !== undefined && descriptor.headerLayout !== 'default' && descriptor.headerLayout !== 'compact') { throw new Error('Invalid workbench header layout'); }
 			const layout = descriptor.layout || {};
@@ -72,6 +98,11 @@ window.__ModuleLoader__.load({
 				//   工作台可声明 `floatingActions: false` 关掉那条 S2 浮动胶囊（AI 助手 + 外开）。
 				//   默认 true —— 现有工作台一个都不变。
 				floatingActions: descriptor.floatingActions !== false,
+				// ★ 2026-11-02（对齐 dsh-desktop §4.1 标准分栏）：未声明 customFrame 的工作台
+				//   默认由宿主渲染「左对话 / 右业务」分栏，会话停靠在左栏（不再切走工作台）。
+				//   `splitConversation: false` 可退回旧行为（点会话即切到原生会话页）——
+				//   给"业务面板必须占满整页、不接受常驻会话区"的老工作台留逃生门。
+				splitConversation: descriptor.customFrame === true ? false : descriptor.splitConversation !== false,
 				layout: { businessSide: layout.businessSide || 'right', businessWidth: layout.businessWidth !== undefined ? layout.businessWidth : 0.36 },
 			});
 		}
@@ -88,9 +119,41 @@ window.__ModuleLoader__.load({
 				this.queue = Promise.resolve();
 				/** 会话停靠（整页工作台）：页面里的停靠点 / 本次指定的停靠会话 / 打不开的会话。 */
 				this.docks = [];
+				/** 标准分栏工作台的左栏停靠点（宿主自己渲染，id → DOM）。 */
+				this.splitDocks = new Map();
 				this.docked = new Map();
 				this.dead = new Set();
 				this.dockError = null;
+				/**
+				 * 注册失败记录（2026-11-02，对齐 dsh-desktop 的 `registrationFailures`）。
+				 *
+				 * 为什么要有：`register()` 校验不过就抛，调用方是插件的 `ctx.effect(...)` ⇒ 异常进了控制台，
+				 * **界面上什么都没有**。用户看到的是「装了，重启了，启动器里还是没有」——
+				 * 这是"装了没出现"的头号原因，而他手上没有任何线索。
+				 * 记下来并在启动器里显示包名 + 阶段 + 原因，用户和 Agent 才有下一步。
+				 *
+				 * key = 来源标识（包名 / 身份），同一个来源后来注册成功就删掉（不留过期结论）。
+				 */
+				this.registrationFailures = new Map();
+				/** 已经套过默认 agent 的「工作台|会话」（每条只套一次，见 applyDefaultPreset）。 */
+				this.presetApplied = new Set();
+				/** 工作台 id → 已确认**真实存在**的 preset id（见 readyPreset；只缓存命中，不缓存"没有"）。 */
+				this.presetResolved = new Map();
+				/** 已经告警过"候选都不存在"的工作台（每个只报一次）。 */
+				this.presetMissingWarned = new Set();
+				/**
+				 * 等 preset 注册好的轮询参数。为什么要等：vssaros-agents 启动只注册少量 preset，
+				 * 其余 ~15s 后才补齐（lazy 注册）；这段时间里用自定义 preset 建会话 / select 都是 Unknown。
+				 * 30s 覆盖 lazy 窗口 + 余量；测试里会调短。
+				 */
+				this.presetPollMs = 1000;
+				this.presetWaitMs = 30000;
+				/** 已经诊断过的停靠会话（见 diagnoseDock；每条只报一次，不刷屏）。 */
+				this.dockedDiag = new Set();
+				/** 已经自动换过会话的工作台（见 healDock；每个只救一次，防循环）。 */
+				this.dockHealed = new Set();
+				/** `remote.agentPresets` 服务（apply 里可选注入；没有就不套默认 agent，其它功能照常）。 */
+				this.agentPresets = null;
 				this.snapshot = this.buildSnapshot();
 			}
 			subscribe(listener) {
@@ -106,9 +169,37 @@ window.__ModuleLoader__.load({
 					workbenches: [...this.providers.values()].map(e => Object.freeze({
 						id: e.id, title: e.title, description: e.description || '', icon: e.icon || '',
 						customFrame: e.customFrame, headerLayout: e.headerLayout, layout: e.layout, panel: e.panel,
+						splitConversation: e.splitConversation === true,
 						added: !!(this.state && this.state.added.includes(e.id)),
 					})),
+					// 注册失败（见 constructor 的注释）：界面据此告诉用户"为什么没出现"，而不是静默。
+					registrationFailures: this.registrationFailures.size
+						? [...this.registrationFailures.values()].map(f => Object.freeze({ ...f }))
+						: [],
 				});
+			}
+
+			/**
+			 * 记一条注册失败并刷新快照（调用方据此在界面上显示）。
+			 * @param source 来源标识：调用方包名 > 描述符的 package/repository > '(未知来源)'
+			 * @param stage  'identity'（身份/校验不过）| 'slot'（面板挂载失败）| 'duplicate'（身份重复）
+			 * @param error  原始错误（保留 message，不吞栈）
+			 */
+			recordRegistrationFailure(source, stage, error) {
+				const key = String(source || '(未知来源)');
+				this.registrationFailures.set(key, {
+					source: key,
+					stage,
+					message: String((error && error.message) || error || '未知错误'),
+					at: new Date().toISOString(),
+				});
+				this.publish();
+			}
+			/** 注册成功时清掉同一来源的旧失败（否则用户会一直看到一个已经不成立的结论）。 */
+			clearRegistrationFailure(source) {
+				if (!this.registrationFailures.has(source)) { return; }
+				this.registrationFailures.delete(source);
+				this.publish();
 			}
 			publish() {
 				this.snapshot = this.buildSnapshot();
@@ -116,8 +207,34 @@ window.__ModuleLoader__.load({
 			}
 
 			register(descriptor, Component) {
-				const entry = normalize(descriptor, Component);
-				if (this.providers.has(entry.id)) { throw new Error('Duplicate workbench provider: ' + entry.id); }
+				// 本地身份的回退来源：调用方客户端包名（官方同款取法 `ctx.fiber.entry.options.name`）。
+				// 拿不到不影响带 repository 的工作台；只有省略 repository 时才必须有它。
+				let caller;
+				try {
+					const name = this.ctx && this.ctx.fiber && this.ctx.fiber.entry && this.ctx.fiber.entry.options
+						? this.ctx.fiber.entry.options.name : undefined;
+					if (typeof name === 'string' && name.trim()) { caller = name.trim(); }
+				} catch (e) { caller = undefined; }
+				/**
+				 * 界面上的来源标识：优先**调用方包名**（用户装的就是它，报出来的才是他认识的名字），
+				 * 其次描述符里写的 `package` / `repository`，最后给一个明确的"未知来源"。
+				 * ⚠ 身份（entry.id）可能因为校验失败而算不出来 ⇒ 这里**不能**依赖它。
+				 */
+				const sourceLabel = caller
+					|| (typeof descriptor?.package === 'string' && descriptor.package.trim())
+					|| (typeof descriptor?.repository === 'string' && descriptor.repository.trim())
+					|| '(未知来源)';
+				let entry;
+				try {
+					entry = normalize(descriptor, Component, caller);
+					if (this.providers.has(entry.id)) { throw new Error('Duplicate workbench provider: ' + entry.id); }
+				} catch (error) {
+					// 记录（含阶段与原因）后**原样抛**：调用方的 ctx.effect 仍要看到失败，
+					// 我们不能把"注册失败"变成"静默跳过"（那样插件会以为自己注册成功了）。
+					const duplicate = /^Duplicate workbench provider/.test(String(error && error.message));
+					this.recordRegistrationFailure(sourceLabel, duplicate ? 'duplicate' : 'identity', error);
+					throw error;
+				}
 				entry.Component = Component;
 				this.providers.set(entry.id, entry);
 				const service = this;
@@ -127,8 +244,11 @@ window.__ModuleLoader__.load({
 					disposeSlot = this.ctx.slots.register({ name: 'main', key: entry.panel }, Panel);
 				} catch (error) {
 					this.providers.delete(entry.id);
+					this.recordRegistrationFailure(sourceLabel, 'slot', error);
 					throw error;
 				}
+				// 同一个来源这次成功了 ⇒ 清掉它之前的失败记录（不留过期结论）
+				this.clearRegistrationFailure(sourceLabel);
 				this.publish();
 				return () => {
 					if (this.providers.get(entry.id) !== entry) { return; }
@@ -155,15 +275,37 @@ window.__ModuleLoader__.load({
 				return id;
 			}
 			isActive() { return this.active !== null && this.providers.has(this.active); }
-			/** 这个工作台的对话停靠在自己页面里（整页工作台）。 */
-			docksConversation(id) {
+			/**
+			 * 这个工作台的对话**怎么显示**（2026-11-02 对齐 dsh-desktop §4.1）：
+			 *   · `inline` —— customFrame：对话嵌在工作台自己页面里（`props.conversation`）；
+			 *   · `split`  —— 标准分栏（未声明 customFrame 的默认）：宿主渲染左对话 / 右业务；
+			 *   · `detach` —— `splitConversation: false`：点会话就切到原生会话页（旧行为，逃生门）。
+			 */
+			conversationMode(id) {
 				const entry = id ? this.providers.get(id) : null;
-				return !!(entry && entry.customFrame);
+				if (!entry) { return 'detach'; }
+				if (entry.customFrame) { return 'inline'; }
+				return entry.splitConversation === false ? 'detach' : 'split';
 			}
+			/** 对话是否停靠在宿主/工作台里（inline 或 split 都算；detach 不算）。 */
+			docksConversation(id) { return this.conversationMode(id) !== 'detach'; }
 			/** 工作台停靠显示的会话：本次会话里指定的 ⇒ 否则持久化的最近会话；必须归属它、且没被判死。 */
 			dockedSessionOf(id) {
 				if (!id || !this.state) { return null; }
 				const sid = this.docked.get(id) || this.state.recentSessions[id] || null;
+				if (!sid || this.dead.has(sid) || this.state.sessionBindings[sid] !== id) { return null; }
+				return sid;
+			}
+			/**
+			 * 标准分栏左栏显示的会话：优先停靠/最近会话；
+			 * 否则"当前主视图会话**且归属本工作台**"（用户在工作台模式下新开会话时，宿主直接把它放进左栏）。
+			 * ⚠ 不属于本工作台的会话**绝不**抢到分栏里（那会把用户的普通会话藏起来）。
+			 */
+			splitSessionOf(id) {
+				const docked = this.dockedSessionOf(id);
+				if (docked) { return docked; }
+				if (!id || !this.state) { return null; }
+				const sid = this.currentSession();
 				if (!sid || this.dead.has(sid) || this.state.sessionBindings[sid] !== id) { return null; }
 				return sid;
 			}
@@ -177,13 +319,29 @@ window.__ModuleLoader__.load({
 					if (i >= 0) { this.docks.splice(i, 1); this.publish(); }
 				};
 			}
-			/** 覆盖层该往哪儿渲染对话：前台工作台的最新停靠点 + 它的停靠会话（任一缺失 ⇒ null）。 */
+			/** 标准分栏左栏的停靠点（宿主 Frame 里渲染；一个工作台同时只有一个）。返回注销函数。 */
+			registerSplitDock(id, element) {
+				const previous = this.splitDocks.get(id);
+				if (previous === element) { return () => { }; }
+				this.splitDocks.set(id, element);
+				this.publish();
+				return () => {
+					if (previous) { this.splitDocks.set(id, previous); }
+					else if (this.splitDocks.get(id) === element) { this.splitDocks.delete(id); }
+					this.publish();
+				};
+			}
+			/** 覆盖层该往哪儿渲染对话：前台工作台的停靠点 + 它的会话（任一缺失 ⇒ null）。 */
 			dockTarget() {
 				const id = this.active;
-				if (!id || !this.docksConversation(id)) { return null; }
-				const dock = [...this.docks].reverse().find(d => d.id === id);
-				const sessionId = this.dockedSessionOf(id);
-				return dock && sessionId ? { id, element: dock.element, sessionId } : null;
+				if (!id) { return null; }
+				const mode = this.conversationMode(id);
+				if (mode === 'detach') { return null; }
+				const element = mode === 'inline'
+					? (([...this.docks].reverse().find(d => d.id === id) || {}).element)
+					: this.splitDocks.get(id);
+				const sessionId = mode === 'inline' ? this.dockedSessionOf(id) : this.splitSessionOf(id);
+				return element && sessionId ? { id, element, sessionId, mode } : null;
 			}
 			/** 停靠会话打不开（已删除 / 归档 / 加载失败）⇒ 本次运行不再尝试，页面回到"开始对话"。 */
 			markDead(sessionId, error) {
@@ -252,14 +410,41 @@ window.__ModuleLoader__.load({
 				const id = this.active;
 				return !!(id && sessionId && this.state && this.state.sessionBindings[sessionId] === id);
 			}
-			/** 默认工作区：最近一次绑给本工作台的会话所在工作区 ⇒ 否则第一个工作区。 */
+			/**
+			 * 默认工作区（给新会话挑根目录）。顺序很重要：
+			 *
+			 * ① **前台主视图会话所在的工作区** —— 用户此刻正在这个项目里工作，助手就该在这里开会话；
+			 * ② 本工作台最近一次会话所在的工作区（保持连续性）；
+			 * ③ 列表第一个（兜底）。
+			 *
+			 * ★ 2026-11-02（用户：「商城聊天框中，工作区显示的名字与工作区根目录不一致」）：
+			 *   之前只有 ②③。②在有历史绑定时会指向**很久以前**那个项目（实测商城助手开在
+			 *   `Saros-agents-pocket`，而用户当前工作区是 `sarosis-agents-client`）⇒ 对话栏 chip 显示
+			 *   Saros-agents-pocket、而界面别处写的是当前会话 cwd=…\sarosis-agents-client，看起来"名字对不上目录"。
+			 *   现在优先跟随用户当前工作区 —— 这也符合直觉：助手默认在你正在做的事里。
+			 */
 			defaultWorkspace() {
 				let items = [];
 				try { items = this.ctx.workspaces.list.getSnapshot().items || []; } catch { items = []; }
+				if (!items.length) { return null; }
+				const bySession = (sessionId) => (sessionId
+					? items.find(w => Array.isArray(w.sessionIds) && w.sessionIds.includes(sessionId))
+					: null);
+				// ① 当前主视图会话（**不是** workbench 自己停靠的那条，避免"跟着工作台自己的旧会话走"）
+				let main;
+				try {
+					const { byId } = this.ctx.sessions.list.getSnapshot();
+					main = Object.keys(byId || {}).find(id => (((byId[id] || {}).retainedBy || {}).mainView || 0) > 0);
+				} catch { main = undefined; }
+				const fromMain = bySession(main);
+				if (fromMain) { return fromMain; }
+				// ② 本工作台最近会话
 				const id = this.active;
 				const recent = id && this.state ? this.state.recentSessions[id] : null;
-				const hit = recent ? items.find(w => Array.isArray(w.sessionIds) && w.sessionIds.includes(recent)) : null;
-				return hit || items[0] || null;
+				const fromRecent = bySession(recent);
+				if (fromRecent) { return fromRecent; }
+				// ③ 兜底
+				return items[0] || null;
 			}
 			/** 把某条会话停靠到该工作台并广播（内部用；调用方已确认归属） */
 			dockTo(id, sessionId) {
@@ -282,7 +467,8 @@ window.__ModuleLoader__.load({
 			 *   · 已归属本工作台  ⇒ 直接停靠
 			 *   · **未归属任何工作台 ⇒ 自动绑定到本工作台再停靠**（用户是在这个工作台里点的，意图明确）
 			 *   · 已归属别的工作台 ⇒ 如实报错（`dockError`），**不**把用户踢出工作台
-			 *   · 前台不是整页工作台（标准分栏）⇒ 保持旧行为（切原生对话）
+			 *   · 标准分栏（split）⇒ 同样停靠（进左栏），不再切走 —— 2026-11-02 对齐官方 §4.1
+			 *   · `splitConversation: false` ⇒ 保持旧行为（切原生对话）
 			 */
 			showSession(sessionId) {
 				const id = this.active;
@@ -309,6 +495,8 @@ window.__ModuleLoader__.load({
 			async bindSession(owner, sessionId) {
 				await this.commit(state => {
 					const prev = state.sessionBindings[sessionId];
+					// ⚠ 归属**不能改**：服务端 `validateState` 会拒（"不能改变或删除已有会话的工作台归属"）。
+					//   每个工作台都建**自己的**会话（见 createOwnSession），根本不需要共用别人的。
 					if (prev && prev !== owner) { throw new Error('此会话已属于另一个工作台，不能重新绑定。'); }
 					if (!state.added.includes(owner)) { state.added.push(owner); }
 					state.sessionBindings[sessionId] = owner;
@@ -320,10 +508,215 @@ window.__ModuleLoader__.load({
 				const owner = this.ownerId();
 				const workspace = workspaceId || (this.defaultWorkspace() && this.defaultWorkspace().workspaceId);
 				if (!workspace) { return this.newWorkspaceSession(); }
-				const sessionId = await this.ctx.sessions.create({ workspaceId: workspace });
+				// 不等：preset 已注册就出生即带；还没注册（开机 lazy 窗口）⇒ 先建出来，注册好再补（applyDefaultPreset）
+				const preset = await this.readyPreset(owner);
+				const sessionId = await this.createOwnSession(workspace, preset);
 				await this.bindSession(owner, sessionId);
+				if (preset) { this.presetApplied.add(owner + '|' + sessionId); }   // 出生就带 ⇒ 不用事后 select
 				this.showSession(sessionId);
+				if (!preset) { this.applyDefaultPreset(owner, sessionId); }
 				return sessionId;
+			}
+			/**
+			 * 给一个工作台建一条**它自己的**新会话（不复用任何现成会话）。
+			 *
+			 * ★ 2026-11-02 根治（用户：「不同工作台中聊天框的 agent 使用不当，多轮修复始终反复出错」）：
+			 *   之前走 `uiWorkspace.connectBlank(ws, { agentPreset })`。它带第二个参数时会**复用工作区里现成的
+			 *   空会话**（`createInWorkspace` 找 blank + cwd 相同 + 未归档的那条）⇒ 同一工作区里的多个工作台
+			 *   **必然拿到同一条会话** ⇒ agent 是会话属性，后写者赢（知识库显示「商城助手」就是这么来的）；
+			 *   而复用到的那条已归属别家，又逼出了"借用"这种共享显示（已删）。
+			 *   官方「全新会话」的写法就是 `connectBlank(ws)` 不带参数 = `sessions.create({ workspaceId })`；
+			 *   宿主侧 `session.create` 只在显式传 `sessionId` 时才复用，并且**建完一定 `workspace.attachSession`**
+			 *   ⇒ 新会话一定登记进工作区（输入框可用的前提），也一定是独占的。
+			 * preset 被拒（理论上不会：调用方只传 list() 里存在的）⇒ 退回不带 preset，不能因此建不出会话。
+			 */
+			async createOwnSession(workspace, preset) {
+				if (preset) {
+					try { return await this.ctx.sessions.create({ workspaceId: workspace, agentPreset: preset }); }
+					catch (error) {
+						console.warn('[vssaros-workbenches] 带 agentPreset 建会话失败，退回默认：' + preset + '（' + String((error && error.message) || error) + '）');
+					}
+				}
+				return this.ctx.sessions.create({ workspaceId: workspace });
+			}
+			/**
+			 * 诊断：这条停靠会话**能不能正常输入**（每条只报一次）。
+			 *
+			 * 判据来自官方 conversation：hero 空态下，会话必须能反查到工作区（`workspace.sessionIds`），
+			 * 否则输入框渲染成「选择一个工作区开始」且 `inert`（不可输入）。
+			 * 所以「输入不了」= 这条会话没进任何工作区。首次发现时先让 sessions 重读一次快照
+			 * （新会话可能还没进客户端索引），仍查不到才告警 —— 告警里带够定位用的数字。
+			 */
+			diagnoseDock(owner, sessionId) {
+				if (!sessionId || this.dockedDiag.has(sessionId)) { return; }
+				this.dockedDiag.add(sessionId);
+				const read = () => {
+					const snapshot = this.ctx.workspaces && this.ctx.workspaces.list ? this.ctx.workspaces.list.getSnapshot() : null;
+					const items = (snapshot && snapshot.items) || [];
+					let summary;
+					try { summary = this.ctx.sessions.list.getSnapshot().byId[sessionId]; } catch { summary = undefined; }
+					return { snapshot, items, summary, mapped: items.find(w => Array.isArray(w.sessionIds) && w.sessionIds.includes(sessionId)) };
+				};
+				const report = (state, refreshed) => {
+					if (state.mapped) { return; }
+					console.warn('[vssaros-workbenches] 停靠会话不属于任何工作区 ⇒ 空态下输入框会退化成「选择一个工作区开始」（不可输入）：'
+						+ sessionId + ' cwd=' + String(state.summary && state.summary.cwd || '(无)')
+						+ ' blank=' + String(state.summary && state.summary.blank)
+						+ ' 工作区phase=' + String(state.snapshot && state.snapshot.phase)
+						+ ' 工作区数=' + state.items.length
+						+ ' 刷新过=' + String(refreshed));
+					this.healDock(owner, state.summary);
+				};
+				const first = read();
+				if (first.mapped || !first.summary) { return; }
+				// 新会话可能还没进客户端索引 ⇒ 重读一次再判定（不重试，避免抖动）
+				Promise.resolve()
+					.then(() => (typeof this.ctx.sessions.refresh === 'function' ? this.ctx.sessions.refresh() : undefined))
+					.then(() => report(read(), true))
+					.catch(() => report(first, false));
+			}
+			/**
+			 * 自愈：工作台 `owner` 停靠的是一条**没被任何工作区收录的空会话** ⇒ 给它建一条**自己的**新会话换上。
+			 *
+			 * 为什么要有：工作区记录被重建过（实测 `sarosis-agents-client` 的 createdAt 晚于那批会话）时，
+			 * 老会话的登记随之丢失，而工作台打开时停靠的正是 `recentSessions` 里那条 ⇒ 每次打开都是禁用输入框。
+			 * 只救**空会话**（有内容时 `hero=false`，输入本来就是正常的）；每个工作台只救一次（防循环）；
+			 * 没有可用工作区时**不救**（那会弹原生选目录对话框，比"输入不了"更吓人）。
+			 * ⚠ `owner` 由调用方传入（就是停靠这条会话的那个工作台），**不读** `this.active` ——
+			 *   多页签同时挂载时前台不一定是它，读错了就会把新会话建给别的工作台。
+			 */
+			healDock(owner, summary) {
+				if (!owner || !this.providers.has(owner)) { return; }
+				if (!summary || summary.blank !== true) { return; }
+				if (this.dockHealed.has(owner)) { return; }
+				const workspace = this.defaultWorkspace();
+				if (!workspace || !workspace.workspaceId) { return; }
+				this.dockHealed.add(owner);
+				console.warn('[vssaros-workbenches] 停靠的是一条没被工作区收录的空会话，给它换一条自己的新会话：'
+					+ String(summary.id || '') + ' @ ' + owner);
+				Promise.resolve()
+					.then(async () => {
+						const preset = await this.readyPreset(owner);
+						const sessionId = await this.createOwnSession(workspace.workspaceId, preset);
+						if (!sessionId || sessionId === summary.id) { return; }
+						await this.bindSession(owner, sessionId);
+						if (preset) { this.presetApplied.add(owner + '|' + sessionId); }
+						this.dockTo(owner, sessionId);
+						if (!preset) { this.applyDefaultPreset(owner, sessionId); }
+					})
+					.catch((error) => console.warn('[vssaros-workbenches] 自动换新会话失败（' + owner + '）：' + String((error && error.message) || error)));
+			}
+			/**
+			 * 这个工作台的 AI 助手默认 agent（preset id）。描述符的 `assistantPreset` 优先（第三方工作台自己声明），
+			 * 其次内置表；都没有 ⇒ 空串（不强行指定，沿用宿主默认）。
+			 */
+			presetOf(id) {
+				return this.presetCandidatesOf(id)[0] || '';
+			}
+			/**
+			 * 候选 preset id（按优先级）：描述符自己声明的 `assistantPreset` > 内置表。
+			 * 为什么是**列表**：同一个 agent 在不同机器上的 id 可以不一样 ——
+			 * 知识库内置的是 `knowledge-base-expert`，而用户数据根里是 `kb-expert`（同名「知识库专家」）。
+			 * 只写死一个，在另一套环境里 `select` 就是 not-found，且**不报错**（官方 select 失败返回 `{ok:false}` 而不是抛）。
+			 */
+			presetCandidatesOf(id) {
+				const entry = id ? this.providers.get(id) : null;
+				const own = entry && typeof entry.assistantPreset === 'string' ? entry.assistantPreset.trim() : '';
+				const table = ASSIST_PRESET_BY_WB[String(id || '')];
+				const list = [own].concat(Array.isArray(table) ? table : (table ? [table] : []));
+				return [...new Set(list.filter(Boolean))];
+			}
+			/**
+			 * 候选里**真实存在**的那个 preset（以 `agentPresets.list()` 为准）；不存在 ⇒ 空串。
+			 *
+			 * ★ 2026-11-02 根治的两条铁律：
+			 *   ① **绝不猜**：列表读不到 / 候选都不在 ⇒ 返回空串（用宿主默认）。以前"读不到就退回第一个候选碰运气"，
+			 *      而给会话 select 一个本机不存在的 id 会把会话**弄坏**——之后 resume 直接报
+			 *      `Unknown agent preset: vssaros-knowledge-base-expert`（真机日志）。
+			 *   ② **等它注册**：vssaros-agents 是 lazy 注册（启动只注册几个，其余 ~15s 后补齐），开机那十几秒里
+			 *      自定义 preset 都还不在列表里。`waitMs > 0` 时每 `presetPollMs` 重读一次直到出现或超时。
+			 * 只缓存**命中**（不缓存"没有"）：没有的那次可能只是还没注册好。
+			 */
+			async readyPreset(id, { waitMs = 0 } = {}) {
+				const candidates = this.presetCandidatesOf(id);
+				if (candidates.length === 0) { return ''; }
+				if (this.presetResolved.has(id)) { return this.presetResolved.get(id); }
+				const started = Date.now();
+				for (;;) {
+					const roster = await this.presetRoster();
+					const hit = roster ? candidates.find(c => roster.has(c)) : '';
+					if (hit) { this.presetResolved.set(id, hit); return hit; }
+					if (Date.now() - started >= waitMs) {
+						if (roster && waitMs > 0 && !this.presetMissingWarned.has(id)) {
+							this.presetMissingWarned.add(id);
+							console.warn('[vssaros-workbenches] 没有找到 ' + id + ' 的默认 agent（等了 ' + Math.round(waitMs / 1000) + 's，候选都不在 agentPresets 列表里）：' + candidates.join(' / '));
+						}
+						return '';
+					}
+					await new Promise(resolve => setTimeout(resolve, this.presetPollMs));
+				}
+			}
+			/** 当前已注册的 preset id 集合；服务缺席 / 调用失败 ⇒ null（调用方据此"不猜"）。 */
+			async presetRoster() {
+				const svc = this.agentPresets;
+				if (!svc || typeof svc.list !== 'function') { return null; }
+				try {
+					const result = await svc.list();
+					// ⚠ 官方失败返回 `{ ok:false }` 而不是抛 ⇒ 必须看 ok
+					const rows = result && result.ok && result.value && Array.isArray(result.value.presets) ? result.value.presets : null;
+					return rows ? new Set(rows.map(row => (row && typeof row === 'object' ? row.id : row))) : null;
+				} catch { return null; }
+			}
+			/** 工作台 `owner` 的对话栏里**此刻显示**的会话（整页工作台 = 停靠的；标准分栏 = 左栏的）。 */
+			sessionShownIn(owner) {
+				return this.conversationMode(owner) === 'split' ? this.splitSessionOf(owner) : this.dockedSessionOf(owner);
+			}
+			/**
+			 * 给工作台 `owner` 对话栏里那条**还没开聊**的会话套上它的默认 agent（hero 空态那条可能不是带 preset 建的：
+			 * 历史会话、或开机 lazy 窗口里只能先不带 preset 建）。
+			 *
+			 * ★ 2026-11-02 根治：这是全仓**唯一**会事后改 agent 的地方（各工作台插件里的 select / 包 newSession /
+			 *   劫持「新会话」按钮已全部删除）。以前 5 个写入者都对**全局当前会话**下手，多页签同时挂载时互相改对方的。
+			 *
+			 * 铁律：
+			 *   · 只改**这个工作台自己显示**的那条（等待期间换了会话 / 换了归属 ⇒ 放弃）；
+			 *   · 只改 **blank**（还没发过话）—— 绝不改进行中的对话；
+			 *   · 每条只套**一次**；等待期间 agent 被人改过（用户在 chip 里手动选了）⇒ 尊重，放弃；
+			 *   · 只用 list() 里**真实存在**的 id（见 readyPreset），被拒必须看 `ok` 并告警。
+			 */
+			applyDefaultPreset(owner, sessionId) {
+				if (!owner || !sessionId || this.presetCandidatesOf(owner).length === 0) { return; }
+				const key = owner + '|' + sessionId;
+				if (this.presetApplied.has(key)) { return; }
+				this.presetApplied.add(key);
+				const summaryOf = () => { try { return this.ctx.sessions.list.getSnapshot().byId[sessionId]; } catch { return undefined; } };
+				const presetNow = () => { const s = summaryOf(); return s && s.projectionValues ? s.projectionValues.agentPreset : undefined; };
+				const stillOurs = () => this.sessionShownIn(owner) === sessionId && !!this.state && this.state.sessionBindings[sessionId] === owner;
+				(async () => {
+					// 会话摘要可能比停靠晚到几百毫秒；**先等摘要再记初值**（否则"摘要晚到"会被误判成"有人改过 agent"）
+					let summary = summaryOf();
+					for (let i = 0; !summary && i < 10; i += 1) {
+						await new Promise(resolve => setTimeout(resolve, 300));
+						summary = summaryOf();
+					}
+					if (!summary || summary.blank !== true) { return; }
+					const before = presetNow();
+					const preset = await this.readyPreset(owner, { waitMs: this.presetWaitMs });
+					if (!preset) { return; }
+					summary = summaryOf();
+					if (!summary || summary.blank !== true) { return; }
+					if (!stillOurs()) { return; }
+					const current = presetNow();
+					if (current === preset) { return; }
+					if (current !== before) { return; }   // 等待期间被改过（多半是用户手动选的）⇒ 尊重
+					const svc = this.agentPresets;
+					if (!svc || typeof svc.select !== 'function') { return; }
+					const result = await svc.select(sessionId, preset);
+					if (result && result.ok === false) {
+						const why = (result.error && (result.error.message || result.error.code)) || '未知原因';
+						console.warn('[vssaros-workbenches] 套用默认 agent 被拒：' + preset + ' @ ' + sessionId + '（' + why + '）');
+					}
+				})().catch((error) => console.warn('[vssaros-workbenches] 套用默认 agent 失败（' + owner + '）：' + String((error && error.message) || error)));
 			}
 			/** 让用户选一个文件夹 ⇒ 建工作区 ⇒ 新会话（用户取消 ⇒ undefined）。 */
 			async newWorkspaceSession() {
@@ -496,8 +889,40 @@ window.__ModuleLoader__.load({
 			React.useEffect(() => (element ? service.registerDock(entry.id, element) : undefined), [element, entry.id]);
 			const docked = service.dockedSessionOf(entry.id);
 			return h('div', { className: 'vssWbDockHost', 'data-vssaros-wb-conversation': entry.id },
+				h(NewSessionButton, { service, entry }),
 				docked ? null : h(ConversationStart, { service }),
 				h('div', { ref: setElement, className: 'vssWbDock', 'data-vssaros-wb-dock': entry.id, hidden: !docked }));
+		}
+		/**
+		 * AI 助手栏**右上角**的「＋ 新会话」（2026-11-02，用户：「所有工作台 AI 助手侧边栏右上角加 +新会话，左上角不要收起按钮」）。
+		 *
+		 * 为什么在宿主做、不在每个工作台各画一个：商城 / 萨罗斯各自画过一套（还各带一个左上角「» 收起」），
+		 * 其余工作台一个都没有 ⇒ 口径不一、位置不一、并行改一处漏一处。宿主的对话栏（ConversationMount /
+		 * SplitConversationPane）是所有工作台共用的 ⇒ 放这里，**一份实现、所有工作台都有**。
+		 * 收起 / 展开仍由右侧中部的浮动工具栏（« »）负责 —— 对话栏里不再放第二个收起入口。
+		 *
+		 * 会话由 `service.newSession()` 建：带该工作台的默认 agent（见 presetOf）、归属本工作台、直接停靠进这一栏。
+		 */
+		function NewSessionButton({ service, entry }) {
+			const [busy, setBusy] = React.useState(false);
+			const preset = service.presetOf(entry.id);
+			return h('button', {
+				type: 'button', className: 'vssWbNewSession', 'data-vssaros-wb-new-session': entry.id, disabled: busy,
+				title: preset ? '新建一个对话（默认 agent 已选好）' : '新建一个对话',
+				onClick: (ev) => {
+					ev.preventDefault();
+					ev.stopPropagation();
+					// 按钮所在的工作台就是用户眼前的这个 ⇒ 先把它记为前台（newSession 认的是前台工作台）
+					if (service.active !== entry.id) { service.activate(entry.id); }
+					setBusy(true);
+					Promise.resolve().then(() => service.newSession())
+						.catch((error) => {
+							service.dockError = String((error && error.message) || error || '新建会话失败');
+							service.publish();
+						})
+						.finally(() => setBusy(false));
+				},
+			}, '＋ 新会话');
 		}
 		/** 停靠点里的"开始对话"（默认工作区新建；没有工作区 ⇒ 让用户选文件夹）。 */
 		function ConversationStart({ service }) {
@@ -512,6 +937,21 @@ window.__ModuleLoader__.load({
 					h('button', { type: 'button', disabled: busy, onClick: () => run(() => service.newSession()) }, busy ? '正在打开…' : '开始对话'),
 					h('button', { type: 'button', disabled: busy, onClick: () => run(() => service.newWorkspaceSession()) }, '选择文件夹…')),
 				error ? h('p', { className: 'vssWbConversationError', role: 'alert' }, error) : null);
+		}
+		/**
+		 * 标准分栏的**左栏**（2026-11-02）：宿主自己渲染，里面一个空 div 作为 portal 目标。
+		 * 与整页工作台的 `ConversationMount` 同一套语义：还没有归属会话 ⇒ 显示「开始对话」，
+		 * 有 ⇒ 由根覆盖层把官方对话 portal 进来（`data-vssaros-wb-split-dock` 只是锚点，内容不归 React 管）。
+		 */
+		function SplitConversationPane({ service, entry }) {
+			useService(service);
+			const [element, setElement] = React.useState(null);
+			React.useEffect(() => (element ? service.registerSplitDock(entry.id, element) : undefined), [element, entry.id]);
+			const docked = service.splitSessionOf(entry.id);
+			return h('div', { className: 'vssWbSplitConversation', 'data-vssaros-wb-split-conversation': entry.id },
+				h(NewSessionButton, { service, entry }),
+				docked ? null : h(ConversationStart, { service }),
+				h('div', { ref: setElement, className: 'vssWbDock', 'data-vssaros-wb-split-dock': entry.id, hidden: !docked }));
 		}
 		/**
 		 * 拼「外开」深链：dsh web 地址 + 工作台（用 **hash** 传 —— Host 的 302 会丢掉 query，但保留 hash）。
@@ -719,14 +1159,139 @@ window.__ModuleLoader__.load({
 			};
 			window.addEventListener('pointerup', finish, true);
 			window.addEventListener('pointercancel', finish, true);
+		}
 
-			// 恢复上次位置（并夹一次，防止窗口变小后越界）
+		/**
+		 * 恢复上次拖拽位置，并在**尺寸变化后重新夹一次**（2026-11-02 用户报「知识库 工作台未显示浮动工具栏」）。
+		 *
+		 * 两个坑（合起来会让胶囊永久飘到可见区外，表现就是"工具栏没了"）：
+		 *   ① 存的是**绝对像素**（`{x,y}`，全局一个 key，所有工作台共用）⇒ 换个窗口尺寸 / 换台机器 /
+		 *      分栏宽度变了，原来那个 x 就在面板外；而这里以前**只在挂载时夹一次**，之后再没人管。
+		 *   ② 挂载时页签可能还没激活（`display:none`）⇒ `getBoundingClientRect()` 全 0 ⇒ 夹出来的
+		 *      `x = maxL - 12` 基于错误尺寸，等于把胶囊钉在错的位置。
+		 * ⇒ 现在：尺寸为 0 时**等到有尺寸再恢复**；任何尺寸变化都重新夹（也是"拖过之后窗口变小"的兜底）。
+		 */
+		/** 已挂载的胶囊（复位逃生门用：位置飘到看不见的地方时能一键拉回，不必开 DevTools 清 localStorage）。 */
+		const mountedActions = new Set();
+		/**
+		 * 复位**全部**工作台的浮动条位置（回默认「右边缘垂直居中」）。
+		 * 用户侧入口：控制台 `__vssarosResetWorkbenchActions()`，或对胶囊右键（单个）。
+		 */
+		function resetAllActions() {
+			try { localStorage.removeItem(ACTIONS_POS_KEY); } catch { /* ignore */ }
+			for (const el of mountedActions) { if (el && el.isConnected) { applyActionsPos(el, null); } }
+			return mountedActions.size;
+		}
+
+		try { window.__vssarosResetWorkbenchActions = resetAllActions; } catch { /* 无 window（测试沙箱）*/ }
+
+		/** 一个元素的简短描述：`div.cls1.cls2#id[data-x]`（日志里认得出是谁）。 */
+		function describeEl(node) {
 			try {
-				const saved = JSON.parse(localStorage.getItem(ACTIONS_POS_KEY) || 'null');
-				if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
-					applyActionsPos(el, clampActions(el, frameEl, saved));
+				if (!node || !node.tagName) { return String(node); }
+				const cls = typeof node.className === 'string' ? node.className.trim().split(/\s+/).filter(Boolean).slice(0, 3).join('.') : '';
+				const data = node.getAttributeNames ? node.getAttributeNames().filter(n => n.startsWith('data-')).slice(0, 2).join(',') : '';
+				return node.tagName.toLowerCase() + (node.id ? '#' + node.id : '') + (cls ? '.' + cls : '') + (data ? '[' + data + ']' : '');
+			} catch { return '?'; }
+		}
+		const rectText = (r) => Math.round(r.left) + ',' + Math.round(r.top) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height);
+
+		/** 每个工作台、每次页面加载只自检一次（见 diagnoseActions）。 */
+		const diagnosedActions = new Set();
+		/** 自检结果也留一份在 window 上（`__vssarosWbActionsDiag`），控制台能直接读。 */
+		const diagnosisLog = [];
+		try { window.__vssarosWbActionsDiag = diagnosisLog; } catch { /* 无 window */ }
+
+		/**
+		 * 运行时自检：胶囊**已经在 DOM 里**，但用户看不到它——只可能是下面四种之一，而这四种 jsdom 都测不了
+		 * （没有布局引擎），只能在真实浏览器里量：
+		 *   ① 尺寸为 0 / 被样式隐藏   ② 落在外框之外（位置存档 / 外框比可见区大）
+		 *   ③ 被别的元素盖住          ④ 被某个祖先的 overflow 裁掉
+		 * 量到什么就写什么（console.warn ⇒ dshHarness 会把它镜像进 main.log，用户不必开控制台）。
+		 * ⚠ 只在**真的出了问题**时说"异常"；没问题也报一行"正常 + 几何"，这样"没有这行日志"就等价于"根本没挂载"。
+		 */
+		function diagnoseActions(el, frameEl, reason) {
+			try {
+				const id = el.getAttribute('data-vssaros-wb-actions') || '?';
+				if (diagnosedActions.has(id)) { return; }
+				diagnosedActions.add(id);
+				const r = el.getBoundingClientRect();
+				const fr = frameEl.getBoundingClientRect();
+				const cs = window.getComputedStyle(el);
+				const issues = [];
+				if (reason) { issues.push(reason); }
+				if (r.width === 0 || r.height === 0) { issues.push('胶囊尺寸为 0'); }
+				if (cs.display === 'none' || cs.visibility === 'hidden' || (cs.opacity !== '' && Number(cs.opacity) === 0)) {
+					issues.push('被样式隐藏(display=' + cs.display + ' visibility=' + cs.visibility + ' opacity=' + cs.opacity + ')');
 				}
-			} catch (e) { /* ignore */ }
+				const vw = window.innerWidth; const vh = window.innerHeight;
+				if (r.width > 0 && (r.right < 0 || r.left > vw || r.bottom < 0 || r.top > vh)) { issues.push('整体在窗口可见区之外'); }
+				else if (r.width > 0 && fr.width > 0 && (r.left < fr.left - 1 || r.right > fr.right + 1 || r.top < fr.top - 1 || r.bottom > fr.bottom + 1)) { issues.push('落在外框之外'); }
+				// 被谁盖住：取胶囊中心点最上层的元素
+				let covered = '';
+				const cx = r.left + r.width / 2; const cy = r.top + r.height / 2;
+				if (r.width > 0 && cx >= 0 && cy >= 0 && cx <= vw && cy <= vh && typeof window.document.elementFromPoint === 'function') {
+					const topEl = window.document.elementFromPoint(cx, cy);
+					if (topEl && topEl !== el && !el.contains(topEl)) { covered = describeEl(topEl); issues.push('中心点被 ' + covered + ' 盖住'); }
+				}
+				// 被哪个祖先裁掉：祖先 overflow 非 visible 且它的矩形没把胶囊完整包住
+				const clippers = [];
+				for (let p = el.parentElement, n = 0; p && p !== window.document.body && n < 12; p = p.parentElement, n += 1) {
+					const pcs = window.getComputedStyle(p);
+					if ((pcs.overflowX !== 'visible' || pcs.overflowY !== 'visible') && r.width > 0) {
+						const pr = p.getBoundingClientRect();
+						if (r.left < pr.left - 1 || r.right > pr.right + 1 || r.top < pr.top - 1 || r.bottom > pr.bottom + 1) { clippers.push(describeEl(p) + '(' + rectText(pr) + ')'); }
+					}
+				}
+				if (clippers.length) { issues.push('被祖先裁剪：' + clippers.slice(0, 2).join(' / ')); }
+				const fcs = window.getComputedStyle(frameEl);
+				const record = {
+					wb: id, ok: issues.length === 0, issues, at: new Date().toISOString(),
+					capsule: rectText(r), frame: rectText(fr), viewport: vw + 'x' + vh,
+					capsuleStyle: 'pos=' + cs.position + ' z=' + cs.zIndex + ' right=' + cs.right + ' top=' + cs.top,
+					frameStyle: 'pos=' + fcs.position + ' overflow=' + fcs.overflowX + '/' + fcs.overflowY,
+					frameCount: window.document.querySelectorAll('.vssWbFrame').length,
+					capsuleCount: window.document.querySelectorAll('[data-vssaros-wb-actions]').length,
+					saved: (() => { try { return localStorage.getItem(ACTIONS_POS_KEY) || ''; } catch { return '(读不到)'; } })(),
+				};
+				diagnosisLog.push(record);
+				console.warn('[vssaros-workbenches] 浮动工具栏自检 ' + id + '：' + (record.ok ? '正常' : '异常 ⇒ ' + issues.join('；'))
+					+ ' | 胶囊 ' + record.capsule + ' | 外框 ' + record.frame + ' | 窗口 ' + record.viewport + ' | ' + record.capsuleStyle
+					+ ' | ' + record.frameStyle + ' | 外框数=' + record.frameCount + ' 胶囊数=' + record.capsuleCount + ' | 存档=' + (record.saved || '无'));
+			} catch (error) {
+				try { console.warn('[vssaros-workbenches] 浮动工具栏自检本身出错：' + String((error && error.message) || error)); } catch { /* 无 console */ }
+			}
+		}
+
+		function restoreActionsPos(el, frameEl) {
+			mountedActions.add(el);
+			let restored = false;
+			const tryRestore = () => {
+				if (restored || !el.isConnected) { return; }
+				const fr = frameEl.getBoundingClientRect();
+				if (fr.width <= 0 || fr.height <= 0) { return; }   // 还没显示 ⇒ 现在量不到，等下一次
+				restored = true;
+				try {
+					const saved = JSON.parse(localStorage.getItem(ACTIONS_POS_KEY) || 'null');
+					if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+						applyActionsPos(el, clampActions(el, frameEl, saved));
+					}
+				} catch { /* localStorage 不可用 ⇒ 用默认位置 */ }
+				// 外框第一次有尺寸 ⇒ 等布局稳定（0.8s）再量一次
+				setTimeout(() => diagnoseActions(el, frameEl, ''), 800);
+			};
+			tryRestore();
+			// 兜底：6 秒后外框还是没尺寸 ⇒ 它一直是隐藏的（页签没显示 / display:none），照样上报一次
+			setTimeout(() => { if (!restored) { diagnoseActions(el, frameEl, '外框 6 秒内始终没有尺寸（隐藏 / 未显示）'); } }, 6000);
+			try {
+				// 面板出现 / 窗口缩放 / 分栏比例变化都会触发 ⇒ 既补"挂载时还没显示"，也补"拖过之后尺寸变了"
+				const ro = new ResizeObserver(() => {
+					tryRestore();
+					if (el.__vssPos && el.isConnected) { applyActionsPos(el, clampActions(el, frameEl, el.__vssPos)); }
+				});
+				ro.observe(frameEl);
+				el.__vssActionsResize = ro;
+			} catch { /* 老运行时没有 ResizeObserver ⇒ 至少还有挂载时那一次 */ }
 		}
 
 		/**
@@ -753,6 +1318,7 @@ window.__ModuleLoader__.load({
 			syncLabelSide();
 
 			attachActionsDrag(el, frameEl);
+			restoreActionsPos(el, frameEl);
 
 			const syncAssist = () => {
 				const host = frameEl.querySelector('[data-vssaros-assist-collapsed]');
@@ -790,7 +1356,12 @@ window.__ModuleLoader__.load({
 			syncAssist();
 		}
 
-		/** 工作台 id → 它的 AI 助手 preset（页面形态下兜底开助手会话用）。 */
+		/**
+		 * 工作台 id → 它的 AI 助手默认 agent（preset id；可给候选数组）。
+		 * ★ 2026-11-02 根治：这是**全仓唯一**的「工作台 → agent」对应表，也只有宿主据它改 agent。
+		 *   各工作台插件**不许**再自带 preset 常量去 select（守卫 check-assistant-collapse 扫全仓）。
+		 *   第三方工作台在描述符里写 `assistantPreset` 即可（优先于本表）。
+		 */
 		const ASSIST_PRESET_BY_WB = {
 			'vssaros/studio': 'vssaros-saroasis-studio',
 			'vssaros/marketplace': 'vssaros-marketplace-bot',
@@ -799,7 +1370,10 @@ window.__ModuleLoader__.load({
 			//   知识库是**页面型**工作台（面板里没有对话列）⇒ 点击只能走外壳兜底开会话；
 			//   而兜底要带 preset —— 之前没这一条，传空串 ⇒ `newChat('')` 等于空转 ⇒「点了没反应」。
 			//   `knowledge-base-expert` 是内置 agent（名称「知识库专家」）⇒ preset = vssaros- + id。
-			'vssaros/kb': 'vssaros-knowledge-base-expert',
+			// ★ 2026-11-02：两个候选 —— 内置 agent 目录叫 `knowledge-base-expert`，而用户数据根里同名「知识库专家」是 `kb-expert`
+			//   （你的机器上实际在用后者）。只写一个，另一套环境里 select 就是 not-found 且不报错。
+			//   实际用哪个由 `agentPresets.list()` 决定（见 readyPreset），都不存在才告警。
+			'vssaros/kb': ['vssaros-kb-expert', 'vssaros-knowledge-base-expert'],
 		};
 		/**
 		 * 「用户主动导航」的时间戳（毫秒）。
@@ -811,9 +1385,96 @@ window.__ModuleLoader__.load({
 		 */
 		let navIntentAt = 0;
 		function markUserNav() { navIntentAt = Date.now(); }
+		/**
+		 * ★★ 2026-11-02（用户三次报「点会话页签后仍然空白」）：**页面级**导航意图。
+		 *   真机现场：新会话已建好并 openSession，但守卫仍把它「停靠到工作台对话列」×3 ⇒
+		 *   `navIntentAt` 根本没刷新 —— 每个插件拿到的 `ctx.uiWorkspace` 是**各自的 cordis 代理**
+		 *   （探针：两次 get 不是同一对象、包装标记读不到），我们对 openSession 的包装**拦不到
+		 *   其它插件发出的调用**。⇒ 再认一个页面级信号 `window.__vssarosUserNavAt`
+		 *   （chat-surface 在用户主动打开/新建会话前写入），两者取最近的那个。
+		 */
+		function lastUserNavAt() {
+			let g = 0;
+			try { g = Number(window.__vssarosUserNavAt) || 0; } catch (e) { g = 0; }
+			return Math.max(navIntentAt, g);
+		}
 
-		function assistantPresetOf(workbenchId) {
-			return ASSIST_PRESET_BY_WB[String(workbenchId || '')] || '';
+		/** 首次打开标记（本地记一次）：只用来决定文案要不要写「首次加载会慢一些」。 */
+		const FIRST_OPEN_KEY = 'vssaros.wbSeen.v1.';
+		function markWorkbenchSeen(id) { try { localStorage.setItem(FIRST_OPEN_KEY + id, String(Date.now())); } catch { /* 隐私模式 */ } }
+		function isFirstOpenOf(id) { try { return !localStorage.getItem(FIRST_OPEN_KEY + id); } catch { return false; } }
+
+		/**
+		 * 大型工作台**第一次打开时的加载态**（方案 D：极简呼吸点）。
+		 *
+		 * 为什么需要：商城 / 知识库 / 媒体库这类工作台的客户端 chunk 很大，首次打开要等
+		 * 「下载 chunk → 注册 → React 挂载 → 首屏」，这段时间外框里是一片空白，看起来像卡死。
+		 *
+		 * 判据（刻意选最简的）：内容容器里出现**第一个真实子节点**就算好了 ——
+		 * 这段要挡的正是"组件还没挂上"的空白期；挂上之后的数据加载由各工作台自己显示。
+		 * 不做尺寸判断：`getBoundingClientRect` 在隐藏页签下全是 0，会误判成"一直没加载"。
+		 *
+		 * 两个细节：① 最短显示 120ms（不然缓存命中时只闪一下，比不显示更难受）；
+		 * ② 淡出 180ms 后再卸载，避免"突然消失"的突兀感。
+		 */
+		function PanelLoadingGate({ entry, children }) {
+			const contentRef = React.useRef(null);
+			const [phase, setPhase] = React.useState('on');   // on → out（淡出中）→ off（已卸载）
+			const firstRef = React.useRef(null);
+			if (firstRef.current === null) { firstRef.current = isFirstOpenOf(entry.id); }
+			React.useEffect(() => {
+				const host = contentRef.current;
+				if (!host) { return undefined; }
+				const startedAt = Date.now();
+				let finished = false;
+				let observer = null;
+				let poll = null;
+				let minTimer = null;
+				let fadeTimer = null;
+				const finish = () => {
+					if (finished) { return; }
+					finished = true;
+					if (observer) { observer.disconnect(); }
+					if (poll) { clearInterval(poll); }
+					markWorkbenchSeen(entry.id);
+					const wait = Math.max(0, 120 - (Date.now() - startedAt));
+					minTimer = setTimeout(() => {
+						setPhase('out');
+						fadeTimer = setTimeout(() => setPhase('off'), 180);
+					}, wait);
+				};
+				const ready = () => host.children.length > 0;
+				if (ready()) { finish(); }
+				else {
+					observer = new MutationObserver(() => { if (ready()) { finish(); } });
+					observer.observe(host, { childList: true });
+					// 兜底轮询：某些工作台先挂一个空壳再塞内容，MutationObserver 只看 childList 会漏
+					poll = setInterval(() => { if (ready()) { finish(); } }, 120);
+				}
+				return () => {
+					if (observer) { observer.disconnect(); }
+					if (poll) { clearInterval(poll); }
+					if (minTimer) { clearTimeout(minTimer); }
+					if (fadeTimer) { clearTimeout(fadeTimer); }
+				};
+			}, [entry.id]);
+			return h('div', { className: 'vssWbPanelBody', 'data-vssaros-wb-panel-body': entry.id },
+				h('div', { ref: contentRef, className: 'vssWbPanelContent', 'data-vssaros-wb-panel-content': entry.id }, children),
+				phase === 'off' ? null : h('div', {
+					className: 'vssWbLoading' + (phase === 'out' ? ' is-out' : ''),
+					'data-vssaros-wb-loading': entry.id, role: 'status', 'aria-busy': 'true',
+					// 关键布局内联兜底：即便样式表没生效（旧标签 / 注入失败），也不能退化成挤在左上角的裸文字
+					style: {
+						position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, zIndex: 6,
+						display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+						gap: '14px', background: 'var(--dsw-alias-bg-base, #1b1b1f)',
+						opacity: phase === 'out' ? 0 : 1, transition: 'opacity .18s ease',
+					},
+				},
+					h('div', { className: 'vssWbLoadingPulse' }),
+					h('div', { className: 'vssWbLoadingLine' }),
+					h('div', { className: 'vssWbLoadingCap' }, '正在加载 · ' + entry.title),
+					firstRef.current ? h('div', { className: 'vssWbLoadingHint' }, '首次加载会慢一些，之后会快很多') : null));
 		}
 		function Frame({ service, entry }) {
 			useService(service);
@@ -877,21 +1538,24 @@ window.__ModuleLoader__.load({
 											const cur = host && host.getAttribute('data-vssaros-assist-collapsed');
 											if (cur === '0' || frameEl.querySelector('[data-vssaros-assist-collapsed="0"]')) { return; }
 										} catch (e) { /* 读不到就按未处理走兜底 */ }
-										const preset = assistantPresetOf(entry.id);
-										let opened = false;
-										try {
-											const ws = service && service.ctx && service.ctx.uiWorkspace;
-											if (ws && typeof ws.startSession === 'function') {
-												ws.startSession(undefined, preset ? { agentPreset: preset } : undefined);
-												opened = true;
-											}
-										} catch (e) { opened = false; }
-										if (!opened) {
+										const startAssist = (preset) => {
+											try {
+												const ws = service && service.ctx && service.ctx.uiWorkspace;
+												if (ws && typeof ws.startSession === 'function') {
+													ws.startSession(undefined, preset ? { agentPreset: preset } : undefined);
+													return true;
+												}
+											} catch (e) { /* 走下一条 */ }
 											const bridge = window.vssarosDsh;
 											if (bridge && typeof bridge.newChat === 'function' && preset) {
-												try { bridge.newChat(preset); } catch (e) { /* 忽略 */ }
+												try { bridge.newChat(preset); return true; } catch (e) { /* 忽略 */ }
 											}
-										}
+											return false;
+										};
+										// preset 只用 agentPresets.list() 里真实存在的（不存在的 id 会把会话弄坏）
+										Promise.resolve(service.readyPreset(entry.id))
+											.catch(() => '')
+											.then((preset) => { startAssist(preset); });
 									}, 200);
 								}
 							},
@@ -919,8 +1583,24 @@ window.__ModuleLoader__.load({
 						h('span', { className: 'wbLabel' }, '在浏览器打开'),
 					),
 				)];
+			// ★ 2026-11-02：标准分栏（未声明 customFrame 的默认）。
+			//   宿主自己给「左对话 / 右业务」，对话由根覆盖层 portal 进左栏停靠点 ⇒
+			//   与整页工作台共用同一套停靠机制（retain / 归属校验 / 自愈全部复用）。
+			if (service.conversationMode(entry.id) === 'split') {
+				const width = Number(entry.layout && entry.layout.businessWidth);
+				return h(HeaderHost, { entry }, ...actions,
+					h(PanelLoadingGate, { entry },
+						h('div', {
+							className: 'vssWbSplit', 'data-vssaros-wb-split': entry.id,
+							'data-business-side': (entry.layout && entry.layout.businessSide) || 'right',
+							style: { '--vssaros-wb-business-width': ((Number.isFinite(width) ? width : 0.36) * 100) + '%' },
+						},
+							h(SplitConversationPane, { service, entry }),
+							h('div', { className: 'vssWbSplitBusiness' }, h(PanelBoundary, { entry }, h(entry.Component, props))))));
+			}
 			return h(HeaderHost, { entry }, ...actions,
-				h(PanelBoundary, { entry }, h(entry.Component, props)));
+				h(PanelLoadingGate, { entry },
+					h(PanelBoundary, { entry }, h(entry.Component, props))));
 		}
 
 		// ── 会话停靠：根覆盖层条目（声明 session 作用域子槽）+ 子槽里的对话面板 ─────────────────
@@ -952,6 +1632,16 @@ window.__ModuleLoader__.load({
 					}
 					return () => { setReference(null); try { ref.release(); } catch { /* 已释放 */ } };
 				}, [sessionId]);
+				// ★ 2026-11-02：停靠的会话若还没开聊（hero 空态），套上**这个工作台**的默认 agent。
+				//   目标只有一个：覆盖层此刻正在渲染的 `target.id` 的 `target.sessionId`（不碰全局当前会话）。
+				//   等摘要 / 等 preset 注册都在 applyDefaultPreset 内部做，这里调一次即可（它自己保证每条只套一次）。
+				const presetOwner = target ? target.id : null;
+				React.useEffect(() => {
+					if (!sessionId || !presetOwner) { return; }
+					// 诊断「这条会话能不能输入」（不属于任何工作区 ⇒ 输入框会被禁用）
+					service.diagnoseDock(presetOwner, sessionId);
+					service.applyDefaultPreset(presetOwner, sessionId);
+				}, [sessionId, presetOwner]);
 				if (!target || !reference || reference.sessionId !== sessionId || typeof SessionProvider !== 'function' || typeof renderSlot !== 'function') { return null; }
 				return ReactDOM.createPortal(
 					h(SessionProvider, { session: reference.ref }, renderSlot(DOCK_SLOT, {})),
@@ -1001,10 +1691,47 @@ window.__ModuleLoader__.load({
 .vssWbConversationActions { display:flex; gap:8px; flex-wrap:wrap; }
 .vssWbConversationActions button { padding:6px 14px; border-radius:999px; cursor:pointer; border:1px solid var(--dsw-alias-border-l2, #3e3e3e); background: var(--dsw-alias-bg-layer-1, #262626); color: inherit; font: inherit; }
 .vssWbConversationError { color: var(--dsw-alias-state-error-primary, #e5484d); }
-.vssWbDockHost { display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; height:100%; }
+.vssWbDockHost { position:relative; display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; height:100%; }
+/* AI 助手栏右上角「＋ 新会话」：所有工作台共用一份（2026-11-02）。z-index 低于浮动工具栏，但高于对话内容。 */
+.vssWbNewSession { position:absolute; z-index:2147481000; right:10px; top:5px; height:22px; padding:0 10px; border-radius:6px; border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.35)); background:var(--dsw-alias-bg-layer-1, #25252a); color:var(--dsw-alias-label-primary, #e6e6ea); font:11px/20px -apple-system, Segoe UI, sans-serif; cursor:pointer; pointer-events:auto; }
+.vssWbNewSession:hover:not([disabled]) { background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.16)); }
+.vssWbNewSession[disabled] { opacity:.6; cursor:default; }
 .vssWbDockHost > .vssWbConversation { margin:16px; }
 .vssWbDock { display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; }
+/* 工作台加载态（方案 D 极简呼吸点）：盖在内容之上，z-index 低于浮动胶囊（它 2147482000）。 */
+.vssWbPanelBody { position:relative; display:flex; flex:1 1 auto; min-height:0; min-width:0; }
+/* ⚠ 必须**纵向** flex：原来是 .vssWbFrame（column）直接当父级，宽高都靠 stretch 铺满；
+   中间插一层如果用了横向 flex，子面板的宽度就变成"内容宽度"⇒ 记忆库被压成一条窄栏、文字竖排（2026-11-02 真机）。 */
+.vssWbPanelContent { display:flex; flex-direction:column; flex:1 1 auto; min-height:0; min-width:0; }
+.vssWbPanelContent > * { flex:1 1 auto; min-width:0; min-height:0; }
+.vssWbLoading { position:absolute; inset:0; z-index:6; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;
+  background:var(--dsw-alias-bg-base, #1b1b1f); opacity:1; transition:opacity .18s ease; }
+.vssWbLoading.is-out { opacity:0; pointer-events:none; }
+.vssWbLoadingPulse { width:34px; height:34px; border-radius:9px; background:rgba(79,140,255,.22); border:1px solid rgba(79,140,255,.5); animation:vssWbPulse 1.7s ease-in-out infinite; }
+.vssWbLoadingLine { width:120px; height:1px; background:linear-gradient(90deg,transparent,rgba(255,255,255,.22),transparent); }
+.vssWbLoadingCap { font-size:11px; letter-spacing:.4px; color:var(--dsw-alias-label-tertiary, rgba(230,230,234,.45)); }
+.vssWbLoadingHint { font-size:10.5px; color:var(--dsw-alias-label-caption, rgba(230,230,234,.30)); }
+@keyframes vssWbPulse { 0%,100% { opacity:.55; transform:scale(.985); } 50% { opacity:1; transform:scale(1); } }
 .vssWbDock[hidden] { display:none; }
+/* ★ 2026-11-02 标准分栏：左对话 / 右业务（业务宽度走 --vssaros-wb-business-width，0.25–0.7）。
+   窄容器（<720px）自动叠成上下：先业务、后对话，避免把业务面板压成一条缝。 */
+.vssWbSplit { display:flex; flex:1; min-height:0; min-width:0; flex-direction:row; }
+.vssWbSplit[data-business-side="left"] { flex-direction:row-reverse; }
+.vssWbSplitConversation { position:relative; display:flex; flex-direction:column; flex:1 1 auto; min-width:0; min-height:0; border-right:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.18)); }
+.vssWbSplitBusiness { display:flex; flex-direction:column; flex:0 0 var(--vssaros-wb-business-width, 36%); min-width:0; min-height:0; }
+/* ★ 2026-11-02：业务在左（row-reverse）时，对话列视觉上跑到**右边** ⇒ 它原来的 border-right 会落到
+   窗口最右边缘（看着像少了一条分栏线）⇒ 改画在对话列的**左**边（业务与对话之间）。 */
+.vssWbSplit[data-business-side="left"] .vssWbSplitConversation {
+  border-right:0; border-left:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.18));
+}
+.vssWbSplitConversation > .vssWbConversation { margin:16px; }
+@container vss-workbench (max-width: 720px) {
+  .vssWbSplit, .vssWbSplit[data-business-side="left"] { flex-direction:column; }
+  .vssWbSplitConversation,
+  /* 业务在左时上面那条 border-left 在竖向堆叠下要清掉（否则竖排时左边多一条线） */
+  .vssWbSplit[data-business-side="left"] .vssWbSplitConversation { border-right:0; border-left:0; border-bottom:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.18)); min-height:240px; }
+  .vssWbSplitBusiness { flex:1 1 auto; }
+}
 /* ★ 2026-10-26「S2 一体条」：AI 助手展开 + 外开 合成一条竖直胶囊，整组可拖（所有工作台共用一份） */
 /* ★ 2026-10-27：与媒体库的浮动区**完全同一套样式**（A 方案 + 边缘高亮）
 .   —— vssaros-media 的 .m-fab 与这条 .vssWbActions 的高亮参数必须逐字一致（由
@@ -1027,19 +1754,41 @@ window.__ModuleLoader__.load({
 .vssWbActions[data-label="right"] .wbWrap:hover .wbLabel { transform:translateY(-50%) translateX(0); }
 .vssWbDockedConversation { display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; height:100%; }
 `;
+		/**
+		 * 注入样式（幂等 + **会更新**）。
+		 *
+		 * ★ 2026-11-02（用户：「加载态未生效」）：原来见到同 id 的 `<style>` 就 `return`。
+		 *   一旦文档里已经存在这个标签（上一版 chunk 注入的 / 页面没整页刷新只换了模块），
+		 *   新版本新增的规则**永远写不进去** ⇒ 新加的元素完全没有样式：
+		 *   加载态于是退化成普通流里的裸文字，挤在左上角（真机截图就是这样）。
+		 * ⇒ 现在存在就更新内容，保证"代码换了 → 样式一定跟着换"。
+		 */
 		function maintainStyles() {
-			if (document.getElementById(STYLE_ID)) { return undefined; }
-			const el = document.createElement('style');
-			el.id = STYLE_ID;
-			el.textContent = CSS;
-			document.head.appendChild(el);
-			return () => el.remove();
+			let el = document.getElementById(STYLE_ID);
+			const created = !el;
+			if (!el) {
+				el = document.createElement('style');
+				el.id = STYLE_ID;
+				document.head.appendChild(el);
+			}
+			if (el.textContent !== CSS) { el.textContent = CSS; }
+			return () => { if (created) { el.remove(); } };
 		}
 
 		function apply(ctx) {
 			const service = new Workbenches(ctx);
 			service.View = makeView(service);
 			ctx.effect(maintainStyles, 'vssaros-workbenches: styles');
+			// ★ 2026-11-02：默认 agent 要用 `remote.agentPresets.select`（官方：`select(sessionId, presetId)`）。
+			//   ⚠ 必须 `ctx.inject`：未声明 inject 的包里 `ctx.get` 返回 undefined（kb / studio 都踩过）。
+			//   服务缺席 ⇒ 只是不套默认 agent，工作台其它功能不受影响，所以**不放进 module.exports.inject**（那会变成硬依赖）。
+			try {
+				if (typeof ctx.inject === 'function') {
+					ctx.inject(['remote.agentPresets'], (scope) => {
+						service.agentPresets = (scope && (scope['remote.agentPresets'] || (typeof scope.get === 'function' ? scope.get('remote.agentPresets') : null))) || null;
+					});
+				}
+			} catch (error) { console.warn('[vssaros-workbenches] 注入 remote.agentPresets 失败（不套默认 agent）：' + String((error && error.message) || error)); }
 			ctx.effect(() => ctx.reflect.provide('desktopWorkbenches', service), 'vssaros-workbenches: service');
 
 			/* ★ 2026-10-26 深链：`?wb=vssaros/agents`（也接受 `vssaros:agents`）⇒ 注册后自动打开该工作台。
@@ -1174,7 +1923,7 @@ window.__ModuleLoader__.load({
 						 *   判据：`navIntentAt` 由被包的 openSession / startSession 打时间戳，
 						 *   2.5s 内视为"用户主动导航"（startSession 是异步的，所以用时间窗而不是布尔量）。
 						 */
-						if (Date.now() - navIntentAt < 2500) {
+						if (Date.now() - lastUserNavAt() < 2500) {
 							// ★ 2026-10-28（用户：「点会话 item 没切过去，手动点会话页又是空白」）：
 							//   只放行 `selectPanel(null)` 还不够 —— 前台工作台如果正在**停靠对话**
 							//   （`shell.overlay` 把 `conversation` portal 进工作台的 dock），
@@ -1238,6 +1987,29 @@ window.__ModuleLoader__.load({
 				const patchedOpen = function (target) {
 					// ★ 用户点侧栏会话 ⇒ 视为"主动导航" ⇒ selectPanel 守卫放行 ⇒ 切到会话页
 					markUserNav();
+					/**
+					 * ★★ 2026-11-02（用户报「点会话页签后中栏是空白」）：
+					 *   只打时间戳**不够** —— 调用方的布局更新（如侧栏切页签）可能**先**触发一次
+					 *   `selectPanel(null)`，那一刻 `navIntentAt` 还是旧的 ⇒ 守卫把会话**停靠进工作台
+					 *   对话列** ⇒ 主面板没有对话可渲染 ⇒ 用户看到一块空白（真机日志：
+					 *   `已拦截 selectPanel(null)：前台整页工作台 = vssaros/kb`）。
+					 *   ⇒ 用户主动打开会话的**当刻**就 `leave()`（清 active ⇒ 覆盖层停止 portal + 回会话面板），
+					 *     不再依赖后面那次 `selectPanel` 的先后顺序 ✓
+					 */
+					try {
+						if (service.active && service.docksConversation(service.active)) { service.leave(); }
+					} catch (e) { /* 停止停靠失败不影响打开会话 */ }
+					/**
+					 * ★★ 2026-11-02 二次（用户报「仍然白框」）：
+					 *   `service.leave()` 只清 `active`（覆盖层停止 portal），**面板本身还停在整页工作台上**
+					 *   —— `selectPanel` 已经被之前那次拦截切到工作台了。不主动切回来，主面板就没有会话可画，
+					 *   仍是白框 ✗。
+					 *   ⇒ 这里再请求一次 `selectPanel(null)`：此刻 `navIntentAt` 刚刷新 ⇒ 守卫走"放行"分支 ✓
+					 */
+					try {
+						const l = ctx.layout;
+						if (l && typeof l.selectPanel === 'function') { l.selectPanel(null); }
+					} catch (e) { /* 切回失败不影响打开会话 */ }
 					const sid = typeof target === 'string' ? target : (target && target.sessionId) || '';
 					// ★ 不预判「能不能打开」—— 让 dsh 自己判断，它抛我们接住：
 					//   空白草稿 / 已删除的会话在 replaceMain 里会抛 unknown session，

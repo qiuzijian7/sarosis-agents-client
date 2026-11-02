@@ -151,6 +151,122 @@ if (unmapped.length) {
 	ok('已注册工作台的图标都能映射到 emoji ✓');
 }
 
+// ── ⑤ 以**包清单**为真源反推（2026-11-02）──────────────────────────────────────
+// 为什么还要这一段：上面 ①–③ 的真源是宿主 TS 里的 `kind:'page'` 表 ⇒ 只管**整页**模块。
+//   **注册式**工作台（`view.kind=none` / `native`，界面由 `desktopWorkbenches.register()` 渲染）
+//   不在那张表里 ⇒ 漏登记**一律抓不到**。实测：`vssaros-loop` 做完后在界面上没有任何入口
+//   （不在 DEFAULT_ITEMS、启动器又把 `vssaros/*` 整体排除、主页没卡片），而本守卫一直是绿的。
+//   ⇒ 真源换成各包 `package.json` 的 `vssaros.workbench`：声明了工作台，就必须**可达**。
+//
+// 三个方向：
+//   A. 整页工作台（view.kind=page）：清单的 route ⇒ 必须在 DEFAULT_ITEMS（route 白名单）与主页卡片里；
+//   B. 注册式工作台（none/native）：没有 route，靠启动器的「已注册但无固定入口」兜底 ⇒
+//      ① 客户端真的调用了 `desktopWorkbenches.register(`，且描述符 repository 与清单一致（不然快照里没有它）；
+//      ② 启动器的过滤判据必须是 `coveredByFixedEntry`（不能退回「`vssaros/` 一律排除」）；
+//   C. 反向（幽灵入口）：DEFAULT_ITEMS 里每个 `/x/<m>/` 都必须有对应的包 ⇒ 否则「卡片在、点不开」。
+const readJson = (p) => JSON.parse(read(p));
+const wbPackages = [];
+for (const dirName of fs.readdirSync(pluginsRoot)) {
+	const pkgPath = path.join(pluginsRoot, dirName, 'package.json');
+	if (!fs.existsSync(pkgPath)) { continue; }
+	let pkg;
+	try { pkg = readJson(pkgPath); } catch { continue; }
+	const v = pkg.vssaros;
+	if (!v || !v.workbench) { continue; }
+	wbPackages.push({
+		dirName,
+		module: v.module || '',
+		viewKind: (v.view && v.view.kind) || (v.module ? 'page' : 'none'),
+		route: v.view && v.view.route ? v.view.route : (v.module ? `/x/${v.module}/` : ''),
+		repository: v.workbench.repository || '',
+	});
+}
+if (wbPackages.length === 0) {
+	fail('没从任何包清单里读到 vssaros.workbench（解析口径坏了 ⇒ ⑤ 会空跑）');
+} else {
+	ok(`包清单声明的工作台：${wbPackages.length} 个（${wbPackages.map(p => p.module || p.dirName).join('、')}）`);
+}
+
+// DEFAULT_ITEMS 块（只取这一块，别把文件里别处的 route 字面量混进来）
+const defaultItemsBlock = (() => {
+	const a = navSrc.indexOf('const DEFAULT_ITEMS = [');
+	if (a < 0) { return ''; }
+	const b = navSrc.indexOf('\n\t\t];', a);
+	return navSrc.slice(a, b < 0 ? undefined : b);
+})();
+const defaultRoutes = [...defaultItemsBlock.matchAll(/route:\s*"([^"]+)"/g)].map(m => m[1]);
+if (defaultRoutes.length === 0) {
+	fail('读不到 client.workbenchNav.js 的 DEFAULT_ITEMS 块（⑤-A/C 会空跑）');
+}
+
+// A. 整页工作台 ⇒ route 白名单 + 主页卡片
+const pageWb = wbPackages.filter(p => p.viewKind === 'page');
+const aNav = [];
+const aHome = [];
+for (const p of pageWb) {
+	if (!p.route) { continue; }
+	if (!covers(new Set(defaultRoutes), p.route)) { aNav.push(`${p.dirName}(${p.route})`); }
+	if (!covers(homeCards, p.route) && !HOST_EXEMPT[p.module]) { aHome.push(`${p.dirName}(${p.route})`); }
+}
+if (aNav.length === 0 && aHome.length === 0) {
+	ok(`⑤-A 整页工作台（${pageWb.length} 个）：清单 route 都在侧栏白名单与主页卡片里 ✓`);
+} else {
+	if (aNav.length) { fail(`⑤-A 清单声明了工作台，但侧栏 route 白名单没有（⇒ 点「打开」被静默拒掉）：${aNav.join('、')}`); }
+	if (aHome.length) { fail(`⑤-A 清单声明了工作台，但主页没有卡片（⇒ 主页看不到它）：${aHome.join('、')}`); }
+}
+
+// B. 注册式工作台 ⇒ 靠启动器兜底，前提是它真的会出现在宿主快照里
+const regWb = wbPackages.filter(p => p.viewKind !== 'page');
+const bProblems = [];
+for (const p of regWb) {
+	const libDir = path.join(pluginsRoot, p.dirName, 'lib');
+	let hit = null;
+	try {
+		for (const f of fs.readdirSync(libDir).filter(n => n.endsWith('.js'))) {
+			const text = read(path.join(libDir, f));
+			if (/desktopWorkbenches\.register\(/.test(text)) { hit = { f, text }; break; }
+		}
+	} catch { /* 没有 lib 目录 ⇒ 下面会报 */ }
+	if (!hit) {
+		bProblems.push(`${p.dirName}：清单声明了工作台，但 lib/ 里没有 desktopWorkbenches.register(（⇒ 宿主快照里没有它 ⇒ 没有入口）`);
+		continue;
+	}
+	const wantRepo = p.repository;
+	if (wantRepo && !hit.text.includes(`'${wantRepo}'`) && !hit.text.includes(`"${wantRepo}"`)) {
+		bProblems.push(`${p.dirName}：客户端描述符里找不到清单的 repository「${wantRepo}」（${hit.f}）`);
+	}
+}
+const launcherUsesCoverage = /function coveredByFixedEntry\(/.test(navSrc)
+	&& /filter\(w => w && w\.id && !coveredByFixedEntry\(w\.id\)\)/.test(navSrc);
+const launcherOldBlanket = /registeredExtras[\s\S]{0,400}!String\(w\.id\)\.startsWith\("vssaros\/"\)/.test(navSrc);
+if (regWb.length > 0 && (!launcherUsesCoverage || launcherOldBlanket)) {
+	bProblems.push('client.workbenchNav.js 的 registeredExtras 必须按 coveredByFixedEntry 过滤；'
+		+ '退回「vssaros/ 开头一律排除」会让所有注册式内置工作台（如 loop）没有任何入口');
+}
+if (bProblems.length === 0) {
+	ok(`⑤-B 注册式工作台（${regWb.length} 个：${regWb.map(p => p.module || p.dirName).join('、')}）：都会进宿主快照，启动器按「无固定入口」兜底 ✓`);
+} else {
+	for (const m of bProblems) { fail(`⑤-B ${m}`); }
+}
+
+// C. 幽灵入口：DEFAULT_ITEMS 里的 /x/<m>/ 必须有对应的包（任何包，不限于声明了 workbench 的）
+const allModules = new Set();
+for (const dirName of fs.readdirSync(pluginsRoot)) {
+	const pkgPath = path.join(pluginsRoot, dirName, 'package.json');
+	if (!fs.existsSync(pkgPath)) { continue; }
+	try { const m = readJson(pkgPath).vssaros?.module; if (m) { allModules.add(m); } } catch { /* ignore */ }
+}
+const ghosts = [];
+for (const r of defaultRoutes) {
+	const m = /^\/x\/([a-z][a-z0-9-]*)\//.exec(r);
+	if (m && !allModules.has(m[1])) { ghosts.push(r); }
+}
+if (ghosts.length === 0) {
+	ok('⑤-C 侧栏白名单里没有幽灵入口（每个 /x/<m>/ 都有对应的包）✓');
+} else {
+	fail(`⑤-C 侧栏白名单里有入口但没有对应的包（⇒ 「入口在、点不开」；删了模块忘了删这里）：${ghosts.join('、')}`);
+}
+
 console.log(problems === 0
 	? '\n[check-workbench-catalog] ✓ 工作台清单一致性守卫通过'
 	: `\n[check-workbench-catalog] ✗ ${problems} 项问题`);

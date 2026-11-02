@@ -3,7 +3,7 @@
  *
  *  Every mutation against the knowledge base (side-panel Vault path *and* the
  *  agent-tool engine path) is appended as one JSON line to
- *  `<kbRoot>/.op-log.jsonl` — i.e. `~/.saros/kb/.op-log.jsonl` by default.
+ *  `<kbRoot>/.kb/op-log.jsonl` — i.e. `~/.saros/kb/.kb/op-log.jsonl` by default.
  *
  *  The log is best-effort: any failure while writing it is swallowed so that
  *  logging never breaks the operation it is recording.
@@ -39,15 +39,15 @@ export interface IKbOpLogEntry {
 }
 
 /** File name of the operation log, written under the KB storage root. */
-export const KB_OP_LOG_FILE = '.op-log.jsonl';
+export const KB_OP_LOG_FILE = '.kb/op-log.jsonl';
 
-/** Resolve the `.op-log.jsonl` URI for a given KB storage root directory. */
+/** Resolve the `.kb/op-log.jsonl` URI for a given KB storage root directory. */
 export function kbOpLogUri(rootDir: string): URI {
 	return URI.file(join(rootDir, KB_OP_LOG_FILE));
 }
 
 /**
- * Append one JSONL line to `<rootDir>/.op-log.jsonl`.
+ * Append one JSONL line to `<rootDir>/.kb/op-log.jsonl`.
  *
  * Uses a read-modify-write so lines stay well-formed even when multiple
  * operations race. Parent directory is created on demand.

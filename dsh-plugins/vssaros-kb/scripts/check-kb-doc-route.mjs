@@ -82,7 +82,7 @@ const walk = (dir) => {
 	}
 	return out;
 };
-const all = walk(join(VAULT, '笔记'));
+const all = walk(join(VAULT, '知识库列表'));
 const pick = all.find(f => readFileSync(f, 'utf8').includes('[!')) || all[0];
 if (!pick) { console.log('（跳过）库里没有 md'); process.exit(0); }
 
@@ -110,8 +110,8 @@ utimesSync(pick, now, now);
 const third = await call(uri);
 t('改 mtime 后缓存失效', third.cached !== true, 'cached=' + third.cached);
 
-// 缓存目录落地在 `<库根>/.kb-html-cache/`（`.kb` 前缀不进树）
-const cacheDir = join(VAULT, '.kb-html-cache');
+// 缓存目录落地在 `<库根>/.kb/html-cache/`（`.kb` 前缀不进树）
+const cacheDir = join(VAULT, '.kb/html-cache');
 t('缓存文件已落盘', existsSync(cacheDir) && readdirSync(cacheDir).some(f => f.endsWith('.json')));
 
 // 顺带验一次服务端渲染器本身（防止 html 字段被换成原文）
@@ -160,8 +160,8 @@ t('体检不把隐藏文件算进去', !(rep.dupNames ?? []).some(d => String(d.
 // ── 清理空目录（**必须用临时库**，绝不能拿真实库做删除测试）──────────
 {
 	const tmpVault = mkdtempSync(join(tmpdir(), 'kb-clean-'));
-	const notes = join(tmpVault, '笔记');
-	mkdirSync(join(tmpVault, '库'), { recursive: true });   // 库结构不全时 pageSnapshotOf 可能不认这个库
+	const notes = join(tmpVault, '知识库列表');
+	mkdirSync(join(tmpVault, '数据源'), { recursive: true });   // 库结构不全时 pageSnapshotOf 可能不认这个库
 	mkdirSync(join(notes, '空A', '空B'), { recursive: true });
 	mkdirSync(join(notes, '有文件'), { recursive: true });
 	writeFileSync(join(notes, '有文件', 'x.md'), '# x', 'utf8');

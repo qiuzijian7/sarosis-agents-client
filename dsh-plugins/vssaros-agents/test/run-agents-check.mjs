@@ -586,10 +586,18 @@ console.log('── 工具 allowlist ──');
 	   名称 + 状态徽标 + 刷新；**网关地址单独一行**截断（title 看全文）。 */
 	check('★ AgentMemory 头部两行布局（状态不再和网关 URL 挤一行）',
 		/'ag3-am-hd'/.test(src) && /'ag3-am-url'/.test(src) && /title: String\(d0\.gateway\)/.test(src));
-	/* ★ 2026-10-31 用户要求：Bots 工作台不要宿主外壳的浮动工具栏（vssWbActions，
-	   出处 = @vssaros/dsh-workbenches；本 chunk 只在本工作台页面加载 ⇒ 作用域天然限定）。 */
-	check('★ 隐藏宿主浮动工具栏（.vssWbActions，用户要求；恢复 = 删这条 CSS）',
-		/\.vssWbActions \{ display:none !important; \}/.test(src));
+	/* ★ 2026-10-31 用户要求：Bots 工作台不要宿主外壳的浮动工具栏。
+	   ⚠ 2026-11-02 事故：当时是用一条全局 CSS（display:none !important）实现的，前提「本 chunk 只在 Bots 页面加载」
+	   不成立（所有插件的客户端 chunk 启动即加载，样式作用于整个 document）⇒ 所有工作台的浮动工具栏都被藏掉。
+	   现在必须用宿主的正式开关 floatingActions:false，且**不许**再写 .vssWbActions 的全局规则。 */
+	check('★ Bots 的描述符声明 floatingActions:false（宿主据它不渲染胶囊，只影响本工作台）',
+		/const DESCRIPTOR = \{[\s\S]*?floatingActions: false,[\s\S]*?\};/.test(src));
+	check('★ 不许再有 .vssWbActions 的全局样式（会连带藏掉所有工作台的浮动工具栏）',
+		!/\.vssWbActions\s*\{/.test(src.replace(/\/\*[\s\S]*?\*\//g, '')));
+	{
+		const pkg = JSON.parse(read('package.json'));
+		check('★ 清单 vssaros.workbench.floatingActions 与描述符同值（false）', pkg.vssaros?.workbench?.floatingActions === false);
+	}
 }
 
 console.log(`\n[agents] ${pass} passing / ${fail} failing`);

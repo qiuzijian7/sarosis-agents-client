@@ -76,7 +76,7 @@ const SYNC_TIMEOUT_MS = 600_000;
 const LOG_TAIL = 6000;
 
 /**
- * 读取 vault 内的「目录 ↔ 飞书知识库」映射（`.feishu-space-map.json`；缺失/损坏 ⇒ 空数组）。
+ * 读取 vault 内的「目录 ↔ 飞书知识库」映射（`.kb/space-map.json`；缺失/损坏 ⇒ 空数组）。
  *
  * 与内置脚本、设置面板共用同一份契约（`parseSpaceMap`）—— 本工具的**默认同步范围**由它推导，
  * 保证「agent 同步」与「📤 立即同步到飞书」按钮口径一致（★ 2026-09-24 用户定调）。
@@ -103,7 +103,7 @@ export function registerKbFeishuSyncTools(ctx: KbFeishuSyncToolContext): void {
 				'**同步范围只由「目录映射」决定**（`知识库设置 → 飞书同步 → 目录映射`）：只有「笔记」区里已关联到飞书知识库的目录才会被同步，未关联的目录不同步、也不会自动建库。',
 				'目标与凭证取自「知识库设置 → 飞书同步」；本工具只覆盖：mode / prune（**范围不可用参数扩大**）。',
 				'返回的「本次报告」就是脚本写的计划/结果逐篇清单（dry-run 也有）——**照它向用户汇报**，别只说 exit 0。',
-				'要把某个目录纳入同步 ⇒ 先用 `kb_feishu_spaces` 确认/新建飞书知识库，再写 `.feishu-space-map.json` 映射（见技能 kb-category-feishu）。',
+				'要把某个目录纳入同步 ⇒ 先用 `kb_feishu_spaces` 确认/新建飞书知识库，再写 `.kb/space-map.json` 映射（见技能 kb-category-feishu）。',
 				'图表：`apply` 前会自动把笔记里的 mermaid / drawio 代码块与 `![[x.canvas]]` 嵌入渲染成 PNG 并改写引用'
 				+ '（飞书不渲染图表源码、图片也不支持 SVG）；`dry-run` 只统计、不改文件。',
 			].join('\n'),
@@ -151,7 +151,7 @@ export function registerKbFeishuSyncTools(ctx: KbFeishuSyncToolContext): void {
 			const mode: 'dry-run' | 'apply' = args['mode'] === 'apply' ? 'apply' : 'dry-run';
 			// ★★ 2026-09-24：范围**只由「目录映射」决定** —— 为此**删掉了 `srcDirs` 参数**。
 			//   实测事故：用户只要求「关联 游戏设计 文件夹」，agent 却在 apply 时传 `srcDirs=笔记/01_学习`
-			//   （比 dry-run 确认的 `笔记/01_学习/游戏设计` 大一层）⇒ 兄弟目录（AI_Agent/UnrealEngine/财经）
+			//   （比 dry-run 确认的 `知识库列表/01_学习/游戏设计` 大一层）⇒ 兄弟目录（AI_Agent/UnrealEngine/财经）
 			//   一并被同步。参数可绕过「只同步已映射目录」的安全口径 ⇒ 直接移除。
 			const srcDirs = deriveMappedSrcDirs(await readVaultSpaceMap(ctx, vaultRoot));
 			if (srcDirs.length === 0) {
@@ -257,7 +257,7 @@ export function registerKbFeishuSyncTools(ctx: KbFeishuSyncToolContext): void {
 	 * `kb_feishu_spaces`（★ 2026-09-24 新增）：列出 / 新建飞书知识库。
 	 *
 	 * 为什么需要它：用户的需求形态是「把某个笔记目录关联到飞书知识库，**没有则新建**」。
-	 * 此前 agent 只能靠 `.feishu-space-map.json`（**本地映射**）判断"远端没有" —— 判据错位，
+	 * 此前 agent 只能靠 `.kb/space-map.json`（**本地映射**）判断"远端没有" —— 判据错位，
 	 * 且建库只能 shell out 直调 `lark-cli wiki +space-create`（实测日志：agent 用 `execute_code`
 	 * 调 CLI 建库，绕过了产品侧的 `sanitizeSpaceName` 与去重检查）。
 	 * 现在给它一条正路：`list` 查远端真实列表、`create` 走同一份封装（含名称净化 + **同名复用**）。
@@ -267,8 +267,8 @@ export function registerKbFeishuSyncTools(ctx: KbFeishuSyncToolContext): void {
 			name: 'kb_feishu_spaces',
 			description: [
 				'列出 / 新建飞书知识库（wiki space）——「把某个笔记目录关联到飞书知识库」的前置步骤。',
-				'**先 `action: "list"`**（绝不要用本地 `.feishu-space-map.json` 判断远端是否存在同名库），确认没有再 `action: "create"`。',
-				'拿到 `spaceId` 后写进 `<vault>/.feishu-space-map.json` 的 `mappings`（`dir` 为「笔记」区相对目录），关联即完成；随后 `kb_feishu_sync` 才会同步该目录。',
+				'**先 `action: "list"`**（绝不要用本地 `.kb/space-map.json` 判断远端是否存在同名库），确认没有再 `action: "create"`。',
+				'拿到 `spaceId` 后写进 `<vault>/.kb/space-map.json` 的 `mappings`（`dir` 为「笔记」区相对目录），关联即完成；随后 `kb_feishu_sync` 才会同步该目录。',
 			].join('\n'),
 			inputSchema: {
 				type: 'object',

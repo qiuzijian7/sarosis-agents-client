@@ -129,7 +129,12 @@ check('群聊页**真的走真源**（注入 window.__chatRows 且 renderStack �
 	/window\.__chatRows = /.test(client) && /var rows=__chatRows\(T\)/.test(client), '');
 // 工作台面板在**另一个文件**（client.agents.js）—— 别拿 groupPage.js 去查。
 const AG_CLIENT_SRC = join(ROOT, 'dsh-plugins/vssaros-agents/lib/client.agents.js');
-const agClientSrc = existsSync(AG_CLIENT_SRC) ? readFileSync(AG_CLIENT_SRC, 'utf8') : '';
+/* ★ 2026-11-02（Bots 工作台重构 · 方案 B）：群聊聊天框（midGroup / groupRows / `@` 提及 / 发送 / 上传 / composer）
+   抽成独立 chunk `client.groupChat.js`。下面这批正则断言的是"工作台的群聊代码里有没有某段逻辑"，
+   与它在哪个文件无关 ⇒ 两个文件拼起来当同一份源码读（搬家不该让守卫变红，也不该让它悄悄失效）。 */
+const AG_GROUPCHAT_SRC = join(ROOT, 'dsh-plugins/vssaros-agents/lib/client.groupChat.js');
+const agClientSrc = (existsSync(AG_CLIENT_SRC) ? readFileSync(AG_CLIENT_SRC, 'utf8') : '')
+	+ '\n' + (existsSync(AG_GROUPCHAT_SRC) ? readFileSync(AG_GROUPCHAT_SRC, 'utf8') : '');
 /* ⚠ 2026-10-26：签名从 `(list)` 变成 `(list, mentionPool)` —— 第二个参数是 `@` 高亮用的
    本群成员表。这里只认"存在这个函数 + 分组常量仍在"，别再钉死参数列表（钉死了每次加参数都要改守卫）。 */
 /* ── 派发正文预算（2026-10-26）────────────────────────────────────────────
@@ -365,8 +370,12 @@ check('★ 顶栏 bot 计数按 agents 算（不把 preset 当 bot），孤儿 p
 		/createHmac\('sha256', `\$\{timestamp\}\\n\$\{secret\}`\)/.test(feishuSrc), '');
 	check('★ 飞书适配器：失败必须抛（不静默成功）', /throw new Error\(`飞书出站失败/.test(feishuSrc)
 		&& /code !== 0\)/.test(feishuSrc), '');
-	check('★ 飞书绑定必须有 webhookUrl（不然绑了也发不出去）',
-		/飞书绑定需要 webhookUrl/.test(readFileSync(join(ROOT, 'dsh-plugins/vssaros-agents/lib/bindings.js'), 'utf8')), '');
+	// ★ 2026-11-02：不再要求"必须有 webhookUrl" —— 2026-10-28 已按用户要求改成**二选一**
+	// （webhook URL 或应用模式凭据），但**仍然 fail-closed**：两条都没有 ⇒ 400。
+	// 原来的断言盯的是"必填"文案，产品改口径后它就变成假红了。
+	check('★ 飞书绑定：webhook 与应用模式凭据二选一，都没有 ⇒ 400 并指向「设置 → 渠道」',
+		/飞书绑定二选一/.test(readFileSync(join(ROOT, 'dsh-plugins/vssaros-agents/lib/bindings.js'), 'utf8'))
+		&& /设置 → 渠道/.test(readFileSync(join(ROOT, 'dsh-plugins/vssaros-agents/lib/bindings.js'), 'utf8')), '');
 	check('★ 密钥不外泄：列表只给 hasSecret', /hasSecret: true/.test(readFileSync(join(ROOT, 'dsh-plugins/vssaros-agents/lib/bindings.js'), 'utf8')), '');
 }
 
@@ -395,20 +404,30 @@ check('★ 顶栏 bot 计数按 agents 算（不把 preset 当 bot），孤儿 p
 
 /* ── 入站状态要做进 UI（2026-10-27 A）──────────────────────────────────────
    之前入站"没反应"只能翻 Host 日志；现在配置页直接显示 status / 重试次数 / 最近错误。
-   三种不可用必须分开说：没配凭据 / 没装 SDK / 连上但报错 —— 处置完全不同。 */
-check('★ 「未配置凭据」指向**当前位置**（IDE 侧已下线，只能指 dsh 设置）',
-	// ⚠ 匹配**实际文案**、并且禁止旧位置字样（含注释）—— 上一版匹配的是注释，
-	//   注释一改守卫就静默失效（这类事今天已经三次）。
-	/未配置应用凭据 —— 到「设置 → 渠道」/.test(agClientSrc)
-	&& !/Channel 配置 → Feishu/.test(agClientSrc), '');
-check('★ 配置页显示飞书入站状态，失败原因直接可见（不靠翻日志）',
-	/'data-ag-inbound': st/.test(agClientSrc)
-	&& /'data-ag-inbound-err'/.test(agClientSrc)
-	// ⚠ 客户端调的是 `controlInbound('inbound-start')`；`action === 'inbound-start'`
-	//   在**路由**里（index.js）。两个文件别混（这条守卫第一版就栽在这）。
-	&& /controlInbound\('inbound-start'\)/.test(agClientSrc)
-	&& /controlInbound\('inbound-stop'\)/.test(agClientSrc)
-	&& /action === 'inbound-start'/.test(readFileSync(join(ROOT, 'dsh-plugins/vssaros-agents/lib/index.js'), 'utf8')), '');
+   三种不可用必须分开说：没配凭据 / 没装 SDK / 连上但报错 —— 处置完全不同。
+
+   ★ 2026-11-02 迁移：渠道/入站 UI 的**权威载体已经是** `vssaros-chat-surface/lib/client.channel.js`
+   （设置 → 渠道 的按平台表）。agents 里那份旧群设置页还在，但文案已不是这里守的那几句
+   ⇒ 守卫改成盯新载体，并把"文案"换成本版真实文案。**不要**再改回 agClientSrc：
+   那边改了文案这边就静默红/假红（2026-11-02 全量跑出来的就是假红）。 */
+{
+	const channelSrc = readFileSync(join(ROOT, 'dsh-plugins/vssaros-chat-surface/lib/client.channel.js'), 'utf8');
+	check('★ 「未配置」必须明说，且凭据位置只指 dsh 侧（IDE 侧已下线）',
+		// 状态列：没配就是"未配置"，不许显示成"未启动/正常"把问题藏起来
+		/if \(!ch\.configured\) \{ return \{ text: "未配置"/.test(channelSrc)
+		// 提示条写明凭据在哪：本机 dsh 侧（不是已下线的 IDE 渠道页）
+		&& /凭据存本机 dsh 侧/.test(channelSrc)
+		&& !/Channel 配置 → Feishu/.test(channelSrc), '');
+	check('★ 配置页显示入站状态，失败原因直接可见（不靠翻日志）',
+		/"data-vssaros-inbound-status"/.test(channelSrc)
+		// 失败计数列（DLQ）+ 请求失败整行可见
+		&& /"失败"/.test(channelSrc)
+		&& /"data-vssaros-channel-error"/.test(channelSrc)
+		// 启停按**平台**走（点一个平台不能去启另一个）
+		&& /actPlatform\("inbound-start", key\)/.test(channelSrc)
+		// 路由侧仍有这两个 action（客户端与服务端别混：这条守卫第一版就栽在这）
+		&& /action === 'inbound-start'/.test(readFileSync(join(ROOT, 'dsh-plugins/vssaros-agents/lib/index.js'), 'utf8')), '');
+}
 
 /* ── 右栏头部图标（2026-10-27 优化）────────────────────────────────────────
    改前：委派 `⇄` / IM 绑定 `⇋` 是**文字字形** —— 两个几乎分不清、随字体变大小/粗细，

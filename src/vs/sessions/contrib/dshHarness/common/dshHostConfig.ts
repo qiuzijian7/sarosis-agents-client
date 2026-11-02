@@ -16,7 +16,7 @@
 
 import {
 	renderAgentsOverlay, renderBridgeOverlay, renderCodebaseOverlay, renderDataRootOverlay,
-	renderKanbanOverlay, renderMemoryOverlay, renderSandboxOverlay,
+	renderKanbanOverlay, renderMemoryOverlay, renderOfficeOverlay, renderSandboxOverlay,
 	type IDshBrowserOverlayConfig,
 } from './dshCli.js';
 import { IDshMcpServerSpec, renderMcpOverlay } from './dshMcpConfig.js';
@@ -37,6 +37,23 @@ export interface IDshBridgeConfig {
 	 * 解法 A（2026-10-15 首启慢调研）：30 分钟太短 ⇒ IDE 重启间隔稍长 Host 就自杀 ⇒ 下次又是一次 ~27s 冷启 ✗。
 	 */
 	readonly idleTtlMs?: number;
+}
+
+/**
+ * Office 运行时（`@deepseek-ai/dsh-skill-office` + `@deepseek-ai/dsh-tool-workspace-dependencies`）
+ * 的装配参数。三项都必须是**绝对路径**：Host 进程读不到产品源码，也不该猜 PATH
+ * （官方 office 技能明确禁止 `pip install` 与"找一个系统 Python"）。
+ *
+ * 2026-11-02：字段缺失 ⇒ 不渲染那条覆盖层 ⇒ 7 个 Office 技能不存在，
+ * 但其余技能与对话不受影响（技能正文里没有任何"必须有 Word 能力"的前提）。
+ */
+export interface IDshOfficeConfig {
+	/** office-runtime 根：含 `primary-runtime/`（Python 负载）与 `office-skills/`（7 个技能）。 */
+	readonly base: string;
+	/** Host 所用 Node 的绝对路径（LibreOffice Kit 的 CLI 要 "node <cli>" 这样调）。 */
+	readonly node: string;
+	/** LibreOffice Kit CLI 入口；缺件传 `false`（插件据此在技能里声明"本部署禁用渲染"）。 */
+	readonly cli: string | false;
 }
 
 /**
@@ -150,15 +167,17 @@ export interface IDshHostConfig {
 	 * `~/.codebase-memory`（空着且不报错 ✗✗）。这里只服务沙箱行 ✓，取值见 `SANDBOX_FALLBACK_ROOT` ✓。
 	 */
 	readonly sandboxWorkspaceRoot?: string;
+	/** Office 运行时装配参数（见 {@link IDshOfficeConfig}）；缺失 ⇒ 不挂 7 个 Office 技能。 */
+	readonly office?: IDshOfficeConfig;
 }
 
 /** 覆盖层种类（也是落盘文件名的前缀，见 {@link hostOverlayFileName}）。 */
-export type DshHostOverlayKind = 'bridge' | 'kanban' | 'codebase' | 'mcp' | 'skills' | 'agents' | 'dataRoot' | 'memory' | 'sandbox';
+export type DshHostOverlayKind = 'bridge' | 'kanban' | 'codebase' | 'mcp' | 'skills' | 'agents' | 'dataRoot' | 'memory' | 'sandbox' | 'office';
 
 /** 覆盖层文件名的前缀：与主进程 `bridge-<id>.yml` / `roots-<id>.yml` 等**逐字一致**。 */
 export const DSH_HOST_OVERLAY_PREFIX: Readonly<Record<DshHostOverlayKind, string>> = {
 	bridge: 'bridge', kanban: 'kanban', codebase: 'codebase', mcp: 'mcp',
-	skills: 'skills', agents: 'agents', dataRoot: 'roots', memory: 'memory', sandbox: 'sandbox',
+	skills: 'skills', agents: 'agents', dataRoot: 'roots', memory: 'memory', sandbox: 'sandbox', office: 'office',
 };
 
 /** 覆盖层的文件名（主进程与独立启动器共用同一套命名，便于人工比对 run 目录）。 */
@@ -278,6 +297,18 @@ export function renderHostOverlays(config: IDshHostConfig): readonly IDshHostOve
 	if (sandboxMode && sandboxRoot) {
 		out.push({ kind: 'sandbox', text: renderSandboxOverlay(sandboxMode, sandboxRoot) });
 	}
+	// Office 运行时（2026-11-02）：两个官方包由**插入行**挂载，因此独立成一条覆盖层
+	//（一个 patch 文件里多个 `- insert:` 只有第一个生效 ⇒ 不能并进 skills 那份）。
+	// base / node / cli 全部由主进程算好（Host 读不到产品源码、也不该猜 PATH）。
+	const office = config.office;
+	if (office) {
+		const officeBase = trimmed(office.base);
+		const officeNode = trimmed(office.node);
+		const officeCli = office.cli === false ? false : trimmed(office.cli);
+		if (officeBase && officeNode && officeCli !== undefined) {
+			out.push({ kind: 'office', text: renderOfficeOverlay({ base: officeBase, node: officeNode, cli: officeCli }) });
+		}
+	}
 	return out;
 }
 
@@ -324,8 +355,24 @@ export function parseDshHostConfig(text: unknown): IDshHostConfig | undefined {
 		return Object.keys(out).length > 0 ? out : undefined;
 	})();
 
+	/**
+	 * Office 运行时（2026-11-02）：`cli` 允许显式为 `false`（本部署没有 LibreOffice Kit），
+	 * 与 browser 那三个键同一条口径 —— 不能走 `trimmed()`（它把 `false` 当"没给"✗）。
+	 */
+	const officeRaw = src.office;
+	const office: IDshOfficeConfig | undefined = (() => {
+		if (!officeRaw || typeof officeRaw !== 'object' || Array.isArray(officeRaw)) { return undefined; }
+		const o = officeRaw as Record<string, unknown>;
+		const base = trimmed(o.base);
+		const node = trimmed(o.node);
+		if (!base || !node) { return undefined; }
+		const cli = o.cli === false ? false : trimmed(o.cli);
+		return cli === undefined ? undefined : { base, node, cli };
+	})();
+
 	const config: IDshHostConfig = {
 		...(bridge ? { bridge } : {}),
+		...(office ? { office } : {}),
 		...(browser ? { browser } : {}),
 		...optional('dataRoot', trimmed(src.dataRoot)),
 		...optional('workspaceId', trimmed(src.workspaceId)),
@@ -367,7 +414,7 @@ function optional<K extends keyof IDshHostConfig>(key: K, value: IDshHostConfig[
 export function serializeDshHostConfig(config: IDshHostConfig): string {
 	const ordered: Record<string, unknown> = {};
 	if (config.bridge) { ordered.bridge = config.bridge; }
-	for (const key of ['dataRoot', 'workspaceId', 'workspaceRoot', 'relatedRoots', 'agentsRoot', 'agentsBuiltinRoot', 'skillDirs', 'bundledSkillDir', 'mcpServers', 'mcpConfigPath', 'gatewayUrl', 'kbRoot', 'unrealBridgeUrl', 'browser', 'sandboxMode', 'sandboxWorkspaceRoot'] as const) {
+	for (const key of ['dataRoot', 'workspaceId', 'workspaceRoot', 'relatedRoots', 'agentsRoot', 'agentsBuiltinRoot', 'skillDirs', 'bundledSkillDir', 'mcpServers', 'mcpConfigPath', 'gatewayUrl', 'kbRoot', 'unrealBridgeUrl', 'browser', 'sandboxMode', 'sandboxWorkspaceRoot', 'office'] as const) {
 		const value = config[key];
 		if (value === undefined) { continue; }
 		if (Array.isArray(value) && value.length === 0) { continue; }

@@ -56,7 +56,7 @@ export interface IKbSettingsHost {
 	/** 订阅同步输出（实时）；返回取消订阅。面板据此把同步过程实时显示在下方。 */
 	onSyncOutput(listener: (chunk: string) => void): { dispose(): void };
 	/**
-	 * 读取用户自定义的「本地目录 ↔ 飞书知识库」映射（vault 内 `.feishu-space-map.json`；不存在 ⇒ 空数组）。
+	 * 读取用户自定义的「本地目录 ↔ 飞书知识库」映射（vault 内 `.kb/space-map.json`；不存在 ⇒ 空数组）。
 	 * 结构内联声明以避免 Input 反向依赖 knowledge/ 模块（同一契约由 feishuSyncCore 定义）。
 	 */
 	loadSpaceMap(): Promise<Array<{ dir: string; spaceId: string; spaceName?: string }>>;

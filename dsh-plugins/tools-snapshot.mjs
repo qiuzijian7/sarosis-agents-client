@@ -14,6 +14,7 @@
 // 捕获它 `ctx.tools.register(...)` 的调用 —— 不启 Host、不调模型、不联网 ✓。
 // ⚠ 插件在 apply 期抛错 ⇒ **记成失败并让守卫红** ✗，绝不静默跳过（跳过 = 清单缺一块而没人知道 ✗）。
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -42,12 +43,15 @@ function fakeContext(foundationSvc) {
 		// ⇒ fake 少了它，这两个插件会抛 `ctx.provide is not a function`，于是它们的工具**一条都抽不到** ✓。
 		// 好在守卫的"失败数组必须为空"那条会把这种**静默缺一块**变成红 ✓（2026-10-12 实测抓到 ✓）。
 		provide: name => { provided[name] = true; return () => { }; },
+		// `vssaros-workbenches` 用 `ctx.reflect.provide(...)` 提供只读归属服务（官方同名同形）
+		reflect: { provide: name => { provided[name] = true; return () => { }; } },
 		get: name => (name === 'vssarosFoundation' ? foundationSvc : (provided[name] ? {} : undefined)),
 		set: () => { },
 		logger: { info: () => { }, warn: () => { }, error: () => { }, debug: () => { } },
 		vssarosFoundation: foundationSvc,
 		webServer: { port: 1, host: '127.0.0.1', register: () => () => { } },
-		connection: { requestRejection: () => undefined },
+		// `fetch.register` 是 Host 路由注册面（workbenches / 各页面插件用）；快照只关心工具，路由丢弃即可
+		connection: { requestRejection: () => undefined, fetch: { register: () => () => { } } },
 		tools: {
 			register: definition => { tools.push(definition); return () => { }; },
 			get: name => tools.find(t => t.name === name),
@@ -76,6 +80,16 @@ function entryOf(definition) {
 	};
 }
 
+/**
+ * 个别插件在**没有数据根**时按设计整个不注册（"写错位置比不写更糟"），快照用空 config 跑就看不到它的工具
+ * ⇒ 这些工具成了盲区：改名 / 改参数 / 被 Agent 引用，没有任何守卫知道（2026-11-02：`install_local_workbench`）。
+ * ⇒ 对这类插件给一个**一次性的临时数据根**（只为让 apply 走到注册；不读不写任何真实目录）。
+ * 新增条目要写明原因；不要拿它去"让别的插件通过"。
+ */
+const CONFIG_OVERRIDES = {
+	'vssaros-workbenches': () => ({ root: path.join(os.tmpdir(), 'vssaros-snapshot-wb-root') }),
+};
+
 /** 抽全部插件的工具面。返回 `{ plugins, total, failures }`（失败**不吞**）。 */
 export async function extractToolSnapshot() {
 	const plugins = {};
@@ -96,7 +110,7 @@ export async function extractToolSnapshot() {
 			if (typeof mod.apply !== 'function') { continue; }
 			// 每个插件用自己的默认 config 跑（与真机"没写覆盖层"时的形态一致 ✓）
 			const { ctx, tools } = fakeContext(foundationSvc);
-			mod.apply(ctx, {});
+			mod.apply(ctx, CONFIG_OVERRIDES[dir] ? CONFIG_OVERRIDES[dir]() : {});
 			const entries = tools.map(entryOf).sort((a, b) => String(a.name).localeCompare(String(b.name)));
 			if (entries.length === 0) { continue; }
 			plugins[dir] = entries;

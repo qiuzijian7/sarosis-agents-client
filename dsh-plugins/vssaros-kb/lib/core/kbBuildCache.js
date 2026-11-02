@@ -1,8 +1,8 @@
-// @vssaros/dsh-kb — 构建缓存 `.kb-build-cache.json` 的**纯逻辑**（零 I/O ✓）。
+// @vssaros/dsh-kb — 构建缓存 `.kb/build-cache.json` 的**纯逻辑**（零 I/O ✓）。
 //
 // ## 契约真源
 // IDE 侧 `knowledge/kbVaultFs.ts`：
-//   · `readBuildCache(vaultRoot)` = `JSON.parse(<vault>/.kb-build-cache.json)`，读不动一律当空 ✓（L399-401 ✓）；
+//   · `readBuildCache(vaultRoot)` = `JSON.parse(<vault>/.kb/build-cache.json)`，读不动一律当空 ✓（L399-401 ✓）；
 //   · `writeBuildCache(vaultRoot, cache)` = `JSON.stringify(cache, null, 2)`（**两个空格缩进、无尾换行** ✓，L403-405 ✓）；
 //   · 形状 = `{ 素材绝对路径: 已生成笔记绝对路径 }` ✓（`kbLint.ts:176` 原话 ✓）。
 //   · 用途（`collectPendingSources`，L97-122 ✓）：① **value** 里的路径＝已产出笔记 ⇒ 永不当素材（防"笔记→笔记"churn ✓）；
@@ -19,7 +19,7 @@
 //
 // ## ⚠ 最要紧的一条：**不能瞎猜 素材→笔记** ✗
 // 缓存要的是"**素材绝对路径** → 笔记绝对路径"，而笔记里 `sources` 存的是 `normalizeSourceRef` 归一后的
-// **小写 basename** ✗（`core/kbFrontmatter.js` 文件头第 4 条 ✓：去 `库/` 前缀、去 wikilink/引号、取最后一段、小写 ✓）。
+// **小写 basename** ✗（`core/kbFrontmatter.js` 文件头第 4 条 ✓：去 `数据源/` 前缀、去 wikilink/引号、取最后一段、小写 ✓）。
 // ⇒ 反向映射只能"按 basename 在**本批素材**里找"，且**一有歧义就不登记** ✓：
 //   · 本批里有两个素材同名 ⇒ 不知道该记哪个 ⇒ **跳过**（宁可下次再算一遍 ✓，也不能把 A 的笔记记到 B 头上 ✗）；
 //   · 两篇笔记都声明了同一素材 ⇒ 缓存是**一对一**映射 ⇒ **跳过**（记谁都可能记错 ✓）；

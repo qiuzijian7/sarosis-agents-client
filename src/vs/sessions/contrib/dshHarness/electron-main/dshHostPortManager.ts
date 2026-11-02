@@ -20,6 +20,7 @@
 
 import { promises as fsp } from 'fs';
 import { createServer } from 'net';
+import { spawnSync } from 'child_process';
 import { join } from '../../../../base/common/path.js';
 import { HOST_PORT_PREFERENCE_FILE, parseHostPortPreference, portOfOrigin, serializeHostPortPreference } from '../common/dshHostPortPreference.js';
 
@@ -98,4 +99,98 @@ export async function resolveHostPort(dshHome: string): Promise<number> {
 	const preferred = await readPreferredHostPort(dshHome);
 	if (preferred === undefined) { return 0; }
 	return await isLoopbackPortFree(preferred) ? preferred : 0;
+}
+
+/** `netstat -ano` 里监听该回环端口的 pid（拿不到就 undefined）。 */
+export function findLoopbackPortOwner(port: number): number | undefined {
+	if (!Number.isInteger(port) || port <= 0) { return undefined; }
+	let out = '';
+	try {
+		const r = spawnSync('netstat', ['-ano'], { encoding: 'utf8', windowsHide: true, timeout: 8000 });
+		out = String(r.stdout || '');
+	} catch {
+		return undefined;
+	}
+	for (const line of out.split(/\r?\n/)) {
+		//   TCP    127.0.0.1:4109    0.0.0.0:0    LISTENING    12345
+		if (!/LISTENING/i.test(line)) { continue; }
+		const cols = line.trim().split(/\s+/);
+		const local = cols[1] ?? '';
+		if (!local.endsWith(`:${port}`)) { continue; }
+		if (!/^(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\[::\])/.test(local)) { continue; }
+		const pid = Number(cols[cols.length - 1]);
+		if (Number.isInteger(pid) && pid > 0) { return pid; }
+	}
+	return undefined;
+}
+
+/** 进程命令行（wmic；读不到就 undefined）。 */
+export function processCommandLine(pid: number): string | undefined {
+	try {
+		const r = spawnSync('wmic', ['process', 'where', `ProcessId=${pid}`, 'get', 'CommandLine', '/format:list'], { encoding: 'utf8', windowsHide: true, timeout: 8000 });
+		const m = /CommandLine=(.+)/i.exec(String(r.stdout || ''));
+		return m ? m[1].trim() : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** 结束一棵进程树（残留 Host 与其子进程）。 */
+function killTree(pid: number): void {
+	try {
+		spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], { encoding: 'utf8', windowsHide: true, timeout: 10000 });
+	} catch {
+		/* 杀不掉就算了 —— 端口回收只是优化 */
+	}
+}
+
+/**
+ * 偏好端口被占用时的**回收尝试**（2026-11-02，P0）。
+ *
+ * ## 为什么需要
+ * 端口漂移有两个代价，都是实测过的：
+ *   ① dsh 把 `http://127.0.0.1:<port>` 写进每条 system 提示 ⇒ 端口变 ⇒ **前缀缓存整段失效**
+ *      （真机：同一会话 6 次请求，302 行里 299 行逐字相同，唯一差异就是端口 ⇒ 命中率 6.4% vs 98.6%）；
+ *   ② 前端资源按 origin 缓存 ⇒ 端口变 ⇒ **每次冷启动重新下载/解析 chunk**（对比 `dsh-desktop`
+ *      固定 43129 优先："Prefer a stable loopback origin so Chromium can reuse the Harness frontend cache"）。
+ * 而 `resolveHostPort` 只在端口**空闲**时才复用，一旦上次的 Host 没退干净（僵尸/keepAlive 残留）
+ * 就回落 `--port 0` ⇒ 实测四次启动拿到 4109 / 12637 / 53383 / 54980，等于稳定性没生效。
+ *
+ * ## 纪律（安全边界）
+ * **只回收"我们自己的" Host**：命令行里必须含本次运行的 dsh `bin.js` 绝对路径。
+ * 别的程序占着端口 —— 一律不动，回落 0（**绝不**为了端口稳定去杀无关进程）。
+ *
+ * @returns `free` 本来空闲 / `reclaimed` 回收成功 / `foreign` 被别人占（不动）/ `unknown` 探测不出来
+ */
+export async function reclaimLoopbackPort(
+	port: number,
+	ownDshBinPath: string,
+): Promise<'free' | 'reclaimed' | 'foreign' | 'unknown'> {
+	if (await isLoopbackPortFree(port)) {
+		return 'free';
+	}
+	if (!ownDshBinPath) {
+		return 'unknown';
+	}
+	const owner = findLoopbackPortOwner(port);
+	if (owner === undefined) {
+		return 'unknown';
+	}
+	const cmd = processCommandLine(owner);
+	if (!cmd) {
+		return 'unknown';
+	}
+	const norm = (s: string): string => s.replace(/\//g, '\\').toLowerCase();
+	if (!norm(cmd).includes(norm(ownDshBinPath))) {
+		return 'foreign';   // ⚠ 别人的进程：动都不要动
+	}
+	killTree(owner);
+	const deadline = Date.now() + 2500;
+	while (Date.now() < deadline) {
+		await new Promise(resolve => setTimeout(resolve, 150));
+		if (await isLoopbackPortFree(port)) {
+			return 'reclaimed';
+		}
+	}
+	return 'unknown';
 }

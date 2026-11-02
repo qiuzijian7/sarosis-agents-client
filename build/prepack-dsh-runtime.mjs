@@ -19,14 +19,13 @@
  * 注意：在 CodeBuddy IDE 里跑要净化 NODE_OPTIONS（注入的 safe-delete 会拦裁剪的批量删除）。
  */
 
-/** 安装后裁剪的重型可选负载（参考 skymecode/deepseek-harness-for-vscode 的做法）：
- *  聊天框场景用不到，删掉可省 ~205 MB；功能本身按"缺失即降级"验证（first-run e2e 全绿为准）。 */
+/** 安装后裁剪的重型可选负载（参考 skymecode/deepseek-harness-for-vscode 的做法）： */
 const PRUNE_LIST = [
-	// 文档预览的 LibreOffice 转换内核（182 MB）：聊天框不展示文档预览侧栏。
-	['node_modules', '@deepseek-ai', 'libreoffice-kit-win32-x64'],
-	['node_modules', '@deepseek-ai', 'libreoffice-kit-darwin-arm64'],
-	['node_modules', '@deepseek-ai', 'libreoffice-kit-darwin-x64'],
-	['node_modules', '@deepseek-ai', 'libreoffice-kit-linux-x64'],
+	// ★ 2026-11-02：LibreOffice Kit（182 MB）**不再裁剪** —— Office 全量路线上线后，它是
+	//   `office-render` / `office-export-pdf` / `office-recalculate` 三个技能的执行引擎
+	//   （`dsh-skill-office` 把它的 CLI 绝对路径写进技能正文，缺件即这三个能力不可用）。
+	//   体积代价见 `build/prepare-office-runtime.mjs` 头注释与发版说明。
+	//
 	// 注意：sherpa-onnx-*（本地语音识别，22 MB）**不裁**——语音输入是聊天框特性
 	//（voice-input bundle 由 supervisor 装进 profile，引擎靠它跑 SenseVoice）。
 ];

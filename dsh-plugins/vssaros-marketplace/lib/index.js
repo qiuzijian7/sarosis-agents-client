@@ -79,6 +79,8 @@ const KINDS = ['agent', 'skill', 'mcp', 'knowledge', 'workflow', 'workbench'];
  */
 
 export async function apply(ctx, config) {
+	// 启动耗时探针（2026-11-02）：apply 进入时刻 —— 与相邻插件的这一行相减就是"谁把时间花掉了"。
+	console.log('[vssaros-marketplace] apply 进入（进程启动后 ' + Math.round(process.uptime() * 1000) + 'ms）');
 	/** IDE 控制桥（可选注入）：**只有 workbench 的装/卸**还需要它 ✓。 */
 	const state = {
 		bridge: null,

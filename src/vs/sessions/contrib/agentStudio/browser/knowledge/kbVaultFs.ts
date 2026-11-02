@@ -33,9 +33,9 @@ import { KB_EXTRACT_DOC_TEXT_CHANNEL, KB_DOC_SOURCE_EXTENSIONS, type IKbExtractD
 // ─── 路径 / 存储键常量（原先是 `KbImportController` 的 static，逐字搬来，值未改动）───
 
 export const KB_ROOT_SUBPATH= '.vssaros/knowledge-base';
-export const KB_LIBRARY_SUBPATH= '库';
+export const KB_LIBRARY_SUBPATH= '数据源';
 export const KB_RAW_SUBPATH= 'raw';
-export const KB_NOTES_SUBPATH= '笔记';
+export const KB_NOTES_SUBPATH= '知识库列表';
 export const KB_SUBS_TMP_SUBPATH= '.kb-subs-tmp';
 export const SYS_INDEX_FILES: readonly string[] = ['index.md', 'overview.md', 'insights.md', 'log.md', 'lint-report.md', 'dedup-report.md', '知识体系.md'];
 export const SKILL_DIR= '.kb-skills';
@@ -202,7 +202,7 @@ export async function stageDocSourcesToText(
 			try {
 				// ★ 图片落点（2026-09-23）：`<库/raw>/assets/<素材名>/`，markdown 里引用
 				//   `assets/<素材名>/img-NN.png` —— 与「导入链接」把图片本地化到
-				//   `库/raw/assets/<素材名>/` 的既有约定完全一致（预览与飞书同步都按相对路径解析）。
+				//   `数据源/raw/assets/<素材名>/` 的既有约定完全一致（预览与飞书同步都按相对路径解析）。
 				const assetDir = URI.joinPath(URI.joinPath(src, '..'), 'assets', stem);
 				const res = await invoke(KB_EXTRACT_DOC_TEXT_CHANNEL, {
 					filePath: src.fsPath,
@@ -397,11 +397,11 @@ export async function salvageSingleNoteToDir(raw: string, safeName: string, outp
 	// ─── 构建缓存 ─────────────────────────────────────────────────────────────
 
 export async function readBuildCache(fileService: IFileService, vaultRoot: URI): Promise<Record<string, string>> {
-		try { return JSON.parse((await fileService.readFile(URI.joinPath(vaultRoot, '.kb-build-cache.json'))).value.toString()); } catch { return {}; }
+		try { return JSON.parse((await fileService.readFile(URI.joinPath(vaultRoot, '.kb/build-cache.json'))).value.toString()); } catch { return {}; }
 	}
 
 export async function writeBuildCache(fileService: IFileService, vaultRoot: URI, cache: Record<string, string>): Promise<void> {
-		try { await fileService.writeFile(URI.joinPath(vaultRoot, '.kb-build-cache.json'), VSBuffer.fromString(JSON.stringify(cache, null, 2))); } catch { /* ignore */ }
+		try { await fileService.writeFile(URI.joinPath(vaultRoot, '.kb/build-cache.json'), VSBuffer.fromString(JSON.stringify(cache, null, 2))); } catch { /* ignore */ }
 	}
 
 	/**
@@ -613,7 +613,7 @@ export function resolveActiveVaultRoot(storageService: IStorageService, envServi
 					if (activeVault) {
 						const computed = URI.joinPath(baseRoot, activeId);
 						// ★ 2026-09-23 诊断日志：命中这条 fallback ⇒ 后续**会在
-						//   `<kbDir>/<vaultId>` 下写文件**（`库/raw/...`），从而创建出
+						//   `<kbDir>/<vaultId>` 下写文件**（`数据源/raw/...`），从而创建出
 						//   那个「凭空多出的 `<时间戳>-<随机>` 目录」。正常配置（vault 有
 						//   `customPath`）永远不会走到这里 ⇒ 一旦出现就是定位线索。
 						logService?.warn(`[KB][vault-dir] resolveActiveVaultRoot fallback → ${computed.fsPath}`
@@ -647,16 +647,16 @@ export function sanitizeFsName(name: string): string {
 	}
 
 	/**
-	 * 计算库文件相对于库根目录的路径，返回 `库/<相对路径>` 格式的双链引用。
+	 * 计算库文件相对于库根目录的路径，返回 `数据源/<相对路径>` 格式的双链引用。
 	 * 例如 libDir= `/vault/库`, file= `/vault/库/概念/UE5-GC/GC_Mechanism.html`
-	 * → `库/概念/UE5-GC/GC_Mechanism.html`。
+	 * → `数据源/概念/UE5-GC/GC_Mechanism.html`。
 	 */
 
 export function relativeFromLib(libFileUri: URI, libDir: URI): string {
 		const libPrefix = libDir.fsPath.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 		const filePath = libFileUri.fsPath.replace(/\\/g, '/').toLowerCase();
 		const rel = filePath.startsWith(libPrefix + '/') ? filePath.substring(libPrefix.length + 1) : filePath;
-		return `库/${rel}`;
+		return `数据源/${rel}`;
 	}
 
 	// ─── vault 锁 ─────────────────────────────────────────────────────────────

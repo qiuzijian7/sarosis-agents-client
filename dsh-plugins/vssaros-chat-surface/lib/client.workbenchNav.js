@@ -53,7 +53,7 @@ window.__ModuleLoader__.load({
 			"codicon:home": "🏠", "codicon:book": "📚", "codicon:database": "🧠",
 			"codicon:robot": "🤖", "codicon:organization": "🤖", "codicon:tasklist": "🗂️",
 			"codicon:checklist": "🗂️", "codicon:list-tree": "🔀", "codicon:type-hierarchy": "🕸️",
-			"codicon:clock": "⏰", "codicon:graph": "📊", "codicon:pulse": "💓",
+			"codicon:clock": "⏰", "codicon:sync": "🔄", "codicon:graph": "📊", "codicon:pulse": "💓",
 			"codicon:search": "🔍", "codicon:settings": "⚙️", "codicon:gear": "⚙️",
 			"codicon:extensions": "🧩", "codicon:package": "🧩", "codicon:cloud": "☁️",
 			"codicon:comment-discussion": "💬", "codicon:terminal": "⌨️",
@@ -778,7 +778,8 @@ window.__ModuleLoader__.load({
 				try {
 					const raw = window.localStorage && window.localStorage.getItem(LS_TABS);
 					const arr = raw ? JSON.parse(raw) : [];
-					return Array.isArray(arr) ? arr.filter(t => t && t.id && (t.route || t.wbId)) : [];
+					// `comp` = 组件页签（2026-11-02：侧栏点群聊 ⇒ 中栏直接挂 agents 插件的 React 群聊面板）
+				return Array.isArray(arr) ? arr.filter(t => t && t.id && (t.route || t.wbId || t.comp)) : [];
 				} catch { return []; }
 			}
 			function saveTabs(list) {
@@ -857,8 +858,21 @@ window.__ModuleLoader__.load({
 			function ensureTab(it) {
 				if (!it || !it.id) { return null; }
 				if (!openTabs.filter(t => t.id === it.id)[0]) {
-					openTabs = openTabs.concat([Object.assign({ id: it.id, name: it.name, ico: it.ico, route: it.route }, it.wbId ? { wbId: it.wbId } : {})]);
+					openTabs = openTabs.concat([Object.assign({ id: it.id, name: it.name, ico: it.ico, route: it.route },
+						it.wbId ? { wbId: it.wbId } : {},
+						// 组件页签：`comp` 是注册表键、`props` 是**可 JSON 化**的入参（要进 localStorage，重开窗口还在）
+						it.comp ? { comp: String(it.comp), props: it.props && typeof it.props === "object" ? it.props : {} } : {})]);
 					saveTabs(openTabs);
+				} else if (it.comp) {
+					// 同 id 的旧页签（上一版是 iframe 群聊页）没有 `comp` ⇒ 就地升级成组件页签，名字也跟着最新的（群被改名）
+					let changed = false;
+					openTabs = openTabs.map((t) => {
+						if (t.id !== it.id) { return t; }
+						if (t.comp === String(it.comp) && t.name === it.name && JSON.stringify(t.props || {}) === JSON.stringify(it.props || {})) { return t; }
+						changed = true;
+						return Object.assign({}, t, { name: it.name, comp: String(it.comp), props: it.props && typeof it.props === "object" ? it.props : {} });
+					});
+					if (changed) { saveTabs(openTabs); }
 				}
 				activeTabId = it.id;
 				saveActiveTab(activeTabId);
@@ -886,10 +900,46 @@ window.__ModuleLoader__.load({
 				return true;
 			}
 			try { window.__vssarosOpenWorkbench = openRegisteredWorkbench; } catch { /* window 不可写 */ }
-			/** 宿主里已注册、且不是内置模块的工作台（启动器里列出来；身份 = owner/repo）。 */
+			/**
+			 * 打开**任意插件页**为中栏页签（2026-11-02，Bots 工作台重构）。
+			 *
+			 * 为什么要它：侧栏「Bots」页签里点**群聊** —— 群对话不是 dsh 会话（`memberSessions` 是逐成员的
+			 * 会话绑定，群本身没有一条"群会话"）⇒ `uiWorkspace.openSession` 无对象可开；而用户要的是
+			 * "中间栏切换出群聊聊天框"。中栏本来就能装任意插件页（工作台页签同一套 `main` 面板 + 页签条），
+			 * 群聊页又有 `?embed=1`（只留中间聊天列，不重复左/右栏）⇒ 直接复用这条路 ✓。
+			 *
+			 * ⚠ 用 `ctx.layout.selectPanel(ENTRY_ID)` 而不是 `selectPanel(null)`：后者会把中栏换回聊天 ✗。
+			 */
+			function openArbitraryPage(it) {
+				// 至少要有一种内容来源：组件（`comp`，首选）或 iframe 路由（`route`，兜底）
+				if (!it || (!it.route && !it.comp)) { return false; }
+				const tab = { id: String(it.id || it.route || it.comp), name: String(it.name || "页面"), ico: it.ico || "📄", route: it.route ? String(it.route) : "" };
+				if (it.comp) { tab.comp = String(it.comp); tab.props = it.props && typeof it.props === "object" ? it.props : {}; }
+				openWorkbenchTab(tab);
+				return true;
+			}
+			try { window.__vssarosOpenPageTab = openArbitraryPage; } catch { /* window 不可写 */ }
+			/**
+			 * 宿主里已注册、且**还没有固定入口**的工作台（启动器里列出来）。
+			 *
+			 * ★ 2026-11-02 改判据：原来是「身份以 `vssaros/` 开头 ⇒ 内置、已有入口 ⇒ 排除」。
+			 *   这个假设只对**整页模块**成立（它们在 DEFAULT_ITEMS 里有 route）。**注册式**内置工作台
+			 *   （`view.kind='none'`，如 `vssaros/loop`）没有页面路由 ⇒ 不在 DEFAULT_ITEMS ⇒ 被这条过滤
+			 *   一并排除 ⇒ **界面上没有任何入口**（主页卡片也没有），而守卫只看整页模块所以一直是绿的。
+			 *
+			 *   现在的判据：身份对应的 `/x/<module>/` 路由已在 DEFAULT_ITEMS 里 ⇒ 排除（有固定入口，别重复）；
+			 *   其余（第三方 `owner/repo`、`local:<pkg>`、**注册式内置**）一律列出。
+			 *   ⇒ 以后新增注册式工作台**不用再登记这张表**（这是「12 处手改」里的一处，现在自动了）。
+			 */
+			function coveredByFixedEntry(wbId) {
+				const m = /^vssaros\/([a-z][a-z0-9-]*)$/.exec(String(wbId || "").toLowerCase());
+				if (!m) { return false; }
+				const prefix = "/x/" + m[1] + "/";
+				return DEFAULT_ITEMS.some(it => it && typeof it.route === "string" && (it.route === prefix || it.route.indexOf(prefix) === 0));
+			}
 			function registeredExtras() {
 				const snap = wbService && typeof wbService.getSnapshot === "function" ? wbService.getSnapshot() : null;
-				return snap && Array.isArray(snap.workbenches) ? snap.workbenches.filter(w => w && w.id && !String(w.id).startsWith("vssaros/")) : [];
+				return snap && Array.isArray(snap.workbenches) ? snap.workbenches.filter(w => w && w.id && !coveredByFixedEntry(w.id)) : [];
 			}
 			function closeTab(id) {
 				openTabs = openTabs.filter(t => t.id !== id);
@@ -904,6 +954,14 @@ window.__ModuleLoader__.load({
 			function openWorkbenchTab(it) {
 				if (!it) { return; }
 				ensureTab(it);
+				/*
+				 * ★ 2026-11-02（用户报「点总览开了个白页/被顶回 dashboard」）：
+				 *   中栏面板**首次挂载**时，它的 mount effect 会 `ensureTab(pick())` ——
+				 *   而 `pick()` 恒是注册时传进来的那个 item（现在是 dashboard）⇒
+				 *   **刚打开的自定义页签会被它抢回 dashboard** ✗（iframe src 变成 /x/dashboard/）。
+				 *   面板的 effect 认 `pendingTabOpen`（命中 activeTabId 就提前 return）⇒ 这里必须记上。
+				 */
+				pendingTabOpen = it.id;
 				try {
 					if (ctx.layout && typeof ctx.layout.selectPanel === "function") {
 						ctx.layout.selectPanel(ENTRY_ID);
@@ -1495,6 +1553,22 @@ window.__ModuleLoader__.load({
 							const frames = openTabs.map((t) => {
 								if (!loadedTabs.has(t.id)) { return null; }
 								const on = t.id === activeTabId;
+								// ★ 2026-11-02 组件页签：插件把 React 组件登记到 `window.__vssarosPageComponents[key]`，
+								//   这里按页签自带的 `comp` 取回直接渲染（不开 iframe ⇒ 与 dsh 同源样式 / 同一份 React 树）。
+								//   组件还没登记（插件晚于本 chunk 加载 / 旧版插件）⇒ 有 route 就**回落 iframe**，不留死页签；
+								//   登记那一刻插件会发 TAB_CHANGE_EVENT ⇒ 这里重画并切到组件。
+								if (t.comp) {
+									let Comp = null;
+									try { const reg = window.__vssarosPageComponents; Comp = reg && typeof reg[t.comp] === "function" ? reg[t.comp] : null; } catch { Comp = null; }
+									if (Comp) {
+										return react.createElement("div", {
+											key: t.id + "|comp", "data-vssaros-wb-comp": t.comp,
+											style: on
+												? { display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0, height: "100%", width: "100%" }
+												: { display: "none" },
+										}, react.createElement(Comp, Object.assign({}, t.props || {}, { active: on })));
+									}
+								}
 								const wbId = wbFor(t);
 								if (wbId) {
 									return react.createElement("div", {
@@ -1720,6 +1794,20 @@ window.__ModuleLoader__.load({
 			// ── 启动器弹层（纯 DOM；chunk 只能 require react ⇒ 弹层不走 react-dom portal）──
 			let launcherEl = null;
 			let editing = false;
+			/** 已安装但当前 Host 未加载的包（`GET /api/vssaros-workbenches/install-status` 的 pending）。 */
+			let restartPending = [];
+			function refreshRestartPending() {
+				try {
+					fetch("/api/vssaros-workbenches/install-status", { cache: "no-store" })
+						.then(r => (r && r.ok ? r.json() : null))
+						.then(body => {
+							// 老 Host 没有这条路由（404 / 非 JSON）⇒ 当作没有，别报错（提示只是增强）
+							restartPending = body && Array.isArray(body.pending) ? body.pending.filter(p => p && p.name) : [];
+							if (launcherEl) { renderLauncherBody(); }
+						})
+						.catch(() => { restartPending = []; });
+				} catch { restartPending = []; }
+			}
 			function closeLauncher() {
 				if (launcherEl) { try { launcherEl.remove(); } catch { /* 已被移除 */ } launcherEl = null; }
 				editing = false;
@@ -1773,6 +1861,41 @@ window.__ModuleLoader__.load({
 						grid.appendChild(cell);
 					}
 					body.appendChild(grid);
+					// ★ 2026-11-02 生效态：已安装、但当前 Host 还没加载的包（对标官方 restart-status）。
+					//   没有这条提示时，`restart-required` 之后用户在启动器里什么都看不到 ⇒ 以为"装失败了"。
+					if (restartPending.length) {
+						const note = el("div", undefined,
+							"margin-top:8px;padding:6px 8px;border-radius:6px;font-size:11px;line-height:1.5;"
+							+ "background:rgba(232,137,12,.12);border:1px solid rgba(232,137,12,.35);");
+						note.setAttribute("data-vssaros-restart-pending", String(restartPending.length));
+						note.textContent = restartPending.map(p => "「" + p.name + (p.version ? " " + p.version : "") + "」").join("、")
+							+ "已安装，重启 Harness 后出现在这里（菜单：Harness → 重启 Harness）。";
+						body.appendChild(note);
+					}
+					// ★ 2026-11-02 注册失败：包装上了、也重启了，但 register() 校验不过 / 面板挂载失败 /
+					//   身份与别的工作台重复 ⇒ 它不会出现在上面的格子里。以前这类失败**只进控制台**，
+					//   用户看到的是"装了却没有"，没有任何线索（"装了没出现"的头号原因）。
+					//   这里如实列出包名 + 阶段 + 原因；同一个包后来注册成功会自动消失（宿主删掉记录）。
+					const regFailed = (() => {
+						try {
+							const snap = wbService && typeof wbService.getSnapshot === "function" ? wbService.getSnapshot() : null;
+							return snap && Array.isArray(snap.registrationFailures) ? snap.registrationFailures : [];
+						} catch { return []; }
+					})();
+					if (regFailed.length) {
+						const STAGE = { identity: "身份/校验不过", duplicate: "与别的工作台身份重复", slot: "面板挂载失败" };
+						const box = el("div", undefined,
+							"margin-top:8px;padding:6px 8px;border-radius:6px;font-size:11px;line-height:1.5;"
+							+ "background:rgba(220,60,60,.10);border:1px solid rgba(220,60,60,.35);");
+						box.setAttribute("data-vssaros-wb-registration-failed", String(regFailed.length));
+						box.appendChild(el("div", "有 " + regFailed.length + " 个工作台装上了但没能注册（所以上面看不到它们）："));
+						for (const f of regFailed) {
+							box.appendChild(el("div",
+								"· " + (f.source || "(未知来源)") + " —— " + (STAGE[f.stage] || f.stage || "失败") + "：" + (f.message || ""),
+								"opacity:.85;word-break:break-word;"));
+						}
+						body.appendChild(box);
+					}
 					return;
 				}
 				// 编辑态：行式列表（拖拽 + ↑↓）
@@ -1847,6 +1970,7 @@ window.__ModuleLoader__.load({
 				document.body.appendChild(box);
 				launcherEl = box;
 				renderLauncherBody();
+				refreshRestartPending();
 				document.addEventListener("mousedown", onLauncherOutside, true);
 			}
 		}

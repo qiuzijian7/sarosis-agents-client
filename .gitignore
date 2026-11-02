@@ -113,6 +113,15 @@ build/*
 # 直接失败（整条打包红）。曾因它被 build/* 吞掉，CI 出的包缺内置运行时（用户报
 # 「打包出的 VsSaros.exe 找不到 dsh」）。
 !build/prepack-dsh-runtime.mjs
+# ★ 2026-11-02 Office 运行时负载的构建器 + 版本锁**必须入库**（同 prepack-dsh-runtime 的理由）：
+# 打包入口会先跑 `node build/prepare-office-runtime.mjs`；脚本/锁不在库里 ⇒ 干净检出与 CI
+# 直接失败（或者更糟：不报错但安装包里没有 Python 负载 ⇒ 7 个 Office 技能全部不可用）。
+# 它产出的 `.build/office-runtime/`（≈150MB）不入库 ✓。
+!build/prepare-office-runtime.mjs
+!build/office-runtime.lock.json
+# 许可声明追加脚本同样必须入库：它把 PSF / MPL 正文从**随包真源**读出来写进
+# `ThirdPartyNotices.txt`（该文件是仓库源文件、原样进安装包）⇒ 脚本不在库里就没法补声明。
+!build/append-office-notices.mjs
 # vendored ripgrep 二进制必须入库：内网 CI 无法访问 npmmirror/GitHub 时
 # 这是唯一的 rg 来源（.ci/package-win-exe.yml Step 3 兜底链末位）。
 # 若删除，CI 打包版将缺 rg -> 内容搜索降级为慢速 walk。

@@ -116,7 +116,7 @@ suite('KbImportController._buildNoteAgentic（agentic 构建模式）', () => {
 		assert.ok(result && result.includes('gc.md'), `应返回首篇笔记路径，实际 ${result}`);
 		assert.ok(fs.getContent('/vault/笔记/概念/gc.md')?.includes('GC 机制'), '笔记 1 已落盘');
 		assert.ok(fs.getContent('/vault/笔记/概念/jvm.md')?.includes('JVM'), '笔记 2 已落盘');
-		const cache = fs.getContent('/vault/.kb-build-cache.json');
+		const cache = fs.getContent('/vault/.kb/build-cache.json');
 		assert.ok(cache?.includes('src1.md'), '构建缓存已写入');
 	});
 
@@ -156,7 +156,7 @@ suite('KbImportController._buildNoteAgentic（agentic 构建模式）', () => {
 		const fs = createTreeFileService();
 		fs.addFile('/vault/库/raw/src4.md', '# 素材\n内容。');
 		fs.addFile('/vault/库/概念/existing.md', '# 已构建\n已有笔记。');
-		fs.addFile('/vault/.kb-build-cache.json', JSON.stringify({ [URI.file('/vault/库/raw/src4.md').fsPath]: URI.file('/vault/库/概念/existing.md').fsPath }));
+		fs.addFile('/vault/.kb/build-cache.json', JSON.stringify({ [URI.file('/vault/库/raw/src4.md').fsPath]: URI.file('/vault/库/概念/existing.md').fsPath }));
 		let driverCalled = false;
 		const driver = { executeFromChatOptions() { driverCalled = true; return (async function* () { })(); } };
 		const controller = createController(fs.service, driver);
@@ -191,7 +191,7 @@ suite('KbImportController.maintainKbInsights 集成（社区语义摘要）', ()
 		assert.ok(/社区 c\S+（3 节点）：三角互链/.test(insights!), '社区标题带主题名');
 		assert.ok(insights!.includes('三篇笔记互相引用'), '摘要渲染为引用块');
 		assert.ok(insights!.includes('[[Alpha]]'), '成员列表保留');
-		assert.ok(fs.getContent('/vault/库/.kb-insights-cache.json'), '摘要缓存已落盘');
+		assert.ok(fs.getContent('/vault/库/.kb/insights-cache.json'), '摘要缓存已落盘');
 
 		// 二次调用：成员指纹命中 ⇒ 不再调 LLM
 		await KbImportController.maintainKbInsights(fs.service, LIB, chatModel as any);

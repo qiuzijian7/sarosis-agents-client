@@ -53,7 +53,15 @@
       "kind": "page",
       "route": "/x/dashboard/"
     },
-    "legacyCounterpart": "agentStudio.dashboard"
+    "legacyCounterpart": "agentStudio.dashboard",
+    "workbench": {
+      "title": "主页",
+      "description": "主页（仪表盘）：Token/用量汇总、运行态（turn/计划/待答）、上下文占用与冷会话提示。",
+      "icon": "codicon:home",
+      "repository": "vssaros:dashboard",
+      "customFrame": false,
+      "headerLayout": "default"
+    }
   },
   "license": "MIT"
 }

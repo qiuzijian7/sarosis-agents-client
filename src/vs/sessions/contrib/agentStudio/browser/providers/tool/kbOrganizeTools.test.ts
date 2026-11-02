@@ -106,7 +106,7 @@ suite('kb_organize（笔记区目录整理工具）', () => {
 	test('正常 move：笔记被搬走 + checkpoint 记录 + vault 外有备份 + 结果带 KB_ORGANIZE_RESULT', async () => {
 		const { fs, captured, handler } = createHarness(SEED);
 		const out = await handler({
-			moves: [{ from: '笔记/01_学习/UnrealEngine/UI优化技巧.md', to: '笔记/01_学习/UnrealEngine/09_UI与Slate/UI优化技巧.md' }],
+			moves: [{ from: '知识库列表/01_学习/UnrealEngine/UI优化技巧.md', to: '知识库列表/01_学习/UnrealEngine/09_UI与Slate/UI优化技巧.md' }],
 			reason: '归入 UI 主题目录',
 		}, undefined, 'knowledge-base-expert');
 
@@ -117,7 +117,7 @@ suite('kb_organize（笔记区目录整理工具）', () => {
 		assert.ok(decodeURIComponent(captured[0].fileUri).includes('UI优化技巧.md'), 'checkpoint 记的是被移动的文件');
 		const backups = fs.backupPaths();
 		assert.strictEqual(backups.length, 1, 'vault 外有一份备份');
-		assert.ok(backups[0].endsWith('笔记/01_学习/UnrealEngine/UI优化技巧.md'), '备份保留原相对路径');
+		assert.ok(backups[0].endsWith('知识库列表/01_学习/UnrealEngine/UI优化技巧.md'), '备份保留原相对路径');
 		assert.ok(backups[0].startsWith('/vault-backup-kborganize-'), '备份在 vault **之外**');
 
 		const text: string = out.content[0].text;
@@ -130,11 +130,11 @@ suite('kb_organize（笔记区目录整理工具）', () => {
 		const { fs, captured, handler } = createHarness(SEED);
 		const out = await handler({
 			moves: [
-				{ from: '库/raw/UI优化篇.md', to: '笔记/某处.md' },                                              // 越出笔记区（from 在库）
-				{ from: '笔记/01_学习/UnrealEngine/UI优化技巧.md', to: '笔记/01_学习/../库/raw/偷渡.md' },        // `..` 穿越
-				{ from: '笔记/不存在.md', to: '笔记/某处.md' },                                                // from 不存在
-				{ from: '笔记/01_学习/UnrealEngine/UI优化技巧.md', to: '笔记/01_学习/UnrealEngine/已有.md' },    // to 已存在
-				{ from: '笔记/01_学习/UnrealEngine/UI优化技巧.md', to: '笔记/01_学习/UnrealEngine/UI优化技巧.md' }, // from===to
+				{ from: '数据源/raw/UI优化篇.md', to: '知识库列表/某处.md' },                                              // 越出笔记区（from 在库）
+				{ from: '知识库列表/01_学习/UnrealEngine/UI优化技巧.md', to: '知识库列表/01_学习/../库/raw/偷渡.md' },        // `..` 穿越
+				{ from: '知识库列表/不存在.md', to: '知识库列表/某处.md' },                                                // from 不存在
+				{ from: '知识库列表/01_学习/UnrealEngine/UI优化技巧.md', to: '知识库列表/01_学习/UnrealEngine/已有.md' },    // to 已存在
+				{ from: '知识库列表/01_学习/UnrealEngine/UI优化技巧.md', to: '知识库列表/01_学习/UnrealEngine/UI优化技巧.md' }, // from===to
 			],
 		}, undefined, 'knowledge-base-expert');
 
@@ -149,7 +149,7 @@ suite('kb_organize（笔记区目录整理工具）', () => {
 
 	test('deletes = 移入备份目录（回收站语义，非真删）', async () => {
 		const { fs, captured, handler } = createHarness(SEED);
-		const out = await handler({ deletes: ['笔记/01_学习/UnrealEngine/UI优化技巧.md'] }, undefined, 'knowledge-base-expert');
+		const out = await handler({ deletes: ['知识库列表/01_学习/UnrealEngine/UI优化技巧.md'] }, undefined, 'knowledge-base-expert');
 
 		assert.ok(!fs.has('/vault/笔记/01_学习/UnrealEngine/UI优化技巧.md'), '笔记区内已移除');
 		const backups = fs.backupPaths();
@@ -161,7 +161,7 @@ suite('kb_organize（笔记区目录整理工具）', () => {
 
 	test('creates = 新建目录（越界同样被拒）', async () => {
 		const { fs, handler } = createHarness(SEED);
-		const out = await handler({ creates: ['笔记/01_学习/UnrealEngine/09_UI与Slate', '库/raw/不该建的目录'] }, undefined, 'knowledge-base-expert');
+		const out = await handler({ creates: ['知识库列表/01_学习/UnrealEngine/09_UI与Slate', '数据源/raw/不该建的目录'] }, undefined, 'knowledge-base-expert');
 
 		assert.ok(fs.hasDir('/vault/笔记/01_学习/UnrealEngine/09_UI与Slate'), '笔记区内目录建成');
 		assert.ok(!fs.hasDir('/vault/库/raw/不该建的目录'), '越界目录被拒');
@@ -173,7 +173,7 @@ suite('kb_organize（笔记区目录整理工具）', () => {
 		const { fs, handler } = createHarness(SEED);
 		fs.service.copy = async () => { throw new Error('disk full'); };
 		const out = await handler({
-			moves: [{ from: '笔记/01_学习/UnrealEngine/UI优化技巧.md', to: '笔记/01_学习/UnrealEngine/09_UI与Slate/UI优化技巧.md' }],
+			moves: [{ from: '知识库列表/01_学习/UnrealEngine/UI优化技巧.md', to: '知识库列表/01_学习/UnrealEngine/09_UI与Slate/UI优化技巧.md' }],
 		}, undefined, 'knowledge-base-expert');
 
 		assert.strictEqual(out.details.moved.length, 0, '没搬');
@@ -184,7 +184,7 @@ suite('kb_organize（笔记区目录整理工具）', () => {
 
 	test('操作总数超限 ⇒ 整体拒绝（分批或走 KB_REORG）', async () => {
 		const { fs, handler } = createHarness(SEED);
-		const moves = Array.from({ length: 51 }, (_, i) => ({ from: `笔记/a${i}.md`, to: `笔记/b${i}.md` }));
+		const moves = Array.from({ length: 51 }, (_, i) => ({ from: `知识库列表/a${i}.md`, to: `知识库列表/b${i}.md` }));
 		const out = await handler({ moves }, undefined, 'knowledge-base-expert');
 		// 早退分支返回的是裸数组（无 details）⇒ 归一化取文本
 		const text: string = (Array.isArray(out) ? out[0] : out.content[0]).text;
@@ -204,8 +204,8 @@ suite('kb_organize（笔记区目录整理工具）', () => {
 		const { fs, captured, handler } = createHarness(SEED);
 		const out = await handler({
 			moves: [
-				{ from: '笔记/01_学习/UnrealEngine/UI优化技巧.md', to: '笔记/01_学习/UnrealEngine/09_UI与Slate/UI优化技巧.md' },
-				{ from: '笔记/01_学习/UnrealEngine/09_UI与Slate/UI优化技巧.md', to: '笔记/01_学习/UnrealEngine/09_UI与Slate/UI优化/UI优化技巧.md' },
+				{ from: '知识库列表/01_学习/UnrealEngine/UI优化技巧.md', to: '知识库列表/01_学习/UnrealEngine/09_UI与Slate/UI优化技巧.md' },
+				{ from: '知识库列表/01_学习/UnrealEngine/09_UI与Slate/UI优化技巧.md', to: '知识库列表/01_学习/UnrealEngine/09_UI与Slate/UI优化/UI优化技巧.md' },
 			],
 		}, undefined, 'knowledge-base-expert');
 

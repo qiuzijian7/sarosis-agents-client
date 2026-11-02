@@ -85,11 +85,49 @@ export function createDraftStore(config, deps = {}) {
 	 * 原子重写整份草稿（临时文件 + `rename`）—— 中途崩了也不会留下**半截**草稿 ✓
 	 *（`appendFile` 追加不怕崩，但"压缩"是替换整份，必须原子 ✓）。
 	 */
-	async function compact(rows) {
+	async function writeAll(rows) {
 		const tmp = `${file}.tmp-${process.pid}`;
 		await writeFile(tmp, rows.length ? `${rows.map(row => JSON.stringify(row)).join('\n')}\n` : '', 'utf8');
 		await rename(tmp, file);
+	}
+
+	/** 压缩（计数留给页面自诊断："治理到底跑了没有"必须可观测 ✓）。 */
+	async function compact(rows) {
+		await writeAll(rows);
 		compactions++;
+	}
+
+	/**
+	 * 累加"重复出现"次数（2026-11-02）—— 自动提升的唯一重复证据。
+	 *
+	 * 为什么不新建行：`extractCandidates` 命中历史指纹就不再产候选 ⇒ 重复句只能靠这里
+	 * 在原行上 `hits += 1`，否则"说过两次"这个信号在落盘时就已经丢了。
+	 *
+	 * ⚠ 只对 `status === 'draft'` 的行累加：已提升/已丢弃的再累加没有意义（前者已经在长期层，
+	 * 后者是用户明确不要的）。
+	 *
+	 * @param {string[]} digests 本回合重复命中的指纹
+	 * @returns {Promise<number>} 实际累加的行数（失败 0，绝不抛）
+	 */
+	async function bump(digests) {
+		const list = Array.isArray(digests) ? digests.filter(d => typeof d === 'string' && d) : [];
+		if (list.length === 0) { return 0; }
+		try {
+			const rows = parseDraftLines(await readFile(file, 'utf8'));
+			let touched = 0;
+			const now = Date.now();
+			const next = rows.map(row => {
+				if (!list.includes(row.digest)) { return row; }
+				if (row.status !== 'draft') { return row; }
+				touched++;
+				return { ...row, hits: (Number.isFinite(row.hits) ? row.hits : 1) + 1, lastSeenAt: now };
+			});
+			if (touched > 0) { await writeAll(next); }
+			return touched;
+		} catch (error) {
+			warnOnce(error);
+			return 0;
+		}
 	}
 
 	/** 追一批草稿行（已是 `buildDraftRow` 的形状）；返回实际写入条数（失败返回 0）。 */
@@ -149,15 +187,57 @@ export function createDraftStore(config, deps = {}) {
 	 * @param {string} status - 目标状态（`DRAFT_STATUSES` 之一）。
 	 * @returns {Promise<{ok: boolean, row?: object, error?: string}>} 结果。
 	 */
-	async function mark(id, status) {
+	async function mark(id, status, extra = {}) {
 		if (typeof id !== 'string' || !id) { return { ok: false, error: 'id 为空' }; }
 		try {
 			const rows = parseDraftLines(await readFile(file, 'utf8'));
 			const index = rows.findIndex(row => row.id === id);
 			if (index === -1) { return { ok: false, error: `草稿不存在：${id}` }; }
-			const updated = [...rows.slice(0, index), { ...rows[index], status, updatedAt: Date.now() }, ...rows.slice(index + 1)];
+			// ★ 2026-11-02：来源标记白名单（收件箱要区分"自动提升 / 人工提升"，撤销要知道长期层 id）。
+			//   只收这两个键 ⇒ 调用方不能借 `extra` 往草稿行里塞任意字段。
+			const patch = {};
+			if (typeof extra?.promotedBy === 'string') { patch.promotedBy = extra.promotedBy; }
+			if (typeof extra?.memoryId === 'string') { patch.memoryId = extra.memoryId; }
+			const base = { ...rows[index], status, updatedAt: Date.now(), ...patch };
+			// 回到待审（撤销）时清掉上一次处理留下的来源标记，否则它会继续被算进"自动提升动态"
+			if (status === 'draft') { delete base.promotedBy; delete base.memoryId; }
+			const updated = [...rows.slice(0, index), base, ...rows.slice(index + 1)];
 			await compact(updated);
 			return { ok: true, row: updated[index] };
+		} catch (error) {
+			warnOnce(error);
+			return { ok: false, error: String(error?.message ?? error) };
+		}
+	}
+
+	/**
+	 * 改写一条**待审**草稿的正文（"改写后提升"用，2026-11-02）。
+	 *
+	 * 刻意**不改 `digest`**：它是"这句话是否已提过"的去重键。改写后若换了 digest，
+	 * 原句下次再被说出来就会被当成全新候选重新入列；保持不变 ⇒ 原句仍被视为"已见"。
+	 *
+	 * @param {string} id 草稿 id
+	 * @param {string} text 新正文（调用方已校验长度）
+	 * @returns {Promise<{ok: boolean, row?: object, error?: string}>} 结果
+	 */
+	async function edit(id, text) {
+		if (typeof id !== 'string' || !id) { return { ok: false, error: 'id 为空' }; }
+		if (typeof text !== 'string' || !text.trim()) { return { ok: false, error: '正文为空' }; }
+		try {
+			const rows = parseDraftLines(await readFile(file, 'utf8'));
+			const index = rows.findIndex(row => row.id === id);
+			if (index === -1) { return { ok: false, error: `草稿不存在：${id}` }; }
+			if (rows[index].status !== 'draft') { return { ok: false, error: `草稿已是 ${rows[index].status} 状态，不能改写` }; }
+			const clean = text.trim();
+			const next = {
+				...rows[index],
+				text: clean, chars: clean.length, edited: true,
+				// 只在第一次改写时记下原文（再次改写不覆盖 ⇒ 永远能看到最初提取的是什么）
+				originalText: typeof rows[index].originalText === 'string' ? rows[index].originalText : rows[index].text,
+				updatedAt: Date.now(),
+			};
+			await compact([...rows.slice(0, index), next, ...rows.slice(index + 1)]);
+			return { ok: true, row: next };
 		} catch (error) {
 			warnOnce(error);
 			return { ok: false, error: String(error?.message ?? error) };
@@ -169,6 +249,8 @@ export function createDraftStore(config, deps = {}) {
 		read,
 		seen,
 		mark,
+		edit,
+		bump,
 		failures: () => failures,
 		file: () => file,
 		dir: () => dir,

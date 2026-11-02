@@ -17,7 +17,7 @@
 // 2026-10-28：`dialog` + `ipcMain` + `BrowserWindow`（值）—— 页面「本地载入文件夹」需要原生目录选择器
 import { session as electronSession, shell, webContents, WebContentsView, BrowserWindow, dialog, ipcMain, type IpcMainEvent, type IpcMainInvokeEvent, type Session } from 'electron';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { IAuxiliaryWindowsMainService } from '../../../../platform/auxiliaryWindow/electron-main/auxiliaryWindows.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -31,7 +31,7 @@ import { DSH_VIEW_PARTITION, DSH_VIEW_PARTITION_CHAT_POOL_PREFIX, DSH_VIEW_PARTI
 import { resolveViewUrl } from '../common/dshPluginPage.js';
 import { unavailablePageUrl } from '../common/dshViewHostUnavailable.js';
 import { IViewLoadRetryState, newViewLoadRetryState, onDocumentFinishedLoad, onMainFrameNavigated, planLoadRetry, resetViewLoadRetry, shouldResetRetryBudget, VIEW_LOAD_MAX_RETRIES, withAuthRetry } from '../common/dshViewLoadRetry.js';
-import { DSH_PAGE_CHAT_ONLY_ARG, DSH_PAGE_IPC_CREDIT, DSH_PAGE_IPC_INSERT, DSH_PAGE_IPC_INVOKE, DSH_PAGE_IPC_KEYDOWN, DSH_PAGE_IPC_REBIND, DSH_PAGE_IPC_RENAME, DSH_PAGE_IPC_RENAMED, DSH_PAGE_IPC_THEME, DSH_PAGE_IPC_AUTH, DSH_PAGE_IPC_UPGRADE, DSH_PAGE_IPC_WORKSPACES, DSH_PAGE_IPC_WORKTREES, DSH_PAGE_SESSION_ARG, DSH_PAGE_SURFACE_ARG, DSH_PAGE_VIEW_ARG, DSH_PAGE_WORKBENCH_ARG, DshPageEvent, IDshAuthOption, IDshCreditPush, IDshInsertReference, IDshUpgradeState, IDshWorkspaceOption, IDshWorktreeOption, validateKeyEvent, validatePageCommand } from '../common/dshPageBridgeProtocol.js';
+import { DSH_PAGE_CHAT_ONLY_ARG, DSH_PAGE_IPC_CREDIT, DSH_PAGE_IPC_INSERT, DSH_PAGE_IPC_INVOKE, DSH_PAGE_IPC_KEYDOWN, DSH_PAGE_IPC_REBIND, DSH_PAGE_IPC_RENAME, DSH_PAGE_IPC_RENAMED, DSH_PAGE_IPC_THEME, DSH_PAGE_IPC_THEME_SOURCE, DSH_PAGE_IPC_AUTH, DSH_PAGE_IPC_UPGRADE, DSH_PAGE_IPC_WORKSPACES, DSH_PAGE_IPC_WORKTREES, DSH_PAGE_SESSION_ARG, DSH_PAGE_SURFACE_ARG, DSH_PAGE_VIEW_ARG, DSH_PAGE_WORKBENCH_ARG, DshPageEvent, DshPageThemeSource, IDshAuthOption, IDshCreditPush, IDshInsertReference, IDshUpgradeState, IDshWorkspaceOption, IDshWorktreeOption, validateKeyEvent, validatePageCommand } from '../common/dshPageBridgeProtocol.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { backgroundForPageSurface, DshThemeTokens, IDshViewBackgrounds } from '../common/dshThemeBridge.js';
 import { IIdeViewSlotForTargeting } from '../common/dshIdeTargeting.js';
@@ -512,6 +512,15 @@ interface IViewSlot {
 	/** 目标 palette 模式（IDE 主题的 light/dark；create / pushTheme 设置）。 */
 	colorScheme?: DshColorScheme;
 	/**
+	 * 本视图是否落在 **dsh 自主窗口**里（桌面窗口 / 分屏 / 全窗；2026-11-02）。
+	 *
+	 * 为真 ⇒ `prefers-color-scheme` **不跟 IDE 主题**，改跟 dsh「外观」：创建时不 emulate，
+	 * 等页面自报 `data-ds-theme-source` 后再对齐（见 {@link DshViewHost.applyPageThemeSource}）。
+	 */
+	dshOwnWindow?: boolean;
+	/** 页面最近一次自报的 dsh 外观方案（仅 dsh 自主窗口有；诊断/幂等用）。 */
+	lastPageThemeSource?: DshPageThemeSource;
+	/**
 	 * 视图底色候选（2026-10-13：修「初次打开侧栏视图会白屏一下」）。
 	 *
 	 * 渲染进程在 `createView` / `pushTheme` 时把「侧栏底色 + 编辑器底色」一起推来；
@@ -629,6 +638,30 @@ export class DshViewHost extends Disposable {
 	) {
 		super();
 		ensurePickFolderChannel(this._logService);
+		/*
+		 * 页面自报的 dsh「外观」方案（2026-11-02）。
+		 *
+		 * 为什么挂在**本类**而不是页面桥（`DSH_PAGE_IPC_INVOKE`）里：页面桥是**单向**的
+		 * （主进程只回 true/'pong'，带不了值），而这条是页面 → 主进程的纯通知，语义上是
+		 * "本地媒体特性对齐"，跟业务桥无关 ⇒ 单独一条内部通道，不走命令白名单 ✓。
+		 *
+		 * ⚠ 只对 `dshOwnWindow` 的视图生效（见 {@link applyPageThemeSource}）：IDE 内嵌视图的明暗
+		 * 必须继续跟 IDE 主题，不能被 dsh 外观改写 ✗。
+		 */
+		const onThemeSource = (event: IpcMainEvent, source: unknown): void => {
+			const value = source === 'light' || source === 'dark' || source === 'system' ? source : undefined;
+			if (!value) {
+				return;
+			}
+			for (const slot of this._views.values()) {
+				if (!slot.view.webContents.isDestroyed() && slot.view.webContents === event.sender) {
+					this.applyPageThemeSource(slot.id, value);
+					return;
+				}
+			}
+		};
+		ipcMain.on(DSH_PAGE_IPC_THEME_SOURCE, onThemeSource);
+		this._register(toDisposable(() => ipcMain.removeListener(DSH_PAGE_IPC_THEME_SOURCE, onThemeSource)));
 	}
 
 	private get session(): Session {
@@ -853,7 +886,7 @@ export class DshViewHost extends Disposable {
 		}
 	}
 
-	create(viewId: string, ownerWindowId: number, surface: DshViewSurface, chatOnlyUi = true, sessionId?: string, colorScheme?: DshColorScheme, route?: string, pageSurface?: string, backgrounds?: IDshViewBackgrounds, isolatedPool = false): void {
+	create(viewId: string, ownerWindowId: number, surface: DshViewSurface, chatOnlyUi = true, sessionId?: string, colorScheme?: DshColorScheme, route?: string, pageSurface?: string, backgrounds?: IDshViewBackgrounds, isolatedPool = false, dshOwnWindow = false, pageColorScheme?: DshColorScheme): void {
 		if (this._views.has(viewId)) {
 			return;
 		}
@@ -918,11 +951,17 @@ export class DshViewHost extends Disposable {
 		view.setBounds(OFFSCREEN);
 		view.setVisible(false);
 		const takesRoute = surfaceTakesRoute(surface);
-		const slot: IViewSlot = { id: viewId, view, ownerWindowId, surface, createdAt: Date.now(), isolated: isolatedPool, partition: decision.partition, route: takesRoute ? route : undefined, pageSurface: takesRoute ? pageSurface : undefined, attachedTo: undefined, visible: false, retry: newViewLoadRetryState(), blankChecks: 0, blankReloads: 0, colorScheme, sessionId: sessionId || undefined, backgrounds, session: viewSession };
+		const slot: IViewSlot = { id: viewId, view, ownerWindowId, surface, createdAt: Date.now(), isolated: isolatedPool, partition: decision.partition, route: takesRoute ? route : undefined, pageSurface: takesRoute ? pageSurface : undefined, attachedTo: undefined, visible: false, retry: newViewLoadRetryState(), blankChecks: 0, blankReloads: 0, colorScheme, dshOwnWindow, lastPageThemeSource: pageColorScheme, sessionId: sessionId || undefined, backgrounds, session: viewSession };
 		// ★ 染色必须在**任何一次 attach / setVisible(true) 之前**（否则中间那几毫秒照样露白 ✗）
 		this._applyViewBackground(slot);
 		this._wire(slot);
 		this._views.set(viewId, slot);
+		// ★ 2026-11-02（抄官方 dsh-desktop 的时序）：自主窗口的明暗**建视图时就设**，不等页面自报
+		//   —— 自报要等页面脚本跑起来，那之前自托管页/第三方组件会按错的明暗先画一帧。
+		//   设不上也不致命：`did-finish-load` 的 `_replayPushedSnapshots` 会再补一次（幂等）。
+		if (dshOwnWindow && pageColorScheme) {
+			void this._emulateColorScheme(slot, pageColorScheme);
+		}
 		if (this._connection) {
 			void this._load(slot);
 		}
@@ -1084,7 +1123,9 @@ export class DshViewHost extends Disposable {
 			return;
 		}
 		slot.lastThemeTokens = tokens;
-		if (colorScheme) {
+		// dsh 自主窗口：明暗由 dsh「外观」决定（见 slot.dshOwnWindow 与 applyPageThemeSource），
+		// 这里**不许**用 IDE 主题的明暗去盖它 —— 否则就是"一部分跟着外观变、一部分不动" ✗
+		if (colorScheme && !slot.dshOwnWindow) {
 			slot.lastColorScheme = colorScheme;
 			slot.colorScheme = colorScheme;
 			void this._emulateColorScheme(slot, colorScheme);
@@ -1355,6 +1396,58 @@ export class DshViewHost extends Disposable {
 		} catch (e) {
 			this._logService.warn(`[dshHarness] emulate prefers-color-scheme failed for ${slot.id}: ${String((e as Error)?.message ?? e)}`);
 		}
+	}
+
+	/**
+	 * 撤掉本视图的 `prefers-color-scheme` emulation（页面回到**真实系统值**）。
+	 *
+	 * 用在 dsh 自主窗口里「外观 = 跟随系统」的情形：这时任何模拟值都是错的 —— 只有让页面读到
+	 * 系统的真实值，`@media (prefers-color-scheme: dark)` 才跟系统一致 ✓。
+	 */
+	private async _clearEmulatedColorScheme(slot: IViewSlot): Promise<void> {
+		if (slot.emulatedScheme === undefined) {
+			return;
+		}
+		const wc = slot.view.webContents;
+		if (wc.isDestroyed()) {
+			return;
+		}
+		try {
+			if (!wc.debugger.isAttached()) {
+				wc.debugger.attach('1.3');
+			}
+			// 空 features = 清空所有被模拟的媒体特性（本类只设过 prefers-color-scheme 一项）
+			await Promise.race([
+				wc.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [] }),
+				new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('emulate clear timeout')), 1500)),
+			]);
+			slot.emulatedScheme = undefined;
+		} catch (e) {
+			this._logService.warn(`[dshHarness] clear prefers-color-scheme emulation failed for ${slot.id}: ${String((e as Error)?.message ?? e)}`);
+		}
+	}
+
+	/**
+	 * 页面自报的 dsh **外观方案** → 对齐本视图的 `prefers-color-scheme`（2026-11-02）。
+	 *
+	 * 只有 **dsh 自主窗口**（桌面窗口 / 分屏 / 全窗）用这条：那里的明暗由用户在 dsh
+	 * 「通用设置 → 外观」里定，与 IDE 主题无关。IDE 内嵌视图**必须忽略**这条（它们的明暗由
+	 * `pushTheme` 按 IDE 主题设），否则同一条通道会把内嵌聊天框改成"跟着 dsh 外观走" ✗。
+	 *
+	 * @param viewId 视图 id（preload 按发送者反查出来的，见构造函数里的 ipc 注册）。
+	 * @param source `light` / `dark` = 用户显式选定；`system` = 撤掉模拟、回到真实系统值。
+	 */
+	applyPageThemeSource(viewId: string, source: DshPageThemeSource): void {
+		const slot = this._views.get(viewId);
+		if (!slot || !slot.dshOwnWindow) {
+			return;
+		}
+		slot.lastPageThemeSource = source;
+		if (source === 'system') {
+			void this._clearEmulatedColorScheme(slot);
+			return;
+		}
+		void this._emulateColorScheme(slot, source);
 	}
 
 	/** 向页面发「插入文件引用」（方案 5.5 onInsertReference）。 */
@@ -1763,6 +1856,11 @@ export class DshViewHost extends Disposable {
 			}
 			if (slot.lastThemeTokens) {
 				wc.send(DSH_PAGE_IPC_THEME, slot.lastThemeTokens);
+			}
+			// dsh 自主窗口：建视图时按 settings.yaml 定的明暗在这里**补一次**
+			// （那时页面还是 about:blank，CDP 命令可能被丢弃；这里页面已就绪 ⇒ 一定生效 ✓；幂等）
+			if (slot.dshOwnWindow && slot.lastPageThemeSource) {
+				this.applyPageThemeSource(slot.id, slot.lastPageThemeSource);
 			}
 		} catch (e) {
 			this._logService.trace(`[dshHarness] view ${slot.id} replay failed: ${String((e as Error)?.message ?? e)}`);

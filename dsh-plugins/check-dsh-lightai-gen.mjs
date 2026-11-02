@@ -24,9 +24,25 @@
  * 用法：node dsh-plugins/check-dsh-lightai-gen.mjs
  *--------------------------------------------------------------------------------------------*/
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+
+/**
+ * media 的 `apply()` 现在会 `ctx.inject(['vssarosFoundation'], …)` 并 `bindFoundation(svc)`
+ * （共享实现迁到 @vssaros/dsh-foundation）。假 ctx 不给这个服务 ⇒ `foundation()` 抛
+ * "vssaros-foundation 服务未绑定" ⇒ 后面几段全跑不到。这里给最小 stub（只覆盖 media 用到的 4 个）。
+ */
+const FOUNDATION_STUB = {
+	escapeHtml: v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])),
+	renderChips: () => '',
+	renderShell: opts => `<!doctype html><html><body>${String(opts?.body ?? '')}</body></html>`,
+	// 每个进程**一个**临时数据根（media 的 ensureMediaAgent 会往里写，不能落到真实用户目录；
+	// 每次调用都新建会让"同一个 agent 目录"在两次调用间变掉）
+	dataRootOf: () => mediaDataRoot,
+};
+const mediaDataRoot = mkdtempSync(join(tmpdir(), 'vss-media-check-'));
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..');
@@ -330,6 +346,10 @@ function imagegenCtx({ lightai, withBridge = true } = {}) {
 		},
 		on: () => () => { },
 		get: () => undefined,
+		// ★ 2026-11-02：media 的 applyInner 现在会 `ctx.provide(...)`（对外提供可选服务），
+		//   假 ctx 缺它就整条 apply 抛 ⇒ 本守卫后面几段一条都跑不到（真机报 `ctx.provide is not a function`）。
+		provide: () => { },
+		vssarosFoundation: FOUNDATION_STUB,
 		logger: () => ({ info() { }, warn() { }, error() { }, debug() { } }),
 		tools: { register: def => { tools.push(def); return () => { }; }, get: n => tools.find(t => t.name === n), schemas: () => [], on: () => { } },
 		attachments: { saveImage: async img => { saved.push(img); return { attachmentId: 'att-' + saved.length, mediaType: img.mediaType, bytes: img.data.length }; } },
@@ -443,6 +463,10 @@ function imagegenCtx({ lightai, withBridge = true } = {}) {
 		},
 		on: () => () => { },
 		get: () => undefined,
+		// ★ 2026-11-02：media 的 applyInner 现在会 `ctx.provide(...)`（对外提供可选服务），
+		//   假 ctx 缺它就整条 apply 抛 ⇒ 本守卫后面几段一条都跑不到（真机报 `ctx.provide is not a function`）。
+		provide: () => { },
+		vssarosFoundation: FOUNDATION_STUB,
 		logger: () => ({ info() { }, warn() { }, error() { }, debug() { } }),
 		tools: { register: def => { tools.push(def); return () => { }; }, get: n => tools.find(t => t.name === n), schemas: () => [], on: () => { } },
 		vssarosBridge: { callIDE: async (method, args) => { bridgeCalls.push({ method, args }); return { ok: false, error: '不该走 IDE' }; } },
@@ -501,6 +525,9 @@ function imagegenCtx({ lightai, withBridge = true } = {}) {
 				return { dispose: () => { } };
 			},
 			on: () => () => { }, get: () => undefined,
+			// 2026-11-02：与上面两处同因（media 的 apply 会 provide，并需要 vssarosFoundation）
+			provide: () => { },
+			vssarosFoundation: FOUNDATION_STUB,
 			logger: () => ({ info() { }, warn() { }, error() { }, debug() { } }),
 			tools: { register: def => { tools.push(def); return () => { }; }, get: n => tools.find(t => t.name === n), schemas: () => [], on: () => { } },
 			vssarosBridge: { callIDE: async (method, args) => { bridgeCalls.push({ method, args }); return { ok: true, videos: [], audios: [] }; } },
@@ -540,20 +567,35 @@ function imagegenCtx({ lightai, withBridge = true } = {}) {
 		try { await h.video({ prompt: 'x' }); } catch (e) { err = String(e?.message ?? e); }
 		if (!/LightAI|登录/.test(err) || h.bridgeCalls.length !== 0) { fail(`⑬ 没登录时该明说去登录（且不静默经 IDE）：${err} bridge=${h.bridgeCalls.length}`); }
 	}
-	// ⑤ 显式指定别的 provider ⇒ 仍走 IDE（尊重显式选择；将来 IDE 补上这两个 op 也不用改这边）
+	/*
+	 * ★ 2026-11-02：⑤⑥ 的口径**反了**。产品 2026-10-26 起（`vssaros-media/lib/index.js:537-541`）
+	 *   视频/语音**不再发注定被拒的桥请求** —— IDE 的 `media` 能力只有「生图 / 改图 / 能力表」，
+	 *   没有 generateVideo / tts 对应的 op ⇒ 直接 `ideMissingOp()` 抛一条带引导的错。
+	 *
+	 * 守卫要守的不变量因此变成：**永远不发这种桥请求**（静默经 IDE 会让用户等 10 分钟超时），
+	 * 并且必须给出可操作的错误（指向「设置 → 模型 → LightAI 登录」或显式 model_id）。
+	 * 不钉具体文案（那是产品措辞），只钉"没有桥请求 + 有明确错误"。
+	 */
+	// ⑤ 显式指定别的 provider ⇒ 仍然**不走 IDE**（那边没有这个 op），而是明确报错
 	{
 		const h = await run({ lightai: { signedIn: true } });
-		await h.video({ prompt: 'x', provider_id: 'my-byok-video' });
-		await h.tts({ text: 'x', provider_id: 'my-byok-audio' });
-		if (h.bridgeCalls.length !== 2 || h.lightaiCalls.length !== 0) { fail(`⑬ 显式指定别的 provider 应仍经 IDE：bridge=${h.bridgeCalls.length} lightai=${h.lightaiCalls.length}`); }
+		let errV = '';
+		let errT = '';
+		try { await h.video({ prompt: 'x', provider_id: 'my-byok-video' }); } catch (e) { errV = String(e?.message ?? e); }
+		try { await h.tts({ text: 'x', provider_id: 'my-byok-audio' }); } catch (e) { errT = String(e?.message ?? e); }
+		if (h.bridgeCalls.length !== 0) { fail(`⑬ 显式指定别的 provider 时不该发桥请求（IDE 没有这个 op，会白等超时）：bridge=${h.bridgeCalls.length}`); }
+		else if (!errV || !errT) { fail(`⑬ 显式指定别的 provider 时应明确报错（不静默成功）：video=${errV || '(无)'} tts=${errT || '(无)'}`); }
+		else if (!/LightAI|model_id|provider|登录|op/i.test(errV + errT)) { fail(`⑬ 报错里要有可操作的指引（去登录 / 指定 model_id）：${errV} / ${errT}`); }
 	}
-	// ⑥ 完全没有 LightAI 服务（老 bridge 插件）⇒ 照旧经 IDE（老行为不变）
+	// ⑥ 完全没有 LightAI 服务（老 bridge 插件）⇒ 同样不发桥请求，而是说清"服务不在/要登录"
 	{
 		const h = await run({ lightai: null });
-		await h.video({ prompt: 'x' });
-		if (h.bridgeCalls.length !== 1 || h.bridgeCalls[0].args?.params?.op !== 'generateVideo') { fail(`⑬ 没有 LightAI 服务时应照旧经 IDE（老行为不变）：${JSON.stringify(h.bridgeCalls[0]?.args?.params ?? {})}`); }
+		let err = '';
+		try { await h.video({ prompt: 'x' }); } catch (e) { err = String(e?.message ?? e); }
+		if (h.bridgeCalls.length !== 0) { fail(`⑬ 没有 LightAI 服务时也不该发桥请求：bridge=${h.bridgeCalls.length}`); }
+		else if (!err) { fail('⑬ 没有 LightAI 服务时应明确报错（不静默成功）'); }
 	}
-	if (!failed('⑬')) { ok('⑬ media 路由：选 LightAI / 只给 model_id / 已登录默认 ⇒ 直连不过桥；没登录 ⇒ 明说去登录；显式别的 provider / 没有 LightAI 服务 ⇒ 仍走 IDE'); }
+	if (!failed('⑬')) { ok('⑬ media 路由：选 LightAI / 只给 model_id / 已登录默认 ⇒ 直连不过桥；没登录 ⇒ 明说去登录；IDE 没有视频/语音 op ⇒ 一个桥请求都不发、给可操作错误'); }
 }
 
 if (problems.length) {

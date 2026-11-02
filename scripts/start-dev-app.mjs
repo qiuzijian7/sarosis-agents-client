@@ -423,9 +423,15 @@ const countWatchProcs = () => {
 	// ⚠ 必须排除**探测语句自身**：查询命令的命令行里也含 `watch-client-transpile` 这几个字，
 	//   不加 `Get-CimInstance` 过滤会把自己（cmd + powershell 两个进程）也数进去
 	//   ⇒ 曾经在 watch 已经全部结束时仍报"检测到 2 个"（2026-10-25 实测）✗
+	// ★★ 2026-11-02（口径修正）：原来同时匹配 `watch-client-transpile`，**把整棵进程树数成 N 个**
+	//   （npm 包装层 / `npm-run-all2 -lp watch-client-transpile …` 聚合层的命令行里都含这个词）
+	//   ⇒ 真机日志出现"检测到 **13 个** transpile --watch 进程"，让人误以为有 13 个 watch 在互相清空 out/
+	//   （实际只有 1 个，`Get-CimInstance` 按 `*transpile --watch*` 精确查就是 1）✗。
+	//   ⇒ 只数**真正的 watcher**（`node build/next/index.ts transpile --watch`）。
+	//   ⚠ 仍然排除探测语句自身（查询命令行里也含这个词）。
 	const ps = "Get-CimInstance Win32_Process"
 		+ " | Where-Object { $_.CommandLine -and $_.CommandLine -notmatch 'Get-CimInstance'"
-		+ " -and ($_.CommandLine -like '*watch-client-transpile*' -or $_.CommandLine -like '*transpile --watch*') }"
+		+ " -and $_.CommandLine -like '*transpile --watch*' }"
 		+ " | Measure-Object | Select-Object -ExpandProperty Count";
 	const r = spawnSync('powershell', ['-NoProfile', '-Command', ps], { encoding: 'utf8', windowsHide: true, timeout: 20000 });
 	const n = Number(String(r.stdout || '').trim());

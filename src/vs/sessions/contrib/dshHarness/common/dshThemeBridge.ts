@@ -105,6 +105,24 @@ export function backgroundForPageSurface(backgrounds: IDshViewBackgrounds | unde
 	return picked ?? backgrounds.sidebar ?? backgrounds.editor;
 }
 
+/**
+ * 本视图是否落在 **dsh 自主窗口**里（桌面窗口 / 分屏栏 / 全窗；2026-11-02）。
+ *
+ * ## 为什么需要这个判据
+ * dsh 有两套明暗来源，必须**按窗口归属**二选一，否则两边打架：
+ * - **IDE 内嵌视图**（主窗口里的聊天框、侧栏插件页）：外观应该跟 **VsSaros/IDE 主题**一致
+ *   —— 页面四周就是 IDE 的界面，聊天框跟着 dsh 自己的 light/dark 偏好才是错的。
+ * - **dsh 自主窗口**（`dshFullWindowContribution` 开的 aux 窗口）：整扇窗口里只有 dsh，
+ *   用户在 dsh「通用设置 → 外观」里选的就是这扇窗口的外观 ⇒ 必须由 **dsh 的偏好**说了算。
+ *
+ * 判据只有一条：视图的宿主窗口 **不是 IDE 主窗口** ⇒ 自主窗口。
+ * （aux 窗口与主窗口是同一渲染进程里的两个 `vscodeWindowId`，所以只能比 id，
+ *   不能靠"有没有 IDE 界面"这种间接迹象判断 ✓。）
+ */
+export function isDshOwnWindow(viewWindowId: number, ideMainWindowId: number | undefined): boolean {
+	return typeof ideMainWindowId === 'number' && viewWindowId !== ideMainWindowId;
+}
+
 /** 页面桥 `applyTheme` 负载校验（跨进程边界）：token 名/颜色值的形状都收紧。 */
 export function validateThemeTokens(value: unknown): value is DshThemeTokens {
 	if (!value || typeof value !== 'object' || Array.isArray(value)) {

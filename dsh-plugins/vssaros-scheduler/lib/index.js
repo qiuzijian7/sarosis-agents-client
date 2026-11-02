@@ -218,6 +218,25 @@ export function apply(ctx, config = {}) {
 		ctx.provide('schedule', engine);
 		engine.start();
 		ctx.effect?.(() => () => engine.stop());
+		// ── 写类工具的审批闸（2026-11-02）─────────────────────────────────────
+		//   与 kb / kanban / workflow / marketplace / loop 同一把：`tools/pre-execute`（waterfall），
+		//   返回 `{ kind: 'ask' }` ⇒ 只有审批回 `allowed-once` 才执行；无审批能力的部署 degrade 成 deny。
+		//   闸 create / update / delete（都改任务文件 `<数据根>/scheduler/tasks.json`）；
+		//   list / history 纯只读 ⇒ 放行。
+		ctx.effect?.(() => ctx.on('tools/pre-execute', (exec, next) => {
+			const toolName = exec && typeof exec.name === 'string' ? exec.name : '';
+			if (toolName !== 'schedule_create' && toolName !== 'schedule_update' && toolName !== 'schedule_delete') {
+				return next();
+			}
+			const args = exec.arguments && typeof exec.arguments === 'object' ? exec.arguments : {};
+			const target = String(args.name ?? args.id ?? args.taskId ?? '').trim() || '(未命名)';
+			const verb = toolName === 'schedule_create' ? '新建' : (toolName === 'schedule_update' ? '修改' : '删除');
+			return {
+				kind: 'ask',
+				reason: `${toolName} 会${verb}自动化任务「${target}」（写 <数据根>/scheduler/tasks.json）`,
+				displayReason: { zh: `允许${verb}自动化任务「${target}」？`, en: `Allow ${toolName} on "${target}"?` },
+			};
+		}));
 		// 模型侧工具（schedule_create / list / update / delete / history）—— 官方同名工具的接管。
 		registerScheduleTools(ctx, { getEngine: () => engine });
 		log('自建调度引擎已就绪：占用 schedule 服务键，配 5 个工具');

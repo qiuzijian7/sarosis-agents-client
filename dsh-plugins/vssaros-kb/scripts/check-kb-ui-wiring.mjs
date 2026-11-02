@@ -261,8 +261,14 @@ check('缺失双链可点击并给出反馈（不再静默）',
 //    这条同时守住"别再把一排按钮塞回去"（那正是 340px 面板里被压成竖排的成因）。
 check('笔记节改为单行收纳（⋯ 菜单在，第二行已删除）',
 	VIEW_SRC.includes('notesMenu') && VIEW_SRC.includes('data-kb-notes-menu') && !VIEW_SRC.includes('kb-sortbar'));
-check('⋯ 菜单里含体检/查重/审核/导图（按能力显示）',
-	['体检', '查重', '审核', '思维导图'].every(k => VIEW_SRC.includes("label: \"" + k + "\"")));
+// ★ 2026-11-02（用户要求移除思维导图）：菜单只留 体检/查重/审核
+check('⋯ 菜单含体检/查重/审核（导图入口已移除）', () => {
+	if (!['体检', '查重', '审核'].every(k => VIEW_SRC.includes('label: "' + k + '"'))) {
+		throw new Error('菜单缺体检/查重/审核');
+	}
+	if (VIEW_SRC.includes('label: "思维导图"')) { throw new Error('思维导图入口又回来了'); }
+	return 'ok';
+});
 check('节头控件不缩不断行（nowrap）',
 	/setNotesMenu\(\{ x:/.test(VIEW_SRC) && VIEW_SRC.includes('whiteSpace: "nowrap"'));
 // ② 文档内双链原来交给宿主 openLink，而宿主只改了自己的状态 ⇒ 界面没反应。
@@ -288,25 +294,19 @@ check('阅读进度条 + 回到顶部',
 //   旧断言随之消失；现在按当前实现重新钉住，别再依赖"当时加过"）。
 // ══════════════════════════════════════════════════════════════════════════
 
-// ── ① 知识库助手必须绑「知识库专家」（当前实现的真实形态：包 newSession）──
-//   ⚠ 2026-10-31 重写（用户：「知识库里 AI 助手应显示 知识库 agent」）：
-//     旧实现两处致命：① `c.get('remote.agentPresets')` 拿不到服务（必须 inject）
-//                    ② 选的 id `vssaros-knowledge-base-expert` 没被注册（数据根无 .agent.md）
-//     ⇒ 断言按**现在这份实现**写（inject + 轮询 + 候选 id），并在最后一刻核对两端契约。
-check('新会话默认用知识库专家：inject 拿服务 + 候选 id + 轮询',
-	CLIENT.includes('__vssarosKbPreset')
-		&& CLIENT.includes("'vssaros-kb-expert'")
-		&& /inject\(\[KB_PRESET_DEPS\[i\]\]/.test(CLIENT)
-		&& /chipSaysExpert/.test(CLIENT)
-		&& /reasserts/.test(CLIENT));
-check('面板在就算（不只看 __vssarosKbActive：挂载那一刻它是 false，会把所有尝试挡掉）',
-	/const kbPanelHere = /.test(CLIENT));
-check('只有本工作台在前台时才改 preset（不带走别的工作台会话）',
-	CLIENT.includes('__vssarosKbActive'));
-check('★ 契约一致：宿主的 KB_PRESET === 客户端候选里的 id',
+// ── ① 知识库助手的默认 agent：**只由宿主设**（2026-11-02 根治）──
+//   ⚠ 历史：10-31 这里自己写了一套（inject agentPresets + 候选 id + 每 700ms 轮询 + 回读徽标 + 被抢走就再设回来）。
+//     它对**全局当前会话**下手，页签条同时挂着几个工作台 ⇒ 把媒体库 / 商城的会话也改成知识库专家
+//     （真机：媒体库会话 resume 报 `Unknown agent preset: vssaros-knowledge-base-expert`）。
+//     现在默认 agent 只由宿主 vssaros-workbenches 设，且只改知识库自己停靠的那条会话。
+{
+	const code = CLIENT.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+	check('知识库客户端**不再**自己设 agent（不 select、不轮询、不带前台标志）',
+		!/__vssarosKbPreset|kbApplyPreset|KB_PRESET_IDS|__vssarosKbActive|agentPresets/.test(code));
+}
+check('★ 契约一致：本包注册的 preset（KB_PRESET）在宿主「工作台 → agent」表的知识库候选里',
 	/export const KB_PRESET = 'vssaros-kb-expert';/.test(KB_AGENT_SRC)
-		&& /KB_PRESET_CANDIDATES = \['knowledge-base-expert'/.test(KB_AGENT_SRC)
-		&& CLIENT.includes("'vssaros-kb-expert'"));
+		&& /'vssaros\/kb':\s*\[[^\]]*'vssaros-kb-expert'/.test(readFileSync(new URL('../../vssaros-workbenches/lib/client.js', import.meta.url), 'utf8')));
 check('宿主会把 agent 落到数据根（ensureKbAgent 被 apply 调用）',
 /ensureKbAgent\(/.test(KB_AGENT_SRC) && /void ensureKbAgent\(/.test(INDEX_SRC));
 
@@ -366,7 +366,7 @@ check('设置页里的行可换行、输入框可收缩（不再被裁切）',
 check('文档页签激活态包含"正在看文档"（切到设置/图谱时不高亮）',
 	KB_TSX.includes("activeView === 'doc' && t.path === activePath"));
 check('页签状态与循环变量不重名（无遮蔽）',
-	KB_TSX.includes("const [activeView, setTab] = useState<'doc' | 'settings' | 'graph' | 'canvas'>") &&
+	/const \[activeView, setTab\] = useState<'doc' \| 'settings' \| 'graph' \| 'canvas'( \| 'home')?>/ .test(KB_TSX) &&
 	KB_TSX.includes('tabs.map(t => {'));
 
 // ★ 2026-10-29（用户：设置 / 图谱页签**只有点击对应按钮**才会打开）：
@@ -375,14 +375,169 @@ check('设置 / 图谱页签按需出现（只有点对应按钮才打开）',
 	KB_TSX.includes('openViews.settings ? (') && KB_TSX.includes('openViews.graph ? (')
 	&& KB_TSX.includes("setOpenViews(o => ({ ...o, settings: true }))")
 	&& KB_TSX.includes("setOpenViews(o => ({ ...o, graph: true }))"));
-check('回到文档时收起这两个页签',
-	KB_TSX.includes("setOpenViews({ settings: false, graph: false, canvas: false })"));
+check('回到文档时收起 设置/图谱/导图（总览常驻，不在此列）',
+	// ★ 2026-11-02：改成函数式更新（保留 `home`）⇒ 断言跟着改，别再写死对象字面量
+	/setOpenViews\(o => \(\{ \.\.\.o, settings: false, graph: false, canvas: false \}\)\)/.test(KB_TSX));
 
 // ★ 2026-10-29（用户：思维导图按钮显示的页面要和设置页同样效果）：
 //   导图必须是**中栏页签**（和 ⚙ 设置 / 🕸 图谱同一套），不再用整页覆盖层。
-check('思维导图也是中栏页签（与设置/图谱同一套）',
-	KB_TSX.includes('data-kb-canvas-tab="1"') && KB_TSX.includes("activeView === 'canvas'")
-	&& KB_TSX.includes("setOpenViews(o => ({ ...o, canvas: true }))"));
+// ★ 2026-11-02（用户要求移除思维导图）：**视图实现保留**（页签/关闭按钮都在），
+//   但入口（工具栏 🗺、⋯ 菜单）必须消失 —— 留着任意一个就等于"按钮没删掉"。
+check('思维导图无入口（视图代码保留，按钮与菜单项已移除）', () => {
+	if (!KB_TSX.includes('data-kb-canvas-tab="1"')) { throw new Error('导图页签实现被误删'); }
+	if (KB_TSX.includes('label="🗺"')) { throw new Error('工具栏 🗺 按钮还在'); }
+	if (KB_TSX.includes('label: "思维导图"')) { throw new Error('⋯ 菜单入口还在'); }
+	return 'ok';
+});
+// ★ 2026-11-02（用户选定 V3 · Notion 文档库）：侧栏 = 卡片分组 + 30px 行 + 类型图标 + 当前库高亮
+// ★ 2026-11-02（真机白屏踩到）：给 TreeRow 加 prop 时**只在类型里加、忘了解构** ⇒
+//   函数体里 `kbStats` 未定义 ⇒ `ReferenceError: kbStats is not defined` ⇒ 整棵树渲染崩掉。
+//   esbuild 只转译不做类型检查，所以这类错必须由守卫兜住。
+// ★ 2026-11-02（真机破坏性 bug）：`onOpenNode` 末尾**无条件** `actions.openNode(path)` ⇒
+//   点一个**目录**会被当成文档打开：界面显示「读不到正文：不是文件：…」并且**整棵树被顶掉**。
+//   契约：文件夹必须在调 openNode 之前 return（展开/收起交给 onToggleOpen）。
+check('点文件夹不会当文档打开（树不被顶掉）', () => {
+	const m = /const onOpenNode = useCallback\([\s\S]*?\}, \[actions\]\);/.exec(KB_TSX);
+	if (!m) { throw new Error('找不到 onOpenNode'); }
+	const body = m[0];
+	const idxReturn = body.indexOf('if (node.isFolder) { return; }');
+	const idxOpen = body.lastIndexOf('actions?.openNode?.(node.path)');
+	if (idxReturn < 0) { throw new Error('onOpenNode 里缺「文件夹早退」'); }
+	if (idxOpen > 0 && idxReturn > idxOpen) { throw new Error('早退写在了 openNode 之后（等于没拦住）'); }
+	return 'ok';
+});
+check('TreeRow 解构含全部 props（防「只加类型、忘了解构」）', () => {
+	const m = /const TreeRow = \(\{([\s\S]*?)\}:/ .exec(KB_TSX);
+	if (!m) { throw new Error('找不到 TreeRow 解构'); }
+	const destructured = m[1];
+	const need = ['node', 'depth', 'selectedPaths', 'openSet', 'onOpen', 'rowTitle', 'currentKb', 'kbStats'];
+	const miss = need.filter((k) => !new RegExp('\\b' + k + '\\b').test(destructured));
+	if (miss.length) { throw new Error('解构里缺：' + miss.join(', ')); }
+	return need.length + ' 个';
+});
+// ★ 2026-11-02（用户选定 S5）：节头是**双行**（标题 + 统计副标题），工具 hover 才占位
+//   起因：真实 340px 面板里 `知识…` 被右侧常驻工具挤断；S5 把数字挪进副标题，右侧默认不占位。
+check('S5 双行节头（标题 + 统计副标题，工具 hover 才占位）', () => {
+	if (!/sub\?: string;/.test(KB_TSX)) { throw new Error('SectionHeader 缺 sub prop'); }
+	if (!/height: sub \? 38 : 32/.test(KB_TSX)) { throw new Error('节头高度没按有无副标题区分'); }
+	if (!/const \[hover, setHover\] = useState\(false\)/.test(KB_TSX)) { throw new Error('节头没有 hover 状态'); }
+	if (!/extra && hover \?/.test(KB_TSX)) { throw new Error('工具不是 hover 才出现（会挤断标题）'); }
+	// 三个节都要有副标题（缺一个就退化成"只有数字"）
+	for (const icon of ['🗂', '📚', '🏷']) {
+		const re = new RegExp('icon="' + icon + '"[\\s\\S]{0,120}?sub=\\{');
+		if (!re.test(KB_TSX)) { throw new Error('节头缺副标题：' + icon); }
+	}
+	return 'ok';
+});
+// ★ 2026-11-02（用户：与 mockup 不一致）
+//   行内顺序必须是 **折叠箭头 → 图标 → 文本**。实现成「图标 → 箭头」时，
+//   图标会顶到最左侧，看起来像"文件夹图标在控制折叠" ✗（真机被用户一眼看出）。
+check('行内顺序：折叠箭头 → 图标 → 文本', () => {
+	const ic = KB_TSX.indexOf('isKbRow ? \'📗\' : (isFolder ? \'📁\' : \'📄\')');
+	const ch = KB_TSX.indexOf("isFolder && hasChildren ? '▸' : ''");
+	if (ic < 0) { throw new Error('找不到类型图标的渲染'); }
+	if (ch < 0) { throw new Error('找不到折叠箭头'); }
+	if (ch > ic) { throw new Error('箭头排在图标之后（应为 箭头 → 图标 → 文本）'); }
+	if (ic - ch > 400) { throw new Error('箭头与图标相距过远，可能不在同一行'); }
+	return 'ok';
+});
+check('N1 树形契约：卡片分组 / 32px 行 / 类型图标 / 当前库 / hover 动作', () => {
+	const need = [
+		['节卡片壳', /borderRadius: 10,/],
+		['节头 emoji', /icon="🗂"|icon="📚"/],
+		['行高 32', /height: 32,[\s\S]{0,240}fontSize: 13\.5/],
+		['N1 行外边距', /margin: '1px 4px'/],
+		['N1 选中 .12', /selected \? 'rgba\(127,127,127,\.12\)'/],
+		['N1 hover 动作', /data-kb-row-more="1"/],
+		['类型图标', /'📗' : \(isFolder \? '📁' : '📄'\)/],
+		['当前库判定', /const isCurrentKb = Boolean\(isKbRow/],
+		['当前库竖条', /inset 2px 0 0 0/],
+		['篇数统计', /function countMdDeep/],
+		['去导引线', /paddingLeft: 4 \+ depth \* 18/],
+	];
+	for (const [name, re] of need) {
+		if (!re.test(KB_TSX)) { throw new Error('缺 ' + name); }
+	}
+	// 旧实现的两处特征不该再回潮
+	if (/height: 27, paddingRight: 6/.test(KB_TSX)) { throw new Error('旧 27px 行样式又回来了'); }
+	if (/borderBottom: '1px solid #2b2b2b'/.test(KB_TSX)) { throw new Error('节还是旧的 1px 分隔线，不是卡片'); }
+	return 'ok';
+});
+check('总览是中栏页签（与设置/图谱/导图同一套，不用覆盖层）',
+	KB_TSX.includes('data-kb-home-tab="1"') && KB_TSX.includes("activeView === 'home'")
+	&& KB_TSX.includes("setOpenViews(o => ({ ...o, home: true }))")
+	&& !KB_TSX.includes('data-kb-home-overlay'));
+
+// ★ 2026-11-02（用户截图）：总览页签要有 ✕；且**切到其他页签时不许自动消失**
+// ★ 2026-11-02（用户：总览时点其他文档，要求自动切到该文档页签）
+//   正文统一在 `loadIntoView` 落地 ⇒ 那里必须把 activeView 拉回 'doc'（唯一收口点）
+// ★ 2026-11-02（用户：点超链接弹「宿主没有打开新窗口」）
+//   笔记里的相对文件名（`SKILL.md`）以前落到"默认导航"被 Electron 拦掉 ⇒ 弹框。
+//   契约：外链 / 绝对路径 / **库内文件链接** 三分类，且相对路径不许再走 openUrl。
+check('超链接分类：相对文件名按库内文件打开（不再弹「打开新窗口」）',
+	/href\.startsWith\('\/\/'\)/.test(KB_TSX)              // 协议相对
+	&& /库内文件链接/.test(KB_TSX)                          // 第三类存在
+	&& /\(actions\?\.openLink \?\? actions\?\.openNode\)\?\.\(abs\)/.test(KB_TSX)   // 解析后走 openLink
+	// client.js 兜底：无 scheme ⇒ openDoc，不 window.open
+	&& /if \(!\/\^\[a-z\]\[a-z0-9\+\.-\]\*:\/i\.test\(url\)\)/.test(CLIENT));
+
+check('打开文档会自动切到文档页签（总览不再"挡着"正文）',
+	/const loadIntoView = useCallback\(\(path[\s\S]{0,700}?setTab\('doc'\)/.test(KB_TSX)
+	// 点文件也要切（资产预览 / 交给宿主那两条支路不走 loadIntoView）
+	&& /const onOpenNode = useCallback\(\(node[\s\S]{0,400}?if \(!node\.isFolder\) \{ setTab\('doc'\); \}/.test(KB_TSX));
+
+// ★ 2026-11-02（用户：总览加载很慢）：骨架屏 + 预热 + 服务端 5s 缓存
+check('总览首屏不空白（骨架屏）且服务端有短缓存',
+	KB_TSX.includes('data-kb-home-skeleton')
+	&& /onLoad=\{\(\) => setHomeLoaded\(true\)\}/.test(KB_TSX)
+	// 面板空闲时预热一次（把冷启 750ms 摊到用户点之前）
+	&& /fetch\('\/x\/kb\/home', \{ cache: 'force-cache' \}\)/.test(KB_TSX)
+	&& INDEX_SRC.includes('HOME_CACHE')
+	&& INDEX_SRC.includes('x-kb-home-cache'));
+
+// ★ 2026-11-02（用户：点刷新不要清空已打开的文档）
+//   契约：视图暴露「只换数据」通道，宿主 refresh 必须用它（不许再 dispose+remount）
+// ★ 2026-11-02（真机踩到）：`lib/web/page-boot.js` 是**生成物**，改它会被 sync 覆盖 ⇒
+//   口径必须钉在生成器里（版本戳 + 刷新语义都写在 sync-kb-sideview.mjs 的模板中）。
+check('生成器（sync-kb-sideview.mjs）带版本戳 + 刷新只换数据', () => {
+	const gen = readFileSync(HERE + 'sync-kb-sideview.mjs', 'utf8');
+	if (!gen.includes('kbSideview.js?v=')) { throw new Error('生成器没给 bundle 加版本戳（会被旧缓存咬）'); }
+	if (!gen.includes('__KB_SIDEVIEW_UPDATE__')) { throw new Error('生成器的 refresh 没走 UPDATE 通道'); }
+	if (/refresh: \(\) => window\.location\.reload\(\)/.test(gen)) { throw new Error('生成器里 refresh 还是纯 reload'); }
+	return 'ok';
+});
+// ★ 2026-11-02：三处加载 bundle 的地方都必须带版本戳（旧缓存会让改动看不到）
+check('bundle 加载带版本戳（page-boot / client.js / client.kb.js 三处一致）', () => {
+	for (const f of ['client.js', 'client.kb.js', 'web/page-boot.js']) {
+		const s = readFileSync(HERE + '../lib/' + f, 'utf8');
+		if (!s.includes('kbSideview.js?v=')) { throw new Error(f + ' 加载 bundle 没带版本戳'); }
+	}
+	return 'ok';
+});
+check('刷新只换数据（不清空已打开文档）', () => {
+	if (!BUNDLE_SRC.includes('__KB_SIDEVIEW_UPDATE__')) { throw new Error('bundle 没暴露 __KB_SIDEVIEW_UPDATE__'); }
+	if (!/refresh: \(\) => \{ void refreshData\(\); \}/.test(CLIENT)) { throw new Error('面板宿主 refresh 没走 refreshData'); }
+	if (!/const refreshData = async \(\) => \{/.test(CLIENT)) { throw new Error('缺 refreshData'); }
+	if (/refresh: \(\) => \{ void remountRef\.current\?\.\(\); \}/.test(CLIENT)) { throw new Error('面板宿主还在 remount'); }
+	// 页面形态（page-boot）同样不许直接 reload
+	const boot = readFileSync(HERE + '../lib/web/page-boot.js', 'utf8');
+	if (!boot.includes('__KB_SIDEVIEW_UPDATE__')) { throw new Error('page-boot 没走 UPDATE 通道'); }
+	if (/refresh: \(\) => window\.location\.reload\(\)/.test(boot)) { throw new Error('page-boot 还在纯 reload'); }
+	return 'ok';
+});
+
+// ★ 2026-11-02（用户：关系图谱 / 思维导图打开的页签没有关闭按钮）
+//   契约：所有「非常驻视图页签」都必须有 ✕（设置 / 图谱 / 导图 / 总览）
+check('视图页签都有关闭按钮（设置 / 图谱 / 导图 / 总览）',
+	['settings', 'graph', 'canvas', 'home'].every((v) => KB_TSX.includes('data-kb-' + v + '-tab-close="1"'))
+	// 点页签只切内容（关闭交给 ✕），避免"再点一次才关"的反直觉行为
+	&& /onClick=\{\(\) => setTab\('(settings|graph|canvas)'\)\}/.test(KB_TSX));
+
+check('总览页签可关闭（✕），且切页签不会自动消失',
+	KB_TSX.includes('data-kb-home-tab-close="1"')
+	// 切文档页签时只收 设置/图谱/导图，必须保留 home
+	&& /setOpenViews\(o => \(\{ \.\.\.o, settings: false, graph: false, canvas: false \}\)\)/.test(KB_TSX)
+	&& !/setOpenViews\(\{ settings: false, graph: false, canvas: false, home: false \}\)/.test(KB_TSX));
 check('导图不再用整页覆盖层（旧的 canvasOpen 状态已移除）',
 	!KB_TSX.includes('data-kb-canvas-overlay') && !KB_TSX.includes('canvasOpen'));
 
@@ -394,7 +549,7 @@ check('正文不用 content-visibility:auto（否则长文滚动位置会被顶�
 
 // ★ 2026-10-29（用户要求：导入落盘在 库/raw）：服务端要放行 <vault>/库/raw/**，
 //   但「库」区其余分类仍必须只读（围栏没放宽，只多了一个受控可写子区）。
-check('库/raw 受控可写（服务端放行该落点）',
+check('数据源/raw 受控可写（服务端放行该落点）',
 	INDEX.includes('resolveRawPath') && INDEX.includes('RAW_DIR') && KB_CORE.includes('export function resolveRawPath'));
 check('围栏没被放宽（笔记区外的「库」其它分类仍拒）',
 	INDEX.includes('const inRaw = rawResolved.inside === true') && INDEX.includes('!inNotes && !inRaw'));

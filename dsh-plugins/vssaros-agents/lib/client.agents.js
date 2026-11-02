@@ -33,176 +33,13 @@ window.__ModuleLoader__.load({
 		/** 快速来回切 bot 时防止把同一只反复建成一串会话（模块级 ⇒ 跨渲染保留） */
 		const BOT_SESSION_PENDING = new Set();
 
-		/* ══ 群聊 `@` 提及：纯函数（2026-10-26）════════════════════════════════════
-		   为什么在 chunk 里再写一份：客户端 chunk **不能** import 服务端文件
-		   （装载器只认 `client.*.js` 的相对请求），而服务端/单测要用同一套规则。
-		   ⇒ 服务端权威实现在 `lib/mentions.js`（有 29 条单测），这里是同语义的紧凑版；
-		     `p3-197` 会把下面 `@MENTIONS-BEGIN/END` 之间的代码抽出来跑同一批向量，
-		     两边行为一旦漂移，那条守卫直接红 ⇒ 不会静默分叉。
-		   规则同 `lib/mentions.js` 头注释（token = `@` + agent.id，因为 bot 名含空格）。 */
-		/* @MENTIONS-BEGIN */
-		const AT_ALL = '所有人';
-		const AT_MAX = 8;
-		const AT_MAXQ = 34;
-		const AT_WORD = /[A-Za-z0-9._%+-]/u;
-
-		/** 当前是否正在输入 `@` ⇒ { start, end, query } | undefined */
-		const atQuery = (value, caret) => {
-			const text = String(value == null ? '' : value);
-			const pos = Number.isInteger(caret) ? Math.min(Math.max(caret, 0), text.length) : text.length;
-			const start = text.lastIndexOf('@', pos - 1);
-			if (start < 0 || pos - start > AT_MAXQ) { return undefined; }
-			if (pos <= start) { return undefined; }            // caret 在 @ 之前（lastIndexOf(-1) 的坑）
-			if (start > 0 && AT_WORD.test(text[start - 1])) { return undefined; }   // 邮箱不触发
-			const query = text.slice(start + 1, pos);
-			// 任何空白/`@`/`#` 都算"已不在写这个 token"（打 `@ ` 立刻关浮层；与 lib/mentions.js 同口径）
-			if (/[\s@#]/u.test(query)) { return undefined; }
-			return { start, end: pos, query };
-		};
-
-		/** 选中候选：替换 `@query` 为 `@label` + 恰好一个尾空格；返回新文本与新 caret */
-		const atSelect = (value, query, label) => {
-			const text = String(value == null ? '' : value);
-			const token = '@' + String(label == null ? '' : label);
-			const skip = text[query.end] === ' ' ? 1 : 0;
-			return {
-				value: text.slice(0, query.start) + token + ' ' + text.slice(query.end + skip),
-				caret: query.start + token.length + 1,
-			};
-		};
-
-		/** 成员的显示名（空则退回 id）—— token 里写它，用户看到的是人话不是 slug */
-		const atLabelOf = (agent) => {
-			const name = String((agent && agent.name) || '').trim();
-			return name || String((agent && agent.id) || '').trim();
-		};
-
-		/**
-		 * 从文本反扫 mentions（同时认显示名与 id；**长串优先、丢弃重叠**）；`@所有人` 标 kind:'all'。
-		 * ⚠ 长串优先是必须的：`@Code Architect` 不能先被 `@Code` 命中（会静默 @ 错人）。
-		 */
-		const atCollect = (text, members) => {
-			const value = String(text == null ? '' : text);
-			const out = [];
-			const taken = [];
-			const needles = [];
-			for (const agent of (Array.isArray(members) ? members : [])) {
-				const id = String((agent && agent.id) || '').trim();
-				if (!id) { continue; }
-				const label = atLabelOf(agent);
-				if (label) { needles.push({ needle: '@' + label, label, agentId: id }); }
-				if (label !== id) { needles.push({ needle: '@' + id, label: id, agentId: id }); }
-			}
-			needles.sort((a, b) => b.needle.length - a.needle.length);
-			for (const n of needles) {
-				const re = new RegExp(n.needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![A-Za-z0-9._-])', 'g');
-				let m = re.exec(value);
-				while (m) {
-					const start = m.index;
-					const end = start + n.needle.length;
-					if (!taken.some((t) => start < t.end && end > t.start)) {
-						taken.push({ start, end });
-						out.push({ start, end, label: n.label, agentId: n.agentId });
-					}
-					m = re.exec(value);
-				}
-			}
-			const reAll = new RegExp('@' + AT_ALL + '(?![A-Za-z0-9._-])', 'g');
-			let a = reAll.exec(value);
-			while (a) {
-				const start = a.index;
-				const end = start + a[0].length;
-				if (!taken.some((t) => start < t.end && end > t.start)) {
-					out.push({ start, end, label: AT_ALL, kind: 'all' });
-				}
-				a = reAll.exec(value);
-			}
-			return out.sort((x, y) => x.start - y.start);
-		};
-
-		/** 文本切成 普通/mention 片段（offset 对不上的丢弃） */
-		const atRuns = (value, mentions) => {
-			const text = String(value == null ? '' : value);
-			const list = [...(Array.isArray(mentions) ? mentions : [])]
-				.filter((m) => Number.isInteger(m.start) && Number.isInteger(m.end))
-				.sort((x, y) => x.start - y.start);
-			const runs = [];
-			let cursor = 0;
-			for (const m of list) {
-				if (m.start < cursor || m.end <= m.start || m.end > text.length) { continue; }
-				if (text.slice(m.start, m.end) !== '@' + m.label) { continue; }
-				if (m.start > cursor) { runs.push({ text: text.slice(cursor, m.start) }); }
-				runs.push({ text: text.slice(m.start, m.end), mention: m });
-				cursor = m.end;
-			}
-			if (cursor < text.length) { runs.push({ text: text.slice(cursor) }); }
-			return runs;
-		};
-
-		/** Backspace/Delete 落在 mention 上 ⇒ 整块删（含尾空格）；未命中返回 undefined */
-		const atDelete = (value, mentions, s, e, key) => {
-			const text = String(value == null ? '' : value);
-			const list = (Array.isArray(mentions) ? mentions : [])
-				.filter((m) => Number.isInteger(m.start) && Number.isInteger(m.end));
-			const target = list.find((m) => {
-				const trailingEnd = text[m.end] === ' ' ? m.end + 1 : m.end;
-				if (s !== e) { return s < trailingEnd && e > m.start; }
-				return key === 'Backspace' ? (s > m.start && s <= trailingEnd) : (s >= m.start && s < m.end);
-			});
-			if (!target) { return undefined; }
-			const end = text[target.end] === ' ' ? target.end + 1 : target.end;
-			const start = s === e ? target.start : Math.min(s, target.start);
-			const finish = s === e ? end : Math.max(e, end);
-			return { value: text.slice(0, start) + text.slice(finish), caret: start };
-		};
-
-		/**
-		 * 显示名去歧义：名字唯一 ⇒ 名字；**同名冲突** ⇒ `名字 · id`。
-		 * 只影响**显示**（不删数据、不改 token），重名时用户才分得清是哪一只。
-		 */
-		const atDisplayLabels = (members) => {
-			const list = Array.isArray(members) ? members.filter(Boolean) : [];
-			const counts = new Map();
-			for (const a of list) {
-				const k = atLabelOf(a).toLocaleLowerCase();
-				counts.set(k, (counts.get(k) || 0) + 1);
-			}
-			const out = new Map();
-			for (const a of list) {
-				const name = atLabelOf(a);
-				const dup = (counts.get(name.toLocaleLowerCase()) || 0) > 1;
-				out.set(String(a.id), dup ? (name + ' · ' + String(a.id)) : name);
-			}
-			return out;
-		};
-
-		/** 候选：成员过滤（name/id 大小写不敏感）+ `@所有人`（成员为空时不给） */
-		const atCandidates = (members, query) => {
-			const list = Array.isArray(members) ? members.filter(Boolean) : [];
-			if (query === undefined || query === null) { return []; }
-			const needle = String(query).toLocaleLowerCase();
-			const labels = atDisplayLabels(list);
-			const bots = list
-				.filter((m) => String(m.name || '').toLocaleLowerCase().includes(needle)
-					|| String(m.id || '').toLocaleLowerCase().includes(needle))
-				.slice(0, AT_MAX)
-				.map((agent) => ({ kind: 'bot', agent, display: labels.get(String(agent.id)) || atLabelOf(agent) }));
-			const offerAll = list.length > 0 && [AT_ALL, 'all', 'everyone']
-				.some((n) => n.toLocaleLowerCase().includes(needle));
-			return offerAll ? [{ kind: 'all', label: AT_ALL, display: AT_ALL }, ...bots] : bots;
-		};
-
-		/** 被 @ 到的 agentId（`@所有人` ⇒ 全群）；发送与派发都用它 */
-		const atTargets = (text, members) => {
-			const mentions = atCollect(text, members);
-			if (mentions.some((m) => m.kind === 'all')) {
-				return (Array.isArray(members) ? members : []).map((m) => String((m && m.id) || '')).filter(Boolean);
-			}
-			const out = [];
-			for (const m of mentions) { if (m.agentId && !out.includes(m.agentId)) { out.push(m.agentId); } }
-			return out;
-		};
-		/* @MENTIONS-END */
+		/* ══ 群聊聊天框已抽成独立 chunk（2026-11-02，方案 B）═══════════════════════════════
+		   `@` 提及纯函数（@MENTIONS-BEGIN/END 区块）、Composer、投递摘要、GroupChat 组件
+		   都在 `client.groupChat.js`；本文件只剩工作台壳 + 群设置 / IM 绑定等二级页。
+		   装载：入口 `lib/client.js` 先装 groupChat 再 `bindGroupChat(mod)`（探针 / 单测同理）。
+		   ⚠ 没绑定（chunk 加载失败 / 探针没装）⇒ 群聊中栏与 agent 输入框显示一句说明，**不崩**。 */
+		let GC = null;
+		function bindGroupChat(mod) { GC = mod || null; }
 
 		const DESCRIPTOR = {
 			// 2026-10-30：与清单（vssaros.activityBar.title / vssaros.workbench.title = "Agents"）统一。
@@ -212,6 +49,9 @@ window.__ModuleLoader__.load({
 			repository: 'vssaros:agents',
 			icon: 'codicon:organization',
 			customFrame: true,
+			// ★ 用户 2026-10-31：Bots 工作台不要宿主的浮动工具栏。用宿主的正式开关（与清单同值），
+			//   **不要**再写全局 CSS 去藏它（那会连带藏掉所有别的工作台的，2026-11-02 事故）。
+			floatingActions: false,
 		};
 
 		async function getJson(path) {
@@ -344,6 +184,14 @@ window.__ModuleLoader__.load({
 			const nativeConversation = (props && props.conversation) || null;
 			const dockService = (props && props.service) || null;
 			const ownerId = (props && props.entry && props.entry.id) || '';
+			/* ★ 2026-11-02（Bots 工作台重构）：**只渲染一个群的聊天列**（`only = { kind:'group', id }`）。
+			   用途：侧栏「Bots」里点群聊 ⇒ 中栏页签直接挂本面板的群聊中栏（`midGroup`），
+			   不再开 iframe 套 `/x/agents/group/<id>?embed=1`（那是另一套 DSB 风格页面：
+			   字体/输入框/主题都和 dsh 聊天框不一致，iframe 里的滚动/焦点/token 也别扭）。
+			   `only` 模式下**不画**工具栏 / 页签 / 左栏 / 右栏，群聊 UI 仍是**同一份**实现（midGroup）。
+			   `active === false`（页签在后台保活）⇒ 暂停 3 秒轮询，切回来再恢复。 */
+			const onlyGroup = props && props.only && props.only.kind === 'group' ? String(props.only.id || '') : '';
+			const panelActive = !(props && props.active === false);
 			/** 让官方对话停靠到**本工作台已拥有的**会话；不拥有就别动（否则会把用户踢到原生对话页） */
 			/**
 			 * 把官方对话切到某条会话 —— **先绑定再显示**。
@@ -412,7 +260,12 @@ window.__ModuleLoader__.load({
 			const [tab, setTab] = useState('roster');
 			const [tabView, setTabView] = useState({ status: 'idle', data: null, error: '' });
 			// 三栏枢纽：左栏选中的是谁（agent 或 群聊）
-			const [sel, setSel] = useState({ kind: 'agent', id: '' });
+			const [sel, setSel] = useState(() => (onlyGroup ? { kind: 'group', id: onlyGroup } : { kind: 'agent', id: '' }));
+			/* only 模式下宿主换了群（同一组件实例被复用）⇒ 选中项必须跟着换 */
+			useEffect(() => {
+				if (!onlyGroup) { return; }
+				setSel((prev) => (prev && prev.kind === 'group' && prev.id === onlyGroup ? prev : { kind: 'group', id: onlyGroup }));
+			}, [onlyGroup]);
 			// 右栏子 tab
 			const [rtab, setRtab] = useState('recent');
 			/* 群聊下右栏记忆类页签「看的是哪个成员」（2026-10-31）。
@@ -431,28 +284,8 @@ window.__ModuleLoader__.load({
 			   ⇒ **永远停在 loading，群聊列表永远是 0**。
 			   ⇒ 依赖改成 `[tab, groupsTick]`：只有切页签或手动刷新才重拉。 */
 			const [groupsTick, setGroupsTick] = useState(0);
-			/* ── 群聊在工作台里**真能聊**（2026-10-26 用户报「复刻未生效」）──────────
-			   真相：工作台的 `midGroup` 原来把 composer 的 submit 接成了
-			   `openModuleRoute('/x/agents/group/…')` —— **点发送是跳页**，不是发消息。
-			   ⇒ 这里补两样东西：
-			     `gOut`   待发送/失败的本地队列（pending/failed，poll 覆盖不掉）
-			     `gDraft` 各群草稿（localStorage，切群不丢）  */
-			const [gOut, setGOut] = useState([]);
-			const [gDraft, setGDraft] = useState({});
-			/* ── 群聊附件（2026-10-26）──────────────────────────────────────────
-			   上传走 `POST /api/group-file?group=&name=`（body = 原始字节），拿到
-			   `{ id, name, size, mime }` 后挂在待发送列表里；发送时随消息带 `files[]`。
-			   `gFiles` 是**全局**待发列表（切群会被清，避免把 A 群的附件发到 B 群）。 */
-			const [gFiles, setGFiles] = useState([]);
-			const [gUpBusy, setGUpBusy] = useState(false);
-			const [gUpErr, setGUpErr] = useState('');
-			const gPickRef = useRef(null);
-			/* ── 群聊 `@` 提及（2026-10-26）──────────────────────────────────────
-			   用户报「输入框敲 @ 没反应」。原来 composer 的 onKeyDown 只处理 Enter，
-			   `@` 就是普通字符。现在：输入框监听 → 算 query → 弹候选 → 选中插入。
-			   `atState.items` 里直接存候选（含 agent 对象），避免渲染时重算。 */
-			const [atState, setAtState] = useState({ open: false, start: 0, end: 0, query: '', active: 0, items: [] });
-			const groupTaRef = useRef(null);
+			/* 群聊聊天框的状态（待发送队列 / 草稿 / 附件 / `@` 候选）已随 GroupChat 搬到
+			   `client.groupChat.js`（2026-11-02）；这里只剩「新建会话」的 busy（群设置页共用）。 */
 			// 右栏记忆类数据（mem/evo/ver/br 共用一次 GET）
 			const [memView, setMemView] = useState({ status: 'idle', data: null, error: '' });   // 列表
 			/* 记忆页签的空态入口（2026-10-27）：一键创建 MEMORY.md，避免"永远是 0 条" */
@@ -482,6 +315,10 @@ window.__ModuleLoader__.load({
 			   实测该 webview `emulate timeout`（没就绪）⇒ 面板纯黑，随后 app 还可能 exit code=1。
 			   ⇒ 改成工作台内二级页：**零新窗口、零新 WebContents**，写动作仍走 `/api/groups`。 */
 			const [groupSetFor, setGroupSetFor] = useState('');   // 正在设置的群 id（''=不在该页）
+			/* only 模式（中栏群聊页签）的**展开栏**（2026-11-02）：群设置不再整块顶掉聊天，而是在聊天右侧的
+			   展开栏里作为独立页签「⚙ 群设置」显示（官方右侧栏是按会话的，这里没有会话 ⇒ 面板自带一个）。
+			   默认收起（与官方一致：右栏默认收起，展开才播种默认页）。 */
+			const [gDrawer, setGDrawer] = useState(false);
 			/* ── IM 绑定（2026-10-27，P0）────────────────────────────────────────
 			   `bindFor = { targetKind:'agent'|'group', targetId, name }`（null = 不在该页）。
 			   P0 只做「一个目标 ⇄ 一个 IM 会话」的配置 + 演练（loopback 模拟器）；
@@ -759,31 +596,17 @@ window.__ModuleLoader__.load({
 			   3 秒一次、页面不可见时跳过（与独立群聊页的 `poll` 同口径）。 */
 			useEffect(() => {
 				if (sel.kind !== 'group' || tab !== 'roster') { return undefined; }
+				// 页签在后台保活（`active === false`）⇒ 不轮询：每个打开过的群页签都挂着，不暂停就是 N 路 3 秒请求
+				if (!panelActive) { return undefined; }
 				const t = setInterval(() => {
 					try {
 						if (!document.hidden) { setGroupsTick((n) => n + 1); }
 					} catch (e) { /* ignore */ }
 				}, 3000);
 				return () => clearInterval(t);
-			}, [sel.kind, sel.id, tab]);
+			}, [sel.kind, sel.id, tab, panelActive]);
 
-			/* ── 群聊草稿：打开某个群时把它自己的草稿填回来 ──────────────────── */
-			useEffect(() => {
-				if (sel.kind !== 'group' || !sel.id) { return; }
-				const gid = String(sel.id);
-				let v = null;
-				// ⚠ 读不到时返回 null（不是 ''）⇒ 下面直接 return，**保留内存里的草稿**。
-				//   否则 localStorage 被禁用（about:blank / 隐私模式）时会把正在打字的草稿清空
-				//   （2026-10-26 p3-189 抓到的：`SecurityError: Access is denied`）。
-				try { v = window.localStorage.getItem('vssaros.agents.gDraft.' + gid); } catch (e) { v = null; }
-				if (v !== null) { setGDraft((prev) => (prev[gid] === v ? prev : { ...prev, [gid]: v })); }
-				/* ⚠ 切群必须清掉**待发附件**：附件是绑在群上的（上传时就带 group=），
-				   不清的话会把 A 群的附件发到 B 群里去。 */
-				setGFiles([]);
-				setGUpErr('');
-				/* `@` 候选同理：不清的话切群后浮层还挂着上一个群的成员（会 @ 错人）。 */
-				setAtState({ open: false, start: 0, end: 0, query: '', active: 0, items: [] });
-			}, [sel.kind, sel.id]);
+			/* 群草稿 / 待发附件 / `@` 候选的「切群恢复与清空」由 GroupChat（key=群 id ⇒ 切群重挂载）自己负责。 */
 
 			const data = view.data;
 			const agents = (data && data.agents) || [];
@@ -809,7 +632,8 @@ window.__ModuleLoader__.load({
 
 			const groups = (groupsView.data && Array.isArray(groupsView.data.groups)) ? groupsView.data.groups : [];
 			const curAgent = sel.kind === 'agent' ? (agents.find(a => a.id === sel.id) || visible[0] || null) : null;
-			const curGroup = sel.kind === 'group' ? (groups.find(g => g.id === sel.id) || groups[0] || null) : null;
+			/* only 模式必须**严格匹配**：回落到 groups[0] 会在群被删后悄悄显示成另一个群 ✗ */
+			const curGroup = sel.kind === 'group' ? (groups.find(g => g.id === sel.id) || (onlyGroup ? null : groups[0]) || null) : null;
 			/* 群成员（只在群选中时算，给右栏用） */
 			const groupMembers = (sel.kind === 'group' && curGroup)
 				? agents.filter((a) => (Array.isArray(curGroup.members) ? curGroup.members : []).map(String).includes(String(a.id)))
@@ -1534,110 +1358,27 @@ window.__ModuleLoader__.load({
 			};
 
 			/* ── composer：**复刻 dsh chat-surface**（参数取自真机 `[data-composer-card]`）──
-			   28px 圆角 / 无边框 / 三层极轻阴影 / 14px·24px 正文 / 左下「＋」28×28 圆形 /
-			   右下发送键 34×34 圆形（↑ 箭头 SVG，不是文字「发送」）。 */
-			const sendArrow = () => h('svg', { viewBox: '0 0 16 16', width: 16, height: 16, 'aria-hidden': 'true' },
-				h('path', {
-					d: 'M8.3125 0.980183C8.66767 1.0531 8.97902 1.20418 9.2627 1.43233C9.48724 1.61297 9.73029 1.85793 9.97949 2.10714L14.707 6.83468L13.293 8.24874L9 3.95577V15.0417H7V3.95577L2.70703 8.24874L1.29297 6.83468L6.02051 2.10714C6.26971 1.85793 6.51277 1.61297 6.7373 1.43233C6.97662 1.23986 7.28445 1.04402 7.6875 0.980183C7.8973 0.947006 8.1031 0.95516 8.3125 0.980183Z',
-					fill: 'currentColor',
-				}));
-			const plusIcon = () => h('svg', { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true', strokeWidth: 1.3 },
-				h('path', { d: 'M8 2V14', stroke: 'currentColor' }), h('path', { d: 'M2 8H14', stroke: 'currentColor' }));
-
-			/**
-			 * @param placeholder 占位文案
-			 * @param actKey      data 锚点（chat / group-send）
-			 * @param submit      回车 / 点发送要做的事
-			 * @param meta        左下角那行说明（模型 / 模式）
-			 */
+			   实现已搬到 `client.groupChat.js` 的 `Composer`（agent 会话与群聊**共用同一个**纯展示组件）。
+			   这里保留原来的调用签名 `composer(placeholder, actKey, submit, meta, opts)`，只把 agent 会话特有的
+			   两样（`draft` 受控值、停止按钮 `cancelTurn`）接上。
+			   @param placeholder 占位文案
+			   @param actKey      data 锚点（chat / group-send）
+			   @param submit      回车 / 点发送要做的事
+			   @param meta        左下角那行说明（模型 / 模式） */
 			const composer = (placeholder, actKey, submit, meta, opts) => {
 				const o = opts || {};
-				const busy = !!o.busy;
-				const streaming = !!o.streaming;
-				const off = !!o.disabled;
-				const hint = busy ? '发送中…' : (streaming ? '生成中…' : (meta || ''));
-				const inputProps = {
-					className: 'ag3-comp-ta', rows: 1, placeholder, 'aria-label': placeholder,
-					'data-ag-composer-input': actKey, disabled: off,
-					/* ★ 2026-10-26 `@` 提及：调用方给的 `onKeyDown` 先跑 —— 它要处理
-					   ↑↓/Enter/Tab/Esc（候选导航）与 Backspace 整块删 mention。
-					   返回 true = 已消费 ⇒ 这里不再当成"回车发送"。
-					   ⚠ IME 保护在调用方里做（`isComposing` 时不能抢 Enter，否则选词就发出去了）。 */
-					onKeyDown: (ev) => {
-						if (o.onKeyDown && o.onKeyDown(ev) === true) { return; }
-						if (ev.key === 'Enter' && !ev.shiftKey) {
-							if (ev.nativeEvent && ev.nativeEvent.isComposing) { return; }
-							ev.preventDefault();
-							submit();
-						}
-					},
-				};
-				if (o.taRef) { inputProps.ref = o.taRef; }
-				if (actKey === 'chat') {
-					inputProps.value = draft;
-					inputProps.onChange = (ev) => setDraft(ev.target.value);
-				} else if (o.value !== undefined) {
-					/* 2026-10-26：其它 composer（群聊的 `group-send`）也能受控 ——
-					   群聊要按群保存草稿，必须由外部持有输入值。 */
-					inputProps.value = o.value;
-					inputProps.onChange = o.onChange;
+				if (!GC || !GC.Composer) {
+					return h('p', { className: 'wb-empty', 'data-ag-composer-missing': '' }, '输入框组件还没加载（client.groupChat.js）—— 刷新或重开这个页签。');
 				}
-				const sendBtn = streaming
-					? h('button', {
-						type: 'button', className: 'ag3-stop', 'data-ag-act': 'stop',
-						'aria-label': '停止生成', title: '停止当前回合', onClick: () => cancelTurn(),
-					}, '■')
-					: h('button', {
-						type: 'button', className: 'ag3-send', 'data-ag-act': actKey,
-						'aria-label': '发送消息', disabled: off || busy, title: '发送（真发到当前会话）',
-						onClick: () => submit(),
-					}, sendArrow());
-				/* `@` 候选浮层（2026-10-26）：定位在输入卡片**上方**（`bottom:100%`）。
-				   ⚠ 用 `onMouseDown` + preventDefault 而不是只用 onClick ——
-				   否则点候选时 textarea 先失焦，caret 丢失、插入位置就错了。 */
-				const atPop = (o.at && o.at.open && Array.isArray(o.at.items) && o.at.items.length)
-					? h('div', { className: 'ag3-atpop', 'data-ag-atpop': String(o.at.items.length), role: 'listbox' },
-						o.at.items.map((item, i) => h('button', {
-							key: (item.kind === 'all' ? 'all' : String(item.agent && item.agent.id || i)),
-							type: 'button',
-							className: 'ag3-atitem' + (i === (o.at.active || 0) ? ' is-on' : ''),
-							role: 'option',
-							'aria-selected': i === (o.at.active || 0) ? 'true' : 'false',
-							'data-ag-atitem': item.kind === 'all' ? 'all' : String(item.agent && item.agent.id || ''),
-							onMouseDown: (ev) => { ev.preventDefault(); },
-							onClick: () => { if (o.onAtChoose) { o.onAtChoose(item); } },
-							title: item.kind === 'all'
-								? ('@' + String(item.label || '所有人') + '（唤醒全部成员）')
-								/* slug 只留在 tooltip 里（排查时有用），列表上一律显示名字 */
-								: ('@' + String(item.agent && item.agent.name || item.agent && item.agent.id || '')
-									+ '  ·  id: ' + String(item.agent && item.agent.id || '')),
-						},
-						h('span', { className: 'ag3-atmark' }, item.kind === 'all' ? '＠' : '@'),
-						/* ★ 2026-10-26 用户要求「显示可读名字，不要 slug」：
-						   只渲染名字；**同名冲突**时 `item.display` 自带 ` · id` 后缀（否则两行长得一样，
-						   看起来就是"重复 bot"）。正常情况下与名字完全一致。 */
-						h('span', { className: 'ag3-atname' },
-							item.kind === 'all'
-								? String(item.label || '所有人')
-								: String(item.display || (item.agent && item.agent.name) || (item.agent && item.agent.id) || '')))))
-					: null;
-				return h('div', { className: 'ag3-compwrap', 'data-ag-composer': actKey },
-					atPop,
-					h('div', { className: 'ag3-compcard' + (off ? ' is-off' : '') },
-						h('div', { className: 'ag3-comp-in' }, h('textarea', inputProps)),
-						h('div', { className: 'ag3-comp-row' },
-													h('button', {
-								type: 'button', className: 'ag3-add',
-								/* ⚠ 2026-10-26：以前这里接的是 `submit()` —— 点「＋」会**直接发消息**（误触）。
-								   现在：给了 `onPick` 就选附件（群聊用），否则保持"添加文件或调用指令"的旧提示。 */
-								'aria-label': o.onPick ? '添加附件' : '添加文件或调用指令',
-								title: o.onPick ? '添加附件（图片/文件，单个 ≤20MB）' : '添加文件或调用指令（在会话里）',
-								'data-ag-act': o.onPick ? (actKey + '-pick') : actKey,
-								onClick: () => { if (o.onPick) { o.onPick(); } else { submit(); } },
-								}, plusIcon()),
-							h('span', { className: 'ag3-comp-meta' }, hint),
-							h('span', { className: 'wb-spacer' }),
-							sendBtn)));
+				const isChat = actKey === 'chat';
+				return h(GC.Composer, {
+					placeholder, actKey, onSubmit: submit, meta,
+					value: isChat ? draft : o.value,
+					onChange: isChat ? (ev) => setDraft(ev.target.value) : o.onChange,
+					taRef: o.taRef, at: o.at, onKeyDown: o.onKeyDown, onAtChoose: o.onAtChoose, onPick: o.onPick,
+					busy: o.busy, streaming: o.streaming, disabled: o.disabled,
+					onStop: () => cancelTurn(),
+				});
 			};
 
 			/** 中间栏头部（官方对话分支与自绘分支共用，避免两处漂移） */
@@ -1709,119 +1450,7 @@ window.__ModuleLoader__.load({
 			};
 
 
-			/** 发一条群消息：乐观上屏（pending）→ 成功剔除 / 失败转 failed 可重试 */
-			/** 单个附件上限（与后端 `MAX_FILE_BYTES` 同一个数 ⇒ 前端先拦，省一次往返） */
-			const MAX_ATTACH = 20 * 1024 * 1024;
-
-			/** 上传一个附件，成功后挂进待发送列表（`gFiles`） */
-			const uploadGroupFile = async (g, file) => {
-				if (!g || !g.id || !file) { return; }
-				if (file.size > MAX_ATTACH) {
-					setGUpErr(`${file.name} 太大（${(file.size / 1048576).toFixed(1)}MB，上限 20MB）`);
-					return;
-				}
-				setGUpBusy(true);
-				setGUpErr('');
-				try {
-					const res = await fetch('/x/agents/api/group-file?group=' + encodeURIComponent(String(g.id))
-						+ '&name=' + encodeURIComponent(file.name || 'file'), {
-						method: 'POST',
-						headers: { 'content-type': file.type || 'application/octet-stream' },
-						body: file,
-						credentials: 'same-origin',
-					});
-					const j = await res.json().catch(() => ({}));
-					if (!res.ok || j.ok === false) { throw new Error(j.error || ('HTTP ' + res.status)); }
-					if (j.file) { setGFiles((prev) => [...prev, j.file]); }
-				} catch (e) {
-					setGUpErr(String((e && e.message) || e));
-				} finally {
-					setGUpBusy(false);
-				}
-			};
-
-			/* ── `@` 提及：交互层（2026-10-26）────────────────────────────────── */
-			/** 本群成员（按 `g.members` 过滤 agents；候选与派发都用它） */
-			const mentionMembersOf = (g) => {
-				const ids = Array.isArray(g && g.members) ? g.members.map(String) : [];
-				return agents.filter((a) => ids.includes(String(a.id)));
-			};
-
-			const atClose = () => setAtState((s) => (s.open
-				? { open: false, start: 0, end: 0, query: '', active: 0, items: [] } : s));
-
-			/** 输入变化后重算候选（caret 从事件里取，不要用 state —— 会慢一帧） */
-			const atSync = (value, caret, g) => {
-				const q = atQuery(value, caret);
-				if (!q) { atClose(); return; }
-				const items = atCandidates(mentionMembersOf(g), q.query);
-				if (!items.length) { atClose(); return; }
-				setAtState({ open: true, start: q.start, end: q.end, query: q.query, active: 0, items });
-			};
-
-			/** 选中候选：写回草稿 + 把 caret 放到 token 之后 */
-			const atChoose = (item, g) => {
-				if (!item || !g || !g.id) { atClose(); return; }
-				const gid = String(g.id);
-				const value = gDraft[gid] || '';
-				/* ★ 2026-10-26：插入的是**显示名**（`@Code Architect`），不是 id —— 用户看到的是人话。
-				   `agentId` 由事后反扫 `atCollect` 得出，服务端用 offset + agentId 派发。 */
-				const label = item.kind === 'all' ? AT_ALL : atLabelOf(item.agent);
-				if (!label) { atClose(); return; }
-				const r = atSelect(value, { start: atState.start, end: atState.end }, label);
-				setGDraft((prev) => ({ ...prev, [gid]: r.value }));
-				try { window.localStorage.setItem('vssaros.agents.gDraft.' + gid, r.value); } catch (e) { /* ignore */ }
-				const ta = groupTaRef.current;
-				atClose();
-				// 等 React 把 value 写进 DOM 再设选区（否则 selectionStart 会被重置到末尾）
-				requestAnimationFrame(() => {
-					if (!ta) { return; }
-					try { ta.focus(); ta.setSelectionRange(r.caret, r.caret); } catch (e) { /* ignore */ }
-				});
-			};
-
-			/**
-			 * 输入框按键：返回 true = 已消费（composer 不会再当成"回车发送"）。
-			 * 覆盖三类：候选导航（↑↓/Enter/Tab/Esc）、mention 整块删除（Backspace/Delete）、IME 保护。
-			 */
-			const atKey = (ev, g) => {
-				// ⚠ 输入法组词期间**绝不能**抢键：否则打拼音时按 Enter 选词会变成"发送消息"
-				const composing = !!(ev.nativeEvent && ev.nativeEvent.isComposing);
-				if (composing) { return false; }
-				const open = atState.open && Array.isArray(atState.items) && atState.items.length > 0;
-				if (open) {
-					const n = atState.items.length;
-					const cur = atState.active || 0;
-					if (ev.key === 'ArrowDown') {
-						setAtState((s) => ({ ...s, active: (cur + 1) % n })); ev.preventDefault(); return true;
-					}
-					if (ev.key === 'ArrowUp') {
-						setAtState((s) => ({ ...s, active: (cur - 1 + n) % n })); ev.preventDefault(); return true;
-					}
-					if (ev.key === 'Enter' || ev.key === 'Tab') {
-						atChoose(atState.items[cur], g); ev.preventDefault(); return true;
-					}
-					if (ev.key === 'Escape') { atClose(); ev.preventDefault(); return true; }
-				}
-				if ((ev.key === 'Backspace' || ev.key === 'Delete') && g && g.id) {
-					const gid = String(g.id);
-					const value = gDraft[gid] || '';
-					const ta = ev.target;
-					const s = ta && Number.isInteger(ta.selectionStart) ? ta.selectionStart : value.length;
-					const e2 = ta && Number.isInteger(ta.selectionEnd) ? ta.selectionEnd : s;
-					const r = atDelete(value, atCollect(value, mentionMembersOf(g)), s, e2, ev.key);
-					if (r) {
-						setGDraft((prev) => ({ ...prev, [gid]: r.value }));
-						try { window.localStorage.setItem('vssaros.agents.gDraft.' + gid, r.value); } catch (e) { /* ignore */ }
-						requestAnimationFrame(() => {
-							try { ta.setSelectionRange(r.caret, r.caret); } catch (e) { /* ignore */ }
-						});
-						ev.preventDefault();
-						return true;
-					}
-				}
-				return false;
-			};
+			/* 附件上传 / `@` 提及交互层 / 发送 / 重试 ⇒ 已搬到 client.groupChat.js 的 GroupChat（2026-11-02） */
 
 			/* ── 群「新建会话」（2026-10-26 / 2026-10-27 改）────────────────────────
 			   群没有"一条会话"这个概念：派发是按成员各自的会话走的。
@@ -1859,319 +1488,29 @@ window.__ModuleLoader__.load({
 				}
 			};
 
-			const sendGroupMsg = async (g, text) => {
-				const txt = String(text || '').trim();
-				/* ★ 2026-10-26：允许「只有附件」的消息（后端也放开了这条）。 */
-				const filesNow = gFiles.slice();
-				if ((!txt && !filesNow.length) || !g || !g.id) { return; }
-				/* ★ `@` 提及：把 offset 一起发给后端（后端优先用它派发；这是修掉
-				   「子串匹配误唤醒」的关键 —— `@test` 不会再命中 `@test1`）。 */
-				const members = mentionMembersOf(g);
-				const ats = atCollect(txt, members);
-				const cid = 'c' + Date.now().toString(36);
-				setGOut((prev) => [...prev, {
-					cid, gid: String(g.id), text: txt, at: Date.now(), state: 'pending', files: filesNow,
-					mentions: ats,
-				}]);
-				setGFiles([]);
-				setGUpErr('');
-				setGDraft((prev) => { const n = { ...prev }; delete n[String(g.id)]; return n; });
-				try { window.localStorage.removeItem('vssaros.agents.gDraft.' + String(g.id)); } catch (e) { /* ignore */ }
-				try {
-					const res = await fetch('/x/agents/api/groups', {
-						method: 'POST', headers: { 'content-type': 'application/json' },
-						body: JSON.stringify({
-							action: 'message', id: String(g.id), text: txt,
-							...(filesNow.length ? { files: filesNow } : {}),
-							...(ats.length ? { mentions: ats } : {}),
-						}),
-					});
-					const j = await res.json().catch(() => ({}));
-					if (!res.ok || j.ok === false) { throw new Error(j.error || ('HTTP ' + res.status)); }
-					setGOut((prev) => prev.filter((x) => x.cid !== cid));
-					setGroupsTick((t) => t + 1);
-				} catch (e) {
-					/* 失败时把附件**放回**待发列表：否则用户重试时附件没了，还得重新传一遍。 */
-					setGFiles((prev) => [...filesNow, ...prev]);
-					setGOut((prev) => prev.map((x) => (x.cid === cid
-						? { ...x, state: 'failed', err: String((e && e.message) || e) } : x)));
-				}
-			};
-			/** 重试一条失败的群消息（cid 不变，不会越点越多） */
-			const retryGroupMsg = (cid) => {
-				const hit = gOut.find((x) => x.cid === cid);
-				if (!hit) { return; }
-				const g = groups.find((x) => x.id === hit.gid);
-				setGOut((prev) => prev.filter((x) => x.cid !== cid));
-				if (g) { void sendGroupMsg(g, hit.text); }
-			};
-
-			/** 时间分隔文案（对齐 DSB 的 `separatorLabel`：今天只给时间，更早给"昨天/日期 + 时间"） */
-			const sepLabelOf = (at) => {
-				const d = new Date(at || Date.now());
-				const n = new Date();
-				const hm = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
-				if (d.toDateString() === n.toDateString()) { return hm; }
-				const y = new Date(n.getTime() - 86400000);
-				if (d.toDateString() === y.toDateString()) { return '昨天 ' + hm; }
-				return (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + hm;
-			};
 			/**
-			 * 群消息行 —— **与 `lib/core/groupChat.js` 的 `chatRows` 逐字同构**（2026-10-26 收敛）。
-			 *
-			 * 为什么不是直接 import：本文件是宿主 chunk，跑在 `__ModuleLoader__` 里，
-			 * 拿不到本地模块（`require` 只给 react 等宿主模块）。
-			 * ⇒ React 侧保留这份同构实现，**由 `p3-190` 用同一组夹具比对两边结果**防漂移。
-			 *   改这里的口径时，必须同步改 `core/groupChat.js`，否则 p3-190 立刻红。
-			 */
-			/* ── 投递状态摘要（2026-10-26）──────────────────────────────────────
-			   服务端在每条用户消息上写 `deliveries: [{ id, agentId, name, state, at, repliedAt?, error? }]`
-			   （state: dispatched / replied / failed）。这里把它压成群头部的一行字：
-			     `已回 2/3 · 等 1`，`title` 里给具体人名。
-			   ⚠ 「超时」是**读时判定**（`dispatched` 且超过 10 分钟），不改磁盘
-			   —— 否则得为它专门跑一个扫描器，收益不值。 */
-			const DELIVERY_TIMEOUT_MS = 10 * 60 * 1000;
-			const summarizeDeliveries = (list, nowMs) => {
-				const rows = Array.isArray(list) ? list.filter(Boolean) : [];
-				if (!rows.length) { return null; }
-				const now = Number.isFinite(nowMs) ? nowMs : Date.now();
-				const names = (arr) => arr.join('、');
-				let replied = 0;
-				const wait = [];
-				const slow = [];
-				const bad = [];
-				for (const d of rows) {
-					const name = String(d.name || d.agentId || '?');
-					if (d.state === 'replied') { replied += 1; continue; }
-					if (d.state === 'failed') { bad.push(name); continue; }
-					const at = Number(d.at) || 0;
-					if (at && now - at > DELIVERY_TIMEOUT_MS) { slow.push(name); } else { wait.push(name); }
-				}
-				const total = rows.length;
-				const text = '已回 ' + replied + '/' + total
-					+ (bad.length ? ' · 失败 ' + bad.length : '')
-					+ (slow.length ? ' · 超时 ' + slow.length : '')
-					+ (wait.length ? ' · 等 ' + wait.length : '');
-				const parts = [];
-				const repliedNames = rows.filter((d) => d.state === 'replied')
-					.map((d) => String(d.name || d.agentId || '?'));
-				if (repliedNames.length) { parts.push('已回：' + names(repliedNames)); }
-				if (wait.length) { parts.push('等待中：' + names(wait)); }
-				if (slow.length) { parts.push('超时未回：' + names(slow)); }
-				if (bad.length) { parts.push('派发失败：' + names(bad)); }
-				return { text, title: parts.join('\n'), pending: wait.length + slow.length, failed: bad.length };
-			};
-
-			const groupRows = (list, mentionPool) => {
-				const GROUP_MS = 300000;        // 相邻 ≤5 分钟成组（DSB 的 GROUP_MS）
-				const SEPARATOR_MS = 1800000;   // 距上一条 ≥30 分钟插分隔（DSB 的 SEPARATOR_MS）
-				const GROUP_MAX = 8;            // 每组 ≤8 条（我们自己的上限）
-				const dayKeyOf = (at) => {
-					const d = new Date(at);
-					return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
-				};
-				const out = [];
-				let prev = null;
-				let groupN = 0;
-				let lastDay = '';
-				for (let i = 0; i < list.length; i += 1) {
-					const m = list[i] || {};
-					const at = Number(m.at) || 0;
-					const isSystem = String(m.role || '') === 'system';
-					const isMe = String(m.role || '') === 'user';
-					const who = isMe ? '__me' : String(m.agentId || m.role || '');
-					const dk = dayKeyOf(at);
-					const crossDay = dk !== lastDay;
-					const bigGap = !!prev && (at - prev.at) >= SEPARATOR_MS;
-
-					// 分隔：跨天 或 距上一条 ≥30 分钟（系统消息不参与，免得把提示前后切成两段）
-					if (!isSystem && (crossDay || bigGap)) {
-						out.push(h('div', { className: 'ag3-gsep', key: 'sep' + i }, sepLabelOf(at)));
-						lastDay = dk;
-						prev = null;
-						groupN = 0;
-					}
-					if (isSystem) {
-						out.push(h('div', { className: 'ag3-gsys', key: 'sys' + i }, String(m.text || '')));
-						prev = null;
-						groupN = 0;
-						continue;
-					}
-
-					const gap = prev ? (at - prev.at) : 1e9;
-					const grp = !!prev && prev.who === who && gap >= 0 && gap <= GROUP_MS && groupN < GROUP_MAX;
-					if (!grp) { groupN = 0; }
-					groupN += 1;
-					const a = isMe ? null : agents.find((x) => x.id === who);
-					const name = isMe ? '你' : String((a && a.name) || who);
-					out.push(h('div', {
-						key: 'm' + i,
-						className: 'ag3-gmsg' + (isMe ? ' is-me' : '') + (grp ? ' is-grp' : '')
-							+ (m.state === 'failed' ? ' is-fail' : '') + (m.state === 'pending' ? ' is-pend' : ''),
-					},
-						h('div', { className: 'ag3-gav' + (grp ? ' is-hidden' : '') }, name.slice(0, 1)),
-						h('div', { className: 'ag3-gcol' },
-							grp ? null : h('div', { className: 'ag3-gwho' }, name),
-							h('div', { className: 'ag3-gbub' + (String(m.text || '') ? '' : ' is-fileonly') },
-								/* @ 提及高亮（2026-10-26）：消息自带 `mentions[]` 就用它（带 offset 校验），
-								   否则按本群成员**从文本反扫** ⇒ 老消息也能正常高亮。 */
-								...(atRuns(String(m.text || ''),
-									(Array.isArray(m.mentions) && m.mentions.length)
-										? m.mentions
-										: atCollect(String(m.text || ''), mentionPool || []))
-									.map((run, ri) => (run.mention
-										? h('span', {
-											key: 'r' + ri,
-											className: 'ag3-gat' + (run.mention.kind === 'all' ? ' is-all' : ''),
-											'data-ag-mention': String(run.mention.agentId || run.mention.label || ''),
-											title: run.mention.kind === 'all' ? '发给全群' : String(run.mention.label || ''),
-										}, run.text)
-										: run.text))),
-								/* 附件（2026-10-26）：图片给缩略图（点开看原图），其它给文件卡片。
-								   href 直接用 GET /api/group-file?id= —— 服务端已按 mime 设 content-type，
-								   浏览器的 <img>/下载 都能直接用，不需要再转 base64。 */
-								(Array.isArray(m.files) && m.files.length)
-									? h('div', { className: 'ag3-gfiles' }, m.files.map((f, fi) => {
-										const url = '/x/agents/api/group-file?id=' + encodeURIComponent(String(f.id || ''));
-										const isImg = /^image\//i.test(String(f.mime || ''));
-										const sizeTxt = (Number(f.size) || 0) >= 1048576
-											? ((Number(f.size) / 1048576).toFixed(1) + 'MB')
-											: (Math.max(1, Math.round((Number(f.size) || 0) / 1024)) + 'KB');
-										return isImg
-											? h('a', {
-												key: 'f' + fi, className: 'ag3-gimg-a', href: url, target: '_blank', rel: 'noreferrer',
-												title: String(f.name || '图片') + ' · ' + sizeTxt, 'data-ag-attach': String(f.id || ''),
-											}, h('img', { className: 'ag3-gimg', src: url, alt: String(f.name || '图片'), loading: 'lazy' }))
-											: h('a', {
-												key: 'f' + fi, className: 'ag3-gfile', href: url, target: '_blank', rel: 'noreferrer',
-												title: String(f.name || '文件') + ' · ' + sizeTxt, 'data-ag-attach': String(f.id || ''),
-											}, h('span', { className: 'ag3-gfile-ic' }, '📄'),
-											h('span', { className: 'ag3-gfile-n' }, String(f.name || '文件')),
-											h('span', { className: 'ag3-gfile-s' }, sizeTxt));
-									}))
-									: null),
-							m.state === 'failed'
-								? h('div', { className: 'ag3-gfail' },
-									h('span', null, '未发送 · ' + String(m.err || '网络错误')),
-									h('button', {
-										type: 'button', className: 'wb-btn is-ghost ag3-mini', 'data-ag-act': 'group-retry',
-										onClick: () => retryGroupMsg(m.cid),
-									}, '重试'))
-								: null,
-							m.state === 'pending' ? h('div', { className: 'ag3-gpend' }, '发送中…') : null)));
-					prev = { at, who };
-				}
-				return out;
-			};
-
-			/**
-			 * 群聊中间栏（2026-10-26 重写，对齐 DeepSeekBot 的 `message-groups.ts`）：
-			 *   · 消息按 **5 分钟成组**（同作者连续），只首条显示名字/头像
-			 *   · 距上一条 **≥30 分钟**或**跨天** ⇒ 插时间分隔
-			 *   · 右对齐自己的、左对齐成员的，各自有头像
-			 *   · 本地 pending / failed 追加在末尾（failed 可点重试）
+			 * 群聊中间栏 = `client.groupChat.js` 的 GroupChat（2026-11-02，方案 B）。
+			 * 工作台中栏与 chat-surface 的中栏页签**共用这一份**；本面板只提供三样东西：
+			 *   · `agents`        成员名册（@ 候选 / 消息里的显示名）
+			 *   · `onNewSession`  「新建会话」（群设置页也在用同一个 newGroupSessions + gSessBusy）
+			 *   · `onOpenSettings`/`reloadGroups`  群设置二级页入口、写完让本面板重拉群清单
+			 * `key = 群 id`：切群 ⇒ 重挂载 ⇒ 待发附件 / `@` 候选自然清空（附件上传时就绑了群，不清会发错群）。
 			 */
 			const midGroup = (g) => {
-				const raw = Array.isArray(g.transcript) ? g.transcript : [];
-				// 服务端消息 + 本地待发送/失败（只取这个群的）
-				const mine = gOut.filter((x) => x.gid === String(g.id));
-				const rows = raw.map((m) => ({
-					at: Number(m.at) || 0,
-					text: String(m.text || m.content || ''),
-					role: String(m.role || 'member'),
-					agentId: String(m.agentId || m.name || ''),
-					files: Array.isArray(m.files) ? m.files : [],
-					state: '',
-				})).concat(mine.map((x) => ({
-					at: x.at, text: x.text, role: 'user', agentId: '', state: x.state, cid: x.cid, err: x.err,
-					files: Array.isArray(x.files) ? x.files : [],
-				})));
-				return h('div', { className: 'ag3-m', 'data-ag-mid': 'group' },
-					h('div', { className: 'ag3-mhd' },
-						h('span', { className: 'ag-gmark' }, '#'),
-						h('div', { className: 'ag3-mhd-main' },
-							h('div', { className: 'ag3row-l1' },
-								h('span', { className: 'ag3-mname', 'data-ag-file-name': String(g.name || g.id || '') }, String(g.name || g.id || '?')),
-								h('span', { className: 'wb-badge' }, String(g.mode || 'open'))),
-							h('div', { className: 'ag3row-l2' },
-								(Array.isArray(g.members) ? g.members.length : 0) + ' 位成员 · ' + rows.length + ' 条消息',
-								/* 投递状态：取**最近一条带 deliveries 的用户消息**（一次派发的真实结果） */
-								(() => {
-									const last = [...raw].reverse()
-										.find((m) => Array.isArray(m.deliveries) && m.deliveries.length);
-									const sum = last ? summarizeDeliveries(last.deliveries) : null;
-									if (!sum) { return null; }
-									return h('span', {
-										className: 'ag3-dl' + (sum.pending ? ' is-wait' : (sum.failed ? ' is-bad' : ' is-done')),
-										'data-ag-delivery': sum.text,
-										title: sum.title,
-									}, ' · ' + sum.text);
-								})())),
-						h('span', { className: 'wb-spacer' }),
-						/* ★ 2026-10-26：两个按钮都改成**页内二级页**（原来走 openModuleRoute ⇒ 新 webview
-						   ⇒ 真机 `emulate timeout` ⇒ 黑屏）。邀请成员 = 同一个设置页（成员区在最下面）。 */
-						/* ★ 2026-10-26 用户报「群会话中缺少新建会话按钮」：
-						   群没有单一会话 ⇒ 这个按钮= 给**每个成员**各开一条新会话（旧会话保留）。 */
-						h('button', {
-							type: 'button', className: 'wb-btn', 'data-ag-act': 'group-newsession',
-							disabled: gSessBusy,
-							title: '给群内每个成员各开一条新会话并**只绑到本群**（旧会话保留，私聊/其它群不受影响）',
-							onClick: () => { void newGroupSessions(g, 'group'); },
-						}, gSessBusy ? '新建中…' : '新建会话'),
-						h('button', { type: 'button', className: 'wb-btn', 'data-ag-act': 'group-invite', onClick: () => openGroupSet(g) }, '邀请成员'),
-						h('button', { type: 'button', className: 'wb-btn is-ghost', 'data-ag-act': 'group-settings', onClick: () => openGroupSet(g) }, '群设置')),
-					h('div', { className: 'ag3-mlist', 'data-ag-midlist': 'group', 'data-ag-gcount': String(rows.length) },
-						rows.length
-							? groupRows(rows, mentionMembersOf(g))
-							: h('p', { className: 'wb-empty', 'data-ag-mid-empty': '' }, '群里还没有消息 —— 在下面发一句开始。')),
-					/* 待发送附件（2026-10-26）：上传成功的先排成一行 chip，可单个移除。
-					   `gUpBusy` 时显示「上传中…」，失败显示原因（不是静默）。 */
-					(gFiles.length || gUpBusy || gUpErr)
-						? h('div', { className: 'ag3-gup', 'data-ag-gup': String(gFiles.length) },
-							gUpBusy ? h('span', { className: 'ag3-gup-chip is-busy', 'data-ag-gup-busy': '' }, '上传中…') : null,
-							...gFiles.map((f, i) => h('span', { className: 'ag3-gup-chip', key: 'u' + i },
-								/^image\//i.test(String(f.mime || '')) ? '🖼 ' : '📄 ',
-								h('span', { className: 'ag3-gup-name' }, String(f.name || '附件')),
-								h('button', {
-									type: 'button', className: 'ag3-gup-x', 'data-ag-act': 'group-remove-file',
-									'aria-label': '移除附件', title: '移除这个附件',
-									onClick: () => setGFiles((prev) => prev.filter((x) => x.id !== f.id)),
-								}, '✕'))),
-							gUpErr ? h('span', { className: 'ag3-gup-err', 'data-ag-gup-err': '' }, '⚠ ' + gUpErr) : null)
-						: null,
-					// 隐藏的 file input：点 composer 的「＋」时由 gPickRef 触发
-					h('input', {
-						key: 'gpick', type: 'file', multiple: true, className: 'ag3-gpick',
-						ref: gPickRef, 'data-ag-act': 'group-file-input', 'aria-hidden': 'true', tabIndex: -1,
-						onChange: (ev) => {
-							const list = ev.target.files ? Array.from(ev.target.files) : [];
-							ev.target.value = '';   // 清空才能重复选同一个文件
-							for (const f of list) { void uploadGroupFile(g, f); }
-						},
-					}),
-					// ★ 发送**就在这里发**（原来接的是 openModuleRoute「跳去群聊页」，等于发不出去）
-					composer('发消息…', 'group-send',
-						() => { void sendGroupMsg(g, gDraft[String(g.id)] || ''); },
-						gFiles.length ? ('群聊 · ' + String(g.mode || 'open') + ' · ' + gFiles.length + ' 个附件') : ('群聊 · ' + String(g.mode || 'open')),
-						{
-							value: gDraft[String(g.id)] || '',
-							taRef: groupTaRef,
-							/* `@` 提及：候选浮层 + 键盘（↑↓/Enter/Tab/Esc）+ Backspace 整块删 */
-							at: atState,
-							onKeyDown: (ev) => atKey(ev, g),
-							onAtChoose: (item) => atChoose(item, g),
-							onChange: (ev) => {
-								const v = ev.target.value;
-								const gid = String(g.id);
-								setGDraft((prev) => { const n = { ...prev }; n[gid] = v; return n; });
-								try { window.localStorage.setItem('vssaros.agents.gDraft.' + gid, v); } catch (e) { /* ignore */ }
-								// ⚠ caret 必须从**事件**里取：state 里的 value 比 DOM 慢一帧，算出来会错位
-								const caret = Number.isInteger(ev.target.selectionStart) ? ev.target.selectionStart : v.length;
-								atSync(v, caret, g);
-							},
-							// 「＋」= 选附件（不传的话点＋会直接发消息，那是旧行为）
-							onPick: () => { try { if (gPickRef.current) { gPickRef.current.click(); } } catch (e) { /* ignore */ } },
-						}));
+				if (!GC || !GC.GroupChat) {
+					return h('div', { className: 'ag3-m', 'data-ag-mid': 'group' },
+						h('p', { className: 'wb-empty', 'data-ag-groupchat-missing': '' }, '群聊组件还没加载（client.groupChat.js）—— 刷新或重开这个页签。'));
+				}
+				return h(GC.GroupChat, {
+					key: String(g.id), group: g, agents,
+					sessBusy: gSessBusy,
+					onNewSession: (grp, mode) => newGroupSessions(grp, mode),
+					onOpenSettings: (grp) => openGroupSet(grp),
+				/* 展开右侧栏按钮：只在中栏群聊页签（only 模式）里给；工作台里群设置仍是页内二级页 */
+				onToggleDrawer: onlyGroup ? () => toggleGDrawer() : undefined,
+				drawerOpen: gDrawer,
+				reloadGroups: () => setGroupsTick((n) => n + 1),
+				});
 			};
 
 			/* ══════ 右栏 320：5 个子 tab ══════ */
@@ -2438,7 +1777,7 @@ window.__ModuleLoader__.load({
 						})),
 						h('circle', {
 							cx: Number((svg.dot && svg.dot.x) || 6), cy: Number((svg.dot && svg.dot.y) || 12), r: 3.2,
-							fill: isHead ? 'var(--dsw-alias-accent, #0e639c)' : 'var(--dsw-alias-label-tertiary, rgba(200,200,200,.55))',
+							fill: isHead ? 'var(--dsw-alias-state-business-primary, #0e639c)' : 'var(--dsw-alias-label-tertiary, rgba(200,200,200,.55))',
 						}));
 				};
 				return h('div', { 'data-ag-rtab-body': 'evo' },
@@ -3278,7 +2617,19 @@ window.__ModuleLoader__.load({
 				setGsName(String(g.name || g.id));
 				setGsMode(String(g.mode || 'all'));
 				setGsErr(''); setGsOk('');
+				if (onlyGroup) { setGDrawer(true); }   // 中栏群聊页签：展开右侧栏并显示「群设置」页签
 			};
+			/** 展开 / 收起右侧栏（only 模式）。展开 = 灌表单 + 开栏（栏里至少有一个页签，不留空栏）。 */
+			const closeGDrawer = () => { setGDrawer(false); setGroupSetFor(''); };
+			const toggleGDrawer = () => {
+				if (gDrawer) { closeGDrawer(); return; }
+				if (curGroup) { openGroupSet(curGroup); }
+			};
+			/* 换群（同一组件实例被复用）⇒ 收起栏：表单里还是上一个群的值，留着会改错群 */
+			useEffect(() => {
+				if (!onlyGroup) { return; }
+				setGDrawer(false); setGroupSetFor('');
+			}, [onlyGroup]);
 
 			/** 统一包一层 busy/错误/成功提示；成功后触发群清单刷新。 */
 			const runGroupAction = async (body, okText) => {
@@ -3296,9 +2647,10 @@ window.__ModuleLoader__.load({
 				}
 			};
 
-			const groupSetPage = () => {
-				const t = groups.find((x) => String(x.id) === String(groupSetFor));
-				const back = h('button', {
+			/** @param idOverride 指定群（展开栏里用 onlyGroup）；@param inDrawer 在展开栏内：没有「← 返回」（关页签即收起） */
+			const groupSetPage = (idOverride, inDrawer) => {
+				const t = groups.find((x) => String(x.id) === String(idOverride || groupSetFor));
+				const back = inDrawer ? null : h('button', {
 					type: 'button', className: 'wb-btn is-ghost', 'data-ag-act': 'group-set-back',
 					onClick: () => setGroupSetFor(''),
 				}, '← 返回');
@@ -4071,6 +3423,44 @@ window.__ModuleLoader__.load({
 					renameDlgNode());
 			};
 
+			/* ── only 模式（中栏群聊页签）：只留群聊中栏 + 页内二级页（群设置 / IM 绑定）──────
+			   ⚠ 不画 toolbar / 页签 / 左右栏。顺序与 rosterPane 的二级页一致：绑定 → 群设置 → 聊天。 */
+			if (onlyGroup) {
+				const gerr = groupsView.status === 'error';
+				return h('div', {
+					className: 'wb wb-ag', 'data-vssaros-page': 'agents', 'data-vssaros-surface': 'group-chat',
+					'data-ag-group-only': onlyGroup,
+					style: { flex: '1 1 auto', minHeight: 0, height: '100%', width: '100%' },
+				},
+					bindFor
+						? bindPage()
+						: curGroup
+							/* 聊天 + 右侧展开栏并排（群设置在栏里作为独立页签，不再整块顶掉聊天） */
+							? h('div', { className: 'ag3-gonly', 'data-ag-gonly': gDrawer ? 'drawer' : 'chat' },
+								midGroup(curGroup),
+								gDrawer
+									? h('aside', { className: 'ag3-drawer', 'data-ag-drawer': onlyGroup, role: 'complementary', 'aria-label': '右侧栏' },
+										h('div', { className: 'ag3-drawer-tabs', role: 'tablist' },
+											h('div', { className: 'ag3-drawer-tab is-on', role: 'tab', 'aria-selected': 'true', 'data-ag-drawer-tab': 'group-settings' },
+												h('span', null, '⚙ 群设置'),
+												h('button', {
+													type: 'button', className: 'ag3-drawer-x', 'data-ag-act': 'group-drawer-close',
+													'aria-label': '关闭「群设置」页签', title: '关闭页签（栏里只剩它时一并收起）',
+													onClick: () => closeGDrawer(),
+												}, '✕')),
+											h('span', { className: 'wb-spacer' }),
+											h('button', {
+												type: 'button', className: 'wb-btn is-ghost ag3-drawer-collapse', 'data-ag-act': 'group-drawer-collapse',
+												'aria-label': '收起右侧栏', title: '收起右侧栏', onClick: () => closeGDrawer(),
+											}, '»')),
+										h('div', { className: 'ag3-drawer-body' }, groupSetPage(onlyGroup, true)))
+									: null)
+							: h('div', { className: 'ag3-m' },
+								h('p', { className: 'wb-empty', 'data-ag-group-state': gerr ? 'error' : (groupsView.status === 'ready' ? 'missing' : 'loading'), role: gerr ? 'alert' : undefined },
+									gerr ? ('读取群聊失败：' + groupsView.error)
+										: (groupsView.status === 'ready' ? '这个群不存在了（可能已被删除）。' : '正在读取群聊…'))));
+					}
+
 			return h('div', { className: 'wb wb-ag', 'data-vssaros-page': 'agents', 'data-vssaros-surface': 'workbench' },
 				h('header', { className: 'wb-toolbar', 'data-dsh-workbench-toolbar': '' },
 					h('h1', { className: 'wb-title' }, 'Bots'),
@@ -4287,11 +3677,11 @@ window.__ModuleLoader__.load({
   color:var(--dsw-alias-label-secondary, rgba(230,230,230,.75)); white-space:nowrap; margin-right:3px; }
 /* ⚠ 色值必须写成 var(--alias, 兜底)：直接写 #hex 会被包内自检的「无裸色值」拦下
    （判据 = 该行不含 var(--）。兜底值本身可以是 hex/rgba，因为有 var(-- 就不算裸）。 */
-.ag3-chip.is-branch { color:var(--dsw-alias-branch, #9cdcfe); border-color:var(--dsw-alias-branch-bd, #2b5c7a); }
-.ag3-chip.is-ver { color:var(--dsw-alias-version, #e2c08d); border-color:var(--dsw-alias-version-bd, #6b5426); }
-.ag3-chip.is-warn { color:var(--dsw-alias-warning, #e6d27a); border-color:var(--dsw-alias-warning-bd, #6b5c26); }
-.ag3-chip.is-new { color:var(--dsw-alias-success, #7ee2a0); border-color:var(--dsw-alias-success-bd, #2c5f3d); }
-.ag3-chip.is-deleted { color:var(--dsw-alias-error, #ff9d97); border-color:var(--dsw-alias-error-bd, #6e2b28); }
+.ag3-chip.is-branch { color:var(--dsw-alias-state-business-primary, #9cdcfe); border-color:var(--dsw-alias-border-l2, #2b5c7a); }
+.ag3-chip.is-ver { color:var(--dsw-alias-state-warn-primary, #e2c08d); border-color:var(--dsw-alias-state-warn-tertiary, #6b5426); }
+.ag3-chip.is-warn { color:var(--dsw-alias-state-warn-primary, #e6d27a); border-color:var(--dsw-alias-state-warn-secondary, #6b5c26); }
+.ag3-chip.is-new { color:var(--dsw-alias-state-success-primary, #7ee2a0); border-color:var(--dsw-alias-state-success-secondary, #2c5f3d); }
+.ag3-chip.is-deleted { color:var(--dsw-alias-state-error-primary, #ff9d97); border-color:var(--dsw-alias-state-error-secondary, #6e2b28); }
 .ag3-auto { color:var(--dsw-alias-label-tertiary, rgba(230,230,230,.55)); }
 /* 演化：分道图行。★ 行高 46 必须等于 lib/core/gitLanes.js 的 ROW_H —— 改一处必须改另一处。 */
 .ag3-crow { display:flex; align-items:stretch; height:46px; padding:0 var(--wb-s1) 0 2px; gap:4px;
@@ -4306,8 +3696,8 @@ window.__ModuleLoader__.load({
 .ag3-vrow { display:flex; flex-direction:column; gap:1px; padding:5px var(--wb-s2); }
 .ag3-vname { display:flex; align-items:center; gap:5px; font-size:12px; }
 .ag3-warn { margin:var(--wb-s1) 0; padding:5px 7px; border-radius:var(--wb-r-sm); font-size:10.5px;
-  color:var(--dsw-alias-warning, #e6d27a); background:var(--dsw-alias-warning-bg, rgba(204,167,0,.12));
-  border:1px solid var(--dsw-alias-warning-bd, rgba(204,167,0,.35)); }
+  color:var(--dsw-alias-state-warn-primary, #e6d27a); background:var(--dsw-alias-state-warn-tertiary, rgba(204,167,0,.12));
+  border:1px solid var(--dsw-alias-state-warn-secondary, rgba(204,167,0,.35)); }
 /* 群聊下「看的是哪个成员」（记忆类页签）—— 群没有自己的记忆库，必须写明主体 */
 .ag3-gsel { display:flex; align-items:center; gap:var(--wb-s1); padding:3px var(--wb-s3); flex:none;
   border-bottom:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.25)); font-size:var(--wb-f-xs);
@@ -4328,15 +3718,15 @@ window.__ModuleLoader__.load({
 .ag3-am-title { font-size:10px; color:var(--dsw-alias-label-secondary, rgba(230,230,230,.75)); }
 .ag3-am-url { margin:2px 0 4px; font-size:9.5px; color:var(--dsw-alias-label-tertiary, rgba(230,230,230,.5));
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-/* ★ 2026-10-31（用户要求）：Bots 工作台里不要宿主外壳的**浮动工具栏**。
-   出处排查过：类名 vssWbActions（「展开 AI 助手 / 在浏览器打开」）由宿主插件
-   @vssaros/dsh-workbenches 注入，不在本插件 ⇒ 在本工作台页面内隐藏。
-   本 chunk 只在 Bots 工作台页面加载 ⇒ 作用域天然限定，不影响别的页面；
-   想恢复删掉这条即可。⚠ 本文件是模板串：注释里不许出现反引号（会提前闭合）。 */
-.vssWbActions { display:none !important; }
+/* ★ 2026-11-02：这里原有一条全局 display:none 的规则（2026-10-31 为「Bots 不要浮动工具栏」加的），已删除。
+   它的前提「本 chunk 只在 Bots 页面加载 ⇒ 作用域天然限定」不成立：dsh 里所有插件的客户端 chunk
+   在应用启动时就加载，样式一注入就作用于整个 document ⇒ **所有工作台**的浮动工具栏都被藏掉
+   （用户连报「知识库 / 商城 / 媒体库都没有浮动工具栏」，宿主自检上报 display=none、尺寸 0x0）。
+   正确做法是描述符里声明 floatingActions: false（见上面的 DESCRIPTOR，与 scheduler / loop 同一机制）。
+   ⚠ 本文件是模板串：注释里不许出现反引号（会提前闭合）。 */
 .ag3-sel { min-width:0; max-width:140px; height:20px; font:inherit; font-size:11px;
   color:var(--dsw-alias-label-primary, currentColor);
-  background:var(--dsw-alias-input-bg, rgba(127,127,127,.12));
+  background:var(--dsw-alias-bg-layer-2, rgba(127,127,127,.12));
   border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.4)); border-radius:var(--wb-r-sm); }
 .ag3-memview { margin-top:var(--wb-s2); border-top:1px dashed var(--dsw-alias-border-l1, rgba(127,127,127,.25)); padding-top:var(--wb-s1); }
 .ag3-statgrid { display:grid; grid-template-columns:repeat(auto-fit, minmax(80px, 1fr)); gap:var(--wb-s1); margin-bottom:var(--wb-s2); }
@@ -4649,6 +4039,28 @@ window.__ModuleLoader__.load({
 
 /* ── 创建页 = 二级页面（原来是居中弹层 ag3-mask/ag3-dlg）──
    它现在由 rosterPane() 直接 return，**替代**整个 .ag3 三栏 ⇒ 必须自己占满并滚动。 */
+/* ── 中栏群聊页签的「展开右侧栏」（2026-11-02）：聊天 + 栏并排；栏里是独立页签「⚙ 群设置」 ── */
+.ag3-gonly { flex:1 1 auto; min-width:0; min-height:0; display:flex; flex-direction:row; position:relative; }
+.ag3-drawer { flex:0 0 360px; width:360px; max-width:55%; min-width:0; min-height:0; display:flex; flex-direction:column;
+  border-left:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.25)); background:var(--dsw-alias-bg-base, transparent); }
+.ag3-drawer-tabs { flex:none; display:flex; align-items:flex-end; gap:4px; padding:6px 8px 0;
+  border-bottom:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.25)); }
+.ag3-drawer-tab { display:inline-flex; align-items:center; gap:6px; padding:5px 6px 5px 10px; font-size:12px; line-height:18px;
+  color:var(--dsw-alias-label-primary, inherit); border-bottom:2px solid var(--dsw-alias-brand-primary, #4d7cfe); margin-bottom:-1px; }
+.ag3-drawer-x { width:18px; height:18px; display:inline-flex; align-items:center; justify-content:center; border:0; border-radius:5px;
+  background:transparent; color:var(--dsw-alias-label-tertiary, inherit); cursor:pointer; font-size:10px; padding:0; }
+.ag3-drawer-x:hover { background:var(--dsw-alias-bg-layer-2, rgba(127,127,127,.18)); color:var(--dsw-alias-label-primary, inherit); }
+.ag3-drawer-collapse { padding:0 8px; align-self:center; }
+.ag3-drawer-body { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
+.ag3-drawer .ag3-sub { padding:12px 14px 18px; }
+.ag3-drawer .ag3-subinner { max-width:none; }
+.ag3-drawer-btn { display:inline-flex; align-items:center; justify-content:center; padding:0 8px; }
+.ag3-drawer-btn.is-on { background:var(--dsw-alias-bg-layer-2, rgba(127,127,127,.18)); color:var(--dsw-alias-label-primary, inherit); }
+/* 窄窗：栏改成盖在聊天上（官方 <768px 同口径：右栏转全屏覆盖），避免把聊天挤成一条缝 */
+@media (max-width: 820px) {
+  .ag3-gonly > .ag3-drawer { position:absolute; right:0; top:0; bottom:0; width:min(360px, 92%); max-width:none; z-index:5;
+    box-shadow:-12px 0 32px var(--dsw-alias-bg-mask-1, rgba(0,0,0,.35)); }
+}
 .ag3-sub { flex:1 1 auto; min-width:0; min-height:0; display:flex; flex-direction:column;
   overflow:auto; padding:14px 20px 20px; }
 .ag3-subinner { width:100%; max-width:760px; margin:0 auto; display:flex; flex-direction:column; gap:8px; }
@@ -4753,6 +4165,36 @@ window.__ModuleLoader__.load({
 			return h(WorkbenchBoundary, null, h(AgentsPanel, props || null));
 		}
 
+		/**
+		 * **中栏群聊页签**的根组件（2026-11-02，Bots 工作台重构）。
+		 *
+		 * 由 chat-surface 的中栏页签（`client.workbenchNav.js`）按注册表键 `agents.groupChat` 取回并渲染，
+		 * props = `{ gid, active }`（`gid` 来自页签自带的 `props`，`active` = 当前是否在屏）。
+		 * 与 AgentsRoot 同一套保护（boundary 最外层 + 样式兜底注入），只是把面板切到 only 模式。
+		 */
+		function GroupChatRoot(props) {
+			useEffect(() => { ensureStyle(); }, []);
+			const gid = String((props && props.gid) || '');
+			return h(WorkbenchBoundary, null, h(AgentsPanel, { only: { kind: 'group', id: gid }, active: !(props && props.active === false) }));
+		}
+
+		/** 页签组件注册表（跨 chunk 的零协议通道：chat-surface 的中栏按键取组件，见 workbenchNav 的 `comp`） */
+		const PAGE_COMPONENTS_GLOBAL = '__vssarosPageComponents';
+		const GROUP_CHAT_COMP = 'agents.groupChat';
+		function registerPageComponents() {
+			try {
+				const reg = (window[PAGE_COMPONENTS_GLOBAL] = window[PAGE_COMPONENTS_GLOBAL] || {});
+				reg[GROUP_CHAT_COMP] = GroupChatRoot;
+				// 页签条/面板已经按"组件缺席"画过一遍 ⇒ 通知它们重画（同 workbenchNav 的刷新事件）
+				window.dispatchEvent(new Event('vssaros-wb-tabs-change'));
+				return () => {
+					try { if (reg[GROUP_CHAT_COMP] === GroupChatRoot) { delete reg[GROUP_CHAT_COMP]; window.dispatchEvent(new Event('vssaros-wb-tabs-change')); } } catch (e) { /* 卸载时 window 可能已没了 */ }
+				};
+			} catch (e) {
+				return undefined;
+			}
+		}
+
 		function install(ctx) {
 			// 样式**在注册前**就注入（不然首帧是三栏裸布局，看起来像"布局错了"✗）
 			try { ensureStyle(); } catch (e) { /* DOM 还没好就等组件挂载时再注入 */ }
@@ -4761,9 +4203,11 @@ window.__ModuleLoader__.load({
 					c.effect(() => c.desktopWorkbenches.register(DESCRIPTOR, AgentsRoot), 'vssaros-agents: workbench');
 				});
 			}, 'vssaros-agents: client');
+			// 中栏群聊页签的组件（不依赖 desktopWorkbenches 服务在不在）
+			ctx.effect(() => registerPageComponents(), 'vssaros-agents: page-components');
 		}
 
-		module.exports = { install, AgentsRoot, AgentsPanel };
+		module.exports = { install, AgentsRoot, AgentsPanel, GroupChatRoot, bindGroupChat };
 		return module.exports;
 	},
 });

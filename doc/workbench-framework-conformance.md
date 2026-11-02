@@ -1,5 +1,8 @@
 # 其他内置工作台是否符合「小红书笔记编辑工作台框架」
 
+> 文档状态：**【历史·调研】**（2026-10-24）。调研快照，**不是流程依据**；
+> 流程只在 `doc/workbench-development-standard.md`。
+
 **调研时间**：2026-10-24 · **样本**：本仓 14 个声明了 `vssaros.workbench` 的插件（8 自有 + 6 未注册/SSR）
 **框架来源**：`doc/xhs-note-aiwriting-mockup.html`（v3 定案）+ **`dsh-plugins/vssaros-studio`**（唯一按该框架落地的实现）
 

@@ -32,7 +32,7 @@ function normalizeTarget(raw: string): string {
 	// ★ 2026-09-24（与宿主侧 KbLinkGraph.normalizeTarget 对齐，双链解析错误）：目标是
 	//   **file:// URI** 时（如 `[[file:///e:/VsSarosVault/库/raw/UI优化篇.md]]`，中文会被百分号编码
 	//   成 `%E5%BA%93`），先解码再取 basename —— 否则永远解析不到，预览/双链面板会显示成乱码 URI。
-	//   ⚠ 相对路径形目标（`库/raw/x.md`）**不进**这个分支：它由下面的 path-suffix 匹配处理 ✓。
+	//   ⚠ 相对路径形目标（`数据源/raw/x.md`）**不进**这个分支：它由下面的 path-suffix 匹配处理 ✓。
 	if (/^[a-z][a-z0-9+.-]*:/i.test(t)) {
 		try { t = decodeURIComponent(t); } catch { /* 裸 % 等非法编码序列 ⇒ 保持原样 */ }
 		t = (t.split(/[\\/]/).pop() ?? t).trim();

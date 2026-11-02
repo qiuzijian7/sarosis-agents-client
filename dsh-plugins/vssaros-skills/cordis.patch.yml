@@ -23,12 +23,14 @@
         #     （`toPresetDefinition` 只消费 persona/tools/model/memory，skills 被忽略）。
         skillAutoload:
           - help-me-understand
-# ── 打开被随包层**关掉的消费者**（2026-10-12）──────────────────────────────────────────
-# `dsh --profile vssaros --dump-config` 里能看到：base 的 `tool-skill` 那一行被
-# `@deepseek-ai/dsh-web-app` **patch 成 `disabled: true`** ✓ ⇒ 原生 `skill` 工具**从不注册** ✗
-# ⇒ 我们的技能来源**注册了也无人使用**（技能进不了模型视野 ✗）—— 页面自诊断里
-# `data-vssaros-native-skill-tool` 长期为 `absent` 就是这个原因（**不是**"dsh 没有这个工具" ✗：
-# 包就在 runtime 里、dsh 自己还依赖它 ✓）。
-# 本模块的层在 web-app **之后** ⇒ 这一条把开关翻回来 ✓（只翻 `disabled`，不动它的其它配置 ✓）。
-- id: tool-skill
-  disabled: false
+# ── host 平面的 `tool-skill` **保持随包层的 disabled: true**（2026-11-02 撤回 10-12 那条翻转）─────────
+# 10-12 这里写过 `- id: tool-skill / disabled: false`（当时 agent preset 里还没有 tool-skill 行）。
+# 10-25 起我们的 preset 从官方 standard 基座生成、**自带** tool-skill ⇒ 两份实例同时活着：
+#   · H = host 平面那份：`skill` 注册在**全局**层，pre-step 监听不带作用域（收所有 agent 的事件）；
+#   · P = preset 那份：`skill` 注册在 preset 作用域层（agent 作用域的父级），监听挂在 preset 作用域。
+#   `tools.get('skill', agent)` = 全局层被祖先层覆盖 ⇒ 返回 **P** ⇒ H 判"自己的工具不可见"⇒ 快照当空；
+#   而 H 注册得早 ⇒ 在 waterfall 里是**外层**，在 P 发完目录之后执行，命中 dsh-tool-skill 的
+#   `!history.published && skills.length === 0 ⇒ 删掉现有 skill-catalog 消息` 分支 ⇒ **P 发的目录被 H 删掉**。
+#   真机表现：10-28 以来所有 vssaros-* 会话 skill-catalog 都是 0 条，模型"看不到任何技能"（含 Office 7 个）。
+# ⇒ 与上游设计一致：技能机制（skill-filesystem / tool-skill）只在 preset 里，host 平面这两行保持关闭。
+#   ⚠ 别再把它翻回来；需要"原生 skill 工具在不在"的诊断，请按 agent 作用域查（`tools.get('skill', agent)`）。

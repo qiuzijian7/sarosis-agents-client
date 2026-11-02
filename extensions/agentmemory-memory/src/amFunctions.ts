@@ -16,7 +16,7 @@ import type {
 	Observation, ObservationPayload,
 	SemanticMemory, ProceduralMemory, Insight,
 } from './amTypes.js';
-import { KV, generateId, fingerprintId, jaccardSimilarity, estimateTokens } from './amSchema.js';
+import { KV, generateId, fingerprintId, jaccardSimilarity, similarityTokens, estimateTokens } from './amSchema.js';
 import { readEnv } from './amEnv.js';
 import { StateKV } from './stateKV.js';
 import { getProfile } from './amPipeline.js';
@@ -156,7 +156,10 @@ export async function autoPage(kv: StateKV, agentId: string, tokenBudget: number
 		const mem: Memory = {
 			id: generateId('mem'), createdAt: entry.createdAt, updatedAt: new Date().toISOString(),
 			type: 'fact', title: entry.content.slice(0, 80), content: entry.content,
-			concepts: [], files: [], sessionIds: [], strength: entry.importance / 10,
+			// 2026-11-02：strength 统一到 **0–10** 刻度。原实现写 `importance / 10`
+			// （0–1 刻度）⇒ 与 `rememberMemory` 的 7、`reinforceMemory` 的 +1 混用，
+			// 让「strength ≤ 2 且 >90 天」等于"全部"。importance 本来就是 1–10 ⇒ 直接落。
+			concepts: [], files: [], sessionIds: [], strength: Math.min(10, Math.max(0, entry.importance)),
 			version: 1, isLatest: true, agentId,
 		};
 		await kv.set(KV.memories(agentId), mem.id, mem);
@@ -260,6 +263,11 @@ export async function remember(
 	for (const m of existing) {
 		if (m.isLatest === false) continue;
 		if (project && m.project && m.project !== project) continue;
+		// ★ 2026-11-02：只在**同 type** 内判近重复。
+		//   跨 type 的高词面重叠几乎都是误判（`bug: X 崩溃` vs `fact: X 已修复`），
+		//   而误判的代价是旧条被标 isLatest=false → 进归档 → 不再参与检索/注入。
+		//   宁可漏判（多留一条近重复）也不要错判（少一条真事实）。
+		if ((m.type ?? 'fact') !== memType) continue;
 		const sim = jaccardSimilarity(content.toLowerCase(), m.content.toLowerCase());
 		if (sim > CONTRADICTION_THRESHOLD) {
 			supersededId = m.id;
@@ -466,10 +474,23 @@ function escapeXmlAttr(s: string): string {
 
 export async function buildContext(
 	kv: StateKV, agentId: string, sessionId: string, project: string, tokenBudget: number,
-	query?: string, options?: { includeEntries?: boolean },
+	query?: string, options?: {
+		includeEntries?: boolean;
+		/** 跳过"会话级"两块（摘要 / 观察）。dsh 注入路径必用：它传的 `sessionId` 是**分区键**，
+		 *  与真实会话 id 永不相等 ⇒ 这两块恒为空，却每次注入都要多打两次全表 list。 */
+		skipSessionBlocks?: boolean;
+		/** 注入算不算"被访问"（默认算）。dsh 注入应传 false：注入不是使用，
+		 *  否则 retention 分数被注入频率灌水（每个会话首装都记一次）。 */
+		recordAccess?: boolean;
+		/** 注入路径要不要顺带做 core→episodic 下溢（默认做）。网关 sweep 已兜底 ⇒ dsh 可传 false。 */
+		autoPage?: boolean;
+	},
 ): Promise<IMemoryContext> {
 	const blocks: ContextBlock[] = [];
 	const nowMs = Date.now();
+	const skipSessionBlocks = options?.skipSessionBlocks === true;
+	const wantRecordAccess = options?.recordAccess !== false;
+	const wantAutoPage = options?.autoPage !== false;
 
 	// ── 注入组装 1:1 对齐 agentmemory mem::context（functions/context.ts）──
 	// 块序列：pinned slots → project profile → lessons → session summaries →
@@ -477,11 +498,13 @@ export async function buildContext(
 	// 原版不注入原始长期记忆/核心记忆（召回全走工具）——memories 与 core
 	// 仅放进返回值供 UI/其他消费者使用，不进注入文本。
 
-	// Pinned slots（recency=now 使其排序后自然靠前，与原版一致）
+	// Pinned slots（★ 2026-11-02：recency 由 `nowMs` 改为**固定 0**）
+	// 原来每次装配都给一个"现在"，而输出按 recency 升序（见末尾）⇒ 它每次都变、排位不稳；
+	// 固定 0 让它永远是第一块（内容本来就只在人改槽位时才变）。
 	const pinnedSlots = await listPinnedSlots(kv, agentId);
 	const slotContent = renderPinnedContext(pinnedSlots);
 	if (slotContent) {
-		blocks.push({ type: 'slot', content: slotContent, tokens: estimateTokens(slotContent), recency: nowMs, sourceIds: pinnedSlots.map(s => s.label) });
+		blocks.push({ type: 'slot', content: slotContent, tokens: estimateTokens(slotContent), recency: 0, sourceIds: pinnedSlots.map(s => s.label) });
 	}
 
 	// Project Profile
@@ -494,7 +517,8 @@ export async function buildContext(
 		if (profile.commonErrors?.length > 0) parts.push(`Common errors: ${profile.commonErrors.slice(0, 3).join('; ')}`);
 		if (parts.length > 0) {
 			const content = `## Project Profile\n${parts.join('\n')}`;
-			blocks.push({ type: 'slot', content, tokens: estimateTokens(content), recency: nowMs });
+			// 固定 1：永远紧跟槽位块（profile 是"慢变事实"，同样是前缀的一部分）
+			blocks.push({ type: 'slot', content, tokens: estimateTokens(content), recency: 1 });
 		}
 	}
 
@@ -523,7 +547,10 @@ export async function buildContext(
 	// 注入 A 的 LLM 请求 → "A 的问题被 B 回答"。注入范围收敛为**当前会话自己的
 	// summary**（供模型记住本会话压缩历史）；其他会话经验走 memory_search/recall 工具
 	// 按需召回，不自动倾倒进上下文。
-	const summaries = (await kv.list<SessionSummary>(KV.summaries(agentId)))
+	// ★ 2026-11-02：`skipSessionBlocks`（dsh 注入）⇒ 不读这一 scope。
+	//   dsh 传的 `sessionId` 是分区键（= agentId），与真实会话 id 永不相等 ⇒ 过滤结果恒空，
+	//   但 `kv.list` 是全表读（跨进程 HTTP）⇒ 每次注入白付一次开销。
+	const summaries = skipSessionBlocks ? [] : (await kv.list<SessionSummary>(KV.summaries(agentId)))
 		.filter(s => typeof s.narrative === 'string' && Array.isArray(s.keyDecisions))
 		.filter(s => s.sessionId === sessionId);
 	const summarizedSessionIds = new Set(summaries.map(s => s.sessionId));
@@ -538,7 +565,7 @@ export async function buildContext(
 	// （工具输出预览），同样导致"A 的问题被 B 回答"。观察是会话级数据，注入范围
 	// 收敛为**当前会话自己的无摘要观察**；其他会话经验走 memory_search/recall 工具
 	// 按需召回，不自动倾倒进上下文。
-	const sessions = await kv.list<{ id: string; startedAt: string }>(KV.sessions(agentId));
+	const sessions = skipSessionBlocks ? [] : await kv.list<{ id: string; startedAt: string }>(KV.sessions(agentId));
 	const recentUnsummarized = sessions
 		.filter(s => s.id === sessionId && !summarizedSessionIds.has(s.id))
 		.sort((a, b) => b.startedAt.localeCompare(a.startedAt))
@@ -624,23 +651,38 @@ export async function buildContext(
 		} catch { /* 搜索失败不阻断策展注入 */ }
 	}
 
-	// 全局 recency 排序（原版 context.ts:234 —— 最新块优先占用预算）
+	// ① 抢占顺序：recency **降序**（原版 context.ts:234 —— 新的/重要的先占预算）
 	blocks.sort((a, b) => b.recency - a.recency);
 
-	// 预算填充（header/footer 计入预算，对齐原版 context.ts:241）
+	// ② 预算填充（header/footer 计入预算，对齐原版 context.ts:241）
 	const header = `<agentmemory-context project="${escapeXmlAttr(project)}">`;
 	const footer = `</agentmemory-context>`;
 	let usedTokens = estimateTokens(header) + estimateTokens(footer);
-	const selected: string[] = [];
+	const selectedBlocks: ContextBlock[] = [];
 	const accessedIds: string[] = [];
 	for (const block of blocks) {
 		if (usedTokens + block.tokens > tokenBudget) continue;
-		selected.push(block.content);
+		selectedBlocks.push(block);
 		usedTokens += block.tokens;
 		if (block.sourceIds) accessedIds.push(...block.sourceIds);
 	}
-	if (accessedIds.length > 0) void recordAccessBatch(kv, agentId, accessedIds);
-	void autoPage(kv, agentId, tokenBudget);
+
+	// ③ ★ 输出顺序（2026-11-02）：按 recency **升序**（旧 → 新）。
+	//
+	// 为什么不能沿用"降序直接输出"：这是常驻注入的**系统提示前缀**，
+	// 降序 = 新块插到最前面 ⇒ 每多一条记忆，**整段前缀的每个字节都位移** ⇒ 提供方的
+	// KV 前缀缓存全废（三个社区插件独立得出同一结论：plus 用 data_version 冻结快照、
+	// evolve 明确只注入稳定轨、longterm 把常驻块压到 700 token）。
+	// 升序 = 新条目**追加在尾部** ⇒ 已有前缀逐字节不变，只多出尾部增量。
+	// 抢占顺序仍然是"新的优先"（② 已经按降序挑完），这里只改**排版**不改取舍。
+	const selected = [...selectedBlocks]
+		.sort((a, b) => a.recency - b.recency)
+		.map(block => block.content);
+
+	// ④ 副作用收口：注入**不是使用**（否则 retention 分数被注入频率灌水），
+	//    下溢也交给网关 sweep（`runFullSweep` 里已有 autoPage）⇒ 注入路径可关。
+	if (wantRecordAccess && accessedIds.length > 0) void recordAccessBatch(kv, agentId, accessedIds);
+	if (wantAutoPage) void autoPage(kv, agentId, tokenBudget);
 	const systemPrompt = selected.length > 0 ? `${header}\n${selected.join('\n\n')}\n${footer}` : '';
 
 	// 返回值中的长期/短期记忆数组仅供 UI 与其他消费者（不进注入文本）。
@@ -693,7 +735,9 @@ export async function autoForget(kv: StateKV, agentId: string, dryRun: boolean =
 	/** ≤ 该规模走精确全两两（O(N²) 可接受且无剪枝漏检风险） */
 	const PAIRWISE_EXACT_LIMIT = 200;
 	const n = latest.length;
-	const tokenSets = latest.map(m => new Set(m.content.toLowerCase().split(/\s+/).filter(t => t.length > 2)));
+	// 2026-11-02：tokenizer 换成 `similarityTokens`（CJK bigram + 空集不计相似）。
+	// 旧口径对中文整句只产出 1 个 token ⇒ 矛盾检测对中文永久失明（实测 275 条）。
+	const tokenSets = latest.map(m => similarityTokens(m.content));
 	const df = new Map<string, number>();
 	for (const s of tokenSets) { for (const t of s) { df.set(t, (df.get(t) ?? 0) + 1); } }
 	const dfCap = Math.max(2, Math.floor(n * 0.3));
@@ -1021,11 +1065,151 @@ export async function consolidateToProcedural(kv: StateKV, agentId: string, sour
 	return proceduralSave(kv, agentId, title, steps, [], '', confidence, tags, undefined);
 }
 
+// ─── Archive（2026-11-02）────────────────────────────────────────────────
+
+/**
+ * 归档保留期。到期才真正删除 —— 归档是"暂时看不见"，不是"留着占地方"。
+ * 取 90 天：足够覆盖"误删后过一阵才发现"的场景，又不至于让库无限膨胀。
+ */
+export const ARCHIVE_TTL_MS = 90 * MS_PER_DAY;
+
+/**
+ * 把一条记忆移进归档（可恢复），并从 `mem:memories` 移除。
+ *
+ * 与被替换掉的"直接 delete"相比，这里多写一份带 `archivedAt` / `archiveReason`
+ * 的副本 —— 因为**误判无法事后发现**：一旦硬删，连"曾经存在过这条"都查不到。
+ *
+ * @param mem 原条目（会写入 `isLatest:false`，避免从归档里被当成活跃条目取出）
+ * @param reason `superseded`（被同 type 近重复替代）/ `contradiction`（矛盾检测）/ `manual`
+ */
+export async function archiveMemory(kv: StateKV, agentId: string, mem: Memory, reason: string): Promise<void> {
+	try {
+		await kv.set(KV.archive(agentId), mem.id, {
+			...mem, isLatest: false, archivedAt: new Date().toISOString(), archiveReason: reason,
+		});
+	} catch {
+		// 归档失败 ⇒ **不删原件**（宁可留一条脏数据，也不能丢掉唯一副本）
+		return;
+	}
+	await kv.delete(KV.memories(agentId), mem.id);
+	await deleteAccessLog(kv, agentId, mem.id);
+}
+
+/**
+ * 清理超过保留期的归档条目（归档 scope 的唯一读侧 —— 没有它归档就是只增不减）。
+ *
+ * 时间解析不出的条目**保留**：与保留期口径一致（宁可多留，不可误删）。
+ * @returns 实际删除的条数
+ */
+export async function pruneArchive(kv: StateKV, agentId: string, now: number = Date.now()): Promise<number> {
+	const rows = await kv.list<{ id?: string; archivedAt?: string }>(KV.archive(agentId));
+	let removed = 0;
+	for (const row of rows) {
+		const id = typeof row?.id === 'string' ? row.id : '';
+		if (!id) { continue; }
+		const at = typeof row.archivedAt === 'string' ? Date.parse(row.archivedAt) : NaN;
+		if (!Number.isFinite(at)) { continue; }
+		if (now - at <= ARCHIVE_TTL_MS) { continue; }
+		await kv.delete(KV.archive(agentId), id);
+		removed++;
+	}
+	return removed;
+}
+
+/** 归档条目的只读视图（工作台「归档」页签用；不含 embedding 等大字段）。 */
+export interface ArchivedMemoryView {
+	id: string;
+	content: string;
+	type: string;
+	archivedAt: string;
+	archiveReason: string;
+	/** 归档到期时间（ms；`archivedAt` 解析不出时为 null ⇒ 永不自动清理，与 `pruneArchive` 同口径） */
+	expiresAt: number | null;
+	/** 距到期还剩几天（向上取整，最小 0；解析不出为 null） */
+	daysLeft: number | null;
+	version?: number;
+	supersedes?: string[];
+}
+
+/**
+ * 列出归档（2026-11-02，工作台「归档」页签）。按归档时间**新→旧**；`archivedAt` 解析不出的排最后。
+ *
+ * ⚠ 只读：不触碰 `mem:memories`，也不参与任何检索/注入（归档的定义就是"暂时看不见"）。
+ * @param limit 返回条数上限（`total` 仍是全量，页面据此提示"仅显示最近 N 条"）
+ */
+export async function listArchive(
+	kv: StateKV, agentId: string, now: number = Date.now(), limit: number = 200,
+): Promise<{ total: number; items: ArchivedMemoryView[] }> {
+	const rows = await kv.list<Memory & { archivedAt?: string; archiveReason?: string }>(KV.archive(agentId));
+	const views: ArchivedMemoryView[] = [];
+	for (const row of rows) {
+		if (!row || typeof row.id !== 'string' || !row.id) { continue; }
+		const at = typeof row.archivedAt === 'string' ? Date.parse(row.archivedAt) : NaN;
+		const expiresAt = Number.isFinite(at) ? at + ARCHIVE_TTL_MS : null;
+		views.push({
+			id: row.id,
+			content: String(row.content ?? ''),
+			type: String(row.type ?? 'fact'),
+			archivedAt: typeof row.archivedAt === 'string' ? row.archivedAt : '',
+			archiveReason: String(row.archiveReason ?? ''),
+			expiresAt,
+			daysLeft: expiresAt === null ? null : Math.max(0, Math.ceil((expiresAt - now) / MS_PER_DAY)),
+			version: row.version,
+			supersedes: Array.isArray(row.supersedes) ? row.supersedes : undefined,
+		});
+	}
+	views.sort((a, b) => {
+		const ta = Date.parse(a.archivedAt); const tb = Date.parse(b.archivedAt);
+		const va = Number.isFinite(ta) ? ta : -Infinity; const vb = Number.isFinite(tb) ? tb : -Infinity;
+		return vb - va;
+	});
+	return { total: views.length, items: views.slice(0, Math.max(0, limit)) };
+}
+
+/**
+ * 把一条归档条目恢复回长期记忆（2026-11-02）。
+ *
+ * 取舍（刻意保守）：
+ *  · **不动**当前最新版本 —— 原稿设想"恢复时把现任最新版标为旧版本"，但那等于一次恢复就**再删一条**
+ *    （与归档层"误判不可怕、因为可恢复"的初衷相反）。恢复后两条并存，用户再决定忘掉哪一条。
+ *  · 同 id 已有**有效**记忆 ⇒ 拒绝覆盖（该 id 由内容指纹派生，说明同样的内容已被重新写入过）。
+ *  · 顺序：**先写回 memories，再删归档** —— 中途失败最坏是两边各一份，不会丢。
+ *  · 已过期的 `forgetAfter` 要去掉，否则下一轮 sweep 会把刚恢复的条目立刻又删了。
+ */
+export async function restoreArchived(
+	kv: StateKV, agentId: string, id: string, now: number = Date.now(),
+): Promise<{ success: boolean; id?: string; error?: string }> {
+	if (typeof id !== 'string' || !id) { return { success: false, error: 'id 为空' }; }
+	const row = await kv.get<Memory & { archivedAt?: string; archiveReason?: string }>(KV.archive(agentId), id);
+	if (!row) { return { success: false, error: '归档里没有这一条（可能已过期被清理）' }; }
+	const live = await kv.get<Memory>(KV.memories(agentId), id);
+	if (live && live.isLatest !== false) {
+		return { success: false, error: '长期记忆里已经有同 id 的有效记忆，未覆盖' };
+	}
+	const { archivedAt: _a, archiveReason: _r, ...rest } = row;
+	const restored: Memory = { ...rest, isLatest: true, updatedAt: new Date(now).toISOString() };
+	if (restored.forgetAfter && Date.parse(restored.forgetAfter) <= now) { delete restored.forgetAfter; }
+	await kv.set(KV.memories(agentId), id, restored);
+	memCachePut(agentId, restored);
+	await kv.delete(KV.archive(agentId), id);
+	return { success: true, id };
+}
+
 // ─── Evict ──────────────────────────────────────────────────────────────
 
-export async function evict(kv: StateKV, agentId: string, dryRun: boolean = false): Promise<{ expiredMemories: number; nonLatest: number; lowImportance: number }> {
+export interface EvictStats {
+	expiredMemories: number;
+	nonLatest: number;
+	lowImportance: number;
+	/** 实际移进归档的条数（`nonLatest` 的一部分；`dryRun` 时恒 0） */
+	archived: number;
+	/** 本轮清掉的超期归档条数 */
+	archivePurged: number;
+}
+
+export async function evict(kv: StateKV, agentId: string, dryRun: boolean = false): Promise<EvictStats> {
 	const now = Date.now();
-	const stats = { expiredMemories: 0, nonLatest: 0, lowImportance: 0 };
+	const stats: EvictStats = { expiredMemories: 0, nonLatest: 0, lowImportance: 0, archived: 0, archivePurged: 0 };
 	const memories = await kv.list<Memory>(KV.memories(agentId));
 	for (const mem of memories) {
 		if (mem.forgetAfter && now > new Date(mem.forgetAfter).getTime()) {
@@ -1035,7 +1219,13 @@ export async function evict(kv: StateKV, agentId: string, dryRun: boolean = fals
 		}
 		if (mem.isLatest === false && (now - new Date(mem.updatedAt || mem.createdAt).getTime()) > 7 * MS_PER_DAY) {
 			stats.nonLatest++;
-			if (!dryRun) { await kv.delete(KV.memories(agentId), mem.id); await deleteAccessLog(kv, agentId, mem.id); }
+			// ★ 2026-11-02：从"直接 delete"改为**先归档再删**。
+			//   触发这条的是 `remember`/`autoForget` 的近重复判定，而旧相似度口径对中文
+			//   会给出 0 或 1 的极端值 ⇒ 误判概率不低。归档 90 天给"误删恢复"留出窗口。
+			if (!dryRun) {
+				await archiveMemory(kv, agentId, mem, 'superseded');
+				stats.archived++;
+			}
 			continue;
 		}
 		// ★ 2026-10-20 止血：这条分支**只计数、不删除**（`dryRun` 对它不再有区别）。
@@ -1047,9 +1237,17 @@ export async function evict(kv: StateKV, agentId: string, dryRun: boolean = fals
 		//     （诊断/日志能看到"本该被删的候选有多少"）。
 		//   ⚠ 刻意**不**改成 `isLatest = false` 软删：上面的 nonLatest 分支 7 天后会把它硬删，
 		//     且 `isLatest === false` 的条目对检索/注入不可见 ⇒ 只是换个方式删掉。
+		//   ★ 2026-11-02 进度：刻度已在**写入侧**统一（`autoPage` 直接落 0–10、V2 `updateMemory`
+		//     接受 0–10），存量数据由网关启动时的 KV schema 迁移 v1 归一到 0–10。
+		//     ⇒ 这条分支**仍保持只上报**：它的判据要等迁移后的库跑过一轮 sweep、确认候选数与
+		//     人工抽检一致再开；届时改成 `archiveMemory(..., 'low-importance')` 而不是 delete。
 		if (mem.strength <= 2 && (now - new Date(mem.createdAt).getTime()) > 90 * MS_PER_DAY) {
 			stats.lowImportance++;
 		}
+	}
+	// 归档也要有出口，否则"可恢复"会变成"永久留一份"。
+	if (!dryRun) {
+		stats.archivePurged = await pruneArchive(kv, agentId, now);
 	}
 	return stats;
 }

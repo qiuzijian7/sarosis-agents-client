@@ -17,7 +17,7 @@ import { buildGraphData } from '../lib/core/kbGraphData.js';
 import { readNotesForGraph } from '../lib/organize.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
-const NOTES_DIR = process.env.VSSAROS_SMOKE_NOTES_DIR || 'E:/VsSarosVault/笔记';
+const NOTES_DIR = process.env.VSSAROS_SMOKE_NOTES_DIR || 'E:/VsSarosVault/知识库列表';
 const serve = !process.argv.includes('--no-serve');
 
 /**

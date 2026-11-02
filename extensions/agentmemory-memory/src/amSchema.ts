@@ -25,6 +25,16 @@ export const KV = {
 	lessons: (agentId: string) => `mem:lessons:${agentId}`,
 	insights: (agentId: string) => `mem:insights:${agentId}`,
 	retentionScores: (agentId: string) => `mem:retention:${agentId}`,
+	/**
+	 * 归档层（2026-11-02）：被取代 / 被矛盾判定淘汰的记忆**移到这里**，不再硬删。
+	 *
+	 * 为什么要有：`evict` 原先直接 `delete` 旧版本 ⇒ 一次误判（旧相似度口径对中文
+	 * 会给出 0 或 1 的极端值）就是**永久数据丢失**，而且事后无法申诉。
+	 * 归档保留 90 天（`ARCHIVE_TTL_MS`），期间可恢复；到期由 `pruneArchive` 清理。
+	 *
+	 * ⚠ 归档条目**不参与**任何检索/注入（只在 memories scope 里的条目才进索引）。
+	 */
+	archive: (agentId: string) => `mem:archive:${agentId}`,
 	accessLog: (agentId: string) => `mem:access:${agentId}`,
 	slots: (agentId: string) => `mem:slots:${agentId}`,
 	state: (agentId: string) => `mem:state:${agentId}`,
@@ -84,18 +94,17 @@ export function fingerprintId(prefix: string, content: string): string {
 	return `${prefix}_${hash.slice(0, 16)}`;
 }
 
-/** Jaccard 相似度 — 对齐 agentmemory jaccardSimilarity */
-export function jaccardSimilarity(a: string, b: string): number {
-	const setA = new Set(a.split(/\s+/).filter(t => t.length > 2));
-	const setB = new Set(b.split(/\s+/).filter(t => t.length > 2));
-	if (setA.size === 0 && setB.size === 0) return 1;
-	if (setA.size === 0 || setB.size === 0) return 0;
-	let intersection = 0;
-	for (const word of setA) {
-		if (setB.has(word)) intersection++;
-	}
-	return intersection / (setA.size + setB.size - intersection);
-}
+/**
+ * Jaccard 相似度 —— 实现搬到 `similarity.ts`（2026-11-02）。
+ *
+ * 旧实现按空白切词 ⇒ 中文整句只有 1 个 token（去重/矛盾检测对中文永久失明），
+ * 且「双空集 ⇒ 1.0」会把两条短中文记忆判成完全相同（后者把前者标 isLatest=false
+ * ⇒ 7 天后被 evict 硬删）。新实现在 `similarity.ts`，口径与 `bm25Index` 的
+ * CJK 降级分支同构（bigram），并明确「空集 ⇒ 0」。
+ *
+ * 保留此处的再导出：`amFunctions` 等调用方无需改动 import 路径。
+ */
+export { jaccardSimilarity, jaccardFromSets, similarityTokens, SIMILARITY_MAX_TOKENS } from './similarity.js';
 
 /** 估算 token 数 — 对齐 agentmemory estimateTokens */
 export function estimateTokens(text: string): number {

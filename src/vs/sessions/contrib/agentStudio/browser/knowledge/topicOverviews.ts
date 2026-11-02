@@ -21,7 +21,7 @@ import type { IChatModel } from './llm.js';
 /** 每个目录的摘要文件名（点开头：不被笔记扫描 / 图谱索引收录）。 */
 export const TOPIC_OVERVIEW_FILE = '.overview.md';
 /** 缓存文件名（记录各目录上次生成时的文件印章集合）。 */
-export const TOPIC_OVERVIEW_CACHE_FILE = '.kb-topic-overview-cache.json';
+export const TOPIC_OVERVIEW_CACHE_FILE = '.kb/topic-overview-cache.json';
 
 /** freshness 阈值：变更比例达到该值才重算（对齐 OpenViking 0.10）。 */
 const FRESHNESS_THRESHOLD = 0.10;

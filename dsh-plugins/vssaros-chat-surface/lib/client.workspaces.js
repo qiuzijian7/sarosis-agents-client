@@ -59,6 +59,13 @@ window.__ModuleLoader__.load({
 		const SLOT = "sidebar.workspaces";
 		const WORKSPACE_EVENT = "vssaros-dsh-workspaces";
 		const HOVER_DELAY_MS = 350;
+		/**
+		 * 会话行 hover 卡片的延迟（2026-11-02，对齐官方 `SessionNodeItem` 的
+		 * `HoverCard openDelayMs={800}`）。
+		 * ⚠ 与工作区的 350ms 刻意不同：会话行是**高频划过**的列表，350ms 会一路弹卡；
+		 *   官方取 800ms 就是"停一下才给详情"的意思。
+		 */
+		const SESS_HOVER_DELAY_MS = 800;
 
 		// ── 纯逻辑（__test 可直接断言）────────────────────────────────────────
 		function samePath(a, b) {
@@ -125,6 +132,253 @@ window.__ModuleLoader__.load({
 			if (h < 24) { return h + " 小时"; }
 			return Math.floor(h / 24) + " 天";
 		}
+
+		// ══════════ 侧栏「会话 / Bots」页签（2026-11-02，Bots 工作台重构）══════════
+		//
+		// 用户要求（2026-11-02）：「左侧栏里『工作区』那块改成 **会话 / Bots** 两个页签；
+		//   会话 = 现在的工作区内容；Bots = bot 列表 + 群聊列表；点 bot ⇒ 中栏就是 dsh 聊天框」。
+		//
+		// 为什么落在本 chunk：`sidebar.workspaces` 这个槽由本 chunk **独占**（priority -10 遮蔽官方
+		//   WorkspaceBrowser）⇒ 页签只能长在这块里。另开一列会吃掉 250px 里本就紧张的行宽 ✗。
+		//
+		// 数据面**只走 agents 插件的同源 HTTP**（与 chat-surface 的 Bots 选择器同一条）：
+		//   · `/x/agents/api/home`  → agents[]（含 presetId / registered）+ home[agentId].sessions[0..n]
+		//     （**最近会话带 id** ⇒ 点 bot 能直接打开它，不必每次新建一条空会话 ✓）
+		//   · `/x/agents/api/groups` → 群聊清单（members / mode）
+		//   · 没有会话时：`POST /api/session { agentPreset }` 新建，再 `openSession`
+		// ⚠ 任何失败都**就地渲染**（窗口模式没有宿主桥 ⇒ notify 是空转，与 ＋ 菜单同一口径）。
+		const SIDEBAR_VIEW_KEY = "vssaros.chatSurface.sidebarView.v1";
+		const AGENTS_API_HOME = "/x/agents/api/home";
+		const AGENTS_API_GROUPS = "/x/agents/api/groups";
+		const AGENTS_API_SESSION = "/x/agents/api/session";
+		/**
+		 * 读一条会话的**首条真实用户消息**（host 侧只读路由；2026-11-02）。
+		 * 用途：把「未命名」补成可读标题 —— dsh 自己没有自动标题能力，`title` 只来自
+		 * `session/title` 事件，所以只能由我们读日志 + 调官方 `session.rename` 写回。
+		 */
+		const FIRST_PROMPT_API = "/x/chat-surface/api/first-prompt";
+		/**
+		 * agents 插件的两个**写**接口（2026-11-02 用户要求「＋ 表示新建 bot 或群聊」）：
+		 *   · `POST /x/agents/api/agents { action:'create', draft }`  —— `draft` 见 agents 的 `core/create.js`：
+		 *     `name`（必填）、`id`（必填，`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`）、`role`、`description`、`icon`…
+		 *     ⚠ id 必须英文/数字（`suggestIdFromName` 对纯中文返回空）⇒ 表单里给一个可编辑的 id 输入框；
+		 *   · `POST /x/agents/api/groups { action:'create', name, members[] }` —— members 至少 1 个且必须真实存在。
+		 */
+		const AGENTS_API_AGENTS = "/x/agents/api/agents";
+		/**
+		 * 让宿主准备「默认工作区」目录（`<DSH_HOME>/VsSaros`，只 mkdir、不写文件 ⇒ 幂等）。
+		 * 为什么需要它：官方 `workspaces.initializeDefault()` 只在**一个工作区都没有**时生效
+		 * （有工作区时实测返回 `undefined`），而 `workspaces.create({ path })` 又要"已存在的绝对路径"。
+		 */
+		const DEFAULT_WS_API = "/x/chat-surface/api/default-workspace";
+
+		function readSidebarView() {
+			try {
+				const v = typeof localStorage !== "undefined" ? localStorage.getItem(SIDEBAR_VIEW_KEY) : null;
+				return v === "bots" ? "bots" : "sessions";
+			} catch { return "sessions"; }
+		}
+		function writeSidebarView(v) {
+			try {
+				if (typeof localStorage !== "undefined") {
+					localStorage.setItem(SIDEBAR_VIEW_KEY, v === "bots" ? "bots" : "sessions");
+				}
+			} catch { /* 存不了只影响下次启动的默认页签 */ }
+		}
+		/**
+		 * bot 行的「最近一条会话 id」（没有 ⇒ 空串 ⇒ 点击时新建）。
+		 * **纯函数**：`__test` 直接断言（数据形状来自 `buildHomeData`，见 agents 插件 lib/home.js）。
+		 */
+		function latestSessionIdOf(home, agentId, usable) {
+			const row = (home && home[agentId]) || {};
+			const list = Array.isArray(row.sessions) ? row.sessions : [];
+			// `usable(sid)`（可选）：返回 false ⇒ 跳过这条。用来排除**确知没有工作区**的会话
+			// （官方 hero 会对它显示「选择一个工作区开始」并禁用输入框 —— 2026-11-02 用户截图「bot 聊天框无法输入」）。
+			const hit = list.filter((s) => s && typeof s.id === "string" && s.id
+				&& (typeof usable !== "function" || usable(s.id) !== false))[0];
+			return hit ? hit.id : "";
+		}
+		/**
+		 * 新建 bot 会话该登记进哪个工作区 ⇒ 返回 **dsh 的 workspaceId**（不是路径）。
+		 *
+		 * ★ 2026-11-02 两次修正（用户反复报「bot 聊天框无法输入」）：
+		 *   第一版传 `cwd`，**方向错了**：官方 `session.create` 只给 cwd ⇒ 会话有目录但**不登记进工作区账本**；
+		 *   而 hero 的输入框判据是 `inert = hero && chipTitle === undefined`，`chipTitle` 来自「账本里含该会话」的
+		 *   工作区标题（账本就绪后不再用 cwd 兜底）⇒ 不在账本 ⇒ 灰输入框 + 工作区选择器写着「选择工作区」。
+		 *   传 `workspaceId` ⇒ 官方建完会 `workspace.attachSession(sid)` ⇒ 登记 ✓（与 `cwd` 互斥，不能同时给）。
+		 * 选取：**当前会话所在工作区**优先（用户眼前的），否则快照第一个有 workspaceId 的；都没有 ⇒ 空串
+		 * （调用方提示"先添加工作区"，不盲建 ✗）。纯函数：`__test` 直接断言。
+		 */
+		function pickBotWorkspaceId(currentSessionId, wsSnap) {
+			const items = (wsSnap && Array.isArray(wsSnap.items)) ? wsSnap.items : [];
+			const usable = items.filter((it) => it && typeof it.workspaceId === "string" && it.workspaceId);
+			if (currentSessionId) {
+				const own = usable.filter((it) => Array.isArray(it.sessionIds) && it.sessionIds.indexOf(currentSessionId) >= 0)[0];
+				if (own) { return own.workspaceId; }
+			}
+			return usable[0] ? usable[0].workspaceId : "";
+		}
+		/** 该会话是否已**登记进某个工作区账本**（没登记 ⇒ 官方 hero 会禁用输入框）。 */
+		function isRegisteredSession(sid, wsSnap) {
+			const items = (wsSnap && Array.isArray(wsSnap.items)) ? wsSnap.items : [];
+			return items.some((it) => it && Array.isArray(it.sessionIds) && it.sessionIds.indexOf(sid) >= 0);
+		}
+		// ── Bots 名册的**缓存优先 + 超时**（2026-11-02 用户报「读取名册太慢了」）───────────────
+		//
+		// 现场：切到 Bots 页签后一直停在「正在读取名册…」。`/x/agents/api/home` 是慢接口
+		//   （host 侧要汇总每个 agent 的最近会话，本机 284 条会话时明显偏慢）⇒ 在它返回之前
+		//   整块是白屏，用户只能干等。
+		//
+		// 口径（与侧栏其它数据一致：**先给能看的，再纠正**）：
+		//   · 上次结果落 localStorage ⇒ 进页签**立刻渲染**（标「缓存」），后台静默刷新；
+		//   · 请求加 8s 超时 ⇒ 永不无限期停在 loading；超时后**保留缓存内容**并说明原因；
+		//   · 缓存只存展示所需字段（agents/home/groups/at），不放任何敏感物。
+		/**
+		 * 「已从列表移除的工作区」持久化键（2026-11-02 用户报「删除的工作区重启后又显示出来」）。
+		 *
+		 * 为什么必须落盘：`workspaces.delete` 只摘 dsh 登记，**IDE 记录仍在** ⇒ 行还是会被
+		 *   `buildSidebar` 的 group 分支渲染出来。只把 record.id 记在内存里的话，重启/重载就丢
+		 *   ⇒ 行"复活" ✗。落 localStorage 才能真的持续隐藏；同时给一个「恢复已移除的工作区」入口，
+		 *   否则用户永远找不回（只能清缓存）。
+		 */
+		const WS_REMOVED_KEY = "vssaros.ws.removed.v1";
+		function readRemovedWs() {
+			try {
+				if (typeof localStorage === "undefined") { return []; }
+				const raw = localStorage.getItem(WS_REMOVED_KEY);
+				if (!raw) { return []; }
+				const a = JSON.parse(raw);
+				return Array.isArray(a) ? a.filter((x) => typeof x === "string" && x) : [];
+			} catch { return []; }
+		}
+		function saveRemovedWs(list) {
+			try {
+				if (typeof localStorage === "undefined") { return; }
+				localStorage.setItem(WS_REMOVED_KEY, JSON.stringify(Array.isArray(list) ? list : []));
+			} catch { /* 存不下只影响下次启动仍会显示 */ }
+		}
+		const BOTS_CACHE_KEY = "vssaros.ws.bots.v1";
+		const BOTS_TIMEOUT_MS = 8000;
+		function readBotsCache() {
+			try {
+				if (typeof localStorage === "undefined") { return null; }
+				const raw = localStorage.getItem(BOTS_CACHE_KEY);
+				if (!raw) { return null; }
+				const o = JSON.parse(raw);
+				if (!o || !Array.isArray(o.agents)) { return null; }
+				return {
+					agents: o.agents,
+					home: (o.home && typeof o.home === "object") ? o.home : {},
+					groups: Array.isArray(o.groups) ? o.groups : [],
+					at: typeof o.at === "number" ? o.at : 0,
+				};
+			} catch { return null; }
+		}
+		function saveBotsCache(d) {
+			try {
+				if (typeof localStorage === "undefined") { return; }
+				localStorage.setItem(BOTS_CACHE_KEY, JSON.stringify({
+					agents: (d && d.agents) || [],
+					home: (d && d.home) || {},
+					groups: (d && d.groups) || [],
+					at: Date.now(),
+				}));
+			} catch { /* 存不下只影响下次启动的首屏速度 */ }
+		}
+		/** 名册 + 群聊一次拉齐（容错：群聊读不到不影响名册）。**纯取数**，供 `__test` 注入 fetch。 */
+		function fetchBotsData(fetchImpl) {
+			const f = fetchImpl || (typeof fetch === "function" ? fetch : null);
+			if (!f) { return Promise.resolve({ ok: false, error: "当前环境没有 fetch" }); }
+			const getJson = (url) => Promise.resolve(f(url, { headers: { accept: "application/json" } }))
+				.then((r) => (r && r.ok ? r.json() : Promise.reject(new Error("HTTP " + (r && r.status)))));
+			return Promise.all([
+				getJson(AGENTS_API_HOME),
+				getJson(AGENTS_API_GROUPS).catch(() => null),
+			]).then(([home, groups]) => ({
+				ok: true,
+				agents: Array.isArray(home && home.agents) ? home.agents : [],
+				home: (home && home.home) || {},
+				groups: Array.isArray(groups && groups.groups) ? groups.groups : [],
+				root: (home && home.root) || "",
+			})).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+		}
+		// ── 新建 Bot / 群聊：校验与预设（2026-11-02「弹出的 UI 框要完善」）──────────────
+		//
+		// 规则**与 host 同源**（不是自己另立一套）：
+		//   · Bot：`name` 必填；`id` 必须过 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`（agents `core/create.js` 的
+		//     `AGENT_ID_RE`），且不能与既有目录重名（host 会 409，这里先拦）；
+		//   · 群聊：`name` 必填、`members` 至少 1 个（host 的 `createGroup` 同口径）。
+		// 都做成**纯函数** ⇒ `__test` 与守卫可以直接断言，不必真去写盘 ✓
+		function validateBotDraft(draft, existingIds) {
+			const errs = [];
+			const name = String((draft && draft.name) || "").trim();
+			const id = String((draft && draft.id) || "").trim();
+			if (!name) { errs.push("名称不能为空"); }
+			if (!id) { errs.push("id 不能为空"); }
+			else if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)) { errs.push("id 只能用 字母/数字/._-，且以字母或数字开头"); }
+			else if (Array.isArray(existingIds) && existingIds.indexOf(id) >= 0) { errs.push("id 已被占用：" + id); }
+			return errs;
+		}
+		function validateGroupDraft(draft) {
+			const errs = [];
+			if (!String((draft && draft.name) || "").trim()) { errs.push("群名不能为空"); }
+			const members = (draft && Array.isArray(draft.members)) ? draft.members : [];
+			if (!members.length) { errs.push("至少要勾一个成员"); }
+			return errs;
+		}
+		/** 新建 Bot 的图标预设（agents 侧默认就是 `lucide:bot`；也允许 emoji）。 */
+		const BOT_ICON_PRESETS = ["lucide:bot", "🧭", "🛠️", "📚", "🧪", "🎨", "📊"];
+		/** 群聊唤醒策略四档（与 agents 的 `GROUP_MODES` 一一对应，顺序也照它排）。 */
+		const GROUP_MODE_OPTIONS = [
+			{ id: "all", label: "全员派发", hint: "每条消息都发给所有成员" },
+			{ id: "mentions", label: "仅 @ 派发", hint: "只有被 @ 的成员回应（默认）" },
+			{ id: "digest", label: "汇总派发", hint: "攒够条数或超时后合并成一批" },
+			{ id: "silent", label: "静默收件", hint: "只收不发，不触发回应" },
+		];
+
+		// ── 未读标记（2026-11-02 用户要求「补未读」；对齐 dsh-desktop 的本地 unreadSessionIds）──
+		//
+		// 口径：**纯本地**。dsh 侧没有"未读"这个远端状态（官方 alpha.3 只有
+		// `completionUnread`——那是"agent 完成了一次运行"，语义不同且只挂在状态点上）。
+		//   · 存储：localStorage `vssaros.ws.unread`（字符串数组；坏数据当空）；
+		//   · 置未读：右键「标为未读」（回头看用）；清未读：**打开这条会话就清**
+		//     （与 dsh-desktop 的 `view.markSessionRead` 同一时机）；
+		//   · 展示：状态灯后一枚小点 + 标题加粗（官方行未读也是 600 字重 ✓）。
+		const UNREAD_KEY = "vssaros.ws.unread";
+		function loadUnread() {
+			try {
+				if (typeof localStorage === "undefined") { return []; }
+				const raw = localStorage.getItem(UNREAD_KEY);
+				const arr = raw ? JSON.parse(raw) : [];
+				return Array.isArray(arr) ? arr.filter((x) => typeof x === "string" && x) : [];
+			} catch { return []; }
+		}
+		function saveUnread(ids) {
+			try {
+				if (typeof localStorage !== "undefined") { localStorage.setItem(UNREAD_KEY, JSON.stringify(ids || [])); }
+			} catch { /* 落盘失败只影响下次启动 */ }
+		}
+		/** 未读集合的增删（**纯逻辑**，`__test` 直接断言）。`on` 省略 = 切换。 */
+		function toggleUnread(ids, sid, on) {
+			const list = Array.isArray(ids) ? ids : [];
+			const has = list.indexOf(sid) >= 0;
+			if (on === undefined) { return has ? list.filter((x) => x !== sid) : list.concat([sid]); }
+			if (on) { return has ? list : list.concat([sid]); }
+			return has ? list.filter((x) => x !== sid) : list;
+		}
+		/**
+		 * 绝对时间（行 hover 用）。与 `timeLabel` 分工：
+		 * 行内仍显示"多久前"（扫视友好），hover 才给"几点几分"（官方行也是这个分工 ✓）。
+		 */
+		function absTimeLabel(at) {
+			if (!at) { return ""; }
+			try {
+				const d = new Date(at);
+				const p2 = (n) => (n < 10 ? "0" : "") + n;
+				return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()) + " " + p2(d.getHours()) + ":" + p2(d.getMinutes());
+			} catch { return ""; }
+		}
+
 		/**
 		 * 收敛成渲染模型（模块作用域 ⇒ __test 直接断言；回落契约见文件头）。
 		 * 返回 [{ kind: "group", record, sessions: [{id,title,at,rootName,isPrimaryRoot,isCurrent}] }
@@ -168,7 +422,14 @@ window.__ModuleLoader__.load({
 			const raw = pick(s && s.title) || pick(summary.displayTitle)
 				|| pick(s && s.firstUserMessage) || pick(s && s.firstUserMessageText)
 				|| pick(s && s.preview) || pick(s && s.lastMessage);
-			if (!raw) { return sid; }
+			// ★★ 2026-11-02 修（用户截图：整列 `session-2ce24dae-…`）：
+			//   官方口径是 `sessionTitle(session) = session.title?.trim() ?? ""` +
+			//   `displayTitle = node.title || t("session.untitled")` ⇒ **没标题就显示「未命名」**，
+			//   从来不会把 id 当标题。我们原来最后回落 `sid` ⇒ 本部署里标题普遍为空时
+			//   整列都是 uuid（比官方难看一个量级 ✗）。
+			//   ⇒ 改成官方口径：**回落「未命名」**（不编造标题，也不再暴露内部 id）。
+			//   ⚠ id 仍可在 hover 卡片 / 行尾 tooltip 里看到，不必占用标题位。
+			if (!raw) { return "未命名"; }
 			const flat = raw.replace(/[\r\n\t]+/g, " ").trim();
 			return flat.length > 48 ? flat.slice(0, 48) + "…" : flat;
 		}
@@ -531,6 +792,28 @@ window.__ModuleLoader__.load({
 			const bridge = shell && shell.bridge;
 			const state = shell && shell.state ? shell.state : {};
 
+			// ── 诊断日志（2026-11-02 用户要求「增加日志定位问题」）────────────────────────────
+			//   现场：desktop 全窗（`chatOnly=0`）里出现过「`sidebar.workspaces` 槽里渲染的是官方
+			//   WorkspaceBrowser」，而同一个 app 的 IDE 聊天框里是我们自己的（页签 + 4 个多根分组）。
+			//   静态守卫只能钉代码形态，这种"注册没生效 / 被别人的占位者赢了"必须在**运行时**留时间线。
+			//
+			//   事件链（都带毫秒时间戳，末尾 80 条留存在 `state.workspacesLog`）：
+			//     install → register-call → register-done / register-threw → render(render-rail)
+			//     → slot-ok / slot-mismatch（700ms 后自检槽里到底是谁）
+			//
+			//   ⚠ 渲染埋点只取第 1/2/3 次 + 每 50 次 ⇒ 不刷屏、也没有性能顾虑；
+			//   ⚠ 任何日志失败都被吞掉（诊断绝不能反过来影响功能）。
+			const WS_LOG_PREFIX = "[vssaros-ws]";
+			const wsLog = (kind, data) => {
+				try {
+					const rec = Object.assign({ t: Date.now(), kind }, data || {});
+					state.workspacesLog = (state.workspacesLog || []).concat([rec]).slice(-80);
+					const bad = kind === "error" || kind === "slot-mismatch" || kind === "register-threw";
+					const emit = bad ? (console.warn || console.log) : (console.info || console.log);
+					if (typeof emit === "function") { emit.call(console, WS_LOG_PREFIX, kind, rec); }
+				} catch { /* 诊断失败不影响功能 */ }
+			};
+
 			const readWsSnapshot = () => {
 				try {
 					const ws = typeof ctx.get === "function" ? ctx.get("workspaces") : undefined;
@@ -624,6 +907,8 @@ window.__ModuleLoader__.load({
 						try { if (typeof setCurrent === "function") { setCurrent(null); } } catch { /* 忽略 */ }
 					};
 					try {
+						// 侧栏点会话 = 用户主动导航（整页工作台在前台时也要切到会话页）
+						try { window.__vssarosUserNavAt = Date.now(); } catch { /* 无 window */ }
 						const r = ctx.uiWorkspace.openSession(sid);
 						if (r && typeof r.then === "function") {
 							r.then(() => { state.lastOpenError = null; say(null); }, onRejected);
@@ -654,6 +939,15 @@ window.__ModuleLoader__.load({
 			 * ⚠ 窗口模式没有宿主桥 ⇒ `notify` 是空转 ⇒ 只写 state 就是静默失败（与 ＋ 按钮同款教训）✗。
 			 */
 			const errText = (e) => String((e && e.message) || e || "未知错误");
+			/**
+			 * 页面级「用户主动导航」信号（2026-11-02，配合 vssaros-workbenches 的 selectPanel 守卫）。
+			 * 前台开着整页工作台时，守卫会把新打开的会话「停靠进工作台对话列」⇒ 中栏空白；
+			 * 只有在 2.5s 内看到用户导航信号才放行。跨插件的方法包装拦不到我们的调用
+			 * （各插件的 ctx.uiWorkspace 是不同代理）⇒ 用 window 上的时间戳共享。
+			 */
+			const markUserNavGlobal = () => {
+				try { window.__vssarosUserNavAt = Date.now(); } catch { /* 无 window */ }
+			};
 			/**
 			 * 归档是否被 Host 以「会话还在跑」拒绝（官方 `WorkspaceArchiveError` + `workspace/session-active`）。
 			 * 官方遇到它弹二次确认（可顺带 stopActivity）；我们**不擅自停掉用户正在跑的会话** ⇒ 只如实说明。
@@ -759,30 +1053,65 @@ window.__ModuleLoader__.load({
 			/** 删除接口路径（host 半边 `lib/index.js` 提供；同源 POST）。 */
 			const DELETE_API = "/x/chat-surface/api/delete-session";
 			/**
-			 * **删除**一条会话：**先归档（Host 状态）、再删磁盘**。
+			 * **删除**一条会话（2026-11-02 升级；对齐 dsh-desktop 的 `uiWorkspace.deleteSession`）。
 			 *
-			 * ★★ 2026-10-30（用户报「点了删除会话，对应的 item 没消失」）—— 只删磁盘是**没用**的：
-			 *   侧栏的会话行来自 **`workspaces.list` 快照的 `items[].sessionIds`**（Host 记的
-			 *   "这个工作区有哪些会话"），删掉 `sessions/<cwd>/<sid>/` 与 projcache **不会**改那条记录
-			 *   ⇒ 行照旧在，只是标题回落成 id ✗（这正是用户看到的现象）。
-			 *   ⇒ 顺序必须是：
-			 *       ① `uiWorkspace.archiveSession(sid)` —— 归档集合是 Host **持久化**状态 ⇒ 一落，列表立刻消失、跨窗口/重启一致；
-			 *       ② 再删磁盘（真删，不可恢复）。
-			 *   ⚠ 归档那步失败就**中止**（尤其 `session-active`：跑着的会话既不删也不停，交给用户）。
-			 *   ⚠ 归档成功但删盘失败 ⇒ 如实说"已从列表移除，磁盘数据仍在"，**不许假装删干净** ✗。
+			 * 旧实现 = 「先归档再删盘」，两个毛病：
+			 *   ① 归档是**用户可见状态**（官方「已归档」筛选里会出现），而我们只想让这一行消失 ⇒ 污染归档；
+			 *   ② 归档会被 `session-active` 拒绝 ⇒ 跑着的会话连删都进不去。
+			 *
+			 * 背景（2026-10-30 用户报「点了删除，item 没消失」）：行来自 `workspaces.list` 快照的
+			 * `items[].sessionIds`（Host 记的账本），只删磁盘不会改它。alpha.3 给了正确的工具：
+			 * `workspaces.get(wsId).detachSession(sid)` —— Workspace 实体方法，**幂等、只摘账本、
+			 * 不动会话日志** ✓。
+			 *
+			 * 新顺序：
+			 *   ① 删磁盘（不可恢复 ⇒ **先做**：失败了就什么都不动，别演成成功 ✗）；
+			 *   ② `detachSession` 摘记录 ⇒ 行消失，且**不污染归档集合**；
+			 *   ③ detach 不可用（老宿主）⇒ **回落归档**（保证"行一定消失"，与旧行为等价）。
 			 */
 			const deleteSessionForever = (sid, say, done) => {
 				const finish = (ok, text, kind) => {
 					say(text, kind || (ok ? "note" : "error"));
 					if (typeof done === "function") { done(ok); }
 				};
-				/** ② 删磁盘（只在归档那步成功之后才走）。 */
+				/** sid 所属的 dsh 工作区（detach 需要 workspaceId）。 */
+				const ownerWorkspaceId = () => {
+					try {
+						const ws = typeof ctx.get === "function" ? ctx.get("workspaces") : null;
+						const snap = ws && ws.list ? ws.list.getSnapshot() : null;
+						const hit = ((snap && snap.items) || []).filter((w) => w && Array.isArray(w.sessionIds) && w.sessionIds.indexOf(sid) >= 0)[0];
+						return hit && hit.workspaceId ? hit.workspaceId : null;
+					} catch { return null; }
+				};
+				/** ② 摘记录 ⇒ Promise<true> 表示已摘掉。 */
+				const detach = () => {
+					try {
+						const ws = typeof ctx.get === "function" ? ctx.get("workspaces") : null;
+						const wid = ownerWorkspaceId();
+						const entity = ws && wid && typeof ws.get === "function" ? ws.get(wid) : null;
+						if (!entity || typeof entity.detachSession !== "function") { return Promise.resolve(false); }
+						return Promise.resolve(entity.detachSession(sid)).then(() => true, () => false);
+					} catch { return Promise.resolve(false); }
+				};
+				/** ③ 老宿主兜底：归档（旧路径，只保证"行消失"）。 */
+				const archiveFallback = () => {
+					try {
+						const uw = ctx.uiWorkspace;
+						if (!uw || typeof uw.archiveSession !== "function") { return Promise.resolve(false); }
+						return Promise.resolve(uw.archiveSession(sid)).then(() => true, () => false);
+					} catch { return Promise.resolve(false); }
+				};
+				const refreshRoster = () => {
+					try {
+						const svc = typeof ctx.get === "function" ? ctx.get("sessions") : null;
+						if (svc && typeof svc.refresh === "function") { void Promise.resolve(svc.refresh()).catch(() => undefined); }
+					} catch { /* 刷不动不影响已删 */ }
+				};
+				/** ① 删磁盘。 */
 				const wipe = () => {
 					let fetchFn = null;
-					try {
-						fetchFn = typeof fetch === "function" ? fetch : null;
-					} catch { fetchFn = null; }
-					if (!fetchFn) { finish(true, "已从列表移除；但当前环境没有 fetch，磁盘数据没删", "error"); return; }
+					try { fetchFn = typeof fetch === "function" ? fetch : null; } catch { fetchFn = null; }
+					if (!fetchFn) { finish(false, "删除失败：当前环境没有 fetch（磁盘没删、列表也没动）", "error"); return; }
 					void Promise.resolve(fetchFn(DELETE_API, {
 						method: "POST",
 						headers: { "content-type": "application/json" },
@@ -792,42 +1121,52 @@ window.__ModuleLoader__.load({
 					}).then(({ res, body }) => {
 						if (!res || !res.ok || !body || body.ok !== true) {
 							const why = body && body.error ? body.error : ("HTTP " + (res ? res.status : "?"));
-							// 列表已经移除了（归档生效）⇒ 说清"磁盘没删"，别让用户以为删干净了
-							finish(true, res && res.status === 404
-								? "已从列表移除；宿主没有删除通路（插件版本过旧 / Host 未重启），磁盘数据仍在"
-								: ("已从列表移除；但磁盘删除失败：" + why), "error");
+							finish(false, res && res.status === 404
+								? "删除失败：宿主没有删除通路（插件版本过旧 / Host 未重启）"
+								: ("删除失败（磁盘没删）：" + why), "error");
 							return;
 						}
-						if (body.found === false) {
-							finish(true, "已从列表移除（磁盘上没找到这条的数据；DSH_HOME=" + String(body.home || "?") + "）", "note");
-						} else {
-							finish(true, "已删除（" + (body.removed || []).length + " 项，不可恢复）", "note");
-						}
-						// 刷 roster：删完让客户端重新拉一次列表（归档已让列表消失，这里是让 roster 也对上）
-						try {
-							const svc = typeof ctx.get === "function" ? ctx.get("sessions") : null;
-							if (svc && typeof svc.refresh === "function") { void Promise.resolve(svc.refresh()).catch(() => undefined); }
-						} catch { /* 刷不动也不影响已删的事实 */ }
+						const found = body.found !== false;
+						const removed = (body.removed || []).length;
+						void detach().then((detached) => {
+							if (detached) {
+								finish(true, found ? "已删除（" + removed + " 项，不可恢复）" : "已从列表移除（磁盘上没找到这条的数据）", "note");
+								refreshRoster();
+								return;
+							}
+							void archiveFallback().then((archived) => {
+								finish(true,
+									(found ? "已删除磁盘数据" : "磁盘上没有这条的数据")
+									+ (archived
+										? "；已从列表移除（宿主没有 detachSession，用归档兜底）"
+										: "；但这条仍留在列表里（宿主既无 detachSession 也无法归档）"),
+									archived ? "note" : "error");
+								refreshRoster();
+							});
+						});
 					}).catch((e) => {
-						finish(true, "已从列表移除；但磁盘删除失败：" + errText(e), "error");
+						finish(false, "删除失败（磁盘没删）：" + errText(e), "error");
 					});
 				};
-				// ① 归档（Host 状态）：列表立即消失，且跨窗口 / 重启一致
-				try {
-					const uw = ctx.uiWorkspace;
-					if (!uw || typeof uw.archiveSession !== "function") {
-						finish(false, "删除失败：宿主不支持归档（uiWorkspace.archiveSession 不可用）⇒ 无法从列表移除");
-						return;
-					}
-					void Promise.resolve(uw.archiveSession(sid)).then(wipe, (e) => {
-						if (isActiveRefusal(e)) {
-							finish(false, "这条会话正在运行，先停止它再删除（不替你停）");
-							return;
-						}
-						finish(false, "删除失败（先从列表移除这一步没过）：" + errText(e));
-					});
-				} catch (e) { finish(false, "删除失败：" + errText(e)); }
+				wipe();
 			};
+			// ── 未读：模块级 + 事件驱动（2026-11-02 用户要求「补未读」）────────────────────
+			//   行渲染 `renderSessionRow` 在 Browser 闭包里，但**模块级**更省事：
+			//   改集合 ⇒ 落盘 + 广播 ⇒ 挂载中的 Browser 重画（不必把 setter 一路传进去）。
+			//   ⚠ 只在**真正变化**时广播（否则每次点击都重画整个列表）。
+			let unreadIds = loadUnread();
+			const UNREAD_EVENT = "vssaros-ws-unread";
+			const setSessionUnread = (sid, on) => {
+				if (!sid) { return; }
+				const next = toggleUnread(unreadIds, sid, on);
+				if (next.length === unreadIds.length && next.every((x, i) => x === unreadIds[i])) { return; }
+				unreadIds = next;
+				saveUnread(next);
+				try { window.dispatchEvent(new Event(UNREAD_EVENT)); } catch { /* 无 window ⇒ 下次渲染才看到 */ }
+			};
+			/** 标记已读（打开会话时调；与 dsh-desktop 的 `view.markSessionRead` 同一时机）。 */
+			const markSessionRead = (sid) => setSessionUnread(sid, false);
+
 			/** 读手动顺序（localStorage）。坏数据 / 无 localStorage ⇒ 空表（侧栏照常工作）。 */
 			const readOrderMap = () => {
 				try {
@@ -989,7 +1328,10 @@ window.__ModuleLoader__.load({
 				headT: { flex: "1 1 auto", fontSize: 12.5 },
 				iconBtn: { background: "none", border: "none", color: "inherit", cursor: "pointer", padding: "2px 4px", borderRadius: 4, fontSize: 12, lineHeight: 1 },
 				list: { flex: "1 1 auto", minHeight: 0, overflowY: "auto" },
-				row: { display: "flex", alignItems: "center", gap: 7, minHeight: 28, padding: "3px 8px", borderRadius: 6, cursor: "pointer", whiteSpace: "nowrap", color: "var(--dsw-alias-label-secondary, #a3a3a3)" },
+				// ★ 2026-11-02（对齐官方 `Rows.module.css` 的 `.projectRow`）：
+				//   分组行 **34px**、`gap:6`、`padding:0 8px` —— 官方 projectRow 34 / sessionRow 32，
+				//   分组比会话略高；原来我们 28/29 两者几乎等高，层级只靠箭头区分，显得平 ✗。
+				row: { display: "flex", alignItems: "center", gap: 6, height: 34, padding: "0 8px", borderRadius: "var(--dsw-radius-md, 6px)", cursor: "pointer", whiteSpace: "nowrap", color: "var(--dsw-alias-label-secondary, #a3a3a3)" },
 				lbl: { flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" },
 				// 时间戳降为 10px（2026-10-21 对齐 dsh-desktop：它是次要信息，别跟标题抢视线）
 				meta: { fontSize: 10, color: "var(--dsw-alias-label-tertiary, #737373)", flex: "0 0 auto", opacity: .9 },
@@ -1021,7 +1363,21 @@ window.__ModuleLoader__.load({
 					border: "1px solid var(--dsw-alias-brand-primary, #5b8cff)",
 					borderRadius: 4, padding: "0 4px", outline: "none",
 				},
-				sessMsg: { fontSize: 11, lineHeight: "1.5", padding: "2px 8px 4px", whiteSpace: "normal" },
+				// ★★ 2026-11-02（用户报「工作区文本下方会显示日志文本，不合理」）：
+				//   原来这是一行**行内**文本，插在列表上方 ⇒ ①把列表往下挤；②长文案一直留在那儿像日志。
+				//   改成**浮层 toast**：`position:fixed` 贴底居中、不参与布局、指针穿透（不挡点击），
+				//   配合 `say()` 的 6s 自动消失 ⇒ 只在需要时瞥一眼，不会常驻。
+				sessMsg: {
+					position: "fixed", zIndex: 96, left: "50%", bottom: 18, transform: "translateX(-50%)",
+					maxWidth: "min(420px, calc(100vw - 32px))",
+					padding: "6px 12px", borderRadius: 8,
+					fontSize: 11.5, lineHeight: "1.5", whiteSpace: "normal",
+					background: "var(--dsw-alias-bg-layer-2, #262626)",
+					border: "1px solid var(--dsw-alias-border-l2, #3e3e3e)",
+					boxShadow: "0 10px 28px rgba(0,0,0,.45)",
+					color: "var(--dsw-alias-label-secondary, #cfd3d6)",
+					pointerEvents: "none", textAlign: "center",
+				},
 				// 删除确认层的按钮（危险操作 ⇒ 红色主按钮；与 dsh 官方 Modal 的按钮尺寸对齐）
 				confirmBtn: {
 					height: 28, padding: "0 14px", borderRadius: 6, fontSize: 12, cursor: "pointer",
@@ -1036,23 +1392,202 @@ window.__ModuleLoader__.load({
 					background: "none", border: "none", borderRadius: 6, cursor: "pointer",
 					color: "var(--dsw-alias-label-tertiary, #737373)", fontSize: 11.5,
 				},
-				// ── 状态灯（2026-10-30）──────────────────────────────────────────
-				// 载体与 @vssaros/dsh-sessions 稿 A 一致：**2px 竖条**（圆点在高 29px 的行里太碎、
-				// 又与「N 个根」徽标抢视线）。颜色口径也照抄：运行中绿 / 等你回答黄 / 空闲灰。
-				// ⚠ 宽度**恒定**（三态同宽）：否则灯一亮整行文字横跳 2px ✗（与图钉占位同一条教训）。
+				// ── 状态点 / 未读点（2026-11-02，用户要求「UI 样式复刻 dsh-desktop」）────────────
+				// 视觉语言对齐官方行（`SessionStatusDots` / `StateDot`）：leading 位放**小圆点**，
+				// 不再用原来的 2px 竖条 —— 否则和官方会话行并排就是两种语言。
+				// ⚠ 尺寸恒定（8px 圆点 + 固定 flex 占位）：开关灯/未读点标题不横跳（与图钉同一条教训）。
 				ring: {
-					width: 2, height: 15, borderRadius: 1, flex: "0 0 2px",
-					margin: "0 1px 0 0", background: "transparent",
+					width: 8, height: 8, borderRadius: "50%", flex: "0 0 8px",
+					margin: "0 1px 0 0", background: "transparent", boxSizing: "border-box",
 				},
 				ringRunning: { background: "#3fb950", animation: "vssaros-ws-ring-pulse 1.6s ease-in-out infinite" },
 				ringAwaiting: { background: "#d7a521" },
-				ringIdle: { background: "rgba(128,128,128,.5)" },				sessMenu: {
+				ringIdle: { background: "rgba(128,128,128,.5)" },
+				// 未读点：官方用 `StateDot{state:'done'}`；这里取品牌蓝 ——
+				// 「状态」回答"在跑没跑"，「未读」回答"看过没"，两件事不用同一种颜色。
+				unreadDot: {
+					width: 6, height: 6, borderRadius: "50%", flex: "0 0 6px",
+					margin: "0 2px 0 0", background: "var(--dsw-alias-brand-primary, #5b8cff)",
+				},
+				// ── 会话行 hover 卡片（2026-11-02）：内容数值抄官方 `SessionHoverContent` ──
+				//   标题 14/20 允许换行、时间 12/16、状态行 12/20 + 8px 点线间距（`Rows.module.css`）。
+				sessHoverCard: {
+					position: "fixed", zIndex: 85, width: 300, maxWidth: "calc(100vw - 16px)",
+					padding: "10px 12px", borderRadius: 8,
+					display: "flex", flexDirection: "column", gap: 8,
+					background: "var(--dsw-alias-bg-layer-2, #262626)",
+					border: "1px solid var(--dsw-alias-border-l2, #3e3e3e)",
+					boxShadow: "0 16px 40px rgba(0,0,0,.55)",
+					color: "var(--dsw-alias-label-primary, #e6e6e6)",
+				},
+				sessHoverTitle: { fontSize: 14, lineHeight: "20px", fontWeight: 600, color: "var(--dsw-alias-label-primary, #fff)", overflowWrap: "break-word" },
+				sessHoverTime: { fontSize: 12, lineHeight: "16px", color: "var(--dsw-alias-label-secondary, #cfd3d6)" },
+				sessHoverPath: { fontSize: 12, lineHeight: "16px", color: "var(--dsw-alias-label-tertiary, #adb2b8)", wordBreak: "break-all" },
+				sessHoverStatus: { fontSize: 12, lineHeight: "20px", color: "var(--dsw-alias-label-tertiary, #adb2b8)", display: "flex", alignItems: "center", gap: 8 },
+				sessHoverCopy: {
+					alignSelf: "flex-start", marginTop: 2, padding: "2px 8px", borderRadius: 6,
+					fontSize: 11, lineHeight: "16px", cursor: "pointer", color: "inherit",
+					background: "var(--dsw-alias-bg-layer-1, #2a2a2a)",
+					border: "1px solid var(--dsw-alias-border-l2, #3e3e3e)",
+				},
+				sessMenu: {
 					position: "fixed", zIndex: 80, minWidth: 186, padding: 4, borderRadius: 8,
 					background: "var(--dsw-alias-bg-layer-2, #262626)",
 					border: "1px solid var(--dsw-alias-border-l2, #3e3e3e)",
 					boxShadow: "0 12px 32px rgba(0,0,0,.55)",
 					color: "var(--dsw-alias-label-primary, #e6e6e6)",
 				},
+				// ── 「会话 / Bots」页签（2026-11-02，Bots 工作台重构）──────────────
+				// 分段控件（用户 2026-11-02 拍板 A）：与右栏页签同一套视觉语言。
+				//
+				// ★★ 2026-11-02 二次（用户报「现在看不清哪个被选中了」）：
+				//   原来选中态是 `bg-layer-1(#2f2f2f)`、容器是 `bg-layer-2(#242424)` —— 只差 11/255，
+				//   在深色主题里几乎不可辨 ✗。现在改成**双重编码**：
+				//     ① 底色：容器更暗（`#1b1b1b`）、选中更亮（`#3d3d3d`）⇒ 明度差 ~34；
+				//     ② 位置：选中项底部一条 **2px 品牌色**（`inset 0 -2px 0`）—— 不依赖色觉；
+				//     ③ 文字：选中纯白 600 字重 / 未选中 `#8a8a8a`（差 ~115）。
+				//   ⚠ 颜色/字重交给注入的 CSS（`.vssaros-ws-tab[data-on="1"]`），因为还要 `:hover`；
+				//     内联 style 只留布局尺寸（内联会盖掉 CSS ⇒ 颜色一旦内联就没法再 hover ✗）。
+				tabBar: {
+					display: "flex", gap: 2, flex: "0 0 auto", padding: 2, margin: "6px 8px 0",
+					borderRadius: 8, border: "1px solid var(--dsw-alias-border-l1, #383838)",
+					background: "var(--dsw-alias-bg-layer-1, #1b1b1b)",
+				},
+				tabBtn: {
+					flex: "1 1 0", minWidth: 0, height: 26, padding: "0 8px", border: "none", borderRadius: 6,
+					// ⚠ 不要写 `font: "inherit"` —— 那是**简写**，会连 `font-weight` 一起重置成 400，
+					//   而内联优先级高于注入的 CSS ⇒ 选中态的 `font-weight:600` 永远不生效
+					//   （2026-11-02 真机实测：computed weight 一直是 400 ✗）。拆成逐项写。
+					fontFamily: "inherit", fontSize: 12, cursor: "pointer", whiteSpace: "nowrap",
+					overflow: "hidden", textOverflow: "ellipsis",
+				},
+				// 保留一份兜底（CSS 没注进去时也不至于全透明）；正常情况由 CSS 覆盖
+				tabBtnOn: {
+					background: "var(--dsw-alias-bg-layer-3, #3d3d3d)",
+					color: "var(--dsw-alias-label-primary, #ffffff)", fontWeight: 600,
+				},
+				botsPane: { flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column" },
+				botsHint: { padding: "4px 10px 6px", fontSize: 11, lineHeight: "1.55", color: "var(--dsw-alias-label-tertiary, #737373)", whiteSpace: "normal" },
+				// ── 「新建 Bot / 新建群聊」表单（2026-11-02；fixed 浮层，侧栏太窄放不下）──
+				botsForm: {
+					position: "fixed", zIndex: 86, width: 300, maxWidth: "calc(100vw - 16px)",
+					left: "50%", top: 72, transform: "translateX(-50%)",
+					padding: 12, borderRadius: 10, display: "flex", flexDirection: "column", gap: 6,
+					background: "var(--dsw-alias-bg-layer-2, #262626)",
+					border: "1px solid var(--dsw-alias-border-l2, #3e3e3e)",
+					boxShadow: "0 20px 48px rgba(0,0,0,.6)",
+					color: "var(--dsw-alias-label-primary, #e6e6e6)",
+				},
+				botsFormTitle: { fontSize: 13, fontWeight: 600, marginBottom: 2 },
+				botsFormLabel: { fontSize: 10.5, lineHeight: "16px", marginTop: 2, color: "var(--dsw-alias-label-tertiary, #737373)" },
+				botsFormInput: {
+					height: 26, padding: "0 8px", borderRadius: 6,
+					border: "1px solid var(--dsw-alias-border-l2, #3e3e3e)",
+					background: "var(--dsw-alias-bg-layer-1, #1f1f1f)", color: "inherit",
+					// ⚠ 不用 `font` 简写（会连 font-weight/line-height 一起重置；本仓踩过）
+					fontFamily: "inherit", fontSize: 12, outline: "none",
+				},
+				botsFormMembers: {
+					maxHeight: 168, overflowY: "auto", display: "flex", flexDirection: "column", gap: 1,
+					padding: 4, borderRadius: 6, border: "1px solid var(--dsw-alias-border-l2, #3e3e3e)",
+				},
+				botsFormMemRow: {
+					display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer",
+					padding: "2px 4px", borderRadius: 4, color: "var(--dsw-alias-label-secondary, #cfd3d6)",
+				},
+				botsFormRow: { display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 4 },
+				botsFormBtn: {
+					height: 26, padding: "0 12px", borderRadius: 6, cursor: "pointer", fontFamily: "inherit", fontSize: 12,
+					border: "1px solid var(--dsw-alias-border-l2, #3e3e3e)",
+					background: "var(--dsw-alias-bg-layer-1, #1f1f1f)", color: "inherit",
+				},
+				botsFormBtnPrimary: {
+					border: "1px solid var(--dsw-alias-brand-primary, #0e639c)",
+					background: "var(--dsw-alias-brand-primary, #0e639c)", color: "#fff", fontWeight: 600,
+				},
+				botsFormErr: { fontSize: 11, lineHeight: "1.5", color: "#f48771", whiteSpace: "normal" },
+				// ── 表单的**结构件**（2026-11-02「弹出的 UI 框要完善」）──────────────
+				botsFormHead: {
+					display: "flex", alignItems: "center", gap: 8, paddingBottom: 8,
+					borderBottom: "1px solid var(--dsw-alias-border-l1, #3a3a3a)", flex: "0 0 auto",
+				},
+				botsFormHeadT: { fontSize: 13, fontWeight: 600, flex: "1 1 auto" },
+				botsFormClose: {
+					width: 20, height: 20, display: "inline-flex", alignItems: "center", justifyContent: "center",
+					border: "none", background: "transparent", color: "var(--dsw-alias-label-tertiary, #8a8a8a)",
+					borderRadius: 4, cursor: "pointer", fontFamily: "inherit", fontSize: 13, lineHeight: 1,
+				},
+				botsFormBody: {
+					display: "flex", flexDirection: "column", gap: 8,
+					maxHeight: "min(64vh, 460px)", overflowY: "auto", paddingRight: 2,
+				},
+				botsFormField: { display: "flex", flexDirection: "column", gap: 3 },
+				botsFormFieldHead: { display: "flex", alignItems: "baseline", gap: 6 },
+				botsFormCounter: {
+					marginLeft: "auto", fontSize: 10, lineHeight: "14px",
+					color: "var(--dsw-alias-label-tertiary, #737373)", fontVariantNumeric: "tabular-nums",
+				},
+				botsFormOk: { fontSize: 10.5, lineHeight: "16px", color: "#3fb950" },
+				botsFormBad: { fontSize: 10.5, lineHeight: "16px", color: "#f48771" },
+				botsFormTip: {
+					fontSize: 10.5, lineHeight: "15px", color: "var(--dsw-alias-label-tertiary, #737373)", whiteSpace: "normal",
+				},
+				botsFormIcons: { display: "flex", flexWrap: "wrap", gap: 4 },
+				botsFormIconBtn: {
+					width: 26, height: 26, display: "inline-flex", alignItems: "center", justifyContent: "center",
+					borderRadius: 6, cursor: "pointer", fontFamily: "inherit", fontSize: 13, lineHeight: 1,
+					border: "1px solid var(--dsw-alias-border-l1, #3a3a3a)",
+					background: "var(--dsw-alias-bg-layer-1, #1f1f1f)", color: "inherit",
+				},
+				botsFormIconOn: {
+					border: "1px solid var(--dsw-alias-brand-primary, #0e639c)",
+					boxShadow: "inset 0 0 0 1px var(--dsw-alias-brand-primary, #0e639c)",
+				},
+				botsFormModeRow: { display: "flex", gap: 3, flexWrap: "wrap" },
+				botsFormModeBtn: {
+					flex: "1 1 0", minWidth: 58, height: 24, borderRadius: 6, cursor: "pointer",
+					fontFamily: "inherit", fontSize: 11, padding: "0 6px", whiteSpace: "nowrap",
+					border: "1px solid var(--dsw-alias-border-l1, #3a3a3a)",
+					background: "var(--dsw-alias-bg-layer-1, #1f1f1f)",
+					color: "var(--dsw-alias-label-tertiary, #8a8a8a)",
+				},
+				botsFormModeOn: {
+					border: "1px solid var(--dsw-alias-brand-primary, #0e639c)",
+					background: "var(--dsw-alias-brand-primary, #0e639c)", color: "#fff", fontWeight: 600,
+				},
+				botsFormPreview: {
+					display: "flex", alignItems: "center", gap: 8, padding: "7px 9px", borderRadius: 8,
+					border: "1px dashed var(--dsw-alias-border-l2, #3e3e3e)",
+					background: "var(--dsw-alias-bg-layer-1, #1f1f1f)",
+				},
+				botsFormPreviewAv: {
+					width: 26, height: 26, borderRadius: 8, flex: "0 0 26px", display: "flex",
+					alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, color: "#fff",
+					background: "var(--dsw-alias-brand-primary, #0e639c)",
+				},
+				botsFormPreviewMain: { display: "flex", flexDirection: "column", gap: 1, minWidth: 0 },
+				botsFormPreviewName: { fontSize: 12.5, lineHeight: "18px", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+				botsFormPreviewMeta: { fontSize: 10.5, lineHeight: "15px", color: "var(--dsw-alias-label-tertiary, #737373)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+				botsFormMemAv: {
+					width: 16, height: 16, borderRadius: 5, flex: "0 0 16px", display: "inline-flex",
+					alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: "#fff",
+					background: "var(--dsw-alias-bg-layer-3, #3d3d3d)",
+				},
+				botsFormTools: { display: "flex", alignItems: "center", gap: 6, marginLeft: "auto" },
+				botsFormMini: {
+					height: 20, padding: "0 7px", borderRadius: 5, cursor: "pointer", fontFamily: "inherit",
+					fontSize: 10.5, border: "1px solid var(--dsw-alias-border-l1, #3a3a3a)",
+					background: "var(--dsw-alias-bg-layer-1, #1f1f1f)", color: "var(--dsw-alias-label-secondary, #cfd3d6)",
+				},
+				botsSec: { display: "flex", alignItems: "center", gap: 6, padding: "8px 10px 2px", fontSize: 10.5, letterSpacing: ".04em", textTransform: "uppercase", color: "var(--dsw-alias-label-tertiary, #737373)" },
+				botsSecCt: { marginLeft: "auto" },
+				botRow: { display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", borderRadius: 6, cursor: "pointer", whiteSpace: "nowrap" },
+				botAv: { width: 22, height: 22, borderRadius: 7, flex: "0 0 22px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: "#fff", background: "var(--dsw-alias-brand-primary, #4d7cfe)" },
+				botMain: { flex: "1 1 auto", minWidth: 0, display: "flex", flexDirection: "column", gap: 0 },
+				botL1: { display: "flex", alignItems: "center", gap: 5, minWidth: 0, fontSize: 12.5, color: "var(--dsw-alias-label-primary, #e6e6e6)" },
+				botName: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" },
+				botPill: { fontSize: 9.5, lineHeight: "14px", padding: "0 5px", borderRadius: 4, flex: "0 0 auto", border: "1px solid var(--dsw-alias-border-l2, #3e3e3e)", color: "var(--dsw-alias-label-tertiary, #737373)" },
+				botL2: { fontSize: 10.5, color: "var(--dsw-alias-label-tertiary, #737373)", overflow: "hidden", textOverflow: "ellipsis" },
 			};
 
 			/**
@@ -1070,6 +1605,102 @@ window.__ModuleLoader__.load({
 						+ "@media (prefers-reduced-motion: reduce){[data-ws-ring='running']{animation:none !important;opacity:1 !important}}";
 					document.head.appendChild(st);
 				} catch { /* 没有 head（非 DOM 环境 / __test）⇒ 静默跳过，灯照样有颜色 ✓ */ }
+			};
+
+			/**
+			 * 会话行的**布局/交互样式**（2026-11-02，用户要求「复刻 dsh 官方原生的 item UI」）。
+			 *
+			 * 数值**逐条抄官方** `@deepseek-ai/dsh-client-ui-workspace` 的 `Rows.module.css`（`YDXeBa_*`）：
+			 *   · 行：`height:32px; gap:0; padding:0 8px; border-radius:var(--dsw-radius-md)`；
+			 *     悬停 / 选中 / 菜单打开 = `background: var(--dsw-alias-interactive-bg-hover)`；
+			 *   · leading 格：`16px × 20px`（官方 `.slot`），里面只放**一个**标记（状态点 / 未读点）；
+			 *   · 标题：`14px / 20px`、`margin:0 6px 0 4px`、`flex:1`、溢出省略；
+			 *     悬停时 `text-overflow:clip`（官方同款，配合右侧行尾动作让出空间）；
+			 *   · 时间：`10px / 16px`、`label-tertiary`，**悬停时隐藏**（让位给 ⋯）；
+			 *   · 图钉：`16×20`、`margin-left:6px`、`label-caption`，**悬停时也隐藏**；
+			 *   · 行尾动作：默认 `display:none`，**悬停 / 菜单打开才出现**（官方 `.rowActions`）。
+			 * ⚠ 这些是"悬停才变"的规则，React 内联 style 表达不了（没有 :hover）⇒ 必须走样式表；
+			 *   用 `data-*` 标记做幂等（与 `ensureRingStyle` 同一套约定）。
+			 */
+			const ensureRowStyle = () => {
+				try {
+					if (typeof document === "undefined" || !document.head) { return; }
+					if (document.head.querySelector("[data-vssaros-ws-row-style]")) { return; }
+					const st = document.createElement("style");
+					st.setAttribute("data-vssaros-ws-row-style", "1");
+					st.textContent = ""
+						+ ".vssaros-ws-row{height:32px;gap:0;padding:0 8px;border-radius:var(--dsw-radius-md,6px);"
+						+ "display:flex;align-items:center;cursor:pointer;user-select:none;"
+						+ "color:var(--dsw-alias-label-primary,#e6e6e6)}"
+						+ ".vssaros-ws-row:hover,.vssaros-ws-row[data-current=\"1\"],.vssaros-ws-row[data-menu-open=\"1\"]"
+						+ "{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}"
+						+ ".vssaros-ws-slot{width:16px;height:20px;flex:none;display:inline-flex;align-items:center;"
+						+ "justify-content:center;color:var(--dsw-alias-label-tertiary,#737373)}"
+						+ ".vssaros-ws-title{flex:1;min-width:0;font-size:14px;line-height:20px;margin:0 6px 0 4px;"
+						+ "overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+						+ "@media (hover:hover){.vssaros-ws-row:hover .vssaros-ws-title{text-overflow:clip}}"
+						// ── 标题溢出：官方 `Rows.module.css` 的**两端淡出**（12px）──
+						//   `.title[data-scrolled]{mask-image:linear-gradient(90deg,#0000,#000 12px)}`
+						//   `.title[data-clipped]{mask-image:linear-gradient(270deg,#0000,#000 12px)}`
+						//   两者都有时左右各淡 12px ⇒ 一眼看出"还有内容"，比纯省略号更像官方 ✓
+						+ ".vssaros-ws-title[data-scrolled]{mask-image:linear-gradient(90deg,#0000,#000 12px)}"
+						+ ".vssaros-ws-title[data-clipped]{mask-image:linear-gradient(270deg,#0000,#000 12px)}"
+						+ ".vssaros-ws-title[data-scrolled][data-clipped]"
+						+ "{mask-image:linear-gradient(90deg,#0000,#000 12px calc(100% - 12px),#0000)}"
+						// 悬停时允许横向滚动（官方是 JS 跑马灯；我们用"淡出 + 原生滚动"，
+						// 不引定时器 —— 滚动条按 WebKit/Firefox 两套都藏掉）
+						+ "@media (hover:hover){.vssaros-ws-row:hover .vssaros-ws-title{overflow-x:auto;scrollbar-width:none}}"
+						+ ".vssaros-ws-title::-webkit-scrollbar{display:none}"
+						+ ".vssaros-ws-time{flex:none;font-size:10px;line-height:16px;color:var(--dsw-alias-label-tertiary,#737373)}"
+						+ ".vssaros-ws-pin{width:16px;height:20px;flex:none;margin-left:6px;display:inline-flex;"
+						+ "align-items:center;justify-content:center;color:var(--dsw-alias-label-caption,#8a8a8a)}"
+						+ ".vssaros-ws-actions{flex:none;display:none;align-items:center;gap:15px}"
+						+ ".vssaros-ws-row:hover .vssaros-ws-actions,.vssaros-ws-row[data-menu-open=\"1\"] .vssaros-ws-actions"
+						+ "{display:inline-flex}"
+						+ ".vssaros-ws-row:hover .vssaros-ws-time,.vssaros-ws-row[data-menu-open=\"1\"] .vssaros-ws-time,"
+						+ ".vssaros-ws-row:hover .vssaros-ws-pin,.vssaros-ws-row[data-menu-open=\"1\"] .vssaros-ws-pin{display:none}"
+						+ ".vssaros-ws-icon{width:16px;height:16px;flex:none;display:inline-flex;align-items:center;"
+						+ "justify-content:center;padding:0;border:none;background:0 0;border-radius:var(--dsw-radius-xs,4px);"
+						+ "cursor:pointer;color:var(--dsw-alias-label-tertiary,#737373)}"
+						+ ".vssaros-ws-icon:hover{color:var(--dsw-alias-label-primary,#e6e6e6)}"
+						// ── 工作区行（官方 `.projectRow`）：默认**文件夹图标**，hover 才换成三角箭头 ──
+						//   官方 CSS 原文：`.projectRow .chevron{display:none}` +
+						//   `.projectRow:hover .chevron{display:inline-flex}` + `.projectRow:hover .folder{display:none}`
+						+ ".vssaros-ws-project{height:34px;gap:0;padding:0 8px;border-radius:var(--dsw-radius-md,6px);"
+						+ "display:flex;align-items:center;cursor:pointer;user-select:none;"
+						+ "color:var(--dsw-alias-label-primary,#e6e6e6)}"
+						+ ".vssaros-ws-project:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}"
+						+ ".vssaros-ws-slot2{width:16px;height:20px;flex:none;display:inline-flex;"
+						+ "align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary,#737373)}"
+						+ ".vssaros-ws-project .vssaros-ws-chevron{display:none}"
+						+ ".vssaros-ws-project:hover .vssaros-ws-chevron{display:inline-flex}"
+						+ ".vssaros-ws-project:hover .vssaros-ws-folder{display:none}"
+						+ ".vssaros-ws-projtitle{flex:1;min-width:0;font-size:14px;line-height:20px;"
+						+ "overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+						// ── 「会话 / Bots」页签（2026-11-02 二次：用户报「看不清哪个被选中」）──
+						//   未选中：透明 + 三级字；hover：二级字 + 微底；
+						//   选中：`bg-layer-3` 亮底 + 纯白 600 + **底部 2px 品牌色**（不依赖色觉的双重编码）。
+						//   ⚠ 选中规则写在 hover **之后**（且特异性更高）⇒ 悬停在选中项上不会被 hover 覆盖 ✓。
+						+ ".vssaros-ws-tab{background:transparent;color:var(--dsw-alias-label-tertiary,#8a8a8a);"
+						+ "transition:background .12s,color .12s,box-shadow .12s}"
+						+ ".vssaros-ws-tab:hover{color:var(--dsw-alias-label-secondary,#cfd3d6);"
+						+ "background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}"
+						// ⚠ 底色用 `interactive-bg-active` 而不是 `bg-layer-3`：真机测过后者在本主题下是
+						//   `#353638`、容器是 `#252526` ⇒ 只差 16/255，用户仍然"看不清"✗。
+						//   active 档更亮，且再叠一圈 1px 亮边把轮廓画出来。
+						+ ".vssaros-ws-tab[data-on=\"1\"]{background:var(--dsw-alias-interactive-bg-active,#414346);"
+						+ "color:var(--dsw-alias-label-primary,#ffffff);font-weight:600;"
+						+ "box-shadow:inset 0 -2px 0 var(--dsw-alias-brand-primary,#0e639c),"
+						+ "inset 0 0 0 1px rgba(255,255,255,.12)}"
+						// 官方 `.projectRow .rowActions{height:20px}` + 同样"悬停才出现"
+						// ★ 2026-11-02：工作区行现在有 **两个** 动作（+ 新建会话 / ⋯ 菜单）⇒ 间距从
+						//   会话行继承来的 15px 收到 6px（15px 是"单个 ⋯ 与时间之间"的留白，两个图标挨着时太散 ✗）；
+						//   并补 `:focus-within`，让键盘 Tab 进按钮时也保持可见（官方同行为）。
+						+ ".vssaros-ws-project .vssaros-ws-actions{display:none;gap:6px}"
+						+ ".vssaros-ws-project:hover .vssaros-ws-actions,"
+						+ ".vssaros-ws-project:focus-within .vssaros-ws-actions{display:inline-flex}";
+					document.head.appendChild(st);
+				} catch { /* 无 head（__test / 非 DOM）⇒ 静默跳过，行仍可用（只是没有悬停效果） */ }
 			};
 
 			/** hover 详情卡（fixed 定位到条目右侧；夹进视口——WebContentsView 外会被裁 ✗）。 */
@@ -1106,6 +1737,14 @@ window.__ModuleLoader__.load({
 
 			function Browser(props) {
 				const wide = !props || props.wide !== false;
+				// ★ 2026-11-02（诊断）：desktop 窗口里观察到「槽里只有官方 WorkspaceBrowser」——
+				//   靠这几个计数/日志就能分清是"没渲染进槽"（tick 恒 0）还是"渲染成 rail 分支"（wide=false）。
+				try {
+					const tick = (state.workspacesRenderTick || 0) + 1;
+					state.workspacesRenderTick = tick;
+					state.workspacesWide = wide;
+					if (tick <= 3) { wsLog("render", { tick, wide, tickNote: "tick 恒 0 ⇒ 本组件从未被调用（注册没落槽）" }); }
+				} catch { /* 诊断失败不影响渲染 */ }
 				const { wsSnap, records } = useData();
 				const [query, setQuery] = react.useState("");
 				const [searchOn, setSearchOn] = react.useState(false);
@@ -1119,12 +1758,32 @@ window.__ModuleLoader__.load({
 				//   `officialTick` = 官方 selection 变化的计数（**读到新值也得重渲染**，否则高亮不动 ✗）。
 				const [localCurrent, setLocalCurrent] = react.useState(null);
 				const [officialTick, setOfficialTick] = react.useState(0);
+				// ★ 2026-11-02（未读）：集合在模块级（行渲染是模块级函数），变更靠事件通知本组件重画。
+				//   ⚠ 只在真正变化时广播（见 setSessionUnread），所以这里不需要节流。
+				const [, forceUnread] = react.useState(0);
+				react.useEffect(() => {
+					if (typeof window === "undefined") { return undefined; }
+					const onUnread = () => forceUnread((n) => n + 1);
+					window.addEventListener(UNREAD_EVENT, onUnread);
+					return () => window.removeEventListener(UNREAD_EVENT, onUnread);
+				}, []);
 				const hoverTimer = react.useRef(null);
+				// ── 会话行 hover 卡片（2026-11-02，对齐官方 `SessionNodeItem` 的 HoverCard）──
+				/** `{sid, x, y}`；null = 不显示。与工作区的 `hover` 分开：两者语义/延迟/内容都不同。 */
+				const [sessHover, setSessHover] = react.useState(null);
+				const sessHoverTimer = react.useRef(null);
 				// ── 会话行操作（2026-10-29，用户要求：右键菜单 + 拖拽排序）──
 				/** 手动顺序（组键 → id 列表）；localStorage 一读，拖完即写。 */
 				const [orderMap, setOrderMap] = react.useState(readOrderMap);
 				/** 会话右键菜单：{sid, pinned, x, y}；null = 关闭。 */
 				const [sessMenu, setSessMenu] = react.useState(null);
+				/**
+				 * 工作区行尾 ⋯ 菜单：`{key, x, y}`；null = 关闭。
+				 * ★ 2026-11-02（对齐官方 `.projectRow` 的 `rowActions`）：官方工作区行 hover 时右侧出现 ⋯，
+				 *   点开是工作区级动作（官方含「删除工作区」danger）。我们这里只做**不破坏数据**的三项
+				 *   （折叠/展开、全部折叠、全部展开）—— 删除工作区要走宿主改 IDE 记录，另议。
+				 */
+				const [wsMenu, setWsMenu] = react.useState(null);
 				/** 就地重命名：{sid, draft}；null = 不在重命名。 */
 				const [renaming, setRenaming] = react.useState(null);
 				/** 会话操作的**就地反馈**（窗口模式没有宿主桥 ⇒ 这是唯一可见通道）。 */
@@ -1137,28 +1796,69 @@ window.__ModuleLoader__.load({
 				const [drag, setDrag] = react.useState(null);
 				/** 当前落点：{sid, after, ok}（ok=false ⇒ 显示禁止态）。 */
 				const [dropAt, setDropAt] = react.useState(null);
+				// ── 「会话 / Bots」页签（2026-11-02）──────────────────────────────
+				/** 当前页签：'sessions'（工作区，现状）| 'bots'（bot 名册 + 群聊）。 */
+				const [view, setViewState] = react.useState(readSidebarView);
+				/** Bots 数据：{status:'idle'|'loading'|'ready'|'error', agents, home, groups, error}。 */
+				const [bots, setBots] = react.useState({ status: "idle", agents: [], home: {}, groups: [], error: "" });
+				/** Bots 页签里的就地反馈（无宿主桥时这是唯一可见通道） */
+				const [botsMsg, setBotsMsg] = react.useState(null); // {kind:'error'|'note', text}
+				// ★★ 2026-11-02（用户要求「Bots 页签下增加搜索按钮和 + 按钮，通会话页签的 UI 样式和布局」）：
+				//   · `botsSearchOn/botsQuery` —— 与会话页签同一套交互（🔍 切换输入框、就地过滤）；
+				//   · `botsMenu` —— ＋ 菜单（fixed 定位，与会话页签的 ＋ 菜单同形态）。
+				//   ⚠ 必须声明在 `railOnly` 提前 return **之前**（否则 rail/展开切换会改 hook 数量 ⇒ React #310）。
+				const [botsSearchOn, setBotsSearchOn] = react.useState(false);
+				const [botsQuery, setBotsQuery] = react.useState("");
+				const [botsMenu, setBotsMenu] = react.useState(null); // {x, y}
+				/**
+				 * 「新建 Bot / 新建群聊」小表单（null = 关闭）。
+				 * `{ kind:'bot'|'group', name, id, role, members[], busy, error }`
+				 * 为什么不跳去 agents 工作台：`＋` 的原意是"就地新建"，跳页会把用户从侧栏上下文里拽走。
+				 */
+				const [botsNew, setBotsNew] = react.useState(null);
+				/**
+				 * **本次会话内**已移除的工作区（IDE 记录 id 集合）。
+				 *
+				 * ★ 2026-11-02（用户报「显示已移除工作区，但是没刷新」）：
+				 *   多根工作区行是**IDE 记录**驱动的（`buildSidebar` 的 group 分支），
+				 *   而 `workspaces.delete` 只摘 dsh 登记 ⇒ 行仍在（变成 0 会话），看起来"没生效" ✗。
+				 *   这里加一层**本地隐藏**：移除成功后把 record.id 记下来并从列表过滤掉。
+				 *   ⚠ 只存在内存（不落 localStorage）⇒ **重载界面即恢复**，不需要额外的"撤销"入口；
+				 *     要彻底移除请到 IDE 里删掉该工作区（提示文案里已写明）。
+				 */
+				// ★ 初始化就从 localStorage 读 —— 重启后仍记得「哪些被移除了」
+				const [wsRemoved, setWsRemoved] = react.useState(() => readRemovedWs());
+				// 任何变化都落盘（幂等；React 双调也不会写坏）
+				react.useEffect(() => { saveRemovedWs(wsRemoved); }, [wsRemoved]);
 				const msgTimer = react.useRef(null);
 				// 点外面 ⇒ 关菜单（与官方菜单同口径；不关就会"菜单糊在侧栏上"✗）
 				// ★ 2026-10-29：工作区 ＋ 菜单与会话右键菜单**共用**这套关闭逻辑（两套并存会互相残留）。
 				react.useEffect(() => {
-					if (!menu && !sessMenu && !confirmDel) { return undefined; }
+					if (!menu && !sessMenu && !confirmDel && !wsMenu && !botsMenu) { return undefined; }
 					const onDown = (ev) => {
 						try {
 							const t = ev.target;
 							if (t && t.closest && (
 								t.closest("[data-vssaros-ws-menu]")
+								|| t.closest("[data-vssaros-ws-row-menu]")
+								// ★ 2026-11-02：Bots 页签的 ＋ 菜单（与会话页签共用这套"点外面/Esc 关闭"）
+								|| t.closest("[data-vssaros-bots-menu]")
 								|| t.closest("[data-vssaros-sess-menu]")
 								// 确认层是**模态**：点它的按钮不该被这里关掉（否则"取消"还没跑就被卸载）
 								|| t.closest("[data-vssaros-sess-confirm]")
 							)) { return; }
 							setMenu(null);
 							setSessMenu(null);
+							// ★ 2026-11-02：工作区行 ⋯ 菜单（wsMenu）此前**漏关**了 —— 点外面它不会消失，
+							//   会和其它菜单一起残留（本次顺手补上）；Bots 的 ＋ 菜单同理。
+							setWsMenu(null);
+							setBotsMenu(null);
 							// 点外面 = 取消（危险操作绝不因为点偏了而执行 ✗）
 							setConfirmDel(null);
-						} catch { setMenu(null); setSessMenu(null); setConfirmDel(null); }
+						} catch { setMenu(null); setSessMenu(null); setWsMenu(null); setBotsMenu(null); setConfirmDel(null); }
 					};
 					const onKey = (ev) => {
-						if (ev.key === "Escape") { setMenu(null); setSessMenu(null); setConfirmDel(null); }
+						if (ev.key === "Escape") { setMenu(null); setSessMenu(null); setWsMenu(null); setBotsMenu(null); setConfirmDel(null); }
 					};
 					document.addEventListener("mousedown", onDown, true);
 					document.addEventListener("keydown", onKey, true);
@@ -1166,7 +1866,7 @@ window.__ModuleLoader__.load({
 						document.removeEventListener("mousedown", onDown, true);
 						document.removeEventListener("keydown", onKey, true);
 					};
-				}, [menu, sessMenu, confirmDel]);
+				}, [menu, sessMenu, confirmDel, wsMenu, botsMenu]);
 				// ★ 2026-10-28：订阅官方 selection（当前会话）—— 官方导航一变就重渲染 ⇒ 高亮跟着动 ✓。
 				//   官方那个字段是私有的 ⇒ 读不到就退化成"乐观高亮 + 宿主绑定"（不会崩 ✓）。
 				react.useEffect(() => {
@@ -1202,7 +1902,8 @@ window.__ModuleLoader__.load({
 					bridged: bridgedCurrent,
 					known: knownIds,
 				});
-				const rows = react.useMemo(() => buildSidebar({
+				const rows = react.useMemo(() => {
+					const all = buildSidebar({
 					workspaces: (wsSnap && wsSnap.items) || [],
 					records,
 					sessionsById: (sessSnap && sessSnap.byId) || {},
@@ -1216,7 +1917,11 @@ window.__ModuleLoader__.load({
 					// ★ 2026-10-29：置顶（Host 快照）+ 手动顺序（本地）
 					pinnedIds: (wsSnap && wsSnap.pinnedSessionIds) || [],
 					orderMap,
-				}), [wsSnap, records, sessSnap, currentId, officialTick, orderMap]);
+					});
+					// ★ 本地隐藏刚移除过的工作区行（IDE 记录还在，dsh 登记已摘 ⇒ 否则行会留着但变成 0 会话）
+					if (!wsRemoved.length) { return all; }
+					return all.filter((r) => !(r && r.kind === "group" && r.record && wsRemoved.indexOf(r.record.id) >= 0));
+				}, [wsSnap, records, sessSnap, currentId, officialTick, orderMap, wsRemoved]);
 
 				// 当前会话 cwd 所在根的路径（详情卡绿框 + 会话根标签用）。
 				// ★ 2026-10-28（用户报「hover 卡片的"当前会话"根 ≠ 输入框 chip 的工作区」）：
@@ -1245,14 +1950,16 @@ window.__ModuleLoader__.load({
 				// ★ 被隐藏的空会话总数（所有工作区，含折叠的）—— 诚实披露，不装作没有。
 				const hiddenBlanks = rows.reduce((n, r2) => n + (r2.hiddenBlanks || 0), 0);
 
-				if (!wide) {
-					// 窄轨（rail）形态：与官方一致，一枚图标，点击展开侧栏。
-					return react.createElement("button", {
-						style: Object.assign({}, S.iconBtn, { fontSize: 16, padding: 6 }),
-						title: "Workspaces",
-						onClick: () => { try { props.expandSidebar(); } catch { /* 可选 */ } },
-					}, "🗀");
-				}
+				// ⚠⚠⚠ 2026-11-02 **真凶修复**：这里原来直接 `if (!wide) return <button/>`，
+				//   而本组件**后面还有 hooks**（`react.useState` / `react.useEffect` 一直到 bots 那段）
+				//   ⇒ 侧栏在 rail(`wide=false`) 与展开(`wide=true`) 之间切换时，**两次渲染的 hook 数量不同**
+				//   ⇒ React 抛 `Minified React error #310`（Rendered more hooks than during the previous render）
+				//   ⇒ 官方 slot renderer 打印 `slot entry crashed in 'sidebar.workspaces'`，把我们的条目卸掉
+				//   ⇒ **回退去渲染官方 WorkspaceBrowser**。
+				//   这正是"IDE 聊天框正常、desktop 全窗时好时坏"的根因：IDE 那侧 `wide` 恒为 true
+				//   ⇒ hook 数量稳定 ⇒ 从不崩溃；desktop 侧栏一收起/展开就切换 hook 数量 ⇒ 崩。
+				//   ⇒ 现在这里只落一个标记，真正的提前 return 放在**所有 hooks 之后**（见末尾 `railOnly` 分支）。
+				const railOnly = !wide;
 
 				const openHover = (key, e) => {
 					const rect = e.currentTarget.getBoundingClientRect();
@@ -1271,6 +1978,228 @@ window.__ModuleLoader__.load({
 					if (hoverTimer.current) { clearTimeout(hoverTimer.current); hoverTimer.current = null; }
 					setHover(null);
 				};
+				/**
+				 * 工作区行尾 ⋯（官方 `.rowActions`）：定位并打开工作区级菜单。
+				 * ⚠ 必须 `stopPropagation`：工作区行的 onClick 是**折叠/展开**，不拦就会顺手把组折起来 ✗。
+				 */
+				const openWsMenu = (key, e, label) => {
+					try { e.preventDefault(); e.stopPropagation(); } catch { /* 合成事件 */ }
+					closeHover();
+					const w = typeof window !== "undefined" ? window.innerWidth : 0;
+					const h = typeof window !== "undefined" ? window.innerHeight : 0;
+					let x = (e && e.clientX ? e.clientX : 16) + 2;
+					let y = (e && e.clientY ? e.clientY : 16) + 2;
+					if (w > 0) { x = Math.max(8, Math.min(x, w - 236)); }
+					if (h > 0) { y = Math.max(8, Math.min(y, h - 150)); }
+					// `label` 只用于菜单标题显示（`key` 是折叠键，可能是 IDE 记录 id，直接显示很丑）
+					setWsMenu({ key, label: String(label || ""), x, y });
+				};
+				/**
+				 * 移除一个工作区（2026-11-02 用户要求：⋯ 菜单里要有「移除工作区」）。
+				 *
+				 * 走官方 `workspaces.delete(workspaceId)` —— 注释原文
+				 *   "Remove one Workspace registration while retaining files and Sessions."
+				 * ⇒ **只摘登记**，会话与磁盘文件都保留（可随时再加回来）✓ 安全可逆。
+				 *
+				 * ⚠ 与「删会话」不同：这里**不碰任何文件**，所以不需要删盘那套兜底。
+				 * ⚠ 多根工作区的 `key` 是 `rec:<IDE 记录 id>`，要先用 `workspaceIdOf` 反查 dsh 的
+				 *   workspaceId；flat 行直接用自带的 `row.workspaceId`。
+				 */
+				const removeWorkspace = (key) => {
+					// ⚠⚠ 这里收到的 `key` 是**折叠键**（渲染时 `const key = row.record.id` /
+					//   `"flat:" + row.label`），而 `rows[].key` 是**分组键**（`rec:<id>` / `ws:<wsId>`）
+					//   ⇒ 两者永不相同。真机报「找不到这个工作区（列表可能已刷新）」就是这个原因 ✗。
+					//   ⇒ 按 kind 分别用对应字段匹配（不要留"看起来通用"的相等判断）。
+					const row = rows.filter((r) => r && r.kind === "group" && r.record && r.record.id === key)[0]
+						|| rows.filter((r) => r && r.kind === "flat" && key === ("flat:" + r.label))[0];
+					if (!row) { say("找不到这个工作区（列表可能已刷新）", "error"); return; }
+					const wsId = row.kind === "flat" ? String(row.workspaceId || "") : workspaceIdOf(row.record);
+					const name = row.kind === "flat" ? row.label : (row.record && row.record.name) || key;
+					if (!wsId) {
+						// dsh 侧本来就没登记（比如之前已摘过），但 **IDE 记录还在** ⇒ 用户想要的
+						// 其实是"让这行消失" ⇒ 直接从列表隐藏（重载可恢复）。
+						if (row.kind === "group" && row.record && row.record.id) {
+							const rid = row.record.id;
+							setWsRemoved((prev) => (prev.indexOf(rid) >= 0 ? prev : prev.concat([rid])));
+							say("已隐藏「" + name + "」", "note");
+						} else {
+							say("「" + name + "」还没在 dsh 侧登记过，无需移除", "note");
+						}
+						return;
+					}
+					let svc = null;
+					try { svc = typeof ctx.get === "function" ? ctx.get("workspaces") : null; } catch { svc = null; }
+					if (!svc || typeof svc.delete !== "function") {
+						say("当前宿主不支持移除工作区（workspaces.delete 不可用）", "error");
+						return;
+					}
+					// ★★ 2026-11-02 二次（用户报「点了没有立即清除，延迟一段时间才刷新 UI」）：
+					//   原来是**等 `svc.delete()` 返回后**才隐藏 ⇒ 延迟 = 一次宿主往返 ✗。
+					//   改成**乐观隐藏**：点下去立刻从列表消失，删除失败再回滚（并报错）。
+					const rid = (row.kind === "group" && row.record && row.record.id) ? row.record.id : "";
+					if (rid) {
+						setWsRemoved((prev) => (prev.indexOf(rid) >= 0 ? prev : prev.concat([rid])));
+					}
+					say("正在移除工作区「" + name + "」…", "note");
+					void Promise.resolve(svc.delete(wsId)).then(
+						() => {
+							try { wsLog("workspace-removed", { wsId, name }); } catch { /* 诊断 */ }
+							say("已移除「" + name + "」（会话与文件保留）", "note");
+						},
+						(e) => {
+							// 回滚：删除失败 ⇒ 把行放回来，别让用户以为"删掉了"
+							if (rid) { setWsRemoved((prev) => prev.filter((x) => x !== rid)); }
+							say("移除工作区失败：" + errText(e), "error");
+						},
+					);
+				};
+				/** 所有分组键（折叠/展开"全部"用）。 */
+				const allGroupKeys = () => {
+					const out = [];
+					for (const r of rows) {
+						out.push(r.kind === "group" ? r.record.id : ("flat:" + r.label));
+					}
+					return out;
+				};
+				/**
+				 * 会话行 hover 卡片（**官方同款**：`openDelayMs=800`、`disabled = menuOpen || drag`）。
+				 *
+				 * 位置贴行**右侧**（侧栏里行很窄，贴右更不容易盖住标题）；夹进视口避免被
+				 * WebContentsView 边缘裁掉（与工作区卡片同一条教训）。
+				 * ⚠ 不进 `onMouseEnter` 立刻 setState：划过几十行不该弹几十张卡。
+				 */
+				const openSessHover = (s, e) => {
+					if (sessMenu || drag) { return; }   // 官方 `disabled={menuOpen || drag.active}`
+					let rect = null;
+					try { rect = e.currentTarget.getBoundingClientRect(); } catch { rect = null; }
+					if (sessHoverTimer.current) { clearTimeout(sessHoverTimer.current); }
+					sessHoverTimer.current = setTimeout(() => {
+						const w = typeof window !== "undefined" ? window.innerWidth : 0;
+						const h = typeof window !== "undefined" ? window.innerHeight : 0;
+						let x = rect ? rect.right + 8 : 16;
+						let y = rect ? rect.top - 4 : 16;
+						if (w > 0) { x = Math.max(8, Math.min(x, w - 328)); }
+						if (h > 0) { y = Math.max(8, Math.min(y, h - 220)); }
+						setSessHover({ sid: s.id, x, y });
+					}, SESS_HOVER_DELAY_MS);
+				};
+				const closeSessHover = () => {
+					if (sessHoverTimer.current) { clearTimeout(sessHoverTimer.current); sessHoverTimer.current = null; }
+					setSessHover(null);
+				};
+				/**
+				 * 一键诊断文本（2026-11-02 用户要求「增加日志定位问题」）。
+				 *
+				 * 用户报「页签 / 工作区行不见了」时，只需 `⋯ → 复制诊断信息`，发过来就能定位：
+				 *   · `replaced/error` —— install 跑没跑、有没有抛；
+				 *   · `slotInfo/slotCheck/firstClass` —— 注册有没有落到槽、槽里现在是谁；
+				 *   · `renderTick/wide/rail` —— 组件被调用过几次、是不是一直 rail；
+				 *   · `log` —— install → register → render → 槽自检 的时间线。
+				 */
+				const diagText = () => {
+					try {
+						const slot = document.querySelector('[data-slot="sidebar.workspaces"]');
+						const first = slot && slot.firstElementChild ? String(slot.firstElementChild.className || "") : "";
+						return JSON.stringify({
+							build: String((typeof window !== "undefined" && window.__vssarosChatSurfaceBuild) || "").slice(-140),
+							url: typeof location !== "undefined" ? String(location.href).slice(0, 140) : "",
+							chatOnly: (() => { try { return !!(typeof window !== "undefined" && window.vssarosDsh && window.vssarosDsh.chatOnly); } catch { return "?"; } })(),
+							replaced: state.workspacesReplaced === true,
+							error: state.workspacesError || null,
+							slotInfo: state.workspacesSlotInfo || null,
+							slotCheck: state.workspacesSlotCheck || null,
+							slotsApi: state.workspacesSlotsApi || null,
+							slotsEntries: state.workspacesSlotEntries || null,
+							slotsDump: state.workspacesSlotsDump || null,
+							renderTick: state.workspacesRenderTick === undefined ? null : state.workspacesRenderTick,
+							wide: state.workspacesWide === undefined ? null : state.workspacesWide,
+							rail: state.workspacesRailLog || 0,
+							ourRows: document.querySelectorAll(".vssaros-ws-project").length,
+							ourTitles: document.querySelectorAll(".vssaros-ws-title").length,
+							tabBar: !!document.querySelector("[data-vssaros-sidebar-tabs]"),
+							firstClass: first.slice(0, 100),
+							log: (state.workspacesLog || []).slice(-24),
+						}, null, 1);
+					} catch (e) {
+						return "诊断失败：" + String((e && e.message) || e);
+					}
+				};
+				/**
+				 * **把「未命名」补成可读标题**（2026-11-02 用户拍板「治本：把标题写回 dsh」）。
+				 *
+				 * 为什么能做：dsh 的标题只来自 `session/title` 事件（`rename`），而它**没有**任何自动标题
+				 *   能力（`autoTitle`/`generateTitle` 全仓 0 命中，文案就是「未命名」）。会话日志里
+				 *   `user/message` 事件带着真人输入（`source.kind === 'user'`）⇒ 取首条即可当标题。
+				 *
+				 * 链路（**只读 host + 官方写**，权限与一致性都交回官方）：
+				 *   `GET /x/chat-surface/api/first-prompt?sessionId=…` → 拿到首条用户文本
+				 *   → `renameSession()`（内部 `sessions.using(...).rename()` ⇒ 写 `session/title` 事件）
+				 *   ⇒ 侧栏、**官方会话头**、搜索结果全都跟着有标题 ✓
+				 *
+				 * 口径：串行 + 每条间隔 60ms（不把 host 打满）；只处理**非 blank、非子代理、标题仍是「未命名」**
+				 *   的会话；失败不中断（计数后继续）；全程就地报进度。
+				 */
+				const backfillTitles = () => {
+					const ids = [];
+					for (const r of rows) {
+						for (const s of r.sessions || []) {
+							if (!s || s.blank || s.isSubagent) { continue; }
+							if (s.title !== "未命名") { continue; }
+							if (ids.indexOf(s.id) < 0) { ids.push(s.id); }
+						}
+					}
+					if (!ids.length) {
+						say("没有需要补标题的会话（都已有标题，或都是空会话）", "note");
+						return;
+					}
+					say("开始补标题：共 " + ids.length + " 条（读首条用户消息 → 写回 dsh）…", "note");
+					let done = 0;
+					let ok = 0;
+					let fail = 0;
+					// renameSession 成功时会 `say(null)` 清提示 ⇒ 传一个静默 say，进度由本函数自己报
+					const quiet = () => undefined;
+					const step = (i) => {
+						if (i >= ids.length) {
+							say("补标题完成：成功 " + ok + " 条" + (fail ? "，跳过/失败 " + fail + " 条" : "") + "（已写回 dsh，官方侧栏也会显示）", "note");
+							return;
+						}
+						const sid = ids[i];
+						let p;
+						try {
+							p = Promise.resolve(fetch(FIRST_PROMPT_API + "?sessionId=" + encodeURIComponent(sid), { headers: { accept: "application/json" } }))
+								.then((r) => (r && r.ok ? r.json() : Promise.reject(new Error("HTTP " + (r && r.status)))));
+						} catch (e) { p = Promise.reject(e); }
+						void p.then(
+							(d) => {
+								const title = d && d.ok && d.found && typeof d.title === "string" ? d.title.trim() : "";
+								if (!title) { fail++; } else { ok++; renameSession(sid, title, quiet, () => undefined); }
+								done++;
+								if (done % 3 === 0 || done === ids.length) { say("补标题 " + done + "/" + ids.length + "（成功 " + ok + "）…", "note"); }
+								try { window.setTimeout(() => step(i + 1), 60); } catch { step(i + 1); }
+							},
+							() => {
+								fail++;
+								done++;
+								try { window.setTimeout(() => step(i + 1), 60); } catch { step(i + 1); }
+							},
+						);
+					};
+					step(0);
+				};
+				/** 复制任意文本（hover 卡片的「复制标题」；clipboard 不可用时回落 execCommand）。 */
+				const copyPlain = (text, say, okLabel) => {
+					const val = String(text || "");
+					if (!val) { return; }
+					const ok = () => say(okLabel || ("已复制：" + val), "note");
+					try {
+						const nav = typeof navigator !== "undefined" ? navigator : null;
+						if (nav && nav.clipboard && typeof nav.clipboard.writeText === "function") {
+							void Promise.resolve(nav.clipboard.writeText(val)).then(ok, () => { legacyCopy(val) ? ok() : say("复制失败（宿主拒绝了剪贴板写入）", "error"); });
+							return;
+						}
+					} catch { /* 落到降级 */ }
+					legacyCopy(val) ? ok() : say("复制失败（宿主拒绝了剪贴板写入）", "error");
+				};
 
 				// ── 会话行操作（2026-10-29）──────────────────────────────────────────
 				/** 就地反馈：6 秒后自动消失（常驻会让人以为状态还在）。 */
@@ -1279,6 +2208,256 @@ window.__ModuleLoader__.load({
 					setSessMsg({ kind: kind === "error" ? "error" : "note", text: String(text) });
 					if (msgTimer.current) { clearTimeout(msgTimer.current); }
 					msgTimer.current = setTimeout(() => setSessMsg(null), 6000);
+				};
+				/**
+				 * 在指定工作区根目录下**新建一个会话**（2026-11-02 用户要求：工作区行 hover 要有 `+`）。
+				 *
+				 * 走官方能力 `ctx.sessions.create({ cwd })`（与 `client.js` 登记会话那条同一 API），
+				 * 宿主会按 cwd 归属到对应工作区；拿到返回的 `sessionId` 后立刻 `openSession` 打开。
+				 *
+				 * ⚠ 不传 `sessionId`（让宿主铸新的），也不先 `openWorkspace()` —— 后者会额外造一条空会话
+				 *   （`client.js` 里对齐工作区那段注释踩过：一次点击留下一条空会话 ✗）。
+				 * ⚠ 没有 cwd（极少数没有根路径的条目）⇒ 明确拒绝，不造一条"没有工作区"的会话
+				 *   （那种会话在 hero 里输入框是灰的）。
+				 */
+				const newSessionInWorkspace = (record, label) => {
+					const dir = primaryPathOf(record);
+					const wsId = workspaceIdOf(record);
+					markUserNavGlobal();
+					// 点下去就开始盯焦点（不依赖任何 promise —— 真机上 `.then` 里的 focus 会被重渲染抢走）
+					watchComposerFocus(24);
+					// ★★ 2026-11-02 修（用户报「点 + 后聊天框无法交互」）：**必须走官方的
+					//   `uiWorkspace.openWorkspaceSession(workspaceId)`**，而不是自己
+					//   `sessions.create({ cwd })` + `openSession`。
+					//
+					//   官方实现（`dsh-client-ui-workspace/lib/client.js:1476`）：
+					//     openWorkspaceSession(workspaceId) → connectBlank(workspaceId)   // sessions.create({ workspaceId })
+					//                                      → replaceMain(sessionId, …, "reveal")
+					//   两点差别是致命的：
+					//     ① `create({ workspaceId })` 会把会话**挂进工作区的 sessionIds**；
+					//        我们传 `cwd` 只定目录，**不建立归属** ⇒ hero 认为"没有工作区"
+					//        ⇒ 输入框灰着、写着「描述你想要构建的内容…」无法输入 ✗（真机复现）；
+					//     ② `connectBlank` 还会复用已有的 blank 会话，不会每次点 + 都新增一条空会话
+					//        （真机「已隐藏 N 条空会话」的 N 一直在涨就是这个原因）。
+					//
+					//   ⇒ 官方路径优先；拿不到 workspaceId 或宿主没这个 API 时才回落到 `create({ cwd })`。
+					try {
+						const uw = ctx.uiWorkspace;
+						const hasApi = !!(uw && typeof uw.openWorkspaceSession === "function");
+						// ⚠ 有官方入口但取不到 workspaceId ⇒ **先把它登记进 dsh**，再开会话。
+						//
+						//   真机（`VsSaros_S1Game`，2 个根、两边都是 0 会话）：dsh 的 `workspaces.list` 里
+						//   压根没有这个工作区的条目 —— 它是 **IDE 侧**的工作区，dsh 没打开过 ⇒ 没有 workspaceId。
+						//   这时只有两条路：
+						//     ① 回落到 `sessions.create({cwd})` ⇒ 有目录但**不在账本里** ⇒ 输入框灰 ✗（已踩）；
+						//     ② **先登记**（`workspaces.create({ path })`，官方"添加工作区"同一条链），
+						//        拿到 workspaceId 再 `openWorkspaceSession` ⇒ 会话有归属、输入框可用 ✓。
+						//   选 ②：用户点「+ 新建会话」的意图本来就包含"让我能在这个工作区里说话"。
+						if (hasApi && !wsId) {
+							const wsSvc = (typeof ctx.get === "function") ? ctx.get("workspaces") : null;
+							if (!wsSvc || typeof wsSvc.create !== "function") {
+								say("这个工作区还没在 dsh 侧登记，且宿主不支持登记（workspaces.create 不可用）", "error");
+								return;
+							}
+							if (!dir) {
+								say("这个工作区没有可用的根路径，无法登记", "error");
+								return;
+							}
+							say("正在把「" + (label || dir) + "」登记到 dsh…", "note");
+							void Promise.resolve(wsSvc.create({ path: dir })).then((created) => {
+								const newId = created && (created.workspaceId
+									|| (created.workspace && created.workspace.workspaceId));
+								if (!newId) { throw new Error("登记工作区后仍拿不到 workspaceId"); }
+								try { wsLog("workspace-registered", { newId: String(newId), dir }); } catch { /* 诊断 */ }
+								return Promise.resolve(uw.openWorkspaceSession(String(newId))).then(() => {
+									try { wsLog("new-session-ok", { wsId: String(newId), via: "register-then-open" }); } catch { /* 诊断 */ }
+								});
+							}).then(
+								() => { say(null); focusComposer(); watchComposerFocus(16); },
+								(e) => {
+									try { wsLog("new-session-fail", { dir, message: String((e && e.message) || e) }); } catch { /* 诊断 */ }
+									say("新建会话失败：" + errText(e), "error");
+								},
+							);
+							return;
+						}
+						if (wsId && hasApi) {
+							say("正在「" + (label || wsId) + "」下新建会话…", "note");
+							try { wsLog("new-session", { via: "uiWorkspace.openWorkspaceSession", wsId, dir }); } catch { /* 诊断 */ }
+							void Promise.resolve(uw.openWorkspaceSession(wsId)).then(
+								() => {
+									say(null);
+									try { wsLog("new-session-ok", { wsId }); } catch { /* 诊断 */ }
+									focusComposer();
+									watchComposerFocus(16);
+								},
+								(e) => {
+									try { wsLog("new-session-fail", { wsId, message: String((e && e.message) || e) }); } catch { /* 诊断 */ }
+									say("新建会话失败：" + errText(e), "error");
+								},
+							);
+							return;
+						}
+					} catch (e) {
+						say("新建会话失败：" + errText(e), "error");
+						return;
+					}
+					// ── 回落：没有 workspaceId（平铺条目）或宿主没有官方入口 ──
+					if (!dir) { say("这个工作区没有根路径，无法新建会话", "error"); return; }
+					let svc = null;
+					try { svc = typeof ctx.get === "function" ? ctx.get("sessions") : null; } catch { svc = null; }
+					if (!svc || typeof svc.create !== "function") {
+						say("当前宿主不支持新建会话（sessions.create 不可用）", "error");
+						return;
+					}
+					say("正在「" + (label || dir) + "」下新建会话…", "note");
+					try { wsLog("new-session", { via: "sessions.create({cwd}) + openSession（回落）", wsId, dir }); } catch { /* 诊断 */ }
+					let p;
+					try { p = Promise.resolve(svc.create({ cwd: dir })); } catch (e) {
+						say("新建会话失败：" + errText(e), "error");
+						return;
+					}
+					void p.then((res) => {
+						// ★★ 2026-11-02 修（用户报「宿主没返回 sessionId」）：`sessions.create` 有**两层实现**，
+						//   返回形态不同 ——
+						//     · `ClientSessions.create`（`dsh-api-session-controller/lib/client.js:3321`）
+						//       返回 `{ ok, value: { sessionId } }`；
+						//     · `SessionsManager.create`（同文件 `:3972`）
+						//       **直接返回 sessionId 字符串**（失败则抛错）。
+						//   `ctx.get("sessions")` 在不同宿主版本/装配下可能给到任一个 ⇒ 只认对象就会把
+						//   "字符串 sessionId" 当成"没返回"（真机就是这么失败的 ✗）。这里两种都接。
+						const got = (() => {
+							if (typeof res === "string") { return res; }
+							if (!res || typeof res !== "object") { return undefined; }
+							if (typeof res.sessionId === "string" && res.sessionId) { return res.sessionId; }
+							const v = res.value;
+							if (typeof v === "string" && v) { return v; }
+							if (v && typeof v === "object" && typeof v.sessionId === "string" && v.sessionId) { return v.sessionId; }
+							if (res.session && typeof res.session.sessionId === "string" && res.session.sessionId) { return res.session.sessionId; }
+							return undefined;
+						})();
+						if (!got) {
+							// 把**实际形状**带出来：下次一眼看出宿主给的是什么（而不是只有一句"没返回"✗）
+							let shape = "";
+							try { shape = "（宿主返回：" + String(JSON.stringify(res)).slice(0, 140) + "）"; } catch { shape = ""; }
+							throw new Error("宿主没返回 sessionId" + shape);
+						}
+						say(null);
+						try { markSessionRead(String(got)); } catch { /* 本地未读表，失败不影响打开 */ }
+						openSession(String(got), say, (sid) => setLocalCurrent(sid));
+						// 打开是异步的（官方导航要几百毫秒）⇒ focus 自己会重试到 composer 出现
+						focusComposer();
+					}).catch((e) => say("新建会话失败：" + errText(e), "error"));
+				};
+				/** 取一个工作区条目的"主根路径"（新建会话用）：优先 roots[0].path，其次 record.path。 */
+				const primaryPathOf = (rec) => {
+					try {
+						const roots = (rec && Array.isArray(rec.roots)) ? rec.roots : [];
+						const primary = roots.filter((r) => r && r.isPrimary)[0] || roots[0] || null;
+						const p1 = primary && (primary.path || primary.rootPath || primary.fsPath);
+						if (typeof p1 === "string" && p1.trim()) { return p1.trim(); }
+						const p2 = rec && (rec.path || rec.cwd);
+						if (typeof p2 === "string" && p2.trim()) { return p2.trim(); }
+					} catch { /* 结构不认识就返回空 */ }
+					return "";
+				};
+				/**
+				 * 把焦点交给 composer（2026-11-02 用户报「点 + 后聊天框无法交互」）。
+				 *
+				 * 真机实测（CDP focus + `Input.insertText`）：新建出来的会话**输入框是可用的**
+				 * （`pointerEvents:auto` / `opacity:1` / 无 disabled 祖先，能聚焦、能打进去），
+				 * 但 `openWorkspaceSession` 的 `replaceMain` **不会**自动把焦点放进 composer ⇒
+				 * 用户点完 `+` 直接打字时按键落在页面空白处，看起来就是"聊天框不能交互" ✗。
+				 * ⇒ 新建成功后主动 focus，并**重试几次**（composer 是异步挂载的）。
+				 */
+				const focusComposer = (tries) => {
+					const n = typeof tries === "number" ? tries : 0;
+					let ok = false;
+					try {
+						const el = document.querySelector('[contenteditable="true"]');
+						if (el && typeof el.focus === "function") {
+							el.focus();
+							ok = document.activeElement === el;
+						}
+					} catch { ok = false; }
+					if (ok) { try { wsLog("focus-composer", { tries: n, ok: true }); } catch { /* 诊断 */ } return; }
+					// ⚠ 必须**持续校验**：真机第一版"找到元素就 focus 一次然后 return"被后续
+					//   `replaceMain` 的重渲染把焦点抢回 body（`activeTag: BODY`）⇒ 等于没做 ✗。
+					if (n < 12 && typeof window !== "undefined") {
+						window.setTimeout(() => focusComposer(n + 1), 200);
+					} else {
+						try { wsLog("focus-composer", { tries: n, ok: false }); } catch { /* 诊断 */ }
+					}
+				};
+				/**
+				 * **焦点守护**（2026-11-02 真机：点 `+` 后 composer 是可用的，但焦点停在 `BODY`）。
+				 *
+				 * 为什么不靠 `openWorkspaceSession().then(...)`：那个 promise 内部还要 `replaceMain`，
+				 * 真机上 `.then` 里的 focus 会被随后的重渲染抢走（实测 `activeElement` 仍是 BODY ✗）。
+				 * ⇒ 点下去就开一个**短时守护**（6 秒 / 每 250ms），只在
+				 *   「composer 存在 && 当前焦点是 body」时才抢 —— 用户主动点了别处就立刻让位。
+				 */
+				const watchComposerFocus = (left) => {
+					const n = typeof left === "number" ? left : 0;
+					try {
+						const el = document.querySelector('[contenteditable="true"]');
+						const active = typeof document !== "undefined" ? document.activeElement : null;
+						if (el && (active === null || active === document.body) && typeof el.focus === "function") {
+							el.focus();
+							try { wsLog("focus-composer", { left: n, ok: document.activeElement === el }); } catch { /* 诊断 */ }
+						}
+					} catch { /* 焦点失败不影响会话本身 */ }
+					if (n > 0 && typeof window !== "undefined") {
+						window.setTimeout(() => watchComposerFocus(n - 1), 250);
+					}
+				};
+				/**
+				 * 取一条工作区条目的 **workspaceId**（官方 `openWorkspaceSession` 的入参就是它）。
+				 * dsh 的 `workspaces.list` 条目字段是 `workspaceId`；我们 `buildSidebar` 归一成 `id`
+				 * ⇒ 两个都认，取不到就返回空串（调用方会回落到 cwd 那条路径）。
+				 */
+				const workspaceIdOf = (rec) => {
+					try {
+						// ① flat 行（`buildSidebar` 的回落分支）自带 `workspaceId`
+						if (rec && typeof rec.workspaceId === "string" && rec.workspaceId) { return rec.workspaceId.trim(); }
+						// ② ⚠⚠ 多根工作区行（group）的 `record` 是 **IDE 记录**，`rec.id` 形如
+						//   `sarosis-agents-client-hcshv` —— 那**不是** dsh 的 workspaceId！
+						//   真机报错：`uiWorkspace.connectWorkspace: unknown workspace sarosis-agents-client-hcshv`
+						//   （`connectBlank` 是按 `workspaceId` 精确匹配的，查不到直接抛 ✗）。
+						//   ⇒ 必须回到 `workspaces.list` 的 items 里，按**主根路径**反查真正的 workspaceId。
+						const items = (wsSnap && Array.isArray(wsSnap.items)) ? wsSnap.items : [];
+						const roots = (rec && Array.isArray(rec.roots)) ? rec.roots : [];
+						// ⚠⚠ 必须是**遍历所有根**，不能只认 `isPrimary`：
+						//   真机（5 个根的工作区 `sarosis-agents-client`）里主根并不在 dsh 的 items 里
+						//   ⇒ 只查主根就一直返回空 ⇒ 报「还没在 dsh 侧登记」✗。
+						//   而 `buildSidebar` 认领 members 用的是 `roots.some(r => samePath(r.path, it.path))`
+						//   （**任意一个根**匹配即可）⇒ 这里与它同口径才能拿到同一批条目 ✓。
+						const pathOfRoot = (r) => {
+							if (!r) { return ""; }
+							const v = r.path || r.rootPath || r.fsPath;
+							return typeof v === "string" ? v : "";
+						};
+						// 主根优先（同一工作区多个根都有条目时，优先主根那条）
+						const ordered = roots.filter((r) => r && r.isPrimary).concat(roots.filter((r) => !r || !r.isPrimary));
+						for (const r of ordered) {
+							const p = pathOfRoot(r);
+							if (!p) { continue; }
+							const hit = items.filter((it) => it && it.workspaceId && samePath(it.path, p))[0];
+							if (hit) { return String(hit.workspaceId); }
+						}
+						// ③ 最后兜底：`rec.id` 若恰好等于某个 item 的 workspaceId（单根场景偶尔成立）
+						const byId = items.filter((it) => it && it.workspaceId === rec.id)[0];
+						if (byId) { return String(byId.workspaceId); }
+						// ④ 都没匹配上 ⇒ 记一条诊断（两边路径都打出来，下次不用再猜为什么对不上）
+						try {
+							wsLog("workspace-id-miss", {
+								recId: String((rec && rec.id) || ""),
+								roots: roots.map(pathOfRoot).filter(Boolean).slice(0, 6),
+								items: items.map((it) => it && it.path).filter(Boolean).slice(0, 6),
+							});
+						} catch { /* 诊断 */ }
+						return "";
+					} catch { return ""; }
 				};
 				/** 按 sid 找渲染模型（菜单标题 / 置顶态都要它）。 */
 				const findSession = (sid) => {
@@ -1290,14 +2469,17 @@ window.__ModuleLoader__.load({
 				/** 右键：fixed 定位并**夹进视口**（侧栏 overflow 会裁掉 absolute 弹层 ✗）。 */
 				const openSessMenu = (s, e) => {
 					try { e.preventDefault(); e.stopPropagation(); } catch { /* 合成事件 */ }
+					// 官方 `HoverCard disabled={menuOpen}`：菜单一开就收起 hover 卡（两张浮层叠着很脏 ✗）
+					closeSessHover();
 					setRenaming(null);
 					const w = typeof window !== "undefined" ? window.innerWidth : 0;
 					const h = typeof window !== "undefined" ? window.innerHeight : 0;
 					let x = e.clientX || 0;
 					let y = e.clientY || 0;
 					if (w > 0) { x = Math.max(8, Math.min(x, w - 232)); }
-					if (h > 0) { y = Math.max(8, Math.min(y, h - 212)); }
-					setSessMenu({ sid: s.id, pinned: s.pinned === true, x, y });
+					// 2026-11-02：多了「标为未读」「分叉」两项 ⇒ 视口裁剪的预留高度跟着放大
+					if (h > 0) { y = Math.max(8, Math.min(y, h - 268)); }
+					setSessMenu({ sid: s.id, pinned: s.pinned === true, unread: unreadIds.indexOf(s.id) >= 0, x, y });
 				};
 				const startRename = (s) => { setSessMenu(null); setRenaming({ sid: s.id, draft: s.title }); };
 				const commitRename = () => {
@@ -1312,6 +2494,28 @@ window.__ModuleLoader__.load({
 					if (act === "pin") { setPinned(cur.sid, !cur.pinned, say); return; }
 					if (act === "rename") { if (s) { startRename(s); } else { setRenaming({ sid: cur.sid, draft: cur.sid }); } return; }
 					if (act === "copy") { copySessionId(cur.sid, say); return; }
+					// ★ 2026-11-02（用户要求「补未读」）：纯本地标记，切换后立刻重画（事件驱动）。
+					if (act === "unread") {
+						setSessionUnread(cur.sid, !cur.unread);
+						say(!cur.unread ? "已标为未读（下次打开这条会话自动清除）" : "已标为已读", "note");
+						return;
+					}
+					// ★ 2026-11-02（用户要求「降维护成本」）：补上官方 `ForkSessionMenuItem` 那项，
+					//   减少"官方有、我们没"的差异；能力缺失就如实说，不静默。
+					if (act === "fork") {
+						try {
+							const uw = ctx.uiWorkspace;
+							if (!uw || typeof uw.forkSession !== "function") {
+								say("当前宿主不支持分叉（uiWorkspace.forkSession 不可用）", "error");
+								return;
+							}
+							void Promise.resolve(uw.forkSession(cur.sid)).then(
+								() => { say("已分叉出一条新会话", "note"); },
+								(e) => { say("分叉失败：" + errText(e), "error"); },
+							);
+						} catch (e) { say("分叉失败：" + errText(e), "error"); }
+						return;
+					}
 					if (act === "archive") { archiveSession(cur.sid, say); return; }
 					if (act === "delete") {
 						// ⚠ 当前会话不许删：删掉之后页面会指着一条不存在的会话（要删先切走）
@@ -1325,6 +2529,8 @@ window.__ModuleLoader__.load({
 				// —— 拖拽（组内；置顶区与普通区互不跨越）——
 				const onDragStartOf = (s) => (e) => {
 					setSessMenu(null);
+					// 官方 `HoverCard disabled={drag.active}`：拖起来就收起（否则卡片跟着鼠标飘 ✗）
+					closeSessHover();
 					setDrag({ sid: s.id, groupKey: s.groupKey, pinned: s.pinned === true });
 					try { e.dataTransfer.setData("text/plain", s.id); e.dataTransfer.effectAllowed = "move"; } catch { /* 某些环境没有 dataTransfer */ }
 				};
@@ -1368,43 +2574,79 @@ window.__ModuleLoader__.load({
 				 * 元素形态：状态灯 → 标题（或就地输入框）→ 根标签（仅非主根）→ 图钉（仅置顶）→ 时间。
 				 * ⚠ 图钉在**行尾**（2026-10-30）：行首放它会白占 12px + gap 7，标题被推右 19px。
 				 */
+				/**
+				 * 工作区行的两个图标 —— **逐字抄官方** `@deepseek-ai/dsh-client-ui-primitives`：
+				 *   · `FolderCloseArtwork`：`viewBox 0 0 16 16`、`fill:none` + **1px stroke** + 中间一条横线；
+				 *   · `IconTriangleRightFillArtwork`：实心三角，展开时整体 `rotate(90deg)`。
+				 *
+				 * ⚠⚠ 别再用"手画 path + fill"（2026-11-02 用户截图：文件夹渲染成一个**空心方块** ✗）：
+				 *   官方 folder 是**描边**图形，用 fill 画会变成一团实心色块/糊成方块。
+				 */
+				const folderIcon = () => react.createElement("svg", {
+					width: 16, height: 16, viewBox: "0 0 16 16", fill: "none",
+					stroke: "currentColor", strokeWidth: 1, "aria-hidden": "true",
+				},
+					react.createElement("path", { d: "M1.50439 3.11059C1.50439 2.55831 1.95211 2.1106 2.50439 2.1106H5.43389C5.67773 2.1106 5.91318 2.19969 6.09593 2.36113L7.71649 3.79265C7.89924 3.95409 8.1347 4.04319 8.3785 4.04319H13.4958C14.0481 4.04319 14.4958 4.4909 14.4958 5.04319V12.8894C14.4958 13.4417 14.0481 13.8894 13.4958 13.8894H2.50439C1.95211 13.8894 1.50439 13.4417 1.50439 12.8894V4.04319V3.11059Z" }),
+					react.createElement("path", { d: "M3.63501 7.66614H12.3647" }));
+				/**
+				 * 工作区行 hover 时的「+」（在此工作区新建会话）。
+				 * 用 **stroke 描边**的加号（与 folder 图标同一视觉语言），不要 emoji/text "+"
+				 * —— 文字加号在 14px 下基线会歪、和 ⋯ 也不成对。
+				 */
+				const plusIcon = () => react.createElement("svg", {
+					width: 14, height: 14, viewBox: "0 0 16 16", fill: "none",
+					stroke: "currentColor", strokeWidth: 1.4, strokeLinecap: "round",
+					"aria-hidden": "true", style: { display: "block" },
+				},
+				react.createElement("path", { d: "M8 3.2v9.6M3.2 8h9.6" }));
+
+				const chevronIcon = (open) => react.createElement("svg", {
+					width: 14, height: 14, viewBox: "0 0 16 16", fill: "none", "aria-hidden": "true",
+					style: { transform: open ? "rotate(90deg)" : "none", transition: "transform .15s" },
+				}, react.createElement("path", {
+					fill: "currentColor",
+					d: "M5.5 4.5C5.5 4.40714 5.52586 4.31612 5.57467 4.23713C5.62349 4.15815 5.69334 4.09431 5.77639 4.05279C5.85945 4.01126 5.95242 3.99368 6.0449 4.00202C6.13738 4.01036 6.22572 4.04429 6.3 4.1L10.967 7.6C11.0291 7.64657 11.0795 7.70697 11.1142 7.77639C11.1489 7.84582 11.167 7.92238 11.167 8C11.167 8.07762 11.1489 8.15418 11.1142 8.22361C11.0795 8.29303 11.0291 8.35343 10.967 8.4L6.3 11.9C6.22572 11.9557 6.13738 11.9896 6.0449 11.998C5.95242 12.0063 5.85945 11.9887 5.77639 11.9472C5.69334 11.9057 5.62349 11.8419 5.57467 11.7629C5.52586 11.6839 5.5 11.5929 5.5 11.5V4.5Z",
+				}));
+
 				const renderSessionRow = (s, setMsg, setLocal) => {
 					const isRenaming = !!(renaming && renaming.sid === s.id);
 					const isDragging = !!(drag && drag.sid === s.id);
 					const mark = dropAt && dropAt.sid === s.id ? dropAt : null;
+					// ★★ 2026-11-02（用户要求「复刻 dsh 官方原生的 item UI」）：
+					//   尺寸 / 间距 / 悬停规则**全部交给** `ensureRowStyle()` 注入的 `.vssaros-ws-row`
+					//   （数值逐条抄官方 `Rows.module.css`）⇒ 这里只留**逐行不同**的部分：
+					//   拖拽半透明、插入线、不可放提示。
+					//   ⚠ 不要再往这里加 height/padding/fontSize —— 内联样式会盖掉类，官方数值就失效了 ✗。
 					const style = Object.assign({},
-						// ★ 会话行的左缩进（2026-10-30，用户连报三次「太靠右 / 还嫌靠右」）：
-						//   标题的 x 由**三段**相加，改一段没用 ⇒ 三段都在这段注释里记清楚：
-						//     ① 行容器左缘 12px（侧栏 padding）
-						//     ② `paddingLeft` 16px（原 30）
-						//     ③ 状态灯 2px + 它的 marginRight 1px + flex gap 7px = 10px
-						//   ⇒ 标题 = 12 + 16 + 10 = **38px**；工作区分组标题 = 12 + padding 8 + 箭头 10 + gap 7 = **37px**
-						//   ⇒ 两者**逐像素齐平**（层级由"分组有 ▼ 箭头、会话有状态灯竖条"表达）。
-						//   ★ 第三报的根因不是 paddingLeft：是**行首那个 12px 图钉占位 + 7px gap = 19px**
-						//     （当日为"切置顶不横跳"付的代价，却全压在标题起点上，把标题推到 57px ✗）；
-						//     现图钉已挪到**行尾**（见下面 kids 的注释）⇒ 这两笔开销没了。
-						//   ⚠ 再要更左只能动 ②（< 15 会让状态灯压到分组标题与「N 个根」徽标之间，视觉打架 ✗），
-						//     或者把状态灯也挪走 —— 但那样就看不出哪条会话在跑。
-						S.row, { paddingLeft: 16, fontSize: 12.5 },
-						s.isCurrent ? { background: "var(--dsw-alias-interactive-bg-active, rgba(91,140,255,.15))", color: "var(--dsw-alias-label-primary, #e6e6e6)" } : null,
-						s.pinned ? { color: "var(--dsw-alias-label-primary, #e6e6e6)" } : null,
 						isDragging ? { opacity: .45 } : null,
-						mark && mark.ok ? { boxShadow: (mark.after ? "inset 0 -2px 0 " : "inset 0 2px 0 ") + "var(--dsw-alias-brand-primary, #5b8cff)" } : null,
+						mark && mark.ok ? { boxShadow: (mark.after ? "inset 0 -2px 0 " : "inset 0 2px 0 ") + "var(--dsw-alias-state-business-primary, #5b8cff)" } : null,
 						mark && !mark.ok ? { outline: "1px dashed #f48771", outlineOffset: "-1px" } : null,
 					);
 					const kids = [];
-					// ★ 状态灯（2026-10-30）：位置在标题**之前**（贴行首缩进处，与 @vssaros/dsh-sessions
-					//   的 `.sv-dot` 同位）—— 眼睛扫左边缘就能看出哪条在跑。
-					//   `unknown`（读不到任何运行信号）⇒ 占位但**不着色**：不把未知画成空闲 ✗。
-					kids.push(react.createElement("span", {
-						key: "ring",
-						style: s.status === "running" ? Object.assign({}, S.ring, S.ringRunning)
-							: s.status === "awaiting" ? Object.assign({}, S.ring, S.ringAwaiting)
-								: s.status === "idle" ? Object.assign({}, S.ring, S.ringIdle) : S.ring,
-						"data-ws-ring": s.status,
-						"aria-hidden": s.status === "unknown" ? "true" : "false",
-						title: RING_LABEL[s.status] || "",
-					}));
+					const isUnread = unreadIds.indexOf(s.id) >= 0;
+					// ★★ leading 格（官方 `.slot` = **16×20**，只放**一个**标记）：
+					//   ① 非 idle 状态 ⇒ 状态点（官方 `showStatus = primaryStatus.state !== "idle"`；
+					//      我们额外把 `unknown` 也归入"不画"—— 不把未知画成空闲 ✗）；
+					//   ② 否则未读 ⇒ 未读点（dsh-desktop 那层语义，官方没有这一层）；
+					//   ③ 否则留空（官方 idle 时渲染 `sidebar.session.row.leading` 槽；我们无槽 ⇒ 空）。
+					const showStatus = s.status === "running" || s.status === "awaiting";
+					kids.push(react.createElement("span", { key: "slot", className: "vssaros-ws-slot" },
+						showStatus
+							? react.createElement("span", {
+								key: "ring",
+								style: Object.assign({}, S.ring, s.status === "running" ? S.ringRunning : S.ringAwaiting),
+								"data-ws-ring": s.status,
+								title: RING_LABEL[s.status] || "",
+							})
+							: isUnread
+								? react.createElement("span", {
+									key: "unread",
+									style: S.unreadDot,
+									"data-ws-unread": "1",
+									title: "未读",
+									"aria-label": "未读",
+								})
+								: null));
 					if (isRenaming) {
 						kids.push(react.createElement("input", {
 							key: "ren",
@@ -1423,31 +2665,96 @@ window.__ModuleLoader__.load({
 							onBlur: () => setRenaming(null),
 						}));
 					} else {
-						kids.push(react.createElement("span", { key: "lbl", style: S.lbl }, s.title));
-						// 稿 1：只有**非主根**的会话才带根名标签 ✓
+						// ★★ 2026-11-02（复刻官方行）：标题 = `.vssaros-ws-title`
+						//   （14px/20px + ellipsis + `margin:0 6px 0 4px`，数值在注入的 CSS 里）；
+						//   未读加粗、双击就地重命名（官方 `onDoubleClick → onRenameRequest`）都保留。
+						kids.push(react.createElement("span", {
+							key: "lbl",
+							className: "vssaros-ws-title",
+							style: isUnread ? { fontWeight: 600 } : null,
+							// ★ 2026-11-02：官方 `useTitleMarquee` 只在**溢出**时给两端淡出（`data-clipped`），
+							//   我们按需在悬停时量一次（`scrollWidth > clientWidth`），不常驻定时器 ✓。
+							onMouseEnter: (e) => {
+								try {
+									const el = e.currentTarget;
+									if (el.scrollWidth > el.clientWidth + 1) { el.setAttribute("data-clipped", "1"); }
+								} catch { /* 量不到就不淡出 */ }
+							},
+							onMouseLeave: (e) => {
+								try {
+									const el = e.currentTarget;
+									el.removeAttribute("data-clipped");
+									el.scrollLeft = 0;
+								} catch { /* 忽略 */ }
+							},
+							onDoubleClick: (e) => {
+								try { e.stopPropagation(); } catch { /* 无事件对象也能进 */ }
+								setRenaming({ sid: s.id, draft: s.title });
+							},
+						}, s.title));
+						// 稿 1：只有**非主根**的会话才带根名标签 ✓（多根模型的补充，官方没有）
 						if (s.rootName && !s.isPrimaryRoot) {
 							kids.push(react.createElement("span", { key: "rt", style: S.rtag }, s.rootName));
 						}
-						// ★★ 2026-10-30（用户第三次报「还嫌靠右」）：图钉从**行首**挪到**行尾**（时间左边）。
-						//   根因是行首那个「图钉占位 12px + gap 7 = 19px」——它当年是为了"切置顶不横跳"，
-						//   代价却全压在标题起点上（把标题从 37 推到 56，看起来像多缩进了一级 ✗）。
-						//   挪到行尾后：① 标题回到 **37**（与工作区分组标题**逐像素齐平**）；
-						//   ② 置顶只改行尾，标题起点不随置顶变化 ⇒ "不横跳"的原目标照样成立 ✓。
+						// 时间（官方顺序 title → time → pin → actions；悬停时由 CSS 隐藏，让位给 ⋯）：
+						kids.push(react.createElement("span", {
+							key: "at",
+							className: "vssaros-ws-time",
+							title: absTimeLabel(s.at) ? ("创建于 " + absTimeLabel(s.at)) : "",
+						}, timeLabel(s.at)));
+						// 图钉（官方 `.pinIndicator` = 16×20 + **SVG 图标** + 悬停隐藏）：
+						//   原来用 📌 emoji —— 14px 下比官方矢量图标重一档，改成同款 pin 形状。
 						if (s.pinned) {
-							kids.push(react.createElement("span", { key: "pin", style: S.pin, "data-pinned": "1", title: "已置顶" }, "📌"));
+							kids.push(react.createElement("span", {
+								key: "pin", className: "vssaros-ws-pin", "data-pinned": "1",
+								title: "已置顶", "aria-label": "已置顶", role: "img",
+							}, react.createElement("svg", { width: 14, height: 14, viewBox: "0 0 16 16", "aria-hidden": "true", style: { display: "block" } },
+								react.createElement("path", {
+									fill: "currentColor",
+									d: "M9.7 1.4a.9.9 0 0 1 1.3 0l3.6 3.6a.9.9 0 0 1-.6 1.5l-1.7.2-2.9 2.9.2 2.2a.7.7 0 0 1-1.2.6L6 11.2l-2.7 2.7-1.2-1.2L4.8 10 2.2 7.4a.7.7 0 0 1 .6-1.2l2.2.2 2.9-2.9.2-1.7a.9.9 0 0 1 .6-.6Z",
+								}))));
 						}
-						kids.push(react.createElement("span", { key: "at", style: S.meta }, timeLabel(s.at)));
+						// 行尾 ⋯（**官方主入口**：`.rowActions` 默认隐藏、悬停 / 菜单打开才出现）：
+						//   右键菜单**保留**（我们原有的入口，官方没有）—— 两个入口开同一个菜单。
+						kids.push(react.createElement("span", { key: "acts", className: "vssaros-ws-actions" },
+							react.createElement("button", {
+								type: "button",
+								className: "vssaros-ws-icon",
+								title: "会话操作",
+								"aria-label": "会话操作（" + s.title + "）",
+								"aria-haspopup": "true",
+								onClick: (e) => {
+									try { e.stopPropagation(); } catch { /* 忽略 */ }
+									openSessMenu(s, e);
+								},
+							}, "⋯")));
 					}
 					return react.createElement("div", {
 						key: s.id,
+						// 官方行的稳定锚点（`data-row-key="session:<id>"`）—— 对自动化/调试有用
+						"data-row-key": "session:" + s.id,
 						"data-session-item": s.id,
 						"data-pinned": s.pinned ? "1" : "0",
+						// ★ 2026-11-02（复刻官方行）：`selected` / `menuOpen` 两个视觉态 ——
+						//   官方是 CSS 类，我们用 `data-*` 让注入的样式表命中（React 内联表达不了 :hover）。
+						"data-current": s.isCurrent ? "1" : undefined,
+						"data-menu-open": (sessMenu && sessMenu.sid === s.id) ? "1" : undefined,
+						className: "vssaros-ws-row",
+						role: "treeitem",
+						"aria-selected": s.isCurrent === true,
 						// 重命名时禁用拖拽：否则输入框里选字会变成拖行 ✗
 						draggable: isRenaming ? "false" : "true",
 						style,
-						title: s.rootName ? s.rootName + " · " + s.id : s.id,
-						onClick: () => { if (!isRenaming) { openSession(s.id, setMsg, setLocal); } },
+						// ★ 2026-11-02：**去掉行上的原生 `title`** —— 官方行也没有（它靠 HoverCard）；
+						//   留着会和我们的 hover 卡片形成"两个浮层"（浏览器原生 tooltip 也 800ms 后弹）。
+						//   会话 id 改在 hover 卡片里给（信息不丢，且不占标题位）。
+						// ★ 2026-11-02：**打开即已读**（与 dsh-desktop 的 `view.markSessionRead` 同一时机，
+						//   也是官方 `openSession` 里的第一步）—— 不放在打开成功的回调里：那时用户已经看到了。
+						onClick: () => { if (!isRenaming) { markSessionRead(s.id); openSession(s.id, setMsg, setLocal); } },
 						onContextMenu: (e) => openSessMenu(s, e),
+						// ★ 2026-11-02：hover 卡片（官方 `HoverCard openDelayMs=800`；菜单开着/拖拽中不弹）
+						onMouseEnter: (e) => openSessHover(s, e),
+						onMouseLeave: closeSessHover,
 						onDragStart: isRenaming ? undefined : onDragStartOf(s),
 						onDragOver: onDragOverOf(s),
 						onDragLeave: () => { if (dropAt && dropAt.sid === s.id) { setDropAt(null); } },
@@ -1489,11 +2796,641 @@ window.__ModuleLoader__.load({
 					return nodes;
 				};
 
-				return react.createElement("div", { style: { display: "flex", flexDirection: "column", minHeight: 0, flex: "1 1 auto" } },
+				/* ══════════ 「会话 / Bots」页签（2026-11-02）══════════ */
+				/**
+				 * 开一条新会话（点「会话」页签 = 等同「新会话」按钮）。
+				 *
+				 * ★★ 2026-11-02 三次修正（用户报「点会话页签没有新建会话，只显示聊天框」）：
+				 *   第一版直接调官方 `uiWorkspace.startSession()`，真机日志显示**调用确实发生了**
+				 *   （`{kind:"new-session", via:"switchView→startSession", entering:true}`）但 `main`
+				 *   会话没变 —— 因为官方实现里有：
+				 *     `const navigation = AbortSignal.any([ctx.layout.beginNavigation(), lifetime.signal]);
+				 *      sessionId = await connectBlank(wsId);
+				 *      if (navigation.aborted) { return; }        ← 期间有别的导航 ⇒ 静默放弃`
+				 *   `beginNavigation()` 每次调用都会中止上一次 ⇒ 与页面其它切换逻辑同帧竞争时**永远可能空转**，
+				 *   而且**不报错**（用户只看到"还是原来那个聊天框"）。
+				 *
+				 *   ⇒ 现在改成我们**自己这条已验证可行的链**（与工作区 `+` 新建会话同一套）：
+				 *     `sessions.create({ workspaceId })`（**带 workspaceId** ⇒ 会挂进工作区账本，
+				 *     hero 输入框才是可用的）→ `uiWorkspace.openSession(sid)` → 焦点交给 composer。
+				 *   目标工作区用现成的纯函数 `pickBotWorkspaceId`（当前会话所属 → 第一个有会话的）。
+				 */
+				const startNewSessionFromTab = () => {
+					markUserNavGlobal();
+					let wsId = "";
+					try {
+						const wsSvc = typeof ctx.get === "function" ? ctx.get("workspaces") : null;
+						const snap = wsSvc && wsSvc.list && typeof wsSvc.list.getSnapshot === "function" ? wsSvc.list.getSnapshot() : null;
+						wsId = pickBotWorkspaceId(currentId, snap);
+					} catch { wsId = ""; }
+					if (!wsId) {
+						try { wsLog("new-session", { via: "tab", skipped: "没有可用工作区" }); } catch { /* 诊断 */ }
+						say("没有可用的工作区，无法新建会话 —— 先添加一个工作区", "error");
+						return;
+					}
+					let svc = null;
+					try { svc = typeof ctx.get === "function" ? ctx.get("sessions") : null; } catch { svc = null; }
+					if (!svc || typeof svc.create !== "function") {
+						say("当前宿主不支持新建会话（sessions.create 不可用）", "error");
+						return;
+					}
+					try { wsLog("new-session", { via: "tab", wsId }); } catch { /* 诊断 */ }
+					void Promise.resolve(svc.create({ workspaceId: wsId })).then((res) => {
+						const got = typeof res === "string" ? res
+							: (res && typeof res === "object"
+								? (res.sessionId || (res.value && (typeof res.value === "string" ? res.value : res.value.sessionId)))
+								: undefined);
+						if (!got) { throw new Error("宿主没返回 sessionId"); }
+						try { markSessionRead(String(got)); } catch { /* 本地未读表 */ }
+						try {
+							const uw = ctx.uiWorkspace;
+							// create 可能耗时 ⇒ 打开前再刷新一次信号（workbenches 的放行窗口是 2.5s）
+							markUserNavGlobal();
+							if (uw && typeof uw.openSession === "function") { uw.openSession(String(got)); }
+						} catch (e) {
+							say("新建会话失败：" + errText(e), "error");
+							return;
+						}
+						focusComposer();
+					}).catch((e) => say("新建会话失败：" + errText(e), "error"));
+				};
+				const switchView = (v) => {
+					const next = v === "bots" ? "bots" : "sessions";
+					setViewState(next);
+					writeSidebarView(next);
+					setBotsMsg(null);
+					// 只在切到「会话」时开新会话（切 Bots 不该开）；失败不打断切页签
+					if (next === "sessions") { startNewSessionFromTab(); }
+				};
+				/**
+				 * 重新拉名册 + 群聊（进 Bots 页签时自动拉一次；⟳ 手动再拉）。
+				 *
+				 * ★ 2026-11-02（用户报「读取名册太慢了」）：**缓存优先** —— 先用上次结果铺满列表
+				 *   （`stale: true` ⇒ 标题旁标「缓存」），再后台刷新；请求 8s 超时，超时也**不白屏**
+				 *   （保留缓存 + 说明原因）。改之前是"loading 挂到接口返回为止"，慢接口 = 长时间空白。
+				 */
+				const reloadBots = () => {
+					const cached = readBotsCache();
+					setBots((b) => {
+						const hasRows = (b.agents || []).length > 0;
+						// 已有内容（上次已拉到 / 刚读的缓存）⇒ 只切 loading，绝不清空列表
+						if (hasRows) { return Object.assign({}, b, { status: "loading" }); }
+						if (cached && cached.agents.length) {
+							return { status: "loading", agents: cached.agents, home: cached.home, groups: cached.groups, error: "", stale: true, cachedAt: cached.at };
+						}
+						return Object.assign({}, b, { status: "loading" });
+					});
+					const timeout = new Promise((_, rej) => {
+						try {
+							window.setTimeout(() => rej(new Error("读取超时（" + Math.round(BOTS_TIMEOUT_MS / 1000) + "s 未返回）")), BOTS_TIMEOUT_MS);
+						} catch { /* 无 window ⇒ 不设超时 */ }
+					});
+					void Promise.race([fetchBotsData(), timeout]).then((d) => {
+						if (d && d.ok) {
+							saveBotsCache(d);
+							setBots({ status: "ready", agents: d.agents, home: d.home, groups: d.groups, error: "" });
+						} else {
+							setBots((b) => ((b.agents || []).length
+								? Object.assign({}, b, { status: "ready", stale: true, error: String((d && d.error) || "读取失败") })
+								: { status: "error", agents: [], home: {}, groups: [], error: String((d && d.error) || "读取失败") }));
+						}
+					}).catch((e) => {
+						const why = String((e && e.message) || e);
+						setBots((b) => ((b.agents || []).length
+							? Object.assign({}, b, { status: "ready", stale: true, error: why })
+							: { status: "error", agents: [], home: {}, groups: [], error: why }));
+					});
+				};
+				react.useEffect(() => {
+					if (view !== "bots" || bots.status !== "idle") { return; }
+					reloadBots();
+				}, [view, bots.status]);
+				// ★★ 这是**最后一个 hook**。rail（窄轨）形态的提前 return 必须放在它之后 ——
+				//   React 规则：每次渲染的 hook 数量与顺序必须完全一致，否则抛 error #310 并卸载整棵子树
+				//   （2026-11-02 真机根因，详见上面 `railOnly` 处的长注释）。
+				if (railOnly) {
+					try {
+						if ((state.workspacesRailLog || 0) < 3) {
+							state.workspacesRailLog = (state.workspacesRailLog || 0) + 1;
+							wsLog("render-rail", { count: state.workspacesRailLog });
+						}
+					} catch { /* 忽略 */ }
+					return react.createElement("button", {
+						style: Object.assign({}, S.iconBtn, { fontSize: 16, padding: 6 }),
+						title: "Workspaces",
+						onClick: () => { try { props.expandSidebar(); } catch { /* 可选 */ } },
+					}, "🗀");
+				}
+				/**
+				 * 点 bot ⇒ **中栏打开它最近一条会话**（`home[agentId].sessions[0].id` 是宿主给的现成事实）。
+				 * 一条会话都没有时：`POST /api/session { agentPreset }` 新建一条绑该 preset 的会话再打开。
+				 * ⚠ 不用「切人格」那条路（那只换提示词、不换会话）—— 用户要的是"点 bot 就是和它聊"。
+				 */
+				const openBot = (a) => {
+					const id = String((a && a.id) || "");
+					if (!id) { return; }
+					setBotsMsg(null);
+					/* ★ 2026-11-02（用户第二次报「bot 聊天框无法输入」，截图：工作区选择器里 cwd 有、但输入框仍灰）：
+					   真根因在官方 hero：`inert = hero && chipTitle === undefined`，chipTitle 来自**工作区账本里含该会话**
+					   的工作区标题。只传 cwd 建出来的会话**不在账本里** ⇒ 灰输入框（上一版的 cwd 修法方向错了）。
+					     ① 复用「最近会话」前先查它**是否已登记进某个工作区**（`workspaces.list.items[].sessionIds`）；
+					        没登记的跳过（≈ 以前不带工作区建的老会话）；
+					     ② 新建时传 **workspaceId**（不是 cwd；官方建完会 attachSession 登记）。 */
+					const usable = (s0) => isRegisteredSession(s0, wsSnap);
+					const sid = latestSessionIdOf(bots.home, id, usable);
+					if (sid) { markSessionRead(sid); openSession(sid, setBotsMsg); return; }
+					const presetId = String((a && a.presetId) || ("vssaros-" + id));
+					const name = String((a && a.name) || id);
+					const wsId = pickBotWorkspaceId(currentId, wsSnap);
+					if (!wsId) {
+						setBotsMsg({ kind: "error", text: "还没有任何工作区 —— 先在「会话」页签里点 + 添加一个工作区，再开「" + name + "」的会话。" });
+						return;
+					}
+					setBotsMsg({ kind: "note", text: "正在为「" + name + "」新建会话…" });
+					let p;
+					try {
+						p = fetch(AGENTS_API_SESSION, {
+							method: "POST", headers: { "content-type": "application/json" },
+							body: JSON.stringify({ agentPreset: presetId, workspaceId: wsId }),
+						}).then((r) => r.json().then((j) => ({ ok: r.ok && (!j || j.ok !== false), j: j || {} })));
+					} catch (e) {
+						setBotsMsg({ kind: "error", text: "新建会话失败：" + String((e && e.message) || e) });
+						return;
+					}
+					void p.then((r) => {
+						const nextSid = r && r.j && r.j.sessionId;
+						if (!r.ok || !nextSid) { throw new Error((r.j && r.j.error) || "宿主没返回 sessionId"); }
+						markSessionRead(nextSid);
+						setBotsMsg(null);
+						// ★ 新会话已登记进账本，但 `bots.home` 还是点之前拉的 ⇒ 不刷新的话，再点同一个 bot
+						//   会因「名册里没有它」又新建一条（越点越多）。先把名册重拉，下一次点击就能复用这条。
+						reloadBots();
+						openSession(String(nextSid), setBotsMsg);
+					}).catch((e) => setBotsMsg({ kind: "error", text: "新建会话失败：" + String((e && e.message) || e) }));
+				};
+				/**
+				 * 群聊：**在中栏打开群聊页**（2026-11-02 用户报障后修）。
+				 *
+				 * 为什么不能 `openSession`：群对话不是 dsh 会话 —— 群上的 `memberSessions` 是**逐成员**
+				 * 的会话绑定，群本身没有"一条群会话" ⇒ 没有 sid 可开（点了中栏只会继续停在 hero ✗）。
+				 * 为什么不能只靠 `bridge.openModulePage`：那是**IDE 侧**开页，dsh 桌面窗口里点了
+				 * 中栏什么都不会变（用户 2026-11-02 截图报的就是这个）。
+				 * ⇒ 走中栏页签（工作台同一套 `main` 面板 + 页签条，`workbenchNav` 暴露
+				 *   `window.__vssarosOpenPageTab`），群聊页带 `?embed=1` 只留聊天列 ✓。
+				 * 兜底顺序：中栏页签（组件 → iframe）→ 宿主桥开完整页 → 就地说明。
+				 *
+				 * ★ 2026-11-02 第二步：中栏页签内容由 iframe 改成 agents 插件登记的 React 群聊面板
+				 *   （`AgentsPanel` 的 only 模式，复用工作台里同一份 `midGroup`）；iframe 只当兜底。
+				 */
+				const openGroup = (g) => {
+					const gid = String((g && g.id) || "");
+					if (!gid) { return; }
+					setBotsMsg(null);
+					const route = "/x/agents/group/" + encodeURIComponent(gid) + "?embed=1";
+					try {
+						if (typeof window !== "undefined" && typeof window.__vssarosOpenPageTab === "function") {
+							// `comp` 首选：agents 插件登记的 React 群聊面板（与 dsh 同源样式，无 iframe）；
+							// `route` 兜底：插件没登记该组件（旧版 / 还没加载）时回落到 iframe 群聊页 ✓
+							window.__vssarosOpenPageTab({
+								id: "group:" + gid, name: String((g && g.name) || gid), ico: "👥",
+								comp: "agents.groupChat", props: { gid }, route,
+							});
+							return;
+						}
+					} catch (e) {
+						setBotsMsg({ kind: "error", text: "打开群聊失败：" + String((e && e.message) || e) });
+						return;
+					}
+					if (bridge && typeof bridge.openModulePage === "function") {
+						void Promise.resolve(bridge.openModulePage("/x/agents/group/" + encodeURIComponent(gid)))
+							.catch((e) => setBotsMsg({ kind: "error", text: "打开群聊失败：" + String((e && e.message) || e) }));
+						return;
+					}
+					setBotsMsg({ kind: "error", text: "当前宿主打不开群聊页（需要 chat-surface 的工作台页签，或桥版本 3+）" });
+				};
+				/** POST JSON（agents 的写接口用；非 2xx 时抛出宿主给的 error 文案，不吞）。 */
+				const postJson = (url, body) => {
+					let p;
+					try {
+						p = Promise.resolve(fetch(url, {
+							method: "POST",
+							headers: { "content-type": "application/json", accept: "application/json" },
+							body: JSON.stringify(body || {}),
+						}));
+					} catch (e) { return Promise.reject(e); }
+					return p.then((r) => Promise.resolve(r.json().catch(() => null)).then((j) => {
+						if (!r || !r.ok) { throw new Error((j && j.error) || ("HTTP " + (r && r.status))); }
+						return j;
+					}));
+				};
+				/** 名称 → 建议 id（与 agents `suggestIdFromName` 同规则：非 `[a-z0-9._-]` 折成 `-`；纯中文 ⇒ 空）。 */
+				const slugOfName = (name) => String(name || "").toLowerCase()
+					.replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
+				/** 打开「新建 Bot / 新建群聊」表单。 */
+				const openBotsNew = (kind) => {
+					// ★ 顺序要紧（2026-11-02 真机：只关菜单、表单不弹）：
+					//   先设表单，再关菜单 —— 反过来时，`setBotsMenu(null)` 会让菜单容器卸载，
+					//   而菜单项是在 **mousedown（capture）** 里调的，卸载发生在同一批更新里，
+					//   实测出现过"表单 state 已写入、但 DOM 没跟上"的诡异状态。
+					//   另外这里**不改** `botsMsg`（它属于"操作反馈"，与打开表单无关）。
+					setBotsNew({
+						kind,
+						name: "", id: "", role: "", description: "",
+						icon: BOT_ICON_PRESETS[0],
+						members: [], mode: "mentions", memberQuery: "",
+						busy: false, error: "",
+					});
+					setBotsMenu(null);
+					setBotsMsg(null);
+				};
+				/**
+				 * 提交新建（Bot / 群聊）。
+				 * ⚠ 两个接口的**必填项不同**：Bot 要 `name` + `id`（英文，纯中文名 slug 为空 ⇒ 让用户手填）；
+				 *   群聊要 `name` + **至少一个真实存在的成员**（host 侧会校验 id 集合）。
+				 * ⚠ 失败一律就地显示（`botsNew.error`），不假装成功、不静默。
+				 */
+				const submitBotsNew = () => {
+					const cur = botsNew;
+					if (!cur || cur.busy) { return; }
+					const name = String(cur.name || "").trim();
+					// 既有 id（"重名"预校验；host 侧还会再查一次并 409）
+					const existingIds = (bots.agents || []).map((a) => String((a && a.id) || "")).filter(Boolean);
+					if (cur.kind === "bot") {
+						const id = String(cur.id || "").trim() || slugOfName(name);
+						const errs = validateBotDraft({ name, id }, existingIds);
+						if (errs.length) { setBotsNew(Object.assign({}, cur, { error: errs.join("；") })); return; }
+						const next = Object.assign({}, cur, { busy: true, error: "" });
+						setBotsNew(next);
+						void postJson(AGENTS_API_AGENTS, {
+							action: "create",
+							draft: {
+								name,
+								id,
+								role: String(cur.role || "").trim(),
+								description: String(cur.description || "").trim(),
+								icon: String(cur.icon || "").trim() || BOT_ICON_PRESETS[0],
+							},
+						}).then(
+							() => {
+								setBotsNew(null);
+								setBotsMsg({ kind: "note", text: "已新建 Bot「" + name + "」（" + id + "）—— 名册刷新中…" });
+								reloadBots();
+							},
+							(e) => setBotsNew((b) => Object.assign({}, b || next, { busy: false, error: "新建失败：" + String((e && e.message) || e) })),
+						);
+						return;
+					}
+					const members = Array.isArray(cur.members) ? cur.members : [];
+					const errs2 = validateGroupDraft({ name, members });
+					if (errs2.length) { setBotsNew(Object.assign({}, cur, { error: errs2.join("；") })); return; }
+					const next = Object.assign({}, cur, { busy: true, error: "" });
+					setBotsNew(next);
+					void postJson(AGENTS_API_GROUPS, {
+						action: "create",
+						name,
+						members,
+						mode: String(cur.mode || "").trim() || "mentions",
+					}).then(
+						() => {
+							setBotsNew(null);
+							setBotsMsg({ kind: "note", text: "已新建群聊「" + name + "」（" + members.length + " 个成员）—— 名册刷新中…" });
+							reloadBots();
+						},
+						(e) => setBotsNew((b) => Object.assign({}, b || next, { busy: false, error: "新建失败：" + String((e && e.message) || e) })),
+					);
+				};
+				const botsSection = (label, count, rows) => (count > 0 ? react.createElement(react.Fragment, null,
+					react.createElement("div", { key: "sec:" + label, style: S.botsSec }, label, react.createElement("span", { style: S.botsSecCt }, String(count))),
+					rows) : null);
+				const botRow = (a) => {
+					const id = String((a && a.id) || "");
+					const name = String((a && a.name) || id);
+					const reg = a && a.registered !== false;
+					const total = (bots.home && bots.home[id] && typeof bots.home[id].sessionsTotal === "number")
+						? bots.home[id].sessionsTotal : 0;
+					const tip = name + (a && a.role ? " · " + a.role : "") + "\n" + String((a && a.description) || "")
+						+ "\n点击 ⇒ 在中栏打开" + (total ? "它最近一条会话" : "一条新会话");
+					return react.createElement("div", {
+						key: "bot:" + id, "data-vssaros-bot": id, style: S.botRow, title: tip,
+						onClick: () => openBot(a),
+					},
+						react.createElement("span", { style: Object.assign({}, S.botAv, { background: String((a && a.color) || "") || "var(--dsw-alias-brand-primary, #4d7cfe)" }) }, name.slice(0, 1)),
+						react.createElement("span", { style: S.botMain },
+							react.createElement("span", { style: S.botL1 },
+								react.createElement("span", { style: S.botName }, name),
+								a && a.role ? react.createElement("span", { style: S.botPill }, String(a.role)) : null,
+								reg ? null : react.createElement("span", { style: Object.assign({}, S.botPill, { color: "var(--dsw-alias-state-warn-primary, #e0a43a)" }) }, "未注册")),
+							react.createElement("span", { style: S.botL2 },
+								(reg ? "" : "花名册里没有它的 preset · ") + (total ? total + " 会话" : "还没有会话"))));
+				};
+				const groupRow = (g) => {
+					const gid = String((g && g.id) || "");
+					const members = Array.isArray(g && g.members) ? g.members.length : 0;
+					const modeText = (g && g.mode === "open") ? "全员响应" : "@ 唤醒";
+					return react.createElement("div", {
+						key: "grp:" + gid, "data-vssaros-group": gid, style: S.botRow,
+						title: String((g && g.name) || gid) + "\n" + members + " 成员 · " + modeText + "\n点击 ⇒ 打开群聊页",
+						onClick: () => openGroup(g),
+					},
+						react.createElement("span", { style: Object.assign({}, S.botAv, { background: "var(--dsw-alias-bg-layer-3, #3a3a3a)" }) }, "👥"),
+						react.createElement("span", { style: S.botMain },
+							react.createElement("span", { style: S.botL1 }, react.createElement("span", { style: S.botName }, String((g && g.name) || gid))),
+							react.createElement("span", { style: S.botL2 }, members + " 成员 · " + modeText)));
+				};
+				const botsPane = () => {
+					const list = bots.agents || [];
+					const groups = bots.groups || [];
+					const regAll = list.filter((a) => a && a.registered !== false);
+					const unregAll = list.filter((a) => a && a.registered === false);
+					const loading = bots.status === "loading";
+					const ready = bots.status === "ready";
+					// ★ 2026-11-02（用户要求「Bots 页签下增加搜索按钮和 + 按钮，通会话页签的 UI」）：
+					//   搜索口径与会话页签一致 —— 名称 / id / role / 描述（群聊再加 mode 与成员）。
+					const q = botsQuery.trim().toLowerCase();
+					const hit = (v) => !q || String(v || "").toLowerCase().indexOf(q) >= 0;
+					const reg = regAll.filter((a) => hit(a && a.name) || hit(a && a.id) || hit(a && a.role) || hit(a && a.description));
+					const unreg = unregAll.filter((a) => hit(a && a.name) || hit(a && a.id) || hit(a && a.role) || hit(a && a.description));
+					const groupsF = groups.filter((g) => hit(g && g.name) || hit(g && g.id) || hit(g && g.mode));
+					const searching = q.length > 0;
+					const shownCount = reg.length + unreg.length + groupsF.length;
+					// ★ 诊断（2026-11-02）：点「新建 Bot」后表单没出现 —— 先分清是 **state 没变**
+					//   还是 **渲染块被跳过**。只在非 null 时打，正常使用不会刷屏。
+					if (botsNew) {
+						try { wsLog("bots-form-render", { kind: botsNew.kind, hasTitle: !!S.botsFormHeadT }); } catch { /* 忽略 */ }
+					}
+					return react.createElement("div", { style: S.botsPane, "data-vssaros-bots-pane": String(list.length) },
+						react.createElement("div", { style: S.head },
+							react.createElement("span", { style: S.headT }, "Bots"),
+							// 有缓存就先标出来（正在后台刷新）—— 用户不至于以为这就是最新
+							bots.stale && list.length ? react.createElement("span", {
+								style: { fontSize: 10, flex: "0 0 auto", marginRight: 4, color: "var(--dsw-alias-label-tertiary, #737373)" },
+								title: bots.cachedAt ? ("上次读到：" + new Date(bots.cachedAt).toLocaleTimeString("zh-CN")) : "正在后台刷新",
+							}, "缓存") : null,
+							// 🔍 搜索（与会话页签**同款按钮、同款位置**）
+							react.createElement("button", {
+								type: "button", style: S.iconBtn, title: "搜索 Bot / 群聊", "aria-label": "搜索 Bot / 群聊",
+								"aria-pressed": botsSearchOn ? "true" : "false",
+								"data-vssaros-bots-search": "1",
+								onClick: () => setBotsSearchOn(!botsSearchOn),
+							}, "🔍"),
+							// ⟳ 刷新：＋ 菜单只放「新建」（用户 2026-11-02 明确要求），
+							//   刷新是常用操作 ⇒ 作为**独立图标**留在头部，不占菜单。
+							react.createElement("button", {
+								type: "button", style: S.iconBtn, title: loading ? "正在读取…" : "重新读取名册 / 群聊",
+								"aria-label": "刷新 Bots", "data-vssaros-bots-refresh": "1", disabled: loading,
+								onClick: () => reloadBots(),
+							}, loading ? "…" : "⟳"),
+							// ＋（与会话页签**同款位置/形态**：点击开一个 fixed 菜单）
+							//   ⚠ 用 ASCII "+"（全角「＋」在某些渲染环境没有字形 ⇒ 显示成豆腐块）
+							react.createElement("button", {
+								type: "button",
+								style: Object.assign({}, S.iconBtn, { fontSize: 14, fontWeight: 600, minWidth: 18, textAlign: "center" }),
+								title: "新建 / 更多…", "aria-label": "新建 / 更多", "aria-haspopup": "true",
+								"data-vssaros-bots-add": "1",
+								onClick: (e) => {
+									try { e.preventDefault(); e.stopPropagation(); } catch { /* 合成事件 */ }
+									let x = 16;
+									let y = 16;
+									try {
+										const r = e.currentTarget.getBoundingClientRect();
+										x = r.right - 220;
+										y = r.bottom + 2;
+									} catch { /* 拿不到 rect 就用左上角 */ }
+									const w = typeof window !== "undefined" ? window.innerWidth : 0;
+									const h = typeof window !== "undefined" ? window.innerHeight : 0;
+									if (w > 0) { x = Math.max(8, Math.min(x, w - 236)); }
+									if (h > 0) { y = Math.max(8, Math.min(y, h - 300)); }
+									setBotsMenu({ x, y });
+								},
+							}, "+")),
+						botsSearchOn ? react.createElement("input", {
+							style: S.search, placeholder: "搜索 Bot / 群聊…", value: botsQuery,
+							"aria-label": "搜索 Bot / 群聊", "data-vssaros-bots-search-input": "1",
+							onChange: (e) => setBotsQuery(e.target.value),
+						}) : null,
+						botsMsg ? react.createElement("div", {
+							style: Object.assign({}, S.sessMsg, {
+								color: botsMsg.kind === "error" ? "#f48771" : "var(--dsw-alias-label-tertiary, #737373)",
+							}),
+						}, botsMsg.text) : null,
+						bots.status === "error" ? react.createElement("div", { style: S.botsHint },
+							"读不到 Bots（" + bots.error + "）—— agents 插件没装、或 Host 没起来。点 ＋ → 刷新名册 重试。") : null,
+						// ★ 慢接口的兜底说明（2026-11-02）：有缓存内容时**不整块报错**，
+						//   只在顶部说一句"显示的是上次结果"（列表照常可点）。
+						bots.stale && list.length && bots.error ? react.createElement("div", { style: S.botsHint },
+							"显示上次结果（" + bots.error + "）—— 点 ＋ → 刷新名册 重试。") : null,
+						bots.status === "idle" || (loading && !list.length) ? react.createElement("div", { style: S.botsHint }, "正在读取名册…") : null,
+						ready && !list.length ? react.createElement("div", { style: S.botsHint },
+							"还没有 bot（每个子目录需要一个带 name 的 .agent.md）。") : null,
+						// 搜索无结果时说清楚（否则看起来像"名册空了"✗）
+						searching && shownCount === 0 ? react.createElement("div", { style: S.botsHint },
+							"没有匹配「" + botsQuery.trim() + "」的 Bot / 群聊。") : null,
+						react.createElement("div", { style: S.list },
+							botsSection("已注册", reg.length, reg.map(botRow)),
+							botsSection("未注册", unreg.length, unreg.map(botRow)),
+							botsSection("群聊", groupsF.length, groupsF.map(groupRow))),
+						// ＋ 菜单（fixed；与会话页签的 ＋ 菜单同形态）
+						botsMenu ? react.createElement("div", {
+							"data-vssaros-bots-menu": "1",
+							style: Object.assign({}, S.sessMenu, { left: botsMenu.x, top: botsMenu.y, maxHeight: 320, overflowY: "auto" }),
+						},
+							// ★★ 2026-11-02（用户要求「＋ 表示新建 bot 或群聊」）：这两项才是 ＋ 的主语义。
+							// ⚠⚠ 必须用 `onMouseDown` 而不是 `onClick`：
+							//   全局"点外面关菜单"监听的是 **document 的 mousedown（capture）**，
+							//   它在元素之前执行 ⇒ 先把 `botsMenu` 置 null ⇒ React 卸载这个按钮
+							//   ⇒ 随后的 click 落在已卸载节点上 ⇒ **onClick 根本不触发**
+							//   （2026-11-02 真机：点「新建 Bot…」只关了菜单、表单没弹，就是这个）。
+							react.createElement("button", {
+								type: "button", role: "menuitem", "data-act": "new-bot", style: S.menuItem,
+								title: "新建一个 Bot（会在 agents 数据根下写 <id>/.agent.md 并立刻同步进花名册）",
+								onMouseDown: (e) => {
+									try { e.preventDefault(); } catch { /* 忽略 */ }
+									// ⚠ 延后一批：全局"点外面关菜单"监听的是 document 的 mousedown(capture)，
+									//   它和这里在同一批更新里（菜单卸载 + 表单挂载）实测出现过
+									//   "state 已写入、DOM 没跟上"（fiber 里 botsNew={kind:'bot'} 但页面上没有表单）。
+									//   拆成两个批次后互不干扰。
+									try { window.setTimeout(() => openBotsNew("bot"), 0); } catch { openBotsNew("bot"); }
+								},
+							}, "新建 Bot…"),
+							react.createElement("button", {
+								type: "button", role: "menuitem", "data-act": "new-group", style: S.menuItem,
+								title: "新建一个群聊（名称 + 至少一个成员）",
+								onMouseDown: (e) => {
+									try { e.preventDefault(); } catch { /* 忽略 */ }
+									try { window.setTimeout(() => openBotsNew("group"), 0); } catch { openBotsNew("group"); }
+								},
+							}, "新建群聊…")) : null,
+						// ★ 2026-11-02：「新建 Bot / 新建群聊」表单（＋ 的主语义）
+						botsNew ? (() => {
+							const f = botsNew;
+							const isBot = f.kind === "bot";
+							const existingIds = (bots.agents || []).map((a) => String((a && a.id) || "")).filter(Boolean);
+							const idValue = String(f.id || "").trim() || slugOfName(f.name);
+							const idErrs = validateBotDraft({ name: f.name, id: idValue }, existingIds);
+							const idOk = isBot && !!String(f.name || "").trim() && !!idValue && idErrs.length === 0;
+							const modeOpt = GROUP_MODE_OPTIONS.filter((m) => m.id === (f.mode || "mentions"))[0] || GROUP_MODE_OPTIONS[1];
+							const memberPool = (regAll.length ? regAll : list);
+							const mq = String(f.memberQuery || "").trim().toLowerCase();
+							const memberShown = mq ? memberPool.filter((a) => String(a.name || a.id).toLowerCase().indexOf(mq) >= 0) : memberPool;
+							const picked = f.members || [];
+							/** 一行「label + 计数 + input」（三个文本字段共用，避免抄三遍）。 */
+							const field = (label, max, key, placeholder) => react.createElement("div", { style: S.botsFormField },
+								react.createElement("div", { style: S.botsFormFieldHead },
+									react.createElement("span", { style: S.botsFormLabel }, label),
+									max ? react.createElement("span", { style: S.botsFormCounter }, String(f[key] || "").length + "/" + max) : null),
+								react.createElement("input", {
+									// ⚠ 键是动态的 ⇒ 必须用**计算属性**（`"a" + key: 1` 是语法错误）
+									["data-vssaros-bots-new-" + key]: "1",
+									autoFocus: key === "name",
+									maxLength: max || undefined,
+									style: S.botsFormInput,
+									value: f[key] || "",
+									placeholder,
+									onChange: (e) => setBotsNew(Object.assign({}, f, { [key]: e.target.value, error: "" })),
+									onKeyDown: (e) => { if (e.key === "Enter") { submitBotsNew(); } if (e.key === "Escape") { setBotsNew(null); } },
+								}));
+							return react.createElement("div", {
+								"data-vssaros-bots-new": f.kind,
+								style: Object.assign({}, S.botsForm, { maxHeight: "min(76vh, 600px)" }),
+								// 点面板内部不该被"点外面关菜单"那套逻辑牵连（面板本来就不自动关闭）
+								onMouseDown: (e) => { try { e.stopPropagation(); } catch { /* 忽略 */ } },
+							},
+								react.createElement("div", { style: S.botsFormHead },
+									react.createElement("span", { style: S.botsFormHeadT }, isBot ? "新建 Bot" : "新建群聊"),
+									react.createElement("button", {
+										type: "button", style: S.botsFormClose, title: "关闭（Esc）", "aria-label": "关闭",
+										"data-act": "new-close", onClick: () => setBotsNew(null),
+									}, "✕")),
+								react.createElement("div", { style: S.botsFormBody },
+									field("名称 *", 80, "name", isBot ? "例如 代码审阅员" : "例如 需求评审群"),
+									isBot ? react.createElement(react.Fragment, null,
+										react.createElement("div", { style: S.botsFormField },
+											react.createElement("div", { style: S.botsFormFieldHead },
+												react.createElement("span", { style: S.botsFormLabel }, "id *（英文目录名）"),
+												idOk
+													? react.createElement("span", { style: S.botsFormOk, "data-vssaros-bots-id-ok": "1" }, "✓ 可用")
+													: react.createElement("span", { style: S.botsFormBad, "data-vssaros-bots-id-bad": "1" },
+														idValue ? (idErrs[0] || "").replace(/^id /, "") : "留空则从名称生成")),
+											react.createElement("input", {
+												style: S.botsFormInput, value: f.id || "", maxLength: 64,
+												placeholder: slugOfName(f.name) || "code-reviewer",
+												"data-vssaros-bots-new-id": "1",
+												onChange: (e) => setBotsNew(Object.assign({}, f, { id: e.target.value, error: "" })),
+												onKeyDown: (e) => { if (e.key === "Enter") { submitBotsNew(); } if (e.key === "Escape") { setBotsNew(null); } },
+											})),
+										field("角色", 40, "role", "例如 代码审阅"),
+										field("描述", 200, "description", "一句话说明它擅长什么"),
+										react.createElement("div", { style: S.botsFormField },
+											react.createElement("span", { style: S.botsFormLabel }, "图标"),
+											react.createElement("div", { style: S.botsFormIcons, "data-vssaros-bots-icons": "1" },
+												BOT_ICON_PRESETS.map((ic) => react.createElement("button", {
+													key: "ic:" + ic, type: "button", title: ic,
+													"data-act": "icon:" + ic,
+													style: Object.assign({}, S.botsFormIconBtn, (f.icon || BOT_ICON_PRESETS[0]) === ic ? S.botsFormIconOn : null),
+													onClick: () => setBotsNew(Object.assign({}, f, { icon: ic })),
+												}, /^lucide:/.test(ic) ? "🤖" : ic)))))
+									: react.createElement(react.Fragment, null,
+										react.createElement("div", { style: S.botsFormField },
+											react.createElement("span", { style: S.botsFormLabel }, "唤醒策略"),
+											react.createElement("div", { style: S.botsFormModeRow, "data-vssaros-bots-modes": "1" },
+												GROUP_MODE_OPTIONS.map((m) => react.createElement("button", {
+													key: "mode:" + m.id, type: "button", title: m.hint,
+													"data-act": "mode:" + m.id,
+													style: Object.assign({}, S.botsFormModeBtn, (f.mode || "mentions") === m.id ? S.botsFormModeOn : null),
+													onClick: () => setBotsNew(Object.assign({}, f, { mode: m.id })),
+												}, m.label))),
+											react.createElement("div", { style: S.botsFormTip }, modeOpt.hint)),
+										react.createElement("div", { style: S.botsFormField },
+											react.createElement("div", { style: S.botsFormFieldHead },
+												react.createElement("span", { style: S.botsFormLabel }, "成员 *（已选 " + picked.length + "）"),
+												react.createElement("span", { style: S.botsFormTools },
+													react.createElement("button", {
+														type: "button", style: S.botsFormMini, "data-act": "members-all",
+														onClick: () => setBotsNew(Object.assign({}, f, { members: memberPool.map((a) => a.id) })),
+													}, "全选"),
+													react.createElement("button", {
+														type: "button", style: S.botsFormMini, "data-act": "members-none",
+														onClick: () => setBotsNew(Object.assign({}, f, { members: [] })),
+													}, "清空"))),
+											react.createElement("input", {
+												style: S.botsFormInput, value: f.memberQuery || "", placeholder: "搜索成员…",
+												"data-vssaros-bots-member-query": "1",
+												onChange: (e) => setBotsNew(Object.assign({}, f, { memberQuery: e.target.value })),
+											}),
+											react.createElement("div", { style: S.botsFormMembers, "data-vssaros-bots-new-members": "1" },
+												memberShown.length === 0
+													? react.createElement("div", { style: S.botsFormTip }, "没有匹配的成员")
+													: memberShown.map((a) => {
+														const on = picked.indexOf(a.id) >= 0;
+														return react.createElement("label", { key: "mem:" + a.id, style: S.botsFormMemRow },
+															react.createElement("input", {
+																type: "checkbox", checked: on,
+																"data-vssaros-bots-new-member": a.id,
+																onChange: () => setBotsNew((b) => {
+																	const cur2 = b || f;
+																	const mem = (cur2.members || []).slice();
+																	const at = mem.indexOf(a.id);
+																	if (at >= 0) { mem.splice(at, 1); } else { mem.push(a.id); }
+																	return Object.assign({}, cur2, { members: mem, error: "" });
+																}),
+															}),
+															react.createElement("span", {
+																style: Object.assign({}, S.botsFormMemAv, { background: a.color || "var(--dsw-alias-bg-layer-3, #3d3d3d)" }),
+															}, String(a.name || a.id).slice(0, 1)),
+															react.createElement("span", null, a.name || a.id));
+													})))),
+									// ── 预览（两套都显示；用户输入时立刻反映，像真的卡片）──
+									react.createElement("div", { style: S.botsFormPreview, "data-vssaros-bots-preview": "1" },
+										react.createElement("span", { style: S.botsFormPreviewAv },
+											isBot ? (/^lucide:/.test(f.icon || "") ? "🤖" : (f.icon || "🤖")) : "👥"),
+										react.createElement("span", { style: S.botsFormPreviewMain },
+											react.createElement("span", { style: S.botsFormPreviewName },
+												String(f.name || "").trim() || (isBot ? "未命名 Bot" : "未命名群聊")),
+											react.createElement("span", { style: S.botsFormPreviewMeta },
+												isBot
+													? ([String(f.role || "").trim(), String(f.description || "").trim()].filter(Boolean).join(" · ") || idValue || "—")
+													: (picked.length + " 成员 · " + modeOpt.label))))),
+									f.error ? react.createElement("div", { style: S.botsFormErr, "data-vssaros-bots-new-error": "1" }, f.error) : null),
+								react.createElement("div", {
+									style: Object.assign({}, S.botsFormRow, { paddingTop: 8, borderTop: "1px solid var(--dsw-alias-border-l1, #3a3a3a)" }),
+								},
+									react.createElement("button", {
+										type: "button", style: S.botsFormBtn, "data-act": "new-cancel",
+										onClick: () => setBotsNew(null),
+									}, "取消"),
+									react.createElement("button", {
+										type: "button", "data-act": "new-submit", disabled: f.busy === true,
+										style: Object.assign({}, S.botsFormBtn, S.botsFormBtnPrimary, f.busy ? { opacity: .7 } : null),
+										onClick: () => submitBotsNew(),
+									}, f.busy ? "创建中…" : (isBot ? "创建 Bot" : "创建群聊")));
+						})() : null);
+				};
+				const tabBar = react.createElement("div", { style: S.tabBar, role: "tablist", "data-vssaros-sidebar-tabs": "1" },
+					["sessions", "bots"].map((k) => react.createElement("button", {
+						key: k, type: "button", role: "tab", "data-vssaros-sidebar-tab": k,
+						"aria-selected": view === k ? "true" : "false",
+						// ★ 2026-11-02 二次：选中态交给 CSS（`[data-on="1"]`）—— 需要 :hover 参与，
+						//   内联 style 表达不了；这里只保留尺寸。
+						className: "vssaros-ws-tab",
+						"data-on": view === k ? "1" : "0",
+						style: S.tabBtn,
+						title: k === "sessions" ? "工作区与会话（现状不变）" : "Bot 名册与群聊",
+						onClick: () => switchView(k),
+					}, k === "sessions" ? "会话" : "Bots")));
+
+				// 「会话」页签 = **原来的整块内容**（工作区头 + 会话树 + 各种菜单），一个字没改。
+				const sessionsPane = react.createElement("div", { style: { display: "flex", flexDirection: "column", minHeight: 0, flex: "1 1 auto" } },
 					react.createElement("div", { style: S.head },
 						// 2026-10-18：与官方中文 UI 对齐（此前写死英文 `Workspaces`，弹窗里和
 				// 「新会话 / 插件 / 自动化任务」并排显得割裂 ✓）
-				react.createElement("span", { style: S.headT }, "工作区"),
+				// ★ 2026-11-02：标题 hover 显示当前界面版本尾段 —— 排查"看不到新功能"时，
+				//   第一件事就是确认这个窗口跑的是不是旧 chunk（本次 bug 就是这么定位的）。
+				react.createElement("span", {
+					style: S.headT,
+					title: (function () {
+						try { return "界面版本：" + String(window.__vssarosChatSurfaceBuild || "(未知)").slice(-30); } catch { return ""; }
+					})(),
+				}, "工作区"),
 						withSearch ? react.createElement("button", { style: S.iconBtn, title: "搜索工作区 / 会话", "aria-label": "搜索工作区 / 会话", onClick: () => setSearchOn(!searchOn) }, "🔍") : null,
 						// ★ 用 ASCII "+"：原来的全角「＋」(U+FF0B) 在某些渲染环境**没有字形**
 						//   ⇒ 界面上是一个豆腐块（用户截图里那个方框就是它）⇒ 点了像"没反应" ✓
@@ -1565,15 +3502,41 @@ window.__ModuleLoader__.load({
 								const key = row.record.id;
 								const isOpen = collapsed[key] !== true;
 								return react.createElement("div", { key: row.key || ("rec:" + key) },
+									// ★ 2026-11-02（对齐官方 `.projectRow`）：默认 **folder 图标**、hover 换**三角箭头**
+									//   （官方 CSS：`.projectRow .chevron{display:none}` + `:hover .chevron{inline-flex}` +
+									//   `:hover .folder{display:none}`）；「N 个根」徽标移到 hover 卡片里（官方行没有徽标 ✗）。
 									react.createElement("div", {
-										style: Object.assign({}, S.row, { color: "var(--dsw-alias-label-primary, #e6e6e6)" }),
+										className: "vssaros-ws-project",
+										role: "treeitem",
+										"aria-expanded": isOpen,
+										// 官方锚点（`data-row-key="workspace:<key>"`）
+										"data-row-key": "workspace:" + key,
 										onClick: () => setCollapsed(nextCollapsed(collapsed, key)),
 										onMouseEnter: (e) => openHover(key, e),
 										onMouseLeave: closeHover,
 									},
-										react.createElement("span", { style: { width: 10, fontSize: 8, color: "var(--dsw-alias-label-tertiary, #737373)", flex: "0 0 auto" } }, isOpen ? "▼" : "▶"),
-										react.createElement("span", { style: Object.assign({}, S.lbl, { fontWeight: 600 }) }, row.record.name),
-										react.createElement("span", { style: S.badge }, row.record.roots.length + " 个根"),
+										react.createElement("span", { className: "vssaros-ws-slot2 vssaros-ws-folder", "aria-hidden": "true" }, folderIcon()),
+										react.createElement("span", { className: "vssaros-ws-slot2 vssaros-ws-chevron", "aria-hidden": "true" }, chevronIcon(isOpen)),
+										react.createElement("span", { className: "vssaros-ws-projtitle" }, row.record.name),
+										// 官方 `.rowActions`：默认隐藏，hover 才出现（CSS 控制）
+										react.createElement("span", { className: "vssaros-ws-actions" },
+											// ★ 2026-11-02（用户要求）：hover 时在 ⋯ 左边给一个 **+** —— 在此工作区新建会话
+											react.createElement("button", {
+												type: "button", className: "vssaros-ws-icon", title: "在此工作区新建会话",
+												"aria-label": "在此工作区新建会话（" + row.record.name + "）",
+												"data-vssaros-ws-row-new-session": key,
+												onClick: (e) => {
+													try { e.preventDefault(); e.stopPropagation(); } catch { /* 合成事件 */ }
+													closeHover();
+													newSessionInWorkspace(row.record, row.record.name);
+													},
+													}, plusIcon()),
+											react.createElement("button", {
+												type: "button", className: "vssaros-ws-icon", title: "工作区操作",
+												"aria-label": "工作区操作（" + row.record.name + "）", "aria-haspopup": "true",
+												"data-vssaros-ws-row-actions": key,
+												onClick: (e) => openWsMenu(key, e, row.record.name),
+											}, "⋯")),
 									),
 									isOpen ? renderSessions(row) : null,
 								);
@@ -1582,17 +3545,115 @@ window.__ModuleLoader__.load({
 							const key = "flat:" + row.label;
 							const isOpen = collapsed[key] !== true;
 							return react.createElement("div", { key: row.key || key },
+								// 回落分支（未被 IDE 记录认领的 dsh 条目）同样按官方 `.projectRow` 画
 								react.createElement("div", {
-									style: Object.assign({}, S.row, { color: "var(--dsw-alias-label-primary, #e6e6e6)" }),
+									className: "vssaros-ws-project",
+									role: "treeitem",
+									"aria-expanded": isOpen,
+									"data-row-key": "workspace:" + key,
 									onClick: () => setCollapsed(nextCollapsed(collapsed, key)),
 								},
-									react.createElement("span", { style: { width: 10, fontSize: 8, color: "var(--dsw-alias-label-tertiary, #737373)", flex: "0 0 auto" } }, isOpen ? "▼" : "▶"),
-									react.createElement("span", { style: Object.assign({}, S.lbl, { fontWeight: 600 }) }, row.label),
+									react.createElement("span", { className: "vssaros-ws-slot2 vssaros-ws-folder", "aria-hidden": "true" }, folderIcon()),
+									react.createElement("span", { className: "vssaros-ws-slot2 vssaros-ws-chevron", "aria-hidden": "true" }, chevronIcon(isOpen)),
+									react.createElement("span", { className: "vssaros-ws-projtitle" }, row.label),
+									react.createElement("span", { className: "vssaros-ws-actions" },
+										// 回落行同样给「+」（路径取 `row.path`，没有就明确提示，不猜）
+										react.createElement("button", {
+											type: "button", className: "vssaros-ws-icon", title: "在此工作区新建会话",
+											"aria-label": "在此工作区新建会话（" + row.label + "）",
+											"data-vssaros-ws-row-new-session": key,
+											onClick: (e) => {
+												try { e.preventDefault(); e.stopPropagation(); } catch { /* 合成事件 */ }
+												closeHover();
+												newSessionInWorkspace(row, row.label);
+											},
+										}, plusIcon()),
+										react.createElement("button", {
+											type: "button", className: "vssaros-ws-icon", title: "工作区操作",
+											"aria-label": "工作区操作（" + row.label + "）", "aria-haspopup": "true",
+											"data-vssaros-ws-row-actions": key,
+											onClick: (e) => openWsMenu(key, e, row.label),
+										}, "⋯")),
 								),
 								isOpen ? renderSessions(row) : null,
 							);
 						}),
 					),
+					// ★ 2026-11-02：工作区行 ⋯ 菜单（官方 `.rowActions` 那枚；只做不破坏数据的三项）
+					wsMenu ? react.createElement("div", {
+						"data-vssaros-ws-row-menu": "1",
+						style: Object.assign({}, S.sessMenu, { left: wsMenu.x, top: wsMenu.y }),
+					},
+						react.createElement("div", {
+							style: { padding: "3px 9px 5px", fontSize: 10.5, color: "var(--dsw-alias-label-tertiary, #737373)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 220 },
+						}, wsMenu.label || wsMenu.key),
+						react.createElement("button", {
+							type: "button", role: "menuitem", "data-act": "toggle", style: S.menuItem,
+							onClick: () => { const k = wsMenu.key; setWsMenu(null); setCollapsed(nextCollapsed(collapsed, k)); },
+						}, "折叠 / 展开"),
+						react.createElement("button", {
+							type: "button", role: "menuitem", "data-act": "collapse-all", style: S.menuItem,
+							onClick: () => {
+								const next = {};
+								for (const k of allGroupKeys()) { next[k] = true; }
+								setWsMenu(null); setCollapsed(next);
+							},
+						}, "全部折叠"),
+						react.createElement("button", {
+							type: "button", role: "menuitem", "data-act": "expand-all", style: S.menuItem,
+							onClick: () => { setWsMenu(null); setCollapsed({}); },
+						}, "全部展开"),
+						// ★ 2026-11-02（用户要求）：移除工作区 —— 走官方 `workspaces.delete`
+						//   （注释原文 "Remove one Workspace registration while retaining files and Sessions"
+						//    ⇒ **只摘登记**，会话与磁盘文件都保留，重新添加即恢复 ⇒ 可逆）。
+						//
+						//   ⚠ 不放"再点一次确认"的两步态：真机实测第一次点击后菜单**没重渲染**
+						//   （`confirmRemove` 写进去了但文本不变），会造成"点了没反应"。既然操作可逆、
+						//   且提示里会说明"会话与文件都保留"，直接执行 + 事后说明更符合预期。
+						react.createElement("div", { style: { height: 1, margin: "4px 6px", background: "var(--dsw-alias-border-l1, #3a3a3a)" } }),
+						react.createElement("button", {
+							type: "button", role: "menuitem", "data-act": "remove-ws",
+							style: S.menuItem,
+							title: "从 dsh 移除这个工作区（只摘登记；会话与磁盘文件都保留，可随时再加回来）",
+							onClick: () => {
+								const k = wsMenu.key;
+								setWsMenu(null);
+								removeWorkspace(k);
+							},
+						}, "移除工作区"),
+						// 恢复入口：隐藏是**持久**的（localStorage），没有这个入口用户只能清缓存才找得回
+						wsRemoved.length ? react.createElement("button", {
+							type: "button", role: "menuitem", "data-act": "restore-ws", style: S.menuItem,
+							title: "把所有「已移除」的工作区重新显示出来",
+							onClick: () => {
+								const n = wsRemoved.length;
+								setWsMenu(null);
+								setWsRemoved([]);
+								say("已恢复显示 " + n + " 个被移除的工作区", "note");
+							},
+						}, "恢复已移除的工作区（" + wsRemoved.length + "）") : null,
+						// ★★ 2026-11-02（用户报「左侧栏又看不到会话/Bots 页签了」）：
+						//   根因**不是**代码 —— 是那个窗口还跑着部署前的 chunk（页面不会自动跟随插件更新，
+						//   `?rev` 变了但已加载的页面不会自己重载）。真机复现：同一个 app 里 IDE 那侧有页签、
+						//   desktop 窗口没有；CDP `Page.reload` 之后立刻出现 ✓。
+						//   ⇒ 给一个**用户可控**的重载入口（不自动 reload：会打断正在跑的对话 ✗）。
+						react.createElement("div", { style: { height: 1, margin: "4px 6px", background: "var(--dsw-alias-border-l1, #3a3a3a)" } }),
+						react.createElement("button", {
+							type: "button", role: "menuitem", "data-act": "backfill-titles", style: S.menuItem,
+							title: "把标题仍是「未命名」的会话，按首条用户消息补上标题（写回 dsh，官方侧栏也会显示）",
+							onClick: () => { setWsMenu(null); backfillTitles(); },
+						}, "补全会话标题"),
+						react.createElement("button", {
+							type: "button", role: "menuitem", "data-act": "copy-diag", style: S.menuItem,
+							title: "复制当前侧栏的诊断信息（版本 / 注册状态 / 槽里是谁 / 事件链）",
+							onClick: () => { setWsMenu(null); copyPlain(diagText(), say, "已复制诊断信息（直接发出来即可）"); },
+						}, "复制诊断信息"),
+						react.createElement("button", {
+							type: "button", role: "menuitem", "data-act": "reload-ui", style: S.menuItem,
+							title: "插件更新后页面不会自动刷新，点这里重载界面",
+							onClick: () => { setWsMenu(null); try { window.location.reload(); } catch { /* 无 window */ } },
+						}, "重载界面"),
+					) : null,
 					// ★ 2026-10-29：会话右键菜单（fixed + 已夹进视口；与 ＋ 菜单共用"点外面 / Esc 关闭"）
 					sessMenu ? react.createElement("div", {
 						"data-vssaros-sess-menu": "1",
@@ -1609,11 +3670,22 @@ window.__ModuleLoader__.load({
 							type: "button", role: "menuitem", "data-act": "rename", style: S.menuItem,
 							onClick: () => menuAction("rename"),
 						}, "重命名"),
+						// ★ 2026-11-02：未读标记（官方行没有菜单项可切，靠本地集合）——
+						//   它在「重命名」之后、"复制/归档"之前：属于"对这条会话本身"的一组动作 ✓
+						react.createElement("button", {
+							type: "button", role: "menuitem", "data-act": "unread", style: S.menuItem,
+							onClick: () => menuAction("unread"),
+						}, sessMenu.unread ? "标为已读" : "标为未读"),
 						react.createElement("div", { style: { height: 1, margin: "4px 6px", background: "var(--dsw-alias-border-l1, #3a3a3a)" } }),
 						react.createElement("button", {
 							type: "button", role: "menuitem", "data-act": "copy", style: S.menuItem,
 							onClick: () => menuAction("copy"),
 						}, "复制会话 id"),
+						// ★ 2026-11-02（降维护）：对齐官方 `ForkSessionMenuItem` 的那一项。
+						react.createElement("button", {
+							type: "button", role: "menuitem", "data-act": "fork", style: S.menuItem,
+							onClick: () => menuAction("fork"),
+						}, "分叉出一条新会话"),
 						react.createElement("button", {
 							type: "button", role: "menuitem", "data-act": "archive", style: S.menuItem,
 							onClick: () => menuAction("archive"),
@@ -1668,7 +3740,46 @@ window.__ModuleLoader__.load({
 						const row = rows.filter((r2) => r2.kind === "group" && r2.record.id === hover.key)[0];
 						return row ? react.createElement(HoverCard, { record: row.record, sessions: row.sessions, currentRootPath, x: hover.x, y: hover.y }) : null;
 					})(),
+					// ★ 2026-11-02（补上官方 `SessionNodeItem` 的最后一块交互）：**会话行 hover 卡片**。
+					//   官方内容 = 完整标题（14/20 可换行）+ 相对时间（12/16）+ 每条状态（12/20 + 点），
+					//   并支持"复制标题"（`copyText/copyLabel/copiedLabel`）。这里额外给了根名与绝对时间。
+					//   ⚠ 卡片自己也要 onMouseEnter/Leave：它贴着行，鼠标一移过去就会被行的 leave 关掉 ✗。
+					sessHover && (() => {
+						const cur = findSession(sessHover.sid);
+						if (!cur) { return null; }
+						const dot = cur.status === "running" ? Object.assign({}, S.ring, S.ringRunning)
+							: cur.status === "awaiting" ? Object.assign({}, S.ring, S.ringAwaiting)
+								: cur.status === "idle" ? Object.assign({}, S.ring, S.ringIdle) : S.ring;
+						return react.createElement("div", {
+							"data-vssaros-sess-hover": "1",
+							role: "tooltip",
+							style: Object.assign({}, S.sessHoverCard, { left: sessHover.x, top: sessHover.y }),
+							onMouseEnter: () => { if (sessHoverTimer.current) { clearTimeout(sessHoverTimer.current); sessHoverTimer.current = null; } },
+							onMouseLeave: closeSessHover,
+						},
+							react.createElement("div", { style: S.sessHoverTitle }, cur.title),
+							react.createElement("div", { style: S.sessHoverTime },
+								timeLabel(cur.at) + (absTimeLabel(cur.at) ? " · 创建于 " + absTimeLabel(cur.at) : "")),
+							cur.rootName ? react.createElement("div", { style: S.sessHoverPath }, "根：" + cur.rootName) : null,
+							// 会话 id 从行上的原生 title 搬到这里（行 title 会与卡片形成两个浮层 ✗）
+							react.createElement("div", { style: Object.assign({}, S.sessHoverPath, { opacity: .8 }) }, cur.id),
+							react.createElement("div", { style: S.sessHoverStatus },
+								react.createElement("span", { style: dot, "aria-hidden": "true" }),
+								react.createElement("span", null, RING_LABEL[cur.status] || "状态未知")),
+							cur.pinned ? react.createElement("div", { style: S.sessHoverStatus }, "📌 已置顶") : null,
+							react.createElement("button", {
+								type: "button", "data-act": "copy-title", style: S.sessHoverCopy, title: "复制标题",
+								onClick: (e) => {
+									try { e.stopPropagation(); } catch { /* 忽略 */ }
+									copyPlain(cur.title, say, "已复制标题");
+								},
+							}, "复制标题"));
+					})(),
 				);
+				// 外层：页签条常驻，两个页签**互斥渲染**（在 Bots 页签时不渲染工作区树 ⇒ 不白跑）。
+				return react.createElement("div", { style: { display: "flex", flexDirection: "column", minHeight: 0, flex: "1 1 auto" } },
+					tabBar,
+					view === "bots" ? botsPane() : sessionsPane);
 			}
 
 			// 遮蔽官方 WorkspaceBrowser（升序取最低 priority 渲染；同 hero.workspace 的 -10 先例 ✓）。
@@ -1677,11 +3788,210 @@ window.__ModuleLoader__.load({
 				//   ⚠ 必须放在这里而不是 install 顶部：`ensureRingStyle` 是与 `S` 一起声明的
 				//   `const`，在本作用域**下方** ⇒ 提前调用会吃掉 TDZ（Cannot access before initialization）。
 				ensureRingStyle();
-				ctx.slots.inject(SLOT, () => ctx.slots.register(
-					{ name: SLOT, id: "vssaros-workspaces", priority: -10 }, Browser));
+				// ★ 2026-11-02：会话行的官方数值（32px 行 / 14px 标题 / 悬停才出行尾动作…）
+				//   ⚠ 同样必须在 `S` 之后调（TDZ），放在这里与 ensureRingStyle 并列 ✓
+				ensureRowStyle();
+				// ── 默认工作区（2026-11-02 用户要求「初始安装启动时应该默认显示一个工作区」）──────
+				//
+				// ★★ 第二轮修正（用户报「当前工作区中，缺少 默认工作区」）：
+				//   第一版只在 `items.length === 0` 时调官方 `workspaces.initializeDefault()`——
+				//   但官方语义是"**首次使用**"：机器上已有任何工作区时它直接返回 `undefined`（实测），
+				//   所以已有工作区的机器永远等不到这个默认工作区 ✗。
+				//
+				//   现在改成**自己确保**（幂等，按路径判断）：
+				//     ① 宿主 `POST /api/default-workspace` ⇒ `mkdir -p <DSH_HOME>/VsSaros` 并返回该路径
+				//        （`workspaces.create` 只接受已存在的绝对路径，而页面建不了目录）；
+				//     ② `workspaces.create({ path })`（官方"添加工作区"同一条链）；
+				//     ③ **已有同路径的工作区就跳过** ⇒ 用户删掉它后下次启动会重新补上，不会重复添加。
+				//
+				//   仍只发起一次（`tried`），且必须等快照 `ready`（pending 时判断会误判）。
+				const ensureDefaultWorkspace = (() => {
+					let tried = false;
+					return () => {
+						if (tried) { return; }
+						try {
+							const ws = typeof ctx.get === "function" ? ctx.get("workspaces") : null;
+							if (!ws || typeof ws.create !== "function") { return; }
+							const snap = ws.list && typeof ws.list.getSnapshot === "function" ? ws.list.getSnapshot() : null;
+							if (!snap || snap.phase !== "ready") { return; }
+							tried = true;
+							try { wsLog("default-workspace", { phase: "start" }); } catch { /* 诊断 */ }
+							let p;
+							try {
+								p = Promise.resolve(fetch(DEFAULT_WS_API, {
+									method: "POST",
+									headers: { accept: "application/json" },
+								})).then((r) => Promise.resolve(r.json().catch(() => null)).then((j) => {
+									if (!r.ok || !j || j.ok !== true || typeof j.path !== "string" || !j.path) {
+										throw new Error((j && j.error) || ("HTTP " + r.status));
+									}
+									return j.path;
+								}));
+							} catch (e) { p = Promise.reject(e); }
+							void p.then((dir) => {
+								// 已有同路径的工作区 ⇒ 什么都不做（幂等；也是"用户删了再补"的判据）
+								const items = (ws.list.getSnapshot() || {}).items || [];
+								const exists = items.some((it) => it && samePath(it.path, dir));
+								if (exists) {
+									try { wsLog("default-workspace", { phase: "exists", path: dir }); } catch { /* 诊断 */ }
+									return undefined;
+								}
+								return Promise.resolve(ws.create({ path: dir })).then((created) => {
+									const id = created && (created.workspaceId
+										|| (created.workspace && created.workspace.workspaceId));
+									try {
+										wsLog("default-workspace", { phase: "created", path: dir, id: id ? String(id) : null });
+									} catch { /* 诊断 */ }
+								});
+							}).catch((e) => {
+								try { wsLog("default-workspace", { phase: "fail", message: String((e && e.message) || e) }); } catch { /* 诊断 */ }
+							});
+						} catch { /* 默认工作区失败不影响任何其它功能 */ }
+					};
+				})();
+				try {
+					ctx.effect(() => {
+						ensureDefaultWorkspace();
+						const ws = typeof ctx.get === "function" ? ctx.get("workspaces") : null;
+						const off = (ws && ws.list && typeof ws.list.subscribe === "function")
+							? ws.list.subscribe(() => ensureDefaultWorkspace())
+							: null;
+						return () => { try { if (typeof off === "function") { off(); } } catch { /* 已释放 */ } };
+					}, "vssaros-chat-surface: default workspace");
+				} catch { /* 没有 effect（测试桩）⇒ 上面已经试过一次 */ }
+				// ★ 诊断（2026-11-02）：把"槽能力 / 注册是否真的成功"记下来 —— desktop 窗口里
+				//   官方 UI 照旧渲染时，先看这三项就能判断是 inject 没生效还是 register 被忽略。
+				/**
+				 * 700ms 后自检：`sidebar.workspaces` 槽里**到底是谁**。
+				 * 这一步是本次定位的关键 —— "注册没抛错"与"真的渲染进槽"是两件事 ✗。
+				 */
+				/**
+				 * dump 槽内部条目表（`SlotCore.records`：`Map<name, {spec, entries}>`）。
+				 * 条目 = `{ options: { id, priority, registrant, order } }` ⇒ 一眼看出
+				 * "槽里有几个注册者、谁排第一、我们到底在不在里面"。
+				 *
+				 * ⚠⚠ **必须在注册之后调用**：第一版把这段放在 `register` 之前 ⇒ dump 出来只有官方
+				 *   那一条（priority 0），看起来像"我们没注册" —— 纯粹是取样时机错 ✗（已踩）。
+				 */
+				const dumpSlotEntries = () => {
+					try {
+						const slots = ctx.slots || {};
+						const core = slots._core;
+						if (core && core.records && typeof core.records.get === "function") {
+							const rec = core.records.get(SLOT);
+							state.workspacesSlotEntries = rec && Array.isArray(rec.entries)
+								? {
+									kind: rec.spec && rec.spec.kind,
+									count: rec.entries.length,
+									list: rec.entries.map((e) => ({
+										id: (e.options && e.options.id) || "",
+										priority: e.options && e.options.priority !== undefined ? e.options.priority : 0,
+										registrant: (e.options && e.options.registrant) || "",
+										order: e.options && e.options.order !== undefined ? e.options.order : null,
+									})),
+								}
+								: { kind: rec && rec.spec && rec.spec.kind, count: 0, list: [], note: "records 里没有该槽" };
+						} else {
+							state.workspacesSlotEntries = { count: -1, note: "拿不到 _core.records" };
+						}
+					} catch (e) {
+						state.workspacesSlotEntries = { count: -1, note: "读条目表失败：" + String((e && e.message) || e) };
+					}
+					wsLog("slots-entries", state.workspacesSlotEntries || {});
+				};
+				const scheduleSlotSelfCheck = () => {
+					try {
+						if (typeof window === "undefined" || typeof document === "undefined") { return; }
+						window.setTimeout(() => {
+							try {
+								const slot = document.querySelector('[data-slot="sidebar.workspaces"]');
+								const first = slot && slot.firstElementChild ? String(slot.firstElementChild.className || "") : "";
+								const info = {
+									hasSlot: !!slot,
+									firstClass: first.slice(0, 100),
+									ourTabBar: !!document.querySelector("[data-vssaros-sidebar-tabs]"),
+									ourRows: document.querySelectorAll(".vssaros-ws-project").length,
+									officialRows: document.querySelectorAll('[class*="projectRow"]').length,
+									renderTick: state.workspacesRenderTick === undefined ? null : state.workspacesRenderTick,
+									wide: state.workspacesWide === undefined ? null : state.workspacesWide,
+								};
+								state.workspacesSlotCheck = info;
+								// 注册已完成 ⇒ 这时 dump 条目表才有第二个注册者（第一版取样过早，只看到官方）
+								dumpSlotEntries();
+								// 槽里没我们的东西（连 tabBar 都没有）⇒ 就是"被别的占位者赢了 / 注册没落槽"
+								wsLog((info.ourTabBar || info.ourRows > 0) ? "slot-ok" : "slot-mismatch", info);
+							} catch (e) {
+								wsLog("error", { where: "slot-check", message: String((e && e.message) || e) });
+							}
+						}, 700);
+					} catch { /* 忽略 */ }
+				};
+				try {
+					state.workspacesSlotInfo = {
+						hasSlots: !!(ctx.slots && typeof ctx.slots.register === "function"),
+						hasInject: !!(ctx.slots && typeof ctx.slots.inject === "function"),
+						slotName: SLOT,
+						url: (typeof location !== "undefined" ? String(location.href).slice(0, 120) : ""),
+						chatOnly: (() => { try { return !!(bridge && bridge.chatOnly); } catch { return "?"; } })(),
+					};
+				} catch { /* 诊断失败不影响注册 */ }
+				wsLog("install", state.workspacesSlotInfo || {});
+				// ★★ 2026-11-02（关键探测）：dump slots 服务的 **API 面**，并尝试常见查询方法。
+				//   官方规则（`dsh-client-ui-slots/lib/index.js:168-173`）：
+				//     · single 槽按 priority 去重，同一 priority 重复注册**直接抛错**；
+				//     · 提示语原文 `register at a different priority to shadow it (lowest renders)`
+				//       ⇒ **priority 小的渲染**。
+				//   我们以 -1000 注册成功（无 register-threw）、官方是 0 ⇒ 理论该赢，
+				//   但 desktop 全窗里 DOM 仍是官方 `bhn1Oq_root` ⇒ 只能把槽内部**条目表**导出来看。
+				//   ⚠ 这一步只读、不改变任何注册行为（探测失败就只是少一条诊断）。
+				try {
+					const slots = ctx.slots || {};
+					const proto = Object.getPrototypeOf(slots) || {};
+					state.workspacesSlotsApi = {
+						own: Object.keys(slots).slice(0, 40),
+						proto: Object.getOwnPropertyNames(proto).slice(0, 60),
+					};
+					for (const m of ["entriesOf", "entries", "snapshot", "list", "describe", "debug", "records"]) {
+						if (typeof slots[m] !== "function") { continue; }
+						try {
+							const got = slots[m](SLOT);
+							state.workspacesSlotsDump = state.workspacesSlotsDump || {};
+							state.workspacesSlotsDump[m] = String(JSON.stringify(got)).slice(0, 900);
+						} catch (e) {
+							state.workspacesSlotsDump = state.workspacesSlotsDump || {};
+							state.workspacesSlotsDump[m] = "threw: " + String((e && e.message) || e).slice(0, 160);
+						}
+					}
+					wsLog("slots-api", state.workspacesSlotsApi);
+					wsLog("slots-dump", { dump: state.workspacesSlotsDump || null });
+				} catch (e) {
+					wsLog("error", { where: "slots-probe", message: String((e && e.message) || e) });
+				}
+				// ⚠⚠ 2026-11-02：priority 从 -10 放宽到 **-1000**。
+				//   slots 的排序是**升序取最前**（`dsh-client-ui-slots/lib/index.js:221`：
+				//   `(a,b) => (a.options.priority ?? 0) - (b.options.priority ?? 0)`）⇒ 越小越优先。
+				//   官方 `sidebar.workspaces` 注册时**不写 priority**（= 0），`dsh-client-ui-subagent`
+				//   用的是 -10 ⇒ 我们与"另一个遮蔽者"同档时会退化成"谁先注册谁赢"，
+				//   在 desktop 全窗（`chatOnly=0`）里实测出现过"官方 WorkspaceBrowser 仍然渲染"的现象
+				//   （`ourRows:0` 而 `projectRow` 有 6 条）。取 -1000 与所有官方/第三方错开。
+				ctx.slots.inject(SLOT, () => {
+					wsLog("register-call", { name: SLOT, id: "vssaros-workspaces", priority: -1000 });
+					let ret;
+					try {
+						ret = ctx.slots.register({ name: SLOT, id: "vssaros-workspaces", priority: -1000 }, Browser);
+					} catch (e) {
+						wsLog("register-threw", { message: String((e && e.message) || e) });
+						throw e;
+					}
+					wsLog("register-done", { retType: typeof ret, retNull: ret === null || ret === undefined });
+					return ret;
+				});
 				state.workspacesReplaced = true;
+				wsLog("inject-done", { note: "inject 回调未触发说明槽定义没被声明/或 inject 被略过" });
+				scheduleSlotSelfCheck();
 			} catch (e) {
 				state.workspacesError = String((e && e.message) || e);
+				wsLog("error", { where: "install", message: state.workspacesError });
 			}
 		}
 
@@ -1697,6 +4007,12 @@ window.__ModuleLoader__.load({
 			SESSION_ORDER_KEY, toIdSet, normalizeOrderMap, sortBySavedOrder, orderGroupSessions, moveWithin, canDrop,
 			// ★ 2026-10-30 分页：默认条数 + 配额取条（守卫 ⑤-j 直接断言）
 			SESSION_PAGE_SIZE, visibleSessions,
+			// ★ 2026-11-02 未读：集合增删 / 绝对时间文案（守卫直接断言）
+			toggleUnread, absTimeLabel, UNREAD_KEY,
+			// ★ 2026-11-02 新建 Bot / 群聊：校验与预设（守卫直接断言）
+			validateBotDraft, validateGroupDraft, BOT_ICON_PRESETS, GROUP_MODE_OPTIONS,
+			// ★ 2026-11-02 侧栏「会话 / Bots」页签：默认页签 / 最近会话选取 / 取数（守卫直接断言）
+			SIDEBAR_VIEW_KEY, readSidebarView, latestSessionIdOf, fetchBotsData, pickBotWorkspaceId, isRegisteredSession,
 		};
 		return module.exports;
 	}

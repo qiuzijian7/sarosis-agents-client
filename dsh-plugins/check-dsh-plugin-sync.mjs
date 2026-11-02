@@ -32,9 +32,37 @@ const PROFILE_ROOTS = [
 
 let pass = 0;
 const failed = [];
+/**
+ * ★ 2026-11-02：**"仓库比已装新"不算失败**，只是一条待生效提示。
+ *
+ * 为什么：本仓规则 1 要求"改了内容必须 bump 版本"，而 bump 之后到 F5 之前，
+ *   已装副本**必然**比仓库旧 ⇒ 原来这会让 26 项变红并且 **`&&` 链在这里断掉**
+ *   （后面的守卫一条都不跑 ⇒ 真正的漂移反而被藏起来）。语义上"待生效"≠"出错"。
+ * 仍然 FAIL 的两种情况（真正的漂移）：
+ *   · 已装版本**新于**仓库（回退 / 装错版本）；
+ *   · 版本相同但入口字节不同（同版本不同内容，boot graph 会错位）。
+ */
+const pending = [];
 function check(name, fn) {
 	try { fn(); pass += 1; console.log('PASS  ' + name); }
 	catch (e) { failed.push(name); console.log('FAIL  ' + name + '  — ' + (e && e.message ? e.message : e)); }
+}
+/** 版本三段比较（预发布后缀按段比字符串；够本脚本用）。>0 表示 a 比 b 新。 */
+function verCmp(a, b) {
+	const pa = String(a).split(/[.-]/);
+	const pb = String(b).split(/[.-]/);
+	for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+		const x = pa[i];
+		const y = pb[i];
+		if (x === undefined) { return -1; }
+		if (y === undefined) { return 1; }
+		const nx = /^\d+$/.test(x);
+		const ny = /^\d+$/.test(y);
+		if (nx && ny) { if (Number(x) !== Number(y)) { return Number(x) - Number(y); } continue; }
+		if (nx !== ny) { return nx ? 1 : -1; }
+		if (x !== y) { return x < y ? -1 : 1; }
+	}
+	return 0;
 }
 
 const readJson = (p) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; } };
@@ -69,7 +97,7 @@ const listFiles = (root, base = root, out = []) => {
  */
 const trackedFilesOf = (repoRoot, pluginDir) => {
 	try {
-		const out = execFileSync('git', ['ls-files', '--', pluginDir], { cwd: repoRoot, encoding: 'utf8' });
+		const out = execFileSync('git', ['ls-files', '--', pluginDir], { cwd: repoRoot, encoding: 'utf8', windowsHide: true });
 		const prefix = pluginDir.replace(/\\/g, '/') + '/';
 		return out.split('\n').filter(Boolean).map((l) => l.replace(/\\/g, '/')).filter((l) => l.startsWith(prefix)).map((l) => l.slice(prefix.length))
 			// 测试文件**不该**进安装包（安装副本天然没有）⇒ 不算缺失
@@ -126,11 +154,17 @@ for (const dir of plugins) {
 			}
 			for (const [kind, dirPath] of copies) {
 				const pj = readJson(path.join(dirPath, 'package.json'));
+				const copyVer = pj ? String(pj.version ?? '') : '';
+				// 仓库更新 = 等一次 F5（不算失败，见文件头 pending 的说明）
+				const awaitingRestart = !!pj && verCmp(copyVer, repoVer) < 0;
 				check(`${tag}/${prof} ${kind}：版本与仓库一致（${repoVer}）`, () => {
 					if (!pj) { throw new Error('读不到 package.json'); }
-					if (String(pj.version ?? '') !== repoVer) {
-						throw new Error(`版本 ${pj.version} ≠ 仓库 ${repoVer} ⇒ boot graph 会对不上（chunk 会被判“不是 boot graph 条目”）`);
+					if (copyVer === repoVer) { return; }
+					if (awaitingRestart) {
+						pending.push(`${tag}/${prof} ${kind}：已装 ${copyVer} < 仓库 ${repoVer} ⇒ 待下一次 F5/重装生效`);
+						return;
 					}
+					throw new Error(`已装 ${copyVer} 新于仓库 ${repoVer} ⇒ 回退或装错版本，boot graph 会对不上（chunk 会被判“不是 boot graph 条目”）`);
 				});
 				/*
 				 * ★ 2026-10-29（真机：打包版知识库**白屏**）：
@@ -153,7 +187,11 @@ for (const dir of plugins) {
 					check(`${tag}/${prof} ${kind}：入口与仓库字节一致（${entryRel}）`, () => {
 						const a = path.join(srcRoot, entryRel), b = path.join(dirPath, entryRel);
 						if (!fs.existsSync(b)) { throw new Error('副本里没有入口文件'); }
-						if (!same(a, b)) { throw new Error('入口字节不一致 ⇒ 页面拿到的 rev/内容与仓库不同'); }
+						if (!same(a, b)) {
+							// 版本还没追平 ⇒ 内容本来就该不同（上一条已记为待生效）
+							if (awaitingRestart) { return; }
+							throw new Error('入口字节不一致 ⇒ 页面拿到的 rev/内容与仓库不同');
+						}
 					});
 				}
 			}
@@ -177,12 +215,26 @@ check('profile 清单指向的暂存副本版本与仓库一致', () => {
 				const depPkg = readJson(path.join(depDir, 'package.json'));
 				if (!depPkg) { throw new Error(`${root}/${prof}: 依赖指向的目录读不到 package.json：${depDir}`); }
 				if (String(depPkg.version) !== String(srcPkg.version)) {
+					// 仓库更新 ⇒ 待 F5（不算失败）；已装新于仓库 ⇒ 真漂移
+					if (verCmp(depPkg.version, srcPkg.version) < 0) {
+						pending.push(`${root}/${prof}: 依赖指向的暂存副本 ${path.basename(depDir)}（${depPkg.version}）< 仓库 ${srcPkg.version} ⇒ 待 F5`);
+						continue;
+					}
 					throw new Error(`${root}/${prof}: 依赖指向 ${path.basename(depDir)}（版本 ${depPkg.version}）但仓库是 ${srcPkg.version} ⇒ boot graph 对不上`);
 				}
 			}
 		}
 	}
 });
+
+if (pending.length) {
+	// 待生效提示：不影响退出码（否则每次 bump 都会打断 `&&` 链，后面的守卫全都不跑）
+	const shown = [...new Set(pending)];
+	console.log(`\n待生效（不算失败，共 ${shown.length} 条）：`);
+	for (const line of shown.slice(0, 8)) { console.log('  · ' + line); }
+	if (shown.length > 8) { console.log(`  · …另外 ${shown.length - 8} 条同类`); }
+	console.log('  ⇒ F5 一次（或插件中心「安装/升级」）即追平。');
+}
 
 console.log('\n' + (failed.length ? `✗ ${failed.length} 项失败 / 共 ${pass + failed.length} 项` : `✓ 全部 ${pass} 项通过`));
 if (failed.length) { process.exit(1); }

@@ -860,6 +860,38 @@ test('media 的等待预算必须是慢档（生图几十秒到几分钟 ⇒ 20s
 				assert.match(consents[0].detail, re, JSON.stringify(capabilities));
 			}
 		});
+		// ★ 2026-11-02：覆盖必须在确认框里说出来（Host 用 `pluginManager.listBundles()` 查过已装版本，
+		//   同名已装 ⇒ 传 `replacing:{from,to}`）。以前这个框永远写“安装”，用户点它时并不知道自己在**替换**一个在用的工作台。
+		test('★ 覆盖：确认框标题/按钮/正文都明说“覆盖”，并写出 from → to', async () => {
+			const { env, consents } = withInstaller(false) as any;
+			await executeIdeCapability({ capability: 'workbenches', params: { ...base, replacing: { from: '1.0.2', to: '1.0.13' } } }, env);
+			assert.strictEqual(consents.length, 1);
+			assert.match(consents[0].title, /覆盖已安装的工作台/);
+			assert.strictEqual(consents[0].confirmLabel, '覆盖');
+			assert.match(consents[0].detail, /这是覆盖：已装 1\.0\.2 → 将换成 1\.0\.13/);
+			assert.match(consents[0].detail, /本机改动/, '要提醒覆盖不会保留已装副本上的本机改动');
+		});
+		test('★ 不是覆盖：文案保持“安装”，不多出覆盖字样（别让每次新装都吓用户）', async () => {
+			const { env, consents } = withInstaller(false) as any;
+			await executeIdeCapability({ capability: 'workbenches', params: base }, env);
+			assert.match(consents[0].title, /^安装第三方工作台/);
+			assert.strictEqual(consents[0].confirmLabel, '安装');
+			assert.doesNotMatch(consents[0].detail, /覆盖/);
+		});
+		test('覆盖时用户拒绝 ⇒ 仍然不装（fail-closed 不因覆盖而放宽）', async () => {
+			const { env, calls } = withInstaller(false) as any;
+			const out = await executeIdeCapability({ capability: 'workbenches', params: { ...base, replacing: { from: '1.0.2', to: '1.0.13' } } }, env) as { ok: boolean; declined?: boolean };
+			assert.strictEqual(out.ok, false);
+			assert.strictEqual(out.declined, true);
+			assert.strictEqual(calls.length, 0);
+		});
+		test('replacing 形状不对（字符串 / null）⇒ 当作不是覆盖，不抛错', async () => {
+			for (const replacing of ['yes', null, 42]) {
+				const { env, consents } = withInstaller(false) as any;
+				await executeIdeCapability({ capability: 'workbenches', params: { ...base, replacing } }, env);
+				assert.match(consents[0].title, /^安装第三方工作台/, JSON.stringify(replacing));
+			}
+		});
 		test('IDE 没接安装通道 ⇒ 报人话', async () => {
 			const env = envOf({ consent: true }).env;
 			await assert.rejects(() => executeIdeCapability({ capability: 'workbenches', params: base }, env), /没有接工作台安装通道/);

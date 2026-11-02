@@ -4,23 +4,23 @@
 //   <数据根>/knowledge-base/<vaultId>/
 //     ├── 笔记/                      笔记（markdown）
 //     ├── 库/<分类>/<标题>.md        资料库正文（分类目录是中文，如 概念/对比）
-//     └── .kbkernel.json             索引：{ v, docs: [{ uri, title, type, created, tags, length, size, mtime }], avgLen, totalDocs }
-//   另见 `src/vs/.../knowledge/knowledgeStorage.ts`（`<root>/<id>/…`）与 `kbSchema.ts`（每个 vault 的 `kb-schema.json` 类型体系，默认目录名 `库/raw`、`笔记`）。
+//     └── .kb/kernel.json             索引：{ v, docs: [{ uri, title, type, created, tags, length, size, mtime }], avgLen, totalDocs }
+//   另见 `src/vs/.../knowledge/knowledgeStorage.ts`（`<root>/<id>/…`）与 `kbSchema.ts`（每个 vault 的 `.kb/schema.json` 类型体系，默认目录名 `数据源/raw`、`知识库列表`）。
 //
-// 本模块 v0 **只读**：索引读 `.kbkernel.json`，正文按 uri 读文件（带路径围栏）。
+// 本模块 v0 **只读**：索引读 `.kb/kernel.json`，正文按 uri 读文件（带路径围栏）。
 // 不猜字段：kernel 里没有的键一律不假设（缺 docs 就按空 vault 处理并记一条 note）。
 
 import { fileNameOf } from './kbFulltext.js';
 
 /** 每个 vault 的索引文件名。 */
-export const KERNEL_FILE = '.kbkernel.json';
+export const KERNEL_FILE = '.kb/kernel.json';
 
 /**
  * 同一份序列化的**另一处落盘**（市场包导入路径会复制一份：`knowledgeBaseView.ts:4867`）。
- * 本轮实测：dev 库里它与同库的 `.kbkernel.json` **同样大小**（内容相同）⇒ 读不到 kernel 时它是
+ * 本轮实测：dev 库里它与同库的 `.kb/kernel.json` **同样大小**（内容相同）⇒ 读不到 kernel 时它是
  * 合理的第二候选（不是"另一个格式"，就是同一份 ✓）。
  */
-export const FTINDEX_FILE = '.ftindex.json';
+export const FTINDEX_FILE = '.kb/ftindex.json';
 
 /** 单个正文文件的最大读取字节数（防止一刀切把巨型文档塞进上下文）。 */
 export const MAX_DOC_BYTES = 200_000;
@@ -90,7 +90,7 @@ function stripMarkdownExt(name) {
 /**
  * 索引里的一条文档（只取真实存在的键；`uri` 是主键）。
  *
- * ★ 2026-10-12（订正一处既有缺陷）：`.kbkernel.json` 在真实机器上有**两种形态** ——
+ * ★ 2026-10-12（订正一处既有缺陷）：`.kb/kernel.json` 在真实机器上有**两种形态** ——
  *   元数据形态（`uri/title/type/created/tags/length/size/mtime/text`，生产库是这种 ✓）与
  *   FTS 形态（`uri/name/path/section/mtime/size/length/tags/text`，dev 库是这种 ✓，实测）。
  *   原先这里只认 `title` ⇒ 在 FTS 形态的库上**标题退回整条 uri 的末段（含 .md）**、`type` 全无 ✗。
@@ -129,20 +129,29 @@ export const TOPIC_OVERVIEW_FILE = '.overview.md';
 /** 单条目录摘要的**字符上限**（300 也是 IDE 那份实现定的）。 */
 export const OVERVIEW_SUMMARY_LIMIT = 300;
 /** library 区目录名（IDE `KB_SECTION_LABEL.library`）：目录摘要在它的**直接子目录**里。 */
-export const LIBRARY_DIR = '库';
+export const LIBRARY_DIR = '数据源';
+/**
+ * ★ 2026-11-02：**旧目录名**（运行期不再使用，只给迁移脚本识别历史库 / 兼容判断用）。
+ *
+ * 为什么要留：老库磁盘上还是 `库` / `笔记`，迁移脚本要能认出它、并知道该往哪搬。
+ * 运行期一律走 `LIBRARY_DIR` / `NOTES_DIR` —— 不要在业务代码里引用 *_LEGACY ✗
+ */
+export const LIBRARY_DIR_LEGACY = '库';
 /** 「笔记」区目录名（2026-10-13 补：构建缓存登记要扫它 ⇒ 与 LIBRARY_DIR 一样收进 core 常量 ✓）。 */
-export const NOTES_DIR = '笔记';
+export const NOTES_DIR = '知识库列表';
+/** 旧名（见 LIBRARY_DIR_LEGACY 说明） */
+export const NOTES_DIR_LEGACY = '笔记';
 
 /**
  * 「库」区里**唯一可写**的落点：原始素材区（聊天消息「导入到知识库」等"先存起来"的内容）。
  *
- * ★ 2026-10-29（用户要求：导入要落盘在 `库/raw` 下）：
+ * ★ 2026-10-29（用户要求：导入要落盘在 `数据源/raw` 下）：
  *   「库」区整体是**只读**的（资料库正文不许动 ✓ —— 见 `kbOrganize.resolveOrganizePath` 的围栏），
- *   但聊天导入的原文属于"素材"而非"成稿" ⇒ 落在 `库/raw` 这一个**受控可写**的子区里。
- *   围栏仍然很窄：只有 `<vault>/库/raw/**` 可写，`库/其它分类` 一律只读 ✓。
+ *   但聊天导入的原文属于"素材"而非"成稿" ⇒ 落在 `数据源/raw` 这一个**受控可写**的子区里。
+ *   围栏仍然很窄：只有 `<vault>/库/raw/**` 可写，`数据源/其它分类` 一律只读 ✓。
  */
 export const RAW_SUBDIR = 'raw';
-/** 原始素材区相对 vault 根的路径（`库/raw`）。 */
+/** 原始素材区相对 vault 根的路径（`数据源/raw`）。 */
 export const RAW_DIR = `${LIBRARY_DIR}/${RAW_SUBDIR}`;
 
 /** 归一化成分隔符 `/`（Windows 上是反斜杠 ⇒ 比对前必须归一 ✓）。 */
@@ -198,7 +207,7 @@ export function buildFeishuSyncArgs({ vault, src = [], apply = false, limit = 0,
 	}
 	/*
 	 * ★ 2026-10-28：`src` 允许传**字符串**（单个目录）或数组。
-	 *   为什么要在这里兜：`for (const dir of '笔记')` 会按**字符**迭代 ⇒ 下发
+	 *   为什么要在这里兜：`for (const dir of '知识库列表')` 会按**字符**迭代 ⇒ 下发
 	 *   `--src 笔 --src 记`，脚本扫不到任何文档却"正常退出"（真机踩过，日志只有
 	 *   `create=0 update=0 skip=0`，看不出根因）。纯函数这层兜住，调用方写错也炸不出来。
 	 */

@@ -30,174 +30,10 @@ window.__ModuleLoader__.load({
 			return null;
 		};
 
-		/**
-		 * 本 bot 的 preset id。
-		 * ⚠ 规则不是 agent id，而是 `vssaros-` + slugify(agentId)
-		 *   （见 `dsh-plugins/vssaros-agents/lib/core/agents.js:35` 的 `PRESET_ID_PREFIX='vssaros-'`
-		 *     与 `:216` 的 `presetIdOf = (id) => 'vssaros-' + slugify(id)`）。
-		 *   之前传 `saroasis-studio` 一直被 `agent-preset/not-found` 拒，就是少了这个前缀。
-		 */
-		const STUDIO_PRESET = 'vssaros-saroasis-studio';
-		/** 草稿预填文本：让输入框里默认就写着这个 bot（用户口径 2026-10-23）。 */
-		const DRAFT_SEED = '@萨罗斯管理平台 ';
-
-		/**
-		 * 等对话挂载到新会话后，往 composer 预填 `DRAFT_SEED`。
-		 * 为什么轮询：会话是异步挂载的，`uiSession.adapter.current` 不会立刻指向它；
-		 * `inputActions` 由会话作用域提供（chat-surface 也是这么读的：`binding.props.inputActions`）。
-		 * 最多尝试 ~4.5s，成功/失败都记 `caps.draftSeeded`。
-		 */
-		/**
-		 * ★ 把"当前会话"的 agent preset 设成我们的 bot（2026-10-23 用户报障：hero 里默认没选中）。
-		 * 为什么不是建会话时传：hero 那条会话**不是我们建的**（工作台打开时 workbenches 就停靠了一条
-		 * 已存在的 blank 会话），所以 `newSession` 包装根本走不到。
-		 * 官方 `agentPresets` 的语义正是"**第一轮开始前**选择 preset"⇒ 在 blank 阶段设它是合法的。
-		 * 方法名/参数形态没有公开文档，这里逐个试（全是 try/catch，试不出来只记 caps，不影响任何功能）。
-		 */
-		function applyPresetToCurrent(ctx, sessionId) {
-			// ⚠ agentPresets 是 **remote** 服务（chat-surface 的 inject 里就是 `remote.agentPresets`），
-			//   直接 ctx.get('agentPresets') 通常拿不到 ⇒ 优先用 `ctx.inject(['remote.agentPresets'])`
-			//   已经捕获到的那个句柄（`globalThis.__vssarosStudioPresets`），其余名字只作兜底。
-			const candidates = [];
-			const held = globalThis.__vssarosStudioPresets;
-			if (held) { candidates.push(['injected', held]); }
-			try { const a = ctx.get && ctx.get('agentPresets'); if (a) { candidates.push(['agentPresets', a]); } } catch { /* ignore */ }
-			try { const b = ctx.get && ctx.get('remote.agentPresets'); if (b) { candidates.push(['remote.agentPresets', b]); } } catch { /* ignore */ }
-			if (!candidates.length) { diag.caps.presetApi = 'no-service'; return; }
-			const names = ['select', 'selectPreset', 'setPreset', 'choose', 'apply'];
-			for (const [label, svc] of candidates) {
-				if (!svc || typeof svc !== 'object') { continue; }
-				for (const name of names) {
-					if (typeof svc[name] !== 'function') { continue; }
-					/* ★★ 官方形态是**两个位置参数** `select(sessionId, presetId)`
-					   （`vssaros-chat-surface/lib/client.preset.js` 里就是 `ctx.remote.agentPresets.select(sid, id)`）。
-					   ⚠ 2026-10-27 真机 bug「萨罗斯工作台的助手显示成商城助手」：
-					   本工作台的对话是**停靠一条已存在的 blank 会话**，只能靠"给这个会话设 preset"，
-					   而这里原来只试了「单参」和「对象」两种 ⇒ 单参 `select(id)` 把 id 当 sessionId 静默吞掉（不抛错），
-					   于是被当成"设置成功"，实际沿用了上一次的 preset（商城助手）。 */
-					if (sessionId) {
-						try {
-							svc[name](sessionId, STUDIO_PRESET);
-							diag.caps.presetApi = label + '.' + name + '(sid,id)';
-							diag.caps.defaults = 'done';
-							return;
-						} catch (e0) { /* 换下一种 */ }
-					}
-					try {
-						svc[name]({ ...(sessionId ? { sessionId } : {}), agentPreset: STUDIO_PRESET });
-						diag.caps.presetApi = label + '.' + name + '(obj' + (sessionId ? '+sid' : '') + ')';
-						diag.caps.defaults = 'done';
-						return;
-					} catch (e1) { /* 换下一种 */ }
-					// 单参放最后：最容易"假成功"（参数被当成 sessionId 吞掉且不抛错）
-					try {
-						svc[name](STUDIO_PRESET);
-						diag.caps.presetApi = label + '.' + name + '(id)';
-						diag.caps.defaults = 'weak';   // 不可信，调用方据此允许后续重试
-						return;
-					} catch (e2) { /* 换下一种 */ }
-				}
-			}
-			diag.caps.presetApi = 'none(' + candidates.map(c => c[0]).join('|') + ')';
-		}
-
-		/** 我们工作台拿到前台后：给停靠会话补 preset + 预填草稿（都只做一次）。 */
-		function ensureDefaults(ctx) {
-			// ⚠ uiSession 也只能靠**动态 inject** 拿到（`ctx.get` 在未声明该服务的插件里是 undefined
-			//   —— 这正是诊断浮标里 `defaults: "no-session"` 的原因：一直读不到会话 id）。
-			const ui = globalThis.__vssarosStudioUiSession || (ctx.get && ctx.get('uiSession'));
-			let sid = null;
-			try {
-				const b = ui && ui.adapter && ui.adapter.current ? ui.adapter.current.getSnapshot() : null;
-				sid = (b && (b.sessionId || b.id)) || null;
-			} catch (e) { note('ensureDefaults/sid', e); }
-			// `uiSession.adapter.current` 指的是**主视图**的会话；我们这套是对话停靠（dock），
-			// 所以它在这里长期为空。补两个来源：① 停靠点 DOM 上的会话 id；② workbenches 的 dockedSessionOf。
-			if (!sid) {
-				try {
-					const el = document.querySelector('[data-vssaros-wb-docked-session]');
-					const v = el && el.getAttribute('data-vssaros-wb-docked-session');
-					if (v) { sid = v; diag.caps.sidFrom = 'dom'; }
-				} catch { /* ignore */ }
-			}
-			if (!sid) {
-				try {
-					const dw = globalThis.__vssarosStudioDw;
-					const entry = diag.caps.entryId || null;
-					if (dw && typeof dw.dockedSessionOf === 'function' && entry) {
-						const v = dw.dockedSessionOf(entry);
-						if (v) { sid = v; diag.caps.sidFrom = 'dockedSessionOf'; }
-					}
-				} catch { /* ignore */ }
-			}
-			diag.caps.currentSid = sid;
-
-			// ★ 仍然没有会话（hero 空态）⇒ **主动建一条**：走我们包装过的 newSession，
-			//   它会给会话带上 agentPreset（这是让"默认选中 bot"真正生效的唯一可靠路径 ——
-			//   hero 的懒创建不经过任何我们能插手的代码）。只尝试一次。
-			if (!sid && !diag.caps.bootstrap) {
-				try {
-					const dw = globalThis.__vssarosStudioDw;
-					if (dw && typeof dw.newSession === 'function') {
-						diag.caps.bootstrap = 'called';
-						dw.newSession();
-					}
-				} catch (e) { note('bootstrap newSession', e); }
-			}
-			// ★ 顺序是关键（2026-10-23 第二次定位）：
-			//   官方 `agentPresets` 的语义是「**第一轮开始前**选择 preset」——**不需要会话 id**。
-			//   而 hero 空态（探索未至之境）本来就**还没有会话**（dsh 懒创建）⇒ 原来这里
-			//   `if (!sid) return` 把"设 preset"整段挡掉了 ⇒ 永远 no-session、永远不生效。
-			//   ⇒ 现在：preset 先设（无会话也设），草稿再等会话。
-			if (diag.caps.presetOk !== true) {
-				applyPresetToCurrent(ctx, sid);
-				const api = String(diag.caps.presetApi || '');
-				/* 只有「带会话 id」的两种形态才算真成功：
-				   · `xxx(sid,id)` —— 官方双参
-				   · `xxx(obj+sid)` / `xxx(obj)` —— 对象形态
-				   单参 `xxx(id)` 会把 presetId 当成 sessionId 吞掉且不抛错（假成功），
-				   不能据此停止重试，否则永远停在"上次的 preset"。 */
-				const strong = api.indexOf('(sid,id)') > 0 || api.indexOf('(obj') > 0;
-				if (strong) { diag.caps.presetOk = true; }
-			}
-			if (!sid) {
-				if (diag.caps.presetOk !== true) { diag.caps.defaults = 'no-session'; }
-				return;
-			}
-			if (diag.caps.defaultsFor === sid + ':' + STUDIO_PRESET) { return; }
-			diag.caps.defaultsFor = sid + ':' + STUDIO_PRESET;
-			seedDraft(ctx, sid);
-		}
-
-		function seedDraft(ctx, sessionId) {
-			let tries = 0;
-			const attempt = () => {
-				tries += 1;
-				try {
-					const ui = ctx.get && ctx.get('uiSession');
-					const binding = ui && ui.adapter && ui.adapter.current ? ui.adapter.current.getSnapshot() : null;
-					const current = binding && (binding.sessionId || binding.id);
-					const actions = binding && binding.props ? binding.props.inputActions : null;
-					if (current === sessionId && actions) {
-						if (typeof actions.setDraft === 'function') {
-							actions.setDraft(DRAFT_SEED);
-							diag.caps.draftSeeded = 'setDraft';
-							return;
-						}
-						if (typeof actions.insertText === 'function' && typeof actions.captureInsertion === 'function') {
-							actions.insertText(DRAFT_SEED, actions.captureInsertion());
-							diag.caps.draftSeeded = 'insertText';
-							return;
-						}
-						diag.caps.draftSeeded = 'no-api';
-						return;
-					}
-				} catch (e) { note('seedDraft', e); }
-				if (tries < 30) { setTimeout(attempt, 150); }
-				else { diag.caps.draftSeeded = diag.caps.draftSeeded || 'timeout'; }
-			};
-			setTimeout(attempt, 120);
-		}
+		// ★ 2026-11-02 根治：这里原有「萨罗斯自己设 bot preset + 预填 `@萨罗斯管理平台 ` + 没会话就主动建一条」
+		//   的整套逻辑（STUDIO_PRESET / applyPresetToCurrent / ensureDefaults / seedDraft），**已删除**。
+		//   它对**全局当前会话**下手，并与另外 4 个写入者互相覆盖 ⇒ agent 反复串台。
+		//   现在默认 agent **只由宿主 vssaros-workbenches 设**（对照表 'vssaros/studio' → vssaros-saroasis-studio）。
 
 		/** 右侧对话栏宽度（与 mockup 一致：560 上限 / 半屏）。 */
 		const CONV_WIDTH = 'min(560px, 52vw)';
@@ -209,7 +45,7 @@ window.__ModuleLoader__.load({
 		 * 约定：
 		 *  - 收起 = aside `display:none`（**不卸载**，否则会话状态 / 滚动位置 / 流式回复全丢）
 		 *  - 收起后不再收成窄条（30px 里塞竖排字会被拆成两列，实测很难看）
-		 *  - 展开入口 = 面板**右上角**浮一颗「« AI 助手」；收起入口 = 对话栏左上角「» 收起」
+		 *  - 收起 / 展开都走右侧中部的**浮动工具栏**（宿主统一渲染）；对话栏左上角**不再**有「» 收起」（2026-11-02 用户要求）
 		 *  - 拖拽条在收起时隐藏（此时宽度由 state 决定，拖了会被渲染覆盖）
 		 */
 		const CONV_MIN = 320;
@@ -228,36 +64,6 @@ window.__ModuleLoader__.load({
 			if (props && props.entry && props.entry.id) { diag.caps.entryId = props.entry.id; }
 			react.useEffect(() => {
 				globalThis.__vssarosStudioActive = active;
-				if (!CTX) { return undefined; }
-				// ★ 不依赖 props.active（它由 workbenches 的 service.active 推，常常滞后/为 false，
-				//   这就是"bot 一直没出现"的原因之一）。改成**挂载即轮询**，直到补上为止。
-				let tries = 0;
-				const timer = setInterval(() => {
-					tries += 1;
-					try { ensureDefaults(CTX); } catch { /* ignore */ }
-					// 诊断浮标：**默认关闭**（定位已完成，不再占用界面）。
-					// 需要时在控制台执行 `localStorage.__studioDiag='1'` 再刷新；
-					// 关掉后若之前渲染过，顺手把它摘掉。
-					try {
-						// 2026-10-25 用户要求「移除提示信息」⇒ **默认不显示**；
-						// 需要排查时在控制台 `localStorage.__studioDiag='1'` 再刷新即可。
-						if (localStorage.getItem('__studioDiag') === '1') {
-							let d = document.getElementById('__studioDiag');
-							if (!d) {
-								d = document.createElement('div');
-								d.id = '__studioDiag';
-								d.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:2147483647;background:rgba(0,0,0,.82);color:#6f6;font:11px/1.45 ui-monospace,Consolas,monospace;padding:6px 8px;border-radius:6px;max-width:460px;white-space:pre-wrap';
-								document.body.appendChild(d);
-							}
-							d.textContent = 'studio caps: ' + JSON.stringify(diag.caps) + '\nerrors: ' + JSON.stringify((diag.errors || []).slice(0, 3));
-						} else {
-							const old = document.getElementById('__studioDiag');
-							if (old) { old.remove(); }
-						}
-					} catch { /* ignore */ }
-					if (tries >= 12 || diag.caps.defaults === 'done') { clearInterval(timer); }
-				}, 400);
-				return () => clearInterval(timer);
 				return () => { if (globalThis.__vssarosStudioActive === active) { globalThis.__vssarosStudioActive = false; } };
 			}, [active]);
 			const conversation = props && props.conversation ? props.conversation : null;
@@ -296,7 +102,8 @@ window.__ModuleLoader__.load({
 				src: '/x/studio/',
 				title: '萨罗斯管理平台',
 				'data-vssaros-studio-site': '',
-				style: { flex: '1 1 auto', width: '100%', height: '100%', border: 0, background: '#fff' },
+				// 底色（2026-11-02）：原来写死 #fff ⇒ 深色外观下页面画出第一帧前会白闪一下 ✗
+				style: { flex: '1 1 auto', width: '100%', height: '100%', border: 0, background: 'var(--dsw-alias-bg-base, #fff)' },
 			});
 			const host = react.createElement('div', {
 				'data-vssaros-studio-panel': '',
@@ -377,9 +184,6 @@ window.__ModuleLoader__.load({
 				}),
 				react.createElement('aside', {
 					'data-vssaros-studio-conv': '',
-					// ★「＋新会话」挂进**本 aside**（不再是 body 浮层）：生命周期与面板绑定
-					//   ⚠ 收起时不挂（窄条/隐藏态里没意义，也点不到）
-					ref: (el) => { if (el && !collapsed) { mountNewButton(el); } },
 					style: {
 						flex: '0 0 auto',
 						position: 'relative',   // 让内部 absolute 的按钮以本面板为定位基准
@@ -397,97 +201,15 @@ window.__ModuleLoader__.load({
 						borderLeft: BORDER, background: 'var(--dsw-alias-bg-base, #fff)',
 					},
 				},
-					// ★ 收起入口（只出现在展开态）：对话栏左上角「» 收起」
-					react.createElement('button', {
-						type: 'button',
-						'data-vssaros-studio-collapse': 'collapse',
-						title: '收起 AI 助手',
-						onClick: (ev) => { ev.preventDefault(); ev.stopPropagation(); setCollapsed(true); },
-						style: {
-							position: 'absolute', zIndex: 2147483000, left: '8px', top: '5px',
-							height: '22px', padding: '0 8px', borderRadius: '6px',
-							border: '1px solid var(--dsw-alias-border-l2,#dcdfe6)',
-							background: 'var(--dsw-alias-bg-layer-1,#fff)',
-							color: 'var(--dsw-alias-label-secondary,#6b7280)',
-							font: '11px/20px -apple-system,"Segoe UI",sans-serif',
-							cursor: 'pointer', pointerEvents: 'auto',
-						},
-					}, '» 收起'),
+					// （左上角不再放收起按钮：收起 / 展开统一走右侧浮动工具栏。2026-11-02）
 					react.createElement('div', {
 						style: {
 							flex: '0 0 auto', height: '32px', display: 'flex', alignItems: 'center', gap: '6px',
-							// 左侧给「» 收起」按钮留位（8px 起、约 58px 宽），否则会压住「✨ AI 助手」
-							padding: '0 12px 0 74px', borderBottom: BORDER, fontSize: '12px', fontWeight: 600,
+							// 左侧不再有「» 收起」，不用留位；右侧给宿主的「＋ 新会话」留位（约 80px）
+							padding: '0 92px 0 12px', borderBottom: BORDER, fontSize: '12px', fontWeight: 600,
 							color: 'var(--dsw-alias-label-primary, #16181d)',
 						},
-					}, react.createElement('span', null, '✨ AI 助手'),
-						react.createElement('span', { style: { flex: '1 1 auto' } }),
-						// ★ 新建会话（2026-10-24 用户要求）：走的是**我们包装过的 newSession**
-						//   ⇒ 会话创建时就带 `agentPreset: 'saroasis-studio'`，
-						//   这比 hero 空态里"事后 select preset"可靠得多（后者会被宿主静默忽略）。
-						react.createElement('button', {
-							type: 'button',
-							'data-vssaros-studio-new': '',
-							// 诊断探针（2026-10-24）：ref 拿到真实 DOM ⇒ 证明按钮真渲染了；
-							// 直接绑 addEventListener ⇒ 绕开 React 合成事件与文档委托两条路径。
-							ref: (el) => {
-								if (!el || el.__vssarosBound) { return; }
-								el.__vssarosBound = true;
-								diag.caps.btnMounted = (diag.caps.btnMounted || 0) + 1;
-								el.addEventListener('click', (ev) => {
-									diag.caps.btnClick = (diag.caps.btnClick || 0) + 1;
-									ev.preventDefault();
-									ev.stopPropagation();
-									const dw = globalThis.__vssarosStudioDw;
-									if (!dw) { diag.caps.newSessionError = 'no-desktopWorkbenches'; return; }
-									(async () => {
-										try {
-											const owner = dw.ownerId();
-											const wsObj = typeof dw.defaultWorkspace === 'function' ? dw.defaultWorkspace() : null;
-											const wsId = wsObj && (wsObj.workspaceId || wsObj.id);
-											diag.caps.createTry = { owner, wsId };
-											if (!wsId) { diag.caps.newSessionError = 'no-workspace'; return; }
-											const sid = await createStudioSession(dw, wsId);
-											diag.caps.createdSid = sid;
-											try { await dw.bindSession(owner, sid); } catch (err) { diag.caps.bindErr = String((err && err.message) || err); }
-											try { dw.showSession(sid); } catch (err) { diag.caps.showErr = String((err && err.message) || err); }
-										} catch (err) { diag.caps.newSessionError = String((err && err.message) || err); }
-									})();
-								});
-							},
-							title: '新建会话（默认 agent：萨罗斯管理平台）',
-							style: {
-								flex: '0 0 auto', border: '1px solid var(--dsw-alias-border-l2, #dcdfe6)',
-								background: 'transparent', color: 'var(--dsw-alias-label-secondary, #5a6270)',
-								borderRadius: '6px', fontSize: '11px', lineHeight: '18px', padding: '0 8px', cursor: 'pointer',
-								// 诊断（2026-10-24）：btnMounted=1 但 btnClick=0 ⇒ 点击没落到按钮上
-								// （被覆盖层挡住 / 祖先 pointer-events:none / z-index 被压）。
-								// 这里把按钮从流里抬出来：最高层级 + 强制可点 + 自己也带定位上下文。
-								// 2026-10-24：浮层里已经有一个可用的「＋新会话」，header 这个点不着又重叠 ⇒ 直接隐藏
-								display: 'none',
-								position: 'relative', zIndex: 2147482000, pointerEvents: 'auto',
-								minWidth: '64px', textAlign: 'center',
-							},
-							// ⚠ 不能调 dw.newSession()：它的包装里有 `if (!__vssarosStudioActive) return origNew()`
-							//   门槛（props.active 常为 false）⇒ 会走回**不带 preset** 的原实现（这就是
-							//   "新建了会话但没有 bot chip"的原因）。这里直接自己建，参数写在明面上。
-							onClick: async () => {
-								diag.caps.newSessionClicked = (diag.caps.newSessionClicked || 0) + 1;
-								const dw = globalThis.__vssarosStudioDw;
-								if (!dw) { diag.caps.newSessionError = 'no-desktopWorkbenches'; return; }
-								try {
-									const owner = dw.ownerId();
-									const wsObj = typeof dw.defaultWorkspace === 'function' ? dw.defaultWorkspace() : null;
-									const wsId = wsObj && (wsObj.workspaceId || wsObj.id);
-									diag.caps.createTry = { owner, wsId };
-									if (!wsId) { diag.caps.newSessionError = 'no-workspace'; return; }
-									const sid = await createStudioSession(dw, wsId);
-									diag.caps.createdSid = sid;
-									try { await dw.bindSession(owner, sid); } catch (e) { diag.caps.bindErr = String((e && e.message) || e); }
-									try { dw.showSession(sid); } catch (e) { diag.caps.showErr = String((e && e.message) || e); }
-								} catch (e) { diag.caps.newSessionError = String((e && e.message) || e); }
-							},
-						}, '＋ 新会话')),
+					}, react.createElement('span', null, '✨ AI 助手')),
 					// 官方对话本体：收起时只藏不卸载（否则会话状态 / 滚动位置 / 流式回复全丢）
 					react.createElement('div', {
 						style: {
@@ -560,207 +282,15 @@ window.__ModuleLoader__.load({
 			} catch (e) { note('guardPanel', e); }
 		}
 
-		/**
-		 * 建一条带 bot preset 的会话。**不再让一个参数把整个动作打死**：
-		 * 候选名逐个试（宿主报 `agent-preset/not-found` 就换下一个），
-		 * 全都不行 ⇒ 退化成"不带 preset"的普通会话（最坏情况也能新建，只是 bot 手动选）。
-		 */
-		async function createStudioSession(dw, workspaceId) {
-			const candidates = [STUDIO_PRESET, 'saroasis-platform', '萨罗斯管理平台'];
-			for (const preset of candidates) {
-				try {
-					const sid = await dw.ctx.sessions.create({ workspaceId, agentPreset: preset });
-					diag.caps.presetUsed = preset;
-					return sid;
-				} catch (e) {
-					const msg = String((e && e.message) || e);
-					if (!/agent-preset\/not-found|unknown agent preset/i.test(msg)) { throw e; }
-					diag.caps.presetRejected = (diag.caps.presetRejected || []).concat(preset);
-				}
-			}
-			const sid = await dw.ctx.sessions.create({ workspaceId });
-			diag.caps.presetUsed = 'none(降级：不带 preset 建会话)';
-			return sid;
-		}
 
-		/**
-		 * studio 面板**真的在屏**吗（供接管官方「新会话」时收窄范围）。
-		 * ① 面板在 DOM 里 ② 真的可见（offsetParent + 实际尺寸）③ 前台工作台就是 studio。
-		 */
-		function studioOnScreen() {
-			try {
-				const panel = document.querySelector('[data-vssaros-studio-panel]');
-				if (!panel) { return false; }
-				if (panel.offsetParent === null && getComputedStyle(panel).position !== 'fixed') { return false; }
-				const r = panel.getBoundingClientRect();
-				if (r.width <= 1 || r.height <= 1) { return false; }
-				const dw = globalThis.__vssarosStudioDw;
-				if (dw && typeof dw.current === 'function') {
-					const cur = String(dw.current() || '');
-					if (cur && !/studio/.test(cur)) { return false; }
-				}
-				return true;
-			} catch { return false; }
-		}
-
-		/**
-		 * ★ 把「＋ 新会话」挂进**面板内部**的容器（aside）。
-		 *
-		 * 为什么不挂 `document.body`（2026-10-25 用户报「跨工作区显示」）：
-		 *   body 上的 `position: fixed` 按钮是**全窗级**的，与工作台无关；只能靠定时器轮询
-		 *   “面板在不在屏”来显隐 ⇒ 切走工作台后必然有残留/误显示，而且卸载不同步。
-		 *   ⇒ 改为挂进 `aside`：**生命周期与面板绑定** —— 面板卸载按钮随之消失，
-		 *     既不会出现在别的工作台，也不需要任何轮询判断 ✓
-		 * 按钮仍是**原生 DOM + 原生事件**（不走 React 合成事件），保留之前“点得着”的特性。
-		 */
-
-		function mountNewButton(container) {
-			if (!container || container.__vssarosNewMounted) { return; }
-			container.__vssarosNewMounted = true;
-			try {
-				container.querySelectorAll('[data-vssaros-studio-neww]').forEach((el) => el.remove());
-			} catch { /* ignore */ }
-
-			const nb = document.createElement('button');
-			nb.type = 'button';
-			nb.textContent = '＋ 新会话';
-			nb.setAttribute('data-vssaros-studio-neww', '');
-			// absolute 相对 aside（aside 已设 position:relative）⇒ 停在对话栏右上角，不越出面板
-			// right:34px 是给右边的伸缩按钮（20px + 间距）让位，两者不重叠
-			nb.style.cssText = 'position:absolute;z-index:2147483000;right:34px;top:5px;height:22px;padding:0 10px;'
-				+ 'border-radius:6px;border:1px solid var(--dsw-alias-border-l2,#dcdfe6);'
-				+ 'background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dsw-alias-label-primary,#16181d);'
-				+ 'font:11px/20px -apple-system,"Segoe UI",sans-serif;cursor:pointer;pointer-events:auto';
-			nb.addEventListener('click', (ev) => {
-				ev.preventDefault();
-				ev.stopPropagation();
-				diag.caps.newBtnClick = (diag.caps.newBtnClick || 0) + 1;
-				const dw = globalThis.__vssarosStudioDw;
-				if (!dw) { diag.caps.newSessionError = 'no-desktopWorkbenches'; return; }
-				(async () => {
-					try {
-						const owner = dw.ownerId();
-						const wsObj = typeof dw.defaultWorkspace === 'function' ? dw.defaultWorkspace() : null;
-						const wsId = wsObj && (wsObj.workspaceId || wsObj.id);
-						diag.caps.createTry = { owner, wsId };
-						if (!wsId) { diag.caps.newSessionError = 'no-workspace'; return; }
-						const sid = await createStudioSession(dw, wsId);
-						diag.caps.createdSid = sid;
-						try { await dw.bindSession(owner, sid); } catch (e) { diag.caps.bindErr = String((e && e.message) || e); }
-						try { dw.showSession(sid); } catch (e) { diag.caps.showErr = String((e && e.message) || e); }
-					} catch (e) { diag.caps.newSessionError = String((e && e.message) || e); }
-				})();
-			});
-			container.appendChild(nb);
-			diag.caps.newBtnMounted = (diag.caps.newBtnMounted || 0) + 1;
-		}
-
-		/** 组件里拿不到 ctx，靠这个全局引用（apply 时赋值）。 */
-		let CTX = null;
+		// ★ 2026-11-02：「＋ 新会话」改由宿主对话栏统一提供（vssaros-workbenches 的 NewSessionButton），本工作台不再自画。
 
 		function apply(ctx) {
-			CTX = ctx;
 			guardPanel(ctx);
 
-			// ★ 原生事件委托（2026-10-24 用户实测「点＋新会话没反应」）：
-			//   React 的 onClick 在这套 customFrame + portal 组合里没触发（浮标连 newSessionClicked 都没有）。
-			//   捕获阶段的文档级监听一定先命中 —— 用 data 属性定位按钮，不依赖 React 事件系统。
-			// ★ 点击定位探针（2026-10-24）：btnMounted=1 但 btnClick 一直是 0
-			//   ⇒ 记录"这一点到底命中了谁"，直接暴露覆盖层/pointer-events 问题。
-			document.addEventListener('pointerdown', (e) => {
-				try {
-					const el = e.target;
-					diag.caps.lastDown = (el && el.tagName) + '.' + String((el && el.className) || '').slice(0, 40);
-					const top = document.elementFromPoint(e.clientX, e.clientY);
-					diag.caps.topAt = top ? (top.tagName + '.' + String(top.className || '').slice(0, 40)) : 'null';
-					diag.caps.topIsBtn = !!(top && top.closest && top.closest('[data-vssaros-studio-new]'));
-					diag.caps.hitBtn = !!(el && el.closest && el.closest('[data-vssaros-studio-new]'));
-				} catch { /* ignore */ }
-			}, true);
-
-			// ★★ 2026-10-25（用户报「＋新会话 跨工作区显示」）：
-			//   按钮**不再挂 document.body**。body 上的 fixed 浮层是**全窗级**的，与工作台无关，
-			//   只能靠定时器轮询"面板在不在屏"来显隐 ⇒ 切走工作台后必然残留/误显示。
-			//   ⇒ 改由 mountNewButton() 挂进**面板内部的 aside**（生命周期与面板绑定），
-			//     面板卸载按钮随之消失 ⇒ 不可能出现在别的工作台，也不需要任何轮询 ✓
-			//   这里只保留面板可见性判定，供下面接管官方「新会话」时收窄范围。
-			globalThis.__vssarosStudioOnScreen = studioOnScreen;
-
-
-			// ★ 2026-10-24 兜底：**接管官方的「新会话」入口**（左侧栏那个）。
-			//   我们自己的按钮一直被别的东西盖住点不着（浮标 lastDown 永远是 SPAN），
-			//   但官方那个按钮是好的 ⇒ 点它时改走"带 agentPreset 建会话"，效果一样。
-			document.addEventListener('click', (e) => {
-				const btn = e.target && e.target.closest ? e.target.closest('button,a,[role="button"]') : null;
-				if (!btn) { return; }
-				const txt = String(btn.textContent || '').replace(/\s+/g, '');
-				if (txt !== '新会话') { return; }
-				// ⚠ 同样收窄：只在我们工作台**真的在屏**时接管。
-				//   原先只看"DOM 里有没有 [data-vssaros-studio-panel]" ⇒ 切到别的工作台后
-				//   旧面板节点还在，会误接管别人家的「新会话」按钮。
-				if (!(typeof globalThis.__vssarosStudioOnScreen === 'function' && globalThis.__vssarosStudioOnScreen())) { return; }
-				e.preventDefault();
-				e.stopPropagation();
-				diag.caps.officialNewIntercepted = (diag.caps.officialNewIntercepted || 0) + 1;
-				const dw = globalThis.__vssarosStudioDw;
-				if (!dw) { diag.caps.newSessionError = 'no-desktopWorkbenches'; return; }
-				(async () => {
-					try {
-						const owner = dw.ownerId();
-						const wsObj = typeof dw.defaultWorkspace === 'function' ? dw.defaultWorkspace() : null;
-						const wsId = wsObj && (wsObj.workspaceId || wsObj.id);
-						diag.caps.createTry = { owner, wsId };
-						if (!wsId) { diag.caps.newSessionError = 'no-workspace'; return; }
-						const sid = await createStudioSession(dw, wsId);
-						diag.caps.createdSid = sid;
-						try { await dw.bindSession(owner, sid); } catch (err) { diag.caps.bindErr = String((err && err.message) || err); }
-						try { dw.showSession(sid); } catch (err) { diag.caps.showErr = String((err && err.message) || err); }
-					} catch (err) { diag.caps.newSessionError = String((err && err.message) || err); }
-				})();
-			}, true);
-
-			let lastNewSessionClick = 0;
-			document.addEventListener('click', async (e) => {
-				const target = e.target && e.target.closest ? e.target.closest('[data-vssaros-studio-new]') : null;
-				if (!target) { return; }
-				const now = Date.now();
-				if (now - lastNewSessionClick < 800) { return; }   // 防重复（React onClick 若也触发，这里挡掉）
-				lastNewSessionClick = now;
-				e.preventDefault();
-				e.stopPropagation();
-				diag.caps.newSessionClicked = (diag.caps.newSessionClicked || 0) + 1;
-				const dw = globalThis.__vssarosStudioDw;
-				if (!dw) { diag.caps.newSessionError = 'no-desktopWorkbenches'; return; }
-				try {
-					const owner = dw.ownerId();
-					const wsObj = typeof dw.defaultWorkspace === 'function' ? dw.defaultWorkspace() : null;
-					const wsId = wsObj && (wsObj.workspaceId || wsObj.id);
-					diag.caps.createTry = { owner, wsId };
-					if (!wsId) { diag.caps.newSessionError = 'no-workspace'; return; }
-					const sid = await createStudioSession(dw, wsId);
-					diag.caps.createdSid = sid;
-					try { await dw.bindSession(owner, sid); } catch (err) { diag.caps.bindErr = String((err && err.message) || err); }
-					try { dw.showSession(sid); } catch (err) { diag.caps.showErr = String((err && err.message) || err); }
-				} catch (err) { diag.caps.newSessionError = String((err && err.message) || err); }
-			}, true);
-
-			// 会话服务：动态 inject（`ctx.get('uiSession')` 拿不到 ⇒ 之前一直 no-session）
-			try {
-				ctx.inject(['uiSession'], (scope) => {
-					const ui = scope.uiSession || (scope.get && scope.get('uiSession')) || null;
-					globalThis.__vssarosStudioUiSession = ui;
-					diag.caps.uiSession = !!ui;
-					diag.caps.uiSessionHasAdapter = !!(ui && ui.adapter);
-				});
-			} catch (e) { note('ctx.inject(uiSession)', e); }
-
-			// 预设服务：同样是 remote（名字可能是 remote.agentPresets）
-			try {
-				ctx.inject(['remote.agentPresets'], (scope) => {
-					globalThis.__vssarosStudioPresets = scope['remote.agentPresets'] || (scope.get && scope.get('remote.agentPresets')) || null;
-					diag.caps.presetsSvc = !!globalThis.__vssarosStudioPresets;
-				});
-			} catch (e) { note('ctx.inject(remote.agentPresets)', e); }
+			// ★ 2026-11-02 根治：这里原有 ① 文档级点击探针 ② **劫持官方左侧「新会话」按钮**改成建萨罗斯会话
+			//   ③ 自画「＋新会话」的点击委托 ④ inject uiSession / remote.agentPresets —— **全部删除**。
+			//   ② 尤其危险：只要萨罗斯面板「看起来在屏」，用户点官方「新会话」就被改道（还会误伤别的工作台）。
 			// 注册式工作台：宿主 Frame 会给我们 `props.conversation`（对话停靠点）
 			try {
 				ctx.inject(['desktopWorkbenches'], (scope) => {
@@ -770,37 +300,7 @@ window.__ModuleLoader__.load({
 					globalThis.__vssarosStudioDw = dw;
 					diag.caps.workbench = true;
 
-					// ★ 默认选中本 bot（2026-10-23 用户要求）：右侧对话的会话要带 agentPreset。
-					//   官方 `newSession()` 里是 `sessions.create({ workspaceId })` —— **不传 preset** ⇒
-					//   会话按全局默认（标准模式）建，右侧 hero 里自然不是"萨罗斯管理平台"。
-					//   这里包一层：仅当我们的工作台在前台时，用它自己的 preset 建会话。
-					//   任何一步失败 ⇒ 原样回落官方实现（绝不把"开始对话"弄坏）。
-					try {
-						if (!dw.newSession.__vssarosStudioGuard) {
-							const origNew = dw.newSession.bind(dw);
-							const patchedNew = async function (workspaceId) {
-								if (!globalThis.__vssarosStudioActive) { return origNew(workspaceId); }
-								try {
-									const owner = dw.ownerId();
-									const wsId = workspaceId || (dw.defaultWorkspace() && dw.defaultWorkspace().workspaceId);
-									if (!wsId) { return origNew(workspaceId); }
-									const sid = await createStudioSession(dw, wsId);
-									try { await dw.bindSession(owner, sid); } catch (e) { note('bindSession', e); }
-									try { dw.showSession(sid); } catch (e) { note('showSession', e); }
-									diag.caps.defaultPreset = STUDIO_PRESET;
-									seedDraft(ctx, sid);   // 输入框里默认写着 @萨罗斯管理平台
-									return sid;
-								} catch (e) {
-									note('newSession(agentPreset)', e);
-									diag.caps.defaultPreset = 'fallback(官方默认)';
-									return origNew(workspaceId);
-								}
-							};
-							patchedNew.__vssarosStudioGuard = true;
-							dw.newSession = patchedNew;
-							diag.caps.presetGuard = 'installed';
-						}
-					} catch (e) { note('wrap newSession', e); }
+					// （2026-11-02：不再包 dw.newSession —— 新会话的默认 agent 由宿主 newSession 自己带）
 				});
 			} catch (e) { note('ctx.inject(desktopWorkbenches)', e); }
 		}

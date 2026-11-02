@@ -309,6 +309,9 @@ import { KbSettingsEditorInput } from './kbSettingsEditorInput.js';
 import { KbNoteEditorInput } from './kbNoteEditorInput.js';
 import { KnowledgeBaseGraphEditorPane } from './kbGraphEditorPane.js';
 import { KbGraphEditorInput } from './kbGraphEditorInput.js';
+// ★ 2026-11-02：知识库「主页」作为中心 Tab（侧栏只留入口）
+import { KbHomeEditorPane } from './kbHomeEditorPane.js';
+import { KbHomeEditorInput } from './kbHomeEditorInput.js';
 import { CanvasEditorPane, getActiveCanvasPane } from './canvasEditor/canvasEditorPane.js';
 import { KbDiagramViewerPane } from './kbDiagramViewerPane.js';
 import { KbDiagramViewerInput } from './kbDiagramViewerInput.js';
@@ -1884,7 +1887,7 @@ class KbNoteResolverContribution extends Disposable implements IWorkbenchContrib
 	 *      故判定必须一并覆盖，否则「视图能富编辑、资源管理器却是纯文本」两边漂移。
 	 *
 	 * ⚠ 为什么不用块编辑器自己的 `_findVaultRoot`（`kbBlocksEditorPane.ts:346`，从文件向上找
-	 *   「含 `笔记` 子目录的最近祖先」）：那是**异步磁盘探测**（最多 12 层 `resolve`），
+	 *   「含 `知识库列表` 子目录的最近祖先」）：那是**异步磁盘探测**（最多 12 层 `resolve`），
 	 *   放在每次打开文件前做一遍代价偏高；此处用存储里的 vault 清单（同步、零 IO）。二者在
 	 *   正常布局下结论一致；若某 vault 完全不在清单里，则该文件按库外处理（开成文本面板）。
 	 */
@@ -1955,6 +1958,18 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	),
 	[
 		new SyncDescriptor(KbGraphEditorInput)
+	]
+);
+
+// Register KbHomeEditorPane — 「🏠 知识库主页」在中间栏打开的独立页（★ 2026-11-02）
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		KbHomeEditorPane,
+		KbHomeEditorPane.ID,
+		localize('kbHomeEditor', "知识库主页"),
+	),
+	[
+		new SyncDescriptor(KbHomeEditorInput)
 	]
 );
 
@@ -2256,8 +2271,8 @@ registerAction2(class extends Action2 {
 //
 // 复用既有管线 `KbImportController.importContentAndBuild`（与「工作区树右键导入」
 // 和「聊天框 write_file 卡片」同一个入口，保证行为一致）：
-//   阶段1 落盘 `库/raw/<原始文件名>` —— **原样字节复制**，二进制文件不会被破坏；
-//   阶段2 构建为结构化笔记 ⇒ 由知识库专家的 schema 分类，归档到 `库/<typeDir>/<topic>/`。
+//   阶段1 落盘 `数据源/raw/<原始文件名>` —— **原样字节复制**，二进制文件不会被破坏；
+//   阶段2 构建为结构化笔记 ⇒ 由知识库专家的 schema 分类，归档到 `数据源/<typeDir>/<topic>/`。
 //
 // 「拷贝 / 移动」只决定**导入成功之后**对源文件做什么：
 //   · 拷贝 = 保留源文件（默认按钮）；· 移动 = 把源文件移入**回收站**（可还原，非永久删除）。
@@ -2540,7 +2555,7 @@ registerAction2(class extends Action2 {
 				const name = basename(uri.path);
 				logService.info(`[agentStudio.kb.importToLibrary] [A ${i + 1}/${incoming.length}] staging: ${uri.toString()}`);
 				try {
-					// 原样字节复制到 `库/raw`（读内容仅用于去重指纹）—— **不调 LLM**。
+					// 原样字节复制到 `数据源/raw`（读内容仅用于去重指纹）—— **不调 LLM**。
 					// 进度 label（`导入中 i/N：文件名`）由 `stageFileToLibrary` 内部统一上报，
 					// 这里**不要再报一次**（会把 i/N 覆盖成只有文件名）。
 					const savedPath = await kbImport.stageFileToLibrary(uri, undefined, {

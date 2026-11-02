@@ -539,8 +539,18 @@ function parseWorkbench(raw: unknown, module: string | undefined, activityBar: I
 			throw new VssarosManifestError(`vssaros.workbench 不认识的字段：${key}`);
 		}
 	}
-	if (view.kind === 'none') {
-		throw new VssarosManifestError('vssaros.workbench 要求有界面：view.kind=none 的插件不能声明工作台');
+	/*
+	 * ★ 2026-11-02：放宽 —— **register 式工作台不需要页面**。
+	 *
+	 * 原规则（"view.kind=none 的插件不能声明工作台"）写在"工作台 = SSR 页面"的年代。
+	 * 现在有两种工作台：
+	 *   ① 页面式：`view.kind = 'page'`，由 `/x/<module>/` 渲染（dashboard / kb / media …）；
+	 *   ② **注册式**：客户端 `desktopWorkbenches.register()`，由宿主直接渲染 React（loop / memory …）
+	 *      —— 它没有页面路由，`view.kind = 'none'` 是**正确**的写法，不是矛盾。
+	 * 真正矛盾的是"有活动栏入口但没界面"（点了没反应）⇒ 只挡这一种。
+	 */
+	if (view.kind === 'none' && activityBar) {
+		throw new VssarosManifestError('vssaros.workbench + activityBar 都要界面，但 view.kind=none：注册式工作台请去掉 activityBar，页面式请给 view');
 	}
 	const title = parseTitle(raw.title, 'vssaros.workbench.title');
 	for (const t of typeof title === 'string' ? [title] : [title.zh, title.en]) {

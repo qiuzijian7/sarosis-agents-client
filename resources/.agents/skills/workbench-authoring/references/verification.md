@@ -77,7 +77,13 @@ VsSaros.exe %TEMP%\wb-tasks
 | 现象 | 真因 |
 |---|---|
 | 守卫全绿但页面空白 | 查的是死文件；或 `cordis.patch.yml` 没被 `dsh.bundle.patch` 引用 |
-| 模块加载了但注册被拒 | 描述符漏 `repository`（错误只在页面 console） |
+| 模块加载了但注册被拒 | 描述符的身份三选一都没写（`repository` / `package`），或写成 `vssaros:` 却没资格。看启动器里的「装了但没能注册」提示（含包名 + 阶段 + 原因），不用翻 console |
 | 样式"没生效" | 用了不存在的令牌名（`--dsw-alias-border-default` 之类）⇒ 静默回落 |
 | 探针数到 0 条 | 用了类名当锚点，UI 统一后被换掉 |
 | 宽度断点不生效 | 用 `@media` 而非 `@container` |
+
+身份速查（描述符里三选一，**不是必填某一种**）：
+
+- 内置包：`repository: 'vssaros:<module>'`（身份 `vssaros/<module>`）
+- 公开包：`repository: 'https://github.com/<owner>/<repo>'`（身份 `owner/repo`）
+- 个人本地包：`package: '@me/<name>'`，**不要写 repository**（身份 `local:@me/<name>`）

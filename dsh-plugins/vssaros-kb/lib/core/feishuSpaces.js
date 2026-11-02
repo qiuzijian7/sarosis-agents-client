@@ -25,7 +25,7 @@ export function spaceCreateArgs(cleanName) {
 /**
  * 规范化知识库名称（照真源 ✓）：去掉会破坏命令行的 `"` 与 CR/LF 并裁剪空白。
  * ⚠ dsh 侧用 `spawn(exe, args[])`（**不经 shell** ✓）⇒ 本来不怕引号 ✗；
- *   但这里仍照真源净化 ✓ —— 因为**同一个名称还会被写进映射文件**（`.feishu-space-map.json` ✓），
+ *   但这里仍照真源净化 ✓ —— 因为**同一个名称还会被写进映射文件**（`.kb/space-map.json` ✓），
  *   那里多一个引号/换行就是坏 JSON ✓（且"两边规则不同"最难解释 ✓）。
  */
 export function sanitizeSpaceName(name) {

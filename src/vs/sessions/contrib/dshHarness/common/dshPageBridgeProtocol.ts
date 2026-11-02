@@ -107,6 +107,23 @@ export const DSH_PAGE_WORKBENCH_ARG = '--vssaros-dsh-workbench=';
 
 /** 工作台 → 页面的主题推送通道（负载经 {@link validateThemeTokens} 校验；方案 5.13.2 P2）。 */
 export const DSH_PAGE_IPC_THEME = 'vssaros:dsh:theme';
+/**
+ * 页面 → 工作台的**外观方案**上报通道（2026-11-02，方向与上面那条相反）。
+ *
+ * 负载 = `'light' | 'dark' | 'system'`，取值就是 dsh 官方写在
+ * `documentElement[data-ds-theme-source]` 上的偏好（dsh 自己的「外观」设置）。
+ *
+ * 为什么需要：`prefers-color-scheme` 是**每张 webContents 一份**的媒体特性，而它是页面里所有
+ * 「自带配色」的东西（插件自托管页、第三方画布组件、`@media` 分支）唯一的明暗来源。
+ * 宿主原来无条件把它 emulate 成 **IDE 主题**的明暗 —— 在 IDE 内嵌视图里正确，在 dsh 自主窗口里
+ * 就与用户选的「外观」打架（= 2026-11-02 用户报的"切到浅色后部分页面没跟着变"）。
+ * ⇒ 自主窗口的视图改成按**这里报的方案** emulate；`system` 表示"别管，用真实系统值"
+ * （**不能**让页面自己把 `system` 解析成 light/dark 再报：宿主一 emulate，页面里的 `matchMedia`
+ *   读到的就是宿主的模拟值，会自锁在某个方案上 ✗）。
+ */
+export const DSH_PAGE_IPC_THEME_SOURCE = 'vssaros:dsh:theme-source';
+/** 外观方案的合法取值（页面上报的值按它收紧；其它一律当"没报"）。 */
+export type DshPageThemeSource = 'light' | 'dark' | 'system';
 /** preload 与页面插件之间的 DOM 事件名（共享 DOM 跨隔离世界可达）。 */
 export const DSH_PAGE_THEME_EVENT = 'vssaros-dsh-theme';
 

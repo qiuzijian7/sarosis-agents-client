@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>知识库侧栏分区头 · 6 种风格可选方案</title>
+<style>
+	:root {
+		--bg: #1e1e1e;
+		--bg-side: #252526;
+		--line: #2b2b2b;
+		--fg: #d4d4d4;
+		--fg-mid: #a8a8a8;
+		--fg-dim: #8a8a8a;
+		--fg-faint: #6b6b6b;
+		--accent: #3794ff;
+	}
+	* { box-sizing: border-box; }
+	body {
+		margin: 0; padding: 26px 30px 60px;
+		background: #141414; color: var(--fg);
+		font: 13px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+		-webkit-font-smoothing: antialiased;
+	}
+	h1 { font-size: 17px; font-weight: 650; margin: 0 0 6px; }
+	.lead { color: var(--fg-dim); font-size: 12.5px; margin: 0 0 20px; max-width: 900px; }
+	.lead b { color: var(--fg); font-weight: 600; }
+
+	.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 22px; }
+	.card {
+		background: #181818; border: 1px solid #2a2a2a; border-radius: 10px;
+		padding: 14px 14px 12px; display: flex; flex-direction: column;
+	}
+	.card-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+	.card-head h3 { margin: 0; font-size: 13px; font-weight: 650; letter-spacing: .02em; }
+	.badge { font-size: 9.5px; font-weight: 700; letter-spacing: .03em; padding: 1px 6px; border-radius: 3px; white-space: nowrap; }
+	.badge.rec { color: #7ee787; background: rgba(63,185,80,.13); border: 1px solid rgba(63,185,80,.3); }
+	.badge.mid { color: #9fd0ff; background: rgba(55,148,255,.12); border: 1px solid rgba(55,148,255,.3); }
+	.badge.big { color: #f0c674; background: rgba(240,198,116,.12); border: 1px solid rgba(240,198,116,.3); }
+	.badge.ref { color: #ff9c9c; background: rgba(241,76,76,.12); border: 1px solid rgba(241,76,76,.3); }
+
+	/* 面板外壳 */
+	.panel { background: var(--bg-side); border: 1px solid #333; border-radius: 7px; overflow: hidden; }
+	.top {
+		display: flex; align-items: center; height: 28px; padding: 0 8px;
+		font-size: 11.5px; color: var(--fg-mid); border-bottom: 1px solid var(--line);
+	}
+	.top .r { margin-left: auto; font-size: 10px; color: var(--fg-faint); }
+	.tree { padding: 0 0 6px; }
+
+	/* 树行（所有方案共用，除 S3/S4 有轻微缩进调整） */
+	.row {
+		display: flex; align-items: center; height: 27px; margin-right: 6px;
+		font-size: 13px; color: var(--fg); border-radius: 4px; cursor: pointer;
+	}
+	.row .in { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; padding-left: 6px; }
+	.row .ch { width: 12px; flex: 0 0 12px; text-align: center; font-size: 9px; color: var(--fg-faint); }
+	.row .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.row.d1 { padding-left: 16px; }
+	.row.d2 { padding-left: 32px; }
+	.g { align-self: stretch; width: 16px; flex: 0 0 16px; border-left: 1px solid rgba(127,127,127,.18); }
+	.g.l { border-left-color: rgba(127,127,127,.3); }
+	.row.sel { background: rgba(127,127,127,.12); }
+	.row.hov { background: rgba(127,127,127,.07); }
+
+	/* ───────── S0 现状 ───────── */
+	.h-s0 {
+		display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px;
+		background: rgba(127,127,127,.06); border-top: 1px solid var(--line);
+		border-bottom: 1px solid var(--line); cursor: pointer;
+	}
+	.h-s0 .ch { width: 14px; flex: 0 0 14px; text-align: center; font-size: 10px; color: var(--fg-dim); transform: rotate(90deg); }
+	.h-s0 .t { font-size: 11.5px; font-weight: 700; letter-spacing: .08em; color: var(--fg-dim); }
+	.h-s0 .pill {
+		height: 16px; min-width: 18px; padding: 0 6px; border-radius: 8px;
+		display: inline-flex; align-items: center; justify-content: center;
+		background: rgba(127,127,127,.18); color: var(--fg-dim);
+		font-size: 10px; font-weight: 600;
+	}
+
+	/* ───────── S1 Obsidian 极简标签 ───────── */
+	.s1-group { padding-top: 10px; }
+	.h-s1 { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px 0 6px; cursor: pointer; }
+	.h-s1 .ch { width: 14px; flex: 0 0 14px; text-align: center; font-size: 9px; color: var(--fg-faint); opacity: .75; transform: rotate(90deg); }
+	.h-s1 .t { font-size: 11px; font-weight: 600; letter-spacing: .05em; color: var(--fg-faint); }
+	.h-s1 .n { font-size: 10.5px; color: var(--fg-faint); opacity: .8; }
+	.h-s1:hover .t, .h-s1:hover .n { color: var(--fg-mid); opacity: 1; }
+
+	/* ───────── S2 VS Code 折叠区 ───────── */
+	.s2-group { border-top: 1px solid rgba(127,127,127,.10); }
+	.s2-group:first-child { border-top: 0; }
+	.h-s2 { display: flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px 0 4px; cursor: pointer; }
+	.h-s2 .ch { width: 12px; flex: 0 0 12px; text-align: center; font-size: 9px; color: var(--fg-dim); transform: rotate(90deg); }
+	.h-s2 .t { font-size: 11px; font-weight: 600; letter-spacing: .04em; color: var(--fg-mid); }
+	.h-s2 .sp { flex: 1; }
+	.h-s2 .n { font-size: 10.5px; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+	.h-s2:hover .t { color: var(--fg); }
+
+	/* ───────── S3 卡片分组（Notion 风） ───────── */
+	.s3-card {
+		margin: 8px 6px; padding: 3px 3px 5px;
+		background: rgba(127,127,127,.045); border: 1px solid rgba(127,127,127,.08); border-radius: 9px;
+	}
+	.h-s3 { display: flex; align-items: center; gap: 6px; height: 27px; padding: 0 6px; cursor: pointer; }
+	.h-s3 .ch { width: 13px; flex: 0 0 13px; text-align: center; font-size: 9px; color: var(--fg-dim); transform: rotate(90deg); }
+	.h-s3 .t { font-size: 12px; font-weight: 650; color: var(--fg); letter-spacing: .01em; }
+	.h-s3 .sp { flex: 1; }
+	.h-s3 .n { font-size: 10.5px; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+	.h-s3:hover .n { color: var(--fg-dim); }
+	.s3-card .row { margin-right: 2px; }
+
+	/* ───────── S4 竖条强调（Linear / Craft 风） ───────── */
+	.s4-group { padding-top: 6px; }
+	.h-s4 {
+		display: flex; align-items: center; gap: 7px; height: 28px; padding: 0 8px 0 0;
+		border-left: 3px solid var(--accent); border-radius: 0 4px 4px 0; cursor: pointer;
+	}
+	.h-s4 .ch { width: 13px; flex: 0 0 13px; text-align: center; font-size: 9px; color: var(--fg-dim); transform: rotate(90deg); }
+	.h-s4 .t { font-size: 12px; font-weight: 650; color: var(--fg); letter-spacing: .01em; }
+	.h-s4 .sp { flex: 1; }
+	.h-s4 .n { font-size: 10.5px; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+	.s4-group .row { padding-left: 20px; }
+	.s4-group .row.d2 { padding-left: 36px; }
+
+	/* ───────── S5 Sticky 全大写栏（Finder 风） ───────── */
+	.s5-group { border-top: 1px solid rgba(127,127,127,.12); }
+	.s5-group:first-child { border-top: 0; }
+	.h-s5 {
+		position: sticky; top: 0; z-index: 2;
+		display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px;
+		background: #232324; cursor: pointer;
+	}
+	.h-s5 .ch { width: 13px; flex: 0 0 13px; text-align: center; font-size: 9px; color: var(--fg-faint); transform: rotate(90deg); }
+	.h-s5 .t { font-size: 10.5px; font-weight: 700; letter-spacing: .1em; color: var(--fg-dim); text-transform: uppercase; }
+	.h-s5 .sp { flex: 1; }
+	.h-s5 .n { font-size: 10px; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+	.h-s5:hover .t { color: var(--fg-mid); }
+
+	/* ───────── S6 图标大标题（Raycast 风） ───────── */
+	.s6-group { padding-top: 12px; }
+	.h-s6 { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 8px; cursor: pointer; }
+	.h-s6 .ico { font-size: 14px; line-height: 1; }
+	.h-s6 .t { font-size: 14px; font-weight: 650; color: var(--fg); }
+	.h-s6 .sp { flex: 1; }
+	.h-s6 .pill {
+		height: 18px; padding: 0 7px; border-radius: 6px;
+		display: inline-flex; align-items: center; gap: 4px;
+		background: rgba(127,127,127,.14); color: var(--fg-dim);
+		font-size: 10.5px; font-weight: 600; font-variant-numeric: tabular-nums;
+	}
+	.h-s6:hover .pill { background: rgba(127,127,127,.2); color: var(--fg-mid); }
+
+	/* 要点 */
+	.pts { margin: 10px 0 0; padding: 0; list-style: none; }
+	.pts li { position: relative; padding-left: 11px; font-size: 11.5px; color: var(--fg-dim); margin-bottom: 3px; }
+	.pts li::before { content: '·'; position: absolute; left: 2px; color: var(--fg-faint); }
+	.pts code { background: #222; border: 1px solid #2e2e2e; border-radius: 3px; padding: 0 3px; font-size: 10.5px; color: #cfcfcf; }
+
+	table { border-collapse: collapse; margin-top: 34px; width: 100%; font-size: 11.5px; }
+	th, td { border: 1px solid #2e2e2e; padding: 6px 9px; text-align: left; vertical-align: top; }
+	th { background: #1b1b1b; color: var(--fg-dim); font-size: 10.5px; letter-spacing: .04em; }
+	td code { background: #222; border-radius: 3px; padding: 0 3px; font-size: 10.5px; }
+	.pick { margin-top: 26px; font-size: 12.5px; color: var(--fg-mid); max-width: 900px; }
+	.pick b { color: var(--fg); }
+</style>
+</head>
+<body>
+
+<h1>知识库侧栏：分区头「数据源 / 知识库列表」· 6 种风格</h1>
+<p class="lead">
+	树行（27px / 13px）在各方案里保持一致，<b>只改分区头</b>（个别方案顺带调缩进/卡片壳）。
+	从上到下越靠前越"轻"，越靠后分组感越强。
+</p>
+
+<div class="grid">
+
+	<!-- ── S0 现状 ── -->
+	<div class="card">
+		<div class="card-head"><h3>S0 · 现状</h3><span class="badge ref">对照组</span></div>
+		<div class="panel">
+			<div class="top">🏠 总览<span class="r">📚 5 · ✎ 98</span></div>
+			<div class="tree">
+				<div class="h-s0"><span class="ch">▸</span><span class="t">数据源</span><span class="pill">129</span></div>
+				<div class="row d1"><span class="g l"></span><span class="in"><span class="ch">▸</span><span class="nm">方法</span></span></div>
+				<div class="row d2"><span class="g"></span><span class="g l"></span><span class="in"><span class="ch"></span><span class="nm">.overview</span></span></div>
+				<div class="row d2 sel"><span class="g"></span><span class="g l"></span><span class="in"><span class="ch"></span><span class="nm">差分图压缩优化方案</span></span></div>
+				<div class="row d2"><span class="g"></span><span class="g l"></span><span class="in"><span class="ch"></span><span class="nm">纹理压缩优化与 ASTC 格式</span></span></div>
+				<div class="h-s0"><span class="ch">▸</span><span class="t">知识库列表</span><span class="pill">98</span></div>
+				<div class="row d1"><span class="g l"></span><span class="in"><span class="ch">▸</span><span class="nm">AIAgent</span></span></div>
+				<div class="row d1"><span class="g l"></span><span class="in"><span class="ch">▸</span><span class="nm">UnrealEngine</span></span></div>
+			</div>
+		</div>
+		<ul class="pts">
+			<li>分区头 h30 + 全宽底 + 上下两条线</li>
+			<li>标题 11.5/700，计数胶囊 r8</li>
+			<li>与树行只差 3px ⇒ 像同层条目</li>
+		</ul>
+	</div>
+
+	<!-- ── S1 ── -->
+	<div class="card">
+		<div class="card-head"><h3>S1 · Obsidian 极简标签</h3><span class="badge rec">推荐</span><span class="badge mid">改动小</span></div>
+		<div class="panel">
+			<div class="top">🏠 总览<span class="r">5 库 · 98 篇</span></div>
+			<div class="tree">
+				<div class="s1-group">
+					<div class="h-s1"><span class="ch">▸</span><span class="t">数据源</span><span class="n">· 129</span></div>
+					<div class="row d1"><span class="g l"></span><span class="in"><span class="ch">▸</span><span class="nm">方法</span></span></div>
+					<div class="row d2"><span class="g"></span><span class="g l"></span><span class="in"><span class="ch"></span><span class="nm">.overview</span></span></div>
+					<div class="row d2 sel"><span class="g"></span><span class="g l"></span><span class="in"><span class="ch"></span><span class="nm">差分图压缩优化方案</span></span></div>
+					<div class="row d2"><span class="g"></span><span class="g l"></span><span class="in"><span class="ch"></span><span class="nm">纹理压缩优化与 ASTC 格式</span></span></div>
+				</div>
+				<div class="s1-group">
+					<div class="h-s1"><span class="ch">▸</span><span class="t">知识库列表</span><span class="n">· 5 库 / 98 篇</span></div>
+					<div class="row d1"><span class="g l"></span><span class="in"><span class="ch">▸</span><span class="nm">AIAgent</span></span></div>
+					<div class="row d1"><span class="g l"></span><span class="in"><span class="ch">▸</span><span class="nm">UnrealEngine</span></span></div>
+				</div>
+			</div>
+		</div>
+		<ul class="pts">
+			<li>无底色/无边框，纯留白分组 <code>10px</code></li>
+			<li>标题 <code>11px/600/.05em</code> + 最弱色</li>
+			<li>计数裸数字 <code>· 129</code></li>
+		</ul>
+	</div>
+
+	<!-- ── S2 ── -->
+	<div class="card">
+		<div class="card-head"><h3>S2 · VS Code 折叠区</h3><span class="badge rec">最省事</span><span class="badge mid">改动小</span></div>
+		<div class="panel">
+			<div class="top">🏠 总览<span class="r">5 库 · 98 篇</span></div>
+			<div class="tree">
+				<div class="s2-group">
+					<div class="h-s2"><span class="ch">▸</span><span class="t">数据源</span><span class="sp"></span><span class="n">129</span></div>
+					<div class="row d1"><span class="g l"></span><span class="in"><span class="ch">▸</span><span class="nm">方法</span></span></div>
+					<div class="row d2"><span class="g"></span><span class="g l"></span><span class="in"><span class="ch"></span><span class="nm">.overview</span></span></div>
+					<div class="row d2 sel"><span class="g"></span><span class="g l"></span><span class="in"><span class="ch"></span><span class="nm">差分图压缩优化方案</span></span></div>
+					<div class="row d2"><span class="g"></span><span class="g l"></span><span class="in"><span class="ch"></span><span class="nm">纹理压缩优化与 ASTC 格式</span></span></div>
+				</div>
+				<div class="s2-group">
+					<div class="h-s2"><span class="ch">▸</span><span class="t">知识库列表</span><span class="sp"></span><span class="n">5 库 / 98 篇</span></div>
+					<div class="row d1"><span class="g l"></span><span class="in"><span class="ch">▸</span><span class="nm">AIAgent</span></span></div>
+					<div class="row d1"><span class="g l"></span><span class="in"><span class="ch">▸</span><span class="nm">UnrealEngine</span></span></div>
+				</div>
+			</div>
+		</div>
+		<ul class="pts">
+			<li>h24（比行更矮），标题 <code>11/600</code> 中灰</li>
+			<li>节间 <code>1px</code> 极淡线（<code>.10</code>）当作栏边界</li>
+			<li>计数右对齐裸数字，像"区域标题"</li>
+		</ul>
+	</div>
+
+	<!-- ── S3 ── -->
+	<div class="card">
+		<div class="card-head"><h3>S3 · 卡片分组（Notion 风）</h3><span class="badge big">分组最明显</span></div>
+		<div class="panel">
+			<div class="top">🏠 总览<span class="r">5 库 · 98 篇</span></div>
+			<div class="tree">
+				<div class="s3-card">
+					<div class="h-s3"><span class="ch">▸</span><span class="t">数据源</span><span class="sp"></span><span class="n">129</span></div>
+					<div class="row d1"><span class="g l"></span><span class="in"><span class="ch">▸</span><span class="nm">方法</span></span></div>
+					<div class="row d2"><span class="g"></span><span class="g l"></span><span class="in"><span class="ch"></span><span class="nm">.overview</span></span></div>
+					<div class="row d2 sel"><span class="g"></span><span class="g l"></span><span class="in"><span class="ch"></span><span class="nm">差分图压缩优化方案</span></span></div>
+					<div class="row d2"><span class="g"></span><span class="g l"></span><span class="in"><span class="ch"></span><span class="nm">纹理压缩优化与 ASTC 格式</span></span></div>
+				</div>
+				<div class="s3-card">
+					<div class="h-s3"><span class="ch">▸</span><span class="t">知识库列表</span><span class="sp"></span><span class="n">5 库 / 98 篇</span></div>
+					<div class="row d1"><span class="g l"></span><span class="in"><span class="ch">▸</span><span class="nm">AIAgent</span></span></div>
+					<div class="row d1"><span class="g l"></span><span class="in"><span class="ch">▸</span><span class="nm">UnrealEngine</span></span></div>
+				</div>
+			</div>
+		</div>
+		<ul class="pts">
+			<li>整节包成卡片：<code>r9</code> + 极淡底/边 + 外距 8px</li>
+			<li>标题回到 <code>12/650</code> 正常色（卡片内做主标题）</li>
+			<li>代价：占宽度（340px 面板里内容更窄）</li>
+		</ul>
+	</div>
+
+	<!-- ── S4 ── -->
+	<div class="card">
+		<div class="card-head"><h3>S4 · 竖条强调（Linear 风）</h3><span class="badge mid">现代感</span></div>
+		<div class="panel">
+			<div class="top">🏠 总览<span class="r">5 库 · 98 篇</span></div>
+			<div class="tree">
+				<div class="s4-group">
+					<div class="h-s4"><span class="ch">▸</span><span class="t">数据源</span><span class="sp"></span><span class="n">129</span></div>
+					<div class="row d1"><span class="g l"></span><span class="in"><span class="ch">▸</span><span class="nm">方法</span></span></div>
+					<div class="row d2"><span class="g"></span><span class="g l"></span><span class="in"><span class="ch"></span><span class="nm">.overview</span></span></div>
+					<div class="row d2 sel"><span class="g"></span><span class="g l"></span><span class="in"><span class="ch"></span><span class="nm">差分图压缩优化方案</span></span></div>
+					<div class="row d2"><span class="g"></span><span class="g l"></span><span class="in"><span class="ch"></span><span class="nm">纹理压缩优化与 ASTC 格式</span></span></div>
+				</div>
+				<div class="s4-group">
+					<div class="h-s4"><span class="ch">▸</span><span class="t">知识库列表</span><span class="sp"></span><span class="n">5 库 / 98 篇</span></div>
+					<div class="row d1"><span class="g l"></span><span class="in"><span class="ch">▸</span><span class="nm">AIAgent</span></span></div>
+					<div class="row d1"><span class="g l"></span><span class="in"><span class="ch">▸</span><span class="nm">UnrealEngine</span></span></div>
+				</div>
+			</div>
+		</div>
+		<ul class="pts">
+			<li>左侧 <code>3px</code> 强调色竖条（<code>--accent</code>）</li>
+			<li>标题 <code>12/650</code> 正常色；树行整体右移 4px 对齐</li>
+			<li>风险：与"选中态"的强调色可能撞色</li>
+		</ul>
+	</div>
+
+	<!-- ── S5 ── -->
+	<div class="card">
+		<div class="card-head"><h3>S5 · Sticky 全大写栏（Finder 风）</h3><span class="badge mid">长列表友好</span></div>
+		<div class="panel">
+			<div class="top">🏠 总览<span class="r">5 库 · 98 篇</span></div>
+			<div class="tree">
+				<div class="s5-group">
+					<div class="h-s5"><span class="ch">▸</span><span class="t">数据源</span><span class="sp"></span><span class="n">129</span></div>
+					<div class="row d1"><span class="g l"></span><span class="in"><span class="ch">▸</span><span class="nm">方法</span></span></div>
+					<div class="row d2"><span class="g"></span><span class="g l"></span><span class="in"><span class="ch"></span><span class="nm">.overview</span></span></div>
+					<div class="row d2 sel"><span class="g"></span><span class="g l"></span><span class="in"><span class="ch"></span><span class="nm">差分图压缩优化方案</span></span></div>
+					<div class="row d2"><span class="g"></span><span class="g l"></span><span class="in"><span class="ch"></span><span class="nm">纹理压缩优化与 ASTC 格式</span></span></div>
+				</div>
+				<div class="s5-group">
+					<div class="h-s5"><span class="ch">▸</span><span class="t">知识库列表</span><span class="sp"></span><span class="n">5 库 / 98 篇</span></div>
+					<div class="row d1"><span class="g l"></span><span class="in"><span class="ch">▸</span><span class="nm">AIAgent</span></span></div>
+					<div class="row d1"><span class="g l"></span><span class="in"><span class="ch">▸</span><span class="nm">UnrealEngine</span></span></div>
+				</div>
+			</div>
+		</div>
+		<ul class="pts">
+			<li>全大写 + <code>.1em</code> 字距，一眼是"栏名"</li>
+			<li>滚动时吸顶（<code>position: sticky</code>），长树不迷路</li>
+			<li>需要给滚动容器确认（当前是树容器滚动）</li>
+		</ul>
+	</div>
+
+	<!-- ── S6 ── -->
+	<div class="card">
+		<div class="card-head"><h3>S6 · 图标大标题（Raycast 风）</h3><span class="badge mid">保留胶囊</span></div>
+		<div class="panel">
+			<div class="top">🏠 总览<span class="r">5 库 · 98 篇</span></div>
+			<div class="tree">
+				<div class="s6-group">
+					<div class="h-s6"><span class="ico">🗂</span><span class="t">数据源</span><span class="sp"></span><span class="pill">129 篇</span></div>
+					<div class="row d1"><span class="g l"></span><span class="in"><span class="ch">▸</span><span class="nm">方法</span></span></div>
+					<div class="row d2"><span class="g"></span><span class="g l"></span><span class="in"><span class="ch"></span><span class="nm">.overview</span></span></div>
+					<div class="row d2 sel"><span class="g"></span><span class="g l"></span><span class="in"><span class="ch"></span><span class="nm">差分图压缩优化方案</span></span></div>
+					<div class="row d2"><span class="g"></span><span class="g l"></span><span class="in"><span class="ch"></span><span class="nm">纹理压缩优化与 ASTC 格式</span></span></div>
+				</div>
+				<div class="s6-group">
+					<div class="h-s6"><span class="ico">📚</span><span class="t">知识库列表</span><span class="sp"></span><span class="pill">5 库 · 98 篇</span></div>
+					<div class="row d1"><span class="g l"></span><span class="in"><span class="ch">▸</span><span class="nm">AIAgent</span></span></div>
+					<div class="row d1"><span class="g l"></span><span class="in"><span class="ch">▸</span><span class="nm">UnrealEngine</span></span></div>
+				</div>
+			</div>
+		</div>
+		<ul class="pts">
+			<li>h34 + emoji 图标 + <code>14/650</code> 大标题</li>
+			<li>计数仍是胶囊（改成低调 <code>r6</code>，不再抢眼）</li>
+			<li>信息最强，但比 S1/S2 更占高度</li>
+		</ul>
+	</div>
+
+</div>
+
+<table>
+	<thead>
+		<tr>
+			<th style="width:150px">方案</th><th>高度</th><th>背景 / 边界</th><th>标题</th><th>计数</th>
+			<th>分组手法</th><th>改动范围</th><th>适合</th>
+		</tr>
+	</thead>
+	<tbody>
+		<tr>
+			<td>S0 现状</td><td>30px</td><td>全宽底 <code>.06</code> + 上下线</td><td>11.5/700/.08em</td><td>胶囊 r8</td><td>1px 线</td><td>—</td><td>对照</td>
+		</tr>
+		<tr>
+			<td><b>S1 Obsidian</b></td><td>26px</td><td>透明 / 无</td><td>11/600/.05em · faint</td><td>裸数字</td><td>10px 留白</td><td>只改 <code>SectionHeader</code></td><td>跟 Obsidian 一致、最"安静"</td>
+		</tr>
+		<tr>
+			<td><b>S2 VS Code</b></td><td>24px</td><td>透明 / 节间 1px <code>.10</code></td><td>11/600 · mid</td><td>右对齐裸数字</td><td>细线分栏</td><td>只改 <code>SectionHeader</code></td><td>想要"分栏感"但不要色块</td>
+		</tr>
+		<tr>
+			<td><b>S3 卡片</b></td><td>27px</td><td>卡片壳 <code>r9</code> + <code>.045</code> 底</td><td>12/650 · fg</td><td>右对齐裸数字</td><td>卡片外距 8px</td><td>改 <code>SectionHeader</code> + 两处 <code>.kb-sec</code> 包一层</td><td>分组感最强</td>
+		</tr>
+		<tr>
+			<td><b>S4 竖条</b></td><td>28px</td><td>透明 / 左 3px accent</td><td>12/650 · fg</td><td>右对齐裸数字</td><td>6px 留白</td><td>只改 <code>SectionHeader</code>（+树缩进 4px）</td><td>想要一点品牌色</td>
+		</tr>
+		<tr>
+			<td><b>S5 Sticky</b></td><td>28px</td><td>不透明底 <code>#232324</code> + 1px 线</td><td>10.5/700/.1em 大写</td><td>右对齐裸数字</td><td>吸顶 + 细线</td><td>改 <code>SectionHeader</code> + 滚动容器确认</td><td>长列表滚动时定位</td>
+		</tr>
+		<tr>
+			<td><b>S6 图标</b></td><td>34px</td><td>透明 / 无</td><td>14/650 · fg</td><td>胶囊 r6（低调）</td><td>12px 留白</td><td>只改 <code>SectionHeader</code></td><td>保留现有信息量、更醒目</td>
+		</tr>
+	</tbody>
+</table>
+
+<p class="pick">
+	<b>选型建议：</b>
+	想最贴近 Obsidian、最"退后"→ <b>S1</b>；
+	想改动最小又有明确分栏 → <b>S2</b>；
+	希望一眼看出"这是两组" → <b>S3</b>；
+	想保留现有图标/胶囊的信息密度 → <b>S6</b>。
+	告诉我编号（例如"要 S2，但计数改成 S6 的胶囊"），我按混搭落地。
+</p>
+
+</body>
+</html>

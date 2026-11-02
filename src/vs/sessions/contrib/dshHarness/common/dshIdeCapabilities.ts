@@ -1317,10 +1317,24 @@ export async function executeIdeCapability(request: { readonly capability: strin
 			if (!env.confirmUserAction) {
 				throw new Error('这台 IDE 没有接用户确认框（env.confirmUserAction 缺失），不能安装');
 			}
+			// ★ 2026-11-02：**覆盖**必须在确认框里说出来。Host 在调用前用 `pluginManager.listBundles()` 查过已装版本，
+			//   同名已装 ⇒ 传 `replacing:{from,to}`。以前这个框永远写“安装”，用户点“安装”时并不知道
+			//   自己是在**替换**一个正在用的工作台（而且已装的那份可能有本机改动）。
+			//   这里只负责如实显示，不做决定：要不要覆盖由 Host 的 `replace` 授权闸在调用之前拦下。
+			const replacingRaw = params.replacing;
+			const replacing = replacingRaw && typeof replacingRaw === 'object'
+				? { from: textParam(replacingRaw as Record<string, unknown>, 'from') ?? '', to: textParam(replacingRaw as Record<string, unknown>, 'to') ?? version }
+				: undefined;
 			const consent = await env.confirmUserAction({
-				title: `安装第三方工作台「${title}」？`,
-				confirmLabel: '安装',
+				title: replacing ? `覆盖已安装的工作台「${title}」？` : `安装第三方工作台「${title}」？`,
+				confirmLabel: replacing ? '覆盖' : '安装',
 				detail: [
+					...(replacing
+						? [
+							`⚠ 这是覆盖：已装${replacing.from ? ` ${replacing.from}` : '的版本'} → 将换成 ${replacing.to}。`,
+							'覆盖不会保留你在已装副本上的本机改动；需要的话请先备份。',
+						]
+						: []),
 					`包：${name}@${version}`,
 					`来源：${sourceText}`,
 					'它的服务端会在 dsh Host 里以完整权限运行（可注册工具、读写文件、访问网络）。只安装你信任的作者。',

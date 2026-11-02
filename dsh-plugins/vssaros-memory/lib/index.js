@@ -51,7 +51,12 @@ const PKG_VERSION = (() => {
 	} catch { return '(未知)'; }
 })();
 import { readScopeSync, resolveMemoryScope } from './core/scope.js';
-import { buildTurnObservation, extractCandidates, turnCandidatesOf, parseFormUrlEncoded, SUMMARY_MATCHED_TAG, summaryCandidatesOf, userTextsOf } from './core/distill.js';
+import { buildTurnObservation, extractCandidates, turnCandidatesOf, parseFormUrlEncoded, repeatedDigestsOf, repeatedSummaryFactDigestsOf, SUMMARY_MATCHED_TAG, summaryCandidatesOf, summaryFactsOf, userTextsOf } from './core/distill.js';
+import { pickAutoPromotions, resolveAutoPromote } from './core/promotion.js';
+import { buildInbox, parseInboxAction } from './core/inbox.js';
+import { buildInjectionView } from './core/injection.js';
+import { funnelOf, createStatsStore } from './stats.js';
+import { health as gatewayHealth, listArchive, restoreArchived } from './gateway.js';
 
 import { createDraftStore, draftRowsOf } from './draft.js';
 import { recallHistory, renderHistory } from './history.js';
@@ -316,7 +321,14 @@ function createState() {
 		/** 自动沉淀：每个会话已读到的事件位置（`session.seq` 偏移；缺省 0 ⇒ 从会话开头读）✓ */
 		distillSeqs: new Map(),
 		/** 自动沉淀的计数（页面/探针自诊断：**跳过与失败都要可见**，否则"没产出"分不清是哪种 ✗）✓ */
-		distill: { turns: 0, candidates: 0, summaries: 0, turnSummaries: 0, written: 0, skipped: 0, failed: 0, judged: 0, judgeDropped: 0, judgeSkipped: 0 },
+		distill: {
+			turns: 0, candidates: 0, summaries: 0, turnSummaries: 0, written: 0, skipped: 0, failed: 0,
+			judged: 0, judgeDropped: 0, judgeSkipped: 0,
+			// 2026-11-02 自动提升的可观测面：**必看**——否则"门控一条都没放过"与"根本没在跑"分不清 ✓
+			repeats: 0, autoPromoted: 0, autoFailed: 0,
+			// 摘要事实候选（从 `compaction/summary` 切出的原子事实句）条数
+			summaryFacts: 0,
+		},
 		/**
 		 * **回合观测**计数（阶段③ 2026-10-27）：从 IDE 渲染侧搬到本插件后的可观测性。
 		 * 为什么不复用 `distill` 计数：观测是**暂存层流水**（每回合都想写），
@@ -354,17 +366,77 @@ function createState() {
  * ⚠ 槽位是**原地更新**（`Object.assign`）而不是替换对象 —— `Map` 里存的是同一个引用，
  * 替换对象会让表里那份永远停在初始值 ✗（原单槽位实现是 `state.snapshot = {...}` 替换，搬不过来 ✓）。
  */
+/**
+ * 槽位登记的人设 ⇒ 要并读的第二个分区（没有 ⇒ ''）。
+ * ★ 2026-10-20：槽位登记时记下的人设（`snapshotFor` 写入；默认槽位没有 ⇒ 只读主分区）。
+ *   显式 `config.agentId` ⇒ 不叠人设（`readPartitionsOf` 的口径）。
+ */
+function personaOf(config, entry) {
+	return readPartitionsOf(config, agentIdOf(config), typeof entry?.persona === 'string' ? entry.persona : '')[1] ?? '';
+}
+
+/**
+ * **装配一份注入文本**（引擎文本 + 人设分区 + 待审提示）—— 不写任何状态。
+ *
+ * 2026-11-02 从 `refreshInto` 里拆出来：工作台的「注入预览」要拿"现在重新装配会得到什么"
+ * 与冻结快照比对，而**比对只有在两边用同一套拼装时才有意义** ✗——
+ * 自己再抄一份拼装逻辑，哪天快照多拼一段、预览没跟上，页面就会报"前缀被打断"这种假警报。
+ * 所以快照刷新与预览共用这一个函数；`refreshInto` 只负责把结果写进槽位。
+ *
+ * @returns {Promise<{text: string, source: string, truncatedByChars: boolean, rawChars: number,
+ *   partitions: string[], personaChars: number, personaError: string, pendingDrafts: number}>}
+ * @throws 网关取不到主分区时抛（调用方决定怎么如实呈现）
+ */
+async function composeWorkingText(state, config, persona) {
+	const base = gatewayUrlOf(config);
+	const agentId = agentIdOf(config);
+	const tokenBudget = tokenBudgetOf(config);
+	// ⚠ **真机订正（2026-10-13）**：读路径不是 `mem::context` ✗（那套 404 ✗），而是
+	// `POST /provider/loadContext`（方法名＝ `IMemoryProvider` 接口名 ✓、信封 `{args:[…]}` ✓）。
+	// `sessionId` 用**分区键**：本进程没有 dsh 会话身份（引擎只用它分页会话块），而**稳定值**才对 KV cache 友好 ✓。
+	// ★ 2026-10-20：有人设 ⇒ **两个分区并行取**，各自用一份 `tokenBudget`（人设分区不挤占工作区那份）；
+	//   人设那份失败**不拖垮**注入（只记 `personaError`，页面可见）。
+	const [primaryText, personaResult] = await Promise.all([
+		workingContext(base, agentId, agentId, tokenBudget),
+		persona
+			? workingContext(base, persona, persona, tokenBudget).then(t => ({ text: t }), e => ({ error: String(e?.message ?? e) }))
+			: Promise.resolve(undefined),
+	]);
+	const personaText = typeof personaResult?.text === 'string' ? personaResult.text.trim() : '';
+	const memoryText = personaText
+		? `${primaryText}\n\n## 人设记忆（${persona}）\n${personaText}`
+		: primaryText;
+	// ★ 2026-10-20（借鉴 dsh-memento：待审提案随快照让模型看见）：草稿只在页面上可见 ⇒ 实测**从没被提升过**。
+	//   告诉模型"有 N 条待审"，它才会在合适时提醒用户；只给**计数**不给正文 —— 未审的东西不能当事实用。
+	//   随快照一起冻结（本会话内不变）⇒ 不打掉前缀缓存。
+	const pending = await pendingDraftsOf(state);
+	const text = pending.total > 0
+		? `${memoryText ? `${memoryText}\n\n` : ''}${renderPendingDraftsNote(pending)}`
+		: memoryText;
+	// ⚠ 这里**有两道闸**，页面必须都说出来（报告 §5-7 的"互相掩盖" ✗）：
+	//   ① **网关**按 `tokenBudget`（默认 1024 token）产出 —— 这才是**通常生效**的那道 ✓；
+	//   ② 本插件另加一道 `MAX_INJECT_CHARS`（8000 字符 ≈ 该预算的十倍）⇒ **通常不生效** ✓，
+	//      只在网关超发时兜底 ✓（system prompt 不该被一段记忆吃满 ✓）。
+	// 所以"已注入 N 字"短，**不等于**记忆本来就少 ✗ —— 记下这次到底有没有被字符闸截 ✓。
+	return {
+		text: renderWorkingContext(text),
+		source: `${base}/provider/loadContext`,
+		truncatedByChars: text.length > MAX_INJECT_CHARS,
+		rawChars: text.length,
+		partitions: persona ? [agentId, persona] : [agentId],
+		personaChars: personaText.length,
+		personaError: personaResult?.error ?? '',
+		pendingDrafts: pending.total,
+	};
+}
+
 function refreshInto(state, config, entry) {
 	const pending = state.inflight.get(entry);
 	if (pending) {
 		return pending;
 	}
 	const base = gatewayUrlOf(config);
-	const agentId = agentIdOf(config);
-	const tokenBudget = tokenBudgetOf(config);
-	// ★ 2026-10-20：槽位登记时记下的人设（`snapshotFor` 写入；默认槽位没有 ⇒ 只读主分区）。
-	//   显式 `config.agentId` ⇒ 不叠人设（`readPartitionsOf` 的口径）。
-	const persona = readPartitionsOf(config, agentId, typeof entry.persona === 'string' ? entry.persona : '')[1] ?? '';
+	const persona = personaOf(config, entry);
 	const promise = (async () => {
 		state.refreshes++;
 		if (!base) {
@@ -372,46 +444,7 @@ function refreshInto(state, config, entry) {
 			return entry;
 		}
 		try {
-			// ⚠ **真机订正（2026-10-13）**：读路径不是 `mem::context` ✗（那套 404 ✗），而是
-			// `POST /provider/loadContext`（方法名＝ `IMemoryProvider` 接口名 ✓、信封 `{args:[…]}` ✓）。
-			// `sessionId` 用**分区键**：本进程没有 dsh 会话身份（引擎只用它分页会话块），而**稳定值**才对 KV cache 友好 ✓。
-			// ★ 2026-10-20：有人设 ⇒ **两个分区并行取**，各自用一份 `tokenBudget`（人设分区不挤占工作区那份）；
-			//   人设那份失败**不拖垮**注入（只记 `personaError`，页面可见）。
-			const [primaryText, personaResult] = await Promise.all([
-				workingContext(base, agentId, agentId, tokenBudget),
-				persona
-					? workingContext(base, persona, persona, tokenBudget).then(t => ({ text: t }), e => ({ error: String(e?.message ?? e) }))
-					: Promise.resolve(undefined),
-			]);
-			const personaText = typeof personaResult?.text === 'string' ? personaResult.text.trim() : '';
-			const memoryText = personaText
-				? `${primaryText}\n\n## 人设记忆（${persona}）\n${personaText}`
-				: primaryText;
-			// ★ 2026-10-20（借鉴 dsh-memento：待审提案随快照让模型看见）：草稿只在页面上可见 ⇒ 实测**从没被提升过**。
-			//   告诉模型"有 N 条待审"，它才会在合适时提醒用户；只给**计数**不给正文 —— 未审的东西不能当事实用。
-			//   随快照一起冻结（本会话内不变）⇒ 不打掉前缀缓存。
-			const pending = await pendingDraftsOf(state);
-			const text = pending.total > 0
-				? `${memoryText ? `${memoryText}\n\n` : ''}${renderPendingDraftsNote(pending)}`
-				: memoryText;
-			// ⚠ 这里**有两道闸**，页面必须都说出来（报告 §5-7 的"互相掩盖" ✗）：
-			//   ① **网关**按 `tokenBudget`（默认 1024 token）产出 —— 这才是**通常生效**的那道 ✓；
-			//   ② 本插件另加一道 `MAX_INJECT_CHARS`（8000 字符 ≈ 该预算的十倍）⇒ **通常不生效** ✓，
-			//      只在网关超发时兜底 ✓（system prompt 不该被一段记忆吃满 ✓）。
-			// 所以"已注入 N 字"短，**不等于**记忆本来就少 ✗ —— 记下这次到底有没有被字符闸截 ✓。
-			Object.assign(entry, {
-				text: renderWorkingContext(text),
-				fetchedAt: Date.now(),
-				ok: true,
-				error: '',
-				source: `${base}/provider/loadContext`,
-				truncatedByChars: text.length > MAX_INJECT_CHARS,
-				rawChars: text.length,
-				partitions: persona ? [agentId, persona] : [agentId],
-				personaChars: personaText.length,
-				personaError: personaResult?.error ?? '',
-				pendingDrafts: pending.total,
-			});
+			Object.assign(entry, await composeWorkingText(state, config, persona), { fetchedAt: Date.now(), ok: true, error: '' });
 		} catch (e) {
 			Object.assign(entry, { text: '', fetchedAt: Date.now(), ok: false, error: String(e?.message ?? e), source: `${base}/provider/loadContext`, truncatedByChars: false, rawChars: 0 });
 		}
@@ -646,6 +679,7 @@ function renderFragment({ state, config, toolsRegistered }) {
           ${statCell('跳过', d.skipped ?? 0)}
           ${statCell('失败', d.failed ?? 0)}
           ${statCell('判定丢弃', d.judgeDropped ?? 0)}
+          ${statCell('自动提升', d.autoPromoted ?? 0)}
         </div>
       </div>
       <div class="kb-side-section">
@@ -654,7 +688,7 @@ function renderFragment({ state, config, toolsRegistered }) {
       </div>
       <div class="kb-side-section" data-vssaros-memory-drafts="${drafts.length}" data-vssaros-memory-drafts-read="${state.drafts?.readAt ?? 0}">
         <div class="kb-side-section-head"><span>草稿区</span><span class="kb-spacer"></span><span class="kb-count">${drafts.length}</span></div>
-        <p class="dsh-diag">自动沉淀（<code>agent/turn-stopping</code>）从会话里的**用户消息**提取的候选，<b>不会自动进长期记忆</b> ✓。「提升」= <b>人的显式确认</b>（所以这条路上<b>不会再弹审批窗</b> ✓，理由见 <code>lib/promote.js</code>）；<b>不</b>处理的草稿 30 天后自动淘汰 ✓。${state.drafts?.error ? ` · <b>读回失败</b>：${escapeHtml(state.drafts.error)}` : ''}</p>
+        <p class="dsh-diag">自动沉淀（<code>agent/turn-stopping</code>）从会话里的**用户消息**提取的候选。<b>高置信条目会自动提升进长期记忆</b> —— 门槛是四条同时满足：显式约定句式（习惯约定 / 显式要求 / 项目规范 / 英文约定）+ LLM 判定通过 + <b>说过两次</b>（同一句重复出现）+ 长度与敏感词合规，且每回合最多 1 条；审计里记作 <code>policy=auto-distill</code>，可撤销。其余仍留在草稿区等你判断 ✓ —— 包括<b>整段摘要</b>（模型转述、体量大，只能人工提升）与它切出的<b>单条事实句</b>（<code>summary-fact</code>；同样要「两次摘要都提到」才够格自动提升）。「提升」= <b>人的显式确认</b>（所以这条路上<b>不会再弹审批窗</b> ✓，理由见 <code>lib/promote.js</code>）；<b>不</b>处理的草稿 30 天后自动淘汰 ✓。自动提升可用 <code>autoPromote: 'off'</code> 整体关闭。${state.drafts?.error ? ` · <b>读回失败</b>：${escapeHtml(state.drafts.error)}` : ''}</p>
         ${draftItems ? `<ul class="kb-draft-list" data-vssaros-memory-draft-list>${draftItems}</ul>` : ''}
       </div>
       ${feedback}
@@ -1034,6 +1068,209 @@ function handleDraftAction(req, res, { promoter, logger, action, state }) {
 }
 
 /**
+ * 收件箱批量动作（`POST /x/memory/api/inbox/act`，JSON）。
+ *
+ * 与旧表单路由 `handleDraftAction` 的差别：① 回 **JSON** 而不是 303（React 工作台自己刷新）；
+ * ② 一次可带多个 id；③ 动作多了 `restore`（撤销）与 `edit-promote`（改写后提升）。
+ * 共同点：**白名单动作**、**体积闸**、异常本地吞掉、页面触发 ⇒ 不过审批闸。
+ *
+ * ⚠ 要求 `content-type: application/json`：浏览器跨站表单（`<form method=post>`）只能发
+ *   urlencoded / multipart / text/plain，发 JSON 必须先过 CORS 预检 ⇒ 这是对"别的网页借用户的浏览器
+ *   POST 本地插件"的一道廉价防线（旧表单路由没有这层，保持不动）。
+ */
+const JSON_BODY_MAX = 64 * 1024;
+
+/** JSON 响应（所有页面 API 同一出口：不缓存）。 */
+function replyJson(res, status, payload, extraHeaders = {}) {
+	res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...extraHeaders });
+	res.end(JSON.stringify(payload));
+}
+
+/**
+ * 读**写路由**的 JSON 请求体（收件箱批量动作 / 归档恢复共用同一套防线，别各写一份 ✗）。
+ *
+ * 防线（按顺序）：仅 POST → 必须 `application/json`（跨站表单发不出）→ 声明长度超限直接 413
+ * → 读取中超限只丢弃、不 `destroy`（destroy 会让客户端只看到 `fetch failed` 而拿不到 413，真 HTTP 测试踩过）
+ * → 必须是合法 JSON。任何一道不过，**已经回了响应**，调用方直接 return。
+ *
+ * @returns {Promise<{ok: true, body: unknown} | {ok: false}>}
+ */
+async function readJsonBody(req, res) {
+	if (req.method !== 'POST') { replyJson(res, 405, { ok: false, error: '写操作必须用 POST' }); return { ok: false }; }
+	if (!/^application\/json\b/i.test(String(req.headers['content-type'] ?? ''))) {
+		replyJson(res, 415, { ok: false, error: '请求必须是 application/json' });
+		return { ok: false };
+	}
+	// 先看声明的长度：明显超限就别读了，直接回 413（客户端能拿到状态码）
+	const declared = Number(req.headers['content-length']);
+	if (Number.isFinite(declared) && declared > JSON_BODY_MAX) {
+		replyJson(res, 413, { ok: false, error: '请求体过大' }, { connection: 'close' });
+		req.resume(); // 把剩余数据丢弃，让连接能正常收尾
+		return { ok: false };
+	}
+	let raw = '';
+	let tooLarge = false;
+	await new Promise(resolve => {
+		req.on('data', chunk => {
+			if (tooLarge) { return; } // 超限后继续丢弃，不再累积
+			if (raw.length + chunk.length > JSON_BODY_MAX) { tooLarge = true; raw = ''; return; }
+			raw += chunk;
+		});
+		req.on('end', () => resolve(undefined));
+		req.on('error', () => resolve(undefined));
+		req.on('close', () => resolve(undefined));
+	});
+	if (tooLarge) { replyJson(res, 413, { ok: false, error: '请求体过大' }, { connection: 'close' }); return { ok: false }; }
+	try { return { ok: true, body: JSON.parse(raw || 'null') }; } catch {
+		replyJson(res, 400, { ok: false, error: '请求体不是合法 JSON' });
+		return { ok: false };
+	}
+}
+
+async function handleInboxAct(req, res, { promoter, logger }) {
+	const reply = (status, payload) => replyJson(res, status, payload);
+	const got = await readJsonBody(req, res);
+	if (!got.ok) { return; }
+	const body = got.body;
+	const parsed = parseInboxAction(body);
+	if (!parsed.ok) { reply(400, { ok: false, error: parsed.error }); return; }
+	let summary;
+	try {
+		summary = await promoter.batch(parsed.action, parsed.ids, { text: parsed.text });
+	} catch (error) {
+		summary = { ok: false, done: 0, failed: parsed.ids.length, results: [], error: String(error?.message ?? error) };
+	}
+	if (summary.failed > 0) {
+		try { logger?.warn?.(`[vssaros-memory] 收件箱 ${parsed.action} 失败 ${summary.failed}/${parsed.ids.length}：${summary.results.filter(r => !r.ok).map(r => r.error).slice(0, 3).join('；')}`); } catch { /* 绝不再抛 ✓ */ }
+	}
+	reply(200, summary);
+}
+
+/** 详情页 / 归档恢复共用的分区扇出上限（每多一个分区多几次引擎调用，别把网关打爆）。 */
+const MAX_PARTITIONS = 8;
+
+/**
+ * 当前分区 + 有数据的全部 agent 分区（与详情页 `loadDetailModel` 同口径，上限 8 个）。
+ * 取不到 `listAllAgentsWithData` 时只返回当前分区——**宁少勿多**：这个名单同时是
+ * 「归档恢复」的写权限白名单，多出来的分区 = 多出来的可写入口。
+ * @returns {Promise<{partitions: string[], truncated: boolean}>}
+ */
+async function resolvePartitions(base, agentId) {
+	const partitions = [];
+	const push = a => { const v = String(a ?? ''); if (v && !partitions.includes(v)) { partitions.push(v); } };
+	push(agentId);
+	try {
+		const agents = await providerCall(base, 'listAllAgentsWithData', [agentId]);
+		for (const a of Array.isArray(agents) ? agents : []) { push(a?.agentId ?? a?.id ?? a); }
+	} catch { /* 老网关 / 临时不可达：只用当前分区 */ }
+	return { partitions: partitions.slice(0, MAX_PARTITIONS), truncated: partitions.length > MAX_PARTITIONS };
+}
+
+/**
+ * 工作台「总览」数据：状态条（网关 / schema / 备份 / 归档 / 自动提升档位）+ 沉淀漏斗。
+ *
+ * ## 降级而不是报错（对标 eternal）
+ * 每一项独立取、独立失败：网关挂了，状态条仍要显示"网关不可达：原因"，漏斗（读本地文件）照常出。
+ * **取不到 ≠ 0**：老网关没有 `schema/backups/lastSweepAt` ⇒ 字段缺席（`null`），页面据此不画那一项，
+ * 绝不显示成 0 / "v0" 去误导。
+ */
+async function buildOverview({ state, config, draftStore, statsStore, autoPromoteCfg }) {
+	const base = gatewayUrlOf(config);
+	const agentId = agentIdOf(config);
+	const rows = await draftStore.read().catch(() => []);
+	const inbox = buildInbox(rows, autoPromoteCfg);
+	// 先把进程内计数并入累计，再读 ⇒ 页面看到的就是"此刻"的账
+	try { await statsStore.syncDistill(state.distill ?? {}); } catch { /* 统计失败不影响总览 */ }
+	const snap = await statsStore.snapshot();
+
+	const health = {
+		agent: agentId,
+		gateway: { configured: !!base, url: base ?? '', state: base ? 'unknown' : 'unconfigured', error: '' },
+		engine: '', schema: null, backups: null, lastSweepAt: null, archive: null, partitions: [],
+		autoPromote: { mode: autoPromoteCfg.mode, minHits: autoPromoteCfg.minHits },
+		tokenBudget: tokenBudgetOf(config), charCap: MAX_INJECT_CHARS,
+		snapshots: state.snapshots?.size ?? 0, refreshes: state.refreshes ?? 0,
+	};
+	if (base) {
+		const [h, parts] = await Promise.allSettled([gatewayHealth(base), resolvePartitions(base, agentId)]);
+		if (h.status === 'fulfilled' && h.value && h.value.status === 'ok') {
+			health.gateway.state = 'ok';
+			health.engine = String(h.value.engine ?? '');
+			// 附加项：缺席 ⇒ 保持 null（老网关）
+			health.schema = h.value.schema && typeof h.value.schema === 'object' ? h.value.schema : null;
+			health.backups = h.value.backups && typeof h.value.backups === 'object' ? h.value.backups : null;
+			health.lastSweepAt = Number.isFinite(h.value.lastSweepAt) ? h.value.lastSweepAt : null;
+		} else {
+			health.gateway.state = 'error';
+			health.gateway.error = h.status === 'rejected' ? String(h.reason?.message ?? h.reason).slice(0, 200) : '网关回应了，但状态不是 ok';
+		}
+		const partitions = parts.status === 'fulfilled' ? parts.value.partitions : [agentId];
+		health.partitions = partitions;
+		// 归档总数：各分区求和；任何一个分区查询失败 ⇒ 该项视为"不可用"(null)，而不是少算后当成真值
+		const archives = await Promise.allSettled(partitions.map(p => listArchive(base, p, 1)));
+		if (archives.every(r => r.status === 'fulfilled' && r.value && typeof r.value.total === 'number')) {
+			health.archive = { total: archives.reduce((s, r) => s + r.value.total, 0), partitions: partitions.length };
+		}
+	}
+	return {
+		ok: true,
+		health,
+		funnel: {
+			since: snap.since,
+			...funnelOf(snap.totals),
+			// 时点值，**不是**累计量 ⇒ 单列，不与上面的漏斗各级画在同一把尺子上
+			pendingNow: inbox.counts.pending,
+			reasons: inbox.reasons,
+		},
+	};
+}
+
+/**
+ * 归档恢复（`POST /x/memory/api/archive/restore`，JSON `{ id, partition }`）。
+ *
+ * 依赖全部注入（`partitionsOf` / `restore` / `audit` / `stats`）⇒ 可用真 HTTP 测试，不需要起整个插件。
+ *
+ * ⚠ `partition` 必须在**允许范围**内（当前分区 + `listAllAgentsWithData` 给的分区，同详情页扇出口径）：
+ *   否则这条路由就成了"让任意调用方往任意 `mem:archive:<x>` / `mem:memories:<x>` 里写"的入口 ✗。
+ * ⚠ 页面 = 人的显式动作 ⇒ 不过审批闸（理由同草稿提升，见 `lib/promote.js` 文件头）；审计照记。
+ * ⚠ 恢复只"写回"，不覆盖同 id 的有效记忆、不删当前最新版（语义见引擎 `restoreArchived`）。
+ */
+async function handleArchiveRestore(req, res, deps) {
+	const got = await readJsonBody(req, res);
+	if (!got.ok) { return; }
+	const id = typeof got.body?.id === 'string' ? got.body.id.trim() : '';
+	const partition = typeof got.body?.partition === 'string' ? got.body.partition.trim() : '';
+	if (!id || !partition) { replyJson(res, 400, { ok: false, error: '缺少 id 或 partition' }); return; }
+	let allowed = [];
+	try { allowed = await deps.partitionsOf(); } catch { allowed = []; }
+	if (!allowed.includes(partition)) { replyJson(res, 403, { ok: false, error: '分区不在允许范围内' }); return; }
+
+	const auditBase = {
+		action: 'executed', tool: 'memory_restore_archive(page)', agentId: partition, sessionId: '',
+		target: 'long', memoryType: 'fact', policy: 'human', content: `archive:${id}`,
+	};
+	let reply = null;
+	try {
+		reply = await deps.restore(partition, id);
+	} catch (error) {
+		// 老网关没有该方法 ⇒ 404 ⇒ 这里如实说，不假装成功
+		await deps.audit?.({ ...auditBase, outcome: 'failed', error });
+		replyJson(res, 200, { ok: false, id, error: String(error?.message ?? error).slice(0, 200) });
+		return;
+	}
+	// 引擎返回 `{ success, id, error }`；"没报错"不算成功，必须明确 success
+	const ok = reply?.success === true || reply?.ok === true;
+	await deps.audit?.({ ...auditBase, outcome: ok ? 'ok' : 'rejected-by-gateway' });
+	if (ok) { try { void deps.stats?.event?.('archiveRestored'); } catch { /* 统计失败不影响恢复 */ } }
+	replyJson(res, 200, ok ? { ok: true, id } : { ok: false, id, error: String(reply?.error ?? '网关未确认恢复成功').slice(0, 200) });
+}
+
+/** 仅供测试：让路由层能被真 HTTP 请求打到（与 `deploymentConfigForTest` 同一做法；生产不用）。 */
+export const handleInboxActForTest = handleInboxAct;
+export const handleArchiveRestoreForTest = handleArchiveRestore;
+export const buildOverviewForTest = buildOverview;
+
+/**
  * 页面里那段点击脚本的**共同缘由**（两个脚本各贴一次结论，正文在这里写清 ✓）。
  *
  * ## 为什么必须用 JS —— 这是**实测**出来的，不是设计偏好 ✗
@@ -1341,14 +1578,14 @@ async function loadDetailModel({ config, params, state }) {
 	//   ⇒ 页签全空、用户看到"未显示内容" ✗✗ —— 而数据其实在**纯 agent id** 的分区里
 	//   （`saros-claw` / `default` / `knowledge-base-expert` …，IDE 侧早就是"工作区 + 所有有数据的 agent 分区"合并）。
 	//   ⇒ 这里按同一口径扇出：读分区 = 当前分区 + `listAllAgentsWithData` 给的全部 agent 分区 ✓
-	//   ⚠ 上限 8 个分区：每多一个分区多 4 次引擎调用，别把网关打爆 ✗
+	//   ⚠ 上限 8 个分区（模块级 `MAX_PARTITIONS`，归档恢复的写权限白名单共用它）：
+	//     每多一个分区多 4 次引擎调用，别把网关打爆 ✗
 	const partitions = [];
 	const pushPartition = a => { const v = String(a ?? ""); if (v && !partitions.includes(v)) { partitions.push(v); } };
 	pushPartition(agentId);
 	const agents = settled[1].value;
 	model.agents = Array.isArray(agents) ? agents.map(a => String(a?.agentId ?? a?.id ?? a)).filter(Boolean) : [];
 	for (const a of model.agents) { pushPartition(a); }
-	const MAX_PARTITIONS = 8;
 	model.partitions = partitions.slice(0, MAX_PARTITIONS);
 	model.partitionsTruncated = partitions.length > MAX_PARTITIONS;
 
@@ -1433,6 +1670,29 @@ async function loadDetailModel({ config, params, state }) {
 			}
 		}
 		model.slots = [...byName.values()];
+	}
+	if (model.view === 'archive') {
+		// ★ 2026-11-02：归档页签（被取代 / 被矛盾判定淘汰的旧版本，90 天内可恢复）。
+		//   跨分区口径同其它页签；每个分区各取最近 200 条，合并后按归档时间新→旧再截 200。
+		//   老网关没有 `listArchive` ⇒ 整页标 `unsupported`（如实说"网关版本不支持"，而不是显示成"归档为空"）。
+		const items = [];
+		let total = 0;
+		let failed = 0;
+		let unsupported = false;
+		for (const aid of model.partitions) {
+			try {
+				const out = await listArchive(base, aid, 200);
+				if (out && Array.isArray(out.items)) {
+					total += Number.isFinite(out.total) ? out.total : out.items.length;
+					for (const it of out.items) { items.push({ ...it, partition: aid }); }
+				}
+			} catch (error) {
+				if (/unknown provider method/i.test(String(error?.message ?? error))) { unsupported = true; } else { failed++; }
+			}
+		}
+		const at = it => { const t = Date.parse(it.archivedAt); return Number.isFinite(t) ? t : -Infinity; };
+		items.sort((a, b) => at(b) - at(a));
+		model.archive = { items: items.slice(0, 200), total, shown: Math.min(items.length, 200), failed, unsupported, ttlDays: 90 };
 	}
 	if (model.view === 'lessons') {
 		// ★ 跨分区（教训也是按分区存的 ⇒ 只查当前（空）分区 ⇒ 恒空 ✗）
@@ -4209,6 +4469,11 @@ export function apply(ctx, rawConfig = {}) {
 	const draftStore = createDraftStore(config, { logger: auditLogger });
 	// 快照的"待审草稿"计数要读它（`pendingDraftsOf`）；启动预热那次刷新早于这里 ⇒ 那一次计 0，会话首装时才有值
 	state.draftStore = draftStore;
+	// ★ 2026-11-02：沉淀统计落盘（`state.distill` 重启归零，漏斗要的是跨重启的累计；口径见 `lib/stats.js` 文件头）。
+	//   钩子里只能 `void` 同步（契约：不得 await I/O），失败绝不抛。
+	const statsStore = createStatsStore(config, { logger: auditLogger });
+	state.statsStore = statsStore;
+	const syncStats = () => { try { void statsStore.syncDistill(state.distill); } catch { /* 统计失败不影响回合 */ } };
 
 	// ★ 后台队列（2026-10-13）：钩子必须 fire-and-forget（官方会 await 它 ✓），但**裸的 `void async`**
 	// 没有并发上限、没有超时、不可观测 ⇒ 连续回合会同时打出多份请求，而一个挂住的请求会永久占住槽位 ✗。
@@ -4234,10 +4499,17 @@ export function apply(ctx, rawConfig = {}) {
 	// 抓住（反向突变 M-L 实测：把注入这处改成"默认开"、钩子那处仍把关 ⇒ 行为不变、67/67 全绿 ✗✓）。
 	// 抽出单一来源之后，任何一处改动都会体现在行为上 ✓。
 	const judgeEnabled = config.distillJudge === true;
+	// ★ 2026-11-02：自动提升的档位在**装配期**就要算好 —— 它决定要不要注入 `llm`。
+	//   ⚠ 这是接线上的一个真坑：`distillJudge` 缺省 **false** ⇒ 若仍只在 `judgeEnabled` 时注入
+	//   `llm`，自动提升路径的 `judgeOk` 就永远是 false（fail-closed）⇒ **门控形同不存在**，
+	//   而且症状是"一条都不提升"（看起来像"没有高置信候选"，极难归因）。
+	const autoPromoteCfg = resolveAutoPromote(config);
 	// ★ 2026-10-27（阶段③）：**回合观测开关**（默认开）。关掉 ⇒ 完全不写 `mem:obs:*`，
 	//   与改动前（IDE 渲染侧负责）行为一致 —— 留这个开关是为了能一键回到旧路径 ✓
 	const observeOnTurn = config.observeOnTurn !== false;
-	if (judgeEnabled) {
+	// 判定器在两种情况下都需要真 `llm`：① 用户显式开了 `distillJudge`（滤候选）；
+	// ② 自动提升档位是 `high-only`（提升前必须拿到判定证据 ⇒ 见 `core/promotion.js` 的 fail-closed）。
+	if (judgeEnabled || autoPromoteCfg.mode === 'high-only') {
 		ctx.inject(['llm'], child => child.effect(() => {
 			llmRuntime = child.llm;
 			return () => { llmRuntime = null; };
@@ -4271,7 +4543,10 @@ export function apply(ctx, rawConfig = {}) {
 	// 叠两层 ✗（且走 `approval/request` 技术上也不通：审批服务要求在 open turn 内，页面请求没有 turn）。
 	const promoter = createPromoter({
 		draftStore,
+		stats: statsStore,
 		remember,
+		// 撤销提升 = 软删长期层那条（与 `memory_forget` 同一个网关方法；页面触发 ⇒ 同样不过审批闸）
+		forget: forgetMemory,
 		// ★ getter（2026-10-20）：调用时现取 —— 切换工作区后提升写进**当前**分区（见 `promote.js` 的注释）
 		gatewayBase: () => gatewayUrlOf(config),
 		// ★ 2026-10-27：提升也走同一解析（否则"草稿提升"会写回 `ws-*` ⇒ 与读分叉 ✗）。
@@ -4284,7 +4559,7 @@ export function apply(ctx, rawConfig = {}) {
 	if (!toolsOnly) ctx.effect(() => ctx.on('agent/turn-stopping', payload => {
 		state.distill.turns++;
 		const session = payload?.agent?.session;
-		if (!session || typeof session.snapshotEvents !== 'function') { state.distill.skipped++; return; }
+		if (!session || typeof session.snapshotEvents !== 'function') { state.distill.skipped++; syncStats(); return; }
 		let events = [];
 		try {
 			const from = state.distillSeqs.get(session.id) ?? 0;
@@ -4301,12 +4576,14 @@ export function apply(ctx, rawConfig = {}) {
 		//   作为「会话摘要」草稿（dsh 侧补上 IDE 时代"压缩即写长期记忆"那一跳；仍是草稿、人工提升 ✓）。
 		//   事件游标与约定提取**共用**（上面已推进）⇒ 同一次压缩只会被看到一次。
 		const hasSummary = events.some(event => event?.type === 'compaction/summary');
-		if (texts.length === 0 && !hasSummary) { state.distill.skipped++; return; }
+		if (texts.length === 0 && !hasSummary) { state.distill.skipped++; syncStats(); return; }
 		// ★ LLM 判定的前置**同步取好**（路由）：后台块里不许再碰 `payload`/`agent` ✗ ——
 		// 那些是回合期对象，回合结束后它们的状态未必还能读 ✓（路由也是"那一刻"的事实 ✓）。
 		// ⚠ `judgeEnabled` 来自**外层**（与"要不要注入 `llm`"是同一个常量 ✓），不在这里重算 ——
 		// 两处判断可能漂移，而漂移出的那一种组合**不会**被探针抓住 ✗。
-		const judgeTarget = judgeEnabled ? modelTargetOf(payload?.agent) : null;
+		// ★ 2026-11-02：自动提升也要用判定器（提升前必须有判定证据）⇒ 两条路任一开启就取路由。
+		//   只在 `judgeEnabled` 时取 ⇒ 自动提升会因 `judgeTarget === null` 被永久跳过（静默不提升）。
+		const judgeTarget = (judgeEnabled || autoPromoteCfg.mode === 'high-only') ? modelTargetOf(payload?.agent) : null;
 
 		// ★★ 2026-10-27（阶段③）：**回合观测**（`mem:obs:*` 暂存层）—— 从 IDE 渲染侧搬到本插件。
 		//   为什么搬：IDE 那几处 `observe` 依赖"渲染进程存活 + 代理可用 + IDE 重启才生效"；
@@ -4366,8 +4643,15 @@ export function apply(ctx, rawConfig = {}) {
 				const summaries = hasSummary
 					? summaryCandidatesOf(events, { sessionId: String(session.id ?? ''), turn: payload?.turn, seenDigests, now: Date.now() })
 					: [];
+				// ★ 2026-11-02：摘要里的**原子事实句**（独立候选流，`matched='summary-fact'`）。
+				//   整段摘要只能人工提升（模型转述、体量大）；但它埋着的"端口改成 8080"这类结论
+				//   是可复用的，切出来当独立候选 ⇒ 才有机会靠"重复出现"自动沉淀 ✓
+				const summaryFacts = hasSummary
+					? summaryFactsOf(events, { sessionId: String(session.id ?? ''), turn: payload?.turn, seenDigests, now: Date.now() })
+					: [];
 				state.distill.candidates += raw.length;
 				state.distill.summaries = (state.distill.summaries ?? 0) + summaries.length;
+				state.distill.summaryFacts = (state.distill.summaryFacts ?? 0) + summaryFacts.length;
 				// ★ LLM 判定（**默认关** ✓）：正则粗筛的噪音交给模型滤一遍 —— 它**只能减少**候选。
 				// ⚠ 失败一律 **fail-open**（保留全部 ✓）：`judge.judge` 的四种失败（超时/抛错/形状不认识/
 				//   回答解析不了）都收敛成"全保留" ⇒ 这里**不需要**再判一次错 ✓（判据：噪音可接受、漏掉不可接受 ✓）。
@@ -4385,8 +4669,70 @@ export function apply(ctx, rawConfig = {}) {
 						}
 					}
 				}
-				const written = await draftStore.append(draftRowsOf([...candidates, ...summaries, ...turnCandidates]));
+				const written = await draftStore.append(draftRowsOf([...candidates, ...summaries, ...turnCandidates, ...summaryFacts]));
 				state.distill.written += written;
+
+				// ★★ 2026-11-02：自动提升（沉淀链的第二半）。此前草稿只进不出 ⇒ 长期层 5 周零写入。
+				//   ⚠ 门控极窄（见 `core/promotion.js` 文件头）：强句式 + LLM 判定成功 + **重复出现**
+				//   + 长度合规 + 非敏感 + 每回合最多 1 条。摘要在任何档位下都必须人工提升。
+				//   ⚠ 顺序：**先 append 再 bump** —— bump 只累加已存在的行，顺序反了第一次永远是 1 次。
+				let autoPromoted = 0;
+				try {
+					const autoCfg = autoPromoteCfg;
+					if (autoCfg.mode === 'high-only') {
+						// 两条候选流各自的"重复命中"：显式句式（用户原话）+ 摘要事实句（模型转述）
+						const repeated = [
+							...repeatedDigestsOf(texts, seenDigests),
+							...repeatedSummaryFactDigestsOf(events, seenDigests),
+						];
+						if (repeated.length > 0) {
+							const bumped = await draftStore.bump(repeated);
+							state.distill.repeats = (state.distill.repeats ?? 0) + bumped;
+							// 重新读盘取**累加后**的 hits（`read()` 是最近的窗口，够用：草稿上限 500）
+							const rows = await draftStore.read();
+							const pool = repeated
+								.map(digest => rows.find(row => row.digest === digest))
+								.filter(row => row && row.status === 'draft');
+							if (pool.length > 0) {
+								// 判定这一批**旧草稿**（不是本回合的新候选）：自动提升的证据必须当场可复核，
+								// 不能拿"本回合新候选判定成功"去顶替 ⇒ 判定失败/未启用就一条都不提（fail-closed）。
+								let judgeOk = false;
+								if (judgeEnabled && judgeTarget !== null) {
+									const verdict = await judge.judge(pool, judgeTarget);
+									judgeOk = verdict.parseFailed !== true;
+									state.distill.judged++;
+								}
+								const { selected } = pickAutoPromotions(pool, {
+									mode: autoCfg.mode, minHits: autoCfg.minHits, judgeOk,
+								});
+								for (const row of selected) {
+									const result = await promoter.promote(row.id, { policy: 'auto-distill' });
+									if (result.ok) { autoPromoted++; }
+									await auditAppend({
+										action: 'executed',
+										tool: 'memory_auto_promote',
+										agentId: agentIdOf(config),
+										sessionId: String(row.sessionId ?? session.id ?? ''),
+										target: 'long',
+										memoryType: 'fact',
+										policy: 'auto-distill',
+										// ⚠ 证据走 `policyKey`：`buildAuditRow` 是**字段白名单**
+										// （未知键静默丢弃）⇒ 直接传 `hits` 会被丢掉，账本里就查不到"凭什么提的"。
+										policyKey: `auto-distill/hits=${Number.isFinite(row.hits) ? row.hits : 1}/${String(row.matched ?? '')}`,
+										outcome: result.ok ? 'ok' : 'failed',
+										content: String(row.text ?? '').slice(0, 200),
+										...(result.ok ? {} : { error: result.error }),
+									});
+								}
+							}
+						}
+					}
+					state.distill.autoPromoted = (state.distill.autoPromoted ?? 0) + autoPromoted;
+				} catch (error) {
+					// 自动提升失败**不影响**草稿已落盘这件事（它是增益，不是主链）
+					state.distill.autoFailed = (state.distill.autoFailed ?? 0) + 1;
+					try { auditLogger?.warn?.(`[vssaros-memory] 自动提升失败（草稿已保留）：${error?.message ?? error}`); } catch { /* 绝不再抛 ✓ */ }
+				}
 				// ⚠ 写盘之后**必须**让 `state.drafts` 跟上（2026-10-13 修）：页面渲染读的是它 ✗ ——
 				// 不更新的话，刚沉淀出来的草稿在页面上看不见（要等下一次页面请求才读盘 ✓）。
 				// 走"**从盘重读**"而不是拿 `written` 去拼：这样页面上看到的永远等于文件里的真内容 ✓
@@ -4398,10 +4744,10 @@ export function apply(ctx, rawConfig = {}) {
 					action: 'distill',
 					agentId: agentIdOf(config),
 					sessionId: String(session.id ?? ''),
-					outcome: candidates.length === 0 && summaries.length === 0 && turnCandidates.length === 0
+					outcome: candidates.length === 0 && summaries.length === 0 && turnCandidates.length === 0 && summaryFacts.length === 0
 						? 'no-candidate'
-						: `drafted:${written}${summaries.length ? `(summary:${summaries.length})` : ''}${turnCandidates.length ? `(turn:${turnCandidates.length})` : ''}`,
-					content: [...candidates, ...summaries, ...turnCandidates].map(candidate => candidate.text.slice(0, 200)).join(' | '),
+						: `drafted:${written}${summaries.length ? `(summary:${summaries.length})` : ''}${summaryFacts.length ? `(fact:${summaryFacts.length})` : ''}${turnCandidates.length ? `(turn:${turnCandidates.length})` : ''}`,
+					content: [...candidates, ...summaries, ...turnCandidates, ...summaryFacts].map(candidate => candidate.text.slice(0, 200)).join(' | '),
 				});
 			} catch (error) {
 				state.distill.failed++;
@@ -4414,6 +4760,8 @@ export function apply(ctx, rawConfig = {}) {
 				state.distill.failed++;
 				try { auditLogger?.warn?.(`[vssaros-memory] 自动沉淀后台任务未完成：${result.error ?? result.skipped}`); } catch { /* 绝不再抛 ✓ */ }
 			}
+			// 后台任务（成功 / 失败 / 超时）都收尾于此 ⇒ 这里同步一次，本回合的全部计数才算完整
+			syncStats();
 		});
 	}));
 
@@ -4516,6 +4864,87 @@ export function apply(ctx, rawConfig = {}) {
 					if (!existsSync(bundlePath)) { res.writeHead(404).end(); return; }
 					res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' });
 					res.end(readFileSync(bundlePath));
+					return;
+				}
+				// ★ 记忆工作台 v2 · 收件箱（2026-11-02）——
+				//   GET  api/inbox      ⇒ 待审 / 自动提升动态 / 已处理 + 每条"为什么没被自动提升"
+				//   POST api/inbox/act  ⇒ 批量 promote / discard / restore（撤销）/ edit-promote（改写后提升）
+				//   写动作与旧表单路由同口径：页面 = 人的显式确认 ⇒ 不过审批闸（理由见 `promote.js` 文件头）。
+				if (pathname === `${PAGE_ROUTE}api/inbox` || pathname === `${PAGE_ROUTE}api/inbox/`) {
+					if (req.method !== 'GET') {
+						res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' });
+						res.end(JSON.stringify({ ok: false, error: '收件箱读取必须用 GET' }));
+						return;
+					}
+					const rows = await draftStore.read();
+					const inbox = buildInbox(rows, autoPromoteCfg);
+					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(JSON.stringify({
+						ok: true,
+						mode: autoPromoteCfg.mode,
+						minHits: autoPromoteCfg.minHits,
+						distill: state.distill ?? {},
+						...inbox,
+					}));
+					return;
+				}
+				if (pathname === `${PAGE_ROUTE}api/inbox/act`) {
+					await handleInboxAct(req, res, { promoter, logger: auditLogger });
+					return;
+				}
+				// ★ 记忆工作台 v2 · P3/P4（2026-11-02）：
+				//   GET  api/overview          ⇒ 状态条（网关 / schema / 备份 / 归档 / 档位）+ 沉淀漏斗
+				//   GET  api/inject-preview    ⇒ 冻结快照 vs 当前库：分块 / token / 前缀比对
+				//   POST api/archive/restore   ⇒ 把一条归档恢复回长期记忆
+				if (pathname === `${PAGE_ROUTE}api/overview`) {
+					if (req.method !== 'GET') { replyJson(res, 405, { ok: false, error: '总览读取必须用 GET' }); return; }
+					try {
+						replyJson(res, 200, await buildOverview({ state, config, draftStore, statsStore, autoPromoteCfg }));
+					} catch (error) {
+						replyJson(res, 500, { ok: false, error: String(error?.message ?? error).slice(0, 200) });
+					}
+					return;
+				}
+				if (pathname === `${PAGE_ROUTE}api/inject-preview`) {
+					if (req.method !== 'GET') { replyJson(res, 405, { ok: false, error: '注入预览必须用 GET' }); return; }
+					const frozen = state.snapshot;
+					const base = gatewayUrlOf(config);
+					let liveText = null;
+					let liveError = '';
+					let liveMeta = {};
+					if (!base) {
+						liveError = '记忆网关未配置（config.gatewayUrl / VSSAROS_MEMORY_GATEWAY_URL）';
+					} else {
+						try {
+							// ★ 与快照刷新共用 `composeWorkingText`；**不写**任何槽位 / 不增刷新计数 ⇒ 预览无副作用
+							//   （`workingContext` 本身也已是无副作用调用：不记访问、不下溢）
+							const composed = await composeWorkingText(state, config, personaOf(config, frozen));
+							liveText = composed.text;
+							liveMeta = { truncatedByChars: composed.truncatedByChars, rawChars: composed.rawChars, partitions: composed.partitions, personaError: composed.personaError, pendingDrafts: composed.pendingDrafts };
+						} catch (error) {
+							liveError = String(error?.message ?? error).slice(0, 200);
+						}
+					}
+					replyJson(res, 200, {
+						ok: true,
+						...buildInjectionView({ frozenText: frozen?.text ?? '', liveText, liveError, budgetTokens: tokenBudgetOf(config), charCap: MAX_INJECT_CHARS }),
+						frozenAt: frozen?.fetchedAt ?? 0,
+						frozenOk: frozen?.ok === true,
+						frozenError: frozen?.error ? String(frozen.error).slice(0, 200) : '',
+						liveMeta,
+					});
+					return;
+				}
+				if (pathname === `${PAGE_ROUTE}api/archive/restore`) {
+					await handleArchiveRestore(req, res, {
+						partitionsOf: async () => {
+							const base = gatewayUrlOf(config);
+							return base ? (await resolvePartitions(base, agentIdOf(config))).partitions : [];
+						},
+						restore: (partition, id) => restoreArchived(requireGateway(config), partition, id),
+						audit: auditAppend,
+						stats: statsStore,
+					});
 					return;
 				}
 				if (pathname === `${PAGE_ROUTE}api/page` || pathname === `${PAGE_ROUTE}api/page/`) {

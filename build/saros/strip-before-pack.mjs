@@ -658,6 +658,50 @@ if (versionKnown) {
 	}
 }
 
+// 2.55) Office 运行时负载（2026-11-02）：
+//    `<appPath>/office-runtime/{primary-runtime,office-skills}` —— Python 解释器 + Office 库，
+//    与 7 个 office 技能同放在一个基目录（Host 侧只注入一个 `officeBase`，见
+//    `dshHostSupervisor` 的 officeBase 计算）。同样 `.build/` 产物、同样 allowEmpty 资源流 ⇒
+//    不构建就**静默**出一个"有 Word 技能但一点就缺 Python"的包：与 dsh-runtime 那条完全同构。
+//    逃生阀：`VSSAROS_SKIP_OFFICE_RUNTIME=1`（打包脚本里那两条会跳过构建）—— 此时只警告不红，
+//    但**必须在发版说明里写明本版无 Office 文档能力**。
+{
+	const skipOfficeRuntime = process.env.VSSAROS_SKIP_OFFICE_RUNTIME === '1';
+	const officeCandidates = [
+		path.join(buildDir, toStagingRel('resources/app/office-runtime')),
+		path.join(buildDir, 'office-runtime'),
+	];
+	const officeDir = officeCandidates.find(dir =>
+		existsSync(path.join(dir, 'primary-runtime', 'runtime.json'))
+		&& existsSync(path.join(dir, 'office-skills', 'office-docx', 'SKILL.md')));
+	if (skipOfficeRuntime) {
+		console.log('  ⚠ 跳过 Office 运行时检查（VSSAROS_SKIP_OFFICE_RUNTIME=1）—— 本版包**不含** docx/xlsx/渲染能力');
+	} else if (officeDir) {
+		console.log('  ✅ office-runtime 已随包（Python 负载 + 7 个 Office 技能）');
+		// ★ 许可门禁（2026-11-02）：Python 与 LibreOffice 的许可正文必须**随二进制一起**进包。
+		//   少了它 = 分发了第三方二进制却没有许可声明（合规硬伤，且用户/法务查的是这里）。
+		const pythonLicense = path.join(officeDir, 'primary-runtime', 'dependencies', 'python', 'LICENSE.txt');
+		const libreLicense = path.join(buildDir, toStagingRel('resources/app/dsh-runtime'), bundledVersion, 'node_modules', '@deepseek-ai', 'libreoffice-kit-win32-x64', 'licenses', 'LibreOffice-MPL-2.0.txt');
+		const libreLicenseRepo = path.join(repoRoot, 'dsh-runtime', bundledVersion, 'node_modules', '@deepseek-ai', 'libreoffice-kit-win32-x64', 'licenses', 'LibreOffice-MPL-2.0.txt');
+		if (!existsSync(pythonLicense)) {
+			console.log('  ❌ office-runtime 缺 Python 许可（dependencies/python/LICENSE.txt）⇒ 不能分发（PSF 许可要求随附）');
+			criticalMissing++;
+		}
+		if (!existsSync(libreLicense) && !existsSync(libreLicenseRepo)) {
+			console.log('  ❌ 随包 dsh-runtime 缺 LibreOffice 许可（libreoffice-kit-win32-x64/licenses/LibreOffice-MPL-2.0.txt）'
+				+ ' ⇒ MPL-2.0 要求随附许可；检查 PRUNE_LIST 是否又把它裁了');
+			criticalMissing++;
+		}
+	} else {
+		console.log('  ❌ 暂存里缺 office-runtime/（需 primary-runtime/runtime.json + office-skills/office-docx/SKILL.md）'
+			+ ' ⇒ 装出来的包没有 docx/xlsx/渲染能力 ✗');
+		criticalMissing++;
+		if (!existsSync(path.join(repoRoot, '.build', 'office-runtime'))) {
+			console.log('      ⇒ 先跑 `node build/prepare-office-runtime.mjs` 生成 .build/office-runtime/（约 150MB，需能访问 PyPI / GitHub）');
+		}
+	}
+}
+
 // 2.6) @vscode/tree-sitter-wasm（2026-09-15，用户报「vssaros.exe 报错」）：
 //    codebase 图谱的解析 Worker 池按**运行时路径**读取本模块
 //    （`codebaseGraphParserPool._initPool` → `FileAccess.asFileUri('<appRoot>/node_modules/@vscode/tree-sitter-wasm/wasm/…')`：

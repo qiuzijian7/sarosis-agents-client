@@ -137,7 +137,7 @@ suite('resolveEmbedTarget（解析：相对笔记 → 相对 vault → 全库按
 		);
 		// ② 相对 vault 根
 		assert.strictEqual(
-			(await resolveEmbedTarget(fs.service, VAULT, NOTE, '库/raw/库里的.mermaid'))?.fsPath.replace(/\\/g, '/'),
+			(await resolveEmbedTarget(fs.service, VAULT, NOTE, '数据源/raw/库里的.mermaid'))?.fsPath.replace(/\\/g, '/'),
 			'/vault/库/raw/库里的.mermaid',
 		);
 		// ③ 全库按文件名搜（裸文件名）

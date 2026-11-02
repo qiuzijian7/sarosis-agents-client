@@ -1,7 +1,7 @@
 {
   "name": "@vssaros/dsh-scheduler",
-  "version": "0.5.6",
-  "description": "VsSaros Scheduler module for DeepSeek Harness. Host side: self-built schedule engine (occupies the `schedule` service key; tasks live in <dataRoot>/scheduler/tasks.json, not in Sessions) served over /x/scheduler/api/*. Client side: a **self-built** workbench (17KB, shared `wb-*` primitives) that reads those same-origin routes — no official `@deepseek-ai/dsh-client-ui-schedule` chunk (the self-built engine has no `@Remote`, so the official page's `remote.schedule` data source could never work without an adapter layer; it also had to be re-copied on every upstream bump). SSR page at /x/scheduler/ + legacy migration stay as before.",
+  "version": "0.6.0",
+  "description": "VsSaros Scheduler module for DeepSeek Harness. Host side: self-built schedule engine (occupies the `schedule` service key; tasks live in <dataRoot>/scheduler/tasks.json) served over /x/scheduler/api/*. Client side: ONE workbench with two tabs — 任务 (scheduled tasks + runtime loops mixed, typed by badge) and 运行记录 (deliveries + loop ledger summary). Loops come from @vssaros/dsh-loop same-origin routes (/x/loop/api/...), so no Host-side proxy is needed; when the loop plugin is absent the tab degrades to scheduled-task-only. SSR page at /x/scheduler/ + legacy migration stay as before.",
   "private": true,
   "type": "module",
   "main": "lib/index.js",

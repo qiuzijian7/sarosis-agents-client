@@ -1,0 +1,705 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>知识库工作台 · 完整 Mockup（左侧栏 + 文档 + AI 助手）</title>
+<style>
+  :root[data-theme="dark"]{
+    --bg:#15161a;--panel:#1c1d22;--panel2:#22232a;--panel3:#282a32;--editor:#191a1f;
+    --line:rgba(255,255,255,.10);--line2:rgba(255,255,255,.18);
+    --fg:#e8e9ec;--fg2:#a9abb3;--fg3:#71737c;
+    --accent:#5b8cff;--accent2:#7aa2ff;--ok:#3fb950;--warn:#d29922;--purple:#a371f7;
+    --code:#22242c;--shadow:0 8px 26px rgba(0,0,0,.45);
+  }
+  :root[data-theme="light"]{
+    --bg:#f5f6f8;--panel:#fff;--panel2:#f0f2f5;--panel3:#e7ebf1;--editor:#fff;
+    --line:rgba(0,0,0,.09);--line2:rgba(0,0,0,.17);
+    --fg:#1b1d22;--fg2:#5a5e68;--fg3:#8b8f99;
+    --accent:#2f6bff;--accent2:#4b80ff;--ok:#1a7f37;--warn:#bf8700;--purple:#8250df;
+    --code:#f3f5f9;--shadow:0 8px 22px rgba(20,30,60,.12);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;-webkit-font-smoothing:antialiased;overflow:hidden}
+  button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+  input,textarea{font:inherit;color:inherit}
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--fg3) 40%,transparent);border-radius:5px}
+  ::-webkit-scrollbar-track{background:transparent}
+
+  .app{height:100vh;display:grid;grid-template-columns:270px 1fr 340px;grid-template-rows:42px 1fr 24px;grid-template-areas:"h h h" "s m a" "st st st"}
+  .app.noai{grid-template-columns:270px 1fr 0}
+  .app.noside{grid-template-columns:0 1fr 340px}
+
+  /* ── 顶栏 ───────────────────────────────── */
+  .hdr{grid-area:h;display:flex;align-items:center;gap:8px;padding:0 12px;background:var(--panel);border-bottom:1px solid var(--line)}
+  .hbtn{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 8px;border-radius:6px;color:var(--fg2);font-size:12.5px;white-space:nowrap}
+  .hbtn:hover{background:var(--panel2);color:var(--fg)}
+  .hbtn.on{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent2)}
+  .vault{display:flex;align-items:center;gap:5px;height:26px;padding:0 8px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);font-size:12.5px}
+  .grow{flex:1}
+  .hsearch{display:flex;align-items:center;gap:6px;height:26px;padding:0 8px;border-radius:6px;background:var(--panel2);border:1px solid var(--line);min-width:200px}
+  .hsearch input{flex:1;min-width:0;background:none;border:0;outline:none;font-size:12.5px}
+  .agentchip{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 9px;border-radius:6px;font-size:12px;color:var(--accent2);background:color-mix(in srgb,var(--accent) 14%,transparent);border:1px solid color-mix(in srgb,var(--accent) 38%,transparent);white-space:nowrap}
+
+  /* ── 左侧栏 ─────────────────────────────── */
+  .side{grid-area:s;display:flex;flex-direction:column;min-height:0;background:var(--panel);border-right:1px solid var(--line)}
+  .side .pad{padding:8px 10px;border-bottom:1px solid var(--line)}
+  .ssearch{display:flex;align-items:center;gap:6px;height:27px;padding:0 8px;border-radius:6px;background:var(--panel2);border:1px solid var(--line)}
+  .ssearch input{flex:1;min-width:0;background:none;border:0;outline:none;font-size:12.5px}
+
+  /* 总览入口（只是一个导航项 —— 明细放中间栏的独立页面） */
+  .nav{padding:6px 6px 8px;border-bottom:1px solid var(--line)}
+  .navitem{display:flex;align-items:center;gap:7px;width:100%;text-align:left;padding:6px 8px;border-radius:7px;font-size:12.5px;color:var(--fg2)}
+  .navitem:hover{background:var(--panel2);color:var(--fg)}
+  .navitem.on{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--fg);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 34%,transparent)}
+  .navitem .s{margin-left:auto;font-size:10.5px;color:var(--fg3);white-space:nowrap}
+
+  /* 树 */
+  .tree{flex:1;overflow:auto;padding:4px 6px 10px;min-height:0}
+  .sec{display:flex;align-items:center;gap:6px;padding:5px 4px;margin-top:4px;font-size:11.5px;color:var(--fg2);cursor:pointer;user-select:none}
+  .sec .arw{width:10px;color:var(--fg3);font-size:9px;transition:transform .12s}
+  .sec.closed .arw{transform:rotate(-90deg)}
+  .sec .cnt{color:var(--fg3);font-size:10.5px}
+  .sec .grow{flex:1}
+  .sec .mini{color:var(--fg3);font-size:10.5px}
+  .node{display:flex;align-items:center;gap:5px;width:100%;text-align:left;padding:3px 5px;border-radius:5px;font-size:12.5px;color:var(--fg)}
+  .node:hover{background:var(--panel2)}
+  .node.sel{background:color-mix(in srgb,var(--accent) 18%,transparent)}
+  .node .arw{width:10px;flex:0 0 10px;color:var(--fg3);font-size:9px;text-align:center;transition:transform .12s}
+  .node.open>.arw{transform:rotate(90deg)}
+  .node .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .node .n{color:var(--fg3);font-size:10.5px;flex:0 0 auto}
+  .node .fb{font-size:9.5px;color:var(--ok)}
+  .children{margin-left:14px;border-left:1px solid var(--line)}
+  .children.hide{display:none}
+  .sub{font-size:11px;color:var(--fg3);padding:2px 5px}
+
+  /* ── 中间文档区 ─────────────────────────── */
+  .main{grid-area:m;display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--editor)}
+  .tabs{display:flex;align-items:stretch;gap:1px;background:var(--panel);border-bottom:1px solid var(--line);overflow-x:auto;min-height:32px}
+  .tab{display:flex;align-items:center;gap:6px;padding:0 10px;font-size:12px;color:var(--fg2);border-right:1px solid var(--line);white-space:nowrap}
+  .tab.on{background:var(--editor);color:var(--fg);box-shadow:inset 0 -2px 0 var(--accent)}
+  .tab .x{color:var(--fg3);font-size:11px;padding:0 2px;border-radius:3px}
+  .tab .x:hover{background:var(--panel3);color:var(--fg)}
+  .doc{flex:1;overflow:auto;padding:26px 34px 80px;min-height:0}
+  .doc h1{font-size:22px;margin:0 0 10px;font-weight:650;letter-spacing:.2px}
+  .meta{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px}
+  .chip{font-size:11px;padding:1px 8px;border-radius:20px;border:1px solid var(--line2);color:var(--fg3)}
+  .chip.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,transparent)}
+  .chip.acc{color:var(--accent2);border-color:color-mix(in srgb,var(--accent) 45%,transparent)}
+  .doc p{margin:0 0 12px;color:var(--fg);font-size:13.5px;line-height:1.85}
+  .doc h2{font-size:15.5px;margin:22px 0 9px;font-weight:650}
+  .doc ul{margin:0 0 12px;padding-left:20px;color:var(--fg);font-size:13.5px;line-height:1.85}
+  .doc li{margin:2px 0}
+  .doc blockquote{margin:0 0 12px;padding:8px 12px;border-left:3px solid var(--accent);background:color-mix(in srgb,var(--accent) 8%,transparent);border-radius:0 6px 6px 0;color:var(--fg2);font-size:12.5px}
+  .doc pre{margin:0 0 12px;padding:11px 13px;background:var(--code);border:1px solid var(--line);border-radius:8px;overflow:auto;font-size:12px;line-height:1.6}
+  .doc code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+  .doc table{width:100%;border-collapse:collapse;font-size:12.5px;margin:0 0 14px}
+  .doc th,.doc td{border:1px solid var(--line);padding:6px 9px;text-align:left}
+  .doc th{background:var(--panel2);font-weight:600}
+  .doc .filelink{color:var(--accent2);border-bottom:1px dotted color-mix(in srgb,var(--accent) 60%,transparent);cursor:pointer}
+
+  /* 主页视图（居中） */
+  .home{flex:1;overflow:auto;padding:24px 30px 80px;min-height:0}
+  /* 主页页头（独立页面的“这一页是什么”） */
+  .pagehd{display:flex;align-items:flex-end;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+  .pagehd h1{margin:0 0 2px;font-size:18px;font-weight:650;letter-spacing:.2px}
+  .pagehd .pd-sub{font-size:12px;color:var(--fg3)}
+  .pagehd .pd-acts{margin-left:auto;display:flex;gap:8px;flex:0 0 auto}
+  .pagehd .pd-btn{height:28px;padding:0 12px;border-radius:7px;border:1px solid var(--line2);background:var(--panel2);font-size:12.5px;color:var(--fg2)}
+  .pagehd .pd-btn:hover{background:var(--panel3);color:var(--fg)}
+  .pagehd .pd-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+
+  .hstats{display:grid;grid-template-columns:repeat(5,1fr);gap:9px;margin-bottom:20px}
+  .hstat{position:relative;padding:10px 11px;border-radius:10px;background:var(--panel);border:1px solid var(--line);overflow:hidden}
+  .hstat .bar{position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent)}
+  .hstat:nth-child(2) .bar{background:var(--ok)}
+  .hstat:nth-child(3) .bar{background:var(--warn)}
+  .hstat:nth-child(4) .bar{background:var(--accent2)}
+  .hstat:nth-child(5) .bar{background:var(--fg3)}
+  .hstat .lb{font-size:11px;color:var(--fg3)}
+  .hstat .v{font-size:19px;font-weight:650;font-variant-numeric:tabular-nums}
+  .hstat .v small{font-size:11px;color:var(--fg3);font-weight:500;margin-left:2px}
+  .hsec{display:flex;align-items:center;gap:8px;margin:0 0 10px;font-size:13.5px;font-weight:600}
+  .hsec .c{font-size:11.5px;color:var(--fg3);font-weight:400}
+  .hgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}
+  .hcard{text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:11px;overflow:hidden}
+  .hcard:hover{transform:translateY(-2px);border-color:var(--line2);box-shadow:var(--shadow)}
+  .hcard .cv{height:82px;position:relative}
+  .hcard .bd{padding:9px 10px 11px}
+  .hcard .nm{font-size:12.5px;font-weight:600}
+  .hcard .mt{font-size:11px;color:var(--fg3);margin-top:2px;display:flex;gap:6px}
+  .hcard.new{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:150px;border:1.5px dashed var(--line2);color:var(--fg2);background:transparent}
+  .hcard.new:hover{border-color:var(--accent);color:var(--accent2)}
+  .hcard.new .p{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent2);font-size:16px}
+  .hrecent{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--panel);margin-top:6px}
+  .hrecent .r{display:flex;align-items:center;gap:9px;padding:8px 11px;border-top:1px solid var(--line);font-size:12.5px;width:100%;text-align:left}
+  .hrecent .r:first-child{border-top:0}
+  .hrecent .r:hover{background:var(--panel2)}
+  .hrecent .r .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hrecent .r .k{color:var(--fg3);font-size:11px}
+  .hrecent .r .tm{color:var(--fg3);font-size:11px;flex:0 0 62px;text-align:right}
+
+  /* ── 右侧 AI ────────────────────────────── */
+  .ai{grid-area:a;display:flex;flex-direction:column;min-height:0;background:var(--panel);border-left:1px solid var(--line)}
+  .app.noai .ai{display:none}
+  .aihd{display:flex;align-items:center;gap:7px;padding:8px 11px;border-bottom:1px solid var(--line)}
+  .aihd .badge{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;padding:1px 7px;border-radius:5px;background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent2);border:1px solid color-mix(in srgb,var(--accent) 38%,transparent)}
+  .aihd .t{font-size:12.5px;font-weight:600}
+  .msgs{flex:1;overflow:auto;padding:12px 11px;display:flex;flex-direction:column;gap:12px;min-height:0}
+  .msg{display:flex;gap:8px;font-size:12.5px}
+  .msg .ava{flex:0 0 22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:11px;background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent2)}
+  .msg.me .ava{background:var(--panel3);color:var(--fg2)}
+  .msg .bd{min-width:0;flex:1}
+  .msg .who{font-size:11px;color:var(--fg3);margin-bottom:2px}
+  .msg .tx{color:var(--fg);line-height:1.75}
+  .msg .tx code{background:var(--code);padding:1px 4px;border-radius:4px;font-size:11.5px}
+  .refs{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px}
+  .ref{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:1px 7px;border-radius:5px;background:var(--panel2);border:1px solid var(--line);color:var(--fg2)}
+  .sugg{display:flex;flex-direction:column;gap:6px;padding:0 11px 10px}
+  .sugg button{text-align:left;font-size:12px;padding:6px 9px;border-radius:7px;border:1px solid var(--line);background:var(--panel2);color:var(--fg2)}
+  .sugg button:hover{border-color:var(--accent);color:var(--fg)}
+  .composer{border-top:1px solid var(--line);padding:8px 10px 10px}
+  .chips{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px}
+  .cchip{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:1px 6px;border-radius:5px;background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent2);border:1px solid color-mix(in srgb,var(--accent) 34%,transparent)}
+  .cchip .x{cursor:pointer;opacity:.7}
+  .cchip .x:hover{opacity:1}
+  .inputbox{border:1px solid var(--line2);border-radius:9px;background:var(--panel2);padding:7px 9px}
+  .inputbox:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}
+  .inputbox textarea{width:100%;min-height:44px;max-height:120px;resize:none;background:none;border:0;outline:none;font-size:12.5px;line-height:1.6}
+  .cfoot{display:flex;align-items:center;gap:6px;margin-top:5px}
+  .cfoot .grow{flex:1}
+  .send{height:26px;padding:0 11px;border-radius:7px;background:var(--accent);color:#fff;font-size:12px;font-weight:600}
+  .send:hover{background:var(--accent2)}
+
+  /* ── 状态栏 ─────────────────────────────── */
+  .st{grid-area:st;display:flex;align-items:center;gap:12px;padding:0 12px;background:var(--panel);border-top:1px solid var(--line);font-size:11px;color:var(--fg3)}
+  .st .grow{flex:1}
+
+  /* 右键菜单 / 弹窗 / toast */
+  .menu{position:fixed;z-index:70;min-width:170px;background:var(--panel2);border:1px solid var(--line2);border-radius:8px;box-shadow:var(--shadow);padding:4px;display:none}
+  .menu.on{display:block}
+  .menu button{display:block;width:100%;text-align:left;padding:5px 9px;border-radius:5px;font-size:12.5px;color:var(--fg2)}
+  .menu button:hover{background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--fg)}
+  .menu .sep{height:1px;background:var(--line);margin:4px 2px}
+  .mask{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;padding:20px}
+  .mask.on{display:flex}
+  .modal{width:400px;max-width:100%;background:var(--panel);border:1px solid var(--line2);border-radius:13px;overflow:hidden}
+  .modal header{padding:13px 15px;border-bottom:1px solid var(--line);font-size:13.5px;font-weight:600}
+  .modal .bd{padding:13px 15px;display:flex;flex-direction:column;gap:10px}
+  .modal label{font-size:12px;color:var(--fg2);display:flex;flex-direction:column;gap:5px}
+  .modal input{padding:7px 9px;border-radius:7px;border:1px solid var(--line2);background:var(--panel2);outline:none;font-size:12.5px}
+  .modal footer{padding:11px 15px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px}
+  .btn{height:28px;padding:0 12px;border-radius:7px;border:1px solid var(--line2);background:var(--panel2);font-size:12.5px}
+  .btn:hover{background:var(--panel3)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  .toast{position:fixed;left:50%;bottom:34px;transform:translateX(-50%) translateY(10px);background:var(--panel3);border:1px solid var(--line2);padding:7px 13px;border-radius:9px;font-size:12.5px;opacity:0;pointer-events:none;transition:.2s;z-index:80}
+  .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+
+  <!-- 顶栏 -->
+  <div class="hdr">
+    <button class="hbtn" id="btnHome" title="回主页">🏠</button>
+    <div class="vault" id="vaultBtn">📚 VsSarosVault <span style="color:var(--fg3)">▾</span></div>
+    <button class="hbtn" id="btnSide" title="收起/展开左侧栏">◧</button>
+    <div class="grow"></div>
+    <div class="hsearch">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" opacity=".5"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="searchTop" placeholder="全库搜索（Ctrl+K）" />
+    </div>
+    <button class="hbtn" title="图谱">🕸</button>
+    <button class="hbtn" title="设置">⚙</button>
+    <div class="agentchip" title="当前会话 agent">⬢ Bot · 知识库专家 ▾</div>
+    <button class="hbtn on" id="btnAi" title="收起/展开 AI 助手">💬 AI</button>
+    <button class="hbtn" id="btnTheme" title="切换明暗">☀</button>
+  </div>
+
+  <!-- 左侧栏 -->
+  <aside class="side">
+    <div class="pad">
+      <div class="ssearch">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" opacity=".5"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="searchSide" placeholder="搜索知识库…" />
+      </div>
+    </div>
+
+    <div class="nav">
+      <!-- ★ 只放入口：明细在中间栏的独立主页（点它切换） -->
+      <button class="navitem" id="navHome">
+        <span>🏠</span><span>总览</span>
+        <span class="s">📚 5 · ✎ 101</span>
+      </button>
+    </div>
+
+    <div class="tree" id="tree">
+      <div class="sec" data-sec="lib">
+        <span class="arw">▾</span><span>数据源</span><span class="cnt">134</span>
+        <span class="grow"></span><span class="mini">只读</span>
+      </div>
+      <div class="children" id="libTree"></div>
+
+      <div class="sec" data-sec="notes">
+        <span class="arw">▾</span><span>知识库列表</span><span class="cnt">101</span>
+        <span class="grow"></span><span class="mini">＋库</span>
+      </div>
+      <div class="children" id="noteTree"></div>
+    </div>
+  </aside>
+
+  <!-- 中间 -->
+  <main class="main">
+    <div class="tabs" id="tabs"></div>
+    <div class="doc" id="doc"></div>
+    <div class="home" id="homeView" style="display:none"></div>
+  </main>
+
+  <!-- 右侧 AI -->
+  <aside class="ai">
+    <div class="aihd">
+      <span class="t">对话</span>
+      <span class="badge">⬢ 知识库专家</span>
+      <span class="grow"></span>
+      <button class="hbtn" title="新会话">＋</button>
+      <button class="hbtn" title="更多">⋯</button>
+    </div>
+    <div class="msgs" id="msgs"></div>
+    <div class="sugg" id="sugg"></div>
+    <div class="composer">
+      <div class="chips" id="cchips"></div>
+      <div class="inputbox">
+        <textarea id="ta" placeholder="问点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
+        <div class="cfoot">
+          <button class="hbtn" title="引用知识库文件">＠</button>
+          <button class="hbtn" title="附件">📎</button>
+          <div class="grow"></div>
+          <button class="send" id="sendBtn">发送</button>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 状态栏 -->
+  <div class="st">
+    <span>5 个知识库 · 101 篇 · 索引 169 条</span>
+    <span>分支 main</span>
+    <span id="stFile">差分图压缩优化方案.md</span>
+    <div class="grow"></div>
+    <span>UTF-8</span>
+    <span>Markdown</span>
+  </div>
+</div>
+
+<div class="menu" id="menu"></div>
+<div class="mask" id="mask">
+  <div class="modal">
+    <header>新建知识库（在「知识库列表」下建文件夹）</header>
+    <div class="bd">
+      <label>名称<input id="vname" placeholder="例如：团队 UI 知识库" /></label>
+      <label>关联飞书（可选）<input id="vspace" placeholder="wiki 空间 ID 或粘贴链接" /></label>
+    </div>
+    <footer><button class="btn" id="cancel">取消</button><button class="btn primary" id="ok">创建</button></footer>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+
+  /* ── 数据（对齐真实库 E:\VsSarosVault）── */
+  const KBS = [
+    { name:'01_学习', docs:76, space:'AIAgent知识库', hue:262 },
+    { name:'技术架构', docs:0, space:'', hue:210 },
+    { name:'导入', docs:0, space:'', hue:190 },
+    { name:'02_工作', docs:0, space:'', hue:288 },
+    { name:'03_生活', docs:0, space:'', hue:24 },
+  ];
+  const LIB_TREE = [
+    { n:'raw', d:1, items:['B站视频截帧.png','动画系统参考文档.md','Control-Rig-参考资料.md'] },
+    { n:'方法', d:1, items:['差分图压缩优化方案.md','高效读书Skill逐页分析.md','纹理压缩优化与ASTC.md'] },
+    { n:'概念', d:1, items:['ASTC 块压缩.md','Git LFS 指针.md'] },
+    { n:'实体', d:1, items:['Unreal Engine.md'] },
+    { n:'源', d:1, items:['cpp内存管理参考资料.md'] },
+    { n:'综合', d:1, items:['性能优化总览.md'] },
+  ];
+  const NOTE_TREE = [
+    { n:'01_学习', d:1, items:['差分图压缩优化方案.md','KB 主页设计要点.md','飞书直读可行性结论.md','游戏设计：新手引导拆解.md'] },
+    { n:'02_工作', d:1, items:['周报 10-27~10-31.md'] },
+    { n:'03_生活', d:1, items:['读书笔记：系统之美.md'] },
+    { n:'技术架构', d:1, items:['LFS 迁移踩坑.md'] },
+    { n:'导入', d:1, items:[] },
+  ];
+
+  const DOCS = {
+    '差分图压缩优化方案.md': {
+      kb:'01_学习', tags:['#性能','#差分图'], updated:'2 分钟前',
+      body: `
+        <p>当前差分图在前端逐帧比对时，<b>压缩率只有 1.8×</b>，而目标是把单帧差异包压到 1/4 以下。这份笔记记录三条已验证可行的路径。</p>
+        <h2>1. 差分图本身</h2>
+        <ul>
+          <li>只保留<b>变化区域的矩形并集</b>，比整帧 diff 少 62% 字节</li>
+          <li>变化块按 8×8 对齐，便于后续做块级压缩</li>
+          <li>边缘像素做 1px 膨胀，避免抗锯齿噪声导致的误判</li>
+        </ul>
+        <blockquote>实测：1280×720 场景，平均每帧从 84KB 降到 31KB（−63%）。</blockquote>
+        <h2>2. 编码</h2>
+        <pre><code>// 伪代码：块级 RLE + 稀疏索引
+for (const block of changedBlocks) {
+  if (block.isUniform) { emit(FLAG_UNIFORM, block.color); }
+  else { emit(FLAG_RAW, block.bytes); }
+}</code></pre>
+        <h2>3. 与其它方案对比</h2>
+        <table>
+          <tr><th>方案</th><th>压缩率</th><th>解码耗时</th><th>结论</th></tr>
+          <tr><td>整帧 PNG</td><td>1.0×</td><td>低</td><td>基线</td></tr>
+          <tr><td>块级 RLE</td><td>2.6×</td><td>低</td><td><b>采用</b></td></tr>
+          <tr><td>WebP 有损</td><td>4.1×</td><td>中</td><td>画质不可控 ✗</td></tr>
+        </table>
+        <p>相关素材见 <span class="filelink">数据源/raw/动画系统参考文档.md</span>，以及 <span class="filelink">数据源/方法/纹理压缩优化与ASTC.md</span>。</p>`,
+    },
+    'KB 主页设计要点.md': {
+      kb:'01_学习', tags:['#设计','#知识库'], updated:'今天 11:07',
+      body: `
+        <p>知识库主页要回答三个问题：<b>我有几个库</b>、<b>每个库多大</b>、<b>最近在动什么</b>。</p>
+        <h2>信息分层</h2>
+        <ul>
+          <li><b>数据栏</b>：知识库数 / 笔记数 / 素材数 / 本周新增 / 已绑飞书</li>
+          <li><b>库卡片</b>：名称 + 篇数 + 更新时间 + 徽标（团队可见 / 版本管理 / 已绑飞书）</li>
+          <li><b>最近编辑</b>：跨库的最近 5 条，点击直接进文档</li>
+        </ul>
+        <blockquote>新建动作固定放卡片网格<b>第一格</b> —— 离内容最近，又不占顶部黄金位。</blockquote>
+        <h2>不要做什么</h2>
+        <ul>
+          <li>不要给树加图标列（和 Obsidian 风格冲突，信息该放悬停）</li>
+          <li>不要在主页放"模板库"当主入口 —— 使用频次远低于直接打开库</li>
+        </ul>`,
+    },
+    '飞书直读可行性结论.md': {
+      kb:'01_学习', tags:['#飞书','#架构'], updated:'今天 09:48',
+      body: `
+        <p>结论：<b>能直读直写，但"零本地文件"等于重写存储层</b>。</p>
+        <h2>现状</h2>
+        <ul>
+          <li>读单篇云文档 → markdown：<b>已有</b></li>
+          <li>同步：本地 → 飞书（<b>单向上行</b>），靠外部 <code>lark-cli</code></li>
+        </ul>
+        <h2>三个方案</h2>
+        <table>
+          <tr><th></th><th>本地文件</th><th>工作量</th></tr>
+          <tr><td>A 同步增强</td><td>真源</td><td>天级</td></tr>
+          <tr><td><b>B 在线库+缓存</b></td><td>缓存</td><td>周级</td></tr>
+          <tr><td>C 零本地</td><td>无</td><td>数周+高风险</td></tr>
+        </table>
+        <p>推荐 B：缓存落 <code>&lt;库&gt;/.feishu-cache/&lt;token&gt;.md</code>，冲突用 <code>rev</code> 乐观锁。</p>`,
+    },
+    'LFS 迁移踩坑.md': {
+      kb:'技术架构', tags:['#git','#LFS'], updated:'昨天',
+      body: `<p>把 134MB 的 <code>.tmp-media</code> 迁到 LFS 时踩到的三件事：</p>
+        <ul><li><code>git lfs migrate import</code> 会重写历史，必须先备份</li>
+        <li>已有 remote 需要 <code>lfs push --all</code>，否则 clone 下来是 pointer</li>
+        <li>Windows 上路径含中文时，<code>.gitattributes</code> 要写 <code>core.quotepath=false</code></li></ul>`,
+    },
+  };
+
+  const RECENT = [
+    { n:'差分图压缩优化方案.md', kb:'01_学习', t:'2 分钟前' },
+    { n:'KB 主页设计要点.md', kb:'01_学习', t:'11:07' },
+    { n:'飞书直读可行性结论.md', kb:'01_学习', t:'09:48' },
+    { n:'LFS 迁移踩坑.md', kb:'技术架构', t:'昨天' },
+    { n:'周报 10-27~10-31.md', kb:'02_工作', t:'10-31' },
+  ];
+
+  const cover = (hue) => `linear-gradient(135deg, hsl(${hue} 45% 34%), hsl(${hue + 26} 38% 18%))`;
+
+  /* ── 状态 ── */
+  let tabs = ['差分图压缩优化方案.md', '飞书直读可行性结论.md'];
+  let active = tabs[0];
+  let home = false;
+  let refs = [{ n:'差分图压缩优化方案.md' }];
+  const sel = { kb:'01_学习', file:'差分图压缩优化方案.md' };
+
+  /* ── toast ── */
+  let tt = 0;
+  const toast = (m) => { const t = $('#toast'); t.textContent = m; t.classList.add('on'); clearTimeout(tt); tt = setTimeout(() => t.classList.remove('on'), 1800); };
+
+  /* ── 侧栏：搜索过滤树（总览已移到中间栏，侧栏不再有卡片） ── */
+  function filterTree() {
+    const q = ($('#searchSide').value || '').trim().toLowerCase();
+    document.querySelectorAll('#tree [data-file], #tree [data-dir]').forEach((el) => {
+      const name = (el.dataset.file || el.dataset.dir || '').toLowerCase();
+      el.style.display = !q || name.includes(q) ? '' : 'none';
+    });
+    // 目录全被过滤掉时，把它的子容器也藏起来（避免出现空行）
+    document.querySelectorAll('#tree [data-children]').forEach((box) => {
+      const visible = [...box.querySelectorAll('[data-file]')].some((el) => el.style.display !== 'none');
+      box.style.display = visible ? '' : 'none';
+    });
+  }
+
+  /* ── 侧栏：树 ── */
+  function renderTree() {
+    const mk = (items, kind) => items.map((it) => {
+      const isOpen = true;
+      const children = it.items.map((f) => `
+        <button class="node" data-file="${esc(f)}" data-kind="${kind}" title="${kind === 'notes' ? '知识库 · ' : '素材 · '}${esc(f)}">
+          <span class="arw"></span><span class="nm">${esc(f)}</span>
+        </button>`).join('');
+      return `
+      <button class="node open" data-dir="${esc(it.n)}">
+        <span class="arw">▸</span><span class="nm">${esc(it.n)}</span>
+        <span class="n">${it.items.length}</span>
+      </button>
+      <div class="children${isOpen ? '' : ' hide'}" data-children="${esc(it.n)}">${children || '<div class="sub">（空）</div>'}</div>`;
+    }).join('');
+
+    $('#libTree').innerHTML = mk(LIB_TREE, 'lib');
+    $('#noteTree').innerHTML = mk(NOTE_TREE, 'notes');
+  }
+
+  /* ── 中间：tabs + 文档 ── */
+  function renderTabs() {
+    $('#tabs').innerHTML = tabs.map(n => `
+      <div class="tab ${n === active && !home ? 'on' : ''}" data-tab="${esc(n)}">
+        <span>${esc(n)}</span><span class="x" data-close="${esc(n)}">✕</span>
+      </div>`).join('');
+  }
+
+  function renderDoc() {
+    const d = DOCS[active];
+    if (!d) { $('#doc').innerHTML = '<p style="color:var(--fg3)">（这个文档还没有内容）</p>'; return; }
+    $('#doc').innerHTML = `
+      <h1>${esc(active.replace(/\.md$/, ''))}</h1>
+      <div class="meta">
+        <span class="chip acc">📚 ${esc(d.kb)}</span>
+        ${d.tags.map(t => `<span class="chip">${esc(t)}</span>`).join('')}
+        <span class="chip">更新 ${esc(d.updated)}</span>
+        <span class="chip ok">✓ 已同步飞书</span>
+      </div>
+      ${d.body}`;
+    $('#stFile').textContent = active;
+  }
+
+  /* ── 中间：主页 ── */
+  function renderHome() {
+    $('#homeView').innerHTML = `
+      <div class="pagehd">
+        <div>
+          <h1>知识库主页</h1>
+          <div class="pd-sub">VsSarosVault · ${KBS.length} 个知识库 · 101 篇笔记 · 134 个素材</div>
+        </div>
+        <div class="pd-acts">
+          <button class="pd-btn" id="backToDoc">← 返回文档</button>
+          <button class="pd-btn primary" id="newKbHome2">＋ 新建知识库</button>
+        </div>
+      </div>
+      <div class="hstats">
+        ${[['知识库', KBS.length, '个'], ['笔记', 101, '篇'], ['素材', 134, '个'], ['本周新增', 12, '篇'], ['已绑飞书', KBS.filter(k => k.space).length, '个']]
+          .map(([l, v, u]) => `<div class="hstat"><span class="bar"></span><div class="lb">${l}</div><div class="v">${v}<small>${u}</small></div></div>`).join('')}
+      </div>
+      <div class="hsec">全部知识库 <span class="c">${KBS.length} 个</span></div>
+      <div class="hgrid">
+        <button class="hcard new" id="newKbHome"><span class="p">＋</span><span>新建知识库</span><span style="font-size:11px;color:var(--fg3)">建文件夹 · 关联飞书</span></button>
+        ${KBS.map(k => `
+          <button class="hcard" data-kb="${esc(k.name)}">
+            <div class="cv" style="background:${cover(k.hue)}"></div>
+            <div class="bd">
+              <div class="nm">${esc(k.name)}</div>
+              <div class="mt"><span>${k.docs} 篇</span>${k.space ? '<span>· 🔗 已绑飞书</span>' : ''}</div>
+            </div>
+          </button>`).join('')}
+      </div>
+      <div class="hsec" style="margin-top:20px">最近编辑 <span class="c">跨库</span></div>
+      <div class="hrecent">
+        ${RECENT.map(r => `<button class="r" data-file="${esc(r.n)}" data-kind="notes">
+          <span class="nm">${esc(r.n)}</span><span class="k">${esc(r.kb)}</span><span class="tm">${esc(r.t)}</span>
+        </button>`).join('')}
+      </div>`;
+  }
+
+  /* ── 右侧：对话 ── */
+  const MSGS = [
+    { who:'me', tx:'帮我看看 <code>差分图压缩优化方案.md</code>，有没有和已有笔记重复的结论？' },
+    { who:'ai', tx:'读了 3 篇相关笔记，结论有两处<b>重复但口径不同</b>：', refs:['差分图压缩优化方案.md','纹理压缩优化与ASTC.md','性能优化总览.md'] },
+  ];
+  function renderMsgs() {
+    $('#msgs').innerHTML = MSGS.map(m => `
+      <div class="msg ${m.who === 'me' ? 'me' : ''}">
+        <span class="ava">${m.who === 'me' ? '我' : '⬢'}</span>
+        <div class="bd">
+          <div class="who">${m.who === 'me' ? '你' : '知识库专家'}</div>
+          <div class="tx">${m.tx}</div>
+          ${m.refs ? `<div class="refs">${m.refs.map(r => `<span class="ref">📄 ${esc(r)}</span>`).join('')}</div>` : ''}
+        </div>
+      </div>`).join('');
+    $('#msgs').scrollTop = 1e6;
+  }
+  function renderChips() {
+    $('#cchips').innerHTML = refs.map((r, i) => `
+      <span class="cchip">📄 ${esc(r.n)}<span class="x" data-rmref="${i}">✕</span></span>`).join('');
+  }
+  function renderSugg() {
+    $('#sugg').innerHTML = [
+      '这份方案还有哪些遗漏的边界情况？',
+      '把结论整理成一份检查清单',
+      '相关素材原始链接都在哪？',
+    ].map(s => `<button data-sugg="${esc(s)}">${esc(s)}</button>`).join('');
+  }
+
+  /* ── 视图切换 ── */
+  function paint() {
+    $('#tabs').style.display = home ? 'none' : 'flex';
+    $('#doc').style.display = home ? 'none' : 'block';
+    $('#homeView').style.display = home ? 'block' : 'none';
+    $('#btnHome').classList.toggle('on', home);
+    $('#navHome').classList.toggle('on', home);
+    renderTabs();
+    if (!home) { renderDoc(); }
+    else { renderHome(); }
+  }
+
+  /* ── 事件 ── */
+  function openDoc(name) {
+    if (!tabs.includes(name)) { tabs.push(name); }
+    active = name; home = false; paint();
+    renderTreeSel();
+  }
+  function renderTreeSel() {
+    document.querySelectorAll('[data-file]').forEach((el) => {
+      el.classList.toggle('sel', el.dataset.file === active);
+    });
+  }
+
+  document.addEventListener('click', (e) => {
+    const t = e.target;
+
+    // 文件节点
+    const f = t.closest('[data-file]');
+    if (f) { openDoc(f.dataset.file); return; }
+
+    // 目录折叠
+    const dir = t.closest('[data-dir]');
+    if (dir) {
+      const kids = dir.nextElementSibling;
+      if (kids && kids.classList.contains('children')) { kids.classList.toggle('hide'); dir.classList.toggle('open'); }
+      return;
+    }
+    // 分区折叠
+    const sec = t.closest('.sec');
+    if (sec) {
+      const kids = sec.nextElementSibling;
+      if (kids) { kids.classList.toggle('hide'); sec.classList.toggle('closed'); }
+      return;
+    }
+
+    // tab 切换 / 关闭
+    const close = t.closest('[data-close]');
+    if (close) {
+      const n = close.dataset.close;
+      tabs = tabs.filter(x => x !== n);
+      if (!tabs.length) { tabs = []; home = true; }
+      else if (active === n) { active = tabs[tabs.length - 1]; }
+      paint(); renderTreeSel(); return;
+    }
+    const tab = t.closest('[data-tab]');
+    if (tab) { active = tab.dataset.tab; home = false; paint(); renderTreeSel(); return; }
+
+    // 库卡片 / 新建
+    const kb = t.closest('[data-kb]');
+    if (kb) { toast('切换到「' + kb.dataset.kb + '」（mock）'); return; }
+    if (t.closest('#backToDoc')) { home = false; paint(); return; }
+    if (t.closest('#newKbHome') || t.closest('#newKbHome2')) { $('#mask').classList.add('on'); setTimeout(() => $('#vname').focus(), 30); return; }
+    if (t.closest('#ok')) {
+      const n = $('#vname').value.trim();
+      if (!n) { $('#vname').focus(); return; }
+      KBS.unshift({ name:n, docs:0, space:$('#vspace').value.trim() ? '新空间' : '', hue:Math.floor(Math.random() * 360) });
+      $('#mask').classList.remove('on'); $('#vname').value = ''; $('#vspace').value = '';
+      home = true; paint(); toast('已创建「' + n + '」'); return;
+    }
+    if (t.closest('#cancel')) { $('#mask').classList.remove('on'); return; }
+
+    // 顶栏
+    if (t.closest('#btnHome')) { home = !home; paint(); return; }
+    if (t.closest('#btnSide')) { $('#app').classList.toggle('noside'); return; }
+    if (t.closest('#btnAi')) { $('#app').classList.toggle('noai'); $('#btnAi').classList.toggle('on'); return; }
+    if (t.closest('#btnTheme')) { const r = document.documentElement; r.dataset.theme = r.dataset.theme === 'dark' ? 'light' : 'dark'; return; }
+    // ★ 侧栏「总览」入口 ⇒ 中间栏切换到独立主页
+    if (t.closest('#navHome')) { home = true; paint(); return; }
+
+    // 引用 chip 删除
+    const rm = t.closest('[data-rmref]');
+    if (rm) { refs.splice(Number(rm.dataset.rmref), 1); renderChips(); return; }
+
+    // 建议
+    const sg = t.closest('[data-sugg]');
+    if (sg) { $('#ta').value = sg.dataset.sugg; $('#ta').focus(); return; }
+
+    // 发送
+    if (t.closest('#sendBtn')) { send(); return; }
+
+    // 关菜单
+    const m = $('#menu');
+    if (m.classList.contains('on')) { m.classList.remove('on'); }
+  });
+
+  function send() {
+    const v = $('#ta').value.trim();
+    if (!v && !refs.length) { $('#ta').focus(); return; }
+    const refHtml = refs.length ? `<div class="refs">${refs.map(r => `<span class="ref">📄 ${esc(r.n)}</span>`).join('')}</div>` : '';
+    MSGS.push({ who:'me', tx: esc(v) + refHtml });
+    MSGS.push({ who:'ai', tx:'（mock）已收到。基于 <b>' + (refs.length || 0) + '</b> 篇引用与库内检索，我会先给结论再给依据。' });
+    $('#ta').value = ''; refs = []; renderChips(); renderMsgs();
+  }
+
+  $('#ta').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  $('#searchSide').addEventListener('input', filterTree);
+  $('#searchTop').addEventListener('input', () => { });
+
+  /* 右键菜单：添加到聊天框中 */
+  document.addEventListener('contextmenu', (e) => {
+    const f = e.target.closest('[data-file]');
+    if (!f) { return; }
+    e.preventDefault();
+    const name = f.dataset.file;
+    const menu = $('#menu');
+    menu.innerHTML = `
+      <button data-act="rename">重命名</button>
+      <button data-act="add">添加到聊天框中</button>
+      <div class="sep"></div>
+      <button data-act="copy">复制绝对路径</button>
+      <button data-act="reveal">在资源管理器中打开</button>
+      <div class="sep"></div>
+      <button data-act="del">删除</button>`;
+    menu.style.left = Math.min(e.clientX, innerWidth - 190) + 'px';
+    menu.style.top = Math.min(e.clientY, innerHeight - 190) + 'px';
+    menu.classList.add('on');
+    menu.onclick = (ev) => {
+      const b = ev.target.closest('[data-act]');
+      if (!b) { return; }
+      menu.classList.remove('on');
+      const act = b.dataset.act;
+      if (act === 'add') {
+        if (refs.some(r => r.n === name)) { toast('已在聊天框中'); return; }
+        refs.push({ n:name }); renderChips(); toast('已添加到右侧聊天框');
+        $('#ta').focus();
+      } else if (act === 'copy') { toast('已复制：E:\\VsSarosVault\\知识库列表\\' + name.replace(/\//g, '\\')); }
+      else { toast('（mock）' + act); }
+    };
+  });
+
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('#mask').classList.remove('on'); $('#menu').classList.remove('on'); } });
+
+  /* 启动：默认进主页（独立页面），左侧「总览」为当前项 */
+  renderTree(); renderMsgs(); renderChips(); renderSugg();
+  home = true; paint(); renderTreeSel(); filterTree();
+})();
+</script>
+</body>
+</html>

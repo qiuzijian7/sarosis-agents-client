@@ -2,7 +2,7 @@
  *  KBSchema — 可配置的知识库分类体系（对齐 llm_wiki schema.md 设计）。
  *
  *  设计原则（借鉴 llm_wiki）：
- *  - 类型体系定义在可持久化的 JSON schema 文件中（vault 根目录 kb-schema.json），
+ *  - 类型体系定义在可持久化的 JSON schema 文件中（vault 根目录 .kb/schema.json），
  *    用户可编辑，无需改源码。
  *  - LLM Agent 读取 schema 后自主决定笔记的类型和路径（声明式），而非控制器预计算
  *    死路径（命令式）。
@@ -91,7 +91,7 @@ export const DEFAULT_KB_SCHEMA: IKBSchema = Object.freeze({
 			dir: '实体',
 			desc: '命名事物：模型、公司、人物、框架、库、工具、数据集、产品',
 			promptHint: '当内容主要介绍/描述一个具体的事物、工具或实体时选择此类型。特征：包含"是什么"、"简介"、"介绍"、公司名、框架名、工具名等。',
-			keywords: ['是什么', '简介', '介绍', 'profile', '公司', '框架', '库', '人物', '组织', '团队'],
+			keywords: ['是什么', '简介', '介绍', 'profile', '公司', '框架', '数据源', '人物', '组织', '团队'],
 		},
 		{
 			id: 'concept',
@@ -178,12 +178,12 @@ export const DEFAULT_KB_SCHEMA: IKBSchema = Object.freeze({
 
 // ─── Schema 加载/保存 ────────────────────────────────────────────────────────
 
-/** kb-schema.json 在 vault 根目录下的文件名 */
-const SCHEMA_FILENAME = 'kb-schema.json';
+/** .kb/schema.json 在 vault 根目录下的文件名 */
+const SCHEMA_FILENAME = '.kb/schema.json';
 
 /**
  * 从 vault 根目录加载知识库 schema。
- * 若 kb-schema.json 存在且格式兼容 → 返回用户自定义 schema；
+ * 若 .kb/schema.json 存在且格式兼容 → 返回用户自定义 schema；
  * 若不存在或格式不兼容 → 返回 DEFAULT_KB_SCHEMA 并自动写入到 vault 根目录。
  *
  * 对齐 llm_wiki：schema.md 在项目根目录，用户可编辑。
@@ -207,7 +207,7 @@ export async function loadKbSchema(fileService: IFileService, vaultRoot: URI): P
 }
 
 /**
- * 将 schema 保存到 vault 根目录的 kb-schema.json。
+ * 将 schema 保存到 vault 根目录的 .kb/schema.json。
  */
 export async function saveKbSchema(fileService: IFileService, vaultRoot: URI, schema: IKBSchema): Promise<void> {
 	const schemaUri = URI.joinPath(vaultRoot, SCHEMA_FILENAME);

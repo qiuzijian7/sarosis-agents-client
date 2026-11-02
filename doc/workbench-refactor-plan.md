@@ -1,5 +1,8 @@
 # 工作台重构方案：对齐 dsh-desktop 工作台范式
 
+> 文档状态：**【计划·提案】**（2026-10-21，110KB）。这是**当时**的重构论证与排期，
+> **不是流程依据**；要写工作台请读 `doc/workbench-development-standard.md`。
+
 - 状态：**提案**（2026-10-21）。取代同日的 `doc/workbench-official-alignment-plan.md`（该稿已被 `git clean -fd` 删除，内容并入本稿）。
 - 对标：`G:\CustomWorkspaces\AIProjects\dsh-desktop`（MIT，Copyright 2026 DataElement）
   - 规范：`docs/workbench-standard.zh.md`、`docs/workbench-market-acceptance.zh.md`

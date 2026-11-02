@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>方案 B · 分段导航 + 主从分栏 · 记忆库布局</title>
+<style>
+:root { color-scheme: dark; }
+body { margin: 0; background: #14161a; color: #e6e6e6; font: 13px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+body.light { background: #eef0f2; color: #222; }
+.bar { position: sticky; top: 0; z-index: 9; background: #14161aee; backdrop-filter: blur(6px); border-bottom: 1px solid #2a2f36; padding: 10px 18px 9px; }
+body.light .bar { background: #eef0f2ee; border-color: #d4d8dc; }
+.bar h1 { font-size: 15px; margin: 0 0 2px; }
+.bar p { margin: 0; color: #9aa0a6; font-size: 12px; max-width: 880px; }
+.row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
+.lbl { color: #9aa0a6; font-size: 12px; min-width: 40px; }
+.chip { font: inherit; font-size: 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid #333a43; background: #1d2126; color: #cfd4da; cursor: pointer; }
+body.light .chip { background: #fff; color: #333; border-color: #c8ccd0; }
+.chip.on { background: #0e639c; border-color: transparent; color: #fff; }
+main { padding: 16px 18px 40px; }
+.fwin { border: 1px solid #2f353d; border-radius: 10px; overflow: hidden; box-shadow: 0 8px 24px #0006; }
+.fbar { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 10px; background: #1b1f24; border-bottom: 1px solid #2f353d; font-size: 12px; color: #b9bfc6; }
+.fbar .dot { width: 8px; height: 8px; border-radius: 2px; background: #6aa9e8; }
+.fbar .t { margin-left: auto; color: #7f868e; }
+.fpage { height: 720px; overflow: auto; container-type: inline-size; }
+.notes { margin-top: 14px; max-width: 760px; font-size: 12.5px; color: #c0c6cc; }
+body.light .notes { color: #444; }
+.notes b { color: #fff; } body.light .notes b { color: #000; }
+.notes ul { margin: 6px 0; padding-left: 20px; }
+.notes li { margin: 2px 0; }
+/* 令牌 */
+.fwin {
+	--v-fg:#cccccc; --v-desc:#9d9d9d; --v-border:#3a3a3a; --v-hover:#2a2d2e; --v-card:#252526;
+	--v-sel:#04395e; --v-selb:#007fd4; --v-btn:#0e639c; --v-ok:#3fb950; --v-warn:#cca700;
+	--v-err:#f14c4c; --v-info:#4daafc; --v-input:#313131; --v-badge:#4d4d4d; --v-accent:#b180d7;
+	--s1:4px; --s2:8px; --s3:12px; --f-xs:11px; --f-sm:12px; --f-md:13px;
+}
+body.light .fwin {
+	--v-fg:#3b3b3b; --v-desc:#767676; --v-border:#e0e0e0; --v-hover:#ececec; --v-card:#fff;
+	--v-sel:#0060c0; --v-selb:#0090f1; --v-btn:#0078d4; --v-ok:#107c10; --v-warn:#8a6d1f;
+	--v-err:#c4281c; --v-info:#006ab1; --v-input:#fff; --v-badge:#c8c8c8; --v-accent:#8a2be2;
+}
+.app { display: flex; flex-direction: column; height: 100%; background: #1f1f1f; color: var(--v-fg); font-size: var(--f-md); }
+body.light .app { background: #f8f8f8; }
+
+.h { display: flex; align-items: baseline; gap: var(--s2); padding: var(--s3) var(--s4, 14px) 4px; }
+.h h1 { font-size: 15px; margin: 0; white-space: nowrap; }
+.h .sub { color: var(--v-desc); font-size: var(--f-xs); font-family: ui-monospace, Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.h .sp { flex: 1 1 auto; }
+.btn { font: inherit; font-size: var(--f-xs); padding: 1px 9px; border-radius: 999px; cursor: pointer; color: inherit;
+	background: transparent; border: 1px solid var(--v-border); white-space: nowrap; }
+.btn:hover { background: var(--v-hover); }
+.btn.pri { background: var(--v-btn); border-color: transparent; color: #fff; }
+.btn.dg { color: var(--v-err); border-color: var(--v-err); }
+
+/* 健康徽标带：窄时自动折行，但不挤压标题（标题在上一行） */
+.hb { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 14px var(--s2); font-size: var(--f-xs); }
+.hb .it { display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--v-border); white-space: nowrap; }
+.hb .it .d { width: 5px; height: 5px; border-radius: 50%; background: var(--v-desc); }
+.hb .ok { border-color: color-mix(in srgb, var(--v-ok) 55%, transparent); } .hb .ok .d { background: var(--v-ok); }
+.hb .w { border-color: color-mix(in srgb, var(--v-warn) 60%, transparent); color: var(--v-warn); } .hb .w .d { background: var(--v-warn); }
+.hb .e { border-color: var(--v-err); color: var(--v-err); } .hb .e .d { background: var(--v-err); }
+
+/* 分段：一行，横向滚动 */
+.segs { display: flex; gap: 2px; padding: 0 14px; border-bottom: 1px solid var(--v-border); overflow-x: auto; scrollbar-width: none; }
+.segs::-webkit-scrollbar { display: none; }
+.segs button { font: inherit; font-size: var(--f-sm); padding: 5px 8px; border: 0; border-bottom: 2px solid transparent;
+	background: transparent; color: var(--v-desc); cursor: pointer; white-space: nowrap; }
+.segs button.on { color: var(--v-fg); border-bottom-color: var(--v-selb); font-weight: 600; }
+.segs .n { margin-left: 4px; padding: 0 5px; border-radius: 999px; font-size: 10px; background: var(--v-badge); color: #fff; }
+body.light .segs .n { color: #333; }
+.segs .n.e { background: var(--v-err); color: #fff; }
+
+.body { flex: 1 1 auto; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+.cap { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 14px; font-size: var(--f-xs); color: var(--v-desc); }
+.cap .wy { padding: 0 6px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--v-warn) 60%, transparent); color: var(--v-warn); }
+.cap .pos { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+.panes { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s3); padding: 0 14px 8px; }
+.panes.two { grid-template-columns: minmax(0, 1fr) minmax(0, 320px); }
+
+.list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--v-border); border-radius: 8px; overflow: hidden; }
+.it { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: var(--s2); padding: 7px 10px; border-bottom: 1px solid var(--v-border); cursor: pointer; }
+.it:last-child { border-bottom: 0; }
+.it:hover { background: var(--v-hover); }
+.it.sel { background: var(--v-sel); }
+.it.open { box-shadow: inset 2px 0 0 var(--v-selb); }
+.it .tx { font-size: var(--f-sm); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+.it .mt { margin-top: 2px; font-size: var(--f-xs); color: var(--v-desc); display: flex; gap: 6px; flex-wrap: wrap; }
+.it .mt .wy { color: var(--v-warn); }
+
+.dt { border: 1px solid var(--v-border); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: var(--s2); }
+.dt .ttl { display: flex; align-items: center; gap: 6px; font-size: var(--f-xs); color: var(--v-desc); }
+.dt .full { font-size: var(--f-sm); line-height: 1.6; background: var(--v-hover); padding: 8px; border-radius: 6px; word-break: break-word; }
+.gate { display: flex; flex-direction: column; gap: 3px; font-size: var(--f-xs); }
+.gate .g { display: grid; grid-template-columns: 12px minmax(0,1fr) auto; gap: 6px; }
+.gate .r { color: var(--v-desc); }
+.dt .acts { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.foot { position: sticky; bottom: 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 14px;
+	border-top: 1px solid var(--v-border); background: #1f1f1fee; backdrop-filter: blur(6px); font-size: var(--f-xs); }
+body.light .foot { background: #f8f8f8ee; }
+.foot .sp { flex: 1 1 auto; }
+.foot .hint { color: var(--v-desc); }
+
+.empty { padding: 20px 14px; font-size: var(--f-sm); color: var(--v-desc); line-height: 1.7; }
+.empty b { color: var(--v-fg); }
+.empty ol { margin: 6px 0 0; padding-left: 18px; }
+.empty code { font-family: ui-monospace, Consolas, monospace; font-size: var(--f-xs); background: var(--v-hover); padding: 0 4px; border-radius: 3px; }
+.toast { margin: 0 14px 6px; padding: 3px 8px; border-radius: 5px; font-size: var(--f-xs); border: 1px solid var(--v-border);
+	background: var(--v-hover); display: flex; gap: 8px; align-items: center; }
+
+/* ≥660 才分栏；否则单栏 + 点开整页详情（避免 300px 里硬塞两列） */
+@container (min-width: 660px) { .panes.two { align-items: start; } }
+@container (max-width: 659px) {
+  .panes.two { grid-template-columns: minmax(0, 1fr); }
+  .dt { order: -1; }
+}
+@container (max-width: 380px) {
+  .h { padding: 10px 10px 3px; }
+  .h .sub { display: none; }
+  .hb, .segs, .cap { padding-left: 10px; padding-right: 10px; }
+  .panes { padding: 0 10px 8px; }
+  .foot { padding: 5px 10px; }
+  .foot .hint { display: none; }
+}
+body.embed .bar, body.embed .notes { display: none; }
+body.embed main { padding: 0; }
+body.embed .fwin { border: 0; border-radius: 0; box-shadow: none; }
+body.embed .fbar { display: none; }
+body.embed .fpage { height: 100vh; }
+</style>
+</head>
+<body>
+<div class="bar">
+	<h1>方案 B · 分段导航 + 主从分栏</h1>
+	<p>最接近「完整工作台」：健康徽标带 + 四段导航 + 宽栏左列表右详情。<b>窄于 660px 自动退成单栏</b>，点行先把详情顶到列表上方，不硬塞两列。</p>
+	<div class="row"><span class="lbl">宽度</span><span id="w"></span><span class="lbl">主题</span><span id="t"></span><span class="lbl">状态</span><span id="s"></span></div>
+</div>
+
+<main>
+	<div class="fwin" id="fwin">
+		<div class="fbar"><span class="dot"></span><span>记忆库</span><span class="t" id="fmeta">中栏</span></div>
+		<div class="fpage"><div class="app" id="app"></div></div>
+	</div>
+	<div class="notes">
+		<b>适合</b>
+		<ul>
+			<li>在中栏（≥760px）当主界面用，右栏也能看（自动单栏）。</li>
+			<li>审核要「边看证据边改」：证据、门控、来源会话同屏，不用来回跳。</li>
+		</ul>
+		<b>代价</b>
+		<ul>
+			<li>窄栏里点行会把详情顶到上面，列表被推走 —— 需要「返回」才能继续挑，比方案 A 多一步。</li>
+			<li>元素最多，实现成本最高（分段状态、分栏断点、详情回填都要处理）。</li>
+		</ul>
+		<b>来源</b>：健康徽标带与「字段/原始」思路取自 <code>dsh-longterm-memory</code>（header 四枚徽标、`conflicts>0` 时问题徽标切 error 色）；页签徽标取自 <code>dsh-memory-evolve</code>（`label: n>0 ? "🔴 记忆 (n)" : "记忆"`）；位置标签取自 <code>dsh-memory-eternal</code> 的 TUI 场景（`n / total`）。
+	</div>
+</main>
+
+<script>
+(function () {
+	'use strict';
+	var EMBED = /(?:^|[?&])embed=1/.test(location.search);
+	var S = { w: 760, theme: 'dark', scenario: 'ok', seg: 'pending', sel: {}, open: null, toast: null };
+	var DATA = [
+		{ id: 'a', kind: '习惯约定', text: '以后所有构建都必须先跑 typecheck 再打产物', hits: '2/2', why: 'judge-unavailable', gate: [1, 1, 1, 0] },
+		{ id: 'b', kind: '强调提醒', text: '必须真的调用对应工具，不要只在回答里描述：用 memory_search 查历史决策', hits: '4/2', why: 'weak-kind', gate: [1, 0, 1, 1] },
+		{ id: 'c', kind: '项目规范', text: '导出包放在 dist/，每次改动都要 bump 版本号', hits: '1/2', why: 'hits<2', gate: [0, 1, 1, 1] }
+	];
+	var GATES = ['同一句说过 2 次', '强约定句式', '不是整段摘要', 'LLM 判定通过'];
+	var esc = function (s) { return String(s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); };
+
+	function head() {
+		return '<div class="h"><h1>记忆库</h1><span class="sub">gr · ws-saros</span><span class="sp"></span>'
+			+ '<button class="btn" data-act="refresh">刷新</button><button class="btn" data-act="more">更多 ▾</button></div>';
+	}
+	function hb() {
+		if (S.scenario === 'down') { return '<div class="hb"><span class="it e"><i class="d"></i>网关不可达</span><span class="it e"><i class="d"></i>问题 1</span></div>'; }
+		if (S.scenario === 'empty') { return '<div class="hb"><span class="it"><i class="d"></i>记忆 0</span><span class="it"><i class="d"></i>待审 0</span><span class="it ok"><i class="d"></i>索引 健康</span></div>'; }
+		return '<div class="hb"><span class="it"><i class="d"></i>记忆 1204</span><span class="it w"><i class="d"></i>待审 17</span>'
+			+ '<span class="it e"><i class="d"></i>问题 2</span><span class="it ok"><i class="d"></i>索引 健康</span>'
+			+ '<span class="it"><i class="d"></i>备份 3</span><span class="it"><i class="d"></i>schema v1</span></div>';
+	}
+	function segs() {
+		var items = [['pending', '待审', '17', ''], ['memory', '记忆', '', ''], ['inject', '注入', '', ''], ['maint', '维护', '', 'e']];
+		return '<nav class="segs">' + items.map(function (it) {
+			return '<button data-seg="' + it[0] + '" class="' + (S.seg === it[0] ? 'on' : '') + '">' + it[1]
+				+ (it[2] ? '<span class="n ' + it[3] + '">' + it[2] + '</span>' : '') + '</button>';
+		}).join('') + '</nav>';
+	}
+	function detail() {
+		if (!S.open) {
+			// 宽栏里右列常驻：空着也要有话说，不能是一块空白
+			return '<aside class="dt"><div class="ttl"><span>证据</span></div>'
+				+ '<div class="note" style="font-size:var(--f-xs)">点左侧任意一条，看它凭什么没被自动提升。'
+				+ '四道门逐项列出，来源会话可跳转。</div></aside>';
+		}
+		var d = DATA.filter(function (x) { return x.id === S.open; })[0] || DATA[0];
+		var back = S.w < 660 ? '<button class="btn" data-act="back">← 返回列表</button>' : '';
+		return '<aside class="dt"><div class="ttl"><span>证据</span><span class="sp" style="flex:1"></span>' + back + '</div>'
+			+ '<div class="full">' + esc(d.text) + '</div>'
+			+ '<div class="ttl">四道门</div><div class="gate">'
+			+ GATES.map(function (g, i) {
+				var ok = d.gate[i];
+				return '<div class="g"><span style="color:var(--v-' + (ok ? 'ok' : 'err') + ')">' + (ok ? '✓' : '✗') + '</span><span>' + g + '</span><span class="r"></span></div>';
+			}).join('') + '</div>'
+			+ '<div class="ttl">判定：' + esc(d.why) + '</div>'
+			+ '<div class="acts"><button class="btn pri" data-act="promote-one">提升</button><button class="btn dg" data-act="discard-one">丢弃</button></div></aside>';
+	}
+	function pendingBody() {
+		if (S.scenario === 'down') {
+			return '<div class="empty"><b>连不上记忆网关</b><ol><li><code>curl 127.0.0.1:3112/health</code></li>'
+				+ '<li>安装版 3111 / dev 3112（配置写哪个用哪个）</li><li>还不行看 <code>gateway.log</code> 末尾 20 行</li></ol>'
+				+ '<div style="margin-top:8px"><button class="btn pri" data-act="retry">重新连接</button></div></div>';
+		}
+		if (S.scenario === 'empty') {
+			return '<div class="empty"><b>收件箱清空了</b><br>达标候选已自动入库；新候选在会话结束时出现。</div>';
+		}
+		var selN = Object.keys(S.sel).filter(function (k) { return S.sel[k]; }).length;
+		var two = S.w >= 660;
+		return '<div class="cap"><span>未自动提升</span><span class="wy">hits<2 ×1</span><span class="wy">weak-kind ×1</span><span class="wy">judge ×1</span>'
+			+ '<span class="pos">3 / 17</span></div>'
+			+ '<div class="panes' + (two ? ' two' : '') + '">'
+			+ (!two || true ? '<ul class="list">' + DATA.map(function (d) {
+				return '<li class="it' + (S.sel[d.id] ? ' sel' : '') + (S.open === d.id ? ' open' : '') + '" data-row="' + d.id + '">'
+					+ '<input type="checkbox" data-chk="' + d.id + '"' + (S.sel[d.id] ? ' checked' : '') + ' aria-label="选择">'
+					+ '<div><div class="tx">' + esc(d.text) + '</div>'
+					+ '<div class="mt"><span>' + esc(d.kind) + '</span><span>hits ' + d.hits + '</span><span class="wy">' + esc(d.why) + '</span></div></div></li>';
+			}).join('') + '</ul>' : '')
+			+ (two || S.open ? detail() : '')
+			+ '</div>'
+			+ '<div class="foot"><span>' + (selN ? '已选 ' + selN : '未选') + '</span><span class="sp"></span>'
+			+ '<span class="hint">Space 多选 · Enter 提升</span>'
+			+ (selN ? '<button class="btn pri" data-act="promote">批量提升</button><button class="btn" data-act="discard">批量丢弃</button>' : '')
+			+ '</div>';
+	}
+	function otherBody() {
+		var map = {
+			memory: ['1204 条记忆', '按类型/标签检索；点标签等同一次带条件搜索。'],
+			inject: ['注入 288 / 1024 token', '前綴稳定：仅尾部 +96（估算 †）。'],
+			maint: ['漏斗 128 → 31 → 24 → 自动 2', '「待审 17」是时点值，不计入累计漏斗。']
+		};
+		var m = map[S.seg] || map.memory;
+		return '<div class="empty"><b>' + m[0] + '</b><br>' + m[1] + '</div>';
+	}
+	function render() {
+		document.body.classList.toggle('light', S.theme === 'light');
+		document.body.classList.toggle('embed', EMBED);
+		document.getElementById('fwin').style.width = EMBED ? '100%' : S.w + 'px';
+		document.getElementById('fmeta').textContent = S.w + 'px';
+		// 故障是全局态，盖过页签（否则状态条红了、正文还在显示漏斗）
+		var body = (S.scenario === 'down' || S.seg === 'pending') ? pendingBody() : otherBody();
+		document.getElementById('app').innerHTML = head() + hb() + segs() + '<div class="body">' + body + '</div>'
+			+ (S.toast ? '<div class="toast">' + esc(S.toast) + '<span style="flex:1"></span><button class="btn" data-act="ok">知道了</button></div>' : '');
+	}
+	function buildBar(id, items, key, fmt) {
+		document.getElementById(id).innerHTML = items.map(function (v) {
+			return '<button class="chip' + (String(S[key]) === String(v) ? ' on' : '') + '" data-set="' + key + '" data-val="' + v + '">' + fmt(v) + '</button>';
+		}).join('');
+	}
+	function bars() {
+		buildBar('w', [320, 380, 520, 760, 1040], 'w', function (v) { return v + 'px'; });
+		buildBar('t', ['dark', 'light'], 'theme', function (v) { return v === 'dark' ? '深色' : '浅色'; });
+		buildBar('s', ['ok', 'empty', 'down'], 'scenario', function (v) { return ({ ok: '正常', empty: '空库', down: '网关故障' })[v]; });
+	}
+	document.addEventListener('click', function (ev) {
+		var b = ev.target.closest ? ev.target.closest('[data-set],[data-seg],[data-chk],[data-row],[data-act]') : null;
+		if (!b) { return; }
+		var d = b.dataset;
+		if (d.set) { S[d.set] = d.set === 'w' ? Number(d.val) : d.val; bars(); render(); return; }
+		if (d.seg) { S.seg = d.seg; render(); return; }
+		if (d.chk) { ev.stopPropagation(); S.sel[d.chk] = !S.sel[d.chk]; render(); return; }
+		if (d.row) { S.open = d.row; render(); return; }
+		switch (d.act) {
+			case 'refresh': S.toast = '已重新读取'; break;
+			case 'retry': S.scenario = 'ok'; S.toast = '已连上网关'; break;
+			case 'back': S.open = null; break;
+			case 'promote': S.sel = {}; S.toast = '已提升，10 秒内可撤销'; break;
+			case 'discard': S.sel = {}; S.toast = '已丢弃，10 秒内可撤销'; break;
+			case 'promote-one': S.toast = '已提升 1 条'; break;
+			case 'discard-one': S.toast = '已丢弃 1 条'; break;
+			case 'ok': S.toast = null; break;
+			case 'more': S.toast = '导出 / 看归档'; break;
+			default: return;
+		}
+		bars(); render();
+	});
+	bars(); render();
+})();
+</script>
+</body>
+</html>

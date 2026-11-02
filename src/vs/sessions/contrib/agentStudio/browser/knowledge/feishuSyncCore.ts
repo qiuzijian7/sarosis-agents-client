@@ -108,11 +108,11 @@ export function parseSrcDirs(raw: string | undefined | null): string[] {
 
 // ─── 用户自定义「本地目录 ↔ 飞书知识库」映射（2026-09-22）────────────────────
 // 由设置面板维护、存放在 vault 内（与脚本 loadSpaceMap / applyExplicitMappings 同一份契约）：
-//   { version: 1, mappings: [{ dir: '库/…/01-基础概念', spaceId: '769…', spaceName: '01-基础概念' }] }
+//   { version: 1, mappings: [{ dir: '数据源/…/01-基础概念', spaceId: '769…', spaceName: '01-基础概念' }] }
 // ⚠ 为什么落文件而不是 CLI 参数：JSON 经 argv 在 Windows（shell:true）下会被引号破坏。
 
 /** 映射文件名（与内置脚本 `SPACE_MAP_FILE` 保持一致）。 */
-export const FEISHU_SPACE_MAP_FILE = '.feishu-space-map.json';
+export const FEISHU_SPACE_MAP_FILE = '.kb/space-map.json';
 
 /**
  * 本次运行「报告」文件名（★ 2026-09-24，与内置脚本 `--plan-file` 配套）。
@@ -125,7 +125,7 @@ export const FEISHU_SYNC_PLAN_FILE = '.feishu-sync-plan.txt';
 
 /** 一条映射：知识库内相对目录 → 飞书 wiki 知识库。 */
 export interface IKbSpaceMapping {
-	/** 知识库内相对目录（如 `库/AI/01-基础概念`）；其**子目录**也会一同绑定 */
+	/** 知识库内相对目录（如 `数据源/AI/01-基础概念`）；其**子目录**也会一同绑定 */
 	dir: string;
 	/** 飞书 wiki 知识库 id */
 	spaceId: string;
@@ -149,7 +149,7 @@ export function parseSpaceMap(text: string | undefined | null): IKbSpaceMapping[
 			}
 		}
 	} else if (src && typeof src === 'object') {
-		// 极简写法：{ mappings: { '库/AI/01-x': '<spaceId>' } }
+		// 极简写法：{ mappings: { '数据源/AI/01-x': '<spaceId>' } }
 		for (const [dir, spaceId] of Object.entries(src as Record<string, unknown>)) {
 			if (dir.trim() && typeof spaceId === 'string' && spaceId.trim()) {
 				out.push({ dir, spaceId, spaceName: '' });
@@ -180,7 +180,7 @@ export function serializeSpaceMap(list: readonly IKbSpaceMapping[]): string {
 // 未映射目录根本不进 plan（因此也不会触发建库）；`--prune` 默认关 ⇒ 缩小范围**不会**删远端。
 
 /** 「笔记」分区名 —— 同步范围的唯一来源区（「库」是原始素材区，不同步）。 */
-export const FEISHU_SYNC_SECTION = '笔记';
+export const FEISHU_SYNC_SECTION = '知识库列表';
 
 /** 归一化 vault 相对目录（与脚本 `applyExplicitMappings` 一致：仅 `\`→`/` + 去尾部 `/`）。 */
 function normalizeMapDir(dir: string | undefined | null): string {
@@ -190,7 +190,7 @@ function normalizeMapDir(dir: string | undefined | null): string {
 /**
  * 从显式映射推导同步范围（`--src` 参数列表）。
  *
- * · 只取 `笔记` 分区内（或恰为该分区）的映射目录；
+ * · 只取 `知识库列表` 分区内（或恰为该分区）的映射目录；
  * · **父子归并**：脚本对每个 `--src` 各 walk 一次 ⇒ 若同时传祖先与后代，后代下的笔记会被
  *   收集两次（重复 plan）；只保留「没有祖先也在集合里」的目录；
  * · 无映射 / 全在「库」区 ⇒ 返回**空数组**（调用方据此提示「先去配置目录映射」并**不执行**同步，

@@ -9,7 +9,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IFeedbackWindowResult, IFeedbackWindowService } from '../common/feedbackWindow.js';
 
 // eslint-disable-next-line local/code-import-patterns
-import { BrowserWindow } from 'electron';
+import { app, BrowserWindow } from 'electron';
 // eslint-disable-next-line local/code-import-patterns
 import type { Debugger } from 'electron';
 
@@ -54,6 +54,9 @@ export class FeedbackWindowMainService extends Disposable implements IFeedbackWi
 	}
 
 	async openFeedbackWindow(url: string, files: readonly string[]): Promise<IFeedbackWindowResult> {
+		// ★ 入口就打点：这是"主进程到底有没有被调用"的唯一判据（渲染层失败是静默的）
+		this._logService.info(`[feedbackWindow] 收到打开请求：files=${files.length}，url 前 90 字符 = ${url.slice(0, 90)}`);
+
 		let win: BrowserWindow;
 		try {
 			win = this._ensureWindow();
@@ -82,6 +85,48 @@ export class FeedbackWindowMainService extends Disposable implements IFeedbackWi
 		win.show();
 		win.focus();
 		return { ok: true, filesFilled, error: fillError };
+	}
+
+	/**
+	 * 系统快照（主进程视角）。
+	 *
+	 * ⚠ 任何一段失败都只是少一行，**绝不抛** —— 诊断包不能因为拿不到磁盘信息就整体失败
+	 *  （2026-11-02 已经因为一个 `Buffer` 未定义白跑了两轮真机）。
+	 */
+	async collectSystemInfo(): Promise<readonly string[]> {
+		const lines: string[] = [];
+		const gb = (n: number) => (n / 1024 ** 3).toFixed(1);
+		const mb = (n: number) => (n / 1024 ** 2).toFixed(0);
+
+		try {
+			// eslint-disable-next-line local/code-import-patterns
+			const os = await import('node:os');
+			const total = os.totalmem();
+			const free = os.freemem();
+			lines.push(`内存        : 空闲 ${gb(free)} / 总计 ${gb(total)} GB（已用 ${(100 * (1 - free / total)).toFixed(1)}%）`);
+			lines.push(`CPU         : ${os.cpus().length} 核  loadavg=${os.loadavg().map(n => n.toFixed(2)).join(' ')}`);
+			lines.push(`系统        : ${os.platform()} ${os.arch()}  uptime=${(os.uptime() / 3600).toFixed(1)}h`);
+		} catch (e) {
+			lines.push('（内存/CPU 采集失败：' + (e instanceof Error ? e.message : String(e)) + '）');
+		}
+
+		try {
+			const mu = process.memoryUsage();
+			lines.push(`主进程内存  : rss=${mb(mu.rss)}MB  heap=${mb(mu.heapUsed)}MB`);
+		} catch { /* 忽略 */ }
+
+		try {
+			// eslint-disable-next-line local/code-import-patterns
+			const fs = await import('node:fs');
+			const stat = await fs.promises.statfs(app.getPath('userData'));
+			const totalB = stat.blocks * stat.bsize;
+			const freeB = stat.bavail * stat.bsize;
+			lines.push(`磁盘(userData): 空闲 ${gb(freeB)} / 总计 ${gb(totalB)} GB`);
+		} catch {
+			lines.push('磁盘(userData): （statfs 不可用）');
+		}
+
+		return lines;
 	}
 
 	override dispose(): void {

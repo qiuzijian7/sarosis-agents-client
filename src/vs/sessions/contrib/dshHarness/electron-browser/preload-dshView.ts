@@ -334,6 +334,49 @@
 		document.dispatchEvent(new CustomEvent(THEME_EVENT, { detail: tokens }));
 	});
 
+	/*
+	 * ★★ 2026-11-02（用户：「dsh 侧切换外观，跟随系统 → 浅色，部分页面没有一起切换」）：
+	 *   把 dsh **自己**解析出来的外观偏好上报给宿主 —— `documentElement[data-ds-theme-source]`
+	 *   是 dsh 官方 boot 脚本写的（`light` / `dark` / `system`）。
+	 *
+	 *   为什么要报：宿主原来无条件把每条 dsh 视图的 `prefers-color-scheme` emulate 成 **IDE 主题**
+	 *   的明暗（`dshViewHost._emulateColorScheme`）。IDE 内嵌视图里这是对的（聊天框该跟 IDE 一致），
+	 *   但在 **dsh 自主窗口**（桌面窗口 / 分屏 / 全窗）里用户改的是 dsh「外观」⇒ 两边打架，
+	 *   表现正是"一部分跟着变、一部分不动"。⇒ 自主窗口改按**这里报的方案**走。
+	 *
+	 *   `system` 原样上报（**不要**在页面里解析成 light/dark）：宿主一 emulate，页面里
+	 *   `matchMedia('(prefers-color-scheme: dark)')` 读到的就是宿主的模拟值 ⇒ 自锁 ✗。
+	 *   宿主收到 `system` 就撤掉 emulation，页面自然回到真实系统值 ✓。
+	 */
+	const THEME_SOURCE_CH = 'vssaros:dsh:theme-source';
+	let lastThemeSource = '';
+	const reportThemeSource = (): void => {
+		try {
+			const raw = document.documentElement ? document.documentElement.dataset.dsThemeSource : '';
+			const source = raw === 'light' || raw === 'dark' || raw === 'system' ? raw : '';
+			if (!source || source === lastThemeSource) {
+				return;
+			}
+			lastThemeSource = source;
+			ipcRenderer.send(THEME_SOURCE_CH, source);
+		} catch { /* 上报失败不影响页面 */ }
+	};
+	try {
+		const watchThemeSource = (): void => {
+			reportThemeSource();
+			const root = document.documentElement;
+			if (!root || typeof MutationObserver === 'undefined') {
+				return;
+			}
+			new MutationObserver(() => reportThemeSource()).observe(root, { attributes: true, attributeFilter: ['data-ds-theme-source'] });
+		};
+		if (document.readyState === 'loading') {
+			document.addEventListener('DOMContentLoaded', watchThemeSource, { once: true });
+		} else {
+			watchThemeSource();
+		}
+	} catch { /* 诊断位不影响任何功能 */ }
+
 	// worktree 列表推送（同上机制：宿主侧 git 事实，页面桥单向 ⇒ 只能推）。
 	// 插件晚于推送加载也能读到 ⇒ 同时写 documentElement.dataset。
 	const WORKTREES_CH = 'vssaros:dsh:worktrees';

@@ -319,7 +319,14 @@ export function apply(ctx, config = {}) {
 			} else {
 				result = await installViaHost(mgr, target);
 			}
-			if (!result.ok) { return { id: entry.id, ...result, warnings: report.warnings }; }
+			// 2026-11-02：失败也带 application（cancelled 与 failed 要分开：取消不是错误，不该显示成"安装失败"）
+			if (!result.ok) {
+				return {
+					id: entry.id, ...result,
+					application: result.code === 'declined' || result.code === 'cancelled' ? 'cancelled' : 'failed',
+					warnings: report.warnings,
+				};
+			}
 			const installs = await readInstalls(config);
 			installs[entry.id] = {
 				pluginName: target.expectedPluginName,
@@ -330,7 +337,13 @@ export function apply(ctx, config = {}) {
 			};
 			await writeInstalls(config, installs);
 			// 新装的插件要等 Host 重启才进组合（运行中的进程不热加载新包）⇒ 如实告诉界面
-			return { ok: true, id: entry.id, via: result.via, changed: result.changed !== false, version: installs[entry.id].version, restartRequired: true, warnings: report.warnings };
+			// 2026-11-02：`application` 是给调用方（模型 / 界面）判断"到底成没成、要不要重启"的唯一口径
+			return {
+				ok: true, id: entry.id, via: result.via, changed: result.changed !== false,
+				version: installs[entry.id].version, restartRequired: true,
+				application: result.application === 'applied' ? 'applied' : 'restart-required',
+				warnings: report.warnings,
+			};
 		} catch (e) {
 			return { ok: false, error: String(e?.message ?? e), code: 'install_failed' };
 		} finally {
@@ -382,7 +395,11 @@ export function apply(ctx, config = {}) {
 		if (shaped.pendingBuilds?.length) {
 			return { ...shaped, ok: false, via: 'host', code: 'pending_builds', error: `这个包要运行构建脚本（${shaped.pendingBuilds.join(', ')}），需要先在插件中心批准` };
 		}
-		return { ok: true, via: 'host', changed: shaped.changed, version: target.expectedVersion };
+		// 2026-11-02：与 dsh-desktop 对齐的五态（调用方按 application 决定下一步，不再靠 ok/restartRequired 猜）
+		return {
+			ok: true, via: 'host', changed: shaped.changed, version: target.expectedVersion,
+			application: shaped.application === 'applied' ? 'applied' : 'restart-required',
+		};
 	}
 
 	/** 只做检查、不装（详情页"检查兼容性"用；结论写进缓存 ⇒ 目录卡片也能标出）。 */

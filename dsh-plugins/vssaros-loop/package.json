@@ -1,16 +1,18 @@
 {
   "name": "@vssaros/dsh-loop",
-  "version": "0.1.1",
+  "version": "0.2.1",
   "description": "VsSaros loop module for DeepSeek Harness: unattended loops (harvest -> select -> work) with a durable ledger, per-item isolated sessions and the same safety rails as bunnyseek's loop engine. Data root follows the shared chain (config.dataRoot -> VSSAROS_DATA_ROOT -> ~/.vssaros).",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
+    "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
   "files": [
     "lib/index.js",
+    "lib/client.js",
     "lib/runner.js",
     "lib/store.js",
     "lib/foundationRef.js",
@@ -29,6 +31,28 @@
       "patch": [
         "./cordis.patch.yml"
       ]
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@vssaros/dsh-workbenches"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "loop",
+    "view": {
+      "kind": "none"
+    },
+    "workbench": {
+      "title": "循环任务",
+      "description": "循环任务（无人值守）：定时采集 → 账本挑单 → 每条独立会话执行，含重试、熔断与干跑。",
+      "icon": "codicon:sync",
+      "repository": "vssaros:loop",
+      "customFrame": false,
+      "headerLayout": "default",
+      "floatingActions": false
     }
   },
   "license": "MIT",

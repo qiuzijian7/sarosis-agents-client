@@ -1008,7 +1008,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	}
 
 	/**
-	 * Schema 驱动的智能内容分类（LLM 依据活动 vault 的 kb-schema.json 进行语义类型判断，
+	 * Schema 驱动的智能内容分类（LLM 依据活动 vault 的 .kb/schema.json 进行语义类型判断，
 	 * 唯一分类路径）。LLM 不可用时安全降级为 schema 默认类型（source='fallback'），
 	 * 不做关键词猜测。
 	 */
@@ -1072,7 +1072,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	}
 
 	/**
-	 * 加载活动 vault 的 kb-schema.json（用户可编辑）；失败时回退内置 DEFAULT_KB_SCHEMA。
+	 * 加载活动 vault 的 .kb/schema.json（用户可编辑）；失败时回退内置 DEFAULT_KB_SCHEMA。
 	 * 每次调用重新读取（文件很小），保证用户对 schema 的编辑即时生效。
 	 */
 	private async _loadKbSchemaSafe(): Promise<IKBSchema> {

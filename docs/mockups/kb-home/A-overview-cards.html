@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<title>A · 数据栏 + 库卡片（独立主页）· Mockup</title>
+<style>
+  :root[data-theme="dark"]{--bg:#15161a;--panel:#1c1d22;--panel2:#22232a;--panel3:#282a32;--line:rgba(255,255,255,.10);--line2:rgba(255,255,255,.18);--fg:#e8e9ec;--fg2:#a9abb3;--fg3:#71737c;--accent:#5b8cff;--accent2:#7aa2ff;--ok:#3fb950;--warn:#d29922;--shadow:0 8px 24px rgba(0,0,0,.45)}
+  :root[data-theme="light"]{--bg:#f5f6f8;--panel:#fff;--panel2:#f0f2f5;--panel3:#e7ebf1;--line:rgba(0,0,0,.09);--line2:rgba(0,0,0,.17);--fg:#1b1d22;--fg2:#5a5e68;--fg3:#8b8f99;--accent:#2f6bff;--accent2:#4b80ff;--ok:#1a7f37;--warn:#bf8700;--shadow:0 8px 22px rgba(20,30,60,.12)}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+  button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+  input{font:inherit;color:inherit}
+  .top{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:10px;padding:10px 20px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+  .crumb{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600}
+  .home{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:7px;color:var(--accent2);background:color-mix(in srgb,var(--accent) 16%,transparent)}
+  .grow{flex:1}
+  .search{display:flex;align-items:center;gap:6px;height:30px;padding:0 9px;border-radius:8px;background:var(--panel);border:1px solid var(--line);min-width:220px}
+  .search:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent)}
+  .search input{flex:1;min-width:0;background:none;border:0;outline:none;font-size:12.5px}
+  .iconbtn{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:8px;color:var(--fg2)}
+  .iconbtn:hover{background:var(--panel2);color:var(--fg)}
+  .btn{height:30px;padding:0 13px;border-radius:8px;border:1px solid var(--line2);background:var(--panel2);font-size:12.5px}
+  .btn:hover{background:var(--panel3)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  .wrap{max-width:1120px;margin:0 auto;padding:22px 20px 70px}
+
+  /* 数据栏 */
+  .stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+  @media (max-width:900px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  .stat{position:relative;text-align:left;padding:11px 12px;border-radius:11px;background:var(--panel);border:1px solid var(--line);overflow:hidden;transition:.16s}
+  .stat:hover{transform:translateY(-1px);border-color:var(--line2);box-shadow:var(--shadow)}
+  .stat .bar{position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent)}
+  .stat.s2 .bar{background:var(--ok)}.stat.s3 .bar{background:var(--warn)}.stat.s4 .bar{background:var(--accent2)}.stat.s5 .bar{background:var(--fg3)}
+  .stat .lb{font-size:11.5px;color:var(--fg3);margin-bottom:3px;display:flex;gap:5px;align-items:center}
+  .stat .v{font-size:21px;font-weight:650;line-height:1.15;font-variant-numeric:tabular-nums}
+  .stat .v small{font-size:11.5px;font-weight:500;color:var(--fg3);margin-left:3px}
+  .stat .sub{font-size:11px;color:var(--fg3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  /* 分区 */
+  .sect{display:flex;align-items:center;gap:10px;margin:26px 0 12px}
+  .sect h2{margin:0;font-size:15px;font-weight:600}
+  .count{font-size:12px;color:var(--fg3);padding:1px 7px;border-radius:20px;background:var(--panel2)}
+  .sortsel{height:28px;padding:0 8px;border-radius:7px;background:var(--panel);border:1px solid var(--line);font-size:12.5px;color:var(--fg2);outline:none}
+
+  /* 卡片 */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px}
+  .card{position:relative;display:flex;flex-direction:column;text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;transition:.18s;cursor:pointer}
+  .card:hover{transform:translateY(-2px);border-color:var(--line2);box-shadow:var(--shadow)}
+  .cover{position:relative;height:96px;overflow:hidden}
+  .cover::after{content:"";position:absolute;inset:0;background:radial-gradient(120% 90% at 20% 10%,rgba(255,255,255,.16),transparent 60%);mix-blend-mode:overlay}
+  .tags{position:absolute;left:8px;top:8px;z-index:2;display:flex;gap:5px}
+  .tag{font-size:10.5px;line-height:17px;padding:0 6px;border-radius:4px;background:rgba(0,0,0,.45);color:#fff}
+  .tag.team{background:color-mix(in srgb,var(--accent) 92%,black)}
+  .tag.git{background:color-mix(in srgb,var(--ok) 88%,black)}
+  .card .body{padding:10px 11px 12px}
+  .card .name{font-size:13px;font-weight:600;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;min-height:2.9em}
+  .card .meta{display:flex;gap:7px;color:var(--fg3);font-size:11.5px;margin-top:5px;flex-wrap:wrap}
+  .card.new{align-items:center;justify-content:center;gap:8px;min-height:164px;border:1.5px dashed var(--line2);background:transparent;color:var(--fg2)}
+  .card.new:hover{border-color:var(--accent);color:var(--accent2);background:color-mix(in srgb,var(--accent) 8%,transparent)}
+  .card.new .plus{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent2);font-size:18px}
+  .card.new .t{font-size:12.5px;font-weight:600}
+  .card.new .d{font-size:11.5px;color:var(--fg3)}
+
+  /* 最近编辑 */
+  .recent{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--panel)}
+  .row{display:flex;align-items:center;gap:10px;padding:9px 12px;border-top:1px solid var(--line);font-size:12.5px;width:100%;text-align:left}
+  .row:first-child{border-top:0}
+  .row:hover{background:var(--panel2)}
+  .row .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row .kb{color:var(--fg3);font-size:11.5px;flex:0 0 auto}
+  .row .tm{color:var(--fg3);font-size:11.5px;flex:0 0 68px;text-align:right}
+
+  .mask{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;padding:20px}
+  .mask.on{display:flex}
+  .modal{width:420px;max-width:100%;background:var(--panel);border:1px solid var(--line2);border-radius:14px;box-shadow:0 24px 60px rgba(0,0,0,.5);overflow:hidden}
+  .modal header{padding:14px 16px;border-bottom:1px solid var(--line);font-size:14px;font-weight:600}
+  .modal .body{padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+  .field{display:flex;flex-direction:column;gap:5px}
+  .field label{font-size:12px;color:var(--fg2)}
+  .field input{padding:8px 10px;border-radius:8px;border:1px solid var(--line2);background:var(--panel2);outline:none;font-size:12.5px}
+  .field input:focus{border-color:var(--accent)}
+  .modal footer{padding:12px 16px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px}
+  .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(10px);background:var(--panel3);border:1px solid var(--line2);padding:8px 14px;border-radius:10px;font-size:12.5px;opacity:0;pointer-events:none;transition:.2s;z-index:80}
+  .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="crumb">
+    <span class="home">🏠</span><span>知识库</span>
+  </div>
+  <div class="grow"></div>
+  <div class="search">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" opacity=".55"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+    <input id="q" placeholder="搜索知识库…" />
+  </div>
+  <button class="btn primary" id="newTop">＋ 新建</button>
+  <button class="iconbtn" id="theme" title="切换明暗">☀</button>
+</div>
+
+<div class="wrap">
+  <div class="stats" id="stats"></div>
+
+  <div class="sect">
+    <h2>全部知识库</h2><span class="count" id="cnt">0</span>
+    <div class="grow"></div>
+    <select class="sortsel" id="sort">
+      <option value="recent">最近使用</option>
+      <option value="name">名称 A→Z</option>
+      <option value="docs">文档数</option>
+    </select>
+  </div>
+  <div class="grid" id="grid"></div>
+
+  <div class="sect"><h2>最近编辑</h2><span class="count">跨库</span></div>
+  <div class="recent" id="recent"></div>
+</div>
+
+<div class="mask" id="mask">
+  <div class="modal">
+    <header>新建知识库（在「知识库列表」下建文件夹）</header>
+    <div class="body">
+      <div class="field"><label>名称</label><input id="vname" placeholder="例如：团队 UI 知识库" /></div>
+      <div class="field"><label>关联飞书（可选）</label><input id="vspace" placeholder="wiki 空间 ID 或粘贴链接" /></div>
+    </div>
+    <footer><button class="btn" id="cancel">取消</button><button class="btn primary" id="ok">创建</button></footer>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+
+  let VAULTS = [
+    { name:'01_学习', docs:76, at:'2 分钟前', ts:9, team:false, git:true, hue:262 },
+    { name:'技术架构', docs:0, at:'昨天', ts:8, team:true, git:true, hue:210 },
+    { name:'导入', docs:0, at:'3 天前', ts:6, team:false, git:false, hue:190 },
+    { name:'02_工作', docs:0, at:'上周', ts:5, team:true, git:true, hue:288 },
+    { name:'03_生活', docs:0, at:'10-20', ts:2, team:false, git:true, hue:24 },
+  ];
+  const RECENT = [
+    { n:'差分图压缩优化方案.md', kb:'01_学习', t:'2 分钟前' },
+    { n:'KB 主页设计要点.md', kb:'01_学习', t:'今天 11:07' },
+    { n:'飞书直读可行性结论.md', kb:'01_学习', t:'今天 09:48' },
+    { n:'LFS 迁移踩坑.md', kb:'技术架构', t:'昨天' },
+    { n:'周报 10/27-10/31.md', kb:'02_工作', t:'10-31' },
+  ];
+
+  let sort = 'recent', q = '', bound = 2;
+
+  const coverOf = (hue) => ({
+    bg:`linear-gradient(135deg, hsl(${hue} 45% 34%), hsl(${hue + 26} 38% 18%))`,
+    pat:`<svg style="position:absolute;inset:0;opacity:.5" viewBox="0 0 200 96" preserveAspectRatio="none"><defs><pattern id="p${hue}" width="24" height="24" patternUnits="userSpaceOnUse" patternTransform="rotate(18)"><path d="M0 24 L24 0" stroke="rgba(255,255,255,.16)" stroke-width="1"/></pattern></defs><rect width="200" height="96" fill="url(#p${hue})"/></svg>`,
+  });
+
+  const visible = () => {
+    let a = VAULTS.filter(v => !q || v.name.toLowerCase().includes(q.toLowerCase()));
+    if (sort === 'name') a = a.slice().sort((x, y) => x.name.localeCompare(y.name, 'zh'));
+    if (sort === 'docs') a = a.slice().sort((x, y) => y.docs - x.docs);
+    if (sort === 'recent') a = a.slice().sort((x, y) => y.ts - x.ts);
+    return a;
+  };
+
+  function render() {
+    const arr = visible();
+    const docs = VAULTS.reduce((s, v) => s + v.docs, 0);
+    $('#cnt').textContent = arr.length + ' 个';
+    $('#stats').innerHTML = [
+      ['知识库', VAULTS.length, '个', '已登记', 's1', ''],
+      ['笔记', docs, '篇', '跨 ' + VAULTS.length + ' 个库', 's2', ''],
+      ['素材', 134, '个', '14.9 MB', 's3', ''],
+      ['本周新增', 12, '篇', '近 7 天', 's4', ''],
+      ['已绑飞书', bound, '个', '可双向同步', 's5', ''],
+    ].map(([lb, v, u, sub, cls]) => `
+      <div class="stat ${cls}"><span class="bar"></span>
+        <div class="lb">${lb}</div>
+        <div class="v">${v}<small>${u}</small></div>
+        <div class="sub">${sub}</div>
+      </div>`).join('');
+
+    $('#grid').innerHTML = `
+      <button class="card new" id="newCard">
+        <span class="plus">＋</span><span class="t">新建知识库</span>
+        <span class="d">建文件夹 · 关联飞书</span>
+      </button>` + arr.map((v) => {
+        const c = coverOf(v.hue);
+        const tg = (v.team ? '<span class="tag team">团队可见</span>' : '') + (v.git ? '<span class="tag git">版本管理</span>' : '');
+        return `<button class="card" data-kb="${esc(v.name)}">
+          <div class="cover" style="background:${c.bg}">${c.pat}<span class="tags">${tg}</span></div>
+          <div class="body">
+            <div class="name">${esc(v.name)}</div>
+            <div class="meta"><span>${v.docs} 篇</span><span>·</span><span>${esc(v.at)}</span></div>
+          </div>
+        </button>`;
+      }).join('');
+
+    $('#recent').innerHTML = RECENT.map((r) => `
+      <button class="row" data-doc="${esc(r.n)}">
+        <span class="nm">${esc(r.n)}</span>
+        <span class="kb">${esc(r.kb)}</span>
+        <span class="tm">${esc(r.t)}</span>
+      </button>`).join('');
+  }
+
+  let tt = 0;
+  const toast = (m) => { const t = $('#toast'); t.textContent = m; t.classList.add('on'); clearTimeout(tt); tt = setTimeout(() => t.classList.remove('on'), 1800); };
+
+  document.addEventListener('click', (e) => {
+    const t = e.target;
+    if (t.closest('#newTop') || t.closest('#newCard')) { $('#mask').classList.add('on'); setTimeout(() => $('#vname').focus(), 30); return; }
+    if (t.closest('#cancel')) { $('#mask').classList.remove('on'); return; }
+    if (t.closest('#ok')) {
+      const name = $('#vname').value.trim();
+      if (!name) { $('#vname').focus(); return; }
+      if ($('#vspace').value.trim()) bound += 1;
+      VAULTS.unshift({ name, docs:0, at:'刚刚', ts:99, team:false, git:true, hue:Math.floor(Math.random() * 360) });
+      $('#mask').classList.remove('on'); $('#vname').value = ''; $('#vspace').value = '';
+      render(); toast('已创建「' + name + '」'); return;
+    }
+    const card = t.closest('[data-kb]');
+    if (card) { toast('打开「' + card.dataset.kb + '」→ 进入该库的文件树（mock）'); return; }
+    const doc = t.closest('[data-doc]');
+    if (doc) { toast('打开「' + doc.dataset.doc + '」（mock）'); return; }
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('#mask').classList.remove('on'); });
+  $('#q').addEventListener('input', (e) => { q = e.target.value; render(); });
+  $('#sort').addEventListener('change', (e) => { sort = e.target.value; render(); });
+  $('#theme').addEventListener('click', () => { const r = document.documentElement; r.dataset.theme = r.dataset.theme === 'dark' ? 'light' : 'dark'; });
+  render();
+})();
+</script>
+</body>
+</html>

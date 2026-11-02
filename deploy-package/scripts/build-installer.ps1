@@ -38,6 +38,28 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+# 2.5 构建「Office 运行时 Python 负载」（2026-11-02 补，≈150MB 下载 + 解包）
+#    7 个 Office 技能（docx/xlsx/pptx + 渲染 / PDF / 重算）靠它跑。`.build/` 是 .gitignore 产物 ⇒
+#    不预构建就是**静默**打出一个"看着有 Word 能力、一点就缺 Python"的包（gulp 的 officeRuntime
+#    资源流 allowEmpty，不会报错）。缓存命中时只剩解包，通常 1-2 分钟。
+#    出不了网的环境：设 VSSAROS_SKIP_OFFICE_RUNTIME=1 跳过（发版说明必须写明本版无 Office 能力）。
+if ($env:VSSAROS_SKIP_OFFICE_RUNTIME -eq '1') {
+    Write-Host "[2.5/5] 跳过 Office 运行时负载（VSSAROS_SKIP_OFFICE_RUNTIME=1）" -ForegroundColor Yellow
+} else {
+    Write-Host "[2.5/5] 准备 Office 运行时负载（primary-runtime + office-skills）..." -ForegroundColor Cyan
+    node build/prepare-office-runtime.mjs
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "错误: Office 运行时负载构建失败（装出来的包不会带 docx/xlsx 能力）" -ForegroundColor Red
+        exit 1
+    }
+    # 第三方许可声明（PSF / MPL-2.0，从随包真源读；幂等）
+    node build/append-office-notices.mjs
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "错误: 第三方许可声明写入失败（分发了 Python/LibreOffice 却没有许可声明）" -ForegroundColor Red
+        exit 1
+    }
+}
+
 # 3. 构建安装包
 Write-Host "[3/5] 构建安装包..." -ForegroundColor Cyan
 if ($BuildType -eq "user") {

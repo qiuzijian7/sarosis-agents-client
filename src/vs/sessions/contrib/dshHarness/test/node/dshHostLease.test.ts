@@ -9,7 +9,7 @@ import { createServer, Server } from 'http';
 import { tmpdir } from 'os';
 import { AddressInfo } from 'net';
 import { join } from '../../../../../base/common/path.js';
-import { hostLeaseBlocker, IDshHostLease, parseHostLease } from '../../common/dshHostLease.js';
+import { hostLeaseBlocker, IDshHostLease, parseHostLease, PLUGIN_STALE_TOLERANCE_MS, staleHostByPluginFiles } from '../../common/dshHostLease.js';
 import { DshHostLeaseStore, pidAlive } from '../../electron-main/dshHostLeaseStore.js';
 
 function lease(overrides: Partial<IDshHostLease> = {}): IDshHostLease {
@@ -54,6 +54,22 @@ suite('dshHostLease', () => {
 		assert.strictEqual(hostLeaseBlocker(lease(), want), undefined);
 		assert.match(hostLeaseBlocker(lease({ dshVersion: '0.1.7-rc.2' }), want)!, /版本不同/);
 		assert.match(hostLeaseBlocker(lease({ profile: 'other' }), want)!, /profile 不同/);
+	});
+
+	test('stale-by-files: plugin files newer than the Host block reuse (cross-process signal)', () => {
+		const startedAt = Date.UTC(2026, 10, 2, 13, 2, 11);
+		const host = lease({ startedAt });
+		// 2026-11-02 真机形态：Host 21:02:11 就绪，插件 21:11:29 落盘 ⇒ 必须判旧
+		const reason = staleHostByPluginFiles(host, { path: 'x/@vssaros/dsh-skills/lib/index.js', mtimeMs: Date.UTC(2026, 10, 2, 13, 11, 29) });
+		assert.match(reason!, /比运行中的 Host 新/);
+		assert.match(reason!, /dsh-skills/);
+		// 文件早于 Host / 在容差内（装完立刻起 Host 的同秒竞争）⇒ 可复用
+		assert.strictEqual(staleHostByPluginFiles(host, { path: 'a', mtimeMs: startedAt - 60_000 }), undefined);
+		assert.strictEqual(staleHostByPluginFiles(host, { path: 'a', mtimeMs: startedAt + PLUGIN_STALE_TOLERANCE_MS }), undefined);
+		assert.ok(staleHostByPluginFiles(host, { path: 'a', mtimeMs: startedAt + PLUGIN_STALE_TOLERANCE_MS + 1 }));
+		// 扫不到文件 / 非法时间 ⇒ 没有证据，不阻止复用
+		assert.strictEqual(staleHostByPluginFiles(host, undefined), undefined);
+		assert.strictEqual(staleHostByPluginFiles(host, { path: 'a', mtimeMs: Number.NaN }), undefined);
 	});
 
 	suite('store', () => {

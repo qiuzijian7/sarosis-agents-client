@@ -76,10 +76,15 @@ const pickProfilesRoot = () => {
 const HOME = pickProfilesRoot();
 
 /**
- * 全部候选 profile 根（dev / 中间方案 / 打包版）—— 2026-10-29：
+ * 全部候选 profile 根（dev / 中间方案 / 打包版 / dsh 自己的 home）—— 2026-10-29 建，2026-11-02 补一个根：
  * 原先只取**第一个存在的**根（通常是 dev），于是"宿主其实跑的是 prod"时，
  * 脚本把字节写进了没人读的目录 ⇒ 页面拿旧字节（"报成功但不同步"的第一层原因）。
  * ⇒ 现在**所有存在的根都同步** ✓
+ *
+ * ⚠ 2026-11-02 更正：曾一度把 `~/.dsh/profiles` 也加进来（以为它是「dsh 侧」在用的 home），**那是误判，已撤回**。
+ *   实测：运行中的 dsh 宿主读的是 `~/.vssaros-dev/dsh-home`（`host-port.json` 今天仍在刷新、
+ *   `node …/dsh-runtime/…/bin.js --profile vssaros` 的补丁目录也在这里）；`~/.dsh` 的 `host-port.json`
+ *   停在 10-16，早没人用。**判断"哪份 home 在用"看 host-port.json 的 mtime 与进程命令行，别凭目录名猜。**
  */
 const PROFILE_ROOTS = [
 	path.join(os.homedir(), '.vssaros-dev', 'dsh-home', 'profiles'),

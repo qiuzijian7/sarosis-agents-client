@@ -1,5 +1,8 @@
 # 工作台对齐官方范式 · 优化方案（提案）
 
+> 文档状态：**【计划·提案】**（2026-10-21）。已被 `doc/workbench-refactor-plan.md` 取代，
+> **不是流程依据**；流程只在 `doc/workbench-development-standard.md`。
+
 - 状态：**提案**（2026-10-21）。本文是 `doc/workbench-authoring-standard.md`（v1.0，稿 A）的**修订提案**，不是已生效规范；条款级改动见 §6。
 - 对标物：dsh-desktop 的**官方工作台规范**（`G:\CustomWorkspaces\AIProjects\dsh-desktop\docs\workbench-standard.zh.md`）与**宿主插件**（`packages/dsh-desktop-workbenches`）。
 - 配套规范稿：`doc/workbench-authoring-standard.md`（Pane × 承载容器，稿 A）

@@ -44,4 +44,13 @@ export interface IFeedbackWindowService {
 	 * ⚠ 只做"预填"，**不代提交**：提交永远由本人点。
 	 */
 	openFeedbackWindow(url: string, files: readonly string[]): Promise<IFeedbackWindowResult>;
+
+	/**
+	 * 采集**主进程视角**的系统快照（内存 / CPU / 磁盘 / 主进程内存）。
+	 *
+	 * 为什么必须在主进程：browser 层拿不到 Node 的 `os` 与 `fs.statfs`；而"IDE 卡顿"
+	 * 这类反馈没有内存与磁盘数据**根本没法量化**（磁盘写满会把一切都伪装成"代码坏了"）。
+	 * 失败也返回可读的说明行，绝不抛。
+	 */
+	collectSystemInfo(): Promise<readonly string[]>;
 }

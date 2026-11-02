@@ -34,7 +34,7 @@ test('★★ resolveAssetSrc：**幂等** —— 已编码的段不得再编一�
 	// 实测事故（2026-09-25）：react-markdown 对图片 href 会先做一次 URL 变换（编码），
 	// 本函数此前无条件再编一次 ⇒
 	//   .../库/raw/assets/GPT%25E4%25BA%2594…%25E7%25A8%258B/frame-04.png  ⇒ **404**
-	// （文件明明存在；同 URL 里 `库` 段是单次编码 %E5%BA%93 所以正常 —— 正是这个对比锁定了根因）
+	// （文件明明存在；同 URL 里 `数据源` 段是单次编码 %E5%BA%93 所以正常 —— 正是这个对比锁定了根因）
 	const slug = 'GPT五档欧卡画风流程';
 	const encodedInput = `assets/${encodeURIComponent(slug)}/frame-04.png`;
 	const rawInput = `assets/${slug}/frame-04.png`;

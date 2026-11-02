@@ -46,18 +46,18 @@ const ctx = new Proxy({}, {
 });
 
 const vault = mkdtempSync(join(tmpdir(), 'kb-dedupe-'));
-mkdirSync(join(vault, '库'), { recursive: true });
-mkdirSync(join(vault, '笔记'), { recursive: true });
+mkdirSync(join(vault, '数据源'), { recursive: true });
+mkdirSync(join(vault, '知识库列表'), { recursive: true });
 
 const base = 'UE5 的 GC 采用增量标记清扫，主要参数有 TimeLimit 与 MaxObjectsPerFrame，'
 	+ '在移动端要特别注意每帧上限，否则会出现卡顿。实测 S1Game 项目在 8ms 限时下稳定。';
-writeFileSync(join(vault, '笔记', 'gc-a.md'), '# GC A\n\n' + base, 'utf8');
+writeFileSync(join(vault, '知识库列表', 'gc-a.md'), '# GC A\n\n' + base, 'utf8');
 // 近似重复：改动约 20% 文字
-writeFileSync(join(vault, '笔记', 'gc-b.md'), '# GC B\n\n' + base.replace('实测 S1Game 项目在 8ms 限时下稳定', '线上项目在 8 毫秒限时下表现稳定'), 'utf8');
+writeFileSync(join(vault, '知识库列表', 'gc-b.md'), '# GC B\n\n' + base.replace('实测 S1Game 项目在 8ms 限时下稳定', '线上项目在 8 毫秒限时下表现稳定'), 'utf8');
 // 完全重复：正文与标题都一致（文件名不同）⇒ 应进 exact
-writeFileSync(join(vault, '笔记', 'gc-c.md'), '# GC A\n\n' + base, 'utf8');
+writeFileSync(join(vault, '知识库列表', 'gc-c.md'), '# GC A\n\n' + base, 'utf8');
 // 无关内容（注意要 ≥ 40 个字符，否则会被"太短不参与"过滤掉）
-writeFileSync(join(vault, '笔记', 'other.md'),
+writeFileSync(join(vault, '知识库列表', 'other.md'),
 	'# 投资\n\n康波周期与资产配置的关系，主要看利率与通胀的错位，和引擎、GC、渲染都无关。'
 	+ '这一篇纯粹是另一条主题线，用来验证查重不会把不相干的笔记判成重复。', 'utf8');
 

@@ -69,10 +69,24 @@ function makeEnv({ frame = rect(0, 0, 800, 600), el = rect(772, 271, 32, 58), st
 	return { window, localStorage, el: el_, frameEl, attrs, store, fireWin, fireEl };
 }
 
+/**
+ * 编译出 `{ drag, restore }`。
+ *
+ * ★ 2026-11-02：位置恢复从 `attachActionsDrag` 内部搬到了 `restoreActionsPos`（那条函数还要处理
+ *   "页签未激活时尺寸为 0，先别恢复" + "尺寸变化后重新夹"，否则胶囊会飘到面板外 = 工具栏凭空消失）。
+ *   ⇒ 这里必须两个都拿到：只跑 drag 不再会恢复存档位置。
+ */
 function compile(env) {
 	const src = extract();
 	if (!src) { return null; }
-	return new Function('window', 'localStorage', src + '\nreturn attachActionsDrag;')(env.window, env.localStorage);
+	return new Function('window', 'localStorage', src + '\nreturn { drag: attachActionsDrag, restore: restoreActionsPos };')(env.window, env.localStorage);
+}
+/** 挂载 = 绑拖拽 + 恢复位置（与 mountActions 里的顺序一致）。 */
+function mount(env) {
+	const api = compile(env);
+	api.drag(env.el, env.frameEl);
+	api.restore(env.el, env.frameEl);
+	return api;
 }
 
 console.log('[actions-drag] S2 一体条 · 整组拖拽');
@@ -88,8 +102,7 @@ if (!src) {
 // ① 不动 ⇒ 算点击：不写位置、不设 data-dragging、不吞 click
 {
 	const env = makeEnv();
-	const drag = compile(env);
-	drag(env.el, env.frameEl);
+	mount(env);
 	env.fireEl('pointerdown', { button: 0, pointerType: 'mouse', pointerId: 1, clientX: 780, clientY: 280 });
 	env.fireWin('pointermove', { pointerId: 1, clientX: 781, clientY: 281 });   // 位移 2px < 3px
 	env.fireWin('pointerup', {});
@@ -101,8 +114,7 @@ if (!src) {
 // ② 真拖 ⇒ 记位置 + data-moved + 吞掉紧随的 click
 {
 	const env = makeEnv();
-	const drag = compile(env);
-	drag(env.el, env.frameEl);
+	mount(env);
 	env.fireEl('pointerdown', { button: 0, pointerType: 'mouse', pointerId: 1, clientX: 780, clientY: 280 });
 	env.fireWin('pointermove', { pointerId: 1, clientX: 680, clientY: 340 });
 	const during = { left: env.el.style.left, top: env.el.style.top };
@@ -123,8 +135,7 @@ if (!src) {
 // ③ 拖进 header ⇒ 夹在安全区（30）
 {
 	const env = makeEnv();
-	const drag = compile(env);
-	drag(env.el, env.frameEl);
+	mount(env);
 	env.fireEl('pointerdown', { button: 0, pointerType: 'mouse', pointerId: 1, clientX: 780, clientY: 280 });
 	env.fireWin('pointermove', { pointerId: 1, clientX: 780, clientY: -500 });
 	env.fireWin('pointerup', {});
@@ -135,8 +146,7 @@ if (!src) {
 // ④ 拖出右下 ⇒ 夹在面板内
 {
 	const env = makeEnv();
-	const drag = compile(env);
-	drag(env.el, env.frameEl);
+	mount(env);
 	env.fireEl('pointerdown', { button: 0, pointerType: 'mouse', pointerId: 1, clientX: 780, clientY: 280 });
 	env.fireWin('pointermove', { pointerId: 1, clientX: 4000, clientY: 4000 });
 	env.fireWin('pointerup', {});
@@ -147,8 +157,7 @@ if (!src) {
 // ⑤ 右键 ⇒ 复位 + 清存储
 {
 	const env = makeEnv({ stored: { x: 100, y: 120 } });
-	const drag = compile(env);
-	drag(env.el, env.frameEl);
+	mount(env);
 	// 存档里的 x 已经不作数（口径是"贴最右"）⇒ 恢复时被夹到 756，y 照旧
 	ck('恢复上次位置（x 夹到最右，y 沿用存档）', env.el.style.left === '756px' && env.el.style.top === '120px', `${env.el.style.left}/${env.el.style.top}`);
 	let prevented = false;
@@ -162,8 +171,7 @@ if (!src) {
 // ⑥ 右键不接管拖拽（留给 contextmenu）
 {
 	const env = makeEnv();
-	const drag = compile(env);
-	drag(env.el, env.frameEl);
+	mount(env);
 	let prevented = false;
 	env.fireEl('pointerdown', { button: 2, pointerType: 'mouse', pointerId: 1, clientX: 780, clientY: 280, preventDefault: () => { prevented = true; } });
 	env.fireWin('pointermove', { pointerId: 1, clientX: 500, clientY: 100 });
@@ -173,8 +181,7 @@ if (!src) {
 // ⑦ 存档越界 ⇒ 挂载时先夹一次
 {
 	const env = makeEnv({ stored: { x: 5000, y: 5000 } });
-	const drag = compile(env);
-	drag(env.el, env.frameEl);
+	mount(env);
 	ck('越界存档被夹回面板内', env.el.style.left === '756px' && env.el.style.top === '542px',
 		`${env.el.style.left}/${env.el.style.top}`);
 }

@@ -36,8 +36,8 @@ const GITIGNORE: readonly string[] = [
 	'.vscode/',
 	'.sarosworkspace/',
 	'# KB metadata caches',
-	'.ftindex.json',
-	'.kbkernel.json',
+	'.kb/ftindex.json',
+	'.kb/kernel.json',
 	'# Attachments (managed separately)',
 	'*.attachments/',
 ];

@@ -17,7 +17,7 @@
  *（视图保留薄壳：它自己的按钮 / 右键菜单仍走这里 ⇒ 行为一字不改 ✓；dsh 引擎下没有视图也照样能用 ✓）。
  *
  * ## 分期（README 5.138）
- * · **第 1 期（本文件当前）**：库清单（storage）／知识库根／库目录（`库`·`笔记`）／op-log／
+ * · **第 1 期（本文件当前）**：库清单（storage）／知识库根／库目录（`数据源`·`知识库列表`）／op-log／
  *   ① 配置文件夹为知识库 ② 删除知识库。
  * · 第 2 期：关系图谱（`_graph` 那半边）。第 3 期：设置面板 host（`IKbSettingsHost` 那 20 个方法）。
  *
@@ -80,6 +80,8 @@ import type { IMindmapData } from '../../common/mindmap/mindmapTypes.js';
 import { IEmbeddingService } from '../../common/embeddingProvider.js';
 import { IKbNativeKernelService, type IKbBuildRoot } from '../kbNativeKernelService.js';
 import { KbGraphEditorInput } from '../kbGraphEditorInput.js';
+// ★ 2026-11-02：「知识库主页」在中间栏打开（侧栏只留入口）
+import { KbHomeEditorInput } from '../kbHomeEditorInput.js';
 import { KbSettingsEditorInput, IKbSettingsHost, type KbSettingsFocus } from '../kbSettingsEditorInput.js';
 import { IDiagramRenderer } from '../peleDiagramRenderer.js';
 import { IDrawioInlineRenderer } from '../drawioInlineRenderer.js';
@@ -145,10 +147,10 @@ export interface IKbCommandService {
 	kbRootUri(): URI;
 	/** 某个库的根目录（有 `customPath` 用它，否则 `<存储根>/<vaultId>` ✓）。 */
 	vaultRootUri(vault: IKbVault): URI;
-	/** 库内的分区目录（`库` / `笔记` ✓）。 */
+	/** 库内的分区目录（`数据源` / `知识库列表` ✓）。 */
 	sectionUri(vault: IKbVault, section: KbSection): URI;
 
-	/** 确保库根 / `库` / `笔记` 三处目录存在（带"已就绪"缓存，避免重复 IPC ✓）。 */
+	/** 确保库根 / `数据源` / `知识库列表` 三处目录存在（带"已就绪"缓存，避免重复 IPC ✓）。 */
 	ensureVaultFolders(vault: IKbVault): Promise<void>;
 	/** 清掉某个库的"目录已就绪"缓存（换目录 / 新建时用 —— 不清会被短路 ✗）。 */
 	invalidateVaultFolders(vaultId: string): void;
@@ -173,14 +175,14 @@ export interface IKbCommandService {
 	 */
 	activeVault(): IKbVault | undefined;
 
-	/** 知识库操作日志根（`resolveKbRoot(...)` ✓ —— 与 Agent 工具侧同一份 `.op-log.jsonl`）。 */
+	/** 知识库操作日志根（`resolveKbRoot(...)` ✓ —— 与 Agent 工具侧同一份 `.kb/op-log.jsonl`）。 */
 	opLogRootDir(): string;
 	/** 统一的操作日志入口（补 `ts` / `channel` 默认值 ✓ —— 视图的 `_logOp` 已委托到这里）。 */
 	logOp(op: string, status: KbOpStatus, extra?: IKbOpExtra): Promise<void>;
 
 	/**
 	 * 「配置文件夹为知识库…」（真源 `configFolderAsVault` ✓）：**原生选目录** → 写清单 →
-	 * 建 `库`/`笔记` → 设为当前。返回 `true` = 清单**真的**变了（宿主据此重启 Host 刷注入 ✓）；
+	 * 建 `数据源`/`知识库列表` → 设为当前。返回 `true` = 清单**真的**变了（宿主据此重启 Host 刷注入 ✓）；
 	 * `false` = 用户取消（⇒ 不该重启 ✗）。
 	 */
 	addVaultFromFolder(): Promise<boolean>;
@@ -191,7 +193,7 @@ export interface IKbCommandService {
 	removeVaultById(vaultId: string): Promise<boolean>;
 
 	/**
-	 * 关系图谱的根目录：**只** `库` + `笔记` 两个分区（不含关联的代码仓库 ✓）——
+	 * 关系图谱的根目录：**只** `数据源` + `知识库列表` 两个分区（不含关联的代码仓库 ✓）——
 	 * 与视图 `buildGraphRoots()` 同口径（供图谱构建与 EditorPane 内的「构建图谱」重扫 ✓）。
 	 */
 	graphRoots(vault: IKbVault): IKbGraphRoot[];
@@ -202,6 +204,8 @@ export interface IKbCommandService {
 	 * ⚠ 空图 / 没有可用库时**如实提示**（dsh 引擎这条路上没有视图能替你说话 ⇒ 静默＝"点了没反应" ✗）。
 	 */
 	openGraph(): Promise<void>;
+	/** ★ 2026-11-02：在**中间栏**打开「知识库主页」（库级总览，不是侧栏里的那一小块） */
+	openHome(): Promise<void>;
 
 	/**
 	 * 「⚙ 知识库设置」：在编辑区打开 `KbSettingsEditorPane`（第 3 期搬进来的 ✓ —— host 的 21 个方法
@@ -220,11 +224,11 @@ export interface IKbCommandService {
 	 * ⚠ 与视图那份的差别如实记：视图取的是**已构建内核**的实时值，这里是**打开面板那一刻**的快照 ✓。
 	 */
 	docStats(vault: IKbVault | undefined): Promise<{ docs: number; bytes: number }>;
-	/** 索引根：`库` + `笔记` + 该库**关联的**代码仓库（供向量重建与内核构建上下文 ✓）。 */
+	/** 索引根：`数据源` + `知识库列表` + 该库**关联的**代码仓库（供向量重建与内核构建上下文 ✓）。 */
 	indexRoots(vault: IKbVault): IKbBuildRoot[];
 
 	/**
-	 * 「导入链接 / URL」（真源菜单里那一项 ✓）：原生输入框 → 抓正文 + 下图片 → 落 `库/raw/<slug>.md`。
+	 * 「导入链接 / URL」（真源菜单里那一项 ✓）：原生输入框 → 抓正文 + 下图片 → 落 `数据源/raw/<slug>.md`。
 	 * 第 4 期搬进来的（**纯重构**：编排走共享的 `KbImportController.importUrl` ✓）—— 目的是让日后
 	 * dsh 页要加这个按钮时**只需加一条桥命令**，不必再回到视图里挖实现 ✓。
 	 */
@@ -543,6 +547,30 @@ export class KbCommandService extends Disposable implements IKbCommandService {
 			const msg = e instanceof Error ? e.message : String(e);
 			this._logService.error('[KB graph] open failed', e);
 			this._notificationService.error(localize('kb.graphOpenFailed', '打开关系图谱失败：{0}', msg));
+		}
+	}
+
+	// ── ★ 2026-11-02：知识库主页（中心 Tab）───────────────────────────────────────────────
+	// 侧栏只放「总览」入口 ⇒ 点它在这里打开一整页（数据栏 + 库卡片 + 最近编辑）。
+	// 与 openGraph 同一范式（EditorInput + EditorPane + 固定 group），所以 Tab 行为和文档/图谱一致。
+	async openHome(): Promise<void> {
+		const vault = this.activeVault();
+		if (!vault) {
+			this._notificationService.info(localize('kb.homeNoVault', '还没有可用的知识库：先「配置文件夹为知识库…」。'));
+			return;
+		}
+		try {
+			const groups = this._editorGroupsService.getGroups(GroupsOrder.CREATION_TIME);
+			const targetGroup = groups.length <= 1 ? SIDE_GROUP : groups[0];
+			await this._editorService.openEditor(
+				new KbHomeEditorInput(String(vault.id)),
+				{ pinned: true },
+				targetGroup,
+			);
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			this._logService.error('[KB home] open failed', e);
+			this._notificationService.error(localize('kb.homeOpenFailed', '打开知识库主页失败：{0}', msg));
 		}
 	}
 
@@ -1006,7 +1034,7 @@ export class KbCommandService extends Disposable implements IKbCommandService {
 				return;
 			}
 			// 让共享内核知道"这个库在哪、缓存落哪"（视图那份在 `rebuildSearchAssets` 里做同一件事 ✓）
-			this._kernelService.setBuildContext(roots, URI.joinPath(this.vaultRootUri(vault), '.kbkernel.json'));
+			this._kernelService.setBuildContext(roots, URI.joinPath(this.vaultRootUri(vault), '.kb/kernel.json'));
 			await this._kernelService.buildVectorIndex(roots);
 			// ★ 落盘：把构建结果写成紧凑二进制 `.kvindex`（dsh 侧语义检索的数据源 ✓）
 			//   ⚠ **只在恰好一个 vault 时落** ✓：`buildVectorIndex` 是**合并索引** ⇒ 多库拆不出来，

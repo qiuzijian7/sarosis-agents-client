@@ -2618,6 +2618,8 @@ function toolDefinitions(ctx, state, config) {
 }
 
 export function apply(ctx, config = {}) {
+	// 启动耗时探针（2026-11-02）：apply 进入时刻 —— 与相邻插件的这一行相减就是"谁把时间花掉了"。
+	console.log('[vssaros-codebase] apply 进入（进程启动后 ' + Math.round(process.uptime() * 1000) + 'ms）');
 	// 重构 1.3：绑定 foundation 共享服务（dataRoot/dshHome/pageShell/lock 的真源）。
 	{
 		// 同步直读在前：有插件在 apply 的**同步段**就建 store（inject 回调是异步的，会来不及 ✗）。

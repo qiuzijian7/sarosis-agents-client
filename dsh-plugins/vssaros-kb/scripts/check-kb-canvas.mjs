@@ -47,9 +47,9 @@ const ctx = new Proxy({}, {
 });
 
 const vault = mkdtempSync(join(tmpdir(), 'kb-canvas-'));
-mkdirSync(join(vault, '库'), { recursive: true });
-mkdirSync(join(vault, '笔记', '图'), { recursive: true });
-writeFileSync(join(vault, '笔记', 'a.md'), '# A\n', 'utf8');
+mkdirSync(join(vault, '数据源'), { recursive: true });
+mkdirSync(join(vault, '知识库列表', '图'), { recursive: true });
+writeFileSync(join(vault, '知识库列表', 'a.md'), '# A\n', 'utf8');
 
 const good = {
 	nodes: [
@@ -58,11 +58,11 @@ const good = {
 	],
 	edges: [{ id: 'e1', fromNode: 'n1', toNode: 'n2', label: '包含' }],
 };
-const canvasPath = join(vault, '笔记', '图', 'demo.canvas');
+const canvasPath = join(vault, '知识库列表', '图', 'demo.canvas');
 writeFileSync(canvasPath, JSON.stringify(good), 'utf8');
-const badPath = join(vault, '笔记', '图', 'broken.canvas');
+const badPath = join(vault, '知识库列表', '图', 'broken.canvas');
 writeFileSync(badPath, '{ this is not json', 'utf8');
-const notCanvas = join(vault, '笔记', 'a.md');
+const notCanvas = join(vault, '知识库列表', 'a.md');
 
 mod.apply(ctx, {
 	dataRoot: mkdtempSync(join(tmpdir(), 'kb-canvas-root-')),
@@ -99,7 +99,7 @@ t('边带标签', (one.edges || []).some(e => e.label === '包含'));
 t('返回导图名（去扩展名）', one.name === 'demo', 'name=' + one.name);
 // 2026-10-25：视图侧要把 source.file（相对「笔记」）折回绝对路径 ⇒ 服务端必须给 notesRoot
 t('返回 notesRoot（供视图折算节点路径）',
-	typeof one.notesRoot === 'string' && one.notesRoot.replace(/\\/g, '/').endsWith('/笔记'),
+	typeof one.notesRoot === 'string' && one.notesRoot.replace(/\\/g, '/').endsWith('/知识库列表'),
 	'notesRoot=' + one.notesRoot);
 
 const broken = await call('/x/kb/api/canvas?uri=' + encodeURIComponent(badPath.replace(/\\/g, '/')));

@@ -35,7 +35,7 @@ export function loadActiveKbVault(storageService: IStorageService): IKbVault | u
 /** 激活 Vault 的「笔记 / 迁移」目录 URI（旧版数据迁移目标）。 */
 export function resolveVaultNotesDir(vault: IKbVault, kbRootUri: URI): URI {
 	const root = vault.customPath ? URI.file(vault.customPath) : URI.joinPath(kbRootUri, vault.id);
-	return URI.joinPath(root, '笔记', '迁移');
+	return URI.joinPath(root, '知识库列表', '迁移');
 }
 
 /**
@@ -105,7 +105,7 @@ export function sanitizeVaultDirName(name: string): string {
  * 路径的直接父目录（同时兼容 `\` 与 `/`；无父 ⇒ `''`）。
  *
  * 用于判定「某目录是否为 Vault 的公共父目录」—— 这种目录被占用，
- * 新建 Vault 时不应把 `库`/`笔记` 直接铺在别人的父目录上。
+ * 新建 Vault 时不应把 `数据源`/`知识库列表` 直接铺在别人的父目录上。
  */
 export function parentDirOf(fsPath: string): string {
 	const p = (fsPath ?? '').replace(/[\\/]+$/, '');

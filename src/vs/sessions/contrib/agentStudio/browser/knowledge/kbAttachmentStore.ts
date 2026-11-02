@@ -45,7 +45,7 @@ export class KbAttachmentStore {
 
 	/**
 	 * 笔记正文里引用该附件的相对路径（笔记与 `<note>.attachments/` 同级）。
-	 * 例：`库/概念/GC 机制.md` + id `m1abc` + `x.png` → `GC 机制.attachments/m1abc.png`
+	 * 例：`数据源/概念/GC 机制.md` + id `m1abc` + `x.png` → `GC 机制.attachments/m1abc.png`
 	 * （路径段保持原样，URL 编码由渲染层 resolveAssetSrc 负责）。
 	 */
 	static relativeRef(noteUri: URI, id: string, filename: string): string {

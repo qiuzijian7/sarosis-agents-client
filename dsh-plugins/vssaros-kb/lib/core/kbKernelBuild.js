@@ -1,20 +1,20 @@
-// @vssaros/dsh-kb — 从盘上**重建 FTS 内核缓存**（`.kbkernel.json` ✓）的纯逻辑 ＋ 最小 I/O（2026-10-13，P1-FTS）。
+// @vssaros/dsh-kb — 从盘上**重建 FTS 内核缓存**（`.kb/kernel.json` ✓）的纯逻辑 ＋ 最小 I/O（2026-10-13，P1-FTS）。
 //
 // ## 它复刻的是谁
 // 真源 `src/vs/sessions/contrib/agentStudio/browser/views/knowledgeBase/kbIndex.ts` 的 `KbFullTextIndex`
 // —— 它的 `serialize()`（`:565-578` ✓）写出的磁盘形态是 `{ v:1, docs:[…], avgLen, totalDocs }` ✓。
 //
-// ## ★ 目标文件是 `.kbkernel.json`（2026-10-13，**第二次取证纠偏** ✓ —— 上一版写 `.ftindex.json` 是错的 ✗）
+// ## ★ 目标文件是 `.kb/kernel.json`（2026-10-13，**第二次取证纠偏** ✓ —— 上一版写 `.kb/ftindex.json` 是错的 ✗）
 // 这套索引有**两个写者、两种形态** ✗：
 //   · **生产形态**（`uri/title/type/created/…` ✓）：agent 构建管线写 ✓；
 //   · **FTS 缓存形态**（本文件 ✓）：`uri/name/path/section/…` ✓。
-// 上一版我以为"两个文件、两个用途"（PREBUILT_INDEX_FILES 把两者并列 ✓）⇒ 写 `.ftindex.json` ✗。
+// 上一版我以为"两个文件、两个用途"（PREBUILT_INDEX_FILES 把两者并列 ✓）⇒ 写 `.kb/ftindex.json` ✗。
 // **更深的取证推翻了这个判断** ✓：
-//   · 真源**运行时**把 FTS 缓存写到 `.kbkernel.json`（`knowledgeBaseView.ts:3404` 的 persistUri ✓）——
-//     `.ftindex.json` 只在"预建索引导入"那条路上被**读** ✓，运行时**没人写它** ✗；
-//   · dsh 读侧按 **kernel → ftindex** 顺序试（`store.js:380/420` ✓）⇒ 只要 `.kbkernel.json` 还在，
-//     写 `.ftindex.json` 会被**压在下面** ⇒ "dsh 改 ⇒ 检索跟上"**断了** ✗。
-// ⇒ 与真源运行时一致的目标 = **`.kbkernel.json`** ✓。覆盖生产形态这件事**真源自己就这么干** ✓
+//   · 真源**运行时**把 FTS 缓存写到 `.kb/kernel.json`（`knowledgeBaseView.ts:3404` 的 persistUri ✓）——
+//     `.kb/ftindex.json` 只在"预建索引导入"那条路上被**读** ✓，运行时**没人写它** ✗；
+//   · dsh 读侧按 **kernel → ftindex** 顺序试（`store.js:380/420` ✓）⇒ 只要 `.kb/kernel.json` 还在，
+//     写 `.kb/ftindex.json` 会被**压在下面** ⇒ "dsh 改 ⇒ 检索跟上"**断了** ✗。
+// ⇒ 与真源运行时一致的目标 = **`.kb/kernel.json`** ✓。覆盖生产形态这件事**真源自己就这么干** ✓
 //   （FTS 层 reconcile 后照常写回 ✓），两侧读侧都容忍两种形态 ✓（`parseKernel` ✓）。
 //   生产形态的"重建"（title/type/created 来自 frontmatter ✓）属 P1 的另一刀 ✗，本刀不碰 ✓。
 //
@@ -42,8 +42,8 @@
 // ⇒ 本文件写**合并形态**：9 个 FTS 字段（黄金表钉死 ✓）＋ `title/type/created`（frontmatter 提取 ✓ ——
 //   `parseFrontmatter` / `readNoteFrontmatterType` 都是逐字移植且被对账钉过的 ✓）。
 //   两侧读侧都容忍多出的键 ✓（`parseKernel` 按键名取 ✓；真源 `deserialize` 只读它认的 ✓）。
-import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { LIBRARY_DIR, NOTES_DIR } from './kb.js';
 import { extractTags, tokenize } from './kbFulltext.js';
 import { extractFrontmatterTags, parseFrontmatter, readNoteFrontmatterType } from './kbFrontmatter.js';
@@ -57,8 +57,8 @@ const TEXT_EXTS = new Set([
 /** 真源 `_reconcileWalk:168` 的 2MB 上限（超出 ⇒ 剔除 ✓）。 */
 const MAX_INDEX_BYTES = 2 * 1024 * 1024;
 
-/** 索引文件落盘名 —— 与真源运行时一致：`.kbkernel.json`（`knowledgeBaseView.ts:3404` 的 persistUri ✓，见文件头 ✓）。 */
-export const KERNEL_CACHE_FILE = '.kbkernel.json';
+/** 索引文件落盘名 —— 与真源运行时一致：`.kb/kernel.json`（`knowledgeBaseView.ts:3404` 的 persistUri ✓，见文件头 ✓）。 */
+export const KERNEL_CACHE_FILE = '.kb/kernel.json';
 
 /** `URI.file(path).toString()` 的最小等价（`file:///g%3A/…` —— **小写盘符** ✓，照 `_asFormatted` ✓）。 */
 function fileUriOf(absPath) {
@@ -194,13 +194,15 @@ export async function kernelStaleCheck(vaultDir) {
 }
 
 /**
- * 重建并落盘 `<vaultDir>/.kbkernel.json`（FTS 缓存形态 ✓ —— 与真源运行时同一个文件 ✓，见文件头 ✓）。
+ * 重建并落盘 `<vaultDir>/.kb/kernel.json`（FTS 缓存形态 ✓ —— 与真源运行时同一个文件 ✓，见文件头 ✓）。
  * ⚠ **调用方必须先取 vault 锁** ✗（本模块不加锁 —— 锁的口径在 `lib/lock.js` ✓，由路由/工具层拿 ✓）。
  * @returns `{ docs, path }`
  */
 export async function rebuildKernelCache(vaultDir) {
 	const docs = await buildKernelDocs(vaultDir);
 	const path = join(vaultDir, KERNEL_CACHE_FILE);
+	// ★ 2026-11-02: 索引搬进 .kb/ 子目录 ⇒ 写前建目录
+	await mkdir(dirname(path), { recursive: true });
 	await writeFile(path, serializeKernel(docs), 'utf8');
 	return { docs, path };
 }

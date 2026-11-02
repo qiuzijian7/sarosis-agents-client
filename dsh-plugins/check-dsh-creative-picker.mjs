@@ -200,14 +200,21 @@ async function boot({ catalog = CATALOG, catalogStatus = 200, catalogType = 'app
 			/LightAI/.test(grp.textContent) && /dsh 直连/.test(grp.textContent) && /已登录/.test(grp.textContent),
 			grp.textContent);
 		const items = [...pop.querySelectorAll('.vc-item')];
-		eq('③b 行数 = 这一类全部模型（含没接入的）', items.length, 3);
+		/*
+		 * ★ 2026-11-02：口径变了 —— 2026-10-23 的回归修复起，列表只渲染**可用**模型
+		 *   （`groups` 先按 `usable()` 过滤），未接入的**不占行**，改由 footer 报数
+		 *   （"可用 N 个 · 另 M 个未接入"）。
+		 *   原来的"3 行 + 置灰行写明原因"就是这个改动之前的形态 ⇒ 现在断言它必然假红。
+		 *   要守的不变量变成：**不隐瞒**（footer 必须报出未接入的数量），而不是"把不可用的画成一整行"。
+		 */
+		eq('③b 只列可用模型（未接入的不占行）', items.length, 2);
 		truthy('③b 每行：缩略图 + 名字 + 徽标',
 			items.every(i => i.querySelector('.vc-thumb svg') && i.querySelector('.vc-l1 .vc-nm') && i.querySelector('[data-vssaros-creative-badge]')));
 		truthy('③b 可用的行显示灯火价', /0\.8 灯火/.test(items[0].textContent), items[0].textContent);
-		const offRow = items.find(i => i.hasAttribute('data-off'));
-		truthy('③b 没接入的行写明原因（且不是 disabled 属性 —— 那样点了没反应）',
-			!!offRow && !offRow.hasAttribute('disabled') && /dsh 侧还没接入这个模型/.test(offRow.textContent),
-			offRow ? offRow.outerHTML.slice(0, 240) : '(没有置灰行)');
+		truthy('③b footer 如实报出「另 1 个未接入」（不隐瞒、不静默消失）',
+			/另 1 个未接入/.test(pop.textContent), pop.querySelector('.vc-foot')?.textContent ?? '(没有 footer)');
+		truthy('③b 未接入的模型没有被当成可点行渲染出来（点不到就不会静默失败）',
+			!items.some(i => /Flux 3\.0/.test(i.textContent)));
 		truthy('③b 当前选中的那行有标记', items[0].hasAttribute('data-on')
 			&& items.filter(i => i.hasAttribute('data-on')).length === 1);
 	} finally { env.restore(); }
@@ -233,19 +240,25 @@ async function boot({ catalog = CATALOG, catalogStatus = 200, catalogType = 'app
 	} finally { env.restore(); }
 }
 
-// ③d 点置灰行 ⇒ 只提示，不发请求
+// ③d 一个都不可用（全部未接入）⇒ 空态写清原因，且一行都不给点、不发请求
 {
-	const env = await boot();
+	// ★ 2026-11-02：原先测的是"点置灰行 ⇒ 只提示不发请求"。列表改成只渲染可用模型后，
+	//   "点了没反应"这个风险换了个位置：**整类都不可用时**列表会空 ⇒ 必须给出可读的空态，
+	//   而不是一个空白面板（那才是真的"点了没反应"）。
+	const allOff = JSON.parse(JSON.stringify(CATALOG));
+	allOff.providers[0].kinds.image = allOff.providers[0].kinds.image.map(m => ({ ...m, routable: false }));
+	allOff.defaults.image = { provider: 'lightai', model: 'picture_flux_3_0' };
+	allOff.picked.image = 'picture_flux_3_0';
+	const env = await boot({ catalog: allOff });
 	try {
 		env.doc.querySelector('[data-vssaros-creative-row][data-kind="image"]').dispatchEvent(new env.window.MouseEvent('click', { bubbles: true }));
 		await new Promise(r => setTimeout(r, 10));
-		const off = env.doc.querySelector('[data-vssaros-creative-pop] .vc-item[data-off]');
-		off.dispatchEvent(new env.window.MouseEvent('click', { bubbles: true }));
-		await new Promise(r => setTimeout(r, 20));
-		eq('③d 置灰行不发请求', env.posts.length, 0);
-		const toast = env.doc.querySelector('[data-vssaros-creative-toast]');
-		truthy('③d 置灰行给出原因（点了有反馈，不是没反应）',
-			!!toast && /dsh 侧还没接入这个模型/.test(toast.textContent), toast ? toast.textContent : '(没有提示元素)');
+		const pop = env.doc.querySelector('[data-vssaros-creative-pop]');
+		eq('③d 全不可用 ⇒ 一行可点项都没有', pop.querySelectorAll('.vc-item').length, 0);
+		truthy('③d 全不可用 ⇒ 空态写明"这一类还没有已接入的模型"（不是空白面板）',
+			/这一类还没有已接入的模型/.test(pop.textContent), pop.querySelector('.vc-list')?.textContent ?? '');
+		truthy('③d 全不可用 ⇒ footer 报出 3 个未接入', /另 3 个未接入/.test(pop.textContent), pop.querySelector('.vc-foot')?.textContent ?? '');
+		eq('③d 全不可用 ⇒ 没有任何请求发出', env.posts.length, 0);
 	} finally { env.restore(); }
 }
 
@@ -260,9 +273,12 @@ async function boot({ catalog = CATALOG, catalogStatus = 200, catalogType = 'app
 		env.doc.querySelector('[data-vssaros-creative-row][data-kind="image"]').dispatchEvent(new env.window.MouseEvent('click', { bubbles: true }));
 		await new Promise(r => setTimeout(r, 10));
 		const pop = env.doc.querySelector('[data-vssaros-creative-pop]');
-		truthy('③e 列表行置灰 + 原因 = 需登录 LightAI',
-			[...pop.querySelectorAll('.vc-item')].every(i => i.hasAttribute('data-off') && /需登录 LightAI/.test(i.textContent)));
-		truthy('③e 组头状态显示"未登录"', /未登录/.test(pop.querySelector('.vc-grp').textContent));
+		// ★ 2026-11-02：未登录 ⇒ 所有模型都不可用 ⇒ 与 ③d 同口径：一行可点项都没有 + 空态文案。
+		//   原来的"每行都置灰 + 行内写原因"是过滤前的形态。
+		eq('③e 未登录 ⇒ 没有可点行', pop.querySelectorAll('.vc-item').length, 0);
+		truthy('③e 未登录 ⇒ 空态文案说清"还没有已接入的模型"', /这一类还没有已接入的模型/.test(pop.textContent));
+		truthy('③e footer 报出未接入数量 + 引导去设置',
+			/另 3 个未接入/.test(pop.textContent) && /设置 → 模型/.test(pop.textContent));
 	} finally { env.restore(); }
 }
 

@@ -20,9 +20,11 @@
 //
 // ⚠ `webServer` / `connection` **不许**写进静态 inject：它们只在 web 模板里存在，
 //   写死会让插件在 headless/tui profile 永久 pending（见 `vssaros-dashboard/lib/index.js:26-29`）⇒ 走 `ctx.inject`。
-import { readdir, rm, stat } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, stat } from 'node:fs/promises';
+import * as zlib from 'node:zlib';
 import { homedir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
+import { promisify } from 'node:util';
 
 export const name = 'vssaros-chat-surface';
 
@@ -111,6 +113,82 @@ async function deleteSessionData(home, sessionId) {
 	return { removed, missing };
 }
 
+// ── 会话首条用户消息（2026-11-02 用户要求「把标题写回 dsh」）──────────────────────────
+//
+// 为什么要在 host 侧做：`sessions.list` 快照里**没有**首条消息文本（只有 `blank` /
+//   `lastPromptAt` / `title`），标题只来自 `session/title` 事件；而 dsh 没有任何自动标题机制
+//   （全仓搜 `autoTitle` / `generateTitle` 都是 0 命中，中文文案就是 `"session.untitled": "未命名"`）。
+//   ⇒ 想把「未命名」变成可读标题，只能自己去会话日志里读首条 `user/message`。
+//
+// 这里**只读**（不改任何数据），写标题仍由页面侧走官方 `session.rename` ⇒ 权限与一致性都交回官方 ✓
+const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
+/**
+ * Node 22.15+ 才有 zstd；没有就如实说"不支持"，不假装读到。
+ *
+ * ⚠ 2026-11-02：**不许用 `zstdDecompressSync`** —— 会话日志可能几 MB，同步解压会把 Host
+ * 主线程整段卡住（守卫 `dshPluginPackages`：同步解压全仓禁）。这里用回调版 + `promisify`。
+ */
+const zstdDecompressAsync = typeof zlib.zstdDecompress === 'function' ? promisify(zlib.zstdDecompress) : null;
+
+/** 会话日志是**多帧** zstd（每次追加一帧）⇒ 按 magic 拆帧逐个解压；坏帧跳过不报错。 */
+async function decompressZstdFrames(buf) {
+	if (!zstdDecompressAsync) { throw new Error('当前 Node 不支持 zstd（需要 22.15+）'); }
+	const starts = [];
+	let at = 0;
+	while ((at = buf.indexOf(ZSTD_MAGIC, at)) >= 0) { starts.push(at); at += 4; }
+	const out = [];
+	for (let k = 0; k < starts.length; k++) {
+		const fr = buf.subarray(starts[k], starts[k + 1] === undefined ? buf.length : starts[k + 1]);
+		try { out.push(String(await zstdDecompressAsync(fr))); } catch { /* 尾部可能截断 ⇒ 跳过 */ }
+	}
+	return out.join('');
+}
+
+/** 这些前缀是**注入内容**，不是用户说的话（真机上最常见的前两条 `user/message` 就是它们）。 */
+const INJECT_PREFIXES = ['<system-reminder>', 'Current runtime context', '<user_instructions>', '<workspace_instructions>'];
+
+/**
+ * 取一条会话的首条**真实用户消息**（只读）。
+ * @returns `{ found, title, seq, error? }`；`title` 已压平空白并截断到 40 字。
+ */
+async function firstUserPromptOf(home, sessionId) {
+	if (!SESSION_ID_RE.test(sessionId)) {
+		throw Object.assign(new Error('非法的会话 id（只接受 session-<id> 形状）'), { status: 400 });
+	}
+	const sessionsRoot = join(home, 'sessions');
+	// cwd 编码规则各版本可能变 ⇒ 扫一层子目录找同名目录（与 deleteSessionData 同一条）
+	let dir = null;
+	let cwdDirs = [];
+	try { cwdDirs = await readdir(sessionsRoot, { withFileTypes: true }); } catch { cwdDirs = []; }
+	for (const entry of cwdDirs) {
+		if (!entry.isDirectory()) { continue; }
+		const cand = join(sessionsRoot, entry.name, sessionId);
+		if (!insideOf(sessionsRoot, cand)) { continue; }
+		try { if ((await stat(cand)).isDirectory()) { dir = cand; break; } } catch { /* 不在这个 cwd 下 */ }
+	}
+	if (!dir) { return { found: false, title: '' , error: '找不到这条会话的日志目录' }; }
+	const file = join(dir, 'session.v4.jsonl.zstd');
+	let buf;
+	try { buf = await readFile(file); } catch (e) { return { found: false, title: '', error: '读不到 session.v4.jsonl.zstd：' + String((e && e.message) || e) }; }
+	const text = await decompressZstdFrames(buf);
+	for (const line of text.split('\n')) {
+		if (!line) { continue; }
+		let o; try { o = JSON.parse(line); } catch { continue; }
+		const ev = o && o.event ? o.event : o;
+		if (!ev || ev.type !== 'user/message') { continue; }
+		const d = ev.data || {};
+		if (d.role !== 'user') { continue; }
+		// ★ 只认真人输入：`source.kind === 'user'`（agent 转发 / 注入的都不算）
+		if (!d.source || d.source.kind !== 'user') { continue; }
+		const parts = Array.isArray(d.content) ? d.content : [];
+		const t = parts.filter((p) => p && p.type === 'text' && typeof p.text === 'string').map((p) => p.text).join(' ').trim();
+		if (!t) { continue; }
+		if (INJECT_PREFIXES.some((p) => t.startsWith(p))) { continue; }
+		return { found: true, title: t.replace(/\s+/g, ' ').slice(0, 40), seq: typeof ev.seq === 'number' ? ev.seq : null };
+	}
+	return { found: false, title: '', error: '这条会话还没有用户消息（或只有注入内容）' };
+}
+
 export function apply(ctx, config) {
 	// 页面路由（**可选**依赖；不在 web 模板 ⇒ 只是没有这条 API，不影响插件激活）
 	ctx.inject(['webServer', 'connection'], (page) => page.effect(() => page.webServer.register({
@@ -128,7 +206,45 @@ export function apply(ctx, config) {
 				return;
 			}
 			const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-			// 只提供一条写操作；其它路径如实 404（不吞、不漏）。
+			// ① 只读：准备**默认工作区**的目录（2026-11-02 用户要求「当前工作区里要有默认工作区」）。
+			//
+			//   为什么需要宿主：官方的 `workspaces.initializeDefault()` 只在**首次使用**（一个工作区都没有）
+			//   时建默认工作区，实测在已有工作区的机器上直接返回 `undefined`（不建）。
+			//   而 `workspaces.create({ path })` 只接受**已存在的绝对路径**（"existing absolute path to adopt"），
+			//   页面是浏览器上下文、建不了目录 ⇒ 由宿主 `mkdir -p` 后把路径交给页面。
+			//
+			//   路径取 `<DSH_HOME>/VsSaros`（我们自己的数据目录下）：不污染用户的「文档」目录，
+			//   且 dsh 会按目录名把它显示成「VsSaros」。
+			//   ⚠ 只建目录、不写任何文件 ⇒ 天然幂等。
+			if (url.pathname === `${ROUTE_PREFIX}/api/default-workspace`) {
+				if (req.method !== 'POST') { json(405, { ok: false, error: '只接受 POST' }); return; }
+				try {
+					const home = dshHomeOf(config);
+					const dir = join(home, 'VsSaros');
+					await mkdir(dir, { recursive: true });
+					json(200, { ok: true, path: dir, home });
+				} catch (e) {
+					json(500, { ok: false, error: String((e && e.message) || e) });
+				}
+				return;
+			}
+			// ② 只读：会话的首条真实用户消息（页面侧拿它生成标题，再走官方 `session.rename` 写回）
+			//    ⚠ 本路由**不写任何东西** ⇒ 权限、`session/title` 事件、list 行刷新全由官方 API 保证 ✓
+			if (url.pathname === `${ROUTE_PREFIX}/api/first-prompt`) {
+				if (req.method !== 'GET') { json(405, { ok: false, error: '只接受 GET' }); return; }
+				const sid = String(url.searchParams.get('sessionId') || '').trim();
+				if (!sid) { json(400, { ok: false, error: '缺 sessionId' }); return; }
+				try {
+					const home = dshHomeOf(config);
+					const got = await firstUserPromptOf(home, sid);
+					json(200, Object.assign({ ok: true, home, sessionId: sid }, got));
+				} catch (e) {
+					const status = e && typeof e.status === 'number' ? e.status : 500;
+					json(status, { ok: false, error: String((e && e.message) || e) });
+				}
+				return;
+			}
+			// ② 写操作只有一条：删会话的本地数据；其它路径如实 404（不吞、不漏）。
 			if (url.pathname !== `${ROUTE_PREFIX}/api/delete-session`) {
 				json(404, { ok: false, error: 'unknown route' });
 				return;

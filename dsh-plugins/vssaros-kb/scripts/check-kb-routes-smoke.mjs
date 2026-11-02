@@ -48,12 +48,12 @@ const ctx = new Proxy({}, {
 
 // 临时库（自带一篇笔记 + 一份 canvas，保证依赖数据的路由有东西可读）
 const vault = mkdtempSync(join(tmpdir(), 'kb-smoke-'));
-mkdirSync(join(vault, '库'), { recursive: true });
-mkdirSync(join(vault, '笔记'), { recursive: true });
-const notePath = join(vault, '笔记', 'smoke.md');
+mkdirSync(join(vault, '数据源'), { recursive: true });
+mkdirSync(join(vault, '知识库列表'), { recursive: true });
+const notePath = join(vault, '知识库列表', 'smoke.md');
 writeFileSync(notePath, '---\ntitle: smoke\n---\n\n# smoke\n\n一段正文，含 [[smoke2]] 与 `code`。\n', 'utf8');
-writeFileSync(join(vault, '笔记', 'smoke2.md'), '# smoke2\n\n另一段。\n', 'utf8');
-writeFileSync(join(vault, '笔记', 'd.canvas'), JSON.stringify({
+writeFileSync(join(vault, '知识库列表', 'smoke2.md'), '# smoke2\n\n另一段。\n', 'utf8');
+writeFileSync(join(vault, '知识库列表', 'd.canvas'), JSON.stringify({
 	nodes: [{ id: 'n1', type: 'text', width: 200, height: 60, x: 0, y: 0, content: 'A', source: { file: 'smoke.md', line: 1 } }],
 	edges: [],
 }), 'utf8');
@@ -99,7 +99,7 @@ const cases = [
 	{ name: 'GET /api/dedupe', path: '/x/kb/api/dedupe', expect: b => b.ok === true && typeof b.scanned === 'number' },
 	{ name: 'GET /api/review', path: '/x/kb/api/review', expect: b => b.ok === true && typeof b.unreviewedCount === 'number' },
 	{ name: 'GET /api/canvas-list', path: '/x/kb/api/canvas-list', expect: b => b.ok === true && Array.isArray(b.files) },
-	{ name: 'GET /api/canvas', path: '/x/kb/api/canvas?uri=' + encodeURIComponent(join(vault, '笔记', 'd.canvas').replace(/\\/g, '/')), expect: b => b.ok === true && Array.isArray(b.nodes) },
+	{ name: 'GET /api/canvas', path: '/x/kb/api/canvas?uri=' + encodeURIComponent(join(vault, '知识库列表', 'd.canvas').replace(/\\/g, '/')), expect: b => b.ok === true && Array.isArray(b.nodes) },
 	{ name: 'GET /api/reindex', path: '/x/kb/api/reindex', expect: b => b.ok === true && b.vector && b.vector.supported === false },
 	{ name: 'GET /api/feishu-schedule', path: '/x/kb/api/feishu-schedule', expect: b => b.ok === true && typeof b.everyMinutes === 'number' },
 	{ name: 'GET /api/feishu-log', path: '/x/kb/api/feishu-log', expect: b => b.ok === true && Array.isArray(b.lines) },

@@ -1,5 +1,7 @@
 # 第三方工作台调研（2026-10-23）
 
+> 文档状态：**【历史·调研】**。调研快照，**不是流程依据**；流程只在 `doc/workbench-development-standard.md`。
+
 **范围**：仓库 `dsh-plugins/` 下所有声明 `vssaros.workbench` 的插件，共 **14 个**。其中 **8 个是我们自有的**（workflow / kanban / memory / codebase / kb / agents / scheduler / dashboard，已全部迁成注册式 React 工作台 + 共享 UI 层），**6 个是第三方/未迁**（生图、商城、媒体库、并行 TUI、历史会话、工具）。
 
 本文只写这 **6 个**：它们各自的布局与功能特色、与工作台规范的差距、以及值得借鉴的点。

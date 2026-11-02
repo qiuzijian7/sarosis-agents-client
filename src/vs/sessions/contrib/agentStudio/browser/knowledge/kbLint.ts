@@ -4,7 +4,7 @@
  *  确定性 lint（不依赖 LLM）：检测断链、孤立笔记、缺 sources 溯源，
  *  输出结构化 issue 列表与可读报告。可由 KB 视图「体检」入口或定时任务触发。
  *
- *  扫描根为 `库/` 分区（笔记与库源文件混居模型）：
+ *  扫描根为 `数据源/` 分区（笔记与库源文件混居模型）：
  *  - 「笔记」= frontmatter 含 `sources` 或 `status` 字段（引擎产出）→ 跑全部规则；
  *  - 「库源文件」= 无 frontmatter，或仅带导入元数据 → 只作为链接目标，不 lint（避免噪音）。
  *--------------------------------------------------------------------------------------------*/
@@ -173,7 +173,7 @@ export async function lintVault(fileService: IFileService, scanRoot: URI, source
 }
 
 /**
- * 规则 5 的实现：读 `<vault>/.kb-build-cache.json`（`{源绝对路径: 已建笔记绝对路径}`），
+ * 规则 5 的实现：读 `<vault>/.kb/build-cache.json`（`{源绝对路径: 已建笔记绝对路径}`），
  * 报告其中「源」或「笔记」已不存在的条目。
  *
  * 为什么重要：缓存是**纯路径映射、不看内容**，且只有在「知识库视图内删除」时才被收口清理；
@@ -183,7 +183,7 @@ export async function lintVault(fileService: IFileService, scanRoot: URI, source
  */
 async function collectStaleCacheIssues(fileService: IFileService, scanRoot: URI): Promise<KbLintIssue[]> {
 	const out: KbLintIssue[] = [];
-	const cacheUri = URI.joinPath(dirname(scanRoot), '.kb-build-cache.json');
+	const cacheUri = URI.joinPath(dirname(scanRoot), '.kb/build-cache.json');
 	let cache: Record<string, string>;
 	try {
 		cache = JSON.parse((await fileService.readFile(cacheUri)).value.toString());

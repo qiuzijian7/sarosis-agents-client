@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>知识库树 · 参考 6 个开源笔记项目的画法（可交互）</title>
+<style>
+	:root {
+		--bg: #141414; --panel-bg: #252526; --line: #2b2b2b;
+		--fg: #d4d4d4; --fg-mid: #a8a8a8; --fg-dim: #8a8a8a; --fg-faint: #6b6b6b;
+		--accent: #3794ff;
+	}
+	* { box-sizing: border-box; }
+	body {
+		margin: 0; background: var(--bg); color: var(--fg);
+		font: 13px/1.55 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+		-webkit-font-smoothing: antialiased; display: flex; flex-direction: column;
+	}
+	header { flex: 0 0 auto; padding: 14px 20px 12px; border-bottom: 1px solid var(--line); background: #181818; }
+	h1 { font-size: 15px; font-weight: 650; margin: 0 0 4px; }
+	.tip { color: var(--fg-faint); font-size: 11.5px; margin: 0 0 10px; max-width: 980px; }
+	.bar { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+	.styles { display: flex; gap: 6px; flex-wrap: wrap; }
+	.sbtn {
+		height: 26px; padding: 0 11px; border-radius: 6px; cursor: pointer;
+		border: 1px solid #3a3a3a; background: #232323; color: var(--fg-dim);
+		font-size: 11.5px; font-weight: 600;
+	}
+	.sbtn:hover { border-color: #4a4a4a; color: var(--fg-mid); }
+	.sbtn.on { background: rgba(55,148,255,.16); border-color: rgba(55,148,255,.55); color: #cfe6ff; }
+	.ctrl { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--fg-dim); }
+	.ctrl input[type=range] { width: 110px; accent-color: var(--accent); }
+
+	main { flex: 1 1 auto; display: flex; gap: 22px; padding: 16px 20px 28px; align-items: flex-start; }
+	#panel {
+		width: 340px; height: 570px; overflow-y: auto; overflow-x: hidden;
+		background: var(--panel-bg); border: 1px solid #333; border-radius: 8px;
+		box-shadow: 0 12px 32px rgba(0,0,0,.5);
+	}
+	aside { flex: 1 1 320px; min-width: 280px; max-width: 560px; }
+	aside h2 { font-size: 12px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--fg-dim); margin: 0 0 8px; }
+	aside .src { font-size: 11px; color: var(--fg-faint); margin: -4px 0 10px; }
+	aside .src b { color: var(--fg-mid); font-weight: 600; }
+	aside ul { margin: 0 0 16px; padding: 0; list-style: none; }
+	aside li { position: relative; padding-left: 12px; font-size: 12px; color: var(--fg-mid); margin-bottom: 5px; }
+	aside li::before { content: '·'; position: absolute; left: 2px; color: var(--fg-faint); }
+	aside code { background: #222; border: 1px solid #2e2e2e; border-radius: 3px; padding: 0 4px; font-size: 11px; color: #cfcfcf; }
+	aside b { color: var(--fg); font-weight: 600; }
+	.kv { display: grid; grid-template-columns: 96px 1fr; gap: 4px 10px; font-size: 11.5px; margin-bottom: 16px; }
+	.kv dt { color: var(--fg-faint); }
+	.kv dd { margin: 0; color: var(--fg-mid); }
+
+	/* 通用面板 */
+	.pbar { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; height: 30px; padding: 0 8px; font-size: 11.5px; color: var(--fg-mid); background: var(--panel-bg); border-bottom: 1px solid var(--line); }
+	.pbar .r { margin-left: auto; font-size: 10px; color: var(--fg-faint); }
+	/* 节头：灰化（本次只比树，节头已定 S5） */
+	.sec { padding: 8px 4px 2px; }
+	.sec:first-of-type { padding-top: 2px; }
+	.sec-head { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 6px; cursor: pointer; user-select: none; opacity: .72; }
+	.sec-head .chev { flex: 0 0 auto; width: 10px; font-size: 8px; color: var(--fg-faint); }
+	.sec-head .t { font-size: 11.5px; font-weight: 650; color: var(--fg-dim); }
+	.sec-head .n { font-size: 10px; color: var(--fg-faint); }
+	.sec-body { display: none; }
+	.sec.open .sec-body { display: block; }
+
+	/* 行骨架 */
+	.row { display: flex; align-items: center; gap: 6px; cursor: pointer; position: relative; min-width: 0; }
+	.row .nm { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.row .chev { flex: 0 0 auto; text-align: center; color: var(--fg-faint); transition: transform .12s ease; }
+	.row .ico { flex: 0 0 auto; line-height: 1; text-align: center; }
+	.row .meta { flex: 0 0 auto; margin-left: auto; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+	.row .acts { flex: 0 0 auto; display: none; gap: 5px; margin-left: auto; color: var(--fg-faint); font-size: 11px; }
+	.row .kids { display: none; }
+	.row.open + .kids { display: block; }
+
+	/* ══════ O1 Obsidian ══════ */
+	.o1 .row { height: 27px; margin-right: 6px; border-radius: 4px; font-size: 13px; }
+	.o1 .row .chev { width: 10px; font-size: 8px; opacity: .55; }
+	.o1 .row .ico { display: none; }
+	.o1 .guide { align-self: stretch; width: 16px; flex: 0 0 16px; border-left: 1px solid rgba(127,127,127,.14); }
+	.o1 .row:hover { background: rgba(127,127,127,.09); }
+	.o1 .row.sel { background: rgba(127,127,127,.16); }
+	.o1 .row.cur { background: rgba(55,148,255,.10); }
+
+	/* ══════ L1 Logseq（导线 + 圆点） ══════ */
+	.l1 .row { height: 26px; font-size: 13px; }
+	.l1 .row .chev { display: none; }
+	.l1 .row .ico { display: none; }
+	.l1 .guide { align-self: stretch; width: 18px; flex: 0 0 18px; border-left: 1px solid rgba(127,127,127,.20); }
+	.l1 .dot {
+		flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%;
+		border: 1.5px solid rgba(127,127,127,.55); background: transparent;
+	}
+	.l1 .row.open .dot { background: rgba(127,127,127,.65); border-color: rgba(127,127,127,.65); }
+	.l1 .row.sel { background: rgba(127,127,127,.10); border-radius: 3px; }
+	.l1 .row.sel .dot { border-color: var(--accent); background: var(--accent); }
+	.l1 .row.cur .nm { color: #fff; font-weight: 600; }
+
+	/* ══════ J1 Joplin（大行 + 徽标，方块选中） ══════ */
+	.j1 .row { height: 30px; padding-right: 6px; font-size: 13.5px; }
+	.j1 .row .chev { width: 12px; font-size: 9px; }
+	.j1 .row .ico { width: 15px; font-size: 12px; }
+	.j1 .row .badge {
+		margin-left: auto; flex: 0 0 auto; height: 16px; min-width: 18px; padding: 0 6px;
+		display: inline-flex; align-items: center; justify-content: center;
+		border-radius: 8px; background: rgba(127,127,127,.22); color: var(--fg-mid);
+		font-size: 10px; font-weight: 600;
+	}
+	.j1 .row:hover { background: rgba(127,127,127,.08); }
+	.j1 .row.sel { background: rgba(55,148,255,.28); color: #fff; }
+	.j1 .row.cur { background: rgba(55,148,255,.16); }
+
+	/* ══════ S1 SiYuan（紧凑 + hover 动作 + 左竖条） ══════ */
+	.s1 .row { height: 26px; margin: 0 4px; border-radius: 4px; font-size: 12.5px; }
+	.s1 .row .chev { width: 10px; font-size: 8px; opacity: .5; }
+	.s1 .row .ico { display: none; }
+	.s1 .row:hover { background: rgba(127,127,127,.10); }
+	.s1 .row:hover .acts { display: flex; }
+	.s1 .row.sel { background: rgba(127,127,127,.14); box-shadow: inset 3px 0 0 var(--accent); }
+	.s1 .row.cur { background: rgba(55,148,255,.10); }
+	.s1 .row.cur .nm { color: #fff; }
+
+	/* ══════ T1 Trilium（类型图标 + 尾部数字） ══════ */
+	.t1 .row { height: 26px; margin: 0 3px; border-radius: 3px; font-size: 13px; }
+	.t1 .row .chev { width: 12px; font-size: 9px; opacity: .6; }
+	.t1 .row .ico { width: 14px; font-size: 11px; color: var(--fg-dim); }
+	.t1 .row .meta { font-size: 9.5px; }
+	.t1 .row:hover { background: rgba(127,127,127,.09); }
+	.t1 .row.sel { background: rgba(127,127,127,.15); }
+	.t1 .row.cur { background: rgba(55,148,255,.10); }
+	.t1 .row.cur .nm { color: #fff; }
+
+	/* ══════ N1 Notion / Anytype（大行 + emoji + hover ⋯） ══════ */
+	.n1 .row { height: 32px; margin: 1px 4px; border-radius: 6px; font-size: 13.5px; }
+	.n1 .row .chev { width: 10px; font-size: 8px; opacity: .5; }
+	.n1 .row .ico { width: 16px; font-size: 12px; }
+	.n1 .row:hover { background: rgba(127,127,127,.07); }
+	.n1 .row:hover .acts { display: flex; }
+	.n1 .row.sel { background: rgba(127,127,127,.12); color: #fff; }
+	.n1 .row.cur { background: rgba(55,148,255,.10); box-shadow: inset 2px 0 0 var(--accent); }
+	.n1 .row.cur .nm { color: #fff; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<header>
+	<h1>知识库树 · 6 种画法（参考开源笔记项目的实现）</h1>
+	<p class="tip">
+		可交互：点节头折叠、点目录展开、点文件选中。节头已灰化（S5 已定），这里只比树的画法。
+		行高/缩进/图标/选中态的具体数值取自各项目公开的样式变量，<b>版本不同可能有 ±2px 差异</b>。
+	</p>
+	<div class="bar">
+		<div class="styles" id="styles"></div>
+		<div class="ctrl"><span>面板宽</span><input id="w" type="range" min="240" max="440" step="10" value="340" /><span id="wv">340px</span></div>
+	</div>
+</header>
+
+<main>
+	<div><div id="panel" class="o1"></div></div>
+	<aside>
+		<h2 id="aname">说明</h2>
+		<p class="src" id="asrc"></p>
+		<ul id="adesc"></ul>
+		<h2>关键数值</h2>
+		<dl class="kv" id="akv"></dl>
+		<h2>怎么读这些方案</h2>
+		<ul>
+			<li><b>缩进</b>：纯 padding（靠空白）/ 1px 导线（Obsidian、Logseq）/ 圆点锚（Logseq）</li>
+			<li><b>折叠</b>：左侧三角（Obsidian、Trilium）/ 隐藏式（Logseq 点圆点）/ 右侧悬浮</li>
+			<li><b>图标</b>：无（Obsidian）/ 类型符号（Trilium）/ emoji（Notion）/ 文件夹图（Joplin）</li>
+			<li><b>选中</b>：圆角块（Obsidian、SiYuan）/ 全宽方块（Joplin）/ 左竖条（SiYuan、Anytype）</li>
+		</ul>
+	</aside>
+</main>
+
+<script>
+const DATA = [
+	{
+		key: 'lib', title: '数据源', count: 129,
+		items: [
+			{ name: '方法', folder: true, kids: [
+				{ name: '.overview.md', file: true, ago: '2d' },
+				{ name: '差分图压缩优化方案.md', file: true, ago: '3d' },
+				{ name: '纹理压缩优化与 ASTC 格式.md', file: true, ago: '1w' },
+				{ name: '高效读书 Skill 逐页分析.md', file: true, ago: '1w' }
+			] },
+			{ name: '案例拆解', folder: true, kids: [{ name: '像任天堂一样做新手引导.md', file: true, ago: '2w' }] }
+		]
+	},
+	{
+		key: 'notes', title: '知识库列表', count: 95,
+		items: [
+			{ name: 'AIAgent', folder: true, kb: true, docs: 21, ago: '5 分钟前', kids: [
+				{ name: 'DSH 专题', folder: true, kids: [{ name: 'Agent 编排.md', file: true, ago: '1h' }] },
+				{ name: 'CodeBuddy 规则体系.md', file: true, ago: '2h' },
+				{ name: 'MCP 协议与工具注册.md', file: true, ago: '1d' }
+			] },
+			{ name: 'ComfyUI技术', folder: true, kb: true, docs: 1, ago: '2d', kids: [] },
+			{ name: 'UnrealEngine', folder: true, kb: true, docs: 45, ago: '1w', kids: [] },
+			{ name: '游戏设计', folder: true, kb: true, docs: 8, ago: '1w', kids: [] },
+			{ name: '财经', folder: true, kb: true, docs: 1, ago: '2w', kids: [] }
+		]
+	}
+];
+
+const STYLES = [
+	{
+		id: 'o1', name: 'O1 Obsidian',
+		src: '<b>Obsidian 1.x</b> · <code>.nav-item</code> + <code>--nav-indentation-guide-width</code>',
+		desc: ['每级 1px 竖导引线，行高 27 / 字号 13', '无图标，目录与文件同色同字重（靠缩进读层级）', '选中是圆角 4 的浅底（不是高亮蓝）', '最"安静"，长时间阅读不累'],
+		kv: [['行高', '27px'], ['字号', '13px'], ['缩进', '16px + 1px 导线'], ['图标', '无'], ['选中', '圆角 4 · rgba .16'], ['折叠', '左侧小三角']]
+	},
+	{
+		id: 'l1', name: 'L1 Logseq',
+		src: '<b>Logseq</b> · 大纲式，<code>.bullet</code> + <code>.block-children</code> 左边线',
+		desc: ['缩进 = 竖向导线 + 每级一个**圆点锚**', '没有三角：点圆点即折叠（点变实心）', '选中时圆点变强调色 ⇒ 一眼看到"我在哪个节点"', '层级感最强，深嵌套也不糊'],
+		kv: [['行高', '26px'], ['字号', '13px'], ['缩进', '18px + 导线 + 圆点'], ['图标', '无（圆点当锚）'], ['选中', '浅底 + 圆点变亮'], ['折叠', '点圆点']]
+	},
+	{
+		id: 'j1', name: 'J1 Joplin',
+		src: '<b>Joplin</b> · 侧栏 notebook 列表，文件夹图 + 计数徽标',
+		desc: ['行高 30 / 字号 13.5，比 Obsidian 大一圈', '文件夹有图标，右端固定**计数徽标**', '选中是**全宽方块**（无圆角、无留边）', '老派但极稳，误点率低'],
+		kv: [['行高', '30px'], ['字号', '13.5px'], ['缩进', '16px'], ['图标', '文件夹图'], ['选中', '全宽方块 · 蓝灰'], ['折叠', '左侧三角']]
+	},
+	{
+		id: 's1', name: 'S1 SiYuan',
+		src: '<b>SiYuan 思源</b> · <code>.b3-list-item</code> + hover 动作区',
+		desc: ['行高 26 / 字号 12.5，信息密度高', 'hover 时**右侧浮出动作**（重命名/更多），平时不占位', '选中 = 圆角底 + **左侧 3px 强调条**', '无图标，层级靠缩进 + 竖条'],
+		kv: [['行高', '26px'], ['字号', '12.5px'], ['缩进', '14px'], ['图标', '无'], ['选中', '圆角 4 + 左 3px 条'], ['折叠', '左侧小三角']]
+	},
+	{
+		id: 't1', name: 'T1 Trilium',
+		src: '<b>Trilium / TriliumNext</b> · <code>.tree-item</code>，按 note 类型给图标',
+		desc: ['类型图标（📕 笔记 / 📁 目录 / 📄 代码）代替字重区分', '行高 26、圆角 3，选中整行浅底', '右端可挂小数字（子项/属性数）', '扫视最快：先看图标再看字'],
+		kv: [['行高', '26px'], ['字号', '13px'], ['缩进', '15px'], ['图标', '类型图标'], ['选中', '整行浅底 r3'], ['折叠', '左侧三角']]
+	},
+	{
+		id: 'n1', name: 'N1 Notion / Anytype',
+		src: '<b>Notion / Anytype</b> · 大行 + emoji 页图标 + hover <code>⋯</code>',
+		desc: ['行高 32 / 字号 13.5，接近"文档产品"手感', 'emoji 当页图标，hover 出 <code>⋯</code> 菜单', '选中 = 圆角 6 弱底 + 白字', '最宽松，也最占纵向空间'],
+		kv: [['行高', '32px'], ['字号', '13.5px'], ['缩进', '18px'], ['图标', 'emoji'], ['选中', '圆角 6 · rgba .12'], ['折叠', '左侧三角']]
+	}
+];
+
+const state = {
+	style: 'o1', width: 340,
+	/* ⚠ selected 存的是**完整 path**（与 render 里比较的口径一致），不是文件名 */
+	collapsed: {}, open: { lib: { '方法': true } }, selected: '方法/差分图压缩优化方案.md', curKb: 'AIAgent'
+};
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+/* 各方案的"画法"差异集中在这里 */
+function indentOf(style, depth) {
+	const base = style === 's1' ? 4 : (style === 'o1' ? 6 : 4);
+	const step = style === 'o1' ? 16 : (style === 'l1' ? 18 : (style === 's1' ? 14 : (style === 't1' ? 15 : (style === 'n1' ? 18 : 16))));
+	return base + depth * step;
+}
+function iconOf(style, item) {
+	if (style === 'o1' || style === 'l1' || style === 's1') { return ''; }
+	if (style === 't1') { return item.kb ? '📕' : (item.folder ? '📁' : '📄'); }
+	return item.kb ? '📗' : (item.folder ? '📁' : '📄');   // j1 / n1
+}
+function chevOf(style, item, open) {
+	if (style === 'l1') { return ''; }              // Logseq 没有三角
+	if (!item.folder) { return ''; }
+	return open ? '▾' : '▸';
+}
+
+function rowHtml(item, depth, secKey, path) {
+	const open = !!state.open[secKey]?.[path];
+	const sel = state.selected === path;
+	const cur = item.kb && item.name === state.curKb;
+	const cls = ['row', open ? 'open' : '', sel ? 'sel' : '', cur ? 'cur' : ''].join(' ');
+	const pad = indentOf(state.style, depth);
+	const guide = state.style === 'o1'
+		? Array.from({ length: depth }).map(() => '<span class="guide"></span>').join('')
+		: (state.style === 'l1' ? Array.from({ length: depth }).map(() => '<span class="guide"></span>').join('') : '');
+	const dot = state.style === 'l1' ? '<span class="dot"></span>' : '';
+	const chev = chevOf(state.style, item, open);
+	const ico = iconOf(state.style, item);
+	const chevSpan = chev ? `<span class="chev" style="width:${state.style === 'j1' || state.style === 't1' ? 12 : 10}px;font-size:${state.style === 'j1' || state.style === 't1' ? 9 : 8}px;transform:rotate(0deg)">${chev}</span>` : `<span class="chev" style="width:${state.style === 'j1' || state.style === 't1' ? 12 : 10}px"></span>`;
+	const icoSpan = ico ? `<span class="ico">${ico}</span>` : '';
+	let tail = '';
+	if (state.style === 'j1' && item.kb) { tail = `<span class="badge">${item.docs}</span>`; }
+	if (state.style === 't1' && item.kb) { tail = `<span class="meta">${item.docs}</span>`; }
+	if (state.style === 's1' || state.style === 'n1') { tail = `<span class="acts">✎ ⋯</span>`; }
+	const kids = item.folder && item.kids && item.kids.length
+		? `<div class="kids">${item.kids.map((k) => rowHtml(k, depth + 1, secKey, path + '/' + k.name)).join('')}</div>`
+		: '';
+	return `<div class="${cls}" data-sec="${secKey}" data-path="${esc(path)}" data-folder="${item.folder ? 1 : 0}" style="padding-left:${pad}px">
+		${guide}${dot}${chevSpan}${icoSpan}<span class="nm">${esc(item.name)}</span>${tail}
+	</div>${kids}`;
+}
+
+function sectionHtml(sec) {
+	const collapsed = !!state.collapsed[sec.key];
+	const body = collapsed ? '' : sec.items.map((it) => rowHtml(it, 0, sec.key, it.name)).join('');
+	return `<div class="sec ${collapsed ? '' : 'open'}">
+		<div class="sec-head" data-head="${sec.key}">
+			<span class="chev" style="transform:rotate(${collapsed ? 0 : 90}deg)">▸</span>
+			<span class="t">${esc(sec.title)}</span><span class="n">${sec.count}</span>
+		</div>
+		<div class="sec-body">${body}</div>
+	</div>`;
+}
+
+function render() {
+	const panel = document.getElementById('panel');
+	panel.className = state.style;
+	panel.style.width = state.width + 'px';
+	panel.innerHTML = `<div class="pbar">🏠 总览<span class="r">📚 5 · ✎ 95</span></div>` + DATA.map(sectionHtml).join('');
+	bind(panel);
+	const st = STYLES.find((s) => s.id === state.style);
+	document.getElementById('aname').textContent = st.name;
+	document.getElementById('asrc').innerHTML = st.src;
+	document.getElementById('adesc').innerHTML = st.desc.map((d) => `<li>${d}</li>`).join('');
+	document.getElementById('akv').innerHTML = st.kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+}
+
+function bind(panel) {
+	panel.querySelectorAll('.sec-head').forEach((el) => {
+		el.addEventListener('click', () => {
+			state.collapsed[el.dataset.head] = !state.collapsed[el.dataset.head];
+			render();
+		});
+	});
+	panel.querySelectorAll('.row').forEach((el) => {
+		el.addEventListener('click', () => {
+			const sec = el.dataset.sec, path = el.dataset.path;
+			state.selected = path;
+			if (el.dataset.folder === '1') {
+				state.open[sec] = state.open[sec] || {};
+				state.open[sec][path] = !state.open[sec][path];
+			} else {
+				const seg = path.split('/');
+				if (['AIAgent', 'ComfyUI技术', 'UnrealEngine', '游戏设计', '财经'].includes(seg[0])) { state.curKb = seg[0]; }
+			}
+			render();
+		});
+	});
+}
+
+const box = document.getElementById('styles');
+box.innerHTML = STYLES.map((s) => `<button class="sbtn ${s.id === state.style ? 'on' : ''}" data-id="${s.id}">${s.name}</button>`).join('');
+box.addEventListener('click', (e) => {
+	const b = e.target.closest('.sbtn');
+	if (!b) { return; }
+	state.style = b.dataset.id;
+	box.querySelectorAll('.sbtn').forEach((x) => x.classList.toggle('on', x.dataset.id === state.style));
+	render();
+});
+document.getElementById('w').addEventListener('input', (e) => {
+	state.width = Number(e.target.value);
+	document.getElementById('wv').textContent = state.width + 'px';
+	render();
+});
+render();
+</script>
+</body>
+</html>

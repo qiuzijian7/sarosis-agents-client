@@ -87,7 +87,7 @@ import { DSH_WORKSPACE_OPTION_LIMIT, DSH_WORKSPACE_ROOT_LIMIT, DSH_WORKTREE_OPTI
 // ⇒ 必须与 IDE 侧同一份判据（`hasWorkspaceFileExtension`）把它排除在"可当 cwd 的目录"之外 ✓。
 import { hasWorkspaceFileExtension } from '../../../../platform/workspace/common/workspace.js';
 import { basename } from '../../../../base/common/path.js';
-import { buildDshThemeTokens, IDshViewBackgrounds } from '../common/dshThemeBridge.js';
+import { buildDshThemeTokens, IDshViewBackgrounds, isDshOwnWindow } from '../common/dshThemeBridge.js';
 import { IDshUpgradeResult, IHostActivity, blockingSessions } from '../common/dshUpgrade.js';
 import { IThirdPartyPlugin } from '../common/dshPluginUpgrade.js';
 import { IAgentStudioService } from '../../../common/agentStudioService.js';
@@ -502,6 +502,16 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	private readonly _onDidDshSessionRenamed = this._register(new Emitter<IDshSessionRenamedResult>());
 	readonly onDidDshSessionRenamed = this._onDidDshSessionRenamed.event;
 	private readonly _ownViews = new Set<string>();
+	/**
+	 * 落在 **dsh 自主窗口**（桌面窗口 / 分屏 / 全窗）里的视图（2026-11-02）。
+	 *
+	 * 为什么要单独记一份：这些窗口里用户改的是 dsh「通用设置 → 外观」，而宿主原来无条件把
+	 * **每条** dsh 视图的 alias token 钉成 IDE 主题色、`prefers-color-scheme` 也模拟成 IDE 主题的明暗
+	 * ⇒ 于是 dsh 外观只改得动"非 alias 部分"（侧栏底色 `--dsw-specific-sidebar-fill` 等），
+	 * 弹窗 / 正文 / 菜单仍是 IDE 主题色 = 用户报的"切到浅色后部分页面没跟着变" ✗。
+	 * ⇒ 自主窗口里的视图**不吃** IDE 主题覆盖层（判据：`common/dshThemeBridge.ts::isDshOwnWindow`）。
+	 */
+	private readonly _dshOwnViews = new Set<string>();
 	/** ★ 2026-10-19（首启成本拆分）：首次 `ensureStarted()` 的时刻 / 是否已打过"Host ready"日志。 */
 	private _startupT0: number | undefined;
 	private _startupLogged = false;
@@ -1868,17 +1878,26 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 
 	createView(viewId: string, windowId: number, surface: DshViewSurface, sessionId?: string, route?: string, pageSurface?: DshPageSurface, overrideChatOnlyUi?: boolean, isolatedPool?: boolean): Promise<void> {
 		this._ownViews.add(viewId);
+		// dsh 自主窗口（桌面 / 分屏 / 全窗）：这个视图的明暗由 dsh「外观」决定，不吃 IDE 主题（2026-11-02）
+		const dshOwnWindow = isDshOwnWindow(windowId, mainWindow?.vscodeWindowId);
+		if (dshOwnWindow) {
+			this._dshOwnViews.add(viewId);
+		}
 		const chatIdOfView = DshHarnessService._chatIdOf(viewId);
 		// 聊天框只保留聊天 UI（方案 5.13）：把设置交给 preload，在页面里隐藏 dsh 的侧栏 / 顶栏 / 右侧栏。
 		// `overrideChatOnlyUi` 供「拼装式弹窗」按视图覆盖（弹窗要复刻官方 desktop ⇒ 保留官方整套 chrome ✓）。
 		const chatOnlyUi = overrideChatOnlyUi ?? (this._configurationService.getValue<boolean>(DshHarnessSettings.ChatOnlyUi) !== false);
 		return this._channel.call(DshHarnessChannelCommand.CreateView, {
-			viewId, windowId, surface, chatOnlyUi, sessionId, colorScheme: this._colorScheme(),
+			viewId, windowId, surface, chatOnlyUi, sessionId,
+			// palette 模式与底色都**只给 IDE 内嵌视图**：自主窗口跟 dsh 外观 ⇒ 给 IDE 的色只会打架
+			// （浅色外观 + 深色 IDE 主题 ⇒ 原生视图底色/弹层被染成深色 ✗）
+			...(dshOwnWindow ? { dshOwnWindow: true } : { colorScheme: this._colorScheme() }),
 			// 弹窗走**独立网络分区**（不与主窗口争同一个 host:port 的 6 条并发连接），见 `DSH_VIEW_PARTITION_DESKTOP`。
 			...(isolatedPool ? { isolatedPool: true } : {}),
 			// ★ 底色候选（2026-10-13「初次打开侧栏视图白屏一下」）：随**创建**一起给 ⇒
 			//   主进程建视图时就染色，页面画出第一帧之前不会露 Electron 默认白 ✓（只靠 pushTheme 会晚一拍 ✗）。
-			backgrounds: this._viewBackgrounds(),
+			//   自主窗口除外：dsh 页面的 boot CSS 自己就把画布刷成正确底色 ✓
+			...(dshOwnWindow ? {} : { backgrounds: this._viewBackgrounds() }),
 			// 承载表面（2026-10-13）与 route 一起只在 plugin-page / workbench 下有意义 ✓（主进程再白名单校验一次）
 			...(surfaceTakesRoute(surface) ? { route, pageSurface } : {}),
 		}).then(() => {
@@ -1971,6 +1990,18 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 
 	/** 当前主题 → dsh token 覆盖层（两形态同值，页面始终跟 IDE 一致）；推给指定视图。 */
 	private _pushTheme(viewId: string): void {
+		if (this._dshOwnViews.has(viewId)) {
+			/*
+			 * dsh 自主窗口：**推空集 = 撤掉 vssaros 覆盖层**（dsh 侧 `theme.overrideTokens` 的
+			 * "同 source 再调一次就整层替换"语义，见 chat-surface 的 applyTheme）。
+			 *
+			 * 为什么必须显式推一次、而不是"什么都不做"：同一个视图有可能先是内嵌、后来挪进
+			 * 自主窗口（或反过来），那时页面上已经叠了一层 IDE 色 ⇒ 不撤就永远钉在旧的 IDE 主题上 ✗。
+			 * 也不推 colorScheme / backgrounds：那两个都是 IDE 主题的值，与 dsh 外观无关 ✗。
+			 */
+			void this._channel.call(DshHarnessChannelCommand.PushTheme, { viewId, tokens: {} });
+			return;
+		}
 		const tokens = buildDshThemeTokens(id => this._themeCssColor(id));
 		const backgrounds = this._viewBackgrounds();
 		// 即便 token 全缺、只要拿到了底色也照推（切主题时原生视图底色得跟着走 ✓）
@@ -2573,6 +2604,7 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 
 	disposeView(viewId: string): Promise<void> {
 		this._ownViews.delete(viewId);
+		this._dshOwnViews.delete(viewId);
 		if (this._activeChatViewId === viewId) {
 			this._activeChatViewId = undefined;
 		}

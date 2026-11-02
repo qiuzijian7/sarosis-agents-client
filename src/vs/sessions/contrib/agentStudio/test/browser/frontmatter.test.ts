@@ -82,7 +82,7 @@ suite('AgentStudio - Frontmatter 解析与 sources 注入', () => {
 
 	// ── extractSources / normalizeSourceRef ─────────────────────────────────────
 	test('extractSources 归一化为库文件 basename（小写，去 库/ 与括号）', () => {
-		const c = '---\nsources:\n  - "库/LibA.md"\n  - "[[库/LibB.md]]"\n---\nbody';
+		const c = '---\nsources:\n  - "数据源/LibA.md"\n  - "[[库/LibB.md]]"\n---\nbody';
 		const r = extractSources(c).sort();
 		assert.deepStrictEqual(r, ['liba.md', 'libb.md']);
 	});

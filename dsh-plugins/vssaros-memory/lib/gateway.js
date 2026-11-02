@@ -46,6 +46,25 @@ export function requireGateway(config) {
 	return base;
 }
 
+/**
+ * `GET {base}/health`（2026-11-02，工作台状态条用）。
+ * 老网关只回 `{status, dataDir, port, engine}`；新网关多 `schema / backups / lastSweepAt`
+ * ⇒ 调用方必须把后三项当**可选**（缺了就不显示那一项，而不是显示成 0）。
+ */
+export function health(base) {
+	return request(`${base}/health`);
+}
+
+/** 归档列表（引擎 `listArchive`；老网关没有该方法 ⇒ 404 ⇒ 调用方降级）。 */
+export function listArchive(base, agentId, limit) {
+	return providerCall(base, 'listArchive', [agentId, limit]);
+}
+
+/** 把一条归档恢复回长期记忆（引擎 `restoreArchived`；**写**，页面触发 ⇒ 同样不过审批闸）。 */
+export function restoreArchived(base, agentId, id) {
+	return providerCall(base, 'restoreArchived', [agentId, id]);
+}
+
 /** `GET {base}/stats/{agentId}`（已核实端点 ✓，真机 200）。 */
 export function stats(base, agentId) {
 	return request(`${base}/stats/${encodeURIComponent(agentId)}`);
@@ -84,8 +103,16 @@ export function providerCall(base, method, args) {
  * 返回**纯字符串**（`''` = 没内容）；形状不认识时由调用方按错误处理（不静默 ✓）。
  */
 export function workingContext(base, agentId, sessionId, tokenBudget) {
-	return providerCall(base, 'loadContext', [agentId, sessionId, undefined, { tokenBudget }])
-		.then(reply => (typeof reply?.systemPrompt === 'string' ? reply.systemPrompt : ''));
+	// ★ 2026-11-02 三个注入侧选项（引擎侧 `buildContext` 的同名参数）：
+	//   · `skipSessionBlocks`：本进程传的 `sessionId` 是**分区键**（= agentId），与真实会话 id
+	//     永不相等 ⇒ 摘要/观察两块恒空，却每次注入都多打两次全表 list（跨进程 HTTP）。
+	//   · `recordAccess:false`：**注入不是使用**。否则每个会话首装都给所有被注入条目 +1 访问，
+	//     把 retention 分数灌成"注入频率"，真正被检索使用的条目反而看不出来。
+	//   · `autoPage:false`：core→episodic 下溢交给网关 sweep（`runFullSweep` 里已有），
+	//     注入路径不该写库。
+	return providerCall(base, 'loadContext', [agentId, sessionId, undefined, {
+		tokenBudget, skipSessionBlocks: true, recordAccess: false, autoPage: false,
+	}]).then(reply => (typeof reply?.systemPrompt === 'string' ? reply.systemPrompt : ''));
 }
 
 /**

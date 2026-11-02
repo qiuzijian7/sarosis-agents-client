@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>媒体库工作台 · 窄窗布局重设计（mockup）</title>
+<style>
+	:root { color-scheme: dark; }
+	html, body { height: 100%; }
+	body { margin: 0; display: flex; flex-direction: column; background: #141417; color: #d8d8df;
+		font: 12px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+	.mk-head { flex: 0 0 auto; padding: 10px 14px 8px; border-bottom: 1px solid #2a2a31; background: #1a1a1f; }
+	.mk-title { font-size: 13px; font-weight: 600; }
+	.mk-badge { margin-left: 8px; font-size: 10px; padding: 1px 6px; border-radius: 8px; font-weight: 400;
+		background: #3a2a12; color: #e0a33a; border: 1px solid #6b4a15; }
+	.mk-row { display: flex; align-items: center; gap: 8px; margin-top: 7px; flex-wrap: wrap; }
+	.mk-lab { flex: 0 0 auto; width: 52px; font-size: 11px; color: #8b8b96; }
+	.mk-tabs { display: inline-flex; border: 1px solid #34343d; border-radius: 6px; overflow: hidden; flex-wrap: wrap; }
+	.mk-tabs button { background: none; border: 0; color: #a9a9b4; font: inherit; font-size: 11.5px; padding: 4px 10px; cursor: pointer; }
+	.mk-tabs button + button { border-left: 1px solid #34343d; }
+	.mk-tabs button.on { background: #0e639c; color: #fff; }
+	.mk-note { font-size: 11px; color: #8b8b96; margin-top: 7px; line-height: 1.6; }
+	.mk-note b { color: #d0a24a; font-weight: 600; }
+	.mk-stage { flex: 1; min-height: 0; overflow: auto; padding: 12px; display: flex; justify-content: center;
+		background: repeating-linear-gradient(45deg, #17171b 0 8px, #1a1a1f 8px 16px); }
+	.mk-wrap { position: relative; flex: 0 0 auto; width: 900px; min-height: 600px; height: 100%;
+		border: 1px solid #34343d; border-radius: 8px; overflow: hidden; background: #1e1e1e;
+		box-shadow: 0 12px 34px rgba(0,0,0,.55); }
+	#frame { display: block; width: 100%; height: 100%; border: 0; }
+	.mk-wid { font-size: 11px; color: #9d9da7; font-variant-numeric: tabular-nums; }
+	.mk-metrics { font-size: 11px; color: #9d9da7; font-variant-numeric: tabular-nums; }
+	.mk-metrics b { color: #d8d8df; font-weight: 600; }
+	.mk-metrics .bad { color: #f14c4c; }
+	.mk-metrics .ok { color: #4ec26a; }
+</style>
+</head>
+<body>
+<header class="mk-head">
+	<div class="mk-title">媒体库工作台 · 窄窗口布局重设计<span class="mk-badge">mockup · 非实现代码</span></div>
+
+	<div class="mk-row">
+		<span class="mk-lab">方案</span>
+		<div class="mk-tabs" id="variants">
+			<button type="button" data-v="now" class="on">A 落地前（有 bug）</button>
+			<button type="button" data-v="b">B 已落地（换行不滚 + 图标收缩）</button>
+			<button type="button" data-v="c">C 当时比较过的另一条路</button>
+		</div>
+	</div>
+
+	<div class="mk-row">
+		<span class="mk-lab">容器宽</span>
+		<div class="mk-tabs" id="widths">
+			<button type="button" data-w="1100">1100</button>
+			<button type="button" data-w="900" class="on">900</button>
+			<button type="button" data-w="820">820</button>
+			<button type="button" data-w="740">740</button>
+			<button type="button" data-w="660">660</button>
+			<button type="button" data-w="560">560</button>
+			<button type="button" data-w="460">460</button>
+		</div>
+		<span class="mk-wid" id="wid"></span>
+	</div>
+	<div class="mk-row"><span class="mk-lab">测量</span><span class="mk-metrics" id="metrics">（等待渲染）</span></div>
+
+	<div class="mk-note">
+		<b>已落地：方案 B（vssaros-media 0.7.31）</b> —— 本页现在是「落地前 / 落地后」的对照，B 那一档的 CSS
+		由 make.mjs 直接从生产代码抽出来，不手抄（所以永远不会比真机身旧）。
+		<br><b>原来的问题</b>（截图红框）：4 个动作按钮和筛选 chips 挤在<b>同一条带横向滚动的行</b>里，而 <code>.m-btn</code> 没写
+		<code>flex:0 0 auto</code> / <code>white-space:nowrap</code> ⇒ 空间不足时被压到 41~45px 宽、中文<b>逐字换行</b>堆成 65~94px 高的竖排文字，行高被撑到 120px。
+		实测容器 1100 就有 177px 溢出（此时中栏只有 ~608px）—— 不是"极小窗口"才有的问题。
+		<br><b>顺带修掉</b>：状态栏右侧按钮同理会挤（A 档 820/740/660 行高 44/51/88px）；面包屑不可收缩（长分组名顶走搜索框）；
+		分隔线类名 <code>vsep</code> 写错（应为 <code>m-vsep</code>）导致竖线从来不可见。
+		<br><b>怎么比较</b>：切宽度（900 / 820 / 740 / 660）对照 A 与 B；「测量」那一行是实时量的（按钮真实尺寸、筛选区是否要横滚、三条工具条高度）。
+		<br><b>C</b> 是当时比较过的另一条路：死守一行、只让筛选区自己横滚（1 行 42px，但要横滚 250~500px），未采用。
+	</div>
+</header>
+
+<main class="mk-stage">
+	<div class="mk-wrap" id="wrap"><iframe id="frame" title="media library preview"></iframe></div>
+</main>
+
+<!-- ★ 手写的 CSS 放在 <template> 里（惰性内容、不会被当成样式解析），脚本用 textContent 读。
+     为什么不用模板字符串：这些块里只要有注释写了反引号，整段就会在反引号处被截断，
+     页面照样能开、脚本却跑不起来（本仓踩过多次）。放 <template> 里彻底没有这类坑。 -->
+<template id="src-now-shim">
+/* A 现状：把 2026-11-02 那批改动在 mockup 里「撤回去」，还原用户报 bug 时的渲染 ——
+   ① 两个分组容器退化成 display:contents（等于它们不存在，chips 与动作按钮仍是 .m-chips 的直接 flex 子项）；
+   ② .m-btn 恢复成可被压扁、文字可换行（真人看到的就是逐字竖排）；
+   ③ .m-chips / .m-status 恢复单行不换行；④ 面包屑恢复成不可收缩（长名字会顶走搜索框）；
+   ⑤ 复刻当时的笔误：分隔线类名写成 .vsep（样式写的是 .m-vsep）⇒ 不可见。 */
+.m-filters, .m-actions, .m-stat-left, .m-stat-right { display: contents; }
+.m-chips { flex-wrap: nowrap; overflow-x: auto; }
+.m-btn { white-space: normal; }
+.m-acts { flex-wrap: nowrap; }
+.m-acts .m-btn { flex: 0 1 auto; }
+.m-status { flex-wrap: nowrap; }
+.m-top .m-crumb { flex: 0 1 auto; max-width: none; }
+.m-top .m-search { flex: 0 1 220px; min-width: 90px; }
+.m-chips .m-vsep { display: none; }
+</template>
+
+<!-- ★ 方案 B 不在这里手抄 —— make.mjs 直接从 mediaPage.js 抽「窄窗口：工具条两段式」那一节注入，
+     所以这个 mockup 的 B 永远等于生产 CSS，不会漂。 -->
+<template id="src-c">
+.m-chips { flex-wrap: nowrap; gap: 6px; overflow: visible; }
+.m-filters { display: flex; flex-wrap: nowrap; align-items: center; gap: 5px; flex: 1 1 auto;
+	min-width: 0; overflow-x: auto; overflow-y: hidden; padding-bottom: 2px; scrollbar-width: thin; }
+.m-filters::-webkit-scrollbar { height: 4px; }
+.m-filters::-webkit-scrollbar-thumb { background: rgba(128,128,128,.4); border-radius: 2px; }
+.m-actions { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.m-actions .m-btn { flex: 0 0 auto; white-space: nowrap; }
+.m-top { flex-wrap: nowrap; }
+.m-top .m-crumb { flex: 1 1 0; min-width: 40px; max-width: 260px; }
+.m-top .m-search { flex: 0 1 170px; min-width: 84px; max-width: 220px; }
+.m-top .m-grow { flex: 0 0 auto; }
+.m-top .m-seg, .m-top .m-density, .m-top .m-btn { flex: 0 0 auto; }
+.m-status { flex-wrap: wrap; row-gap: 3px; }
+.m-stat-left, .m-stat-right { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.m-stat-right { margin-left: auto; }
+@media (max-width: 900px) {
+	.m-actions .m-btn .lbl { display: none; }
+	.m-actions .m-btn { padding: 3px 7px; min-width: 26px; }
+	.m-top .m-density { display: none; }
+}
+@media (max-width: 760px) {
+	.m-stat-extra { display: none; }
+}
+@media (min-width: 620px) {
+	.m-top [data-vssaros-media-open] { display: none; }
+}
+</template>
+
+<template id="src-tokens">
+:root {
+	--vscode-editor-background: #1f1f1f;
+	--vscode-sideBar-background: #252526;
+	--vscode-foreground: #cccccc;
+	--vscode-descriptionForeground: #9d9d9d;
+	--vscode-panel-border: rgba(128,128,128,.28);
+	--vscode-list-hoverBackground: rgba(128,128,128,.15);
+	--vscode-list-activeSelectionBackground: #094771;
+	--vscode-list-activeSelectionForeground: #ffffff;
+	--vscode-button-background: #0e639c;
+	--vscode-button-foreground: #ffffff;
+	--vscode-button-secondaryBackground: rgba(128,128,128,.16);
+	--vscode-input-background: rgba(128,128,128,.12);
+	--vscode-input-border: rgba(128,128,128,.35);
+	--vscode-focusBorder: #4d9fff;
+	--vscode-editorWidget-background: rgba(128,128,128,.14);
+	--vscode-badge-background: rgba(128,128,128,.22);
+	--vscode-textCodeBlock-background: rgba(128,128,128,.12);
+	--vscode-menu-background: #252529;
+	--vscode-menu-border: rgba(128,128,128,.35);
+	--vscode-widget-border: rgba(128,128,128,.45);
+	--vscode-errorForeground: #f14c4c;
+	--dsw-alias-label-primary: #e6e6ea;
+	--dsw-alias-label-secondary: #9d9da7;
+	--dsw-alias-bg-layer-1: #25252a;
+	--dsw-alias-interactive-bg-hover: rgba(128,128,128,.16);
+}
+html, body { height: 100%; margin: 0; }
+body { display: flex; flex-direction: column; background: var(--vscode-editor-background);
+	color: var(--vscode-foreground); font: 12px/1.4 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+* { box-sizing: border-box; }
+</template>
+
+<script>
+// 现状 CSS 由 make.mjs 从 dsh-plugins/vssaros-media/lib/mediaPage.js 的 MEDIA_CSS 抽出后注入
+// （保证「A 现状」是真实样式，不是我手抄的近似版）。
+const CSS_NOW = __CSS_NOW__;
+
+// ── A 现状：只为让同一份 markup 还原今天的渲染 —— 两个新分组容器退化成 display:contents
+//    （等价于「它们不存在」，chips 与动作按钮仍是 .m-chips 的直接 flex 子项），
+//    并复刻今天的一个笔误：markup 里分隔线类名写成 .vsep（样式写的是 .m-vsep）⇒ 不可见。
+// 手写的 CSS 全部来自上面的 <template>（见文件头的说明：避免模板字符串里反引号截断）
+// ⚠ <template> 的子节点在 .content 里 ⇒ textContent 直接读是空串，必须走 .content.textContent
+const tpl = (id) => (document.getElementById(id)?.content?.textContent ?? '');
+const CSS_NOW_SHIM = tpl('src-now-shim');   // A 现状的对齐垫片
+const CSS_B = __CSS_B_LIVE__;               // B = 生产代码里那一节真身（make.mjs 抽出来的）
+const CSS_C = tpl('src-c');                 // C 单行 + 筛选横滚
+const TOKENS = tpl('src-tokens');           // 本 mockup 的主题变量
+
+const COLORS = ['#c9c9cd', '#b9c6d2', '#e7cdd6', '#bfe4e4', '#e3d8c4', '#d9c6c6', '#c9dbe9', '#e2dcc0', '#c9e0c8', '#d6c9e2', '#e9d3b8', '#c6d3d6'];
+
+function cardHtml(i) {
+	const kind = (i % 5 === 3) ? '视频' : (i % 7 === 5 ? '音频' : '图片');
+	const glyph = kind === '视频' ? '▶' : (kind === '音频' ? '♪' : '');
+	return '<button type="button" class="m-card' + (i === 0 ? ' sel' : '') + '" data-id="a' + i + '" title="a3c7dc78.png">'
+		+ '<span class="m-thumb" style="background:' + COLORS[i % COLORS.length] + '">'
+		+ (glyph ? '<span class="m-glyph">' + glyph + '</span>' : '')
+		+ '<span class="m-kbadge">' + kind + '</span>'
+		+ (i === 0 ? '<span class="m-fav" title="已收藏">★</span>' : '')
+		+ (i === 0 ? '<span class="m-check">✓</span>' : '')
+		+ '</span>'
+		+ '<span class="m-name">' + ['a3c7dc78.png', '491952c7.png', 'b338da1f.png', '00059d0b.png', '5afe6abe.png', '475a91d.png'][i % 6] + '</span>'
+		+ '<span class="m-meta">1024×1024 · 1.2 MB</span>'
+		+ '</button>';
+}
+
+const navHtml = (icon, label, n, on) => '<button type="button" class="m-nav' + (on ? ' on' : '') + '">'
+	+ '<span class="ic">' + icon + '</span><span class="lb">' + label + '</span><span class="n">' + n + '</span></button>';
+
+const chip = (label, on, attr) => '<button type="button" class="m-chip' + (on ? ' on' : '') + '"' + attr + '>' + label + '</button>';
+
+const PANEL = `
+<div class="m-app">
+	<aside class="m-side">
+		<div class="m-sec">全部</div>
+		${navHtml('▣', '全部', '667', true)}
+		${navHtml('▣', '图片', '588', false)}
+		${navHtml('▶', '视频', '79', false)}
+		${navHtml('♪', '音频', '0', false)}
+		${navHtml('¶', '文本', '0', false)}
+		${navHtml('★', '收藏', '2', false)}
+		${navHtml('◌', '未分类', '667', false)}
+		${navHtml('◇', '未标签', '666', false)}
+		${navHtml('⌫', '回收站', '6', false)}
+		<div class="m-sec">分组</div>
+		<div class="m-dim" style="padding:2px 12px 4px">（还没有分组；在检查器里填「分组」即可新建）</div>
+		<div class="m-sec">标签</div>
+		${navHtml('#', '动物', '1', false)}
+		${navHtml('#', '真机验证标签', '1', false)}
+	</aside>
+
+	<section class="m-main">
+		<div class="m-top">
+			<div class="m-crumb">媒体库<span class="sep">/</span><b>全部分组·角色立绘</b><span class="cnt">667 项</span></div>
+			<button type="button" class="m-btn sm m-side-toggle" title="导航">☰</button>
+			<div class="m-search"><span>⌕</span><input type="search" placeholder="搜索名称 / 标签 / prompt" value=""></div>
+			<div class="m-seg" data-media-view>
+				<button type="button" class="on" title="网格">▦</button><button type="button" title="瀑布流">▥</button><button type="button" title="列表">≡</button>
+			</div>
+			<input type="range" class="m-density" min="112" max="248" value="168" title="缩略图大小">
+			<button type="button" class="m-btn sm" title="显示/隐藏检查器">⧉</button>
+			<button type="button" class="m-btn sm" data-vssaros-media-open title="在编辑区打开（只有侧栏太窄时用）"><span class="ico">↗</span><span class="lbl">编辑区</span></button>
+		</div>
+
+		<div class="m-chips">
+			<div class="m-filters">
+				<span class="glabel">类型</span>
+				${chip('全部', true, ' data-kind=""')}${chip('<span class="ico">▣</span><span class="lbl">图片</span>', false, ' data-kind="image"')}${chip('<span class="ico">▶</span><span class="lbl">视频</span>', false, ' data-kind="video"')}${chip('<span class="ico">♪</span><span class="lbl">音频</span>', false, ' data-kind="audio"')}${chip('<span class="ico">¶</span><span class="lbl">文本</span>', false, ' data-kind="text"')}
+				<span class="m-vsep"></span>
+				<span class="glabel">来源</span>
+				${chip('全部', true, ' data-provider=""')}${chip('local', false, ' data-provider="local"')}${chip('comfyui', false, ' data-provider="comfyui"')}${chip('lightai', false, ' data-provider="lightai"')}
+				<span class="m-vsep"></span>
+				${chip('★ 仅收藏', false, ' data-fav="1"')}
+			</div>
+			<div class="m-actions">
+				<button type="button" class="m-btn sm" title="从本地选图片/视频导入（可多选）"><span class="ico">＋</span><span class="lbl">导入文件</span></button>
+				<button type="button" class="m-btn sm" title="导入整个文件夹（复制进库，可脱源）"><span class="ico">📁</span><span class="lbl">导入文件夹</span></button>
+				<button type="button" class="m-btn sm" title="把一个本地文件夹里的文件登记进库：不复制、不移动原文件"><span class="ico">🔗</span><span class="lbl">链接文件夹</span></button>
+				<button type="button" class="m-btn sm" title="把当前筛选（或选中的）素材另存成可读文件名到指定文件夹"><span class="ico">📤</span><span class="lbl">导出到文件夹</span></button>
+			</div>
+		</div>
+
+		<div class="m-list mode-grid">
+			<div class="m-cards">${Array.from({ length: 12 }, (_, i) => cardHtml(i)).join('')}</div>
+		</div>
+
+		<div class="m-status">
+			<div class="m-stat-left">
+				<span><b>60</b> / 667 项</span><span>·</span>
+				<span>已选 <b>0</b></span><span>·</span>
+				<span class="m-stat-extra">506 MB · 回收站 6</span>
+			</div>
+			<div class="m-grow"></div>
+			<div class="m-stat-right">
+				<button type="button" class="m-btn sm danger" title="清空回收站" hidden>清空回收站</button>
+				<button type="button" class="m-btn sm" title="删掉 objects/thumbs 里没有任何资产引用的残留文件">清理孤儿文件</button>
+				<button type="button" class="m-btn sm">加载更多</button>
+			</div>
+		</div>
+	</section>
+
+	<aside class="m-insp">
+		<div class="m-pv"><span class="m-glyph big">▣</span></div>
+		<h4 class="m-iname">a3c7dc78.png</h4>
+		<div class="m-isub">图片 · image/png · 1.2 MB · ★ 已收藏</div>
+		<div class="m-blk"><div class="m-bh">元信息</div><dl class="m-kv">
+			<dt>尺寸</dt><dd>1024×1024</dd><dt>格式</dt><dd>PNG</dd><dt>大小</dt><dd>1.2 MB</dd>
+			<dt>来源</dt><dd>local</dd><dt>导入</dt><dd>2026-10-24 10:37</dd></dl></div>
+		<div class="m-blk"><div class="m-bh">分组</div>
+			<input class="m-input" name="board" placeholder="分组（回车应用；输入新名字即新建）"></div>
+		<div class="m-blk"><div class="m-bh">标签</div>
+			<div class="m-tags"><span class="m-tg">#动物<i class="m-tgx" title="移除标签">×</i></span><span class="m-tg">#真机验证标签<i class="m-tgx" title="移除标签">×</i></span></div>
+			<div class="m-tagadd"><input class="m-input" name="tag" placeholder="加标签后回车"><button type="button" class="m-btn sm">+ 添加</button></div></div>
+		<div class="m-blk"><div class="m-bh">PROMPT</div>
+			<div class="m-prompt">超级风格卡通小柴犬角色，Q版大头大身，圆润清晰线条，粗白描边，跳脱搞怪背景，构图简洁，无文字，得意坏笑，摇首；头部小，一只脚立起…</div></div>
+		<div class="m-acts">
+			<button type="button" class="m-btn primary">★ 取消收藏</button>
+			<button type="button" class="m-btn danger">⌫ 移入回收站</button>
+		</div>
+	</aside>
+
+	<div class="m-fab" data-media-fab>
+		<div class="m-fabWrap"><button type="button" class="m-fabAct is-primary" title="展开 AI 助手">✦</button><span class="m-fabLabel">展开 AI 助手</span></div>
+		<div class="m-fabDivider"></div>
+		<div class="m-fabWrap"><button type="button" class="m-fabAct" title="在浏览器里打开">↗</button><span class="m-fabLabel">在浏览器打开</span></div>
+	</div>
+</div>
+`;
+
+const PANEL_JS = '<script>'
+	// 自测：把「有没有横向溢出 / 动作按钮实际尺寸 / 两条工具条高度」回传给父页（跨 origin 不能用 DOM 读）
+	+ 'window.addEventListener("load", function () { setTimeout(function () {'
+	+ '  var q = function (s) { return document.querySelector(s); };'
+	// ⚠ 不能用 top / status / name 当变量名：它们是 window 的既有属性（top 不可覆盖）⇒ 取不到元素
+	+ '  var chips = q(".m-chips"), acts = q(".m-actions"), topRow = q(".m-top"), statusRow = q(".m-status"), filters = q(".m-filters");'
+	+ '  var btns = [].slice.call(document.querySelectorAll(".m-actions .m-btn"));'
+	+ '  var box = function (el) { if (!el) { return [0, 0]; } var r = el.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; };'
+	+ '  var info = {'
+	+ '    docW: document.documentElement.clientWidth,'
+	+ '    overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,'
+	+ '    topH: box(topRow)[1], chipsH: box(chips)[1], chipsOverflow: chips ? chips.scrollWidth - chips.clientWidth : 0,'
+	+ '    filtersOverflow: filters ? filters.scrollWidth - filters.clientWidth : 0,'
+	+ '    actsW: box(acts)[0], statusH: box(statusRow)[1],'
+	+ '    btns: btns.map(function (b) { var s = box(b); return s[0] + "x" + s[1]; }).join(" "),'
+	+ '  };'
+	+ '  parent.postMessage({ __mediaMock: info }, "*");'
+	+ '}, 80); });'
+	+ 'document.addEventListener("click", function (e) {'
+	+ '  var c = e.target.closest && e.target.closest(".m-chip");'
+	+ '  if (!c) { return; }'
+	+ '  var key = c.hasAttribute("data-kind") ? "data-kind" : (c.hasAttribute("data-provider") ? "data-provider" : "data-fav");'
+	+ '  document.querySelectorAll(".m-chip[" + key + "]").forEach(function (x) { x.classList.remove("on"); });'
+	+ '  c.classList.add("on");'
+	+ '});'
+	+ '<\/script>';
+
+const VARIANTS = {
+	now: CSS_NOW + CSS_NOW_SHIM,
+	b: CSS_NOW + CSS_B,
+	c: CSS_NOW + CSS_C,
+};
+
+const frame = document.getElementById('frame');
+const wrap = document.getElementById('wrap');
+const wid = document.getElementById('wid');
+const metricsEl = document.getElementById('metrics');
+const state = { v: 'now', w: 900 };
+
+window.addEventListener('message', (e) => {
+	const m = e.data && e.data.__mediaMock;
+	if (!m) { return; }
+	const bad = (cond) => cond ? 'bad' : 'ok';
+	const scroll = m.chipsOverflow + m.filtersOverflow;
+	metricsEl.innerHTML = '视口 <b>' + m.docW + 'px</b>'
+		+ ' · 页面横向溢出 <b class="' + bad(m.overflow > 0) + '">' + (m.overflow > 0 ? '有 ' + m.overflow + 'px' : '无') + '</b>'
+		+ ' · 筛选区要横滚 <b class="' + bad(scroll > 0) + '">' + (scroll > 0 ? '有 ' + scroll + 'px' : '无') + '</b>'
+		+ ' · 顶栏/筛选行/状态栏高 <b>' + m.topH + ' / ' + m.chipsH + ' / ' + m.statusH + 'px</b>'
+		+ ' · 动作按钮 <b>' + m.btns + '</b>'
+		+ ' · 动作组宽 <b>' + m.actsW + 'px</b>';
+});
+
+// 供自动化取证：window.__metrics()
+window.__metrics = () => metricsEl.textContent;
+
+function srcdoc() {
+	return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><style>'
+		+ TOKENS + VARIANTS[state.v] + '</style></head><body>' + PANEL + PANEL_JS + '</body></html>';
+}
+
+function render() {
+	wrap.style.width = state.w + 'px';
+	wid.textContent = '容器 ' + state.w + 'px（= 工作台面板宽度；页面视口就是它）';
+	frame.srcdoc = srcdoc();
+}
+
+document.getElementById('variants').addEventListener('click', (e) => {
+	const b = e.target.closest('button');
+	if (!b) { return; }
+	state.v = b.dataset.v;
+	for (const x of document.querySelectorAll('#variants button')) { x.classList.toggle('on', x === b); }
+	render();
+});
+
+document.getElementById('widths').addEventListener('click', (e) => {
+	const b = e.target.closest('button');
+	if (!b) { return; }
+	state.w = Number(b.dataset.w);
+	for (const x of document.querySelectorAll('#widths button')) { x.classList.toggle('on', x === b); }
+	render();
+});
+
+render();
+</script>
+</body>
+</html>

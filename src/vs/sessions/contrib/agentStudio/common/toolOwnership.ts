@@ -104,8 +104,8 @@ export const SHARED_TOOL_VERBS: readonly ISharedToolVerb[] = [
 	//   `_registerKbBuildTools()` 也被注释）⇒ 现在只有 Host 插件还提供 `kb_build` ⇒ **不再是"两侧同名"** ✓。
 	//   ⇒ 登记项已移除（保留它能过守卫的唯一办法是造一个不存在的 ideFile ⇒ 那是自欺 ✗）。
 	//   若 IDE 侧恢复该工具，必须把这一项加回来。
-	{ name: 'kb_topic_overviews', hostPlugin: 'vssaros-kb', ideFile: 'browser/providers/tool/kbVaultRecallTools.ts', sharedStore: '库/<分类>/.overview.md' },
-	{ name: 'kb_feishu_sync', hostPlugin: 'vssaros-kb', ideFile: 'browser/providers/tool/kbFeishuSyncTools.ts', sharedStore: '库/raw + 飞书同步脚本副本' },
+	{ name: 'kb_topic_overviews', hostPlugin: 'vssaros-kb', ideFile: 'browser/providers/tool/kbVaultRecallTools.ts', sharedStore: '数据源/<分类>/.overview.md' },
+	{ name: 'kb_feishu_sync', hostPlugin: 'vssaros-kb', ideFile: 'browser/providers/tool/kbFeishuSyncTools.ts', sharedStore: '数据源/raw + 飞书同步脚本副本' },
 
 	// ─── 记忆（同一套记忆文件）───
 

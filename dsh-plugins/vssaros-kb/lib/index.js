@@ -9,7 +9,7 @@
 //   （`agentStudio.memory`，页面 `/x/memory/`），**内嵌与那条片段路由一并删除**：
 //   现在四个工作台各自一个宿主页，不再有跨模块内嵌，`view.kind=section` 只剩 mcp 一处（寄居 skills）。
 //
-// 数据：`~/.vssaros/knowledge-base/<vaultId>/`（`笔记/`、`库/<分类>/*.md`、`.kbkernel.json` 索引）。**只读**。
+// 数据：`~/.vssaros/knowledge-base/<vaultId>/`（`知识库列表/`、`数据源/<分类>/*.md`、`.kb/kernel.json` 索引）。**只读**。
 
 import { spawn } from 'node:child_process';
 import { bindFoundation } from './foundationRef.js';
@@ -67,6 +67,9 @@ import { MAX_PREVIEW_LISTED } from './core/kbIngest.js';
 // 批授权（`kb_build mode=build` 那张唯一的审批卡）：三条不变式见 core/kbBatchGrant.js 文件头。
 import { DEFAULT_BATCH_LIMIT, GRANT_TTL_MS, clampBatch, consumeGrant, describeGrant, grantAllows, openGrant } from './core/kbBatchGrant.js';
 
+import { clearFeishuBinding, createKnowledgeBase, listKnowledgeBases, readFeishuBinding, writeFeishuBinding } from './core/kbLayoutOps.js';
+// ★ 2026-11-02：知识库主页（/x/kb/home）的 HTML 渲染，纯函数、可单测
+import { renderHomePage } from './homePage.js';
 import { DEFAULT_LARK_CLI, LARK_CLI_MISSING_HINT, SPACE_LIST_ARGS, findSameNameSpace, parseCreatedSpaceId, parseSpaceList, sanitizeSpaceName, spaceCreateArgs } from './core/feishuSpaces.js';
 
 // ★ 页面那唯一一条写路由（§15.33）**复用工具同款围栏** ✓：`resolveOrganizePath` 早就把
@@ -310,10 +313,10 @@ const graphCache = new Map();
  * 而笔记内容在两次打开之间通常**完全没变**。键取 `路径(小写) 的 sha1`，值里存
  * `mtime + bytes` 做失效判定 —— 文件一改，mtime/大小就变，缓存自动失效，不需要手动清。
  *
- * 落点 `<库根>/.kb-html-cache/`：`.kb` 前缀会被视图的 isNoise 过滤掉，不会出现在树里。
+ * 落点 `<库根>/.kb/html-cache/`：`.kb` 前缀会被视图的 isNoise 过滤掉，不会出现在树里。
  * 任何异常（只读盘、权限）都只让缓存失效，**不阻断**正文返回。
  */
-const HTML_CACHE_DIR = '.kb-html-cache';
+const HTML_CACHE_DIR = '.kb/html-cache';
 /**
  * 渲染管线版本（2026-10-26 引入）。
  *
@@ -459,7 +462,7 @@ const PAGE_DOC_LIMIT = 40;
  * ⚠ 因此「笔记」分区的行**永远**不可能是 pending（没有「库」这一段前缀 ✓），与真源"非库分区不参与"一致 ✓。
  */
 /**
- * 该行的 **vault 内相对路径**（形如 `笔记/子/甲.md` ✓）；不是这个 vault 的 uri ⇒ undefined ✓。
+ * 该行的 **vault 内相对路径**（形如 `知识库列表/子/甲.md` ✓）；不是这个 vault 的 uri ⇒ undefined ✓。
  * 与 `libraryRelativeOf` 同一手法，只是不剥「库」那一段 ✓（两处都按 `/<vaultId>/` 定位 ✓）。
  */
 function vaultRelativeOf(doc, vaultId) {
@@ -697,7 +700,7 @@ function notesToolbarHtml() {
 
 function sectionHtml({ section, vaultId, count, body, missing, toolbar = '' }) {
 	const isLibrary = section === LIBRARY_DIR;
-	const label = isLibrary ? '库' : '笔记';
+	const label = isLibrary ? '数据源' : '知识库列表';
 	// ⇐ 真源分区头图标是 codicon-library / codicon-note（`knowledgeBaseView.ts:1627` ✓）——
 	//   2026-10-19 用真 codicon 替掉 📚 / 📝（那两个是彩色 emoji，且不跟着分区色走 ✗）。
 	const glyph = codicon(isLibrary ? 'book' : 'note');
@@ -2365,7 +2368,7 @@ const KB_SCRIPT = `
 	//    ⚠ 本段在模板串里 ⇒ 注释里不许出现反引号 ✗。
 	function dirOfRel(rel) { var parts = String(rel || "").split("/"); parts.pop(); return parts.join("/"); }
 	function baseOfRel(rel) { var parts = String(rel || "").split("/"); return parts[parts.length - 1] || ""; }
-	function isNotesRel(rel) { return String(rel || "").indexOf("笔记/") === 0; }
+	function isNotesRel(rel) { return String(rel || "").indexOf("知识库列表/") === 0; }
 	function readDragPayload(ev) {
 		try { return JSON.parse((ev.dataTransfer && ev.dataTransfer.getData("application/x-kb-drag")) || "[]"); } catch (e) { return []; }
 	}
@@ -2477,7 +2480,7 @@ const KB_SCRIPT = `
 			var paths = readDragPayload(ev);
 			if (!paths.length) { return; }
 			var section = body.closest ? body.closest(".dsh-section") : null;
-			transferInto(section ? (section.getAttribute("data-vault") || "") : "", paths, "笔记", (ev.ctrlKey || ev.altKey) ? "copy" : "move");
+			transferInto(section ? (section.getAttribute("data-vault") || "") : "", paths, "知识库列表", (ev.ctrlKey || ev.altKey) ? "copy" : "move");
 		});
 	});
 	// ★★ 右键菜单（§15.46；**自定件** ✗：真源走编辑器原生菜单 ✓ ⇒ 结构与项照它、样式我们自定 ✓）
@@ -2546,7 +2549,7 @@ const KB_SCRIPT = `
 	/**
 	 * 把行上的 data-uri 归一成**宿主认的绝对 fs 路径**（正斜杠、盘符大写）。
 	 *
-	 * ★ 实测（2026-10-14，拿真实 .kbkernel.json 对过）：data-uri 有**两种形态** ✗
+	 * ★ 实测（2026-10-14，拿真实 .kb/kernel.json 对过）：data-uri 有**两种形态** ✗
 	 *   · 在索引里的文件 ⇒ 生产形态（小写盘符 + 百分号编码的 file URI，例：file 三斜杠 c 百分号 3A 斜杠 Users …）；
 	 *   · **不在索引里的文件与所有目录** ⇒ uriOf 回落 absOf(node) ⇒ **裸 fs 路径**（Windows 盘符那种）。
 	 *     （见 renderPage 里的回退链：uriIndex 查不到就用 absOf ✓。）
@@ -2681,7 +2684,7 @@ const KB_SCRIPT = `
 		}
 		// ⚠ 只在**「笔记」区**出现这两项 ✗（围栏在服务端 ✓，但 UI 上摆一个"点了必然 400"的项违反本页纪律：
 		//   见上面 ✎ 那条注释"不做一个点了会报错的按钮 ✓" —— 往「库」造素材是**导入**那条路 ✓）。
-		if (dirRel === "笔记" || dirRel.indexOf("笔记/") === 0) {
+		if (dirRel === "知识库列表" || dirRel.indexOf("知识库列表/") === 0) {
 			// ⚠ 实现搬到了 newInDir ✓（行内动作与菜单**共用一份** ✓ —— 见那个函数的注释 ✓）
 			items.push({ label: "新建笔记", run: function () { newInDir(row, "file", dirRel); } });
 			items.push({ label: "新建文件夹", run: function () { newInDir(row, "folder", dirRel); } });
@@ -3184,7 +3187,7 @@ function updateSolo() {
  * 解析 IDE **注入**的库记录（`config.kbVaults` —— JSON 字符串，见 `dshHarnessService` 的 `_kbVaultsSlim` ✓）。
  *
  * 为什么是"注入"而不是从盘上推 ✗：库的**名字与图标只存在 IDE storage 里**（`agentStudio.kb.vaults` ✓），
- * 盘上任何地方都没有 —— 真机核过：库目录里只有索引缓存（`.kbkernel.json` / `.ftindex.json` ✓）✗。
+ * 盘上任何地方都没有 —— 真机核过：库目录里只有索引缓存（`.kb/kernel.json` / `.kb/ftindex.json` ✓）✗。
  *
  * ⚠ 容错口径（重要 ✓）：坏输入 / 空 / 不是数组 / 一条都没有 ⇒ **`undefined`** ⇒ 调用方**退回旧行为**
  * （uid 目录名当库名 ✓）并**如实标注** ✗ —— 绝不抛、也绝不编造名字 ✓。
@@ -3612,9 +3615,9 @@ export function renderFulltextResult(value) {
 	if (value.docsWithoutText) {
 		notes.push(`${value.docsWithoutText} 篇索引条目没有正文（老索引），未参与检索。`);
 	}
-	const notKernel = (value.sources ?? []).filter(s => s.source !== '.kbkernel.json');
+	const notKernel = (value.sources ?? []).filter(s => s.source !== '.kb/kernel.json');
 	if (notKernel.length) {
-		notes.push(`来源不是 .kbkernel.json 的库：${notKernel.map(s => `${s.vaultId}=${s.source}`).join(', ')}。`);
+		notes.push(`来源不是 .kb/kernel.json 的库：${notKernel.map(s => `${s.vaultId}=${s.source}`).join(', ')}。`);
 	}
 	// 跨库检索时分数**不可互相比较**（每库一份索引 ⇒ 各自语料不同）⇒ 如实说明，不假装可比 ✓
 	// ⚠ 说的是"覆盖了几个库"（含没有命中的），不是"命中来自几个库" —— 后者会让人以为每个库都出结果 ✗
@@ -4126,13 +4129,13 @@ function toolDefinitions(ctx, state, config) {
 	}, {
 		// ★★ 2026-10-20（用户报「为什么存到 讲懂/ 文件夹」）：新增**目录地图**工具。
 		//   此前模型要决定「这篇放哪」时**没有任何依据**（只能看单个文件路径，看不到分类结构）
-		//   ⇒ 就按任务名自造了 `笔记/讲懂/` ✗。
-		//   `笔记/知识体系.md` 里本来有一份带说明的目录总览，但它是 `kb_build` 的产物、
+		//   ⇒ 就按任务名自造了 `知识库列表/讲懂/` ✗。
+		//   `知识库列表/知识体系.md` 里本来有一份带说明的目录总览，但它是 `kb_build` 的产物、
 		//   **可能过时**（实测文档写 UnrealEngine 46 篇、磁盘只有 1 篇）⇒ 这里**以磁盘为准**，
 		//   只给"路径 + 篇数"（语义留给模型按目录名判断，或让它读体系文档补充）。
 		name: 'kb_catalog',
-		description: '笔记区的**目录地图**：列出 `笔记/` 下所有分类目录及其篇数（**以磁盘实际目录为准**）。'
-			+ '⚠ 决定把笔记写到哪里之前，**先调本工具**看清既有分类；把笔记放进**领域分类**（如 `笔记/01_学习/AI_Agent`），'
+		description: '笔记区的**目录地图**：列出 `知识库列表/` 下所有分类目录及其篇数（**以磁盘实际目录为准**）。'
+			+ '⚠ 决定把笔记写到哪里之前，**先调本工具**看清既有分类；把笔记放进**领域分类**（如 `知识库列表/01_学习/AI_Agent`），'
 			+ '**不要**用任务类型命名目录（`讲懂/`、`分析/`、`摘要/` 都是错的）。'
 			+ '看不清该放哪就**直接问用户**（把这里的目录列给用户选）。',
 		parameters: { type: 'object', properties: {} },
@@ -4162,7 +4165,7 @@ function toolDefinitions(ctx, state, config) {
 				text: value.count
 					? `笔记区有 ${value.count} 个分类目录（路径与篇数**以磁盘为准**；说明来自知识体系.md，可能滞后）：\n`
 						+ value.dirs.map(d => `- ${d.path}（${d.count} 篇）${d.desc ? `　← ${d.desc}` : ''}`).join('\n')
-					: '笔记区还没有子目录（可以直接写 `笔记/xxx.md`，或问用户想怎么分类）。',
+					: '笔记区还没有子目录（可以直接写 `知识库列表/xxx.md`，或问用户想怎么分类）。',
 			}],
 		},
 		isConcurrencySafe: () => true,
@@ -4170,7 +4173,7 @@ function toolDefinitions(ctx, state, config) {
 			const { vaults } = await listAllVaults(root(), config, { withDocs: false });
 			const target = vaults[0];
 			if (!target) { return { count: 0, dirs: [] }; }
-			// 目录与篇数来自**磁盘**（真实）；说明来自 `笔记/知识体系.md`（尽力匹配，可能过时/缺失）
+			// 目录与篇数来自**磁盘**（真实）；说明来自 `知识库列表/知识体系.md`（尽力匹配，可能过时/缺失）
 			const [dirs, descMap] = await Promise.all([
 				noteCatalog(target.dir),
 				catalogDescriptions(target.dir),
@@ -4213,7 +4216,7 @@ function toolDefinitions(ctx, state, config) {
 			// ★★ 2026-10-19 修（用户报「读取知识库根目录还是错误」）：
 			//   `readDoc(root(), uri)` 里**相对路径是相对「数据根」解析的**（`resolve(rootAbs, uri)`）——
 			//   而数据根是 `~/.vssaros-dev/knowledge-base`，真正的库在 `<数据根>/<vaultId>/` 或外挂路径
-			//   （`E:/VsSarosVault`）⇒ `库/概念/x.md` 会被解析成一个**不存在的路径** ✗
+			//   （`E:/VsSarosVault`）⇒ `数据源/概念/x.md` 会被解析成一个**不存在的路径** ✗
 			//   （description 却承诺"vault 内相对路径"，两者不符 ✓ 真机踩到）。
 			//   而且数据根下**有多个库**（`20260709063858-azbh1at` 等）⇒ 同名相对路径天然歧义。
 			//   ⇒ 相对路径一律按**当前库**解析（面板上选的那个 ✓）；要读别的库显式传 vaultId。
@@ -4374,7 +4377,7 @@ function toolDefinitions(ctx, state, config) {
 		},
 	}, {
 		// ── 笔记区目录整理（§R.7 第 ④ 项的**最后一项**；真源 IDE `kbOrganizeTools.ts` ✓）────────────
-		// 语义照搬 ✓：只在 **`笔记/` 区内**动（资料库正文 `库/` 不许碰 ✓）；顺序 creates → moves →
+		// 语义照搬 ✓：只在 **`知识库列表/` 区内**动（资料库正文 `数据源/` 不许碰 ✓）；顺序 creates → moves →
 		// deletes(移入备份) ✓；单次上限 `MAX_OPS` ✓；`from===to` / `from 不存在` / **`to` 已存在**（不覆盖 ✓）
 		// ⇒ 逐项拒并如实列进 `skipped` ✓；备份落在 **vault 之外** ✓（vault 文件树会把 vault 内的一切列出来，
 		// 备份放里面就成了"知识库内容" ✗）。
@@ -4383,21 +4386,21 @@ function toolDefinitions(ctx, state, config) {
 		//   （没有还原点就不动手 ✓）。
 		name: 'kb_organize',
 		description: [
-			'整理知识库**「笔记」区**的目录结构（**只能在 `笔记/` 区内操作** ✓，资料库正文区动不了 ✓）：',
+			'整理知识库**「笔记」区**的目录结构（**只能在 `知识库列表/` 区内操作** ✓，资料库正文区动不了 ✓）：',
 			'- `creates`：新建目录（自动建父目录 ✓）；',
 			'- `moves`：移动/重命名笔记（改目录名 = 对目录下每个文件各写一条 ✓）—— 目标已存在会**拒该项、不覆盖** ✓；',
 			// 2026-10-14（§16.20）：`copies` 的规则与 `moves` **相反**（撞名改名而不是拒 ✗）—— 描述里必须说清，
 			// 否则模型会以为它也会"拒"，从而自己拼增量名（拼错就是覆盖或撞名失败 ✓）。
 			'- `copies`：复制笔记／目录（源**保持不动** ✓）—— 目标已存在时**不拒**，而是自动改增量名 `甲 copy.md` / `甲 copy 2.md` ✓（照真源 Ctrl 拖拽的命名 ✓）；复制不写备份（源没被动 ✓）；',
 			'- `deletes`：**不是真删除** —— 移入 **vault 之外**的备份目录（可恢复 ✓）。',
-			`一次最多 ${MAX_OPS} 项；路径给相对 vault 根（形如 \`笔记/01_学习/…\`）或绝对路径均可 ✓。`,
+			`一次最多 ${MAX_OPS} 项；路径给相对 vault 根（形如 \`知识库列表/01_学习/…\`）或绝对路径均可 ✓。`,
 			'⚠ 结果里含一行 `KB_ORGANIZE_RESULT {json}`（含 `backupDir` ✓）；**还原只能靠那个备份目录**（dsh 侧没有聊天页签的 undoAll ✗）⇒ 被拒绝的项（`skipped`）要么改参数重试、要么别硬凑 ✓。',
 			// 2026-10-12（报告 R.8.4）：dsh 原生 fs 工具**写**受沙箱围栏（`workspace-write` ＝ 会话工作区 ＋ 平台 temp），
 			// 而 vault 与数据根都在围栏**外** ⇒ 模型若改用原生 `write`/`edit` 动笔记，会拿到 `FS_SANDBOX_DENIED` ✗。
 			// 这句写进描述就是为了让模型**别绕**（它看不到我们这份文档，只看得到描述 ✓）。
 			'⚠ **改知识库（vault）里的笔记请走本工具** ✗：dsh 原生 `write` / `edit` 受沙箱围栏限制（只允许**会话工作区**内与平台临时目录），vault 与数据根都在围栏外 ⇒ 用原生工具会吃 `FS_SANDBOX_DENIED`；同理，动别处路径也只该用对应的 VsSaros 工具 ✓。',
 			'⚠ 会改盘 ⇒ 需要用户在审批里确认 ✓（被拒绝是正常的，别反复重试 ✗）。',
-			'⚠ 另外会**顺带刷新导航文件** `笔记/index.md` 与 `笔记/overview.md`（与 IDE 同一套规则 ⇒ 两侧视图看到的目录一致 ✓）；`insights.md` **也由我们维护** ✓；只有各目录 `.overview.md`（目录摘要中间层，要模型）不在 dsh 侧 ⇒ 要它最新请在 IDE 侧刷一次 ✓。',
+			'⚠ 另外会**顺带刷新导航文件** `知识库列表/index.md` 与 `知识库列表/overview.md`（与 IDE 同一套规则 ⇒ 两侧视图看到的目录一致 ✓）；`insights.md` **也由我们维护** ✓；只有各目录 `.overview.md`（目录摘要中间层，要模型）不在 dsh 侧 ⇒ 要它最新请在 IDE 侧刷一次 ✓。',
 		].join(' '),
 		parameters: {
 			type: 'object',
@@ -4524,11 +4527,11 @@ function toolDefinitions(ctx, state, config) {
 			'看知识库「库」里**还有哪些素材没建成笔记**（把素材归纳进「笔记」区的那件事）。',
 			'`mode:"preview"`（**缺省**，只读）：列出待构建素材与**拒因**（未构建 / 笔记不存在 / 素材被改过），不启动任何会话 ——',
 			'在问用户"要不要构建"之前先用它拿到准确数量与清单 ✓。',
-			'`mode:"build"`（真构建，**要用户批准**）：起一个子代理读这些素材、用 `kb_write_note` 把笔记写进「笔记」区，并在收尾时创建/完善 `笔记/知识体系.md` ✓。',
+			'`mode:"build"`（真构建，**要用户批准**）：起一个子代理读这些素材、用 `kb_write_note` 把笔记写进「笔记」区，并在收尾时创建/完善 `知识库列表/知识体系.md` ✓。',
 			'⚠ 它**立即返回** jobId（构建是分钟级后台任务）⇒ 进度/结果用 `job_output`（`wait:true` 会等它跑完）、`job_list`、`job_kill` ✓；',
 			'⚠ 前置：组合里要有 `jobs` 与 `subagents` 服务（缺了会明确报错并指路 IDE 侧 ✓）；⚠ 子代理**没有自己的审批通道** （平台把它钉成 approvalPolicy=never）⇒ 批准这张卡时会同时开一份**有界批授权**，否则它一篇都写不出来 ✓；',
-			'⚠ 跑完之后**宿主会刷新** `笔记/index.md` 与 `笔记/overview.md`（与 IDE 同一套规则 ✓）；`insights.md` **也由我们维护** ✓；只有各目录 `.overview.md`（要模型）不在 dsh 侧 ✓。',
-			'⚠ 构建收尾会把本批**确实产出**的笔记登记进共享的 `.kb-build-cache.json`（**只增不删** ✓，与 IDE 同一份格式与口径 ✓）⇒ 下一次 preview 不会重复计数 ✓；⚠ 三处如实边界：① 本侧**只统计 `.md` 素材**（pdf/docx 等非 md 素材需要 IDE 侧先转成文本，那条原生转换链 dsh 侧没有 ✗）；',
+			'⚠ 跑完之后**宿主会刷新** `知识库列表/index.md` 与 `知识库列表/overview.md`（与 IDE 同一套规则 ✓）；`insights.md` **也由我们维护** ✓；只有各目录 `.overview.md`（要模型）不在 dsh 侧 ✓。',
+			'⚠ 构建收尾会把本批**确实产出**的笔记登记进共享的 `.kb/build-cache.json`（**只增不删** ✓，与 IDE 同一份格式与口径 ✓）⇒ 下一次 preview 不会重复计数 ✓；⚠ 三处如实边界：① 本侧**只统计 `.md` 素材**（pdf/docx 等非 md 素材需要 IDE 侧先转成文本，那条原生转换链 dsh 侧没有 ✗）；',
 			'② 待构建判据与 IDE 的「批量构建」**同一套**（含"素材改了会重新计入"✓），但**不含**导航文件与构建产出笔记 ✓。',
 		].join(' '),
 		parameters: {
@@ -4660,29 +4663,29 @@ function toolDefinitions(ctx, state, config) {
 		//   （页面只读、原生写工具吃 `FS_SANDBOX_DENIED`）。这不是"移植"（IDE 侧也**没有**这个工具 ✓，
 		//   那边走编辑器 UI / 构建流程 ✓）—— 是给 dsh 会话补一条**可控的**写路径 ✓。
 		// 安全规则**沿用 `organize.js` 的同三条**（同一份 `resolveOrganizePath` / 同一套 vault 外备份 ✓）：
-		//   围栏 `笔记/` 之外一律拒 ✓、缺省**不覆盖** ✓、覆盖前先把旧正文移入备份（dsh 侧唯一还原点 ✓）。
+		//   围栏 `知识库列表/` 之外一律拒 ✓、缺省**不覆盖** ✓、覆盖前先把旧正文移入备份（dsh 侧唯一还原点 ✓）。
 		name: 'kb_write_note',
 		description: [
-			'把**一篇笔记的正文**写进知识库的「笔记」区（`<vault>/笔记/…` ✓；资料库正文区 `库/` 动不了 ✓）。',
+			'把**一篇笔记的正文**写进知识库的「笔记」区（`<vault>/笔记/…` ✓；资料库正文区 `数据源/` 动不了 ✓）。',
 			'缺省 `mode: "create"` ⇒ **目标已存在就拒绝**（绝不静默覆盖 ✓）；确实要覆盖时显式传 `mode: "replace"` ⇒',
 			'旧正文会**先**被复制进 vault 之外的备份目录（结果里给 `backupDir`，**还原只靠它** ✓）。',
-			'`path` 给相对 vault 根（形如 `笔记/主题/标题.md` ✓）或绝对路径均可 ✓，**父目录会自动创建** ✓。',
+			'`path` 给相对 vault 根（形如 `知识库列表/主题/标题.md` ✓）或绝对路径均可 ✓，**父目录会自动创建** ✓。',
 			// ★★ 2026-10-20 真机（用户报「为什么笔记存到 讲懂 文件夹下」）：模型把**任务类型**
-			//   （「讲懂」）当成了分类，自建 `笔记/讲懂/` 这种孤儿目录，而库里的既有分类是
+			//   （「讲懂」）当成了分类，自建 `知识库列表/讲懂/` 这种孤儿目录，而库里的既有分类是
 			//   `01_学习` / `02_工作` / `03_生活` / `技术架构` 这类**领域**划分 ✗。
 			//   根因：`path` 完全自由 + 描述里没有任何"该放哪"的引导 ⇒ 模型只能自己发明规则。
 			//   ⇒ 把口径写进描述（模型每次写都会读到），并明确"不确定就落 笔记/ 根、别新建目录"。
 			'⚠ **存放位置有规矩**：先看**既有分类**（**调 `kb_catalog`** 拿目录地图：路径 + 篇数），'
-				+ '把笔记放进**领域分类**（如 `笔记/01_学习/AI_Agent/`、`笔记/技术架构/`）。'
+				+ '把笔记放进**领域分类**（如 `知识库列表/01_学习/AI_Agent/`、`知识库列表/技术架构/`）。'
 				+ '**不要**用**任务类型**命名目录 —— `讲懂/`、`分析/`、`摘要/`、`问答/` 这类都是错的'
 				+ '（同一篇笔记会因为换个任务被存成好几份）。'
 				// ★ 2026-10-20（用户口径）：**不确定就问用户，不要自己挑、更不要新建目录**。
-				+ '**不确定放哪就询问用户**（列出 `笔记/` 下现有目录供其选择）—— '
+				+ '**不确定放哪就询问用户**（列出 `知识库列表/` 下现有目录供其选择）—— '
 				+ '宁可多问一句，也不要留下一个孤儿目录。',
 			`⚠ 单篇上限 ${MAX_NOTE_CHARS} 字；⚠ 空内容允许（= 建一篇空笔记），但**空内容也是一次写入** ⇒ 同样要过审批 ✓。`,
 			'⚠ **改知识库（vault）里的笔记请走本工具** ✗：dsh 原生 `write` / `edit` 只允许会话工作区内与平台临时目录，vault 在围栏外 ⇒ 用原生工具会吃 `FS_SANDBOX_DENIED` ✓。',
 			'⚠ 会改盘 ⇒ 需要用户在审批里确认 ✓（被拒绝是正常的，别反复重试 ✗）。',
-			'⚠ 另外会**顺带刷新导航文件** `笔记/index.md` 与 `笔记/overview.md`（与 IDE 同一套规则 ⇒ 两侧视图看到的目录一致 ✓）；`insights.md` **也由我们维护** ✓；只有各目录 `.overview.md`（目录摘要中间层，要模型）不在 dsh 侧 ⇒ 要它最新请在 IDE 侧刷一次 ✓。',
+			'⚠ 另外会**顺带刷新导航文件** `知识库列表/index.md` 与 `知识库列表/overview.md`（与 IDE 同一套规则 ⇒ 两侧视图看到的目录一致 ✓）；`insights.md` **也由我们维护** ✓；只有各目录 `.overview.md`（目录摘要中间层，要模型）不在 dsh 侧 ⇒ 要它最新请在 IDE 侧刷一次 ✓。',
 		].join(' '),
 		parameters: {
 			type: 'object',
@@ -4735,9 +4738,9 @@ function toolDefinitions(ctx, state, config) {
 			let nav;
 			try {
 				result = await writeNote({ vaultRoot: targets[0].dir, relPath: redirect.relPath, content: params?.content, mode });
-				// ★ 写完刷导航（`笔记/index.md` / `笔记/overview.md`）—— 与真源同一批动作之后刷 ✓
+				// ★ 写完刷导航（`知识库列表/index.md` / `知识库列表/overview.md`）—— 与真源同一批动作之后刷 ✓
 				//（真源：构建/整理完后 `maintainKbNavigation` ✓；本仓最接近的挂点就是这里与构建任务 ✓）。
-				//   放在**同一把 vault 锁之内**：导航也是往 `笔记/` 里写 ⇒ 不能与别的写者交错 ✓。
+				//   放在**同一把 vault 锁之内**：导航也是往 `知识库列表/` 里写 ⇒ 不能与别的写者交错 ✓。
 				if (result.ok) { nav = await refreshDerived(targets[0].dir, config, [result.path]); }
 			} finally {
 				await release();
@@ -4757,7 +4760,7 @@ function toolDefinitions(ctx, state, config) {
 				created: result.created,
 				mode: result.mode,
 				bytes: result.bytes,
-				// ★ 落点被「当前目录」调整过 ⇒ **必须告诉模型**（否则它以为是 `笔记/xxx.md`，
+				// ★ 落点被「当前目录」调整过 ⇒ **必须告诉模型**（否则它以为是 `知识库列表/xxx.md`，
 				//   下次还按旧路径找，会"找不到刚写的笔记" ✗）。也放进工具结果，用户看回执能懂 ✓。
 				...(redirect.redirected ? { redirectedFrom: redirect.from, activeDir } : {}),
 				// ★ 库被纠正过（方案 A：当前库优先）⇒ **同样必须说**（否则模型以为写进了它指定的库，
@@ -4777,9 +4780,9 @@ function toolDefinitions(ctx, state, config) {
 		name: 'kb_mkdir',
 		description: [
 			'在知识库「笔记」区建目录（递归建父目录 ✓；**目录已存在不算错** ✓）。',
-			'`path` 给相对 vault 根（形如 `笔记/主题` ✓）或绝对路径均可 ✓；`笔记/` 之外一律拒绝 ✓。',
+			'`path` 给相对 vault 根（形如 `知识库列表/主题` ✓）或绝对路径均可 ✓；`知识库列表/` 之外一律拒绝 ✓。',
 			'⚠ 会改盘 ⇒ 需要用户在审批里确认 ✓；⚠ 与写笔记同理：别用 dsh 原生工具去建 vault 里的目录（沙箱围栏外侧会吃 `FS_SANDBOX_DENIED` ✓）。',
-			'⚠ 另外会**顺带刷新导航文件** `笔记/index.md` 与 `笔记/overview.md`（与 IDE 同一套规则 ⇒ 两侧视图看到的目录一致 ✓）；`insights.md` **也由我们维护** ✓；只有各目录 `.overview.md`（目录摘要中间层，要模型）不在 dsh 侧 ⇒ 要它最新请在 IDE 侧刷一次 ✓。',
+			'⚠ 另外会**顺带刷新导航文件** `知识库列表/index.md` 与 `知识库列表/overview.md`（与 IDE 同一套规则 ⇒ 两侧视图看到的目录一致 ✓）；`insights.md` **也由我们维护** ✓；只有各目录 `.overview.md`（目录摘要中间层，要模型）不在 dsh 侧 ⇒ 要它最新请在 IDE 侧刷一次 ✓。',
 		].join(' '),
 		parameters: {
 			type: 'object',
@@ -5320,16 +5323,16 @@ function toolDefinitions(ctx, state, config) {
 		// ── 飞书知识库：列出 / 新建（§R.7 第 ④ 项）─────────────────────────────────────────────
 		// 为什么需要它 ✓：`kb_feishu_sync` 只解决"把笔记推上去" ✓，而用户的真实需求形态是
 		// 「把某个笔记目录关联到飞书知识库，**没有则新建**」✗ —— 缺的正是"查远端真实列表 / 建库"这一步 ✓。
-		// ⚠ 判据**不许**用本地 `.feishu-space-map.json` ✗：那是**本地映射**，不等于远端有没有同名库 ✓
+		// ⚠ 判据**不许**用本地 `.kb/space-map.json` ✗：那是**本地映射**，不等于远端有没有同名库 ✓
 		//   （IDE 侧注释记的正是这个"判据错位" ✓）⇒ `list` 必须问远端 ✓。
 		// 契约照 IDE 真源（`browser/knowledge/feishuSyncCore.ts` ✓）：`wiki +space-list --page-all --format json`（20s ✓）、
 		// `wiki +space-create --name … --as user`（30s ✓）、同名（忽略大小写与首尾空白）⇒ **复用不重建** ✓。
 		name: 'kb_feishu_spaces',
 		description: [
 			'列出 / 新建**飞书知识库**（wiki space）——「把某个笔记目录关联到飞书知识库」的前置步骤。',
-			'**先 `action: "list"`**（不要用本地 `.feishu-space-map.json` 判断远端有没有同名库 ✗ —— 那是本地映射，判据错位）；',
+			'**先 `action: "list"`**（不要用本地 `.kb/space-map.json` 判断远端有没有同名库 ✗ —— 那是本地映射，判据错位）；',
 			'确认远端没有再 `action: "create"`；同名库已存在时会**直接复用**并返回它的 spaceId ✓（不会重复创建 ✓）。',
-			`拿到 spaceId 后写进 vault 内的 \`.feishu-space-map.json\` 的 mappings（\`dir\` 用「笔记」区相对目录），再跑 kb_feishu_sync ✓。`,
+			`拿到 spaceId 后写进 vault 内的 \`.kb/space-map.json\` 的 mappings（\`dir\` 用「笔记」区相对目录），再跑 kb_feishu_sync ✓。`,
 			'底层跑 lark-cli（缺它/未登录时给出安装与登录指引 ✓）；`create` 会**写远端** ⇒ 需要用户在审批里确认 ✓（被拒绝是正常的，别反复重试 ✗）。',
 		].join(' '),
 		parameters: {
@@ -5395,7 +5398,7 @@ function toolDefinitions(ctx, state, config) {
 			if (dup) {
 				return {
 					ok: true, action, duplicated: true, spaceId: dup.spaceId, count: spaces.length, spaces,
-					message: `飞书侧**已存在**同名知识库「${dup.name}」（spaceId: ${dup.spaceId}）⇒ 不要重复创建 ✓。下一步：把该 spaceId 写进该 vault 的 .feishu-space-map.json 的 mappings（dir = 「笔记」区相对目录），再跑 kb_feishu_sync ✓。`,
+					message: `飞书侧**已存在**同名知识库「${dup.name}」（spaceId: ${dup.spaceId}）⇒ 不要重复创建 ✓。下一步：把该 spaceId 写进该 vault 的 .kb/space-map.json 的 mappings（dir = 「笔记」区相对目录），再跑 kb_feishu_sync ✓。`,
 				};
 			}
 			const created = await runLarkCli(exe, spaceCreateArgs(name), SPACE_CREATE_TIMEOUT_MS);
@@ -5409,7 +5412,7 @@ function toolDefinitions(ctx, state, config) {
 			}
 			return {
 				ok: true, action, created: true, spaceId,
-				message: `已创建飞书知识库「${name}」（spaceId: ${spaceId}）✓。下一步：把该 spaceId 写进该 vault 的 .feishu-space-map.json 的 mappings（dir = 「笔记」区相对目录），再跑 kb_feishu_sync ✓。⚠ 只有映射目录里的内容会被同步；空目录不会产生任何文档（可先放一篇索引笔记）。`,
+				message: `已创建飞书知识库「${name}」（spaceId: ${spaceId}）✓。下一步：把该 spaceId 写进该 vault 的 .kb/space-map.json 的 mappings（dir = 「笔记」区相对目录），再跑 kb_feishu_sync ✓。⚠ 只有映射目录里的内容会被同步；空目录不会产生任何文档（可先放一篇索引笔记）。`,
 			};
 		},
 	}, {
@@ -5655,7 +5658,7 @@ export const WRITE_TOOLS = ['kb_feishu_sync', 'kb_feishu_spaces', 'kb_organize',
  * 写操作的**落盘日志**（`<数据根>/kb-write.log`）。
  *
  * ★★ 2026-10-19（用户反复报「工具里写了错误的知识库目录」）：`kb_write_note` 之前
- *   **一行日志都不留** —— `.op-log.jsonl` 里只有 `feishu.sync`（那是 IDE 侧记录的），
+ *   **一行日志都不留** —— `.kb/op-log.jsonl` 里只有 `feishu.sync`（那是 IDE 侧记录的），
  *   于是"到底用了哪个 vault、落点被纠正没有"完全查不到，只能靠猜 ✗。
  *   ⇒ 每次写都把三件事记下来：**请求的 vaultId / 实际用的 / 最终路径**。
  *   ⚠ 落点不能走 `foundation`（apply 阶段可能未绑定，见 skills 插件同名坑）⇒ 这里用
@@ -5691,7 +5694,7 @@ async function vaultWantedOf(params, config) {
 	// 真机事故：用户页面选的是 `20260922123131-827wo3k`（我的知识库 / E:/VsSarosVault），
 	//   而模型调 `kb_write_note` 时显式传了 `20260709063858-azbh1at` —— 它刚才 `kb_search`（**跨库** ✓）
 	//   在那个库的「库」区搜到了素材，于是判断"内容在那儿"，笔记就写进了那个库 ✗。
-	//   ⇒ 用户看不到笔记、另一个库却多了一篇（`笔记/00-入门与导读/...` 实测）。
+	//   ⇒ 用户看不到笔记、另一个库却多了一篇（`知识库列表/00-入门与导读/...` 实测）。
 	//
 	// 现在的口径：**用户当前所在的位置就是默认落点**。模型想写别的库会被纠正，
 	//   并把被纠正的值放进返回值（调用方要写进工具结果 ⇒ 模型和用户都能看见"落点被改过" ✓，
@@ -5857,7 +5860,7 @@ function writeActorIds(agent) {
 }
 
 /**
- * 写完盘之后刷新导航两件（`笔记/index.md`、`笔记/overview.md`）。
+ * 写完盘之后刷新导航两件（`知识库列表/index.md`、`知识库列表/overview.md`）。
  *
  * 口径见 `core/kbNavigation.js` 文件头（**逐字**照真源 ✓，交叉校验在 IDE 侧测试
  * `kbNavigationParity.test.ts` ⇒ 两侧**逐字节**相同 ✓）。真源在每次构建/整理之后都会刷一次
@@ -5873,13 +5876,13 @@ async function refreshDerived(vaultRoot, config, targets = []) {
 		return undefined;
 	}
 	try {
-		const notesDir = join(vaultRoot, '笔记');
+		const notesDir = join(vaultRoot, '知识库列表');
 		// ★ 顺序照真源：先刷导航、再跑门控（`maintainKbNavigation` 之后才 `applyDeabstractionGating` ✓）
 		// 真源顺序：来源注入（子代理写 frontmatter 时自带 ✓）→ **补链** → 导航 → 门控 ✓
 		const enrichment = await enrichNotes(notesDir, targets);
 		const navigation = await maintainNavigation(notesDir);
 		const gating = await applyGating(notesDir, vaultRoot);
-		// ★ 末尾重建 FTS 内核缓存（`.kbkernel.json` ✓ —— 2026-10-13 §16.8 纠偏：真源运行时就写它 ✓）：
+		// ★ 末尾重建 FTS 内核缓存（`.kb/kernel.json` ✓ —— 2026-10-13 §16.8 纠偏：真源运行时就写它 ✓）：
 		//   改了笔记 ⇒ 检索/页面要能立刻看到新数据 ⇒ 重建缓存是"写"的收尾 ✓。
 		//   ⚠ **各自 try** ✗：缓存是**可再生**的（丢了重建即可 ✓）⇒ 它失败**不该**让写入失败 ✓
 		//     （与上面那句"刷新失败不该让写入失败"同一条 ✓）—— 但要把失败**带进回执** ✓（不许静默吞 ✗）。
@@ -5976,8 +5979,8 @@ export function buildChildPrompt({ vaultId, files, batch, remaining }) {
 		//   · 而 `知识体系.md` 在真源里**正是构建的一部分**：kb-build 手册 Phase 2 的原话是
 		//     "依据笔记区当前真实的目录与文件，创建或完善 `知识体系.md`"（`kbImportController.ts:1665` ✓）
 		//     ⇒ 原来那条"不许动知识体系.md"是**错的** ✗（照它做出来的库，在 IDE 侧看就是"缺了体系文档" ✓）。
-		'3. 不许改「库」区素材，也不许动 `笔记/index.md` 与 `笔记/overview.md`（这两个导航文件由宿主在任务结束后自动重建 ⇒ 你写了也会被覆盖）。',
-		'   但**要**收尾时创建/完善 `笔记/知识体系.md`（vaultId 同上，用 kb_write_note ✓）：它是「知识体系」文档本身 ——'
+		'3. 不许改「库」区素材，也不许动 `知识库列表/index.md` 与 `知识库列表/overview.md`（这两个导航文件由宿主在任务结束后自动重建 ⇒ 你写了也会被覆盖）。',
+		'   但**要**收尾时创建/完善 `知识库列表/知识体系.md`（vaultId 同上，用 kb_write_note ✓）：它是「知识体系」文档本身 ——'
 			+ '依据你这次看到的真实目录与笔记，写清各分类下有什么、彼此什么关系；已存在就 mode="replace" 更新它 ✓。',
 		`4. 本批最多 ${batch} 份（这里给了 ${files.length} 份）；${remaining > 0 ? `另有 ${remaining} 份留给下一次调用 ✓` : '这批就是全部 ✓'}。`,
 		'5. 收尾时如实回报：新建/更新了哪几篇、哪几份没做成、为什么（失败的照实说，不要假装成功）。',
@@ -6127,7 +6130,7 @@ async function startBuildJob({ ctx, state, config, vault, pending, params, exec,
 				const controller = new AbortController();
 				return {
 					cancel: reason => controller.abort(reason ?? 'kb-build 被取消'),
-					// ★ 子代理跑完之后刷新导航两件（`笔记/index.md`、`笔记/overview.md`）——
+					// ★ 子代理跑完之后刷新导航两件（`知识库列表/index.md`、`知识库列表/overview.md`）——
 					//   真源在构建之后也是立刻 `maintainKbNavigation` ✓。放在 `done` 的收尾（**成功/失败都刷**：
 					//   失败时也可能已经写了半批 ✓），且刷新失败**不影响任务结论**（`refreshNavigation` 自己吞错 ✓）。
 					// ⚠ 必须是**同步调用** `subagents.start`（async IIFE 在第一个 await 之前是同步执行的 ✓）——
@@ -6245,7 +6248,7 @@ async function startBuildJob({ ctx, state, config, vault, pending, params, exec,
 				// ★ 如实说清后果（2026-10-13 真机：子代理的确认请求被**确定性拒绝** ⇒ 没授权就写不出来 ✓）
 				: '批授权已关闭（config.batchGrant=false）⇒ ⚠ 子代理**没有审批通道**（平台把它钉成 approvalPolicy=never）：本批的笔记写入会被确定性拒绝，**一篇也写不出来** ✓',
 			// ★ P1：缓存写入要对用户可见 ✓（我们不写时如实说、开始写了也要如实说 ✓）
-			'收尾（子代理跑完之后）会刷新导航三件、并把本批**确实产出**的笔记登记进 `.kb-build-cache.json`（素材绝对路径 → 笔记绝对路径 ✓，**只增不删** ✓）—— 登记后下一次 preview 不再把它们算成待构建 ✓；有歧义（同名素材 / 一素材被两篇笔记声明）的条目会**跳过并说明** ✓。',
+			'收尾（子代理跑完之后）会刷新导航三件、并把本批**确实产出**的笔记登记进 `.kb/build-cache.json`（素材绝对路径 → 笔记绝对路径 ✓，**只增不删** ✓）—— 登记后下一次 preview 不再把它们算成待构建 ✓；有歧义（同名素材 / 一素材被两篇笔记声明）的条目会**跳过并说明** ✓。',
 			'⚠ 残余风险：IDE 侧整理器**不加锁** ⇒ 它与我们同一瞬间写这份缓存时仍可能丢**一条** ✗（丢的那条下次会被重新算成待构建，重建时**就地 patch** 那篇笔记 ✓）。',
 			'进度与取消用 dsh 自己的任务面板，或 job_output / job_list / job_kill ✓（本工具**不 awaits** 构建 —— 它是分钟级长任务 ✓）。',
 		].join('\n'),
@@ -6272,6 +6275,19 @@ const SYNC_STATE = { running: false, lastAt: 0, lastCode: null, lastError: '', l
 
 /** 重建索引的运行状态（同上：进程内，够用且不需要落盘） */
 const REINDEX_STATE = { running: false, lastAt: 0, docs: 0, lastError: '' };
+
+/**
+ * `/x/kb/home` 的渲染缓存（★ 2026-11-02，用户报「总览加载很慢」）。
+ *
+ * 实测：**首次 750ms、之后 23ms** —— 冷启动成本来自 `listAllVaults` 首次扫描
+ * （要遍历数据根下所有库目录）+ 模块懒加载 JIT。总览页每次切页签都会重新 `src` 一次，
+ * 冷一遍就够难受了 ⇒ 这里给 5s 内存缓存：
+ *   · 重复打开/切页签 ⇒ 直接吐缓存（<1ms）
+ *   · 数据变更（新建库/绑定飞书）⇒ 调 `/x/kb/home?refresh=1` 或等 5s 自然过期
+ * ⚠ 不落盘：这是**渲染结果**，不是数据源。
+ */
+const HOME_CACHE = { key: '', at: 0, html: '' };
+const HOME_TTL_MS = 5000;
 
 /**
  * `/api/view-data` 的组装结果缓存（2026-10-25）。
@@ -6313,7 +6329,8 @@ async function performFeishuSync(config, { dry = false } = {}) {
 		if (maps.length) {
 			const obj = { mappings: {} };
 			for (const m of maps) { obj.mappings[String(m.dir).replace(/\\/g, '/')] = String(m.spaceId); }
-			await writeFile(join(vault.dir, '.feishu-space-map.json'), JSON.stringify(obj, null, 2), 'utf8');
+			await mkdir(join(vault.dir, '.kb'), { recursive: true });
+					await writeFile(join(vault.dir, '.kb/space-map.json'), JSON.stringify(obj, null, 2), 'utf8');
 		}
 	} catch { /* 写不进去不阻断（脚本会退回"未映射类别自动建库"） */ }
 
@@ -6321,7 +6338,7 @@ async function performFeishuSync(config, { dry = false } = {}) {
 		vault: vault.dir,
 		/*
 		 * ★★ 2026-10-28（真机：`[map] 已配置 6 条映射，但本次没有文档命中`）：
-		 *   这里原先是 `src: NOTES_DIR` —— `NOTES_DIR` 是**字符串** `'笔记'`，
+		 *   这里原先是 `src: NOTES_DIR` —— `NOTES_DIR` 是**字符串** `'知识库列表'`，
 		 *   而 `buildFeishuSyncArgs` 里是 `for (const dir of src)` ⇒ 字符串按**字符**迭代
 		 *   ⇒ 实际下发 `--src 笔 --src 记`（脚本头部就打印 `src: 笔, 记`）
 		 *   ⇒ 两个不存在的目录 ⇒ 扫不到任何文档 ⇒ `create=0 update=0 skip=0` ✗。
@@ -6340,7 +6357,8 @@ async function performFeishuSync(config, { dry = false } = {}) {
 	const text = String(output || '');
 	let logFile = '';
 	try {
-		logFile = join(vault.dir, '.kb-feishu-sync.log');
+		logFile = join(vault.dir, '.kb/feishu-sync.log');
+									try { mkdir(join(vault.dir, '.kb'), { recursive: true }); } catch { /* 只读盘：让 appendFile 自己报错 */ }
 		const head = `===== ${new Date().toISOString()} ${dry ? 'dry-run' : 'apply'} code=${code} =====\n`;
 		await appendFile(logFile, head + text.slice(-200000) + '\n', 'utf8');
 	} catch { logFile = ''; }
@@ -6391,6 +6409,8 @@ function startFeishuScheduler(config) {
 let KB_CREDENTIALS = null;
 
 export function apply(ctx, config = {}) {
+	// 启动耗时探针（2026-11-02）：apply 进入时刻 —— 与相邻插件的这一行相减就是"谁把时间花掉了"。
+	console.log('[vssaros-kb] apply 进入（进程启动后 ' + Math.round(process.uptime() * 1000) + 'ms）');
 	// 重构 1.3：绑定 foundation 共享服务（dataRoot/dshHome/pageShell/lock 的真源）。
 	{
 		// 同步直读在前：有插件在 apply 的**同步段**就建 store（inject 回调是异步的，会来不及 ✗）。
@@ -6763,7 +6783,7 @@ export function apply(ctx, config = {}) {
 						const { vaults } = await listAllVaults(kbRootOf(config), config, { withDocs: false });
 						const vault = vaults.find(candidate => candidate.id === vaultId);
 						if (!vault) { send(404, { ok: false, error: `找不到 vault：${vaultId}` }); return; }
-						// 目标目录必须在「笔记」区内（空 = 笔记区根 ✓ —— resolveOrganizePath 认 `笔记` 本身 ✓）
+						// 目标目录必须在「笔记」区内（空 = 笔记区根 ✓ —— resolveOrganizePath 认 `知识库列表` 本身 ✓）
 						/*
 						 * 目标目录必须在「笔记」区内（空 = 笔记区根 ✓ —— resolveOrganizePath 认 笔记 本身 ✓），
 						 * **或**「库/raw」原始素材区（★ 2026-10-29 用户要求：聊天消息「导入到知识库」落在 库/raw）。
@@ -7141,7 +7161,7 @@ export function apply(ctx, config = {}) {
 				}
 				// ★ 2026-10-24：**新建知识库 / 本地载入文件夹**（标题行下拉里的两项，对齐 IDE 侧「＋ 配置文件夹为知识库…」）
 				//   · `mode:'attach'`：把一个已有文件夹登记成库（**不移动、不复制**任何文件）
-				//   · `mode:'create'`：在数据根下建一个新库（只建 `笔记/` 与 `库/` 两个空目录）
+				//   · `mode:'create'`：在数据根下建一个新库（只建 `知识库列表/` 与 `数据源/` 两个空目录）
 				//   落点是自己维护的 `<数据根>/.extra-vaults.json`（不碰 IDE 配置，见 externalVaultRecords 注释）
 				/*
 				 * ★ 2026-10-28（用户：库下拉列表每项要有删除按钮）：**从列表移除**（不删磁盘）。
@@ -7185,6 +7205,137 @@ export function apply(ctx, config = {}) {
 						send(200, { ok: true, removed: vaultId, note: '只移除登记，磁盘文件未改动' });
 					} catch (e) {
 						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
+				/*
+				 * ★ 2026-11-02（P1）：`知识库列表/<名称>/` = 一个知识库。
+				 *   列 / 建 两条最小路由，纯逻辑在 `core/kbLayoutOps.js`（可单测）✓
+				 */
+				/*
+				 * ★ 2026-11-02：知识库**主页**独立页面（中间栏 Tab 的 iframe 指向这里）。
+				 *   数据只在插件侧有 ⇒ 页面放这里直取，不造跨 webview 取数协议 ✓
+				 */
+				// ⚠ ROUTE_PREFIX 已经是 `/x/kb` ⇒ 这里只补 `/home`（写成 `/kb/home` 会变成 /x/kb/kb/home ✗）
+				if (url && url.pathname === `${ROUTE_PREFIX}/home`) {
+					try {
+						const wanted = String(url.searchParams.get('vaultId') || config?.kbActiveVaultId || '');
+						// ★ 命中 5s 缓存直接返回（切页签/重复打开 ⇒ 秒开）；`?refresh=1` 强制重算
+						const cacheKey = wanted + '|' + String(config?.kbActiveVaultId || '');
+						if (url.searchParams.get('refresh') !== '1'
+							&& HOME_CACHE.html && HOME_CACHE.key === cacheKey
+							&& (Date.now() - HOME_CACHE.at) < HOME_TTL_MS) {
+							res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-kb-home-cache': 'hit' });
+							res.end(HOME_CACHE.html);
+							return;
+						}
+						const { vaults } = await listAllVaults(kbRootOf(config), config, { withDocs: false });
+						const vault = vaults.find(v => v.id === wanted) ?? vaults[0];
+						const kbs = vault ? listKnowledgeBases(vault.dir || vault.path) : [];
+						const vaultName = vault
+							? ((vault.name && String(vault.name).trim()) || String(vault.id))
+							: '';
+						const html = renderHomePage({ vaultName, kbs, routePrefix: ROUTE_PREFIX });
+						HOME_CACHE.key = cacheKey; HOME_CACHE.at = Date.now(); HOME_CACHE.html = html;
+						res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-kb-home-cache': 'miss' });
+						res.end(html);
+					} catch (e) {
+						res.writeHead(500, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+						res.end('<!doctype html><meta charset="utf-8"><body style="font:14px -apple-system,sans-serif;padding:40px;color:#c00">知识库主页渲染失败：'
+							+ String((e && e.message) || e) + '</body>');
+					}
+					return;
+				}
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/kb-list`) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						const wanted = String(url.searchParams.get('vaultId') || config?.kbActiveVaultId || '');
+						const { vaults } = await listAllVaults(kbRootOf(config), config, { withDocs: false });
+						const vault = vaults.find(v => v.id === wanted) ?? vaults[0];
+						if (!vault) { send(200, { ok: true, kbs: [] }); return; }
+						send(200, { ok: true, vaultId: vault.id, vaultPath: vault.dir || vault.path, kbs: listKnowledgeBases(vault.dir || vault.path) });
+					} catch (e) {
+						send(500, { ok: false, error: String((e && e.message) || e) });
+					}
+					return;
+				}
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/kb-create` && req.method === 'POST') {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						let raw = '';
+						for await (const chunk of req) {
+							raw += chunk;
+							if (raw.length > 8192) { send(413, { ok: false, error: '请求体太大' }); return; }
+						}
+						const payload = JSON.parse(raw || '{}');
+						const wanted = String(payload?.vaultId || config?.kbActiveVaultId || '');
+						const { vaults } = await listAllVaults(kbRootOf(config), config, { withDocs: false });
+						const vault = vaults.find(v => v.id === wanted) ?? vaults[0];
+						if (!vault) { send(400, { ok: false, error: '还没有可用的知识库' }); return; }
+						const r = createKnowledgeBase(vault.dir || vault.path, payload?.name, { withIndex: payload?.withIndex !== false });
+						if (!r.ok) { send(r.code === 'exists' ? 409 : 400, r); return; }
+						send(200, Object.assign({ ok: true, vaultId: vault.id }, r));
+					} catch (e) {
+						send(500, { ok: false, error: String((e && e.message) || e) });
+					}
+					return;
+				}
+				/*
+				 * ★ 2026-11-02：每个知识库可**关联一个飞书知识库（wiki 空间）** ⇒ 绑定就近存
+				 *   `知识库列表/<库>/.kb-feishu.json`（库被单独拷走/发布时绑定跟着走）
+				 */
+				if ((url && url.pathname === `${ROUTE_PREFIX}/api/kb-bind` && req.method === 'POST')) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						let raw = '';
+						for await (const chunk of req) {
+							raw += chunk;
+							if (raw.length > 8192) { send(413, { ok: false, error: '请求体太大' }); return; }
+						}
+						const payload = JSON.parse(raw || '{}');
+						const wanted = String(payload?.vaultId || config?.kbActiveVaultId || '');
+						const { vaults } = await listAllVaults(kbRootOf(config), config, { withDocs: false });
+						const vault = vaults.find(v => v.id === wanted) ?? vaults[0];
+						if (!vault) { send(400, { ok: false, error: '还没有可用的知识库' }); return; }
+						const r = writeFeishuBinding(vault.dir || vault.path, payload?.kb, {
+							spaceId: payload?.spaceId,
+							spaceName: payload?.spaceName,
+							syncMode: payload?.syncMode,
+						});
+						if (!r.ok) { send(r.code === 'no-kb' ? 404 : 400, r); return; }
+						send(200, Object.assign({ ok: true, vaultId: vault.id }, r));
+					} catch (e) {
+						send(500, { ok: false, error: String((e && e.message) || e) });
+					}
+					return;
+				}
+				if ((url && url.pathname === `${ROUTE_PREFIX}/api/kb-unbind` && req.method === 'POST')) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						let raw = '';
+						for await (const chunk of req) { raw += chunk; if (raw.length > 4096) { send(413, { ok: false }); return; } }
+						const payload = JSON.parse(raw || '{}');
+						const wanted = String(payload?.vaultId || config?.kbActiveVaultId || '');
+						const { vaults } = await listAllVaults(kbRootOf(config), config, { withDocs: false });
+						const vault = vaults.find(v => v.id === wanted) ?? vaults[0];
+						if (!vault) { send(400, { ok: false, error: '还没有可用的知识库' }); return; }
+						const r = clearFeishuBinding(vault.dir || vault.path, payload?.kb);
+						if (!r.ok) { send(400, r); return; }
+						send(200, Object.assign({ ok: true, vaultId: vault.id }, r));
+					} catch (e) {
+						send(500, { ok: false, error: String((e && e.message) || e) });
 					}
 					return;
 				}
@@ -7343,7 +7494,7 @@ export function apply(ctx, config = {}) {
 								const withAbs = (nodes) => (nodes ?? []).map((n) => (n.isDirectory
 									// ★ 2026-10-24：**目录也要 abs**。之前只给文件拼了绝对路径 ⇒ 目录在页面上
 									//   只剩 `01_学习/游戏设计` 这种「相对区目录」的形态：
-									//   · 目录映射的键少掉 `笔记/` 前缀（写进 space-map 脚本对不上）
+									//   · 目录映射的键少掉 `知识库列表/` 前缀（写进 space-map 脚本对不上）
 									//   · `relOf()` 无处可折，界面上显示的路径也就不完整
 									? {
 										name: n.name, rel: n.rel, isDirectory: true,
@@ -7412,6 +7563,12 @@ export function apply(ctx, config = {}) {
 								tree: mapNodes(notesSection.nodes),
 								library: mapNodes(libSection.nodes),
 								libraryCount: libSection.files,
+								/*
+								 * ★ 2026-11-02（P1）：`知识库列表/` 下的一级子目录 = **知识库**。
+								 *   前端据此渲染「📚 N 库 · 🔗 M」小签与行悬停说明（树刻意复刻 Obsidian，不加图标列 ✗）。
+								 *   失败降级成空数组：主页/树不受影响。
+								 */
+								kbs: (() => { try { return listKnowledgeBases(vault.dir); } catch { return []; } })(),
 								tags,
 							});
 							// 双链（可缺）：失败只影响「双链」这一节，不影响主体
@@ -7457,9 +7614,38 @@ export function apply(ctx, config = {}) {
 				if (url && url.pathname === `${ROUTE_PREFIX}/api/page`) {
 					try {
 						const root = kbRootOf(config);
-						const snapshot = await pageSnapshotOf(root, { external: externalVaultRecords(config) });
-			// ★ 2026-10-23：记下本次列出的库根（含外挂库）⇒ `/api/doc` 用它做围栏的允许根
-			LAST_VAULT_DIRS = (snapshot.vaults ?? []).map(v => v.dir).filter(Boolean);
+						let snapshot = await pageSnapshotOf(root, { external: externalVaultRecords(config) });
+						/*
+						 * ★ 2026-11-02（用户报「知识库不显示内容」）：
+						 *   目录改名迁移会**按设计删掉 `.kb/kernel.json`**（`文档说：派生缓存应当清掉`）⇒
+						 *   索引为 0 ⇒ 页面按索引渲染时看起来"空"。
+						 *   这里兜一层：**索引缺失就自动重建**（169 篇约 120ms，可接受），
+						 *   重建完再重取一次快照，避免这次请求仍拿到空数据。
+						 *   ⚠ 只对"目录里确实有 md、但 kernel 不存在"的库做，不碰正常库。
+						 */
+						try {
+							let rebuilt = 0;
+							for (const v of (snapshot.vaults ?? [])) {
+								const dir = String(v.dir || '');
+								if (!dir) { continue; }
+								const kernelFile = join(dir, '.kb/kernel.json');
+								if (existsSync(kernelFile)) { continue; }
+								const notesDir = join(dir, NOTES_DIR);
+								if (!existsSync(notesDir)) { continue; }
+								await rebuildKernelCache(dir);
+								rebuilt += 1;
+							}
+							if (rebuilt) {
+								// 注意 `pageSnapshotOf` **没有 refresh 参数**：它的指纹含 kernel 的 size/mtime，
+								// 刚重建过 ⇒ 指纹已变 ⇒ 这里重取自然是新数据 ✓
+								snapshot = await pageSnapshotOf(root, { external: externalVaultRecords(config) });
+							}
+						} catch (e) {
+							// 重建失败不阻断页面（页面会显示 0 篇，但至少不 500）
+							state?.logger?.warn?.('[kb] 自动重建索引失败：' + String((e && e.message) || e));
+						}
+					// ★ 2026-10-23：记下本次列出的库根（含外挂库）⇒ `/api/doc` 用它做围栏的允许根
+					LAST_VAULT_DIRS = (snapshot.vaults ?? []).map(v => v.dir).filter(Boolean);
 						const injected = parseInjectedVaults(config?.kbVaults);
 						/*
 						 * ★ 2026-10-28（真机：载入的库显示成 `ext-f0e1f1cee`）：
@@ -7555,7 +7741,7 @@ export function apply(ctx, config = {}) {
 				}
 				// ★ 2026-10-24：**保存正文**（dsh 侧行内编辑 / 任务清单勾选都用这条）。
 				//   围栏比读取更严一档 —— 只允许写「笔记」区里的 `.md`：
-				//     · 库区（`库/`）是只读素材，任何写请求 403；
+				//     · 库区（`数据源/`）是只读素材，任何写请求 403；
 				//     · 路径必须落在「库根 + 页面列过的库根」之内（段边界比较）；
 				//     · 只收 .md、单文件 ≤ 4MB（超出当异常，避免误把二进制当文本写坏）。
 				//   ⚠ 必须放在 GET 那条**之前**：下面那条 `=== /api/doc` 没有方法判断，
@@ -7596,7 +7782,7 @@ export function apply(ctx, config = {}) {
 							});
 							return;
 						}
-						// 备份：写进 `笔记/.kb-backup/`（以 `.kb` 开头 ⇒ 树里被噪音过滤掉，不污染目录）
+						// 备份：写进 `知识库列表/.kb-backup/`（以 `.kb` 开头 ⇒ 树里被噪音过滤掉，不污染目录）
 						let backup = '';
 						if (before && before.isFile() && before.size > 0) {
 							try {
@@ -7630,7 +7816,7 @@ export function apply(ctx, config = {}) {
 							const vroot = [kbRootOf(config), ...externalVaultRecords(config).map(it => it.dir || it.path || ''), ...LAST_VAULT_DIRS]
 								.filter(Boolean).map(s => String(s).replace(/\\/g, '/').replace(/\/+$/, ''))
 								.filter(r => pNorm === r || pNorm.startsWith(r + '/')).sort((a, b) => b.length - a.length)[0];
-							if (vroot) { void maybeAutoCommit(vroot, `保存 ${basename(p) || '笔记'}`); }
+							if (vroot) { void maybeAutoCommit(vroot, `保存 ${basename(p) || '知识库列表'}`); }
 						}
 						const after = await stat(p).catch(() => null);
 						send(200, {
@@ -7804,7 +7990,7 @@ export function apply(ctx, config = {}) {
 						const { vaults } = await listAllVaults(kbRootOf(config), config, { withDocs: false });
 						const vault = (want && vaults.find(v => v.id === want)) || vaults.find(v => v.id === config?.kbActiveVaultId) || vaults[0];
 						if (!vault) { send(400, { ok: false, error: '还没有可用的知识库' }); return; }
-						const file = join(vault.dir, '.kb-feishu-sync.log');
+						const file = join(vault.dir, '.kb/feishu-sync.log');
 						let text = '';
 						try { text = await readFile(file, 'utf8'); } catch { text = ''; }
 						const n = Math.max(20, Math.min(2000, Number(url.searchParams.get('lines') ?? 200) || 200));
@@ -8169,7 +8355,7 @@ export function apply(ctx, config = {}) {
 				}
 				// ★ 2026-10-25：**重建索引**（对应 IDE 设置页的「🔄 重新构建向量索引」）。
 				//   ⚠ 如实分界：
-				//     · `kernel`（`.kbkernel.json`）与全文 BM25 都是**纯本地计算** ⇒ dsh 侧可以重建；
+				//     · `kernel`（`.kb/kernel.json`）与全文 BM25 都是**纯本地计算** ⇒ dsh 侧可以重建；
 				//     · **向量索引（embedding）需要模型 provider**，那是 IDE 侧能力 ⇒ dsh 侧不做，
 				//       路由里明确回 `vector: { supported: false, reason }`，页面也照实标注，不放假按钮。
 				if (url && url.pathname === `${ROUTE_PREFIX}/api/reindex`) {
@@ -8283,7 +8469,7 @@ export function apply(ctx, config = {}) {
 					}
 					return;
 				}
-				// 导图清单：`笔记` 区里所有 .canvas（面板里的选择器用它）
+				// 导图清单：`知识库列表` 区里所有 .canvas（面板里的选择器用它）
 				if (url && url.pathname === `${ROUTE_PREFIX}/api/canvas-list`) {
 					const send = (code, payload) => {
 						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });

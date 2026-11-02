@@ -176,7 +176,7 @@ export class KbArticleTestRunner {
 
 	private async _testUrlImportWechat(vaultRoot: URI): Promise<KbTestResult> {
 		const checks: KbTestResult['checks'] = [];
-		const libraryDir = URI.joinPath(vaultRoot, '库');
+		const libraryDir = URI.joinPath(vaultRoot, '数据源');
 
 		try {
 			// Simulate: write a mock WeChat article to library
@@ -208,7 +208,7 @@ export class KbArticleTestRunner {
 
 	private async _testUrlImportBilibili(vaultRoot: URI): Promise<KbTestResult> {
 		const checks: KbTestResult['checks'] = [];
-		const libraryDir = URI.joinPath(vaultRoot, '库');
+		const libraryDir = URI.joinPath(vaultRoot, '数据源');
 
 		try {
 			const filePath = URI.joinPath(libraryDir, 'bilibili-react19.md');
@@ -230,7 +230,7 @@ export class KbArticleTestRunner {
 
 	private async _testFileImportMd(vaultRoot: URI): Promise<KbTestResult> {
 		const checks: KbTestResult['checks'] = [];
-		const libraryDir = URI.joinPath(vaultRoot, '库');
+		const libraryDir = URI.joinPath(vaultRoot, '数据源');
 
 		try {
 			const filePath = URI.joinPath(libraryDir, 'pkm-comparison.md');
@@ -258,7 +258,7 @@ export class KbArticleTestRunner {
 
 	private async _testFileImportTxt(vaultRoot: URI): Promise<KbTestResult> {
 		const checks: KbTestResult['checks'] = [];
-		const libraryDir = URI.joinPath(vaultRoot, '库');
+		const libraryDir = URI.joinPath(vaultRoot, '数据源');
 
 		try {
 			const filePath = URI.joinPath(libraryDir, 'plain-text-note.md');
@@ -333,7 +333,7 @@ export class KbArticleTestRunner {
 
 		try {
 			// The Obsidian note has [[双链系统]], [[WYSIWYG 编辑器]], [[AI 技术趋势 2026 年中总结]], [[React 19 新特性详解]]
-			const pkmNoteUri = URI.joinPath(vaultRoot, '库', 'pkm-comparison.md').toString();
+			const pkmNoteUri = URI.joinPath(vaultRoot, '数据源', 'pkm-comparison.md').toString();
 			const backlinks = await this._kernelService.getBacklinks(pkmNoteUri);
 
 			checks.push({ name: '反链查询无异常', passed: true });
@@ -360,7 +360,7 @@ export class KbArticleTestRunner {
 		try {
 			// The plain text note (TC-05) should have no frontmatter.
 			// Simulate frontmatter standardization.
-			const filePath = URI.joinPath(vaultRoot, '库', 'plain-text-note.md');
+			const filePath = URI.joinPath(vaultRoot, '数据源', 'plain-text-note.md');
 			const original = (await this._fileService.readFile(filePath)).value.toString();
 
 			const hasFrontmatter = original.startsWith('---');
@@ -391,7 +391,7 @@ export class KbArticleTestRunner {
 
 		try {
 			// Extract #tags# from the WeChat article
-			const filePath = URI.joinPath(vaultRoot, '库', 'wechat-ai-trends-2026.md');
+			const filePath = URI.joinPath(vaultRoot, '数据源', 'wechat-ai-trends-2026.md');
 			const content = (await this._fileService.readFile(filePath)).value.toString();
 
 			const tags = this._extractInlineTags(content);
@@ -425,7 +425,7 @@ export class KbArticleTestRunner {
 			checks.push({ name: 'MOC 含标签', passed: mocContent.includes('#moc#') });
 
 			// Write MOC to notes section
-			const mocPath = URI.joinPath(vaultRoot, '笔记', 'MOC-技术知识地图.md');
+			const mocPath = URI.joinPath(vaultRoot, '知识库列表', 'MOC-技术知识地图.md');
 			await this._fileService.writeFile(mocPath, VSBuffer.fromString(mocContent));
 			const exists = await this._fileService.exists(mocPath);
 			checks.push({ name: 'MOC 文件已写入', passed: exists });
@@ -462,7 +462,7 @@ export class KbArticleTestRunner {
 
 	private async _testBulkImport(vaultRoot: URI): Promise<KbTestResult> {
 		const checks: KbTestResult['checks'] = [];
-		const libraryDir = URI.joinPath(vaultRoot, '库', 'bulk-test');
+		const libraryDir = URI.joinPath(vaultRoot, '数据源', 'bulk-test');
 
 		try {
 			const startTime = Date.now();

@@ -10,7 +10,7 @@
 //     但回退要求开 fence 在**前 6 行内** ⇒ 免得把正文深处的 `---` 水平线当成 frontmatter ✗。
 //   · `repairWikilinkLists`：修 `sources: [[a]], [[b]]` 这种非法 YAML（LLM 常见产出 ✓）。
 //   · 行级注入 / 改状态：**只动目标字段、保留其他字段的原始格式** ✓（agent 写的 frontmatter 不许被重排 ✗）。
-//   · `normalizeSourceRef`：来源一律归一到**小写 basename**（去 `库/` 前缀、去 wikilink/引号/括号 ✓）——
+//   · `normalizeSourceRef`：来源一律归一到**小写 basename**（去 `数据源/` 前缀、去 wikilink/引号/括号 ✓）——
 //     门控就是按这个口径数"distinct 来源"的，口径错一格，pending/active 就跟着错 ✗。
 // ⇒ 交叉校验：`poc/dsh-p0/scripts/p3-59-kb-gating.mjs` 拿 IDE 侧**真** `applyDeabstractionGating`
 //   （它内部走真的 `extractSources` / `setStatus` / 别名归一 ✓）在同一份夹具上跑一遍 ⇒ 与本模块**逐字节**比 ✓。
@@ -132,7 +132,7 @@ function stripQuotes(s) {
 }
 
 /**
- * 从笔记内容提取 sources[]，归一化为库文件 basename（小写，去 `库/` 前缀与 wikilink/引号/括号）。
+ * 从笔记内容提取 sources[]，归一化为库文件 basename（小写，去 `数据源/` 前缀与 wikilink/引号/括号）。
  * @param {string} content
  * @returns {string[]}
  */

@@ -29,9 +29,16 @@ const fail = message => { throw new StateError(message); };
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const validId = value => typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/.test(value)
 	&& !['__proto__', 'prototype', 'constructor'].includes(value);
-/** `owner/repo`（第三方，小写）或 `vssaros/<module>`（内置）。 */
-export const validWorkbenchId = value => typeof value === 'string'
-	&& /^[a-z0-9][a-z0-9_.-]*\/[a-z0-9][a-z0-9_.-]*$/.test(value) && value.length <= 255;
+/**
+ * 合法工作台身份（与 dsh-desktop §2 身份表一致）：
+ *   · `owner/repo`          —— GitHub 仓库工作台（小写）
+ *   · `vssaros/<module>`    —— 本仓内置保留命名空间
+ *   · `local:<npm 包名>`    —— 本地开发/自装工作台（无仓库也能有稳定身份；scoped 包 = `local:@scope/name`）
+ */
+const REPO_ID_RE = /^[a-z0-9][a-z0-9_.-]*\/[a-z0-9][a-z0-9_.-]*$/;
+const LOCAL_ID_RE = /^local:(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+export const validWorkbenchId = value => typeof value === 'string' && value.length <= 255
+	&& (REPO_ID_RE.test(value) || LOCAL_ID_RE.test(value));
 
 export function emptyState() {
 	return { version: 1, added: [], pinned: [], favorites: [], active: null, sessionBindings: {}, recentSessions: {}, notes: {}, hiddenWorkspaces: {} };

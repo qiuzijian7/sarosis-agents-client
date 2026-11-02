@@ -39,10 +39,10 @@ const root = mkdtempSync(join(tmpdir(), 'kb-surface-'));
 let handler;
 try {
 	const vaultDir = join(root, 'vault1');
-	mkdirSync(join(vaultDir, '笔记'), { recursive: true });
-	mkdirSync(join(vaultDir, '库'), { recursive: true });
-	writeFileSync(join(vaultDir, '笔记', 'hello.md'), '# hello\n\n正文一行。\n');
-	writeFileSync(join(vaultDir, '笔记', 'second.md'), '# second\n\n第二篇。\n');
+	mkdirSync(join(vaultDir, '知识库列表'), { recursive: true });
+	mkdirSync(join(vaultDir, '数据源'), { recursive: true });
+	writeFileSync(join(vaultDir, '知识库列表', 'hello.md'), '# hello\n\n正文一行。\n');
+	writeFileSync(join(vaultDir, '知识库列表', 'second.md'), '# second\n\n第二篇。\n');
 
 	const noop = () => () => {};
 	const ctx = new Proxy({}, {

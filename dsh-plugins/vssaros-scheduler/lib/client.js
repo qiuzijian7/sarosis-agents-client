@@ -1,4 +1,4 @@
-// CLIENT_BUILD_STAMP: 2026-10-31 self-built workbench (0.5.3: 两栏（列表+详情）+ 搜索/筛选 + 相对时间 + 规则可改 + 删除二次确认) —— 改了这个文件就把这一行也动一下（?rev 随入口 mtime 变）
+// CLIENT_BUILD_STAMP: 2026-11-02 self-built workbench (0.6.0: 循环任务并入「任务」页 —— 两页签 + 混排卡片 + 循环详情/干跑/跑一轮/放回 blocked) —— 改了这个文件就把这一行也动一下（?rev 随入口 mtime 变）
 // @vssaros/dsh-scheduler — 客户端入口（2026-10-31 重写：不再搬运官方 chunk）。
 //
 // ── 路线（用户 2026-10-31 拍板 A）──────────────────────────────────────────
@@ -46,6 +46,16 @@ window.__ModuleLoader__.load({
 		const API_UPDATE = '/x/scheduler/api/update';
 		const API_DELETE = '/x/scheduler/api/delete';
 		const API_HISTORY = '/x/scheduler/api/history';
+		// ★ 2026-11-02（把「循环任务」并进自动化任务）：loop 插件自带同源路由（/x/loop/api/ 前缀）
+		//   ⇒ 浏览器直接 fetch 即可（与 scheduler 的接口同一套凭据），**不需要 Host 侧转发**。
+		//   loop 没装 ⇒ 404 ⇒ 降级成"只有定时任务"，页面不红。
+		//   ⚠ 注释里不要写"路径 + 星号"：包内自检的 strip() 会把那对字符当块注释起点，
+		//      一路吃到下一个结束符 ⇒ 中间的真实代码被当注释删掉 ⇒ 断言集体假红（这里踩过）。
+		const API_LOOP_LIST = '/x/loop/api/list';
+		const API_LOOP_SHOW = '/x/loop/api/show';
+		const API_LOOP_DRY = '/x/loop/api/dry-run';
+		const API_LOOP_RUN = '/x/loop/api/run';
+		const API_LOOP_ANSWER = '/x/loop/api/answer';
 		// ★ 2026-10-31：卡片 hover 的「▶ 立即运行一次」（Host 侧 `engine.fireNow` 的路由）。
 		const API_RUN = '/x/scheduler/api/run';
 
@@ -95,6 +105,12 @@ window.__ModuleLoader__.load({
 }
 /* ★ 2026-10-31（按 mockup 改版）：任务 item = 卡片网格，hover 出 ▶ / ✎ / ⋯ */
 .vssSchedCards { display:grid; grid-template-columns:repeat(auto-fill, minmax(250px, 1fr)); gap: var(--wb-s2, 8px); }
+/* ★ 2026-11-02（循环并进「任务」页）：类型徽标 / 循环卡片 / 账本小徽标 */
+.vssSchedKind { flex:0 0 auto; font-size:9px; padding:0 6px; border-radius: var(--wb-r-pill, 999px); border:1px solid currentColor; color: var(--dsw-alias-brand-text, #4c9aff); }
+.vssSchedCard.is-loop { border-left:2px solid var(--dsw-alias-state-warn-primary, #e0a43a); }
+.vssSchedCard.is-loop .vssSchedKind { color: var(--dsw-alias-state-warn-primary, #e0a43a); }
+.vssSchedBad { font-size:9px; padding:0 5px; border-radius: var(--wb-r-pill, 999px); border:1px solid currentColor; color: var(--dsw-alias-state-warn-primary, #e0a43a); }
+.vssSchedBad.is-error { color: var(--dsw-alias-state-error-primary, #f48771); }
 .vssSchedCard { display:flex; flex-direction:column; gap: var(--wb-s1, 4px); min-width:0; cursor:pointer; }
 .vssSchedCardHd { display:flex; align-items:center; gap: var(--wb-s1, 4px); min-width:0; }
 .vssSchedCardName { flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -410,6 +426,13 @@ window.__ModuleLoader__.load({
 			const [menuFor, setMenuFor] = react.useState('');
 			const [menuPos, setMenuPos] = react.useState({ left: 0, top: 0 });
 			const [editingId, setEditingId] = react.useState('');
+			// ★ 2026-11-02（循环并进「任务」页）：循环列表 / 详情弹窗 / 忙标记 / 回答草稿。
+			const [loops, setLoops] = react.useState({ ok: false, items: [], error: '' });
+			const [loopDetail, setLoopDetail] = react.useState(null);
+			const [loopDetailFor, setLoopDetailFor] = react.useState('');
+			const [loopBusy, setLoopBusy] = react.useState('');
+			const [answerKey, setAnswerKey] = react.useState('');
+			const [answerText, setAnswerText] = react.useState('');
 
 			const reload = react.useCallback(() => {
 				getJson(API_LIST).then((data) => {
@@ -419,6 +442,54 @@ window.__ModuleLoader__.load({
 				});
 			}, []);
 			react.useEffect(() => { reload(); }, [reload]);
+
+			/** 循环列表：`/x/loop/api/list`；插件不在/未激活 ⇒ 404 ⇒ 只影响「任务」页里的循环卡片。 */
+			const reloadLoops = react.useCallback(() => {
+				getJson(API_LOOP_LIST).then((data) => {
+					const items = Array.isArray(data?.loops) ? data.loops : [];
+					setLoops({ ok: data?.ok === true, items, error: data?.ok === true ? '' : String(data?.error ?? '') });
+				}).catch((error) => {
+					setLoops({ ok: false, items: [], error: String(error?.message ?? error) });
+				});
+			}, []);
+			react.useEffect(() => { reloadLoops(); }, [reloadLoops]);
+
+			/** 打开循环详情（护栏 + 账本）。 */
+			async function openLoopDetail(name) {
+				setLoopDetailFor(name);
+				setLoopDetail(null);
+				const data = await getJson(`${API_LOOP_SHOW}?name=${encodeURIComponent(name)}`);
+				if (data?.ok) { setLoopDetail(data); }
+				else { setErr(data?.error ?? '读取循环详情失败'); setLoopDetailFor(''); }
+			}
+			/** 循环动作：干跑 / 跑一轮 / 放回 blocked（全部走 loop 插件自己的路由）。 */
+			async function loopAct(name, kind) {
+				setLoopBusy(kind);
+				setErr('');
+				const url = kind === 'dry' ? API_LOOP_DRY : API_LOOP_RUN;
+				const out = await post(url, { name });
+				setLoopBusy('');
+				if (!out?.ok) { setErr(out?.error ?? '循环操作失败'); return; }
+				const result = out.result ?? {};
+				if (kind === 'dry') {
+					const picked = Array.isArray(result.willRun) ? result.willRun.length : 0;
+					setErr(`${name}：采到 ${result.total ?? 0} 条，会跑 ${picked} 条${result.harvestError ? `（${result.harvestError}）` : ''}`);
+				} else {
+					setErr(result.skipped ? `${name}：${result.skipped}` : `${name}：已跑一轮（${(result.results ?? []).length} 条）`);
+				}
+				reloadLoops();
+				await openLoopDetail(name);
+			}
+			/** 放回一条 blocked（写入账本，下一轮带答案重跑）。 */
+			async function answerLoop(name, key) {
+				const out = await post(API_LOOP_ANSWER, { name, key, answer: answerText });
+				setAnswerKey('');
+				setAnswerText('');
+				if (!out?.ok) { setErr(out?.error ?? '放回失败'); return; }
+				setErr(`已放回 ${out.released?.length ?? 0} 条`);
+				reloadLoops();
+				await openLoopDetail(name);
+			}
 
 			/** 搜索 + 状态筛选后的可见行（官方这两条在任务一多时是刚需）。 */
 			const keyword = search.trim().toLowerCase();
@@ -612,20 +683,62 @@ window.__ModuleLoader__.load({
 					h('button', { type: 'button', className: 'wb-link', onClick: reload }, '刷新'),
 					h('button', { type: 'button', className: 'wb-link', 'data-vssaros-scheduler-create': '1', onClick: () => openEdit('') }, '新建')));
 
+			/**
+			 * 循环卡片（2026-11-02：把「循环任务」并进「任务」页）。
+			 * 与定时卡片同一套视觉，靠右上角「循环」徽标区分；hover 是 ▶ 跑一轮 / ⚙ 详情 / ⋯ 干跑。
+			 * ⚠ 循环**没有删除**：它的定义在 `<数据根>/loops/<名字>/loop.json`，删文件即可（UI 不做危险动作）。
+			 */
+			function loopCard(l) {
+				const counts = l.ledger ?? { total: 0, done: 0, failed: 0, blocked: 0 };
+				const due = typeof l?.state?.dueInS === 'number' ? l.state.dueInS : null;
+				const dueText = due === null ? '手动' : (due <= 0 ? '已到期' : (due < 3600 ? `${Math.round(due / 60)} 分钟后` : `${Math.round(due / 3600)} 小时后`));
+				return h('div', {
+					className: 'wb-card vssSchedCard is-loop',
+					key: `loop:${l.name}`,
+					'data-loop-id': l.name,
+					onClick: () => { openLoopDetail(l.name); },
+				},
+					h('div', { className: 'vssSchedCardHd' },
+						h('span', { className: 'wb-row-name vssSchedCardName' }, l.title || l.name),
+						h('span', { className: 'vssSchedKind' }, '循环'),
+						h('div', { className: 'vssSchedActs' },
+							h('button', {
+								type: 'button', className: 'wb-btn is-icon is-ghost vssSchedIcb', title: '跑一轮',
+								'data-sched-act': 'loop-run',
+								onClick: (ev) => { ev.stopPropagation(); loopAct(l.name, 'run'); },
+							}, '▶'),
+							h('button', {
+								type: 'button', className: 'wb-btn is-icon is-ghost vssSchedIcb', title: '循环详情（护栏 + 账本）',
+								'data-sched-act': 'loop-detail',
+								onClick: (ev) => { ev.stopPropagation(); openLoopDetail(l.name); },
+							}, '⚙'),
+							h('button', {
+								type: 'button', className: 'wb-btn is-icon is-ghost vssSchedIcb', title: '干跑（不建会话、不花 token）',
+								'data-sched-act': 'loop-dry',
+								onClick: (ev) => { ev.stopPropagation(); loopAct(l.name, 'dry'); },
+							}, '⋯'))),
+					h('div', { className: 'vssSchedDesc' }, `${l.schedule || 'manual'}${l?.state?.circuitOpen ? ' · 已熔断' : ''}`),
+					h('div', { className: 'vssSchedCardFt' },
+						h('span', null, `账本 ${counts.done ?? 0}/${counts.total ?? 0}`),
+						counts.blocked ? h('span', { className: 'vssSchedBad' }, `阻塞 ${counts.blocked}`) : null,
+						l?.state?.circuitOpen ? h('span', { className: 'vssSchedBad is-error' }, '已熔断') : null,
+						h('span', { className: 'vssSchedRel' }, dueText)));
+			}
+
 			// ── 任务卡片网格（2026-10-31 按 mockup 改版：item = 卡片，hover 出 ▶ / ✎ / ⋯）─────
 			let grid = null;
 			if (state.loading) {
 				grid = h('div', { className: 'wb-empty' }, '载入中…');
 			} else if (!state.available) {
 				grid = h('div', { className: 'wb-empty' }, '调度引擎不可用：' + (state.error || '未知原因') + '（不影响其它功能）');
-			} else if (visible.length === 0) {
+			} else if (visible.length === 0 && loops.items.length === 0) {
 				grid = h('div', { className: 'vssSchedEmpty', 'data-sched-empty': state.entries.length === 0 ? 'none' : 'filtered' },
 					h('span', { className: 'vssSchedEmptyGlyph' }, '🕒'),
 					h('h2', null, state.entries.length === 0 ? '还没有自动化任务' : '没有匹配的自动化任务'),
-					h('div', { className: 'wb-empty' }, '点「新建自动化任务」，或让 Agent 用 schedule_create 帮你建。'),
+					h('div', { className: 'wb-empty' }, '点「新建自动化任务」，或让 Agent 用 schedule_create 帮你建；循环则是在数据根的 loops/<名字>/loop.json 里定义。'),
 					h('button', { type: 'button', className: 'wb-btn is-primary', onClick: () => openEdit('') }, '新建自动化任务'));
 			} else {
-				grid = h('div', { className: 'vssSchedCards', 'data-sched-cards': String(visible.length) }, visible.map((e) => {
+				const taskCards = visible.map((e) => {
 					const on = e.status === 'active';
 					const rel = relativeWhen(e.scheduledAt);
 					return h('div', {
@@ -668,17 +781,50 @@ window.__ModuleLoader__.load({
 							h('span', null, e.ruleText ?? ''),
 							rel ? h('span', { className: 'vssSchedRel' }, rel) : null,
 							h('span', { className: on ? 'on' : '' }, on ? '已启用' : '已停用')));
-				}));
+				});
+				// ★ 循环卡片与定时卡片混排（循环没有"已结束"概念 ⇒ 只在「全部 / 已启用」下出现）。
+				const loopCards = (statusFilter === 'all' || statusFilter === 'active')
+					? loops.items.filter((l) => {
+						if (!keyword) { return true; }
+						return String(l.name ?? '').toLowerCase().includes(keyword)
+							|| String(l.title ?? '').toLowerCase().includes(keyword)
+							|| String(l.schedule ?? '').toLowerCase().includes(keyword);
+					}).map(loopCard)
+					: [];
+				grid = h('div', {
+					className: 'vssSchedCards',
+					'data-sched-cards': String(taskCards.length + loopCards.length),
+				}, [...taskCards, ...loopCards]);
 			}
 
 			// ── 运行记录（页签二）：/api/history 不传 id ⇒ 全部任务的投递记录 ──
 			const nameOf = (id) => (state.entries ?? []).find((x) => x.id === id)?.title ?? id;
 			const shownRecords = recordsFilterId ? allRecords.filter((r) => r.taskId === recordsFilterId) : allRecords;
 			let recordsView = null;
-			if (shownRecords.length === 0) {
-				recordsView = h('div', { className: 'wb-empty' }, '还没有运行记录。');
-			} else {
-				recordsView = h('table', { className: 'wb-table', 'data-sched-records': recordsFilterId || 'all' },
+			// 循环账本小结（运行记录页顶部）——点一行进循环详情看逐条账本。
+			const loopSummary = loops.items.length === 0
+				? null
+				: h('div', { className: 'vssSchedField', 'data-sched-loop-summary': '' },
+					h('label', null, '循环账本（点一行看明细 / 干跑 / 跑一轮）'),
+					h('table', { className: 'wb-table' },
+						h('thead', null, h('tr', null,
+							h('th', null, '循环'), h('th', null, '调度'), h('th', null, '账本'), h('th', null, '阻塞'), h('th', null, '状态'))),
+						h('tbody', null, loops.items.map((l) => {
+							const c = l.ledger ?? {};
+							return h('tr', {
+								key: `looprow:${l.name}`, style: { cursor: 'pointer' },
+								'data-sched-loop-row': l.name,
+								onClick: () => openLoopDetail(l.name),
+							},
+								h('td', null, l.title || l.name),
+								h('td', null, l.schedule || 'manual'),
+								h('td', null, `${c.done ?? 0}/${c.total ?? 0}`),
+								h('td', null, String(c.blocked ?? 0)),
+								h('td', null, l?.state?.circuitOpen ? '已熔断' : '正常'));
+						}))));
+			const deliveredTable = shownRecords.length === 0
+				? h('div', { className: 'wb-empty' }, '还没有投递记录。')
+				: h('table', { className: 'wb-table', 'data-sched-records': recordsFilterId || 'all' },
 					h('thead', null, h('tr', null,
 						h('th', null, '时间'), h('th', null, '任务'), h('th', null, '轮次'), h('th', null, '来源'))),
 					h('tbody', null, shownRecords.map((r, i) => h('tr', { key: `${r.taskId ?? i}#${r.seq ?? i}` },
@@ -686,17 +832,21 @@ window.__ModuleLoader__.load({
 						h('td', null, nameOf(r.taskId)),
 						h('td', null, `#${r.seq ?? ''}`),
 						h('td', null, r.manual ? '手动' : '自动')))));
-			}
+			recordsView = h('div', { className: 'vssSchedField' }, [loopSummary, deliveredTable]);
 
+			// ★ 2026-11-02：页签收成两个 —— 「任务」= 定时 + 循环混排，「运行记录」= 投递记录 + 循环账本小结。
+			const taskTotal = (state.entries ?? []).length + loops.items.length;
 			const tabs = h('div', { className: 'wb-tabs', 'data-sched-tabs': mainTab },
 				h('button', {
 					type: 'button', className: mainTab === 'tasks' ? 'wb-tab is-active' : 'wb-tab',
+					'data-sched-tab': 'tasks',
 					onClick: () => { setMainTab('tasks'); setMenuFor(''); },
-				}, '定时任务'),
+				}, `任务 (${taskTotal})`),
 				h('button', {
 					type: 'button', className: mainTab === 'records' ? 'wb-tab is-active' : 'wb-tab',
-					onClick: () => { setMainTab('records'); setMenuFor(''); loadAllRecords(); },
-				}, '运行记录'));
+					'data-sched-tab': 'records',
+					onClick: () => { setMainTab('records'); setMenuFor(''); reloadLoops(); loadAllRecords(); },
+				}, `运行记录 (${allRecords.length})`));
 
 			const children = [tabs, toolbar, h('div', { className: 'wb-scroll vssSchedBody' },
 				mainTab === 'tasks'
@@ -761,6 +911,64 @@ window.__ModuleLoader__.load({
 						onClick: () => { setMenuFor(''); setPendingDelete(menuFor); },
 					}, '删除')));
 			}
+			// ★ 2026-11-02（循环并进来）：循环详情弹窗 —— 护栏 + 账本 + 干跑 / 跑一轮 / 放回 blocked。
+			if (loopDetailFor) {
+				const dl = loopDetail;
+				const spec = dl?.spec ?? null;
+				const entries = dl?.entries ?? [];
+				const badgeOf = (status) => (status === 'done' ? 'wb-badge is-ok' : status === 'failed' ? 'wb-badge is-error' : 'wb-badge is-warn');
+				children.push(h('div', { className: 'vssSchedCreate', 'data-sched-loop-detail': loopDetailFor },
+					h('div', { className: 'vssSchedCreateCard' },
+						h('h2', { className: 'vssSchedCreateTitle' }, `循环：${dl?.loop?.title || loopDetailFor}`),
+						h('div', { className: 'vssSchedCreateHint' }, spec
+							? `调度 ${spec.schedule} · 安静时段 ${spec.quietHours || '关'} · 每轮最多 ${spec.maxItemsPerRound} 条 · 阻塞策略 ${spec.onAsk} · 交接 ${spec.handoff?.require ? `要求（≤${spec.handoff.maxChars}）` : '不要求'}`
+							: '载入中…'),
+						entries.length === 0
+							? h('div', { className: 'vssSchedCreateHint' }, '还没有账本条目。跑一轮或干跑后这里会有记录。')
+							: h('table', { className: 'wb-table', 'data-sched-loop-ledger': '' },
+								h('thead', null, h('tr', null,
+									h('th', null, '键'), h('th', null, '状态'), h('th', null, '尝试'), h('th', null, '原因'), h('th', null, ''))),
+								h('tbody', null, entries.map((entry) => h('tr', { key: entry.key },
+									h('td', null, h('code', { className: 'wb-code' }, entry.key)),
+									h('td', null, h('span', { className: badgeOf(entry.status) }, String(entry.status ?? '—'))),
+									h('td', null, String(entry.attempts ?? 0)),
+									h('td', null, String(entry.lastError ?? '').slice(0, 100)),
+									h('td', null, entry.status === 'blocked'
+										? h('button', {
+											type: 'button', className: 'wb-link', 'data-sched-act': 'loop-answer',
+											onClick: () => { setAnswerKey(entry.key); setAnswerText(''); },
+										}, '回答')
+										: null))))),
+						answerKey
+							? h('div', { className: 'vssSchedCreateRow' },
+								h('label', null, `回答 ${answerKey}（会写进账本，下一轮带着它重跑）`),
+								h('textarea', { value: answerText, 'aria-label': '回答', onChange: (ev) => setAnswerText(ev.target.value) }),
+								h('div', { className: 'vssSchedCreateActs' },
+									h('button', { type: 'button', className: 'wb-btn', onClick: () => setAnswerKey('') }, '取消'),
+									h('button', {
+										type: 'button', className: 'wb-btn is-primary',
+										onClick: () => answerLoop(loopDetailFor, answerKey),
+									}, '放回队列')))
+							: null,
+						// ⚠ 干跑/跑一轮的结果走 `err`（与新建弹窗同一套提示口径）⇒ 这里必须有槽，
+						//   否则点了按钮"什么都没发生"（真机首验就是这样：结果只进了 state）。
+						err ? h('div', { className: 'vssSchedCreateErr', 'data-sched-loop-msg': '' }, err) : null,
+						h('div', { className: 'vssSchedCreateHint' }, '循环定义在 <数据根>/loops/<名字>/loop.json；删除 = 删掉那个目录（UI 不做危险动作）。'),
+						h('div', { className: 'vssSchedCreateActs' },
+							h('button', {
+								type: 'button', className: 'wb-btn',
+								onClick: () => { setLoopDetailFor(''); setAnswerKey(''); },
+							}, '关闭'),
+							h('button', {
+								type: 'button', className: 'wb-btn', disabled: loopBusy !== '',
+								'data-sched-act': 'loop-dry', onClick: () => loopAct(loopDetailFor, 'dry'),
+							}, loopBusy === 'dry' ? '干跑中…' : '干跑'),
+							h('button', {
+								type: 'button', className: 'wb-btn is-primary', disabled: loopBusy !== '',
+								'data-sched-act': 'loop-run', onClick: () => loopAct(loopDetailFor, 'run'),
+							}, loopBusy === 'run' ? '运行中…' : '跑一轮')))));
+			}
+
 			// ★ 删除二次确认（取自官方：说明后果 + 显式确认，避免误删无法挽回）
 			if (pendingDelete) {
 				children.push(h('div', { className: 'vssSchedCreate', 'data-sched-confirm': pendingDelete },

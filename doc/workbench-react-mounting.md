@@ -1,5 +1,8 @@
 # 工作台的 React 挂载方式：小红书工作台 vs 其他内置工作台
 
+> 文档状态：**【历史·调研】**（2026-10-24）。挂载方式的调研快照，**不是流程依据**；
+> 承载口径以 `doc/workbench-carrier-consolidation.md` 与规范 §2 为准。
+
 **调研时间**：2026-10-24 · **样本**：本仓 30 个插件，重点是 14 个声明 `vssaros.workbench` 的工作台 + 宿主 `vssaros-workbenches`
 
 ---

@@ -67,6 +67,13 @@ export const DSH_KB_REFS_PLUGIN_NAME = '@vssaros/dsh-kb-refs';
  * （同名工具不能两个都注册 —— dsh 里那不是后者覆盖，而是整条 entry 失效）。
  */
 export const DSH_BROWSER_PLUGIN_NAME = '@vssaros/dsh-browser';
+/**
+ * Office 模板插件（用户自带 .docx 当模板，2026-11-02）：**纯 host 工具插件** ——
+ * 没有 `vssaros.module` ⇒ `listBundledPlugins` 的模块自发现收不到它，必须像 bridge /
+ * chat-surface 那样显式列进伴生插件清单（否则 profile 里没有它 ⇒ overlay 里那行 `- insert:`
+ * 解析不到包名 ⇒ Host 起不来）。
+ */
+export const DSH_OFFICE_TEMPLATE_PLUGIN_NAME = '@vssaros/dsh-office-template';
 
 /** Host 侧 `unreal_*` 插件包名（源码位于仓库根 `dsh-plugins/vssaros-unreal/`）；让路机制同上。 */
 export const DSH_UNREAL_PLUGIN_NAME = '@vssaros/dsh-unreal';
@@ -795,6 +802,15 @@ export interface IDshCreateViewArgs {
 	readonly sessionId?: string;
 	/** 页面 palette 模式（IDE 主题的 light/dark）；缺省时主进程不强制 emulation。 */
 	readonly colorScheme?: DshColorScheme;
+	/**
+	 * 本视图是否落在 **dsh 自主窗口**（桌面窗口 / 分屏 / 全窗；2026-11-02）。
+	 *
+	 * 为真 ⇒ 明暗交给 **dsh 自己的「外观」偏好**（判据见 `common/dshThemeBridge.ts::isDshOwnWindow`）：
+	 * 宿主不推 IDE 主题的 alias token 覆盖层，`prefers-color-scheme` 也按页面自报的
+	 * `data-ds-theme-source` 走（见 `dshViewHost.applyPageThemeSource`）。
+	 * 缺省（false）⇒ 旧行为：跟 IDE 主题一致（主窗口里的聊天框 / 插件页）。
+	 */
+	readonly dshOwnWindow?: boolean;
 	/**
 	 * `surface=plugin-page` 时加载的插件自托管路由（方案 6.3：`/x/<module>/`）。
 	 * 只接受站内绝对路径（`/` 开头、无 `..`、无 `//` 前缀）；其他 surface 传了会被忽略。

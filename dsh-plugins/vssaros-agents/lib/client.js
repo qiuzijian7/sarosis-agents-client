@@ -39,6 +39,13 @@
 // ★ 2026-10-31 touch（知识库商城条目 P0 收尾） 2026-10-31 08:17:11：chunk（client.agents.js）改过之后必须动入口 ⇒ ?rev 才会变，浏览器不吃旧缓存。
 // ★ 2026-10-31 touch#2 2026-10-31 11:48:40：chunk 改过之后必须动入口 ⇒ ?rev 才会变（守卫查 mtime）。
 // ★ touch 2026-10-31 11:55:15：chunk 改过之后必须动入口 ⇒ ?rev 才会变（守卫查 mtime）。
+// ★ 2026-11-02 touch#3 2026-11-02 02:17:40：chunk 改过之后必须动入口 ⇒ ?rev 才会变（守卫查 mtime）。
+// ★ 2026-11-02 touch#4：新增右侧栏「Bot 设置」页签（lib/client.botSettings.js）+ 本入口 require 它
+//   ⇒ 改动后再动一次入口（?rev 才会变；守卫比的是 mtime）。
+// ★ 2026-11-02 touch#8：POST /api/session 透传 workspaceId（与 cwd 互斥）—— 点 bot 新建会话登记进工作区账本，修「bot 聊天框灰色无法输入」。
+// ★ 2026-11-02 touch#7：中栏群聊页签加「展开右侧栏」按钮 + 展开栏里的独立「群设置」页签（群设置不再整块顶掉聊天）。
+// ★ 2026-11-02 touch#6：群聊聊天框抽成 lib/client.groupChat.js（方案 B），本入口先装它再 bindGroupChat；
+//   中栏群聊页签改挂 React 组件（agents.groupChat，方案 A）。chunk 改过之后必须最后动入口 ⇒ ?rev 才会变。
 window.__ModuleLoader__.load({
 	id: '@vssaros/dsh-agents',
 	factory: (require) => {
@@ -48,12 +55,36 @@ window.__ModuleLoader__.load({
 		function apply(ctx) {
 			try {
 				if (typeof require.async !== 'function') { throw new Error('装载器没有 require.async（老运行时）'); }
+				// ★ 2026-11-02（Bots 工作台重构 · 方案 B）：群聊聊天框 / 输入框 composer 抽成独立 chunk
+				//   `client.groupChat.js`，工作台与 chat-surface 的中栏群聊页签共用。agents 面板渲染它之前必须先
+				//   `bindGroupChat(mod)`，所以这里 **先装 groupChat、再 install**。
+				//   groupChat 装失败不该带走整个工作台：吞掉并记下原因，面板会显示「群聊组件还没加载」。
+				const groupChatP = require.async('./client.groupChat.js').catch((e) => {
+					const why = String((e && e.message) || e);
+					globalThis.__vssarosAgentsClient = Object.assign({}, globalThis.__vssarosAgentsClient, { groupChatFailed: why });
+					console.warn(`[vssaros-agents] 群聊组件装载失败：${why}`);
+					return null;
+				});
 				require.async('./client.agents.js')
+					.then((part) => groupChatP.then((gc) => {
+						if (part && typeof part.bindGroupChat === 'function') { part.bindGroupChat(gc); }
+						return part;
+					}))
 					.then((part) => { if (part && typeof part.install === 'function') { part.install(ctx); } })
 					.catch((e) => {
 						const why = String((e && e.message) || e);
 						globalThis.__vssarosAgentsClient = { loaded: true, workbenchFailed: why };
 						console.warn(`[vssaros-agents] 工作台组件装载失败：${why}`);
+					});
+				// ★ 2026-11-02（Bots 工作台重构第 2 步）：右侧栏「Bot 设置」页签
+				//   （点聊天框右上角 Bot ⚙ 时由 chat-surface 撑开右栏并选中它）。
+				//   独立装载：它失败不该带走工作台页面（反之亦然）⇒ 各自 catch ✓。
+				require.async('./client.botSettings.js')
+					.then((part) => { if (part && typeof part.install === 'function') { part.install(ctx); } })
+					.catch((e) => {
+						const why = String((e && e.message) || e);
+						globalThis.__vssarosAgentsClient = Object.assign({}, globalThis.__vssarosAgentsClient, { botSettingsFailed: why });
+						console.warn(`[vssaros-agents] Bot 设置页签装载失败：${why}`);
 					});
 			} catch (e) {
 				const why = String((e && e.message) || e);

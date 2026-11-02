@@ -49,9 +49,9 @@ const ctx = new Proxy({}, {
 });
 
 const vault = mkdtempSync(join(tmpdir(), 'kb-vcache-'));
-mkdirSync(join(vault, '库'), { recursive: true });
-mkdirSync(join(vault, '笔记'), { recursive: true });
-writeFileSync(join(vault, '笔记', 'a.md'), '# A\n\n[[b]]\n', 'utf8');
+mkdirSync(join(vault, '数据源'), { recursive: true });
+mkdirSync(join(vault, '知识库列表'), { recursive: true });
+writeFileSync(join(vault, '知识库列表', 'a.md'), '# A\n\n[[b]]\n', 'utf8');
 
 mod.apply(ctx, {
 	dataRoot: mkdtempSync(join(tmpdir(), 'kb-vcache-root-')),
@@ -82,7 +82,7 @@ t('立刻再请求命中缓存', second.cached === true, 'cached=' + second.cach
 t('命中时内容一致', JSON.stringify(second.data) === JSON.stringify(first.data));
 
 // 新增一篇 ⇒ 目录 mtime 变 ⇒ 必须失效（否则用户新建笔记后树里看不到）
-writeFileSync(join(vault, '笔记', 'b.md'), '# B\n', 'utf8');
+writeFileSync(join(vault, '知识库列表', 'b.md'), '# B\n', 'utf8');
 const third = await call('/x/kb/api/view-data');
 t('新增笔记后缓存失效', third.cached === false, 'cached=' + third.cached);
 t('篇数已变成 2', third.data && third.data.noteCount === 2, 'noteCount=' + (third.data && third.data.noteCount));

@@ -66,6 +66,15 @@ ck('header 安全区常量', /ACTIONS_SAFE_TOP = 30/.test(shell));
 ck('落点不低于安全区', /Math\.max\(ACTIONS_SAFE_TOP/.test(shell));
 ck('位置持久化（__vssarosWbActionsPos）', /ACTIONS_POS_KEY = '__vssarosWbActionsPos'/.test(shell));
 ck('右键复位', /contextmenu[\s\S]{0,220}applyActionsPos\(el, null\)/.test(shell));
+// ★ 2026-11-02（用户报「知识库 工作台未显示浮动工具栏」）：
+//   位置存的是**绝对像素**且全局共用一个 key，只在挂载时夹一次 ⇒ 窗口 / 分栏尺寸一变就飘到面板外，
+//   表现就是"工具栏凭空消失"。三条必须同时在场，缺一条这个 bug 就会回来。
+ck('位置恢复：面板还没尺寸（页签未激活）时先不恢复',
+	/fr\.width <= 0 \|\| fr\.height <= 0/.test(shellSrc) && /function restoreActionsPos\(/.test(shellSrc));
+ck('位置恢复：尺寸变化后重新夹回面板内（ResizeObserver）',
+	/new ResizeObserver\(/.test(shellSrc) && /applyActionsPos\(el, clampActions\(el, frameEl, el\.__vssPos\)\)/.test(shellSrc));
+ck('复位逃生门：__vssarosResetWorkbenchActions（位置飘走后可一键拉回）',
+	/window\.__vssarosResetWorkbenchActions = resetAllActions/.test(shellSrc));
 // ⚠ 只查 swallow 的**定义**不够：删掉它的 addEventListener 注册也算"没吞"（突变验证抓到过）
 ck('拖动后吞掉那次 click（定义 + 注册）',
 	/const swallow = \(e\) => \{ e\.stopPropagation\(\); e\.preventDefault\(\); \}/.test(shell)
@@ -107,10 +116,12 @@ for (const wb of [MARKETS, STUDIO]) {
 	// 折叠契约（保持原样）
 	ck('收起用 display:none（不卸载）', /display: collapsed \? 'none' : 'flex'/.test(code));
 	ck('不收窄条：无 COLLAPSED_W 30px', !/COLLAPSED_W\s*=\s*'(28|30)px'/.test(code));
-	ck('收起入口文案「» 收起」', /'» 收起'/.test(code));
+	// ★ 2026-11-02（用户：「AI 助手侧边栏左上角不要有收起按钮」「右上角加 +新会话」）：
+	//   对话栏顶部的两个按钮**不再由各工作台自画**：「＋ 新会话」由宿主对话栏统一提供，收起/展开走右侧浮动工具栏。
+	ck('左上角不再自画「» 收起」（收起统一走浮动工具栏）', !/'» 收起'/.test(code) && !/data-vssaros-(studio|market)-collapse/.test(code));
+	ck('不再自画「＋ 新会话」（宿主对话栏统一提供）', !/mountNewButton/.test(code) && !/＋ ?新会话/.test(code) && !/neww/.test(code));
 	ck('宽度下限 CONV_MIN = 320', /CONV_MIN\s*=\s*320/.test(code));
 	ck('拖拽条收起时隐藏', /display: collapsed \? 'none' : undefined/.test(code));
-	ck('收起态不挂「＋新会话」', /if \(el && !collapsed\)/.test(code));
 	// key 名两个工作台不完全一样（Studio 用 ConvCollapsed、Market 用 Collapsed），只要带工作台前缀即可
 	ck('状态持久化（*Collapsed key）', /__vssaros(Studio|Market)(Conv)?Collapsed/.test(code));
 }
@@ -145,11 +156,166 @@ for (const wb of [MARKETS, STUDIO]) {
 		!/--vscode-/.test(mediaCss.slice(mediaCss.indexOf('.m-fab {'), mediaCss.indexOf('.m-linkbar'))));
 }
 
-// ── 3. 跨文件：文案一致 ───────────────────────────────────────────────
-if (!failed) {
-	const labels = [MARKETS, STUDIO].map((wb) => (read(wb.file).match(/'»\s*收起'/) || [''])[0].replace(/\s+/g, ''));
-	if (new Set(labels).size !== 1) { fail(`收起文案不一致：${labels.join(' / ')}`); }
-	else { console.log(`\n✓ 两个工作台文案一致：${labels[0]}`); }
+// ── 2.6 媒体库工具条：窄窗口不许把按钮挤成竖排（2026-11-02）─────────────────────
+//   用户报「窗口大小不足时 UI 布局不合理」：4 个动作按钮和筛选 chips 抢同一条 overflow-x:auto 的行，
+//   而 .m-btn 没有 flex:0 0 auto / nowrap ⇒ 被压到 41~45px 宽、中文逐字换行，堆成 65~94px 高的竖排文字。
+//   实测容器 1100（中栏只有 ~608px）就有 182px 溢出 ⇒ 这不是"极小窗口"才有的问题。
+//   口径：筛选区自己换行 / 动作组不收缩（窄了只留图标）/ 顶栏只有面包屑当弹性项。
+{
+	console.log('\n媒体库工具条（窄窗口不许把按钮挤成竖排）');
+	const page = read('dsh-plugins/vssaros-media/lib/mediaPage.js');
+	const css = strip(page);
+	ck('.m-btn 不折行（white-space: nowrap）', /\.m-btn \{[^}]*white-space:\s*nowrap/.test(css));
+	ck('筛选行允许换行（.m-chips flex-wrap: wrap）', /\.m-chips \{[^}]*flex-wrap:\s*wrap/.test(css));
+	ck('筛选区自己去换行（.m-filters display:flex + flex-wrap）', /\.m-filters \{[^}]*flex-wrap:\s*wrap/.test(css));
+	ck('动作组不参与收缩（.m-actions flex: 0 0 auto）', /\.m-actions \{[^}]*flex:\s*0 0 auto/.test(css));
+	ck('动作组里的按钮不参与收缩（flex: 0 0 auto）', /\.m-actions \.m-btn \{[^}]*flex:\s*0 0 auto/.test(css));
+	ck('顶栏只有面包屑可收缩（.m-top .m-crumb flex: 1 1 0）', /\.m-top \.m-crumb \{[^}]*flex:\s*1 1 0/.test(css));
+	ck('状态栏左右两段各自成组（放不下整体换行）', /\.m-stat-left, \.m-stat-right \{/.test(css));
+	ck('≤900 动作按钮只留图标 + title（.lbl 隐藏）',
+		/@media \(max-width: 900px\) \{\s*\/\*[^*]*\*\/\s*\.m-actions \.m-btn \.lbl \{ display: none; \}/.test(css)
+		|| /@media \(max-width: 900px\) \{[\s\S]{0,260}\.m-actions \.m-btn \.lbl \{ display: none;/.test(css));
+	ck('≤760 类型 chip 只留字形（.m-chip .lbl 隐藏）', /@media \(max-width: 760px\) \{[\s\S]{0,200}\.m-chips \.m-chip \.lbl \{ display: none/.test(css));
+	ck('「在编辑区打开」宽了收起（≥620 隐藏，锚点仍在）',
+		/@media \(min-width: 620px\) \{[\s\S]{0,120}\[data-vssaros-media-open\] \{ display: none/.test(css)
+		&& /data-vssaros-media-open/.test(page));
+	// 抽出来的小节要被 mockup 生成器找到（否则 doc/media-library-responsive 立刻失效）
+	ck('「窄窗口：工具条两段式」小节标记还在（mockup 抽它当 B 档）', /\/\* ── 窄窗口：工具条两段式/.test(page));
+	ck('markup 里两个分组容器都在（.m-filters / .m-actions）', /class="m-filters"/.test(page) && /class="m-actions"/.test(page));
+	ck('分隔线类名是 .m-vsep（2026-11-02 修掉的 .vsep 笔误）', /class="m-vsep"/.test(page) && !/class="vsep"/.test(page));
+}
+
+// ── 3. AI 助手栏顶部：**统一由宿主提供**（2026-11-02）────────────────────────────
+// 用户要求：所有工作台的 AI 助手栏 ① 右上角有「＋ 新会话」② 左上角没有收起按钮 ③ 聊天框默认就是该工作台对应的 agent。
+// 之前商城、萨罗斯各自画了一套（还各带一个左上角「» 收起」），其余工作台一个都没有 ⇒ 口径不一、并行改一处漏一处。
+// 现在只有宿主对话栏（ConversationMount / SplitConversationPane）这**一份**实现，守卫钉住它、也钉住「别处不许再画」。
+{
+	console.log('\nAI 助手栏顶部（宿主统一：右上角「＋ 新会话」、左上角无收起、默认 agent）');
+	const sliceAfter = (marker, len) => { const i = shellSrc.indexOf(marker); return i < 0 ? '' : shellSrc.slice(i, i + len); };
+	ck('宿主有 NewSessionButton，文案「＋ 新会话」',
+		/function NewSessionButton\(/.test(shellSrc) && /'＋ 新会话'/.test(shell));
+	ck('整页工作台的对话栏（ConversationMount）挂了它',
+		/h\(NewSessionButton, \{ service, entry \}\)/.test(sliceAfter('function ConversationMount(', 900)));
+	ck('标准分栏的对话栏（SplitConversationPane）也挂了它',
+		/h\(NewSessionButton, \{ service, entry \}\)/.test(sliceAfter('function SplitConversationPane(', 900)));
+	ck('按钮在对话栏**右上角**（right + top，没有 left）',
+		/\.vssWbNewSession \{[^}]*position:absolute;[^}]*right:10px;[^}]*top:5px/.test(shellSrc) && !/\.vssWbNewSession \{[^}]*[;{ ]left:/.test(shellSrc));
+	ck('对话栏是定位上下文（否则按钮以更外层为基准飘走）',
+		/\.vssWbDockHost \{ position:relative;/.test(shellSrc) && /\.vssWbSplitConversation \{ position:relative;/.test(shellSrc));
+	ck('宿主不在对话栏里放收起按钮（收起统一走浮动工具栏）', !/vssWbCollapse|data-vssaros-wb-collapse/.test(shellSrc));
+	// 大型工作台首次打开慢（2026-11-02 用户要求）：外框给一层加载态，且不能盖住浮动胶囊
+	ck('工作台有加载态（方案 D），且层级低于浮动胶囊',
+		/function PanelLoadingGate\(/.test(shell) && /data-vssaros-wb-loading/.test(shellSrc)
+		&& /\.vssWbLoading \{ position:absolute; inset:0; z-index:6;/.test(shellSrc)
+		&& /\.vssWbActions \{[^}]*z-index:2147482000/.test(shellSrc)
+		&& /正在加载 · /.test(shellSrc));
+	ck('加载态有最短显示时长（缓存命中时不闪）', /Math\.max\(0, 120 -/.test(shell));
+	// 用户 2026-11-02：「记忆库不应该有浮动工具栏」⇒ 与 scheduler / loop 同一机制（描述符 + 清单都要声明）
+	{
+		const memSrc = read('dsh-plugins/vssaros-memory/lib/client.memory.js');
+		const memPkg = JSON.parse(read('dsh-plugins/vssaros-memory/package.json'));
+		ck('记忆库声明 floatingActions:false（描述符与清单同值）',
+			/floatingActions: false/.test(memSrc) && memPkg.vssaros.workbench.floatingActions === false);
+	}
+	// 真机「未生效」：同 id 的 <style> 已存在时旧实现直接 return ⇒ 新规则永远写不进去，加载态退化成裸文字
+	ck('样式注入会**更新**已有 <style>（不是见到同 id 就跳过）',
+		/if \(el\.textContent !== CSS\)/.test(shell) && !/if \(document\.getElementById\(STYLE_ID\)\) \{ return undefined; \}/.test(shell));
+	// ★★ 2026-11-02 根治（用户：「不同工作台中聊天框的 agent 使用不当，多轮修复始终反复出错」）：
+	//   五个叠加根因：①5 个写入者（宿主 + kb/商城/媒体库/萨罗斯各自 select、各自包 newSession、萨罗斯还劫持官方「新会话」）
+	//   ②插件改的是**全局当前会话**，页签条同时挂着多个工作台 ⇒ 互相改对方的 ③vssaros-agents 是 lazy 注册，开机 ~15s 里
+	//   自定义 preset 不存在 ④connectBlank(ws,{agentPreset}) 复用工作区里现成的空会话 ⇒ 多个工作台抢同一条（又逼出"借用"）
+	//   ⑤select 不存在的 id 会把会话弄坏（之后 resume 报 Unknown agent preset）。下面逐条钉死。
+	ck('新会话 = 建一条**自己的**会话（sessions.create），**不走** connectBlank（它会复用别人的空会话）',
+		/async createOwnSession\(workspace, preset\)/.test(shell) && /this\.createOwnSession\(workspace, preset\)/.test(shell)
+		&& !/\.connectBlank\(/.test(shell));
+	ck('不再有「借用」别的工作台的会话（每个工作台独占自己的会话）',
+		!/borrowSession|this\.borrowed\b/.test(shell));
+	ck('会话归属不可改（服务端 validateState 会拒；空会话也不例外）',
+		/prev !== owner\) \{ throw new Error\('此会话已属于另一个工作台/.test(shell) && !/isBlankSession/.test(shell));
+	// ⚠ 要匹配**调用点**：只写 `diagnoseDock\(…\)` 会连方法定义本身一起匹配，把调用删掉也照样绿（反向突变当场抓到的）。
+	ck('停靠时诊断「会话不属于任何工作区」，并带上**是哪个工作台**（不读全局前台）',
+		/service\.diagnoseDock\(presetOwner, sessionId\)/.test(shellSrc) && /停靠会话不属于任何工作区/.test(shellSrc));
+	ck('自愈：给**传入的那个工作台**建自己的新会话（只救空会话、每工作台只救一次、不读 this.active）',
+		/this\.healDock\(owner, state\.summary\)/.test(shell) && /healDock\(owner, summary\) \{/.test(shell)
+		&& /summary\.blank !== true\) \{ return; \}/.test(shell) && /this\.dockHealed\.has\(owner\)/.test(shell)
+		&& !/healDock\([^)]*\) \{\s*const owner = this\.active/.test(shell));
+	// 真机截图：商城 chip 写 Saros-agents-pocket，用户当前工作区是 sarosis-agents-client ⇒ 名字与根目录对不上
+	ck('新会话默认建在**用户当前工作区**（主视图会话所在工作区优先）',
+		/\.mainView \|\| 0\) > 0/.test(shell) && /fromMain/.test(shell) && /if \(fromMain\) \{ return fromMain; \}/.test(shell));
+	// 默认 agent
+	ck('新会话出生就带 agentPreset（比事后 select 可靠）', /sessions\.create\(\{ workspaceId: workspace, agentPreset: preset \}\)/.test(shell));
+	ck('preset 被拒时退回不带 preset 的建法（不能因此建不出会话）', /退回默认/.test(shellSrc) && /sessions\.create\(\{ workspaceId: workspace \}\)/.test(shell));
+	ck('**绝不猜** preset：只用 agentPresets.list() 里真实存在的；读不到列表 ⇒ 不指定',
+		/candidates\.find\(c => roster\.has\(c\)\)/.test(shell) && /if \(!svc \|\| typeof svc\.list !== 'function'\) \{ return null; \}/.test(shell)
+		&& !/碰运气|candidates\[0\];/.test(shell));
+	ck('**等注册**（lazy 窗口）：readyPreset 带 waitMs 轮询，事后补套时用 presetWaitMs',
+		/async readyPreset\(id, \{ waitMs = 0 \} = \{\}\)/.test(shell) && /this\.readyPreset\(owner, \{ waitMs: this\.presetWaitMs \}\)/.test(shell)
+		&& /this\.presetWaitMs = 30000;/.test(shell));
+	ck('事后套用**只改这个工作台此刻显示**的那条（不是全局当前会话）',
+		/const stillOurs = \(\) => this\.sessionShownIn\(owner\) === sessionId && !!this\.state && this\.state\.sessionBindings\[sessionId\] === owner;/.test(shell)
+		&& /if \(!stillOurs\(\)\) \{ return; \}/.test(shell));
+	ck('事后套用只动 blank、每条只套一次、等待期间被改过就尊重',
+		/if \(!summary \|\| summary\.blank !== true\) \{ return; \}/.test(shell) && /presetApplied\.has\(key\)/.test(shell)
+		&& /presetApplied\.add\(key\)/.test(shell) && /if \(current !== before\) \{ return; \}/.test(shell));
+	ck('select 失败看 ok（官方失败返回 {ok:false}，不抛）', /result && result\.ok === false/.test(shell) && /套用默认 agent 被拒/.test(shellSrc));
+	ck('默认 agent 服务走 ctx.inject 可选注入（不是硬依赖）',
+		/ctx\.inject\(\['remote\.agentPresets'\]/.test(shell) && !/module\.exports\.inject = \[[^\]]*agentPresets/.test(shell));
+	ck('页面型兜底开助手会话也只用真实存在的 preset（readyPreset）',
+		/Promise\.resolve\(service\.readyPreset\(entry\.id\)\)/.test(shell) && !/assistantPresetOf\(/.test(shell));
+	// 工作台 → agent 的对应表（内置，全仓唯一）
+	const PRESETS = [['vssaros/marketplace', 'vssaros-marketplace-bot'], ['vssaros/media', 'vssaros-media-librarian'], ['vssaros/studio', 'vssaros-saroasis-studio']];
+	for (const [wb, preset] of PRESETS) {
+		ck(`${wb} 默认 agent = ${preset}`, new RegExp(`'${wb}':\\s*'${preset}'`).test(shellSrc));
+	}
+	ck('vssaros/kb 默认 agent 是候选列表（kb-expert / knowledge-base-expert，同名「知识库专家」在不同环境 id 不同）',
+		/'vssaros\/kb':\s*\[\s*'vssaros-kb-expert',\s*'vssaros-knowledge-base-expert'\s*\]/.test(shellSrc));
+	// 别处不许再画（扫所有插件的客户端代码；宿主自己除外）
+	const walk = (dir, out = []) => {
+		for (const entry of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
+			if (entry.name === 'node_modules' || entry.name === 'test') { continue; }
+			const rel = `${dir}/${entry.name}`;
+			if (entry.isDirectory()) { walk(rel, out); }
+			else if (/^(?:client.*|workbench|mediaApp)\.js$/.test(entry.name)) { out.push(rel); }
+		}
+		return out;
+	};
+	const offenders = [];
+	for (const rel of walk('dsh-plugins')) {
+		if (rel === SHELL) { continue; }
+		const code = strip(read(rel));
+		if (/['"`]＋ ?新会话['"`]/.test(code)) { offenders.push(`${rel}（自画「＋ 新会话」）`); }
+		if (/['"`]» 收起['"`]/.test(code)) { offenders.push(`${rel}（自画「» 收起」）`); }
+	}
+	ck('除宿主外，没有任何工作台自画「＋ 新会话」/「» 收起」', offenders.length === 0, offenders.join('、'));
+
+	// ★★ 唯一写入者（2026-11-02 根治）：除宿主外，插件客户端代码里**不许**有改 agent 的写入点。
+	//   以前 kb / 商城 / 媒体库 / 萨罗斯各写一套，对全局当前会话 select、各自包 newSession、萨罗斯还劫持官方「新会话」，
+	//   每轮只修一个，其余照跑 ⇒「修好又坏」。下面的白名单只放**用户显式意图**的入口（不碰工作台会话），新增必须写理由。
+	const WRITER_ALLOW = {
+		'dsh-plugins/vssaros-chat-surface/lib/client.preset.js': '用户在模式选择器里**手动**切 agent（用户意图，本来就该改）',
+		'dsh-plugins/vssaros-chat-surface/lib/client.workspaces.js': 'Bots 侧栏：用户点某个 bot ⇒ 新建一条和它聊的主视图会话（不碰工作台会话）',
+		'dsh-plugins/vssaros-agents/lib/client.agents.js': 'Bots 工作台：用户点某个 bot ⇒ 新建一条和它聊的会话（不碰工作台会话）',
+	};
+	const WRITER_PATS = [
+		[/agentPresets[\s\S]{0,4}\.select\(|\.select\(\s*(sid|sessionId)\s*,|svc\[name\]\(/, 'select(会话, preset)'],
+		[/dw\.newSession\s*=|\.newSession\s*=\s*(patched|function)/, '包 dw.newSession'],
+		[/!==\s*'新会话'|===\s*'新会话'/, '劫持官方「新会话」按钮'],
+		[/[{,]\s*agentPreset\s*:/, '带 agentPreset 建会话'],
+		[/__vssaros(Kb|Market|Media|Studio)Preset\b/, '自己的 preset 诊断（= 自己在设 preset）'],
+	];
+	const writers = [];
+	for (const rel of walk('dsh-plugins')) {
+		if (rel === SHELL || WRITER_ALLOW[rel]) { continue; }
+		const lines = strip(read(rel)).split(/\r?\n/);
+		lines.forEach((line, i) => {
+			for (const [re, label] of WRITER_PATS) { if (re.test(line)) { writers.push(`${rel}:${i + 1}（${label}）`); } }
+		});
+	}
+	ck('除宿主外，没有任何插件在改工作台会话的 agent（select / 包 newSession / 劫持「新会话」/ 带 preset 建会话）',
+		writers.length === 0, writers.slice(0, 6).join('、'));
+	for (const rel of Object.keys(WRITER_ALLOW)) {
+		ck(`白名单条目仍然存在（${rel.split('/').slice(-3).join('/')}）——不存在就删掉这条，别让白名单过期`, fs.existsSync(path.join(ROOT, rel)));
+	}
 }
 
 // ── 4. 浮动区 CSS 结构（2026-10-27 真实事故）─────────────────────────────
@@ -187,8 +353,9 @@ if (!failed) {
 	ck('商城：不再自己包 selectPanel / openSession（只由外壳负责）', !patchesPanel(marketClient));
 	ck('两边都不再用「已被包过就放弃」的 newSession 守卫',
 		!/if \(dw\.newSession !== orig(NewSession)?\) \{ return; \}/.test(mediaClient + marketClient));
-	ck('两边的 preset 补丁都受前台标志保护',
-		mediaClient.includes('__vssarosMediaActive') && marketClient.includes('__vssarosMarketActive'));
+	// ★ 2026-11-02 根治：两边的 preset 补丁（和它们用的前台标志）已整体删除 —— 默认 agent 只由宿主设。
+	ck('两边都不再有自己的 preset 补丁 / 前台标志（默认 agent 只由宿主设）',
+		!/__vssarosMediaActive|__vssarosMarketActive|MEDIA_PRESET|MARKET_PRESET/.test(strip(mediaClient) + strip(marketClient)));
 	ck('外壳：拦下 selectPanel(null) 时必须把会话停靠进对话列（不能只拦不接）',
 		/service\.showSession\(sid\)/.test(shellSrc));
 	ck('外壳：目标会话优先取 uiWorkspace.mainReference（新建会话只有它有）',
@@ -231,8 +398,11 @@ if (!failed) {
 	// ★ 2026-10-28（用户：「知识库的展开 AI 助手点不动，展开后应显示知识库专家」）：
 	//   知识库是页面型工作台（面板无对话列）⇒ 点击只能靠外壳兜底开会话，兜底**必须带 preset**
 	//   （空 preset 的 newChat 等于空转）。知识库专家 = 内置 agent knowledge-base-expert。
-	ck('外壳：知识库 preset 映射到知识库专家（vssaros-knowledge-base-expert）',
-		/vssaros\/kb': 'vssaros-knowledge-base-expert'/.test(shellSrc));
+	// ★ 2026-11-02：知识库现在是**候选列表**（['vssaros-kb-expert', 'vssaros-knowledge-base-expert']）——
+	//   同一个「知识库专家」在内置目录里叫 knowledge-base-expert、在用户数据根里叫 kb-expert。
+	//   两个都要在，实际用哪个由 agentPresets.list() 决定。
+	ck('外壳：知识库 preset 映射到知识库专家（候选含 vssaros-knowledge-base-expert 与 vssaros-kb-expert）',
+		/vssaros\/kb': \[[^\]]*'vssaros-knowledge-base-expert'[^\]]*\]/.test(shellSrc) && /vssaros\/kb': \[[^\]]*'vssaros-kb-expert'[^\]]*\]/.test(shellSrc));
 	// ★ 2026-10-28（用户第二次报「点展开没反应」）：兜底必须**优先用 startSession**
 	//   （同步切到会话页，行为可预期）；页面桥只当退路 —— 它在桌面窗口里可能"成功但开在后台"。
 	{
@@ -241,5 +411,52 @@ if (!failed) {
 		ck('外壳：点展开优先 startSession 开会话，页面桥只当退路',
 			iStart >= 0 && iBridge > iStart);
 	}
+// ── 5. 类名所有权：`.vssWbActions` **只属于宿主**（2026-11-02 用户报「浮动工具栏功能丢失」）──
+// 事故：商城把卡片底部按钮行也写成 `className: "vssWbActions"` ⇒ 宿主的
+//   `.vssWbActions { position:absolute; right:12px; top:50%; z-index:2147482000; … }` 把它命中，
+//   每张卡片的按钮行变成绝对定位的浮动块，并与真正的胶囊**同名同位**互相覆盖
+//   ⇒ 用户看到的是「浮动工具栏没了 / 点了没反应」。
+// 媒体库早前也踩过同类（两条浮动区重叠），可见这类撞名会反复发生 ⇒ 用守卫钉住所有权。
+{
+	console.log('\n类名所有权  (.vssWbActions 只许宿主定义)');
+	const HOST = 'dsh-plugins/vssaros-workbenches/lib/client.js';
+	/**
+	 * 允许出现的例外：**现在没有，也不该有**。
+	 *
+	 * ★ 2026-11-02 事故：这里曾给 `vssaros-agents` 开过白名单（用户要求 Bots 不要浮动工具栏，
+	 *   它用一条全局 `.vssWbActions { display:none !important }` 实现）。那条规则作用于**整个 document**
+	 *   （所有插件的客户端 chunk 启动即加载，不是「只在 Bots 页面加载」）⇒ 所有工作台的浮动工具栏都被藏掉，
+	 *   用户连报「知识库 / 商城 / 媒体库都没有」。白名单就是放行它的口子。
+	 *   「某个工作台不要浮动工具栏」只有一条正路：描述符声明 `floatingActions: false`。
+	 */
+	const ALLOW = {};
+	const walk = (dir, out = []) => {
+		for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+			if (entry.name === 'node_modules' || entry.name === 'vendor') { continue; }
+			const full = path.join(dir, entry.name);
+			if (entry.isDirectory()) { walk(full, out); }
+			else if (/\.(?:m|c)?js$/.test(entry.name)) { out.push(full); }
+		}
+		return out;
+	};
+	const offenders = [];
+	for (const file of walk(path.join(ROOT, 'dsh-plugins'))) {
+		const rel = path.relative(ROOT, file).replace(/\\/g, '/');
+		// 守卫脚本自身会提到这个类名（断言文本），跳过
+		if (/^dsh-plugins\/(check-|test\/)/.test(rel) || /\/test\//.test(rel)) { continue; }
+		if (rel === HOST || ALLOW[rel]) { continue; }
+		const code = strip(read(rel));
+		// 「定义样式」或「用作自己的 className」都算侵占（只提到类名做断言/注释不算）
+		const defines = /\.vssWbActions\s*\{/.test(code);
+		const uses = /className:\s*["']vssWbActions["']/.test(code);
+		if (defines || uses) { offenders.push(rel + (defines ? '（定义了样式）' : '（用了这个 className）')); }
+	}
+	ck('除宿主外没有任何插件定义/使用 .vssWbActions', offenders.length === 0, offenders.join('、'));
+	// 商城改用了独立类名 ⇒ 钉住，防止改回去
+	const marketSrc = read('dsh-plugins/vssaros-chat-surface/lib/client.market.js');
+	ck('商城卡片按钮行用独立类名 vssWbCardActions（不复用宿主胶囊类名）',
+		/\.vssWbCardActions\s*\{/.test(marketSrc) && /className:\s*"vssWbCardActions"/.test(marketSrc));
+}
+
 console.log(failed ? `\n[check-assistant-collapse] ✗ ${failed} 项不通过` : '\n[check-assistant-collapse] ✓ 通过');
 process.exit(failed ? 1 : 0);

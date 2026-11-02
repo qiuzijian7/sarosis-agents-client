@@ -240,7 +240,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	/** DOM 层最后选中项（Shift+Click 范围选择的锚点） */
 	private _domLastSelectedPath: string | null = null;
 	/**
-	 * 已构建的「构建源」绝对路径集合（**小写**），来自 `<vault>/.kb-build-cache.json`（2026-09-23，P2）。
+	 * 已构建的「构建源」绝对路径集合（**小写**），来自 `<vault>/.kb/build-cache.json`（2026-09-23，P2）。
 	 * 渲染库分区节点时用它判断「待构建 / 已建笔记」—— 原先按**扩展名**猜（库内非 .md 一律
 	 * 显示「待构建」、.md 一律显示「已建笔记」），并非真实构建状态。
 	 */
@@ -442,7 +442,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	}
 
 	// ═══════════════════════════════════════════════════════════
-	//  Operation log (`.saros/kb/.op-log.jsonl`)
+	//  Operation log (`.saros/kb/.kb/op-log.jsonl`)
 	// ═══════════════════════════════════════════════════════════
 
 	/** ⚠ 只留这一个壳（视图里有 ~30 处调用 ✓）；"补 ts / channel 默认值 + 落盘"那份实现只在服务里 ✓。 */
@@ -825,7 +825,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	}
 
 	/**
-	 * 确保库根 / `库` / `笔记` 三处目录存在（"已就绪"缓存在服务里 ✓ —— dsh 引擎下命令侧也要它 ✓）。
+	 * 确保库根 / `数据源` / `知识库列表` 三处目录存在（"已就绪"缓存在服务里 ✓ —— dsh 引擎下命令侧也要它 ✓）。
 	 */
 	private async ensureVaultFolders(v: IKbVault): Promise<void> {
 		await this._kbCommand.ensureVaultFolders(v);
@@ -1450,7 +1450,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		this.notificationService.info(`已清空审核队列（${notes.length} 篇）`);
 	}
 
-	/** P3-2 视图入口：跑确定性结构校验，写 lint-report.md 并通知。扫描根为 `库/`（笔记与源文件混居）。 */
+	/** P3-2 视图入口：跑确定性结构校验，写 lint-report.md 并通知。扫描根为 `数据源/`（笔记与源文件混居）。 */
 	private async _runLint(v: IKbVault): Promise<void> {
 		const libDir = this.sectionUri(v, 'library');
 		const notesDir = this.sectionUri(v, 'notes');
@@ -1584,13 +1584,13 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	}
 
 	/**
-	 * 配置文件夹为知识库（真源那一步 ✓）：**原生选目录** → 写清单 → 建 `库/笔记` → 激活。
+	 * 配置文件夹为知识库（真源那一步 ✓）：**原生选目录** → 写清单 → 建 `数据源/笔记` → 激活。
 	 *
 	 * ⚠ 2026-10-15 返回值口径：`true` = 真加了（宿主据此重启 Host 刷注入 ✓）、`false` = 用户取消 ✓。
 	 * ⚠ 这条命令**不接受页面给的路径** ✗：选哪个目录只能由用户在原生对话框里定 ✓（协议侧无参数 ✓）。
 	 */
 	/**
-	 * 配置文件夹为知识库（真源那一步 ✓）：**原生选目录** → 写清单 → 建 `库/笔记` → 激活。
+	 * 配置文件夹为知识库（真源那一步 ✓）：**原生选目录** → 写清单 → 建 `数据源/笔记` → 激活。
 	 *
 	 * ⚠ 2026-10-15 返回值口径：`true` = 真加了（宿主据此重启 Host 刷注入 ✓）、`false` = 用户取消 ✓。
 	 * ⚠ 这条命令**不接受页面给的路径** ✗：选哪个目录只能由用户在原生对话框里定 ✓（协议侧无参数 ✓）。
@@ -1631,7 +1631,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		const arrow = this._arrowEl();
 		const title = $('span.kb-title');
 		const secIcon = $('span.kb-cat.codicon.' + (section === 'library' ? 'codicon-library' : 'codicon-note'));
-		const titleText = $('span'); titleText.textContent = section === 'library' ? '库' : '笔记';
+		const titleText = $('span'); titleText.textContent = section === 'library' ? '数据源' : '知识库列表';
 		title.replaceChildren(secIcon, titleText);
 		const count = $('span.kb-count'); count.textContent = '...';
 		// 「库 / 笔记」标题右侧的后台处理状态（2026-09-23）：转圈 + 文案（如「分析中 3/7」）。
@@ -1722,7 +1722,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 				const sectionUri = this.sectionUri(this._activeVault!, section);
 				const isCopy = ev.ctrlKey || ev.altKey;
 				this.logService.info(`[DnD-DOM] drop to section root: ${paths.length} items (mode=${isCopy ? 'copy' : 'move'})`);
-				void this._doMoveFiles(paths, { name: section === 'library' ? '库' : '笔记', path: sectionUri.fsPath, uri: sectionUri, isDirectory: true, section, size: 0, mtime: 0, ctime: 0, childCount: 0 }, isCopy ? 'copy' : 'move');
+				void this._doMoveFiles(paths, { name: section === 'library' ? '数据源' : '知识库列表', path: sectionUri.fsPath, uri: sectionUri, isDirectory: true, section, size: 0, mtime: 0, ctime: 0, childCount: 0 }, isCopy ? 'copy' : 'move');
 			} catch { /* ignore */ }
 		});
 		sec.append(body);
@@ -1780,7 +1780,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		// 进入即校验：若本次刷新已被更新的刷新取代，连「加载中…」都不该写
 		// （否则过期调用会把占位符留在屏幕上，等不到任何人来清）。
 		if (this._isSectionRefreshStale(section, gen)) { return; }
-		// ★ 2026-09-23（P2）：库分区要显示**真实**构建状态（查 .kb-build-cache.json）⇒ 渲染前先取一次
+		// ★ 2026-09-23（P2）：库分区要显示**真实**构建状态（查 .kb/build-cache.json）⇒ 渲染前先取一次
 		if (section === 'library') { await this._reloadBuildState(); }
 		const t0 = performance.now();
 		body.replaceChildren();
@@ -1990,7 +1990,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	 *  · `.md` 素材：直接用它自己的路径查；
 	 *  · 非 md（PDF/docx）：它们**自身不是构建源** —— 先经 `_stageDocSourcesToText` 转成
 	 *    「同目录同名 .md」，那个 .md 才是构建源 ⇒ 用它的路径查。
-	 *    所以 `库/raw/x.pdf` 在 `库/raw/x.md` 构建后会正确显示「已建笔记」。
+	 *    所以 `数据源/raw/x.pdf` 在 `数据源/raw/x.md` 构建后会正确显示「已建笔记」。
 	 */
 	private _isBuiltSource(node: IKbNode): boolean {
 		if (node.section !== 'library' || node.isDirectory) { return false; }
@@ -2441,7 +2441,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	 * 有契约测试守着）—— 引擎不会自动删用户笔记，这是对的设计。但删掉文件后，库/笔记里会留下一堆
 	 * 悬空状态，而原先的收尾只挂在一段恒不成立的分支上：
 	 *  ① 导航（index/overview/insights）不刷新 —— 原先只在 `cascadeDeleted > 0` 时刷新，而它恒为 0；
-	 *  ② `.kb-build-cache.json` 残留条目 —— 源被删则记录无意义；**笔记被删则必须清掉**，否则
+	 *  ② `.kb/build-cache.json` 残留条目 —— 源被删则记录无意义；**笔记被删则必须清掉**，否则
 	 *     批量构建的 `pending` 过滤会把它的源**永久**排除在外（删了笔记就再也建不出来）；
 	 *  ③ 笔记 frontmatter 的 `sources` 留着已不存在的来源 —— 门控按去重来源数决定 active/pending
 	 *     ⇒ 来源数虚高、状态失真；
@@ -2756,7 +2756,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	//   （list / prompt / create）**已全部搬进 `IKbCommandService`**（第 3 期 ✓）—— 它们只服务设置面板。
 
 	/**
-	 * 「导入链接 / URL」（真源菜单里那一项 ✓）：抓正文 + 下图片 → 落 `库/raw/<slug>.md`。
+	 * 「导入链接 / URL」（真源菜单里那一项 ✓）：抓正文 + 下图片 → 落 `数据源/raw/<slug>.md`。
 	 *
 	 * ★ 2026-10-16（第 4 期）：实现搬进 `IKbCommandService`（原位编排本来就走共享的
 	 *   `KbImportController.importUrl` ✓）⇒ 本视图只剩这一层壳（菜单那条仍走它 ✓）；
@@ -2897,7 +2897,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		// Fallback：主线程构建图谱 + 提及（FTS 已就绪）
 		const roots = this.buildRoots();
 		const kernelCache = this._activeVault
-			? URI.joinPath(this.vaultUri(this._activeVault), '.kbkernel.json')
+			? URI.joinPath(this.vaultUri(this._activeVault), '.kb/kernel.json')
 			: undefined;
 		const t0 = performance.now();
 		await this._nativeKernel.build(roots, kernelCache); // 全量：FTS 增量 + 图谱 + 提及
@@ -3777,7 +3777,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			if (n) { return this._resolvePasteTargetDir(n); }
 		}
 		const sectionUri = this.sectionUri(this._activeVault, 'notes');
-		return { name: '笔记', path: sectionUri.fsPath, uri: sectionUri, isDirectory: true, section: 'notes', size: 0, mtime: 0, ctime: 0, childCount: 0 };
+		return { name: '知识库列表', path: sectionUri.fsPath, uri: sectionUri, isDirectory: true, section: 'notes', size: 0, mtime: 0, ctime: 0, childCount: 0 };
 	}
 
 	/** 复制路径（绝对或相对知识库根）。 */
@@ -4280,7 +4280,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	/**
 	 * 尝试从外部目录加载预建索引到当前 Vault。
 	 *
-	 * 场景：飞书知识库包携带 .ftindex.json / .kbkernel.json，安装后调用此方法
+	 * 场景：飞书知识库包携带 .kb/ftindex.json / .kb/kernel.json，安装后调用此方法
 	 * 将索引复制到 Vault 根目录并加载，**跳过全量文件扫描与索引重建**。
 	 *
 	 * @param sourceDir 预建索引所在目录（即 knowledgeInstaller.install 的 targetDir）
@@ -4289,7 +4289,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	async tryLoadPrebuiltIndex(sourceDir: URI): Promise<boolean> {
 		if (!this._activeVault) { return false; }
 		const vaultRoot = this.vaultUri(this._activeVault);
-		const sourceFts = URI.joinPath(sourceDir, '.ftindex.json');
+		const sourceFts = URI.joinPath(sourceDir, '.kb/ftindex.json');
 
 		if (!await this.fileService.exists(sourceFts)) {
 			return false;
@@ -4304,12 +4304,12 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			}
 
 			// Copy index files to vault root (overwrite stale cache)
-			const destFts = URI.joinPath(vaultRoot, '.ftindex.json');
+			const destFts = URI.joinPath(vaultRoot, '.kb/ftindex.json');
 			await this.fileService.copy(sourceFts, destFts, true);
 
-			const sourceKernel = URI.joinPath(sourceDir, '.kbkernel.json');
+			const sourceKernel = URI.joinPath(sourceDir, '.kb/kernel.json');
 			if (await this.fileService.exists(sourceKernel)) {
-				const destKernel = URI.joinPath(vaultRoot, '.kbkernel.json');
+				const destKernel = URI.joinPath(vaultRoot, '.kb/kernel.json');
 				await this.fileService.copy(sourceKernel, destKernel, true);
 			}
 
@@ -4354,7 +4354,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 				const t1 = performance.now();
 				await this._rebuildLargeRepoSqlite(metas);
 				this.logService.info(`[KB perf] large-repo SQLite incremental sync: ${(performance.now() - t1).toFixed(1)}ms (${metas.length} docs)`);
-				this._kbKernelService.setBuildContext(roots, URI.joinPath(vaultRoot, '.kbkernel.json'));
+				this._kbKernelService.setBuildContext(roots, URI.joinPath(vaultRoot, '.kb/kernel.json'));
 			} catch (err) {
 				this.logService.warn(`[KB] large-repo rebuild failed: ${err}`);
 			}
@@ -4364,7 +4364,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		}
 
 		try {
-			const kernelCache = URI.joinPath(vaultRoot, '.kbkernel.json');
+			const kernelCache = URI.joinPath(vaultRoot, '.kb/kernel.json');
 
 			// 懒初始化 Worker 管理器
 			if (!this._kbWorker) {

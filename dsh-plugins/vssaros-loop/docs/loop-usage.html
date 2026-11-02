@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<!--
+	@vssaros/dsh-loop（无人值守循环）使用说明 —— 2026-10-31，与 0.1.1 的实现逐条对齐。
+	内容来源：lib/core/spec.js（字段与护栏）、lib/store.js（落盘布局）、lib/index.js（工具签名）。
+	类名 lp- 前缀；色值走 --dsw-alias-* 带兜底；表格容器可横向滚动（窄屏不溢出）。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>vssaros-loop 使用说明</title>
+<style>
+:root{
+	--lp-bg:#17171a; --lp-card:#1e1e22; --lp-line:rgba(127,127,127,.24); --lp-txt:#e6e6ea;
+	--lp-sub:rgba(230,230,230,.62); --lp-accent:#4c9aff; --lp-ok:#3fb950; --lp-warn:#e0a43a; --lp-err:#f48771;
+}
+*{box-sizing:border-box}
+body{margin:0; padding:24px; background:var(--lp-bg); color:var(--lp-txt);
+	font:13px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+main{max-width:1100px; margin:0 auto}
+h1{font-size:20px; margin:0 0 4px}
+h2{font-size:16px; margin:28px 0 10px; padding-bottom:6px; border-bottom:1px solid var(--lp-line)}
+h3{font-size:14px; margin:18px 0 8px}
+p,li{margin:6px 0}
+code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12px;
+	background:rgba(127,127,127,.16); padding:1px 5px; border-radius:4px}
+.lead{color:var(--lp-sub); margin-bottom:20px}
+.lp-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:12px}
+.lp-card{background:var(--lp-card); border:1px solid var(--lp-line); border-radius:12px; padding:14px 16px}
+.lp-card b{display:block; margin-bottom:4px}
+.lp-scroll{overflow:auto; border:1px solid var(--lp-line); border-radius:10px}
+table{border-collapse:collapse; width:100%; font-size:12px; min-width:560px}
+th,td{text-align:left; padding:7px 12px; border-bottom:1px solid var(--lp-line); vertical-align:top}
+th{color:var(--lp-sub); font-weight:600; background:rgba(127,127,127,.08)}
+td code{background:rgba(127,127,127,.2)}
+pre{background:#111114; border:1px solid var(--lp-line); border-radius:10px; padding:12px 14px; overflow:auto;
+	font:12px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace}
+pre code{background:none; padding:0}
+.lp-note{border-left:2px solid var(--lp-accent); background:rgba(0,127,212,.08); padding:8px 12px;
+	border-radius:0 8px 8px 0; margin:10px 0; font-size:12px}
+.lp-warn{border-left-color:var(--lp-warn); background:rgba(224,164,58,.10)}
+.lp-ok{border-left-color:var(--lp-ok); background:rgba(63,185,80,.10)}
+ol.lp-steps{padding-left:22px}
+ol.lp-steps li{margin:8px 0}
+.lp-tag{display:inline-block; font-size:11px; padding:1px 8px; border-radius:999px;
+	border:1px solid var(--lp-line); color:var(--lp-sub)}
+.lp-tag.is-write{border-color:var(--lp-warn); color:var(--lp-warn)}
+footer{margin:32px 0 0; color:var(--lp-sub); font-size:12px}
+@media (max-width:640px){ body{padding:14px} }
+</style>
+</head>
+<body>
+<main>
+<h1>vssaros-loop：无人值守循环</h1>
+<p class="lead">
+	一个 <b>loop</b> = 定时去外部系统<b>采活</b>（harvest）→ 用共享账本<b>挑单去重</b> → 每条条目在<b>独立会话</b>里让 agent 干活 →
+	按完成契约<b>结算</b>。它跑在 Host 里（30 秒一个 tick），不需要人盯着，也不需要模型自己记得"上一轮做到哪"。
+</p>
+
+<h2>一、30 秒上手</h2>
+<ol class="lp-steps">
+	<li>在数据根下建目录：<code>&lt;数据根&gt;/loops/&lt;名字&gt;/</code>，写 <code>loop.json</code>（最小配置见下）。</li>
+	<li>先干跑：<code>loop_dry_run { "name": "&lt;名字&gt;" }</code> —— 看它采到什么、会做哪几条、其余为什么被排除。</li>
+	<li>确认无误再开跑：<code>loop_run { "name": "&lt;名字&gt;" }</code>（或等 <code>schedule</code> 到点自动跑）。</li>
+	<li>随时查账：<code>loop_list</code> / <code>loop_show { "name": "&lt;名字&gt;" }</code>。</li>
+</ol>
+<div class="lp-note lp-warn">
+	<b>先干跑再开跑是纪律，不是建议。</b>干跑真的执行采集命令，但<b>不建会话、不花 token</b>；
+	它能在你烧掉一轮额度之前就把"采到的行没有 id""prompt 是空的""全是已处理过的老条目"这类问题暴露出来。
+</div>
+
+<h2>二、文件与数据落在哪</h2>
+<div class="lp-scroll">
+<table>
+	<thead><tr><th>路径</th><th>是什么</th></tr></thead>
+	<tbody>
+		<tr><td><code>&lt;数据根&gt;/loops/&lt;名字&gt;/loop.json</code></td><td>循环定义（下面那张字段表就是它）</td></tr>
+		<tr><td><code>&lt;数据根&gt;/loops/&lt;名字&gt;/state.json</code></td><td>运行状态：上次起止时间、结果、连续失败次数、轮数</td></tr>
+		<tr><td><code>&lt;数据根&gt;/loops/&lt;名字&gt;/ledger.json</code></td><td>账本：每条条目的状态、尝试次数、原因、会话 id</td></tr>
+	</tbody>
+</table>
+</div>
+<p class="lead">
+	数据根按共享链解析：<code>config.dataRoot</code> → <code>$VSSAROS_DATA_ROOT</code> → <code>~/.vssaros</code>（dev 环境通常是
+	<code>~/.vssaros-dev</code>）。落盘是<b>原子写</b>（tmp → rename），进程被杀也不会留下半截 JSON。
+</p>
+
+<h2>三、loop.json 字段</h2>
+<h3>调度与安静时段</h3>
+<div class="lp-scroll">
+<table>
+	<thead><tr><th>字段</th><th>默认</th><th>说明</th></tr></thead>
+	<tbody>
+		<tr><td><code>schedule</code></td><td><code>manual</code></td><td>只有三种：<code>every 30m</code> / <code>daily 09:00</code> / <code>manual</code>（刻意<b>不做 cron</b>——cron 要时区故事，<code>every</code> 已覆盖真实需求）。两轮最短间隔 120 秒。</td></tr>
+		<tr><td><code>quietHours</code></td><td><code>''</code></td><td>如 <code>23:00-07:00</code>，跨午夜也可；留空 / <code>none</code> / <code>off</code> = 不启用</td></tr>
+	</tbody>
+</table>
+</div>
+
+<h3>取活（harvest）</h3>
+<div class="lp-scroll">
+<table>
+	<thead><tr><th>字段</th><th>默认</th><th>说明</th></tr></thead>
+	<tbody>
+		<tr><td><code>harvest.command</code></td><td><code>''</code></td><td>一条 shell 命令，<b>stdout 必须是 JSON 数组</b>（或 <code>{"rows":[...]}</code>）</td></tr>
+		<tr><td><code>harvest.cwd</code></td><td><code>''</code></td><td>命令的工作目录；留空用插件 <code>cwd</code></td></tr>
+		<tr><td><code>identityFields</code></td><td><code>["id"]</code></td><td>行的哪些字段进账本键；没有 id 就用别的字段组合</td></tr>
+		<tr><td><code>harvestTimeout</code></td><td><code>2m</code></td><td>采集命令超时（超时只报一轮 <code>harvest-failed</code>，<b>不算条目失败</b>）</td></tr>
+	</tbody>
+</table>
+</div>
+<div class="lp-note lp-warn">
+	<b>最容易踩的一条：<code>harvest.command</code> 只有插件 <code>config.allowCommands=true</code> 才会真的执行</b>（默认是 <code>false</code>）。
+	否则你会看到 <code>harvest 未执行：config.allowCommands=false</code> —— 那是安全默认值，不是故障。
+</div>
+
+<h3>干活（work）与完成契约</h3>
+<div class="lp-scroll">
+<table>
+	<thead><tr><th>字段</th><th>默认</th><th>说明</th></tr></thead>
+	<tbody>
+		<tr><td><code>work.prompt</code></td><td><code>''</code></td><td>每条条目要做的事；支持 <code>{字段}</code> 占位（取自采集到的行，如 <code>{id}</code>、<code>{bug}</code>）</td></tr>
+		<tr><td><code>work.taskHeader</code></td><td><code>''</code></td><td>拼在 prompt 前面的抬头（同样支持占位），让条目自带单号</td></tr>
+		<tr><td><code>work.allowedTools</code></td><td><code>[]</code></td><td>这条 loop 允许的工具名（与插件 <code>allowTools</code> 取交集）</td></tr>
+		<tr><td><code>work.model</code> / <code>work.template</code> / <code>work.cwd</code></td><td>空</td><td>可选覆盖</td></tr>
+		<tr><td><code>completion.requireMarker</code></td><td><code>true</code></td><td>要求条目最后一行给出标记（见下）</td></tr>
+		<tr><td><code>completion.onMissingMarker</code></td><td><code>failed</code></td><td>没给标记时算 <code>failed</code>（可设 <code>done</code>）</td></tr>
+	</tbody>
+</table>
+</div>
+<p>完成契约由<b>框架</b>自动附加到每条目的 prompt 末尾，作者不用自己写；条目收尾必须是下面之一：</p>
+<pre><code>[item:done]                        → 完成
+[item:failed:&lt;原因&gt;]  → 失败（会计入重试与熔断）
+[item:blocked:&lt;问题&gt;] → 停等人决策（用 loop_answer 回答后重跑）</code></pre>
+
+<h3>护栏（都有默认值，不写也能 7×24 跑）</h3>
+<div class="lp-scroll">
+<table>
+	<thead><tr><th>字段</th><th>默认</th><th>硬上限</th><th>作用</th></tr></thead>
+	<tbody>
+		<tr><td><code>maxItemsPerRound</code></td><td>3</td><td>20</td><td>一轮最多做几条（防一轮烧光）</td></tr>
+		<tr><td><code>itemTimeout</code></td><td>45m</td><td>6h</td><td>单条墙钟超时</td></tr>
+		<tr><td><code>itemTurnCap</code></td><td>60</td><td>500</td><td>单条最多多少轮对话</td></tr>
+		<tr><td><code>maxAttempts</code></td><td>2</td><td>5</td><td>失败重试几次</td></tr>
+		<tr><td><code>retryBackoff</code></td><td>30m</td><td>24h</td><td>重试前的退避</td></tr>
+		<tr><td><code>consecutiveFailureLimit</code></td><td>3</td><td>10</td><td>连续几轮有失败 ⇒ <b>熔断</b>（粘性：只能人工恢复）</td></tr>
+		<tr><td><code>roundCostCeiling</code></td><td>0（关）</td><td>—</td><td>单轮成本上限</td></tr>
+		<tr><td><code>runsRetention</code></td><td>30d</td><td>365d</td><td>运行记录保留期</td></tr>
+		<tr><td><code>notify</code></td><td><code>["web"]</code></td><td>—</td><td>通知通道</td></tr>
+	</tbody>
+</table>
+</div>
+<div class="lp-note">
+	越过<b>硬上限一律拒绝</b>（不是夹紧）—— 夹紧会让"我明明写了 500 轮"静默变成 60 轮，那是没法排障的。
+</div>
+
+<h3>结构化交接（handoff，可选）</h3>
+<p>
+	开了之后，每条条目除标记外还要交一份带字段的交接块（<code>summary</code> / <code>evidence</code> / <code>next</code> / <code>blocker</code>），
+	超长或字段矛盾直接判失败（<b>不截断、不静默放过</b>）。默认关闭，与老 loop 完全兼容。
+</p>
+<pre><code>"handoff": { "require": true, "maxChars": 16384 }</code></pre>
+<div class="lp-note">
+	这份交接是<b>条目自述，不是独立验收</b>：写 <code>done</code> ≠ 有人复核过。（这条口径与官方 Ralph loop 一致。）
+</div>
+
+<h3>一个能直接用的例子</h3>
+<pre><code>{
+  "name": "tapd-bug-triage",
+  "schedule": "every 30m",
+  "quietHours": "23:00-07:00",
+  "maxItemsPerRound": 3,
+  "harvest": {
+    "command": "python scripts/list_open_bugs.py --json",
+    "identityFields": ["id"]
+  },
+  "work": {
+    "taskHeader": "单号 {id}：{title}",
+    "prompt": "复现并定位这条缺陷，改完跑单测。收尾最后一行给 [item:done] 或 [item:blocked:&lt;原因&gt;]。"
+  },
+  "completion": { "requireMarker": true },
+  "handoff": { "require": true, "maxChars": 16384 }
+}</code></pre>
+
+<h2>四、五个工具</h2>
+<div class="lp-grid">
+	<div class="lp-card"><b>loop_list</b><span class="lp-tag">只读</span>
+		<p>列出本机所有循环：调度、账本计数、下次到期、是否熔断、配置错误。参数：<code>verbose:true</code> 附带护栏参数。</p>
+	</div>
+	<div class="lp-card"><b>loop_show</b><span class="lp-tag">只读</span>
+		<p>单个循环的完整定义 + 账本明细（done/failed/blocked/running 与原因）。参数：<code>name</code>（必填）、<code>limit</code>（≤100）。回答"这个循环为什么没跑"。</p>
+	</div>
+	<div class="lp-card"><b>loop_dry_run</b><span class="lp-tag">只读</span>
+		<p>干跑：真采集 + 挑单 + 逐条说明为什么排除，<b>不建会话、不落账本</b>。参数：<code>name</code>。</p>
+	</div>
+	<div class="lp-card"><b>loop_run</b><span class="lp-tag is-write">需审批</span>
+		<p>立刻跑一轮（不等 schedule）。会建独立会话、写账本。参数：<code>name</code>。</p>
+	</div>
+	<div class="lp-card"><b>loop_answer</b><span class="lp-tag is-write">需审批</span>
+		<p>回答被阻塞的条目并放回队列。参数：<code>name</code>（必填）、<code>key</code>（不传=放开该循环全部 blocked）、<code>answer</code>。</p>
+	</div>
+</div>
+
+<h2>五、安装与插件配置</h2>
+<ul>
+	<li><b>装机</b>：IDE 启动时按伴生清单安装（<code>@vssaros/dsh-workitem</code> 先于 <code>@vssaros/dsh-loop</code>——loop 用 <code>ctx.inject</code> 等它）。它是<b>纯 Host 插件</b>，不声明 <code>vssaros</code> manifest ⇒ IDE 侧没有页签，只有 5 个工具。</li>
+	<li><b>依赖</b>：<code>@vssaros/dsh-workitem</code>（账本/去重/完成契约的唯一真源，与群聊 <code>#task</code> 共用）——<b>没绑上不降级</b>，会抛带指引的错（静默回退本地实现正是"两份判定"复活的入口）。</li>
+	<li><b>config</b>：<code>allowCommands</code>（默认 <b>false</b>：harvest 命令开关）、<code>allowTools</code>（条目会话里允许的工具名数组）、<code>cwd</code>、<code>dataRoot</code>。</li>
+	<li><b>驱动一条条目的原语</b>：bridge 的 <code>vssarosRuns.run({ sessionId, cwd, prompt, timeoutMs, approval })</code>；后台回合没人审批 ⇒ <code>approval.allow</code> 默认全拒，必须显式放开。</li>
+</ul>
+
+<h2>六、排障速查</h2>
+<div class="lp-scroll">
+<table>
+	<thead><tr><th>现象</th><th>先看这里</th></tr></thead>
+	<tbody>
+		<tr><td>每轮都采到 0 条</td><td><code>harvest.command</code> 为空，或 <code>config.allowCommands=false</code>（默认）</td></tr>
+		<tr><td><code>harvest 的 stdout 不是合法 JSON</code></td><td>命令输出必须是数组 / <code>{"rows":[...]}</code>；别把日志打到 stdout</td></tr>
+		<tr><td>条目一直被重试</td><td>没给 <code>[item:*]</code> 标记（默认 <code>requireMarker=true</code>、缺标记算 failed）</td></tr>
+		<tr><td>循环"卡住不跑"</td><td><code>state.json</code> 里 <code>consecutiveFailures</code> ≥ 上限 ⇒ <b>熔断是粘性的</b>，需人工 <code>loop_run</code> 或清 state 后恢复</td></tr>
+		<tr><td>夜里还在跑</td><td>配 <code>quietHours</code>；它在安静时段内只跳过、不算失败</td></tr>
+		<tr><td>状态显示 <code>paused</code></td><td>历史遗留值（早期版本写入）；语义等同停用（只有 <code>active</code> 才会触发）</td></tr>
+		<tr><td>同一个活被做两遍</td><td><code>identityFields</code> 选的字段不稳定（比如带了每次都变的时间戳）</td></tr>
+		<tr><td>换机器后账本对不上</td><td>数据根解析链不同（<code>config.dataRoot</code> / <code>VSSAROS_DATA_ROOT</code>）——dev 与 prod 是两套根</td></tr>
+		<tr><td>插件激活失败</td><td>看 Host 日志里是否有 <code>vssaros-loop</code> 的行；它<b>默认不打日志</b>（只在 runs 缺失或工具没注册时 warn）⇒ "日志里没有它"不等于没激活，要看 profile 目录与数据根落盘</td></tr>
+	</tbody>
+</table>
+</div>
+
+<h2>七、它和「自动化任务 / 群聊 #task」的分工</h2>
+<div class="lp-grid">
+	<div class="lp-card"><b>自动化任务（schedule）</b><p>管"人看的任务列表"与定时投递一句话；<code>/api/run</code> 可手动立刻跑一次。</p></div>
+	<div class="lp-card"><b>vssaros-loop</b><p>管"无人值守地批量干活"：外部采集 + 账本去重 + 独立会话 + 重试/熔断。</p></div>
+	<div class="lp-card"><b>群聊 #task</b><p>同一套账本内核的另一条入口（显式 <code>#task:&lt;key&gt;</code>），与 loop 共享去重判定。</p></div>
+</div>
+<div class="lp-note">
+	<b>为什么触发权不交给 schedule：</b>schedule 只会"往会话投一条 prompt"，拿它当哨兵等于让内部逻辑靠解析自己发出的 prompt 触发，脆得没边。
+	所以 schedule 只保留"人看的任务列表"，真正的循环触发留在本插件。
+</div>
+
+<footer>
+	与 0.1.1 实现对齐；字段与默认值以 <code>lib/core/spec.js</code>、工具签名以 <code>lib/index.js</code> 为准。改动后请先跑
+	<code>node dsh-plugins/vssaros-loop/test/run-loop-check.mjs</code>（95 项）。
+</footer>
+</main>
+</body>
+</html>

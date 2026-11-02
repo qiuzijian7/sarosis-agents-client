@@ -57,6 +57,69 @@ const component = listLib().map((p) => ({ p, text: strip(fs.readFileSync(p, 'utf
 check('找到工作台组件（含 register）', !!component, component?.p.split(/[\\/]/).pop());
 const src = component?.text || '';
 check('描述符带 repository（vssaros:<模块>）', /repository:\s*'vssaros:memory'/.test(src));
+// ★ 2026-11-02（用户：「记忆库中，移除右侧 AI 助手栏」）：
+//   真正生效的是**运行期描述符**（宿主 normalize 它），清单只做登记展示（且白名单不含 splitConversation）。
+{
+	check('运行期描述符关闭常驻对话列（splitConversation:false ⇒ 记忆面板独占整幅）',
+		/splitConversation:\s*false/.test(src), '找不到 splitConversation:false');
+	// 断言"写在描述符里"而不是"写在清单里"：清单校验器不认识这个键，写了会让插件清单解析失败
+	check('splitConversation 不写进清单（IDE 清单白名单不含它，写了会抛"不认识的字段"）',
+		pkg.vssaros?.workbench?.splitConversation === undefined, String(pkg.vssaros?.workbench?.splitConversation));
+	// layout 只在分栏模式下生效；保留它是为了将来重开分栏时位置正确 ⇒ 这里只钉"重开时业务在左"
+	const rtSide = (src.match(/layout:\s*\{[^}]*businessSide:\s*'([a-z]+)'/) || [])[1];
+	check('重开分栏时业务面板在左（businessSide=left）', rtSide === 'left', String(rtSide));
+	// 文案不能继续承诺「边对话边看记忆」——助手栏已经不在这个工作台里了
+	check('描述不再承诺"边对话边看记忆"（助手栏已移除）',
+		!/边对话边看记忆/.test(String(pkg.vssaros?.workbench?.description) + src), String(pkg.vssaros?.workbench?.description));
+}
+
+/**
+ * ★ 行为断言（不只是"源码里有个 false"）：把本包描述符交给**宿主外壳自己的 `normalize()`** 跑一遍，
+ * 看规范化结果里 `splitConversation` 是否真的变成 false（`conversationMode()` 据此判 `detach` ⇒ 不渲染对话列）。
+ * 这样"改错位置/键名拼错/被 normalize 默认值覆盖"都会红，而不是只在人眼前错一次。
+ */
+{
+	const loadChunk = (file, fakeReact) => {
+		let mod = null;
+		const win = { __ModuleLoader__: { load: ({ factory }) => { mod = factory(name => (name === 'react' ? fakeReact : (() => { throw new Error('unexpected require ' + name); })())); } } };
+		const doc = { addEventListener() { }, getElementById() { return null; }, createElement() { return { style: {}, setAttribute() { } }; }, head: { appendChild() { } } };
+		new Function('window', 'document', fs.readFileSync(file, 'utf8'))(win, doc);
+		return mod;
+	};
+	// 外壳 chunk 里 `class … extends React.Component` / 各类 hook 都要有，否则加载期就抛（不是断言失败）
+	const fakeReact = {
+		createElement: () => null, Fragment: 'F',
+		Component: class { }, PureComponent: class { },
+		useState: (v) => [typeof v === 'function' ? v() : v, () => { }],
+		useEffect: () => { }, useLayoutEffect: () => { }, useInsertionEffect: () => { },
+		useCallback: (f) => f, useMemo: (f) => f(), useRef: (v) => ({ current: v ?? null }),
+		useReducer: (r, i) => [i, () => { }], useContext: () => ({}),
+		createContext: (v) => ({ Provider: 'P', Consumer: 'C', _v: v }),
+		forwardRef: (f) => f, memo: (f) => f,
+	};
+	let ok = '未执行';
+	try {
+		const mem = loadChunk(path.join(ROOT, 'lib', 'client.memory.js'), fakeReact);
+		const shellFile = path.resolve(ROOT, '..', 'vssaros-workbenches', 'lib', 'client.js');
+		const Comp = function Comp() { return null; };
+		const shell = (() => {
+			let m = null;
+			const win = { __ModuleLoader__: { load: ({ factory }) => { m = factory(name => (name === 'react' ? fakeReact : (name === 'react-dom' ? { createPortal: () => null } : (() => { throw new Error('unexpected require ' + name); })()))); } }, location: { search: '', hash: '', origin: 'http://127.0.0.1:1' } };
+			const doc = { getElementById: () => ({}), createElement: () => ({ style: {}, setAttribute() { } }), head: { appendChild() { } } };
+			new Function('window', 'globalThis', 'document', fs.readFileSync(shellFile, 'utf8'))(win, {}, doc);
+			return m;
+		})();
+		const entry = shell.normalize(mem.__DESCRIPTOR, Comp);
+		check('宿主 normalize() 后 splitConversation=false（⇒ conversationMode 判 detach，不渲染对话列）',
+			entry.splitConversation === false, JSON.stringify({ customFrame: entry.customFrame, splitConversation: entry.splitConversation }));
+		check('宿主 normalize() 保留 customFrame=false（不误判成"整页内嵌"）', entry.customFrame === false, String(entry.customFrame));
+		ok = '';
+	} catch (e) {
+		check('行为断言：描述符经宿主 normalize()', false, String(e && e.message || e));
+		ok = '';
+	}
+	void ok;
+}
 check('根节点有 data-vssaros-surface="workbench"', /data-vssaros-surface['"]?\s*:\s*['"]workbench/.test(src));
 check('工具条锚点恰好 1 个', (src.match(/data-dsh-workbench-toolbar/g) || []).length === 1);
 const wbClasses = new Set((src.match(/'wb(?:-[a-z0-9]+)*'/g) || []).map((s) => s.slice(1, -1)));

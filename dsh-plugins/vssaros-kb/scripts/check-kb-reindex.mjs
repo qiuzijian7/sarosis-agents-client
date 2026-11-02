@@ -2,7 +2,7 @@
  * 守卫：**重建索引**（2026-10-25）。
  *
  * 用**临时库**跑（绝不碰真实库的内核缓存），断言四件事：
- *   ① POST /api/reindex 真的重建出 `.kbkernel.json`
+ *   ① POST /api/reindex 真的重建出 `.kb/kernel.json`
  *   ② 返回的 docs 数量与库里的笔记数一致
  *   ③ GET /api/reindex 暴露运行状态（页面据此显示"上次重建"）
  *   ④ **向量索引如实标注不支持**（dsh 侧没有 embedding provider，不能假装能重建）
@@ -47,10 +47,10 @@ const ctx = new Proxy({}, {
 
 // 临时库：两篇笔记 + 空的「库」目录（pageSnapshotOf 需要一个像样的库结构）
 const vault = mkdtempSync(join(tmpdir(), 'kb-reindex-'));
-mkdirSync(join(vault, '库'), { recursive: true });
-mkdirSync(join(vault, '笔记', 'sub'), { recursive: true });
-writeFileSync(join(vault, '笔记', 'a.md'), '---\ntitle: A\n---\n\n# A\n\n内容一段。\n', 'utf8');
-writeFileSync(join(vault, '笔记', 'sub', 'b.md'), '# B\n\n另一个内容。\n', 'utf8');
+mkdirSync(join(vault, '数据源'), { recursive: true });
+mkdirSync(join(vault, '知识库列表', 'sub'), { recursive: true });
+writeFileSync(join(vault, '知识库列表', 'a.md'), '---\ntitle: A\n---\n\n# A\n\n内容一段。\n', 'utf8');
+writeFileSync(join(vault, '知识库列表', 'sub', 'b.md'), '# B\n\n另一个内容。\n', 'utf8');
 
 mod.apply(ctx, {
 	dataRoot: mkdtempSync(join(tmpdir(), 'kb-reindex-root-')),
@@ -81,8 +81,8 @@ const t = (name, ok, extra = '') => {
 const run = await call('/x/kb/api/reindex', 'POST');
 t('重建索引返回 ok', run.ok === true, JSON.stringify(run).slice(0, 160));
 t('统计到 2 篇笔记', run.docs === 2, 'docs=' + run.docs);
-t('内核缓存已落盘（.kbkernel.json）', existsSync(join(vault, '.kbkernel.json')));
-t('返回里带内核文件名', String(run.kernelFile || '').includes('.kbkernel.json'));
+t('内核缓存已落盘（.kb/kernel.json）', existsSync(join(vault, '.kb/kernel.json')));
+t('返回里带内核文件名', String(run.kernelFile || '').endsWith('kernel.json'));   // ★ basename：不带 `.kb/` 目录
 
 const status = await call('/x/kb/api/reindex');
 t('状态路由可用且记录上次结果', status.ok === true && status.lastDocs === 2 && status.lastAt > 0,

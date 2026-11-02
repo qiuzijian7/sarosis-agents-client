@@ -14,6 +14,13 @@ import { fileURLToPath } from 'node:url';
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 
 const STEPS = [
+	// ★ 2026-11-02：目录改名（库→数据源 / 笔记→知识库列表）——常量、旧名字面量、迁移脚本幂等
+	// ★ 2026-11-02：元数据收进 .kb/（索引/飞书/缓存/日志一个目录）
+	{ file: 'check-kb-meta.mjs', desc: '元数据目录：.kb/ 唯一真源 + 业务代码不写旧散件' },
+	{ file: 'check-kb-layout.mjs', desc: '布局契约：新目录名 + 迁移脚本幂等（改名不丢飞书映射）' },
+	// ★ 2026-11-02（P1）：`知识库列表/<文件夹>` = 一个知识库 ⇒ 新建 = 建文件夹（名称校验是安全边界）
+	{ file: 'check-kb-kblist.mjs', desc: '知识库=文件夹：名称校验 / 新建 / 列表 / 路由与入口接线' },
+
 	{ file: 'check-page-templates.mjs', desc: '模板串：HTML 注释/内容不许有反引号 + 真求值' },
 	{ file: 'check-page-script.mjs', desc: '页内脚本：no-undef' },
 	{ file: 'check-page-surfaces.mjs', desc: '一页三形态：脚本可解析 + 三态接线不变（2026-10-21）' },

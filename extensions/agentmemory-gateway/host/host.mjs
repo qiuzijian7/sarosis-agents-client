@@ -58,6 +58,16 @@ import {
 } from './indexCache.mjs';
 import { checkRequest, parseAllowedOrigins } from './requestGuard.mjs';
 import { decideFallback, mainThreadEmbeddingAllowed } from './modelVectorsPolicy.mjs';
+import {
+	KV_SCHEMA_SCOPE,
+	KV_SCHEMA_KEY,
+	KV_SCHEMA_VERSION,
+	readSchemaVersion,
+	runKvMigrations,
+	buildSchemaRow,
+} from './kvMigrations.mjs';
+import { SUBAGENT_SCOPE_LIKE } from './pruneScopes.mjs';
+import { buildHealthExtras } from './healthInfo.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1183,6 +1193,9 @@ function gatewayBm25Getter(agentId) {
 
 let providerInstance = null;
 // Methods that must NOT be reachable over /provider/* (private / event-only).
+/** 最近一次定时 sweep **完成**的时间（ms）；供 `/health` 报告。0 = 本进程还没跑完过一轮。 */
+let lastSweepAt = 0;
+
 const PROVIDER_METHOD_BLACKLIST = new Set([
 	'constructor', 'dispose', 'onMemoryWritten', 'onMemoryWriteFailed',
 	'_ensureServer', '_on', '_emit', '_serverStats', '_healthChecked',
@@ -1654,12 +1667,16 @@ function pruneOrphanData(force = false) {
 	if (!force && now - _lastPruneAt < 24 * 3600 * 1000) { return; }
 	_lastPruneAt = now;
 	try {
-		// ① 超期 subagent 会话数据（semantic 固化 + obs 观察暂存 + memories episodic 条目）
-		// 2026-09-10 扩展：mem:memories:subagent-% 此前不在剪枝范围（实测 5309 行/7.9MB
-		// 一次性 episodic 永久滞留）。注意 SQL 直删会留下 BM25/向量索引残留条目，
-		// 但 subagent scope 固化后不再被检索，且重启全量重建即消除——可接受。
+		// ① 超期 subagent 数据 —— ★ 2026-11-02：从"逐族枚举 3 个"改成**族通配**。
+		//
+		// 漏掉的族是真实存在的：实测 dev 库 `mem:slots:subagent-*` 672 行里 **557 行是空槽位**
+		// （每个子代理固定种 8 个槽，用完没人清），`profiles` / `lessons` / `access` /
+		// `retention` / `graph` 同理。逐族枚举正是漏的原因 ⇒ 用 `mem:%:subagent-%` 一条覆盖
+		// （判据见 `pruneScopes.mjs`：`subagent-` 是子代理专用前缀）。
+		// 注意 SQL 直删会留下 BM25/向量索引残留条目，但 subagent scope 固化后不再被检索，
+		// 且重启全量重建即消除——可接受。
 		const stale = db.prepare(
-			"DELETE FROM kv_store WHERE (scope LIKE 'mem:semantic:subagent-%' OR scope LIKE 'mem:obs:subagent-%' OR scope LIKE 'mem:memories:subagent-%')"
+			`DELETE FROM kv_store WHERE scope LIKE '${SUBAGENT_SCOPE_LIKE}'`
 			+ ' AND (updated_at IS NULL OR updated_at < ?)').run(now - PRUNE_TTL_MS);
 		// ② 旧格式巨型键 / 超阈值单值（旧 extractEpisodic 的数组键 'episodic' 可深达千层）
 		const oversized = db.prepare(
@@ -1709,6 +1726,79 @@ async function readBody(req) {
 // pendingWrites is kept for graceful-shutdown accounting only.
 let pendingWrites = 0;
 
+// ── KV 结构迁移（2026-11-02）──────────────────────────────────────────────
+/**
+ * 启动期跑一次 KV 结构迁移。**必须在建索引之前**（BM25/向量索引都是从 KV 重建的）。
+ *
+ * 失败策略（全部 fail-safe，不做"没有备份的改数据"）：
+ *  · 备份失败 ⇒ 放弃迁移（下次启动重试）；
+ *  · 单行迁移抛错 ⇒ 跳过该行（坏数据留原处，版本照常前进不重复跑）；
+ *  · 写事务失败 ⇒ 回滚且**版本号不前进**。
+ *
+ * @param {string} dataDir 数据根（备份落在 `<dataDir>/migrations`）
+ */
+function migrateKvSchema(dataDir) {
+	if (backendKind !== 'sqlite' || !db) {
+		emit('log', '[mem-migrate] 非 sqlite 后端 ⇒ 跳过结构迁移');
+		return;
+	}
+	let from = 0;
+	try {
+		const row = db.prepare('SELECT value FROM kv_store WHERE scope = ? AND key = ?').get(KV_SCHEMA_SCOPE, KV_SCHEMA_KEY);
+		from = readSchemaVersion(row?.value);
+	} catch (error) {
+		emit('warn', `[mem-migrate] 读版本号失败 ⇒ 跳过本次迁移：${error instanceof Error ? error.message : String(error)}`);
+		return;
+	}
+	if (from >= KV_SCHEMA_VERSION) {
+		if (from > KV_SCHEMA_VERSION) {
+			emit('warn', `[mem-migrate] 库版本 v${from} 高于本进程 v${KV_SCHEMA_VERSION} ⇒ 不迁移（不降级、不猜）`);
+		}
+		return;
+	}
+
+	// ① 备份（VACUUM INTO 是唯一不锁死地拿到一致快照的方式）
+	const backupDir = path.join(dataDir, 'migrations');
+	try {
+		fs.mkdirSync(backupDir, { recursive: true });
+		const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+		const file = path.join(backupDir, `state_store.v${from}.${stamp}.bak.db`);
+		db.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`);
+		emit('log', `[mem-migrate] 迁移前备份：${file}`);
+		const kept = fs.readdirSync(backupDir).filter(f => f.endsWith('.bak.db')).sort().reverse();
+		for (const old of kept.slice(3)) {
+			try { fs.unlinkSync(path.join(backupDir, old)); } catch { /* 删不掉就留着，不影响迁移 */ }
+		}
+	} catch (error) {
+		emit('warn', `[mem-migrate] 备份失败 ⇒ 放弃本次迁移（不在没有退路的情况下改数据）：${error instanceof Error ? error.message : String(error)}`);
+		return;
+	}
+
+	// ② 只加载会被迁移的行（memories 之外的 scope 与结构迁移无关）
+	const rows = db.prepare("SELECT scope, key, value FROM kv_store WHERE scope LIKE 'mem:memories:%'").all().map(row => {
+		let value = null;
+		try { value = JSON.parse(row.value); } catch { value = null; }
+		return { scope: row.scope, key: row.key, value };
+	});
+	const result = runKvMigrations(rows, from);
+
+	// ③ 单事务写入 + 版本号（失败回滚，版本不前进）
+	db.exec('BEGIN IMMEDIATE');
+	try {
+		for (const row of result.changed) {
+			stmtSet.run(row.scope, row.key, JSON.stringify(row.value), Date.now());
+		}
+		stmtSet.run(KV_SCHEMA_SCOPE, KV_SCHEMA_KEY, JSON.stringify(buildSchemaRow(result.version, result.applied)), Date.now());
+		db.exec('COMMIT');
+	} catch (error) {
+		try { db.exec('ROLLBACK'); } catch { /* 回滚失败也只能如实报告 */ }
+		emit('warn', `[mem-migrate] 写入失败 ⇒ 已回滚，版本不前进：${error instanceof Error ? error.message : String(error)}`);
+		return;
+	}
+	const summary = result.applied.map(a => `${a.id}(${a.rows} 行)`).join(', ') || '无变更';
+	emit('log', `[mem-migrate] v${from} → v${result.version}：${summary}，改写 ${result.changed.length} 行`);
+}
+
 async function main() {
 	const port = parseInt(process.env.AGENTMEMORY_PORT || '3111', 10);
 	const dataDir = resolveDataDir();
@@ -1716,6 +1806,8 @@ async function main() {
 
 	await initBackend(dataDir);
 	if (backendKind === 'sqlite') ensureSqliteStmts();
+	// ★ 必须在建索引之前：索引是"从 KV 重建"的派生数据，先迁移再重建才一致。
+	migrateKvSchema(dataDir);
 
 	// Plan C: load the BM25 index module (from the sibling agentmemory-memory
 	// extension's compiled output) and rebuild the in-process index from KV.
@@ -1806,8 +1898,19 @@ async function main() {
 
 			// ── Health check ─────────────────────────────────────────────────
 			if (url.pathname === '/health') {
+				// ★ 2026-11-02：附加 schema 版本 / 迁移备份 / 最近 sweep（工作台状态条用）。
+				//   全部是**附加**字段 + 整段兜底：健康检查本身绝不能因为这些附加项读不出而失败。
+				let extras = {};
+				try {
+					const row = (backendKind === 'sqlite' && stmtGet) ? stmtGet.get(KV_SCHEMA_SCOPE, KV_SCHEMA_KEY) : null;
+					let backupNames = [];
+					try { backupNames = fs.readdirSync(path.join(dataDir, 'migrations')); } catch { /* 目录不存在 = 没做过迁移备份 */ }
+					extras = buildHealthExtras({
+						schemaRaw: row?.value ?? null, expectedVersion: KV_SCHEMA_VERSION, backupNames, lastSweepAt,
+					});
+				} catch { extras = {}; }
 				res.writeHead(200, { 'Content-Type': 'application/json' });
-				res.end(JSON.stringify({ status: 'ok', dataDir, port, engine: backendKind }));
+				res.end(JSON.stringify({ status: 'ok', dataDir, port, engine: backendKind, ...extras }));
 				return;
 			}
 
@@ -2377,6 +2480,7 @@ async function main() {
 				// 让出事件循环：给并发 HTTP 请求插队机会
 				await new Promise(r => setImmediate(r));
 			}
+			lastSweepAt = Date.now(); // 一轮真正跑完才记（early return / 抛错不记）⇒ /health 不会谎报"刚清扫过"
 		} finally {
 			_sweeping = false;
 		}

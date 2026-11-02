@@ -834,8 +834,9 @@ function makeSkill(localId, version, extra = {}) {
 
 		check('㉗ 有 marketAgent.js', ma.length > 0, maPath);
 		check('㉗ agent id = marketplace-bot', ma.includes("MARKET_AGENT_ID = 'marketplace-bot'"));
-		check('㉗ preset id = `vssaros-marketplace-bot`（单前缀，多一层就永远 not-found）',
-			ma.includes("MARKET_PRESET = 'vssaros-marketplace-bot'") && wb.includes("MARKET_PRESET = 'vssaros-marketplace-bot'"));
+		check('㉗ preset id = `vssaros-marketplace-bot`（单前缀，多一层就永远 not-found）；宿主表里同 id',
+			ma.includes("MARKET_PRESET = 'vssaros-marketplace-bot'")
+			&& fs.readFileSync(path.resolve(HERE, '..', '..', 'vssaros-workbenches', 'lib', 'client.js'), 'utf8').includes("'vssaros/marketplace': 'vssaros-marketplace-bot'"));
 		check('㉗ **不写 tools 白名单**（allowlist 会把没列的全 deny ⇒ 变哑巴）',
 			!ma.includes('"tools"'));
 		check('㉗ 落在 `<数据根>/agents/<id>/.agent.md`（与用户自建 bot 同构）',
@@ -845,16 +846,15 @@ function makeSkill(localId, version, extra = {}) {
 		check('㉗ 有 rescan 时立即生效（不用重启）',
 			pageSrc2.includes('state.agentsRescan') && pageSrc2.includes('await state.agentsRescan()'));
 
-		check('㉗ 工作台包了 `newSession`（点「+ 新会话」也带同款 preset）',
-			wb.includes('origNewSession') && wb.includes('dw.newSession = patched'));
-		check('㉗ 包装**会还原**（dispose 放回原函数）', wb.includes('dw.newSession = origNewSession'));
-		check('㉗ 不覆盖别人的钩子（已被包过就不挂）',
-			wb.includes('if (dw.newSession !== origNewSession) { return; }'));
-		check('㉗ 只在**面板挂载 / 新会话**时设（agentPresets 是全局的，不能抢别人的）',
-			wb.includes('useEffect') && wb.includes('ensureMarketDefaults(ctx)'));
-		check('㉗ 输入框预填 `@商城助手`', wb.includes("DRAFT_SEED = '@商城助手 '"));
-		check('㉗ 预设 API 试多种方法名（没有公开文档）',
-			wb.includes("'select'") && wb.includes("'setPreset'") && wb.includes("'selectPreset'"));
+		// ★★ 2026-11-02 根治（用户：「不同工作台中聊天框的 agent 使用不当，多轮修复始终反复出错」）：
+		//   商城自己那套「设商城助手 + 预填 @商城助手 + 包 dw.newSession」已整体删除。它对**全局当前会话**下手，
+		//   与知识库 / 媒体库 / 萨罗斯 / 宿主一共 5 个写入者互相覆盖。现在默认 agent **只由宿主设**（只改商城停靠的那条）。
+		//   ⇒ 这里反过来守「商城别又自己设」；宿主那份的行为由 check-workbench-assistant.mjs（真 React + jsdom）守。
+		const wbCode = wb.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+		check('㉗ 商城工作台**不再**包 `dw.newSession`（新会话的默认 agent 由宿主带）',
+			!/dw\.newSession\s*=/.test(wbCode) && !wbCode.includes('origNewSession'));
+		check('㉗ 商城工作台**不再**自己 select / 预填 / 带前台标志（agentPresets 是全局的，会抢别人的会话）',
+			!/MARKET_PRESET|DRAFT_SEED|ensureMarketDefaults|tryApplyPreset|__vssarosMarketPreset|__vssarosMarketActive|agentPresets/.test(wbCode));
 		// ★ 必须**无论 created 都 rescan**：文件已存在时（`created:false`）看似无事可做，
 		//   但本次 Host 启动可能还没扫过它（插件后装 / 用户手动放文件）⇒ 不 rescan 就永远没 preset
 		check('㉗ **无论 created 都 rescan**（否则文件早已存在时永远没 preset）',
@@ -869,11 +869,15 @@ function makeSkill(localId, version, extra = {}) {
 	const agPath = path.resolve(HERE, '..', '..', 'vssaros-agents', 'lib', 'index.js');
 	const ag = fs.existsSync(agPath) ? fs.readFileSync(agPath, 'utf8') : '';
 
-	check('㉘ 有「＋ 新会话」按钮', wb2.includes('＋ 新会话') && wb2.includes('data-vssaros-market-neww'));
-	check('㉘ 按钮挂进 **aside**（生命周期与面板绑定，不用轮询显隐）', wb2.includes('mountNewButton(el)'));
-	check('㉘ 用原生 DOM + addEventListener（customFrame+portal 里 React onClick 不触发）',
-		wb2.includes("document.createElement('button')") && wb2.includes("nb.addEventListener('click'"));
-	check('㉘ 点击走宿主 `newSession`（已被我们包过 ⇒ 自动设商城 preset）', wb2.includes('dw.newSession();'));
+	// ★ 2026-11-02：「＋ 新会话」（右上角）改由**宿主对话栏统一提供**（`vssaros-workbenches` 的 NewSessionButton，
+	//   所有工作台一致、自带该工作台的默认 agent）。商城不再自画 ⇒ 这里反过来守「别又自己画一个」。
+	//   宿主那份的行为由 `check-workbench-assistant.mjs`（真 React + jsdom）守。
+	// 先去掉注释再匹配：注释里要写「这里为什么不画了」，不该因此被判成"又画了"
+	const noComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+	check('㉘ 商城不再自画「＋ 新会话」（宿主对话栏统一提供）',
+		!noComments(wb2).includes('＋ 新会话') && !noComments(wb2).includes('data-vssaros-market-neww') && !noComments(wb2).includes('mountNewButton'));
+	check('㉘ 商城的默认 agent 仍由宿主 newSession 带（商城 preset 在宿主表里）',
+		fs.readFileSync(path.resolve(HERE, '..', '..', 'vssaros-workbenches', 'lib', 'client.js'), 'utf8').includes("'vssaros/marketplace': 'vssaros-marketplace-bot'"));
 
 	check('㉘ `vssaros-agents` 提供 `vssarosAgents` 服务', ag.includes("ctx.provide('vssarosAgents'"));
 	check('㉘ 服务含 `rescan()`（重扫目录 + 增量注册）', ag.includes('rescan: async ()'));
@@ -895,46 +899,28 @@ function makeSkill(localId, version, extra = {}) {
 		wb3.includes('collapsed ? \'none\' : \'flex\'') && !wb3.includes('collapsed ? null : conversation'));
 	check('㉙ 面板是定位上下文（浮动按钮才能贴右上角）',
 		wb3.includes("'data-vssaros-market-panel'") && wb3.includes("position: 'relative',"));
-	check('㉙ 收起后**右上角**浮一个「« AI 助手」按钮',
-		wb3.includes("'data-vssaros-market-expand'") && wb3.includes("right: '10px'")
-		&& wb3.includes("'AI 助手'"));
-	check('㉙ 展开态按钮是「» 收起」、只做收起（setCollapsed(true)）',
-		wb3.includes('» 收起') && wb3.includes('setCollapsed(true)'));
-	check('㉙ 浮动按钮做展开（setCollapsed(false)）', wb3.includes('setCollapsed(false)'));
+	// ★ 2026-11-02：展开按钮已按 2026-10-26 定稿**收归外壳**（`vssaros-workbenches` 的 S2 一体条），
+	//   工作台侧不再自造 `data-vssaros-market-expand` 浮动按钮。现在的契约是"外壳渲染 + 工作台跟着开合"：
+	//     ① 面板根写 `data-vssaros-assist-collapsed`（外壳据此切换「« 展开 / » 收起」）
+	//     ② 监听外壳派发的 `vssaros:assist-expand` / `-collapse`（必须挂 window，子节点收不到）
+	check('㉙ 收起态上报给外壳（`data-vssaros-assist-collapsed`），不再自造展开按钮',
+		wb3.includes("'data-vssaros-assist-collapsed'") && !wb3.includes("'data-vssaros-market-expand'"));
+	check('㉙ 收起/展开由外壳驱动（监听 assist-expand / assist-collapse）',
+		wb3.includes("'vssaros:assist-expand'") && wb3.includes("'vssaros:assist-collapse'")
+		&& wb3.includes('window.addEventListener'));
+	// ★ 2026-11-02（用户：「AI 助手侧边栏左上角不要有收起按钮」）：商城不再自画「» 收起」，
+	//   收起 / 展开只经外壳事件（见上一条）⇒ 也就没有独立的 `setCollapsed`。
+	const wb3Code = wb3.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+	check('㉙ 左上角不再自画「» 收起」（收起统一走右侧浮动工具栏）',
+		!wb3Code.includes('» 收起') && !wb3Code.includes('setCollapsed(true)') && !wb3Code.includes('data-vssaros-market-collapse'));
 	check('㉙ 不再用竖排文字（`writing-mode: vertical-rl` 会被拆成两列）',
 		!wb3.includes('vertical-rl'));
 	check('㉙ 收起时藏起拖拽条（宽度由 state 控制，拖了会被覆盖 ⇒ 表现成"拖不动"）',
 		wb3.includes("display: collapsed ? 'none' : undefined"));
 	check('㉙ 收起状态持久化（关掉再打开还是上次那样）',
 		wb3.includes('__vssarosMarketCollapsed') && wb3.includes('localStorage.setItem(COLLAPSE_KEY'));
-	check('㉙ 收起时不挂「＋ 新会话」（对话栏都隐藏了）', wb3.includes('if (el && !collapsed)'));
-
-	// ★ 2026-10-26 用户报「聊天框没显示商城助手」的**真因**：
-	//   `ctx.get('agentPresets')` 在**未声明 inject 的插件里返回 undefined**
-	//   （studio 注释原话：`uiSession` 也只能靠动态 inject 拿到）
-	//   ⇒ 之前 `tryApplyPreset` 一直 no-service，**静默失败** ⇒ 下拉仍是「标准模式」✗
-	check('㉙ 用 `ctx.inject` 拿 `agentPresets`（不能只靠 `ctx.get`）',
-		wb3.includes('ctx.inject([key]') && wb3.includes("['agentPresets', 'remote.agentPresets']"));
-	check('㉙ 服务到手就**立即**试一次（不等下一次面板挂载）',
-		wb3.includes('ensureMarketDefaults(ctx); } catch'));
-	check('㉙ 有预设诊断（`__vssarosMarketPreset`，排查"到底哪步失败"）',
-		wb3.includes('globalThis.__vssarosMarketPreset'));
-
-	// ★★ 2026-10-26 对照 studio 找到的**两个关键差异**（此前只试一次 ⇒ 必然失败）
-	//   ① hero 空态时**会话还没建出来** ⇒ `select` 无处可设
-	//   ② 服务本身可能还在异步就绪
-	//   studio 的做法：`setInterval` 400ms、最多 12 次（≈4.8s），成功即停
-	check('㉙ **轮询** 12 次 × 400ms（hero 空态时会话还没建，只试一次必失败）',
-		wb3.includes('tries >= 12') && wb3.includes('}, 400);'));
-	check('㉙ 轮询成功后立即停（不空转）', wb3.includes('presetDiag.ok === true || tries >= 12'));
-	check('㉙ 挂载时**立即**先试一次（服务可能早就绪）',
-		wb3.includes('ensureMarketDefaults(ctx); } catch'));
-	// studio 的 obj 形态是 `{ sessionId, agentPreset }` —— 部分实现要求"给哪个会话设"
-	check('㉙ obj 形态**带 sessionId**（对齐 studio）', wb3.includes('sessionId ? { sessionId } : {}'));
-	check('㉙ 会话 id 三来源兜底（uiSession / DOM / dockedSessionOf）',
-		wb3.includes('function currentSessionId') && wb3.includes('data-vssaros-wb-docked-session')
-		&& wb3.includes('dockedSessionOf'));
-	check('㉙ inject `uiSession`（`ctx.get` 拿不到）', wb3.includes("ctx.inject(['uiSession']"));
+	// （2026-11-02 根治：原先这里守「inject agentPresets / 轮询 12×400ms / obj 形态带 sessionId / 会话 id 三来源」——
+	//   那整套是商城自己设 preset 的实现，已删除；默认 agent 只由宿主设。见 ㉗ 的「不再自己 select」。）
 }
 
 // ── ㉚ agent 必须 `source: custom`（2026-10-26 真机定位的根因）────────────
@@ -949,16 +935,14 @@ function makeSkill(localId, version, extra = {}) {
 			ma2.includes("migrations.push('builtin→custom')") && ma2.includes('builtin'));
 	}
 
-// ── ㉛ preset 必须用**双位置参数** `select(sessionId, presetId)`（2026-10-26 真机）──
-//   官方形态见 `vssaros-chat-surface/lib/client.preset.js:254`：
-//     `ctx.remote.agentPresets.select(sid, id)`
-//   ⚠ 只试「单参」和「对象」两种都**不生效且不报错** ⇒ 静默失败 ✗
+// ── ㉛ preset 的官方形态是**双位置参数** `select(sessionId, presetId)`（2026-10-26 真机）──
+//   ★ 2026-11-02 根治：商城不再自己调 select（只由宿主调，宿主那份用双参 + 看 ok）。这里改守宿主那份。
 {
-		const wb4 = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'workbench.js'), 'utf8');
-		check('㉛ 试 **双位置参数** `select(sessionId, presetId)`（官方形态）',
-			wb4.includes('svc[name](sessionId, MARKET_PRESET)') && wb4.includes('(sid,id)'));
-		check('㉛ 三种形态都试（双参 → 单参 → 对象），全部记进诊断',
-			wb4.includes('presetDiag.calls.push') && wb4.includes('`${label}.${name}(obj'));
+		const host4 = fs.readFileSync(path.resolve(HERE, '..', '..', 'vssaros-workbenches', 'lib', 'client.js'), 'utf8');
+		check('㉛ 宿主用**双位置参数** `select(sessionId, preset)`（官方形态）',
+			host4.includes('await svc.select(sessionId, preset)'));
+		check('㉛ 宿主看 `ok`（官方失败返回 {ok:false}，不抛 ⇒ 只写 catch 永远抓不到）',
+			host4.includes('result && result.ok === false'));
 	}
 
 // ── ㉜ 商城助手人设 + 专属建议卡（2026-10-26 用户：「重构商城助手的提示词」）──
@@ -1010,8 +994,10 @@ function makeSkill(localId, version, extra = {}) {
 		check('㉝ cardModel 带上 suggestions（API 给数组或逗号串都兼容）',
 			w6.includes('suggestions: Array.isArray(agent.suggestions)'));
 
+		// ★ 2026-11-02：类型里已有 `suggestions?: string | string[]`（54 行），
+		//   不再需要 `(agent as any).suggestions` 这种绕过 —— 断言改为盯"回写 + 类型已声明"。
 		check('㉝ IDE 侧**序列化回写**（否则编辑一次就丢）',
-			ide.includes('fm.suggestions') && ide.includes('agent as any).suggestions'));
+			ide.includes('fm.suggestions') && /suggestions\?:\s*string\s*\|\s*string\[\]/.test(ide));
 		check('㉝ IDE 侧解析读出', ide.includes('suggestions: parseStringArray(raw.suggestions)'));
 	}
 

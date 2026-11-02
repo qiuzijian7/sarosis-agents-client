@@ -34,6 +34,13 @@ disable-model-invocation: false
 
 注册式工作台由**宿主渲染 React**；`customFrame: true` 时宿主会注入 `props.conversation`（官方对话本体）。
 
+**两种对话承载（2026-11-02 补齐）**：
+
+- `customFrame: true` ⇒ 对话**嵌在你的页面里**（`props.conversation`，你决定放哪）。
+- 不声明 `customFrame`（默认）⇒ **标准分栏**：宿主给「左对话 / 右业务」，业务宽度由 `layout.businessWidth`（0.25–0.7）决定。
+  你在工作台里点会话/新建会话**不会再把用户踢出工作台**（会话停靠在左栏）。
+- 明确不要常驻会话 ⇒ `splitConversation: false`（点会话切到会话页，旧行为）。
+
 ## 第二步：目录与清单（最容易死在这里）
 
 标准目录（以商城为例，逐字对得上仓库现状）：
@@ -53,7 +60,7 @@ dsh-plugins/vssaros-<module>/
 1. 客户端入口**绝不能写 `chunk:` 字段** —— 装载器按「包内 chunk」校验，`chunk: 'client.js'` 会让**整个 web boot 失败**。入口只声明 `id` + `factory`；子块才是 `chunk: 'client.<name>.js'`。
 2. 清单必须有 `exports['./client']` + `dsh.client.inject`；`dsh.bundle.patch` 指向 `cordis.patch.yml`，否则插件不进运行时且**宿主不报错**。
 3. 改过任何客户端子块：**升版本号 + touch 入口**（`check-chat-surface-chunks` 按 mtime 判「入口比子块旧」）。
-4. 描述符必须带 `repository`（`vssaros:<module>` 或 https 地址），漏了会 `Invalid workbench repository` —— 模块加载成功但注册被拒，只有页面 console 能看到。
+4. 身份三选一（2026-11-02 起本地包**不再强制**仓库）：`repository: 'vssaros:<module>'`（内置）/ `repository: 'https://github.com/<owner>/<repo>'`（公开）/ **省略 repository** + `package: '<npm 包名>'` ⇒ 得到 `local:<包名>`。三者都没有才会 `Workbench registration needs a repository … or a package name` —— 模块加载成功但注册被拒，只有页面 console 能看到。
 
 字段模板与注册代码见 `references/manifest-and-registration.md`；打包/部署/两套宿主服务名见 `references/directory-and-packaging.md`。
 
@@ -63,7 +70,9 @@ dsh-plugins/vssaros-<module>/
 const DESCRIPTOR = {
 	title: '任务台',
 	description: '一句话说清它替用户做什么',
-	repository: 'vssaros:tasks',   // 必填
+	// 身份三选一（见第 4 条）：内置包写 repository: 'vssaros:tasks'；
+	// 个人本地包写 package: '@me/tasks-workbench'（不要写 repository）。
+	package: '@me/tasks-workbench',
 	icon: 'codicon:checklist',     // codicon 需经 wbIconEmoji 映射，否则渲染成 🧩
 	customFrame: true,             // 需要 props.conversation（AI 助手）时必开
 	layout: { businessSide: 'left' },
@@ -126,6 +135,38 @@ node src/vs/sessions/contrib/dshHarness/test/common/run-all-common-tests.mjs
 
 写法与常见假绿见 `references/verification.md`。
 
+## 第七步：装上（2026-11-02 新增，缺这一步等于没做完）
+
+构建出 `.tgz` 之后，**先干跑**（不弹确认、不装、不写盘，用同一套校验）：
+
+```text
+check_local_workbench({ path: "<本机 .tgz 的绝对路径>" })
+```
+
+`ok:false` ⇒ 按 `errors` 改完重新 `pnpm pack`，**不要**去调安装（那会白白打扰用户点一次确认再失败）。
+`ok:true` 只说明结构 + 静态审计通过，**不等于装上能跑**，别对用户说“已验证可用”。通过后再装：
+
+```text
+install_local_workbench({ path: "<本机 .tgz 的绝对路径>", replace: false })
+```
+
+它内部：校验包（`package.json` / `dsh.bundle.patch` / 声明的入口必须真在包里、拒绝路径穿越、压缩 ≤8MiB、解压 ≤32MiB）
+→ 解到临时目录 → 交 IDE 主进程那条已验证的安装通道（**会弹一次用户确认**）→ 写安装证据到
+`<数据根>/vssaros-workbenches/local-installs.json` → 清理临时目录。
+
+按返回的 `application` 决定下一步，**不许自己猜**：
+
+| application | 含义 | 你要做什么 |
+|---|---|---|
+| `applied` | 已生效 | 直接核验界面 |
+| `restart-required` | 已装，等重启 | 请用户点「立即重启」/ 菜单「Harness → 重启 Harness」；**不要自己重启** |
+| `cancelled` | 用户取消了 | 说明没装，等用户决定；别换个路径硬塞 |
+| `failed` | 失败 | 把错误原因原样告诉用户（包不合法 / 通道出错 / 没有控制桥） |
+| `overridden` | 被更高优先级包覆盖 | 不算生效，说明冲突 |
+
+⚠ 没有控制桥（dsh 独立运行 / IDE 没开）时工具会**明确报错**，此时交付校验过的 `.tgz` 并说明未安装 ——
+不要说"已安装/已加载"。
+
 ## 必踩坑速查（每条都真机踩过）
 
 1. 入口写 `chunk:` ⇒ **整个 web boot 失败**，不是单个页面坏。
@@ -133,7 +174,7 @@ node src/vs/sessions/contrib/dshHarness/test/common/run-all-common-tests.mjs
 3. 用**类名**当探针锚点 ⇒ UI 统一后数到 0，看着像没渲染。
 4. 裸色值 / 写不存在的令牌名 ⇒ 暗色主题静默回落。
 5. 缺 `cordis.patch.yml` 或漏 `dsh.bundle.patch` ⇒ 插件**根本不加载且不报错**。
-6. 漏 `repository` ⇒ `Invalid workbench repository`（只在 console）。
+6. 身份三选一（`repository` / `package`）一个都没写 ⇒ 注册被拒；现在启动器会显示「装了但没能注册」+ 包名 + 阶段 + 原因，不用翻 console。
 7. 用 `@media` 判宽度 ⇒ 侧栏与编辑区同窗不同宽，判不出来；用容器查询。
 8. 两套页面各自取数 ⇒ 口径必分叉；取数函数只写一次。
 9. 空态只写「暂无数据」⇒ 用户卡住；要给「为什么空 + 下一步」。
@@ -151,8 +192,11 @@ node src/vs/sessions/contrib/dshHarness/test/common/run-all-common-tests.mjs
 ```powershell
 $S = "<Base directory>\scripts"
 
-# 生成注册式工作台骨架（清单 + Host 入口 + 客户端入口 + 面板）
+# 生成注册式工作台骨架（清单 + Host 入口 + 客户端入口 + 面板）——内置形态（默认）
 node "$S\scaffold_workbench.mjs" tasks --dir dsh-plugins/vssaros-tasks --title "任务台" --icon codicon:checklist
+
+# 外部包形态（--mode external）：身份 local:<npm 包名>，**不改任何宿主文件**，pnpm pack 后用 install_local_workbench 装
+node "$S\scaffold_workbench.mjs" tasks --mode external --package @me/tasks-workbench --title "任务台"
 
 # 体检一个包（13 条结构/视觉规则，可用于还没进 UNIFIED 的新包）
 node "$S\audit_workbench.mjs" dsh-plugins/vssaros-tasks
@@ -172,5 +216,9 @@ node "$S\audit_workbench.mjs" dsh-plugins/vssaros-tasks
 | `scripts/scaffold_workbench.mjs` | 生成工作台骨架 |
 | `scripts/audit_workbench.mjs` | 单包体检（13 条） |
 | `test/run-workbench-skill-check.mjs` | **本技能自检**（防文档腐烂）：引用路径是否仍存在、代码事实是否还成立 |
+
+> 面向人与第三方的规范（本技能的浓缩版，随包并从 Host 下发）：
+> `doc/workbench-development-standard.md` ⇒ `GET /api/vssaros-workbenches/development-guide`；
+> 承载收口见 `doc/workbench-carrier-consolidation.md`，技能写法见 `doc/skill-authoring-standard.md`。
 
 > 姊妹文档：`.codebuddy/skills/dsh-workbench-authoring/`（给编码助手用的同主题技能，含更长的实战复盘）。改规范时两份要同步；本文件是**运行期 agent** 读的那份。

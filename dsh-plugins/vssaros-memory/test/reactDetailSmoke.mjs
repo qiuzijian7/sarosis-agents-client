@@ -51,14 +51,24 @@ assert(typeof MemoryDetailPage === 'function', 'detailView.js 必须导出 creat
 
 const draw = el => renderToStaticMarkup(el);
 
-// ── ① 页签壳：10 个页签 + 返回按钮 + loading 态 ──────────────────────────
-check('① 壳：10 个页签 + 「← 返回记忆库」+ loading 态', () => {
+// ── ① 页签壳：11 个页签（7 主栏 + 4 在「更多」里）+ 返回按钮 + loading 态 ─────────
+// ★ 2026-11-02（工作台 v2 · P4）：原先是"10 个页签全在首屏"。现在新增「归档」，并把 dsh 侧长期为空的
+//   钩子 / 提交 / 报告 / 技能 折叠进「更多」——**首屏不再有它们是设计意图，不是回归**。
+//   这条测试原本要保护的是"旧的 10 个页签一个都没丢、都还点得到"，所以这里改成：
+//   主栏 7 个直接在首屏；那 4 个在「更多」展开后全部可达（用 initialTab 模拟"当前就在其中一个"）。
+check('① 壳：11 个页签（7 主栏 + 4 折叠）+ 「← 返回记忆库」+ loading 态；旧 10 个一个没丢', () => {
 	const html = draw(React.createElement(MemoryDetailPage, { onBack() { } }));
-	const tabs = ['memories', 'sessions', 'slots', 'lessons', 'consolidation', 'audit', 'hooks', 'commits', 'report', 'skills'];
-	for (const t of tabs) { contains(html, `data-memory-detail-tab="${t}"`, '页签壳'); }
+	const primary = ['memories', 'sessions', 'slots', 'lessons', 'archive', 'consolidation', 'audit'];
+	const folded = ['hooks', 'commits', 'report', 'skills'];
+	for (const t of primary) { contains(html, `data-memory-detail-tab="${t}"`, '页签壳（主栏）'); }
+	for (const t of folded) { assert(!html.includes(`data-memory-detail-tab="${t}"`), `${t} 应折叠进「更多」，首屏不该直接出现`); }
+	contains(html, 'data-memory-detail-more="closed"', '「更多」入口');
+	// 折叠 ≠ 删除：当前页签在「更多」里时它们全部展开可达
+	const open = draw(React.createElement(MemoryDetailPage, { onBack() { }, initialTab: 'hooks' }));
+	for (const t of folded) { contains(open, `data-memory-detail-tab="${t}"`, '「更多」展开后'); }
 	contains(html, '返回记忆库', '页签壳');
 	contains(html, 'data-memory-detail-state="loading"', 'SSR 首帧');
-	return '10 页签齐';
+	return '7 主栏 + 4 折叠，全部可达';
 });
 
 // ── ② 记忆 ───────────────────────────────────────────────────────────────
@@ -90,14 +100,25 @@ check('③ 会话：sessionId + 摘要 + 错误行', () => {
 });
 
 // ── ④ 槽位 ───────────────────────────────────────────────────────────────
-check('④ 槽位：按 slotNames 顺序 + 空槽位标 (空) + 正文', () => {
+// ★ 2026-11-02（用户问「为什么部分页签是空的」后改版）：**逐行标「(空)」改成汇总一句**——
+//   8 个槽位全空时页面被「(空)」刷满，噪音大于信息。新契约仍然保证：
+//   ① 有内容的槽位按 slotNames 顺序展开正文；② 空槽位**点名可辨识**（不静默吞掉）。
+check('④ 槽位：有内容的展开正文 + 空槽位点名汇总（不再逐行刷 (空)）', () => {
 	const html = draw(renderDetailTab('slots', {
 		slotNames: ['project_context', 'guidance'],
 		slots: [{ name: 'project_context', content: '槽位正文Y' }],
 	}));
 	contains(html, 'project_context', '槽位页');
 	contains(html, '槽位正文Y', '槽位页');
-	contains(html, '(空)', '槽位页（guidance 没有内容应标空）');
+	contains(html, '另有 1 个槽位为空：guidance', '槽位页（空槽位要点名，不能静默吞掉）');
+	// 全空：一句说明 + 点名 + 说明不是丢数据
+	const allEmpty = draw(renderDetailTab('slots', {
+		slotNames: ['project_context', 'guidance'],
+		slots: [{ name: 'project_context', content: '' }, { name: 'guidance', content: '' }],
+	}));
+	contains(allEmpty, '2 个槽位都还没写入内容', '全空汇总');
+	contains(allEmpty, 'project_context', '全空也要点名');
+	contains(allEmpty, '不等于丢数据', '全空要说明不是丢数据');
 	return 'ok';
 });
 

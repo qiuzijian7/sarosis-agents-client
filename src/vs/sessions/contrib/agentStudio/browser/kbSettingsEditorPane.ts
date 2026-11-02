@@ -356,7 +356,7 @@ export class KbSettingsEditorPane extends EditorPane {
 		this._hint(fsSec, '同步范围 = 下方「目录映射」里已关联到飞书知识库的「笔记」子目录（映射到哪个知识库就同步到哪）。未关联的目录不会同步，也不会自动创建知识库。');
 
 		// ── 目录 ↔ 知识库映射（**同步范围的唯一来源**）──
-		// 落盘在 vault 内 `.feishu-space-map.json`（与内置脚本同一契约）⇒ 无需经 CLI 参数传递（避免引号转义问题）。
+		// 落盘在 vault 内 `.kb/space-map.json`（与内置脚本同一契约）⇒ 无需经 CLI 参数传递（避免引号转义问题）。
 		const mapRow = this._row(fsSec, '目录映射');
 		const addMapBtn = $('button.kbs-btn');
 		addMapBtn.textContent = '＋ 添加目录';

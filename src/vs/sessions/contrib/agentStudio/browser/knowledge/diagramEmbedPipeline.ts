@@ -117,7 +117,7 @@ export async function resolveEmbedTarget(
 	}
 	const basename = (cleaned.split(/[\\/]/).pop() ?? cleaned).toLowerCase();
 	const budget = { left: 20000 };
-	for (const section of ['库', '笔记']) {
+	for (const section of ['数据源', '知识库列表']) {
 		const hit = await findByBasename(fileService, URI.joinPath(vaultRoot, section), basename, budget);
 		if (hit) { return hit; }
 	}

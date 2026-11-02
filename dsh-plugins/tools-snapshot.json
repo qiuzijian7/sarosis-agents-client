@@ -1,6 +1,6 @@
 {
   "note": "由 dsh-plugins/tools-snapshot.mjs 生成；被 dshHarness/test/common/dshToolSnapshot.test.ts 钉住。不要手改，跑 --write。",
-  "total": 165,
+  "total": 175,
   "plugins": {
     "vssaros-agents": [
       {
@@ -984,13 +984,13 @@
           "provider",
           "vaultId"
         ],
-        "descriptionHash": "47a7fce8fecd"
+        "descriptionHash": "3361aca64bd1"
       },
       {
         "name": "kb_catalog",
         "required": [],
         "params": [],
-        "descriptionHash": "c0553057e683"
+        "descriptionHash": "b51a35fa05fe"
       },
       {
         "name": "kb_feishu_spaces",
@@ -1000,7 +1000,7 @@
           "cliPath",
           "name"
         ],
-        "descriptionHash": "38f66bf73159"
+        "descriptionHash": "33daa1280448"
       },
       {
         "name": "kb_feishu_sync",
@@ -1045,7 +1045,7 @@
           "path",
           "vaultId"
         ],
-        "descriptionHash": "dca86be44e0c"
+        "descriptionHash": "5916ae8ff81c"
       },
       {
         "name": "kb_organize",
@@ -1058,7 +1058,7 @@
           "reason",
           "vaultId"
         ],
-        "descriptionHash": "be21234f6525"
+        "descriptionHash": "597da00c3f92"
       },
       {
         "name": "kb_read",
@@ -1099,7 +1099,7 @@
         "params": [
           "vaultId"
         ],
-        "descriptionHash": "68c178eb4a00"
+        "descriptionHash": "ab8f3310c7a6"
       },
       {
         "name": "kb_write_note",
@@ -1113,7 +1113,7 @@
           "path",
           "vaultId"
         ],
-        "descriptionHash": "377a4154e670"
+        "descriptionHash": "fee784bb40d2"
       }
     ],
     "vssaros-loop": [
@@ -1714,6 +1714,34 @@
         "descriptionHash": "bb87392f961f"
       }
     ],
+    "vssaros-office-template": [
+      {
+        "name": "office_template",
+        "required": [
+          "path"
+        ],
+        "params": [
+          "path"
+        ],
+        "descriptionHash": "673e398a0cdf"
+      },
+      {
+        "name": "office_template_write",
+        "required": [
+          "output_path",
+          "path",
+          "replacements"
+        ],
+        "params": [
+          "additions",
+          "output_path",
+          "path",
+          "removals",
+          "replacements"
+        ],
+        "descriptionHash": "95bc433c1848"
+      }
+    ],
     "vssaros-pele": [
       {
         "name": "render_diagram",
@@ -1728,6 +1756,68 @@
           "theme"
         ],
         "descriptionHash": "688276963d43"
+      }
+    ],
+    "vssaros-scheduler": [
+      {
+        "name": "schedule_create",
+        "required": [
+          "rule",
+          "title"
+        ],
+        "params": [
+          "action",
+          "kind",
+          "loopName",
+          "prompt",
+          "rule",
+          "sessionId",
+          "title",
+          "workItem"
+        ],
+        "descriptionHash": "9446a77e5518"
+      },
+      {
+        "name": "schedule_delete",
+        "required": [
+          "id"
+        ],
+        "params": [
+          "id"
+        ],
+        "descriptionHash": "fabc466221fe"
+      },
+      {
+        "name": "schedule_history",
+        "required": [
+          "id"
+        ],
+        "params": [
+          "id",
+          "limit"
+        ],
+        "descriptionHash": "a2311c5eef37"
+      },
+      {
+        "name": "schedule_list",
+        "required": [],
+        "params": [
+          "limit"
+        ],
+        "descriptionHash": "7a0ceef52eb9"
+      },
+      {
+        "name": "schedule_update",
+        "required": [
+          "id"
+        ],
+        "params": [
+          "id",
+          "rule",
+          "status",
+          "title"
+        ],
+        "descriptionHash": "60244bd7866d"
       }
     ],
     "vssaros-sessions": [
@@ -1763,6 +1853,15 @@
           "skill_id"
         ],
         "descriptionHash": "5465e816f3b3"
+      },
+      {
+        "name": "skill_context",
+        "required": [],
+        "params": [
+          "category",
+          "include"
+        ],
+        "descriptionHash": "589bb50aeb15"
       },
       {
         "name": "skill_manage",
@@ -1892,6 +1991,30 @@
           "vault"
         ],
         "descriptionHash": "62ec2a2c7d8a"
+      }
+    ],
+    "vssaros-workbenches": [
+      {
+        "name": "check_local_workbench",
+        "required": [
+          "path"
+        ],
+        "params": [
+          "path"
+        ],
+        "descriptionHash": "8ebeb4ed92eb"
+      },
+      {
+        "name": "install_local_workbench",
+        "required": [
+          "path"
+        ],
+        "params": [
+          "allowDowngrade",
+          "path",
+          "replace"
+        ],
+        "descriptionHash": "8be8aeda97a2"
       }
     ],
     "vssaros-workflow": [

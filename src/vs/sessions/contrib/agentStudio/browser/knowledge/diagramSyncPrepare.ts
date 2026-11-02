@@ -56,7 +56,7 @@ import { extractHtmlEmbeds, prepareHtmlAttachmentsForNote } from './htmlAttachme
  * （见 `feishuSyncCore.deriveMappedSrcDirs`），「库」是素材层、永不参与同步。
  * 正常调用方（视图按钮 / `kb_feishu_sync` 工具）都会显式传入推导结果，这里只是防御性兜底。
  */
-export const DEFAULT_DIAGRAM_SRC_DIRS: readonly string[] = ['笔记'];
+export const DEFAULT_DIAGRAM_SRC_DIRS: readonly string[] = ['知识库列表'];
 
 /** 收集上限（防御性：极端大的 vault 不至于把同步拖死）。 */
 const MAX_FILES = 20000;
@@ -104,7 +104,7 @@ export interface IDiagramPrepareResult {
  */
 export interface IDiagramPrepareRequest {
 	readonly vaultRoot: URI;
-	/** 库内相对目录（如 `['笔记']`）；空数组 ⇒ 扫描 `库` 与 `笔记` */
+	/** 库内相对目录（如 `['知识库列表']`）；空数组 ⇒ 扫描 `数据源` 与 `知识库列表` */
 	readonly srcDirs: readonly string[];
 	/** true = 只统计不写盘（dry-run 预览用） */
 	readonly dryRun: boolean;
@@ -115,7 +115,7 @@ export type KbDiagramPrepareFn = (request: IDiagramPrepareRequest) => Promise<ID
 
 export interface IPrepareDiagramsOptions {
 	readonly vaultRoot: URI;
-	/** 库内相对目录（如 `['笔记']`）；空数组 ⇒ `DEFAULT_DIAGRAM_SRC_DIRS` */
+	/** 库内相对目录（如 `['知识库列表']`）；空数组 ⇒ `DEFAULT_DIAGRAM_SRC_DIRS` */
 	readonly srcDirs: readonly string[];
 	readonly fileService: IFileService;
 	/** mermaid 源码 → SVG（通常注入 `IDiagramRenderer.renderToSvg`） */

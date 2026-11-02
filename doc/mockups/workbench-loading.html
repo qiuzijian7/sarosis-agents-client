@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>工作台加载态 mockup · 请选择一个方向</title>
+<style>
+  /* ── 主题变量：对齐 dsh 深色（--dsw-alias-* 的近似值）──────────────────────────── */
+  :root{
+    --bg:#1b1b1f; --panel:#202027; --panel2:#25252c; --line:rgba(255,255,255,.08);
+    --line2:rgba(255,255,255,.14); --fg:#e6e6ea; --fg2:rgba(230,230,234,.66);
+    --fg3:rgba(230,230,234,.40); --brand:#4f8cff; --brand2:#7aa6ff;
+    --ok:#3fb950; --radius:10px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:#141418;color:var(--fg);
+    font:13px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .page{max-width:1180px;margin:0 auto;padding:28px 20px 64px}
+  h1{font-size:19px;margin:0 0 6px;font-weight:600}
+  .sub{color:var(--fg2);margin:0 0 22px}
+  .hint{color:var(--fg3);font-size:12px}
+
+  .case{margin:0 0 30px;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#16161a}
+  .case-hd{display:flex;align-items:baseline;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);background:#181820}
+  .tag{font:600 11px/1 ui-monospace,monospace;color:#0b0d12;background:var(--brand);padding:5px 8px;border-radius:6px}
+  .case-hd b{font-size:14px;font-weight:600}
+  .case-hd span{color:var(--fg2);font-size:12px}
+  .case-body{display:grid;grid-template-columns:1fr 268px}
+  .case-ft{padding:10px 16px;border-top:1px solid var(--line);color:var(--fg2);font-size:12px;background:#181820}
+  .pros{list-style:none;margin:0;padding:12px 16px;border-left:1px solid var(--line);background:#181820;font-size:12px;color:var(--fg2)}
+  .pros li{margin:0 0 8px;padding-left:14px;position:relative}
+  .pros li::before{content:"";position:absolute;left:0;top:7px;width:5px;height:5px;border-radius:50%;background:var(--brand2)}
+  .pros b{color:var(--fg)}
+
+  /* ── 模拟 dsh 窗口里的工作台区域 ─────────────────────────────────────────── */
+  .stage{position:relative;height:330px;background:var(--bg);overflow:hidden}
+  .tabbar{height:30px;display:flex;align-items:flex-end;gap:2px;padding:0 10px;border-bottom:1px solid var(--line);background:#1e1e24}
+  .tab{height:23px;padding:0 12px;display:flex;align-items:center;font-size:11px;color:var(--fg2);
+    border:1px solid transparent;border-bottom:0;border-radius:7px 7px 0 0}
+  .tab.on{background:var(--bg);border-color:var(--line);color:var(--fg)}
+  .stage-in{position:absolute;inset:30px 0 0 0;display:flex}
+  /* 浮动胶囊（真实存在，别挡住它） */
+  .capsule{position:absolute;right:10px;top:50%;transform:translateY(-50%);z-index:9;
+    display:flex;flex-direction:column;gap:6px;padding:6px;border-radius:9px;
+    background:rgba(79,140,255,.14);border:1px solid rgba(79,140,255,.55);
+    box-shadow:0 0 0 1px rgba(79,140,255,.12),0 6px 18px rgba(0,0,0,.4)}
+  .capsule i{width:18px;height:18px;border-radius:5px;background:rgba(230,230,234,.28)}
+
+  @keyframes sweep{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
+  @keyframes breathe{0%,100%{opacity:.55;transform:scale(.985)}50%{opacity:1;transform:scale(1)}}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes bar{0%{width:8%}45%{width:62%}75%{width:84%}100%{width:96%}}
+  @keyframes dot{0%,80%,100%{opacity:.25}40%{opacity:1}}
+  .sh{position:relative;overflow:hidden;background:rgba(255,255,255,.055);border-radius:6px}
+  .sh::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.10),transparent);
+    animation:sweep 1.35s infinite}
+
+  /* A 骨架屏 */
+  .sk{display:flex;width:100%}
+  .sk-left{width:180px;border-right:1px solid var(--line);padding:12px 10px;display:flex;flex-direction:column;gap:9px}
+  .sk-mid{flex:1;min-width:0;padding:12px;display:grid;grid-template-columns:repeat(3,1fr);gap:10px;align-content:start}
+  .sk-right{width:250px;border-left:1px solid var(--line);padding:14px 12px;display:flex;flex-direction:column;gap:10px;align-items:center}
+  .sk-right .ring{width:26px;height:26px;border-radius:50%;border:2px solid rgba(255,255,255,.14);border-top-color:var(--brand);animation:spin .9s linear infinite;margin-top:14px}
+  .sk-right .big{width:56px;height:56px;border-radius:14px;margin-top:8px}
+
+  /* B 顶部细进度 + 居中阶段 */
+  .topbar{position:absolute;left:0;right:0;top:0;height:2px;background:rgba(255,255,255,.06);z-index:5}
+  .topbar i{display:block;height:100%;background:linear-gradient(90deg,var(--brand),var(--brand2));animation:bar 1.9s ease-out infinite}
+  .center{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px}
+  .center .t{font-size:13px;color:var(--fg)}
+  .center .d{font-size:11.5px;color:var(--fg3)}
+  .dots i{display:inline-block;width:4px;height:4px;margin-left:3px;border-radius:50%;background:var(--brand2);animation:dot 1.2s infinite}
+  .dots i:nth-child(2){animation-delay:.15s}.dots i:nth-child(3){animation-delay:.3s}
+
+  /* C 居中卡片 */
+  .card{width:300px;padding:22px 20px;border-radius:14px;background:var(--panel);
+    border:1px solid var(--line2);box-shadow:0 14px 34px rgba(0,0,0,.42);text-align:center}
+  .card .logo{width:46px;height:46px;margin:0 auto 12px;border-radius:12px;background:linear-gradient(150deg,#2a3550,#1d2230);
+    border:1px solid var(--line2);display:grid;place-items:center;animation:breathe 1.6s ease-in-out infinite}
+  .card .logo i{width:18px;height:18px;border-radius:5px;background:var(--brand);opacity:.85}
+  .card .ct{font-size:13.5px;margin:0 0 4px}
+  .card .cd{font-size:11.5px;color:var(--fg3);margin:0 0 14px}
+  .card .cbar{height:3px;border-radius:2px;background:rgba(255,255,255,.08);overflow:hidden}
+  .card .cbar i{display:block;height:100%;background:linear-gradient(90deg,var(--brand),var(--brand2));animation:bar 1.9s ease-out infinite}
+
+  /* D 极简 */
+  .mini{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px}
+  .mini .pulse{width:34px;height:34px;border-radius:9px;background:rgba(79,140,255,.22);
+    border:1px solid rgba(79,140,255,.5);animation:breathe 1.7s ease-in-out infinite}
+  .mini .line{width:120px;height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.22),transparent)}
+  .mini .cap{font-size:11px;color:var(--fg3);letter-spacing:.4px}
+
+  .foot-note{margin-top:26px;padding:14px 16px;border:1px dashed var(--line2);border-radius:12px;background:#17171c;color:var(--fg2);font-size:12.5px}
+  .foot-note b{color:var(--fg)}
+  code{font:12px/1.5 ui-monospace,monospace;background:rgba(255,255,255,.06);padding:1px 5px;border-radius:4px}
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>大型工作台首次打开的加载态 · 四个方向</h1>
+  <p class="sub" style="margin-bottom:6px;color:#8fd18f">已选定：<b>D 极简呼吸点</b>（2026-11-02），已实现在宿主 <code>Frame</code> 的 <code>PanelLoadingGate</code> 里；本页保留作选型记录。</p>
+  <p class="sub">商城、知识库、媒体库这类「大工作台」首次打开要等 chunk 下载 + React 挂载 + 数据首屏。
+    下面四种都在同一套深色变量下渲染，右侧是各自的代价。<span class="hint">（本页是静态 mockup，动画会循环播放以模拟加载中）</span></p>
+
+  <!-- A -->
+  <section class="case">
+    <div class="case-hd"><span class="tag">A</span><b>骨架屏</b><span>按真实三栏结构先占位：左列表 / 中内容 / 右对话</span></div>
+    <div class="case-body">
+      <div class="stage">
+        <div class="tabbar"><div class="tab on">商城</div><div class="tab">知识库</div><div class="tab">媒体库</div></div>
+        <div class="stage-in">
+          <div class="sk">
+            <div class="sk-left">
+              <div class="sh" style="height:22px;width:70%"></div>
+              <div class="sh" style="height:14px"></div><div class="sh" style="height:14px;width:86%"></div>
+              <div class="sh" style="height:14px;width:74%"></div><div class="sh" style="height:14px"></div>
+              <div class="sh" style="height:14px;width:62%"></div>
+            </div>
+            <div class="sk-mid">
+              <div class="sh" style="height:86px"></div><div class="sh" style="height:86px"></div><div class="sh" style="height:86px"></div>
+              <div class="sh" style="height:86px"></div><div class="sh" style="height:86px"></div><div class="sh" style="height:86px"></div>
+            </div>
+            <div class="sk-right">
+              <div class="sh big"></div>
+              <div class="ring"></div>
+              <div class="sh" style="height:10px;width:70%"></div>
+              <div class="sh" style="height:10px;width:52%"></div>
+            </div>
+          </div>
+        </div>
+        <div class="capsule"><i></i><i></i></div>
+      </div>
+      <ul class="pros">
+        <li><b>最不像"加载"</b>：视觉上直接给出结构，用户知道等的是什么</li>
+        <li>切换工作台时<b>不会闪白</b>，几乎无感</li>
+        <li>代价：要为每个工作台配一套骨架结构，通用版只能做"泛化三栏"</li>
+      </ul>
+    </div>
+    <div class="case-ft">适合：多个大工作台统一接入（用一份泛化骨架），或重点优化商城 / 知识库两个最常用的</div>
+  </section>
+
+  <!-- B -->
+  <section class="case">
+    <div class="case-hd"><span class="tag">B</span><b>顶部细进度条 + 阶段文案</b><span>顶部 2px 进度 + 中央一行"正在加载…"</span></div>
+    <div class="case-body">
+      <div class="stage">
+        <div class="tabbar"><div class="tab on">商城</div><div class="tab">知识库</div><div class="tab">媒体库</div></div>
+        <div class="stage-in">
+          <div class="topbar"><i></i></div>
+          <div class="center">
+            <div class="t">正在打开 商城工作台</div>
+            <div class="d">首次加载会慢一些，之后走本地缓存<span class="dots"><i></i><i></i><i></i></span></div>
+          </div>
+        </div>
+        <div class="capsule"><i></i><i></i></div>
+      </div>
+      <ul class="pros">
+        <li><b>最省事</b>：一份实现，所有工作台通用，无需按工作台定制</li>
+        <li>进度条能给"在动"的确定感，<b>文案可解释"首次慢"</b></li>
+        <li>代价：大块空白仍显得"没开始"，比骨架屏略空</li>
+      </ul>
+    </div>
+    <div class="case-ft">适合：先快速覆盖全部工作台（改动最小），后续再对头部两个做骨架屏</div>
+  </section>
+
+  <!-- C -->
+  <section class="case">
+    <div class="case-hd"><span class="tag">C</span><b>居中卡片（带品牌感）</b><span>图标呼吸 + 标题 + 细进度 + 一句解释</span></div>
+    <div class="case-body">
+      <div class="stage">
+        <div class="tabbar"><div class="tab on">商城</div><div class="tab">知识库</div><div class="tab">媒体库</div></div>
+        <div class="stage-in">
+          <div class="center">
+            <div class="card">
+              <div class="logo"><i></i></div>
+              <p class="ct">正在打开 商城工作台</p>
+              <p class="cd">首次加载会慢一些，之后会走本地缓存</p>
+              <div class="cbar"><i></i></div>
+            </div>
+          </div>
+        </div>
+        <div class="capsule"><i></i><i></i></div>
+      </div>
+      <ul class="pros">
+        <li><b>最"产品化"</b>：一眼看出是哪个工作台在开，不像卡住</li>
+        <li>卡片能承载更多信息（版本、作者、最近一次使用）</li>
+        <li>代价：遮挡更多、比 B 重；频繁切换时会觉得"每次都要等卡片"</li>
+      </ul>
+    </div>
+    <div class="case-ft">适合：工作台数量少、每次打开都值得"交代一句"的场景；对频繁切换略重</div>
+  </section>
+
+  <!-- D -->
+  <section class="case">
+    <div class="case-hd"><span class="tag">D</span><b>极简呼吸点</b><span>只有中央一个小方块 + 底部一行小字</span></div>
+    <div class="case-body">
+      <div class="stage">
+        <div class="tabbar"><div class="tab on">商城</div><div class="tab">知识库</div><div class="tab">媒体库</div></div>
+        <div class="stage-in">
+          <div class="mini">
+            <div class="pulse"></div>
+            <div class="line"></div>
+            <div class="cap">正在加载 · 商城</div>
+          </div>
+        </div>
+        <div class="capsule"><i></i><i></i></div>
+      </div>
+      <ul class="pros">
+        <li><b>最安静</b>：不抢注意力，切换时最不打扰</li>
+        <li>实现最轻，任何工作台都适用</li>
+        <li>代价：第一次用的用户可能不知道"在等什么"（没有文案解释慢的原因）</li>
+      </ul>
+    </div>
+    <div class="case-ft">适合：把加载态当"过渡"而不是"页面"，追求切换不打断</div>
+  </section>
+
+  <div class="foot-note">
+    <b>也可以组合：</b>首次打开用 <b>A（骨架）</b>，已经有缓存后再打开用 <b>D（极简）</b>——两次体验分开，
+    首次交代价换"知道在等什么"，回访几乎无感。<br>
+    落地方式（选定后我按这个接）：宿主 <code>Frame</code> 在 <code>PanelBoundary</code> 里判断"组件是否已画出内容"——
+    首帧没内容就先渲染所选加载态，组件出现真实 DOM 后淡出；同时在 <code>?rev</code> 未命中缓存时（首次）显示"首次加载"文案。
+  </div>
+</div>
+</body>
+</html>

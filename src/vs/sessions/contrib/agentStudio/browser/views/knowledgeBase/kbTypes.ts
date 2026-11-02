@@ -13,8 +13,8 @@ import { URI } from '../../../../../../base/common/uri.js';
 export type KbSection = 'library' | 'notes';
 
 export const KB_SECTION_LABEL: Record<KbSection, string> = {
-	library: '库',
-	notes: '笔记',
+	library: '数据源',
+	notes: '知识库列表',
 };
 
 /**

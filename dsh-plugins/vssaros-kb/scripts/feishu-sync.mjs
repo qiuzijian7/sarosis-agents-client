@@ -35,8 +35,8 @@ const SYS_FILES = new Set(['index.md', 'overview.md', 'insights.md', 'log.md', '
 /** 目录跳过（工具/配置目录）。 */
 const SKIP_DIRS = new Set(['.obsidian', '.workbuddy', '.trash', 'node_modules', '.git']);
 
-const INDEX_FILE = '.feishu-sync.json';
-const LOG_FILE = '.feishu-sync.log';
+const INDEX_FILE = '.kb/feishu-sync.json';
+const LOG_FILE = '.kb/feishu-sync.log';   // ★ 2026-11-02：日志收进 .kb/
 /**
  * 「本次报告」（`--plan-file`）逐篇条目的上限：超出只保留前 N 条 + 一行提示。
  * 报告是给 agent/用户**看计划与结果**用的，不该因为一个超大库变成几 MB。
@@ -90,7 +90,7 @@ function parseArgs(argv) {
 		else if (a === '--no-mindmap') { out.noMindmap = true; }
 		else if (a === '-h' || a === '--help') { out.help = true; }
 	}
-	if (out.src.length === 0) { out.src = ['库']; }
+	if (out.src.length === 0) { out.src = ['数据源']; }
 	if (!out.dryRun && !out.apply) { out.dryRun = true; } // 默认安全：不显式 --apply 一律 dry-run
 	return out;
 }
@@ -515,7 +515,7 @@ function updateMindmaps(args, idx, plan, spaces, logLines) {
 	for (const p of plan) {
 		const spaceId = p.targetSpace ?? '';
 		if (!spaceId || spaceId === 'my_library') { continue; }   // my_library 不是 wiki space
-		// 库内相对路径：`p.rel` 是**相对 vault** 的（如 `库/知识库/01-类别/笔记.md`），
+		// 库内相对路径：`p.rel` 是**相对 vault** 的（如 `数据源/知识库/01-类别/笔记.md`），
 		// 需依次剥掉 ①同步源根前缀（`p.src`）②类别目录前缀 —— 否则导图会多出
 		// 「库 / 知识库根 / 01-类别」这几层无意义嵌套（真机实测踩到）。
 		const relFromSrc = p.rel.startsWith(p.src + '/') ? p.rel.slice(p.src.length + 1) : p.rel;
@@ -631,7 +631,8 @@ export function loadIndex(vaultRoot) {
 }
 
 export function saveIndex(vaultRoot, idx) {
-	fs.writeFileSync(path.join(vaultRoot, INDEX_FILE), JSON.stringify({
+	fs.mkdirSync(path.join(vaultRoot, '.kb'), { recursive: true });   // ★ 同步索引在 .kb/ 下 ⇒ 写前建目录
+fs.writeFileSync(path.join(vaultRoot, INDEX_FILE), JSON.stringify({
 		version: INDEX_VERSION,
 		spaces: idx.spaces ?? {},
 		files: idx.files ?? {},
@@ -761,17 +762,17 @@ export function migrateIndexEntries(idx, plan) {
  */
 // ─── 用户自定义「本地目录 ↔ 飞书知识库」映射（2026-09-22）────────────────────
 // 由来：原先只有「类别层级」自动推导（第 N 级目录名 = 知识库名，未映射则自动建库）。
-// 现在支持用户显式指定：配置文件放在 vault 内（`<vault>/.feishu-space-map.json`），
+// 现在支持用户显式指定：配置文件放在 vault 内（`<vault>/.kb/space-map.json`），
 // 由设置面板编辑；**显式映射优先于**类别层级推导。
 // 为什么用文件而不是命令行参数：JSON 经 argv 传递在 Windows（shell:true）下会被引号破坏。
 
 /** 映射配置文件（相对 vault 根）。 */
-export const SPACE_MAP_FILE = '.feishu-space-map.json';
+export const SPACE_MAP_FILE = '.kb/space-map.json';
 
 /**
  * 读取用户映射表（宽容解析：文件不存在/损坏 ⇒ 返回空数组，不影响同步）。
- * 结构：`{ version: 1, mappings: [{ dir: '库/…/01-基础概念', spaceId: '769…', spaceName: '01-基础概念' }] }`
- * 兼容极简写法：`{ mappings: { '库/…/01-基础概念': '769…' } }`（目录 → spaceId）
+ * 结构：`{ version: 1, mappings: [{ dir: '数据源/…/01-基础概念', spaceId: '769…', spaceName: '01-基础概念' }] }`
+ * 兼容极简写法：`{ mappings: { '数据源/…/01-基础概念': '769…' } }`（目录 → spaceId）
  */
 export function loadSpaceMap(vaultRoot, fileName = SPACE_MAP_FILE) {
 	let raw = null;
@@ -1197,7 +1198,7 @@ function main() {
 	const spaces = idx.spaces;
 	const createdSpaces = [];
 	const unresolved = new Set();
-	// ── 用户自定义映射优先（vault 内 `.feishu-space-map.json`，由设置面板维护）──
+	// ── 用户自定义映射优先（vault 内 `.kb/space-map.json`，由设置面板维护）──
 	// 用户显式指定的「本地目录 → 飞书知识库」会**覆盖**类别层级推导结果。
 	// ⚠ 必须**最早**执行：后面的 `categories`（未映射类别）与「自动建库」都基于它改写后的 `p.category`，
 	//    否则映射目录会先被当成一个「新类别」而多建一个无用知识库（真机验证踩到）。

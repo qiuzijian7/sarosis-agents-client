@@ -19,18 +19,11 @@ window.__ModuleLoader__.load({
 		const react = require('react');
 
 		const SITE_PATH = '/x/media/';
-		const MEDIA_PRESET = 'vssaros-media-librarian';
 		const COLLAPSE_KEY = 'vssaros.media.convCollapsed';
 		const WIDTH_KEY = 'vssaros.media.convWidth';
 		const CONV_WIDTH = '380px';
 		const WB_ID = 'vssaros/media';
 
-		/**
-		 * `remote.agentPresets` 服务的模块级引用。
-		 * 为什么放模块级：`MediaPanel` 是注册给宿主的**模块级组件**，拿不到 `apply(ctx)` 的闭包，
-		 * 但它需要把当前会话的 agent 纠回「媒体库管家」（见组件里的 useEffect）。
-		 */
-		let PRESETS = null;
 
 		function savedWidth() {
 			try {
@@ -69,25 +62,6 @@ window.__ModuleLoader__.load({
 				};
 			}, []);
 
-		// ★ 2026-10-28（用户：「媒体库工作台中的 AI 助手内，应该显示 媒体库助手 agent」）：
-		//   现象是右侧对话列显示「商城助手」。根因：**商城插件也包了 dw.newSession**，而它的守卫是
-		//   「已被别人包过就放弃」⇒ 后装的我们永远包不上 ⇒ 新会话沿用别人的 agent preset。
-		//   这里两条一起做：
-		//     ① 记录「媒体库工作台是否在前台」（外壳 Frame 会给 customFrame 传 props.active）；
-		//     ② 前台时把**当前停靠会话**的 agent 纠回「媒体库管家」——这样已经存在的会话也能被修好。
-		react.useEffect(() => {
-			const active = props && props.active === true;
-			globalThis.__vssarosMediaActive = active;
-			if (!active) { return undefined; }
-			try {
-				const dw = globalThis.__vssarosMediaDw;
-				const sid = dw && typeof dw.dockedSessionOf === 'function' ? dw.dockedSessionOf(WB_ID) : '';
-				if (sid && PRESETS && typeof PRESETS.select === 'function') {
-					PRESETS.select(sid, MEDIA_PRESET);
-				}
-			} catch (e) { /* 纠正失败不影响面板 */ }
-			return () => { globalThis.__vssarosMediaActive = false; };
-		}, [props && props.active]);
 
 			const site = react.createElement('iframe', {
 				src: SITE_PATH,
@@ -177,46 +151,14 @@ window.__ModuleLoader__.load({
 		};
 
 		function apply(ctx) {
-			let presets = null;
-			try {
-				ctx.inject(['remote.agentPresets'], (scope) => {
-					presets = scope['remote.agentPresets'] || (scope.get && scope.get('remote.agentPresets')) || null;
-					// 面板（MediaPanel）是模块级函数，拿不到这个闭包 ⇒ 放模块级，供「纠回 agent」用
-					PRESETS = presets;
-				});
-			} catch (e) { /* 拿不到就只做面板，不改 preset */ }
-
 			try {
 				ctx.inject(['desktopWorkbenches'], (scope) => {
 					const dw = scope.desktopWorkbenches || (scope.get && scope.get('desktopWorkbenches'));
 					if (!dw || typeof dw.register !== 'function') { return; }
-					globalThis.__vssarosMediaDw = dw;
 					scope.effect(() => dw.register(DESCRIPTOR, MediaPanel), 'vssaros-media: workbench');
-
-					// ★ 新建会话默认绑「媒体库管家」（用户：agent 要是媒体库助手）。
-					//   ⚠ 2026-10-28 真机 bug：**商城插件也包了 `dw.newSession`**，而它的守卫是
-					//   「`dw.newSession !== origNewSession` ⇒ 放弃」⇒ 后装的我们**永远包不上**
-					//   ⇒ 会话沿用「商城助手」（截图现象）。所以这里**不再判断"是否已被包过"**：
-					//   总是把**当时**的 `dw.newSession` 链在后面，并只在**本工作台在前台**时才改 preset
-					//   （否则会把别的工作台的会话也带跑）。
-					const orig = typeof dw.newSession === 'function' ? dw.newSession : null;
-					if (!orig) { return; }
-					const patched = function (...args) {
-						const out = orig.apply(dw, args);
-						try {
-							Promise.resolve(out).then((sid) => {
-								if (!globalThis.__vssarosMediaActive) { return; }
-								if (!sid || !presets || typeof presets.select !== 'function') { return; }
-								try { presets.select(sid, MEDIA_PRESET); } catch (e) { /* ignore */ }
-							}).catch(() => { /* ignore */ });
-						} catch (e) { /* ignore */ }
-						return out;
-					};
-					scope.effect(() => {
-						// 链式包：`orig` 可能是别的插件包过的版本 ⇒ 沿用它、只在外层再套一层
-						dw.newSession = patched;
-						return () => { if (dw.newSession === patched) { dw.newSession = orig; } };
-					}, 'vssaros-media: newSession preset');
+					// ★ 2026-11-02 根治：不再包 dw.newSession、不再在面板里 select 媒体库管家 ——
+					//   默认 agent **只由宿主 vssaros-workbenches 设**（对照表 'vssaros/media' → vssaros-media-librarian），
+					//   且只改媒体库自己停靠的那条会话。媒体库 agent 文件仍由 Host 侧 lib/mediaAgent.js 写入（与之同 id）。
 				});
 			} catch (e) {
 				console.error('[vssaros-media] 注册工作台失败（页面仍可用）', e);

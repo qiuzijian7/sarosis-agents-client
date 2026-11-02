@@ -26,7 +26,7 @@ import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { renderNoteDiagrams } from './diagramRenderPipeline.js';
 
 const VAULT = URI.file(path.join('C:', 'tmp', 'vault'));
-const NOTE = URI.joinPath(VAULT, '笔记', '设计.md');
+const NOTE = URI.joinPath(VAULT, '知识库列表', '设计.md');
 
 const quietLog = { info() { }, warn() { }, error() { }, debug() { }, trace() { } };
 
@@ -119,7 +119,7 @@ suite('图表渲染编排（renderNoteDiagrams）', () => {
 		assert.strictEqual(r.rendered.length, 1);
 		assert.deepStrictEqual(r.rendered[0].kind, 'drawio');
 		assert.strictEqual(r.rendered[0].relPath, '设计.attachments/chart-1.png');
-		assert.ok(t.fs.relPaths().includes('笔记/设计.attachments/chart-1.png'), 'PNG 应落在笔记同级的附件目录');
+		assert.ok(t.fs.relPaths().includes('知识库列表/设计.attachments/chart-1.png'), 'PNG 应落在笔记同级的附件目录');
 
 		const note = t.fs.text(NOTE);
 		assert.ok(note.includes('![[设计.attachments/chart-1.png]]'), '应写入图片引用');
@@ -189,7 +189,7 @@ suite('图表渲染编排（renderNoteDiagrams）', () => {
 		const r = await t.run();
 		assert.strictEqual(r.changed, false);
 		assert.strictEqual(t.fs.writes, 0, '不应发生任何写操作');
-		assert.deepStrictEqual(t.fs.relPaths(), ['笔记/设计.md']);
+		assert.deepStrictEqual(t.fs.relPaths(), ['知识库列表/设计.md']);
 		assert.ok(r.message.includes('没有需要转换的图表'));
 	});
 

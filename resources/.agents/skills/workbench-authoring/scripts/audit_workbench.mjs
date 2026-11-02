@@ -31,7 +31,8 @@ const testFiles = walk(join(dir, 'test'));
 const rows = [
 	['S1 bundle patch（cordis.patch.yml + insert）', /-\s*insert:/.test(patch)],
 	['S2 清单 dsh.bundle.patch + files', !!(pkg.dsh?.bundle?.patch) && (pkg.files || []).includes('cordis.patch.yml')],
-	['S3 描述符带 repository', /repository:\s*['"]vssaros:[a-z0-9-]+['"]/.test(src)],
+	// 身份三选一（2026-11-02）：内置 `vssaros:<m>` / 公开 GitHub / 本地 `package: '@scope/name'`
+	['S3 描述符带身份（repository 或 package）', /repository:\s*['"](?:vssaros:[a-z0-9-]+|https:\/\/github\.com\/)/.test(src) || /\bpackage:\s*['"](?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*['"]/.test(src)],
 	['S4 入口不写 chunk:', !/^\s*chunk\s*:/m.test(entry)],
 	['S5 注册（*register(）', /(desktopWorkbenches|workbenches|dw|c)\s*\.\s*register\(/.test(src)],
 	[`S6 ≥10 个 wb-*（实际 ${wbClasses.size}）`, wbClasses.size >= 10],

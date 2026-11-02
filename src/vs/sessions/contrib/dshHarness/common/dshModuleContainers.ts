@@ -62,6 +62,10 @@ export type DshModuleId =
 	//   `marketplace` = 我们的自营商城（独立页面 `/x/marketplace/`）⇒ 两条数据源、两条能力，互不覆盖 ✓。
 	// 无 ActivityBar 图标：入口走工作台中间栏 / 命令（页面自带 route）。
 	| 'marketplace'
+	// 2026-11-02：无人值守循环（`@vssaros/dsh-loop`）—— **注册式工作台**（无页面路由）。
+	// 与 ide / channels / pele / web-content-import 同形态：在 DSH_BUILTIN_MODULES、不在容器表、
+	// 清单 `view.kind='none'`；它的界面由 `desktopWorkbenches.register()` 渲染。
+	| 'loop'
 	// 2026-10-31（用户要求「移除并行工作台」）：`'parallel'` 联合体成员已删除（原本
 	//   `@vssaros/dsh-parallel` 的并行 TUI 工作台，2026-10-22 加的）；下面四张表里的登记同步删掉
 	//   （联合体 / 内置模块表 / 容器表 / 页面表）—— 漏一处就是"入口还在但点不开"✗。
@@ -126,6 +130,10 @@ export const DSH_BUILTIN_MODULES: readonly IDshBuiltinModule[] = [
 	// 凭据与审批只有一份真源）+ 聊天框里的生图工具卡（官方 `tool.call.images` 画廊）。
 	// 无图标模块形态（view.kind='none'）：画布工作台那页落地（P2）后才给活动栏一格。
 	{ module: 'imagegen', pluginName: '@vssaros/dsh-imagegen', summary: '图像生成（生图工具 + 对话内出图；执行经控制桥回 IDE）' },
+	// 2026-11-02：无人值守循环（`@vssaros/dsh-loop`）。**注册式工作台**（`desktopWorkbenches.register`，
+	// 宿主直接渲染 React）+ `/x/loop/api/*` 编排接口 ⇒ 没有页面路由 ⇒ 无图标模块形态
+	// （在 DSH_BUILTIN_MODULES、不在容器表、清单 view.kind='none'）。入口走工作台切换菜单。
+	{ module: 'loop', pluginName: '@vssaros/dsh-loop', summary: '无人值守循环（采集→挑单→执行 + 账本/重试/熔断；注册式工作台，无独立页面）' },
 	// 2026-10-21：工作台商城（无 ActivityBar 图标；界面在 chat-surface 的设置面板里）。
 	{ module: 'market', pluginName: '@vssaros/dsh-market', summary: '工作台商城：读 dsh 公开市场目录（协议 v2）+ Host 侧安装路由（无 ActivityBar 图标）' },
 	// 2026-10-22：**自营商城工作台**（agent / skill / 工作台 / 工作流 四类商品）。

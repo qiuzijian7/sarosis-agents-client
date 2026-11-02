@@ -168,7 +168,7 @@ suite('_cacheEntryFresh（缓存新鲜度：素材改过后必须能重建）', 
 	test('笔记不比素材旧 ⇒ 新鲜（命中缓存）', async () => {
 		const fs = createFs({
 			'/vault/库/raw/a.md': { content: '素材', mtime: 100 },
-			'/vault/笔记/n.md': { content: '笔记', mtime: 200 },
+			'/vault/笔记/n.md': { content: '知识库列表', mtime: 200 },
 		});
 		const fresh = await (KbImportController as any)._cacheEntryFresh(fs.service, URI.file('/vault/库/raw/a.md'), fp('/vault/笔记/n.md'));
 		assert.strictEqual(fresh, true);
@@ -177,7 +177,7 @@ suite('_cacheEntryFresh（缓存新鲜度：素材改过后必须能重建）', 
 	test('素材比笔记新（构建后又被改过）⇒ 不新鲜（要重建）', async () => {
 		const fs = createFs({
 			'/vault/库/raw/a.md': { content: '素材', mtime: 300 },
-			'/vault/笔记/n.md': { content: '笔记', mtime: 200 },
+			'/vault/笔记/n.md': { content: '知识库列表', mtime: 200 },
 		});
 		const fresh = await (KbImportController as any)._cacheEntryFresh(fs.service, URI.file('/vault/库/raw/a.md'), fp('/vault/笔记/n.md'));
 		assert.strictEqual(fresh, false);
@@ -200,7 +200,7 @@ suite('_collectPendingSources（pending 判定）', () => {
 			[fp('/vault/库/raw/某素材.md')]: fp('/vault/库/概念/产出.md'),           // 值 ⇒ 「产出.md」是笔记不是素材
 		};
 		const fs = createFs({
-			'/vault/.kb-build-cache.json': JSON.stringify(cache),
+			'/vault/.kb/build-cache.json': JSON.stringify(cache),
 			'/vault/库/raw/新鲜.md': { content: 'a', mtime: 100 },
 			'/vault/笔记/已有/新鲜笔记.md': { content: 'n', mtime: 200 },
 			'/vault/库/raw/改过了.md': { content: 'b', mtime: 300 },
@@ -228,13 +228,13 @@ suite('_parseReorgPlan（KB_REORG 计划解析与安全校验）', () => {
 	test('合法计划 ⇒ 解析出 move（含相对路径）', async () => {
 		const fs = createFs({ '/vault/笔记/a.md': 'x' });
 		const plan = await (KbImportController as any)._parseReorgPlan(
-			'前言…\n<!-- KB_REORG\n{"reason":"归位","moves":[{"from":"笔记/a.md","to":"笔记/01_学习/b.md"}]}\n-->\n后记',
+			'前言…\n<!-- KB_REORG\n{"reason":"归位","moves":[{"from":"知识库列表/a.md","to":"知识库列表/01_学习/b.md"}]}\n-->\n后记',
 			VAULT_URI, NOTES_URI, fs.service, quietLog,
 		);
 		assert.strictEqual(plan.reason, '归位');
 		assert.strictEqual(plan.moves.length, 1);
-		assert.strictEqual(plan.moves[0].fromRel, '笔记/a.md');
-		assert.strictEqual(plan.moves[0].toRel, '笔记/01_学习/b.md');
+		assert.strictEqual(plan.moves[0].fromRel, '知识库列表/a.md');
+		assert.strictEqual(plan.moves[0].toRel, '知识库列表/01_学习/b.md');
 	});
 
 	test('无块 / JSON 坏 / moves 非数组 ⇒ 空计划（不抛错）', async () => {
@@ -249,11 +249,11 @@ suite('_parseReorgPlan（KB_REORG 计划解析与安全校验）', () => {
 		const fs = createFs({ '/vault/笔记/a.md': 'x', '/vault/笔记/已有.md': 'y', '/vault/库/raw/x.md': 'z' });
 		const plan = await (KbImportController as any)._parseReorgPlan(
 			'<!-- KB_REORG {"moves":['
-			+ '{"from":"库/raw/x.md","to":"笔记/偷渡.md"},'            // 越出笔记区
-			+ '{"from":"笔记/a.md","to":"笔记/已有.md"},'              // to 已存在
-			+ '{"from":"笔记/a.md","to":"笔记/../库/穿越.md"},'        // `..`
-			+ '{"from":"笔记/a.md","to":"笔记/a.md"},'                // from===to
-			+ '{"from":"笔记/不存在.md","to":"笔记/某处.md"}'          // from 不存在
+			+ '{"from":"数据源/raw/x.md","to":"知识库列表/偷渡.md"},'            // 越出笔记区
+			+ '{"from":"知识库列表/a.md","to":"知识库列表/已有.md"},'              // to 已存在
+			+ '{"from":"知识库列表/a.md","to":"知识库列表/../库/穿越.md"},'        // `..`
+			+ '{"from":"知识库列表/a.md","to":"知识库列表/a.md"},'                // from===to
+			+ '{"from":"知识库列表/不存在.md","to":"知识库列表/某处.md"}'          // from 不存在
 			+ ']} -->',
 			VAULT_URI, NOTES_URI, fs.service, quietLog,
 		);
@@ -263,7 +263,7 @@ suite('_parseReorgPlan（KB_REORG 计划解析与安全校验）', () => {
 	test('超过 50 条 ⇒ 截断到上限', async () => {
 		const seed: Record<string, string> = {};
 		const moves = [];
-		for (let i = 0; i < 60; i++) { seed[`/vault/笔记/f${i}.md`] = 'x'; moves.push({ from: `笔记/f${i}.md`, to: `笔记/sub/f${i}.md` }); }
+		for (let i = 0; i < 60; i++) { seed[`/vault/笔记/f${i}.md`] = 'x'; moves.push({ from: `知识库列表/f${i}.md`, to: `知识库列表/sub/f${i}.md` }); }
 		const fs = createFs(seed);
 		const plan = await (KbImportController as any)._parseReorgPlan(
 			`<!-- KB_REORG {"moves":${JSON.stringify(moves)}} -->`, VAULT_URI, NOTES_URI, fs.service, quietLog,
@@ -278,7 +278,7 @@ suite('buildPendingAsAgentSession（agent 自主读写：集成）', () => {
 		'/vault/库/raw/UI优化篇.md': { content: '# UI优化篇 素材原文', mtime: 100 },
 		'/vault/库/raw/已构建.md': { content: '# 已构建素材', mtime: 50 },
 		'/vault/笔记/已有/已构建笔记.md': { content: '---\ntitle: 已构建笔记\n---\n', mtime: 200 },
-		'/vault/.kb-build-cache.json': JSON.stringify({ [fp('/vault/库/raw/已构建.md')]: fp('/vault/笔记/已有/已构建笔记.md') }),
+		'/vault/.kb/build-cache.json': JSON.stringify({ [fp('/vault/库/raw/已构建.md')]: fp('/vault/笔记/已有/已构建笔记.md') }),
 	});
 
 	test('完整流程：会话创建 + 两阶段消息（挂技能）+ 产出归集 + 缓存回填 + 通知', async () => {
@@ -319,8 +319,8 @@ suite('buildPendingAsAgentSession（agent 自主读写：集成）', () => {
 		const p1 = chat.calls[0].message;
 		assert.ok(p1.includes('素材清单'), 'Phase 1 有素材清单');
 		assert.ok(p1.includes('UI优化篇.md'), '清单里有素材文件名');
-		// sources 引用的实际形态：`库/raw/ui优化篇.md`（_relativeFromLib：带「库/」前缀、小写；normalizeSourceRef 会再归一）
-		assert.ok(p1.toLowerCase().includes('库/raw/ui优化篇.md'), '清单里带 sources 相对引用');
+		// sources 引用的实际形态：`数据源/raw/ui优化篇.md`（_relativeFromLib：带「库/」前缀、小写；normalizeSourceRef 会再归一）
+		assert.ok(p1.toLowerCase().includes('数据源/raw/ui优化篇.md'), '清单里带 sources 相对引用');
 		assert.ok(p1.includes('笔记区现有目录树'), '带目录树快照');
 		assert.ok(!p1.includes('Schema 类型定义'), '规则不再塞消息里（已移进技能）');
 
@@ -335,7 +335,7 @@ suite('buildPendingAsAgentSession（agent 自主读写：集成）', () => {
 		assert.strictEqual(res.usedFallback, false);
 
 		// ⑥ 缓存回填：按新笔记 frontmatter 的 sources 反查来源
-		const cacheText = fs.content('/vault/.kb-build-cache.json')!;
+		const cacheText = fs.content('/vault/.kb/build-cache.json')!;
 		const cache = JSON.parse(cacheText) as Record<string, string>;
 		assert.ok(cache[fp('/vault/库/raw/UI优化篇.md')]?.endsWith('UI优化技巧.md'), '素材 → 笔记映射写入缓存');
 
@@ -354,7 +354,7 @@ suite('buildPendingAsAgentSession（agent 自主读写：集成）', () => {
 		const fs = createFs({
 			'/vault/库/raw/已构建.md': { content: 'x', mtime: 50 },
 			'/vault/笔记/n.md': { content: 'n', mtime: 200 },
-			'/vault/.kb-build-cache.json': JSON.stringify({ [fp('/vault/库/raw/已构建.md')]: fp('/vault/笔记/n.md') }),
+			'/vault/.kb/build-cache.json': JSON.stringify({ [fp('/vault/库/raw/已构建.md')]: fp('/vault/笔记/n.md') }),
 		});
 		const chat = createChatMock(fs);
 		const { controller, notices } = createController(fs, { chat: chat.svc });

@@ -158,13 +158,13 @@ suite('AgentStudio - KbImportController 确定性导航/源追溯/洞察', () =>
 	});
 
 	test('parseNoteSources 块序列 sources → 归一化 basename', () => {
-		const md = '---\nsources:\n  - "库/LibA.md"\n  - [[库/LibB.md]]\n---\n正文';
+		const md = '---\nsources:\n  - "数据源/LibA.md"\n  - [[库/LibB.md]]\n---\n正文';
 		const r = KbImportController.parseNoteSources(md);
 		assert.deepStrictEqual(r.sort(), ['liba.md', 'libb.md']);
 	});
 
 	test('parseNoteSources 流列表 sources → 归一化 basename', () => {
-		const md = '---\nsources: ["库/LibA.md", "[[库/LibB.md]]"]\n---\n正文';
+		const md = '---\nsources: ["数据源/LibA.md", "[[库/LibB.md]]"]\n---\n正文';
 		const r = KbImportController.parseNoteSources(md);
 		assert.deepStrictEqual(r.sort(), ['liba.md', 'libb.md']);
 	});
@@ -375,7 +375,7 @@ suite('AgentStudio - KbImportController 确定性导航/源追溯/洞察', () =>
 
 		const ctrl = makeCtrl(fs);
 		const content = 'GC卡顿诊断报告 GR 自旋等待分析 机制 原理';
-		const r = await ctrl._computeTargetCategory(content, URI.joinPath(root, '库'), root);
+		const r = await ctrl._computeTargetCategory(content, URI.joinPath(root, '数据源'), root);
 		// 命中概念类型下的 GR 子目录 → 复用
 		assert.strictEqual(r.category, '概念/GR', '命中 schema 类型目录下的子目录应复用');
 		assert.strictEqual(r.type, '概念', 'type 应为概念');
@@ -393,7 +393,7 @@ suite('AgentStudio - KbImportController 确定性导航/源追溯/洞察', () =>
 		const ctrl = makeCtrl(fs);
 		// 内容包含 GR 关键词 + 概念关键词
 		const content = 'GC卡顿诊断报告 机制 原理分析';
-		const r = await ctrl._computeTargetCategory(content, URI.joinPath(root, '库'), root);
+		const r = await ctrl._computeTargetCategory(content, URI.joinPath(root, '数据源'), root);
 		// 关键断言：01_学习 不是 schema 类型，不应被复用
 		assert.ok(!r.category.startsWith('01_学习'), '用户目录 01_学习 不应被复用为分类');
 		// 测试环境无 LLM → 安全降级默认类型（不再用关键词猜 schema 类型）
@@ -407,7 +407,7 @@ suite('AgentStudio - KbImportController 确定性导航/源追溯/洞察', () =>
 		// 空 notesDir，无候选；测试环境无 LLM → 安全降级
 		const ctrl = makeCtrl(fs);
 		const content = 'GC垃圾回收机制原理分析\n详细内容...';
-		const r = await ctrl._computeTargetCategory(content, URI.joinPath(root, '库'), root);
+		const r = await ctrl._computeTargetCategory(content, URI.joinPath(root, '数据源'), root);
 		assert.strictEqual(r.category, '杂记/未分类', '无 LLM 时应降级为 默认类型/未分类');
 		assert.strictEqual(r.type, '杂记', 'type 应为 schema 默认类型 misc 的目录');
 		assert.strictEqual(r.topic, '未分类', '无 LLM 时 topic 应为未分类（不再从内容行派生）');
@@ -420,7 +420,7 @@ suite('AgentStudio - KbImportController 确定性导航/源追溯/洞察', () =>
 		const root = notesRoot();
 		const ctrl = makeCtrl(fs);
 		const content = '如何优化React性能 - 最佳实践指南';
-		const r = await ctrl._computeTargetCategory(content, URI.joinPath(root, '库'), root);
+		const r = await ctrl._computeTargetCategory(content, URI.joinPath(root, '数据源'), root);
 		// 测试环境无 LLM → 安全降级默认类型
 		assert.strictEqual(r.classifyResult.typeId, 'misc', '无 LLM 时应降级为 misc');
 		assert.strictEqual(r.classifyResult.typeLabel, '杂记');
@@ -648,7 +648,7 @@ suite('AgentStudio - KbImportController GC HTML 导入（分类归档/结构抽�
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	const vault = () => URI.file('/vault');
-	const notesDirOf = () => URI.joinPath(vault(), '笔记');
+	const notesDirOf = () => URI.joinPath(vault(), '知识库列表');
 	const GC_FIXTURE = nodePath.join(process.cwd(),
 		'src/vs/sessions/contrib/agentStudio/test/browser/fixtures/GC_Mechanism_Diagram.html');
 	const loadGcHtml = (): string => {
@@ -795,7 +795,7 @@ suite('AgentStudio - KbImportController GC HTML 导入（分类归档/结构抽�
 		assert.strictEqual(await ctrl.handleFavoriteMessage(html, null, vault()), true);
 		const libPath = fs.listFiles('/库/raw/').filter(k => k.endsWith('.md'))[0];
 		const libPathDec = decodeURIComponent(libPath);
-		const libRel = libPathDec.substring(libPathDec.indexOf('/库/') + 1); // '库/raw/UE5垃圾回收机制-<date>.md'
+		const libRel = libPathDec.substring(libPathDec.indexOf('/库/') + 1); // '数据源/raw/UE5垃圾回收机制-<date>.md'
 
 		// 构建 LLM：stage1（系统提示含「架构师」）返回规划文本；stage2 返回 FILE 块
 		// FILE 块路径相对库根、必须带 schema 类型目录前缀（与 buildFileBlockPrompt 契约一致）
@@ -833,7 +833,7 @@ suite('AgentStudio - KbImportController GC HTML 导入（分类归档/结构抽�
 
 		// ★ 2026-09-23 语义变更：产物落**笔记区**（库 = 数据源层）。
 		// 模型给的 `概念/…` 目录仍被尊重（目录决定权归 LLM）⇒ 依旧归类在 概念/ 下
-		const expectedNoteUri = URI.joinPath(vault(), '笔记', '概念', 'UE5垃圾回收机制', 'UE5垃圾回收机制.md');
+		const expectedNoteUri = URI.joinPath(vault(), '知识库列表', '概念', 'UE5垃圾回收机制', 'UE5垃圾回收机制.md');
 		const note = fs.contentOf(expectedNoteUri);
 		assert.ok(note, '笔记应写入 笔记/概念/UE5垃圾回收机制/UE5垃圾回收机制.md');
 		assert.ok(note!.includes('# UE5 垃圾回收机制'), '笔记应含标题');
@@ -847,7 +847,7 @@ suite('AgentStudio - KbImportController GC HTML 导入（分类归档/结构抽�
 		const html = loadGcHtml();
 
 		// 直接放置带分类 frontmatter 的库文件（跳过入库阶段）
-		const libUri = URI.joinPath(vault(), '库', '概念', 'UE5垃圾回收机制', '2026-07-28_test01.md');
+		const libUri = URI.joinPath(vault(), '数据源', '概念', 'UE5垃圾回收机制', '2026-07-28_test01.md');
 		fs.addFile(libUri, [
 			'---', 'type: 概念', 'topic: UE5垃圾回收机制', 'date: 2026-07-28',
 			'source: test', 'hash: abc123', 'tags: []', '---', '', html,
@@ -873,7 +873,7 @@ suite('AgentStudio - KbImportController GC HTML 导入（分类归档/结构抽�
 
 		// ★ 2026-09-23：兜底锚点也改成**笔记区根**（产出的是笔记，不该落回素材目录）；
 		//   名字仍取库文件 frontmatter 推导出的 topic，且 salvage 不加类型目录前缀。
-		const expectedNoteUri = URI.joinPath(vault(), '笔记', 'UE5垃圾回收机制.md');
+		const expectedNoteUri = URI.joinPath(vault(), '知识库列表', 'UE5垃圾回收机制.md');
 		const note = fs.contentOf(expectedNoteUri);
 		assert.ok(note, '兜底笔记应落在 笔记/UE5垃圾回收机制.md（topic 取库文件 frontmatter）');
 		assert.ok(note!.includes('title: UE5垃圾回收机制'), '兜底笔记 frontmatter 应含库分类 topic');
@@ -921,7 +921,7 @@ suite('AgentStudio - KbImportController GC HTML 导入（分类归档/结构抽�
 		assert.ok(notePath, '兜底应产出笔记而非失败');
 
 		// ★ 2026-09-23：兜底落**笔记区根**（不再是源文件旁）；raw 路径推导不出分类 ⇒ 未分类
-		const expectedNoteUri = URI.joinPath(vault(), '笔记', '未分类.md');
+		const expectedNoteUri = URI.joinPath(vault(), '知识库列表', '未分类.md');
 		const note = fs.contentOf(expectedNoteUri);
 		assert.ok(note, '兜底笔记应落在 笔记/未分类.md（raw 无分类上下文 → 未分类）');
 		assert.ok(note!.includes('title: 未分类'), '兜底笔记 frontmatter 应含路径推导出的 topic=未分类');
@@ -940,7 +940,7 @@ suite('AgentStudio - KbImportController P0-1 去抽象化门控', () => {
 
 	test('单一概念仅 1 个来源 → status: pending', async () => {
 		const fs = new MockFileService();
-		fs.addFile(URI.joinPath(lib(), '概念', 'GC', 'GC.md'), conceptNote('concept', 'GC 机制', ['库/LibA.md']));
+		fs.addFile(URI.joinPath(lib(), '概念', 'GC', 'GC.md'), conceptNote('concept', 'GC 机制', ['数据源/LibA.md']));
 		const r = await KbImportController.applyDeabstractionGating(fs, lib());
 		assert.strictEqual(r.pending, 1);
 		assert.strictEqual(r.active, 0);
@@ -951,8 +951,8 @@ suite('AgentStudio - KbImportController P0-1 去抽象化门控', () => {
 	test('同名概念被 ≥2 个不同来源确认 → status: active（跨文件）', async () => {
 		const fs = new MockFileService();
 		// 两次导入产生同名概念的两个文件，各自引用不同库文件（标题含/不含空格均归一匹配）
-		fs.addFile(URI.joinPath(lib(), '概念', 'GC', 'GC-a.md'), conceptNote('concept', 'GC 机制', ['库/LibA.md']));
-		fs.addFile(URI.joinPath(lib(), '概念', 'GC', 'GC-b.md'), conceptNote('concept', 'GC机制', ['库/LibB.md']));
+		fs.addFile(URI.joinPath(lib(), '概念', 'GC', 'GC-a.md'), conceptNote('concept', 'GC 机制', ['数据源/LibA.md']));
+		fs.addFile(URI.joinPath(lib(), '概念', 'GC', 'GC-b.md'), conceptNote('concept', 'GC机制', ['数据源/LibB.md']));
 		const r = await KbImportController.applyDeabstractionGating(fs, lib());
 		assert.strictEqual(r.active, 2);
 		assert.strictEqual(r.pending, 0);
@@ -977,8 +977,8 @@ suite('AgentStudio - KbImportController P0-1 去抽象化门控', () => {
 		// 在 kbDir（库/ 的父目录）放 aliases.json：canonical「垃圾回收」含同义词「GC机制」
 		fs.addFile(URI.joinPath(URI.file('/vault'), 'aliases.json'),
 			JSON.stringify({ aliases: { '垃圾回收': ['GC机制', 'GC', 'GarbageCollection'] } }));
-		fs.addFile(URI.joinPath(lib(), '概念', 'GC', 'a.md'), conceptNote('concept', 'GC 机制', ['库/LibA.md']));
-		fs.addFile(URI.joinPath(lib(), '概念', 'GC', 'b.md'), conceptNote('concept', '垃圾回收', ['库/LibB.md']));
+		fs.addFile(URI.joinPath(lib(), '概念', 'GC', 'a.md'), conceptNote('concept', 'GC 机制', ['数据源/LibA.md']));
+		fs.addFile(URI.joinPath(lib(), '概念', 'GC', 'b.md'), conceptNote('concept', '垃圾回收', ['数据源/LibB.md']));
 		const r = await KbImportController.applyDeabstractionGating(fs, lib());
 		assert.strictEqual(r.active, 2, '同义归一后两文件应视为同一概念且来源≥2 → active');
 		assert.strictEqual(r.pending, 0);
@@ -989,8 +989,8 @@ suite('AgentStudio - KbImportController P0-1 去抽象化门控', () => {
 
 	test('P1 同义归一：缺 aliases.json 时安全降级（各按自身标题归并，互不同源）', async () => {
 		const fs = new MockFileService();
-		fs.addFile(URI.joinPath(lib(), '概念', 'GC', 'a.md'), conceptNote('concept', 'GC 机制', ['库/LibA.md']));
-		fs.addFile(URI.joinPath(lib(), '概念', 'GC', 'b.md'), conceptNote('concept', '垃圾回收', ['库/LibB.md']));
+		fs.addFile(URI.joinPath(lib(), '概念', 'GC', 'a.md'), conceptNote('concept', 'GC 机制', ['数据源/LibA.md']));
+		fs.addFile(URI.joinPath(lib(), '概念', 'GC', 'b.md'), conceptNote('concept', '垃圾回收', ['数据源/LibB.md']));
 		const r = await KbImportController.applyDeabstractionGating(fs, lib());
 		assert.strictEqual(r.pending, 2, '无 aliases 时两标题不归一 → 各仅 1 来源 → pending');
 		assert.strictEqual(r.active, 0);

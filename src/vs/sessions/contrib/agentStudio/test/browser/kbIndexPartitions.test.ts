@@ -62,18 +62,18 @@ suite('KB 索引：库 + 笔记两个分区都必须进索引（防「链接全�
 	test('build 递归覆盖 库/笔记（含子目录）⇒ 文件名表可支撑 wikilink 解析', async () => {
 		const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-index-'));
 		try {
-			fs.mkdirSync(path.join(vault, '库'), { recursive: true });
-			fs.mkdirSync(path.join(vault, '笔记', '01_学习', 'AI_Agent'), { recursive: true });
-			fs.writeFileSync(path.join(vault, '库', 'index.md'), '# index\n\n[[01 智能体是什么]]\n');
-			fs.writeFileSync(path.join(vault, '笔记', '01_学习', 'AI_Agent', '01 智能体是什么.md'), '# 甲\n');
-			fs.writeFileSync(path.join(vault, '笔记', '01_学习', 'AI_Agent', '02 智能体发展史.md'), '# 乙\n');
+			fs.mkdirSync(path.join(vault, '数据源'), { recursive: true });
+			fs.mkdirSync(path.join(vault, '知识库列表', '01_学习', 'AI_Agent'), { recursive: true });
+			fs.writeFileSync(path.join(vault, '数据源', 'index.md'), '# index\n\n[[01 智能体是什么]]\n');
+			fs.writeFileSync(path.join(vault, '知识库列表', '01_学习', 'AI_Agent', '01 智能体是什么.md'), '# 甲\n');
+			fs.writeFileSync(path.join(vault, '知识库列表', '01_学习', 'AI_Agent', '02 智能体发展史.md'), '# 乙\n');
 
 			const idx = new KbFullTextIndex(makeFs());
 			await idx.build([
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				{ uri: URI.file(path.join(vault, '库')), section: 'library' as any },
+				{ uri: URI.file(path.join(vault, '数据源')), section: 'library' as any },
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				{ uri: URI.file(path.join(vault, '笔记')), section: 'notes' as any },
+				{ uri: URI.file(path.join(vault, '知识库列表')), section: 'notes' as any },
 			]);
 
 			const docs = idx.allDocs();

@@ -544,7 +544,12 @@ async function disposeAllPresets(state) {
  * 不是"本轮做了什么"的日志；只在注册时才记的话，页面第二次请求就空了（实测踩过）。
  */
 async function syncPresets(state, presets, config) {
+	// ★ 2026-11-02 启动计时探针（只记录，不改行为）：拆 syncPresets 内部各段耗时。
+	const syncT0 = Date.now();
+	const mark = (label) => console.log(`[vssaros-agents] 计时 syncPresets ${label}：+${Date.now() - syncT0}ms（进程启动后 ${Math.round(process.uptime() * 1000)}ms）`);
+	mark('开始');
 	const scan = await scanAgentsFromConfig(config, undefined);
+	mark(`扫描完成（${scan.agents.length} 个 agent）`);
 	const provider = typeof config.defaultProvider === 'string' ? config.defaultProvider.trim() : '';
 	const errors = [...scan.errors];
 	const diagnostics = [];
@@ -595,7 +600,18 @@ async function syncPresets(state, presets, config) {
 	 * @param record 是否写诊断（只有最后一轮记，免得同一个 agent 记两条）
 	 * @param only 只处理这些 key（`undefined` = 全部）。第一阶段用它把影响面收窄到"新增的 preset"。
 	 */
-	const applyDesired = async (allowedAgentPresets, record, only) => {
+	const applyDesired = async (allowedAgentPresets, record, only, phase = '?') => {
+		// ★ 2026-11-02 启动计时探针（只记录，不改行为）：拆清楚 dsh 侧 `register` / `dispose` 的真实耗时。
+		//   为什么需要：主进程日志里 Host 行的时间戳是 supervisor **每 400ms 轮询** host 日志时打的
+		//   （dshHostSupervisor `setInterval(…, 400)`）⇒ 相邻 persona 恰好隔 400/414ms 是量化假象，
+		//   既不能证明也不能否定上面"每个 preset 挂载约 0.4s"的说法。这里用 Host 进程内的
+		//   `Date.now()` 直接计时 ⇒ 不受轮询影响。
+		const phaseT0 = Date.now();
+		let regCount = 0;
+		let regMs = 0;
+		let dispCount = 0;
+		let dispMs = 0;
+		const uptimeMs = () => Math.round(process.uptime() * 1000);
 		for (const { key, agent, definition, notes } of buildDesired(allowedAgentPresets)) {
 			if (only && !only.has(key)) {
 				continue;
@@ -611,26 +627,44 @@ async function syncPresets(state, presets, config) {
 			}
 			if (existing) {
 				// 定义变了：先撤旧的再注册（`register` 对重名会失败，不能直接覆盖）
+				const disposeT0 = Date.now();
 				try {
 					await existing.dispose();
 				} catch (e) {
 					errors.push(`撤销旧定义失败（${key}）：${String(e?.message ?? e)}`);
 				}
+				const disposeTook = Date.now() - disposeT0;
+				dispCount++;
+				dispMs += disposeTook;
+				console.log(`[vssaros-agents] dispose ${existing.presetId} 用时 ${disposeTook}ms（${phase}；进程启动后 ${uptimeMs()}ms）`);
 				state.registered.delete(key);
 			}
+			const registerT0 = Date.now();
 			try {
 				const dispose = await presets.register(definition);
+				const registerTook = Date.now() - registerT0;
+				regCount++;
+				regMs += registerTook;
+				console.log(`[vssaros-agents] register ${definition.id} 用时 ${registerTook}ms（${phase}；进程启动后 ${uptimeMs()}ms）`);
 				state.registered.set(key, { presetId: definition.id, fingerprint, dispose });
 				if (record) {
 					diagnostics.push({ agentId: agent.id, presetId: definition.id, rows: definition.plugins.length, notes, changed: true });
 				}
 			} catch (e) {
+				const registerTook = Date.now() - registerT0;
+				regCount++;
+				regMs += registerTook;
+				console.log(`[vssaros-agents] register ${definition.id} 失败，用时 ${registerTook}ms（${phase}；进程启动后 ${uptimeMs()}ms）`);
 				// 注册失败要看得见（dsh 侧自己的花名册也会留一条带诊断的失败行，但那是它的口径）
 				errors.push(`注册 preset 失败（${definition.id}）：${String(e?.message ?? e)}`);
 				if (record) {
 					diagnostics.push({ agentId: agent.id, presetId: definition.id, rows: definition.plugins.length, notes: [...notes, '注册失败'], changed: true });
 				}
 			}
+		}
+		if (regCount || dispCount) {
+			console.log(`[vssaros-agents] applyDesired(${phase}) 合计 ${Date.now() - phaseT0}ms：`
+				+ `register ×${regCount} = ${regMs}ms，dispose ×${dispCount} = ${dispMs}ms（进程启动后 ${uptimeMs()}ms）`);
 		}
 	};
 
@@ -664,6 +698,7 @@ async function syncPresets(state, presets, config) {
 	const lazyRequested = config?.presetMode !== 'eager' && process.env.VSSAROS_DSH_PRESET_MODE !== 'off';
 	const lazyMode = lazyRequested && !state.lazyFilled;
 	const recentPresets = lazyMode ? await recentSessionPresetIds(config, { limit: 8 }) : [];
+	mark(`定义构造 + 最近会话读取完成（wanted ${wantedKeys.length}，missing ${missingKeys.length}，recent ${recentPresets.length}）`);
 	const eagerKeys = lazyMode
 		? pickLazyEagerKeys(wantedKeys, { delegatable: delegatablePresetIds, recent: recentPresets, max: LAZY_EAGER_MAX })
 		: undefined;
@@ -674,7 +709,7 @@ async function syncPresets(state, presets, config) {
 		// ★ 2026-10-29：第一阶段**只注册会被清单引用的**（可委派的）。原来把全部缺失 key 都先注册一遍，
 		//   第二阶段带清单时指纹变了又全部撤掉重注册 ⇒ 每个 preset 注册两次（eager 实测 59 次 ≈ 30×2）。
 		//   不可委派的 preset 不在任何清单里，第二阶段注册一次就够。
-		await applyDesired(null, false, new Set(gate(missingKeys).filter(isDelegatableKey)));
+		await applyDesired(null, false, new Set(gate(missingKeys).filter(isDelegatableKey)), lazyMode ? 'phase1/lazy' : 'phase1');
 	}
 	const okPresetIds = [...state.registered.entries()]
 		.filter(([key]) => !key.endsWith('::assign') && shownIds.has(key))
@@ -687,8 +722,9 @@ async function syncPresets(state, presets, config) {
 	//   代价：这 5 个 agent 在补齐（15s）之前不能派生子代理；其余 agent 不受影响（它们的清单引用的是
 	//   这 5 个，引用已就位 ⇒ 仍可立即派生子代理）✓。
 	const phase2Only = lazyMode ? new Set([...eagerKeys].filter((key) => !isDelegatableKey(key))) : eagerKeys;
-	await applyDesired(okPresetIds, true, phase2Only);
+	await applyDesired(okPresetIds, true, phase2Only, lazyMode ? 'phase2/lazy' : (state.lazyFilled ? 'phase2/fill' : 'phase2'));
 	state.subagentListSig = okPresetIds.join('|');
+	mark('两阶段注册完成');
 	if (lazyMode) {
 		scheduleLazyFill(state, config, wantedKeys.length);
 	}
@@ -712,6 +748,7 @@ async function syncPresets(state, presets, config) {
 	} catch (e) {
 		errors.push(`读取花名册失败：${String(e?.message ?? e)}`);
 	}
+	mark('结束（含撤销消失的 preset + 读花名册）');
 	state.diagnostics = diagnostics;
 	state.errors = errors;
 	return scan;
@@ -1139,7 +1176,11 @@ function applyTopLevel(ctx, config) {
 		return undefined;
 	});
 
+	// ★ 2026-11-02 启动计时探针（只记录）：apply 到 agentPresets 服务就绪之间等了多久。
+	//   实测 kb apply（2.8s）→ 第一次 register（5.9s）之间有 ~3.1s 未归因；这一行判"是不是在等服务"。
+	const agentsApplyAt = Math.round(process.uptime() * 1000);
 	ctx.inject(['agentPresets'], child => child.effect(() => {
+		console.log(`[vssaros-agents] 计时 agentPresets 就绪（进程启动后 ${Math.round(process.uptime() * 1000)}ms；apply 于 ${agentsApplyAt}ms）`);
 		state.presets = child.agentPresets; // ← 回调内取服务对象（子 ctx 事后就 inactive 了）
 		// 注册是异步的（`register` 返回 Promise<disposer>）：登记 in-flight，卸载时先等它落地再撤销，
 		// 否则会出现"卸载后又注册回来"的泄漏。
@@ -1280,9 +1321,16 @@ function applyTopLevel(ctx, config) {
 				const body = await readJsonBody(req).catch(() => ({}));
 				try {
 					// 只透传白名单字段（`sessionId` 不透传：新会话就让它自己生成，避免与已有会话撞名）
+					// ★ 2026-11-02：`workspaceId` 与 `cwd` **互斥**（官方 `session.create` 两个都给会 400）。
+					//   只给 `cwd` ⇒ 会话有目录但**不登记进工作区账本** ⇒ 官方 hero 判 `chipTitle === undefined`
+					//   ⇒ 输入框被禁用（用户截图「bot 聊天框无法输入」）；给 `workspaceId` ⇒ 官方建完会
+					//   `workspace.attachSession(sid)` ⇒ 登记 ✓。优先 workspaceId。
+					const wantWs = typeof body.workspaceId === 'string' && body.workspaceId ? body.workspaceId : undefined;
 					const out = await ctl.create({
 						agentPreset: typeof body.agentPreset === 'string' && body.agentPreset ? body.agentPreset : undefined,
-						cwd: typeof body.cwd === 'string' && body.cwd ? body.cwd : undefined,
+						...(wantWs
+							? { workspaceId: wantWs }
+							: { cwd: typeof body.cwd === 'string' && body.cwd ? body.cwd : undefined }),
 					});
 					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
 					res.end(JSON.stringify({ ok: true, sessionId: out && out.sessionId, agentPreset: out && out.agentPreset }));

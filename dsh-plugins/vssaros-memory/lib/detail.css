@@ -14,6 +14,10 @@
 .md2 .md2-tab { padding:3px 10px; border-radius:var(--wb-r-pill, 999px); font-size:var(--wb-f-xs, 12px);
   border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3)); background:transparent; color:inherit; cursor:pointer; }
 .md2 .md2-tab.is-active { background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.18)); font-weight:600; }
+/* ★ 2026-11-02：页签计数徽标 + 已知为空置灰（只对**取到过**的页签生效，未知不显示数字） */
+.md2 .md2-tab.is-empty { opacity:.55; }
+.md2 .md2-tab-n { margin-left:4px; padding:0 5px; border-radius:999px; font-size:10px; line-height:1.5;
+  background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.18)); opacity:.9; }
 .md2 .md2-body { padding:8px 16px 20px; overflow:auto; }
 .md2 .md2-h { margin:12px 0 6px; font-size:var(--wb-f-xs, 12px); opacity:.75; font-weight:600; }
 .md2 .md2-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; }
@@ -24,6 +28,9 @@
 .md2 .md2-row-text.mono { font-family:var(--wb-font-mono, monospace); }
 .md2 .md2-badge { padding:1px 6px; border-radius:999px; font-size:11px;
   border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3)); opacity:.9; }
+/* 可点徽标（tier/类型）：消掉 button 的 UA 背景/字体默认，只留徽标外观 */
+.md2 .md2-tag-btn { background:transparent; font:inherit; color:inherit; cursor:pointer; }
+.md2 .md2-tag-btn:hover { opacity:.65; }
 .md2 .md2-badge-empty { opacity:.55; }
 .md2 .md2-time { font-size:11px; opacity:.6; }
 .md2 .md2-stats { display:flex; flex-wrap:wrap; gap:10px; padding:2px 0 8px; font-size:11px; opacity:.75; }

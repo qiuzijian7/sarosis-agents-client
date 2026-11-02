@@ -13,7 +13,7 @@
 
 import { ChildProcess, execFile, execFileSync, spawn } from 'child_process';
 import { createHash, randomBytes } from 'crypto';
-import { existsSync, promises as fsp, readFileSync, rmSync, utimesSync } from 'fs';
+import { existsSync, promises as fsp, readdirSync, readFileSync, rmSync, statSync, utimesSync } from 'fs';
 
 /**
  * pnpm 是否可用（**机器级**事实 ⇒ 模块级缓存即可）。
@@ -39,9 +39,9 @@ import { auditBundledPluginVersions, isVersionNewer, renderBundledVersionAudit }
 import { describeManualUpgrade, IThirdPartyPlugin, pickThirdPartyPlugins, upgradableSpecOf } from '../common/dshPluginUpgrade.js';
 import { DSH_HOST_IDLE_TTL_MS, DshHostOverlayKind, hostOverlayFileName, IDshHostConfig, renderHostOverlays } from '../common/dshHostConfig.js';
 import { HOST_RUN_OWNERSHIP_HEARTBEAT_MS, hostRunOwnershipFileName } from '../common/dshHostRunOwnership.js';
-import { DSH_ARCHIFY_PLUGIN_NAME, DSH_BRIDGE_PLUGIN_NAME, DSH_EGO_PLUGIN_NAME, DSH_BROWSER_PLUGIN_NAME, DSH_CHAT_SURFACE_PLUGIN_NAME, DSH_DEFAULT_PROFILE, DSH_FOUNDATION_PLUGIN_NAME, DSH_KB_REFS_PLUGIN_NAME, DSH_LOOP_PLUGIN_NAME, DSH_UNREAL_PLUGIN_NAME, DSH_VOICE_BUNDLE_PLUGIN_NAME, DSH_WEB_APP_BUNDLE_NAME, DSH_WORKBENCHES_PLUGIN_NAME, DSH_WORKITEM_PLUGIN_NAME, IDshBundledInstallResult, IDshHostStartOptions, IDshHostStatus, IDshPluginInfo, sameStartOptions } from '../common/dshHarness.js';
+import { DSH_ARCHIFY_PLUGIN_NAME, DSH_BRIDGE_PLUGIN_NAME, DSH_EGO_PLUGIN_NAME, DSH_BROWSER_PLUGIN_NAME, DSH_OFFICE_TEMPLATE_PLUGIN_NAME, DSH_CHAT_SURFACE_PLUGIN_NAME, DSH_DEFAULT_PROFILE, DSH_FOUNDATION_PLUGIN_NAME, DSH_KB_REFS_PLUGIN_NAME, DSH_LOOP_PLUGIN_NAME, DSH_UNREAL_PLUGIN_NAME, DSH_VOICE_BUNDLE_PLUGIN_NAME, DSH_WEB_APP_BUNDLE_NAME, DSH_WORKBENCHES_PLUGIN_NAME, DSH_WORKITEM_PLUGIN_NAME, IDshBundledInstallResult, IDshHostStartOptions, IDshHostStatus, IDshPluginInfo, sameStartOptions } from '../common/dshHarness.js';
 import { mergeMissingBundles, parseProfileBundles } from '../common/dshPluginActivation.js';
-import { hostLeaseBlocker, IDshHostLease } from '../common/dshHostLease.js';
+import { hostLeaseBlocker, IDshHostLease, staleHostByPluginFiles } from '../common/dshHostLease.js';
 import { SANDBOX_FALLBACK_MODE, SANDBOX_FALLBACK_ROOT } from '../common/dshSandboxCompat.js';
 import { probeLabelWriteOnce } from './dshSandboxProbe.js';
 import { DshBridgeClient } from './dshBridgeClient.js';
@@ -49,7 +49,7 @@ import { IStartupDeadline, createStartupDeadline, startupExpiryMessage } from '.
 import { normalizeExistingPath, repairStoreMetadataContent } from './dshStoreMetadata.js';
 import { DshHostLeaseStore, pidAlive } from './dshHostLeaseStore.js';
 import { orphanLeaseCandidates } from '../common/dshHostRunOwnership.js';
-import { rememberHostPort, resolveHostPort } from './dshHostPortManager.js';
+import { readPreferredHostPort, reclaimLoopbackPort, rememberHostPort, resolveHostPort } from './dshHostPortManager.js';
 import { reapOrphanHosts } from './dshHostReaper.js';
 import { repairBundledPluginFiles, repairProfileDeps } from './dshProfileDepsRepair.js';
 import { DshRuntimeError, DshRuntimeManager, injectBundledPnpm, IResolvedDsh, IResolvedNode, sanitizedEnv } from './dshRuntimeManager.js';
@@ -218,6 +218,8 @@ export interface IDshHostSupervisorOptions {
 	 * 缺省 undefined ⇒ 老构建/没带该包时行为与从前一致。
 	 */
 	readonly browserPluginDir?: string;
+	/** Office 模板插件目录（`dsh-plugins/vssaros-office-template`；纯 host 工具插件，必须显式给）。 */
+	readonly officeTemplatePluginDir?: string;
 	/** 随产品分发的 **Host 侧 `unreal_*` 插件**目录（同上）。 */
 	readonly unrealPluginDir?: string;
 	/**
@@ -1043,6 +1045,16 @@ export class DshHostSupervisor extends Disposable {
 				// 控制桥管道 ⇒ VsSaros 侧 `DshBridgeClient.connect` 60s 超时（ENOENT）⇒ **Host 退出 code 1**。
 				// 2026-10-11 实测根因：App 侧 profile 缺它、探针侧有它（README 4.79）。
 				[DSH_WEB_APP_BUNDLE_NAME, resolveSiblingPackage(dsh.bin, DSH_WEB_APP_BUNDLE_NAME), 'web-app bundle'],
+				// ★★ 2026-11-02（真机事故：会话里"没有 office-docx 这些技能"）：
+				//   Office 的 7 个技能由**官方 `@deepseek-ai/dsh-skill-office`** 提供，我们的覆盖层只是
+				//   `- insert:` 一行引用它的**包名**。但 cordis 是从 **profile 的 node_modules** 解析包名的 ——
+				//   `@deepseek-ai/dsh-skill-office` / `dsh-tool-workspace-dependencies` 都不在 dsh 的默认
+				//   依赖树里（实测 profile 里两个都是 MISSING）⇒ 那两行 entry **加载失败**，而失败只在
+				//   `--dump-config` 里留一行 `entry not found`、在技能页上表现为"少 7 个技能"，没有任何红 ✗。
+				//   ⇒ 必须像 web-app bundle 一样**显式装进 profile**（`resolveSiblingPackage` 取的是
+				//   **当前 runtime 里**的那一份 ⇒ 版本天然与 dsh 对齐，零网络、不受 registry 影响）。
+				['@deepseek-ai/dsh-skill-office', resolveSiblingPackage(dsh.bin, '@deepseek-ai/dsh-skill-office'), 'office skills (upstream)'],
+				['@deepseek-ai/dsh-tool-workspace-dependencies', resolveSiblingPackage(dsh.bin, '@deepseek-ai/dsh-tool-workspace-dependencies'), 'office python dependencies tool'],
 				// foundation（重构 1.3）：所有模块插件的共享服务（dataRoot/dshHome/pageShell/lock 真源），
 				// **必须在模块插件之前**装上——消费者 apply 时 inject 它，缺了它们会永远 pending。
 				[DSH_FOUNDATION_PLUGIN_NAME, this._opts.foundationPluginDir, 'foundation plugin'],
@@ -1061,6 +1073,10 @@ export class DshHostSupervisor extends Disposable {
 				//   装不上不影响启动：`vssaros-ide` 那条路会继续兜底（它只在服务**在**的时候让路）。
 				[DSH_BROWSER_PLUGIN_NAME, this._opts.browserPluginDir, 'host browser plugin'],
 				[DSH_UNREAL_PLUGIN_NAME, this._opts.unrealPluginDir, 'host unreal plugin'],
+				// Office 模板（用户自带 .docx 当模板，2026-11-02）：**纯 host 工具插件**（没有 `vssaros.module`
+				// ⇒ 模块自发现收不到它）⇒ 只能显式列在这里。装不上不影响启动（只是少
+				// `office_template` / `office_template_write` 两个工具，官方 7 个 Office 技能照常可用）。
+				[DSH_OFFICE_TEMPLATE_PLUGIN_NAME, this._opts.officeTemplatePluginDir, 'office template plugin'],
 				// **vendored 第三方技能包**（archify）：随包自动装（2026-10-14，用户要求"默认随包"）。
 				// 与前两个同一条路（存在才装、装不上不影响启动 ⇒ 只是技能库里少一个 archify ✓）。
 				// 装的是**本地暂存目录**（零网络）⇒ 首启只多一次暂存拷贝，不像 npm 那条要等 30s+ ✓。
@@ -1239,6 +1255,14 @@ export class DshHostSupervisor extends Disposable {
 			const bridgeVersion: string | undefined = installedVersionOf(DSH_BRIDGE_PLUGIN_NAME);
 			// 收敛"必须与运行时同一模块实例"的 dsh 包——不同实例会让**实时启停永远失败**（见该方法注释）。
 			await this._dedupeSharedPackages(dsh, profile, env);
+			// ★★ 2026-11-02（真机：F5 起不来；Host 自己的日志是
+			//   `Error: UNKNOWN: unknown error, realpath …\profiles\vssaros\node_modules\@deepseek-ai\dsh-app-boot`
+			//   抛在 `composeProfile → createRuntimeResolution → linkedProfileRoots` ⇒ Host code 1 退出）：
+			//   profile 里**一个坏掉的联接**就能让整个 app 起不来，而且极难发现 ——
+			//   `existsSync` 对断链返回 **false**（它跟随链接），所以"文件都在"的检查全是绿的 ✗。
+			//   ⇒ 每次启动前沿 `node_modules/@scope/<名字>` 扫一层：`lstat` 判定是链接后 `realpath` 试一下，
+			//     失败就地**用真实副本替换**（源优先取链接指向的目标，其次取运行时同版本包）。
+			await this._repairBrokenProfileLinks(dsh, profile, env);
 			// ★★ 2026-10-30（外部机器 P0：**窗口开了，但界面是 dsh 原生的**，没有侧栏「主页」/没有我们的页面）：
 			//   现场 `profile/package.json` 里 `dependencies` 全在、profile 的 node_modules 里
 			//   那批 `@vssaros` 插件文件也全在，
@@ -1259,6 +1283,20 @@ export class DshHostSupervisor extends Disposable {
 			const leases = new DshHostLeaseStore(this.effectiveDshHome(options.dshHome), line => this._appendLog(line));
 			this._leaseStore = leases;
 			const existing = leases.read();
+			// ★★ 2026-11-02（真机：装完插件后重启 app，日志 `reusing the Host started by pid 115820`，
+			//   Host 21:02 起、插件文件 21:11 才落盘 ⇒ 新代码整轮没执行，且没有任何提示）：
+			//   `_pluginsStale` 只活在**做过安装的那个进程**的内存里 ⇒ app 一重启这个信号就丢了。
+			//   ⇒ 补一个跨进程成立的判据：profile 里随包插件的最新写盘时间 > 租约 `startedAt`
+			//   （Host 就绪时写、复用时不刷新）⇒ 等价于"插件换过" ⇒ 置 `_pluginsStale`，
+			//   后面的"不接管 + 回收孤儿 + spawn 成功后清标记"整条既有路径原样复用 ✓。
+			const newestPluginFile = this._newestPluginFile(this._profileDir(profile, env), plugins.map(([name]) => name));
+			if (existing && !this._pluginsStale) {
+				const diskStale = staleHostByPluginFiles(existing, newestPluginFile);
+				if (diskStale) {
+					this._appendLog(`not reusing the running Host (pid ${existing.pid}): ${diskStale}`);
+					this._pluginsStale = true;
+				}
+			}
 			if (existing && this._pluginsStale) {
 				// ★ 插件换过版本 ⇒ **不许接管**这个 Host（见 `_pluginsStale` 的注释）。它内存里是旧插件代码，
 				//   而客户端 chunk 由它从磁盘现读 ⇒ "前端新、后端旧" ⇒ 2026-10-12 实测白屏
@@ -1295,7 +1333,7 @@ export class DshHostSupervisor extends Disposable {
 				this._throwIfStale(generation);
 				// 锁竞争里那个 Host 同样可能是旧代码（别的实例拉起它时还没装上新插件）⇒ 同样不接管 ✓。
 				// ⚠ 刚判过"桥连不上"的同一个 Host 不再试第二次（否则白等 10s 桥超时，结果一样）。
-				if (leaseFromLock && leaseFromLock.pid !== this._bridgelessLeasePid && !pluginsWereStale && !hostLeaseBlocker(leaseFromLock, want) && !(await leases.probe(leaseFromLock))) {
+				if (leaseFromLock && leaseFromLock.pid !== this._bridgelessLeasePid && !pluginsWereStale && !staleHostByPluginFiles(leaseFromLock, newestPluginFile) && !hostLeaseBlocker(leaseFromLock, want) && !(await leases.probe(leaseFromLock))) {
 					if (await this._adoptLease(leaseFromLock, generation, profile, dshHome, t0)) {
 						return this._status;
 					}
@@ -1387,6 +1425,37 @@ export class DshHostSupervisor extends Disposable {
 				const agentsBuiltinRoot = forceEmptyBuiltinAgents
 					? undefined
 					: await this._writeBuiltinAgentsDir(options.agentsBuiltinSrc?.trim() || undefined);
+				// ★ Office 运行时（2026-11-02）：Python 负载（`primary-runtime/`）与 7 个 office 技能
+				//   （`office-skills/`）同在一个基目录下 —— dev 是 `<仓库根>/.build/office-runtime`
+				//   （`build/prepare-office-runtime.mjs` 产出），打包是 `<appPath>/office-runtime`
+				//   （gulp 资源流按 `base: '.build'` 原样搬进去）。两个候选都试，缺一个就不挂
+				//   （不注入 ⇒ 7 个技能不存在，其余功能不受影响 ✓）。
+				//   基址从 `agentsBuiltinSrc`（`<appPath>/resources/.agents/agents`）反推 appRoot：
+				//   这是主进程**已知**的产品资源绝对路径，不必为此再引 FileAccess。
+				const officeBase = (() => {
+					const src = options.agentsBuiltinSrc?.trim();
+					if (!src) { return undefined; }
+					const appRoot = dirname(dirname(dirname(src)));
+					return ['office-runtime', join('.build', 'office-runtime')]
+						.map(rel => join(appRoot, rel))
+						.find(dir => existsSync(join(dir, 'primary-runtime', 'runtime.json')) && existsSync(join(dir, 'office-skills')));
+				})();
+				// LibreOffice Kit 的 CLI 与 `dsh` 包同级：
+				//   <runtime>/node_modules/@deepseek-ai/dsh/lib/bin.js → ../../libreoffice-kit/lib/cli.js
+				//   缺件传 `false`（插件会在技能正文里声明"本部署禁用渲染"，而不是启动崩溃 ✓）。
+				const officeCli = (() => {
+					// ★ 身份断言（2026-11-02）：LibreOffice Kit 的命令是 `<node> <cli> …`，这里的 node 必须是
+					//   dsh 用的**独立 node**（`node.path`），不能是 VsSaros 自己（Electron）。真机上若 `nodePath`
+					//   被指成安装包 exe，渲染 / PDF / 重算会以一堆看不懂的 stderr 失败 ⇒ 这里直接把 cli 降级成
+					//   `false`（技能正文会写"本部署禁用渲染"），并留一条日志说明该改哪。
+					if (officeBase && resolve(node.path) === resolve(process.execPath)) {
+						this._appendLog('⚠ Office 运行时的 node 指向了 VsSaros 自身（Electron）⇒ 渲染 / PDF / 重算降级为不可用；'
+							+ '请把「dsh 运行时 Node 路径」设置指到一个独立 node');
+						return false;
+					}
+					const candidate = join(dirname(dsh.bin), '..', '..', 'libreoffice-kit', 'lib', 'cli.js');
+					return existsSync(candidate) ? candidate : false;
+				})();
 				const hostConfig: IDshHostConfig = {
 					...(pipe && token ? {
 						bridge: {
@@ -1432,12 +1501,21 @@ export class DshHostSupervisor extends Disposable {
 						sandboxMode: SANDBOX_FALLBACK_MODE,
 						...(workspaceRoot ? {} : { sandboxWorkspaceRoot: SANDBOX_FALLBACK_ROOT }),
 					} : {}),
+					// Office 运行时（2026-11-02）：node 必须是 **Host 自己的解释器**（不是 Electron 的
+					// process.execPath）—— 官方 office 技能用它跑 LibreOffice Kit CLI 与脚本。
+					...(officeBase ? { office: { base: officeBase, node: node.path, cli: officeCli } } : {}),
 				};
+				/** 把各条覆盖层的 YAML 文本按顺序收起来，最后并成**一个** `--patch` 文件（2026-11-02）。 */
+				const mergedParts: string[] = [];
+				/** 逐条文件的路径（顺序同 `mergedParts`）—— 逃生开关 `VSSAROS_HOST_OVERLAY_MERGE=0` 用它。 */
+				const individualFiles: string[] = [];
 				/** 落盘一条覆盖层并记住文件（文件名与中立入口共用 `hostOverlayFileName`）。 */
 				const writeOverlay = async (kind: DshHostOverlayKind, text: string): Promise<void> => {
 					await fsp.mkdir(this._opts.runDir, { recursive: true });
 					const file = join(this._opts.runDir, hostOverlayFileName(kind, runId));
 					await fsp.writeFile(file, text, { mode: 0o600 });
+					mergedParts.push(text);
+					individualFiles.push(file);
 					switch (kind) {
 						case 'bridge': this._overlayFile = file; break;
 						case 'kanban': this._kanbanOverlayFile = file; break;
@@ -1449,7 +1527,7 @@ export class DshHostSupervisor extends Disposable {
 						case 'sandbox': this._sandboxOverlayFile = file; break;
 						default: break;   // `mcp` 不走这里（它有"让路"逻辑，见 `_writeMcpOverlay`）
 					}
-					overlays.push(file);
+					// ⚠ 只收文本、不再逐条 push（合并后的单文件在下面统一 push）
 				};
 
 				// MCP 服务器：dsh-mcp-client 是"一个服务器一个组合行"、没有运行时注册 API（见 common/dshMcpConfig.ts），
@@ -1457,7 +1535,7 @@ export class DshHostSupervisor extends Disposable {
 				// 这一条**不进** `renderHostOverlays`：写入前要读盘+解析，而且"行已归 dsh 侧就让路"（登记过
 				// `@vssaros/dsh-mcp-rows` 时两条路不能并存，否则同一台服务器挂两遍 ✗）。渲染器仍是同一个。
 				const mcpConfigPath = options.mcpConfigPath?.trim();
-				const mcpOverlayFile = mcpConfigPath
+				const mcpOverlay = mcpConfigPath
 					? await this._writeMcpOverlay(mcpConfigPath, this._profileManifest(profile, env))
 					: undefined;
 
@@ -1475,8 +1553,9 @@ export class DshHostSupervisor extends Disposable {
 				for (const overlay of renderHostOverlays(hostConfig)) {
 					// MCP 那条按旧顺序插在 codebase 之后、skills 之前（它打的是**别的行**，跨条顺序不影响语义，
 					// 只为让 run 目录里的文件与日志保持旧的可读顺序）。
-					if (!mcpPushed && mcpOverlayFile && overlay.kind !== 'bridge' && overlay.kind !== 'kanban' && overlay.kind !== 'codebase') {
-						overlays.push(mcpOverlayFile);
+					if (!mcpPushed && mcpOverlay && overlay.kind !== 'bridge' && overlay.kind !== 'kanban' && overlay.kind !== 'codebase') {
+						mergedParts.push(mcpOverlay.text);
+						individualFiles.push(mcpOverlay.file);
 						mcpPushed = true;
 					}
 					const note = logOfKind[overlay.kind];
@@ -1485,8 +1564,34 @@ export class DshHostSupervisor extends Disposable {
 					}
 					await writeOverlay(overlay.kind, overlay.text);
 				}
-				if (mcpOverlayFile && !mcpPushed) {
-					overlays.push(mcpOverlayFile);   // 后面没有别的覆盖层时补在末尾：不能因为它"晚"就丢掉
+				if (mcpOverlay && !mcpPushed) {
+					mergedParts.push(mcpOverlay.text);   // 后面没有别的覆盖层时补在末尾：不能因为它"晚"就丢掉
+					individualFiles.push(mcpOverlay.file);
+				}
+
+				// ★★ 2026-11-02（P0，对齐 dsh-desktop 的"覆盖层静态化"）：把 N 条覆盖层并成**一个** `--patch`。
+				//   它们的语义本来就是"一个文件里可以有多段 `- insert:` / 逐行 config"（我们按 kind 拆文件
+				//   只是历史习惯 + 便于人工查看），而每条 `--patch` 都要 dsh 单独读盘 + 解析 ⇒ 启动期
+				//   10 份 YAML 的解析开销和"顺序不可控"的排查成本都是白付。
+				//   ⚠ 单条文件**仍然照写**（run 目录里能逐条看，排查时不用解合并文件）；
+				//     只有 `--patch` 参数改成传合并后的那一个 ✓。
+				if (mergedParts.length) {
+					// ⚠ 逃生开关（2026-11-02）：合并是**新行为**，万一某台机器上 dsh 对合并后的
+					//   YAML 有语义差异（行顺序/覆盖），一个环境变量就能退回旧的"逐条 --patch"：
+					//     set VSSAROS_HOST_OVERLAY_MERGE=0
+					//   默认合并。回退时把逐条文件按原顺序都传过去（下面的 individualFiles）。
+					const mergeOverlays = (process.env['VSSAROS_HOST_OVERLAY_MERGE'] ?? '1') !== '0';
+					if (mergeOverlays) {
+						await fsp.mkdir(this._opts.runDir, { recursive: true });
+						const mergedFile = join(this._opts.runDir, `overlays-${runId}.yml`);
+						await fsp.writeFile(mergedFile, mergedParts.join('\n'), { mode: 0o600 });
+						overlays.push(mergedFile);
+						this._overlayFile = mergedFile;   // 清理口：run 结束时删这一个即可（其余单条由 cleanup 兜底）
+						this._appendLog(`overlay 合并：${mergedParts.length} 条 → 1 个 --patch（${mergedFile}）`);
+					} else {
+						for (const f of individualFiles) { overlays.push(f); }
+						this._appendLog(`overlay 合并已关闭（VSSAROS_HOST_OVERLAY_MERGE=0）⇒ 逐条 --patch ×${individualFiles.length}`);
+					}
 				}
 
 				// ── 端口稳定性（2026-10-14 缓存命中率根因，详见 common/dshHostPortPreference.ts）──
@@ -1496,7 +1601,28 @@ export class DshHostSupervisor extends Disposable {
 				// system 提示 302 行里 299 行逐字相同，**唯一差异就是那一行的端口**，
 				// 累计缓存命中率 6.4%；而同会话内端口未变的那次调用能到 98.6%。
 				// 复用上次端口（探测空闲才用），任何异常回落 0 —— 稳定性是优化，不是启动前置条件。
-				const hostPort = await resolveHostPort(this.effectiveDshHome(options.dshHome));
+				// ★★ 2026-11-02（P0，对齐 dsh-desktop 的固定 origin 策略）：偏好端口**被我们自己的
+				//   残留 Host 占着**时，先回收它再复用，而不是直接回落 `--port 0`。
+				//   实测代价：最近四次启动拿到 4109 / 12637 / 53383 / 54980 —— 端口每次都变 ⇒
+				//     ① 前端按 origin 缓存 ⇒ 每次冷启动重下/重解析 chunk；
+				//     ② system 提示里的 `http://127.0.0.1:<port>` 字节变 ⇒ prompt 前缀缓存整段失效。
+				//   ⚠ 只回收命令行里含本次 dsh `bin.js` 的进程；别人的进程一律不动（回落 0）。
+				const hostHome = this.effectiveDshHome(options.dshHome);
+				let hostPort = await resolveHostPort(hostHome);
+				if (hostPort === 0) {
+					const preferredPort = await readPreferredHostPort(hostHome);
+					if (preferredPort !== undefined) {
+						const portOutcome = await reclaimLoopbackPort(preferredPort, dsh.bin);
+						if (portOutcome === 'reclaimed' || portOutcome === 'free') {
+							hostPort = preferredPort;
+							this._appendLog(`port ${preferredPort}: 偏好端口可用（${portOutcome === 'reclaimed' ? '已回收自己的残留 Host' : '当前空闲'}）`
+								+ ' ⇒ 复用该端口（前端缓存 / system 提示前缀缓存都能复用）');
+						} else {
+							this._appendLog(`port ${preferredPort}: 偏好端口不可用（${portOutcome === 'foreign' ? '被**其他进程**占用，不动它' : '探测失败'}）`
+								+ ' ⇒ 本次回落 --port 0：端口会变，前端缓存与 prompt 前缀缓存可能失效');
+						}
+					}
+				}
 				const args = buildHostArgs(dsh.bin, profile, overlays, hostPort);
 				// ★★ 2026-10-29（真机：装完最新版本起不来 ⇒ 桌面窗口报「控制桥不可用（Host 未运行）」）：
 				//   Host 侧日志给出了真因：
@@ -2092,11 +2218,109 @@ export class DshHostSupervisor extends Disposable {
 				await fsp.symlink(runtimeCopy, temp, 'junction');   // 先接通（此时原目录还在）
 				await fsp.rm(profileCopy, { recursive: true, force: true });
 				await fsp.rename(temp, profileCopy);                // 再就位
-				this._appendLog(`${pkg}: profile 侧副本已收敛为指向运行时的联接 ⇒ 实时启停可用`);
+				// ★ 2026-11-02（真机：F5 起不来）：在部分机器上"指向 dsh-runtime 的 junction"
+				//   **建出来 realpath 就失败**（`Error: UNKNOWN: unknown error, realpath …dsh-app-boot`），
+				//   而 dsh 组装 profile 时正是拿 realpath 解析链接根 ⇒ Host 直接 code 1 退出 ✗。
+				//   ⇒ 建完立刻验一次：不可用就**退化成真实副本**（宁可失去"同一模块实例"，
+				//     也不能让整个 app 起不来；实时启停退回文件级，其余功能不受影响）。
+				try {
+					await fsp.realpath(profileCopy);
+					this._appendLog(`${pkg}: profile 侧副本已收敛为指向运行时的联接 ⇒ 实时启停可用`);
+				} catch {
+					await fsp.rm(profileCopy, { recursive: true, force: true });
+					await fsp.cp(runtimeCopy, profileCopy, { recursive: true });
+					this._appendLog(`${pkg}: 联接不可用（realpath 失败）⇒ 已退化为真实副本（实时启停退回文件级，但能正常启动）`);
+				}
 			} catch (e) {
 				await fsp.rm(temp, { recursive: true, force: true }).catch(() => undefined);
 				this._appendLog(`${pkg}: 收敛失败（不影响启动，实时启停会退回文件级）：${String((e as Error)?.message ?? e)}`);
 			}
+		}
+	}
+
+	/**
+	 * **修掉 profile 里坏掉的联接**（2026-11-02，真机：F5 起不来，Host code 1）。
+	 *
+	 * 现场：`composeProfile → createRuntimeResolution → linkedProfileRoots → realModuleDirectory`
+	 * 对 `profiles/vssaros/node_modules/@deepseek-ai/dsh-app-boot` 调 `realpath` ⇒
+	 * `Error: UNKNOWN: unknown error` ⇒ 组装 profile 直接抛错 ⇒ Host 起不来 ⇒ 窗口开了也是死的。
+	 *
+	 * 为什么难发现：
+	 *   · `existsSync(断链)` 返回 **false**（它跟随链接）⇒ "文件都在"的体检全绿；
+	 *   · 只有一个条目坏（其余 156 个都是真目录）⇒ 看起来像是偶发。
+	 *
+	 * 修法：断链就地换成**真实副本**（`cp`），源优先用链接原本指向的目标（若目标可读），
+	 *   否则用运行时同版本包（`resolveSiblingPackage`）。两者都不可用 ⇒ 删掉断链，
+	 *   交回 Node 正常解析（至少不会再让 realpath 抛错）。
+	 *
+	 * ⚠ 只扫 `node_modules/@scope/<name>` 一层：这里是 dsh 组装 profile 时 `linkedProfileRoots`
+	 *   会碰到的范围，深递归既慢又没必要。
+	 */
+	private async _repairBrokenProfileLinks(dsh: IResolvedDsh, profile: string, env: NodeJS.ProcessEnv): Promise<void> {
+		const nodeModules = join(this._profileDir(profile, env), 'node_modules');
+		let scopes: string[];
+		try {
+			scopes = (await fsp.readdir(nodeModules)).filter(n => n.startsWith('@'));
+		} catch {
+			return;
+		}
+		let repaired = 0;
+		for (const scope of scopes) {
+			const scopeDir = join(nodeModules, scope);
+			let names: string[];
+			try {
+				names = await fsp.readdir(scopeDir);
+			} catch {
+				continue;
+			}
+			for (const name of names) {
+				const p = join(scopeDir, name);
+				let st;
+				try {
+					st = await fsp.lstat(p);
+				} catch {
+					continue;
+				}
+				if (!st.isSymbolicLink()) {
+					continue;
+				}
+				try {
+					await fsp.realpath(p);
+					continue;   // 链接是好的
+				} catch { /* 断链 ⇒ 往下修 */ }
+				const pkg = `${scope}/${name}`;
+				let source = '';
+				try {
+					const target = await fsp.readlink(p);
+					const tst = await fsp.stat(target);
+					if (tst.isDirectory() || tst.isFile()) {
+						source = target;
+					}
+				} catch { /* 目标也不可达 ⇒ 退回运行时同版本包 */ }
+				if (!source) {
+					const rt = resolveSiblingPackage(dsh.bin, pkg);
+					if (rt && existsSync(rt)) {
+						source = rt;
+					}
+				}
+				try {
+					await fsp.rm(p, { recursive: true, force: true });
+					if (source) {
+						await fsp.cp(source, p, { recursive: true });
+						repaired++;
+						this._appendLog(`profile 联接失效 ⇒ 已用真实副本替换：${pkg}`);
+					} else {
+						repaired++;
+						this._appendLog(`profile 联接失效且找不到可用来源 ⇒ 已删除该联接：${pkg}（交回 Node 解析）`);
+					}
+				} catch (e) {
+					this._appendLog(`profile 联接修复失败：${pkg} ⇒ ${String((e as Error)?.message ?? e).slice(0, 160)}`);
+				}
+			}
+		}
+		if (repaired) {
+			this._appendLog(`profile 联接体检：修复 ${repaired} 个失效联接`
+				+ '（断链会让 dsh 组装 profile 时 realpath 失败 ⇒ Host 直接退出、F5 起不来）');
 		}
 	}
 
@@ -2843,7 +3067,7 @@ export class DshHostSupervisor extends Disposable {
 		}
 	}
 
-	private async _writeMcpOverlay(configPath: string, profileManifest: string): Promise<string | undefined> {
+	private async _writeMcpOverlay(configPath: string, profileManifest: string): Promise<{ file: string; text: string } | undefined> {
 		// ★ 2026-10-12：MCP 的"配置 → 组合行"已归 dsh 侧（`dsh-plugins/vssaros-mcp/bin/sync-rows.mjs`，
 		// 用官方 `dsh plugin add` 登记成 profile 的一个 bundle 层）。**登记过就必须让路** —— 两条路不能并存：
 		// `insert` 不是"同 id 后层胜出"，实测同时开会把同一台服务器挂两遍（p3-25），而 dsh 侧 serverName
@@ -2868,9 +3092,11 @@ export class DshHostSupervisor extends Disposable {
 		const id = randomBytes(6).toString('hex');
 		await fsp.mkdir(this._opts.runDir, { recursive: true });
 		this._mcpOverlayFile = join(this._opts.runDir, `mcp-${id}.yml`);
-		await fsp.writeFile(this._mcpOverlayFile, renderMcpOverlay(servers), { mode: 0o600 });
+		const mcpText = renderMcpOverlay(servers);
+		await fsp.writeFile(this._mcpOverlayFile, mcpText, { mode: 0o600 });
 		this._appendLog(`mcp overlay: ${servers.length} server(s)${skipped.length ? `, ${skipped.length} skipped` : ''}`);
-		return this._mcpOverlayFile;
+		// 2026-11-02：把文本一并交回 ⇒ 主流程把它并进**一个** `--patch` 文件（见 writeOverlay 附近注释）。
+		return { file: this._mcpOverlayFile, text: mcpText };
 	}
 
 	/**
@@ -2965,6 +3191,64 @@ export class DshHostSupervisor extends Disposable {
 	private _profileDir(profile: string, env: NodeJS.ProcessEnv): string {
 		const home = env.DSH_HOME?.trim() || join(homedir(), '.dsh');
 		return join(home, 'profiles', profile);
+	}
+
+	/**
+	 * 随包插件在 profile 里的**最新服务端代码文件**（`package.json` 与 `.js/.mjs/.cjs`）及其写入时间。
+	 *
+	 * 给"能否复用运行中 Host"用（见 `staleHostByPluginFiles`）：只看本次伴生清单里的包，
+	 * 跳过嵌套 `node_modules`（`repairProfileDeps` 每次启动都可能补写那里的文件 ⇒ 会造成假"更新"）。
+	 *
+	 * ⚠ 两条真机得来的口径（2026-11-02）：
+	 *   ① **客户端分包不算**（`client.js` / `client.*.js` 与 `exports["./client"]` 入口）：Host 每次请求都从磁盘
+	 *      现读它们 ⇒ 它们变了**不代表** Host 内存旧了；而 dev 启动器（`scripts/dsh-plugin-deploy.mjs --changed`）
+	 *      **每次启动都会 `utimes` 所有 client 入口**（刷 `?rev` 让浏览器丢缓存）⇒ 算进来就等于 dev 下每次都冷启 ✗。
+	 *   ② 时间取 **max(mtime, ctime)**：Windows 的 `copyFileSync` 会**保留源文件 mtime** ⇒ "Host 起之前改、
+	 *      起之后才部署"的文件 mtime 看起来比 Host 早 ✗；ctime 才是写进 profile 的那一刻（实测 kanban/store.js：
+	 *      mtime 09:09 / ctime 16:33）。
+	 * `statSync` 跟随链接 ⇒ 链接到 runtime 的包按目标文件算（runtime 不变就不会误判）。
+	 * 扫描失败一律当"没扫到"（undefined）⇒ 回退到原有判定，绝不因为诊断失败而阻止启动。
+	 */
+	private _newestPluginFile(profileDir: string, names: readonly string[]): { path: string; mtimeMs: number } | undefined {
+		let newest: { path: string; mtimeMs: number } | undefined;
+		const consider = (file: string) => {
+			try {
+				const st = statSync(file);
+				const mtimeMs = Math.max(st.mtimeMs, st.ctimeMs);
+				if (!newest || mtimeMs > newest.mtimeMs) {
+					newest = { path: file, mtimeMs };
+				}
+			} catch { /* 读不到就跳过 */ }
+		};
+		const isClientChunk = (fileName: string) => /^client(?:\.[^.]+)*\.(?:m?js|cjs)$/.test(fileName);
+		const walk = (dir: string, depth: number, clientEntry: string | undefined) => {
+			if (depth > 6) { return; }
+			let entries;
+			try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+			for (const entry of entries) {
+				if (entry.name === 'node_modules' || entry.name.startsWith('.')) { continue; }
+				const full = join(dir, entry.name);
+				if (entry.isDirectory()) {
+					walk(full, depth + 1, clientEntry);
+				} else if (entry.name === 'package.json' || (/\.(?:m?js|cjs)$/.test(entry.name) && !isClientChunk(entry.name) && full !== clientEntry)) {
+					consider(full);
+				}
+			}
+		};
+		for (const name of new Set(names)) {
+			if (!name) { continue; }
+			const dir = join(profileDir, 'node_modules', ...name.split('/'));
+			const manifest = join(dir, 'package.json');
+			if (!existsSync(manifest)) { continue; }
+			let clientEntry: string | undefined;
+			try {
+				const client = (JSON.parse(readFileSync(manifest, 'utf8')) as { exports?: Record<string, unknown> }).exports?.['./client'];
+				const rel = typeof client === 'string' ? client : (client && typeof client === 'object' ? (client as { default?: unknown }).default : undefined);
+				clientEntry = typeof rel === 'string' ? join(dir, rel) : undefined;
+			} catch { /* 读不到 exports ⇒ 只按文件名排除 client 分包 */ }
+			walk(dir, 0, clientEntry);
+		}
+		return newest;
 	}
 
 	private _profileManifest(profile: string, env: NodeJS.ProcessEnv): string {

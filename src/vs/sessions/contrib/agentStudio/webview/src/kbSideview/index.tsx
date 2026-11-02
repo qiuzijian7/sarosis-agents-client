@@ -335,77 +335,111 @@ const VaultIcon = () => (
 	<Svg><path d="M3 2h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1zm1.5 2v8h7V4h-7z" /></Svg>
 );
 
-const SectionHeader = ({ title, count, expanded, onToggle, extra, onDropRoot }: {
-	title: string; count?: string; expanded: boolean; onToggle: () => void; extra?: React.ReactNode;
+const SectionHeader = ({ title, icon, sub, count, expanded, onToggle, extra, onDropRoot }: {
+	title: string;
+	/** 节头左侧的 emoji 图标（🗂 数据源 / 📚 知识库列表 / 🏷 标签分类） */
+	icon?: string;
+	/**
+	 * ★ 2026-11-02（用户选定 **S5 · 双行节头**）：第二行的统计副标题。
+	 *   例如「5 个知识库 · 95 篇 · 已绑飞书 0」——数字有了含义，不用猜「95」是什么。
+	 *   有副标题时**不再显示计数胶囊**（计数已并进副标题），右侧只留给 hover 工具。
+	 */
+	sub?: string;
+	count?: string; expanded: boolean; onToggle: () => void; extra?: React.ReactNode;
 	/**
 	 * 拖到**节头**＝移到该区根目录（2026-10-23）。之前只有目录行能接 drop ⇒ 想把笔记
-	 * 拖回 `笔记/` 顶层没有任何落点 ✗。传的是**区名**（`笔记` / `库`）而不是绝对路径：
+	 * 拖回 `知识库列表/` 顶层没有任何落点 ✗。传的是**区名**（`知识库列表` / `数据源`）而不是绝对路径：
 	 * 组件不知道库根在哪，而两宿主都能把区名解析成根目录（IDE 走 sectionUri，插件页拼相对路径）。
 	 */
 	onDropRoot?: (paths: readonly string[]) => void;
-}) => (
-	<div
-		role="button"
-		tabIndex={0}
-		onClick={onToggle}
-		onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}
-		onDragOver={e => {
-			if (!onDropRoot) { return; }
-			e.preventDefault();                    // 节头也要允许投放（否则只有目录行能接）
-			e.dataTransfer.dropEffect = 'move';
-		}}
-		onDrop={e => {
-			if (!onDropRoot) { return; }
-			const raw = e.dataTransfer.getData('text/plain');
-			if (!raw) { return; }
-			e.preventDefault();
-			e.stopPropagation();
-			onDropRoot(raw.split('\n').filter(Boolean));
-		}}
-		/*
-		 * ★★ 2026-10-24（用户：三个折叠页签不明显，重新设计）：
-		 *   上一版把节头做成了"和内容行一样"的普通行 ⇒ 在 27px 行高里，标题、计数、内容行
-		 *   全都是 13px 同色文字，三者**视觉权重完全相同**，翻到中段就分不清哪是分组。
-		 *   ⇒ 恢复「栏」的语义（Obsidian 的 sidebar 分组头其实也是这种处理）：
-		 *     · 加厚到 30px + 轻微底色（与内容行区分开，且不抢眼）
-		 *     · 标题 11.5px **加粗 + 字距**（短小、明显是"栏名"而不是条目名）
-		 *     · 计数做成**胶囊徽标**（常驻可见，一眼看出这节有多少条）
-		 *     · 左侧折叠箭头放大到 10px 并带过渡 ⇒ 收起/展开方向明确
-		 *     · 顶部一条细分隔线 ⇒ 三节之间有清晰边界
-		 *   工具按钮仍只在 hover 时出现（默认版面保持干净）。
-		 */
-		className="kb-sec-head"
-		style={{
-			display: 'flex', alignItems: 'center', gap: 6, height: 30, padding: '0 8px',
-			background: 'rgba(127,127,127,.06)',
-			borderTop: `1px solid ${c.line}`,
-			cursor: 'pointer', userSelect: 'none',
-		}}
-	>
-		<span style={{
-			width: 14, flex: '0 0 14px', color: c.fgDim, fontSize: 10, textAlign: 'center',
-			transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform .12s ease',
-		}}>▸</span>
-		<span style={{
-			fontSize: 11.5, fontWeight: 700, letterSpacing: '.08em', color: c.fgDim,
-			overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-		}}>{title}</span>
-		{count !== undefined && (
+}) => {
+	/**
+	 * ★ 2026-11-02：工具按钮**默认不占位**（hover 才出现）。
+	 *   这是「知…被截断」的直接原因：以前 5 个工具常驻，把 340px 里的标题挤没了。
+	 *   用 React 状态而不是 CSS :hover —— 本文件全是内联样式，没有样式表可用。
+	 */
+	const [hover, setHover] = useState(false);
+	return (
+		<div
+			role="button"
+			tabIndex={0}
+			onClick={onToggle}
+			onMouseEnter={() => setHover(true)}
+			onMouseLeave={() => setHover(false)}
+			onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}
+			onDragOver={e => {
+				if (!onDropRoot) { return; }
+				e.preventDefault();                    // 节头也要允许投放（否则只有目录行能接）
+				e.dataTransfer.dropEffect = 'move';
+			}}
+			onDrop={e => {
+				if (!onDropRoot) { return; }
+				const raw = e.dataTransfer.getData('text/plain');
+				if (!raw) { return; }
+				e.preventDefault();
+				e.stopPropagation();
+				onDropRoot(raw.split('\n').filter(Boolean));
+			}}
+			className="kb-sec-head"
+			/*
+			 * ★ 2026-11-02（S5 · 双行节头）：
+			 *   · 标题 12.5/650 正常色（第一行）+ 统计副标题 10px 最弱色（第二行）
+			 *   · 高度 38（有副标题时）/ 32（无副标题的老调用方）
+			 *   · 折叠箭头与图标**贴第一行**（alignSelf: flex-start + marginTop）
+			 *   · 右侧：hover ⇒ 工具；非 hover ⇒ 计数胶囊（有副标题时不显示，避免挤占）
+			 */
+			style={{
+				display: 'flex', alignItems: 'center', gap: 7, height: sub ? 38 : 32,
+				padding: '0 8px 0 5px', background: 'transparent', borderTop: 0,
+				cursor: 'pointer', userSelect: 'none', minWidth: 0,
+			}}
+		>
 			<span style={{
-				height: 16, minWidth: 18, padding: '0 6px', boxSizing: 'border-box',
-				display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-				borderRadius: 8, background: 'rgba(127,127,127,.18)', color: c.fgDim,
-				fontSize: 10, fontWeight: 600, fontVariantNumeric: 'tabular-nums',
-			}}>{count}</span>
-		)}
-		<span style={{ flex: 1 }} />
-		{extra ? <span className="kb-sec-extra" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>{extra}</span> : null}
-	</div>
-);
+				width: 11, flex: '0 0 11px', color: c.fgFaint, fontSize: 8, textAlign: 'center', opacity: .5,
+				alignSelf: 'flex-start', marginTop: sub ? 10 : 11,
+				transform: expanded ? 'rotate(90deg)' : 'none', transition: 'transform .12s ease',
+			}}>▸</span>
+			{icon ? <span style={{ fontSize: 13, lineHeight: 1, flex: '0 0 auto', alignSelf: 'flex-start', marginTop: sub ? 7 : 8 }}>{icon}</span> : null}
+			<span style={{ display: 'flex', flexDirection: 'column', gap: 1, flex: '1 1 auto', minWidth: 0 }}>
+				<span
+					title={title}
+					style={{ fontSize: 12.5, fontWeight: 650, letterSpacing: '.01em', color: c.fg, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+				>{title}</span>
+				{sub ? (
+					<span style={{ fontSize: 10, color: c.fgFaint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sub}</span>
+				) : null}
+			</span>
+			{extra && hover ? (
+				<span className="kb-sec-extra" style={{ display: 'flex', alignItems: 'center', gap: 4, flex: '0 0 auto' }}>{extra}</span>
+			) : (count !== undefined && !sub ? (
+				<span style={{
+					height: 18, minWidth: 20, padding: '0 7px', boxSizing: 'border-box', flex: '0 0 auto',
+					display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+					borderRadius: 6, background: 'rgba(127,127,127,.13)', color: c.fgDim,
+					fontSize: 10, fontWeight: 600, fontVariantNumeric: 'tabular-nums',
+				}}>{count}</span>
+			) : null)}
+		</div>
+	);
+};
 
 // ─── 树 ────────────────────────────────────────────────────────────────────
 
-const TreeRow = ({ node, depth, selectedPaths, openSet, onOpen, onMove, onToggleSelect, onToggleOpen, onRangeSelect }: {
+/**
+ * 递归数一个目录下的 md 篇数（★ 2026-11-02，V3：知识库行右端显示「N 篇」）。
+ * 优先走 children（准确、排除子目录里的非 md）；没有 children 才退回 count。
+ */
+function countMdDeep(node: KbTreeNode): number {
+	if (!node.isFolder) { return /\.md$/i.test(node.name) ? 1 : 0; }
+	if (node.children?.length) {
+		let n = 0;
+		for (const ch of node.children) { n += countMdDeep(ch); }
+		return n;
+	}
+	return typeof node.count === 'number' ? node.count : 0;
+}
+
+const TreeRow = ({ node, depth, selectedPaths, openSet, onOpen, onMove, onToggleSelect, onToggleOpen, onRangeSelect, rowTitle, currentKb, kbStats }: {
 	node: KbTreeNode; depth: number; selectedPaths?: readonly string[];
 	/**
 	 * ★ 2026-10-23（方案 A）：展开状态**提升到父级**，TreeRow 变成受控组件。
@@ -422,11 +456,35 @@ const TreeRow = ({ node, depth, selectedPaths, openSet, onOpen, onMove, onToggle
 	onToggleOpen?: (path: string) => void;
 	/** Shift + 单击：按可见顺序取区间（锚点由父组件记） */
 	onRangeSelect?: (path: string) => void;
+	/** ★ 2026-11-02：知识库行（`知识库列表/<库>`）的悬停说明：篇数 / 是否已关联飞书 */
+	rowTitle?: string;
+	/** ★ 2026-11-02（V3）：当前正在看的库名 ⇒ 那一行高亮（淡蓝底 + 内侧竖条） */
+	currentKb?: string;
+	/**
+	 * ★ 2026-11-02（V3 修正）：知识库名 → 篇数。
+	 *   来源是 `/api/view-data` 的 `kbs`（服务端 `listKnowledgeBases` 算好的），
+	 *   ⚠ **不能**用 `countMdDeep(node)` 代替：树的库节点**没有 children**（懒加载）⇒ 恒为 0 ✗
+	 *   （真机实测 6 个库全显示「0 篇」，就是踩了这个）。
+	 */
+	kbStats?: ReadonlyMap<string, number>;
 }) => {
 	const open = openSet.has(node.path);
 	const isFolder = node.isFolder;
 	const hasChildren = !!node.children?.length;
 	const selected = !!selectedPaths?.includes(node.path);
+	/*
+	 * V3：知识库行 = `知识库列表/<库>`（两段）**且**服务端确认识别为知识库。
+	 *   ⚠ 只靠路径会把 `.archive-2026-11-02` 这类目录也算成库（真机实测它带了 📗）⇒
+	 *     用 `kbStats`（`listKnowledgeBases` 的结果）做白名单；宿主没注入时退回纯路径判定。
+	 */
+	const kbName = String(node.name);
+	const pathLooksKb = isFolder && /(^|[\\/])知识库列表[\\/][^\\/]+$/.test(String(node.path));
+	const isKbRow = pathLooksKb && (kbStats ? kbStats.has(kbName) : true);
+	const isCurrentKb = Boolean(isKbRow && currentKb && kbName === String(currentKb));
+	/** 篇数：优先用服务端 `kbs.docs`；没有该库才退回递归统计 */
+	const kbDocs = isKbRow ? (kbStats?.get(kbName) ?? countMdDeep(node)) : 0;
+	/** N1：hover 才出右侧动作（⋯），平时不占版面对齐位置 */
+	const [hovering, setHovering] = useState(false);
 
 	const toggle = useCallback(() => {
 		if (isFolder && hasChildren) { onToggleOpen?.(node.path); }
@@ -440,6 +498,9 @@ const TreeRow = ({ node, depth, selectedPaths, openSet, onOpen, onMove, onToggle
 				role="treeitem"
 				// 事件委托用：滚动容器统一挂 contextmenu，靠这两个属性反查是谁被右键
 				data-kb-path={node.path}
+				/* ★ 2026-11-02：不破坏 Obsidian 风格（不加图标/计数），信息放**悬停**里 */
+				title={rowTitle}
+
 				data-kb-folder={isFolder ? '1' : '0'}
 				/* 拖拽整理（2026-10-23）：只有目录是投放目标；数据从 dataTransfer 取，
 				   不引入全局 drag state（省一次整树重渲染）*/
@@ -489,38 +550,62 @@ const TreeRow = ({ node, depth, selectedPaths, openSet, onOpen, onMove, onToggle
 				 *   ③ 折叠箭头从**左侧移到右侧**，且只有目录才有（Obsidian 的 `nav-collapse-icon`）
 				 *   ④ 选中是**低对比底色 + 正常前景**（不是 VS Code 那种整行高亮蓝）
 				 */
+				/*
+				 * ★ 2026-11-02（用户选定 V3 · Notion 文档库）：
+				 *   ① 行高 27→30、字号 13→13.5、圆角 4→6（胶囊式 hover）
+				 *   ② **去掉竖导引线**，改 18px/层纯缩进（卡片里再画线会和卡片边框打架）
+				 *   ③ 加类型图标：知识库 📗 / 目录 📁 / 文件 📄（一眼分层）
+				 *   ④ 选中 = .11 弱底 + 白字；**当前库** = 淡蓝底 + 内侧 2px 竖条 + 600 字重
+				 *   ⑤ 知识库行右端显示「N 篇」（递归统计 md，弱色小字）
+				 */
 				style={{
-					display: 'flex', alignItems: 'stretch', height: 27, paddingRight: 6,
-					cursor: 'pointer', fontSize: 13, position: 'relative',
-					/* Obsidian：选中是**圆角浅底**（不是整行高亮蓝），并且右侧留 6px 空隙 */
-					background: selected ? 'rgba(127,127,127,.16)' : 'transparent',
-					borderRadius: 4, marginRight: 6,
-					/* Obsidian 里目录与文件**同色同字重**，不做区分 */
-					color: c.fg,
+					display: 'flex', alignItems: 'center', height: 32,
+					paddingLeft: 4 + depth * 18, paddingRight: 8, margin: '1px 4px',
+					cursor: 'pointer', fontSize: 13.5, position: 'relative',
+					borderRadius: 6,
+					background: selected ? 'rgba(127,127,127,.12)' : (isCurrentKb ? 'rgba(55,148,255,.10)' : 'transparent'),
+					color: (selected || isCurrentKb) ? '#fff' : c.fg,
+					boxShadow: isCurrentKb ? 'inset 2px 0 0 0 var(--dsw-alias-brand-primary, var(--vscode-focusBorder, #3794ff))' : 'none',
+					fontWeight: isCurrentKb ? 600 : 400,
 				}}
-				onMouseEnter={e => { if (!selected) { (e.currentTarget as HTMLElement).style.background = 'rgba(127,127,127,.09)'; } }}
-				onMouseLeave={e => { if (!selected) { (e.currentTarget as HTMLElement).style.background = 'transparent'; } }}
+				onMouseEnter={e => { setHovering(true); if (!selected && !isCurrentKb) { (e.currentTarget as HTMLElement).style.background = 'rgba(127,127,127,.07)'; } }}
+				onMouseLeave={e => { setHovering(false); if (!selected && !isCurrentKb) { (e.currentTarget as HTMLElement).style.background = 'transparent'; } }}
 			>
-				{/* 缩进导引：每层一条竖线（Obsidian `--nav-indentation-guide-color`） */}
-				{Array.from({ length: depth }).map((_, i) => (
-					<span
-						key={'g' + i}
-						style={{ width: 16, flex: '0 0 16px', alignSelf: 'stretch', borderLeft: `1px solid rgba(127,127,127,${i === depth - 1 ? .35 : .2})` }}
-					/>
-				))}
 				{/*
-				 * ★ 2026-10-24（照 Obsidian 原文排版复刻）：
-				 *   · 折叠箭头在**名字左侧**（文件也占位，保证同层名字左边缘对齐）
-				 *   · **没有任何文件图标**（Obsidian 默认无图标；非 md 靠名字里的扩展名区分）
-				 *   · **不显示大小/子项数**（Obsidian 树里没有这一列；悬停也不显示）
+				 * ★ 2026-11-02（用户：与 mockup 不一致）：
+				 *   顺序必须是 **折叠箭头 → 图标 → 文本**（mockup 口径）。
+				 *   之前实现成了「图标 → 折叠箭头 → 文本」⇒ 视觉上图标顶到最左，看起来像"文件夹在控制折叠" ✗
+				 *   ⚠ 文件没有箭头，但**保留 10px 占位**，保证同层文本左边缘对齐。
 				 */}
-				<span style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 1, minWidth: 0, paddingLeft: depth === 0 ? 6 : 2 }}>
-					<span style={{
-						width: 12, flex: '0 0 12px', textAlign: 'center', color: c.fgFaint, fontSize: 9,
-						transform: isFolder && open ? 'rotate(90deg)' : 'none', transition: 'transform .12s ease',
-					}}>{isFolder && hasChildren ? '▸' : ''}</span>
-					<span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{node.name}</span>
+				<span style={{
+					width: 10, flex: '0 0 10px', textAlign: 'center', color: c.fgFaint, fontSize: 8, opacity: .6,
+					transform: isFolder && open ? 'rotate(90deg)' : 'none', transition: 'transform .12s ease',
+				}}>{isFolder && hasChildren ? '▸' : ''}</span>
+				<span style={{ width: 15, flex: '0 0 15px', textAlign: 'center', fontSize: 12, lineHeight: 1 }}>
+					{isKbRow ? '📗' : (isFolder ? '📁' : '📄')}
 				</span>
+				<span style={{ display: 'flex', alignItems: 'center', gap: 7, flex: 1, minWidth: 0 }}>
+					<span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{node.name}</span>
+					{isKbRow ? (
+						<span style={{ marginLeft: 'auto', paddingLeft: 6, flex: '0 0 auto', fontSize: 10, color: c.fgFaint, fontVariantNumeric: 'tabular-nums' }}>{kbDocs} 篇</span>
+					) : null}
+				</span>
+				{/* N1：hover 才出现的动作。⋯ 直接派发 contextmenu ⇒ 复用既有的右键菜单，不新增管道 */}
+				{hovering && !selected ? (
+					<span
+						role="button"
+						title="更多"
+						aria-label="更多"
+						data-kb-row-more="1"
+						onClick={ev => {
+							ev.stopPropagation();
+							const el = ev.currentTarget as HTMLElement;
+							const r = el.getBoundingClientRect();
+							el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: r.left, clientY: r.bottom }));
+						}}
+						style={{ flex: '0 0 auto', marginLeft: 4, padding: '0 4px', fontSize: 12, lineHeight: '20px', color: c.fgFaint, cursor: 'pointer', borderRadius: 3 }}
+					>⋯</span>
+				) : null}
 			</div>
 			{isFolder && open && hasChildren && node.children!.map(child => (
 				<TreeRow
@@ -534,6 +619,8 @@ const TreeRow = ({ node, depth, selectedPaths, openSet, onOpen, onMove, onToggle
 					onToggleSelect={onToggleSelect}
 					onToggleOpen={onToggleOpen}
 					onRangeSelect={onRangeSelect}
+					currentKb={currentKb}
+					kbStats={kbStats}
 				/>
 			))}
 		</>
@@ -1285,7 +1372,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 	const toggle = (k: keyof typeof expanded) => setExpanded(v => ({ ...v, [k]: !v[k] }));
 
 	// 双链取数：优先查注入的全量索引（按选中节点）；没有选中/没有索引时退回 data 里的示例值。
-	// ⚠ 键要**归一化**再查：IDE 侧注入的是 `笔记/…` 相对路径，插件页注入的是绝对路径，
+	// ⚠ 键要**归一化**再查：IDE 侧注入的是 `知识库列表/…` 相对路径，插件页注入的是绝对路径，
 	//   两边分隔符还可能一个正斜杠一个反斜杠 ⇒ 统一成小写正斜杠，避免"索引有、查不到"。
 	const linksIndex = useMemo(() => {
 		if (!data.links) { return undefined; }
@@ -1339,6 +1426,85 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 	const noteTree = useMemo(() => filterByTag(applySort(refine(data.tree, q), sortKey), tagPathSet), [data.tree, q, sortKey, tagPathSet]);
 	const libTotal = useMemo(() => countOf(libTree), [libTree]);
 	const noteTotal = useMemo(() => countOf(noteTree), [noteTree]);
+
+	/*
+	 * ★ 2026-11-02（P1）：`知识库列表/<名称>/` = 一个知识库。
+	 *   数据来自 `/api/view-data` 的 `kbs`（服务端 `listKnowledgeBases`）⇒ 前端只负责展示：
+	 *   节头一枚「📚 N 库 · 🔗 M」小签，行内只加**悬停说明**（树刻意复刻 Obsidian，不加图标/列 ✗）。
+	 */
+	const kbList: any[] = useMemo(() => (Array.isArray((data as any)?.kbs) ? (data as any).kbs : []), [data]);
+	const kbMap = useMemo(() => new Map(kbList.map((k: any) => [String(k.name), k])), [kbList]);
+	/** ★ 2026-11-02（V3）：库名 → 篇数（树里库行右端显示「N 篇」，来自服务端 kbs.docs） */
+	const kbStats = useMemo(() => new Map<string, number>(kbList.map((k: any) => [String(k.name), Number(k.docs) || 0])), [kbList]);
+	const kbBound = useMemo(() => kbList.filter((k: any) => k && k.hasFeishu).length, [kbList]);
+	const kbTitleOf = useCallback((n: any) => {
+		const k: any = kbMap.get(String(n?.name ?? ''));
+		if (!k) { return undefined; }
+		const parts = ['知识库 · ' + String(k.docs ?? 0) + ' 篇'];
+		parts.push(k.hasFeishu ? '已关联飞书' : '未关联飞书');
+		return parts.join(' · ');
+	}, [kbMap]);
+
+	/*
+	 * ★ 2026-11-02：中间栏「知识库主页」里点库卡片 ⇒ 回到侧栏**定位到该知识库**。
+	 *
+	 * 为什么用 postMessage：主页在 iframe 里（`/x/kb/home`），React 状态在父文档 ⇒ 只有消息这一条路。
+	 * 为什么按 **名字** 找节点而不是拼路径：树的 `node.path` 是绝对路径，拼错就静默失败（踩过）；
+	 * 用 `noteTree` 里现成的顶层节点最稳（找不到就如实提示，不假装成功）。
+	 */
+
+	/*
+	 * ★ 2026-11-02：**预热总览**。冷启首次 `/x/kb/home` 实测 750ms（之后 23ms），
+	 *   面板空闲时就先打一枪，把它变成"热"的 ⇒ 用户点总览时直接秒开。
+	 *   失败无所谓（离线/接口没起），只是没预热到。
+	 */
+	useEffect(() => {
+		const t = window.setTimeout(() => {
+			try { void fetch('/x/kb/home', { cache: 'force-cache' }); } catch { /* 预热失败忽略 */ }
+		}, 900);
+		return () => window.clearTimeout(t);
+	}, []);
+
+	useEffect(() => {
+		/** 统一落点：把左侧树展开到该库（消息与广播两条路都走它） */
+		const applyFocus = (name: string) => {
+			const node = (noteTree as any[]).find((n) => String(n?.name ?? '') === name);
+			if (!node) { showToast('左侧没找到「' + name + '」（刷新后重试）'); return; }
+			setTab('doc'); setOpenViews(o => ({ ...o, home: false }));   // 定位到库 ⇒ 收起总览页签
+			if (!expanded.notes) { toggle('notes'); }
+			onToggleOpen?.(node.path);
+			showToast('已定位到「' + name + '」');
+		};
+		const onHomeMsg = (ev: MessageEvent) => {
+			const d: any = ev?.data;
+			if (!d || d.source !== 'kb-home' || d.type !== 'open-kb' || !d.kb) { return; }
+			applyFocus(String(d.kb));
+		};
+		/*
+		 * ★ 2026-11-02：主页开成**独立页签**后，它在另一个文档里 ⇒ `postMessage` 到的是壳、
+		 *   不是本页 ✗。改用 localStorage 广播（同源跨文档，`storage` 事件在别的文档触发 ✓）。
+		 */
+		const onStorage = (ev: StorageEvent) => {
+			if (ev.key !== 'vssaros.kb.focus' || !ev.newValue) { return; }
+			try {
+				const j = JSON.parse(ev.newValue);
+				if (j && j.kb) { applyFocus(String(j.kb)); }
+			} catch { /* 坏数据忽略 */ }
+		};
+		window.addEventListener('message', onHomeMsg);
+		window.addEventListener('storage', onStorage);
+		return () => {
+			window.removeEventListener('message', onHomeMsg);
+			window.removeEventListener('storage', onStorage);
+		};
+		/*
+		 * ⚠ 依赖里**不能**写 `showToast`：它在本组件里是**后面**才声明的 `const`（L1500+），
+		 *   而依赖数组是在 hook 调用点（更靠前）求值的 ⇒ 会抛
+		 *   `ReferenceError: Cannot access 'xxx' before initialization`（TDZ）
+		 *   ⇒ **整个面板渲染崩溃、页面白屏**（2026-11-02 真机踩到，报错是压缩后的 `'ct'`，极难定位）。
+		 *   回调是在消息到达时才执行，那时 `showToast` 早已初始化 ✓
+		 */
+	}, [noteTree, expanded, toggle, onToggleOpen]);
 
 	// 搜索时强制"全展开"：命中项基本都在子目录里，保持折叠会让用户只看到一串文件夹 ✗
 	const openSetView = useMemo<ReadonlySet<string>>(
@@ -1440,6 +1606,15 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 	 */
 	const [tabs, setTabs] = useState<{ path: string; title: string }[]>([]);
 	const [activePath, setActivePath] = useState("");
+	/**
+	 * ★ 2026-11-02（V3）：当前库 = `activePath` 里 `知识库列表/<库>/…` 的那一段。
+	 *   用它给树里对应知识库行加高亮（淡蓝底 + 内侧竖条），解决"不知道自己在哪个库"。
+	 */
+	const currentKb = (() => {
+		const segs = String(activePath || '').replace(/\\/g, '/').split('/');
+		const i = segs.lastIndexOf('知识库列表');
+		return i >= 0 && segs[i + 1] ? segs[i + 1] : '';
+	})();
 	/** 每个 Tab 的现场（doc / draft / 滚动位置）；切走时存、切回时还原 */
 	const tabSnapRef = useRef(new Map<string, { doc: unknown; draft: string | null; scroll: number }>());
 	/** 细条与正文之间要还原的滚动位置（等内容渲染完再滚，否则滚不动） */
@@ -1629,6 +1804,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 		return { ok: true, mtime: r?.mtime };
 	};
 
+
 	/** 拉一次编辑器 bundle（同源；失败就记住失败，别每次重试刷控制台） */
 	const ensureEditor = (): Promise<boolean> => new Promise((resolve) => {
 		const w = window as unknown as { __KB_EDITOR_MOUNT__?: unknown };
@@ -1707,13 +1883,22 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 	 * ★ 2026-10-29（用户：「点设置 / 关系图谱要显示成**带页签**的页面，与打开文档的页签并列」）：
 	 *   一个状态管三块内容：文档 / 设置 / 关系图谱。页签条上永远有这两个页签，可点击来回切。
 	 */
-	const [activeView, setTab] = useState<'doc' | 'settings' | 'graph' | 'canvas'>('doc');
+	const [activeView, setTab] = useState<'doc' | 'settings' | 'graph' | 'canvas' | 'home'>('doc');
+	/**
+	 * ★ 2026-11-02（用户：总览加载很慢）：iframe 首帧前先给**骨架屏**，
+	 *   否则那 0.5–0.8 秒就是一片黑（看着像挂了）。`onLoad` 后淡入真内容。
+	 */
+	const [homeLoaded, setHomeLoaded] = useState(false);
 	/**
 	 * ★ 2026-10-29（用户：「设置 / 关系图谱页签**只有点击对应按钮**才会打开」）：
 	 *   这两个页签**不常驻**在页签条上 —— 只有用户点了 ⚙ / 🕸 才出现；
 	 *   回到文档时自动收起（点当前激活的页签也能关掉它）。
 	 */
-	const [openViews, setOpenViews] = useState<{ settings: boolean; graph: boolean; canvas: boolean }>({ settings: false, graph: false, canvas: false });
+	/*
+	 * ★ 2026-11-02（用户截图要求）：`home` 也是**页签条上的一个页签**（与文档/设置/图谱/导图并列），
+	 *   点左侧「🏠 总览」⇒ 在这里多一个「总览」页签，切页签即可，不需要"返回"、也不另开宿主页签。
+	 */
+	const [openViews, setOpenViews] = useState<{ settings: boolean; graph: boolean; canvas: boolean; home: boolean }>({ settings: false, graph: false, canvas: false, home: false });
 	/*
 	 * ★ 2026-10-28：**宿主富设置**（飞书同步/目录映射/CLI）也要在「中栏页签」里显示。
 	 *   它属于面板层（另一个 React 树）⇒ 这里只给一个空容器，由宿主往里渲染
@@ -1798,7 +1983,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 	/** 编辑框引用（粘贴/拖入附件后要把 Markdown 插到**光标处**） */
 	const editorRef = useRef<HTMLTextAreaElement | null>(null);
 
-	/** 粘贴 / 拖入图片 ⇒ 上传到 `笔记/_assets/`，再把 `![](相对路径)` 插到光标位置 */
+	/** 粘贴 / 拖入图片 ⇒ 上传到 `知识库列表/_assets/`，再把 `![](相对路径)` 插到光标位置 */
 	const insertAsset = async (file: File) => {
 		const up = actions?.uploadAsset;
 		if (!up || !doc?.path) {
@@ -1845,6 +2030,13 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 		const load = actions?.loadDoc;
 		if (!load) { return false; }
 		const name = fallbackName || String(path).split("/").pop() || path;
+		/*
+		 * ★ 2026-11-02（用户：总览时点其他文档，要求自动切到该文档页签）：
+		 *   正文都在这个函数里落地 ⇒ 这里把 activeView 拉回 'doc' 是**唯一收口点**，
+		 *   覆盖：左树点击 / 搜索结果 / 双链跳转 / 图谱点节点 等所有打开正文的路径。
+		 *   ⚠ 只切视图，**不动 openViews.home** —— 总览页签要留在页签条上（用户明确要求）。
+		 */
+		setTab('doc');
 		ensureTab(path, name);      // 每次打开正文都确保有对应 Tab
 		const kind = assetKindOf(path);
 		if (kind && actions?.assetUrl) {
@@ -2010,6 +2202,11 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 	const onOpenNode = useCallback((node: KbTreeNode) => {
 		// 普通单击 = 单选举中（并把选中集收敛成这一项）；目录不改变选中集
 		if (!node.isFolder) { setSelected([node.path]); }
+		/*
+		 * ★ 2026-11-02：点**文件**就把中栏切回文档视图（资产预览/内嵌正文/交给宿主三条路都覆盖）。
+		 *   点目录不切 —— 目录只是展开/收起。
+		 */
+		if (!node.isFolder) { setTab('doc'); }
 		// 有 loadDoc（插件页 / 工作台面板）⇒ 正文在本视图右栏内嵌显示
 		// 非 Markdown 文件（图片/PDF/音视频）：`/api/doc` 是文本读取，直接读会报"读取失败"
 		// ⇒ 有资源路由就渲染预览，没有就继续走原逻辑（IDE 侧由编辑器接管）
@@ -2023,6 +2220,15 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 			loadIntoView(node.path, node.name);
 			return;
 		}
+		/*
+		 * ★ 2026-11-02（真机踩到，破坏性）：文件夹**到此为止**。
+		 *   以前这里无条件 `actions.openNode(path)` ⇒ 点一个目录，宿主会当文档打开，
+		 *   结果是「读不到正文：不是文件：E:\…\知识库列表\财经」，而且整个树被顶掉（树消失）✗
+		 *   （库节点没有 children 时最明显：`toggle()` 里 `isFolder && hasChildren` 不成立，
+		 *     点击对文件夹变成"打开"）。
+		 *   展开/收起由 `TreeRow` 的 `onToggleOpen` 负责，本函数只处理"打开内容"。
+		 */
+		if (node.isFolder) { return; }
 		actions?.openNode?.(node.path);
 	}, [actions]);
 
@@ -2115,13 +2321,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 					setOpenViews(o => ({ ...o, graph: true }));
 						setTab('graph');
 				}} /> : null}
-				{/*
-				 * 导图（.canvas）：只有宿主能「就地渲染」时才出现。
-				 * 宿主声明 `canvas: true`（服务端有 /api/canvas）⇒ 视图自己画；
-				 */}
-				{actions?.canvas
-					? <IconBtn title="思维导图（.canvas）" label="🗺" onClick={() => { setOpenViews(o => ({ ...o, canvas: true })); setTab('canvas'); }} />
-					: null}
+				{/* ★ 2026-11-02（用户要求）：移除「思维导图」按钮 —— 视图实现保留，只是不再有入口 */}
 				{actions?.feishuSync ? <IconBtn title="同步飞书" label="☁" onClick={() => actions?.feishuSync?.()} /> : null}
 
 				{/* 库下拉：列表 + 新建 + 本地载入（照 IDE 侧「＋ 配置文件夹为知识库…」的位置） */}
@@ -2370,6 +2570,18 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 								},
 							},
 
+							/*
+							 * ★ 2026-11-02：**知识库 = `知识库列表/<库>` 这个文件夹** ⇒ 只有这种两段路径才给「关联飞书」。
+							 *   ⚠ 树里 `menu.path` 是**绝对路径**（`E:\…\知识库列表\01_学习`）⇒ 正则必须同时认 `\` 与 `/`（踩过一次）。
+							 *   绑定写到 `<库>/.kb-feishu.json`（跟着库走，库被拷走/发布也不丢）。
+							 */
+							...(menu.paths.length === 1 && /(^|[\\/])知识库列表[\\/][^\\/]+$/.test(String(menu.path || '')) ? [{
+								label: '关联飞书知识库…',
+								run: () => {
+									if (actions?.useInlineDialogs) { setDialog({ kind: 'kbBind', path: String(menu.path || ''), value: '' } as any); void loadBindSpaces(); return; }
+									showToast('当前宿主不支持内联对话框，请到设置里配置');
+								},
+							}] : []),
 							// 2026-10-26：右键菜单补齐「复制绝对路径 / 在资源管理器中打开」
 							{
 								label: '复制绝对路径',
@@ -2435,28 +2647,67 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 				)}
 
 				{/* 库（原料区）—— IDE sideview 的主体第二块，React 版原先缺这一节 */}
-				<div className="kb-sec" style={{ borderBottom: '1px solid #2b2b2b' }}>
+				{/* ★ 2026-11-02：总览只留**入口** —— 整页放在中间栏（KbHomeEditorPane），侧栏不再堆卡片 */}
+				<div style={{ padding: '6px 8px' }}>
+					<button
+						type="button"
+						data-kb-homeentry=""
+						title="在中间栏打开知识库主页（数据栏 / 库卡片 / 最近编辑）"
+						onClick={() => {
+			/*
+			 * ★ 2026-11-02（用户截图口径）：点这里 = 在**本页面中栏的页签条**上开一个「总览」页签，
+			 *   与文档 / 设置 / 图谱 / 导图并列 ⇒ 切页签来回看，**不需要"返回"**，也不另开宿主工作台页签。
+			 */
+			setOpenViews(o => ({ ...o, home: true }));
+			setHomeLoaded(false);   // 重新打开 ⇒ 先骨架屏，再淡入
+			setTab('home');
+		}}
+						style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', textAlign: 'left', padding: '5px 7px', borderRadius: 6, background: 'transparent', border: `1px solid ${c.line}`, color: c.fgDim, fontSize: 12, cursor: 'pointer' }}
+					>
+						<span>🏠</span><span>总览</span>
+						<span style={{ marginLeft: 'auto', fontSize: 10.5, color: c.fgFaint, whiteSpace: 'nowrap' }}>
+							📚 {kbList.length} · ✎ {Number((data as any)?.noteCount ?? 0)}{kbBound ? ` · 🔗 ${kbBound}` : ''}
+						</span>
+					</button>
+				</div>
+
+				{/* ★ 2026-11-02（V3）：每节 = 一张卡片（淡底 + 细边 + r10），节头是卡片内标题 */}
+				<div className="kb-sec" style={{
+					margin: '8px 6px', padding: '4px 4px 6px',
+					background: 'rgba(127,127,127,.04)',
+					border: '1px solid rgba(127,127,127,.08)',
+					borderRadius: 10,
+				}}>
 					<SectionHeader
-						title="库"
+						icon="🗂"
+						sub={`${libTotal} 个文件`}
+						title="数据源"
 						count={String(libTotal)}
 						expanded={expanded.library}
 						onToggle={() => toggle('library')}
-						onDropRoot={paths => onMoveNode(paths, '库')}
+						onDropRoot={paths => onMoveNode(paths, '数据源')}
 					/>
 					{expanded.library && libTree.map(node => (
 						<TreeRow key={node.path} node={node} depth={0} selectedPaths={selected} openSet={openSetView} onOpen={onOpenNode} onMove={onMoveNode}
-							onToggleSelect={onToggleSelect} onToggleOpen={onToggleOpen} onRangeSelect={onRangeSelect} />
+							onToggleSelect={onToggleSelect} onToggleOpen={onToggleOpen} onRangeSelect={onRangeSelect} currentKb={currentKb} kbStats={kbStats} />
 					))}
 				</div>
 
 				{/* 笔记 */}
-				<div className="kb-sec" style={{ borderBottom: '1px solid #2b2b2b' }}>
+				<div className="kb-sec" style={{
+					margin: '8px 6px', padding: '4px 4px 6px',
+					background: 'rgba(127,127,127,.04)',
+					border: '1px solid rgba(127,127,127,.08)',
+					borderRadius: 10,
+				}}>
 					<SectionHeader
-						title="笔记"
+						icon="📚"
+						sub={`${kbList.length} 个知识库 · ${noteTotal} 篇${kbBound ? ' · 已绑飞书 ' + kbBound : ''}`}
+						title="知识库列表"
 						count={String(noteTotal)}
 						expanded={expanded.notes}
 						onToggle={() => toggle('notes')}
-						onDropRoot={paths => onMoveNode(paths, '笔记')}
+						onDropRoot={paths => onMoveNode(paths, '知识库列表')}
 						extra={
 							/*
 							 * ★ 2026-10-26（方案 B · 单行收纳）：
@@ -2464,6 +2715,23 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 							 *   刻意**不放** 4 个独立图标 —— 340px 面板里放不下，历史上就被压成竖排单字。
 							 */
 							<span style={{ display: "flex", alignItems: "center", gap: 4, flex: "0 0 auto", whiteSpace: "nowrap" }}>
+								{/* 知识库统计小签：N 库 / 已绑飞书 M（不占行宽，窄面板也放得下） */}
+								{kbList.length ? (
+									<span title={'知识库 ' + kbList.length + ' 个' + (kbBound ? '，其中 ' + kbBound + ' 个已关联飞书' : '')}
+										style={{ height: 20, padding: '0 6px', fontSize: 10.5, borderRadius: 3, flex: '0 0 auto', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', color: c.fgDim, border: `1px solid ${c.line}` }}>
+										📚 {kbList.length}{kbBound ? ' · 🔗' + kbBound : ''}
+									</span>
+								) : null}
+								{/* ★ 2026-11-02（P1）：新建知识库 = 在「知识库列表」下建一个文件夹（可选关联飞书在下一步） */}
+								<button
+									type="button"
+									title="新建知识库（在「知识库列表」下建一个文件夹）"
+									onClick={e => { e?.stopPropagation?.(); setDialog({ kind: "newKb", value: "新知识库 1" } as any); }}
+									style={{
+										height: 20, padding: "0 6px", fontSize: 10.5, cursor: "pointer", borderRadius: 3, flex: "0 0 auto",
+										background: "transparent", color: c.fgDim, border: `1px solid ${c.line}`, whiteSpace: "nowrap",
+									}}
+								>＋库</button>
 								<button
 									type="button"
 									title="排序（点击选择）与更多操作"
@@ -2519,7 +2787,6 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 									{ label: "体检", run: () => actions?.runLint?.(), show: !!actions?.runLint },
 									{ label: "查重", run: () => actions?.runDedup?.(), show: !!actions?.runDedup },
 									{ label: "审核", run: () => actions?.reviewQueue?.(), show: !!actions?.reviewQueue },
-									{ label: "思维导图", run: () => { setOpenViews(o => ({ ...o, canvas: true })); setTab('canvas'); }, show: !!actions?.canvas },
 								].filter(item => item.show).map(item => (
 									<div
 										key={item.label}
@@ -2556,13 +2823,14 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 
 					{expanded.notes && noteTree.map(node => (
 						<TreeRow key={node.path} node={node} depth={0} selectedPaths={selected} openSet={openSetView} onOpen={onOpenNode} onMove={onMoveNode}
-							onToggleSelect={onToggleSelect} onToggleOpen={onToggleOpen} onRangeSelect={onRangeSelect} />
+							onToggleSelect={onToggleSelect} onToggleOpen={onToggleOpen} onRangeSelect={onRangeSelect} currentKb={currentKb} kbStats={kbStats} />
 					))}
 				</div>
 
 				{/* 标签 */}
-				<div className="kb-sec" style={{ borderBottom: '1px solid #2b2b2b' }}>
-					<SectionHeader title="标签分类" count={String(data.tags.length)} expanded={expanded.tags} onToggle={() => toggle('tags')} />
+				<div className="kb-sec" style={{ margin: '8px 6px', padding: '4px 4px 6px', background: 'rgba(127,127,127,.04)', border: '1px solid rgba(127,127,127,.08)', borderRadius: 10 }}>
+					<SectionHeader icon="🏷"
+						sub={`${data.tags.length} 个标签`} title="标签分类" count={String(data.tags.length)} expanded={expanded.tags} onToggle={() => toggle('tags')} />
 					{expanded.tags && (
 						<div style={{ padding: '4px 10px 8px' }}>
 							{/* 筛选状态条：点标签后这里会亮出「筛选：#xxx ×」，否则用户不知道树为什么变短了 */}
@@ -2621,14 +2889,17 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 															actions?.pickTag?.(t.tag);
 														}}
 														title={tagFilter === t.tag ? '再点一次取消筛选' : ('筛选出带 #' + t.tag + ' 的笔记')}
-														style={{
-															display: 'flex', alignItems: 'center', gap: 4, height: 21, padding: '0 7px',
-															background: tagFilter === t.tag ? 'var(--dsw-alias-button-primary-fill, var(--vscode-button-background, #0e639c))' : '#2a2d2e',
-															border: '1px solid ' + (tagFilter === t.tag ? 'transparent' : '#383838'),
-															borderRadius: 11, fontSize: 11,
-															color: tagFilter === t.tag ? 'var(--dsw-alias-label-primary-inverted, var(--vscode-button-foreground, #fff))' : '#c8c8c8',
-															cursor: 'pointer',
-														}}
+															style={{
+																display: 'flex', alignItems: 'center', gap: 4, height: 21, padding: '0 7px',
+																// ★ 2026-11-02（用户报「dsh 侧切外观后部分页面没跟着变」）：**未选中态原来写死深色**
+																//   （底 #2a2d2e / 边 #383838 / 字 #c8c8c8）⇒ 浅色外观下这一片标签云仍是深底浅字
+																//   （真机取证：切浅色后仍有 50 个元素保持深色，全是这些胶囊）。改为走调色板 `c` ✓
+																background: tagFilter === t.tag ? 'var(--dsw-alias-button-primary-fill, var(--vscode-button-background, #0e639c))' : c.hover,
+																border: '1px solid ' + (tagFilter === t.tag ? 'transparent' : c.line),
+																borderRadius: 11, fontSize: 11,
+																color: tagFilter === t.tag ? 'var(--dsw-alias-label-primary-inverted, var(--vscode-button-foreground, #fff))' : c.fg,
+																cursor: 'pointer',
+															}}
 													>#{t.tag}<span style={{ fontSize: 9.5, color: c.fgFaint }}>{t.count}</span></button>
 												))}
 											</div>
@@ -2637,7 +2908,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 								);
 							})}
 							{data.untaggedCount ? (
-								<span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, height: 21, padding: '0 7px', border: '1px dashed #555', borderRadius: 11, fontSize: 11, color: c.fgDim, marginTop: 4 }}>
+								<span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, height: 21, padding: '0 7px', border: `1px dashed ${c.line}`, borderRadius: 11, fontSize: 11, color: c.fgDim, marginTop: 4 }}>
 									未标签<span style={{ fontSize: 9.5, color: c.fgFaint }}>{data.untaggedCount}</span>
 								</span>
 							) : null}
@@ -2685,7 +2956,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 			</div>
 
 			{/* 底栏 */}
-			<div style={{ display: 'flex', alignItems: 'center', gap: 8, height: 24, padding: '0 10px', background: '#1a1a1a', borderTop: `1px solid ${c.line}`, fontSize: 11, color: status.color, flex: '0 0 auto' }}>
+			<div style={{ display: 'flex', alignItems: 'center', gap: 8, height: 24, padding: '0 10px', background: c.inputBg, borderTop: `1px solid ${c.line}`, fontSize: 11, color: status.color, flex: '0 0 auto' }}>
 				<span style={{ width: 6, height: 6, borderRadius: '50%', background: data.indexState === 'indexing' ? c.fgDim : c.ok }} />
 				<span>{status.text} · b1644{debug ? ' · ' + debug : ''}</span>
 			</div>
@@ -2731,7 +3002,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 											tabIndex={0}
 											aria-selected={on}
 											title={t.path}
-											onClick={() => { setTab('doc'); setOpenViews({ settings: false, graph: false, canvas: false }); switchTab(t.path); }}
+											onClick={() => { setTab('doc'); setOpenViews(o => ({ ...o, settings: false, graph: false, canvas: false })); switchTab(t.path); }}
 											onKeyDown={e => { if (e.key === "Enter") { switchTab(t.path); } }}
 											style={{
 												display: "flex", alignItems: "center", gap: 6, flex: "0 0 auto", maxWidth: 190,
@@ -2757,47 +3028,101 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 									);
 								})}
 								{/* ★ 2026-10-29：设置 / 关系图谱 = 与文档页签**并列**的两个页签（可点击切换） */}
-									{openViews.settings ? (
-										<div
-											data-kb-settings-tab="1"
-									role="tab"
-									aria-selected={activeView === 'settings'}
-									title="知识库设置"
-									onClick={() => {
-										// 再点一次 = 关闭（回到文档）
-										if (activeView === 'settings') { setTab('doc'); setOpenViews(o => ({ ...o, settings: false })); return; }
-										setTab('settings');
-									}}
-									style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto', padding: '0 10px', fontSize: 11.5, cursor: 'pointer', color: activeView === 'settings' ? c.fg : c.fgDim, background: activeView === 'settings' ? 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))' : 'transparent', borderRight: `1px solid ${c.line}`, boxShadow: activeView === 'settings' ? 'inset 0 2px 0 var(--dsw-alias-brand-primary, var(--vscode-focusBorder, #3794ff))' : 'none' }}
-								>⚙ 设置</div>
-									) : null}
-									{openViews.graph ? (
-										<div
-											data-kb-graph-tab="1"
-									role="tab"
-									aria-selected={activeView === 'graph'}
-									title="关系图谱"
-									onClick={() => {
-										if (activeView === 'graph') { setTab('doc'); setOpenViews(o => ({ ...o, graph: false })); return; }
-										setTab('graph');
-									}}
-									style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto', padding: '0 10px', fontSize: 11.5, cursor: 'pointer', color: activeView === 'graph' ? c.fg : c.fgDim, background: activeView === 'graph' ? 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))' : 'transparent', borderRight: `1px solid ${c.line}`, boxShadow: activeView === 'graph' ? 'inset 0 2px 0 var(--dsw-alias-brand-primary, var(--vscode-focusBorder, #3794ff))' : 'none' }}
-								>🕸 关系图谱</div>
-									) : null}
-										{openViews.canvas ? (
-											<div
-												data-kb-canvas-tab="1"
-												role="tab"
-												aria-selected={activeView === 'canvas'}
-												title="思维导图"
-												onClick={() => {
-													if (activeView === 'canvas') { setTab('doc'); setOpenViews(o => ({ ...o, canvas: false })); return; }
-													setTab('canvas');
-												}}
-												style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto', padding: '0 10px', fontSize: 11.5, cursor: 'pointer', color: activeView === 'canvas' ? c.fg : c.fgDim, background: activeView === 'canvas' ? 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))' : 'transparent', borderRight: `1px solid ${c.line}`, boxShadow: activeView === 'canvas' ? 'inset 0 2px 0 var(--dsw-alias-brand-primary, var(--vscode-focusBorder, #3794ff))' : 'none' }}
-											>🗺 思维导图</div>
-										) : null}
-							</div>
+																	{openViews.settings ? (
+									<div
+										data-kb-settings-tab="1"
+										role="tab"
+										aria-selected={activeView === 'settings'}
+										title="知识库设置"
+										/* ★ 2026-11-02（用户：图谱/导图页签没有关闭按钮）：点页签只切内容，关闭交给 ✕ */
+										onClick={() => setTab('settings')}
+										style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto', padding: '0 8px 0 10px', fontSize: 11.5, cursor: 'pointer', color: activeView === 'settings' ? c.fg : c.fgDim, background: activeView === 'settings' ? 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))' : 'transparent', borderRight: `1px solid ${c.line}`, boxShadow: activeView === 'settings' ? 'inset 0 2px 0 var(--dsw-alias-brand-primary, var(--vscode-focusBorder, #3794ff))' : 'none' }}
+									>
+										<span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>⚙ 设置</span>
+										<span
+											role="button"
+											tabIndex={0}
+											title="关闭"
+											aria-label="关闭"
+											data-kb-settings-tab-close="1"
+											onClick={ev => { ev.stopPropagation(); if (activeView === 'settings') { setTab('doc'); } setOpenViews(o => ({ ...o, settings: false })); }}
+											onKeyDown={ev => { if (ev.key === 'Enter') { ev.stopPropagation(); if (activeView === 'settings') { setTab('doc'); } setOpenViews(o => ({ ...o, settings: false })); } }}
+											style={{ opacity: .55, fontSize: 13, lineHeight: 1, flex: '0 0 auto' }}
+										>×</span>
+									</div>
+								) : null}
+																	{openViews.graph ? (
+									<div
+										data-kb-graph-tab="1"
+										role="tab"
+										aria-selected={activeView === 'graph'}
+										title="关系图谱"
+										/* ★ 2026-11-02（用户：图谱/导图页签没有关闭按钮）：点页签只切内容，关闭交给 ✕ */
+										onClick={() => setTab('graph')}
+										style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto', padding: '0 8px 0 10px', fontSize: 11.5, cursor: 'pointer', color: activeView === 'graph' ? c.fg : c.fgDim, background: activeView === 'graph' ? 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))' : 'transparent', borderRight: `1px solid ${c.line}`, boxShadow: activeView === 'graph' ? 'inset 0 2px 0 var(--dsw-alias-brand-primary, var(--vscode-focusBorder, #3794ff))' : 'none' }}
+									>
+										<span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>🕸 关系图谱</span>
+										<span
+											role="button"
+											tabIndex={0}
+											title="关闭"
+											aria-label="关闭"
+											data-kb-graph-tab-close="1"
+											onClick={ev => { ev.stopPropagation(); if (activeView === 'graph') { setTab('doc'); } setOpenViews(o => ({ ...o, graph: false })); }}
+											onKeyDown={ev => { if (ev.key === 'Enter') { ev.stopPropagation(); if (activeView === 'graph') { setTab('doc'); } setOpenViews(o => ({ ...o, graph: false })); } }}
+											style={{ opacity: .55, fontSize: 13, lineHeight: 1, flex: '0 0 auto' }}
+										>×</span>
+									</div>
+								) : null}
+																		{openViews.canvas ? (
+									<div
+										data-kb-canvas-tab="1"
+										role="tab"
+										aria-selected={activeView === 'canvas'}
+										title="思维导图"
+										/* ★ 2026-11-02（用户：图谱/导图页签没有关闭按钮）：点页签只切内容，关闭交给 ✕ */
+										onClick={() => setTab('canvas')}
+										style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto', padding: '0 8px 0 10px', fontSize: 11.5, cursor: 'pointer', color: activeView === 'canvas' ? c.fg : c.fgDim, background: activeView === 'canvas' ? 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))' : 'transparent', borderRight: `1px solid ${c.line}`, boxShadow: activeView === 'canvas' ? 'inset 0 2px 0 var(--dsw-alias-brand-primary, var(--vscode-focusBorder, #3794ff))' : 'none' }}
+									>
+										<span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>🗺 思维导图</span>
+										<span
+											role="button"
+											tabIndex={0}
+											title="关闭"
+											aria-label="关闭"
+											data-kb-canvas-tab-close="1"
+											onClick={ev => { ev.stopPropagation(); if (activeView === 'canvas') { setTab('doc'); } setOpenViews(o => ({ ...o, canvas: false })); }}
+											onKeyDown={ev => { if (ev.key === 'Enter') { ev.stopPropagation(); if (activeView === 'canvas') { setTab('doc'); } setOpenViews(o => ({ ...o, canvas: false })); } }}
+											style={{ opacity: .55, fontSize: 13, lineHeight: 1, flex: '0 0 auto' }}
+										>×</span>
+									</div>
+								) : null}
+											{/* ★ 2026-11-02：总览页签（与文档/设置/图谱/导图并列；点左侧「🏠 总览」才会出现） */}
+											{openViews.home ? (
+												<div
+													data-kb-home-tab="1"
+													role="tab"
+													aria-selected={activeView === 'home'}
+													title="总览"
+													/* ★ 2026-11-02：常驻页签 —— 只切内容，不再"点一下就收起"（收起交给 ✕） */
+													onClick={() => setTab('home')}
+													style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '0 0 auto', padding: '0 8px 0 10px', fontSize: 11.5, cursor: 'pointer', color: activeView === 'home' ? c.fg : c.fgDim, background: activeView === 'home' ? 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))' : 'transparent', borderRight: `1px solid ${c.line}`, boxShadow: activeView === 'home' ? 'inset 0 2px 0 var(--dsw-alias-brand-primary, var(--vscode-focusBorder, #3794ff))' : 'none' }}
+												>
+													<span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>🏠 总览</span>
+													{/* 关闭（与文档页签同一套视觉） */}
+													<span
+														role="button"
+														tabIndex={0}
+														title="关闭"
+														aria-label="关闭"
+														data-kb-home-tab-close="1"
+														onClick={ev => { ev.stopPropagation(); setTab('doc'); setOpenViews(o => ({ ...o, home: false })); }}
+														onKeyDown={ev => { if (ev.key === 'Enter') { ev.stopPropagation(); setTab('doc'); setOpenViews(o => ({ ...o, home: false })); } }}
+														style={{ opacity: .55, fontSize: 13, lineHeight: 1, flex: '0 0 auto' }}
+													>×</span>
+												</div>
+											) : null}
+											</div>
 
 							{/* ── D：极简细条（28px）：折叠面包屑 + 预览/编辑 + ⋯ + 进度 ── */}
 							{activeView === 'doc' ? (<>
@@ -2834,7 +3159,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 										title="版本（本地 Git 历史 / 恢复）"
 										onClick={() => { void openGitPanel(); }}
 										style={{ flex: "0 0 auto", height: 20, padding: "0 8px", fontSize: 10.5, cursor: "pointer", borderRadius: 3,
-											border: `1px solid ${c.line}`, background: gitOpen ? "var(--dsw-alias-bg-active, rgba(255,255,255,.08))" : "transparent",
+											border: `1px solid ${c.line}`, background: gitOpen ? "var(--dsw-alias-interactive-bg-active, rgba(255,255,255,.08))" : "transparent",
 											color: gitInfo?.repo ? c.fg : c.fgFaint }}
 									>
 										版本{gitInfo?.repo && versions.length ? ` ${versions.length}` : ""}
@@ -3032,7 +3357,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 								</div>
 							</div>
 
-							{/* 备份列表：保存时自动生成（`笔记/.kb-backup/`），这里只读列出 + 恢复 */}
+							{/* 备份列表：保存时自动生成（`知识库列表/.kb-backup/`），这里只读列出 + 恢复 */}
 							{backups ? (
 								<div style={{ marginBottom: 10, border: `1px solid ${c.line}`, borderRadius: 4, maxHeight: 220, overflow: 'auto' }}>
 									{backups.length === 0 ? (
@@ -3204,17 +3529,43 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 															}
 															return;
 														}
-														if (/^(https?:|mailto:)/i.test(href)) {
+														/*
+														 * ★ 2026-11-02（用户报「点超链接弹『宿主没有打开新窗口』」）：
+														 *   笔记里的 `SKILL.md` / `需求文档.xlsx` 这类**相对文件名**以前落到"默认导航"，
+														 *   被 Electron 拦掉 ⇒ 弹出「宿主没有打开新窗口」✗（用户完全看不懂）。
+														 *   现在分三类处理：外链 / 库内文件 / 其它（都不再让 webview 自己导航）。
+														 */
+														// ① 外链：http(s) / mailto / 协议相对 `//host/path`
+														if (/^(https?:|mailto:)/i.test(href) || href.startsWith('//')) {
 															e.preventDefault();
-															if (actions?.openUrl) { actions.openUrl(href); }
-															else { window.open(href, '_blank', 'noopener'); }
+															const external = href.startsWith('//') ? 'https:' + href : href;
+															if (actions?.openUrl) { actions.openUrl(external); }
+															else { window.open(external, '_blank', 'noopener'); }
 															return;
 														}
-														// 其它（相对路径附件等）也不让 webview 自己导航：交给宿主按 URL 打开
-														if (/^(file:|[A-Za-z]:[\\/]|\.{0,2}\/)/.test(href)) {
+														// ② 绝对文件路径（`file:` / `D:/…` / `/abs`）：交给宿主按 URL 打开
+														if (/^(file:|[A-Za-z]:[\\/]|\/)/.test(href)) {
 															e.preventDefault();
 															if (actions?.openUrl) { actions.openUrl(href); }
+															return;
 														}
+														// ③ 其余 = **库内文件链接**（`SKILL.md`、`../a/b.md`、`./x.png`）
+														//   相对当前文档所在目录解析成绝对路径，交给 openLink 在右栏打开
+														e.preventDefault();
+														try {
+															const rel = decodeURIComponent(href).replace(/^file:\/\//i, '');
+															const cur = String(doc?.path || '').replace(/\\/g, '/');
+															const dir = cur.includes('/') ? cur.slice(0, cur.lastIndexOf('/')) : '';
+															// 归一化 `..` / `.`（纯字符串，不依赖 path 模块）
+															const segs: string[] = [];
+															for (const seg of ((dir ? dir + '/' : '') + rel).split('/')) {
+																if (!seg || seg === '.') { continue; }
+																if (seg === '..') { segs.pop(); continue; }
+																segs.push(seg);
+															}
+															const abs = segs.join('/');
+															if (abs) { (actions?.openLink ?? actions?.openNode)?.(abs); }
+														} catch { /* 解析失败就静默（至少不再弹"打开新窗口"） */ }
 													}
 													const box = el.closest('[data-task-line]') as HTMLInputElement | null;
 													if (box && actions?.saveDoc) {
@@ -3260,13 +3611,58 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 				<KbGraphTab vaultId={data.activeVaultId} onOpenNote={actions?.openNode} />
 			) : null}
 
+			{/* ★ 2026-11-02：总览页签的内容（同源 iframe 载 `/x/kb/home`，数据由插件侧现取） */}
+			{activeView === 'home' ? (
+				<div
+					data-kb-home-pane="1"
+					key="home-pane"
+					/*
+					 * ★ 2026-11-02（用户截图「渲染位置错误，没有顶头」）：
+					 *   放在文档流里时，前面那段「细条 + 文档空态」仍占着 ~290px（它们没按 activeView 收敛）
+					 *   ⇒ 总览被挤到半屏以下 ✗。
+					 *   父容器（右栏）本身是 `position:relative` ⇒ 这里**绝对定位**贴住页签条下沿
+					 *   （条高 30 + 1px 边框 = 31，两处都是本文件自己的常量）⇒ 顶头渲染、且盖住空态 ✓
+					 *   页签条仍可点（我们的层从 31px 起，不遮它）✓
+					 */
+					style={{ position: 'absolute', left: 0, right: 0, top: 31, bottom: 0, zIndex: 3, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))' }}
+				>
+					{/* 骨架屏：只在首帧前显示，避免"点开一片黑"（实测冷启 750ms） */}
+					{!homeLoaded ? (
+						<div
+							data-kb-home-skeleton="1"
+							style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', gap: 12, padding: '20px 24px', color: c.fgDim, fontSize: 12.5, pointerEvents: 'none' }}
+						>
+							<div style={{ fontSize: 15, fontWeight: 650, color: c.fg }}>知识库主页</div>
+							<div>正在加载总览…</div>
+							<div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginTop: 4 }}>
+								{[0, 1, 2, 3].map((i) => (
+									<div key={i} style={{ height: 54, borderRadius: 10, border: `1px solid ${c.line}`, background: 'rgba(127,127,127,.07)' }} />
+								))}
+							</div>
+							<div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+								{[0, 1, 2, 3].map((i) => (
+									<div key={i} style={{ height: 120, borderRadius: 10, border: `1px solid ${c.line}`, background: 'rgba(127,127,127,.05)' }} />
+								))}
+							</div>
+						</div>
+					) : null}
+					<iframe
+						data-kb-home-frame=""
+						title="知识库主页"
+						src="/x/kb/home"
+						onLoad={() => setHomeLoaded(true)}
+						style={{ flex: 1, width: '100%', border: 0, background: 'transparent', opacity: homeLoaded ? 1 : 0, transition: 'opacity .12s linear' }}
+					/>
+				</div>
+			) : null}
+
 				{activeView === 'canvas' ? (
 					<div style={{ flex: '1 1 auto', minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))' }}>
 						<KbCanvasPane
 							onClose={() => { setTab('doc'); setOpenViews(o => ({ ...o, canvas: false })); }}
 							onOpenNote={(abs) => {
 								setTab('doc');
-								setOpenViews({ settings: false, graph: false, canvas: false });
+								setOpenViews(o => ({ ...o, settings: false, graph: false, canvas: false }));
 								(actions?.openLink ?? actions?.openNode)?.(abs);
 							}}
 						/>
@@ -3416,12 +3812,14 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 			 * 导图覆盖层（2026-10-25 从面板侧迁到视图）：三端共用一份 `KbCanvasPane`。
 			 * 与设置面板同一套「父 relative + 子 absolute」定位（不用 fixed：宿主容器带 transform）。
 			 */}
+			{/*
+
 			{/* 轻提示：底部居中浮层（pointerEvents: none 不挡点击） */}
 			{toast ? (
 				<div
 					data-kb-toast="1"
 					role="status"
-					style={{ position: 'absolute', left: '50%', bottom: 16, transform: 'translateX(-50%)', zIndex: 60, maxWidth: '90%', padding: '7px 12px', borderRadius: 6, fontSize: 12, lineHeight: 1.5, color: '#fff', background: 'rgba(30,30,30,.95)', border: '1px solid rgba(255,255,255,.16)', boxShadow: '0 6px 20px rgba(0,0,0,.45)', pointerEvents: 'none' }}
+					style={{ position: 'absolute', left: '50%', bottom: 16, transform: 'translateX(-50%)', zIndex: 60, maxWidth: '90%', padding: '7px 12px', borderRadius: 6, fontSize: 12, lineHeight: 1.5, color: 'var(--dsw-alias-label-primary, #fff)', background: 'var(--dsw-alias-bg-overlay, rgba(30,30,30,.95))', border: `1px solid ${c.line}`, boxShadow: '0 6px 20px rgba(0,0,0,.45)', pointerEvents: 'none' }}
 				>
 					{toast}
 				</div>
@@ -3445,10 +3843,26 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 							{dialog.kind === 'rename' ? '重命名'
 								: dialog.kind === 'delete' ? '确认删除'
 									: dialog.kind === 'newNote' ? '新建笔记'
+											: dialog.kind === 'newKb' ? '新建知识库（在「知识库列表」下建一个文件夹）'
+											: dialog.kind === 'kbBind' ? '关联飞书知识库（填 wiki 空间 ID）'
 										: dialog.kind === 'newFolder' ? '新建目录'
 											: dialog.kind === 'vaultCreate' ? '新建知识库'
 												: '本地载入文件夹'}
 						</div>
+						{/* ★ 2026-11-02：关联飞书 —— 能列出空间就给下拉；列不出就走下面的手填框 ✓ */}
+						{dialog.kind === 'kbBind' && bindSpaces.length ? (
+							<select data-kb-spacepick="" value={dialog.value}
+								onChange={e => setDialog({ ...dialog, value: e.target.value })}
+								style={{ width: '100%', height: 26, boxSizing: 'border-box', marginBottom: 8, background: c.inputBg, color: c.fg, border: `1px solid ${c.line}`, borderRadius: 4, fontSize: 12 }}>
+								<option value="">— 选择飞书知识库（共 {bindSpaces.length} 个）—</option>
+								{bindSpaces.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+							</select>
+						) : null}
+						{dialog.kind === 'kbBind' && bindSpacesErr ? (
+							<div style={{ fontSize: 11, color: c.fgFaint, marginBottom: 8 }}>
+								⚠ 列不出飞书空间：{bindSpacesErr}（可在下方手填 space ID）
+							</div>
+						) : null}
 						{dialog.kind === 'delete' ? (
 							<div style={{ fontSize: 12.5, color: c.fgDim, marginBottom: 12 }}>
 								确定删除选中的 {dialog.paths.length} 项？此操作不可撤销。
@@ -3482,6 +3896,50 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 									if (d.kind === 'rename') { actions?.renameNode?.(d.path, d.value.trim()); }
 									else if (d.kind === 'delete') { actions?.deleteNodes?.(d.paths, true); }
 									else if (d.kind === 'newNote') { actions?.createNote?.('', d.value.trim()); }
+									/* ★ 2026-11-02（P1）：新建知识库 = 在「知识库列表」下建文件夹（含 index.md） */
+									/* ★ 2026-11-02：把某个知识库关联到一个飞书 wiki 空间 */
+									else if (d.kind === 'kbBind') {
+										/*
+										 * ⚠ `d.path` 是**绝对路径**（`E:\VsSarosVault\知识库列表\01_学习`）——
+										 *   以前按 `/` split 取 [1] ⇒ 得到 undefined ⇒ kb 为空 ⇒ 接口 400（踩过一次）。
+										 *   口径：取 `知识库列表` 之后那一段；取不到就退回"最后一段"。
+										 */
+										const segs = String((d as any).path || '').split(/[\\/]/).filter(Boolean);
+										const at = segs.lastIndexOf('知识库列表');
+										const kb = at >= 0 && segs[at + 1] ? segs[at + 1] : (segs[segs.length - 1] || '');
+										/* 支持直接粘贴空间链接（…/wiki/space/7688…）或裸 ID */
+										const rawSpace = String(d.value || '').trim();
+										const spaceId = (rawSpace.match(/(\d{6,})/) || [])[1] || rawSpace;
+										const spaceName = (bindSpaces.find(s => s.id === spaceId)?.name) || kb;
+										void (async () => {
+											try {
+												const res = await fetch('/x/kb/api/kb-bind', {
+													method: 'POST',
+													headers: { 'content-type': 'application/json' },
+													body: JSON.stringify({ kb, spaceId, spaceName }),
+												});
+												const j: any = await res.json().catch(() => ({}));
+												if (!j?.ok) { showToast(j?.error || '关联失败'); return; }
+												showToast('已把「' + kb + '」关联到飞书空间 ' + j.binding.spaceId);
+												actions?.refresh?.();
+											} catch (err) { showToast('关联失败：' + String((err as any)?.message ?? err)); }
+										})();
+									}
+									else if (d.kind === 'newKb') {
+										void (async () => {
+											try {
+												const res = await fetch('/x/kb/api/kb-create', {
+													method: 'POST',
+													headers: { 'content-type': 'application/json' },
+													body: JSON.stringify({ name: d.value.trim(), withIndex: true }),
+												});
+												const j: any = await res.json().catch(() => ({}));
+												if (!j?.ok) { showToast(j?.error || '创建失败'); return; }
+												showToast('已创建知识库「' + j.name + '」');
+												actions?.refresh?.();
+											} catch (err) { showToast('创建失败：' + String((err as any)?.message ?? err)); }
+										})();
+									}
 									// 新建：传**文件夹路径**，库名由服务端取文件夹名（不再另取名）
 									else if (d.kind === 'vaultCreate') { actions?.addVault?.('create', d.value.trim()); }
 									else if (d.kind === 'vaultAttach') { actions?.addVault?.('attach', d.value.trim()); }
@@ -3509,19 +3967,19 @@ const DEMO: KbSideviewData = {
 	noteCount: 102,
 	tree: [
 		{
-			name: '01_学习', path: '笔记/01_学习', isFolder: true, count: 102, children: [
+			name: '01_学习', path: '知识库列表/01_学习', isFolder: true, count: 102, children: [
 				{
-					name: 'AI_Agent', path: '笔记/01_学习/AI_Agent', isFolder: true, count: 20, children: [
-						{ name: '01 智能体是什么', path: '笔记/01_学习/AI_Agent/01 智能体是什么.md', isFolder: false },
-						{ name: '05 DSH 框架原理', path: '笔记/01_学习/AI_Agent/05 DSH 框架原理.md', isFolder: false },
-						{ name: '05a 框架原理（讲懂版）', path: '笔记/01_学习/AI_Agent/05a 框架原理（讲懂版）.md', isFolder: false },
+					name: 'AI_Agent', path: '知识库列表/01_学习/AI_Agent', isFolder: true, count: 20, children: [
+						{ name: '01 智能体是什么', path: '知识库列表/01_学习/AI_Agent/01 智能体是什么.md', isFolder: false },
+						{ name: '05 DSH 框架原理', path: '知识库列表/01_学习/AI_Agent/05 DSH 框架原理.md', isFolder: false },
+						{ name: '05a 框架原理（讲懂版）', path: '知识库列表/01_学习/AI_Agent/05a 框架原理（讲懂版）.md', isFolder: false },
 					],
 				},
-				{ name: 'UnrealEngine', path: '笔记/01_学习/UnrealEngine', isFolder: true, count: 45 },
-				{ name: '游戏设计', path: '笔记/01_学习/游戏设计', isFolder: true, count: 8 },
+				{ name: 'UnrealEngine', path: '知识库列表/01_学习/UnrealEngine', isFolder: true, count: 45 },
+				{ name: '游戏设计', path: '知识库列表/01_学习/游戏设计', isFolder: true, count: 8 },
 			],
 		},
-		{ name: '02_工作', path: '笔记/02_工作', isFolder: true, count: 0 },
+		{ name: '02_工作', path: '知识库列表/02_工作', isFolder: true, count: 0 },
 	],
 	tags: [
 		{ tag: 'AI-Agent', count: 19 }, { tag: '游戏设计', count: 8 }, { tag: 'UE', count: 7 },
@@ -3529,14 +3987,14 @@ const DEMO: KbSideviewData = {
 	],
 	untaggedCount: 56,
 	outLinks: [
-		{ title: '工程实践 工具设计与 Harness', path: '笔记/01_学习/AI_Agent/工程实践 工具设计与 Harness.md' },
+		{ title: '工程实践 工具设计与 Harness', path: '知识库列表/01_学习/AI_Agent/工程实践 工具设计与 Harness.md' },
 	],
 	inLinks: [
-		{ title: '08 DeepSeek Harness (DSH) 总览与架构', path: '笔记/01_学习/AI_Agent/08 DeepSeek Harness (DSH) 总览与架构.md' },
-		{ title: '03 DSH 优缺点评估', path: '笔记/01_学习/AI_Agent/03 DSH 优缺点评估.md' },
+		{ title: '08 DeepSeek Harness (DSH) 总览与架构', path: '知识库列表/01_学习/AI_Agent/08 DeepSeek Harness (DSH) 总览与架构.md' },
+		{ title: '03 DSH 优缺点评估', path: '知识库列表/01_学习/AI_Agent/03 DSH 优缺点评估.md' },
 	],
 	indexState: 'ready',
-	selectedPath: '笔记/01_学习/AI_Agent/05 DSH 框架原理.md',
+	selectedPath: '知识库列表/01_学习/AI_Agent/05 DSH 框架原理.md',
 };
 
 /**
@@ -3557,15 +4015,48 @@ export type KbSideviewMount = (el: HTMLElement, data: KbSideviewData, actions?: 
 declare global {
 	interface Window {
 		__KB_SIDEVIEW_MOUNT__?: KbSideviewMount;
+		/** ★ 2026-11-02：只换数据的通道（刷新不重建视图 ⇒ 打开中的文档不丢） */
+		__KB_SIDEVIEW_UPDATE__?: (data: KbSideviewData, actions?: KbSideviewActions) => void;
 	}
+}
+
+/*
+ * ★ 2026-11-02：`__KB_SIDEVIEW_UPDATE__` 用**模块内变量 + getter** 暴露。
+ *   直接 `window.xxx = fn` 在这套 bundle 里会被后一次挂载/卸载覆盖掉（真机实测：mount 源码里明明有、
+ *   运行时却 undefined ✗）⇒ 改成 getter，读的时候永远拿到当前挂载实例的更新函数。
+ */
+let __kbUpdate: ((d: KbSideviewData, a?: KbSideviewActions) => void) | undefined;
+if (typeof window !== 'undefined') {
+	try {
+		Object.defineProperty(window, '__KB_SIDEVIEW_UPDATE__', {
+			configurable: true,
+			get() { return __kbUpdate; },
+		});
+	} catch { /* 极老宿主：退回普通赋值（下面 mount 里也赋一次） */ }
 }
 
 if (typeof window !== 'undefined') {
 	window.__KB_SIDEVIEW_MOUNT__ = (el, data, actions) => {
 		const root = createRoot(el);
 		const dbg = 'mount/d' + (data ? Object.keys(data).length : 0) + '/a' + (actions ? Object.keys(actions).length : 0);
+
+		/*
+		 * ★ 2026-11-02（用户：点刷新不要清空已打开的文档）：
+		 *   以前宿主的「刷新」是 `dispose + mount`（整个视图重建）⇒ 打开的页签/正文/选中全部丢 ✗。
+		 *   这里暴露一条**只换数据**的通道：同一个 root、同一个组件实例 ⇒ 视图本地状态（tabs / doc /
+		 *   activePath / 展开态）全部保留，只有 `data` 换新 ✓。
+		 *   老宿主没有调它也没关系（行为退回 remount，只是会清空）。
+		 */
+		const update = (nextData: KbSideviewData, nextActions?: KbSideviewActions) => {
+			root.render(<KbSideview data={nextData} actions={nextActions ?? actions} debug={dbg.replace('mount/', 'update/')} />);
+		};
+		__kbUpdate = update;   // 通过 getter 暴露（见文件下方 defineProperty）
+
 		root.render(<KbSideview data={data} actions={actions} debug={dbg} />);
-		return () => root.unmount();
+		return () => {
+			if (__kbUpdate === update) { __kbUpdate = undefined; }
+			root.unmount();
+		};
 	};
 }
 

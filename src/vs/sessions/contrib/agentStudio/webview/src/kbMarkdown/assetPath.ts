@@ -45,7 +45,7 @@ export function normalizeRelativeRef(src: string): string {
  *   `assets/GPT五档欧卡画风流程/frame-04.png`
  *     → react-markdown 先编 → `assets/GPT%E4%BA%94…/frame-04.png`
  *     → 本函数再编 `%` → `assets/GPT%25E4%25BA%2594…/frame-04.png`  ✗
- *   浏览器实际请求的就是后者 ⇒ **404**（而文件明明存在，`库` 段是单次编码所以正常）。
+ *   浏览器实际请求的就是后者 ⇒ **404**（而文件明明存在，`数据源` 段是单次编码所以正常）。
  *
  * 修法：先 `decodeURIComponent` 再 `encodeURIComponent` ⇒ 不管进来是裸中文还是已编码，
  * 出去都恰好一次编码。`decode` 失败（段里含**非转义**的 `%`，如 `100%.png`）时退回直接编码 ——

@@ -1,7 +1,7 @@
 // @vssaros/dsh-kb — `kb_organize` 的**纯逻辑**：路径归一化 + 围栏 + 上限 + 备份落点命名。
 //
 // 真源：IDE `browser/providers/tool/kbOrganizeTools.ts`（2026-10-12 逐条核对 ✓）。照抄的语义：
-//   · 只能在 **`笔记/` 区**内操作 ✗（不是整个 vault ✓ —— 资料库正文 `库/` 不许动 ✓）；
+//   · 只能在 **`知识库列表/` 区**内操作 ✗（不是整个 vault ✓ —— 资料库正文 `数据源/` 不许动 ✓）；
 //   · `moves` 自动建父目录 ✓、`from === to` / `from 不存在` / **`to` 已存在**（**不覆盖** ✓）⇒ 逐项拒；
 //   · `deletes` **不是真删** ⇒ 移进 **vault 之外**的备份目录（回收站语义 ✓）；
 //   · 一次最多 `MAX_OPS` 项 ✓；结果里含一行 `KB_ORGANIZE_RESULT {json}` ✓。
@@ -11,7 +11,7 @@
 // 纯函数：不 import fs ✓ ⇒ 归一化/围栏/上限可直测（`p3-08` ✓），真正的写盘在 `lib/organize.js` ✓。
 
 /** 允许操作的区域（相对 vault 根 ✓）：**只有**「笔记」区 ✓。 */
-export const NOTES_DIR = '笔记';
+export const NOTES_DIR = '知识库列表';
 
 /** 单次操作项上限（照真源 ✓：防模型一次吐上千条）。 */
 export const MAX_OPS = 50;
@@ -36,7 +36,7 @@ export function normalizeRelPath(p) {
 
 /**
  * 把调用方给的路径解析成绝对路径 + 围栏判定（**纯字符串运算** ✓，不碰 fs ✓）。
- * 接受相对 vault 根的（`笔记/01_学习/x.md` ✓）或绝对的（`D:/…/笔记/y.md` ✓）——与真源同口径 ✓。
+ * 接受相对 vault 根的（`知识库列表/01_学习/x.md` ✓）或绝对的（`D:/…/笔记/y.md` ✓）——与真源同口径 ✓。
  * ⚠ 围栏是 **`<vault>/笔记/` 之内**（含前缀斜杠 ✓）⇒ 「笔记」目录**本身**也在围栏外 ✓
  *   （不允许把整个笔记区搬走/改名 ✗）。
  * @returns `{ abs, rel, inside, why }`；非法路径 ⇒ `{ why: '路径无效' }`

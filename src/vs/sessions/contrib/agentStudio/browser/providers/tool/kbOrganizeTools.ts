@@ -58,7 +58,7 @@ export function registerKbOrganizeTools(ctx: KbOrganizeToolContext): void {
 				'- creates：新建目录',
 				'- deletes：**不是真删除** —— 移入 vault 之外的备份目录（可恢复）',
 				'执行前会为每个涉及的文件写 checkpoint（聊天页签可 undoAll 回滚），且每个文件都会被备份到 vault 外。',
-				'路径给相对 vault 根的（形如 `笔记/…`）或绝对路径均可；结果里含一行 `KB_ORGANIZE_RESULT {json}`。',
+				'路径给相对 vault 根的（形如 `知识库列表/…`）或绝对路径均可；结果里含一行 `KB_ORGANIZE_RESULT {json}`。',
 			].join('\n'),
 			inputSchema: {
 				type: 'object',
@@ -73,7 +73,7 @@ export function registerKbOrganizeTools(ctx: KbOrganizeToolContext): void {
 							required: ['from', 'to'],
 						},
 					},
-					creates: { type: 'array', items: { type: 'string' }, description: '新建的目录（相对 vault 根，形如 `笔记/01_学习/UnrealEngine/09_UI与Slate`）' },
+					creates: { type: 'array', items: { type: 'string' }, description: '新建的目录（相对 vault 根，形如 `知识库列表/01_学习/UnrealEngine/09_UI与Slate`）' },
 					deletes: { type: 'array', items: { type: 'string' }, description: '要「删除」的笔记（实际移入备份目录，不是真删）' },
 				},
 				required: [],
@@ -85,7 +85,7 @@ export function registerKbOrganizeTools(ctx: KbOrganizeToolContext): void {
 		handler: async (args, _signal, agentId) => {
 			const log = ctx.logService;
 			const vaultRoot = resolveKbRootUri(ctx.storageService, ctx.environmentService);
-			const notesDir = URI.joinPath(vaultRoot, '笔记');
+			const notesDir = URI.joinPath(vaultRoot, '知识库列表');
 			const notesPrefix = notesDir.fsPath.replace(/\\/g, '/').toLowerCase() + '/';
 
 			const rel = (u: URI) => u.path.replace(vaultRoot.path, '').replace(/^\//, '');

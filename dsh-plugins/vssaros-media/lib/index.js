@@ -1307,6 +1307,9 @@ async function handleMediaApi(config, { req, res, url, authenticatedUrl }) {
  * 定位完可以留着 —— 它就是"插件没挂上"的唯一线索。
  */
 export function apply(ctx, config = {}) {
+	const __applyT0 = Date.now();
+	// 启动耗时探针（2026-11-02）：apply 进入时刻 —— 与相邻插件的这一行相减就是"谁把时间花掉了"。
+	console.log('[vssaros-media] apply 进入（进程启动后 ' + Math.round(process.uptime() * 1000) + 'ms）');
 	console.log('[vssaros-media] apply 开始（config 键：' + Object.keys(config ?? {}).join(',') + '）');
 	try {
 		applyInner(ctx, config);
@@ -1329,7 +1332,7 @@ export function apply(ctx, config = {}) {
 	} catch (e) {
 		console.warn('[vssaros-media] ensureMediaAgent 同步失败：' + String(e?.message ?? e));
 	}
-	console.log('[vssaros-media] apply 完成');
+	console.log('[vssaros-media] apply 用时 ' + (Date.now() - __applyT0) + 'ms（apply 返回）');
 }
 
 function applyInner(ctx, config = {}) {

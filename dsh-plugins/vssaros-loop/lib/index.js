@@ -126,6 +126,31 @@ export function apply(ctx, config = {}) {
 	const log = typeof ctx.logger === 'function' ? ctx.logger('vssaros-loop') : console;
 	const now = () => Date.now();
 
+	/**
+	 * 把 blocked 条目放回队列：blocked → failed —— 保留 attempts（别用"回答过"洗白重试次数），
+	 * 但把退避起点重置到现在，让下一轮就能重跑。
+	 * ★ 2026-11-02：工具 `loop_answer` 与工作台路由**共用这一份**（两份实现会漂）。
+	 * @returns `{ released, error }`
+	 */
+	function releaseBlocked(loop, wanted, answer) {
+		const nowMs = now();
+		const { ledger } = readLedger(config, loop.name, nowMs);
+		const released = [];
+		for (const [key, entry] of Object.entries(ledger.items)) {
+			if (entry.status !== 'blocked' || (wanted && key !== wanted)) { continue; }
+			markFailed(ledger, key, {
+				sessionId: entry.sessionId,
+				reason: `answer: ${answer || '(empty)'} / was: ${entry.lastError}`,
+			}, nowMs);
+			released.push(key);
+		}
+		if (released.length === 0) {
+			return { released, error: wanted ? `没有处于 blocked 的条目：${wanted}` : `循环 ${loop.name} 没有 blocked 的条目` };
+		}
+		writeLedger(config, loop.name, ledger);
+		return { released, error: '' };
+	}
+
 	let runs = null;
 	const runner = createRunner({
 		config,
@@ -311,23 +336,9 @@ export function apply(ctx, config = {}) {
 			if (!loop) {
 				throw new Error(`找不到循环：${text(args.name)}`);
 			}
-			const nowMs = now();
-			const { ledger } = readLedger(config, loop.name, nowMs);
-			const wanted = text(args.key);
-			const released = [];
-			for (const [key, entry] of Object.entries(ledger.items)) {
-				if (entry.status !== 'blocked' || (wanted && key !== wanted)) {
-					continue;
-				}
-				// blocked → failed：保留 attempts（别用"回答过"来洗白重试次数），
-				// 但把退避起点重置到现在，让下一轮就能重跑。
-				markFailed(ledger, key, { sessionId: entry.sessionId, reason: `answer: ${text(args.answer) || '(empty)'} / was: ${entry.lastError}` }, nowMs);
-				released.push(key);
-			}
-			if (released.length === 0) {
-				throw new Error(wanted ? `没有处于 blocked 的条目：${wanted}` : `循环 ${loop.name} 没有 blocked 的条目`);
-			}
-			writeLedger(config, loop.name, ledger);
+			// ★ 2026-11-02：逻辑抽成 `releaseBlocked`（工作台路由也用它）——两份实现会漂。
+			const { released, error } = releaseBlocked(loop, text(args.key), text(args.answer));
+			if (error) { throw new Error(error); }
 			return { name: loop.name, released };
 		},
 	}));
@@ -339,4 +350,96 @@ export function apply(ctx, config = {}) {
 		}
 		return undefined;
 	});
+
+	// ── 工作台数据接口（2026-11-02：用户「缺少 UI 入口」）────────────────────────
+	//   与工具共用同一套 store/runner（**不重写一份判定**）。
+	//   `webServer` + `connection` 走可选注入：headless/tui 里没有它们 ⇒ 工具面照常，只是没有页面。
+	ctx.inject(['webServer', 'connection'], scope => scope.effect(() => scope.webServer.register({
+		kind: 'prefix',
+		path: '/x/loop',
+		handler: async (req, res) => {
+			const sendJson = (status, body) => {
+				res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+				res.end(JSON.stringify(body));
+			};
+			try {
+				const rejected = scope.connection.requestRejection(req);
+				if (rejected) {
+					res.writeHead(rejected, { 'content-type': 'text/plain' });
+					res.end(String(rejected));
+					return;
+				}
+				const url = new URL(req.url ?? '/', 'http://x');
+				const name = url.searchParams.get('name') ?? '';
+				const readJsonBody = () => new Promise((resolve, reject) => {
+					let buf = '';
+					req.on('data', (chunk) => { buf += chunk; if (buf.length > 64 * 1024) { req.destroy(); reject(new Error('body too large')); } });
+					req.on('end', () => { try { resolve(buf ? JSON.parse(buf) : {}); } catch (e) { reject(e); } });
+					req.on('error', reject);
+				});
+
+				// 列表：每个 loop 的快照（与 loop_list 工具同一口径）
+				if (url.pathname === '/x/loop/api/list' && req.method === 'GET') {
+					const nowMs = now();
+					const listed = listLoops(config);
+					const loops = listed.loops.map(loop => snapshot(config, loop, nowMs));
+					sendJson(200, {
+						ok: true,
+						loops,
+						warnings: listed.warnings ?? [],
+						runsService: !!runs,
+						loopsDir: loopsDirOf(config),
+					});
+					return;
+				}
+				// 详情：护栏参数 + 最近账本条目（与 loop_show 工具同一口径）
+				if (url.pathname === '/x/loop/api/show' && req.method === 'GET') {
+					const loop = findLoop(config, text(name));
+					if (!loop) { sendJson(404, { ok: false, error: `找不到循环：${name}` }); return; }
+					const nowMs = now();
+					const { ledger, recovered } = readLedger(config, loop.name, nowMs);
+					const entries = Object.entries(ledger.items)
+						.map(([key, entry]) => ({ key, ...entry }))
+						.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+						.slice(0, 100);
+					sendJson(200, {
+						ok: true,
+						loop: snapshot(config, loop, nowMs),
+						spec: loop.spec ? describeLoop(loop.spec) : null,
+						entries,
+						recovered,
+					});
+					return;
+				}
+				// 干跑（只采集 + 挑单，不建会话、不落账本）
+				if (url.pathname === '/x/loop/api/dry-run' && req.method === 'POST') {
+					const body = await readJsonBody();
+					const loop = findLoop(config, text(body?.name));
+					if (!loop) { sendJson(404, { ok: false, error: `找不到循环：${text(body?.name)}` }); return; }
+					sendJson(200, { ok: true, result: await runner.runRound(loop, { dryRun: true }) });
+					return;
+				}
+				// 跑一轮（写账本、建会话）——UI 上是一次显式点击，等同于 loop_run 工具
+				if (url.pathname === '/x/loop/api/run' && req.method === 'POST') {
+					const body = await readJsonBody();
+					const loop = findLoop(config, text(body?.name));
+					if (!loop) { sendJson(404, { ok: false, error: `找不到循环：${text(body?.name)}` }); return; }
+					sendJson(200, { ok: true, result: await runner.runRound(loop) });
+					return;
+				}
+				// 放回 blocked 条目
+				if (url.pathname === '/x/loop/api/answer' && req.method === 'POST') {
+					const body = await readJsonBody();
+					const loop = findLoop(config, text(body?.name));
+					if (!loop) { sendJson(404, { ok: false, error: `找不到循环：${text(body?.name)}` }); return; }
+					const out = releaseBlocked(loop, text(body?.key), text(body?.answer));
+					sendJson(out.error ? 400 : 200, { ok: !out.error, ...out });
+					return;
+				}
+				sendJson(404, { ok: false, error: `未知接口：${url.pathname}` });
+			} catch (e) {
+				sendJson(500, { ok: false, error: String(e?.message ?? e) });
+			}
+		},
+	}), 'vssaros-loop: workbench routes'));
 }

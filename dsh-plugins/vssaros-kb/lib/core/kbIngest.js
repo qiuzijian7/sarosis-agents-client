@@ -7,7 +7,7 @@
 //
 // 待构建（pending）的三条判据（照真源 ✓，顺序也照它）：
 //   ① **入口集合**：`<vault>/库/` 下递归的 `*.md`，跳过**点开头**的文件/目录 ✓、跳过系统导航文件名 ✓；
-//   ② **排除构建产出**：缓存（`.kb-build-cache.json`）的 **value**（= 已生成笔记的路径）不算素材 ✗
+//   ② **排除构建产出**：缓存（`.kb/build-cache.json`）的 **value**（= 已生成笔记的路径）不算素材 ✗
 //      —— 否则会出现"笔记 → 笔记"的递归 churn ✓；
 //   ③ **新鲜度**（★ 2026-09-24 的真源语义）：缓存无此素材 ⇒ 待构建；有缓存但**笔记不存在** ⇒ 待构建；
 //      笔记存在但 **笔记 mtime < 素材 mtime**（素材在构建后又被改过）⇒ 待构建 ✓；否则算已构建 ✓。
@@ -15,11 +15,11 @@
 /** 系统导航文件名（**照真源逐项**；`p3-08` 会拿 IDE 源码文本对账，改了这边就会红 ✓）。 */
 export const SYS_INDEX_FILES = ['index.md', 'overview.md', 'insights.md', 'log.md', 'lint-report.md', 'dedup-report.md', '知识体系.md'];
 
-/** 构建缓存文件名（真源 `readBuildCache`：`<vault>/.kb-build-cache.json`，形如 `{ 素材绝对路径: 笔记绝对路径 }`）。 */
-export const BUILD_CACHE_FILE = '.kb-build-cache.json';
+/** 构建缓存文件名（真源 `readBuildCache`：`<vault>/.kb/build-cache.json`，形如 `{ 素材绝对路径: 笔记绝对路径 }`）。 */
+export const BUILD_CACHE_FILE = '.kb/build-cache.json';
 
 /** 「库」区目录名（与 `core/kb.js` 的 `LIBRARY_DIR` 同值，这里显式复述以免跨文件误改）。 */
-export const LIB_DIR = '库';
+export const LIB_DIR = '数据源';
 
 /** 预览一次最多列多少条（照真源 `MAX_LISTED = 20` ✓：多素材时不要把整张清单灌进上下文 ✓）。 */
 export const MAX_PREVIEW_LISTED = 20;

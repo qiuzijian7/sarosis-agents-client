@@ -150,6 +150,7 @@ export function apply(ctx, config = {}) {
 	let idleTimer;
 	const noteClients = () => {
 		connectedClients = clients.size;
+		publishHostOwnership();
 		if (!config.pipe || !idleTtlMs) {
 			return;
 		}
@@ -176,6 +177,23 @@ export function apply(ctx, config = {}) {
 	// 读不到记录（还没写下 / 已被清）⇒ **一律不动**（保守 ✓）。
 	// ⚠ 优雅分离（IDE 正常退出且 keepAlive）时宿主会把 mtime 推到未来 ⇒ 这里天然判"不陈旧" ✓。
 	let ownerRecordPath;
+	/**
+	 * ★★ 2026-11-02（真机：F5 接管了旧 Host，25s 后 Host 自杀 ⇒ 页面连接重试 20s、建会话失败，46s 才重起）：
+	 *   `vssaros-agents` 的父进程看护（hostSelfWatch.js）只认 spawn 时的 `process.ppid` ⇒ Host 被**新 app 接管**后，
+	 *   它看见"旧 app 已退出"就判自己是孤儿 ⇒ `process.exit(0)` ✗✗。
+	 *   而"当前谁在用这个 Host"的真源在本插件（握手给的 ownerRecord + 已连的 IDE 客户端数，见下面看门狗注释）。
+	 *   ⇒ 把它发布到进程内共享位（`Symbol.for` ⇒ 跨插件/跨模块副本也是同一把钥匙），供看护先问一句再决定。
+	 *   ⚠ 只发布"事实"，不替看护做判断；本插件没挂载时该位为空 ⇒ 看护按原逻辑走（不改变无桥部署的行为）。
+	 */
+	const publishHostOwnership = () => {
+		try {
+			globalThis[Symbol.for('vssaros.hostOwnership')] = {
+				ownerRecordPath: ownerRecordPath || '',
+				clientCount: clients.size,
+				updatedAt: Date.now(),
+			};
+		} catch { /* 只是提示信息：写不进去就让看护按原逻辑走 */ }
+	};
 	const ownerWatchdog = setInterval(() => {
 		if (!ownerRecordPath || clients.size > 0) { return; }
 		let mtimeMs;

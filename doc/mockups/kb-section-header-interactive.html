@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>知识库 · 分区头样式（可交互）</title>
+<style>
+	:root {
+		--bg: #141414;
+		--panel-bg: #252526;
+		--line: #2b2b2b;
+		--fg: #d4d4d4;
+		--fg-mid: #a8a8a8;
+		--fg-dim: #8a8a8a;
+		--fg-faint: #6b6b6b;
+		--accent: #3794ff;
+		--hover: rgba(127,127,127,.08);
+		--sel: rgba(127,127,127,.12);
+	}
+	* { box-sizing: border-box; }
+	html, body { height: 100%; }
+	body {
+		margin: 0; background: var(--bg); color: var(--fg);
+		font: 13px/1.55 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+		-webkit-font-smoothing: antialiased;
+		display: flex; flex-direction: column;
+	}
+
+	/* ── 顶部控制条 ── */
+	header {
+		flex: 0 0 auto; padding: 14px 20px 12px;
+		border-bottom: 1px solid var(--line); background: #181818;
+	}
+	h1 { font-size: 15px; font-weight: 650; margin: 0 0 4px; }
+	.tip { color: var(--fg-faint); font-size: 11.5px; margin: 0 0 10px; }
+	.bar { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+	.styles { display: flex; gap: 6px; flex-wrap: wrap; }
+	.sbtn {
+		height: 26px; padding: 0 11px; border-radius: 6px; cursor: pointer;
+		border: 1px solid #3a3a3a; background: #232323; color: var(--fg-dim);
+		font-size: 11.5px; font-weight: 600; letter-spacing: .02em;
+	}
+	.sbtn:hover { border-color: #4a4a4a; color: var(--fg-mid); }
+	.sbtn.on { background: rgba(55,148,255,.16); border-color: rgba(55,148,255,.55); color: #cfe6ff; }
+	.ctrl { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--fg-dim); }
+	.ctrl input[type=range] { width: 116px; accent-color: var(--accent); }
+	.ctrl label { display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
+	.warn {
+		margin-top: 10px; font-size: 11.5px; padding: 5px 9px; border-radius: 5px;
+		display: none; align-items: center; gap: 7px;
+	}
+	.warn.bad { display: flex; background: rgba(241,76,76,.12); border: 1px solid rgba(241,76,76,.4); color: #ffb3b3; }
+	.warn.ok { display: flex; background: rgba(63,185,80,.10); border: 1px solid rgba(63,185,80,.32); color: #9be9a8; }
+
+	/* ── 主体：面板 + 说明 ── */
+	main { flex: 1 1 auto; min-height: 0; display: flex; gap: 22px; padding: 16px 20px 24px; align-items: flex-start; }
+	.stage { flex: 0 0 auto; }
+	#panel {
+		width: 340px; height: 560px; overflow-y: auto; overflow-x: hidden;
+		background: var(--panel-bg); border: 1px solid #333; border-radius: 8px;
+		box-shadow: 0 12px 32px rgba(0,0,0,.5);
+	}
+	aside { flex: 1 1 320px; min-width: 260px; max-width: 520px; }
+	aside h2 { font-size: 12px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--fg-dim); margin: 0 0 8px; }
+	aside ul { margin: 0 0 16px; padding: 0; list-style: none; }
+	aside li { position: relative; padding-left: 12px; font-size: 12px; color: var(--fg-mid); margin-bottom: 5px; }
+	aside li::before { content: '·'; position: absolute; left: 2px; color: var(--fg-faint); }
+	aside code { background: #222; border: 1px solid #2e2e2e; border-radius: 3px; padding: 0 4px; font-size: 11px; color: #cfcfcf; }
+	aside b { color: var(--fg); font-weight: 600; }
+	.kv { display: grid; grid-template-columns: 88px 1fr; gap: 4px 10px; font-size: 11.5px; margin-bottom: 16px; }
+	.kv dt { color: var(--fg-faint); }
+	.kv dd { margin: 0; color: var(--fg-mid); }
+
+	/* ── 面板内公共结构 ── */
+	.pbar {
+		position: sticky; top: 0; z-index: 5;
+		display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px;
+		font-size: 11.5px; color: var(--fg-mid);
+		background: var(--panel-bg); border-bottom: 1px solid var(--line);
+	}
+	.pbar .r { margin-left: auto; font-size: 10px; color: var(--fg-faint); }
+	.search { display: flex; align-items: center; gap: 6px; margin: 7px 8px; padding: 0 8px; height: 26px; border: 1px solid rgba(127,127,127,.18); border-radius: 5px; font-size: 11.5px; color: var(--fg-faint); }
+
+	.sec { }
+	.sec-head {
+		display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
+		min-width: 0;
+	}
+	.sec-head .chev {
+		flex: 0 0 auto; text-align: center; color: var(--fg-faint);
+		transition: transform .12s ease;
+	}
+	.sec-head .ico { flex: 0 0 auto; line-height: 1; }
+	.sec-head .ttl {
+		flex: 0 1 auto; min-width: 0;
+		overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	}
+	.sec-head .cnt { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+	.sec-head .sp { flex: 1 1 auto; min-width: 4px; }
+	.sec-head .tools { flex: 0 0 auto; display: flex; gap: 5px; align-items: center; opacity: 0; pointer-events: none; transition: opacity .1s; }
+	.sec-head:hover .tools, .sec-head:focus-within .tools { opacity: 1; pointer-events: auto; }
+	.sec-head .tool { font-size: 11px; color: var(--fg-faint); cursor: pointer; padding: 0 2px; border-radius: 3px; }
+	.sec-head .tool:hover { color: var(--fg); background: rgba(127,127,127,.14); }
+	.sec-head .sub { display: none; }
+	.sec-body { display: none; }
+	.sec.open .sec-body { display: block; }
+
+	/* 树行公共 */
+	.row {
+		display: flex; align-items: center; gap: 6px; cursor: pointer; position: relative;
+		min-width: 0;
+	}
+	.row .chev { flex: 0 0 auto; text-align: center; color: var(--fg-faint); transition: transform .12s ease; }
+	.row .ico { flex: 0 0 auto; line-height: 1; }
+	.row .nm { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.row .meta { flex: 0 0 auto; margin-left: auto; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+	.row .kids { display: none; }
+	.row.open + .kids { display: block; }
+
+	/* ══════════ S0 现状（复刻截图里的问题） ══════════ */
+	.s0 .sec { margin: 8px 6px; padding: 4px 4px 6px; background: rgba(127,127,127,.04); border: 1px solid rgba(127,127,127,.08); border-radius: 10px; }
+	.s0 .sec-head { height: 30px; padding: 0 6px; }
+	.s0 .chev { width: 11px; font-size: 9px; opacity: .7; }
+	.s0 .ico { font-size: 12px; }
+	.s0 .ttl { font-size: 12.5px; font-weight: 650; letter-spacing: .01em; }
+	.s0 .cnt { height: 18px; min-width: 20px; padding: 0 7px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; background: rgba(127,127,127,.13); font-size: 10px; font-weight: 600; color: var(--fg-dim); }
+	.s0 .tools { opacity: 1; pointer-events: auto; }  /* 现状：工具常驻，挤占标题 ✗ */
+	.s0 .row { height: 30px; padding: 0 8px 0 4px; margin: 1px 2px; border-radius: 6px; font-size: 13.5px; }
+	.s0 .row .chev { width: 10px; font-size: 8px; opacity: .6; }
+	.s0 .row .ico { font-size: 12px; }
+	.s0 .row:hover { background: var(--hover); }
+	.s0 .row.sel { background: var(--sel); color: #fff; }
+	.s0 .row.cur { background: rgba(55,148,255,.10); color: #fff; font-weight: 600; box-shadow: inset 2px 0 0 0 var(--accent); }
+
+	/* ══════════ S1 极简标签（Obsidian，最省宽度） ══════════ */
+	.s1 .sec { padding: 8px 6px 2px; }
+	.s1 .sec:first-of-type { padding-top: 2px; }
+	.s1 .sec-head { height: 24px; padding: 0 8px 0 4px; }
+	.s1 .chev { width: 12px; font-size: 9px; opacity: .7; }
+	.s1 .ico { display: none; }
+	.s1 .ttl { font-size: 11px; font-weight: 600; letter-spacing: .05em; color: var(--fg-faint); }
+	.s1 .sec-head:hover .ttl { color: var(--fg-mid); }
+	.s1 .cnt { font-size: 10.5px; color: var(--fg-faint); opacity: .85; }
+	.s1 .cnt::before { content: '· '; }
+	.s1 .row { height: 27px; padding: 0 8px 0 4px; margin: 0 4px; border-radius: 4px; font-size: 13px; }
+	.s1 .row .chev { width: 10px; font-size: 8px; opacity: .55; }
+	.s1 .row .ico { font-size: 11px; opacity: .8; }
+	.s1 .row:hover { background: var(--hover); }
+	.s1 .row.sel { background: var(--sel); color: #fff; }
+	.s1 .row.cur { background: rgba(55,148,255,.10); color: #fff; box-shadow: inset 2px 0 0 0 var(--accent); }
+
+	/* ══════════ S2 粘性栏（Finder） ══════════ */
+	.s2 .sec { border-top: 1px solid rgba(127,127,127,.10); }
+	.s2 .sec:first-of-type { border-top: 0; }
+	.s2 .sec-head {
+		position: sticky; top: 30px; z-index: 4; height: 26px; padding: 0 8px;
+		background: #232324;
+	}
+	.s2 .chev { width: 11px; font-size: 8px; opacity: .6; }
+	.s2 .ico { font-size: 11px; opacity: .9; }
+	.s2 .ttl { font-size: 10.5px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--fg-dim); }
+	.s2 .cnt { font-size: 10px; color: var(--fg-faint); }
+	.s2 .row { height: 24px; padding: 0 8px 0 4px; margin: 0 4px; border-radius: 3px; font-size: 12.5px; }
+	.s2 .row .chev { width: 10px; font-size: 8px; }
+	.s2 .row .ico { font-size: 11px; }
+	.s2 .row:hover { background: var(--hover); }
+	.s2 .row.sel { background: var(--sel); }
+	.s2 .row.cur { background: rgba(55,148,255,.10); color: #fff; }
+
+	/* ══════════ S3 卡片 + 尾部计数（现状优化） ══════════ */
+	.s3 .sec { margin: 7px 6px; padding: 3px 3px 5px; background: rgba(127,127,127,.035); border: 1px solid rgba(127,127,127,.07); border-radius: 9px; }
+	.s3 .sec-head { height: 28px; padding: 0 5px; }
+	.s3 .chev { width: 10px; font-size: 8px; opacity: .55; }
+	.s3 .ico { font-size: 12px; }
+	.s3 .ttl { font-size: 12.5px; font-weight: 650; }
+	.s3 .sp { flex: 1 1 auto; }
+	.s3 .cnt { font-size: 10.5px; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+	.s3 .row { height: 29px; padding: 0 8px 0 3px; margin: 1px 1px; border-radius: 5px; font-size: 13px; }
+	.s3 .row .chev { width: 10px; font-size: 8px; opacity: .55; }
+	.s3 .row .ico { font-size: 12px; }
+	.s3 .row:hover { background: var(--hover); }
+	.s3 .row.sel { background: var(--sel); color: #fff; }
+	.s3 .row.cur { background: rgba(55,148,255,.10); color: #fff; font-weight: 600; box-shadow: inset 2px 0 0 0 var(--accent); }
+
+	/* ══════════ S4 图标大标题（Raycast） ══════════ */
+	.s4 .sec { padding: 10px 6px 2px; }
+	.s4 .sec:first-of-type { padding-top: 4px; }
+	.s4 .sec-head { height: 32px; padding: 0 8px 0 5px; }
+	.s4 .chev { width: 11px; font-size: 8px; opacity: .5; }
+	.s4 .ico { font-size: 14px; }
+	.s4 .ttl { font-size: 14px; font-weight: 650; }
+	.s4 .cnt { height: 18px; padding: 0 7px; display: inline-flex; align-items: center; border-radius: 6px; background: rgba(127,127,127,.12); font-size: 10.5px; font-weight: 600; color: var(--fg-dim); }
+	.s4 .row { height: 28px; padding: 0 8px 4px 6px; margin: 0 4px; border-radius: 5px; font-size: 13px; }
+	.s4 .row .chev { width: 10px; font-size: 8px; opacity: .5; }
+	.s4 .row .ico { font-size: 12px; }
+	.s4 .row:hover { background: var(--hover); }
+	.s4 .row.sel { background: var(--sel); color: #fff; }
+	.s4 .row.cur { background: rgba(55,148,255,.10); color: #fff; font-weight: 600; box-shadow: inset 2px 0 0 0 var(--accent); }
+
+	/* ══════════ S5 双行节头（标题 + 统计副标题） ══════════ */
+	.s5 .sec { padding: 10px 6px 3px; border-top: 1px solid rgba(127,127,127,.09); }
+	.s5 .sec:first-of-type { border-top: 0; }
+	.s5 .sec-head { height: 38px; padding: 0 8px 0 5px; align-items: center; }
+	.s5 .chev { width: 11px; font-size: 8px; opacity: .5; align-self: flex-start; margin-top: 9px; }
+	.s5 .ico { font-size: 13px; align-self: flex-start; margin-top: 6px; }
+	.s5 .ttlwrap { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; gap: 1px; }
+	.s5 .ttl { font-size: 12.5px; font-weight: 650; }
+	.s5 .sub { display: block; font-size: 10px; color: var(--fg-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.s5 .cnt { display: none; }
+	.s5 .row { height: 27px; padding: 0 8px 0 4px; margin: 0 4px; border-radius: 4px; font-size: 13px; }
+	.s5 .row .chev { width: 10px; font-size: 8px; opacity: .5; }
+	.s5 .row .ico { font-size: 11px; }
+	.s5 .row:hover { background: var(--hover); }
+	.s5 .row.sel { background: var(--sel); color: #fff; }
+	.s5 .row.cur { background: rgba(55,148,255,.10); color: #fff; font-weight: 600; box-shadow: inset 2px 0 0 0 var(--accent); }
+
+	/* 窄面板兜底：所有方案在 hover 时才出工具，且标题优先 */
+	#panel.narrow .sec-head .tools { display: none; }
+</style>
+</head>
+<body>
+
+<header>
+	<h1>知识库 · 分区头样式（可交互）</h1>
+	<p class="tip">
+		左面板是**真的能点**：点节头折叠、点目录展开、点文件选中。拖动宽度滑块可复现截图里「知识…被截断」的场景。
+	</p>
+	<div class="bar">
+		<div class="styles" id="styles"></div>
+		<div class="ctrl">
+			<span>面板宽度</span>
+			<input id="w" type="range" min="240" max="440" step="10" value="340" />
+			<span id="wv">340px</span>
+		</div>
+		<div class="ctrl">
+			<label><input id="cCount" type="checkbox" checked /> 显示计数</label>
+			<label><input id="cIcon" type="checkbox" checked /> 显示图标</label>
+		</div>
+	</div>
+	<div class="warn" id="warn"></div>
+</header>
+
+<main>
+	<div class="stage">
+		<div id="panel" class="s0"></div>
+	</div>
+
+	<aside>
+		<h2 id="aname">说明</h2>
+		<ul id="adesc"></ul>
+		<h2>关键数值</h2>
+		<dl class="kv" id="akv"></dl>
+		<h2>为什么能解决「知…」截断</h2>
+		<ul>
+			<li>工具按钮改为 <b>hover 才出现</b>（现状常驻，直接吃掉标题宽度）</li>
+			<li>计数改为 <b>不参与挤压</b>：裸数字 / 尾部弱字 / 挪到副标题</li>
+			<li>标题 <code>flex: 0 1 auto; min-width: 0</code>，<b>先于</b>工具获得空间</li>
+			<li>窄面板下再降级：工具整组隐藏（<code>#panel.narrow</code>）</li>
+		</ul>
+	</aside>
+</main>
+
+<script>
+/* ───────── 数据（贴近真实） ───────── */
+const DATA = [
+	{
+		key: 'lib', icon: '🗂', title: '数据源', count: 129, sub: '129 个文件 · 方法 / 案例 / 原文',
+		items: [
+			{ name: '方法', folder: true, kids: [
+				{ name: '.overview.md', file: true },
+				{ name: '差分图压缩优化方案.md', file: true },
+				{ name: '纹理压缩优化与 ASTC 格式.md', file: true },
+				{ name: '高效读书 Skill 逐页分析.md', file: true },
+				{ name: 'Codex 批量生成游戏图标.md', file: true }
+			] },
+			{ name: '案例拆解', folder: true, kids: [
+				{ name: '像任天堂一样做新手引导.md', file: true },
+				{ name: '游戏数值拆解 5 步法.md', file: true }
+			] }
+		]
+	},
+	{
+		key: 'notes', icon: '📚', title: '知识库列表', count: 95, sub: '5 个知识库 · 95 篇 · 已绑飞书 0',
+		items: [
+			{ name: 'AIAgent', folder: true, kb: true, docs: 21, kids: [
+				{ name: 'DSH 专题', folder: true, kids: [{ name: 'Agent 编排.md', file: true }] },
+				{ name: 'CodeBuddy 规则体系.md', file: true },
+				{ name: 'MCP 协议与工具注册.md', file: true }
+			] },
+			{ name: 'ComfyUI技术', folder: true, kb: true, docs: 1, kids: [{ name: 'ComfyUI 核心节点体系.md', file: true }] },
+			{ name: 'UnrealEngine', folder: true, kb: true, docs: 45, kids: [{ name: '01_核心系统', folder: true, kids: [] }] },
+			{ name: '游戏设计', folder: true, kb: true, docs: 8, kids: [] },
+			{ name: '财经', folder: true, kb: true, docs: 1, kids: [] }
+		]
+	},
+	{
+		key: 'tags', icon: '🏷', title: '标签分类', count: 197, sub: '常用 11 · 一般 38 · 其余',
+		items: [
+			{ name: '#UE4', file: true }, { name: '#动画系统', file: true },
+			{ name: '#性能优化', file: true }, { name: '#AI-Agent', file: true },
+			{ name: '#游戏设计', file: true }, { name: '#C++', file: true }
+		]
+	}
+];
+
+const STYLES = [
+	{ id: 's0', name: 'S0 现状', desc: ['卡片分组 + 30px 节头 + 计数胶囊', '⚠ 工具常驻、计数占位 ⇒ 窄面板把标题挤成「知…」'], kv: [['节头高', '30px'], ['背景', '卡片 rgba .04'], ['标题', '12.5 / 650'], ['计数', '胶囊 r6'], ['工具', '常驻 ✗'], ['节间距', '卡片 8px']] },
+	{ id: 's1', name: 'S1 极简标签', desc: ['无卡片、无底色，节头 24px，标题最弱色', '计数变「· 129」裸数字 ⇒ 完全不挤标题', '最省宽度，340px 下标题永远完整'], kv: [['节头高', '24px'], ['背景', '透明'], ['标题', '11 / 600 / .05em · faint'], ['计数', '· 129（裸）'], ['工具', 'hover'], ['节间距', '8px padding']] },
+	{ id: 's2', name: 'S2 粘性栏', desc: ['节头吸顶，滚动时始终知道在哪一节', '全大写 + 字距，语义最强', '节间 1px 极淡线，不画卡片'], kv: [['节头高', '26px'], ['背景', '#232324 不透明'], ['标题', '10.5 / 700 / .1em 大写'], ['计数', '右对齐裸数字'], ['工具', 'hover'], ['节间距', '1px 线']] },
+	{ id: 's3', name: 'S3 卡片 + 尾部计数', desc: ['保留卡片（和现状同气质），但工具改 hover', '计数移到标题右侧尾巴（弱色小字，不占挤压位）', '改动最小、最能解掉截断'], kv: [['节头高', '28px'], ['背景', '卡片 rgba .035'], ['标题', '12.5 / 650'], ['计数', '尾部 10.5 faint'], ['工具', 'hover'], ['节间距', '卡片 7px']] },
+	{ id: 's4', name: 'S4 图标大标题', desc: ['emoji 14px + 标题 14px，信息最强', '计数胶囊保留但降到 r6 低调', '适合"把分区当导航"的读法'], kv: [['节头高', '32px'], ['背景', '透明'], ['标题', '14 / 650'], ['计数', '胶囊 r6 低调'], ['工具', 'hover'], ['节间距', '10px padding']] },
+	{ id: 's5', name: 'S5 双行节头', desc: ['标题 + 一行统计副标题（5 库 · 95 篇 · 已绑 0）', '数字有含义，不用猜「95」是什么', '最高 38px，占空间最多'], kv: [['节头高', '38px'], ['背景', '透明'], ['标题', '12.5 / 650 + 副标题 10'], ['计数', '并入副标题'], ['工具', 'hover'], ['节间距', '1px 线']] },
+	{ id: 's6', name: 'S6 全宽工具条', desc: ['hover 时整条变工具条（重命名/新建/整理）', '默认零占位 ⇒ 标题 100% 可用宽度', '工具多时最从容'], kv: [['节头高', '26px'], ['背景', '透明'], ['标题', '11.5 / 650'], ['计数', '尾部 faint'], ['工具', 'hover 覆盖整行'], ['节间距', '8px']] }
+];
+
+/* ───────── 状态 ───────── */
+const state = {
+	style: 's0',
+	width: 340,
+	showCount: true,
+	showIcon: true,
+	collapsed: {},   // sectionKey -> true
+	open: { lib: { '方法': true }, notes: {} },
+	selected: '',
+	curKb: 'AIAgent'
+};
+
+/* ───────── 工具条按钮（模拟真实：排序 / ＋ / ⋯） ───────── */
+const TOOLS = `
+	<span class="tool" title="按名称排序">⇅</span>
+	<span class="tool" title="新建">＋</span>
+	<span class="tool" title="更多">⋯</span>`;
+
+function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+function rowHtml(item, depth, secKey, path) {
+	const pad = 4 + depth * 16;
+	const isFolder = !!item.folder;
+	const openKey = path;
+	const open = !!state.open[secKey]?.[openKey];
+	const sel = state.selected === path;
+	const cur = item.kb && item.name === state.curKb;
+	const icon = item.kb ? '📗' : (isFolder ? '📁' : '📄');
+	const meta = item.kb && state.showCount ? `<span class="meta">${item.docs} 篇</span>` : '';
+	const chev = isFolder ? (open ? '▾' : '▸') : '';
+	const kids = isFolder && item.kids && item.kids.length
+		? `<div class="kids">${item.kids.map((k) => rowHtml(k, depth + 1, secKey, path + '/' + k.name)).join('')}</div>`
+		: '';
+	return `<div class="row ${open ? 'open' : ''} ${sel ? 'sel' : ''} ${cur ? 'cur' : ''}" data-sec="${secKey}" data-path="${esc(path)}" data-folder="${isFolder ? 1 : 0}" style="padding-left:${pad}px">
+		${state.showIcon ? `<span class="ico">${icon}</span>` : '<span class="ico" style="width:12px"></span>'}
+		<span class="chev" style="width:10px;font-size:8px">${chev}</span>
+		<span class="nm">${esc(item.name)}</span>${meta}
+	</div>${kids}`;
+}
+
+function sectionHtml(sec) {
+	const collapsed = !!state.collapsed[sec.key];
+	const items = collapsed ? '' : sec.items.map((it) => rowHtml(it, 0, sec.key, it.name)).join('');
+	const count = state.showCount
+		? (state.style === 's0' || state.style === 's4'
+			? `<span class="cnt">${sec.count}</span>`
+			: `<span class="cnt">${sec.count}</span>`)
+		: '';
+	const icon = state.showIcon ? `<span class="ico">${sec.icon}</span>` : '';
+	const body = state.style === 's5'
+		? `<span class="ttlwrap"><span class="ttl">${esc(sec.title)}</span><span class="sub">${esc(sec.sub)}</span></span>`
+		: `<span class="ttl">${esc(sec.title)}</span>`;
+	return `<div class="sec ${collapsed ? '' : 'open'}">
+		<div class="sec-head" data-head="${sec.key}">
+			<span class="chev" style="width:12px;font-size:9px;transform:rotate(${collapsed ? 0 : 90}deg)">▸</span>
+			${icon}
+			${body}
+			<span class="sp"></span>
+			${state.style === 's5' ? '' : count}
+			<span class="tools">${TOOLS}</span>
+		</div>
+		<div class="sec-body">${items}</div>
+	</div>`;
+}
+
+function render() {
+	const panel = document.getElementById('panel');
+	panel.className = state.style + (state.width < 300 ? ' narrow' : '');
+	panel.style.width = state.width + 'px';
+	panel.innerHTML =
+		`<div class="pbar">🏠 总览<span class="r">📚 5 · ✎ 95</span></div>
+		 <div class="search">🔍 搜索笔记或库…</div>` +
+		DATA.map(sectionHtml).join('');
+
+	bind(panel);
+	updateAside();
+	checkTruncation();
+}
+
+function bind(panel) {
+	panel.querySelectorAll('.sec-head').forEach((el) => {
+		el.addEventListener('click', (e) => {
+			if (e.target.classList.contains('tool')) { e.stopPropagation(); return; }
+			const k = el.dataset.head;
+			state.collapsed[k] = !state.collapsed[k];
+			render();
+		});
+	});
+	panel.querySelectorAll('.row').forEach((el) => {
+		el.addEventListener('click', () => {
+			const sec = el.dataset.sec;
+			const path = el.dataset.path;
+			if (el.dataset.folder === '1') {
+				state.open[sec] = state.open[sec] || {};
+				state.open[sec][path] = !state.open[sec][path];
+				state.selected = path;
+				render();
+				return;
+			}
+			state.selected = path;
+			// 点库内文件 ⇒ 该库成为"当前库"
+			const seg = path.split('/');
+			if (seg.length >= 2 && ['AIAgent', 'ComfyUI技术', 'UnrealEngine', '游戏设计', '财经'].includes(seg[0])) { state.curKb = seg[0]; }
+			render();
+		});
+	});
+}
+
+function updateAside() {
+	const st = STYLES.find((s) => s.id === state.style);
+	document.getElementById('aname').textContent = st.name;
+	document.getElementById('adesc').innerHTML = st.desc.map((d) => `<li>${d}</li>`).join('');
+	document.getElementById('akv').innerHTML = st.kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+}
+
+/* 关键：实时检测「知识库列表」标题是否被截断 */
+function checkTruncation() {
+	const heads = [...document.querySelectorAll('#panel .sec-head .ttl')];
+	const bad = heads.filter((t) => t.scrollWidth > t.clientWidth + 1);
+	const warn = document.getElementById('warn');
+	if (bad.length) {
+		warn.className = 'warn bad';
+		warn.innerHTML = `⚠ 宽度 ${state.width}px 下标题被截断：<b>${bad.map((b) => esc(b.textContent)).join(' / ')}</b>（这就是截图里「知…」的成因）`;
+	} else {
+		warn.className = 'warn ok';
+		warn.innerHTML = `✓ 宽度 ${state.width}px 下所有分区标题完整显示`;
+	}
+}
+
+/* 方案按钮 */
+const stylesBox = document.getElementById('styles');
+stylesBox.innerHTML = STYLES.map((s) => `<button class="sbtn ${s.id === state.style ? 'on' : ''}" data-id="${s.id}">${s.name}</button>`).join('');
+stylesBox.addEventListener('click', (e) => {
+	const b = e.target.closest('.sbtn');
+	if (!b) { return; }
+	state.style = b.dataset.id;
+	stylesBox.querySelectorAll('.sbtn').forEach((x) => x.classList.toggle('on', x.dataset.id === state.style));
+	render();
+});
+
+/* 控件 */
+document.getElementById('w').addEventListener('input', (e) => {
+	state.width = Number(e.target.value);
+	document.getElementById('wv').textContent = state.width + 'px';
+	render();
+});
+document.getElementById('cCount').addEventListener('change', (e) => { state.showCount = e.target.checked; render(); });
+document.getElementById('cIcon').addEventListener('change', (e) => { state.showIcon = e.target.checked; render(); });
+
+render();
+</script>
+</body>
+</html>

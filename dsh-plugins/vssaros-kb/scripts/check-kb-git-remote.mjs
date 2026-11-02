@@ -152,8 +152,8 @@ check('旧配置里的明文令牌会被迁移进凭据库并从文件删掉', a
 check('端到端：目录当远端（无需服务器）→ 推送 → 拉取', async () => {
 	const base = mkdtempSync(path.join(os.tmpdir(), 'kb-rem-e2e-'));
 	const vault = path.join(base, 'vault'), bare = path.join(base, 'remote.git');
-	mkdirSync(path.join(vault, '笔记'), { recursive: true });
-	writeFileSync(path.join(vault, '笔记', 'a.md'), '# a\n\n第一版\n', 'utf8');
+	mkdirSync(path.join(vault, '知识库列表'), { recursive: true });
+	writeFileSync(path.join(vault, '知识库列表', 'a.md'), '# a\n\n第一版\n', 'utf8');
 	try {
 		if (!(await G.runGit(['init', '--bare', bare], base)).ok) { throw new Error('建裸仓库失败'); }
 		if (!(await G.initRepo(vault)).ok) { throw new Error('init 失败'); }
@@ -170,14 +170,14 @@ check('端到端：目录当远端（无需服务器）→ 推送 → 拉取', a
 check('本地有未提交改动时：拉取要拒绝（不许悄悄覆盖）', async () => {
 	const base = mkdtempSync(path.join(os.tmpdir(), 'kb-rem-dirty-'));
 	const vault = path.join(base, 'vault'), bare = path.join(base, 'r.git');
-	mkdirSync(path.join(vault, '笔记'), { recursive: true });
-	writeFileSync(path.join(vault, '笔记', 'a.md'), '# a\n', 'utf8');
+	mkdirSync(path.join(vault, '知识库列表'), { recursive: true });
+	writeFileSync(path.join(vault, '知识库列表', 'a.md'), '# a\n', 'utf8');
 	try {
 		await G.runGit(['init', '--bare', bare], base);
 		await G.initRepo(vault);
 		await R.gitRemoteSet(vault, bare);
 		await R.gitPush(vault, { type: 'path', url: bare, branch: 'master' });
-		writeFileSync(path.join(vault, '笔记', 'a.md'), '# a\n\n未提交的改动\n', 'utf8');
+		writeFileSync(path.join(vault, '知识库列表', 'a.md'), '# a\n\n未提交的改动\n', 'utf8');
 		const pl = await R.gitPull(vault, { type: 'path', url: bare, branch: 'master' });
 		if (pl.ok) { throw new Error('有未提交改动竟然允许拉取'); }
 		if (!/未提交/.test(String(pl.error || ''))) { throw new Error('拒绝原因不对：' + pl.error); }

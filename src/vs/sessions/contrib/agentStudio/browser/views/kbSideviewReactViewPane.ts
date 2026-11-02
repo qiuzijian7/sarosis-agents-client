@@ -72,7 +72,7 @@ const VIEWABLE_EXTS = new Set([
 	'html', 'htm', 'txt',
 ]);
 
-/** 收树里的文件节点（`path` 已是 `笔记/…` 相对形态，与组件同一命名空间） */
+/** 收树里的文件节点（`path` 已是 `知识库列表/…` 相对形态，与组件同一命名空间） */
 function flattenFiles(nodes: readonly KbTreeNode[]): KbTreeNode[] {
 	const out: KbTreeNode[] = [];
 	for (const n of nodes) {
@@ -97,7 +97,7 @@ async function buildLinkIndex(fileService: IFileService, notesDir: URI, tree: re
 		LINK_CACHE = { key, at: Date.now(), graph };
 	}
 	const graph = LINK_CACHE.graph;
-	const rel = (uri: URI) => '笔记/' + uri.path.slice(notesDir.path.length + 1);
+	const rel = (uri: URI) => '知识库列表/' + uri.path.slice(notesDir.path.length + 1);
 	const result: Record<string, LinkPair> = {};
 	for (const node of flattenFiles(tree)) {
 		const id = URI.joinPath(notesDir, ...relSegments(node.path)).toString();
@@ -138,7 +138,7 @@ interface KbSideviewPayload {
 	/** 「库」区（原料）：与笔记区并列，对齐 IDE sideview 的两节结构 */
 	readonly library?: readonly KbTreeNode[];
 	readonly libraryCount?: number;
-	/** 全量双链索引：`key = 树的 path`（`笔记/…`）⇒ 组件按选中项本地查表 */
+	/** 全量双链索引：`key = 树的 path`（`知识库列表/…`）⇒ 组件按选中项本地查表 */
 	readonly links?: Record<string, LinkPair>;
 	readonly tags: readonly { readonly tag: string; readonly count: number }[];
 	readonly indexState: 'ready' | 'indexing' | 'stale';
@@ -146,7 +146,7 @@ interface KbSideviewPayload {
 
 /** 组件通过 `postMessage` 发来的动作（与 `webview/src/kbSideview/index.tsx` 的 actions 一一对应）。 */
 interface IKbAction {
-	readonly type?: 'openNode' | 'openLink' | 'openGraph' | 'openSettings' | 'refresh' | 'switchVault' | 'search' | 'pickTag'
+	readonly type?: 'openNode' | 'openLink' | 'openGraph' | 'openHome' | 'openSettings' | 'refresh' | 'switchVault' | 'search' | 'pickTag'
 		// 写操作（2026-10-23）：组件只表达意图，落盘/弹框由宿主实现
 		| 'createNote' | 'newFolder' | 'renameNode' | 'deleteNode'
 		// 拖拽移动（2026-10-23）：`path` = 被拖节点，`toPath` = 目标目录
@@ -191,6 +191,8 @@ window.__KB_SIDEVIEW_ACTIONS__ = {
 	openNode: p => acquireVsCodeApi().postMessage({ type: 'openNode', path: p }),
 	refresh: () => acquireVsCodeApi().postMessage({ type: 'refresh' }),
 	openGraph: () => acquireVsCodeApi().postMessage({ type: 'openGraph' }),
+	// ★ 2026-11-02：侧栏「总览」入口 ⇒ 在中间栏打开独立主页（不是侧栏内展开）
+	openHome: () => acquireVsCodeApi().postMessage({ type: 'openHome' }),
 	openSettings: () => acquireVsCodeApi().postMessage({ type: 'openSettings' }),
 	switchVault: id => acquireVsCodeApi().postMessage({ type: 'switchVault', id }),
 	// 全文检索是**双向**的：发消息带 requestId，宿主回推 searchResults 时按 id 兑现 Promise。
@@ -307,6 +309,9 @@ export class KbSideviewReactViewPane extends ViewPane {
 					break;
 				case 'openGraph':
 					await this._kbCommand.openGraph();
+					break;
+				case 'openHome':
+					await this._kbCommand.openHome();
 					break;
 				case 'openSettings':
 					await this._kbCommand.openSettings();
@@ -481,7 +486,7 @@ export class KbSideviewReactViewPane extends ViewPane {
 		return resolveVaultNotesDir(vault, resolveKbRootUri(this._storageService, this._environmentService));
 	}
 
-	/** `笔记/01_学习/x` → `['01_学习','x']`：去掉 `笔记/` 前缀并过滤空段（防止拼出 `笔记/笔记/…`）。 */
+	/** `知识库列表/01_学习/x` → `['01_学习','x']`：去掉 `知识库列表/` 前缀并过滤空段（防止拼出 `知识库列表/笔记/…`）。 */
 	private _relSegments(relPath: string | undefined): string[] {
 		return (relPath ?? '').replace(/^笔记\//, '').split('/').filter(Boolean);
 	}
@@ -490,9 +495,9 @@ export class KbSideviewReactViewPane extends ViewPane {
 	 * ★ 2026-10-23（修一个已上线的 bug）：按 path 的**首段**决定基准目录。
 	 *
 	 * 原先所有写操作都是 `URI.joinPath(await this._notesDir(), ..._relSegments(p))`，
-	 * 而 `_relSegments` 只剥 `笔记/` ⇒ 库区的 `库/方法/x.md` 会被解析成
+	 * 而 `_relSegments` 只剥 `知识库列表/` ⇒ 库区的 `数据源/方法/x.md` 会被解析成
 	 * `<vault>/笔记/库/方法/x.md`（不存在）⇒ **库区的改名/删除/移动全部失效**（静默失败）。
-	 * 两个区的根不同（`笔记` = notesDir，`库` = sectionUri(vault,'library')），必须分开解析。
+	 * 两个区的根不同（`知识库列表` = notesDir，`数据源` = sectionUri(vault,'library')），必须分开解析。
 	 */
 	private async _baseDirOf(path: string): Promise<{ dir: URI; segs: string[] } | undefined> {
 		const vault = loadActiveKbVault(this._storageService);
@@ -500,16 +505,16 @@ export class KbSideviewReactViewPane extends ViewPane {
 		const kbRoot = resolveKbRootUri(this._storageService, this._environmentService);
 		const raw = (path ?? '').split('/').filter(Boolean);
 		const section = raw[0];
-		if (section === '库') {
+		if (section === '数据源') {
 			return { dir: this._kbCommand.sectionUri(vault, 'library'), segs: raw.slice(1) };
 		}
-		// `笔记/…` 或（历史数据）没有前缀 ⇒ 都按笔记区处理
-		return { dir: resolveVaultNotesDir(vault, kbRoot), segs: section === '笔记' ? raw.slice(1) : raw };
+		// `知识库列表/…` 或（历史数据）没有前缀 ⇒ 都按笔记区处理
+		return { dir: resolveVaultNotesDir(vault, kbRoot), segs: section === '知识库列表' ? raw.slice(1) : raw };
 	}
 
-	/** 打开笔记：tree 的 path 形如 `笔记/01_学习/x`，而 notesDir 已指向「笔记」⇒ 去掉前缀。 */
+	/** 打开笔记：tree 的 path 形如 `知识库列表/01_学习/x`，而 notesDir 已指向「笔记」⇒ 去掉前缀。 */
 	private async _openNote(relPath: string): Promise<void> {
-		// ★ 2026-10-23：原先固定用 notesDir + 只剥 `笔记/` ⇒ **库区文件点开也指错**
+		// ★ 2026-10-23：原先固定用 notesDir + 只剥 `知识库列表/` ⇒ **库区文件点开也指错**
 		//   （`<vault>/笔记/库/…`，同 `_baseDirOf` 修掉的那批问题）。现在按首段解析基准目录，
 		//   库区的 pdf / canvas / 图片也能真正由编辑器 resolver 打开 ✓
 		const base = await this._baseDirOf(relPath);
@@ -561,8 +566,8 @@ export class KbSideviewReactViewPane extends ViewPane {
 			// 「库」区目录由服务给（不同库的自定义路径由它负责），不自己拼 `<vault>/库`
 			const libraryDir = this._kbCommand.sectionUri(vault, 'library');
 			const [tree, library, tags] = await Promise.all([
-				this._walkChildren(notesDir, '笔记', 0),
-				this._walkChildren(libraryDir, '库', 0),
+				this._walkChildren(notesDir, '知识库列表', 0),
+				this._walkChildren(libraryDir, '数据源', 0),
 				this._readTags(vault),
 			]);
 			const noteCount = countLeaves(tree);
@@ -632,7 +637,7 @@ export class KbSideviewReactViewPane extends ViewPane {
 	 *
 	 * 为什么不用那个索引：它要 worker + 全量内存索引（`knowledgeBaseView` 里是 5000 行的重装备），
 	 * 而侧栏只做"输入框里敲词、给前 20 条"这一件事。102 篇 md 直接读一遍 ≈ 几十 ms，比拉 worker 便宜 ✓。
-	 * ⚠ 命中路径返回 `笔记/…`（与树的 path 同一命名空间）⇒ 组件点结果直接 `openNode` 即可 ✓。
+	 * ⚠ 命中路径返回 `知识库列表/…`（与树的 path 同一命名空间）⇒ 组件点结果直接 `openNode` 即可 ✓。
 	 */
 	private async _searchNotes(notesDir: URI, query: string, limit = 20): Promise<{ title: string; path: string; snippet: string }[]> {
 		const q = query.trim().toLowerCase();
@@ -657,12 +662,12 @@ export class KbSideviewReactViewPane extends ViewPane {
 				});
 			}
 		};
-		await walk(notesDir, '笔记/');
+		await walk(notesDir, '知识库列表/');
 		return hits;
 	}
 
 	/**
-	 * 标签聚合：读 `<vault>/.kbkernel.json` 的 `docs[].tags`。
+	 * 标签聚合：读 `<vault>/.kb/kernel.json` 的 `docs[].tags`。
 	 *
 	 * 为什么不走 `KbFullTextIndex`（IDE 侧那个）：它需要 worker + 内存索引，
 	 * 而这里只需要「标签 → 篇数」这一层聚合，读一次 kernel 缓存最省。
@@ -670,7 +675,7 @@ export class KbSideviewReactViewPane extends ViewPane {
 	 */
 	private async _readTags(vault: { readonly path: string }): Promise<{ tag: string; count: number }[]> {
 		try {
-			const kernelUri = URI.joinPath(URI.file(vault.path), '.kbkernel.json');
+			const kernelUri = URI.joinPath(URI.file(vault.path), '.kb/kernel.json');
 			const raw = (await this._fileService.readFile(kernelUri)).value.toString();
 			const parsed = JSON.parse(raw) as { docs?: readonly { tags?: readonly string[] }[] };
 			const counts = new Map<string, number>();

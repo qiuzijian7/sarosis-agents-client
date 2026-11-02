@@ -200,6 +200,41 @@ export function extractCandidates(userTexts, options = {}) {
 }
 
 /**
+ * 找出本回合"**重复命中已有草稿**"的指纹（纯函数，2026-11-02）。
+ *
+ * 为什么需要它：`extractCandidates` 命中 `seenDigests` 就 `continue` ⇒ 同一句话第二次
+ * 出现**不会**产出候选，于是"说过两次"这个最强信号被直接丢掉了。而自动提升恰恰要用它
+ * （说一次可能是随口，说两次才是约定）。⇒ 这里单独把重复命中的 digest 捞出来，
+ * 由调用方 `draftStore.bump(...)` 累加 `hits`，再由 `core/promotion.js` 判定是否够格。
+ *
+ * @param {readonly string[]} userTexts 本回合用户消息文本
+ * @param {Set<string>|readonly string[]} seenDigests 历史草稿指纹
+ * @param {{maxPerTurn?: number}} [options] 上限（防一回合内刷爆）
+ * @returns {string[]} 重复命中的指纹（去重，顺序即出现序）
+ */
+export function repeatedDigestsOf(userTexts, seenDigests, options = {}) {
+	const seen = seenDigests instanceof Set ? seenDigests : new Set(Array.isArray(seenDigests) ? seenDigests : []);
+	if (seen.size === 0) { return []; }
+	const max = Number.isInteger(options.maxPerTurn) && options.maxPerTurn > 0 ? options.maxPerTurn : DISTILL_MAX_PER_TURN;
+	const out = [];
+	for (const raw of Array.isArray(userTexts) ? userTexts : []) {
+		const text = typeof raw === 'string' ? raw : '';
+		if (!text) { continue; }
+		for (const { re } of DISTILL_PATTERNS) {
+			const match = re.exec(text);
+			if (match === null) { continue; }
+			const candidate = normalizeCandidateText(match[0]);
+			if (!candidate) { continue; }
+			const digest = auditDigestOf(candidate);
+			if (!digest || !seen.has(digest) || out.includes(digest)) { continue; }
+			out.push(digest);
+			if (out.length >= max) { return out; }
+		}
+	}
+	return out;
+}
+
+/**
  * 草稿行的形状（落 JSONL 用；字段白名单，照 `buildAuditRow` 的口径 ✓）。
  * @param {object} candidate - `extractCandidates` 的产物。
  * @param {{status?: string}} [options] - 初始状态。
@@ -468,6 +503,101 @@ export function summaryCandidatesOf(events, options = {}) {
 		});
 	}
 	return out;
+}
+
+// ── 摘要事实候选（2026-11-02）────────────────────────────────────────────────
+//
+// 为什么还要从摘要里再切一层：整段摘要是"模型对整段对话的转述"，把它写进长期记忆
+// 既挤占检索位、又没法自动判定（`SUMMARY_MATCHED_TAG` 被刻意排除在自动提升之外）。
+// 但摘要里**确实**埋着值得长期记住的原子事实（"部署端口改成 8080" / "导出包用 pnpm"）。
+// ⇒ 用一条纯规则把摘要切成"短事实句"，作为**独立候选流**（`summary-fact`）：
+//     · 仍然是**草稿**（人工可提升）；
+//     · 只有"同一句在多次摘要里重复出现"（hits ≥ 2）+ LLM 判定通过 才允许自动提升
+//       —— 详见 `core/promotion.js` 的 `SUMMARY_FACT_MIN_HITS`。
+// 这条流刻意**窄**：宁可漏，不可把模型推断当事实。
+
+/** 摘要事实候选的 `matched` 标签。 */
+export const SUMMARY_FACT_MATCHED_TAG = 'summary-fact';
+
+/** 一条摘要最多切出几条事实候选（防一次压缩塞满草稿区）。 */
+export const SUMMARY_FACT_MAX = 3;
+
+/** 事实句的长度区间（太短没有信息量；太长多半还是叙述而非结论）。 */
+export const SUMMARY_FACT_MIN_CHARS = 12;
+export const SUMMARY_FACT_MAX_CHARS = 160;
+
+/**
+ * 事实句的信号词 —— 命中才当候选。
+ *
+ * 判据是"这句话像不像一条**可复用的事实/决策**"，而不是"像不像一句自然语言"：
+ * 全是叙述（"我看了下代码然后改了改"）不该进长期层。
+ */
+const SUMMARY_FACT_SIGNAL_RE = /(?:改成|改用|改为|换成|确定|定为|定案|结论|决策|约定|规范|口径|纪律|必须|禁止|不要|注意|风险|坑|根因|原因|修复|解决|默认|缺省|端口|路径|依赖|版本|接口|字段|schema|超时|上限|TODO)/i;
+
+/** 明显不是事实句的形态：标题行、纯列表符号、URL、表格分隔、代码栅栏。 */
+const SUMMARY_FACT_NOISE_RE = /^(?:#{1,6}\s|[-*+]\s*$|\||```|>|\[?\d+[.)]\s*$)/;
+
+/**
+ * 从 `compaction/summary` 事件里切出"事实句"候选（纯函数；零 I/O）。
+ *
+ * @param {readonly unknown[]} events 会话事件
+ * @param {{sessionId?: string, turn?: number, seenDigests?: Set<string>|readonly string[], now?: number, max?: number}} [options]
+ * @returns {Array<{id: string, at: number, text: string, chars: number, digest: string, matched: string, source: {sessionId: string, turn: number}}>}
+ */
+export function summaryFactsOf(events, options = {}) {
+	const sessionId = typeof options.sessionId === 'string' ? options.sessionId : '';
+	const turn = Number.isFinite(options.turn) ? options.turn : 0;
+	const now = Number.isFinite(options.now) ? options.now : 0;
+	const seen = options.seenDigests instanceof Set ? options.seenDigests : new Set(Array.isArray(options.seenDigests) ? options.seenDigests : []);
+	const max = Number.isInteger(options.max) && options.max > 0 ? options.max : SUMMARY_FACT_MAX;
+	const out = [];
+	const emitted = new Set();
+	for (const event of Array.isArray(events) ? events : []) {
+		if (event?.type !== 'compaction/summary') { continue; }
+		const blocks = event?.data?.summary;
+		const raw = Array.isArray(blocks)
+			? blocks.filter(b => b?.type === 'text' && typeof b.text === 'string').map(b => b.text).join('\n')
+			: '';
+		if (!raw) { continue; }
+		const body = stripSystemWrappers(raw);
+		// 按句切：中文句号/问号/感叹号/分号 + 换行；刻意**不**按逗号（会切碎结论）
+		for (const piece of body.split(/[。！？；\n]+/)) {
+			const sentence = piece.replace(/^[\s\-*+>·]+/, '').replace(/\s+/g, ' ').trim();
+			if (sentence.length < SUMMARY_FACT_MIN_CHARS) { continue; }
+			if (SUMMARY_FACT_NOISE_RE.test(sentence)) { continue; }
+			if (!SUMMARY_FACT_SIGNAL_RE.test(sentence)) { continue; }
+			const text = sentence.length > SUMMARY_FACT_MAX_CHARS ? `${sentence.slice(0, SUMMARY_FACT_MAX_CHARS)}…` : sentence;
+			const digest = auditDigestOf(text);
+			if (!digest || emitted.has(digest) || seen.has(digest)) { continue; }
+			emitted.add(digest);
+			out.push({
+				id: `fact-${digest.slice(0, 12)}`,
+				at: now,
+				text,
+				chars: text.length,
+				digest,
+				matched: SUMMARY_FACT_MATCHED_TAG,
+				source: { sessionId, turn },
+			});
+			if (out.length >= max) { return out; }
+		}
+	}
+	return out;
+}
+
+/**
+ * 本回合"重复命中已有摘要事实草稿"的指纹（与 `repeatedDigestsOf` 同一用途，另一条候选流）。
+ * @param {readonly unknown[]} events 会话事件
+ * @param {Set<string>|readonly string[]} seenDigests 历史草稿指纹
+ * @param {{max?: number}} [options]
+ * @returns {string[]} 重复命中的指纹
+ */
+export function repeatedSummaryFactDigestsOf(events, seenDigests, options = {}) {
+	const seen = seenDigests instanceof Set ? seenDigests : new Set(Array.isArray(seenDigests) ? seenDigests : []);
+	if (seen.size === 0) { return []; }
+	// 这里**不传** seenDigests：要拿到"全部当前事实句"再自己筛重复
+	const all = summaryFactsOf(events, { ...options, max: options.max ?? SUMMARY_FACT_MAX });
+	return all.filter(candidate => seen.has(candidate.digest)).map(candidate => candidate.digest);
 }
 
 /**

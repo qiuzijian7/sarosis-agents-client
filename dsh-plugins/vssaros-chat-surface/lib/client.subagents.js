@@ -64,11 +64,13 @@ window.__ModuleLoader__.load({
 				fontSize: 11, lineHeight: "18px", whiteSpace: "nowrap",
 			},
 			dot: { width: 6, height: 6, borderRadius: "50%", background: "var(--dsw-alias-brand-primary, #3b82f6)" },
-			dotIdle: { width: 6, height: 6, borderRadius: "50%", background: "rgba(255,255,255,.35)" },
+			// 空闲灯（2026-11-02）：原来写死半透明白 ⇒ 浅色外观下等于看不见。改用 dimmed 令牌 ✓
+			dotIdle: { width: 6, height: 6, borderRadius: "50%", background: "var(--dsw-alias-label-dimmed, rgba(255,255,255,.35))" },
 			caret: { fontSize: 9, opacity: 0.7 },
 			pop: {
 				position: "absolute", zIndex: 40, top: 26, left: 0, minWidth: 300, maxWidth: 380,
-				padding: 6, borderRadius: 6, background: "#1c1c1c",
+				// 弹层底色（2026-11-02）：原来写死 #1c1c1c ⇒ 浅色外观下仍是一块深色面板 ✗
+				padding: 6, borderRadius: 6, background: "var(--dsw-alias-bg-layer-2, #1c1c1c)",
 				border: "1px solid var(--dsw-alias-border-l2, #3c3c3c)",
 				boxShadow: "0 8px 24px rgba(0,0,0,.5)",
 			},

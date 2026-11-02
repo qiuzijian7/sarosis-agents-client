@@ -56,7 +56,7 @@ window.__ModuleLoader__.load({
 			"codicon:home": "🏠", "codicon:book": "📚", "codicon:database": "🧠",
 			"codicon:robot": "🤖", "codicon:organization": "🤖", "codicon:tasklist": "🗂️",
 			"codicon:checklist": "🗂️", "codicon:list-tree": "🔀", "codicon:type-hierarchy": "🕸️",
-			"codicon:clock": "⏰", "codicon:graph": "📊", "codicon:pulse": "💓",
+			"codicon:clock": "⏰", "codicon:sync": "🔄", "codicon:graph": "📊", "codicon:pulse": "💓",
 			"codicon:search": "🔍", "codicon:settings": "⚙️", "codicon:gear": "⚙️",
 			"codicon:extensions": "🧩", "codicon:package": "🧩", "codicon:cloud": "☁️",
 			"codicon:comment-discussion": "💬", "codicon:terminal": "⌨️",
@@ -140,7 +140,11 @@ window.__ModuleLoader__.load({
 .vssWbCardDescription { margin:0; min-height:42px; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
 .vssWbCardDescription p { margin:0; }
 /* 底部一行：只放控件（GitHub / 收藏 / 主按钮）—— 指标已挪到上面独占一行 */
-.vssWbActions { margin-top:auto; padding-top:4px; display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:nowrap; min-width:0; }
+/* ⚠ 类名【不能】用宿主的浮动胶囊类名（见 vssaros-workbenches/lib/client.js 的 .vssWbActions）：
+   同名会被宿主的 position:absolute; right:12px; top:50% 命中 ⇒ 每张卡片的按钮行变成绝对定位的浮动块，
+   还会与真正的胶囊重叠（2026-11-02 用户报「浮动工具栏功能丢失」）。
+   卡片底部这一行是【普通流内布局】，用独立类名；守卫禁止其它插件定义 .vssWbActions。 */
+.vssWbCardActions { margin-top:auto; padding-top:4px; display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:nowrap; min-width:0; }
 .vssWbCardControls { display:flex; align-items:center; gap:6px; flex:0 0 auto; }
 .vssWbCardBtn { font-size:12px; line-height:18px; padding:6px 11px; border-radius:999px; white-space:nowrap; flex:0 0 auto; }
 .vssWbInstalled { font-size:12px; color: var(--dsw-alias-label-tertiary, #737373); white-space:nowrap; flex:0 0 auto; }
@@ -515,7 +519,7 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 						react.createElement("div", { className: "vssWbCardDescription" },
 							react.createElement("p", { className: "vssWbMuted" }, it.description || "这个工作台暂时还没有填写介绍。"),
 						),
-						react.createElement("div", { className: "vssWbActions" },
+						react.createElement("div", { className: "vssWbCardActions" },
 							react.createElement("div", { className: "vssWbCardControls" },
 								repo ? react.createElement("a", {
 									className: "vssWbRound", href: repo, target: "_blank", rel: "noopener noreferrer",
@@ -663,18 +667,52 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 			/** dsh 工作台市场的策展仓库（投稿 PR 提交到这里；本机不保存投稿状态）。 */
 			const MARKET_REPO = "https://github.com/dataelement/awesome-dsh-workbench";
 
-			/** 给 Agent 的「开发工作台」指令。 */
+			/** 开发规范的稳定取法（随包规范，Host 下发；与产品版本一致，不会用记忆里的旧口径）。 */
+			const GUIDE_PATH = "/api/vssaros-workbenches/development-guide";
+
+			/**
+			 * 给 Agent 的「开发工作台」指令（本机自用，不上架）。
+			 *
+			 * ★ 2026-11-02 重写。旧版要求「公开 GitHub 仓库 + repository 指回本仓库」——那是本地身份
+			 *   （`local:<包名>`）出现之前的前提；照它做的 Agent 会去向用户要仓库、甚至编一个仓库地址。
+			 *   新版的原则：
+			 *   ① **提示词不抄规范**——规范有自己的取法（GUIDE_PATH），抄一份就会和规范分叉、悄悄过期；
+			 *      这里只放必须在对话**开头**就生效的纪律；
+			 *   ② 工具名与回执态必须和 Host 实现一致（`check_local_workbench` / `install_local_workbench`），
+			 *      `dsh-plugins/check-workbench-guide.mjs` 会逐项核对；
+			 *   ③ 对用户说业务语言，不让用户确认代码字段。
+			 */
 			function developmentPromptText() {
 				return [
-					"请帮我开发一个 dsh 工作台（工作台 = 有专属界面、会话与资料的插件）。",
-					"要求：",
-					"1. 代码放在我自己的公开 GitHub 仓库根目录（一个工作台，暂不支持 monorepo 子目录），并带许可证。",
-					"2. package.json 是安装契约：完整 SemVer 版本、repository 指回本仓库、声明 dsh.bundle.patch、exports[\"./client\"] 真实存在。",
-					"3. 界面边界、目录选择、会话归属、模式切换按《工作台开发规范》做。",
-					"4. 打包后不超过 8MiB；包内不得含 .env / 令牌 / 密钥 / 客户数据 / 本机绝对路径。",
-					"5. 至少一个可用安装源：npm 包、GitHub Release 安装包（.tgz）或仓库源码可直接安装。",
-					"6. 全部开发完成后先装到本机自测并实际打开验证。",
-					"（我还没明确要求上架时，停在「本机可用」就好，不要自作主张公开代码。）",
+					"我想在本机制作并使用一个 VsSaros 工作台，不需要上传或投稿。这条通用指令不含业务需求，不能据此决定做什么工作台。",
+					"",
+					"【先读规范，别凭记忆】开始前请先取最新的《工作台开发规范》：GET " + GUIDE_PATH + "。响应头 x-workbench-guide-version 就是这一版的版本号（形如 0.3.8/1a2b3c4d），记下来，收尾汇报里要带上。规范与你记忆里的做法冲突时，以规范为准。",
+					"",
+					"【先问清楚再动手】复用我在当前对话里已经说过的需求。每次只问一个必要的问题，不重复我已给的信息，不用固定问卷。名称未知时先问“这个工作台想叫什么名字？”，允许暂定名，不要让名字挡住开工。",
+					"再按上下文补问目标使用者、主要功能或业务场景。核心流程不清楚时，根据我的回答给出一个最小流程建议让我确认或调整，不要让我填完整需求表。",
+					"业务目标和最小范围明确并经我确认之前：不要创建或修改业务代码、界面或包文件，也不要构建、打包、安装。可以只读检查目录和已有说明，但目录名、示例或现有代码不能当作我的意图。",
+					"",
+					"【说业务语言】需求、布局建议、确认选项和完成状态都用业务语言（例如“整页展示业务内容，需要时再打开 AI 对话”或“边对话边查看辅助资料”）。不要让我确认 customFrame、register()、repository、dshHomePath 这类代码字段；技术字段由你按规范处理。",
+					"",
+					"【本地开发不需要仓库】纯本地工作台不写 repository，也不写 vssaros 清单块：描述符用 package 字段，宿主会据此生成 local:<包名> 身份。不得要求我创建 GitHub 仓库，更不能编一个仓库地址。",
+					"",
+					"【开发】需求确认后，先定最小业务流程，不要覆盖我已有的未提交改动。按规范选“业务整页”（customFrame）或“标准分栏”，并设计首次没有会话时的入口——不要把常驻对话区当默认设计。",
+					"可以加载 workbench-authoring 技能，用它自带的脚手架起步（scripts/scaffold_workbench.mjs <module> --mode external --package @scope/name）。业务区按自身容器宽度重排；检查首次无会话、已关联会话、侧栏展开/收起、窄窗口，并用真实长度的中英文内容确认没有单字竖排、控件裁切、整页横向溢出。",
+					"",
+					"【装之前先干跑，再安装】pnpm pack 出 .tgz 后：",
+					"1. 先调 check_local_workbench({ path: \"<.tgz 绝对路径>\" })。ok:false 就按 errors 改完重新打包，不要去调安装。ok:true 只说明结构与静态审计通过，不等于装上能跑。",
+					"2. 再调 install_local_workbench({ path: \"<.tgz 绝对路径>\", replace: false })。它会弹一次用户确认。如果同名工作台已经装了，工具会直接拦下并告诉你（replace_not_authorized）——这时先问我“要更新这个已安装的工作台吗”，我同意后才带 replace:true 再调；不要自己决定覆盖。",
+					"3. 按返回的 application 决定下一步：applied 直接核验界面；restart-required 才提示我重启 Harness；failed / cancelled 都不算生效，如实说明原因。failed 时先看 code：replace_not_authorized 是“同名已装、要我授权更新”，downgrade_blocked 是“要装的是更低的版本、要我确认是否回退”——这两种都要先问我，不要绕过。",
+					"没有可用的安装工具（例如 IDE 没开），就保留校验过的 .tgz 并准确说明缺哪一步，不要说已安装。",
+					"",
+					"【不要擅自重启】如果你正运行在需要重启的这台 VsSaros 里，不要自己关闭或重启 VsSaros / Harness，也不要用 ps、pgrep 之类去管理重启；等我重启。想确认是否已加载，查 GET /api/vssaros-workbenches/install-status，不要靠猜。",
+					"",
+					"【如实汇报】先说能做什么、实际测了哪些操作、哪些仍待验证；改动的文件和技术检查放简短附录。安装成功不等于所有验收通过，没实测的项目标“待验证”。",
+					"",
+					"【收尾必须是这三点】最终回复的最后，在所有说明、自测结果和附录之后，放一个醒目的“接下来怎么做”，且其后不要再追加任何内容：",
+					"1. 开发结果：用实际的工作台名称说明开发与安装状态，并带上这次遵循的规范版本（x-workbench-guide-version）。只有两者都真的成功才说“已在本机开发并安装”；未完成或安装失败就如实说明卡在哪，不要说已加载或已通过全部验收。",
+					"2. 如何重启：安装成功且需要重启时，请我等当前任务结束后点顶部“立即重启”，或菜单 Harness → 重启 Harness；通常只需重启 Harness，不必退出整个应用。无需重启或安装未完成就如实说，不要把重启当成安装失败的补救。",
+					"3. 去哪里打开：重启后展开左侧栏，点工作台入口，在启动器里选择新工作台（写出它的真实名称）。若没有出现，到工作台商城的“已安装”检查它的运行状态。我可以直接试用，也可以回到本对话告诉你“重启好了”再让你继续验收。",
 				].join("\n");
 			}
 

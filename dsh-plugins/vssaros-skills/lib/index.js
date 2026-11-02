@@ -42,6 +42,11 @@ const ROUTE_PREFIX = '/x/skills';
 const PROVIDER_NAME = VSAROS_SKILL_PROVIDER;
 /** dsh 原生的技能加载工具名（`dsh-tool-skill`）：本模块的消费者，页面报告它在不在。 */
 const NATIVE_SKILL_TOOL = 'skill';
+/**
+ * 消费者探测的去抖窗口（2026-11-02）：启动期 `tools/change` 成簇到达，每次都同步重算会把 Host 启动
+ * 拖慢 ~2s（实测见 `ctx.inject(['tools'], …)` 那段注释）。与 vssaros-agents 的 `TOOL_SURFACE_DEBOUNCE_MS` 同值。
+ */
+const SKILL_TOOL_PROBE_DEBOUNCE_MS = 800;
 
 /**
  * 每次挂载一份状态（**不是模块级** ✗）。
@@ -3613,7 +3618,9 @@ export function installSkillAutoload(ctx, config, deps = {}) {
 	//   若走真实兜底会读到包里的 patch 而意外注入 ⇒ 必须能替换成 `() => []` ✓。
 	const fallback = deps.autoloadFallback ?? skillAutoloadFromOwnPatch;
 	const always = fromConfig.length > 0 ? fromConfig : fallback();
-	if (always.length === 0) { return; }
+	// ⚠ 2026-11-02：这里原来是 `if (always.length === 0) return;` —— 现在同一个 pre-step 监听还承载
+	//   **技能目录兜底**（`ensureSkillCatalog`），没配自动加载技能时也必须挂上 ⇒ 不再提前返回。
+	//   自动加载那一半在 `always` 为空时天然是 no-op（`todo` 为空 ⇒ 原样返回 decision）。
 
 	// ★ 2026-10-19：**boot 日志**。没有它就只能看到"没有 inject 日志"，无法区分
 	//   「插件根本没加载 / skillAutoload 没传进来」和「加载了但 pre-step 没触发」✗
@@ -3647,6 +3654,88 @@ export function installSkillAutoload(ctx, config, deps = {}) {
 		//     用 `ctx.inject` 只在**有该服务时**挂这段，其余功能不受影响 ✓。
 		ctx.inject(['agents'], scope => scope.effect(() => {
 			void logAutoload(config, `registered skills=${always.join(',')}`, deps);
+			// ★★ 2026-11-02 技能目录**安全网**（根因已在 cordis.patch.yml 修掉，这里只防回归）：
+			//   根因：host 平面被我们翻回 `disabled: false` 的 tool-skill（H）与 preset 自带的 tool-skill（P）
+			//   同时活着；`tools.get('skill', agent)` 解析到 P ⇒ H 视自己为"被遮蔽"、快照当空，且 H 是 waterfall
+			//   外层 ⇒ 在 P 发完目录后走 `!published && skills.length === 0 ⇒ 删掉 skill-catalog`，把目录删了。
+			//   正常情况下（只剩 P）这里**不会**触发；日志出现 `catalog-fallback … published` 就说明又有人
+			//   把技能目录弄丢了（例如 host 平面 tool-skill 被重新启用）⇒ 去查 dump-config，别只看这里。
+			//   格式与 dsh-tool-skill 逐字一致：同样的 `<system-reminder>` 框架与 `- \`name\`: description` 行；
+			//   同样的 `source: { kind: 'skill-catalog', form: 'catalog', entries }` ⇒ dsh 侧 `catalogHistory`
+			//   会把它认作"已发布"，不会再叠一份。
+			//   只在会话里**没有可见目录**时发（看本步消息 + 会话历史），每个 agent 每个进程最多发一次。
+			const SKILL_CATALOG_DESCRIPTION_MAX = 500;
+			const catalogPublished = new WeakSet();
+			const escapeCatalogText = value => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+			const catalogDescriptionOf = value => {
+				const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+				return text.length <= SKILL_CATALOG_DESCRIPTION_MAX ? text : `${text.slice(0, SKILL_CATALOG_DESCRIPTION_MAX - 1)}…`;
+			};
+			/** 会话历史里是否已有**仍可见**的 skill-catalog（与 dsh-tool-skill 的 catalogHistory 同口径）；读不了 ⇒ undefined。 */
+			const sessionHasVisibleCatalog = agent => {
+				try {
+					const session = agent?.session;
+					if (!session || typeof session.eventAt !== 'function' || typeof session.seq !== 'number') { return undefined; }
+					const visible = new Set(session.surface?.nodes ?? []);
+					for (let index = session.seq - 1; index >= 0; index -= 1) {
+						const event = session.eventAt(index);
+						if (event?.type === 'user/message' && event?.data?.source?.kind === 'skill-catalog' && visible.has(event.seq)) { return true; }
+					}
+					return false;
+				} catch {
+					return undefined;
+				}
+			};
+			const ensureSkillCatalog = async ({ agent, signal }, decision) => {
+				if (!agent || !decision || decision.kind === 'reject' || catalogPublished.has(agent)) { return decision; }
+				const current = Array.isArray(decision.messages) ? decision.messages : [];
+				if (current.some(m => m?.source?.kind === 'skill-catalog')) { catalogPublished.add(agent); return decision; }
+				const inHistory = sessionHasVisibleCatalog(agent);
+				if (inHistory === true) { catalogPublished.add(agent); return decision; }
+				const sid = agent?.session?.id ?? agent?.id ?? '(unknown)';
+				try {
+					const registry = deps.skills;
+					if (!registry || typeof registry.snapshot !== 'function') { return decision; }
+					const snapshot = await registry.snapshot({ cwd: agent?.session?.header?.cwd, signal, scope: agent });
+					if (!snapshot?.complete) {
+						// 快照不完整时 dsh 也不发（避免把半份目录当真）⇒ 下一步再试，不记 published
+						void logAutoload(config, `catalog-fallback session=${sid} skip: snapshot incomplete`, deps);
+						return decision;
+					}
+					const skills = (Array.isArray(snapshot.skills) ? snapshot.skills : []).filter(s => s?.invocation?.modelInvocable === true && typeof s?.name === 'string');
+					if (skills.length === 0) { catalogPublished.add(agent); return decision; }
+					const createUserMessage = deps.createUserMessage ?? await loadCreateUserMessage();
+					if (!createUserMessage) { return decision; }
+					const entries = skills.map(s => ({ name: s.name, description: catalogDescriptionOf(s.description) }));
+					const message = createUserMessage({
+						content: [{
+							type: 'text',
+							text: [
+								'<system-reminder>',
+								'A skill is a reusable set of task-specific instructions. The following skills are available in this session:',
+								'',
+								'<available_skills>',
+								...entries.map(entry => `- \`${entry.name}\`: ${escapeCatalogText(entry.description)}`),
+								'</available_skills>',
+								'',
+								'If the user names a skill, or the task clearly matches a skill\'s description, call the `skill` tool with the exact skill name before taking task actions. Load all applicable skills, then follow their full instructions. This catalog contains summaries only; do not infer or follow a skill\'s instructions until it has been loaded.',
+								'A user may also invoke a skill directly; its <skill_content> block then appears in this conversation. Follow it, and do not call the `skill` tool again for that skill.',
+								'</system-reminder>',
+							].join('\n'),
+						}],
+						source: { kind: 'skill-catalog', form: 'catalog', entries },
+					});
+					catalogPublished.add(agent);
+					const office = entries.map(e => e.name).filter(n => /^office/.test(n));
+					const line = `catalog-fallback session=${sid} preset=${agent?.session?.header?.agentPreset ?? '?'} published entries=${entries.length} office=[${office.join(',')}] history=${inHistory === undefined ? 'unknown' : 'none'}`;
+					void logAutoload(config, line, deps);
+					try { ctx.logger?.info?.(`[skill-catalog] ${line}`); } catch { /* 忽略 */ }
+					return { ...decision, messages: [...current, message] };
+				} catch (e) {
+					void logAutoload(config, `catalog-fallback session=${sid} ERROR ${String(e?.stack ?? e?.message ?? e).slice(0, 600)}`, deps);
+					return decision;
+				}
+			};
 			const autoloadHandler = async ({ agent, messages, signal }, next) => {
 		// ★★ 2026-10-20 真机：`skill-autoload.log` 里**只有 boot、没有 inject** ⇒
 		//   无法区分"pre-step 压根没触发"和"触发了但被幂等跳过/注入失败" ✗。
@@ -3757,7 +3846,7 @@ export function installSkillAutoload(ctx, config, deps = {}) {
 			//   （不掩盖失败：dsh 仍需知道本轮失败 ✓）。
 			return scope.on('agent/pre-step', async (payload, next) => {
 				try {
-					return await autoloadHandler(payload, next);
+					return await ensureSkillCatalog(payload, await autoloadHandler(payload, next));
 				} catch (e) {
 					void logAutoload(config, `ERROR ${e?.stack ?? e?.message ?? String(e)}`, deps);
 					throw e;
@@ -3841,7 +3930,34 @@ export function apply(ctx, config = {}) {
 		// 它注册的工具名也确实就是 `"skill"`（runtime 源码 `ctx.tools.register(skillTool)` ✓），可 `get('skill')`
 		// 一直空 ✓）；而 `schemas()` 是**已被真机证明能用**的那条路 ✓（mcp 页正是靠它数出 `mcp__probe__probe_ping` ✓）。
 		// 两个模块对"工具在不在"必须走**同一条 API** ✓，否则就是"这页说在、那页说不在" ✗。
-		const namesOf = () => {
+		//
+		// ★★ 2026-11-02（启动提速，`node --cpu-prof` 实测）：Host 启动期 CPU 有 **3.19s（≈40%）** 花在这里 ——
+		//   原来每次 `tools/change` 都同步跑 `sync()`，里面调 **3 次** `schemas()`；`schemas()` 对**每个**工具
+		//   深拷贝一次 parameters（dsh-tools `schemaOf` → dsh-util-values `snapshotJsonValue`），启动期
+		//   `tools/change` 又是成簇到达 ⇒ 全程 `schemaOf` 2.64s **100% 来自本插件**，把 agents 的 preset
+		//   注册和 bridge apply 往后推了 ~2s。
+		//   ⇒ 两处改法（结果不变）：
+		//     ① 取名/取描述改走 `view().visible`（dsh-tools 源码：`schemas(scope)` 就是
+		//        `[...this.view(scope).visible.values()].map(d => this.schemaOf(d, true))` ⇒ 名字集合**完全一致**，
+		//        只是不深拷贝）；`view` 不存在/抛错时**回落 `schemas()`**（保留上面那条"真机证明可用"的老路）；
+		//     ② 一轮 `sync()` 只取**一次**快照，三处共用；`tools/change` 去抖 800ms（与 vssaros-agents 同口径）。
+		//   ⚠ 与 vssaros-agents 的 `core/toolNames.js` 同一取法 ⇒ 两个模块对"工具在不在"仍是同一条口径 ✓。
+		/** 当前全局可见工具：`[{ name, description }]`；问不动 ⇒ `[]`（如实 absent，不假装在 ✓）。 */
+		const visibleToolsOf = () => {
+			try {
+				const visible = tools.tools.view?.()?.visible;
+				if (visible && typeof visible.entries === 'function') {
+					const out = [];
+					for (const [name, definition] of visible.entries()) {
+						if (typeof name === 'string') {
+							out.push({ name, description: typeof definition?.description === 'string' ? definition.description : '' });
+						}
+					}
+					return out;
+				}
+			} catch {
+				// 内部 API 变了 ⇒ 落到公开 API
+			}
 			let value;
 			try {
 				value = tools.tools.schemas?.();
@@ -3849,23 +3965,18 @@ export function apply(ctx, config = {}) {
 				return []; // 问不动就如实说"不知道"（⇒ absent），不假装在 ✓
 			}
 			const list = Array.isArray(value) ? value : (value && typeof value === 'object' ? Object.values(value) : []);
-			return list.map(item => (typeof item === 'string' ? item : item?.name)).filter(name => typeof name === 'string');
+			return list
+				.map(item => (typeof item === 'string' ? { name: item, description: '' } : { name: item?.name, description: typeof item?.description === 'string' ? item.description : '' }))
+				.filter(item => typeof item.name === 'string');
 		};
 		/**
 		 * 全局注册表里的 MCP 工具：`mcp__<server>__<tool>` ⇒ `{ server: [{ name, description }] }`。
 		 *
 		 * ★ 2026-10-26（用户：「mcp 的详情中，应该有工具列表」）：
-		 *   工具名只有运行时注册表才知道（mcp.json 里没有），而本插件本来就有 `tools.schemas()` 这个
+		 *   工具名只有运行时注册表才知道（mcp.json 里没有），而本插件本来就有工具注册表这个
 		 *   唯一被真机证明可用的入口（技能诊断栏也靠它）⇒ 直接复用，别再让 `vssaros-mcp` 单独给一份。
 		 */
-		const mcpToolsOf = () => {
-			let value;
-			try {
-				value = tools.tools.schemas?.();
-			} catch {
-				return {};
-			}
-			const list = Array.isArray(value) ? value : (value && typeof value === 'object' ? Object.values(value) : []);
+		const mcpToolsOf = (list) => {
 			/** @type {Record<string, Array<{ name: string, description: string }>>} */
 			const map = {};
 			for (const item of list) {
@@ -3880,17 +3991,29 @@ export function apply(ctx, config = {}) {
 			for (const key of Object.keys(map)) { map[key].sort((a, b) => a.name.localeCompare(b.name)); }
 			return map;
 		};
+		let disposed = false;
+		let syncTimer;
 		const sync = () => {
+			if (disposed) { return; }
 			// 记下**实际看到的名字**（含 "skill" 字样的那几个）—— 不只为断言，更是为**说得出为什么** ✓：
 			// 真机读数长时间是 absent ⇒ 要么它真没注册 ✓，要么名字被**命名空间化**了 ✗（mcp 的工具名就是
 			// `mcp__probe__probe_ping` 那种形式 ✓）。没有这一栏，只能猜 ✓。
-			state.skillishTools = namesOf().filter(name => /skill/i.test(name)).slice(0, 4);
-			state.nativeSkillToolPresent = namesOf().includes(NATIVE_SKILL_TOOL);
+			// ⚠ 一轮只取**一次**快照，三处共用（原来是 3 次 `schemas()`）。
+			const list = visibleToolsOf();
+			const names = list.map(item => item.name);
+			state.skillishTools = names.filter(name => /skill/i.test(name)).slice(0, 4);
+			state.nativeSkillToolPresent = names.includes(NATIVE_SKILL_TOOL);
 			// 连接器详情里的「工具列表」用它（工具增减时随 tools/change 一起刷新）
-			state.mcpTools = mcpToolsOf();
+			state.mcpTools = mcpToolsOf(list);
+		};
+		/** `tools/change` 启动期成簇到达 ⇒ 去抖合并成一轮（这三项只给页面诊断栏用，晚 0.8s 无感）。 */
+		const scheduleSync = () => {
+			if (disposed || syncTimer) { return; }
+			syncTimer = setTimeout(() => { syncTimer = undefined; sync(); }, SKILL_TOOL_PROBE_DEBOUNCE_MS);
+			syncTimer.unref?.();
 		};
 		sync();
-		tools.on('tools/change', sync);
+		tools.on('tools/change', scheduleSync);
 
 		// ── 技能检索工具（② ）────────────────────────────────────────────────────────────────
 		// 契约对齐 IDE 真源（`browser/providers/tool/skillTools.ts` 的 `skill_search`）：同样"BM25 排序 +
@@ -4197,6 +4320,65 @@ export function apply(ctx, config = {}) {
 					skills: skills.map(s => ({ id: s.id, name: s.name, description: s.description ?? '', activation: s.activation ?? 'manual' })),
 				};
 			},
+		}, {
+			// ★ 2026-11-02：`activation: always/auto` 的承接者。
+			//
+			// 事实（别当 bug 查）：dsh 的技能接口只有"提供候选 + 按需 get"，**没有"每轮自动注入"**这一层
+			// ⇒ 技能里写 `activation: always` 在 dsh 侧过去等于不存在（IDE 侧 legacy 注入链才会读它）。
+			// 这里给一个显式入口：开工前调一次，把 always（可加 auto）技能的正文拿回来当本轮约束。
+			// ⚠ 它不是"自动注入"，是"模型主动取用"——文案里不许说成自动（否则又是一个骗人的能力）。
+			name: 'skill_context',
+			description: '取回"常驻约束型"技能的正文（默认 activation=always，可加 auto），用作本回合的规则。dsh 侧没有每轮自动注入，所以这类技能的语义靠这个工具承接：接任务时先调一次，把返回内容当作必须遵守的约束。',
+			parameters: {
+				type: 'object',
+				properties: {
+					include: {
+						type: 'array', items: { type: 'string', enum: ['always', 'auto'] },
+						description: '额外纳入的激活方式（默认 ["always"]；只有确实需要"关键词命中就生效"时才加 auto）',
+					},
+					category: { type: 'string', description: '可选：只取某个分类的常驻技能' },
+				},
+			},
+			output: {
+				schema: {
+					type: 'object',
+					properties: {
+						count: { type: 'integer' },
+						skills: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, name: { type: 'string' }, activation: { type: 'string' }, content: { type: 'string' } } } },
+						truncated: { type: 'boolean' },
+					},
+				},
+				render: (_args, value) => [{
+					type: 'text',
+					text: value.count
+						? `本回合必须遵守的常驻约束（${value.count} 个技能）：\n\n${value.skills.map(s => `## ${s.name}（${s.activation}）\n${s.content}`).join('\n\n')}${value.truncated ? '\n\n…（内容过长已截断，需要全文请用 read_skill）' : ''}`
+						: '没有 always/auto 类的常驻技能（这不影响正常任务，直接按用户要求做即可）。',
+				}],
+			},
+			isConcurrencySafe: () => true,  // 只读 ✓
+			execute: async (params) => {
+				const include = Array.isArray(params?.include) && params.include.length
+					? params.include.map(value => String(value)).filter(value => value === 'always' || value === 'auto')
+					: ['always'];
+				const category = String(params?.category ?? '').toLowerCase().trim();
+				const scan = await scanSkills(skillsRootOf(config));
+				const picked = scan.skills.filter(skill => {
+					if (!include.includes(skill.activation ?? 'manual')) { return false; }
+					return !category || String(skill.metadata?.category ?? '').toLowerCase() === category;
+				});
+				// 单条 4000 字、总量 20000 字上限：这些正文会进上下文，必须有硬边界
+				let budget = 20000;
+				let truncated = false;
+				const skills = picked.map(skill => {
+					const text = String(skill.content ?? '');
+					const keep = Math.max(0, Math.min(4000, budget));
+					const slice = text.slice(0, keep);
+					budget -= slice.length;
+					if (slice.length < text.length) { truncated = true; }
+					return { id: skill.id, name: skill.name, activation: skill.activation ?? 'manual', content: slice };
+				}).filter(skill => skill.content);
+				return { count: skills.length, skills, truncated };
+			},
 		}];
 		// ⚠ 只闸**注册**这一步 ✓：上面的消费者探测（`nativeSkillToolPresent` / `skillishTools`）必须照跑 ✓ ——
 		// 页面那两栏全靠它，而 `ctx.tools.schemas()` 是**全局**注册表视图 ⇒ preset 那次挂载注册的工具
@@ -4204,6 +4386,9 @@ export function apply(ctx, config = {}) {
 		const registered = hostHalf ? [] : definitions.map(definition => tools.tools.register(definition));
 
 		return () => {
+			// 先停去抖：否则卸载后定时器触发会把下面两项又写回去（还会访问已 inactive 的 ctx）
+			disposed = true;
+			if (syncTimer) { clearTimeout(syncTimer); syncTimer = undefined; }
 			state.nativeSkillToolPresent = false;
 			state.skillishTools = [];
 			for (const dispose of registered) {

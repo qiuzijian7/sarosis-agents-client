@@ -232,7 +232,15 @@ for (const name of names) {
 		try { pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')); } catch { continue; }
 		const entryRel = typeof pkg.main === 'string' ? pkg.main : 'lib/index.js';
 		const entry = join(dir, entryRel);
-		if (!existsSync(entry)) { continue; }
+		if (!existsSync(entry)) {
+	// ★ 2026-11-02：入口不存在**必须报错**，不能 `continue` 跳过 —— 跳过的净效果是
+	//   "把插件入口改坏 ⇒ 这个插件自动免检"（实测：把 vssaros-office-template 的 main 改成
+	//   不存在的文件，检查项 104 → 103 且仍然全部 passed ✗）。
+	//   真实风险：main 路径写错 / 大小写不一致 / 打包漏文件 —— 全都表现为"这个插件不存在"，
+	//   而守卫全绿，安装清单照旧会去装一个没有入口的包。
+	check(`${name}：入口存在（${entryRel}）`, false, `package.json 的 main 指向不存在的文件：${entryRel}`);
+	continue;
+}
 		const spec = JSON.stringify(pathToFileURL(entry).href);
 		try {
 			execFileSync(process.execPath, ['-e', `import(${spec}).then(()=>{},e=>{console.error(e && e.message || e);process.exit(1)})`], { stdio: 'pipe' });

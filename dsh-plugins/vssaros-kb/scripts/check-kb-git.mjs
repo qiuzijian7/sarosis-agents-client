@@ -75,18 +75,19 @@ await check('围栏：库外路径一律拒绝（纯字符串）', () => {
 	if (G.relInside('/vault/a', 'notes/x.md') === undefined) { throw new Error('库内路径被误拦'); }
 });
 await check('.gitignore 覆盖可再生的缓存/索引/备份', () => {
-	const need = ['.kb-html-cache/', '.kb-build-cache.json', '.feishu-sync.json', '.kb-backup/'];
+	// ★ 2026-11-02：所有元数据收进 .kb/ ⇒ 忽略项收敛成一条（其余是目录级噪音）
+	const need = ['.kb/', '.kb-backup/'];
 	for (const n of need) { if (!G.GITIGNORE_ENTRIES.includes(n)) { throw new Error('缺忽略项：' + n); } }
 });
 await check('maybeAutoCommit：**显式关掉**自动提交 ⇒ 不提交', async () => {
 	const dir = mkdtempSync(path.join(os.tmpdir(), 'kbgit-guard2-'));
 	try {
-		mkdirSync(path.join(dir, '笔记'), { recursive: true });
-		writeFileSync(path.join(dir, '笔记/a.md'), '# a\n', 'utf8');
+		mkdirSync(path.join(dir, '知识库列表'), { recursive: true });
+		writeFileSync(path.join(dir, '知识库列表/a.md'), '# a\n', 'utf8');
 		const init = await G.initRepo(dir);
 		if (!init.ok) { throw new Error('init 失败：' + (init.error || '')); }
 		G.writeGitConfig(dir, { autoCommit: false });
-		writeFileSync(path.join(dir, '笔记/a.md'), '# a\n\n第二版\n', 'utf8');
+		writeFileSync(path.join(dir, '知识库列表/a.md'), '# a\n\n第二版\n', 'utf8');
 		const r = await G.maybeAutoCommit(dir, '测试');
 		if (!r.skipped) { throw new Error('关掉后竟然提交了'); }
 	} finally { rmSync(dir, { recursive: true, force: true }); }
@@ -100,12 +101,12 @@ await check('★ 默认开启：配置缺省 ⇒ autoInit / autoCommit 都是 tr
 await check('★ 默认开启：**没有 .git 时保存会自动建库并提交**（用户不用先点开启）', async () => {
 	const dir = mkdtempSync(path.join(os.tmpdir(), 'kbgit-guard4-'));
 	try {
-		mkdirSync(path.join(dir, '笔记'), { recursive: true });
-		writeFileSync(path.join(dir, '笔记/a.md'), '# a\n\n第一版\n', 'utf8');
+		mkdirSync(path.join(dir, '知识库列表'), { recursive: true });
+		writeFileSync(path.join(dir, '知识库列表/a.md'), '# a\n\n第一版\n', 'utf8');
 		if (G.isRepo(dir)) { throw new Error('一开始就有仓库，用例没意义'); }
 		await G.maybeAutoCommit(dir, '保存 a.md');
 		if (!G.isRepo(dir)) { throw new Error('没有自动建库'); }
-		const log = await G.gitLog(dir, '笔记/a.md', 10);
+		const log = await G.gitLog(dir, '知识库列表/a.md', 10);
 		if (!Array.isArray(log.items) || log.items.length < 1) { throw new Error('没有产生提交'); }
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
@@ -113,8 +114,8 @@ await check('★ 默认开启：**没有 .git 时保存会自动建库并提交*
 await check('★ 关掉后（autoInit:false）⇒ 连仓库都不建（绝不擅自 git init）', async () => {
 	const dir = mkdtempSync(path.join(os.tmpdir(), 'kbgit-guard5-'));
 	try {
-		mkdirSync(path.join(dir, '笔记'), { recursive: true });
-		writeFileSync(path.join(dir, '笔记/a.md'), '# a\n', 'utf8');
+		mkdirSync(path.join(dir, '知识库列表'), { recursive: true });
+		writeFileSync(path.join(dir, '知识库列表/a.md'), '# a\n', 'utf8');
 		G.writeGitConfig(dir, { autoInit: false, autoCommit: false });
 		await G.maybeAutoCommit(dir, '保存 a.md');
 		if (G.isRepo(dir)) { throw new Error('关掉了还建库 ✗'); }
@@ -123,15 +124,15 @@ await check('★ 关掉后（autoInit:false）⇒ 连仓库都不建（绝不擅
 await check('init → 提交 → 按文件取历史（端到端，临时目录）', async () => {
 	const dir = mkdtempSync(path.join(os.tmpdir(), 'kbgit-guard3-'));
 	try {
-		mkdirSync(path.join(dir, '笔记'), { recursive: true });
-		writeFileSync(path.join(dir, '笔记/a.md'), '# a\n\n第一版\n', 'utf8');
+		mkdirSync(path.join(dir, '知识库列表'), { recursive: true });
+		writeFileSync(path.join(dir, '知识库列表/a.md'), '# a\n\n第一版\n', 'utf8');
 		if (!(await G.initRepo(dir)).ok) { throw new Error('init 失败'); }
-		writeFileSync(path.join(dir, '笔记/a.md'), '# a\n\n第二版\n', 'utf8');
+		writeFileSync(path.join(dir, '知识库列表/a.md'), '# a\n\n第二版\n', 'utf8');
 		if (!(await G.gitCommit(dir, 'chore(kb): 第二版')).ok) { throw new Error('commit 失败'); }
-		const log = await G.gitLog(dir, '笔记/a.md', 20);
+		const log = await G.gitLog(dir, '知识库列表/a.md', 20);
 		if (!Array.isArray(log.items) || log.items.length < 2) { throw new Error('该文件历史不足 2 条'); }
 		const oldest = log.items[log.items.length - 1];
-		const shown = await G.gitShowFile(dir, oldest.hash, '笔记/a.md');
+		const shown = await G.gitShowFile(dir, oldest.hash, '知识库列表/a.md');
 		if (!shown.ok || !String(shown.content || '').includes('第一版')) { throw new Error('取不到旧版本内容'); }
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });

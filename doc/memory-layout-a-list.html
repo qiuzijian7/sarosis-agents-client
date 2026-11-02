@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>方案 A · 清单式（窄栏原生） · 记忆库布局</title>
+<style>
+/* ── 设计板外壳（非产品代码）────────────────────────────────────────── */
+:root { color-scheme: dark; }
+body { margin: 0; background: #14161a; color: #e6e6e6; font: 13px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+body.light { background: #eef0f2; color: #222; }
+.bar { position: sticky; top: 0; z-index: 9; background: #14161aee; backdrop-filter: blur(6px); border-bottom: 1px solid #2a2f36; padding: 10px 18px 9px; }
+body.light .bar { background: #eef0f2ee; border-color: #d4d8dc; }
+.bar h1 { font-size: 15px; margin: 0 0 2px; }
+.bar p { margin: 0; color: #9aa0a6; font-size: 12px; max-width: 880px; }
+.row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
+.lbl { color: #9aa0a6; font-size: 12px; min-width: 40px; }
+.chip { font: inherit; font-size: 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid #333a43; background: #1d2126; color: #cfd4da; cursor: pointer; }
+body.light .chip { background: #fff; color: #333; border-color: #c8ccd0; }
+.chip.on { background: #0e639c; border-color: transparent; color: #fff; }
+main { padding: 16px 18px 40px; }
+.fwin { border: 1px solid #2f353d; border-radius: 10px; overflow: hidden; box-shadow: 0 8px 24px #0006; }
+.fbar { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 10px; background: #1b1f24; border-bottom: 1px solid #2f353d; font-size: 12px; color: #b9bfc6; }
+.fbar .dot { width: 8px; height: 8px; border-radius: 2px; background: #6aa9e8; }
+.fbar .t { margin-left: auto; color: #7f868e; }
+.fpage { height: 720px; overflow: auto; container-type: inline-size; }
+.notes { margin-top: 14px; max-width: 720px; font-size: 12.5px; color: #c0c6cc; }
+body.light .notes { color: #444; }
+.notes b { color: #fff; } body.light .notes b { color: #000; }
+.notes ul { margin: 6px 0; padding-left: 20px; }
+.notes li { margin: 2px 0; }
+/* ── 产品层令牌 ───────────────────────────────────────────────────── */
+.fwin {
+	--v-fg:#cccccc; --v-desc:#9d9d9d; --v-border:#3a3a3a; --v-hover:#2a2d2e; --v-card:#252526;
+	--v-sel:#04395e; --v-selb:#007fd4; --v-btn:#0e639c; --v-ok:#3fb950; --v-warn:#cca700;
+	--v-err:#f14c4c; --v-info:#4daafc; --v-input:#313131; --v-badge:#4d4d4d;
+	--s1:4px; --s2:8px; --s3:12px;
+	--f-xs:11px; --f-sm:12px; --f-md:13px;
+}
+body.light .fwin {
+	--v-fg:#3b3b3b; --v-desc:#767676; --v-border:#e0e0e0; --v-hover:#ececec; --v-card:#fff;
+	--v-sel:#0060c0; --v-selb:#0090f1; --v-btn:#0078d4; --v-ok:#107c10; --v-warn:#8a6d1f;
+	--v-err:#c4281c; --v-info:#006ab1; --v-input:#fff; --v-badge:#c8c8c8;
+}
+.app { display: flex; flex-direction: column; height: 100%; background: #1f1f1f; color: var(--v-fg); font-size: var(--f-md); }
+body.light .app { background: #f8f8f8; }
+
+/* 头部：标题绝不换行（这是之前被挤成竖排的地方）*/
+.h { display: flex; align-items: baseline; gap: var(--s2); padding: var(--s3) var(--s3) 6px; }
+.h h1 { font-size: 15px; margin: 0; white-space: nowrap; flex: 0 0 auto; }
+.h .sub { color: var(--v-desc); font-size: var(--f-xs); font-family: ui-monospace, Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.h .sp { flex: 1 1 auto; }
+.btn { font: inherit; font-size: var(--f-xs); padding: 1px 9px; border-radius: 999px; cursor: pointer; color: inherit;
+	background: transparent; border: 1px solid var(--v-border); white-space: nowrap; }
+.btn:hover { background: var(--v-hover); }
+.btn.pri { background: var(--v-btn); border-color: transparent; color: #fff; }
+.btn:disabled { opacity: .5; cursor: default; }
+
+/* 状态：一行小 chip，允许换行但不变成色块墙 */
+.st { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 var(--s3) var(--s2); font-size: var(--f-xs); }
+.st span { padding: 0 7px; border-radius: 999px; border: 1px solid var(--v-border); white-space: nowrap; }
+.st .w { border-color: color-mix(in srgb, var(--v-warn) 60%, transparent); color: var(--v-warn); }
+.st .e { border-color: var(--v-err); color: var(--v-err); }
+
+/* 分段：横向滚动，绝不折成三行 */
+.segs { display: flex; gap: 2px; padding: 0 var(--s3); border-bottom: 1px solid var(--v-border); overflow-x: auto; scrollbar-width: none; }
+.segs::-webkit-scrollbar { display: none; }
+.segs button { font: inherit; font-size: var(--f-sm); padding: 5px 8px; border: 0; border-bottom: 2px solid transparent;
+	background: transparent; color: var(--v-desc); cursor: pointer; white-space: nowrap; }
+.segs button.on { color: var(--v-fg); border-bottom-color: var(--v-selb); font-weight: 600; }
+
+.body { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.list { list-style: none; margin: 0; padding: 0; }
+.it { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: var(--s2); align-items: start;
+	padding: 7px var(--s3); border-bottom: 1px solid var(--v-border); cursor: pointer; }
+.it:hover { background: var(--v-hover); }
+.it.sel { background: var(--v-sel); }
+.it .tx { font-size: var(--f-sm); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+.it .mt { margin-top: 2px; font-size: var(--f-xs); color: var(--v-desc); display: flex; gap: 6px; flex-wrap: wrap; }
+.it .mt .wy { color: var(--v-warn); }
+.it .more { border: 0; background: transparent; color: var(--v-desc); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
+.it .more:hover { color: var(--v-fg); }
+
+.foot { position: sticky; bottom: 0; display: flex; align-items: center; gap: 6px; padding: 6px var(--s3);
+	border-top: 1px solid var(--v-border); background: #1f1f1fee; backdrop-filter: blur(6px); font-size: var(--f-xs); }
+body.light .foot { background: #f8f8f8ee; }
+.foot .sp { flex: 1 1 auto; }
+.foot .hint { color: var(--v-desc); }
+
+.empty { padding: 22px var(--s3); font-size: var(--f-sm); color: var(--v-desc); line-height: 1.7; }
+.empty b { color: var(--v-fg); }
+.empty ol { margin: 6px 0 0; padding-left: 18px; }
+.empty code { font-family: ui-monospace, Consolas, monospace; font-size: var(--f-xs); background: var(--v-hover); padding: 0 4px; border-radius: 3px; }
+
+.toast { margin: 0 var(--s3) 6px; padding: 3px 8px; border-radius: 5px; font-size: var(--f-xs);
+	border: 1px solid var(--v-border); background: var(--v-hover); display: flex; gap: 8px; align-items: center; }
+
+/* 更窄（<340px）再收紧：隐藏副标题、缩内边距，保证「一行能说完」 */
+@container (max-width: 340px) {
+  .h { padding: 10px 8px 5px; }
+  .h .sub { display: none; }
+  .st, .segs { padding-left: 8px; padding-right: 8px; }
+  .it { padding: 6px 8px; gap: 6px; }
+  .foot { padding: 5px 8px; }
+  .foot .hint { display: none; }
+}
+/* 嵌入模式（对比页用）：去掉设计板外壳，只留产品界面 */
+body.embed .bar, body.embed .notes { display: none; }
+body.embed main { padding: 0; }
+body.embed .fwin { border: 0; border-radius: 0; box-shadow: none; }
+body.embed .fbar { display: none; }
+body.embed .fpage { height: 100vh; }
+</style>
+</head>
+<body>
+<div class="bar">
+	<h1>方案 A · 清单式（窄栏原生）</h1>
+	<p>只做一件事：<b>把「待你处理的条目」按行摆出来</b>。没有说明段落、没有仪表盘、没有嵌套卡片——所有信息压到两行以内，300px 也不挤。</p>
+	<div class="row"><span class="lbl">宽度</span><span id="w"></span><span class="lbl">主题</span><span id="t"></span><span class="lbl">状态</span><span id="s"></span></div>
+</div>
+
+<main>
+	<div class="fwin" id="fwin">
+		<div class="fbar"><span class="dot"></span><span>记忆库</span><span class="t" id="fmeta">右栏</span></div>
+		<div class="fpage"><div class="app" id="app"></div></div>
+	</div>
+	<div class="notes">
+		<b>适合</b>
+		<ul>
+			<li>常驻在右栏 / 侧栏（280–380px），用户「扫一眼、点两下」就走。</li>
+			<li>审核是主线、浏览是支线：点行 → 到中栏看证据、改、提升。</li>
+		</ul>
+		<b>代价</b>
+		<ul>
+			<li>没有就地详情：多一次跳转（换来窄栏里不出现双栏挤压）。</li>
+			<li>漏斗/健康这类「偶尔看」的东西只留一行数字，要点进维护页。</li>
+		</ul>
+		<b>来源</b>：行结构与「依据前置」取自 <code>dsh-memory-eternal</code> 的 TUI 审核场景（列表项带 kind·时间·来源·reason）；「不做说明段落、只留动作」取自 <code>dsh-memory-plus</code> 的零面板取向。
+	</div>
+</main>
+
+<script>
+(function () {
+	'use strict';
+	var EMBED = /(?:^|[?&])embed=1/.test(location.search);
+	var S = { w: 320, theme: 'dark', scenario: 'ok', seg: 'pending', sel: {}, toast: null };
+	var DATA = [
+		{ id: 'a', kind: '习惯约定', text: '以后所有构建都必须先跑 typecheck 再打产物', hits: '2/2', why: 'judge-unavailable' },
+		{ id: 'b', kind: '强调提醒', text: '必须真的调用对应工具，不要只在回答里描述：用 memory_search 查历史决策', hits: '4/2', why: 'weak-kind' },
+		{ id: 'c', kind: '项目规范', text: '导出包放在 dist/，每次改动都要 bump 版本号', hits: '1/2', why: 'hits<2' }
+	];
+	var esc = function (s) { return String(s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); };
+
+	function head() {
+		return '<div class="h"><h1>记忆库</h1><span class="sub">gr · ws-saros</span><span class="sp"></span>'
+			+ '<button class="btn" data-act="refresh">刷新</button></div>';
+	}
+	function stats() {
+		if (S.scenario === 'down') { return '<div class="st"><span class="e">网关不可达</span><span class="e">问题 1</span><span>索引 未知</span></div>'; }
+		if (S.scenario === 'empty') { return '<div class="st"><span>记忆 0</span><span>待审 0</span><span>问题 0</span></div>'; }
+		return '<div class="st"><span>记忆 1204</span><span class="w">待审 17</span><span class="e">问题 2</span><span>注入 288/1024</span></div>';
+	}
+	function segs() {
+		var items = [['pending', '待审 17'], ['memory', '记忆'], ['inject', '注入'], ['maint', '维护']];
+		return '<nav class="segs">' + items.map(function (it) {
+			return '<button data-seg="' + it[0] + '" class="' + (S.seg === it[0] ? 'on' : '') + '">' + it[1] + '</button>';
+		}).join('') + '</nav>';
+	}
+	function rows() {
+		if (S.scenario === 'down') {
+			return '<div class="empty"><b>连不上记忆网关</b><ol>'
+				+ '<li><code>curl 127.0.0.1:3112/health</code></li>'
+				+ '<li>安装版端口 3111 / dev 3112，配置写哪个用哪个</li>'
+				+ '<li>还不行看 <code>gateway.log</code> 末尾 20 行</li></ol></div>'
+				+ '<div style="padding:0 12px 12px"><button class="btn pri" data-act="retry">重新连接</button></div>';
+		}
+		if (S.scenario === 'empty') {
+			return '<div class="empty"><b>收件箱清空了</b><br>达标候选已自动入库，见「记忆」；新候选在会话结束时出现。</div>';
+		}
+		var selN = Object.keys(S.sel).filter(function (k) { return S.sel[k]; }).length;
+		return '<ul class="list">' + DATA.map(function (d) {
+			return '<li class="it' + (S.sel[d.id] ? ' sel' : '') + '" data-row="' + d.id + '">'
+				+ '<input type="checkbox" data-chk="' + d.id + '"' + (S.sel[d.id] ? ' checked' : '') + ' aria-label="选择">'
+				+ '<div><div class="tx">' + esc(d.text) + '</div>'
+				+ '<div class="mt"><span>' + esc(d.kind) + '</span><span>hits ' + d.hits + '</span><span class="wy">' + esc(d.why) + '</span></div></div>'
+				+ '<button class="more" data-act="menu" title="更多">⋯</button></li>';
+		}).join('') + '</ul>'
+			+ '<div class="foot"><span>' + (selN ? '已选 ' + selN : '未选') + '</span><span class="sp"></span>'
+			+ '<span class="hint">点行看证据</span>'
+			+ (selN ? '<button class="btn pri" data-act="promote">提升</button><button class="btn" data-act="discard">丢弃</button>' : '')
+			+ '</div>';
+	}
+	function viewOther() {
+		var map = {
+			memory: ['1204 条记忆', '按类型/标签检索，点标签等同一次带条件搜索。'],
+			inject: ['注入 288 / 1024 token', '前綴稳定：本次会话前段未变，仅尾部 +96（估算 †）。'],
+			maint: ['漏斗 128 → 31 → 24 → 自动 2', '「待审 17」是时点值，不计入累计漏斗。']
+		};
+		var m = map[S.seg] || map.memory;
+		return '<div class="empty"><b>' + m[0] + '</b><br>' + m[1] + '</div>';
+	}
+	function render() {
+		document.body.classList.toggle('light', S.theme === 'light');
+		document.body.classList.toggle('embed', EMBED);
+		document.getElementById('fwin').style.width = EMBED ? '100%' : S.w + 'px';
+		document.getElementById('fmeta').textContent = S.w + 'px';
+		// 网关故障是**全局态**：不管当前在哪个页签，正文都让位给三步诊断
+		var body = (S.scenario === 'down' || S.seg === 'pending') ? rows() : viewOther();
+		document.getElementById('app').innerHTML = head() + stats() + segs() + '<div class="body">' + body + '</div>'
+			+ (S.toast ? '<div class="toast">' + esc(S.toast) + '<span style="flex:1"></span><button class="btn" data-act="ok">知道了</button></div>' : '');
+	}
+	function buildBar(id, items, key, fmt) {
+		document.getElementById(id).innerHTML = items.map(function (v) {
+			return '<button class="chip' + (String(S[key]) === String(v) ? ' on' : '') + '" data-set="' + key + '" data-val="' + v + '">' + fmt(v) + '</button>';
+		}).join('');
+	}
+	function bars() {
+		buildBar('w', [320, 380, 520, 760, 1040], 'w', function (v) { return v + 'px'; });
+		buildBar('t', ['dark', 'light'], 'theme', function (v) { return v === 'dark' ? '深色' : '浅色'; });
+		buildBar('s', ['ok', 'empty', 'down'], 'scenario', function (v) { return ({ ok: '正常', empty: '空库', down: '网关故障' })[v]; });
+	}
+	document.addEventListener('click', function (ev) {
+		var b = ev.target.closest ? ev.target.closest('[data-set],[data-seg],[data-chk],[data-row],[data-act]') : null;
+		if (!b) { return; }
+		var d = b.dataset;
+		if (d.set) { S[d.set] = d.set === 'w' ? Number(d.val) : d.val; if (d.set === 'scenario' && d.val !== 'ok') { S.toast = null; } bars(); render(); return; }
+		if (d.seg) { S.seg = d.seg; S.toast = null; render(); return; }
+		if (d.chk) { ev.stopPropagation(); S.sel[d.chk] = !S.sel[d.chk]; render(); return; }
+		if (d.row) { S.toast = '已打开「' + d.row + '」的证据（中栏，示例）'; render(); return; }
+		switch (d.act) {
+			case 'refresh': S.toast = '已重新读取'; break;
+			case 'retry': S.scenario = 'ok'; S.toast = '已连上网关'; break;
+			case 'promote': S.sel = {}; S.toast = '已提升（10 秒内可撤销）'; break;
+			case 'discard': S.sel = {}; S.toast = '已丢弃（10 秒内可撤销）'; break;
+			case 'ok': S.toast = null; break;
+			case 'menu': S.toast = '改写 / 丢弃 / 看来源会话'; break;
+			default: return;
+		}
+		bars(); render();
+	});
+	bars(); render();
+})();
+</script>
+</body>
+</html>

@@ -241,7 +241,7 @@ export function composeArticleMarkdown(opts: {
 
 /**
  * 由标题（优先）或 URL 生成**安全文件名 slug**：保留中文/字母/数字，其余折叠为 `-`。
- * 用于 `库/raw/<slug>.md` 与图片目录 `库/raw/assets/<slug>/`。
+ * 用于 `数据源/raw/<slug>.md` 与图片目录 `数据源/raw/assets/<slug>/`。
  */
 export function slugifyTitle(title: string | undefined, url: string, maxLen = 60): string {
 	const base = (title ?? '').trim() || (() => {

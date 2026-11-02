@@ -85,11 +85,11 @@ suite('feishuSyncCore', () => {
 		});
 
 		test('多 src 目录按顺序展开；空项被跳过', () => {
-			const args = buildSyncArgs('s.mjs', { ...base, srcDirs: ['库/A', '', '库/B'] });
+			const args = buildSyncArgs('s.mjs', { ...base, srcDirs: ['数据源/A', '', '数据源/B'] });
 			const srcIndexes = args.map((a, i) => (a === '--src' ? i : -1)).filter(i => i >= 0);
 			assert.strictEqual(srcIndexes.length, 2, '空字符串不应产生 --src');
-			assert.strictEqual(args[srcIndexes[0] + 1], '库/A');
-			assert.strictEqual(args[srcIndexes[1] + 1], '库/B');
+			assert.strictEqual(args[srcIndexes[0] + 1], '数据源/A');
+			assert.strictEqual(args[srcIndexes[1] + 1], '数据源/B');
 		});
 
 		test('apply 模式与冲突策略透传', () => {
@@ -108,7 +108,7 @@ suite('feishuSyncCore', () => {
 
 	suite('parseSrcDirs', () => {
 		test('逗号分隔 + 去空白 + 去空项', () => {
-			assert.deepStrictEqual(parseSrcDirs(' 库/A , 库/B ,, '), ['库/A', '库/B']);
+			assert.deepStrictEqual(parseSrcDirs(' 库/A , 库/B ,, '), ['数据源/A', '数据源/B']);
 		});
 		test('空值返回空数组', () => {
 			assert.deepStrictEqual(parseSrcDirs(undefined), []);
@@ -247,23 +247,23 @@ suite('feishuSyncCore', () => {
 
 		test('只保留「笔记」区内的映射目录', () => {
 			assert.deepStrictEqual(
-				deriveMappedSrcDirs([m('库/AI'), m('笔记/AI'), m('库/raw/素材')]),
-				['笔记/AI'],
+				deriveMappedSrcDirs([m('数据源/AI'), m('知识库列表/AI'), m('数据源/raw/素材')]),
+				['知识库列表/AI'],
 				'「库」是素材层，永不进入同步范围',
 			);
 		});
 
 		test('父子归并：子目录被祖先涵盖时不重复作为 --src（否则文件被 plan 两次）', () => {
 			assert.deepStrictEqual(
-				deriveMappedSrcDirs([m('笔记/AI'), m('笔记/AI/01-基础'), m('笔记/AI/01-基础/deep')]),
-				['笔记/AI'],
+				deriveMappedSrcDirs([m('知识库列表/AI'), m('知识库列表/AI/01-基础'), m('知识库列表/AI/01-基础/deep')]),
+				['知识库列表/AI'],
 			);
 		});
 
 		test('同级多目录：全部保留且顺序稳定', () => {
 			assert.deepStrictEqual(
-				deriveMappedSrcDirs([m('笔记/B'), m('笔记/A'), m('笔记/B/sub')]),
-				['笔记/A', '笔记/B'],
+				deriveMappedSrcDirs([m('知识库列表/B'), m('知识库列表/A'), m('知识库列表/B/sub')]),
+				['知识库列表/A', '知识库列表/B'],
 			);
 		});
 
@@ -272,13 +272,13 @@ suite('feishuSyncCore', () => {
 		});
 
 		test('反斜杠 / 尾部斜杠归一（面板与手写文件的两种形态都要能识别）', () => {
-			assert.deepStrictEqual(deriveMappedSrcDirs([m('笔记\\AI\\'), m('笔记/AI')]), ['笔记/AI']);
+			assert.deepStrictEqual(deriveMappedSrcDirs([m('知识库列表\\AI\\'), m('知识库列表/AI')]), ['知识库列表/AI']);
 		});
 
 		test('空映射 / 只有「库」区 ⇒ 空数组（调用方据此提示「先去配置映射」且不执行同步）', () => {
 			assert.deepStrictEqual(deriveMappedSrcDirs([]), []);
 			assert.deepStrictEqual(deriveMappedSrcDirs(undefined), []);
-			assert.deepStrictEqual(deriveMappedSrcDirs([m('库/raw')]), []);
+			assert.deepStrictEqual(deriveMappedSrcDirs([m('数据源/raw')]), []);
 		});
 
 		test('不把「笔记X」误判为「笔记」区（前缀必须落在分隔符上）', () => {

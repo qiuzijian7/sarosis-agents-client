@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
 
 		const API = '/x/kb/api';
 		/** 「笔记」区（可写区）的目录名 —— 与后端 `NOTES_DIR` 同值（`lib/core/kb.js`）。 */
-		const NOTES_NAME = '笔记';
+		const NOTES_NAME = '知识库列表';
 		// ⚠ 描述符要与清单 `vssaros.workbench` **逐字段一致**：宿主快照直接取这里的 description / icon，
 		//   **不回落到清单** ⇒ 漏写就是"注册表里那一项说明是空的" ✗（2026-10-22 审计发现本包就漏了 description）。
 		const DESCRIPTOR = {
@@ -199,7 +199,7 @@ window.__ModuleLoader__.load({
 				}
 			}, [q, vaultId]);
 
-			/** 绝对路径 → vault 内相对路径（`笔记/甲.md`）；不在本库下 ⇒ 空串（调用方据此拒绝写）。 */
+			/** 绝对路径 → vault 内相对路径（`知识库列表/甲.md`）；不在本库下 ⇒ 空串（调用方据此拒绝写）。 */
 			const vaultRelOf = (abs) => {
 				const dir = String((vault && vault.dir) || '');
 				const target = String(abs || '');
@@ -220,7 +220,7 @@ window.__ModuleLoader__.load({
 					const body = await postJson('/new', { vaultId: vault.id, kind: newKind, dir, name: newName.trim() });
 					setNewName('');
 					await load();
-					say('已创建' + (newKind === 'folder' ? '目录' : '笔记') + '：' + String(body.rel || body.name || ''), false);
+					say('已创建' + (newKind === 'folder' ? '目录' : '知识库列表') + '：' + String(body.rel || body.name || ''), false);
 				} catch (e) {
 					say('创建失败：' + String(e && e.message || e), true);
 				} finally { setBusy(''); }
@@ -362,7 +362,7 @@ window.__ModuleLoader__.load({
 								// ★ 第二刀：新建（只写「笔记」区 —— 与后端围栏同口径 ✓）
 								h('form', { className: 'kbt-new', 'data-kb-new': '', onSubmit: (ev) => { ev.preventDefault(); void doCreate(); } },
 									h('select', { value: newKind, 'aria-label': '新建类型', 'data-kb-new-kind': '', onChange: (ev) => setNewKind(ev.target.value) },
-										h('option', { value: 'file' }, '笔记'),
+										h('option', { value: 'file' }, '知识库列表'),
 										h('option', { value: 'folder' }, '目录')),
 									h('input', {
 										value: newName, 'data-kb-new-name': '', placeholder: newKind === 'folder' ? '目录名' : '笔记名（缺省自动起名）',
@@ -371,8 +371,8 @@ window.__ModuleLoader__.load({
 									h('button', { type: 'submit', disabled: !!busy }, busy === 'create' ? '创建中…' : '＋ 新建'),
 									h('span', { className: 'kbt-target', title: '点「笔记」区里的目录可以改目标' }, NOTES_NAME + (newDir ? '/' + newDir : '')),
 									newDir ? h('button', { type: 'button', className: 'wb-btn is-ghost', onClick: () => setNewDir('') }, '回笔记根') : null),
-								treeSection('library', '库'),
-								treeSection('notes', '笔记'),
+								treeSection('library', '数据源'),
+								treeSection('notes', '知识库列表'),
 								vault && vault.tags && vault.tags.length
 									? h('section', { className: 'kbt-section' },
 										h('div', { className: 'wb-group-hd' }, h('span', null, '标签分类'), h('span', { className: 'wb-card-sub' }, vault.tags.length + ' 个标签')),
@@ -504,7 +504,12 @@ window.__ModuleLoader__.load({
 				if (typeof window.__KB_SIDEVIEW_MOUNT__ === 'function') { return resolve(); }
 				const viaScript = () => {
 					const s = document.createElement('script');
-					s.src = '/x/kb/web/kbSideview.js';
+					/*
+ * ★ 2026-11-02：**加版本戳**。以前固定 URL ⇒ 宿主/浏览器命中旧缓存时，
+ *   明明文件已更新，界面还是老逻辑（这轮就被它坑了一次：UPDATE 通道写了但没生效）。
+ *   no-store 头在某些宿主里不足以保证重新取 ⇒ 直接换 URL。
+ */
+s.src = '/x/kb/web/kbSideview.js?v=' + Date.now();
 					s.onload = () => (typeof window.__KB_SIDEVIEW_MOUNT__ === 'function' ? resolve() : reject(new Error('bundle 未导出 MOUNT')));
 					s.onerror = () => reject(new Error('bundle 加载失败：/x/kb/web/kbSideview.js'));
 					document.head.appendChild(s);
@@ -601,6 +606,21 @@ window.__ModuleLoader__.load({
 				await remountRef.current?.();
 			}).catch((e) => window.alert('操作失败：' + String((e && e.message) || e)));
 
+			/*
+			 * ★ 2026-11-02（用户：点刷新不要清空已打开的文档）：
+			 *   以前 refresh 走 `remountRef`（dispose + 重新 mount）⇒ 页签/正文/展开态全丢 ✗。
+			 *   视图侧暴露了 `__KB_SIDEVIEW_UPDATE__`（同一个 root 换 props）⇒ 只换数据 ✓。
+			 *   老 bundle 没有这条通道时退回 remount（行为与旧版一致，不会更差）。
+			 */
+			const refreshData = async () => {
+				try {
+					const next = await buildData();
+					const upd = window.__KB_SIDEVIEW_UPDATE__;
+					if (typeof upd === 'function') { upd(next, actions); return; }
+				} catch { /* 取数失败 ⇒ 落到 remount 兜底 */ }
+				await remountRef.current?.();
+			};
+
 			const actions = {
 				// 视图自己弹对话框（Electron 不支持 window.prompt）
 				useInlineDialogs: true,
@@ -678,14 +698,15 @@ window.__ModuleLoader__.load({
 				},
 				openNode: (p) => { void openDoc(p); },
 				openLink: (p) => { void openDoc(p); },
-				refresh: () => { void remountRef.current?.(); },
+				// ★ 2026-11-02：刷新只换数据，不重建视图（否则打开中的文档被清空）
+			refresh: () => { void refreshData(); },
 				createNote: (dir, name) => {
 					const n = String(name || '').trim();
-					if (n) { void writeOp('/new', { vaultId: vaultRef.current.id, kind: 'note', dir: dir || '笔记', name: n }); }
+					if (n) { void writeOp('/new', { vaultId: vaultRef.current.id, kind: 'note', dir: dir || '知识库列表', name: n }); }
 				},
 				newFolder: (dir, name) => {
 					const n = String(name || '').trim();
-					if (n) { void writeOp('/new', { vaultId: vaultRef.current.id, kind: 'folder', dir: dir || '笔记', name: n }); }
+					if (n) { void writeOp('/new', { vaultId: vaultRef.current.id, kind: 'folder', dir: dir || '知识库列表', name: n }); }
 				},
 				renameNode: (p, newName) => {
 					const n = String(newName || '').trim();

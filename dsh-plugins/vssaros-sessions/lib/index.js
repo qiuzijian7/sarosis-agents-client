@@ -1589,6 +1589,20 @@ function currentWorkspaceRoots() {
 	}
 }
 
+/**
+ * 工作区范围过滤（页面与 API **共用**这一份，不许各写一遍 ⇒ 不会再出现"页面认、API 不认"）。
+ * `scope !== 'current'` 或拿不到当前工作区根 ⇒ 原样返回（**不猜**，更不把用户的会话悄悄藏起来）。
+ */
+export function rowsInScope(rows, scope, workspaceRoots) {
+	if (scope !== 'current' || !Array.isArray(workspaceRoots) || workspaceRoots.length === 0) { return rows; }
+	const norm = p => String(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+	const roots = workspaceRoots.map(norm);
+	return rows.filter(row => {
+		const c = norm(row.cwd || '');
+		return !!c && roots.some(n => c === n || c.startsWith(n + '/'));
+	});
+}
+
 /** 页面 + API 共用的一份投影（**不可能出现"页面 3 个、API 5 个"**）。 */
 function viewOf(scan, now, groupBy, workspaceRoots = []) {
 	const groups = applyPresetNames(buildSessionGroups(scan.rows, { by: groupBy, workspaceRoots }), groupBy, scan.presetNames).map(group => ({
@@ -1703,15 +1717,7 @@ function pageHtml(scan, config, groupBy, scope = 'all', view = 'list', status = 
 	const workspaceRoots = currentWorkspaceRoots();
 	// ★ 2026-10-19（稿 B「工作区工作台」）：顶部可选“全部工作区 / 仅当前工作区”。
 	//   ⚠ 默认 **全部**：切到“仅当前”会让其它工作区的历史会话从列表里消失（用户会以为丢数据 ✗）。
-	const scopedRows = (() => {
-		if (scope !== 'current' || workspaceRoots.length === 0) { return scan.rows; }
-		const norm = p => String(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-		const roots = workspaceRoots.map(norm);
-		return scan.rows.filter(row => {
-			const c = norm(row.cwd || '');
-			return !!c && roots.some(n => c === n || c.startsWith(n + '/'));
-		});
-	})();
+	const scopedRows = rowsInScope(scan.rows, scope, workspaceRoots);
 	// ★ 2026-10-19（体感最差的一条：300 条里全是"未命名会话"）：投影没标题 ⇒ 用**首条用户消息**当标题。
 	// ★ 2026-10-20：这段从 `pageHtml` 里**搬出去**了（`prefillFirstPrompts`，在路由 handler 里
 	//   `await` 完再渲染）—— 它要读盘 + 解 zstd，同步做会把 Host 主线程占住（本仓"插件不许同步解压"
@@ -1981,7 +1987,11 @@ export function apply(ctx, config = {}) {
 					const apiPrefs = (() => {
 						try { return readPrefs(dshHomeOf(config)); } catch { return normalizePrefs(undefined); }
 					})();
-					const apiCleared = filterHiddenByClear(scan.rows, { clearedAt: apiPrefs.clearedAt, pinned: new Set(apiPrefs.pinned) }).kept;
+					// ★ 2026-11-02（承载收口 P1）：API 也认 `scope=current`（只看当前工作区，含多根），
+					//   与 `pageHtml` 同一个 `rowsInScope`。以前只有页面认它 ⇒ 注册式工作台（客户端）拿 API 时
+					//   「仅当前工作区」会**静默无效**（选了没效果，用户以为是 bug）。
+					const apiScoped = rowsInScope(scan.rows, scope, currentWorkspaceRoots());
+					const apiCleared = filterHiddenByClear(apiScoped, { clearedAt: apiPrefs.clearedAt, pinned: new Set(apiPrefs.pinned) }).kept;
 					const apiScan = {
 						...scan,
 						// 与页面同口径：清空隐藏的 + 空白会话默认不列（用户开了 showBlank 才给）

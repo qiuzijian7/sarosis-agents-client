@@ -405,6 +405,12 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 			: ['dsh-runtime/*/node_modules/**', 'dsh-runtime/*/package.json', 'dsh-runtime/*/profile-seed/**'];
 		const dshRuntime = gulp.src(dshRuntimeGlob, { base: '.', allowEmpty: true, dot: true });
 
+		// Office 运行时负载（`build/prepare-office-runtime.mjs` 生成）：`base: '.build'` ⇒ 进包后是
+		// `<appPath>/office-runtime/{primary-runtime,office-skills}`。Python 必须是**真实目录**（不能进 asar），
+		// 与 dsh-runtime 同一处理方式。未跑 builder 时 allowEmpty 跳过，Host 侧找不到基目录 ⇒ 不挂
+		// 7 个 Office 技能（docx/xlsx 能力缺席，其余功能不受影响）。
+		const officeRuntime = gulp.src(['.build/office-runtime/**'], { base: '.build', allowEmpty: true, dot: true });
+
 		const jsFilter = util.filter(data => !data.isDirectory() && /\.js$/.test(data.path));
 		const root = path.resolve(path.join(import.meta.dirname, '..'));
 		const productionDependencies = getProductionDependencies(root);
@@ -448,6 +454,7 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 			telemetry,
 			dshPlugins,
 			dshRuntime,
+			officeRuntime,
 			sources,
 			deps
 		];

@@ -7,7 +7,7 @@
  * KnowledgeInstaller —— 知识库的安装器实现。
  * 纯文件资源（docs/ + index.json），无平台服务依赖。
  *
- * 支持预建索引：若知识库包中携带 .ftindex.json / .kbkernel.json，安装时自动
+ * 支持预建索引：若知识库包中携带 .kb/ftindex.json / .kb/kernel.json，安装时自动
  * 完成路径重映射 + 一致性校验，避免每个客户端重复构建全文索引。
  */
 
@@ -25,7 +25,7 @@ import { IEnvironmentService } from '../../../../../platform/environment/common/
 const KB_SUBDIR = 'knowledge-base';
 
 /** Pre-built index filenames carried in knowledge packages. */
-const PREBUILT_INDEX_FILES = ['.ftindex.json', '.kbkernel.json'];
+const PREBUILT_INDEX_FILES = ['.kb/ftindex.json', '.kb/kernel.json'];
 
 export class KnowledgeInstaller extends Disposable implements IPackageInstaller {
 	declare readonly _serviceBrand: undefined;
@@ -56,11 +56,11 @@ export class KnowledgeInstaller extends Disposable implements IPackageInstaller 
 		}
 
 		// Try to remap pre-built index files in-place before copying.
-		// Extract the source prefix from the first .ftindex.json found.
+		// Extract the source prefix from the first .kb/ftindex.json found.
 		let hasPrebuiltIndex = false;
 		let sourcePrefix = '';
 		if (prebuiltSource.length > 0) {
-			const ftsFile = prebuiltSource.find(f => f.name === '.ftindex.json');
+			const ftsFile = prebuiltSource.find(f => f.name === '.kb/ftindex.json');
 			if (ftsFile) {
 				try {
 					const raw = (await this.fileService.readFile(ftsFile.uri)).value.toString();
@@ -91,7 +91,7 @@ export class KnowledgeInstaller extends Disposable implements IPackageInstaller 
 			}
 
 			// Validate the remapped index against the installed files on disk.
-			const ftsIndex = prebuiltSource.find(f => f.name === '.ftindex.json');
+			const ftsIndex = prebuiltSource.find(f => f.name === '.kb/ftindex.json');
 			if (ftsIndex) {
 				try {
 					const raw = (await this.fileService.readFile(ftsIndex.uri)).value.toString();

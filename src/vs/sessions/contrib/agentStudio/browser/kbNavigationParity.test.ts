@@ -2,7 +2,7 @@
  *  Copyright (c) Sarosis. All rights reserved.
  *  Licensed under the MIT License.
  *
- *  kbNavigationParity.test.ts — 导航文件（`笔记/index.md` / `笔记/overview.md`）的**跨引擎对账**。
+ *  kbNavigationParity.test.ts — 导航文件（`知识库列表/index.md` / `知识库列表/overview.md`）的**跨引擎对账**。
  *
  *  为什么要有它：这两个文件是**两侧视图共读**的导航产物 —— IDE 侧的 `maintainKbNavigation`
  *  与 dsh 侧插件（`dsh-plugins/vssaros-kb/lib/core/kbNavigation.js`）都会生成它们。

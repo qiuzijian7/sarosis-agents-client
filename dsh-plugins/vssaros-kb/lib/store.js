@@ -6,11 +6,11 @@
 // ⚠ `writeFile` 是 2026-10-13 补的：写构建缓存（P1）时才需要 —— 漏掉它的表现是
 // `ReferenceError: writeFile is not defined`，而且**只在"真的登记成功"那条路上**才炸 ✓
 // （p3-66 抓到的 ✓：登记函数先跑通、到了落盘那一步才抛 ⇒ 若不跑那条路，这个 bug 会一直躺着 ✓）。
-import { readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { foundation } from './foundationRef.js';
 import { homedir } from 'node:os';
 
-import { join, resolve, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 
 import { fileURLToPath } from 'node:url';
 
@@ -38,14 +38,14 @@ export function kbRootOf(config) {
 /**
  * 页面渲染快照（报告 §5-4 的"缓存 vault/kernel 扫描结果，按 mtime 失效"）✓。
  *
- * 为什么需要：kb 页**每次渲染**都会 ① 逐个 vault 读并 `JSON.parse` 那个 `.kbkernel.json`
+ * 为什么需要：kb 页**每次渲染**都会 ① 逐个 vault 读并 `JSON.parse` 那个 `.kb/kernel.json`
  *（大库时就是几万个 doc 的索引 ✗）② 递归 walk 整个库数文件 ⇒ 刷新一次全是主线程 I/O ✗。
  *
  * 缓存键 = **根目录 readdir 的形状 + 每个 vault 目录的 mtime + 那个 vault 的 kernel 的 (size, mtimeMs)**
  * ✓ —— 覆盖"加/删库 ✓、加/删文件 ✓、重建索引 ✓"（codebase 的 `loadGraph` 是同一套思路 ✓，这里抄它 ✓）。
  * 扫描**之后再取一次**指纹 ✓：两端不一致就不缓存这次结果 ✓（别把扫描期间的中间态钉住 ✗）。
  *
- * ⚠ 一个如实说明的边界 ✗：手工往 `库/` 里丢文件、又**没重建 kernel** 时，页面上那个"N 个文件"的
+ * ⚠ 一个如实说明的边界 ✗：手工往 `数据源/` 里丢文件、又**没重建 kernel** 时，页面上那个"N 个文件"的
  * 计数可能**滞后**（直到 kernel 变或 Host 重启 ✓）；**索引条目数与正文不受影响** ✓（它们只看 kernel ✓）。
  */
 let pageCache;
@@ -95,8 +95,8 @@ export async function pageSnapshotOf(root, { external = [] } = {}) {
  * 指纹：读不动的一律按"变过"处理（保守 ⇒ 宁可多扫一次，也不显示旧数据 ✗）。
  *
  * ⚠ 为什么**还要看 vault 的直接子目录**（第一版只看 vault 自己，当场被 p3-08 抓到 ✗）：往
- * `笔记/` 或 `库/<分类>/` 里丢文件，变的是**子目录**的 mtime、vault 自己的 mtime 不变 ✗ ⇒
- * 那样"加文件立刻重扫"就是假的 ✓。真实布局恰好是两层（`笔记/` 与 `库/<分类>/`）⇒ 下沉一层就够 ✓
+ * `知识库列表/` 或 `数据源/<分类>/` 里丢文件，变的是**子目录**的 mtime、vault 自己的 mtime 不变 ✗ ⇒
+ * 那样"加文件立刻重扫"就是假的 ✓。真实布局恰好是两层（`知识库列表/` 与 `数据源/<分类>/`）⇒ 下沉一层就够 ✓
  * （**更深**的嵌套、或只改已有文件的**内容**，这两件事都不改文件数 ⇒ 不需要让这份快照失效 ✓；
  * 页面上要看正文时走只读 API / `kb_read`，那是另一条路径 ✓）。
  */
@@ -226,10 +226,10 @@ export async function listVaults(root, { withDocs = true, external = [] } = {}) 
  * 列一个分区的**真文件树**（2026-10-13，§15.38 复刻第一刀）。
  *
  * ## 为什么必须有它
- * 此前页面渲染的是**索引条目**（`.kbkernel.json` 的 docs）⇒ 只有"被索引的 md" ✗；
+ * 此前页面渲染的是**索引条目**（`.kb/kernel.json` 的 docs）⇒ 只有"被索引的 md" ✗；
  * 而真源的树走 `fileService` **列目录**（`knowledgeBaseView.ts` 的 `loadSectionTree`）⇒
  * **目录、非 md 文件、点文件全在**，没索引的标「未索引」（`isRawLib`，`:2062`）+ 大小。
- * 对照图就是证据：右侧连 `.kb-insights-cache.json` / `.canvas` 都列着 ✓。
+ * 对照图就是证据：右侧连 `.kb/insights-cache.json` / `.canvas` 都列着 ✓。
  *
  * ## 三处如实标注（不假装与真源同规 ✗）
  * ① **排序**：真源默认是 `KB_SORT_GROUPS` 的「创建时间（从旧到新）」；我们按
@@ -243,7 +243,7 @@ export async function listVaults(root, { withDocs = true, external = [] } = {}) 
  * @param {{section?: string, maxDepth?: number, maxNodes?: number}} [options]
  * @returns `{ section, dir, nodes, files, dirs, truncated, missing? }`；
  *   `nodes` 是**嵌套**数组（`{ name, rel, isDirectory, size?, mtime?, children? }`），
- *   `rel` 相对**该分区**（页面拼 `笔记/...` 时用它 ✓）
+ *   `rel` 相对**该分区**（页面拼 `知识库列表/...` 时用它 ✓）
  */
 export async function listVaultTree(vaultDir, { section = LIBRARY_DIR, maxDepth = 6, maxNodes = 1500 } = {}) {
 	const dir = join(vaultDir, section);
@@ -345,8 +345,8 @@ export const MAX_TOPIC_OVERVIEWS = 200;
 /**
  * 读一个 vault 的**目录摘要**：`<vault>/库/<分类>/.overview.md`。
  *
- * 口径与 IDE 的 `readTopicOverviews()` 一致：只取 library 区（`库/`）的**直接子目录**——那是
- * 「渐进式下钻」的第一层，不是递归把整棵树倒出来。`库/` 不存在时**不猜别的区**，如实带上
+ * 口径与 IDE 的 `readTopicOverviews()` 一致：只取 library 区（`数据源/`）的**直接子目录**——那是
+ * 「渐进式下钻」的第一层，不是递归把整棵树倒出来。`数据源/` 不存在时**不猜别的区**，如实带上
  * `libraryMissing`（由工具给出可读说明；猜错的代价是模型拿到一整套错误的"目录结构"）。
  *
  * 返回 `{overviews: [{dir, summary}], libraryDir, libraryMissing?, scannedDirs}`；
@@ -383,7 +383,7 @@ export async function listTopicOverviews(vaultDir) {
 
 /**
  * 读一篇正文。
- * `uri` 可以是 `file://` URL（索引里就是这种），也可以是 vault 内的相对路径（`库/概念/x.md`）。
+ * `uri` 可以是 `file://` URL（索引里就是这种），也可以是 vault 内的相对路径（`数据源/概念/x.md`）。
  * **路径围栏**：解析后的绝对路径必须落在 vault 根内，否则拒绝——`kb_read` 是模型可达的工具，
  * 不能让 `../../` 之类的输入读到库外（`..`、盘符、UNC 都挡在这条检查里）。
  */
@@ -436,9 +436,9 @@ export async function readDoc(root, uri, extraRoots = []) {
 // 正文检索（`kb_search mode=fulltext`）的数据源与索引缓存
 //
 // ★ 数据源的选择**不是猜的**，是实测出来的（2026-10-12）：
-//   `.kbkernel.json` 在生产库（元数据形态）与 dev 库（FTS 形态）里**都带全文 `text`** ✓
+//   `.kb/kernel.json` 在生产库（元数据形态）与 dev 库（FTS 形态）里**都带全文 `text`** ✓
 //   ⇒ 正文不必自己去扫盘：直接用索引器已经读过的正文（零额外 I/O、且与 IDE 侧
-//   "索引的就是这份文本"天然一致 ✓）。读不到 text（老索引）时退到 `.ftindex.json`
+//   "索引的就是这份文本"天然一致 ✓）。读不到 text（老索引）时退到 `.kb/ftindex.json`
 //   （同一份序列化的另一处落盘，实测与 kernel 同样大小 ✓），再没有就**如实说没有**（不假装搜过 ✗）。
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -558,7 +558,7 @@ export async function fulltextIndexes(root, vaults) {
 // 口径真源 = IDE 的 `collectPendingSources`（`knowledge/kbVaultFs.ts:97-122` ✓ 逐行读过）；
 // 纯逻辑那半在 `core/kbIngest.js`（`classifyPending` ✓），这里只负责**读盘**：
 //   · 入口集合：递归 walk `<vault>/库/`，跳过**点开头**的文件与目录 ✓、只收 `*.md` ✓、跳过系统导航文件名 ✓；
-//   · 构建缓存：`<vault>/.kb-build-cache.json`（`{ 素材绝对路径: 笔记绝对路径 }` ✓）。
+//   · 构建缓存：`<vault>/.kb/build-cache.json`（`{ 素材绝对路径: 笔记绝对路径 }` ✓）。
 // ⚠ **如实记两处边界**（真源有、我们没有）：
 //   ① 真源在数之前会先 `stageDocSourcesToText` 把 **pdf/docx 等非 md 素材**转成文本，
 //      再当素材算 ✓ —— dsh 侧没有那条原生转换链 ⇒ 本侧**只统计 `.md`** ✗，非 md 素材不在这里出现 ✓；
@@ -651,7 +651,7 @@ export async function previewBuild(vaultDir) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 构建缓存**写入**（P1，2026-10-13）：把本批**确实产出**的笔记登记进 <vault>/.kb-build-cache.json。
+// 构建缓存**写入**（P1，2026-10-13）：把本批**确实产出**的笔记登记进 <vault>/.kb/build-cache.json。
 //
 // 为什么必须做：不登记 ⇒ 下一次 preview 把同一批**再算成待构建** ✗（"越用越不准" ✓）。
 // 协议（三条，见 core/kbBuildCache.js 文件头）：
@@ -687,6 +687,8 @@ export async function registerBuildCacheEntries(vaultDir, { sources }) {
 		// ⇒ 只在读得动的常态下才可能丢更新 ✓（这条随残余风险一起如实记 ✓）
 	}
 	const merged = mergeBuildCache(existing, entries);
+	// ★ 2026-11-02: 构建缓存搬进 .kb/ 子目录 ⇒ 写前建目录
+	await mkdir(dirname(cacheFile), { recursive: true });
 	await writeFile(cacheFile, serializeBuildCache(merged), { encoding: 'utf8' });
 	return { registered: entries.length, total: Object.keys(merged).length, changed: true, skipped, cacheFile, notesScanned: notes.length, sourcesScanned: (sources ?? []).length };
 }
@@ -718,14 +720,14 @@ async function collectNoteFiles(notesDir, out = []) {
  * 笔记区的**目录地图**（给 AI 选「这篇该放哪」用）。
  *
  * ★★ 2026-10-20（用户报「为什么存到 讲懂/ 文件夹」）：模型不知道库里既有的分类结构，
- *   只能按任务名自造目录（讲懂/）。而 `笔记/知识体系.md` 里**本来就有**一份带说明的目录总览
+ *   只能按任务名自造目录（讲懂/）。而 `知识库列表/知识体系.md` 里**本来就有**一份带说明的目录总览
  *   （「AI_Agent/ ← AI 智能体学习（13 篇）」），只是没人把它喂给模型。
  *   ⇒ 本函数以**磁盘真实目录**为准（知识体系.md 可能过时，不能当唯一真源），
  *     输出精简地图：路径 + 篇数。语义说明由调用方叠加（见 index.js 的 kb_catalog）。
  *   ⚠ 只扫到 depth 层（缺省 2）：`01_学习/AI_Agent` 这种两级足够定位，再深就是噪音。
  */
 export async function noteCatalog(vaultDir, { maxDepth = 2 } = {}) {
-	const root = join(vaultDir, '笔记');
+	const root = join(vaultDir, '知识库列表');
 	const out = [];
 	const walk = async (current, rel, depth) => {
 		if (depth > maxDepth) { return; }
@@ -740,7 +742,7 @@ export async function noteCatalog(vaultDir, { maxDepth = 2 } = {}) {
 				const files = await readdir(abs, { withFileTypes: true });
 				count = files.filter(f => f.isFile() && f.name.endsWith('.md')).length;
 			} catch { count = 0; }
-			out.push({ path: '笔记/' + childRel, name: entry.name, depth, count });
+			out.push({ path: '知识库列表/' + childRel, name: entry.name, depth, count });
 			await walk(abs, childRel, depth + 1);
 		}
 	};
@@ -749,7 +751,7 @@ export async function noteCatalog(vaultDir, { maxDepth = 2 } = {}) {
 }
 
 /**
- * 从 `笔记/知识体系.md` 提取**目录语义说明**（`AI_Agent/ ← AI 智能体学习（13 篇）` 里的后半截）。
+ * 从 `知识库列表/知识体系.md` 提取**目录语义说明**（`AI_Agent/ ← AI 智能体学习（13 篇）` 里的后半截）。
  *
  * ★ 2026-10-20：`noteCatalog` 只给"路径 + 篇数"，模型仍要靠目录名猜语义。
  *   而体系文档里本来就有说明文字 —— 把它叠加上去，模型判断归属会准得多 ✓。
@@ -762,7 +764,7 @@ export async function noteCatalog(vaultDir, { maxDepth = 2 } = {}) {
 export async function catalogDescriptions(vaultDir) {
 	const out = new Map();
 	try {
-		const text = await readFile(join(vaultDir, '笔记', '知识体系.md'), { encoding: 'utf8' });
+		const text = await readFile(join(vaultDir, '知识库列表', '知识体系.md'), { encoding: 'utf8' });
 		for (const line of text.split(/\r?\n/)) {
 			// 形如： `│   ├── AI_Agent/             ← AI 智能体学习（13 篇）`
 			const m = /(?:^|[\s│├└─]+)([^\s│├└─/]+)\/\s*←\s*(.+)$/.exec(line);

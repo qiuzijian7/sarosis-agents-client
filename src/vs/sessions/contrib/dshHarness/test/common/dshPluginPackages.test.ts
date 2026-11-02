@@ -826,6 +826,12 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			// loop（2026-10-31，新插件）：过闸的是 `loop_run`（真的跑起来 + 写账本）与 `loop_answer`
 			// （把作答写进账本）；`loop_list` / `loop_show` / `loop_dry_run` 纯只读 ⇒ 放行。
 			{ dir: 'vssaros-loop', gate: 'hook' },
+			// office-template（2026-11-02，新插件）：过闸的是 `office_template_write`（按模板出稿并落盘）；
+			// `office_template` 只读（拿段落/run ID）⇒ 放行。
+			{ dir: 'vssaros-office-template', gate: 'hook' },
+			// scheduler（2026-11-02，自研调度引擎重写后重新登记）：过闸的是 create / update / delete
+			// （都写 `<数据根>/scheduler/tasks.json`）；list / history 只读 ⇒ 放行。
+			{ dir: 'vssaros-scheduler', gate: 'hook' },
 			// agents（2026-10-13，P2 生命周期工具）：过闸的是 `agent_switch_persona`（改运行中会话的提示词）
 			// 与 `agent_stop`（停别人的回合）✓；`agent_list` 只读 ✓。
 			{
@@ -884,6 +890,19 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			// 路径由模型指定）⇒ 与 kanban/kb 的写同一档，必须挂闸（此前它注册了工具却不在台账里 ⇒ 守卫红）。
 			// 闸只拦"带 saveTo"的调用；纯校验/取 SVG 仍直接放行（否则每次渲染都弹窗，工具没法用）。
 			{ dir: 'vssaros-pele', gate: 'hook' },
+			// ★ 2026-11-02：工作台宿主的两个工具，**分类不同**，都不挂 Host 钩子：
+			//   · `check_local_workbench` 纯只读（读 .tgz、在内存里校验，不安装、不写盘）⇒ 没有可拦的写入；
+			//   · `install_local_workbench` **会安装插件**（服务端代码以完整权限在 Host 里跑）——这是最重的一类写。
+			//     但它的闸**不在 Host 里，在 IDE 主进程**：它只能经控制桥调 `ide.request{capability:'workbenches',op:'install'}`，
+			//     而那条能力在执行前会弹**原生模态确认框**（含静态能力扫描，`confirmUserAction`，拒绝 / 超时 ⇒ 不装，fail-closed；
+			//     见 `dshIdeCapabilities.ts` 的 `case 'workbenches'`）。再叠一层 Host 钩子只会让用户连点两次（审批 + 模态框），
+			//     且 `ide.request` 本身只做授权不弹确认，所以**确认框是这条链上唯一的、真的会拦人的那一道**。
+			//     没有控制桥时工具直接抛错（不装），所以不存在「绕过确认框」的路径。
+			//     （同口径先例：media 的闸在 IDE 侧；本条的行为由 run-workbenches-check 钉住：无桥 ⇒ 抛 /没有可用的控制桥/）。
+			{
+				dir: 'vssaros-workbenches',
+				reason: 'check_local_workbench 纯只读；install_local_workbench 的闸在 IDE 主进程（workbenches.install 的原生模态确认框，fail-closed），Host 侧没有可绕过它的路径（无控制桥即抛错）。',
+			},
 			// 2026-10-16（重构 4）：session_search 只读（搜投影缓存的元数据：标题/路径）⇒ 没有可拦的写入 ✓
 			// （与 dashboard 同口径：只读 ⇒ 不挂闸，理由写明 ✓）。
 			{ dir: 'vssaros-sessions', reason: 'session_search 只读（搜投影缓存的元数据：标题/路径，不写盘、不改数据）⇒ 没有可拦的写入。' },
@@ -1163,8 +1182,18 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 		assert.deepStrictEqual(missing, [], `这些有页面的插件还没声明 vssaros.workbench：${missing.join(', ')}`);
 		for (const plugin of readPluginPackages(root!)) {
 			const m = manifestOf(plugin);
-			if (m && m.view.kind !== 'page') {
-				assert.strictEqual(m.workbench, undefined, `${plugin.dirName} 没有页面却声明了工作台`);
+			/*
+			 * ★ 2026-11-02：反向断言收窄到 `section`。
+			 *
+			 * 原来写的是"`view.kind !== 'page'` ⇒ 不许声明工作台"，那是"工作台 = SSR 页面"的年代。
+			 * 现在三种形态都**可以**带工作台身份：
+			 *   · `page`   —— 整页（kb / media / dashboard …）；
+			 *   · `none`   —— **注册式**工作台，界面由 `desktopWorkbenches.register()` 渲染（loop）；
+			 *   · `native` —— IDE 原生侧栏视图 + 注册式工作台并存（agents 的 Bots）。
+			 * 只有 `section`（嵌在别人页面里的片段）没有独立身份 ⇒ 仍然禁止。
+			 */
+			if (m && m.view.kind === 'section') {
+				assert.strictEqual(m.workbench, undefined, `${plugin.dirName} 是嵌入式 section，不能声明独立的工作台身份`);
 			}
 		}
 	});

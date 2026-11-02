@@ -57,9 +57,11 @@ suite('打包版在跑时 F5 也要能起 dev', () => {
 		assert.ok(at > 0, '找不到 running()');
 		const body = code.slice(at, at + 1600);
 
-		// ⚠ 钉**调用**：代码里不许再真的调 tasklist（注释里提它是可以的，stripComments 已去掉注释）
-		assert.ok(!/spawnSync\('tasklist'/.test(body),
-			'running() 不许再用 tasklist 按名字数进程（打包版同名 ⇒ 会被当成 dev 实例 ⇒ F5 永远 SKIP ✗）');
+		// ⚠ 钉**调用**：不许再用 tasklist **按名字**数进程（注释里提它是可以的，stripComments 已去掉注释）
+		//   ★ 2026-11-02：允许"按 PID 查存活"的兜底（`tasklist /FI "PID eq <pid>"`）——
+		//   那是 `runningFromLock()` 用的，判据是 code.lock 里的 pid，**与进程名无关** ✓。
+		assert.ok(!/spawnSync\('tasklist',\s*\['\/fi',\s*`?IMAGENAME/.test(body),
+			'running() 不许用 tasklist 按名字数进程（打包版同名 ⇒ 会被当成 dev 实例 ⇒ F5 永远 SKIP ✗）');
 		assert.ok(!/IMAGENAME eq/.test(body),
 			'running() 不许再用 IMAGENAME 过滤（那是按名字，不是按路径）');
 
@@ -86,5 +88,18 @@ suite('打包版在跑时 F5 也要能起 dev', () => {
 		const iIf = code.indexOf('if (running() > 0) {');
 		const iWin = code.indexOf('hasVisibleAppWindow()', iIf);
 		assert.ok(iWin > iIf, 'hasVisibleAppWindow 必须在 `running() > 0` 分支内使用');
+	});
+
+	test('4) watch 计数只数真正的 watcher（不许把 npm/聚合层的进程树数成 N 个）', () => {
+		const src = read(LAUNCHER);
+		const at = src.indexOf('const countWatchProcs = () => {');
+		assert.ok(at > 0, '找不到 countWatchProcs');
+		const body = src.slice(at, at + 1400);
+		// ⚠ 2026-11-02 真机：旧口径同时匹配 `watch-client-transpile` ⇒ 把 npm 包装层 /
+		//   `npm-run-all2 -lp watch-client-transpile …` 聚合层全算进去 ⇒ 日志谎报"13 个"
+		//   （实际只有 1 个 node watcher）⇒ 让人误以为多实例在互相清空 out/。
+		assert.ok(!/'watch-client-transpile'/.test(body),
+			'watch 计数不许匹配 `watch-client-transpile`（npm 包装层/聚合层命令行里都有它 ⇒ 会把整棵树数成 N 个）');
+		assert.match(body, /like '\*transpile --watch\*'/, '只数真正的 watcher：`node build/next/index.ts transpile --watch`');
 	});
 });

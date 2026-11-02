@@ -84,7 +84,12 @@ __ModuleLoader__.load({
 const DESCRIPTOR = {
 	title: '任务台',
 	description: '一句话说清它替用户做什么',
-	repository: 'vssaros:tasks',        // 必填；缺失 ⇒ Invalid workbench repository
+	// 身份三选一，**不是必填某一种**（2026-11-02 起本地包不再强制仓库）：
+	//   repository: 'vssaros:tasks'                        ⇒ 内置包（身份 vssaros/tasks）
+	//   repository: 'https://github.com/me/tasks'          ⇒ 公开包（身份 me/tasks）
+	//   package: '@me/tasks-workbench'（省略 repository）  ⇒ 本地包（身份 local:@me/tasks-workbench）
+	// 三者都没有 ⇒ 抛 Workbench registration needs a repository … or a package name
+	package: '@me/tasks-workbench',
 	icon: 'codicon:checklist',          // 渲染时须经 wbIconEmoji() 映射，否则是 🧩
 	customFrame: true,                  // 需要 props.conversation 时必开
 	layout: { businessSide: 'left' },   // 可选：业务区在左

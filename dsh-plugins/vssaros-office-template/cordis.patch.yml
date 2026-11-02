@@ -1,0 +1,19 @@
+# @vssaros/dsh-office-template bundle patch: insert the Office-template row.
+#
+# `config` stays empty on purpose: the plugin must not guess where the Office runtime
+# payload lives. VsSaros is expected to inject `runtimePath` (and optionally `workspacePath`)
+# through a `--patch` overlay targeting this id on every Host run — the same mechanism the
+# vssaros-kanban row uses for `dataRoot` / `workspaceId`.
+#
+# ⚠ 2026-11-02 现状：**overlay 那一半还没接**（插件也还没进"随包自动安装"白名单）。
+#   现在的可用形态是手动装：`dsh plugin add file:<repo>/dsh-plugins/vssaros-office-template`，
+#   并把 `config.runtimePath` 指向 `<appPath>/.build/office-runtime`（dev）或
+#   `<appPath>/office-runtime`（打包）。接线时两处要一起改：白名单 + `renderOfficeOverlay()`。
+#
+# ⚠ The row id here and the id used by `renderOfficeOverlay()` (common/dshCli.ts) must stay
+# identical: a mismatched id patches nothing, silently, and the tools then report
+# "缺 Office 运行时负载" even though the payload is installed.
+- insert:
+    - id: vssaros-office-template
+      name: '@vssaros/dsh-office-template'
+      config: {}

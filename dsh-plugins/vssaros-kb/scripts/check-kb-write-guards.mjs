@@ -7,7 +7,7 @@
  *   "库区不会被写、库外不会被写、`../` 穿不出去、超限会被拒" —— 而后者才是真出事的地方。
  *
  * 手法与 `check-page-render-surfaces.mjs` 一致：假 ctx 抓出 handler，直接喂 req/res，
- * 用一个临时库（`笔记/` + `库/`）跑，不需要启动 Host、不碰真实知识库。
+ * 用一个临时库（`知识库列表/` + `数据源/`）跑，不需要启动 Host、不碰真实知识库。
  *
  * 跑法：node dsh-plugins/vssaros-kb/scripts/check-kb-write-guards.mjs
  */
@@ -32,8 +32,8 @@ const foundation = fnd.createFoundationService();
 
 const root = mkdtempSync(join(tmpdir(), 'kb-write-'));
 const vaultDir = join(root, 'vault1');
-const notesDir = join(vaultDir, '笔记');
-const libDir = join(vaultDir, '库');
+const notesDir = join(vaultDir, '知识库列表');
+const libDir = join(vaultDir, '数据源');
 mkdirSync(notesDir, { recursive: true });
 mkdirSync(libDir, { recursive: true });
 writeFileSync(join(notesDir, 'a.md'), '# a\n\n原始内容\n');
@@ -169,7 +169,7 @@ const secret = join(outside, 'secret.md').replace(/\\/g, '/');
 	const okUp = await call('POST', '/x/kb/api/asset/upload?doc=' + encodeURIComponent(docA) + '&name=shot.png', Buffer.from('png-bytes'));
 	check('上传：笔记区成功（200）', okUp.status === 200 && okUp.json?.ok === true, `status=${okUp.status}`);
 	check('上传：落点在 _assets 且 rel 是相对路径',
-		(okUp.json?.abs ?? '').includes('/笔记/_assets/') && (okUp.json?.rel ?? '').startsWith('_assets/'),
+		(okUp.json?.abs ?? '').includes('/知识库列表/_assets/') && (okUp.json?.rel ?? '').startsWith('_assets/'),
 		okUp.json?.rel ?? '');
 	check('上传：字节一致', existsSync(okUp.json?.abs ?? '') && readFileSync(okUp.json.abs, 'utf8') === 'png-bytes');
 

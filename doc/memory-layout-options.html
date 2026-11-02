@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>记忆库布局 · 三方案对比</title>
+<style>
+:root { color-scheme: dark; --colw: 320px; }
+body { margin: 0; background: #14161a; color: #e6e6e6; font: 13px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+body.light { background: #eef0f2; color: #222; }
+header { position: sticky; top: 0; z-index: 9; background: #14161aee; backdrop-filter: blur(6px); border-bottom: 1px solid #2a2f36; padding: 12px 20px 10px; }
+body.light header { background: #eef0f2ee; border-color: #d4d8dc; }
+h1 { font-size: 16px; margin: 0 0 2px; }
+.sub { margin: 0; color: #9aa0a6; font-size: 12px; max-width: 1000px; }
+.row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.lbl { color: #9aa0a6; font-size: 12px; min-width: 52px; }
+.chip { font: inherit; font-size: 12px; padding: 3px 11px; border-radius: 999px; border: 1px solid #333a43; background: #1d2126; color: #cfd4da; cursor: pointer; }
+body.light .chip { background: #fff; color: #333; border-color: #c8ccd0; }
+.chip.on { background: #0e639c; border-color: transparent; color: #fff; }
+main { padding: 16px 20px 60px; }
+.cols { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+.col { border: 1px solid #2f353d; border-radius: 10px; overflow: hidden; background: #1a1d22; }
+body.light .col { border-color: #d4d8dc; background: #fff; }
+.col > .hd { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid #2f353d; font-size: 12px; }
+body.light .col > .hd { border-color: #e0e0e0; }
+.col > .hd b { font-size: 13px; }
+.col > .hd .sp { flex: 1 1 auto; }
+.col > .hd a { color: #4daafc; font-size: 11px; text-decoration: none; }
+body.light .col > .hd a { color: #006ab1; }
+.frame { width: var(--colw); height: 620px; border: 0; display: block; background: #1f1f1f; }
+table { border-collapse: collapse; width: 100%; max-width: 1080px; margin-top: 22px; font-size: 12.5px; }
+th, td { border: 1px solid #2a2f36; padding: 5px 8px; text-align: left; vertical-align: top; }
+body.light th, body.light td { border-color: #d4d8dc; }
+th { color: #9aa0a6; font-weight: 500; }
+td b { color: #fff; } body.light td b { color: #000; }
+.bad { color: #f14c4c; } .good { color: #3fb950; } .mid { color: #cca700; }
+.pick { margin-top: 20px; max-width: 1080px; display: flex; gap: 16px; flex-wrap: wrap; }
+.pick .box { flex: 1 1 320px; border: 1px solid #2a2f36; border-radius: 10px; padding: 12px 14px; font-size: 12.5px; }
+body.light .pick .box { border-color: #d4d8dc; }
+.pick h3 { margin: 0 0 6px; font-size: 13px; }
+.pick ul { margin: 4px 0 0; padding-left: 18px; color: #c0c6cc; }
+body.light .pick ul { color: #444; }
+.pick code { background: #22262c; padding: 0 4px; border-radius: 3px; font-size: 11.5px; }
+body.light .pick code { background: #dfe3e7; }
+</style>
+</head>
+<body>
+<header>
+	<h1>记忆库布局 · 三个方案对比</h1>
+	<p class="sub">同一份数据、同一套主题令牌，只改<b>信息架构与排版策略</b>。切宽度看同一方案在右栏（300/360）和中栏（520/760）里的真实表现——重点看 300px。</p>
+	<div class="row"><span class="lbl">预览宽度</span><span id="wbar"></span><span style="width:1px;height:16px;background:#2a2f36;margin:0 4px"></span>
+		<span class="lbl">主题</span><span id="tbar"></span></div>
+</header>
+
+<main>
+	<div class="cols" id="cols">
+		<section class="col">
+			<div class="hd"><b>A 清单式</b><span class="sp"></span><a href="memory-layout-a-list.html" target="_blank">单独打开 ↗</a></div>
+			<iframe class="frame" id="fa" src="memory-layout-a-list.html?embed=1" title="方案 A"></iframe>
+		</section>
+		<section class="col">
+			<div class="hd"><b>B 分段导航 + 主从分栏</b><span class="sp"></span><a href="memory-layout-b-split.html" target="_blank">单独打开 ↗</a></div>
+			<iframe class="frame" id="fb" src="memory-layout-b-split.html?embed=1" title="方案 B"></iframe>
+		</section>
+		<section class="col">
+			<div class="hd"><b>C 卡片仪表盘</b><span class="sp"></span><a href="memory-layout-c-cards.html" target="_blank">单独打开 ↗</a></div>
+			<iframe class="frame" id="fc" src="memory-layout-c-cards.html?embed=1" title="方案 C"></iframe>
+		</section>
+	</div>
+
+	<table>
+		<tr><th style="width:150px">维度</th><th>A 清单式</th><th>B 分段 + 分栏</th><th>C 卡片仪表盘</th></tr>
+		<tr><td>300px 右栏</td><td><span class="good">原生为窄栏设计</span>：标题一行、分段一行、行高两行文本</td><td><span class="mid">可用</span>：徽标带折行两次；点行后详情顶到列表上方</td><td><span class="mid">可用</span>：卡片单列堆叠，滚动最长</td></tr>
+		<tr><td>首屏能看到</td><td>3 条完整候选 + 依据 + 批量入口</td><td>3 条候选（列表）+ 1 条完整证据（右栏）</td><td>2 张卡（待审 17 + 3 条预览、注入进度）</td></tr>
+		<tr><td>审一条要几步</td><td><b>2 步</b>：点勾 → 提升（证据在中栏）</td><td><b>1 步</b>：证据同屏，直接点提升</td><td><b>3 步</b>：进二级列表 → 选 → 提升</td></tr>
+		<tr><td>看健康/漏斗</td><td>一行数字，细节要跳页</td><td>徽标带 +「维护」页签</td><td><span class="good">同屏五张卡</span>，一眼看全</td></tr>
+		<tr><td>取数失败时</td><td>顶部换一条错误行 + 空态说明</td><td>徽标切红 + 诊断页替换列表</td><td><span class="good">只塌一张卡</span>，其余不受影响</td></tr>
+		<tr><td>实现成本</td><td><span class="good">低</span>：单列 + 现有 api/inbox</td><td><span class="bad">高</span>：分段状态 + 分栏断点 + 详情回填</td><td><span class="mid">中</span>：五张独立卡 + 降级逻辑</td></tr>
+		<tr><td>最大风险</td><td>信息太少，用户不点进去就不知道详情</td><td>窄栏里「详情顶走列表」容易迷路</td><td>卡片边框多 = 仪表盘噪音；批量藏太深</td></tr>
+		<tr><td>主要参考</td><td>eternal TUI 列表 · plus 零面板</td><td>longterm 徽标带 · evolve 页签徽标 · eternal 位置标签</td><td>longterm Stat · living-memory 可信度字形/阈值脚注</td></tr>
+	</table>
+
+	<div class="pick">
+		<div class="box">
+			<h3>我的建议：<b>A 作默认，C 作「维护」页</b></h3>
+			<ul>
+				<li>记忆库的主场景是<b>右栏常驻 + 快速清掉待审</b>，A 的 2 步流程最省事，也不会再把标题挤成竖排。</li>
+				<li>C 的卡片别丢：把它放进「维护」页签，正好承载漏斗、归档、运行时三件「偶尔看」的事（顺带解决现在主页一条长滚动的问题）。</li>
+				<li>B 只在「中栏全宽」时才值得——可以作为宽栏的增强版渐进上线，不必一开始就做。</li>
+			</ul>
+		</div>
+		<div class="box">
+			<h3>确认方式（回一个字母即可）</h3>
+			<ul>
+				<li><code>A</code> 只做 A；<code>B</code> 只做 B；<code>C</code> 只做 C。</li>
+				<li><code>A+C</code> = 主页 A + 维护页 C（推荐）。</li>
+				<li>也可以说「A 但要 <b>就地详情</b>」这类微调，我按你的话改。</li>
+			</ul>
+		</div>
+	</div>
+</main>
+
+<script>
+(function () {
+	'use strict';
+	var W = [300, 360, 520, 760];
+	var S = { w: 320, theme: 'dark' };
+	function buildW() {
+		document.getElementById('wbar').innerHTML = W.map(function (v) {
+			return '<button class="chip' + (S.w === v ? ' on' : '') + '" data-w="' + v + '">' + v + 'px</button>';
+		}).join('');
+		document.documentElement.style.setProperty('--colw', S.w + 'px');
+	}
+	function buildT() {
+		document.getElementById('tbar').innerHTML = ['dark', 'light'].map(function (v) {
+			return '<button class="chip' + (S.theme === v ? ' on' : '') + '" data-t="' + v + '">' + (v === 'dark' ? '深色' : '浅色') + '</button>';
+		}).join('');
+		document.body.classList.toggle('light', S.theme === 'light');
+	}
+	document.addEventListener('click', function (ev) {
+		var b = ev.target.closest ? ev.target.closest('[data-w],[data-t]') : null;
+		if (!b) { return; }
+		if (b.dataset.w) { S.w = Number(b.dataset.w); buildW(); }
+		if (b.dataset.t) { S.theme = b.dataset.t; buildT(); }
+	});
+	buildW(); buildT();
+})();
+</script>
+</body>
+</html>

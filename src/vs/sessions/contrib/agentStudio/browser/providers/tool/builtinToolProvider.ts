@@ -1046,7 +1046,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 	 *
 	 * 与 `vision_analyze` 是**组合关系**：本工具产出 PNG 路径，vision_analyze 逐张读。
 	 * 默认落点 `<userDataPath>/tmp/video-frames/…`（`~/.vssaros` 属允许根、不污染用户工作区）；
-	 * 调用方可传 `outDir` 落到知识库（例如 `库/<素材名>/frames/`）以便长期引用。
+	 * 调用方可传 `outDir` 落到知识库（例如 `数据源/<素材名>/frames/`）以便长期引用。
 	 */
 
 	/**

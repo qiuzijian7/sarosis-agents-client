@@ -2,7 +2,7 @@
  * 守卫：`feishu-sync.mjs` 的 `--src` 参数必须**逐目录**下发，不能被拆成单字。
  *
  * 起因（2026-10-28 真机）：
- *   `performFeishuSync` 传的是 `src: NOTES_DIR`（字符串 `'笔记'`），而
+ *   `performFeishuSync` 传的是 `src: NOTES_DIR`（字符串 `'知识库列表'`），而
  *   `buildFeishuSyncArgs` 里 `for (const dir of src)` 会按**字符**迭代
  *   ⇒ 实际下发 `--src 笔 --src 记` ⇒ 脚本扫不到任何文档，却以退出码 0 结束
  *   ⇒ 用户只看到 `[map] 已配置 6 条映射，但本次没有文档命中` + `create=0 update=0 skip=0`。
@@ -32,13 +32,13 @@ function check(name, fn) {
 const srcsOf = (args) => args.reduce((acc, a, i) => (a === '--src' ? acc.concat([args[i + 1]]) : acc), []);
 
 check('字符串入参 ⇒ 只产出 1 个 --src（不是逐字符）', () => {
-	const srcs = srcsOf(buildFeishuSyncArgs({ vault: 'V', src: '笔记' }));
-	assert.deepStrictEqual(srcs, ['笔记'], '实际 = ' + JSON.stringify(srcs));
+	const srcs = srcsOf(buildFeishuSyncArgs({ vault: 'V', src: '知识库列表' }));
+	assert.deepStrictEqual(srcs, ['知识库列表'], '实际 = ' + JSON.stringify(srcs));
 });
 
 check('数组入参 ⇒ 原样逐个下发', () => {
-	const srcs = srcsOf(buildFeishuSyncArgs({ vault: 'V', src: ['笔记', '库/x'] }));
-	assert.deepStrictEqual(srcs, ['笔记', '库/x'], '实际 = ' + JSON.stringify(srcs));
+	const srcs = srcsOf(buildFeishuSyncArgs({ vault: 'V', src: ['知识库列表', '数据源/x'] }));
+	assert.deepStrictEqual(srcs, ['知识库列表', '数据源/x'], '实际 = ' + JSON.stringify(srcs));
 });
 
 check('空 / 缺省 ⇒ 不下发 --src', () => {

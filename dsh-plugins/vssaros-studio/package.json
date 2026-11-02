@@ -1,7 +1,7 @@
 {
   "name": "@vssaros/dsh-studio",
-  "version": "0.1.10",
-  "description": "VsSaros studio workbench: hosts the Saroasis Studio System front end (http://saroasisstudiosystem.saroasis.woa.com:9999/) inside a dsh page, with a right-edge (vertically centred) 'AI 助手' entry that opens the assistant (chat-surface) in the right sidebar.",
+  "version": "0.1.13",
+  "description": "VsSaros studio workbench: hosts the Saroasis Studio System front end (http://saroasisstudiosystem.saroasis.woa.com:9999/) inside a dsh page, with a right-edge (vertically centred) 'AI 助手' entry that opens the assistant (chat-surface) in the right sidebar. 0.1.12（2026-11-02，用户报「dsh 侧切外观后部分页面没跟着变」）：内嵌 iframe 的底色原来写死 #fff ⇒ 深色外观下页面画出第一帧前白闪一下；改为 var(--dsw-alias-bg-base, #fff)。",
   "private": true,
   "type": "module",
   "main": "lib/index.js",

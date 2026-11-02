@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>知识库 · 目录树样式（可交互，节头统一 S5）</title>
+<style>
+	:root {
+		--bg: #141414; --panel-bg: #252526; --line: #2b2b2b;
+		--fg: #d4d4d4; --fg-mid: #a8a8a8; --fg-dim: #8a8a8a; --fg-faint: #6b6b6b;
+		--accent: #3794ff; --hover: rgba(127,127,127,.08); --sel: rgba(127,127,127,.12);
+	}
+	* { box-sizing: border-box; }
+	body {
+		margin: 0; background: var(--bg); color: var(--fg);
+		font: 13px/1.55 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+		-webkit-font-smoothing: antialiased; display: flex; flex-direction: column;
+	}
+	header { flex: 0 0 auto; padding: 14px 20px 12px; border-bottom: 1px solid var(--line); background: #181818; }
+	h1 { font-size: 15px; font-weight: 650; margin: 0 0 4px; }
+	.tip { color: var(--fg-faint); font-size: 11.5px; margin: 0 0 10px; }
+	.bar { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+	.trees { display: flex; gap: 6px; flex-wrap: wrap; }
+	.tbtn {
+		height: 26px; padding: 0 11px; border-radius: 6px; cursor: pointer;
+		border: 1px solid #3a3a3a; background: #232323; color: var(--fg-dim);
+		font-size: 11.5px; font-weight: 600;
+	}
+	.tbtn:hover { border-color: #4a4a4a; color: var(--fg-mid); }
+	.tbtn.on { background: rgba(55,148,255,.16); border-color: rgba(55,148,255,.55); color: #cfe6ff; }
+	.ctrl { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--fg-dim); }
+	.ctrl input[type=range] { width: 116px; accent-color: var(--accent); }
+
+	main { flex: 1 1 auto; display: flex; gap: 22px; padding: 16px 20px 28px; align-items: flex-start; }
+	#panel {
+		width: 340px; height: 580px; overflow-y: auto; overflow-x: hidden;
+		background: var(--panel-bg); border: 1px solid #333; border-radius: 8px;
+		box-shadow: 0 12px 32px rgba(0,0,0,.5);
+	}
+	aside { flex: 1 1 320px; min-width: 260px; max-width: 540px; }
+	aside h2 { font-size: 12px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--fg-dim); margin: 0 0 8px; }
+	aside ul { margin: 0 0 16px; padding: 0; list-style: none; }
+	aside li { position: relative; padding-left: 12px; font-size: 12px; color: var(--fg-mid); margin-bottom: 5px; }
+	aside li::before { content: '·'; position: absolute; left: 2px; color: var(--fg-faint); }
+	aside code { background: #222; border: 1px solid #2e2e2e; border-radius: 3px; padding: 0 4px; font-size: 11px; color: #cfcfcf; }
+	aside b { color: var(--fg); font-weight: 600; }
+	.kv { display: grid; grid-template-columns: 92px 1fr; gap: 4px 10px; font-size: 11.5px; margin-bottom: 16px; }
+	.kv dt { color: var(--fg-faint); }
+	.kv dd { margin: 0; color: var(--fg-mid); }
+
+	/* ── 面板通用 ── */
+	.pbar { position: sticky; top: 0; z-index: 6; display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px; font-size: 11.5px; color: var(--fg-mid); background: var(--panel-bg); border-bottom: 1px solid var(--line); }
+	.pbar .r { margin-left: auto; font-size: 10px; color: var(--fg-faint); }
+	.search { display: flex; align-items: center; gap: 6px; margin: 7px 8px; padding: 0 8px; height: 26px; border: 1px solid rgba(127,127,127,.18); border-radius: 5px; font-size: 11.5px; color: var(--fg-faint); }
+
+	/* ══ 节头：统一 S5（双行：标题 + 统计副标题）══ */
+	.sec { padding: 10px 6px 3px; border-top: 1px solid rgba(127,127,127,.09); }
+	.sec:first-of-type { border-top: 0; }
+	.sec-head {
+		display: flex; align-items: center; gap: 7px; height: 38px;
+		padding: 0 8px 0 5px; cursor: pointer; user-select: none; min-width: 0;
+	}
+	.sec-head .chev { flex: 0 0 auto; width: 11px; font-size: 8px; opacity: .5; color: var(--fg-faint); align-self: flex-start; margin-top: 10px; transition: transform .12s ease; }
+	.sec-head .ico { flex: 0 0 auto; font-size: 13px; align-self: flex-start; margin-top: 7px; }
+	.sec-head .ttlwrap { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; min-width: 0; }
+	.sec-head .ttl { font-size: 12.5px; font-weight: 650; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.sec-head .sub { display: block; font-size: 10px; color: var(--fg-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.sec-head .tools { flex: 0 0 auto; display: flex; gap: 5px; opacity: 0; pointer-events: none; transition: opacity .1s; }
+	.sec-head:hover .tools { opacity: 1; pointer-events: auto; }
+	.sec-head .tool { font-size: 11px; color: var(--fg-faint); cursor: pointer; padding: 0 2px; border-radius: 3px; }
+	.sec-head .tool:hover { color: var(--fg); background: rgba(127,127,127,.14); }
+	.sec-body { display: none; }
+	.sec.open .sec-body { display: block; }
+
+	/* ── 行通用骨架（各方案只覆盖差异） ── */
+	.row { display: flex; align-items: center; gap: 6px; cursor: pointer; position: relative; min-width: 0; }
+	.row .chev { flex: 0 0 auto; text-align: center; color: var(--fg-faint); transition: transform .12s ease; }
+	.row .ico { flex: 0 0 auto; line-height: 1; }
+	.row .nm { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.row .meta { flex: 0 0 auto; margin-left: auto; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+	.row .sub2 { display: none; }
+	.row .kids { display: none; }
+	.row.open + .kids { display: block; }
+
+	/* ══════════ T0 现状 ══════════ */
+	.t0 .row { height: 30px; padding: 0 8px 0 4px; margin: 1px 2px; border-radius: 6px; font-size: 13.5px; }
+	.t0 .row .chev { width: 10px; font-size: 8px; opacity: .6; }
+	.t0 .row .ico { font-size: 12px; }
+	.t0 .row .meta { font-size: 10px; }
+	.t0 .row:hover { background: var(--hover); }
+	.t0 .row.sel { background: rgba(127,127,127,.11); color: #fff; }
+	.t0 .row.cur { background: rgba(55,148,255,.10); color: #fff; font-weight: 600; box-shadow: inset 2px 0 0 0 var(--accent); }
+
+	/* ══════════ T1 紧凑符号，篇数紧跟 ══════════ */
+	.t1 .row { height: 24px; padding: 0 6px 0 3px; margin: 0 3px; border-radius: 3px; font-size: 12.5px; }
+	.t1 .row .chev { width: 10px; font-size: 8px; opacity: .55; }
+	.t1 .row .ico { width: 13px; text-align: center; font-size: 10px; color: var(--fg-faint); }
+	.t1 .row .meta { margin-left: 4px; font-size: 9.5px; opacity: .85; }
+	.t1 .row.folder .nm { color: #dcdcdc; }
+	.t1 .row:hover { background: var(--hover); }
+	.t1 .row.sel { background: rgba(127,127,127,.14); color: #fff; }
+	.t1 .row.cur { background: rgba(55,148,255,.10); color: #fff; box-shadow: inset 2px 0 0 0 var(--accent); }
+
+	/* ══════════ T2 引导线层级（VS Code 精确） ══════════ */
+	.t2 .row { height: 26px; padding: 0 8px 0 0; margin: 0 4px; border-radius: 3px; font-size: 12.5px; }
+	.t2 .row .chev { width: 14px; font-size: 9px; }
+	.t2 .row .ico { width: 14px; font-size: 11px; text-align: center; color: var(--fg-faint); }
+	.t2 .row.folder .nm { font-weight: 500; color: #e4e4e4; }
+	.t2 .row.file .nm { color: #c6c6c6; }
+	.t2 .g { align-self: stretch; width: 14px; flex: 0 0 14px; border-left: 1px solid rgba(127,127,127,.16); }
+	.t2 .g.last { border-left-color: rgba(127,127,127,.26); }
+	.t2 .row:hover { background: var(--hover); }
+	.t2 .row.sel { background: rgba(127,127,127,.14); }
+	.t2 .row.sel::before { content: ''; position: absolute; left: 0; top: 2px; bottom: 2px; width: 2px; border-radius: 2px; background: var(--accent); }
+	.t2 .row.cur { background: rgba(55,148,255,.10); color: #fff; }
+
+	/* ══════════ T3 双行卡片行（库=卡片，文件=单行） ══════════ */
+	.t3 .row { height: 28px; padding: 0 8px 0 4px; margin: 1px 3px; border-radius: 6px; font-size: 13px; }
+	.t3 .row.kb { height: 40px; padding: 5px 8px 5px 4px; align-items: flex-start; flex-wrap: wrap; }
+	.t3 .row .chev { width: 10px; font-size: 8px; opacity: .5; }
+	.t3 .row.kb .chev { margin-top: 3px; }
+	.t3 .row .ico { font-size: 12px; }
+	.t3 .row.kb .ico { font-size: 13px; }
+	.t3 .row .nm { font-size: 13px; }
+	.t3 .row.kb .nm { font-weight: 600; color: #eee; }
+	.t3 .row .sub2 { display: none; }
+	.t3 .row.kb .sub2 { display: block; flex: 0 0 100%; padding-left: 24px; font-size: 10px; color: var(--fg-faint); }
+	.t3 .row:hover { background: var(--hover); }
+	.t3 .row.sel { background: rgba(127,127,127,.12); }
+	.t3 .row.cur { background: rgba(55,148,255,.10); box-shadow: inset 2px 0 0 0 var(--accent); }
+	.t3 .row.cur .nm { color: #fff; }
+
+	/* ══════════ T4 极简纯文本（Obsidian 原教旨） ══════════ */
+	.t4 .row { height: 26px; padding: 0 8px 0 2px; margin: 0 6px; border-radius: 4px; font-size: 13px; }
+	.t4 .row .chev { width: 12px; font-size: 9px; opacity: .45; }
+	.t4 .row .ico { display: none; }
+	.t4 .row .meta { display: none; }
+	.t4 .row:hover { background: var(--hover); }
+	.t4 .row:hover .meta { display: inline; font-size: 9.5px; }
+	.t4 .row.sel { background: rgba(127,127,127,.10); }
+	.t4 .row.cur { background: rgba(55,148,255,.08); }
+	.t4 .row.cur .nm { color: #fff; }
+
+	/* ══════════ T5 时间轴（右侧显示最近改动） ══════════ */
+	.t5 .row { height: 27px; padding: 0 8px 0 4px; margin: 0 4px; border-radius: 4px; font-size: 12.5px; }
+	.t5 .row .chev { width: 10px; font-size: 8px; opacity: .5; }
+	.t5 .row .ico { font-size: 11px; opacity: .9; }
+	.t5 .row .meta { font-size: 9.5px; color: var(--fg-faint); }
+	.t5 .row:hover { background: var(--hover); }
+	.t5 .row.sel { background: rgba(127,127,127,.12); color: #fff; }
+	.t5 .row.cur { background: rgba(55,148,255,.10); color: #fff; box-shadow: inset 2px 0 0 0 var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+	<h1>知识库 · 目录树样式（节头已统一 S5）</h1>
+	<p class="tip">可交互：点节头折叠、点目录展开、点文件选中、点库切换「当前库」。拖宽度滑块可看窄面板表现。</p>
+	<div class="bar">
+		<div class="trees" id="trees"></div>
+		<div class="ctrl"><span>面板宽度</span><input id="w" type="range" min="240" max="440" step="10" value="340" /><span id="wv">340px</span></div>
+	</div>
+</header>
+
+<main>
+	<div><div id="panel" class="t0"></div></div>
+	<aside>
+		<h2 id="aname">说明</h2>
+		<ul id="adesc"></ul>
+		<h2>关键数值</h2>
+		<dl class="kv" id="akv"></dl>
+		<h2>选型提示</h2>
+		<ul>
+			<li><b>T1</b> 一屏最多行（≈32 行），129 项首选</li>
+			<li><b>T2</b> 层级最清楚（引导线 + 文件夹加粗）</li>
+			<li><b>T3</b> 库里放「篇数 / 飞书 / 最近」当卡片看</li>
+			<li><b>T4</b> 最安静，信息全进 hover</li>
+			<li><b>T5</b> 想一眼看到「哪些最近改过」</li>
+		</ul>
+	</aside>
+</main>
+
+<script>
+const DATA = [
+	{
+		key: 'lib', icon: '🗂', title: '数据源', count: 129, sub: '129 个文件 · 方法 / 案例 / 原文',
+		items: [
+			{ name: '方法', folder: true, kids: [
+				{ name: '.overview.md', file: true, ago: '2d' },
+				{ name: '差分图压缩优化方案.md', file: true, ago: '3d' },
+				{ name: '纹理压缩优化与 ASTC 格式.md', file: true, ago: '1w' },
+				{ name: '高效读书 Skill 逐页分析.md', file: true, ago: '1w' }
+			] },
+			{ name: '案例拆解', folder: true, kids: [{ name: '像任天堂一样做新手引导.md', file: true, ago: '2w' }] }
+		]
+	},
+	{
+		key: 'notes', icon: '📚', title: '知识库列表', count: 95, sub: '5 个知识库 · 95 篇 · 已绑飞书 0',
+		items: [
+			{ name: 'AIAgent', folder: true, kb: true, docs: 21, ago: '5 分钟前', kids: [
+				{ name: 'DSH 专题', folder: true, kids: [{ name: 'Agent 编排.md', file: true, ago: '1h' }] },
+				{ name: 'CodeBuddy 规则体系.md', file: true, ago: '2h' },
+				{ name: 'MCP 协议与工具注册.md', file: true, ago: '1d' }
+			] },
+			{ name: 'ComfyUI技术', folder: true, kb: true, docs: 1, ago: '2d', kids: [{ name: 'ComfyUI 核心节点体系.md', file: true, ago: '2d' }] },
+			{ name: 'UnrealEngine', folder: true, kb: true, docs: 45, ago: '1w', kids: [] },
+			{ name: '游戏设计', folder: true, kb: true, docs: 8, ago: '1w', kids: [] },
+			{ name: '财经', folder: true, kb: true, docs: 1, ago: '2w', kids: [] }
+		]
+	}
+];
+
+const TREES = [
+	{ id: 't0', name: 'T0 现状', desc: ['30px / 13.5px / 18px 缩进 / emoji 图标', '篇数右对齐（离名字远，扫视要跨半屏）'], kv: [['行高', '30px'], ['字号', '13.5px'], ['缩进', '18px / 层'], ['图标', 'emoji 📗📁📄'], ['篇数', '右对齐 10px'], ['一屏 ≈', '15 行']] },
+	{ id: 't1', name: 'T1 紧凑符号', desc: ['24px / 12.5px，一屏最多行', '图标换弱色符号（▤ 目录 / ▦ 文件），不再用彩色 emoji', '篇数紧跟名字（AIAgent 21），不跨屏'], kv: [['行高', '24px'], ['字号', '12.5px'], ['缩进', '12px / 层'], ['图标', '弱色 ▤ ▦'], ['篇数', '紧跟名字 9.5px'], ['一屏 ≈', '22 行']] },
+	{ id: 't2', name: 'T2 引导线层级', desc: ['每级一条 1px 竖线，深层节点不再靠猜', '文件夹 500 字重更亮、文件常规色', '选中 = 弱底 + 左 2px accent'], kv: [['行高', '26px'], ['字号', '12.5px'], ['缩进', '14px + guide'], ['图标', '符号 + 字重区分'], ['篇数', '右对齐'], ['一屏 ≈', '19 行']] },
+	{ id: 't3', name: 'T3 双行卡片行', desc: ['知识库行变 40px 卡片：名字 + 副行（21 篇 · 5 分钟前）', '文件行仍是 28px 单行', '把"库"当项目卡片看，信息最丰富'], kv: [['行高', '库 40 / 文件 28'], ['字号', '13px + 副行 10px'], ['缩进', '16px / 层'], ['图标', 'emoji'], ['篇数', '进副行'], ['一屏 ≈', '12 行']] },
+	{ id: 't4', name: 'T4 极简纯文本', desc: ['无图标、无 guide、无篇数：只有箭头和名字', '篇数只在 hover 时出现', '最接近 Obsidian 默认，最安静'], kv: [['行高', '26px'], ['字号', '13px'], ['缩进', '16px'], ['图标', '无'], ['篇数', 'hover 才显示'], ['一屏 ≈', '19 行']] },
+	{ id: 't5', name: 'T5 时间轴', desc: ['右侧显示「最近改动」而不是篇数（2d / 1h / 1w）', '文件夹仍显示篇数', '回答"哪些东西最近动过"'], kv: [['行高', '27px'], ['字号', '12.5px'], ['缩进', '14px'], ['图标', 'emoji 11px'], ['右侧', '1h / 2d / 1w'], ['一屏 ≈', '18 行']] }
+];
+
+const state = {
+	tree: 't0', width: 340,
+	collapsed: {}, open: { lib: { '方法': true } }, selected: '', curKb: 'AIAgent'
+};
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function iconOf(item) {
+	if (state.tree === 't1' || state.tree === 't2') { return item.kb ? '▤' : (item.folder ? '▤' : '▦'); }
+	if (state.tree === 't3') { return item.kb ? '📗' : (item.folder ? '📁' : '📄'); }
+	return item.kb ? '📗' : (item.folder ? '📁' : '📄');
+}
+
+function metaOf(item) {
+	if (state.tree === 't1') { return item.kb ? `<span class="meta">${item.docs}</span>` : ''; }
+	if (state.tree === 't3') { return ''; }
+	if (state.tree === 't4') { return item.kb ? `<span class="meta">${item.docs} 篇</span>` : ''; }
+	if (state.tree === 't5') { return `<span class="meta">${item.kb ? item.docs + ' 篇 · ' : ''}${item.ago || ''}</span>`; }
+	return item.kb ? `<span class="meta">${item.docs} 篇</span>` : '';
+}
+
+function rowHtml(item, depth, secKey, path, guides) {
+	const isFolder = !!item.folder;
+	const open = !!state.open[secKey]?.[path];
+	const sel = state.selected === path;
+	const cur = item.kb && item.name === state.curKb;
+	const pad = (state.tree === 't2' ? 2 : 4) + depth * (state.tree === 't1' ? 12 : (state.tree === 't2' ? 14 : 16));
+	const cls = ['row', isFolder ? 'folder' : 'file', open ? 'open' : '', sel ? 'sel' : '', cur ? 'cur' : '', item.kb ? 'kb' : ''].join(' ');
+	const guideHtml = (state.tree === 't2' && depth > 0)
+		? Array.from({ length: depth }).map((_, i) => `<span class="g ${i === depth - 1 ? 'last' : ''}"></span>`).join('')
+		: '';
+	const sub2 = item.kb ? `<span class="sub2">${item.docs} 篇 · ${item.ago || ''} · ${item.name === state.curKb ? '当前库' : '未绑定飞书'}</span>` : '';
+	const chev = isFolder ? (open ? '▾' : '▸') : '';
+	const kids = isFolder && item.kids && item.kids.length
+		? `<div class="kids">${item.kids.map((k) => rowHtml(k, depth + 1, secKey, path + '/' + k.name)).join('')}</div>`
+		: '';
+	return `<div class="${cls}" data-sec="${secKey}" data-path="${esc(path)}" data-folder="${isFolder ? 1 : 0}" style="padding-left:${pad}px">
+		${guideHtml}<span class="chev" style="width:${state.tree === 't2' ? 14 : 10}px;font-size:${state.tree === 't2' ? 9 : 8}px">${chev}</span>
+		<span class="ico">${iconOf(item)}</span><span class="nm">${esc(item.name)}</span>${sub2}${metaOf(item)}
+	</div>${kids}`;
+}
+
+function sectionHtml(sec) {
+	const collapsed = !!state.collapsed[sec.key];
+	const body = collapsed ? '' : sec.items.map((it) => rowHtml(it, 0, sec.key, it.name)).join('');
+	return `<div class="sec ${collapsed ? '' : 'open'}">
+		<div class="sec-head" data-head="${sec.key}">
+			<span class="chev" style="transform:rotate(${collapsed ? 0 : 90}deg)">▸</span>
+			<span class="ico">${sec.icon}</span>
+			<span class="ttlwrap"><span class="ttl">${esc(sec.title)}</span><span class="sub">${esc(sec.sub)}</span></span>
+			<span class="tools"><span class="tool" title="排序">⇅</span><span class="tool" title="新建">＋</span><span class="tool" title="更多">⋯</span></span>
+		</div>
+		<div class="sec-body">${body}</div>
+	</div>`;
+}
+
+function render() {
+	const panel = document.getElementById('panel');
+	panel.className = state.tree;
+	panel.style.width = state.width + 'px';
+	panel.innerHTML = `<div class="pbar">🏠 总览<span class="r">📚 5 · ✎ 95</span></div>
+		<div class="search">🔍 搜索笔记或库…</div>` + DATA.map(sectionHtml).join('');
+	bind(panel);
+	const st = TREES.find((t) => t.id === state.tree);
+	document.getElementById('aname').textContent = st.name;
+	document.getElementById('adesc').innerHTML = st.desc.map((d) => `<li>${d}</li>`).join('');
+	document.getElementById('akv').innerHTML = st.kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+}
+
+function bind(panel) {
+	panel.querySelectorAll('.sec-head').forEach((el) => {
+		el.addEventListener('click', (e) => {
+			if (e.target.classList.contains('tool')) { e.stopPropagation(); return; }
+			state.collapsed[el.dataset.head] = !state.collapsed[el.dataset.head];
+			render();
+		});
+	});
+	panel.querySelectorAll('.row').forEach((el) => {
+		el.addEventListener('click', () => {
+			const sec = el.dataset.sec, path = el.dataset.path;
+			state.selected = path;
+			if (el.dataset.folder === '1') {
+				state.open[sec] = state.open[sec] || {};
+				state.open[sec][path] = !state.open[sec][path];
+			} else {
+				const seg = path.split('/');
+				if (['AIAgent', 'ComfyUI技术', 'UnrealEngine', '游戏设计', '财经'].includes(seg[0])) { state.curKb = seg[0]; }
+			}
+			render();
+		});
+	});
+}
+
+const box = document.getElementById('trees');
+box.innerHTML = TREES.map((t) => `<button class="tbtn ${t.id === state.tree ? 'on' : ''}" data-id="${t.id}">${t.name}</button>`).join('');
+box.addEventListener('click', (e) => {
+	const b = e.target.closest('.tbtn');
+	if (!b) { return; }
+	state.tree = b.dataset.id;
+	box.querySelectorAll('.tbtn').forEach((x) => x.classList.toggle('on', x.dataset.id === state.tree));
+	render();
+});
+document.getElementById('w').addEventListener('input', (e) => {
+	state.width = Number(e.target.value);
+	document.getElementById('wv').textContent = state.width + 'px';
+	render();
+});
+render();
+</script>
+</body>
+</html>

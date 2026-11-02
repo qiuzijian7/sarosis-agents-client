@@ -486,7 +486,7 @@ export class KbImportController extends Disposable {
 
 	/**
 	 * 「导入链接 / URL」（2026-09-22）：抓取网页正文 → **下载图片到知识库** → 改写引用 → 组装 markdown
-	 * → 落盘 `库/raw/<slug>.md`。之后可直接「构建为笔记」，其本地图片也能被飞书同步上传
+	 * → 落盘 `数据源/raw/<slug>.md`。之后可直接「构建为笔记」，其本地图片也能被飞书同步上传
 	 * （飞书链路只认本地相对引用，见 doc/kb-feishu-sync-spec.md §3）。
 	 *
 	 * 设计：服务由**调用方注入**（视图侧已有），不改进本类构造签名 ⇒ 避免改动 3 处 new 点与测试。
@@ -681,13 +681,13 @@ export class KbImportController extends Disposable {
 	}
 
 	/**
-	 * 飞书云文档 → `库/raw/<slug>.md`（2026-09-23，含图片与画板/思维导图）。
+	 * 飞书云文档 → `数据源/raw/<slug>.md`（2026-09-23，含图片与画板/思维导图）。
 	 *
 	 * 流程（三步，全部依赖官方 CLI `lark-cli`）：
 	 *  ① `docs +fetch --doc-format markdown`：正文一次拿全（标题 / 列表 / **表格** / **超链接**
 	 *     由 CLI 转换好；`--detail with-ids` 保留块 ID，便于后续精确定位）；
 	 *  ② 正文里的内嵌资源（`<img token>` / `<source token>` / `<whiteboard token>`）逐个
-	 *     `docs +media-download` 落到 `库/raw/assets/<slug>/`；画板（**思维导图**）用
+	 *     `docs +media-download` 落到 `数据源/raw/assets/<slug>/`；画板（**思维导图**）用
 	 *     `--type whiteboard` 取缩略图；
 	 *  ③ 把资源标签**原位**替换成本地相对引用后落盘。
 	 *
@@ -727,7 +727,7 @@ export class KbImportController extends Disposable {
 			return { ok: false, images: 0, message: `无法读取飞书文档：${doc.error ?? 'CLI 未返回文档内容'}` };
 		}
 
-		// ③ 图片 / 画板本地化 → `库/raw/assets/<slug>/`
+		// ③ 图片 / 画板本地化 → `数据源/raw/assets/<slug>/`
 		const libRawDir = URI.joinPath(vaultRoot, KB_LIBRARY_SUBPATH, KB_RAW_SUBPATH);
 		const title = doc.title ?? url;
 		const slug = slugifyTitle(title, url);
@@ -873,7 +873,7 @@ export class KbImportController extends Disposable {
 		//   「相对笔记区」，会产出嵌套错位的目录。同时把**笔记区全部子目录**（含用户手写层级）作为候选，
 		//   让落点复用既有结构（★ 用户要求：如 `01_学习/UnrealEngine/09_UI与Slate/`）。
 		const formatHint = buildFileBlockPrompt(notesDir.fsPath, await listAllNoteSubdirs(this._fileService, notesDir));
-		// 图片清单 + 视觉总结指令（2026-09-22）：导入链接时图片已本地化到 `库/raw/assets/<素材名>/`，
+		// 图片清单 + 视觉总结指令（2026-09-22）：导入链接时图片已本地化到 `数据源/raw/assets/<素材名>/`，
 		// 这里把清单交给 agent ⇒ 它逐张调用 vision_analyze 总结图片内容（该工具一次只接受一张图）。
 		// 笔记正文必须保留**相对引用**（`assets/<素材名>/<文件名>`）：预览与飞书同步都按相对路径解析。
 		let assetSection = '';
@@ -1266,18 +1266,18 @@ export class KbImportController extends Disposable {
 	 *
 	 * 与 `_buildAllPendingCore`（宿主读文件 → 解析 FILE 块 → **宿主落盘**）的本质区别：
 	 *   · 宿主只把**素材路径清单**交给 agent，由 agent 用 `file_read` **依次读取**原文；
-	 *   · agent 用 `file_write` / `patch` **自己把笔记写进 `笔记/`** ⇒ 所以这一轮**绝不能**再传
+	 *   · agent 用 `file_write` / `patch` **自己把笔记写进 `知识库列表/`** ⇒ 所以这一轮**绝不能**再传
 	 *     `chatOnly: true`（它会过滤掉写文件类工具）。写入落在沙箱允许根内（vault 已注册在
 	 *     `agentStudio.kb.vaults` 的 customPath 里），默认 `edit: auto` 策略对**沙箱内的写**免审批
 	 *     ⇒ 无人值守也能跑完（⚠ 提示词里明确禁用 `terminal`：execute 档会弹审批）。
 	 *   · 多文件 ⇒ **一条** prompt（不是每个文件一条），上下文由 agent 自己的阅读节奏决定。
 	 *
-	 * 随后在**同一会话**追加第二条 prompt：让 agent 依据 `笔记/` 现有**目录与文件**
-	 * 创建/完善**知识体系文档**（`笔记/知识体系.md`）—— 即「帮助用户构建知识体系」。
+	 * 随后在**同一会话**追加第二条 prompt：让 agent 依据 `知识库列表/` 现有**目录与文件**
+	 * 创建/完善**知识体系文档**（`知识库列表/知识体系.md`）—— 即「帮助用户构建知识体系」。
 	 *
 	 * 产出识别（宿主侧双保险，因为落盘不再经过宿主）：
 	 *   ① 流里的工具结果：`file_write` 返回 `wrote N chars to <绝对路径>`（coreTools 的实现）；
-	 *   ② `笔记/` 目录**前后快照 diff**（新增文件）。
+	 *   ② `知识库列表/` 目录**前后快照 diff**（新增文件）。
 	 * 收尾与旧路径一致：按新笔记 frontmatter 的 `sources` 反查来源 → 写构建缓存 → 补链 → 门控 → 导航。
 	 *
 	 * 降级：没有 chat 服务 / 会话建不出来 ⇒ 自动回落 `buildAllPendingNotes`（宿主逐篇落盘）。
@@ -1599,7 +1599,7 @@ export class KbImportController extends Disposable {
 	 * 渲染「笔记区现有目录树」文本，供构建提示词使用。
 	 *
 	 * ★ 2026-09-23（用户要求）：落点要**依据笔记里已有的目录结构**，例如把 UI 优化笔记放进
-	 *   `笔记/01_学习/UnrealEngine/09_UI与Slate/`，而不是凭空新建 `笔记/UI优化与性能/` 这种平行树。
+	 *   `知识库列表/01_学习/UnrealEngine/09_UI与Slate/`，而不是凭空新建 `知识库列表/UI优化与性能/` 这种平行树。
 	 *
 	 * ⚠ 与 `_listEngineNoteDirs()` 的口径**相反**：那个函数刻意**排除**手写区（`01_学习/…` 这类数字前缀
 	 *   目录），依据是当时「只把 LLM 自己建的目录作为候选」的旧要求；用户现在明确要求复用他自己的层级
@@ -1690,7 +1690,7 @@ export class KbImportController extends Disposable {
 	/**
 	 * 计算「待构建素材」清单 —— **两条批量路径共用**（宿主逐篇落盘 / agent 自主读写），口径必须一致：
 	 *   ① 先把 PDF/docx 落成同目录同名 `.md`（`_stageDocSourcesToText`，**必须在枚举之前**）；
-	 *   ② 读构建缓存 `<vault>/.kb-build-cache.json`；
+	 *   ② 读构建缓存 `<vault>/.kb/build-cache.json`；
 	 *   ③ 递归枚举「库」内 `.md`，排除系统导航文件（index/overview/insights/知识体系…）；
 	 *   ④ 过滤掉「已构建过的源」（缓存键）与「本身就是别人产出的笔记」（缓存值）。
 	 *
@@ -1891,7 +1891,7 @@ export class KbImportController extends Disposable {
 		const dateStr = now.toISOString().slice(0, 10);
 		const hash = Math.abs(content.split('').reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0)).toString(36);
 		const dedupKey = `${hash}:${content.length}`;
-		const cacheUri = URI.joinPath(root, '.kb-ingest-cache.json');
+		const cacheUri = URI.joinPath(root, '.kb/ingest-cache.json');
 		const cache = await this._readIngestCache(cacheUri);
 		const dedupHit = await this._handleDedupHit(dedupKey, targetDir, cacheUri, cache);
 		if (dedupHit) { return dedupHit; }
@@ -1962,7 +1962,7 @@ export class KbImportController extends Disposable {
 		await this._fileService.createFolder(targetDir);
 		const hash = Math.abs(content.split('').reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0)).toString(36);
 		const dedupKey = `${hash}:${content.length}`;
-		const cacheUri = URI.joinPath(root, '.kb-ingest-cache.json');
+		const cacheUri = URI.joinPath(root, '.kb/ingest-cache.json');
 		const cache = await this._readIngestCache(cacheUri);
 		const dedupHit = await this._handleDedupHit(dedupKey, targetDir, cacheUri, cache);
 		if (dedupHit) { return dedupHit; }
@@ -2175,7 +2175,7 @@ export class KbImportController extends Disposable {
 			}
 			out.push('');
 		}
-		const indexUri = URI.joinPath(notesDir, 'index.md');
+		const indexUri = URI.joinPath(KbImportController._navDir(notesDir), 'index.md');
 		await KbImportController._writeIfChanged(fileService, indexUri, out.join('\n'));
 	}
 
@@ -2214,7 +2214,7 @@ export class KbImportController extends Disposable {
 			}
 			out.push('');
 		}
-		const overviewUri = URI.joinPath(notesDir, 'overview.md');
+		const overviewUri = URI.joinPath(KbImportController._navDir(notesDir), 'overview.md');
 		await KbImportController._writeIfChanged(fileService, overviewUri, out.join('\n'));
 	}
 
@@ -2225,7 +2225,7 @@ export class KbImportController extends Disposable {
 				'# 知识图谱洞察', '',
 				'> 暂无笔记数据，导入消息后自动生成。', '',
 			].join('\n');
-			const insightsUri = URI.joinPath(notesDir, 'insights.md');
+			const insightsUri = URI.joinPath(KbImportController._navDir(notesDir), 'insights.md');
 			await KbImportController._writeIfChanged(fileService, insightsUri, empty);
 			return;
 		}
@@ -2276,18 +2276,20 @@ export class KbImportController extends Disposable {
 			out.push('');
 		}
 		out.push('---', '', '*由 KbImportController 自动维护，基于 Louvain 社区检测算法生成。*');
-		const insightsUri = URI.joinPath(notesDir, 'insights.md');
+		const insightsUri = URI.joinPath(KbImportController._navDir(notesDir), 'insights.md');
 		await KbImportController._writeIfChanged(fileService, insightsUri, out.join('\n'));
 	}
 
 	static async appendKbLog(fileService: IFileService, targetDir: URI, entry: string): Promise<void> {
 		try {
-			const logUri = URI.joinPath(targetDir, 'log.md');
+			const logUri = URI.joinPath(KbImportController._navDir(targetDir), 'log.md');
 			const ts = new Date().toISOString();
 			let existing = '';
 			try { existing = (await fileService.readFile(logUri)).value.toString(); } catch { /* new file */ }
 			const line = `- ${ts} ${entry}\n`;
 			if (!existing.includes(entry)) {
+				// ★ 2026-11-02：日志也在 .kb/nav/ 下 ⇒ 首次写入要先建目录
+				try { await fileService.createFolder(URI.joinPath(logUri, '..')); } catch { /* 已存在 */ }
 				await fileService.writeFile(logUri, VSBuffer.fromString(existing + line));
 			}
 		} catch { /* ignore */ }
@@ -2305,11 +2307,22 @@ export class KbImportController extends Disposable {
 
 
 
+	/**
+	 * ★ 2026-11-02：导航 / 日志这类**派生物**统一落到 `<vault>/.kb/nav/`。
+	 *   `notesDir` 恒为 `<vault>/知识库列表` ⇒ 上跳一层就是库根；URL 里用 `..` 由 `URI.joinPath` 归一化。
+	 *   与插件侧 `organize.js` 的 `.kb/nav` 同一口径（两边视图看到的位置一致 ✓）。
+	 */
+	static _navDir(notesDir: URI): URI {
+		return URI.joinPath(notesDir, '..', '.kb', 'nav');
+	}
+
 	static async _writeIfChanged(fileService: IFileService, uri: URI, content: string): Promise<void> {
 		try {
 			const existing = (await fileService.readFile(uri)).value.toString();
 			if (existing === content) { return; }
 		} catch { /* file doesn't exist yet */ }
+		// 写前建父目录（`.kb/nav` 首次使用时不存在；已存在会抛，忽略即可）
+		try { await fileService.createFolder(URI.joinPath(uri, '..')); } catch { /* 已存在 / 只读盘 */ }
 		await fileService.writeFile(uri, VSBuffer.fromString(content));
 	}
 

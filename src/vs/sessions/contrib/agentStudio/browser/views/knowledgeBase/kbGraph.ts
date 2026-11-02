@@ -213,7 +213,7 @@ export class KbLinkGraph {
 	 * 无法读懂的百分号编码 URI。优先级（对齐 Obsidian 的显示习惯）：
 	 *   1. `[[目标|别名]]` / `[[目标#锚点]]` 的显式显示段（保持旧行为）；
 	 *   2. 已解析 ⇒ 目标文档的 frontmatter `title`（笔记互引的最可读形态）；
-	 *   3. 已解析但无 title ⇒ 目标文件名（去扩展名），如 `库/raw/UI优化篇.md` ⇒「UI优化篇」；
+	 *   3. 已解析但无 title ⇒ 目标文件名（去扩展名），如 `数据源/raw/UI优化篇.md` ⇒「UI优化篇」；
 	 *   4. 未解析（断链）⇒ 与 normalizeTarget 同源的「解码 + basename + 去扩展名」，至少可读。
 	 */
 	private _displayLabel(raw: string, meta: ILinkDocMeta | undefined): string {

@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>知识库主页 · 三个方向（选一个）</title>
+<style>
+  :root{--bg:#15161a;--panel:#1c1d22;--panel2:#22232a;--line:rgba(255,255,255,.1);--line2:rgba(255,255,255,.18);--fg:#e8e9ec;--fg2:#a9abb3;--fg3:#71737c;--accent:#5b8cff;--accent2:#7aa2ff;--ok:#3fb950;--warn:#d29922}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:34px 20px 70px}
+  h1{font-size:21px;margin:0 0 6px}
+  .sub{color:var(--fg3);font-size:12.5px;margin-bottom:26px}
+  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  @media (max-width:900px){.cards{grid-template-columns:1fr}}
+  .c{display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden;text-decoration:none;color:inherit;transition:.16s}
+  .c:hover{transform:translateY(-2px);border-color:var(--line2);box-shadow:0 10px 26px rgba(0,0,0,.4)}
+  .thumb{height:132px;position:relative;overflow:hidden;border-bottom:1px solid var(--line);background:var(--panel2)}
+  .body{padding:14px 15px 16px;flex:1;display:flex;flex-direction:column;gap:8px}
+  .t{font-size:14.5px;font-weight:650}
+  .d{font-size:12.5px;color:var(--fg2)}
+  .kv{font-size:11.5px;color:var(--fg3);display:flex;gap:6px;flex-wrap:wrap;margin-top:auto}
+  .pill{border:1px solid var(--line2);border-radius:20px;padding:1px 8px}
+  .pill.ok{color:var(--ok);border-color:rgba(63,185,80,.45)}
+  .pill.warn{color:var(--warn);border-color:rgba(210,153,34,.45)}
+  .open{margin-top:10px;height:30px;border-radius:8px;background:var(--accent);color:#fff;font-size:12.5px;font-weight:600;display:flex;align-items:center;justify-content:center}
+  .note{margin-top:30px;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:var(--panel)}
+  .note h2{font-size:13.5px;margin:0 0 8px}
+  .note table{width:100%;border-collapse:collapse;font-size:12.5px}
+  .note th,.note td{border:1px solid var(--line);padding:6px 9px;text-align:left;color:var(--fg2)}
+  .note th{background:var(--panel2);color:var(--fg)}
+  code{background:var(--panel2);padding:1px 5px;border-radius:4px;font-size:12px}
+
+  /* 缩略图：用极简线框表示布局差异 */
+  .m{position:absolute;inset:12px;display:flex;gap:6px}
+  .box{background:rgba(91,140,255,.16);border:1px solid rgba(91,140,255,.45);border-radius:5px}
+  .box.s{background:rgba(255,255,255,.06);border-color:var(--line2)}
+  .A{flex-direction:column}
+  .A .rowline{display:flex;gap:6px;height:26px}
+  .A .rowline .box{flex:1}
+  .A .grid{flex:1;display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+  .B .side{width:34%;display:flex;flex-direction:column;gap:6px}
+  .B .side .box{height:16px}
+  .B .main{flex:1;display:flex;flex-direction:column;gap:6px}
+  .B .main .box:first-child{height:26px}
+  .B .main .box{flex:1}
+  .C{flex-direction:column}
+  .C .hello{display:flex;gap:6px;height:24px}
+  .C .hello .box{flex:1}
+  .C .cols{flex:1;display:flex;gap:6px}
+  .C .cols .l{flex:1.5;display:flex;flex-direction:column;gap:5px}
+  .C .cols .r{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:5px}
+  .C .cols .box{flex:1}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>知识库主页（独立视图）· 三个方向</h1>
+  <div class="sub">同一个数据源（`知识库列表/` 下一级文件夹 = 一个知识库），三种信息组织方式。点卡片看可交互原型。</div>
+
+  <div class="cards">
+    <a class="c" href="A-overview-cards.html">
+      <div class="thumb"><div class="m A">
+        <div class="rowline"><span class="box"></span><span class="box"></span><span class="box"></span><span class="box"></span><span class="box s"></span></div>
+        <div class="grid"><span class="box"></span><span class="box s"></span><span class="box s"></span><span class="box s"></span></div>
+        <div class="box s" style="height:22px"></div>
+      </div></div>
+      <div class="body">
+        <div class="t">A · 数据栏 + 库卡片</div>
+        <div class="d">顶部一排统计（库/笔记/素材/本周/已绑飞书），下面是库卡片网格 + 最近编辑。<b>最接近现在的总览</b>，改动最小。</div>
+        <div class="kv"><span class="pill ok">上手最快</span><span class="pill">信息密度中</span><span class="pill">适合 5–20 个库</span></div>
+        <div class="open">打开 A</div>
+      </div>
+    </a>
+
+    <a class="c" href="B-split-list-detail.html">
+      <div class="thumb"><div class="m B">
+        <div class="side"><span class="box"></span><span class="box s"></span><span class="box s"></span><span class="box s"></span><span class="box s"></span></div>
+        <div class="main"><span class="box"></span><span class="box s"></span><span class="box s"></span><span class="box s"></span></div>
+      </div></div>
+      <div class="body">
+        <div class="t">B · 左列表 + 右详情</div>
+        <div class="d">左边库列表（含搜索/新建），右边是选中库的<b>详情页</b>：统计、最近文档、快捷操作（关联飞书 / 打开树 / 发布）。</div>
+        <div class="kv"><span class="pill ok">库多也不乱</span><span class="pill">接近桌面工具</span><span class="pill">改动中等</span></div>
+        <div class="open">打开 B</div>
+      </div>
+    </a>
+
+    <a class="c" href="C-activity-dashboard.html">
+      <div class="thumb"><div class="m C">
+        <div class="hello"><span class="box s"></span><span class="box"></span><span class="box"></span><span class="box"></span></div>
+        <div class="cols">
+          <div class="l"><span class="box"></span><span class="box s"></span><span class="box s"></span><span class="box s"></span></div>
+          <div class="r"><span class="box s"></span><span class="box s"></span><span class="box s"></span><span class="box s"></span></div>
+        </div>
+      </div></div>
+      <div class="body">
+        <div class="t">C · 活动仪表盘</div>
+        <div class="d">以<b>“最近在做什么”</b>为主线：本周活动流（新增/修改/同步）+ 紧凑库卡片 + 飞书绑定 + 素材占用告警。</div>
+        <div class="kv"><span class="pill ok">最有“活着”的感觉</span><span class="pill warn">信息最多</span><span class="pill">改动最大</span></div>
+        <div class="open">打开 C</div>
+      </div>
+    </a>
+  </div>
+
+  <div class="note">
+    <h2>三者的取舍（一句话）</h2>
+    <table>
+      <tr><th>维度</th><th>A 数据栏+卡片</th><th>B 左列表+右详情</th><th>C 活动仪表盘</th></tr>
+      <tr><td>回答的问题</td><td>“我有几个库、各多大”</td><td>“这个库里有什么、能做什么”</td><td>“这周我动了什么、哪里要处理”</td></tr>
+      <tr><td>库很多时（20+）</td><td>卡片会很长</td><td><b>最好</b>（可滚动列表 + 搜索）</td><td>卡片区会被压缩</td></tr>
+      <tr><td>落地代价</td><td><b>最小</b>（现成总览换个容器）</td><td>中（多一个详情区 + 选中态）</td><td>大（要 `mtime` 聚合出活动流）</td></tr>
+      <tr><td>依赖的数据</td><td><code>kbs</code> + 计数</td><td><code>kbs</code> + 每库最近文档</td><td><code>kbs</code> + <b>近 7 天变更</b>（需扫描/快照）</td></tr>
+    </table>
+    <div style="margin-top:10px;color:var(--fg3);font-size:12px">
+      我的建议：<b>A 先落地</b>（一天内可上），把 <b>B 的“右详情”</b>作为 A 点开库后的过渡页；C 的“本周活动”数据先只做“最近更新 Top N”，等索引快照稳了再上时间线。
+    </div>
+  </div>
+</div>
+</body>
+</html>

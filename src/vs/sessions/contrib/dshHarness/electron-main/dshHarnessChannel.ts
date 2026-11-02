@@ -13,7 +13,7 @@
  * 首次运行（没有上次选项）与"上次被禁用"时仍退回渲染进程触发。
  */
 
-import { app, BaseWindow, dialog, net, type BrowserWindow } from 'electron';
+import { app, BaseWindow, dialog, nativeTheme, net, type BrowserWindow } from 'electron';
 import { existsSync, promises as fsp, readFileSync } from 'fs';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
@@ -35,7 +35,8 @@ import { DshCreditProxy, IDshCreditSample } from './dshCreditProxy.js';
 import { localPluginDir, selectRuntimeVersion, toFileSpec } from '../common/dshCli.js';
 import { downloadAndVerify, removeDownloaded } from './dshMarketplaceInstaller.js';
 import { discoverUpdates, resolveCurrentVersion, selectInstallTarget } from '../common/dshCompat.js';
-import { DSH_HARNESS_CHANNEL, DshHarnessChannelCommand, DshHarnessChannelEvent, IDshBootstrapArgs, IDshBundledPluginRow, IDshCreateViewArgs, IDshHostStartOptions, IDshHostStatus, IDshIdeClaimReply, IDshIdeReply, IDshIdeRequest, IDshPluginActivationSnapshot, IDshPluginInfo, IDshPluginRowSetResult, IDshPluginSetResult, IDshUpdateDiscoveryResult, IDshUpdatePolicy, IDshUpgradeArgs, IDshViewBounds, sameStartOptions, surfaceTakesRoute } from '../common/dshHarness.js';
+import { DSH_HARNESS_CHANNEL, DshColorScheme, DshHarnessChannelCommand, DshHarnessChannelEvent, IDshBootstrapArgs, IDshBundledPluginRow, IDshCreateViewArgs, IDshHostStartOptions, IDshHostStatus, IDshIdeClaimReply, IDshIdeReply, IDshIdeRequest, IDshPluginActivationSnapshot, IDshPluginInfo, IDshPluginRowSetResult, IDshPluginSetResult, IDshUpdateDiscoveryResult, IDshUpdatePolicy, IDshUpgradeArgs, IDshViewBounds, sameStartOptions, surfaceTakesRoute } from '../common/dshHarness.js';
+import { colorSchemeForPreference, parseThemePreference } from '../common/dshThemePreference.js';
 import { IdeRequestClaims } from '../common/dshIdeClaims.js';
 import { IIdeTargetPick, pickIdeTargetWindow } from '../common/dshIdeTargeting.js';
 import { readCapabilityDeclarations } from '../common/dshIdeAuthorization.js';
@@ -282,6 +283,11 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			chatSurfacePluginDir: existsSync(join(bundledChatSurface, 'package.json')) ? bundledChatSurface : undefined,
 			kbRefsPluginDir: existsSync(join(bundledKbRefs, 'package.json')) ? bundledKbRefs : undefined,
 			browserPluginDir: existsSync(join(bundledBrowser, 'package.json')) ? bundledBrowser : undefined,
+			// Office 模板（用户自带 docx）：纯 host 工具插件 ⇒ 必须显式给目录（模块自发现看不到它）。
+			// 目录不存在（旧构建 / 干净检出）⇒ 不装；overlay 里那行也会因为 `office` 配置缺席而不渲染，
+			// 两侧都不会出现"插入了不存在的包"这种启动失败。
+			officeTemplatePluginDir: existsSync(join(this._bundledPluginsRoot, 'vssaros-office-template', 'package.json'))
+				? join(this._bundledPluginsRoot, 'vssaros-office-template') : undefined,
 			unrealPluginDir: existsSync(join(bundledUnreal, 'package.json')) ? bundledUnreal : undefined,
 			archifyPluginDir: existsSync(join(bundledArchify, 'package.json')) ? bundledArchify : undefined,
 			egoPluginDir: existsSync(join(bundledEgo, 'package.json')) ? bundledEgo : undefined,
@@ -755,6 +761,29 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				this._logService.info('[dshHarness] 桌面窗口关闭 ⇒ 它是最后一个界面，退出应用');
 				app.quit();
 			});
+		}
+	}
+
+	/**
+	 * dsh 自己的「外观」偏好 → 本视图要模拟的 palette 模式（2026-11-02，抄官方 dsh-desktop 的时序）。
+	 *
+	 * 读 `<dshHome>/settings.yaml` 的 `ui-theme.preference`（**只读**，设置项的真源永远是 dsh 界面）。
+	 * 读不到/认不出 ⇒ `undefined`（= 不模拟、交给页面自报那条通道，行为退回旧版 ✓）。
+	 *
+	 * 为什么在主进程读：Windows/macOS 的 `prefers-color-scheme` 是**每张 webContents 一份**的模拟值，
+	 * 只有主进程能设（`Emulation.setEmulatedMedia`）；而"建视图那一刻就要设"⇒ 决策必须发生在主进程。
+	 */
+	private async _dshColorScheme(): Promise<DshColorScheme | undefined> {
+		try {
+			const profileDir = this._supervisor.profileDirectory();       // <dshHome>/profiles/<profile>
+			const dshHome = dirname(dirname(profileDir));
+			const text = await fsp.readFile(join(dshHome, 'settings.yaml'), 'utf8');
+			const preference = parseThemePreference(text);
+			return colorSchemeForPreference(preference, nativeTheme.shouldUseDarkColors);
+		} catch (e) {
+			// 还没打开过 dsh 的设置界面 ⇒ 文件不存在（最常见）；其它异常也一律降级，绝不因此建不出视图 ✗
+			this._logService.trace(`[dshHarness] 读 dsh 外观偏好失败（降级为页面自报）：${String((e as Error)?.message ?? e)}`);
+			return undefined;
 		}
 	}
 
@@ -1881,7 +1910,14 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				// 页面画出第一帧之前不会露 Electron 默认白。形状非法 ⇒ 当没给（宁可少染一次，
 				// 也不把没校验过的字符串塞进原生 API ✗）。
 				const backgrounds: IDshViewBackgrounds | undefined = validateViewBackgrounds(a.backgrounds) ? a.backgrounds : undefined;
-				this._views.create(a.viewId, a.windowId, a.surface, a.chatOnlyUi !== false, a.sessionId || undefined, a.colorScheme, route, pageSurface, backgrounds, a.isolatedPool === true);
+				// dsh 自主窗口（桌面窗口 / 分屏 / 全窗，2026-11-02）：明暗交给 dsh「外观」，不吃 IDE 主题
+				// （判据与理由见 `common/dshThemeBridge.ts::isDshOwnWindow`；主进程只按渲染侧传的布尔值执行 ✓）。
+				const dshOwnWindow = a.dshOwnWindow === true;
+				// ★ 2026-11-02（抄官方 dsh-desktop 的时序）：自主窗口的初始明暗**建视图时就定**，
+				//   而不是等页面 `dom-ready` 后自报（那几百毫秒到几秒里，自托管页/第三方组件会先按错的明暗画一帧）。
+				//   真源 = dsh 自己的 `settings.yaml → ui-theme.preference`（只读；认不出就当没配 ⇒ 不模拟）。
+				const pageColorScheme = dshOwnWindow ? await this._dshColorScheme() : undefined;
+				this._views.create(a.viewId, a.windowId, a.surface, a.chatOnlyUi !== false, a.sessionId || undefined, a.colorScheme, route, pageSurface, backgrounds, a.isolatedPool === true, dshOwnWindow, pageColorScheme);
 				return;
 			}
 			case DshHarnessChannelCommand.ListDshSessions: {

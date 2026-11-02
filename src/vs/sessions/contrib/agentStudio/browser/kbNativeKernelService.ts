@@ -189,9 +189,9 @@ export class KbNativeKernelService extends Disposable implements IKbNativeKernel
 	}
 
 	/**
-	 * Walk up from a note URI to locate the vault root via the `.kbkernel.json`
+	 * Walk up from a note URI to locate the vault root via the `.kb/kernel.json`
 	 * cache marker that `KnowledgeBaseView.rebuildSearchAssets` writes under the
-	 * vault root. When found, record the `库`/`笔记` section roots + cache URI so
+	 * vault root. When found, record the `数据源`/`知识库列表` section roots + cache URI so
 	 * the shared kernel can build without the KB view having run first.
 	 *
 	 * This is best-effort: if no marker exists (cold start, KB view never built),
@@ -207,10 +207,10 @@ export class KbNativeKernelService extends Disposable implements IKbNativeKernel
 		} catch {
 			return;
 		}
-		const KB_CACHE = '.kbkernel.json';
+		const KB_CACHE = '.kb/kernel.json';
 		const SECTION_FOLDERS: ReadonlyArray<readonly [string, KbSection]> = [
-			['库', 'library'],
-			['笔记', 'notes'],
+			['数据源', 'library'],
+			['知识库列表', 'notes'],
 		];
 		let cur: URI | undefined = dirname(start);
 		for (let depth = 0; depth < 12 && cur; depth++) {

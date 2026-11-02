@@ -109,7 +109,7 @@ function stripQuotes(s: string): string {
 	return s.replace(/^["']|["']$/g, '');
 }
 
-/** 从笔记内容提取 sources[]，归一化为库文件 basename（小写，去 `库/` 前缀与 wikilink/引号/括号）。 */
+/** 从笔记内容提取 sources[]，归一化为库文件 basename（小写，去 `数据源/` 前缀与 wikilink/引号/括号）。 */
 export function extractSources(content: string): string[] {
 	const { frontmatter } = parseFrontmatter(content);
 	if (!frontmatter) { return []; }

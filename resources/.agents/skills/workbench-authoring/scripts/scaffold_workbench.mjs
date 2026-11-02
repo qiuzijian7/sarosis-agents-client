@@ -1,16 +1,27 @@
 #!/usr/bin/env node
 // 生成一个「注册式工作台」骨架：清单 + 服务端入口 + 客户端入口 + 子块面板。
 //
+// 两种形态（--mode）：
+//
+//   builtin（默认）：VsSaros 仓库**内置**工作台。身份 `vssaros:<module>`，包在 dsh-plugins/ 下。
+//     生成后要登记宿主侧几张表（见脚本末尾提示），守卫会抓漏登记。
+//
+//   external：**外部包**（对标 dsh-desktop 的第三方工作台）。身份 `local:<npm 包名>`，**0 处宿主改动**：
+//     不写 `repository`、不写 `vssaros` 清单块、不用登记任何表；`pnpm pack` 出 .tgz 后用
+//     `install_local_workbench` 装上，重启 Harness 后出现在工作台启动器里。
+//
 // 用法：
-//   node scaffold_workbench.mjs <module> [--dir <输出目录>] [--title <标题>]
-//        [--icon codicon:list-tree] [--desc <一句话>] [--order 41] [--force]
+//   node scaffold_workbench.mjs <module> [--mode builtin|external] [--package @scope/name]
+//        [--dir <输出目录>] [--title <标题>] [--icon codicon:list-tree] [--desc <一句话>]
+//        [--order 41] [--force]
 //
 // 例：
 //   node scaffold_workbench.mjs tasks --dir dsh-plugins/vssaros-tasks --title "任务台" --icon codicon:checklist
+//   node scaffold_workbench.mjs tasks --mode external --package @me/tasks-workbench --title "任务台"
 //
-// 生成后必做（脚本会打印提醒）：
+// builtin 生成后必做（脚本会打印提醒）：
 //   1) 把包加进 check-workbench-style.mjs 的 UNIFIED 白名单
-//   2) 在 chat-surface 的 DEFAULT_ITEMS / 启动器登记
+//   2) 整页模块才需要登记 DEFAULT_ITEMS / 主页卡片；注册式工作台启动器会**自动**列出，不用登记
 //   3) 跑 check-chat-surface-chunks / check-workbench-catalog / check-workbench-style
 //   4) 写探针（本脚本不生成探针：探针依赖你本仓的 sandbox lib）
 
@@ -20,7 +31,7 @@ import { join } from 'node:path';
 const argv = process.argv.slice(2);
 const moduleName = (argv[0] || '').trim();
 if (!moduleName || moduleName.startsWith('--')) {
-	console.error('用法: node scaffold_workbench.mjs <module> [--dir <输出目录>] [--title 标题] [--icon codicon:xxx] [--desc 描述] [--order 41] [--force]');
+	console.error('用法: node scaffold_workbench.mjs <module> [--mode builtin|external] [--package @scope/name] [--dir <输出目录>] [--title 标题] [--icon codicon:xxx] [--desc 描述] [--order 41] [--force]');
 	process.exit(1);
 }
 if (!/^[a-z][a-z0-9-]*$/.test(moduleName)) {
@@ -31,13 +42,37 @@ const flag = (name, fallback) => {
 	const i = argv.indexOf('--' + name);
 	return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : fallback;
 };
+const mode = flag('mode', 'builtin');
+if (mode !== 'builtin' && mode !== 'external') {
+	console.error(`--mode 只能是 builtin 或 external：${mode}`);
+	process.exit(1);
+}
+const external = mode === 'external';
 const title = flag('title', moduleName);
 const desc = flag('desc', '一句话说清它替用户做什么');
 const icon = flag('icon', 'codicon:list-tree');
 const order = Number(flag('order', '41'));
-const outDir = flag('dir', `dsh-plugins/vssaros-${moduleName}`);
+// external 默认输出到当前目录下的 <module>/（它不属于本仓 dsh-plugins/）
+const outDir = flag('dir', external ? moduleName : `dsh-plugins/vssaros-${moduleName}`);
 const force = argv.includes('--force');
-const pkgName = `@vssaros/dsh-${moduleName}`;
+// npm 包名规则（与宿主 client.js 的 PACKAGE_RE 同口径；宿主会把它派生成 `local:<包名>` 身份）
+const PACKAGE_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+const pkgName = external ? flag('package', `@local/${moduleName}`) : `@vssaros/dsh-${moduleName}`;
+if (external) {
+	if (!PACKAGE_RE.test(pkgName)) {
+		console.error(`--package 不是合法的 npm 包名：${pkgName}（小写，可带 @scope/，如 @me/tasks-workbench）`);
+		process.exit(1);
+	}
+	// 外部包不能和内置模块同名：同名时 `/x/<module>/` 路由会静默抢占（谁先注册谁赢）
+	if (existsSync(join(process.cwd(), 'dsh-plugins', `vssaros-${moduleName}`)) && !argv.includes('--force')) {
+		console.error(`module「${moduleName}」与本仓内置模块同名（dsh-plugins/vssaros-${moduleName}）：换个名字，或加 --force（不建议）`);
+		process.exit(1);
+	}
+	if (pkgName.startsWith('@vssaros/')) {
+		console.error('外部包不要用 @vssaros/ 作用域（那是内置包的命名空间，会被当成内置包处理）');
+		process.exit(1);
+	}
+}
 
 const files = {};
 
@@ -54,24 +89,28 @@ files['package.json'] = JSON.stringify({
 	scripts: { check: `node ./test/run-${moduleName}-check.mjs` },
 	// ⚠ `dsh.bundle.patch` 是**激活入口**：没有它插件不会进运行时（且宿主不报错，纯静默）
 	dsh: { bundle: { patch: './cordis.patch.yml' }, client: { platform: 'web', inject: ['@vssaros/dsh-workbenches'] } },
-	vssaros: {
-		workbench: {
-			title,
-			description: desc,
-			icon,
-			repository: `vssaros:${moduleName}`,
-			customFrame: true,
+	// external：**不写 `vssaros` 清单块**。那是给 VsSaros 宿主侧（活动栏 / 模块表）读的内置包协议；
+	// 外部包的身份由 `package` 字段派生（local:<包名>），入口由启动器按宿主快照自动列出。
+	...(external ? {} : {
+		vssaros: {
+			workbench: {
+				title,
+				description: desc,
+				icon,
+				repository: `vssaros:${moduleName}`,
+				customFrame: true,
+			},
+			activityBar: { icon, order },
 		},
-		activityBar: { icon, order },
-	},
+	}),
 }, null, 2) + '\n';
 
 // ⚠ bundle patch = **激活入口**。缺了它：profile 里 deps/bundles 都登记、宿主也不报错，
 //   但注册表里就是没有这个工作台（纯静默）—— 2026-10-24 真机就是这么浪费了两轮的。
 files['cordis.patch.yml'] = [
-	`# @vssaros/dsh-${moduleName} bundle patch：把本插件 insert 进运行时（缺了 = 静默不激活）。`,
+	`# ${pkgName} bundle patch：把本插件 insert 进运行时（缺了 = 静默不激活）。`,
 	'- insert:',
-	`    - id: vssaros-${moduleName}`,
+	`    - id: ${external ? pkgName.replace(/^@/, '').replace(/\//g, '-') : `vssaros-${moduleName}`}`,
 	`      name: '${pkgName}'`,
 	'      config: {}',
 	'',
@@ -123,8 +162,15 @@ files[join('lib', 'client.js')] = [
 	'// ⚠ 四条真机踩过的规矩：',
 	'//   ① 入口**不要**写 `chunk:`（会让整个 web boot 失败）；',
 	'//   ② 入口 `inject` 写宿主服务名；子块 `install(ctx)` 里再 `ctx.inject` 兜底；',
-	'//   ③ 描述符**必须带 `repository`**（`vssaros:<模块>` 或 https://github.com/<owner>/<repo>），',
-	'//      缺了宿主 `normalize()` 判 `Invalid workbench repository` ⇒ **静默不进注册表**；',
+	...(external
+		? [
+			`//   ③ 描述符写 \`package: '${pkgName}'\`（身份 local:<包名>）——**不要**写 repository / route / order，`,
+			'//      那些是内置包协议；缺了身份来源会被 `normalize()` 拒绝 ⇒ **静默不进注册表**；',
+		]
+		: [
+			'//   ③ 描述符**必须带 `repository`**（`vssaros:<模块>` 或 https://github.com/<owner>/<repo>），',
+			'//      缺了宿主 `normalize()` 会拒绝注册 ⇒ **静默不进注册表**（启动器会显示“装了但没能注册”+ 原因）；',
+		]),
 	'//   ④ 改过子块要再动一次本入口 + 升版本（chunk 守卫按 mtime 判）。',
 	'window.__ModuleLoader__.load({',
 	`\tid: '${pkgName}',`,
@@ -241,14 +287,23 @@ files[join('lib', `client.${moduleName}.js`)] = [
 	'',
 	'\t\t// 描述符必须在**组件文件**里（style 守卫用「含 desktopWorkbenches.register 的文件」当组件）',
 	'\t\tconst DESCRIPTOR = {',
-	`\t\t\trepository: 'vssaros:${moduleName}',   // ⚠ 必填：缺了宿主判 Invalid workbench repository`,
-	`\t\t\tid: 'vssaros/${moduleName}',`,
-	`\t\t\ttitle: '${title}',`,
-	`\t\t\tdescription: '${desc}',`,
-	`\t\t\ticon: '${icon}',`,
-	`\t\t\troute: '/x/${moduleName}/',`,
-	`\t\t\torder: ${order},`,
-	'\t\t\tcustomFrame: true,',
+	...(external ? [
+		// 外部包：身份由 `package` 派生为 `local:<包名>`（不要写 repository / id / route / order）；
+		// 不声明 customFrame ⇒ 标准分栏（左对话 / 右业务），业务宽度可用 layout.businessWidth（0.25–0.7）。
+		`\t\t\tpackage: '${pkgName}',   // ⚠ 必填（没有 repository 时靠它派生 local:<包名>）`,
+		`\t\t\ttitle: '${title}',`,
+		`\t\t\tdescription: '${desc}',`,
+		`\t\t\ticon: '${icon}',`,
+	] : [
+		`\t\t\trepository: 'vssaros:${moduleName}',   // ⚠ 内置包必填：缺了宿主拒绝注册（启动器会显示原因）`,
+		`\t\t\tid: 'vssaros/${moduleName}',`,
+		`\t\t\ttitle: '${title}',`,
+		`\t\t\tdescription: '${desc}',`,
+		`\t\t\ticon: '${icon}',`,
+		`\t\t\troute: '/x/${moduleName}/',`,
+		`\t\t\torder: ${order},`,
+		'\t\t\tcustomFrame: true,',
+	]),
 	'\t\t};',
 	'',
 	'\t\tfunction install(ctx) {',
@@ -278,16 +333,32 @@ files[join('README.md')] = [
 	'- 注册式工作台：左列表 / 右详情，颜色与尺寸全走共享层（`wb-*` + `--dsw-alias-*`）。',
 	'- 取数：`GET /x/' + moduleName + '/?format=json`（与 SSR 共用同一次装配）。',
 	'',
-	'## 本地验证',
-	'',
-	'```bash',
-	'node dsh-plugins/check-workbench-style.mjs      # 需把本包加入 UNIFIED 白名单',
-	'node dsh-plugins/check-workbench-catalog.mjs',
-	'node dsh-plugins/check-chat-surface-chunks.mjs',
-	'```',
-	'',
-	'> 骨架由 `dsh-workbench-authoring` 技能生成；探针需按本仓 `poc/dsh-p0/scripts/lib.mjs` 自己写（见技能 references/verification.md）。',
-	'',
+	...(external ? [
+		'## 本地验证与安装',
+		'',
+		'```bash',
+		`node ./test/run-${moduleName}-check.mjs     # 包内自检`,
+		'pnpm pack                                   # 产出 .tgz（宿主不代构建）',
+		'```',
+		'',
+		'装上：让 Agent 调 `install_local_workbench({ path: "<.tgz 绝对路径>" })`（会弹一次确认）。',
+		'`application` 为 `restart-required` 时**重启 Harness** 后，在工作台启动器（右键侧栏「工作台」）里出现。',
+		'重启之前启动器会提示“已安装，重启 Harness 后出现”，那是预期，不是失败。',
+		'',
+		`> 身份：\`local:${pkgName}\`（由描述符的 \`package\` 字段派生）。外部包**不需要**登记任何宿主表。`,
+		'',
+	] : [
+		'## 本地验证',
+		'',
+		'```bash',
+		'node dsh-plugins/check-workbench-style.mjs      # 需把本包加入 UNIFIED 白名单',
+		'node dsh-plugins/check-workbench-catalog.mjs',
+		'node dsh-plugins/check-chat-surface-chunks.mjs',
+		'```',
+		'',
+		'> 骨架由 `dsh-workbench-authoring` 技能生成；探针需按本仓 `poc/dsh-p0/scripts/lib.mjs` 自己写（见技能 references/verification.md）。',
+		'',
+	]),
 ].join('\n');
 
 // 包内自检（S15）：没有它，工作台一装出去就没有可跑的验收；守卫也会报红。
@@ -318,7 +389,9 @@ files[join('test', `run-${moduleName}-check.mjs`)] = [
 	'',
 	'const pkg = JSON.parse(read(\'package.json\'));',
 	`check('包名', pkg.name === '${pkgName}', pkg.name);`,
-	`check('清单声明工作台 title', pkg.vssaros?.workbench?.title === '${title}', pkg.vssaros?.workbench?.title);`,
+	...(external
+		? ["check('外部包不带 vssaros 清单块（内置包协议，外部包写了会被误当内置）', pkg.vssaros === undefined);"]
+		: [`check('清单声明工作台 title', pkg.vssaros?.workbench?.title === '${title}', pkg.vssaros?.workbench?.title);`]),
 	`check('注入自有宿主 @vssaros/dsh-workbenches', (pkg.dsh?.client?.inject || []).includes('@vssaros/dsh-workbenches'));`,
 	'const patchField = pkg.dsh?.bundle?.patch;',
 	"check('清单带 dsh.bundle.patch', /cordis\\.patch\\.yml/.test(String(Array.isArray(patchField) ? patchField.join(',') : patchField)), JSON.stringify(patchField));",
@@ -331,7 +404,13 @@ files[join('test', `run-${moduleName}-check.mjs`)] = [
 	'\t.sort((a, b) => (b.text.match(/\\bwb-[a-z-]+/g) || []).length - (a.text.match(/\\bwb-[a-z-]+/g) || []).length)[0];',
 	"check('找到工作台组件（含 register）', !!component, component?.p.split(/[\\\\/]/).pop());",
 	'const src = component ? component.text : \'\';',
-	`check('描述符带 repository（vssaros:${moduleName}）', /repository:\\s*'vssaros:${moduleName}'/.test(src));`,
+	...(external
+		? [
+			// 用 includes + JSON.stringify：包名里有 `/`（@scope/name），塞进正则字面量会截断它
+			`check('描述符带 package（local:<包名> 身份来源）', src.includes(${JSON.stringify(`package: '${pkgName}'`)}));`,
+			"check('描述符不写 repository（外部包身份由 package 派生）', !/^\\s*repository\\s*:/m.test(src));",
+		]
+		: [`check('描述符带 repository（vssaros:${moduleName}）', /repository:\\s*'vssaros:${moduleName}'/.test(src));`]),
 	"check('根节点有 data-vssaros-surface=\"workbench\"', /data-vssaros-surface['\"]?\\s*:\\s*['\"]workbench/.test(src));",
 	"check('工具条锚点恰好 1 个', (src.match(/data-dsh-workbench-toolbar/g) || []).length === 1);",
 	"const wbClasses = new Set(src.match(/\\bwb(?:-[a-z0-9]+)*\\b/g) || []);",
@@ -360,13 +439,30 @@ for (const [rel, content] of Object.entries(files)) {
 	written++;
 }
 
-console.log(`\n✓ 生成 ${written} 个文件 → ${outDir}`);
-console.log(`
+console.log(`\n✓ 生成 ${written} 个文件 → ${outDir}（${mode}）`);
+if (external) {
+	console.log(`
+外部包（local:${pkgName}）——不需要改任何宿主文件：
+  1) 把 lib/client.${moduleName}.js 里的面板换成你的业务（保持 wb-* 原语 + --dsw-alias-* 令牌）
+  2) node ${join(outDir, 'test', `run-${moduleName}-check.mjs`)}     # 包内自检
+  3) cd ${outDir} && pnpm pack                                   # 产出 .tgz
+  4) install_local_workbench({ path: "<.tgz 绝对路径>" }) → 按返回的 application 决定下一步
+     restart-required ⇒ 请用户重启 Harness（不要自己重启），之后在工作台启动器里打开
+  ⚠ 改过 lib/client.${moduleName}.js 之后要升版本并 touch lib/client.js（?rev 缓存纪律，同内置包）
+`);
+} else {
+	console.log(`
 接下来（漏一步都会被守卫抓）：
   1) 把 'vssaros-${moduleName}' 加进 dsh-plugins/check-workbench-style.mjs 的 UNIFIED 白名单
-  2) 在 dsh-plugins/vssaros-chat-surface/lib/client.workbenchNav.js 登记（DEFAULT_ITEMS / 启动器）
+  2) 登记宿主侧（按形态）：
+     · 整页模块（有 /x/${moduleName}/ 页面）：dsh-plugins/vssaros-chat-surface/lib/client.workbenchNav.js 的 DEFAULT_ITEMS、
+       dsh-plugins/vssaros-dashboard/lib/catalog.js 的 WORKBENCH_MODULES、
+       src/vs/sessions/contrib/dshHarness/common/dshModuleContainers.ts 的模块联合体 + DSH_BUILTIN_MODULES + 页面表
+     · 注册式（清单 view.kind='none'）：只需登记 dshModuleContainers.ts 的模块联合体 + DSH_BUILTIN_MODULES；
+       **不用**登记 DEFAULT_ITEMS（启动器会按宿主快照自动列出）
      —— 图标若是 codicon，同时加进 workbenchNav + market 两张 WB_ICON_EMOJI 表（逐字一致）
   3) node dsh-plugins/check-workbench-style.mjs && node dsh-plugins/check-workbench-catalog.mjs
      node dsh-plugins/check-chat-surface-chunks.mjs
   4) 写探针：注册表里有 vssaros/${moduleName} / 无 iframe / 卡片数 == 数据项数 / 切暗色颜色变
 `);
+}

@@ -1,6 +1,10 @@
 # 内置工作台 × 「制作模板」符合度评估
 
-**标准来源**：技能 `dsh-workbench-authoring`（`SKILL.md` 15 条坑 + `references/manifest-and-registration.md` 的激活三件套 + 共享层/令牌/容器查询/锚点/零 iframe 纪律）
+> 文档状态：**【历史·评估】**（2026-10）。当时的符合度快照，**不是流程依据**；
+> 流程只在 `doc/workbench-development-standard.md`。样本数已被后续改动超过，读它别当现状。
+
+**标准来源**：当时的技能 `dsh-workbench-authoring`（2026-11-02 已收口为指针，
+现以 `doc/workbench-development-standard.md` 为唯一流程源 + `resources/.agents/skills/workbench-authoring/` 为实现细节）。原文提到的：`SKILL.md` 15 条坑 + `references/manifest-and-registration.md` 的激活三件套 + 共享层/令牌/容器查询/锚点/零 iframe 纪律）
 **样本**：声明了 `vssaros.workbench` 的 **15 个包**（9 个已注册 + 6 个 SSR/站点型）
 **时间**：2026-10-24 · **脚本**：`%TEMP%\wb-standard-audit2.mjs`（结果 `%TEMP%\wb-standard-audit2.json`）
 

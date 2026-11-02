@@ -151,7 +151,9 @@ const groups = core.buildSessionGroups(rowsForGrouping);
 check('按 cwd 分组，未分组恒在最后', () => {
 	assert.equal(groups.length, 3);
 	assert.deepEqual(groups.map(g => g.key), [A, B, core.UNGROUPED_GROUP_KEY]);
-	assert.equal(groups[0].title, 'sarosis-agents-client');
+	// 2026-11-02：跟随 2026-10-24 的口径 —— 组标题取**末两段**（防同名不同根混淆），
+	// 所以 `...\SarosWorkspace\sarosis-agents-client` 的标题是 `SarosWorkspace/sarosis-agents-client`。
+	assert.equal(groups[0].title, 'SarosWorkspace/sarosis-agents-client');
 	assert.equal(groups[2].ungrouped, true);
 });
 const gA = groups[0];
@@ -191,8 +193,13 @@ check('容错：NaN / 负数 extra 不会让整组消失', () => {
 	assert.equal(core.computeGroupWindow(Array.from({ length: 10 }, (_, i) => ({ id: `x${i}` })), Number.NaN, core.isActiveSession).visible.length, 5);
 	assert.equal(core.computeGroupWindow(Array.from({ length: 10 }, (_, i) => ({ id: `x${i}` })), -3, core.isActiveSession).visible.length, 5);
 });
-check('路径末段同时认反斜杠（Windows cwd）', () => {
-	assert.equal(core.workspaceTitleOf('g:\\SarosWorkspace\\sarosis-agents-client'), 'sarosis-agents-client');
+check('路径末两段同时认反斜杠（Windows cwd）', () => {
+	// 2026-11-02：`workspaceTitleOf` 自 2026-10-24 起取**末两段**（同名不同根必须可分）。
+	// 断言改为跟随该口径，同时保留"反斜杠要认"这个原意（盘符不算一段）。
+	assert.equal(core.workspaceTitleOf('g:\\SarosWorkspace\\sarosis-agents-client'), 'SarosWorkspace/sarosis-agents-client');
+	// 单段路径（盘符 + 一段）当前实现会把盘符带出来（`g:/only-one`），这里**不固化**：
+	// 那是注释里"盘符不算段"未落地的部分，等它真的改了再补断言，别让测试替实现做决定。
+	assert.equal(core.lastPathSegment('g:\\SarosWorkspace\\sarosis-agents-client'), 'sarosis-agents-client');
 });
 
 console.log('── C1b. 空白会话不许吃掉可见配额（用户 2026-10-19 报「还是看不到那条历史会话」）──');
@@ -543,8 +550,17 @@ check('页面：清空按钮 → 页面内二次确认（带"影响多少条"）
 });
 check('清空**只影响列表**：不删任何文件；API 与页面同口径', () => {
 	assert.ok(!/\bunlinkSync\b|\brmSync\b|\bfs\.rm\(/.test(idxSrc), '清空历史不许删文件（删投影缓存＝假删除且不可逆 ✗）');
-	assert.ok(idxSrc.includes('filterHiddenByClear(scan.rows'), 'API 侧也必须过滤（否则页面与 API 各说各话）✗');
+	// ★ 2026-11-02：API 的输入从 `scan.rows` 变成 `apiScoped`（先按工作区范围过滤，再过滤清空）。
+	//   要守的不变量没变——**API 必须过滤被清空的会话**——只是字面量换了；这里按不变量断言（调用存在 + 输入来自 scan 的衍生物），
+	//   而不是钉某个变量名（否则下次换名又假红）。
+	assert.ok(/filterHiddenByClear\(\s*(scan\.rows|apiScoped)\b/.test(idxSrc), 'API 侧也必须过滤（否则页面与 API 各说各话）✗');
 	assert.ok(idxSrc.includes('clearedAt: apiPrefs.clearedAt'), 'API 要暴露清空状态（消费方要能区分"没有"和"被清空"）✗');
+});
+check('★ API 与页面**共用**同一个 `rowsInScope`（注册式工作台拿 API 时「仅当前工作区」不能静默无效）', () => {
+	// 回归：2026-11-02 之前只有 `pageHtml` 认 `scope=current`，`/api/sessions` 不认 ⇒ 客户端选了没效果。
+	assert.ok(/export function rowsInScope\(/.test(idxSrc), '范围过滤必须是一个共用函数 ✗');
+	assert.ok(/rowsInScope\(scan\.rows, scope, currentWorkspaceRoots\(\)\)/.test(idxSrc), 'API 侧要调 rowsInScope ✗');
+	assert.ok(/const scopedRows = rowsInScope\(scan\.rows, scope, workspaceRoots\)/.test(idxSrc), '页面侧也要调同一个 rowsInScope（不许各写一份）✗');
 });
 
 console.log('── J. 会话执行中实时更新状态（2026-10-19 用户报「item 状态不实时」）──');

@@ -65,7 +65,7 @@ await check('打包：排除 .git / 临时媒体 / 应用态 / 索引缓存', as
 	fs.writeFileSync(path.join(v, '笔记/a.md'), '# a\n', 'utf8');
 	fs.writeFileSync(path.join(v, '.tmp-media/big.mp4'), Buffer.alloc(1024, 1));
 	fs.writeFileSync(path.join(v, '.kbkernel.json'), '{}');
-	execFileSync('git', ['init', '-q'], { cwd: v, stdio: 'pipe' });
+	execFileSync('git', ['init', '-q'], { cwd: v, stdio: 'pipe', windowsHide: true });
 	try {
 		const b = await pub.preparePublishBundle({
 			dataRoot: '/tmp/dr', kind: 'knowledge', localId: 'k2', version: '1.0.0', sourceDir: v,

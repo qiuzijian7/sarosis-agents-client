@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>方案 C · 卡片仪表盘 · 记忆库布局</title>
+<style>
+:root { color-scheme: dark; }
+body { margin: 0; background: #14161a; color: #e6e6e6; font: 13px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+body.light { background: #eef0f2; color: #222; }
+.bar { position: sticky; top: 0; z-index: 9; background: #14161aee; backdrop-filter: blur(6px); border-bottom: 1px solid #2a2f36; padding: 10px 18px 9px; }
+body.light .bar { background: #eef0f2ee; border-color: #d4d8dc; }
+.bar h1 { font-size: 15px; margin: 0 0 2px; }
+.bar p { margin: 0; color: #9aa0a6; font-size: 12px; max-width: 880px; }
+.row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
+.lbl { color: #9aa0a6; font-size: 12px; min-width: 40px; }
+.chip { font: inherit; font-size: 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid #333a43; background: #1d2126; color: #cfd4da; cursor: pointer; }
+body.light .chip { background: #fff; color: #333; border-color: #c8ccd0; }
+.chip.on { background: #0e639c; border-color: transparent; color: #fff; }
+main { padding: 16px 18px 40px; }
+.fwin { border: 1px solid #2f353d; border-radius: 10px; overflow: hidden; box-shadow: 0 8px 24px #0006; }
+.fbar { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 10px; background: #1b1f24; border-bottom: 1px solid #2f353d; font-size: 12px; color: #b9bfc6; }
+.fbar .dot { width: 8px; height: 8px; border-radius: 2px; background: #6aa9e8; }
+.fbar .t { margin-left: auto; color: #7f868e; }
+.fpage { height: 720px; overflow: auto; container-type: inline-size; }
+.notes { margin-top: 14px; max-width: 720px; font-size: 12.5px; color: #c0c6cc; }
+body.light .notes { color: #444; }
+.notes b { color: #fff; } body.light .notes b { color: #000; }
+.notes ul { margin: 6px 0; padding-left: 20px; }
+.notes li { margin: 2px 0; }
+.fwin {
+	--v-fg:#cccccc; --v-desc:#9d9d9d; --v-border:#3a3a3a; --v-hover:#2a2d2e; --v-card:#252526;
+	--v-sel:#04395e; --v-selb:#007fd4; --v-btn:#0e639c; --v-ok:#3fb950; --v-warn:#cca700;
+	--v-err:#f14c4c; --v-info:#4daafc; --v-input:#313131; --v-badge:#4d4d4d; --v-accent:#b180d7;
+	--s1:4px; --s2:8px; --s3:12px; --f-xs:11px; --f-sm:12px; --f-md:13px;
+}
+body.light .fwin {
+	--v-fg:#3b3b3b; --v-desc:#767676; --v-border:#e0e0e0; --v-hover:#ececec; --v-card:#fff;
+	--v-sel:#0060c0; --v-selb:#0090f1; --v-btn:#0078d4; --v-ok:#107c10; --v-warn:#8a6d1f;
+	--v-err:#c4281c; --v-info:#006ab1; --v-input:#fff; --v-badge:#c8c8c8; --v-accent:#8a2be2;
+}
+.app { display: flex; flex-direction: column; height: 100%; background: #1f1f1f; color: var(--v-fg); font-size: var(--f-md); }
+body.light .app { background: #f8f8f8; }
+
+.h { display: flex; align-items: baseline; gap: var(--s2); padding: var(--s3) 14px 2px; }
+.h h1 { font-size: 15px; margin: 0; white-space: nowrap; }
+.h .sub { color: var(--v-desc); font-size: var(--f-xs); font-family: ui-monospace, Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.h .sp { flex: 1 1 auto; }
+.btn { font: inherit; font-size: var(--f-xs); padding: 1px 9px; border-radius: 999px; cursor: pointer; color: inherit;
+	background: transparent; border: 1px solid var(--v-border); white-space: nowrap; }
+.btn:hover { background: var(--v-hover); }
+.btn.pri { background: var(--v-btn); border-color: transparent; color: #fff; }
+.btn.dg { color: var(--v-err); border-color: var(--v-err); }
+
+.body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 6px 14px 12px; }
+.grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s2); }
+
+.card { border: 1px solid var(--v-border); border-radius: 8px; background: var(--v-card); display: flex; flex-direction: column; }
+.card > header { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--v-border); font-size: var(--f-xs); color: var(--v-desc); }
+.card > header .k { color: var(--v-fg); font-weight: 600; }
+.card > header .sp { flex: 1 1 auto; }
+.card .in { padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.card footer { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-top: 1px solid var(--v-border); font-size: var(--f-xs); }
+.card footer .sp { flex: 1 1 auto; }
+.num { font-size: 24px; line-height: 1.1; font-weight: 600; font-variant-numeric: tabular-nums; }
+.num small { font-size: var(--f-xs); font-weight: 400; color: var(--v-desc); margin-left: 4px; }
+.kv { display: flex; flex-wrap: wrap; gap: 4px; font-size: var(--f-xs); }
+.kv span { padding: 0 7px; border-radius: 999px; border: 1px solid var(--v-border); white-space: nowrap; }
+.mini { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.mini li { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 6px; align-items: start; padding: 3px 0; border-top: 1px dashed var(--v-border); }
+.mini li:first-child { border-top: 0; }
+.mini .tx { font-size: var(--f-sm); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+.mini .mt { font-size: var(--f-xs); color: var(--v-desc); }
+.mini .mt .wy { color: var(--v-warn); }
+.mini li.sel { background: var(--v-sel); }
+
+.meter { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--v-hover); }
+.meter i { display: block; height: 100%; }
+.meter .keep { background: var(--v-ok); } .meter .add { background: var(--v-warn); }
+
+.bars { display: flex; flex-direction: column; gap: 3px; font-size: var(--f-xs); }
+.br { display: grid; grid-template-columns: 62px minmax(0, 1fr) 34px; gap: 6px; align-items: center; }
+.br .bg { height: 10px; border-radius: 3px; background: var(--v-hover); overflow: hidden; }
+.br .bg i { display: block; height: 100%; background: var(--v-info); opacity: .85; }
+.br.auto .bg i { background: var(--v-ok); } .br.drop .bg i { background: var(--v-badge); }
+.br .n { text-align: right; font-variant-numeric: tabular-nums; }
+
+.note { font-size: var(--f-xs); color: var(--v-desc); line-height: 1.5; }
+.note b { color: var(--v-fg); }
+.qm { color: var(--v-warn); cursor: help; }
+
+.foot { position: sticky; bottom: 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 14px;
+	border-top: 1px solid var(--v-border); background: #1f1f1fee; backdrop-filter: blur(6px); font-size: var(--f-xs); }
+body.light .foot { background: #f8f8f8ee; }
+.foot .sp { flex: 1 1 auto; }
+.foot .hint { color: var(--v-desc); }
+.toast { margin: 0 14px 6px; padding: 3px 8px; border-radius: 5px; font-size: var(--f-xs); border: 1px solid var(--v-border);
+	background: var(--v-hover); display: flex; gap: 8px; align-items: center; }
+
+/* 宽一点就两列，卡片自己撑；窄栏一律单列 */
+@container (min-width: 520px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .card.wide { grid-column: 1 / -1; } }
+@container (max-width: 380px) {
+  .h { padding: 10px 10px 2px; }
+  .h .sub { display: none; }
+  .body, .foot { padding-left: 10px; padding-right: 10px; }
+  .num { font-size: 21px; }
+}
+body.embed .bar, body.embed .notes { display: none; }
+body.embed main { padding: 0; }
+body.embed .fwin { border: 0; border-radius: 0; box-shadow: none; }
+body.embed .fbar { display: none; }
+body.embed .fpage { height: 100vh; }
+</style>
+</head>
+<body>
+<div class="bar">
+	<h1>方案 C · 卡片仪表盘</h1>
+	<p>按「一屏看清五件事」组织：<b>待审 / 注入 / 漏斗 / 归档 / 运行时</b>各一张卡，每张卡只有一个主数字 + 一个动作。窄栏自动单列。</p>
+	<div class="row"><span class="lbl">宽度</span><span id="w"></span><span class="lbl">主题</span><span id="t"></span><span class="lbl">状态</span><span id="s"></span></div>
+</div>
+
+<main>
+	<div class="fwin" id="fwin">
+		<div class="fbar"><span class="dot"></span><span>记忆库</span><span class="t" id="fmeta">中栏</span></div>
+		<div class="fpage"><div class="app" id="app"></div></div>
+	</div>
+	<div class="notes">
+		<b>适合</b>
+		<ul>
+			<li>「这周攒了什么、健康不健康」优先于「现在要审哪一条」。</li>
+			<li>卡片彼此独立：某个源取不到时只塌一张卡，不会整页空。</li>
+		</ul>
+		<b>代价</b>
+		<ul>
+			<li>审核要进二级（卡片里只露 3 条预览），批量操作藏得比 A/B 深。</li>
+			<li>窄栏里卡片堆叠，滚动长度最长；卡片边框多了会有「仪表盘噪音」。</li>
+		</ul>
+		<b>来源</b>：卡片 + 单主数字取自 <code>dsh-longterm-memory</code> 的 8 格 Stat 与库路径卡；<b>†/⌊ 可信度字形与阈值脚注</b>取自 <code>dsh-living-memory</code>（`client.js:278-302`：&gt;70% 红、&gt;50% 橙，且把「建议换窗」写进脚注）；「累计 vs 时点」分列是同源结论。
+	</div>
+</main>
+
+<script>
+(function () {
+	'use strict';
+	var EMBED = /(?:^|[?&])embed=1/.test(location.search);
+	var S = { w: 760, theme: 'dark', scenario: 'ok', sel: {}, toast: null };
+	var DATA = [
+		{ id: 'a', kind: '习惯约定', text: '以后所有构建都必须先跑 typecheck 再打产物', hits: '2/2', why: 'judge-unavailable' },
+		{ id: 'b', kind: '强调提醒', text: '必须真的调用对应工具，不要只在回答里描述', hits: '4/2', why: 'weak-kind' },
+		{ id: 'c', kind: '项目规范', text: '导出包放在 dist/，每次改动都要 bump 版本号', hits: '1/2', why: 'hits<2' }
+	];
+	var esc = function (s) { return String(s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); };
+	var down = function () { return S.scenario === 'down'; };
+	var empty = function () { return S.scenario === 'empty'; };
+
+	function head() {
+		return '<div class="h"><h1>记忆库</h1><span class="sub">gr · ws-saros</span><span class="sp"></span>'
+			+ '<button class="btn" data-act="refresh">刷新</button></div>';
+	}
+	function cardPending() {
+		if (down()) { return '<section class="card wide"><header><span class="k">待审</span><span class="sp"></span><span>取不到</span></header>'
+			+ '<div class="in"><div class="note">网关不可达，这一格显示为未知而不是 0。</div></div>'
+			+ '<footer><span class="note">安装版 3111 / dev 3112</span><span class="sp"></span><button class="btn" data-act="diag">去诊断</button></footer></section>'; }
+		var selN = Object.keys(S.sel).filter(function (k) { return S.sel[k]; }).length;
+		var n = empty() ? 0 : 17;
+		return '<section class="card wide"><header><span class="k">待审</span><span class="sp"></span><span>' + (n ? '等你判断' : '已清空') + '</span></header>'
+			+ '<div class="in"><div class="num">' + n + '<small>条</small></div>'
+			+ (n ? '<ul class="mini">' + DATA.map(function (d) {
+				return '<li class="' + (S.sel[d.id] ? 'sel' : '') + '"><input type="checkbox" data-chk="' + d.id + '"' + (S.sel[d.id] ? ' checked' : '') + ' aria-label="选择">'
+					+ '<div><div class="tx">' + esc(d.text) + '</div><div class="mt">' + esc(d.kind) + ' · hits ' + d.hits + ' · <span class="wy">' + esc(d.why) + '</span></div></div></li>';
+			}).join('') + '</ul>' : '<div class="note">没有候选。达标条目已自动入库，见下方「记忆」。</div>')
+			+ '</div><footer><span class="note">' + (selN ? '已选 ' + selN : '点勾选可批量') + '</span><span class="sp"></span>'
+			+ (selN ? '<button class="btn pri" data-act="promote">批量提升</button><button class="btn" data-act="discard">丢弃</button>' : '<button class="btn" data-act="all">查看全部</button>')
+			+ '</footer></section>';
+	}
+	function cardInject() {
+		if (down()) { return '<section class="card"><header><span class="k">注入</span><span class="sp"></span><span>未知</span></header><div class="in"><div class="note">网关不可达</div></div></section>'; }
+		var use = empty() ? 0 : 288, budget = 1024;
+		return '<section class="card"><header><span class="k">注入</span><span></span><span class="sp"></span><span>本次会话冻结</span></header>'
+			+ '<div class="in"><div class="num">' + use + '<small>/ ' + budget + ' tok <span class="qm" title="估算：字符数 / 3，与引擎同口径">†</span></small></div>'
+			+ '<div class="meter"><i class="keep" style="width:' + (use ? (use - 96) / budget * 100 : 0) + '%"></i><i class="add" style="width:' + (use ? 96 / budget * 100 : 0) + '%"></i></div>'
+			+ '<div class="note">前綴稳定：前段未变，仅尾部 <b>+96</b>（可命中缓存）</div></div>'
+			+ '<footer><button class="btn" data-act="inject">看六块</button><span class="sp"></span><span class="note">' + Math.round(use / budget * 100) + '%</span></footer></section>';
+	}
+	function cardFunnel() {
+		var f = [['回合', 128], ['候选', 31], ['草稿', 24], ['自动', 2], ['人工', 4], ['丢弃', 3]];
+		return '<section class="card"><header><span class="k">沉淀漏斗</span><span class="sp"></span><span>累计</span></header>'
+			+ '<div class="in"><div class="bars">' + f.map(function (r) {
+				return '<div class="br ' + (r[0] === '自动' ? 'auto' : r[0] === '丢弃' ? 'drop' : '') + '"><span>' + r[0] + '</span>'
+					+ '<span class="bg"><i style="width:' + Math.max(2, r[1] / 128 * 100) + '%"></i></span><span class="n">' + r[1] + '</span></div>';
+			}).join('') + '</div>'
+			+ '<div class="note">「待审 17」是<b>时点值</b>，不在上面这条累计线里。</div></div>'
+			+ '<footer><button class="btn" data-act="maint">看口径</button><span class="sp"></span><span class="note">自 10-28</span></footer></section>';
+	}
+	function cardArchive() {
+		var n = empty() ? 0 : 12;
+		return '<section class="card"><header><span class="k">归档</span><span class="sp"></span><span>90 天可恢复</span></header>'
+			+ '<div class="in"><div class="num">' + n + '<small>条</small></div>'
+			+ '<div class="note">最近：部署端口 8011（superseded，剩 87 天）</div></div>'
+			+ '<footer><button class="btn" data-act="archive">打开</button><span class="sp"></span><span class="note">恢复不动现任</span></footer></section>';
+	}
+	function cardHealth() {
+		if (down()) { return '<section class="card"><header><span class="k">运行时</span><span class="sp"></span><span style="color:var(--v-err)">1 个问题</span></header>'
+			+ '<div class="in"><div class="note">网关不可达：<code>curl 127.0.0.1:3112/health</code></div></div>'
+			+ '<footer><button class="btn pri" data-act="diag">三步诊断</button></footer></section>'; }
+		return '<section class="card"><header><span class="k">运行时</span><span class="sp"></span><span style="color:var(--v-warn)">2 个问题</span></header>'
+			+ '<div class="in"><div class="kv"><span>网关 3112</span><span>schema v1</span><span>备份 3</span><span>索引 5000/5000</span><span>sweep 4 分钟前</span></div>'
+			+ '<div class="note">① 3 条草稿的判定路由未配 ② 12 条已归档仍被检索到</div></div>'
+			+ '<footer><button class="btn" data-act="reindex">重建索引</button><span class="sp"></span><button class="btn" data-act="diag">详情</button></footer></section>';
+	}
+	function memoryCard() {
+		var n = empty() ? 0 : 1204;
+		return '<section class="card"><header><span class="k">记忆</span><span class="sp"></span><span>长期</span></header>'
+			+ '<div class="in"><div class="num">' + n + '<small>条</small></div><div class="note">semantic 812 · episodic 260 · procedural 132</div></div>'
+			+ '<footer><button class="btn" data-act="memory">去检索</button><span class="sp"></span><span class="note">点标签=带条件搜索</span></footer></section>';
+	}
+	function render() {
+		document.body.classList.toggle('light', S.theme === 'light');
+		document.body.classList.toggle('embed', EMBED);
+		document.getElementById('fwin').style.width = EMBED ? '100%' : S.w + 'px';
+		document.getElementById('fmeta').textContent = S.w + 'px';
+		if (S.scenario === 'init') { /* 未使用 */ }
+		var body = '<div class="grid">' + cardPending() + (down() ? '' : cardInject()) + cardFunnel()
+			+ (down() ? '' : cardArchive() + memoryCard()) + cardHealth() + '</div>';
+		document.getElementById('app').innerHTML = head() + '<div class="body">' + body + '</div>'
+			+ (S.toast ? '<div class="toast">' + esc(S.toast) + '<span style="flex:1"></span><button class="btn" data-act="ok">知道了</button></div>' : '');
+	}
+	function buildBar(id, items, key, fmt) {
+		document.getElementById(id).innerHTML = items.map(function (v) {
+			return '<button class="chip' + (String(S[key]) === String(v) ? ' on' : '') + '" data-set="' + key + '" data-val="' + v + '">' + fmt(v) + '</button>';
+		}).join('');
+	}
+	function bars() {
+		buildBar('w', [320, 380, 520, 760, 1040], 'w', function (v) { return v + 'px'; });
+		buildBar('t', ['dark', 'light'], 'theme', function (v) { return v === 'dark' ? '深色' : '浅色'; });
+		buildBar('s', ['ok', 'empty', 'down'], 'scenario', function (v) { return ({ ok: '正常', empty: '空库', down: '网关故障' })[v]; });
+	}
+	document.addEventListener('click', function (ev) {
+		var b = ev.target.closest ? ev.target.closest('[data-set],[data-chk],[data-act]') : null;
+		if (!b) { return; }
+		var d = b.dataset;
+		if (d.set) { S[d.set] = d.set === 'w' ? Number(d.val) : d.val; S.toast = null; bars(); render(); return; }
+		if (d.chk) { ev.stopPropagation(); S.sel[d.chk] = !S.sel[d.chk]; render(); return; }
+		switch (d.act) {
+			case 'refresh': S.toast = '已重新读取'; break;
+			case 'promote': S.sel = {}; S.toast = '已提升，10 秒内可撤销'; break;
+			case 'discard': S.sel = {}; S.toast = '已丢弃，10 秒内可撤销'; break;
+			case 'all': S.toast = '打开完整收件箱（17 条）'; break;
+			case 'inject': S.toast = '六块 + 前缀比对（示例）'; break;
+			case 'maint': S.toast = '漏斗口径：累计事件，不含待审时点值'; break;
+			case 'archive': S.toast = '归档 12 条，90 天内可恢复'; break;
+			case 'memory': S.toast = '去检索 1204 条'; break;
+			case 'reindex': S.toast = '索引重建已排队'; break;
+			case 'diag': S.toast = '三步诊断：curl / 端口 / gateway.log'; break;
+			case 'ok': S.toast = null; break;
+			default: return;
+		}
+		bars(); render();
+	});
+	bars(); render();
+})();
+</script>
+</body>
+</html>

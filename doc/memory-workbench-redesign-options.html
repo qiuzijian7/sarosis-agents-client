@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>记忆工作台重构 · 三方案对比（R1/R2/R3）</title>
+<style>
+:root { color-scheme: dark; --colw: 360px; }
+body { margin: 0; background: #14161a; color: #e6e6e6; font: 13px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+body.light { background: #eef0f2; color: #222; }
+header { position: sticky; top: 0; z-index: 9; background: #14161aee; backdrop-filter: blur(6px); border-bottom: 1px solid #2a2f36; padding: 12px 20px 10px; }
+body.light header { background: #eef0f2ee; border-color: #d4d8dc; }
+h1 { font-size: 16px; margin: 0 0 2px; }
+.sub { margin: 0; color: #9aa0a6; font-size: 12px; max-width: 1060px; }
+.row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.lbl { color: #9aa0a6; font-size: 12px; min-width: 52px; }
+.chip { font: inherit; font-size: 12px; padding: 3px 11px; border-radius: 999px; border: 1px solid #333a43; background: #1d2126; color: #cfd4da; cursor: pointer; }
+body.light .chip { background: #fff; color: #333; border-color: #c8ccd0; }
+.chip.on { background: #0e639c; border-color: transparent; color: #fff; }
+main { padding: 16px 20px 60px; }
+.cols { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+.col { border: 1px solid #2f353d; border-radius: 10px; overflow: hidden; background: #1a1d22; }
+body.light .col { border-color: #d4d8dc; background: #fff; }
+.col > .hd { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-bottom: 1px solid #2f353d; font-size: 12px; }
+body.light .col > .hd { border-color: #e0e0e0; }
+.col > .hd b { font-size: 13px; }
+.col > .hd .sp { flex: 1 1 auto; }
+.col > .hd a { color: #4daafc; font-size: 11px; text-decoration: none; }
+body.light .col > .hd a { color: #006ab1; }
+.frame { width: var(--colw); height: 640px; border: 0; display: block; background: #1f1f1f; }
+table { border-collapse: collapse; width: 100%; max-width: 1120px; margin-top: 22px; font-size: 12.5px; }
+th, td { border: 1px solid #2a2f36; padding: 5px 8px; text-align: left; vertical-align: top; }
+body.light th, body.light td { border-color: #d4d8dc; }
+th { color: #9aa0a6; font-weight: 500; }
+td b { color: #fff; } body.light td b { color: #000; }
+.bad { color: #f14c4c; } .good { color: #3fb950; } .mid { color: #cca700; }
+.pick { margin-top: 20px; max-width: 1120px; display: flex; gap: 16px; flex-wrap: wrap; }
+.pick .box { flex: 1 1 340px; border: 1px solid #2a2f36; border-radius: 10px; padding: 12px 14px; font-size: 12.5px; }
+body.light .pick .box { border-color: #d4d8dc; }
+.pick h3 { margin: 0 0 6px; font-size: 13px; }
+.pick ul { margin: 4px 0 0; padding-left: 18px; color: #c0c6cc; }
+body.light .pick ul { color: #444; }
+.pick code { background: #22262c; padding: 0 4px; border-radius: 3px; font-size: 11.5px; }
+body.light .pick code { background: #dfe3e7; }
+a.lnk { color: #4daafc; } body.light a.lnk { color: #006ab1; }
+</style>
+</head>
+<body>
+<header>
+	<h1>记忆工作台重构 · 三方案对比（R1 / R2 / R3）</h1>
+	<p class="sub">承接 <a class="lnk" href="memory-workbench-current-review.html">当前页面优缺点分析</a>：功能深度我们第一、信息架构垫底。三个方案共用同一份数据与同一套主题令牌，只改<b>信息架构哲学</b>。重点看 300–380px（真实右栏）。</p>
+	<div class="row"><span class="lbl">预览宽度</span><span id="wbar"></span><span style="width:1px;height:16px;background:#2a2f36;margin:0 4px"></span>
+		<span class="lbl">主题</span><span id="tbar"></span><span style="width:1px;height:16px;background:#2a2f36;margin:0 4px"></span>
+		<a class="lnk" href="memory-layout-options.html">上一轮：纯布局 A/B/C →</a></div>
+</header>
+
+<main>
+	<div class="cols" id="cols">
+		<section class="col">
+			<div class="hd"><b>R1 收件箱优先</b><span class="sp"></span><a href="memory-ia-r1-inbox-first.html" target="_blank">单独打开 ↗</a></div>
+			<iframe class="frame" src="memory-ia-r1-inbox-first.html?embed=1" title="R1"></iframe>
+		</section>
+		<section class="col">
+			<div class="hd"><b>R2 仪表盘优先</b><span class="sp"></span><a href="memory-ia-r2-dashboard.html" target="_blank">单独打开 ↗</a></div>
+			<iframe class="frame" src="memory-ia-r2-dashboard.html?embed=1" title="R2"></iframe>
+		</section>
+		<section class="col">
+			<div class="hd"><b>R3 桌面应用骨架</b><span class="sp"></span><a href="memory-ia-r3-rail.html" target="_blank">单独打开 ↗</a></div>
+			<iframe class="frame" src="memory-ia-r3-rail.html?embed=1" title="R3"></iframe>
+		</section>
+	</div>
+
+	<table>
+		<tr><th style="width:130px">维度</th><th>R1 收件箱优先</th><th>R2 仪表盘优先</th><th>R3 桌面应用骨架</th></tr>
+		<tr><td>主页定位</td><td><b>今日 = 第一任务</b>（审核），其余进页签</td><td><b>一屏五件事</b>（六张卡 + 主数字）</td><td><b>导航为骨架</b>（左竖导航，可无限扩展）</td></tr>
+		<tr><td>300px 右栏</td><td><span class="good">原生可用</span>：徽标带折行 1–2 行，页签横滑，双栏自动单栏</td><td><span class="mid">可用</span>：卡片单列堆叠，滚动最长（~1100px）</td><td><span class="mid">可用</span>：竖导航退化成顶部分段 + 单栏</td></tr>
+		<tr><td>审一条</td><td><span class="good">1 步</span>：证据同屏（宽栏）→ 点提升</td><td><b>3 步</b>：进二级 → 选 → 提升</td><td>同 R1（宽屏证据在上下文栏）</td></tr>
+		<tr><td>看健康</td><td>徽标带（页签上方，随时可见）</td><td><span class="good">同屏卡片</span>（最全，且单卡可独立降级）</td><td>徽标带 + <b>导航底部常驻状态点</b></td></tr>
+		<tr><td>扩展性</td><td>页签 +1 = 加一栏</td><td>每加一块 = 加一张卡（会挤）</td><td><span class="good">最强</span>：加「图谱/策略」只是多一个导航项</td></tr>
+		<tr><td>实现成本</td><td><span class="good">低</span>（现有 api 全够）</td><td><span class="mid">中</span>（卡片独立降级逻辑）</td><td><span class="bad">高</span>（两套导航形态 + 三区断点）</td></tr>
+		<tr><td>最大风险</td><td>窄栏里「详情顶置」多一步返回</td><td>批量藏太深；卡片边框多 = 仪表盘噪音</td><td>窄栏退化路径要测透，否则右栏体验倒退</td></tr>
+		<tr><td>主要参考</td><td>longterm 徽标带/6 段 · evolve 页签徽标 · eternal 位置标签+冻结 · living 可信度</td><td>longterm Stat 卡 · living ⌊/† 脚注 · eternal 降级诊断</td><td>longterm 页面骨架 · evolve 页签组</td></tr>
+	</table>
+
+	<div class="pick">
+		<div class="box">
+			<h3>我的建议：<b>R1 起步，R3 是终态</b></h3>
+			<ul>
+				<li>R1 把 P0 三个缺点（长滚动 / 文字状态条 / 无诊断页）一次改掉，成本最低、右栏最稳。</li>
+				<li>R3 的导航骨架是长期目标：等未来加「图谱 / 策略 / 多分区」时再升，届时大部分区域代码可平移。</li>
+				<li>R2 不建议单独上：它的卡可以并进 R1 的「维护」页，兼得「一屏看全」。</li>
+			</ul>
+		</div>
+		<div class="box">
+			<h3>确认方式（回一个字母即可）</h3>
+			<ul>
+				<li><code>R1</code> / <code>R2</code> / <code>R3</code> 单独做。</li>
+				<li><code>R1+维护卡片</code> = R1 主页 + R2 的卡并入维护页（推荐）。</li>
+				<li>或直接说「R1 但要 xxx」，我按你的话改。</li>
+			</ul>
+		</div>
+	</div>
+</main>
+
+<script>
+(function () {
+	'use strict';
+	var W = [300, 360, 520, 760];
+	var S = { w: 360, theme: 'dark' };
+	function buildW() {
+		document.getElementById('wbar').innerHTML = W.map(function (v) {
+			return '<button class="chip' + (S.w === v ? ' on' : '') + '" data-w="' + v + '">' + v + 'px</button>';
+		}).join('');
+		document.documentElement.style.setProperty('--colw', S.w + 'px');
+	}
+	function buildT() {
+		document.getElementById('tbar').innerHTML = ['dark', 'light'].map(function (v) {
+			return '<button class="chip' + (S.theme === v ? ' on' : '') + '" data-t="' + v + '">' + (v === 'dark' ? '深色' : '浅色') + '</button>';
+		}).join('');
+		document.body.classList.toggle('light', S.theme === 'light');
+	}
+	document.addEventListener('click', function (ev) {
+		var b = ev.target.closest ? ev.target.closest('[data-w],[data-t]') : null;
+		if (!b) { return; }
+		if (b.dataset.w) { S.w = Number(b.dataset.w); buildW(); }
+		if (b.dataset.t) { S.theme = b.dataset.t; buildT(); }
+	});
+	buildW(); buildT();
+})();
+</script>
+</body>
+</html>

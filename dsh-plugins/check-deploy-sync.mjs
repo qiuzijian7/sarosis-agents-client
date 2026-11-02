@@ -63,7 +63,7 @@ check('⑥ 复制失败变成可读错误（不抛栈）', () => {
 });
 
 check('⑦ 脚本本身能跑（--verify 不崩、退出码 0）', () => {
-	const out = execFileSync(process.execPath, [SRC, '--verify', 'vssaros-kb'], { encoding: 'utf8' });
+	const out = execFileSync(process.execPath, [SRC, '--verify', 'vssaros-kb'], { encoding: 'utf8', windowsHide: true });
 	assert.ok(out.includes('vssaros-kb'), '输出里没有插件名');
 });
 

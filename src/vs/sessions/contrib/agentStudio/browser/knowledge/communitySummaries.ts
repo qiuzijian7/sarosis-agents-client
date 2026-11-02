@@ -8,7 +8,7 @@
  *  本模块在检测之后追加一次（仅一次）LLM 调用，为每个社区生成「主题名 + 摘要」：
  *   - 成本控制：社区按规模降序取 top N、成员标题截断、所有社区合并为单次调用；
  *   - 缓存：按「成员指纹」（成员标题归一排序 join）命中直接复用，社区重编号不影响命中，
- *     落盘 <notesDir>/.kb-insights-cache.json（点开头，_collectMdFiles 自动跳过）；
+ *     落盘 <notesDir>/.kb/insights-cache.json（点开头，_collectMdFiles 自动跳过）；
  *   - 降级：无 chatModel / 调用失败 ⇒ 返回已缓存部分，调用方回退纯成员列表，管线不阻塞。
  *--------------------------------------------------------------------------------------------*/
 
@@ -18,7 +18,7 @@ import { IFileService } from '../../../../../platform/files/common/files.js';
 import type { IChatModel } from './llm.js';
 
 /** 缓存文件名（点开头：不会被 _collectMdFiles 当笔记扫描）。 */
-export const KB_INSIGHTS_CACHE_FILE = '.kb-insights-cache.json';
+export const KB_INSIGHTS_CACHE_FILE = '.kb/insights-cache.json';
 
 /** 参与摘要的社区数上限（按规模降序）。 */
 const MAX_COMMUNITIES = 8;

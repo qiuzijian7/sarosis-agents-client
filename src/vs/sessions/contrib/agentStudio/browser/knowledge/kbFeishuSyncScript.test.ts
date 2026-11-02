@@ -66,7 +66,7 @@ function noteWith(block: Record<string, string>, body: string): string {
  */
 function vaultWithSyncedNote(): { vault: string; src: string; note: string; rel: string; hash: string } {
 	const vault = tmpVault();
-	const src = '库/AI';
+	const src = '数据源/AI';
 	const rel = `${src}/01-基础概念/笔记A.md`;
 	const note = path.join(vault, ...rel.split('/'));
 	const body = '# 标题\n\n正文内容。\n';
@@ -239,15 +239,15 @@ suite('feishu-sync 脚本 · 改名 / 移动 / 类别改名', () => {
 
 	suite('类别推导（categoryOf）', () => {
 		test('默认取 src 下第 1 级目录；更深层级可选', () => {
-			assert.strictEqual(sync.categoryOf('库/AI/01-基础概念/子/笔记.md', '库/AI', 1), '01-基础概念');
-			assert.strictEqual(sync.categoryOf('库/AI/01-基础概念/子/笔记.md', '库/AI', 2), '01-基础概念/子');
+			assert.strictEqual(sync.categoryOf('数据源/AI/01-基础概念/子/笔记.md', '数据源/AI', 1), '01-基础概念');
+			assert.strictEqual(sync.categoryOf('数据源/AI/01-基础概念/子/笔记.md', '数据源/AI', 2), '01-基础概念/子');
 		});
 		test('文件直接在 src 根下 ⇒ null（走默认落点，不新建知识库）', () => {
-			assert.strictEqual(sync.categoryOf('库/AI/00-首页.md', '库/AI', 1), null);
+			assert.strictEqual(sync.categoryOf('数据源/AI/00-首页.md', '数据源/AI', 1), null);
 		});
 		test('depth = 0 ⇒ 不分类别；src 前缀不匹配 ⇒ null', () => {
-			assert.strictEqual(sync.categoryOf('库/AI/01-x/a.md', '库/AI', 0), null);
-			assert.strictEqual(sync.categoryOf('库/别的/01-x/a.md', '库/AI', 1), null);
+			assert.strictEqual(sync.categoryOf('数据源/AI/01-x/a.md', '数据源/AI', 0), null);
+			assert.strictEqual(sync.categoryOf('数据源/别的/01-x/a.md', '数据源/AI', 1), null);
 		});
 	});
 
@@ -255,27 +255,27 @@ suite('feishu-sync 脚本 · 改名 / 移动 / 类别改名', () => {
 		test('缺失或损坏的索引 ⇒ 空 v2 结构（不抛错）', () => {
 			const vault = tmpVault();
 			assert.deepStrictEqual(sync.loadIndex(vault), { version: 2, spaces: {}, files: {}, mindmaps: {} });
-			fs.writeFileSync(path.join(vault, '.feishu-sync.json'), '{ not json', 'utf8');
+			fs.writeFileSync(path.join(vault, '.kb/feishu-sync.json'), '{ not json', 'utf8');
 			assert.deepStrictEqual(sync.loadIndex(vault), { version: 2, spaces: {}, files: {}, mindmaps: {} });
 		});
 		test('v1 扁平结构自动迁移进 files', () => {
 			const vault = tmpVault();
-			fs.writeFileSync(path.join(vault, '.feishu-sync.json'),
-				JSON.stringify({ '库/AI/a.md': { token: TOKEN_A, hash: 'H1' } }), 'utf8');
+			fs.writeFileSync(path.join(vault, '.kb/feishu-sync.json'),
+				JSON.stringify({ '数据源/AI/a.md': { token: TOKEN_A, hash: 'H1' } }), 'utf8');
 			const idx = sync.loadIndex(vault);
 			assert.strictEqual(idx.version, 2);
-			assert.strictEqual(idx.files['库/AI/a.md'].token, TOKEN_A);
+			assert.strictEqual(idx.files['数据源/AI/a.md'].token, TOKEN_A);
 			assert.deepStrictEqual(idx.spaces, {});
 		});
 		test('saveIndex → loadIndex 往返保留 spaces 与 files', () => {
 			const vault = tmpVault();
 			sync.saveIndex(vault, {
 				spaces: { '01-x': { spaceId: SPACE_1, name: '01-x' } },
-				files: { '库/AI/01-x/a.md': { token: TOKEN_A, hash: 'H1', space: SPACE_1, node: 'N1' } },
+				files: { '数据源/AI/01-x/a.md': { token: TOKEN_A, hash: 'H1', space: SPACE_1, node: 'N1' } },
 			});
 			const back = sync.loadIndex(vault);
 			assert.strictEqual(back.spaces['01-x'].spaceId, SPACE_1);
-			assert.strictEqual(back.files['库/AI/01-x/a.md'].node, 'N1');
+			assert.strictEqual(back.files['数据源/AI/01-x/a.md'].node, 'N1');
 		});
 	});
 
@@ -424,8 +424,8 @@ suite('feishu-sync 脚本 · 改名 / 移动 / 类别改名', () => {
 
 		test('无类别（src 根下）⇒ 落点由 parentSpace 决定（my_library 可被 wiki 识别）', () => {
 			const vault = tmpVault();
-			writeFileEnsured(path.join(vault, '库/AI/根笔记.md'), '# 根笔记\n');
-			const plan = sync.collectPlan(vault, ['库/AI'], { categoryDepth: 1, index: sync.loadIndex(vault) });
+			writeFileEnsured(path.join(vault, '数据源/AI/根笔记.md'), '# 根笔记\n');
+			const plan = sync.collectPlan(vault, ['数据源/AI'], { categoryDepth: 1, index: sync.loadIndex(vault) });
 			sync.computeTargets(plan, SPACES, 'my_library');
 			assert.strictEqual(plan[0].targetSpace, 'my_library');
 			assert.strictEqual(plan[0].needsMove, false, '新建文档不搬迁');
@@ -435,8 +435,8 @@ suite('feishu-sync 脚本 · 改名 / 移动 / 类别改名', () => {
 
 		test('新建文档（无 token）不参与搬迁，直接落到目标知识库', () => {
 			const vault = tmpVault();
-			writeFileEnsured(path.join(vault, '库/AI/01-x/新笔记.md'), '# 新笔记\n');
-			const plan = sync.collectPlan(vault, ['库/AI'], { categoryDepth: 1, index: sync.loadIndex(vault) });
+			writeFileEnsured(path.join(vault, '数据源/AI/01-x/新笔记.md'), '# 新笔记\n');
+			const plan = sync.collectPlan(vault, ['数据源/AI'], { categoryDepth: 1, index: sync.loadIndex(vault) });
 			sync.computeTargets(plan, { '01-x': { spaceId: SPACE_1, name: '01-x' } });
 			assert.strictEqual(plan[0].action, 'create');
 			assert.strictEqual(plan[0].targetSpace, SPACE_1);
@@ -502,61 +502,61 @@ suite('feishu-sync 脚本 · 改名 / 移动 / 类别改名', () => {
 	suite('★ 用户自定义「目录 ↔ 知识库」映射', () => {
 		test('最长前缀匹配：更具体的目录优先', () => {
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			const plan: any[] = [{ rel: '库/AI/01-x/a.md' }, { rel: '库/AI/02-y/b.md' }];
+			const plan: any[] = [{ rel: '数据源/AI/01-x/a.md' }, { rel: '数据源/AI/02-y/b.md' }];
 			const spaces: Record<string, { spaceId: string; name?: string }> = {};
 			const applied = sync.applyExplicitMappings(plan, spaces, [
-				{ dir: '库/AI', spaceId: 'SP_ROOT', spaceName: '根库' },
-				{ dir: '库/AI/01-x', spaceId: 'SP_X', spaceName: 'X 库' },
+				{ dir: '数据源/AI', spaceId: 'SP_ROOT', spaceName: '根库' },
+				{ dir: '数据源/AI/01-x', spaceId: 'SP_X', spaceName: 'X 库' },
 			]);
-			assert.strictEqual(plan[0].category, '库/AI/01-x');
-			assert.strictEqual(plan[1].category, '库/AI');
-			assert.strictEqual(spaces['库/AI/01-x'].spaceId, 'SP_X');
-			assert.strictEqual(spaces['库/AI'].spaceId, 'SP_ROOT');
+			assert.strictEqual(plan[0].category, '数据源/AI/01-x');
+			assert.strictEqual(plan[1].category, '数据源/AI');
+			assert.strictEqual(spaces['数据源/AI/01-x'].spaceId, 'SP_X');
+			assert.strictEqual(spaces['数据源/AI'].spaceId, 'SP_ROOT');
 			assert.strictEqual(applied.length, 2);
 		});
 
 		test('未命中的文档保持原类别（不影响类别层级推导结果）', () => {
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			const plan: any[] = [{ rel: '库/别的/a.md', category: '别的' }];
+			const plan: any[] = [{ rel: '数据源/别的/a.md', category: '别的' }];
 			const spaces: Record<string, { spaceId: string }> = {};
-			assert.deepStrictEqual(sync.applyExplicitMappings(plan, spaces, [{ dir: '库/AI', spaceId: 'S1' }]), []);
+			assert.deepStrictEqual(sync.applyExplicitMappings(plan, spaces, [{ dir: '数据源/AI', spaceId: 'S1' }]), []);
 			assert.strictEqual(plan[0].category, '别的');
 			assert.deepStrictEqual(spaces, {});
 		});
 
 		test('路径归一（反斜杠 / 尾斜杠）且忽略非法项', () => {
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			const plan: any[] = [{ rel: '库/AI/01-x/a.md' }];
+			const plan: any[] = [{ rel: '数据源/AI/01-x/a.md' }];
 			const spaces: Record<string, { spaceId: string }> = {};
 			const applied = sync.applyExplicitMappings(plan, spaces, [
-				{ dir: '库\\AI\\01-x\\', spaceId: 'SP_X' },
+				{ dir: '数据源\\AI\\01-x\\', spaceId: 'SP_X' },
 				{ dir: '', spaceId: 'BAD' },
-				{ dir: '库/AI/02', spaceId: '' },
+				{ dir: '数据源/AI/02', spaceId: '' },
 			]);
 			assert.deepStrictEqual(applied.map((a: { spaceId: string }) => a.spaceId), ['SP_X']);
-			assert.strictEqual(plan[0].category, '库/AI/01-x');
+			assert.strictEqual(plan[0].category, '数据源/AI/01-x');
 		});
 
 		test('以用户配置覆盖已有 spaceId（用户显式配置即权威）', () => {
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			const plan: any[] = [{ rel: '库/AI/01-x/a.md', category: '01-x' }];
-			const spaces: Record<string, { spaceId: string; name?: string }> = { '库/AI/01-x': { spaceId: 'OLD' } };
-			sync.applyExplicitMappings(plan, spaces, [{ dir: '库/AI/01-x', spaceId: 'NEW', spaceName: '新名' }]);
-			assert.strictEqual(spaces['库/AI/01-x'].spaceId, 'NEW');
-			assert.strictEqual(spaces['库/AI/01-x'].name, '新名');
+			const plan: any[] = [{ rel: '数据源/AI/01-x/a.md', category: '01-x' }];
+			const spaces: Record<string, { spaceId: string; name?: string }> = { '数据源/AI/01-x': { spaceId: 'OLD' } };
+			sync.applyExplicitMappings(plan, spaces, [{ dir: '数据源/AI/01-x', spaceId: 'NEW', spaceName: '新名' }]);
+			assert.strictEqual(spaces['数据源/AI/01-x'].spaceId, 'NEW');
+			assert.strictEqual(spaces['数据源/AI/01-x'].name, '新名');
 		});
 
 		test('loadSpaceMap：数组 / 极简对象 / 缺失 / 损坏 一律不抛错', () => {
 			const vault = tmpVault();
 			assert.deepStrictEqual(sync.loadSpaceMap(vault), [], '文件不存在 ⇒ 空表');
-			fs.writeFileSync(path.join(vault, '.feishu-space-map.json'), '{ broken', 'utf8');
+			fs.writeFileSync(path.join(vault, '.kb/space-map.json'), '{ broken', 'utf8');
 			assert.deepStrictEqual(sync.loadSpaceMap(vault), [], '损坏 JSON ⇒ 空表（不影响同步）');
-			fs.writeFileSync(path.join(vault, '.feishu-space-map.json'),
-				JSON.stringify({ version: 1, mappings: [{ dir: '库/A', spaceId: 'S1', spaceName: 'A 库' }] }), 'utf8');
-			assert.deepStrictEqual(sync.loadSpaceMap(vault), [{ dir: '库/A', spaceId: 'S1', spaceName: 'A 库' }]);
-			fs.writeFileSync(path.join(vault, '.feishu-space-map.json'),
-				JSON.stringify({ mappings: { '库/B': 'S2' } }), 'utf8');
-			assert.deepStrictEqual(sync.loadSpaceMap(vault), [{ dir: '库/B', spaceId: 'S2', spaceName: '' }]);
+			fs.writeFileSync(path.join(vault, '.kb/space-map.json'),
+				JSON.stringify({ version: 1, mappings: [{ dir: '数据源/A', spaceId: 'S1', spaceName: 'A 库' }] }), 'utf8');
+			assert.deepStrictEqual(sync.loadSpaceMap(vault), [{ dir: '数据源/A', spaceId: 'S1', spaceName: 'A 库' }]);
+			fs.writeFileSync(path.join(vault, '.kb/space-map.json'),
+				JSON.stringify({ mappings: { '数据源/B': 'S2' } }), 'utf8');
+			assert.deepStrictEqual(sync.loadSpaceMap(vault), [{ dir: '数据源/B', spaceId: 'S2', spaceName: '' }]);
 		});
 	});
 
@@ -587,20 +587,20 @@ suite('feishuSyncCore · 映射配置与知识库列表', () => {
 		assert.deepStrictEqual(parseSpaceMap(''), []);
 		assert.deepStrictEqual(parseSpaceMap('{ broken'), []);
 		assert.deepStrictEqual(
-			parseSpaceMap(JSON.stringify({ version: 1, mappings: [{ dir: '库/A', spaceId: 'S1', spaceName: 'A 库' }] })),
-			[{ dir: '库/A', spaceId: 'S1', spaceName: 'A 库' }]);
-		assert.deepStrictEqual(parseSpaceMap(JSON.stringify({ mappings: { '库/B': 'S2' } })),
-			[{ dir: '库/B', spaceId: 'S2', spaceName: '' }]);
+			parseSpaceMap(JSON.stringify({ version: 1, mappings: [{ dir: '数据源/A', spaceId: 'S1', spaceName: 'A 库' }] })),
+			[{ dir: '数据源/A', spaceId: 'S1', spaceName: 'A 库' }]);
+		assert.deepStrictEqual(parseSpaceMap(JSON.stringify({ mappings: { '数据源/B': 'S2' } })),
+			[{ dir: '数据源/B', spaceId: 'S2', spaceName: '' }]);
 		assert.deepStrictEqual(
-			parseSpaceMap(JSON.stringify({ mappings: [{ dir: '', spaceId: 'S' }, { dir: '库/C', spaceId: '' }] })),
+			parseSpaceMap(JSON.stringify({ mappings: [{ dir: '', spaceId: 'S' }, { dir: '数据源/C', spaceId: '' }] })),
 			[], '缺 dir 或 spaceId 的项应被忽略');
 	});
 
 	test('serializeSpaceMap → parseSpaceMap 往返无损（面板保存后脚本可读）', () => {
-		const list = [{ dir: '库/A/01-x', spaceId: 'S1', spaceName: 'X 库' }, { dir: '库/B', spaceId: 'S2' }];
+		const list = [{ dir: '数据源/A/01-x', spaceId: 'S1', spaceName: 'X 库' }, { dir: '数据源/B', spaceId: 'S2' }];
 		assert.deepStrictEqual(parseSpaceMap(serializeSpaceMap(list)), [
-			{ dir: '库/A/01-x', spaceId: 'S1', spaceName: 'X 库' },
-			{ dir: '库/B', spaceId: 'S2', spaceName: '' },
+			{ dir: '数据源/A/01-x', spaceId: 'S1', spaceName: 'X 库' },
+			{ dir: '数据源/B', spaceId: 'S2', spaceName: '' },
 		]);
 	});
 
@@ -663,9 +663,9 @@ suite('思维导图结构（buildMindmapNodes / mindmapHash）', () => {
 	});
 
 	test('结构指纹：结构未变 ⇒ 指纹相同（据此跳过远端更新）', () => {
-		const a = sync.buildMindmapNodes('库', [{ rel: 'x/a.md', title: 'A' }]);
-		const b = sync.buildMindmapNodes('库', [{ rel: 'x/a.md', title: 'A' }]);
-		const c = sync.buildMindmapNodes('库', [{ rel: 'x/a.md', title: 'A' }, { rel: 'x/b.md', title: 'B' }]);
+		const a = sync.buildMindmapNodes('数据源', [{ rel: 'x/a.md', title: 'A' }]);
+		const b = sync.buildMindmapNodes('数据源', [{ rel: 'x/a.md', title: 'A' }]);
+		const c = sync.buildMindmapNodes('数据源', [{ rel: 'x/a.md', title: 'A' }, { rel: 'x/b.md', title: 'B' }]);
 		assert.strictEqual(sync.mindmapHash(a), sync.mindmapHash(b));
 		assert.notStrictEqual(sync.mindmapHash(a), sync.mindmapHash(c), '新增笔记必须让指纹变化');
 		assert.strictEqual(sync.mindmapHash([]), sync.mindmapHash([]));
@@ -872,7 +872,7 @@ suite('KB URL 导入 · 纯函数（slug / 图片路径 / HTML 兜底）', () =>
  */
 suite('sync 报告（formatSyncReport）· --plan-file', () => {
 	const baseReport = {
-		dryRun: true, vault: 'C:/vault', src: ['笔记/A'],
+		dryRun: true, vault: 'C:/vault', src: ['知识库列表/A'],
 		done: 0, skip: 3, total: 5, at: '2026-09-24T00:00:00.000Z',
 		summary: ['计划: create=2 update=1 skip=3 (共 5)'],
 		items: ['计划 create 笔记/A/x.md → SP1111111111', '失败 update 笔记/A/y.md — boom'],

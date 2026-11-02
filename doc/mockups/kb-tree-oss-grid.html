@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>知识库树 · 6 种画法并排对比</title>
+<style>
+	:root { --bg:#141414; --panel-bg:#252526; --line:#2b2b2b; --fg:#d4d4d4; --fg-mid:#a8a8a8; --fg-dim:#8a8a8a; --fg-faint:#6b6b6b; --accent:#3794ff; }
+	* { box-sizing: border-box; }
+	body { margin:0; padding:22px 24px 48px; background:var(--bg); color:var(--fg); font:13px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; -webkit-font-smoothing:antialiased; }
+	h1 { font-size:15px; font-weight:650; margin:0 0 4px; }
+	.tip { color:var(--fg-faint); font-size:11.5px; margin:0 0 18px; max-width:1000px; }
+	.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:18px; }
+	.cell { background:#181818; border:1px solid #2a2a2a; border-radius:10px; padding:12px 12px 10px; }
+	.cell h3 { margin:0; font-size:12.5px; font-weight:650; }
+	.cell .src { color:var(--fg-faint); font-size:10.5px; margin:2px 0 9px; }
+	.panel { height:330px; overflow:hidden; background:var(--panel-bg); border:1px solid #333; border-radius:7px; }
+	.pbar { display:flex; align-items:center; height:26px; padding:0 8px; font-size:11px; color:var(--fg-mid); border-bottom:1px solid var(--line); }
+	.pbar .r { margin-left:auto; font-size:9.5px; color:var(--fg-faint); }
+	.sec { padding:6px 4px 2px; }
+	.sec-head { display:flex; align-items:center; gap:5px; height:22px; padding:0 6px; opacity:.7; }
+	.sec-head .t { font-size:11px; font-weight:650; color:var(--fg-dim); }
+	.sec-head .n { font-size:9.5px; color:var(--fg-faint); }
+
+	.row { display:flex; align-items:center; gap:6px; position:relative; min-width:0; }
+	.row .nm { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+	.row .chev { flex:0 0 auto; text-align:center; color:var(--fg-faint); }
+	.row .ico { flex:0 0 auto; text-align:center; line-height:1; }
+	.row .meta { flex:0 0 auto; margin-left:auto; color:var(--fg-faint); }
+	.row .acts { flex:0 0 auto; display:none; gap:5px; margin-left:auto; color:var(--fg-faint); font-size:11px; }
+
+	.o1 .row { height:27px; margin-right:6px; border-radius:4px; font-size:13px; }
+	.o1 .row .chev { width:10px; font-size:8px; opacity:.55; }
+	.o1 .guide { align-self:stretch; width:16px; flex:0 0 16px; border-left:1px solid rgba(127,127,127,.14); }
+	.o1 .row.hover { background:rgba(127,127,127,.09); }
+	.o1 .row.sel { background:rgba(127,127,127,.16); }
+	.o1 .row.cur { background:rgba(55,148,255,.10); }
+
+	.l1 .row { height:26px; font-size:13px; }
+	.l1 .guide { align-self:stretch; width:18px; flex:0 0 18px; border-left:1px solid rgba(127,127,127,.20); }
+	.l1 .dot { flex:0 0 8px; width:8px; height:8px; border-radius:50%; border:1.5px solid rgba(127,127,127,.55); }
+	.l1 .row.open .dot { background:rgba(127,127,127,.65); border-color:rgba(127,127,127,.65); }
+	.l1 .row.sel { background:rgba(127,127,127,.10); border-radius:3px; }
+	.l1 .row.cur .nm { color:#fff; font-weight:600; }
+
+	.j1 .row { height:30px; padding-right:6px; font-size:13.5px; }
+	.j1 .row .chev { width:12px; font-size:9px; }
+	.j1 .row .ico { width:15px; font-size:12px; }
+	.j1 .badge { margin-left:auto; flex:0 0 auto; height:16px; min-width:18px; padding:0 6px; display:inline-flex; align-items:center; justify-content:center; border-radius:8px; background:rgba(127,127,127,.22); color:var(--fg-mid); font-size:10px; font-weight:600; }
+	.j1 .row.sel { background:rgba(55,148,255,.28); color:#fff; }
+	.j1 .row.cur { background:rgba(55,148,255,.16); }
+
+	.s1 .row { height:26px; margin:0 4px; border-radius:4px; font-size:12.5px; }
+	.s1 .row .chev { width:10px; font-size:8px; opacity:.5; }
+	.s1 .row:hover .acts { display:flex; }
+	.s1 .row.sel { background:rgba(127,127,127,.14); box-shadow:inset 3px 0 0 var(--accent); }
+	.s1 .row.cur { background:rgba(55,148,255,.10); }
+
+	.t1 .row { height:26px; margin:0 3px; border-radius:3px; font-size:13px; }
+	.t1 .row .chev { width:12px; font-size:9px; opacity:.6; }
+	.t1 .row .ico { width:14px; font-size:11px; color:var(--fg-dim); }
+	.t1 .row .meta { font-size:9.5px; }
+	.t1 .row.sel { background:rgba(127,127,127,.15); }
+	.t1 .row.cur { background:rgba(55,148,255,.10); }
+
+	.n1 .row { height:32px; margin:1px 4px; border-radius:6px; font-size:13.5px; }
+	.n1 .row .chev { width:10px; font-size:8px; opacity:.5; }
+	.n1 .row .ico { width:16px; font-size:12px; }
+	.n1 .row:hover .acts { display:flex; }
+	.n1 .row.sel { background:rgba(127,127,127,.12); color:#fff; }
+	.n1 .row.cur { background:rgba(55,148,255,.10); box-shadow:inset 2px 0 0 var(--accent); }
+	.n1 .row.cur .nm { color:#fff; font-weight:600; }
+
+	table { border-collapse:collapse; width:100%; font-size:11.5px; margin-top:26px; }
+	th, td { border:1px solid #2e2e2e; padding:6px 9px; text-align:left; vertical-align:top; }
+	th { background:#1b1b1b; color:var(--fg-dim); font-size:10.5px; }
+	td code { background:#222; border-radius:3px; padding:0 3px; font-size:10.5px; }
+	.foot { margin-top:22px; font-size:12.5px; color:var(--fg-mid); max-width:1000px; }
+	.foot b { color:var(--fg); }
+	.legend { margin-top:10px; font-size:11px; color:var(--fg-faint); }
+	.legend i { display:inline-block; width:9px; height:9px; border-radius:2px; margin:0 4px 0 12px; vertical-align:-1px; }
+</style>
+</head>
+<body>
+
+<h1>知识库树 · 6 种画法并排对比</h1>
+<p class="tip">
+	同一份数据、同一状态（`方法` 已展开 / `差分图压缩优化方案` 选中 / `AIAgent` 是当前库），只换画法。
+	数值取自各项目公开样式变量，版本不同可能 ±2px。想逐项点着试，用 <b>kb-tree-oss-switch.html</b>。
+</p>
+
+<div class="grid" id="grid"></div>
+
+<div class="legend">
+	状态：<i style="background:rgba(127,127,127,.16)"></i>选中
+	<i style="background:rgba(55,148,255,.2)"></i>当前库
+	<i style="background:rgba(127,127,127,.09)"></i>hover
+</div>
+
+<table>
+	<thead><tr>
+		<th style="width:130px">项目</th><th>缩进怎么画</th><th>折叠控件</th><th>图标</th><th>选中态</th><th>行高 / 字号</th><th>拿过来最合适的地方</th>
+	</tr></thead>
+	<tbody>
+		<tr><td><b>O1 Obsidian</b></td><td>16px + 1px 竖导线</td><td>左侧小三角（10px）</td><td>无</td><td>圆角 4 浅底</td><td>27 / 13</td><td>想最"退后"、长时间读</td></tr>
+		<tr><td><b>L1 Logseq</b></td><td>18px + 导线 + 圆点锚</td><td>点圆点（无三角）</td><td>无</td><td>浅底 + 圆点变亮</td><td>26 / 13</td><td>深层嵌套、大纲式内容</td></tr>
+		<tr><td><b>J1 Joplin</b></td><td>16px</td><td>左侧三角</td><td>文件夹图</td><td><b>全宽方块</b>（无圆角）</td><td>30 / 13.5</td><td>要"一眼点中"、误点率低</td></tr>
+		<tr><td><b>S1 SiYuan</b></td><td>14px</td><td>左侧小三角</td><td>无</td><td>圆角 4 + <b>左 3px 条</b></td><td>26 / 12.5</td><td>高密度 + hover 就近操作</td></tr>
+		<tr><td><b>T1 Trilium</b></td><td>15px</td><td>左侧三角</td><td><b>类型图标</b></td><td>整行浅底 r3</td><td>26 / 13</td><td>内容类型多（笔记/代码/图片）</td></tr>
+		<tr><td><b>N1 Notion</b></td><td>18px</td><td>左侧三角</td><td>emoji</td><td>圆角 6 弱底</td><td>32 / 13.5</td><td>想要"文档产品"手感</td></tr>
+	</tbody>
+</table>
+
+<p class="foot">
+	<b>我的组合建议：</b>骨架用 <b>O1</b>（导线 + 27px），但把 <b>S1 的左侧 3px 强调条</b> 借来做选中，
+	计数用 <b>J1 的徽标</b>放到库行 → 既有 Obsidian 的安静，又有明确的"我在哪 / 这个库多少篇"。
+	告诉我编号或组合即可。
+</p>
+
+<script>
+const DATA = [
+	{ key:'lib', title:'数据源', count:129, items:[
+		{ name:'方法', folder:true, kids:[
+			{ name:'.overview.md' }, { name:'差分图压缩优化方案.md' }, { name:'纹理压缩优化与 ASTC 格式.md' }
+		] },
+		{ name:'案例拆解', folder:true, kids:[] }
+	] },
+	{ key:'notes', title:'知识库列表', count:95, items:[
+		{ name:'AIAgent', folder:true, kb:true, docs:21, kids:[{ name:'DSH 专题', folder:true, kids:[] }] },
+		{ name:'ComfyUI技术', folder:true, kb:true, docs:1, kids:[] },
+		{ name:'UnrealEngine', folder:true, kb:true, docs:45, kids:[] },
+		{ name:'游戏设计', folder:true, kb:true, docs:8, kids:[] }
+	] }
+];
+
+const STYLES = [
+	{ id:'o1', name:'O1 Obsidian', src:'16px + 1px 导线 · 无图标 · 圆角浅底' },
+	{ id:'l1', name:'L1 Logseq', src:'18px + 导线 + 圆点 · 点圆点折叠' },
+	{ id:'j1', name:'J1 Joplin', src:'16px · 文件夹图 + 计数徽标 · 全宽方块选中' },
+	{ id:'s1', name:'S1 SiYuan', src:'14px · 无图标 · 圆角 + 左 3px 强调条' },
+	{ id:'t1', name:'T1 Trilium', src:'15px · 类型图标 · 整行浅底 r3' },
+	{ id:'n1', name:'N1 Notion', src:'18px · emoji · 圆角 6 弱底' }
+];
+
+const OPEN = '方法';
+const SEL = '差分图压缩优化方案.md';
+const CUR = 'AIAgent';
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+
+function pad(style, depth) {
+	const base = style === 'o1' ? 6 : 4;
+	const step = style === 'o1' ? 16 : style === 'l1' ? 18 : style === 's1' ? 14 : style === 't1' ? 15 : style === 'n1' ? 18 : 16;
+	return base + depth * step;
+}
+function icon(style, item) {
+	if (style === 'o1' || style === 'l1' || style === 's1') { return ''; }
+	if (style === 't1') { return item.kb ? '📕' : item.folder ? '📁' : '📄'; }
+	return item.kb ? '📗' : item.folder ? '📁' : '📄';
+}
+function row(style, item, depth, path) {
+	const isFolder = !!item.folder;
+	const open = item.name === OPEN;
+	const sel = item.name === SEL;
+	const cur = item.kb && item.name === CUR;
+	const guides = (style === 'o1' || style === 'l1')
+		? Array.from({ length: depth }).map(() => '<span class="guide"></span>').join('') : '';
+	const dot = style === 'l1' ? '<span class="dot"></span>' : '';
+	const chev = (style === 'l1' || !isFolder) ? '' : (open ? '▾' : '▸');
+	const cw = (style === 'j1' || style === 't1') ? 12 : 10;
+	const ico = icon(style, item);
+	const tail = style === 'j1' && item.kb ? `<span class="badge">${item.docs}</span>`
+		: style === 't1' && item.kb ? `<span class="meta" style="font-size:9.5px">${item.docs}</span>` : '';
+	const kids = (open && item.kids && item.kids.length)
+		? `<div>${item.kids.map((k) => row(style, k, depth + 1, path + '/' + k.name)).join('')}</div>` : '';
+	return `<div class="row ${open ? 'open' : ''} ${sel ? 'sel' : ''} ${cur ? 'cur' : ''}" style="padding-left:${pad(style, depth)}px">
+		${guides}${dot}<span class="chev" style="width:${cw}px;font-size:${cw === 12 ? 9 : 8}px">${chev}</span>
+		${ico ? `<span class="ico">${ico}</span>` : ''}<span class="nm">${esc(item.name)}</span>${tail}
+	</div>${kids}`;
+}
+function panelHtml(st) {
+	const body = DATA.map((sec) => `<div class="sec">
+		<div class="sec-head"><span style="font-size:8px;color:#6b6b6b">▾</span><span class="t">${sec.title}</span><span class="n">${sec.count}</span></div>
+		${sec.items.map((it) => row(st.id, it, 0, it.name)).join('')}
+	</div>`).join('');
+	return `<div class="cell">
+		<h3>${st.name}</h3><div class="src">${st.src}</div>
+		<div class="panel ${st.id}"><div class="pbar">🏠 总览<span class="r">📚 5 · ✎ 95</span></div>${body}</div>
+	</div>`;
+}
+
+document.getElementById('grid').innerHTML = STYLES.map(panelHtml).join('');
+</script>
+</body>
+</html>

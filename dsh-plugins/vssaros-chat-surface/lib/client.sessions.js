@@ -224,14 +224,37 @@ window.__ModuleLoader__.load({
 			 */
 			function splitPane() {
 				const api = (typeof window !== "undefined" && window.vssarosDsh) || null;
+				const st = (typeof window !== "undefined" && window.__vssarosChatSurface) || null;
+				/**
+				 * 统一的失败上报（2026-11-02 用户报「点新窗格没反应」）。
+				 *
+				 * 病根：原来 `p.catch(() => undefined)` + 空 `catch {}` ⇒ **宿主侧的任何失败都被吞掉**，
+				 *   用户只能看到"点了没反应" ✗。现在三条路都留痕：
+				 *   ① `console.warn`（DevTools 可查）；② `state.newWindowEntryError`（`⋯→复制诊断信息` 可查）；
+				 *   ③ 宿主 toast（`api.notify`，用户当场可见）。
+				 */
+				const fail = (msg) => {
+					const why = String(msg || "未知错误");
+					if (st) { st.newWindowEntry = "failed"; st.newWindowEntryError = why; }
+					try { console.warn("[vssaros-ws] splitChatPane failed:", why); } catch { /* 无 console */ }
+					try { if (api && typeof api.notify === "function") { api.notify("warn", "分屏失败：" + why); } } catch { /* 通知失败不阻塞 */ }
+				};
 				if (api && typeof api.splitChatPane === "function") {
 					try {
 						const p = api.splitChatPane();
-						if (p && typeof p.catch === "function") { p.catch(() => undefined); }
-					} catch { /* IPC 失败只影响这一次点击 */ }
+						if (p && typeof p.then === "function") {
+							p.then(
+								() => { if (st) { st.newWindowEntry = "ok"; st.newWindowEntryError = null; } },
+								(e) => fail((e && e.message) || e),
+							);
+						} else if (st) {
+							st.newWindowEntry = "called";
+						}
+					} catch (e) {
+						fail((e && e.message) || e);
+					}
 					return;
 				}
-				const st = (typeof window !== "undefined" && window.__vssarosChatSurface) || null;
 				if (st) {
 					st.newWindowEntry = "unsupported";
 					st.newWindowEntryError = "splitChatPane unavailable (bridgeVersion=" + (api && api.bridgeVersion) + ")";
@@ -243,7 +266,17 @@ window.__ModuleLoader__.load({
 				} catch { /* 通知失败不阻塞 */ }
 			}
 
-			/** 与 [＋][🕘][⚙] 同款的胶囊按钮（主题色一律走 --dsw-alias-*）。 */
+			/**
+			 * 与 [＋][🕘][⚙] 同款的胶囊按钮（主题色一律走 --dsw-alias-*）。
+			 *
+			 * ★★ 2026-11-02（用户报「点新窗格没反应」）：加了**页面内即时反馈**。
+			 *   为什么必须在页面内：宿主侧失败走两条路 —— ① `notify`/`_notifications` 发到 **IDE 通知中心**，
+			 *   而桌面模式下 IDE 主窗口是**隐藏的** ⇒ 用户看不到；② `chrome.toast`（"放不下"）虽然可见，
+			 *   但 `800ms 内重复点击`那条分支是**完全静默**的（宿主日志里才有）。
+			 *   桥又只 resolve 一个 void（拿不到 ok）⇒ 页面无从判断。
+			 *   ⇒ 这里自己给三段反馈：点下去"正在分屏…"→ 2.6s 后若仍无变化则给出**可操作的解释**
+			 *     （窗口太窄 / 连点被忽略），至少不会"点了毫无动静"✗
+			 */
 			function NewWindowChip() {
 				return react.createElement("button", {
 					type: "button",

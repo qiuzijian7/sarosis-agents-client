@@ -82,7 +82,7 @@ const html = `<!DOCTYPE html>
  * 适配层：把 dsh 插件的 \`/x/kb/api/page\` 形状 → React 组件的数据契约。
  *
  * 两侧的差别只有一处：组件的 \`path\` 由**宿主自己解释**。
- *   - IDE 侧：\`笔记/01_学习/x\`（宿主自己拼 notesDir）
+ *   - IDE 侧：\`知识库列表/01_学习/x\`（宿主自己拼 notesDir）
  *   - 插件页：直接用服务端给的 **abs 绝对路径**（\`/api/doc?uri=\` 就吃它）
  * ⇒ 同一份组件，两种 path 语义，不需要改组件 ✓
  */
@@ -199,7 +199,26 @@ async function boot() {
 	window.__KB_SIDEVIEW_ACTIONS__ = {
 		openNode: p => { window.location.href = '/x/kb/doc?uri=' + encodeURIComponent(p); },
 		openLink: p => { window.location.href = '/x/kb/doc?uri=' + encodeURIComponent(p); },
-		refresh: () => window.location.reload(),
+		/*
+			 * ★ 2026-11-02（用户：点刷新不要清空已打开的文档）：
+			 *   先重取 /api/view-data（refresh=1 绕过缓存），再走视图的 UPDATE 通道只换数据；
+			 *   老 bundle 没有该通道时才退回 reload。
+			 */
+			refresh: async () => {
+				try {
+					const want = new URLSearchParams(window.location.search).get('vault') || '';
+					const q = want ? ('?vault=' + encodeURIComponent(want) + '&refresh=1') : '?refresh=1';
+					const res = await fetch('/x/kb/api/view-data' + q, { credentials: 'same-origin', cache: 'no-store' });
+					const body = await res.json();
+					const upd = window.__KB_SIDEVIEW_UPDATE__;
+					if (body && body.ok && body.data && typeof upd === 'function') {
+						window.__KB_SIDEVIEW_DATA__ = body.data;
+						upd(body.data);
+						return;
+					}
+				} catch (e) { /* 取数失败 ⇒ 落到 reload 兜底 */ }
+				window.location.reload();
+			},
 		openGraph: () => { window.location.href = '/x/kb/graph'; },
 		// ★ 2026-10-25（真机：插件页点 ⚙ 没反应）：**不再提供假的 openSettings**。
 		//   视图的逻辑是「有 openSettings 就交给宿主；没有就打开自己的设置面板」。
@@ -383,11 +402,11 @@ async function boot() {
 		// ── 写操作（2026-10-23）：入参照抄 client.kb.js:219/239/261，别再自己猜字段名 ──
 		createNote: (dir, name) => {
 			const n = String(name || '').trim();
-			if (n) { void writeOp('/new', { vaultId: VAULT_ID, kind: 'note', dir: dir || '笔记', name: n }); }
+			if (n) { void writeOp('/new', { vaultId: VAULT_ID, kind: 'note', dir: dir || '知识库列表', name: n }); }
 		},
 		newFolder: (dir, name) => {
 			const n = String(name || '').trim();
-			if (n) { void writeOp('/new', { vaultId: VAULT_ID, kind: 'folder', dir: dir || '笔记', name: n }); }
+			if (n) { void writeOp('/new', { vaultId: VAULT_ID, kind: 'folder', dir: dir || '知识库列表', name: n }); }
 		},
 		renameNode: (p, newName) => {
 			const n = String(newName || '').trim();
@@ -448,7 +467,8 @@ async function boot() {
 
 	// ③ 再加载 UI
 	const s = document.createElement('script');
-	s.src = '/x/kb/web/kbSideview.js';
+	// ★ 2026-11-02：**加版本戳**（固定 URL 会命中旧缓存 ⇒ bundle 更新了界面还是老逻辑）
+s.src = '/x/kb/web/kbSideview.js?v=' + Date.now();
 	s.onerror = () => { document.getElementById('boot').textContent = '加载 kbSideview.js 失败（先跑 sync-kb-sideview.mjs）'; };
 	document.body.appendChild(s);
 	document.getElementById('boot')?.remove();
@@ -473,7 +493,13 @@ if (!inlineMatch) {
 	process.exit(1);
 }
 const bootJs = inlineMatch[1];
-const htmlWithSrc = html.replace(inlineMatch[0], '<script src="/x/kb/web/page-boot.js" defer></script>');
+/*
+ * ★ 2026-11-02（真机踩到，连累三轮）：这里以前固定 `page-boot.js` 无版本戳 ⇒
+ *   **page-boot 本身命中旧缓存** ⇒ 它再用「旧的无 ?v= 的 bundle URL」加载 ⇒
+ *   即使 bundle 已更新，界面跑的还是老逻辑（表现就是"改了没生效"）。
+ *   ⇒ 入口也带时间戳（页面每次加载各自生成一个），链路从 HTML 起都是新的。
+ */
+const htmlWithSrc = html.replace(inlineMatch[0], '<script src="/x/kb/web/page-boot.js?v=' + Date.now() + '" defer></script>');
 const outBoot = join(OUT_DIR, 'page-boot.js');
 writeFileSync(outBoot, bootJs, 'utf8');
 writeFileSync(outHtml, htmlWithSrc, 'utf8');

@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-market",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "VsSaros workbench market host half: published catalog API + install channel (npm / GitHub Release / GitHub source) with pre-install compatibility / host-singleton checks; installs go through the IDE (ide.request capability 'workbenches') with user consent.",
   "private": true,
   "type": "module",

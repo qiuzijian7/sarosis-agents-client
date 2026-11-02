@@ -14,6 +14,16 @@
       "notes": "前台已是 dsh；后台入口全在 legacy"
     },
     {
+      "id": "unattended-loop",
+      "title": "无人值守循环（loop_run 调度 + 账本）",
+      "owner": "dsh",
+      "dshTarget": "@vssaros/dsh-loop（Host 内自建：调度、账本、熔断都在 dsh 侧，数据在 <数据根>/loops/<名字>）",
+      "parityProbe": "dsh-plugins/vssaros-loop/test/run-loop-check.mjs",
+      "killSwitch": "—（dsh 新建能力，没有 legacy 对端）",
+      "deleteWhen": "—（无 legacy 实现可删）",
+      "notes": "2026-11-02 登记：工具已注册但台账缺族（守卫第 1 项红）。它与 agent-loop 不是同一件事 —— 前者是无人值守的循环引擎，不依赖 chatEngine 回退开关"
+    },
+    {
       "id": "core-tools",
       "title": "文件/终端/搜索/Web/委派/计划 工具族",
       "owner": "dual",
@@ -222,6 +232,16 @@
       "killSwitch": "chatEngine=legacy",
       "deleteWhen": "Phase 5 完成",
       "notes": "聊天已迁，其余留壳逐步收缩。★ 2026-10-19 后台入口调研结论（决定『能不能删 AgentChatPanel』）：**后台入口 8 条（IM 入站飞书/Telegram/loopback、Pocket、workflow/画布执行、子代理委派、自进化、后台命令通知、Lark CLI；定时任务已废）全部走 IAgentChatService + piLoop，无一处 new 面板** ⇒ 后台**不构成**删除阻碍；checkpointManager / workflowTraceController / chatEditorIntegration 只是 import type { IChatPanel } 的可选消费者（panel?.），无面板时静默跳过。真正阻碍只剩：① nativeChatEditorPane.ts:6300-6311 的 legacy 前台分支（唯一构造点 985-1004）；② iChatPanel.ts / agentChatTypes.ts 被若干文件 type-only 依赖（接口留、类删）；③ dev 画布沙箱 chatSandbox.tsx:143 动态 new。已解耦：detectDiagramTheme → sessions/browser/diagramTheme.ts、terminalLiveOutput → sessions/browser/terminalLiveOutput.ts。对外耦合面由 `npm run check:legacy-chat-coupling` 冻结。⚠ 另注：本族的 killSwitch 与 agent-loop / core-tools / llm-providers 三族同为 chatEngine=legacy ⇒ 去掉它会让四个族同时失去回退路径，是产品决定。★ 2026-10-19 **已拍板：保留回退开关原样，AgentChatPanel 不删**；已确认的死代码 CliChatEditorPanel（0 构造 0 import，被 XtermCliPanel 取代）也留着，随 agentChat/ 整体删除时一起处理。本轮只落地：detectDiagramTheme/terminalLiveOutput 两项解耦 + `npm run check:legacy-chat-coupling` 耦合守卫。⚠ 后续若再推进删除，入口仍是「去掉 chatEngine=legacy」这一步，别跳过"
+    },
+    {
+      "id": "office",
+      "title": "Office 文档出稿（按用户 Word 模板生成新稿）",
+      "owner": "dsh",
+      "dshTarget": "@vssaros/dsh-office-template（office_template 取段落/run ID、office_template_write 按模板出稿）+ resources/office-skills 与 Office 运行时负载",
+      "parityProbe": "check-office-skills（技能与上游逐字节一致 / 差异已登记）",
+      "killSwitch": "—",
+      "deleteWhen": "—（legacy 侧从来没有等价能力，纯 dsh 新增）",
+      "notes": "2026-11-02 立族：office_template_write 会落盘 .docx ⇒ 已挂 tools/pre-execute 审批闸（与 kb/kanban/workflow/marketplace/loop/scheduler 同一把）；office_template 只读（拿 ID）放行"
     },
     {
       "id": "marketplace",

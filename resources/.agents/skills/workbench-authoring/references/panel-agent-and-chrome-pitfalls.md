@@ -12,7 +12,7 @@
 | 用户说的 | 真根因 | 在哪一节 |
 |---|---|---|
 | 「打开工作台后，点工作区里的**会话 item 没反应**」 | 外壳把 `selectPanel(null)` **拦住了（对）但没有"接住"** —— 没把刚选中的会话停靠进工作台的对话列 ⇒ 状态变了、界面不动 | §1 |
-| 「右侧对话列显示的**不是我的 agent**」（显示成别的插件的 agent） | ① 本插件的 agent **根本不存在**（只有工具没有 agent）② `newSession` 被别的插件先包走、你的补丁放弃了 | §2 |
+| 「右侧对话列显示的**不是我的 agent**」（显示成别的插件的 agent） | ① 本插件的 agent **根本不存在**（只有工具没有 agent）② 宿主的「工作台 → agent」表里没有你（或描述符没写 `assistantPreset`）③ 有人**又在插件里自己 select / 包 `newSession`**（2026-11-02 已全部删除，守卫会红） | §2 |
 | 「**多余**的浮动工具栏」/「浮条被右边缘裁掉」/「文字常显、样式全乱」 | ① 页面自带浮条 + 外壳浮条**重合** ② 浮条挂在内容容器里被挤出去 ③ CSS **一条未闭合规则**吞掉后面所有后代规则 | §3 |
 | 「右侧**业务面板（编辑区）不见了**」 | 窄屏断点把面板自动 `hide`，而工作台面板正好落在断点里 | §4 |
 
@@ -247,60 +247,45 @@ suggestions:                     # ★ 别用半角逗号（YAML 列表会被拼
 2. 失败**只打日志**，绝不能让 `apply` 抛错（它会把整个插件带崩）；
 3. `source: custom` + `suggestions` 用「，」——这两条都是"静默失败"型（不报错，只是不出现）。
 
-### 层 ②：`newSession` 被别的插件先包走，你的补丁"礼貌地放弃"了
+### 层 ②：告诉宿主「我的默认 agent 是谁」——**只告诉，不自己设**
 
-**症状**：agent 存在、preset id 也对，但新会话还是不绑你的 agent。
-
-**根因**：多个工作台插件都会包 `dw.newSession`（商城、萨罗斯、你）。商城那份的守卫是：
-
-```js
-scope.effect(() => {
-  if (dw.newSession !== origNewSession) { return; }   // ← 「已被别人包过就放弃」
-  dw.newSession = patched;
-}, '...');
-```
-
-⇒ **后装的那个永远包不上**（`dw.newSession` 已经是别人的 patched）⇒ 不会去 select 自己的 preset。
-
-**修法**：**总是链式包**（拿到"当时的"引用再套一层），并用「前台标志」决定要不要改 preset
-（同类的第二处：商城的 `ensureMarketDefaults()` 原本**无条件**在 `newSession` 里跑 ⇒ 打开别的工作台新建会话也会被带成商城助手；0.3.0 起也加了前台判定）：
+**规则（2026-11-02 根治后，守卫 `check-assistant-collapse` 扫全仓）**：工作台插件里**不许**出现
+`agentPresets.select(...)`、`dw.newSession = …`、劫持官方「新会话」按钮、带 `agentPreset` 建会话。
+默认 agent **只由宿主 `vssaros-workbenches` 设**。你只需要二选一：
 
 ```js
-const orig = dw.newSession;              // ← 可能是别人包过的版本，没关系
-const patched = function (...args) {
-  const out = orig.apply(dw, args);
-  Promise.resolve(out).then((sid) => {
-    if (!globalThis.__myWbActive) { return; }       // ★ 关键：别改别的会话
-    if (sid && presets && typeof presets.select === 'function') {
-      try { presets.select(sid, MY_PRESET); } catch { /* 忽略 */ }
-    }
-  }).catch(() => {});
-  return out;
-};
-scope.effect(() => {
-  dw.newSession = patched;
-  return () => { if (dw.newSession === patched) { dw.newSession = orig; } };   // 只在还是自己时才还原
-}, 'my-wb: newSession preset');
+// 第三方 / 新工作台：描述符里声明（优先于宿主内置表）
+const DESCRIPTOR = { title: '我的工作台', repository: 'vssaros:mine', customFrame: true, assistantPreset: 'vssaros-my-agent' };
 ```
 
-### 层 ③（顺手补一刀）：把**已存在**的会话也纠回来
+或者（仓库内置工作台）在宿主 `ASSIST_PRESET_BY_WB` 里加一行；同一个 agent 在不同环境 id 不同时写**候选数组**
+（例：`'vssaros/kb': ['vssaros-kb-expert', 'vssaros-knowledge-base-expert']`）。
 
-用户打开工作台时，对话列往往已经绑了一个会话（可能用的是别人的 preset）。前台时主动纠一次：
+**为什么不能自己设（五个叠加根因，反复修了四五轮才看清）**：
+1. **写入者太多**：宿主 + 知识库 + 商城 + 媒体库 + 萨罗斯各写一套，每轮只修一个，其余照跑 ⇒「修好又坏」；
+2. **改错会话**：插件 select 的是**全局当前会话**（`uiSession.adapter.current`），前台标志 `__xxxActive` 也是全局单例；
+   页签条会**同时挂着多个工作台** ⇒ 知识库改了媒体库的会话、商城改了知识库的（真机日志
+   `套用默认 agent 被拒：vssaros-media-librarian @ …（Unknown agent preset: vssaros-knowledge-base-expert）`）；
+3. **lazy 注册**：`vssaros-agents` 启动只注册几个 preset，其余 ~15s 后补齐；这段时间里用自定义 preset 建会话 / select
+   都是 Unknown（它的 lazy 保护只包了它自己内部的 sessionController）；
+4. **共用空会话**：`uiWorkspace.connectBlank(ws, {agentPreset})` 会**复用工作区里现成的空会话** ⇒ 同工作区的多个工作台
+   拿到同一条，agent 是会话属性，后写者赢；
+5. **select 不存在的 id 会把会话弄坏**：之后 resume 直接报 `Unknown agent preset`。
 
-```js
-const sid = dw.dockedSessionOf(WB_ID);          // 外壳给的"当前停靠会话"
-if (sid && PRESETS && typeof PRESETS.select === 'function') {
-  try { PRESETS.select(sid, MY_PRESET); } catch { /* 忽略 */ }
-}
-```
-
-> `PRESETS` 要放**模块级**变量：面板组件是模块级函数，拿不到 `apply(ctx)` 的闭包。
+**宿主现在怎么做的**（你不用写，但要知道它的保证）：
+- 新会话 = `sessions.create({ workspaceId, agentPreset })` 建一条**自己的**（宿主侧建完一定 `attachSession` 进工作区），
+  **不走** `connectBlank(ws, {agentPreset})`；不"借用"别的工作台的会话；
+- 只用 `agentPresets.list()` 里**真实存在**的 id；列表读不到就**不指定**，绝不猜；
+- 还没注册（lazy 窗口）⇒ 先不带 preset 建出来，注册好后**补到这条会话上**（最多等 30s）；
+- 事后补只改「这个工作台对话栏**此刻显示**的那条」、只改 blank、每条只一次、等待期间用户手动换过就尊重；
+- select 失败看 `ok`（官方失败**返回** `{ok:false}`，不抛）。
 
 ### 判据
 
-- 单测：先给 `dw.newSession` 塞一个"别人的 patched"，再 apply 你的插件 ⇒ 调 `dw.newSession()`：
-  前台应得到 `[sid, 你的preset]`，**非前台应为 `null`**（不抢别人）。
-- 真机：打开工作台 ⇒ 对话列 header 的 agent 是你的；点「+ 新会话」⇒ 还是你的。
+- 单测：`dsh-plugins/check-workbench-assistant.mjs`（真 React + jsdom）——mock 必须"像真的"：未注册的 preset 让
+  `create` 抛、让 `select` 返回 `{ok:false}`；roster 能晚到；`connectBlank` 会复用共享空会话；多个工作台同时挂载。
+  只测"select 永远成功、只挂一个工作台"的 mock 会全绿而真机照样坏（上一版就是这样）。
+- 真机：打开工作台 ⇒ 对话列 header 的 agent 是你的；点「+ 新会话」⇒ 还是你的；**同时开着另一个工作台也不串**。
 
 ---
 
@@ -408,7 +393,7 @@ ck('花括号配平', open === close, `{ =${open} } =${close}`);
    改什么都白改 —— 先重载窗口（关掉重开 / `Ctrl+R` / 重启 IDE），再谈别的。
 2. `wmic process get Name,ProcessId,CreationDate` ⇒ **IDE 进程启动时间 vs 插件安装时间**：视图比安装早 ⇒ 必然是旧 client；
 3. 直接看**磁盘上装的那份**有没有本次改动的**特征串**（每个小改动给自己留一个唯一字符串，
-   例如新函数名 `assistantPresetOf`、新常量 `MEDIA_PRESET`）⇒ 比看外观可靠；
+   例如新函数名 `readyPreset`、新方法 `createOwnSession`）⇒ 比看外观可靠；
 4. 想验"浏览器实际拿到的是不是新的"：在页面里 `fetch(chunkUrl)` 后 `text.indexOf(特征串)`。
 
 ⚠ **页面 console 不进 Host/IDE 的日志文件**（harness 日志只有 Host 侧输出）⇒
@@ -439,8 +424,8 @@ ck('花括号配平', open === close, `{ =${open} } =${close}`);
 
 **agent**
 - [ ] `<数据根>/agents/<id>/.agent.md` 存在（`source: custom`，`suggestions` 用「，」）
-- [ ] `newSession` **链式**包（不要"已被包过就放弃"），且只在 `__myWbActive` 时 select preset
-- [ ] 前台时用 `dw.dockedSessionOf(WB_ID)` 把已存在的会话也纠一次
+- [ ] 描述符写 `assistantPreset: 'vssaros-<slug>'`（或在宿主 `ASSIST_PRESET_BY_WB` 加一行）——**只告诉宿主，不自己设**
+- [ ] 插件里**没有** `agentPresets.select` / `dw.newSession = …` / 劫持「新会话」/ 带 `agentPreset` 建会话（守卫会红）
 
 **浮条 / 布局**
 - [ ] 嵌入时（`window.self !== window.top`）**摘掉页面自带的浮条**（避免与外壳重合）

@@ -35,34 +35,21 @@ export const KB_GIT_CONFIG_FILE = '.kb-git.json';
  * （.kb-backup 是快照目录，也不该进版本）
  */
 export const GITIGNORE_ENTRIES = [
-	'.kb-html-cache/',
-	// ★ 2026-10-31（真机：E:\VsSarosVault 145MB，其中 .tmp-media 里 3 个 mp4 就 138MB）：
-	//   这些**临时媒体**若在首次提交时进了库，就永远留在历史里（git 删了文件 blob 还在）⇒ 必须先忽略。
-	'.tmp-media/',
-	// ★ 同批发现：下面这几个是**真实存在**的缓存/索引/日志文件名（之前写的是带连字符的猜测名 ⇒ 没生效）
-	'.kbkernel.json',
-	'.kbkernel.json.bak-*',
-	'.kb-ingest-cache.json',
-	'.kb-insights-cache.json',
-	'.op-log.jsonl',
-	// Obsidian 的应用态（插件/工作区，1.7MB）⇒ 不是笔记内容，不进版本
-	'.obsidian/',
-	'.kb-build-cache.json',
-	'.kb-kernel.json',
-	'.kb-insights-cache.json',
-	'.kb-topic-overview-cache.json',
-	'.feishu-sync.json',
-	'.feishu-space-map.json',
-	'.feishu-space-map.json.bak-*',
-	'.feishu-sync.log',
-	'.kb-feishu-sync.log',
+	/*
+	 * ★ 2026-11-02：元数据全部收进 .kb/ 一个目录（仿 Obsidian 的 .obsidian/）⇒
+	 *   忽略规则只要一条 .kb/ 就够，不再逐个文件名维护
+	 *   （以前每加一个缓存文件就得记得补一条，漏了就把缓存塞进仓库 ✗）。
+	 */
+	'.kb/',
+	'.kb-kernel.json',                 // 极老版本的单文件索引（只用于迁移识别）
 	'.tmp-media/',
 	'.canvas-text-migration-backup/',
 	'.kb-backup/',
-	// 本机私有设置（自动提交开关等）：换台机器就不同 ⇒ 不进版本（否则 dirty 永远不为 0）
-	'.kb-git.json',
-	'.DS_Store',
-	'Thumbs.db',
+	// Obsidian 的应用态（插件/工作区，约 1.7MB）⇒ 不是笔记内容，不进版本
+	'.obsidian/',
+	// 日志：追加写，天然噪音
+	'.feishu-sync.log',
+	'.kb-feishu-sync.log',
 ];
 
 /**

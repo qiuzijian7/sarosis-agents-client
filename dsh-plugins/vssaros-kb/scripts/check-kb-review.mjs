@@ -46,12 +46,12 @@ const ctx = new Proxy({}, {
 });
 
 const vault = mkdtempSync(join(tmpdir(), 'kb-review-'));
-mkdirSync(join(vault, '库'), { recursive: true });
-mkdirSync(join(vault, '笔记'), { recursive: true });
+mkdirSync(join(vault, '数据源'), { recursive: true });
+mkdirSync(join(vault, '知识库列表'), { recursive: true });
 
-const aPath = join(vault, '笔记', 'a.md');
-const bPath = join(vault, '笔记', 'b.md');
-const cPath = join(vault, '笔记', 'c.md');
+const aPath = join(vault, '知识库列表', 'a.md');
+const bPath = join(vault, '知识库列表', 'b.md');
+const cPath = join(vault, '知识库列表', 'c.md');
 writeFileSync(aPath, '---\ntitle: A 篇\ntags: [x]\n---\n\n# A\n\n正文甲。\n', 'utf8');
 writeFileSync(bPath, '---\ntitle: B 篇\nreview: approved\n---\n\n# B\n\n正文乙。\n', 'utf8');
 writeFileSync(cPath, '# C\n\n没有 frontmatter 的正文丙。\n', 'utf8');
@@ -95,7 +95,7 @@ t('写入 review: approved', /^review:\s*approved$/m.test(aText), aText.split('\
 t('保留原有 frontmatter 键（title / tags）', aText.includes('title: A 篇') && aText.includes('tags: [x]'));
 t('写入 reviewedAt', /^reviewedAt:\s*\d{4}-\d{2}-\d{2}$/m.test(aText));
 t('正文没有被吞', aText.includes('正文甲。'));
-t('改前有备份', existsSync(join(vault, '笔记', '.kb-backup')));
+t('改前有备份', existsSync(join(vault, '知识库列表', '.kb-backup')));
 
 // 无 frontmatter 的 c.md
 const markC = await call('/x/kb/api/review/mark', 'POST', JSON.stringify({ uri: cPath.replace(/\\/g, '/'), status: 'rejected' }));

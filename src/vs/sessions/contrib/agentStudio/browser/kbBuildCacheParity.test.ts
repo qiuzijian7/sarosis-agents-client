@@ -2,7 +2,7 @@
  *  Copyright (c) Sarosis. All rights reserved.
  *  Licensed under the MIT License.
  *
- *  kbBuildCacheParity.test.ts — 构建缓存 `.kb-build-cache.json` 的**跨引擎对账**（P1 验收）。
+ *  kbBuildCacheParity.test.ts — 构建缓存 `.kb/build-cache.json` 的**跨引擎对账**（P1 验收）。
  *
  *  P1 的验收标准（doc/dsh-kb-build-orchestration.html §4 的 P1 行）是：
  *  **两侧对"待构建数量"给出同一个数**（同一夹具对账 ✓）。本测试提供"IDE 侧那个数"：
@@ -97,7 +97,7 @@ const fp = (p: string) => URI.file(p).fsPath;
  *   · `乙素材.md`：缓存里有它，笔记存在但**比素材旧**（素材构建后又被改过）⇒ pending（'素材在构建后被改过' ✓）；
  *   · `丙素材.md`：缓存里**没有** ⇒ pending（'未构建' ✓）；
  *   · `丁素材.md`：缓存指向的笔记**不存在** ⇒ pending（'笔记不存在' ✓）；
- *   · `笔记/丙素材.md`：**是别人的产出**（在缓存 value 里）⇒ 永不当素材（`skippedOutputs` ✓）。
+ *   · `知识库列表/丙素材.md`：**是别人的产出**（在缓存 value 里）⇒ 永不当素材（`skippedOutputs` ✓）。
  */
 const FIXTURE: Record<string, ISeedFile | string> = {
 	[`${VAULT}/库/raw/甲素材.md`]: { content: '# 甲素材\n', mtime: 100 },
@@ -126,7 +126,7 @@ suite('kb 构建缓存 · 跨引擎对账（真源读数）', () => {
 		const envCache = process.env.KB_CACHE_PARITY_CACHE;
 		const useCache = envCache ? JSON.parse(envCache) : undefined;
 		const seed: Record<string, ISeedFile | string> = { ...FIXTURE };
-		if (useCache) { seed[`${VAULT}/.kb-build-cache.json`] = JSON.stringify(useCache); }
+		if (useCache) { seed[`${VAULT}/.kb/build-cache.json`] = JSON.stringify(useCache); }
 		const fs = createFs(seed);
 		const vaultRoot = URI.file(VAULT);
 
@@ -135,7 +135,7 @@ suite('kb 构建缓存 · 跨引擎对账（真源读数）', () => {
 
 		// 格式契约：真源 `writeBuildCache` 的**字节**（dsh 侧 `serializeBuildCache` 必须逐字节相同 ✓）
 		await writeBuildCache(fs.service, vaultRoot, CACHE);
-		const cacheBytes = fs.content(`${VAULT}/.kb-build-cache.json`)!;
+		const cacheBytes = fs.content(`${VAULT}/.kb/build-cache.json`)!;
 
 		// ★ 读数（`p3-66` 拿同一份夹具跑我们的移植 ⇒ 比数＋比字节 ✓）
 		// ⚠ 放在断言之前（首跑必然不等 ⇒ 断言一抛就拿不到读数 ✗ —— 前几轮踩过 ✓）。

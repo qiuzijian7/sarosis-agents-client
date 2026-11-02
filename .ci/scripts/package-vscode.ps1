@@ -22,6 +22,22 @@ Write-Host "Prepacking bundled dsh runtime"
 node build/prepack-dsh-runtime.mjs
 if ($LASTEXITCODE -ne 0) { Write-Error "prepack-dsh-runtime failed"; exit 1 }
 
+# Office 运行时 Python 负载（2026-11-02，≈150MB 下载 + 解包；缓存命中时只剩解包）：
+# 7 个 Office 技能（docx/xlsx/pptx + 渲染 / PDF / 重算）靠它跑。与 dsh-runtime 同理 ——
+# `.build/` 是 .gitignore 产物 ⇒ 不预构建就是**静默**打出一个"看着有 Word 能力、一点就缺 Python"
+# 的包（gulp 的 officeRuntime 流是 allowEmpty，不会报错）。
+# 出不了网的环境：设 VSSAROS_SKIP_OFFICE_RUNTIME=1 跳过，但必须在发版说明里写明本版无 Office 文档能力。
+if ($env:VSSAROS_SKIP_OFFICE_RUNTIME -eq '1') {
+    Write-Host "Skipping Office runtime payload (VSSAROS_SKIP_OFFICE_RUNTIME=1)" -ForegroundColor Yellow
+} else {
+    Write-Host "Preparing bundled Office runtime payload"
+    node build/prepare-office-runtime.mjs
+    if ($LASTEXITCODE -ne 0) { Write-Error "prepare-office-runtime failed"; exit 1 }
+    # 第三方许可声明（PSF / MPL-2.0 正文从随包真源读出，写进 ThirdPartyNotices.txt；幂等）
+    node build/append-office-notices.mjs
+    if ($LASTEXITCODE -ne 0) { Write-Error "append-office-notices failed"; exit 1 }
+}
+
 & $gulp vscode-win32-x64 --verbose
 if ($LASTEXITCODE -ne 0) { Write-Error "Packaging failed"; exit 1 }
 

@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>R2 仪表盘优先 · 记忆工作台重构方案</title>
+<style>
+:root { color-scheme: dark; }
+body { margin: 0; background: #14161a; color: #e6e6e6; font: 13px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+body.light { background: #eef0f2; color: #222; }
+.bar { position: sticky; top: 0; z-index: 9; background: #14161aee; backdrop-filter: blur(6px); border-bottom: 1px solid #2a2f36; padding: 10px 18px 9px; }
+body.light .bar { background: #eef0f2ee; border-color: #d4d8dc; }
+.bar h1 { font-size: 15px; margin: 0 0 2px; }
+.bar p { margin: 0; color: #9aa0a6; font-size: 12px; max-width: 900px; }
+.row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
+.lbl { color: #9aa0a6; font-size: 12px; min-width: 40px; }
+.chip { font: inherit; font-size: 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid #333a43; background: #1d2126; color: #cfd4da; cursor: pointer; }
+body.light .chip { background: #fff; color: #333; border-color: #c8ccd0; }
+.chip.on { background: #0e639c; border-color: transparent; color: #fff; }
+main { padding: 16px 18px 40px; }
+.fwin { border: 1px solid #2f353d; border-radius: 10px; overflow: hidden; box-shadow: 0 8px 24px #0006; }
+.fbar { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 10px; background: #1b1f24; border-bottom: 1px solid #2f353d; font-size: 12px; color: #b9bfc6; }
+.fbar .dot { width: 8px; height: 8px; border-radius: 2px; background: #6aa9e8; }
+.fbar .t { margin-left: auto; color: #7f868e; }
+.fpage { height: 760px; overflow: auto; container-type: inline-size; }
+.notes { margin-top: 14px; max-width: 860px; font-size: 12.5px; color: #c0c6cc; }
+body.light .notes { color: #444; }
+.notes b { color: #fff; } body.light .notes b { color: #000; }
+.notes ul { margin: 6px 0; padding-left: 20px; }
+.notes li { margin: 2px 0; }
+.fwin {
+	--v-fg:#cccccc; --v-desc:#9d9d9d; --v-border:#3a3a3a; --v-hover:#2a2d2e; --v-card:#252526;
+	--v-sel:#04395e; --v-selb:#007fd4; --v-btn:#0e639c; --v-ok:#3fb950; --v-warn:#cca700;
+	--v-err:#f14c4c; --v-info:#4daafc; --v-input:#313131; --v-badge:#4d4d4d; --v-accent:#b180d7;
+	--s1:4px; --s2:8px; --s3:12px; --f-xs:11px; --f-sm:12px; --f-md:13px; --row:7px;
+}
+body.light .fwin {
+	--v-fg:#3b3b3b; --v-desc:#767676; --v-border:#e0e0e0; --v-hover:#ececec; --v-card:#fff;
+	--v-sel:#0060c0; --v-selb:#0090f1; --v-btn:#0078d4; --v-ok:#107c10; --v-warn:#8a6d1f;
+	--v-err:#c4281c; --v-info:#006ab1; --v-input:#fff; --v-badge:#c8c8c8; --v-accent:#8a2be2;
+}
+.app { display: flex; flex-direction: column; height: 100%; background: #1f1f1f; color: var(--v-fg); font-size: var(--f-md); }
+body.light .app { background: #f8f8f8; }
+.app[data-density="compact"] { --row:4px; --f-xs:10px; --f-sm:11px; --f-md:12px; }
+.app[data-density="large"] { --row:10px; --f-xs:12px; --f-sm:13px; --f-md:14px; }
+
+.h { display: flex; align-items: baseline; gap: var(--s2); padding: var(--s3) 14px 2px; flex-wrap: wrap; }
+.h h1 { font-size: 15px; margin: 0; white-space: nowrap; }
+.h .sub { color: var(--v-desc); font-size: var(--f-xs); font-family: ui-monospace, Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.h .sp { flex: 1 1 auto; }
+.btn { font: inherit; font-size: var(--f-xs); padding: 1px 9px; border-radius: 999px; cursor: pointer; color: inherit;
+	background: transparent; border: 1px solid var(--v-border); white-space: nowrap; }
+.btn:hover { background: var(--v-hover); }
+.btn.pri { background: var(--v-btn); border-color: transparent; color: #fff; }
+.btn.dg { color: var(--v-err); border-color: var(--v-err); }
+.btn.on { border-color: var(--v-selb); background: var(--v-hover); }
+
+.body { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s2); padding: 6px 14px 10px; }
+.card { border: 1px solid var(--v-border); border-radius: 8px; background: var(--v-card); display: flex; flex-direction: column; }
+.card > header { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--v-border); font-size: var(--f-xs); color: var(--v-desc); }
+.card > header .k { color: var(--v-fg); font-weight: 600; }
+.card > header .sp { flex: 1 1 auto; }
+.card .in { padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.card > footer { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-top: 1px solid var(--v-border); font-size: var(--f-xs); }
+.card > footer .sp { flex: 1 1 auto; }
+.num { font-size: 24px; line-height: 1.1; font-weight: 600; font-variant-numeric: tabular-nums; }
+.num small { font-size: var(--f-xs); font-weight: 400; color: var(--v-desc); margin-left: 4px; }
+.qm { color: var(--v-warn); cursor: help; }
+.note { font-size: var(--f-xs); color: var(--v-desc); line-height: 1.6; }
+.note b { color: var(--v-fg); }
+.mono { font-family: ui-monospace, Consolas, monospace; }
+.meter { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--v-hover); }
+.meter i { display: block; height: 100%; }
+.meter .keep { background: var(--v-ok); } .meter .add { background: var(--v-warn); }
+.bars { display: flex; flex-direction: column; gap: 3px; font-size: var(--f-xs); }
+.br { display: grid; grid-template-columns: 58px minmax(0,1fr) 32px; gap: 6px; align-items: center; }
+.br .bg { height: 10px; border-radius: 3px; background: var(--v-hover); overflow: hidden; }
+.br .bg i { display: block; height: 100%; background: var(--v-info); opacity: .85; }
+.br.auto .bg i { background: var(--v-ok); } .br.drop .bg i { background: var(--v-badge); }
+.br .n { text-align: right; font-variant-numeric: tabular-nums; }
+.kvs { display: flex; flex-wrap: wrap; gap: 4px; font-size: var(--f-xs); }
+.kvs span { padding: 0 7px; border-radius: 999px; border: 1px solid var(--v-border); white-space: nowrap; }
+.mini { list-style: none; margin: 0; padding: 0; }
+.mini li { display: grid; grid-template-columns: 16px minmax(0,1fr); gap: 6px; padding: 4px 0; border-top: 1px dashed var(--v-border); }
+.mini li:first-child { border-top: 0; }
+.mini .tx { font-size: var(--f-sm); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+.mini .mt { font-size: var(--f-xs); color: var(--v-desc); }
+.mini .mt .wy { color: var(--v-warn); }
+.mini li.sel { background: var(--v-sel); }
+
+/* 二级页（点卡片动作进入）*/
+.sub { padding: 4px 14px 10px; display: flex; flex-direction: column; gap: var(--s2); }
+.sub .top { display: flex; align-items: center; gap: 6px; }
+.list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--v-border); border-radius: 8px; overflow: hidden; }
+.it { display: grid; grid-template-columns: 16px minmax(0,1fr); gap: var(--s2); padding: var(--row) 10px; border-bottom: 1px solid var(--v-border); cursor: pointer; }
+.it:last-child { border-bottom: 0; }
+.it:hover { background: var(--v-hover); }
+.it.sel { background: var(--v-sel); }
+.it .tx { font-size: var(--f-sm); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+.it .mt { margin-top: 2px; font-size: var(--f-xs); color: var(--v-desc); display: flex; gap: 6px; flex-wrap: wrap; }
+.it .mt .wy { color: var(--v-warn); }
+.tag { font-size: 10px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--v-border); color: var(--v-desc); white-space: nowrap; }
+.tag.k { border-color: color-mix(in srgb, var(--v-info) 55%, transparent); color: var(--v-info); }
+.foot { position: sticky; bottom: 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 14px;
+	border-top: 1px solid var(--v-border); background: #1f1f1fee; backdrop-filter: blur(6px); font-size: var(--f-xs); }
+body.light .foot { background: #f8f8f8ee; }
+.foot .sp { flex: 1 1 auto; }
+.foot .hint { color: var(--v-desc); }
+.tool { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; }
+input[type="search"] { font: inherit; font-size: var(--f-sm); padding: 3px 8px; border-radius: 6px; color: inherit;
+	background: var(--v-input); border: 1px solid var(--v-border); min-width: 0; flex: 1 1 150px; }
+.state { max-width: 620px; margin: 18px auto; padding: 0 14px; display: flex; flex-direction: column; gap: var(--s2); }
+.state h2 { margin: 0; font-size: calc(var(--f-md) + 1px); }
+.state ol { margin: 0; padding-left: 18px; font-size: var(--f-sm); color: var(--v-desc); }
+.state code { font-family: ui-monospace, Consolas, monospace; font-size: var(--f-xs); background: var(--v-hover); padding: 0 4px; border-radius: 3px; }
+.toast { margin: 0 14px 6px; padding: 3px 8px; border-radius: 5px; font-size: var(--f-xs); border: 1px solid var(--v-border);
+	background: var(--v-hover); display: flex; gap: 8px; align-items: center; }
+@container (min-width: 520px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .card.wide { grid-column: 1 / -1; } }
+@container (max-width: 380px) {
+  .h { padding: 10px 10px 2px; }
+  .h .sub { display: none; }
+  .grid, .sub, .foot { padding-left: 10px; padding-right: 10px; }
+  .num { font-size: 21px; }
+}
+body.embed .bar, body.embed .notes { display: none; }
+body.embed main { padding: 0; }
+body.embed .fwin { border: 0; border-radius: 0; box-shadow: none; }
+body.embed .fbar { display: none; }
+body.embed .fpage { height: 100vh; }
+</style>
+</head>
+<body>
+<div class="bar">
+	<h1>R2 · 仪表盘优先</h1>
+	<p>主页 = 六张卡（待审 / 记忆 / 注入 / 漏斗 / 归档 / 运行时），每张一个主数字 + 一个动作；审核进二级页。单张卡取不到只塌自己。</p>
+	<div class="row"><span class="lbl">宽度</span><span id="w"></span><span class="lbl">主题</span><span id="t"></span><span class="lbl">状态</span><span id="s"></span></div>
+</div>
+<main>
+	<div class="fwin" id="fwin"><div class="fbar"><span class="dot"></span><span>记忆库</span><span class="t" id="fmeta"></span></div>
+		<div class="fpage"><div class="app" id="app"></div></div></div>
+	<div class="notes">
+		<b>相对现状改了什么</b>
+		<ul>
+			<li>「一眼看全」：五件事都有主数字；<b>数据可信度字形 †/⌊ 与阈值脚注</b>（living-memory 做法）落在每一处。</li>
+			<li>审核进二级：主页不塞 17 条，只露 3 条预览 + 批量入口（卡内可勾）。</li>
+			<li>单卡降级：网关挂时只塌「待审/注入/记忆」三卡，漏斗与归档卡照常。</li>
+		</ul>
+		<b>取舍</b>：批量操作比 R1 深一层；窄栏卡片堆叠、滚动最长。<b>入口</b>：<a href="memory-workbench-redesign-options.html">对比页</a> · <a href="memory-workbench-current-review.html">优缺点分析</a>
+	</div>
+</main>
+<script>
+(function () {
+	'use strict';
+	var EMBED = /(?:^|[?&])embed=1/.test(location.search);
+	var S = { w: 760, theme: 'dark', scenario: 'ok', view: 'home', sel: {}, q: '', density: 'standard', toast: null, frozen: null };
+	var P = [
+		{ id: 'a', kind: '习惯约定', text: '以后所有构建都必须先跑 typecheck 再打产物', hits: '2/2', why: 'judge-unavailable' },
+		{ id: 'b', kind: '强调提醒', text: '必须真的调用对应工具，不要只在回答里描述：用 memory_search 查历史决策', hits: '4/2', why: 'weak-kind' },
+		{ id: 'c', kind: '项目规范', text: '导出包放在 dist/，每次改动都要 bump 版本号', hits: '1/2', why: 'hits<2' }
+	];
+	var MEMS = [
+		{ type: 'fact', tier: 'semantic', text: '本项目使用 pnpm 管理依赖，构建前必须先 typecheck', str: 8, used: '2 小时前', tags: ['pnpm', '构建'] },
+		{ type: 'convention', tier: 'semantic', text: '导出的插件包每次改动都必须 bump 版本号', str: 9, used: '昨天', tags: ['发布'] },
+		{ type: 'bug', tier: 'episodic', text: 'dev app 重启才会加载新 Host 代码（HMR 不覆盖主进程）', str: 6, used: '3 天前', tags: ['dev'] },
+		{ type: 'routine', tier: 'procedural', text: '发版：自检 → bump → 安装 → 重启 → 验收', str: 7, used: '5 天前', tags: ['发布'] },
+		{ type: 'fact', tier: 'semantic', text: '记忆网关安装版 3111 / dev 3112，不猜端口', str: 7, used: '1 周前', tags: ['网关'] }
+	];
+	var esc = function (s) { return String(s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); };
+	var $ = function (id) { return document.getElementById(id); };
+	var qa = function (sel) { return Array.prototype.slice.call(document.querySelectorAll(sel)); };
+	var down = function () { return S.scenario === 'down'; };
+	var empty = function () { return S.scenario === 'empty'; };
+
+	function hdr() {
+		return '<div class="h"><h1>记忆库</h1><span class="sub">gr · ws-saros</span><span class="sp"></span>'
+			+ ['compact','standard','large'].map(function (d) { return '<button class="btn' + (S.density === d ? ' on' : '') + '" data-density="' + d + '">' + ({ compact: '紧凑', standard: '标准', large: '大' })[d] + '</button>'; }).join(' ')
+			+ '<button class="btn" data-act="refresh">刷新</button></div>';
+	}
+	function toastBar() {
+		return S.toast ? '<div class="toast">' + esc(S.toast) + '<span style="flex:1"></span>'
+			+ (S.frozen ? '<button class="btn" data-act="undo">撤销（10s）</button>' : '')
+			+ '<button class="btn" data-act="dismiss">知道了</button></div>' : '';
+	}
+	function cardPending() {
+		if (down()) { return '<section class="card wide"><header><span class="k">待审</span><span class="sp"></span><span>取不到</span></header>'
+			+ '<div class="in"><div class="note">网关不可达，显示「未知」而不是 0。'
+			+ '<code class="mono">curl 127.0.0.1:3112/health</code></div></div>'
+			+ '<footer><span class="note">安装版 3111 / dev 3112</span><span class="sp"></span><button class="btn" data-act="diag">去诊断</button></footer></section>'; }
+		var n = empty() ? 0 : 17;
+		var selN = Object.keys(S.sel).filter(function (k) { return S.sel[k]; }).length;
+		return '<section class="card wide"><header><span class="k">待审</span><span class="sp"></span><span>' + (n ? '等你判断' : '已清空') + '</span></header>'
+			+ '<div class="in"><div class="num">' + n + '<small>条</small></div>'
+			+ (n ? '<ul class="mini">' + P.map(function (d) {
+				return '<li class="' + (S.sel[d.id] ? 'sel' : '') + '"><input type="checkbox" data-chk="' + d.id + '"' + (S.sel[d.id] ? ' checked' : '') + ' aria-label="选择">'
+					+ '<div><div class="tx">' + esc(d.text) + '</div><div class="mt">' + esc(d.kind) + ' · hits ' + d.hits + ' · <span class="wy">' + esc(d.why) + '</span></div></div></li>';
+			}).join('') + '</ul>' : '<div class="note">没有候选。达标条目已自动入库，见「记忆」卡。</div>')
+			+ '</div><footer><span class="note">' + (selN ? '已选 ' + selN + ' · 提交前冻结' : '点勾可批量') + '</span><span class="sp"></span>'
+			+ (selN ? '<button class="btn pri" data-act="bulk">批量提升</button><button class="btn" data-act="bulkdiscard">丢弃</button>' : '<button class="btn" data-act="review">进审核（17 条）</button>')
+			+ '</footer></section>';
+	}
+	function cardMemory() {
+		if (down()) { return '<section class="card"><header><span class="k">记忆</span><span class="sp"></span><span>未知</span></header><div class="in"><div class="note">网关不可达</div></div></section>'; }
+		var n = empty() ? 0 : 1204;
+		return '<section class="card"><header><span class="k">记忆</span><span class="sp"></span><span>长期</span></header>'
+			+ '<div class="in"><div class="num">' + n + '<small>条</small></div><div class="note">semantic 812 · episodic 260 · procedural 132</div></div>'
+			+ '<footer><button class="btn" data-act="memory">去检索</button><span class="sp"></span><span class="note">点标签 = 带条件搜索</span></footer></section>';
+	}
+	function cardInject() {
+		if (down()) { return '<section class="card"><header><span class="k">注入</span><span class="sp"></span><span>未知</span></header><div class="in"><div class="note">网关不可达</div></div></section>'; }
+		var use = empty() ? 0 : 288, budget = 1024;
+		return '<section class="card"><header><span class="k">注入</span><span class="sp"></span><span>本次会话冻结</span></header>'
+			+ '<div class="in"><div class="num">' + use + '<small>/ ' + budget + ' tok <span class="qm" title="估算：字符/3">†</span></small></div>'
+			+ '<div class="meter"><i class="keep" style="width:' + (use ? (use - 96) / budget * 100 : 0) + '%"></i><i class="add" style="width:' + (use ? 96 / budget * 100 : 0) + '%"></i></div>'
+			+ '<div class="note">前綴稳定：仅尾部 <b>+96</b>（可命中缓存）</div></div>'
+			+ '<footer><button class="btn" data-act="inject">看六块</button><span class="sp"></span><span class="note">' + Math.round(use / budget * 100) + '%</span></footer></section>';
+	}
+	function cardFunnel() {
+		var f = [['回合', 128], ['候选', 31], ['草稿', 24], ['自动', 2, 'auto'], ['人工', 4], ['丢弃', 3, 'drop']];
+		return '<section class="card"><header><span class="k">沉淀漏斗</span><span class="sp"></span><span>累计</span></header>'
+			+ '<div class="in"><div class="bars">' + f.map(function (r) { return '<div class="br ' + (r[2] || '') + '"><span>' + r[0] + '</span><span class="bg"><i style="width:' + Math.max(2, r[1] / 128 * 100) + '%"></i></span><span class="n">' + r[1] + '</span></div>'; }).join('') + '</div>'
+			+ '<div class="note">「待审 17」是<b>时点值</b>，不在上面这条累计线里 <span class="qm" title="时点值 vs 累计值混排会误导">⌊</span></div></div>'
+			+ '<footer><button class="btn" data-act="maint">看口径</button><span class="sp"></span><span class="note">自 10-28</span></footer></section>';
+	}
+	function cardArchive() {
+		var n = empty() ? 0 : 12;
+		return '<section class="card"><header><span class="k">归档</span><span class="sp"></span><span>90 天可恢复</span></header>'
+			+ '<div class="in"><div class="num">' + n + '<small>条</small></div><div class="note">最近：部署端口 8011（superseded，剩 87 天）</div></div>'
+			+ '<footer><button class="btn" data-act="archive">打开</button><span class="sp"></span><span class="note">恢复不动现任</span></footer></section>';
+	}
+	function cardHealth() {
+		if (down()) { return '<section class="card"><header><span class="k">运行时</span><span class="sp"></span><span style="color:var(--v-err)">1 个问题</span></header>'
+			+ '<div class="in"><div class="note">网关不可达：<code class="mono">curl 127.0.0.1:3112/health</code></div></div>'
+			+ '<footer><button class="btn pri" data-act="diag">三步诊断</button></footer></section>'; }
+		return '<section class="card"><header><span class="k">运行时</span><span class="sp"></span><span style="color:var(--v-warn)">2 个问题</span></header>'
+			+ '<div class="in"><div class="kvs"><span>网关 3112</span><span>schema v1</span><span>备份 3</span><span>索引 5000/5000</span><span>sweep 4 分钟前</span></div>'
+			+ '<div class="note">① 3 条草稿判定路由未配 ② 12 条已归档仍被检索到</div></div>'
+			+ '<footer><button class="btn" data-act="reindex">重建索引</button><span class="sp"></span><button class="btn" data-act="diag">详情</button></footer></section>';
+	}
+	function home() {
+		return '<div class="grid">' + cardPending() + (down() ? '' : cardInject() + cardMemory()) + cardFunnel()
+			+ (down() ? '' : cardArchive()) + cardHealth() + '</div>' + toastBar();
+	}
+	function review() {
+		var selN = Object.keys(S.sel).filter(function (k) { return S.sel[k]; }).length;
+		return '<div class="sub"><div class="top"><button class="btn" data-act="home">← 仪表盘</button><span class="note">待审 17 条 · 位置 <b>3 / 17</b> · 排序 hits↓</span></div>'
+			+ '<div class="card"><ul class="list">' + P.map(function (d) {
+				return '<li class="it' + (S.sel[d.id] ? ' sel' : '') + '"><input type="checkbox" data-chk="' + d.id + '"' + (S.sel[d.id] ? ' checked' : '') + ' aria-label="选择">'
+					+ '<div><div class="tx">' + esc(d.text) + '</div><div class="mt"><span class="tag k">' + esc(d.kind) + '</span><span>hits ' + d.hits + '</span><span class="wy">依据：' + esc(d.why) + '</span></div></div></li>';
+			}).join('') + '</ul></div>'
+			+ '<div class="foot"><span>' + (selN ? '已选 ' + selN : '未选') + '</span>' + (selN ? '<span class="hint">提交前冻结目标，弹一次确认</span>' : '')
+			+ '<span class="sp"></span><span class="hint">Space 多选 · Enter 提升</span>'
+			+ (selN ? '<button class="btn pri" data-act="bulk">批量提升</button><button class="btn" data-act="bulkdiscard">批量丢弃</button>' : '')
+			+ '</div></div>' + toastBar();
+	}
+	function memory() {
+		var q = S.q.toLowerCase();
+		var list = MEMS.filter(function (m) { return !q || (m.text + ' ' + m.tags.join(' ')).toLowerCase().indexOf(q) >= 0; });
+		return '<div class="sub"><div class="top"><button class="btn" data-act="home">← 仪表盘</button><span class="note">' + list.length + ' / ' + MEMS.length + ' · 12ms</span></div>'
+			+ '<div class="tool"><input type="search" id="q" placeholder="搜正文 / 标签（250ms 防抖）" value="' + esc(S.q) + '"></div>'
+			+ '<div class="card"><ul class="list">' + list.map(function (m) {
+				return '<li class="it"><span class="tag">' + esc(m.tier) + '</span><div><div class="tx">' + esc(m.text) + '</div>'
+					+ '<div class="mt"><span class="tag k">' + esc(m.type) + '</span><span>强度 ' + m.str + '/10</span><span>' + esc(m.used) + '</span>'
+					+ m.tags.map(function (t) { return '<button class="btn" style="font-size:10px;padding:0 6px" data-tag="' + esc(t) + '">#' + esc(t) + '</button>'; }).join('') + '</div></div></li>';
+			}).join('') + '</ul></div></div>' + toastBar();
+	}
+	function diag() {
+		return '<div class="state"><h2>连不上记忆网关</h2><ol>'
+			+ '<li><code>curl 127.0.0.1:3112/health</code> → 期望 <code>{"status":"ok"}</code></li>'
+			+ '<li>安装版 <b>3111</b> / dev <b>3112</b>（不猜端口）</li>'
+			+ '<li>还不行看 <code>gateway.log</code> 末尾 20 行，常见是数据目录被占用</li></ol>'
+			+ '<div><button class="btn pri" data-act="retry">重新连接</button> <button class="btn" data-act="home">回仪表盘</button></div></div>' + toastBar();
+	}
+	function render() {
+		document.body.classList.toggle('light', S.theme === 'light');
+		document.body.classList.toggle('embed', EMBED);
+		$('fwin').style.width = EMBED ? '100%' : S.w + 'px';
+		$('fmeta').textContent = S.w + 'px · ' + S.density;
+		$('app').setAttribute('data-density', S.density);
+		var body = S.view === 'review' ? review() : S.view === 'memory' ? memory() : S.view === 'diag' ? diag() : home();
+		$('app').innerHTML = hdr() + '<div class="body">' + body + '</div>';
+	}
+	function buildBar(id, items, key, fmt) {
+		$(id).innerHTML = items.map(function (v) {
+			return '<button class="chip' + (String(S[key]) === String(v) ? ' on' : '') + '" data-set="' + key + '" data-val="' + v + '">' + fmt(v) + '</button>';
+		}).join('');
+	}
+	function bars() {
+		buildBar('w', [320, 380, 520, 760, 1040], 'w', function (v) { return v + 'px'; });
+		buildBar('t', ['dark', 'light'], 'theme', function (v) { return v === 'dark' ? '深色' : '浅色'; });
+		buildBar('s', ['ok', 'empty', 'down'], 'scenario', function (v) { return ({ ok: '正常', empty: '空库', down: '网关故障' })[v]; });
+	}
+	document.addEventListener('click', function (ev) {
+		var b = ev.target.closest ? ev.target.closest('[data-set],[data-chk],[data-tag],[data-density],[data-act]') : null;
+		if (!b) { return; }
+		var d = b.dataset;
+		if (d.set) { S[d.set] = d.set === 'w' ? Number(d.val) : d.val; bars(); render(); return; }
+		if (d.chk) { ev.stopPropagation(); S.sel[d.chk] = !S.sel[d.chk]; render(); return; }
+		if (d.tag) { S.q = d.tag; S.view = 'memory'; render(); return; }
+		if (d.density) { S.density = d.density; render(); return; }
+		var ids = Object.keys(S.sel).filter(function (k) { return S.sel[k]; });
+		switch (d.act) {
+			case 'refresh': S.toast = '已重新读取'; break;
+			case 'review': S.view = 'review'; break;
+			case 'memory': S.view = 'memory'; break;
+			case 'diag': S.view = 'diag'; break;
+			case 'home': S.view = 'home'; break;
+			case 'retry': S.scenario = 'ok'; S.view = 'home'; S.toast = '已连上网关'; break;
+			case 'bulk': S.frozen = { n: ids.length }; S.sel = {}; S.toast = '已提升 ' + ids.length + ' 条（目标已冻结）'; break;
+			case 'bulkdiscard': S.frozen = { n: ids.length }; S.sel = {}; S.toast = '已丢弃 ' + ids.length + ' 条'; break;
+			case 'undo': S.frozen = null; S.toast = '已撤销'; break;
+			case 'dismiss': S.toast = null; break;
+			case 'inject': S.toast = '六块 + 前缀比对（示例）'; break;
+			case 'maint': S.toast = '漏斗口径：累计事件，不含待审时点值'; break;
+			case 'archive': S.toast = '归档 12 条，90 天内可恢复，恢复不动现任'; break;
+			case 'reindex': S.toast = '索引重建已排队'; break;
+			default: return;
+		}
+		render();
+	});
+	document.addEventListener('input', function (ev) {
+		if (ev.target && ev.target.id === 'q') {
+			S.q = ev.target.value; render();
+			var el = document.getElementById('q');
+			if (el) { el.focus(); try { el.setSelectionRange(el.value.length, el.value.length); } catch (e) { } }
+		}
+	});
+	bars(); render();
+})();
+</script>
+</body>
+</html>
