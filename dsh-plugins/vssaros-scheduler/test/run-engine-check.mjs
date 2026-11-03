@@ -169,6 +169,73 @@ const mkTask = (id, patch = {}) => ({
 	ok('盘上带 history', Array.isArray(reloaded.tasks.history));
 }
 
+// ── 2026-11-03：模型友好形状 + 有效期停用（0.7.0）─────────────────────────
+{
+	// ① `time: "HH:MM"` 免换算（模型最容易给这个形状；要求它算 atMinute 是我们独有的坑）
+	reset();
+	const engine = newEngine();
+	const daily = engine.create({ id: 'm1', kind: 'prompt', prompt: 'p', sessionId: 's', rule: { kind: 'daily', time: '09:30', timeZone: 'UTC' } });
+	eq('daily 收 time "09:30" ⇒ atMinute 570', daily.rule.atMinute, 570);
+	const weekly = engine.create({ id: 'm2', kind: 'prompt', prompt: 'p', sessionId: 's', rule: { kind: 'weekly', time: '7:05', weekdays: [1, 3], timeZone: 'UTC' } });
+	eq('weekly 收 "7:05" ⇒ 425', weekly.rule.atMinute, 425);
+	// ② 官方形状 `every_seconds` 也认
+	const every = engine.create({ id: 'm3', kind: 'prompt', prompt: 'p', sessionId: 's', rule: { kind: 'every', every_seconds: 600 } });
+	eq('每 600 秒（every_seconds 别名）', every.rule.everySeconds, 600);
+	// ③ 非法 time ⇒ 明确报错（不静默变 00:00）
+	let threw = '';
+	try {
+		engine.create({ id: 'm4', kind: 'prompt', prompt: 'p', sessionId: 's', rule: { kind: 'daily', time: '25:99' } });
+	} catch (error) { threw = String(error?.message ?? error); }
+	ok('非法 time 拒绝（不静默归零）', /atMinute|time/.test(threw), threw);
+
+	// ④ `inactive` 是合法状态（UI 的暂停按钮 + 有效期停用都用它；此前枚举里没有 ⇒ 暂停会抛错）
+	const paused = engine.update('m1', { status: 'inactive' });
+	eq('update 接受 status=inactive', paused?.status, 'inactive');
+}
+
+// ── 有效期：到期自动停用（tick，不需要跑 task）────────────────────────────
+{
+	reset();
+	const engine = newEngine();
+	const expiresAt = new Date(base + 60 * 60_000).toISOString();
+	engine.create({
+		id: 'x1', kind: 'prompt', prompt: 'p', sessionId: 's',
+		rule: { kind: 'daily', atMinute: 0, timeZone: 'UTC' }, expiresAt,
+	});
+	eq('建出来是 active', engine.get('x1').status, 'active');
+	nowMs = base + 2 * 60 * 60_000;     // 越过有效期
+	engine.stop();
+	const fired = [];
+	engine.onFire(e => fired.push(e.taskId));
+	// tick 由 start() 的 interval 驱动；这里直接调内部 tick 不可见 ⇒ 用 start+stop 触发一次 catchUp。
+	engine.start();
+	engine.stop();
+	eq('过期后自动停用', engine.get('x1').status, 'inactive');
+	ok('过期任务不会再被派发', fired.length === 0, fired.join(','));
+}
+
+// ── 投递结果回写 history（0.7.0：到点是否真的送到会话）────────────────────
+{
+	reset();
+	const engine = newEngine();
+	engine.create({ id: 'd1', kind: 'prompt', prompt: 'p', sessionId: 's', rule: { kind: 'every', everySeconds: 600 } });
+	nowMs = base + 600_000;
+	engine.fireNow('d1');
+	const atMs = base + 600_000;
+	ok('投递前 history 里没有 delivered', engine.history({ id: 'd1', limit: 5 })[0].delivered === undefined);
+	// 三态：pending ⇒ delivered=null（"投递中"），否则 ok/失败
+	engine.markDelivery('d1', atMs, { pending: true });
+	eq('投递中标 delivered=null', engine.history({ id: 'd1', limit: 5 })[0].delivered, null);
+	engine.markDelivery('d1', atMs, { ok: false, error: '未绑定会话（不投递）' });
+	const failed = engine.history({ id: 'd1', limit: 5 })[0];
+	eq('回写 delivered=false', failed.delivered, false);
+	ok('回写里带原因', String(failed.deliveryError).includes('未绑定会话'), failed.deliveryError);
+	engine.markDelivery('d1', atMs, { ok: true });
+	const done = engine.history({ id: 'd1', limit: 5 })[0];
+	eq('回写 delivered=true 时清空原因', done.deliveryError, '');
+	eq('没有对应历史 ⇒ 返回 false（不静默造记录）', engine.markDelivery('nope', 1, { ok: true }), false);
+}
+
 // ── 撞键保护 ─────────────────────────────────────────────────────────────
 {
 	eq('组合里没有 schedule ⇒ 可以占用', shouldProvideSchedule({ get: () => null, schedule: undefined }).ok, true);

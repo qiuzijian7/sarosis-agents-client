@@ -29,7 +29,9 @@ export type DshModuleEngine = 'legacy' | 'dsh';
 
 /** 内置模块 id（与 `@vssaros/dsh-<module>` 包名一一对应，见方案 6.6）。 */
 export type DshModuleId =
-	| 'skills' | 'mcp' | 'kb' | 'memory' | 'media' | 'codebase' | 'kanban' | 'workflow' | 'agents' | 'dashboard' | 'ide' | 'channels'
+	// ★ 2026-11-03：`agents` 仍是模块（随包安装链 + Host 路由），但没有容器/界面（view.kind=none）。
+	| 'agents'
+	| 'skills' | 'mcp' | 'kb' | 'memory' | 'media' | 'codebase' | 'kanban' | 'workflow' | 'dashboard' | 'ide' | 'channels'
 	// 2026-10-12：历史会话 sideview 的 dsh 页面（`@vssaros/dsh-sessions`）。
 	// **它有自己的容器**（`vssaros.dsh.sessions`，`page-only`）—— 见下面 DSH_BUILTIN_MODULES 那条的说明。
 	| 'sessions'
@@ -96,13 +98,19 @@ export const DSH_BUILTIN_MODULES: readonly IDshBuiltinModule[] = [
 	{ module: 'skills', pluginName: '@vssaros/dsh-skills', summary: '内置与用户技能目录注册为 dsh 技能来源' },
 	{ module: 'mcp', pluginName: '@vssaros/dsh-mcp', summary: 'MCP 服务器清单动态挂载' },
 	{ module: 'kb', pluginName: '@vssaros/dsh-kb', summary: '资料库检索 / 导入 / 构建工具与页面' },
-	{ module: 'memory', pluginName: '@vssaros/dsh-memory', summary: '工作记忆注入与记忆提取（独立工作台：/x/memory/）' },
-	// 媒体库紧跟 memory（都属于「资料库」拆出来的四格之一）：它**只读**直连主进程 media.db。
+	// 2026-11-03：记忆模块改为**内置插件**（dsh-memory-evolve 源码纳管为 @vssaros/dsh-memory）。
+	// 登记进 DSH_BUILTIN_MODULES 是「内置」的真源：expectedModulePlugins 启动时把它补进 bundles。
+	// 它是注册式（view.kind='none'）：UI 在会话页「记忆」Tab，没有 /x/memory/ 工作台与活动栏容器。
+	{ module: 'memory', pluginName: '@vssaros/dsh-memory', summary: '内置记忆：分层记忆 / 待办 / 技能管理（会话页记忆 Tab，无独立工作台）' },
+	// 媒体库属于「资料库」拆出来的四格之一：它**只读**直连主进程 media.db。
 	{ module: 'media', pluginName: '@vssaros/dsh-media', summary: '媒体库：只读直连主进程 media.db（资产列表 / 统计）' },
 	{ module: 'codebase', pluginName: '@vssaros/dsh-codebase', summary: '代码图谱服务与查询工具（在 Host 进程内运行）' },
 	{ module: 'kanban', pluginName: '@vssaros/dsh-kanban', summary: '看板存储与卡片工具' },
 	{ module: 'workflow', pluginName: '@vssaros/dsh-workflow', summary: '工作流引擎（Host worker_threads）与画布' },
-	{ module: 'agents', pluginName: '@vssaros/dsh-agents', summary: '.agent.md 注册为 dsh agent preset' },
+	// ★ 2026-11-03（用户要求「移除 bots 工作台」）：agents 仍是**模块插件**（Host 侧 Host 路由 + 工具 +
+	//   随包安装链都靠它），但**没有界面**：activity bar 容器已删、页面已删 ⇒ `view.kind = 'none'`。
+	//   bots 只在聊天框侧栏「Bots」页签里（chat-surface），配置在会话视图「设置」页签。
+	{ module: 'agents', pluginName: '@vssaros/dsh-agents', summary: '.agent.md 注册为 dsh agent preset（无界面：bots 在聊天框侧栏 / 会话设置页签）' },
 	{ module: 'dashboard', pluginName: '@vssaros/dsh-dashboard', summary: '会话遥测 / 用量汇总（可选）' },
 	{ module: 'ide', pluginName: '@vssaros/dsh-ide', summary: 'IDE 能力工具（无 ActivityBar 图标）' },
 	// 2026-10-16（重构 2.3）：渠道插件已建（`dsh-plugins/vssaros-channels`）——核心环（路由 + loopback
@@ -211,10 +219,8 @@ export const DSH_MODULE_CONTAINERS: readonly IDshModuleContainer[] = [
 		activityBar: { containerId: 'vssaros.dsh.codebase', title: { zh: '代码库', en: 'Codebase' }, icon: 'codicon:type-hierarchy', order: 113 },
 		note: '2026-10-12（「资料库」拆分第一刀）：**page-only → existing**，显示名「代码图谱」→「代码库」。原因是它被提升为「资料库」4 个 tab 之一（code）的独立工作台：`engine=dsh` 仍走插件页面 `/x/codebase/`；`engine=legacy` 侧现在**有**静态入口 `CodebaseLibraryViewPane`（索引统计 + 日志 + 图谱查看器入口；原先 legacy 无入口是因为当时 legacy 侧根本没有这个 tab 的宿主）。⚠ 容器 id / 视图 id `vssaros.dsh.codebaseView` **一字未改**（改 id 会丢用户已存的活动栏布局）。图谱的**生产**（tree-sitter 索引）仍在 IDE 侧。｜ 2026-10-12（Q2）：order `25 → 113`，与另三格（110/111/112）聚成一段 ✓。',
 	},
-	{
-		containerId: 'agentStudio.presetAgent', modules: ['agents'], status: 'existing',
-		activityBar: { containerId: 'agentStudio.presetAgent', title: 'Agents', icon: 'codicon:robot', order: 60 },
-	},
+	// ★ 2026-11-03：`agentStudio.presetAgent`（Bots 工作台容器）已下线 —— 图标、原生 roster 树、
+	//   `/x/agents/` 页面全部移除；agents 仍是模块（随包安装 + Host 路由），但 `view.kind='none'`。
 	{
 		containerId: 'agentStudio.tasks', modules: ['kanban'], status: 'existing',
 		activityBar: { containerId: 'agentStudio.tasks', title: 'Tasks', icon: 'codicon:tasklist', order: 70 },
@@ -237,11 +243,7 @@ export const DSH_MODULE_CONTAINERS: readonly IDshModuleContainer[] = [
 		activityBar: { containerId: 'agentStudio.knowledgeBase', title: { zh: '知识库', en: 'Knowledge Base' }, icon: 'codicon:book', order: 110 },
 		note: '2026-10-12（「资料库」拆分）：**不再共容器** —— `memory` 已拆成一格（见下），本容器现在只由 `kb` 决定可见性；显示名由「资料库」改回「知识库」。⚠ 容器 id 与存储键**一字未动**（R1：不改就丢不掉用户已有的活动栏布局）。（画布**不**寄居这里：它有自己的一格 —— 它读同一份数据，但页面是整页而非片段。）',
 	},
-	{
-		containerId: 'agentStudio.memory', modules: ['memory'], status: 'existing',
-		activityBar: { containerId: 'agentStudio.memory', title: { zh: '记忆库', en: 'Memory' }, icon: 'codicon:database', order: 111 },
-		note: '2026-10-12（「资料库」拆分）：由资料库页的「记忆」tab 提升为独立工作台 —— 这一刀**正对着决议①的「kb / memory 共容器」**（`DSH_MODULE_PAGES` 里 memory 同时从 `section` 变 `page`）。IDE 侧宿主 `MemoryLibraryViewPane`；容器 id / 视图 id 均为**新建**（不复用 kb 的）。',
-	},
+
 	{
 		containerId: 'agentStudio.media', modules: ['media'], status: 'existing',
 		activityBar: { containerId: 'agentStudio.media', title: { zh: '媒体库', en: 'Media' }, icon: 'codicon:file-media', order: 112 },
@@ -335,9 +337,6 @@ export interface IDshModulePage {
 }
 
 export const DSH_MODULE_PAGES: readonly IDshModulePage[] = [
-	// 2026-10-30：agents 改成**原生侧栏视图**（`vssaros.agents.roster` 树 + 刷新/开完整页两个动作）⇒
-	//   kind=native、不再有页面路由；地址在清单 `view.data.route`（数据接口），由 dshNativeTreeViewPane 消费。
-	{ module: 'agents', kind: 'native' },
 	{ module: 'codebase', kind: 'page', route: '/x/codebase/' },
 	{ module: 'dashboard', kind: 'page', route: '/x/dashboard/' },
 	{ module: 'kanban', kind: 'page', route: '/x/kanban/' },
@@ -351,10 +350,10 @@ export const DSH_MODULE_PAGES: readonly IDshModulePage[] = [
 	{ module: 'kb', kind: 'page', route: '/x/kb/' },
 	{ module: 'skills', kind: 'page', route: '/x/skills/' },
 	{ module: 'workflow', kind: 'page', route: '/x/workflow/' },
-	// 2026-10-12（「资料库」拆分）：memory 从「寄居 kb 的片段」变**独立整页**（容器 `agentStudio.memory`）。
-	// 插件侧旧的 `/x/memory/section` 片段路由**已删** —— 同批摘掉了知识库页的内嵌记忆分区
-	// （`dsh-plugins/vssaros-kb` 的 `fetchMemorySection` 与 `data-vssaros-kb-memory-section` 都没了）。
-	{ module: 'memory', kind: 'page', route: '/x/memory/' },
+	// ★ 2026-11-03：Bots 工作台（`/x/agents/` 承载页 + SSR 页 + 原生 roster 树）整体下线 ⇒
+	//   agents 变成"无界面模块"（清单 `view.kind='none'`）。它仍要登记在这张表里，
+	//   否则 `dshPluginPackages` 会报「声明了未登记的内置模块：agents」。
+	{ module: 'agents', kind: 'none' },
 	{ module: 'media', kind: 'page', route: '/x/media/' },
 	// 2026-10-12：历史会话 dsh 页（容器 `vssaros.dsh.sessions`）。用它必须与清单 `view.kind` 一致
 	// （守卫「DSH_MODULE_PAGES 与插件清单逐项一致」会逐项比对）。

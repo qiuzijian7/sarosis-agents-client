@@ -38,7 +38,8 @@ import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/vie
 import { DshHarnessSettings, IDshPluginInfo } from '../common/dshHarness.js';
 import { containersFromPlugins, DSH_MODULE_CONTAINERS, IDshModuleContainer, planModuleContainers } from '../common/dshModuleContainers.js';
 import { IDshHarnessService } from './dshHarnessService.js';
-import { AGENT_STUDIO_CODEBASE_VIEW_ID, AGENT_STUDIO_DASHBOARD_VIEW_ID, AGENT_STUDIO_DSH_IMAGEGEN_VIEW_ID, AGENT_STUDIO_DSH_MARKETPLACE_VIEW_ID, AGENT_STUDIO_DSH_SESSIONS_VIEW_ID, AGENT_STUDIO_DSH_STUDIO_VIEW_ID, AGENT_STUDIO_INTEGRATION_VIEW_ID, AGENT_STUDIO_KB_VIEW_ID, AGENT_STUDIO_MEDIA_VIEW_ID, AGENT_STUDIO_MEMORY_VIEW_ID, AGENT_STUDIO_PRESET_AGENT_VIEW_ID, AGENT_STUDIO_SCHEDULER_VIEW_ID, AGENT_STUDIO_TASKS_VIEW_ID, AGENT_STUDIO_WORKFLOW_VIEW_ID } from '../../../common/agentStudioConstants.js';
+// ★ 2026-11-03：`AGENT_STUDIO_PRESET_AGENT_VIEW_ID`（Bots 工作台容器）已下线，不再从这里引用
+import { AGENT_STUDIO_CODEBASE_VIEW_ID, AGENT_STUDIO_DASHBOARD_VIEW_ID, AGENT_STUDIO_DSH_IMAGEGEN_VIEW_ID, AGENT_STUDIO_DSH_MARKETPLACE_VIEW_ID, AGENT_STUDIO_DSH_SESSIONS_VIEW_ID, AGENT_STUDIO_DSH_STUDIO_VIEW_ID, AGENT_STUDIO_INTEGRATION_VIEW_ID, AGENT_STUDIO_KB_VIEW_ID, AGENT_STUDIO_MEDIA_VIEW_ID, AGENT_STUDIO_SCHEDULER_VIEW_ID, AGENT_STUDIO_TASKS_VIEW_ID, AGENT_STUDIO_WORKFLOW_VIEW_ID } from '../../../common/agentStudioConstants.js';
 import { DynamicActivityBarContainers } from '../../agentStudio/browser/dynamicActivityBarContainers.js';
 import { DshPluginViewPane } from './dshPluginViewPane.js';
 import { DshNativeTreeViewPane } from './dshNativeTreeViewPane.js';
@@ -72,13 +73,10 @@ const MODULE_VIEW_HOSTS: Readonly<Record<string, IModuleViewHost>> = {
 	'vssaros.dsh.codebase': pageHost(AGENT_STUDIO_CODEBASE_VIEW_ID, 'vssaros.dsh.codebase'),
 	// 历史会话的 dsh 页：`page-only`（legacy 侧有**另一个**容器 —— 常驻的 `sessionHistory.view`，见容器表 note）
 	'vssaros.dsh.sessions': pageHost(AGENT_STUDIO_DSH_SESSIONS_VIEW_ID, 'vssaros.dsh.sessions'),
-	'agentStudio.presetAgent': pageHost(AGENT_STUDIO_PRESET_AGENT_VIEW_ID, 'agentStudio.presetAgent'),
 	'agentStudio.tasks': pageHost(AGENT_STUDIO_TASKS_VIEW_ID, 'agentStudio.tasks'),
 	'agentStudio.workflow': pageHost(AGENT_STUDIO_WORKFLOW_VIEW_ID, 'agentStudio.workflow'),
 	'agentStudio.integration': pageHost(AGENT_STUDIO_INTEGRATION_VIEW_ID, 'agentStudio.integration'),
 	'agentStudio.knowledgeBase': pageHost(AGENT_STUDIO_KB_VIEW_ID, 'agentStudio.knowledgeBase'),
-	// 2026-10-12（「资料库」拆分）：记忆库独立成格，dsh 引擎下挂插件自托管页 `/x/memory/`。
-	'agentStudio.memory': pageHost(AGENT_STUDIO_MEMORY_VIEW_ID, 'agentStudio.memory'),
 	// 媒体库同理：插件自托管页 `/x/media/`（只读直连主进程 media.db）。
 	'agentStudio.media': pageHost(AGENT_STUDIO_MEDIA_VIEW_ID, 'agentStudio.media'),
 	'agentStudio.dashboard': pageHost(AGENT_STUDIO_DASHBOARD_VIEW_ID, 'agentStudio.dashboard'),
@@ -114,7 +112,6 @@ const MODULE_VIEW_HOSTS: Readonly<Record<string, IModuleViewHost>> = {
  */
 const NATIVE_VIEW_IDS: Readonly<Record<string, string>> = {
 	// Agent 名册（2026-10-30 首个样板）：原生树取代 `?surface=sideview` 的插件网页。
-	'vssaros.agents.roster': AGENT_STUDIO_PRESET_AGENT_VIEW_ID,
 };
 
 /**

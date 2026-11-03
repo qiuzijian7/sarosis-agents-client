@@ -99,11 +99,9 @@ window.__ModuleLoader__.load({
 			// ★ 稿 C（2026-10-21 用户拍板）：会话磁贴矩阵 = dsh desktop 的「多会话窗口」形态
 			//   （一眼看到一批会话的状态，点一块换到那条会话）。与「会话」条目同源路由，只是 view 不同 ✓
 			{ id: "vssaros-wb-session-tiles", name: "会话磁贴", ico: "🧲", route: "/x/sessions/?view=tiles" },
-			{ id: "vssaros-wb-agents", name: "Bots", ico: "🤖", route: "/x/agents/" },
-			{ id: "vssaros-wb-kanban", name: "看板", ico: "🗂️", route: "/x/kanban/" },
+					{ id: "vssaros-wb-kanban", name: "看板", ico: "🗂️", route: "/x/kanban/" },
 			{ id: "vssaros-wb-workflow", name: "工作流", ico: "🔀", route: "/x/workflow/" },
 			{ id: "vssaros-wb-kb", name: "知识库", ico: "📚", route: "/x/kb/" },
-			{ id: "vssaros-wb-memory", name: "记忆库", ico: "🧠", route: "/x/memory/" },
 			{ id: "vssaros-wb-codebase", name: "代码库", ico: "🕸️", route: "/x/codebase/" },
 			{ id: "vssaros-wb-media", name: "媒体库", ico: "🖼️", route: "/x/media/" },
 			{ id: "vssaros-wb-imagegen", name: "生图", ico: "🎨", route: "/x/imagegen/" },
@@ -111,7 +109,14 @@ window.__ModuleLoader__.load({
 			// ★ 2026-10-24（用户：「移除自动化任务 item，将自动化任务包装成一个 自动化任务工作台」）：
 			//   侧栏那条官方「自动化任务」面板被隐藏（见下面 HIDDEN_LABELS）⇒ 能力全部收到这个工作台里
 			//   ⇒ 名字也跟着改成「自动化任务」（与工作台标题、插槽描述符三处同值）。
-			{ id: "vssaros-wb-scheduler", name: "自动化任务", ico: "🕒", route: "/x/scheduler/" },
+			// ★★ 2026-11-03（用户报「为什么会有两个自动化任务页签」）：**入口去重**。
+			//   这一行是 2026-10-24「把官方面板收成一个工作台」时的老入口；现在插件清单
+			//   （`vssaros-scheduler` 的 `vssaros.workbench`）自己就注册了同名工作台 + 图标
+			//   ⇒ 两处并存 = 侧栏/启动器里两个「自动化任务」，点不同入口会开出**两个 IDE 页签**
+			//   （route 差一个尾斜杠就是两个 resource，见 `DshPluginPageEditorInput.normalizeRoute`）。
+			//   `hidden: true` 而不是直接删：这份表**同时是 route 白名单**（`itemByRoute()`），
+			//   删了会让主页卡片/深链「打开」被静默拒掉；也用于「已注册工作台」的去重判据（见 :937）。
+			{ id: "vssaros-wb-scheduler", name: "自动化任务", ico: "🕒", route: "/x/scheduler/", hidden: true },
 			// ★ 2026-10-22（修 bug：主页没有「商城」卡片）：自营商城工作台。
 			//   这份 DEFAULT_ITEMS 同时是 **route 白名单**（`itemByRoute()` 只认这里的 route）⇒
 			//   不登记 ⇒ 从主页/侧栏点「打开」会被静默拒掉（"点了没反应"）✗ ⇒ 必须登记 ✓。
@@ -136,15 +141,20 @@ window.__ModuleLoader__.load({
 		window.__vssarosWorkbenchItems = DEFAULT_ITEMS;
 
 		function loadOrder() {
-			try {
-				const raw = window.localStorage && window.localStorage.getItem(LS_KEY);
-				const saved = raw ? JSON.parse(raw) : null;
-				if (!Array.isArray(saved)) { return DEFAULT_ITEMS.slice(); }
-				const byId = new Map(DEFAULT_ITEMS.map((i) => [i.id, i]));
-				const out = saved.map((id) => byId.get(id)).filter(Boolean);
-				for (const it of DEFAULT_ITEMS) { if (out.indexOf(it) < 0) { out.push(it); } } // 新条目补尾
-				return out;
-			} catch { return DEFAULT_ITEMS.slice(); }
+		try {
+			const raw = window.localStorage && window.localStorage.getItem(LS_KEY);
+			const saved = raw ? JSON.parse(raw) : null;
+			// ★ 2026-11-03：`hidden` 条目（如 scheduler，已改由插件清单注册）**不进可排序列**
+			//   ⇒ 启动器/排序层都不会再出现第二个同名入口。
+			if (!Array.isArray(saved)) { return DEFAULT_ITEMS.filter((i) => !i.hidden); }
+			const byId = new Map(DEFAULT_ITEMS.map((i) => [i.id, i]));
+			const out = saved.map((id) => byId.get(id)).filter(Boolean);
+			for (const it of DEFAULT_ITEMS) {
+				if (it.hidden) { continue; }
+				if (out.indexOf(it) < 0) { out.push(it); } // 新条目补尾
+			}
+			return out;
+		} catch { return DEFAULT_ITEMS.filter((i) => !i.hidden); }
 		}
 		function saveOrder(items) {
 			try { window.localStorage && window.localStorage.setItem(LS_KEY, JSON.stringify(items.map((i) => i.id))); } catch { /* 私有模式等：不存也能用 */ }
@@ -793,6 +803,15 @@ window.__ModuleLoader__.load({
 			}
 			let openTabs = loadTabs();
 			let activeTabId = loadActiveTab();
+			// 2026-11-03：记忆库工作台整套下线（改用 dsh-memory-evolve）⇒ 用户 localStorage 里
+			// 残留的旧页签仍会被恢复成一个点了 404 的「记忆库」条目（存档只存 id/name/route，
+			// 不校验代码里还有没有入口）。这里显式清掉并回写，避免重开窗口又冒出来。
+			{
+				const retired = new Set(["vssaros-wb-memory"]);
+				const kept = openTabs.filter(t => t && t.id && !retired.has(t.id));
+				if (kept.length !== openTabs.length) { openTabs = kept; saveTabs(openTabs); }
+				if (retired.has(activeTabId)) { activeTabId = ""; saveActiveTab(""); }
+			}
 			// ── 提速三件（2026-10-21 用户：「主页 page 开启太慢了」）──────────────────────
 			//   ① loadedTabs：**已打开过的页签**（iframe 一旦加载就**保活**，切页签只切 display ⇒
 			//      第二次打开**零网络请求、零重渲染** ✓；没打开过的**不预载** ⇒ 首次只加载一份 ✓）。
@@ -1695,7 +1714,13 @@ window.__ModuleLoader__.load({
 					const info = snap && Array.isArray(snap.workbenches) ? snap.workbenches.filter(w => w.id === wbId)[0] : null;
 					return { id: "wb:" + wbId, wbId, name: (info && info.title) || wbId, ico: wbIconEmoji(info && info.icon), route: "" };
 				}
-				return items.filter(it => it && it.route === r)[0] || null;
+				// ★★ 2026-11-03（回归修复）：`items` 是**可显示/可排序**的那份（`loadOrder()` 已滤掉 hidden）⇒
+				//   主页卡片发来的 `vssaros-wb-open { route:'/x/scheduler/' }` 在这里会**找不到条目**
+				//   ⇒ `notify("工作台路由不认")` ⇒ 表现为"点了没反应"（用户当前报的就是这个）。
+				//   hidden 条目仍是**合法路由**（它存在的意义就是白名单）⇒ 回退到全表再匹配一次。
+				const hit = items.filter(it => it && it.route === r)[0];
+				if (hit) { return hit; }
+				return DEFAULT_ITEMS.filter(it => it && it.route === r)[0] || null;
 			}
 			function unpin(route) {
 				writePinned(readPinned().filter(r => r !== route));
@@ -1838,6 +1863,9 @@ window.__ModuleLoader__.load({
 					const grid = el("div");
 					grid.style.cssText = "display:grid;grid-template-columns:repeat(4,1fr);gap:6px;";
 					for (const it of items) {
+						// `hidden` = 只做 route 白名单 / 去重判据，不在启动器里再出一个入口
+						// （★ 2026-11-03：scheduler 已由插件清单注册，见 DEFAULT_ITEMS 那条注释）。
+						if (it && it.hidden) { continue; }
 						const cell = el("div");
 						cell.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 2px;border-radius:8px;cursor:pointer;font-size:17px;";
 						cell.onmouseenter = () => { cell.style.background = "rgba(128,128,128,.14)"; };

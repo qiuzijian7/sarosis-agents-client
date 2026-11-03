@@ -144,12 +144,10 @@ window.__ModuleLoader__.load({
 		// 数据面**只走 agents 插件的同源 HTTP**（与 chat-surface 的 Bots 选择器同一条）：
 		//   · `/x/agents/api/home`  → agents[]（含 presetId / registered）+ home[agentId].sessions[0..n]
 		//     （**最近会话带 id** ⇒ 点 bot 能直接打开它，不必每次新建一条空会话 ✓）
-		//   · `/x/agents/api/groups` → 群聊清单（members / mode）
 		//   · 没有会话时：`POST /api/session { agentPreset }` 新建，再 `openSession`
 		// ⚠ 任何失败都**就地渲染**（窗口模式没有宿主桥 ⇒ notify 是空转，与 ＋ 菜单同一口径）。
 		const SIDEBAR_VIEW_KEY = "vssaros.chatSurface.sidebarView.v1";
 		const AGENTS_API_HOME = "/x/agents/api/home";
-		const AGENTS_API_GROUPS = "/x/agents/api/groups";
 		const AGENTS_API_SESSION = "/x/agents/api/session";
 		/**
 		 * 读一条会话的**首条真实用户消息**（host 侧只读路由；2026-11-02）。
@@ -269,7 +267,6 @@ window.__ModuleLoader__.load({
 				return {
 					agents: o.agents,
 					home: (o.home && typeof o.home === "object") ? o.home : {},
-					groups: Array.isArray(o.groups) ? o.groups : [],
 					at: typeof o.at === "number" ? o.at : 0,
 				};
 			} catch { return null; }
@@ -280,26 +277,24 @@ window.__ModuleLoader__.load({
 				localStorage.setItem(BOTS_CACHE_KEY, JSON.stringify({
 					agents: (d && d.agents) || [],
 					home: (d && d.home) || {},
-					groups: (d && d.groups) || [],
 					at: Date.now(),
 				}));
 			} catch { /* 存不下只影响下次启动的首屏速度 */ }
 		}
-		/** 名册 + 群聊一次拉齐（容错：群聊读不到不影响名册）。**纯取数**，供 `__test` 注入 fetch。 */
+		/** 只拉名册（★ 2026-11-03 群聊下线：不再请求 /api/groups）。**纯取数**，供 `__test` 注入 fetch。 */
 		function fetchBotsData(fetchImpl) {
 			const f = fetchImpl || (typeof fetch === "function" ? fetch : null);
 			if (!f) { return Promise.resolve({ ok: false, error: "当前环境没有 fetch" }); }
 			const getJson = (url) => Promise.resolve(f(url, { headers: { accept: "application/json" } }))
 				.then((r) => (r && r.ok ? r.json() : Promise.reject(new Error("HTTP " + (r && r.status)))));
-			return Promise.all([
-				getJson(AGENTS_API_HOME),
-				getJson(AGENTS_API_GROUPS).catch(() => null),
-			]).then(([home, groups]) => ({
+			return getJson(AGENTS_API_HOME).then((home) => ({
 				ok: true,
 				agents: Array.isArray(home && home.agents) ? home.agents : [],
 				home: (home && home.home) || {},
-				groups: Array.isArray(groups && groups.groups) ? groups.groups : [],
 				root: (home && home.root) || "",
+				// ★ 2026-11-03：lazy 补齐还没结束 ⇒ 这份快照里"未注册"会虚高（启动时只注册了首批）。
+				//   页签据此自动重拉一次，而不是把早期快照当成最终事实（用户报「为什么这么多未注册」）。
+				presetsPending: home && home.presetsPending === true,
 			})).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
 		}
 		// ── 新建 Bot / 群聊：校验与预设（2026-11-02「弹出的 UI 框要完善」）──────────────
@@ -307,7 +302,6 @@ window.__ModuleLoader__.load({
 		// 规则**与 host 同源**（不是自己另立一套）：
 		//   · Bot：`name` 必填；`id` 必须过 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`（agents `core/create.js` 的
 		//     `AGENT_ID_RE`），且不能与既有目录重名（host 会 409，这里先拦）；
-		//   · 群聊：`name` 必填、`members` 至少 1 个（host 的 `createGroup` 同口径）。
 		// 都做成**纯函数** ⇒ `__test` 与守卫可以直接断言，不必真去写盘 ✓
 		function validateBotDraft(draft, existingIds) {
 			const errs = [];
@@ -319,6 +313,13 @@ window.__ModuleLoader__.load({
 			else if (Array.isArray(existingIds) && existingIds.indexOf(id) >= 0) { errs.push("id 已被占用：" + id); }
 			return errs;
 		}
+		/** 新建 Bot 的图标预设（agents 侧默认就是 `lucide:bot`；也允许 emoji）。 */
+		const BOT_ICON_PRESETS = ["lucide:bot", "🧭", "🛠️", "📚", "🧪", "🎨", "📊"];
+		/**
+		 * ★ 2026-11-03：群聊下线后这两个只剩"表单分支的形状"（`openBotsNew` 只会传 `'bot'`，
+		 *   群聊那一支不可达）。留着是为了不把 `submitBotsNew` / 表单里的一堆引用拆断；
+		 *   等设置页签那轮一起清（`__test` 仍在导出它们，守卫按存在性断言）。
+		 */
 		function validateGroupDraft(draft) {
 			const errs = [];
 			if (!String((draft && draft.name) || "").trim()) { errs.push("群名不能为空"); }
@@ -326,9 +327,6 @@ window.__ModuleLoader__.load({
 			if (!members.length) { errs.push("至少要勾一个成员"); }
 			return errs;
 		}
-		/** 新建 Bot 的图标预设（agents 侧默认就是 `lucide:bot`；也允许 emoji）。 */
-		const BOT_ICON_PRESETS = ["lucide:bot", "🧭", "🛠️", "📚", "🧪", "🎨", "📊"];
-		/** 群聊唤醒策略四档（与 agents 的 `GROUP_MODES` 一一对应，顺序也照它排）。 */
 		const GROUP_MODE_OPTIONS = [
 			{ id: "all", label: "全员派发", hint: "每条消息都发给所有成员" },
 			{ id: "mentions", label: "仅 @ 派发", hint: "只有被 @ 的成员回应（默认）" },
@@ -2888,7 +2886,12 @@ window.__ModuleLoader__.load({
 					void Promise.race([fetchBotsData(), timeout]).then((d) => {
 						if (d && d.ok) {
 							saveBotsCache(d);
-							setBots({ status: "ready", agents: d.agents, home: d.home, groups: d.groups, error: "" });
+							setBots({
+								status: "ready", agents: d.agents, home: d.home, groups: d.groups, error: "",
+								// ★ 2026-11-03：preset 还在分批注册 ⇒ 这份快照的「未注册」会虚高（下面自动重拉）
+								presetsPending: d.presetsPending === true,
+								fetchedAt: Date.now(),
+							});
 						} else {
 							setBots((b) => ((b.agents || []).length
 								? Object.assign({}, b, { status: "ready", stale: true, error: String((d && d.error) || "读取失败") })
@@ -2905,6 +2908,17 @@ window.__ModuleLoader__.load({
 					if (view !== "bots" || bots.status !== "idle") { return; }
 					reloadBots();
 				}, [view, bots.status]);
+				/* ★ 2026-11-03（用户报「Bots 页签里为什么这么多未注册」）：
+				   根因 = lazy 两阶段注册 —— 启动时只注册首批（可委派 + 最近会话用过的，通常 4~5 个），
+				   其余 15s 后才补齐。这个页签原来**只在第一次进入时拉一次**，于是把早期快照一直挂在屏上，
+				   「未注册 N 个」看起来像坏了。后端 `/api/home` 现在会回 `presetsPending`：
+				   还在补齐就每 3s 重拉一次（上限 40 次 ≈ 2 分钟），补齐后自然停下；
+				   同时把状态写进提示条（`data-vssaros-bots-pending`），不让人以为没注册成功。 */
+				react.useEffect(() => {
+					if (view !== "bots" || bots.status !== "ready" || bots.presetsPending !== true) { return undefined; }
+					const timer = window.setTimeout(() => { reloadBots(); }, 3000);
+					return () => { try { window.clearTimeout(timer); } catch { /* 忽略 */ } };
+				}, [view, bots.status, bots.presetsPending, bots.fetchedAt]);
 				// ★★ 这是**最后一个 hook**。rail（窄轨）形态的提前 return 必须放在它之后 ——
 				//   React 规则：每次渲染的 hook 数量与顺序必须完全一致，否则抛 error #310 并卸载整棵子树
 				//   （2026-11-02 真机根因，详见上面 `railOnly` 处的长注释）。
@@ -2968,46 +2982,6 @@ window.__ModuleLoader__.load({
 						openSession(String(nextSid), setBotsMsg);
 					}).catch((e) => setBotsMsg({ kind: "error", text: "新建会话失败：" + String((e && e.message) || e) }));
 				};
-				/**
-				 * 群聊：**在中栏打开群聊页**（2026-11-02 用户报障后修）。
-				 *
-				 * 为什么不能 `openSession`：群对话不是 dsh 会话 —— 群上的 `memberSessions` 是**逐成员**
-				 * 的会话绑定，群本身没有"一条群会话" ⇒ 没有 sid 可开（点了中栏只会继续停在 hero ✗）。
-				 * 为什么不能只靠 `bridge.openModulePage`：那是**IDE 侧**开页，dsh 桌面窗口里点了
-				 * 中栏什么都不会变（用户 2026-11-02 截图报的就是这个）。
-				 * ⇒ 走中栏页签（工作台同一套 `main` 面板 + 页签条，`workbenchNav` 暴露
-				 *   `window.__vssarosOpenPageTab`），群聊页带 `?embed=1` 只留聊天列 ✓。
-				 * 兜底顺序：中栏页签（组件 → iframe）→ 宿主桥开完整页 → 就地说明。
-				 *
-				 * ★ 2026-11-02 第二步：中栏页签内容由 iframe 改成 agents 插件登记的 React 群聊面板
-				 *   （`AgentsPanel` 的 only 模式，复用工作台里同一份 `midGroup`）；iframe 只当兜底。
-				 */
-				const openGroup = (g) => {
-					const gid = String((g && g.id) || "");
-					if (!gid) { return; }
-					setBotsMsg(null);
-					const route = "/x/agents/group/" + encodeURIComponent(gid) + "?embed=1";
-					try {
-						if (typeof window !== "undefined" && typeof window.__vssarosOpenPageTab === "function") {
-							// `comp` 首选：agents 插件登记的 React 群聊面板（与 dsh 同源样式，无 iframe）；
-							// `route` 兜底：插件没登记该组件（旧版 / 还没加载）时回落到 iframe 群聊页 ✓
-							window.__vssarosOpenPageTab({
-								id: "group:" + gid, name: String((g && g.name) || gid), ico: "👥",
-								comp: "agents.groupChat", props: { gid }, route,
-							});
-							return;
-						}
-					} catch (e) {
-						setBotsMsg({ kind: "error", text: "打开群聊失败：" + String((e && e.message) || e) });
-						return;
-					}
-					if (bridge && typeof bridge.openModulePage === "function") {
-						void Promise.resolve(bridge.openModulePage("/x/agents/group/" + encodeURIComponent(gid)))
-							.catch((e) => setBotsMsg({ kind: "error", text: "打开群聊失败：" + String((e && e.message) || e) }));
-						return;
-					}
-					setBotsMsg({ kind: "error", text: "当前宿主打不开群聊页（需要 chat-surface 的工作台页签，或桥版本 3+）" });
-				};
 				/** POST JSON（agents 的写接口用；非 2xx 时抛出宿主给的 error 文案，不吞）。 */
 				const postJson = (url, body) => {
 					let p;
@@ -3037,7 +3011,7 @@ window.__ModuleLoader__.load({
 						kind,
 						name: "", id: "", role: "", description: "",
 						icon: BOT_ICON_PRESETS[0],
-						members: [], mode: "mentions", memberQuery: "",
+						
 						busy: false, error: "",
 					});
 					setBotsMenu(null);
@@ -3080,24 +3054,6 @@ window.__ModuleLoader__.load({
 						);
 						return;
 					}
-					const members = Array.isArray(cur.members) ? cur.members : [];
-					const errs2 = validateGroupDraft({ name, members });
-					if (errs2.length) { setBotsNew(Object.assign({}, cur, { error: errs2.join("；") })); return; }
-					const next = Object.assign({}, cur, { busy: true, error: "" });
-					setBotsNew(next);
-					void postJson(AGENTS_API_GROUPS, {
-						action: "create",
-						name,
-						members,
-						mode: String(cur.mode || "").trim() || "mentions",
-					}).then(
-						() => {
-							setBotsNew(null);
-							setBotsMsg({ kind: "note", text: "已新建群聊「" + name + "」（" + members.length + " 个成员）—— 名册刷新中…" });
-							reloadBots();
-						},
-						(e) => setBotsNew((b) => Object.assign({}, b || next, { busy: false, error: "新建失败：" + String((e && e.message) || e) })),
-					);
 				};
 				const botsSection = (label, count, rows) => (count > 0 ? react.createElement(react.Fragment, null,
 					react.createElement("div", { key: "sec:" + label, style: S.botsSec }, label, react.createElement("span", { style: S.botsSecCt }, String(count))),
@@ -3123,36 +3079,24 @@ window.__ModuleLoader__.load({
 							react.createElement("span", { style: S.botL2 },
 								(reg ? "" : "花名册里没有它的 preset · ") + (total ? total + " 会话" : "还没有会话"))));
 				};
-				const groupRow = (g) => {
-					const gid = String((g && g.id) || "");
-					const members = Array.isArray(g && g.members) ? g.members.length : 0;
-					const modeText = (g && g.mode === "open") ? "全员响应" : "@ 唤醒";
-					return react.createElement("div", {
-						key: "grp:" + gid, "data-vssaros-group": gid, style: S.botRow,
-						title: String((g && g.name) || gid) + "\n" + members + " 成员 · " + modeText + "\n点击 ⇒ 打开群聊页",
-						onClick: () => openGroup(g),
-					},
-						react.createElement("span", { style: Object.assign({}, S.botAv, { background: "var(--dsw-alias-bg-layer-3, #3a3a3a)" }) }, "👥"),
-						react.createElement("span", { style: S.botMain },
-							react.createElement("span", { style: S.botL1 }, react.createElement("span", { style: S.botName }, String((g && g.name) || gid))),
-							react.createElement("span", { style: S.botL2 }, members + " 成员 · " + modeText)));
-				};
 				const botsPane = () => {
 					const list = bots.agents || [];
-					const groups = bots.groups || [];
+					// ★ 2026-11-03（用户要求「只显示已注册的 bots」）：未注册的**不再渲染**。
+					//   为什么可以省：preset 没注册成功的 bot 点了也开不了会话（`session.create` 会报未知 preset），
+					//   列出来只是噪音；启动早期的"未注册"更是分批注册的正常中间态（见上面 presetsPending）。
+					//   仍然保留计数口径：`hiddenUnregistered` 只用于"有 N 个没显示"的一句说明。
 					const regAll = list.filter((a) => a && a.registered !== false);
-					const unregAll = list.filter((a) => a && a.registered === false);
+					const hiddenUnregistered = list.filter((a) => a && a.registered === false).length;
 					const loading = bots.status === "loading";
 					const ready = bots.status === "ready";
 					// ★ 2026-11-02（用户要求「Bots 页签下增加搜索按钮和 + 按钮，通会话页签的 UI」）：
-					//   搜索口径与会话页签一致 —— 名称 / id / role / 描述（群聊再加 mode 与成员）。
+					//   搜索口径与会话页签一致 —— 名称 / id / role / 描述。
+					// ★ 2026-11-03：群聊下线 ⇒ 名册只剩 bot。
 					const q = botsQuery.trim().toLowerCase();
 					const hit = (v) => !q || String(v || "").toLowerCase().indexOf(q) >= 0;
 					const reg = regAll.filter((a) => hit(a && a.name) || hit(a && a.id) || hit(a && a.role) || hit(a && a.description));
-					const unreg = unregAll.filter((a) => hit(a && a.name) || hit(a && a.id) || hit(a && a.role) || hit(a && a.description));
-					const groupsF = groups.filter((g) => hit(g && g.name) || hit(g && g.id) || hit(g && g.mode));
 					const searching = q.length > 0;
-					const shownCount = reg.length + unreg.length + groupsF.length;
+					const shownCount = reg.length;
 					// ★ 诊断（2026-11-02）：点「新建 Bot」后表单没出现 —— 先分清是 **state 没变**
 					//   还是 **渲染块被跳过**。只在非 null 时打，正常使用不会刷屏。
 					if (botsNew) {
@@ -3222,13 +3166,22 @@ window.__ModuleLoader__.load({
 						bots.status === "idle" || (loading && !list.length) ? react.createElement("div", { style: S.botsHint }, "正在读取名册…") : null,
 						ready && !list.length ? react.createElement("div", { style: S.botsHint },
 							"还没有 bot（每个子目录需要一个带 name 的 .agent.md）。") : null,
+						// ★ 2026-11-03：preset 分批注册期间说明一下（此时"少几个 bot"是正常中间态，不是名册丢了）
+						bots.presetsPending === true ? react.createElement("div", {
+							"data-vssaros-bots-pending": "1",
+							style: S.botsHint,
+						}, "dsh 正在分批注册 preset（启动时先注册首批，其余十几秒后补齐）—— 还没注册好的 bot 暂不显示，本页每 3 秒自动刷新。") : null,
 						// 搜索无结果时说清楚（否则看起来像"名册空了"✗）
 						searching && shownCount === 0 ? react.createElement("div", { style: S.botsHint },
-							"没有匹配「" + botsQuery.trim() + "」的 Bot / 群聊。") : null,
+							"没有匹配「" + botsQuery.trim() + "」的 Bot。") : null,
+						// ★ 2026-11-03（用户要求「只显示已注册的 bots」）：未注册的整段不再渲染，
+						//   只留一句计数（可点 ⟳ 重试；preset 注册成功后它们会自己出现在上面）。
+						!searching && hiddenUnregistered > 0 && bots.presetsPending !== true ? react.createElement("div", {
+							"data-vssaros-bots-hidden": String(hiddenUnregistered),
+							style: S.botsHint,
+						}, "另有 " + hiddenUnregistered + " 个 bot 的 preset 未注册（点了也开不了会话）⇒ 已隐藏。改了 .agent.md 或刚启动时可点 ＋ → 刷新名册 重试。") : null,
 						react.createElement("div", { style: S.list },
-							botsSection("已注册", reg.length, reg.map(botRow)),
-							botsSection("未注册", unreg.length, unreg.map(botRow)),
-							botsSection("群聊", groupsF.length, groupsF.map(groupRow))),
+							botsSection("已注册", reg.length, reg.map(botRow))),
 						// ＋ 菜单（fixed；与会话页签的 ＋ 菜单同形态）
 						botsMenu ? react.createElement("div", {
 							"data-vssaros-bots-menu": "1",
@@ -3251,15 +3204,7 @@ window.__ModuleLoader__.load({
 									//   拆成两个批次后互不干扰。
 									try { window.setTimeout(() => openBotsNew("bot"), 0); } catch { openBotsNew("bot"); }
 								},
-							}, "新建 Bot…"),
-							react.createElement("button", {
-								type: "button", role: "menuitem", "data-act": "new-group", style: S.menuItem,
-								title: "新建一个群聊（名称 + 至少一个成员）",
-								onMouseDown: (e) => {
-									try { e.preventDefault(); } catch { /* 忽略 */ }
-									try { window.setTimeout(() => openBotsNew("group"), 0); } catch { openBotsNew("group"); }
-								},
-							}, "新建群聊…")) : null,
+							}, "新建 Bot…")) : null,
 						// ★ 2026-11-02：「新建 Bot / 新建群聊」表单（＋ 的主语义）
 						botsNew ? (() => {
 							const f = botsNew;

@@ -1,7 +1,7 @@
 {
   "name": "@vssaros/dsh-memory",
-  "version": "0.9.12",
-  "description": "VsSaros memory module for DeepSeek Harness: injects the agent's working memory as a system-prompt section (read-only, via the AgentMemory gateway), exposes 23 memory tools — memory_list / memory_search / memory_stats / memory_refresh / memory_remember / memory_recall / memory_forget / memory_obsidian_export / memory_cascade / memory_crystal / memory_routine / memory_improve / memory_facet / memory_governance / memory_team / memory_mesh / memory_sentinel / memory_api / memory_slot / memory_lesson / memory_work / memory_import / memory_skill — 16 of which change user data and therefore pass the approval gate, auto-distills durable facts from user messages into a human-reviewed draft area (agent/turn-stopping), auto-promotes only high-confidence repeats (strong phrasing + LLM verdict + seen twice, config.autoPromote='high-only' by default, 'off' restores drafts-only), and serves its own standalone page (/x/memory/, activityBar container agentStudio.memory, order 111). The legacy /x/memory/section fragment route was removed on 2026-10-12 (the knowledge-base page no longer embeds it). Single writer stays the gateway.",
+  "version": "1.0.5",
+  "description": "VsSaros built-in memory module (vendored from dsh-memory-evolve): layered memory (global / user / project / git branch / daily), todos, skills management and the session-page Memory tab. Web API namespace /memory-evolve/* is kept for client/server compatibility.",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
@@ -10,32 +10,32 @@
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
+  "scripts": {
+    "test": "node --test 'tests/*.test.js'",
+    "build": "node scripts/build.mjs"
+  },
+  "license": "MIT",
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "platform": "web"
+    },
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
   "files": [
-    "lib/index.js",
-    "lib/detail.js",
-    "lib/pageShell.js",
-    "lib/gateway.js",
-    "lib/audit.js",
-    "lib/draft.js",
-    "lib/stats.js",
-    "lib/promote.js",
-    "lib/queue.js",
-    "lib/judge.js",
-    "lib/core/memory.js",
-    "lib/core/audit.js",
-    "lib/core/distill.js",
-    "lib/core/judge.js",
-    "lib/core/promotion.js",
-    "lib/core/inbox.js",
-    "lib/core/injection.js",
-    "lib/history.js",
+    "lib/",
+    "skills/",
+    "vendor/",
+    "scripts/",
     "cordis.patch.yml",
-    "lib/foundationRef.js",
-    "lib/client.js",
-    "lib/client.memory.js",
-    "lib/detail.bundle.js",
-    "lib/detail.css",
-    "lib/core/scope.js"
+    "LICENSE",
+    "README.md"
   ],
   "peerDependencies": {
     "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
@@ -43,47 +43,9 @@
   "vssaros": {
     "manifestVersion": 1,
     "module": "memory",
-    "activityBar": {
-      "containerId": "agentStudio.memory",
-      "title": {
-        "zh": "记忆库",
-        "en": "Memory"
-      },
-      "icon": "codicon:database",
-      "order": 111
-    },
     "view": {
-      "kind": "page",
-      "route": "/x/memory/"
+      "kind": "none"
     },
-    "legacyCounterpart": "agentStudio.memory",
-    "workbench": {
-      "title": "记忆库",
-      "description": "查看与整理 Agent 的长期记忆：审核沉淀候选、检查注入内容与归档。",
-      "repository": "vssaros:memory",
-      "customFrame": false,
-      "floatingActions": false,
-      "layout": {
-        "businessSide": "left",
-        "businessWidth": 0.36
-      }
-    }
-  },
-  "license": "MIT",
-  "dsh": {
-    "bundle": {
-      "patch": [
-        "./cordis.patch.yml"
-      ]
-    },
-    "client": {
-      "platform": "web",
-      "inject": [
-        "@vssaros/dsh-workbenches"
-      ]
-    }
-  },
-  "scripts": {
-    "check": "node ./test/run-memory-check.mjs"
+    "legacyCounterpart": "agentStudio.memory"
   }
 }

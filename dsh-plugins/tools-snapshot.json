@@ -1,63 +1,8 @@
 {
   "note": "由 dsh-plugins/tools-snapshot.mjs 生成；被 dshHarness/test/common/dshToolSnapshot.test.ts 钉住。不要手改，跑 --write。",
-  "total": 175,
+  "total": 148,
   "plugins": {
     "vssaros-agents": [
-      {
-        "name": "agent_group_create",
-        "required": [
-          "members",
-          "name"
-        ],
-        "params": [
-          "members",
-          "mode",
-          "name",
-          "operationKey"
-        ],
-        "descriptionHash": "4311fdb9fc5c"
-      },
-      {
-        "name": "agent_group_invite",
-        "required": [
-          "group",
-          "members"
-        ],
-        "params": [
-          "group",
-          "members",
-          "operationKey"
-        ],
-        "descriptionHash": "603456c7c9db"
-      },
-      {
-        "name": "agent_group_invite_respond",
-        "required": [
-          "accept",
-          "group"
-        ],
-        "params": [
-          "accept",
-          "group"
-        ],
-        "descriptionHash": "f92dca64af8f"
-      },
-      {
-        "name": "agent_group_invites",
-        "required": [],
-        "params": [],
-        "descriptionHash": "96096d28aabc"
-      },
-      {
-        "name": "agent_group_leave",
-        "required": [
-          "group"
-        ],
-        "params": [
-          "group"
-        ],
-        "descriptionHash": "b5593ca3a1a5"
-      },
       {
         "name": "agent_list",
         "required": [],
@@ -120,6 +65,19 @@
           "clear"
         ],
         "descriptionHash": "3c45e2ce5060"
+      },
+      {
+        "name": "workspace_memory",
+        "required": [
+          "action"
+        ],
+        "params": [
+          "action",
+          "content",
+          "match",
+          "scope"
+        ],
+        "descriptionHash": "2e0e5f623c67"
       }
     ],
     "vssaros-bridge": [
@@ -1402,318 +1360,6 @@
         "descriptionHash": "a338abb6cc77"
       }
     ],
-    "vssaros-memory": [
-      {
-        "name": "memory_api",
-        "required": [],
-        "params": [
-          "args",
-          "method",
-          "verbose"
-        ],
-        "descriptionHash": "03298c7f409e"
-      },
-      {
-        "name": "memory_cascade",
-        "required": [
-          "memory_id"
-        ],
-        "params": [
-          "memory_id"
-        ],
-        "descriptionHash": "7a1e36911a38"
-      },
-      {
-        "name": "memory_crystal",
-        "required": [
-          "action"
-        ],
-        "params": [
-          "action",
-          "action_id",
-          "crystal_id"
-        ],
-        "descriptionHash": "bfe5d76d988b"
-      },
-      {
-        "name": "memory_facet",
-        "required": [
-          "action"
-        ],
-        "params": [
-          "action",
-          "dimension",
-          "target_id",
-          "target_type",
-          "value"
-        ],
-        "descriptionHash": "1b3446ecc88a"
-      },
-      {
-        "name": "memory_forget",
-        "required": [
-          "memory_id"
-        ],
-        "params": [
-          "memory_id",
-          "reason"
-        ],
-        "descriptionHash": "0ace72367f3a"
-      },
-      {
-        "name": "memory_governance",
-        "required": [
-          "action"
-        ],
-        "params": [
-          "action",
-          "checkpoint_id",
-          "concept",
-          "description",
-          "dry_run",
-          "filters",
-          "ids",
-          "limit",
-          "memory_id",
-          "name",
-          "passed",
-          "priority",
-          "session_id",
-          "snapshot_id",
-          "sub",
-          "updates"
-        ],
-        "descriptionHash": "b07a0d88edaf"
-      },
-      {
-        "name": "memory_import",
-        "required": [
-          "action"
-        ],
-        "params": [
-          "action",
-          "data",
-          "jsonl",
-          "max_events",
-          "session_id"
-        ],
-        "descriptionHash": "67aee276f712"
-      },
-      {
-        "name": "memory_improve",
-        "required": [
-          "action",
-          "memory_id"
-        ],
-        "params": [
-          "action",
-          "memory_id",
-          "new_content"
-        ],
-        "descriptionHash": "ae4df48caa2b"
-      },
-      {
-        "name": "memory_lesson",
-        "required": [
-          "action"
-        ],
-        "params": [
-          "action",
-          "confidence",
-          "content",
-          "context",
-          "lesson_id",
-          "limit",
-          "project",
-          "query"
-        ],
-        "descriptionHash": "e1b6f9793144"
-      },
-      {
-        "name": "memory_list",
-        "required": [],
-        "params": [
-          "limit",
-          "partition"
-        ],
-        "descriptionHash": "eddcd9963c1c"
-      },
-      {
-        "name": "memory_mesh",
-        "required": [
-          "action"
-        ],
-        "params": [
-          "action",
-          "direction",
-          "name",
-          "peer_id",
-          "scopes",
-          "url"
-        ],
-        "descriptionHash": "6b129384a2f0"
-      },
-      {
-        "name": "memory_obsidian_export",
-        "required": [],
-        "params": [],
-        "descriptionHash": "c71c395cd17c"
-      },
-      {
-        "name": "memory_recall",
-        "required": [
-          "query"
-        ],
-        "params": [
-          "history",
-          "limit",
-          "partition",
-          "query",
-          "strategy"
-        ],
-        "descriptionHash": "b2311a6e22b1"
-      },
-      {
-        "name": "memory_refresh",
-        "required": [],
-        "params": [],
-        "descriptionHash": "89d7101ef794"
-      },
-      {
-        "name": "memory_remember",
-        "required": [
-          "content"
-        ],
-        "params": [
-          "content",
-          "importance",
-          "memory_type",
-          "tags"
-        ],
-        "descriptionHash": "b3eee2ebdbf3"
-      },
-      {
-        "name": "memory_routine",
-        "required": [
-          "action"
-        ],
-        "params": [
-          "action",
-          "description",
-          "error",
-          "frozen",
-          "name",
-          "result",
-          "routine_id",
-          "run_id",
-          "step_order",
-          "step_status",
-          "steps"
-        ],
-        "descriptionHash": "43a7454cc64d"
-      },
-      {
-        "name": "memory_search",
-        "required": [
-          "query"
-        ],
-        "params": [
-          "limit",
-          "partition",
-          "query"
-        ],
-        "descriptionHash": "7d8eb15d732a"
-      },
-      {
-        "name": "memory_sentinel",
-        "required": [
-          "action"
-        ],
-        "params": [
-          "action",
-          "condition",
-          "name",
-          "result",
-          "sentinel_id",
-          "type"
-        ],
-        "descriptionHash": "27dac22e4e81"
-      },
-      {
-        "name": "memory_skill",
-        "required": [
-          "action"
-        ],
-        "params": [
-          "action",
-          "session_id",
-          "skill_id"
-        ],
-        "descriptionHash": "f0302b9bb8b4"
-      },
-      {
-        "name": "memory_slot",
-        "required": [
-          "action"
-        ],
-        "params": [
-          "action",
-          "content",
-          "description",
-          "label",
-          "max_observations",
-          "pinned",
-          "session_id",
-          "size_limit",
-          "text"
-        ],
-        "descriptionHash": "2aaa08601fb5"
-      },
-      {
-        "name": "memory_stats",
-        "required": [],
-        "params": [],
-        "descriptionHash": "346bd4ea25f6"
-      },
-      {
-        "name": "memory_team",
-        "required": [
-          "action"
-        ],
-        "params": [
-          "action",
-          "item_type",
-          "memory_id",
-          "project",
-          "query"
-        ],
-        "descriptionHash": "6c77a1e75e12"
-      },
-      {
-        "name": "memory_work",
-        "required": [
-          "group"
-        ],
-        "params": [
-          "action_id",
-          "content",
-          "description",
-          "edge_type",
-          "from",
-          "group",
-          "id",
-          "limit",
-          "peer",
-          "priority",
-          "status",
-          "sub",
-          "title",
-          "to",
-          "type"
-        ],
-        "descriptionHash": "bb87392f961f"
-      }
-    ],
     "vssaros-office-template": [
       {
         "name": "office_template",
@@ -1768,14 +1414,13 @@
         "params": [
           "action",
           "kind",
-          "loopName",
           "prompt",
           "rule",
           "sessionId",
           "title",
           "workItem"
         ],
-        "descriptionHash": "9446a77e5518"
+        "descriptionHash": "156a2eaadbb2"
       },
       {
         "name": "schedule_delete",

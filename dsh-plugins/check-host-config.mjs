@@ -87,9 +87,8 @@ const TARGETS = [
 			{ fn: 'agentsRootOf', chain: 'sub', sub: 'agents', key: 'agentsRoot' },
 		],
 	},
-	// memory：**本轮（2026-10-12）新引入**数据根（此前只有网关 URL）—— 审计账本落 <数据根>/memory-audit/，
-	// 口径必须与上面几份逐字节同形（B2 的拷贝一致性会把它一并纳入比较 ✓）
-	{ plugin: 'vssaros-memory', module: 'lib/audit.js', cases: [{ fn: 'dataRootOf', chain: 'root' }] },
+	// 2026-11-03：vssaros-memory 整套下线并归档 ⇒ 上面两条（audit.js 数据根 / index.js 分区键）已摘除，
+	// 否则 TARGETS 会因「模块不存在」直接记违规。
 	// codebase 的数据来自**工作区**（不是数据根）⇒ 按它自己的契约：给了就用，没给就是 null（不猜）
 	{
 		plugin: 'vssaros-codebase', module: 'lib/store.js', cases: [
@@ -98,9 +97,6 @@ const TARGETS = [
 			{ fn: 'workspaceRootOf', chain: 'workspaceContext', key: 'workspaceRoot', absent: null },
 		],
 	},
-	// memory 的**分区键**（2026-10-17）：这是**写路径**（分区认错 = 记忆静默写进旧工作区的分区 ✗）⇒
-	// 断言必须落在生产用的那个函数上。`partitionKeyOf` 就是 `agentIdOf` 的对外形态（导出只为可断言 ✓）。
-	{ plugin: 'vssaros-memory', module: 'lib/index.js', cases: [{ fn: 'partitionKeyOf', chain: 'partition' }] },
 	// 看板**写路径**的打标来源（2026-10-17）：`kanban_create` / `update` / `decompose` / `swarm` / `specify`
 	// 都经它决定卡片归哪个工作区。为什么要单独断它：dsh 侧的**读**路径**不按工作区过滤**（`kanban_list`
 	// 缺省 = 全部工作区，过滤在 IDE 侧用它自己的活动工作区 id 做 ✓）⇒ 只断读路径会得出"运行期上下文没用"
@@ -417,7 +413,7 @@ checkSame('写锁 lock.js 委托层（4 份同形）', allJs
 
 // B1c foundationRef.js 绑定层同形（份数写死：新增消费插件必须显式改这里 ⇒ 逼一次复核 ✓）
 {
-	const EXPECTED_FOUNDATIONREF_COPIES = 15; // kanban/codebase/dashboard/kb/media/memory/sessions/skills/web-content-import/workflow + scheduler（2.1）+ pocket（2.4）+ market（工作台商城 2026-10-21）+ marketplace（自营商城，2026-10-22：要数据根读写台账）+ loop（无人值守循环，2026-10-30：dataRoot 读 loops/ 与 ledger）｜★ 2026-10-30：xhs-note（小红书工作台）已移除 ⇒ 少一份
+	const EXPECTED_FOUNDATIONREF_COPIES = 14; // kanban/codebase/dashboard/kb/media/sessions/skills/web-content-import/workflow + scheduler（2.1）+ pocket（2.4）+ market（工作台商城 2026-10-21）+ marketplace（自营商城，2026-10-22：要数据根读写台账）+ loop（无人值守循环，2026-10-30：dataRoot 读 loops/ 与 ledger）｜★ 2026-10-30 xhs-note、2026-11-03 vssaros-memory 已移除 ⇒ 各少一份
 	const entries = allJs
 		.filter(f => /lib[\\/]foundationRef\.js$/.test(f) && !/vssaros-foundation/.test(f))
 		.map(f => ({ file: rel(f), hash: shortHash(fs.readFileSync(f, 'utf8')) }));
@@ -435,7 +431,10 @@ checkSame('写锁 lock.js 委托层（4 份同形）', allJs
 //   观察按**会话自己的分区**查、摘要按 **分区+sessionId** 配对（否则同名会话串）。
 // ⚠ 行为级断言（真渲染一次会话页）+ 源码结构断言（防回退）：探针 p3-89 在 gitignore 里
 //   ⇒ 只有它的话**发布出去的包没有这道守卫** ✗ ⇒ 必须有一道入库的。
-{
+// 2026-11-03：vssaros-memory 现在是内置记忆插件（会话页记忆 Tab），已无 lib/detail.js。
+// 这段只服务旧网关版记忆插件的「会话分区」守卫，改为按 detail.js 判定：只有旧目录仍在才执行，
+// 否则新插件会被误判（readFileSync detail.js 抛错 ⇒ 整个 host-config 守卫崩）。
+if (fs.existsSync(path.join(PLUGINS_DIR, 'vssaros-memory', 'lib', 'detail.js'))) {
 	const memIndexFile = path.join(PLUGINS_DIR, 'vssaros-memory', 'lib', 'index.js');
 	const memDetailFile = path.join(PLUGINS_DIR, 'vssaros-memory', 'lib', 'detail.js');
 	const memIndexSrc = fs.readFileSync(memIndexFile, 'utf8').replace(/\r\n/g, '\n');

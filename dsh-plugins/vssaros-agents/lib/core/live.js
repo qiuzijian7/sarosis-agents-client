@@ -3,13 +3,45 @@
 // 把 dsh 的会话投影缓存（projcache）折成"每个 agent 的实况"：
 //   一条缓存记录 → 瘦会话行（sessionRowOf）→ 按 preset 聚合（aggregateByPreset）→ 接到 agent 上（liveForAgents）。
 //
-// 连接键是 **presetIdOf(agent.id)**：会话记录的是 preset（`rows.agentPreset.val`，如 `vssaros-standard` /
-// `vssaros-ppt-slides-master`），不是 agent id——身份（preset）首回合锁定，所以缓存里的值就是归属。
+// 连接键是 **presetIdOf(agent.id)**：有 Bot 身份记录的会话按记录的 botId 归属，没有的按会话 preset
+// （`rows.agentPreset.val`，如 `vssaros-ppt-slides-master`）——见 `rowAgentKeyOf`。
 //
 // 防御口径（与 store.js 的 scanAgents 一致）：行缺 / val 为 null ⇒ 按"没有"计；record 畸形 ⇒ 返回 error，
 // 绝不抛——缓存是 dsh 的可选物，坏一个文件不许拖垮整页。
 
 import { presetIdOf } from './agents.js';
+import { BOT_PROJECTION_KEY, resolveSessionBot } from './botIdentity.js';
+
+/**
+ * 会话行 → **归属键**（★ 2026-11-03，"每个 bot 一个 preset"重构第 2 步收口）。
+ *
+ * 有 Bot 身份记录（`row.botId`，已在 `sessionRowOf` 里按 `resolveSessionBot` 校验过 presetId 一致）
+ * ⇒ `presetIdOf(botId)`（每个 bot 稳定唯一，第 3 步多个 bot 共用一个 preset 后依然成立）；
+ * 没有记录 ⇒ 会话的 presetId（旧行为）。
+ * ⚠ 所有"这条会话是哪个 agent 的"判断都必须走这里（或 `rowBelongsTo`），不许再直接比 `row.presetId`
+ *   —— 守卫 `dsh-plugins/check-bot-identity.mjs` 扫描调用面。
+ */
+export function rowAgentKeyOf(row) {
+	if (!row || typeof row !== 'object') {
+		return null;
+	}
+	if (typeof row.botId === 'string' && row.botId) {
+		return presetIdOf(row.botId);
+	}
+	return typeof row.presetId === 'string' && row.presetId ? row.presetId : null;
+}
+
+/** 这条会话行属不属于该 agent（`agentId` = 花名册里的 `agent.id`）。 */
+export function rowBelongsTo(row, agentId) {
+	const key = rowAgentKeyOf(row);
+	return !!key && key === presetIdOf(agentId);
+}
+
+/** 会话行 → 花名册里的 agent（找不到 ⇒ undefined）。 */
+export function rowAgentOf(row, agents) {
+	const key = rowAgentKeyOf(row);
+	return key ? (agents ?? []).find(a => a && presetIdOf(a.id) === key) : undefined;
+}
 
 /** token 合计：输入 + 输出 + 读缓存 + 写缓存，四桶全算（读缓存也真实占过窗口）。非数/负数按 0。 */
 export function tokenTotal(totals) {
@@ -48,10 +80,13 @@ export function sessionRowOf(record, id, mtimeMs) {
 		? `${modelSel.lastUsed.provider}/${modelSel.lastUsed.model}` : null;
 	const meta = rowVal(rec, 'sessionListMetadata');
 	const lastPromptAt = Number.isFinite(meta?.lastPromptAt) ? meta.lastPromptAt : null;
+	// Bot 身份记录（投影 `vssaros-bot`）：只有与当前 preset 一致才采信（判据唯一真源 = resolveSessionBot）
+	const bot = resolveSessionBot({ agentPreset: preset, identity: rowVal(rec, BOT_PROJECTION_KEY) });
 	return {
 		row: {
 			id,
 			presetId: typeof preset === 'string' && preset !== '' ? preset : null,
+			botId: bot.source === 'record' ? bot.botId : null,
 			title: typeof title === 'string' && title !== '' ? title : null,
 			personaId: personaVal && typeof personaVal.personaId === 'string' ? personaVal.personaId : null,
 			model: modelRef,
@@ -63,8 +98,8 @@ export function sessionRowOf(record, id, mtimeMs) {
 }
 
 /**
- * 瘦会话行 → `Map<presetId, 聚合>`。
- * presetId 为 null 的行进 `(none)` 桶——如实单列，不猜归属（旧会话/无 preset 的会话客观存在）。
+ * 瘦会话行 → `Map<归属键, 聚合>`（归属键见 `rowAgentKeyOf`：有身份记录 = presetIdOf(botId)，否则 presetId）。
+ * 归属键为 null 的行进 `(none)` 桶——如实单列，不猜归属（旧会话/无 preset 的会话客观存在）。
  * `lastTitle` 跟随 `lastActiveAt` 最大的那一行（两者必须同源，否则"最近活跃"和"标题"会各说各话）。
  */
 export function aggregateByPreset(rows) {
@@ -73,7 +108,7 @@ export function aggregateByPreset(rows) {
 		if (!row || typeof row !== 'object') {
 			continue;
 		}
-		const key = row.presetId || '(none)';
+		const key = rowAgentKeyOf(row) || '(none)';
 		const cur = byPreset.get(key) ?? { presetId: key, sessions: 0, tokens: 0, turns: 0, lastActiveAt: null, lastTitle: null };
 		cur.sessions += 1;
 		cur.tokens += row.tokens ?? 0;
@@ -136,7 +171,7 @@ export function usageByAgent(agents, rows) {
 		totals.sessions += 1;
 		totals.tokens += row.tokens ?? 0;
 		totals.turns += row.turns ?? 0;
-		const agentId = known.get(row.presetId);
+		const agentId = known.get(rowAgentKeyOf(row));
 		if (!agentId) {
 			unknown.sessions += 1;
 			unknown.tokens += row.tokens ?? 0;

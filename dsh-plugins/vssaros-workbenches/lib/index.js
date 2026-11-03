@@ -118,10 +118,15 @@ export function apply(ctx, config) {
 	// 用**父 ctx** 的 effect（不是 scoped 的）：探针/守卫的假 ctx 常只给父 ctx 挂 effect，
 	// scoped.effect 在那种 ctx 里不存在 ⇒ 整条 apply 直接抛（2026-11-02 link-route 探针当场抓到）。
 	// tools 服务缺失时 inject 回调根本不会执行，所以这里不需要额外判空。
-	ctx.inject(['tools'], () => {
-		// 真实 ctx.inject 只在服务**存在**时回调，这里的判空只服务探针（有的假 ctx 会把所有
-		// inject 都回调一遍但不提供 tools）—— 少了它就整条 apply 抛，探针全红但不是产品坏了。
-		const tools = ctx.tools;
+	ctx.inject(['tools'], scope => {
+		// ★★ 2026-11-03（真机：打包版 Host 日志 `error vssaros-workbenches:
+		//   Error: cannot get property "tools" without inject`，at Object.callback …index.js:124）：
+		//   cordis 的规矩是**inject 回调里必须用回调参数（子 ctx）取服务**；用**父** `ctx.tools`
+		//   取一个在父 ctx 上没声明注入的服务 ⇒ 直接抛 ⇒ 整条 apply 失败 ⇒
+		//   `install_local_workbench` / `check_local_workbench` 两个工具**永远注册不上** ✗✗。
+		//   （原来那句"判空只服务探针"的注释把方向带偏了：问题不在判空，在取法。）
+		let tools = null;
+		try { tools = scope?.tools ?? null; } catch { tools = null; }   // 探针的假 ctx 对未知属性可能抛
 		if (!tools || typeof tools.register !== 'function') { return; }
 		ctx.effect(() => tools.register(localWorkbenchInstallTool(ctx, root, () => injectedBridge)), 'vssaros-workbenches: install tool');
 		ctx.effect(() => tools.register(checkLocalWorkbenchTool()), 'vssaros-workbenches: check tool');

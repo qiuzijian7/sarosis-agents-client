@@ -127,7 +127,6 @@ import {
 	AGENT_STUDIO_WORKFLOW_VIEW_ID,
 	AGENT_STUDIO_DASHBOARD_VIEW_ID,
 	AGENT_STUDIO_KB_VIEW_ID,
-	AGENT_STUDIO_MEMORY_VIEW_ID,
 	AGENT_STUDIO_MEDIA_VIEW_ID,
 	AGENT_STUDIO_CODEBASE_VIEW_ID,
 	AGENT_STUDIO_DATA_PATH_SETTING,
@@ -297,7 +296,6 @@ import { KnowledgeBaseViewPane } from './views/knowledgeBaseView.js';
 // ★ 2026-10-23：React 版知识库（实验容器 `agentStudio.knowledgeBaseReact`，可整段下线）
 import { AGENT_STUDIO_KB_REACT_VIEW_ID, KbSideviewReactViewPane } from './views/kbSideviewReactViewPane.js';
 // 2026-10-12：「资料库」拆分 —— 记忆 / 代码两个 tab 提升为独立工作台（各自一个新 Pane）。
-import { MemoryLibraryViewPane } from './views/memoryLibraryView.js';
 import { CodebaseLibraryViewPane } from './views/codebaseLibraryView.js';
 import { MediaLibraryViewPane } from './views/mediaLibraryView.js';
 // 资料库 activitybar 徽标聚合（知识库 / 代码库 / 记忆的构建与新增提示）。
@@ -4272,30 +4270,8 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 	//   4. Their agentCapabilities contribution was removed from package.json to
 	//      prevent the extension-point path from attempting a futile renderer-side load.
 	private static readonly BUILTIN_FALLBACK_MANIFEST: ICapabilityPluginManifestEntry[] = [
-		{
-			// agentmemory：替代 AgentMemory 的新记忆框架。
-			// 通过 POST /observe 记录观察，POST /remember 保存长期记忆，
-			// POST /smart-search 做 BM25+Vector+Graph 混合搜索。
-			//
-			// 记忆统一入口：SessionMemoryProvider 已废弃，本 provider 是唯一
-			// 记忆来源（扩展 activate 时以 priority=1000 注册）。
-			//
-			// agentmemory server 由主进程 startAgentMemoryGateway() 启动；端口**不再写死**
-			// 3111 —— 主进程 `_resolveAgentMemoryPort()` 按 app 形态派生（安装版 3111 / dev 3112）。
-			// 渲染侧**读不到 process.env**（渲染进程无 process）⇒ 由本文件的
-			// `_injectAgentMemoryEndpoint()` 按 dataDir 认领后写 `globalThis.__SAROS_AGENTMEMORY_URL__`。
-			id: 'agentmemory-memory',
-			name: 'AgentMemory',
-			version: '1.0.0',
-			module: '../../../../extensions/agentmemory-memory/src/extension.js',
-			appResource: 'vs/../../extensions/agentmemory-memory/dist/extension.js',
-			capabilities: [
-				{ capability: 'memory', provider: 'agentmemory', priority: 90 },
-			],
-		},
-		// agentmemory-gateway 不再走 AgentCapability 路径——它走 VSCode 扩展宿主，
-		// 由 vscode 主框架在 builtInExtensions 加载时直接 activate，避免 bare specifier
-		// "vscode" / "fs" 等无法在渲染端 ESM 解析导致的启动失败。
+		// 2026-11-03：AgentMemory 整套下线（改用 dsh-memory-evolve）⇒ 内置能力插件回退清单清空。
+		// agentmemory-gateway 原本就不走 AgentCapability 路径（由扩展宿主 activate），无需在此登记。
 	];
 
 	// --- Source 1: Built-in plugins (build-time manifest) -------------------
@@ -5176,19 +5152,8 @@ class AgentStudioToolbarContribution extends Disposable implements IWorkbenchCon
 			viewCtor: KnowledgeBaseViewPane,
 		});
 
-		// Memory (order: 111) —— 2026-10-12：由「资料库」页的「记忆」tab 提升为独立工作台。
-		// ⚠ 容器 id / 视图 id 都是**新建**的（见 constants 的说明）：绝不复用 kb 的，
-		// 否则要么撞双注册，要么把 kb 的布局状态一并接管。
-		// ⚠ 容器 id 必须写成**字面量**：`dshActivityBarSource.test.ts` 是按字面量匹配静态注册的
-		// （表驱动守卫），用记号常量会让它找不到、报「existing 没走 _registerModuleToolIcon」。
-		this._registerModuleToolIcon(viewContainerRegistry, viewsRegistry, {
-			id: 'agentStudio.memory',
-			title: localize2('agentStudio.memory.title', "记忆库"),
-			icon: Codicon.database,
-			viewId: AGENT_STUDIO_MEMORY_VIEW_ID,
-			order: 111,
-			viewCtor: MemoryLibraryViewPane,
-		});
+		// 2026-11-03：记忆库静态容器整体下线（改用 dsh-memory-evolve 的会话页记忆 Tab）。
+		// 容器表 / 活动栏宿主表 / 导航清单已同步移除，避免留下点了没内容的空入口。
 
 		// Media (order: 112) —— 2026-10-12：由「资料库」页的「媒体库」tab 提升为独立工作台。
 		// 数据源 = 主进程 MediaStore（`{rootDir}/media.db`）；dsh 引擎下由 `@vssaros/dsh-media`

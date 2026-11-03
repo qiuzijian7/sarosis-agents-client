@@ -1,5109 +1,2332 @@
-// @vssaros/dsh-memory — host half：工作记忆注入（system prompt section）+ 记忆工具 + 寄居资料库页的区块。
-//
-// 三件事：
-//   ① **注入**：把网关产出的工作记忆文本注册成一条系统提示词 section。**section 的 text 提供者是同步的**
-//      （`PromptSection.text: string | (ctx) => string`，见 dsh-system-prompt 类型），所以注入的是
-//      "最近一次快照"，**刷新走：新装配主体首装 / `memory_refresh` 工具 / 页面请求**（绝不在 assembly 里做 I/O）。
-//
-//      ⚠ 2026-10-13 改（注入形态修正）：原来是 `TTL 60s` 的后台刷新，现改为**按装配主体冻结**
-//      （`snapshotFor`）。理由：section 在提示词**最前面**（order 100），文本每 60 秒可能变一次 ⇒
-//      **反复打掉 KV cache 的前缀** ✗ —— 这个代价远大于"写入后本会话看不到自己刚写的内容"（后者有
-//      `memory_refresh` 兜底 ✓）。详见 `snapshotFor` 的注释。
-//   ② **工具**：`memory_search` / `memory_stats` 用**已核实**的网关端点；`memory_refresh` 强制刷新快照。
-//   ③ **页面**：`/x/memory/` **独立整页**（清单 `view.kind=page`，容器 `agentStudio.memory`，
-//      order 111 —— 2026-10-12「资料库」拆分后从"寄居 kb 的片段"升格）。
-//      旧片段路由 `/x/memory/section` **已删**（知识库页不再内嵌记忆分区，它没有调用方了）。
-//
-// 单写者：记忆的写入口是网关，本模块只读（不开直写文件的通道）。
-//
-// **静态 `inject` 只留 `tools`**（2026-10-12 改，见 `doc/dsh-modules-conformance.html` §5-9）：
-// `webServer` / `connection` 只在 web 模板里存在，写进静态 inject 会让整个模块在 headless / tui
-// profile 里**永久 pending**、**连工具一起失效** ✗（kanban 的注释就是这条教训的先例）。
-// 现在：页面/片段路由改 `ctx.inject(['webServer','connection'], …)` 动态挂 ✓，路由里用**子 ctx** 的
-// `page.webServer` / `page.connection` ✓，而 `ctx.tools` 等**已声明**的服务照旧从根 ctx 读 ✓。
-// 改之前踩过的两个坑（结论仍然有效 —— 别踩回去 ✗）：
-//   ① 页面 handler 里读**未声明**的服务（`page.tools`）→ 真机 500
-//      `cannot get required service "tools" in inactive context`；
-//   ② 用 `ctx.inject(...)` 的子 ctx 读工具表 → 拿不到（子 ctx 的可见范围与根不同）。
-
-import { existsSync, readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { bindFoundation, foundation } from './foundationRef.js';
-import { buildAuditRow } from './core/audit.js';
-
-import { DEFAULT_TOKEN_BUDGET, LEGACY_PARTITION, MAX_INJECT_CHARS, REQUEST_MARKER, SECTION_NAME, SEARCH_CONFIDENCE_THRESHOLD, SECTION_ORDER_FALLBACK, admitSnapshot, buildWriteReason, createSnapshot, isMemoryWriteRequest, isWriteIntent, normalizeSearchResults, parseWriteReason, partitionOf, personaIdOf, policyMemoryTypeOf, readPartitionsOf, renderWorkingContext, resolveWritePolicy, snapshotKeyOf, splitByConfidence, summarizeStats, targetKeyOf, targetLabelOf, validateWritePolicies, validateWritePolicy, WRITE_VERBS } from './core/memory.js';
-
-import { createAuditWriter } from './audit.js';
-
-// ★ 2026-10-14：「记忆详情」页（dsh 侧复刻 IDE 的 `MemoryDetailEditorPane`）—— 独立文件，理由见其文件头。
-// ⚠ 为什么单独成文件：本文件已 3300+ 行，而详情页自带约 200 行 CSS + 十几个渲染函数 ⇒ 混进来会让
-//   "页面"这件事在 index 里更难找 ✓；且它是**纯函数**（不碰 I/O ✓）⇒ 那个新文件能被探针直接喂数据测 ✓。
-// ⚠ 已登记进 `package.json` 的 `files`（白名单式，不加进去不会随包分发 ✗）。
-import { DETAIL_ROUTE, renderDetailPage } from './detail.js';
-
-
-// ★ 2026-10-15：把**版本号**写进页面副标题 —— 因为"点了没反应"这类问题的根因**屡屡是"用户看到的是旧版"**，
-//   而新旧两版**视觉上一模一样** ⇒ 没有版本号就只能靠猜 ✗。⇒ 副标题带版本 ⇒ 用户刷新后**一眼**能确认 ✓。
-//   ⚠ 运行时读 package.json（不硬编码 ⇒ 不会漂移 ✓）；读不到就降级成 `(未知)` ✓（不炸页面 ✓）。
-const PKG_VERSION = (() => {
-	try {
-		return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version ?? '(未知)';
-	} catch { return '(未知)'; }
-})();
-import { readScopeSync, resolveMemoryScope } from './core/scope.js';
-import { buildTurnObservation, extractCandidates, turnCandidatesOf, parseFormUrlEncoded, repeatedDigestsOf, repeatedSummaryFactDigestsOf, SUMMARY_MATCHED_TAG, summaryCandidatesOf, summaryFactsOf, userTextsOf } from './core/distill.js';
-import { pickAutoPromotions, resolveAutoPromote } from './core/promotion.js';
-import { buildInbox, parseInboxAction } from './core/inbox.js';
-import { buildInjectionView } from './core/injection.js';
-import { funnelOf, createStatsStore } from './stats.js';
-import { health as gatewayHealth, listArchive, restoreArchived } from './gateway.js';
-
-import { createDraftStore, draftRowsOf } from './draft.js';
-import { recallHistory, renderHistory } from './history.js';
-
-import { createJudge } from './judge.js';
-
-import { createPromoter } from './promote.js';
-
-import { createTaskQueue } from './queue.js';
-
-import { autoCrystallize, cascadeUpdate, compressSession, createRoutine, crystalGet, crystalList, crystallize, facetDimensions, facetGet, facetQuery, facetStats, facetTag, facetUntag, forgetMemory, frontierAdd, gatewayUrlOf, getRoutine, getRoutines, governanceAuditQuery, governanceBulkDelete, governanceDelete, meshJoin, meshLeave, meshList, meshSync, obsidianExport, providerCall, recallFormatted, reinforceMemory, remember, requireGateway, routineDelete, routineFreeze, routineStatus, routineStepUpdate, runRoutine, search, sentinelCancel, sentinelCheck, sentinelCreate, sentinelList, sentinelTrigger, stats, teamQuery, teamShare, workingContext } from './gateway.js';
-
-
-export const name = 'vssaros-memory';
-
 /**
- * 必需服务：这三个在 Host 里**已证实存在**（kanban 同款声明，真机验过）。
+ * vssaros-memory — persistent long-term memory and background memory
+ * review for DeepSeek Harness. Pure plugin: only public seams
+ * (`systemPrompt`, `tools`, `commands`, `subagents`, `approval`), zero DSH
+ * core changes, zero runtime dependencies.
  *
- * `systemPrompt` **刻意不放进这里**：写进静态 inject 会让插件在缺该服务的组合里**永久 pending**
- * （实测：加了它以后真机整片 404——路由/工具/注入全都不注册）。它走可选注入，是否生效由页面自诊断。
- */
-export const inject = ['tools'];
-
-const ROUTE_PREFIX = '/x/memory';
-/**
- * 清单声明的**整页**路由（`view.kind=page`；2026-10-12「资料库」拆分后启用）。
- * **精确匹配**；独立工作台容器 `agentStudio.memory` 直接加载它。
- */
-const PAGE_ROUTE = '/x/memory/';
-/**
- * 草稿提升的表单动作路径（**无 JS**：页面里就是一个 `<form method="post">` ✓）。
+ * Two memory tracks:
+ *   - user track (MEMORY.md / USER.md): written only by explicit user action
+ *     (the `memory` tool call) or by user-confirmed suggestions;
+ *   - learned track (SUGGESTIONS.jsonl): background reviews propose, the
+ *     user confirms through `/memory_review`.
  *
- * 为什么不用 client chunk 加"提升"按钮：本页是**服务端渲染 + 零脚本**（`lib/pageShell.js` 的口径 ✓），
- * 为了一个按钮引入 client chunk 会把"页面脚本能不能被当字符串 eval"那套契约一起拖进来 ✗ ——
- * 而表单这条路零新契约、零新依赖 ✓。
- */
-const PROMOTE_ROUTE = '/x/memory/promote';
-/**
- * 丢弃表单动作路径（与提升**对称**设计 ✓）。
- *
- * 为什么要有"丢弃"这个动作（而不只是"不理会"）：草稿区是**待办**，而"放着不管"与"我看过、不要"
- * 是两件事 ✓ —— 后者需要**当下**把它移出视线，否则草稿列表会被已知的噪音占满、真正的候选被淹掉 ✗。
- * ⚠ 但它**不是永久否决**（`seenDigestsOf` 只把 `status !== 'rejected'` 算作已见 ⇒ 下次还会再提 ✓），
- * 理由见 `lib/promote.js` 的 `discard` 注释 ✓。
- */
-const DISCARD_ROUTE = '/x/memory/discard';
-// ★ 2026-10-12：片段路由 `/x/memory/section`（`view.kind=section` 时代的宿主内嵌入口）已删 ——
-// 知识库页不再内嵌记忆分区（记忆已是独立工作台），它不再有任何调用方。
-// ★ 2026-10-13：`REFRESH_MS = 60_000`（TTL 保鲜期）**已删** —— 见 `snapshotFor`。
-// 它唯一的用途是"过期后在下一个触发点后台刷新"，而那个行为**恰好是**要消灭的：section 在提示词最前面，
-// 任何时间驱动的变更都会打掉 KV cache 前缀 ✗。刷新点改为**语义驱动**（新主体首装 / 工具 / 页面）✓。
-/** 本插件注册的工具名（页面自诊断用）。 */
-const TOOL_NAMES = ['memory_list', 'memory_search', 'memory_stats', 'memory_refresh', 'memory_remember',
-	// 2026-10-13 批 1（从 IDE 侧高级记忆工具里接过来的**单方法**那几个 ✓；命名与真源逐字一致 ✓）
-	'memory_recall', 'memory_forget', 'memory_obsidian_export', 'memory_cascade', 'memory_crystal',
-	// 批 2a：多 action 的两个（例程 / 改进 ✓）—— 参数与 action 取值逐条照 `routineCrystalFacetTools.ts:44-62` ✓
-	// 与 `unifiedMemoryTools.ts:80-89` ✓
-	'memory_routine', 'memory_improve',
-	// 批 2b：多维标签（6 action ✓，照 `routineCrystalFacetTools.ts:208-217` ✓）；`memory_crystal` 已升级为 4 action ✓
-	'memory_facet',
-	// 批 2c：四个多 action（治理 / 团队池 / 联邦 / 哨兵 ✓）—— action 表照 `advancedMemoryTools.ts:48-300` ✓
-	'memory_governance', 'memory_team', 'memory_mesh', 'memory_sentinel',
-	// 2026-10-13：通用**只读**入口（1 个工具覆盖 28 个已确证的只读方法 ✓，白名单见 `MEMORY_API_READONLY`）。
-	// ⚠ 放在**末尾**：页面自诊断按本数组顺序输出（`index.js:2458`），`toolDefinitions` 也把它排在最后 ✓
-	// ⇒ 两处顺序一致，`p3-07` 的整串断言才成立 ✓。
-	// ⚠ 它**不在** `WRITE_TOOLS` 里（只读 ⇒ 不过闸 ✓；`p3-26` 的 89 条正是守这个）。
-	'memory_api',
-	// 2026-10-13：槽位（8 action，读写各半 ✓）—— 写类要过闸，所以必须独立成工具（不能塞进只读的 `memory_api` ✓）。
-	'memory_slot',
-	// 2026-10-13：课程（4 action：list/recall 只读、save/delete 写 ✓）—— 同上 ✓。
-	'memory_lesson',
-	// 2026-10-13：行动链 / 草图 / 信号（3 group × 各 3-5 个 sub ✓）—— 边界清楚，**不塞进 governance** ✓。
-	'memory_work',
-	// 2026-10-13：导入（写）—— 与 `memory_api` 的 `exportMemories`（只读）配对 ⇒ **按读/写切边界** ✓。
-	'memory_import',
-	// 2026-10-13：技能落盘（写）—— 补齐"引擎抽出的技能 → 平台 SKILL.md"这条**此前断开的链** ✓。
-	'memory_skill'];
-
-/**
- * 写入预算（**与 legacy 同纪律，但口径不同 —— 如实写在下面**）。
- *
- * 为什么要有：IDE 侧对 `memory_remember` 有预算（`src/.../providers/tool/memoryTools.ts:44-72`）：
- * 子代理 **10/任务**、主代理 **50/会话**，超限时**引导模型去复用**已有记忆而不是继续写。而 dsh 侧
- * 此前**只有"content 非空"一条校验** ⇒ 同一个库会被"有预算的那侧"和"**没预算**的那侧"以不同纪律写，
- * 出现"dsh 侧越写越多、只能回 IDE 清理"的单向沉淀（README 5.57 的第 2 问）。
- *
- * ⚠ **口径差异（这就是"口径统一"里还没定的那一半）**：dsh 侧**没有会话边界**（工具由 Host 进程里的
- * agent 调用，Host 与 IDE 的会话不是一件事）⇒ 这里的预算按 **Host 进程生命周期** 计，粒度是
- * "**每 Host 运行 N 次**"，而不是 legacy 的"每会话 N 次"。数值与 legacy 的**默认值**对齐（50 / 10 ✓），
- * 且用同一套 `subagent-` 前缀判据 ✓ —— 但两边**不共享计数器**（不同进程，各自计各自）。
- *
- * 判定发生在**打网关之前**（预算是"别写太多"，不是"网关说你写太多"）⇒ 超限时不会产生任何网络调用 ✓，
- * 也不会消耗任何写配额 ✓。计数在**尝试时**就 +1（与 legacy 的 `checkMemoryWriteBudget` 一致 ✓）：
- * 网关拒绝的那次也算，避免"失败重试"绕过预算 ✓。
- */
-const MAIN_WRITE_BUDGET = 50;
-const SUBAGENT_WRITE_BUDGET = 10;
-
-/** 预算上限：`config.maxWritesPerRun`（正整数，探针用它把预算压到 2 好断言）> 前缀判据的默认值。 */
-function writeBudgetOf(config, agentId) {
-	const configured = config?.maxWritesPerRun;
-	if (Number.isInteger(configured) && configured > 0) {
-		return configured;
-	}
-	return String(agentId).startsWith('subagent-') ? SUBAGENT_WRITE_BUDGET : MAIN_WRITE_BUDGET;
-}
-
-/**
- * 本插件实例的**记忆分区键**（即网关的 `agentId`）。
- *
- * 实现搬到 `core/memory.js` 的 `partitionOf`（纯逻辑、探针可直接测 ✓）——
- * 2026-10-12 起它**按工作区派生**（`config.workspaceId` ⇒ `ws-<id>`，由壳注入）：
- * dsh 侧记忆因此按工作区隔离，而**不需要动网关的任何一行**（理由见 `partitionOf` 的注释）。
- *
- * ⚠ 后果（已与用户确认的取舍）：隔离**之前**的数据全在旧分区 `default` 里，且**无法按工作区还原**
- *   （写入时没有记录来源）⇒ 那些记忆**不再被注入**，但可以用 `memory_list` / `memory_search` 的
- *   `partition: 'legacy'` **显式查回来** ✓（`LEGACY_PARTITION`）。
- */
-const agentIdOf = config => partitionOf(workspaceScoped(config));
-const tokenBudgetOf = config => (Number.isInteger(config?.tokenBudget) && config.tokenBudget > 0 ? config.tokenBudget : DEFAULT_TOKEN_BUDGET);
-
-/**
- * 把**运行期**工作区上下文叠进 config（2026-10-17）。
- *
- * 为什么必须叠（这是"切工作区不必重启"在本模块的落点）：`config.workspaceId` 只在 Host 启动时注入
- * 一次 ⇒ 不重启的话，切换工作区后新写入的记忆会静默落进**旧**分区 `ws-<旧id>` ✗（读取时"记忆不见了"
- * 只是表象，真身在旧分区）。运行期上下文的真源与三条纪律见
- * `@vssaros/dsh-foundation/lib/workspaceContext.js` ✓。
- *
- * ⚠ 有上下文就**以它为准**：上下文里没有 workspaceId（＝当前没有活动工作区）时**不**回落 config 的旧值，
- *   而是让 `partitionOf` 走它自己的兜底（旧分区 `default` ✓）——与"config 里没注入"同口径 ✓。
- * ⚠ 读不到上下文（foundation 未绑定 / 从未推过 / 老 Host）⇒ **原样返回** ⇒ 与从前逐字相同 ✓。
- */
-function workspaceScoped(config) {
-	const runtime = workspaceContext();
-	return runtime ? { ...config, workspaceId: runtime.workspaceId } : config;
-}
-
-/** 运行期工作区上下文；`undefined` = 没有（foundation 缺席也算"没有" ⇒ 回落 config ✓）。 */
-function workspaceContext() {
-	// 为什么要 try：`foundation()` 在服务未绑定时**故意抛错**（fail-fast ✓），而本函数在工具/页面的
-	// 热路径上 ⇒ 不能让它把"记忆按哪个分区挂"变成整页报错 ✗（与 config 回落同语义 ✓）。
-	try {
-		return foundation().workspaceContext?.() ?? undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-/**
- * 本插件实例的**记忆分区键**（＝ 生产用的 `agentIdOf` 的对外形态）。
- *
- * 为什么导出：它是**写路径**上的判据（分区认错 = 记忆静默落进旧工作区的分区 ✗）⇒ 必须能被守卫
- * 直接断言"运行期上下文优先 / 上下文说没有就不回落旧值"，而不是靠读源码猜 ✓
- * （`dsh-plugins/check-host-config.mjs` 的 `partition` 链就是它 ✓）。
- */
-export function partitionKeyOf(config) {
-	return agentIdOf(config);
-}
-
-// ── 部署配置兜底（2026-10-20，preset plane 半边副本没有壳注入的配置）──────────────────
-//
-// 只兜底**部署级**的三个键：网关地址 / 数据根 / 工作区（都由壳经 `--patch` 注入 host plane 那行）。
-// ⚠ 刻意不兜底 `agentId`（显式分区是"我就要这个分区"，不该被别的挂载影响）与策略类键（writePolicy 等：
-//   各行自己的配置说了算）。
-// ⚠ 只给 `toolsOnly` 副本用：非半边的挂载缺配置时**保持原样**（探针 p3-35 的"壳未注入 ⇒ default"语义不变）。
-const DEPLOYMENT_KEYS = Object.freeze(['gatewayUrl', 'dataRoot', 'workspaceId']);
-/** 本进程登记的部署配置（最后一次带配置的非半边挂载）。 */
-let deploymentConfig = null;
-
-const hasValue = v => typeof v === 'string' && v.trim() !== '';
-
-/** 登记；没有任何部署键 ⇒ 不登记（返回 null）。 */
-function registerDeploymentConfig(raw) {
-	if (!raw || !DEPLOYMENT_KEYS.some(k => hasValue(raw[k]))) { return null; }
-	const snapshot = Object.freeze(Object.fromEntries(DEPLOYMENT_KEYS.filter(k => hasValue(raw[k])).map(k => [k, raw[k]])));
-	deploymentConfig = snapshot;
-	return snapshot;
-}
-
-function unregisterDeploymentConfig(snapshot) {
-	if (deploymentConfig === snapshot) { deploymentConfig = null; }
-}
-
-/**
- * 半边副本的 config：自己有的键用自己的；缺的部署键在**读取时**取登记值（getter ⇒ 先挂载/后挂载都对）。
- * 展开（`{...config}`）也会求值 getter ⇒ `workspaceScoped` 等现有用法不用改。
- * @param {object} raw
- */
-export function withDeploymentFallback(raw) {
-	const out = { ...(raw ?? {}) };
-	for (const key of DEPLOYMENT_KEYS) {
-		if (hasValue(out[key])) { continue; }
-		delete out[key];
-		Object.defineProperty(out, key, { enumerable: true, configurable: true, get: () => deploymentConfig?.[key] });
-	}
-	return out;
-}
-
-/** 探针用：当前登记的部署配置（只读）。 */
-export function deploymentConfigForTest() {
-	return deploymentConfig;
-}
-
-/**
- * 本次调用的**读**分区清单（2026-10-20：写 ws、读 ws + 当前人设，口径见 `core/memory.js` 的人设分区注释）。
- * @param {object} config
- * @param {object} state - 需要 `state.projections`（`sessionProjections` 服务，可缺席）。
- * @param {unknown} agent - dsh `Agent`（装配上下文 / 工具执行上下文里的那个；缺席 ⇒ 只读主分区）。
- * @returns {{ primary: string, persona: string, partitions: string[] }}
- */
-function readScopeOf(config, state, agent) {
-	const primary = agentIdOf(config);
-	const persona = personaIdOf(agent, state?.projections);
-	return { primary, persona, partitions: readPartitionsOf(config, primary, persona) };
-}
-
-/**
- * 多分区检索 → 合并（按分数降序、按 id 去重、再截到 `limit`）。每条带上 `partition`（来自哪个分区）。
- * ⚠ 分区之间**并行**取；任一分区失败**不拖垮整次检索**（主分区失败才算失败，人设分区失败只记一条说明）。
- */
-async function searchPartitions(base, partitions, query, limit) {
-	const settled = await Promise.allSettled(partitions.map(p => search(base, p, query, limit)));
-	const merged = [];
-	const seen = new Set();
-	const notes = [];
-	let primaryError = '';
-	settled.forEach((r, i) => {
-		const part = partitions[i];
-		const normalized = r.status === 'fulfilled' ? normalizeSearchResults(r.value, limit) : { error: String(r.reason?.message ?? r.reason) };
-		if (normalized.error) {
-			if (i === 0) { primaryError = normalized.error; } else { notes.push(`人设分区 ${part} 取数失败：${normalized.error}`); }
-			return;
-		}
-		for (const item of normalized.items) {
-			const key = `${part}\u0000${item.id}`;
-			if (seen.has(key)) { continue; }
-			seen.add(key);
-			merged.push({ ...item, partition: part });
-		}
-	});
-	if (primaryError) { return { error: primaryError }; }
-	merged.sort((a, b) => (typeof b.score === 'number' ? b.score : -1) - (typeof a.score === 'number' ? a.score : -1));
-	return { items: merged.slice(0, limit), notes };
-}
-
-function createState() {
-	return {
-		/** **默认槽位**：启动预热 / 工具 / 页面刷新都写它；也是新装配主体首次进入时的**种子**（见 `snapshotFor`） */
-		snapshot: createSnapshot(),
-		/**
-		 * **冻结快照表**（按装配主体归属，键 = `context.scope` → `context.agent` → 全局保底）。
-		 * 会话进入时取一次，之后**只**因"新主体 / 显式刷新 / 页面请求"更新 ⇒ 前缀稳定 ✓。
-		 */
-		snapshots: new Map(),
-		/** 刷新计数（页面/探针自诊断） */
-		refreshes: 0,
-		/** 每个 agentId 已用的写入次数（**每 Host 运行**计 —— 口径见 `writeBudgetOf` 的说明） */
-		writes: new Map(),
-		/** 正在进行的刷新，**按槽位**去重（避免并发重复拉） */
-		inflight: new Map(),
-		/** 自动沉淀：每个会话已读到的事件位置（`session.seq` 偏移；缺省 0 ⇒ 从会话开头读）✓ */
-		distillSeqs: new Map(),
-		/** 自动沉淀的计数（页面/探针自诊断：**跳过与失败都要可见**，否则"没产出"分不清是哪种 ✗）✓ */
-		distill: {
-			turns: 0, candidates: 0, summaries: 0, turnSummaries: 0, written: 0, skipped: 0, failed: 0,
-			judged: 0, judgeDropped: 0, judgeSkipped: 0,
-			// 2026-11-02 自动提升的可观测面：**必看**——否则"门控一条都没放过"与"根本没在跑"分不清 ✓
-			repeats: 0, autoPromoted: 0, autoFailed: 0,
-			// 摘要事实候选（从 `compaction/summary` 切出的原子事实句）条数
-			summaryFacts: 0,
-		},
-		/**
-		 * **回合观测**计数（阶段③ 2026-10-27）：从 IDE 渲染侧搬到本插件后的可观测性。
-		 * 为什么不复用 `distill` 计数：观测是**暂存层流水**（每回合都想写），
-		 * 与"草稿候选"是两层（见 `core/distill.js` 的 buildTurnObservation 注释）⇒ 混在一起会看不清 ✗
-		 */
-		observe: { turns: 0, written: 0, failed: 0, skipped: 0 },
-		/**
-		 * 草稿区的**读回缓存**（页面渲染是同步的、读文件是异步的 ⇒ 页面请求时后台读一份放这里 ✓）。
-		 * 为什么需要它：草稿如果只有文件、没有界面，就等于**不存在** ✗ —— 自动沉淀的价值全在
-		 * "人能看见并决定要不要提升" ✓。
-		 */
-		drafts: { rows: [], readAt: 0, error: '' },
-		/**
-		 * **摘要版**（侧栏）最近一次的取数结果（`loadSummaryModel` ✓）：取数有预算（见 `SUMMARY_WAIT_MS`）——
-		 * 超预算就用这份缓存渲染，并如实标注"取数中" ✓，而不是把侧栏空着等网关 ✗。
-		 */
-		summary: undefined,
-		/** 提示词 section 的注册情况：`undefined` = `systemPrompt` 服务不在（组合里没挂），否则是 order */
-		promptSection: undefined,
-		/**
-		 * `sessionProjections` 服务（可选注入；读"会话中途切换过的人格"用 —— 见 `core/memory.js` 的 `personaIdOf`）。
-		 * 缺席 ⇒ 只按会话的 preset 认人设（不影响功能，只是认不出中途切换）。
-		 */
-		projections: undefined,
-	};
-}
-
-/**
- * 拉一次工作记忆 → 写进**指定槽位**（`entry`）。失败也记录（页面可见），但**不往提示词里塞错误文本**。
- *
- * 为什么带 `entry` 参数（原来是写死的 `state.snapshot`）：快照现在是**按主体冻结**的多槽位结构
- * （见 `snapshotFor`）⇒ 刷新必须能指定"刷哪一个"，否则工具/页面的刷新会去改别的会话正冻结着的文本 ✗。
- * 去重也**按槽位**做：同一份记忆被 3 个会话同时首装，不该只发 1 个请求就把另外 2 个槽位丢掉 ✓。
- *
- * ⚠ 槽位是**原地更新**（`Object.assign`）而不是替换对象 —— `Map` 里存的是同一个引用，
- * 替换对象会让表里那份永远停在初始值 ✗（原单槽位实现是 `state.snapshot = {...}` 替换，搬不过来 ✓）。
- */
-/**
- * 槽位登记的人设 ⇒ 要并读的第二个分区（没有 ⇒ ''）。
- * ★ 2026-10-20：槽位登记时记下的人设（`snapshotFor` 写入；默认槽位没有 ⇒ 只读主分区）。
- *   显式 `config.agentId` ⇒ 不叠人设（`readPartitionsOf` 的口径）。
- */
-function personaOf(config, entry) {
-	return readPartitionsOf(config, agentIdOf(config), typeof entry?.persona === 'string' ? entry.persona : '')[1] ?? '';
-}
-
-/**
- * **装配一份注入文本**（引擎文本 + 人设分区 + 待审提示）—— 不写任何状态。
- *
- * 2026-11-02 从 `refreshInto` 里拆出来：工作台的「注入预览」要拿"现在重新装配会得到什么"
- * 与冻结快照比对，而**比对只有在两边用同一套拼装时才有意义** ✗——
- * 自己再抄一份拼装逻辑，哪天快照多拼一段、预览没跟上，页面就会报"前缀被打断"这种假警报。
- * 所以快照刷新与预览共用这一个函数；`refreshInto` 只负责把结果写进槽位。
- *
- * @returns {Promise<{text: string, source: string, truncatedByChars: boolean, rawChars: number,
- *   partitions: string[], personaChars: number, personaError: string, pendingDrafts: number}>}
- * @throws 网关取不到主分区时抛（调用方决定怎么如实呈现）
- */
-async function composeWorkingText(state, config, persona) {
-	const base = gatewayUrlOf(config);
-	const agentId = agentIdOf(config);
-	const tokenBudget = tokenBudgetOf(config);
-	// ⚠ **真机订正（2026-10-13）**：读路径不是 `mem::context` ✗（那套 404 ✗），而是
-	// `POST /provider/loadContext`（方法名＝ `IMemoryProvider` 接口名 ✓、信封 `{args:[…]}` ✓）。
-	// `sessionId` 用**分区键**：本进程没有 dsh 会话身份（引擎只用它分页会话块），而**稳定值**才对 KV cache 友好 ✓。
-	// ★ 2026-10-20：有人设 ⇒ **两个分区并行取**，各自用一份 `tokenBudget`（人设分区不挤占工作区那份）；
-	//   人设那份失败**不拖垮**注入（只记 `personaError`，页面可见）。
-	const [primaryText, personaResult] = await Promise.all([
-		workingContext(base, agentId, agentId, tokenBudget),
-		persona
-			? workingContext(base, persona, persona, tokenBudget).then(t => ({ text: t }), e => ({ error: String(e?.message ?? e) }))
-			: Promise.resolve(undefined),
-	]);
-	const personaText = typeof personaResult?.text === 'string' ? personaResult.text.trim() : '';
-	const memoryText = personaText
-		? `${primaryText}\n\n## 人设记忆（${persona}）\n${personaText}`
-		: primaryText;
-	// ★ 2026-10-20（借鉴 dsh-memento：待审提案随快照让模型看见）：草稿只在页面上可见 ⇒ 实测**从没被提升过**。
-	//   告诉模型"有 N 条待审"，它才会在合适时提醒用户；只给**计数**不给正文 —— 未审的东西不能当事实用。
-	//   随快照一起冻结（本会话内不变）⇒ 不打掉前缀缓存。
-	const pending = await pendingDraftsOf(state);
-	const text = pending.total > 0
-		? `${memoryText ? `${memoryText}\n\n` : ''}${renderPendingDraftsNote(pending)}`
-		: memoryText;
-	// ⚠ 这里**有两道闸**，页面必须都说出来（报告 §5-7 的"互相掩盖" ✗）：
-	//   ① **网关**按 `tokenBudget`（默认 1024 token）产出 —— 这才是**通常生效**的那道 ✓；
-	//   ② 本插件另加一道 `MAX_INJECT_CHARS`（8000 字符 ≈ 该预算的十倍）⇒ **通常不生效** ✓，
-	//      只在网关超发时兜底 ✓（system prompt 不该被一段记忆吃满 ✓）。
-	// 所以"已注入 N 字"短，**不等于**记忆本来就少 ✗ —— 记下这次到底有没有被字符闸截 ✓。
-	return {
-		text: renderWorkingContext(text),
-		source: `${base}/provider/loadContext`,
-		truncatedByChars: text.length > MAX_INJECT_CHARS,
-		rawChars: text.length,
-		partitions: persona ? [agentId, persona] : [agentId],
-		personaChars: personaText.length,
-		personaError: personaResult?.error ?? '',
-		pendingDrafts: pending.total,
-	};
-}
-
-function refreshInto(state, config, entry) {
-	const pending = state.inflight.get(entry);
-	if (pending) {
-		return pending;
-	}
-	const base = gatewayUrlOf(config);
-	const persona = personaOf(config, entry);
-	const promise = (async () => {
-		state.refreshes++;
-		if (!base) {
-			Object.assign(entry, { text: '', fetchedAt: Date.now(), ok: false, error: '记忆网关未配置（config.gatewayUrl / VSSAROS_MEMORY_GATEWAY_URL）', source: '', truncatedByChars: false, rawChars: 0 });
-			return entry;
-		}
-		try {
-			Object.assign(entry, await composeWorkingText(state, config, persona), { fetchedAt: Date.now(), ok: true, error: '' });
-		} catch (e) {
-			Object.assign(entry, { text: '', fetchedAt: Date.now(), ok: false, error: String(e?.message ?? e), source: `${base}/provider/loadContext`, truncatedByChars: false, rawChars: 0 });
-		}
-		return entry;
-	})().finally(() => {
-		state.inflight.delete(entry);
-	});
-	state.inflight.set(entry, promise);
-	return promise;
-}
-
-/** 刷新**默认槽位**（启动预热 / 页面请求 / `memory_refresh` 工具用）。 */
-function refresh(state, config) {
-	return refreshInto(state, config, state.snapshot);
-}
-
-/**
- * 待审草稿计数（`status === 'draft'`），按类型拆成"约定"与"会话摘要"。
- * 草稿存储还没建好（启动预热那一次）/ 读失败 ⇒ 0 —— 计数只是提示，绝不让注入失败。
- */
-async function pendingDraftsOf(state) {
-	try {
-		const rows = state.draftStore ? await state.draftStore.read() : [];
-		const pending = rows.filter(row => row?.status === 'draft');
-		const summaries = pending.filter(row => row.matched === SUMMARY_MATCHED_TAG).length;
-		return { total: pending.length, summaries, conventions: pending.length - summaries };
-	} catch {
-		return { total: 0, summaries: 0, conventions: 0 };
-	}
-}
-
-/**
- * 单分区的多策略召回（原 `memory_recall` 的逻辑原样搬出，供多分区并行调用）。
- * 回退与 IDE 同法（真源 `unifiedMemoryTools.ts:62-63` ✓）：老网关没有 `recallFormatted`（404 ⇒ 抛）时退回普通检索。
- * @returns {Promise<{ strategy: string, text: string }>}
- */
-async function recallOne(base, partition, query, strategy, limit) {
-	try {
-		const raw = await recallFormatted(base, partition, query, strategy, limit);
-		return { strategy, text: typeof raw === 'string' ? raw : JSON.stringify(raw ?? null) };
-	} catch (error) {
-		const normalized = normalizeSearchResults(await search(base, partition, query, limit), limit);
-		if (normalized.error) {
-			throw new Error(`${normalized.error}（且 recallFormatted 也失败：${error?.message ?? error}）`);
-		}
-		const text = normalized.items.length
-			? `命中 ${normalized.items.length} 条（分区 ${partition}，已回退 memory_search）\n`
-				+ normalized.items.map((item, i) => `[${i + 1}] ${item.id}${item.score === undefined ? '' : ` (${item.score.toFixed(2)})`}`).join('\n')
-			: `分区 ${partition} 里没有命中任何记忆条目（已回退 memory_search）。`;
-		return { strategy: 'searchMemory(fallback)', text };
-	}
-}
-
-/** 快照里的"待审草稿"提示（纯文本、无正文）。 */
-export function renderPendingDraftsNote({ total, summaries, conventions }) {
-	const parts = [conventions > 0 ? `约定 ${conventions}` : '', summaries > 0 ? `会话摘要 ${summaries}` : ''].filter(Boolean).join('、');
-	return `## 待审记忆草稿\n有 ${total} 条自动提取的候选${parts ? `（${parts}）` : ''}尚未进入长期记忆，需用户在「记忆」页审核并「提升」后才生效。`
-		+ '合适时可以提醒用户去审核；在此之前不要把这些草稿当作已确认的事实。';
-}
-
-/**
- * 取本次装配该用的快照 —— **冻结**语义（2026-10-13 的注入形态修正，替换掉的 `REFRESH_MS = 60s`）。
- *
- * 为什么必须冻结：section 排在 system prompt **最前面**（order 100，紧随部署人设），而它的 `text`
- * provider **每次 assembly 都被调用** ⇒ 只要文本变过一次，**整条前缀缓存作废** ✗。一个每 60 秒就可能
- * 打掉 KV cache 的注入点，比"写入后本会话看不到自己刚写的内容"昂贵得多 ✓。
- * `core/memory.js` 的 `renderWorkingContext` 注释里早就写着"稳定性优先…否则每次 assembly 都会抖动、
- * 白白打掉 KV cache" —— 这里是把那句话**落到实现**上 ✓。
- *
- * 语义（与 `dsh-memento` 的"会话内冻结快照"同一取舍：它的 order -50 同样刻意排在最前，
- * 且会话内不变）：
- *   ① 每个装配主体（`context.scope` / `context.agent`）**首次进入**时登记一个槽位；
- *   ② 之后**只**在三种情况更新 —— 新主体首装 / 显式 `memory_refresh` / 页面请求（诊断面要看最新）✓；
- *   ③ 新槽位首装**同步借默认槽位的内容当种子**（乐观：同一分区的内容本就相同，只是写入时机不同）
- *      ⇒ 会话第一轮不会看到空白 ✓，同时后台取该主体自己那份，下一轮起生效 ✓。
- *
- * 已知边界：`snapshotKeyOf` 取不到主体时退回**全局保底键**（功能不丢、只是不隔离）——
- * 这个降级在页面上是可观察的（见诊断行的 `快照数`）✓。
- *
- * @param {object} state - 插件状态。
- * @param {object} config - 插件配置。
- * @param {unknown} context - section provider 收到的装配上下文（`AssembleContext`）。
- * @returns {string} 注入文本。
- */
-function snapshotFor(state, config, context) {
-	const entry = admitSnapshot(state.snapshots, snapshotKeyOf(context));
-	// ★ 2026-10-20：本主体当前生效的人设（装配上下文是 `{ agent, scope: agent }` —— dsh-agent 的
-	//   `assembleContextFor`）。拿不到就是 `''`（只读工作区分区，与从前一致）。
-	const persona = personaIdOf(context?.agent, state.projections);
-	if (entry.fetchedAt === 0) {
-		// 首次进入该主体：先借默认槽位（本轮立刻有内容 ✓），再后台取自己那份 ✓
-		Object.assign(entry, {
-			text: state.snapshot.text,
-			ok: state.snapshot.ok,
-			error: state.snapshot.error,
-			source: state.snapshot.source,
-			fetchedAt: state.snapshot.fetchedAt,
-			persona,
-		});
-		void refreshInto(state, config, entry);
-	} else if ((entry.persona ?? '') !== persona) {
-		// 会话**换了人设**（空白会话里改 preset / 中途切人格）：人设 section 本身已经变了 ⇒ 前缀反正要变，
-		// 这时重取记忆**不额外**打掉缓存；不重取的话会一直注入**上一个人设**的记忆 ✗。
-		entry.persona = persona;
-		void refreshInto(state, config, entry);
-	}
-	return entry.text;
-}
-
-// 页面外壳（标题 / 工具条 / 分区 / 空态 / 诊断行）逐条移植自 VsSaros 原容器 Pane，
-// 见 `lib/pageShell.js` 顶部注释（真源行号 + 分发约定）。`escapeHtml` 由它提供。
-import { escapeHtml, renderShell } from './pageShell.js';
-
-
-/**
- * 固定槽位（**逐字照抄** `memoryLibraryView.ts:45-48` 的 `SLOT_NAMES` —— 它与记忆引擎的
- * `DEFAULT_SLOTS` 同源）。它**不是**从网关读来的：IDE 侧同样是硬编码常量 ⇒ 这里也硬编码 ✓
- * （改成"从网关读槽位"反而会与真源分叉 ✗）。
- */
-const SLOT_NAMES = [
-	'persona', 'user_preferences', 'tool_guidelines', 'project_context',
-	'guidance', 'pending_items', 'session_patterns', 'self_notes',
-];
-
-/**
- * 单个统计格子（等价于 IDE 侧 `libraryStatHelpers.ts:37-46` 的 `statCell`）：
- * `div.kb-stat-cell` > `span.kb-stat-num` + `span.kb-stat-label`，值为 0 时加 `.zero`（灰显 ✓）。
- */
-function statCell(label, value) {
-	const zero = value === 0 || value === '0';
-	return `<div class="kb-stat-cell${zero ? ' zero' : ''}"><span class="kb-stat-num">${escapeHtml(String(value))}</span><span class="kb-stat-label">${escapeHtml(String(label))}</span></div>`;
-}
-
-/**
- * 页面正文（2026-10-13 复刻「记忆库」view 的结构）。
- *
- * 结构与类名**照 `memoryLibraryView.ts:84-163` 的 `renderBody` / `_renderList`**：
- * 面板（`kb-panel` + `kb-panel-bar`）→ 入口卡片（`kb-entry`）→ 统计区（`kb-stat-hero` +
- * 两个 `kb-stat-grid`）→ 固定槽位（`kb-side-section` + `kb-slot-chip`）✓。
- *
- * ★★ 一处**有意的不照搬**（改之前先读这段）：真源的统计区是「总数 / 4 层（Working·Episodic·
- * Semantic·Procedural）/ Episodic 6 个子类型」，数据来自 `provider.searchAllAgents('')` 全量遍历。
- * 那条路在 **dsh 侧不成立**（2026-10-13 真机实测，隔离网关 + 写 4 条不同类型记忆）：
- *   · `GET /stats/<agentId>` 只回 `{indexSize, serverAvailable}` —— **不是记忆统计** ✗；
- *   · `searchAllAgents('')` 只回 **1 条**（不是全量）✗ ⇒ 按它计数会得到"1"这个**错的数**；
- *   · `getStats(agentId)` 回 `{longTermCount:0, coreMemoryCount:0, lessonsCount:0}`，与刚写入的
- *     4 条**对不上** ✗。
- * ⇒ 所以本页**不显示**四层/子类型计数（显示错的数字比不显示更糟 ✗），改为**同样的视觉格子装
- *   dsh 侧真拿得到的数据**：注入字符 / 草稿待定 / 会话快照 / 刷新次数，以及自动沉淀的六项累计 ✓。
- *   这些都是本插件**自己状态里的事实**，不依赖网关的计数接口 ✓。将来若网关补齐计数，把数据源
- *   换掉即可 —— 格子与样式不用动 ✓。
- *
- * ⚠ 探针锚点（`data-vssaros-memory-*`）**一个都没删**：它们跟着各自的数据挪到了新的容器上
- * （如草稿区那三个属性从 `<div class="diag">` 挪到 `kb-side-section` 上）⇒ 属性名与取值不变，
- * `p3-07` / `p3-48` / `p3-50` 的断言照旧 ✓（**这是改这个文件时最容易踩的坑** ✗）。
- */
-function renderFragment({ state, config, toolsRegistered }) {
-	const { snapshot } = state;
-	// ★ 草稿区（自动沉淀的产出）：**不**注入提示词、**不**自动进长期记忆 —— 只在这里给人看 ✓
-	// 理由见 `core/distill.js` 的约束 ②（自动提取必然有误 ⇒ 先草稿 + 用户显式提升 ✓）。
-	const drafts = Array.isArray(state.drafts?.rows) ? state.drafts.rows : [];
-	// 最近 5 条（新的在后 ⇒ 倒过来看更自然）✓
-	const draftItems = drafts.slice(-5).reverse().map(row => {
-		const text = `<code>${escapeHtml(String(row.text ?? '').slice(0, 90))}</code>`;
-		const meta = `<small>[${escapeHtml(String(row.matched ?? ''))}${Number.isFinite(row.turn) ? ` · turn ${escapeHtml(String(row.turn))}` : ''}]</small>`;
-		// ⚠ **每条一个独立表单**（不是一个表单里放多个按钮）：HTML 的 submit 按钮只会提交**它所在的**
-		// 那个表单 ⇒ 每条一个表单是最不容易写错的形状 ✓。
-		const draftId = escapeHtml(String(row.id ?? ''));
-		const action = row.status === 'draft'
-			// ⚠ **每条两个独立表单**（不是一个表单放两个按钮）：`submit` 按钮只提交**它所在的**那个表单 ⇒
-			// "一个表单两个动作"得靠 JS 改 `formaction` ✗ —— 而本页是零脚本的口径 ✓（见 `lib/pageShell.js`）。
-			? ` <form method="post" action="${PROMOTE_ROUTE}" style="display:inline"><input type="hidden" name="id" value="${draftId}"><button type="submit" data-vssaros-memory-promote="${draftId}">提升</button></form>`
-				+ ` <form method="post" action="${DISCARD_ROUTE}" style="display:inline"><input type="hidden" name="id" value="${draftId}"><button type="submit" data-vssaros-memory-discard="${draftId}">丢弃</button></form>`
-			: ` <small>（${escapeHtml(String(row.status ?? ''))}）</small>`;
-		return `<li>${text} ${meta}${action}</li>`;
-	}).join('');
-	// ★ 上一次草稿动作的**即时反馈**（2026-10-13）：303 回本页之后，若只靠"草稿从列表消失"暗示，
-	// 用户分不清"成功了"与"页面没刷新"（尤其**失败**时 —— 比如网关没确认成功 ✗）⇒ 明说一次 ✓。
-	// ⚠ 30 秒后自然过期：否则一个旧结果会一直挂在页面上、被当成"刚刚发生的事" ✗。
-	const lastAction = state.lastAction;
-	const feedback = lastAction && Number.isFinite(lastAction.at) && Date.now() - lastAction.at < 30_000
-		? `<p class="dsh-diag" data-vssaros-memory-last-action="${escapeHtml(String(lastAction.action))}|${lastAction.ok ? 'ok' : 'failed'}">${lastAction.action === 'promote' ? '提升' : '丢弃'}${lastAction.ok ? '<b>成功</b>' : '<b>失败</b>'}：<code>${escapeHtml(String(lastAction.text ?? '').slice(0, 60))}</code>${lastAction.ok ? '' : ` —— ${escapeHtml(String(lastAction.error ?? '(无详情)'))}`}</p>`
-		: '';
-	const base = gatewayUrlOf(config);
-	const agentId = agentIdOf(config);
-	const stateName = !base ? 'unconfigured' : (snapshot.ok ? 'ok' : 'error');
-	const detail = !base
-		? `<p class="dsh-diag">记忆网关未配置：设 <code>VSSAROS_MEMORY_GATEWAY_URL</code>，或由 VsSaros 经 <code>--patch</code> 注入 <code>config.gatewayUrl</code>。</p>`
-		: (snapshot.ok
-			? `<pre>${escapeHtml(snapshot.text || '(工作记忆为空)')}</pre>`
-			: `<p class="dsh-diag">刷新失败：<code>${escapeHtml(snapshot.error)}</code></p>`);
-	const d = state.distill ?? {};
-	return `<section data-vssaros-page="memory-section" data-vssaros-memory-state="${stateName}" data-vssaros-memory-agent="${escapeHtml(agentId)}" data-vssaros-memory-bytes="${Buffer.byteLength(snapshot.text, 'utf8')}" data-vssaros-memory-chars="${snapshot.text.length}" data-vssaros-memory-refreshes="${state.refreshes}" data-vssaros-memory-writes="${state.writes.get(agentId) ?? 0}" data-vssaros-memory-tools="${escapeHtml(toolsRegistered)}" data-vssaros-memory-gateway="${escapeHtml(base ?? '')}">
-<div class="kb-panel kb-panel-mem active">
-  <div class="kb-panel-bar">
-    <span class="kb-panel-bar-label">记忆库</span>
-    <span class="kb-spacer"></span>
-    <span class="kb-count" title="待处理草稿">${drafts.length}</span>
-  </div>
-  <div class="kb-panel-content">
-    <div class="kb-mem-list">
-      <!-- ★★ 2026-10-14：这张卡**终于**恢复成真入口 ✓。
-           改之前：dsh 侧没有详情面板 ⇒ 只能写成"跳到本页底部的注入正文"（href 指向页内锚点，不是面板）
-           —— 一个**点起来不像它看起来那样**的入口 ✗（文案/箭头照真源，目标却换了 ✗）。
-           现在 lib/detail.js 把 IDE 的 MemoryDetailEditorPane 复刻过来了 ⇒ 文案与目标都回归真源 ✓：
-           标题「查看完整记忆」· 副文案「打开记忆详情」· 目标是独立页面 ./detail（子路由 ✓）。
-           ⚠ 本段是 JS 模板字符串内：注释里**不能出现反引号**（本仓踩过五次 ✗ —— 这一轮我又踩了**两次**：
-             先是在这里写了 href 的反引号形式，修完还留着三个 ⇒ 两次都是 node --check 才抓到 ✗）。
-           ⚠ 教训：**写模板字符串内的注释时，把"反引号"当成和未转义引号一样的禁字符** ✓。 -->
-      <!-- ⚠⚠ href **保留**（无 JS / 纯浏览器时它仍是可用的退化 ✓），但真机里的点击由
-           OPEN_DETAIL_JS 接管 —— 因为实测"光有 href 点了完全没反应" ✗（见那个常量的注释 ✓）。
-           data-vssaros-memory-action 就是给那段 JS 选目标用的 ✓。
-           ⚠ 本段在模板字符串内 ⇒ 注释里**绝不能出现反引号**（这条我在本仓已踩四次 ✗✗）。 -->
-      <a class="kb-entry" href="?view=detail" data-vssaros-memory-action="open-detail" role="button" tabindex="0">
-        <span class="kb-entry-icon">🗃</span>
-        <span class="kb-entry-text"><div class="kb-entry-title">查看完整记忆</div><div class="kb-entry-meta">打开记忆详情（复刻 IDE 的 MemoryDetailEditorPane）</div></span>
-        <span class="kb-entry-arrow">→</span>
-      </a>
-      <div class="kb-stats">
-        <div class="kb-stat-hero"><span class="kb-stat-hero-num">${snapshot.text.length}</span><span class="kb-stat-hero-label">字已注入 · agent <code>${escapeHtml(agentId)}</code></span></div>
-        <div class="kb-stat-grid">
-          ${statCell('注入字符', snapshot.text.length)}
-          ${statCell('草稿待定', drafts.length)}
-          ${statCell('会话快照', state.snapshots.size)}
-          ${statCell('刷新次数', state.refreshes)}
-        </div>
-        <div class="kb-stat-sub">自动沉淀（本回合累计）</div>
-        <div class="kb-stat-grid">
-          ${statCell('回合', d.turns ?? 0)}
-          ${statCell('候选', d.candidates ?? 0)}
-          ${statCell('已写', d.written ?? 0)}
-          ${statCell('跳过', d.skipped ?? 0)}
-          ${statCell('失败', d.failed ?? 0)}
-          ${statCell('判定丢弃', d.judgeDropped ?? 0)}
-          ${statCell('自动提升', d.autoPromoted ?? 0)}
-        </div>
-      </div>
-      <div class="kb-side-section">
-        <div class="kb-side-section-head"><span>固定槽位</span><span class="kb-spacer"></span><span class="kb-count">${SLOT_NAMES.length}</span></div>
-        <div class="kb-mem-slots">${SLOT_NAMES.map(name => `<span class="kb-slot-chip">${escapeHtml(name.replace(/_/g, ' '))}</span>`).join('')}</div>
-      </div>
-      <div class="kb-side-section" data-vssaros-memory-drafts="${drafts.length}" data-vssaros-memory-drafts-read="${state.drafts?.readAt ?? 0}">
-        <div class="kb-side-section-head"><span>草稿区</span><span class="kb-spacer"></span><span class="kb-count">${drafts.length}</span></div>
-        <p class="dsh-diag">自动沉淀（<code>agent/turn-stopping</code>）从会话里的**用户消息**提取的候选。<b>高置信条目会自动提升进长期记忆</b> —— 门槛是四条同时满足：显式约定句式（习惯约定 / 显式要求 / 项目规范 / 英文约定）+ LLM 判定通过 + <b>说过两次</b>（同一句重复出现）+ 长度与敏感词合规，且每回合最多 1 条；审计里记作 <code>policy=auto-distill</code>，可撤销。其余仍留在草稿区等你判断 ✓ —— 包括<b>整段摘要</b>（模型转述、体量大，只能人工提升）与它切出的<b>单条事实句</b>（<code>summary-fact</code>；同样要「两次摘要都提到」才够格自动提升）。「提升」= <b>人的显式确认</b>（所以这条路上<b>不会再弹审批窗</b> ✓，理由见 <code>lib/promote.js</code>）；<b>不</b>处理的草稿 30 天后自动淘汰 ✓。自动提升可用 <code>autoPromote: 'off'</code> 整体关闭。${state.drafts?.error ? ` · <b>读回失败</b>：${escapeHtml(state.drafts.error)}` : ''}</p>
-        ${draftItems ? `<ul class="kb-draft-list" data-vssaros-memory-draft-list>${draftItems}</ul>` : ''}
-      </div>
-      ${feedback}
-      <!-- ★ 诊断默认**折叠**（2026-10-13，照真源观感调的）：真源那个「记忆库」view 是**纯概览**
-           —— hero + 统计 + 定槽位，一屏看完就结束 ✗；而本页原来把两段长诊断直接铺在下面，
-           整页显得很长、与真源的"干净"观感差得远 ✗。
-           用**原生 details**（零脚本 ✓ 有系统三角箭头 ✓ 语义就是"可展开" ✓），
-           折叠的只是**呈现**：里面所有 data-vssaros-memory-* 锚点照旧在 DOM 里 ✓
-           ⇒ 探针断言的属性一个都不少（它们只看 DOM 不看可见性 ✓）。 -->
-      <details class="kb-side-section kb-details">
-        <summary class="kb-side-section-head"><span>诊断</span><span class="kb-spacer"></span><span class="kb-count">展开</span></summary>
-        <p class="dsh-diag" data-vssaros-memory-section="${state.promptSection === undefined ? 'absent' : 'registered'}" data-vssaros-memory-section-order="${state.promptSection ?? ''}" data-vssaros-memory-snapshots="${state.snapshots.size}" data-vssaros-memory-distill="${d.turns ?? 0}|${d.candidates ?? 0}|${d.written ?? 0}|${d.skipped ?? 0}|${d.failed ?? 0}|${d.judged ?? 0}|${d.judgeDropped ?? 0}|${d.judgeSkipped ?? 0}">agent <code>${escapeHtml(agentId)}</code> · 网关 <code>${escapeHtml(base ?? '(未配置)')}</code> · 刷新 ${state.refreshes} 次 · 工具 <code>${escapeHtml(toolsRegistered)}</code> · 会话快照 <code>${state.snapshots.size}</code> 份（每个装配主体首次装配时取一次后<b>冻结</b> ⇒ 提示词前缀不因时间而变 ✓；更新时机只有三个：新主体首装 / <code>memory_refresh</code> / 本页面刷新）${state.promptSection === undefined ? ' · <b>提示词 section 未注册</b>（组合里没有 systemPrompt 服务）' : ''}</p>
-        <p class="dsh-diag" data-vssaros-memory-truncated="${snapshot.truncatedByChars ? 'yes' : 'no'}" data-vssaros-memory-token-budget="${tokenBudgetOf(config)}" data-vssaros-memory-char-cap="${MAX_INJECT_CHARS}">这段文本就是注入 system prompt 的那一份（section <code>${SECTION_NAME}</code>）。**两道闸**：网关按 <code>tokenBudget=${tokenBudgetOf(config)}</code> token 产出（**通常是它生效**）✓；本插件另加一道 <code>${MAX_INJECT_CHARS}</code> 字符硬上限（约十倍大 ⇒ 通常不生效，只在网关超发时兜底）✓ —— 所以"已注入 N 字"短**不等于**记忆本来就少 ✗。本次${snapshot.truncatedByChars ? `**触发了字符闸**（网关给了 ${snapshot.rawChars ?? '?'} 字，已截到 ${MAX_INJECT_CHARS} 字）` : '未触发字符闸'} ✓。</p>
-      </details>
-      <div class="kb-side-section" id="vssaros-working-memory">
-        <div class="kb-side-section-head"><span>工作记忆</span><span class="kb-spacer"></span><span class="kb-count">${snapshot.ok ? `${snapshot.text.length} 字` : '未注入'}</span></div>
-        ${detail}
-      </div>
-    </div>
-  </div>
-</div>
-</section>`;
-}
-
-/**
- * 页面专属样式（`<pre>` 里的工作记忆文本；骨架与主题变量由 `pageShell.js` 给）。
- *
- * ★ 2026-10-13（复刻「记忆库」view 的样式）：下面 `.kb-*` 那一组**逐条移植自 IDE 侧的真源样式表**
- * `src/vs/sessions/contrib/agentStudio/browser/views/media/kbView.css` —— 因为 `memoryLibraryView.ts`
- * 就是那块表的使用者（它 `import './media/kbView.css'`，自己只搭 DOM）⇒ 复刻它的视觉
- * **等于**复刻那块表 ✓，而不是照截图猜数值 ✓。每条后面标了真源行号，改样式时两边一起改 ✓。
- *
- * ⚠ 移植时的两处**必要换算**（真源不能原样搬的地方，写下来免得后来人以为是抄漏了）：
- *   ① **图标字体**：真源用 `codicon`（IDE 自带的图标字体，如 `span.codicon.codicon-database`）✗ ——
- *      本页是**独立 document**，没有那个字体 ⇒ 同名的 span 会渲染成**空白** ✗。所以统一换成 emoji ✓，
- *      与页面上原有的 `⟳ 刷新` 同一口径 ✓。
- *   ② **类名保留 `kb-` 而不改写成 `dsh-`**：本页是独立 document，不存在与宿主样式撞名的可能 ✓；
- *      保留原名才能逐行对照真源（"这条对应 kbView.css 哪一行"一眼可查 ✓）。`dsh-*` 那组仍由
- *      `pageShell.js` 提供（它是**跨插件共享**的骨架，模块专属样式**不许**塞进去 —— 见该文件末尾的约定 ✗）✓。
- */
-const PAGE_CSS = `
-pre {
-	background: var(--vscode-textCodeBlock-background, rgba(128,128,128,.15));
-	padding: 8px;
-	border-radius: 4px;
-	margin: 6px 0 0;
-	white-space: pre-wrap;
-	word-break: break-word;
-	font-family: var(--vscode-editor-font-family, ui-monospace), Consolas, monospace;
-	font-size: 11px;
-}
-
-/* ── 视图外壳与标题栏（kbView.css:6-46）──────────────────────────────── */
-.kb-view { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
-.kb-header {
-	display: flex;
-	align-items: center;
-	gap: 4px;
-	padding: 0 4px 0 10px;
-	height: 35px;
-	border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border));
-	flex-shrink: 0;
-}
-.kb-header .kb-title {
-	font-size: 11px;
-	text-transform: uppercase;
-	letter-spacing: .5px;
-	font-weight: 600;
-	opacity: .8;
-	display: flex;
-	align-items: center;
-	gap: 6px;
-}
-.kb-hbtn {
-	width: 26px;
-	height: 26px;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	border-radius: 4px;
-	cursor: pointer;
-	color: var(--vscode-icon-foreground);
-	opacity: .75;
-	border: 1px solid transparent;
-	font-size: 14px;
-	text-decoration: none;
-}
-.kb-hbtn:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); opacity: 1; }
-
-/* ── 记忆库面板（kbView.css:837-838 / 841-856）────────────────────────── */
-.kb-panel { display: none; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
-.kb-panel.active { display: flex; }
-.kb-panel-bar {
-	display: flex;
-	align-items: center;
-	gap: 4px;
-	padding: 0 4px 0 10px;
-	height: 30px;
-	flex-shrink: 0;
-	border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border));
-}
-.kb-panel-bar-label {
-	font-size: 11px;
-	text-transform: uppercase;
-	letter-spacing: .5px;
-	font-weight: 600;
-	opacity: .8;
-}
-.kb-spacer { flex: 1; }
-/* 真源里 kb-scroll 与 kb-panel-content 同组定义（滚动容器 + 面板内容区）。
-   ⚠⚠ 这条注释里**不能写反引号**：本段整体是一个 JS 模板字符串，一个反引号就会**提前结束**它，
-   后面的 CSS 会被当成 JS 解析 ⇒ 报 scroll is not defined（2026-10-13 实测，栈正好指向这一行 ✗）。
-   同理不要写美元符号紧跟花括号 —— 那是模板插值（本段样式不需要任何插值 ✓）。 */
-.kb-panel-content { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 2px 0; }
-.kb-mem-list { padding: 4px 0; }
-
-/* ── 入口卡片（kbView.css:860-878）──────────────────────────────────── */
-.kb-entry {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	margin: 6px 8px;
-	padding: 10px 12px;
-	border-radius: 4px;
-	cursor: pointer;
-	font-size: 12px;
-	text-decoration: none;
-	background: var(--vscode-editorWidget-background, var(--vscode-input-background));
-	border: 1px solid var(--vscode-panel-border, var(--vscode-sideBar-border));
-	transition: background .1s, border-color .1s;
-}
-.kb-entry:hover { border-color: var(--vscode-focusBorder, #007acc); }
-.kb-entry-icon { font-size: 16px; flex-shrink: 0; color: var(--vscode-icon-foreground); }
-.kb-entry-text { flex: 1; min-width: 0; }
-.kb-entry-title { color: var(--vscode-foreground); }
-.kb-entry-meta { font-size: 10px; color: var(--vscode-descriptionForeground); margin-top: 2px; }
-.kb-entry-arrow { flex-shrink: 0; font-size: 14px; color: var(--vscode-descriptionForeground); }
-
-/* ★ 2026-10-15（用户报"记忆库 sideview 样式错误，要求与 codebase 风格一致"）：
-   **删掉**上一版的 .kb-hbtn-primary（填充色大蓝按钮）✗ —— 它塞在 **35px 的标题行**里必然溢出
-   （实测：按钮盖到标题栏上、还压住工具行 ✓），而 codebase 侧栏版的"置顶主按钮"根本不是填充色按钮，
-   是下面这三条**卡片式主入口**（边框高亮 + 标题加粗）✓ —— 逐条同款抄自 vssaros-codebase 的侧栏版。
-   ⚠ 本段在**模板字符串**里 ⇒ 注释里**不许出现反引号**（本仓第 6 次踩 ✓：写代码路径时顺手加了反引号，
-     整段 CSS 被提前闭合、报 "Unexpected identifier" ✗✗）。 */
-button.kb-entry { width: calc(100% - 16px); font: inherit; text-align: left; }
-.kb-entry-primary { border-color: var(--vscode-focusBorder, #007acc); }
-.kb-entry-primary .kb-entry-title { font-weight: 600; }
-
-/* ── 摘要版（侧栏）的「最近记忆」行（2026-10-15 方案 1 ✓；只用 --vscode-* 令牌 ⇒ 主题跟随 ✓）── */
-.kb-sum-list { padding: 2px 0 6px; }
-.kb-sum-row {
-	display: flex;
-	align-items: baseline;
-	gap: 6px;
-	padding: 5px 12px;
-	border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,.25));
-}
-.kb-sum-row:first-child { border-top: none; }
-.kb-sum-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
-.kb-sum-pill {
-	flex: none;
-	font-size: 10px;
-	padding: 0 5px;
-	border-radius: 8px;
-	background: var(--vscode-badge-background, rgba(128,128,128,.25));
-	color: var(--vscode-badge-foreground, var(--vscode-foreground));
-}
-.kb-sum-time { flex: none; font-size: 10px; color: var(--vscode-descriptionForeground); }
-.kb-sum-empty { margin: 0; padding: 6px 12px; font-size: 11px; color: var(--vscode-descriptionForeground); }
-
-/* ── 统计区（kbView.css:915-976）────────────────────────────────────── */
-.kb-stats { padding: 8px 10px 4px; }
-.kb-stats-hint { font-size: 11px; color: var(--vscode-descriptionForeground); padding: 6px 2px; }
-.kb-stat-hero { display: flex; align-items: baseline; gap: 6px; padding: 2px 2px 8px; }
-.kb-stat-hero-num {
-	font-size: 20px;
-	font-weight: 600;
-	line-height: 1;
-	color: var(--vscode-foreground);
-}
-.kb-stat-hero-label { font-size: 11px; color: var(--vscode-descriptionForeground); }
-.kb-stat-grid {
-	display: grid;
-	grid-template-columns: repeat(auto-fill, minmax(70px, 1fr));
-	gap: 4px;
-	margin-bottom: 6px;
-}
-.kb-stat-cell {
-	display: flex;
-	flex-direction: column;
-	gap: 1px;
-	min-width: 0;
-	padding: 5px 7px;
-	border-radius: 4px;
-	background: var(--vscode-editorWidget-background, rgba(128,128,128,.08));
-	border: 1px solid var(--vscode-panel-border, transparent);
-}
-.kb-stat-cell.zero { opacity: .55; }
-.kb-stat-num { font-size: 13px; font-weight: 600; line-height: 1.2; color: var(--vscode-foreground); }
-.kb-stat-label {
-	font-size: 10px;
-	color: var(--vscode-descriptionForeground);
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-.kb-stat-sub {
-	margin: 2px 2px 4px;
-	font-size: 10px;
-	text-transform: uppercase;
-	letter-spacing: .5px;
-	color: var(--vscode-descriptionForeground);
-}
-
-/* ── 侧栏小分区 / 槽位 chip（kbView.css:882-889 / 1000-1019）────────── */
-.kb-side-section { padding: 2px 0 6px; }
-.kb-side-section-head {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	padding: 4px 10px;
-	font-size: 10px;
-	text-transform: uppercase;
-	letter-spacing: .5px;
-	font-weight: 600;
-	color: var(--vscode-descriptionForeground);
-}
-.kb-count {
-	font-size: 10px;
-	padding: 0 6px;
-	border-radius: 10px;
-	background: var(--vscode-badge-background, rgba(128,128,128,.2));
-	color: var(--vscode-badge-foreground);
-}
-.kb-mem-slots { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 8px; }
-.kb-slot-chip {
-	font-size: 9px;
-	padding: 2px 6px;
-	border-radius: 3px;
-	color: var(--vscode-descriptionForeground);
-	background: var(--vscode-badge-background, rgba(128,128,128,.18));
-}
-/* 可折叠分区（原生 details ⇒ **零脚本** ✓，与本页口径一致 ✓）。
-   刻意**不画**默认三角（list-style:none + 去掉 webkit marker），改用 ::after 的小三角 ——
-   这样 summary 能直接复用 .kb-side-section-head 的排版，与「固定槽位 / 草稿区」那些标题**完全对齐** ✓
-   （否则系统三角会把这一行的左内边距顶歪 ✗）。 */
-.kb-details > summary { cursor: pointer; list-style: none; user-select: none; }
-.kb-details > summary::-webkit-details-marker { display: none; }
-/* ⚠ 三角直接用**字符本身**（▾ / ▸），不要写 CSS 的码点转义。
-   本段是 JS 模板字符串：码点转义里的反斜杠紧跟数字会被当成八进制转义，语法检查直接报错 ✗。
-   要么写双反斜杠，要么干脆用字符 —— 这里选后者，少一层转义 ✓。
-   ⚠ 另：本段注释里**不要引用代码标识符**（反引号会提前结束模板字符串，这个坑已踩多次 ✗）。 */
-.kb-details > summary::after { content: '▾'; margin-left: 6px; font-size: 9px; opacity: .7; }
-.kb-details:not([open]) > summary::after { content: '▸'; }
-.kb-details > summary:hover { color: var(--vscode-foreground, #ccc); }
-
-/* 草稿条目（真源无对应区块：草稿区是 dsh 侧独有的自动沉淀产出）*/
-.kb-draft-list { margin: 0; padding: 0 12px 4px 26px; font-size: 11px; }
-.kb-draft-list li { margin: 3px 0; color: var(--vscode-foreground); }
-.kb-draft-list li small { color: var(--vscode-descriptionForeground); }
-
-/* ⚠ 行内代码要**看得出是代码**：pageShell.js 的骨架只给了等宽字体、没给底色，
-   结果诊断行里那一长串工具名与正文糊在一起 ✗（2026-10-13 按渲染实测补 ✓）。
-   ⚠ 本段是 JS 模板字符串：注释里**不能有反引号**（这一条已经踩了四次 ✗ ⇒ 由 p3-69 的守卫兜住 ✓）。 */
-code {
-	background: var(--vscode-textCodeBlock-background, rgba(128,128,128,.18));
-	padding: 0 3px;
-	border-radius: 3px;
-}
-
-/* ⚠⚠ 草稿的「提升 / 丢弃」**必须显式给样式**（2026-10-13 修，这是"看着和效果图不一致"的真因之一）：
-   不给的话用的是**浏览器默认按钮** —— 实测计算样式是 background rgb(240,240,240) +
-   border 2px outset，也就是**浅灰底 + 3D 凸起边框** ✗✗ ⇒ 在深色侧栏里极其突兀 ✗。
-   这里照本页既有的 .dsh-btn 口径改用主题变量 ✓，并按草稿行的密度收小一点 ✓。 */
-.kb-draft-list button {
-	background: var(--vscode-button-secondaryBackground, #3a3d41);
-	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground, #ccc));
-	border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.35));
-	border-radius: 3px;
-	padding: 1px 7px;
-	font: inherit;
-	font-size: 10px;
-	line-height: 1.5;
-	cursor: pointer;
-	vertical-align: baseline;
-}
-.kb-draft-list button:hover {
-	background: var(--vscode-button-background, #0e639c);
-	color: var(--vscode-button-foreground, #fff);
-	border-color: var(--vscode-focusBorder, #007fd4);
-}
-`;
-
-/**
- * 整页形态。
- *
- * ★ 2026-10-12（「资料库」拆分）：「记忆库」已是**独立工作台** —— 容器 `agentStudio.memory`
- * 加载的是清单声明的 `/x/memory/`（`view.kind=page`），**不再是**「kb 没装时的回退」（README
- * 4.82 / 5.16 那条）。所以这里的文案也从「寄居资料库」改成独立工作台的口径。
- * **只剩一种形态**（2026-10-12 起）：整页外壳。原先按 `?embed=1` 分出的「裸片段」形态，随片段路由
- * `/x/memory/section` 一起删除（知识库页不再内嵌记忆分区 —— 它是独立工作台，不是别人的区块）。
- * 页内仍保留锚点 `data-vssaros-page="memory-section"`（`p3-16` 用它认页，**锚点值不动**）。
- */
-/**
- * 从 agent 上取本次判定该用的模型路由（优先级照官方 `dsh-compaction-basic/lib/index.js:293-302` ✓）：
- * `session.requestHeader()?.config`（最近一次真实请求用过的路由）→ `agent.options.{provider,model}`。
- * 两者都取不到 ⇒ `null` ⇒ 调用方**跳过判定并计入 `judgeSkipped`**（可见，不静默 ✓）——
- * 这比"瞎猜一个 provider"正确得多（猜错会静默失败或烧到别的路由 ✗）。
- * @param {object} agent - `agent/turn-stopping` 的 `payload.agent`。
- * @returns {{provider: string, model: string} | null} 路由。
- */
-function modelTargetOf(agent) {
-	try {
-		const latest = agent?.session?.requestHeader?.()?.config;
-		if (typeof latest?.provider === 'string' && latest.provider && typeof latest?.model === 'string' && latest.model) {
-			return { provider: latest.provider, model: latest.model };
-		}
-	} catch { /* 头取不到就退到 options ✓ */ }
-	const options = agent?.options;
-	if (typeof options?.provider === 'string' && options.provider && typeof options?.model === 'string' && options.model) {
-		return { provider: options.provider, model: options.model };
-	}
-	return null;
-}
-
-/**
- * 处理一次"提升"表单提交（`POST /x/memory/promote`，**无 JS** ✓）。
- *
- * ⚠ 非 POST 一律 **405**（不是 404）：这个路径**存在**、只是方法不对 —— 顺带挡住"被链接预取 /
- * 爬虫抓一下就触发一次写入"这类事故 ✓（写操作上这尤其要紧 ✓）。
- * ⚠ 一律 **303 回页面**：表单 POST 之后必须重定向，否则用户刷新会**重复提交** ✓
- *（而重复提交在这里是幂等的：`promotedMemoryIdOf` 由指纹派生 + `mark('promoted')` 会拦住第二次 ✓，
- * 但那是第二道防线，第一道就是 303 ✓）。
- * ⚠ 整个 handler 不返回 Promise、异常全部本地吞掉 ⇒ 路由层不会出现未处理的 rejection ✓。
- */
-function handleDraftAction(req, res, { promoter, logger, action, state }) {
-	// `action` 只允许这两个（白名单 ⇒ 不能被路径拼出一个任意方法名 ✗）
-	if (action !== 'promote' && action !== 'discard') {
-		res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
-		res.end(`不认识的草稿动作：${String(action)}`);
-		return;
-	}
-	let body = '';
-	let size = 0;
-	req.on('data', chunk => {
-		size += chunk.length;
-		// 体积闸：表单只该带一个 id ⇒ 超过 4 KB 直接断（不让它变成一个能被塞满的入口 ✓）
-		if (size > 4096) { req.destroy(); } else { body += chunk; }
-	});
-	req.on('end', () => {
-		void (async () => {
-			const { id } = parseFormUrlEncoded(body);
-			let result;
-			try {
-				result = await promoter[action](id);
-			} catch (error) {
-				result = { ok: false, error: String(error?.message ?? error) };
-			}
-			if (!result.ok) {
-				const label = action === 'promote' ? '提升' : '丢弃';
-				try { logger?.warn?.(`[vssaros-memory] 草稿${label}失败：${result.error}`); } catch { /* 绝不再抛 ✓ */ }
-			}
-			// ★ 把结果留给**下一次页面渲染**（303 之后浏览器马上会 GET 本页 ✓）：
-			// 没有它的话，用户只能靠"草稿从列表消失"推断，而**失败**（比如网关没确认成功）在界面上
-			// 与"页面没刷新"长得一模一样 ✗ —— 那正是这条提升路径上最容易误解的地方 ✓。
-			if (state) {
-				state.lastAction = {
-					action, ok: result.ok, id,
-					text: result.text, error: result.error, at: Date.now(),
-				};
-			}
-			res.writeHead(303, { location: PAGE_ROUTE });
-			res.end();
-		})();
-	});
-	req.on('error', () => { /* 客户端断开：什么都不做（也绝不抛 ✓） */ });
-}
-
-/**
- * 收件箱批量动作（`POST /x/memory/api/inbox/act`，JSON）。
- *
- * 与旧表单路由 `handleDraftAction` 的差别：① 回 **JSON** 而不是 303（React 工作台自己刷新）；
- * ② 一次可带多个 id；③ 动作多了 `restore`（撤销）与 `edit-promote`（改写后提升）。
- * 共同点：**白名单动作**、**体积闸**、异常本地吞掉、页面触发 ⇒ 不过审批闸。
- *
- * ⚠ 要求 `content-type: application/json`：浏览器跨站表单（`<form method=post>`）只能发
- *   urlencoded / multipart / text/plain，发 JSON 必须先过 CORS 预检 ⇒ 这是对"别的网页借用户的浏览器
- *   POST 本地插件"的一道廉价防线（旧表单路由没有这层，保持不动）。
- */
-const JSON_BODY_MAX = 64 * 1024;
-
-/** JSON 响应（所有页面 API 同一出口：不缓存）。 */
-function replyJson(res, status, payload, extraHeaders = {}) {
-	res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...extraHeaders });
-	res.end(JSON.stringify(payload));
-}
-
-/**
- * 读**写路由**的 JSON 请求体（收件箱批量动作 / 归档恢复共用同一套防线，别各写一份 ✗）。
- *
- * 防线（按顺序）：仅 POST → 必须 `application/json`（跨站表单发不出）→ 声明长度超限直接 413
- * → 读取中超限只丢弃、不 `destroy`（destroy 会让客户端只看到 `fetch failed` 而拿不到 413，真 HTTP 测试踩过）
- * → 必须是合法 JSON。任何一道不过，**已经回了响应**，调用方直接 return。
- *
- * @returns {Promise<{ok: true, body: unknown} | {ok: false}>}
- */
-async function readJsonBody(req, res) {
-	if (req.method !== 'POST') { replyJson(res, 405, { ok: false, error: '写操作必须用 POST' }); return { ok: false }; }
-	if (!/^application\/json\b/i.test(String(req.headers['content-type'] ?? ''))) {
-		replyJson(res, 415, { ok: false, error: '请求必须是 application/json' });
-		return { ok: false };
-	}
-	// 先看声明的长度：明显超限就别读了，直接回 413（客户端能拿到状态码）
-	const declared = Number(req.headers['content-length']);
-	if (Number.isFinite(declared) && declared > JSON_BODY_MAX) {
-		replyJson(res, 413, { ok: false, error: '请求体过大' }, { connection: 'close' });
-		req.resume(); // 把剩余数据丢弃，让连接能正常收尾
-		return { ok: false };
-	}
-	let raw = '';
-	let tooLarge = false;
-	await new Promise(resolve => {
-		req.on('data', chunk => {
-			if (tooLarge) { return; } // 超限后继续丢弃，不再累积
-			if (raw.length + chunk.length > JSON_BODY_MAX) { tooLarge = true; raw = ''; return; }
-			raw += chunk;
-		});
-		req.on('end', () => resolve(undefined));
-		req.on('error', () => resolve(undefined));
-		req.on('close', () => resolve(undefined));
-	});
-	if (tooLarge) { replyJson(res, 413, { ok: false, error: '请求体过大' }, { connection: 'close' }); return { ok: false }; }
-	try { return { ok: true, body: JSON.parse(raw || 'null') }; } catch {
-		replyJson(res, 400, { ok: false, error: '请求体不是合法 JSON' });
-		return { ok: false };
-	}
-}
-
-async function handleInboxAct(req, res, { promoter, logger }) {
-	const reply = (status, payload) => replyJson(res, status, payload);
-	const got = await readJsonBody(req, res);
-	if (!got.ok) { return; }
-	const body = got.body;
-	const parsed = parseInboxAction(body);
-	if (!parsed.ok) { reply(400, { ok: false, error: parsed.error }); return; }
-	let summary;
-	try {
-		summary = await promoter.batch(parsed.action, parsed.ids, { text: parsed.text });
-	} catch (error) {
-		summary = { ok: false, done: 0, failed: parsed.ids.length, results: [], error: String(error?.message ?? error) };
-	}
-	if (summary.failed > 0) {
-		try { logger?.warn?.(`[vssaros-memory] 收件箱 ${parsed.action} 失败 ${summary.failed}/${parsed.ids.length}：${summary.results.filter(r => !r.ok).map(r => r.error).slice(0, 3).join('；')}`); } catch { /* 绝不再抛 ✓ */ }
-	}
-	reply(200, summary);
-}
-
-/** 详情页 / 归档恢复共用的分区扇出上限（每多一个分区多几次引擎调用，别把网关打爆）。 */
-const MAX_PARTITIONS = 8;
-
-/**
- * 当前分区 + 有数据的全部 agent 分区（与详情页 `loadDetailModel` 同口径，上限 8 个）。
- * 取不到 `listAllAgentsWithData` 时只返回当前分区——**宁少勿多**：这个名单同时是
- * 「归档恢复」的写权限白名单，多出来的分区 = 多出来的可写入口。
- * @returns {Promise<{partitions: string[], truncated: boolean}>}
- */
-async function resolvePartitions(base, agentId) {
-	const partitions = [];
-	const push = a => { const v = String(a ?? ''); if (v && !partitions.includes(v)) { partitions.push(v); } };
-	push(agentId);
-	try {
-		const agents = await providerCall(base, 'listAllAgentsWithData', [agentId]);
-		for (const a of Array.isArray(agents) ? agents : []) { push(a?.agentId ?? a?.id ?? a); }
-	} catch { /* 老网关 / 临时不可达：只用当前分区 */ }
-	return { partitions: partitions.slice(0, MAX_PARTITIONS), truncated: partitions.length > MAX_PARTITIONS };
-}
-
-/**
- * 工作台「总览」数据：状态条（网关 / schema / 备份 / 归档 / 自动提升档位）+ 沉淀漏斗。
- *
- * ## 降级而不是报错（对标 eternal）
- * 每一项独立取、独立失败：网关挂了，状态条仍要显示"网关不可达：原因"，漏斗（读本地文件）照常出。
- * **取不到 ≠ 0**：老网关没有 `schema/backups/lastSweepAt` ⇒ 字段缺席（`null`），页面据此不画那一项，
- * 绝不显示成 0 / "v0" 去误导。
- */
-async function buildOverview({ state, config, draftStore, statsStore, autoPromoteCfg }) {
-	const base = gatewayUrlOf(config);
-	const agentId = agentIdOf(config);
-	const rows = await draftStore.read().catch(() => []);
-	const inbox = buildInbox(rows, autoPromoteCfg);
-	// 先把进程内计数并入累计，再读 ⇒ 页面看到的就是"此刻"的账
-	try { await statsStore.syncDistill(state.distill ?? {}); } catch { /* 统计失败不影响总览 */ }
-	const snap = await statsStore.snapshot();
-
-	const health = {
-		agent: agentId,
-		gateway: { configured: !!base, url: base ?? '', state: base ? 'unknown' : 'unconfigured', error: '' },
-		engine: '', schema: null, backups: null, lastSweepAt: null, archive: null, partitions: [],
-		autoPromote: { mode: autoPromoteCfg.mode, minHits: autoPromoteCfg.minHits },
-		tokenBudget: tokenBudgetOf(config), charCap: MAX_INJECT_CHARS,
-		snapshots: state.snapshots?.size ?? 0, refreshes: state.refreshes ?? 0,
-	};
-	if (base) {
-		const [h, parts] = await Promise.allSettled([gatewayHealth(base), resolvePartitions(base, agentId)]);
-		if (h.status === 'fulfilled' && h.value && h.value.status === 'ok') {
-			health.gateway.state = 'ok';
-			health.engine = String(h.value.engine ?? '');
-			// 附加项：缺席 ⇒ 保持 null（老网关）
-			health.schema = h.value.schema && typeof h.value.schema === 'object' ? h.value.schema : null;
-			health.backups = h.value.backups && typeof h.value.backups === 'object' ? h.value.backups : null;
-			health.lastSweepAt = Number.isFinite(h.value.lastSweepAt) ? h.value.lastSweepAt : null;
-		} else {
-			health.gateway.state = 'error';
-			health.gateway.error = h.status === 'rejected' ? String(h.reason?.message ?? h.reason).slice(0, 200) : '网关回应了，但状态不是 ok';
-		}
-		const partitions = parts.status === 'fulfilled' ? parts.value.partitions : [agentId];
-		health.partitions = partitions;
-		// 归档总数：各分区求和；任何一个分区查询失败 ⇒ 该项视为"不可用"(null)，而不是少算后当成真值
-		const archives = await Promise.allSettled(partitions.map(p => listArchive(base, p, 1)));
-		if (archives.every(r => r.status === 'fulfilled' && r.value && typeof r.value.total === 'number')) {
-			health.archive = { total: archives.reduce((s, r) => s + r.value.total, 0), partitions: partitions.length };
-		}
-	}
-	return {
-		ok: true,
-		health,
-		funnel: {
-			since: snap.since,
-			...funnelOf(snap.totals),
-			// 时点值，**不是**累计量 ⇒ 单列，不与上面的漏斗各级画在同一把尺子上
-			pendingNow: inbox.counts.pending,
-			reasons: inbox.reasons,
-		},
-	};
-}
-
-/**
- * 归档恢复（`POST /x/memory/api/archive/restore`，JSON `{ id, partition }`）。
- *
- * 依赖全部注入（`partitionsOf` / `restore` / `audit` / `stats`）⇒ 可用真 HTTP 测试，不需要起整个插件。
- *
- * ⚠ `partition` 必须在**允许范围**内（当前分区 + `listAllAgentsWithData` 给的分区，同详情页扇出口径）：
- *   否则这条路由就成了"让任意调用方往任意 `mem:archive:<x>` / `mem:memories:<x>` 里写"的入口 ✗。
- * ⚠ 页面 = 人的显式动作 ⇒ 不过审批闸（理由同草稿提升，见 `lib/promote.js` 文件头）；审计照记。
- * ⚠ 恢复只"写回"，不覆盖同 id 的有效记忆、不删当前最新版（语义见引擎 `restoreArchived`）。
- */
-async function handleArchiveRestore(req, res, deps) {
-	const got = await readJsonBody(req, res);
-	if (!got.ok) { return; }
-	const id = typeof got.body?.id === 'string' ? got.body.id.trim() : '';
-	const partition = typeof got.body?.partition === 'string' ? got.body.partition.trim() : '';
-	if (!id || !partition) { replyJson(res, 400, { ok: false, error: '缺少 id 或 partition' }); return; }
-	let allowed = [];
-	try { allowed = await deps.partitionsOf(); } catch { allowed = []; }
-	if (!allowed.includes(partition)) { replyJson(res, 403, { ok: false, error: '分区不在允许范围内' }); return; }
-
-	const auditBase = {
-		action: 'executed', tool: 'memory_restore_archive(page)', agentId: partition, sessionId: '',
-		target: 'long', memoryType: 'fact', policy: 'human', content: `archive:${id}`,
-	};
-	let reply = null;
-	try {
-		reply = await deps.restore(partition, id);
-	} catch (error) {
-		// 老网关没有该方法 ⇒ 404 ⇒ 这里如实说，不假装成功
-		await deps.audit?.({ ...auditBase, outcome: 'failed', error });
-		replyJson(res, 200, { ok: false, id, error: String(error?.message ?? error).slice(0, 200) });
-		return;
-	}
-	// 引擎返回 `{ success, id, error }`；"没报错"不算成功，必须明确 success
-	const ok = reply?.success === true || reply?.ok === true;
-	await deps.audit?.({ ...auditBase, outcome: ok ? 'ok' : 'rejected-by-gateway' });
-	if (ok) { try { void deps.stats?.event?.('archiveRestored'); } catch { /* 统计失败不影响恢复 */ } }
-	replyJson(res, 200, ok ? { ok: true, id } : { ok: false, id, error: String(reply?.error ?? '网关未确认恢复成功').slice(0, 200) });
-}
-
-/** 仅供测试：让路由层能被真 HTTP 请求打到（与 `deploymentConfigForTest` 同一做法；生产不用）。 */
-export const handleInboxActForTest = handleInboxAct;
-export const handleArchiveRestoreForTest = handleArchiveRestore;
-export const buildOverviewForTest = buildOverview;
-
-/**
- * 页面里那段点击脚本的**共同缘由**（两个脚本各贴一次结论，正文在这里写清 ✓）。
- *
- * ## 为什么必须用 JS —— 这是**实测**出来的，不是设计偏好 ✗
- * 原先入口卡就是一个普通 `<a class="kb-entry" href="./detail">` ✓（服务端渲染、零脚本 ✓），
- * 而且我核实过：**href 正确、`/x/memory/detail` 返回 200、详情页内容也对**（`p3-07` 116/116 ✓）。
- * 但**用户实测：点下去"完全没反应"** ✗✗ —— 页面没变、也没跳浏览器。
- * ★ 2026-10-15 **真因（主进程日志实证）**：每点一次就是一行
- *   `webContents#will-navigate: Prevented webcontent navigation` —— `src/vs/code/electron-main/app.ts`
- *   的全局 `web-contents-created` 守卫对**所有** webContents 的页内导航一律 `preventDefault`
- *   ⇒ `<a href>`、`location.href`、`<form>` 提交**全部**被拦（`dshViewHost.ts` 里"同源放行"从未生效 ✗）。
- *   ⇒ 已在 `app.ts` 豁免 dsh 视图（`DshViewHost.isDshViewWebContents`，导航权限交还 `dshViewHost` 的同源守卫 ✓）。
- *   ⚠ 先前"JS 发起的导航同源 ⇒ `will-navigate` 放行"的判断是**错的** ✗（探针实测"已点击 ⇒ 发起导航"之后仍被拦）。
- *
- * ## ⚠ 零脚本的纪律被打破了（必须记清）
- * 本文件顶部写着"本页是服务端渲染 + **零脚本**"（`pageShell.js` 的口径 ✓）—— 代价换来的东西是
- * **"入口点了没反应"** ✗✗ ⇒「入口能用」优先 ✓。注入走平台的 `renderShell({ script })` ✓（kanban / workflow
- * 等好几页都在用 ✓），**没有**改 `pageShell.js`（那会违反它"与模块无关"的约定 ✗）。
- * ⚠ 本段在**模板字符串**里 ⇒ JS 里**不能用反引号**（本仓踩过多次 ✗），一律单引号 ✓。
+ * The snapshot is injected as a `systemPrompt` context: DSH materializes it
+ * as a user-role tail message and only re-appends when the rendered text
+ * changes, so the stable system/history prefix (and its cache) is preserved.
+ * @module vssaros-memory
  */
 
-/**
- * **完整版页**上「查看完整记忆 → 记忆详情」的点击行为（子路由 ⇒ **不能**用 `openModulePage` ✗：
- * 白名单只认整页 `/x/memory/`，传 `/x/memory/detail` 会被宿主 warn 掉、表现仍是"点了没反应" ✗）。
- *
- * ⇒ 三级：① 有桥 ⇒ **原地**导航 `./detail`（`app.ts` 已豁免 dsh 视图，页内导航真的能走了 ✓）；
- *         ② 无桥（纯浏览器）⇒ 新标签页（这是**真能用的**退化，不是"点了没反应" ✓）。
- * ⚠ 本脚本只挂在**完整版页**上（`renderPage`）——侧栏那份摘要版走 `OPEN_LIBRARY_JS` ✓。
- */
-const OPEN_DETAIL_JS = `(function(){
-  var el = document.querySelector('[data-vssaros-memory-action="open-detail"]');
-  var probe = document.getElementById('vssaros-memory-probe');
-  var mark = function (s) { if (probe) { probe.textContent = s; } };
-  if (!el) { mark('· JS 跑了但找不到入口卡 ✗'); return; }
-  var go = function (ev) {
-    if (ev) { ev.preventDefault(); }
-    var at = new Date().toLocaleTimeString();
-    // ★★ 2026-10-24：**同路由 + 查询参数**原地渲染详情 —— 不接桥、不开新窗口。
-    //   为什么不调 openModulePage：本页常在 iframe 里（preload 只注入顶层 frame）
-    //   ⇒ window.vssarosDsh 不在 ⇒ 旧代码退化成 window.open('./detail')
-    //   ⇒ IDE 用内部浏览器打开**没有 token** 的地址 ⇒ **黑屏窗口** ✗✗（真机定案）
-    mark('· ' + at + ' 打开详情（?view=detail）');
-    location.href = '?view=detail';
-  };
-  el.addEventListener('click', go);
-  el.addEventListener('keydown', function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { go(ev); } });
-})();`;
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
+import { ArchiveStore, MemoryStore, SuggestionQueue, extractEntryDate, gitBranch, gitBranchList, parseEntryBranches, parseEntryDshOnly, parseEntrySummary, autoSummary, stripEntrySummary, todayStamp } from './store.js'
+import { stripEntryId, extractEntryId, legacyIdFor } from './sync/entryid.js'
+import { readAliases } from './aliases.js'
+import { reviewCommand, reviewStatusTool, reviewTurnCounter, writeGapCounter, enqueueSuggestion, suggestToolDefinition } from './review.js'
+import { skillManageTool } from './skills.js'
+import { installApi } from './api.js'
+import { installSkillsManager } from './skills-manager.js'
+import { TodoStore, createTodoController } from './todo.js'
+import { installMemorySync, makeProjectDirResolver } from './sync/index.js'
+import { createSearchDocsController, searchDocsCommand } from './search-docs.js'
+import { installBroadcast, installCoi } from './coi/index.js'
+import { syncBuiltinSkillsIfEnabled } from './coi/skills-sync.js'
+import { installNotify, installChannelSend, installSessionImages } from './notify.js'
+import { buildWsCoordBlock, installWsCoord } from './coi/ws-coord.js'
+import { installSession } from './session-orch.js'
+import { AliasStore } from './aliases.js'
+import { installSessionSearch } from './search/index.js'
+import { installPrompts, sanitizeSnapshotBody } from './prompts.js'
+import { installModels, buildModelsSnapshotAsync } from './models.js'
+import { installUiSettings } from './ui-settings.js'
+import { installMermaid } from './mermaid.js'
+import { installBookmarks } from './bookmarks.js'
+import { installCanvas } from './canvas.js'
+import { getUpdateChecker } from './update.js'
+import { installAdvisor } from './advisor/index.js'
+import { resolveLocale, setLocale, getLocale, translate, MEMORY_DICT, REVIEW_DICT, TODO_DICT, SKILL_DICT, SNAPSHOT_DICT, MISC_DICT } from './i18n.js'
+// DSH 0.2.0 settings 服务兼容层（get→describe、事件改名）：详见 settings-compat.js 头注释
+import { hasSettingsRead, SETTINGS_CHANGE_EVENTS } from './settings-compat.js'
+
+/** Translate through the MEMORY dictionary in the active locale. */
+const mt = (key, params) => translate(MEMORY_DICT, key, params)
+/** Translate through the SNAPSHOT dictionary in the active locale. */
+const st = (key, params) => translate(SNAPSHOT_DICT, key, params)
+
+// Re-exported for the web API layer (api.js imports them from here).
+export { gitBranch, gitBranchList } from './store.js'
+
+export const name = 'vssaros-memory'
+// 插件级服务声明：声明过的服务 ctx.xxx 直接可用（cordis 限制：未声明的
+// 服务直接读会抛 "cannot get property 'xxx' without inject"）。
+// tools/systemPrompt 是历史声明；agents 于 2026-08-09 加入——会话编排
+// 模块（de_session）需要它创建/唤醒会话（曾用 ctx.inject(['agents'])
+// 动态注入导致工具未注册，改为声明式注入后与 tools 同款可靠）；
+// workspaceRegistry 刻意不做插件级硬依赖：headless bundle 不提供该
+// web-only 服务，而默认的记忆工具与提示词注入并不需要它。需要工作区的
+// 可选能力通过 ctx.get() / 局部 ctx.inject() 读取并明确降级。
+// sessionTitle 同日加入——de_session rename 改会话名称（左侧列表标题）。
+// sessionPersistence 于 2026-08-11 加入——de_session wake 恢复离线会话时
+// 需读该会话 log 里自己最后使用的模型（request/header），否则恢复的
+// agent.options 为空、{{model}} 变量无值导致被唤醒会话回合失败。
+// settings / llm 于 2026-08-11 加入——模型配置模块（de_models 工具 +
+// 「模型设置」Tab）需要读取模型目录（settings.get）与供应商/思考等级
+// 元数据（llm.listConfigurableProviders / resolveModelInfo）。
+export const inject = ['tools', 'systemPrompt', 'agents', 'sessionTitle', 'sessionPersistence', 'settings', 'llm']
+
+/** Plugin config defaults (conservative: review off, memory on). */
+export const DEFAULTS = {
+  // storage
+  memoryDir: null, // null → <dshHome>/memories
+  entryDatePrefix: true,
+  // daily / project memory (per-turn proactive writes — never injected, see renderSnapshot)
+  perTurnProjectWrites: true, // snapshot hint requires a per-turn project write check
+  perTurnDailyWrites: true,   // snapshot hint requires a per-turn daily write check
+  perTurnKeyWrites: true,     // snapshot hint: importance-gated project KEY writes (injected)
+  // 写入看门狗（2026-08-31 设计；用户拍板 2026-09-04：**默认关闭**）：
+  // 长会话指令稀释——固定提示词逐渐失效，模型连续多轮不写 daily/project
+  // 且程序侧毫无反馈，遗漏被静默吞掉（根源是模型指令遵循能力，强模型
+  // 不需要这个功能，故默认关、用户按需打开）。开启后程序按会话统计
+  // "连续完成多少个用户回合未写 daily/project"，缺口达到 writeGuardThreshold
+  // 时快照注入置顶提醒（粘性，写入即消）；threshold=2 意为容忍 1 轮遗漏、
+  // 第 2 轮起提醒。可在「Memory Evolve 设置 → 配置」打开。
+  perTurnWriteGuard: false,  // false（默认）= 不计数、不提醒；true = 启用看门狗
+  writeGuardThreshold: 2,    // 连续 N 轮未写入触发提醒（正整数，>=1）
+  keyBranchFilter: true,      // static (config.yaml only): inject only KEY entries whose branch scope matches the session's git branch
+  // key 轨渐进式披露（2026-08-15）：摘要注入减少 token，按需展开加载全文
+  keyProgressiveDisclosure: 'off', // 'auto' | 'off' | 'on' — auto=小数据量全量注入、大数据量摘要注入；off=始终全量（默认）；on=始终摘要
+  keyFullInjectThreshold: 3,  // auto 模式：条目数 ≤ 此值 → 全量注入
+  keyFullInjectCharLimit: 1500, // auto 模式：总字符数 ≤ 此值 → 全量注入
+  // snapshot injection
+  injectMemory: true,
+  snapshotOrder: 500,
+  injectionScan: true,
+  // tools / command names
+  toolName: 'memory',
+  suggestToolName: 'memory_suggest',
+  commandName: 'memory_review',
+  skillManageToolName: 'skill_manage',
+  todoToolName: 'dtodo',
+  // VsSaros 内置化（2026-11-03）：开启后快照 text provider 先探测 memory 工具是否真的注册，
+  // 没装上/被禁用时不发任何「每轮写入」指令（否则模型会反复调用看不到的工具）。
+  // 默认 false 保持上游行为；VsSaros profile 的覆盖层设为 true。
+  snapshotRequireTools: false,
+  // 待办能力运行时开关（默认开；关闭时 dtodo 工具、待办 Tab、到期提醒
+  // 一并退出，数据与同步轨保留）。向后兼容：旧配置/state 文件缺失该键时
+  // 视为启用，保持既有行为。
+  todoEnabled: true,
+  // skill management
+  skillDir: null, // null → ~/.agents/skills (the DSH skill library)
+  skillMaxBytes: 65536,
+  // background review (in-turn, prompt-driven: the main LLM reviews itself
+  // when the turn counter reaches the interval)
+  reviewEnabled: false,
+  reviewInterval: 5,
+  reviewMode: 'suggest', // 'suggest' | 'auto' — suggest = global facts go through memory_suggest (user confirms); auto = direct memory writes
+  skillReviewEnabled: false, // off by default: skill creations queue for user confirmation (on = direct, no approval)
+  memoryTabEnabled: true, // session memory tab in the web GUI (default ON — the settings-panel entry is gone, the tab is the only surface)
+  suggestionsFile: null, // null → <memoryDir>/SUGGESTIONS.jsonl
+  stateFile: null, // null → <memoryDir>/plugin-state.json (runtime config overrides)
+  // local file search (search_local_files; default OFF — the tool is not
+  // registered at all, so the model never sees it)
+  searchDocsEnabled: false,
+  // 四档模式（2026-08-09 用户拍板）：all=文件名+内容 / filename=仅文件名 /
+  // content=仅内容 / off=工具不注册。**null = 未设置**——实际生效值由
+  // controller 按「运行时 mode → 配置 mode → 旧布尔开关推断」三级解析
+  // （不在此推断，避免推断值压过运行时 Web 面板/slash 命令的切换）。
+  searchDocsMode: null,
+  searchDocsToolName: 'memory_evolve_search_local_files',
+  searchDocsCommandName: 'memory_evolve_search_files',
+  searchDocsExts: ['md'],
+  searchDocsProviders: 'auto', // 'auto' | ['mdfind','es','rg','walk'] — replaceable implementations
+  searchDocsCacheTtlMs: 3600000, // walk 缓存 TTL（1h）
+  searchDocsTimeoutMs: 60000, // 每层搜索超时上限
+  searchDocsCacheFile: null, // null → <memoryDir>/search-docs-index.json
+  // COI 调度（de_coi：统一调度 kimi/codex/grok/hermes 等 CLI 代理）
+  coiEnabled: false,          // COI 调度总开关（默认禁用，与本地搜索一致；记忆 Tab 运行时配置可随时切换，工具/命令即时生效，Tab 刷新后出现）
+  coiDataDir: null,           // null → <memoryDir>/coi
+  coiSummaryEnabled: true,    // 任务完成自动沉淀摘要到 project/daily 记忆
+  coiSyncSkills: true,        // 启动时把内置适配器技能（skills/ 目录）同步到技能库（源头在插件）
+  coiNotifyCommand: null,     // 完成通知命令模板（占位符 {taskId}{coi}{status}{summary}；null=不通知）
+  coiRetentionDays: 90,       // 任务留档保留天数（超期自动清理）
+  coiTaskTimeoutMs: 43200000, // 任务默认超时（12 小时；AI 代理任务动辄数小时，超时仅作兜底防线）
+  coiMaxLogBytes: 2097152,    // 单任务留档上限（2 MiB）
+  // 会话广播（de_broadcast）：**独立子模块**（用户拍板 2026-08-08：明显
+  // 独立的子模块不挂在别的模块下——曾跟随 coiEnabled 导致开关联动、工具
+  // 上下文污染），独立开关与存储目录；开启后注册 de_broadcast 工具 +
+  // 快照「会话广播」段 + 会话头部复制会话 ID 按钮；默认关
+  broadcastEnabled: false,
+  broadcastDataDir: null,     // null → <memoryDir>/broadcast
+  // 广播图片附件子开关（P3 2026-08-11，随 260810 快照图片机制）：de_broadcast
+  // send 支持图片附件（path/url/base64 三来源，存 <广播目录>/attachments/，
+  // 消息 JSON 只存元数据；GUI 收件箱缩略图 + AI read 拿文件路径）。**依赖
+  // broadcastEnabled 大开关**（广播关=附件整体不生效）；默认开（发图是聊天
+  // 基本能力，随广播启用即可用；关闭时 send 带附件明确报错不静默忽略）。
+  broadcastImageEnabled: true,
+  // 工作区冲突协调（ws-coord）：**会话广播模块的子功能组**（用户拍板
+  // 2026-08-09——语义上属于"通知的一部分"，归入广播，不做独立模块）。
+  // 同工作区多会话并行时的资源占用协调：声明锁（de_ws_declare）+
+  // 自动登记（fs/observed 写后自动进占用集）+ 写前冲突检测（软模式：
+  // 警告不拦截，先信任 AI；enforceWrite 打开升级为硬拦截）+ 冲突定向
+  // 通知 + 活动感知（de_ws_status 概览 / 快照【工作区活动】段）。依赖
+  // broadcastEnabled 大开关（广播关 = 本功能全部不注册）。默认关。
+  wsCoordEnabled: false,
+  wsCoordEnforceWrite: false, // 硬拦截模式（true=冲突时 deny 拒绝写入；默认软模式只警告）
+  wsCoordSnapshot: true,      // 活动感知快照段【工作区活动】（活跃会话 ≥2 时注入一行，带时间）
+  wsCoordAutoRegister: true,  // fs/observed 自动登记（false=只有声明式锁）
+  wsCoordNotifyConflict: true,// 冲突时给占用方发定向通知（走广播通道）
+  // 会话搜索（de_session_search）：**独立子模块**（与广播同一纪律——不挂
+  // 在任何模块下）。独立开关；零常驻状态（无索引/缓存/定时器，每次调用
+  // 实时只读扫描）；当前支持 Codex 源（~/.codex/sessions + archived_sessions
+  // 的明文 JSONL，rg 预筛后毫秒级），DSH 会话（zstd 拼接帧）暂不实现。
+  // 默认关：注册即占模型工具列表，需要时才开。
+  sessionSearchEnabled: false,
+  sessionSearchRoots: null,   // 每源根目录覆盖（当前仅 codex，如 { codex: '/path' }）；null=各源默认
+  // 会话编排（de_session）：**独立子模块**（用户拍板纪律——独立领域
+  // 不挂别的模块下）。程序化创建/唤醒 DSH 会话（spawn 新会话派长提示词、
+  // wake 唤醒已有会话等价替用户发消息、status/list 查状态）。独立开关
+  // 与存储目录；默认关（注册即占模型工具列表）。依赖 DSH agents 服务，
+  // 仅同进程会话可唤醒；spawn 加房间经广播模块松耦合桥接。
+  sessionEnabled: false,
+  sessionDataDir: null,       // null → <memoryDir>/session-orch
+  promptsEnabled: false,      // 提示词管理器总开关（默认禁用，与本地搜索/COI 一致；开启后「提示词」Tab、注入轨与 de_prompts 工具生效）
+  promptToolName: 'de_prompts', // 提示词库工具名（AI 查询/注入提示词；随 promptsEnabled 开关注册/注销）
+  // 模型配置（de_models + 「模型设置」Tab）：**独立子模块**（与其他模块
+  // 同款独立开关）。表格展示 DSH 供应商/模型 + 每模型启用/备注/思考等级
+  // 配置；de_models 工具给 AI 查询可用模型清单。**默认关闭**（与其他
+  // 独立模块一致：注册即占模型工具列表，需要时再开；且本模块的配置
+  // 只对插件自身有用——不修改也不影响 DSH 的模型设置，DSH 侧仍以官方
+  // 「设置 → 模型」为准）。
+  modelsEnabled: false,
+  // DSH UI 设置（dsh-ui-settings）：**独立子模块**（与广播/COI 同一纪律——
+  // 独立领域不挂别的模块下）。对 DSH web 界面做样式级小功能（第一版：左侧
+  // 会话列表「仅显示进行中」筛选，默认只显示进行中的会话、可一键切回全部；
+  // 后期扩展：主题更换等）。纯客户端实现（CSS + DOM 增强），宿主端只提供
+  // 开关与状态端点；**默认关闭**（与其他独立模块一致，需要时再开）。
+  uiSettingsEnabled: false,
+  // 会话书签（session bookmarks）：**独立子模块**（与广播/UI 设置同一纪律——
+  // 独立领域不挂别的模块下）。每轮星标 + 书签列表 + 跳转定位（第一阶段）；
+  // 第二阶段才做「从此处新建官方分支」。纯 UI + 宿主 API（不注册 AI 工具）；
+  // 存储独立 sidecar <memoryDir>/session-bookmarks.json；**默认关闭**。
+  bookmarkEnabled: false,
+  // 渠道通知（de_notify）：**独立子模块**（与广播/COI 同一纪律——独立领域
+  // 不挂别的模块下）。AI 完成任务后通过 IM 渠道（一期：飞书）**主动发通知**
+  // 给用户。渠道能力来自渠道插件（dsh-feishu 等**公共插件**）在 apply 时
+  // 登记的 globalThis 注册表（用户拍板方案 A）——本模块**零依赖**渠道插件
+  // （没装/旧版无钩子 → 如实报"渠道不可用"，主插件零影响）。两种触发：
+  // ①de_notify 手动工具（随时可发、无频率约束——用户拍板）；
+  // ②COI 完成自动通知（COI 运行时配置 coiNotifyChannels，经 sendChannelNotify
+  // 回调松耦合桥接，notify 未启用时 COI 侧静默跳过）。**默认关闭**（与其他
+  // 独立模块一致：注册即占模型工具列表，需要时再开）。
+  notifyEnabled: false,
+  // 渠道直发（de_channel_send）：**独立子模块**（2026-08-10 用户拍板——与
+  // notify 同一纪律：独立领域独立开关；当天由 de_feishu_send 泛化为四渠道：
+  // feishu/qq/weixin/wecom）。AI 主动发送文本/图片/文件到 IM 渠道（DSH→渠道
+  // 单向，不带「非对话」通知标注）。渠道能力来自各渠道插件（dsh-feishu /
+  // dsh-qqbot / dsh-weixin / dsh-wecombot）的 globalThis 注册表（sendMedia
+  // 槽位，插件版本需支持附件）。**默认开启**（用户拍板要的功能，开箱即用；
+  // 与 notifyEnabled 互不影响：直发 vs 通知，语义不同、开关粒度独立）。
+  channelSendEnabled: true,
+  // 本会话图片查询（de_session_images）：**独立子模块**（2026-08-11 P1 任务——
+  // 与渠道发送同一家族但语义独立：列出当前会话最近的图片引用，AI 先查再发）。
+  // 独立开关 sessionImageQueryEnabled（默认**关**，与其他独立模块一致：注册即
+  // 占模型工具列表，需要时再开；且依赖 DSH 260810+ 快照的 attachments 服务，
+  // 旧版本查询会如实报错）。开启时注册 de_session_images 工具；关闭时整体卸载。
+  sessionImageQueryEnabled: false,
+  // 项目记忆跨设备同步（/memory_sync）：**独立子模块**（独立领域独立开关
+  // 纪律）。syncEnabled 默认**关**——不开的项目/电脑行为与现状逐字节一致；
+  // 开启后：setup 初始化记忆 git 仓库（模式 A 复用主仓库 dsh-shared/memory
+  // 分支 / 模式 B 私有仓库）、sync 拉取合并（fetch 锁外/合并锁内/双父提交）、
+  // sync --push 显式推送（**push 永远需用户同意**，需求 #12）。一期范围 =
+  // 项目轨（KEY + 项目日志 + KEY-archive），全局轨二期。
+  syncEnabled: false,
+  // Advisor 评审能力（lib/advisor/）：**独立子模块**（与广播/COI 同一纪律
+  // ——独立领域不挂别的模块下）。按会话运行的独立评审模型：观察主会话、
+  // 以"用户前台可见文本表面"为输入（不含思考/工具调用）、实时评审、
+  // steer 投递建议、右侧悬浮面板实时展示输入/输出、用户可发指令、评审
+  // 记录 JSONL 持久化（<advisorDataDir>/records.jsonl）。**默认关闭**（与
+  // 其他独立模块一致，需要时再开）；provider/model 缺省为空=继承会话
+  // 模型（agent.options），只配其中一个=门禁禁用（config-incomplete）。
+  advisorEnabled: false,
+  advisorDataDir: null,           // null → <memoryDir>/advisor
+  advisorProvider: null,          // 评审供应商路由（双空=继承会话模型）
+  advisorModel: null,             // 评审模型 id（双空=继承会话模型）
+  advisorSystemPrompt: '',        // 覆盖内置评审提示词（≤8KB；空=内置默认）
+  advisorPanelEnabled: true,      // 悬浮面板显示开关（与评审运行解耦）
+  advisorImmuneTurns: 0,          // 冷却回合数（0=不限制，用户拍板；fence 路径保留）
+  advisorSteerSeverities: ['nit', 'concern', 'blocker'], // 全量 steer（用户拍板），保留可收紧
+  // Q1（2026-08-12 用户拍板）：info 级建议默认仅记录不注入（面板可见、
+  // 会话流不受打扰）；开启后 info 走 inject（永不 steer）
+  advisorInfoInject: false,
+  advisorMaxMessages: 60,         // 评审输入有界窗口（0=无上限）
+  advisorMaxQueued: 32,           // 评审队列上限（满=drop-newest）
+  advisorCallTimeoutMs: 60000,    // 单次评审调用超时（正整数）
+  // 无限画板（de_canvas + 画板 Tab）：**独立子模块**（用户拍板纪律——
+  // 独立领域不挂别的模块下）。本地路径引用 + 单板+视角筛选 + AI 双向
+  // 拉取式（不注入快照）+ AI 只加/查/改不碰摆放 + AI 产物默认便签写
+  // 会话板中央区 + 写入免确认（仅加会话便签）+ 安全从简（AI 只读已上板
+  // 节点）。存储 <memoryDir>/canvas/boards.json（整板原子写 + rev 乐观锁
+  // 防多会话并发覆盖）。默认关（与其他独立模块一致）。
+  canvasEnabled: false,
+}
+
+/** Keys the Web UI may change at runtime (persisted to stateFile). */
+export const RUNTIME_KEYS = [
+  'reviewEnabled', 'reviewInterval', 'reviewMode', 'skillReviewEnabled',
+  'perTurnProjectWrites', 'perTurnDailyWrites', 'perTurnKeyWrites',
+  'perTurnWriteGuard', 'writeGuardThreshold',
+  'keyProgressiveDisclosure', 'keyFullInjectThreshold', 'keyFullInjectCharLimit',
+  'searchDocsEnabled', 'coiEnabled', 'broadcastEnabled', 'promptsEnabled',
+  'sessionSearchEnabled', 'sessionEnabled', 'modelsEnabled', 'uiSettingsEnabled',
+  'bookmarkEnabled', 'searchDocsMode', 'todoEnabled',
+  'wsCoordEnabled', 'wsCoordEnforceWrite', 'wsCoordSnapshot',
+  'notifyEnabled', 'channelSendEnabled', 'broadcastImageEnabled',
+  'sessionImageQueryEnabled', 'syncEnabled',
+  'advisorEnabled', 'advisorProvider', 'advisorModel', 'advisorSystemPrompt',
+  'advisorPanelEnabled', 'advisorImmuneTurns', 'advisorSteerSeverities',
+  'advisorInfoInject',
+  'advisorMaxMessages', 'advisorMaxQueued', 'advisorCallTimeoutMs',
+  'canvasEnabled',
+]
+
+/** Validate one runtime-config patch value against its key. */
+export function validateRuntimePatch(key, value) {
+  switch (key) {
+    case 'reviewEnabled':
+    case 'skillReviewEnabled':
+    case 'perTurnProjectWrites':
+    case 'perTurnDailyWrites':
+    case 'perTurnKeyWrites':
+    case 'perTurnWriteGuard':
+    case 'searchDocsEnabled':
+    case 'searchDocsMode':
+      if (key === 'searchDocsMode') {
+        // null = 未设置（controller 按 searchDocsEnabled 推断生效档）。
+        // ⚠️ GET /api/config 回显的就是 null（runtime={...config} 的
+        // DEFAULTS 占位），保存必须允许它，否则设置面板一保存就报错。
+        if (value !== null && !['all', 'filename', 'content', 'off'].includes(value)) {
+          throw new Error('vssaros-memory: searchDocsMode 必须是 all / filename / content / off 之一（或 null 恢复默认推断）')
+        }
+        return
+      }
+      if (typeof value !== 'boolean') throw new Error(`vssaros-memory: ${key} 必须是布尔值`)
+      return
+    case 'coiEnabled':
+    case 'broadcastEnabled':
+    case 'promptsEnabled':
+    case 'sessionSearchEnabled':
+    case 'sessionEnabled':
+    case 'modelsEnabled':
+    case 'uiSettingsEnabled':
+    case 'bookmarkEnabled':
+    case 'todoEnabled':
+    case 'wsCoordEnabled':
+    case 'wsCoordEnforceWrite':
+    case 'wsCoordSnapshot':
+    case 'notifyEnabled':
+    case 'channelSendEnabled':
+    case 'broadcastImageEnabled':
+    case 'sessionImageQueryEnabled':
+    case 'syncEnabled':
+    case 'canvasEnabled':
+      if (typeof value !== 'boolean') throw new Error(`vssaros-memory: ${key} 必须是布尔值`)
+      return
+    case 'reviewInterval':
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 1) {
+        throw new Error('vssaros-memory: reviewInterval 必须 >= 1')
+      }
+      return
+    case 'writeGuardThreshold':
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+        throw new Error('vssaros-memory: writeGuardThreshold 必须是 >= 1 的整数')
+      }
+      return
+    case 'reviewMode':
+      if (value !== 'suggest' && value !== 'auto') throw new Error('vssaros-memory: reviewMode 必须是 "suggest" 或 "auto"')
+      return
+    case 'advisorEnabled':
+    case 'advisorPanelEnabled':
+    case 'advisorInfoInject':
+      if (typeof value !== 'boolean') throw new Error(`vssaros-memory: ${key} 必须是布尔值`)
+      return
+    case 'advisorProvider':
+    case 'advisorModel':
+      if (value !== null && (typeof value !== 'string' || value.trim() === '')) {
+        throw new Error(`vssaros-memory: ${key} 必须是 null（继承会话模型）或非空字符串`)
+      }
+      return
+    case 'advisorSystemPrompt':
+      if (typeof value !== 'string') throw new Error('vssaros-memory: advisorSystemPrompt 必须是字符串')
+      if (value.length > 8192) throw new Error('vssaros-memory: advisorSystemPrompt 超长（上限 8192 字符）')
+      return
+    case 'advisorImmuneTurns':
+    case 'advisorMaxMessages':
+    case 'advisorMaxQueued':
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+        throw new Error(`vssaros-memory: ${key} 必须是非负整数`)
+      }
+      return
+    case 'advisorCallTimeoutMs':
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+        throw new Error('vssaros-memory: advisorCallTimeoutMs 必须是正整数')
+      }
+      return
+    case 'advisorSteerSeverities':
+      if (!Array.isArray(value) || value.length === 0 || !value.every((s) => s === 'nit' || s === 'concern' || s === 'blocker')) {
+        throw new Error('vssaros-memory: advisorSteerSeverities 必须是非空数组且元素为 nit/concern/blocker')
+      }
+      return
+    case 'keyProgressiveDisclosure':
+      if (value !== 'auto' && value !== 'off' && value !== 'on') {
+        throw new Error('vssaros-memory: keyProgressiveDisclosure 必须是 "auto" / "off" / "on"')
+      }
+      return
+    case 'keyFullInjectThreshold':
+    case 'keyFullInjectCharLimit':
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+        throw new Error(`vssaros-memory: ${key} 必须是正整数`)
+      }
+      return
+    default:
+      throw new Error(`vssaros-memory: 不可运行的配置项 "${key}"`)
+  }
+}
+
+/** Load persisted runtime overrides (stateFile); a missing file is empty. */
+function loadState(stateFile) {
+  try {
+    const text = readFileSync(stateFile, 'utf8')
+    const parsed = JSON.parse(text)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch (error) {
+    if (error.code === 'ENOENT') return {}
+    throw error
+  }
+}
+
+/** Atomically persist runtime overrides. */
+function saveState(stateFile, state) {
+  writeFileSync(`${stateFile}.tmp.${process.pid}`, JSON.stringify(state, null, 2) + '\n')
+  renameSync(`${stateFile}.tmp.${process.pid}`, stateFile)
+}
+
+const POSITIVE_NUMBER_KEYS = [
+  'snapshotOrder', 'reviewInterval', 'writeGuardThreshold', 'skillMaxBytes',
+  'searchDocsCacheTtlMs', 'searchDocsTimeoutMs',
+  'coiRetentionDays', 'coiTaskTimeoutMs', 'coiMaxLogBytes',
+  'advisorCallTimeoutMs',
+]
+const BOOLEAN_KEYS = [
+  'injectMemory', 'injectionScan', 'reviewEnabled', 'skillReviewEnabled',
+  'entryDatePrefix', 'memoryTabEnabled', 'keyBranchFilter',
+  'perTurnProjectWrites', 'perTurnDailyWrites', 'perTurnKeyWrites',
+  'perTurnWriteGuard',
+  'searchDocsEnabled', 'coiEnabled', 'coiSummaryEnabled', 'coiSyncSkills',
+  'promptsEnabled', 'sessionSearchEnabled', 'sessionEnabled', 'todoEnabled',
+  'notifyEnabled', 'channelSendEnabled', 'broadcastImageEnabled',
+  'sessionImageQueryEnabled', 'syncEnabled',
+  'advisorEnabled', 'advisorPanelEnabled',
+  'canvasEnabled',
+]
+const STRING_KEYS = [
+  'toolName', 'suggestToolName', 'commandName', 'reviewMode',
+  'skillManageToolName', 'searchDocsToolName', 'searchDocsCommandName',
+  'promptToolName',
+]
 
 /**
- * **摘要版（侧栏）**主入口「查看完整记忆」的点击行为 —— **逐条照抄 codebase 的 `SIDEVIEW_SCRIPT`**
- * （`vssaros-codebase/lib/index.js:918-933` ✓）：点下去**立刻**把按钮文案换成"正在编辑区打开…"并加 `.busy`
- * ⇒ "点了没反应"**当场**就能分辨是页面没接住、还是宿主没开起来 ✓（这比事后读日志快得多 ✓）。
- *
- * ⚠ 为什么传 `location.pathname` 而不写死 `/x/memory/`：宿主用它查模块页表（白名单 ✓）；
- *   带不带 `?surface=sideview` 是**宿主的自由**，页面不该把自己钉在某个表面参数上 ✓（照 kanban 的注释 ✓）。
- * ⚠ 为什么必须是**整页**路由：宿主白名单只认 `DSH_MODULE_PAGES` 里的那几条（子路由 `/x/memory/detail` 会被拒 ✗
- *   ⇒ 表现仍然是"点了没反应" ✗✓，这条在 p3-07 里有负对照断言）。
- * ⚠ 失败分支**不静默**：把原因写进副文案（可见 ✓）——"静默失败"是这一串问题的共同病根 ✗。
+ * Validate raw config and fill defaults. Throws loud on invalid values so
+ * misconfiguration fails at load.
+ * @param {object} [raw] - the raw cordis config.
+ * @returns {object} the resolved config.
  */
-const OPEN_LIBRARY_JS = `(function(){
-  var btn = document.querySelector('[data-vssaros-memory-action="open-library"]');
-  if (!btn) { return; }
-  var label = btn.querySelector('[data-vssaros-memory-action-label]');
-  var meta = btn.querySelector('.kb-entry-meta');
-  var reset = function (text) { btn.classList.remove('busy'); if (label) { label.textContent = '查看完整记忆'; } if (text && meta) { meta.textContent = text; } };
-  btn.addEventListener('click', function () {
-    if (label) { label.textContent = '正在编辑区打开…'; }
-    btn.classList.add('busy');
-    var bridge = window.vssarosDsh;
-    if (bridge && typeof bridge.openModulePage === 'function') {
-      try {
-        Promise.resolve(bridge.openModulePage(location.pathname)).then(null, function (e) { reset('编辑区打开失败：' + ((e && e.message) || e)); });
-        return;
-      } catch (e) { reset('编辑区打开失败：' + ((e && e.message) || e)); return; }
+export function resolveConfig(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('vssaros-memory: 配置必须是对象')
+  }
+  const config = { ...DEFAULTS }
+  for (const [key, value] of Object.entries(raw)) {
+    if (value === undefined) continue
+    if (!(key in DEFAULTS)) throw new Error(`vssaros-memory: 未知配置项 "${key}"`)
+    config[key] = value
+  }
+  const home = process.env.DSH_HOME || join(homedir(), '.dsh')
+  config.memoryDir = resolve(config.memoryDir ?? join(home, 'memories'))
+  config.suggestionsFile = resolve(config.suggestionsFile ?? join(config.memoryDir, 'SUGGESTIONS.jsonl'))
+  config.skillDir = resolve(config.skillDir ?? join(homedir(), '.agents', 'skills'))
+  for (const key of POSITIVE_NUMBER_KEYS) {
+    const value = config[key]
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+      throw new Error(`vssaros-memory: ${key} 必须是正数`)
     }
-    // 没有桥：纯浏览器里本页就是完整版 ⇒ 原地打开（与 codebase 同款退化 ✓）
-    if (bridge) { location.href = location.pathname; return; }
-    window.open(location.pathname, '_blank', 'noopener');
-  });
-})();`;
-
-/** 详情页一次最多取多少条（服务端渲染 ⇒ 比 IDE 侧的 200 小得多 ✓，翻页由"搜索/筛选收窄"代替 ✓）。 */
-const DETAIL_ITEMS_LIMIT = 50;
-
-/** 引擎返回值 → 行数组（三种既有形状 ✓；详情页与摘要版共用，别各写一份 ✗）。 */
-function rowsOf(value) {
-	return Array.isArray(value) ? value
-		: (value && Array.isArray(value.memories) ? value.memories
-			: (value && Array.isArray(value.items) ? value.items : []));
+  }
+  // writeGuardThreshold 额外要求整数（与运行时 validateRuntimePatch 口径
+  // 一致，评审 P2-1：静态配置 1.5 之类的小数必须拒绝——轮次计数不存在小数）。
+  if (!Number.isInteger(config.writeGuardThreshold)) {
+    throw new Error('vssaros-memory: writeGuardThreshold 必须是 >= 1 的整数')
+  }
+  for (const key of BOOLEAN_KEYS) {
+    if (typeof config[key] !== 'boolean') {
+      throw new Error(`vssaros-memory: ${key} 必须是布尔值`)
+    }
+  }
+  for (const key of STRING_KEYS) {
+    if (typeof config[key] !== 'string' || config[key].length === 0) {
+      throw new Error(`vssaros-memory: ${key} 必须是非空字符串`)
+    }
+  }
+  if (config.reviewMode !== 'suggest' && config.reviewMode !== 'auto') {
+    throw new Error('vssaros-memory: reviewMode 必须是 "suggest" 或 "auto"')
+  }
+  // MAJOR-4（复审）：Advisor 静态配置校验（与 validateRuntimePatch 同规则，
+  // 防非法静态值/损坏 state 绕过运行时校验）
+  if (!Number.isInteger(config.advisorMaxMessages) || config.advisorMaxMessages < 0) {
+    throw new Error('vssaros-memory: advisorMaxMessages 必须是非负整数（0=无上限）')
+  }
+  if (!Number.isInteger(config.advisorMaxQueued) || config.advisorMaxQueued < 1) {
+    throw new Error('vssaros-memory: advisorMaxQueued 必须是正整数')
+  }
+  if (!Number.isInteger(config.advisorImmuneTurns) || config.advisorImmuneTurns < 0) {
+    throw new Error('vssaros-memory: advisorImmuneTurns 必须是非负整数')
+  }
+  if (typeof config.advisorSystemPrompt !== 'string' || config.advisorSystemPrompt.length > 8192) {
+    throw new Error('vssaros-memory: advisorSystemPrompt 必须是字符串（≤8192 字符）')
+  }
+  // Q1（第一轮优化）：info 注入布尔
+  if (typeof config.advisorInfoInject !== 'boolean') {
+    throw new Error('vssaros-memory: advisorInfoInject 必须是布尔值')
+  }
+  if (!Array.isArray(config.advisorSteerSeverities) || config.advisorSteerSeverities.length === 0
+    || !config.advisorSteerSeverities.every((s) => s === 'nit' || s === 'concern' || s === 'blocker')) {
+    throw new Error('vssaros-memory: advisorSteerSeverities 必须是非空数组且元素为 nit/concern/blocker')
+  }
+  for (const key of ['advisorProvider', 'advisorModel']) {
+    if (config[key] !== null && (typeof config[key] !== 'string' || config[key].trim() === '')) {
+      throw new Error(`vssaros-memory: ${key} 必须是 null 或非空字符串`)
+    }
+  }
+  if (config.reviewInterval < 1) {
+    throw new Error('vssaros-memory: reviewInterval 必须 >= 1')
+  }
+  if (!Array.isArray(config.searchDocsExts) || config.searchDocsExts.length === 0
+    || config.searchDocsExts.some((ext) => typeof ext !== 'string' || !/^[a-z0-9]{1,10}$/.test(ext.toLowerCase().replace(/^\./, '')))) {
+    throw new Error('vssaros-memory: searchDocsExts 必须是非空扩展名数组（如 ["md","docx"]）')
+  }
+  config.searchDocsExts = config.searchDocsExts.map((ext) => ext.toLowerCase().replace(/^\./, ''))
+  config.coiDataDir = resolve(config.coiDataDir ?? join(config.memoryDir, 'coi'))
+  config.advisorDataDir = resolve(config.advisorDataDir ?? join(config.memoryDir, 'advisor'))
+  config.sessionDataDir = resolve(config.sessionDataDir ?? join(config.memoryDir, 'session-orch'))
+  if (config.coiNotifyCommand !== null && (typeof config.coiNotifyCommand !== 'string' || config.coiNotifyCommand.trim() === '')) {
+    throw new Error('vssaros-memory: coiNotifyCommand 必须是字符串或 null')
+  }
+  if (config.searchDocsProviders !== 'auto'
+    && (!Array.isArray(config.searchDocsProviders) || config.searchDocsProviders.length === 0
+      || config.searchDocsProviders.some((name) => typeof name !== 'string' || name.length === 0))) {
+    throw new Error('vssaros-memory: searchDocsProviders 必须是 "auto" 或非空 provider 名数组')
+  }
+  return config
 }
 
 /**
- * 四个分层的**方法名与标签**（顺序与 `detail.js` 的页签一致 ✓）。
- *
- * ⚠ 分层 id（`episodic` / `semantic` / `procedural` / `working`）就是详情页的 `tier` 值 ——
- *   摘要版与详情页必须同源，否则同一个库在两个页面上给两个数字（用户会当成"链接错了" ✗）。
+ * Render the memory snapshot injected into the model context. Live reads are
+ * intentional: DSH's runtime-context materialization only appends when the
+ * rendered text changes, so mid-session memory writes surface at the next
+ * step as a tail message while the stable prefix stays cached. The slow-
+ * moving tracks are rendered here — global memory/user AND the per-project
+ * KEY track (projects/<hash>/KEY.md, scoped to this agent's cwd): KEY facts
+ * change rarely (only when something important happens, never per-turn), so
+ * injecting them with live reads gives real-time change monitoring at a
+ * cache-friendly cost, exactly like the global tracks. The project log and
+ * the daily log change on every write, and injecting them would append a
+ * new tail snapshot per turn and defeat prefix caching — they stay on-demand
+ * via the memory tool, with a fixed per-turn write duty in the hint below.
+ * @param {object} config - resolved config.
+ * @param {MemoryStore} store - the memory store.
+ * @param {object|null} [sessionTitleService] - DSH sessionTitle 服务（可选，
+ *   会话名称显示用；不可用/未传时名称不显示——兼容降级）。
+ * @returns {string} the snapshot text (empty when nothing is stored).
  */
-const MEMORY_TIERS = [
-	{ id: 'episodic', label: '事件', method: 'getEpisodicMemories' },
-	{ id: 'semantic', label: '语义', method: 'getSemanticMemories' },
-	{ id: 'procedural', label: '流程', method: 'proceduralList' },
-	// ⚠ 第 4 层 id 叫 `working`，但方法名是 `coreMemoryList` —— 这是详情页既有的映射（照 IDE 侧那页 ✓）
-	{ id: 'working', label: '核心', method: 'coreMemoryList' },
-];
+export function renderSnapshot(config, store, agent, counter, sessionTitleService = null, writeGap = null) {
+  const parts = []
+  // 会话 ID 段（快照最前面的独立输出端，常驻注入，不随任何模块开关）：
+  // AI 始终知道"我是谁"——广播消息判断 sender/recipients 谁是谁、回复时
+  // 把此 ID 告知对方，以及未来其他模块的消费者都要用它。固定文本（会话
+  // 生命周期内不变，缓存友好）；无会话视角（subagent 等）不注入。
+  // 会话名称/别名（2026-08-12 用户要求）：同款"有就显示、没有就不显示"
+  // 的兼容逻辑——名称来自 DSH sessionTitle 服务（自动生成/用户 rename，
+  // 更新粒度为"用户消息后"，不是每步渲染——符合快照段状态驱动稳定铁律；
+  // live 会话可读，服务不可用/无标题时置 null 不显示）；别名来自本插件
+  // aliases.json（用户手动设置，≤10 字）。两者都无时输出与旧版完全一致
+  // （只有 ID），零变化兼容。
+  if (agent?.session?.id) {
+    const aliases = readAliases(config.memoryDir ?? '')
+    const alias = aliases[agent.session.id]
+    let title = null
+    try {
+      title = sessionTitleService?.get?.(agent.session)?.title ?? null
+    } catch { /* 标题读取失败置 null（兼容降级） */ }
+    if (alias || title) {
+      const bits = []
+      if (title) bits.push(st('snap.yourName', { title }))
+      if (alias) bits.push(st('snap.yourAlias', { alias }))
+      bits.push(st('snap.yourId', { id: agent.session.id }))
+      parts.push(`${st('snap.sessionNamed')}\n${bits.join('\n')}`)
+    } else {
+      parts.push(`${st('snap.sessionPlain')}\n${st('snap.yourId', { id: agent.session.id })}`)
+    }
+  }
+  // ⚠️ 2026-08-13 设计反转：不再注入「评审员机制说明」快照段——注入消息
+  // 伪装成用户指令（Agent 不知道评审员存在），快照段介绍 Advisor 会暴露
+  // 身份、让 Agent 质疑注入来源（实测执行力下降）。
+  const memoryEntries = store.entriesOf('memory')
+  const userEntries = store.entriesOf('user')
+  if (memoryEntries.length > 0) {
+    // 展示剥离身份证（Codex 二轮 P1-4）：全局轨启用后补发的 [id:xxxx]
+    // 不得进入模型上下文（与 KEY 段同规则）
+    parts.push(`${st('snap.memoryHead')}\n${memoryEntries.map((entry) => `- ${stripEntrySummary(stripEntryId(entry))}`).join('\n')}`)
+  }
+  if (userEntries.length > 0) {
+    parts.push(`${st('snap.userHead')}\n${userEntries.map((entry) => `- ${stripEntrySummary(stripEntryId(entry))}`).join('\n')}`)
+  }
+  // Project KEY facts are injected for the agent's own project only (its
+  // session cwd). Same live-read/change-detected mechanism as the global
+  // tracks: a KEY write (tool or web tab) surfaces in the next step's tail.
+  // When the project is a git worktree and keyBranchFilter is on, the
+  // current branch is resolved live and ONLY entries whose scope covers it
+  // are injected (untagged entries = "全部" always qualify). Outside git,
+  // or when the branch cannot be resolved, every entry is injected — the
+  // conservative choice that never hides memory. The branch name itself is
+  // injected alongside, so the model knows which branch it is on.
+  const keyAgent = agent?.session?.header?.cwd ? agent : undefined
+  const branch = keyAgent && config.keyBranchFilter !== false ? gitBranch(keyAgent.session.header.cwd) : undefined
+  let keyEntries = keyAgent ? store.entriesOf('key', keyAgent) : []
+  if (branch !== undefined) {
+    keyEntries = keyEntries.filter((entry) => {
+      const scope = parseEntryBranches(entry)
+      return scope === null || scope.includes(branch)
+    })
+  }
+  if (keyEntries.length > 0) {
+    // 渐进式披露：根据配置决定全量注入还是摘要注入
+    const totalChars = keyEntries.reduce((sum, e) => sum + e.length, 0)
+    const mode = config.keyProgressiveDisclosure ?? 'off'
+    const useFullInject = mode === 'off' || 
+      (mode === 'auto' && keyEntries.length <= (config.keyFullInjectThreshold ?? 3) && totalChars <= (config.keyFullInjectCharLimit ?? 1500))
+    
+    if (useFullInject) {
+      // 全量注入（现状逻辑）
+      const head = branch !== undefined
+        ? st('snap.keyBranchHead', { branch })
+        : st('snap.keyHead')
+      // 全量注入展示剥离：身份证 [id:…] + 摘要标记 [summary:…]（2026-08-15：
+      // 正文已完整，summary 是仅供摘要模式注入用的元数据，不应再显示）
+      parts.push(`${head}\n${keyEntries.map((entry) => `- ${stripEntrySummary(stripEntryId(entry))}`).join('\n')}`)
+    } else {
+      // 摘要注入（渐进式披露）
+      const head = branch !== undefined
+        ? st('snap.keySummaryBranchHead', { branch })
+        : st('snap.keySummaryHead')
+      parts.push(`${head}\n${keyEntries.map((entry) => {
+        const shortId = extractEntryId(entry) ?? legacyIdFor(entry)
+        const summary = parseEntrySummary(entry) || autoSummary(entry)
+        return `- [${shortId}] ${summary}`
+      }).join('\n')}`)
+    }
+  }
+  // The project log (MEMORY.md under projects/<hash>/) and the daily log are
+  // deliberately NOT rendered into the snapshot: they change on every write,
+  // and each change would append a new runtime-context tail message,
+  // defeating LLM prefix caching. Instead the stable hint below (fixed text
+  // for a given config, never varies with content) requires the model to
+  // CHECK every turn for record-worthy facts and write them via the memory
+  // tool right away — the program stamps timestamps, so daily/project stay
+  // current without waiting for a review round. Both tracks are
+  // user-toggleable at runtime (perTurnProjectWrites / perTurnDailyWrites):
+  // a disabled track drops its write duty and the hint falls back to
+  // on-demand reads. KEY writes are importance-gated (perTurnKeyWrites):
+  // only durable project facts (long-lived conventions/decisions/architecture
+  // pitfalls) qualify — never per-turn progress. Subagent sessions get a
+  // restrained variant: record one entry per independent achievement instead
+  // of a per-turn duty, so bulk delegation does not flood the tracks.
+  const isSubagent = agent?.session?.header?.origin === 'subagent'
+  const reviewOn = !isSubagent && config.reviewEnabled
+  // Due warning: when the review is due, the snapshot itself tells the model
+  // (the sticky counter is the authority). Low-frequency text change — one
+  // extra tail snapshot per review cycle is a fair cache price for closing
+  // the 'never checks' hole of weak-following models.
+  const due = reviewOn && counter !== undefined && counter.turnsOf(agent) >= config.reviewInterval
+  const keyDuty = config.perTurnKeyWrites !== false
+  const writeTargets = [
+    config.perTurnDailyWrites !== false ? 'target=daily' : null,
+    config.perTurnProjectWrites !== false ? 'target=project' : null,
+  ].filter(Boolean)
+  // With git the model is told which branch it is on — even when no KEY
+  // entry matches, the branch line keeps the model branch-aware. Outside
+  // git nothing branch-related is injected at all.
+  const branchHint = branch !== undefined
+    ? st('snap.branchHint', { branch })
+    : ''
+  // 待办能力关闭时（todoEnabled=false）快照不注入 dtodo 指导行、头部也
+  // 不提及 dtodo——模型看到工具清单里没有 dtodo，也不会被要求调用它。
+  //
+  // 修复（2026-09-08，issue #43）：dtodo 收尾提示同样要对子代理豁免。
+  // `snap.todoHint` 的语义是「收尾时调用 dtodo list 检查到期……有到期未
+  // 完成项就在回复末尾提醒用户」——这是**面向真人会话**的职责：子代理不
+  // 向用户直接交付（结果回父会话），也不该替父会话提醒待办，注入只会诱导
+  // 它多调一次 dtodo 白烧 token。同一函数内其它收尾职责早已按
+  // `isSubagent` 降级（review 计数与 due 提醒 index.js:646、写入看门狗
+  // index.js:718、收尾标题 subagentTurnEndHead、写入文案 subagentWrite），
+  // 唯独此处漏了豁免——补齐后子代理快照不再出现任何 dtodo 收尾指导。
+  // 头部 `snap.section` 保留 dtodo 字样：那是「本插件提供哪些工具」的事实
+  // 陈述（dtodo 工具对子代理确实注册可用），不是收尾指令，与本次修复无关。
+  const todoEnabled = config.todoEnabled !== false
+  const todoHint = todoEnabled && !isSubagent ? `\n${st('snap.todoHint')}` : ''
+  parts.push(`${todoEnabled ? st('snap.section') : st('snap.sectionNoTodo')}
+${st('snap.readHint')}${branchHint}${todoHint}`)
 
-/**
- * 取四个分层的行。
- *
- * ⚠ 某层返回 `undefined` = **该层取数失败**，与"该层为空"（`[]`）**必须分开** ✗ ——
- *   混在一起就会把失败渲染成"0 条"（p3-51 那条纪律：不许把失败美化成成功 ✓）。
- */
-async function fetchTierRows(base, agentId) {
-	const rows = await Promise.all(MEMORY_TIERS.map(async tier => {
-		try { return rowsOf(await providerCall(base, tier.method, [agentId])); } catch { return undefined; }
-	}));
-	return MEMORY_TIERS.map((tier, i) => ({ ...tier, rows: rows[i] }));
-}
+  // Turn-final duties, as one minimal checklist (write → review when the
+  // snapshot says so). No per-turn status check: the program injects a
+  // due warning into the snapshot the moment a review is due (sticky until
+  // completed), so the model never has to poll — and weak followers cannot
+  // skip a review silently. No mechanism explanation: the interval and mode
+  // ride on the due warning; `memory_review_status` is only for completing
+  // a review (or manual progress checks).
+  if (writeTargets.length > 0 || keyDuty || reviewOn) {
+    const steps = []
+    if (writeTargets.length > 0 || keyDuty) {
+      if (isSubagent) {
+        const base = st('snap.subagentWrite', { targets: writeTargets.join(st('snap.and')) })
+        steps.push(keyDuty
+          ? `${base}${st('snap.subagentKeyTail')}`
+          : `${base}${st('snap.subagentSkipTail')}`)
+      } else {
+        const duties = []
+        if (writeTargets.length > 0) {
+          // 一次调用批量写（entries 数组含各轨一项），省一次工具往返。
+          // writeTargets 元素形如 'target=daily'，直接 join(' 与 ') 拼进提示。
+          duties.push(st('snap.batchWriteDuty', { targets: writeTargets.join(st('snap.and')) }))
+        }
+        if (keyDuty) duties.push(st('snap.keyDuty'))
+        // 用户情绪反馈记录（2026-08-10）：真人用户本回合输入有明显情绪时，
+        // 给 daily/project 条目都带 feedback 参数（程序拼接【反馈】行，格式
+        // 固定可检索）；分类按轨区分：daily 通用分层、project 项目内分层。
+        if (writeTargets.length > 0) {
+          duties.push(st('snap.feedbackDuty'))
+        }
+        steps.push(st('snap.writeStep', { duties: duties.join('；') }))
+      }
+    }
+    if (reviewOn) {
+      const n = steps.length + 1
+      steps.push(st('snap.reviewStep', { n }))
+    }
+    const tail = st('snap.noTimestampTail')
+    const dueWarning = due
+      ? st('snap.dueWarning', { interval: config.reviewInterval, mode: config.reviewMode })
+      : ''
+    // 写入看门狗提醒：本会话连续 writeGuardThreshold 个用户回合未写
+    // daily/project（writeGapCounter 计数、写入即归零）→ 快照注入置顶
+    // 提醒，粘性直到下一次成功写入。文案刻意静态（不嵌实时计数）——
+    // 一次欠账最多产生两条尾部快照（出现 + 消失），与 dueWarning 同款
+    // 缓存代价；阈值从配置读取（随配置变化，不随回合变化）。
+    // ⚠️ P1-4 修复：文案按实际启用的写入轨参数化（writeTargets）——只开着
+    // 一轨时不允许命令模型补写已关闭的轨（否则违背 perTurn*Writes 配置）。
+    const writeGuardThreshold = config.writeGuardThreshold ?? 2
+    const writeGapDue = writeGap !== null
+      && !isSubagent
+      && writeTargets.length > 0
+      && config.perTurnWriteGuard !== false
+      && writeGap.gapOf(agent) >= writeGuardThreshold
+    const writeWarning = writeGapDue
+      ? st('snap.writeGuardWarning', { threshold: writeGuardThreshold, tracks: writeTargets.join(st('snap.and')) })
+      : ''
+    const head = isSubagent
+      ? st('snap.subagentTurnEndHead')
+      : st('snap.turnEndHead')
+    parts.push(`${head}
+${steps.map((step) => `  ${step}`).join('\n')}
+${tail}${dueWarning}${writeWarning}`)
+  }
 
-/** 摘要版最多列几条"最近记忆"。 */
-const SUMMARY_RECENT_LIMIT = 5;
-/**
- * 摘要版的**取数预算**（毫秒）：网关自己的超时是 5s（`gateway.js` 的 TIMEOUT_MS），
- * 但**侧栏**不该等满 5s 才出画面 —— 等不到就先用上次结果渲染、并如实标注"取数中" ✓
- * （那次请求**不取消**：它是只读的，跑完就进缓存 ⇒ 下次 ⟳ 立刻有数 ✓）。
- */
-const SUMMARY_WAIT_MS = 2500;
-
-/** 没有取到任何数时的空摘要（字段齐全 ⇒ 渲染端不必到处判 undefined ✓）。 */
-function emptySummary(config) {
-	return { agentId: agentIdOf(config), hasGateway: !!gatewayUrlOf(config), at: 0, tiers: [], failed: [], total: null, layers: null, recent: [] };
-}
-
-/**
- * 「记忆库」侧栏**摘要版**的取数（2026-10-15，用户拍板方案 1「仪表盘卡 + 按钮置顶」）。
- *
- * 三个数字的**口径**（都要能一眼说清，否则不如不显示）：
- *   ① 条记忆 = 四层合计（**本地聚合** ✓ —— 引擎 `getStats` 实测写入后仍回 0 ✗，见 `loadDetailModel` 的注释）；
- *   ② 分层   = **有内容**的层数（0 条的层不算 ✓ —— 否则永远是 4，等于没信息 ✗）；
- *   ③ 工作记忆 = 注入正文字数（**不在本函数里**：它来自 `state.snapshot`，另有冻结语义 ✓）。
- * 最近几条 = 四层合并、按时间倒序前 `SUMMARY_RECENT_LIMIT` 条（时间字段照 `toDetailItem` 的口径取 ✓）。
- *
- * ⚠ 任一层失败 ⇒ 合计与层数都给 `null`（渲染成 `—`）而**不显示半个数** ×：半个数比空着更容易被当真 ✓；
- *   失败的层名进 `model.failed`，渲染端点出来 ✓。
- */
-async function loadSummaryModel({ config }) {
-	const base = gatewayUrlOf(config);
-	const agentId = agentIdOf(config);
-	const model = emptySummary(config);
-	model.agentId = agentId;
-	model.at = Date.now();
-	if (!base) { return model; }
-	const tiers = await fetchTierRows(base, agentId);
-	const seen = new Set();
-	const rows = [];
-	for (const tier of tiers) {
-		if (tier.rows === undefined) { model.failed.push(tier.id); continue; }
-		model.tiers.push({ id: tier.id, label: tier.label, count: tier.rows.length });
-		for (const row of tier.rows) {
-			if (!row || typeof row !== 'object') { continue; }
-			const id = String(row.id ?? '');
-			if (!id || seen.has(id)) { continue; }
-			seen.add(id);
-			const meta = row.metadata && typeof row.metadata === 'object' ? row.metadata : {};
-			// 排序键：`toDetailItem` 只给格式化后的时间 ⇒ 原值在这里自己取一次（口径与它一致 ✓）
-			const raw = Number(row.timestamp ?? row.createdAt ?? meta.createdAt ?? 0);
-			rows.push({ item: toDetailItem(row, tier.id), ts: Number.isFinite(raw) ? raw : 0 });
-		}
-	}
-	if (model.failed.length === 0) {
-		model.total = rows.length;
-		model.layers = model.tiers.filter(t => t.count > 0).length;
-	}
-	model.recent = rows.sort((a, b) => b.ts - a.ts).slice(0, SUMMARY_RECENT_LIMIT).map(row => row.item);
-	return model;
-}
-
-/**
- * 页面渲染用的摘要：**等一个有界预算**，超时/失败就用上次缓存并标注（见 `SUMMARY_WAIT_MS` 的说明 ✓）。
- */
-async function summaryForRender(state, config) {
-	let timer;
-	const raced = await Promise.race([
-		loadSummaryModel({ config }).then(model => { state.summary = model; return model; }, () => null),
-		new Promise(resolve => { timer = setTimeout(() => resolve(null), SUMMARY_WAIT_MS); timer.unref?.(); }),
-	]);
-	clearTimeout(timer);
-	if (raced) { return raced; }
-	return { ...(state.summary ?? emptySummary(config)), timedOut: true };
-}
-
-/**
- * 「记忆详情」页的**取数**（2026-10-14）。
- *
- * ## 三个设计选择
- * ① **本函数只读**：只调只读方法 ✓（写入口仍是网关 + 审批闸 ✓，见文件头"单写者"）。
- * ② **分层列表四个方法并行**（`Promise.allSettled` ✓）：它们各自独立、失败互不影响 ⇒ 一个回空
- *    或抛错不该让整页 500 ✗（与 `p3-51` 那条"要如实说、不能美化成成功"同一纪律 ✓ —— 失败会
- *    进 `model.error` 或该层为空，**不静默吞掉** ✓）。
- *    ⚠ 为什么不用 `memory_api` 的 `searchMemory`：引擎那支**硬编码 limit=20**（实测 ✓）
- *    ⇒ 拿不到"该分区共几条" ⇒ 统计与列表都会失真 ✗。分层方法才是面板用的那支 ✓。
- * ③ 计数**在本地聚合**（与 IDE 侧 `_countByTier` 同款 ✓）—— 引擎的 `getStats` 实测"写入 4 条后
- *    仍回 0" ✗ ⇒ 不能拿它当"总数"（这条早先在 `getExtendedStats` 的 note 里已记 ✓）。
- */
-/**
- * 「会话」页要查的**分区数上限**（2026-10-21）。
- *
- * 为什么要有上限：会话页现在要**同时**显示工作区分区与"按 agent 区分"的所有分区
- * ⇒ 分区数 = agent 数（实测一个 profile 就有 7~20 个）⇒ 每个分区 2 次网关往返。
- * 不设上限 ⇒ 一个装了 200 个 agent 的库会打出 400 次请求 ⇒ 页面直接卡死 ✗。
- * ⇒ 取前 N 个 ＋ **如实标注**"已截断"（不静默丢数据 ✓）。
- */
-const SESSION_PARTITION_LIMIT = 24;
-
-/** 会话行的排序时间（`updatedAt` → `startedAt` → 0）；解析不了就当 0（排最后）✓。 */
-function sessionTimeOf(row) {
-	const t = Date.parse(String(row?.updatedAt ?? row?.startedAt ?? ''));
-	return Number.isFinite(t) ? t : 0;
-}
-
-/**
- * 「会话」页的取数（2026-10-21，用户拍板「记忆既可以按工作区隔离，也可以按 agent 区分，
- * 记忆的会话都应该显示出来」）。
- *
- * ## 病根（为什么之前页面永远是空的）
- * 之前这里只查 `agentIdOf(config)`（＝**工作区分区** `ws-*`/`wa-*`），而 dsh 侧的观测/会话
- * **实际落在纯 agent 分区**（`saros-claw` / `knowledge-base-expert` …）
- * ⇒ 真库实测：dev 与安装版两个 profile 的工作区 scope 都是 **0 条**，而 `mem:obs:*`
- * 有 3617 / 19703 条 ⇒ **数据在，只是查错了分区** ✗（截图里"暂无会话记录"就是这个）。
- *
- * ## 现在的口径
- * 读分区清单 = 主分区（工作区）＋ **所有有数据的 agent 分区**（`listAllAgentsWithData`）
- * ⇒ 合并展示，每条带 `partition`（来自哪个分区）⇒ 观察按**该会话自己的分区**去查
- * （用主分区查必然是空 ⇒ 点开什么都没有 ✗）。
- *
- * ⚠ 一个分区/辅助查询失败**不该**让整页 500（零脚本页崩了 = 用户什么都看不到 ✗）
- * ⇒ 逐分区 `allSettled` + 整体 try/catch（失败**如实说**，页面仍然渲染 ✓）。
- */
-async function loadSessionsView({ model, config, state, base, params, agentId }) {
-	const scope = readScopeOf(config, state, undefined);
-	// ⚠ 必须 catch：`listAllAgentsWithData` 在**旧网关/代理**上可能不存在（unknown provider method ✗）
-	let agentPartitions = [];
-	try {
-		agentPartitions = rowsOf(await providerCall(base, 'listAllAgentsWithData', []))
-			.map(x => String(x ?? '').trim()).filter(Boolean);
-	} catch { agentPartitions = []; }
-	const allPartitions = [...new Set([...scope.partitions, ...agentPartitions])];
-	const searched = allPartitions.slice(0, SESSION_PARTITION_LIMIT);
-	const per = await Promise.all(searched.map(async p => {
-		const [s, sum] = await Promise.allSettled([
-			providerCall(base, 'listSessions', [p]),
-			providerCall(base, 'listSummaries', [p]),
-		]);
-		return { p, sessions: rowsOf(s.value), summaries: rowsOf(sum.value) };
-	}));
-	const byTime = (a, b) => sessionTimeOf(b) - sessionTimeOf(a);
-	model.sessions = per.flatMap(x => x.sessions.map(row => ({ ...row, partition: x.p }))).sort(byTime);
-	model.summaries = per.flatMap(x => x.summaries.map(row => ({ ...row, partition: x.p }))).sort(byTime);
-	model.sessionPartitions = searched;
-	// ⚠ 截断必须**如实标注**（不静默丢分区 ⇒ 用户看到的会话数会与真实不符 ✗）
-	model.sessionPartitionsTruncated = allPartitions.length > searched.length;
-	model.sessionPartitionsTotal = allPartitions.length;
-	// ⚠⚠ **只对选中的那一个**会话取观察（零脚本下"展开"= 换 `?session=` ✓）
-	//   ⇒ 否则 N 个会话就是 N 次网关往返 ✗（IDE 侧是懒加载，天然只取一个 ✓）
-	const sid = params.get('session');
-	// ★ 2026-10-21：同名 session 可能出现在**多个分区** ⇒ 选中要**带分区**（`?partition=`），
-	//   否则会同时展开多条、且观察会取到别的分区的那条 ✗（没给分区时退回"第一个匹配" ✓）。
-	const spart = String(params.get('partition') ?? '');
-	const picked = model.sessions.find(s => String(s?.id ?? '') === sid
-			&& (spart === '' || String(s?.partition ?? '') === spart))
-		?? model.sessions.find(s => String(s?.id ?? '') === sid);
-	if (picked) {
-		// ⚠ 用**该会话自己的分区**查观察（会话可能来自 agent 分区 ⇒ 用主分区查必然空 ✗）
-		const p = String(picked.partition ?? agentId);
-		try { model.sessionDetail = { observations: rowsOf(await providerCall(base, 'observeList', [p, sid])), partition: p }; }
-		catch { model.sessionDetail = { observations: [], partition: p }; }
-	}
-}
-
-async function loadDetailModel({ config, params, state }) {
-	const base = gatewayUrlOf(config);
-	const agentId = agentIdOf(config);
-	const model = {
-		params, agentId, hasGateway: !!base, tool: params.get('tool') ?? '',
-		view: params.get('view') ?? 'memories',
-		items: [], total: 0, tierCounts: { working: 0, episodic: 0, semantic: 0, procedural: 0 },
-		typeCounts: {}, extStats: {}, agents: [],
-		// ★ 槽位页要的**固定槽位名单**由本文件注入（`detail.js` 不能 import 本文件 ⇒ 会成环 ✗；
-		//   而让它自己再抄一份就多了一个会漂移的真源 ✗ ⇒ 注入是唯一既单一真源又不引环的做法 ✓）
-		slotNames: SLOT_NAMES,
-		// ★ 2026-10-26：**自动沉淀计数**（「固化」页签直接展示）—— 含新增的 `turnSummaries`
-		//   （按回合摘要自动沉淀的次数）。不暴露的话用户在页面上看不出沉淀到底在不在跑 ✗
-		distillStats: state && state.distill && typeof state.distill === 'object' ? state.distill : {},
-	};
-	if (!base) { return model; }
-
-	const call = async method => {
-		try { return await providerCall(base, method, [agentId]); } catch { return null; }
-	};
-	const settled = await Promise.allSettled([
-		call('getExtendedStats'), call('listAllAgentsWithData'),
-	]);
-	const ext = settled[0].value;
-
-	// ★★ 2026-10-26：**跨分区取数**（与 IDE 侧 `memoryDetailEditorPane` 同口径）。
-	//   病根（真机 2026-10-26）：详情页只查**当前分区**（`ws-<workspaceId>`，真库里 0 条）
-	//   ⇒ 页签全空、用户看到"未显示内容" ✗✗ —— 而数据其实在**纯 agent id** 的分区里
-	//   （`saros-claw` / `default` / `knowledge-base-expert` …，IDE 侧早就是"工作区 + 所有有数据的 agent 分区"合并）。
-	//   ⇒ 这里按同一口径扇出：读分区 = 当前分区 + `listAllAgentsWithData` 给的全部 agent 分区 ✓
-	//   ⚠ 上限 8 个分区（模块级 `MAX_PARTITIONS`，归档恢复的写权限白名单共用它）：
-	//     每多一个分区多 4 次引擎调用，别把网关打爆 ✗
-	const partitions = [];
-	const pushPartition = a => { const v = String(a ?? ""); if (v && !partitions.includes(v)) { partitions.push(v); } };
-	pushPartition(agentId);
-	const agents = settled[1].value;
-	model.agents = Array.isArray(agents) ? agents.map(a => String(a?.agentId ?? a?.id ?? a)).filter(Boolean) : [];
-	for (const a of model.agents) { pushPartition(a); }
-	model.partitions = partitions.slice(0, MAX_PARTITIONS);
-	model.partitionsTruncated = partitions.length > MAX_PARTITIONS;
-
-	/** 在**指定分区**上调用（原来的 `call` 绑死了当前 agentId ⇒ 扇出必须按分区调 ✓）。 */
-	const callIn = async (aid, method) => {
-		try { return await providerCall(base, method, [aid]); } catch { return null; }
-	};
-
-	// 四层 × N 分区 ⇒ 一次性并发（每分区内部再并发，整体仍是一个 Promise.allSettled ✓）
-	const tierSettled = await Promise.allSettled(model.partitions.map(aid => Promise.all([
-		callIn(aid, 'getEpisodicMemories'), callIn(aid, 'getSemanticMemories'),
-		callIn(aid, 'proceduralList'), callIn(aid, 'coreMemoryList'),
-	])));
-	// ⚠ `rowsOf` 已提升到模块作用域（摘要版与详情页共用同一份形状归一 ✓ —— 别在这里再写一份 ✗）
-	const tiers = [];
-	for (let p = 0; p < model.partitions.length; p++) {
-		const r = tierSettled[p];
-		const rows = r && r.status === 'fulfilled' ? r.value : [];
-		for (const [tier, raw] of [['episodic', rows[0]], ['semantic', rows[1]], ['procedural', rows[2]], ['working', rows[3]]]) {
-			tiers.push([tier, rowsOf(raw), model.partitions[p]]);
-		}
-	}
-	model.extStats = ext && typeof ext === 'object' ? ext : {};
-
-	const seen = new Set();
-	model.items = [];
-	for (const [tier, rows, partition] of tiers) {
-		model.tierCounts[tier] = (model.tierCounts[tier] ?? 0) + rows.length;
-		for (const row of rows) {
-			if (!row || typeof row !== 'object') { continue; }
-			const id = String(row.id ?? '');
-			// ⚠ 去重键要带分区：不同分区可能有同名/同 id 的条目（各分区独立生成 id 的情况）
-			const key = partition + '|' + id;
-			if (!id || seen.has(key)) { continue; }
-			seen.add(key);
-			const item = toDetailItem(row, tier);
-			// ★ 标来源分区（UI 上只在"非当前分区"时才显示徽标 ✓，与 IDE 侧同口径）
-			item.partition = partition;
-			model.items.push(item);
-		}
-	}
-	model.total = model.items.length;
-	// 子类型计数：只对 episodic 那一层做（IDE 侧 `Episodic 子类型` 的口径 ✓）
-	for (const item of model.items) {
-		const key = String(item.type ?? '').toLowerCase();
-		if (key) { model.typeCounts[key] = (model.typeCounts[key] ?? 0) + 1; }
-	}
-
-	// 筛选（layer / type / q）—— 与 IDE 侧一样是**纯前端**（那边切换筛选不发任何请求 ✓）
-	const layer = params.get('layer') ?? 'all';
-	const type = params.get('type') ?? '';
-	const q = (params.get('q') ?? '').toLowerCase().trim();
-	if (layer !== 'all') { model.items = model.items.filter(i => i.tier === layer); }
-	if (type) { model.items = model.items.filter(i => String(i.type ?? '').toLowerCase() === type); }
-	if (q) { model.items = model.items.filter(i => i.content.toLowerCase().includes(q)); }
-	// ⚠ `total` 保持"筛选前"的总数（= 上面那行统计的数字 ✓）；筛选后的条数是 `filtered` ✓
-	model.filtered = model.items.length;
-	// ★ 2026-10-26：条数上限**可由请求带**（React 二级页 200 条；SSR 详情页仍默认 50 ⇒ 首屏快 ✓）
-	const limitRaw = Number(params.get('limit'));
-	const itemLimit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 500) : DETAIL_ITEMS_LIMIT;
-	model.itemLimit = itemLimit;
-	model.truncated = model.items.length > itemLimit;
-	model.items = model.items.slice(0, itemLimit);
-
-	// ── 按页签取数：**只取当前那页要的** ✓（不做"每次都把全部拉一遍" —— 那是给引擎添无谓负载 ✗）
-	// ⚠⚠ `getAuditLog` 这里**是页面直调**，而且**不能前置 agentId** ✗：
-	//   它的首参**不是** agentId（正因为这个，它被**刻意**排除在 `MEMORY_API_READONLY` 之外 ——
-	//   塞进 `memory_api` 会被前置成 `getAuditLog(agentId, {limit:200})` ⇒ 引擎参数错位 ✗）。
-	//   ⇒ 正确的调法就是 IDE 侧那句的形状：`getAuditLog({ limit: 200 })` ✓（页面 ≠ 给模型的工具 ✓）
-	if (model.view === 'slots') {
-		// ★ 跨分区：同名槽位**当前分区优先**（与 IDE 侧 `_fanout` 同口径 ✓）
-		const byName = new Map();
-		for (const aid of model.partitions) {
-			for (const row of rowsOf(await callIn(aid, 'getSlots'))) {
-				const name = String(row?.name ?? row?.slot ?? '');
-				if (!name) { continue; }
-				const prev = byName.get(name);
-				// 当前分区（partitions[0]）优先保留；其余分区只在没占位时补进去
-				if (!prev || (prev.partition !== agentId && aid === agentId)) {
-					byName.set(name, Object.assign({}, row, { partition: aid, sourcePartition: aid }));
-				}
-			}
-		}
-		model.slots = [...byName.values()];
-	}
-	if (model.view === 'archive') {
-		// ★ 2026-11-02：归档页签（被取代 / 被矛盾判定淘汰的旧版本，90 天内可恢复）。
-		//   跨分区口径同其它页签；每个分区各取最近 200 条，合并后按归档时间新→旧再截 200。
-		//   老网关没有 `listArchive` ⇒ 整页标 `unsupported`（如实说"网关版本不支持"，而不是显示成"归档为空"）。
-		const items = [];
-		let total = 0;
-		let failed = 0;
-		let unsupported = false;
-		for (const aid of model.partitions) {
-			try {
-				const out = await listArchive(base, aid, 200);
-				if (out && Array.isArray(out.items)) {
-					total += Number.isFinite(out.total) ? out.total : out.items.length;
-					for (const it of out.items) { items.push({ ...it, partition: aid }); }
-				}
-			} catch (error) {
-				if (/unknown provider method/i.test(String(error?.message ?? error))) { unsupported = true; } else { failed++; }
-			}
-		}
-		const at = it => { const t = Date.parse(it.archivedAt); return Number.isFinite(t) ? t : -Infinity; };
-		items.sort((a, b) => at(b) - at(a));
-		model.archive = { items: items.slice(0, 200), total, shown: Math.min(items.length, 200), failed, unsupported, ttlDays: 90 };
-	}
-	if (model.view === 'lessons') {
-		// ★ 跨分区（教训也是按分区存的 ⇒ 只查当前（空）分区 ⇒ 恒空 ✗）
-		const rows = [];
-		const seenLesson = new Set();
-		for (const aid of model.partitions) {
-			for (const row of rowsOf(await callIn(aid, 'getLessons'))) {
-				const id = String(row?.id ?? row?.content ?? '');
-				if (!id || seenLesson.has(id)) { continue; }
-				seenLesson.add(id);
-				rows.push(Object.assign({}, row, { partition: aid }));
-			}
-		}
-		model.lessons = rows;
-	}
-	if (model.view === 'audit') {
-		model.auditSummary = (await call('getAuditSummary')) ?? {};
-		try { model.auditLog = rowsOf(await providerCall(base, 'getAuditLog', [{ limit: 200 }])); } catch { model.auditLog = []; }
-		// ★ 2026-10-21：审计的**单一真源**是**落盘账本**（`<数据根>/memory-audit/audit.jsonl`，
-		//   由本插件写入）⇒ 引擎自带的 AuditLog 只是**进程内内存态**（重启即失、也没人调 record）
-		//   ⇒ 只读它 ⇒ 审计页**永远是 0**（真库 `mem:audit:*` 也是 0 条）✗✗。
-		//   ⇒ 这里读账本（页面直调，形状 = `{ limit }`）⇒ 页面与 IDE 侧看到**同一份**审计 ✓
-		try {
-			const ledger = rowsOf(await providerCall(base, 'getAuditLedger', [{ limit: 200 }]));
-			if (ledger.length) {
-				const seen = new Set((model.auditLog ?? []).map(r => String(r?.id ?? '')));
-				model.auditLog = [...ledger.filter(r => !seen.has(String(r?.id ?? ''))), ...(model.auditLog ?? [])];
-				model.auditSummary = {
-					...(model.auditSummary ?? {}),
-					totalAuditEntries: (Number(model.auditSummary?.totalAuditEntries) || 0) + ledger.length,
-				};
-			}
-		} catch { /* 账本读不到就只用内存审计 ✓ */ }
-	}
-	// ⚠⚠ 下面这三页用的方法**全部**首参都不是 agentId ✗ ⇒ 必须**页面直调**，逐个写清形状：
-	//   ⇒ 它们也正是**因此**被刻意排除在 `MEMORY_API_READONLY` 之外（塞进 `memory_api` 会被自动前置
-	//     agentId ⇒ 参数错位 ✗，见本文件 `MEMORY_API_READONLY` 上方那段注释 ✓）。
-	if (model.view === 'hooks') {
-		// `getHookStats()` —— **无参** ⇒ `[]` ✓
-		try { model.hookStats = (await providerCall(base, 'getHookStats', [])) ?? {}; } catch { model.hookStats = {}; }
-	}
-	if (model.view === 'commits') {
-		// `getCommitStats()` 无参 ✓；★ `getRecentCommits(50)` 的首参是 **limit**（不是 agentId ✗）
-		try { model.commitStats = (await providerCall(base, 'getCommitStats', [])) ?? {}; } catch { model.commitStats = {}; }
-		try { model.commits = rowsOf(await providerCall(base, 'getRecentCommits', [50])); } catch { model.commits = []; }
-	}
-	if (model.view === 'report') {
-		// ★ `generateReport(type, agentId)` —— 首参是 **type**（照 IDE 侧 1254 行的调用顺序 ✓）
-		//   零脚本下类型由 `?rtype=` 表达；没传就默认 `summary`（照 IDE 侧 1241 行"首屏自动出摘要" ✓）
-		const rtype = params.get('rtype') ?? 'summary';
-		try { model.report = await providerCall(base, 'generateReport', [rtype, agentId]); } catch { model.report = null; }
-	}
-	if (model.view === 'sessions') {
-		// ★ 2026-10-21：会话页现在**同时**显示工作区分区与 agent 分区的会话（口径见 loadSessionsView）。
-		//   整体包 try/catch：一个分区查询失败**不该**让整页 500（零脚本页崩了 = 用户什么都看不到 ✗）
-		//   ⇒ 失败**如实说**（写进 model，页面上会显示），页面仍然渲染 ✓。
-		try {
-			await loadSessionsView({ model, config, state, base, params, agentId });
-		} catch (err) {
-			console.error('[vssaros-memory] sessions view failed:', err instanceof Error ? (err.stack || err.message) : String(err));
-			model.sessionsError = String(err instanceof Error ? err.message : err);
-			model.sessions = [];
-			model.summaries = [];
-		}
-	}
-	if (model.view === 'consolidation') {
-		// 三个分层方法首参**都是** agentId ✓；⚠ `getConsolidationContext` 回的是**字符串**（不是数组 ✗
-		// ⇒ 别用 `rowsOf`，那会把它当数组处理 ✓）
-		try { model.consolidationContext = String((await providerCall(base, 'getConsolidationContext', [agentId])) ?? ''); }
-		catch { model.consolidationContext = ''; }
-		model.episodicItems = rowsOf(await call('getEpisodicMemories'));
-		model.semanticItems = rowsOf(await call('getSemanticMemories'));
-		model.proceduralItems = rowsOf(await call('getProceduralMemories'));
-	}
-	if (model.view === 'skills') {
-		// ⚠ IDE 侧那页还会**直读用户目录** `~/.vssaros/skills/*/.usage.json` 拿 usage 统计
-		//   （read_skill 调用 / 近30天活跃 / 已钉选 ✗）—— 本页**不读用户目录** ✓（只读口径 + 单写者；
-		//   数据只从网关来 ✓）；缺的那几项在页面上**如实标注** ✓（见 `detail.js` 的 `renderSkillsView`）
-		// ★ 跨分区：统计按各分区**加权**合并（不能把各分区平均再平均 ⇒ 会失真 ✗，与 IDE 侧同口径）
-		let totalSkills = 0, sumUsage = 0, writtenCount = 0, sumConf = 0, sumSteps = 0, parts = 0;
-		const skillRows = [];
-		const seenSkill = new Set();
-		for (const aid of model.partitions) {
-			const st = (await callIn(aid, 'getSkillStats')) ?? {};
-			const n = Number(st.totalSkills) || 0;
-			totalSkills += n;
-			sumUsage += Number(st.totalUsage) || 0;
-			writtenCount += Number(st.writtenCount) || 0;
-			sumConf += (Number(st.avgConfidence) || 0) * n;
-			sumSteps += (Number(st.avgSteps) || 0) * n;
-			if (n) { parts += 1; }
-			for (const row of rowsOf(await callIn(aid, 'listSkills'))) {
-				const id = String(row?.id ?? row?.title ?? '');
-				if (!id || seenSkill.has(id)) { continue; }
-				seenSkill.add(id);
-				skillRows.push(Object.assign({}, row, { partition: aid }));
-			}
-		}
-		model.skillStats = {
-			totalSkills,
-			avgConfidence: totalSkills ? sumConf / totalSkills : 0,
-			avgSteps: totalSkills ? sumSteps / totalSkills : 0,
-			totalUsage: sumUsage,
-			writtenCount,
-			partitions: parts,
-		};
-		model.skills = skillRows;
-	}
-	if (model.tool === 'diag') {
-		const diag = await call('diagnose');
-		model.diag = diag && typeof diag === 'object' ? { ...diag, ...(model.extStats ?? {}) } : { ...(model.extStats ?? {}) };
-	}
-	return model;
-}
-
-/** 一条引擎记忆 → 详情页卡片要的字段（`detail.js` 的 `renderCard` 口径 ✓）。 */
-function toDetailItem(row, tier) {
-	const meta = row.metadata && typeof row.metadata === 'object' ? row.metadata : {};
-	const content = typeof row.content === 'string' ? row.content : JSON.stringify(row.content ?? '');
-	const ts = row.timestamp ?? row.createdAt ?? meta.createdAt;
-	const date = ts ? new Date(ts) : null;
-	const valid = date && !Number.isNaN(date.getTime());
-	return {
-		id: String(row.id ?? ''),
-		type: String(row.type ?? tier),
-		tier,
-		title: content.slice(0, 80).replace(/\s+/g, ' '),
-		content,
-		timestamp: valid ? date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '',
-		strength: typeof meta.strength === 'number' ? meta.strength : undefined,
-		// ⚠ 排除 owner/userId/agentId（IDE 侧 1936 行同款 ✓）—— 它们对"这条记忆是什么"没信息量
-		meta: Object.entries(meta).filter(([k]) => !['owner', 'userId', 'agentId'].includes(k))
-			.slice(0, 12).map(([k, v]) => [k, String(v ?? '').slice(0, 80)]),
-	};
+  // COI 状态通知（2026-08-13 用户拍板重构）：**不再注入快照列表**——
+  // 状态变化改为向发起会话投递独立消息（启动=【COI 任务已发起】，终态=
+  // 【COI 任务完成】，由 coi/scheduler.js 在状态跳变时经 agents 服务
+  // inject/followup 投递）。快照段移除的原因：①与其他模块注入段混在
+  // 一起噪音大；②终态摘要截取无价值（日志长时落在中段）；③与完成唤醒
+  // 消息双通道重复提醒同一任务。需要看后台任务用 de_coi_status / GUI 任务页。
+  // 会话广播（2026-08-13 用户拍板）：**移出整体快照**——新消息/房间动态
+  // 改为独立消息投递（installBroadcast 内 send 后投递 + 首次会话补投未读
+  // 汇总），收件箱语义不变（de_broadcast read 处理）。DSH 快照按整体文本
+  // diff 注入，广播段高频变化会连带其他段重注入（噪声）。
+  // 记忆同步（2026-08-13 用户拍板）：**无 AI 侧入口**——命令组与快照状态
+  // 行均已删除。记忆同步完全由用户在 Web GUI（记忆同步 Tab）主动操作，
+  // AI 不参与执行，快照不再显示同步状态。
+  //
+  // 修复（issue #53，2026-09-14）：整段快照在离开插件前必须净化 `{{...}}`。
+  // 宿主（@deepseek-ai/dsh-system-prompt）的段渲染器把段正文里的 `{{name}}`
+  // 当模板变量解析，**未注册变量直接 throw**（宿主只注册 provider/model/cwd，
+  // memory:snapshot 段不注册任何变量）→ 整段渲染失败 = preStep 失败 = 该会话
+  // 每一步、每一轮都起不来，且**无法用 memory 工具自救**（工具调用需要回合，
+  // 而回合已经起不来），只能手改记忆文件。
+  //
+  // 记忆正文由模型/用户写入，天然可能包含 `{{xxx}}`（真实案例：记录
+  // 「x-opencode-session: {{session}}」这条事实）。此前净化只做在
+  // `prompt:injections` 轨（lib/prompts.js 的 renderInjectionSnapshot），
+  // 而本函数把会话标题/别名、memory/user 轨、项目 KEY 轨（全量与摘要两种
+  // 模式）的**原文**直接拼进同一段——这条注入路径没有任何净化，构成单点：
+  // 记忆里出现一个 `{{` 就等价于给所有注入该轨的会话埋雷。
+  //
+  // 用 expand:false 只降级不展开：记忆里的 `{{date}}` 是字面事实（不是待
+  // 展开的模板），展开会篡改内容；降级为 `{date}` 既保留语义又让宿主不再
+  // 解析。插件自身静态文案用的是单花括号（`{branch}`/`{title}`），不含
+  // `{{` 字面量，故整段净化零语义损失。
+  return sanitizeSnapshotBody(parts.join('\n\n'), { expand: false })
 }
 
 /**
- * 详情页的整页外壳。
- *
- * ⚠ 与 `renderPage` 的分工：本页的**正文与样式都来自 `lib/detail.js`** ✓（那边是纯函数、
- * 有独立探针 `p3-81` ✓），这里只负责"套上 dsh 的页面外壳 + 取数" ✓。
+ * Resolve one reveal target to an openable path. Every target is a fixed
+ * path derived from the memory dir, the skill dir, or the dsh home — never
+ * an arbitrary path. Directories open as-is; a missing file falls back to
+ * its containing directory (e.g. AGENTS.md before DSH created it, or
+ * today's daily log before the first write) instead of failing with an
+ * unknown target.
+ * @param {object} config - resolved plugin config.
+ * @param {string} target - the reveal target name.
+ * @returns {string | undefined} the path to open, or undefined for an
+ *   unknown target.
  */
-function renderDetailShell(model) {
-	const { title, extraCss, body } = renderDetailPage(model);
-	return renderShell({
-		kind: 'memory-detail',
-		title: '记忆详情',
-		subtitle: `复刻 IDE 的 MemoryDetailEditorPane · 只读 · 零脚本 · v${PKG_VERSION}`,
-		extraCss,
-		bodyHtml: body,
-	});
+export function resolveRevealTarget(config, target) {
+  const today = todayStamp()
+  const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
+  const table = {
+    memoryDir: config.memoryDir,
+    memoryFile: join(config.memoryDir, 'MEMORY.md'),
+    userFile: join(config.memoryDir, 'USER.md'),
+    archiveMemoryFile: join(config.memoryDir, 'MEMORY-archive.md'),
+    archiveUserFile: join(config.memoryDir, 'USER-archive.md'),
+    dailyDir: join(config.memoryDir, 'daily'),
+    dailyFile: join(config.memoryDir, 'daily', `${today}.md`),
+    projectsDir: join(config.memoryDir, 'projects'),
+    skillDir: config.skillDir,
+    agentsFile: join(dshHome, 'AGENTS.md'),
+  }
+  if (typeof target !== 'string' || !(target in table)) return undefined
+  const path = table[target]
+  // Directories open as-is; the plugin's own storage directories are
+  // created on demand so the reveal buttons work on a fresh install before
+  // any memory was ever written (MEMORY.md/USER.md/daily/projects do not
+  // exist yet, and neither does the memory dir itself).
+  if (target === 'memoryDir' || target === 'dailyDir' || target === 'projectsDir') {
+    return existsSync(path) ? path : ensureDir(path)
+  }
+  if (target === 'agentsFile') {
+    return existsSync(path) ? path : dshHome
+  }
+  if (target === 'skillDir') {
+    return existsSync(path) ? path : dirname(config.skillDir)
+  }
+  // Files: open the containing directory when the file does not exist yet
+  // (creating it on demand — the memory dir is plugin-owned).
+  const dir = table[target === 'dailyFile' ? 'dailyDir' : 'memoryDir']
+  return existsSync(path) ? path : ensureDir(dir)
 }
 
 /**
- * 详情页的两个导出动作（`?tool=export-json` / `export-md`）。
- *
- * ⚠ 为什么放**服务端**、而不是像 IDE 侧那样在前端 `Blob` 下载 ✗：本页是零脚本口径（`pageShell.js` ✓），
- *   前端做不了"生成文件并触发下载"⇒ 改成"服务端回一个带 `content-disposition` 的响应" ✓，
- *   由浏览器/宿主按附件处理 ✓ —— **零脚本** ✓。数据走 `exportMemories`（白名单里的**只读**导出 ✓）。
+ * Convert a Linux/WSL path to a Windows path for `explorer.exe`, using
+ * `wslpath` (bundled with WSL itself). Falls back to the original path when
+ * wslpath is missing or fails — e.g. on pure Linux, where the explorer.exe
+ * attempt will fail anyway and the command chain moves on.
+ * @param {string} path - the Linux path to convert.
+ * @returns {string} the Windows path, or the input when not convertible.
  */
-async function handleDetailExport(res, { config, tool }) {
-	try {
-		const base = gatewayUrlOf(config);
-		if (!base) { throw new Error('记忆网关未配置（VSSAROS_MEMORY_GATEWAY_URL）'); }
-		const agentId = agentIdOf(config);
-		// ⚡ 技能导出（IDE 侧技能页的 `⬇ 导出 JSON` ✓）：同一个动作类型，只是取数换成 `listSkills` ✓
-		if (tool === 'export-skills') {
-			const skills = await providerCall(base, 'listSkills', [agentId]);
-			res.writeHead(200, {
-				'content-type': 'application/json; charset=utf-8',
-				'content-disposition': 'attachment; filename="vssaros-skills.json"',
-				'cache-control': 'no-store',
-			});
-			res.end(JSON.stringify({ exportedAt: new Date().toISOString(), agentId, skills }, null, 2));
-			return;
-		}
-		const data = await providerCall(base, 'exportMemories', [agentId]);
-		if (tool === 'export-json') {
-			res.writeHead(200, {
-				'content-type': 'application/json; charset=utf-8',
-				'content-disposition': 'attachment; filename="vssaros-memory.json"',
-				'cache-control': 'no-store',
-			});
-			res.end(JSON.stringify(data, null, 2));
-			return;
-		}
-		res.writeHead(200, {
-			'content-type': 'text/markdown; charset=utf-8',
-			'content-disposition': 'attachment; filename="vssaros-memory.md"',
-			'cache-control': 'no-store',
-		});
-		res.end(memoriesToMarkdown(data, agentId));
-	} catch (e) {
-		res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
-		res.end('导出失败：' + String(e?.message ?? e));
-	}
+export function toWindowsPath(path) {
+  const result = spawnSync('wslpath', ['-w', path], { windowsHide: true, encoding: 'utf8' })
+  const converted = result.error ? '' : String(result.stdout ?? '').trim()
+  return converted || path
 }
 
-/** 导出载荷 → Markdown（字段按 `exportMemories` 的返回口径取，缺字段就跳过 ✓）。 */
-function memoriesToMarkdown(data, agentId) {
-	const rows = Array.isArray(data) ? data : (Array.isArray(data?.memories) ? data.memories : []);
-	const head = ['# 记忆导出', '', '- 分区：' + agentId, '- 条数：' + rows.length,
-		'- 导出时间：' + new Date().toISOString(), ''];
-	const body = rows.map((row, i) => {
-		const meta = row?.metadata && typeof row.metadata === 'object' ? row.metadata : {};
-		const lines = ['## ' + (i + 1) + '. ' + String(row?.type ?? 'memory'), '',
-			'- id: ' + String(row?.id ?? '')];
-		if (meta.strength !== undefined) { lines.push('- strength: ' + String(meta.strength)); }
-		lines.push('', String(row?.content ?? ''), '');
-		return lines.join('\n');
-	});
-	return head.concat(body).join('\n');
+/** Create a directory (recursively) and return its path. */
+function ensureDir(path) {
+  mkdirSync(path, { recursive: true })
+  return path
+}
+
+/** Render the memory tool result as model/UI text. */
+function renderMemoryResult(value) {
+  const lines = [value.message ?? '']
+  if (Array.isArray(value.entries) && value.entries.length > 0) {
+    lines.push(mt('render.currentEntries', { count: value.entries.length }))
+    value.entries.forEach((entry, index) => lines.push(`${index + 1}. ${entry}`))
+  }
+  if (Array.isArray(value.matches) && value.matches.length > 0) {
+    lines.push(mt('render.matches'))
+    value.matches.forEach((entry, index) => lines.push(`${index + 1}. ${entry}`))
+  }
+  // entries 多轨批量写：逐轨渲染结果，模型一眼看清哪轨成功/失败
+  if (Array.isArray(value.multi) && value.multi.length > 0) {
+    lines.push(mt('render.batchResults'))
+    value.multi.forEach((m) => lines.push(`- ${m.target}: ${m.message}`))
+  }
+  return lines.join('\n')
 }
 
 /**
- * 标题栏（照 `memoryLibraryView.ts:88-99` 的 `kb-header`：标题 + spacer + ⟳ 刷新）—— **两个表面共用** ✓。
- *
- * ⚠ 两处换算（与 `PAGE_CSS` 顶部注释同源）：① 图标用 emoji（本页没有 codicon 图标字体，真源那两个
- *   `span.codicon.*` 在这里会渲染成空白 ✗）；② 刷新从 IDE 的 `onclick` 换成 `<a href="./">`
- *   （`./` 正是页路由本身 ✓ —— 原先进化成 `./section` 那个已删的片段路由时它是个 404 的死按钮 ✗）。
- * ★ 2026-10-15（用户拍板"仪表盘卡 + **按钮置顶**"）：只读工作台唯一的按钮就是"刷新" ⇒
- *   从"只有图标的角落链接"改成**带字的显眼主按钮** ✓（与 codebase sideview 的置顶主入口同一种视觉重量 ✓）。
+ * Strip the full entry list and store-internal fields from a write result:
+ * add/replace/remove return the whole track (and `removed` 原文) for internal
+ * bookkeeping, but the model only needs the outcome (list is the read path
+ * that returns entries). `removed` 不在 output schema 内（additionalProperties
+ * :false 下多字段会被模型 API 拒），必须一并剥除。
+ * @param {object} result - the store result.
+ * @returns {object} the same result without `entries` / `removed`.
  */
-function headerHtmlOf() {
-	// ★ 2026-10-15：`.kb-hbtn` 是**图标按钮**（26×26 ✓ 塞得进 35px 的标题行 ✓）—— codebase 完整版的
-	//   刷新就是这个形状（`vssaros-codebase/lib/index.js:697` ✓）。**不要**再加填充色/加大内距：
-	//   上一版那个 `.kb-hbtn-primary` 在 35px 行里必然溢出（用户报"样式错误"的真身 ✓）。
-	//   ⚠ 为什么 href 直接写 `./` 就够、不需要带上当前表面：带 `surface` 的两个表面（侧栏 / 编辑区）都在
-	//     路由里**提前 return** 了 ⇒ 只有"无参数"才会渲染本页（要么是纯浏览器，要么是详情页「← 记忆库」切回来 ✓），
-	//     这时 `./` 正是它自己 ✓（不写一个永远走不到的分支 ✓）。
-	return '<div class="kb-header"><span class="kb-title"><span>🗃</span><span>记忆库</span></span><span class="kb-spacer"></span><a class="kb-hbtn" href="./" title="刷新记忆库" aria-label="刷新记忆库">⟳</a></div>';
+function outcomeOnly(result) {
+  if (result && typeof result === 'object') {
+    const { entries, removed, matches, ...rest } = result
+    // matches（replace/remove 匹配不唯一的展示）也剥身份证（审查 P1-5）
+    if (Array.isArray(matches)) rest.matches = matches.map((entry) => stripEntrySummary(stripEntryId(entry)))
+    return rest
+  }
+  return result
 }
 
 /**
- * 工具行（说明 + `#vssaros-memory-probe`）—— **两个表面共用** ✓。
- *
- * ⚠⚠ 版本号**必须放在这里**而不是 `subtitle`：`renderShell` 的取法是 `${headerHtml || '<div class="dsh-header">…'}`
- *   ⇒ 有 `headerHtml` 时 `subtitle` **根本不渲染** ✗（上一版把版本号加在 subtitle 上 ⇒ 用户永远看不到 ⇒
- *   我拿它判断"页面是不是旧的"，白折腾三轮 ✓）。
- * ⚠ 探针**两个表面都要有**：两边的脚本都会往里写状态（"已请求在编辑区打开"这类 ✓）——
- *   少一个就等于"点了没反应时现场什么都没有" ✗（这正是这一轮最初的病根）。
+ * Build the `memory` tool definition.
+ * @param {object} ctx - the plugin context (for optional approval).
+ * @param {object} config - resolved config.
+ * @param {MemoryStore} store - the memory store.
+ * @param {import('./store.js').SuggestionQueue} queue - the suggestion queue
+ *   (key-track writes go through it for user confirmation).
+ * @param {() => object} getRuntime - runtime config getter.
+ * @param {ArchiveStore} archive - the archive store (archive action 用：
+ *   主轨条目移动到对应归档文件）。
+ * @param {{gapOf?: (agent?: object) => number, noteWrite?: (agent?: object) => void}|null} [writeGap]
+ *   写入看门狗计数器（可选，兼容降级）：daily/project 写入成功后调
+ *   noteWrite 重置该会话的连续未写计数（见 review.js writeGapCounter）。
+ * @returns {object} a ToolDefinition-shaped object.
  */
-function toolbarHtmlOf() {
-	return '<div class="dsh-toolbar"><span class="dsh-diag" style="padding:0;font-size:11px">只读快照 · 写入走 <code>memory_remember</code> 工具</span>'
-		+ `<span id="vssaros-memory-probe" class="dsh-diag" style="padding:0 0 0 8px;font-size:11px">· v${PKG_VERSION}</span></div>`;
+export function memoryTool(ctx, config, store, queue, getRuntime, archive, writeGap = null) {
+  /**
+   * 程序拼接【反馈】行（用户情绪反馈记录，2026-08-10 上线）。
+   * sentiment 必填（positive/negative）；category/quote/note 可缺省
+   * （缺省段不输出，category 缺省标"未分类"）。所有字段清洗
+   * |、换行、§、引号（防破坏 § 分隔的 MD 条目格式）；quote 强制截断
+   * ≤20 字（用户原话摘录，可溯源证据）。返回 '' 表示不生成行。
+   * @param {object|null} feedback - 工具的 feedback 参数（或 entries 项内的）。
+   * @returns {string} 【反馈】行文本，或 ''。
+   */
+  function buildFeedbackLine(feedback) {
+    if (!feedback || typeof feedback !== 'object') return ''
+    const sent = feedback.sentiment === 'positive' ? mt('feedback.positive') : feedback.sentiment === 'negative' ? mt('feedback.negative') : null
+    if (sent === null) return ''
+    const clean = (s) => String(s ?? '').replace(/[|\n\r§"]/g, '').trim()
+    const cat = clean(feedback.category) || mt('feedback.uncategorized')
+    const quote = clean(feedback.quote).slice(0, 20)
+    const note = clean(feedback.note)
+    const tag = feedback.manual === true ? mt('feedback.tagManual') : mt('feedback.tag')
+    const parts = [`${mt('feedback.sentiment')}:${sent}`, `${mt('feedback.category')}:${cat}`]
+    if (quote) parts.push(`${mt('feedback.quote')}:"${quote}"`)
+    if (note) parts.push(`${mt('feedback.note')}:${note}`)
+    return `${tag}${parts.join(' | ')}`
+  }
+
+  /**
+   * 单轨 add 的公共实现（entries 批量与单轨 add 共用）：
+   * - feedback 行由程序拼接后附加到条目末尾（仅 daily/project 轨生效；
+   *   key 轨忽略 feedback，走建议队列；memory/user 也不生成行）；
+   * - key 轨 add 进待确认队列（用户确认后写入并注入），不直接落盘；
+   * - 结果统一 outcomeOnly（剥 entries/removed，严格对齐 output schema）。
+   * @param {string} target - 记忆轨。
+   * @param {string} content - 条目内容。
+   * @param {object|null} feedback - feedback 参数（可为空）。
+   * @param {object} exec - 工具执行上下文（agent 等）。
+   * @returns {Promise<object>} 工具友好结果 {ok, message, target, ...}。
+   */
+  async function addOne(target, content, feedback, exec, summary) {
+    const fbLine = target === 'daily' || target === 'project' ? buildFeedbackLine(feedback) : ''
+    let finalContent = String(content ?? '').trim()
+    if (fbLine !== '') finalContent = finalContent === '' ? fbLine : `${finalContent}\n${fbLine}`
+    if (finalContent === '') return { ok: false, message: mt('msg.emptyContent'), target }
+    // 渐进式披露：key 轨支持 summary 参数，拼入 [summary:...] 标签。
+    // 清洗（审查修复）：换行会让标签跨行、']' 会让解析正则 [^\]]* 提前
+    // 截断（剩余文字漏进正文、stripEntrySummary 失配）——都是 LLM 自由
+    // 文本参数常见的字符，必须先去掉再截断。
+    if (target === 'key' && summary) {
+      const sanitized = String(summary).replace(/[\n\r\t\]]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120)
+      if (sanitized !== '') {
+        const summaryTag = `[summary:${sanitized}]`
+        finalContent = `${summaryTag}\n${finalContent}`
+      }
+    }
+    if (target === 'key') {
+      const outcome = enqueueSuggestion(queue, 'key', finalContent, mt('msg.keySuggestReason'), exec?.agent)
+      if (outcome.ok) {
+        outcome.message = mt('msg.keySuggestionQueued', { queued: outcome.queued })
+      }
+      // queued 不在输出 schema 内（additionalProperties:false），剥离
+      const { queued: _queued, ...rest } = outcome
+      return outcomeOnly(rest)
+    }
+    const addResult = store.add(target, finalContent, exec.agent)
+    // 写入看门狗：daily/project 写入成功即重置该会话的连续未写计数
+    // （memory/user/key 不算——看门狗盯的是每轮进展日志的欠账；key 走
+    // 确认队列、memory/user 是慢变轨，都不承载"本轮做了什么"）。
+    if (addResult.ok && (target === 'daily' || target === 'project')) {
+      writeGap?.noteWrite?.(exec?.agent)
+    }
+    return outcomeOnly(addResult)
+  }
+
+  return {
+    name: config.toolName,
+    get description() { return mt('memory.desc') },
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['add', 'replace', 'remove', 'archive', 'list', 'expand'],
+          get description() { return mt('param.action') },
+        },
+        target: {
+          type: 'string',
+          enum: ['memory', 'user', 'project', 'key', 'daily'],
+          get description() { return mt('param.target') },
+        },
+        content: {
+          type: 'string',
+          get description() { return mt('param.content') },
+        },
+        entries: {
+          type: 'array',
+          get description() { return mt('param.entries') },
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              target: {
+                type: 'string',
+                enum: ['daily', 'project'],
+                get description() { return mt('param.entriesTarget') },
+              },
+              content: {
+                type: 'string',
+                get description() { return mt('param.entriesContent') },
+              },
+              feedback: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  sentiment: {
+                    type: 'string',
+                    enum: ['positive', 'negative'],
+                    get description() { return mt('param.sentiment') },
+                  },
+                  category: {
+                    type: 'string',
+                    get description() { return mt('param.category') },
+                  },
+                  quote: {
+                    type: 'string',
+                    get description() { return mt('param.quote') },
+                  },
+                  note: {
+                    type: 'string',
+                    get description() { return mt('param.note') },
+                  },
+                  manual: {
+                    type: 'boolean',
+                    get description() { return mt('param.manual') },
+                  },
+                },
+                required: ['sentiment'],
+                get description() { return mt('feedback.tag') },
+              },
+            },
+            required: ['target', 'content'],
+          },
+        },
+        feedback: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            sentiment: {
+              type: 'string',
+              enum: ['positive', 'negative'],
+              get description() { return mt('param.sentiment') },
+            },
+            category: {
+              type: 'string',
+              get description() { return mt('param.category') },
+            },
+            quote: {
+              type: 'string',
+              get description() { return mt('param.quote') },
+            },
+            note: {
+              type: 'string',
+              get description() { return mt('param.note') },
+            },
+            manual: {
+              type: 'boolean',
+              get description() { return mt('param.manual') },
+            },
+          },
+          required: ['sentiment'],
+          get description() { return mt('param.feedback') },
+        },
+        match: {
+          type: 'string',
+          get description() { return mt('param.match') },
+        },
+        archived: {
+          type: 'boolean',
+          get description() { return mt('param.archived') },
+        },
+        branches: {
+          type: 'string',
+          get description() { return mt('param.branches') },
+        },
+        branch: {
+          type: 'string',
+          get description() { return mt('param.branch') },
+        },
+        filter: {
+          type: 'string',
+          get description() { return mt('param.filter') },
+        },
+        since: {
+          type: 'string',
+          get description() { return mt('param.since') },
+        },
+        until: {
+          type: 'string',
+          get description() { return mt('param.until') },
+        },
+        limit: {
+          type: 'integer',
+          get description() { return mt('param.limit') },
+        },
+        recent: {
+          type: 'boolean',
+          get description() { return mt('param.recent') },
+        },
+        id: {
+          type: 'string',
+          get description() { return mt('param.id') },
+        },
+        summary: {
+          type: 'string',
+          get description() { return mt('param.summary') },
+        },
+      },
+      required: ['action', 'target'],
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean' },
+          message: { type: 'string' },
+          target: { type: 'string' },
+          entries: { type: 'array', items: { type: 'string' } },
+          matches: { type: 'array', items: { type: 'string' } },
+          chars: { type: 'integer' },
+          backup: { type: 'string' },
+          // list 元数据：该轨总条目数与最早/最新日期（指导模型合理设置查询范围）
+          total: { type: 'integer' },
+          earliest: { type: 'string' },
+          latest: { type: 'string' },
+          // entries 多轨批量写的结果数组（每轨 {target, ok, message}）
+          multi: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                target: { type: 'string' },
+                ok: { type: 'boolean' },
+                message: { type: 'string' },
+              },
+              required: ['target', 'ok', 'message'],
+            },
+          },
+        },
+        required: ['ok', 'message'],
+      },
+      render: (_args, value) => [{ type: 'text', text: renderMemoryResult(value) }],
+    },
+    async execute(args, exec) {
+      const target = args.target
+      const action = args.action
+      const origin = exec?.agent?.session?.header?.origin
+      // Layered gate for subagent-origin writes: global tracks (memory/user,
+      // injected every session) are the high-risk surface — refused in
+      // suggest mode, approval-gated in auto mode. The project-scoped tracks
+      // (project/key, keyed to one cwd) and daily (never injected) are safe
+      // for automatic writes. The main session is never gated here (the review
+      // prompt disciplines its global writes instead).
+      if (origin === 'subagent' && (target === 'memory' || target === 'user')) {
+        if (getRuntime().reviewMode !== 'auto') {
+          return {
+            ok: false,
+            message: mt('msg.subagentGlobalDenied', { suggestTool: getRuntime().suggestToolName }),
+            target,
+          }
+        }
+        const approval = ctx.get('approval')
+        if (!approval) {
+          return { ok: false, message: mt('msg.approvalUnavailable'), target }
+        }
+        const outcome = await approval.request({
+          agent: exec.agent,
+          toolName: config.toolName,
+          callId: exec.callId,
+          reason: '记忆审查建议写入长期记忆',
+          signal: exec.signal,
+        })
+        if (outcome !== 'allowed-once') {
+          return { ok: false, message: mt('msg.notApproved', { outcome }), target }
+        }
+      }
+      // target 兜底校验：required 已放宽为仅 ['action']（entries 批量模式
+      // 不需要顶层 target），其他操作缺 target 时给出明确错误而非底层报错。
+      const isEntriesAdd = action === 'add' && Array.isArray(args.entries) && args.entries.length > 0
+      if (!target && !isEntriesAdd) {
+        return { ok: false, message: mt('msg.missingTarget') }
+      }
+      let result
+      try {
+        switch (action) {
+          case 'list': {
+            // archived=true：查归档文件（MEMORY-archive.md / USER-archive.md /
+            // 项目 KEY-archive.md）——归档内容不注入、主轨 list 看不到，
+            // 需要时可在这里检索（移回主记忆走记忆 Tab 或人工转正）。
+            if (args.archived === true) {
+              if (target !== 'memory' && target !== 'user' && target !== 'key') {
+                result = { ok: false, message: mt('msg.archivedQueryOnly'), target }
+                break
+              }
+              const cwd = exec?.agent?.session?.header?.cwd
+              if (target === 'key' && !cwd) {
+                result = { ok: false, message: mt('msg.keyArchiveNeedsCwd'), target }
+                break
+              }
+              let entries = archive.entriesOf(target, cwd)
+              // 轻量过滤：filter 子串（大小写不敏感）、since/until 按时间戳
+              // 前缀比较、recent 倒序、limit 截断——与主轨 list 语义对齐
+              const q = String(args.filter ?? '').trim().toLowerCase()
+              if (q) entries = entries.filter((e) => e.toLowerCase().includes(q))
+              const stamp = (e) => { const m = /^\[(\d{4}-\d{2}-\d{2})\]/.exec(e); return m ? m[1] : null }
+              if (args.since !== undefined) {
+                const s = String(args.since)
+                entries = entries.filter((e) => { const d = stamp(e); return d !== null && d >= s })
+              }
+              if (args.until !== undefined) {
+                const u = String(args.until)
+                entries = entries.filter((e) => { const d = stamp(e); return d !== null && d <= u })
+              }
+              if (args.recent === true) entries = [...entries].reverse()
+              if (args.limit !== undefined && Number.isInteger(args.limit) && args.limit > 0) {
+                entries = entries.slice(0, args.limit)
+              }
+              result = {
+                ok: true,
+                message: mt('msg.archiveList', { target, count: entries.length }),
+                target,
+                entries: entries.map((entry) => stripEntrySummary(stripEntryId(entry))), // 展示剥离身份证+摘要标记（§4.7）
+                chars: entries.map((entry) => stripEntrySummary(stripEntryId(entry))).join('\n').length,
+              }
+              break
+            }
+            const stats = {}
+            // ── 大文件轨查询保护（2026-08-10）──
+            // project/daily 是追加增长型日志（一年可达几千条），模型无参数
+            // list 会拉回全量 → 上下文 token 爆炸。未显式传 limit/recent 时
+            // 默认"最近 50 条倒序"，并返回元数据（total/earliest/latest）让
+            // 模型判断查询范围（日志就是给 AI 查的，信息越清楚查得越准）。
+            // 显式传 limit/recent 时尊重显式值；memory/user/key 轨不设保护。
+            const isLog = target === 'project' || target === 'daily'
+            const protectedView = isLog
+              && args.limit === undefined
+              && args.recent === undefined
+              && args.since === undefined
+              && args.until === undefined
+            const queryOpts = {
+              filter: args.filter,
+              since: args.since,
+              until: args.until,
+              limit: protectedView ? 50 : args.limit,
+              recent: protectedView ? true : args.recent,
+            }
+            let entries = store.query(target, exec.agent, queryOpts, stats)
+            // 元数据：该轨文件的总条目数与最早/最新日期（用于指导查询范围）
+            const allEntries = store.entriesOf(target, exec.agent)
+            const dates = []
+            for (const entry of allEntries) {
+              const d = extractEntryDate(entry)
+              if (d !== null) dates.push(d)
+            }
+            const total = allEntries.length
+            const earliest = dates.length > 0 ? dates.reduce((a, b) => (a < b ? a : b)) : ''
+            const latest = dates.length > 0 ? dates.reduce((a, b) => (a > b ? a : b)) : ''
+            // key 轨的 branch 过滤：只看该分支可见的条目（无标记=全部 + 标记含该分支）
+            if (target === 'key' && args.branch !== undefined && String(args.branch).trim() !== '') {
+              const b = String(args.branch).trim()
+              entries = entries.filter((entry) => {
+                const scope = parseEntryBranches(entry)
+                return scope === null || scope.includes(b)
+              })
+            }
+            let message = `${target}：${entries.length} 条匹配`
+            if (protectedView) {
+              // 默认保护视图：告知库规模与时间跨度，引导模型合理加条件查询
+              message += `（该轨共 ${total} 条，时间跨度 ${earliest || '?'} ~ ${latest || '?'}，默认只返回最近 50 条——查询更早记录请加 since/until（如 since=${earliest || 'YYYY-MM-DD'}）或增大 limit）`
+            } else if (entries.length === 0 && (args.filter !== undefined || args.since !== undefined || args.until !== undefined)) {
+              // 查不到：提醒模型读全文，不要凭猜测下结论
+              message += '（未找到匹配条目——可去掉过滤条件重新 list 读取全文核对）'
+            } else if (stats.undated > 0 && (args.since !== undefined || args.until !== undefined)) {
+              // 日期格式不兼容：提醒模型这些条目未参与日期过滤
+              message += `（另有 ${stats.undated} 条日期无法解析的条目未参与日期过滤——可去掉 since/until 重新 list 读取全文核对）`
+            }
+            result = {
+              ok: true,
+              message,
+              target,
+              // 展示剥离：身份证 [id:…] 是内部合并机制，模型可见输出一律剥掉
+              // （施工图 §4.7；内部匹配用原文，不受影响）。
+              entries: entries.map((entry) => stripEntrySummary(stripEntryId(entry))),
+              chars: entries.map((entry) => stripEntrySummary(stripEntryId(entry))).join('\n').length,
+              total,
+              earliest,
+              latest,
+            }
+            break
+          }
+          case 'add': {
+            // ── entries 多轨批量（每轮收尾合并写 daily+project）──
+            // 仅支持 daily/project 两轨（schema enum 已限；此处程序再兜底，
+            // 防绕过 memory/user 的 subagent 门禁与 key 的确认队列）。
+            // 逐项独立执行、独立成败，汇总到 multi 返回。
+            if (Array.isArray(args.entries) && args.entries.length > 0) {
+              const multi = []
+              for (const item of args.entries) {
+                const t = item?.target
+                const c = String(item?.content ?? '').trim()
+                if (t !== 'daily' && t !== 'project') {
+                  multi.push({ target: String(t ?? '?'), ok: false, message: mt('msg.batchUnsupportedTrack') })
+                  continue
+                }
+                if (c === '') {
+                  multi.push({ target: t, ok: false, message: mt('msg.emptyContent') })
+                  continue
+                }
+                // 单轨容错（issue #18 建议第 3 条）：任何一轨写入抛异常
+                // （如 Windows 上锁文件删除被占用、记忆目录无法创建等）
+                // 只记为该轨失败，不中断循环、不丢弃其余轨道。
+                let r
+                try {
+                  r = await addOne(t, c, item?.feedback, exec)
+                } catch (error) {
+                  r = { ok: false, message: mt('msg.writeError', { detail: error?.message ?? String(error) }) }
+                }
+                multi.push({ target: t, ok: r.ok, message: r.message })
+              }
+              const allOk = multi.every((m) => m.ok)
+              result = {
+                ok: allOk,
+                message: mt('msg.batchSummary', { count: multi.length }) + multi.map((m) => `${m.target}=${m.ok ? mt('msg.ok') : mt('msg.failed')}`).join(' '),
+                multi,
+              }
+              break
+            }
+            // ── 单轨 add（原逻辑 + feedback 参数）──
+            let content = String(args.content ?? '').trim()
+            let branchWarning = ''
+            // key 轨的分支范围：branches=main,dev → 条目带 [branch:main,dev] 标记；
+            // 缺省/空 = 全部（无标记）。对不存在的分支只警告、照常写入（分支以后可能创建）。
+            if (target === 'key' && args.branches !== undefined && String(args.branches).trim() !== '') {
+              const list = String(args.branches).split(',').map((b) => b.trim()).filter((b) => b.length > 0)
+              if (list.length > 0) {
+                content = `[branch:${list.join(',')}] ${content}`
+                const known = gitBranchList(exec?.agent?.session?.header?.cwd)
+                if (known.length > 0) {
+                  const unknown = list.filter((b) => !known.includes(b))
+                  if (unknown.length > 0) {
+                    branchWarning = mt('msg.branchWarningUnknown', { branches: unknown.join(', ') })
+                  }
+                }
+              }
+            }
+            const addOneResult = await addOne(target, content, args.feedback, exec, args.summary)
+            if (addOneResult.ok && branchWarning !== '') addOneResult.message += branchWarning
+            result = addOneResult
+            break
+          }
+          case 'replace':
+            result = outcomeOnly(store.replace(target, args.match, args.content, exec.agent))
+            break
+          case 'remove':
+            result = outcomeOnly(store.remove(target, args.match, exec.agent))
+            break
+          case 'archive': {
+            // 归档：主轨条目 → 对应归档文件（仅 memory/user/key 三轨）。
+            // 与记忆 Tab「归档」按钮同一语义——按唯一子串片段从主轨移除
+            // 整条，原文追加进 MEMORY-archive.md / USER-archive.md /
+            // projects/<项目>/KEY-archive.md（key 需会话工作目录）。
+            // 可逆：记忆 Tab 归档页「移回主记忆」可转正。
+            // 顺序：先归档、后删除——先用 peek 预览命中原文并写入归档
+            // 文件，归档写入成功后再从主轨删除；归档失败时主轨条目原样
+            // 保留（绝不丢数据）。删除失败（并发下 match 已变化）时归档
+            // 里会多出一条可手动清理的条目，但主轨数据仍在、可恢复——
+            // 权衡取「宁可重复、不可丢失」。
+            if (target !== 'memory' && target !== 'user' && target !== 'key') {
+              result = { ok: false, message: mt('msg.archiveTracksOnly'), target }
+              break
+            }
+            const match = String(args.match ?? '').trim()
+            if (!match) {
+              result = { ok: false, message: mt('msg.archiveEmptyMatch'), target }
+              break
+            }
+            const cwd = exec?.agent?.session?.header?.cwd
+            if (target === 'key' && !cwd) {
+              result = { ok: false, message: mt('msg.archiveKeyNeedsCwd'), target }
+              break
+            }
+            // 第一步：预览命中原文（只读，不写盘）
+            const preview = store.peek(target, match, exec.agent)
+            if (!preview.ok) {
+              result = outcomeOnly(preview)
+              break
+            }
+            // 第二步：先把原文写进归档文件（原子写 + 目录锁）
+            const appended = archive.append(target, preview.entry, cwd)
+            if (!appended.ok) {
+              result = {
+                ok: false,
+                message: mt('msg.archiveAppendFailed', { detail: appended.message ?? '?' }),
+                target,
+              }
+              break
+            }
+            // 第三步：归档成功后再从主轨删除
+            const removed = store.remove(target, match, exec.agent)
+            if (!removed.ok) {
+              result = {
+                ok: false,
+                message: mt('msg.archivePartial', { total: appended.total, detail: removed.message }),
+                target,
+              }
+              break
+            }
+            result = {
+              ok: true,
+              message: mt('msg.archivedDone', { target, total: appended.total }),
+              target,
+            }
+            break
+          }
+          case 'expand': {
+            // 渐进式披露：按 ID 加载 key 轨条目全文
+            if (target !== 'key') {
+              result = { ok: false, message: mt('msg.expandKeyOnly'), target }
+              break
+            }
+            if (!args.id) {
+              result = { ok: false, message: mt('msg.expandNeedsId'), target }
+              break
+            }
+            const cwd = exec?.agent?.session?.header?.cwd
+            if (!cwd) {
+              result = { ok: false, message: mt('msg.expandNeedsCwd'), target }
+              break
+            }
+            const keyAgent = { session: { header: { cwd } } }
+            // 分支作用域过滤（审查修复）：与快照注入/key 轨 list 同一规则——
+            // 只有当前分支可见的条目（无标记=全部 + [branch:…] 含当前分支）
+            // 才能 expand，防止分支 A 的会话 expand 出仅限分支 B 的条目。
+            const branch = config.keyBranchFilter !== false ? gitBranch(cwd) : undefined
+            let keyEntries = store.entriesOf('key', keyAgent)
+            if (branch !== undefined) {
+              keyEntries = keyEntries.filter((entry) => {
+                const scope = parseEntryBranches(entry)
+                return scope === null || scope.includes(branch)
+              })
+            }
+            const found = keyEntries.find(e => e.includes(`[id:${args.id}]`) || legacyIdFor(e) === args.id)
+            if (!found) {
+              result = { ok: false, message: mt('msg.expandNotFound', { id: args.id }), target }
+              break
+            }
+            result = {
+              ok: true,
+              message: mt('msg.expandFullText'),
+              target,
+              entries: [stripEntrySummary(stripEntryId(found))],
+            }
+            break
+          }
+          default:
+            result = { ok: false, message: mt('msg.unknownAction', { action }), target }
+        }
+      } catch (error) {
+        // e.g. project memory without a session cwd
+        result = { ok: false, message: error?.message ?? String(error), target }
+      }
+      return result
+    },
+  }
+}
+
+
+/**
+ * 构建 COI 任务注入的记忆上下文文本（与 DSH 会话注入同源同规则）：
+ *   长期记忆 + 用户档案（所有任务注入）；项目关键记忆仅在有 cwd 时注入，
+ *   且按 git 分支过滤（与 keyBranchFilter 一致：只注入无标记或覆盖当前
+ *   分支的条目）。**不注入 AGENTS.md**（用户决策：DSH 的每轮纪律/开发规则
+ *   只约束 DSH 主模型，不应强加给外部 COI）。项目日志/每日日志不注入
+ *   （流水太长，与 DSH 快照策略一致）。
+ *   tracks 可只取部分轨（'memory'/'user'/'key' 子集，COI 调度由 AI 经
+ *   injectTracks 自主选择）；缺省=全部三轨。
+ *   excludeDshOnly：true = 跳过带「仅 DSH」标记（[dsh-only]）的条目——
+ *   这些条目只适用于 DSH 自身（DSH 纪律/规则/架构类事实），外部执行器
+ *   不必遵循 DSH 规则，注入只会让它们困惑。COI 调度注入时传 true；DSH
+ *   自身快照注入不传（标记条目照常注入 DSH）。
+ * @param {MemoryStore} store - 记忆 store。
+ * @param {object} [opts] - { cwd, branch, tracks, excludeDshOnly }。
+ * @returns {string} 拼接好的上下文文本（无内容返回空串）。
+ */
+export function buildMemoryContext(store, { cwd, branch: declaredBranch, tracks, excludeDshOnly } = {}) {
+  // tracks 缺省=全部三轨（兼容快照等既有调用方）；COI 调度时由 AI 经
+  // injectTracks 参数自主选择（scope 与注入无关，任何层级都能选轨注入）
+  const want = (track) => tracks === undefined || tracks.includes(track)
+  // 「仅 DSH」标记过滤：excludeDshOnly=true（外部执行器注入）时整条跳过
+  // 带 [dsh-only] 的条目；DSH 自身注入（false/缺省）原样保留
+  const dshOnlySafe = (entries) => (excludeDshOnly ? entries.filter((entry) => !parseEntryDshOnly(entry)) : entries)
+  const parts = []
+  if (want('memory')) {
+    const memoryEntries = dshOnlySafe(store.entriesOf('memory'))
+    if (memoryEntries.length > 0) parts.push(`${st('ctx.memoryGlobal')}\n${memoryEntries.join('\n')}`)
+  }
+  if (want('user')) {
+    const userEntries = dshOnlySafe(store.entriesOf('user'))
+    if (userEntries.length > 0) parts.push(`${st('ctx.userProfile')}\n${userEntries.join('\n')}`)
+  }
+  if (want('key') && cwd) {
+    const keyAgent = { session: { header: { cwd } } }
+    let keyEntries = dshOnlySafe(store.entriesOf('key', keyAgent))
+    // 分支过滤：优先用任务声明的分支（scope=project 可挂 branch，如
+    // feat/tag-question-paper）；任务未声明时回退到 cwd 目录当前 checkout
+    // 的分支（git branch --show-current，与 DSH 会话注入同规则）。非 git
+    // 仓库/获取失败 → 全部注入。
+    const branch = declaredBranch ?? gitBranch(cwd)
+    if (branch !== undefined) {
+      keyEntries = keyEntries.filter((entry) => {
+        const scope = parseEntryBranches(entry)
+        return scope === null || scope.includes(branch)
+      })
+    }
+    if (keyEntries.length > 0) {
+      const head = branch !== undefined ? st('ctx.keyWithBranch', { branch }) : st('ctx.keyPlain')
+      // 展示剥离：身份证 [id:…] 不注入（审查 P1-5：COI/外部执行器出口）
+      // 展示剥离：身份证 + 摘要标记（与 DSH 快照全量注入同规则；正文完整时
+      // [summary:…] 是仅供摘要模式用的元数据，不注入外部执行器）
+      parts.push(`${head}\n${keyEntries.map((entry) => stripEntrySummary(stripEntryId(entry))).join('\n')}`)
+    }
+  }
+  return parts.join('\n\n')
 }
 
 /**
- * **完整版**记忆库页（编辑区承载 / 无 `surface` 参数的退化）。
- *
- * ★ 2026-10-15：侧栏现在是**摘要版**（`renderSideviewPage` ✓，用户拍板"只留三张卡 + 最近几条 + 置顶入口"）
- *   ⇒ 本函数只服务"编辑区那份完整版"与"浏览器直开"两种情形 ✓。
+ * The plugin entrypoint.
+ * @param {object} ctx - the plugin context (`tools`, `systemPrompt` injected).
+ * @param {object} [rawConfig] - raw cordis config.
  */
-function renderPage({ state, config, toolsRegistered }) {
-	return renderShell({
-		kind: 'memory-section',
-		title: '记忆库',
-		subtitle: `只读快照 · 独立工作台 · v${PKG_VERSION}`,
-		headerHtml: headerHtmlOf(),
-		toolbarHtml: toolbarHtmlOf(),
-		// 真源的面板骨架自带滚动容器（`kb-panel-content`）⇒ 不再套 `dsh-scroll`/`dsh-section` ✓
-		bodyHtml: `<div class="kb-view">${renderFragment({ state, config, toolsRegistered })}</div>`,
-		extraCss: PAGE_CSS,
-		// ★ 2026-10-15：本页**不再是零脚本** —— 见 `OPEN_DETAIL_JS` 的注释（"入口点了没反应"是实测 ✗，
-		//   而"入口能用"优先于"零脚本"）。注入走平台的 `renderShell({ script })` ✓，不乱改 pageShell ✓。
-		script: OPEN_DETAIL_JS,
-	});
-}
-
-/**
- * 「记忆库」侧栏**摘要版**（2026-10-15；用户拍板方案 1「仪表盘卡 + 按钮置顶」
- * ⇒ 见 `doc/sideview-codebase-memory-mockup.html`，并按用户 2026-10-15 晚的要求**与 codebase 风格一致** ✓）。
- *
- * ## 骨架**逐条照抄 codebase 侧栏版**（`vssaros-codebase/lib/index.js:951-1000` ✓）
- *   · `headerHtml` 里开 `<div class="kb-view">` → `.kb-header`（标题 + spacer + **文字标签**）→ `.kb-panel`
- *     → `.kb-panel-bar`（面板名 + spacer + 副标题）→ `.kb-panel-content`，`bodyHtml` 再收掉三层 ✓。
- *   · 主入口是**卡片式按钮**（`button.kb-entry.kb-entry-primary` ✓ 边框高亮 + 标题加粗），**排在最上** ✓
- *     —— "按钮置顶"指的就是它 ✓。
- *   · ⚠⚠ **不要再放填充色大按钮**：上一版把 header 的 ⟳ 做成填充色（`.kb-hbtn-primary`）⇒
- *     在 **35px 的标题行**里必然溢出（盖住标题栏/压住工具行）✗✗ —— 用户报的"样式错误"就是这个 ✓。
- *     刷新在 codebase 里是 `.kb-hbtn`（26×26 图标 ✓）；本页的刷新在**完整版**的标题栏里（同款 ✓）。
- *
- * ## 内容（自上而下）
- *   ① 标题栏（标题 + 「侧栏摘要」标签）② 面板栏（`只读快照 · 写入走 memory_remember 工具 · v<版本>`）
- *   ③ **主入口卡片** ⇒ 编辑区打开**记忆详情**（`OPEN_LIBRARY_JS` ✓）
- *   ④ 三张仪表盘卡：条记忆 / 分层 / 工作记忆（口径见 `loadSummaryModel` ✓）
- *   ⑤ 最近 5 条记忆（类型 pill + 时间）⑥ 诊断行（agent / 网关 / 四层计数 ✓ 照 codebase 的 `summary` 段写法）
- *
- * ⚠ 数取不到时**如实显示 `—` + 原因**（`failed` / `timedOut` ✓）——**不许用 0 冒充**：
- *   0 = "这个分区确实没记忆"，与"取数失败"含义相反（p3-51 那条纪律 ✓）。
- */
-function renderSideviewPage({ summary, state, config }) {
-	const { snapshot } = state;
-	const failed = Array.isArray(summary.failed) ? summary.failed : [];
-	const gateway = gatewayUrlOf(config);
-	const number = value => (value === null || value === undefined ? '—' : String(value));
-	const cell = (value, label, title) => `<div class="kb-stat-cell${value === 0 ? ' zero' : ''}" title="${escapeHtml(title)}"><div class="kb-stat-num">${escapeHtml(String(value))}</div><div class="kb-stat-label">${escapeHtml(label)}</div></div>`;
-
-	const tiers = summary.tiers.map(t => `${t.label} ${t.count}`).join(' · ');
-	const failNote = failed.length
-		? `这几层取数失败：${failed.join(' / ')}（网关 ${gateway ?? '(未配置)'}）—— 合计与层数因此显示为 —（半个数比空着更容易被当真 ✗）`
-		: '';
-	const timeoutNote = summary.timedOut
-		? `取数超过 ${Math.round(SUMMARY_WAIT_MS / 1000)}s 还没答完 —— 现在这版是${summary.at ? '上一次的结果' : '空值'}（那次请求仍在跑，重开面板即可看到最新）`
-		: '';
-	const totalTitle = summary.total === null ? (failNote || '取数中…') : `四个分层合计 ${summary.total} 条｜${tiers}`;
-	const layerTitle = summary.layers === null ? (failNote || '取数中…') : `有内容的层数 / 共 ${MEMORY_TIERS.length} 层｜${tiers}`;
-	// 工作记忆卡走的是**另一条链**（`state.snapshot` = 注入面，另有冻结语义）⇒ 它失败要单独说 ✓
-	const workingValue = snapshot.ok ? snapshot.text.length : '—';
-	const workingTitle = snapshot.ok
-		? `注入 system prompt 的正文 ${snapshot.text.length} 字（${new Date(snapshot.fetchedAt || Date.now()).toLocaleTimeString('zh-CN')} 取）`
-		: `工作记忆取数失败：${snapshot.error || '(无详情)'}`;
-
-	// ★ 主入口：**codebase 同款**（`button.kb-entry.kb-entry-primary` ✓）。文案照 IDE 真源
-	//   （`memoryLibraryView.ts:126-138` 的那张卡：标题「查看完整记忆」· 副文案说明它通向 MemoryDetailEditorPane ✓）。
-	//   ⚠ 目标由 `OPEN_LIBRARY_JS` 走桥 ⇒ 编辑区打开**记忆详情**（`?surface=editor` ⇒ `renderDetailShell` ✓）。
-	const openEntry = `<button type="button" class="kb-entry kb-entry-primary" data-vssaros-memory-action="open-library">
-	<span class="kb-entry-icon">🗃</span>
-	<span class="kb-entry-text"><span class="kb-entry-title" data-vssaros-memory-action-label>查看完整记忆</span>
-	<span class="kb-entry-meta">在编辑区打开记忆详情（复刻 IDE 的 MemoryDetailEditorPane）</span></span>
-	<span class="kb-entry-arrow">›</span></button>`;
-
-	const rows = summary.recent.map(item => `<div class="kb-sum-row" data-vssaros-memory-recent="${escapeHtml(item.id)}">`
-		+ `<span class="kb-sum-t" title="${escapeHtml(item.content)}">${escapeHtml(item.title)}</span>`
-		+ `<span class="kb-sum-pill">${escapeHtml(item.type)}</span>`
-		+ `<span class="kb-sum-time">${escapeHtml(item.timestamp)}</span></div>`).join('');
-	const empty = summary.recent.length ? ''
-		: `<p class="kb-sum-empty">${!summary.hasGateway ? '记忆网关未配置（config.gatewayUrl / VSSAROS_MEMORY_GATEWAY_URL）'
-			: failed.length >= MEMORY_TIERS.length ? '四个分层都取数失败 —— 见下面那行说明'
-				: '这个分区还没有记忆'}</p>`;
-	const notes = [failNote, timeoutNote].filter(Boolean);
-	// 诊断行（照 codebase 的 `summary` 段写法：一段 `.dsh-diag` 带机器可读属性 ✓）
-	const diag = `<p class="dsh-diag kb-log" data-vssaros-memory-total="${summary.total ?? ''}" data-vssaros-memory-layers="${summary.layers ?? ''}" data-vssaros-memory-failed="${escapeHtml(failed.join(','))}" data-vssaros-memory-agent="${escapeHtml(summary.agentId ?? '')}" data-vssaros-memory-gateway="${escapeHtml(gateway ?? '')}" data-vssaros-memory-refreshes="${state.refreshes}">agent <code>${escapeHtml(summary.agentId ?? '')}</code> · 网关 <code>${escapeHtml(gateway ?? '(未配置)')}</code><br>${escapeHtml(tiers || '四层都没取到')}${failed.length ? ` · <b>失败层</b> ${escapeHtml(failed.join(' / '))}` : ''}</p>`;
-
-	return renderShell({
-		kind: 'memory-sideview',
-		title: '记忆库',
-		// `subtitle` 实际不渲染（有 `headerHtml` ⇒ renderShell 只用 header ✓）；留着只为"万一没有 headerHtml"也不空 ✓
-		subtitle: `只读快照 · 摘要版 · v${PKG_VERSION}`,
-		// ⚠ 三层结构由 headerHtml 开、bodyHtml 收（照 codebase ✓）——中途不能插 `dsh-toolbar` 那种独立行 ✗
-		// ★★ 2026-10-20（真机报障「记忆 sideview 为空」，截图是整片纯黑）：`.kb-panel` 在**完整版**的
-		//   tab 式 CSS 里是 `display: none`，只有 `.kb-panel.active` 才 `display: flex`（见本文件
-		//   PAGE_CSS 里那两行）。本页 `extraCss` 复用的正是那份 PAGE_CSS ⇒ 漏掉 `active` 会让
-		//   **整个面板** `display:none`：页面加载成功（`did-finish-load` 正常、日志零错误）但内容区
-		//   一片黑 —— 这是"日志全绿、界面全空"的典型成因（CSS 隐藏既不报错也不留痕 ✗）。
-		//   ⚠ codebase 侧栏不需要 `active`，是因为它的 `.kb-panel` 本身就 `display: flex`
-		//   —— 照抄骨架时**别把这一半一起照抄**。
-		headerHtml: `<div class="kb-view">
-<div class="kb-header">
-	<span class="kb-title"><span>🗃</span><span>记忆库</span></span>
-	<span class="kb-spacer"></span>
-	<span class="kb-stat-hero-label">侧栏摘要</span>
-</div>
-<div class="kb-panel active">
-	<div class="kb-panel-bar"><span class="kb-panel-bar-label">记忆库</span><span class="kb-spacer"></span><span class="kb-stat-hero-label">只读快照 · 写入走 <code>memory_remember</code> 工具 · v${PKG_VERSION}</span></div>
-	<div class="kb-panel-content">`,
-		bodyHtml: `${openEntry}<div class="kb-stats">
-	<div class="kb-stat-grid">
-		${cell(number(summary.total), '条记忆', totalTitle)}
-		${cell(number(summary.layers), '分层', layerTitle)}
-		${cell(workingValue, '工作记忆', workingTitle)}
-	</div>
-</div>
-<div class="kb-side-section">
-	<div class="kb-side-section-head"><span>最近记忆</span><span class="kb-spacer"></span><span class="kb-count">${summary.recent.length}</span></div>
-	<div class="kb-sum-list">${rows}${empty}</div>
-</div>
-${notes.length ? `<p class="dsh-diag">${escapeHtml(notes.join('｜'))}</p>` : ''}
-${diag}</div>
-</div>
-</div>`,
-		extraCss: PAGE_CSS,
-		script: OPEN_LIBRARY_JS,
-		// 标准锚点（工作台规范 §7.4；chat-surface 的 probeCatalog 与探针只认这个名字）
-		attrs: 'data-vssaros-surface="sideview"',
-	});
-}
-
-/**
- * 把"非 remember 类写工具"的参数翻成**审批里那行人话**（`buildWriteReason` 的 `content` 位）。
- *
- * 为什么不能只传 `content` ✗：软删除 / 级联 / 结晶的载荷里**没有** `content` —— 若这里返回空串，
- * 闸会退回"取不到载荷"那句 ⚠，`parseWriteReason` 也解析不出 ⇒ 每条都被记成 `(unparsable)` ✗
- *（等于新工具**永远**弹一次"形状可能已变"的窗 ✓✗，那是最像坏了的好不好）。
- * 取不到关键字段就**如实返回空串** ⇒ 上面那条降级路径照旧生效 ✓（不静默造一个假载荷 ✗）。
- *
- * @param {string} toolName - 工具名。
- * @param {Record<string, unknown>} args - `exec.arguments`。
- * @returns {string} 人话载荷（空串 = 取不到）。
- */
-function describeWritePayload(toolName, args) {
-	if (toolName === 'memory_forget' || toolName === 'memory_cascade') {
-		const id = typeof args.memory_id === 'string' ? args.memory_id.trim() : '';
-		if (!id) { return ''; }
-		const why = typeof args.reason === 'string' && args.reason.trim() ? `（原因：${args.reason.trim()}）` : '';
-		return `${toolName === 'memory_forget' ? '软删除（标记 superseded）' : '级联修复（把引用它的下游标 stale）'} memory_id=${id}${why}`;
-	}
-	if (toolName === 'memory_crystal') {
-		// 只有 `create`/`auto` 会走到这里（`isWriteIntent` 已把 list/get 放行 ✓）
-		const action = typeof args.action === 'string' ? args.action : '';
-		if (!action) { return ''; }
-		const actionId = typeof args.action_id === 'string' ? args.action_id.trim() : '';
-		return action === 'create'
-			? `行动链结晶 action_id=${actionId}`
-			: `自动结晶（把高强度记忆转成结晶）`;
-	}
-	if (toolName === 'memory_routine') {
-		// 只有会改数据的 action 才走到这里（`isWriteIntent` 已把 list/get/status 放行 ✓）
-		const action = typeof args.action === 'string' ? args.action : '';
-		if (!action) { return ''; }
-		const routineId = typeof args.routine_id === 'string' ? args.routine_id.trim() : '';
-		const runId = typeof args.run_id === 'string' ? args.run_id.trim() : '';
-		const name = typeof args.name === 'string' ? args.name.trim() : '';
-		const detail = action === 'create' ? (name ? `name=${name}` : '')
-			: action === 'step' ? `run_id=${runId} step_order=${String(args.step_order ?? '?')} → ${String(args.step_status ?? 'done')}`
-				: `routine_id=${routineId || runId}`;
-		return `例程（routine）${action}${detail ? ` ${detail}` : ''}`;
-	}
-	if (toolName === 'memory_governance') {
-		// 只有 `delete` / `bulk_delete`（且 dry_run=false）会走到这里 ✓；`audit` 与 dry-run 已被判据放行 ✓
-		const action = typeof args.action === 'string' ? args.action : '';
-		if (!action) { return ''; }
-		if (action === 'delete') {
-			const ids = Array.isArray(args.ids) ? args.ids.filter(id => typeof id === 'string' && id.trim()) : [];
-			return ids.length ? `按 id 删除 ${ids.length} 条记忆：${ids.slice(0, 5).join(', ')}${ids.length > 5 ? ' …' : ''}` : '';
-		}
-		if (action === 'bulk_delete') {
-			const f = args.filters && typeof args.filters === 'object' ? args.filters : {};
-			return `按条件**真正删除**记忆（filters=${JSON.stringify(f).slice(0, 160)}，dry_run=false ✓ 会真删）`;
-		}
-		// 2026-10-14：新增的两个写 action 也要有审批文案 ✓
-		// ⚠ 缺了它，弹窗只显示工具名（`memory_governance`）而**不说明要动什么** ✗ ——
-		//   审批的意义正是"让人看清内容后再放行" ✓（与 `update` 那条的处境相同 ✓）。
-		if (action === 'compress') {
-			const sid = typeof args.session_id === 'string' ? args.session_id.trim() : '';
-			return sid ? `压缩会话 ${sid} 的未压缩观察为叙事摘要（**不可逆** ⚠ 那些观察会被标记为已压缩）` : '';
-		}
-		if (action === 'frontier') {
-			const c = typeof args.concept === 'string' ? args.concept.trim() : '';
-			return c ? `把概念「${c}」加入**待探索的前沿队列**` : '';
-		}
-		return '';
-	}
-	if (toolName === 'memory_team') {
-		// 只有 `share` 会走到这里 ✓（`query` 只读 ✓）
-		const memId = typeof args.memory_id === 'string' ? args.memory_id.trim() : '';
-		return memId ? `把记忆 ${memId} 共享到**团队池**${args.project ? `（project=${String(args.project)}）` : ''}` : '';
-	}
-	if (toolName === 'memory_mesh') {
-		const action = typeof args.action === 'string' ? args.action : '';
-		if (!action) { return ''; }
-		if (action === 'join') {
-			const name = typeof args.name === 'string' ? args.name.trim() : '';
-			const url = typeof args.url === 'string' ? args.url.trim() : '';
-			return name && url ? `加入联邦 peer「${name}」（${url}）` : '';
-		}
-		if (action === 'leave') { return `让 peer ${String(args.peer_id ?? '?')} 下线`; }
-		if (action === 'sync') { return `与 peer 同步记忆（direction=${String(args.direction ?? 'both')}${args.peer_id ? `, peer=${String(args.peer_id)}` : '（全部在线 peer）'}）`; }
-		return '';
-	}
-	if (toolName === 'memory_sentinel') {
-		// ⚠ 只有 `create`/`check`/`cancel` 会走到这里 ✓（`check` 会**触发**哨兵 ⇒ 算写 ✓）
-		const action = typeof args.action === 'string' ? args.action : '';
-		if (!action) { return ''; }
-		if (action === 'create') {
-			const name = typeof args.name === 'string' ? args.name.trim() : '';
-			const condition = typeof args.condition === 'string' ? args.condition.trim() : '';
-			return name && condition ? `新建哨兵「${name}」监视条件：${condition}` : '';
-		}
-		if (action === 'check') { return '立即评估所有哨兵（**可能触发**它们 ✓）'; }
-		if (action === 'trigger') { return `**直接触发**哨兵 ${String(args.sentinel_id ?? '?')}（**跳过条件评估** ⇒ 一定会置为已触发 ✓）`; }
-		if (action === 'cancel') { return `取消哨兵 ${String(args.sentinel_id ?? '?')}`; }
-		return '';
-	}
-	if (toolName === 'memory_improve') {
-		const action = typeof args.action === 'string' ? args.action : '';
-		const memId = typeof args.memory_id === 'string' ? args.memory_id.trim() : '';
-		if (!action || !memId) { return ''; }
-		return `改进记忆 ${memId}（${action}）`;
-	}
-	return '';
-}
-
-/**
- * `memory_api` 的**只读白名单**（2026-10-13 建）。
- *
- * ## 为什么要它
- * 引擎（`agentMemoryProviderV2`）公开约 200 个方法，但**每个方法都做成工具**是不可行的：
- * 工具定义进**系统提示词** ⇒ 17 → 77 个会让每次会话的提示词膨胀数倍，而 90% 的工具在 90% 的
- * 会话里用不到 ✗。⇒ 用**一个通用入口**覆盖一批只读能力，把上下文成本从 O(方法数) 降到 O(1) ✓。
- *
- * ## 名单怎么定出来的（**不是照抄引擎方法清单** ✗）
- * 候选先逐个在**真机网关**上实测（隔离端口 + 隔离数据目录），并且**分两轮**：第一轮裸调、
- * 第二轮先把"需要前置数据"的那批喂上数据（写 lesson / 建 checkpoint 与 snapshot / 加 skill /
- * observe / 写 semantic-procedural / enrichFile）再调 ✓。
- * ⚠ 没有第二轮就会把"**我没造数据**"误判成"**引擎没实现**" ✗（第一轮 17 个有货，第二轮 27 个 ✓）。
- *
- * ## 两种**不收录**（都要写下来，否则后来人会当成漏了再补一遍 ✗）
- * 1. **铁证桩**：源码里是单行体空实现 ⇒ 永远回空，做成工具只会**消耗调用并误导模型** ✗
- *    判据是"**源码是不是 `{ return <空常量>; }` 单行体**"（`p3-80` 的 ⑩ 自动扫 `agentMemoryProviderV2.ts`
- *    对账 ⇒ 白名单里混进一个就红 ✓）。
- *    **全清单（17 个，2026-10-13 扫出）** —— 别再把它们当"漏掉的"补一遍 ✗：
- *      `getTimeline` · `getTopLessons` · `searchLessons` · `traceProvenance` · `verifyProvenance` ·
- *      `enrichFile` · `setWorkingMemory` · `getWorkingMemory` · `getAllWorkingMemory` · `getFileIndex` ·
- *      `getActions` · `getSignals` · `restoreSnapshot` · `getCircuitStates` · `getRecentSearches` ·
- *      `registerHook` · `unregisterHook`
- *    ⚠⚠ 顺带纠正一处**我早先的判断**：我曾说"provenance 引擎早就有、只是没接出来" —— **错了** ✗，
- *    `ProviderV2` 上的 `traceProvenance` / `verifyProvenance` **是未实现的桩**（`provenance.ts` 那个
- *    151 行的模块**没有被 ProviderV2 接上**）⇒ 这条能力**在 dsh 侧无论怎么接都拿不到** ✓。
- *    ⚠ 判据为什么不能用"**实测回空**"：它**分不开**"没实现"与"没数据" ✗✗ —— 同一批方法裸测回空、
- *      造了前置数据就有货（普查时 17 → 27 ✓），而 `traceProvenance` 造什么都回 null ✓。
- * 2. **未证实**：实测回空，但**不能排除**是"还缺更特殊的前置数据"（如 `store.semantic` 不走
- *    `writeMemory`、profile 需要专门的构建步骤）⇒ 宁可**不收录**也不给模型一个"大概能返回点什么"
- *    的入口 ✗（与 `p3-51` 那条"能返回点什么 ≠ 精确匹配"同一判据 ✓）。要加先补一条能**造出数据**
- *    的对照，再进这张表 ✓。
- *
- * ## `args` 一栏的口径
- * 只写**除 `agentId` 之外**的位置参数（`agentId` 由 execute 自动前置，模型不该也不能传 ✗ ——
- * 手填 agentId 等于让它有机会写到别的分区去 ✓）。`?` 表示可选。
- */
-const MEMORY_API_READONLY = new Map([
-	// ── 分层读取 / 记忆清单 ─────────────────────────────────────────────
-	['getEpisodicMemories', { args: '', note: '读情景记忆（按时间线，最接近“发生过什么”）' }],
-	['getProceduralMemories', { args: '', note: '读程序性记忆（做法/步骤，引擎从技能等沉淀）' }],
-	['proceduralList', { args: '', note: '程序性记忆清单（含技能沉淀物）' }],
-	// ── 会话与观察 ──────────────────────────────────────────────────────
-	['listSessions', { args: '', note: '本 agent 有记录的会话清单' }],
-	['observeList', { args: 'sessionId', note: '某会话的观察记录（hook 落下的原始观测）' }],
-	['observeCount', { args: 'sessionId', note: '某会话的观察条数' }],
-	// ── 检索（比 memory_search 更强）────────────────────────────────────
-	['smartSearch', { args: 'query, limit?', note: '★ 多策略检索（可给答案）——优先于 memory_search 用于“找相关的一批”' }],
-	['smartSearchWithAnswer', { args: 'query, limit?', note: '★ 检索并尝试给答案（⚠ 引擎未配 LLM 时回 `{skipped:true, reason:"llm not configured"}`，要如实转述 ✓）' }],
-	['expandQuery', { args: 'query', note: '查询改写（同义/时间/实体展开）——可用于把模糊问句变具体' }],
-	['skillMatch', { args: 'task, limit?', note: '★ 按任务描述匹配**技能**（返回 skill + 匹配理由）' }],
-	// ── 统计与诊断 ──────────────────────────────────────────────────────
-	// ⚠⚠ 这条的 note **改正过**（2026-10-14）：原先写"比 `memory_stats` 可信" ✗ —— 它**自己也有坑**：
-	//   `{...stats, bm25IndexSize: s.indexSize, vectorIndexSize: 0}` ⇒ `vectorIndexSize` 是**硬编码 0** ✗，
-	//   而 `bm25IndexSize` 取自 `_serverStats`，dsh 走**网关模式**（`serverAvailable: false`）⇒ **实测恒 0** ✗✗
-	//   （我在 2000 条、检索明明有效时看到 `bm25IndexSize: 0` ✓ ⇒ 是**观测字段**坏了，不是索引没建 ✓）。
-	//   ⇒ 它**能用**的只有 `longTermCount` / `coreMemoryCount` / `lessonsCount` 这几个（`getStats` 那层 ✓）
-	//     —— 而 `getStats` **自己**在写入后也可能回 0（早先实测过 ✗）⇒ **两者都别当权威** ✓。
-	['getExtendedStats', { args: '', note: '扩展统计（长期/核心/课程数）——⚠ `bm25IndexSize`/`vectorIndexSize` 在网关模式下**恒为 0**（观测字段坏，不代表索引没建 ✗）；计数也别当权威' }],
-	['followupStats', { args: 'windowMs?', note: '检索后的追问率统计' }],
-	['diskSize', { args: '', note: '各分区的磁盘占用' }],
-	['diagnose', { args: '', note: '★ 自诊断（逐层计数 + status）——排障首选' }],
-	['runDiagnostics', { args: '', note: '运行诊断（status / serverAvailable）' }],
-	['getHealthStatus', { args: '', note: '健康状态' }],
-	// ── 课程 / 槽位 / 关系 / 检查点 ─────────────────────────────────────
-	['getLessons', { args: '', note: '★ 课程清单（从错里学到的）' }],
-	// ⚠⚠ **这两个不是"纯只读"** —— 2026-10-13 用"真机副作用审计"查出来的（**代码审计看不出来** ✓）：
-	//   `slotList` 的第一行是 `await seedDefaults(kv, agentId)` ⇒ **首次调用会 `kv.set` 8 个缺省槽位**
-	//   （`persona` / `user_preferences` / `tool_guidance` … 都是**空内容** ✓，见 `amSlots.ts:18-32` ✓）。
-	// ⇒ 判它"不过闸"**仍然是对的**（判据是"**会不会改用户数据**"，而它只补引擎自己的空缺省项 ✓ ——
-	//   与 `dry_run` 缺省 true、`memory_refresh` 不算写是同一条判据 ✓），但**不能标成"纯只读"** ✗。
-	// ⇒ 真实性质由 `p3-80` 的 ⑰ 守着：调它**不会改动任何已有槽位的内容** ✓（只会**新增**缺省项 ✓）。
-	['getSlots', { args: '', note: '全部槽位（name + content）⚠ 首次调用会由引擎补 8 个**空**缺省槽位（不改你已有的内容 ✓）' }],
-	['slotList', { args: '', note: '全部槽位（含 sizeLimit / description，比 getSlots 详细）⚠ 同 `getSlots`：首次调用会补空缺省槽位 ✓' }],
-	['getSlot', { args: 'label', note: '读单个槽位的内容（label 见 slotList）' }],
-	['getRelationStats', { args: '', note: '记忆关系网规模' }],
-	['checkpointList', { args: '', note: '检查点清单' }],
-	['snapshotList', { args: '', note: '快照清单' }],
-	// ── 技能 ────────────────────────────────────────────────────────────
-	['listSkills', { args: '', note: '★ 技能清单（含 id / trigger / title）——记忆引擎的“技能”，**不是**平台的 SKILL.md ✗' }],
-	['skillList', { args: '', note: '技能清单（与 listSkills 同源，保留两者以对齐引擎）' }],
-	['getSkillStats', { args: '', note: '技能统计（总数 / 平均置信度 / 使用次数）' }],
-	// ── 审计与规模 ──────────────────────────────────────────────────────
-	['getAuditSummary', { args: '', note: '审计摘要（写入条数等）' }],
-	['listAllAgentsWithData', { args: '', note: '哪些 agent 分区里有数据（⚠ 只看得到**本网关**上的分区）' }],
-	// ── 导出（2026-10-13 收）─────────────────────────────────────────────
-	// ⚠ 为什么"导出"进**只读**白名单、而"导入"另做一个工具（`memory_import`）：
-	//   `exportMemories` 只**读**（返回 `{version, exportedAt, agentId, memories[]}` ✓），
-	//   `importMemories` / `replayImportJsonl` 只**写** ⇒ 读写本就该分在两侧 ✓
-	//   ⇒ 于是**不需要**一个"既导又入"的 `memory_transfer`（那会与已有的 `memory_obsidian_export`
-	//     形成"两个导出"的局面，模型得猜该用哪个 ✗）⇒ 边界按**读/写**切，比按"导入导出"这个词切更清楚 ✓。
-	['exportMemories', { args: '', note: '★ 导出全部记忆（`{version, exportedAt, agentId, memories[]}`）—— 可存档，或用 `memory_import` 导回 ✓' }],
-
-	// ── 2026-10-13 全量对账后补入（+13）──────────────────────────────────
-	// 动机：把引擎 226 个公开方法**逐个对账**（已接 / 桩 / 明确不做 / 未接）⇒ 还剩一批**只读的真实现**
-	// 没接。只读的补进白名单是**零成本**的（不加工具、不加提示词）⇒ 没有理由不接 ✓。
-	// ⚠ 以下都是 `async … { …真实实现… }`（非桩 ✓）；是否真有数据由引擎沉淀决定，不在这里保证 ✓
-	//   （"收录"的判据见本表头注释：**源码不是单行体空实现**即可 ✓）。
-	['coreMemoryList', { args: '', note: '读**核心记忆**（每轮都进提示词的常驻层；`memory_remember` 的 `working` 型就落这里 ✓）' }],
-	['getCompactContext', { args: 'limit?', note: '压缩后的上下文文本（长会话里"已经把什么压掉了"的可见形式 ✓）' }],
-	['getConsolidationContext', { args: '', note: '固化上下文（引擎把短期沉淀为长期时的输入 ✓）' }],
-	['temporalQuery', { args: 'entity', note: '按实体查时间线（"这事的来龙去脉" ✓）' }],
-	['getSmartSearchResults', { args: 'query, options?', note: '智能检索的**结构化**结果（要 id/分数等字段用它；要现成文本用 smartSearch ✓）' }],
-	['teamProfile', { args: 'teamId?', note: '本 agent 在团队池里的画像' }],
-	['teamFeed', { args: 'limit?, teamId?', note: '团队池动态流' }],
-	['meshExport', { args: 'scopes?, since?', note: '联邦（mesh）导出负载 —— 给对端同步用 ✓' }],
-	['claudeBridgeRead', { args: '', note: '读 Claude Code 桥接进来的条目（从 Claude 侧迁过来的记忆 ✓）' }],
-	['runExtendedDiagnostics', { args: '', note: '扩展诊断（比 `diagnose` 多几层计数 ✓）' }],
-	['circuitStatesGet', { args: '', note: '熔断状态（引擎对上游出错时的自保护状态 ✓）' }],
-	['richFileContext', { args: 'files[], concepts?', note: '文件上下文的**丰富版**（比 `getFileContext` 多概念维度 ✓）' }],
-	['diffFileContext', { args: 'filesChanged[]', note: '**改动过**的文件涉及哪些记忆 —— 改代码前先看这里 ✓' }],
-	// ⚠ **刻意不收**（首参不是 agentId ⇒ 与本工具"自动前置 agentId"的约定冲突，硬收会传错参数 ✗）：
-	//   `getReplaySession(sessionId)` · `getHookStats()` · `getCommitStats()` · `getRecentCommits(limit?)`。
-	//   ⚠ 另：`getStats` 虽是真实现，但**实测在写入 4 条后仍回 0** ✗ ⇒ 不收（用 `getExtendedStats` ✓）。
-
-	// ── 引擎自沉淀的层（2026-10-13 三次普查后补入，+11）────────────────────
-	// ⚠ 为什么第一版没收它们：真机裸测**恒回空** ✗。但二轮普查（造前置数据）也没填上 ⇒ 当时判为
-	//   "未证实"。**第三轮改判**：去读**源码** ⇒ 它们是**多行真实现**（`_kv.list(KV.semantic(...))` /
-	//   `fn.sessionSummaryList(...)` / `pipe.getProfile(...)` / `rem.replayList(...)` …），只是数据由
-	//   **引擎自己的管线**在真实使用中沉淀 ⇒ **我在探针里造不出来 ≠ 能力不存在** ✗✗。
-	// ⇒ 判据改为「**源码是不是单行体空实现**」：是 ⇒ 桩，绝不收录；否 ⇒ 收录（数据有没有由引擎决定 ✓）。
-	//   这条判据比"实测回空"可靠得多 —— 实测**分不开**"没实现"与"没数据" ✓（见 `p3-80` 的 ⑩）。
-	// ⚠ `visionSearch` **故意不在此表**：它也是真实现，但需要**图像**数据，而 dsh 侧没有任何图像写入
-	//   路径 ⇒ 收录了也**永远回空**，只会浪费一次调用 ✗（要加先得有一条真的能写图像的路径 ✓）。
-	['getSemanticMemories', { args: '', note: '读语义记忆（由固化管线产出，非手动写入）' }],
-	['semanticList', { args: '', note: '语义层清单（同上）' }],
-	['listSummaries', { args: 'limit?', note: '会话摘要清单（需先有 summarizeSession 产出）' }],
-	['getReplaySessions', { args: '', note: '可回放的会话清单' }],
-	['insightSearch', { args: 'query, limit?', note: '洞察检索（insights 由引擎沉淀）' }],
-	['getProfile', { args: '', note: 'agent 画像（由管线构建，未构建时回 null 是**正常**的 ✓）' }],
-	['getRelations', { args: 'memoryId', note: '某条记忆的关系网（id 先用 memory_list 拿）' }],
-	['frontierGet', { args: '', note: '前沿队列（待处理项）' }],
-	['frontierNext', { args: 'project?, agentIdentity?, includeLeasedByOthers?', note: '取下一个前沿项' }],
-	['getFileContext', { args: 'filePath', note: '文件上下文（该文件相关的记忆聚合）' }],
-	['bugMemoriesForFiles', { args: 'files[], project?', note: '与这些文件相关的 bug 记忆' }],
-
-	// ── 信号（2026-10-14 真机实测后补入）─────────────────────────────────
-	// ⚠ 为什么不直接用它替换已接的 `signalQuery`：两者**排序口径不同** ✗ ——
-	//   `signalQuery` 按 `createdAt` **降序**（新的在前 ✓，见 `amAdvanced.ts:115`）；
-	//   而这个 `signalQueryExpanded` **不排序**（KV 原序 ✗）⇒ 各有各的用处 ✓。
-	// ⚠ 它的**增量**在于**过滤**：可按 `type` / `from` 筛，且**会剔除已过期**的（`amFinal.ts:503-507` ✓）。
-	//   真机实测：`type='info'` 只回 info ✓、`from='别的 agent'` 回 `[]` ✓ ⇒ 过滤确实生效 ✓。
-	['signalQueryExpanded', { args: 'type?, from?', note: '信号检索（可按 type/from 过滤，且**自动剔除过期** ✓）—— ⚠ 与 `signalQuery` 的差别是**它会过滤、且不按时间排序** ✓' }],
-]);
-
-/** 工具定义（八个只读 + 四个写入）。写入也**只经网关**（本进程从不自己拼记忆的存储形状）。 */
-function toolDefinitions(ctx, state, config, auditAppend) {
-	return [{
-		name: 'memory_remember',
-		description: '把一条记忆写进当前 Agent 的记忆库。`memory_type` 里 `working` 进**核心槽位**（每轮对话都会带上，留给"当前任务与偏好"这类），其余原生类型（pattern / preference / architecture / bug / workflow / fact）进**长期记忆**；`semantic` / `procedural` **不接受手动写入**（由固化管线产出）。'
-			+ ' ⚠ 这是**写**：只在确实值得跨会话记住时用（结论、偏好、踩过的坑、约定），不要记流水账。',
-		parameters: {
-			type: 'object',
-			properties: {
-				content: { type: 'string', description: '要记住的内容（一句话说清，别贴长文）' },
-				memory_type: {
-					type: 'string',
-					enum: ['working', 'pattern', 'preference', 'architecture', 'bug', 'workflow', 'fact'],
-					description: '记忆类型（缺省 fact）；working = 核心槽位，其余 = 长期记忆',
-				},
-				// 受限 schema 子集里没有 minimum/maximum：范围写在描述里、由代码夹紧（与 memory_search 的 limit 同法）
-				importance: { type: 'integer', description: '重要度 0–10（缺省 5；超出会被夹到边界）' },
-				tags: { type: 'array', items: { type: 'string' }, description: '可选标签' },
-			},
-			required: ['content'],
-		},
-		output: {
-			schema: {
-				type: 'object',
-				properties: {
-					ok: { type: 'boolean' }, memory_type: { type: 'string' }, target: { type: 'string' }, reply: { type: 'string' },
-				},
-				required: ['ok', 'memory_type'],
-			},
-			render: (_args, value) => [{
-				type: 'text',
-				text: value.ok ? `已写入${value.target}（${value.memory_type}）` : `写入失败：${value.reply ?? '网关没有返回可读信息'}`,
-			}],
-		},
-		execute: async params => {
-			const base = requireGateway(config);
-			const content = typeof params?.content === 'string' ? params.content.trim() : '';
-			if (!content) {
-				throw new Error('content 不能为空');
-			}
-			// ★ 写入预算（与 legacy 同纪律；口径 = **每 Host 运行**，见 `writeBudgetOf`）——
-			// 拦在**打网关之前**：超限时不产生任何网络调用、也不消耗写配额 ✓。
-			// ★★ 2026-10-26（用户要求「没选 agent 时按 preset 映射」）：**写分区人设优先** ——
-			//   会话选中了 preset（`vssaros-<id>`）就写人设分区（dsh 侧真正读的地方），
-			//   否则退回工作区分区 `ws-*`（保持原行为，不乱猜 ✓）。规则见 `writePartitionOf`。
-			const primaryPartition = agentIdOf(config);
-			const personaPartition = personaIdOf(ctx?.agent, state?.projections);
-			// ★ 2026-10-27：**三处写入统一走 `resolveMemoryScope`**（跨进程真源）。
-			//   优先级：跨进程别名（宿主写、网关落文件）＞ 会话人设 ＞ 主分区。
-			//   ⇒ 与渲染侧 `scopedMemoryAgentId()` 给出**同一个答案**，不再各按各的规则 ✗
-			const agentId = resolveMemoryScope({
-				agentId: primaryPartition,
-				persona: personaPartition,
-				scope: readScopeSync(config),
-			});
-			// 观测：把"这次写按 preset 映射到了哪个分区"留在内存态里（页面/探针可读）；
-			// ⚠ 不往审计账本里塞新动作（账本的动作词表是别处按口径用的，乱加会污染 ✓）
-			state.lastWriteScope = { at: Date.now(), primary: primaryPartition, persona: personaPartition, used: agentId };
-			const budget = writeBudgetOf(config, agentId);
-			const used = state.writes.get(agentId) ?? 0;
-			if (used >= budget) {
-				// 错误信息照 legacy 的用意（`memoryTools.ts:100-103`）：不是"你坏了"，而是**引导改用检索** ✓
-				throw new Error(`记忆写入预算已用尽（本 Host 运行 ${budget} 次上限，agentId=${agentId}）：请优先用 memory_search 复用已有记忆，或把结论写进最终回复，而不是继续写。`);
-			}
-			state.writes.set(agentId, used + 1);
-			const memoryType = typeof params?.memory_type === 'string' && params.memory_type ? params.memory_type : 'fact';
-			const importance = Math.min(10, Math.max(0, Number.isFinite(params?.importance) ? Math.floor(params.importance) : 5));
-			const tags = Array.isArray(params?.tags) ? params.tags.filter(tag => typeof tag === 'string' && tag.trim()) : [];
-			// ⚠ **真机订正（2026-10-13）**：**没有** `mem::core-add` / `mem::remember` 这两个方法 ✗（都 404 ✗）；
-			// 类型路由（`working`/`short_term` ⇒ core，其余 ⇒ 长期层）**发生在网关侧**（引擎按 `entry.type` 自己分叉 ✓）
-			// ⇒ 本进程只发一次 `POST /provider/writeMemory {args:[agentId, entry]}` ✓，不再自己分流 ✗。
-			// `entry` 形状**逐字照抄** IDE 侧 `memory_remember`（`memoryTools.ts:137-146` ✓）。
-			const entry = {
-				id: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
-				type: memoryType,
-				content,
-				timestamp: Date.now(),
-				importance,
-				metadata: { importance, ...(tags.length ? { tags } : {}) },
-			};
-			// 审计「执行结果」这一格：**包住网关调用** ⇒ 网关拒了（HTTP 非 2xx / 超时 / 明确失败）
-			// 也能留痕 ✓ —— 只在拿到 reply 之后记会漏掉"网关抛错"这类最需要排查的情形 ✗。
-			// 用已算出的局部 `agentId`（＝ `agentIdOf(config)`，即记忆落的分区）而非再算一次 ✓。
-			const auditBase = {
-				action: 'executed', tool: 'memory_remember', agentId,
-				target: targetKeyOf(memoryType), memoryType, content,
-			};
-			let reply;
-			try {
-				reply = await remember(base, agentId, entry);
-			} catch (error) {
-				await auditAppend({ ...auditBase, outcome: 'failed', error });
-				throw error; // 记完**必须重抛** —— 审计绝不改变工具行为 ✓
-			}
-			// 网关回复**原样**判断与回传：形状里未核实的那部分靠真机错误暴露（本文件与 gateway.js 的既有口径）。
-			// 只有网关**明确**说成功才算成功——"没报错"不算（写操作上这条尤其要紧）。
-			const ok = reply?.ok === true || reply?.success === true;
-			await auditAppend({ ...auditBase, outcome: ok ? 'ok' : 'rejected-by-gateway' });
-			// 写成功后**主动刷新默认槽位**（报告 §5-7 的另一半 ✓）：否则页面会在"写入前"的工作记忆上停着 ✗
-			// —— 刚写进去的东西看不见，最容易被当成"写失败" ✗。
-			// ⚠ 只刷**默认槽位**（页面/新会话/种子用）✓；**不动各会话正冻结着的槽位** —— 那是 2026-10-13
-			// 的冻结语义：本会话想立刻看见刚写的内容，走 `memory_refresh`（它会把冻结表清掉重取 ✓）。
-			// 用 `void`：写工具的回执不该等一次网关往返 ✓（刷新失败不影响"写入成功"这个事实 ✓）。
-			if (ok) {
-				void refresh(state, config);
-			}
-			return {
-				ok,
-				memory_type: memoryType,
-				target: targetLabelOf(memoryType),
-				...(ok ? {} : { reply: JSON.stringify(reply ?? null).slice(0, 400) }),
-			};
-		},
-	}, {
-		name: 'memory_list',
-		description: '**列出**当前 Agent 记忆库里的条目（只读）。空查询 = 全量列出（与 legacy 的 `memory_list` 同法：`provider.searchMemory(agentId, \'\')`）。⚠ 2026-10-13 起检索走 provider 平面（`searchMemory` ✓）⇒ 返回的是**完整条目**（含正文 ✓）；宿主路由 `/search/<agentId>` 只给 `{id,score}` 且空查询恒为 `[]` ✗，那条路已弃用。'
-			+ ' ⚠ dsh 侧此前**只能检索、不能列举** ⇒ 写进去的东西得靠 memory_search 撞词才看得见，"越写越多、看不见"会把人逼回 IDE（README 5.59）。',
-		parameters: {
-			type: 'object',
-			properties: {
-				limit: { type: 'integer', description: '返回条数上限，1–100（默认 20；超出会被夹到边界）' },
-				partition: { type: 'string', enum: ['current', 'legacy'], description: '缺省 `current` = 当前工作区分区 + 当前人设的分区（人设积累的记忆跟人设走）；选 `legacy` 列**旧分区**（`default`：本插件按工作区隔离之前的数据；它不再被注入，但可从这里显式查回来）' },
-			},
-		},
-		output: {
-			schema: {
-				type: 'object',
-				properties: {
-					count: { type: 'integer' },
-					limit: { type: 'integer' },
-					partition: { type: 'string' },
-					partitions: { type: 'array', items: { type: 'string' } },
-					notes: { type: 'array', items: { type: 'string' } },
-					items: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, score: { type: 'number' }, partition: { type: 'string' } }, required: ['id'] } },
-				},
-				required: ['count', 'items'],
-			},
-			render: (_args, value) => [{
-				type: 'text',
-				text: value.count
-					? `记忆库（分区 ${value.partition ?? '?'}）列出 ${value.count} 条（上限 ${value.limit}）：${value.items.map(item => item.id).join(', ')}`
-					: `分区 ${value.partition ?? '?'} 里没有可列出的条目（或用空查询取不到——那就换 memory_search 试试别的词）。`,
-			}],
-		},
-		isConcurrencySafe: () => true,
-		execute: async (params, exec) => {
-			const base = requireGateway(config);
-			// ⚠ 空查询**就是**全量列出（与 legacy 同法）—— 这不是漏了参数 ✓
-			const rawLimit = Number.isFinite(params?.limit) ? Math.floor(params.limit) : 20;
-			const limit = Math.min(100, Math.max(1, rawLimit));
-			// `partition: 'legacy'` ⇒ **旧分区的显式出口**（旧混合记忆不再注入，但必须查得回来 ✓）
-			if (params?.partition === 'legacy') {
-				const normalized = normalizeSearchResults(await search(base, LEGACY_PARTITION, '', limit), limit);
-				if (normalized.error) {
-					throw new Error(normalized.error);
-				}
-				return { count: normalized.items.length, limit, partition: LEGACY_PARTITION, items: normalized.items };
-			}
-			// ★ 2026-10-20：缺省 = 工作区分区 **+ 当前人设分区**（口径见 `readScopeOf`）
-			const scope = readScopeOf(config, state, exec?.agent);
-			const merged = await searchPartitions(base, scope.partitions, '', limit);
-			if (merged.error) {
-				throw new Error(merged.error);
-			}
-			return { count: merged.items.length, limit, partition: scope.partitions.join(' + '), partitions: scope.partitions, items: merged.items, ...(merged.notes.length ? { notes: merged.notes } : {}) };
-		},
-	}, {
-		name: 'memory_search',
-		description: '在当前 Agent 的记忆库里检索条目，返回命中的记忆 id 与相关度分数（正文需用 memory_stats / 记忆页面查看）。',
-		parameters: {
-			type: 'object',
-			properties: {
-				query: { type: 'string', description: '检索词（自然语言即可）' },
-				// dsh 的参数 schema 只接受受限子集（无 minimum/maximum）：范围写描述、由代码夹紧
-				limit: { type: 'integer', description: '返回条数上限，1–100（默认 10；超出会被夹到边界）' },
-				partition: { type: 'string', enum: ['current', 'legacy'], description: '缺省 `current` = 当前工作区分区 + 当前人设的分区（合并按分数排序，每条标注来源分区）；选 `legacy` 检索**旧分区**（`default`：按工作区隔离之前的数据；它不再被注入，但可从这里显式查回来）' },
-			},
-			required: ['query'],
-		},
-		output: {
-			schema: {
-				type: 'object',
-				properties: {
-					count: { type: 'integer' },
-					partition: { type: 'string' },
-					partitions: { type: 'array', items: { type: 'string' } },
-					notes: { type: 'array', items: { type: 'string' } },
-					items: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, score: { type: 'number' }, partition: { type: 'string' } }, required: ['id'] } },
-				},
-				required: ['count', 'items'],
-			},
-			// ⚠️ `tools.register` 要求 output 里**必须有 render**（不是可选）：
-			// 只写 schema 会抛 `tool "x" must declare output { schema, render, presentationMeta? }`，
-			// 而它的表现是**整个插件不挂载**（真机 404，只有 Host 日志里有线索）。kanban 的写法就是对的。
-			// ★ 2026-10-14：**按分数分组**输出（`splitByConfidence` ✓）。
-			// 为什么必须分组：引擎 `searchMemory` **每查询恒回 20 条、且不做阈值截断**（实测：30 条库里搜
-			// 「构建」回 20 条，其中**只有 2 条真相关** ✓）⇒ 默认 `limit=10` 时模型拿到的是
-			// 「1–2 条真相关 + 8–9 条噪声」，而 `(0.0027)` 与 `(0.5081)` 在它眼里只是**两个小数** ✗
-			// —— 它**没有**"多少分才算低"的标尺 ⇒ 很容易把噪声当命中用 ✗。这条把标尺内建进来 ✓。
-			// ⚠ 低置信的 **id 仍然列出**（不替模型做"丢弃"的决定 ✓），只是明确标注"一般可忽略" ✓。
-			// ⚠ **0 条高置信**是必须显式说的情形：那意味着"库里大概真没有"，不说的话模型会拿噪声硬答 ✗。
-			render: (_args, value) => {
-				if (!value?.count) {
-					return [{ type: 'text', text: `分区 ${value?.partition ?? '?'} 里没有命中任何记忆条目。` }];
-				}
-				const { high, low } = splitByConfidence(value.items);
-				// ⚠ 分数**统一三位**：`toFixed(2)` 会把 0.0027 打成 `0.00` ⇒ 噪声与零分无法区分 ✗
-				//   （修好读取之前一直是 `undefined` ⇒ 这个坑此前看不到 ✓）
-				const fmt = list => list.map(i => `${i.id}(${typeof i.score === 'number' ? i.score.toFixed(3) : '?'})`).join(', ');
-				const lowScores = low.map(i => i.score).filter(s => typeof s === 'number');
-				const lines = [`命中 ${value.count} 条（分区 ${value.partition ?? '?'}）：${high.length
-					? `${high.length} 条高置信（分数 ≥${SEARCH_CONFIDENCE_THRESHOLD}）`
-					: '**0 条高置信**'}`];
-				if (high.length) {
-					lines.push(`  ${fmt(high)}`);
-				} else {
-					lines.push('  ⚠ 没有一条达到高置信阈值 ⇒ 下面这些**很可能都与查询无关**'
-						+ '（引擎在没有匹配时也会回填满额结果 ⇒ 别拿它们硬答 ✗）：');
-				}
-				if (low.length) {
-					lines.push(`  低置信 ${low.length} 条（分数 `
-						+ `${lowScores.length ? Math.min(...lowScores).toFixed(3) : '?'}–${lowScores.length ? Math.max(...lowScores).toFixed(3) : '?'}`
-						+ '，通常是引擎无匹配时的模糊填充 ⇒ 一般可忽略）：');
-					lines.push(`  ${fmt(low)}`);
-				}
-				return [{ type: 'text', text: lines.join('\n') }];
-			},
-		},
-		isConcurrencySafe: () => true,
-		execute: async (params, exec) => {
-			const base = requireGateway(config);
-			const query = typeof params?.query === 'string' ? params.query : '';
-			const rawLimit = Number.isFinite(params?.limit) ? Math.floor(params.limit) : 10;
-			const limit = Math.min(100, Math.max(1, rawLimit));
-			// `partition: 'legacy'` ⇒ **旧分区的显式出口**（同 memory_list ✓）
-			if (params?.partition === 'legacy') {
-				const normalized = normalizeSearchResults(await search(base, LEGACY_PARTITION, query, limit), limit);
-				if (normalized.error) {
-					throw new Error(normalized.error);
-				}
-				return { count: normalized.items.length, partition: LEGACY_PARTITION, items: normalized.items };
-			}
-			// ★ 2026-10-20：缺省 = 工作区分区 **+ 当前人设分区**（`exec.agent` 是调用方会话 —— dsh-tools 的 `ToolRunContext`）
-			const scope = readScopeOf(config, state, exec?.agent);
-			const merged = await searchPartitions(base, scope.partitions, query, limit);
-			if (merged.error) {
-				throw new Error(merged.error);
-			}
-			return { count: merged.items.length, partition: scope.partitions.join(' + '), partitions: scope.partitions, items: merged.items, ...(merged.notes.length ? { notes: merged.notes } : {}) };
-		},
-	}, {
-		name: 'memory_stats',
-		description: '查看当前 Agent 记忆库的统计信息（条目数等，字段由记忆网关决定）。',
-		parameters: { type: 'object', properties: {} },
-		output: {
-			schema: {
-				type: 'object',
-				properties: { agentId: { type: 'string' }, summary: { type: 'string' }, keys: { type: 'array', items: { type: 'string' } } },
-				required: ['agentId', 'summary'],
-			},
-			render: (_args, value) => [{ type: 'text', text: `${value.agentId} 的记忆库：${value.summary}` }],
-		},
-		isConcurrencySafe: () => true,
-		execute: async () => {
-			const base = requireGateway(config);
-			return { agentId: agentIdOf(config), ...summarizeStats(await stats(base, agentIdOf(config))) };
-		},
-	}, {
-		name: 'memory_refresh',
-		description: '强制刷新工作记忆快照：刷新页面/新会话用的那一份，并解冻各会话的冻结快照（刚写入重要记忆后调它，下次请求就带新内容）。',
-		parameters: { type: 'object', properties: {} },
-		output: {
-			schema: {
-				type: 'object',
-				properties: { ok: { type: 'boolean' }, chars: { type: 'integer' }, frozen: { type: 'integer' }, error: { type: 'string' } },
-				required: ['ok', 'chars'],
-			},
-			render: (_args, value) => [{
-				type: 'text',
-				text: value.ok
-					? `工作记忆已刷新：${value.chars} 字（下一次请求就带新内容${value.frozen > 0 ? `；同时解冻了 ${value.frozen} 份会话快照，它们下一轮各自重取` : ''}）`
-					: `刷新失败：${value.error}`,
-			}],
-		},
-		execute: async () => {
-			// ★ 冻结语义下的"立刻生效"（2026-10-13 起）：
-			//   (a) 刷**默认槽位** —— 页面 / 新会话 / 种子用的那份 ✓；
-			//   (b) **清空冻结表** ⇒ 正在冻结的会话槽位作废，下一轮 assembly 重新登记并重取 ✓。
-			// 为什么是"清表"而不是"逐个刷" ✗：工具执行阶段**拿不到装配主体** —— `AssembleContext`
-			// （含 `scope` / `agent`）只在 section 的 text provider 里给（见 `snapshotFor`）⇒ 无法定位
-			// "当前是哪个会话"。清表是**保守且正确**的做法：多花几次网关往返，换来"所有会话立刻看到" ✓。
-			// 先清后刷：这样新登记的槽位能直接借到刚刷新好的默认槽位当种子（首轮即有内容 ✓）。
-			const frozen = state.snapshots.size;
-			state.snapshots.clear();
-			const snapshot = await refresh(state, config);
-			return { ok: snapshot.ok, chars: snapshot.text.length, frozen, ...(snapshot.ok ? {} : { error: snapshot.error }) };
-		},
-	}, {
-		// ── 2026-10-13 批 1 ────────────────────────────────────────────────
-		// 命名 / 参数 / 回复语义一律照 IDE 真源（注释里逐条给了行号）—— dsh 侧**只做**"过闸 + 走 provider 平面"。
-		name: 'memory_recall',
-		description: '**多策略**召回记忆（比 memory_search 更强）：可选 hybrid（BM25＋向量）/ graph_first / vector_first / graph_only / vector_only 并带重排；网关不支持该方法时**自动回退 memory_search**。只读。'
-			+ ' 缺省还会附上**近 30 天同一工作区的历史会话片段**（会话原文、未经审核；`history: false` 关闭）——问"之前做过/聊过什么"时用它。'
-			+ ' ⚠ 想"按词撞"用 memory_search，想"按语义捞一批"用这个 ✓。',
-		parameters: {
-			type: 'object',
-			properties: {
-				query: { type: 'string', description: '检索词（自然语言即可）' },
-				strategy: { type: 'string', enum: ['hybrid', 'graph_first', 'vector_first', 'graph_only', 'vector_only'], description: '检索策略（缺省 hybrid）' },
-				limit: { type: 'integer', description: '最多取几条，1–100（缺省 10；超出会被夹到边界）' },
-				partition: { type: 'string', enum: ['current', 'legacy'], description: '缺省 `current` = 工作区分区 + 当前人设分区；选 `legacy` 时走**旧分区** `default`（与 memory_list / memory_search 同一出口 ✓）' },
-				history: { type: 'boolean', description: '是否附带近 30 天同工作区的历史会话片段（缺省 true）' },
-			},
-			required: ['query'],
-		},
-		output: {
-			schema: {
-				type: 'object',
-				properties: { partition: { type: 'string' }, strategy: { type: 'string' }, text: { type: 'string' }, historySessions: { type: 'integer' } },
-				required: ['text'],
-			},
-			render: (_args, value) => [{ type: 'text', text: value.text }],
-		},
-		isConcurrencySafe: () => true,
-		execute: async (params, exec) => {
-			const base = requireGateway(config);
-			const query = typeof params?.query === 'string' ? params.query.trim() : '';
-			if (!query) { throw new Error('query 不能为空'); }
-			const rawLimit = Number.isFinite(params?.limit) ? Math.floor(params.limit) : 10;
-			const limit = Math.min(100, Math.max(1, rawLimit));
-			const strategy = typeof params?.strategy === 'string' && params.strategy ? params.strategy : 'hybrid';
-			// ★ 2026-10-20：与 memory_search / memory_list 同口径 —— 缺省读「工作区 + 当前人设」
-			const partitions = params?.partition === 'legacy' ? [LEGACY_PARTITION] : readScopeOf(config, state, exec?.agent).partitions;
-			const session = exec?.agent?.session;
-			const [memory, history] = await Promise.all([
-				Promise.all(partitions.map(p => recallOne(base, p, query, strategy, limit))),
-				params?.history === false
-					? Promise.resolve(null)
-					: recallHistory(state.sessionQuery, {
-						query,
-						cwd: typeof session?.meta?.cwd === 'string' ? session.meta.cwd : undefined,
-						excludeSessionId: typeof session?.id === 'string' ? session.id : (typeof exec?.agent?.id === 'string' ? exec.agent.id : undefined),
-					}).catch(error => ({ available: false, term: '', sessions: [], scanned: 0, truncated: false, error: String(error?.message ?? error) })),
-			]);
-			const memoryText = memory.map((m, i) => (i === 0 ? m.text : `## 人设记忆（${partitions[i]}）\n${m.text}`)).join('\n\n');
-			const historyText = history ? renderHistory(history) : '';
-			return {
-				partition: partitions.join(' + '),
-				strategy: memory[0]?.strategy ?? strategy,
-				text: historyText ? `${memoryText}\n\n${historyText}` : memoryText,
-				historySessions: history?.sessions?.length ?? 0,
-			};
-		},
-	}, {
-		name: 'memory_forget',
-		description: '**软删除**一条记忆：标记为 superseded（不再被召回，但**保留审计痕迹**，不是物理删除）。⚠ 这是**写**（会改用户数据）⇒ 需审批。'
-			+ ' 等价于 IDE 的 `memory_forget` / `memory_delete` —— 真源里两者调的是**同一个** `forgetMemory` ✓（所以 dsh 侧只做一个 ✓）。',
-		parameters: {
-			type: 'object',
-			properties: {
-				memory_id: { type: 'string', description: '要遗忘的记忆 id（先用 memory_list / memory_search / memory_recall 拿到）' },
-				// ⚠ 引擎的 `forgetMemory(kv, agentId, memId)` 只认 **2 参**（`amFunctions.ts:1050` ✓）⇒ `reason`
-				// **不进记忆库** ✗ —— 它的用途是**审批文案 + 审计账本**（"批准即所见"，与 IDE 真源同法 ✓）。
-				reason: { type: 'string', description: '可选：为什么忘掉它。⚠ 只进审批/审计（引擎不存这个字段 ✓），不进记忆库' },
-			},
-			required: ['memory_id'],
-		},
-		output: {
-			schema: {
-				type: 'object',
-				properties: { ok: { type: 'boolean' }, memory_id: { type: 'string' }, reply: { type: 'string' } },
-				required: ['ok', 'memory_id'],
-			},
-			render: (_args, value) => [{
-				type: 'text',
-				text: value.ok
-					? `已遗忘 ${value.memory_id}（软删除：不再召回，审计痕迹仍在）`
-					: `遗忘失败：${value.reply ?? '网关没有返回可读信息'}`,
-			}],
-		},
-		execute: async (params) => {
-			const base = requireGateway(config);
-			const memoryId = typeof params?.memory_id === 'string' ? params.memory_id.trim() : '';
-			if (!memoryId) { throw new Error('memory_id 不能为空'); }
-			const reason = typeof params?.reason === 'string' && params.reason.trim() ? params.reason.trim() : undefined;
-			const auditBase = {
-				action: 'executed', tool: 'memory_forget', target: 'long', memoryType: 'fact',
-				content: `软删除 memory_id=${memoryId}${reason ? `（原因：${reason}）` : ''}`,
-			};
-			let reply;
-			try {
-				reply = await forgetMemory(base, agentIdOf(config), memoryId, reason);
-			} catch (error) {
-				await auditAppend({ ...auditBase, outcome: 'failed', error });
-				throw error;
-			}
-			// 真源返回 **boolean**（`unifiedMemoryTools.ts:162` ✓）；另两种形状也认（不猜 ⇒ 三种都收，其余算失败 ✓）
-			const ok = reply === true || reply?.ok === true || reply?.success === true;
-			await auditAppend({ ...auditBase, outcome: ok ? 'ok' : 'rejected-by-gateway' });
-			return { ok, memory_id: memoryId, ...(ok ? {} : { reply: JSON.stringify(reply ?? null).slice(0, 400) }) };
-		},
-	}, {
-		name: 'memory_obsidian_export',
-		description: '把当前分区的**活跃记忆**导出成 Obsidian 兼容 Markdown（按记忆类型分组、带 wikilink）并**返回文本**。只读 ✓（落盘由调用方决定 —— 要存成 vault 笔记就自己写文件 ✓）。'
-			+ ' ⚠ 超过 8000 字会**截断预览**并告知全量长度 ✓。',
-		parameters: { type: 'object', properties: {} },
-		output: {
-			schema: {
-				type: 'object',
-				properties: { chars: { type: 'integer' }, truncated: { type: 'boolean' }, text: { type: 'string' } },
-				required: ['chars', 'text'],
-			},
-			render: (_args, value) => [{ type: 'text', text: value.text }],
-		},
-		isConcurrencySafe: () => true,
-		execute: async () => {
-			const base = requireGateway(config);
-			const raw = await obsidianExport(base, agentIdOf(config));
-			const text = typeof raw === 'string' ? raw : JSON.stringify(raw ?? null);
-			if (!text) {
-				return { chars: 0, truncated: false, text: 'Nothing to export（当前分区没有活跃记忆）。' };
-			}
-			// 截断保护与 IDE 同口径（`advancedMemoryTools.ts:318-321` ✓：8K 上限、预览前 4000 字 ✓）
-			if (text.length > 8000) {
-				return { chars: text.length, truncated: true, text: `已导出 ${text.length} 字 Obsidian Markdown（预览前 4000 字）：\n\n${text.slice(0, 4000)}\n\n…（已截断；要全量就再调一次并写入文件）` };
-			}
-			return { chars: text.length, truncated: false, text: `已导出 Obsidian Markdown（${text.length} 字）：\n\n${text}` };
-		},
-	}, {
-		name: 'memory_cascade',
-		description: '**级联修复**：给一条已被替代（superseded）的记忆 id，把它下游**引用过它**的条目（行动 / 草稿 / 快照）标记为 stale。⚠ 这是**写**（会改用户数据）⇒ 需审批。'
-			+ ' 通常在替代发生时**自动**跑；手动调它是为了修历史遗留 ✓。',
-		parameters: {
-			type: 'object',
-			properties: {
-				memory_id: { type: 'string', description: '作为级联起点的**已被替代**记忆 id' },
-			},
-			required: ['memory_id'],
-		},
-		output: {
-			schema: {
-				type: 'object',
-				properties: { ok: { type: 'boolean' }, memory_id: { type: 'string' }, flagged: { type: 'integer' }, reply: { type: 'string' } },
-				required: ['ok', 'memory_id'],
-			},
-			render: (_args, value) => [{
-				type: 'text',
-				text: value.ok
-					? `级联已执行（起点 ${value.memory_id}）：标记了 ${value.flagged ?? '?'} 条下游为 stale`
-					: `级联失败：${value.reply ?? '网关没有返回可读信息'}`,
-			}],
-		},
-		execute: async (params) => {
-			const base = requireGateway(config);
-			const memoryId = typeof params?.memory_id === 'string' ? params.memory_id.trim() : '';
-			if (!memoryId) { throw new Error('memory_id 不能为空'); }
-			const auditBase = { action: 'executed', tool: 'memory_cascade', target: 'long', memoryType: 'fact', content: `级联修复 memory_id=${memoryId}` };
-			let reply;
-			try {
-				reply = await cascadeUpdate(base, agentIdOf(config), memoryId);
-			} catch (error) {
-				await auditAppend({ ...auditBase, outcome: 'failed', error });
-				throw error;
-			}
-			// ★ 形状**已核实**（引擎 `amFinal.ts:16-20` ✓）：`{ success: boolean; flagged: number }`，
-			// 且**起点不存在**时明确回 `{ success: false, flagged: 0 }` ✓ ⇒ 判据就是 `success === true` ✓
-			//（不再用"非明确 false 就算成功"那种兜底 ✗ —— 引擎给了准确字段就该用它 ✓）。
-			const ok = reply?.success === true;
-			await auditAppend({ ...auditBase, outcome: ok ? 'ok' : 'rejected-by-gateway' });
-			const flagged = Number.isFinite(reply?.flagged) ? reply.flagged : undefined;
-			return { ok, memory_id: memoryId, ...(flagged === undefined ? {} : { flagged }), ...(ok ? {} : { reply: JSON.stringify(reply ?? null).slice(0, 400) }) };
-		},
-	}, {
-		name: 'memory_crystal',
-		description: '行动链**结晶**：把已完成的行动链固化成可复用经验（crystal）。4 个 action（照真源 ✓）：'
-			+ '`create`（手动结晶 ✓）/ `list`（列出 ✓）/ `get`（取详情 ✓）/ `auto`（把高强度记忆自动结晶 ✓）。'
-			+ ' ⚠ `create`/`auto` 是**写**（新增数据 ⇒ 需审批 ✓）；`list`/`get` **只读**（不弹窗 ✓）。',
-		parameters: {
-			type: 'object',
-			properties: {
-				action: { type: 'string', enum: ['create', 'list', 'get', 'auto'], description: '要做的动作' },
-				action_id: { type: 'string', description: '已完成行动链的 id（create）' },
-				crystal_id: { type: 'string', description: '结晶 id（get）' },
-			},
-			required: ['action'],
-		},
-		output: {
-			schema: {
-				type: 'object',
-				properties: { ok: { type: 'boolean' }, action: { type: 'string' }, text: { type: 'string' } },
-				required: ['ok', 'action', 'text'],
-			},
-			render: (_args, value) => [{ type: 'text', text: value.text }],
-		},
-		execute: async (params) => {
-			const base = requireGateway(config);
-			const agent = agentIdOf(config);
-			const action = typeof params?.action === 'string' ? params.action : '';
-			const str = key => (typeof params?.[key] === 'string' ? params[key].trim() : '');
-			const auditBase = detail => ({ action: 'executed', tool: 'memory_crystal', target: 'long', memoryType: 'fact', content: `结晶 ${action}${detail ? ` ${detail}` : ''}` });
-			switch (action) {
-				case 'create': {
-					const actionId = str('action_id');
-					if (!actionId) { throw new Error('create 需要 action_id'); }
-					let reply;
-					try {
-						reply = await crystallize(base, agent, actionId);
-					} catch (error) {
-						await auditAppend({ ...auditBase(`action_id=${actionId}`), outcome: 'failed', error });
-						throw error;
-					}
-					// ★ 形状已核实（引擎 `amAdvanced.ts:328-333` ✓）：成功回 `Crystal`、**行动链不存在回 `null`** ✗ ⇒ null = 失败 ✓
-					const ok = reply !== null && reply !== undefined;
-					await auditAppend({ ...auditBase(`action_id=${actionId}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-					return {
-						ok, action,
-						text: ok
-							? `已结晶（起点行动链 ${actionId}${reply?.id ? ` → 结晶 ${reply.id}` : ''}）：${String(reply?.narrative ?? '').slice(0, 200)}`
-							: `结晶失败：行动链 ${actionId} 不存在（引擎回 null ✓）`,
-					};
-				}
-				case 'list': {
-					const list = await crystalList(base, agent);
-					const items = Array.isArray(list) ? list : [];
-					return {
-						ok: Array.isArray(list), action,
-						text: items.length
-							? `结晶 ${items.length} 条：\n${items.slice(0, 20).map(c => `- [${c?.id ?? '?'}] ${String(c?.narrative ?? '').slice(0, 120)}${c?.filesAffected?.length ? `（涉及 ${c.filesAffected.slice(0, 3).join(',')}）` : ''}`).join('\n')}`
-							: '还没有任何结晶。',
-					};
-				}
-				case 'get': {
-					const id = str('crystal_id');
-					if (!id) { throw new Error('get 需要 crystal_id'); }
-					const c = await crystalGet(base, agent, id);
-					if (c === null || c === undefined) { return { ok: false, action, text: `结晶 ${id} 不存在。` }; }
-					const parts = [String(c?.narrative ?? '(无叙述)')];
-					if (Array.isArray(c?.keyOutcomes) && c.keyOutcomes.length) { parts.push(`关键结果: ${c.keyOutcomes.join('; ')}`); }
-					if (Array.isArray(c?.filesAffected) && c.filesAffected.length) { parts.push(`涉及文件: ${c.filesAffected.join(', ')}`); }
-					if (Array.isArray(c?.lessons) && c.lessons.length) { parts.push(`经验: ${c.lessons.join('; ')}`); }
-					return { ok: true, action, text: parts.join('\n') };
-				}
-				case 'auto': {
-					let created;
-					try {
-						created = await autoCrystallize(base, agent);
-					} catch (error) {
-						await auditAppend({ ...auditBase(), outcome: 'failed', error });
-						throw error;
-					}
-					// 形状已核实（`amFinal.ts:100` ⇒ **number** ＝ 新建几条 ✓）
-					await auditAppend({ ...auditBase(), outcome: 'ok' });
-					return { ok: true, action, text: `自动结晶完成：新建 ${typeof created === 'number' ? created : JSON.stringify(created)} 条。` };
-				}
-				default:
-					throw new Error(`memory_crystal: 不认识的 action "${action}"（合法：create/list/get/auto）`);
-			}
-		},
-	}, {
-		// ── 批 2a：例程（8 action）─────────────────────────────────────────
-		// action 取值与参数名**逐条照抄**真源 `routineCrystalFacetTools.ts:44-62` ✓；
-		// 每个分支的调法与回执判据按**引擎源码**取实 ✓（`amRemaining.ts` / `amReplication.ts` ✓）。
-		name: 'memory_routine',
-		description: '**可复用多步流程**（routine）：把重复性procedure 固化成有序步骤，之后跑它、逐步回报、查状态（最后一步 done 自动完成 ✓）。'
-			+ ' ⚠ `create`/`run`/`step`/`freeze`/`delete` 是**写**（需审批 ✓）；`list`/`get`/`status` **只读**（不弹窗 ✓）。',
-		parameters: {
-			type: 'object',
-			properties: {
-				action: { type: 'string', enum: ['create', 'list', 'get', 'run', 'step', 'status', 'freeze', 'delete'], description: '要做的动作' },
-				routine_id: { type: 'string', description: '例程 id（get / run / freeze / delete）' },
-				name: { type: 'string', description: '例程名（create）' },
-				description: { type: 'string', description: '例程说明（create）' },
-				steps: {
-					type: 'array', description: '有序步骤（create；按数组顺序编号 ✓）',
-					items: { type: 'object', properties: { title: { type: 'string' }, description: { type: 'string' } } },
-				},
-				frozen: { type: 'boolean', description: '冻结/解冻（freeze；缺省 true ＝ 冻结 ✓）' },
-				run_id: { type: 'string', description: '运行 id（step / status）' },
-				step_order: { type: 'number', description: '步骤序号（step；从 0 起 ✓）' },
-				step_status: { type: 'string', enum: ['done', 'failed', 'skipped', 'running'], description: '这一步的结果（step；缺省 done）' },
-				result: { type: 'string', description: '简短结果摘要（step）' },
-				error: { type: 'string', description: 'step_status=failed 时的错误信息（step）' },
-			},
-			required: ['action'],
-		},
-		output: {
-			schema: {
-				type: 'object',
-				properties: { ok: { type: 'boolean' }, action: { type: 'string' }, text: { type: 'string' } },
-				required: ['ok', 'action', 'text'],
-			},
-			render: (_args, value) => [{ type: 'text', text: value.text }],
-		},
-		execute: async (params) => {
-			const base = requireGateway(config);
-			const agent = agentIdOf(config);
-			const action = typeof params?.action === 'string' ? params.action : '';
-			const str = key => (typeof params?.[key] === 'string' ? params[key].trim() : '');
-			const auditBase = detail => ({ action: 'executed', tool: 'memory_routine', target: 'long', memoryType: 'fact', content: `例程 ${action}${detail ? ` ${detail}` : ''}` });
-			switch (action) {
-				case 'create': {
-					const name = str('name');
-					const steps = Array.isArray(params?.steps) ? params.steps : [];
-					if (!name) { throw new Error('create 需要 name'); }
-					if (steps.length === 0) { throw new Error('create 需要非空的 steps[]'); }
-					const reply = await createRoutine(base, agent, {
-						name, steps,
-						...(str('description') ? { description: str('description') } : {}),
-					});
-					const ok = typeof reply?.id === 'string' && !!reply.id;
-					await auditAppend({ ...auditBase(`name=${name} steps=${steps.length}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-					return {
-						ok, action,
-						text: ok
-							? `已建例程「${reply?.name ?? name}」（id ${reply.id}，${reply?.steps?.length ?? steps.length} 步）。`
-							: `建例程失败：网关没有回可用的 id（回执 ${JSON.stringify(reply ?? null).slice(0, 200)}）`,
-					};
-				}
-				case 'list': {
-					const list = await getRoutines(base, agent);
-					const items = Array.isArray(list) ? list : [];
-					return {
-						ok: Array.isArray(list), action,
-						text: items.length
-							? `例程 ${items.length} 个：\n${items.map(r => `- [${r?.id ?? '?'}] ${r?.name ?? '?'}（${r?.steps?.length ?? 0} 步，frozen=${r?.frozen !== false}）${r?.description ?? ''}`).join('\n')}`
-							: '还没有注册任何例程。',
-					};
-				}
-				case 'get': {
-					const id = str('routine_id');
-					if (!id) { throw new Error('get 需要 routine_id'); }
-					const r = await getRoutine(base, agent, id);
-					if (r === null || r === undefined) {
-						return { ok: false, action, text: `例程 ${id} 不存在。` };
-					}
-					const steps = Array.isArray(r?.steps) ? r.steps : [];
-					return {
-						ok: true, action,
-						text: `例程「${r?.name ?? '?'}」（id ${r?.id ?? id}，frozen=${r?.frozen !== false}）：\n${steps.map((s, i) => `  ${s?.order ?? i}. ${s?.title ?? '?'}${s?.description ? ` — ${s.description}` : ''}`).join('\n') || '（没有步骤）'}`,
-					};
-				}
-				case 'run': {
-					const id = str('routine_id');
-					if (!id) { throw new Error('run 需要 routine_id'); }
-					const run = await runRoutine(base, agent, id);
-					const ok = typeof run?.id === 'string' && !!run.id;
-					await auditAppend({ ...auditBase(`routine_id=${id}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-					return {
-						ok, action,
-						text: ok
-							? `已开始运行 ${run.id}（例程 ${id}）。接下来逐步执行并用 action=step 回报（run_id=${run.id}）。`
-							: `启动失败：网关没有回可用的 run id（回执 ${JSON.stringify(run ?? null).slice(0, 200)}）`,
-					};
-				}
-				case 'step': {
-					const runId = str('run_id');
-					const order = Number(params?.step_order);
-					if (!runId || !Number.isFinite(order)) { throw new Error('step 需要 run_id 与 step_order'); }
-					const status = typeof params?.step_status === 'string' && params.step_status ? params.step_status : 'done';
-					const run = await routineStepUpdate(base, agent, runId, order, status, str('result') || undefined, str('error') || undefined);
-					const ok = run !== null && run !== undefined;
-					await auditAppend({ ...auditBase(`run_id=${runId} step=${order} → ${status}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-					return {
-						ok, action,
-						text: ok
-							? `第 ${order} 步 → ${status}。运行 ${run?.id ?? runId}：status=${run?.status ?? '?'}, currentStep=${run?.currentStep ?? '?'}${run?.completedAt ? `, completedAt=${run.completedAt}` : ''}`
-							: `回报失败：运行 ${runId} 不存在（引擎回空 ✓）`,
-					};
-				}
-				case 'status': {
-					const runId = str('run_id');
-					if (!runId) { throw new Error('status 需要 run_id'); }
-					const s = await routineStatus(base, agent, runId);
-					// ⚠ 形状已核实 ✓（`amReplication.ts:248`）：**唯一的失败信号是 `success:false`**（"run not found" ✓）
-					// ⇒ 缺 `success` 字段时按成功（真源自带的 `progress` 形态就是这样 ✓），显式 `false` 才是失败 ✓。
-					const ok = s?.success !== false;
-					return { ok, action, text: ok ? JSON.stringify(s?.progress ?? s, null, 2) : `查状态失败：${s?.error ?? 'run not found'}` };
-				}
-				case 'freeze': {
-					const id = str('routine_id');
-					if (!id) { throw new Error('freeze 需要 routine_id'); }
-					const frozen = params?.frozen !== false; // 真源缺省 true ＝ 冻结 ✓
-					const r = await routineFreeze(base, agent, id, frozen);
-					const ok = r?.success === true; // 形状已核实 ✓（`amReplication.ts:268`）
-					await auditAppend({ ...auditBase(`routine_id=${id} frozen=${frozen}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-					return { ok, action, text: ok ? `例程 ${id} 已${frozen ? '冻结' : '解冻'}（frozen=${r?.routine?.frozen !== false}）。` : `冻结失败：${r?.error ?? '网关没有回可读信息'}` };
-				}
-				case 'delete': {
-					const id = str('routine_id');
-					if (!id) { throw new Error('delete 需要 routine_id'); }
-					const ok = (await routineDelete(base, agent, id)) === true; // 形状已核实 ✓（`amRemaining.ts:132`：boolean ✓）
-					await auditAppend({ ...auditBase(`routine_id=${id}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-					return { ok, action, text: ok ? `例程 ${id} 及其运行已删除。` : `例程 ${id} 不存在。` };
-				}
-				default:
-					throw new Error(`memory_routine: 不认识的 action "${action}"（合法：create/list/get/run/step/status/freeze/delete）`);
-			}
-		},
-	}, {
-		// ── 批 2a：改进已有记忆（3 action）──────────────────────────────────
-		name: 'memory_improve',
-		description: '改进已有记忆：`reinforce`（提升强度/访问度 ⇒ 不再被衰减 ✓）/ `update`（用新内容替代 ✓）/ `merge`（把新内容并入 ✓）。'
-			+ ' ⚠ 三个 action **都会改数据** ⇒ 这是**写**（需审批 ✓）。',
-		parameters: {
-			type: 'object',
-			properties: {
-				memory_id: { type: 'string', description: '要改进的记忆 id' },
-				action: { type: 'string', enum: ['reinforce', 'update', 'merge'], description: '怎么改（reinforce=强化已有条目；update=替代；merge=并入）' },
-				new_content: { type: 'string', description: 'update / merge **必填**：新内容或要并入的内容' },
-			},
-			required: ['memory_id', 'action'],
-		},
-		output: {
-			schema: {
-				type: 'object',
-				properties: { ok: { type: 'boolean' }, memory_id: { type: 'string' }, action: { type: 'string' }, text: { type: 'string' } },
-				required: ['ok', 'memory_id', 'action', 'text'],
-			},
-			render: (_args, value) => [{ type: 'text', text: value.text }],
-		},
-		execute: async (params) => {
-			const base = requireGateway(config);
-			const agent = agentIdOf(config);
-			const memoryId = typeof params?.memory_id === 'string' ? params.memory_id.trim() : '';
-			const action = typeof params?.action === 'string' ? params.action : '';
-			if (!memoryId) { throw new Error('memory_id 不能为空'); }
-			const newContent = typeof params?.new_content === 'string' ? params.new_content.trim() : '';
-			const auditBase = { action: 'executed', tool: 'memory_improve', target: 'long', memoryType: 'fact', content: `改进记忆 ${memoryId}（${action}）` };
-			if (action === 'reinforce') {
-				let okReply;
-				try {
-					okReply = await reinforceMemory(base, agent, memoryId);
-				} catch (error) {
-					await auditAppend({ ...auditBase, outcome: 'failed', error });
-					throw error;
-				}
-				// ⚠ 真源在旧 provider 上会**回退**成写一条 `(reinforced)` 假内容 ✗ —— 本模块刻意不做 ✓（见 gateway.js 的说明）
-				const ok = okReply === true; // 形状已核实 ✓（`amFunctions.ts:1060`：boolean；记忆不存在 ⇒ false ✓）
-				await auditAppend({ ...auditBase, outcome: ok ? 'ok' : 'rejected-by-gateway' });
-				return { ok, memory_id: memoryId, action, text: ok ? `已强化 ${memoryId}（strength +1 ✓）。` : `强化失败：记忆 ${memoryId} 不存在（或被遗忘）✓。` };
-			}
-			if (action === 'update' || action === 'merge') {
-				if (!newContent) { throw new Error(`${action} 需要 new_content`); }
-				// 载荷**逐字照抄**真源 ✓（`unifiedMemoryTools.ts:120-127`）：新 id 由 `${memId}-${action}-${时间戳}` 派生 ✓
-				const entry = {
-					id: `${memoryId}-${action}-${Date.now()}`,
-					type: 'fact',
-					content: newContent,
-					metadata: { improves: memoryId, action, source: 'memory_improve' },
-				};
-				try {
-					await remember(base, agent, entry);
-				} catch (error) {
-					await auditAppend({ ...auditBase, outcome: 'failed', error });
-					throw error;
-				}
-				// ⚠ `writeMemory` **没有回执**（引擎返回 void ✓）⇒ 判据只能是"没抛错" ✓ —— 如实写在文案里，
-				//   不假装拿到了成功确认 ✓（与"写操作上没报错不等于成功"是同一条纪律的例外：这里**没有**别的信号可用 ✓）。
-				await auditAppend({ ...auditBase, outcome: 'ok' });
-				return { ok: true, memory_id: memoryId, action, text: `已${action === 'update' ? '更新' : '并入'} ${memoryId}（新条目 ${entry.id}）。⚠ writeMemory 无回执 ⇒ 以"没报错"为准 ✓。` };
-			}
-			throw new Error(`memory_improve: 不认识的 action "${action}"（合法：reinforce/update/merge）`);
-		},
-	}, {
-		// ── 批 2b：多维标签（facet，6 action）──────────────────────────────
-		// action 与参数名**逐条照抄**真源 `routineCrystalFacetTools.ts:208-217` ✓；
-		// 回执形状按**引擎源码**取实 ✓（`amAdvanced.ts:339/343` / `amFinal.ts:118/129/134/147` ✓）。
-		name: 'memory_facet',
-		description: '**多维标签**（facet）：给记忆/文件/会话/例程/结晶打 `维度:值` 标签，再按维度（可选值）查回目标，也可查某目标的标签、去标签、看维度统计。'
-			+ ' ⚠ `tag`/`untag` 是**写**（需审批 ✓）；`query`/`get`/`stats`/`dimensions` **只读**（不弹窗 ✓）。',
-		parameters: {
-			type: 'object',
-			properties: {
-				action: { type: 'string', enum: ['tag', 'query', 'get', 'untag', 'stats', 'dimensions'], description: '要做的动作' },
-				target_id: { type: 'string', description: '目标 id（tag / get / untag）' },
-				target_type: { type: 'string', enum: ['memory', 'file', 'session', 'routine', 'crystal'], description: '目标类型（tag；缺省 memory）' },
-				dimension: { type: 'string', description: '维度名，如 project / domain / status（tag / query / get / untag）' },
-				value: { type: 'string', description: '维度值（tag 必填；query 时可作过滤 ✓）' },
-			},
-			required: ['action'],
-		},
-		output: {
-			schema: {
-				type: 'object',
-				properties: { ok: { type: 'boolean' }, action: { type: 'string' }, text: { type: 'string' } },
-				required: ['ok', 'action', 'text'],
-			},
-			render: (_args, value) => [{ type: 'text', text: value.text }],
-		},
-		execute: async (params) => {
-			const base = requireGateway(config);
-			const agent = agentIdOf(config);
-			const action = typeof params?.action === 'string' ? params.action : '';
-			const str = key => (typeof params?.[key] === 'string' ? params[key].trim() : '');
-			const auditBase = detail => ({ action: 'executed', tool: 'memory_facet', target: 'long', memoryType: 'fact', content: `标签 ${action}${detail ? ` ${detail}` : ''}` });
-			switch (action) {
-				case 'tag': {
-					const targetId = str('target_id');
-					const dimension = str('dimension');
-					const value = str('value');
-					if (!targetId || !dimension || !value) { throw new Error('tag 需要 target_id、dimension 与 value'); }
-					const targetType = str('target_type') || 'memory';
-					const reply = await facetTag(base, agent, targetId, targetType, dimension, value);
-					const ok = typeof reply?.id === 'string' && !!reply.id;
-					await auditAppend({ ...auditBase(`${targetId} ${dimension}=${value}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-					return {
-						ok, action,
-						text: ok
-							? `已打标签 ${targetId}：${dimension}=${value}（facet ${reply.id}）`
-							: `打标签失败：网关没有回可用的 facet id（回执 ${JSON.stringify(reply ?? null).slice(0, 200)}）`,
-					};
-				}
-				case 'query': {
-					const dimension = str('dimension');
-					if (!dimension) { throw new Error('query 需要 dimension'); }
-					const list = await facetQuery(base, agent, dimension, str('value') || undefined);
-					const items = Array.isArray(list) ? list : [];
-					return {
-						ok: Array.isArray(list), action,
-						text: items.length
-							? `维度 [${dimension}] 命中 ${items.length} 条：\n${items.slice(0, 20).map(f => `- ${f?.targetId ?? '?'}（${f?.targetType ?? 'memory'}）：${f?.dimension ?? dimension}=${f?.value ?? '?'}`).join('\n')}`
-							: `维度 [${dimension}] 下没有命中任何标签${str('value') ? `（值过滤 ${str('value')}）` : ''}。`,
-					};
-				}
-				case 'get': {
-					const targetId = str('target_id');
-					const dimension = str('dimension');
-					if (!targetId || !dimension) { throw new Error('get 需要 target_id 与 dimension'); }
-					const list = await facetGet(base, agent, targetId, dimension);
-					// ⚠ 形状已核实（`amFinal.ts:147`）⇒ **数组** ✗（不是记录或 null ✗）⇒ **空数组＝没有标签** ✓
-					//（真源 IDE 的 `f ? … : 'No facet'` 对空数组也走"有"那条 ✗ —— 我们按诚实口径 ✓）
-					const items = Array.isArray(list) ? list : [];
-					return {
-						ok: items.length > 0, action,
-						text: items.length ? JSON.stringify(items) : `${targetId} 上没有 ${dimension} 标签。`,
-					};
-				}
-				case 'untag': {
-					const targetId = str('target_id');
-					const dimension = str('dimension');
-					if (!targetId || !dimension) { throw new Error('untag 需要 target_id 与 dimension'); }
-					const ok = (await facetUntag(base, agent, targetId, dimension)) === true; // 形状已核实 ✓（boolean ✓）
-					await auditAppend({ ...auditBase(`${targetId} ${dimension}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-					return { ok, action, text: ok ? `已去掉 ${targetId} 上的 ${dimension} 标签。` : `${targetId} 上没有 ${dimension} 标签。` };
-				}
-				case 'stats': {
-					const s = await facetStats(base, agent);
-					return { ok: s !== null && s !== undefined, action, text: JSON.stringify(s ?? {}) };
-				}
-				case 'dimensions': {
-					const d = await facetDimensions(base, agent);
-					const items = Array.isArray(d) ? d : [];
-					return { ok: Array.isArray(d), action, text: `维度 ${items.length} 个：${items.join(', ') || '(无)'}` };
-				}
-				default:
-					throw new Error(`memory_facet: 不认识的 action "${action}"（合法：tag/query/get/untag/stats/dimensions）`);
-			}
-		},
-	}, {
-		// ── 批 2c：治理（3 action）＋ 批 2d：检查点 / 快照（2026-10-13 扩）────────
-		// action/参数名照真源 `advancedMemoryTools.ts:53-70` ✓；形状按引擎取实 ✓（`amExtras.ts` / `amFinal.ts` ✓）。
-		// ★ 2026-10-13 扩两个 action（`checkpoint` / `snapshot`）而**不加新工具**：治理本来就是"低频高危操作"的
-		//   收口处 ✓，多 action 的形态也已成熟（`routine` / `facet` / `sentinel` 都是 ✓）—— 工具数不涨 ⇒ 不加提示词成本 ✓。
-		name: 'memory_governance',
-		description: '**记忆治理**：按 id 精确删、按条件批量删（**默认 dry-run 只出计划** ✓）、查治理审计、'
-			+ '以及**检查点 / 快照**（`checkpoint` / `snapshot`，见 `sub`）。'
-			+ ' ⚠ 写类：`delete`、`dry_run=false` 的 `bulk_delete`、`checkpoint` 的 `create`/`resolve`/`expire`、'
-			+ '`snapshot` 的 `create`/`restore`（**restore 会用快照覆盖当前记忆** ⚠）、'
-			+ ' `compress`（把某会话**未压缩的观察**压成叙事摘要 —— ⚠ **不可逆**，且同一会话第二次调用**必回 null** ✓）、'
-			+ ' `frontier`（把一个概念加入**待探索队列** ✓，读取端用 `memory_api` 的 `frontierGet`/`frontierNext` ✓）。'
-			+ ' 只读：`audit`、dry-run、`checkpoint`/`snapshot` 的 `list`（不弹窗 ✓）。',
-		parameters: {
-			type: 'object',
-			properties: {
-				action: { type: 'string', enum: ['delete', 'bulk_delete', 'update', 'audit', 'checkpoint', 'snapshot', 'compress', 'frontier'], description: '要做的动作' },
-				// ── 2026-10-14 新增两个 action（**真机实测确证可用后**才接 ✓）──────────────────
-				session_id: { type: 'string', description: '`compress`：要压缩的会话 id（必填；先用 `memory_api` 的 `listSessions` 拿）。⚠ **压缩不可逆**：它把该会话未压缩的观察标记为已压缩 ⇒ 同一会话**第二次调用必然回 null** ✓（那不是失败，是"无事可做" ✓）' },
-				concept: { type: 'string', description: '`frontier`：要加入**前沿队列**的概念（必填）' },
-				description: { type: 'string', description: '`frontier`：概念的一句话说明（可选）' },
-				priority: { type: 'number', description: '`frontier`：优先级（可选，数字越大越靠前）' },
-				updates: { type: 'object', description: '`update`：要改的字段（如 `{content, importance}`）—— ⚠ 只在**确信要改**时用，改错了要用快照恢复 ✓' },
-				sub: { type: 'string', description: '`checkpoint`：list(缺省)/create/resolve/expire；`snapshot`：list(缺省)/create/restore。⚠ **缺省 = list（只读）** ✓ —— 与 `dry_run` 缺省 true 同一思路：不确定时不动数据 ✓' },
-				ids: { type: 'array', items: { type: 'string' }, description: '要删的确切记忆 id（delete）' },
-				filters: {
-					type: 'object', description: '批量条件（bulk_delete）；**空对象 = 匹配全部活跃记忆** ⚠ 先用 dry-run 看一遍',
-					properties: {
-						type: { type: 'string', description: '只删这一类型（working/pattern/fact/preference/architecture/bug/workflow/semantic/procedural/episodic）' },
-						maxStrength: { type: 'number', description: '只删 strength ≤ 此值的' },
-						minAgeDays: { type: 'number', description: '只删比这更旧的（天）' },
-						pattern: { type: 'string', description: '只删正文含此子串的（不区分大小写）' },
-					},
-				},
-				dry_run: { type: 'boolean', description: '只预览不删（bulk_delete；**缺省 true** ✓ —— 要真删必须显式 false ✓）' },
-				limit: { type: 'integer', description: '审计条数上限（audit；缺省 20）' },
-				name: { type: 'string', description: '名字（checkpoint / snapshot 的 create）' },
-				checkpoint_id: { type: 'string', description: '检查点 id（checkpoint 的 resolve / expire；先用 sub=list 拿到）' },
-				passed: { type: 'boolean', description: '这个检查点算通过还是失败（checkpoint 的 resolve）' },
-				snapshot_id: { type: 'string', description: '快照 id（snapshot 的 restore；先用 sub=list 拿到）' },
-				memory_id: { type: 'string', description: '要改的记忆 id（update；先用 memory_list / memory_search 拿到）' },
-			},
-			required: ['action'],
-		},
-		output: {
-			schema: {
-				type: 'object',
-				properties: { ok: { type: 'boolean' }, action: { type: 'string' }, text: { type: 'string' } },
-				required: ['ok', 'action', 'text'],
-			},
-			render: (_args, value) => [{ type: 'text', text: value.text }],
-		},
-		execute: async (params) => {
-			const base = requireGateway(config);
-			const agent = agentIdOf(config);
-			const action = typeof params?.action === 'string' ? params.action : '';
-			const auditBase = detail => ({ action: 'executed', tool: 'memory_governance', target: 'long', memoryType: 'fact', content: `治理 ${action}${detail ? ` ${detail}` : ''}` });
-			if (action === 'delete') {
-				const ids = Array.isArray(params?.ids) ? params.ids.filter(id => typeof id === 'string' && id.trim()) : [];
-				if (ids.length === 0) { throw new Error('delete 需要非空的 ids[]'); }
-				const reply = await governanceDelete(base, agent, ids);
-				const deleted = Number.isFinite(reply?.deleted) ? reply.deleted : undefined;
-				const ok = deleted !== undefined;
-				await auditAppend({ ...auditBase(`ids=${ids.length}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-				return { ok, action, text: ok ? `已删除 ${deleted} 条（请求 ${ids.length} 条）。` : `删除失败：网关没回可读的计数（回执 ${JSON.stringify(reply ?? null).slice(0, 200)}）` };
-			}
-			if (action === 'bulk_delete') {
-				// 真源：`dry_run !== false` ⇒ 默认 **dry-run** ✓（要真删必须显式 false ✓）
-				const dryRun = params?.dry_run !== false;
-				const src = params?.filters && typeof params.filters === 'object' ? params.filters : {};
-				// 只透传认识的字段 ✓（schema 之外的键一律丢掉 —— 与"不猜"同一条纪律 ✓）
-				const filters = {
-					...(typeof src.type === 'string' && src.type ? { type: src.type } : {}),
-					...(Number.isFinite(src.maxStrength) ? { maxStrength: src.maxStrength } : {}),
-					...(Number.isFinite(src.minAgeDays) ? { minAgeDays: src.minAgeDays } : {}),
-					...(typeof src.pattern === 'string' && src.pattern ? { pattern: src.pattern } : {}),
-					dryRun,
-				};
-				const reply = await governanceBulkDelete(base, agent, filters);
-				const matched = Number.isFinite(reply?.matched) ? reply.matched : undefined;
-				const scanned = Number.isFinite(reply?.scanned) ? reply.scanned : undefined;
-				if (!dryRun) { await auditAppend({ ...auditBase(`filters=${JSON.stringify(filters).slice(0, 120)}`), outcome: 'ok' }); }
-				return {
-					ok: matched !== undefined,
-					action,
-					text: dryRun
-						? `**dry-run**：扫描 ${scanned ?? '?'} 条活跃记忆，命中 ${matched ?? '?'} 条**将被删除** —— 要真删请显式传 dry_run=false ✓。`
-						: `批量删除完成：扫描 ${scanned ?? '?'} 条，删除 ${Number.isFinite(reply?.deleted) ? reply.deleted : '?'} 条。`,
-				};
-			}
-			// ── 批 2e：改记忆（2026-10-13 补）────────────────────────────────
-			// 为什么补它：治理工具本来有 `delete`（硬删）却没有"**改**" ⇒ 只能用"删掉再写一条"绕过，
-			// 而那会**丢 id 与关系** ✗。`updateMemory` 是真实现 ✓（`updateMemory(agentId, id, updates)` ✓）。
-			if (action === 'update') {
-				const id = typeof params?.memory_id === 'string' ? params.memory_id.trim() : '';
-				if (!id) { throw new Error('update 需要 memory_id'); }
-				const updates = params?.updates;
-				if (!updates || typeof updates !== 'object' || Array.isArray(updates) || Object.keys(updates).length === 0) {
-					throw new Error('update 需要非空的 updates 对象（如 {content: "…"}）');
-				}
-				const reply = await providerCall(base, 'updateMemory', [agent, id, updates]);
-				const ok = !!reply?.id;
-				await auditAppend({ ...auditBase(`update ${id} ${Object.keys(updates).join(',')}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-				return { ok, action, text: ok ? `记忆 ${reply.id} 已更新（改了 ${Object.keys(updates).join('、')}）。` : `更新失败：引擎没找到记忆 ${id}（回执 ${JSON.stringify(reply ?? null).slice(0, 160)}）` };
-			}
-			// ── 2026-10-14：压缩会话（**写，且不可逆** ⚠）─────────────────────────────
-			// ⚠⚠ `null` 有**两种含义**、而引擎把它们**混在一起**（`amCompress.ts:121` 的"没有未压缩的观察"
-			//   vs `catch` 里的异常 ✓）⇒ 这里**如实转述两种可能**，绝不美化成"压缩完成" ✗
-			//   （与"引擎回空要如实说"同一条纪律 ✓）。
-			if (action === 'compress') {
-				const sessionId = typeof params?.session_id === 'string' ? params.session_id.trim() : '';
-				if (!sessionId) {
-					throw new Error('memory_governance: action=compress 需要 session_id（先用 memory_api 的 listSessions 拿会话 id ✓）');
-				}
-				// ⚠ **不传 project**：缺省由引擎取 `existing?.project || 'default'` ✓ 够用；
-				//   而多传它只会重现我实测踩过的那个坑（见 `gateway.js` 里 compressSession 的注释 ✓）。
-				const summary = await compressSession(base, agent, sessionId);
-				const ok = !!summary;
-				await auditAppend({ ...auditBase(`compress ${sessionId}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-				if (!ok) {
-					return {
-						ok: false, action,
-						text: `会话 ${sessionId} 压缩返回 **null** —— 引擎把两种情况混在一起：`
-							+ '① 该会话**已经没有未压缩的观察**（正常的“无事可做”，尤其是同一会话的第二次调用 ✓）；'
-							+ '② 压缩过程**出错并被 `catch` 吞掉** ✗。⚠ 引擎不区分这两者 ⇒ **别当成“压缩成功”** ✓。',
-					};
-				}
-				const lines = [`会话 ${sessionId} 已压缩 ✓（project=${summary.project ?? '?'}，观察数 ${summary.observationCount ?? '?'}）`];
-				if (summary.title) { lines.push(`  标题：${String(summary.title).slice(0, 160)}`); }
-				if (summary.narrative) { lines.push(`  叙事：${String(summary.narrative).slice(0, 400)}`); }
-				if (Array.isArray(summary.keyDecisions) && summary.keyDecisions.length) {
-					lines.push(`  关键决定：${summary.keyDecisions.slice(0, 5).map(d => String(d).slice(0, 80)).join(' | ')}`);
-				}
-				if (Array.isArray(summary.concepts) && summary.concepts.length) {
-					lines.push(`  概念：${summary.concepts.slice(0, 10).join(', ')}`);
-				}
-				return { ok: true, action, text: lines.join('\n') };
-			}
-			// ── 2026-10-14：前沿队列入队（**写**）──────────────────────────────────
-			// ⚠ 与 `getTopLessons` 那类**恒空桩**不同：真机实测它**返回完整对象并真的落库** ✓。
-			if (action === 'frontier') {
-				const concept = typeof params?.concept === 'string' ? params.concept.trim() : '';
-				if (!concept) {
-					throw new Error('memory_governance: action=frontier 需要 concept（要加入队列的概念 ✓）');
-				}
-				const desc = typeof params?.description === 'string' ? params.description.trim() : undefined;
-				const pri = Number.isFinite(params?.priority) ? params.priority : undefined;
-				const reply = await frontierAdd(base, agent, concept, desc, pri);
-				const ok = !!reply?.id;
-				await auditAppend({ ...auditBase(`frontier ${concept}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-				return {
-					ok, action,
-					text: ok
-						? `已加入前沿队列：${concept}（id=${reply.id}${pri === undefined ? '' : `，priority=${pri}`}）—— 读取用 memory_api 的 frontierGet/frontierNext ✓`
-						: `入队失败：引擎没回 id（回执 ${JSON.stringify(reply ?? null).slice(0, 160)}）`,
-				};
-			}
-			if (action === 'audit') {
-				const limit = Number.isFinite(params?.limit) ? Math.max(1, Math.floor(params.limit)) : 20;
-				const entries = await governanceAuditQuery(base, agent, { limit });
-				const items = Array.isArray(entries) ? entries : [];
-				return {
-					ok: Array.isArray(entries), action,
-					text: items.length
-						? `治理审计 ${items.length} 条：\n${items.slice(0, limit).map(e => `- ${e?.timestamp ?? e?.createdAt ?? ''} ${e?.operation ?? e?.action ?? ''} ${JSON.stringify(e?.details ?? e).slice(0, 160)}`).join('\n')}`
-						: '治理审计为空。',
-				};
-			}
-			// ── 批 2d：检查点（`Checkpoint` 形状见 `amAdvanced.ts:78-90` ✓）──────────────────
-			if (action === 'checkpoint') {
-				const sub = typeof params?.sub === 'string' && params.sub ? params.sub : 'list'; // 缺省 list ⇒ 只读 ✓
-				const name = typeof params?.name === 'string' ? params.name.trim() : '';
-				if (sub === 'list') {
-					const list = await providerCall(base, 'checkpointList', [agent]);
-					const items = Array.isArray(list) ? list : [];
-					return {
-						ok: Array.isArray(list), action,
-						text: items.length
-							? `检查点 ${items.length} 个：\n${items.map(c => `- ${c?.id ?? '?'}「${c?.name ?? ''}」status=${c?.status ?? '?'} created=${c?.createdAt ?? ''}${c?.resolvedAt ? ` resolved=${c.resolvedAt}` : ''}${c?.description ? `\n  ${String(c.description).slice(0, 160)}` : ''}`).join('\n')}`
-							: '还没有任何检查点（`sub=create` 加一个 ✓）。',
-					};
-				}
-				if (sub === 'create') {
-					if (!name) { throw new Error('checkpoint create 需要 name'); }
-					// ⚠ 方法名是 **`createCheckpoint`**（ProviderV2 的**公开**名 ✓），**不是** `checkpointCreate`
-					//   —— 后者是**内部模块函数**（`adv.checkpointCreate`，见 `agentMemoryProviderV2.ts:597` 那行的
-					//   转发 ✓）：两者**词序颠倒** ⇒ 真机上 `checkpointCreate` 是 **404** ✗✗。
-					//   ★ 这一处是 `p3-80` 的 ⑫ 抓出来的（假网关永远发现不了 ✓）⇒ 别改回去 ✓。
-					const cp = await providerCall(base, 'createCheckpoint', [agent, name]);
-					const ok = typeof cp?.id === 'string' && !!cp.id;
-					await auditAppend({ ...auditBase(`checkpoint create ${name}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-					return { ok, action, text: ok ? `已建检查点「${name}」（id ${cp.id}，status=${cp.status ?? 'pending'}）。用 sub=resolve 标记它通过/失败 ✓。` : `建检查点失败：网关没回可读的 id（回执 ${JSON.stringify(cp ?? null).slice(0, 200)}）` };
-				}
-				if (sub === 'resolve') {
-					const id = typeof params?.checkpoint_id === 'string' ? params.checkpoint_id.trim() : '';
-					if (!id) { throw new Error('checkpoint resolve 需要 checkpoint_id'); }
-					if (typeof params?.passed !== 'boolean') { throw new Error('checkpoint resolve 需要 passed（true/false）'); }
-					const cp = await providerCall(base, 'checkpointResolve', [agent, id, params.passed]);
-					// ⚠ id 不存在时引擎回 **`null`**（`amAdvanced.ts:83` 的 `if (!cp) return null` ✓）⇒ **必须判失败** ✓
-					const ok = !!cp && typeof cp.id === 'string';
-					await auditAppend({ ...auditBase(`checkpoint resolve ${id}=${params.passed}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-					return { ok, action, text: ok ? `检查点「${cp.name ?? id}」已标记为 ${cp.status ?? (params.passed ? 'passed' : 'failed')}。` : `标记失败：引擎没找到检查点 ${id}（回执 ${JSON.stringify(cp ?? null).slice(0, 120)}）` };
-				}
-				if (sub === 'expire') {
-					const id = typeof params?.checkpoint_id === 'string' ? params.checkpoint_id.trim() : '';
-					if (!id) { throw new Error('checkpoint expire 需要 checkpoint_id'); }
-					const r = await providerCall(base, 'checkpointExpire', [agent, id]);
-					await auditAppend({ ...auditBase(`checkpoint expire ${id}`), outcome: 'ok' });
-					return { ok: true, action, text: `检查点 ${id} 已过期（${JSON.stringify(r ?? null).slice(0, 160)}）。` };
-				}
-				throw new Error(`memory_governance checkpoint: 不认识的 sub "${sub}"（合法：list/create/resolve/expire）`);
-			}
-			// ── 批 2d：快照（`Snapshot` 形状见 `amAdvanced.ts:314`；恢复见 `amReplication.ts:212` ✓）──
-			if (action === 'snapshot') {
-				const sub = typeof params?.sub === 'string' && params.sub ? params.sub : 'list'; // 缺省 list ⇒ 只读 ✓
-				const name = typeof params?.name === 'string' ? params.name.trim() : '';
-				if (sub === 'list') {
-					const list = await providerCall(base, 'snapshotList', [agent]);
-					const items = Array.isArray(list) ? list : [];
-					return {
-						ok: Array.isArray(list), action,
-						text: items.length
-							? `快照 ${items.length} 个：\n${items.map(s => `- ${s?.id ?? '?'}「${s?.name ?? ''}」created=${s?.createdAt ?? ''}${Number.isFinite(s?.memoryCount) ? ` 记忆 ${s.memoryCount} 条` : ''}`).join('\n')}`
-							: '还没有任何快照（`sub=create` 存一个 ✓）。',
-					};
-				}
-				if (sub === 'create') {
-					if (!name) { throw new Error('snapshot create 需要 name'); }
-					const snap = await providerCall(base, 'createSnapshot', [agent, name]);
-					const ok = typeof snap?.id === 'string' && !!snap.id;
-					await auditAppend({ ...auditBase(`snapshot create ${name}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-					return { ok, action, text: ok ? `已建快照「${name}」（id ${snap.id}${Number.isFinite(snap.memoryCount) ? `，含 ${snap.memoryCount} 条记忆` : ''}）。⚠ 用 sub=restore 会**覆盖当前记忆**。` : `建快照失败：网关没回可读的 id（回执 ${JSON.stringify(snap ?? null).slice(0, 200)}）` };
-				}
-				if (sub === 'restore') {
-					const id = typeof params?.snapshot_id === 'string' ? params.snapshot_id.trim() : '';
-					if (!id) { throw new Error('snapshot restore 需要 snapshot_id'); }
-					const r = await providerCall(base, 'snapshotRestore', [agent, id]);
-					// ⚠ 引擎回 `{success, restored?, error?}` ✓ ⇒ **必须按 `success` 判**，不能只看"没抛错" ✗
-					//   （典型失败：老快照是 legacy 格式（只有 ids 没有全量数据）⇒ 永远恢复不了 ✓，见 `amReplication.ts:212` ✓）
-					const ok = r?.success === true;
-					await auditAppend({ ...auditBase(`snapshot restore ${id}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-					return { ok, action, text: ok ? `快照 ${id} 已恢复：写回 ${r.restored ?? '?'} 条记忆。` : `恢复失败：${r?.error ?? '网关没回可读信息'}（回执 ${JSON.stringify(r ?? null).slice(0, 200)}）` };
-				}
-				throw new Error(`memory_governance snapshot: 不认识的 sub "${sub}"（合法：list/create/restore）`);
-			}
-			throw new Error(`memory_governance: 不认识的 action "${action}"（合法：delete/bulk_delete/audit/checkpoint/snapshot）`);
-		},
-	}, {
-		// ── 批 2c：团队池（2 action）───────────────────────────────────────
-		name: 'memory_team',
-		description: '**团队记忆池**：把自己的一条记忆共享到团队池（其他 agent 可发现 ✓），或查别人共享了什么（跨 agent 知识共享 ✓）。'
-			+ ' ⚠ `share` 是**写**（需审批 ✓）；`query` 只读（不弹窗 ✓）。',
-		parameters: {
-			type: 'object',
-			properties: {
-				action: { type: 'string', enum: ['share', 'query'], description: '要做的动作' },
-				memory_id: { type: 'string', description: '要共享的记忆 id（share；先用 memory_search 找到）' },
-				item_type: { type: 'string', description: '共享项的类型标签（share；缺省 "memory"）' },
-				project: { type: 'string', description: '项目范围标签（可选）' },
-				query: { type: 'string', description: '关键词过滤（query；空 = 全部共享项）' },
-			},
-			required: ['action'],
-		},
-		output: {
-			schema: {
-				type: 'object',
-				properties: { ok: { type: 'boolean' }, action: { type: 'string' }, text: { type: 'string' } },
-				required: ['ok', 'action', 'text'],
-			},
-			render: (_args, value) => [{ type: 'text', text: value.text }],
-		},
-		execute: async (params) => {
-			const base = requireGateway(config);
-			const agent = agentIdOf(config);
-			const action = typeof params?.action === 'string' ? params.action : '';
-			const str = key => (typeof params?.[key] === 'string' ? params[key].trim() : '');
-			if (action === 'share') {
-				const memId = str('memory_id');
-				if (!memId) { throw new Error('share 需要 memory_id'); }
-				const reply = await teamShare(base, agent, memId, str('item_type') || 'memory', str('project') || undefined);
-				// 形状已核实 ✓（`amRemaining.ts:145` ⇒ `{success, item?, error?}` ✓）
-				const ok = reply?.success === true;
-				await auditAppend({ action: 'executed', tool: 'memory_team', target: 'long', memoryType: 'fact', content: `共享记忆 ${memId} 到团队池`, outcome: ok ? 'ok' : 'rejected-by-gateway' });
-				return { ok, action, text: ok ? `已共享记忆 ${memId} 到团队池（share id ${reply?.item?.id ?? '?'}）。` : `共享失败：${reply?.error ?? '网关没有回可读信息'}` };
-			}
-			if (action === 'query') {
-				const items = await teamQuery(base, agent, str('query') || undefined);
-				const list = Array.isArray(items) ? items : [];
-				return {
-					ok: Array.isArray(items), action,
-					text: list.length
-						? `团队池 ${list.length} 项：\n${list.slice(0, 20).map(i => {
-							const content = typeof i?.content === 'string' ? i.content : (i?.content?.content ?? JSON.stringify(i?.content ?? ''));
-							return `- [${i?.type ?? 'item'}] by ${i?.sharedBy ?? '?'} @ ${i?.sharedAt ?? ''}：${String(content).slice(0, 160)}`;
-						}).join('\n')}`
-						: '团队池是空的。',
-				};
-			}
-			throw new Error(`memory_team: 不认识的 action "${action}"（合法：share/query）`);
-		},
-	}, {
-		// ── 批 2c：联邦（4 action）─────────────────────────────────────────
-		name: 'memory_mesh',
-		description: '**Mesh 联邦**（多 agent 跨网关协作）：加入一个 peer、列 peer、让 peer 下线、或同步（push/pull 记忆增量，last-write-wins ✓）。'
-			+ ' ⚠ `join`/`leave`/`sync` 是**写**（需审批 ✓）；`list` 只读 ✓。⚠ `sync` 需要两端网关共享 `AGENTMEMORY_SECRET` ✓。',
-		parameters: {
-			type: 'object',
-			properties: {
-				action: { type: 'string', enum: ['join', 'list', 'leave', 'sync'], description: '要做的动作' },
-				name: { type: 'string', description: 'peer 显示名（join）' },
-				url: { type: 'string', description: 'peer 网关地址，如 http://192.168.1.10:3111（join）' },
-				scopes: { type: 'array', items: { type: 'string' }, description: '共享范围（join/sync；缺省 ["memories","actions"]）' },
-				peer_id: { type: 'string', description: 'peer id（leave/sync；sync 不带 = 所有在线 peer）' },
-				direction: { type: 'string', enum: ['push', 'pull', 'both'], description: '同步方向（sync；缺省 both）' },
-			},
-			required: ['action'],
-		},
-		output: {
-			schema: {
-				type: 'object',
-				properties: { ok: { type: 'boolean' }, action: { type: 'string' }, text: { type: 'string' } },
-				required: ['ok', 'action', 'text'],
-			},
-			render: (_args, value) => [{ type: 'text', text: value.text }],
-		},
-		execute: async (params) => {
-			const base = requireGateway(config);
-			const agent = agentIdOf(config);
-			const action = typeof params?.action === 'string' ? params.action : '';
-			const str = key => (typeof params?.[key] === 'string' ? params[key].trim() : '');
-			const scopes = Array.isArray(params?.scopes) ? params.scopes.filter(s => typeof s === 'string' && s.trim()) : undefined;
-			const auditBase = detail => ({ action: 'executed', tool: 'memory_mesh', target: 'long', memoryType: 'fact', content: `联邦 ${action}${detail ? ` ${detail}` : ''}` });
-			if (action === 'join') {
-				const name = str('name');
-				const url = str('url');
-				if (!name || !url) { throw new Error('join 需要 name 与 url'); }
-				const peer = await meshJoin(base, agent, name, url, scopes);
-				// 形状已核实 ✓（`amRemaining.ts:173` ⇒ `MeshPeer` ✓）
-				const ok = typeof peer?.id === 'string' && !!peer.id;
-				await auditAppend({ ...auditBase(`${name} ${url}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-				return { ok, action, text: ok ? `已加入 peer「${name}」（${url}）→ peer id ${peer.id}` : `加入失败：网关没回可用的 peer id（回执 ${JSON.stringify(peer ?? null).slice(0, 200)}）` };
-			}
-			if (action === 'list') {
-				const peers = await meshList(base, agent);
-				const list = Array.isArray(peers) ? peers : [];
-				return {
-					ok: Array.isArray(peers), action,
-					text: list.length
-						? `Mesh peer ${list.length} 个：\n${list.map(p => `- [${p?.id ?? '?'}] ${p?.name ?? ''} ${p?.url ?? ''} status=${p?.status ?? '?'} scopes=${(p?.sharedScopes ?? []).join(',')}${p?.lastSyncAt ? ` lastSync=${p.lastSyncAt}` : ''}`).join('\n')}`
-						: '还没有注册任何 mesh peer。',
-				};
-			}
-			if (action === 'leave') {
-				const peerId = str('peer_id');
-				if (!peerId) { throw new Error('leave 需要 peer_id'); }
-				const ok = (await meshLeave(base, agent, peerId)) === true; // 形状已核实 ✓（boolean ✓）
-				await auditAppend({ ...auditBase(`peer=${peerId}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-				return { ok, action, text: ok ? `peer ${peerId} 已标记为 offline。` : `peer ${peerId} 不存在。` };
-			}
-			if (action === 'sync') {
-				const reply = await meshSync(base, agent, {
-					...(str('peer_id') ? { peerId: str('peer_id') } : {}),
-					...(scopes ? { scopes } : {}),
-					...(str('direction') ? { direction: str('direction') } : {}),
-				});
-				// 形状已核实 ✓（`amRemaining.ts:372` ⇒ `{success, results?, error?}` ✓）
-				const ok = reply?.success === true;
-				await auditAppend({ ...auditBase(`direction=${str('direction') || 'both'}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-				if (!ok) { return { ok: false, action, text: `同步失败：${reply?.error ?? '网关没有回可读信息'}` }; }
-				const lines = (Array.isArray(reply?.results) ? reply.results : []).map(x => `- ${x?.peerName ?? '?'}：pushed=${x?.pushed ?? '?'} pulled=${x?.pulled ?? '?'}${x?.errors?.length ? ` errors=[${x.errors.join('; ')}]` : ''}`);
-				return { ok: true, action, text: `同步完成：\n${lines.join('\n') || '（没有在线 peer）'}` };
-			}
-			throw new Error(`memory_mesh: 不认识的 action "${action}"（合法：join/list/leave/sync）`);
-		},
-	}, {
-		// ── 批 2c：哨兵（4 action）─────────────────────────────────────────
-		name: 'memory_sentinel',
-		description: '**哨兵**（条件监视器）：建一个命名监视器 + 条件表达式、列出来、立即评估（`check`）、**直接触发**（`trigger`）、取消。'
-			+ ' ⚠ `create`/`check`/`trigger`/`cancel` 是**写**（`check`/`trigger` 都会把哨兵置为已触发 ✓，需审批 ✓）；`list` 只读 ✓。'
-			+ ' 条件格式：threshold `"memory_count > 1000"` ✓ / pattern（正则或子串 ✓）/ schedule `"24h"`/`"7d"`/ISO 日期 ✓。'
-			+ ' ⚠ `trigger` 与 `check` 的区别：`check` 是**先评估条件**、满足才触发；`trigger` 是**跳过评估直接触发** ✓。',
-		parameters: {
-			type: 'object',
-			properties: {
-				action: { type: 'string', enum: ['create', 'list', 'check', 'trigger', 'cancel'], description: '要做的动作' },
-				name: { type: 'string', description: '监视器名（create）' },
-				condition: { type: 'string', description: '要监视的条件表达式，如 "memory_count > 1000"（create）' },
-				type: { type: 'string', enum: ['threshold', 'pattern', 'schedule'], description: '监视器类型（create；缺省 threshold）' },
-				sentinel_id: { type: 'string', description: '哨兵 id（cancel / trigger；先用 action=list 拿）' },
-				result: { type: 'object', description: '`trigger`：顺带记下触发时的上下文（可选 ✓ —— 引擎会存进该哨兵的触发记录 ✓）' },
-			},
-			required: ['action'],
-		},
-		output: {
-			schema: {
-				type: 'object',
-				properties: { ok: { type: 'boolean' }, action: { type: 'string' }, text: { type: 'string' } },
-				required: ['ok', 'action', 'text'],
-			},
-			render: (_args, value) => [{ type: 'text', text: value.text }],
-		},
-		execute: async (params) => {
-			const base = requireGateway(config);
-			const agent = agentIdOf(config);
-			const action = typeof params?.action === 'string' ? params.action : '';
-			const str = key => (typeof params?.[key] === 'string' ? params[key].trim() : '');
-			const auditBase = detail => ({ action: 'executed', tool: 'memory_sentinel', target: 'long', memoryType: 'fact', content: `哨兵 ${action}${detail ? ` ${detail}` : ''}` });
-			if (action === 'create') {
-				const name = str('name');
-				const condition = str('condition');
-				if (!name || !condition) { throw new Error('create 需要 name 与 condition'); }
-				const s = await sentinelCreate(base, agent, name, condition, str('type') || 'threshold');
-				// 形状已核实 ✓（`amAdvanced.ts:133` ⇒ `Sentinel` ✓）
-				const ok = typeof s?.id === 'string' && !!s.id;
-				await auditAppend({ ...auditBase(`${name}：${condition}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-				return { ok, action, text: ok ? `已建哨兵「${name}」（id ${s.id}），条件：${condition}。下次维护扫描或 action=check 会评估它 ✓。` : `建哨兵失败：网关没回可用的 id（回执 ${JSON.stringify(s ?? null).slice(0, 200)}）` };
-			}
-			if (action === 'list') {
-				const list = await sentinelList(base, agent);
-				const items = Array.isArray(list) ? list : [];
-				return {
-					ok: Array.isArray(list), action,
-					text: items.length
-						? `哨兵 ${items.length} 个：\n${items.map(s => `- [${s?.id ?? '?'}] ${s?.name ?? '?'}（${s?.type ?? 'threshold'}）：${s?.condition ?? ''} status=${s?.status ?? 'watching'}${s?.triggeredAt ? ` triggered=${s.triggeredAt}` : ''} created=${s?.createdAt ?? ''}`).join('\n')}`
-						: '还没有注册任何哨兵。',
-				};
-			}
-			if (action === 'check') {
-				const r = await sentinelCheck(base, agent);
-				// 形状已核实 ✓（`amAdvanced.ts:224` ⇒ `SentinelCheckResult`：`checked`/`expired?`/`triggered?`/`errors?` ✓ —— 判据用 `checked` ✓）
-				const ok = Number.isFinite(r?.checked);
-				await auditAppend({ ...auditBase(), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-				if (!ok) { return { ok: false, action, text: `评估失败：网关没回可读结果（回执 ${JSON.stringify(r ?? null).slice(0, 200)}）` }; }
-				const parts = [`已评估 ${r.checked} 个 watching 哨兵`];
-				if (r.expired) { parts.push(`${r.expired} 个过期`); }
-				if (Array.isArray(r.triggered) && r.triggered.length) {
-					parts.push(`**触发 ${r.triggered.length} 个**：`);
-					for (const t of r.triggered) { parts.push(`  - 「${t?.name ?? '?'}」（${t?.type ?? '?'}）：${JSON.stringify(t?.result ?? null).slice(0, 200)}`); }
-				} else { parts.push('没有触发任何哨兵 ✓'); }
-				if (Array.isArray(r.errors) && r.errors.length) { parts.push(`错误：${r.errors.map(e => `${e?.id ?? '?'}: ${e?.error ?? '?'}`).join('; ')}`); }
-				return { ok: true, action, text: parts.join('\n') };
-			}
-			if (action === 'cancel') {
-				const sid = str('sentinel_id');
-				if (!sid) { throw new Error('cancel 需要 sentinel_id'); }
-				const r = await sentinelCancel(base, agent, sid);
-				const ok = r?.success === true; // 形状已核实 ✓（`amAdvanced.ts:303` ✓）
-				await auditAppend({ ...auditBase(`sentinel_id=${sid}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-				return { ok, action, text: ok ? `哨兵 ${sid} 已取消。` : `取消失败：${r?.error ?? '网关没有回可读信息'}` };
-			}
-			// 2026-10-14 新增：**直接触发**（跳过条件评估 ⇒ 一定置为 triggered ✓）
-			// ⚠ 与 `check` 的分工：`check` 是"先评估**所有**哨兵的条件、满足才触发" ✓；
-			//   `trigger` 是"点名触发某一个、不评估" ✓ ⇒ 两者语义不同、都要有 ✓。
-			// ⚠ 形状**真机实测已核实**：成功 `{success:true}`、失败 `{success:false, error}` ✓
-			//   （与 `compressSession` 那种"null 混两种含义"不同 ⇒ 这里能如实区分成功/失败 ✓）。
-			if (action === 'trigger') {
-				const sid = str('sentinel_id');
-				if (!sid) { throw new Error('trigger 需要 sentinel_id（先用 action=list 拿 ✓）'); }
-				const result = params?.result && typeof params.result === 'object' ? params.result : undefined;
-				const r = await sentinelTrigger(base, agent, sid, result);
-				const ok = r?.success === true;
-				await auditAppend({ ...auditBase(`trigger sentinel_id=${sid}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-				return {
-					ok, action,
-					text: ok
-						? `哨兵 ${sid} 已触发 ✓（status → triggered）`
-						: `触发未生效：${r?.error ?? '网关没有回可读信息'}`
-							// ⚠⚠ 这句**必须**写：真机实测"重复触发"就是这个错误 ✓ 而它是**幂等保护** ✓
-							//   —— 不写清的话，模型会当成故障去重试 ✗（那是本仓反复踩的"把正常态当错误"✓）。
-							+ ' ⚠ 若错误是 `sentinel already triggered` ⇒ 那是**幂等保护**（它**已经是** triggered 状态 ✓），'
-							+ '**不是故障** ⇒ 别重试；用 `action=list` 看状态即可 ✓',
-				};
-			}
-			throw new Error(`memory_sentinel: 不认识的 action "${action}"（合法：create/list/check/trigger/cancel）`);
-		},
-	}, {
-		// ── 通用只读入口（2026-10-13 建）────────────────────────────────────
-		// 为什么用"一个工具 + 方法名"而不是"每个能力一个工具"：见 `MEMORY_API_READONLY` 的头注释
-		// （工具定义进系统提示词 ⇒ 数量就是上下文成本 ✓）。
-		name: 'memory_api',
-		description: '**通用只读记忆入口**：用 `method` 调引擎的高级只读能力（分层读取 / 智能检索 / 技能匹配 / '
-			+ '会话观察 / 课程 / 槽位 / 统计诊断 / 清单）。'
-			+ ' ⚠ **只读**：它不能写任何东西（写请走 memory_remember / memory_forget / memory_governance 等专用工具 ✓）。'
-			+ ' ⚠ 不传 `method`（或传 `list_methods`）⇒ 返回**可用方法清单**（默认只给「方法名+参数」以省上下文 ✓；'
-			+ '要看每个方法的**说明**再加 `verbose: true`）——**先看清单再调** ✓。'
-			// ⚠ 这个数字**必须用变量**：白名单从 28 一路扩到 53，而硬编码的旧数字**没人守** ✗
-			//   （`p3-78` 只对「文档里的工具名」与代码，不查这句 ✓）⇒ 写成变量就永不漂移 ✓。
-			+ ' ⚠ 表外的 method 会被**直接拒绝**（不是透传 ✗）：引擎约 200 个方法里只有 '
-			+ `${MEMORY_API_READONLY.size} 个被确证过可用，`
-			+ '其余要么是未实现的空壳（恒回 null）、要么没验过 ⇒ 不给你猜的机会 ✓。',
-		parameters: {
-			type: 'object',
-			properties: {
-				method: { type: 'string', description: '要调用的只读方法名（见 `list_methods` 的清单）；省略则只返回清单' },
-				args: {
-					type: 'array', description: '该方法的**位置参数**（**不含 agentId** —— 当前分区由插件自动前置，手填会被忽略 ✓）',
-					items: {},
-				},
-				// ★ 2026-10-14：清单默认**瘦身**，`verbose` 才给说明 —— 理由见 execute 里那段注释 ✓
-				verbose: { type: 'boolean', description: '仅在 `list_methods` 时有效：给每个方法带上**一句话说明**（默认 false ⇒ 只给「方法名+参数」，省约 2/3 上下文 ✓；要挑方法时再设 true）' },
-			},
-		},
-		output: {
-			schema: {
-				type: 'object',
-				properties: { ok: { type: 'boolean' }, method: { type: 'string' }, text: { type: 'string' } },
-				required: ['ok', 'method', 'text'],
-			},
-			render: (_args, value) => [{ type: 'text', text: value.text }],
-		},
-		isConcurrencySafe: () => true,
-		execute: async (params) => {
-			const method = typeof params?.method === 'string' ? params.method.trim() : '';
-			// 清单：既是自描述，也是"该工具能干什么"的**唯一权威来源**（缺了它模型只能猜方法名 ✗）
-			if (!method || method === 'list_methods') {
-				const entries = [...MEMORY_API_READONLY.entries()];
-				// ★ 2026-10-14：清单**默认瘦身**（`verbose` 才给说明）。
-				// 为什么：这份清单**每次"不确定能干什么"都要吃一遍**，而完整版实测 **3231 字符**（53 个方法 ×
-				// 一句话说明）✗ —— 但模型大多数时候只需要**知道有哪些方法** ✓，说明只在"要挑一个"时才需要。
-				// ⇒ 默认只给「方法名+参数」（约 1/3 长度），要说明再加 `verbose: true` ✓。
-				// ⚠ 引导语**必须写**：只说"要说明加 verbose"会让模型在**不确定**时干脆不用（
-				//   而它本来就不该在不确定时调引擎 ✓）⇒ 明确写"按需" ✓。
-				if (params?.verbose !== true) {
-					return {
-						ok: true, method: 'list_methods',
-						text: `可用只读方法 ${entries.length} 个（args 不含 agentId —— 由插件自动前置 ✓）：\n`
-							+ entries.map(([name, m]) => `${name}(${m.args || ''})`).join(' | ')
-							+ '\n\n要挑方法时再调一次并加 `verbose: true`（带每个方法的一句话说明，约 3 倍长度 ⇒ 按需用 ✓）。'
-							+ '\n⚠ 表外的 method 一律被拒（含写方法与引擎里未实现的空壳 ✓）。',
-					};
-				}
-				const lines = entries
-					.map(([name, m]) => `- ${name}(${m.args})${m.args ? '' : '（无参数）'} —— ${m.note}`);
-				return {
-					ok: true, method: 'list_methods',
-					text: `可用的只读方法 ${entries.length} 个（args 从**不含 agentId** 的位置开始 ✓）：\n${lines.join('\n')}\n`
-						+ '\n⚠ 引擎里另有约 170 个方法**刻意不在此表**：铁证为未实现空壳的（如 `traceProvenance` ⇒ 恒回 null）'
-						+ '与未经真机验证的都在外 ✗ —— 需要哪个先说一声，验过再加 ✓。',
-				};
-			}
-			const spec = MEMORY_API_READONLY.get(method);
-			if (!spec) {
-				// ⚠ 负对照：表外**必须拒绝**（写成"透传任意方法"＝白名单形同虚设 ✗）。回话里带上最近的名字，
-				// 让模型能自我纠正（而不是盲猜一轮 ✓）。
-				const near = [...MEMORY_API_READONLY.keys()].filter(k => k.toLowerCase().includes(method.toLowerCase().slice(0, 4)));
-				throw new Error(`memory_api: 方法 "${method}" 不在**只读白名单**里 ⇒ 拒绝执行`
-					+ `（不存在的引擎方法 / 未验证的方法 / 写方法都不放行 ✗）。`
-					+ `${near.length ? `你是不是想调：${near.join(' / ')}？` : '先用 method=list_methods 看清单 ✓。'}`);
-			}
-			const base = requireGateway(config);
-			// ⚠ agentId 由这里**前置**，不从参数取：手填等于让模型有机会写到别的分区 ✗（跨 agent 泄漏）
-			const rest = Array.isArray(params?.args) ? params.args : [];
-			try {
-				const raw = await providerCall(base, method, [agentIdOf(config), ...rest]);
-				const value = raw === undefined ? null : raw;
-				const body = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-				// ⚠ 空结果**照实说**（不能美化成长句）：引擎回空有"真没数据"与"方法其实是空壳"两种，
-				//   调用方需要能看出这个区别 ✓（这条与 p3-07 的"回 null 必须判失败"同一纪律 ✓）。
-				const empty = value === null || value === '' || (Array.isArray(value) && value.length === 0);
-				return {
-					ok: true, method,
-					text: empty
-						? `${method} 返回**空**（${value === null ? 'null' : Array.isArray(value) ? '[]' : "''"}）—— 要么本分区确实没有这类数据，要么该方法在引擎侧是空实现 ✓。`
-						: `${method}（args=${JSON.stringify(rest)}）→\n${body}`,
-				};
-			} catch (error) {
-				// 网关的报错**原样转述**（不吞成"操作失败" ✗）：参数不对时那句话本身就是纠正依据 ✓
-				return { ok: false, method, text: `${method} 调用失败：${error?.message ?? error}` };
-			}
-		},
-	}, {
-		// ── 槽位（memory slot）─────────────────────────────────────────────
-		// 为什么单独做成工具而不是靠 `memory_api`：槽位**一半是写**（create/set/append/replace/delete/reflect），
-		// 而 `memory_api` 是**只读**入口 ⇒ 写类要独立走审批闸 ✓。
-		// ⚠ 内部直接用 `providerCall` 而不在 `lib/gateway.js` 加一堆薄封装：`gateway.js` 里**一个 slot 方法都没有**
-		//   （只有 `workingContext` 经 `loadContext` 间接读 ✓）⇒ 为 8 个方法各写一层一行的转发**没有信息量** ✓；
-		//   `memory_api` 已开先例 ✓，且方法名与参数**逐字来自**引擎签名（`agentMemoryProviderV2.ts` ✓）⇒ 可核对 ✓。
-		name: 'memory_slot',
-		description: '**槽位**（slot）读写：槽位是"每轮对话都会带上"的**常驻上下文**（比普通记忆更靠近提示词），'
-			+ '适合放"当前任务与偏好"这类需要一直生效的东西。'
-			+ ' `list` / `get` **只读**（不弹窗 ✓）；`create` / `set` / `append` / `replace` / `delete` / `reflect` **是写**（需审批 ✓）。'
-			+ ' ⚠ 先 `list` 看现有槽位与它们的 `sizeLimit`（超出上限的内容会被引擎截断 ✓），再决定 `set` 还是 `append`。',
-		parameters: {
-			type: 'object',
-			properties: {
-				action: { type: 'string', enum: ['list', 'get', 'create', 'set', 'append', 'replace', 'delete', 'reflect'], description: '要做的动作' },
-				label: { type: 'string', description: '槽位名（`list` 之外都必填；`list` 能告诉你现有哪些）' },
-				content: { type: 'string', description: '整段内容（create / set / replace）' },
-				text: { type: 'string', description: '要追加的片段（append —— 与 set 的区别是它**不覆盖**已有内容 ✓）' },
-				session_id: { type: 'string', description: '会话 id（reflect：把该会话的观察反思进槽位）' },
-				max_observations: { type: 'integer', description: '反思时最多取多少条观察（reflect；可选）' },
-				size_limit: { type: 'integer', description: '该槽位的内容上限（create；可选）' },
-				description: { type: 'string', description: '槽位用途说明（create；可选 —— 它会出现在 `list` 的结果里，给以后的自己看 ✓）' },
-				pinned: { type: 'boolean', description: '是否常驻进提示词（create；可选）' },
-			},
-			required: ['action'],
-		},
-		output: {
-			schema: {
-				type: 'object',
-				properties: { ok: { type: 'boolean' }, action: { type: 'string' }, text: { type: 'string' } },
-				required: ['ok', 'action', 'text'],
-			},
-			render: (_args, value) => [{ type: 'text', text: value.text }],
-		},
-		isConcurrencySafe: () => true,
-		execute: async (params) => {
-			const base = requireGateway(config);
-			const agent = agentIdOf(config);
-			const action = typeof params?.action === 'string' ? params.action : '';
-			const label = typeof params?.label === 'string' ? params.label.trim() : '';
-			const str = key => (typeof params?.[key] === 'string' ? params[key] : '');
-			// 写类动作走审计（只读不动审计 —— 与 `memory_governance` 的 audit 同判据 ✓）
-			const auditBase = detail => ({ action: 'executed', tool: 'memory_slot', target: 'long', memoryType: 'fact', content: `槽位 ${action} ${label}${detail ? ` ${detail}` : ''}` });
-			// 每个动作 → 引擎方法名 + 除 agentId 外的位置参数（逐字对齐 `agentMemoryProviderV2.ts` 的签名 ✓）
-			const plan = {
-				create: { method: 'slotCreate', argv: () => [{ label, content: str('content'), sizeLimit: params?.size_limit, description: str('description'), pinned: params?.pinned === true }] },
-				set: { method: 'slotSet', argv: () => [label, str('content')] },
-				append: { method: 'slotAppend', argv: () => [label, str('text')] },
-				replace: { method: 'slotReplace', argv: () => [label, str('content')] },
-				delete: { method: 'slotDelete', argv: () => [label] },
-				reflect: { method: 'slotReflect', argv: () => [str('session_id'), params?.max_observations] },
-			};
-			const render = list => (Array.isArray(list) ? list : [])
-				.map(s => `- ${s?.label ?? s?.name ?? '?'}${s?.pinned ? ' 📌' : ''}${Number.isFinite(s?.sizeLimit) ? `（上限 ${s.sizeLimit}）` : ''}${s?.description ? `：${s.description}` : ''}\n  ${String(s?.content ?? '').slice(0, 300) || '（空）'}`)
-				.join('\n');
-			if (action === 'list') {
-				const list = await providerCall(base, 'slotList', [agent]);
-				return { ok: Array.isArray(list), action, text: Array.isArray(list) && list.length ? `槽位 ${list.length} 个：\n${render(list)}` : '当前没有任何槽位（用 action=create 建一个 ✓）。' };
-			}
-			if (action === 'get') {
-				if (!label) { throw new Error('get 需要 label'); }
-				const content = await providerCall(base, 'getSlot', [agent, label]);
-				// ⚠ 回空**照实说**：引擎对"槽位不存在"与"槽位是空的"都回空串 ⇒ 不编造 ✓（与 p3-80 的判据一致 ✓）
-				return { ok: true, action, text: typeof content === 'string' && content ? `槽位「${label}」的内容：\n${content}` : `槽位「${label}」读出**空**（可能不存在，也可能是空槽 —— 用 action=list 看有没有这个 label ✓）。` };
-			}
-			const step = plan[action];
-			if (!step) { throw new Error(`memory_slot: 不认识的 action "${action}"（合法：list/get/create/set/append/replace/delete/reflect）`); }
-			if (!label) { throw new Error(`${action} 需要 label`); }
-			if (action === 'reflect' && !str('session_id')) { throw new Error('reflect 需要 session_id'); }
-			if (action !== 'delete' && action !== 'reflect' && !str('content') && !str('text')) {
-				throw new Error(`${action} 的内容不能为空（content${action === 'append' ? ' / text' : ''}）`);
-			}
-			const reply = await providerCall(base, step.method, [agent, ...step.argv()]);
-			await auditAppend({ ...auditBase(`(${step.method})`), outcome: 'ok' });
-			const body = typeof reply === 'string' ? reply : JSON.stringify(reply ?? null);
-			return { ok: true, action, text: `槽位 ${action} 已完成（${step.method}）。\n${body.slice(0, 400)}` };
-		},
-	}, {
-		// ── 课程（lesson）─────────────────────────────────────────────────
-		// 为什么独立成工具：同 `memory_slot` —— `save` / `delete` 是写 ⇒ 不能塞进只读的 `memory_api` ✓。
-		// ⚠⚠ **刻意没收 `getTopLessons` / `searchLessons`**：这两个在引擎里是**单行体空实现**（恒回 `[]` ✗，
-		//   见 `MEMORY_API_READONLY` 头注释里那份 17 个桩的清单 ✓）⇒ 收进来只会浪费调用并让模型以为"没有课程" ✗。
-		//   要"按相关度找课程"用 **`recall`**（走 `lessonRecall`，真实现 ✓）。
-		// ⚠⚠ **刻意没收 `addLesson`**：它的签名有 `tags`，但实现是
-		//     `fn.lessonSave(kv, agentId, content, context, 0.8)` —— **`tags` 根本没被用** ✗✗（静默丢弃）。
-		//   ⇒ 它没有任何 `lessonSave` 不具备的能力 ⇒ 收两个只会让模型纠结"该调哪个" ✗。
-		//     （这条是读实现读出来的，光看签名会以为 `tags` 有用 ✓ —— 与 provenance 那次同类的教训 ✓。）
-		name: 'memory_lesson',
-		description: '**课程**（lesson）读写：课程是"从错里学到的东西"，用于跨会话避免重复踩坑。'
-			+ ' `list` / `recall` **只读**（不弹窗 ✓）；`save` / `delete` **是写**（需审批 ✓）。'
-			+ ' ⚠ 想找"和当前任务相关的课程"用 `recall`（带 query）而不是 `list` + 自己翻 ✓。',
-		parameters: {
-			type: 'object',
-			properties: {
-				action: { type: 'string', enum: ['list', 'recall', 'save', 'delete'], description: '要做的动作' },
-				query: { type: 'string', description: '检索词（recall）' },
-				project: { type: 'string', description: '限定项目（recall / save；可选）' },
-				limit: { type: 'integer', description: '最多几条（recall；可选）' },
-				content: { type: 'string', description: '课程正文 —— 写清"什么情况下、该怎么做/不该怎么做"（save）' },
-				context: { type: 'string', description: '这条课程从哪来的（save；可选 —— 给以后的自己留线索 ✓）' },
-				confidence: { type: 'number', description: '确信度 0–1（save；可选）' },
-				lesson_id: { type: 'string', description: '要删的课程 id（delete —— 先用 list 拿到）' },
-			},
-			required: ['action'],
-		},
-		output: {
-			schema: {
-				type: 'object',
-				properties: { ok: { type: 'boolean' }, action: { type: 'string' }, text: { type: 'string' } },
-				required: ['ok', 'action', 'text'],
-			},
-			render: (_args, value) => [{ type: 'text', text: value.text }],
-		},
-		isConcurrencySafe: () => true,
-		execute: async (params) => {
-			const base = requireGateway(config);
-			const agent = agentIdOf(config);
-			const action = typeof params?.action === 'string' ? params.action : '';
-			const str = key => (typeof params?.[key] === 'string' ? params[key].trim() : '');
-			const auditBase = detail => ({ action: 'executed', tool: 'memory_lesson', target: 'long', memoryType: 'fact', content: `课程 ${action}${detail ? ` ${detail}` : ''}` });
-			// ⚠ 只读分支**不同审计**（与 `memory_governance` 的 audit / `memory_slot` 的 list 同判据 ✓）
-			if (action === 'list' || action === 'recall') {
-				// ⚠ 先校验再调用（否则空 query 会先打到网关才被拒 —— 白跑一次网络 ✓）
-				if (action === 'recall' && !str('query')) { throw new Error('recall 需要 query'); }
-				const reply = action === 'list'
-					? await providerCall(base, 'getLessons', [agent])
-					: await providerCall(base, 'lessonRecall', [agent, str('query'), str('project') || undefined, params?.limit]);
-				const items = Array.isArray(reply) ? reply : (Array.isArray(reply?.lessons) ? reply.lessons : []);
-				const body = items.length
-					? items.map((l, i) => {
-						const id = l?.id ?? l?.lesson?.id ?? '?';
-						const text = l?.content ?? l?.lesson?.content ?? '';
-						const why = l?.reason ?? l?.matchReason ?? '';
-						const ctx = l?.context ?? l?.lesson?.context ?? '';
-						const conf = l?.confidence ?? l?.lesson?.confidence;
-						return `[${i + 1}] ${id}${Number.isFinite(conf) ? `（确信度 ${conf}）` : ''}\n  ${String(text).slice(0, 400)}${ctx ? `\n  来源：${String(ctx).slice(0, 160)}` : ''}${why ? `\n  为什么相关：${why}` : ''}`;
-					}).join('\n')
-					: (action === 'list' ? '还没有任何课程（用 action=save 记一条 ✓）。' : `没有与「${str('query')}」相关的课程。`);
-				return { ok: true, action, text: items.length ? `课程 ${items.length} 条：\n${body}` : body };
-			}
-			if (action === 'save') {
-				const content = str('content');
-				if (!content) { throw new Error('save 需要 content'); }
-				const conf = Number.isFinite(params?.confidence) ? params.confidence : undefined;
-				const reply = await providerCall(base, 'lessonSave', [agent, content, str('context') || undefined, conf, str('project') || undefined]);
-				await auditAppend({ ...auditBase(content.slice(0, 80)), outcome: 'ok' });
-				return { ok: true, action, text: `已记下课程（${JSON.stringify(reply ?? null).slice(0, 200)}）。` };
-			}
-			if (action === 'delete') {
-				const id = str('lesson_id');
-				if (!id) { throw new Error('delete 需要 lesson_id'); }
-				await providerCall(base, 'deleteLesson', [agent, id]);
-				await auditAppend({ ...auditBase(id), outcome: 'ok' });
-				return { ok: true, action, text: `课程 ${id} 已删除。` };
-			}
-			throw new Error(`memory_lesson: 不认识的 action "${action}"（合法：list/recall/save/delete）`);
-		},
-	}, {
-		// ── 行动链 / 草图 / 信号（2026-10-13 建）──────────────────────────
-		// ⚠ 为什么**另开工具**而不是像 checkpoint/snapshot 那样塞进 `memory_governance`：
-		//   那三个与"**治理**"（删除 / 审计 / 回滚）是同一语义域（都是"对已有记忆做处置"）✓；
-		//   而 `action` / `sketch` / `signal` 是**另一条链**（"行动 → 草图 → 结晶 → 跨代理信号" ✓）。
-		//   塞进 governance 会让它的 action 涨到 8 个且**语义混杂** ⇒ 模型更难选对 ✗；
-		//   多一个工具（提示词成本 +1 条）换来边界清楚，是划算的 ✓。
-		// ⚠⚠ 三处**必须用"读"而不是同名的桩**（本仓第三次遇到这种"名字更像读的反而更差" ✗）：
-		//   · 列行动用 **`actionList`** ✓，**不是** `getActions`（`getActions` ⇒ `{ return []; }` **桩** ✗）；
-		//   · 列信号用 **`signalQuery`** ✓，**不是** `getSignals`（同样是桩 ✗）。
-		//   判据同上：源码单行体空实现 ⇒ 永不收录（`MEMORY_API_READONLY` 头注释里有全清单 ✓）。
-		name: 'memory_work',
-		description: '**行动链 / 草图 / 信号**：`action` 是待办与依赖（`blocks` / `depends_on` / `relates_to` / `supersedes`），'
-			+ '`sketch` 是"还没定形的想法、可以挂若干行动"（有有效期，7 天后过期），'
-			+ '`signal` 是**跨 agent** 的短消息（默认 24h 过期）。'
-			+ ' ⚠ 只读：各组的 `list` / `get`；其余（`create` / `update` / `edge` / `add` / `discard` / `send`）**是写**（需审批 ✓）。',
-		parameters: {
-			type: 'object',
-			properties: {
-				group: { type: 'string', enum: ['action', 'sketch', 'signal'], description: '哪一组' },
-				sub: { type: 'string', description: 'action: list(缺省)/get/create/update/edge；sketch: list(缺省)/create/add/discard；signal: list(缺省)/send/threads。⚠ 缺省 = list（只读）✓' },
-				id: { type: 'string', description: '目标 id（action 的 get/update、sketch 的 add/discard；先用 list 拿到）' },
-				title: { type: 'string', description: '标题（action / sketch 的 create）' },
-				description: { type: 'string', description: '说明（action / sketch 的 create；可选）' },
-				priority: { type: 'number', description: '优先级（action 的 create / update；可选）' },
-				status: { type: 'string', description: '新状态（action 的 update，如 pending/done/failed）' },
-				from: { type: 'string', description: '起点行动 id（action 的 edge）' },
-				to: { type: 'string', description: '终点行动 id（action 的 edge）' },
-				edge_type: { type: 'string', enum: ['blocks', 'depends_on', 'relates_to', 'supersedes'], description: '关系类型（action 的 edge）' },
-				action_id: { type: 'string', description: '要挂到草图上的行动 id（sketch 的 add）' },
-				limit: { type: 'integer', description: '线程数上限（signal 的 threads；可选）' },
-				type: { type: 'string', description: '信号类型（signal 的 send，如 info/request/done）' },
-				content: { type: 'string', description: '信号内容（signal 的 send）' },
-				peer: { type: 'string', description: '收件方 agent id（signal 的 send；可选 —— 不填是广播 ✓）' },
-			},
-			required: ['group'],
-		},
-		output: {
-			schema: {
-				type: 'object',
-				properties: { ok: { type: 'boolean' }, group: { type: 'string' }, text: { type: 'string' } },
-				required: ['ok', 'group', 'text'],
-			},
-			render: (_args, value) => [{ type: 'text', text: value.text }],
-		},
-		isConcurrencySafe: () => true,
-		execute: async (params) => {
-			const base = requireGateway(config);
-			const agent = agentIdOf(config);
-			const group = typeof params?.group === 'string' ? params.group : '';
-			const sub = typeof params?.sub === 'string' && params.sub ? params.sub : 'list'; // 缺省只读 ✓
-			const str = key => (typeof params?.[key] === 'string' ? params[key].trim() : '');
-			const auditBase = detail => ({ action: 'executed', tool: 'memory_work', target: 'long', memoryType: 'fact', content: `${group} ${sub}${detail ? ` ${detail}` : ''}` });
-			const rows = (list, render) => (Array.isArray(list) ? `共 ${list.length} 条：\n${list.map(render).join('\n')}` : `结果不是列表（回执 ${JSON.stringify(list ?? null).slice(0, 160)}）`);
-
-			if (group === 'action') {
-				if (sub === 'list') {
-					const list = await providerCall(base, 'actionList', [agent]); // ⚠ 不是桩 `getActions` ✗
-					return { ok: Array.isArray(list), group, text: Array.isArray(list) && list.length ? rows(list, a => `- ${a?.id} [${a?.status ?? '?'}] p${a?.priority ?? '-'}「${a?.title ?? ''}」${a?.description ? ` ${String(a.description).slice(0, 120)}` : ''}`) : '没有行动项（`sub=create` 加一个 ✓）。' };
-				}
-				if (sub === 'get') {
-					const id = str('id');
-					if (!id) { throw new Error('action get 需要 id'); }
-					const a = await providerCall(base, 'actionGet', [agent, id]);
-					return { ok: !!a?.id, group, text: a?.id ? `- ${a.id} [${a.status ?? '?'}] p${a.priority ?? '-'}「${a.title ?? ''}」${a.description ? `\n  ${String(a.description).slice(0, 300)}` : ''}` : `没找到行动 ${id}（回执 ${JSON.stringify(a ?? null).slice(0, 120)}）` };
-				}
-				if (sub === 'create') {
-					const title = str('title');
-					if (!title) { throw new Error('action create 需要 title'); }
-					const a = await providerCall(base, 'actionCreate', [agent, title, str('description') || undefined, Number.isFinite(params?.priority) ? params.priority : undefined]);
-					const ok = typeof a?.id === 'string' && !!a.id;
-					await auditAppend({ ...auditBase(`create ${title}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-					return { ok, group, text: ok ? `已建行动 ${a.id}「${title}」（status=${a.status ?? 'pending'}）。` : `建行动失败（回执 ${JSON.stringify(a ?? null).slice(0, 160)}）` };
-				}
-				if (sub === 'update') {
-					const id = str('id');
-					if (!id) { throw new Error('action update 需要 id'); }
-					const a = await providerCall(base, 'actionUpdate', [agent, id, str('status') || undefined, Number.isFinite(params?.priority) ? params.priority : undefined]);
-					const ok = typeof a?.id === 'string' && !!a.id;
-					await auditAppend({ ...auditBase(`update ${id} ${str('status') || ''}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-					return { ok, group, text: ok ? `行动 ${a.id} 已更新（status=${a.status ?? '?'}，priority=${a.priority ?? '?'}）。` : `更新失败：引擎没找到行动 ${id}（回执 ${JSON.stringify(a ?? null).slice(0, 120)}）` };
-				}
-				if (sub === 'edge') {
-					const from = str('from'); const to = str('to');
-					if (!from || !to) { throw new Error('action edge 需要 from 与 to'); }
-					const e = await providerCall(base, 'actionEdgeCreate', [agent, from, to, str('edge_type') || undefined]);
-					const ok = typeof e?.id === 'string' && !!e.id;
-					await auditAppend({ ...auditBase(`edge ${from}->${to}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-					return { ok, group, text: ok ? `已建关系 ${e.id}：${from} —${e.type ?? '?'}→ ${to}。` : `建关系失败（回执 ${JSON.stringify(e ?? null).slice(0, 160)}）` };
-				}
-				throw new Error(`memory_work action: 不认识的 sub "${sub}"（合法：list/get/create/update/edge）`);
-			}
-
-			if (group === 'sketch') {
-				if (sub === 'list') {
-					const list = await providerCall(base, 'sketchList', [agent]);
-					return { ok: Array.isArray(list), group, text: Array.isArray(list) && list.length ? rows(list, s => `- ${s?.id} [${s?.status ?? '?'}]「${s?.title ?? ''}」挂 ${Array.isArray(s?.actionIds) ? s.actionIds.length : 0} 个行动 expires=${s?.expiresAt ?? '?'}`) : '没有草图（`sub=create` 起一个 ✓）。' };
-				}
-				if (sub === 'create') {
-					const title = str('title');
-					if (!title) { throw new Error('sketch create 需要 title'); }
-					const s = await providerCall(base, 'sketchCreate', [agent, title, str('description') || undefined]);
-					const ok = typeof s?.id === 'string' && !!s.id;
-					await auditAppend({ ...auditBase(`create ${title}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-					return { ok, group, text: ok ? `已建草图 ${s.id}「${title}」（${s.expiresAt ? `${s.expiresAt} 过期` : '有有效期'} —— 用 sub=add 挂行动 ✓）。` : `建草图失败（回执 ${JSON.stringify(s ?? null).slice(0, 160)}）` };
-				}
-				if (sub === 'add') {
-					const id = str('id'); const aid = str('action_id');
-					if (!id || !aid) { throw new Error('sketch add 需要 id（草图）与 action_id（行动）'); }
-					const r = await providerCall(base, 'sketchAdd', [agent, id, aid]);
-					// ⚠ 引擎回 `{success, error?}` ✓ ⇒ **必须按 `success` 判**（不存在的草图会回 false ✗）
-					const ok = r?.success === true;
-					await auditAppend({ ...auditBase(`add ${aid}->${id}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-					return { ok, group, text: ok ? `已把行动 ${aid} 挂到草图 ${id} 上。` : `挂载失败：${r?.error ?? '网关没回可读信息'}（回执 ${JSON.stringify(r ?? null).slice(0, 160)}）` };
-				}
-				if (sub === 'discard') {
-					const id = str('id');
-					if (!id) { throw new Error('sketch discard 需要 id'); }
-					const ok = await providerCall(base, 'sketchDiscard', [agent, id]);
-					// ⚠ 引擎回**布尔** ✓ ⇒ 只有 `true` 才算成功 ✓
-					await auditAppend({ ...auditBase(`discard ${id}`), outcome: ok === true ? 'ok' : 'rejected-by-gateway' });
-					return { ok: ok === true, group, text: ok === true ? `草图 ${id} 已丢弃。` : `丢弃失败：引擎没找到草图 ${id}（回执 ${JSON.stringify(ok ?? null).slice(0, 80)}）` };
-				}
-				throw new Error(`memory_work sketch: 不认识的 sub "${sub}"（合法：list/create/add/discard）`);
-			}
-
-			if (group === 'signal') {
-				if (sub === 'list') {
-					const list = await providerCall(base, 'signalQuery', [agent]); // ⚠ 不是桩 `getSignals` ✗
-					return { ok: Array.isArray(list), group, text: Array.isArray(list) && list.length ? rows(list, s => `- ${s?.id} ${s?.from ?? '?'}→${s?.to ?? '(广播)'} [${s?.type ?? '?'}] ${String(s?.content ?? '').slice(0, 160)}（${s?.createdAt ?? ''}）`) : '没有信号。' };
-				}
-				if (sub === 'send') {
-					const type = str('type'); const content = str('content');
-					if (!type || !content) { throw new Error('signal send 需要 type 与 content'); }
-					const s = await providerCall(base, 'signalSend', [agent, type, content, str('peer') || undefined]);
-					const ok = typeof s?.id === 'string' && !!s.id;
-					await auditAppend({ ...auditBase(`send ${type}->${str('peer') || 'broadcast'}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-					return { ok, group, text: ok ? `已发信号 ${s.id}（${s.from} → ${s.to ?? '(广播)'}，${s.expiresAt ? `${s.expiresAt} 过期` : ''}）。` : `发信号失败（回执 ${JSON.stringify(s ?? null).slice(0, 160)}）` };
-				}
-				if (sub === 'threads') {
-					const r = await providerCall(base, 'signalThreads', [agent, Number.isFinite(params?.limit) ? params.limit : undefined]);
-					const th = Array.isArray(r?.threads) ? r.threads : [];
-					return { ok: r?.success === true, group, text: r?.success === true ? (th.length ? `线程 ${th.length} 个：\n${th.map(t => `- ${t?.threadId ?? '?'}：${t?.messages ?? 0} 条，最近 ${t?.lastMessage ?? '?'}，参与方 ${Array.isArray(t?.participants) ? t.participants.join('/') : '?'}`).join('\n')}` : '还没有任何信号线程。') : `查询失败（回执 ${JSON.stringify(r ?? null).slice(0, 160)}）` };
-				}
-				throw new Error(`memory_work signal: 不认识的 sub "${sub}"（合法：list/send/threads）`);
-			}
-			throw new Error(`memory_work: 不认识的 group "${group}"（合法：action/sketch/signal）`);
-		},
-	}, {
-		// ── 导入（2026-10-13 建）───────────────────────────────────────────
-		// ⚠ 与 `memory_api` 的 `exportMemories` 配对：**读在那侧、写在这侧** ✓（见 `MEMORY_API_READONLY` 里的说明）。
-		// 两个 action 都**是写** ⇒ 本工具无条件过闸（没有只读形态 ✓，不需要 `isWriteIntent` 分支）。
-		name: 'memory_import',
-		description: '**把记忆导回来**（写）：`import` 吃 `exportMemories` 的整份返回；'
-			+ '`replay` 吃 **JSONL 会话日志**（每行一个事件，只认 `role` 为 user/human/tool_use/tool_result/tool 的行 ✓）。'
-			+ ' ⚠ 两者都会**写入/追加**记忆 ⇒ 需审批。导出用 `memory_api` 的 `exportMemories`（只读 ✓）。',
-		parameters: {
-			type: 'object',
-			properties: {
-				action: { type: 'string', enum: ['import', 'replay'], description: '要做的动作' },
-				data: { type: 'object', description: '`import`：`exportMemories` 的完整返回（含 `memories[]`）。⚠ 只接受那一种形状 —— 别的形状会被引擎拒（它按 `data.memories` 迭代 ✓）' },
-				session_id: { type: 'string', description: '`replay`：这些事件归属的会话 id' },
-				jsonl: { type: 'string', description: '`replay`：JSONL 文本（每行一个事件）' },
-				max_events: { type: 'integer', description: '`replay`：最多导入多少条（缺省 200；超出的计入 `skipped` ✓）' },
-			},
-			required: ['action'],
-		},
-		output: {
-			schema: {
-				type: 'object',
-				properties: { ok: { type: 'boolean' }, action: { type: 'string' }, text: { type: 'string' } },
-				required: ['ok', 'action', 'text'],
-			},
-			render: (_args, value) => [{ type: 'text', text: value.text }],
-		},
-		isConcurrencySafe: () => true,
-		execute: async (params) => {
-			const base = requireGateway(config);
-			const agent = agentIdOf(config);
-			const action = typeof params?.action === 'string' ? params.action : '';
-			const auditBase = detail => ({ action: 'executed', tool: 'memory_import', target: 'long', memoryType: 'fact', content: `导入 ${action}${detail ? ` ${detail}` : ''}` });
-			if (action === 'import') {
-				const data = params?.data;
-				// ⚠ 先在**本地**把形状挡住：引擎对坏数据是 **HTTP 500**（`data.memories is not iterable` ✓）
-				//   ⇒ 与其让它 500，不如这里给一句人话（**但报错原话也要带上**，不能只说"参数不对" ✗）。
-				if (!data || typeof data !== 'object' || !Array.isArray(data.memories)) {
-					throw new Error(`import 需要 \`exportMemories\` 的整份返回（至少含 \`memories[]\`）—— 收到 ${data === null ? 'null' : Array.isArray(data) ? '一个数组' : typeof data}。`
-						+ '（引擎对别的形状会直接 500：`data.memories is not iterable` ✓）');
-				}
-				const reply = await providerCall(base, 'importMemories', [agent, data]);
-				// 引擎回**数字**（导入条数 ✓）⇒ 必须是有限数才算成（回 `undefined`/对象都判失败 ✓）
-				const ok = Number.isFinite(reply);
-				await auditAppend({ ...auditBase(`memories=${data.memories.length}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-				return { ok, action, text: ok ? `已导入 ${reply} 条（请求 ${data.memories.length} 条）。` : `导入失败：引擎没回可读的条数（回执 ${JSON.stringify(reply ?? null).slice(0, 200)}）` };
-			}
-			if (action === 'replay') {
-				const sessionId = typeof params?.session_id === 'string' ? params.session_id.trim() : '';
-				const jsonl = typeof params?.jsonl === 'string' ? params.jsonl : '';
-				if (!sessionId) { throw new Error('replay 需要 session_id'); }
-				if (!jsonl.trim()) { throw new Error('replay 需要 jsonl'); }
-				const maxEvents = Number.isFinite(params?.max_events) ? Math.max(1, Math.floor(params.max_events)) : 200;
-				const reply = await providerCall(base, 'replayImportJsonl', [agent, sessionId, jsonl, maxEvents]);
-				const imported = Number.isFinite(reply?.imported) ? reply.imported : undefined;
-				const skipped = Number.isFinite(reply?.skipped) ? reply.skipped : undefined;
-				const ok = imported !== undefined;
-				await auditAppend({ ...auditBase(`replay session=${sessionId} imported=${imported ?? '?'}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-				// ⚠ `skipped` 大而 `imported=0` 是最可能踩的坑（格式不对 ⇒ 引擎**静默跳过**，不报错 ✗）
-				//   ⇒ 这时必须**提示格式**，否则调用方会以为"日志是空的" ✓。
-				const hint = (imported === 0 && (skipped ?? 0) > 0)
-					? '\n⚠ 全部被跳过：`replay` 只认 `role` 为 user / human / tool_use / tool_result / tool 的行（其余字段如 `content`/`text` 二者取一 ✓）。'
-					: '';
-				return { ok, action, text: ok ? `回放导入：imported=${imported}，skipped=${skipped}。${hint}` : `回放失败：引擎没回可读计数（回执 ${JSON.stringify(reply ?? null).slice(0, 200)}）` };
-			}
-			throw new Error(`memory_import: 不认识的 action "${action}"（合法：import/replay）`);
-		},
-	}, {
-		// ── 技能落盘（2026-10-13 建）───────────────────────────────────────
-		// ★★ **建这个工具是因为一次实证，不是因为"引擎有那些方法"**：
-		//   我本来把"技能"归为"**两侧都没做成工具** ⇒ 产品决策，先不动" ✗。但真机实测发现这条链是**通的**：
-		//     引擎自动抽取技能（`extractSkill` → KV，形如 `skl-xxx`）
-		//       → `writeAllSkillFiles` → `<skillsDir>/<slug>/SKILL.md`（**带 `match:` frontmatter + 标准章节** ✓）
-		//       → 平台的 `vssaros-skills` 插件（`skill_manage` / `skill_search`）就能用 ✓
-		//   ⇒ 两个"技能"**不是两套系统**，是同一条链的**两端** ✓（平台那个工具的说明里也写着"技能是你的**程序性记忆**" ✓）。
-		//   ⇒ dsh 侧此前**有前端**（`skill_manage` 管 SKILL.md ✓）却**没有"把引擎学到的落成技能"的入口** ✗✗
-		//     —— 这正是本工具要补的那一环 ✓。
-		// ⚠ 只装**写类**：`listSkills` / `getSkillStats` / `skillMatch` 是只读、**已在 `memory_api` 白名单** ✓
-		//   （重复收会变成"两个入口让模型猜" ✗）。
-		name: 'memory_skill',
-		description: '**把记忆引擎抽出的技能落成平台技能文件**（写）：`write` 把引擎侧的技能写成 '
-			+ '`<数据根>/skills/<slug>/SKILL.md` ⇒ 平台技能库（`skill_manage` / `skill_search`）立刻可用 ✓。'
-			+ ' ⚠ 先 `memory_api` 的 `listSkills` 看有哪些（没有就先让它自动抽取，或 `add` 一个）。'
-			+ ' ⚠ `delete_file` 会**删掉磁盘上的技能目录**（引擎里的记录还在 ⇒ 可再 `write` 回来 ✓）。',
-		parameters: {
-			type: 'object',
-			properties: {
-				action: { type: 'string', enum: ['write', 'delete_file', 'extract'], description: '要做的动作' },
-				skill_id: { type: 'string', description: '`write` 想只落一个时给（不给则**全部**落盘 ✓）；`delete_file` 必给' },
-				session_id: { type: 'string', description: '`extract`：从哪个会话里抽技能（先用 `memory_api` 的 `listSessions` 拿）' },
-			},
-			required: ['action'],
-		},
-		output: {
-			schema: {
-				type: 'object',
-				properties: { ok: { type: 'boolean' }, action: { type: 'string' }, text: { type: 'string' } },
-				required: ['ok', 'action', 'text'],
-			},
-			render: (_args, value) => [{ type: 'text', text: value.text }],
-		},
-		isConcurrencySafe: () => true,
-		execute: async (params) => {
-			const base = requireGateway(config);
-			const agent = agentIdOf(config);
-			const action = typeof params?.action === 'string' ? params.action : '';
-			const skillId = typeof params?.skill_id === 'string' ? params.skill_id.trim() : '';
-			const auditBase = detail => ({ action: 'executed', tool: 'memory_skill', target: 'long', memoryType: 'fact', content: `技能 ${action}${detail ? ` ${detail}` : ''}` });
-			if (action === 'write') {
-				if (skillId) {
-					const r = await providerCall(base, 'writeSkillFile', [agent, skillId]);
-					// ⚠ 引擎回 `{ok, path?, error?}` ✓ ⇒ **按 `ok` 判**，并把 `path` 如实回报（人能去核对 ✓）
-					await auditAppend({ ...auditBase(skillId), outcome: r?.ok === true ? 'ok' : 'rejected-by-gateway' });
-					return { ok: r?.ok === true, action, text: r?.ok === true ? `技能 ${skillId} 已写成文件${r.path ? `：${r.path}` : ''}（平台侧可用了 ✓）。` : `落盘失败：${r?.error ?? '网关没回可读信息'}（回执 ${JSON.stringify(r ?? null).slice(0, 160)}）` };
-				}
-				const r = await providerCall(base, 'writeAllSkillFiles', [agent]);
-				// 引擎回 `{written, failed, errors[]}` ✓ —— ⚠ 有 `failed` 时必须**如实说出来**，不能只报成功数 ✗
-				const ok = Number.isFinite(r?.written) && !(r.failed > 0);
-				await auditAppend({ ...auditBase(`all written=${r?.written ?? '?'}`), outcome: ok ? 'ok' : 'rejected-by-gateway' });
-				return {
-					ok, action,
-					text: Number.isFinite(r?.written)
-						? `技能落盘：成功 ${r.written} 个${r.failed ? `，**失败 ${r.failed} 个**：${(r.errors ?? []).slice(0, 3).join('；')}` : '，无失败 ✓'}`
-						: `落盘失败：网关没回可读计数（回执 ${JSON.stringify(r ?? null).slice(0, 160)}）`,
-				};
-			}
-			if (action === 'delete_file') {
-				if (!skillId) { throw new Error('delete_file 需要 skill_id'); }
-				const r = await providerCall(base, 'deleteSkillFile', [agent, skillId]);
-				// 引擎回 `{ok, deleted?, error?}` ✓ ⇒ 按 `ok` 判（⚠ `deleted:false` 也算"文件本来就不在"⇒ 仍报 ok ✓）
-				await auditAppend({ ...auditBase(skillId), outcome: r?.ok === true ? 'ok' : 'rejected-by-gateway' });
-				return { ok: r?.ok === true, action, text: r?.ok === true ? `技能 ${skillId} 的文件已删除（引擎里的记录还在 ⇒ 可再 write 回来 ✓）。` : `删除失败：${r?.error ?? '网关没回可读信息'}（回执 ${JSON.stringify(r ?? null).slice(0, 160)}）` };
-			}
-			if (action === 'extract') {
-				const sessionId = typeof params?.session_id === 'string' ? params.session_id.trim() : '';
-				if (!sessionId) { throw new Error('extract 需要 session_id'); }
-				const r = await providerCall(base, 'extractSkill', [agent, sessionId]);
-				await auditAppend({ ...auditBase(`session=${sessionId}`), outcome: 'ok' });
-				return { ok: true, action, text: `已从会话 ${sessionId} 抽取技能（${JSON.stringify(r ?? null).slice(0, 200)}）。⚠ 抽出来只在引擎侧 ⇒ 要用它就再跑 write ✓。` };
-			}
-			throw new Error(`memory_skill: 不认识的 action "${action}"（合法：write/delete_file/extract）`);
-		},
-	}];
-}
-
-/**
- * 写入类工具（审批闸只拦这些 ✓，见 README 5.104）。
- *
- * 为什么导出：跨模块守卫（`dshPluginPackages.test.ts`）拿它**机器核对** —— 名单非空 ✓、
- * 每个名字都真的被注册 ✓（防"闸挂了但名单是空的" ✗ 这种最像修好了的坏法 ✓）。
- *
- * ⚠ **名单里只有 `memory_remember`，不含 `memory_refresh`** —— 报告 R1 把后者也列成"写"，但按代码它只
- * 重取一次**记忆网关快照**并刷新注入文本 ⇒ **不改任何用户数据** ✗。给它弹窗只会造成审批疲劳，
- * 与 kb 那条"dry-run 只出计划 ⇒ 不该弹窗"是**同一判据** ✓（判据是"会不会改用户数据"，不是"函数名像不像写"）。
- */
-export const WRITE_TOOLS = [
-	'memory_remember',
-	// 2026-10-13 批 1：判据仍是"**会不会改用户数据**"（不是"名字像不像写" ✓）——
-	// 软删除（标记 superseded）/ 级联把下游标 stale / 行动链结晶，三者都会改 ⇒ 一律过闸 ✓。
-	// 反例（**刻意不过闸**）：`memory_obsidian_export` 只**返回** markdown ✓、`memory_recall` 只读 ✓。
-	'memory_forget', 'memory_cascade', 'memory_crystal',
-	// 批 2a：两个多 action 工具 —— 它们在名单里，但**具体某次调用是否真写**由 `isWriteIntent` 判 ✓
-	//（`memory_routine` 的 list/get/status 只读 ⇒ 不弹窗 ✗；`memory_improve` 三个 action 全写 ✓）。
-	'memory_routine', 'memory_improve',
-	// 批 2b：`memory_facet` 的 query/get/stats/dimensions 只读 ⇒ 不弹窗 ✗（tag/untag 过闸 ✓）
-	'memory_facet',
-	// 批 2c：四个多 action —— 具体某次是否真写**全部**由 `isWriteIntent` 判 ✓，其中三处是**参数敏感**的：
-	//   · `memory_governance` 的 `audit` ✓ 与 `bulk_delete` 的 **dry-run**（缺省 true ＝ 只出计划 ✓）⇒ 不弹窗 ✗
-	//   · `memory_team` 的 `query` ✓ / `memory_mesh` 的 `list` ✓ / `memory_sentinel` 的 `list` ✓ ⇒ 不弹窗 ✗
-	//   · ⚠ `memory_sentinel` 的 `check` **算写**（会就地评估并可能**触发** ✓）—— 别按"看着像只读"放行 ✗
-	'memory_governance', 'memory_team', 'memory_mesh', 'memory_sentinel',
-	// 2026-10-13：槽位 —— 8 个 action 里 `list` / `get` 只读 ⇒ 具体某次是否真写由 `isWriteIntent` 判 ✓
-	//（与 `memory_facet` / `memory_routine` 同一形态 ✓）。
-	'memory_slot',
-	// 2026-10-13：课程 —— `list` / `recall` 只读 ⇒ 同上 ✓（`recall` 会读索引但**不改**用户数据 ✓）。
-	'memory_lesson',
-	// 2026-10-13：行动链 / 草图 / 信号 —— 只读面是 `list` / `get` / `threads` ⇒ 其余过闸 ✓。
-	'memory_work',
-	// 2026-10-13：导入 —— **两个 action 都是写**（`import` / `replay`）⇒ 无条件过闸，
-	// 因此 `isWriteIntent` **不需要**为它加分支（名单里的默认 `return true` 已经覆盖 ✓）。
-	'memory_import',
-	// 2026-10-13：技能落盘 —— 三个 action（`write` / `delete_file` / `extract`）**都是写**
-	//（`write` 会**建/覆盖** SKILL.md ✓、`delete_file` 会**删目录** ✓）⇒ 同上，无条件过闸 ✓。
-	'memory_skill',
-];
-
 export function apply(ctx, rawConfig = {}) {
-	// ★ preset plane 半边判定（理由见下方 `toolsOnly` 的注释）必须在建 `config` 之前 —— 半边副本的 config 要叠部署兜底
-	const toolsOnly = rawConfig?.toolsOnly === true;
-	const config = toolsOnly ? withDeploymentFallback(rawConfig) : (rawConfig ?? {});
-	// 重构 1.3：绑定 foundation 共享服务（dataRoot/dshHome/pageShell/lock 的真源）。
-	{
-		// 同步直读在前：有插件在 apply 的**同步段**就建 store（inject 回调是异步的，会来不及 ✗）。
-		let ready = null;
-		try { ready = ctx.get?.('vssarosFoundation') ?? ctx.vssarosFoundation ?? null; } catch { /* 探针的 Proxy 假 ctx 对未知属性抛错 ⇒ 当不存在 */ }
-		if (ready) { bindFoundation(ready); }
-		ctx.inject(['vssarosFoundation'], child => {
-		let svc = null;
-		try { svc = child.vssarosFoundation ?? null; } catch { /* 探针的假 ctx（Proxy）对未知属性抛错 ⇒ 当不存在 */ }
-		if (svc) { bindFoundation(svc); }
-	});
-	}
-	/**
-	 * ★ R13 preset plane 的**半边**（2026-10-20）：本包被 **host plane**（`cordis.patch.yml`）
-	 * 与 **preset plane**（`vssaros-agents/preset-vssaros.rows.yml`）**双挂载**，而 `apply` 会跑两次。
-	 *
-	 * 现场证据（`~/.vssaros-dev/memory-audit/audit.jsonl`）：`agent/turn-stopping` 被注册了两个监听
-	 * ⇒ **每回合 distill 跑两遍**，审计成对出现：
-	 *   `agentId=ws-<workspaceId>`（preset plane 那侧的上下文）与 `agentId=default`（host plane）。
-	 * 同理 `systemPrompt.section` 也注册两次（同样内容进两段，白占 token）。
-	 *
-	 * 修法口径与 `vssaros-agents` 的 `toolsOnly: true` **完全一致**：preset 那行只负责"工具对会话可见"
-	 * （R13 的设计就是把给模型用的能力放进 preset）⇒ 这一次**只注册工具**，section / 钩子一概不碰。
-	 * host plane 那行不传该键 ⇒ 仍是完整挂载（页面 + section + 钩子 + 工具）✓。
-	 *
-	 * ⚠ 这不是"把 host 行 disabled"那种 plane 迁移收尾（那条要产品决策：无 preset 的会话还留不留能力），
-	 *   只是把**重复副作用**消掉 ⇒ 对 headless / 无 preset 会话零影响 ✓。
-	 * ⚠ 审批钩子（`tools/pre-execute`）**不设**这道半边：waterfall 里先返回者终止，重复注册不会弹两次窗。
-	 *
-	 * ★★ 2026-10-20 真机订正（`dsh --profile vssaros --patch <壳的 memory 覆盖层> --dump-config`）：
-	 *   壳的覆盖层**只打到 host plane 那一行**（`gatewayUrl` / `dataRoot` / `workspaceId`）；preset 两行
-	 *   （`preset-vssaros-standard` / `preset-vssaros-ptc`）**只有 `toolsOnly: true`**。而 dsh 的工具解析是
-	 *   「Scoped tools shadow globals」（`@deepseek-ai/dsh-tools` 类型注释）⇒ 默认 preset 的会话里，模型调用的是
-	 *   **preset 这份**：网关未配置、分区回落 `default`、数据根回落 `~/.vssaros`（**安装版**的目录 ✗）。
-	 *   ⇒ 半边副本经 `withDeploymentFallback` 在**调用时**借 host plane 那次的部署配置（与 YAML 写在哪一行无关）。
-	 *   上面那句"ws- 是 preset 那侧"是旧推测，现场是反的：preset 那侧原本什么都没有。
-	 */
-	// 非半边、且带部署配置的那次挂载 ⇒ 登记为本进程的部署配置（半边副本兜底用）；卸载时撤销
-	if (!toolsOnly) {
-		ctx.effect(() => {
-			const registered = registerDeploymentConfig(rawConfig);
-			return () => { if (registered) { unregisterDeploymentConfig(registered); } };
-		});
-	}
+  const config = resolveConfig(rawConfig)
+  // Host-side locale (English support): resolve once at boot from the DSH
+  // Language preference (default 'en' when unset), then follow live changes
+  // through the settings commit event. Getter-based tool descriptions and
+  // snapshot builders read the active locale per call, so a flip takes
+  // effect on the next model request / injected turn without re-registering
+  // anything. The 'locale' namespace belongs to DSH's own locale plugin —
+  // we only read it here and never write to it.
+  //
+  // 2026-09-28（DSH 0.2.0 适配）：宿主把 settings 服务的 get() 移除、改为
+  // describe()，并把提交事件从 'settings/updated' 改名为
+  // 'settings/document-updated'。两个事件名都订阅（未知事件名在 cordis 里
+  // 只是永不触发，不会报错），读值统一走 settings-compat 的版本兼容层，
+  // 于是新老宿主都能就地跟随语言切换。
+  setLocale(resolveLocale(ctx))
+  ctx.effect(() => {
+    const settings = ctx.get('settings')
+    if (!hasSettingsRead(settings)) return () => {}
+    const disposers = SETTINGS_CHANGE_EVENTS.map((event) => ctx.on(event, (ns) => {
+      if (ns === 'locale') setLocale(resolveLocale(ctx))
+    }))
+    return () => { for (const dispose of disposers) dispose() }
+  }, 'vssaros-memory: locale watcher')
+  const store = new MemoryStore(config.memoryDir, {
+    ...config,
+    // 记忆同步接线（施工图 §4.2/§6）：entryIdMode 随 syncEnabled 动态开关
+    // （syncCtrl.sync() 里同步）；projectDirResolver 让 sync 项目（迁移到
+    // projectId 目录后）的 store 读写定位到新目录，未启用项目回退原逻辑。
+    entryIdMode: config.syncEnabled ? 'on' : 'off',
+    projectDirResolver: makeProjectDirResolver(config),
+  })
+  const archive = new ArchiveStore(config.memoryDir, { projectDirResolver: makeProjectDirResolver(config) })
+  const queue = new SuggestionQueue(config.suggestionsFile)
+  const todoStore = new TodoStore(config.memoryDir, makeProjectDirResolver(config))
+  const stateFile = resolve(config.stateFile ?? join(config.memoryDir, 'plugin-state.json'))
+  // 会话别名共享存储（aliases.json 单实例）：api 路由（/api/aliases）与
+  // de_session rename 共用，避免多实例内存缓存互覆写
+  const aliasStore = new AliasStore(config.memoryDir)
 
-	const state = createState();
+  // Runtime configuration: cordis config (static defaults) overlaid with the
+  // persisted state file, which the Web settings panel updates live.
+  const state = loadState(stateFile)
+  const runtime = { ...config }
+  // 记忆同步模块引用（声明提前：installApi 的 deps 对象在 apply 前部构造，
+  // 而 syncCtrl 在尾部装配——TDZ 约束，2026-08-11 实测）
+  let syncDispose = null
+  let syncStatusRef = null
+  let syncOpsRef = null
+  for (const key of RUNTIME_KEYS) {
+    if (state[key] !== undefined) runtime[key] = state[key]
+  }
+  const getRuntime = () => runtime
+  // Review turn counter: created once, shared by the snapshot (due warning)
+  // and the memory_review_status tool. Zero-cost when review is disabled
+  // (the settled listener returns early unless reviewEnabled).
+  const counter = reviewTurnCounter(ctx, getRuntime)
+  // 写入看门狗计数器（2026-08-31）：按会话统计"连续完成多少个用户回合
+  // 未写 daily/project"（subagent 不计）；快照在缺口达到 writeGuardThreshold
+  // 时注入置顶提醒（renderSnapshot），memory 工具 addOne 写入成功即归零。
+  // 与 counter 同款一次性创建、全局共享；perTurnWriteGuard 关闭时计数器
+  // 早退（零成本），提醒渲染也独立复查开关（两半各自安全降级）。
+  const writeGap = writeGapCounter(ctx, () => getRuntime().perTurnWriteGuard !== false)
+  const updateRuntime = (patch) => {
+    const entries = Object.entries(patch)
+    for (const [key, value] of entries) validateRuntimePatch(key, value)
+    const nextState = { ...state, ...patch }
+    const nextRuntime = { ...runtime, ...patch }
+    saveState(stateFile, nextState)
+    Object.assign(state, nextState)
+    Object.assign(runtime, nextRuntime)
+    return { ...runtime }
+  }
 
-	// ★ 写策略（移植 `dsh-memento` 的 `lib/gate.mjs`）—— 在**挂载期**校验并**响亮失败** ✗：
-	//   错配置要在装配时第一个说话，而不是等到某次写被静默放行/拦截 ✓
-	//   （缺省 `writePolicy='ask'` + 空表 ⇒ 与从前**逐字一样**：所有写都弹窗 ✓）。
-	const writePolicy = validateWritePolicy(typeof config.writePolicy === 'string' ? config.writePolicy : 'ask');
-	const writePolicies = validateWritePolicies(config.writePolicies);
+  // 3. In-turn review tools are one runtime-controlled capability. Register
+  // and dispose the pair together so the snapshot never advertises a review
+  // workflow with only half of its tools available.
+  let reviewToolsDispose = null
+  const reviewCtrl = {
+    sync(desired = runtime.reviewEnabled === true) {
+      const enabled = desired === true
+      if (enabled && reviewToolsDispose === null) {
+        reviewToolsDispose = ctx.effect(() => {
+          let suggestDispose = null
+          try {
+            suggestDispose = ctx.tools.register(suggestToolDefinition(config, queue, () => getRuntime().todoEnabled !== false))
+            const statusDispose = ctx.tools.register(reviewStatusTool(getRuntime, counter))
+            return () => { try { statusDispose() } finally { suggestDispose() } }
+          } catch (error) {
+            suggestDispose?.()
+            throw error
+          }
+        }, 'vssaros-memory: review tools')
+      } else if (!enabled && reviewToolsDispose !== null) {
+        const dispose = reviewToolsDispose
+        reviewToolsDispose = null
+        dispose()
+      }
+    },
+  }
 
-	// ★ 审计账本（P2，用户 2026-10-12 拍板"插件侧 JSONL"）：**跨会话可查**的那一份。
-	//   落点 `<数据根>/memory-audit/audit.jsonl`（为什么不放网关的 `.agentmemory/`，见 lib/audit.js 文件头）。
-	//   这里只**建写入器**（零 I/O —— 目录到首次 append 才 mkdir ✓）；写失败由写入器自己吞掉并
-	//   只喊一次 warn ⇒ **审计绝不影响记忆写入** ✓（core/audit.js 文件头的纪律 ②）。
-	// ⚠ 读 `ctx.logger` 必须**防御性**：cordis 的 ctx 是 **Proxy**，"读未声明/未 provide 的名字会抛"
-	// （本仓既有先例；`p3-07` 的假 ctx 就是照这条写的）⇒ 直接 `ctx.logger` 在真 Host 下会让
-	// **整个 `apply` 在开头抛出** ⇒ 工具、页面路由、提示词 section **全部不注册** ✗✗
-	// 实测症状：进程内断言全绿（fake ctx 有 logger）、真 Host 上 `/x/memory/section` 404 且工具不可见 ✓。
-	const auditLogger = (() => {
-		try { return ctx.logger; } catch { return undefined; }
-	})();
-	const audit = createAuditWriter(config, { logger: auditLogger });
-	/** 是否在账本里落**全文**（默认否：只落 digest + 前 80 字，见 core/audit.js 的隐私说明）。 */
-	const auditFull = config.auditFullContent === true;
-	/**
-	 * 记一笔审计：把 **writer + 全文开关 + 分区 agentId** 收在一处 ✓
-	 *
-	 * 为什么需要它、而不是各处直接 `audit.append(buildAuditRow(...))`：`toolDefinitions` 是**模块级
-	 * 函数**（不在 `apply` 的闭包里）⇒ 那两个值必须**显式传进去**。收成一个函数比传两个值更难写错 ✓
-	 * —— 第一版正是漏了这条：`memory_remember` 的 `execute` 里直接引用了 `auditFull`，
-	 * 探针一跑就报 `auditFull is not defined` ✓（**源码级看完全正常**，只有真跑才现形）。
-	 */
-	const auditAppend = input => audit.append(buildAuditRow({ ...input, agentId: input.agentId ?? agentIdOf(config), full: auditFull }));
+  // 2d. Local document search (search_local_docs): default OFF — the tool is
+  // registered only while the runtime switch is on, so a disabled tool never
+  // appears in the model's tool list (and its schema stays out of the prompt).
+  // updateRuntime 联动：Web 设置面板 / slash 命令切换后即时注册或注销。
+  const searchDocsCtrl = createSearchDocsController(ctx, config, getRuntime)
+  const applyRuntimePatch = (patch) => {
+    // Stage the tool transition before committing the settings patch. A tool
+    // registration failure leaves every runtime/persisted key untouched; a
+    // persistence failure restores the previous tool surface.
+    const previousReviewEnabled = runtime.reviewEnabled === true
+    const desiredReviewEnabled = Object.hasOwn(patch, 'reviewEnabled')
+      ? patch.reviewEnabled
+      : previousReviewEnabled
+    if (Object.hasOwn(patch, 'reviewEnabled')) validateRuntimePatch('reviewEnabled', patch.reviewEnabled)
+    let next
+    try {
+      reviewCtrl.sync(desiredReviewEnabled)
+      next = updateRuntime(patch)
+    } catch (error) {
+      try {
+        reviewCtrl.sync(previousReviewEnabled)
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], 'vssaros-memory: 运行时设置失败且审查工具回滚不完整')
+      }
+      throw error
+    }
+    notifyCtrl.sync() // 渠道通知随 notifyEnabled 即时安装/卸载（先于 COI——COI 依赖其 sendChannelNotify 回调）
+    channelSendCtrl.sync() // 渠道直发随 channelSendEnabled 即时安装/卸载（独立开关，与 notify 互不影响）
+    sessionImageCtrl.sync() // 本会话图片查询随 sessionImageQueryEnabled 即时安装/卸载（独立开关）
+    searchDocsCtrl.sync()
+    todoCtrl.sync() // 待办能力随 todoEnabled 即时注册/注销（dtodo 工具；数据与同步轨不动）
+    coiCtrl.sync() // COI 模块随 coiEnabled 即时安装/卸载
+    broadcastCtrl.sync() // 会话广播随 broadcastEnabled 即时安装/卸载
+    sessionSearchCtrl.sync() // 会话搜索随 sessionSearchEnabled 即时安装/卸载
+    sessionCtrl.sync() // 会话编排随 sessionEnabled 即时安装/卸载（曾漏掉导致开关打开工具不注册）
+    promptsCtrl.sync() // 提示词模块随 promptsEnabled 即时安装/卸载
+    modelsCtrl.sync() // 模型配置随 modelsEnabled 即时安装/卸载
+    uiSettingsCtrl.sync() // DSH UI 设置随 uiSettingsEnabled 即时安装/卸载
+    bookmarkCtrl.sync() // 会话书签随 bookmarkEnabled 即时安装/卸载
+    syncCtrl.sync() // 记忆同步随 syncEnabled 即时安装/卸载（含 store.entryIdMode 动态切换）
+    advisorCtrl.sync() // Advisor 评审随 advisorEnabled 即时安装/卸载（运行中键变化走 reconfigure）
+    canvasCtrl.sync() // 无限画板随 canvasEnabled 即时安装/卸载（de_canvas 工具 + HTTP API）
+    return next
+  }
 
-	// 启动即拉一次；之后靠 TTL / 工具 / 页面请求保鲜
-	void refresh(state, config);
+  // 1. Memory snapshot injection (frozen-ish: live reads, change-detected
+  //    materialization keeps the cache prefix stable).
+  if (config.injectMemory) {
+    ctx.effect(() => {
+      try {
+        return ctx.systemPrompt.context({
+          name: 'memory:snapshot',
+          order: config.snapshotOrder,
+          text: (context) => {
+            const runtime = getRuntime()
+            // VsSaros 内置化（2026-11-03）：快照里的「每轮收尾用 memory 写入」只有在
+            // memory 工具真的注册时才有意义。ctx.tools.schemas() 是插件作用域的全局注册视图
+            // （与 check-agent-tools.mjs 同款），拿不到会话级白名单 ⇒ 这里只做 fail-safe：
+            // 工具没装上 / 被禁用时不发任何指令，避免模型反复调用看不到的工具。
+            // 会话级可见性由 resources/.agents/agents/<id>/.agent.md 的 tools 白名单负责（已补齐）。
+            if (runtime.snapshotRequireTools) {
+              let names = []
+              try {
+                names = (ctx.tools?.schemas?.() ?? []).map(t => typeof t === 'string' ? t : t?.name).filter(Boolean)
+              } catch { names = [] }
+              if (!names.includes(runtime.toolName ?? 'memory')) { return '' }
+            }
+            // 记忆同步无快照状态行（2026-08-13 用户拍板：AI 不参与同步，见
+            // renderSnapshot 内注释）
+            return renderSnapshot(runtime, store, context.agent, counter, ctx.sessionTitle, writeGap)
+          },
+        })
+      } catch (error) {
+        // 幂等保护（issue #23）：DSH 0.1.x 的 loader 曾把插件在无 scope 标签的
+        // ctx 上装配两次，system-prompt 的 global 层同名重复插入会抛
+        // "already registered"（该层本就该只有一份注册，DSH 报错文案也提示应走
+        // per-agent 注册）。命中重复时跳过并告警，避免整个 apply 失败连带
+        // 快照注入失效 + /memory-evolve/api/* 404；其余异常照抛。
+        if (error instanceof Error && error.message.includes('already registered')) {
+          console.warn('[vssaros-memory] memory:snapshot 已注册，跳过重复注册（issue #23 幂等保护）')
+          return () => {}
+        }
+        throw error
+      }
+    }, 'vssaros-memory: memory snapshot')
+  }
 
-	// ① 注入：section 的 text 提供者同步返回快照（零 I/O），刷新永远发生在 assembly 之外。
-	//    可选注入：组合里没有 systemPrompt 时不激活这一块，其余功能照常（页面会显示"未注册"）。
-	// ⚠ `toolsOnly`（preset plane 那一次）不注册 section —— 否则每轮系统提示里会多出**同一段**记忆。
-	if (!toolsOnly) ctx.inject(['systemPrompt'], child => child.effect(() => {
-		let order = SECTION_ORDER_FALLBACK;
-		try {
-			const persona = child.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX');
-			if (Number.isFinite(persona)) {
-				order = persona + 100; // 紧随部署级人设之后
-			}
-		} catch {
-			/* 中央表不可用就用兜底值 */
-		}
-		state.promptSection = order;
-		// 注册返回的就是 Cordis effect disposer，撤销时要调用**它**（不是再调一次 section()）
-		// ⚠ `text` 是**每次 assembly 都被调用**的 provider（`PromptSection.text: string | (context) => string`）
-		// ⇒ 这里必须走 `snapshotFor`（**冻结**、按装配主体归属），绝不能直读"最新的那一份" ✗ ——
-		// 直读＝每轮都可能变＝把最前面那条前缀的 KV cache 反复打掉（详见 `snapshotFor` 的注释）。
-		const dispose = child.systemPrompt.section({
-			name: SECTION_NAME,
-			order,
-			text: context => snapshotFor(state, config, context),
-		});
-		return () => {
-			state.promptSection = undefined;
-			dispose();
-		};
-	}));
+  // 2. The memory tool (always registered; subagent writes are gated).
+  ctx.effect(() => ctx.tools.register(memoryTool(ctx, config, store, queue, getRuntime, archive, writeGap)), 'vssaros-memory: memory tool')
 
-	// ★ 写入类工具的**审批闸**（报告 §7.2 R1 / README 5.104）—— 与 kanban / workflow / kb **同一把** ✓：
-	// 官方派发前决策钩子 `tools/pre-execute`（waterfall ✓），返回 `{ kind: 'ask' }` ＝ "先问用户" ✓；
-	// 契约：只有审批服务回 `allowed-once` 才执行 ✓、**没有审批支持的部署 degrade to deny** ✓。
-	// 为什么 memory 必须有这道闸：`memory_remember` 写的是**跨会话的长期记忆** —— 模型可以不经确认把
-	// 内容固化进用户的记忆库，之后每轮都会被检索到 ✗（这类"越写越多、越检索越相信自己"的污染比一次
-	// 文件写入更难挽回 ✓）。参数无关：只要调用就是写 ⇒ 不像 kb 那样带条件 ✓。
-	ctx.effect(() => ctx.on('tools/pre-execute', (exec, next) => {
-		if (!exec || !WRITE_TOOLS.includes(exec.name)) {
-			return next(); // 只读工具（list / search / stats / recall / obsidian_export）与"只刷快照不改数据"的 memory_refresh ⇒ 默认 allow ✓
-		}
-		// ⚠ 参数在 **`exec.arguments`**，不是 `args` —— 官方真源 `ToolExecutionInput.arguments`
-		//    （`@deepseek-ai/dsh-tools/lib/types/index.d.ts:226-227`："Losslessly JSON-serializable
-		//    parsed arguments"），且 `tools/pre-execute` 在 **materialize 之后**执行
-		//    （同文件 `:359`："Materialize input, run the ordered pre-execute/guard gate"）。
-		//    p3-26 用真事件钉住这个字段名（写错 ⇒ 取不到参数 ⇒ 探针红 ✓）。
-		const args = /** @type {{content?: unknown, memory_type?: unknown, importance?: unknown, tags?: unknown, memory_id?: unknown, reason?: unknown, action?: unknown, action_id?: unknown, new_content?: unknown, routine_id?: unknown, name?: unknown}} */ (exec.arguments ?? {});
-		// ★ 参数敏感（2026-10-13 批 2a）：写名单里的工具也可能有**只读形态** ✗ —— `memory_routine` 的
-		//   `list`/`get`/`status` 不写盘 ⇒ **不该弹窗** ✓（同 kb 那条"dry-run 只出计划 ⇒ 不该问"的判据 ✓）；
-		//   判据收在纯函数 `isWriteIntent` 里 ✓（放在这儿会变成一长串 `&&/||`，接下一个工具时最容易漏 ✓）。
-		if (!isWriteIntent(exec.name, args)) {
-			return next();
-		}
-		const content = typeof args.content === 'string' ? args.content : '';
-		// ★ 2026-10-13 批 1：写工具**不止 remember** 了 ⇒ 审批文案必须**说真话** ✗：
-		//   拿 remember 的模板去描述一次"软删除"，等于"批准的不是它做的" ✗。动词 + 人话载荷都按工具取 ✓。
-		//   （动词表收进 core/memory.js 的 `WRITE_VERBS`，2026-10-20 补齐后加的 5 个工具。）
-		const verb = WRITE_VERBS[exec.name] ?? 'remember';
-		// ★ 2026-10-20：策略的 type 维**不再**直接读 `args.memory_type`（只有 remember 声明了它；
-		//   删改类工具多塞一个 `memory_type:'working'` 就能借到 core 档的宽松策略 ✗）—— 见 `policyMemoryTypeOf`。
-		//   reason 里写的就是这个值 ⇒ 下游 answerer 解析出来的也是它（模型改不到 reason）。
-		const policyType = policyMemoryTypeOf(exec.name, args);
-		const payloadText = content || describeWritePayload(exec.name, args);
-		// 载荷「批准即所见」（移植 dsh-memento 的 lib/gate.mjs）：reason 里带**完整内容** ⇒
-		// 人批准的是具体变更，而不是"某个工具想写点什么"；且 `PreToolDecision.ask.reason` 按官方
-		// 契约就是"被审计的审批理由"（types/index.d.ts:437-442），随 `approval/asked` 进会话日志
-		// ⇒ 这一步顺带拿到审计，不必自建账本 ✓。
-		// 取不到 content 时**说出来**，绝不产出一条"看起来正常、其实是空载荷"的审批 ✗
-		//（那句必然 parseWriteReason ⇒ null，探针据此变红 ✓）。
-		const reason = payloadText
-			? buildWriteReason({ content: payloadText, memoryType: policyType, importance: args.importance, tags: args.tags, verb })
-			: `${REQUEST_MARKER} ${verb} (未从 exec.arguments 取到载荷 —— 工具参数形状可能已变)`;
-		// 审计「请求」这一格：**不 await** —— 闸的职责是"要不要弹窗"，不该被账本 I/O 拖慢 ✓。
-		// 策略与裁决结果记在下一格 `decision`（此刻尚未裁决，policy 留空 ✓）。
-		void auditAppend({
-			action: 'request', tool: exec.name,
-			target: targetKeyOf(policyType),
-			memoryType: policyType,
-			content,
-		});
-		return {
-			kind: 'ask',
-			reason,
-			displayReason: { en: `Allow ${exec.name} to write into this agent's long-term memory?`, zh: `允许 ${exec.name} 写入本 Agent 的长期记忆？` },
-		};
-	}));
+  // 2b. The skill management tool (always registered: useful in ordinary
+  //     sessions too — "把这个流程做成技能" — and required by the review
+  //     subagent for the skill track).
+  ctx.effect(() => ctx.tools.register(skillManageTool(ctx, config)), 'vssaros-memory: skill tool')
 
-	// ★ 粒度写策略的**裁决点**（移植 `dsh-memento` 的 `index.mjs:1143-1156` 的 answerer 手法）。
-	//
-	// 为什么不把裁决写在闸里直接放行 ✗：`tools/pre-execute` 里 `return next()`（＝不弹窗）会让这次
-	// 写入**在会话日志里零痕迹** ✗ —— 而 `approval/asked` + `approval/decided` 正是"这次写发生过、
-	// 由谁放行"的唯一证据链（`dsh-user-approval/lib/types/types.d.ts:37-51`；注意 `displayReason`
-	// 明确**不进**审计事件，只有 `reason` 进 ⇒ 载荷必须放 reason ✓）。
-	// 让 `auto` 也走一遍审批服务、由本插件 answerer 直接回 `allowed-once`，审计对**照样落盘** ✓✓
-	//（memento 原话："auto：本插件 answerer 直接放行（allowed-once）；审批来源仍随 approval/asked +
-	// approval/decided 审计对记录"）。
-	// `prepend: true`：`auto`/`off` 必须先于 UI answerer 生效（否则 auto 照样弹窗 ✗）；`ask` 走 next() 交 UI ✓。
-	//
-	// 不认领的请求**一律 next()**（绝不吞别人的审批 ✗）；认领了却解析不了载荷 ⇒ **退回 ask（最严）**
-	// 并留一行 warn —— 形状漂移时宁可多问一次，也不能少问 ✓。
-	ctx.effect(() => ctx.on('approval/request', async (req, next) => {
-		if (!isMemoryWriteRequest(req, WRITE_TOOLS)) { return next(); }
-		const parsed = parseWriteReason(req.reason);
-		if (parsed === null) {
-			auditLogger?.warn?.('[vssaros-memory] 认领到审批请求但载荷解析失败 ⇒ 退回 ask');
-			// 认领了却解析不了 ⇒ 也记一笔：**异常路径必须可见**（它意味着 reason 的形状已经漂移 ✓）
-			await auditAppend({
-				action: 'decision', tool: req.toolName,
-				policy: writePolicy, policyKey: '(unparsable)', outcome: 'degraded-to-ask', error: '载荷解析失败',
-			});
-			return next();
-		}
-		const { policy, key } = resolveWritePolicy(writePolicies, writePolicy, targetKeyOf(parsed.memoryType), parsed.memoryType);
-		// 审计「裁决」这一格：**await** —— answerer 本身就是异步的，且这一笔是"谁放行的"核心证据 ✓。
-		// `ask` 也记（outcome=delegated-to-ui）：它说明"本插件的策略没拦、交给了人类 UI" ✓。
-		// 用户最终批没批由审批服务的会话日志（`approval/asked`+`decided`）记录，本账本**不假装知道** ✗。
-		await auditAppend({
-			action: 'decision', tool: req.toolName,
-			target: targetKeyOf(parsed.memoryType), memoryType: parsed.memoryType,
-			policy, policyKey: key,
-			outcome: policy === 'ask' ? 'delegated-to-ui' : (policy === 'auto' ? 'allowed-once' : 'rejected'),
-			content: parsed.content,
-		});
-		if (policy === 'ask') { return next(); }
-		auditLogger?.info?.(`[vssaros-memory] writePolicy=${policy}（命中键 ${key}）⇒ ${policy === 'auto' ? 'allowed-once' : 'rejected'}：${req.toolName}`);
-		return policy === 'auto' ? 'allowed-once' : 'rejected';
-	}, { prepend: true }));
+  // 2c. The todo capability（todoEnabled 运行时开关）：控制器只负责工具注册；
+  // 存储刻意留在控制器外——禁用完全可逆，不触碰既有待办数据文件，也不
+  // 影响独立的同步轨；重新启用即刻恢复。
+  const todoCtrl = createTodoController(ctx, config, getRuntime, todoStore)
 
-	// ★ 自动沉淀（2026-10-13）：挂 `agent/turn-stopping` ⇒ **fire-and-forget**。
-	//
-	// 为什么要有它：社区 12 款记忆插件里 **10 款**都有自动沉淀，而我们的写入此前只有
-	// "模型显式调 `memory_remember`" 一条路 ⇒ 会话里说过的约定/偏好，模型不主动写就永久丢了 ✗
-	//（这是历轮评估里排第一的能力缺口）。
-	//
-	// ⚠⚠ 处理函数里**绝不能 await 任何 I/O**：官方对该钩子的说明是
-	// "The turn is about to close… **Awaited before the boundary commits**" + `@mode serial`
-	//（`@deepseek-ai/dsh-agent/lib/types/runtime-types.d.ts:370-391`）⇒ 在它里面做一次网关往返／
-	// 一次 LLM 调用 ＝"**每个回合都多等那么久**"✗✗ —— 社区那句"永不阻塞回合"不是风格偏好，
-	// 是这条契约的**硬要求** ✓。所以流程是：同步取事件（`snapshotEvents` 同步 ✓）→ 同步提取候选
-	//（纯函数 ✓）→ `void` 排后台写盘 ✓。
-	//
-	// 产出是**草稿**（不是长期记忆）：自动提取必然有误（玩笑、否定句「以后不要 X」、转述的约定），
-	// 直写＝把错误喂给之后每一轮 ✗ —— 见 `core/distill.js` 的约束 ② 与社区的自陈教训 ✓。
-	const draftStore = createDraftStore(config, { logger: auditLogger });
-	// 快照的"待审草稿"计数要读它（`pendingDraftsOf`）；启动预热那次刷新早于这里 ⇒ 那一次计 0，会话首装时才有值
-	state.draftStore = draftStore;
-	// ★ 2026-11-02：沉淀统计落盘（`state.distill` 重启归零，漏斗要的是跨重启的累计；口径见 `lib/stats.js` 文件头）。
-	//   钩子里只能 `void` 同步（契约：不得 await I/O），失败绝不抛。
-	const statsStore = createStatsStore(config, { logger: auditLogger });
-	state.statsStore = statsStore;
-	const syncStats = () => { try { void statsStore.syncDistill(state.distill); } catch { /* 统计失败不影响回合 */ } };
+  // 3. In-turn review (opt-in): the live runtime value is the sole authority
+  // for both the snapshot instructions and the paired tool surface.
+  reviewCtrl.sync()
 
-	// ★ 后台队列（2026-10-13）：钩子必须 fire-and-forget（官方会 await 它 ✓），但**裸的 `void async`**
-	// 没有并发上限、没有超时、不可观测 ⇒ 连续回合会同时打出多份请求，而一个挂住的请求会永久占住槽位 ✗。
-	// 队列补这三样（见 `lib/queue.js` 文件头 ✓）。**并发 1**：这是本地网关 + 单机场景，串行已经够快，
-	// 而且串行让"失败原因"更容易归因 ✓。`distillTimeoutMs` 可配（探针把它压到 1ms 来断言超时路径 ✓）。
-	const distillQueue = createTaskQueue({
-		concurrency: 1,
-		timeoutMs: Number(config.distillTimeoutMs) > 0 ? Number(config.distillTimeoutMs) : 30_000,
-		maxPending: 8,
-		logger: auditLogger,
-	});
+  // 3b. 模型配置模块（de_models 工具 + 「模型设置」Tab 数据面）：**独立
+  //     子模块**，与其他模块同款独立开关 modelsEnabled（默认关）。开启时
+  //     注册 de_models 工具 + 提供 /api/models 数据；关闭时工具注销、
+  //     API 返回"未启用"（配置数据 models.json 保留）。开关在「设置」Tab
+  //     的「配置」里切换（applyRuntimePatch sync 链即时生效）。
+  let modelsDispose = null
+  let modelsStore = null
+  const modelsCtrl = {
+    sync() {
+      const enabled = runtime.modelsEnabled === true
+      if (enabled && modelsDispose === null) {
+        const installed = installModels(ctx, config)
+        modelsDispose = installed.dispose
+        modelsStore = installed.store
+      } else if (!enabled && modelsDispose !== null) {
+        modelsDispose()
+        modelsDispose = null
+        modelsStore = null
+      }
+    },
+  }
+  modelsCtrl.sync()
 
-	// ★ LLM 判定（2026-10-13）：**默认关** + **可选注入** `llm`。
-	//
-	// 两条纪律都是刻意的：
-	//   · **默认关**：开启它意味着"每个回合都可能多一次模型调用"⇒ 成本与隐私面都由用户显式同意 ✓
-	//     （本插件的隐私默认值一贯保守 ✓）；
-	//   · **可选注入**：`llm` **不写进静态 `inject`** —— 那会让缺该服务的组合（headless / 精简 profile）
-	//     **永久 pending**、连工具一起失效 ✗（本仓为 `systemPrompt` 已经踩过这一次，注释就在文件头 ✓）。
-	//     服务不在 ⇒ `llmRuntime` 保持 null ⇒ 判定被跳过并计入 `judgeSkipped`（**可见**，不静默 ✓）。
-	let llmRuntime = null;
-	// ⚠ **开关只在这一处判断**，注入与钩子共用它 —— 两处各写一遍时，只改一处的行为**不会**被探针
-	// 抓住（反向突变 M-L 实测：把注入这处改成"默认开"、钩子那处仍把关 ⇒ 行为不变、67/67 全绿 ✗✓）。
-	// 抽出单一来源之后，任何一处改动都会体现在行为上 ✓。
-	const judgeEnabled = config.distillJudge === true;
-	// ★ 2026-11-02：自动提升的档位在**装配期**就要算好 —— 它决定要不要注入 `llm`。
-	//   ⚠ 这是接线上的一个真坑：`distillJudge` 缺省 **false** ⇒ 若仍只在 `judgeEnabled` 时注入
-	//   `llm`，自动提升路径的 `judgeOk` 就永远是 false（fail-closed）⇒ **门控形同不存在**，
-	//   而且症状是"一条都不提升"（看起来像"没有高置信候选"，极难归因）。
-	const autoPromoteCfg = resolveAutoPromote(config);
-	// ★ 2026-10-27（阶段③）：**回合观测开关**（默认开）。关掉 ⇒ 完全不写 `mem:obs:*`，
-	//   与改动前（IDE 渲染侧负责）行为一致 —— 留这个开关是为了能一键回到旧路径 ✓
-	const observeOnTurn = config.observeOnTurn !== false;
-	// 判定器在两种情况下都需要真 `llm`：① 用户显式开了 `distillJudge`（滤候选）；
-	// ② 自动提升档位是 `high-only`（提升前必须拿到判定证据 ⇒ 见 `core/promotion.js` 的 fail-closed）。
-	if (judgeEnabled || autoPromoteCfg.mode === 'high-only') {
-		ctx.inject(['llm'], child => child.effect(() => {
-			llmRuntime = child.llm;
-			return () => { llmRuntime = null; };
-		}));
-	}
-	// ★ 2026-10-20：会话投影服务（**可选**）—— 读"会话中途切换过的人格"，决定读哪个人设分区。
-	//   缺席（老 Host / 组合里没挂）⇒ 只按会话 preset 认人设，功能不丢 ✓（`personaIdOf` 的注释）。
-	//   ⚠ 只**读**它的状态，不 register 投影（`vssaros-persona` 由 `vssaros-agents` 注册 —— 重复注册以先注册者为准，
-	//   这里注册反而可能让定义版本分叉 ✗）。
-	ctx.inject(['sessionProjections'], child => child.effect(() => {
-		// 与 `vssarosFoundation` 那条同一写法：读服务包一层 try（探针的严格假 ctx 对未知属性抛错 ⇒ 当不存在；
-		// 真 Cordis 下服务不在时根本不会进到这里）✓
-		let svc;
-		try { svc = child.sessionProjections; } catch { svc = undefined; }
-		state.projections = svc && typeof svc.stateOf === 'function' ? svc : undefined;
-		return () => { state.projections = undefined; };
-	}));
-	// ★ 2026-10-20：官方会话检索服务（**可选**）—— `memory_recall` 的"历史会话"那一段（见 lib/history.js）。
-	//   缺席 ⇒ 那一段如实显示"未检索：服务不可用"，记忆那一段照常。
-	ctx.inject(['sessionQuery'], child => child.effect(() => {
-		let svc;
-		try { svc = child.sessionQuery; } catch { svc = undefined; }
-		state.sessionQuery = svc ?? undefined;
-		return () => { state.sessionQuery = undefined; };
-	}));
-	// ⚠ 传 **getter** 而不是实例：`llmRuntime` 是可选注入、在装配后才可能被赋值 ✓（理由见 `lib/judge.js`）
-	const judge = createJudge({ llm: () => llmRuntime, timeoutMs: Number(config.distillJudgeTimeoutMs), logger: auditLogger });
+  // 4. Web API: the settings panel's data surface (web-only service; the
+  //    plugin still loads on surfaces without httpServer).
+  ctx.inject(['webServer'], (webCtx) => {
+    // 版本检测与更新模块（lib/update.js，一期）：模块级单例——runningTag
+    // 只在进程首次创建时探测；注入回调重跑（热装配/fiber 重放）复用同一
+    // 实例，不会误清更新后的"等待重启"提示（CodeX 复审 P0-4）。
+    // restartRequired 为派生语义（runningTag !== localTag），无需 init
+    // 清除步骤。状态文件回退目录用 memoryDir。
+    const updateOps = getUpdateChecker({ fallbackDir: config.memoryDir })
+    // 启动后台静默检测（稳定版复审 P0-10）：badge 数据源是只读缓存，
+    // 若用户从不打开版本页，检测永不触发、红点永不出现（卖点自锁）——
+    // 插件启动时在后台跑一次 status()（fire-and-forget，不阻塞启动）。
+    // status 自带 24h 成功 TTL + 30min 失败退避 + single-flight，多设备/
+    // 多实例不会反复打远端；结果落缓存，设置 Tab 红点与版本页自动就位。
+    void updateOps.status().catch(() => { /* 静默：检测失败不打扰启动 */ })
+    const resolveReveal = (target) => resolveRevealTarget(config, target)
+    // Open a path with the platform's reveal command; WSL/Linux falls back
+    // from xdg-open to wslview so a missing xdg-utils does not silently
+    // swallow the click. Rejects with a user-visible message when nothing
+    // is available. Linux/WSL: xdg-open → wslview → explorer.exe (WSL ships
+    // explorer.exe + wslpath even where wslu's wslview cannot be installed).
+    const revealPath = (path) => new Promise((resolve, reject) => {
+      const commands = process.platform === 'darwin' ? ['open']
+        : process.platform === 'win32' ? ['explorer']
+          : ['xdg-open', 'wslview', 'explorer.exe']
+      const tryNext = (index) => {
+        if (index >= commands.length) {
+          reject(new Error('没有可用的打开命令（Linux/WSL 请安装 xdg-utils，或使用 Windows 自带的 explorer.exe）'))
+          return
+        }
+        const command = commands[index]
+        // explorer.exe takes a Windows path; everything else the Linux path.
+        const args = command === 'explorer.exe' ? [toWindowsPath(path)] : [path]
+        const child = spawn(command, args, { windowsHide: true, stdio: 'ignore' })
+        child.on('error', () => tryNext(index + 1))
+        child.on('spawn', () => resolve())
+      }
+      tryNext(0)
+    })
+    webCtx.effect(() => installApi(webCtx, {
+      store, archive, queue, todoStore, getRuntime, updateRuntime: applyRuntimePatch, resolveRevealTarget: resolveReveal, revealPath,
+      config,
+      // 共享别名存储实例（aliases.json 单实例：api 路由与 de_session rename
+      // 共用同一内存缓存，避免多实例互覆写；api.js 缺省自建）
+      aliases: aliasStore,
+      resolveCwd: (sessionId) => ctx.get('agents')?.get?.(sessionId)?.session?.header?.cwd,
+      // 记忆同步状态（/memory-evolve/memory-sync/status）：syncEnabled 时由
+      // syncCtrl 提供，否则恒未启用
+      syncStatus: (cwd) => (syncStatusRef ? syncStatusRef(cwd) : { enabled: false, initialized: false }),
+      // 记忆同步 UI 操作（/memory_sync 命令组的 API 化：setup/sync/off/
+      // resolve/conflicts/migrate——记忆同步 Tab 用）
+      syncOps: syncOpsRef ?? {
+        setup: async () => ({ kind: 'error', text: translate(MISC_DICT, 'misc.syncNotReady', undefined, getLocale()) }),
+        sync: async () => ({ kind: 'error', text: translate(MISC_DICT, 'misc.syncNotReady', undefined, getLocale()) }),
+        off: () => ({ kind: 'error', text: translate(MISC_DICT, 'misc.syncNotReady', undefined, getLocale()) }),
+        resolve: async () => ({ kind: 'error', text: translate(MISC_DICT, 'misc.syncNotReady', undefined, getLocale()) }),
+        conflicts: () => [],
+        migrate: () => null,
+      },
+      // 模型配置模块：store（models.json 读写）+ 快照聚合（供应商/模型/
+      // 思考等级/备注/enabled 一站式返回给「模型设置」Tab 与外部查询）；
+      // 模块未启用（modelsEnabled=false）时 store 为 null，API 拒绝访问。
+      modelsStore,
+      buildModelsSnapshot: () => buildModelsSnapshotAsync(ctx, modelsStore),
+      // 版本检测与更新（/api/update/status、/api/update、badge.update 字段）
+      updateOps,
+    }), 'vssaros-memory: web api')
+  })
 
-	// ★ 草稿提升（**人在页面上**触发）—— ⚠ 它**刻意不过审批闸**，推理见 `lib/promote.js` 文件头：
-	// 闸的理由是"**模型**可能不经确认就写记忆"，而人按下按钮本身就是那次确认 ⇒ 再弹一次是把确认链
-	// 叠两层 ✗（且走 `approval/request` 技术上也不通：审批服务要求在 open turn 内，页面请求没有 turn）。
-	const promoter = createPromoter({
-		draftStore,
-		stats: statsStore,
-		remember,
-		// 撤销提升 = 软删长期层那条（与 `memory_forget` 同一个网关方法；页面触发 ⇒ 同样不过审批闸）
-		forget: forgetMemory,
-		// ★ getter（2026-10-20）：调用时现取 —— 切换工作区后提升写进**当前**分区（见 `promote.js` 的注释）
-		gatewayBase: () => gatewayUrlOf(config),
-		// ★ 2026-10-27：提升也走同一解析（否则"草稿提升"会写回 `ws-*` ⇒ 与读分叉 ✗）。
-		//   提升是**页面触发**、没有会话上下文 ⇒ persona 传空，只靠跨进程别名归一 ✓
-		agentId: () => resolveMemoryScope({ agentId: agentIdOf(config), scope: readScopeSync(config) }),
-		auditAppend,
-	});
-	// ⚠ `toolsOnly`（preset plane 那一次）不注册本钩子 —— 否则**每回合 distill 跑两遍**
-	//   （实测症状见 `apply` 开头 `toolsOnly` 的注释：审计成对出现 ws-… / default）。
-	if (!toolsOnly) ctx.effect(() => ctx.on('agent/turn-stopping', payload => {
-		state.distill.turns++;
-		const session = payload?.agent?.session;
-		if (!session || typeof session.snapshotEvents !== 'function') { state.distill.skipped++; syncStats(); return; }
-		let events = [];
-		try {
-			const from = state.distillSeqs.get(session.id) ?? 0;
-			const to = typeof session.seq === 'number' ? session.seq : 0;
-			events = to > from ? Array.from(session.snapshotEvents(from, to)) : [];
-			state.distillSeqs.set(session.id, to);
-		} catch (error) {
-			state.distill.failed++;
-			try { auditLogger?.warn?.(`[vssaros-memory] 自动沉淀读会话事件失败：${error?.message ?? error}`); } catch { /* 记录失败本身绝不再抛 ✓ */ }
-			return;
-		}
-		const texts = userTextsOf(events);
-		// ★ 2026-10-20：同一段事件里若发生过**压缩**，`compaction/summary` 带着模型写好的会话摘要 ⇒
-		//   作为「会话摘要」草稿（dsh 侧补上 IDE 时代"压缩即写长期记忆"那一跳；仍是草稿、人工提升 ✓）。
-		//   事件游标与约定提取**共用**（上面已推进）⇒ 同一次压缩只会被看到一次。
-		const hasSummary = events.some(event => event?.type === 'compaction/summary');
-		if (texts.length === 0 && !hasSummary) { state.distill.skipped++; syncStats(); return; }
-		// ★ LLM 判定的前置**同步取好**（路由）：后台块里不许再碰 `payload`/`agent` ✗ ——
-		// 那些是回合期对象，回合结束后它们的状态未必还能读 ✓（路由也是"那一刻"的事实 ✓）。
-		// ⚠ `judgeEnabled` 来自**外层**（与"要不要注入 `llm`"是同一个常量 ✓），不在这里重算 ——
-		// 两处判断可能漂移，而漂移出的那一种组合**不会**被探针抓住 ✗。
-		// ★ 2026-11-02：自动提升也要用判定器（提升前必须有判定证据）⇒ 两条路任一开启就取路由。
-		//   只在 `judgeEnabled` 时取 ⇒ 自动提升会因 `judgeTarget === null` 被永久跳过（静默不提升）。
-		const judgeTarget = (judgeEnabled || autoPromoteCfg.mode === 'high-only') ? modelTargetOf(payload?.agent) : null;
+  // 5. Skills manager (merged from the standalone dsh-skill-browser plugin):
+  //    browse/search/disable skills + custom skill dirs, served under the
+  //    original /skills-manager prefix so the browser client is unchanged.
+  //    The disabled list migrates once from the standalone plugin's state.
+  installSkillsManager(ctx, {
+    stateFile: join(config.memoryDir, 'skills-state.json'),
+    // issue #4：技能 Tab 的项目技能扫描按「当前会话 cwd」定位（与 /api/memory
+    // 各接口同款模式），不再固定回退到 workspace.list()[0]；客户端请求带
+    // sessionId，服务端据此解析会话工作目录。
+    resolveCwd: (sessionId) => ctx.get('agents')?.get?.(sessionId)?.session?.header?.cwd,
+  })
 
-		// ★★ 2026-10-27（阶段③）：**回合观测**（`mem:obs:*` 暂存层）—— 从 IDE 渲染侧搬到本插件。
-		//   为什么搬：IDE 那几处 `observe` 依赖"渲染进程存活 + 代理可用 + IDE 重启才生效"；
-		//   而本 hook 的事件源与 distill **完全相同**（同一个 `agent/turn-stopping`）
-		//   ⇒ 放这里更稳、也少一处跨进程调用 ✓（用户要求"边聊边记"不该依赖 IDE 前端）
-		//   ⚠ 同样纪律：**同步**取好回合期对象（`payload`/`agent` 在后台不可靠，与 judgeTarget 同理）
-		const obsBase = gatewayUrlOf(config);
-		// 与 memory_remember 同一解析器（别名 ＞ 人设 ＞ 主分区）⇒ 观测与写入必落同一分区 ✓
-		const obsPartition = resolveMemoryScope({
-			agentId: agentIdOf(config),
-			persona: personaIdOf(payload?.agent, state?.projections),
-			scope: readScopeSync(config),
-		});
-		const observation = buildTurnObservation(events, {
-			sessionId: String(session.id ?? ''),
-			turn: payload?.turn,
-			now: Date.now(),
-		});
-		if (observation && obsBase && observeOnTurn) {
-			state.observe.turns++;
-			void providerCall(obsBase, 'observe', [obsPartition, observation]).then(
-				() => { state.observe.written++; },
-				error => {
-					state.observe.failed++;
-					try { auditLogger?.warn?.(`[vssaros-memory] 回合观测写入失败（不影响回合）：${error?.message ?? error}`); } catch { /* 绝不再抛 ✓ */ }
-				},
-			);
-		} else if (observation) {
-			state.observe.skipped++;
-		}
-		// ⚠ 从这里起**全是后台**（`void` + 队列）：钩子已经返回，回合不会被这一跳拖住 ✓
-		// 用队列而不是裸 `void async`：并发上限 + 超时 + 可观测（`state.distill` 里的计数即来自它的结果 ✓）。
-		void distillQueue.push(async () => {
-			try {
-				const seenDigests = await draftStore.seen();
-				const raw = extractCandidates(texts, {
-					sessionId: String(session.id ?? ''),
-					turn: payload?.turn,
-					seenDigests,
-					now: Date.now(),
-				});
-				// 摘要草稿**不过** LLM 判定：判定器的提示词是为"短约定"设计的（只能减少候选），
-				// 对一整段摘要没有可用的判据 —— 摘要的把关就是人工「提升」✓。
-				// ★★ 2026-10-26：**按回合摘要自动沉淀** —— 正则只认显式句式（以后/记住/…）⇒ 普通对话
-				//   106/106 `no-candidate`；这里在"本回合没有显式候选"时，从 user+assistant 造一条摘要候选
-				//   （保守阈值 + digest 去重 + 每回合最多 1 条；仍是**草稿**，要人工「提升」才进长期记忆 ✓）
-				const turnCandidates = raw.length === 0
-					? turnCandidatesOf(events, {
-						sessionId: String(session.id ?? ''),
-						turn: payload?.turn,
-						seenDigests,
-						now: Date.now(),
-					})
-					: [];
-				state.distill.turnSummaries = (state.distill.turnSummaries ?? 0) + turnCandidates.length;
+  // 6. Commands: the review command works even with review off (users may
+  //    want to inspect/clean leftover suggestions). Registered when the
+  //    commands service exists.
+  ctx.inject(['commands'], (cmdCtx) => {
+    cmdCtx.commands.register(reviewCommand(config, store, todoStore, archive, queue, () => getRuntime().todoEnabled !== false))
+    cmdCtx.commands.register(searchDocsCommand(config, {
+      status: () => searchDocsCtrl.status(),
+      setEnabled: (enabled) => applyRuntimePatch({ searchDocsEnabled: enabled }),
+    }))
+  })
 
-				const summaries = hasSummary
-					? summaryCandidatesOf(events, { sessionId: String(session.id ?? ''), turn: payload?.turn, seenDigests, now: Date.now() })
-					: [];
-				// ★ 2026-11-02：摘要里的**原子事实句**（独立候选流，`matched='summary-fact'`）。
-				//   整段摘要只能人工提升（模型转述、体量大）；但它埋着的"端口改成 8080"这类结论
-				//   是可复用的，切出来当独立候选 ⇒ 才有机会靠"重复出现"自动沉淀 ✓
-				const summaryFacts = hasSummary
-					? summaryFactsOf(events, { sessionId: String(session.id ?? ''), turn: payload?.turn, seenDigests, now: Date.now() })
-					: [];
-				state.distill.candidates += raw.length;
-				state.distill.summaries = (state.distill.summaries ?? 0) + summaries.length;
-				state.distill.summaryFacts = (state.distill.summaryFacts ?? 0) + summaryFacts.length;
-				// ★ LLM 判定（**默认关** ✓）：正则粗筛的噪音交给模型滤一遍 —— 它**只能减少**候选。
-				// ⚠ 失败一律 **fail-open**（保留全部 ✓）：`judge.judge` 的四种失败（超时/抛错/形状不认识/
-				//   回答解析不了）都收敛成"全保留" ⇒ 这里**不需要**再判一次错 ✓（判据：噪音可接受、漏掉不可接受 ✓）。
-				let candidates = raw;
-				if (raw.length > 0 && judgeEnabled) {
-					if (judgeTarget === null) {
-						state.distill.judgeSkipped++; // 路由取不到 ⇒ 可见地跳过（不静默、也不瞎猜 ✗）
-					} else {
-						const verdict = await judge.judge(raw, judgeTarget);
-						state.distill.judged++;
-						if (verdict.dropped.length > 0) {
-							const drop = new Set(verdict.dropped);
-							candidates = raw.filter(candidate => !drop.has(candidate.digest));
-							state.distill.judgeDropped += verdict.dropped.length;
-						}
-					}
-				}
-				const written = await draftStore.append(draftRowsOf([...candidates, ...summaries, ...turnCandidates, ...summaryFacts]));
-				state.distill.written += written;
+  // 7.4 通知模块（de_notify + web 站内通知）：2026-08-13 用户拍板把「渠道通知」
+  //     与「web 通知」合并为**通知模块**——notifyEnabled 一个开关同时启用两者：
+  //     de_notify 工具（手动触发，channels 含 feishu/qq/weixin/wecom/web/all）
+  //     + web 站内通知（落盘存储 + 网页右上角铃铛）。sendChannelNotify ref 供
+  //     COI 调度模块（coiNotifyChannels 自动通知）松耦合桥接——未启用时 ref
+  //     为 null，COI 侧静默跳过。webStore ref 供直发模块复用（发 web 落盘）。
+  let notifyDispose = null
+  let notifySendRef = null
+  let notifyWebStoreRef = null
+  let channelSendDispose = null
+  let channelSendWebStoreRef = null
 
-				// ★★ 2026-11-02：自动提升（沉淀链的第二半）。此前草稿只进不出 ⇒ 长期层 5 周零写入。
-				//   ⚠ 门控极窄（见 `core/promotion.js` 文件头）：强句式 + LLM 判定成功 + **重复出现**
-				//   + 长度合规 + 非敏感 + 每回合最多 1 条。摘要在任何档位下都必须人工提升。
-				//   ⚠ 顺序：**先 append 再 bump** —— bump 只累加已存在的行，顺序反了第一次永远是 1 次。
-				let autoPromoted = 0;
-				try {
-					const autoCfg = autoPromoteCfg;
-					if (autoCfg.mode === 'high-only') {
-						// 两条候选流各自的"重复命中"：显式句式（用户原话）+ 摘要事实句（模型转述）
-						const repeated = [
-							...repeatedDigestsOf(texts, seenDigests),
-							...repeatedSummaryFactDigestsOf(events, seenDigests),
-						];
-						if (repeated.length > 0) {
-							const bumped = await draftStore.bump(repeated);
-							state.distill.repeats = (state.distill.repeats ?? 0) + bumped;
-							// 重新读盘取**累加后**的 hits（`read()` 是最近的窗口，够用：草稿上限 500）
-							const rows = await draftStore.read();
-							const pool = repeated
-								.map(digest => rows.find(row => row.digest === digest))
-								.filter(row => row && row.status === 'draft');
-							if (pool.length > 0) {
-								// 判定这一批**旧草稿**（不是本回合的新候选）：自动提升的证据必须当场可复核，
-								// 不能拿"本回合新候选判定成功"去顶替 ⇒ 判定失败/未启用就一条都不提（fail-closed）。
-								let judgeOk = false;
-								if (judgeEnabled && judgeTarget !== null) {
-									const verdict = await judge.judge(pool, judgeTarget);
-									judgeOk = verdict.parseFailed !== true;
-									state.distill.judged++;
-								}
-								const { selected } = pickAutoPromotions(pool, {
-									mode: autoCfg.mode, minHits: autoCfg.minHits, judgeOk,
-								});
-								for (const row of selected) {
-									const result = await promoter.promote(row.id, { policy: 'auto-distill' });
-									if (result.ok) { autoPromoted++; }
-									await auditAppend({
-										action: 'executed',
-										tool: 'memory_auto_promote',
-										agentId: agentIdOf(config),
-										sessionId: String(row.sessionId ?? session.id ?? ''),
-										target: 'long',
-										memoryType: 'fact',
-										policy: 'auto-distill',
-										// ⚠ 证据走 `policyKey`：`buildAuditRow` 是**字段白名单**
-										// （未知键静默丢弃）⇒ 直接传 `hits` 会被丢掉，账本里就查不到"凭什么提的"。
-										policyKey: `auto-distill/hits=${Number.isFinite(row.hits) ? row.hits : 1}/${String(row.matched ?? '')}`,
-										outcome: result.ok ? 'ok' : 'failed',
-										content: String(row.text ?? '').slice(0, 200),
-										...(result.ok ? {} : { error: result.error }),
-									});
-								}
-							}
-						}
-					}
-					state.distill.autoPromoted = (state.distill.autoPromoted ?? 0) + autoPromoted;
-				} catch (error) {
-					// 自动提升失败**不影响**草稿已落盘这件事（它是增益，不是主链）
-					state.distill.autoFailed = (state.distill.autoFailed ?? 0) + 1;
-					try { auditLogger?.warn?.(`[vssaros-memory] 自动提升失败（草稿已保留）：${error?.message ?? error}`); } catch { /* 绝不再抛 ✓ */ }
-				}
-				// ⚠ 写盘之后**必须**让 `state.drafts` 跟上（2026-10-13 修）：页面渲染读的是它 ✗ ——
-				// 不更新的话，刚沉淀出来的草稿在页面上看不见（要等下一次页面请求才读盘 ✓）。
-				// 走"**从盘重读**"而不是拿 `written` 去拼：这样页面上看到的永远等于文件里的真内容 ✓
-				// （也顺带覆盖"别处改了草稿文件"的情形 ✓）。读失败不影响沉淀本身 ✓。
-				void draftStore.read()
-					.then(rows => { state.drafts = { rows, readAt: Date.now(), error: '' }; })
-					.catch(error => { state.drafts = { rows: state.drafts.rows, readAt: Date.now(), error: String(error?.message ?? error) }; });
-				await auditAppend({
-					action: 'distill',
-					agentId: agentIdOf(config),
-					sessionId: String(session.id ?? ''),
-					outcome: candidates.length === 0 && summaries.length === 0 && turnCandidates.length === 0 && summaryFacts.length === 0
-						? 'no-candidate'
-						: `drafted:${written}${summaries.length ? `(summary:${summaries.length})` : ''}${summaryFacts.length ? `(fact:${summaryFacts.length})` : ''}${turnCandidates.length ? `(turn:${turnCandidates.length})` : ''}`,
-					content: [...candidates, ...summaries, ...turnCandidates, ...summaryFacts].map(candidate => candidate.text.slice(0, 200)).join(' | '),
-				});
-			} catch (error) {
-				state.distill.failed++;
-				try { auditLogger?.warn?.(`[vssaros-memory] 自动沉淀失败（不影响回合）：${error?.message ?? error}`); } catch { /* 绝不再抛 ✓ */ }
-			}
-		}).then(result => {
-			// ⚠ 队列的结果也要**计入可见计数**：超时是 `Promise.race` 在**外层**判的 ⇒ 上面的 catch
-			// 根本不会执行 ⇒ 不接这一下就会出现"任务失败了、但页面显示什么都没发生" ✗（观测出现洞 ✓）。
-			if (!result.ok) {
-				state.distill.failed++;
-				try { auditLogger?.warn?.(`[vssaros-memory] 自动沉淀后台任务未完成：${result.error ?? result.skipped}`); } catch { /* 绝不再抛 ✓ */ }
-			}
-			// 后台任务（成功 / 失败 / 超时）都收尾于此 ⇒ 这里同步一次，本回合的全部计数才算完整
-			syncStats();
-		});
-	}));
+  // 7.4.1 渠道直发（de_channel_send）：**独立子模块**（与通知模块同一家族但
+  //     语义独立——直发 vs 通知，开关粒度独立）。channelSendEnabled 独立开关
+  //     （默认**开**，用户拍板要的功能开箱即用）：开启时注册 de_channel_send
+  //     工具（channels 同样含 web——直发也能发到网页站内）。与 notifyEnabled
+  //     互不影响，但发 web 依赖通知模块的 webStore（notify 未开时 webStore 为
+  //     null，发 web 如实报「渠道未启用」）。
+  //     ⚠️ channelSendCtrl 定义在 notifyCtrl 之前：notifyCtrl.sync 会重装直发
+  //     （web 存储就绪/释放时），引用 channelSendCtrl 必须已初始化（防 TDZ）。
+  const channelSendCtrl = {
+    sync() {
+      const enabled = runtime.channelSendEnabled === true
+      if (enabled) {
+        // webStore 引用变化时重装：execute 闭包捕获了旧 webStore（发 web 的
+        // 落盘目标变了），须 dispose 后重装刷新绑定。
+        if (channelSendDispose === null || channelSendWebStoreRef !== notifyWebStoreRef) {
+          if (channelSendDispose !== null) channelSendDispose()
+          channelSendDispose = installChannelSend(ctx, { webStore: notifyWebStoreRef }).dispose
+          channelSendWebStoreRef = notifyWebStoreRef
+        }
+      } else if (channelSendDispose !== null) {
+        channelSendDispose()
+        channelSendDispose = null
+        channelSendWebStoreRef = null
+      }
+    },
+  }
 
-	// ② 工具
-	ctx.effect(() => {
-		// ── R13（preset plane）：同一个包会被挂**两次**（host plane + 我们的 preset ✓）──
-		// `hostHalf: true` ⇒ 这次只注册页面/片段，**不注册工具**（工具交给 preset 里那次 ✓）；
-		// 缺省 ⇒ **与从前完全一样** ✓（零行为改变）。可选的 `systemPrompt` 注入**不受影响** ✓：
-		// 那是"记忆区块"的可见性，属于 host 侧语义，两次挂载都该有（幂等注册 ✓）。
-		if (config.hostHalf === true) { return undefined; }
-		const disposers = toolDefinitions(ctx, state, config, auditAppend).map(definition => ctx.tools.register(definition));
-		return () => {
-			for (const dispose of disposers) {
-				dispose();
-			}
-		};
-	});
+  // 通知发送方显示名解析（web 铃铛列表用）：别名优先 → 会话名称（sessionTitle
+  // 服务实时取，用户可见的左侧列表标题）→ 短 ID 兜底。sessionId 空 = 系统自动。
+  // ⚠️ 2026-08-14 防御加固：sessionTitle.get(session) 读 session.events，
+  // 传 undefined 会崩（可选链不保护参数）——先判 agent?.session 存在。
+  const resolveNotifySenderName = (sessionId) => {
+    if (!sessionId) return 'system'
+    const alias = aliasStore?.get?.(sessionId)
+    if (alias) return alias
+    const agent = ctx.get('agents')?.get?.(sessionId)
+    const title = agent?.session ? (ctx.sessionTitle?.get?.(agent.session)?.title ?? null) : null
+    if (title) return title
+    return String(sessionId).slice(0, 8)
+  }
 
-	// ③ 页面（清单 view.kind=page；2026-10-12「资料库」拆分后从"寄居片段"升为**独立整页**）。
-	// 路由仍是**可选**依赖：`webServer` / `connection` 只在 web 模板里存在（见文件头的注释）。
-	// 不在 web 模板 ⇒ 只是**没有页面** ✓，工具照常可用 ✓。
-	ctx.inject(['webServer', 'connection'], page => page.effect(() => page.webServer.register({
-		kind: 'prefix',
-		path: ROUTE_PREFIX,
-		// ⚠ 必须 async：下面渲染前要 `await draftStore.read()`（草稿区的内容是渲染依赖 ✓，
-		// 而写出草稿是**别的路径**做的 —— 自动沉淀 / 提升丢弃 ✓）⇒ 见那段注释。
-		handler: async (req, res) => {
-			const rejected = page.connection.requestRejection(req);
-			if (rejected) {
-				res.writeHead(rejected, { 'content-type': 'text/plain; charset=utf-8' });
-				res.end(String(rejected));
-				return;
-			}
-			try {
-				const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-				const pathname = url.pathname;
-				// ★ 2026-10-22（工作台重构 §5 步骤 2）：**页面数据的 JSON 接口**（React 工作台用）。
-				//   与 SSR 页**同一份 state**（`state.snapshot` / `state.drafts` / `state.distill` / `state.lastAction`）
-				//   ⇒ 两个界面的数字与文案口径一致 ✓（各算一遍迟早分叉 ✗）。
-				//   ⚠ 不在这里 `void refresh(...)`：那是**渲染**的副作用（页面每次打开刷一次）⇒
-				//     放进 GET 接口会让轮询/重取把网关打爆 ✗。要新鲜数据由页面上的「刷新」显式触发 ✓。
-				// ★★ 2026-10-26：**记忆详情的 JSON 接口**（React 二级页面用，用户要求"详情用 React 实现"）。
-				//   为什么要有它：详情页过去只有**服务端渲染**一条路 ⇒ React 工作台想展示详情只能靠
-				//   ① 整页导航（丢上下文/黑屏）或 ② `openModulePage`（桌面全窗没有编辑区 ⇒ 空编辑器黑屏）
-				//   ⇒ 把 `loadDetailModel` 的结果**原样暴露成 JSON** ⇒ React 就地渲染二级页 ✓
-				//   ⚠ `params` 是 URLSearchParams（不可 JSON 化）⇒ 单独转普通对象；其余字段都是纯数据 ✓
-				//   ⚠ 取数与 SSR 详情页**同一个函数**（`loadDetailModel`）⇒ 两个界面的口径不会再分叉 ✓
-				if (pathname === `${PAGE_ROUTE}api/detail` || pathname === `${PAGE_ROUTE}api/detail/`) {
-					try {
-						// ★ React 二级页要看到更多条目（SSR 页为省首屏只取 50）⇒ 这里默认 200、上限 500
-						//   ⚠ 用副本改参数：url.searchParams 是共享对象，直接 set 会影响同请求的其它分支 ✗
-						const detailParams = new URLSearchParams(url.searchParams);
-						if (!detailParams.get('limit')) { detailParams.set('limit', '200'); }
-						const model = await loadDetailModel({ config, params: detailParams, state });
-						const payload = Object.assign({ ok: true, version: PKG_VERSION }, model, {
-							params: Object.fromEntries(detailParams),
-						});
-						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-						res.end(JSON.stringify(payload));
-					} catch (e) {
-						const message = String(e?.message ?? e);
-						res.writeHead(500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-						res.end(JSON.stringify({ ok: false, error: message }));
-					}
-					return;
-				}
-				// ★★ 2026-10-26：**独立 React 详情页**（IDE webview 与浏览器共用同一份实现/数据源）。
-				//   为什么不复用 `/x/memory/detail`（SSR 版）：那份是服务端拼 HTML，React 只在 dsh 客户端里跑；
-				//   IDE 要在**编辑区**显示 React 版 ⇒ 需要一个**自包含**的页面：壳 + 自带 React 的 bundle ✓
-				//   ⚠ 路由**不带查询串**（`openModulePage` / 模块页白名单都要求干净路径 ✓），
-				//     token 由宿主加载时拼（与其它模块页同机制）。
-				if (pathname === `${PAGE_ROUTE}react-detail` || pathname === `${PAGE_ROUTE}react-detail/`) {
-					const bundlePath = fileURLToPath(new URL('./detail.bundle.js', import.meta.url));
-					const cssPath = fileURLToPath(new URL('./detail.css', import.meta.url));
-					if (!existsSync(bundlePath)) {
-						res.writeHead(500, { 'content-type': 'text/html; charset=utf-8' });
-						res.end('<h1>记忆详情（React）未构建</h1><p>缺少 <code>detail.bundle.js</code> ⇒ 跑 <code>node dsh-plugins/vssaros-memory/webapp/build.mjs</code></p>');
-						return;
-					}
-					const css = existsSync(cssPath) ? readFileSync(cssPath, 'utf8') : '';
-					res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-					res.end([
-						'<!doctype html><html lang="zh-CN"><head>',
-						'<meta charset="utf-8">',
-						'<meta name="viewport" content="width=device-width,initial-scale=1">',
-						'<title>记忆详情</title>',
-						// 独立页没有 IDE 的 CSS 令牌 ⇒ 这里给**明暗兜底色**（否则深色下会黑字黑底 ✗）
-						'<style>:root{color-scheme:light dark}body{margin:0;font:13px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;background:#ffffff;color:#1f1f1f}',
-						'@media (prefers-color-scheme: dark){body{background:#1e1e1e;color:#d4d4d4}}',
-						css,
-						'</style></head><body><div id="root"></div>',
-						'<script src="/x/memory/react-detail.js"></script>',
-						'</body></html>',
-					].join(''));
-					return;
-				}
-				// bundle 本体（IIFE，自带 React ⇒ 不需要宿主注入任何东西 ✓）
-				if (pathname === `${PAGE_ROUTE}react-detail.js`) {
-					const bundlePath = fileURLToPath(new URL('./detail.bundle.js', import.meta.url));
-					if (!existsSync(bundlePath)) { res.writeHead(404).end(); return; }
-					res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' });
-					res.end(readFileSync(bundlePath));
-					return;
-				}
-				// ★ 记忆工作台 v2 · 收件箱（2026-11-02）——
-				//   GET  api/inbox      ⇒ 待审 / 自动提升动态 / 已处理 + 每条"为什么没被自动提升"
-				//   POST api/inbox/act  ⇒ 批量 promote / discard / restore（撤销）/ edit-promote（改写后提升）
-				//   写动作与旧表单路由同口径：页面 = 人的显式确认 ⇒ 不过审批闸（理由见 `promote.js` 文件头）。
-				if (pathname === `${PAGE_ROUTE}api/inbox` || pathname === `${PAGE_ROUTE}api/inbox/`) {
-					if (req.method !== 'GET') {
-						res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' });
-						res.end(JSON.stringify({ ok: false, error: '收件箱读取必须用 GET' }));
-						return;
-					}
-					const rows = await draftStore.read();
-					const inbox = buildInbox(rows, autoPromoteCfg);
-					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-					res.end(JSON.stringify({
-						ok: true,
-						mode: autoPromoteCfg.mode,
-						minHits: autoPromoteCfg.minHits,
-						distill: state.distill ?? {},
-						...inbox,
-					}));
-					return;
-				}
-				if (pathname === `${PAGE_ROUTE}api/inbox/act`) {
-					await handleInboxAct(req, res, { promoter, logger: auditLogger });
-					return;
-				}
-				// ★ 记忆工作台 v2 · P3/P4（2026-11-02）：
-				//   GET  api/overview          ⇒ 状态条（网关 / schema / 备份 / 归档 / 档位）+ 沉淀漏斗
-				//   GET  api/inject-preview    ⇒ 冻结快照 vs 当前库：分块 / token / 前缀比对
-				//   POST api/archive/restore   ⇒ 把一条归档恢复回长期记忆
-				if (pathname === `${PAGE_ROUTE}api/overview`) {
-					if (req.method !== 'GET') { replyJson(res, 405, { ok: false, error: '总览读取必须用 GET' }); return; }
-					try {
-						replyJson(res, 200, await buildOverview({ state, config, draftStore, statsStore, autoPromoteCfg }));
-					} catch (error) {
-						replyJson(res, 500, { ok: false, error: String(error?.message ?? error).slice(0, 200) });
-					}
-					return;
-				}
-				if (pathname === `${PAGE_ROUTE}api/inject-preview`) {
-					if (req.method !== 'GET') { replyJson(res, 405, { ok: false, error: '注入预览必须用 GET' }); return; }
-					const frozen = state.snapshot;
-					const base = gatewayUrlOf(config);
-					let liveText = null;
-					let liveError = '';
-					let liveMeta = {};
-					if (!base) {
-						liveError = '记忆网关未配置（config.gatewayUrl / VSSAROS_MEMORY_GATEWAY_URL）';
-					} else {
-						try {
-							// ★ 与快照刷新共用 `composeWorkingText`；**不写**任何槽位 / 不增刷新计数 ⇒ 预览无副作用
-							//   （`workingContext` 本身也已是无副作用调用：不记访问、不下溢）
-							const composed = await composeWorkingText(state, config, personaOf(config, frozen));
-							liveText = composed.text;
-							liveMeta = { truncatedByChars: composed.truncatedByChars, rawChars: composed.rawChars, partitions: composed.partitions, personaError: composed.personaError, pendingDrafts: composed.pendingDrafts };
-						} catch (error) {
-							liveError = String(error?.message ?? error).slice(0, 200);
-						}
-					}
-					replyJson(res, 200, {
-						ok: true,
-						...buildInjectionView({ frozenText: frozen?.text ?? '', liveText, liveError, budgetTokens: tokenBudgetOf(config), charCap: MAX_INJECT_CHARS }),
-						frozenAt: frozen?.fetchedAt ?? 0,
-						frozenOk: frozen?.ok === true,
-						frozenError: frozen?.error ? String(frozen.error).slice(0, 200) : '',
-						liveMeta,
-					});
-					return;
-				}
-				if (pathname === `${PAGE_ROUTE}api/archive/restore`) {
-					await handleArchiveRestore(req, res, {
-						partitionsOf: async () => {
-							const base = gatewayUrlOf(config);
-							return base ? (await resolvePartitions(base, agentIdOf(config))).partitions : [];
-						},
-						restore: (partition, id) => restoreArchived(requireGateway(config), partition, id),
-						audit: auditAppend,
-						stats: statsStore,
-					});
-					return;
-				}
-				if (pathname === `${PAGE_ROUTE}api/page` || pathname === `${PAGE_ROUTE}api/page/`) {
-					// 草稿是**渲染依赖** ⇒ 读一次（只读本地 jsonl，代价可忽略 ✓，与 SSR 页同口径）
-					await draftStore.read()
-						.then(rows => { state.drafts = { rows, readAt: Date.now(), error: '' }; })
-						.catch(error => { state.drafts = { rows: state.drafts?.rows ?? [], readAt: Date.now(), error: String(error?.message ?? error) }; });
-					const snapshot = state.snapshot;
-					const base = gatewayUrlOf(config);
-					const agentId = agentIdOf(config);
-					const toolsRegistered = TOOL_NAMES.filter(tool => !!ctx.tools.get(tool)).join(',') || '(未注册)';
-					const lastAction = state.lastAction;
-					const fresh = lastAction && Number.isFinite(lastAction.at) && Date.now() - lastAction.at < 30_000;
-					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-					res.end(JSON.stringify({
-						ok: true,
-						version: PKG_VERSION,
-						state: {
-							name: !base ? 'unconfigured' : (snapshot.ok ? 'ok' : 'error'),
-							agent: agentId,
-							gateway: base ?? '',
-							bytes: Buffer.byteLength(snapshot.text, 'utf8'),
-							chars: snapshot.text.length,
-							refreshes: state.refreshes,
-							writes: state.writes.get(agentId) ?? 0,
-							tools: toolsRegistered,
-							promptSection: state.promptSection === undefined ? null : state.promptSection,
-							snapshots: state.snapshots.size,
-							sectionName: SECTION_NAME,
-							tokenBudget: tokenBudgetOf(config),
-							charCap: MAX_INJECT_CHARS,
-						},
-						working: {
-							ok: snapshot.ok === true,
-							text: snapshot.text ?? '',
-							error: snapshot.error ? String(snapshot.error) : '',
-							source: snapshot.source ? String(snapshot.source) : '',
-							fetchedAt: snapshot.fetchedAt ?? 0,
-							truncated: snapshot.truncatedByChars === true,
-							rawChars: snapshot.rawChars ?? null,
-						},
-						distill: state.distill ?? {},
-						drafts: {
-							rows: (state.drafts?.rows ?? []).map(row => ({
-								id: String(row.id ?? ''), text: String(row.text ?? '').slice(0, 90),
-								matched: String(row.matched ?? ''), turn: Number.isFinite(row.turn) ? row.turn : null,
-								status: String(row.status ?? ''),
-							})),
-							readAt: state.drafts?.readAt ?? 0,
-							error: state.drafts?.error ? String(state.drafts.error) : '',
-						},
-						lastAction: fresh ? { action: String(lastAction.action ?? ''), ok: lastAction.ok === true, text: String(lastAction.text ?? '').slice(0, 60), error: lastAction.error ? String(lastAction.error) : '' } : null,
-						slots: SLOT_NAMES.slice(),
-					}));
-					return;
-				}
-				// ★ 提升路由（`POST /x/memory/promote`）—— 草稿区那个"无 JS"表单提交到这里 ✓
-				// （为什么页面提升不过审批闸：见 `lib/promote.js` 文件头 ✓）
-				if (pathname === PROMOTE_ROUTE || pathname === DISCARD_ROUTE) {
-					if (req.method !== 'POST') {
-						res.writeHead(405, { 'content-type': 'text/plain; charset=utf-8' });
-						res.end('草稿操作必须用 POST（GET 会被预取/被链接抓到 ⇒ 一次点击变成两次写入 ✗）');
-						return;
-					}
-					handleDraftAction(req, res, {
-						promoter,
-						logger: auditLogger,
-						// 动作由**路径**决定（白名单在 `handleDraftAction` 里再校验一次 ✓）
-						action: pathname === PROMOTE_ROUTE ? 'promote' : 'discard',
-						state, // ⇒ 结果留给下一次渲染（见 `handleDraftAction` 的注释 ✓）
-					});
-					return;
-				}
-				// ★ 2026-10-14：**记忆详情页** `/x/memory/detail` ✓。
-				// ⚠ 为什么做成**子路由**而不是新整页：整页要同步改三处（`dshModuleContainers.ts` 的
-				//   `DSH_MODULE_PAGES` / 插件清单的 `vssaros.view` / `vssaros-dashboard` 的 catalog ✓），
-				//   而子路由**零改动** ✓；且它本来就是"记忆库"的下钻页，不该在活动栏另占一格 ✗。
-				if (pathname === DETAIL_ROUTE) {
-					const params = url.searchParams;
-					const tool = params.get('tool') ?? '';
-					if (tool === 'export-json' || tool === 'export-md' || tool === 'export-skills') {
-						await handleDetailExport(res, { config, tool });
-						return;
-					}
-					const model = await loadDetailModel({ config, params, state });
-					res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-					res.end(renderDetailShell(model));
-					return;
-				}
-				// 只剩一条页面路由：**整页** `/x/memory/`（独立工作台）。旧的片段路由 `/x/memory/section`
-				// 已于 2026-10-12 随「知识库页不再内嵌记忆分区」一起删除（不再有调用方）。
-				if (pathname !== PAGE_ROUTE) {
-					res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
-					res.end(`不是本插件的页面路由：${pathname}`);
-					return;
-				}
-				// ★★ 2026-10-15（用户两轮口径合并后的最终形态）：
-				//   **侧栏**（宿主带 `?surface=sideview`）⇒ **摘要版**（置顶主入口 + 三张卡 + 最近几条 ✓）；
-				//   **编辑区**（`?surface=editor`）⇒ **记忆详情**（复刻 IDE 的 `MemoryDetailEditorPane` ✓）——
-				//     ⚠ 用户实测口径：编辑区显示详情"正常"✓，显示完整版"不正确"✗（第一版把完整版搬进去被否 ✓）；
-				//   无参数（纯浏览器 / 详情页「← 记忆库」回链）⇒ **完整版**（草稿区 · 固定槽位 · 诊断 · 工作记忆正文 ✓
-				//     —— 那些区块仍可达：详情页右上角「← 记忆库」就在同一个窗格里切过去 ✓）。
-				//   ⚠ 两个表面**同一个路由**（`/x/memory/`）⇒ 判据只能是 `surface`（宿主注入的 ✓，页面自己不猜 ✗）。
-				//   ⚠ 摘要版要数字 ⇒ 取数有**预算**（`summaryForRender` ✓）：等不到就用上次结果渲染并如实标注，
-				//     不把侧栏空着等网关（网关忙时实测会答满 5s 超时 ✗）。
-				// ★★ 2026-10-24：**同路由 + 查询参数**原地渲染详情（`/x/memory/?view=detail`）。
-				//   为什么不跳 `/x/memory/detail`、也不调 openModulePage：
-				//   ① 插件页常在 **iframe** 里（宿主 preload 只注入顶层 frame）⇒ `window.vssarosDsh` **不在**
-				//      ⇒ 旧代码退化成 `window.open('./detail')` ⇒ IDE 用**内部浏览器**打开一个**没有 token** 的地址
-				//      ⇒ 用户看到的就是"**弹出一个黑屏窗口**" ✗✗（真机 2026-10-24 20:55 定案）
-				//   ② 同路由换查询参数 ⇒ **pathname 不变**（仍是 `/x/memory/`）⇒ iframe 内是同帧导航（放行 ✓）、
-				//      顶层文档时也不属于"从 `/` 跳模块页"（守卫允许同模块子树 ✓）
-				//   ⇒ 无桥、无新窗口、无 token 问题，两种承载方式都能用 ✓
-				if (url.searchParams.get('view') === 'detail') {
-					const model = await loadDetailModel({ config, params: url.searchParams, state });
-					res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-					res.end(renderDetailShell(model));
-					return;
-				}
-				if (url.searchParams.get('surface') === 'editor') {
-					const model = await loadDetailModel({ config, params: url.searchParams, state });
-					res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-					res.end(renderDetailShell(model));
-					return;
-				}
-				if (url.searchParams.get('surface') === 'sideview') {
-					// 工作记忆那份仍照完整版的节奏：**用当前快照渲染 + 后台刷新** ✓（它有冻结语义，不该在这里等 ✗）
-					void refresh(state, config);
-					const summary = await summaryForRender(state, config);
-					res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-					res.end(renderSideviewPage({ summary, state, config }));
-					return;
-				}
-				// 打开/刷新页面时顺手刷新**默认槽位**（不 await 刷新结果，只用当前快照渲染；下一次请求就是新数据）✓。
-				// 为什么不顺手刷**各会话的冻结槽位** ✗：页面是**诊断面**（要看最新），而会话槽位是**冻结面**
-				// （要前缀稳定）—— 两者诉求相反，页面刷会话槽位就等于把"每 60 秒打掉一次缓存"搬回来 ✓。
-				void refresh(state, config);
-				// ⚠⚠ 草稿这份**必须 await**（2026-10-13 修）：`state.drafts` 是**渲染依赖** ——
-				// 原来写 `void`，等于"用上一次的值渲染本次页面" ✗ ⇒ **刚被自动沉淀写进草稿区的候选，
-				// 在页面上要等到再刷新一次才出现** ✗✗。实测：真跑一次 `turn-stopping` 后
-				// `state.distill.written=2`、草稿文件里也有 2 行，而页面草稿区仍是 **0 条** ✗。
-				// 代价可忽略（只读一个本地 jsonl）✓；而快照那边保持 `void` 是对的 —— 它是**故意**要旧值 ✓。
-				await draftStore.read()
-					.then(rows => { state.drafts = { rows, readAt: Date.now(), error: '' }; })
-					.catch(error => { state.drafts = { rows: state.drafts.rows, readAt: Date.now(), error: String(error?.message ?? error) }; });
-				const toolsRegistered = TOOL_NAMES.filter(tool => !!ctx.tools.get(tool)).join(',') || '(未注册)';
-				// 一律给**整页**外壳：容器加载的就是本路由，给裸片段会让用户看到没有样式的一段内容 ✗。
-				const html = renderPage({ state, config, toolsRegistered });
-				res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-				res.end(html);
-			} catch (e) {
-				const message = String(e?.message ?? e);
-				if (res.headersSent) {
-					res.end(message);
-				} else {
-					res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
-					res.end(message);
-				}
-			}
-		},
-	})));
+  const notifyCtrl = {
+    sync() {
+      const enabled = runtime.notifyEnabled === true
+      if (enabled && notifyDispose === null) {
+        const installed = installNotify(ctx, { memoryDir: config.memoryDir, resolveSenderName: resolveNotifySenderName })
+        notifyDispose = installed.dispose
+        notifySendRef = installed.sendChannelNotify
+        notifyWebStoreRef = installed.webStore
+        // web 存储就绪：若直发已启用，重装它拿到 webStore（发 web 才能落盘）。
+        channelSendCtrl.sync()
+      } else if (!enabled && notifyDispose !== null) {
+        notifyDispose()
+        notifyDispose = null
+        notifySendRef = null
+        notifyWebStoreRef = null
+        // web 存储释放：若直发仍启用，重装它失去 webStore（发 web 报未启用）。
+        channelSendCtrl.sync()
+      }
+    },
+  }
+  notifyCtrl.sync()
+  channelSendCtrl.sync()
+
+  // 7.4.2 本会话图片查询（de_session_images）：**独立子模块**（2026-08-11 P1
+  //     任务——与渠道发送同一家族但语义独立：列出当前会话最近的图片引用，
+  //     AI 先查再发；独立开关 sessionImageQueryEnabled（默认关），不借
+  //     channelSendEnabled/notifyEnabled 的开关——2026-08-08 用户纪律）。
+  //     依赖 DSH 260810+ 快照的 attachments 服务与 agents 服务（agents 已
+  //     声明式注入）；260809 及更早进程查询会如实报错（attachments 缺失）。
+  let sessionImageDispose = null
+  const sessionImageCtrl = {
+    sync() {
+      const enabled = runtime.sessionImageQueryEnabled === true
+      if (enabled && sessionImageDispose === null) {
+        sessionImageDispose = installSessionImages(ctx).dispose
+      } else if (!enabled && sessionImageDispose !== null) {
+        sessionImageDispose()
+        sessionImageDispose = null
+      }
+    },
+  }
+  sessionImageCtrl.sync()
+
+  // 6.5 内置技能同步（issue #58）：适配器使用指南的源头在插件包 `skills/`，
+  //     启动时同步到技能库（`~/.agents/skills`）——默认启用、技能管理 Tab 可
+  //     禁用、随插件升级更新（x-version 门控，用户编辑受保护）。
+  //     **只受 coiSyncSkills 控制，与 coiEnabled 无关**：此前这个调用点在
+  //     `installCoi()` 内，而 `installCoi` 由 coiEnabled 门控（默认 false），
+  //     于是默认配置下内置技能永远不会进技能库——与 §7.5 broadcast 当初
+  //     "独立子模块挂在 COI 下拆不开"是同款事故。
+  //     同步失败不阻断启动（syncBuiltinSkillsIfEnabled 内部收口并 warn）。
+  syncBuiltinSkillsIfEnabled(config)
+
+  // 7. COI 调度模块（de_coi 工具/命令/API）：统一调度 kimi/codex/grok/hermes
+  //    等 CLI 代理。模块边界：lib/coi/* 独立目录，只通过 memoryStore.add
+  //    这一个薄接口沉淀摘要；未来拆独立插件时替换该回调即可。
+  //    coiEnabled 为运行时开关（默认禁用）：开启时安装（工具/命令/API 注册、
+  //    任务数据目录复用），关闭时整体卸载；Web Tab 在刷新后随 API 探测出现/隐藏。
+  let coiDispose = null
+  const coiCtrl = {
+    sync() {
+      const enabled = runtime.coiEnabled === true
+      if (enabled && coiDispose === null) {
+        const installed = installCoi(ctx, config, {
+          memoryStore: store,
+          resolveCwd: (sessionId) => ctx.get('agents')?.get?.(sessionId)?.session?.header?.cwd,
+          // 记忆上下文注入（读 memory/user/key；tracks 由 AI 经 injectTracks
+          // 自主选择）。excludeDshOnly=true：跳过带 [dsh-only] 标记的条目——
+          // 外部执行器不是 DSH，不必遵循 DSH 纪律/规则，注入只会让其困惑
+          memoryContext: ({ cwd, branch, tracks }) => buildMemoryContext(store, { cwd, branch, tracks, excludeDshOnly: true }),
+          // 渠道通知回调（coiNotifyChannels 自动通知）：notify 模块未启用时
+          // ref 为 null → 可选链返回 undefined，COI 侧静默跳过
+          sendChannelNotify: (opts) => notifySendRef?.(opts),
+        })
+        coiDispose = installed.dispose
+      } else if (!enabled && coiDispose !== null) {
+        coiDispose()
+        coiDispose = null
+      }
+    },
+  }
+  coiCtrl.sync()
+
+  // 7.5 会话广播（de_broadcast）：**独立子模块**（用户拍板：明显独立的
+  //     子模块不挂在别的模块下，曾跟随 coiEnabled 是事故）。broadcastEnabled
+  //     独立开关（默认关）：开启时安装（de_broadcast 工具注册 + prune
+  //     定时器 + 快照「会话广播」段 + 会话头部复制会话 ID 按钮），关闭时
+  //     整体卸载；存储独立目录 broadcastDataDir（<memoryDir>/broadcast）。
+  //     storeRef 供会话编排模块（de_session spawn 加房间）松耦合桥接——
+  //     广播未启用时返回 undefined，编排模块只提示不阻断。
+  //     7.55 工作区冲突协调（ws-coord）是**广播模块的子功能组**（用户拍板
+  //     2026-08-09：语义上属于"通知的一部分"，归入广播，不做独立模块）：
+  //     wsCoordEnabled 子开关（默认关），**依赖广播大开关**（广播关 =
+  //     wsCoord 全部不注册）；开启时安装锁存储 + de_ws_* 工具 + 事件监听
+  //     （fs/observed 自动登记 / pre-execute 冲突检测 / post-execute 软模式
+  //     警告 / turn-stopping 释放），存储独立子目录 <broadcastDataDir>/ws-coord/，
+  //     代码独立装配单元（installWsCoord）——防 08-08「广播挂 COI 拆不开」
+  //     事故重演，将来若要拆出成本低。
+  let broadcastDispose = null
+  let broadcastStoreRef = null
+  let wsCoordDispose = null
+  const wsCoordCtrl = {
+    sync() {
+      // 子开关依赖广播大开关：broadcastEnabled 关 = wsCoord 不注册
+      const enabled = runtime.wsCoordEnabled === true && broadcastDispose !== null
+      if (enabled && wsCoordDispose === null) {
+        const installed = installWsCoord(ctx, config, { broadcastStore: broadcastStoreRef })
+        wsCoordDispose = installed.dispose
+      } else if (!enabled && wsCoordDispose !== null) {
+        wsCoordDispose()
+        wsCoordDispose = null
+      }
+    },
+  }
+  const broadcastCtrl = {
+    sync() {
+      const enabled = runtime.broadcastEnabled === true
+      if (enabled && broadcastDispose === null) {
+        const installed = installBroadcast(ctx, config)
+        broadcastDispose = installed.dispose
+        broadcastStoreRef = installed.store
+        // 广播装好后同步 wsCoord（wsCoordEnabled 已开时随广播一起装）
+        wsCoordCtrl.sync()
+      } else if (!enabled && broadcastDispose !== null) {
+        // 广播卸载时 wsCoord 一并卸载（先子后父，依赖顺序）
+        if (wsCoordDispose !== null) {
+          wsCoordDispose()
+          wsCoordDispose = null
+        }
+        broadcastDispose()
+        broadcastDispose = null
+        broadcastStoreRef = null
+      }
+    },
+  }
+  broadcastCtrl.sync()
+
+  // 7.55 会话编排（de_session）：**独立子模块**（与广播同一纪律——独立
+  //      领域不挂别的模块下）。sessionEnabled 独立开关（默认关）：开启时
+  //      注册 de_session 工具（spawn 新建会话 / wake 唤醒已有会话 /
+  //      status/list 查状态），关闭时整体卸载（并清理本模块 spawn 出的
+  //      live agent，用户自己的会话不受影响）；存储独立目录
+  //      sessionDataDir（<memoryDir>/session-orch）。依赖 DSH agents 服务，
+  //      仅同进程会话可唤醒；spawn 加房间经 getBroadcastStore 桥接广播。
+  let sessionDispose = null
+  const sessionCtrl = {
+    sync() {
+      const enabled = runtime.sessionEnabled === true
+      if (enabled && sessionDispose === null) {
+        const installed = installSession(ctx, config, {
+          getBroadcastStore: () => broadcastStoreRef,
+          // 共享别名存储（与 /api/aliases 同一实例，rename 改别名即时一致）
+          aliasStore,
+        })
+        sessionDispose = installed.dispose
+      } else if (!enabled && sessionDispose !== null) {
+        sessionDispose()
+        sessionDispose = null
+      }
+    },
+  }
+  sessionCtrl.sync()
+
+  // 7.6 会话搜索（de_session_search）：**独立子模块**（与广播同一纪律）。
+  //     sessionSearchEnabled 独立开关（默认关）：开启时注册 de_session_search
+  //     工具（实时只读扫描 Codex 会话，无索引/缓存/定时器），关闭时注销。
+  //     存储零依赖——不建目录不落盘，root 覆盖走静态 config.sessionSearchRoots。
+  let sessionSearchDispose = null
+  const sessionSearchCtrl = {
+    sync() {
+      const enabled = runtime.sessionSearchEnabled === true
+      if (enabled && sessionSearchDispose === null) {
+        const installed = installSessionSearch(ctx, config)
+        sessionSearchDispose = installed.dispose
+      } else if (!enabled && sessionSearchDispose !== null) {
+        sessionSearchDispose()
+        sessionSearchDispose = null
+      }
+    },
+  }
+  sessionSearchCtrl.sync()
+
+  // 8. 提示词管理器（Prompt Manager）：提示词库 CRUD + 注入轨（一次性/持续
+  //    N 轮/每 M 回合一次，agent/turn-stopping 回合推进）+ 快照段 + Web API。
+  //    复用「写后即时注入、不打断回复」通道；未来监测注入只对接注入轨 add
+  //    入口。promptsEnabled 为运行时开关（默认禁用）：开启时安装，关闭时
+  //    整体卸载（快照段/事件监听/API 全部移除，存储数据保留）。
+  let promptsDispose = null
+  const promptsCtrl = {
+    sync() {
+      const enabled = runtime.promptsEnabled === true
+      if (enabled && promptsDispose === null) {
+        const installed = installPrompts(ctx, config)
+        promptsDispose = installed.dispose
+      } else if (!enabled && promptsDispose !== null) {
+        promptsDispose()
+        promptsDispose = null
+      }
+    },
+  }
+  promptsCtrl.sync()
+
+  // 9. DSH UI 设置（dsh-ui-settings）：**独立子模块**（用户拍板纪律——
+  //    独立领域不挂别的模块下）。对 DSH web 界面做样式级小功能（第一版：
+  //    左侧会话列表「仅显示进行中」筛选 + 折叠工作区运行徽标）。纯客户端
+  //    实现（CSS + DOM 增强，注入逻辑在 src/client/session-filter.ts），
+  //    宿主端提供独立开关 uiSettingsEnabled（默认关）、状态探测端点
+  //    GET /api/ui-settings/state（关闭时 404，客户端探测失败即不注入任何
+  //    东西）与**运行中会话快照** GET /api/ui-settings/running（折叠的
+  //    工作区分组不渲染会话行、DOM 计数会漏，由宿主端精确统计——
+  //    agents.roots 的 status + workspace.sessionIds 归属）。开关在
+  //    「设置」Tab 的「配置」里切换（applyRuntimePatch sync 链即时安装/卸载）。
+  //
+  // 运行中会话快照构建：遍历所有顶层 live agent（roots，即用户可见的
+  // 会话），status==='running' 的按 workspace.sessionIds 归属到工作区，
+  // 归属不到的合并为未分组（title=null）。groups 保持 workspace.list()
+  // 顺序，客户端按行标题前缀匹配（workspace title 全局唯一）。
+  //
+  // ⚠️ 踩坑（2026-08-09 用户实测 bug）：workspace.list() 返回的包装对象
+  // 是 { host, id, record:{...} } 结构——title/sessionIds 经**原型 getter**
+  // 暴露（可读），但**没有 workspaceId getter**（真实 id 在 .id）。
+  // 之前用 owner.workspaceId 做 Map key 全是 undefined → 所有组 get(undefined)
+  // 命中同一个计数 → 每个工作区都显示相同的运行数。修复：**用 workspace
+  // 对象引用本身做 Map key**（不依赖任何字段名），归属与取数天然一一对应。
+  const buildRunningSnapshot = () => {
+    const agentsSvc = ctx.get('agents')
+    const workspaceSvc = ctx.get('workspaceRegistry')
+    const roots = agentsSvc?.roots?.() ?? []
+    const workspaces = workspaceSvc?.list?.() ?? []
+    // 按 workspace 对象引用统计 running 数（sessionIds getter 精确归属）。
+    const runningByWorkspace = new Map()
+    let ungrouped = 0
+    for (const agent of roots) {
+      if (agent.status !== 'running') continue
+      const sessionId = agent.session?.id
+      const owner = sessionId === undefined ? undefined
+        : workspaces.find((w) => (w.sessionIds ?? []).includes(sessionId))
+      if (owner === undefined) ungrouped += 1
+      else runningByWorkspace.set(owner, (runningByWorkspace.get(owner) ?? 0) + 1)
+    }
+    const groups = []
+    for (const w of workspaces) {
+      const running = runningByWorkspace.get(w) ?? 0
+      groups.push({ title: w.title, workspaceId: w.id ?? null, running })
+    }
+    if (ungrouped > 0) groups.push({ title: null, workspaceId: null, running: ungrouped })
+    const total = groups.reduce((sum, g) => sum + g.running, 0)
+    return { total, groups }
+  }
+  let uiSettingsDispose = null
+  const uiSettingsCtrl = {
+    sync() {
+      const enabled = runtime.uiSettingsEnabled === true
+      if (enabled && uiSettingsDispose === null) {
+        const installed = installUiSettings(ctx, { getRunningSnapshot: buildRunningSnapshot })
+        // Mermaid 静态端点（/memory-evolve/mermaid/mermaid.min.js）跟随
+        // DSH UI 设置模块的生命周期：模块关闭时端点一并卸载（client 的
+        // 「Mermaid 图表渲染」功能开关在其「综合」列表里，模块关了功能
+        // 自然没有入口）。独立文件独立函数（lib/mermaid.js），不借开关。
+        const installedMermaid = installMermaid(ctx)
+        uiSettingsDispose = () => {
+          installed.dispose()
+          installedMermaid.dispose()
+        }
+      } else if (!enabled && uiSettingsDispose !== null) {
+        uiSettingsDispose()
+        uiSettingsDispose = null
+      }
+    },
+  }
+  uiSettingsCtrl.sync()
+
+  // 10. 会话书签（session bookmarks）：**独立子模块**（用户拍板纪律——
+  //     独立领域不挂别的模块下）。每轮星标 + 书签列表 + 跳转（第一阶段
+  //     不做分支）。纯 UI + 宿主 API（不注册 AI 工具）；存储独立 sidecar
+  //     session-bookmarks.json。bookmarkEnabled 独立开关（默认关）：开启
+  //     时安装 HTTP API，关闭时整体卸载（数据文件保留）；客户端探测
+  //     /api/bookmarks/state 成功才注入 turnTail 星标与「书签」Tab。
+  //     开关在「设置」Tab 的「配置」里切换（applyRuntimePatch sync 链
+  //     即时安装/卸载）。
+  let bookmarkDispose = null
+  const bookmarkCtrl = {
+    sync() {
+      const enabled = runtime.bookmarkEnabled === true
+      if (enabled && bookmarkDispose === null) {
+        const installed = installBookmarks(ctx, config)
+        bookmarkDispose = installed.dispose
+      } else if (!enabled && bookmarkDispose !== null) {
+        bookmarkDispose()
+        bookmarkDispose = null
+      }
+    },
+  }
+  bookmarkCtrl.sync()
+
+  // 11. 无限画板（canvas）：**独立子模块**（用户拍板纪律）。canvasEnabled
+  //     独立开关（默认关）：开启时安装（de_canvas 工具 + HTTP API +
+  //     <memoryDir>/canvas/ 存储），关闭时整体卸载（数据文件保留）。
+  //     resolveCwd 复用主插件 agents 服务（与会话编排同款），供工具与
+  //     API 解析会话归属键。开关在「设置」Tab 的「配置」里切换。
+  let canvasDispose = null
+  const canvasCtrl = {
+    sync() {
+      const enabled = runtime.canvasEnabled === true
+      if (enabled && canvasDispose === null) {
+        const installed = installCanvas(
+          ctx,
+          config,
+          (sessionId) => ctx.get('agents')?.get?.(sessionId)?.session?.header?.cwd,
+          // 会话显示名解析（2026-08-14 用户要求：归属徽标显示会话名称
+          // 而非一长段 sessionId）：别名优先 → sessionTitle 服务实时取
+          // （左侧列表标题）→ null（前端兜底短 ID）。与 advisor/notify
+          // 同款模式。
+          // ⚠️ 2026-08-14 修复：sessionTitle.get(session) 直接读
+          // session.events，传 undefined 会崩（可选链不保护参数）——
+          // 画板 GET 遍历**所有节点**的 sessionId，必然遇到不在本进程的
+          // 会话（离线/已归档），曾导致整个 GET 500、前端刷新后空板
+          // （用户反馈"冲突后刷新画板是空的"的真根因）。必须先判
+          // agent?.session 存在再取标题；查不到会话名返回 null 让前端
+          // 兜底短 ID，绝不让单个节点拖垮整板加载。
+          (sessionId) => {
+            if (!sessionId) return null
+            const agent = ctx.get('agents')?.get?.(sessionId)
+            const alias = aliasStore?.get?.(sessionId) ?? null
+            if (alias) return alias
+            const session = agent?.session
+            if (!session) return null
+            return ctx.sessionTitle?.get?.(session)?.title ?? null
+          },
+        )
+        canvasDispose = installed.dispose
+      } else if (!enabled && canvasDispose !== null) {
+        canvasDispose()
+        canvasDispose = null
+      }
+    },
+  }
+  canvasCtrl.sync()
+
+  // 7.9 项目记忆跨设备同步：**独立子模块**（施工图 §7 第 6 步；独立领域
+  //     独立开关纪律——syncEnabled 默认关）。2026-08-13 用户拍板：记忆同步
+  //     完全由用户在 Web GUI（记忆同步 Tab）主动操作——**无 AI 侧入口**
+  //     （/memory_sync 命令组与快照状态行均已删除），仅保留 GUI 侧
+  //     syncOps/syncStatus（Tab 与 API 用）。关闭时整体卸载（记忆目录/仓库
+  //     全保留）。store 的 entryIdMode 随开关动态切换（仅项目轨受影响，
+  //     未启用零变化）。
+  const syncCtrl = {
+    sync() {
+      const enabled = runtime.syncEnabled === true
+      store.entryIdMode = enabled ? 'on' : 'off'
+      if (syncDispose === null) {
+        const installed = installMemorySync(ctx, { config, getRuntime, applyRuntimePatch, store })
+        syncDispose = installed.dispose
+        syncStatusRef = installed.syncStatus
+        syncOpsRef = installed.ops
+      }
+    },
+  }
+  syncCtrl.sync()
+
+  // 8.9 Advisor 评审能力（lib/advisor/）：**独立子模块**（用户拍板：与广播/
+  //     COI 同一纪律）。advisorEnabled 开关（默认关）：开启时安装（可见面
+  //     观察器 + 评审运行时 + /advisor 命令 + HTTP API + 数据目录
+  //     <memoryDir>/advisor），关闭时整体卸载（dispose 统一清理）；运行中
+  //     键变化（provider/model/prompt/窗口/队列/超时）经 reconfigure 热
+  //     更新（按签名重建运行时，仅窗口类键原地生效）。
+  let advisorRef = null
+  const advisorConfigOf = () => {
+    // 合并静态 config 与运行时 advisor 键（installAdvisor 只消费 advisor* 键；
+    // runtime 覆盖优先）
+    const merged = { ...config }
+    for (const key of RUNTIME_KEYS) {
+      if (key.startsWith('advisor') && runtime[key] !== undefined) merged[key] = runtime[key]
+    }
+    return merged
+  }
+  const advisorCtrl = {
+    sync() {
+      // **B2（复审）：控制面常驻**——API/命令/面板状态始终可用（默认关闭
+      // 时面板可开、/advisor on 可开）；开关只影响 observer/runtime 是否
+      // 评审（installAdvisor 内部 effectiveEnabled + ensureRuntime 门禁）。
+      // 不再按 advisorEnabled 卸载（旧实现默认关闭时 /status 404、无法开启）。
+      if (advisorRef === null) {
+        const installed = installAdvisor(ctx, advisorConfigOf(), {
+          dataDir: config.advisorDataDir,
+          sessionName: (sessionId) => {
+            // MAJOR-3：别名优先（AliasStore）→ sessionTitle → null
+            // ⚠️ 曾误写 aliasStoreRef（未定义变量）→ sessionName 闭包抛
+            // ReferenceError → renderAndEmit 在 onDelta 前静默失败（评审
+            // 从未开始）；正确变量为 apply 内的 aliasStore
+            // ⚠️ 2026-08-14 防御加固：sessionTitle.get 传 undefined 会崩
+            //（可选链不保护参数），先判 agent?.session 存在。
+            const agent = ctx.get('agents')?.get?.(sessionId)
+            const alias = aliasStore?.get?.(sessionId) ?? null
+            if (alias) return alias
+            const session = agent?.session
+            if (!session) return null
+            return ctx.sessionTitle?.get?.(session)?.title ?? null
+          },
+          // 测试环境 ctx.logger 可能是对象（非 cordis 函数式）——兼容两种形态
+          logger: typeof ctx.logger === 'function' ? (ctx.logger('advisor') ?? console) : console,
+          persistAdvisorPatch: (patch) => applyRuntimePatch(patch),
+          validatePatch: validateRuntimePatch,
+        })
+        advisorRef = installed
+      } else {
+        // 运行中键变化：热更新（含开关翻转——reconfigure 停/启全部 runtime）
+        advisorRef.ctrl?.reconfigure?.(advisorConfigOf())
+      }
+    },
+  }
+  advisorCtrl.sync()
 }

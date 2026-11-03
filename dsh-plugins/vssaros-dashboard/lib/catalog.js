@@ -308,7 +308,6 @@ export const WORKBENCH_MODULES = [
 	{ route: '/x/dashboard/', name: '主页', desc: '会话遥测 / 用量与编排', icon: '🏠', alwaysPinned: true },
 	{ route: '/x/kanban/', name: '看板', desc: '看板存储与卡片工具', icon: '🗂' },
 	{ route: '/x/kb/', name: '知识库', desc: '知识库索引与检索', icon: '📚' },
-	{ route: '/x/memory/', name: '记忆库', desc: '记忆条目与检索', icon: '🧠' },
 	{ route: '/x/codebase/', name: '代码库', desc: '代码图谱与符号检索', icon: '🕸' },
 	{ route: '/x/media/', name: '媒体库', desc: '只读 media.db 页面', icon: '🎬' },
 	{ route: '/x/imagegen/', name: '生图', desc: '生图工作台 / 最近出图画廊', icon: '🎨' },
@@ -320,7 +319,6 @@ export const WORKBENCH_MODULES = [
 	//   ⇒ 这张卡片点「打开」本来就会被**静默拒掉**（表现为"点了没反应"）。移除卡片正好把这个假入口清掉 ✓。
 	//   （MCP 服务器本身仍在「工具」页的 MCP 页签里管理 ✓）
 	{ route: '/x/workflow/', name: '流程', desc: '工作流引擎与画布', icon: '⚙' },
-	{ route: '/x/agents/', name: 'Bots', desc: '.agent.md → dsh preset', icon: '🤖' },
 	// ★ 2026-10-22（修 bug：主页没有「商城」卡片）：自营商城工作台（`@vssaros/dsh-marketplace`）。
 	//   ⚠ 漏登记的后果不止"卡片不显示"：`client.workbenchNav.js` 的 `itemByRoute()` 只认
 	//   `DEFAULT_ITEMS` 里的 route ⇒ 卡片就算加进来，点「打开」也会被 route 白名单静默拒掉

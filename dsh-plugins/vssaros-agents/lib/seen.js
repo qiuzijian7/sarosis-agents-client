@@ -13,7 +13,7 @@ import { renameWithRetry } from './atomicWrite.js';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { dataRootOf } from './store.js';
-import { presetIdOf } from './core/agents.js';
+import { rowBelongsTo } from './core/live.js';
 
 const FILE = 'agents-seen.json';
 const DEBOUNCE_MS = 500;
@@ -69,11 +69,10 @@ export async function markSeen(config, agentId) {
 export function unreadCounts(sessionRows, agents, seen) {
 	const out = {};
 	for (const a of agents ?? []) {
-		const preset = presetIdOf(a.id);
 		const seenMs = Number.isFinite(seen?.[a.id]) ? seen[a.id] : 0;
 		let n = 0;
 		for (const row of sessionRows ?? []) {
-			if (row?.presetId === preset && Number.isFinite(row.lastActiveAt) && row.lastActiveAt > seenMs) {
+			if (rowBelongsTo(row, a.id) && Number.isFinite(row.lastActiveAt) && row.lastActiveAt > seenMs) {
 				n++;
 			}
 		}

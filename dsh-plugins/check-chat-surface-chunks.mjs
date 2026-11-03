@@ -1381,7 +1381,6 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		['"data-vssaros-bots-search-input": "1"', 'Bots 搜索框必须有锚点（便于自动化/诊断）'],
 		// ★ 2026-11-02（用户要求「＋ 表示新建 bot 或群聊」）：
 		['"data-act": "new-bot"', 'Bots 的 ＋ 菜单必须有「新建 Bot…」（走 agents 的 create API）'],
-		['"data-act": "new-group"', 'Bots 的 ＋ 菜单必须有「新建群聊…」（走 groups 的 create API）'],
 		['"data-vssaros-bots-new": f.kind', '新建表单必须有锚点，并带 kind（bot / group 两套字段）'],
 		['const submitBotsNew = () => {', '新建必须真的有提交实现'],
 		['const AGENTS_API_AGENTS = "/x/agents/api/agents";', '新建 Bot 必须走 agents 官方的 create 接口'],
@@ -1473,6 +1472,20 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 	}
 	// ★ 2026-11-02（用户报「点新窗格没反应」）：宿主失败只发 **IDE 通知**（桌面模式下 IDE 主窗口隐藏
 	//   ⇒ 看不见），桥又不回传 ok ⇒ 页面必须自己给"正在分屏 / 没出现的可能原因"的可见反馈。
+	// ★ 2026-11-03（用户报「切到知识库/商城页签再切回会话页签 ⇒ 中栏空白」）：
+	//   工作台页签栏切回会话只调 `selectPanel(null)` 且不换 main，跨插件信号打不到
+	//   ⇒ 守卫必须能按「main 会话是否变化」把它判成"只切面板"并放行。
+	{
+		let wbSrc = '';
+		try { wbSrc = fs.readFileSync(path.join(PLUGIN_DIR, '..', 'vssaros-workbenches', 'lib', 'client.js'), 'utf8'); } catch { wbSrc = ''; }
+		for (const [needle, why] of [
+			['let lastMainSidAtPanelCall', 'selectPanel 守卫必须记住上次 main 会话（区分切面板 vs 换会话）'],
+			['const onlyPanelSwitch = !!sid && sid === lastMainSidAtPanelCall', 'main 未变的 selectPanel(null) 必须放行（否则切回会话页签白框）'],
+			['const fromReplaceMain = /replaceMain|openSession|startSession|connectBlank/.test(stack)', '必须按调用栈区分「工作台内部换会话」与「切回会话页签」'],
+		]) {
+			if (wbSrc.indexOf(needle) < 0) { problems.push(`vssaros-workbenches/lib/client.js: 缺「${needle}」—— ${why} ✗（2026-11-03）`); }
+		}
+	}
 	{
 		let sessSrc = '';
 		try { sessSrc = fs.readFileSync(path.join(LIB, 'client.sessions.js'), 'utf8'); } catch { sessSrc = ''; }
@@ -1482,6 +1495,45 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 			['st.newWindowEntryError = why;', '「新窗格」失败必须写进 state（供「复制诊断信息」查）'],
 		]) {
 			if (sessSrc.indexOf(needle) < 0) { problems.push(`client.sessions.js: 缺「${needle}」—— ${why} ✗（2026-11-02）`); }
+		}
+		// ★ 2026-11-03 二次（用户要求「在下拉框中显示 VsSaros，而不是独立按钮」）：
+		//   负对照 —— 独立 chip 不许再回来
+		if (sessSrc.includes('data-vssaros-open-ide')) {
+			problems.push('client.sessions.js: 独立「VsSaros」chip 又回来了 ⇒ 用户明确要求在官方下拉里显示 ✗（2026-11-03）');
+		}
+	}
+	// ★ 2026-11-03：VsSaros 必须是官方「更多打开方式」下拉里的一项（DOM 注入，见该 chunk 头注释）
+	//   ⚠ 必须在独立 chunk + ALWAYS_CHUNKS 接线：PART_CHUNKS 只覆盖 surface=chat，
+	//      desktop 主栏（full）根本不装 ⇒ 真机第一版就是这样「完全没生效」✗
+	{
+		let menuSrc = '';
+		try { menuSrc = fs.readFileSync(path.join(LIB, 'client.openInAppMenu.js'), 'utf8'); } catch { menuSrc = ''; }
+		for (const [needle, why] of [
+			['img[src*="open-in-app/icon/"]', '注入判据必须只认官方 open-in-app 菜单（别误伤其它菜单）'],
+			['sampleWrap.cloneNode(true)', '菜单项必须从现有项 clone（CSS-module 类名是 hash，写死会失效）'],
+			['typeof api.focusIde === "function"', 'VsSaros 菜单项必须走宿主桥 focusIde（不能页面自己开窗）'],
+			['new MutationObserver(() => scan())', '菜单是异步 portal ⇒ 必须用 MutationObserver 才能挂上'],
+			// ★ 2026-11-03 三次：独立 VsSaros 按钮必须消失（旧 chunk 缓存也可能残留 ⇒ DOM 兜底清理）
+			['removeStandaloneChip()', '无条件部件必须清理残留的独立 VsSaros 按钮（只允许在下拉里出现）'],
+			['data-vssaros-open-ide', '清理判据必须认准独立 chip 的锚点'],
+			['new KeyboardEvent("keydown", { key: "Escape", bubbles: true })', '点击 VsSaros 后必须只派发 Escape 让官方菜单自己卸载'],
+			// ★ 2026-11-03：logo 必须与项目正式 SVG 一致（sessions-logo-dark.svg / client.brand.js BrandMark）
+			['viewBox="0 0 512 512" width="512" height="512"', 'VsSaros 图标必须用正式 512 viewBox（不许再自画 16×16 蓝底 V）'],
+			['rx="96" fill="#FFFFFF"', '必须白底 + rx96 圆角（品牌规范）'],
+			['stroke="#FF5A2E"', '必须用品牌橙 #FF5A2E 描边'],
+			['A140 140 0 0 1 366.3 169.8', '必须保留上弧几何'],
+			['cx="256" cy="256" r="58" stroke-width="30"', '必须保留中心圆几何'],
+		]) {
+			if (menuSrc.indexOf(needle) < 0) { problems.push(`client.openInAppMenu.js: 缺「${needle}」—— ${why} ✗（2026-11-03）`); }
+		}
+		// ★ 负对照：菜单是 React portal ⇒ 手动 removeChild 会让 React 抛错并卸载整块头部 UI
+		if (/menu\.parentNode\s*&&\s*menu\.parentNode\.removeChild\(menu\)/.test(menuSrc)) {
+			problems.push('client.openInAppMenu.js: 又出现手动删除菜单 DOM ⇒ React 抛 removeChild 错误、顶部 UI 全消失 ✗（2026-11-03）');
+		}
+		let entrySrc = '';
+		try { entrySrc = fs.readFileSync(path.join(LIB, 'client.js'), 'utf8'); } catch { entrySrc = ''; }
+		if (!/ALWAYS_CHUNKS\s*=\s*\[[^\]]*client\.openInAppMenu\.js/.test(entrySrc)) {
+			problems.push('client.js: openInAppMenu 必须接进 ALWAYS_CHUNKS（放 PART_CHUNKS 在 desktop 主栏不装载）✗（2026-11-03）');
 		}
 	}
 	for (const [needle, why] of need) {
@@ -2324,12 +2376,18 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		problems.push('client.workbenchNav.js: 不许 remove() 那一行（React 会重建、易打乱兄弟节点；用 display:none ✗）');
 	}
 
-	// ⑥ 隐藏了官方「自动化任务」行 ⇒ **页签条必须补上同名入口**，否则用户再也进不去那个能力 ✗
-	const schedulerItem = /\{ id: "vssaros-wb-scheduler", name: "([^"]+)", ico: "[^"]*", route: "\/x\/scheduler\/" \}/.exec(nav);
+	// ⑥ 隐藏了官方「自动化任务」行 ⇒ 必须**有人**承接能力；但承接者从 2026-11-03 起换人了：
+	//   插件清单（`vssaros-scheduler` 的 `vssaros.workbench`）自己注册了同名工作台 + 图标
+	//   ⇒ chat-surface 这条老入口必须 `hidden: true`（否则两个「自动化任务」入口会开出两个 IDE 页签，
+	//     用户报过："为什么会有两个自动化任务页签"）。
+	//   ⚠ 条目本身**不能删**：它同时是 route 白名单（`itemByRoute()`）与"已注册工作台"的去重判据。
+	const schedulerItem = /\{ id: "vssaros-wb-scheduler", name: "([^"]+)", ico: "[^"]*", route: "\/x\/scheduler\/"(, hidden: true)? \}/.exec(nav);
 	if (!schedulerItem) {
-		problems.push('client.workbenchNav.js: DEFAULT_ITEMS 缺 vssaros-wb-scheduler（隐藏侧栏那行后就没入口了 ✗）');
+		problems.push('client.workbenchNav.js: DEFAULT_ITEMS 缺 vssaros-wb-scheduler（route 白名单 + 已注册工作台去重都靠它 ✗）');
 	} else if (schedulerItem[1] !== '自动化任务') {
 		problems.push(`client.workbenchNav.js: 页签名必须是「自动化任务」（实际「${schedulerItem[1]}」）—— 与工作台标题/清单三处同值 ✗`);
+	} else if (!schedulerItem[2]) {
+		problems.push('client.workbenchNav.js: vssaros-wb-scheduler 必须 hidden: true（入口已由插件清单 vssaros.workbench 提供；留着 = 两个入口、两个同名页签 ✗）');
 	}
 
 	if (!problems.some((p) => /HIDDEN_LABELS|display:none|aria-label|MutationObserver|节流|remove\(\)|vssaros-wb-scheduler/.test(p))) {
@@ -2608,126 +2666,72 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		problems.push('client.msgImport.js: 读不到源文件 — ' + String((e && e.message) || e));
 	}
 }
-// ── ㉑ 侧栏「会话 / Bots」页签 + 聊天框 Bot ⚙（2026-11-02，Bots 工作台重构）────────────
-// 起因：用户把 Bots 从「一个三栏工作台页面」改成「侧栏的一个页签」——
-//   左栏 会话 / Bots（会话 = 原工作区内容，Bots = 名册 + 群聊，点 bot ⇒ 中栏 dsh 聊天框），
-//   中栏右上角 Bot ⚙ ⇒ **官方那根可伸缩右侧栏**里开「Bot 设置」页签。
-// 会反复踩的四处（都配了断言）：
-//   ① 把「会话」页签内容改写/搬走 ⇒ 工作区树功能回退；
-//   ② ⚙ 占到官方 `conversation.session.header.corner`（打开侧边栏）那格 ⇒ 压住官方按钮；
-//   ③ 忘了先点官方 expand ⇒ 右栏收起时点了"没反应"；
-//   ④ 页签 id 两处不一致（chat-surface 按钮 / agents 面板）⇒ 打开的是空页签。
+// ── ㉑ 侧栏「会话 / Bots」页签（2026-11-02；★ 2026-11-03 群聊与 Bots 工作台下线后收敛）──────
+// 现在只剩：侧栏「会话 / Bots」两个页签 + Bots 页签列 bot 名册（点 bot ⇒ 中栏开它的会话）。
+// 已下线、必须保持消失的东西（反向断言，复活即红）：右上角 Bot ⚙ / 右侧栏 Bot 设置面板 /
+//   点群聊开中栏群页签（openGroup / agents.groupChat / ?embed=1 群路由）。
 {
 	try {
 		const root = path.resolve(import.meta.dirname, '..');
 		const libDir = path.join(root, 'dsh-plugins', 'vssaros-chat-surface', 'lib');
 		const ws = fs.readFileSync(path.join(libDir, 'client.workspaces.js'), 'utf8');
-		const btn = fs.readFileSync(path.join(libDir, 'client.botSettingsBtn.js'), 'utf8');
-		const entry = fs.readFileSync(path.join(libDir, 'client.js'), 'utf8');
-		const agtEntry = fs.readFileSync(path.join(root, 'dsh-plugins', 'vssaros-agents', 'lib', 'client.js'), 'utf8');
-		const agtPanel = fs.readFileSync(path.join(root, 'dsh-plugins', 'vssaros-agents', 'lib', 'client.botSettings.js'), 'utf8');
-		const strip = (s) => String(s).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-
-		// ① 侧栏两个页签（会话 / Bots）+ 数据面
+		const cv = fs.readFileSync(path.join(libDir, 'client.conversationViews.js'), 'utf8');
 		if (!ws.includes('data-vssaros-sidebar-tabs')) {
 			problems.push('client.workspaces.js: 缺侧栏页签锚点 data-vssaros-sidebar-tabs ⇒ 找不到「会话 / Bots」页签');
 		}
-		if (!/\["sessions", "bots"\]\.map/.test(ws)) {
-			problems.push('client.workspaces.js: 页签不是「会话 / Bots」两个（2026-11-02 用户定的形态）');
+		if (!/\.map\(\(k\) =>/.test(ws) || !/\["sessions", "bots"\]/.test(ws)) {
+			problems.push('client.workspaces.js: 页签不是 会话 / Bots 两个（改动会让侧栏少一页）');
 		}
-		if (!ws.includes('latestSessionIdOf') || !ws.includes('AGENTS_API_SESSION')) {
-			problems.push('client.workspaces.js: 点 bot 没走「最近一条会话 → 没有才新建」那条链 ⇒ 每次点都新建空会话 / 或点了没反应 ✗');
+		if (fs.existsSync(path.join(libDir, 'client.botSettingsBtn.js'))) {
+			problems.push('client.botSettingsBtn.js: 右上角 Bot ⚙ 已下线（bot 配置统一进会话「设置」页签），文件不该存在 ✗');
 		}
-		// ② 「会话」页签必须还是原来那块工作区内容（不许被改写或搬走）
-		if (!ws.includes('const sessionsPane = react.createElement')) {
-			problems.push('client.workspaces.js: 原「工作区」整块没被收进 sessionsPane ⇒ 「会话」页签功能回退 ✗');
+		if (fs.existsSync(path.join(root, 'dsh-plugins', 'vssaros-agents', 'lib', 'client.botSettings.js'))) {
+			problems.push('vssaros-agents/lib/client.botSettings.js: 右侧栏 Bot 设置面板已下线 ✗');
 		}
-		// ③ Bot ⚙ 的位置与开合链路
-		if (!strip(btn).includes('"conversation.session.header.utilities"')) {
-			problems.push('client.botSettingsBtn.js: 没注册到 conversation.session.header.utilities（右上角动作组）');
+		if (/openGroup|agents\.groupChat|\/x\/agents\/group\//.test(ws)) {
+			problems.push('client.workspaces.js: 群聊入口（openGroup / agents.groupChat / 群页路由）已下线，不该留着 ✗');
 		}
-		if (strip(btn).includes('"conversation.session.header.corner"')) {
-			problems.push('client.botSettingsBtn.js: 占了官方「打开侧边栏」那一格 ⇒ 会压住官方伸缩按钮（2026-10-30 用户截图报过）✗');
+		// 设置页签（2026-11-03 用户要求：bot 配置进会话页签、放整排最右端、并入记忆设置）
+		if (!/const ORDERS = \{ memory: 20, skills: 30, todo: 40, settings: 60 \};/.test(cv)) {
+			problems.push('client.conversationViews.js: 「设置」页签必须 order 60（整排最右端），且不再有独立的记忆设置页签 ✗');
 		}
-		if (!/window\[TARGET_GLOBAL\] = /.test(strip(btn))) {
-			problems.push('client.botSettingsBtn.js: 没写 window.__vssarosBotSettings ⇒ 右栏设置页不知道给哪个 bot 看');
+		if (!/label: "设置"/.test(cv) || /label: "记忆设置"/.test(cv)) {
+			problems.push('client.conversationViews.js: 页签文案必须是「设置」（记忆设置已并入）✗');
 		}
-		if (!strip(btn).includes('ctx.sidebarRight.openTab(TAB_ID)')) {
-			problems.push('client.botSettingsBtn.js: 没走 ctx.sidebarRight.openTab ⇒ 点 ⚙ 不会真的开出页签');
+		if (!/function BotConfigCard\(/.test(cv) || !/data-vssaros-botcfg/.test(cv)) {
+			problems.push('client.conversationViews.js: 缺 Bot 配置卡（BotConfigCard / data-vssaros-botcfg）⇒ bot 配置又没地方改了 ✗');
 		}
-		if (!strip(btn).includes('data-sidebar-right-expand')) {
-			problems.push('client.botSettingsBtn.js: 没先点官方 [data-sidebar-right-expand] ⇒ 右栏收起时点了看不到设置页 ✗');
+		if (!/action: "update"[\s\S]{0,120}id: agentId/.test(cv)) {
+			problems.push('client.conversationViews.js: Bot 配置卡必须走 POST /x/agents/api/agents {action:"update", id} ✗');
 		}
-		// ④ 页签 id 两处逐字一致
-		const idOf = (src) => (String(src).match(/const TAB_ID = "([^"]+)"/) || [])[1] || '';
-		if (!idOf(btn) || idOf(btn) !== idOf(agtPanel)) {
-			problems.push('Bot 设置页签 id 两处不一致（chat-surface 的按钮 "'
-				+ (idOf(btn) || '缺') + '" vs agents 的面板 "' + (idOf(agtPanel) || '缺') + '"）⇒ 点 ⚙ 打开的是空页签 ✗');
+		// ★ 2026-11-03（用户要求「只显示已注册的 bots」）：未注册那段不许回来 ——
+		//   注册失败的 bot 点了也开不了会话（session.create 报未知 preset），列出来只是噪音。
+		if (/botsSection\(\s*"未注册"/.test(ws)) {
+			problems.push('client.workspaces.js: Bots 页签只显示已注册的 bot（「未注册」段不许回来）✗');
 		}
-		// ⑤ 装载：⚙ 走 ALWAYS（无桥环境也要有）；面板 chunk 必须被 agents 入口 require
-		if (!/ALWAYS_CHUNKS = \[[^\]]*client\.botSettingsBtn\.js/s.test(entry)) {
-			problems.push('client.js: client.botSettingsBtn.js 不在 ALWAYS_CHUNKS ⇒ 无桥环境（dsh 纯浏览器）里没有 Bot ⚙ ✗');
+		if (!/hiddenUnregistered/.test(ws)) {
+			problems.push('client.workspaces.js: 未注册的 bot 要保留一句计数说明（hiddenUnregistered），不许静默消失 ✗');
 		}
-		if (!agtEntry.includes("./client.botSettings.js")) {
-			problems.push('vssaros-agents/lib/client.js: 没 require ./client.botSettings.js ⇒ 右侧栏「Bot 设置」页签根本注册不上 ✗');
-		}
-		if (!agtPanel.includes('sidebar.right.pane.tab')) {
-			problems.push('vssaros-agents/lib/client.botSettings.js: 没注册到 sidebar.right.pane.tab（右侧栏页签槽）');
-		}
-		// ⑥ 点群聊 ⇒ **中栏**出现群聊页（2026-11-02 用户报障：点了中栏还是 hero）──────────────
-		//   群没有"群会话"（memberSessions 是逐成员的）⇒ 不能 openSession；只能把群聊页
-		//   （?embed=1，只留聊天列）当中栏页签打开 —— 由 workbenchNav 暴露的
-		//   `window.__vssarosOpenPageTab` 提供（用 selectPanel(ENTRY_ID)，不是 selectPanel(null)，
-		//   否则中栏会换回聊天 ✗）。
-		const nav = fs.readFileSync(path.join(libDir, 'client.workbenchNav.js'), 'utf8');
-		if (!nav.includes('window.__vssarosOpenPageTab = openArbitraryPage')) {
-			problems.push('client.workbenchNav.js: 没暴露 window.__vssarosOpenPageTab ⇒ 侧栏点群聊无法在中栏开页 ✗');
-		}
-		// ⚠ 只钉"函数体内**调用**了 openWorkbenchTab"，不要钉字面量 `openWorkbenchTab({ id:`：
-		//   现在的写法是先构造 `const tab = { id, name, ... }` 再传进去 ⇒ 字面量断言会假红（2026-11-02 踩过 ✗）。
+		/* ★ 2026-11-03（用户报「切换不同人格时没有显示欢迎页」）：欢迎页必须认**会话内人格**
+		   （`vssaros-persona` 投影）—— 切人格不改 agentPreset，只看 preset 会让模式 preset 里的
+		   人格切换变成空 hero。判据：effectiveAgentOf + show 走 who.source。 */
 		{
-			const at = nav.indexOf('function openArbitraryPage');
-			if (at < 0) {
-				problems.push('client.workbenchNav.js: 缺 openArbitraryPage（侧栏点群聊没入口 ✗）');
-			} else {
-				const end = nav.indexOf('\n\t\t\t}', at);
-				const body = nav.slice(at, end > at ? end : at + 1600);
-				if (!body.includes('openWorkbenchTab(')) {
-					problems.push('client.workbenchNav.js: openArbitraryPage 没走 openWorkbenchTab（中栏页签 + 页签条那条通路）');
-				}
+			const wl = fs.readFileSync(path.join(libDir, 'client.welcome.js'), 'utf8');
+			if (!/function effectiveAgentOf\(/.test(wl) || !/pv\["vssaros-persona"\]/.test(wl)) {
+				problems.push('client.welcome.js: 欢迎页必须认会话内人格（vssaros-persona 投影）⇒ 否则模式 preset 里切人格是空 hero ✗');
+			}
+			if (!/who\.source !== "none"/.test(wl)) {
+				problems.push('client.welcome.js: 是否显示要走 effectiveAgentOf 的统一结论（who.source），不许只看 preset ✗');
+			}
+			if (!/pickAgent\(roster, presetId, who\.agentId\)/.test(wl)) {
+				problems.push('client.welcome.js: 名册匹配要带上人格 agentId（否则切人格后卡片还是原 bot 的）✗');
 			}
 		}
-		if (!ws.includes('window.__vssarosOpenPageTab(')) {
-			problems.push('client.workspaces.js: 点群聊没走 __vssarosOpenPageTab（改用 openSession 会一直停在 hero ✗）');
-		}
-		// ⑦ 中栏页签是**组件页签**（2026-11-02 方案 A）：首选 agents 插件登记的 React 群聊面板，iframe 只当兜底
-		//   起因：iframe 套 `/x/agents/group/<id>?embed=1` 是另一套 DSB 风格页面（字体/输入框/主题都和 dsh 不一致）。
-		if (!/comp: "agents\.groupChat", props: \{ gid \}/.test(ws)) {
-			problems.push('client.workspaces.js: 点群聊没带 comp:"agents.groupChat" + props.gid ⇒ 中栏又退回 iframe 那套 UI ✗');
-		}
-		if (!/t\.comp/.test(nav) || !/window\.__vssarosPageComponents/.test(nav)) {
-			problems.push('client.workbenchNav.js: 中栏页签不认 comp（没按 window.__vssarosPageComponents 取组件）⇒ 群聊页签恒走 iframe 兜底 ✗');
-		}
-		if (!/\(t\.route \|\| t\.wbId \|\| t\.comp\)/.test(nav)) {
-			problems.push('client.workbenchNav.js: loadTabs 过滤掉了只有 comp 的页签 ⇒ 重开窗口群聊页签丢失 ✗');
-		}
-		if (!/else if \(it\.comp\)/.test(nav)) {
-			problems.push('client.workbenchNav.js: ensureTab 没把旧的 iframe 群聊页签就地升级成 comp ⇒ 老用户永远看到 iframe ✗');
-		}
-		if (!/createElement\(Comp, Object\.assign\(\{\}, t\.props \|\| \{\}, \{ active: on \}\)\)/.test(nav)) {
-			problems.push('client.workbenchNav.js: 组件页签没把 active 传给组件 ⇒ 后台保活的群页签停不下 3 秒轮询 ✗');
-		}
-		if (!ws.includes('"?embed=1"')) {
-			problems.push('client.workspaces.js: 群聊页没带 ?embed=1 ⇒ 中栏里会出现两套左栏/右栏 ✗');
-		}
-		if (!problems.some((p) => /openGroup|群聊|__vssarosOpenPageTab/.test(p))) {
-			notes.push('侧栏点群聊 ⇒ 中栏页签打开群聊页（?embed=1；不走 openSession —— 群没有"群会话"）');
-		}
-		if (!problems.some((p) => /sidebar-tabs|TAB_ID|botSettingsBtn|botSettings\.js|右栏|侧边栏/.test(p))) {
-			notes.push('侧栏「会话 / Bots」页签 + Bot ⚙（页签 id 两处一致 / ⚙ 不占官方伸缩按钮 / 先 expand 再 openTab）');
+		if (!problems.some((p) => /sidebar-tabs|botSettingsBtn|botSettings\.js|设置/.test(p))) {
+			notes.push('侧栏「会话 / Bots」页签 + 会话视图「设置」页签（bot 配置进页签、记忆设置并入；Bot ⚙ 已删）');
 		}
 	} catch (e) {
-		problems.push('侧栏页签 / Bot ⚙ 守卫读不到源文件：' + String((e && e.message) || e));
+		problems.push('侧栏页签 / 设置页签守卫读不到源文件：' + String((e && e.message) || e));
 	}
 }
 

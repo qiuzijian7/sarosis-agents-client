@@ -98,8 +98,15 @@ export async function extractToolSnapshot() {
 	const { createFoundationService } = await import(pathToFileURL(path.join(HERE, 'vssaros-foundation', 'lib', 'index.js')).href);
 	const foundationSvc = createFoundationService();
 	let total = 0;
+	// 2026-11-03：`vssaros-memory` 是会话页记忆 Tab 的内置插件（vendored dsh-memory-evolve）。
+	// 它的 apply() 硬注入 Host 的 systemPrompt.context / llm / sessionPersistence / agents /
+	// sessionTitle / settings 共 7 个 cordis 服务，离线 fake ctx 无法等价复现（会抛
+	// "Cannot read properties of undefined (reading 'context')"）⇒ **显式排除**并写明原因，
+	// 不是静默跳过：其它插件在 apply 期抛错仍会让守卫红 ✓。真机激活由
+	// /memory-evolve/api/config（200）与 host 日志的 [vssaros-memory] 行验证。
+	const OFFLINE_UNSUPPORTED = new Set(['vssaros-memory']);
 	const dirs = fs.readdirSync(HERE, { withFileTypes: true })
-		.filter(d => d.isDirectory() && d.name.startsWith('vssaros-'))
+		.filter(d => d.isDirectory() && d.name.startsWith('vssaros-') && !OFFLINE_UNSUPPORTED.has(d.name))
 		.map(d => d.name)
 		.sort();
 	for (const dir of dirs) {

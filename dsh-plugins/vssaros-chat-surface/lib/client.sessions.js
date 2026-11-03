@@ -277,6 +277,8 @@ window.__ModuleLoader__.load({
 			 *   ⇒ 这里自己给三段反馈：点下去"正在分屏…"→ 2.6s 后若仍无变化则给出**可操作的解释**
 			 *     （窗口太窄 / 连点被忽略），至少不会"点了毫无动静"✗
 			 */
+			// ★ 2026-11-03 二次：用户要求「在下拉框中显示 VsSaros，而不是独立按钮」
+			//   ⇒ 独立 chip 已撤掉，改由 `client.openInApp.js` 往官方「更多打开方式」菜单注入一项。
 			function NewWindowChip() {
 				return react.createElement("button", {
 					type: "button",

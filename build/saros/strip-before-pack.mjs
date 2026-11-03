@@ -400,12 +400,8 @@ function ensureDir(label, stagingRel, repoRel, sentinel = 'extension.js', opts =
 	criticalMissing++;
 }
 
-// 1) agentmemory 能力插件 dist（AgentCapability 回退路径硬编码加载）
-ensureFile(
-	'agentmemory-memory/dist/extension.js',
-	'resources/app/extensions/agentmemory-memory/dist/extension.js',
-	['extensions/agentmemory-memory/dist/extension.js'],
-);
+// 2026-11-03：AgentMemory 整套下线 ⇒ 不再要求 agentmemory-memory/dist/extension.js
+// 随包（能力插件注册也已摘除，留着这条会让打包门禁 criticalMissing → exit 1）。
 
 // 2) 自定义扩展编译产物 out/ 缺失自愈（2026-08-29 生产事故：agent-studio 缺失 out/extension.js
 //    → 扩展宿主激活失败 → 工作区崩溃 “An unknown error occurred”）。

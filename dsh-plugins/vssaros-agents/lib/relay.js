@@ -15,7 +15,7 @@ import { AGENT_REPLY_KIND, finalAssistantText, findOurSplices, replyText } from 
 import { readLiveSession } from './live.js';
 import { outboxMarkUnknown, outboxNote, outboxPendingFor, outboxResolve } from './outbox.js';
 import { agentsRootOf, scanAgents } from './store.js';
-import { presetIdOf } from './core/agents.js';
+import { rowAgentOf } from './core/live.js';
 
 /**
  * 发送方登记一条"等它回"（投递成功后调）。entry = { messageId, from, fromName, hop }。
@@ -25,7 +25,7 @@ export function notePendingReply(config, sessionId, entry) {
 	return outboxNote(config, { kind: 'relay', sessionId, ...entry });
 }
 
-/** 会话 id → 显示名（projcache preset → agent 名；取不到就退回 preset id / 会话 id）。 */
+/** 会话 id → 显示名（projcache 行 → 归属 agent 名（身份记录优先，见 rowAgentOf）；取不到就退回 preset id / 会话 id）。 */
 async function displayNameOf(config, sessionId) {
 	const row = await readLiveSession(config, sessionId).catch(() => null);
 	const preset = row?.row?.presetId;
@@ -33,7 +33,7 @@ async function displayNameOf(config, sessionId) {
 		return sessionId;
 	}
 	const scan = await scanAgents(agentsRootOf(config)).catch(() => null);
-	return scan?.agents.find(a => presetIdOf(a.id) === preset)?.name ?? preset;
+	return rowAgentOf(row.row, scan?.agents)?.name ?? preset;
 }
 
 /**

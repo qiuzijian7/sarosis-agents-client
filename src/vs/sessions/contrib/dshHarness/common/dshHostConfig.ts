@@ -16,7 +16,7 @@
 
 import {
 	renderAgentsOverlay, renderBridgeOverlay, renderCodebaseOverlay, renderDataRootOverlay,
-	renderKanbanOverlay, renderMemoryOverlay, renderOfficeOverlay, renderSandboxOverlay,
+	renderKanbanOverlay, renderOfficeOverlay, renderSandboxOverlay,
 	type IDshBrowserOverlayConfig,
 } from './dshCli.js';
 import { IDshMcpServerSpec, renderMcpOverlay } from './dshMcpConfig.js';
@@ -273,17 +273,8 @@ export function renderHostOverlays(config: IDshHostConfig): readonly IDshHostOve
 			}),
 		});
 	}
-	const gatewayUrl = trimmed(config.gatewayUrl);
-	if (gatewayUrl) {
-		// 记忆模块的口径是 `config.gatewayUrl` → 环境变量 `VSSAROS_MEMORY_GATEWAY_URL` → **明确报"未配置"**。
-		// 地址的真源是主进程 `app.ts._initAgentMemoryEndpoint()`（端口规则的唯一真源）⇒ **拿不到就不渲染**，
-		// 尊重模块"不猜端口"的纪律（猜错会读到另一个网关的库）。
-		// ⚠ 行 id `vssaros-memory` 必须与插件自带 `cordis.patch.yml` 同名，否则补丁**打空且静默**（README 4.79）。
-		// ⚠ 记忆模块自 2026-10-12 起读 `config.dataRoot`（审计账本）与 `config.workspaceId`
-		// （按工作区隔离记忆分区）⇒ 三者必须**同写一份**：同一行被两份覆盖层打时 `config` 是整体替换 ✗
-		//（与看板那条同一个坑、同一个解法 ✓）。不注入时分别退回生产数据根 / 旧分区 `default`。
-		out.push({ kind: 'memory', text: renderMemoryOverlay(gatewayUrl, dataRoot, workspaceId) });
-	}
+	// 2026-11-03：记忆网关整套下线 ⇒ 不再生成 `vssaros-memory` 覆盖层（插件已从 bundles 移除，
+	// 打这一行只会静默打空）。`config.gatewayUrl` 字段保留以兼容独立启动器的旧配置对象。
 	// 沙箱降级**放最后**：它打的是 `sandbox-policy` 这一行（`@deepseek-ai/dsh-base` 自带的行），
 	// 与上面任何一条都不撞（所以不存在"同写一份"的替换风险 ✓）；顺序上放末尾只为让 run 目录里的
 	// 文件与日志读起来是"先常规、后补救"✓。

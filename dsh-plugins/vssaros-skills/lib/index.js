@@ -1887,7 +1887,6 @@ const TOOLS_WORKBENCHES = [
 	{ name: '流程', desc: '工作流引擎与画布', route: '/x/workflow/', provider: 'vssaros-workflow' },
 	{ name: 'Agent', desc: '.agent.md → dsh preset', route: '/x/agents/', provider: 'vssaros-agents' },
 	{ name: '商城', desc: '技能 / 工作台 / 工作流的安装与发布', route: '/x/marketplace/', provider: 'vssaros-marketplace' },
-	{ name: '记忆库', desc: '记忆条目与检索', route: '/x/memory/', provider: 'vssaros-memory' },
 ];
 
 /** 路径显示：家目录缩成 `~`，否则整行会被截断。 */

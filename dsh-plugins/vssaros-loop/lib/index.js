@@ -155,7 +155,15 @@ export function apply(ctx, config = {}) {
 	const runner = createRunner({
 		config,
 		now,
-		log,
+		// ★★ 2026-11-03（真机：打包版 Host 日志 `error vssaros-loop: TypeError: log is not a function`，
+		//   at Object.start …runner.js:281）：runner 的 deps 约定是 **`log(level, msg)` 函数**
+		//   （见 runner.js 头注释），而这里的 `log` 是 `ctx.logger('vssaros-loop')` 或 `console`
+		//   —— 都是**对象** ⇒ 直接传进去，`runner.start()` 一调 `log('info', …)` 就抛 ⇒
+		//   loop 的 ticker 永远起不来。⇒ 在这里适配成函数（对象按 level 取方法，缺方法回落 console）。
+		log: (level, msg) => {
+			const fn = (log && typeof log[level] === 'function') ? log[level] : console.log;
+			try { fn.call(log, msg); } catch { /* 日志本身不该拖垮 runner */ }
+		},
 		getRuns: () => runs,
 		listLoops: cfg => listLoops(cfg),
 		readLedger,

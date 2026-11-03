@@ -1,7 +1,7 @@
 {
   "name": "@vssaros/dsh-scheduler",
-  "version": "0.6.0",
-  "description": "VsSaros Scheduler module for DeepSeek Harness. Host side: self-built schedule engine (occupies the `schedule` service key; tasks live in <dataRoot>/scheduler/tasks.json) served over /x/scheduler/api/*. Client side: ONE workbench with two tabs — 任务 (scheduled tasks + runtime loops mixed, typed by badge) and 运行记录 (deliveries + loop ledger summary). Loops come from @vssaros/dsh-loop same-origin routes (/x/loop/api/...), so no Host-side proxy is needed; when the loop plugin is absent the tab degrades to scheduled-task-only. SSR page at /x/scheduler/ + legacy migration stay as before.",
+  "version": "0.9.2",
+  "description": "VsSaros Scheduler module for DeepSeek Harness. Host side: self-built schedule engine (occupies the `schedule` service key; tasks live in <dataRoot>/scheduler/tasks.json) served over /x/scheduler/api/*, and **onFire is now wired to delivery** (bridge vssarosRuns.run, same primitive as vssaros-loop) so a due task actually posts its prompt into the bound session instead of only writing history. Client side: ONE workbench with two tabs — 任务 (scheduled tasks + runtime loops mixed) and 运行记录. Loops come from @vssaros/dsh-loop same-origin routes; when absent the tab degrades to scheduled-task-only. Model side: schedule_create auto-binds the calling session (exec.agent.session.id) and accepts time:\"HH:MM\" instead of minute numbers.",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
@@ -21,6 +21,7 @@
     "lib/migrate.js",
     "lib/store.js",
     "lib/tools.js",
+    "lib/sessionBinding.js",
     "cordis.patch.yml"
   ],
   "peerDependencies": {
@@ -58,12 +59,13 @@
     "legacyCounterpart": "vssaros.dsh.scheduler",
     "workbench": {
       "title": "自动化任务",
-      "description": "自动化任务（自建调度）：定时/周期/一次性任务，支持触发循环（loop）与投递历史。",
+      "description": "自动化任务（自建调度）：定时/周期/一次性任务，投递到会话并记录运行历史。",
       "icon": "codicon:clock",
       "repository": "vssaros:scheduler",
       "customFrame": false,
       "headerLayout": "default",
-      "floatingActions": false
+      "floatingActions": false,
+      "splitConversation": false
     }
   },
   "license": "MIT",

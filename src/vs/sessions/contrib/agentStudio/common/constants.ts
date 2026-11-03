@@ -326,17 +326,6 @@ export const AGENT_STUDIO_KB_VIEW_ID = 'agentStudio.knowledgeBaseView';
  */
 export const AGENT_STUDIO_KB_VIEW_CONTAINER_ID = 'agentStudio.knowledgeBase';
 /**
- * 记忆库（独立工作台，2026-10-12 从「资料库」页的 mem tab 提升）的**视图 id**。
- *
- * 容器 id 在静态注册处写成字面量 `'agentStudio.memory'`（`dshActivityBarSource.test.ts`
- * 按字面量匹配静态注册，用记号常量会让那条表驱动守卫找不到 ⇒ 报「existing 没走
- * _registerModuleToolIcon」）；这里只留视图 id 常量。
- *
- * ⚠ 两个 id 都是**新建**的（绝不复用 kb 的）：容器 id 一旦改动，用户在
- * `workbench.activity.pinnedViewlets2` 里已存的活动栏布局就找不到它了（R1）。
- */
-export const AGENT_STUDIO_MEMORY_VIEW_ID = 'agentStudio.memoryView';
-/**
  * 媒体库（独立工作台，2026-10-12 从「资料库」页的 media tab 提升）的**视图 id**。
  * 容器 id 同样是注册处的字面量 `'agentStudio.media'`（理由见上）。
  */

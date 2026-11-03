@@ -25,8 +25,10 @@ import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promi
 import { join, basename } from 'node:path';
 import { promisify } from 'node:util';
 import { agentsRootOf, dataRootOf, scanAgentsFromConfig } from './store.js';
-import { presetIdOf } from './core/agents.js';
+import { rowAgentOf } from './core/live.js';
 import { MEMORY_CHARS_DEFAULT, MEMORY_CHARS_MAX, MEMORY_CHARS_MIN, clampMemoryChars } from './core/memoryLimits.js';
+import { readMemoryPrefs } from './memoryPrefs.js';
+import { WORKSPACE_MEMORY_DIRNAME, WORKSPACE_MEMORY_TEMPLATE, isWorkspaceScope, keyOfScopeId, resolveWorkspace, scopeIdOfKey } from './workspaceMemory.js';
 
 const execFileP = promisify(execFile);
 
@@ -81,6 +83,9 @@ export function clampLogLimit(value) {
 /** 记忆目录。 */
 export function memoryDirOf(config, agentId) {
 	const id = String(agentId ?? '');
+	/* ★ 2026-11-03（P2）工作区作用域 `ws.<key>`：目录只由 12 位十六进制 key 决定，
+	   与 agent 目录互不相交（agent id 不含点）⇒ Git / 备份 / 回滚 / 分道图 / 演化页全部原样复用。 */
+	if (isWorkspaceScope(id)) { return join(dataRootOf(config), WORKSPACE_MEMORY_DIRNAME, keyOfScopeId(id)); }
 	/* 自定义 agent：与 `.agent.md` 同目录树（原行为，一个字没改） */
 	const ownRoot = join(agentsRootOf(config), id);
 	if (id && existsSync(ownRoot)) { return join(ownRoot, 'memory'); }
@@ -266,26 +271,25 @@ export async function memoryFingerprintOf(config, agentId) {
 export function installMemoryBackupWatcher(ctx, config) {
 	// 每个 agent 上次见过的指纹（内存态，进程重启后重新建立 ⇒ 第一次会自动备一次）
 	const seen = new Map();
-	// presetId → agentId 的反查表（扫盘不便宜 ⇒ 缓存 60 秒）
-	let presetMap = new Map();
-	let presetMapAt = 0;
-	const resolveAgentId = async (preset) => {
-		if (!presetMap.size || Date.now() - presetMapAt > 60_000) {
+	// 会话行 → agentId（身份记录优先，见 core/live.js rowAgentOf；花名册扫盘不便宜 ⇒ 缓存 60 秒）
+	let agentsCache = [];
+	let agentsAt = 0;
+	const resolveAgentId = async (row) => {
+		if (!agentsCache.length || Date.now() - agentsAt > 60_000) {
 			const scanned = await scanAgentsFromConfig(config).catch(() => ({ agents: [] }));
-			presetMap = new Map((scanned.agents ?? []).map(a => [presetIdOf(a.id), a.id]));
-			presetMapAt = Date.now();
+			agentsCache = scanned.agents ?? [];
+			agentsAt = Date.now();
 		}
-		return presetMap.get(preset) ?? '';
+		return rowAgentOf(row, agentsCache)?.id ?? '';
 	};
-	return ctx.on('agent/turn-stopping', async (payload) => {
+	const offBot = ctx.on('agent/turn-stopping', async (payload) => {
 		const session = payload?.agent?.session;
 		if (!session?.id) { return; }
 		try {
 			const { readLiveSession } = await import('./live.js');
 			const row = await readLiveSession(config, session.id).catch(() => null);
-			const preset = row?.row?.presetId ?? '';
-			if (!preset) { return; }
-			const agentId = await resolveAgentId(preset);
+			if (!row?.row?.presetId) { return; }
+			const agentId = await resolveAgentId(row.row);
 			if (!agentId) { return; }
 			const fp = await memoryFingerprintOf(config, agentId);
 			if (!fp) { return; }                        // 没有记忆文件 ⇒ 无事可做
@@ -298,15 +302,52 @@ export function installMemoryBackupWatcher(ctx, config) {
 			/* 备份失败不该影响回合结束 ✓ */
 		}
 	});
+
+	// ★ 2026-11-03（P2）工作区记忆：同一条纪律，只是身份来自**会话 cwd**（不是 preset）。
+	//   所以普通会话（没选 Bot）的回合结束也会落一条提交 ⇒ 演化图对所有会话都有节奏。
+	//   身份解析是同步 stat（resolveWorkspace 带 60s 缓存），热路径不起子进程；
+	//   指纹只含 .md/.txt（scope.json 不算）⇒ 改口径不会触发多余提交。
+	const wsSeen = new Map();
+	const offWorkspace = ctx.on('agent/turn-stopping', async (payload) => {
+		try {
+			const cwd = payload?.agent?.session?.header?.cwd;
+			if (typeof cwd !== 'string' || !cwd) { return; }
+			const ws = resolveWorkspace(cwd);
+			if (!ws) { return; }
+			const scopeId = scopeIdOfKey(ws.key);
+			const fp = await memoryFingerprintOf(config, scopeId);
+			if (!fp) { return; }                          // 这个工作区还没有记忆 ⇒ 无事可做
+			if (wsSeen.get(scopeId) === fp) { return; }  // 这一轮没动过
+			wsSeen.set(scopeId, fp);
+			await backupMemory(config, scopeId, 'auto-after-turn').catch(() => null);
+			// 开着自动提交时顺手保证仓库存在（工具写入已 fire-and-forget 过一次；这里兜住"页面整篇写 / 旧数据"）
+			if (memoryAutoCommitOnTurn(config)) {
+				await ensureMemoryRepo(config, scopeId).catch(() => undefined);
+			}
+			await autoCommitAfterTurn(config, scopeId);
+		} catch {
+			/* 同上：记忆的任何失败都不该拖住回合结束 */
+		}
+	});
+
+	return () => {
+		try { offBot?.(); } catch { /* 退订失败无妨 */ }
+		try { offWorkspace?.(); } catch { /* 同上 */ }
+	};
 }
 
 /**
- * 「回合结束自动提交」开关（2026-10-31）。缺省**开**；只有显式 `memoryAutoCommit: false` 才关。
+ * 「回合结束自动提交」开关（2026-10-31）。缺省**开**。
  *
  * 为什么默认开：不自动提交的话，「演化」页上能看到的历史 = 人手动按按钮的次数，
  * 而 agent 写记忆是有工具口的 ⇒ 图与实际改动次数严重不符，"演化"名存实亡。
+ *
+ * ★ 2026-11-03（P2）优先级：**用户偏好**（`<数据根>/memory-prefs.json`，聊天框「记忆设置」里可改）
+ *   > 插件 config 的 `memoryAutoCommit: false` > 缺省（开）。偏好文件按 mtime 缓存，回合热路径只多一次 stat。
  */
 export function memoryAutoCommitOnTurn(config) {
+	const pref = readMemoryPrefs(config).autoCommit;
+	if (typeof pref === 'boolean') { return pref; }
 	return config?.memoryAutoCommit !== false;
 }
 
@@ -472,7 +513,10 @@ export async function readMemorySnapshot(config, agentId, chars = SNAPSHOT_CHARS
 		const cut = trimmed.length > cap
 			? `${trimmed.slice(0, cap)}\n…（截断：上限 ${cap} 字符，完整索引在记忆目录）`
 			: trimmed;
-		return `\n\n## 记忆索引（MEMORY.md 快照）\n${cut}`;
+		// ★ 2026-11-02：拆开 `{{` / `}}` —— 人设 section 会做模板插值，记忆里一个未注册的 `{{x}}`
+		//   就让整段装配抛错 ⇒ 该 Bot 的会话每一轮都起不来（dsh-memory-evolve issue #53 同款）。
+		//   现在有了 workspace_memory 工具，模型写进 `{{…}}` 的概率变高 ⇒ 注入端必须兜住。
+		return `\n\n## 记忆索引（MEMORY.md 快照）\n${cut.replace(/\{\{/g, '{ {').replace(/\}\}/g, '} }')}`;
 	} catch {
 		return ''; // 没有记忆目录/文件 ⇒ 不注入（正常态 ✓）
 	}
@@ -564,8 +608,11 @@ export async function gitStatusOf(config, agentId) {
 	}
 	const branch = (await git(dir, ['branch', '--show-current'])).out || 'main';
 	const countText = (await git(dir, ['rev-list', '--count', 'HEAD'])).out;
-	const porcelain = await git(dir, ['status', '--porcelain']);
-	const lines = porcelain.ok && porcelain.out ? porcelain.out.split('\n').filter(Boolean) : [];
+	// ⚠ 必须 `raw`：`git()` 默认 trim，而 porcelain 第一行以空格开头（` M MEMORY.md` = 工作区修改、未暂存），
+	//   trim 掉前导空格后 `slice(3)` 少切一个字符 ⇒ 首行文件名变成 `EMORY.md`、状态列也错位
+	//   （2026-11-03 工作区记忆 P2 探针抓到；Bot 记忆的「未提交」列表同样受影响）。
+	const porcelain = await git(dir, ['status', '--porcelain'], { raw: true });
+	const lines = porcelain.ok && porcelain.out ? porcelain.out.split(/\r?\n/).filter(Boolean) : [];
 	// `changes`（2026-10-31）：比 `dirtyFiles` 多一个 `kind`，页面要按 DeepSeekBot 的
 	//   「新记忆 / 已有记忆的更新」分组（只有文件名分不出来 —— porcelain 的前两列状态被 slice(3) 丢了）。
 	//   XY：'??' = 未跟踪；首列 A = 已暂存新增；含 D = 删除；其余 = 改动已有文件。
@@ -634,10 +681,79 @@ export async function enableGit(config, agentId) {
  *   这是我们相对 DeepSeekBot 的优势（它 `git-not-found` 直接判记忆不可用）。
  * ⚠ 调用点：建 bot 之后 + `/api/memory` 的 GET 入口（后者让**老 bot** 也被照顾到，不用重建）。
  */
-export async function ensureMemoryRepo(config, agentId) {
+/**
+ * ★ 2026-11-03（P3）性能：本机实测一次完整 ensure ≈ 5s（init+首提交 ≈ 2.9s，初始 v0 标签 ≈ 3.1s），
+ *   而**已就绪**的重复调用仍要 ≈ 1.2s（gitStatusOf + listVersions 各跑一串 git 子进程）——
+ *   写入和 Bot 页每次读取都会调到它，白白多等。所以：
+ *   ① 进程内记住"这个目录已就绪"，命中前**仍然校验** `.git` 与 `MEMORY.md` 还在（被删就重建，语义不变）；
+ *   ② 同一目录并发调用合并成同一个任务（否则两个请求同时 `git init` / 打 tag 会互相踩锁）；
+ *   ③ `options.deferTag: true`：只等到"仓库可用"就返回，初始 v0 标签放后台补（写入响应不依赖它）。
+ *   ⚠ 只缓存**成功且 git 可用**的结果：没装 git 时不缓存，装上之后下一次调用自然补建。
+ */
+const repoReady = new Set();
+const repoJobs = new Map();
+
+export async function ensureMemoryRepo(config, agentId, options = {}) {
 	const id = String(agentId ?? '').trim();
 	if (!id) { return { ok: false, reason: 'no-agent' }; }
 	const dir = memoryDirOf(config, id);
+	if (repoReady.has(dir) && existsSync(join(dir, '.git')) && existsSync(join(dir, 'MEMORY.md'))) {
+		return { ok: true, created: false, wroteTemplate: false, git: 'ready', tagged: '', cached: true };
+	}
+	repoReady.delete(dir);
+	let job = repoJobs.get(dir);
+	if (!job) {
+		job = runEnsureMemoryRepo(config, id, dir);
+		repoJobs.set(dir, job);
+		// done 的失败由调用方各自处理；这里只负责清理登记，不能让它变成未处理的 rejection
+		job.done.then(
+			(r) => { if (r && r.ok && r.git !== 'unavailable') { repoReady.add(dir); } },
+			() => undefined,
+		).finally(() => { repoJobs.delete(dir); });
+	}
+	return options.deferTag === true ? job.core : job.done;
+}
+
+/** 测试用：清空"已就绪"缓存。 */
+export function __resetEnsureCache() {
+	repoReady.clear();
+	repoJobs.clear();
+}
+
+/** 返回 `{ core, done }`：core = 仓库可用（①②③），done = 再加上初始版本标签（④）。 */
+function runEnsureMemoryRepo(config, id, dir) {
+	let tagStep = Promise.resolve('');
+	const core = (async () => {
+		const r = await ensureRepoCore(config, id, dir);
+		if (r.git !== 'unavailable') { tagStep = ensureInitialTag(config, id); }
+		return r;
+	})();
+	const done = core.then(async (r) => ({ ...r, tagged: await tagStep }));
+	// core 单独被等待、done 被丢弃时，done 的失败也不能成为未处理的 rejection
+	done.catch(() => undefined);
+	return { core, done };
+}
+
+/** ④ 初始版本标签（失败只返回空串，不影响记忆可用性）。 */
+async function ensureInitialTag(config, id) {
+	/* ④ 初始版本（2026-10-27）：让「版本」页签也有内容。
+	   「版本」= git tag，前一步只保证有提交与分支，还得有人手动打第一个 tag。
+	   用户在截图里报的是"记忆/演化/版本/分支都没内容"，这是最后一个空格子。
+	   ⚠ 只在**一个 tag 都没有**时打 —— 绝不覆盖用户已有的版本名。
+	   ⚠ 打 tag 失败不影响记忆可用性（只是「版本」页签继续空着，不该让整次初始化失败）。 */
+	try {
+		const vers = await listVersions(config, id);
+		if (vers.enabled && !vers.versions.length) {
+			await setVersion(config, id, INITIAL_VERSION_TAG);
+			return INITIAL_VERSION_TAG;
+		}
+	} catch {
+		/* 见上 */
+	}
+	return '';
+}
+
+async function ensureRepoCore(config, id, dir) {
 	await mkdir(dir, { recursive: true });
 
 	/* ② 模板：缺失才写（`stat` 成功就说明已有文件） */
@@ -646,7 +762,8 @@ export async function ensureMemoryRepo(config, agentId) {
 	let exists = false;
 	try { await stat(corePath); exists = true; } catch { exists = false; }
 	if (!exists) {
-		await writeFile(corePath, CORE_MEMORY_TEMPLATE, 'utf8');
+		/* 工作区作用域用它自己的模板（"工作区记忆"标题 + 写给 workspace_memory 工具的说明） */
+		await writeFile(corePath, isWorkspaceScope(id) ? WORKSPACE_MEMORY_TEMPLATE : CORE_MEMORY_TEMPLATE, 'utf8');
 		wroteTemplate = true;
 	}
 
@@ -663,30 +780,12 @@ export async function ensureMemoryRepo(config, agentId) {
 		gitState = 'unavailable';
 	}
 
-	/* ④ 初始版本（2026-10-27）：让「版本」页签也有内容。
-	   「版本」= git tag，前一步只保证有提交与分支，还得有人手动打第一个 tag。
-	   用户在截图里报的是"记忆/演化/版本/分支都没内容"，这是最后一个空格子。
-	   ⚠ 只在**一个 tag 都没有**时打 —— 绝不覆盖用户已有的版本名。
-	   ⚠ 打 tag 失败不影响记忆可用性（只是「版本」页签继续空着，不该让整次初始化失败）。 */
-	let tagged = '';
-	if (gitState !== 'unavailable') {
-		try {
-			const vers = await listVersions(config, id);
-			if (vers.enabled && !vers.versions.length) {
-				await setVersion(config, id, INITIAL_VERSION_TAG);
-				tagged = INITIAL_VERSION_TAG;
-			}
-		} catch {
-			tagged = '';
-		}
-	}
-
 	return {
 		ok: true,
 		created: wroteTemplate || gitState === 'initialized',
 		wroteTemplate,
 		git: gitState,
-		tagged,
+		tagged: '',   // ④ 由 ensureMemoryRepo 的 done 补上
 	};
 }
 

@@ -185,7 +185,7 @@ export function validateDraft(draft, ctx = {}) {
 		}
 	}
 	if (draft.modelAssignment) {
-		// 委派模型同理：它会被写成派生 preset 的 default-model 行，路由不通就整条委派跑不起来
+		// 委派模型同理：委派会话按它做会话级选择（lib/modelSelection.js），路由不通就只能跟随默认模型
 		const probe = toPresetDefinition({ id: draft.id || 'draft', name: draft.name || 'draft', model: draft.model, tools: [], persona: '' }, { provider: ctx.provider, modelOverride: draft.modelAssignment });
 		if (probe.notes.some(n => n.startsWith('模型未映射'))) {
 			errors.push('委派模型 ' + draft.modelAssignment + ' 在 dsh 里没有路由：写成 provider/model，或留空让委派跟随主模型');

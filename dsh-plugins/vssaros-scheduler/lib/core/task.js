@@ -9,7 +9,13 @@
 import { describeRule, nextRunAtMs } from './cron.js';
 
 export const TASK_KINDS = ['prompt', 'loop', 'action'];
-export const TASK_STATUSES = ['active', 'paused', 'ended'];
+/**
+ * ★ 2026-11-03（既有 bug 修复）：UI 与引擎 tick 都用 **`inactive`** 表示"停用"
+ * （`client.js` 的暂停按钮、`rowOf` 的归一化、有效期到期停用），但这个枚举里只有
+ * `paused` ⇒ 暂停一次就会在 `normalizeTask` 抛 `status: 必须是 …`，UI 上表现为"点了没反应"。
+ * 现在两个都收：`inactive` 是现行值，`paused` 只为兼容历史数据（旧版本写进去的）。
+ */
+export const TASK_STATUSES = ['active', 'inactive', 'paused', 'ended'];
 export const RULE_KINDS = ['cron', 'daily', 'weekly', 'every', 'at', 'after'];
 export const DEDUPE_MODES = ['forever', 'per-day', 'off'];
 /** `every` 的最小间隔（秒）。官方下限是 60s，我们取同值以免用户困惑。 */
@@ -22,6 +28,20 @@ export class TaskError extends Error {
 		this.name = 'TaskError';
 		this.field = field;
 	}
+}
+
+/**
+ * `"09:00"` / `"9:00"` / `"09:00:00"` ⇒ 当天分钟数（540）。
+ * 不合法 ⇒ `NaN`（让调用方的统一校验给出可读错误，而不是在这里抛两种异常）。
+ * ★ 2026-11-03：模型给"HH:MM"比给 `atMinute: 540` 自然得多 —— 官方 selector 就是 time 字符串。
+ */
+export function minuteOfClock(clock) {
+	const m = /^(\d{1,2}):(\d{2})(?::\d{2})?$/.exec(String(clock ?? '').trim());
+	if (!m) { return NaN; }
+	const hour = Number(m[1]);
+	const minute = Number(m[2]);
+	if (!(hour >= 0 && hour < 24 && minute >= 0 && minute < 60)) { return NaN; }
+	return hour * 60 + minute;
 }
 
 const str = v => (typeof v === 'string' ? v.trim() : '');
@@ -61,9 +81,15 @@ export function normalizeTask(raw, { nowMs = Date.now(), timeZone = DEFAULT_TIME
 	if (ruleKind === 'cron') {
 		rule.expression = str(ruleRaw.expression);
 	} else if (ruleKind === 'daily' || ruleKind === 'weekly') {
-		const atMinute = Number(ruleRaw.atMinute);
+		// ★ 2026-11-03（P0-3，时间免换算）：模型更容易给 `time: "09:00"`（官方形状），
+		//   而不是 `atMinute: 540`。两种都认：显式 atMinute 优先，否则解析 time。
+		//   —— 官方 dsh-tool-schedule 的 selector 就是 `daily: { time, time_zone }`，
+		//      要求模型自己算分钟数是我们独有的易错点。
+		const hasAtMinute = ruleRaw.atMinute !== undefined && ruleRaw.atMinute !== null && ruleRaw.atMinute !== '';
+		const atMinute = hasAtMinute ? Number(ruleRaw.atMinute) : minuteOfClock(ruleRaw.time);
 		if (!Number.isInteger(atMinute) || atMinute < 0 || atMinute >= 24 * 60) {
-			throw new TaskError('rule.atMinute', `必须是 0-${24 * 60 - 1} 的整数分钟，实际 ${ruleRaw.atMinute}`);
+			throw new TaskError('rule.atMinute',
+				`需要 0-${24 * 60 - 1} 的整数分钟（atMinute），或 "HH:MM" 形状的 time；实际 atMinute=${JSON.stringify(ruleRaw.atMinute)} time=${JSON.stringify(ruleRaw.time)}`);
 		}
 		rule.atMinute = atMinute;
 		if (ruleKind === 'weekly') {
@@ -74,9 +100,11 @@ export function normalizeTask(raw, { nowMs = Date.now(), timeZone = DEFAULT_TIME
 			rule.weekdays = [...new Set(weekdays)].sort((a, b) => a - b);
 		}
 	} else if (ruleKind === 'every') {
-		const everySeconds = Number(ruleRaw.everySeconds);
+		// 同样认官方形状 `every_seconds`（模型按官方文档写时最容易给这个）。
+		const rawEvery = ruleRaw.everySeconds ?? ruleRaw.every_seconds;
+		const everySeconds = Number(rawEvery);
 		if (!Number.isInteger(everySeconds) || everySeconds < MIN_EVERY_SECONDS) {
-			throw new TaskError('rule.everySeconds', `必须是 ≥${MIN_EVERY_SECONDS} 的整数秒，实际 ${ruleRaw.everySeconds}`);
+			throw new TaskError('rule.everySeconds', `必须是 ≥${MIN_EVERY_SECONDS} 的整数秒，实际 ${JSON.stringify(rawEvery)}`);
 		}
 		rule.everySeconds = everySeconds;
 	} else if (ruleKind === 'after') {
@@ -105,6 +133,12 @@ export function normalizeTask(raw, { nowMs = Date.now(), timeZone = DEFAULT_TIME
 			throw new TaskError('prompt', 'kind=prompt 必须有 prompt');
 		}
 		payload.sessionId = str(raw.sessionId);
+		// ★ 2026-11-03「根治」：会话归属（数据根）随任务一起落盘。
+		//   由 `stampSession()` 在 engine.create/update 写入前盖章；这里只负责透传，旧数据为空串。
+		payload.sessionRoot = str(raw.sessionRoot);
+		// ★ 2026-11-03 cwd 真因：会话所属工作区（第一次按 bridge 的报错重试成功后缓存，
+		//   以后直接用，避免每次都先失败一次）。
+		payload.sessionCwd = str(raw.sessionCwd);
 	} else if (kind === 'loop') {
 		payload.loopName = str(raw.loopName);
 		if (!payload.loopName) {

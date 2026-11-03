@@ -2,7 +2,7 @@
 //
 // 模型（BotHarness 的 Orchestrator / Assignment 分离在我们侧的对应物）：
 //   ① 委派 = **开一条该 agent preset 的新会话** + steer 一条带头协议的任务消息（会话即执行单元，
-//      身份/模型/工具都走 preset ⇒ 不另造运行时 ✓）；
+//      身份/工具走 preset，模型是会话级选择 `model-assignment` → `model`，见 lib/modelSelection.js）；
 //   ② 并发上限 MAX_CONCURRENT：**超限立即结构化报错**（HTTP 409 + code），**不排队** ✓
 //      （排队 = 用户以为在跑实际没跑，最难查 ✗）；
 //   ③ 报告 = 该会话回合结束（agent/turn-stopping）时验证真消费了任务消息（findOurSplices，与 relay
@@ -20,15 +20,17 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { assignmentPresetIdOf, presetIdOf } from './core/agents.js';
+import { modelRouteOf, presetIdOf } from './core/agents.js';
+import { applyModelSelection } from './modelSelection.js';
 
 /**
- * 纯推导：这条委派该用哪条 preset。
- * `.agent.md` 写了 `model-assignment` ⇒ 用派生版 `<preset>-assign`（同人格、只有模型不同，
- * 见 `core/agents.js assignmentPresetIdOf` 的注释）；否则与主会话同一条（旧行为 ✓）。
+ * 纯推导：这条委派的会话用哪个模型路由。
+ * ★ 2026-11-03：委派与主会话**同一条 preset**；`model-assignment` 改为会话级选择（原 `<preset>-assign`
+ *   派生 preset 只差一行 default-model，而那一行在 dsh API 会话里没有消费方，从未生效）。
+ *   没写 `model-assignment` ⇒ 回落 `model`；都没写 ⇒ undefined（跟随默认模型）。
  */
-export function assignmentPresetFor(agent) {
-	return agent && agent.modelAssignment ? assignmentPresetIdOf(agent.id) : presetIdOf(agent?.id);
+export function assignmentModelRouteOf(agent, provider) {
+	return modelRouteOf(agent?.modelAssignment, provider) ?? modelRouteOf(agent?.model, provider);
 }
 import { AGENT_MESSAGE_KIND, finalAssistantText, findOurSplices } from './core/relay.js';
 import { checkCwdGrant } from './grants.js';
@@ -163,7 +165,7 @@ export async function createAssignment(config, state, input) {
 	if (grantRefusal) {
 		throw httpError(403, grantRefusal);
 	}
-	const wantPreset = assignmentPresetFor(agent);
+	const wantPreset = presetIdOf(agent.id);
 	const created = await sc.create({ ...(cwd ? { cwd } : {}), agentPreset: wantPreset });
 	const sessionId = String(created?.sessionId ?? '').trim();
 	if (!sessionId) {
@@ -173,6 +175,12 @@ export async function createAssignment(config, state, input) {
 	if (!live) {
 		throw httpError(503, `会话已建（${sessionId}）但没在运行注册表里——委派发不出去。会话本身还在，可到会话列表里找它。`);
 	}
+	// 委派模型：**steer 之前**显式选上（覆盖 agent/created 里按 `model:` 选的那次；会话还没请求过，无副作用）。
+	// 选不上 ⇒ 跟随默认模型，原因记进台账的 error（不静默）。
+	const route = assignmentModelRouteOf(agent, typeof config?.defaultProvider === 'string' ? config.defaultProvider.trim() : '');
+	const modelResult = route
+		? await applyModelSelection({ sc: state.rawSessionController, llm: state.llm, projections: state.projections }, live, route, { onlyIfBlank: false })
+		: undefined;
 	const senderName = String(input?.fromName ?? '').trim() || 'agents 页';
 	const fromSession = String(input?.fromSession ?? '').trim() || null;
 	const message = {
@@ -200,7 +208,9 @@ export async function createAssignment(config, state, input) {
 		report: null,
 		error: created?.agentPreset && created.agentPreset !== wantPreset
 			? `实际跑的是 preset ${created.agentPreset} 而不是 ${wantPreset}（该 agent 的 preset 可能没注册成功）`
-			: null,
+			: (modelResult && !modelResult.ok
+				? `委派模型 ${route.provider}/${route.model} 没选上（${modelResult.reason}）⇒ 跟随默认模型`
+				: null),
 		fromSession,
 		createdAt: Date.now(),
 		updatedAt: Date.now(),

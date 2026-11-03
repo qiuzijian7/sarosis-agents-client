@@ -1354,15 +1354,29 @@ function applyInner(ctx, config = {}) {
 	//   同 Host 的其它插件（`@vssaros/dsh-imagegen` 生图 / 将来的画布、工作流）**直接写这里**，
 	//   不再绕 IDE 主进程（那条 `media` 能力的 `importAsset` 只是过渡通道，IDE 侧媒体库随后下线）。
 	//   ⚠ 方法都**惰性**（每次取才建库）：本插件可能只是被加载、当次并不写盘。
-	ctx.provide('vssarosMediaStore', {
-		/** 入库一条（幂等：originId 已存在 ⇒ 返回已有那条）。 @returns {Promise<object|undefined>} */
-		importAsset: async input => ownStoreOf(config).importAsset(input),
-		list: async filter => ownStoreOf(config).list(filter ?? {}),
-		get: async id => ownStoreOf(config).get(id),
-		stats: async () => ownStoreOf(config).stats(),
-		/** 真源根目录（排查"图到底存哪"用）。 */
-		root: async () => ownStoreOf(config).root,
-	});
+	//   ★★ 2026-11-03（真机：F5 后「会话启动失败（第 1/3 次）：vssaros-media (@vssaros/dsh-media):
+	//     service "vssarosMediaStore" has been registered at <vssaros-media>」）：
+	//     本包会被挂**两次** —— host 行（`cordis.patch.yml`）与 preset 行（`preset-vssaros.rows.yml`）。
+	//     第二次 `provide` 让 cordis 抛 ⇒ **整个 preset 无效**（`agent-preset/invalid`）⇒
+	//     ① 会话起不来（用户看到的横幅）；② **preset 内所有工具一起缺失**（含基座的 pwsh / read
+	//     ⇒ `unknown tool "pwsh"` / `"read"` 就来自这里 ✗✗）。
+	//     ⇒ 已存在就**复用**：同一 Host 只需要一份媒体库真源，preset 层直接用 host 那份。
+	let mediaStoreExisting = null;
+	try { mediaStoreExisting = ctx.get?.('vssarosMediaStore') ?? null; } catch { mediaStoreExisting = null; }
+	if (mediaStoreExisting) {
+		console.log('[vssaros-media] vssarosMediaStore 已由另一层提供 ⇒ 本层跳过注册'
+			+ '（重复 provide 会让 cordis 抛错 ⇒ 整个 preset 失效）');
+	} else {
+		ctx.provide('vssarosMediaStore', {
+			/** 入库一条（幂等：originId 已存在 ⇒ 返回已有那条）。 @returns {Promise<object|undefined>} */
+			importAsset: async input => ownStoreOf(config).importAsset(input),
+			list: async filter => ownStoreOf(config).list(filter ?? {}),
+			get: async id => ownStoreOf(config).get(id),
+			stats: async () => ownStoreOf(config).stats(),
+			/** 真源根目录（排查"图到底存哪"用）。 */
+			root: async () => ownStoreOf(config).root,
+		});
+	}
 	// 注：`ctx.provide` 在真 Host 一定存在（cordis 标准面）；探针的假 ctx 可能没有 ⇒
 	//     上面那行不要改成可选调用（`?.` 会把"真 Host 没 provide"这种真故障静默掉）。
 
@@ -1401,7 +1415,12 @@ function applyInner(ctx, config = {}) {
 	});
 
 	// ② 页面路由（**可选**依赖：缺 webServer / connection 的模板里只是没有页面，工具照常可用）
-	ctx.inject(['webServer', 'connection'], page => page.effect(() => {
+	// ★ 2026-11-03：preset 层会再挂一次本包 ⇒ 第二次注册同一 prefix 会被 webServer 判
+	//   `duplicate prefix route "/x/media"` 抛（与 dashboard / mcp 同一个坑）。
+	//   页面属于 host 面：**已由另一层提供就不再注册**（`mediaStoreExisting` 就是"另一层已经挂过"的判据）。
+	if (mediaStoreExisting) {
+		console.log('[vssaros-media] 页面路由已由另一层注册 ⇒ 本层跳过（避免 duplicate prefix route）');
+	} else ctx.inject(['webServer', 'connection'], page => page.effect(() => {
 		const disposeRoute = page.webServer.register({
 		kind: 'prefix',
 		path: ROUTE_PREFIX,

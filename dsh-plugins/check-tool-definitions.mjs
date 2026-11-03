@@ -51,7 +51,11 @@ function schemaBadness(schema, where, out) {
 }
 
 let total = 0, bad = 0;
-for (const plugin of fs.readdirSync(DIR, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name).sort()) {
+// 2026-11-03：vssaros-memory 的 apply() 硬注入 Host 的 7 个 cordis 服务，离线伪 ctx 装不起来
+// ⇒ 与 tools-snapshot.mjs 同口径显式跳过（真机激活由 /memory-evolve/api/config + host 日志验证），
+// 避免每次体检刷一条 ERR 噪音；其它插件仍照常体检。
+const OFFLINE_UNSUPPORTED = new Set(['vssaros-memory']);
+for (const plugin of fs.readdirSync(DIR, { withFileTypes: true }).filter(d => d.isDirectory() && !OFFLINE_UNSUPPORTED.has(d.name)).map(d => d.name).sort()) {
 	const entry = path.join(DIR, plugin, 'lib', 'index.js');
 	if (!fs.existsSync(entry)) { continue; }
 	let mod;

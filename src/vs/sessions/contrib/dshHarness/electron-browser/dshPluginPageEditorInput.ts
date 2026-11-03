@@ -26,6 +26,33 @@ import { EditorInputCapabilities } from '../../../../workbench/common/editor.js'
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import type { IUntypedEditorInput } from '../../../../workbench/common/editor.js';
 
+/**
+ * route 归一化（★ 2026-11-03，用户报「为什么会有两个自动化任务页签」）。
+ *
+ * 同一个插件页可能被**两条入口**打开，而两条入口给的 route 只差一个**尾部斜杠**
+ * （`/x/scheduler/` vs `/x/scheduler`）——`openModulePage` 那侧为此专门写了双向兼容
+ * （`p.route === command.route || p.route === command.route + '/'`），正说明两种写法都在流通。
+ *
+ * 但本输入原来**按 route 字面值**做单例键与 `resource` ⇒ 差一个斜杠就成了两个编辑器、
+ * 并排两个**同名**页签（用户完全无法分辨，也没法判断哪个是"真的"）。
+ *
+ * 归一化**只动路径尾部斜杠**：`?query` 与 `#hash` 原样保留 —— 子页面（知识库图谱）、
+ * 深链（`?image=…`）仍各自成页，不会互相顶掉。
+ */
+function normalizeRoute(route?: string): string {
+	if (typeof route !== 'string' || route === '') {
+		return '';
+	}
+	const hashAt = route.indexOf('#');
+	const hash = hashAt >= 0 ? route.slice(hashAt) : '';
+	const beforeHash = hashAt >= 0 ? route.slice(0, hashAt) : route;
+	const queryAt = beforeHash.indexOf('?');
+	const query = queryAt >= 0 ? beforeHash.slice(queryAt) : '';
+	const path = queryAt >= 0 ? beforeHash.slice(0, queryAt) : beforeHash;
+	const trimmed = path.replace(/\/+$/, '');
+	return `${trimmed || '/'}${query}${hash}`;
+}
+
 export class DshPluginPageEditorInput extends EditorInput {
 
 	static readonly ID = 'workbench.editor.dshPluginPage';
@@ -52,7 +79,8 @@ export class DshPluginPageEditorInput extends EditorInput {
 
 	/** 单例键：**容器 + 子路由**（同容器不同子路由必须是两个 tab，否则图谱会被知识库主页顶掉 ✗）。 */
 	private static _keyOf(containerId: string, route?: string): string {
-		return route ? `${containerId}#${route}` : containerId;
+		const norm = normalizeRoute(route);
+		return norm ? `${containerId}#${norm}` : containerId;
 	}
 
 	/**
@@ -89,7 +117,8 @@ export class DshPluginPageEditorInput extends EditorInput {
 
 	override get resource(): URI {
 		// 含子路由 ⇒ 同容器的不同子页面（知识库主页 vs 关系图谱）是**两个不同的 resource** ✓
-		return URI.from({ scheme: 'dsh-page', path: `/${this.containerId}${this.route ?? ''}` });
+		// ★ 2026-11-03：但**尾部斜杠不算不同页面**（见 normalizeRoute）。
+		return URI.from({ scheme: 'dsh-page', path: `/${this.containerId}${normalizeRoute(this.route)}` });
 	}
 
 	override matches(other: EditorInput | IUntypedEditorInput): boolean {
@@ -98,7 +127,7 @@ export class DshPluginPageEditorInput extends EditorInput {
 		}
 		return other instanceof DshPluginPageEditorInput
 			&& other.containerId === this.containerId
-			&& other.route === this.route;
+			&& normalizeRoute(other.route) === normalizeRoute(this.route);
 	}
 
 	override toUntyped(): IUntypedEditorInput {

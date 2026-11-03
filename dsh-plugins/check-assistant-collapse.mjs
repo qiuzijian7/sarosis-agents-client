@@ -210,13 +210,8 @@ for (const wb of [MARKETS, STUDIO]) {
 		&& /\.vssWbActions \{[^}]*z-index:2147482000/.test(shellSrc)
 		&& /正在加载 · /.test(shellSrc));
 	ck('加载态有最短显示时长（缓存命中时不闪）', /Math\.max\(0, 120 -/.test(shell));
-	// 用户 2026-11-02：「记忆库不应该有浮动工具栏」⇒ 与 scheduler / loop 同一机制（描述符 + 清单都要声明）
-	{
-		const memSrc = read('dsh-plugins/vssaros-memory/lib/client.memory.js');
-		const memPkg = JSON.parse(read('dsh-plugins/vssaros-memory/package.json'));
-		ck('记忆库声明 floatingActions:false（描述符与清单同值）',
-			/floatingActions: false/.test(memSrc) && memPkg.vssaros.workbench.floatingActions === false);
-	}
+	// 2026-11-03：记忆库工作台整套下线（改用 dsh-memory-evolve）⇒ 上面那条
+	// 「记忆库声明 floatingActions:false」的守卫随之摘除（清单里已无 vssaros.workbench）。
 	// 真机「未生效」：同 id 的 <style> 已存在时旧实现直接 return ⇒ 新规则永远写不进去，加载态退化成裸文字
 	ck('样式注入会**更新**已有 <style>（不是见到同 id 就跳过）',
 		/if \(el\.textContent !== CSS\)/.test(shell) && !/if \(document\.getElementById\(STYLE_ID\)\) \{ return undefined; \}/.test(shell));
@@ -294,7 +289,7 @@ for (const wb of [MARKETS, STUDIO]) {
 	const WRITER_ALLOW = {
 		'dsh-plugins/vssaros-chat-surface/lib/client.preset.js': '用户在模式选择器里**手动**切 agent（用户意图，本来就该改）',
 		'dsh-plugins/vssaros-chat-surface/lib/client.workspaces.js': 'Bots 侧栏：用户点某个 bot ⇒ 新建一条和它聊的主视图会话（不碰工作台会话）',
-		'dsh-plugins/vssaros-agents/lib/client.agents.js': 'Bots 工作台：用户点某个 bot ⇒ 新建一条和它聊的会话（不碰工作台会话）',
+		// ★ 2026-11-03：`vssaros-agents/lib/client.agents.js`（Bots 工作台）已删 ⇒ 白名单条目随之移除
 	};
 	const WRITER_PATS = [
 		[/agentPresets[\s\S]{0,4}\.select\(|\.select\(\s*(sid|sessionId)\s*,|svc\[name\]\(/, 'select(会话, preset)'],

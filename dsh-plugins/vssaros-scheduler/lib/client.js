@@ -1,4 +1,4 @@
-// CLIENT_BUILD_STAMP: 2026-11-02 self-built workbench (0.6.0: 循环任务并入「任务」页 —— 两页签 + 混排卡片 + 循环详情/干跑/跑一轮/放回 blocked) —— 改了这个文件就把这一行也动一下（?rev 随入口 mtime 变）
+// CLIENT_BUILD_STAMP: 2026-11-03 self-built workbench (0.9.2: 移除 loop 选项与循环 UI 入口 —— loop 插件已从运行环境卸载) —— 改了这个文件就把这一行也动一下
 // @vssaros/dsh-scheduler — 客户端入口（2026-10-31 重写：不再搬运官方 chunk）。
 //
 // ── 路线（用户 2026-10-31 拍板 A）──────────────────────────────────────────
@@ -31,7 +31,7 @@ window.__ModuleLoader__.load({
 		/** 与 package.json 的 `vssaros.workbench` 逐字同值（守卫钉住：改一处必须改两处）。 */
 		const WB_DESCRIPTOR = {
 			title: WB_TITLE,
-			description: '自动化任务（自建调度）：定时/周期/一次性任务，支持触发循环（loop）与投递历史。',
+			description: '自动化任务（自建调度）：定时/周期/一次性任务，投递到会话并记录运行历史。',
 			repository: 'vssaros:scheduler',
 			icon: 'codicon:clock',
 			customFrame: false,
@@ -39,6 +39,12 @@ window.__ModuleLoader__.load({
 			// ★ 2026-10-31（用户：「自动化任务 工作台中，不要有 浮动工具栏」）：
 			//   退出宿主的 S2 浮动胶囊（AI 助手 + 外开）—— 本工作台是纯管理页，不需要它。
 			floatingActions: false,
+			// ★ 2026-11-03（用户：「自动化任务 工作台中，不应该有 ai 助手栏」）：
+			//   宿主给「未声明 customFrame」的工作台默认渲染**左对话 / 右业务**分栏（`conversationMode === 'split'`）
+			//   ⇒ 页面里会常驻一块「需要 AI 协助时，开始一段对话…」的 AI 助手栏。
+			//   `splitConversation: false` 是宿主的逃生门（'detach'）⇒ 业务面板占满整页、不显示对话栏。
+			//   ⚠ 与 floatingActions 一样：**描述符与 package.json 清单两处必须同值**（自检钉住）。
+			splitConversation: false,
 		};
 
 		const API_LIST = '/x/scheduler/api/list';
@@ -111,6 +117,11 @@ window.__ModuleLoader__.load({
 .vssSchedCard.is-loop .vssSchedKind { color: var(--dsw-alias-state-warn-primary, #e0a43a); }
 .vssSchedBad { font-size:9px; padding:0 5px; border-radius: var(--wb-r-pill, 999px); border:1px solid currentColor; color: var(--dsw-alias-state-warn-primary, #e0a43a); }
 .vssSchedBad.is-error { color: var(--dsw-alias-state-error-primary, #f48771); }
+/* ★ 2026-11-03（P0-2）：外部跳转过来时高亮目标卡片（__vssarosSchedulerFocus 写焦点键） */
+.vssSchedCard.is-focus { outline:2px solid var(--dsw-alias-state-business-primary, #4c9aff); outline-offset:2px; }
+/* ★ 2026-11-03：运行记录的「投递」列（已投递 / 未投递+原因 / 投递中） */
+.vssSchedDelivered { color: var(--dsw-alias-state-success-primary, #3fb950); }
+.vssSchedUndelivered { color: var(--dsw-alias-state-error-primary, #f48771); }
 .vssSchedCard { display:flex; flex-direction:column; gap: var(--wb-s1, 4px); min-width:0; cursor:pointer; }
 .vssSchedCardHd { display:flex; align-items:center; gap: var(--wb-s1, 4px); min-width:0; }
 .vssSchedCardName { flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -122,10 +133,18 @@ window.__ModuleLoader__.load({
 /* 启停开关（共享层没有 toggle 原语 ⇒ 自定义，走 alias 令牌） */
 .vssSchedToggle { position:relative; width:30px; height:17px; flex:0 0 auto; border-radius: var(--wb-r-pill, 999px); border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3)); background:transparent; cursor:pointer; }
 .vssSchedToggle::after { content:""; position:absolute; top:2px; left:2px; width:11px; height:11px; border-radius:50%; background: var(--dsw-alias-label-secondary, rgba(230,230,230,.7)); transition:left .15s; }
-.vssSchedToggle.is-on { background: var(--dsw-alias-brand-primary, #007fd4); border-color:transparent; }
+/* ★ 2026-11-03（用户报「开启状态的按钮全黑」）：**别用 brand-primary 当激活色**。
+   它在 dsh 主题里是"反色文字的主色底"——暗色主题下取 neutral-bluish-1000（最深的蓝黑），
+   亮色主题下才是 bluish-50。拿它当开关背景 ⇒ 暗色下就是一颗黑药丸。
+   语义正确的选择：启用=成功色、选中/当前=业务蓝。 */
+.vssSchedToggle.is-on { background: var(--dsw-alias-state-success-primary, #3fb950); border-color:transparent; }
 .vssSchedToggle.is-on::after { left:15px; background: var(--dsw-alias-label-primary, #e6e6ea); }
 .vssSchedDesc { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; font-size: var(--wb-f-xs, 11px); color: var(--dsw-alias-label-tertiary, rgba(230,230,230,.6)); flex:1 1 auto; min-height:0; }
 .vssSchedCardFt { display:flex; align-items:center; gap: var(--wb-s2, 8px); font-size: var(--wb-f-xs, 11px); color: var(--dsw-alias-label-tertiary, rgba(230,230,230,.6)); }
+/* ★ 2026-11-03：主页面提示槽（错误 / 操作回执）—— 之前没有它，runNow 的话全被吞掉 */
+.vssSchedDiag { display:flex; align-items:center; gap: var(--wb-s2, 8px); margin:0 0 var(--wb-s2, 8px); padding:6px 10px; border-radius: var(--wb-r-sm, 6px); border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3)); background: var(--dsw-alias-bg-layer-2, rgba(127,127,127,.08)); }
+.vssSchedDiagText { flex:1 1 auto; min-width:0; font-size: var(--wb-f-sm, 12px); color: var(--dsw-alias-label-primary, #e6e6ea); }
+.vssSchedEditorNote { font-size: var(--wb-f-xs, 11px); line-height:1.5; color: var(--dsw-alias-label-tertiary, rgba(230,230,230,.6)); }
 .vssSchedCardFt .on { margin-left:auto; color: var(--dsw-alias-state-success-primary, #3fb950); }
 /* ⋯ 的菜单（fixed 锚在视口坐标 ⇒ 不受祖先 overflow 裁切） */
 .vssSchedMenu { position:fixed; z-index:80; display:flex; flex-direction:column; gap:2px; padding: var(--wb-s1, 4px); border-radius: var(--wb-r-md, 10px); border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3)); background: var(--dsw-alias-bg-layer-2, #25252a); box-shadow:0 8px 28px rgba(0,0,0,.4); min-width:150px; }
@@ -157,8 +176,27 @@ window.__ModuleLoader__.load({
 		 *   ⇒ 统一 no-store + 解析容错：非 JSON / 空响应 ⇒ 返回 `{ok:false,…}`，UI 显示可读原因。
 		 */
 		async function getJson(url, options) {
-			const res = await fetch(url, { cache: 'no-store', ...options });
-			const text = await res.text();
+			// ★★ 2026-11-03（用户报「编辑弹窗里的按钮未接线」）：**fetch 必须自己兜错**。
+			//   原来这里直接 `await fetch(...)` ⇒ 网络层一失败（Host 重启中 / 断网 / 401 连接被掐）就抛未捕获异常
+			//   ⇒ 调用方 `await post(...)` 中断 ⇒ 表单既不显示错误也不关闭 ⇒ 用户看到的就是"点了没反应"。
+			//   现在任何传输层失败都降级成 `{ok:false, error}`，由表单把原因显示出来（可见的失败 ≫ 静默失败）。
+			let res;
+			try {
+				res = await fetch(url, { cache: 'no-store', ...options });
+			} catch (error) {
+				return {
+					ok: false,
+					available: false,
+					entries: [],
+					error: `连不上调度服务：${String(error?.message ?? error)}（Host 可能正在重启，稍后再试）`,
+				};
+			}
+			let text = '';
+			try {
+				text = await res.text();
+			} catch (error) {
+				return { ok: false, available: false, entries: [], error: `读取响应失败：${String(error?.message ?? error)}` };
+			}
 			try {
 				return JSON.parse(text);
 			} catch (error) {
@@ -178,6 +216,15 @@ window.__ModuleLoader__.load({
 
 		function systemZone() {
 			try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch (error) { return 'UTC'; }
+		}
+
+		/**
+		 * 当前会话 id —— 聊天壳把它写在 `document.body.dataset.vssarosSessionId`
+		 * （`vssaros-chat-surface/lib/client.js`：`document.body.dataset.vssarosSessionId = currentSessionId`）。
+		 * 读不到 ⇒ 空串（在设置页/空白页时**不猜**一个会话，留空就是"只记录不投递"）。
+		 */
+		function currentSessionId() {
+			try { return String(document.body?.dataset?.vssarosSessionId ?? '').trim(); } catch { return ''; }
 		}
 
 		/** 时间戳 → 「10月31日 19:23」这样的短格式（列表里不需要秒与 ISO 的 T）。 */
@@ -263,20 +310,14 @@ window.__ModuleLoader__.load({
 					placeholder: '到点要 agent 做什么 —— 像写会话一样描述：步骤、输出格式、保存位置…',
 					onChange: (ev) => setField('prompt', ev.target.value),
 				}),
-				h('div', { className: 'vssSchedEditorBar' },
-					h('button', { type: 'button', className: 'vssSchedEditorIc', title: '附件（占位）', onClick: () => note('附件：未接线') }, '＋'),
-					h('span', { className: 'vssSchedEditorSp' }),
-					h('button', { type: 'button', className: 'vssSchedEditorIc', title: '模型选择（占位）', onClick: () => note('模型选择：未接线') }, '✨ Auto ▾'),
-					h('button', {
-						type: 'button', className: 'vssSchedEditorIc', title: '先保存修改，再用卡片 hover 的 ▶ 运行一次',
-						onClick: () => note('试运行：先保存修改，再用卡片 hover 的 ▶ 运行一次'),
-					}, '➤')),
+				// ★★ 2026-11-03（用户报「附件、工作区、访问权限、模型选择、试运行 都不生效」）：
+				//   这五个原先是照官方会话编辑器**临摹的装饰按钮**，自建引擎里没有对应能力（点了只弹一句.未实现.）。
+				//   留着假按钮比没有更糟 —— 用户会反复点、以为是 bug。
+				//   全部去掉，改成一行**准确说明**：提醒到点只是把这段话投回绑定的会话，
+				//   附件 / 模型 / 工具权限都由**那次会话**决定，任务本身不持有这些设置。
 				h('div', { className: 'vssSchedEditorSub' },
-					h('button', { type: 'button', className: 'vssSchedEditorIc', onClick: () => note('工作区：未接线') }, '📁 工作区 ▾'),
-					h('button', {
-						type: 'button', className: 'vssSchedEditorIc is-warn',
-						onClick: () => note('访问权限：由 item 会话的 allowTools 白名单管，这里暂不可调'),
-					}, '⚠ 允许完全访问 ▾'))));
+					h('span', { className: 'vssSchedEditorNote' },
+						'到点把这段话投回绑定的会话 —— 附件、模型、工具权限都沿用那次会话，任务本身不单独持有'))));
 			// ── 三下拉（截图同款）：重复 / 时间 / 有效期 ──
 			rows.push(h('div', { className: 'vssSchedSelects' },
 				h('div', { className: 'vssSchedSel' },
@@ -319,12 +360,35 @@ window.__ModuleLoader__.load({
 				rows.push(field('到期日期（到点自动停用）', h('input', { type: 'date', value: form.expiryDate, onChange: (ev) => setField('expiryDate', ev.target.value) })));
 			}
 			rows.push(field('做什么', h('select', { value: form.kind, onChange: (ev) => setField('kind', ev.target.value) },
-				h('option', { value: 'loop' }, '触发一个循环（loop）'),
 				h('option', { value: 'prompt' }, '往会话投一句话'))));
 			if (form.kind === 'loop') {
 				rows.push(field('循环名（loop_list 里的名字）', h('input', { type: 'text', value: form.loopName, onChange: (ev) => setField('loopName', ev.target.value) })));
 			} else {
-				rows.push(field('会话 id（可选；不填则只记录不投递）', h('input', { type: 'text', value: form.sessionId, onChange: (ev) => setField('sessionId', ev.target.value) })));
+				// ★ 2026-11-03（P0-3）：会话 id 不再要用户凭空去想 —— 聊天壳在 `body[data-vssaros-session-id]`
+				//   上暴露了当前会话（client.js:905），一键取用即可。留空仍然是"只记录不投递"（不猜）。
+				rows.push(field('会话 id（留空 = 只记录不投递）', h('div', { className: 'wb-field-row' },
+					h('input', {
+						className: 'wb-input', type: 'text', value: form.sessionId,
+						placeholder: '点右侧「用当前会话」，或粘贴一个会话 id',
+						'aria-label': '会话 id', 'data-sched-session': '',
+						onChange: (ev) => setField('sessionId', ev.target.value),
+					}),
+					h('button', {
+						type: 'button', className: 'wb-btn', 'data-sched-act': 'use-session',
+						title: currentSessionId() ? `当前会话：${currentSessionId()}` : '读不到当前会话（可能在设置页/空白页）',
+						onClick: () => {
+							setField('sessionId', currentSessionId());
+							// ★ 「根治」：重新绑定后立刻撤掉归属告警（别让用户修好了还看着红字）。
+							setField('sessionBinding', '');
+							setField('sessionBindingMessage', '');
+						},
+					}, '用当前会话'))));
+				// ★ 2026-11-03「根治」：跨环境 / 会话被删 ⇒ 直接把原因和修复动作摆在会话字段下面。
+				if (form.sessionBinding === 'foreign' || form.sessionBinding === 'missing') {
+					rows.push(h('div', {
+						className: 'vssSchedCreateErr', 'data-sched-binding-warn': form.sessionBinding,
+					}, form.sessionBindingMessage || '会话归属异常：请点「用当前会话」重新绑定'));
+				}
 			}
 			// ── 通知开关（截图同款）──
 			rows.push(h('div', { className: 'vssSchedSwitchRow' },
@@ -342,8 +406,11 @@ window.__ModuleLoader__.load({
 			rows.push(h('div', { className: 'vssSchedCreateActs' },
 				h('button', { type: 'button', className: 'wb-link', onClick: props.onCancel }, '取消'),
 				h('button', {
-					type: 'button', className: 'wb-link', 'data-vssaros-scheduler-submit': '1', onClick: props.onSubmit,
-				}, props.submitLabel || '创建')));
+					type: 'button', className: 'wb-link', 'data-vssaros-scheduler-submit': '1',
+					disabled: props.saving === true,
+					'aria-busy': props.saving === true ? 'true' : undefined,
+					onClick: props.onSubmit,
+				}, props.saving ? '保存中…' : (props.submitLabel || '创建'))));
 
 			return h('div', { className: 'vssSchedCreate', 'data-vssaros-scheduler-dialog': '1' },
 				h('div', { className: 'vssSchedCreateCard' },
@@ -382,6 +449,34 @@ window.__ModuleLoader__.load({
 			const pad = (n) => String(n).padStart(2, '0');
 			return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 		}
+		/**
+		 * 投递三态（★ 2026-11-03）：`delivered` 由 Host 侧 `engine.markDelivery` 回写。
+		 *   · `null`      → 投递中（bridge 回合还没回来，最长到 timeoutMs）
+		 *   · `true`      → 已投递（消息进了那个会话）
+		 *   · `false`     → 未投递（原因在 `deliveryError`，最常见的两种：未绑定会话 / 会话打不开）
+		 *   · `undefined` → 旧记录（接线之前的历史，没法回溯）
+		 * 为什么要在 UI 上区分：不区分时"没投出去"和"还没投"长得一模一样，用户只会以为任务失效。
+		 */
+		function deliveryCell(row) {
+			if (row?.delivered === true) {
+				return h('span', { className: 'vssSchedDelivered' }, '已投递');
+			}
+			if (row?.delivered === false) {
+				const reason = String(row.deliveryError ?? '');
+				// ★ 2026-11-03：bridge 抛的是一长串 session 引用，截到 40 字后只剩半截 id，
+				//   用户看不懂也无从下手。会话失效这类换成可行动的短句，完整原文仍放 title（hover 可见）。
+				const short = /会话已失效/.test(reason)
+					? '会话已失效（请重新绑定当前会话）'
+					: reason.slice(0, 40);
+				return h('span', { className: 'vssSchedUndelivered', title: reason },
+					`未投递${short ? `：${short}` : ''}`);
+			}
+			if (row?.delivered === null) {
+				return h('span', { className: 'wb-meta' }, '投递中');
+			}
+			return h('span', { className: 'wb-meta' }, '—');
+		}
+
 		/** `atMinute` → `HH:mm`（详情里编辑用）。 */
 		function clockOfMinute(atMinute) {
 			const value = Number(atMinute);
@@ -405,7 +500,7 @@ window.__ModuleLoader__.load({
 			const [creating, setCreating] = react.useState(false);
 			const [form, setForm] = react.useState({
 				title: '', ruleKind: 'daily', time: '09:00', weekdays: '1', everySeconds: '3600',
-				date: '', expression: '', kind: 'loop', loopName: '', prompt: '', sessionId: '', timeZone: systemZone(),
+				date: '', expression: '', kind: 'prompt', loopName: '', prompt: '', sessionId: '', timeZone: systemZone(),
 				// ★ 2026-10-31（编辑弹窗按截图）：有效期（''=长期 / '+30d' / '+90d' / 'custom'）与企微推送开关。
 				notify: false, expiry: '', expiryDate: '',
 			});
@@ -419,6 +514,8 @@ window.__ModuleLoader__.load({
 			const [records, setRecords] = react.useState([]);
 			const [pendingDelete, setPendingDelete] = react.useState('');
 			const [saving, setSaving] = react.useState(false);
+			// ★ 2026-11-03：「立即运行」正在跑的那条（按钮显示 `…` 并禁用，避免连点重复触发投递）。
+			const [runningId, setRunningId] = react.useState('');
 			// ★ 2026-10-31（卡片网格版）：主页签、全局运行记录、hover 菜单、编辑中的任务 id。
 			const [mainTab, setMainTab] = react.useState('tasks');
 			const [allRecords, setAllRecords] = react.useState([]);
@@ -426,6 +523,8 @@ window.__ModuleLoader__.load({
 			const [menuFor, setMenuFor] = react.useState('');
 			const [menuPos, setMenuPos] = react.useState({ left: 0, top: 0 });
 			const [editingId, setEditingId] = react.useState('');
+			// ★ 2026-11-03（P0-2）：从外部跳进来时要高亮的那条任务（`window.__vssarosSchedulerFocus(id)`）。
+			const [focusId, setFocusId] = react.useState('');
 			// ★ 2026-11-02（循环并进「任务」页）：循环列表 / 详情弹窗 / 忙标记 / 回答草稿。
 			const [loops, setLoops] = react.useState({ ok: false, items: [], error: '' });
 			const [loopDetail, setLoopDetail] = react.useState(null);
@@ -442,15 +541,41 @@ window.__ModuleLoader__.load({
 				});
 			}, []);
 			react.useEffect(() => { reload(); }, [reload]);
+			// ★ 2026-11-03（P0-2）：外部跳转 —— 读一次焦点键（一次性，读完即删，避免下次再高亮）。
+			//   为什么用 sessionStorage 而不是 URL hash：`#wb=...` 是 dsh 的工作台路由，塞额外参数会被它误解析。
+			react.useEffect(() => {
+				let id = '';
+				try {
+					id = String(sessionStorage.getItem('vssaros.scheduler.focus') ?? '').trim();
+					sessionStorage.removeItem('vssaros.scheduler.focus');
+				} catch { id = ''; }
+				if (!id) { return; }
+				setFocusId(id);
+				setMainTab('tasks');
+			}, []);
+			// ★ 2026-11-03（P0-2 修正）：工作台**已经开着**时不会重新挂载 ⇒ 只读一次 sessionStorage 是收不到的。
+			//   已挂载的情况走事件（`__vssarosSchedulerFocus` 会派发），未挂载的走上面的焦点键。
+			react.useEffect(() => {
+				const onFocus = (ev) => {
+					const id = String(ev?.detail?.id ?? '').trim();
+					if (!id) { return; }
+					setFocusId(id);
+					setMainTab('tasks');
+				};
+				window.addEventListener('vssaros:scheduler-focus', onFocus);
+				return () => window.removeEventListener('vssaros:scheduler-focus', onFocus);
+			}, []);
+			// 列表到货后再滚（那一刻 DOM 里才有这张卡片）。
+			react.useEffect(() => {
+				if (!focusId || !(state.entries ?? []).some((x) => x.id === focusId)) { return; }
+				try { document.querySelector(`[data-sched-id="${focusId}"]`)?.scrollIntoView({ block: 'center' }); } catch { /* 旧内核 */ }
+			}, [focusId, state.entries.length]);
 
 			/** 循环列表：`/x/loop/api/list`；插件不在/未激活 ⇒ 404 ⇒ 只影响「任务」页里的循环卡片。 */
+			// ★ 2026-11-03：loop 插件已卸载 ⇒ 不再请求 /x/loop/api/*（404 会污染日志），循环列表恒为空，
+			//   于是循环卡片 / 循环账本小结 / 循环详情弹窗都不会渲染。
 			const reloadLoops = react.useCallback(() => {
-				getJson(API_LOOP_LIST).then((data) => {
-					const items = Array.isArray(data?.loops) ? data.loops : [];
-					setLoops({ ok: data?.ok === true, items, error: data?.ok === true ? '' : String(data?.error ?? '') });
-				}).catch((error) => {
-					setLoops({ ok: false, items: [], error: String(error?.message ?? error) });
-				});
+				setLoops({ ok: false, items: [], error: '' });
 			}, []);
 			react.useEffect(() => { reloadLoops(); }, [reloadLoops]);
 
@@ -538,6 +663,9 @@ window.__ModuleLoader__.load({
 						loopName: '',
 						prompt: String(t.prompt ?? ''),
 						sessionId: String(t.sessionId ?? ''),
+						// ★ 2026-11-03「根治」：/api/list 带出的归属状态 —— 编辑弹窗据此标红。
+						sessionBinding: String(t.sessionBinding ?? ''),
+						sessionBindingMessage: String(t.sessionBindingMessage ?? ''),
 						timeZone: String(t.timeZone ?? systemZone()),
 						// ★ 编辑回填：有 expiresAt ⇒ 「到指定日期」（日期取当天口径）。
 						notify: t.notify === true,
@@ -548,7 +676,11 @@ window.__ModuleLoader__.load({
 				} else {
 					setForm({
 						title: '', ruleKind: 'daily', time: '09:00', weekdays: '1', everySeconds: '3600',
-						date: '', expression: '', kind: 'prompt', loopName: '', prompt: '', sessionId: '', timeZone: systemZone(),
+						date: '', expression: '', kind: 'prompt', loopName: '', prompt: '',
+						// ★ P0-3：新建默认就绑**当前会话**（用户在工作台里建任务时，意图几乎总是"投给我现在这个对话"）。
+						//   读不到（设置页/空白页）才留空 ⇒ 到点只记历史，UI 上会明确显示"未投递：未绑定会话"。
+						sessionId: currentSessionId(),
+						timeZone: systemZone(),
 						notify: false, expiry: '', expiryDate: '',
 					});
 					setEditingId('');
@@ -556,11 +688,28 @@ window.__ModuleLoader__.load({
 				setErr('');
 				setCreating(true);
 			}
-			/** ▶ 立即运行一次（Host 侧 engine.fireNow；会写一条 manual 投递记录）。 */
+			/**
+			 * ▶ 立即运行一次（Host 侧 engine.fireNow；会写一条 manual 投递记录）。
+			 *
+			 * ★ 2026-11-03（用户报「点了没反应」）：`fireNow` 只做「记 history + 异步投递」，**卡片字段几乎不变**
+			 *   ⇒ 即使成功，界面上也看不出动静。现在：按钮变 `…`（防连点）+ 明确回执「已触发，结果见运行记录」。
+			 */
 			async function runNow(id) {
-				const out = await post(API_RUN, { id });
-				if (!out?.ok) { setErr(out?.error ? `运行失败：${out.error}` : '运行失败'); return; }
-				reload();
+				if (runningId) { return; }
+				setRunningId(id);
+				setErr('');
+				try {
+					const out = await post(API_RUN, { id });
+					if (!out?.ok) { setErr(`运行失败：${out?.error ?? '未知错误'}`); return; }
+					// 说清两件事：① 已经触发了；② 投递结果去哪看（未绑会话的任务只会记历史）。
+					// ★ 2026-11-03：别预设成"未绑会话" —— 也可能是**绑定了但会话已失效**（跨环境/会话被删），
+				//   旧文案会误导用户去找一个其实填了值的字段。
+				setErr(`已触发「${nameOf(id)}」—— 投递结果见「运行记录」（未绑定会话 / 会话已失效时只记历史，不投递）`);
+					reload();
+					loadAllRecords();
+				} finally {
+					setRunningId('');
+				}
 			}
 			/** 运行记录页签：不传 id ⇒ 全部任务的投递记录。 */
 			async function loadAllRecords() {
@@ -569,6 +718,12 @@ window.__ModuleLoader__.load({
 			}
 
 			async function submit() {
+				// ★ 2026-11-03：`saving` 之前只有 state、没人用 ⇒ 连点会重复 POST，且点击后毫无反馈
+				//   （配上 fetch 静默失败就是"按钮未接线"的观感）。这里做成：连点直接吞掉 + 按钮显示「保存中…」。
+				//   用超时兜底复位：某条分支若因网络悬挂没回到 finally，也不会把按钮永久禁用。
+				if (saving) { return; }
+				setSaving(true);
+				setTimeout(() => { try { setSaving(false); } catch { /* 已卸载 */ } }, 6000);
 				setErr('');
 				const parsed = ruleFromForm(form);
 				if (parsed.error) { setErr(parsed.error); return; }
@@ -581,29 +736,19 @@ window.__ModuleLoader__.load({
 					expiresAt = new Date(`${form.expiryDate}T23:59:59`).toISOString();
 				}
 				const notify = form.notify === true;
-				// ★ 编辑既有任务：走 /api/update（Host 侧 updateSchedule 现在也认 prompt/expiresAt/notify）
+				// ★ 编辑既有任务：走 /api/update（Host 侧 updateSchedule 认 prompt/expiresAt/notify/**sessionId**）
+				//   ⚠ 2026-11-03 修：这里此前**没传 sessionId** ⇒ 用户在弹窗里点「用当前会话」（或改投递目标）再
+				//   保存，等于没点 —— 表现就是"按钮未接线"。同批删掉了下面那段重复的 editingId 分支（死代码）。
 				if (editingId) {
 					const out = await post(API_UPDATE, {
 						id: editingId,
 						title: form.title || '未命名任务',
 						rule: parsed.rule,
 						prompt: String(form.prompt ?? '').trim(),
+						// 传空串 = 解绑（normalizeTask 会写出空 sessionId ⇒ 到点只记历史，不再投递）。
+						sessionId: String(form.sessionId ?? '').trim(),
 						expiresAt,
 						notify,
-					});
-					if (!out?.ok) { setErr(out?.error ?? '保存失败'); return; }
-					setCreating(false);
-					setEditingId('');
-					reload();
-					return;
-				}
-				// ★ 编辑既有任务：走 /api/update（Host 侧 updateSchedule 现在也认 prompt）
-				if (editingId) {
-					const out = await post(API_UPDATE, {
-						id: editingId,
-						title: form.title || '未命名任务',
-						rule: parsed.rule,
-						prompt: String(form.prompt ?? '').trim(),
 					});
 					if (!out?.ok) { setErr(out?.error ?? '保存失败'); return; }
 					setCreating(false);
@@ -735,26 +880,36 @@ window.__ModuleLoader__.load({
 				grid = h('div', { className: 'vssSchedEmpty', 'data-sched-empty': state.entries.length === 0 ? 'none' : 'filtered' },
 					h('span', { className: 'vssSchedEmptyGlyph' }, '🕒'),
 					h('h2', null, state.entries.length === 0 ? '还没有自动化任务' : '没有匹配的自动化任务'),
-					h('div', { className: 'wb-empty' }, '点「新建自动化任务」，或让 Agent 用 schedule_create 帮你建；循环则是在数据根的 loops/<名字>/loop.json 里定义。'),
+					h('div', { className: 'wb-empty' }, '点「新建自动化任务」，或让 Agent 用 schedule_create 帮你建。'),
 					h('button', { type: 'button', className: 'wb-btn is-primary', onClick: () => openEdit('') }, '新建自动化任务'));
 			} else {
 				const taskCards = visible.map((e) => {
 					const on = e.status === 'active';
 					const rel = relativeWhen(e.scheduledAt);
 					return h('div', {
-						className: 'wb-card vssSchedCard' + (menuFor === e.id ? ' is-menu' : ''),
+						className: 'wb-card vssSchedCard' + (menuFor === e.id ? ' is-menu' : '') + (focusId === e.id ? ' is-focus' : ''),
 						key: e.id,
 						'data-sched-id': e.id,
 						onClick: () => { openEdit(e.id); },
 					},
 						h('div', { className: 'vssSchedCardHd' },
 							h('span', { className: 'wb-row-name vssSchedCardName' }, e.title || '(未命名)'),
+							// ★ 2026-11-03「根治」：会话归属异常在列表里就可见（不用等到点了运行才发现）。
+							(e.sessionBinding === 'foreign' || e.sessionBinding === 'missing')
+								? h('span', {
+									className: 'vssSchedBad is-error', 'data-sched-binding': e.sessionBinding,
+									title: e.sessionBindingMessage || '会话归属异常',
+								}, '会话失效')
+								: null,
 							h('div', { className: 'vssSchedActs' },
 								h('button', {
-									type: 'button', className: 'wb-btn is-icon is-ghost vssSchedIcb', title: '立即运行一次',
+									type: 'button', className: 'wb-btn is-icon is-ghost vssSchedIcb',
+									title: runningId === e.id ? '正在触发…' : '立即运行一次（会写一条手动记录，结果见运行记录）',
 									'data-sched-act': 'run',
+									disabled: runningId === e.id,
+									'aria-busy': runningId === e.id ? 'true' : undefined,
 									onClick: (ev) => { ev.stopPropagation(); runNow(e.id); },
-								}, '▶'),
+								}, runningId === e.id ? '…' : '▶'),
 								h('button', {
 									type: 'button', className: 'wb-btn is-icon is-ghost vssSchedIcb', title: '编辑',
 									'data-sched-act': 'edit',
@@ -826,11 +981,13 @@ window.__ModuleLoader__.load({
 				? h('div', { className: 'wb-empty' }, '还没有投递记录。')
 				: h('table', { className: 'wb-table', 'data-sched-records': recordsFilterId || 'all' },
 					h('thead', null, h('tr', null,
-						h('th', null, '时间'), h('th', null, '任务'), h('th', null, '轮次'), h('th', null, '来源'))),
+						h('th', null, '时间'), h('th', null, '任务'), h('th', null, '轮次'),
+						h('th', null, '投递'), h('th', null, '来源'))),
 					h('tbody', null, shownRecords.map((r, i) => h('tr', { key: `${r.taskId ?? i}#${r.seq ?? i}` },
 						h('td', null, absoluteWhen(r.at)),
 						h('td', null, nameOf(r.taskId)),
 						h('td', null, `#${r.seq ?? ''}`),
+						h('td', null, deliveryCell(r)),
 						h('td', null, r.manual ? '手动' : '自动')))));
 			recordsView = h('div', { className: 'vssSchedField' }, [loopSummary, deliveredTable]);
 
@@ -848,7 +1005,13 @@ window.__ModuleLoader__.load({
 					onClick: () => { setMainTab('records'); setMenuFor(''); reloadLoops(); loadAllRecords(); },
 				}, `运行记录 (${allRecords.length})`));
 
-			const children = [tabs, toolbar, h('div', { className: 'wb-scroll vssSchedBody' },
+			// ★★ 2026-11-03（用户报「立即运行一次 点击后没有反应」）：主页面上**根本没有提示槽** ——
+			//   `runNow` 写的「运行失败／已触发」只进了 state，没有任何地方渲染 ⇒ 用户只看到"点了没反应"。
+			//   这条槽同时承载错误与操作回执（有内容才出现，✕ 可关）。
+			const notice = err ? h('div', { className: 'vssSchedDiag', 'data-sched-msg': '' },
+				h('span', { className: 'vssSchedDiagText' }, err),
+				h('button', { type: 'button', className: 'wb-link', onClick: () => setErr('') }, '✕')) : null;
+			const children = [tabs, notice, toolbar, h('div', { className: 'wb-scroll vssSchedBody' },
 				mainTab === 'tasks'
 					? h('div', { className: 'wb-field-row' },
 						h('input', {
@@ -876,6 +1039,7 @@ window.__ModuleLoader__.load({
 					form,
 					setField,
 					err,
+					saving,
 					title: editingId ? '编辑自动化任务' : '新建自动化任务',
 					submitLabel: editingId ? '保存修改' : '创建',
 					// 编辑器里的装饰按钮（＋/Auto/📁/⚠）没有真实能力 ⇒ 点了给一句说明，不静默。
@@ -987,6 +1151,25 @@ window.__ModuleLoader__.load({
 
 		function apply(ctx) {
 			ctx.effect(maintainStyles, 'vssaros-scheduler: styles');
+			/**
+			 * ★ 2026-11-03（P0-2）：外部跳到**某条任务**。
+			 * 聊天里的工具卡片 / 深链只需要 `window.__vssarosSchedulerFocus(taskId)`：
+			 * 先写一次性焦点键，再让聊天壳把「自动化任务」工作台打开 —— 到货后卡片会被描边并滚到视野中央。
+			 * 为什么不用 URL：`#wb=...` 是 dsh 的工作台路由，多加参数会被它误解析（试过的）。
+			 */
+			try {
+				window.__vssarosSchedulerFocus = (id) => {
+					const target = String(id ?? '').trim();
+					// ① 未挂载（还没打开过工作台）⇒ 写一次性焦点键，挂载时消费。
+					try { sessionStorage.setItem('vssaros.scheduler.focus', target); } catch { /* 隐私模式 */ }
+					// ② 已挂载（最常见：用户就开着工作台）⇒ 事件直达，立刻高亮 + 滚动。
+					try { window.dispatchEvent(new CustomEvent('vssaros:scheduler-focus', { detail: { id: target } })); } catch { /* 旧内核 */ }
+					if (typeof window.__vssarosOpenWorkbench === 'function') {
+						try { return window.__vssarosOpenWorkbench('vssaros/scheduler'); } catch { return false; }
+					}
+					return false;
+				};
+			} catch { /* window 不可写 */ }
 			// 只依赖 `desktopWorkbenches` ⇒ **工作台一定注册**（点得开、有反应）；
 			// 数据面是同源 fetch ⇒ 没有"服务未就绪 ⇒ 面板空白"这类失败模式。
 			ctx.inject(['desktopWorkbenches'], (wb) => {

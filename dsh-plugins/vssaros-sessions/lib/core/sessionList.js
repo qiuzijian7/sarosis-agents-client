@@ -41,6 +41,23 @@ export const LIST_META_KEY = 'sessionListMetadata';
  * ⇒ **不渲染任何人格标记**（见 `vssaros-agents/lib/core/persona.js`）。
  */
 export const PERSONA_KEY = 'vssaros-persona';
+/**
+ * 会话的 Bot 身份 —— 由 `@vssaros/dsh-agents` 注册的投影（★ 2026-11-03）。值形如 `{ botId, presetId, atSeq }`。
+ * 判据与 `vssaros-agents/lib/core/botIdentity.js` 的 `resolveSessionBot` 同口径：**记录的 presetId 与会话当前
+ * preset 一致才采信**（空会话换过 preset 后旧记录作废）。本包不能 import 那个包 ⇒ 守卫
+ * `dsh-plugins/check-bot-identity.mjs` 比对 key 与判据。
+ */
+export const BOT_KEY = 'vssaros-bot';
+
+/** 会话缓存行 → 已校验的 botId（没有记录 / 与当前 preset 不一致 ⇒ undefined）。 */
+export function botIdOfRows(botValue, preset) {
+	if (!botValue || typeof botValue !== 'object') {
+		return undefined;
+	}
+	const botId = strOrUndefined(typeof botValue.botId === 'string' ? botValue.botId.trim() : undefined);
+	const recPreset = typeof botValue.presetId === 'string' ? botValue.presetId.trim() : '';
+	return botId && preset && recPreset === preset ? botId : undefined;
+}
 
 /**
  * 路径末段（同时认 `/` 与 `\`）。
@@ -136,12 +153,15 @@ export function sessionFromCacheRows(valueOf, { id, cwd, createdAt, source = 'ca
 	const personaName = persona && typeof persona === 'object' ? strOrUndefined(persona.name) : undefined;
 	const turn = valueOf(TURN_KEY);
 	const retry = valueOf(RETRY_KEY);
+	const preset = strOrUndefined(valueOf(PRESET_KEY));
 	return {
 		id: strOrUndefined(id),
 		cwd: strOrUndefined(cwd),
 		createdAt: numOrUndefined(createdAt),
 		title: strOrUndefined(valueOf(TITLE_KEY)),
-		preset: strOrUndefined(valueOf(PRESET_KEY)),
+		preset,
+		// Bot 身份记录（已按当前 preset 校验；没有 ⇒ undefined ⇒ 分组退回按 preset）
+		botId: botIdOfRows(valueOf(BOT_KEY), preset),
 		// 人格：切换过才有（personaId === null ⇒ 跟随自带人设 ⇒ 不显示标记）
 		personaId,
 		personaName,
@@ -416,9 +436,15 @@ export function normalizeGroupBy(value) {
 	return SESSION_GROUP_BY.includes(key) ? key : 'workspace';
 }
 
-/** 一条会话在某种分组方式下的**分组值**（未归属一律 {@link UNGROUPED_GROUP_KEY}）。 */
+/**
+ * 一条会话在某种分组方式下的**分组值**（未归属一律 {@link UNGROUPED_GROUP_KEY}）。
+ * 按 Bot：有身份记录 ⇒ `vssaros-<botId>`（每个 bot 稳定唯一，与 agents 插件 presetIdOf 同形；
+ * 第 3 步多个 bot 共用 preset 后依然分得开）；没有 ⇒ 会话的 preset（旧行为）。
+ */
 export function groupKeyOf(session, by = 'workspace') {
-	const raw = by === 'bot' ? session?.preset : session?.cwd;
+	const raw = by === 'bot'
+		? (typeof session?.botId === 'string' && session.botId ? 'vssaros-' + session.botId : session?.preset)
+		: session?.cwd;
 	return typeof raw === 'string' && raw.trim() ? raw.trim() : UNGROUPED_GROUP_KEY;
 }
 

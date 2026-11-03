@@ -104,7 +104,6 @@ if (process.argv.includes('--preview')) {
 			{ route: '/x/dashboard/', name: '主页', desc: '会话遥测 / 用量与编排', top: true },
 			{ route: '/x/kanban/', name: '看板', desc: '看板存储与卡片工具' },
 			{ route: '/x/kb/', name: '知识库', desc: '笔记与双链' },
-			{ route: '/x/memory/', name: '记忆库', desc: '长期记忆' },
 			{ route: '/x/codebase/', name: '代码库', desc: '符号与图谱' },
 			{ route: '/x/media/', name: '媒体库', desc: '图片与视频' },
 			{ route: '/x/imagegen/', name: '生图', desc: '文生图 / 画布' },

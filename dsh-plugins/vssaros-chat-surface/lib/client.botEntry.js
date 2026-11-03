@@ -22,7 +22,27 @@ window.__ModuleLoader__.load({
 		const react = require("react");
 
 		/** dsh 自带 4 个模式（不是 Bot）—— 与 client.preset.js 的模式白名单互补：这里取**其余**当 Bot。 */
-		const MODE_IDS = new Set(["standard", "ptc", "minimal", "cordis", "vssaros-standard", "vssaros-ptc", "vssaros-full"]);
+		/* vssaros:bot-identity v1 —— 逐字副本，真源 vssaros-agents/lib/core/botIdentity.js（守卫 dsh-plugins/check-bot-identity.mjs） */
+		const BOT_MODE_PRESET_IDS = ["standard", "ptc", "minimal", "cordis", "vssaros-standard", "vssaros-ptc", "vssaros-full", "vssaros-minimal", "vssaros-cordis"];
+		/** 是不是"可能属于某个 bot"的 preset（vssaros- 前缀且不是模式 preset）。 */
+		function isBotPresetId(presetId) {
+			const id = String(presetId || "").trim();
+			return id.indexOf("vssaros-") === 0 && id.length > 8 && BOT_MODE_PRESET_IDS.indexOf(id) < 0;
+		}
+		/** 会话属于哪个 bot：身份记录（presetId 与当前一致才采信）> 按 preset 推断（botId=null，调用方用花名册反查）。 */
+		function sessionBotOf(projectionValues) {
+			const pv = projectionValues || {};
+			const presetId = String(pv.agentPreset || "").trim();
+			if (!isBotPresetId(presetId)) { return { isBot: false, botId: null, presetId: presetId, source: "none" }; }
+			const rec = pv["vssaros-bot"];
+			const recBot = rec && typeof rec.botId === "string" ? rec.botId.trim() : "";
+			if (recBot && String(rec.presetId || "").trim() === presetId) {
+				return { isBot: true, botId: recBot, presetId: presetId, source: "record" };
+			}
+			return { isBot: true, botId: null, presetId: presetId, source: "preset" };
+		}
+		/* /vssaros:bot-identity */
+		const MODE_IDS = new Set(BOT_MODE_PRESET_IDS);
 		/** 「+」菜单里的行名（带前缀，避免与官方命令重名 ⇒ 官方文档：重名会 fail loud）。 */
 		const ROW_NAME = "vssaros-bots";
 		/** 人格路由（agents 插件的页面路由；与 client.agents.js 同一条）。 */

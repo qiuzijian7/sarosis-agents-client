@@ -10,6 +10,7 @@
 //   · **派发不阻塞**：监听者抛错只记日志，绝不让一个任务的异常停掉整个引擎。
 
 import { HISTORY_KEEP, readTasks, writeTasks } from './store.js';
+import { stampSession } from './sessionBinding.js';
 import { isDue, markFired, nextRunAtMs, normalizeTask, workItemKeyOf } from './core/task.js';
 
 const DEFAULT_TICK_MS = 30_000;
@@ -87,8 +88,26 @@ export function createScheduleEngine(options = {}) {
 	 * 启动追赶：把**已经过期**的任务直接推进到下一个未来时刻。
 	 * 为什么不补跑：机器睡了一夜 / Host 停了一天，补跑会一次性放出 N 轮 —— 比漏一轮严重得多。
 	 */
-	function catchUp(atMs) {
+	/**
+	 * ★ 2026-11-03：有效期到点自动停用（任务保留可查看，只是不再触发）。
+	 * tick 与 catchUp **都**要调 —— 只挂在 tick 上时，"停机跨过有效期再启动"会先被
+	 * catchUp 推进 next，看起来像"过期了还在排期"。
+	 */
+	function expireDue(atMs) {
 		let dirty = false;
+		for (let i = 0; i < store.tasks.length; i += 1) {
+			const task = store.tasks[i];
+			if (task?.status === 'active' && task.expiresAt && Date.parse(task.expiresAt) <= atMs) {
+				store.tasks[i] = { ...task, status: 'inactive' };
+				dirty = true;
+				log(`任务 ${task.id} 已过有效期（${task.expiresAt}）⇒ 自动停用`);
+			}
+		}
+		return dirty;
+	}
+
+	function catchUp(atMs) {
+		let dirty = expireDue(atMs);
 		store.tasks = store.tasks.map(task => {
 			if (task.status !== 'active') { return task; }
 			const target = Number(task?.next?.target);
@@ -103,16 +122,7 @@ export function createScheduleEngine(options = {}) {
 	/** 一次 tick：先处理到期停用（有效期），再对所有到点的任务各触发一次。 */
 	function tick() {
 		const atMs = now();
-		let dirty = false;
-		// ★ 有效期：到点自动停用（任务保留可查看，不再触发）。
-		for (let i = 0; i < store.tasks.length; i += 1) {
-			const task = store.tasks[i];
-			if (task?.status === 'active' && task.expiresAt && Date.parse(task.expiresAt) <= atMs) {
-				store.tasks[i] = { ...task, status: 'inactive' };
-				dirty = true;
-				log(`任务 ${task.id} 已过有效期（${task.expiresAt}）⇒ 自动停用`);
-			}
-		}
+		let dirty = expireDue(atMs);
 		if (dirty) { save(); }
 		for (let i = 0; i < store.tasks.length; i += 1) {
 			const task = store.tasks[i];
@@ -145,7 +155,8 @@ export function createScheduleEngine(options = {}) {
 		},
 		/** 新建（校验走 `normalizeTask`，越界直接抛）。 */
 		create: raw => {
-			const task = normalizeTask(raw, { nowMs: now(), timeZone: timeZone });
+			// ★ 2026-11-03「根治」：绑会话时同时记下**当前数据根**（跨环境可判）。
+			const task = normalizeTask(stampSession(raw, config), { nowMs: now(), timeZone: timeZone });
 			if (findIndex(task.id) >= 0) {
 				throw new Error(`任务 id 已存在：${task.id}`);
 			}
@@ -156,10 +167,14 @@ export function createScheduleEngine(options = {}) {
 		update: (id, patch) => {
 			const index = findIndex(id);
 			if (index < 0) { return null; }
-			const merged = normalizeTask({ ...store.tasks[index], ...patch, id }, { nowMs: now(), timeZone: timeZone });
-			store.tasks[index] = merged;
+			const merged = { ...store.tasks[index], ...patch, id };
+			// ⚠ 只在**本次真的改了 sessionId** 时重盖归属：只暂停 / 改标题就把 foreign 洗成当前环境，
+			//   会让「跨环境」这条线索丢失（虽仍会被存在性检查拦住，但提示就不准了）。
+			const stamped = Object.hasOwn(patch, 'sessionId') ? stampSession(merged, config) : merged;
+			const task = normalizeTask(stamped, { nowMs: now(), timeZone: timeZone });
+			store.tasks[index] = task;
 			save();
-			return clone(merged);
+			return clone(task);
 		},
 		remove: id => {
 			const index = findIndex(id);
@@ -181,6 +196,31 @@ export function createScheduleEngine(options = {}) {
 			.reverse()
 			.map(clone),
 		nextRunAtOf: task => nextRunAtMs(task.rule, now(), task.rule.timeZone || timeZone),
+		/**
+		 * ★ 2026-11-03：把「到点后有没有真的送到会话」回写进**同一条历史**。
+		 *
+		 * 为什么不用日志：dsh 的 logger 在生产级别下不一定落文件（真机验证时日志里就查不到），
+		 * 而"投递到底成没成"是用户最该看见的一件事 ⇒ 记进 history，`/api/history` 与工作台
+		 * 的「运行记录」都能直接读（`delivered` / `deliveryError`）。
+		 */
+		markDelivery: (taskId, atMs, result = {}) => {
+			const rows = Array.isArray(store.history) ? store.history : [];
+			for (let i = rows.length - 1; i >= 0; i -= 1) {
+				const row = rows[i];
+				if (row?.taskId !== taskId || Number(row.at) !== Number(atMs)) { continue; }
+				// 三态：`delivered=null` 表示**投递中**（bridge 的回合可能挂很久）——
+				// 必须有这个状态，否则"发起了但还没回来"和"根本没投递"在记录里长得一模一样。
+				if (result.pending === true) {
+					store.history[i] = { ...row, delivered: null, deliveryError: '' };
+				} else {
+					const ok = result.ok === true;
+					store.history[i] = { ...row, delivered: ok, deliveryError: ok ? '' : String(result.error ?? '') };
+				}
+				save();
+				return true;
+			}
+			return false;
+		},
 		/** ★ 官方没有的：订阅"到点"事件。返回 dispose。 */
 		onFire: cb => {
 			if (typeof cb !== 'function') { return () => undefined; }

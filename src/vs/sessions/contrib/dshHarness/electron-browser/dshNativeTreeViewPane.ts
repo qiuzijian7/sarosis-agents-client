@@ -386,34 +386,6 @@ export class DshNativeTreeViewPane extends ViewPane {
  *   不做猜测性转换（例如不把 `live: {}` 猜成"有 3 个会话"）。
  */
 const NATIVE_DATA_SOURCES: Readonly<Record<string, IDshNativeDataSource>> = {
-	'vssaros.agents.roster': {
-		// 与 `/x/agents/?surface=sideview` 与编辑区完整页**同一份**接口（见 vssaros-agents/lib/index.js）。
-		route: '/x/agents/api/agents',
-		decode(json: unknown): readonly IDshNativeRow[] {
-			const root = json as { agents?: unknown } | undefined;
-			const agents = Array.isArray(root?.agents) ? root!.agents : [];
-			const rows: IDshNativeRow[] = [];
-			for (const raw of agents) {
-				const a = raw as Record<string, unknown>;
-				const id = typeof a.id === 'string' ? a.id : '';
-				if (!id) {
-					continue; // 没有 id 的行无法定位，跳过而不是渲染一行点不动的条目
-				}
-				const name = typeof a.name === 'string' && a.name ? a.name : id;
-				const live = a.live as { sessions?: unknown } | null | undefined;
-				const sessions = typeof live?.sessions === 'number' ? live.sessions : 0;
-				const description = typeof a.description === 'string' ? a.description : '';
-				rows.push({
-					handle: `agent:${id}`,
-					label: name,
-					...(description ? { description } : {}),
-					...(typeof a.color === 'string' ? { color: a.color } : {}),
-					icon: Codicon.account,
-					...(sessions > 0 ? { badge: String(sessions) } : {}),
-					tooltip: description ? `${name}\n${description}` : name,
-				});
-			}
-			return rows;
-		},
-	},
+	// ★ 2026-11-03：`vssaros.agents.roster`（Bots 侧栏原生树）随 Bots 工作台一起下线 ——
+	//   bots 只在聊天框侧栏「Bots」页签里（chat-surface 的 client.workspaces.js）。
 };

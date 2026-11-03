@@ -1913,6 +1913,15 @@ window.__ModuleLoader__.load({
 						return hit ? hit.id : undefined;
 					} catch (e) { return undefined; }
 				};
+				/**
+				 * ★★ 2026-11-03（用户报「切到知识库/商城页签，再切回会话页签 ⇒ 中栏空白」）：
+				 *   工作台**页签栏**切回「会话」时只调 `selectPanel(null)`，**不换会话**；
+				 *   而工作台内部"切会话/切工作区"走 `replaceMain` ⇒ 会先把 main 换成新会话。
+				 *   ⇒ 用「main 会话是否变化」区分这两种意图，补上 `navIntentAt` 覆盖不到的入口
+				 *   （页签栏在 iframe/外壳里，跨插件的 openSession 包装与页面级信号都打不到 ✗）。
+				 *   初始化为安装守卫那一刻的 main ⇒ 打开工作台后 main 未变 ⇒ 切回会话页签判为"只切面板" ✓
+				 */
+				let lastMainSidAtPanelCall = currentMainSessionId() || '';
 				const guarded = (panel) => {
 					try {
 						/**
@@ -1936,6 +1945,26 @@ window.__ModuleLoader__.load({
 						}
 						if (panel === null && service.active && service.docksConversation(service.active)) {
 							const sid = currentMainSessionId();
+							// ★ 2026-11-03：main 没变 ⇒ 只是"切回会话页签"，不是工作台内部换会话
+							//   ⇒ 退出工作台并放行，让中栏重新渲染会话（否则面板停在工作台、embed 全隐藏 ⇒ 白框 ✗）
+							const onlyPanelSwitch = !!sid && sid === lastMainSidAtPanelCall;
+							lastMainSidAtPanelCall = sid || lastMainSidAtPanelCall;
+							/**
+							 * ★ 2026-11-03 二次修正：真机复现「知识库 → 商城 → 切回会话」仍被拦截。
+							 *   原因：工作台 open() 期间会新建/切换自己的会话 ⇒ main 已变 ⇒
+							 *   `onlyPanelSwitch` 不成立（拿 main 当基准不可靠 ✗）。
+							 *   改用**调用栈**：工作台内部"切会话/切工作区"必经官方
+							 *   `replaceMain()`（内部末尾才 `selectPanel(null)`）；而页签栏/侧栏切回会话
+							 *   是**直接**调 `selectPanel(null)` ⇒ 栈里没有这些帧。
+							 *   ⇒ 非 replaceMain 的 `selectPanel(null)` 一律视为"用户要回会话页" ⇒ 放行。
+							 */
+							const stack = String((new Error()).stack || '');
+							const fromReplaceMain = /replaceMain|openSession|startSession|connectBlank/.test(stack);
+							if (onlyPanelSwitch || !fromReplaceMain) {
+								try { service.leave(); } catch (e) { /* 退出失败不阻断放行 */ }
+								console.info('[vssaros-workbenches] 切回会话面板（非 replaceMain）⇒ 放行 selectPanel(null)');
+								return original(panel);
+							}
 							// ⚠ 2026-10-28：**不要**在这里用 sessionExists（查 sessions.list）做前置 ——
 							//   侧栏「＋ 新建会话」走 startSession → connectBlank → replaceMain，新会话此刻
 							//   **还没进列表快照** ⇒ 会被误判"已不存在" ⇒ 新建会话"没反应"。

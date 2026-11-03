@@ -48,6 +48,7 @@ import { DshBridgeClient } from './dshBridgeClient.js';
 import { IStartupDeadline, createStartupDeadline, startupExpiryMessage } from './dshStartupDeadline.js';
 import { normalizeExistingPath, repairStoreMetadataContent } from './dshStoreMetadata.js';
 import { DshHostLeaseStore, pidAlive } from './dshHostLeaseStore.js';
+import { stagePluginDir } from './dshPluginStaging.js';
 import { orphanLeaseCandidates } from '../common/dshHostRunOwnership.js';
 import { readPreferredHostPort, reclaimLoopbackPort, rememberHostPort, resolveHostPort } from './dshHostPortManager.js';
 import { reapOrphanHosts } from './dshHostReaper.js';
@@ -1135,6 +1136,22 @@ export class DshHostSupervisor extends Disposable {
 			//       接受多包；依据写在 `buildPluginAddArgsMany` 的注释里）⇒ N 次进程 + N 次解析收敛成 1 次 ✓
 			//   安全网：批量漏装的那几项**回退 `_ensurePlugin` 逐项装**（行为与旧版逐字一致）⇒ 即便
 			//   将来 dsh 改窄参数，最坏也只是回到从前的速度，不会装不上 ✓。
+			// ★★ 2026-11-03（真机：别人机器启动直接失败，`EEXIST: mkdir …\plugins\vssaros-dsh-loop-…\docs`）：
+			//   伴生清单里 **`DSH_LOOP_PLUGIN_NAME` 被显式列了一次**，而 `modulePluginDirs`（按 `vssaros.module`
+			//   自发现）**又列了一次** ⇒ 同一个插件进列表两遍 ⇒ 两个并发 `_stagePlugin` 写**同一个**版本目录
+			//   ⇒ 一个在 rm、另一个在 cp ⇒ EEXIST / ENOTEMPTY ⇒ Host 起不来。
+			//   ⇒ **按名字去重**（保留先出现的那条 = 伴生显式项优先）。这是根治；
+			//     `dshPluginStaging.ts` 的原子落位只是防御（多进程 / 重试重叠时不再互撞）。
+			{
+				const seen = new Set<string>();
+				const deduped = plugins.filter(([name]) => (seen.has(name) ? false : (seen.add(name), true)));
+				if (deduped.length !== plugins.length) {
+					const dropped = plugins.length - deduped.length;
+					this._appendLog(`伴生插件清单去重：${plugins.length} → ${deduped.length}（去掉 ${dropped} 条重复，同名插件只装一次）`);
+				}
+				plugins.length = 0;
+				plugins.push(...deduped);
+			}
 			const wants: { name: string; dir: string; label: string; bundled: string; installed?: string; fingerprint?: string }[] = [];
 			for (let i = 0; i < plugins.length; i++) {
 				const [name, dir, label] = plugins[i];
@@ -3275,22 +3292,12 @@ export class DshHostSupervisor extends Disposable {
 	private async _stagePlugin(pluginName: string, sourceDir: string, version: string, profileDir: string, fingerprint?: string): Promise<string> {
 		const name = pluginName.replace(/^@/, '').replace(/\//g, '-');
 		const dest = join(profileDir, '.vssaros', 'plugins', `${name}-${version}${fingerprint ? `-${fingerprint}` : ''}`);
-		// 源**就是**目标：它已经在位（e2e 探针会把我们的暂存目录当 spec 传进来），此时"先删再拷"
-		// 会把源一起删掉，`cp` 拷出空目录、`dsh plugin add` 报缺 package.json。直接返回。
-		// Windows 路径大小写不敏感，两种写法要算同一个。
-		const norm = (p: string) => (process.platform === 'win32' ? resolve(p).toLowerCase() : resolve(p));
-		if (norm(sourceDir) === norm(dest)) {
-			return dest;
-		}
-		await fsp.rm(dest, { recursive: true, force: true });
-		await fsp.mkdir(dest, { recursive: true });
-		// 只排源目录**内部**的 node_modules：源本身可能就在 node_modules 里
-		//（如官方 voice-input bundle 随运行时分发），按绝对路径排会把所有文件滤光（实测）。
-		await fsp.cp(sourceDir, dest, {
-			recursive: true,
-			filter: src => !/[\\/]node_modules([\\/]|$)/.test(src.slice(sourceDir.length)),
-		});
-		return dest;
+		// ★★ 2026-11-03（真机：别人机器上 F5/启动直接失败，Host 起不来）：
+		//   `start failed: EEXIST: mkdir …\.vssaros\plugins\vssaros-dsh-loop-…\docs`
+		//   `start failed: ENOTEMPTY: rmdir …\.vssaros\plugins\vssaros-dsh-kb-…\lib`
+		//   根因与修法（临时目录 + rename 原子落位）写在 `dshPluginStaging.ts` 的文件头 ——
+		//   那里是**并发安全**的唯一实现，本方法只负责拼路径，别再在这里写"先 rm 再 cp" ✗。
+		return stagePluginDir({ sourceDir, destDir: dest });
 	}
 
 	/** 读 `package.json` 里的一个字符串字段（读不到 / 类型不对 / 空串都算没有）。 */

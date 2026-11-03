@@ -14,6 +14,7 @@
 // ⚠ 入口里必须先 `var module = { exports: {} };`（否则真机报 `exports is not defined`）。
 // ★ touch 2026-11-02 03:11:24：chunk 改过之后必须动入口 ⇒ ?rev 才会变（守卫查 mtime）。
 // ★ touch 2026-11-02 03:21:57：chunk 改过之后必须动入口 ⇒ ?rev 才会变（守卫查 mtime）。
+// ★ touch 2026-11-03：chunk（client.kbview.js）改了「选中行前景」（0.5.65 浅色外观下白字叠白底）⇒ 动入口让 ?rev 变。
 // ★ 2026-10-31 touch 2026-11-02 03:25:02：改动 chunk（远端抽象层 UI）之后动入口 ⇒ ?rev 跟着变，浏览器不吃旧缓存。
 window.__ModuleLoader__.load({
 	id: '@vssaros/dsh-kb',

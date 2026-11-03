@@ -24,8 +24,14 @@
 //   人格全文随消息落日志，所以历史可精确重放；工具/模型**不受影响**（要换能力只能新建会话，走 preset）。
 
 import { randomUUID } from 'node:crypto';
+// ★ 2026-11-03 修「join is not defined」：applyPersona 的记忆提示里用 join() 拼 MEMORY.md 绝对路径，
+//   但这个 import 从来没写过 —— 只在「bot 有记忆内容」时才走到那行，所以一直潜伏到本轮真机才炸。
+import { join } from 'node:path';
 import { askAssignment, cancelAssignment, createAssignment, installAssignmentTracker, listAssignments } from './assignments.js';
-import { allowlistDenyOf, assignmentPresetIdOf, pickLazyEagerKeys, avatarColorOf, isDelegatableAgent, isShownAgent, presetIdOf, summarizeAgents, toPresetDefinition } from './core/agents.js';
+import { allowlistDenyOf, pickLazyEagerKeys, avatarColorOf, isDelegatableAgent, isShownAgent, presetIdOf, summarizeAgents, toPresetDefinition } from './core/agents.js';
+import { agentModelRouteOf, applyModelSelection, prevalidateRoutes, setAgentModelRoutes } from './modelSelection.js';
+import { botIdentityProjection } from './core/botIdentity.js';
+import { writeBotIdentity } from './botIdentityWriter.js';
 import { createAgentFromDraft, deleteAgent, previewAgentDraft, readAgentDraft, resetAgentModel, setAgentMemoryLimits, setAgentSubagent, updateAgentFromDraft } from './create.js';
 import { draftFromAgentMd, modelCandidatesOf } from './core/create.js';
 import { lineDiff } from './core/diff.js';
@@ -34,20 +40,20 @@ import { PERSONA_PROJECTION_KEY, personaProjection, personaSwitchMessage, switch
 import { createToolNameSnapshot } from './core/toolNames.js';
 // 群聊的派发/记账与 `@vssaros/dsh-loop` 共用同一份 work-item 判据（真源在 `@vssaros/dsh-workitem`）。
 import { bindWorkItems } from './workItemRef.js';
-import { renderDetailPage } from './detail.js';
 // ★ 2026-10-22（工作台重构）：名册 JSON 接口复用**同一份**面板数据构建（页面与工作台不会各算一遍 ✓）
 import { buildHomeData } from './home.js';
-import { renderGroupPage } from './groupPage.js';
 import { renderMemoryEvoPage } from './memoryEvoPage.js';
-/* 群聊附件（2026-10-26）：上传/读取独立成模块（见 groupFiles.js 头注释的安全边界）。
-   ⚠ MAX_FILE_BYTES 同时用于 readRawBody 的上限 —— 两边必须是同一个常量，别各写一份。 */
-import { MAX_FILE_BYTES, readGroupFile, saveGroupFile } from './groupFiles.js';
-import { addGroupMembers, bindGroupSession, createGroup, decideGroupJoin, deleteGroup, effectiveModeFor, ensureMemberSession, installGroupTracker, listGroups, markGroupRead, newGroupSessions, normalizeGroupMode, postGroupMessage, removeGroupMember, respondGroupInvite, setGroupAvatar, setGroupMemberPolicy, updateGroup, wakeOf } from './groups.js';
+// 给某个 agent 找活会话（IM 渠道派发用；★ 2026-11-03 从 groups.js 抽出，群聊下线后仅此一处消费）
+import { ensureAgentSession } from './agentSession.js';
 import { readLiveSessions, recentSessionPresetIds } from './live.js';
 import { markSeen, unreadSnapshot } from './seen.js';
 import { backupMemory, ensureMemoryRepo, clampMemoryChars, enableGit, gitGraphOf, gitLogOf, gitShowMemoryFile, gitStatusOf, installMemoryBackupWatcher, listBranches, listMemoryBackups, listMemoryFiles, listVersions, MEMORY_CHARS_MAX, readMemoryFile, readMemorySnapshot, restoreMemoryBackup, restoreMemoryFile, setVersion, snapshotGit, switchBranch, writeCoreMemory, memoryDirOf, memoryAutoCommitOnTurn, __memoryTurn } from './memory.js';
 // 从 AgentMemory 网关库拉一份 MEMORY.md **草稿**（只读；不落盘 —— 落盘仍走 write-memory 由人确认）
 import { importMemoryDraft, listAgentMemoryCandidates, listAgentMemoryExtras, syncMemoryToAgentMemory } from './agentmemoryImport.js';
+// 工作区记忆（2026-11-02）：记忆 = Bot × 工作区 两层；这里只用到注入、页面 API 两处
+import { addEntryForCwd, ensureWorkspaceMemory, claimWorkspaceMemory, findClaimableMemories, isWorkspaceScope, removeEntryForCwd, resolveWorkspace, scopeIdOfKey, setWorkspaceMemoryLimits, workspaceFromScopeId, workspaceMemoryView, workspaceSnapshotText, writeWorkspaceMemory } from './workspaceMemory.js';
+// 记忆偏好（2026-11-03）：「回合末自动提交」等开关，运行期可改、立刻生效
+import { readMemoryPrefs, setMemoryPrefs } from './memoryPrefs.js';
 import { ensureOutboxLoaded, outboxList, outboxRetry } from './outbox.js';
 /* IM 绑定（2026-10-27，P0）：每个 bot / 群可绑一个 IM 会话，双向流转。
    适配器端口与 `vssaros-channels/lib/core/ports.js` 同形 ⇒ 飞书适配器将来可直接搬。 */
@@ -93,7 +99,7 @@ import { encodeBody } from './gzip.js';
 import { botFromSoulText, importDsbBot } from './importDsb.js';
 import { exportAgent, importAgent, saveExport } from './pack.js';
 import { installRelay } from './relay.js';
-import { renderSideviewPage } from './sideview.js';
+
 // ★ 2026-10-19：改用 `scanAgentsFromConfig` —— 它会扫**两个**根（内置 + 自定义）并合并
 //   （同 id 时自定义优先）。此前只扫自定义根 ⇒ dsh 侧**列不出任何内置 agent** ✗。
 // ⚠ 2026-10-19：`agentsRootOf` / `scanAgents` 已随扫描逻辑搬进 `store.js`，但请求处理里仍在用它们
@@ -154,6 +160,9 @@ function scheduleLazyFill(state, config, total) {
 		})().catch((e) => {
 			console.error(`[vssaros-agents] lazy 补齐 preset 失败：${String(e?.message ?? e)}`);
 		}).finally(() => {
+			// ★ 2026-11-03：给 HTTP 层一个"补齐已结束"的判据 —— Bots 页签据此自动重拉一次，
+			//   否则它会一直显示启动早期那份"大量未注册"的快照（用户截图里 24 个未注册就是这么来的）。
+			state.lazyFillDone = true;
 			if (lazyPresetHooks.state === state) {
 				lazyPresetHooks.state = null;
 			}
@@ -180,8 +189,46 @@ async function ensureLazyPreset(presetId) {
 	await state.lazyFill.fillNow();
 }
 
+/** 已经探测过的 preset（每个只打一行，避免刷屏）。 */
+const probedPresets = new Set();
+
+/**
+ * 会话建好之后，用**该会话的 agent 作用域**查一次可见工具名（2026-11-03，`unknown tool "pwsh"` / `"read"` 诊断）。
+ *
+ * 为什么必须用作用域而不是全局：这两个工具的**顶层 profile 行被官方 dsh-web-app 硬编码禁用**
+ * （rc.2 `cordis.patch.yml:483`）⇒ 只能由 preset 行提供，工具注册在**preset 层**；
+ * 全局视图（`tools.view()` 不带 scope）根本看不到它们 ⇒ 只有这个作用域能回答"这个会话到底有没有工具"。
+ *
+ * 只读、只记日志：任何一步失败都静默（诊断不该影响建会话）。
+ */
+export function probeToolScope(toolsOf, presetId, created) {
+	try {
+		const key = String(presetId ?? '(none)');
+		if (probedPresets.has(key) || !toolsOf) {
+			return;
+		}
+		// create 的返回值形状随版本变：agent 可能挂在 result / result.session 上，也可能就是 agent 本身。
+		// ⚠ 不能无条件 fallback 到 `created`：空对象（或别的东西）会被当成 scope ⇒ 多打一行无意义的探测。
+		const agent = created?.agent ?? created?.session?.agent ?? (created?.session ? created : undefined);
+		if (!agent) {
+			return;
+		}
+		const tools = toolsOf();
+		const visible = tools?.view?.(agent)?.visible;
+		if (!visible || typeof visible.keys !== 'function') {
+			return;
+		}
+		probedPresets.add(key);
+		const names = [...visible.keys()];
+		const has = (n) => (names.includes(n) ? '在' : '缺');
+		console.log(`[vssaros-agents] 作用域探测 (preset=${key})：可见工具 ${names.length} 个`
+			+ ` ⇒ pwsh=${has('pwsh')} read=${has('read')} write=${has('write')} run_code=${has('run_code')}`
+			+ `（shell 类里还有：${names.filter((n) => /pwsh|bash|shell|exec/.test(n)).slice(0, 6).join(',') || '无'}）`);
+	} catch { /* 诊断永不抛 */ }
+}
+
 /** 给 sessionController 套一层：`create({ agentPreset })` 之前先确保那个 preset 已注册。 */
-function withLazyPresetGuard(sc) {
+function withLazyPresetGuard(sc, toolsOf) {
 	if (!sc || typeof sc.create !== 'function') {
 		return sc;
 	}
@@ -190,7 +237,9 @@ function withLazyPresetGuard(sc) {
 			if (prop === 'create') {
 				return async (options, ...rest) => {
 					await ensureLazyPreset(options?.agentPreset);
-					return target.create(options, ...rest);
+					const created = await target.create(options, ...rest);
+					probeToolScope(toolsOf, options?.agentPreset, created);
+					return created;
 				};
 			}
 			const value = Reflect.get(target, prop, target);
@@ -253,6 +302,8 @@ function applyPersona(ctx, config) {
 	ctx.inject(['sessionProjections'], child => child.effect(() => {
 		projections = child.sessionProjections;
 		child.sessionProjections.register(personaProjection());
+		// Bot 身份投影（同 key + 同 stateVersion 的多次 register = ref-count 共享 ✓）
+		child.sessionProjections.register(botIdentityProjection());
 		// ★★ 2026-10-29 探针（③ 的可行性）：**effect 真正执行的时刻**（harness 会给这行打时间戳）。
 		//   背景：apply() 本身只要 0~1ms，但两行 persona 之间恒定隔 ~400ms ⇒ 要分清
 		//   「我们的注册本身慢」还是「dsh 在两行 composition 之间等」。
@@ -348,11 +399,13 @@ function applyPersona(ctx, config) {
 				/* ★ 2026-10-27：以前只注入**内容**、不说文件在哪 ⇒ agent 不知道往哪写
 				   ⇒ 记忆永远空（用户报「记忆没有显示内容」）。现在把绝对路径与写法一并给出。
 				   ⚠ 只在真有记忆内容时追加（没有记忆就不打扰每个会话）。
-				   ⚠ 路径用 `memoryDirOf` 算 —— 内置 agent 与自定义 agent 的目录不同。 */
+				   ⚠ 路径用 `memoryDirOf` 算 —— 内置 agent 与自定义 agent 的目录不同。
+				   ★ 2026-11-02：写法从"直接编辑这个文件"改成**工具**：记忆在 `<数据根>` 下，
+				     不在 dsh 文件沙箱的写根（会话 cwd / tmp）里 ⇒ `workspace-write` 下直接编辑必被拒。 */
 				const memHint = (mem && config.agentId)
 					? ('\n\n## 记忆\n长期记忆文件：' + join(memoryDirOf(config, config.agentId), 'MEMORY.md')
 						+ '（当前 ' + String(mem.length) + ' 字符）\n'
-						+ '想把某件事记住时，直接编辑这个文件、追加一条 Markdown 列表项；不要新建子目录，也不要改其它文件。\n'
+						+ '想把某件事记住时，用 workspace_memory 工具（scope=bot 记你自己的经验与用户偏好；scope=workspace 记项目事实），不要直接编辑文件。\n'
 						+ '改动在**新会话**生效（当前会话已冻结，以保证 prompt 缓存命中）。')
 					: '';
 				return mem ? base + mem + memHint : base;
@@ -372,6 +425,74 @@ function applyPersona(ctx, config) {
 	const wanted = Array.isArray(config.tools) ? config.tools.filter(t => typeof t === 'string' && t.trim()) : [];
 	if (wanted.length) {
 		installAllowlist(ctx, config, wanted);
+	}
+	// ★ 2026-11-03：会话绑定 = ① 身份记录（这个会话属于哪个 bot）② `.agent.md` 的 `model:` 会话级选择
+	installSessionBinding(ctx, config);
+}
+
+/**
+ * 本 preset 的会话（新建 / 恢复都会触发 `agent/created`）：
+ *   ① 写 Bot 身份记录（plugin record，见 core/botIdentity.js / lib/botIdentityWriter.js；已写过不重复；
+ *      恢复的老会话会被**补写**一条 ⇒ 老会话也逐步有记录）；
+ *   ② 按 `.agent.md` 的 `model:` 选模型（见 lib/modelSelection.js 头注释的四条规则）。
+ *
+ * · 与 `installAllowlist` 同一挂法：preset 作用域订阅 `agent/created`，再核一次会话的 agentPreset 防误伤。
+ * · 路由按 agentId 现查（`agentModelRouteOf`）⇒ 改了 `model:` **不需要**重挂 preset，新会话即生效。
+ * · 模型：命中校验缓存时是**同步**提交（`applyModelSelection` 在第一个 await 之前完成）⇒ 调用方建完会话紧接着
+ *   steer 也赶得上第一步装配。
+ * · 身份记录：推到 `setImmediate` 再写 —— `agent/created` 可能在别的 append 发布过程中派发，
+ *   dsh 禁止重入 append（"session append cannot reenter"）。
+ */
+function installSessionBinding(ctx, config) {
+	const agentId = typeof config.agentId === 'string' ? config.agentId : '';
+	const presetId = typeof config.presetId === 'string' ? config.presetId : '';
+	if (!agentId) {
+		return;
+	}
+	const deps = { sc: undefined, llm: undefined, projections: undefined };
+	ctx.inject(['sessionController'], child => child.effect(() => {
+		deps.sc = child.sessionController;
+		return () => { deps.sc = undefined; };
+	}));
+	ctx.inject(['llm'], child => child.effect(() => {
+		deps.llm = child.llm;
+		return () => { deps.llm = undefined; };
+	}));
+	ctx.inject(['sessionProjections'], child => child.effect(() => {
+		deps.projections = child.sessionProjections;
+		return () => { deps.projections = undefined; };
+	}));
+	const seen = new WeakSet();
+	try {
+		ctx.on('agent/created', ({ agent }) => {
+			if (!agent?.session || seen.has(agent)) { return; }
+			if (presetId && deps.projections) {
+				let current;
+				try { current = deps.projections.stateOf(agent.session, 'agentPreset'); } catch { current = undefined; }
+				if (typeof current === 'string' && current && current !== presetId) { return; }
+			}
+			seen.add(agent);
+			if (presetId) {
+				setImmediate(() => {
+					void writeBotIdentity({ projections: deps.projections }, agent, { botId: agentId, presetId }).then((result) => {
+						if (!result.ok && result.reason !== 'already') {
+							console.warn(`[vssaros-agents] agent ${agentId} 会话 ${agent.session?.header?.id ?? '?'} 身份记录没写上（${result.reason}）⇒ 按 preset 推断`);
+						}
+					});
+				});
+			}
+			const route = agentModelRouteOf(agentId, 'main');
+			if (!route) { return; }
+			void applyModelSelection(deps, agent, route, { onlyIfBlank: true }).then((result) => {
+				if (result.ok) {
+					console.log(`[vssaros-agents] agent ${agentId} 新会话 ${agent.session?.header?.id ?? '?'} 模型 → ${result.selected.provider}/${result.selected.model}`);
+				} else if (result.reason !== 'not-blank' && result.reason !== 'subagent') {
+					console.warn(`[vssaros-agents] agent ${agentId} 的模型没选上（${result.reason}）⇒ 该会话跟随默认模型`);
+				}
+			});
+		});
+	} catch (error) {
+		console.warn(`[vssaros-agents] agent ${agentId}：订阅 agent/created 失败，model 不生效（${String(error?.message ?? error)}）`);
 	}
 }
 
@@ -553,47 +674,50 @@ async function syncPresets(state, presets, config) {
 	const provider = typeof config.defaultProvider === 'string' ? config.defaultProvider.trim() : '';
 	const errors = [...scan.errors];
 	const diagnostics = [];
-	// 一个 agent 可能对应**两个** preset：本体 + 委派版（`.agent.md` 写了 `model-assignment` 时，
-	// 见 core/agents.js 的注释：dsh 的 `session.create` 只吃 `agentPreset`，没法在创建时覆盖模型 ⇒
-	// 只能派生一个"同人格、不同 default-model"的 preset 给委派用）。
-	// `state.registered` 的 key 用 `agentId` / `agentId::assign`（不用 presetId，免得与"源文件消失"判据打架）。
-	const idsInScan = new Set(scan.agents.map((agent) => presetIdOf(agent.id)));
+	// ★ 2026-11-03：一个 agent **只对应一个** preset。原来写了 `model-assignment` 的 agent 还会派生一条
+	//   `<preset>-assign`（只差一行 default-model）——那一行在 dsh API 会话里没有消费方，从未生效，已移除。
+	//   模型改为会话级选择：这里刷新路由表，会话创建时由 `installModelApply` / 委派入口按它选（lib/modelSelection.js）。
+	//   `state.registered` 的 key = `agentId`（不用 presetId，免得与"源文件消失"判据打架）。
+	setAgentModelRoutes(scan.agents, provider);
+	void prevalidateRoutes({ sc: state.rawSessionController, llm: state.llm });
 
 	/**
 	 * 按扫描结果构造要注册的定义。
 	 * @param allowedAgentPresets `null` = 不挂 `tool-subagent`（第一阶段）；数组 = 挂上动态清单。
 	 */
-	const buildDesired = (allowedAgentPresets) => {
-		const out = [];
-		for (const agent of scan.agents) {
-			out.push({
-				key: agent.id,
-				agent,
-				...toPresetDefinition(agent, {
-					provider,
-					...(allowedAgentPresets ? { allowedAgentPresets } : {}),
-				}),
-			});
-			if (!agent.modelAssignment) {
-				continue;
+	const buildDesired = (allowedAgentPresets) => scan.agents.map((agent) => ({
+		key: agent.id,
+		agent,
+		...toPresetDefinition(agent, {
+			provider,
+			...(allowedAgentPresets ? { allowedAgentPresets } : {}),
+		}),
+	}));
+
+	// ★ 2026-11-03 诊断（只记录）：真机 `Error: unknown tool "pwsh"` / `"read"` 排查用。
+	//   这两个工具由 `@deepseek-ai/dsh-tool-pwsh` / `dsh-tool-fs` 注册，而**顶层 profile 行被官方
+	//   dsh-web-app patch 硬编码 `disabled: true`**（rc.2 `cordis.patch.yml:483`）⇒ 只能由 preset 提供。
+	//   我们的基座里这两行的 `disabled` 是 `{ __jsExpr: "process.platform !== 'win32'" }` 标记对象
+	//   （`core/presetBase.generated.js`），本应由 cordis loader 求值 ⇒ 把**注册出去的实际形态**打出来：
+	//   · 仍是对象 / 字符串 ⇒ 求值没发生（truthy ⇒ 工具被禁 ✗）
+	//   · false / 缺省 ⇒ 正常启用 ✓
+	{
+		const sample = scan.agents[0];
+		if (sample) {
+			try {
+				// ⚠ `toPresetDefinition` 返回的是 `{ definition, notes }`（见 `buildDesired` 的展开）——
+				//   直接取 `.plugins` 会拿到 undefined，误报"基座里没有这两行"（第一版就是这个假警报）。
+				const rows = (toPresetDefinition(sample, { provider })?.definition?.plugins ?? [])
+					.filter((row) => row && /^tool-(pwsh|fs)$/.test(String(row.id ?? '')));
+				const desc = rows.length
+					? rows.map((row) => `${row.id}.disabled=${row.disabled === undefined ? '(缺省=启用)' : JSON.stringify(row.disabled)}`).join('  ')
+					: '（基座里没有 tool-pwsh / tool-fs 行！）';
+				console.log(`[vssaros-agents] 诊断 shell 工具行（以 ${sample.id} 的 preset 为例）：${desc}`);
+			} catch (e) {
+				console.log('[vssaros-agents] 诊断 shell 工具行失败：' + String(e?.message ?? e));
 			}
-			const derivedId = assignmentPresetIdOf(agent.id);
-			if (idsInScan.has(derivedId)) {
-				// 只在最后一次（正式那一轮）记一次，免得第一阶段重复刷同一条错误
-				if (allowedAgentPresets) {
-					errors.push(`agent ${agent.id} 的 model-assignment 被忽略：派生 preset ${derivedId} 与另一个 agent 的 preset 撞名`);
-				}
-				continue;
-			}
-			out.push({
-				key: `${agent.id}::assign`,
-				agent,
-				// 派生 preset 刻意**不带** `allowedAgentPresets`（不再 fan-out，见 core/agents.js 注释）
-				...toPresetDefinition(agent, { provider, modelOverride: agent.modelAssignment, idSuffix: '-assign', nameSuffix: ' · 委派' }),
-			});
 		}
-		return out;
-	};
+	}
 
 	/**
 	 * @param allowedAgentPresets `null` = 不带清单（第一阶段）；数组 = 带清单
@@ -616,7 +740,7 @@ async function syncPresets(state, presets, config) {
 			if (only && !only.has(key)) {
 				continue;
 			}
-			// 指纹直接取定义本身（含派生 preset 的模型行 + 子代理清单）——比手写字段清单更不容易漏
+			// 指纹直接取定义本身（含子代理清单）——比手写字段清单更不容易漏
 			const fingerprint = JSON.stringify(definition);
 			const existing = state.registered.get(key);
 			if (existing && existing.fingerprint === fingerprint) {
@@ -703,7 +827,7 @@ async function syncPresets(state, presets, config) {
 		? pickLazyEagerKeys(wantedKeys, { delegatable: delegatablePresetIds, recent: recentPresets, max: LAZY_EAGER_MAX })
 		: undefined;
 	const gate = (keys) => (eagerKeys ? keys.filter((key) => eagerKeys.has(key)) : keys);
-	const isDelegatableKey = (key) => !key.endsWith('::assign') && delegatablePresetIds.has(presetIdOf(key));
+	const isDelegatableKey = (key) => delegatablePresetIds.has(presetIdOf(key));
 	const needFirstPass = missingKeys.some(isDelegatableKey);
 	if (needFirstPass) {
 		// ★ 2026-10-29：第一阶段**只注册会被清单引用的**（可委派的）。原来把全部缺失 key 都先注册一遍，
@@ -712,7 +836,7 @@ async function syncPresets(state, presets, config) {
 		await applyDesired(null, false, new Set(gate(missingKeys).filter(isDelegatableKey)), lazyMode ? 'phase1/lazy' : 'phase1');
 	}
 	const okPresetIds = [...state.registered.entries()]
-		.filter(([key]) => !key.endsWith('::assign') && shownIds.has(key))
+		.filter(([key]) => shownIds.has(key))
 		.map(([, entry]) => entry.presetId)
 		.sort();
 	// 第二阶段：带动态清单（已一致的 preset 指纹相同 ⇒ 直接跳过，不会重复注册）
@@ -729,7 +853,7 @@ async function syncPresets(state, presets, config) {
 		scheduleLazyFill(state, config, wantedKeys.length);
 	}
 	const seenKeys = new Set(wantedKeys);
-	// 源文件消失（或委派模型被删掉）的 preset：撤掉（只增不删会让花名册里留幽灵）
+	// 源文件消失的 preset：撤掉（只增不删会让花名册里留幽灵）
 	for (const [key, entry] of [...state.registered]) {
 		if (seenKeys.has(key)) {
 			continue;
@@ -740,7 +864,7 @@ async function syncPresets(state, presets, config) {
 			/* 已失效即目标 */
 		}
 		state.registered.delete(key);
-		diagnostics.push({ agentId: key.replace(/::assign$/, ''), presetId: entry.presetId, rows: 0, notes: ['源文件已消失 → 已注销该 preset'], changed: true });
+		diagnostics.push({ agentId: key, presetId: entry.presetId, rows: 0, notes: ['源文件已消失 → 已注销该 preset'], changed: true });
 	}
 	try {
 		const roster = await presets.list();
@@ -934,15 +1058,99 @@ async function switchPersona(state, config, body) {
 	};
 }
 
+/** 工作区记忆 section 的名字（全局层；dsh 对重名注册直接抛 ⇒ 只在顶层角色注册一次）。 */
+const WORKSPACE_MEMORY_SECTION_NAME = 'vssaros-workspace-memory';
+/** 排在部署级人设（含 Bot 记忆）之后、AgentMemory（人设 +100）之前。 */
+const WORKSPACE_MEMORY_ORDER_OFFSET = 50;
+
+/**
+ * 工作区记忆注入（2026-11-02，用户拍板「所有会话都注入；Bot 会话里排在 Bot 记忆之后」）。
+ *
+ * · 只在**顶层角色**注册（全局层）⇒ 普通会话与每个 Bot preset 的会话都能拿到；
+ *   persona / toolsOnly 两种挂载**不**注册（否则同一段记忆会进提示词两遍，见双 plane 的教训）。
+ * · 语义与 Bot 记忆一致：`session`（默认）= **会话内冻结**（前缀稳定 ⇒ prompt cache 命中），
+ *   `live` = 每次装配读最新（只按 mtime 读盘，稳态一次 stat）。
+ * · `interpolate: false`：记忆是自由文本，`{{…}}` 绝不能被当成模板变量（未注册变量会让装配抛错）。
+ * · 提供者**永不抛**：抛了 = 这个会话的装配失败 = 每一轮都起不来 ⇒ 出错只记一笔、返回空串。
+ */
+export const __workspaceMem = { served: 0, frozenSessions: 0, empty: 0, errors: 0, lastError: '', order: undefined };
+
+export function installWorkspaceMemorySection(ctx, config) {
+	const frozen = new WeakMap();
+	const textFor = (context) => {
+		try {
+			const session = context?.agent?.session;
+			const cwd = session?.header?.cwd;
+			if (typeof cwd !== 'string' || !cwd) {
+				return '';
+			}
+			const ws = resolveWorkspace(cwd);
+			if (!ws) {
+				return '';
+			}
+			const { text, limits } = workspaceSnapshotText(config, ws);
+			if (limits.mode === 'live' || !session || typeof session !== 'object') {
+				__workspaceMem.served += 1;
+				if (!text) { __workspaceMem.empty += 1; }
+				return text;
+			}
+			if (!frozen.has(session)) {
+				// ⚠ 空串也冻结：会话中途写进来的记忆**新会话**才生效（与 Bot 记忆同一口径），
+				//   否则同一会话里提示词前缀会在"有 / 没有"之间变化，缓存每次都失效。
+				frozen.set(session, text);
+				__workspaceMem.frozenSessions += 1;
+			}
+			__workspaceMem.served += 1;
+			const value = frozen.get(session);
+			if (!value) { __workspaceMem.empty += 1; }
+			return value;
+		} catch (error) {
+			__workspaceMem.errors += 1;
+			__workspaceMem.lastError = String(error?.message ?? error).slice(0, 200);
+			return '';
+		}
+	};
+	ctx.inject(['systemPrompt'], child => child.effect(() => {
+		let order = WORKSPACE_MEMORY_ORDER_OFFSET;
+		try {
+			const persona = child.systemPrompt.getSectionOrder(PERSONA_ORDER_NAME);
+			if (Number.isFinite(persona)) {
+				order = persona + WORKSPACE_MEMORY_ORDER_OFFSET;
+			}
+		} catch {
+			/* 中央 order 表不可用 ⇒ 用兜底值 */
+		}
+		__workspaceMem.order = order;
+		try {
+			const dispose = child.systemPrompt.section({
+				name: WORKSPACE_MEMORY_SECTION_NAME,
+				order,
+				interpolate: false,
+				text: textFor,
+			});
+			return () => {
+				__workspaceMem.order = undefined;
+				dispose();
+			};
+		} catch (error) {
+			// 重名（同一 ctx 被装配两次）只告警，不拖垮整个插件的激活
+			console.warn(`[vssaros-agents] 工作区记忆 section 未注册：${String(error?.message ?? error)}`);
+			return undefined;
+		}
+	}));
+}
+
 /** 角色 1：顶层（注册 preset + 页面）。 */
 function applyTopLevel(ctx, config) {
 	const state = createState();
 	// 审批模板闸谓词（2026-10-16，P2）：tools.js 的 pre-execute 先查它；读失败按"没有"（照常问 ✓）。
 	state.approvalTemplates = templateGate(config);
+	// 工作区记忆注入（全局层，所有会话；见 installWorkspaceMemorySection 头注释）
+	installWorkspaceMemorySection(ctx, config);
 
 	/* ── IM 绑定（2026-10-27，P0）──────────────────────────────────────────────
-	   装配顺序很重要：Hub 先建好挂到 state 上，`installGroupTracker` 里的回复回收
-	   才能在回合结束时把 IM 那条答复推回去（tracker 读 `state.bindingHub`）。
+	   装配顺序很重要：Hub 先建好挂到 state 上，回合结束的回复回收才能在结束那一刻
+	   把 IM 那条答复推回去（回收器读 `state.bindingHub`）。
 	   `loopback` 适配器是**进程内模拟器**：没有飞书凭据也能把整条链路跑通（演练/自测）。 */
 	const loopbackAdapter = createLoopbackAdapter();
 	state.bindingHub = createBindingHub({
@@ -951,7 +1159,6 @@ function applyTopLevel(ctx, config) {
 			try { (level === 'warn' ? console.warn : console.info)(`[vssaros-agents][im] ${msg}`); } catch { /* 忽略 */ }
 		},
 		scanAgents: (cfg) => scanAgentsFromConfig(cfg),
-		groupExists: async (cfg, id) => (await listGroups(cfg)).groups.some(g => String(g.id) === String(id)),
 		/* 幂等跨重启（imSeen.js）：飞书会重投事件，只靠内存去重会在 Host 重启后失效
 		   —— 表现是"同一条消息被回两遍"，很容易被当成重复 bot。 */
 		seen: { mark: (key) => markInboundSeen(config, key) },
@@ -965,7 +1172,7 @@ function applyTopLevel(ctx, config) {
 		deadLetters: { record: (entry) => recordDeadLetter(config, entry) },
 		dispatchAgent: (cfg, binding, msg) => dispatchImToAgent(cfg, state, binding, msg, {
 			scanAgents: (c) => scanAgentsFromConfig(c),
-			ensureSession: (c, st, agent) => ensureMemberSession(c, st, agent, undefined),
+			ensureSession: (c, st, agent) => ensureAgentSession(c, st, agent),
 			/* ★ 2026-10-29：**每条绑定固定一条会话**（否则每次派发都可能新建一条「未命名会话」，
 			   用户在 Bots 页/工作区里认不出哪条是飞书来的）。映射单独存盘，见 imSessionMap.js。 */
 			imSessions: {
@@ -980,16 +1187,6 @@ function applyTopLevel(ctx, config) {
 				await sc.rename({ sessionId, title });
 			},
 		}),
-		dispatchGroup: async (cfg, binding, msg) => {
-			/* 群里入站 ⇒ 走**既有** `postGroupMessage`：于是成员级唤醒策略、digest、
-			   `@` 提及、接力全部照常生效，IM 只是另一个入口（不是另一套逻辑）。 */
-			const who = String(msg?.userName || msg?.userId || 'IM 用户');
-			const r = await postGroupMessage(cfg, state, {
-				id: binding.targetId,
-				text: `[${binding.platform} · ${who}] ${String(msg?.content ?? '')}`,
-			});
-			return { groupId: binding.targetId, dispatched: r?.dispatched ?? [] };
-		},
 	});
 	state.bindingHub.register(loopbackAdapter);
 	state.loopbackAdapter = loopbackAdapter;
@@ -1117,6 +1314,8 @@ function applyTopLevel(ctx, config) {
 	ctx.inject(['sessionProjections'], child => child.effect(() => {
 		state.projections = child.sessionProjections;
 		child.sessionProjections.register(personaProjection());
+		// Bot 身份投影（带 wire ⇒ 页面 projectionValues["vssaros-bot"] 可读；判据见 core/botIdentity.js）
+		child.sessionProjections.register(botIdentityProjection());
 		return () => {
 			state.projections = undefined;
 		};
@@ -1137,9 +1336,23 @@ function applyTopLevel(ctx, config) {
 	// `dsh-api-session-controller` 的 `SessionCreateRequest`）；`agent_read_chat` 的历史检索入口
 	// （`sessionQuery.filterEvents` 的字面子句，`dsh-session-query` ✓）。
 	ctx.inject(['sessionController'], child => child.effect(() => {
-		state.sessionController = withLazyPresetGuard(child.sessionController);
+		state.sessionController = withLazyPresetGuard(child.sessionController, () => {
+			// 诊断用：apply 的 ctx 静态 inject 了 tools ⇒ 这里一定有；取不到就放弃探测
+			try { return ctx.tools; } catch { return undefined; }
+		});
+		// 会话级模型选择要用官方内部入口 `agents.selectForNextRequest`（见 lib/modelSelection.js）
+		state.rawSessionController = child.sessionController;
 		return () => {
 			state.sessionController = undefined;
+			state.rawSessionController = undefined;
+		};
+	}));
+	// 模型校验（与官方 selectModel 同口径：`llm.resolveCallConfig`）；到位后预热一次校验缓存
+	ctx.inject(['llm'], child => child.effect(() => {
+		state.llm = child.llm;
+		void prevalidateRoutes({ sc: state.rawSessionController, llm: state.llm });
+		return () => {
+			state.llm = undefined;
 		};
 	}));
 	ctx.inject(['sessionQuery'], child => child.effect(() => {
@@ -1163,8 +1376,7 @@ function applyTopLevel(ctx, config) {
 	ctx.effect(() => installRelay(ctx, config, state));
 	// 委派台账跟踪（2026-10-16，P1）：同一钩子、同一事件视野判据 ✓（lib/assignments.js 头注释）。
 	ctx.effect(() => installAssignmentTracker(ctx, config, state));
-	// 群聊回复回收（2026-10-16，二期）：同一钩子（lib/groups.js 头注释——承载面为何自托管写在那里 ✓）。
-	ctx.effect(() => installGroupTracker(ctx, config, state));
+
 	/* Host 退出前把 IM 幂等表落盘（写盘是去抖的，不 flush 会丢最后几条 ⇒ 重启后重复处理） */
 	ctx.effect(() => () => { void flushInboundSeen(config); });
 	// 记忆自动备份（2026-10-21）：回合结束 ⇒ 记忆变了就留一份档（DSB 的「一次对话结束」口径）。
@@ -1234,6 +1446,29 @@ function applyTopLevel(ctx, config) {
 		},
 		/** 本插件实际扫描的目录（调用方排查"文件放错地方"时很有用）。 */
 		agentsRoot: () => agentsRootOf(config),
+		/**
+		 * ★ 2026-11-03：给**其它插件**（记忆库的草稿提升）往工作区记忆追加一条。
+		 *
+		 * 为什么走服务而不是 HTTP：同一个 Host 进程内，直接复用 `workspaceEntryAction`
+		 * 的去重 / 提示注入扫描 / 长度上限 / 写锁，不会再出一份"第二个写入口"。
+		 * cwd 只用来**算身份**（往上找 .git + 哈希），写入永远落在 `<数据根>/workspace-memory/<key>/`。
+		 *
+		 * @param {string} cwd 会话工作目录（绝对路径）
+		 * @param {string} content 一句完整的事实
+		 * @returns {{ ok: boolean, duplicate?: boolean, message: string, workspace?: {key: string, name: string, root: string} }}
+		 */
+		addWorkspaceEntry: (cwd, content) => {
+			const r = addEntryForCwd(config, cwd, content);
+			// 写入后顺带 Git 化（软失败，不阻塞回执）；与 workspace_memory 工具同一口径
+			if (r.ok && !r.duplicate && r.workspace) { void ensureMemoryRepo(config, scopeIdOfKey(r.workspace.key), { deferTag: true }).catch(() => undefined); }
+			return r;
+		},
+		/**
+		 * 从工作区记忆里删一条（撤销提升用）。`match` 要能唯一定位那一条。
+		 * `notFound: true` 表示这条已经不在了（比如用户手改过 MEMORY.md）——调用方应当视为"已达成目标"。
+		 * @returns {{ ok: boolean, notFound?: boolean, message: string }}
+		 */
+		removeWorkspaceEntry: (cwd, match) => removeEntryForCwd(config, cwd, match),
 	});
 
 	ctx.inject(['webServer', 'connection'], page => page.effect(() => page.webServer.register({
@@ -1506,7 +1741,6 @@ function applyTopLevel(ctx, config) {
 				try {
 					const deps = {
 						scanAgents: (cfg) => scanAgentsFromConfig(cfg),
-						groupExists: async (cfg, id) => (await listGroups(cfg)).groups.some(g => String(g.id) === String(id)),
 						/* 平台是否已配好应用凭据（`bindings.assertTransport` 用）：飞书没填 webhook 时
 						   改为要求「设置 → 渠道」里已有 App ID/Secret（应用模式），否则 400 —— 
 						   这样既不会拦掉"填个 chat_id 就能用"的正路，也不会让人建出一条永远发不出去的绑定。 */
@@ -1676,92 +1910,6 @@ function applyTopLevel(ctx, config) {
 				}
 				return;
 			}
-			/* 群聊**附件**（2026-10-26 用户要求「完善群聊中附件功能」）：
-			     上传 POST /api/group-file?group=<gid>&name=<urlencoded>   body = 原始字节
-			     读取 GET  /api/group-file?id=<fileId>                     （图片可直接当 <img src>）
-			   为什么单独两条路由而不是塞进 /api/groups：附件是**二进制**，得走 readRawBody，
-			   和那边的 JSON 口径完全不同；混在一起会让两边都变复杂。 */
-			if (pathname === `${ROUTE_PREFIX}/api/group-file`) {
-				try {
-					if (req.method === 'POST') {
-						const gid = String(url.searchParams.get('group') || '');
-						const name = String(url.searchParams.get('name') || 'file');
-						const mime = String(req.headers['content-type'] || '');
-						const buf = await readRawBody(req, MAX_FILE_BYTES);
-						const file = await saveGroupFile(config, gid, name, buf, mime);
-						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-						res.end(JSON.stringify({ ok: true, file }));
-					} else if (req.method === 'GET') {
-						const { meta, buf } = await readGroupFile(config, url.searchParams.get('id'));
-						res.writeHead(200, {
-							'content-type': meta.mime || 'application/octet-stream',
-							'content-length': String(buf.length),
-							// inline：图片/PDF 直接在浏览器里看；filename* 让中文名不乱码
-							'content-disposition': `inline; filename*=UTF-8''${encodeURIComponent(meta.name || 'file')}`,
-							'cache-control': 'private, max-age=86400',
-						});
-						res.end(buf);
-					} else {
-						res.writeHead(405, { 'content-type': 'application/json; charset=utf-8' });
-						res.end(JSON.stringify({ error: '只支持 GET / POST' }));
-					}
-				} catch (e) {
-					const status = Number.isInteger(e?.httpStatus) ? e.httpStatus : 500;
-					res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
-					res.end(JSON.stringify({ error: String(e?.message ?? e) }));
-				}
-				return;
-			}
-			// 群聊 API（2026-10-16，二期）：GET 清单 / POST create·message·delete。
-			// 承载面为何是"自托管群对话区"而不是 dsh 群会话：lib/groups.js 头注释 ★ 留痕 ✓。
-			if (pathname === `${ROUTE_PREFIX}/api/groups`) {
-				try {
-					if (req.method === 'GET') {
-						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-						res.end(JSON.stringify(await listGroups(config)));
-					} else if (req.method === 'POST') {
-						const body = await readJsonBody(req);
-						const action = typeof body?.action === 'string' && body.action.trim() ? body.action.trim() : '';
-						const result = action === 'create' ? await createGroup(config, body)
-							: action === 'message' ? await postGroupMessage(config, state, body)
-								: action === 'delete' ? await deleteGroup(config, body)
-									// 2026-10-21（对齐 DSB 的频道设置）：改名 / 唤醒策略 / 邀请 / 移出
-									: action === 'rename' ? await updateGroup(config, body)
-										: action === 'mode' ? await updateGroup(config, body)
-											: action === 'invite' ? await addGroupMembers(config, body)
-												: action === 'remove' ? await removeGroupMember(config, body)
-								// 成员级唤醒策略（2026-10-26）：mode=inherit 表示回到继承群默认
-								: action === 'policy' ? await setGroupMemberPolicy(config, body)
-								// 群级会话（2026-10-27）：带 `sessionId` ⇒ 改绑到已有会话（切回旧会话）；
-								// 否则 ⇒ 新建（mode=group 只绑本群 / all 同步其它群）
-								: action === 'session' ? (body && body.sessionId !== undefined
-								  ? await bindGroupSession(config, state, body)
-								  : await newGroupSessions(config, state, body))
-								// 派发方式（2026-10-26）：steer（抢断）/ followup（排队等回合结束）
-								: action === 'dispatch' ? await updateGroup(config, body)
-													// 加入需确认（2026-10-21）：群级开关 + 待确认队列
-													: action === 'approval' ? await updateGroup(config, body)
-														: action === 'join-decide' ? await decideGroupJoin(config, body)
-															// Bot **自己**回应邀请（2026-10-31，P1）：人批准走 join-decide，这条是 Bot 自决
-															: action === 'invite-respond' ? await respondGroupInvite(config, body)
-															// 已读游标（2026-10-21）：页面把"当前群看完了"上传，unread 从这里重新算
-															: action === 'read' ? await markGroupRead(config, body)
-														// 群头像（2026-10-21）：页面先裁成 256×256、压到 96KB 以内再传
-														: action === 'avatar' ? await setGroupAvatar(config, body)
-													: (() => { throw Object.assign(new Error(`未知 action：${action || '(空)'}（支持 create/message/delete/rename/mode/invite/remove/join-decide/invite-respond/read）`), { httpStatus: 400 }); })();
-						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-						res.end(JSON.stringify(result));
-					} else {
-						res.writeHead(405, { 'content-type': 'text/plain; charset=utf-8', allow: 'GET, POST' });
-						res.end('GET or POST');
-					}
-				} catch (e) {
-					const status = Number.isInteger(e?.httpStatus) ? e.httpStatus : 400;
-					res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
-					res.end(JSON.stringify({ error: String(e?.message ?? e) }));
-				}
-				return;
-			}
 			// 记忆 API（2026-10-16，二期）：GET ?agent= 文件+Git 状态（&file= 读内容）/ POST enable-git·snapshot。
 			// 写口只有「启用 Git」与「提交快照」两个（git 子进程）；模型没有记忆 CRUD 工具 ✗（拍板点 ③⑤）。
 			/* AgentMemory 候选（2026-10-27，记忆页签的只读块）——
@@ -1837,6 +1985,111 @@ function applyTopLevel(ctx, config) {
 				return;
 			}
 
+			// 工作区记忆 API（2026-11-02）：聊天框「记忆 / 记忆设置」页签的「工作区」那一段。
+			//   GET  ?cwd=<会话 cwd>              ⇒ 身份（git 根 / key）+ 正文 + 条目 + 注入口径 + 运行时计数
+			//   POST {cwd, action:'init'}          ⇒ 建模板（已有就什么都不覆盖）
+			//   POST {cwd, action:'write', text}   ⇒ 人在页签里整篇编辑（超 20000 直接 400）
+			//   POST {cwd, action:'set-limits', chars?, mode?}
+			// ⚠ cwd 只用来**算身份**（往上 stat 找 .git + 哈希），写入一律落在 `<数据根>/workspace-memory/<key>/`
+			//   ⇒ 页面传什么路径都写不出这个目录（见 workspaceMemory.js 头注释的安全边界）。
+			if (pathname === `${ROUTE_PREFIX}/api/workspace-memory`) {
+				const replyJson = (status, body) => {
+					res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(JSON.stringify(body));
+				};
+				try {
+					const body = req.method === 'POST' ? await readJsonBody(req) : null;
+					const cwd = String((body?.cwd ?? url.searchParams.get('cwd')) ?? '').trim();
+					if (!cwd) {
+						throw Object.assign(new Error('需要 cwd（会话工作目录）'), { httpStatus: 400 });
+					}
+					const ws = resolveWorkspace(cwd);
+					if (!ws) {
+						throw Object.assign(new Error(`工作目录不可用：${cwd}（要是已存在的绝对路径）`), { httpStatus: 400 });
+					}
+					const scopeId = scopeIdOfKey(ws.key);
+					if (req.method === 'POST') {
+						const action = typeof body?.action === 'string' ? body.action.trim() : '';
+						if (action === 'init') {
+							ensureWorkspaceMemory(config, ws);
+						} else if (action === 'write') {
+							writeWorkspaceMemory(config, ws, body?.text);
+						} else if (action === 'set-limits') {
+							setWorkspaceMemoryLimits(config, ws, { chars: body?.chars, mode: body?.mode });
+						} else if (action === 'claim') {
+							// 认领同 remote 的旧记忆（搬家 / 改名 / 另一台机器 clone 到不同路径）：复制、不覆盖
+							claimWorkspaceMemory(config, ws, String(body?.from ?? ''));
+						} else {
+							throw Object.assign(new Error(`未知 action：${action || '(空)'}（支持 init / write / set-limits / claim）`), { httpStatus: 400 });
+						}
+						// 记忆目录 Git 化（2026-11-03，P2）：软失败（没装 git 也能用文件模式）。
+						// 放在写之后：初始提交会带上刚写的内容；已启用时 ensureMemoryRepo 幂等。
+						// deferTag：只等到"仓库可用"就响应，初始 v0 标签放后台补（实测标签一步 ≈ 3s，响应不依赖它）
+						await ensureMemoryRepo(config, scopeId, { deferTag: true }).catch(() => undefined);
+					} else if (req.method !== 'GET') {
+						replyJson(405, { error: '只接受 GET / POST' });
+						return;
+					}
+					const view = workspaceMemoryView(config, ws);
+					const injected = view.limits.chars > 0 ? Math.min(view.chars, view.limits.chars) : 0;
+					// Git 状态只在记忆已建立时查（几条 git 子进程）；失败按"未启用"如实说
+					const gitInfo = view.exists
+						? await gitStatusOf(config, scopeId).catch(() => ({ enabled: false }))
+						: { enabled: false };
+					replyJson(200, {
+						ok: true,
+						scopeId,
+						workspace: { key: ws.key, root: ws.root, cwd: ws.cwd, name: ws.name, isGit: ws.isGit, remote: ws.remote },
+						dir: view.dir,
+						exists: view.exists,
+						text: view.text,
+						chars: view.chars,
+						entries: view.entries.map(e => ({ text: e.text, raw: e.raw })),
+						limits: view.limits,
+						usage: { chars: view.chars, limit: view.limits.chars, injected },
+						// 注入侧的真实计数（进程内）：页面据此判断"section 到底有没有在跑"
+						runtime: { ...__workspaceMem },
+						// 演化图 / 回合末自动提交（P2）：与 Bot 记忆同口径，页面据此显示"已提交 N 次 · 未提交 M"
+						git: { enabled: gitInfo.enabled === true, branch: gitInfo.branch ?? '', commits: gitInfo.commits ?? 0, dirty: gitInfo.dirty ?? 0 },
+						autoCommit: { on: memoryAutoCommitOnTurn(config), turns: __memoryTurn.byAgent.get(scopeId)?.commits ?? 0 },
+						// 还没有记忆时，列出"同 remote、旧根已不存在"的旧记忆供认领（只列不自动认领）
+						claimable: view.exists ? [] : findClaimableMemories(config, ws),
+						tool: 'workspace_memory',
+					});
+				} catch (e) {
+					const status = Number.isInteger(e?.httpStatus) ? e.httpStatus : 500;
+					replyJson(status, { error: String(e?.message ?? e) });
+				}
+				return;
+			}
+
+			// 记忆偏好（2026-11-03）：目前只有「回合末自动提交」。GET 读、POST {autoCommit:boolean} 写，立刻生效。
+			//   Bot 记忆与工作区记忆共用这一个开关（见 memoryPrefs.js 头注释）。
+			if (pathname === `${ROUTE_PREFIX}/api/memory-prefs`) {
+				const replyPrefs = (status, body) => {
+					res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(JSON.stringify(body));
+				};
+				try {
+					if (req.method === 'POST') {
+						const body = await readJsonBody(req);
+						setMemoryPrefs(config, { autoCommit: body?.autoCommit });
+					} else if (req.method !== 'GET') {
+						replyPrefs(405, { error: '只接受 GET / POST' });
+						return;
+					}
+					replyPrefs(200, {
+						ok: true,
+						autoCommit: memoryAutoCommitOnTurn(config),
+						// 谁在起作用：偏好覆盖了 config 才是 'pref'（页面据此说明"这是你设的"还是"默认值"）
+						source: typeof readMemoryPrefs(config).autoCommit === 'boolean' ? 'pref' : (config?.memoryAutoCommit === false ? 'config' : 'default'),
+					});
+				} catch (e) {
+					replyPrefs(Number.isInteger(e?.httpStatus) ? e.httpStatus : 500, { error: String(e?.message ?? e) });
+				}
+				return;
+			}
+
 			if (pathname === `${ROUTE_PREFIX}/api/memory`) {
 				try {
 					if (req.method === 'GET') {
@@ -1846,6 +2099,13 @@ function applyTopLevel(ctx, config) {
 						const agentId = String(url.searchParams.get('agent') ?? '').trim();
 						if (!agentId) {
 							throw Object.assign(new Error('需要 agent 参数'), { httpStatus: 400 });
+						}
+						// ★ 2026-11-03（P2）工作区作用域 `ws.<key>`：演化页 / 聊天框共用这条读口。
+						//   身份只认 scope.json（页面传的 id 只能指向 `<数据根>/workspace-memory/<key>`），
+						//   没建立过 ⇒ 404 如实说，不替人凭空建目录（建立走 workspace-memory 的 init）。
+						const wsScope = isWorkspaceScope(agentId) ? workspaceFromScopeId(config, agentId) : null;
+						if (isWorkspaceScope(agentId) && !wsScope) {
+							throw Object.assign(new Error('这个工作区还没有记忆（先在聊天框「记忆」页签里新建）'), { httpStatus: 404 });
 						}
 						/* ★ 2026-10-27：首次读取即初始化（幂等）—— 老 bot 不用重建也能有内容。
 						   ⚠ 只读接口不该因为 git 不可用而 500 ⇒ ensureMemoryRepo 内部软失败。
@@ -1883,7 +2143,9 @@ function applyTopLevel(ctx, config) {
 						// 数据源 = 扫描出的 agent（`memory-chars`/`memory-mode`）+ 当前 MEMORY.md 实际字符数。
 						const scanned = await scanAgents(root, undefined).catch(() => ({ agents: [] }));
 						const meta = (scanned.agents ?? []).find(a => a.id === agentId);
-						const limitChars = clampMemoryChars(meta?.memoryChars);
+						// 工作区作用域的口径在 scope.json（不是 .agent.md）
+						const wsView = wsScope ? workspaceMemoryView(config, wsScope) : null;
+						const limitChars = wsView ? wsView.limits.chars : clampMemoryChars(meta?.memoryChars);
 						// 直接读一次（`listing` 只说明存在性；先 some 再读等于同一个文件碰两次）
 						const memoryText = await readMemoryFile(config, agentId, 'MEMORY.md').catch(() => null);
 						// `&versions=1`：版本（tag）清单 —— 只有演化面板要，普通页面请求不必多跑一条 git
@@ -1906,7 +2168,8 @@ function applyTopLevel(ctx, config) {
 						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
 						res.end(JSON.stringify({
 							agent: agentId,
-							...listing,
+							// 工作区作用域才有：演化页 / 聊天框据此显示"这是哪个工作区的记忆"
+							...(wsScope ? { workspace: { key: wsScope.key, root: wsScope.root, name: wsScope.name, isGit: wsScope.isGit, remote: wsScope.remote } } : {}),
 							git,
 							log: log.log,
 							...(versions ? { versions: versions.versions } : {}),
@@ -1922,7 +2185,7 @@ function applyTopLevel(ctx, config) {
 							diff,
 							limits: {
 								chars: limitChars,
-								mode: meta?.memoryMode ?? 'session',
+								mode: wsView ? wsView.limits.mode : (meta?.memoryMode ?? 'session'),
 								personaChars: meta?.persona?.length ?? 0,
 								max: MEMORY_CHARS_MAX,
 								// 装配时的**真实**口径（`applyPersona` 写进 __promptMem 的那份）：
@@ -1930,6 +2193,12 @@ function applyTopLevel(ctx, config) {
 								// 两个来源不同（这里是扫 .agent.md，那边是 preset config），对不上就说明
 								// preset 还没按新口径重建。`null` = 该 agent 的 preset 从未挂载过。
 								runtime: (() => {
+									// 工作区：注入侧是一个全局 section，计数在 __workspaceMem（不是 per-agent 的 __promptMem）
+									if (wsScope) {
+										return __workspaceMem.order === undefined
+											? null
+											: { mode: wsView.limits.mode, chars: limitChars, ready: true, served: __workspaceMem.served, frozenSessions: __workspaceMem.frozenSessions };
+									}
 									const rt = __promptMem.byAgent.get(agentId);
 									return rt
 										? { mode: rt.mode, chars: rt.chars, ready: rt.ready, served: rt.served, frozenSessions: rt.frozenSessions }
@@ -1946,6 +2215,14 @@ function applyTopLevel(ctx, config) {
 						if (!target) {
 							throw Object.assign(new Error('需要 agent'), { httpStatus: 400 });
 						}
+						// 工作区作用域（2026-11-03，P2）：写口按 scope.json 的身份走，不碰 .agent.md
+						const wsTarget = isWorkspaceScope(target) ? workspaceFromScopeId(config, target) : null;
+						if (isWorkspaceScope(target) && !wsTarget) {
+							throw Object.assign(new Error('这个工作区还没有记忆（先在聊天框「记忆」页签里新建）'), { httpStatus: 404 });
+						}
+						if (wsTarget && action === 'import-draft') {
+							throw Object.assign(new Error('工作区记忆不支持从记忆库拉草稿（草稿按 Bot 分区）'), { httpStatus: 400 });
+						}
 						// 2026-10-19（P1-2）：新增两个**人工**写口 ——
 						//   write-memory：整篇写 `MEMORY.md`（超 20000 字符直接 400，不静默截断）
 						//   set-limits  ：只改 `.agent.md` 的 `memory-chars`/`memory-mode`（正文逐字不动）
@@ -1956,8 +2233,10 @@ function applyTopLevel(ctx, config) {
 							await backupMemory(config, target, 'before-snapshot').catch(() => null);
 							return snapshotGit(config, target, body?.message);
 						})()
-								: action === 'write-memory' ? await writeCoreMemory(config, target, body?.text)
-									: action === 'set-limits' ? await setAgentMemoryLimits(config, target, { chars: body?.chars, mode: body?.mode })
+								: action === 'write-memory' ? await (wsTarget ? writeWorkspaceMemory(config, wsTarget, body?.text) : writeCoreMemory(config, target, body?.text))
+									: action === 'set-limits' ? await (wsTarget
+										? setWorkspaceMemoryLimits(config, wsTarget, { chars: body?.chars, mode: body?.mode })
+										: setAgentMemoryLimits(config, target, { chars: body?.chars, mode: body?.mode }))
 										// 回滚：只覆盖那一个文件（不是 git checkout），随后自动提交一条快照 ✓
 										: action === 'restore' ? await (async () => {
 							await backupMemory(config, target, 'before-restore').catch(() => null);
@@ -1976,7 +2255,7 @@ function applyTopLevel(ctx, config) {
 											// 人看过、删改过才走 write-memory，与"提交只能人按"同一条纪律 ✓
 											: action === 'import-draft' ? await importMemoryDraft(config, target, { limit: body?.limit })
 												: (() => { throw Object.assign(new Error(`未知 action：${action || '(空)'}（支持 enable-git/snapshot/write-memory/set-limits/restore/import-draft）`), { httpStatus: 400 }); })();
-						if (action === 'set-limits' && state.presets) {
+						if (action === 'set-limits' && state.presets && !wsTarget) {
 							// 改了记忆口径 ⇒ 该 agent 的 preset 定义变了（persona row 的 config），必须重新注册
 							await syncPresets(state, state.presets, config).catch(e => {
 								state.errors = [...state.errors, `改记忆上限后同步 preset 失败：${String(e?.message ?? e)}`];
@@ -2273,56 +2552,11 @@ function applyTopLevel(ctx, config) {
 				try {
 					const live = await readLiveSessions(config).catch(() => null);
 					const counts = live ? await unreadSnapshot(config, scan.agents, live.rows) : {};
-					// 群未读（2026-10-21）：侧栏 15s 轮询顺手带上，只给"有未读的群"（空的不占带宽）
-					const groupCounts = {};
-					const groupList = await listGroups(config).catch(() => ({ groups: [] }));
-					for (const g of groupList.groups ?? []) {
-						if (g.unread > 0) {
-							groupCounts[g.id] = g.unread;
-						}
-					}
 					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-					res.end(JSON.stringify({ counts, groups: groupCounts }));
+					res.end(JSON.stringify({ counts }));
 				} catch (e) {
 					res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
 					res.end(JSON.stringify({ error: String(e?.message ?? e) }));
-				}
-				return;
-			}
-			// ── 群聊独立页（2026-10-21，方案 A）─────────────────────────────────────
-			// 承载：编辑区页签（`DshPluginPageEditorInput`）。侧栏的「聊天」按钮 =
-			// `bridge.openModulePage('/x/agents/group?group=<id>')` ⇒ 宿主按前缀归属到 agents 容器，
-			// 单例键 = 容器 + 子路由 ⇒ **每个群一个 tab** ✓
-			// 数据面沿用 `api/groups`（读/写都在那儿）⇒ 本页只做视图，刷新后以服务端 transcript 为准。
-			//
-			// ⚠ 群 id / 「新建」走**路径段**而不是查询串：桥的 `openModulePage` 只放
-			//   `[A-Za-z0-9._~/-]`（查询串被明确拒绝，见 dshPageBridgeProtocol 的实现）
-			//   ⇒ `?group=` 会被协议直接丢掉。路径段同时让 `DshPluginPageEditorInput`
-			//   的"容器 + 子路由"单例键天然做到**一群一 tab** ✓
-			//   `/x/agents/group`（默认选第一个）/ `/x/agents/group/<groupId>` / `/x/agents/group/new`
-			const groupM = new RegExp(`^${ROUTE_PREFIX}/group(?:/([A-Za-z0-9._-]+))?/?$`).exec(pathname);
-			if (groupM) {
-				try {
-					const seg = groupM[1] ?? '';
-					const scan = await scanAgentsFromConfig(config);
-					const groups = await listGroups(config).catch(() => ({ groups: [], keep: 0 }));
-					const html = renderGroupPage({
-						groups,
-						// 成员候选：页面可见的 agent（隐藏的「助理」不该被拉进群聊）
-						agents: (scan.agents ?? []).filter(a => isShownAgent(a)),
-						activeId: seg === 'new' ? '' : seg,
-						openNew: seg === 'new',
-						keep: groups.keep,
-					});
-					const encoded = encodeBody(req, html);
-					res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', ...encoded.headers });
-					res.end(encoded.body);
-				} catch (e) {
-					const message = String(e?.message ?? e);
-					if (!res.headersSent) {
-						res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
-					}
-					res.end(message);
 				}
 				return;
 			}
@@ -2336,7 +2570,13 @@ function applyTopLevel(ctx, config) {
 					const agentId = memM[1];
 					const scan = await scanAgentsFromConfig(config).catch(() => ({ agents: [] }));
 					const agent = (scan.agents ?? []).find(a => a.id === agentId);
-					const html = renderMemoryEvoPage({ agentId, agentName: agent?.name, missing: !agent });
+					// ★ 2026-11-03（P2）工作区作用域 `ws.<key>`：同一张演化页，标题换成工作区名
+					const wsScope = isWorkspaceScope(agentId) ? workspaceFromScopeId(config, agentId) : null;
+					const html = renderMemoryEvoPage({
+						agentId,
+						agentName: wsScope ? `工作区 · ${wsScope.name}` : agent?.name,
+						missing: isWorkspaceScope(agentId) ? !wsScope : !agent,
+					});
 					const encoded = encodeBody(req, html);
 					res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', ...encoded.headers });
 					res.end(encoded.body);
@@ -2417,33 +2657,8 @@ function applyTopLevel(ctx, config) {
 					}));
 					return;
 				}
-				/* ★★ 2026-10-26（用户要求「让 Bots 页签承载 React 工作台」；插件侧落地）：
-				   Bots 页签在 IDE 里承载的是**本插件的主页路由** `/x/agents/`（SSR 页）。
-				   改 IDE 侧切 `surface=workbench` 需重编译宿主 + 管理员安装（安装目录不可写，实测 EPERM）。
-				   ⇒ 这里在**插件侧**做到同样效果：
-				     · 主页默认返回一个同源的**承载页**，iframe 指向 dsh 客户端并带深链 `?wb=vssaros/agents`
-				       （同源 ⇒ 共用 cookie 认证，不需要传 token）
-				     · `?legacy=1` 回退旧 SSR 页（出问题时有退路，不把人锁死）
-				     · `?surface=sideview` / 所有 `/api/*` 完全不受影响
-				   ⚠ 只在 **GET 页面请求**上生效；POST/PUT 与 API 一律走原逻辑。 */
-				{
-					const isPageGet = req.method === 'GET'
-						&& !url.pathname.includes('/api/')
-						&& url.searchParams.get('surface') !== 'sideview'
-						&& url.searchParams.get('legacy') !== '1'
-						&& !url.searchParams.has('json');
-					if (isPageGet) {
-						const hostHtml = renderWorkbenchHostPage({ module: 'agents' });
-						const encodedHost = encodeBody(req, hostHtml);
-						res.writeHead(200, {
-							'content-type': 'text/html; charset=utf-8',
-							'cache-control': 'no-store',
-							...encodedHost.headers,
-						});
-						res.end(encodedHost.body);
-						return;
-					}
-				}
+				// ★ 2026-11-03：Bots 工作台整体下线（用户要求）⇒ 不再有承载页 / SSR 页；
+				// 本路由只剩 `/api/*`（名册 / home / 会话 / 记忆 / 渠道 …）。页面入口一律在聊天框侧栏「Bots」页签。
 				// 实况 + 用量（P1/P5）：projcache 读不到就降级为"没有这两块"（页面主体不受影响 ✓）
 				const live = await readLiveSessions(config).catch(() => null);
 				const liveRows = live ? liveForAgents(scan.agents, aggregateByPreset(live.rows)).rows : [];
@@ -2457,7 +2672,6 @@ function applyTopLevel(ctx, config) {
 				//   （各取一遍 ⇒ 迟早出现"页面说有 3 条委派、工作台说 2 条"这种分叉 ✗）
 				const assignmentsData = await listAssignments(config);
 				const templatesData = await listApprovalTemplates(config).catch(() => ({ tools: [], templates: [] }));
-				const groupsData = await listGroups(config).catch(() => ({ groups: [], keep: 0 }));
 				const outboxData = await outboxList(config).catch(() => ({ entries: [], keep: 0 }));
 				const unreadData = live ? await unreadSnapshot(config, scan.agents, live.rows) : {};
 				// 新建向导（2026-10-16，方案 A）：模型候选 = 真实会话里跑过的 provider/model ✓；
@@ -2477,6 +2691,9 @@ function applyTopLevel(ctx, config) {
 						root,
 						summary: shownSummary,
 						roster: state.roster,
+						// ★ 2026-11-03：lazy 补齐还没结束（preset 正在陆续注册）⇒ 前端据此自动重拉，
+						//   否则 Bots 页签会一直显示启动早期那份"大量未注册"的快照。
+						presetsPending: !!state.lazyFill && state.lazyFillDone !== true,
 						diagnostics: state.diagnostics,
 						errors: [...scan.errors, ...state.errors],
 						missing: scan.missing ?? '',
@@ -2500,7 +2717,7 @@ function applyTopLevel(ctx, config) {
 						live: live ? { dir: live.dir, sessions: live.rows.length, truncated: live.truncated === true, errors: live.errors, ...(live.missing ? { missing: live.missing } : {}) } : null,
 						usage,
 						unread: unreadData,
-						home: buildHomeData({ agents: shownAgents, sessionRows: live?.rows ?? [], assignments: assignmentsData, groups: groupsData }),
+						home: buildHomeData({ agents: shownAgents, sessionRows: live?.rows ?? [], assignments: assignmentsData }),
 						/* 2026-10-26 用户要求「模型改成下拉框」：
 						   候选来源与 `GET /api/agents` 同一份（`modelCandidatesOf` 只收**合法**的
 						   `provider/model` 引用 ⇒ `claude-sonnet-4-20250514` 这种裸名进不来 ✓）。
@@ -2510,37 +2727,10 @@ function applyTopLevel(ctx, config) {
 					}));
 					return;
 				}
-				const surface = url.searchParams.get('surface') === 'sideview' ? 'sideview' : 'editor';
-				const render = surface === 'sideview' ? renderSideviewPage : renderDetailPage;
-				// 渲染先于 writeHead：渲染抛错还能干净回 500（教训：顺序反了会切断 socket）
-				const html = render({
-					agents: shownAgents,
-					summary: shownSummary,
-					root,
-					missing: scan.missing,
-					diagnostics: state.diagnostics,
-					roster: state.roster,
-					errors: [...scan.errors, ...state.errors],
-					liveRows,
-					// Bot 主页（方案 A 第 2 步）：「会话」面板要逐条会话（标题/最近活跃/回合），不是聚合值 ✓
-					sessionRows: live?.rows ?? [],
-					// 未读角标（方案 A 收尾）：侧栏首屏就要带上（轮询是补新活动，不是补首屏 ✗）
-					unread: unreadData,
-					usage,
-					assignments: assignmentsData,
-					// 授权页签的模板清单（读失败按空 ⇒ 页面照出，模板区显示空 ✓）
-					templates: templatesData,
-					// 群聊页签（读失败按空 ⇒ 同上口径 ✓）
-					groups: groupsData,
-					// 授权页签的 outbox 队列（同口径 ✓）
-					outbox: outboxData,
-					create: createData,
-					});
-				// 压缩（2026-10-19）：页面 CSS/JS 全内联，实测 144KB → gzip 27KB（18%）。
-				// 只改传输编码、不动页面结构；不支持 gzip 的客户端拿到原文（encodeBody 里判）。
-				const encoded = encodeBody(req, html);
-				res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', ...encoded.headers });
-				res.end(encoded.body);
+				// ★ 2026-11-03：Bots 工作台（SSR 双表面）已下线 ⇒ /x/agents/ 下除 /api/* 与记忆演化页之外，
+				// 不再有 HTML 页面。bots 只在聊天框侧栏「Bots」页签里用。
+				res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+				res.end('Not Found');
 			} catch (e) {
 				const message = String(e?.message ?? e);
 				if (res.headersSent) {
@@ -2610,7 +2800,10 @@ function applyToolsOnly(ctx, config) {
 		};
 	}));
 	ctx.inject(['sessionController'], child => child.effect(() => {
-		state.sessionController = withLazyPresetGuard(child.sessionController);
+		state.sessionController = withLazyPresetGuard(child.sessionController, () => {
+			// 诊断用：apply 的 ctx 静态 inject 了 tools ⇒ 这里一定有；取不到就放弃探测
+			try { return ctx.tools; } catch { return undefined; }
+		});
 		return () => {
 			state.sessionController = undefined;
 		};
@@ -2784,57 +2977,3 @@ export function apply(ctx, config = {}) {
 	}
 }
 
-/**
- * 工作台承载页（2026-10-26）：让 IDE 的 Bots 页签（承载本插件主页路由 `/x/agents/`）
- * **直接显示 React 工作台**，不必改 IDE 侧（那需要重编译宿主 + 管理员安装，实测安装目录不可写）。
- *
- * 做法：同源 iframe 指向 dsh 客户端根，带深链 `?wb=<module>`（由 `@vssaros/dsh-workbenches` 打开对应工作台）。
- * 同源 ⇒ 复用同一份 cookie 认证，**不传 token**（传了等于把凭据放进 URL）。
- *
- * ⚠ 三条退路，避免把人锁死：
- *   · `?legacy=1` ⇒ 直接走旧 SSR 页（本函数不参与）
- *   · 页面左下角常驻「旧版页面」链接
- *   · iframe 加载失败 → 显示提示 + 同一个旧版链接（不白屏）
- */
-function renderWorkbenchHostPage({ module: mod } = {}) {
-	const m = String(mod || 'agents');
-	const wb = `vssaros/${m}`;
-	const legacy = `/x/${m}/?legacy=1`;
-	const css = 'html,body{margin:0;height:100%;background:transparent;overflow:hidden}'
-		+ '#wb{position:absolute;inset:0;border:0;width:100%;height:100%;display:block}'
-		+ '#fb{position:absolute;left:10px;bottom:10px;z-index:5;font:12px/1.5 system-ui;'
-		+ 'color:rgba(160,160,160,.9);background:rgba(0,0,0,.42);padding:2px 8px;border-radius:6px;'
-		+ 'text-decoration:none;transition:opacity .15s}'
-		+ '#fb:hover{color:#eee;background:rgba(0,0,0,.68)}'
-		+ '#err{position:absolute;inset:0;display:none;place-items:center;text-align:center;padding:24px;'
-		+ 'font:13px/1.8 system-ui;color:#c9c9c9}';
-	return '<!doctype html><html lang="zh"><head><meta charset="utf-8">'
-		+ '<meta name="viewport" content="width=device-width,initial-scale=1">'
-		+ '<title>Bots</title><style>' + css + '</style>'
-		/* ★ 深链传递（2026-10-26）：**不能**用 `?wb=` —— Host 会把 `/?token=…` 302 到 `/`，
-		   query 在任何脚本执行前就丢了（实测 `location.href` 在首个脚本里已经是 `/`）。
-		   ⇒ 用同源 `localStorage` 传：iframe 与本页同源，重定向也带不走它；
-		     由 `@vssaros/dsh-workbenches` 读取后**立刻删掉**（一次性，不会影响下次正常打开）。 */
-		+ '<script>try{localStorage.setItem("vssaros.wb.pending","' + wb + '");}catch(e){}</script>'
-		+ '</head><body>'
-		+ '<iframe id="wb" src="/?wb=' + wb + '" title="Bots 工作台"></iframe>'
-		+ '<a id="fb" href="' + legacy + '" title="切回旧的 SSR 页面">旧版页面</a>'
-		+ '<div id="err">React 工作台没加载出来（工作台插件可能没启用）。<br>'
-		+ '<a href="' + legacy + '" style="color:#7ab8ff">改用旧版页面</a></div>'
-		/* 隐藏 dsh 自己的左侧栏（2026-10-26）：
-		   正解是 IDE 侧开 `surface=workbench`，由 preload 注入 `CHAT_ONLY_CSS`；我们是 iframe 绕行，
-		   拿不到 preload ⇒ 但**同源**可以直接往 iframe 文档里注入同一段 CSS，视觉效果等价。
-		   口径照抄 `preload-dshView.ts:54`（两边必须一致，否则"工作台账"会长得不一样）。 */
-		+ '<script>var f=document.getElementById("wb");'
-		+ 'var WB_CSS="[data-slot=\\"sidebar\\"]{display:none !important}"'
-		+ '+"div:has(> [data-shell-overlay]){grid-template-columns:0 minmax(0,1fr) auto !important}";'
-		+ 'function wbInject(){try{var d=f.contentDocument;if(!d||!d.head)return false;'
-		+ 'if(d.getElementById("wb-hide-sidebar"))return true;'
-		+ 'var st=d.createElement("style");st.id="wb-hide-sidebar";st.textContent=WB_CSS;d.head.appendChild(st);'
-		+ 'return true;}catch(e){return false;}}'
-		/* 客户端是异步 boot、iframe 内部还会有路由切换 ⇒ 轮询注入（幂等：有 id 就不重复插） */
-		+ 'var wbTries=0;var wbTimer=setInterval(function(){wbInject();if(++wbTries>=300)clearInterval(wbTimer);},100);'
-		+ 'f.addEventListener("load",function(){wbInject();});'
-		+ 'f.addEventListener("error",function(){document.getElementById("err").style.display="grid";});'
-		+ '<\/script></body></html>';
-}

@@ -416,7 +416,6 @@ const WB_ICONS = {
 	'/x/dashboard/': 'home',
 	'/x/kanban/': 'kanban',
 	'/x/kb/': 'book',
-	'/x/memory/': 'pulse',
 	'/x/codebase/': 'code',
 	'/x/media/': 'play',
 	'/x/imagegen/': 'image',

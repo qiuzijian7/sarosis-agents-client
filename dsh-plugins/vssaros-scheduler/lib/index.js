@@ -27,6 +27,7 @@ import { registerScheduleTools } from './tools.js';
 import { escapeHtml, renderShell } from './pageShell.js';
 import { bindFoundation } from './foundationRef.js';
 import { migrateLegacySchedules } from './migrate.js';
+import { bindingOf } from './sessionBinding.js';
 
 export const name = 'vssaros-scheduler';
 /**
@@ -163,7 +164,12 @@ document.querySelectorAll('[data-delete]').forEach(btn => btn.addEventListener('
 
 // ★ 2026-10-31：apply 开始接收 `config`（此前一直丢着没接）—— 编辑弹窗的企微推送需要
 //   `config.notifyWebhook`；不接的话引用就是 ReferenceError（0.5.6 首次真机就炸过）。
+// ★ 2026-11-03「根治」：`config` 是 apply 的参数，而模块级的 listSchedules / createSchedule
+//   也要用同一个数据根做会话归属判定 ⇒ 存一份只读引用（不复制，Foundation 注入后仍指向同一对象）。
+let hostConfig = {};
+
 export function apply(ctx, config = {}) {
+	hostConfig = config;
 	// ══ 引擎状态：**必须在任何调用之前声明完毕** ════════════════════════════════
 	// ★ 2026-10-31 真机事故（根因）：`ctx.inject` 的回调在服务**已就绪**时会**同步**执行。
 	//   原先把 `let engineInstalled` 与 `function installScheduleEngine` 写在这个 inject 调用
@@ -173,6 +179,118 @@ export function apply(ctx, config = {}) {
 	//   `function` 声明会提升，但 `let` 不会 ⇒ 声明一律提到 apply 顶部。
 	// `engine` 是**模块级**（见上方声明）—— 这里只留幂等开关。
 	let engineInstalled = false;
+	// ══ 到点投递的状态（★ 2026-11-03）══════════════════════════════════════════════
+	// ⚠ 这三个声明**必须**在任何 `ctx.inject` 之前：回调在服务已就绪时是**同步**执行的，
+	//   写到 inject 之后就命中 TDZ（0.5.6 那次 `engineInstalled` 事故同源）。
+	let runsSvc = null;
+	let deliveryOff = null;
+	let logFn = (...args) => console.log('[vssaros-scheduler]', ...args);
+
+	/**
+	 * 把「到点」接到 bridge 的 `vssarosRuns.run()` —— 与 `vssaros-loop` **同一条原语**。
+	 *
+	 * ★★ 为什么必须有它（2026-11-03 审计）：在此之前 `engine.onFire` **全仓没有任何消费者**，
+	 *   任务到点只做「写一条投递历史 + emit」，prompt 从来没被投给任何会话。
+	 *   表现是「任务建好了、历史里有记录、但会话里什么都没发生」——最难查的那种半成品。
+	 *
+	 * 取舍：
+	 *   · 只投 `kind=prompt`（loop/action 型由各自通道负责，这里不抢）；
+	 *   · 没绑会话 ⇒ 记日志跳过（不假装投递，也不猜一个会话）；
+	 *   · 后台回合没人审批 ⇒ `approval.allow` 只放 `config.allowTools` 白名单（默认全拒，与 loop 一致）。
+	 */
+	function attachDelivery() {
+		if (deliveryOff || !engine || !runsSvc || typeof runsSvc.run !== 'function') { return; }
+		const allow = Array.isArray(config?.allowTools) ? config.allowTools.map(String).filter(Boolean) : [];
+		// 捕获当前引擎实例：回调里只用 `svc`，避免"引擎被重建后写到新实例"这种幽灵问题。
+		const svc = engine;
+		deliveryOff = svc.onFire((payload) => {
+			const task = payload?.task;
+			if (!task) { return; }
+			if (task.kind !== 'prompt') {
+				logFn(`任务 ${task.id} 是 ${task.kind} 型 ⇒ 投递由对应通道负责（loop/action），此处跳过`);
+				return;
+			}
+			const sessionId = String(task.sessionId ?? '').trim();
+			// ★★ 2026-11-03「根治」：发起后台回合**之前**先校验会话归属。
+			//   旧行为：直接 runs.run ⇒ bridge 抛一串 session id ⇒ 用户只看到被截断的「未投递」，无从下手。
+			//   现在：未绑定 / 跨环境 / 会话被删 ⇒ 当场写一条可行动的历史，**不再发起注定失败的回合**。
+			const binding = bindingOf(task, hostConfig);
+			if (binding.state !== 'ok') {
+				const message = binding.state === 'unbound'
+					? '未绑定会话（不投递）'
+					: `会话归属校验未通过：${binding.message}`;
+				svc.markDelivery?.(task.id, payload.atMs, { ok: false, error: message });
+				logFn(`任务 ${task.id} 跳过投递：${message}`);
+				return;
+			}
+			const prompt = [`【定时任务】${task.title}`, String(task.prompt ?? '')].join('\n').trim();
+			// 先标「投递中」：bridge 的回合可能跑很久，期间运行记录要能显示"已发起、还没回来"。
+			svc.markDelivery?.(task.id, payload.atMs, { pending: true });
+			const runOnce = (cwd) => runsSvc.run({
+				sessionId,
+				// ⚠ bridge 的 `runs.run` 要求 cwd（真机报错 `session.run: cwd required`）⇒ 必须给。
+				cwd,
+				prompt,
+				timeoutMs: Number(config?.itemTimeoutMs) > 0 ? Number(config.itemTimeoutMs) : 30 * 60_000,
+				approval: { allow },
+			});
+			// ★★ 2026-11-03 真因（17:15 那条 #8 的完整错误）：
+			//   `session "X" belongs to "G:\SarosWorkspace\sarosis-agents-client", not "C:\Users\qiuzijian"`
+			//   —— 会话**存在**，是 `cwd` 给错了：process.cwd() 是 Host 进程的工作目录（用户主目录），
+			//   而会话属于**打开它时的工作区**；bridge 按 cwd 归属校验 ⇒ 直接拒绝。
+			//   修法：先用任务缓存的 sessionCwd；不符就从报错解析出真实工作区**重试一次**，
+			//   成功后写回任务（以后不再白失败一次）。
+			const guessCwd = String(task.sessionCwd ?? '').trim()
+				|| (typeof config?.cwd === 'string' && config.cwd.trim() ? config.cwd.trim() : '')
+				|| process.cwd();
+			Promise.resolve()
+				.then(() => runOnce(guessCwd))
+				.catch((error) => {
+					const hint = /belongs to\s+"([^"]+)"/i.exec(String(error?.message ?? error));
+					const realCwd = hint?.[1]?.trim();
+					if (!realCwd || realCwd === guessCwd) { throw error; }
+					logFn(`任务 ${task.id} 的 cwd=${guessCwd} 与会话工作区不符 ⇒ 用 ${realCwd} 重试`);
+					return runOnce(realCwd).then((result) => {
+						// 缓存正确 cwd（update 不带 sessionId ⇒ 不会重盖会话归属）。
+						try { svc.update?.(task.id, { sessionCwd: realCwd }); } catch { /* 缓存失败不影响本次投递 */ }
+						return result;
+					});
+				})
+				.then((result) => {
+					svc.markDelivery?.(task.id, payload.atMs, { ok: true });
+					logFn(`任务 ${task.id} 已投递到会话 ${sessionId}（stop=${result?.stopReason ?? '—'}）`);
+				})
+				.catch((error) => {
+					const raw = String(error?.message ?? error);
+					// 2026-11-03：bridge 的会话类错误分两种，都翻译成可行动的一句话，原文保留在括号里。
+					//   ① 会话真的找不到；② cwd 与会话工作区不符（上面已按真实工作区重试过一次）。
+					//   ⚠ 别再误判成"跨环境/会话不存在" —— 17:15 那条的完整错误是
+					//     `session "X" belongs to "G:\…", not "C:\Users\…"`，会话其实好好地在盘上。
+					const sessionGone = /session/i.test(raw)
+						&& /not found|不存在|未找到|unknown|invalid|cannot|无法|打不开|does not exist/i.test(raw);
+					const cwdMismatch = /belongs to\s+"[^"]+"/i.test(raw);
+					const message = sessionGone
+						? `会话已失效（当前 Host 找不到 ${sessionId}）⇒ 请打开这条任务、点「用当前会话」重新绑定并保存。原错误：${raw}`
+						: (cwdMismatch
+							? `cwd 与会话工作区不符，自动重试仍失败 ⇒ 请把任务重新绑定到当前会话，或检查该工作区是否可访问。原错误：${raw}`
+							: raw);
+					svc.markDelivery?.(task.id, payload.atMs, { ok: false, error: message });
+					logFn(`任务 ${task.id} 投递失败：${message}`);
+				});
+		});
+		logFn('[scheduler] 到点投递已接线（vssarosRuns ⇒ 独立后台回合）');
+	}
+
+	// runs 服务（bridge）；没装 ⇒ 到点只记历史（attachDelivery 里会跳过，不报错）。
+	ctx.inject(['vssarosRuns'], (scope) => {
+		try { runsSvc = scope.vssarosRuns ?? null; } catch { runsSvc = null; }
+		attachDelivery();
+		return () => {
+			runsSvc = null;
+			try { deliveryOff?.(); } catch { /* 已释放 */ }
+			deliveryOff = null;
+		};
+	});
 
 	/**
 	 * ★ 2026-10-31：自建调度引擎，**占用 `schedule` 服务键**。
@@ -239,7 +357,10 @@ export function apply(ctx, config = {}) {
 		}));
 		// 模型侧工具（schedule_create / list / update / delete / history）—— 官方同名工具的接管。
 		registerScheduleTools(ctx, { getEngine: () => engine });
-		log('自建调度引擎已就绪：占用 schedule 服务键，配 5 个工具');
+		logFn = log;
+		// ★ 2026-11-03：引擎一建好就把「到点 ⇒ 真的投递」接上（runs 可能还没就绪 ⇒ attachDelivery 幂等，晚到再补）。
+		attachDelivery();
+		log('自建调度引擎已就绪：占用 schedule 服务键，配 5 个工具，到点投递已接线');
 	}
 
 	// 委托层绑定（foundation 服务；页面壳的真源）。可选注入：缺了页面如实报错而不是 pending。
@@ -380,7 +501,14 @@ async function listSchedules(ctx) {
 		return { ok: true, available: false, entries: [], error: '调度引擎未就绪（foundation 未注入，或组合里已有别的 schedule 服务）' };
 	}
 	try {
-		return { ok: true, available: true, entries: engine.catalog({ limit: 200 }).map(rowOf) };
+		// ★ 2026-11-03「根治」：把会话归属状态一并带给工作台（卡片徽标 / 编辑弹窗红字用）。
+		return {
+			ok: true, available: true,
+			entries: engine.catalog({ limit: 200 }).map((t) => {
+				const b = bindingOf(t, hostConfig);
+				return { ...rowOf(t), sessionBinding: b.state, sessionBindingMessage: b.message };
+			}),
+		};
 	} catch (e) {
 		const error = String(e?.message ?? e);
 		ctx.logger('vssaros-scheduler').warn(`任务清单读取失败：${error}`);
@@ -403,6 +531,10 @@ async function updateSchedule(body) {
 	// ★ 编辑弹窗的「有效期 / 消息推送」：expiresAt 传空串 = 清掉（回到长期有效）。
 	if (typeof body?.expiresAt === 'string') { patch.expiresAt = body.expiresAt.trim(); }
 	if (typeof body?.notify === 'boolean') { patch.notify = body.notify; }
+	// ★ 2026-11-03：编辑弹窗可以改投递目标（也能传空串解绑）—— 此前这条更新路径**不收 sessionId**
+	//   ⇒ 在弹窗里点「用当前会话」再保存等于没点（用户报「按钮未接线」的真因之一）。
+	//   `normalizeTask` 对空串会写成 `''`（`payload.sessionId = str(...)`）⇒ 解绑立即生效。
+	if (typeof body?.sessionId === 'string') { patch.sessionId = body.sessionId.trim(); }
 	if (body.rule) { patch.rule = body.rule.kind ? body.rule : (officialToSelfRule(body.rule) ?? body.rule); }
 	try {
 		const task = engine.update(id, patch);
@@ -513,11 +645,10 @@ async function createSchedule(ctx, body) {
 		const task = engine.create({
 			id: `t-${randomUUID().slice(0, 8)}`,
 			title: typeof body?.title === 'string' ? body.title.trim() || '未命名任务' : '未命名任务',
-			kind: typeof body?.kind === 'string' && ['prompt', 'loop', 'action'].includes(body.kind) ? body.kind : 'prompt',
+			kind: typeof body?.kind === 'string' && ['prompt', 'action'].includes(body.kind) ? body.kind : 'prompt',
 			...(request.rule ? { rule: request.rule } : {}),
 			...(body?.prompt ? { prompt: String(body.prompt).trim() } : {}),
 			...(body?.sessionId ? { sessionId: String(body.sessionId).trim() } : {}),
-			...(body?.loopName ? { loopName: String(body.loopName).trim() } : {}),
 			...(body?.workItem ? { workItem: body.workItem } : {}),
 			// ★ 2026-10-31（编辑弹窗）：有效期与消息推送。
 			...(typeof body?.expiresAt === 'string' && body.expiresAt.trim() ? { expiresAt: body.expiresAt.trim() } : {}),

@@ -273,8 +273,22 @@ const c = {
 	fgFaint: 'var(--dsw-alias-label-dimmed, var(--vscode-disabledForeground, #6e7681))',
 	line: 'var(--dsw-alias-border-l2, var(--vscode-panel-border, #3c3c3c))',
 	hover: 'var(--dsw-alias-interactive-bg-hover, var(--vscode-list-hoverBackground, #2a2d2e))',
-	sel: 'var(--dsw-alias-interactive-bg-active, var(--vscode-list-activeSelectionBackground, #094771))',
-	selFg: 'var(--dsw-alias-label-primary-inverted, var(--vscode-list-activeSelectionForeground, #ffffff))',
+	/**
+	 * 选中态 = **低对比底 + 正常前景**（2026-11-03 修正）。
+	 *
+	 * ★ 用户报「白色外观下被选中的文档显示白色、与背景同色，不容易辨别」：
+	 *   原来这里是 `list-activeSelectionBackground` + `label-primary-inverted`。
+	 *   但 dsw 调色板里 `label-primary-inverted` 在**浅色**下就是 `neutral-bluish-00`（纯白）——
+	 *   它是给「品牌色实底」（`button-primary-fill`，浅色下近黑）用的反色，不是"选中前景"；
+	 *   叠在 `interactive-bg-active`（浅色只有 10% 深蓝灰）上就是白字配白底 ⇒ 选中项几乎消失。
+	 *   IDE 侧同理：Dark+ 的 activeSelection 是**深蓝实底**，白字才成立，而我们只借了颜色、没借语义。
+	 *   ⇒ 底色走 interactive-bg-active（浅色 10% / 深色 14%），前景一律 label-primary
+	 *     （浅色近黑 / 深色近白），两种外观都可读。
+	 */
+	sel: 'var(--dsw-alias-interactive-bg-active, var(--vscode-list-inactiveSelectionBackground, #37373d))',
+	selFg: 'var(--dsw-alias-label-primary, var(--vscode-list-inactiveSelectionForeground, #cccccc))',
+	/** 选中 / 当前库的内侧竖条：dsh 用品牌蓝，IDE 用主题强调色，最后兜底 VS Code 蓝 */
+	selBar: 'var(--dsw-alias-brand-primary-new-colorprimary-new-color, var(--vscode-focusBorder, #3794ff))',
 	accent: 'var(--dsw-alias-brand-primary, var(--vscode-focusBorder, #007acc))',
 	link: 'var(--dsw-alias-link, var(--vscode-textLink-foreground, #3794ff))',
 	inputBg: 'var(--dsw-alias-bg-layer-2, var(--vscode-input-background, #3c3c3c))',
@@ -555,18 +569,25 @@ const TreeRow = ({ node, depth, selectedPaths, openSet, onOpen, onMove, onToggle
 				 *   ① 行高 27→30、字号 13→13.5、圆角 4→6（胶囊式 hover）
 				 *   ② **去掉竖导引线**，改 18px/层纯缩进（卡片里再画线会和卡片边框打架）
 				 *   ③ 加类型图标：知识库 📗 / 目录 📁 / 文件 📄（一眼分层）
-				 *   ④ 选中 = .11 弱底 + 白字；**当前库** = 淡蓝底 + 内侧 2px 竖条 + 600 字重
+				 *   ④ 选中 = 弱底 + 正常前景；**当前库** = 淡蓝底 + 内侧 2px 竖条 + 600 字重
 				 *   ⑤ 知识库行右端显示「N 篇」（递归统计 md，弱色小字）
+				 *
+				 * ★ 2026-11-03（用户报「白色外观下选中的文档显示白色、与背景同色」）——
+				 *   V3 的「弱底 + **白字**」只在深色外观下成立：
+				 *     ① 白字写死 `#fff` ⇒ 浅色外观下白字叠白底，选中项等于消失；
+				 *     ② 选中底是裸 `rgba(127,127,127,.12)`，浅色下只比白底深一点点。
+				 *   ⇒ 前景一律 c.fg（浅色近黑 / 深色近白），底色走令牌 c.sel，
+				 *     并给选中行**同一条内侧竖条**：底色再淡也能一眼定位（浅色尤其需要）。
 				 */
 				style={{
 					display: 'flex', alignItems: 'center', height: 32,
 					paddingLeft: 4 + depth * 18, paddingRight: 8, margin: '1px 4px',
 					cursor: 'pointer', fontSize: 13.5, position: 'relative',
 					borderRadius: 6,
-					background: selected ? 'rgba(127,127,127,.12)' : (isCurrentKb ? 'rgba(55,148,255,.10)' : 'transparent'),
-					color: (selected || isCurrentKb) ? '#fff' : c.fg,
-					boxShadow: isCurrentKb ? 'inset 2px 0 0 0 var(--dsw-alias-brand-primary, var(--vscode-focusBorder, #3794ff))' : 'none',
-					fontWeight: isCurrentKb ? 600 : 400,
+					background: selected ? c.sel : (isCurrentKb ? 'rgba(55,148,255,.10)' : 'transparent'),
+					color: c.fg,
+					boxShadow: (selected || isCurrentKb) ? `inset 2px 0 0 0 ${c.selBar}` : 'none',
+					fontWeight: (selected || isCurrentKb) ? 600 : 400,
 				}}
 				onMouseEnter={e => { setHovering(true); if (!selected && !isCurrentKb) { (e.currentTarget as HTMLElement).style.background = 'rgba(127,127,127,.07)'; } }}
 				onMouseLeave={e => { setHovering(false); if (!selected && !isCurrentKb) { (e.currentTarget as HTMLElement).style.background = 'transparent'; } }}

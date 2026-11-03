@@ -155,6 +155,8 @@ console.log('── 新建自动化任务（Host 侧 /api/create 与规则转换
 console.log('── 循环任务并进「任务」页（0.6.0）──');
 {
 	// 用户 2026-11-02：循环不再单独占工作台入口 ⇒ 收进自动化任务的两个页签（任务 / 运行记录）。
+	const cliSrc = read('lib/client.js');
+	const toolSrc2 = read('lib/tools.js');
 	check('页签收成两个（任务 / 运行记录，带计数）',
 		/taskTotal/.test(entry) && /运行记录 \(\$\{allRecords\.length\}\)/.test(entry) && !/}, '定时任务'\)/.test(entry));
 	check('循环数据走 loop 插件的同源路由（不需要 Host 转发）',
@@ -165,8 +167,45 @@ console.log('── 循环任务并进「任务」页（0.6.0）──');
 		/vssSchedKind/.test(entry) && /账本 \$\{counts\.done/.test(entry) && /is-loop/.test(entry));
 	check('循环详情弹窗（护栏摘要 + 账本表 + 回答）',
 		/data-sched-loop-detail/.test(entry) && /data-sched-loop-ledger/.test(entry) && /'data-sched-act': 'loop-answer'/.test(entry));
-	check('loop 不可用时降级（只少循环卡片，不把页面弄红）',
-		/reloadLoops/.test(entry) && /setLoops\(\{ ok: data\?\.ok === true/.test(entry) && /loops\.items/.test(entry));
+	// ★ 2026-11-03：loop 插件已卸载 ⇒ 不再请求 /x/loop/api/*（404 会污染日志），列表恒空。
+	check('loop 插件卸载后不再请求其接口（循环 UI 恒不渲染）',
+		!/getJson\(API_LOOP_LIST\)/.test(cliSrc) && /setLoops\(\{ ok: false, items: \[\]/.test(cliSrc));
+	// 「自动化任务里不要有 loop 选项」的四条硬约束（用户 2026-11-03）
+	check('新建弹窗不再有 loop 选项', !/value: 'loop'/.test(cliSrc));
+	check('新建表单默认 kind=prompt', /kind: 'prompt', loopName: ''/.test(cliSrc));
+	check('工具 schema 的 kind enum 不含 loop',
+		/enum: \['prompt', 'action'\]/.test(toolSrc2) && !/enum: \['prompt', 'loop'/.test(toolSrc2));
+	check('工具不再有 loopName 参数', !/loopName/.test(toolSrc2));
+	// 只查 WB_DESCRIPTOR.description 那一行（submit 里的旧分支文案仍带「触发循环」，属不可达死代码）。
+	check('工作台描述不再提 loop',
+		/description: '自动化任务（自建调度）：定时\/周期\/一次性任务，投递到会话并记录运行历史。'/.test(cliSrc)
+		&& !/description: '[^']*触发循环/.test(cliSrc));
+}
+
+console.log('── 工具卡片 + 会话自动填充 + 任务定位（0.8.0）──');
+{
+	// 对照官方 dsh-tool-schedule / dsh-client-ui-schedule 的三件事：
+	// ① 聊天里的工具卡片（presentCall）；② 会话不用人填；③ 能跳到具体任务。
+	const toolSrc = strip(read('lib/tools.js'));
+	const presentCalls = (toolSrc.match(/presentCall:/g) ?? []).length;
+	check('5 个工具都有 presentCall（聊天里的工具卡片）', presentCalls === 5, String(presentCalls));
+	check('卡片契约与官方同款（card:generic + kind other/read）',
+		/card: 'generic'/.test(toolSrc) && /kind: 'read'/.test(toolSrc) && /kind: 'other'/.test(toolSrc));
+	check('创建结果里给出入口与定位方式', /__vssarosSchedulerFocus/.test(toolSrc));
+	// ★★ 2026-11-03 真机炸点：dsh 的 value-schema spec 要求 `type:'object'` **显式** `additionalProperties`，
+	//   缺了 ⇒ 真机报 `tool "schedule_list" returned invalid output: "value" must match exactly one oneOf branch (matched 0)`。
+	//   （本地用 dsh 自己的 valueSchemaSpecToJsonSchema 复现：编译直接抛 `schema.additionalProperties must be explicitly true or false`）
+	const schemaHeads = [...toolSrc.matchAll(/output:\s*\{[\s\S]{0,40}?schema:\s*\{\s*(?:\r?\n\s*)?type: 'object',?\s*(?:\r?\n\s*)?(additionalProperties: (?:true|false))?/g)];
+	check('5 个工具的 output.schema 根都显式 additionalProperties',
+		schemaHeads.length === 5 && schemaHeads.every((m) => !!m[1]),
+		`schema 根数=${schemaHeads.length}，带 additionalProperties=${schemaHeads.filter((m) => m[1]).length}`);
+	check('当前会话从 body 的 data-vssaros-session-id 读（读不到不猜）',
+		/dataset\?\.vssarosSessionId/.test(entry));
+	check('新建任务默认绑当前会话', /sessionId: currentSessionId\(\)/.test(entry));
+	check('弹窗有「用当前会话」按钮', /'use-session'/.test(entry) && /用当前会话/.test(entry));
+	check('外部定位入口：__vssarosSchedulerFocus + 一次性焦点键',
+		/window\.__vssarosSchedulerFocus/.test(entry) && /vssaros\.scheduler\.focus/.test(entry));
+	check('命中后高亮并滚动到卡片', /is-focus/.test(entry) && /scrollIntoView/.test(entry));
 }
 
 console.log('── 装载契约：入口在假 loader + 假 React 下真跑一遍 ──');
@@ -233,6 +272,123 @@ console.log('── 装载契约：入口在假 loader + 假 React 下真跑一�
 	// ★ 2026-10-31（用户：「自动化任务 工作台中，不要有 浮动工具栏」）：
 	//   描述符与清单都要声明 `floatingActions: false`（宿主据它隐藏 S2 浮动胶囊）⇒ 两处必须同值。
 	check('注册描述符 floatingActions 与清单同值', d.floatingActions === pkg.vssaros.workbench.floatingActions, String(d.floatingActions));
+	// ★ 2026-11-03（用户：「自动化任务 工作台中，不应该有 ai 助手栏」）：
+	//   宿主对未声明 customFrame 的工作台默认走「左对话 / 右业务」分栏 ⇒ 页面里常驻 AI 助手栏。
+	//   本工作台是纯管理页 ⇒ 声明 `splitConversation: false`（宿主 conversationMode ⇒ 'detach' ⇒ 业务占满）。
+	check('注册描述符 splitConversation = false（不要 AI 助手栏）', d.splitConversation === false, String(d.splitConversation));
+	check('清单同步声明 splitConversation = false', pkg.vssaros.workbench.splitConversation === false, String(pkg.vssaros.workbench.splitConversation));
+}
+
+console.log('── 到点投递 + 模型侧自动取会话（0.7.0）──');
+{
+	// ★★ 2026-11-03 审计出的两个硬缺口，这两条断言就是防它们复发：
+	//   ① `engine.onFire` 此前**全仓零消费者** ⇒ 任务到点只写历史，prompt 从没投给会话；
+	//   ② `schedule_create` 的 `execute(args)` 拿不到 exec ⇒ 模型必须自己编 sessionId。
+	const hostSrc = strip(read('lib/index.js'));
+	const toolSrc = strip(read('lib/tools.js'));
+	const taskSrc = strip(read('lib/core/task.js'));
+	check('Host 真的订阅 onFire 并调 runs.run（不是只有事件定义）',
+		/svc\.onFire\(/.test(hostSrc) && /runsSvc\.run\(/.test(hostSrc) && /const svc = engine/.test(hostSrc));
+	check('投递结果回写 history（delivered / deliveryError）',
+		/svc\.markDelivery\?\./.test(hostSrc) && /markDelivery: \(taskId, atMs, result/.test(strip(read('lib/engine.js'))));
+	// 运行记录必须把三态显示出来（否则"没投出去"和"还没投"在 UI 上一样）
+	check('运行记录表格有「投递」列', /h\('th', null, '投递'\)/.test(entry) && /deliveryCell\(r\)/.test(entry));
+	// 0.8.9 把截断变量从 reason 换成 short（会话失效显示短句），判据跟着换。
+	check('投递三态都渲染（已投递 / 未投递+原因 / 投递中 / 旧记录 —）',
+		/已投递/.test(entry) && /未投递\$\{short/.test(entry) && /投递中/.test(entry) && /'—'/.test(entry));
+	check('投递用 bridge 的 vssarosRuns（与 loop 同一条原语）',
+		/ctx\.inject\(\['vssarosRuns'\]/.test(hostSrc));
+	// 0.9.0 起改为投递前 `bindingOf` 预检（未绑定 / 跨环境 / 会话被删 都当场记账并跳过）。
+	check('没绑会话 ⇒ 归属预检拦截（不猜会话、不假装投递）',
+		/bindingOf\(task, hostConfig\)/.test(hostSrc) && /未绑定会话（不投递）/.test(hostSrc));
+	check('后台回合的审批放行来自 config.allowTools', /config\?\.allowTools/.test(hostSrc));
+	check('schedule_create 从 exec 取当前会话（对齐官方 exec.agent.session.id）',
+		/async execute\(args = \{\}, exec\)/.test(toolSrc) && /exec\?\.agent\?\.session\?\.id/.test(toolSrc));
+	check('schedule_create 的 sessionId 不再写"必填"', !/必填：绑定的会话 id/.test(toolSrc));
+	check('rule 认 time:"HH:MM"（免换算）',
+		/minuteOfClock\(ruleRaw\.time\)/.test(taskSrc) && /time: \{ type: 'string'/.test(toolSrc));
+	check('every 也认官方形状 every_seconds', /ruleRaw\.every_seconds/.test(taskSrc));
+	check('状态枚举收下 inactive（UI 暂停按钮用的就是它）', /TASK_STATUSES = \['active', 'inactive'/.test(taskSrc));
+	// ⚠ 别写 `|| true`：那是假绿（这次草稿里就出现过）。真数出现次数。
+	const engineSrc = strip(read('lib/engine.js'));
+	check('有效期停用抽成 expireDue，且 tick 与 catchUp 都调用',
+		/function expireDue\(/.test(engineSrc) && (engineSrc.match(/expireDue\(/g) ?? []).length >= 3,
+		String((engineSrc.match(/expireDue\(/g) ?? []).length));
+}
+
+console.log('── 编辑弹窗接线（0.8.7）──');
+{
+	// 2026-11-03 用户报「编辑自动化任务弹窗里的按钮未接线」⇒ 三处根因，都是**静默失败**：
+	//   ① getJson 直接 await fetch ⇒ 传输层一失败就抛未捕获异常 ⇒ 点了毫无反应（连错误都不显示）；
+	//   ② 编辑分支没传 sessionId ⇒ 点「用当前会话」再保存等于没点；
+	//   ③ updateSchedule 也不收 sessionId（两端都缺）。
+	const clientSrc = strip(read('lib/client.js'));
+	const hostSrc = strip(read('lib/index.js'));
+	check('getJson 兜住传输层异常（失败降级成可见 error，不抛）', /连不上调度服务/.test(clientSrc));
+	// ⚠ 这条**必须用原文**（不能用 strip）：`strip()` 遇到行内的空字符串字面量（`?? ''`）会配错引号，
+	//   把紧随其后的内容一起吃掉 ⇒ 断言永远假红（试出来的）。
+	check('编辑保存带上 sessionId（空串=解绑）', /sessionId: String\(form\.sessionId/.test(read('lib/client.js')));
+	check('updateSchedule 接受 sessionId', /typeof body\?\.sessionId === 'string'/.test(hostSrc));
+	check('保存中禁用按钮 + 文案（连点不重复提交）',
+		/props\.saving \? '保存中…'/.test(clientSrc) && /setSaving\(true\)/.test(clientSrc));
+}
+
+console.log('── 操作回执 + 去装饰控件（0.8.8）──');
+{
+	// 2026-11-03 用户两条："立即运行一次按钮点击后没有反应" / "附件、工作区、访问权限、模型选择、试运行 都不生效"。
+	// 前者是**没有提示槽**（setErr 的话无处渲染）；后者是照官方编辑器临摹的**假按钮**。
+	const src = read('lib/client.js');
+	check('任务页有提示槽（runNow 的回执真能显示）', /data-sched-msg/.test(src));
+	check('立即运行：防连点 + 明确回执（含"结果见运行记录"）',
+		/runningId/.test(src) && /已触发「/.test(src) && /投递结果见「运行记录」/.test(src));
+	// 判据只看**调用点**（注释里保留用户原话"按钮未接线"是好事，别被它误伤）
+	check('弹窗里的装饰假按钮已删除（附件/模型/试运行/工作区/权限 都不再绑 note）',
+		!/note\(.附件/.test(src) && !/note\(.模型选择/.test(src) && !/note\(.试运行/.test(src)
+		&& !/note\(.工作区/.test(src) && !/note\(.访问权限/.test(src));
+	check('改为能力说明（附件/模型/权限沿用会话）', /任务本身不单独持有/.test(src));
+}
+
+console.log('── 投递失败文案可行动（0.8.9）──');
+{
+	// 2026-11-03 真机：任务绑的是 **dev 的会话 id**，产品版 Host 找不到 ⇒ bridge 抛一串 session 引用，
+	// UI 只显示被截断的半截 id，用户问「未投递是什么意思、如何解决」。
+	const host = read('lib/index.js');
+	const cli = read('lib/client.js');
+	check('bridge 的「会话找不到」翻译成可行动文案', /会话已失效（当前 Host 找不到/.test(host) && /用当前会话/.test(host));
+	check('运行记录把会话失效显示成短句（不截半截 id）', /会话已失效（请重新绑定当前会话）/.test(cli));
+	check('立即运行回执不再预设成「未绑会话」', /会话已失效时只记历史/.test(cli));
+}
+
+console.log('── 会话归属根治（0.9.0）──');
+{
+	// 2026-11-03 真机：任务绑的是 dev 的会话，在产品版 Host 里不存在 ⇒ bridge 抛一串 id。
+	// 根治 = 写入盖章 + 投递前预检 + UI 可见；四条链路一节都不能少（用原文 read，别用 strip）。
+	const host = read('lib/index.js');
+	const cli = read('lib/client.js');
+	const eng = read('lib/engine.js');
+	const task = read('lib/core/task.js');
+	const sb = read('lib/sessionBinding.js');
+	check('归属模块：盖章 + 判定 + 存在性检查', /export function stampSession/.test(sb) && /export function bindingOf/.test(sb) && /export function sessionExists/.test(sb));
+	check('创建盖章，且只在改 sessionId 时重盖', /stampSession\(raw, config\)/.test(eng) && /Object.hasOwn\(patch, 'sessionId'\)/.test(eng));
+	check('normalizeTask 透传 sessionRoot', /payload.sessionRoot/.test(task));
+	check('投递前预检（不发起注定失败的后台回合）', /bindingOf\(task, hostConfig\)/.test(host) && /会话归属校验未通过/.test(host));
+	check('列表带出归属状态', /sessionBinding: b.state/.test(host));
+	check('UI：卡片徽标 + 弹窗红字 + 重绑后清告警',
+		/data-sched-binding/.test(cli) && /data-sched-binding-warn/.test(cli) && /setField\('sessionBinding', ''\)/.test(cli));
+}
+
+console.log('── cwd 归属重试（0.9.1，真因修复）──');
+{
+	// 17:15 那条 #8 的完整错误：session "X" belongs to "G:\…", not "C:\Users\qiuzijian"。
+	// 会话**存在**，是 process.cwd() 与会话工作区不符 ⇒ 按报错里的真实工作区重试并缓存。
+	const host = read('lib/index.js');
+	const tsk = read('lib/core/task.js');
+	check('runs.run 抽成 runOnce（可用不同 cwd 调）', /const runOnce = \(cwd\)/.test(host));
+	check('从 belongs to 解析真实工作区并重试', /belongs to/.test(host) && /runOnce\(realCwd\)/.test(host));
+	check('成功后把工作区缓存进 sessionCwd', /sessionCwd: realCwd/.test(host));
+	check('normalizeTask 透传 sessionCwd', /payload.sessionCwd/.test(tsk));
+	check('cwd 优先级：任务缓存 > config > process.cwd()', /task\.sessionCwd/.test(host) && /process\.cwd\(\)/.test(host));
+	check('cwd 不符时有可行动文案', /cwd 与会话工作区不符/.test(host));
 }
 
 console.log(`\n[scheduler] ${pass} passing / ${fail} failing`);

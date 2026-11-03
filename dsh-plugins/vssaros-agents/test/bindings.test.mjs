@@ -136,13 +136,17 @@ check('按 (platform, chatId) 找绑定', () => {
 	assert.equal(findBindingForChat(list, 'feishu', 'c1'), null, '平台也要匹配');
 });
 check('★ 出站候选：排除停用与「只进不出」', () => {
+	// ★ 2026-11-03：dsh 群聊下线 ⇒ targetKind 只剩 'agent'（normalizeBinding 会强制归一）
 	const list = [
-		{ ...normalizeBinding({ targetId: 'g1', targetKind: 'group', chatId: 'a' }) },
-		{ ...normalizeBinding({ targetId: 'g1', targetKind: 'group', chatId: 'b' }), enabled: false },
-		{ ...normalizeBinding({ targetId: 'g1', targetKind: 'group', chatId: 'c' }), direction: 'in' },
+		{ ...normalizeBinding({ targetId: 'bot1', chatId: 'a' }) },
+		{ ...normalizeBinding({ targetId: 'bot1', chatId: 'b' }), enabled: false },
+		{ ...normalizeBinding({ targetId: 'bot1', chatId: 'c' }), direction: 'in' },
 	];
-	const hit = findOutboundBindings(list, 'group', 'g1');
+	const hit = findOutboundBindings(list, 'agent', 'bot1');
 	assert.deepEqual(hit.map((b) => b.chatId), ['a']);
+});
+check('targetKind 只剩 agent（传 group 也归一成 agent）', () => {
+	assert.equal(normalizeBinding({ targetId: 'x', targetKind: 'group', chatId: 'd' }).targetKind, 'agent');
 });
 
 /* ── 存储 CRUD（临时 dataRoot，不碰真机数据）────────────────────────── */

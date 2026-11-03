@@ -16,14 +16,6 @@
             name: '@vssaros/dsh-kanban'
           - id: vssaros-kb
             name: '@vssaros/dsh-kb'
-          # memory（2026-10-20）：与 agents 同一条半边口径 —— `toolsOnly: true` ⇒ preset 内这次只注册工具。
-          # 不加的实测后果（`memory-audit/audit.jsonl`）：`agent/turn-stopping` 被挂两个监听 ⇒
-          # **每回合 distill 跑两遍**（审计成对：`ws-<workspaceId>` + `default`），
-          # 且 `systemPrompt.section` 也注册两次（同一段记忆进两遍提示词）。页面/路由重复由 dsh 按路径覆盖 ⇒ 无害。
-          - id: vssaros-memory
-            name: '@vssaros/dsh-memory'
-            config:
-              toolsOnly: true
           - id: vssaros-media
             name: '@vssaros/dsh-media'
           - id: vssaros-workflow
@@ -63,25 +55,6 @@
                 #   并没有丢；写类（forget/import/skill/slot/lesson/work/routine/improve/facet/
                 #   governance/team/mesh/sentinel/cascade/crystal）默认不进模型目录，
                 #   需要时按精确名删掉对应行即可恢复。
-                - 'memory_list'
-                - 'memory_stats'
-                - 'memory_refresh'
-                - 'memory_forget'
-                - 'memory_obsidian_export'
-                - 'memory_cascade'
-                - 'memory_crystal'
-                - 'memory_routine'
-                - 'memory_improve'
-                - 'memory_facet'
-                - 'memory_governance'
-                - 'memory_team'
-                - 'memory_mesh'
-                - 'memory_sentinel'
-                - 'memory_slot'
-                - 'memory_lesson'
-                - 'memory_work'
-                - 'memory_import'
-                - 'memory_skill'
                 # ── 飞书族（2026-10-21 加）：**零损失**的那一类 ────────────────────────────
                 # 族级用量的结论（`doc/tool-surface-family-usage.md`）：`feishu_*` 5 个工具 ≈887 tok
                 #   （占可见面 23,454 tok 的 3.8%），而**真机账上调用 0 次** —— 因为飞书通道

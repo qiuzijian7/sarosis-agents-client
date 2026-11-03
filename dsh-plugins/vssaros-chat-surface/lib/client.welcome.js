@@ -32,18 +32,63 @@ window.__ModuleLoader__.load({
 		const FOCUS_KEY = "vssaros.agents.focus";
 		const ROSTER_TTL_MS = 30000;
 		const VSSAROS_PREFIX = "vssaros-";
-		const MODE_PRESETS = ["standard", "ptc", "minimal", "cordis"];
+		/* vssaros:bot-identity v1 —— 逐字副本，真源 vssaros-agents/lib/core/botIdentity.js（守卫 dsh-plugins/check-bot-identity.mjs） */
+		const BOT_MODE_PRESET_IDS = ["standard", "ptc", "minimal", "cordis", "vssaros-standard", "vssaros-ptc", "vssaros-full", "vssaros-minimal", "vssaros-cordis"];
+		/** 是不是"可能属于某个 bot"的 preset（vssaros- 前缀且不是模式 preset）。 */
+		function isBotPresetId(presetId) {
+			const id = String(presetId || "").trim();
+			return id.indexOf("vssaros-") === 0 && id.length > 8 && BOT_MODE_PRESET_IDS.indexOf(id) < 0;
+		}
+		/** 会话属于哪个 bot：身份记录（presetId 与当前一致才采信）> 按 preset 推断（botId=null，调用方用花名册反查）。 */
+		function sessionBotOf(projectionValues) {
+			const pv = projectionValues || {};
+			const presetId = String(pv.agentPreset || "").trim();
+			if (!isBotPresetId(presetId)) { return { isBot: false, botId: null, presetId: presetId, source: "none" }; }
+			const rec = pv["vssaros-bot"];
+			const recBot = rec && typeof rec.botId === "string" ? rec.botId.trim() : "";
+			if (recBot && String(rec.presetId || "").trim() === presetId) {
+				return { isBot: true, botId: recBot, presetId: presetId, source: "record" };
+			}
+			return { isBot: true, botId: null, presetId: presetId, source: "preset" };
+		}
+		/* /vssaros:bot-identity */
 
 		/** 跑的是不是**我们的 agent**（不是模式 preset、不是 dsh 自带 preset）。 */
 		function isAgentPreset(presetId) {
-			const id = String(presetId || "");
-			return id.startsWith(VSSAROS_PREFIX) && MODE_PRESETS.indexOf(id.slice(VSSAROS_PREFIX.length)) < 0;
+			return isBotPresetId(presetId);
 		}
-		/** 名册里按 presetId 精确匹配（约束 ②）。 */
-		function pickAgent(agents, presetId) {
-			if (!Array.isArray(agents) || !presetId) { return null; }
-			return agents.find((a) => a && a.presetId === presetId) || null;
+		/** 名册匹配（约束 ②）：身份记录的 botId 优先（`a.id` 精确），没有再按 presetId 精确匹配。 */
+		function pickAgent(agents, presetId, botId) {
+			// 人格切换时只有 agentId、没有对应 preset（在模式 preset 里切人格）⇒ 不能因为 presetId 空就早退
+			if (!Array.isArray(agents)) { return null; }
+			if (!presetId && !botId) { return null; }
+			return (botId && agents.find((a) => a && a.id === botId)) || agents.find((a) => a && a.presetId === presetId) || null;
 		}
+		/**
+		 * ★ 2026-11-03（用户报「切换不同人格时没有显示欢迎页」）：欢迎页属于**当前生效的人格**，不只看 preset。
+		 *
+		 * 根因：会话内切人格（`vssaros-persona` 投影）**不改 agentPreset** —— 在「标准模式（VsSaros）」
+		 * 这类模式 preset 里切到 Code Architect，preset 仍是 `vssaros-standard` ⇒ 旧判据
+		 * `isBotPresetId(preset)` 为 false ⇒ 欢迎页整块不渲染（截图里就是空 hero）。
+		 *
+		 * 优先级（与 lib/core/persona.js 的语义一致）：
+		 *   ① 会话内切过的人格（`personaId` = agent id）；
+		 *   ② 否则看 bot 身份（身份记录 > preset）。
+		 * @returns `{ agentId, presetId, source: 'persona'|'record'|'preset'|'none' }`
+		 */
+		function effectiveAgentOf(projectionValues) {
+			const pv = projectionValues || {};
+			const persona = pv["vssaros-persona"];
+			const personaId = persona && typeof persona.personaId === "string" ? persona.personaId.trim() : "";
+			if (personaId) {
+				return { agentId: personaId, presetId: "vssaros-" + personaId, source: "persona" };
+			}
+			const bot = sessionBotOf(pv);
+			if (bot.source === "record") { return { agentId: bot.botId, presetId: bot.presetId, source: "record" }; }
+			if (bot.isBot) { return { agentId: "", presetId: bot.presetId, source: "preset" }; }
+			return { agentId: "", presetId: bot.presetId, source: "none" };
+		}
+
 		/** 建议问题：目前是**固定**三条（.agent.md 还没有建议字段；不按名字瞎编 ✗）。 */
 		const SUGGESTIONS = [
 			"介绍一下你能帮我做什么",
@@ -245,8 +290,10 @@ window.__ModuleLoader__.load({
 				const summary = readSummary(sid);
 				const session = props && props.session;
 				const blank = session && typeof session.blank === "boolean" ? session.blank : !!(summary && summary.blank);
-				const presetId = summary && summary.projectionValues && summary.projectionValues.agentPreset;
-				const show = !!sid && blank && isAgentPreset(presetId);
+				// ★ 2026-11-03：人格切换也要出欢迎页（见 effectiveAgentOf 的注释）
+				const who = effectiveAgentOf(summary && summary.projectionValues);
+				const presetId = who.presetId;
+				const show = !!sid && blank && who.source !== "none";
 				react.useEffect(() => {
 					if (!show) { return undefined; }
 					let dead = false;
@@ -256,11 +303,12 @@ window.__ModuleLoader__.load({
 						loadFallbackPresets().then((list) => { if (!dead) { setFallback(list); } });
 					});
 					return () => { dead = true; };
-				}, [show, presetId]);
+				}, [show, presetId, who.agentId]);
 				if (!show) { return null; }
-				const model = cardModel(pickAgent(roster, presetId), (fallback || []).find((p) => p && p.id === presetId));
+				const model = cardModel(pickAgent(roster, presetId, who.agentId), (fallback || []).find((p) => p && p.id === presetId));
 				if (!model) { return null; }
-				state.welcomeShown = presetId;
+				// 诊断用：记"这次欢迎页是按谁出的"（人格切换时 agentId 有意义，presetId 只是回落）
+				state.welcomeShown = who.agentId || presetId;
 				const inputActions = props && props.inputActions;
 				const ask = (text) => {
 					if (!inputActions || typeof inputActions.setDraft !== "function") { say("聊天框没有提供输入接口（inputActions），请直接在输入框里提问"); return; }
@@ -336,7 +384,7 @@ window.__ModuleLoader__.load({
 
 		exports.install = install;
 		// 仅测试用：纯逻辑
-		exports.__test = { isAgentPreset, pickAgent, cardModel, handoffValue, SUGGESTIONS, SUGGESTIONS_BY_PRESET, suggestionsOf, ENTRY_ID, ENTRY_ORDER, SLOT, seeded };
+		exports.__test = { isAgentPreset, sessionBotOf, effectiveAgentOf, pickAgent, cardModel, handoffValue, SUGGESTIONS, SUGGESTIONS_BY_PRESET, suggestionsOf, ENTRY_ID, ENTRY_ORDER, SLOT, seeded };
 		return module.exports;
 	}
 });

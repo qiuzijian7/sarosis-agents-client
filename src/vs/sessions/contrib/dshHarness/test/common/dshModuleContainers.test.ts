@@ -26,23 +26,15 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 		// 决议① 剩下的共容器实例（integration = skills + mcp）必须是聚合语义
 		const integration = DSH_MODULE_CONTAINERS.find(c => c.containerId === 'agentStudio.integration');
 		assert.deepStrictEqual([...(integration?.modules ?? [])].sort(), ['mcp', 'skills']);
-		// 2026-10-12（「资料库」拆分）：knowledgeBase **不再与 memory 共容器**，只剩 kb。
+		// 2026-11-03：memory 改为内置插件（@vssaros/dsh-memory，会话页记忆 Tab）。
+		// 内置模块表必须登记它（启动补登记 bundles），但活动栏容器与 /x/memory/ 整页不复活。
 		const kb = DSH_MODULE_CONTAINERS.find(c => c.containerId === 'agentStudio.knowledgeBase');
 		assert.deepStrictEqual([...(kb?.modules ?? [])], ['kb'], 'kb 容器现在只由 kb 决定可见性');
-		// ★ 2026-10-12：**语义反转** —— memory 现在**必须**有自己的容器。
-		// 本断言到这里为止都在说「memory 不单独占容器」（决议①「kb / memory 共容器」）—— 那正是
-		// 「资料库拆成 4 个工作台」这一刀的正面对手。改它 = 改决议本身，**不是绕过守卫**：
-		// 留着旧断言的话，"拆了又没拆"（memory 又被并回 kb）无人发现 ✗。
-		const memory = DSH_MODULE_CONTAINERS.find(c => c.containerId === 'agentStudio.memory');
-		assert.deepStrictEqual([...(memory?.modules ?? [])], ['memory'], 'memory 必须有独立容器');
-		assert.strictEqual(memory?.status, 'existing', 'memory 在两种引擎下都要有入口');
-		assert.ok(!DSH_MODULE_CONTAINERS.some(c => c.containerId !== 'agentStudio.memory' && c.modules.includes('memory')),
-			'memory 不许同时留在别的容器里（那就又变回共容器了）');
-		const memoryPage = DSH_MODULE_PAGES.find(p => p.module === 'memory');
-		assert.deepStrictEqual(
-			memoryPage && { module: memoryPage.module, kind: memoryPage.kind, route: memoryPage.route },
-			{ module: 'memory', kind: 'page', route: '/x/memory/' },
-			'memory 必须是整页（不再是寄居 kb 的片段）');
+		assert.ok(DSH_BUILTIN_MODULES.some(m => m.module === 'memory' && m.pluginName === '@vssaros/dsh-memory'),
+			'memory 必须登记为内置模块，否则启动时不会被补进 bundles');
+		assert.ok(!DSH_MODULE_CONTAINERS.some(c => c.containerId === 'agentStudio.memory'), '旧记忆库独立容器不应复活');
+		assert.ok(!DSH_MODULE_CONTAINERS.some(c => c.modules.includes('memory')), 'memory 不占活动栏容器');
+		assert.ok(!DSH_MODULE_PAGES.some(p => p.module === 'memory'), 'memory 没有 /x/memory/ 整页');
 	});
 
 	test('容器反查与默认页面路由（决议③ / 13.3 约定）', () => {
@@ -68,10 +60,8 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 		//   所以只有 mcp 时落在它自己的片段路由上——与 memory 同一条规则（片段也是可服务的 HTML，比空白强）。
 		assert.deepStrictEqual(pageRouteForActiveModules(integration, ['mcp']), { module: 'mcp', kind: 'section', route: '/x/mcp/section' },
 			'只有 mcp 时用它自己的片段路由');
-		// 2026-10-12（「资料库」拆分）：memory 已不在 kb 容器里 ⇒ 它对 kb 不再是候选（这正是拆分要达到的效果）。
-		assert.strictEqual(pageRouteForActiveModules(kb, ['memory']), undefined, 'memory 已拆出 kb 容器');
-		assert.deepStrictEqual(pageRouteForActiveModules(moduleContainerOf('agentStudio.memory'), ['memory']),
-			{ module: 'memory', kind: 'page', route: '/x/memory/' }, '记忆库自己的容器按整页解析');
+		// 2026-11-03：memory 模块整套下线 ⇒ 不再是任何容器的候选，记忆库自己的容器也已移除。
+		assert.strictEqual(pageRouteForActiveModules(kb, ['memory']), undefined, 'memory 已下线，对 kb 不再是候选');
 		// 两个都在时：**page 优先**（skills 是整页，mcp 的片段内嵌在它里面）
 		assert.deepStrictEqual(pageRouteForActiveModules(integration, ['skills', 'mcp']), { module: 'skills', kind: 'page', route: '/x/skills/' });
 
@@ -107,8 +97,8 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 				assert.ok(modules.has(module), `${container.containerId} 的模块 ${module} 不在 DSH_MODULE_PAGES 里（页面解析会拿不到它）`);
 			}
 			// 每个容器至少要有**一个**能出内容的模块（有页面路由的 page/section，或 native 原生视图）：
-			// 否则"图标可见但点开永远空"。⚠ 2026-10-30：agents 转成 native 后
-			// `agentStudio.presetAgent` 这个容器只有一个 native 模块 ⇒ 判据必须把 native 算进来。
+			// 否则"图标可见但点开永远空"。⚠ 2026-10-30：native 模块也算（判据见下）；
+			//   2026-11-03 起唯一的 native 模块（agents 侧栏 roster）已随 Bots 工作台下线。
 			assert.ok(container.modules.some(m => {
 				const p = pageOf(m);
 				return !!p?.route || p?.kind === 'native';
@@ -158,11 +148,12 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 	test('engine=dsh：已装插件 → 注册容器；未装 → 注销已注册容器', () => {
 		const plan = planModuleContainers({
 			engine: 'dsh',
-			installedPlugins: ['@vssaros/dsh-kanban', '@vssaros/dsh-agents'],
+			installedPlugins: ['@vssaros/dsh-kanban'],
 			registeredContainerIds: ['agentStudio.workflow', 'agentStudio.tasks'],
 		});
-		assert.deepStrictEqual(plan.activeModules, ['kanban', 'agents']);
-		assert.deepStrictEqual(plan.registrations.map(c => c.containerId), ['agentStudio.presetAgent']);
+		// ★ 2026-11-03：agents 不再有模块容器（Bots 工作台下线）⇒ 计划里不会再出现 agentStudio.presetAgent
+		assert.deepStrictEqual(plan.activeModules, ['kanban']);
+		assert.deepStrictEqual(plan.registrations, []);
 		assert.deepStrictEqual(plan.deregistrations, ['agentStudio.workflow']);
 		assert.strictEqual(plan.contextKeys['vssaros.dsh.plugin.kanban.active'], true);
 		assert.strictEqual(plan.contextKeys['vssaros.dsh.plugin.workflow.active'], false);
@@ -182,18 +173,14 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 		assert.strictEqual(onlySkills.contextKeys['vssaros.dsh.plugin.skills.active'], true);
 		assert.strictEqual(onlySkills.contextKeys['vssaros.dsh.plugin.mcp.active'], false);
 
-		// 2026-10-12（「资料库」拆分）：装了 memory ⇒ `agentStudio.memory` **自己**那一格也要注册
-		// （原先它并进 knowledgeBase 那格），所以这里必须把新容器一起算作"已注册"。
+		// 2026-11-03：memory 下线后，这段只保留「已注册且仍激活 → 不重复注册」的语义，
+		// 用 kb 顶替原 memory 的 fixture 角色（原来那条「只装 memory 要注销 kb」已无意义）。
 		const both = planModuleContainers({
-			engine: 'dsh', installedPlugins: ['@vssaros/dsh-skills', '@vssaros/dsh-mcp', '@vssaros/dsh-memory'],
-			registeredContainerIds: ['agentStudio.integration', 'agentStudio.knowledgeBase', 'agentStudio.memory'],
+			engine: 'dsh', installedPlugins: ['@vssaros/dsh-skills', '@vssaros/dsh-mcp', '@vssaros/dsh-kb'],
+			registeredContainerIds: ['agentStudio.integration', 'agentStudio.knowledgeBase'],
 		});
 		assert.deepStrictEqual(both.registrations, [], '已注册且仍激活 → 不重复注册');
-		// ★ 2026-10-12（「资料库」拆分）：这一条**正是拆分前「kb / memory 共容器」的反例** ——
-		// 旧语义下"装了 memory"就等于"kb 容器激活"（不该注销）；拆开后 memory 只管自己那一格，
-		// kb 未被点亮 ⇒ 已注册的 `agentStudio.knowledgeBase` **必须**被注销。
-		assert.deepStrictEqual(both.deregistrations, ['agentStudio.knowledgeBase'],
-			'只装 memory 不再点亮知识库容器（共容器已拆开）');
+		assert.ok(!both.deregistrations.includes('agentStudio.knowledgeBase'), '仍激活的知识库容器不许被注销');
 
 		const noneLeft = planModuleContainers({
 			engine: 'dsh', installedPlugins: [], registeredContainerIds: ['agentStudio.integration', 'agentStudio.knowledgeBase'],
@@ -250,7 +237,8 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 		}
 		// 全部模块都装了：所有容器都应注册（含 page-only 的代码图谱）；当前没有 planned 容器
 		assert.deepStrictEqual(plan.registrations.map(c => c.containerId).sort(),
-			['agentStudio.dashboard', 'agentStudio.integration', 'agentStudio.knowledgeBase', 'agentStudio.media', 'agentStudio.memory', 'agentStudio.presetAgent', 'agentStudio.tasks', 'agentStudio.workflow',
+			// ★ 2026-11-03：`agentStudio.presetAgent`（Bots 工作台）已下线 ⇒ 从期望集合里删掉
+			['agentStudio.dashboard', 'agentStudio.integration', 'agentStudio.knowledgeBase', 'agentStudio.media', 'agentStudio.tasks', 'agentStudio.workflow',
 				// `vssaros.dsh.*` 自建容器：代码库 2026-10-12 起是 `existing`（两种引擎都有）；历史会话 dsh 页
 				// 2026-10-12 新增，`page-only`（legacy 侧的历史会话是**另一个**常驻容器 `sessionHistory.view`，两者并存）。
 				// （画布模块已于 2026-10-15 移除 —— `.canvas` 文件仍走 legacy **编辑器**，不受影响 ✓）
@@ -279,18 +267,10 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 			};
 		}
 
-		/** 原生侧栏视图（`kind: 'native'`）的夹具：没有页面路由，数据来自 `view.data.route`。 */
-		function fixtureNativePlugin(name: string, module: string, containerId: string, order: number, dataRoute: string): IPluginWithManifest {
-			return {
-				name,
-				manifest: {
-					manifestVersion: 1,
-					module,
-					activityBar: { containerId, title: { zh: module, en: module }, icon: 'codicon:symbol-misc', order },
-					view: { kind: 'native', viewType: `vssaros.${module}.roster`, data: { route: dataRoute } } as never,
-				},
-			};
-		}
+		/* ★ 2026-11-03：`fixtureNativePlugin` 已删 —— 它唯一的用途是给 agents 造
+		   `kind: 'native'` 的夹具（Bots 侧栏 roster 树），而那套界面已整体下线；
+		   目前没有任何模块是 native 形态（`DSH_MODULE_PAGES` 里也没有 native 项），
+		   留着这个 helper 只会变成"声明了但没人用"的死代码（TS6133）。 */
 
 		test('★ 从清单派生容器与页面：内置插件集合派生出的表与硬编码表逐项一致（双轨对账）', () => {
 			// 这条是整个 1.1 的**对账锚点**：派生 ≠ 表 ⇒ 说明有人改了清单忘了同步（或反之）。
@@ -299,13 +279,12 @@ suite('dshModuleContainers（容器聚合与注册计划）', () => {
 				fixturePlugin('@vssaros/dsh-skills', 'skills', 'agentStudio.integration', 90, '/x/skills/'),
 				{ name: '@vssaros/dsh-mcp', manifest: { manifestVersion: 1, module: 'mcp', view: { kind: 'section', host: 'skills', route: '/x/mcp/section' } } },
 				fixturePlugin('@vssaros/dsh-kb', 'kb', 'agentStudio.knowledgeBase', 110, '/x/kb/'),
-				fixturePlugin('@vssaros/dsh-memory', 'memory', 'agentStudio.memory', 111, '/x/memory/'),
 				fixturePlugin('@vssaros/dsh-media', 'media', 'agentStudio.media', 112, '/x/media/'),
 				fixturePlugin('@vssaros/dsh-codebase', 'codebase', 'vssaros.dsh.codebase', 113, '/x/codebase/'),
 				fixturePlugin('@vssaros/dsh-kanban', 'kanban', 'agentStudio.tasks', 70, '/x/kanban/'),
 				fixturePlugin('@vssaros/dsh-workflow', 'workflow', 'agentStudio.workflow', 80, '/x/workflow/'),
-				// 2026-10-30：agents 转成**原生侧栏视图**（`vssaros.agents.roster` 树）⇒ 夹具也用 native。
-				fixtureNativePlugin('@vssaros/dsh-agents', 'agents', 'agentStudio.presetAgent', 60, '/x/agents/api/agents'),
+				// ★ 2026-11-03：agents 的 Bots 工作台整体下线（含原生侧栏 roster 树）⇒ 夹具里不再有它；
+				//   备份留档：它曾是 `fixtureNativePlugin('@vssaros/dsh-agents', 'agents', 'agentStudio.presetAgent', 60, '/x/agents/api/agents')`。
 				fixturePlugin('@vssaros/dsh-dashboard', 'dashboard', 'agentStudio.dashboard', 5, '/x/dashboard/'),
 				fixturePlugin('@vssaros/dsh-sessions', 'sessions', 'vssaros.dsh.sessions', 120, '/x/sessions/'),
 				// 重构 2.1：定时任务（官方 dsh-schedule 的薄壳；page-only，legacy 侧无对应物）。

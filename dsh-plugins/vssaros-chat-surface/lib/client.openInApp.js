@@ -1,6 +1,11 @@
 // @vssaros/dsh-chat-surface — 隐藏官方「在其他 app 中打开」下拉（open-in-app cell）
 // package-local chunk（dsh client-modules 契约）：主包 lib/client.js 用 require.async("./client.openInApp.js") 取回本模块的 install()。
 // 一个文件一个换皮点：并行改动各改各的文件，不再撞同一个 client.js。
+//
+// ⚠ 2026-11-03：往官方下拉里加「VsSaros」的注入器**不在这里** —— 本 chunk 只在
+//   `surface === "chat"` 的 PART_CHUNKS 装载，而带官方 chip 的 desktop 主栏是 `full` 形态
+//   （走 client.js:578 的独立 require 列表）⇒ 放这里它根本不会被装载 ✗。
+//   ⇒ 注入器在 `client.openInAppMenu.js`，由 ALWAYS_CHUNKS 无条件装载 ✓
 window.__ModuleLoader__.load({
 	id: "@vssaros/dsh-chat-surface",
 	chunk: "client.openInApp.js",

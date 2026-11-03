@@ -71,8 +71,15 @@ if (exists(snapshotPath)) {
 } else {
 	fail('找不到 dsh-plugins/tools-snapshot.json（插件工具名单的真源）');
 }
-const knownTools = new Set([...officialTools, ...pluginTools]);
-ok(`dsh 工具名单：官方 ${officialTools.size} 个 + 插件 ${pluginTools.size} 个 = ${knownTools.size} 个`);
+// 2026-11-03：内置记忆插件 `vssaros-memory` 的工具不进离线工具快照
+// （它的 apply() 硬注入 Host 的 7 个 cordis 服务，见 tools-snapshot.mjs 的 OFFLINE_UNSUPPORTED），
+// 但真机确实注册、且已写进各内置 agent 的 tools 白名单 ⇒ 显式补进 knownTools，
+// 否则判据 A 会把这三个合法名字当成写错并静默丢弃（allowlist 形同虚设）。
+// 真源在 dsh-plugins/vssaros-memory/lib/index.js 的 DEFAULTS：toolName /
+// todoToolName / skillManageToolName（profile 覆盖层把后者改为 de_skill_manage）。
+const BUILTIN_MEMORY_TOOLS = ['memory', 'dtodo', 'de_skill_manage'];
+const knownTools = new Set([...officialTools, ...pluginTools, ...BUILTIN_MEMORY_TOOLS]);
+ok(`dsh 工具名单：官方 ${officialTools.size} 个 + 插件 ${pluginTools.size} 个 + 内置记忆 ${BUILTIN_MEMORY_TOOLS.length} 个 = ${knownTools.size} 个`);
 
 // ── 2. dsh 可见的技能目录 ─────────────────────────────────────────
 const skillDirs = new Set();

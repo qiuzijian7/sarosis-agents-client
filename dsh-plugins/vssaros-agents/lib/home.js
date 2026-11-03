@@ -3,8 +3,8 @@
 // doc/agents-botmode-mockup.html 方案 A：编辑区 = 当前 bot 的主页 —— 会话 / Bot 收件箱 / 记忆 / 定时 四块。
 // 数据口径（全部**如实**，不造数）：
 //   · 会话   = projcache 里该 agent preset 的会话（最近活跃排序）＋ 委派台账里它的委派（需要处理 / 进行中 / 已完成）。
-//   · 收件箱 = **只读推导**：派给它的委派 ＋ 它所在群里需要它响应的群消息（open 模式全员 / admin 模式被 @）。
-//              DeepSeekBot 那种「接纳层」我们没有 ⇒ 面板标题旁明写「推导自委派台账与群聊」✓。
+//   · 收件箱 = **只读推导**：派给它的委派（2026-11-03 群聊下线后不再有群消息来源）。
+//              DeepSeekBot 那种「接纳层」我们没有 ⇒ 面板标题旁明写「推导自委派台账」✓。
 //   · 记忆   = 异步读 /x/agents/api/memory（文件 + Git 历史；与「记忆」签同一个 API）。
 //   · 定时   = 还没有 bot 级定时任务（Q4 未定）⇒ 如实占位，不放假条目 ✗。
 //
@@ -13,7 +13,7 @@
 //   函数体里**不许引用本模块的任何变量**，只用 ES2017，不许出现脚本结束标签字面量。
 
 import { presetIdOf } from './core/agents.js';
-import { parseMentions } from './groups.js';
+import { rowBelongsTo } from './core/live.js';
 
 const SESSIONS_KEEP = 6;
 const INBOX_KEEP = 8;
@@ -33,25 +33,19 @@ function agoOf(ms) {
 const fmtTokens = n => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n || 0));
 const clip = (s, n) => { const t = String(s ?? '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n) + '…' : t; };
 
-/** 群消息是否点到了这个 agent：**直接用派发同一个解析器**（groups.js 的 parseMentions）——收件箱必须与真实派发一致，
- *  不能自己再写一份 @ 规则（两份迟早漂移 ✗）。 */
-function mentions(text, agent, members, agents) {
-	return parseMentions(String(text ?? ''), members, agents).some(x => x.id === agent.id);
-}
-
 /**
  * 每个 agent 的主页数据（页面 data-home 里按 agentId 存一份；换人只读这份，不再请求 ✓）。
+ * ★ 2026-11-03：群聊下线 ⇒ 收件箱只推导自**委派台账**（`groups` 参数已移除）。
  * @returns Record<agentId, HomeData>
  */
-export function buildHomeData({ agents, sessionRows, assignments, groups }) {
+export function buildHomeData({ agents, sessionRows, assignments }) {
 	const out = {};
 	const asgItems = assignments?.items ?? [];
 	const cap = assignments?.cap ?? 8;
 	const runningAll = assignments?.running ?? 0;
 	for (const a of agents ?? []) {
-		const preset = presetIdOf(a.id);
 		const rows = (sessionRows ?? [])
-			.filter(r => r && r.presetId === preset)
+			.filter(r => r && rowBelongsTo(r, a.id))
 			.sort((x, y) => (y.lastActiveAt ?? 0) - (x.lastActiveAt ?? 0));
 		const mine = asgItems.filter(r => r?.agentId === a.id);
 		const attention = mine.filter(r => (r.status !== 'running' && r.status !== 'done') || r.error);
@@ -68,31 +62,11 @@ export function buildHomeData({ agents, sessionRows, assignments, groups }) {
 				at: r.createdAt ?? null,
 			});
 		}
-		for (const g of groups?.groups ?? []) {
-			if (!Array.isArray(g?.members) || !g.members.includes(a.id)) {
-				continue;
-			}
-			const log = Array.isArray(g.transcript) ? g.transcript : [];
-			log.forEach((entry, i) => {
-				if (entry?.role !== 'user' || !(g.mode === 'open' || mentions(entry.text, a, g.members, agents))) {
-					return;
-				}
-				const replied = log.slice(i + 1).some(e => e?.role === 'member' && e.agentId === a.id);
-				inbox.push({
-					icon: '#',
-					title: g.name + ' · 群消息' + (g.mode === 'open' ? '' : '（@ 了它）'),
-					sub: clip(entry.text, 80),
-					st: replied ? 'done' : 'pend',
-					stText: replied ? '已回复' : '待回复',
-					at: entry.at ?? null,
-				});
-			});
-		}
 		inbox.sort((x, y) => (y.at ?? 0) - (x.at ?? 0));
 		const asgRow = r => ({ id: r.id, task: clip(r.task, 60), ago: agoOf(r.createdAt), error: r.error ? clip(r.error, 80) : '' });
 		out[a.id] = {
 			agentId: a.id,
-			preset,
+			preset: presetIdOf(a.id),
 			cap,
 			runningAll,
 			sessionsTotal: rows.length,
@@ -154,7 +128,7 @@ function homePanelsHtml(d, esc) {
 	h += '</div></div>';
 	// ② Bot 收件箱（只读推导）
 	h += '<div class="hp" data-home-panel="inbox"><div class="hp-h">✉ Bot 收件箱 <span class="ct">' + d.inboxPending + '</span>'
-		+ '<span class="sp"></span><small>只读 · 推导自委派台账与群聊</small></div><div class="hp-b">';
+		+ '<span class="sp"></span><small>只读 · 推导自委派台账</small></div><div class="hp-b">';
 	if (d.inbox.length) {
 		for (var n = 0; n < d.inbox.length; n++) {
 			var x = d.inbox[n];
@@ -163,7 +137,7 @@ function homePanelsHtml(d, esc) {
 		}
 		if (d.inboxTotal > d.inbox.length) { h += '<div class="more">共 ' + d.inboxTotal + ' 条，只显示最近 ' + d.inbox.length + ' 条</div>'; }
 	} else {
-		h += '<div class="it dim"><span class="ico">·</span><div class="mid">收件箱是空的：还没有派给它的委派，也没有需要它响应的群消息</div></div>';
+		h += '<div class="it dim"><span class="ico">·</span><div class="mid">收件箱是空的：还没有派给它的委派</div></div>';
 	}
 	h += '</div></div>';
 	// ③ 记忆（异步填充：loadMemory → homeMemoryHtml）

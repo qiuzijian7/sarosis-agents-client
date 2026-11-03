@@ -2,12 +2,15 @@
 //
 // ── 这个模块解决什么 ────────────────────────────────────────────────────────
 // 已有的 `vssaros-channels` 插件把「一个 IM 会话 ⇄ 一条匿名 dsh 会话」跑通了，
-// 但它**不认识我们的 bot 和群**。本模块补上那一层：把 **指定的 bot / 群** 与
+// 但它**不认识我们的 bot**。本模块补上那一层：把 **指定的 bot** 与
 // **指定的 IM 会话** 绑起来，双向流转。
 //
-//   IM 平台 ──适配器──> 入站事件 ──> [binding 表] ──> dispatchAgent / dispatchGroup
-//      ▲                                   │                      │
-//      └──────────── 出站（deliver）──── 回复回收 <────────────────┘
+//   IM 平台 ──适配器──> 入站事件 ──> [binding 表] ──> dispatchAgent
+//      ▲                                   │                 │
+//      └──────────── 出站（deliver）──── 回复回收 <───────────┘
+//
+// ★ 2026-11-03：`targetKind` 只剩 `agent`（dsh 群聊功能整体下线）；IM **群会话**仍可绑，
+//   靠 `chatType:'group'` + `mentionPolicy` 控制（那是 IM 侧的分组，与 dsh 的群无关）。
 //
 // ── 适配器端口 ──────────────────────────────────────────────────────────────
 // 与 `vssaros-channels/lib/core/ports.js` **同形**（`{ id, name, send(ctx,text) }`），
@@ -21,7 +24,7 @@
 // ── 三条安全默认（都是 fail-closed）────────────────────────────────────────
 // ① 白名单为空 ⇒ **拒绝所有**（与 channels 的 allowFrom 口径一致）
 // ② 绑定只能由**人**创建/修改/删除（bot 不能把自己的输出外发到外部 IM）
-// ③ 群聊默认 `mentionPolicy='at'`：没 @ 到 bot 的消息不处理
+// ③ IM 群会话默认 `mentionPolicy='at'`：没 @ 到 bot 的消息不处理
 import { renameWithRetry } from './atomicWrite.js';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -31,7 +34,7 @@ import { dataRootOf } from './store.js';
 import { listDeadLetters, removeDeadLetter } from './deadLetters.js';
 import { outboxNote } from './outbox.js';
 import { AGENT_MESSAGE_KIND } from './core/relay.js';
-import { clipDispatchText, dispatchModeOf, normalizeActor } from './groups.js';
+import { clipDispatchText, dispatchModeOf, normalizeActor } from './textUtils.js';
 /* 渠道准入策略（**OpenClaw 同构**）：四态私聊 / 三态群 / 房白名单 / 触发词 / 风暴预算 / 消毒。
    纯函数、无 IO ⇒ 能被 Hub、探针、以及未来的任何渠道层复用（这也是"复刻语义而非渠道"的落点）。 */
 import { DM_POLICIES, GROUP_POLICIES, createLoopGuard, decideInbound, sanitizeInbound } from './channelPolicy.js';
@@ -102,8 +105,7 @@ export function normalizeBinding(input, existing) {
 		return allowed.includes(val) ? val : fallback;
 	};
 	const platform = pick('platform', BINDING_PLATFORMS, 'loopback');
-	const targetKind = String((input?.targetKind === undefined ? cur.targetKind : input.targetKind) ?? '').trim() === 'group'
-		? 'group' : 'agent';
+	const targetKind = 'agent';
 	const targetId = String((input?.targetId === undefined ? cur.targetId : input.targetId) ?? '').trim();
 	const chatId = String((input?.chatId === undefined ? cur.chatId : input.chatId) ?? '').trim();
 	const chatType = String((input?.chatType === undefined ? cur.chatType : input.chatType) ?? 'p2p').trim() === 'group'
@@ -206,14 +208,8 @@ async function assertBindingTarget(config, binding, deps) {
 		throw httpError(400, 'targetId 不能为空（要绑定哪个 bot / 群）。');
 	}
 	const scan = await deps.scanAgents(config);
-	if (binding.targetKind === 'agent') {
-		if (!scan.agents.some(a => String(a.id) === binding.targetId)) {
-			throw httpError(400, `没有这个 bot：${binding.targetId}`);
-		}
-		return;
-	}
-	if (deps.groupExists && !(await deps.groupExists(config, binding.targetId))) {
-		throw httpError(400, `没有这个群：${binding.targetId}`);
+	if (!scan.agents.some(a => String(a.id) === binding.targetId)) {
+		throw httpError(400, `没有这个 bot：${binding.targetId}`);
 	}
 }
 
@@ -446,9 +442,8 @@ export function findOutboundBindings(bindings, targetKind, targetId) {
 
 /**
  * 建 Hub。`deps`：
- *   · `scanAgents(config)` / `groupExists(config,id)` —— 校验目标
+ *   · `scanAgents(config)` —— 校验目标
  *   · `dispatchAgent(config, binding, msg)` —— 入站派给某个 bot（返回 { sessionId, messageId }）
- *   · `dispatchGroup(config, binding, msg)` —— 入站派给某个群
  *   · `log(level, msg)`
  *
  * 适配器通过 `register(adapter)` 注入；没注册的平台 ⇒ 出站如实失败（不假装成功）。
@@ -571,9 +566,7 @@ export function createBindingHub(deps) {
 		}
 		const safeMsg = { ...msg, content: cleaned.text };
 		try {
-			const r = binding.targetKind === 'group'
-				? await deps.dispatchGroup(deps.config, binding, safeMsg)
-				: await deps.dispatchAgent(deps.config, binding, safeMsg);
+			const r = await deps.dispatchAgent(deps.config, binding, safeMsg);
 			return { ok: true, reason: 'ok', key, binding, ...r };
 		} catch (e) {
 			log('warn', `入站派发失败（${platform}:${chatId}）：${String(e?.message ?? e)}`);

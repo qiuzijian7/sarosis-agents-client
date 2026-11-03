@@ -10,10 +10,10 @@
 //   name / description      →  preset 的 name / description（花名册里显示）
 //   body（Markdown 正文）    →  本包在**该 preset 作用域内再挂一次**（`config.persona`），
 //                              注册成一条系统提示词 section（`ctx.systemPrompt.section`）
-//   model                   →  `@deepseek-ai/dsh-agent-default-model` 行（provider + model）
-//                              ⚠️ 需要 `config.defaultProvider`（dsh 的 provider route 名，由 VsSaros 的
-//                              providers.sync 决定）。**没配就不写模型行**——宁可跟随默认，也不写一个
-//                              不存在的 route 让会话创建失败。
+//   model / model-assignment →  **不进 preset**（2026-11-03）：会话级选择，见 `lib/modelSelection.js`
+//                              （preset 里的 default-model 行在 dsh API 会话里没有消费方，从未生效）。
+//                              ⚠️ 裸模型名需要 `config.defaultProvider`（见 `modelRouteOf`）；路由不出来
+//                              就跟随默认模型，不写一个不存在的 route。
 //   tools                   →  **未映射**（v0）。dsh 侧的工具裁剪需要工具策略行的知识，本模块不猜。
 //   icon                    →  **页面头像**（2026-10-13 起）：emoji 原样保留，进 api/agents 与
 //                              /x/agents 页（底色按 id 哈希派生）；**不进 preset 定义**（dsh 的
@@ -39,8 +39,6 @@ export const PRESET_ID_PREFIX = 'vssaros-';
 /** 我们的包名——preset 里"人设行"要用它（同一包、另一份 config）。 */
 export const PERSONA_ROW_NAME = '@vssaros/dsh-agents';
 
-/** dsh 自带行：设定该 Agent 的默认模型。 */
-export const DEFAULT_MODEL_ROW_NAME = '@deepseek-ai/dsh-agent-default-model';
 // 子代理（control / list-agents / subagent / fork）与压缩三件套的行**不再在这里手写**：
 // 它们随共享基座（presetBase.generated.js，= 官方 standard 的全部行）一起来，见 `toPresetDefinition`。
 
@@ -197,15 +195,21 @@ export function presetIdOf(agentId) {
 }
 
 /**
- * 委派专用 preset 的 id（`.agent.md` 写了 `model-assignment` 时才存在）。
+ * `.agent.md` 的模型文本 → dsh 路由 `{ provider, model }`（路由不出来返回 undefined）。
  *
- * 为什么必须派生一个 preset：dsh 的 `session.create` 只认 `agentPreset`，**没有** model 覆盖参数
- * ⇒ "编排用强模型、委派用便宜模型"只能靠两条 preset（同人格/同工具，只有 `default-model` 行不同）。
- * 后缀用 `-assign`（与 `presetIdOf` 同一字符集，不引入新 id 形态）；万一和某个真实 agent 撞名，
- * `syncPresets` 会忽略派生并记一条 error（不静默）。
+ * `provider/model` 显式指定；裸模型名用 `config.defaultProvider`。
+ * ★ 2026-11-03：原来的委派专用 preset（`<preset>-assign`，只差一行 default-model）已移除——
+ *   那一行在 dsh API 会话里没有消费方，从未生效；模型改为会话级选择（`lib/modelSelection.js`）。
  */
-export function assignmentPresetIdOf(agentId) {
-	return `${presetIdOf(agentId)}-assign`;
+export function modelRouteOf(modelText, provider) {
+	const text = typeof modelText === 'string' ? modelText.trim() : '';
+	if (!text) {
+		return undefined;
+	}
+	const [maybeProvider, maybeModel] = text.includes('/') ? text.split('/', 2) : ['', text];
+	const route = maybeProvider.trim() || (typeof provider === 'string' ? provider.trim() : '');
+	const model = maybeModel.trim();
+	return route && model ? { provider: route, model } : undefined;
 }
 
 function listValue(value) {
@@ -231,8 +235,8 @@ export function agentFromFile(text, { id, file }) {
 	}
 	const model = listValue(meta.model)[0];
 	// 委派执行模型（2026-10-19，对齐 DSB 的 orchestrator / assignment 双模型）：
-	// `model-assignment: provider/model` 会让插件额外注册一条 `<preset>-assign`（同人格同工具、
-	// 只有模型不同），委派开的新会话用它；主会话仍用 `model`。留空 = 委派跟随主模型（旧行为 ✓）。
+	// `model-assignment: provider/model` = 委派开的新会话用的模型（会话级选择，见 lib/modelSelection.js）；
+	// 主会话仍用 `model`。留空 = 委派跟随主模型。
 	const modelAssignment = listValue(meta['model-assignment'])[0];
 	// role / skills（款 A mockup：sideview 角色标签 + hero 技能 chip）。真源 = agentMdFormat 的扩展字段
 	// `role` / `skills`。dsh 侧用逗号分隔口径（与 tools 一致）：`role: 检索`、`skills: anysearch, analysis`。
@@ -382,7 +386,10 @@ export function toDshTools(names) {
  * 而 agent 的 `skills:` 只能靠这个工具加载 ⇒ 藏了就等于技能全废。
  * （同名遮蔽在运行时还会再判一次，见 `allowlistDenyOf` 的 `shadowed`；这里是拿不到作用域视图时的兜底。）
  */
-export const ALWAYS_KEEP_TOOL_NAMES = Object.freeze(['skill']);
+export const ALWAYS_KEEP_TOOL_NAMES = Object.freeze(['skill',
+	// 2026-11-02：记忆写入口（Bot 记忆 + 工作区记忆）。提示词里告诉 agent "用 workspace_memory 记"，
+	// 而它是 host 层全局工具 ⇒ 写了 `tools:` 的 agent 会把它一起藏掉 ⇒ 提示与能力自相矛盾 ✗。
+	'workspace_memory']);
 
 /**
  * agent 的 `tools` allowlist → 要在 **agent 作用域** `restrict({ deny })` 的全局工具名。
@@ -449,7 +456,7 @@ export function rowIdsOf(rows) {
  *
  * · 工具白名单必须一致 —— 否则共用 preset 会让某个 agent 多看到别人的工具 ✗；
  * · **人设不进键**（人设由运行时投影切换，见 `personaProjection` / `personaSwitchMessage`）；
- * · **模型不进键**（preset 里的 `default-model` 只是默认值，实际路由可按 session 覆盖）。
+ * · **模型不进键**（2026-11-03 起模型已不在 preset 里，是会话级选择，见 `lib/modelSelection.js`）。
  *
  * ⚠ 空 tools（没声明白名单）⇒ key 为空串 ⇒ 这些 agent 天然同白名单 ⇒ 归到同一类 ✓（省得最多）。
  */
@@ -502,7 +509,7 @@ export function presetClusterIdOf(key) {
 /**
  * lazy 注册时，**启动就要注册**的那批 key（★ 2026-10-29）。
  *
- * key 形态：`<agentId>`（本体）/ `<agentId>::assign`（委派派生版）。三类必须先就位：
+ * key = `<agentId>`（2026-11-03 起不再有 `::assign` 委派派生版）。三类必须先就位：
  *   ① 委派清单引用的 preset（`tool-subagent` 激活时会 readDocument 清单里每个 id，缺一个整个 preset 起不来）；
  *   ② 最近会话用过的 preset（桌面窗口启动即恢复上次会话 ⇒ 它的 preset 不在 ⇒ 恢复失败）；
  *   ③ 不够 `max` 个时按扫描顺序补本体（让列表里至少有几个可选）。
@@ -516,16 +523,15 @@ export function presetClusterIdOf(key) {
  */
 export function pickLazyEagerKeys(wantedKeys, { delegatable = new Set(), recent = [], max = 3 } = {}) {
 	const keys = Array.isArray(wantedKeys) ? wantedKeys : [];
-	const presetOfKey = (key) => (key.endsWith('::assign') ? assignmentPresetIdOf(key.slice(0, -'::assign'.length)) : presetIdOf(key));
 	const recentSet = new Set(recent);
 	const out = new Set();
 	for (const key of keys) {
-		if (!key.endsWith('::assign') && delegatable.has(presetOfKey(key))) {
+		if (delegatable.has(presetIdOf(key))) {
 			out.add(key);
 		}
 	}
 	for (const key of keys) {
-		if (recentSet.has(presetOfKey(key))) {
+		if (recentSet.has(presetIdOf(key))) {
 			out.add(key);
 		}
 	}
@@ -533,9 +539,7 @@ export function pickLazyEagerKeys(wantedKeys, { delegatable = new Set(), recent 
 		if (out.size >= max) {
 			break;
 		}
-		if (!key.endsWith('::assign')) {
-			out.add(key);
-		}
+		out.add(key);
 	}
 	return out;
 }
@@ -566,20 +570,15 @@ export function toPresetDefinition(agent, options = {}) {
 		},
 	});
 	const provider = typeof options.provider === 'string' ? options.provider.trim() : '';
-	// `options.modelOverride` = 派生 preset（委派版）用它自己的模型；留空就用 agent 自己的 `model`
+	// ★ 2026-11-03：模型**不再进 preset**（原来的 default-model 行在 dsh API 会话里没有消费方，从未生效）；
+	//   运行时由 `lib/modelSelection.js` 在会话创建时按 `modelRouteOf` 做会话级选择。
+	//   这里只保留"路由不出来"的诊断（页面琥珀标 / resetModel 判据 / 新建向导校验都按这条 note 判）。
+	//   `options.modelOverride` = 只校验另一个模型文本（新建向导校验 `model-assignment` 用）。
 	const modelText = typeof options.modelOverride === 'string' && options.modelOverride.trim()
 		? options.modelOverride.trim()
 		: agent.model;
-	if (modelText) {
-		// `model` 允许写成 `provider/model` 显式指定；否则用 defaultProvider
-		const [maybeProvider, maybeModel] = modelText.includes('/') ? modelText.split('/', 2) : ['', modelText];
-		const route = maybeProvider.trim() || provider;
-		if (route && maybeModel.trim()) {
-			// 紧跟人设行（行序不影响语义，放前面只是 readDocument 里好找）
-			plugins.splice(1, 0, { id: 'default-model', name: DEFAULT_MODEL_ROW_NAME, config: { provider: route, model: maybeModel.trim() } });
-		} else {
-			notes.push(`模型未映射（agent.md 写了 model=${modelText}，但没配 config.defaultProvider 且不是 provider/model 形式）→ 该 preset 跟随默认模型`);
-		}
+	if (modelText && !modelRouteOf(modelText, provider)) {
+		notes.push(`模型未映射（agent.md 写了 model=${modelText}，但没配 config.defaultProvider 且不是 provider/model 形式）→ 该 preset 跟随默认模型`);
 	}
 	if (agent.tools.length) {
 		// tools 转 dsh 的工具 allowlist：运行时在 **agent 作用域** `restrict({ deny })`（见 lib/index.js 的
@@ -591,27 +590,22 @@ export function toPresetDefinition(agent, options = {}) {
 	}
 	// ── 上下文压缩：基座已带官方 `compaction` 组（compaction-basic + command-compact + tool-result-pruner，
 	//    group + isolate 形状、阈值与官方同值）⇒ 不再手抄（2026-10-21 那次 P0 就是手抄补上的）。
-	//    派生 preset（`-assign`）同样保留：委派会话同样会长，同样需要裁剪。
 	//
 	// ── 子代理（2026-10-19 起）：基座的 `delegation` 组 = 官方 control → list-agents → subagent → fork
 	//    + workflow-ptc / tool-workflow。这里只做差量：
 	//    · 本体 preset：`tool-subagent` 补 `backgroundMode: 'continuable'` 与动态清单 `allowedAgentPresets`；
 	//      `tool-subagent-fork` 补 `backgroundMode`（⚠ fork **不能**带清单：fork 继承父上下文，
 	//      `assertProvider` 会拒绝"继承上下文 + 独立选 preset"，直接抛错）。
-	//    · `subagents: false`（审查族"只有一个席位"）与派生 preset（`-assign`，不再 fan-out）：
-	//      **整组去掉**。为什么不能靠 tools 里不写 subagent 来关：`restrict()` 拦不住本 preset 作用域内
+	//    · `subagents: false`（审查族"只有一个席位"）：**整组去掉**。为什么不能靠 tools 里不写 subagent 来关：`restrict()` 拦不住本 preset 作用域内
 	//      挂的行（见上）⇒ 只能在装配层不给这一组 —— 提示词里的「One Seat」是意愿，这里才是真闸。
 	//    清单为空时**不带** `allowedAgentPresets` = 官方语义"继承父会话的 preset"（工具仍在，只是看不到
 	//    `agent_preset` 参数）；且清单一直为空时配置不变 ⇒ 新建/删除 agent 不触发重挂（churn=0）。
 	const allowed = Array.isArray(options.allowedAgentPresets)
 		? [...new Set(options.allowedAgentPresets.filter(id => typeof id === 'string' && id && id !== presetIdOf(agent.id)))].sort()
 		: [];
-	const isDerivedPreset = typeof options.idSuffix === 'string' && options.idSuffix !== '';
 	const delegationIndex = plugins.findIndex(row => row?.id === 'delegation');
-	if (isDerivedPreset || agent.subagents === false) {
-		if (agent.subagents === false) {
-			notes.push('subagents: false → 该 agent 不挂 delegation 组（subagent / fork / workflow；审查族只有一个席位）');
-		}
+	if (agent.subagents === false) {
+		notes.push('subagents: false → 该 agent 不挂 delegation 组（subagent / fork / workflow；审查族只有一个席位）');
 		if (delegationIndex >= 0) {
 			plugins.splice(delegationIndex, 1);
 		}
@@ -637,11 +631,9 @@ export function toPresetDefinition(agent, options = {}) {
 	if (missing.length) {
 		notes.push(`基座缺行：${missing.join(', ')}（跑 node dsh-plugins/preset-sync.mjs --write-agent-base）`);
 	}
-	const idSuffix = typeof options.idSuffix === 'string' ? options.idSuffix : '';
-	const nameSuffix = typeof options.nameSuffix === 'string' ? options.nameSuffix : '';
 	const definition = {
-		id: presetIdOf(agent.id) + idSuffix,
-		name: agent.name + nameSuffix,
+		id: presetIdOf(agent.id),
+		name: agent.name,
 		plugins,
 	};
 	// 人设行带上本 preset 的 id：运行时 allowlist 只认"会话 agentPreset == 本 id"的 agent（防误伤别的 preset）

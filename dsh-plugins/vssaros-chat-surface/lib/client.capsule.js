@@ -30,12 +30,30 @@ window.__ModuleLoader__.load({
 		const FOCUS_KEY = "vssaros.agents.focus";
 		const ROSTER_TTL_MS = 30000;
 		const VSSAROS_PREFIX = "vssaros-";
-		const MODE_PRESETS = ["standard", "ptc", "minimal", "cordis"];
+		/* vssaros:bot-identity v1 —— 逐字副本，真源 vssaros-agents/lib/core/botIdentity.js（守卫 dsh-plugins/check-bot-identity.mjs） */
+		const BOT_MODE_PRESET_IDS = ["standard", "ptc", "minimal", "cordis", "vssaros-standard", "vssaros-ptc", "vssaros-full", "vssaros-minimal", "vssaros-cordis"];
+		/** 是不是"可能属于某个 bot"的 preset（vssaros- 前缀且不是模式 preset）。 */
+		function isBotPresetId(presetId) {
+			const id = String(presetId || "").trim();
+			return id.indexOf("vssaros-") === 0 && id.length > 8 && BOT_MODE_PRESET_IDS.indexOf(id) < 0;
+		}
+		/** 会话属于哪个 bot：身份记录（presetId 与当前一致才采信）> 按 preset 推断（botId=null，调用方用花名册反查）。 */
+		function sessionBotOf(projectionValues) {
+			const pv = projectionValues || {};
+			const presetId = String(pv.agentPreset || "").trim();
+			if (!isBotPresetId(presetId)) { return { isBot: false, botId: null, presetId: presetId, source: "none" }; }
+			const rec = pv["vssaros-bot"];
+			const recBot = rec && typeof rec.botId === "string" ? rec.botId.trim() : "";
+			if (recBot && String(rec.presetId || "").trim() === presetId) {
+				return { isBot: true, botId: recBot, presetId: presetId, source: "record" };
+			}
+			return { isBot: true, botId: null, presetId: presetId, source: "preset" };
+		}
+		/* /vssaros:bot-identity */
 
 		/** 跑的是不是**我们的 agent**（判据与 client.agents.js 同口径）。 */
 		function isAgentPreset(presetId) {
-			const id = String(presetId || "");
-			return id.startsWith(VSSAROS_PREFIX) && MODE_PRESETS.indexOf(id.slice(VSSAROS_PREFIX.length)) < 0;
+			return isBotPresetId(presetId);
 		}
 
 		/**
@@ -139,8 +157,9 @@ window.__ModuleLoader__.load({
 				const [box, setBox] = react.useState(null); // {left, top} 相对 chip 容器
 				react.useEffect(() => subscribeSessions(() => force((n) => n + 1)), []);
 				const summary = readSummary(sid);
-				const presetId = summary && summary.projectionValues && summary.projectionValues.agentPreset;
-				const show = !!sid && isAgentPreset(presetId);
+				const bot = sessionBotOf(summary && summary.projectionValues);
+				const presetId = bot.presetId;
+				const show = !!sid && bot.isBot;
 				react.useEffect(() => {
 					if (!show) { return undefined; }
 					let dead = false;
@@ -197,7 +216,9 @@ window.__ModuleLoader__.load({
 					return () => { window.clearTimeout(t); };
 				}, [open]);
 				if (!show) { return null; }
-				const agent = (roster || []).find((a) => a && a.presetId === presetId) || null;
+				// 身份记录的 botId 优先匹配（第 3 步合并 preset 后多个 bot 会共用一个 presetId）；没有记录再按 presetId
+				const agent = (bot.botId && (roster || []).find((a) => a && a.id === bot.botId))
+					|| (roster || []).find((a) => a && a.presetId === presetId) || null;
 				// 名字：agents API 的名字 → preset id 去前缀（API 404 时的兜底；这就是 capsuleApiMissing 的可见后果 ✓）
 				const name = agent ? String(agent.name || agent.id) : presetId.slice(VSSAROS_PREFIX.length);
 				const icon = agent && agent.icon ? String(agent.icon) : name.slice(0, 1);

@@ -2452,9 +2452,8 @@ export class CodeApplication extends Disposable {
 		// macOS: eagerly register the embedded app with Launch Services
 		this.registerEmbeddedAppWithLaunchServices();
 
-		// 启动 agentmemory 内嵌网关子进程（新记忆框架）。
-		// agentmemory server 监听 127.0.0.1:3111，提供 BM25+Vector+Graph 混合搜索。
-		this.startAgentMemoryGateway();
+		// 2026-11-03：AgentMemory 整套下线（改用 dsh-memory-evolve）⇒ 不再 spawn 内嵌网关。
+		// startAgentMemoryGateway() 及其 helpers 暂留作归档代码，调用点此处移除即可完全停写 .agentmemory。
 	}
 
 	private registerEmbeddedAppWithLaunchServices(): void {
@@ -2519,7 +2518,11 @@ export class CodeApplication extends Disposable {
 	 *   - 子进程异常退出时记录 error，不影响其他功能
 	 *   - saros 退出时通过 SIGTERM 触发优雅关闭
 	 */
-	private startAgentMemoryGateway(): void {
+	/**
+	 * 2026-11-03：AgentMemory 整套下线，启动调用点已移除。保留为归档/诊断入口（改为 public，
+	 * 否则 `noUnusedLocals` 会对未调用的 private 方法报 TS6133）；正常启动不会再走到这里。
+	 */
+	startAgentMemoryGateway(): void {
 		try {
 			const appRoot = this.environmentMainService.appRoot;
 

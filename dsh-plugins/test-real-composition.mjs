@@ -30,7 +30,6 @@ const MATRIX = {
   'vssaros-kanban': ['kanban_list', 'kanban_create', 'kanban_update', 'kanban_complete', 'kanban_decompose', 'kanban_swarm', 'kanban_specify', 'web_recipe_create', 'web_recipe_list', 'web_recipe_remove'],  // 重构 4：kanban_decompose（2026-10-16 起）
   'vssaros-kb': ['kb_list', 'kb_search', 'kb_reindex', 'kb_read', 'kb_topic_overviews', 'kb_feishu_sync'],
   'vssaros-codebase': ['codebase_overview', 'codebase_search', 'codebase_deps', 'codebase_hotspots', 'codebase_self_index'],
-  'vssaros-memory': ['memory_remember', 'memory_recall', 'memory_search', 'memory_list'],
   'vssaros-workflow': ['workflow_list', 'workflow_get', 'workflow_update', 'workflow_engine_status'],
   'vssaros-dashboard': ['dashboard_session', 'dashboard_sessions'],
   'vssaros-skills': ['skill_manage', 'skill_search'],

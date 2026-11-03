@@ -39,6 +39,26 @@ window.__ModuleLoader__.load({
 
 		/** dsh 自带 preset（无 `vssaros-` 前缀）；用于分组显示。 */
 		const BUILTIN_PRESETS = ["standard", "ptc", "minimal", "cordis"];
+		/* vssaros:bot-identity v1 —— 逐字副本，真源 vssaros-agents/lib/core/botIdentity.js（守卫 dsh-plugins/check-bot-identity.mjs） */
+		const BOT_MODE_PRESET_IDS = ["standard", "ptc", "minimal", "cordis", "vssaros-standard", "vssaros-ptc", "vssaros-full", "vssaros-minimal", "vssaros-cordis"];
+		/** 是不是"可能属于某个 bot"的 preset（vssaros- 前缀且不是模式 preset）。 */
+		function isBotPresetId(presetId) {
+			const id = String(presetId || "").trim();
+			return id.indexOf("vssaros-") === 0 && id.length > 8 && BOT_MODE_PRESET_IDS.indexOf(id) < 0;
+		}
+		/** 会话属于哪个 bot：身份记录（presetId 与当前一致才采信）> 按 preset 推断（botId=null，调用方用花名册反查）。 */
+		function sessionBotOf(projectionValues) {
+			const pv = projectionValues || {};
+			const presetId = String(pv.agentPreset || "").trim();
+			if (!isBotPresetId(presetId)) { return { isBot: false, botId: null, presetId: presetId, source: "none" }; }
+			const rec = pv["vssaros-bot"];
+			const recBot = rec && typeof rec.botId === "string" ? rec.botId.trim() : "";
+			if (recBot && String(rec.presetId || "").trim() === presetId) {
+				return { isBot: true, botId: recBot, presetId: presetId, source: "record" };
+			}
+			return { isBot: true, botId: null, presetId: presetId, source: "preset" };
+		}
+		/* /vssaros:bot-identity */
 		/** VsSaros agent 的 preset id 前缀（见 `vssaros-agents/lib/core/agents.js` 的 PRESET_ID_PREFIX）。 */
 		const VSSAROS_PREFIX = "vssaros-";
 /**
@@ -430,7 +450,7 @@ const loadVisiblePresetIds = () => {
 			 * ⚠ 判据按 `BUILTIN_PRESETS` 推导（不是写死 `vssaros-standard`）⇒ 将来同步了别的官方预设
 			 *   （`vssaros-ptc` 等）也自动归到"模式" ✓。
 			 */
-			const isModePreset = (presetId) => !!presetId && BUILTIN_PRESETS.some((base) => presetId === VSSAROS_PREFIX + base);
+			const isModePreset = (presetId) => !!presetId && BOT_MODE_PRESET_IDS.indexOf(String(presetId)) >= 0;
 
 			/** 人格路由（agents 模块自带；与页面同在 dsh web server 上）。 */
 			const PERSONA_ROUTE = "/x/agents/api/persona";
