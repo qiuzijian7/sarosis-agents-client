@@ -38,8 +38,8 @@ const CSS = `
 	transition:background-color .12s;
 }
 .vssSchedTurnCard:hover { background:var(--dsw-alias-bg-layer-2, rgba(128,128,128,.14)); }
-/* ★ 2026-11-03：描边/激活别用 `--dsw-alias-brand-primary` —— 它在暗色主题下是
-   `neutral-bluish-1000`（最深蓝黑），大面积填充或描边会看不见（scheduler 开关全黑就是这么来的）。 */
+/* ★ 2026-11-03：描边/激活别用 --dsw-alias-brand-primary —— 它在暗色主题下是
+   neutral-bluish-1000（最深蓝黑），大面积填充或描边会看不见（scheduler 开关全黑就是这么来的）。 */
 .vssSchedTurnCard:focus-visible { outline:2px solid var(--dsw-alias-state-business-primary, #4c9aff); outline-offset:1px; }
 .vssSchedTurnCardGlyph { flex:0 0 auto; opacity:.75; }
 .vssSchedTurnCardTitle { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }

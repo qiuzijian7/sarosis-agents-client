@@ -76,16 +76,10 @@ window.__ModuleLoader__.load({
 						globalThis.__vssarosAgentsClient = { loaded: true, workbenchFailed: why };
 						console.warn(`[vssaros-agents] 工作台组件装载失败：${why}`);
 					});
-				// ★ 2026-11-02（Bots 工作台重构第 2 步）：右侧栏「Bot 设置」页签
-				//   （点聊天框右上角 Bot ⚙ 时由 chat-surface 撑开右栏并选中它）。
-				//   独立装载：它失败不该带走工作台页面（反之亦然）⇒ 各自 catch ✓。
-				require.async('./client.botSettings.js')
-					.then((part) => { if (part && typeof part.install === 'function') { part.install(ctx); } })
-					.catch((e) => {
-						const why = String((e && e.message) || e);
-						globalThis.__vssarosAgentsClient = Object.assign({}, globalThis.__vssarosAgentsClient, { botSettingsFailed: why });
-						console.warn(`[vssaros-agents] Bot 设置页签装载失败：${why}`);
-					});
+				// ⚠ 2026-11-03（用户要求「Bot 设置面板下线」）：原来这里 `require.async('./client.botSettings.js')`
+				//   装右侧栏「Bot 设置」页签。该页签与 chat-surface 右上角的 Bot ⚙ 一起下线 —— bot 配置统一走
+				//   chat-surface 的 Bot 身份入口，不再需要侧栏页签。⇒ chunk 文件已删、files 白名单已摘，
+				//   这里也不再装载（留着会 404，面板永远显示「装载失败」）。
 			} catch (e) {
 				const why = String((e && e.message) || e);
 				globalThis.__vssarosAgentsClient = { loaded: true, workbenchFailed: why };
