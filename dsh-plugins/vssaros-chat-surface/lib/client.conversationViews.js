@@ -118,7 +118,8 @@ window.__ModuleLoader__.load({
 				appearance: "none", cursor: "pointer", padding: "2px 12px", borderRadius: 6,
 				border: "1px solid var(--dsw-alias-brand-primary, #3794ff)",
 				background: "var(--dsw-alias-brand-primary, #3794ff)",
-				color: "#fff", fontSize: 11.5, lineHeight: "19px", fontWeight: 600,
+				// 文字色必须跟主题走：暗色主题的 brand-primary 接近白色，写死 #fff 会白字白底（2026-11-04 实测）。
+				color: "var(--dsw-alias-label-primary-foreground, #fff)", fontSize: 11.5, lineHeight: "19px", fontWeight: 600,
 			},
 			bar: {
 				height: 4, borderRadius: 2, overflow: "hidden", flex: "0 0 auto",
@@ -472,8 +473,8 @@ window.__ModuleLoader__.load({
 								changed.map((r, i) => react.createElement("div", {
 									key: "r" + i,
 									style: Object.assign({}, C.item, {
-										fontFamily: "var(--dsw-alias-font-mono, ui-monospace, Consolas, monospace)",
-										color: r.type === "del" ? "var(--dsw-alias-label-success, #3fb950)" : "var(--dsw-alias-label-danger, #f85149)",
+										fontFamily: "ui-monospace, Consolas, monospace",
+										color: r.type === "del" ? "var(--dsw-alias-state-success-primary, #3fb950)" : "var(--dsw-alias-state-error-primary, #f85149)",
 									}),
 								// 条目自带 Markdown 列表符（"- [日期] …"）⇒ 去掉，否则显示成 "+ - …" / "- - …" 很难读
 								}, (r.type === "del" ? "+ " : "- ") + String(r.text).replace(/^\s*[-*+]\s+/, "")))),
@@ -504,7 +505,7 @@ window.__ModuleLoader__.load({
 									key: c.hash,
 									style: Object.assign({}, C.item, {
 										display: "flex", gap: 8, alignItems: "center", cursor: "pointer",
-										outline: sel === c.hash ? "1px solid var(--dsw-alias-border-focus, #6e7681)" : "none",
+										outline: sel === c.hash ? "1px solid var(--dsw-alias-state-business-primary, #6e7681)" : "none",
 									}),
 									onClick: () => { setSel(sel === c.hash ? "" : c.hash); setConfirming(false); setErr(""); },
 								}, kids([
@@ -609,7 +610,7 @@ window.__ModuleLoader__.load({
 					react.createElement("i", {
 						style: Object.assign({}, C.barFill, {
 							width: pct + "%",
-							background: over ? "var(--dsw-alias-label-warning, #d29922)" : C.barFill.background,
+							background: over ? "var(--dsw-alias-state-warn-label, #d29922)" : C.barFill.background,
 						}),
 					}))
 				: null;
@@ -661,7 +662,7 @@ window.__ModuleLoader__.load({
 						onChange: (e) => setDraft(e && e.target ? e.target.value : ""),
 						style: Object.assign({}, C.input, {
 							width: "100%", minHeight: 220, boxSizing: "border-box",
-							fontFamily: "var(--dsw-alias-font-mono, ui-monospace, Consolas, monospace)", lineHeight: "18px",
+							fontFamily: "ui-monospace, Consolas, monospace", lineHeight: "18px",
 						}),
 					}),
 					react.createElement("div", { key: "ops", style: C.row }, kids([
@@ -752,11 +753,10 @@ window.__ModuleLoader__.load({
 			return react.createElement("div", { style: C.card }, kids([
 				react.createElement("div", { key: "r", style: C.row }, kids([
 					react.createElement("span", { key: "t", style: C.title }, "回合末自动提交快照"),
-					on === null ? null : react.createElement("span", { key: "s", style: on ? C.badgeOn : C.badge }, on ? "开" : "关"),
 					react.createElement("span", { key: "sp", style: C.grow }),
-					react.createElement("button", {
-						key: "b", type: "button", style: on ? C.btn : C.btnPrimary, disabled: busy || on === null, onClick: toggle,
-					}, busy ? "保存中…" : (on ? "关闭" : "开启")),
+					busy ? react.createElement("span", { key: "bz", style: C.tiny }, "保存中…") : null,
+					// 与记忆模块面板同一种开关（状态即控件），不再是「徽标显示状态 + 按钮执行动作」两套语义
+					on === null ? null : react.createElement(MemSwitch, { key: "b", checked: on === true, disabled: busy, label: "回合末自动提交快照", onChange: () => toggle() }),
 				])),
 				detail,
 				err ? react.createElement("div", { key: "e", style: Object.assign({}, C.err, { marginTop: 4 }) }, err) : null,
@@ -815,7 +815,7 @@ window.__ModuleLoader__.load({
 						react.createElement("button", { key: "s", type: "button", style: C.btnPrimary, disabled: saving || !data, onClick: save }, saving ? "保存中…" : "保存"),
 					])),
 					react.createElement("div", { key: "d", style: Object.assign({}, C.sub, { margin: "4px 0 8px" }) },
-						"工作区 MEMORY.md 的前 N 个字符注入到本工作区的**所有**会话（Bot 会话里排在 Bot 记忆之后）。0 = 关闭；范围 512~20000。"),
+						"工作区 MEMORY.md 的前 N 个字符会注入到本工作区的所有会话（Bot 会话里排在 Bot 记忆之后）。0 = 关闭；范围 512~20000。"),
 					react.createElement("div", { key: "r1", style: C.row }, kids([
 						react.createElement("span", { key: "l", style: C.sub }, "上限"),
 						react.createElement("input", {
@@ -898,58 +898,362 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * 「VsSaros Memory 模块」设置卡（★ 2026-11-03：两套页签合并）。
-		 * 原 evolve 的独立「Vssaros Memory 设置」页签已下线，它的运行时配置能力
-		 * 通过同源 /memory-evolve/api/config 接进本页，避免第二套页签。
-		 * 指南 / 待确认建议仍在 evolve 的「记忆」页签内，不在这里重复。
+		 * 「VsSaros Memory 模块」配置面板（★ 2026-11-03 两套页签合并；2026-11-04 扩成完整面板）。
+		 * 原 evolve「设置」页签的「配置」子页全部运行时键都在这里（同源 /memory-evolve/api/config），
+		 * 插件报错里的「请在『设置』Tab 的『配置』里打开 X」指的就是这里。
+		 * 分组表外的新键自动落进「其它」组 ⇒ 上游加了开关也不会在 UI 上消失。
+		 * 被 lockedOffKeys 锁定的项（响应里的 `locked`）显示为只读。
+		 * 指南 / 待确认建议在 evolve 的「记忆」页签内，不在这里重复。
 		 */
 		const MEM_CONFIG_API = "/memory-evolve/api/config";
 		const MEM_UPDATE_API = "/memory-evolve/api/update/status";
-		const MEM_TOGGLES = [
-			{ key: "perTurnProjectWrites", label: "每轮写项目进展" },
-			{ key: "perTurnDailyWrites", label: "每轮写今日日志" },
-			{ key: "perTurnKeyWrites", label: "每轮提交 KEY 建议" },
-			{ key: "perTurnWriteGuard", label: "写入守卫" },
-			{ key: "reviewEnabled", label: "记忆审查" },
-			{ key: "todoEnabled", label: "待办模块" },
-			{ key: "notifyEnabled", label: "通知" },
+		const MEM_GROUPS = [
+			{ id: "write", title: "每轮写入", open: true, hint: "快照按这些开关要求模型在回合末写记忆；每开一项，每个回合就多一次工具调用。", fields: [
+				{ key: "perTurnProjectWrites", label: "每轮写项目进展", hint: "target=project · 按项目累积的进展记录" },
+				{ key: "perTurnDailyWrites", label: "每轮写今日日志", hint: "target=daily · 按日期滚动的工作日志" },
+				{ key: "perTurnKeyWrites", label: "按需提交项目关键记忆建议", hint: "target=key · 进入待确认队列，人工确认后才注入" },
+				{ key: "perTurnWriteGuard", label: "漏写提醒", hint: "连续 N 轮没写就在快照里提醒；只在开了上面两项时有意义" },
+				{ key: "writeGuardThreshold", dep: "perTurnWriteGuard", label: "漏写提醒阈值", unit: "轮", type: "int", min: 1 },
+			] },
+			{ id: "review", title: "记忆审查", fields: [
+				{ key: "reviewEnabled", label: "回合内记忆审查", hint: "每隔几轮让模型回顾对话，提炼值得长期保留的内容" },
+				{ key: "reviewInterval", dep: "reviewEnabled", label: "审查间隔", unit: "轮", type: "int", min: 1 },
+				{ key: "reviewMode", dep: "reviewEnabled", label: "审查结果处理", type: "enum", options: [["suggest", "提建议，人工确认"], ["auto", "直接写入"]] },
+				{ key: "skillReviewEnabled", label: "新技能直接生效", hint: "关闭时新技能先进入待确认队列" },
+			] },
+			{ id: "key", title: "项目关键记忆注入", fields: [
+				{ key: "keyProgressiveDisclosure", label: "注入方式", hint: "条目多时只注入摘要，模型按需再读全文", type: "enum", options: [["off", "始终全文"], ["auto", "按数据量自动"], ["on", "始终摘要"]] },
+				{ key: "keyFullInjectThreshold", label: "全文注入条数上限", unit: "条", type: "int", min: 1 },
+				{ key: "keyFullInjectCharLimit", label: "全文注入字符上限", unit: "字符", type: "int", min: 1 },
+			] },
+			{ id: "modules", title: "功能模块", open: true, fields: [
+				{ key: "todoEnabled", label: "待办", hint: "dtodo 工具与「待办」页签" },
+				{ key: "modelsEnabled", label: "模型设置" },
+				{ key: "promptsEnabled", label: "提示词库" },
+				{ key: "bookmarkEnabled", label: "会话书签" },
+				{ key: "uiSettingsEnabled", label: "界面增强" },
+				{ key: "sessionEnabled", label: "会话编排", hint: "让模型创建、调度其它会话" },
+				{ key: "sessionSearchEnabled", label: "会话搜索", hint: "检索历史会话内容" },
+				{ key: "sessionImageQueryEnabled", label: "会话图片查询" },
+				{ key: "notifyEnabled", label: "渠道通知" },
+				{ key: "channelSendEnabled", label: "渠道直发" },
+				{ key: "broadcastEnabled", label: "会话广播", hint: "会话之间互发消息" },
+				{ key: "broadcastImageEnabled", dep: "broadcastEnabled", label: "广播允许带图片" },
+				{ key: "wsCoordEnabled", label: "工作区协调", hint: "多个会话同时改同一工作区时互相知会" },
+				{ key: "wsCoordEnforceWrite", dep: "wsCoordEnabled", label: "工作区协调：写入前强制检查" },
+				{ key: "wsCoordSnapshot", dep: "wsCoordEnabled", label: "工作区协调：注入快照" },
+			] },
+			{ id: "advisor", title: "Advisor 评审", fields: [
+				{ key: "advisorEnabled", label: "启用 Advisor", hint: "另一个模型旁听会话并给出评审意见" },
+				{ key: "advisorPanelEnabled", dep: "advisorEnabled", label: "显示悬浮面板" },
+				{ key: "advisorInfoInject", dep: "advisorEnabled", label: "注入 info 级意见" },
+				{ key: "advisorProvider", dep: "advisorEnabled", label: "供应商", hint: "留空 = 跟随会话", placeholder: "跟随会话", type: "str", nullable: true },
+				{ key: "advisorModel", dep: "advisorEnabled", label: "模型", hint: "留空 = 跟随会话", placeholder: "跟随会话", type: "str", nullable: true },
+				{ key: "advisorSteerSeverities", dep: "advisorEnabled", label: "会打断会话的级别", type: "multi", options: [["nit", "nit"], ["concern", "concern"], ["blocker", "blocker"]] },
+				{ key: "advisorImmuneTurns", dep: "advisorEnabled", label: "开局免评回合数", unit: "轮", type: "int", min: 0 },
+				{ key: "advisorMaxMessages", dep: "advisorEnabled", label: "每次带入消息数上限", unit: "条", type: "int", min: 0 },
+				{ key: "advisorMaxQueued", dep: "advisorEnabled", label: "排队上限", unit: "条", type: "int", min: 0 },
+				{ key: "advisorCallTimeoutMs", dep: "advisorEnabled", label: "调用超时", unit: "毫秒", type: "int", min: 1 },
+				{ key: "advisorSystemPrompt", dep: "advisorEnabled", label: "系统提示词", hint: "留空使用默认提示词", type: "text" },
+			] },
+			{ id: "unverified", title: "未通过 Windows 验证的模块", hint: "上游测试在 Windows 上未通过，已锁定为关闭。", fields: [
+				{ key: "canvasEnabled", label: "无限画板" },
+				{ key: "coiEnabled", label: "CLI 调度（COI）" },
+				{ key: "syncEnabled", label: "记忆同步" },
+				{ key: "searchDocsEnabled", label: "本地文件搜索" },
+				{ key: "searchDocsMode", dep: "searchDocsEnabled", label: "本地文件搜索范围", type: "enum", nullable: true, options: [["", "默认（跟随开关）"], ["all", "文件名 + 内容"], ["filename", "仅文件名"], ["content", "仅内容"], ["off", "关闭"]] },
+			] },
 		];
+		const MEM_KNOWN = new Set(MEM_GROUPS.flatMap((g) => g.fields.map((f) => f.key)).concat(["memoryTabEnabled"]));
+		// 控件统一 26px 高；边框用 border-l3（border-l1 只有 4% 透明度，输入框几乎看不出能编辑）
+		const MEM_INPUT = {
+			height: 26, padding: "0 8px", borderRadius: 6, fontSize: 12, boxSizing: "border-box",
+			border: "1px solid var(--dsw-alias-border-l3, rgba(128,128,128,.35))",
+			background: "var(--dsw-alias-bg-layer-2, transparent)",
+			color: "var(--dsw-alias-label-primary, currentColor)",
+		};
+		const MEM_S = {
+			head: { display: "flex", alignItems: "flex-start", gap: 10, flexWrap: "wrap" },
+			headText: { display: "flex", flexDirection: "column", gap: 2, flex: "1 1 200px", minWidth: 0 },
+			headTools: { display: "flex", alignItems: "center", gap: 8, flex: "0 1 auto" },
+			group: { borderTop: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.2))", marginTop: 10, paddingTop: 6 },
+			// display:flex 会去掉 Chromium 的原生三角，改用自绘箭头（能跟主题色走）
+			summary: { display: "flex", alignItems: "center", gap: 6, cursor: "pointer", listStyle: "none", userSelect: "none", padding: "4px 0" },
+			chevron: { display: "inline-block", width: 12, textAlign: "center", fontSize: 9, color: "var(--dsw-alias-label-tertiary, currentColor)", transition: "transform .12s" },
+			groupTitle: { fontWeight: 600, fontSize: 12.5 },
+			meta: { color: "var(--dsw-alias-label-tertiary, rgba(128,128,128,.8))", fontSize: 11 },
+			groupHint: { color: "var(--dsw-alias-label-tertiary, rgba(128,128,128,.8))", fontSize: 11, lineHeight: "16px", padding: "0 0 4px 18px" },
+			row: { display: "flex", alignItems: "center", gap: 12, padding: "7px 0 7px 18px", minHeight: 34, boxSizing: "border-box", borderTop: "1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.12))" },
+			labelBox: { display: "flex", flexDirection: "column", gap: 2, flex: "1 1 auto", minWidth: 0 },
+			label: { color: "var(--dsw-alias-label-primary, currentColor)", fontSize: 12, lineHeight: "18px" },
+			hint: { color: "var(--dsw-alias-label-tertiary, rgba(128,128,128,.8))", fontSize: 11, lineHeight: "16px" },
+			ctl: { display: "flex", alignItems: "center", gap: 6, flex: "0 0 auto" },
+			unit: { color: "var(--dsw-alias-label-tertiary, rgba(128,128,128,.8))", fontSize: 11 },
+			saved: { color: "var(--dsw-alias-state-success-primary, #3fb950)", fontSize: 11 },
+			lock: {
+				display: "inline-flex", alignItems: "center", padding: "0 6px", borderRadius: 999, fontSize: 10.5, lineHeight: "16px", marginLeft: 6, verticalAlign: "1px",
+				background: "var(--dsw-alias-state-warn-tertiary, rgba(255,170,0,.15))", color: "var(--dsw-alias-state-warn-label, #b8860b)",
+			},
+		};
+
+		/** 作用域分区标题（「本会话」/「全局」），细线延伸到右侧。 */
+		function SectionLabel(props) {
+			return react.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginTop: 4 } }, kids([
+				react.createElement("span", { key: "t", style: { fontSize: 11, fontWeight: 600, color: "var(--dsw-alias-label-tertiary, rgba(128,128,128,.8))", whiteSpace: "nowrap" } }, props.text),
+				react.createElement("span", { key: "l", style: { flex: "1 1 auto", height: 1, background: "var(--dsw-alias-border-l2, rgba(128,128,128,.2))" } }),
+			]));
+		}
+
+		/**
+		 * 开关：状态即控件（role=switch + aria-checked），旁边带「开 / 关」文字。
+		 * 关态轨道用 label-caption（亮：中灰 / 暗：深灰），border-l 系列太淡、白色滑块看不清。
+		 */
+		function MemSwitch(props) {
+			const on = props.checked === true;
+			const disabled = !!props.disabled;
+			return react.createElement("button", {
+				type: "button", role: "switch", "aria-checked": on ? "true" : "false", "aria-label": props.label || "",
+				disabled, title: props.title || "",
+				onClick: () => { if (!disabled) { props.onChange(!on); } },
+				style: {
+					display: "inline-flex", alignItems: "center", gap: 6, padding: 0, margin: 0, border: "none", background: "transparent",
+					cursor: disabled ? "not-allowed" : "pointer", color: "inherit", font: "inherit",
+				},
+			}, kids([
+				react.createElement("span", {
+					key: "tr", "aria-hidden": "true",
+					style: {
+						position: "relative", display: "inline-block", width: 30, height: 18, borderRadius: 9, flex: "0 0 auto", transition: "background .15s",
+						background: on ? "var(--dsw-alias-brand-primary, #3794ff)" : "var(--dsw-alias-label-caption, rgba(128,128,128,.5))",
+					},
+				}, react.createElement("span", {
+					style: {
+						position: "absolute", top: 2, left: on ? 14 : 2, width: 14, height: 14, borderRadius: "50%", transition: "left .15s",
+						boxShadow: "0 1px 2px rgba(0,0,0,.25)",
+						// 关态滑块用卡片底色：switch-thumb 在暗色下是中灰，压在中灰轨道上几乎看不出位置
+						background: on ? "var(--dsw-alias-label-primary-foreground, #fff)" : "var(--dsw-alias-bg-layer-1, #fff)",
+					},
+				})),
+				react.createElement("span", {
+					key: "tx",
+					style: { fontSize: 11.5, minWidth: 14, color: on ? "var(--dsw-alias-label-primary, currentColor)" : "var(--dsw-alias-label-tertiary, rgba(128,128,128,.8))" },
+				}, on ? "开" : "关"),
+			]));
+		}
+
+		/** 推断「其它」组里未登记键的控件类型（只读展示数组/对象，避免误改）。 */
+		function memFieldFor(key, value) {
+			if (typeof value === "boolean") { return { key, label: key }; }
+			if (typeof value === "number") { return { key, label: key, type: "int", min: 0 }; }
+			if (typeof value === "string" || value === null) { return { key, label: key, type: "str", nullable: value === null }; }
+			return { key, label: key, type: "readonly" };
+		}
+
+		/**
+		 * 单个配置项：左侧标签 + 常驻说明（不再藏在 title 悬停里），右侧控件 + 单位 + 保存状态；
+		 * 出错时错误写在这一行下面（页面很长，顶部横幅在底部改动时看不到）。
+		 * 数字/文本先在本地编辑，失焦或回车才提交（避免每敲一个字就保存一次）。
+		 */
+		function MemField(props) {
+			const f = props.field;
+			const value = props.value;
+			const locked = props.locked;
+			const disabled = props.pending || locked;
+			const type = f.type || "bool";
+			const [draft, setDraft] = react.useState(value === null || value === undefined ? "" : String(value));
+			react.useEffect(() => { setDraft(value === null || value === undefined ? "" : String(value)); }, [value]);
+			// raw：失焦/回车时直接取输入框当前值。
+			const commitText = (raw) => {
+				const text = typeof raw === "string" ? raw : draft;
+				const cur = value === null || value === undefined ? "" : String(value);
+				if (text === cur) { return; }
+				if (type === "int") {
+					const n = Number(text);
+					if (text.trim() === "" || !Number.isInteger(n) || n < (f.min ?? 0)) {
+						props.onError(f.label + "：必须是 ≥ " + (f.min ?? 0) + " 的整数");
+						setDraft(cur);
+						return;
+					}
+					props.onSave(f.key, n);
+					return;
+				}
+				props.onSave(f.key, f.nullable && text.trim() === "" ? null : text);
+			};
+			const labelBox = react.createElement("div", { key: "lb", style: MEM_S.labelBox }, kids([
+				react.createElement("span", { key: "l", style: MEM_S.label, title: f.key }, kids([
+					f.label,
+					locked ? react.createElement("span", { key: "lk", style: MEM_S.lock }, "已锁定") : null,
+				])),
+				f.hint ? react.createElement("span", { key: "h", style: MEM_S.hint }, f.hint) : null,
+				// 父开关关着时这项不起作用 —— 仍可预先调好，只是说清楚
+				props.depOff ? react.createElement("span", { key: "dp", style: MEM_S.hint }, "需先开启「" + props.depOff + "」才生效") : null,
+				props.error ? react.createElement("span", { key: "e", style: C.err, role: "alert" }, props.error) : null,
+			]));
+			const status = props.pending
+				? react.createElement("span", { key: "st", style: MEM_S.unit }, "保存中…")
+				: props.saved ? react.createElement("span", { key: "st", style: MEM_S.saved }, "已保存") : null;
+			const rowStyle = Object.assign({}, MEM_S.row, props.first ? { borderTop: "none" } : {}, locked ? { opacity: 0.62 } : props.depOff ? { opacity: 0.72 } : {});
+
+			if (type === "text") {
+				return react.createElement("div", {
+					style: Object.assign({}, rowStyle, { flexDirection: "column", alignItems: "stretch", gap: 6 }), "data-vssaros-memcfg": f.key,
+				}, kids([
+					labelBox,
+					react.createElement("textarea", {
+						key: "t", disabled, rows: 4, "aria-label": f.label,
+						style: Object.assign({}, MEM_INPUT, { height: "auto", minHeight: 72, padding: "6px 8px", width: "100%", resize: "vertical", fontFamily: "inherit", lineHeight: "18px" }),
+						value: draft, onChange: (e) => setDraft(e.target.value),
+					}),
+					react.createElement("div", { key: "b", style: Object.assign({}, MEM_S.ctl, { justifyContent: "flex-end" }) }, kids([
+						status,
+						react.createElement("button", { key: "s", type: "button", disabled: disabled || draft === (value || ""), style: C.btn, onClick: () => commitText() }, "保存"),
+					])),
+				]));
+			}
+
+			let control;
+			if (type === "bool") {
+				control = react.createElement(MemSwitch, {
+					key: "c", checked: value === true, disabled, label: f.label,
+					title: locked ? "已锁定：该功能未通过当前平台验证" : "",
+					onChange: (next) => props.onSave(f.key, next),
+				});
+			} else if (type === "enum") {
+				control = react.createElement("select", {
+					key: "c", disabled, "aria-label": f.label, style: Object.assign({}, MEM_INPUT, { paddingRight: 4, maxWidth: 200 }),
+					value: value === null || value === undefined ? "" : String(value),
+					onChange: (e) => props.onSave(f.key, f.nullable && e.target.value === "" ? null : e.target.value),
+				}, f.options.map(([v, l]) => react.createElement("option", { key: v, value: v }, l)));
+			} else if (type === "multi") {
+				const cur = Array.isArray(value) ? value : [];
+				control = react.createElement("span", { key: "c", style: Object.assign({}, C.row, { gap: 10 }) }, f.options.map(([v, l]) => react.createElement("label", {
+					key: v, style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, cursor: disabled ? "not-allowed" : "pointer" },
+				}, kids([
+					react.createElement("input", {
+						key: "c", type: "checkbox", disabled, checked: cur.includes(v), style: { margin: 0, accentColor: "var(--dsw-alias-brand-primary, #3794ff)" },
+						onChange: () => {
+							const next = cur.includes(v) ? cur.filter((x) => x !== v) : cur.concat([v]);
+							if (next.length === 0) { props.onError(f.label + "：至少保留一项"); return; }
+							props.onSave(f.key, next);
+						},
+					}),
+					l,
+				]))));
+			} else if (type === "readonly") {
+				control = react.createElement("span", { key: "c", style: C.tiny }, JSON.stringify(value));
+			} else {
+				control = react.createElement("input", {
+					key: "c", disabled, "aria-label": f.label, type: type === "int" ? "number" : "text", min: type === "int" ? (f.min ?? 0) : undefined,
+					style: Object.assign({}, MEM_INPUT, { width: type === "int" ? 88 : 180, textAlign: type === "int" ? "right" : "left" }),
+					value: draft, placeholder: f.placeholder || "",
+					onChange: (e) => setDraft(e.target.value),
+					onBlur: (e) => commitText(e.target.value),
+					onKeyDown: (e) => { if (e.key === "Enter") { e.target.blur(); } },
+				});
+			}
+			return react.createElement("div", { style: rowStyle, "data-vssaros-memcfg": f.key }, kids([
+				labelBox,
+				react.createElement("div", { key: "ct", style: MEM_S.ctl }, kids([
+					status,
+					control,
+					f.unit ? react.createElement("span", { key: "u", style: MEM_S.unit }, f.unit) : null,
+				])),
+			]));
+		}
+
 		function MemoryModuleCard(props) {
 			const say = props.say;
 			const [state, reload] = useLoader(() => getJson(MEM_CONFIG_API), []);
 			const [ver] = useLoader(() => getJson(MEM_UPDATE_API), []);
-			const [busy, setBusy] = react.useState(false);
-			const [err, setErr] = react.useState("");
-			const cfg = state.data && state.data.config ? state.data.config : null;
-			const toggle = (key) => {
-				if (!cfg) { return; }
-				setBusy(true);
-				setErr("");
-				postJson(MEM_CONFIG_API, { patch: { [key]: !(cfg[key] === true) } })
-					.then(() => { if (say) { say("记忆模块配置已更新：" + key); } reload(); })
-					.catch((e) => setErr("保存失败：" + explainLoadError(String((e && e.message) || e))))
-					.then(() => setBusy(false));
+			const [saved, setSaved] = react.useState(null);
+			// 只锁正在保存的那一项（以前一保存就把 43 项全部禁用，整卡闪一下）
+			const [pendingKey, setPendingKey] = react.useState("");
+			const [savedKey, setSavedKey] = react.useState("");
+			const [fieldErr, setFieldErr] = react.useState({ key: "", msg: "" });
+			const [query, setQuery] = react.useState("");
+			const [openMap, setOpenMap] = react.useState(() => Object.fromEntries(MEM_GROUPS.map((g) => [g.id, g.open === true])));
+			const timer = react.useRef(null);
+			react.useEffect(() => () => { if (timer.current) { clearTimeout(timer.current); } }, []);
+			const cfg = saved || (state.data && state.data.config ? state.data.config : null);
+			const locked = new Set(state.data && Array.isArray(state.data.locked) ? state.data.locked : []);
+			const save = (key, value) => {
+				setPendingKey(key);
+				setFieldErr({ key: "", msg: "" });
+				postJson(MEM_CONFIG_API, { patch: { [key]: value } })
+					.then((body) => {
+						// POST 回的是**完整运行时配置**（含 memoryDir / toolName 等静态键）。只合并 GET 时就有的键，
+						// 否则静态键会混进「其它」组，点它们必然 400（2026-11-04 真机发现）。
+						const base = cfg || {};
+						if (body && body.config) { setSaved(Object.fromEntries(Object.keys(base).map((k) => [k, k in body.config ? body.config[k] : base[k]]))); } else { reload(); }
+						setSavedKey(key);
+						if (timer.current) { clearTimeout(timer.current); }
+						timer.current = setTimeout(() => setSavedKey(""), 1600);
+						if (say) { say("记忆模块配置已更新：" + key); }
+					})
+					.catch((e) => setFieldErr({ key, msg: "保存失败：" + explainLoadError(String((e && e.message) || e)) }))
+					.then(() => setPendingKey(""));
 			};
-			const version = ver.data && ver.data.status ? String(ver.data.status) : "";
+			const status = ver.data && ver.data.status ? String(ver.data.status) : "";
+			const q = query.trim().toLowerCase();
+			const matches = (f) => !q || [f.label, f.key, f.hint || "", f.unit || ""].some((s) => String(s).toLowerCase().includes(q));
+			const extra = cfg ? Object.keys(cfg).filter((k) => !MEM_KNOWN.has(k)).sort().map((k) => memFieldFor(k, cfg[k])) : [];
+			const groups = extra.length > 0 ? MEM_GROUPS.concat([{ id: "other", title: "其它", fields: extra }]) : MEM_GROUPS;
+			let shown = 0;
+			const labelOf = (key) => { for (const g of MEM_GROUPS) { const hit = g.fields.find((x) => x.key === key); if (hit) { return hit.label; } } return key; };
+			const groupEls = cfg ? groups.map((g) => {
+				const all = g.fields.filter((f) => f.key in cfg);
+				const fields = all.filter(matches);
+				if (fields.length === 0) { return null; }
+				shown += fields.length;
+				const open = q ? true : openMap[g.id] === true;
+				// 组标题右侧显示「已开 n / m」（以前的「(15)」只是项数，看不出开了几个）
+				const bools = all.filter((f) => (f.type || "bool") === "bool");
+				const lockedBools = bools.filter((f) => locked.has(f.key)).length;
+				const meta = bools.length > 0 && lockedBools === bools.length
+					? "已锁定"
+					: bools.length > 0 ? "已开 " + bools.filter((f) => cfg[f.key] === true).length + " / " + bools.length : all.length + " 项";
+				return react.createElement("details", {
+					key: g.id, open, style: MEM_S.group, "data-vssaros-memcfg-group": g.id,
+					onToggle: (e) => { if (!q) { const o = e.currentTarget.open; setOpenMap((m) => Object.assign({}, m, { [g.id]: o })); } },
+				}, kids([
+					react.createElement("summary", { key: "s", style: MEM_S.summary }, kids([
+						react.createElement("span", { key: "c", "aria-hidden": "true", style: Object.assign({}, MEM_S.chevron, { transform: open ? "rotate(90deg)" : "none" }) }, "▶"),
+						react.createElement("span", { key: "t", style: MEM_S.groupTitle }, g.title),
+						react.createElement("span", { key: "sp", style: C.grow }),
+						react.createElement("span", { key: "m", style: MEM_S.meta }, q ? "匹配 " + fields.length + " 项" : meta),
+					])),
+					g.hint ? react.createElement("div", { key: "h", style: MEM_S.groupHint }, g.hint) : null,
+					react.createElement("div", { key: "f" }, fields.map((f, i) => react.createElement(MemField, {
+						key: f.key, field: f, value: cfg[f.key], locked: locked.has(f.key), first: i === 0,
+						depOff: f.dep && !locked.has(f.key) && cfg[f.dep] !== true ? labelOf(f.dep) : "",
+						pending: pendingKey === f.key, saved: savedKey === f.key,
+						error: fieldErr.key === f.key ? fieldErr.msg : "",
+						onSave: save, onError: (m) => setFieldErr({ key: f.key, msg: m }),
+					}))),
+				]));
+			}) : [];
 			return react.createElement("div", { style: C.card, "data-vssaros-view": "memory-module-settings" }, kids([
-				react.createElement("div", { key: "h", style: C.row }, kids([
-					react.createElement("span", { key: "t", style: C.title }, "VsSaros Memory 模块"),
-					react.createElement("span", { key: "sp", style: C.grow }),
-					version ? react.createElement("span", { key: "v", style: C.badge }, "更新状态：" + version) : null,
+				react.createElement("div", { key: "h", style: MEM_S.head }, kids([
+					react.createElement("div", { key: "tx", style: MEM_S.headText }, kids([
+						react.createElement("span", { key: "t", style: C.title }, "记忆模块"),
+						react.createElement("span", { key: "s", style: MEM_S.hint }, "改动即时生效并持久化。指南与待确认的记忆建议在「记忆」页签。"),
+					])),
+					react.createElement("div", { key: "tools", style: MEM_S.headTools }, kids([
+						react.createElement("input", {
+							key: "q", type: "search", placeholder: "搜索设置", "aria-label": "搜索记忆模块设置", value: query,
+							"data-vssaros-memcfg-search": "1",
+							style: Object.assign({}, MEM_INPUT, { width: 160 }),
+							onChange: (e) => setQuery(e.target.value),
+						}),
+						status ? react.createElement("span", { key: "v", style: C.badge, title: "内置插件随 VsSaros 一起更新" }, status === "unsupported" ? "随 VsSaros 更新" : "更新状态：" + status) : null,
+					])),
 				])),
-				state.error ? react.createElement("div", { key: "e", style: C.err }, "读取失败：" + explainLoadError(state.error)) : null,
-				err ? react.createElement("div", { key: "e2", style: C.err }, err) : null,
-				...MEM_TOGGLES.map((m) => react.createElement("div", { key: m.key, style: C.row }, kids([
-					react.createElement("span", { key: "t", style: C.sub }, m.label),
-					react.createElement("span", { key: "sp", style: C.grow }),
-					react.createElement("button", {
-						key: "b", type: "button", disabled: busy || !cfg,
-						style: cfg && cfg[m.key] === true ? C.btnPrimary : C.btn,
-						onClick: () => toggle(m.key),
-					}, cfg ? (cfg[m.key] === true ? "开" : "关") : "—"),
-				]))),
-				react.createElement("div", { key: "n", style: Object.assign({}, C.tiny, { marginTop: 4 }) },
-					"原「Vssaros Memory 设置」页签已并入此处；指南、待确认建议与版本详情在「记忆」页签内。"),
+				state.loading && !cfg ? react.createElement("div", { key: "ld", style: Object.assign({}, C.tiny, { marginTop: 8 }) }, "加载中…") : null,
+				state.error ? react.createElement("div", { key: "e", style: Object.assign({}, C.err, { marginTop: 8 }) }, "读取失败：" + explainLoadError(state.error)) : null,
+				...groupEls.filter(Boolean),
+				cfg && q && shown === 0
+					? react.createElement("div", { key: "nm", style: Object.assign({}, C.tiny, { marginTop: 10 }) }, "没有匹配「" + query.trim() + "」的设置项。")
+					: null,
 			]));
 		}
 
@@ -963,12 +1267,15 @@ window.__ModuleLoader__.load({
 				: react.createElement(WorkspaceSettingsPane, { key: "ws:" + pick.cwd, cwd: pick.cwd, say: props.__vssarosSay });
 			return react.createElement("div", { style: C.root, "data-vssaros-view": "bot-settings", "data-vssaros-memory-scope": pick.scope },
 				kids([
+					// 作用域分区：上半部分随「工作区 | Bot」切换，下半部分是全局设置 —— 不标出来就像分段在管整页
+					react.createElement(SectionLabel, { key: "sec-scope", text: "本会话" }),
 					pick.bar,
 					// ★ 2026-11-03：Bot 配置（名称/描述/角色/模型/人设/技能）→ 只有 Bot 段才有
 					pick.scope === "bot" && pick.agentId
 						? react.createElement(BotConfigCard, { key: "cfg", agentId: pick.agentId, say: props.__vssarosSay })
 						: null,
 					pane,
+					react.createElement(SectionLabel, { key: "sec-global", text: "全局（所有会话与工作区共用）" }),
 					// ★ 2026-11-03：evolve 的「Vssaros Memory 设置」页签并入本页（全局卡，两段都显示）
 					react.createElement(MemoryModuleCard, { key: "mem-module", say: props.__vssarosSay }),
 				]));
@@ -1636,6 +1943,7 @@ window.__ModuleLoader__.load({
 		exports.__test = {
 			SLOT, IDS, ORDERS, OFFICIAL, WS_API,
 			isAgentPreset, agentIdOf, cwdOf, isUnder, rootOptionsFor, parseMemory, sizeLabel, explainLoadError, TODO_GROUPS,
+			MemoryModuleCard, MEM_GROUPS, SettingsView,
 		};
 		return module.exports;
 	},
