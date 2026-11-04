@@ -243,6 +243,9 @@ export function installApi(ctx, deps) {
             ...Object.fromEntries(RUNTIME_KEYS.map((key) => [key, runtime[key]])),
             memoryTabEnabled: runtime.memoryTabEnabled,
           },
+          // VsSaros（2026-11-04）：被 lockedOffKeys 锁定的开关，面板据此显示为不可改。
+          // 放在 config 外面：config 会被面板原样回传为 patch，混进非运行时键会被拒绝。
+          locked: Array.isArray(deps.config?.lockedOffKeys) ? [...deps.config.lockedOffKeys] : [],
         })
         return
       }

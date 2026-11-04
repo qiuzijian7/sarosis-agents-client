@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { createServer } from 'node:http'
 import { apply, gitBranch, gitBranchList, inject, resolveConfig, renderSnapshot, resolveRevealTarget, toWindowsPath, RUNTIME_KEYS, validateRuntimePatch } from '../lib/index.js'
 import { setLocale, getLocale } from '../lib/i18n.js'
 import { installCanvas } from '../lib/canvas.js'
@@ -206,6 +207,111 @@ test('resolveConfig defaults and validation', () => {
   assert.throws(() => resolveConfig({ searchDocsExts: ['BAD*'] }), /searchDocsExts/)
   assert.throws(() => resolveConfig({ searchDocsProviders: [] }), /searchDocsProviders/)
   assert.throws(() => resolveConfig('x'), /对象/)
+})
+
+test('skillManageEnabled:false：不注册技能工具，快照也不提它', () => {
+  const dir = tempDir()
+  const ctx = fakeCtx()
+  apply(ctx, { memoryDir: dir, skillManageEnabled: false })
+  assert.ok(ctx.state.tools.some((t) => t.name === 'memory'), 'memory 工具仍注册')
+  assert.ok(!ctx.state.tools.some((t) => t.name === 'skill_manage'), '不与 @vssaros/dsh-skills 撞名')
+  const config = resolveConfig({ memoryDir: dir, skillManageEnabled: false, reviewEnabled: true })
+  const store = new MemoryStore(config.memoryDir, config)
+  const snapshot = renderSnapshot(config, store, { id: 'a', session: { header: { cwd: dir } } })
+  assert.ok(snapshot.includes('## 记忆 vssaros-memory（包含 memory 工具、dtodo 待办工具）'), snapshot.slice(0, 200))
+  assert.ok(!snapshot.includes('skill_manage'), '快照不得引导模型调用未注册的工具')
+  clean(dir)
+})
+
+test('快照里的技能工具名取配置，不写死', () => {
+  const dir = tempDir()
+  const config = resolveConfig({ memoryDir: dir, skillManageToolName: 'custom_skill', reviewEnabled: true })
+  const store = new MemoryStore(config.memoryDir, config)
+  const snapshot = renderSnapshot(config, store, { id: 'a', session: { header: { cwd: dir } } })
+  assert.ok(snapshot.includes('custom_skill 技能工具'))
+  assert.ok(snapshot.includes('技能用 custom_skill 创建/优化'))
+  clean(dir)
+})
+
+test('审查到期提示：技能工具名取配置，未注册时不提技能工具', () => {
+  const dir = tempDir()
+  const agent = { id: 'a', session: { header: { cwd: dir } } }
+  const due = { turnsOf: () => 99 }
+  const render = (extra) => {
+    const config = resolveConfig({ memoryDir: dir, reviewEnabled: true, ...extra })
+    return renderSnapshot(config, new MemoryStore(config.memoryDir, config), agent, due)
+  }
+  const off = render({ skillManageEnabled: false })
+  assert.ok(off.includes('⚠️ **记忆审查已到期**'), '到期提示仍在')
+  assert.ok(!/skill_manage/.test(off), '不得引导模型调用未注册的技能工具')
+  const custom = render({ skillManageToolName: 'custom_skill' })
+  assert.ok(custom.includes('技能用 custom_skill 创建/优化；完成后'), '到期提示里的工具名取配置')
+  assert.ok(!custom.includes('de_skill_manage'))
+  clean(dir)
+})
+
+test('lockedOffKeys：写错键名报错，且静态配置被强制关闭', () => {
+  assert.throws(() => resolveConfig({ lockedOffKeys: 'coiEnabled' }), /lockedOffKeys/)
+  assert.throws(() => resolveConfig({ lockedOffKeys: ['nope'] }), /无效键/)
+  assert.throws(() => resolveConfig({ lockedOffKeys: ['writeGuardThreshold'] }), /无效键/)
+  const config = resolveConfig({ searchDocsEnabled: true, lockedOffKeys: ['searchDocsEnabled'] })
+  assert.equal(config.searchDocsEnabled, false)
+})
+
+test('lockedOffKeys：历史状态文件里的 true 不能让功能复活（有对照）', () => {
+  const run = (lockedOffKeys) => {
+    const dir = tempDir()
+    writeFileSync(join(dir, 'plugin-state.json'), JSON.stringify({ searchDocsEnabled: true }))
+    const ctx = fakeCtx()
+    apply(ctx, { memoryDir: dir, searchDocsProviders: ['walk'], lockedOffKeys })
+    const name = resolveConfig({}).searchDocsToolName
+    const registered = ctx.state.tools.some((t) => t.name === name)
+    clean(dir)
+    return registered
+  }
+  assert.equal(run([]), true, '对照：不锁定时状态文件确实能打开它')
+  assert.equal(run(['searchDocsEnabled']), false, '锁定后不注册')
+})
+
+test('内置包自带 patch 的产品默认值：能通过校验且不注册技能工具', () => {
+  const text = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  for (const line of ['skillManageEnabled: false', 'snapshotRequireTools: true', 'perTurnDailyWrites: false', 'perTurnProjectWrites: false']) {
+    assert.ok(text.includes(line), `cordis.patch.yml 缺 ${line}`)
+  }
+  const locked = [...text.matchAll(/^\s+-\s+(\w+Enabled)\s*$/gm)].map((m) => m[1])
+  assert.deepEqual(locked, ['canvasEnabled', 'syncEnabled', 'coiEnabled', 'searchDocsEnabled'])
+  const config = resolveConfig({ skillManageEnabled: false, snapshotRequireTools: true, perTurnDailyWrites: false, perTurnProjectWrites: false, lockedOffKeys: locked })
+  for (const key of locked) assert.equal(config[key], false)
+})
+
+test('modelsEnabled 运行时切换后 /api/models 立即生效（deps 不得按值捕获 store）', async () => {
+  const dir = tempDir()
+  const llm = { listConfigurableProviders: () => [], listProviders: () => [], resolveModelInfo: async () => ({}) }
+  const ctx = fakeCtx({ llm })
+  apply(ctx, { memoryDir: dir })
+  const route = ctx.state.routes.find((r) => r.kind === 'prefix' && r.path === '/memory-evolve')
+  assert.ok(route, 'web API 前缀路由已注册')
+  const server = createServer((req, res) => route.handler(req, res))
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const base = `http://127.0.0.1:${server.address().port}/memory-evolve/api`
+  const call = async (method, path, body) => {
+    const res = await fetch(base + path, { method, headers: body ? { 'content-type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined })
+    return { status: res.status, data: await res.json().catch(() => ({})) }
+  }
+  try {
+    let r = await call('GET', '/models')
+    assert.equal(r.status, 400, '默认关闭')
+    assert.match(String(r.data.error), /未启用/)
+    assert.equal((await call('POST', '/config', { patch: { modelsEnabled: true } })).status, 200)
+    r = await call('GET', '/models')
+    assert.equal(r.status, 200, `打开后应可用，实际：${JSON.stringify(r.data).slice(0, 120)}`)
+    assert.equal((await call('POST', '/config', { patch: { modelsEnabled: false } })).status, 200)
+    r = await call('GET', '/models')
+    assert.equal(r.status, 400, '关回后再次拒绝')
+  } finally {
+    await new Promise((r) => server.close(r))
+    clean(dir)
+  }
 })
 
 test('apply registers memory tool and snapshot context by default', () => {

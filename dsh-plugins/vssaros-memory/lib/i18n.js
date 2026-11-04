@@ -523,12 +523,20 @@ export const SNAPSHOT_DICT = {
     '## This project\'s key memories (memory tool target=key; summary mode, current branch: {branch}; use memory action=expand+id to load full text)',
   ],
   'snap.section': [
-    '## 记忆 vssaros-memory（包含 memory 工具、dtodo 待办工具、de_skill_manage 技能工具）',
-    '## Memory vssaros-memory (provides the memory tool, dtodo todo tool, and de_skill_manage skill tool)',
+    '## 记忆 vssaros-memory（包含 memory 工具、dtodo 待办工具、{skillTool} 技能工具）',
+    '## Memory vssaros-memory (provides the memory tool, dtodo todo tool, and {skillTool} skill tool)',
   ],
   'snap.sectionNoTodo': [
-    '## 记忆 vssaros-memory（包含 memory 工具、de_skill_manage 技能工具）',
-    '## Memory vssaros-memory (provides the memory tool and de_skill_manage skill tool)',
+    '## 记忆 vssaros-memory（包含 memory 工具、{skillTool} 技能工具）',
+    '## Memory vssaros-memory (provides the memory tool and {skillTool} skill tool)',
+  ],
+  'snap.sectionNoSkill': [
+    '## 记忆 vssaros-memory（包含 memory 工具、dtodo 待办工具）',
+    '## Memory vssaros-memory (provides the memory tool and dtodo todo tool)',
+  ],
+  'snap.sectionNoTodoNoSkill': [
+    '## 记忆 vssaros-memory（包含 memory 工具）',
+    '## Memory vssaros-memory (provides the memory tool)',
   ],
   'snap.readHint': [
     '- 读取：需要时用 memory 工具读取 target=project（项目约定/进展）与 target=daily（今日日志），不要凭猜测回答。本项目关键记忆（target=key）已注入上下文，无需读取。',
@@ -581,16 +589,24 @@ export const SNAPSHOT_DICT = {
   ],
   'snap.writeStep': ['1. 写入：{duties}；', '1. Write: {duties};'],
   'snap.reviewStep': [
-    '{n}. 审查：仅当快照出现「记忆审查已到期」提醒时执行审查（全局记忆用 memory_suggest 提建议 / mode=auto 直接写 memory，技能用 de_skill_manage 创建/优化），完成后调用 memory_review_status（action=complete）复位；无提醒则跳过，不要调用 check。',
-    '{n}. Review: only when the snapshot shows the "memory review is due" reminder run a review (global memory via memory_suggest suggestions / direct memory writes in mode=auto; skills via de_skill_manage create/patch), then call memory_review_status (action=complete) to reset; with no reminder skip — do not call check.',
+    '{n}. 审查：仅当快照出现「记忆审查已到期」提醒时执行审查（全局记忆用 memory_suggest 提建议 / mode=auto 直接写 memory，技能用 {skillTool} 创建/优化），完成后调用 memory_review_status（action=complete）复位；无提醒则跳过，不要调用 check。',
+    '{n}. Review: only when the snapshot shows the "memory review is due" reminder run a review (global memory via memory_suggest suggestions / direct memory writes in mode=auto; skills via {skillTool} create/patch), then call memory_review_status (action=complete) to reset; with no reminder skip — do not call check.',
+  ],
+  'snap.reviewStepNoSkill': [
+    '{n}. 审查：仅当快照出现「记忆审查已到期」提醒时执行审查（全局记忆用 memory_suggest 提建议 / mode=auto 直接写 memory），完成后调用 memory_review_status（action=complete）复位；无提醒则跳过，不要调用 check。',
+    '{n}. Review: only when the snapshot shows the "memory review is due" reminder run a review (global memory via memory_suggest suggestions / direct memory writes in mode=auto), then call memory_review_status (action=complete) to reset; with no reminder skip — do not call check.',
   ],
   'snap.noTimestampTail': [
     '- 内容不要自带时间/日期前缀（程序自动盖时间戳）。',
     '- Do not prefix entry content with your own time/date stamps (the program timestamps automatically).',
   ],
   'snap.dueWarning': [
-    '\n\n⚠️ **记忆审查已到期**（间隔 {interval} 轮，mode={mode}）：本回合收尾必须执行审查——全局记忆用 memory_suggest 提交建议（mode=auto 时用 memory 直接写入），技能用 de_skill_manage 创建/优化；完成后调用 memory_review_status（action=complete）复位。',
-    '\n\n⚠️ **A memory review is DUE** (interval {interval} turns, mode={mode}): finish this turn by running the review — global memory via memory_suggest suggestions (direct memory writes in mode=auto), skills via de_skill_manage create/patch; then call memory_review_status (action=complete) to reset.',
+    '\n\n⚠️ **记忆审查已到期**（间隔 {interval} 轮，mode={mode}）：本回合收尾必须执行审查——全局记忆用 memory_suggest 提交建议（mode=auto 时用 memory 直接写入），技能用 {skillTool} 创建/优化；完成后调用 memory_review_status（action=complete）复位。',
+    '\n\n⚠️ **A memory review is DUE** (interval {interval} turns, mode={mode}): finish this turn by running the review — global memory via memory_suggest suggestions (direct memory writes in mode=auto), skills via {skillTool} create/patch; then call memory_review_status (action=complete) to reset.',
+  ],
+  'snap.dueWarningNoSkill': [
+    '\n\n⚠️ **记忆审查已到期**（间隔 {interval} 轮，mode={mode}）：本回合收尾必须执行审查——全局记忆用 memory_suggest 提交建议（mode=auto 时用 memory 直接写入）；完成后调用 memory_review_status（action=complete）复位。',
+    '\n\n⚠️ **A memory review is DUE** (interval {interval} turns, mode={mode}): finish this turn by running the review — global memory via memory_suggest suggestions (direct memory writes in mode=auto); then call memory_review_status (action=complete) to reset.',
   ],
   // 写入看门狗（2026-08-31 设计；2026-09-04 评审 P1-4 修复）：长会话连续
   // 多轮未写 daily/project 的置顶提醒。文案刻意静态（不嵌实时计数）——

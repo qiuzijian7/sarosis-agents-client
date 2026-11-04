@@ -107,6 +107,14 @@ export const DEFAULTS = {
   suggestToolName: 'memory_suggest',
   commandName: 'memory_review',
   skillManageToolName: 'skill_manage',
+  // VsSaros 内置化（2026-11-04）：false = 不注册本插件的技能管理工具。产品里 @vssaros/dsh-skills
+  // 已占用 skill_manage（带审批闸、写产品技能库）；同名注册会让整个 apply() 抛错，改名又会给模型
+  // 两个语义不同的技能工具。默认 true 保持上游行为，内置包在自带 cordis.patch.yml 里设 false。
+  skillManageEnabled: true,
+  // VsSaros 内置化（2026-11-04）：强制关闭的运行时开关（只接受布尔型 RUNTIME_KEYS）。
+  // 运行时状态文件优先于静态配置，只写 false 挡不住 POST /api/config 或历史 plugin-state.json，
+  // 所以启动合并与 updateRuntime 两处都要拦。用于上游在当前平台未通过测试的功能。
+  lockedOffKeys: [],
   todoToolName: 'dtodo',
   // VsSaros 内置化（2026-11-03）：开启后快照 text provider 先探测 memory 工具是否真的注册，
   // 没装上/被禁用时不发任何「每轮写入」指令（否则模型会反复调用看不到的工具）。
@@ -418,7 +426,7 @@ const POSITIVE_NUMBER_KEYS = [
   'advisorCallTimeoutMs',
 ]
 const BOOLEAN_KEYS = [
-  'injectMemory', 'injectionScan', 'reviewEnabled', 'skillReviewEnabled',
+  'injectMemory', 'injectionScan', 'reviewEnabled', 'skillReviewEnabled', 'skillManageEnabled',
   'entryDatePrefix', 'memoryTabEnabled', 'keyBranchFilter',
   'perTurnProjectWrites', 'perTurnDailyWrites', 'perTurnKeyWrites',
   'perTurnWriteGuard',
@@ -455,6 +463,16 @@ export function resolveConfig(raw) {
   config.memoryDir = resolve(config.memoryDir ?? join(home, 'memories'))
   config.suggestionsFile = resolve(config.suggestionsFile ?? join(config.memoryDir, 'SUGGESTIONS.jsonl'))
   config.skillDir = resolve(config.skillDir ?? join(homedir(), '.agents', 'skills'))
+  if (!Array.isArray(config.lockedOffKeys)) {
+    throw new Error('vssaros-memory: lockedOffKeys 必须是数组')
+  }
+  for (const key of config.lockedOffKeys) {
+    // 写错键名必须报错：否则以为锁住了、实际什么都没锁。
+    if (!RUNTIME_KEYS.includes(key) || typeof DEFAULTS[key] !== 'boolean') {
+      throw new Error(`vssaros-memory: lockedOffKeys 含无效键 "${key}"（只接受布尔型运行时开关）`)
+    }
+    config[key] = false
+  }
   for (const key of POSITIVE_NUMBER_KEYS) {
     const value = config[key]
     if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
@@ -682,7 +700,13 @@ export function renderSnapshot(config, store, agent, counter, sessionTitleServic
   // 陈述（dtodo 工具对子代理确实注册可用），不是收尾指令，与本次修复无关。
   const todoEnabled = config.todoEnabled !== false
   const todoHint = todoEnabled && !isSubagent ? `\n${st('snap.todoHint')}` : ''
-  parts.push(`${todoEnabled ? st('snap.section') : st('snap.sectionNoTodo')}
+  // 头部是「本插件提供哪些工具」的事实陈述：没注册技能工具就不提，工具名取配置。
+  const skillToolOn = config.skillManageEnabled !== false
+  const skillTool = config.skillManageToolName ?? 'skill_manage'
+  const sectionHead = skillToolOn
+    ? st(todoEnabled ? 'snap.section' : 'snap.sectionNoTodo', { skillTool })
+    : st(todoEnabled ? 'snap.sectionNoSkill' : 'snap.sectionNoTodoNoSkill')
+  parts.push(`${sectionHead}
 ${st('snap.readHint')}${branchHint}${todoHint}`)
 
   // Turn-final duties, as one minimal checklist (write → review when the
@@ -719,11 +743,13 @@ ${st('snap.readHint')}${branchHint}${todoHint}`)
     }
     if (reviewOn) {
       const n = steps.length + 1
-      steps.push(st('snap.reviewStep', { n }))
+      steps.push(skillToolOn ? st('snap.reviewStep', { n, skillTool }) : st('snap.reviewStepNoSkill', { n }))
     }
     const tail = st('snap.noTimestampTail')
     const dueWarning = due
-      ? st('snap.dueWarning', { interval: config.reviewInterval, mode: config.reviewMode })
+      ? (skillToolOn
+        ? st('snap.dueWarning', { interval: config.reviewInterval, mode: config.reviewMode, skillTool })
+        : st('snap.dueWarningNoSkill', { interval: config.reviewInterval, mode: config.reviewMode }))
       : ''
     // 写入看门狗提醒：本会话连续 writeGuardThreshold 个用户回合未写
     // daily/project（writeGapCounter 计数、写入即归零）→ 快照注入置顶
@@ -1596,6 +1622,8 @@ export function apply(ctx, rawConfig = {}) {
   for (const key of RUNTIME_KEYS) {
     if (state[key] !== undefined) runtime[key] = state[key]
   }
+  // 锁定键优先于持久化状态：历史 plugin-state.json 里的 true 不得让功能复活。
+  for (const key of config.lockedOffKeys) runtime[key] = false
   const getRuntime = () => runtime
   // Review turn counter: created once, shared by the snapshot (due warning)
   // and the memory_review_status tool. Zero-cost when review is disabled
@@ -1610,6 +1638,11 @@ export function apply(ctx, rawConfig = {}) {
   const updateRuntime = (patch) => {
     const entries = Object.entries(patch)
     for (const [key, value] of entries) validateRuntimePatch(key, value)
+    for (const [key, value] of entries) {
+      if (config.lockedOffKeys.includes(key) && value !== false) {
+        throw new Error(`vssaros-memory: ${key} 已被 lockedOffKeys 锁定为关闭（该功能未通过当前平台验证）`)
+      }
+    }
     const nextState = { ...state, ...patch }
     const nextRuntime = { ...runtime, ...patch }
     saveState(stateFile, nextState)
@@ -1735,10 +1768,12 @@ export function apply(ctx, rawConfig = {}) {
   // 2. The memory tool (always registered; subagent writes are gated).
   ctx.effect(() => ctx.tools.register(memoryTool(ctx, config, store, queue, getRuntime, archive, writeGap)), 'vssaros-memory: memory tool')
 
-  // 2b. The skill management tool (always registered: useful in ordinary
-  //     sessions too — "把这个流程做成技能" — and required by the review
-  //     subagent for the skill track).
-  ctx.effect(() => ctx.tools.register(skillManageTool(ctx, config)), 'vssaros-memory: skill tool')
+  // 2b. The skill management tool (useful in ordinary sessions too — "把这个
+  //     流程做成技能" — and required by the review subagent for the skill
+  //     track). VsSaros 内置包关闭它：技能写入统一走 @vssaros/dsh-skills。
+  if (config.skillManageEnabled !== false) {
+    ctx.effect(() => ctx.tools.register(skillManageTool(ctx, config)), 'vssaros-memory: skill tool')
+  }
 
   // 2c. The todo capability（todoEnabled 运行时开关）：控制器只负责工具注册；
   // 存储刻意留在控制器外——禁用完全可逆，不触碰既有待办数据文件，也不
@@ -1834,7 +1869,9 @@ export function apply(ctx, rawConfig = {}) {
       // 模型配置模块：store（models.json 读写）+ 快照聚合（供应商/模型/
       // 思考等级/备注/enabled 一站式返回给「模型设置」Tab 与外部查询）；
       // 模块未启用（modelsEnabled=false）时 store 为 null，API 拒绝访问。
-      modelsStore,
+      // VsSaros 修复（2026-11-04）：必须是 getter。deps 在启动时构造一次，按值写 `modelsStore,`
+      // 会永远捕获启动瞬间的 null ⇒ 运行时打开「模型设置」后 API 仍报未启用，要重启 Host（上游同款）。
+      get modelsStore() { return modelsStore },
       buildModelsSnapshot: () => buildModelsSnapshotAsync(ctx, modelsStore),
       // 版本检测与更新（/api/update/status、/api/update、badge.update 字段）
       updateOps,

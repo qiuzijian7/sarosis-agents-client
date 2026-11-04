@@ -4,7 +4,25 @@
 # memory / skills / todos / CLI-dispatch host plugin on boot.
 # Install with `dsh plugin --profile <name> add <path-or-git-url>`; the bundle
 # patch is applied automatically, so do NOT insert this row again in the
-# profile patch (duplicate ids crash the loader).
+# profile patch (duplicate ids crash the loader). A profile-level `- id:`
+# override replaces this `config` wholesale, so keep product defaults here.
 - insert:
     - id: vssaros-memory
       name: '@vssaros/dsh-memory'
+      config:
+        # 技能写入统一走 @vssaros/dsh-skills 的 skill_manage（带审批闸）。本插件再注册同名工具会让
+        # 整个 apply() 抛 "already registered"；改名则给模型两个语义不同的技能工具。
+        skillManageEnabled: false
+        # 快照里的写入指令只在 memory 工具真的注册时下发。
+        snapshotRequireTools: true
+        # 不强制每轮写日志/进展：否则每个回合都多一次工具往返、日志持续增长。KEY 建议仍按需提交。
+        # 这两项是运行时开关，可在会话「设置」页重新打开。
+        perTurnDailyWrites: false
+        perTurnProjectWrites: false
+        # 这些功能的上游测试在 Windows 上未通过（canvas 的敏感路径拦截用正斜杠片段匹配，对反斜杠
+        # 路径不生效；sync/COI/searchDocs 另有路径与 git 问题）。修好并通过测试前不允许打开。
+        lockedOffKeys:
+          - canvasEnabled
+          - syncEnabled
+          - coiEnabled
+          - searchDocsEnabled

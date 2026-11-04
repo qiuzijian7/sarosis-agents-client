@@ -158,6 +158,27 @@ test('api config get/update with validation', async () => {
   }
 })
 
+test('api config 返回 locked 清单（放在 config 外，面板回传 patch 不受影响）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-memory-api-locked-'))
+  const api = await bootApi({ config: { memoryDir: dir, skillDir: join(dir, 'skills'), lockedOffKeys: ['canvasEnabled', 'syncEnabled'] } })
+  try {
+    const got = await api.request('GET', '/memory-evolve/api/config')
+    assert.deepEqual(got.data.locked, ['canvasEnabled', 'syncEnabled'])
+    assert.equal('locked' in got.data.config, false)
+    const none = await bootApi()
+    try {
+      assert.deepEqual((await none.request('GET', '/memory-evolve/api/config')).data.locked, [])
+    } finally {
+      await none.close()
+      rmSync(none.dir, { recursive: true, force: true })
+    }
+  } finally {
+    await api.close()
+    rmSync(api.dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('api memory/key writes a key fact for the session cwd', async () => {
   const api = await bootApi({ resolveCwd: (sessionId) => (sessionId === 'abc' ? '/work/p' : undefined) })
   try {
