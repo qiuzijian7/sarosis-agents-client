@@ -1,0 +1,38 @@
+# 依赖
+node_modules/
+
+# 构建产物
+lib/
+dist/
+coverage/
+*.tsbuildinfo
+
+# 日志与临时文件
+*.log
+pnpm-debug.log*
+.tmp-*/
+.DS_Store
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+
+# npm
+package-lock.json
+npm-debug.log*
+*.tgz
+
+# pnpm
+.pnpm-store/
+
+# 环境变量（含潜在密钥，勿提交 / 勿发布）
+.env
+.env.*
+
+# WorkBuddy 工作区数据
+.workbuddy/
+
+# 本地运行产物（含潜在项目信息，勿提交 / 勿发布）
+docs/teamflow/
+logs/

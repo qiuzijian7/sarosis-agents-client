@@ -769,6 +769,15 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
 				//   约 1s 后才被 `DshFullWindowContribution` 藏回去 ✗。
 				//   ⇒ 隐藏期也**不进任务栏**（显示时再放开，见下面 `onShown`）。
 				options.skipTaskbar = true;
+				// ★★ 2026-11-04（打包版 exe 仍报"闪一下再出 desktop"）：10-31 那轮加的
+				//   `onFocusWhileHidden` 是**事后补救** —— 真机日志每次启动都出现
+				//   `window#hiddenStart: 窗口在隐藏启动期间被激活 ⇒ 立刻收回`，说明 focus 事件触发时
+				//   窗口已经被画出来了，`hide()` 追不上那一帧 ✗。
+				//   ⇒ 从源头断掉：`focusable: false` ⇒ Chromium **无法激活**这个首个窗口 ⇒
+				//     `show:false` 就不会被激活推翻，也不会触发 focus/show 事件。
+				//   ⚠ 真正显示时（`onShown`）必须 `setFocusable(true)` 恢复，否则用户点开的 IDE 窗口
+				//     永远拿不到焦点（下面 onShown 里做）。
+				options.focusable = false;
 			}
 
 			// Create the browser window
@@ -832,8 +841,13 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
 						// 渲染进程（或用户）已经把它显示出来过 ⇒ 显示权移交完成，兜底作废，别再抢
 						this._startHidden = false;
 						failsafe.cancel();
-						// 隐藏期的"不进任务栏/收回焦点"到此为止 ⇒ 恢复成普通窗口 ✓
-						try { this._win?.setSkipTaskbar(false); } catch { /* 已销毁 */ }
+						// 隐藏期的"不进任务栏/不可聚焦"到此为止 ⇒ 恢复成普通窗口 ✓
+						// ⚠ `setFocusable(true)` 不能漏：创建时设了 `focusable:false` 防止被 Chromium 激活，
+						//    正式显示后必须放开，否则用户点开的 IDE 窗口拿不到焦点 ✗。
+						try {
+							this._win?.setSkipTaskbar(false);
+							this._win?.setFocusable(true);
+						} catch { /* 已销毁 */ }
 					};
 					this._win.on('show', onShown);
 					this._register(toDisposable(() => { try { this._win?.removeListener('show', onShown); } catch { /* 已销毁 */ } }));

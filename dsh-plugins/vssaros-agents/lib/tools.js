@@ -35,6 +35,7 @@ import { readLiveSession, readLiveSessions } from './live.js';
 import { CORE_MEMORY_TEMPLATE, ensureMemoryRepo, memoryDirOf } from './memory.js';
 import { notePendingReply } from './relay.js';
 import { agentsRootOf, scanAgents, scanAgentsFromConfig } from './store.js';
+import { externalBots, externalBotOf } from './teamBus.js';
 import { applyEntryAction, resolveWorkspace, scopeIdOfKey, workspaceEntryAction } from './workspaceMemory.js';
 /** 过闸工具（`tools/pre-execute` ⇒ ask）。名单由 `dshPluginPackages.test.ts` 逐名核对。 */
 export const WRITE_TOOLS = ['agent_switch_persona', 'agent_stop'];
@@ -146,8 +147,13 @@ export function registerAgentTools(ctx, config, state) {
 						tail.push(...recent);
 					}
 					return [head, `  ${liveText}`, ...tail].join('\n');
-				});
-				if (lines.length === 0) {
+					});
+					// ★ 2026-11-04 主管组团：外部 bot 也列出来，别的 bot 才能用 agent_message 找主管求助。
+					for (const bot of externalBots()) {
+					lines.push([`- ${bot.name}（${bot.id}）[外部 · ${String(bot.role ?? '主管')}]`,
+						`  ${String(bot.description ?? '')} · 会话由它自己管理`].join('\n'));
+					}
+					if (lines.length === 0) {
 					return '还没有 agent（每个子目录需要一个带 name 的 .agent.md）。';
 				}
 				const notes = [];
@@ -285,6 +291,18 @@ export function registerAgentTools(ctx, config, state) {
 				const thisHop = hop + 1;
 				if (thisHop > MAX_HOPS) {
 					return `这条接力链已经 ${MAX_HOPS} 跳了，别再转——停下来直接把结果回给用户。`;
+				}
+				/* ★ 2026-11-04 主管组团：外部 bot 的会话不在本插件的注册表里，消息交给注册方自己处理。 */
+				const external = externalBotOf(args?.to);
+				if (external) {
+					const from = exec?.agent?.id ?? null;
+					const header = `[Message from ${from ?? '未知会话'} · 第 ${thisHop} 跳]\n`;
+					try {
+						await external.onMessage({ from, text: `${header}${text}`, hop: thisHop, session: String(args?.session ?? '').trim() || undefined });
+					} catch (e) {
+						return `转交给 ${external.name} 失败：${String(e?.message ?? e)}`;
+					}
+					return `已转交 ${external.name}（${external.id}，第 ${thisHop} 跳）：它用自己的主管会话处理，结果会通过它自己的渠道回复。别轮询、别重发。`;
 				}
 				const scan = await scanAgents(agentsRootOf(config));
 				const { agent, error } = findAgent(scan.agents, args?.to);

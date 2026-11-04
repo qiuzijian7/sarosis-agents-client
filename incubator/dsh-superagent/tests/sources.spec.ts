@@ -1111,6 +1111,37 @@ describe('feishu event consumer', () => {
     expect(store.triggers.get(feishuTriggerId('om_9'))).toBeUndefined()
     controller.abort(); await running; store.close()
   }, 20_000)
+  it('listens through the Bots connection of this Host instead of starting its own consumer', async () => {
+    // VsSaros addition: Feishu feeds one connection per app; with the Bots holding it here, the Source subscribes to it.
+    const key = Symbol.for('vssaros.feishuEvents')
+    const listeners = new Set<(payload: unknown) => void>()
+    const subscribed: string[] = []
+    let up = true
+    ;(globalThis as Record<symbol, unknown>)[key] = { version: 1, active: (appId: string) => up && appId === 'cli_bot',
+      subscribe: (appId: string, listener: (payload: unknown) => void) => {
+        subscribed.push(appId); listeners.add(listener); return () => { listeners.delete(listener) }
+      } }
+    try {
+      const { ctx, health, store } = consumerSource(cli('never'))
+      running = runFeishu(ctx, controller.signal)
+      await vi.waitFor(() => expect(health.feishu).toMatchObject({ state: 'ready', code: 'feishuShared', values: { app: 'cli_bot' } }), until)
+      expect(subscribed).toEqual(['cli_bot'])
+      const message = (id: string, chat: string, type: string) => ({ schema: '2.0', header: { event_type: 'im.message.receive_v1', app_id: 'cli_bot' },
+        event: { sender: { sender_type: 'user', sender_id: { open_id: 'ou_alice' } }, message: { message_id: id, chat_id: chat, chat_type: type,
+          message_type: 'text', create_time: String(Date.now()), content: JSON.stringify({ text: '@_user_1 fix it' }),
+          mentions: [{ key: '@_user_1', name: 'Bot', id: { open_id: 'ou_bot' } }] } } })
+      for (const listener of listeners) { listener(message('om_s1', 'oc_group', 'group')); listener(message('om_s2', 'oc_dm', 'p2p')) }
+      await vi.waitFor(() => expect(store.triggers.get(feishuTriggerId('om_s2'))).toBeDefined(), until)
+      expect(store.triggers.get(feishuTriggerId('om_s1'))).toMatchObject({ addressed: 'mention', text: '@Bot fix it' })
+      expect(store.get(KV.feishu.chats)).toEqual({ oc_group: false, oc_dm: true })
+      // No `lark-cli event consume` was started: a second connection would take half of the app's events.
+      expect(runs()).toBe(0)
+      // When the Bots connection goes away, the Source stops listening through it.
+      up = false
+      await vi.waitFor(() => expect(listeners.size).toBe(0), { timeout: 12_000 })
+      controller.abort(); await running; store.close()
+    } finally { delete (globalThis as Record<symbol, unknown>)[key] }
+  }, 25_000)
   it('keeps a chat\'s history cursor when its read fails, and recovers known direct chats only while direct messages are on', async () => {
     const hour = new Date(Date.now() - 3_600_000).toISOString()
     const recovered = async (directMessages: boolean) => {

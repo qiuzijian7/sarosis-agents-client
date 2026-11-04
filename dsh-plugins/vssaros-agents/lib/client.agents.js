@@ -328,7 +328,7 @@ window.__ModuleLoader__.load({
 			const [bindForm, setBindForm] = useState({
 				platform: 'loopback', chatId: '', chatType: 'p2p', direction: 'both',
 				mentionPolicy: 'at', allowFrom: '', enabled: true,
-				webhookUrl: '', webhookSecret: '',
+				webhookUrl: '', webhookSecret: '', appId: '',
 			});
 			const [bindBusy, setBindBusy] = useState(false);
 			const [bindMsg, setBindMsg] = useState('');
@@ -1219,6 +1219,10 @@ window.__ModuleLoader__.load({
 					h('div', { className: 'ag3row-main' },
 						h('div', { className: 'ag3row-l1' },
 							h('span', { className: 'ag-name', 'data-ag-name': String(a.name || a.id) }, a.name || a.id),
+							/* ★ 2026-11-04 主管组团：主管创建的 bot 留在 Bots 名册里，标一枚「主管创建」。 */
+							a.createdBy === 'supervisor' ? pill('主管创建', 'role', '由 SuperAgent 主管创建，留在 Bots 名册里') : null,
+							/* 外部 bot = SuperAgent 主管本身：名册只登记，会话与消息由它自己管。 */
+							a.external ? pill('主管', 'role', 'SuperAgent 主管：会话由它自己管理，可用 agent_message 找它求助') : null,
 							a.registered ? null : pill('未注册', 'warn', '花名册里没有它的 preset ⇒ dsh 侧没注册'),
 							h('span', { className: 'wb-spacer' }),
 							pending ? badge(pending, '待处理 ' + pending + ' 条') : null),
@@ -3039,11 +3043,11 @@ window.__ModuleLoader__.load({
 					platform: cur.platform, chatId: cur.chatId, chatType: cur.chatType,
 					direction: cur.direction, mentionPolicy: cur.mentionPolicy,
 					allowFrom: (cur.allowFrom || []).join(','), enabled: cur.enabled === true,
-					webhookUrl: String(cur.webhookUrl || ''), webhookSecret: '',
+					webhookUrl: String(cur.webhookUrl || ''), webhookSecret: '', appId: String(cur.appId || ''),
 				} : {
 					platform: 'loopback', chatId: '', chatType: kind === 'group' ? 'group' : 'p2p',
 					direction: 'both', mentionPolicy: 'at', allowFrom: '', enabled: true,
-					webhookUrl: '', webhookSecret: '',
+					webhookUrl: '', webhookSecret: '', appId: '',
 				});
 				setBindFor({ targetKind: kind, targetId: String(id), name: String(name || id) });
 				void loadBindings();
@@ -3070,6 +3074,8 @@ window.__ModuleLoader__.load({
 							allowFrom: String(bindForm.allowFrom || '').split(',').map((s) => s.trim()).filter(Boolean),
 							enabled: bindForm.enabled === true,
 							webhookUrl: String(bindForm.webhookUrl || '').trim(),
+							/* ★ 2026-11-04 多飞书应用：空串 = 默认应用（服务端据此清掉旧的 appId） */
+							...(bindForm.platform === 'feishu' ? { appId: String(bindForm.appId || '').trim() } : {}),
 							/* 密钥留空 ⇒ **不发这个字段**（服务端约定：undefined = 保留原值）。
 							   发空串是"清除"，会让用户以为"没改"其实清掉了。 */
 							...(String(bindForm.webhookSecret || '').trim()
@@ -3241,6 +3247,22 @@ window.__ModuleLoader__.load({
 									: null);
 						})(),
 						fieldSel('platform', platformOptions, '平台'),
+						/* ★ 2026-11-04 多飞书应用：不同 Bot 可以用不同的飞书应用收发（应用在「设置 → 渠道」里添加）。
+						   只有额外应用存在、或这条绑定本来就指定了应用时才出现 —— 单应用的用户看不到这一项。 */
+						(() => {
+							if (bindForm.platform !== 'feishu') { return null; }
+							const apps = Array.isArray(bdata.feishuApps) ? bdata.feishuApps : [];
+							const extras = apps.filter((a) => a && !a.isDefault);
+							const curApp = String(bindForm.appId || '');
+							if (!extras.length && !curApp) { return null; }
+							const def = apps.find((a) => a && a.isDefault);
+							const opts = [['', '默认应用' + (def ? '（' + def.appId + '）' : '')]];
+							for (const a of extras) {
+								opts.push([String(a.appId), (a.name ? a.name + ' · ' : '') + a.appId + (a.configured ? '' : '（缺 App Secret）')]);
+							}
+							if (curApp && !opts.some(([v]) => v === curApp)) { opts.push([curApp, curApp + '（已不在应用列表里）']); }
+							return fieldSel('appId', opts, '飞书应用');
+						})(),
 						selDef && selDef.implemented && bindForm.platform !== 'loopback' && selCh && !selCh.configured
 							/* 飞书有 webhook 这条替代通道 ⇒ 填了就不算"没配"（2026-10-28）。 */
 							&& !(bindForm.platform === 'feishu' && String(bindForm.webhookUrl || '').trim())

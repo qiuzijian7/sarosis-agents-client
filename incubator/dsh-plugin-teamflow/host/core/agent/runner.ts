@@ -1,0 +1,618 @@
+/**
+ * dsh-plugin-teamflow core — 子代理执行器（并发池 / 单阶段运行 / 重试与熔断）。
+ * 依赖：util/constants/types + core(context/metering)。
+ */
+import { runtime, providerName, trackInFlight, untrackInFlight, liveChildAgentOf } from './context.ts'
+import { resolveChildRoute, finalizeNoTextStage } from './route.ts'
+import { accumulateSessionUsage, freshTokensOf, effectiveFreshBudget } from './metering.ts'
+import { startStageGuard } from './guard.ts'
+import { clip, extractText, blockShape, captureArtifactBaseline, emptyTurnDocVerdict, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, shouldContinueChild, shouldRerouteChild, classifyExternalFailure, externalBackoffMs, stageDocText } from '../../util.ts'
+import { RETRY_LIMIT, FRESH_TOKEN_BUDGET } from '../../constants.ts'
+import { t, type HostLocale } from '../../locales.ts'
+import { runLocaleOf } from '../locale.ts'
+import { stripStateBlock } from '../domain/state.ts'
+import { canReviseViaChild, revisePrdViaChild } from '../prd-revise.ts'
+import type { Journal, ParentAgentLike, SubagentRunLike, SubagentStarters, UsageBuckets } from '../../types.ts'
+import type { JournalStage } from '../../../store.ts'
+
+// 纯函数下沉到 route.ts（不依赖 guard/util 的宿主私有包），测试可在公共 CI 跑；re-export 保持既有 import 面。
+export { resolveChildRoute, finalizeNoTextStage }
+
+/**
+ * 推理强度能力探测（缓存，2026-09-11）：只有宿主明确声明该路由支持某档位才下发。
+ * 宿主对**不支持的值硬失败且不降级**（`UNSUPPORTED_REASONING_EFFORT`），所以宁可不下发。
+ * 返回 null = 探测不可用（老宿主/未声明容量）→ 调用方一律不下发，保持宿主默认。
+ */
+const effortSupportCache = new Map<string, string[] | null>()
+
+async function supportedEfforts(route: { provider?: string; model?: string }): Promise<string[] | null> {
+  // 两者都要有才探测：只知 provider 会拿到「provider 默认模型」的能力，与本次实际路由可能不符
+  if (!route.provider || !route.model) return null
+  const llm = runtime.llm as { resolveModelInfo?: (p?: string, m?: string) => Promise<unknown> } | undefined
+  if (!llm || typeof llm.resolveModelInfo !== 'function') return null
+  const key = `${route.provider}/${route.model || ''}`
+  if (effortSupportCache.has(key)) return effortSupportCache.get(key) || null
+  let out: string[] | null = null
+  try {
+    const info = (await llm.resolveModelInfo(route.provider, route.model)) as { reasoning?: { efforts?: unknown } } | null | undefined
+    const efforts = info && info.reasoning && info.reasoning.efforts
+    if (Array.isArray(efforts)) {
+      // ⚠️ 宿主 `LlmModelReasoningInfo.efforts` 是 **对象数组** `{id, name, description}`（不是字符串），
+      // 早期实现按字符串过滤 → 恒空 → 永远判「不支持」而静默不下发（2026-09-11 实锤：候选 run 无降档日志）。
+      out = efforts
+        .map((e) => (typeof e === 'string'
+          ? e
+          : (e && typeof e === 'object' && typeof (e as { id?: unknown }).id === 'string' ? (e as { id: string }).id : null)))
+        .filter((x): x is string => typeof x === 'string' && x.length > 0)
+    }
+  } catch (e) { out = null }
+  effortSupportCache.set(key, out)
+  return out
+}
+
+/**
+ * 解析本阶段要下发的推理强度：
+ * - 阶段未要求降档（effortHint 空）→ 不传，宿主默认（DeepSeek high）
+ * - 第 1 次尝试用 hint；**重试回升 'high'**（质量优先，ADR-0006）
+ * - 只有探测到该路由支持该档位才返回，否则不传（防 `UNSUPPORTED_REASONING_EFFORT` 硬失败）
+ * - 未下发时返回原因文本 → 调用方记 warn（这类静默失败必须可见，见 2026-09-11 实锤）
+ */
+async function resolveStageEffort(
+  route: { provider?: string; model?: string }, attempt: number, effortHint?: string | null, locale: HostLocale = 'zh',
+): Promise<{ effort?: string; skip?: string }> {
+  const base = effortHint && String(effortHint).trim() ? String(effortHint).trim() : null
+  if (!base) return {}
+  const wanted = attempt > 1 ? 'high' : base
+  const supported = await supportedEfforts(route)
+  if (!supported) return { skip: t(locale, 'diag.noEfforts', { provider: route.provider || '?', model: route.model || '?' }) }
+  if (supported.indexOf(wanted) === -1) return { skip: t(locale, 'diag.unsupportedEffort', { wanted, list: supported.join('/') || t(locale, 'diag.listNone') }) }
+  return { effort: wanted }
+}
+
+/**
+ * 计量为空时的**可见化**（2026-10-16 实锤 run tf-mv9o5fkk-orjou4）。
+ *
+ * `accumulateSessionUsage` 返回 null 本身是**设计上的降级路径**（投影未挂载/子会话确实无 usage），
+ * 但它同时也是真故障的**唯一症状** —— 曾经静默：21/21 阶段 usage 全空、run 照样报 completed、
+ * 4 小时无人察觉（根因 = 活句柄取晚了，见 runAgent 里那段注释）。
+ * 故每个 run 记一条 warn，把链路逐级讲清（活句柄 → session → 投影 → 事件数），
+ * 下次再断能一眼定位是哪一环。§「空值必须可见」。
+ */
+const usageDiagLogged = new WeakSet<object>()
+function noteUsageMissing(journal: Journal, run: SubagentRunLike | null, locale: HostLocale): void {
+  try {
+    if (!journal || typeof journal !== 'object') return
+    if (usageDiagLogged.has(journal)) return
+    usageDiagLogged.add(journal)
+    const agent = run ? run.localAgent : undefined
+    const session = agent ? (agent as { session?: { snapshotEvents?: () => unknown[] } }).session : undefined
+    let events = 'n/a'
+    try {
+      if (session && typeof session.snapshotEvents === 'function') events = String((session.snapshotEvents() || []).length)
+    } catch (e) { events = 'err' }
+    const projections = runtime.sessionProjections as { stateOf?: unknown } | undefined
+    journal.logs.push({
+      t: Date.now(), level: 'warn',
+      message: t(locale, 'diag.usageMissing', {
+        handle: run && run.localAgent ? 'yes' : 'no',
+        session: session ? 'yes' : 'no',
+        projections: projections && typeof projections.stateOf === 'function' ? 'yes' : 'no',
+        events,
+      }),
+    })
+  } catch (e) { /* 诊断本身绝不打断阶段 */ }
+}
+
+/** 运行单个阶段子代理：执行 + 产出实质校验 + token 双口径计量 + stage 状态流转。
+ *  `taskIds`：本阶段承载的**开发任务身份**（host 生成的 `dt-N`；合并任务时是数组）。
+ *  与 `taskKey`（人读标题）分家——判定只认 id，title 只作展示（见 pipeline.buildDevTaskDefs 注释）。 */
+export async function runAgent(
+  journal: Journal, parent: ParentAgentLike, label: string, phase: string, prompt: string, signal: unknown, taskKey?: string | null,
+  attempt = 1, effortHint?: string | null, taskIds?: string[] | null,
+): Promise<string | null> {
+  const maxSeq = journal.stages.length ? Math.max(...journal.stages.map((s) => s.seq)) : 0
+  // run 语言快照（AC-2）：诊断/日志/失败摘要一律随 run，不受界面当前语言影响
+  const locale = runLocaleOf(journal)
+  let stageText = null
+  const stage: JournalStage = {
+    seq: maxSeq + 1, label, phase, status: 'running', outcome: null,
+    taskKey: taskKey || null,
+    taskIds: (Array.isArray(taskIds) && taskIds.length) ? [...taskIds] : null,
+    childId: null, startedAt: Date.now(), endedAt: null, summary: null,
+    usage: null, handoff: null, output: null,
+  }
+  journal.stages.push(stage)
+  // **产物基线**（2026-10-16，必须在子代理启动前、任何 await 前拍）：只有指纹变了的候选产物才认作
+  // 「本阶段写的」。防的是上游阶段越界写下游产物后，下游凭旧文件被判「已交付」（实锤 tf-mv9o5fkk-orjou4）。
+  // 只填缺失项 ⇒ 重试/续跑沿用首次基线（语义 = 「本阶段是否写过」，不是「本次尝试是否写过」）。
+  captureArtifactBaseline(journal, phase, stage)
+  journal.agentsStarted += 1
+  let run = null
+  let cancelGuard: (() => void) | null = null
+  try {
+    // 显式传当前生效路由，避免继承过期的 parent.options 快照（主线程已切换代理的情况）
+    const route = resolveChildRoute(parent)
+    // **引擎留痕（2026-09-18）**：逐阶段记下实际生效的 provider/model —— 子代理路由跟随主线程/团队配置，
+    // 与 run 起始默认可能不同；一次真实排查里为了回答「是不是模型的锅」（不缓存的 provider 每轮调用
+    // 要多付 ~15.5k，见 FRESH_TOKEN_BUDGET），只能去解压会话文件翻 request/header。
+    stage.provider = route.provider || providerName() || null
+    stage.model = route.model || null
+    // 机械阶段降档（可选）：只在宿主声明支持时下发；重试自动回升 high（见 resolveStageEffort）
+    const eff = await resolveStageEffort(route, attempt, effortHint, locale)
+    const effort = eff.effort
+    const agentOptions = (route.provider || route.model || effort) ? {
+      ...(route.provider ? { provider: route.provider } : {}),
+      ...(route.model ? { model: route.model } : {}),
+      ...(route.maxTokens ? { maxTokens: route.maxTokens } : {}),
+      ...(effort ? { reasoningEffort: effort } : {}),
+    } : undefined
+    if (effort && !journal.cancelled) {
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, attempt > 1 ? 'diag.effortRetry' : 'diag.effort', { label, effort }) })
+    } else if (eff.skip && !journal.cancelled) {
+      // 静默失败可见化（2026-09-11 实锤：efforts 对象数组被当字符串过滤 → 恒判不支持却无任何痕迹）
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.effortSkip', { label, skip: eff.skip }) })
+    }
+    // **宿主 API 迁移（2026-10-15 / issue #20）**：alpha.2 起 `subagents.start(name, request)` 被整体删除，
+    // 唯一入口是 `startActivation(spec)`。官方迁移指南（`docs/upgrade-guide/v0.2.1-alpha.1/subagent-activations/`）
+    // 对「必须等待结果的宿主代码」指定两条：① 用 `delivery: 'caller'`；② 发布后 `signal` 不再控制取消，
+    // 保留回执用 `dispose()` 取消该次 activation。
+    // `delivery: 'caller'` 是本插件的**必须**选择（不是优化）：`'parent'` 会向父会话投递完成通知，
+    // 而父会话就是主线程——流水线的阶段完成由本插件自己汇报，不能让宿主再插一条。
+    const sig = normalizeSignal(signal)
+    const activation = await (runtime.subagents as SubagentStarters).startActivation!({
+      provider: providerName() as string,
+      label,
+      request: {
+        prompt: [{ type: 'text', text: prompt }],
+        parent,
+        ...(agentOptions ? { agentOptions } : {}),
+        signal: sig,
+      },
+      signal: sig,
+      delivery: 'caller',
+    })
+    // 🔴 **活 Agent 必须在这一刻取**（2026-10-16 实测 tf-mv9o5fkk-orjou4：21/21 阶段 usage 全空）：
+    // 宿主对本地子级在 **idle 时就 close(activation)**（`manager.watchLocalSettlement` → `finishDisposal`
+    // → `handle.dispose()` ⇒ 从 `agents` 注册表注销），而 `activation.result` 是「**handle cleanup 之后**」
+    // 才 settle（subagent README：result "deliver … after handle cleanup, capacity release, and settlement
+    // notifications"）⇒ 等到 finally 再按 childId 查注册表**必然拿不到**。
+    // 早取到的这个对象在注销后依然可用（我们只读 `.session` / `.status` / `.inject`），
+    // 与 alpha.1 时代「回执直接带活 Agent」的语义对齐。
+    const liveChild = liveChildAgentOf(activation.childId)
+    run = {
+      id: activation.childId,
+      result: activation.result,
+      dispose: () => activation.dispose(),
+      localAgent: liveChild,
+    }
+    stage.childId = run.id
+    trackInFlight(journal.id, stage, run)
+    try {
+      if (parent && parent.session && typeof parent.session.append === 'function') {
+        parent.session.append('tool-workflow/agent-start', {
+          runId: journal.id, seq: stage.seq, label, phase, childId: run.id,
+        })
+      }
+    } catch (e) { /* 轨迹写入失败不影响主流程 */ }
+    // 单调用护栏：进行中退化检测（推理复读/墙钟超限 → dispose 中止，outcome=degenerated 走干净重试）
+    cancelGuard = startStageGuard({ run, journal, label, stage })
+    const result = await run.result
+    const stop = result && result.stopReason
+    const text = extractText(result && result.output)
+    stageText = text
+    // 交付判定（信号分级：客观形态 → 证据块 → 措辞兜底，见 util.judgeDeliverable）
+    const verdict = judgeDeliverable(phase, text)
+    // **doc 类阶段的产物兜底**（2026-09-18 probe-v2 实锤，见 util.DOC_STAGE_FILES）：这些阶段的产物
+    // 是任务夹文件，回复只是摘要 —— 回复过短不等于没干活（实锤：PRD.md 4894 字节已落盘、还调了
+    // `present` 声明交付物，却因回复只有 284 字符的 state 块被判「未交付」）。回读文件，达下限即判交付。
+    // 前提仍是**回复非空**：pipeline 要用回复合并 state 块；空回复另走下方 emptyTurnDoc 兜底（A 档）。
+    let docFallback: { name: string; length: number } | null = null
+    if (!verdict.ok && text && stop === 'completed') {
+      const doc = stageDocText(journal, phase, stage.artifactBaseline)
+      if (doc && doc.length >= verdict.min) docFallback = { name: doc.name, length: doc.length }
+    }
+    // **空收尾的文件兜底**（2026-09-27，A 档止损）：`completed` + 0 字符 = 推理模型空收尾（DeepSeek 实测：
+    // reasoning 之后、正文之前被服务端收尾）。doc 类阶段「文件即产物」——若任务夹产物已落盘且达下限，
+    // 没理由因「没说话」整轮重跑（重跑 ≈ 150 万 token）。判定核心在 util.emptyTurnDocVerdict（纯函数，
+    // 行为级测试锁得住——runner 链宿主私有 peer 不可 import）。⚠️ 边界（tf-muigy5eq r12 实测）：空收尾
+    // 死在写报告**之前**（全程只写了验证脚本）时不命中 → 照旧重跑。它救的是「文件已合格、只差说话」的
+    // 变体；「干到一半死掉」要 continuable 续跑（docs/TODO.md 立项）。
+    // 返回值用**文件内容**顶替空回复：timeline 存产物全文（与 resume 复用同构）；state 块不在文件里
+    // 则 mergeStageState 自然跳过（宽容语义），不破坏下游。
+    let emptyTurnDoc: { name: string; text: string; length: number } | null = null
+    if (!text && stop === 'completed') {
+      emptyTurnDoc = emptyTurnDocVerdict(stop, text, verdict.min, stageDocText(journal, phase, stage.artifactBaseline))
+    }
+    if (journal.cancelled) {
+      stage.status = 'cancelled'; stage.outcome = 'cancelled'
+      return null
+    }
+    // **环境不可用优先于「完成了」**（2026-09-23 probe-v4 第二次实机，勿回退）：护栏在 WARN 档一旦记下
+    // 「同一工具持续同一错误失败」，本阶段就已证明**该工作区跑不了命令**。此时模型可能改用文件工具把活干完
+    // （实测：它手写 13 个文件 / 69.8k 输出，其中一个 18.7KB 的自测脚本**一次都没跑过**）——这种"完成"无法验证，
+    // 而下游 dev/QA/验收更需要 shell，按**防假交付**原则不得算 done → 归 env-unavailable：不重试、汇报点名
+    // 环境与原文错误、引导「先修工作区再 resume」（工作区里已落地的文件不删，resume 会带着 shell 重跑本阶段）。
+    if (stage.envUnavailable) {
+      stage.status = 'failed'
+      stage.outcome = 'env-unavailable'
+      stage.summary = t(locale, 'diag.envUnavailableStage', { label, detail: stage.envUnavailable })
+      if (text) stage.output = clip(stripStateBlock(text), 4000)
+      journal.logs.push({ t: Date.now(), level: 'error', message: stage.summary })
+      return null
+    }
+    if (stop === 'completed' && text && (verdict.ok || docFallback)) {
+      stage.status = 'done'; stage.outcome = 'completed'
+      // ⚠️ 剥掉机器契约块（2026-10-08）：这份落盘文本会进**详情浮层**与 resume 重建上下文，
+      // state 块只对 host 有意义，不该出现在任何展示面上。机器面读的是 `withRetry` 的返回值（未剥）。
+      stage.output = clip(stripStateBlock(text), 50000) // 阶段产物全文（断点续跑重建上下文）
+      if (docFallback) {
+        // 留痕（visible）：判交付的依据是文件而不是回复 —— 否则"为什么这次没重试"又成黑盒
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.docDelivered', { label, length: verdict.length, min: verdict.min, name: docFallback.name, docLen: docFallback.length }) })
+      }
+      // 措辞只作诊断：命中拒绝词但已带验证证据块 → 仍判交付（2026-09-11 信号换轨）。
+      // 留一条 warn 是为了审计可见（「为什么这句『无法执行』没判失败」有据可查），不改变结论。
+      if (verdict.refusal) {
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.refusalWithEvidence', { label, phrase: verdict.refusal.phrase, context: verdict.refusal.context }) })
+      }
+      return text
+    }
+    // 空收尾兜底判交付（放在 envUnavailable 之后：环境不可用优先，防假交付）
+    if (emptyTurnDoc) {
+      stage.status = 'done'; stage.outcome = 'completed'
+      stage.output = clip(stripStateBlock(emptyTurnDoc.text), 50000)
+      stageText = emptyTurnDoc.text // handoff/state 合并用文件内容，不再拿空串
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.emptyTurnDelivered', { label, name: emptyTurnDoc.name, length: emptyTurnDoc.length, min: verdict.min }) })
+      return emptyTurnDoc.text
+    }
+    if (stage.guardReason) {
+      // 护栏中止优先于通用失败分类（成功产出已在上方抢救）；
+      // 复读=degenerated（可干净重试），挂死/空转=stalled（走预算门转人工）
+      stage.status = 'failed'
+      stage.outcome = stage.guardOutcome || 'degenerated'
+      stage.summary = t(locale, 'diag.guardAbort', { reason: stage.guardReason })
+      if (text) stage.output = clip(stripStateBlock(text), 4000) // 失败产出截断落盘（重试诊断/详情浮层）
+      journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} ${stage.summary}` })
+      return null
+    }
+    stage.status = 'failed'
+    stage.outcome = (stop === 'completed' && text) ? 'insubstantial' : (stop || 'error')
+    // provider 错误细节记录（观测改进：此前只有 stopReason=error，无从排查瞬时/持久）
+    const errDetail = result && (result as { error?: unknown }).error
+    if (stage.outcome === 'insubstantial') {
+      // 拒绝词命中点回灌（重试诊断需要「哪段输出被判拒绝」）；否则细分内容过短
+      if (verdict.reason === 'refusal' && verdict.refusal) {
+        stage.summary = t(locale, 'diag.refusalNoEvidence', { phrase: verdict.refusal.phrase, context: verdict.refusal.context })
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.refusalNoEvidenceLog', { label, phrase: verdict.refusal.phrase }) })
+      } else {
+        stage.summary = t(locale, 'diag.tooShort', { length: verdict.length, min: verdict.min })
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.tooShortLog', { label, length: verdict.length }) })
+      }
+      if (text) stage.output = clip(stripStateBlock(text), 4000)
+    } else {
+      // 诊断必须能自证（2026-09-26 tf-muigy5eq r12 实踩）：此前只报 stopReason，
+      // 「正文为空」与「provider 报错」长得一模一样，排查只能跳子代理会话原始记录。
+      // 现在带上正文长度 + **响应块构成**；且 `completed` + 0 字符 = 推理模型空收尾，给专属措辞（一眼可认）。
+      // 块构成是判断「谁收的尾」的关键：空收尾形状 = 只有 reasoning、无 text、无 tool-call；
+      // 宿主中断会带 aborted、预算截断会带 max-tokens，都不会是 stop（见 util.blockShape 注释与 DSH 排查记录）。
+      const err = errDetail ? t(locale, 'diag.noResultError', { error: String(errDetail).slice(0, 200) }) : ''
+      const shape = blockShape(result && result.output)
+      stage.summary =
+        !text && stop === 'completed'
+          ? t(locale, 'diag.emptyTurn', { stop: stop || 'unknown', shape })
+          : t(locale, 'diag.noResult', { stop: stop || 'unknown', len: (text || '').length, shape, error: err })
+      journal.logs.push({ t: Date.now(), level: 'error', message: `${label} ${stage.summary}` })
+      if (text) stage.output = clip(stripStateBlock(text), 4000) // 半截产出（如 stopReason=length）也落盘供诊断
+    }
+    return null
+  } catch (e) {
+    stage.status = journal.cancelled ? 'cancelled' : 'failed'
+    if (!journal.cancelled && stage.guardReason) {
+      stage.outcome = stage.guardOutcome || 'degenerated'
+      stage.summary = `${t(locale, 'diag.guardAbort', { reason: stage.guardReason })}${t(locale, 'diag.colon')}${String((e && e.message) || e)}`
+    } else {
+      stage.outcome = journal.cancelled ? 'cancelled' : 'error'
+      stage.summary = t(locale, 'diag.startFail', { msg: String((e && e.message) || e) })
+    }
+    journal.logs.push({ t: Date.now(), level: 'error', message: `${label} ${stage.summary}` })
+    return null
+  } finally {
+    if (cancelGuard) cancelGuard()
+    stage.usage = accumulateSessionUsage(run)
+    if (!stage.usage) noteUsageMissing(journal, run, locale)
+    stage.handoff = stageText ? handoffBrief(stageText) : null
+    stage.endedAt = Date.now()
+    untrackInFlight(journal.id, stage) // 只注销自己这一路（并发 dev 同 run 多路在飞，见 context.inFlight）
+    // 结算后释放子代理资源（对齐宿主规范结算 dsh-subagent settleRun：result 后必 dispose）。
+    // ⚠️ 2026-09-26 实锤修复：此语句曾被行注释吞掉（与上一句同行）→ 正常结算路径 dispose 从未执行。
+    if (run) { try { await run.dispose() } catch (e2) { /* ignore */ } }
+  }
+}
+
+/**
+ * 该阶段失败是否「外部供应商不可用」（限流/无额度/上游 5xx/超时…）。
+ * 判据 = `classifyExternalFailure(错误细节, stage.summary)`（纯函数，单测覆盖真值表）。
+ * ⚠️ 启发式：宿主只给 `stopReason=error` + 错误文本，无结构化错误码；命中原文进日志便于日后核对。
+ */
+function isExternalFailure(stage: { summary?: string | null; outcome?: string | null; output?: string | null }): boolean {
+  if (stage.outcome === 'insubstantial' || stage.outcome === 'degenerated' || stage.outcome === 'stalled' || stage.outcome === 'aborted' || stage.outcome === 'env-unavailable') return false
+  return classifyExternalFailure(String(stage.summary || ''), String(stage.output || '').slice(-500)) === 'external'
+}
+
+/** 可取消等待：等待期间被取消/中断则立刻返回 false（不把 sleep 变成不可打断的挂起）。 */
+async function sleepUnlessCancelled(ms: number, isCancelled: () => boolean): Promise<boolean> {
+  const step = 1000
+  let waited = 0
+  while (waited < ms) {
+    if (isCancelled()) return false
+    const slice = Math.min(step, ms - waited)
+    await new Promise((r) => setTimeout(r, slice))
+    waited += slice
+  }
+  return !isCancelled()
+}
+
+/**
+ * 单阶段重试 + token 熔断（**新增口径**：input+cacheWrite+output，排除 cacheRead——见
+ * `FRESH_TOKEN_BUDGET` 与 metering.freshTokensOf；汇报仍走官方 totalTokensOf 口径）。
+ * 顺序：不可重试/外部中止/护栏中止 → 预算门 → 自动重试（预算合理时重试优先于熔断，2026-09-11 修正）。
+ * `effortHint`：机械阶段的推理强度降档提示（第 1 次尝试生效，重试自动回升 high，见 resolveStageEffort）。 */
+export async function withRetry(
+  journal: Journal,
+  parent: unknown,
+  label: string,
+  phase: string,
+  prompt: string,
+  signal: unknown,
+  taskKey?: string | null,
+  effortHint?: string | null,
+  taskIds?: string[] | null,
+  /** 中断后 resume：**上一轮那个任务的 childId**（≠ 重试的 lastStage.childId）——有了它，attempt=1
+   *  也能在原 child 里继续：中断不等于失败，新起一个只会让它从零重读一遍同样的上下文。 */
+  resumeChildId?: string | null,
+): Promise<{ text: string | null; attempts: number; freshTokens: number; stage: JournalStage | null }> {
+  let attempts = 0
+  let freshTokens = 0
+  // 熔断预算的缓存能力判据：累计本次调用各次尝试的 usage（只看本阶段，见 metering.effectiveFreshBudget）
+  let usageAcc: UsageBuckets = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, calls: 0 }
+  let lastStage: JournalStage | null | undefined = null
+  // 外部供应商故障的独立计数（不受 RETRY_LIMIT 约束：那是"换做法重试"的次数，
+  // 外部故障是"等窗口过去"，两件事不能共用一个计数器）
+  let externalAttempts = 0
+  // 重试诊断包与重试日志同样随 run 语言（诊断包是喂回子代理的注入文本）
+  const locale = runLocaleOf(journal)
+  /* ── 重试复用同一个子代理（2026-10-28）───────────────────────────────────
+   * 为什么：重试原本每次 `runAgent` 新起一个 child —— 新 child 对上一轮**一无所知**，只能从零重读
+   * PRD / TECHNICAL / 源码。实测 tf-mvpjqs87-14qdxa：单阶段 dev 184 次调用烧 18.4M token、
+   * 修复轮 96~150 次调用烧 6.5~15M，绝大部分是"重读同样的上下文"。而同一 child 续跑是可行的：
+   * PRD 改写已真机验过（同一 child 连改 3 版、零新 spawn，见 prd-revise.ts 头注释）。
+   * 安全阀（2026-10-29 收紧）：
+   *  - 没投进去（无 childId / 宿主不支持 / sendMessage 抛错）⇒ 回落新起，落可见 warn；
+   *  - **投进去了但没等到正文 ⇒ 绝不回落新起**。实锤：child 在跑长命令（mvn/探针）期间事件冻结，
+   *    idle 判据误判"不动了" ⇒ 我们放弃并新起 ⇒ **两个子代理改同一批文件**（old child 还在继续）。
+   *    此时唯一安全的选择是把本次按失败收场（提测门禁会拦下，转人工），宁可浪费这一轮。
+   */
+  async function tryContinueInChild(
+    stage: JournalStage,
+    instruction: string,
+  ): Promise<{ kind: 'text'; text: string; usage?: UsageBuckets } | { kind: 'noText' } | null> {
+    const childId = String(stage.childId || '')
+    if (!childId) return null
+    if (!canReviseViaChild({ subagents: runtime.subagents, sessionQuery: runtime.sessionQuery, childId })) return null
+    const diag = { base: 0, end: 0, waitedMs: 0, delivered: false }
+    const out = await revisePrdViaChild({
+      subagents: runtime.subagents,
+      sessionQuery: runtime.sessionQuery,
+      parent,
+      childId,
+      instruction,
+      signal: normalizeSignal(signal),
+      // 长命令（构建/测试/探针）期间事件会冻结几分钟 ⇒ idle 给足；上限也放宽 ——
+      // 反正「投进去了」之后回落新起是禁手（两个 agent 改同一批文件），久等是更便宜的选项。
+      // ⚠️ 2026-10-29 真机 tf-mvsgetmy-ldop5j T9 实证：resume 复活的 child 单 turn 正常跑了
+      // 90 分钟、160+ 步（写 4 个测试文件 + 反复 mvn），旧 waitMs=25 分钟墙钟到顶 → 判 noText
+      // 失败，但 child 其实一直在干活、最终把 FortuneTwoTurnStreamTest 等全跑绿。
+      // ⇒ idle 抬到 10 分钟：盖住 `job_output wait=300s` 的空窗（等 5 分钟 mvn 不该被误判「不动」）；
+      //   waitMs 抬到 2 小时：给正常长任务足够窗口。真卡死仍由 idle（10 分钟无进展）兜底放弃，
+      //   不会无限等；有进展就一直等（revisePrdViaChild 的 idle 判据保证这点）。
+      idleMs: 600_000,
+      waitMs: 7_200_000,
+      diag,
+    }).catch(() => null)
+    if (out && String(out.text || '').trim()) {
+      return { kind: 'text', text: out.text, usage: out.usage as UsageBuckets | undefined }
+    }
+    if (diag.delivered) {
+      // **投进去了**：old child 仍在跑（或已把改动写进文件）。此刻回落新起 = 两个 agent 并发改同一批文件
+      // ⇒ 唯一安全的动作是按失败收场（不新起），转人工。
+      journal.logs.push({
+        t: Date.now(), level: 'error',
+        message: t(locale, 'diag.continueNoText', {
+          label: stage.label || label, sec: Math.round((Number(diag.waitedMs) || 0) / 1000),
+        }),
+      })
+      return { kind: 'noText' }
+    }
+    // 没投进去 ⇒ 回落新起是安全的，落可见 warn
+    journal.logs.push({
+      t: Date.now(), level: 'warn',
+      message: t(locale, 'diag.continueFallback', {
+        label: stage.label || label, delivered: 'no', sec: Math.round((Number(diag.waitedMs) || 0) / 1000),
+      }),
+    })
+    return null
+  }
+
+  for (let attempt = 1; attempt <= RETRY_LIMIT; attempt++) {
+    attempts = attempt
+    const labelNow = attempt > 1 ? t(locale, 'dev.taskRetry', { label, n: attempt }) : label
+    // 重试诊断包：原样重试=盲试（子代理不知道上次为什么失败，重试即碰运气）。
+    // 诊断源现成：stage.summary（含拒绝词命中点/过短/stopReason 细节）+ guardReason + 失败产出尾部。
+    const promptNow = attempt > 1 && lastStage ? prompt + buildRetryDiagnostic(attempt, lastStage, locale) : prompt
+    // 重试优先**在同一子代理里继续**（它还记得上一轮写过什么、试过什么）；拿不到再新起。
+    const continueId = (lastStage && String(lastStage.childId || '').trim()) || String(resumeChildId || '').trim()
+    if (shouldContinueChild(attempt, lastStage ? lastStage.childId : null, resumeChildId)) {
+      // **改道闸门（2026-10-29，用户拍板）**：旧 child 上一轮因模型不可用（429/无额度/上游故障…）
+      // 失败，且用户已主动切到别的模型 ⇒ 续跑旧 child 仍打老（不可用）模型，纯浪费一次机会；
+      // 放弃续跑、落到下方 runAgent 新起 child（resolveChildRoute 吃新模型）。
+      // 老模型仍可用（或非外部失败）⇒ 保持续跑，不丢旧 child 上下文。
+      const desiredRoute = resolveChildRoute(parent)
+      if (shouldRerouteChild({ journal, childId: continueId, route: desiredRoute })) {
+        journal.logs.push({
+          t: Date.now(), level: 'warn',
+          message: t(locale, 'diag.rerouteNewChild', { label, model: desiredRoute.model || desiredRoute.provider || '?' }),
+        })
+        // 不续跑 ⇒ 跳过本块，落到下方 runAgent 新起 child（吃新路由）
+      } else {
+        const instr = resumeChildId
+          ? t(locale, 'diag.continueResume') + (lastStage ? `\n${buildRetryDiagnostic(attempt, lastStage, locale)}` : '')
+          : buildRetryDiagnostic(attempt, lastStage, locale)
+        const cont = await tryContinueInChild(lastStage || ({ childId: continueId, label } as JournalStage), instr)
+        // **投进去了但没等到正文** ⇒ 原子代理仍在跑（或已写入文件）。绝不回落新起 ——
+        // 两个子代理改同一批文件比失败更糟。按失败收场，让提测门禁拦下转人工。
+        if (cont && cont.kind === 'noText') {
+          // ⚠️ 2026-10-29 真机 tf-mvsgetmy-ldop5j T9 实证：续跑没拿到正文时旧实现**直接 return、
+          // 完全不动 stage**，导致复用 resume 前的旧 stage ⇒ endedAt 停在首次运行（卡片显示 6m3s，
+          // 而 child 实际已活了 6.5 小时、单 turn 90 分钟还在跑），UI 时间严重失真、看起来像"6 分钟
+          // 就死的弃子"。此处落真实结束时刻 + 明确 failed，让卡片显示的是「这一轮什么时候真失败」，
+          // 而不是首次尝试的陈旧时长。
+          finalizeNoTextStage(lastStage, Date.now())
+          return { text: null, attempts, freshTokens, stage: lastStage }
+        }
+        if (cont && cont.kind === 'text') {
+          const u = (cont.usage || {}) as UsageBuckets
+          const prev = lastStage.usage || ({} as UsageBuckets)
+          lastStage.usage = {
+            input: (Number(prev.input) || 0) + (Number(u.input) || 0),
+            cacheRead: (Number(prev.cacheRead) || 0) + (Number(u.cacheRead) || 0),
+            cacheWrite: (Number(prev.cacheWrite) || 0) + (Number(u.cacheWrite) || 0),
+            output: (Number(prev.output) || 0) + (Number(u.output) || 0),
+            calls: (Number(prev.calls) || 0) + (Number(u.calls) || 0),
+          }
+          // 同一个 child 继续 ⇒ 不新增 stage（卡片不重复），把本轮记为同一次尝试的续跑
+          lastStage.status = 'done'
+          lastStage.outcome = 'completed'
+          lastStage.endedAt = Date.now()
+          freshTokens += freshTokensOf(u)
+          usageAcc = {
+            input: usageAcc.input + (Number(u.input) || 0),
+            cacheRead: usageAcc.cacheRead + (Number(u.cacheRead) || 0),
+            cacheWrite: usageAcc.cacheWrite + (Number(u.cacheWrite) || 0),
+            output: usageAcc.output + (Number(u.output) || 0),
+            calls: usageAcc.calls + (Number(u.calls) || 0),
+          }
+          journal.logs.push({
+            t: Date.now(), level: 'info',
+            message: t(locale, 'log.continueChild', { label: lastStage.label || label, attempt, tokens: freshTokensOf(u) }),
+          })
+          return { text: cont.text, attempts, freshTokens, stage: lastStage }
+        }
+      } // 改道闸门 else 结束
+    }
+    // ⚠️ 并发安全（并行 dev 子任务共享同一 journal.stages）：必须在调用前记录长度——
+    // runAgent 同步 push 本次尝试的 stage（第一个 await 前），期间其他任务的 runAgent
+    // 可能已 push 新 stage；用 length-1 取 stage 会错位（证据块/重试诊断/usage 累计全串）。
+    const beforeLen = journal.stages.length
+    const result = await runAgent(journal, parent, labelNow, phase, promptNow, signal, taskKey, attempt, effortHint, taskIds)
+    lastStage = journal.stages[beforeLen] || null
+    // 累计本次调用各次尝试的**新增**消耗（input+cacheWrite+output；cacheRead 是廉价重放，
+    // 不计入熔断——旧口径含 cacheRead 导致「一次失败必熔断」，见 FRESH_TOKEN_BUDGET 注释）
+    if (lastStage && lastStage.phase === phase) {
+      freshTokens += freshTokensOf(lastStage.usage)
+      const u = (lastStage.usage || {}) as { input?: number; cacheRead?: number; cacheWrite?: number; output?: number; calls?: number }
+      usageAcc = {
+        input: usageAcc.input + (u.input || 0),
+        cacheRead: usageAcc.cacheRead + (u.cacheRead || 0),
+        cacheWrite: usageAcc.cacheWrite + (u.cacheWrite || 0),
+        output: usageAcc.output + (u.output || 0),
+        calls: usageAcc.calls + (u.calls || 0),
+      }
+    }
+    if (result) return { text: result, attempts, freshTokens, stage: lastStage }
+    if (journal.cancelled) return { text: null, attempts, freshTokens, stage: lastStage }
+    // 不可重试失败（上下文耗尽等）：重试同一 prompt 大概率复现 → 直接需人工
+    if (lastStage && isUnretryable(lastStage.outcome, lastStage.outcome)) {
+      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'diag.unretryable', { label, outcome: lastStage.outcome }) })
+      journal.humanIntervention = true
+      return { text: null, attempts, freshTokens, stage: lastStage }
+    }
+    // **外部供应商不可用**（限流 / 无额度 / 上游 5xx / 超时…；2026-09-17 dddd 实测：同请求 16 分钟后成功）
+    // ——这不是内容失败，重试同样的请求只是"等窗口过去"。处置：**长退避重试**（30s→60s→120s→240s），
+    // 而不是像内容失败那样快速失败两次就转人工。退避**不计入熔断预算**（等待不烧 token）。
+    if (lastStage && isExternalFailure(lastStage)) {
+      const wait = externalBackoffMs(externalAttempts + 1)
+      if (wait !== null) {
+        externalAttempts++
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.externalBackoff', { label, n: externalAttempts, sec: Math.round(wait / 1000), detail: clip(String(lastStage.summary || ''), 200) }) })
+        if (!(await sleepUnlessCancelled(wait, () => journal.cancelled))) {
+          return { text: null, attempts, freshTokens, stage: lastStage } // 等待期间被取消 → 按取消收尾（不重试）
+        }
+        // 退避后重试同一阶段（attempt 计数不推进 RETRY_LIMIT：这是"等窗口"而非"换做法重试"）
+        attempt--
+        continue
+      }
+      // 退避用尽：仍失败 → **可续跑的外部中断态**（不是内容失败，也不要求改需求）：
+      // run 落 interrupted、阶段标 interrupted，汇报明写"疑似限流/额度，窗口恢复后 resume 只补这一段"。
+      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'diag.externalExhausted', { label, n: externalAttempts }) })
+      if (lastStage) { lastStage.status = 'interrupted'; lastStage.outcome = 'external' }
+      journal.interrupted = true
+      journal.interruptedAt = Date.now()
+      journal.externalFailure = true
+      journal.humanIntervention = true
+      return { text: null, attempts, freshTokens, stage: lastStage }
+    }
+    // 外部中止（aborted：用户重启/进程被杀等）：非模型失败、非烧钱——不熔断、不自动重试，
+    // needs-human 引导 resume 续跑（resume 精确补跑失败任务，已完成任务复用；实证 r29 重启后 resume 成功）。
+    // 旧行为结算成「熔断」误导（freshTokens 是本次调用累计，含成功任务消耗；真实原因是外部中止）。
+    if (lastStage && lastStage.outcome === 'aborted') {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.aborted', { label }) })
+      journal.humanIntervention = true
+      return { text: null, attempts, freshTokens, stage: lastStage }
+    }
+    // **环境不可用**（2026-09-23 probe-v4 实锤）：命令工具持续以同一错误失败（如 Windows 沙箱 ACL
+    // provision 失败 → 该工作区所有命令全废）。重试/换命令/更多推理都修不好**环境**，自动重试只会把同样的
+    // 钱再烧一遍（实锤那次白烧 52.6k 输出，且汇报把真因误写成 max-tokens）→ 直接 needs-human，
+    // 并明确点名「环境不可用、先修工作区再 resume」（已完成阶段与产物全部复用）。
+    if (lastStage && lastStage.outcome === 'env-unavailable') {
+      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'diag.envUnavailable', { label }) })
+      journal.humanIntervention = true
+      return { text: null, attempts, freshTokens, stage: lastStage }
+    }
+    // 护栏中止（degenerated）= 主动止损：退化会话内自动重试大概率复现且烧钱（实证 run tf-mte906e9：
+    // 6 次中止全部自动重试失败，复读计数 12→27 递增；resume 以全新会话续跑一次成功）→ 不再自动重试，
+    // 直接 needs-human，引导 teamflow_resume（全新子代理会话 = 干净上下文）
+    if (lastStage && lastStage.outcome === 'degenerated') {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.degenerated', { label }) })
+      journal.humanIntervention = true
+      return { text: null, attempts, freshTokens, stage: lastStage }
+    }
+    // 护栏中止（stalled = 挂死/空转）：对齐 guard 注释「走预算门转人工，不自动重试烧钱」——
+    // 挂死无产出可救、空转已在烧钱，自动重试大概率复现（实证与 degenerated 同理）→ needs-human 引导 resume
+    if (lastStage && lastStage.outcome === 'stalled') {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.stalled', { label }) })
+      journal.humanIntervention = true
+      return { text: null, attempts, freshTokens, stage: lastStage }
+    }
+    // token 熔断（新增口径）：本次调用累计新增消耗超预算 → 停止重试转人工。
+    // 位置在「自动重试」之前是刻意的：预算合理（≈2 轮尝试量级）时，首次失败走下方重试；
+    // 只有该量级数倍的真跑飞才熔断——旧口径把 cacheRead 算进来，等于取消了自动重试（2026-09-11 修）。
+    // **预算随缓存能力自适应**（2026-09-18 probe-v2 实锤）：不缓存的 provider 上每轮调用都要重付
+    // system+tools（实测 ~15.5k/次），200k 会退化成「约 13 次调用上限」→ 按倍数放宽（见 metering）。
+    const eff = effectiveFreshBudget(usageAcc, FRESH_TOKEN_BUDGET)
+    if (freshTokens >= eff.budget) {
+      const params = {
+        label, fresh: Math.round(freshTokens / 1000), budget: Math.round(eff.budget / 1000),
+        calls: eff.calls, ratio: Math.round(eff.ratio * 100),
+      }
+      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, eff.uncached ? 'diag.breakerUncached' : 'diag.breaker', params) })
+      journal.humanIntervention = true
+      return { text: null, attempts, freshTokens, stage: lastStage }
+    }
+    if (attempt < RETRY_LIMIT) {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.retry', { label, n: attempt, outcome: lastStage ? lastStage.outcome || 'unknown' : 'unknown' }) })
+    } else {
+      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'diag.retryExhausted', { label, n: RETRY_LIMIT }) })
+      journal.humanIntervention = true
+    }
+  }
+  return { text: null, attempts, freshTokens, stage: lastStage }
+}

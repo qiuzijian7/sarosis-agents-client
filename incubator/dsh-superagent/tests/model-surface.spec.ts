@@ -36,8 +36,11 @@ interface Skill { name: string; description: string; content: string }
 /**
  * Maximum combined character count of system prompt and tool definitions per role (~5% above baseline).
  * Lower this limit when shrinking model-facing text; raise it only intentionally and explain why in the commit message.
+ * VsSaros addition: raised to 61_000 for the five `orchestrator_team_*` tools (plans, Bots, creating Bots,
+ * status, stop) plus one line in the orchestrator prompt telling the model when to use them. Their descriptions
+ * and schemas were kept short; together the team feature adds ~2,300 characters to the orchestrator's surface.
  */
-const BUDGET: Record<Role, number> = { orchestrator: 59_000, worker: 40_500 }
+const BUDGET: Record<Role, number> = { orchestrator: 61_000, worker: 40_500 }
 const PROMPTS = 'prompts/, skills/', TOOLS = 'src/app/tools/', SESSIONS = 'src/app/sessions.ts'
 const NOTICES = 'src/app/notices.ts', LINKS = 'src/app/links.ts', ASSESSMENT = 'src/app/assessment.ts'
 const EXECUTOR = 'src/executor/dsh.ts', ERRORS = 'src/core/errors.ts'

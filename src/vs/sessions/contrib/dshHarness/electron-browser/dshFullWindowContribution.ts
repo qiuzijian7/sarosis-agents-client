@@ -25,9 +25,13 @@
  * 那套全局处理（作用于主窗口），与聊天宿主"只处理自己负责的少数方法"同口径。
  */
 
-import { getZoomFactor } from '../../../../base/browser/browser.js';
 import { $, append } from '../../../../base/browser/dom.js';
+// ⚠ 2026-11-04 补：`getZoomFactor` 缺 import 会让整个项目编译不过（3 处使用），
+//   产物不更新 ⇒ 所有 dev 改动都"不生效"。定义在 base/browser/browser.js。
+import { getZoomFactor } from '../../../../base/browser/browser.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
+// ★ 2026-11-04：caption「应用 / 编辑」菜单用**原生菜单**（画在所有 WebContentsView 之上）。
+import { popup } from '../../../../base/parts/contextmenu/electron-browser/contextmenu.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 // ★ 2026-10-29（右栏自愈可见化）：自愈时弹一条通知 ⇒ 用户知道"右栏为什么没了"，而不是莫名消失。
@@ -42,6 +46,8 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IAuxiliaryWindowService } from '../../../../workbench/services/auxiliaryWindow/browser/auxiliaryWindowService.js';
 import { setDshFullWindowOpener, setDshPaneActionOpener, setDshSplitPaneOpener, type DshPaneAction } from '../../../common/dshFullWindow.js';
 import { dshChatNewSessionId } from '../common/dshChatSession.js';
+// ★ 2026-11-04：菜单模板 + 动作/命令封闭集（common 层纯函数，有守卫做行为级断言）。
+import { desktopMenuLabel, desktopMenuNames, dshDesktopMenuTemplate, type DshDesktopMenuAction, type DshDesktopMenuCommand, type DshDesktopMenuName } from '../common/dshDesktopMenu.js';
 import { DshHarnessSettings } from '../common/dshHarness.js';
 // ★ 2026-10-29（拖拽堆叠）：布局用**树**（h/v split + 权重）⇒ 能表达左右/上下混合、2×2、L 形。
 //   几何与重排是**纯函数**（common/dshSplitLayout.ts，有单测）⇒ 这里只负责"把结果摆到原生视图上"。
@@ -1169,6 +1175,58 @@ export class DshFullWindowContribution extends Disposable {
 				`color:${fg}`, 'opacity:.62', 'letter-spacing:.02em',
 			].join(';');
 			version.textContent = `v${this._productService.version}`;
+			// ★★ 2026-11-04（用户要求「dsh desktop 顶部增加 menu，包括应用和编辑」）：
+			//   参考 dsh-desktop 的 `src/preload/windows-menu-bar.ts`：caption 行挂两枚按钮，
+			//   弹出**原生菜单**（`Menu.popup`，画在所有 WebContentsView 之上；DOM 菜单会被盖住 ✗）。
+			//   ⚠ 整条 bar 是 `-webkit-app-region:drag` ⇒ 按钮必须 `no-drag` + `pointer-events:auto`
+			//     （本仓 `dshDesktopSplitChrome.ts:17-18` 的两条硬规矩）。
+			//   ⚠ `pointerdown` preventDefault ⇒ 打开菜单不抢走 composer 的焦点
+			//     （编辑菜单的按键靠 `sendInputEvent` 送回聚焦视图；参考工程同一处理）。
+			const windowId = win.vscodeWindowId;
+			const menuButtons: HTMLButtonElement[] = [];
+			const menuHost = append(bar, $('span.vssaros-desk-menubar'));
+			menuHost.setAttribute('role', 'menubar');
+			menuHost.setAttribute('aria-label', '应用菜单');
+			menuHost.style.cssText = 'display:inline-flex;align-items:center;gap:2px;flex:none;'
+				+ 'margin-left:10px;pointer-events:auto;-webkit-app-region:no-drag;';
+			/**
+			 * ★ 2026-11-04 真机修正：aux 窗口是 `about:blank`，`documentElement.lang` 为空、
+			 *   `navigator.language` 是 `en-US` ⇒ 照参考工程 `windows-menu-bar.ts` 的
+			 *   `document.documentElement.lang || navigator.language` 判据会显示成英文 ✗。
+			 *   dsh desktop 的自绘标题栏（品牌名 / 分屏菜单 / 状态）一律中文 ⇒ 这里固定 `zh`，
+			 *   模板仍保留 en 分支（单测覆盖），将来做多语言时再接配置。
+			 */
+			const locale: 'zh' | 'en' = 'zh';
+			for (let i = 0; i < desktopMenuNames.length; i++) {
+				const name: DshDesktopMenuName = desktopMenuNames[i];
+				const btn = append(menuHost, $('button.vssaros-desk-menu-btn')) as HTMLButtonElement;
+				btn.type = 'button';
+				btn.setAttribute('role', 'menuitem');
+				btn.setAttribute('aria-haspopup', 'menu');
+				btn.setAttribute('aria-expanded', 'false');
+				btn.setAttribute('data-vssaros-desktop-menu', name);
+				btn.tabIndex = i === 0 ? 0 : -1;
+				btn.textContent = desktopMenuLabel(name, locale);
+				btn.style.cssText = 'height:22px;padding:0 9px;border:0;border-radius:5px;'
+					+ `background:transparent;color:${fg};font:inherit;font-size:12px;cursor:default;`
+					+ 'pointer-events:auto;-webkit-app-region:no-drag;';
+				btn.addEventListener('pointerdown', e => e.preventDefault());
+				btn.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); });
+				btn.addEventListener('mouseenter', () => { btn.style.background = 'rgba(128,128,128,.22)'; });
+				btn.addEventListener('mouseleave', () => { btn.style.background = 'transparent'; });
+				btn.addEventListener('click', () => { void this._openDesktopMenu(name, btn, windowId, locale); });
+				btn.addEventListener('keydown', e => {
+					if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+						e.preventDefault();
+						const next = menuButtons[i === 0 ? 1 : 0];
+						if (next) { btn.tabIndex = -1; next.tabIndex = 0; next.focus(); }
+					} else if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+						e.preventDefault();
+						void this._openDesktopMenu(name, btn, windowId, locale);
+					}
+				});
+				menuButtons.push(btn);
+			}
 			// 窗控按钮（Electron 画在我们这条 DOM 之上）：颜色跟着主题走
 			void this._nativeHostService.updateWindowControls({
 				targetWindowId: win.vscodeWindowId,
@@ -1181,6 +1239,102 @@ export class DshFullWindowContribution extends Disposable {
 			return 0;
 		}
 		return DESKTOP_TITLEBAR_H;
+	}
+
+	/**
+	 * 打开 caption 的「应用 / 编辑」菜单（2026-11-04，参考 dsh-desktop 的
+	 * `desktop-titlebar:popup-menu` handler + `windowsMenuTemplate`）。
+	 *
+	 * 用本仓已有的 `popup()`（→ 主进程 `menu.popup()`）而不是 Electron `Menu.buildFromTemplate`：
+	 * 两者都是**原生菜单**、都画在 WebContentsView 之上，但 `popup()` 的 click 回调留在渲染侧
+	 * ⇒ 可以直接调 `IDshHarnessService` / `INativeHostService`，不必新增 IPC 往返 ✓
+	 *
+	 * 坐标：按钮的 `getBoundingClientRect()` 是 CSS 像素，popup 要窗口 DIP ⇒ 乘 `getZoomFactor()`
+	 * （与 `dshDesktopSplitChrome._popupMenu` / 参考工程的 `x * zoomFactor` 同口径）。
+	 */
+	private _openDesktopMenu(name: DshDesktopMenuName, button: HTMLButtonElement, windowId: number, locale: 'zh' | 'en'): void {
+		const entry = this._desktopWindows.get(windowId);
+		const viewId = entry?.viewId;
+		/**
+		 * ★★ 2026-11-04 三次修正（真机 CDP 抓到）：
+		 *   原来开头有 `if (aria-expanded === 'true') return;` 的**硬守卫**，复位只靠 `popup()`
+		 *   的 `onHide`（主进程 `menu.popup` callback 回发 `CONTEXT_MENU_CLOSE_CHANNEL`）。
+		 *   一旦菜单被系统级方式关掉、或跨窗口 IPC 没回发，aria 就永久卡在 true
+		 *   ⇒ 按钮**再也打不开**（真机复现：Esc 后仍 `expanded:"true"`，再点无变化）✗。
+		 *   ⇒ 改成：① 只用 250ms 时间戳软防连点（原生菜单是模态的，开着时点不到按钮）；
+		 *            ② 15s 超时兜底强制复位；③ 不再拿 aria 当行为开关，只作 ARIA 语义。
+		 *   顺便留两枚诊断锚点（CDP / 守卫可读）：viewId 是否解析到、菜单实际打开过几次。
+		 */
+		try {
+			button.setAttribute('data-vssaros-menu-viewid', viewId || '');
+			const opens = Number(button.getAttribute('data-vssaros-menu-opens') || 0) + 1;
+			button.setAttribute('data-vssaros-menu-opens', String(opens));
+		} catch { /* 诊断失败不影响菜单 */ }
+		const now = Date.now();
+		const last = Number(button.getAttribute('data-vssaros-menu-opened-at') || 0);
+		if (now - last < 250) { return; }
+		try { button.setAttribute('data-vssaros-menu-opened-at', String(now)); } catch { /* 忽略 */ }
+		/**
+		 * ★★ 2026-11-04 真机修正：**打开菜单的路径必须完全同步**。
+		 *   第一版在 popup 前 `await runDesktopMenuAction(viewId, 'zoomQuery')`（跨进程 IPC）
+		 *   ⇒ channel 调用一旦挂起，菜单永远弹不出来、`aria-expanded` 也永远不变
+		 *   （CDP 真机：click 到达、listener 齐全，但 `MutationObserver` 零条属性变更 ✗）。
+		 *   参考工程的 `mainWindow.webContents.getZoomFactor()` 是主进程**同步本地读取**，没有这个 await。
+		 *   ⇒ 这里用渲染侧 `getZoomFactor()`（同进程、同步）显示百分比；zoom 动作仍在主进程执行。
+		 */
+		/**
+		 * ★★ 2026-11-04 二次修正（真机 console 抓到）：
+		 *   `getZoomFactor()`（base/browser/browser.js）在里面 `getWindowId()` 读
+		 *   `mainWindow.vscodeWindowId` ⇒ 本 realm 里 mainWindow undefined ⇒ 抛
+		 *   `TypeError: Cannot read properties of undefined (reading 'vscodeWindowId')`
+		 *   ⇒ 菜单还没 setAttribute 就整个崩掉 ✗。参考工程是在主进程读
+		 *   `window.webContents.getZoomFactor()`，本仓没有这个同步入口。
+		 *   ⇒ 标题栏不随页面缩放，坐标/百分比一律按 1 处理（与 `dshDesktopSplitChrome`
+		 *     的 `_popupMenu` 用 `this._model?.zoom ?? 1` 同口径）；缩放真值由主进程 zoom 动作维护。
+		 */
+		const zoomFactor = 1;
+		const actions = {
+			act: (action: DshDesktopMenuAction) => {
+				if (!viewId) { this._log.warn('[dshHarness] desktop menu: no viewId for ' + action); return; }
+				void this._dsh.runDesktopMenuAction(viewId, action);
+			},
+			run: (command: DshDesktopMenuCommand) => { void this._runDesktopMenuCommand(command, windowId); },
+		};
+		const items = dshDesktopMenuTemplate(name, locale, zoomFactor, actions);
+		const rect = button.getBoundingClientRect();
+		const reset = () => { try { button.setAttribute('aria-expanded', 'false'); } catch { /* 按钮已卸载 */ } };
+		button.setAttribute('aria-expanded', 'true');
+		try {
+			popup(items, { x: Math.round(rect.left * zoomFactor), y: Math.round(rect.bottom * zoomFactor) }, reset);
+		} catch (err) {
+			reset();
+			this._log.warn('[dshHarness] desktop menu: 原生菜单弹不出来', err);
+		}
+		// ★ 兜底：onHide 没回发时 15s 后强制复位（否则 aria 永久卡 true）
+		setTimeout(() => {
+			if (button.getAttribute('aria-expanded') === 'true') { reset(); }
+		}, 15_000);
+	}
+
+	/** caption 应用菜单里那些**不需要视图**的宿主命令（参考 `executeDesktopMenuCommand`）。 */
+	private async _runDesktopMenuCommand(command: DshDesktopMenuCommand, windowId: number): Promise<void> {
+		switch (command) {
+			case 'restart':
+				await this._dsh.restart();
+				break;
+			case 'toggleFullscreen':
+				await this._nativeHostService.toggleFullScreen({ targetWindowId: windowId });
+				break;
+			case 'checkForUpdates':
+				await this._dsh.getUpgradeState(true);
+				break;
+			case 'about':
+				this._notifications.info(`VsSaros ${this._productService.version}`);
+				break;
+			case 'quit':
+				await this._nativeHostService.quit();
+				break;
+		}
 	}
 
 	/**

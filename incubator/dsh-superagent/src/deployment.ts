@@ -2,6 +2,7 @@
 import { LIMITS } from './limits.ts'
 import { accessSync, constants, readFileSync, statSync } from 'node:fs'
 import { delimiter, dirname, extname, isAbsolute, join } from 'node:path'
+import { larkProfiles, type LarkProfiles } from './sources/feishu-profile.ts'
 import type { Volatile } from '@deepseek-ai/cordis'
 import s from '@deepseek-ai/schemastery'
 import { z } from 'zod'
@@ -47,7 +48,14 @@ export const GithubAccountsSchema = z.object({
   repository: z.string().trim().regex(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?$/, 'owner/name').default(''),
   cli: z.string().trim().default(''),
 })
-export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
+/**
+ * VsSaros addition: `appId` picks the Feishu app by its lark-cli profile (lark-cli names a profile after its app by default).
+ * Empty keeps upstream behaviour: the CLI's active profile.
+ */
+export const FeishuBotSchema = z.object({
+  cli: z.string().trim().default(''),
+  appId: z.string().trim().regex(/^(cli_[A-Za-z0-9]+)?$/, 'cli_…').default(''),
+})
 /** Source configuration keys that affect deployment setup and trigger a restart when changed. */
 export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape),
   // VsSaros addition: the p4 Source's server, accounts and workspaces, which the workers' p4 guard is written from.
@@ -63,7 +71,13 @@ export interface Deployment extends Machine {
   github?: GithubAccount
   feishu?: FeishuBot
 }
-export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
+/** VsSaros addition: `profile` is the lark-cli profile every call selects (`--profile`), present only when the Source names an app. */
+export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string; profile?: string }
+/** The shell-free argv of the bot's lark-cli, selecting its profile when it has one; every Host-side call and the worker shim use it. */
+export function larkArgv(bot: Pick<FeishuBot, 'cli' | 'profile'>, path = process.env.PATH ?? '', windows = WINDOWS): string[] {
+  return [...cliArgv(bot.cli, path, windows), ...profileArgs(bot.profile)]
+}
+export const profileArgs = (profile: string | undefined): string[] => profile ? ['--profile', profile] : []
 /** The deployment's GitHub repository and account, or an error naming what to configure when the GitHub Source is not set up. */
 export function githubOf(deployment: Pick<Deployment, 'repository' | 'github'>): { repository: string; github: GithubAccount } {
   const { repository, github } = deployment
@@ -171,21 +185,40 @@ const BotInfo = z.object({ bot: z.object({ open_id: z.string().regex(/^ou_[A-Za-
  * Verify that the configured Feishu CLI is authenticated as a bot and restricted to strict mode `bot`.
  * Workers invoke this CLI as `lark-cli`, so a CLI that also permits a user identity would let workers act as that user.
  */
-export async function resolveFeishuBot(machine: Machine, feishu: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<FeishuBot | undefined> {
-  const { cli: name } = FeishuBotSchema.parse(feishu ?? {})
+export async function resolveFeishuBot(machine: Machine, feishu: unknown, probe: Probe, path = process.env.PATH ?? '',
+  profiles: LarkProfiles = larkProfiles()): Promise<FeishuBot | undefined> {
+  const { cli: name, appId } = FeishuBotSchema.parse(feishu ?? {})
   if (!name) return undefined
   const fail = (error: unknown): never => { throw error instanceof SetupError ? error : new SetupError('feishuCliFailed', { output: reason(error) }) }
   let cli = ''
   try { cli = executable(name, path, workerBin(machine.stateDir)) } catch (error) { fail(error) }
-  const run = (...args: string[]): Promise<string> => probe([cli, ...args], { LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1', LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1' }).catch(fail)
+  const call = (...args: string[]): Promise<string> => probe([cli, ...args], { LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1', LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1' }).catch(fail)
+  // VsSaros addition: with an app named, every check below runs under that app's profile, added first if it is missing.
+  const profile = appId ? await larkProfileOf(appId, cli, call, path, profiles, fail) : undefined
+  const run = (...args: string[]): Promise<string> => call(...profileArgs(profile), ...args)
   const text = await run('auth', 'status')
   const status = parsed(AuthStatus, text.slice(text.indexOf('{')))
   if (!status) return fail(new SetupError('feishuNoApp'))
+  if (appId && status.appId !== appId) fail(new SetupError('feishuAppMismatch', { app: appId, profile: profile ?? '', actual: status.appId }))
   if (status.identities.bot.status !== 'ready') fail(new SetupError('feishuBotNotReady', { app: status.appId, status: status.identities.bot.status }))
   const mode = /strict-mode:\s*(\w+)/.exec(await run('config', 'strict-mode'))?.[1]
   if (mode !== 'bot') fail(new SetupError('feishuUserIdentity', { mode: mode ?? 'unknown' }))
   // `--format json` unwraps only `data`, whereas this endpoint returns the payload under `bot`.
   const info = parsed(BotInfo, (await run('api', 'GET', '/open-apis/bot/v3/info', '--as', 'bot', '--format', 'ndjson')).split('\n')[0] ?? '')
   if (!info) return fail(new SetupError('feishuNoBot'))
-  return { cli, appId: status.appId, brand: status.brand, botId: info.bot.open_id, name: info.bot.app_name }
+  return { cli, appId: status.appId, brand: status.brand, botId: info.bot.open_id, name: info.bot.app_name, ...profile ? { profile } : {} }
+}
+const ProfileList = z.array(z.looseObject({ name: z.string(), appId: z.string().optional() }))
+/** The lark-cli profile of `appId`: an existing one (by app, then by name), else one added from the Bots' secret for it. */
+async function larkProfileOf(appId: string, cli: string, call: (...args: string[]) => Promise<string>, path: string,
+  profiles: LarkProfiles, fail: (error: unknown) => never): Promise<string> {
+  const text = await call('profile', 'list')
+  const listed = parsed(ProfileList, text.slice(Math.max(0, text.indexOf('[')))) ?? []
+  const found = listed.find(profile => profile.appId === appId) ?? listed.find(profile => profile.name === appId)
+  if (found) return found.name
+  const secret = profiles.secret(appId)
+  if (!secret) return fail(new SetupError('feishuAppMissing', { app: appId }))
+  try { await profiles.create(cliArgv(cli, path), appId, secret) }
+  catch (error) { fail(new SetupError('feishuProfileFailed', { app: appId, output: reason(error) })) }
+  return appId
 }

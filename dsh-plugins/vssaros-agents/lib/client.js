@@ -42,6 +42,9 @@
 // ★ 2026-11-02 touch#3 2026-11-02 02:17:40：chunk 改过之后必须动入口 ⇒ ?rev 才会变（守卫查 mtime）。
 // ★ 2026-11-02 touch#4：新增右侧栏「Bot 设置」页签（lib/client.botSettings.js）+ 本入口 require 它
 //   ⇒ 改动后再动一次入口（?rev 才会变；守卫比的是 mtime）。
+// ★ 2026-11-04 touch#11：Bots 名册登记外部 bot「SuperAgent 主管」，别的 bot 可用 agent_message 找它求助。
+// ★ 2026-11-04 touch#10：Bots 名册行标「主管创建」（SuperAgent 组团创建的 bot 留在名册里）。
+// ★ 2026-11-04 touch#9：IM 绑定页的飞书绑定可选「飞书应用」（多飞书应用，空 = 默认应用）。
 // ★ 2026-11-02 touch#8：POST /api/session 透传 workspaceId（与 cwd 互斥）—— 点 bot 新建会话登记进工作区账本，修「bot 聊天框灰色无法输入」。
 // ★ 2026-11-02 touch#7：中栏群聊页签加「展开右侧栏」按钮 + 展开栏里的独立「群设置」页签（群设置不再整块顶掉聊天）。
 // ★ 2026-11-02 touch#6：群聊聊天框抽成 lib/client.groupChat.js（方案 B），本入口先装它再 bindGroupChat；

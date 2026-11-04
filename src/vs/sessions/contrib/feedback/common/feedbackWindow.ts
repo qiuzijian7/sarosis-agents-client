@@ -46,6 +46,17 @@ export interface IFeedbackWindowService {
 	openFeedbackWindow(url: string, files: readonly string[]): Promise<IFeedbackWindowResult>;
 
 	/**
+	 * **立刻**把窗口显示出来，里面是一张本地 loading 页（不联网、无脚本）。
+	 *
+	 * 为什么要它：诊断采集（读十几个日志 + 978 次 mtime 兜底 + 落盘）要几秒，
+	 * 而窗口原本是"先填后显" ⇒ 用户点完干等，体感就是"卡住了"（真机 2026-11-04）。
+	 * 现在：点击 → 本地 loading 页立刻出现 → 采集完再 `openFeedbackWindow` 切到表单。
+	 *
+	 * 失败只是没 loading 页（不影响后续 `openFeedbackWindow`），绝不抛。
+	 */
+	showLoading(text: string): Promise<void>;
+
+	/**
 	 * 采集**主进程视角**的系统快照（内存 / CPU / 磁盘 / 主进程内存）。
 	 *
 	 * 为什么必须在主进程：browser 层拿不到 Node 的 `os` 与 `fs.statfs`；而"IDE 卡顿"

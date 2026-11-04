@@ -74,14 +74,20 @@ import { createDiscordAdapter, createDiscordGateway } from './adapters/discord.j
 import { createWecomAdapter, handleWecomCallback } from './adapters/wecom.js';
 /* IM 应用凭据（**dsh 侧真源**，2026-10-27）：设置弹窗「渠道」页读写 `<dataRoot>/agent-im-accounts.json`；
    `config.feishu`（IDE 覆盖层）降级为兼容回落 —— 优先级 dsh 文件 → config → 环境变量。 */
-import { describeFeishu, describePlatforms, migrateLegacyFeishu, resolveFeishu, resolvePlatform, savePlatform } from './imCredentials.js';
+import { describeFeishu, describeFeishuApps, describePlatforms, migrateLegacyFeishu, resolveFeishu, resolveFeishuApp, resolvePlatform, saveFeishuApp, savePlatform } from './imCredentials.js';
 /* 入站「上次是否在跑」的开关（2026-10-29）：重启 Host 后据此恢复，别让用户以为坏了。 */
-import { readInboundEnabled, setInboundEnabled } from './imInboundState.js';
+import { readFeishuAppsEnabled, readInboundEnabled, setFeishuAppEnabled, setInboundEnabled } from './imInboundState.js';
 /* ★ 2026-10-29：**跨 dataRoot 的入站长连接互斥锁**（见 imInboundLock.js 文件头）。
    飞书对同一应用只让一条长连接真正收到事件，而这台机器上可能同时有几个 Host
    （旧 Host 未被回收 / dev 版与正式版是两个 dataRoot、互相看不见）⇒ 必须在 home 下放锁，
    抢不到就不连。否则表现是「日志全绿 + 心跳正常 + 零事件」，极难查（今天就卡在这）。 */
 import { releaseImLock, startImLockHeartbeat, tryAcquireImLock } from './imInboundLock.js';
+import { acquireFeishuAppLock, describeFeishuHolder } from './imFeishuAppLock.js';
+import { createFeishuAppInbounds } from './feishuAppInbounds.js';
+import { appIdOfEvent, feishuEventBus } from './feishuEventBus.js';
+import { createTeamService } from './team.js';
+import { createTeamBot } from './teamCreate.js';
+import { externalBots, externalBotRow, teamBus } from './teamBus.js';
 /* ★ 2026-10-29：**父进程看护** —— app 退出后 Host 自己退，避免孤儿 Host 继续占用
    会话写句柄与 IM 长连接（见 hostSelfWatch.js 文件头；真机上曾攒出 3 个 Host 抢飞书事件）。 */
 import { startAppParentWatch } from './hostSelfWatch.js';
@@ -1155,6 +1161,8 @@ function applyTopLevel(ctx, config) {
 	const loopbackAdapter = createLoopbackAdapter();
 	state.bindingHub = createBindingHub({
 		config,
+		/* 2026-11-04 多飞书应用：绑定/消息的应用为空时都按当前默认应用算（老绑定行为不变） */
+		defaultFeishuAppId: async () => (await resolveFeishu(config)).appId,
 		log: (level, msg) => {
 			try { (level === 'warn' ? console.warn : console.info)(`[vssaros-agents][im] ${msg}`); } catch { /* 忽略 */ }
 		},
@@ -1195,7 +1203,7 @@ function applyTopLevel(ctx, config) {
 	   ② 没填 ⇒ **应用模式**：用「设置 → 渠道」里的 App ID / App Secret 换 tenant_access_token，
 	      `im/v1/messages?receive_id_type=chat_id` ⇒ **填个 chat_id 就能发**（用户就是这么预期的）。
 	   `resolveApp` 现取而不是启动快照 ⇒ 在设置里填完立刻生效，不用重启 Host。 */
-	state.bindingHub.register(createFeishuAdapter({ resolveApp: () => resolveFeishu(config) }));
+	state.bindingHub.register(createFeishuAdapter({ resolveApp: (appId) => resolveFeishuApp(config, appId) }));
 	/* 飞书**入站**（P2）：长连接。传输层用官方 SDK；没装/没凭据 ⇒ start() 抛 unavailable，
 	   由 API 如实回报（不假装"正在连接"）。这里**不自动 start** —— 没凭据时反复重连只是噪音。
 	   ★ 2026-10-27「数据源统一到 dsh 侧」：凭据真源改为 `<dataRoot>/agent-im-accounts.json`
@@ -1223,8 +1231,33 @@ function applyTopLevel(ctx, config) {
 		}),
 		/* 事件 → 与手动演练（action:'inbound'）**同一条**入口，策略/幂等/派发完全一致 */
 		onMessage: (msg) => state.bindingHub.handleInbound(msg),
+		/* ★ 2026-11-04：原始事件扇出给同进程订阅者（如 dsh-superagent）——同一应用只能有这一条连接 */
+		onRaw: (payload) => feishuEventBus().publish(appIdOfEvent(payload) || (state.feishuApps ? state.feishuApps.defaultAppId() : ''), payload),
 		log: (level, msg) => {
 			try { (level === 'warn' ? console.warn : console.info)(`[vssaros-agents][im-in] ${msg}`); } catch { /* 忽略 */ }
+		},
+	});
+
+	/* ★ 2026-11-04 多飞书应用：每个额外应用一个网关、一把按应用的锁；消息打上 appId 再进路由。
+	   默认应用仍是上面的 `state.feishuInbound`（只是启停改走管理器，以便统一加锁）。 */
+	const imLockRoot = () => String((config && config.dataRoot) || process.env.VSSAROS_DATA_ROOT || '');
+	state.feishuApps = createFeishuAppInbounds({
+		defaultGateway: state.feishuInbound,
+		makeGateway: (appId) => createFeishuGateway({
+			transport: createRawWsTransport({ resolve: () => resolveFeishuApp(config, appId) }),
+			onMessage: (msg) => state.bindingHub.handleInbound({ ...msg, appId }),
+			onRaw: (payload) => feishuEventBus().publish(appId, payload),
+			log: (level, msg) => {
+				try { (level === 'warn' ? console.warn : console.info)(`[vssaros-agents][im-in][${appId}] ${msg}`); } catch { /* 忽略 */ }
+			},
+		}),
+		resolveDefaultAppId: async () => (await resolveFeishu(config)).appId,
+		acquire: (appId, opts) => acquireFeishuAppLock(appId, opts),
+		describeHolder: describeFeishuHolder,
+		dataRoot: imLockRoot,
+		bus: feishuEventBus(),
+		log: (level, msg) => {
+			try { (level === 'warn' ? console.warn : console.info)(`[vssaros-agents][im] ${msg}`); } catch { /* 忽略 */ }
 		},
 	});
 
@@ -1281,8 +1314,18 @@ function applyTopLevel(ctx, config) {
 	setTimeout(() => {
 		void (async () => {
 			const enabled = await readInboundEnabled(config).catch(() => ({}));
+			/* ★ 2026-11-04：飞书按**应用**加锁恢复（默认应用 + 每个记过「已启动」的额外应用）。
+			   锁被占 ⇒ 管理器抛 409，这里只记一条"谁占着"，与原来的跳过语义相同。 */
+			const feishuKeys = [...(enabled.feishu ? [''] : []), ...Object.keys(await readFeishuAppsEnabled(config).catch(() => ({})))];
+			for (const appId of feishuKeys) {
+				try {
+					const st = await state.feishuApps.start(appId);
+					console.info(`[vssaros-agents][im] 已按上次状态恢复入站：feishu${appId ? ' · ' + appId : ''}（${st && st.status}）`);
+				} catch (e) {
+					console.warn(`[vssaros-agents][im] 跳过恢复入站（feishu${appId ? ' · ' + appId : ''}）：${String((e && e.message) || e).slice(0, 240)}`);
+				}
+			}
 			const gateways = {
-				feishu: state.feishuInbound,
 				telegram: state.telegramInbound,
 				discord: state.discordInbound,
 			};
@@ -1376,6 +1419,14 @@ function applyTopLevel(ctx, config) {
 	ctx.effect(() => installRelay(ctx, config, state));
 	// 委派台账跟踪（2026-10-16，P1）：同一钩子、同一事件视野判据 ✓（lib/assignments.js 头注释）。
 	ctx.effect(() => installAssignmentTracker(ctx, config, state));
+	// ★ 2026-11-04 团队总线（superagent 主管组团 T0/T2）：只在顶层角色提供（委派、跟踪、建 bot 都在这里）；
+	//   卸载时撤销，总线上的订阅表保留（见 lib/teamBus.js）。
+	ctx.effect(() => teamBus().provide({
+		...createTeamService(config, state),
+		createBot: async (input) => createTeamBot(config, input, async () => {
+			if (state.presets) await syncPresets(state, state.presets, config);
+		}),
+	}));
 
 	/* Host 退出前把 IM 幂等表落盘（写盘是去抖的，不 flush 会丢最后几条 ⇒ 重启后重复处理） */
 	ctx.effect(() => () => { void flushInboundSeen(config); });
@@ -1744,7 +1795,11 @@ function applyTopLevel(ctx, config) {
 						/* 平台是否已配好应用凭据（`bindings.assertTransport` 用）：飞书没填 webhook 时
 						   改为要求「设置 → 渠道」里已有 App ID/Secret（应用模式），否则 400 —— 
 						   这样既不会拦掉"填个 chat_id 就能用"的正路，也不会让人建出一条永远发不出去的绑定。 */
-						appConfigured: async (platform) => (await resolvePlatform(config, platform)).configured,
+						appConfigured: async (platform, appId) => platform === 'feishu' && appId
+							? (await resolveFeishuApp(config, appId)).configured
+							: (await resolvePlatform(config, platform)).configured,
+						/* 2026-11-04：等于默认应用的 appId 存成空（"空 = 默认"） */
+						defaultFeishuAppId: async () => (await resolveFeishu(config)).appId,
 					};
 					if (req.method === 'GET') {
 						const out = await listBindings(config, deps);
@@ -1764,8 +1819,12 @@ function applyTopLevel(ctx, config) {
 								feishu: state.feishuInbound ? state.feishuInbound.state() : null,
 								telegram: state.telegramInbound ? state.telegramInbound.state() : null,
 								discord: state.discordInbound ? state.discordInbound.state() : null,
+								/* 2026-11-04：额外飞书应用各自的长连接状态 `{ [appId]: state }`（默认应用仍是上面的 feishu） */
+								feishuApps: state.feishuApps ? state.feishuApps.appStates() : {},
 							},
 							feishu: await describeFeishu(config),
+							/* 2026-11-04：全部飞书应用（默认在前），绑定按 appId 选；secret 只以 hasSecret 出现 */
+							feishuApps: await describeFeishuApps(config),
 							/* 多渠道（2026-10-27）：每平台的掩码状态 + 字段定义。
 							   ⚠ secret 只以 `hasSecret` 出现，明文永不出这个进程。 */
 							channels: await describePlatforms(config),
@@ -1831,21 +1890,45 @@ function applyTopLevel(ctx, config) {
 										     重启 Host 时据此恢复 —— 否则"点了启动、重启后又静默回到未启动"，
 										     用户只会看到"消息没反应"（见 imInboundState.js 头注释）。 */
 									: action === 'inbound-start' ? await (async () => {
+										const platform = String((body && body.platform) || 'feishu').trim().toLowerCase();
+										/* ★ 2026-11-04：飞书按**应用**启动并加锁（以前手动启动不加锁 ⇒ 两个客户端都点了就会抢事件） */
+										if (platform === 'feishu' && state.feishuApps) {
+											const key = await state.feishuApps.keyOf(body && body.appId);
+											const st = await state.feishuApps.start(key);
+											await (key ? setFeishuAppEnabled(config, key, true) : setInboundEnabled(config, 'feishu', true)).catch(() => undefined);
+											return st;
+										}
 										const gw = inboundOf(body);
 										await gw.start();
-										await setInboundEnabled(config, (body && body.platform) || 'feishu', true).catch(() => undefined);
+										await setInboundEnabled(config, platform, true).catch(() => undefined);
 										return gw.state();
 									})()
 									: action === 'inbound-stop' ? await (async () => {
+										const platform = String((body && body.platform) || 'feishu').trim().toLowerCase();
+										if (platform === 'feishu' && state.feishuApps) {
+											const key = await state.feishuApps.keyOf(body && body.appId);
+											const st = await state.feishuApps.stop(key);
+											await (key ? setFeishuAppEnabled(config, key, false) : setInboundEnabled(config, 'feishu', false)).catch(() => undefined);
+											return st;
+										}
 										const gw = inboundOf(body);
 										await gw.stop();
-										await setInboundEnabled(config, (body && body.platform) || 'feishu', false).catch(() => undefined);
+										await setInboundEnabled(config, platform, false).catch(() => undefined);
 										return gw.state();
+									})()
+									/* ★ 2026-11-04：增改/删除一个**额外**飞书应用（`{ appId, appSecret?, name?, remove? }`）。
+									   删除时先停掉它的长连接并放锁，再清掉「上次已启动」记录。 */
+									: action === 'feishu-app' ? await (async () => {
+										if (body && body.remove === true && state.feishuApps) {
+											await state.feishuApps.forget(body.appId);
+											await setFeishuAppEnabled(config, body.appId, false).catch(() => undefined);
+										}
+										return { feishuApps: await saveFeishuApp(config, { ...(body || {}), actor: body?.actor }) };
 									})()
 									/* 测试发送（2026-10-27）：用**真实适配器**给这条绑定发一条消息 ——
 									   "配完了到底通不通"不必再等真跑一次对话；失败原因原样返回。 */
 									: action === 'test' ? await state.bindingHub.testBinding(body?.id)
-										: (() => { throw Object.assign(new Error(`未知 action：${action}（支持 create/update/delete/inbound/test）`), { httpStatus: 400 }); })();
+										: (() => { throw Object.assign(new Error(`未知 action：${action}（支持 create/update/delete/inbound/inbound-start/inbound-stop/credentials/feishu-app/test）`), { httpStatus: 400 }); })();
 						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
 						res.end(JSON.stringify(result));
 					} else {
@@ -2626,6 +2709,8 @@ function applyTopLevel(ctx, config) {
 							// 角色标签、技能、头像底色（底色只有服务端会算 ⇒ 直接给，前端不再抄一份公式 ✓）
 							role: a.role ?? null,
 							skills: a.skills ?? [],
+							// ★ 2026-11-04 主管组团：created-by: supervisor 的 bot 留在名册里、标「主管创建」。
+							createdBy: a.createdBy === 'supervisor' ? 'supervisor' : null,
 							/*
 							 * ★ 2026-10-27（真机：所有内置 agent 的欢迎卡都是同一套通用按钮）：
 							 *   `core/agents.js` 早就把 `.agent.md` 的 `suggestions:` 解析进 agent 对象了，
@@ -2641,7 +2726,8 @@ function applyTopLevel(ctx, config) {
 							presetId: presetIdOf(a.id),
 							registered: state.roster.includes(presetIdOf(a.id)),
 							live: liveOf.get(a.id) ?? null,
-						})),
+						// ★ 2026-11-04：外部 bot（SuperAgent 主管）只登记在名册里，不写 .agent.md、不注册 preset。
+						})).concat(externalBots().map(externalBotRow)),
 						live: {
 							dir: live.dir,
 							sessions: live.rows.length,
@@ -2704,6 +2790,7 @@ function applyTopLevel(ctx, config) {
 							icon: a.icon ?? '',
 							role: a.role ?? null,
 							skills: a.skills ?? [],
+							createdBy: a.createdBy === 'supervisor' ? 'supervisor' : null,
 							// 与 GET /api/agents 同口径：欢迎卡要读它（漏了就会退回通用三条）
 							suggestions: a.suggestions ?? [],
 							color: avatarColorOf(a.id),

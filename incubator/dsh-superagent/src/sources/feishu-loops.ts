@@ -5,9 +5,11 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
 import { threadKey, type Thread, type Trigger } from '../core/index.ts'
 import { feishuChatLink } from './feishu-channel.ts'
-import { cliArgv, type FeishuBot } from '../deployment.ts'
+import { larkArgv, type FeishuBot } from '../deployment.ts'
 import { validItems, type Tally } from '../infra/commands.ts'
 import { readFeishu, type FeishuRef } from './feishu-read.ts'
+import { busTaken, feishuAppHolder, FeishuConsumerExit, listensShared, sharedEvent, sharedFeishuEvents, type SharedFeishuEvents }
+  from './feishu-share.ts'
 import { feishuRef, feishuTime, feishuTrigger, HistoricalMessageSchema, historyEvent, HistoryPageSchema, SOURCE, topicEvent }
   from './feishu-trigger.ts'
 import { health, type SourceContext } from './host.ts'
@@ -51,18 +53,72 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
       await delay(5000, undefined, { signal }).catch(() => {})
       continue
     }
+    const appId = bot(ctx).appId
+    // VsSaros addition: Feishu delivers each event to one connection of an app only. When the Bots in this Host
+    // hold that connection, listen through it; when another process holds it, say so and look again shortly.
+    if (listensShared(sharedFeishuEvents(), appId, feishuAppHolder(appId))) {
+      await listenShared(ctx, sharedFeishuEvents()!, signal)
+      retry = undefined
+      continue
+    }
+    const holder = feishuAppHolder(appId)
+    if (holder) {
+      ctx.report('feishu', health('error', 'feishuAppShared', { app: holder.appId, holder: `pid ${holder.pid} (${holder.dataRoot})` }))
+      await delay(30_000, undefined, { signal }).catch(() => {})
+      continue
+    }
     const running = new AbortController()
-    const check = setInterval(() => { if (!enabled(ctx)) running.abort() }, 5000)
+    // Yield within five seconds when the Bots take the same app later (e.g. after VsSaros restarts), in this process
+    // (then listen through them) or in another one.
+    const check = setInterval(() => {
+      if (!enabled(ctx) || feishuAppHolder(appId) || sharedFeishuEvents()?.active(appId)) running.abort()
+    }, 5000)
     const stop = () => running.abort()
     signal.addEventListener('abort', stop, { once: true })
     const began = Date.now()
     try { await consume(ctx, running.signal) }
-    catch (error) { if (!running.signal.aborted) ctx.report('feishu', { state: 'error', detail: String(error) }) }
+    catch (error) {
+      if (!running.signal.aborted) {
+        ctx.report('feishu', error instanceof FeishuConsumerExit && busTaken(error.code, error.diagnostic)
+          ? health('error', 'feishuBusBusy', { app: appId }) : { state: 'error', detail: String(error) })
+      }
+    }
     finally { clearInterval(check); signal.removeEventListener('abort', stop) }
     if (running.signal.aborted) continue
     retry = consumerRetry(retry, Date.now() - began)
     await delay(retry, undefined, { signal }).catch(() => {})
   }
+}
+/**
+ * VsSaros addition: receives the app's events through the Bots connection in this Host until that connection goes away
+ * or the Source is turned off, then returns so the loop falls back to its own consumer.
+ */
+async function listenShared(ctx: SourceContext, bus: SharedFeishuEvents, signal: AbortSignal): Promise<void> {
+  const appId = bot(ctx).appId
+  const running = new AbortController()
+  const stop = () => running.abort()
+  signal.addEventListener('abort', stop, { once: true })
+  let chain = Promise.resolve()
+  const unsubscribe = bus.subscribe(appId, payload => {
+    const event = sharedEvent(payload)
+    if (!event) return
+    chain = chain.then(() => take(ctx, event)).catch(error => { ctx.report('feishu', { state: 'error', detail: String(error) }) })
+  })
+  ctx.report('feishu', { ...health('ready', 'feishuShared', { app: appId }), at: new Date().toISOString() })
+  const check = setInterval(() => {
+    if (!enabled(ctx) || !listensShared(bus, appId, feishuAppHolder(appId))) running.abort()
+  }, 5000)
+  try { await new Promise<void>(resolve => running.signal.aborted ? resolve() : running.signal.addEventListener('abort', () => resolve(), { once: true })) }
+  finally { clearInterval(check); unsubscribe(); signal.removeEventListener('abort', stop); await chain }
+}
+/** Takes in one event in the `event consume` shape, from either path; events read while the Source is off are dropped. */
+async function take(ctx: SourceContext, input: unknown): Promise<void> {
+  const trigger = feishuTrigger(input, bot(ctx).botId, bot(ctx).appId)
+  if (!trigger || !enabled(ctx)) return
+  const chats = ctx.state.get(KV.feishu.chats) ?? {}
+  chats[String(trigger.meta.chatId)] = trigger.meta.direct === true
+  ctx.state.set(KV.feishu.chats, chats)
+  await receive(ctx, trigger)
 }
 /** Wait before restarting the event consumer: 1s after a run that stayed up for a minute, otherwise exponential backoff up to 60s. */
 export const consumerRetry = (previous: number | undefined, ranMs: number): number =>
@@ -70,7 +126,8 @@ export const consumerRetry = (previous: number | undefined, ranMs: number): numb
 async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   // VsSaros patch (Windows): windowsHide keeps the long-running consumer from opening a console window.
   // VsSaros patch (Windows): `bot.cli` may resolve to a `.cmd` launcher, which Node cannot spawn without a shell.
-  const [program, ...prefix] = cliArgv(bot(ctx).cli)
+  // VsSaros addition: the argv also selects the bot's lark-cli profile when the Source names an app.
+  const [program, ...prefix] = larkArgv(bot(ctx))
   const child = spawn(program!, [...prefix, 'event', 'consume', 'im.message.receive_v1', '--as', 'bot'],
     { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: { ...process.env, LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1',
       LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1' } })
@@ -89,20 +146,13 @@ async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   stdout.on('line', (line: string) => {
     chain = chain.then(async () => {
       if (line.length > 1_048_576) throw new Error('Feishu event exceeds 1 MiB')
-      const trigger = feishuTrigger(JSON.parse(line), bot(ctx).botId, bot(ctx).appId)
-      // Events already read when the Source is disabled are dropped; the consumer stops shortly after.
-      if (!trigger || !enabled(ctx)) return
-      const chats = ctx.state.get(KV.feishu.chats) ?? {}
-      chats[String(trigger.meta.chatId)] = trigger.meta.direct === true
-      ctx.state.set(KV.feishu.chats, chats)
-      await receive(ctx, trigger)
+      await take(ctx, JSON.parse(line))
     }).catch(error => { ctx.report('feishu', { state: 'error', detail: String(error) }) })
   })
   try {
     await new Promise<void>((resolve, reject) => {
       child.once('error', reject)
-      const exited = (code: number | null) => new Error(`Feishu event consumer exited (${code}, ready=${ready}): ${diagnostic}`)
-      child.once('close', (code) => signal.aborted ? resolve() : reject(exited(code)))
+      child.once('close', (code) => signal.aborted ? resolve() : reject(new FeishuConsumerExit(code, ready, diagnostic)))
     })
   } finally { clearTimeout(timeout); signal.removeEventListener('abort', stop); stdout.close(); stderr.close(); await chain }
 }

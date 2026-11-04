@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process'
 import { basename } from 'node:path'
 import { promisify } from 'node:util'
 import { z } from 'zod'
-import { cliArgv, githubOf, type Deployment } from '../deployment.ts'
+import { githubOf, larkArgv, type Deployment } from '../deployment.ts'
 
 const exec = promisify(execFile)
 const TIMEOUT_MS = 90_000
@@ -127,7 +127,8 @@ export class Commands {
     const bot = this.deployment.feishu
     if (!bot) throw new Error('The Feishu Source has no working bot CLI')
     // VsSaros patch (Windows): `Commands.run` refuses `.cmd`/`.bat`, so resolve the bot CLI to a shell-free argv.
-    const [program, ...prefix] = cliArgv(bot.cli)
+    // VsSaros addition: the argv also selects the bot's lark-cli profile when the Source names an app.
+    const [program, ...prefix] = larkArgv(bot)
     const output = await this.run(program!, [...prefix, ...args, '--as', 'bot', '--format', 'json'], cwd)
       .catch((error: unknown) => { throw membership(error) })
     const result = JSON.parse(output) as { ok: boolean; data: T; error?: { code?: number; message?: string } }

@@ -196,7 +196,8 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
     kept.add(file)
   }
   await shim('gh', github ? { run: github.cli } : { fail: 'gh is unavailable: this installation has no GitHub account.' })
-  await shim('lark-cli', feishu ? { run: feishu.cli } : { fail: 'lark-cli is unavailable: this installation has no Feishu bot.' })
+  // VsSaros addition: with the Source naming an app, the workers' lark-cli is pinned to that app's bot-only profile.
+  await shim('lark-cli', feishu ? { run: feishu.cli, with: feishu.profile ? ['--profile', feishu.profile] : [] } : { fail: 'lark-cli is unavailable: this installation has no Feishu bot.' })
   for (const name of new Set(blockedCommands.filter(name => !WORKER_COMMANDS.includes(name)))) {
     await shim(name, { fail: github ? `${name} is blocked in this installation; use gh, which acts as ${github.login}.` : `${name} is blocked in this installation.` })
   }

@@ -40,6 +40,7 @@
 **/extensions/vscode-api-tests/testWorkspace2/**
 **/fixtures/**
 **/node_modules/**
+**/incubator/**
 **/out/**
 **/out-*/**
 **/src/**/dompurify.js

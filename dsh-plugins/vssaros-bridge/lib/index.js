@@ -244,9 +244,25 @@ export function apply(ctx, config = {}) {
 				}
 			}
 			if (preferred && !officialUsable && (untouchedOfficialDefault || staleOwnRoute)) {
-				// `saveSelection` 在没有 configuration editor 时是 no-op（官方 README）⇒ 只记"请求改写"。
-				await defaultModel.saveSelection({ provider: preferred.route, model: preferred.models[0].id });
-				return `请求改写 ${current.provider}/${current.model} -> ${preferred.route}/${preferred.models[0].id}`;
+				const want = { provider: preferred.route, model: preferred.models[0].id };
+				/**
+				 * ★★ 2026-11-04（CodeBuddy 登录后聊天框看不到模型信息）：
+				 *   `agentDefaultModel.saveSelection()` 在 `fiber.entry === undefined` 或
+				 *   `ctx.get('configEditor')` 缺席时**直接 return**（官方 `dsh-agent-default-model/lib/index.js:53-57`），
+				 *   也就是说这行"改写"经常什么都没做。旧代码无条件返回"请求改写 X -> Y"的**成功文案**，
+				 *   日志看着像生效了，实际选择仍是官方默认 `deepseek-official/deepseek-flash`（没凭据、
+				 *   不在目录里）⇒ 按 model-selection 的 README「saved selection absent from catalog ⇒
+				 *   composer shows 'Select model'」，用户就看到"没有模型信息" ✗。
+				 *   ⇒ 调用后**读回 currentSelection() 校验**，未生效就明确留痕（不再假装成功）。
+				 *   安装版全新 profile 的 `[PiDualRun] 暂无激活的模型选择` 正是这一状态。
+				 */
+				await defaultModel.saveSelection(want);
+				let after;
+				try { after = defaultModel.currentSelection?.(); } catch { after = undefined; }
+				const applied = !!after && after.provider === want.provider && after.model === want.model;
+				return applied
+					? `已改写 ${current.provider}/${current.model} -> ${preferred.route}/${preferred.models[0].id}`
+					: `改写未生效（saveSelection 为 no-op）：${current.provider}/${current.model} 仍指向不可用的模型；期望 ${preferred.route}/${preferred.models[0].id}`;
 			}
 			return undefined;
 		} catch (e) {
@@ -258,6 +274,37 @@ export function apply(ctx, config = {}) {
 	// 放在 `pipe/token` 早退**之前**：dsh 独立跑（没有 IDE）时 CodeBuddy 也要能登录、能出模型 ✓。
 	// 有 IDE 托管（配了 pipe）时首轮同步推迟到"第一个 IDE 客户端注册"（那时才能拿到计费代理地址 ⇒
 	// 避免先写直连、再改代理地址的两次 profile 重写）；20s 内没人注册就按直连写。
+	/**
+	 * ★★ 2026-11-04（安装版首次登录 CodeBuddy 后，dsh 聊天框看不到模型信息）：
+	 *   模型目录由官方 `dsh-client-ui-model-selection` 渲染，数据来自 `session.modelCatalog()`
+	 *   → Host `buildModelCatalog()` → `ctx.llm.listProviders()`。客户端 `ModelCatalogDirectory`
+	 *   **只在页面挂载时 load() 一次**，之后仅靠 4 个转发事件 refresh：
+	 *     `llm/adapters-updated` / `settings/document-updated` / credentials×2
+	 *   （`dsh-client-ui-model-selection/lib/client.js:1006-1017`）。
+	 *
+	 *   安装版首次登录时，路由写入（03:39:46）**早于**页面 dom-ready（03:40:45）⇒
+	 *   事件发出去时还没有订阅者；而 `llm-pi-ai.providers` 是 `.volatile()`（故意不落盘，
+	 *   baseURL 含随机端口、token 会过期），Host 一重启（安装版装完伴生插件会重起）路由就没了
+	 *   ⇒ 页面首拉拿到空目录，之后 `(none) (unchanged)` 的 providers.sync 不发任何事件
+	 *   ⇒ 目录永远停在空快照。dev 能显示只是因为它的 `cordis.patch.yml` 里**早就持久化**了
+	 *   完整路由画像 + `agent-default-model` 选择（真机核对，见反馈分析）。
+	 *
+	 *   ⇒ 这里不落盘失效数据，而是让目录在**任何连接时机**都能重拉：
+	 *     ① 路由写入后主动补发两个刷新事件（覆盖已连上的客户端）；
+	 *     ② 每个 IDE 客户端注册时再补发一次（覆盖页面订阅晚于写入的窗口）；
+	 *     ③ `start()` 缩短首次同步延迟 ⇒ Host 重启后尽快重放路由。
+	 */
+	const notifyModelDirectory = (why) => {
+		try {
+			// `ctx.emit(name, ...args)` 是 cordis 标准签名（cordis/lib/index.js:280）。
+			// 两个事件都在 `dsh-api-remotes` 的转发白名单里（mode: emit ⇒ 推给浏览器）。
+			ctx.emit('llm/adapters-updated');
+			ctx.emit('settings/document-updated', 'llm-pi-ai');
+			console.log(`[vssaros-bridge] model directory refreshed (${why})`);
+		} catch (e) {
+			console.log(`[vssaros-bridge] model directory refresh failed (${why}): ${String(e?.message ?? e)}`);
+		}
+	};
 	const codebuddy = createCodeBuddyService({
 		credentials: ctx.credentials,
 		settings: ctx.settings,
@@ -266,10 +313,15 @@ export function apply(ctx, config = {}) {
 		onRouteWritten: async entry => {
 			const note = await alignDefaultModel({ [entry.route]: entry });
 			if (note) { console.log(`[vssaros-bridge] default model: ${note}`); }
+			notifyModelDirectory('route-written');
 		},
 		log: line => console.log(line),
 	});
-	ctx.effect(() => codebuddy.start({ initialDelayMs: config && config.pipe ? 20_000 : 2_000 }));
+	// 首次同步延迟：有 IDE 托管时原来等 20s（为了先拿到计费代理地址再写，避免两次 profile 重写）。
+	// 但 volatile 路由不落盘 ⇒ Host 一重启就没有模型，20s 里页面已经加载完并首拉了空目录。
+	// ⇒ 缩到 2s 先重放一版（直连），`client.register` 到来后再由既有 syncRoute('client-register')
+	//   改写成代理地址；多一次 profile 重写，但换来"重启后目录一定非空" ✓。
+	ctx.effect(() => codebuddy.start({ initialDelayMs: 2_000 }));
 
 	// ── LightAI（2026-10-22，用户选方案 ①：用本仓浏览器插件开登录页、登录后自动读 Cookie）──────────────
 	// 浏览器插件是**可选**依赖：`ctx.inject([...], cb)` 动态取（不在 ⇒ 本插件照常起，只是登录时明说"需要浏览器插件"）✓。
@@ -856,6 +908,9 @@ export function apply(ctx, config = {}) {
 						// 有 IDE 客户端了 ⇒ 可以拿计费代理地址 ⇒ 立刻同步一次 CodeBuddy 路由（也顺带在主进程登记代理路由：
 						// 主进程的路由表只在内存里，App 重启后不登记一次，走代理的请求会 502 ✗）。
 						void codebuddy.syncRoute('client-register').catch(() => undefined);
+						// ★ 2026-11-04：客户端此刻才连上，之前路由写入时的刷新事件没人订阅 ⇒ 补发一次，
+						//   让刚挂载的 ModelCatalogDirectory 重拉目录（否则停在空快照，聊天框看不到模型）。
+						notifyModelDirectory('client-register');
 						break;
 					}
 					case 'host.ping':

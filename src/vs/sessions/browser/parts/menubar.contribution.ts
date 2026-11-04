@@ -254,24 +254,22 @@ const VS_SAROS_FEEDBACK_URL = FEEDBACK_FORM_URL;
  *
  * 顺序有讲究：`buildFeedbackUrl` 按传入顺序分配预算 ⇒ 短字段在前、长文本在后。
  */
-function feedbackPrefill(ctx: IDiagnosticContext, files: readonly string[]): IFeedbackPrefill {
+/**
+ * 组装要预填进问卷的关键字段。
+ *
+ * ★ 2026-11-04（用户原话："问题描述中，不要预填内容"）：**不再预填问题描述**。
+ *   理由：那是必填问答题，预填一大段环境信息后用户往往原样提交 ⇒ 反馈变成"日志复读机"，
+ *   还挤掉了真正该写的现象描述。环境信息本来就在「日志文件」的 env 卷里，不丢。
+ *   只保留 **版本号 / 平台** 两个短字段（独立题，填了不碍事、不填又得手打）。
+ */
+function feedbackPrefill(ctx: IDiagnosticContext): IFeedbackPrefill {
 	const { product, env } = ctx;
 	// 问卷里「平台」是单选，选项实测为 Win / Mac / Web ⇒ Linux 没有对应项，宁可不填也不填错
 	const platform = isWindows ? 'Win' : isMacintosh ? 'Mac' : undefined;
 
-	const description = [
-		'【请在这里补充：你做了什么、期望看到什么、实际看到什么，以及大概发生在几点】',
-		'',
-		...describeEnv(ctx),
-		'',
-		'已自动附上的诊断文件：' + (files.length ? files.map(f => basename(f)).join('、') : '（本次没有收集到）'),
-		'（完整日志在「日志文件」题的附件里；如涉隐私请先在下面删掉对应行再提交）',
-	].join('\n');
-
 	return {
 		版本号: product.nameShort + ' ' + product.version + (env.isBuilt ? '' : '（开发版）'),
 		平台: platform,
-		问题描述: description,
 	};
 }
 
@@ -323,6 +321,11 @@ registerAction2(class OpenFeedbackFormAction extends Action2 {
 			mainProcessService.getChannel(ipcFeedbackWindowChannelName),
 		);
 
+		// ★ 立刻弹 loading 页（本地 `data:` 页，不联网）：采集要读十几个日志、可能还要
+		//   978 次 mtime 兜底 stat、再落盘，几秒钟不给反馈就是"点击没反应"（2026-11-04 真机）。
+		//   ⚠ 必须 await：保证"loading 页 → 表单"的加载顺序，避免两次 loadURL 竞争。
+		await feedbackWindow.showLoading('正在收集诊断日志…');
+
 		// ② 系统快照（主进程视角：内存/CPU/磁盘）。失败只是少几行，绝不阻断
 		let systemInfo: readonly string[] = [];
 		try {
@@ -349,7 +352,7 @@ registerAction2(class OpenFeedbackFormAction extends Action2 {
 		// ⚠ 组装 prefill 也必须包起来：它一旦抛错，旧写法会**既没日志也没窗口**（最难的静默失败形态）
 		let url: string;
 		try {
-			url = buildFeedbackUrl(feedbackPrefill(ctx, files));
+			url = buildFeedbackUrl(feedbackPrefill(ctx));
 		} catch (e) {
 			logService.error('[feedbackWindow] 组装预填信息失败，退化为不带预填', e);
 			url = FEEDBACK_FORM_URL;
@@ -371,7 +374,7 @@ registerAction2(class OpenFeedbackFormAction extends Action2 {
 				}
 				notification.notify({
 					severity: (!files.length || result.filesFilled) ? Severity.Info : Severity.Warning,
-					message: '反馈窗口已打开：' + attachment + '；版本/平台/环境已预填 —— 补充现象后点提交',
+					message: '反馈窗口已打开：' + attachment + '；版本/平台已预填 —— 请写清现象和大概时间后提交',
 				});
 				return;
 			}
@@ -382,6 +385,18 @@ registerAction2(class OpenFeedbackFormAction extends Action2 {
 		} catch (e) {
 			// ★ 必须落日志：以前这里只弹 toast，一旦主进程侧静默失败就无从查起（2026-11-02 教训）
 			logService.error('[feedbackWindow] 打开内置反馈窗口失败，将退回系统浏览器', e);
+
+			// 兜底 A：窗口已经开着（loading 页）说明通道是通的，多半只是"填附件"那步失败
+			//   ⇒ 再导航一次不带附件，至少别让用户对着 loading 页干等。
+			const retry = await feedbackWindow.openFeedbackWindow(url, []).catch(() => undefined);
+			if (retry?.ok) {
+				notification.notify({
+					severity: Severity.Warning,
+					message: '反馈窗口已打开，但诊断文件没能自动附上 —— 需要的话请手动「添加本地文件」',
+				});
+				return;
+			}
+
 			notification.notify({
 				severity: Severity.Warning,
 				message: '没能打开内置反馈窗口（' + (e instanceof Error ? e.message : String(e)) + '）⇒ 改用系统浏览器',

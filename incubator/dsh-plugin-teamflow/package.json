@@ -1,0 +1,147 @@
+{
+  "name": "dsh-plugin-teamflow",
+  "version": "0.3.3",
+  "description": "TeamFlow 团队研发流水线（TypeScript）：需求→PRD→设计→架构→技术方案→并行开发→QA→验收；backlog 持久化 + 断点续跑 + 完成汇报 + 防假交付；Web 团队工作台（conversation.view tab + 拖拽看板）",
+  "type": "module",
+  "main": "./lib/host.mjs",
+  "exports": {
+    ".": "./lib/host.mjs",
+    "./host": "./lib/host.mjs",
+    "./client": "./lib/client.js",
+    "./store": "./lib/store.mjs",
+    "./descriptors": "./lib/descriptors.mjs",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "dsh-teamflow-run-inspect": "scripts/run-inspect.mjs"
+  },
+  "engines": {
+    "node": ">=22.18",
+    "dsh": ">=0.2.1-rc.5 <0.3.0"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-modules",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ],
+      "immediately": false
+    }
+  },
+  "scripts": {
+    "bundle": "tsdown && tsdown -c tsdown.host.config.ts",
+    "bundle:host": "tsdown -c tsdown.host.config.ts",
+    "bundle:client": "tsdown",
+    "watch": "tsdown --watch",
+    "prepare": "lefthook install",
+    "deploy": "node deploy.mjs",
+    "format": "oxlint --fix . || oxlint --fix .",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint --deny-warnings",
+    "test": "node test/smoke.js && node test/signal-brand.test.js && node test/human-approval.test.js && node test/bug-open-reason.test.js && node test/confirm-run-snapshot.test.js && node test/prd-rev.test.js && node test/prd-revise.test.js && node test/locale.test.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js && node test/runlogs.test.js && node test/cancel.test.js && node test/diagnostic.test.js && node test/empty-turn.test.js && node test/evidence.test.js && node test/metering.test.js && node test/overlap-merge.test.js && node test/acl-preflight.test.js && node test/gitignore.test.js && node test/commit-path.test.js && node test/product-scope.test.js && node test/state.test.js && node test/update-check.test.js && node test/dev-task-id.test.js && node test/clarify-log.test.js && node test/triage-gate.test.js && node test/instruction-budget.test.js && node test/prompt-contract.test.js && node test/craft-link.check.mjs && node test/conformance.test.js && node test/changelog.test.js && node test/client-host-api.test.js && node test/runs-eviction.test.js && node test/qa-rounds-report.test.js && node test/run-inspect.test.js && node test/hi-report.test.js && node test/orchestration.test.js && node test/interface-check.test.js && node test/smoke-check.test.js && node test/viewport.test.js && node test/out-of-scope.test.js && node test/pinned-constants.test.js && node test/qa-rework-bound.test.js && node test/resolve-child-route.test.js && node test/dev-continue-timeout.test.js && node test/long-call.test.js && node test/retry-continue-child.test.js",
+    "prepublishOnly": "npx tsdown && npx tsdown -c tsdown.host.config.ts && node test/smoke.js && node test/prd-rev.test.js && node test/prd-revise.test.js && node test/locale.test.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js && node test/runlogs.test.js && node test/cancel.test.js && node test/diagnostic.test.js && node test/empty-turn.test.js && node test/evidence.test.js && node test/metering.test.js && node test/overlap-merge.test.js && node test/acl-preflight.test.js && node test/gitignore.test.js && node test/commit-path.test.js && node test/product-scope.test.js && node test/state.test.js && node test/update-check.test.js && node test/dev-task-id.test.js && node test/clarify-log.test.js && node test/triage-gate.test.js && node test/instruction-budget.test.js && node test/prompt-contract.test.js && node test/craft-link.check.mjs && node test/conformance.test.js && node test/changelog.test.js && node test/client-host-api.test.js && node test/runs-eviction.test.js && node test/qa-rounds-report.test.js && node test/run-inspect.test.js && node test/hi-report.test.js && node test/orchestration.test.js && node test/interface-check.test.js && node test/smoke-check.test.js && node test/viewport.test.js && node test/out-of-scope.test.js && node test/pinned-constants.test.js && node test/qa-rework-bound.test.js && node test/resolve-child-route.test.js && node test/dev-continue-timeout.test.js && node test/long-call.test.js && node test/retry-continue-child.test.js"
+  },
+  "files": [
+    "lib",
+    "scripts/run-inspect.mjs",
+    "cordis.patch.yml",
+    "README.md",
+    "README.en.md",
+    "CHANGELOG.md"
+  ],
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "teamflow",
+    "multi-agent",
+    "pipeline",
+    "agent-team",
+    "llm-agent",
+    "kanban",
+    "coding-agent"
+  ],
+  "devDependencies": {
+    "@stylistic/eslint-plugin": "5.10.0",
+    "@types/node": "^26.2.0",
+    "@types/react": "^18.3.31",
+    "lefthook": "^2.1.14",
+    "oxlint": "1.89.0",
+    "tsdown": "^0.23.2",
+    "typescript": "^6.0.3"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-base": "*",
+    "@deepseek-ai/dsh-client-locale": "*",
+    "@deepseek-ai/dsh-client-modules": "*",
+    "@deepseek-ai/dsh-client-ui-conversation": "*",
+    "@deepseek-ai/dsh-client-ui-layout": "*",
+    "@deepseek-ai/dsh-client-ui-sidebar": "*",
+    "@deepseek-ai/dsh-client-ui-sidebar-right": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-sandbox-windows-acl": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-typert-protocol": "*",
+    "@deepseek-ai/dsh-util-workspace-path": "*",
+    "react": "^18.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-base": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-locale": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-modules": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-conversation": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-layout": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-sidebar": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-sidebar-right": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-typert-protocol": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-util-workspace-path": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-sandbox-windows-acl": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MichaelShii/dsh-plugin-teamflow.git"
+  },
+  "homepage": "https://github.com/MichaelShii/dsh-plugin-teamflow",
+  "bugs": {
+    "url": "https://github.com/MichaelShii/dsh-plugin-teamflow/issues"
+  }
+}

@@ -20,6 +20,8 @@ import { githubChannel } from '../../src/sources/github-trigger.ts'
 import { feishuKind } from '../../src/sources/feishu.ts'
 import { githubKind } from '../../src/sources/github.ts'
 import type { Health } from '../../src/sources/host.ts'
+import type { BotApproval, BotCard, CreatedBot, PlanView } from '../../src/app/team.ts'
+import type { SkillRecord, TeamWorkflow } from '../../src/app/retrospective.ts'
 import type { SourceKind } from '../../src/sources/kind.ts'
 import { testDeployment } from './deployment.ts'
 
@@ -111,6 +113,23 @@ export interface PanelServer {
   /** VsSaros addition: changelist reviews by ticket, their differences, and the files a refused approval names (when set). */
   reviews: Record<string, ReviewView>
   reviewChanged?: string[]
+  /** VsSaros addition: the main Session's team plans. */
+  plans: PlanView[]
+  teamAvailable: boolean
+  teamBots: BotCard[]
+  startedPlans: { goal: string; steps: unknown[] }[]
+  stoppedPlan?: string
+  /** VsSaros addition: Bot drafts waiting for a person, and those already created. */
+  approvals: BotApproval[]
+  createdBots: CreatedBot[]
+  approvedBot?: string
+  rejectedBot?: string
+  /** VsSaros addition: skills and workflows a finished plan leaves behind. */
+  retroSkills: SkillRecord[]
+  retroWorkflows: TeamWorkflow[]
+  approvedSkill?: string
+  savedWorkflow?: string
+  ranWorkflow?: string
 }
 type ReviewView = Extract<ApiResponse<'GET tickets/:id/review'>, { review: object }>
 export let server: PanelServer
@@ -252,6 +271,7 @@ function initial(): PanelServer {
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
     health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [], reviews: {},
+    plans: [], teamAvailable: true, teamBots: [], startedPlans: [], approvals: [], createdBots: [], retroSkills: [], retroWorkflows: [],
     setup: { machine: MACHINE, problem: null, feishuProblem: null,
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
         name: 'Widgets Bot' } } },
@@ -294,6 +314,23 @@ const ticketOf = (id: string) =>
   [...server.tickets.open, ...server.person, ...server.tickets.ended].find(ticket => ticket.id === id) ?? server.ticketDetails[id]
 const SourceSave = z.object({ enabled: z.boolean(), config: z.unknown() })
 
+/** VsSaros addition: a team plan of two Bots, one reporting and one still working. */
+export function teamPlan(): PlanView {
+  const at = '2026-11-04T10:02:00.000Z'
+  return { id: 'plan-1', goal: '首页新手引导上线', status: 'running', createdAt: at, running: 1, bots: ['设计 bot', '数据 bot'],
+    steps: [
+      { id: 'T1', planId: 'plan-1', title: '交互方案', spec: '出 5 步交互稿', bot: '设计 bot', after: [], state: 'done', hop: 2,
+        botName: '设计 bot', report: '交互稿 5 屏。', startedAt: at, endedAt: at },
+      { id: 'T2', planId: 'plan-1', title: '埋点方案', spec: '每步曝光/点击/跳过', bot: '数据 bot', after: ['T1'], state: 'running', hop: 1,
+        botName: '数据 bot', sessionId: 's2', assignmentId: 'a2', startedAt: at },
+    ],
+    exchanges: [
+      { seq: 1, planId: 'plan-1', hop: 0, from: 'SuperAgent', to: 'SuperAgent', kind: 'system', text: 'Plan: 首页新手引导上线', at },
+      { seq: 2, planId: 'plan-1', stepId: 'T1', hop: 1, from: 'SuperAgent', to: '设计 bot', kind: 'give', text: '交互方案', at },
+      { seq: 3, planId: 'plan-1', stepId: 'T1', hop: 2, from: '设计 bot', to: 'SuperAgent', kind: 'report', text: '交互稿 5 屏。', at },
+    ] }
+}
+
 const ROUTES: { [K in keyof Api]: Route<K> } = {
   'GET state': { answer: stateView },
   'GET overview': { answer: overviewView },
@@ -316,6 +353,12 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     ...body.update ? { update: { currentVersion: '1.0.98', latestVersion: '1.0.98', action: 'already_up_to_date', ok: true,
       message: 'lark-cli 1.0.98 is already up to date' } } : {} }) },
   'POST sources/feishu/cli-apply': { body: true, answer: () => ({ ok: true, output: 'done' }) },
+  // VsSaros addition: TAPD Open API credentials in the Host's credentials file; the stand-in never stores a secret.
+  'GET sources/tapd/credentials': { answer: () => ({ configured: false, source: 'none' as const, file: 'C:\\fake\\dsh-home\\tapd.env', overridden: false }) },
+  'POST sources/tapd/credentials': { body: true, answer: ({ body }) => body.clear
+    ? { configured: false, source: 'none' as const, file: 'C:\\fake\\dsh-home\\tapd.env', overridden: false }
+    : { configured: true, source: 'file' as const, file: 'C:\\fake\\dsh-home\\tapd.env', overridden: false,
+      kind: body.kind ?? 'client', method: 'Basic TAPD_CLIENT_ID/SECRET (API account)', ...body.id ? { account: 'abc…yz' } : {} } },
   'GET threads': { query: ['filter', 'offset', 'limit'], answer: () => page(server.threads) },
   'GET threads/:key': { query: ['limit', 'before', 'around'], answer: ({ params, query }) => {
     const found = server.threadPages(params.key, query)
@@ -429,6 +472,54 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     if (view?.review.state !== 'waiting') return refuse(409, 'This ticket has no changelist to review')
     view.review = { ...view.review, state: 'discarded', by: 'qiuzijian' }
     return view.review
+  } },
+  'GET team/plans': { answer: () => ({ available: server.teamAvailable, plans: server.plans }) },
+  'GET team/bots': { answer: () => ({ available: server.teamAvailable, bots: server.teamBots }) },
+  'POST team/plans': { body: true, answer: ({ body }) => {
+    server.startedPlans.push({ goal: body.goal, steps: body.steps })
+    return teamPlan()
+  } },
+  'GET team/approvals': { answer: () => ({ waiting: server.approvals, created: server.createdBots, perPlan: 3, global: 20 }) },
+  'POST team/approvals/:id/approve': { answer: ({ params }) => {
+    const draft = server.approvals.find(item => item.id === params.id)
+    if (!draft) return refuse(404, `No Bot draft ${params.id}`)
+    server.approvedBot = params.id
+    return { id: draft.draft.id, name: draft.draft.name, preset: `vssaros-${draft.draft.id}`, file: `C:/fake/agents/${draft.draft.id}/.agent.md` }
+  } },
+  'POST team/approvals/:id/reject': { answer: ({ params }) => {
+    if (!server.approvals.some(item => item.id === params.id)) return refuse(404, `No Bot draft ${params.id}`)
+    server.rejectedBot = params.id
+    return { rejected: true }
+  } },
+  'GET team/retrospective': { answer: () => ({ skills: server.retroSkills, workflows: server.retroWorkflows }) },
+  'POST team/skills/:id/approve': { answer: ({ params }) => {
+    const skill = server.retroSkills.find(item => item.id === params.id)
+    if (!skill) return refuse(404, `No skill ${params.id}`)
+    server.approvedSkill = params.id
+    return { ...skill, state: 'active' }
+  } },
+  'POST team/skills/:id/reject': { answer: ({ params }) => {
+    const skill = server.retroSkills.find(item => item.id === params.id)
+    if (!skill) return refuse(404, `No skill ${params.id}`)
+    return { ...skill, state: 'rejected' }
+  } },
+  'POST team/workflows/:id/save': { answer: ({ params }) => {
+    const workflow = server.retroWorkflows.find(item => item.id === params.id)
+    if (!workflow) return refuse(404, `No workflow ${params.id}`)
+    server.savedWorkflow = params.id
+    return { ...workflow, state: 'saved' }
+  } },
+  'POST team/workflows/:id/run': { answer: ({ params }) => {
+    const workflow = server.retroWorkflows.find(item => item.id === params.id)
+    if (!workflow) return refuse(404, `No workflow ${params.id}`)
+    server.ranWorkflow = params.id
+    return teamPlan()
+  } },
+  'POST team/plans/:id/stop': { answer: ({ params }) => {
+    const plan = server.plans.find(item => item.id === params.id)
+    if (!plan) return refuse(404, `No plan ${params.id}`)
+    server.stoppedPlan = params.id
+    return { ...plan, status: 'cancelled', endedAt: '2026-11-04T10:20:00.000Z' }
   } },
 }
 

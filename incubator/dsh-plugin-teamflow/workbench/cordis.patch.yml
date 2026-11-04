@@ -1,0 +1,12 @@
+# dsh-teamflow-workbench bundle patch：把本插件 insert 进运行时（缺了 = 静默不激活）。
+# root 由宿主 dshHomePath 解析，数据落在数据根而不是用户项目。
+# allowTools 是背景子会话的工具白名单：默认 []（fail-closed，写工具全拒）。
+# 需要真机跑流水线时改成显式最小集合、不用通配符；改动 bundle 内的 config 需要
+# 重新组装（重启 Harness / 重新安装）才生效，HMR 不会重读它。
+- insert:
+    - id: dsh-teamflow-workbench
+      name: 'dsh-teamflow-workbench'
+      config:
+        root: !!js dshHomePath('dsh-teamflow-workbench')
+        allowTools: []
+        timeoutMs: 180000

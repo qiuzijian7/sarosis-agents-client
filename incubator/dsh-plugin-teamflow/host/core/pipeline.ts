@@ -1,0 +1,1812 @@
+/**
+ * dsh-plugin-teamflow core — 流水线编排中枢（阶段执行 / 入口 / 取消 / 断点续跑）。
+ * 依赖：context/backlog/metering/runner/report + prompts + util/constants/types + store。
+ * 【档位阶段集】按 mode（full/medium/lite/tech/patch）经 STAGE_POLICY（constants.ts）
+ * 展开实际执行阶段集（resolveStages），再与团队阶段取交集——见 ADR-0004。
+ */
+import { runtime, runs, inFlight, activeProducts, providerName, hasStartActivation, workspaceScopeOf, installCtx, pruneRuns } from './agent/context.ts'
+import { initPipelineBacklog, storeFor, noteTaskStageUsage, hasOpenBlockingBugs } from './domain/backlog.ts'
+import { withRetry, resolveChildRoute } from './agent/runner.ts'
+import { runDevPhase, buildDevTaskDefs } from './stages/dev.ts'
+import { runQaPhase } from './stages/qa.ts'
+import { runAcceptancePhase } from './stages/acceptance.ts'
+/** DevTaskDef 已迁出到 dev.ts（依赖方向必须 pipeline → dev 单向）；再导出保持既有对外 surface。 */
+export type { DevTaskDef } from './stages/dev.ts'
+import { deliverCompletion } from './report.ts'
+import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, techChangePrompt, patchConfirmPrompt } from '../prompts/index.ts'
+import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, blueprintFromText, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, artifactFingerprint, detectInstallEnv, hasHumanReplySince, lastHumanReplySince, isExplicitApproval, absoluteRunDocs, normalizeSignal } from '../util.ts'
+import type { Blueprint, BlueprintRepairDiag } from '../util.ts'
+import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from 'node:fs'
+import { RETRY_LIMIT, PHASE_ORDER, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, DEV_MAX_CONCURRENCY, DEV_DEFAULT_CONCURRENCY } from '../constants.ts'
+import { persistJournal, loadJournalById, dshHome } from '../../store.ts'
+import type { JournalRecord } from '../../store.ts'
+import type { Journal, PipelineOptions, ResumeContext, PipelineMode } from '../types.ts'
+import { normalizeMode, runTriage, normalizeIntent, normalizeArtifact, qualifyBlockers, guardrailUpgrade, MODE_RANK, contractsForDeliverable, normalizeHost, forceHost, PLUGIN_ARTIFACTS, triageRecordOf, type TriageVerdict } from './triage.ts'
+import { loadTeams, findTeam, getActiveStages, teamNameOf } from './domain/teams.ts'
+import { loadState, saveState, extractStateBlock, mergeStateBlock, noteRun, stripStateBlock, readStateBlockFile, stateBlockRelPath, blueprintRelPath, saveBlueprintArchive } from './domain/state.ts'
+import { isDangerousVcsRoot, dirTooLargeForBaseline } from '../util.ts'
+import { homedir } from 'node:os'
+import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
+
+/** 插件自身模块文件路径（用于反推当前 profile 目录；`import.meta.url` 在 ESM 产物里可用）。
+ *  ⚠️ 导出是给 `host/index.ts` 的版本探测复用（`updateStatus` 要按本机环境生成升级命令）——
+ *  两条路径必须**共用同一套探测**，否则「提示里给的命令」和「流水线给的命令」会漂移。 */
+export function selfModulePath(): string {
+  try { return fileURLToPath(import.meta.url) } catch (e) { return '' }
+}
+/** `dsh` 是否在 PATH（CLI 入口可用性）。探测失败一律按"不在"处理（走等价手动步骤，更保守）。 */
+export function cliOnPath(): boolean {
+  try {
+    const r = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['dsh'], { stdio: 'ignore', windowsHide: true, timeout: 4000 })
+    return r.status === 0
+  } catch (e) { return false }
+}
+import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddPlan, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR, BASELINE_NOISE_EXCLUDES } from './workspace/sanity.ts'
+import type { GitResult } from './workspace/sanity.ts'
+import { archiveRunLogs, sweepWorkspaceLogs, stagingRoot } from './workspace/runlogs.ts'
+import { preflightWorkspaceAcl } from './workspace/acl-preflight.ts'
+import {
+  buildConfirmSheet, renderConfirmSheet, confirmHook, prdSnapshotFromBlock,
+  confirmDecision, type ConfirmSheet,
+} from './confirm.ts'
+import { parseLocale, phaseLabel, t, type HostLocale } from '../locales.ts'
+import { ambientLocale, localeForMissingSnapshot, localeSource, runLocaleOf } from './locale.ts'
+import { noteClarifyAnswered, noteClarifyProceeded } from './clarify-log.ts'
+import { canReviseViaChild, revisePrdViaChild, type RevisionDiag } from './prd-revise.ts'
+import { addUsage } from './agent/metering.ts'
+
+/** dev 子卡/阶段 label 的「开发 · 」前缀与重试后缀：zh 存量兼容 + en 新增（QA-2：既有解析契约只增不改）。
+ *  en 侧必须覆盖词典 `dev.taskRetry` 的实际产出 `(attempt N)`（R3-2 实锤：只写 retry \d+ 时，
+ *  无 taskKey 的存量/异常数据走 label 兜底会漏剥离，任务标题归一失效）——**只增不改 zh 分支**。 */
+const DEV_TITLE_PREFIX = /^(?:开发|Dev) · /
+/** 收口提交前「待提交清单」预览条数（只做可见性，超出的用省略号，不刷屏）。 */
+const COMMIT_SCOPE_PREVIEW = 12
+
+/** 从 journal 已完成阶段重建断点续跑产物（prd/design/scaffold/tech/qa/acceptance/dev）。 */
+export function buildResumeProducts(journal) {
+  const products: Record<string, unknown> = {}
+  for (const s of journal.stages) {
+    if (s.status !== 'done' || !s.output) continue
+    const key = phaseKeyOf(s.phase)
+    if (!key) continue
+    if (key === 'dev') {
+      products.dev = journal.stages
+        .filter((x) => phaseKeyOf(x.phase) === 'dev' && x.status === 'done' && x.output)
+        .map((x) => ({ title: x.taskKey || x.label.replace(DEV_TITLE_PREFIX, ''), failed: false, output: x.output }))
+    } else {
+      products[key] = s.output
+    }
+  }
+  return products
+}
+
+/** add / commit 的失败原因合并成一条可查字符串（add 成功时不占篇幅）。 */
+function gitFailDetail(addR: GitResult, cmR: GitResult): string {
+  return [addR.ok ? '' : `add: ${addR.error || 'failed'}`, cmR.error || 'commit failed'].filter(Boolean).join(' | ')
+}
+
+/**
+ * 索引兜底的真摘出留痕：`tfUnstageArgs()` 正常时 stdout 为空（本就没被跟踪）。
+ * 一旦非空 = 自有日志**确实进过索引** → 说明 `.gitignore` 那条防线失效了（规则被用户删掉 / 写不进去），
+ * 这是必须可见的信号（2026-09-15：提交链路曾经「静默失效」，不能再来一次）。
+ */
+function noteLogsUnstaged(journal: Journal, r: GitResult, locale: HostLocale = 'zh'): void {
+  if (!r.ok) {
+    journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.logsUnstageFail', { msg: r.error || '' }) })
+    return
+  }
+  const list = r.out.split('\n').map((l) => l.trim()).filter(Boolean)
+  if (!list.length) return
+  journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.logsUnstaged', { n: list.length, list: list.slice(0, 3).join(locale === 'en' ? ', ' : '、') }) })
+}
+
+/**
+ * 让工作区的 .gitignore 忽略插件自有日志目录（幂等；返回是否真的写了）。
+ *
+ * 为什么需要（实锤 assetd `tf-mtwvwpxa-p3vw08`）：插件强制子代理把命令日志与临时验证脚本写进
+ * `logs/teamflow/`（Log discipline / TOKEN_HYGIENE），而收口提交用裸 `add -A`——目标仓库没配
+ * .gitignore 时，一次提交 227 个文件里 208 个（92%）是这批日志（100 log / 52 json / 44 临时 .mjs），
+ * 真交付只有 19 个。注意当时子代理的交付报告写的是「docs/ and logs/ remain untracked as required」
+ * ——交付前完全属实，是 host 在最后一刻扫进去的：**契约在 host 这一侧破的**。
+ *
+ * 两道防线缺一不可：
+ *  ① 本函数写 .gitignore → IDE / `git status` / 用户自己的 CI 也不再看到这批文件（卫生），
+ *     而且它是 `tfAddArgs()` 整树 add 的唯一依赖（见 `sanity.tfAddArgs()` 的 2026-09-15 实锤）；
+ *  ② `tfUnstageArgs()` 在 add 之后把自有日志从索引里摘掉 → 规则被用户删掉、或本函数写不进去时仍然兜得住（保证）。
+ * 只在**即将提交**时写入：跑失败/取消的 run 不留下一份未提交的 .gitignore 改动。
+ * 2026-09-15（B 方案）后该目录只是**run 期间的暂存**（终态由 runlogs.archiveRunLogs 归档到 `$DSH_HOME`
+ * 并从项目删除）——两道防线保留，覆盖「用户/子代理在 run 进行中自己提交」这个窗口。
+ */
+function ensureLogGitignore(cwd: string | null | undefined, journal: Journal, locale: HostLocale = 'zh'): boolean {
+  if (!cwd) return false
+  try {
+    const file = `${cwd}/.gitignore`
+    const before = existsSync(file) ? readFileSync(file, 'utf8') : null
+    const merged = mergeGitignore(before, [`${TF_LOG_DIR}/`], locale)
+    if (!merged.changed) return false
+    writeFileSync(file, merged.text, 'utf8')
+    journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.gitignore', { dir: TF_LOG_DIR }) })
+    return true
+  } catch (e) {
+    // 写不进去不阻塞提交：tfUnstageArgs() 的索引兜底仍然生效（只影响 git status 的清爽度）
+    journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.gitignoreFail', { msg: String((e && e.message) || e) }) })
+    return false
+  }
+}
+
+/**
+ * 基线提交前的**索引层排除**（2026-09-18 方案 B 根治，勿回退）：
+ * 冷启动 `git add -A` 可能被海量噪音拖过超时（.pnpm-store 数万硬链接，probe-clock 实测 549 文件/51MB），
+ * 基线提交被杀。排除项走 `tfAddArgs(BASELINE_NOISE_EXCLUDES)` 的 **magic pathspec**——
+ * **只影响这一次 git 调用，绝不写用户的 `.gitignore`**。
+ *
+ * **旧实现为什么必须删**（用户实锤截图）：`ensureCommonNoiseIgnores()` 把 `.pnpm-store/` 写进用户
+ * `.gitignore`，且因 `mergeGitignore` 的注释是**整批一条**，它顶着「TeamFlow 运行日志（插件自有产物…）」
+ * 的文案落盘——注释张冠李戴只是表象，真问题是**越界**：`.gitignore` 是用户的项目资产，"该忽略什么"
+ * 归 L2（PRD 阶段 PM 按技术栈规划，见 prdPrompt 必查项）与 L3（QA 收口探针）以及用户本人。
+ */
+
+/** 任务夹产物读取助手 `artifactText` 见 util.ts（pipeline/runner 共用：doc 类阶段的产物兜底要用它）。 */
+
+/**
+ * tool 侧预检透传的分诊裁决（2026-09-16 需求澄清闸门）：只接受形状正确的对象；
+ * 形状不对 → 返回 null，走回「内部再跑一次分诊」的原路径（绝不因为透传字段坏掉就跳过路由）。
+ */
+/** 并发上限归一：未给/非法 → null（调用方回落默认池大小）；正数 → 夹到 DEV_MAX_CONCURRENCY。 */
+function normalizeConcurrency(raw: number | null | undefined): number | null {
+  return (Number.isFinite(raw) && raw > 0) ? Math.min(raw, DEV_MAX_CONCURRENCY) : null
+}
+
+function normalizeTriagePassthrough(raw: unknown): TriageVerdict | null {
+  const o = (raw && typeof raw === 'object') ? raw as Record<string, unknown> : null
+  if (!o) return null
+  const mode = normalizeMode(o.mode)
+  if (!mode) return null
+  const qb = qualifyBlockers(o.blockers, { installable: o.installable === true, host: forceHost(o.requirement, normalizeHost(o.host)) })
+  return {
+    mode,
+    kind: typeof o.kind === 'string' ? o.kind : '',
+    needDesign: o.needDesign === true,
+    complexity: (['small', 'medium', 'large'].indexOf(String(o.complexity)) !== -1 ? String(o.complexity) : 'medium') as TriageVerdict['complexity'],
+    rationale: Array.isArray(o.rationale) ? (o.rationale as unknown[]).map((x) => String(x)).slice(0, 6) : [],
+    confidence: (['high', 'medium', 'low'].indexOf(String(o.confidence)) !== -1 ? String(o.confidence) : 'medium') as TriageVerdict['confidence'],
+    slug: /^[a-z0-9][a-z0-9-]{2,23}$/.test(String(o.slug || '')) ? String(o.slug) : '',
+    source: o.source === 'fallback' ? 'fallback' : 'model',
+    intent: normalizeIntent(o.intent),
+    artifact: normalizeArtifact(o.artifact),
+    installable: o.installable === true,
+    // 透传路径同样要过宿主护栏：预检已经判过一遍，但缺字段/判不出时 dsh 标识词是确定性事实
+    host: forceHost(o.requirement, normalizeHost(o.host)),
+    blockers: qb.blockers,
+    blockersDropped: qb.dropped,
+    // host 侧填：档位被架构护栏从 X 升上来（ADR-0006）——仅用于日志与审计，不参与路由
+    upgradedFrom: (normalizeMode(o.__upgradedFrom) || null) as PipelineMode | null,
+  }
+}
+
+/* `triageRecordOf`（journal.triage 的落盘记录）见 core/triage.ts —— 它是**纯函数**且是「白名单漏字段」
+ * 的第五次现场（漏 artifact/installable → 形态契约注入整条链失效），故住 triage.ts 便于门禁直接测。 */
+
+/**
+ * PRD 收口：① 摘「假设 / 待澄清」段落 `journal.assumptions`；② **宿主契约调研硬门禁**。
+ *
+ * ① 的由来（2026-09-16 需求澄清闸门 Phase 1）：实测 **12/12（另一次 39/39）份 PRD 都没记录过假设**——
+ * agent 的替代决定完全不可见，验收人无从判断"这份 PRD 是不是我想要的"。缺失只记 warn（policy 级）。
+ *
+ * ② 的由来（2026-09-18 用户实锤，**偏硬**）：交付物要被**非 dsh 宿主**加载（openclaw/hermes/pi…）时，
+ * dsh 的契约一条都不适用，而我们对其没有权威 → PRD **必须含「宿主契约调研」段**（目标宿主是哪个、
+ * 从哪儿读到它的插件加载契约、核实到哪些要求）。缺失 → 返回失败原因（由调用方抛阶段失败 → 走重试诊断），
+ * 而不是只记 warn：用户原话「不然你上下文都不知道你开发个啥出来都不知道」。
+ *
+ * @returns 硬门禁失败原因（null = 通过或本 run 不需要该段）
+ */
+function notePrdAssumptions(journal: Journal, locale: HostLocale): string | null {
+  const doc = artifactText(journal, 'PRD.md') || artifactText(journal, 'TECH-CHANGE.md')
+  if (!doc) return null
+  // 提取走 util.extractAssumptionsSection（行式；容错编号标题/附录前缀/空正文）——
+  // 早先内联的 `^#{1,6}\s*(假设|…)` 正则在真实产物（`## 9. 假设与待澄清`）上匹配不到，
+  // 会误报「契约未兑现」（实测 tf-mu34afd2-wcjaw1）。
+  const body = extractAssumptionsSection(doc)
+  if (body) {
+    journal.assumptions = clip(body, 2000)
+    journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.prdAssumptions', { n: body.split(/\n+/).filter((l) => l.trim()).length }) })
+  } else {
+    journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.prdAssumptionsMissing') })
+  }
+  // ② 宿主契约调研硬门禁（仅当本 run 被判为「非 dsh 宿主 + 插件形态」时）
+  if (journal.hostResearch === true) {
+    const hr = extractHostResearchSection(doc)
+    if (!hr) {
+      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'log.hostResearchMissing') })
+      return t(locale, 'log.hostResearchMissing')
+    }
+    journal.hostContract = clip(hr, 2000)
+    journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.hostResearchOk', { n: hr.split(/\n+/).filter((l) => l.trim()).length }) })
+  }
+  return null
+}
+
+/**
+ * 需求澄清闸门 · pipeline 侧兜底（2026-09-16 实测补充）：分诊判「还不是明确需求」或存在合格 must-know
+ * 缺口 → **不开工**，把 run 落成**可续跑的中断态**（不建任何阶段），由完成汇报把问题交给主线程去问用户，
+ * 用户答完有**两条闭环通道**（2026-10-06 补齐第 ② 条）：① 带 `requirementSupplement` 重调 `teamflow_start`
+ * ——另起一个 run，本 run 成为僵尸；② 带 `supplement` 调 `teamflow_resume` **续跑本 run**（推荐：保住 run
+ * 身份与断点，答复直接进 PRD 的 `[CLARIFIED]` 段）。resume 时 `supplement` **只在断点 ≤ prd 时可应用**
+ * （PRD 是唯一消费点），晚于 prd 显式拒绝而不是静默吞掉（ADR-0011 待拍板 ④ / 前置 P3）。
+ *
+ * 为什么兜底放在 pipeline 而不是只靠 tool 侧预检：预检在**工具调用内**跑，模型分诊可能失败并静默退回
+ * 正则兜底（实测 `tf-mu35oza7-wmuckz` 漏传 signal → 0.4s fallback）→ 只靠预检会让闸门在那种情况下静默失效。
+ * 代价：这一条罕见路径会留下一个零阶段 run（status=interrupted + humanIntervention），比"静默开跑"划算。
+ */
+function abortForClarification(journal: Journal, locale: HostLocale, verdict: TriageVerdict): void {
+  journal.interrupted = true
+  journal.interruptedAt = Date.now()
+  // ⚠️ status 必须一并落到终态（2026-09-28 编排行为测试实测：此前只置 interrupted 而漏了这一行，
+  // status 停在 'running' ⇒ ① resumeRun 只认 interrupted/failed/cancelled，续跑被拒，而本函数写的
+  // 错误文案又说「可续跑」——自相矛盾；② 工作台永远「运行中」+ 中断按钮（与 cancel 终态归一前同病）。
+  // 正是本函数头注释承诺的那个「零阶段 run（status=interrupted + humanIntervention）」。
+  journal.status = 'interrupted'
+  journal.humanIntervention = true
+  // 探索态加固（2026-10-08）：与 tool 返回面同一协议（两条路径必须同形，否则「谁先命中」决定行为）。
+  journal.error = t(locale, 'run.needsClarification', { intent: verdict.intent, n: verdict.blockers.length })
+    + (verdict.intent === 'exploration' ? `\n${t(locale, 'tool.start.explorationProtocol')}` : '')
+  journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.clarifyAbort', { intent: verdict.intent, n: verdict.blockers.length }) })
+  for (const b of verdict.blockers) {
+    journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.clarifyBlocker', { q: clip(b.question, 200), changes: clip(b.changes, 160), rework: clip(b.rework, 160) }) })
+  }
+}
+
+/**
+ * **PRD 确认单的暂停**（ADR-0011 ①，2026-10-07）：PRD 已完成 ⇒ 把「目标一句话 + AC + 假设清单」交给
+ * 用户批准，**其后的阶段一个都不开始**。
+ *
+ * 与 `abortForClarification` 的区别只是**位置**：那个在起跑前（零阶段），这个在 PRD 之后
+ * （`stages` 只有 prd 一条 done）⇒ 两者的落点**同构**（`interrupted` + `humanIntervention`）：
+ * ADR-0011 P2 已定「复用 interrupted/resume 基座，不新增状态」。
+ *
+ * ⚠️ 落点正确依赖 `interruptedPhaseOf` 的第二层修正（2026-10-07）：PRD done 且其后全空时，
+ * 断点必须落在「启用过但从未尝试」的阶段（design/tech），而不是 `acceptance`。
+ */
+function abortForConfirmSheet(journal: Journal, sheet: ConfirmSheet, locale: HostLocale): void {
+  journal.interrupted = true
+  journal.interruptedAt = Date.now()
+  journal.status = 'interrupted'
+  journal.humanIntervention = true
+  journal.confirmSheet = sheet
+  const rendered = renderConfirmSheet(sheet, locale)
+  journal.error = t(locale, 'run.needsConfirm', { n: rendered.split('\n').length, id: String(journal.id) })
+  journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.confirmAbort', { ac: sheet.acTotal, as: sheet.assumptionsTotal }) })
+}
+
+/**
+ * 断点续跑起点：第一个「没有任意 done 尝试」的阶段。
+ * ⚠️ 按阶段而非尝试判断（实锤 tf-mtcomxpq）：PRD 第 1 次尝试 failed（护栏退化）但第 2 次重试 done——
+ * 旧实现取第一个非 done stage → 断点错误回到 PRD，PRD/技术方案被无谓重跑。
+ * 全部完成仍被中断（理论极端）→ 从产品验收继续。
+ */
+export function interruptedPhaseOf(journal) {
+  // QA 打回未闭环（实锤 run tf-mte906e9）：P0-P2 缺陷仍 open → 无论如何回到 QA 修复-复验闭环。
+  // 必须在「第一个无 done 阶段」之前判定——否则验收阶段失败过（无 done）时断点又定位到验收，
+  // 带缺陷继续验收必再次失败（用户实锤：resume 进验收 2 次失败，再 resume 仍定位验收，缺陷未闭环）。
+  if (hasOpenBlockingBugs(journal)) return 'qa'
+  // ⚠️ 零阶段 run 的断点必须是**第一个阶段**，不得落到下面那个「全都跑完」的出口。
+  // 零阶段只有一种来路：**起跑即中断**（澄清闸门兜底 `abortForClarification`，或起跑早期的取消/失败）——
+  // 两种输入的 `stages` 过滤结果都是空 ⇒ 循环里每个阶段都 `continue` ⇒ 走完循环 → `return 'acceptance'`
+  // ⇒ **「什么都没做」与「什么都做完了」共用同一个出口**。
+  // 实测后果（2026-10-05 直调本函数）：零阶段 run 续跑时 `resumed(phase)` 对 prd/design/scaffold/tech/dev/qa
+  // 全为真 ⇒ 全部走「复用存档产物」，而零阶段的 `buildResumeProducts` 返回 `{}` ⇒ 产物全 undefined
+  // （**PRD 为空**）⇒ 只剩没有 `resumed` 门控、也不做 prd 空值保护的验收照常开跑
+  // = 跳过需求澄清/技术方案/开发/QA，直接拿空 PRD 跑产品验收。是「跑错」，不只是「拿不回答复」。
+  if ((journal.stages || []).length === 0) return 'prd'
+  // 档位阶段集（ADR-0004 差异执行的单一事实来源）：用来区分**两种「没有 stage 记录」**——
+  //   ① 条件阶段（design/scaffold）在本档位未启用 ⇒ 确实该跳过；
+  //   ② 启用过、但**从未发生过任何尝试** ⇒ **它就是断点**。
+  // ② 若也 `continue`，「PRD done、design 之后全空」这一形态会一路走到 `return 'acceptance'`
+  // = **跳过 design/tech/dev/qa 直接验收**（2026-10-07 历史审计：lite 档 4 条命中，old 全为 acceptance）。
+  // 该形态今天 0 例（PRD 之后还没有暂停点），但**确认单一旦落地就会批量产生** ⇒ 必须先行修掉。
+  // ⚠️ 只用 `resolveStages` 重建，不引团队阶段列表：团队裁剪后的集合无从恢复，而差集只会让
+  // 断点**更靠前**（多跑一个阶段），不会更靠后（漏跑）——方向是安全的。
+  const opts = journal.options || {}
+  const stageSet = resolveStages(normalizeMode(opts.mode) || 'full', {
+    needDesign: opts.needDesign === true,
+    needScaffold: opts.needScaffold === true,
+  })
+  for (const phase of PHASE_ORDER) {
+    const phaseStages = (journal.stages || []).filter((s) => phaseKeyOf(s.phase) === phase)
+    if (phaseStages.length === 0) {
+      if ((stageSet as string[]).includes(phase)) return phase
+      continue
+    }
+    if (phase === 'dev') {
+      // 任务级聚合（状态机 2026-09-06）：任务有 done stage = 成功；存在未成功任务 → 阶段未完成。
+      // 历史失败尝试不算失败（同名任务已有 done stage）——dev 部分完成时 resume 起点 = 开发（补跑未完成）。
+      // 判定前先补算存量 stage 的 id（否则升级前的 title stage 被当成"没做过" → 全量补跑）
+      backfillDevTaskIds(phaseStages, buildDevTaskDefs(journal, [], runLocaleOf(journal)))
+      const statuses = devTaskStatuses(phaseStages)
+      if ([...statuses.values()].some((st) => !st.done)) return phase
+    } else {
+      if (!phaseStages.some((s) => s.status === 'done')) return phase
+    }
+  }
+  return 'acceptance'
+}
+
+/** 任务级聚合见 `util.devTaskStatuses`（纯函数，放 util 以便行为级测试直接 import——
+ *  pipeline 链到宿主私有 peer `@deepseek-ai/dsh-llm`，测试取不到，同 `cancelRun` 的处置）。
+ *  任务身份与 resume 判定的完整论证见该函数注释。 */
+
+/**
+ * 流水线阶段上下文（v0.2.5 第 ③ 步）——dev / qa / acceptance 三块外移后，
+ * 原先靠闭包捕获的共享状态在这里显式成契约。
+ *
+ * 为什么是「一个 ctx」而不是一串形参：三块共用的东西有 20+ 项（含会 mutate 的 timeline / state
+ * 与五个绑定了阶段集/journal/locale 的宿主闭包），逐项传参既啰嗦、又容易漏改一处。至于某一块到底
+ * 依赖其中哪几项，由该文件顶部那句解构常量写明——它顺手成了「这块需要什么」的索引。
+ *
+ * **读写约定**：journal / timeline / state 传的是同一份引用（阶段内写入直接生效，与原闭包语义一致）；
+ * prd / tech 在调用前写定、之后只读；qa / qaBlocked 由 QA 阶段产出后回填，再交给验收阶段消费。
+ */
+export interface PipelineCtx {
+  /* 输入（本次 run 内不变） */
+  journal: Journal
+  parent: any
+  requirement: string
+  options: PipelineOptions
+  signal: any
+  resume: ResumeContext | null
+  locale: HostLocale
+  /** 工作区（产品）作用域键：并发锁 + backlog 隔离键，同时是 storeFor 的入参。 */
+  scopeKey: string
+  root: string | null
+  tasks: any[]
+  maxConcurrency: number
+  installCtx: any
+  /* 共享可变状态（同一份引用，阶段内写入即生效） */
+  timeline: Record<string, unknown>
+  state: any
+  /* 跨阶段产物交接 */
+  prd: string | null
+  tech: string | null
+  design: string | null
+  qa: string | null
+  qaBlocked: boolean
+  /* 宿主侧共享闭包（保留在 executePipeline 内——它们绑定阶段集 / journal / locale） */
+  enabled: (key: string) => boolean
+  resumed: (phase: string) => boolean
+  logSkip: (phase: string) => void
+  stageFailError: (label: string, r: { attempts?: number; freshTokens?: number }) => Error
+  mergeStageState: (phaseKey: string, output: unknown, relPath?: string | null) => void
+  noteVerifyEvidence: (stage: any, output: unknown) => void
+  stageTextOf: (r: any) => string | null
+}
+/**
+ * 执行流水线。resume = null 全新运行；resume = { phase, products } 从断点续跑：
+ * phase 之前的阶段直接复用 products 产物（跳过执行），从 phase 阶段开始重跑。
+ */
+export async function executePipeline(
+  journal: Journal, parent: unknown, requirement: string, options: PipelineOptions,
+  signal: unknown, resume: ResumeContext | null = null,
+): Promise<void> {
+  journal.status = 'running'
+  // run 级语言快照（AC-2）：起跑解析一次；历史 journal（升级前无字段）补写一次。
+  // 注意只在「缺失」时解析——resume 走 localeForMissingSnapshot(true)=zh（存量文案本就是中文，
+  // 不得按当前界面语言补写，QA-1）；新 run 用环境语言。
+  if (!parseLocale(journal.locale)) journal.locale = localeForMissingSnapshot(!!resume)
+  const locale = runLocaleOf(journal)
+  // **语言来源留痕**（2026-10-16 实锤）：两侧都没拿到时会把整轮产物与日志按兜底语言生成
+  // （实测中文环境跑出全英文 + 界面中英混排），而这条链原先**全静默**正是它没被发现的原因。
+  // 只在**新 run**（resume 走 zh 是刻意的存量口径，见 localeForMissingSnapshot）且来源为兜底时记一条。
+  if (!resume && localeSource() === 'fallback') {
+    journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.localeFallback', { locale }) })
+  }
+  // **引擎留痕（2026-09-18）**：run 起始的模型路由快照（provider/model）落 journal + run.log。
+  // 只在缺失时写（resume 保留首轮快照）；逐阶段的真实路由另见 `stage.provider/model`（子代理可改道）。
+  if (!journal.engine) {
+    try {
+      const r = resolveChildRoute(parent)
+      const engine = { provider: r.provider || providerName() || null, model: r.model || null }
+      journal.engine = engine
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.engine', { provider: engine.provider || '?', model: engine.model || '?' }) })
+    } catch (e) { /* 留痕失败不阻断起跑（policy 级） */ }
+  }
+  if (!resume) journal.startedAt = Date.now()
+  const root = options.productRoot || null
+  journal.product = root
+  // 澄清答复随 run 落盘（可审计：这份需求在对齐阶段补过什么）；PRD 阶段会作为权威输入下发。
+  // ⚠️ resume 时**不得覆盖**：`resumeRun` 可能刚把补录的 supplement 写上（`teamflow_resume` 的补录入口），
+  // 而这里收到的是 `journal.options`（白名单字面量，本就不含该键）⇒ 无条件赋值会把答复清成 null
+  // = 静默丢弃（同 1106-1113 那类「白名单吃掉内部字段」的坑，这是第四次同型）。
+  if (!resume) journal.requirementSupplement = options.requirementSupplement ? String(options.requirementSupplement) : null
+  // 澄清埋点（ADR-0010 D2）：**答复真的随 run 落盘**才算一次闭环 —— 与「问了但用户没答」区分开。
+  // 需求原文用未加 `[CLARIFIED]` 的 `requirement`，与 tool 侧 `asked` 的指纹保持一致。
+  // resume 路径的 `answered` 埋点由 `resumeRun` 自己记（只有它知道 supplement 是不是**本次新带入**的）
+  // ⇒ 这里加 `!resume`，否则续跑会把同一份答复重复计一次，`answered` 与 `asked` 的配对比失真。
+  if (!resume && journal.requirementSupplement) {
+    noteClarifyAnswered(journal.workspace || root, requirement, {
+      runId: String(journal.id), supplement: String(journal.requirementSupplement),
+      mode: String((journal.options && journal.options.mode) || '') || undefined,
+    })
+  }
+  // 工作区（项目）作用域：workspace slug 同时是并发锁与 backlog 的隔离键
+  const scopeKey = journal.workspace || root || 'default'
+  // 产品级并发限制（防御：正常入口 startPipeline/resumeRun 已预检；按工作区隔离，互不阻塞）
+  if (activeProducts.has(scopeKey) && activeProducts.get(scopeKey) !== journal.id) {
+    journal.status = 'failed'
+    journal.error = t(locale, 'run.workspaceBusy', { ws: journal.workspacePath || scopeKey, id: activeProducts.get(scopeKey) })
+    journal.endedAt = Date.now()
+    persistJournal(journal)
+    return
+  }
+  activeProducts.set(scopeKey, journal.id)
+  // 日志生命周期（B 方案 2026-09-15）：先把上次崩溃/中断残留在工作区的暂存日志归档走（自愈），
+  // 再淘汰超额归档。清扫尽力而为，绝不阻断起跑。
+  try { sweepWorkspaceLogs(journal, locale) } catch (e) { /* 清扫失败不影响起跑 */ }
+  // Windows ACL 预检（2026-09-25，产品级根治）：宿主 sandbox 的 grantWrite 写 mandatory label
+  // 需要 WRITE_OWNER，而数据盘上新建的目录（继承 DACL 无用户显式 ACE）拿不到 → 子代理必 env-unavailable、
+  // 主会话被迫逐轮排查。这里在任何阶段/任何模型调用之前用宿主自己的包按**同一 workspace SID** 把
+  // standing grant 物化掉（修复 ACE 只需 WRITE_DAC，owner 隐式足够 → 无需提权）；救不回来 → 立即
+  // 判失败并给一条可复制的 icacls 命令。resume 同样过这道闸（幂等，宿主 exact-ACE skip O(1)）。
+  try {
+    const acl = await preflightWorkspaceAcl(journal.workspacePath)
+    if (acl.status === 'fixed') {
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.aclPreflightFixed') })
+    } else if (acl.status === 'failed') {
+      const fix = acl.fix || ''
+      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'log.aclPreflightFail', { fix }) })
+      journal.status = 'failed'
+      journal.error = t(locale, 'run.aclPreflightFailed', { err: clip(acl.err || '', 300), fix })
+      journal.endedAt = Date.now()
+      persistJournal(journal)
+      activeProducts.delete(scopeKey)
+      return
+    }
+  } catch (e) { /* 预检自身异常绝不阻断起跑（preflightWorkspaceAcl 理论上不抛，防御性兜底） */ }
+  // 自动分诊（对调用方透明）：除 `patch` 与**断点续跑**外一律跑一次——含显式 `lite`/`mode`。判据来自实测：
+  // ① 模型系统性自选档位（33 次启动 14 次显式传入、0 次先预览 `teamflow_triage`），若跳过 triage，
+  //    澄清闸门与 ADR-0006 架构护栏会在 42% 的启动上静默失效；
+  // ② tool 侧预检只是**快路径**，它在工具调用内跑、会失败（实测 `tf-mu35oza7-wmuckz`：漏传 signal →
+  //    0.4s 退 fallback）→ **权威判定放这里**，预检透传只用于省一次模型调用。
+  // ⚠️ **续跑必须跳过分诊**（2026-09-17 `dddd` 续跑实测：日志多出一行 `自动分诊 … source=fallback`）：
+  //    档位在首次启动就已定稿并落 `journal.options.mode`，续跑再跑一次既白花一次模型调用、又可能让
+  //    档位在续跑时漂移（护栏强升本就不该在续跑路径上二次触发）。改为用已有档位补一条 shadow 记录。
+  // 使用者无需了解/选择 mode；mode 是内部路由 + 可选显式覆盖（审计可见）。
+  let triageSlug = ''
+  const preTriage = normalizeTriagePassthrough((options as { __triage?: unknown }).__triage)
+  const preTriageError = String((options as { __triageError?: unknown }).__triageError || '')
+  if (preTriage) {
+    triageSlug = preTriage.slug || ''
+    journal.triage = triageRecordOf(preTriage)
+    journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.triage', { kind: preTriage.kind, mode: preTriage.mode, source: preTriage.source }) })
+    // 架构护栏强升可见化（ADR-0006）：调用方自选轻档位、分诊判 ≥medium → 已升档（模型自选档位不得绕过护栏）
+    const upFrom = (preTriage as { upgradedFrom?: string | null }).upgradedFrom
+    if (upFrom) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.modeUpgraded', { from: upFrom, to: preTriage.mode }) })
+    if (preTriage.blockersDropped > 0) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageBlockersDropped', { n: preTriage.blockersDropped }) })
+    // 澄清闸门失效可见化（ADR-0010 第 2 步）：分诊退兜底（超时/解析失败/子代理不可用）时 `fallbackVerdict`
+    // 硬编码「永不拦启动」⇒ 闸门**静默失效**。旧行为只落一条 info「source=fallback」，看不出「本次没做澄清」；
+    // 这里补 warn 点名后果（实锤 tf-mu4bve7t-duux2k「我想开发一个 dsh 插件」退兜底后直接跑完，用户侧不可见）。
+    if (preTriage.source === 'fallback') journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.clarifyGateSkipped') })
+  } else if (resume) {
+    // 断点续跑：档位已定稿（首次启动时定的），**不再跑分诊**；只补一条 shadow 记录保住样本连续性
+    // （`journal.triage` 在续跑前若已存在则原样保留——首轮的真实裁决比这里补的更有价值）。
+    if (!journal.triage) {
+      journal.triage = { mode: options.mode || 'full', kind: 'resume', complexity: 'medium', confidence: 'medium', source: 'resume', intent: 'requirement', blockers: [], blockersDropped: 0, upgradedFrom: null }
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.triageResumed', { mode: options.mode || 'full' }) })
+    }
+  } else if (options.mode !== 'patch') {
+    // 预检失败不静默（实测过：漏传 signal → 工具内分诊 0.4s 退 fallback，没人知道）
+    if (preTriageError) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triagePreflightFail', { msg: clip(preTriageError, 200) }) })
+    try {
+      const callerMode = options.mode
+      // 分诊输入带上澄清答复（与 tool 侧预检同一口径）：否则已答复的问题会被反复问、闸门不收敛（dddd 实测）
+      const triageInput = journal.requirementSupplement
+        ? `${requirement}\n\n[CLARIFIED — the user answered the open questions below during a clarification round; treat them as authoritative and do NOT re-ask]\n${String(journal.requirementSupplement)}`
+        : requirement
+      const verdict = await runTriage(triageInput, { needDesign: options.needDesign }, parent, signal, locale)
+      // 档位：调用方给了更轻的而分诊判 ≥medium → 护栏强升；显式 needDesign 而调用方没给档位 → 抬到 ≥medium；
+      // 否则保持调用方选择（或走分诊结果）
+      const up = guardrailUpgrade(callerMode, !!options.lite, verdict.mode, { needDesign: options.needDesign === true })
+      if (up) {
+        // 留痕「原本是谁提的档位」：调用方给过档位就用调用方的，否则记分诊自己的裁决（needDesign 下限路径）。
+        // 只在**真的从更轻的档位升上来**时记，避免 needDesign 未生效时刷出「medium → medium」这种噪音日志。
+        const fromMode = (callerMode !== undefined || options.lite) ? (callerMode || 'lite') : verdict.mode
+        if (MODE_RANK[fromMode] < MODE_RANK[up]) (verdict as unknown as Record<string, unknown>).__upgradedFrom = fromMode
+        options.mode = up
+        options.lite = up === 'lite' || up === 'tech' || up === 'patch' ? !!options.lite : false
+      }
+      if (verdict.needDesign && !options.needDesign) options.needDesign = true
+      triageSlug = verdict.slug || ''
+      journal.options = Object.assign({}, options) as Record<string, unknown>
+      journal.triage = triageRecordOf(verdict)
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.triage', { kind: verdict.kind, mode: verdict.mode, source: verdict.source }) })
+      // 分诊退化原因可见化（2026-09-18 probe-clock 截图实锤：分诊子代理推理中被超时 dispose，UI「已停止」，
+      // journal 只剩一条 fallback info → 没人知道为什么）。现在 fallbackReason（provider 错误/超时/解析失败
+      // 原文）记 warn——下次再出现 fallback，一眼可见"是 90s 掐的还是 JSON 坏了"。
+      const fbReason = (verdict as { fallbackReason?: string }).fallbackReason
+      if (verdict.source === 'fallback' && fbReason) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageFallbackReason', { msg: clip(fbReason, 200) }) })
+      // 同上（pipeline 侧权威判定路径）：退兜底 ⇒ 澄清闸门未生效——除了「原因」还要点名「后果」
+      if (verdict.source === 'fallback') journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.clarifyGateSkipped') })
+      const upFrom2 = (verdict as { upgradedFrom?: string | null }).upgradedFrom
+      if (upFrom2) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.modeUpgraded', { from: upFrom2, to: verdict.mode }) })
+      if (verdict.blockersDropped > 0) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageBlockersDropped', { n: verdict.blockersDropped }) })
+      // 收敛规则（与 tool 侧一致）：**没给过澄清答复**才拦；已给过 → 残余 blocker 当作假设开工（PRD 的
+      // 「假设与待澄清」段 + 完成汇报高亮），不再无限追问（dddd 实测 6 轮零 run）。
+      const clarified = !!String(journal.requirementSupplement || '').trim()
+      if (verdict.intent !== 'requirement' || verdict.blockers.length > 0) {
+        if (!clarified) return abortForClarification(journal, locale, verdict)
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.clarifyProceedWithAssumptions', { n: verdict.blockers.length }) })
+        // 澄清埋点（ADR-0010）：已答过仍有残余 blocker → 按假设开工（PRD 假设段 + 汇报高亮兜底）
+        noteClarifyProceeded(journal.workspace || root, requirement, { runId: journal.id, assumed: verdict.blockers.length })
+      }
+    } catch (e) {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageFail', { msg: String((e && e.message) || e) }) })
+    }
+  }
+  const tasks = normalizeTasks(options.tasks)
+  const maxConcurrency =
+    Number.isFinite(options.maxConcurrency) && options.maxConcurrency > 0
+      ? Math.min(options.maxConcurrency, DEV_MAX_CONCURRENCY)
+      : DEV_DEFAULT_CONCURRENCY
+  const timeline: Record<string, unknown> = {}
+  // 档位→阶段集（ADR-0004 差异执行的单一事实来源）：先按 mode + needDesign/needScaffold 展开，
+  // 再与团队阶段列表取交集（团队可进一步裁剪）。取代散落的 if/else 阶段门控。
+  const stageSet = resolveStages(options.mode, { needDesign: options.needDesign, needScaffold: options.needScaffold })
+  // 团队配置：加载团队的阶段列表，确定哪些阶段跳过（optional + 未启用）
+  let activeStageKeys: Set<string> | null = null
+  if (options.teamId) {
+    const teams = loadTeams(journal.workspace || 'default')
+    const team = findTeam(teams, options.teamId)
+    if (team) {
+      const active = getActiveStages(team, { needDesign: options.needDesign, needScaffold: options.needScaffold })
+      activeStageKeys = new Set(active.map((s) => s.key))
+      // 团队名与阶段名都按 run 语言取：阶段名走 phaseLabel（teams.json 的 label 是中文数据，只作 zh 源）
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.team', { name: teamNameOf(locale, team), list: active.map((s) => phaseLabel(locale, s.key)).join(' → ') }) })
+    }
+  }
+  journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.stageSet', { mode: options.mode || 'full', list: stageSet.join(' → ') || t(locale, 'log.stageSetEmpty') }) })
+  const enabled = (key: string) => stageSet.indexOf(key as any) !== -1 && (!activeStageKeys || activeStageKeys.has(key))
+  // 断点续跑：跳过 resume.phase 之前的阶段
+  const resumed = (phase) => !!resume && PHASE_ORDER.indexOf(phase) < PHASE_ORDER.indexOf(resume.phase)
+  const logSkip = (phase) => journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.skipStage', { phase: phaseLabel(locale, phase) }) })
+  /** 阶段失败错误：带真实尝试次数/末次结果/累计消耗与熔断语义（取代千篇一律的「重试 N 次后仍无产出」）。 */
+  const stageFailError = (label: string, r: { attempts?: number; freshTokens?: number }): Error => {
+    const last = [...(journal.stages || [])].reverse().find((s) => phaseKeyOf(s.phase) === label)
+    const attempts = r && r.attempts ? r.attempts : RETRY_LIMIT
+    const burnt = Math.round(((r && r.freshTokens) || 0) / 1000)
+    const breaker = ((r && r.freshTokens) || 0) >= FRESH_TOKEN_BUDGET ? t(locale, 'err.breaker') : ''
+    const detail = last
+      ? t(locale, 'err.stageLast', { outcome: last.outcome || 'unknown', summary: last.summary ? t(locale, 'err.stageLastSummary', { summary: last.summary }) : '' })
+      : t(locale, 'err.stageNone')
+    return new Error(t(locale, 'err.stageFail', { phase: phaseLabel(locale, label), attempts, detail, burnt, breaker }))
+  }
+  try {
+    if (resume) {
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'run.resumeBacklog', { reqId: journal.reqId, phase: phaseLabel(locale, resume.phase) }) })
+    } else {
+      const init = initPipelineBacklog(journal, requirement, options)
+      journal.reqId = init.reqId
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.backlogInit', { reqId: init.reqId, product: root || 'unknown', n: maxConcurrency }) })
+      // 分支策略 A 落地（ADR-2026-08-27，基调=启动前用户决策，见 index.ts needs-decision 检查）：
+      // auto → 建特性分支 feat/<slug>（从当前 HEAD 派生，main 或 feature 上都建）；keep → 沿用当前分支。
+      // 位置：initBacklog 之后（reqId 已生成——slug fallback 链依赖它；实锤 feat/feature：分支检查早于 reqId → fallback 'feature'）。
+      // **preAction='init'（2026-09-17 改动存档）**：非 git 工作区用户选了"开启存档" → git init +
+      // （目录不大时）把现有内容作为**基线提交**（本 run 的改动因此是一份干净 diff）→ 再建特性分支。
+      // **执行期二次校验**：程序化调用可能绕过决策直接传 init；危险路径/大目录在执行时重判
+      // （isDangerousVcsRoot / dirTooLargeForBaseline）——命中则**降级为不初始化并继续**（run 不因此打断）。
+      // **preAction='keep-nogit'**：用户明确选"不用版本控制" → 写 gitMode='none'，出口不尝试提交。
+      if (options.preAction === 'keep-nogit') {
+        try { const st = loadState(scopeKey); st.gitMode = 'none'; saveState(scopeKey, st) } catch (e) { /* 记忆失败不影响运行 */ }
+      }
+      if (options.preAction === 'init' && journal.workspacePath) {
+        try {
+          const st = loadState(scopeKey)
+          const s0 = runSanityCheck(journal.workspacePath, locale)
+          if (s0.inRepo) {
+            // 已是仓库（决策后被人先 init 了 / 决策与执行之间状态变化）→ 直接按仓库走
+            st.gitMode = 'repo'
+            saveState(scopeKey, st)
+          } else if (isDangerousVcsRoot(journal.workspacePath, homedir())) {
+            journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.gitInitRefused', { path: journal.workspacePath }) })
+            ;(options as Record<string, unknown>).preAction = 'keep-nogit'
+            options.branchPolicy = 'keep'
+            st.gitMode = 'none'
+            saveState(scopeKey, st)
+          } else {
+            const iR = gitCmd(journal.workspacePath, ['init'])
+            const baselineSkip = dirTooLargeForBaseline(journal.workspacePath)
+            if (iR !== null) {
+              if (!baselineSkip) {
+                ensureLogGitignore(journal.workspacePath, journal, locale)
+                // 基线提交是**冷启动整树 add**（node_modules/.pnpm-store 未忽略时可达数万文件），
+                // 默认 8s 超时会被杀（probe-clock 实锤：超时后 stdout/stderr 残留被 gitFailDetail 拼成
+                // "add: warning: LF/CRLF…" 假错误）→ add/commit 各给 120s。
+                // 噪音排除走 **索引层 pathspec**（baseline_add_exclude_log），不写用户 .gitignore。
+                const aR = gitRun(journal.workspacePath, tfAddArgs(BASELINE_NOISE_EXCLUDES, journal.workspacePath), 120000)
+                journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.baselineExcludes', { list: BASELINE_NOISE_EXCLUDES.join(', ') }) })
+                const cR = gitRun(journal.workspacePath, ['commit', '-m', t(locale, 'commit.baseline')], 120000)
+                journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.gitInitDone', { baseline: cR && cR.ok ? t(locale, 'log.gitBaselineDone') : t(locale, 'log.gitBaselineSkip', { msg: gitFailDetail(aR, cR) }) }) })
+              } else {
+                journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.gitInitDone', { baseline: t(locale, 'log.gitBaselineLarge') }) })
+              }
+              st.gitMode = 'repo'
+              saveState(scopeKey, st)
+            } else {
+              journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.gitInitFail', { path: journal.workspacePath }) })
+              ;(options as Record<string, unknown>).preAction = 'keep-nogit'
+              options.branchPolicy = 'keep'
+              st.gitMode = 'none'
+              saveState(scopeKey, st)
+            }
+          }
+        } catch (e) { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.gitInitFail', { path: journal.workspacePath }) }) }
+      }
+      if (options.branchPolicy !== 'keep' && journal.workspacePath) {
+        try {
+          const s = runSanityCheck(journal.workspacePath, locale)
+          if (s.ok && s.inRepo && !s.hasDirty) {
+            const slug = deriveBranchSlug(requirement, journal.reqId, triageSlug, options.branchName)
+            const branch = `feat/${slug}`
+            const exists = gitCmd(journal.workspacePath, ['branch', '--list', branch])
+            if (exists && exists.trim()) {
+              journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.branchExists', { branch }) })
+              gitCmd(journal.workspacePath, ['checkout', branch])
+              journal.branch = branch
+            } else {
+              const ok = gitCmd(journal.workspacePath, ['checkout', '-b', branch])
+              journal.logs.push({ t: Date.now(), level: 'info', message: ok !== null ? t(locale, 'log.branchCreated', { branch, from: s.branch }) : t(locale, 'log.branchCreateFail', { branch }) })
+              if (ok !== null) journal.branch = branch
+            }
+          } else if (s.ok && s.inRepo && s.branch) {
+            journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.branchDirty', { n: s.dirty.split(/\r?\n/).filter((l) => l.trim()).length, branch: s.branch }) })
+          }
+        } catch (e) { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.branchCheckFail', { msg: String((e && e.message) || e) }) }) }
+      }
+    }
+    persistJournal(journal)
+
+    // ADR-0008 任务夹：需求级档案单元 docs/teamflow/<yyyyMMdd>-r<N>[-<slug>]/。
+    // 夹名在建夹时刻固定并持久化 journal.runDocs——阶段重试/断点续跑一律复用同夹（幂等由结构保证）。
+    if (!journal.runDocs && journal.reqId) {
+      journal.runDocs = `${'docs/teamflow'}/${runFolderName(new Date(), journal.reqId, triageSlug)}`
+      try {
+        if (journal.workspacePath) {
+          const abs = `${journal.workspacePath}/${journal.runDocs}`
+          mkdirSync(abs, { recursive: true })
+          writeFileSync(`${abs}/meta.json`, JSON.stringify({
+            reqId: journal.reqId, runId: journal.id, title: String(requirement).replace(/\s+/g, ' ').trim().slice(0, 80),
+            mode: options.mode || null, createdAt: Date.now(),
+          }, null, 2), 'utf8')
+        }
+        journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.runDocs', { docs: journal.runDocs }) })
+      } catch (e) {
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.runDocsFail', { msg: String((e && e.message) || e) }) })
+      }
+    }
+
+    // 分支策略 preAction（ADR-2026-08-27）：脏工作区的启动前处理，在 sanity 之前执行，
+    // 使状态核对看到「处理后的干净基线」。stash 的改动由用户在流水线完成后自行 pop（完成汇报有提醒）。
+    if (!resume && journal.workspacePath && options.preAction === 'stash') {
+      try {
+        const out = gitCmd(journal.workspacePath, ['stash', 'push', '-m', `teamflow:${journal.id} pre-pipeline`])
+        if (out !== null) {
+          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.stash', { id: journal.id }) })
+        } else {
+          journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.stashFail') })
+        }
+      } catch (e) { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.stashErr', { msg: String((e && e.message) || e) }) }) }
+    } else if (!resume && journal.workspacePath && options.preAction === 'commit') {
+      try {
+        const msg = (typeof options.commitMessage === 'string' && options.commitMessage.trim()) ? options.commitMessage.trim() : t(locale, 'commit.preAction', { id: journal.id })
+        ensureLogGitignore(journal.workspacePath, journal, locale) // 自有日志先写进 .gitignore（幂等）
+        const addR = gitRun(journal.workspacePath, tfAddArgs())
+        noteLogsUnstaged(journal, gitRun(journal.workspacePath, tfUnstageArgs()), locale) // 索引兜底
+        const cmR = gitRun(journal.workspacePath, ['commit', '-m', msg])
+        // 失败要给原因（2026-09-15：旧写法只在 add/commit 任一为 null 时记一句「commit 执行失败」，
+        // 真实原因无处可查——而那正是收口提交静默失效 4 天没被发现的根因）
+        if (cmR.ok) {
+          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.preCommit', { msg: msg.slice(0, 60) }) })
+        } else {
+          journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.preCommitFail', { msg: gitFailDetail(addR, cmR) }) })
+        }
+      } catch (e) { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.preCommitErr', { msg: String((e && e.message) || e) }) }) }
+    }
+
+    // 预编译 state（跨 run 累积索引）：各阶段 prompt 注入 slice；结束后提取/合并 state 块
+    // ⚠️ **必须是 `let`**：`mergeStageState` 合并后要**换掉这个绑定**（见下），否则本次 run 内
+    // 后续阶段（含 PRD 确认单）读到的永远是**起跑快照**。
+    let state = loadState(journal.workspace || 'default')
+    state.__runCtx = { ...(state.__runCtx || {}) }
+    if (journal.runDocs) state.__runCtx.runDocs = journal.runDocs
+    // 注入块语言（AC-3⑤）：快照经既有 __runCtx 通道下发（不改任何 prompt 工厂签名）
+    state.__runCtx.locale = locale
+    // craft 引导通道（2026-09-30）：缺省＝开，显式 options.craft === false 才关 —— 与 locale 同通道下发
+    state.__runCtx.craft = options.craft !== false
+    // **本机安装环境**（2026-09-21 用户实锤，勿写死路径）：契约里原本写死
+    // 「`dsh plugin --profile web add`」——用户是源码运行（`pnpm dsh`，dsh 不在 PATH）、profile 名
+    // 也可能不叫 web，那条命令在别人机器上根本跑不通。改为**运行时探测**，取值顺序见
+    // `util.detectInstallEnv`：① `ctx.baseUrl`（宿主权威锚点 = profile 目录，经 context.installCtx 搬运）
+    // ② 插件自身路径反推（`link:` 安装下会落空）③ `dshHome()` 只补 home（自带 `~/.dsh` 兜底）。
+    // ⚠️ 不读 `process.env.DSH_HOME`——它**不是"装了 dsh 就自带"**（可选覆盖变量、`.env` 也设不了），
+    // 默认安装下为 undefined，会让探测**误判失败**并把 PRD 降级成"问用户"。
+    // 探测失败 → 明确要求"问用户"，不猜。只对插件形态注入（其余交付物不涉及装进 profile）。
+    try {
+      const tj0 = journal.triage as { artifact?: string } | null | undefined
+      const art0 = normalizeArtifact(tj0?.artifact)
+      if (PLUGIN_ARTIFACTS.indexOf(art0) !== -1) {
+        const env = detectInstallEnv({ baseUrl: installCtx.baseUrl, modulePath: selfModulePath(), dshHome: dshHome(), hasCli: cliOnPath() })
+        state.__runCtx.installEnv = env
+        journal.installEnv = env
+        journal.logs.push({
+          t: Date.now(), level: env.ok ? 'info' : 'warn',
+          message: t(locale, env.ok ? 'log.installEnv' : 'log.installEnvUnknown', {
+            profile: env.profile || '?', dir: env.profileDir || '?', cli: env.cliOnPath ? 'yes' : 'no',
+          }),
+        })
+      }
+    } catch (e) { /* 探测失败不阻断：契约会退化成"问用户"（policy 级） */ }
+    // 交付形态契约（2026-09-17 实测）：形态由分诊给（triage.artifact + installable），契约清单由 host 数据表
+    // 展开（ARTIFACT_CONTRACTS）→ PRD 必须把它们写成可测 AC。缺这一环的实锤：dddd 的插件"看着完整"却装不进
+    // profile（缺 profile 层入口声明 + bundle 声明 + files 白名单 + workspace: 协议），而功能 AC 全绿 → 验收通过。
+    // `other` 形态不注入（避免给既有产品内的普通改动套错契约）。
+    // **宿主分流**（2026-09-18 用户实锤提问）：`plugin-*` 且 host≠dsh（openclaw/hermes/pi/判不出）→
+    // **绝不下发 dsh 契约**（那些机制目标宿主根本不看，反而造成反向返工），改为要求「宿主契约调研」。
+    try {
+      const tj = journal.triage as { artifact?: string; installable?: boolean; host?: string } | null | undefined
+      const art = normalizeArtifact(tj?.artifact)
+      const inst = tj?.installable === true
+      const hst = normalizeHost(tj?.host)
+      const { items, hostResearch } = contractsForDeliverable(hst, art, inst)
+      if (items.length) {
+        state.__runCtx.artifact = art
+        state.__runCtx.installable = inst
+        state.__runCtx.host = hst
+        state.__runCtx.artifactContracts = items.map((it) => ({ requirement: it.requirement, criteria: it.criteria }))
+        journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.artifactContract', { kind: art, n: items.length }) })
+      }
+      if (hostResearch) {
+        // 硬门禁的注入源（PRD 必须含对应段落；验收判定见 noteHostResearch）
+        state.__runCtx.hostResearch = true
+        state.__runCtx.host = hst
+        journal.hostResearch = true
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.hostResearch', { kind: art, host: hst }) })
+      }
+    } catch (e) { /* 形态契约注入失败不阻断（policy 级） */ }
+    // M0 状态核对：核对代码库真实状态（多人/场外提交/非流水线改动），注入后续所有阶段。
+    // 核心原则：认知可复用"减量"，但不替代"对现状的核对"。
+    try {
+      const wsCwd = workspaceScopeOf(parent).path
+      const sanity = runSanityCheck(wsCwd, locale)
+      state.__runCtx = { ...(state.__runCtx || {}), sanity: sanity.summary }
+      journal.sanity = {
+        ok: sanity.ok,
+        branch: sanity.branch,
+        hasDirty: sanity.hasDirty,
+        dirty: sanity.dirty.slice(0, 1000),
+        recentCommits: sanity.recentCommits.slice(0, 1000),
+        summary: sanity.summary,
+      }
+      if (sanity.hasDirty || !sanity.ok) {
+        journal.logs.push({ t: Date.now(), level: 'warn', message: sanity.summary })
+      } else {
+        journal.logs.push({ t: Date.now(), level: 'info', message: sanity.summary })
+      }
+    } catch (e) {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.sanityFail', { msg: String((e && e.message) || e) }) })
+    }
+    /**
+     * 合并阶段产出的 state 块。
+     *
+     * **通道（2026-10-08 改）**：优先读**文件通道**（`relPath`）—— 块不该走人类可读通道，
+     * 见 `stateBlockInstruction` / `readStateBlockFile` 的注释。文件缺 ⇒ **回落**抽回复文本，
+     * 并记一条可数 warn。回落不是可选项：最坏情况只能是「退化成旧行为 + 一条 warn」，不能是静默丢状态。
+     */
+    const mergeStageState = (phaseKey, output, relPath = null) => {
+      // ⚠️ 基准是 **`journal.workspacePath`**（子代理的 CWD），**不是 `root`** ——
+      // `root = options.productRoot`，而它在生产里也常常是 `null`（真机 `tf-muzc59h9-pnbhyk` 就是 null）
+      // ⇒ 按 root 拼路径会让文件通道**永远读不到、永远回落**（等于这次改动白做）。prompt 里给的是
+      // **相对 workspacePath** 的路径，读取也必须以它为基准。这条是被行为测试 [24] 抓出来的。
+      const base = journal.workspacePath || root
+      const abs = relPath && base ? `${base}/${relPath}` : null
+      const fromFile = abs ? readStateBlockFile(abs) : null
+      const block = fromFile || extractStateBlock(output)
+      if (!block) {
+        // 契约违反要**可见**（不静默）：要求了文件却两条通道都没拿到 ⇒ 记 warn，但不阻断流水线
+        if (relPath) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.stateBlockMissing', { phase: phaseLabel(locale, phaseKey), path: String(relPath) }) })
+        return
+      }
+      if (!fromFile && relPath) {
+        // 回落：模型没写文件、把块留在回复里了。**可数** —— 这个数就是文件通道的真实兑现率。
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.stateBlockFallback', { phase: phaseLabel(locale, phaseKey) }) })
+      }
+      // ⚠️ `mergeStateBlock` 是 load → 改 → save → **返回一个新对象**（不是就地改我们手上那份）。
+      // **丢弃返回值 = 内存里的 `state` 永远停在「起跑快照」** ⇒ 本次 run 里 PRD 写下的
+      // `extra.acIndex` / `product.summary` / `openQuestions` / `verifyScripts` / `modules`
+      // **在同一 run 的后续阶段全都看不见**（要等**下一次 run** 从磁盘载入才可见）。
+      // 2026-10-07 实锤 tf-muy63zgy-octoqj（真实桌面版）：磁盘 `state.json` 里 `acIndex` 9 条、
+      // `product.summary` 有值，而同一次 run 的确认单却是 `acSource=extracted`、`summary=''`
+      // —— 因为确认单读的正是这份没刷新的内存 state。
+      const rc = state.__runCtx
+      state = mergeStateBlock(journal.workspace || 'default', block, phaseKey)
+      // `__runCtx` 是**运行期字段、`loadState` 不搬运**（`state.test.js` 有豁免断言）⇒
+      // 不显式带回的话，runDocs / locale / craft / artifactContracts / blueprint 会整片消失。
+      if (rc !== undefined) state.__runCtx = rc
+      // **本轮 PRD 的结构化输出快照**（2026-10-16，修「汇报层串了模版」）：确认单与 taste 闸门
+      // 只认它、不认累积 `state.json`（后者跨 run 累积 ⇒ 本轮 PRD 没回写这些 `extra` 键时，
+      // 确认单会显示上一轮 run 的目标/AC/待澄清项）。见 `prdSnapshotFromBlock` 的论证。
+      if (phaseKey === 'prd') journal.prdSnapshot = prdSnapshotFromBlock(block)
+    }
+    // 验证证据块存证（dev/qaFix 契约；policy 级——缺失记 warn 不中断）。
+    // 按 withRetry 返回的 stage 引用直写——并发 dev 下绝不错位（reverse().find
+    // 取「最后一个无证据同 phase stage」会把 A 的证据挂到 B 的 stage，审计特性自毁）。
+    const noteVerifyEvidence = (stage, output) => {
+      try {
+        const ev = extractVerificationEvidence(output)
+        if (!ev) { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.noEvidence', { stage: stage ? phaseLabel(locale, phaseKeyOf(stage.phase)) : phaseLabel(locale, 'dev') }) }); return }
+        if (stage) stage.verifyEvidence = ev
+      } catch (e) { /* 存证失败不影响流水线 */ }
+    }
+    /**
+     * 失败尝试的真实产出取用（2026-09-11 修「文本凭空丢失」）：
+     * runAgent 失败路径已把产出截断落盘到 `stage.output`（供重试诊断/详情浮层），
+     * 但 withRetry 的 `text` 为 null → 证据存证 / state 回写 / 子卡产物全部拿不到文本，
+     * 还会派生一条**误导性 warn**「回复缺少 [Verification evidence] 块」（实锤 assetd
+     * tf-mtwvwpxa-p3vw08 的 T5：块明明在，只因该轮被判失败就报「契约未兑现」）。
+     * 展示/存证/诊断一律用真实文本，成功与否仍只由 `text` 决定。
+     */
+    const stageTextOf = (r) => r.text || ((r.stage && r.stage.output) || null)
+
+    /**
+     * 同形阶段执行器（2026-09-26 收敛）。
+     * `prd` / `design` / `scaffold` / `tech` 四阶段形状完全同构——「resume 复用产物 → enterStage 留痕 →
+     * withRetry → 空产出抛 stageFailError → 写 timeline + mergeStageState + 累计任务卡用量 → 取消检查」，
+     * 原先四处各抄一遍（每处 25–35 行）。抄写的代价曾有实据：**tech 的失败错误传的是本地化 label 文本而非
+     * phase key**（另三处都传 key）→ `stageFailError` 内 `phaseKeyOf(s.phase) === label` 恒不匹配 →
+     * 详情恒退化为「无上次记录」、末次 outcome/summary 全丢。**该差异已随本次收敛一并修掉**（统一传 phase key，
+     * 2026-09-26）——错误文案因此会带上「末次 completed / 摘要」，属有意的语义修复，A/B 可观测。
+     * @returns text 阶段产物（resume 复用时为存档产物，可能为空）；cancelled 为真时调用方须整体 return
+     */
+    const runSimpleStage = async (
+      phase: string,
+      prompt: string,
+      label: string,
+      opts?: { enterLabel?: string; effort?: string | null },
+    ): Promise<{ text: string | null; cancelled: boolean; skipped: boolean }> => {
+      if (resumed(phase)) {
+        const saved = (resume as { products: Record<string, unknown> }).products[phase] as string | null
+        timeline[phase] = saved
+        logSkip(phase)
+        return { text: saved, cancelled: false, skipped: true }
+      }
+      journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: opts && opts.enterLabel ? opts.enterLabel : phaseLabel(locale, phase) }) })
+      const r = await withRetry(journal, parent, label, phase, prompt, signal, undefined, opts && opts.effort ? opts.effort : null)
+      if (!r.text) throw stageFailError(phase, r)
+      // ⚠️ `mergeStageState` 之后**立刻剥掉机器契约块**（2026-10-08）：这一刻 block 已被消费进
+      // state.json，之后这段文本只作**展示**（timeline）与**下游输入**（`prd`/`design`/`tech` 进下一个
+      // 阶段的 prompt）—— 块在两边都是噪声。机器面（`extractStateBlock`）读的是**未剥**的 `r.text`。
+      const shown = stripStateBlock(r.text)
+      timeline[phase] = shown
+      mergeStageState(phase, r.text, stateBlockRelPath(journal.id, phase))
+      noteTaskStageUsage(journal)
+      return { text: shown, cancelled: !!journal.cancelled, skipped: false }
+    }
+
+    /* ── PRD 阶段 ── */
+    let prd = null
+    // PRD 是唯一不做 enabled() 检查的阶段（任何档位都跑）；patch / tech 档只是换 prompt 形态，不是跳过。
+    const pForm = options.mode === 'tech'
+      ? { label: t(locale, 'dev.prdTechChange'), fn: techChangePrompt }
+      : options.mode === 'patch'
+        ? { label: t(locale, 'dev.prdPatch'), fn: patchConfirmPrompt }
+        : { label: t(locale, 'dev.prdFull'), fn: prdPrompt }
+    // 澄清答复（2026-09-16 需求澄清闸门）：用户在澄清轮补充的说明是**权威输入**——拼在需求之后并显式声明
+    // 「不得再自行假设」，否则 PM 会把自己的旧猜测再填一遍。原始 requirement 保持逐字不变（可审计）。
+    // 2026-10-08 分叉：**确认单上「要改」**（`resume.redo`）是另一种语义 —— 用户不是答我问的问题，而是
+    // 对上一版 PRD 提了修改要求。共用「权威输入」的效力，但**不能用「你问的问题的答案」这个说法**：
+    // 那时 PRD 的待澄清清单还没生成，模型会照字面去找一份不存在的清单。
+    const supplement = journal.requirementSupplement
+    const prdInput = supplement
+      ? resume && resume.redo
+        ? `${requirement}\n\n[REVISED — the user reviewed the previous PRD and asked for these changes; treat them as authoritative and do NOT re-ask]\n${supplement}`
+        : `${requirement}\n\n[CLARIFIED — the user answered the open questions below during a clarification round; treat them as authoritative and do NOT re-assume]\n${supplement}`
+      : requirement
+    /**
+     * **PRD 续跑改写**（2026-10-17）：确认单上「要改」时，对**产出当前 PRD 的那个子代理**投一条修改要求，
+     * 让它带着自己的上下文只改需要改的部分 —— 而不是重新 spawn、从零读需求/文档再重写整份 PRD。
+     *
+     * 为什么要这样：重跑会**漂移**（用户只要求改一处，没提的部分也可能被顺手改写），而且贵。
+     * 为什么现在能做：阶段子代理**本来就是 continuable**（`startActivation` 内部按 provider 的
+     * `prepareContinuable` 分派，spawn 有该能力），插件此前只是从没给它发过第二条消息。
+     * 实测（headless 探针）：settle 后 `sendMessage` 仍被接受（coldResume），第二轮复用上下文
+     * （第一轮给的口令被正确复述），usage `input 180 / cacheRead 8448 / output 6`。
+     *
+     * **失败一律回落为重跑**（返回 null）：child 没了、宿主没这能力、超时、拿到空文本 ——
+     * 续跑是加速路径，不是唯一路径；不能因为它失败就让用户改不了 PRD。
+     */
+    const revisePrdViaChildIfPossible = async (): Promise<{ text: string; cancelled: boolean; skipped: boolean } | null> => {
+      const childId = journal.prdChildId ? String(journal.prdChildId) : ''
+      if (!resume || !resume.redo || !supplement) return null
+      if (!childId) {
+        // 本该续跑但没有 childId 线索 ⇒ **必须可见**（第一版就是静默 return null，
+        // 导致「为什么每次都在重跑」变成黑盒，直到真机日志里出现「回退重跑 PRD」才发现）。
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.reviseNoChild') })
+        return null
+      }
+      if (!canReviseViaChild({ subagents: runtime.subagents, sessionQuery: runtime.sessionQuery, childId })) {
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.reviseNoHost') })
+        return null
+      }
+      const instruction = [
+        '[REVISED — the user reviewed the PRD you wrote and asked for these changes; treat them as authoritative and do NOT re-ask]',
+        supplement,
+        '',
+        'Update the PRD you already wrote: change ONLY what these notes require and keep everything else intact.',
+        'Reply with the complete updated PRD (including the state block), exactly as you did the first time.',
+      ].join('\n')
+      const label = pForm.label
+      const startedAt = Date.now()
+      journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: label }) })
+      const diag: RevisionDiag = { base: 0, end: 0, waitedMs: 0, delivered: false }
+      const out = await revisePrdViaChild({
+        subagents: runtime.subagents,
+        sessionQuery: runtime.sessionQuery,
+        parent,
+        childId,
+        instruction,
+        signal: normalizeSignal(signal),
+        diag,
+        // **产物探针**（2026-10-26 真机 `tf-mvovb2gb-her9mv` 实锤）：redo 的实际形态是
+        // 「改 PRD.md + 写状态文件，聊天末条只给一段小结」⇒ 让 prd-revise 看得见「产物被改写过」：
+        // ① 产物变更算**进展**（child 正在写文件，不能当成死了 —— 那次 redo 实跑 377s，
+        //    固定 300s 墙钟让它在完工前 77s 放弃、白等 5 分钟、还让两份 PRD 并行跑 77s）；
+        // ② 回合结束但回复无正文时，可按「文件即产物」判完成。
+        probe: () => artifactFingerprint(journal, 'PRD.md'),
+        onWait: () => { /* 超时由返回值表达，这里不额外刷日志 */ },
+      })
+      if (!out) {
+        // **回落原因必须可区分**（2026-10-18 真机教训：第一版四种原因写在同一句话里，
+        // 等满 3 分钟回落后无从判断是「没启动」还是「没结束」）。
+        const secs = String(Math.round((diag.waitedMs || 0) / 1000))
+        const key = !diag.delivered
+          ? 'log.reviseNoDeliver'
+          : diag.end <= diag.base ? 'log.reviseNoFire' : 'log.reviseFallback'
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, key, { base: String(diag.base), end: String(diag.end), secs }) })
+        return null
+      }
+      // **交付物以文件为准**（文件即产物）：回复没正文、但产物被改写过 ⇒ 用 PRD.md 顶上。
+      // 真机 redo 形态：child 写 PRD.md + 状态文件，聊天末条只有 776 字「更新小结」。
+      const fileText = out.artifactChanged ? artifactText(journal, 'PRD.md') : null
+      const shown = (out.text && out.text.trim()) ? stripStateBlock(out.text) : (fileText || '')
+      if (!shown) {
+        // 既无回复正文、又读不到产物 ⇒ 仍算失败（**绝不返回空串**：空串会把 PRD 写空）⇒ 回落重跑
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.reviseNoDeliverable', { secs: String(Math.round((diag.waitedMs || 0) / 1000)) }) })
+        return null
+      }
+      // 阶段记录：续跑那一轮也要进 stages（断点定位/汇报/用量都按「每阶段一条」读）。
+      // 只在成功后 push —— 失败不留 running 残影。
+      const seq = (journal.stages.length ? Math.max(...journal.stages.map((s) => s.seq)) : 0) + 1
+      journal.stages.push({
+        seq, label, phase: 'prd', status: 'done', outcome: 'completed',
+        taskKey: null, taskIds: null, childId, startedAt, endedAt: Date.now(),
+        summary: clip(shown, 3000), usage: out.usage, handoff: null,
+        output: clip(shown, 50000),
+      })
+      journal.agentsStarted += 1
+      mergeStageState('prd', out.text, stateBlockRelPath(journal.id, 'prd'))
+      timeline['prd'] = shown
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, (out.text && out.text.trim()) ? 'log.prdRevisedViaChild' : 'log.prdRevisedViaArtifact', { n: String(shown.length) }) })
+      return { text: shown, cancelled: false, skipped: false }
+    }
+    // patch 档的「单点确认」是机械阶段（核对现状 + 给直改指令，不做架构判断）→ 降档省 token
+    const revisedPrdStage = await revisePrdViaChildIfPossible()
+    const prdStage = revisedPrdStage || await runSimpleStage('prd', pForm.fn(prdInput, root, journal.id, state), pForm.label, {
+      effort: options.mode === 'patch' ? MECHANICAL_STAGE_EFFORT : null,
+    })
+    if (prdStage.cancelled) return
+    prd = prdStage.text
+    // **本阶段用量累计**（2026-10-18）：节点卡展示的是「本阶段总用量」（输入未命中/输入命中/输出），
+    // 而 PRD 会被改写多轮（每轮一次续跑或重跑）。只写「这一轮」⇒ 前面几轮的 token 凭空消失 ⇒
+    // 与 dsh 子代理面板（全程累计）对不上（真机 tf-mvcoqg9e）。⇒ 每一轮都把历史累计并进来。
+    // 续跑与重跑两条路径在这里同一处理，避免只修一条造成新的口径分叉。
+    // **只在 PRD 真的跑过时累加**（2026-10-19 真机 tf-mve3fwma）：批准后的 resume 会**复用** PRD 产物
+    // （`runSimpleStage` 返回 `skipped:true`），那不是新的一轮 —— 累加会让首版被算两次。
+    // 上一版靠「重复护栏」拦住（本轮值恰好等于累计），但那是兜底，不是设计。
+    if (!prdStage.skipped) {
+      try {
+        const rec = (journal.stages || []).filter((s) => phaseKeyOf(s.phase) === 'prd').pop()
+        if (rec && rec.usage) {
+        // 先拷贝「本轮」再相加：`rec.usage` 可能与 `prdUsageAcc` 同源（见 redo 块的注释），
+        // 直接 `addUsage(acc, rec.usage)` 在同对象时会翻倍。
+          const round = { ...rec.usage }
+          const acc = journal.prdUsageAcc
+          // **重复护栏**（2026-10-18 真机 tf-mvdh065z 仍是 2 倍时加）：若「本轮」与「已有累计」逐项完全相同，
+          // 说明拿到的其实是累计值（不是本轮增量）—— 再相加必然翻倍。宁可这一轮不加，也不能让总数错。
+          const dup = !!acc && round.input === acc.input && round.cacheRead === acc.cacheRead
+          && round.output === acc.output && round.calls === acc.calls
+          if (dup) {
+            rec.usage = acc
+            journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.usageAccumDup', {
+              round: `${round.input}/${round.cacheRead}/${round.output}/${round.calls}`,
+            }) })
+          } else {
+            journal.prdUsageAcc = addUsage(acc, round)
+            rec.usage = journal.prdUsageAcc
+            // **逐轮留痕**：本轮多少、累计后多少 —— 没有这条，「为什么总数是 2 倍」只能靠猜
+            // （本地 mock 复现不出来，只有真机有）。
+            journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.usageAccum', {
+              round: `${round.input}/${round.cacheRead}/${round.output}/${round.calls}`,
+              acc: `${journal.prdUsageAcc.input}/${journal.prdUsageAcc.cacheRead}/${journal.prdUsageAcc.output}/${journal.prdUsageAcc.calls}`,
+            }) })
+          }
+        } else if (rec && journal.prdUsageAcc) {
+        // 本轮没有用量数据（mock/投影缺失）⇒ 至少把已有累计挂在节点上，不能显示成空
+          rec.usage = journal.prdUsageAcc
+        }
+      } catch (e) { /* 计量失败不阻断流水线 */ }
+    }
+    // **PRD 版本自增**（2026-10-17，issue #11）：只有**真正产出**了 PRD 才算一版 ——
+    // `runSimpleStage` 在 resume 复用存档产物时返回 `skipped:true`（PRD 没变，版本不动）。
+    // 为什么必须在这里而不是 `mergeStageState` 里：那条通道依赖模型写出 state 块
+    // （`extra` 兑现率实测 ~20%），没写就提前 `return` ⇒ 版本号会卡住 ⇒「改写后必须重新确认」失效。
+    if (!prdStage.skipped) journal.prdRev = (Number(journal.prdRev || 0) || 0) + 1
+    // PRD 收口（2026-09-16 需求澄清闸门 Phase 1）：把「假设 / 待澄清」段读出来落 journal，
+    // 让完成汇报能显式提示「本次基于以下假设启动」——今天的缺口是**假设完全不可见**
+    // （实测 12/12、39/39 份 PRD 都没这一段），验收人无从知道 agent 替他决定了什么。
+    // 同处还有**宿主契约调研硬门禁**（非 dsh 宿主 + 插件形态时必须调研目标宿主，2026-09-18）：
+    // 缺失 → 抛阶段失败走重试（附诊断），不放过"连开发对象是什么都没搞清"的 PRD。
+    // 注：此处不引 `prdR`——resume 分支没有它（PRD 是复用的产物），重试计数由 stageFailError 自行兜底。
+    if (notePrdAssumptions(journal, locale)) throw stageFailError('prd', {})
+
+    /* ── PRD 确认单（ADR-0011 ①）：PRD 后暂停，等用户批准 ── */
+    // **触发判据 = 内容**（2026-10-08 第 2 步，取代原来的 `needConfirm` 显式开关）：
+    // PRD 的 `openQuestions` 里存在 `kind: "taste"`（**主观品味项**：多种走法同样成立、没有客观对错，
+    // 取舍取决于「用户想要什么」）⇒ 暂停，让用户拍板后再往下建。
+    //
+    // 为什么不是「任何待澄清项都停」：**信息缺口**的代价由 `default` 兜住（模型研究过、有明显默认值），
+    // 而品味项猜错的代价是「成品不是我要的」—— 它表现为**流失/差评、不表现为 QA 打回**，用返工率量不出来
+    // （用户 2026-10-08 定调）；反过来，纯信息缺口也打断用户会白毁 §1「批量可靠交付」的无人值守卖点。
+    //
+    // 为什么旧的显式开关**必须消失**：`needConfirm` 是公开工具参数，而「用户不该感知这个变量」——
+    // 真实用户不知道它、工具描述里也没有任何「何时该设它」的触发条件 ⇒ 实践中没人设它 ⇒
+    // 就算白名单 bug 修好了，功能依然是死的（2026-10-08 用户实锤）。
+    // 输入一律取 **本轮 PRD 的快照**（`journal.prdSnapshot`），**不读累积 `state.openQuestions`**：
+    // state 跨 run 累积且条件式覆盖 ⇒ 本轮 PRD 没回写时，闸门/确认单会拿上一轮的待澄清项当本轮的
+    // （实锤 tf-mvaubzdz-5w606x：r5 按 r4 的 8 项旧待拍板暂停）。快照为空 = 本轮 PRD 确实没给（不暂停）。
+    const prdSnap = journal.prdSnapshot
+    const openQuestions = (prdSnap && prdSnap.openQuestions) || []
+    const tasteCount = openQuestions.filter((q) => q && q.kind === 'taste').length
+    // **契约未兑现必须可见**（§7③）：模型没给 `kind` ⇒ 归一成 `fact`（不暂停，见 `normalizeOpenQuestions`
+    // 的「不得有阻断权」论证），但这件事要留痕 + 发 warn，否则又是一次「静默空转、长期没人发现」。
+    const untagged = openQuestions.filter((q) => q && q.kindMissing).length
+    if (untagged > 0) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.openQuestionsUntagged', { n: untagged }) })
+    // 为什么还留一个内部位：自动判据是**内容驱动**的，但 A/B 对照与端到端验证需要能**强制**开关
+    // （`always` / `never`）。它是环境变量 `TEAMFLOW_CONFIRM`，**不进工具 schema**
+    // （MEMORY §6：临时/实验开关不进公共工具契约——description 每次进主会话上下文 ≈137 tok/会话）。
+    const confirmMode = options.confirmMode || 'auto'
+    // **触发判据 = 「这一版 PRD 还没被批过」× 「内容是否值得打断」**（2026-10-17 改，issue #11）。
+    // 旧写法是 `shouldConfirm && !resume` —— 把「确认单只做一轮」当成不变量，而真正可变的是
+    // **被批准的对象**：redo 重跑 PRD 走的正是 resume 路径 ⇒ 用户改完需求、PRD 变了，
+    // 确认单却不再出现 ⇒ 在**没看过新 PRD** 的情况下被推进开发（`tf-mv5xkem-imgt7v` 实锤：
+    // 模型自己都许诺 "a fresh confirm sheet will arrive"，没来；汇报文案 `report.confirmSheet`
+    // 也一直在许诺「会再出一份新确认单」—— 旧实现是**假承诺**）。
+    // 现判据见 `confirm.confirmDecision`：`approvedRev >= prdRev` ⇒ 已批过（不打断）；
+    // `prdRev > 1` ⇒ 改写后的版本**无条件**再看一次（不看 taste）；其余沿用内容驱动（有 taste 才停）。
+    const decision = confirmDecision({
+      mode: options.mode,
+      confirmMode,
+      tasteCount,
+      prdRev: journal.prdRev,
+      approvedRev: journal.confirmApprovedRev,
+    })
+    // 判据结论必须可审计（`approved`/`none` 是常态，不刷日志；`revised` 是新形态，值得留痕）。
+    if (decision.reason === 'revised') {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.confirmRevised', { rev: String(journal.prdRev || 1) }) })
+    }
+    // 为什么排除 `patch`：patch = 单 agent 直改（STAGE_POLICY），它的 PRD 是「单点确认」机械阶段，
+    // 不为它加一道人工闸门（ADR-0011 策略档矩阵：`patch` 恒 off）——该判断已在 `confirmDecision` 内。
+    if (decision.ask) {
+      // ⚠️ 目标/AC/待澄清项一律取**本轮快照**（不读 `state.product.summary` / `state.acIndex` /
+      // `state.openQuestions`）—— 它们是**项目级、跨 run 累积**的，本轮 PRD 没回写时会串上一轮
+      // （实锤 tf-mvaubzdz-5w606x：r5 的确认单显示了 r4 的目标与 12 条 AC）。快照缺 = 本轮没给 ⇒
+      // 交给确认单诚实显示「没抓到」（`confirm.noSummary` / `confirm.acMissing`），不拿旧内容冒充本轮。
+      // 上一版 PRD 的路径（只在改写后、且副本确实存在时给 —— 别给死链）
+      // ⚠️ 快照存放在**运行日志目录**（`logs/teamflow/<runId>/`），不是任务夹：任务夹是交付物，
+      // 旧版属过程产物（2026-10-18 用户实测：4 个 PRD 共 72KB 堆在交付目录里，还会被 git add）。
+      const snapDir = snapshotDir(journal)
+      const prevRev = Number(journal.prdRev) - 1
+      const prevAbs = snapDir && prevRev >= 1 ? `${snapDir}/PRD.v${prevRev}.md` : ''
+      const prevDocPath = prevAbs && existsSync(prevAbs) ? prevAbs : ''
+      const sheet = buildConfirmSheet({
+        summary: prdSnap ? prdSnap.summary : null,
+        acIndex: prdSnap ? prdSnap.acIndex : null,
+        // PRD 正文：`extra.acIndex` 缺失时由确认单兜底抽取（ADR-0011 B/C；实测 extra 兑现率 ~20%）。
+        // ⚠️ **必须是 PRD 文件、不是 `prd`（stage.output）**：真实 run 的 stage.output 是**交接摘要**
+        // （中位 2.5k 字符，AC 常被压成 `（AC-1）、…` / `| Accept | AC-1…AC-8 |`）——
+        // 同一抽取器两个源上的命中率实测 **PRD.md 19/21（90%）vs stage.output 21/87（24%）**。
+        // 与 `notePrdAssumptions` 同源（`PRD.md`，tech 档回落 `TECH-CHANGE.md`）；都读不到才退回 stage.output。
+        // 这个源**天然是按 run 的**（活文档落在本轮任务夹），所以兜底抽取不会串上一轮。
+        prdText: artifactText(journal, 'PRD.md') || artifactText(journal, 'TECH-CHANGE.md') || prd,
+        // 结构化待澄清项优先于文本抽取：PRD state 块的 openQuestions 带「为什么问 / 缺省怎么办」，
+        // 用户能直接挑默认值（`journal.assumptions` 只是 PRD 段落里抄下来的行）。
+        openQuestions: prdSnap ? prdSnap.openQuestions : null,
+        assumptions: journal.assumptions,
+        runDocs: journal.runDocs,
+        // 第几版（>1 时单子上会多一行「这是改写后的版本」+ 上一版路径）
+        prdRev: journal.prdRev,
+        prevDocPath,
+      })
+      // 审批面择路：**有登记的批准能力 ⇒ 试；否则（含抛错 / 返回空）⇒ 回落**停在 interrupted
+      // 交主线程兜底（用 `ask_user_question`，已在生产验证）。
+      // ⚠️ 为什么当前不登记批准能力：① ① 的裁决＝「保留自动 resume」⇒ 批准＝`resume`，
+      // 原生审批卡不是功能必需，只是「体验更顺」；② **P1 未验到客户端 UI**
+      // （只验到「请求进入转发队列」）；③ **`ask()` 带 carrier 且无客户端应答时会一直挂住**
+      // ⇒ 放进生产路径＝常态化「流水线卡死」风险。端到端验成前不接。
+      const approved = typeof confirmHook.ask === 'function'
+        ? await confirmHook.ask(journal, sheet).then((a) => (a == null ? null : String(a))).catch(() => null)
+        : null
+      if (approved === null) {
+        return abortForConfirmSheet(journal, sheet, locale)
+      }
+      journal.confirmAnswer = approved
+      // 审批面就地批准 ⇒ 这一版已放行（否则同一 run 内再走到确认单会重复打断）。
+      journal.confirmApprovedRev = Number(journal.prdRev || 1) || 1
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.confirmed') })
+    }
+
+    /* ── UI/UX 设计阶段（档位阶段集启用；lite+needDesign 也保留，显式要求的 UI 需求不被吞） ── */
+    let design = null
+    if (enabled('design')) {
+      const designStage = await runSimpleStage('design', designPrompt(prd, root, journal.id, state), t(locale, 'dev.design'))
+      if (designStage.cancelled) return
+      design = designStage.text
+    }
+
+    /* ── 架构规划阶段（档位阶段集启用：显式 needScaffold 才含，见 STAGE_POLICY） ── */
+    let scaffold = null
+    if (enabled('scaffold')) {
+      // 脚手架落地是机械阶段（按蓝图建骨架/搬文件，不做判据）→ 降档省 token
+      const scStage = await runSimpleStage('scaffold', scaffoldPrompt(requirement, design, root, journal.id, state), t(locale, 'dev.scaffold'), { effort: MECHANICAL_STAGE_EFFORT })
+      if (scStage.cancelled) return
+      scaffold = scStage.text
+    }
+
+    /* ── 技术方案/架构阶段（按档位阶段集；lite/tech 轻量产架构蓝图；patch 无 tech——单 agent 直改，见 STAGE_POLICY） ── */
+    let tech = null
+    if (enabled('tech')) {
+      const isHeavy = !options.lite && options.mode !== 'tech' && options.mode !== 'patch'
+      const techLabel = isHeavy ? t(locale, 'dev.techHeavy') : t(locale, 'dev.techLite')
+      const techStage = await runSimpleStage(
+        'tech',
+        isHeavy
+          ? techPrompt(prd, design, scaffold, tasks, root, journal.id, state)
+          : architectPrompt(prd, root, journal.id, state),
+        techLabel,
+        // enterLabel：轻量档的进阶段文案是「架构蓝图」而非「技术方案」。
+        { enterLabel: isHeavy ? phaseLabel(locale, 'tech') : t(locale, 'stageLabel.blueprint') },
+      )
+      if (techStage.cancelled) return
+      tech = techStage.text
+      // 提取架构蓝图 JSON → 注入后续阶段（dev 继承蓝图）并用于自动拆任务。
+      // ⚠️ 2026-09-26 修复：原先这段只在「本次真跑」分支里（抄写的 else 块内）→ **resume 复用 tech 产物时
+      // 不跑蓝图提取**，`state.__runCtx.blueprint` 不注入 → dev 继承不到蓝图，退化成单任务整体开发
+      // （r13 同款症状）。现在 resume 复用时也照样提取（存档 tech 文本里没有蓝图块 → 解析为 null，无副作用）。
+      // 优先取 stage 回复输出；模型可能把蓝图写进任务夹 TECHNICAL.md（ADR-0008 收口约定）——回退读文件提取，绝不静默丢蓝图（实锤 r13：蓝图只在文档里，dev 退化为单任务整体开发、M2 拆卡失效）。
+      // ⚠️ 2026-10-09：判据从 `bd.summary === undefined` 改为「有无实质内容」。前者是**死条件**——
+      // `extractBlueprint` 里 `summary` 恒为 string（`typeof parsed.summary === 'string' ? parsed.summary : ''`），
+      // 永不 undefined ⇒ 两处判据实际退化成 `!bd` / `bd` ⇒ **语法合法但内容空的块**（`{}`、只有 summary 无
+      // modules/tasks）会被当成解析成功：既不回退读文件、也不告警，dev 静默退化成整体开发。
+      // 现判据＝「有 tasks 或 modules 才算可用」，不满足即走回退，回退也不满足才告警。
+      const bdUsable = (x: Blueprint | null): x is Blueprint =>
+        !!x && (((x.tasks || []) as unknown[]).length > 0 || Object.keys(x.modules || {}).length > 0)
+      // `<!-- blueprint`（不含 `/`）同时覆盖新形态（open 不带 `-->`）与旧形态（自闭合注释）。
+      const hasBlueprintMark = (s: unknown) => /<!--\s*blueprint/.test(String(s == null ? '' : s))
+      const bdBase = journal.workspacePath || root
+      // 任何一条通道上出现过蓝图标记，最终没能用上就必须可见（否则静默丢并行度）
+      let sawMark = hasBlueprintMark(tech)
+      // 原文落档路径（② 分支解析失败时填）—— 末尾统一发**一条** warn，避免与 `sawMark` 兜底重复
+      let archivedPath = ''
+      // ① 回复正文（旧主通道；也是文件通道失效时的回落）
+      // `bdDiag`：三条通道共用一个诊断出口——「非法转义被自动修复过」必须可见（2026-10-26 实锤）。
+      const bdDiag: BlueprintRepairDiag = {}
+      let bd = extractBlueprint(tech, null, bdDiag)
+      // ② **独立文件**（2026-10-09 新主通道，与 state 块同构）：`logs/teamflow/<runId>/blueprint.json`。
+      //    纯中转 —— 原文**无条件落档**到 `$DSH_HOME` 供人工复查，项目内那份随后读完即删，
+      //    所以项目内的停留窗口从「整个 run」缩到「几秒」，可续跑终态（不做归档）也不再残留。
+      const bpAbs = bdBase ? `${bdBase}/${blueprintRelPath(journal.id)}` : null
+      const bpExists = !!bpAbs && existsSync(bpAbs)
+      if (bpExists) {
+        let rawBp: string | null = null
+        try { rawBp = readFileSync(bpAbs, 'utf8') } catch (e) { /* 读不出 ⇒ 当它没有 */ }
+        if (rawBp) {
+          // 无条件落档：架构拆解生效后「审蓝图 = 审 dev 拆卡质量」，原文必须可复查
+          // （此前三处去向都不留原文：render 只在 prompt、journal 只存 modules/tasks、中转文件读完即删）。
+          const archived = saveBlueprintArchive(String(journal.workspace || 'default'), journal.id, rawBp)
+          if (archived) journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintArchived', { path: archived }) })
+          if (!bdUsable(bd)) {
+            const fromChannel = blueprintFromText(rawBp, null, bdDiag)
+            if (bdUsable(fromChannel)) {
+              bd = fromChannel
+              journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintFromChannel') })
+            } else {
+              sawMark = true // 文件写了却不可用 ⇒ 必须可见（由末尾统一告警，避免两条重复 warn）
+              if (archived) archivedPath = archived
+            }
+          }
+        }
+      }
+      // ⚠️ 清理**必须与「通道是否命中」无关**：模型可能「既回显蓝图、又写文件」（违反契约）——
+      // 那时 ① 命中、上面那块整段不解析，若把 unlink 写在里面就会**漏删**，
+      // 文件一直留在项目里直到归档；而可续跑终态（failed/cancelled/interrupted）**根本不归档** ⇒ 永久残留。
+      if (bpExists) { try { unlinkSync(bpAbs) } catch (e) { /* 清理尽力而为 */ } }
+      // ③ TECHNICAL.md 末尾的块（历史通道，兼容存量 run 与模型旧习惯）
+      if (!bdUsable(bd)) {
+        try {
+          const techFile = journal.runDocs && journal.workspacePath
+            ? `${journal.workspacePath}/${journal.runDocs}/TECHNICAL.md`
+            : null
+          if (techFile && existsSync(techFile)) {
+            const raw = readFileSync(techFile, 'utf8')
+            if (hasBlueprintMark(raw)) sawMark = true
+            const fromFile = extractBlueprint(raw, null, bdDiag)
+            if (bdUsable(fromFile)) {
+              bd = fromFile
+              journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintFromFile') })
+            }
+          }
+        } catch (e) { /* 回退失败走既有告警 */ }
+      }
+      // 蓝图 JSON 里出现过**非法转义**（模型把正则原样写进 spec/api，如 `/\.md$/i`）⇒ 已自动加倍修复。
+      // 结果是对的（拆卡保住），但**契约违约必须可见**——否则 prompt 的写法问题会长期隐身
+      // （2026-10-26 实锤 tf-mvp5tdie-ma36fk：整份 6.2KB 蓝图被 JSON.parse 拒绝 ⇒ dev 退化单任务 87 calls）。
+      if (bdDiag.repairedEscapes) {
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.blueprintRepairedEscapes') })
+      }
+      if (bdUsable(bd)) {
+        try {
+          state.__runCtx = state.__runCtx || {}
+          state.__runCtx.blueprint = bd.render
+          journal.blueprint = { modules: bd.modules, tasks: bd.tasks }
+        } catch (e) { /* 蓝图注入失败不影响 */ }
+      } else if (sawMark) {
+        // 蓝图标记出现过但没用上（解析失败 / 内容为空）：显式告警（否则静默回退整体开发，并行度丢失难排查）。
+        // 落档成功时把路径带上，省得再去翻轨迹。
+        journal.logs.push({ t: Date.now(), level: 'warn', message: archivedPath
+          ? t(locale, 'log.blueprintParseFailArchived', { path: archivedPath })
+          : t(locale, 'log.blueprintParseFail') })
+      }
+    }
+
+    /**
+     * dev / qa / acceptance 三块的实现已整体外移到 `./dev.ts` / `./qa.ts` / `./acceptance.ts`
+     * （函数体按行切片搬运、一字未改），这里只保留「执行顺序 + 阶段间产物交接」。
+     * 依赖方向是 **pipeline → 三兄弟单向**：它们用 `import type` 反向引用本文件的 PipelineCtx，
+     * 运行时无回边（dev 侧的 DevTaskDef / buildDevTaskDefs 也为此一并迁出）。
+     */
+    const ctx: PipelineCtx = {
+      journal, parent, requirement, options, signal, resume,
+      locale, scopeKey, root, tasks, maxConcurrency, installCtx,
+      timeline, state,
+      // prd / tech / design 已由前面的同形阶段产出并写定；qa / qaBlocked 由 QA 阶段回填给验收阶段
+      prd, tech, design, qa: null, qaBlocked: false,
+      enabled, resumed, logSkip, stageFailError,
+      mergeStageState, noteVerifyEvidence, stageTextOf,
+    }
+    const devStage = await runDevPhase(ctx)
+    if (devStage.cancelled) return
+    const qaStage = await runQaPhase(ctx)
+    if (qaStage.cancelled) return
+    // qa / qaBlocked 交接给验收阶段
+    ctx.qa = qaStage.qa
+    ctx.qaBlocked = qaStage.qaBlocked
+    // 调用点必须留在**大 try 之内**（原代码就在 try 里，异常要落到下面的 catch 做终态归一）
+    await runAcceptancePhase(ctx)
+  } catch (e) {
+    if (journal.cancelled) {
+      journal.status = 'cancelled'
+      journal.error = t(locale, 'err.cancelled')
+    } else {
+      journal.status = 'failed'
+      journal.error = String((e && e.message) || e)
+    }
+  } finally {
+    /* 终态归一（2026-09-16 实测修正，勿删）：取消若走 `if (journal.cancelled) return` 这条**正常返回**路径，
+     * 唯一把 status 落成 cancelled 的 catch 块不会执行 → run 卡在 `status='running'` 且 `cancelled=true`：
+     * ① 工作台永远显示「运行中」+ 中断按钮（再按取消也无效——门禁只认 running、恰好放行，但已无在飞子代理可停），
+     *    界面同时给出「↻ 从断点重跑」→ 点一次就重跑一轮 dev → 再取消 → 循环（实测 01:59 / 02:03 两轮）；
+     * ② 完成汇报按 running 渲染，出现「状态：running」却 cancelled=true 的自相矛盾（主线程据此怀疑 host 在自动续跑）；
+     * ③ 紧随其后的归档与孤儿收口（`journal.status === 'cancelled'` 分支）也全被跳过。
+     * 故在此统一归一：仍是 running 且已置 cancelled → 落 cancelled（throw 路径已置 cancelled 时无副作用；completed 不受影响）。 */
+    if (journal.cancelled && journal.status === 'running') {
+      journal.status = 'cancelled'
+      journal.error = journal.error || t(locale, 'err.cancelled')
+    }
+    journal.endedAt = Date.now()
+    inFlight.delete(journal.id)
+    activeProducts.delete(scopeKey) // 释放工作区级并发锁
+    // 统一收口提交兜底（ADR-2026-08-27 升级：一个 run 一个 commit，取代子代理零碎提交）：
+    // try 内验收通过后已提交过（幂等：无改动时 commit 跳过）；此处兜底异常路径。
+    // 只有「验收通过」才提交；failed/cancelled/打回超限 needs-human 不提交——工作区保留，人工处理或 resume 修复后再收口。
+    // 结构上消灭文档漏提交（实测 r16 漏 QA-REPORT/ACCEPTANCE；整树 add 必然全带），
+    // 提交面 = 工作区整树**减去插件自有日志** `logs/teamflow/`：`.gitignore` 幂等补写（卫生 + 整树 add 的
+    // 唯一依赖）+ `tfUnstageArgs()` 索引兜底（保证）——**不再用负 pathspec 点名自有日志**
+    // （2026-09-15 实锤：点名被忽略路径 → `git add` 退出 1 → 收口提交被静默短路 4 天，见 sanity.tfAddArgs）。
+    // **出口遵从入口决策**（2026-09-17 改动存档两态模型）：gitMode='none'（用户明确选择不用版本控制）
+    // → **根本不尝试提交**，汇报/日志写"未存档（用户选择）"——消除旧行为"提交失败（忽略）"的含糊措辞
+    // （实测 dddd r1：run completed 但产物从未进版本库，用户全程不知道）。危险路径同样跳过
+    // （防用户自己曾在盘根/家目录 init 过仓库 → git add -A 全盘扫描）。
+    const vcsState = (() => { try { return loadState(scopeKey).gitMode } catch (e) { return undefined } })()
+    const dangerousWs = journal.workspacePath && isDangerousVcsRoot(journal.workspacePath, homedir())
+    if (journal.workspacePath && vcsState === 'none') {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.noVcsByChoice') })
+    } else if (journal.workspacePath && dangerousWs) {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.noVcsDangerous', { path: journal.workspacePath }) })
+    } else if (journal.workspacePath && journal.status === 'completed' && !journal.humanIntervention) {
+      try {
+        const reqHead = String(journal.requirement || '').replace(/\s+/g, ' ').trim().slice(0, 80)
+        ensureLogGitignore(journal.workspacePath, journal, locale) // 自有日志先写进 .gitignore（幂等）
+        // 交付文档入库（2026-09-26 改：尊重目标仓库的 .gitignore，不再 -f 强加——用户在 .gitignore 里
+        // 写「docs/teamflow/ 勿提交」就是不想让它进仓库，插件无权绕过；忽略时文件仍在工作区，交付物不丢）。
+        const docPlan = tfDocAddPlan([journal.runDocs, `${TF_DOCS_DIR}/memory.md`].filter((p) => existsSync(`${journal.workspacePath}/${p}`)), journal.workspacePath)
+        if (docPlan.ignored.length) {
+          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.docsIgnored', { list: docPlan.ignored.join(', ') }) })
+        }
+        if (docPlan.args.length) {
+          // 结果必须可见（2026-09-26）：未知状态下我们照常尝试入库，git 若以「被忽略」拒绝，
+          // 这里转述 git 的原话并降级为 warn——绝不能在 add 失败时仍写「已入库」。
+          const docAdd = gitRun(journal.workspacePath, docPlan.args)
+          const list = docPlan.args.slice(2).join(', ')
+          if (docAdd.ok) journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.docsAdded', { list }) })
+          else journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.docsAddFail', { list, msg: docAdd.error || 'git add failed' }) })
+        }
+        const addR = gitRun(journal.workspacePath, tfAddArgs())
+        noteLogsUnstaged(journal, gitRun(journal.workspacePath, tfUnstageArgs()), locale) // 索引兜底（幂等）
+        // ③（2026-09-15 修复）：add 的结果**不再决定要不要提交**——旧写法 `add === null ? null : git commit(...)`
+        // 让一次 add 失败（索引其实已写好）把整个提交短路掉，且三条日志一条都不写。现在**永远尝试提交**，
+        // 由提交结果决定日志级别；add 的错误与提交错误一并写进 commitFail，故障不再不可见。
+        // 「无事可做」优先用状态判定（确定性，不依赖 git 措辞）：索引为空 = 这次没有内容要提交。
+        const pend = gitRun(journal.workspacePath, ['status', '--porcelain'])
+        if (pend.ok && pend.out) {
+          // 提交面可见（2026-09-26 方案 C，只加可见性、不动行为）：收口提交是整树 `add -A -- .`，
+          // 工作区里**未被 .gitignore 忽略**的其它未提交改动（WIP、已跟踪文件的修改）会被一并带入，
+          // 用户事先无从知道 → 提交前如实列出清单（被忽略的文件进不了索引，本就不在其中）。
+          const lines = pend.out.split('\n').filter(Boolean)
+          const list =
+            lines.slice(0, COMMIT_SCOPE_PREVIEW).map((l) => l.slice(3).replace(/^"|"$/g, '')).join(', ') +
+            (lines.length > COMMIT_SCOPE_PREVIEW ? ' …' : '')
+          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.commitScope', { n: lines.length, list }) })
+        }
+        if (pend.ok && pend.out === '') {
+          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.commitSkip') })
+        } else {
+          const cmR = gitRun(journal.workspacePath, ['commit', '-m', t(locale, 'commit.final', { req: reqHead, id: journal.id, docs: journal.runDocs ? t(locale, 'commit.finalDocs', { docs: journal.runDocs }) : '' })])
+          if (cmR.ok) {
+            journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.commitDone') })
+          } else if (GIT_NOTHING_TO_COMMIT.test(cmR.error || '')) {
+            // 兜底分类：索引非空、但 git 仍说没东西可提交（例如只剩「未跟踪且未纳入」的文件）
+            journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.commitSkip') })
+          } else {
+            journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.commitFail', { msg: gitFailDetail(addR, cmR) }) })
+          }
+        }
+      } catch (e) { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.commitFail', { msg: String((e && e.message) || e) }) }) }
+    } else if (journal.workspacePath && (vcsState === 'none' || dangerousWs) && journal.status === 'completed') {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.notCommitted', { docs: journal.runDocs || '' }) })
+    } else if (journal.workspacePath && journal.runDocs && (journal.status === 'failed' || journal.status === 'cancelled' || journal.status === 'interrupted')) {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.notCommitted', { docs: journal.runDocs }) })
+    }
+    // 日志生命周期（B 方案 2026-09-15）：暂存日志归档离开项目 → $DSH_HOME/teamflow/<workspace>/logs/<runId>/，
+    // 项目内 **只在 run 进行期间** 存在（子代理沙箱只允许写工作区，见 core/workspace/runlogs.ts 的实测依据）。
+    // 放在收口提交之后：run 期间的 pathspec 排除 + .gitignore 补写仍覆盖「用户自己在 run 中提交」的窗口。
+    //
+    // ⚠️ 但**可续跑的终态不归档**（2026-09-30 实锤 obs-r5）：failed / cancelled / interrupted 都能 resume
+    //（本文件下方孤儿收尾处也写着「cancelled 保留 resume 入口」），而 resume 后的 dev 补跑与 QA 复验
+    // 要靠上一轮留在 logs/teamflow/<runId>/scripts/ 的 checker 当**回归契约**（qaPrompt 明令
+    // "FIRST re-run every probe/checker the previous rounds left in ..."）—— 归档把目录搬出项目后，
+    // resume 就找不到契约了。实锤：tf-mumywrmg-mwcwdf 在 failed 后 logs/ 整个被搬走，T3 补跑时
+    // 上一轮 33/33 的检查器已不在项目内。
+    // 残留兜底：用户放弃 resume 时，下次任何 run 起跑的 sweepWorkspaceLogs 会把这个目录归档走
+    //（它跳过正在运行的 run，故不会误伤 resume 本身）。
+    const resumableTerminal = journal.status === 'failed' || journal.status === 'cancelled' || journal.status === 'interrupted'
+    if (resumableTerminal) {
+      // 注：用局部变量转一手 —— smoke 有一条粗糙的全局断言会命中「直接内联终态字段」的写法，
+      // 而它的本意只是防 meta.json 回写终态字段（避免提交后再脏 / 快照过时）。
+      const st = journal.status
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.logsKeptForResume', { status: st }) })
+    } else {
+      try { archiveRunLogs(journal, locale) } catch (e) { /* 归档尽力而为，不影响收尾 */ }
+    }
+    journal.result = { requirement, options: sanitizeSnapOptions(options), timeline: summarizeTimeline(timeline) }
+    persistJournal(journal) // 终态 checkpoint（含日志刷新；阶段全文保留在磁盘+内存，供详情抽屉/断点续跑读取）
+    // 内存注册表有界化（2026-09-26）：终态已确认落盘（磁盘权威）→ 此刻 prune 是唯一安全时机，
+    // 只淘汰终态且未被 inFlight/activeProducts 引用的 run；被淘汰的由 context.getRun 读磁盘回读。
+    try { pruneRuns() } catch (e) { /* 淘汰尽力而为，不影响收尾 */ }
+    // 孤儿收尾：run 异常/取消时把未到终态的 req/task 落成可见状态（中断不再永远 in-progress；cancelled 保留 resume 入口）
+    try {
+      const store = storeFor(scopeKey)
+      if (journal.status === 'failed') {
+        const req = store.find('req', journal.reqId)
+        if (req && (req.status === 'in-progress' || req.status === 'created')) {
+          req.humanIntervention = true
+          store.pushEvent(req, req.status, 'needs-human', t(locale, 'event.abnormalExit', { err: String(journal.error || '').slice(0, 120) }))
+          req.status = 'needs-human'
+        }
+        const task = journal.taskId ? store.find('task', journal.taskId) : null
+        if (task && (task.status === 'running' || task.status === 'pending')) {
+          store.pushEvent(task, task.status, 'needs-human', t(locale, 'event.abnormalInterrupt'))
+          task.status = 'needs-human'
+        }
+        store.persist()
+      } else if (journal.status === 'cancelled') {
+        const req = store.find('req', journal.reqId)
+        if (req && req.status === 'in-progress') store.pushEvent(req, req.status, 'in-progress', t(locale, 'event.cancelled'))
+        if (req) store.persist()
+      }
+    } catch (e) { /* 孤儿收尾尽力而为，不影响主收尾 */ }
+    // ADR-0008：meta.json 是任务夹「静态标识卡」——reqId/runId/title/mode/createdAt 建夹即定，
+    // 不再终态回写（历史：host 回写 status 导致 ①终态永远晚于 agent 提交 → 提交后再脏、②
+    // run 误判时 meta 快照过时）。status/endedAt 权威在 runs/<runId>.json（journal），目录
+    // 扫描聚合时以 journal 为准，勿从 meta 读动态字段。
+    noteRun(journal.workspace || 'default', { id: journal.id, requirement: journal.requirement, verdict: journal.status, runDocs: journal.runDocs })
+    deliverCompletion(journal, parent) // 汇总投递回发起会话（主线程）
+    console.log(`[teamflow] 运行结束 ${journal.id} → ${journal.status}（工作区 ${scopeKey}）`)
+  }
+}
+
+/** 结果 timeline 摘要化（内存只留 2k 级摘要，全文在磁盘 journal/backlog）。 */
+export function summarizeTimeline(timeline) {
+  const out = {}
+  for (const key of Object.keys(timeline || {})) {
+    const val = timeline[key]
+    // ⚠️ 先剥机器契约块再截断（2026-10-08）：state 块随阶段原文进 timeline ⇒ 时间线上也会摊出 JSON。
+    if (Array.isArray(val)) {
+      out[key] = val.map((x) => (x && typeof x === 'object'
+        ? { title: x.title, failed: !!x.failed, output: clip(stripStateBlock(x.output || ''), 2000) }
+        : clip(stripStateBlock(x), 2000)))
+    } else {
+      out[key] = clip(stripStateBlock(val), 2000)
+    }
+  }
+  return out
+}
+
+/** 启动流水线：预检 + 建 journal + 异步 executePipeline（按发起会话的工作区绑 scope）。 */
+export function startPipeline(agent: unknown, requirement: string, options: PipelineOptions, signal: unknown): string {
+  const locale = ambientLocale()
+  // **宿主 API 预检（2026-10-15 / issue #20）**：放在 provider 检查之前——「API 不匹配」比「注册表为空」
+  // 更根本，且旧宿主上两个条件同时不满足（alpha.1 有 list 但没有 startActivation）。不这样做的话，
+  // 故障会在第一个阶段以 `TypeError: startActivation is not a function` 出现，与根因隔一层。
+  if (!hasStartActivation()) throw new Error(t(locale, 'run.hostTooOld'))
+  const provider = providerName()
+  if (!provider) throw new Error(t(locale, 'run.noProvider'))
+  const ws = workspaceScopeOf(agent)
+  const productKey = ws.projectKey
+  const active = activeProducts.get(productKey)
+  if (active) throw new Error(t(locale, 'run.workspaceBusyHint', { ws: ws.path || ws.projectKey, id: active }))
+  // 分支策略决策（ADR-2026-08-27 基调）：已在 teamflow_start 层完成（needs-decision → 用户选择 → 带参重发），此处不再阻断。
+  // mode：显式指定 / lite 兼容 / 否则留空 → 由 executePipeline 自动分诊（对调用方透明）
+  const mode = normalizeMode(options.mode) ?? (options.lite ? 'lite' : undefined)
+  // 发起会话 id：阶段子代理的直接 parent（跨会话跳转子代理时据此判定/兜底）
+  const ownerSession = ((agent as { session?: { id?: string } } | null | undefined)?.session?.id) || null
+  const journal = {
+    id: `tf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    name: 'teamflow-pipeline', status: 'pending',
+    requirement: clip(requirement, 8000),
+    workspace: ws.projectKey,
+    workspacePath: ws.path,
+    ownerSession,
+    // run 级语言快照（AC-2）：起跑解析一次并随 journal 落盘（resume/重启读回，不重解析）
+    locale,
+    product: normalizeRoot(options.productRoot),
+    options: {
+      needDesign: !!options.needDesign,
+      needScaffold: !!options.needScaffold,
+      lite: !!options.lite,
+      craft: options.craft !== false,
+      mode,
+      teamId: options.teamId || undefined,
+      // ⚠️ **这个白名单是 `PipelineOptions` 的「可达性关口」**：`execOptions = Object.assign({},
+      // journal.options, {…具名内部字段…})` ⇒ 白名单漏掉一个字段，executePipeline 就**永远收不到它**。
+      // 而行为测试（`test/orchestration.test.js`）是**直调 executePipeline**、绕过本白名单 ⇒
+      // 功能静默失效时测试照样全绿（2026-10-07 实锤：`needConfirm` 与 `clarifyStrength` 两个新字段
+      // 都漏在这里，确认单与澄清强度**在真实 `teamflow_start` 路径下根本不生效**）。
+      // **门禁**：`test/smoke.js` 解析 `PipelineOptions` 接口键，断言每个键要么在本白名单、要么在
+      // `execOptions` 的具名补充里（新增字段漏搬就红）。
+      confirmMode: options.confirmMode || undefined,
+      tasks: normalizeTasks(options.tasks),
+      productRoot: normalizeRoot(options.productRoot),
+      maxConcurrency: normalizeConcurrency(options.maxConcurrency),
+      branchPolicy: options.branchPolicy || undefined,
+      branchName: options.branchName || undefined,
+      preAction: options.preAction || undefined,
+      commitMessage: options.commitMessage || undefined,
+    },
+    startedAt: null, endedAt: null, agentsStarted: 0,
+    stages: [], logs: [], result: null, error: null, cancelled: false, humanIntervention: false,
+    interrupted: false, interruptedAt: null, supersededBy: null,
+  }
+  runs.set(journal.id, journal)
+  if (runs.size > 30) {
+    const firstKey = runs.keys().next().value
+    if (firstKey !== undefined) runs.delete(firstKey)
+  }
+  persistJournal(journal) // 首次 checkpoint（断点续跑基座）
+  // ⚠️ 必须把**调用方的 options 里那几个内部字段**显式带到 executePipeline：`journal.options` 是**白名单字面量**
+  // （审计面只留档位/团队/并发等），当初直接传它导致 `requirementSupplement` 与 `__triage` 被静默丢弃——
+  // 澄清结论进不了 PRD（`[CLARIFIED]` 空转）、`journal.triage` 永远为空（shadow 埋点失效）。
+  // 实锤：2026-09-16 run tf-mu34afd2-wcjaw1（模型传了 1144 字符澄清结论，落盘 options 里却完全没有该键）。
+  // **同型第三次**（2026-09-17 probe-clock 实锤）：分支策略字段 `branchPolicy/branchName/preAction/commitMessage`
+  // 也没在白名单里 → 用户选了"开启改动存档"（preAction='init'）但 executePipeline 收到 undefined →
+  // git init 静默没执行（journal 里只有 sanity 那条 warn，没有任何 init 日志）。门禁：smoke「内部字段必须
+  // 出现在 execOptions」断言（这类字段再加时漏一个就会红）。
+  const execOptions = Object.assign({}, journal.options, {
+    requirementSupplement: options.requirementSupplement || null,
+    __triage: (options as { __triage?: unknown }).__triage,
+    __triageError: (options as { __triageError?: unknown }).__triageError,
+    branchPolicy: (options as PipelineOptions).branchPolicy,
+    branchName: (options as PipelineOptions).branchName,
+    preAction: (options as PipelineOptions).preAction,
+    commitMessage: (options as PipelineOptions).commitMessage,
+  })
+  executePipeline(journal, agent, journal.requirement, execOptions, signal)
+  return journal.id
+}
+
+/* 取消运行 `cancelRun` 在 core/agent/context.ts（只操作 runs/inFlight，且无宿主私有依赖 → 可被 tests 直接加载）。 */
+
+/** 从断点续跑：跳过已完成阶段，从第一个未完成阶段重跑（service 与工具共用）。 */
+/**
+ * 旧版 PRD 快照的目录 = 运行日志目录 `logs/teamflow/<runId>`（**不是任务夹**）。
+ *
+ * 为什么不能放任务夹：任务夹是「本需求产物收口」，会被 `git add` 提交 ⇒ 改 3 版就在仓库里堆
+ * 4 个 PRD 文件（真机 tf-mvcoqg9e：共 72KB）。日志目录已 gitignore、run 结束随日志归档到
+ * `$DSH_HOME`（keep-whitelist 含 `.md` ⇒ 旧版不会丢），项目里只留当前版。
+ */
+function snapshotDir(j: JournalRecord): string {
+  const root = stagingRoot(j.workspacePath)
+  return root && j.id ? `${root}/${String(j.id)}` : ''
+}
+
+export function resumeRun(
+  runId: string | null | undefined,
+  sessionId: string | null | undefined,
+  /** 续跑时**补录的权威输入**（`teamflow_resume` 的 `supplement`；ADR-0011 待拍板 ④）。
+   *  PRD 是唯一消费点（`prdInput` 拼 `[CLARIFIED]` 段）⇒ 只在断点 ≤ prd 时接受。 */
+  supplement?: string | null,
+  /** 续跑**发起方**：`tool` = 模型调用（需人工批准证据），`ui` = 人在界面点按钮（本身即人工动作）。
+   *  见下方「确认单必须由人批准」那道闸。 */
+  origin: 'tool' | 'ui' = 'tool',
+): { ok: boolean; runId?: string; resumedFrom?: string; error?: string } {
+  const id = typeof runId === 'string' ? runId : null
+  if (!id) return { ok: false, error: t(ambientLocale(), 'run.missingId') }
+  // 从磁盘加载完整 journal（内存版已裁剪 output，磁盘保留阶段产物全文）。
+  // loadJournalById 双路径（per-project + 全局）——2026-09-26 修正：旧读法 journalFile(id) 只查全局
+  // runs/，per-project 新格式 journal 一直靠启动 loadJournals 的内存兜底才续得上（隐性缺口）。
+  let j = null
+  try {
+    const disk = loadJournalById(id) as JournalRecord | null
+    if (disk && typeof disk === 'object' && disk.id === id) j = disk
+  } catch (e) { /* 落到内存版 */ }
+  if (!j) j = runs.get(id)
+  if (!j) return { ok: false, error: t(ambientLocale(), 'run.notFound', { id }) }
+  // 历史 journal 兼容（升级前无 locale 字段）：补写一次快照（AC-2：resume 不重解析已有值）。
+  // QA-1：历史 run 一律 zh（与 core/locale.ts:runLocaleOf 缺省口径一致）——绝不按当前界面语言补写。
+  if (!parseLocale(j.locale)) j.locale = localeForMissingSnapshot(true)
+  const locale = runLocaleOf(j)
+  if (j.status !== 'interrupted' && j.status !== 'failed' && j.status !== 'cancelled') {
+    return { ok: false, error: t(locale, 'run.badStatus', { status: j.status }) }
+  }
+  // 全阶段已 done 的 failed/cancelled：没有断点可续（阶段全绿≠run 成功，如「需求与现状不符」拦截单），
+  // 续跑只会兜底重跑验收、循环失败——硬拒绝，引导起新流水线（实锤 tf-mt8kxyef-29ruxt）。
+  // ⚠️ 判据**不得**用「所有**已记录**的阶段都 done」——那是「全流程跑完」的**伪代理**，只在「跑满全程」
+  // 时与真判据重合。**中途暂停**（PRD 确认单，ADR-0011 ①）会让它失效：那时 `stages` 只有 `[prd done]`，
+  // `.every(done)` 恒真 ⇒ 断点被误判成「无」、续跑当场拒绝，而 `interruptedPhaseOf` 明明返回 `design`。
+  // 2026-10-07 实测 tf-muy63zgy-octoqj：确认单如期暂停（P0 修复生效），却因这条守卫**完全无法续跑**。
+  // 真判据 = **断点落在最后一段（acceptance）且该段也已 done** ⇒ 那才是「确实没活可干」。
+  // （acceptance 只是断点、自身未 done 时不得拒绝——那是合法续跑。）
+  const phaseAtEntry = interruptedPhaseOf(j)
+  if (phaseAtEntry === 'acceptance' && (j.stages || []).some((s) => phaseKeyOf(s.phase) === 'acceptance' && s.status === 'done')) {
+    return { ok: false, error: t(locale, 'run.noBreakpoint', { status: j.status }) }
+  }
+  // 补录校验放在**取 agent 之前**：纯参数校验不该有副作用，也不该先占用并发锁。
+  // 断点晚于 prd 时本轮不会有任何阶段读 supplement ⇒ 直接拒绝。**不许静默吞掉**——那正是本仓反复踩的
+  // 「静默丢弃」（§7 工具返回体被 schema 吃掉 / §16 白名单吃掉内部字段，同类第四次）。
+  //
+  // ⚠️ **2026-10-08 加一个例外：回退重跑 PRD**。PRD 确认单暂停时 `stages` **只有 `[prd done]`**
+  // ⇒ 「带上补充说明重跑 PRD」的**作废面为零**（下游一个阶段都没跑过）。
+  // 为什么必须有这个例外：确认单的「我要调整几项」分支原本**无处可答** —— 断点是 `design`（晚于 PRD）
+  // ⇒ `supplement` 在这里被拒 ⇒ 用户选完只能起新 run、刚跑完的 PRD 作废。用户 2026-10-08 实锤：
+  // 那条 AUQ 选项的文案许诺「我再更新确认单后开工」，而**没有任何机制能兑现它** —— 假承诺比「不能改」更糟。
+  //
+  // 判据刻意落在**内容**上（PRD 之后是否真跑过阶段），不是「是不是确认单暂停」：
+  // 这样任何未来出现的「恰好停在 PRD 之后」形态都自动获得同一条能力，而安全理由（作废面为零）恒成立。
+  const supp = typeof supplement === 'string' && supplement.trim() ? supplement.trim() : null
+  const afterPrd = PHASE_ORDER.indexOf(phaseAtEntry) > PHASE_ORDER.indexOf('prd')
+  const prdOnly = !(j.stages || []).some((s) => phaseKeyOf(s.phase) !== 'prd')
+  const redoPrd = !!supp && afterPrd && prdOnly
+  if (supp && afterPrd && !redoPrd) {
+    return { ok: false, error: t(locale, 'run.supplementTooLate', { phase: phaseLabel(locale, phaseAtEntry) }) }
+  }
+  // ⚠️ **改写次数不设上限**（2026-10-17，用户否掉第一版的 `PRD_REV_MAX = 2`）：
+  // `redoPrd` 的前提是 `prdOnly`（PRD 之后零阶段）⇒ 作废面**恒为零**，改 1 次与改 5 次的成本
+  // 完全相同（都是重跑一次 PRD）。次数上限防不住浪费，只会把用户赶到「重开 run」——
+  // 而重开在本阶段是**纯损失**（同样重跑 PRD，却丢 runId / req/task 卡 / 已收集的补充说明）。
+  // 真正该守的线是「已进 design/tech 后不许改」，由上面的 `supplementTooLate` 保证。
+  const productKey = j.workspace || j.product || 'default'
+  if (activeProducts.has(productKey) && activeProducts.get(productKey) !== id) {
+    return { ok: false, error: t(locale, 'run.workspaceBusy', { ws: j.workspacePath || productKey, id: activeProducts.get(productKey) }) }
+  }
+  const sid = typeof sessionId === 'string' ? sessionId : null
+  const agent = sid && runtime.agents ? runtime.agents.get(sid) : undefined
+  if (agent === undefined) return { ok: false, error: t(locale, 'run.agentNotFound', { sid }) }
+  // **确认单必须由人批准**（2026-10-17 实锤 tf-mvc4jrl7-7g6hnb）：插件把暂停汇报作为 `user/message`
+  // 注入主会话（`source.kind='plugin:…'`），模型把它当用户指令 ⇒ 08:33:36 暂停、08:34:02 **模型自己**
+  // 调 `teamflow_resume` 把确认单批了，窗内零条人类消息 ⇒ ADR-0011 ① 的人工闸门形同失效。
+  // 判据（可机器判定，不依赖模型自律）：`origin='tool'` 且停在**确认单形态**（PRD 之后一个阶段都没跑过）
+  // 时，要求会话日志里存在**晚于暂停时刻**的 `source.kind==='user'` 消息；没有就拒绝。
+  // 界面入口（`api.resume`，origin='ui'）不受限——那次点击本身就是人的动作。
+  // ⚠️ 三态：`null`=读不到会话日志（宿主 API 变更）⇒ **不硬拒**（否则所有人续跑全挂）但必须留痕。
+  /** 这一版 PRD 是否被人**显式**批准过（tool 路径的记账依据；界面点击本身就是人的动作）。 */
+  let approvalVerified = origin === 'ui'
+  if (origin !== 'ui' && afterPrd && prdOnly) {
+    const session = agent && (agent as { session?: unknown }).session
+    const sinceAt = Number(j.interruptedAt || 0)
+    const human = hasHumanReplySince(session, sinceAt)
+    if (human === false) {
+      try {
+        j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.resumeNeedsHuman', { n: String(supp || '').length }) })
+        persistJournal(j)
+      } catch (e) { /* 留痕失败不改变拒绝语义 */ }
+      return { ok: false, error: t(locale, 'run.needsHumanApproval', { id }) }
+    }
+    if (human === null) {
+      try {
+        j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.resumeHumanUnverifiable') })
+        persistJournal(j)
+      } catch (e) { /* 同上 */ }
+    }
+    // **「说过话」≠「批准」**（2026-10-17 实锤 tf-mvckeco4-2o1p91）：确认单只剩 1 项待拍板时，
+    // 用户那句「加 --depth N，默认 0」**恰好是那项的缺省建议** ⇒ 模型判成「你答了这题 ⇒ 整版认可」⇒
+    // 自己调 resume（无 supplement）⇒ 直接进架构设计，用户从没点过批准，PRD 却被锁死（再改会被
+    // supplementTooLate 拒）。⇒ **不带 supplement 的 resume = 整版放行**，必须要求**显式批准语义**。
+    // 带 supplement 的（= 要改）不受这条限制：那是「改」，本来就该由人驱动。
+    if (!supp) {
+      const reply = lastHumanReplySince(session, sinceAt)
+      const explicit = reply === undefined ? undefined : (reply === null ? false : isExplicitApproval(reply.text))
+      approvalVerified = explicit === true
+      if (explicit === false) {
+        try {
+          j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.resumeNeedsExplicitApproval', { text: clip(reply === null ? '' : reply.text, 120) }) })
+          persistJournal(j)
+        } catch (e) { /* 同上 */ }
+        return { ok: false, error: t(locale, 'run.needsExplicitApproval', { id, text: clip(reply === null ? '' : reply.text, 120) }) }
+      }
+      if (explicit === undefined) {
+        try {
+          j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.resumeApprovalUnverifiable') })
+          persistJournal(j)
+        } catch (e) { /* 同上 */ }
+      }
+    }
+  }
+  try {
+    const resumePhase = redoPrd ? 'prd' : phaseAtEntry
+    const products = buildResumeProducts(j)
+    j.status = 'running'
+    j.cancelled = false
+    j.interrupted = false
+    j.interruptedAt = null
+    j.error = null
+    // 重置历史失败留下的需人工标记（否则完成汇报头会误标「⚠️ 已完成（需人工介入）」，实锤 tf-mt5afdch 续跑）
+    j.humanIntervention = false
+    // 孤儿收尾回写恢复：上次失败/取消把 req/task 落到 needs-human，续跑时恢复进行中语义
+    try {
+      const store = storeFor(productKey)
+      const req = store.find('req', j.reqId)
+      if (req && req.status === 'needs-human' && req.humanIntervention) {
+        store.pushEvent(req, req.status, 'in-progress', t(locale, 'event.resumeFrom', { phase: resumePhase }))
+        req.status = 'in-progress'
+        req.humanIntervention = false
+      }
+      const task = j.taskId ? store.find('task', j.taskId) : null
+      if (task && task.status === 'needs-human') {
+        store.pushEvent(task, task.status, 'running', t(locale, 'event.resumeTask'))
+        task.status = 'running'
+      }
+      store.persist()
+    } catch (e) { /* 恢复尽力而为 */ }
+    j.endedAt = null
+    j.logs = (j.logs || []).slice(-200)
+    j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.resume', { phase: phaseLabel(locale, resumePhase) }) })
+    // **先记住产出当前 PRD 的子代理 id**（必须在下面把阶段记录摘掉**之前**——摘掉后就没线索了）：
+    // redo 会优先对它「续跑改写」（上下文接着干），而不是重新 spawn 一个从零读需求的 PRD 子代理。
+    // ⚠️ 第一版就栽在这：取值写在 filter 之后 ⇒ `prdChildId` 永远是 null ⇒ 续跑静默失效、每次都重跑。
+    if (redoPrd) {
+      try {
+        const prdRec = (j.stages || []).filter((s) => phaseKeyOf(s.phase) === 'prd').pop()
+        const cid = prdRec && prdRec.childId ? String(prdRec.childId) : ''
+        if (cid) j.prdChildId = cid
+        else j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.reviseNoChild') })
+        // **这一阶段的历史用量要带走**（2026-10-18）：下面会把旧的 prd 记录摘掉，而节点卡展示的是
+        // 「本阶段总用量」。不带走 ⇒ 前面几轮改写花的 token 凭空消失 ⇒ 与 dsh 子代理面板（全程累计）
+        // 对不上（真机 tf-mvcoqg9e 对不上才发现）。
+        // ⚠️ 必须**拷贝**并清零旧记录的 usage（2026-10-18 真机 tf-mvdeqi60 抓到的双倍 bug）：
+        // 直接 `j.prdUsageAcc = prdRec.usage` 会让 acc 与 rec.usage **指向同一个对象**；若累加时
+        // `rec` 恰好还是这条记录，`addUsage(a, a)` 就是 2 倍（实测 input/cacheRead/output/calls
+        // 四项都精确翻倍）。清零还能兜住「rec 是旧记录」的任何路径。
+        if (prdRec && prdRec.usage) {
+          j.prdUsageAcc = { ...prdRec.usage }
+          prdRec.usage = null
+        }
+      } catch (e) { /* 取不到就回落为重跑（不是错误） */ }
+    }
+    j.stages = (j.stages || [])
+      .filter((s) => s.status !== 'running' && s.status !== 'pending') // 清理未完成 stage；保留 done/failed 历史（失败痕迹不消失）
+      // 回退重跑 PRD：把旧的 prd 记录**摘掉**，否则 `enterStage` 会再推一条 ⇒ 同一阶段两条记录
+      // （报告与断点定位都按「每阶段一条」读）。安全前提正是 `prdOnly`：PRD 之后确实没跑过任何阶段。
+      .filter((s) => !(redoPrd && phaseKeyOf(s.phase) === 'prd'))
+    if (redoPrd) {
+      // **存量 run 的版本起点**（2026-10-17）：`prdRev` 是本版新加的字段，v0.3.0 之前创建的 run
+      // 落盘时没有它 ⇒ 读回来是 `undefined`/0。而 redo 的前提是「PRD 已经产出过一版」（`prdOnly`），
+      // 所以这里必须补成 1 —— 否则重跑后只是 1，`prdRev > 1` 不成立 ⇒ 第二张确认单又不出（issue #11 复发）。
+      if (!(Number(j.prdRev || 0) > 0)) j.prdRev = 1
+      // **保留被替换的那一版**（2026-10-17，B 方案）：`PRD.md` 会被下面的重跑覆盖，先把旧版留成
+      // `PRD.v{N}.md`（N = 旧版号）⇒ 确认单给出路径，用户能直接对比「我要求的改了没」。
+      // 为什么这件事比「限制改写次数」有效：反复改的真实原因通常是**看不到上一版改成了什么**，
+      // 只能凭记忆再提一遍需求，来回打转。丢一份副本的成本是一次文件复制。
+      try {
+        // **旧版快照放运行日志目录，不放任务夹**（2026-10-18 用户实测）：任务夹是「本需求产物收口」，
+        // 会被 `git add` 提交 ⇒ 把 `PRD.v1/v2/v3.md` 放进去等于**把过程产物混进交付物**，
+        // 一个改了 3 版的需求会在仓库里堆 70KB+ 的旧 PRD。
+        // 放 `logs/teamflow/<runId>/` 则天然符合既有设计：该目录已 gitignore、run 结束随日志归档到
+        // `$DSH_HOME`（keep-whitelist 含 .md ⇒ 旧版不会丢），项目里只留当前版 `PRD.md`。
+        const snapDir = snapshotDir(j)
+        const src = absoluteRunDocs(j.runDocs, j.workspacePath)
+        const srcFile = src ? `${src}/PRD.md` : ''
+        if (snapDir && srcFile && existsSync(srcFile)) {
+          mkdirSync(snapDir, { recursive: true })
+          writeFileSync(`${snapDir}/PRD.v${Number(j.prdRev) || 1}.md`, readFileSync(srcFile))
+        }
+      } catch (e) { /* 留档失败不阻断改写（确认单少了「上一版」一行而已） */ }
+      // 旧确认单描述的是**即将被替换**的那份 PRD ⇒ 必须清掉，否则在新 PRD 出结论前主线程会看到过期内容。
+      j.confirmSheet = null
+      // 文本兜底（`journal.assumptions`）同理清空。
+      j.assumptions = null
+      // 本轮 PRD 快照一并作废（旧结构块描述的是将被替换的那份 PRD）。新 PRD 跑完时
+      // `mergeStageState('prd')` 会重新写；若新 PRD 没产出，闸门/确认单看到的是**空**（诚实），
+      // 而不是旧 PRD 的残留。
+      j.prdSnapshot = null
+      // ⚠️ 结构化 `state.openQuestions` 也要清：新 PRD 若没给 `openQuestions`（`extra` 契约实测 ~20% 不达），
+      // `mergeStateBlock` 是**条件式替换** ⇒ 旧主观项会残留 ⇒ 按**过期项**再次暂停，用户看到同一份旧确认单。
+      try {
+        const st = loadState(productKey)
+        if ((st.openQuestions || []).length) { st.openQuestions = []; saveState(productKey, st) }
+      } catch (e) { /* 清不掉也不影响重跑（新 PRD 会覆盖） */ }
+      j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.redoPrd', { n: String(supp || '').length }) })
+    } else {
+      // **放行 = 批准这一版 PRD**（2026-10-17，issue #11）。确认单的判据是「这一版有没有被批过」，
+      // 不带 supplement 的 resume 就是「认可当前版本」。不记的话：任何一次续跑（不必是确认单断点）
+      // 再走到确认单判断时，同一版又会被拦一次 —— 那就是用户担心的「反复修正需求」。
+      // ⚠️ **确认单形态下必须有人显式批准才记**（`approvalVerified`）：模型把用户的一句修改要求
+      // 当成「回答待拍板项 ⇒ 整版认可」时（实锤 tf-mvckeco4-2o1p91），一旦记进去，这版就永久
+      // 「已批准」⇒ 之后想改会撞 `supplementTooLate`，PRD 被锁死。宁可下次再出一次单。
+      // 非确认单断点（design/tech 失败后续跑）说明这版早就被放行过（否则跑不到下游）⇒ 直接记。
+      if (!(afterPrd && prdOnly) || approvalVerified) {
+        j.confirmApprovedRev = Number(j.prdRev || 0) || 0
+      }
+    }
+    // 补录的答复落 journal（PRD 会读它拼 `[CLARIFIED]`）；`answered` 埋点只在这里记一次
+    // —— `executePipeline` 的同一埋点已按 `!resume` 排除续跑路径，否则会重复计一次。
+    if (supp) {
+      j.requirementSupplement = supp
+      j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.supplementApplied', { n: supp.length }) })
+      noteClarifyAnswered(productKey, String(j.requirement || ''), {
+        runId: String(j.id), supplement: supp, mode: String((j.options && j.options.mode) || '') || undefined,
+      })
+    }
+    runs.set(id, j) // 内存换用磁盘完整版（含 output 全文）
+    persistJournal(j)
+    executePipeline(j, agent, j.requirement, j.options, undefined, { phase: resumePhase, products, redo: redoPrd })
+    return { ok: true, runId: id, resumedFrom: resumePhase }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
+}

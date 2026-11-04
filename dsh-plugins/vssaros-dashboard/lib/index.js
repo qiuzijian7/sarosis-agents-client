@@ -28,7 +28,7 @@ import { readFileSync } from 'node:fs';
 //   （`dashboard_sessions` / `dashboard_session` 的文本）—— 页面搬到 React 后它们不能跟着一起删 ✗。
 //   `getWidget` 随卡片渲染一起下线了；`normalizeWidgetConfig` 仍在用（见 `layoutForClient`：渲染前把
 //   每张卡的 config 归一化一次，`sessions.limit` 夹紧 / `workbench.order` 过滤去重都靠它）。
-import { activityText, contextUsageText, escapeHtml, groupByCwd, isoOf, listMetaText, metaBlock, modelText, normalizeWidgetConfig, serializeCatalog, sessionRowModel, SESSIONS_LIMIT_DEFAULT, summarizeModel, usageBuckets, WIDGETS, WORKBENCH_MODULES } from './catalog.js';
+import { activityText, contextUsageText, escapeHtml, groupByCwd, isoOf, listMetaText, metaBlock, modelText, normalizeWidgetConfig, serializeCatalog, sessionRowModel, SESSIONS_LIMIT_DEFAULT, summarizeModel, usageBuckets, WIDGETS, VISIBLE_WORKBENCH_MODULES } from './catalog.js';
 
 import { activePresetOf, DEFAULT_PRESET_NAME, defaultLayout, LAYOUT_VERSION, layoutCssVars, normalizeLayout, normalizeLayoutFile, normalizePresetName, normalizeSettings, serializeLayoutFile } from './layout.js';
 
@@ -320,7 +320,7 @@ export function buildDashboardPayload({ data, config, toolsRegistered, liveServi
 		toolsRegistered,
 		liveServices,
 		sessions: summary.sorted.map(sessionRowModel),
-		workbench: WORKBENCH_MODULES,
+		workbench: VISIBLE_WORKBENCH_MODULES,
 		workspaces: groupByCwd(summary.sorted, 30),
 		usage: usageBuckets(model),
 		// 版本号也随载荷下发：**两个前端**都用它（模块页印在页面中缝、注册式工作台印在顶栏）

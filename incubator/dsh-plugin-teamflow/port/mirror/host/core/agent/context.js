@@ -1,0 +1,322 @@
+/**
+ * dsh-plugin-teamflow core — 运行期共享状态（进程单例）。
+ * - runtime（agents/subagents/workspaceRegistry/agentDefaultModel/llm）：由 index=TeamflowService 的 static inject 注入（setRuntime）。
+ * - runs/inFlight/activeProducts：流水线运行期 Map（跨 runner/pipeline/report/服务共享）。
+ * 这是 ADR-0004「共享状态」在编排层的落点：共享对象集中、单向被 core 各模块 import（不反向）。
+ */
+import { slugPath, persistJournal, loadJournalById } from '../../../store.js'
+                                                      
+                                                         
+import { t } from '../../locales.js'
+import { runLocaleOf } from '../locale.js'
+import { RUNS_MEMORY_KEEP } from '../../constants.js'
+
+/** 子代理/计量等宿主能力（由 TeamflowService 装配时 setRuntime 注入）。字段为鸭子类型：消费方自行窄化。 */
+export const runtime   
+              
+                 
+                          
+                                                                              
+                                                                      
+                    
+                         
+                         
+           
+  = {}
+
+export function setRuntime(
+  agents         ,
+  subagents         ,
+  workspaceRegistry          ,
+  agentDefaultModel          ,
+  llm          ,
+)       {
+  runtime.agents = agents
+  runtime.subagents = subagents
+  runtime.workspaceRegistry = workspaceRegistry
+  runtime.agentDefaultModel = agentDefaultModel
+  runtime.llm = llm
+}
+
+/**
+ * 可选能力：官方 Session 投影注册表（ctx.sessionProjections，dsh-session-projection）。
+ * 单独 setter 而非并入 setRuntime——它是**可选**依赖：用 ctx.inject 在服务可用时注册，
+ * 未挂载（最小 profile）时计量自动回退事件扫描，插件照常加载。
+ */
+export function setSessionProjections(projections         )       {
+  runtime.sessionProjections = projections
+}
+
+/**
+ * 可选能力：Session 查询服务（`ctx.get('sessionQuery')`，`dsh-session-query`）。
+ * 与 `setSessionProjections` 同款单独 setter：**不写进 static inject**——精简 profile 没有它时，
+ * 插件必须照常加载，只是「PRD 续跑改写」自动回落为重跑（`prd-revise.canReviseViaChild` 会判掉）。
+ */
+export function setSessionQuery(query         )       {
+  runtime.sessionQuery = query
+}
+
+/**
+ * **宿主锚点**（2026-09-21）：TeamflowService 构造时把 `ctx.baseUrl`（= 当前 profile 目录的
+ * file:// URL，宿主在挂载插件树**之前**设好）与 `dshHomePath` 记下来，供 pipeline 起跑时探测本机
+ * 安装环境。**为何不由 pipeline 自己拿**：pipeline 是纯编排模块，没有 ctx；且它链到宿主私有 peer
+ * （report→@deepseek-ai/dsh-llm），Behavior 测试取不到 → 锚点经此单例搬运（与 setRuntime 同款，
+ * 单向依赖不破）。
+ * ⚠️ 不存 `process.env.DSH_HOME`：它**不是"装了 dsh 就自带"**（可选覆盖变量，装 dsh 不写它，
+ * `.env` 也设不了 DSH_ 前缀），默认安装下为 undefined。baseUrl 才是权威事实。
+ */
+export const installCtx                       = {}
+export function setInstallCtx(ctx         )       {
+  const c = ctx                                            
+  const url = c && typeof c.baseUrl === 'string' ? c.baseUrl : ''
+  if (url) installCtx.baseUrl = url
+}
+
+/** 运行期 run 注册表（runId → Journal）。 */
+export const runs = new Map()
+/** 进行中的 stage 注册表（runId → `Map<stage, run>`）。**同一 run 可有多路并发子代理**（dev 并发池），
+ *  故每 run 存的是 stage→handle 的表而不是单个 handle：旧形状（每 run 一个 `{run, stage}`，后启动的覆盖前一个）
+ *  让取消只能停掉最后一路，兄弟继续跑到自然结束（2026-09-16 用户实测：「开发的多 agent 中断不了」）。 */
+export const inFlight = new Map()
+/** 登记一路在飞子代理（runAgent 拿到 handle 后调用）。 */
+export function trackInFlight(runId         , stage         , run         )       {
+  if (!runId || !stage) return
+  let m = inFlight.get(runId)
+  if (!m) { m = new Map(); inFlight.set(runId, m) }
+  m.set(stage, run)
+}
+/** 注销一路在飞子代理（该阶段结束时调用）；空桶顺手清掉，避免 map 常驻膨胀。 */
+export function untrackInFlight(runId         , stage         )       {
+  const m = inFlight.get(runId)
+  if (!m) return
+  m.delete(stage)
+  if (m.size === 0) inFlight.delete(runId)
+}
+/** 产品级 backlog 缓存（product → BacklogStore）。 */
+export const stores = new Map()
+/** 产品级并发锁：product → 活跃 runId（同一产品同时只允许一条流水线）。 */
+export const activeProducts = new Map()
+
+/**
+ * **可淘汰 runId 决策**（纯决策，不动 Map；2026-09-26）。
+ *
+ * 背景：`runs` 只 set 不 delete（全仓 grep 实锤）+ 启动时 loadJournals 全量灌入 → 常驻宿主
+ * 跨工作区单调增长。磁盘（persistJournal）才是权威，内存降级为「最近 N 条终态 + 全部活跃」的
+ * 有界缓存。淘汰只针对**终态且已落 endedAt** 的 run——running（cancelRun 门禁只认它）与
+ * 活跃引用（inFlight 的 key / activeProducts 的值）一律保护。
+ *
+ * 决策与执行分离的原因同 `judgeDeliverable` 下沉：pipeline 链到宿主私有 peer 测不到，
+ * 这里可被行为级测试直接锁真值表。
+ *
+ * @param keep 保留的最近终态条数（按 endedAt 降序）
+ * @returns 可安全从 runs 中删除的 runId 列表
+ */
+export function evictableRunIds(keep        )           {
+  if (!(keep > 0)) return []
+  const protectedIds = new Set        ()
+  for (const id of inFlight.keys()) protectedIds.add(String(id))
+  for (const id of activeProducts.values()) protectedIds.add(String(id))
+  const terminal                                                          = []
+  for (const [id, j] of runs) {
+    const rec = j                                           
+    if (!rec || rec.status === 'running' || rec.endedAt == null) continue
+    // 受保护 run 仍占排序位（不因保护而「让坑」）：否则活跃 run 挡住最新槽位时，
+    // 比它更旧的终态 run 会永远留在内存——与「最近 keep 条终态 + 全部活跃」的契约相悖。
+    terminal.push({ id, endedAt: Number(rec.endedAt) || 0, locked: protectedIds.has(id) })
+  }
+  terminal.sort((a, b) => b.endedAt - a.endedAt)
+  return terminal.slice(Math.floor(keep)).filter((x) => !x.locked).map((x) => x.id)
+}
+
+/** 执行淘汰（在终态 checkpoint 落盘**之后**调用——磁盘确认写完才允许内存放手）。 @returns 实际淘汰条数。 */
+export function pruneRuns(keep         = RUNS_MEMORY_KEEP)         {
+  const ids = evictableRunIds(keep)
+  for (const id of ids) runs.delete(id)
+  return ids.length
+}
+
+/**
+ * 读 run 的统一入口：内存未命中 → 磁盘回读（**不回填** runs——回填会让「浏览历史 run」重新撑大
+ * 内存，有界性破产；resume 需要驻留时自己显式 runs.set，snapshot/status 等只读场景每次小文件读盘即可）。
+ * runId 白名单校验在 store.loadJournalById 内做（防路径拼接注入）。
+ */
+export function getRun(id         )                       {
+  if (typeof id !== 'string' || !id) return null
+  const hit = runs.get(id)
+  if (hit) return hit                 
+  return loadJournalById(id)
+}
+
+/**
+ * 取消运行（只对**本进程正在跑**的 run 有效：置 cancelled + dispose 进行中的子代理）。
+ *
+ * 为什么在本文件（而不是 pipeline.ts）：它只操作本文件声明的 `runs`/`inFlight`，且不引宿主私有依赖
+ * ——放这里可被 `test/cancel.test.js` 直接加载做行为级断言（pipeline.ts 链到 report→`@deepseek-ai/dsh-llm`，
+ * 仓库内无法 import，故取消门禁若留在那里就只能靠源码正则守）。
+ *
+ * `status !== 'running'` 门禁是必须的（2026-09-16）：旧实现只要 runId 在内存里就置 cancelled 并返回
+ * true——对已 completed 的 run 会给 journal 打上 cancelled 标记（状态却仍是 completed），对重启后由
+ * `loadJournals()` 回填的 interrupted run 则是「提示取消成功、状态永远不变」。running 是唯一的真实活动态
+ * （`executePipeline` 首句同步写入，早于任何 await，故无窗口），取消失败必须对调用方可见（界面按钮与
+ * `teamflow_cancel` 都据此提示），不得静默成功。
+ *
+ * 只置位、不改状态机：run 终态由 executePipeline 收尾落定（cancelled + 不提交 + 保留 resume 入口）。
+ * 在飞子代理**全部** dispose（并发 dev 的多路都要停——只停最后一路是 2026-09-16 实测的缺陷）；
+ * `dispose()` 是异步的，其 Promise 一律挂 `.catch`，避免拒绝变成未处理拒绝。
+ *
+ * **取消来源必须落盘**（2026-09-16 实测补充）：主线程收到 `⏹ 已取消` 的汇报后无从判断「谁取消的」，
+ * 曾据错误前提怀疑「另一会话在自动续跑」（实际是人工点界面按钮）。来源三类：界面按钮（人工）、
+ * 模型工具、未知（历史 run）。它进 journal.logs（可见）+ `journal.cancelSource`（随汇报一起给主线程）。
+ */
+                                                    
+export function cancelRun(runId                           , source               = 'unknown')          {
+  const j = runs.get(runId)
+  if (!j || j.status !== 'running') return false
+  j.cancelled = true
+  j.cancelSource = source
+  j.cancelRequestedAt = Date.now()
+  try {
+    const locale = runLocaleOf(j)
+    j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.cancelRequested', { source: t(locale, `cancelSource.${source}`) }) })
+  } catch (e) { /* 日志失败不影响取消 */ }
+  const live = inFlight.get(runId)
+  if (live) {
+    for (const run of live.values()) {
+      try {
+        const p = run && typeof run.dispose === 'function' ? run.dispose() : null
+        if (p && typeof p.catch === 'function') p.catch(() => { /* 关闭失败不影响取消语义 */ })
+      } catch (e) { /* ignore */ }
+    }
+  }
+  persistJournal(j)
+  return true
+}
+
+/** 可用的子代理 provider 名（优先 spawn）。 */
+export function providerName()                {
+  const subagents = runtime.subagents                                         
+  if (!subagents || typeof subagents.list !== 'function') return null
+  const names = subagents.list()
+  if (names.indexOf('spawn') !== -1) return 'spawn'
+  return names.length > 0 ? names[0] : null
+}
+
+/**
+ * 宿主能力探测：`subagents.startActivation` 是否存在（2026-10-15 / issue #20）。
+ *
+ * alpha.1 的 `subagents.start(name, request)` 在 alpha.2 被**整体删除**（提交 `3d852a1cea`），旧插件
+ * 在新宿主上的真实故障链是「分诊静默降级 → 第一个阶段 `TypeError: start is not a function`」——
+ * 报错点与根因隔了一层。这里把「宿主 API 不匹配」变成**起跑即显性失败**。
+ *
+ * 主门禁仍是 `package.json` 的 `engines.dsh`（宿主 `app-boot` 在装载 profile bundle 时校验，
+ * 不满足则把插件列入 `skippedBundles` 并给出明确原因）——本函数是那之后的第二道：
+ * `dsh plugin allow-version` 豁免、`file:` 直装、开发态副本都能绕过 `engines` 校验。
+ */
+export function hasStartActivation()          {
+  const subagents = runtime.subagents                                             
+  return !!subagents && typeof subagents.startActivation === 'function'
+}
+
+/**
+ * **活子代理 Agent 的唯一取法**（2026-10-15 / issue #20）：alpha.2 起 `startActivation` 不再回传
+ * `localAgent` 句柄（`SubagentActivation` 只有 `childId`/`messageId`/`result`/`dispose`），
+ * 改由 `agents` 注册表按 childId 取——宿主 `manager.startLocal` 走的就是 `agents.create()`，
+ * 所以 `startActivation` 返回时该子 Agent 已注册（`packages/subagent/subagent/src/manager.ts`）。
+ *
+ * 兜底一律返回 undefined（与旧 `localAgent` 在远程 provider 下为 undefined 同义）：消费方
+ * （护栏/计量）本就把「读不到」当降级路径，不能让取句柄本身成为新的失败点。
+ */
+export function liveChildAgentOf(childId         )                                  {
+  if (typeof childId !== 'string' || !childId) return undefined
+  const agents = runtime.agents                                                 
+  if (!agents || typeof agents.get !== 'function') return undefined
+  try {
+    const agent = agents.get(childId)                                          
+    return agent && typeof agent === 'object' ? agent : undefined
+  } catch (e) { return undefined }
+}
+
+/** LlmModelInfo 鸭子形状（DSH llm.resolveModelInfo 返回；含 inputModalities）。 */
+                                                                  
+
+/**
+ * 探测指定 provider/model 是否支持图像输入（多模态）。
+ * 用途：QA/验收的视觉验证条款按能力条件化——不支持视觉的模型禁止「截图看图」（防幻觉/循环），
+ * 只走 DOM 计算断言（evaluate 返回文本）；探测失败/未知 → false（安全侧）。
+ */
+export async function currentModelSupportsVision(provider                , model                )                   {
+  try {
+    const llm = runtime.llm     
+                                                                                               
+                        
+    if (!llm || typeof llm.resolveModelInfo !== 'function') return false
+    const p = (provider && provider.trim()) || providerName()
+    const m = (model && model.trim()) || (() => {
+      const adm = runtime.agentDefaultModel                                                                                           
+      if (adm && typeof (adm                                                   ).currentSelection === 'function') {
+        try { return (adm                                                  ).currentSelection()?.model } catch (e) { return undefined }
+      }
+      return (adm                                  )?.model
+    })()
+    if (!p || !m) return false
+    const info = await llm.resolveModelInfo(p, m)
+    return !!info && Array.isArray(info.inputModalities) && info.inputModalities.includes('image')
+  } catch (e) { return false }
+}
+
+/** 会话/Agent 鸭子形状（只读所需叶子字段）。 */
+                                                                     
+                                                  
+
+/** workspaceRegistry.resolveByPath 返回的鸭子形状。 */
+                                                                  
+
+/**
+ * 从发起会话推导工作区作用域。
+ *
+ * 优先级（**实际生效的只有第 2 条**）：
+ * 1. workspaceRegistry.resolveByPath(cwd) → 用 workspace.id（UUID）作 projectKey
+ *    —— ⚠️ **当前不可达**：宿主 `resolveByPath` 是 `async`（返回 Promise，见
+ *    `packages/workspace/workspace/src/index.ts`），本函数同步调用 → `ws.id` 恒为 undefined，
+ *    永远落到第 2 条。分支保留是为将来迁移（需 await + 存储 key 迁移，见 docs/TODO.md）。
+ * 2. session cwd 的 basename + 短 hash（`slugPath`）—— **当前实际使用的 key**
+ * 3. 兜底 'default'
+ *
+ * projectKey 用于 $DSH_HOME/teamflow/<projectKey>/ 目录，要求：
+ * - 同一路径永远解析到同一个 key（sha1 派生，满足）
+ * - 不同 cwd 即使 basename 相同也不碰撞（hash 参与，满足）
+ * - 目录名安全（只含 [a-zA-Z0-9_-]）
+ * ⚠️ 代价：key 绑定**路径字符串**，同一工作区换个写法（盘符大小写/软链/尾斜杠）会得到不同 key。
+ */
+export function workspaceScopeOf(agent         )                                                                          {
+  const session = (agent                                )?.session
+  const cwd = session && session.header && typeof session.header.cwd === 'string' && session.header.cwd ? session.header.cwd : undefined
+
+  // 分支 1（当前不可达，见上方说明）：通过 workspaceRegistry 拿稳定 workspace UUID
+  if (cwd && runtime.workspaceRegistry && typeof runtime.workspaceRegistry.resolveByPath === 'function') {
+    try {
+      const ws = runtime.workspaceRegistry.resolveByPath(cwd)                            
+      if (ws && typeof ws.id === 'string') {
+        // 目录名：workspace title（basename）+ workspace id 前 8 位（防同名碰撞）
+        const safe = (ws.title || 'ws').replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'ws'
+        const idTag = ws.id.replace(/-/g, '').slice(0, 8)
+        return { projectKey: `${safe}-${idTag}`, workspaceId: ws.id, path: cwd }
+      }
+    } catch (e) { /* resolveByPath 失败时走回退 */ }
+  }
+
+  // 回退：basename + hash(路径)
+  if (cwd) {
+    return { projectKey: slugPath(cwd), workspaceId: null, path: cwd }
+  }
+
+  // 兜底
+  const sid = session && typeof session.id === 'string' && session.id ? session.id : null
+  if (sid) {
+    return { projectKey: slugPath(`session:${sid}`), workspaceId: null, path: null }
+  }
+  return { projectKey: 'default', workspaceId: null, path: null }
+}
+
+
+//# sourceURL=file:///G:/SarosWorkspace/sarosis-agents-client/incubator/dsh-plugin-teamflow/host/core/agent/context.ts

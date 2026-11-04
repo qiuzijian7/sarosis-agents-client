@@ -1,0 +1,292 @@
+/**
+ * dsh-plugin-teamflow — Remote 描述符（纯数据，host 与 client 共用）。
+ *
+ * host 侧：通过 ctx.typert.register() 注册为 strict 本地调用定义（免 @Remote 装饰器）；
+ * client 侧：通过 ctx.remote.$mount() 生成 `ctx.remote.teamflow.<method>` 调用面。
+ * 两边使用同一份描述符，保证 endpoint（namespace/method）与 wire 参数一致。
+ *
+ * 参数规则：全部宽松 JSON，wire 字段名 = host 方法参数名，client 端按位置传参；
+ * 参数允许省略（host 方法收到 undefined）。
+ *
+ * codec 为什么用 strict：client 的 $mount 只接受 mode: 'strict' 描述符
+ * （requireStrictDescriptor），src-json 会被拒（"field has no strict codec"）。
+ * 本插件载荷本就是自由 JSON，因此 strict schema 用恒等 parse（不做形状校验；
+ * host 侧 decode 仍会做 JSON 安全性检查，参数缺省语义与 src-json 一致）。
+ *
+ * ⚠️ create() 是 dsh 0.1.6-alpha.2 起的**硬要求**（宿主 breaking change）：
+ * typert registry 的 validateCodec 对 strict codec 强制校验
+ * `typeof codec.create === 'function'`，缺失则注册即抛
+ * "strict codec has no create() factory" → 插件 activate 失败（表现为
+ * "2 entries did not activate"）。schema 字段保留仅为兼容旧宿主与既有测试。
+ */
+
+import type { InvocationDescriptor } from '@deepseek-ai/dsh-typert-protocol'
+
+/** 恒等 parse：接受任意 JSON 值，原样返回。 */
+const JSON_SCHEMA: { parse(value: unknown): unknown } = { parse: (value) => value }
+/** 统一 strict codec（本插件所有参数/结果均为自由 JSON）。 */
+const strict = {
+  mode: 'strict' as const,
+  typeSymbol: 'dsh-plugin-teamflow/types#Json',
+  schema: JSON_SCHEMA,
+  /** 首次跨边界使用时物化 schema（宿主按需调用，只调一次并缓存）。 */
+  create: () => JSON_SCHEMA,
+}
+type StrictCodec = typeof strict
+
+const p = (name: string): InvocationParameter => ({ name, wire: name, source: 'json', codec: strict })
+
+interface InvocationParameter {
+  readonly name: string
+  readonly wire: string
+  readonly source: 'json'
+  readonly codec: StrictCodec
+}
+
+export const TEAMFLOW_DESCRIPTORS: readonly InvocationDescriptor[] = Object.freeze([
+  {
+    id: 'dsh-plugin-teamflow#teamflow/ping',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'ping',
+    invocation: { kind: 'direct' },
+    parameters: [],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/setLocale',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'setLocale',
+    invocation: { kind: 'direct' },
+    parameters: [p('locale')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/list',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'list',
+    invocation: { kind: 'direct' },
+    parameters: [p('sessionId')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/snapshot',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'snapshot',
+    invocation: { kind: 'direct' },
+    parameters: [p('runId'), p('sessionId')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/start',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'start',
+    invocation: { kind: 'direct' },
+    parameters: [p('sessionId'), p('requirement'), p('options')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/cancel',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'cancel',
+    invocation: { kind: 'direct' },
+    parameters: [p('runId')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/backlog',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'backlog',
+    invocation: { kind: 'direct' },
+    parameters: [p('sessionId')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/backlogUpdate',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'backlogUpdate',
+    invocation: { kind: 'direct' },
+    parameters: [p('kind'), p('id'), p('to'), p('sessionId'), p('reason')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/assign',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'assign',
+    invocation: { kind: 'direct' },
+    parameters: [p('kind'), p('id'), p('role'), p('assignee'), p('sessionId')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/pause',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'pause',
+    invocation: { kind: 'direct' },
+    parameters: [p('sessionId')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/resumeSession',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'resumeSession',
+    invocation: { kind: 'direct' },
+    parameters: [p('sessionId')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/listTeams',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'listTeams',
+    invocation: { kind: 'direct' },
+    parameters: [p('sessionId')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/selectTeam',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'selectTeam',
+    invocation: { kind: 'direct' },
+    parameters: [p('sessionId'), p('teamId')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/getActiveTeam',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'getActiveTeam',
+    invocation: { kind: 'direct' },
+    parameters: [p('sessionId')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/clearTeam',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'clearTeam',
+    invocation: { kind: 'direct' },
+    parameters: [p('sessionId')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/resume',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'resume',
+    invocation: { kind: 'direct' },
+    parameters: [p('runId'), p('sessionId')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/stageDetail',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'stageDetail',
+    invocation: { kind: 'direct' },
+    parameters: [p('runId'), p('seq'), p('sessionId')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/itemDetail',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'itemDetail',
+    invocation: { kind: 'direct' },
+    parameters: [p('kind'), p('id'), p('sessionId')],
+    result: strict,
+  },
+  /* ── 全局面板：按产品线 key 寻址（root scope 无会话上下文的入口） ── */
+  {
+    id: 'dsh-plugin-teamflow#teamflow/products',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'products',
+    invocation: { kind: 'direct' },
+    parameters: [p('sessionId')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/productView',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'productView',
+    invocation: { kind: 'direct' },
+    parameters: [p('product')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/productRunDetail',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'productRunDetail',
+    invocation: { kind: 'direct' },
+    parameters: [p('product'), p('runId')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/productStageDetail',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'productStageDetail',
+    invocation: { kind: 'direct' },
+    parameters: [p('product'), p('runId'), p('seq')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/productItemDetail',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'productItemDetail',
+    invocation: { kind: 'direct' },
+    parameters: [p('product'), p('kind'), p('id'), p('sessionId')],
+    result: strict,
+  },
+  /* ── 版本探测（ADR-0012）：工作台提示条按需调用 ── */
+  {
+    id: 'dsh-plugin-teamflow#teamflow/updateStatus',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'updateStatus',
+    invocation: { kind: 'direct' },
+    parameters: [p('force')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/skipUpdateVersion',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'skipUpdateVersion',
+    invocation: { kind: 'direct' },
+    parameters: [p('version')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/upgradeSelf',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'upgradeSelf',
+    invocation: { kind: 'direct' },
+    parameters: [p('version')],
+    result: strict,
+  },
+])
+
+/** client 端 $mount 使用的贡献对象。 */
+export const TEAMFLOW_REMOTE_CONTRIBUTION: {
+  readonly package: string
+  readonly descriptors: readonly InvocationDescriptor[]
+} = Object.freeze({
+  package: 'dsh-plugin-teamflow',
+  descriptors: TEAMFLOW_DESCRIPTORS,
+})

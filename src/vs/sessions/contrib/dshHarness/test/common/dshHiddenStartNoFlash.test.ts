@@ -19,6 +19,12 @@
  *   · 隐藏期 `options.skipTaskbar = true`（显示时 `onShown` 里恢复 false）；
  *   · 隐藏期监听 `focus`：一旦被激活立刻 `hide()` + `blur()` 收回（只在 `_startHidden` 为真时）。
  *
+ * ★★ 2026-11-04 补强（**打包版 exe 仍闪**）：上面那条 focus 收回是**事后补救**，真机日志
+ *   每次启动都会出现 `window#hiddenStart: 窗口在隐藏启动期间被激活 ⇒ 立刻收回` ⇒
+ *   focus 触发时窗口已经被画出来了，`hide()` 追不上那一帧 ✗。
+ *   ⇒ 从源头断掉：创建时 `options.focusable = false` ⇒ Chromium 无法激活首个窗口；
+ *     正式显示时（`onShown`）必须 `setFocusable(true)` 恢复，否则用户点开的 IDE 拿不到焦点。
+ *
  * 运行：node src/vs/sessions/contrib/dshHarness/test/common/run-all-common-tests.mjs dshHiddenStartNoFlash
  */
 
@@ -34,10 +40,22 @@ function read(rel: string): string {
 	return fs.readFileSync(abs, 'utf8');
 }
 
+/**
+ * 断言必须基于**去掉注释**的代码：注释里会写出 `setFocusable(true)` 这类字眼，
+ * 只查文本会被"实现删了、注释还在"的突变骗成假绿（2026-11-04 踩过）。
+ */
+function code(rel: string): string {
+	return read(rel)
+		.replace(/\/\*[\s\S]*?\*\//g, '')
+		.split(/\r?\n/)
+		.filter(l => !/^\s*\/\//.test(l))
+		.join('\n');
+}
+
 suite('隐藏启动期间不许被激活（IDE 不闪）', () => {
 
 	test('1) 隐藏期必须同时设置 show=false 与 skipTaskbar=true', () => {
-		const src = read(W);
+		const src = code(W);
 		const at = src.indexOf('this._startHidden = config.startHidden === true;');
 		assert.ok(at > 0, '找不到 _startHidden 的赋值');
 		const block = src.slice(at, at + 900);
@@ -47,8 +65,10 @@ suite('隐藏启动期间不许被激活（IDE 不闪）', () => {
 	});
 
 	test('2) 隐藏期被激活必须立刻收回（hide + blur），且显示后要恢复成普通窗口', () => {
-		const src = read(W);
+		const src = code(W);
 		assert.match(src, /onFocusWhileHidden/, '必须有"隐藏期被激活 ⇒ 收回"的处理');
+		assert.match(src, /\.on\('focus', onFocusWhileHidden\)/,
+			'光有处理函数不够，必须真的注册到 focus 事件上（否则"被激活就收回"根本不会执行）');
 		const at = src.indexOf('const onFocusWhileHidden = () => {');
 		assert.ok(at > 0, '找不到 onFocusWhileHidden');
 		const body = src.slice(at, at + 700);
@@ -60,5 +80,18 @@ suite('隐藏启动期间不许被激活（IDE 不闪）', () => {
 		const shown = src.indexOf('const onShown = () => {');
 		assert.ok(shown > 0, '找不到 onShown');
 		assert.match(src.slice(shown, shown + 700), /setSkipTaskbar\(false\)/, '显示后要恢复任务栏（否则窗口永远不在任务栏）');
+	});
+
+	test('3) ★ 创建期必须不可聚焦（focusable=false），显示后必须恢复（setFocusable(true)）', () => {
+		const src = code(W);
+		const at = src.indexOf('this._startHidden = config.startHidden === true;');
+		assert.ok(at > 0, '找不到 _startHidden 的赋值');
+		const block = src.slice(at, at + 1600);
+		assert.match(block, /options\.focusable = false;/,
+			'必须从源头禁止激活：只靠 focus 事件里 hide() 是事后补救，窗口已经画出那一帧 ✗');
+		const shown = src.indexOf('const onShown = () => {');
+		assert.ok(shown > 0, '找不到 onShown');
+		assert.match(src.slice(shown, shown + 700), /setFocusable\(true\)/,
+			'正式显示后必须恢复可聚焦（否则用户点开的 IDE 窗口永远拿不到焦点）');
 	});
 });

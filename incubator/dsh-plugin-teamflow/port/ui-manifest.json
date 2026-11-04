@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "upstreamHead": "89aec4b094d0450b37c54d65f5dea469e0c01f02",
+  "generator": "port/port-ui.mjs",
+  "output": "workbench/lib/client.teamflow.ui.js",
+  "outputSha256": "b656136179717ba801e0f6fcf3c57e6645f5b6ab36a16eca3c513db2ad7bb6d1",
+  "sources": {
+    "client/shared.tsx": "dcac9bc119b85fa4058b4bcd15cb9b4a311b7617b26f84d07c13fc0d21fdd757",
+    "client/viewport.ts": "5bb7bfd9ca287fa1a47876e39efb0aded7b3edce95c90ea0397a832b5872d45d",
+    "client/bug-open-reason.ts": "865a5909d50f826cf899417ae653f408ecb6bd5af75a9bfc572714444ec78601",
+    "client/locales.ts": "68a937afea5cb048338a59fd561b4c19aad8b621b64182db2e342779a5c5075b",
+    "client/panel.tsx": "a1d2ba347a95cf1a2f6ebb93d6aa8bc34934b22cdce56f242a1bba320aabf833",
+    "client/index.tsx": "2b4ee7baf5aec7465049116fdd7031766da0bf9b706bc8bd9163f88a0592be23"
+  },
+  "patches": [
+    {
+      "id": "child-session-open",
+      "rel": "client/index.tsx",
+      "why": "阶段会话是 vssarosRuns 起的独立会话（不是子代理）⇒ 按会话 id 直接打开，不用 parent/child 地址"
+    },
+    {
+      "id": "evidence-all-phases",
+      "rel": "client/index.tsx",
+      "why": "验证证据不只 dev 有：验收阶段要并排显示独立验收者的证据（本移植的核心增强）"
+    },
+    {
+      "id": "inline-run-detail",
+      "rel": "client/panel.tsx",
+      "why": "本插件不注册右侧栏 run tab（地址为空）⇒ 直接走面板内联详情，不弹「无地址」提示"
+    },
+    {
+      "id": "team-selector-reload",
+      "rel": "client/index.tsx",
+      "why": "团队可在工作台「团队配置」页增删改：选择器每次展开都重取列表（上游只在挂载时取一次，改完要切会话才看得到）"
+    },
+    {
+      "id": "global-panel-embedded",
+      "rel": "client/panel.tsx",
+      "why": "嵌入工作台外壳（props.embedded）时不渲染上游自带的标题栏：外壳已有唯一工具条（标题/回到对话/刷新），两条标题栏重复且「当前会话 session-」在工作台里没有意义"
+    },
+    {
+      "id": "resume-needs-human",
+      "rel": "client/index.tsx",
+      "why": "上游续跑按钮只认 interrupted/failed/cancelled，而服务掉线 / 独立验收未通过都会落到 needs-human ⇒ 真机上停线的 run 在界面上点不到「从断点重跑」。needs-human 只要还有未完成阶段就应可续跑"
+    }
+  ],
+  "shims": [
+    "react",
+    "../descriptors.js",
+    "./locale-push.js",
+    "./update-ui.js"
+  ]
+}

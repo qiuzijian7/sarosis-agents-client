@@ -8,6 +8,7 @@
 import { z } from 'zod'
 import type { Commands } from '../infra/commands.ts'
 import { cliArgv } from '../deployment.ts'
+import { tapdCredential, tapdCredentialsHint, tapdEnvironment, tapdTimeoutMs, type TapdEnv } from './tapd-auth.ts'
 
 export const TAPD_SOURCE = 'tapd'
 export const TAPD_TYPES = ['story', 'bug', 'task'] as const
@@ -168,24 +169,25 @@ const listArgs = (filter: Record<string, string>, page: number) => {
 const commentFilter = (type: TapdType, workspace: string, id: string, since?: string) =>
   ({ workspace_id: workspace, entry_type: COLLECTION[type].entry, entry_id: id, ...since ? { modified: `>${tapdTime(since)}` } : {} })
 
-export interface OpenApiOptions { api: string; environment?: Record<string, string | undefined>; fetch?: typeof fetch; timeoutMs?: number }
-/** TAPD's Open API, signed in with the account the Host's environment names. */
+export interface OpenApiOptions { api: string; environment?: TapdEnv; fetch?: typeof fetch; timeoutMs?: number }
+/** TAPD's Open API, signed in with the account the Host's environment or credentials file names. */
 export class TapdOpenApi implements TapdApi {
   private readonly fetch: typeof fetch
   constructor(private readonly options: OpenApiOptions) { this.fetch = options.fetch ?? globalThis.fetch }
+  /** An explicit environment (tests) is used as-is; a real Host also reads the local credentials file. */
+  private get env(): TapdEnv { return this.options.environment ?? tapdEnvironment() }
   private authorization(): string {
-    const env = this.options.environment ?? process.env
-    if (env.DSH_SUPERAGENT_TAPD_BEARER) return `Bearer ${env.DSH_SUPERAGENT_TAPD_BEARER}`
-    const user = env.DSH_SUPERAGENT_TAPD_USER, password = env.DSH_SUPERAGENT_TAPD_PASSWORD
-    if (!user || !password) throw new TapdError('Set DSH_SUPERAGENT_TAPD_USER and DSH_SUPERAGENT_TAPD_PASSWORD (or DSH_SUPERAGENT_TAPD_BEARER) for the Host')
-    return `Basic ${Buffer.from(`${user}:${password}`).toString('base64')}`
+    const credential = tapdCredential(this.env)
+    if (!credential) throw new TapdError(tapdCredentialsHint(this.env))
+    return credential.header
   }
   private async request(method: 'GET' | 'POST', path: string, fields: Record<string, string>, signal?: AbortSignal): Promise<TapdRecord[]> {
-    const timeout = AbortSignal.timeout(this.options.timeoutMs ?? 30_000)
+    const timeout = AbortSignal.timeout(this.options.timeoutMs ?? tapdTimeoutMs(this.env))
     const query = new URLSearchParams(fields).toString()
     const url = `${this.options.api.replace(/\/$/, '')}/${path}${method === 'GET' ? `?${query}` : ''}`
     const response = await this.fetch(url, { method, signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-      headers: { authorization: this.authorization(), ...method === 'POST' ? { 'content-type': 'application/x-www-form-urlencoded' } : {} },
+      headers: { authorization: this.authorization(), accept: 'application/json',
+        ...method === 'POST' ? { 'content-type': 'application/x-www-form-urlencoded' } : {} },
       ...method === 'POST' ? { body: query } : {} })
     const text = await response.text()
     if (response.status === 401 || response.status === 403) throw new TapdError(`TAPD refused the account (HTTP ${response.status})`)

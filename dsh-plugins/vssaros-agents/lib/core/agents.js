@@ -278,6 +278,8 @@ export function agentFromFile(text, { id, file }) {
 			//   · `subagents: false` = "这个 agent 不许自己开子代理"（审查族只留一个席位）；
 			//   · `subagent: true`   = "别的 agent 可以点名派活给它"（委派目标）。
 			...(String(meta.subagent ?? '').trim().toLowerCase() === 'true' ? { delegatable: true } : {}),
+			// ★ 2026-11-04 主管组团：created-by: supervisor 的 bot 留在名册里、标「主管创建」。
+			...(String(meta['created-by'] ?? '').trim().toLowerCase() === 'supervisor' ? { createdBy: 'supervisor' } : {}),
 			...(role ? { role } : {}),
 			...(skills.length ? { skills } : {}),
 			// 欢迎卡的「建议问题」（★ 2026-10-26）：`.agent.md` 写 YAML 列表，

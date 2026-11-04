@@ -30,6 +30,9 @@ import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
 import { ReviewRefused, type Reviews } from './review.ts'
 import type { CliCheck } from './cli-check.ts'
 import { TAPD_SOURCE } from '../sources/tapd-api.ts'
+import { saveTapdCredential, TapdCredentialError, tapdCredentialStatus } from '../sources/tapd-auth.ts'
+import { TEAM_BOTS_GLOBAL, TEAM_BOTS_PER_PLAN, TEAM_STEPS_MAX, TeamError, type Team } from './team.ts'
+import type { Retrospective } from './retrospective.ts'
 import { handleTapdWebhook, TAPD_WEBHOOK_PATH, type TapdWebhookResult } from './tapd-webhook.ts'
 
 export interface HttpHost {
@@ -61,6 +64,15 @@ export interface HttpHost {
   models(): Promise<ModelCatalog>
   /** VsSaros addition: local lark-cli diagnostics and confirmed maintenance. */
   readonly cli: Pick<CliCheck, 'check' | 'apply'>
+  /** VsSaros addition: the main Session's team plans and the Bot drafts waiting for a person. */
+  readonly team: Pick<Team, 'available' | 'views' | 'stop' | 'approvals' | 'createdBots' | 'approve' | 'reject' | 'plan' | 'bots'>
+  /** VsSaros addition: skills and workflows a finished plan leaves behind. */
+  readonly retro: Retrospective
+}
+/** VsSaros addition: the Feishu app the saved Feishu Source names, or '' for lark-cli's active profile. */
+function feishuAppOf(runtime: Pick<HttpHost, 'store'>): string {
+  const config = runtime.store.settings().sources.feishu?.config as { appId?: unknown } | undefined
+  return typeof config?.appId === 'string' ? config.appId : ''
 }
 /**
  * Represents a client-facing 400 or 404 error raised during management route parsing or lookup.
@@ -93,6 +105,8 @@ function failure(error: unknown): [number, Record<string, unknown>] {
   }
   if (error instanceof SetupError) return [400, { error: error.message, setup: error.problem }]
   if (error instanceof RouteError) return [error.status, { error: error.message }]
+  if (error instanceof TapdCredentialError) return [400, { error: error.message }]
+  if (error instanceof TeamError) return [400, { error: error.message }]
   if (error instanceof UserError) return [error.missing ? 404 : 400, { error: error.message, code: error.code, values: error.values }]
   if (error instanceof SettingsConflict || error instanceof PromptConflict) return [409, { error: error.message }]
   // VsSaros addition: a review the CL as it is now cannot take, with the files that changed since it was read.
@@ -213,13 +227,19 @@ function routes(runtime: HttpHost): Routes {
     'GET policy/history': () => policyHistory(store, runtime.sources, policyVersion(store.settings())),
     'POST policy-sync/:id': async ({ params }) => ({ policy: await runtime.settings.sync(params.id) }),
     'POST setup/check': () => { runtime.checkSetup(); return { restarting: true } },
-    // VsSaros addition: read-only local checks, and write actions that the panel must confirm first.
+    // VsSaros addition: read-only local checks, and write actions that the panel must confirm first. Both work on the
+    // lark-cli profile of the app the Feishu Source names (its saved `appId`), or the active profile when it names none.
     'POST sources/feishu/cli-check': async ({ body }) =>
-      runtime.cli.check(z.object({ update: z.boolean().optional() }).parse(await body()).update ?? false),
+      runtime.cli.check(z.object({ update: z.boolean().optional() }).parse(await body()).update ?? false, feishuAppOf(runtime)),
     'POST sources/feishu/cli-apply': async ({ body }) => {
       const request = z.object({ action: z.enum(['strict-bot', 'update']), confirm: z.literal(true) }).parse(await body())
-      return runtime.cli.apply(request.action, request.confirm)
+      return runtime.cli.apply(request.action, request.confirm, feishuAppOf(runtime))
     },
+    'GET sources/tapd/credentials': () => tapdCredentialStatus(),
+    'POST sources/tapd/credentials': async ({ body }) => saveTapdCredential(z.object({
+      kind: z.enum(['client', 'user', 'token']).optional(), id: z.string().max(512).optional(),
+      secret: z.string().max(512).optional(), clear: z.boolean().optional(),
+    }).strict().parse(await body(4096))),
     'GET models': () => runtime.models(),
     'GET prompts': ({ query }) => { const { revision, offset } = PromptsQuery.parse(query); return promptsView(runtime, revision, offset) },
     'PUT prompts': async input => {
@@ -234,6 +254,32 @@ function routes(runtime: HttpHost): Routes {
     'POST tickets/:id/review/reject': async ({ params, body }) =>
       runtime.reviews.reject(ticket(params.id), z.object({ comment: z.string().trim().min(1).max(4000) }).parse(await body()).comment),
     'POST tickets/:id/review/discard': ({ params }) => runtime.reviews.discard(ticket(params.id)),
+    'GET team/plans': () => ({ available: runtime.team.available(), plans: runtime.team.views(20) }),
+    'GET team/bots': async () => ({ available: runtime.team.available(), bots: await runtime.team.bots() }),
+    // VsSaros addition: a person in the panel may start a plan without waiting for the model to call its tool.
+    // It goes through the same Team, so quotas, dependencies, reports and the retrospective are identical.
+    'POST team/plans': async ({ body }) => runtime.team.plan(z.object({
+      goal: z.string().trim().min(1).max(500), ticketId: z.string().trim().optional(),
+      steps: z.array(z.object({ key: z.string().trim().min(1).max(24), title: z.string().trim().min(1).max(120),
+        spec: z.string().trim().min(1).max(4000), bot: z.string().trim().min(1).max(120),
+        after: z.array(z.string().trim().min(1).max(24)).max(TEAM_STEPS_MAX).optional() }).strict())
+        .min(1).max(TEAM_STEPS_MAX),
+    }).strict().parse(await body())),
+    'POST team/plans/:id/stop': ({ params }) => runtime.team.stop(params.id, 'stopped by a person in the panel'),
+    'GET team/approvals': () => ({ waiting: runtime.team.approvals(), created: runtime.team.createdBots(),
+      perPlan: TEAM_BOTS_PER_PLAN, global: TEAM_BOTS_GLOBAL }),
+    'POST team/approvals/:id/approve': ({ params }) => runtime.team.approve(params.id),
+    'POST team/approvals/:id/reject': ({ params }) => { runtime.team.reject(params.id); return { rejected: true as const } },
+    'GET team/retrospective': () => ({ skills: runtime.retro.tables.skills(), workflows: runtime.retro.tables.workflows() }),
+    'POST team/skills/:id/approve': ({ params }) => runtime.retro.approveSkill(params.id),
+    'POST team/skills/:id/reject': ({ params }) => runtime.retro.rejectSkill(params.id),
+    'POST team/workflows/:id/save': ({ params }) => runtime.retro.saveWorkflow(params.id),
+    'POST team/workflows/:id/run': async ({ params }) => {
+      const workflow = runtime.retro.run(params.id)
+      const values = Object.fromEntries(workflow.params.map(param => [param.key, param.value ?? workflow.goal]))
+      return runtime.team.plan({ goal: workflow.goal, steps: workflow.steps.map(step => ({ ...step,
+        spec: step.spec.replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (_match, key: string) => values[key] ?? '') })) })
+    },
   }
 }
 function decoded(segment: string): string {

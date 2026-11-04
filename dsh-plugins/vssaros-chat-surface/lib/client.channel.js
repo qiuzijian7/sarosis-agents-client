@@ -14,8 +14,10 @@
 //
 // ── 与后端的契约（不变）──────────────────────────────────────────────────
 //   GET  /x/agents/api/bindings → { channels, channelDefs, bindings, inbounds,
-//                                   pairings, deadLetters, recentChats }
-//   POST 同上 { action: 'inbound-start'|'inbound-stop'|'credentials'|'pairing-approve'|'dead-letters-clear', ... }
+//                                   pairings, deadLetters, recentChats,
+//                                   feishuApps, inbounds.feishuApps（2026-11-04 多飞书应用）}
+//   POST 同上 { action: 'inbound-start'|'inbound-stop'|'credentials'|'pairing-approve'|'dead-letters-clear'
+//               |'feishu-app'（增改/删额外飞书应用）, ... }；飞书启停可带 `appId`（空 = 默认应用）
 //
 // ⚠ 分区壳必须用 `props.renderSlot(...)` 渲染子槽（写成 `props.children` ⇒ 导航项在、内容空白，
 //   2026-10-27 真机踩过；`check-chat-surface-chunks.mjs` 第 ⑦ 条守着这条）。
@@ -172,6 +174,17 @@ window.__ModuleLoader__.load({
 	}
 
 	function ChannelPanel() {
+		/**
+		 * ★ 2026-11-04 多飞书应用：额外应用（不是默认那个）的连接状态。
+		 * 数据来自 `inbounds.feishuApps[appId]`（与默认应用的网关同形：status / lastError / lastEventAt）。
+		 */
+		const appStatusOf = (inb) => {
+			const s = String((inb && inb.status) || "idle");
+			if (s === "ready") { return { text: "已连接", tone: "ok", active: true }; }
+			if (s === "connecting") { return { text: "连接中…", tone: "warn", active: true }; }
+			if (s === "error") { return { text: "失败", tone: "err", active: false }; }
+			return { text: "未启动", tone: "", active: false };
+		};
 		const [state, setState] = react.useState({ status: "loading", data: null, error: "", busy: "", ok: "" });
 		/** 各平台草稿：`{ [platform]: { [fieldKey]: value } }`（secret 不回填 ⇒ 留空 = 不改）。 */
 		const [drafts, setDrafts] = react.useState({});
@@ -258,6 +271,14 @@ window.__ModuleLoader__.load({
 		const dlItems = (d.deadLetters && Array.isArray(d.deadLetters.items)) ? d.deadLetters.items : [];
 		const recentChats = Array.isArray(d.recentChats) ? d.recentChats : [];
 		const inbounds = d.inbounds || {};
+		/* 2026-11-04：全部飞书应用（默认在前，`isDefault`）+ 额外应用各自的连接状态 */
+		const feishuApps = Array.isArray(d.feishuApps) ? d.feishuApps : [];
+		const extraApps = feishuApps.filter((a) => a && !a.isDefault);
+		const appInbounds = (inbounds && inbounds.feishuApps) || {};
+		const appLabel = (id) => {
+			const a = feishuApps.find((x) => x && x.appId === id);
+			return a && a.name ? a.name + " · " + id : String(id || "");
+		};
 
 		const statusOf2 = (key) => channels.find((c) => c && c.key === key) || {};
 		const bindingsOf = (key) => bindings.filter((b) => String(b.platform || "") === key);
@@ -339,6 +360,87 @@ window.__ModuleLoader__.load({
 						"适配器尚未实现 —— 不给表单，避免「填了不生效」。")));
 			}
 
+			/* ①b ★ 2026-11-04 其他飞书应用：不同 Bot 可以用不同的飞书应用（各自 App ID / Secret）。
+			   上面的「凭据」仍是**默认应用**（老绑定、不选应用的绑定都走它）；这里只管额外的。
+			   ⚠ 同一个应用在整台机器上只能有一条长连接（飞书只把事件推给其中一条），
+			     所以每个应用各自「启动 / 停止」，被别的客户端占着时服务端回 409 并写明是谁。 */
+			if (key === "feishu" && def.implemented) {
+				const af = drafts.feishuApp || {};
+				const setApp = (k, v) => setDrafts((d0) => ({ ...d0, feishuApp: { ...(d0.feishuApp || {}), [k]: v } }));
+				const known = extraApps.some((a) => a.appId === String(af.appId || "").trim());
+				const saveApp = () => {
+					const appId = String(af.appId || "").trim();
+					const body = { action: "feishu-app", appId };
+					if (String(af.appSecret || "").trim()) { body.appSecret = String(af.appSecret).trim(); }
+					if (String(af.name || "").trim()) { body.name = String(af.name).trim(); }
+					post(body, "feishu-app", "已保存飞书应用：" + appId);
+					setDrafts((d0) => ({ ...d0, feishuApp: {} }));
+				};
+				const removeApp = (appId) => {
+					if (!window.confirm("删除飞书应用 " + appId + "？它的长连接会停掉；仍绑着它的会话将收不到也发不出消息。")) { return; }
+					post({ action: "feishu-app", appId, remove: true }, "app-remove:" + appId, "已删除飞书应用：" + appId);
+				};
+				blocks.push(el("div", { style: S.card, "data-vssaros-feishu-apps": String(extraApps.length) },
+					el("div", { style: S.cap }, el("span", null, "其他飞书应用"),
+						el("span", { style: S.cnt }, String(extraApps.length)), el("span", { style: S.sp }),
+						el("span", { style: { ...S.p, ...S.small, fontWeight: 400 } }, "绑定时可选；不选 = 默认应用")),
+					extraApps.length
+						? el("table", { style: S.table }, el("tbody", null, extraApps.map((a) => {
+							const ast = appStatusOf(appInbounds[a.appId]);
+							const ainb = appInbounds[a.appId] || null;
+							return el("tr", { key: String(a.appId), "data-vssaros-feishu-app": String(a.appId), "data-vssaros-feishu-app-status": String((ainb && ainb.status) || "idle") },
+								el("td", { style: S.td },
+									el("div", null, a.name ? el("b", null, String(a.name) + " ") : null, el("span", { style: S.code }, String(a.appId))),
+									el("div", { style: { ...S.p, ...S.small, color: toneColor(ast.tone) } },
+										ast.text + (a.configured ? "" : " · 缺 App Secret")
+										+ (ainb && ainb.lastEventAt ? " · 最近事件 " + new Date(ainb.lastEventAt).toTimeString().slice(0, 8) : "")
+										+ (ainb && ainb.lastError && !ast.active ? " · " + String(ainb.lastError).slice(0, 80) : ""))),
+								el("td", { style: { ...S.td, ...S.num, whiteSpace: "nowrap" } },
+									ast.active
+										? el("button", {
+											type: "button", style: S.btn, "data-vssaros-feishu-app-stop": String(a.appId),
+											disabled: !!state.busy,
+											onClick: () => post({ action: "inbound-stop", platform: "feishu", appId: a.appId }, "app-stop:" + a.appId, ""),
+										}, "停止")
+										: el("button", {
+											type: "button", style: S.btnPrimary, "data-vssaros-feishu-app-start": String(a.appId),
+											disabled: !!state.busy || !a.configured,
+											onClick: () => post({ action: "inbound-start", platform: "feishu", appId: a.appId }, "app-start:" + a.appId, ""),
+										}, state.busy === "app-start:" + a.appId ? "启动中…" : "启动"),
+									el("button", {
+										type: "button", style: { ...S.btnGhost, marginLeft: 4 }, "data-vssaros-feishu-app-remove": String(a.appId),
+										disabled: !!state.busy, onClick: () => removeApp(String(a.appId)),
+									}, "删除")));
+						})))
+						: el("p", { style: { ...S.p, ...S.small, padding: "7px 8px" } }, "还没有额外的飞书应用。"),
+					el("div", { style: { ...S.fld, borderTop: "1px dashed var(--dsw-alias-border-l2, rgba(127,127,127,.24))" } },
+						el("label", { style: S.lbl }, "App ID"),
+						el("input", {
+							style: S.input, type: "text", placeholder: "cli_xxxxxxxx", "data-vssaros-feishu-app-field": "appId",
+							value: String(af.appId || ""), onChange: (ev) => setApp("appId", ev.target.value),
+						}),
+						el("label", { style: S.lbl }, "App Secret"),
+						el("input", {
+							style: S.input, type: "password", "data-vssaros-feishu-app-field": "appSecret",
+							placeholder: known ? "已配置 · 留空 = 不改" : "",
+							value: String(af.appSecret || ""), onChange: (ev) => setApp("appSecret", ev.target.value),
+						}),
+						el("label", { style: S.lbl }, "名称"),
+						el("input", {
+							style: S.input, type: "text", placeholder: "可选，便于在绑定里认出", "data-vssaros-feishu-app-field": "name",
+							value: String(af.name || ""), onChange: (ev) => setApp("name", ev.target.value),
+						})),
+					el("div", { style: { ...S.toolbar, borderBottom: 0 } },
+						el("span", null, "每个应用只能在一台机器上连一次；dsh-superagent 填同一个 App ID 时会复用这里的 Secret。"),
+						el("span", { style: S.sp }),
+						el("button", {
+							type: "button", style: S.btnPrimary, "data-vssaros-channel-act": "feishu-app",
+							disabled: !!state.busy || !/^cli_[A-Za-z0-9]+$/.test(String(af.appId || "").trim())
+								|| (!known && !String(af.appSecret || "").trim()),
+							onClick: saveApp,
+						}, state.busy === "feishu-app" ? "保存中…" : (known ? "更新" : "添加")))));
+			}
+
 			/* ② 该平台的绑定 */
 			blocks.push(el("div", { style: S.card, "data-vssaros-channel-bindings": String(bList.length) },
 				el("div", { style: S.cap }, el("span", null, "绑定"),
@@ -350,6 +452,10 @@ window.__ModuleLoader__.load({
 							el("span", { style: S.code }, String(b.chatId || "")),
 							el("span", { style: { ...S.p, ...S.small } }, " · " + String(b.targetKind === "group" ? "群" : "Bot") + " · " + String(b.targetId || "")),
 							el("span", { style: { ...S.p, ...S.small } }, " · " + (b.enabled === false ? "停用" : "启用")),
+							key === "feishu" && extraApps.length
+								? el("span", { style: { ...S.p, ...S.small }, "data-vssaros-bind-app": String(b.appId || "") },
+									" · " + (b.appId ? "应用 " + appLabel(b.appId) : "默认应用"))
+								: null,
 							/* ★ 2026-10-27「测试发送」：点一下就知道这条出站通不通（用真实适配器） */
 							el("button", {
 								type: "button", style: { ...S.btnGhost, marginLeft: "4px" },
@@ -410,9 +516,10 @@ window.__ModuleLoader__.load({
 			if (rList.length) {
 				blocks.push(el("div", { style: S.card, "data-vssaros-recent": String(rList.length) },
 					el("div", { style: S.cap }, el("span", null, "最近出现的会话"), el("span", { style: S.cnt }, String(rList.length))),
-					el("table", { style: S.table }, el("tbody", null, rList.slice(0, 5).map((r) => el("tr", { key: String(r.chatId), "data-vssaros-recent-row": String(r.chatId) },
+					el("table", { style: S.table }, el("tbody", null, rList.slice(0, 5).map((r) => el("tr", { key: String(r.appId || "") + ":" + String(r.chatId), "data-vssaros-recent-row": String(r.chatId) },
 						el("td", { style: S.td }, el("span", { style: S.code }, String(r.chatId))),
-						el("td", { style: S.td }, String(r.userName || "") + " · " + String(r.count || 1) + " 条")))))));
+						el("td", { style: S.td }, String(r.userName || "") + " · " + String(r.count || 1) + " 条"
+							+ (r.appId ? " · 应用 " + appLabel(r.appId) : ""))))))));
 			}
 
 			const toolbarNode = el("div", { style: S.toolbar },

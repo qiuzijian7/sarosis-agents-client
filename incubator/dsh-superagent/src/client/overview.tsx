@@ -4,6 +4,7 @@ import { usePoll, type Problem } from './api.ts'
 import { Button, Icon } from './controls.tsx'
 import { useAction, usePanel, usePanelData } from './provider.tsx'
 import { PendingReviews } from './review.tsx'
+import { TeamPlans } from './team-plans.tsx'
 import { setupPage, settingsRoute, type Route } from './route.ts'
 import { TicketLine } from './rows.tsx'
 import { healthText, localized, reasonLabel, valueLabel, readableMarkers } from './text.ts'
@@ -75,6 +76,7 @@ export function OverviewPage() {
     {error && <LoadState error={error} loading={false} />}
     {/* VsSaros addition: changelists waiting for a person's review come first. */}
     <PendingReviews />
+    <TeamPlans />
     <Section title={t('pendingTickets')} count={data.person.length}>
       {data.person.length ? <ul className="dt-list dt-cards">{data.person.map(ticket => <TicketLine key={ticket.id} ticket={ticket} question
         onChanged={reload} />)}</ul>

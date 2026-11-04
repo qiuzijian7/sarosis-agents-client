@@ -1,0 +1,394 @@
+/**
+ * dsh-plugin-teamflow — 验收结论解析（parseAcceptanceVerdict）回归测试。
+ * 背景（历史 bug tf-msytlok5）：验收报告 ✅ 通过，但记忆回写段「SUMMARY.md 结构无需改动」
+ * 被旧正则「无需改动」子串命中 → 误判 reject → 整条流水线置 failed。
+ * 修复原则：只以显式「验收结论 / 整体结论」行为准，正文散文不做朴素子串匹配。
+ */
+import { parseAcceptanceVerdict, extractBlueprint, repairJsonEscapes, defectFingerprint, qaRoundEntry, classifyExternalFailure, externalBackoffMs, EXTERNAL_BACKOFF_MS, isDangerousVcsRoot, dirTooLargeForBaseline, judgeDeliverable, DOC_STAGE_FILES, stageDocText, artifactText } from '../port/mirror/host/util.js'
+import { parseDefects, parseDefectRows } from '../port/mirror/host/core/domain/backlog.js'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+let failed = 0
+const expect = (actual, expected, msg) => {
+  if (actual === expected) console.log(`  ✓ ${msg}`)
+  else { console.error(`  ✗ ${msg} — got ${actual}, want ${expected}`); failed++ }
+}
+const eqJson = (actual, expected, msg) => expect(JSON.stringify(actual), JSON.stringify(expected), msg)
+
+console.log('── 回归：验收通过却误判 reject（历史 bug）──')
+const buggy = `# 产品验收报告 — Tetris v2.4
+## 验收结论：✅ 通过
+逐条核对表全绿，无 P0/P1/P2 缺陷。
+## 记忆回写
+已更新 memory.md：OBS-12-1 关闭确认、OBS-12-2 新增；SUMMARY.md 结构无需改动
+<!-- state -->{"phase":"acceptance"}<!-- /state -->`
+expect(parseAcceptanceVerdict(buggy), 'accepted', '正文「结构无需改动」不触发 reject（回归核心）')
+
+const negated = `## 验收结论：通过
+不存在需求与实际不符、需求站不住的情形，本轮为有效修复，全部验证通过。`
+expect(parseAcceptanceVerdict(negated), 'accepted', '正文否定式「需求与实际不符」不触发 reject')
+
+const passWithChg = '## 验收结论：✅ 通过（其他模块代码无需改动，均可继续）'
+expect(parseAcceptanceVerdict(passWithChg), 'accepted', '结论行含「通过」+「无需改动」→ accepted（通过词优先）')
+
+const noConclusion = '主体内容未按格式写结论行。需求无效这类词出现在正文讨论里，不应判拒绝。'
+expect(parseAcceptanceVerdict(noConclusion), 'needs-human', '无结论行 → needs-human（不再默认 accepted——防漏报，需人工确认）')
+
+console.log('── 章节标题蒙蔽结论行（2026-09-17 实测 bug，tf-mu4bve7t-duux2k）──')
+// 真实产物结构：`## 1. 验收结论摘要`（含"验收结论"四字）排在真正的结论行之前
+const withSummaryHeading = [
+  '# 站立活动督促时钟 DSH 插件 · 产品验收报告（ACCEPTANCE）',
+  '## 1. 验收结论摘要',
+  '本轮验收结论摘要：AC-1~AC-8 逐条满足，3 个阻断缺陷已修复并复验通过。',
+  '## 2. 逐条 AC 核对表',
+  '| AC | 结论 |',
+  '## 3. 架构一致性检查（M3 质量门 · 必查）',
+  '架构一致性核验 — PASS，无返工项。',
+  '## 4. 缺陷与风险',
+  '## 5. 人工补测清单（环境限制，非交付缺陷）',
+  '## 6. 验收结论',
+  '验收结论：✅ 通过',
+  '',
+].join('\n')
+expect(parseAcceptanceVerdict(withSummaryHeading), 'accepted', '「## 1. 验收结论摘要」不得蒙住真正的结论行（回归核心）')
+expect(parseAcceptanceVerdict(withSummaryHeading.replace('验收结论：✅ 通过', '验收结论：❌ 不通过')), 'rework', '同结构下结论行写 ❌ → rework（不被标题带偏）')
+expect(parseAcceptanceVerdict(withSummaryHeading.replace('验收结论：✅ 通过', '## 6. 验收结论\n（本行未写结论）')), 'needs-human', '只有「验收结论」标题行、无字面量结论行 → needs-human（不猜）')
+// 英文同构（AC-6 只增不改）
+const enSummary = ['# Acceptance', '## 1. Acceptance verdict summary', 'All ACs satisfied.', '## 6. Acceptance verdict', 'Acceptance verdict: ✅ Pass'].join('\n')
+expect(parseAcceptanceVerdict(enSummary), 'accepted', 'en：summary 标题行不得蒙住 `Acceptance verdict: ✅ Pass`')
+expect(parseAcceptanceVerdict(enSummary.replace('✅ Pass', '❌ Fail')), 'rework', 'en：同结构 ❌ Fail → rework')
+// 结论行带 ## 前缀/列表符也要认
+expect(parseAcceptanceVerdict('## 验收结论：✅ 通过'), 'accepted', '结论行带 `## ` 前缀 → 仍识别')
+expect(parseAcceptanceVerdict('- 验收结论：通过'), 'accepted', '结论行为列表项 → 仍识别')
+expect(parseAcceptanceVerdict('**验收结论：** ✅ 通过'), 'needs-human', '加粗破坏 `验收结论：` 连写 → needs-human（宁严勿松，不猜）')
+
+console.log('── 漏报护栏（2026-09-03）：模型写 ❌ 但漏写「验收结论：」前缀 → 不得判 accepted ──')
+expect(parseAcceptanceVerdict('逐条核对后，❌ 不通过，存在 P0 缺陷。'), 'needs-human', '正文写 ❌ 但无结论行 → needs-human（旧实现漏报为 accepted）')
+expect(parseAcceptanceVerdict('## 验收结论：❌ 不通过\n存在 P0 缺陷。'), 'rework', '结论行 ❌ 不通过（有前缀）→ rework（正常路径不受影响）')
+expect(parseAcceptanceVerdict('## 验收结论：✅ 通过\n全部 AC 绿。'), 'accepted', '结论行 ✅ 通过 → accepted（正常路径不受影响）')
+// 2026-09-17 收紧：📝 只在**行首**算结论（旧的全文字面量匹配会被"引用/论证它不适用"的报告骗到，
+// 实锤 tf-mu4i779p-kze5kl：一份 `⚠️ 有条件通过` 的报告因标题「为什么不判「📝 需求不适用」」被判 reject）
+expect(parseAcceptanceVerdict('逐条核对后 📝 需求不适用，现状已满足。'), 'needs-human', '📝 出现在句中（非行首）→ needs-human（旧实现全文命中判 reject；宁严勿松，人工看一眼）')
+
+console.log('── 📝 需求不适用：只认「行首结论」写法（2026-09-17 实测修 bug tf-mu4i779p-kze5kl）──')
+expect(parseAcceptanceVerdict('## 📝 需求不适用\n现状已满足，无有效变更。'), 'reject', '`## 📝 需求不适用`（行首）→ reject')
+expect(parseAcceptanceVerdict('| 📝 需求不适用 | 现状已满足 |'), 'reject', '表格形态（行首单元格）→ reject')
+expect(parseAcceptanceVerdict('逐条 AC 核对表全绿。\n\n### 5.3 为什么不判「📝 需求不适用」\n\nL122: dev 结果并非「无需改动」——本轮确有两个文件的实质改动，需求真实存在。\n\n验收结论：⚠️ 有条件通过'), 'accepted', '**引用/论证**该词（标题 + 正文否定）→ 不得判 reject（回归核心，复刻真实报告结构）')
+expect(parseAcceptanceVerdict('## 5. 结论\n\n本次交付满足现状，📝 需求不适用。'), 'needs-human', '📝 在正文句尾（非行首）→ needs-human（不再全文命中）')
+
+console.log('── 空结论行 / 裸否定词（2026-09-03）：四档词校验只覆盖 reject 分支的漏报变体 ──')
+expect(parseAcceptanceVerdict('## 验收结论：\n全部 AC 绿。'), 'needs-human', '空结论行（前缀残留非空，旧实现漏回 accepted）→ needs-human')
+expect(parseAcceptanceVerdict('## 验收结论：（待定）\n人工确认后再定。'), 'needs-human', '结论行无四档词（待定）→ needs-human')
+expect(parseAcceptanceVerdict('## 验收结论：不通过\n存在 P0 缺陷。'), 'rework', '裸「不通过」（无 ❌ 前缀，旧实现被「通过」子串吞成 accepted）→ rework')
+expect(parseAcceptanceVerdict('## 验收结论：未通过\n存在 P1 缺陷。'), 'rework', '结论行「未通过」→ rework（正常路径）')
+expect(parseAcceptanceVerdict('## 验收结论：✅ 通过（未发现不通过项）'), 'accepted', '✅ 通过 + 双重否定（未发现不通过项）→ accepted（否定保护不误杀）')
+expect(parseAcceptanceVerdict('## 验收结论：✅ 通过\n全部 AC 绿。'), 'accepted', '结论行 ✅ 通过 → accepted（正常路径不受影响）')
+
+console.log('── 真 reject / rework 仍能识别 ──')
+expect(parseAcceptanceVerdict('## 验收结论：📝 需求不适用\n开发结果已满足现状，无有效变更。'), 'reject', '📝 需求不适用 → reject')
+expect(parseAcceptanceVerdict('## 验收结论：需求与实际不符\n建议取消改动或调整需求。'), 'reject', '结论行「需求与实际不符」无通过词 → reject')
+expect(parseAcceptanceVerdict('## 整体结论：需求无效，无需改动。'), 'reject', '结论行「需求无效，无需改动」→ reject')
+expect(parseAcceptanceVerdict('## 验收结论：❌ 不通过\n存在 P0 缺陷。'), 'rework', '结论行 ❌ 不通过 → rework')
+expect(parseAcceptanceVerdict('## 验收结论：需返工\n部分验收项未达标。'), 'rework', '结论行 需返工 → rework')
+
+console.log('── M3 架构门禁：验收看架构，不只 verify 全绿 ──')
+expect(parseAcceptanceVerdict('## 验收结论：⚠️ 有条件通过\n功能 AC 全绿，但检测到重复实现：game 与 audio 各自维护 safeStorage 适配器，应抽独立 storage 模块。架构返工项：合并重复封装。'), 'rework', '内有「重复实现…架构返工」→ rework（M3 架构打回）')
+expect(parseAcceptanceVerdict('## 验收结论：⚠️ 有条件通过\n偏离蓝图：未按架构蓝图拆独立模块，该抽象未抽象。'), 'rework', '「偏离蓝图+该抽象未抽象」→ rework（M3 架构打回）')
+expect(parseAcceptanceVerdict('## 验收结论：✅ 通过\n已按架构蓝图实现，无重复、无偏离，模块边界清晰，架构一致性良好。'), 'accepted', '通过 + 架构一致 → accepted（架构词不误杀正常通过）')
+expect(parseAcceptanceVerdict('## 验收结论：✅ 通过\n无 P0/P1/P2 缺陷。'), 'accepted', '纯功能通过 → accepted（不受架构词影响）')
+
+console.log('── M3 回归（tf-mt1pulkw）：架构「PASS/无返工」不得误杀（否定式保护）──')
+expect(parseAcceptanceVerdict('## 验收结论：⚠️ 有条件通过\n架构一致性核验（M3 质量门禁）— PASS，无返工项，无该抽象未抽象，无架构打回项，非漂移。'), 'accepted', '「M3 PASS，无返工/非漂移/无该抽象未抽象/无架构打回项」→ accepted（否定式不误判 rework，回归核心）')
+expect(parseAcceptanceVerdict('## 验收结论：⚠️ 有条件通过\n但检测到重复实现：两套安全存储适配器；偏离蓝图、该拆未拆，需架构返工。'), 'rework', '「存在重复实现/偏离蓝图/需架构返工」→ rework（真打回仍识别）')
+
+console.log('── M1 架构蓝图提取（extractBlueprint）──')
+const blueprinted = `# 技术方案
+<!-- blueprint -->{"summary":"应抽独立 storage 封装","modules":{"/storage.js":{"responsibility":"持久化封装","why":"消除 game/audio 两套适配器重复"}},"duplications":["game.safeStorage 与 audio.resolveStorage 重复"],"tasks":[{"title":"拆 storage 模块","files":["/storage.js"],"spec":"独立 UMD 存储层"}]}<!-- /blueprint -->`
+const bd = extractBlueprint(blueprinted)
+expect(bd !== null, true, '合法蓝图 JSON 块可提取')
+expect(bd ? bd.summary : '', '应抽独立 storage 封装', '提取 summary')
+expect(bd && Array.isArray(bd.tasks) && bd.tasks.length === 1, true, '提取 tasks')
+expect(bd && Object.keys(bd.modules || {}).length === 1, true, '提取 modules')
+expect(extractBlueprint('没有蓝图块'), null, '无蓝图块 → null')
+expect(extractBlueprint('<!-- blueprint -->{bad json}<!-- /blueprint -->'), null, '非法 JSON → null')
+
+console.log('── 蓝图标记形态：新（真注释块）/ 旧（自闭合注释，兼容）──')
+// 2026-10-09：`<!-- blueprint -->` 是自闭合注释，渲染器消化它 ⇒ 后面的 JSON 裸露在预览里（用户截图实锤）。
+// 上面 `blueprinted` / `broken` 两段语料用的都是**旧形态** —— 它们仍通过，即向后兼容的证明。
+{
+  const NEW = '<!-- blueprint\n{"summary":"新形态蓝图","tasks":[{"title":"T","files":["/a.js"]}]}<!-- /blueprint -->'
+  const nb = extractBlueprint(NEW)
+  expect(nb !== null && nb.summary === '新形态蓝图', true, '新形态（open 不带 -->）可提取')
+  expect(nb && nb.tasks.length === 1, true, '新形态 tasks 提取正常')
+  expect(bd !== null, true, '旧形态（自闭合注释）**仍兼容**（上方语料即旧形态）')
+  // 组合形态（open 新式、行内紧跟 JSON）也不该漏
+  const inline = '<!-- blueprint{"summary":"行内新式","tasks":[]}<!-- /blueprint -->'
+  const nb2 = extractBlueprint(inline)
+  expect(nb2 !== null && nb2.summary === '行内新式', true, 'open 后**无换行**直接跟 JSON 也能提取')
+}
+
+console.log('── 蓝图抢救：末尾截断（补齐尾部闭合 ｜ 实锤 tf-mv3op3i2-0ok7nb）──')
+// 事故：模型把 5937 字符的完整蓝图写进 blueprint.json，尾部**少了 1 个 `}`** ⇒ JSON.parse 失败；
+// 既有 `repairBlueprintJson` 只治「提前闭合」（值后多写一个 `}`），救不了「末尾没收」
+// ⇒ 蓝图整片丢失、dev 退化为单任务整体开发（该 run 规划 12 个任务，实际只跑 1 个）。
+{
+  const TRUNCATED = '{"summary":"截断样本","modules":{"/a.js":{"responsibility":"A","api":["f()"],"why":"w"}},"duplications":[],"tasks":[{"title":"T1","files":["/a.js"],"spec":"s1"},{"title":"T2","files":["/b.js"],"spec":"s2"}]'
+  expect(JSON.parse(TRUNCATED + '}') !== null, true, '语料自检：只差最后 1 个 `}`，补上即合法')
+  const r = extractBlueprint('<!-- blueprint\n' + TRUNCATED + '\n<!-- /blueprint -->')
+  expect(r !== null, true, '末尾截断的蓝图可被抢救（不再整片丢失）')
+  expect(r && r.tasks.length === 2, true, '抢救后 tasks 数量正确')
+  expect(r && Object.keys(r.modules || {}).length === 1, true, '抢救后 modules 数量正确')
+  // ⚠️ 安全边界：截断落在字符串里 ⇒ **不得变成可用蓝图**。硬补会产出「语法合法但语义缺失」的对象，
+  // 下游会拿它当权威蓝图 —— 那比直接失败更危险。
+  // ⚠️ 变异实测（2026-10-11）：把 `closeTruncated` 里的 `inStr || esc` 守卫删掉，这条**不会变红** ——
+  // 因为括号统计本身就跳过字符串内（`if (inStr) continue`），且字符串未闭合时 `JSON.parse` 必然失败，
+  // 把守卫的效应兜住了 ⇒ 该守卫是**防御性代码，行为层不可观测**。
+  // 这条断言保障的是**行为**（语义残缺的内容不得变成权威蓝图），不是守卫那一行本身。
+  const IN_STR = '{"summary":"断在字符串里","modules":{"/a.js":{"responsibility":"A'
+  expect(extractBlueprint('<!-- blueprint\n' + IN_STR + '\n<!-- /blueprint -->'), null,
+    '截断在字符串内的内容**不得变成可用蓝图**（硬补会产出语义缺失的假对象）')
+  // 多条未闭合（对象 + 数组）也要能按栈补齐
+  const TWO = '{"summary":"s","modules":{},"tasks":[{"title":"T","files":["/a.js"]'
+  const r2 = extractBlueprint('<!-- blueprint\n' + TWO + '\n<!-- /blueprint -->')
+  expect(r2 !== null && r2.tasks.length === 1, true, '多层未闭合（{ 与 [ 同时）按栈逆序补齐')
+}
+
+console.log('── 蓝图抢救：非法 JSON 转义（模型把正则原样写进 spec ｜ 实锤 tf-mvp5tdie-ma36fk）──')
+// 事故：模型把正则原样写进蓝图 JSON 的 spec/api（`/\.md$/i`、`/\[\[...\]\]/`），而 JSON 只允许
+// `\" \\ \/ \b \f \n \r \t \uXXXX` ⇒ JSON.parse 抛「Bad escaped character」⇒ 6.2KB 蓝图（6 模块 / 7 任务）
+// 整份丢弃 ⇒ dev 退化为单任务整体开发（实测该轮 dev 87 calls / 4.8M cacheRead）。
+{
+  const BS = '\\' // 一个反斜杠
+  const badJson = '{"spec":"/' + BS + '.md$/i"}'
+  let threw = false
+  try { JSON.parse(badJson) } catch (e) { threw = true }
+  expect(threw, true, '语料自检：单反斜杠正则在 JSON 里确实非法（这就是事故形态）')
+  const fixed = repairJsonEscapes(badJson)
+  expect(fixed !== null, true, 'repairJsonEscapes：检出非法转义并返回修复串')
+  let fixedSpec = null
+  try { fixedSpec = fixed === null ? null : JSON.parse(fixed).spec } catch (e) { fixedSpec = null }
+  expect(fixedSpec, '/' + BS + '.md$/i', '修复后**语义不变**（字面反斜杠保留，不是删掉）')
+  expect(repairJsonEscapes('{"a":"ok"}'), null, '无需修复 ⇒ 返回 null（调用方据此区分「修过」与「本来没问题」）')
+  expect(repairJsonEscapes('{"a":"' + BS + 'n' + BS + 't' + BS + 'u00e9"}'), null, '合法转义（\\n \\t \\uXXXX）一律不动')
+  // 端到端：整份蓝图不再丢
+  const bp = '<!-- blueprint\n{"summary":"正则蓝图","modules":{"/src/a.js":{"responsibility":"A","api":["/' + BS + '.md$/i"],"why":"w"}},"tasks":[{"title":"T1","files":["/src/a.js"],"spec":"匹配 /' + BS + '[[' + BS + ']]/"}]}\n<!-- /blueprint -->'
+  const diag = {}
+  const rb = extractBlueprint(bp, null, diag)
+  expect(rb !== null, true, '含非法转义的蓝图不再整份丢弃（拆卡保住）')
+  expect(rb ? rb.tasks.length : -1, 1, '修复后 tasks 数量正确')
+  expect(rb ? Object.keys(rb.modules || {}).length : -1, 1, '修复后 modules 数量正确')
+  expect(diag.repairedEscapes, true, '诊断出口报告「修过」（留痕依据，避免契约违约静默）')
+  // 对照组：正常蓝图不得被标成「修过」（判据要有区分力）
+  const diag2 = {}
+  const okBp = extractBlueprint(blueprinted, null, diag2)
+  expect(okBp !== null && diag2.repairedEscapes !== true, true, '正常蓝图不报「修过」')
+  // 双病并发：截断 + 非法转义
+  const both = '{"summary":"双病","modules":{},"tasks":[{"title":"T","files":["/a.js"],"spec":"/' + BS + 'd"'
+  const rBoth = extractBlueprint('<!-- blueprint\n' + both + '\n<!-- /blueprint -->')
+  expect(rBoth !== null && rBoth.tasks.length === 1, true, '截断 + 非法转义同时犯也能救（先修转义再补闭合）')
+  // 修复不是万能：真正坏的 JSON 仍返回 null（不伪造蓝图）
+  expect(extractBlueprint('<!-- blueprint\n{"a": \n<!-- /blueprint -->'), null, '彻底坏的 JSON 仍返回 null')
+}
+
+console.log('── 回归：蓝图「顶层值提前闭合」抢救（实锤 tf-mt85o5jj：duplications 后多一个 }，tasks 被判为块外内容 → 静默回退整体开发）──')
+const broken = '<!-- blueprint -->{"summary":"踢墙开关","modules":{"/game.js":{"responsibility":"引擎","why":"状态闭环"}},"duplications":["与 ghost/BGM 开关模式不同，需 README 标注"]},"tasks":[{"title":"T1: game.js 引擎踢墙开关","files":["/game.js"],"spec":"偏移表+开关"},{"title":"T2: ui.js 面板开关","files":["/ui.js"],"spec":"开关控件"}]}<!-- /blueprint -->'
+const bdb = extractBlueprint(broken)
+expect(bdb !== null, true, '提前闭合的畸形蓝图可被抢救（不再回退 null）')
+expect((bdb && bdb.tasks ? bdb.tasks.length : -1), 2, '抢救后 tasks 不丢失（并行拆解保住）')
+expect((bdb && bdb.summary) || '', '踢墙开关', '抢救后 summary 完整')
+expect(extractBlueprint('<!-- blueprint -->完全不是 JSON<!-- /blueprint -->'), null, '彻底非 JSON 仍返回 null')
+
+console.log('── en 结论行（AC-6 只增不改：英文新增识别，中文用例逐字不动）──')
+expect(parseAcceptanceVerdict('## Acceptance verdict: ✅ Pass\nAll ACs verified green.'), 'accepted', 'en ✅ Pass → accepted')
+expect(parseAcceptanceVerdict('## Acceptance verdict: ⚠️ Conditional pass (rework items listed)\nTwo P3 observations remain open.'), 'accepted', 'en ⚠️ Conditional pass（正文含裸 rework）→ accepted（禁止把裸 rework 当否定词，防误判打回）')
+expect(parseAcceptanceVerdict('## Acceptance verdict: ❌ Fail\nBUG-1 (P1) is still open.'), 'rework', 'en ❌ Fail → rework')
+expect(parseAcceptanceVerdict('## Acceptance verdict: 📝 Not applicable\nThe shipped product already has this behavior.'), 'reject', 'en 📝 Not applicable → reject（ADR-0005 的 en 等价物）')
+expect(parseAcceptanceVerdict('## Overall verdict: Not applicable\nRequirement does not match the shipped product.'), 'reject', 'en Overall verdict + not applicable（无 emoji）→ reject')
+expect(parseAcceptanceVerdict('## Acceptance verdict: Pass\nAll checks green.'), 'accepted', 'en 裸 Pass（无 emoji）→ accepted（四档兜底）')
+expect(parseAcceptanceVerdict('## Acceptance verdict: Fail\nRegression found in audio.js.'), 'rework', 'en 裸 Fail（无 emoji）→ rework（四档兜底）')
+expect(parseAcceptanceVerdict('## Acceptance verdict: ❌ Not passed\nTwo checks failed.'), 'rework', 'en ❌ Not passed → rework（「passed」子串不得翻成 accepted）')
+expect(parseAcceptanceVerdict('## Acceptance verdict: ✅ Pass (no failed checks)'), 'accepted', 'en ✅ Pass + 否定保护（no failed）→ accepted')
+expect(parseAcceptanceVerdict('Verification completed, but the report carries no verdict line.'), 'needs-human', 'en 无结论行 → needs-human（漏报护栏对 en 同样生效）')
+
+console.log('── extractBlueprint locale（尾参可选：缺省 zh 逐字不变）──')
+const bdEn = extractBlueprint(blueprinted, 'en')
+const bdEnRender = bdEn ? bdEn.render : ''
+const bdRender = bd ? bd.render : ''
+expect(bdEnRender.includes('Architecture judgment:') && bdEnRender.includes('Decomposed tasks:'), true, 'en render 用英文小标题（架构判断/拆解任务）')
+expect(bdEnRender.includes('架构判断：') || bdEnRender.includes('架构拆解任务：'), false, 'en render 不出现中文包裹标签')
+expect(bdRender.includes('架构判断：') && bdRender.includes('【架构蓝图（tech 阶段产出，dev 须在既有架构上实现，勿重建）】'), true, 'zh render 逐字不变（缺省 locale）')
+expect(bdRender.includes('Architecture judgment:'), false, 'zh render 不出现英文包裹标签')
+
+console.log('── parseDefects：按表头认表（2026-09-15 停线回归 tf-mu2ioilr-95l4th）──')
+// 停线根因：复验对照表（第 2 列 P 级 + 第 3 列结论「已关闭」）被按列位置当成缺陷表，
+// 每轮复验重生一个 P2 → 复验必然超限 → 跳过验收。以下第 1 条即该形态的回归门禁。
+const reverifyTable = `## 3. round-2 缺陷复验对照
+
+| 编号 | round-2 级 | 复验结论 | 独立证据 |
+|---|---|---|---|
+| R2-1 en 分支 5 处中文章节名/标签 | P2 | **已关闭** | en 产出 CJK 0 处 |
+| R2-2a logSkip('开发') | P3 | 误报 | phaseLabel(en, 开发) = Development |`
+eqJson(parseDefects(reverifyTable), [], '复验对照表（无严重级表头）整表跳过 → 0 缺陷（停线回归核心）')
+
+const zhStandard = [
+  '| 编号 | 严重级(P0/P1/P2/P3) | 功能模块 | 复现步骤 | 期望行为 | 实际行为 | 关联验收项 |',
+  '|---|---|---|---|---|---|---|',
+  '| BUG-1 | **P1** | persist.js | reload | keep | lost | AC-1 |',
+  '| OBS-1 | P3 | ui.js | click | toast | none | AC-3 |',
+].join('\n')
+eqJson(parseDefects(zhStandard), [{ id: 'BUG-1', severity: 'P1', module: 'persist.js' }], 'zh 标准缺陷表：**P1** 命中、OBS- 观察项跳过')
+
+const enStandard = [
+  '| ID | Severity (P0/P1/P2/P3) | Module | Steps | Expected | Actual | Related AC |',
+  '|---|---|---|---|---|---|---|',
+  '| BUG-2 | P2 | audio.js | mute | silent | beep | AC-2 |',
+].join('\n')
+eqJson(parseDefects(enStandard), [{ id: 'BUG-2', severity: 'P2', module: 'audio.js' }], 'en 标准缺陷表：en 表头识别 + 列位置由表头决定')
+
+const reordered = [
+  '| 编号 | 功能模块 | 严重级(P0/P1/P2/P3) | 备注 |',
+  '|---|---|---|---|',
+  '| BUG-3 | store.ts | P1 | 列序与 zh 模板不同也须命中 |',
+].join('\n')
+eqJson(parseDefects(reordered), [{ id: 'BUG-3', severity: 'P1', module: 'store.ts' }], '严重级列不在第 2 位时按表头定位（不再依赖固定列位置）')
+
+const twoTables = `${reverifyTable}\n\n## 7. 缺陷表\n\n${zhStandard}`
+eqJson(parseDefects(twoTables), [{ id: 'BUG-1', severity: 'P1', module: 'persist.js' }], '同一报告内对照表 + 缺陷表并存：只登记后者（多表上下文互不污染）')
+
+console.log('── parseDefectRows：富行（缺陷卡详情用；2026-09-15 用户实锤「看不出缺陷是啥」）──')
+const richTable = [
+  '| 编号 | 严重级(P0/P1/P2/P3) | 功能模块 | 复现步骤 | 期望行为 | 实际行为 | 关联验收项 |',
+  '|---|---|---|---|---|---|---|',
+  '| R3-1 | P3 | 日志/注入面 | en 下跑 withRetry 失败分支 | en run 日志全英文 | 模板硬编码全角冒号 | AC-3 |',
+].join('\n')
+const rich = parseDefectRows(richTable)
+eqJson(rich.map((r) => [r.id, r.severity, r.module, r.reproduce, r.expected, r.actual, r.ac]), [
+  ['R3-1', 'P3', '日志/注入面', 'en 下跑 withRetry 失败分支', 'en run 日志全英文', '模板硬编码全角冒号', 'AC-3'],
+], '富行取到复现/期望/实际/关联验收项（此前这四列被整列丢弃 → 卡详情空白）')
+eqJson(Object.keys(rich[0]), ['id', 'severity', 'module', 'reproduce', 'expected', 'actual', 'ac', 'check', 'criterion', 'columns'], '富行字段集（含 check/criterion 与 columns 原始表头映射）')
+eqJson(parseDefects(richTable), [{ id: 'R3-1', severity: 'P3', module: '日志/注入面' }], 'parseDefects 仍是瘦身契约（冻结语料逐字节比对的形状不得变）')
+const enRich = parseDefectRows([
+  '| ID | Severity (P0/P1/P2/P3) | Module | Steps | Expected | Actual | Related AC |',
+  '|---|---|---|---|---|---|---|',
+  '| R9-1 | P2 | pipeline | rerun in en | labels normalized | suffix mismatched | AC-9 |',
+].join('\n'))
+eqJson([enRich[0].reproduce, enRich[0].expected, enRich[0].actual, enRich[0].ac], ['rerun in en', 'labels normalized', 'suffix mismatched', 'AC-9'], 'en 表头同样取到四列（Steps/Expected/Actual/Related AC）')
+eqJson([enRich[0].check, enRich[0].criterion], ['', ''], '旧报告（无检测命令/通过判据列）零回归：两字段为空串，不抛不误取')
+
+console.log('── 缺陷行：检测命令 / 通过判据（B 方案 2026-09-15；含转义管道符）──')
+const checkTable = [
+  '| 编号 | 严重级(P0/P1/P2/P3) | 功能模块 | 复现步骤 | 期望行为 | 实际行为 | 关联验收项 | 检测命令 | 通过判据 |',
+  '|---|---|---|---|---|---|---|---|---|',
+  '| R2-1 | P2 | prompt 语言面 | 复跑 en 工厂 | en 无中文字面量 | 5 处中文章节名 | AC-5 | `node logs/.../scripts/r3-scan.mjs` | CJK 命中 0 |',
+  '| R2-2 | P1 | 解析面 | 跑解析器 | 只出 2 条 | 多出 1 条（`a\\|b` 转义行） | AC-9 | `grep -E "alpha\\|beta" src/` | exit 1 |',
+].join('\n')
+const checkRows = parseDefectRows(checkTable)
+eqJson([checkRows[0].check, checkRows[0].criterion], ['node logs/.../scripts/r3-scan.mjs', 'CJK 命中 0'], 'zh 表头：检测命令/通过判据按表头取到')
+eqJson([checkRows[1].check, checkRows[1].criterion], ['grep -E "alpha|beta" src/', 'exit 1'], '单元格内的转义管道符 \\| 还原为字面量（命令里的 `a|b` 不被切开）')
+eqJson(checkRows.map((r) => r.id), ['R2-1', 'R2-2'], '转义行不得错列：两条缺陷都按行解析（R3-2 错列实锤的回归门禁）')
+eqJson(checkRows[1].actual, '多出 1 条（a|b 转义行）', '转义行其余列同样不错位（cellText 会剥离行内反引号）')
+const enCheck = parseDefectRows([
+  '| ID | Severity (P0/P1/P2/P3) | Module | Steps | Expected | Actual | Related AC | Check command | Pass criterion |',
+  '|---|---|---|---|---|---|---|---|---|',
+  '| R9-2 | P2 | prompts | rerun factory | no CJK | 5 sections | AC-5 | node scripts/scan.mjs | 0 hits |',
+].join('\n'))
+eqJson([enCheck[0].check, enCheck[0].criterion], ['node scripts/scan.mjs', '0 hits'], 'en 表头：Check command / Pass criterion 取到（P0–P2 必填列）')
+
+console.log('── D 埋点：QA 逐轮收敛数据（稳定身份 + 增/减/停滞；2026-09-15）──')
+expect(defectFingerprint({ check: '  node  scripts/scan.mjs  ' }), 'cmd:node scripts/scan.mjs', '指纹优先用检测命令（去空白、归一化；机器写给机器看，最稳定）')
+expect(defectFingerprint({ module: 'Prompts', actual: '5 处中文章节名' }), 'txt:prompts|5 处中文章节名', '没有检测命令 → 回落 模块+实际行为文本')
+expect(defectFingerprint({ id: 'R2-1' }), 'id:r2-1', '两者都缺 → 最后回落 id（最不稳定）')
+expect(defectFingerprint({ check: '`grep -E "a|b" src/`' }), 'cmd:grep -e "a|b" src/', '命令里的反引号被剥离（身份比较不受 markdown 表示影响）')
+expect(defectFingerprint(null), '', '空输入不抛（防御）')
+
+const d1 = [
+  { id: 'QA-1', severity: 'P2', module: 'locale', check: 'node scripts/a.mjs' },
+  { id: 'QA-2', severity: 'P1', module: 'prompts', check: 'node scripts/b.mjs' },
+  { id: 'QA-3', severity: 'P3', module: 'logging' },
+]
+const r1 = qaRoundEntry(1, 3, d1, [], 71, 2)
+eqJson([r1.round, r1.blocking, r1.p3, r1.outcome, r1.withCheck, r1.qaCalls], [1, 2, 1, 'rework', 2, 71], '第 1 轮：阻断 2 / P3 1 / outcome=rework / 带检测命令 2 / QA 调用数记录')
+eqJson([r1.newFps, r1.repeats, r1.resolved], [2, 0, 0], '第 1 轮全部算「新」，无重复无消解')
+eqJson(r1.defects.map((d) => d.fp), ['cmd:node scripts/a.mjs', 'cmd:node scripts/b.mjs'], '埋点里存稳定身份（不含 P3 观察项）')
+
+const d2 = [
+  { id: 'R2-1', severity: 'P2', module: 'prompts', check: 'node scripts/b.mjs' },
+  { id: 'R2-2', severity: 'P2', module: 'tools', check: 'node scripts/c.mjs' },
+]
+const r2 = qaRoundEntry(2, 7, d2, [r1], 39, 2)
+eqJson([r2.blocking, r2.outcome], [2, 'rework'], '第 2 轮：阻断 2 / 仍打回')
+eqJson([r2.newFps, r2.repeats, r2.resolved], [1, 1, 1], '与历史轮对比：新 1（c）/ 重复 1（b 原样再现）/ 消解 1（a 已消失）')
+
+const r3 = qaRoundEntry(3, 10, [{ id: 'R3-1', severity: 'P3', module: 'logging' }], [r1, r2], 109, 2)
+eqJson([r3.blocking, r3.outcome, r3.resolved], [0, 'pass', 2], '第 3 轮干净：outcome=pass，上一轮 2 条全部消解')
+expect(qaRoundEntry(3, 10, [{ id: 'R3-1', severity: 'P1', module: 'x' }], [r1, r2], 109, 2).outcome, 'limit', '超出上限时 outcome=limit（与 pass/rework 区分，供后续判据取数）')
+
+console.log('── 外部供应商故障分类（2026-09-17 dddd 实测：同请求 16 分钟后成功 → 属外部窗口，不是内容失败）──')
+expect(classifyExternalFailure('429 Too Many Requests'), 'external', '429 → external')
+expect(classifyExternalFailure('{"error":{"code":"rate_limit_exceeded"}}'), 'external', 'rate_limit_exceeded → external')
+expect(classifyExternalFailure('insufficient_balance: 账户余额不足'), 'external', 'insufficient_balance → external')
+expect(classifyExternalFailure('Error 402: Payment Required'), 'external', '402 → external')
+expect(classifyExternalFailure('503 Service Unavailable'), 'external', '503 → external')
+expect(classifyExternalFailure('upstream connect error or disconnect/reset'), 'external', 'upstream 断连 → external')
+expect(classifyExternalFailure('request timed out after 120s'), 'external', 'timeout → external')
+expect(classifyExternalFailure('fetch failed: ECONNRESET'), 'external', 'ECONNRESET/fetch failed → external')
+expect(classifyExternalFailure('接口限流，请求过于频繁'), 'external', '中文「限流/请求过于频繁」→ external')
+expect(classifyExternalFailure('当前无额度，请充值后重试'), 'external', '中文「无额度」→ external')
+expect(classifyExternalFailure('maximum context length exceeded'), 'content', '上下文超限 → content（不是外部故障）')
+expect(classifyExternalFailure('产出过短，未达阶段下限'), 'content', '产出过短 → content')
+expect(classifyExternalFailure('some completely unrelated text'), 'unknown', '未命中 → unknown（按内容类处置，宁严勿松）')
+expect(classifyExternalFailure(''), 'unknown', '空输入 → unknown')
+expect(classifyExternalFailure(null, '429 rate limit'), 'external', '错误细节在 hint 里也能命中')
+expect(classifyExternalFailure('ok', 'degenerated'), 'content', 'hint 命中护栏 → content（外部故障不得盖住护栏中止）')
+eqJson(EXTERNAL_BACKOFF_MS, [30000, 60000, 120000, 240000], '退避序列 30s→60s→120s→240s（总等待 ≈7.5 分钟）')
+expect(externalBackoffMs(1), 30000, '第 1 次退避 = 30s')
+expect(externalBackoffMs(4), 240000, '第 4 次退避 = 240s')
+expect(externalBackoffMs(5), null, '超出序列 → null（退避用尽 → 落可续跑中断态）')
+
+console.log('\n── 改动存档防线（2026-09-17：盘根/家目录 init + 基线提交 = 灾难动作，两层防线）──')
+expect(isDangerousVcsRoot('C:\\', null), true, '驱动器根 C:\\ → 拒绝 init')
+expect(isDangerousVcsRoot('C:', null), true, 'C:（无反斜杠）→ 拒绝 init')
+expect(isDangerousVcsRoot('C:\\Users', null), true, '深度 ≤1（C:\\Users）→ 拒绝 init')
+expect(isDangerousVcsRoot('C:\\Users\\gyech', 'C:\\Users\\gyech'), true, '家目录本身 → 拒绝 init')
+expect(isDangerousVcsRoot('C:\\Users', 'C:\\Users\\gyech'), true, '家目录的祖先 → 拒绝 init')
+expect(isDangerousVcsRoot('C:\\Windows', null), true, '系统目录 → 拒绝 init')
+expect(isDangerousVcsRoot('C:\\Program Files', null), true, 'Program Files → 拒绝 init')
+expect(isDangerousVcsRoot('C:\\Users\\gyech\\proj', 'C:\\Users\\gyech'), false, '家目录**下面**的项目目录 → 允许 init')
+expect(isDangerousVcsRoot('D:\\src\\my-plugin', null), false, '普通深度（D:\\src\\my-plugin）→ 允许 init')
+expect(isDangerousVcsRoot('', null), true, '空路径 → 拒绝（宁严勿松）')
+expect(dirTooLargeForBaseline('C:\\Windows\\System32', 3, 1024, 300), true, '大目录（有界采样，阈值 3 个文件即超）→ 不做基线提交')
+expect(dirTooLargeForBaseline('Z:\\__definitely_missing__', 1000, 104857600, 200), true, '目录不可读（采样失败）→ 按过大处理（宁严勿松）')
+
+console.log('── doc 类阶段的产物兜底（2026-09-18 probe-v2 实锤：PRD.md 4894 字节已落盘、还调了 present，')
+console.log('   却因回复只有 284 字符的 state 块被判「未交付」→ 阶段失败 → 熔断转人工）──')
+{
+  const ws = mkdtempSync(join(tmpdir(), 'tf-docfallback-'))
+  const runDocs = 'docs/teamflow/20260918-r1-x'
+  mkdirSync(join(ws, runDocs), { recursive: true })
+  const journal = { workspacePath: ws, runDocs }
+  // 真实形状：文件 4894 字节（这里用同等量级的正文），回复只有一个 state 块
+  const longBody = '# PRD\n' + '这是 PRD 正文。'.repeat(400)
+  writeFileSync(join(ws, runDocs, 'PRD.md'), longBody)
+  const shortReply = '<!-- state -->{"phase":"prd","summary":"PRD 完成"}<!-- /state -->'
+  const verdict = judgeDeliverable('prd', shortReply)
+  expect(verdict.ok, false, '回复 284 字符 → 单看回复仍判未交付（判据不放宽）')
+  const doc = stageDocText(journal, 'prd')
+  expect(!!doc && doc.name === 'PRD.md', true, 'stageDocText 摘到 PRD.md')
+  expect(doc.length >= verdict.min, true, `文件长度 ${doc.length} ≥ 下限 ${verdict.min} → 兜底成立（runner 据此判交付）`)
+  expect(artifactText(journal, 'PRD.md') === longBody.trim(), true, 'artifactText 读回全文（trim 后）')
+  // 边界：文件缺失 / 文件过短 / 非 doc 阶段 / 空 journal
+  expect(stageDocText({ workspacePath: ws, runDocs: 'docs/teamflow/nope' }, 'prd'), null, '文件缺失 → null（仍按未交付处理）')
+  writeFileSync(join(ws, runDocs, 'DESIGN.md'), '太短')
+  expect(stageDocText(journal, 'design').length < judgeDeliverable('design', '').min, true, '文件存在但过短 → 长度不足以下限（runner 不会据此判交付）')
+  expect(stageDocText(journal, 'dev'), null, 'dev 不在表内（交付在代码 + 证据块，不靠文件兜底）')
+  expect(stageDocText(journal, 'scaffold'), null, 'scaffold 不在表内（产物是代码/蓝图）')
+  expect(stageDocText(null, 'prd'), null, '空 journal → null（绝不抛）')
+  expect(DOC_STAGE_FILES.prd.indexOf('TECH-CHANGE.md') !== -1, true, 'tech 档的 PRD 走 TECH-CHANGE.md（同阶段多形态）')
+  expect(DOC_STAGE_FILES.scaffold === undefined && DOC_STAGE_FILES.dev === undefined, true, '表里只有「产物就是任务夹文件」的阶段')
+  rmSync(ws, { recursive: true, force: true })
+}
+
+console.log(failed === 0 ? '\n✅ verdict 测试全部通过' : `\n❌ ${failed} 项失败`)
+process.exit(failed === 0 ? 0 : 1)

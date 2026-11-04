@@ -1,3 +1,4 @@
+// 2026-11-04 touch⑲: 设置 → 渠道的飞书展开区加「其他飞书应用」（增删、各自启停、绑定/最近会话显示所用应用）⇒ 动入口刷新 chunk rev。
 // 2026-11-02 touch⑱: 主题守卫落地 —— client.subagents.js 的弹层底 #1c1c1c 改 var(--dsw-alias-bg-layer-2)、
 //   空闲状态灯改 var(--dsw-alias-label-dimmed)（原来写死深色/半透明白 ⇒ 切浅色外观时不跟）⇒ 动入口刷新 chunk rev。
 // 2026-11-02 touch⑰（反向突变复核后重刷）: 点 bot 新建会话成功后重拉 Bots 名册
@@ -22,7 +23,10 @@
 // 2026-10-30 touch: 左下角更新行改为两行 —— 第一行摘要，第二行直接列"更新内容"（具体项 + 版本），
 //   ROW_H 30→52（client.upgrade.js 的 upcomingItems / .vu-sub）⇒ 动入口刷新 chunk rev。
 // 2026-11-03 touch②: Bot 身份统一判据（vssaros:bot-identity v1 副本进 capsule/botSettingsBtn/welcome/conversationViews/agents/botEntry；vssaros-full 不再被当成 bot；空白 botId 不采信）
-// CLIENT_BUILD_STAMP 2026-11-03T17:05 任务卡片描边改用 state-business-primary（brand-primary 暗色下不可见）@ 2026-11-03T16:45
+// 2026-11-04 touch㉒: 反向突变复核后重刷入口（守卫要求入口 mtime 必须晚于改过的 chunk）。
+// 2026-11-04 touch㉑: 上面三个 chunk 全部改完后重刷入口（守卫要求入口 mtime 必须晚于改过的 chunk）。
+// 2026-11-04 touch⑳: 看板 / 流程 / 生图三个工作台暂时下线（DEFAULT_ITEMS 打 hidden+offline、固定行与残留页签过滤）⇒ 动入口刷新 chunk rev。
+// CLIENT_BUILD_STAMP 2026-11-04 三个工作台暂时下线（看板 / 流程 / 生图）@ 2026-11-04
 // 2026-11-02 touch: 新增 client.conversationViews.js（会话区「记忆 / 技能 / 待办 / 记忆设置」
 //   四个 conversation.view 页签，order 20/30/40/50 落在官方轨迹 10 的右侧）⇒ 动入口刷新 chunk rev。
 // CHUNK_BUILD_STAMP 2026-10-27T18:22：渠道页可编辑凭据（写 dsh 侧 agent-im-accounts.json）

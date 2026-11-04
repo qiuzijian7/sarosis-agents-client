@@ -36,6 +36,7 @@ import { AGENT_MESSAGE_KIND, finalAssistantText, findOurSplices } from './core/r
 import { checkCwdGrant } from './grants.js';
 import { notePendingReply } from './relay.js';
 import { agentsRootOf, dataRootOf, scanAgents } from './store.js';
+import { teamBus } from './teamBus.js';
 import { findAgent } from './tools.js';
 
 /** 全局并发上限（BotHarness 默认 8 同构）。 */
@@ -138,14 +139,15 @@ export function resetAssignments() {
  * @param config 本行 config（数据根解析）
  * @param state 顶层角色状态（sessionController / agents 服务槽位）
  * @param input `{ agent, task, fromSession?, fromName?, cwd? }`
+ * @param options `{ scan? }`：换一个名册扫描（团队服务传「内置 + 自定义」两个根；缺省只扫自定义根，HTTP 委派行为不变）
  */
-export async function createAssignment(config, state, input) {
+export async function createAssignment(config, state, input, options = {}) {
 	await ensureLoaded(config);
 	const task = String(input?.task ?? '').trim();
 	if (!task) {
 		throw httpError(400, '任务不能为空（task）。');
 	}
-	const scan = await scanAgents(agentsRootOf(config));
+	const scan = typeof options.scan === 'function' ? await options.scan(config) : await scanAgents(agentsRootOf(config));
 	const { agent, error } = findAgent(scan.agents, input?.agent);
 	if (error) {
 		throw httpError(404, error);
@@ -280,7 +282,23 @@ export async function cancelAssignment(config, state, input) {
 	record.status = 'cancelled';
 	record.updatedAt = Date.now();
 	await persist(config);
+	teamBus().publish(assignmentView(record));
 	return record;
+}
+
+/** 对外（团队总线）看得到的字段：不含消息 id 等内部登记。 */
+export function assignmentView(record) {
+	return {
+		id: record.id, botId: record.agentId, botName: record.agentName, sessionId: record.sessionId,
+		status: record.status, report: record.report ?? null, error: record.error ?? null,
+		createdAt: record.createdAt, updatedAt: record.updatedAt,
+	};
+}
+
+/** 按 id 取一条委派（团队总线用；没有 ⇒ undefined）。 */
+export async function getAssignment(config, id) {
+	await ensureLoaded(config);
+	return ASSIGNMENTS.get(String(id ?? '').trim());
 }
 
 /**
@@ -308,6 +326,7 @@ export function installAssignmentTracker(ctx, config, _state) {
 		} catch {
 			return; // 读不动就保持 running（下回合再判 ✓）
 		}
+		const settled = [];
 		for (const record of targets) {
 			const latest = record.messageIds[record.messageIds.length - 1];
 			const hits = findOurSplices(events, new Set([latest]));
@@ -324,8 +343,11 @@ export function installAssignmentTracker(ctx, config, _state) {
 			}
 			record.status = 'done';
 			record.updatedAt = Date.now();
+			settled.push(record);
 		}
 		// 写穿（终态落盘 ⇒ 重启后报告还在 ✓）
 		void persist(config);
+		// 团队总线：等这条委派的一方（dsh-superagent 主管）据此推进计划
+		for (const record of settled) { teamBus().publish(assignmentView(record)); }
 	});
 }

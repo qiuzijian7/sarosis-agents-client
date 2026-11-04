@@ -64,13 +64,15 @@ export function buildAppMessagePayload(chatId, text) {
  * `deps.fetchImpl` / `deps.now` 可注入（单测不联网）。
  */
 export function createFeishuAdapter({ fetchImpl = globalThis.fetch, now = () => Date.now(), resolveApp = null } = {}) {
-	/* tenant_access_token 缓存：有效期 7200s，**取太勤会被限流** ⇒ 提前 5 分钟过期。 */
-	let cachedToken = '';
-	let tokenExpireAt = 0;
+	/* tenant_access_token 缓存：有效期 7200s，**取太勤会被限流** ⇒ 提前 5 分钟过期。
+	   ★ 2026-11-04 多飞书应用：按 appId 分开缓存 —— 单个变量会让 bot B 拿着 bot A 应用的 token 发消息
+	     （飞书按 token 的应用身份发，消息会以错误的机器人出现，或因机器人不在群里被拒）。 */
+	const tokens = new Map();
 
-	async function appCredentials() {
+	/** `appId` 来自绑定（空 = 默认应用）；`resolveApp(appId)` 由 Host 注入，返回 `{ appId, appSecret, configured }`。 */
+	async function appCredentials(appId) {
 		if (typeof resolveApp !== 'function') { return null; }
-		const app = await resolveApp().catch(() => null);
+		const app = await resolveApp(String(appId ?? '').trim()).catch(() => null);
 		if (!app || !app.configured || !String(app.appId || '').trim() || !String(app.appSecret || '').trim()) {
 			return null;
 		}
@@ -78,7 +80,8 @@ export function createFeishuAdapter({ fetchImpl = globalThis.fetch, now = () => 
 	}
 
 	async function tenantToken(app) {
-		if (cachedToken && now() < tokenExpireAt) { return cachedToken; }
+		const hit = tokens.get(app.appId);
+		if (hit && hit.secret === app.appSecret && now() < hit.expireAt) { return hit.token; }
 		const res = await fetchImpl(`${FEISHU_API_ROOT}/auth/v3/tenant_access_token/internal`, {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
@@ -93,16 +96,17 @@ export function createFeishuAdapter({ fetchImpl = globalThis.fetch, now = () => 
 		const token = String(json.tenant_access_token || '');
 		if (!token) { throw new Error('unavailable：飞书没有返回 tenant_access_token'); }
 		const expire = Number(json.expire) > 0 ? Number(json.expire) : 7200;
-		cachedToken = token;
-		tokenExpireAt = now() + Math.max(60, expire - 300) * 1000;
+		tokens.set(app.appId, { token, secret: app.appSecret, expireAt: now() + Math.max(60, expire - 300) * 1000 });
 		return token;
 	}
 
 	/** 应用模式：token → `im/v1/messages`（receive_id_type=chat_id）。 */
 	async function sendViaApp(ctx, text) {
-		const app = await appCredentials();
+		const app = await appCredentials(ctx?.appId);
 		if (!app) {
-			throw new Error('unavailable：这条绑定没有 webhook URL，且「设置 → 渠道」里没有飞书应用凭据（App ID / App Secret）');
+			throw new Error(String(ctx?.appId ?? '').trim()
+				? `unavailable：这条绑定用的飞书应用 ${String(ctx.appId).trim()} 没有配置 App Secret`
+				: 'unavailable：这条绑定没有 webhook URL，且「设置 → 渠道」里没有飞书应用凭据（App ID / App Secret）');
 		}
 		const chatId = String(ctx?.chatId ?? '').trim();
 		if (!chatId) { throw new Error('飞书应用模式：缺 chatId（receive_id）'); }

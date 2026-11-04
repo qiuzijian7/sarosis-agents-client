@@ -195,7 +195,7 @@ export function isUnrecoverableError(e) {
 	return msg.startsWith('unavailable') || /未安装|缺少 app_id|缺少 app_secret|缺少 Bot Token/.test(msg);
 }
 
-export function createFeishuGateway({ transport, onMessage, log, baseDelayMs = 1000, maxDelayMs = 30_000 } = {}) {
+export function createFeishuGateway({ transport, onMessage, onRaw, log, baseDelayMs = 1000, maxDelayMs = 30_000 } = {}) {
 	let handle = null;
 	let stopped = false;
 	let attempt = 0;
@@ -238,6 +238,9 @@ export function createFeishuGateway({ transport, onMessage, log, baseDelayMs = 1
 					   于是分不清"飞书没推"和"推了但被忽略"（2026-10-29 排查时栽在这）。
 					   现在任何事件都先打一行：只打**事件类型**，不打正文（隐私）。 */
 					note('info', `收到飞书事件：${describeEventType(payload)}`);
+					/* ★ 2026-11-04：原始事件先扇出给同进程的其它订阅者（feishuEventBus.js）——
+					   同一应用只能有一条连接，别的插件只能从这里拿到消息。出错不影响 Bots 自己的处理。 */
+					try { onRaw?.(payload); } catch (e) { note('warn', `事件扇出失败：${String(e?.message ?? e)}`); }
 					const parsed = parseFeishuEvent(payload);
 					if (parsed.kind === 'message') {
 						state.status = 'ready';

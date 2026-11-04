@@ -36,6 +36,37 @@ const FIND_LOG_INPUT_EXPRESSION = `(() => {
 	return hit >= 0 ? hit : 0;
 })()`;
 
+/** 极简 HTML 转义（`text` 目前是内部常量，但不给注入留口子）。 */
+function escapeHtml(s: string): string {
+	const map: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' };
+	return s.replace(/[&<>"]/g, c => map[c] ?? c);
+}
+
+/**
+ * 本地 loading 页（纯 HTML + CSS，**不含脚本** ⇒ 不必放宽任何沙箱设置）。
+ *
+ * 用 `data:` URL 而不是先 loadURL 到远端：远端要等网络（WAF/首屏 1~3s），
+ * 而用户点完按钮最需要的是"立刻有反应"。
+ */
+function toDataUrl(text: string): string {
+	const html = `<!doctype html><html><head><meta charset="utf-8"><style>
+	html,body{height:100%;margin:0;background:#1f1f1f;color:#e6e6e6;
+		font:14px/1.7 "Segoe UI",system-ui,-apple-system,sans-serif;
+		display:flex;align-items:center;justify-content:center}
+	.box{text-align:center;max-width:520px;padding:0 24px}
+	.spin{width:30px;height:30px;margin:0 auto 18px;border:3px solid #3a3a3a;
+		border-top-color:#4ea1ff;border-radius:50%;animation:s .9s linear infinite}
+	@keyframes s{to{transform:rotate(360deg)}}
+	.t{font-size:15px}
+	.tip{margin-top:8px;color:#9a9a9a;font-size:12px}
+</style></head><body><div class="box">
+	<div class="spin"></div>
+	<div class="t">${escapeHtml(text)}</div>
+	<div class="tip">正在本机收集诊断日志，完成后会自动打开问卷（无需操作）</div>
+</div></body></html>`;
+	return 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
+}
+
 /**
  * 反馈窗口的**主进程**实现（2026-10-31）。
  *
@@ -51,6 +82,18 @@ export class FeedbackWindowMainService extends Disposable implements IFeedbackWi
 		@ILogService private readonly _logService: ILogService,
 	) {
 		super();
+	}
+
+	async showLoading(text: string): Promise<void> {
+		try {
+			const win = this._ensureWindow();
+			await win.loadURL(toDataUrl(text));
+			win.show();
+			win.focus();
+		} catch (e) {
+			// 只是没有 loading 页 ⇒ 不影响之后的 openFeedbackWindow
+			this._logService.warn('[feedbackWindow] 显示加载页失败', e);
+		}
 	}
 
 	async openFeedbackWindow(url: string, files: readonly string[]): Promise<IFeedbackWindowResult> {

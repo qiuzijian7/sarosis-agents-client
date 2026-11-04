@@ -42,7 +42,29 @@ export async function readInboundEnabled(config) {
 	return out;
 }
 
-/** 写某个平台的开关（其余平台保持原值）。 */
+/** 2026-11-04：额外飞书应用的开关 `{ [appId]: true }`（默认应用仍是 `enabled.feishu`）。 */
+export async function readFeishuAppsEnabled(config) {
+	try {
+		const body = JSON.parse(await readFile(inboundStatePathOf(config), 'utf8'));
+		const apps = body && body.feishuApps && typeof body.feishuApps === 'object' ? body.feishuApps : {};
+		return Object.fromEntries(Object.entries(apps).filter(([, v]) => v === true));
+	} catch {
+		return {};
+	}
+}
+
+async function writeState(config, enabled, feishuApps) {
+	const root = dataRootOf(config);
+	await mkdir(root, { recursive: true });
+	const target = inboundStatePathOf(config);
+	const tmp = target + '.tmp-' + String(process.pid) + '-' + Date.now().toString(36);
+	const body = { version: 1, enabled, ...(Object.keys(feishuApps).length ? { feishuApps } : {}) };
+	await writeFile(tmp, JSON.stringify(body, null, 2), { encoding: 'utf8', mode: 0o600 });
+	await renameWithRetry(tmp, target);
+	try { await chmod(target, 0o600); } catch { /* Windows 上 chmod 无意义 */ }
+}
+
+/** 写某个平台的开关（其余平台、以及额外飞书应用的开关都保持原值）。 */
 export async function setInboundEnabled(config, platform, enabled) {
 	const key = String(platform ?? '').trim().toLowerCase();
 	if (!INBOUND_PLATFORMS.includes(key)) {
@@ -51,13 +73,16 @@ export async function setInboundEnabled(config, platform, enabled) {
 	}
 	const cur = await readInboundEnabled(config);
 	cur[key] = enabled === true;
-
-	const root = dataRootOf(config);
-	await mkdir(root, { recursive: true });
-	const target = inboundStatePathOf(config);
-	const tmp = target + '.tmp-' + String(process.pid) + '-' + Date.now().toString(36);
-	await writeFile(tmp, JSON.stringify({ version: 1, enabled: cur }, null, 2), { encoding: 'utf8', mode: 0o600 });
-	await renameWithRetry(tmp, target);
-	try { await chmod(target, 0o600); } catch { /* Windows 上 chmod 无意义 */ }
+	await writeState(config, cur, await readFeishuAppsEnabled(config));
 	return cur;
+}
+
+/** 写某个**额外**飞书应用的开关（关掉即删键）。 */
+export async function setFeishuAppEnabled(config, appId, enabled) {
+	const id = String(appId ?? '').trim();
+	const apps = await readFeishuAppsEnabled(config);
+	if (!id) { return apps; }
+	if (enabled === true) { apps[id] = true; } else { delete apps[id]; }
+	await writeState(config, await readInboundEnabled(config), apps);
+	return apps;
 }

@@ -1191,6 +1191,18 @@ export const enum DshHarnessChannelCommand {
 	TofSignOut = 'tofSignOut',
 	/** 取 dsh 侧当前有效票据（商城 JWT 兑换用；只到渲染进程，绝不下发页面）。 */
 	TofTicket = 'tofTicket',
+	/**
+	 * **桌面窗口顶部「应用 / 编辑」菜单的动作**（2026-11-04，参考 dsh-desktop 的 caption menu）。
+	 *
+	 * 为什么必须经主进程：composer / 编辑器自己管 undo 历史栈 ⇒ `webContents.undo()` 会跳过它
+	 * （参考工程 `sendEditingKey` 同口径）⇒ 必须 `webContents.sendInputEvent` 发真实按键；
+	 * 缩放、重载、开发者工具也都作用在**主进程持有的 WebContentsView** 上。
+	 *
+	 * 入参 `{ viewId, action }`；`action` 是 `common/dshDesktopMenu.ts` 的**封闭集**
+	 * （`isDshDesktopMenuAction` 白名单校验，页面/渲染侧不许自造）⇒ 与 `SetViewVisible` 同安全口径。
+	 * 返回新的 zoomFactor（供「实际大小（当前 N%）」刷新）；无可用视图时 undefined。
+	 */
+	DesktopMenuAction = 'desktopMenuAction',
 }
 
 /** 工作区同步的概览（渲染进程侧同步可读，用于界面显示）。 */

@@ -13,11 +13,13 @@ import type { Sessions } from '../sessions.ts'
 import type { Settings } from '../settings.ts'
 import type { Store } from '../store.ts'
 import { AcknowledgementSchema, readTool, tool, type Tool } from './tool.ts'
+import { teamTools, type TeamToolsHost } from './team.ts'
 
 const RoutingNoteSchema = z.string().trim()
   .refine(text => wordCount(text) <= NOTE_WORDS, `Routing note must not exceed ${NOTE_WORDS} words (Chinese uses word segmentation). Shorten it; do not split it across deliveries.`)
   .describe(`Optional routing background or explicit human constraint, at most ${NOTE_WORDS} words. Never add implementation instructions or replace the original source.`)
-export interface MainToolsHost {
+/** VsSaros patch: the host also carries the Team (`TeamToolsHost`). */
+export interface MainToolsHost extends TeamToolsHost {
   readonly context: Context
   readonly engine: Pick<EngineForMainSession, 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'> & EngineForPeople
   readonly store: Pick<Store, 'tickets' | 'triggers' | 'threads' | 'atomic' | 'replyStatus' | 'settings'>
@@ -297,5 +299,7 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
         return saved
       },
     }),
+    // VsSaros addition: team plans given to VsSaros Bots.
+    ...teamTools(host),
   ]
 }

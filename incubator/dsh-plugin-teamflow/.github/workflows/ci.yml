@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'release-*']
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22.18 = `engines.node` 声明的下限；24.x = 现役 LTS。
+        # ⚠️ 矩阵**抓不住**「契约违规被宽松运行时吸收」这一类（2026-10-17 issue #20 追评：伪 AbortSignal
+        # 在 Node 24 抛 `signals[1] is not of type AbortSignal.`，而当年同一套测试在 22/24 上全绿）。
+        # 真正的门禁是 test/signal-brand.test.js 与 orchestration 里的 brand 断言；矩阵只兜「其它 Node 24 差异」。
+        node-version: [22.18, 24.x]
+    steps:
+      # action 一律**钉到 commit SHA**（标签可被重指向 ⇒ 可变依赖进了我们的 CI 权限面）。
+      # 行尾 `# vX.Y.Z` 是给人读的版本锚点，实际生效的是 SHA；升级由 dependabot 提 PR，
+      # 它同时改 SHA 与这行注释（`smoke.js` 锁「每个 uses 都是 40 位 SHA」，改回标签会红）。
+      # 历史注记：v4 及以下的 action runtime 是 node20（GitHub 已弃用，会被强制切到 node24），
+      # v5 起是 node24 —— 这条只解释当初为什么不用 v4，不再约束当前版本。
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+        with:
+          version: 11
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - name: Install (frozen lockfile)
+        # --ignore-scripts：CI 不需要 git hooks（postinstall 会装 lefthook 并拉二进制），
+        # 跳过更快也不受二进制下载影响；git hooks 是本地的事，门禁靠下面的 `pnpm lint`。
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      # ⚠️ 这里**故意没有** typecheck 步骤（2026-10-27 试过并撤回）：`tsc --noEmit` 需要
+      # `@deepseek-ai/dsh-*` 的类型声明，而这些包**不在 npm registry**（tsconfig 的 paths 指向
+      # 本机 `~/.dsh/profiles/node_modules/`），CI 装不到 ⇒ 跑起来是 9 条 TS2307，红得毫无信息。
+      # 它的正确位置是**有宿主包的机器**：`deploy.mjs` 在构建前会跑一次（release/部署必经）。
+      # 别为了"CI 里有这一步"而把 paths 改成假声明——那只会让类型检查变成自娱自乐。
+
+      - name: Lint（oxlint，0 warning 门禁；2026-09-26 引入，存量违规已清零）
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Bundle
+        run: pnpm bundle
+
+      # 注：typecheck 依赖宿主私有包 @deepseek-ai/* 的类型（由本机 dsh profile 提供），
+      # 公共 CI 无此环境，故不在 CI 跑；请在本地宿主环境下执行 `pnpm typecheck`。

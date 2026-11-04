@@ -1,0 +1,865 @@
+# Changelog
+
+> 本插件首次公开发布版本为 **v0.1.0**；发布前的内部迭代（v0.3~v0.13）记录于 `AGENTS.md` §5，对外统一归到 v0.1.0。
+
+## [0.3.3] - 2026-11-01
+
+> **28 笔提交 / 27 个文件 / +1930 −526 行**（`v0.3.2..HEAD` git 对比生成；不含本版 `CHANGELOG` /
+> `docs/releases/` 自身与版本号 bump）。主题：**让续跑跑得住** —— 续跑/重试不再白烧 token、长任务不再被
+> 墙钟误杀、切模型即时到达子代理。逐条取证见 `docs/releases/v0.3.3.md`。
+
+### ⬆️ 升级要点（TL;DR）
+
+- **`engines` 有变**：宿主 `dsh` 下限由 `0.2.1-alpha.2` 抬到 **`0.2.1-rc.5`**（上界仍 `<0.3.0`）；Node ≥ 22.18。
+  升完**重启** `dsh --profile web`（桌面版重启应用）——修复都在宿主侧，不重启不生效。
+- **一处行为变更**：子代理续跑的等待由「固定 25 分钟墙钟」改为「**有进展**就续等」（idle 10 分钟无进展才放手，
+  天花板 2 小时）。用户可见差异：长时间跑构建/测试的子代理不再被误判「拿不到正文」而失败。
+- 无 `teamflow_*` 工具 schema / journal / 任务夹契约改动，**不需要迁移**。
+
+### ① 长任务不再被墙钟误杀（修复）
+
+**现象**：人工 resume 复活的子代理，这一轮正常跑了很久（写测试 + 反复跑构建），插件在固定 25 分钟到顶时判
+「没拿到正文」失败；卡片还显示首次尝试的时长（几分钟），像「早就失败的弃子」，实际子代理仍在正常干活并最终跑绿。
+
+**根因**：续跑等待用固定 25 分钟墙钟，到顶即放弃，**不看是否还在推进**；且判失败时**不更新**该阶段记录，
+结束时间停在首次运行。
+
+**修复**：放弃判据改为「**有进展**就续等」（无新事件/无产物变更持续 10 分钟才放手，天花板 2 小时）；
+判失败时落**真实**结束时刻，卡片不再显示陈旧时长。
+
+### ② 续跑与重试复用同一个子代理（省 token）
+
+**现象**：每次重试都新起一个子代理，对上一轮一无所知，从零重读 PRD/技术方案/源码，单阶段可烧掉千万级 token。
+
+**修复**：重试与人工中断后的 resume 都在**原 child** 里继续（它记得上一轮改到哪）；指令投递成功后**绝不
+回落新起**——两个子代理会并发改同一批文件，宁可本轮按失败收场转人工。
+
+### ③ 切模型即时到达子代理
+
+**现象**：在界面切到别的模型后，子代理仍打旧（已不可用/被限流）的模型。
+
+**根因**：只读父会话「上一次实际请求」的配置，而它只在父代理真正发请求后才刷新 ⇒ 切模型后是陈旧快照。
+
+**修复**：优先读「待生效选择」；旧模型确属外部不可用且用户已切模型时，改道新起子代理吃新路由。
+
+### ④ 开发阶段的边界守卫（修复）
+
+越界发现落成「收口任务」（发现了就有通道变成工作项）；依赖成环改为串行化，读者不再与写者同波；
+技术方案钉死的数值常量被改动直接停（不等验收）；本轮有失败就不再起收口任务（失败态下 spawn 起不来，白烧两次尝试）。
+
+### ⑤ QA 回环在 resume 后不再失效（修复）
+
+QA 打回轮次改为**跨 resume 累计**（续跑后曾有界闭环整个失效）；超限日志不再谎称「跳过产品验收」；
+长命令挂住时给出可见提醒 + QA 命令纪律（一条命令只做一件事、带超时）。
+
+### ⑥ 供应链加固 + 宿主下限锚定
+
+CI 的 action 钉 commit SHA、引入 dependabot 分组、进程调用改 `execFileSync`（去掉 shell 字符串）；
+`engines.dsh` 下限抬到 `0.2.1-rc.5`。
+
+## [0.3.2] - 2026-10-26
+
+> **16 笔提交 / 22 个文件 / +1038 −114 行**（`v0.3.1..HEAD` git 对比生成；不含本版 `CHANGELOG` /
+> `docs/releases/` 自身与版本号 bump）。主题：**让真机跑得住** —— 四条「日志不报错、阶段照样 done」的
+> 静默故障。逐条取证见 `docs/releases/v0.3.2.md`。
+
+### ⬆️ 升级要点（TL;DR）
+
+- **无 `engines` 变化**（宿主仍须 ≥ `0.2.1-alpha.2`）。升完**重启** `dsh --profile web`（桌面版重启应用）
+  —— 四条修复都在宿主侧，不重启不生效。
+- **唯一行为变化**：PRD 改写的等待判据由「固定 300s 墙钟」改为「无进展即放手」（idle 240s / 天花板 600s）。
+  用户可见差异：重改写不再莫名回落成「重跑 PRD」。
+
+### ① 语言不再漂移成英文（修复）
+
+新开工作区后，宿主把整轮产物生成成英文（团队名、子代理 label、PRD 正文），而界面是中文 ⇒ 中英混排。
+根因：客户端上报语言的**空值分支被当成「无事可做」**——不推、也不重试；而语言服务只在**变化**时回调、
+不含初值 ⇒ 挂载瞬间取到空就永远没人再推，宿主永久停在 `en` 兜底。现在「值没就绪」算**待重试**
+（且重试时**重新取值**），宿主侧也不再让空值抹掉已有好值。
+
+### ② 分诊不再白跑一次（修复）
+
+用户在确认单上点选后重调，模型重写补充说明 ⇒ 缓存键变 ⇒ 又起一个分诊子代理。现在「待决策」期间按
+**需求原文**放宽命中（真改了需求仍会重跑）。
+
+### ③ PRD 改写不再「完工前放弃」（修复）
+
+改写走续跑，但原先等的是**固定 300s 墙钟**：一次真实改写跑了 377s ⇒ 插件在它完工前 77 秒放弃，
+白等 5 分钟、丢弃已完成的改写，还让两份 PRD 并行跑。现在改「**无进展**」判据（既无新事件、也无产物变更
+持续一段时间才放手），天花板抬到 600s；并支持「回合结束但回复无正文」时按**文件即产物**判完成。
+
+### ④ 蓝图不再整份丢弃（修复）
+
+模型把正则原样写进蓝图 JSON（`/\.md$/i`），`JSON.parse` 直接拒绝 ⇒ 整份蓝图（多模块 / 多任务）被丢弃
+⇒ dev 退化为**单任务整体开发**。现在对字符串内的**非法 JSON 转义**做确定性修复（加倍成字面反斜杠），
+并覆盖「截断 + 非法转义」并发的形态；修复过会打一条 warn 留痕。
+
+### ⑤ 需求澄清 / 确认单（体验）
+
+- 确认单**清单化**：最多一张汇总卡，不再逐题弹。
+- `PRD` 新增 **anti-goals** 段（「技术可行但产品失败」的情形）。
+- `/teamflow-brainstorm`：需求头脑风暴入口（**只许用户调用**，模型不可自动触发）。
+- 缺陷修复前先看「最近改了什么」（`git log` + 对 baseline 的 diff），再读整模块。
+
+### ⑥ 稳健性（修复）
+
+- 参数类失败判据补第三族（曾把参数错判成「环境不可用」⇒ 停掉自动重试）。
+- 批准后的 resume 复用 PRD 时，用量不再累加。
+- 部署自检：核对 profile 版本号与产物指纹；profile 依赖声明校正为 `file:`（防 `npm install` 打回旧版）。
+
+## [0.3.1] - 2026-10-18
+
+> **12 笔提交 / 18 个文件 / +1540 −24 行**（`v0.3.0..HEAD` git 对比生成；不含本版 `CHANGELOG` /
+> `docs/releases/` 自身与版本号 bump）。⚠️ **两处行为变更**：①「不带 `supplement` 的 resume」等于
+> 整版放行，现在要求**显式批准语义**；② PRD 改写不再重跑子代理，改为在**原 child 的上下文里续跑**。
+> 详细论证与真机取证见 `docs/releases/v0.3.1.md`。
+
+### ⬆️ 升级要点（TL;DR）
+
+- **无 `engines` 变化**（宿主仍须 ≥ `0.2.1-alpha.2`）。升完**重启** `dsh --profile web`（桌面版重启应用）。
+- 如果你之前觉得「在确认单上改一次 PRD 又慢又贵又不可控」：本版起改写走**续跑**——带缓存的模型每轮
+  新增 input 可从 20 万量级降到 1.5 万量级；无缓存的模型成本与重跑相当，但**不再漂移**（只改你指的地方）。
+
+### ① PRD 改写闭环（新能力）
+
+- **改写绑定版本**：确认单上「要改」⇒ PRD 版本号 +1，**上一版的批准自动失效**、必须重新出单；
+  不再有次数上限（上限解决不了「看不到改了什么」，版本+快照才能）。
+- **改写不再重跑子代理**：阶段子代理本就是 continuable（`startActivation` 内部按 provider 的
+  `prepareContinuable` 走 `startLocal`），改为对**原 child** `sendMessage`、再用 `sessionQuery.observeSession`
+  读它这一轮的输出 ⇒ 上下文接着干，只改用户指的地方。真机验证：第 5 版正确**删除**了前几轮加的
+  `--depth`，同时保留 `children` 嵌套与 stdout/stderr 分工。
+- **回落兜底**：childId 缺失 / 宿主无 `sessionQuery` / 超时（300s）/ 拿到空文本 / 投递被拒 ⇒ 一律
+  **回落为「重跑 PRD」**，五类原因分别留痕（不再把四种原因写进同一句话）。
+- **旧版快照**：存 `logs/teamflow/<runId>/PRD.v{N}.md`（随日志归档），**不进任务夹**——
+  任务夹是交付物、会被 `git add`，改 3 版会在仓库里堆 4 个 PRD。
+- 快照的第二重用途（ADR-0011 追加）：各版本的特征计数可直接证明「每轮改的是哪件事、有没有落实」。
+
+### ② 批准语义（行为变更 + 修复）
+
+- **「暂停后有人说过话」≠「批准」**。确认单只剩 1 项待拍板时，用户那句修改要求**恰好是那项的缺省
+  建议** ⇒ 模型判定「你答了这题 ⇒ 整版认可」并自己 `resume`，`confirmApprovedRev` 被写死 ⇒ 这版 PRD
+  再也改不动（PRD 之后已跑过阶段，再带 `supplement` 会被拒）。
+- 现在：**不带 `supplement` 的 resume（= 整版放行）必须有显式批准语义**——否定优先、无批准词不认、
+  有修改词视为「要改」、裸 `ok` 刻意不认；`ask_user_question` 只解析 `answers` 字段（不拿问题正文里
+  的「要不要改」当修改意图）。带 `supplement` 的 resume 不受此限（那本来就是人的驱动）。
+- **批准状态也加严**：确认单形态下只有**显式批准**才写 `confirmApprovedRev`，宁可下次再出一张单，
+  也不让一次误判把 PRD 永久锁死。
+- 真机双向验证：模型自批被拒（暂停后零人类消息）；用户说「批准，开始吧」正常放行并正确记账。
+
+### ③ 阶段用量（修复）
+
+- 改写多轮时，阶段节点卡只显示最后一轮 ⇒ 现在**逐轮累计**（`prdUsageAcc` 落盘）。
+- 修「累计精确翻倍」：累计值与阶段记录曾**共享同一个对象**，累加时退化成 `addUsage(a, a)`
+  （真机上 input/cacheRead/output/calls 四项**都精确 2 倍**）。
+- 逐轮留痕（`本轮 ⇒ 累计`）+ 重复护栏（本轮与累计完全相同时跳过并记 warn），异常不再靠猜。
+
+### ④ 文档
+
+- ADR-0011 追加三段订正：确认单绑 PRD 版本、continuable 续跑（含取文本的三个坑）、
+  快照＝机器可查的落实证据。
+
+## [0.3.0] - 2026-10-17
+
+> **4 笔提交 / 10 个文件 / +349 −18 行**（`v0.2.9..HEAD` git 对比生成；不含本版 `CHANGELOG` /
+> `docs/releases/` 自身与版本号 bump）。⚠️ **行为变更**：PRD 确认单必须由**人**批准 —— 模型工具路径的续跑
+> 需要「暂停之后有人答复过」的证据，否则拒绝并要求先把确认单要点问用户；界面按钮不受此限。
+> 其余为修复，`teamflow_*` 工具 schema / journal / 任务夹契约零改动。详细论证与真机取证见
+> `docs/releases/v0.3.0.md`。
+
+### ⬆️ 升级要点（TL;DR）
+
+- **无 `engines` 变化**（宿主仍须 ≥ `0.2.1-alpha.2`）。升完**重启** `dsh --profile web`（桌面版重启应用）。
+- 若宿主跑在 **Node 24** 上，本版修掉「续跑与面板启动 100% 起不来」的硬故障，务必升级。
+
+### ① Node 24 上续跑 / 面板启动全挂（修复）
+
+- 兜底 signal 此前是**鸭子对象**（`{aborted:false, addEventListener(){}, …}`），被当作 `request.signal` 交给宿主。
+  宿主会把它丢进 `AbortSignal.any([...])`：Node 22 的校验是**鸭子式**（有 `aborted` 即收）⇒ 长期无症状；
+  **Node 24 改走 WebIDL `sequence<AbortSignal>` 真 brand 校验** ⇒ `signals[1] is not of type AbortSignal.`，
+  阶段在 1–3ms 内启动即死。三条传 `undefined` 的入口全中：`resumeRun`（续跑）、`api.start`（面板启动）、
+  triage 预检；只有带真 `exec.signal` 的 `teamflow_start` 幸免。
+- 改为真 `AbortController().signal`（语义不变：永不 abort），`normalizeSignal` 只认 **brand**
+  （`instanceof` + `toString` 跨 realm 兜底），不再接受鸭子形状。
+- 门禁：新增 `test/signal-brand.test.js`（29 条）与编排级 brand 断言 —— 断言**契约**而非「宿主那行抛不抛」，
+  因此在 Node 22 上就能判死；CI 增加 Node 24 矩阵（仅兜其它运行时差异，抓不住这一类，注释已写明）。
+
+### ② 确认单可以被模型自己「批准」（行为变更 + 修复）
+
+- 插件把暂停汇报作为 `user/message` **注入**主会话，模型把它当用户指令 ⇒ 自己调 `teamflow_resume`
+  把确认单批了（窗口内零条人类消息），而代价是「直接开始写代码」。
+- 现在由**宿主判定**：模型工具路径停在确认单形态（PRD 之后一个阶段都没跑过）时，要求会话里存在
+  **晚于暂停时刻的人工答复**，否则拒绝并要求先问用户。人工答复认两类：人会话说（`source.kind==='user'`）
+  与**人点了 `ask_user_question` 的选项**（宿主落盘为 `tool/result`、不产生 `user/message` —— 漏掉这条
+  会让用户点完选项却被拒，是本版补齐的第二半）。
+- 界面入口（工作台「↻ 从断点重跑」）标注为人工来源，不受此限；读不到会话日志时**放行并留痕**
+  （宁可降级，也不能让所有续跑全挂）。
+- 汇报文案不再给模型「批准：调 `teamflow_resume`」的可执行样例，改为「只能由人决定，不要替用户批准」。
+- 门禁：`test/human-approval.test.js`（24 条）+ 编排「无人工答复 ⇒ 代批被拒且不起子代理」。
+
+## [0.2.9] - 2026-10-17
+
+> **11 笔提交 / 35 个文件 / +1371 −102 行**（`v0.2.8..HEAD` 全量对比，变更清单由 git 对比生成；
+> 不含本版 `CHANGELOG` / `docs/releases/` 自身）。⚠️ **本版有破坏性**：宿主 subagent API 在
+> `dsh-v0.2.1-alpha.2` 删除了扁平入口 `subagents.start()`，本版迁移到 `startActivation(spec)`，并把
+> `engines.dsh` 收窄为 `>=0.2.1-alpha.2 <0.3.0` —— **低于该版本的宿主会跳过本插件（不加载）**，
+> 升级插件前请先升宿主。其余各笔均为**真机暴露后的修复**，`teamflow_*` 工具 schema / journal / 任务夹契约零改动。
+> 详细论证见 `docs/releases/v0.2.9.md`。
+
+### ⬆️ 升级要点（TL;DR）
+
+- **先升宿主再升插件**：宿主须 ≥ `0.2.1-alpha.2`（本版 `engines.dsh` 是**宿主强校验**的硬门禁，不满足则插件被
+  跳过、工作台不可用）。升完**重启** `dsh --profile web`（桌面版重启应用）。
+- 本版 = 「适配宿主 alpha.2 子代理新接口」＋「一批真机暴露后的修复」，两者一并发出。
+
+### ① 适配宿主 alpha.2 的 subagent API（破坏性，issue #20）
+
+- 宿主 `dsh-v0.2.1-alpha.2`（提交 `3d852a1cea`）**删除**扁平入口 `subagents.start(name, request)`，唯一入口改为
+  `startActivation(spec)`（`provider`/`label`/`signal`/`delivery` 提到 spec 顶层、`label` 必填、回执不再带 `localAgent`）。
+- 本插件**不兼容旧宿主、不写 shim**：用 `engines.dsh = >=0.2.1-alpha.2 <0.3.0` 当门禁。⚠️ 一并订正两条**旧结论**：
+  `engines.dsh` 是**宿主强校验**的（旧 README 写「宿主不校验」是错的）；alpha.2 起 **one-shot 也占
+  `maxActiveSubagents` 池**（默认 8）。
+- **计量取句柄改在「启动窗口内」**：宿主对本地子级 **idle 即 close**、`activation.result` 在 handle cleanup **之后**才
+  settle ⇒ 原「lazy getter」读 usage 时句柄必然已注销（实锤一次 21/21 阶段 usage 全空、静默数小时）。改为
+  `startActivation` 返回**那一刻**取 `liveChildAgentOf(childId)` 塞进句柄；空值以 `diag.usageMissing` 每 run 一条 warn。
+- **跳子代理会话的地址 `mode` 改传 `'unknown'`**：本插件阶段子代理在 alpha.2 起一律记 `continuable`，写死 `'one-shot'`
+  会被宿主判 `subagent/unauthorized`（实机踩过）。`'unknown'` 是宿主钦定的浏览语义。
+
+### ② 真机暴露后的修复批次
+
+- **语言上报不再静默降级**（中文环境整轮产物全英文实锤）：客户端改为**有界重试**（成功即停 / 2s 重排 / 上限 8 /
+  世代判据 / `dispose` 彻底安静），宿主新增 `localeSource()` 三态 —— 新 run 语言取自兜底时写一条**可见 warn**
+  （这条链原先全静默，正是它长期没被发现的原因）。
+- **确认单不再串上一轮**（「汇报层串了模版」实锤）：`state.json` 是**按项目累积、跨 run** 的，确认单的目标/AC/
+  待澄清项此前读它 ⇒ 本轮 PRD 没回写这些 `extra` 键时显示**上一轮 run 的内容**。改为 PRD 合并 state 时捕获
+  `journal.prdSnapshot`（run 级），确认单/闸门只读它；缺 = 本轮没给（诚实显示「没抓到」，不回落旧值冒充本轮）。
+- **「参数类失败」豁免改为按类覆盖**（两次实锤）：宿主见到同一工具同一错误持续失败会判「环境不可用」**硬停且
+  不自动重试**，但「模型把参数传错」不属于环境故障。豁免从「列举 fs 工具三条文案」改为**按解析层前缀整体覆盖**
+  （含宿主通用参数校验前缀 `invalid arguments:`）——否则任何非 fs 工具的类型错都会硬停。
+- **QA 复验表的「已闭环行」不再计入阻断**（「自我实现的停线」变体 2 实锤）：宿主判「缺陷表」的唯一信号是「表头
+  有严重级列」，而**复验结论表**若照用该表头 + 新增「状态」列，会把**已修复**的缺陷记成本轮阻断 ⇒ 三轮「未收敛」
+  ⇒ **验收被跳过、run 误降级 needs-human**（交付其实干净）。判据补「状态/结论列」（明确标已闭环即跳过），并新增
+  冻结语料 + 循环级行为门禁。
+- **「文件即产物」加新鲜度判据**：此前只查「文件在不在、够不够长」⇒ 上游阶段越界写下游产物会让下游「自评」
+  （架构师越界写 `QA-REPORT.md` 实锤）。改为按阶段开始时的产物指纹（`size:mtimeMs`）判「是不是本阶段写的」。
+- **缺陷卡回答「为什么还停在待认领」**：`open` 分两类——P3 观察项（设计上永不自动关）／非 P3 未闭环（来源 run
+  以需人工裁定收尾）——此前界面统一显示「待认领」、不可区分。卡片与详情面板新增「停留原因」行。
+
+### 验证
+
+- typecheck 0 错；全量测试通过（含新增/扩写 `confirm-run-snapshot` / `bug-open-reason` / `locale` / `empty-turn` /
+  `orchestration` / `smoke`，以及新增冻结语料 `qa-reverify-status-column.md`）；各修复均配**单维度变异证明**断言有牙。
+- 真机：alpha.2 适配经两个真实流水线（共 24 阶段）全程跑通子代理；确认单快照与 `invalid arguments:` 豁免
+  均在真机日志中确认生效（runId / 取证细节见 `docs/releases/v0.2.9.md`）。
+- **本版唯一「未真机」项**：QA 复验表修复（其输入形态取自真实 QA 报告并已冻结成语料，运行路径由**循环级行为门禁**覆盖）。
+
+## [0.2.8] - 2026-10-12
+
+> **5 笔提交 / 25 个文件 / +1677 −22 行**（`v0.2.7..HEAD` 全量对比，变更清单由 git 对比生成；
+> 含 5 份通稿文档，不含本版 `CHANGELOG` / `docs/releases/` 自身）。**无破坏性**：本版只**新增**
+> 3 个 Remote 方法（`updateStatus` / `skipUpdateVersion` / `upgradeSelf`）与 3 个客户端槽位贡献，
+> `teamflow_*` 工具 schema / journal / 任务夹契约零改动；升级探测**默认开启但永不阻断**（联网失败
+> 降级为「不提示」，`TEAMFLOW_UPDATE=0` 可整体关闭）。详细论证见 `docs/releases/v0.2.8.md` 与
+> `docs/adr/0012-update-notice-and-one-click-upgrade.md`。
+
+### ⬆️ 升级要点（TL;DR）
+
+- **0.2.8 起插件会自己告诉你有新版本**：工作台顶部提示条 / 全局面板「检查更新」/ 「插件」页新版本徽标，
+  三处**web 与桌面版都可见**（同一个插件页）；升级动作各归各的 profile（web 用命令，桌面版在应用内操作）。
+  **registry 安装可一键升级**，升完**重启**生效；README 新增「升级（对使用者）」一节。
+- 本版对存量用户**第一次触达无效**（通知机制要靠升级才能获得）⇒ 老用户请按 README 的命令手动升这一次。
+
+### ① 升级提示与一键升级（头条，ADR-0012）
+
+- **三处发现面共用一份实现**（`client/update-ui.tsx`）：工作台顶部提示条（打开时按需探测）；
+  全局面板头部「检查更新」按钮（**唯一手动入口**，绕过缓存）；宿主插件页徽标与操作槽位
+  （`plugins.detail.badge` / `.actions`——槽位贡献写在本插件代码里，不改宿主）。
+  **补的是宿主现成的缺口**：宿主插件页的「更新」只给**官方插件**，第三方插件在宿主口径里是
+  「请先卸载再安装新版」⇒ 本插件在页面上贡献的徽标＋「升级」按钮＝**不用卸载、原地更新**。
+- **探测底座是纯函数**（`host/core/update-check.ts`）：**24h 缓存**（不变成后台轮询）、「跳过此版本」
+  跳的是**具体版本号**（更新的版本仍会提示）、4s 超时、**永不抛**（联网失败降级为「不提示」并显式带原因）；
+  `TEAMFLOW_UPDATE=0` 整体关闭（环境开关，不进公开 schema）。
+- **一键升级走宿主 `pluginManager.installBundle`**：备份 / 回滚 / 写锁 / 审批 / 取消全是宿主现成的，
+  不自己 spawn pnpm。**两步确认**（点一次只展开说明：改依赖、要重启），**run 进行中拒绝升级**，
+  失败按宿主分型结论渲染（不把不同失败糊成一句「升级失败」）。
+- **一键只对 registry 安装开放**：`file:` / git / tarball 装法一键会把依赖**静默换成线上版本**
+  （真机踩过并回滚）⇒ 那些装法只给**可复制的裸命令**（无引号括注，粘进终端即可跑）。
+
+### ② 其它
+
+- **README（中英）改为「插件页安装优先」**：宿主插件页本来就能装（npm 包 / Git 仓库 / 本地目录，两端同一个页面），
+  命令行降为**等价替代**（脚本化 / 批量环境）＋ 本地源码开发路径。
+- `prepublishOnly` 补上漏掉的 `test/runs-eviction.test.js`（白名单少一项 ⇒ 发布前那次永远不跑它）。
+- `docs/adr/0012`：本功能的完整决策与五轮 UI 真机反馈的纪律沉淀（含「一个字符串两个消费者＝两份契约」）。
+
+### 验证
+
+- typecheck 0 错；全量 35 项测试通过（含新增 `test/update-check.test.js`，四条单维度变异证明断言有牙）。
+- 真机：桌面版（desktop profile）实测探测 → 提示条 / 悬浮层 / 复制 / 升级全链路；
+  `installRecipe` 重构前后六个分支逐字节比对（进 `__runCtx` 的那段零漂移）。
+
+## [0.2.7] - 2026-10-11
+
+> **43 笔新提交 / 36 个文件 / +3485 −277 行**（`v0.2.6..HEAD` 全量对比，变更清单由 git 对比生成；
+> 不含本版 `CHANGELOG` / `docs/releases/` 自身）。**无破坏性**：`teamflow_start` 的参数对象是
+> `additionalProperties: true` ⇒ 本版**摘出工具 schema** 的两个字段（`needConfirm` / `clarifyStrength`）
+> 即使被传入也**只被忽略、不会报错**；journal / 任务夹契约 / 其余 `teamflow_*` 参数全部向后兼容。
+> 三条主线 = ① **澄清闸门 + PRD 确认单**（ADR-0010/0011）② **resume / 断点系列修复**（四处，其中两处是
+> 「听起来对、实际全错」的伪代理判据）③ **机器契约彻底离开人类可读通道**（state 块与蓝图块双双改走独立文件）。
+> 宿主侧检查仍**纯记录、不阻断**，且与模型能力无关。
+
+### ⬆️ 升级要点（TL;DR）
+
+- **产品路径改由内容驱动，不再靠开关**：`needConfirm` / `clarifyStrength` 摘出公开 schema，改环境变量
+  （`TEAMFLOW_CONFIRM` / `TEAMFLOW_CLARIFY`）。理由：一个「用户不会主动设、工具描述里也没说何时该设」的
+  参数 = 功能不存在。
+- **PRD 确认单会主动暂停**：PRD 出现**主观品味项**（美术风格 / 交互形态 / 人设等）时停在 PRD 后等批准；
+  **纯信息缺口不阻断**（保住无人值守）。
+- **机器契约不再出现在任何用户会读的文本里** —— 既不在回复正文，也不在交付文档，**连标记包裹都去掉**。
+- 升完**重启** `dsh --profile web`（桌面版重启桌面应用）。
+
+### ① 澄清闸门与 PRD 确认单（头条）
+
+- **确认单改「内容驱动」**（取代 `needConfirm` 开关）：PRD 假设段从「只有信息不足」扩一维到**主观决策项**，
+  `openQuestions` 每条加 `kind: 'fact' | 'taste'` ⇒ **有 `taste` 才停**。
+- **AC 抽取三层**（ADR-0011 C）：结构化优先 → 正文兜底 → **来源必须自曝**（空壳比空更糟）。
+  真实语料逼出两条规则：故事表把 AC 放**第二列**（只锚行首漏 4/4）；区间引用行不得造垃圾条目。
+- **确认单断点开放「回退重跑 PRD」**：原先选项文案写着「我再更新确认单后开工」而后端**明确拒绝**补充输入
+  ⇒ **假承诺**（用户以为能改，点完才发现要么重开、要么白跑）。判据落在**内容**上（`stages` 除 prd 外无记录
+  ⇒ 作废面为零）。
+- **澄清协议归 ctx 手册**：`clarifyStrength` 从未影响过流水线（只选 ctx 文案变体）⇒ 移出 `PipelineOptions`。
+  **判别式：若一个参数的唯一作用是在几个文案变体里挑一个，它就该是文案的默认值，不是参数。**
+- **P0 修复**：`journal.options` 白名单**漏了一个字段** ⇒ `needConfirm` / `clarifyStrength` 在**真实路径下
+  根本不生效**，而测试全绿（`runScenario` 直调 `executePipeline`，**绕过了白名单**）。
+
+### ② resume / 断点系列修复
+
+| 事故 | 教训 |
+| --- | --- |
+| 确认单暂停后**无法续跑** | 无断点判据用了「已记录阶段全 done」这条**伪代理** |
+| **同一 run 内 state 从不刷新** | `mergeStateBlock` 返回**新对象**而调用点丢返回值 ⇒ 后续阶段看不见本 run 写的 `extra.*` |
+| 断点定位第二层 | 「启用过但从未尝试」的阶段也应算断点 |
+| 零阶段 run 断点错位 | ＋续跑补录入口 |
+| resume 文案把「从未尝试」说成「失败」 | 判据同时含两种形态 ⇒ 两个数分开报 |
+
+### ③ 机器契约离开人类可读通道
+
+- **state 块改文件通道** ＋ **蓝图改独立文件**（`logs/teamflow/<runId>/blueprint.json`）：
+  Tech 文档是 user-facing deliverable，而蓝图块真机实测占其 **31% 字符**（5403/17583）。
+  解析链**三级回退**：回复正文 → 独立文件 → `TECHNICAL.md`（历史通道）。
+- **中转文件读完即删**，且清理与「通道是否命中」**解耦** —— 模型「既回显又写文件」时不得漏删
+  （可续跑终态**不归档** ⇒ 漏删即永久残留）。
+- **蓝图截断抢救** `closeTruncated`：实锤模型写了 **5937 字符完整蓝图却缺最外层 1 个 `}`**，
+  既有 `repairBlueprintJson`（只治「提前闭合」）救不了 ⇒ **12 个任务退化成 1 个整体开发**。
+  ⚠️ 仅当截断**不在字符串内、且转义已收尾**时才补 —— 断在字符串中间硬补会得到「语法合法但语义缺失」
+  的对象，**比直接失败更危险**。
+- **蓝图原文落档** `$DSH_HOME/teamflow/<ws>/blueprints/<runId>.json`（无条件）：此前蓝图**三处去向都不留
+  原文**（`render` 只在注入 prompt 那一刻、`journal.blueprint` 只存 `{modules,tasks}`、中转文件读完即删）
+  ⇒ 「模型到底设计成什么架构」无从复查。
+- **标记形态**：`<!-- state -->` / `<!-- blueprint -->` 是**自闭合注释** ⇒ 渲染器消化整条、紧随其后的 JSON
+  变**裸文本**，在 Typora / VS Code 预览里**直接显示给用户**。open 去掉尾部 `-->`；解析器两种都认。
+- **state 块改纯 JSON**（文件整份就是那个 JSON，标记纯属冗余）；`extractStateBlock` **保持不动**
+  —— 回落是在自然语言回复里找块，标记仍是唯一锚。顺带删掉 `state.memory` 死字段。
+- **dev 任务标签**：`if (resume)` 原先**无条件**写「（补跑）」⇒ dev 一次都没跑过也全被标补跑。
+
+⚠️ **两条新增通用纪律**：**凡「用完即删」的中转物必须留事后取证旁路**（否则同类问题变成「无法诊断」）；
+**测「函数正确」≠ 测「调用点接线正确」**（接线必须单独断言，否则静默返回 null 而单测全绿）。
+
+### ④ 其它修复
+
+- 可自愈的文件防护门禁失败**不再计入** env-unavailable（issue #15）。
+- 「工具在这一层不适用」补入 `unknown tool` ＋ 宿主文案漂移检查。
+- 蓝图 `tasks[]` **限定实现范围** —— 不许把 QA / 验收的活划成 dev 任务。
+- 确认单改**两步**（先导总问单独一次）；认可补录语义改成「固化进 PRD」。
+
+### ⑤ 文档
+
+- **ADR-0010**（澄清闸门）、**ADR-0011**（访谈协议 + PRD 确认门）、**ADR-0006**（蓝图形态与通道订正）。
+- `docs/TODO.md` 重排为**三段结构**（真待办 / 观察中 / 已否决）；`docs/devlog.md` 改**按发布批次归并**。
+
+### 验证
+
+- `npm test` 全绿（含 golden corpus 零 LLM 确定性回归）；三条主线各有真机 run 实证。
+- ⏳ **截断抢救尚未被真机触发**（单测用真机那个 5937 字符截断样本 + 部署产物验证；三次真机 run 的蓝图
+  均为合法 JSON）—— **如实标注，不作「已验证」声明**。
+
+## [0.2.6] - 2026-10-02
+
+> 23 笔新提交 / 47 个文件 / +3450 −139 行（`v0.2.5..HEAD` 全量对比，变更清单由 git 对比生成）。
+> **无破坏性**：宿主窗口从 `>=0.1.7-alpha.1 <0.2.0` 放宽到**并集区间**（含 0.2.0 预览版，见下）；journal / 任务夹 / `teamflow_*` 工具参数全部向后兼容。
+> 三条主线 = ① **交付枚举不再被上限截断**（曾让四项 host 检查同时静默跳过）；② **大文档注入一律「小 teaser + 磁盘完整路径」**；③ **dsh 0.2.0 预览版兼容 + 桌面版独立 profile 支持**。
+> 宿主侧检查仍**纯记录、不阻断**，且与模型能力无关。
+
+### ⬆️ 升级要点（TL;DR）
+
+- 🐛 **安装阻塞修复（发版前最后一步拦下的）**：`postinstall: lefthook install` → **`prepare`**。`postinstall` 在**消费者从 registry 安装**时也会跑，而 `lefthook` 是 devDependency（不在 tarball 里）⇒ 安装直接失败。实测反证：改前 `npm install <tarball>` 报 `'lefthook' 不是内部或外部命令`（与用户桌面端日志逐字一致），改后 `added 1 package in 9s`。`prepare` 只在本地 install / pack / publish 时跑，**git hook 仍自动装、发布不再炸**。已加门禁：`preinstall/install/postinstall` 必须为空 + `prepare` 必须是 `lefthook install`。
+- **宿主窗口放宽到 dsh 0.2.0-rc.2**（`engines.dsh` 改并集区间；已逐项核对**未发现破坏**）。⚠ 区间**不是**简单放宽上界——预发布只匹配同 tuple 区间，直接把 `<0.2.0` 改成 `<0.3.0` 会让 `0.2.0-rc.x` 判 fail。
+- **桌面版（dsh 0.2.0 起）需要单独安装**：它用独立的 `desktop` profile，与 `web` 各自一份 node_modules；且 CLI **明确拒绝** `--profile desktop`（Electron 独占）⇒ 桌面版走应用内插件管理界面。`deploy.mjs` 新增 `DSH_PROFILE` 支持分别同步。
+- 升完**重启** `dsh --profile web`（桌面版重启桌面应用）生效。
+- ⚠ **prompt 变长**：craft 五条款（design 2b/2c、dev 4b/4c、QA 0d，缺省开）+ 四处磁盘路径指引，`host/prompts/index.ts` 净增 76 行。本仓的 `instruction-budget` 门禁**只管 AGENTS.md、不管 prompt**，故这部分**未量化**（增量以百字符计，单次调用多几十到几百 tok）。
+- 新增日志键：`log.hostScanTruncated`（枚举被上限截断时的撤回提示）。
+
+### 交付枚举不再被上限截断（今天的头条）
+
+实锤：一次真实交付（runId 见 `docs/releases/v0.2.6.md`）——工作区里有 pnpm 的 `.pnpm-store`（几千个**无扩展名** blob），而旧跳过名单**漏了它**，且它在 `readdir` 顺序里排在 `AGENTS.md` 之前 ⇒ 瞬间吃满 400 上限 ⇒ 返回的 400 条里**源文件 0、HTML 0** ⇒ **加载检查 / 接口核对 / 冒烟 / 验证证据观察四项同时静默跳过**，日志读起来像「交付里什么都没有」，而交付完好（28 文件 / 13 源文件 / 1 个 `index.html`）。**用户是在浏览器里点不动才把它暴露出来的。**
+
+- `host/util.ts`：新增 `scanDeliverableFiles(root, limit)` 返回 `{ files, truncated, limit }`；**点目录一律不遍历**；`listDeliverableFiles` 退为薄包装（签名与旧行为不变，调用方零改动）。
+- `stages/qa.ts`：三项检查任一 `truncated` ⇒ 追加一条 `log.hostScanTruncated` **撤回提示**。⚠ 措辞要说准：那三条「未执行 / 源文件 0 个 / no-html」的**原文保留**（它们确实没执行），撤回靠的是**后一条 warn 点名它们不是事实** ⇒ **顺序也是契约**。
+- 门禁两层：`test/smoke-check.test.js` ②b 段（扫描器层：点目录洪水 / 截断必须 `truncated=true` / 与「真的没有」可区分）+ `test/orchestration.test.js` 第 ⑨ 组（**接线层**：430 个无扩展名文件顶满 400，断言撤回提示发出且排在负结论之后）。变异实测：短路 `if (scanTruncated)` ⇒ 4 条立刻红。
+
+### 大文档注入：裸 clip → 「小 teaser + 磁盘完整路径」
+
+按 256 份真实任务夹文档实测：`TECHNICAL.md` 中位 **19075**、最大 35547；`DESIGN.md` 中位 9338；PRD 中位 6334、QA-REPORT 中位 4430。
+
+- **TECHNICAL.md**（`devPrompt` + `qaFixPrompt`）：`clip(tech, 12000)` → `clip(tech, 4000)` + `Path: ${RUN}/TECHNICAL.md` +「只是开头一小段」。旧阈值会截 **47/50** 份真实文档。
+- **DESIGN.md**（`scaffoldPrompt` + `techPrompt`）：`clip(design, 10000)` → 4000 + 路径。旧阈值会截 **11/31** 份。
+- **PRD.md**（design/tech/architect）与 **QA-REPORT.md**（qaFix）：**阈值不动**，只补磁盘路径——它们原本**零路径兜底**，尾部（优先级 / 依赖与风险 / 验收总则）一旦截断**永久不可补救**。
+- ⚠ 一个反直觉结论：TECHNICAL 中位 19075 ⇒ **连 4000 的 teaser 也截 94%** ⇒ **磁盘路径才是修复主体，teaser 价值有限**。
+- 明确**不动**的两处：`clip(scaffold, 10000)` 与 `clip(devSummary, 8000)`——它们**不是磁盘文件**，无路径可指，加提示就是空话。
+- 门禁：clip 纪律的源码锁 6 道（tech/design 各一条「只用 4000」+ 四条「路径指引覆盖 N 处」）。
+
+### craft 引导通道（design → dev 接通）
+
+来源是「流水线 vs 裸跑」对照的机制归因：**`designPrompt` 写出的 DESIGN.md 到不了 dev 手里**（`devPrompt` 签名没有 `design` 参数），所以流水线在「做好看」这件事上结构性输给单 agent。
+
+- `devPrompt(task, tech, prd, design, …)` 新增 design 入参，注入视觉规格 + 磁盘路径，并明写「视觉规格写在 DESIGN.md 开头，先读它再动手做任何可见的东西」。
+- 开关：`TEAMFLOW_CRAFT`（**未设置/空串 = 开**，只有 `0`/`false`/`off`/`no` 才关），经 `util.envFlagOn` → `options.craft` → `state.__runCtx.craft`；**不做工具参数**（工具 description 每次进主会话上下文），**resume 读 journal 快照不读环境变量**。
+- 定位收窄为**交互反馈下限 + 状态可见性**，不做审美裁决；QA 只记 **P3 observation、绝不阻断**（弱/本地模型产不出 craft，硬门禁会让插件对它们不可用）。
+- ⚠ **净收益至今无定论**：三组样本方向互不相同（全被 QA 返工轮 / dev 任务拆分数 / host 检查静默跳过盖住）。详见 `docs/benchmarks/craft-ab-pomodoro.md`。
+
+### 新增脚本
+
+- `scripts/artifact-selfcheck.mjs`：产物自洽探针（静态、零浏览器依赖）——`[geo]` 几何自洽 / `[bind]` 未绑定按钮与歧义选择器 / `[craft]` 反馈态计数 / `[state]` **死快照** / `[persist]` 持久化缺口。`[state]` 来自一次真实误判：某产物「滑块点不动」，而此前所有静态指标（反馈规则数、AC 数、bind/geo）**全绿**。
+- `scripts/hi-report.mjs`：人工介入归因巡检（只读）。动机是本仓曾长期按「35%」排优先级，而那是**早于 09-17** 的样本；分层实测 91 个 run：09-17 前 20.7%（failed 12）、之后 **9.1%（failed 0）**，且剩下 3 次全是 `knownIssuesAcceptance`（QA 超限 → 产品决策**刻意**交人）。
+- `package.json` 两条测试链接入 `craft-link.check.mjs` 与 `hi-report.test.js`——前者此前是**未跟踪文件**却在链里，会让新克隆 `npm test` 必挂、`npm publish` 被 `prepublishOnly` 挡。
+
+### 护栏 / 编排（本轮前段）
+
+- 澄清闸门埋点（ADR-0010 第 1 步）。
+- env-unavailable 不再误杀「文件级可自愈冲突」，并加**进展豁免**（用**成功**调用判定，不用 `lastMutationAt`）。
+- 「工具在这一层不适用」不再判死（子代理无 Agent Team 身份 / 无委派深度时，调用必失败但不代表工作区全废）+ 禁调协作工具 + dev 端到端证据。
+- 可续跑终态**不归档暂存日志**——resume 要靠上一轮的 checker 当回归契约。
+- 消除「验证脚本会随 run 丢弃」的误导定性，禁止拆 checker 重建任务。
+
+### 客户端窄屏 / 移动端
+
+- 流水线画布支持触摸、缩放下限不再写死、窄容器默认列表视图（issue #10）。
+- ⚠ 缩放下限**保留 0.5**：0.12 时卡片只有 37×7px，糊成一团。上一版把「能看全」当成目标是错的，已 revert。
+- 详情浮层修窄容器下左侧溢出、正文被裁（截图实锤）；画布操作提示改为设备中性。
+- 移动端**不在支持范围**（宿主 dsh 自身未做）——记进 `docs/TODO.md` 的 ⛔ 已否决清单，**不写 README**。
+
+### 语料 / 测试
+
+- `corpus/qa-defect-rich-columns.md`：补「富列 + 列序由表头决定（严重级刻意放最后一列）+ 转义 `|` 还原」。此前 5 份缺陷语料全走 `parseDefects` 投影 ⇒ `reproduce/expected/actual/ac/check/criterion` 与整张 `columns` **从未被断言**。变异实测：不认转义时**只有新语料变红**，那份 note 自称「R3-2 转义回归门禁」的旧语料照旧全绿 ⇒ **一条语料断言了什么只能由变异测试回答，不能由它的 note 回答**。
+- `corpus/tech-blueprint-valid.md` / `tech-blueprint-unrepairable.md`：补 `extractBlueprint` 的正常路径与「不可抢救 ⇒ 返回 null」，连同既有那条构成合法 / 可抢救 / 不可抢救三态（conformance 24 → **26**）。
+- `test/locale.test.js` 新增**占位符覆盖门禁**（224 处带参调用）：起因是桌面版首跑 journal 里出现字面量 `host 侧冒烟：{entry} 真浏览器加载后…`——模板有 `{entry}` 而调用只传了 `{draw, raf, mut, ms}`。同型漏传全仓 2 处（另一处 `guard.envProgress` 缺 `label`）。⚠ 参数表必须**括号配平**地取，实调用常嵌 `t(..., { n })`，用 `[^}]*` 会把「已传」误判成「漏传」。
+
+### 宿主兼容：dsh 0.2.0（预览版）
+
+- `engines.dsh` 改为**并集区间** `">=0.1.7-alpha.1 <0.3.0 || >=0.2.0-rc.1 <0.3.0"`。⚠ 上界**不能简单放宽**：semver 的「预发布只匹配同 tuple 区间」规则下，把 `<0.2.0` 直接改成 `<0.3.0`，`0.2.0-rc.1` / `0.2.0-rc.2` **仍判 fail**（semver 7.7.4 实测）。该字段**宿主不读取/校验**，只表达对正式版的兼容声明；`test/smoke.js` 有门禁钉住。
+- **0.2.0-rc.2 逐项核对：未发现破坏**。证据七条：
+  1. `tsc --noEmit` **直接对着 profile 里已装的 0.2.0-rc.2 编译**（`tsconfig.json` 的 paths 指向 `~/.dsh/profiles/node_modules/@deepseek-ai/*`）且 0 错；host 源码 12036 行里只有 **14 行**用 `: any`（0.1%）、2 行 `as any` ⇒ 「类型过」不是靠 `any` 糊过去的（`strict: false` 不影响属性存在性检查）。
+  2. 实际 import 的 `@deepseek-ai/*` 只有 **4 个包、每包 1 个符号**，逐个比对 0.2.0-rc.2 的运行时导出 ⇒ **0 缺失**。
+  3. `dsh.client.inject` 语义未变（仍是「必须先到达的 factory 依赖边」）。⚠ manifest 类型里那句 `inject` 的注释写着 "Informational … **not** Cordis service injection"，指的是**对 Cordis 而言**（真正的服务边由 patch 行给出），运行时仍用 manifest 的 `inject` 排 factory 到达顺序——**别把它误读成语义变更**。
+  4. manifest schema 兼容：`manifestVersion: 1` 仍有效、`bundle.patch` 仍是 `string | string[]`、`client.platform / inject / immediately` 全在；**新增的 `external` 是可选的**（非 inject 的模块请求），本插件不需要。
+  5. `cordis.patch.yml` 的 `insert:` 行仍被支持（0.2.0 的新能力是**新增**「bundle 自列其 rows」，不替换旧机制）。
+  6. 宿主只校验 **`peerDependencies`** 里的 `@deepseek-ai/dsh*`（本插件全是 `*` ⇒ 放行），**不读 `engines.dsh`**。
+  7. dsh 侧无 `CHANGELOG`；`docs/upgrade-guide/` 只有 v0.1.7-rc.2 一篇，**0.2.0 升级指南尚未撰写**。
+  ⚠ 以上全是**静态**核对：运行时（cordis 服务在 activate 时是否仍在、插件能否在桌面版 profile 正常加载）**需重启宿主实测**。
+- **桌面版用独立的 `desktop` profile**（`~/.dsh/profiles/desktop`），与 `web` 各自一份 node_modules ⇒ 插件须**分别安装**（只装 web 上，桌面版看不到本插件）；且 CLI **明确拒绝** `--profile desktop`（`managed exclusively by the Electron application`）⇒ 桌面版走应用内插件管理界面。该 profile 由 Electron 独占管理，但 `packages/boot/app-boot/src/profile.ts` **只在文件缺失时才写** `package.json`，手工声明不会被启动时冲掉。
+- `deploy.mjs` 新增 `DSH_PROFILE` 环境变量（默认 `web`，保持既有调用不变），使两个 profile 能分别同步——否则桌面版那份副本会**静默陈旧**。
+- 可能受益 / 需复验：0.2.0 有 9 个 `fix(windows)` 与新增 ACL 诊断 skill（值得重测「E: 盘 fresh 目录 grantWrite 必败 Win32 5」）；`user-questions` 支持定时等待与迟到回复（本插件的澄清闸门需复验调用契约）；`schedule` 变为可选 bundle。
+
+### 验证
+
+- 桌面版首次验证 run（runId 见 `docs/releases/v0.2.6.md`）：**completed / humanIntervention=false** / 12m04s / input 1.43M / 49 calls。
+  分诊判成 **lite**（design/scaffold 未经历）；三项 host 检查**全部执行**（接口核对是 `skip；源文件 0 个 —— 不足两个源文件`，属**有明确原因的合理 skip**）；`ACCEPTANCE.md` 末行 `验收结论：✅ 通过`，46 条断言 0 失败。
+- 全量：`npm test` / `tsc --noEmit` / `oxlint --deny-warnings` / conformance **26/26** / instruction-budget（19 条锚点、无孤儿）全绿；已同步 web 与 desktop 两个 profile。
+
+- `engines.dsh` 改为**并集区间** `">=0.1.7-alpha.1 <0.3.0 || >=0.2.0-rc.1 <0.3.0"`。⚠ 上界**不能简单放宽**：semver 的「预发布只匹配同 tuple 区间」规则下，把 `<0.2.0` 直接改成 `<0.3.0`，`0.2.0-rc.1` / `0.2.0-rc.2` **仍判 fail**（semver 7.7.4 实测，四行对照表见 `README.md` 版本锚定小节）。该字段**宿主不读取/校验**，只表达对正式版的兼容声明；`test/smoke.js` 有门禁钉住。
+- **0.2.0-rc.2 逐项核对：未发现破坏**。证据七条：
+  1. `tsc --noEmit` **直接对着 profile 里已装的 0.2.0-rc.2 编译**（`tsconfig.json` 的 paths 指向 `~/.dsh/profiles/node_modules/@deepseek-ai/*`）且 0 错；host 源码 12036 行里只有 **14 行**用 `: any`（0.1%）、2 行 `as any` ⇒ 「类型过」不是靠 `any` 糊过去的（`strict: false` 不影响属性存在性检查）。
+  2. 实际 import 的 `@deepseek-ai/*` 只有 **4 个包、每包 1 个符号**，逐个比对 0.2.0-rc.2 的运行时导出 ⇒ **0 缺失**。
+  3. `dsh.client.inject` 语义未变（仍是「必须先到达的 factory 依赖边」）。⚠ manifest 类型里那句 `inject` 的注释写着 "Informational … **not** Cordis service injection"，指的是**对 Cordis 而言**（真正的服务边由 patch 行给出），运行时仍用 manifest 的 `inject` 排 factory 到达顺序——**别把它误读成语义变更**。
+  4. manifest schema 兼容：`manifestVersion: 1` 仍有效、`bundle.patch` 仍是 `string | string[]`、`client.platform / inject / immediately` 全在；**新增的 `external` 是可选的**（非 inject 的模块请求），本插件不需要。
+  5. `cordis.patch.yml` 的 `insert:` 行仍被支持（0.2.0 的新能力是**新增**「bundle 自列其 rows」，不替换旧机制）。
+  6. 宿主只校验 **`peerDependencies`** 里的 `@deepseek-ai/dsh*`（本插件全是 `*` ⇒ 放行），**不读 `engines.dsh`**。
+  7. dsh 侧无 `CHANGELOG`；`docs/upgrade-guide/` 只有 v0.1.7-rc.2 一篇，**0.2.0 升级指南尚未撰写**。
+  ⚠ 以上全是**静态**核对：运行时（cordis 服务在 activate 时是否仍在、插件能否在桌面版 profile 正常加载）**需重启宿主实测**，不能据「tsc 通过」宣称已在 0.2.0 上跑通。
+- **桌面版（dsh 0.2.0 起）用独立的 `desktop` profile**（`~/.dsh/profiles/desktop`），与 `web` 各自一份 node_modules ⇒ 插件须**分别安装**（只装 web 上，桌面版看不到本插件）；且 CLI **明确拒绝** `--profile desktop`（`managed exclusively by the Electron application`）⇒ 桌面版走应用内插件管理界面。该 profile 由 Electron 独占管理，但 `packages/boot/app-boot/src/profile.ts` **只在文件缺失时才写** `package.json`，手工声明不会被启动时冲掉。
+- `deploy.mjs` 新增 `DSH_PROFILE` 环境变量（默认 `web`，保持既有调用不变），使两个 profile 能分别同步——否则桌面版那份副本会**静默陈旧**。
+- 可能受益 / 需复验：0.2.0 有 9 个 `fix(windows)` 与新增 ACL 诊断 skill（值得重测「E: 盘 fresh 目录 grantWrite 必败 Win32 5」）；`user-questions` 支持定时等待与迟到回复（本插件的澄清闸门需复验调用契约）；`schedule` 变为可选 bundle。
+
+## [0.2.5] - 2026-09-29
+
+> 逐条变更说明与验证数据见 `docs/releases/v0.2.5.md`。**无破坏性**：宿主窗口不变（`>=0.1.7-alpha.1 <0.2.0`），journal / 任务夹 / 工具参数全部向后兼容。三条主线 = ① 编排可测（拆分 + 分目录 + 编排行为测试）；② 交付质量契约（接口契约三层 + 冒烟要求 + 证据探针）；③ host 侧三条客观检查（能否打开 / 接口对不对 / 有没有真动），**与模型能力无关**，全部只记录不阻断。
+
+### ⬆️ 升级要点（TL;DR）
+
+- **无破坏性**：宿主窗口不变；journal 格式、任务夹契约、`teamflow_*` 工具参数全部向后兼容。
+- **升完重启 `dsh --profile web` 生效**（本版含 host 运行时改动）。
+- 新增的 host 侧检查**纯记录、不阻断**，处于观察期；新增日志键：`log.hostLoadOk/hostLoadErrors/hostLoadSkipped`、`log.hostInterfaceOk/hostInterfaceMismatch/hostInterfaceSkip`、`log.hostSmokeOk/hostSmokeNoMotion/hostSmokeSkip`。
+- 蓝图（`api` 签名）现在也注入 QA / 验收上下文，单次约 +1.4k tokens。
+
+### 编排可测
+
+- `executePipeline` 1646 → 1159 行：dev / qa / acceptance 外移到 `host/core/stages/`，函数体按行切片搬运一字未改；共享状态收进 `PipelineCtx`（`import type` 反向引类型 ⇒ 无运行时回边）。
+- `host/core` 按职责分组：`stages/` `agent/` `workspace/` `domain/`。
+- 新增 `test/orchestration.test.js`：stub 子代理驱动真实流水线，覆盖 17 个场景；对拆分前后两份代码各跑一遍均全绿。
+
+### 交付质量契约
+
+- **接口契约三层**：蓝图给精确 `api` 签名 → dev 逐字调用、禁自创成员名 → QA 静态核对（不匹配 = P1）。
+- **冒烟运行（0a2）**：交付须被证明「主路径产生可观测状态变化」；无浏览器时用 DOM/Canvas 桩但保留真实定时器语义。
+- **运行证据探针（warn-only）**：含可执行入口时报告应给「命令 + 结果」类证据；同时锁住「不得强行执行不该执行的交付」。
+
+### host 侧客观检查（不依赖模型能力）
+
+- **浏览器可用性探测**：host 进程可起浏览器（截图 447B / exit 0），而 agent 子代理在受限令牌下恒不能（crashpad 需 `PROCESS_ALL_ACCESS`，受限令牌缺 `0x200/0x800`）。
+- **加载检查**：真浏览器加载交付，抓未捕获错误 —— 专治「打开就崩」，子代理做不到。
+- **接口核对**：解析产物真实导出 vs 跨模块调用点；事故 run 命中 5 处、健康 run 0 处。
+- **冒烟**：「页面有 canvas 却从未绘制」= 空转；四个真实交付复核 **4/4 判定正确**。
+
+### 修复
+
+- **两项 host 检查静默空转**：误把 `root`(= `options.productRoot`) 当文件系统路径（工作区模式下恒为 null，连查 5 个 run）⇒ 从未执行且零日志。改为 `fsRootOf(root, workspacePath)` 解析，并让每种结局都留痕。
+- **蓝图收不到**：`stateSliceFor` 角色白名单缺 `qa`/`acceptance`，而两处 prompt 都写「若注入蓝图则依它核对」⇒ 恒为假。已补。
+- **撤回浏览器配方**：宿主实测证明 `--no-sandbox` 无效（加不加输出逐字节相同），改为写明「agent 沙箱内不可用 + 证据 + 不要再试参数组合」。
+
+### 验证
+
+- 30 个测试套件全绿，断言 **2177** 条（v0.2.4 为 2013）；`tsc` 0 错；`oxlint` 0/0（73 文件）；CI（ubuntu-latest）全绿。
+
+## [0.2.4] - 2026-09-28
+
+> 逐条变更说明与验证数据见 `docs/releases/v0.2.4.md`。**无破坏性**：宿主窗口不变（`>=0.1.7-alpha.1 <0.2.0`），journal/任务夹/参数全部向后兼容。性质 = 工程基建（代码格式单一仲裁者 + max-len 对齐宿主 140 + lefthook 预提交自动修 + @stylistic/oxlint 风格门禁），零功能性变更、零用户可见行为变化。
+
+### ⬆️ 升级要点（TL;DR）
+
+- **无破坏性**：宿主窗口不变；journal 格式、任务夹契约、`teamflow_*` 工具参数全部向后兼容。
+- **升完重启 `dsh --profile web` 生效**。
+- 纯工程基建版本：确立代码格式单一仲裁者（`@stylistic/indent`，不引入 Prettier）、行长上限对齐宿主收严到 140、加 lefthook 预提交钩子自动修复 staged 文件、风格门禁改走宿主同款 `@stylistic`（oxlint jsPlugins）。
+
+### 工程基建
+
+- **代码格式单一仲裁者**：确立 `@stylistic/indent` 为唯一格式权威，不引入 Prettier（两者在 JSX 缩进上互斥）；规范见 `docs/anchors/code-style.md`（含规则准入与升级纪律、源码断言锁只锁内容不锁排版）。
+- **max-len 收严到 140**：对齐宿主 dsh 行宽；全仓 53 处超长行手工折行 + 3 条长正则拆成语义分组数组并做等价性校验（disable 计数归零），不靠 disable 逃避。
+- **lefthook 预提交钩子**：贡献者 `git commit` 即合规——`pnpm format`（两遍 `--fix`）+ `git diff --cached --check` 空白检查，`stage_fixed: true`。
+- **风格门禁改走宿主同款 `@stylistic`**：oxlint `jsPlugins` 加载 `@stylistic/eslint-plugin`（103 规则、0 warning 门禁），锁精确版本 1.85.0（jsPlugins alpha 不随 semver）；补 `@stylistic/indent` + `pnpm format` + `.editorconfig` 三层缩进兜底。
+
+### 验证
+
+- 全仓 oxlint `--deny-warnings` 0/0 @ 103 规则；`tsc --noEmit` 0；28 个测试套件全绿（含 instruction-budget / changelog / prompt-contract / conformance）；lefthook 预提交钩子实跑通过。验证数据见发布说明。
+
+## [0.2.3] - 2026-09-27
+
+> 逐条变更说明与验证数据见 `docs/releases/v0.2.3.md`。**无破坏性**：宿主窗口不变（`>=0.1.7-alpha.1 <0.2.0`），journal/任务夹/参数全部向后兼容。性质 = 诚实可见性（git 提交面 / 失败诊断 / 主会话触发纪律）+ 空收尾止损 + 只读检查 CLI。
+
+### ⬆️ 升级要点（TL;DR）
+
+- **无破坏性**：宿主窗口不变；journal 格式、任务夹契约、`teamflow_*` 工具参数全部向后兼容。
+- **升完重启 `dsh --profile web` 生效**。
+- 新增随包脚本 `scripts/run-inspect.mjs`：给定 runId 只读输出该 run 的文本态 / `--json`（18 键冻结契约）报告。
+
+### 修复
+
+- **交付文档入库尊重仓库 .gitignore**：不再 `git add -f` 强加被忽略文件（`tfDocAddPlan` 三态判定：忽略不入库并点名 / unknown 仍按入库——丢弃用户东西的方向从严）。
+- **交付文档 add 失败不再谎报「已入库」**：失败降级 warn 并转述 git 原话（zh/en），产物留在工作区。
+- **失败诊断自证化**：带正文长度 + 响应块构成（`util.blockShape` 一行）；`completed`+空正文给专属措辞——空收尾形状（只有 reasoning）与宿主中断（`aborted`）/预算截断（`max-tokens`）在日志内即可分辨，不必再解压子代理会话。
+- **主会话触发纪律**：TeamFlow 上下文注入补显式禁令——开发需求唯一动作是 `teamflow_start`，无论需求多小多明确禁止绕过流水线自行实现（换 provider 后实测两次绕过，mercury-2.5 修复后正常触发，8 阶段全绿）。
+- **tech 失败详情不再丢失**：tech 阶段失败错误改传 phase key（原传本地化 label，末次尝试详情恒退化为「无阶段记录」）。
+- **resume 不再丢蓝图**：续跑复用 tech 产物时也执行蓝图提取，dev 不再退化成单任务整体开发（存档无蓝图块则解析为 null，无副作用）。
+
+### 新行为
+
+- **空收尾止损（A 档）**：`completed` + 空正文时回读任务夹产物，达下限判交付收口（返回文件内容顶替空回复），不再整轮重跑（实测一次空收尾沉没 112 万 token）。判定抽纯函数 + 行为级套件 `test/empty-turn.test.js`（抓出并修复 min=0 边界）。诚实边界：只救「文件已合格只差说话」；「干到一半死掉」须 continuable 续跑，已立项 `docs/TODO.md`。
+- **收口提交前如实列出提交范围**（项数 + 路径清单，只加可见性不改行为）。
+- **新工具 `scripts/run-inspect.mjs`**：runId → 只读文本态 / `--json`（schema `teamflow.run-inspect/v1`）报告。
+
+### 验证
+
+- 真实流水线回归 ×2（gitignore 尊重 + 提交面清单全中；换 provider 触发 + 8 阶段全绿零重试，收口提交与清单逐项一致）；smoke 509 → 518；typecheck / oxlint / 全套 `pnpm test` 绿。验证数据见发布说明。
+
+## [0.2.2] - 2026-09-26
+
+> 逐条变更说明与验证数据见 `docs/releases/v0.2.2.md`。**无破坏性**：宿主窗口不变（`>=0.1.7-alpha.1 <0.2.0`），journal/任务夹/参数全部向后兼容。性质 = 缺陷修复 + 工程基建（lint/CI 门禁），无新功能。
+
+### ⬆️ 升级要点（TL;DR）
+
+- **无破坏性、无行为变更面**：宿主窗口不变；全部变更经 A/B 行为验证（`git archive` 修复前后双副本 + stub 宿主依赖，dispose / 分诊定时器 / runs 有界化 / resume 四项对照）与全套测试（24 套件）+ `oxlint --deny-warnings` 0 warning 门禁。
+- **升完重启 `dsh --profile web` 生效**。
+
+### 修复
+
+- **正常结算路径子代理从未 dispose（死代码）**：`runner.ts` 结算 `finally` 里的 `if (run) { ... run.dispose() }` 被行注释吞成死代码（编辑事故），导致每个阶段正常结算后子代理会话不释放（对宿主契约 `settleRun` = result 后必 dispose 的违背）。修复后 A/B 实测：修复前 5/5 阶段 dispose 0 次 → 修复后 5/5 各 1 次且发生在 result 结算之后。
+- **分诊超时定时器悬挂**：`triage.ts` 的 `Promise.race` 超时 `setTimeout` 无 `clearTimeout`——每次分诊成功都留一个 240s 悬挂定时器（事件循环无法及时退出）。修复后结算即清，A/B 实测：修复前 cleared 0 / pending 1（进程被吊住 >120s）→ 修复后 cleared 1 / pending 0（进程 171ms 退出）。
+- **`runs` 内存注册表有界化**：原实现只 set 不 delete + 启动时全量灌入 → 常驻宿主跨工作区单调增长。现改为「最近 100 条终态 + 全部活跃 run」的有界缓存（`RUNS_MEMORY_KEEP`），终态 checkpoint 落盘后 `pruneRuns` 收缩；被淘汰 run 由 `getRun` 统一入口读磁盘回读（不回填），`snapshot`/`status`/`stageDetail`/`teamflow_merge` 五处读点全部切换。实测灌 120 条历史 run 后跑真实 pipeline：内存 120 → 100、淘汰 21 条、回读完整；修复前 120 → 121 单调增长。
+- **resume 查不到 per-project journal 的隐性缺口**：`resumeRun` 的磁盘读只查全局 `runs/`，per-project 新格式 journal 一直靠启动时全量回填的内存兜底才续得上。新增 `store.loadJournalById`（双路径 + runId 白名单防注入）作为 resume 与 `getRun` 的统一权威读取。实测：内存不存在的 per-project journal 修复前 resume 报 `Run not found` → 修复后续跑至 completed。
+- **dev 并发上限 8 三处硬编码收敛为常量**（`DEV_MAX_CONCURRENCY` / `DEV_DEFAULT_CONCURRENCY`，评估复核时发现实际是 3 处而非 2 处）。
+
+### 工程基建
+
+- **oxlint 0-warning 门禁**：devDeps + `.oxlintrc.json`（存量 210 warnings 清零，含 58 处历史死 import）；CI 追加 lint 步骤（与 test/bundle 同跑）。豁免口径与理由登记于 `AGENTS.md` §4 与 `CONTRIBUTING.md`（`catch (e) {}` 是刻意的尽力而为风格；`|| {}` 兜底与 `new Array(n)` 在 `strict:false` 鸭子类型下承担类型角色，机械等价改写会让消费点类型劣化——规则 off，勿"清理"）。
+- **`CONTRIBUTING.md` 新增「Lint gate」说明**（含"oxlint 会扫未跟踪文件"的本地跑提示）。
+
+## [0.2.1] - 2026-09-25
+
+> 逐条变更说明与验证数据见 `docs/releases/v0.2.1.md`。**无破坏性**：宿主窗口不变（`>=0.1.7-alpha.1 <0.2.0`），蓝图与任务参数向后兼容。
+
+### ⬆️ 升级要点（TL;DR）
+
+- **并行 dev 不再互相踩写集**：多个开发任务并行时，除「写同一文件仍合并串行」外，新增**依赖分波**——声明了 `reads`（只读别人负责的文件）或 `dependsOn` 的任务自动排到写者之后的波次，波内并行、波间屏障；声明了环的依赖按软依赖丢边（不退化为全串行）；某波有失败则后续波不再启动（止损，续跑时自动补跑）。
+- **Windows 新目录首跑不再撞沙箱授权**：在数据盘（非系统盘）新建目录跑流水线，首次启动曾必然触发宿主沙箱 `grantWrite (Win32 5)`、子代理环境不可用、需人工排查——现在插件在**任何阶段与模型调用之前**自动完成工作区写授权物化（与宿主同 SID，宿主侧零重复），拿不到授权时自动补一条最小权限修复 ACE（**无需管理员**）后重试；仍失败则**立即失败**并给出一条可复制的修复命令（不消耗任何模型调用）。非 Windows 或宿主无 ACL 沙箱包时自动跳过，行为同旧版。
+
+### 新增
+
+- **dev 依赖分波调度（社区 issue #4 的完整答案）**：此前「多个并行 dev 任务抢写同一文件」只有一道合并护栏（写交集合并），依赖阻塞（issue 的 AC3）没有答案——某任务要读别人正要改写的文件时，要么陪葬式合并、要么读到改写前状态。现在：技术方案蓝图与 `teamflow_start` 的任务参数支持 `reads`（只读边界，**不阻塞并行**）；调度层按「写交集合并 + 三类依赖边（reads / dependsOn / 未声明写集）」做波次分层——波内并行、波间屏障，环声明按软依赖丢边并计数留痕，未声明写集的任务独占末波（保守但不错杀）；某波失败后不再启动后续波，续跑按未完成补跑。配套修复：任务数日志改为「缺失/总数」口径（旧文案会把 1 说成 5）；新增波次/丢边/只读保并行的留痕日志（实测某条流水线上「按可写边界判定比按 reads 判定多保 2 路并发」）。
+- **Windows ACL 预检自愈**：根因是宿主沙箱写 mandatory label 需要 `WRITE_OWNER`，而数据盘新建目录的继承 DACL 通常不含用户显式 ACE（owner 隐式权利只有读控制与改 DACL）→ 首跑授权必失败。修法在插件层：流水线起跑前用宿主自己的 ACL 包按**同一工作区 SID** 把 standing 授权提前物化（宿主随后命中幂等快路径，零重复零残留）；拿不到授权时自动补一条仅含 `WRITE_OWNER` 位的修复 ACE（该写操作只需 owner 隐式权利，**不需要提权**）后重试；救不回 → run 立即失败并附可复制的修复命令与「续跑即可」指引。实测：对照实验四态矩阵（无 ACE 失败 / 仅 WRITE_OWNER 成功 / 仅 WRITE_DAC 失败 / Full 成功）+ 真实流水线端到端（自动修复命中、全程零授权错误）。
+
+## [0.2.0] - 2026-09-23
+
+> 已发布（npm `latest`）；逐条变更说明与升级论证见 `docs/releases/v0.2.0.md`。`main` 与 npm `latest` 保持一致，只接收发布合入。
+
+### ⬆️ 升级要点（TL;DR）
+
+> 本节只保留「要不要升、什么会坏」所需的判据；详细论证（取证、源码坐标、事故复盘）的归处是 `docs/releases/`。
+
+- **⚠️ 破坏性：宿主下限抬到 dsh `>=0.1.7-alpha.1 <0.2.0`**——0.1.6-alpha.2 及更早没有 `session-format-v3-to-v4`，插件注入事件的 source 会被拒（v3 白名单不含 `plugin:*`），**整条 run 直接失败**。升插件前先升 dsh。
+- **⚠️ 破坏性：注入事件 source 形态变更**（`{ kind: 'plugin', plugin }` → 命名空间 `kind: 'plugin:dsh-plugin-teamflow'`）。解析过插件事件的第三方需按 v4 适配。
+- **行为收紧（非可选）**：档位不再由模型自选（省略 `lite`/`mode` 即交给自动分诊，且分诊判 ≥medium 时自动升档）；澄清闸门除 `patch` 档外一律生效——第一次可能被问 1 轮 must-know 问题，这是设计而非故障。
+- **新增早停：环境不可用（`env-unavailable`）**——工作区起不了命令时约 15 秒内停手上报（不再误报成「输出被截断」、不再自动重试），修好工作区后 `teamflow_resume` 续跑，已完成阶段与产物全部复用。
+- **判定多处收紧**：验收结论只认字面量结论行、缺陷只认显式严重级表头、dev 任务身份用 `dt-N`、`execOptions` 白名单完整性有门禁守——历史 journal 兼容，续跑按新规则判定。
+- **安装与存档**：安装入口改运行时探测（源码运行 / profile 名非 `web` 都能给出正确指令），安装步骤由**主 agent** 执行；`logs/teamflow/` 永不入提交，run 终态归档到 `$DSH_HOME`。
+
+
+### 新增
+- **安装入口探测的主源改成「宿主权威锚点」，不再依赖 `DSH_HOME`**（2026-09-21 用户实锤追问：「DSH_HOME 这个变量是安装了 dsh 就自带的吗」→「用户安装了 dsh 之后，在安装了我们插件，DSH_HOME 也不会存在吧」——**用户是对的**）：上一批把「探测」当成了修好的事，但它的主源选错了，**默认安装的机器上会误判成"探测失败"**。**取证（四条）**：① `DSH_HOME` 是**可选覆盖变量**而非安装产物——`packages/util/home-paths/src/index.ts:18` 定义 `DSH_HOME_ENV='DSH_HOME'`、`:87-91` 优先级为「显式配置 > `$DSH_HOME` > `~/.dsh`」，`defaultDshHome()=join(homedir(),'.dsh')`；② 装 dsh **不会**写它——本机实测 `[Environment]::GetEnvironmentVariable('DSH_HOME','User')` 与 `'Machine'` **均为空**；③ `.env` **永远设不了**它——`packages/boot/app-boot/src/index.ts:117` `BOOTSTRAP_PREFIXES=['DSH_',…]` + `:167-180` 命中即抛错；④ 宿主进程里它通常 **undefined**。**我曾被自己的观测误导（撤回）**：本轮 `pwsh` 打出 `DSH_HOME=C:\Users\gyech\.dsh`、`cmd /c set DSH` 也有，我据此在 `util.ts` 写了「宿主注入的环境变量，实测存在」——**这句是错的**。真相：`packages/shell/shell-env/src/index.ts:99` 构造时 `resolveDshHome()`、`:150-152` `collect()` **每次 shell 调用现算一个受管 overlay** 交给 `tool-bash:340`/`tool-pwsh:361`，官方 README 明写「shell executor **discards inherited `DSH_*` values** … `process.env` is **never** modified」→ **shell 里的观测不能用来推断宿主进程环境**（值不是继承来的，是现算的）。**真正的缺陷**：`detectInstallEnv` **已经把答案算出来了却丢掉**——`profileFromModulePath()` 同时返回 `home`/`dir`，旧实现只取 `.profile`、改从 `opts.dshHome` 重拼 → `ok = !!home && !!profile && !!profileDir` → 默认安装下 `home=''` → **`ok=false` → PRD 被降级成「问用户 profile 在哪」**（源码运行 / 一键安装都可能中招）。**修法（用户拍板 A：主源换成宿主给的权威锚点）**：① **`ctx.baseUrl` 就是当前 profile 目录**——`apps/cli/src/profile-boot.ts:315` `rootConfig=join(profile.dir,'cordis.yml')` → `packages/boot/app-boot/src/index.ts:799` `ctx.baseUrl = pathToFileURL(dirname(absoluteConfigPath))`，且该赋值在 `:801`(Loader)/`:804`(挂载插件树)**之前**，Cordis `extend()` 原型继承（`cordis/lib/index.js:1703`）→ 插件构造时即读得到；**实测**（真 cordis）：`root.baseUrl='file:///C:/Users/u/.dsh/profiles/web/'` → `plugin ctx.baseUrl` 与嵌套 service 读到的**都是**该值。新增纯函数 `util.profileDirFromBaseUrl`（`file://` → `decodeURIComponent` + 去 Windows 前导斜杠；容忍 `cordis.yml` 文件名段；非 `profiles/<name>` 形态返回 null）；② 取值顺序改为 **`baseUrl`（主源）> `modulePath`（次源）> `dshHome()` hint（只补 home）**，`ok = !!profile && isAbsolutePath(profileDir)`（新增 `isAbsolutePath`，跨平台 POSIX/`C:\`/UNC）——**刻意不含 `DSH_HOME`**，且**要求绝对路径**（相对目录照做不了；实测旧版 `baseUrl='profiles/web'` 会错报 `ok=true`，已堵）；③ `ctx` → pipeline 经 **`context.installCtx` 单例 + `setInstallCtx(ctx)`** 搬运（与 `setRuntime` 同款，pipeline 无 ctx 且链宿主私有 peer 取不到，故不反向依赖），`index.ts` 构造时登记；④ pipeline 调用点改 `detectInstallEnv({ baseUrl: installCtx.baseUrl, modulePath: selfModulePath(), dshHome: dshHome(), hasCli: cliOnPath() })`，**删掉裸 `process.env.DSH_HOME`**。**为何 `baseUrl` 优于反推**：`link:`/junction 安装下 `import.meta.url` 会解析到**真实目标**——实测建 junction 后 import 得到 `file:///C:/…/junc-probe/real/lib/host.mjs`（probe-v2 的 `dsh-plugin-md-table-align` 正是 `<JUNCTION>` → 反推必落空），而 `baseUrl` 不碰模块路径。**store.ts 一行未动**：`dshHome()` 的 `process.env.DSH_HOME || join(homedir(),'.dsh')` **本来就是对的**（有兜底），22 个调用点（`teamflowRoot`/`stateFile`/`teams`…）自动继承——实测全仓 72 处 `DSH_HOME` 字样里**只有 2 处真读环境变量**（那处已修 + 存储那处本就带兜底），故改动面是 3 个文件约 20 行而非"很大"。**门禁**：`triage-gate[13]` 新增 20 条（baseUrl 三形态/跨平台/URL 解码/容忍文件段；**「不给 `dshHome` 也必须 ok=true」双向回归锁**（旧缺陷正是这条）；junction 场景 baseUrl 兜住；`baseUrl` 非 profile 形态（源码仓）→ `ok=false` 不误判；相对目录 → `ok=false`；POSIX 根拼接不产双斜杠；`isAbsolutePath` 正负例），并新增源码断言「pipeline 代码中不得读 `process.env.DSH_HOME`」（**剥注释后匹配**——本仓有在注释里点名反例的习惯，直接全文匹配会把解释性注释误判为违规，首跑即撞上）。**变异实测（6 条）**：`ok` 退回认相对目录 → 红；忽略 `baseUrl`（主源失效）→ 红；`profiles` 段不校验 → 红；URL 不解码/不去前导斜杠 → 红；pipeline 退回读 `process.env.DSH_HOME` → 红；恢复 → 全绿。**一条等价变异（诚实记录，非漏洞）**：给 `ok` 再加 `!!home` **杀不死**——`ok` 要求 `profileDir` 为绝对路径、而 `profileDir` 与 `home` 同源派生 ⟹ `home` 必非空；覆盖输入空间实测「与现值结论不同的用例数 = 0」。另**修正我自己写错的断言**：`file:///profiles/web/` 是**合法绝对路径**（原断言期望 `ok=false`，是断言错不是代码错），改为断言拼接不产 `//profiles/web` 双斜杠。全量 19 套件 + L1 + L2 23/23 + typecheck 全绿。
+- **安装入口不再写死：改成 host 运行时探测（每个用户环境不同），并明确「安装由主 agent 执行」（2026-09-21 用户实锤）**：用户指出「**我机器上的 dsh 都在 E:\Code\OpenSource\deepseek-harness，然后 pnpm dsh，因为我走的是源码运行，不是一键安装**」，并强调「**不只是兼容我的环境，因为我这是个 toc 插件，每个用户环境不一样，路径不要写死，要用灵活可靠的方法**」。**问题定性**：契约里原本写死「`dsh plugin --profile web add <spec>` 退出码 0」——但 ① 源码运行下 **`dsh` 不在 PATH**（实测 `where dsh` 无结果，且这正是 probe-v2 的 T5 卡住的真因）；② profile 名也不一定叫 `web`；③ 一键安装的用户则确实有 `dsh`。一条写死的命令**不可能同时成立**。**修法一（探测替代写死）**：新增 `util.detectInstallEnv` / `profileFromModulePath` / `installRecipe` 三个纯函数——事实全部**运行时得到**：`DSH_HOME`（宿主环境变量）+ **插件自身磁盘位置反推当前 profile**（我们被 `$DSH_HOME/profiles/<name>/node_modules/<pkg>/lib/host.mjs` 加载）+ `dsh` 是否在 PATH；pipeline 起跑探测并同时注入 `state.__runCtx.installEnv`（供 prompt）与 `journal.installEnv`（留痕、落盘）。**探测失败（拿不到 HOME 或 profile）→ `ok=false` → PRD 必须改为"问用户 profile 在哪"，绝不编路径**。**修法二（说清谁能执行）**：读宿主源码 `apps/cli/src/plugin.ts` 确认 `dsh plugin add` 的语义 = 「`pnpm add <spec>`（cwd=profile 目录）→ `reconcilePlugins`：依赖里**声明了 `dsh.bundle.patch` 的包自动进 `dsh.profile.bundles`**」→ 等价手动步骤**不是猜的**。而**执行者只能是主 agent**：实测流水线子代理会话明写 `permission scope was fixed ... cannot be widened`（写不了 profile），主 agent 的 profile 写入被拒后宿主给出 `escalation available ... sandbox_permissions + justification`，`approval/policy: ask` 下**经用户批准即可**（无人应答 fail closed）。故契约把安装写成「**给主 agent 执行的步骤**」而非"请用户手动测试"。**修法三（汇报带可执行指令）**：完成汇报新增「🧩 安装待办（需主 agent 执行）」——含**本机真实 profile 目录 + 本机命令形态 + 回滚**；探测失败时改为"先问用户 profile 位置"。**门禁**：`triage-gate` [13]（`profileFromModulePath` 正/负例含跨平台、`detectInstallEnv` 失败降级、`installRecipe` 三态、以及接线断言：运行时探测/双注入/落盘/注入块点明主 agent）+ 契约断言「**不得出现写死的 `--profile web`**」「要求以探测为准」「要求问用户」「安装步骤归主 agent」；L1 新增 `PRD-INSTALL-ENV-PROBED`(zh/en) 与 `PRD-NO-INSTALL-ENV-WITHOUT-PROBE`（无探测结果不注入，不编路径）。**变异实测**（7 处，全部红）：契约写死命令 → 2 红；探测失败仍编路径 → 4 红；反推不校验 node_modules → 2 红；失败文案不要求问用户 → 2 红；pipeline 写死 profile → 2 红；prdPrompt 不注入环境段 → L1 10 红；installEnv 只写不落盘 → 2 红；恢复 → 19 套件全绿
+
+- **契约样本来源改成「本机已装 dsh 插件」——原实现指向的路径在用户机器上根本不存在（2026-09-21 用户实锤追问）**：用户在讨论 probe-v3 测试目录时反问「**指向的是不是都是我本地的目录，那如果用户没有的话会导致什么结果**」——这个追问戳中一个一直没被验证的前提。**取证（两条实测）**：① `npm pack --dry-run` → 发布包**只有 10 个文件**（`lib/*.mjs` 4 个 + `package.json` + `cordis.patch.yml` + 两个 README + CHANGELOG），**源码 `client/index.tsx` / `host/index.ts` 根本不发布**；② 旧 prompt 写的是「必须去读**本仓**已有的同类插件样本（`plugins/dsh-plugin-teamflow`）」——**本仓相对路径**，只在工作区位于我们仓库 `plugins/` 下时成立（probe-v2 恰好如此，所以那轮"有参考"其实是**测试被喂了答案**）。**后果**：npm 用户的孤立工作区里 ① 没有 `plugins/dsh-plugin-teamflow` 这个路径 → PM 读空或跳过 → 契约里「禁止凭记忆写字段名」退化成**无法执行的空话**；② 即便指向我们插件自己的安装目录，那里也只有**编译产物**（没有源码样本）→ 让 PM 读产物当样本反而更糟。**修法（不写死任何绝对路径）**：样本**首选项 = 本机已安装的 dsh 插件** `$DSH_HOME/profiles/*/node_modules/<任一 dsh 插件>/`——任何 dsh 插件开发者机器上必然存在（实测本机 profile 里有 4 个：`dsh-plugin-teamflow`/`dsh-plugin-md-table-align`/`dsh-plugin-standup-reminder`/`dsh-workbuddy-connect`，**都带 `dsh` 声明块 + `cordis.patch.yml`**），而它们的 `package.json`（`dsh` 块）与 `cordis.patch.yml` 正是「**声明到底怎么写**」的权威且与宿主版本同步的现场；**本仓样本降为次选**（工作区恰在本仓时可就近读）；两者都没有 → 去读宿主文档或问用户。**诚实边界**：本机已装插件给的是**声明写法**（`package.json` 的 `dsh` 块 + `cordis.patch.yml`），**不含源码写法**——所以 slot 那类源码级知识（`inject`/`register`）仍靠契约判据内嵌，不能指望读样本得到。**附带纠正一处我此前的错误推断**：我曾担心"子代理受文件沙箱限制读不了 `$DSH_HOME`"——解压 probe-v2 全部 12 个子代理会话核查，`FS_SANDBOX_DENIED` **命中 0 次**，`file access denied` 唯一命中处是**系统提示文本本身**；子代理**确实成功读了工作区外的文件** → 读操作不受该限制，方案可行。门禁：`triage-gate` 增 3 条（本仓样本保留为次选 / hint 含 `$DSH_HOME`+`profiles`+`node_modules` / **不得写死绝对路径**）+ L1 改 `PRD-ARTIFACT-CONTRACTS` 并新增 `PRD-SAMPLE-SOURCE-LOCAL-FIRST`（en 同改）。**变异实测**：prompt 退回只指本仓 → L1 **4 红**；hint 写死绝对路径 → **3 红**；hint 去掉 `$DSH_HOME/profiles` → **2 红**；恢复 → 19 套件全绿
+
+- **交付形态契约补一条「UI 挂载点 `name` 必须是 slot 名」（2026-09-21 实锤：probe-v2 交付的插件工具条静默不挂载）**：核 probe-v2 残留时从工作区 3 个未提交 diff 里挖出的**真根因**——流水线交付的 Markdown 表格对齐器 `ctx.slots.register({ name: 'md-table-align.dock' })` 把**插件自己的标识**当成了 slot 名，与 `ctx.slots.inject('conversation.input.dock', …)` 对不上 → **静默不挂载、工具条永不出现**；而它的功能单测 **31/31 全绿、AC 全过、验收 ✅ 通过**（与 dddd 事故同型：下游只验 AC 表，而 AC 里没有"UI 真的出现"）。修复即 `name` 改成 slot 名、插件标识挪到 `id`。**同仓就是权威样本**：`client/index.tsx` 5 处注册（`sidebar.panellist`/`main`/`sidebar.right.pane.tab`/`conversation.view`/`conversation.input.right`）**无一例外 `name` == slot 名**。故写进 `ARTIFACT_CONTRACTS` 的 `plugin-client` 与 `plugin-full`（判据给两段式写法 + 「`inject` 参数与 `register.name` 必须逐字相同」+ 端到端以「装进宿主后 UI 真的出现」为准）。门禁：`triage-gate` [11] 增 4 条 + L1 增 `PRD-SLOT-NAME-CONTRACT`；**变异实测**：删掉 `plugin-full` 那条 → **2 红**，恢复 → 全绿
+
+- **交付形态契约按「宿主框架」分键：开发 openclaw / hermes / pi 插件时不再套用 dsh 的契约（2026-09-18 用户实锤提问）**：用户问「我开发 openclaw 插件，或者 hermes 插件，或者其他 agent 插件，你如何识别不同的场景？这些在 dsh 的契约在其他的不一定有效吧」——**这个质疑是对的**：`plugin-host/plugin-client/plugin-full` 是 **dsh 私有词汇**（profile 层入口声明 / `dsh.bundle.patch` / `dsh.client` 块 / `files` 白名单都是 dsh 的加载机制），旧实现却把它们当"开发插件"的通用形态 → 给 [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)（`ctx.llm` + 工具覆盖 flag 的插件 API）、[pi-agent](https://github.com/earendil-works/pi)（extension + hooks 体系）或 OpenClaw（自带[构建插件文档](https://docs2.openclaw.ai/zh-CN/plugins/building-plugins)）的插件套 dsh 契约 = **反向返工**（改了 dsh 的入口声明，目标宿主根本不看）。**修法（按宿主分键，不给别的框架硬写契约）**：新增与 `artifact` **正交**的 `ArtifactHost = 'dsh' | 'other' | 'unknown'`（`triage.host` → `journal.triage.host` → `contractsForDeliverable()` 单一取用入口）；`plugin-*` 且 `host !== 'dsh'` → **0 条本仓契约**，改为要求 PRD 产出**「宿主契约调研」段**。**为什么不做多框架契约库**：无界增长（每来一个框架加一套）+ 必然过期（hermes PR 编号已到 #26759）+ **我们对其没有权威**（凭记忆写字段名正是 dddd 事故的成因）。**确定性护栏**：模型判 `unknown` 而需求含 dsh 标识词（`dsh`/`@deepseek-ai/dsh-*`/`deepseek-harness`/`cordis`）→ 抬为 `dsh`（防漏判导致整条 dsh 契约静默丢失）；**不覆盖模型明确判的 `other`**（拿词表当身份已两次踩坑）。**硬门禁（用户定调「偏硬」）**：原话「不然你上下文都不知道你开发个啥出来都不知道」→ PRD 缺该段 = **PRD 阶段失败走重试**（`extractHostResearchSection` 行式解析；**空标题不算**，否则模型学会只写标题就过）；`dsh` 场景分毫不受影响。**契约内容同步 sharpen**（把踩过的坑写成具体判据，而非"参照同仓样本"）：入口 `name` 必须用包根名（子路径被 loader 静默跳过）/ client 声明块字段集合必须与样本逐字段一致 / `files` 漏了就不加载 / 沙箱装不了真 profile 时**必须写明人工手测步骤**。门禁：`triage-gate` [11]+[12]（44 条）、L1 新增 5 条（含 3 条 `host-enforced`）、L2 新增 3 份语料（在位/整段缺/空标题）、smoke 7 条指针。**有效性实测**：契约分流失效 → 6 红；漏搬 `host` → 3 红；护栏失效 → 4 红；接线断开 → 1 红；不注入调研段 → L1 2 红；空标题判有效 → 1 红；恢复 → 19 套件全绿
+
+- **流水线可以直接中断了（界面三处按钮 + host 取消门禁）**：此前 `teamflow_cancel` / `teamflow.cancel(runId)` 与取消语义都在（Remote 描述符 + 服务方法 + 模型工具三件套齐备），**唯独客户端一个调用点都没有**——触发了流水线就只能等它跑完，或去跟模型说一句。现在：**会话内工作台顶栏**「⏹ 中断 #xxxxxx」、**全局面板 run 行**、**run 详情头**（右栏 tab 与面板浮层）三处入口，共用同一个 `CancelButton`（**两段式内联确认**：首次点击进入「确认中断?」、3 秒内再点才执行——客户端没有宿主 confirm/对话框依赖，不引新依赖；面板里整行可点开详情，按钮自己 `stopPropagation`）。中止动作走 **DSH 原生 `SubagentRun.dispose()`**（官方契约「cancel remaining work, reach child quiescence」；宿主另有 `subagents.interruptByParent`，但它只服务 continuable 常驻子代理，流水线用的一次性 run 不能走它）。**顺带修掉一个既有缺陷**：`cancelRun` 原先对「内存里存在」的任何 run 都置 `cancelled` 并返回成功——对已完成的 run 是污染 journal，对重启后回填的 interrupted run 是「提示成功但状态永远不变」；现加 `status !== 'running'` 门禁（running 是唯一真实活动态），取消失败对界面可见（工作台报「已不在运行中」，面板给提示），而**阶段间隙（`inFlight` 为空）仍可取消**。取消只置位不改状态机：终态由收尾逻辑落定（`cancelled` + 不提交 + 保留断点续跑入口）。已知边界（写进 `AGENTS.md` §5）：`inFlight` 每个 run 只记最后启动的那个子代理，**并发 dev 子任务的兄弟不会被立即 dispose**（跑到自然结束，下一个检查点不再启动新阶段）。回归门禁：新增 **`test/cancel.test.js`（30 断言，真行为级）**——门禁真值表 / 置位 + dispose + 落盘 / 阶段间隙可取消 / dispose 抛错不吞取消 / descriptor↔服务↔三处 UI 入口同源；为此把 `cancelRun` 从 `pipeline.ts` 移到 `core/context.ts`（pipeline 链到 `report→@deepseek-ai/dsh-llm` 这个宿主私有 peer，仓库内没有 `node_modules`，行为级测试取不到它）。**顺带修一处被实测截图暴露的文案**：阶段被中断时显示「已关闭」（en: `Closed`）——`client/locales.ts` 的 `status.*` 是 backlog 卡片词表（`closed`/`cancelled`/`verified` **都**译「已关闭」），阶段渲染此前直接复用它；现在阶段面单独取词 `stageStatus.cancelled` =「已中止 / Stopped」（不撞 `runStatus` 的「已中断 / 已取消」，其余阶段状态仍共用同一张表），并去掉两处同义重复/误标：阶段行里多余的原文 `cancelled` chip、「尝试历史」把被中止的尝试显示成「进行中」。**相位组头取色同理修正**：`layoutFlow` 的 `anyFail` 原先把 `cancelled` 与 `failed`/`needs-human` 并列 → 用户主动中断的相位组头被涂成**错误色（红）**，而同一节点里阶段卡竖条与「已中止」chip 是灰的（`STATUS_COLOR.cancelled = text2`）= 红头灰身；删掉该判定后组头与连线落到兜底灰（与 chip 同色），真失败仍为红（**不会误变绿**——`allDone` 要求每个阶段都 `done`）。**并发中断硬化（实测两个独立缺陷）**：① **队列补位**——`util.runPool` 的 worker 拿到被取消任务的 `null` 结果后立刻取下一个任务并起新子代理，表现为「中断了又自动启动一个」；现加可选 `shouldStop`（取任务前判定），dev 与 resume 补跑两处传 `() => journal.cancelled`，未启动条目结果为 `undefined`（调用方按 `r &&` 过滤，resume 补跑循环补 `if (!t) continue`）。② **只停最后一路**——`inFlight` 旧形状是每 run 一个 `{run, stage}`（后启动覆盖前一个），`cancelRun` 只 dispose 那一个，并发 dev 的兄弟继续跑（「开发的多 agent 中断不了」）；现改为 `runId → Map<stage, run>` + `trackInFlight`/`untrackInFlight`，取消**遍历 dispose 全部**在飞子代理，并对 `dispose()` 的 Promise 挂 `.catch`。**③ 终态归一（取消卡在「运行中」）**：取消若走 `if (journal.cancelled) return` 的**正常返回**路径，唯一把状态落成 `cancelled` 的 catch 块不会执行 → run 永久停在 `status=running` 且 `cancelled=true`：工作台一直显示「运行中」+ 中断按钮（再按取消无效——门禁只认 running、恰好放行），界面同时给「↻ 从断点重跑」→ 点一次重跑一轮 dev → 再取消，形成"取消了又自己跑起来"的死循环；完成汇报还会自相矛盾地写「状态：running」（主线程据此怀疑 host 内置自动续跑——实测**插件与宿主都没有任何自动续跑**，那几轮续跑全部来自界面按钮）。现于 `executePipeline` 的 finally 首句归一：仍是 running 且已置 cancelled → 落 `cancelled`（幂等），归档/孤儿收口/汇报随之走正确的终态分支。**④ 取消后径直进 QA（resume 路径）**：dev 收口的两个判断（取消检查、提测门禁）原先只写在「新开发」分支里，**resume 补跑分支没有** → 从断点重跑时中断，三路 dev 全「已中止」却立刻起了一个 QA 子代理（更早的隐患：resume 补跑失败也会带着已知缺口直接进 QA，正是 r26 实锤「T2 failed → QA 450k 白烧」的形态）。现把两者移到两分支的**汇合点**，且顺序为先取消检查后提测门禁（取消时任务的 failed 只是「没跑完」，不记成提测失败转人工）。`runPool` 同步搬到 `host/util.ts`（无宿主私有依赖 → 行为级测试可直接喂 items 断言）。**⑤ 取消来源可辨 + 取消态不再给模型续跑引导**：主线程收到「⏹ 已取消」的汇报后**无从判断谁停的**，实测它据此提出错误前提（「外部续跑源在另一个会话（DSH-Plugin）」）并去挖了一圈，还向用户抛出「要不要硬阻断这条 run」。现：取消来源分 `ui`（界面按钮=人工）/`tool`（模型工具）/`unknown`（历史 run），落 `journal.cancelSource` + journal.logs「收到中断请求（来源：…）」，完成汇报新增一行「中断来源：{source}」；**取消态改用 `report.nextCancelled`**——明写「不会自动续跑（host 无该机制），如需继续请让用户点『↻ 从断点重跑』，不要自行调用 teamflow_resume」（旧 `report.next` 把 teamflow_resume 当"下一步"教给模型）
+
+- **需求澄清闸门 Phase 1：探索态需求不再直接开跑 + PRD 假设可见化**：社区讨论（deepseek-ai/deepseek-harness#6405）两位用户的反馈命中同一条缺口——① 「我想开发一个 dsh 插件」这种**陈述式探索**不匹配疑问句式正则（`是不是|要不要|建议…`）→ 直接跑完整条流水线，用户原话「我都不知道自己想要啥，它做完了」；② 「意图澄清需要 agent 与人对话，子代理形态怎么做？」——宿主 `DELEGATED_CALLER` 与 `exit_plan_mode` 都**拒绝存活子级**，故澄清只能由 host 发起、落主线程。本次落地两件（**不改启动后的流水线语义**）：**（1）启动前闸门**——`teamflow_start` 与 Remote `start` 在分支决策之前跑 `clarificationPreflight`（**复用原本就要跑的那一次分诊**，不额外增加模型调用）：分诊裁决新增 `intent`（requirement/exploration/feedback）与 `blockers[]`，**合格线由 host 判**（`qualifyBlockers`：≥2 个互斥读法 + 改变哪个产物/AC/范围 + 猜错返工什么，三项缺一即丢并记 warn、上限 3 条——模型几乎总能为任何需求凑出「问题」，不合格线就会退化成每次都打断）；命中 → 返回 `needs-clarification` **不建 run**，主线程问清后把答复放进新参数 `requirementSupplement` 重调（PRD 收到 `[CLARIFIED]` 权威输入，明令不得再自行假设）。**两条硬边界**：显式 `mode`/`lite` 与现状一致不跑分诊、因而**不走闸门**；分诊不可用/超时走 `fallbackVerdict`（intent=requirement、空 blockers）→ **放行**，即行为与 0.1.9 一致（零回归）。**（2）假设可见化（覆盖 100% 的 run）**——实测 **12/12（另一次 39/39）份 PRD 从未记录过假设**，agent 的替代决定完全不可见、验收人无从判断「这份 PRD 是不是我想要的」：`prdPrompt` 增**必填**「假设与待澄清」段并镜像 state 块 `openQuestions`（tech 变更单 / patch 确认单各加一句），PRD 收口摘段落 `journal.assumptions`（缺失只记 warn），完成汇报显式回带「⚠️ 本次基于以下假设启动」。裁决与假设均随 journal 落盘（`journal.triage`/`assumptions`/`requirementSupplement`）= 下一步「PRD 确认单」的 shadow 埋点。门禁：新增 `test/triage-gate.test.js`（31 断言）+ smoke 19 条 + L1 四条 prompt 契约；全套 16 个套件绿
+- **选团队注入补「澄清闭环」三段（实测驱动）**：把闸门落地当天的真实会话拉出来核对（`session-518e9188`，工作区 `E:\Code\OpenSource\DSH-Plugin\plugins\test`，产品线 `ws-test-a5c6a95f`）：团队注入**已下发**（「只有收到明确的开发需求…才调用 teamflow_start」），用户说的是「**我想开发一个 dsh 插件**」，但 **`teamflow_start` 调用次数 = 0**、该产品线 **runs = 0**——即第一道防线（**模型自觉**：先 Glob 探空工作区、读插件形态文档、调 brainstorming 给方向候选）生效，**第二道（我们的闸门）根本没机会执行**（它活在工具内部）。这既证明两层防线互补（社区实证里第一道失效、当时无第二道 → 闸门兜住），也暴露一个真缺口：**旧注入只写「不明确就别调用」，没写「澄清完必须回来开工」**，于是这条链没有闭环保证（模型可能聊完就停）。故注入文案（`host/locales/tools.ts` 的 `tool.ctx.team`，zh+en 同形）补三段：**① 澄清前置**——探索/笼统需求先给 2–4 个方向候选、只问「无法自查且答错要返工」的关键点、能自己查的不问；**② 澄清后必须回到流水线**——对齐后务必调用 `teamflow_start`，原始原话留在 `requirement`、澄清结论放进 `requirementSupplement`；**③ `needs-clarification` 处理指引**——按返回的 blockers 继续问用户、带 supplement 重调，**不要自行替用户假设**。门禁：smoke 三条（zh 两段 / en 两段 / 指引句）
+### 修复
+- **环境不可用早停（`env-unavailable`）：工作区起不了命令，不再被误报成「输出被截断」**（2026-09-23 probe-v4 实锤）：非系统盘新建目录下，宿主 Windows 沙箱 ACL provision 失败，每次 `pwsh` 都返回 `Error: SetNamedSecurityInfoW failed (Win32 5): grantWrite(<workspace>)`——旧行为把它报成 `stopReason=max-tokens`（11 次调用 / 52,588 输出 / 3 分 45 秒），模型在第 2 次失败后改走「文件工具绕道」又烧了 83,496 输出。修法：① 阈值 `GUARD_TOOL_FAIL_WARN 3→2` / `GUARD_TOOL_FAIL_ABORT 5→3`；② `guard.ts` 新增信号 D（结构化 `message.isError` 判据 + `工具名::归一化错误` 指纹计数 → WARN 落 `stage.envUnavailable` 并注入提醒，ABORT 中止本次尝试）；③ `runner.ts` 环境不可用**优先于「完成了」**且不自动重试 → `humanIntervention`（提示「这不是模型问题，请先修复工作区再 resume」）；④ prompt 增 `[Env unavailable · policy]`（同一错误连续失败即停手上报，禁止绕道、禁止用推理代替执行）。实测同一工作区同一故障：**52,588 输出 / 3 分 45 秒 → 1,510 输出 / 15 秒**。门禁：smoke 3q（含「优先级顺序」断言）+ diagnostic（含生产阈值真值表）+ L1 `ENV-UNAVAILABLE-STOP`
+- **DSH session-format v4 事件 source 适配（probe-v3 实锤整轮 run 失败，破坏性）**：升级到 dsh 0.1.7-alpha.1 后，宿主 `session-format-v3-to-v4` 在事件被 Session 采纳前校验 `source.kind`，**拒绝 v3 退役的 `{kind:'plugin', plugin:'x'}` wrapper**（`message-sources.ts`：`format v4 message requires a producer-owned source kind`），要求带命名空间的 `kind:'plugin:<name>'`。插件所有注入事件（团队上下文 inject ×2、`report.ts` 完成汇报、`guard.ts` 护栏提醒）用的都是旧 wrapper → 新 run 在事件写入阶段直接抛错失败（probe-v3 的 journal 因此没落盘，目录里只有 `teams.json`）。修法：四处 `source` 全部改为 `{kind:'plugin:dsh-plugin-teamflow', ...}`（删 `plugin` 字段、保留 `form`/`summary`）；**加回归断言**（`test/smoke.js` `kind:'plugin:dsh-plugin-teamflow'` 全池命 + 无退役 wrapper 写法）；build 重新 bundle 后重启 web 生效。注：`runner.ts:172` 的 `session.append('tool-workflow/agent-start', …)` 不携带 message/source，不在 v4 校验的遍历范围内，无需改
+- **dsh 0.1.7-alpha.1 兼容性核查（无其余破坏性项）**：逐契约核对插件依赖的宿主 API 在 0.1.7-alpha.1 下均稳定——typert 严格描述符仍要求 `create()`（`descriptors.ts` 已满足）；`subagents.start(name, request)` / `SubagentRun.{id,localAgent,result,dispose()}` 签名未变；`tokenUsage` 投影四桶名（`uncachedInputTokens`/`outputTokens`/`cacheReadTokens`/`cacheWriteTokens`，`stateVersion:2`）与 `sessionStats.steps` 调用数来源与 `metering.ts` 读取完全一致；`agent.inject/followup/steer`、`ctx.get('settings').get('locale').preference` 只读端口、`ctx.remote.$mount({package, descriptors})`、`sessions.openSubagent`、`sidebarRight.openResource`、`ctx.locale.*` 全部兼容。结论：0.1.7-alpha.1 下**仅 v4 source 一项需适配**（已落地）；README 版本锚定随后改锚 v0.1.7-alpha.1、`engines.dsh` 随之下调（见下条）
+- **宿主下限随 v4 要求收窄：`engines.dsh` 改为 `>=0.1.7-alpha.1 <0.2.0`**：上两条的 v4 source 决定了「能跑流水线」的下限——0.1.6-alpha.2 及更早**没有** `session-format-v3-to-v4` 包，其 source kind 校验是**封闭白名单**（`session-format-v2-to-v3/src/payload.ts:10` 的 `SOURCE_KINDS`、`:112`；该文件自述「V2 migration admission and **V3 payload validation**」、被 `codec.ts:12` 的 `assertV3Event` 引用 = v3 运行时校验），**不含 `plugin:*`** → 两种 source 形态互不兼容，下限即 v4 宿主。`engines.dsh` 随之收窄（semver 7.7.4 实测：`0.1.7-alpha.1`/`0.1.7-alpha.2`/`0.1.7`/`0.1.8`/`0.1.9` **PASS**，`0.1.6-alpha.2`/`0.1.6`/`0.2.0-rc.1`/`0.2.0` **fail**）。README（zh/en）版本锚定段由 v0.1.6-alpha.2 改锚 **v0.1.7-alpha.1**，新增本次 breaking 面（原 0.1.6 typert 段保留、改标「上次核对」），并修掉升级检查清单里已过期的 `source.kind='plugin'`；`docs/benchmarks/teamflow-vs-dsh-builtin-agent-team.md` 的「已知破坏点」与「兼容声明」同步。**已发版通稿 `docs/announcement/github-discussion-show-your-plugin.md` 定稿冻结**（随 v0.1.8 发布）：其内的锚定是发布当时的事实、不再追改，后续新通稿另建文件并写当时的锚定版本
+- **流水线图里所有「开发」子任务卡片只剩「开发」两个字（标题丢失，0.1.9 起的回归）**：维护者对比两次截图后问「现在开发不显示里面的 title 了？」。证据链：① 截图里三张卡片的时长 2m18s/3m3s/2m48s 唯一定位到 run `tf-mtr9mi37-m9zx1u`（journal 里三个 dev 阶段时长 139/184/168s）；② **journal 里标题完好**（`taskKey="game.js ghostY rot 归一加固（单点防御）"`、`label="开发 · …"` 三条齐全）→ 数据没丢，问题在展示；③ 客户端渲染走 `stageLabelOf(s)`，它靠 `s.taskKey` 区分「任务级阶段（保留任务名）」与「其余阶段（走 phase 词表本地化）」，而 **host 的 snapshot 投影从未带 `taskKey`**（`host/index.ts` 的 `stages: j.stages.map(...)`）→ 该分支永不成立 → 全部 dev 卡片退化成阶段名「开发」；④ 回归点：P1 客户端 i18n 改造（0.1.9）之前节点标题直接渲染 `s.label`，改造后改走 `stageLabelOf` 而投影没跟上。**同一根因还吃掉 QA 缺陷修复轮**（`taskKey=null`，label=「开发 · QA 缺陷修复（第 1 轮）」→ 也只显示「开发」）。修法：**投影补 `taskKey`**（补齐 client 契约）+ **`stageLabelOf` 对 dev 阶段兜底保留 label**（缺字段也不丢标题）；门禁：smoke 两条（投影必须含 taskKey、dev 兜底不得移除）。**历史 run 零迁移**——标题一直在 journal 里，部署 + 重启后老 run 也会恢复显示
+- **Phase 1 自伤两处（同日实测修，勿回退）**：① **澄清答复被静默丢弃**——`startPipeline` 把**白名单化的 `journal.options`**（只含档位/团队/并发等审计字段）直接传给 `executePipeline`，于是 `requirementSupplement` 与 `__triage` 从没进过 pipeline：澄清结论进不了 PRD（`[CLARIFIED]` 块空转）、`journal.triage` 永远为空（**shadow 埋点整个失效**）；修法 = `execOptions = Object.assign({}, journal.options, { requirementSupplement, __triage })`（审计面仍保持干净，内部字段只走执行面）。② **PRD 假设段提取匹配不到真实产物**——内联正则 `^#{1,6}\s*(假设|待澄清|…)` 遇到本仓惯例的**编号标题**（`## 9. 假设与待澄清`）直接落空，而 `([\s\S]*?)(?=\n#{1,6}|\s*$)` 的 `\s*$` 分支又会在标题后立刻命中并摘出空串 → 明明写了段落却记「契约未兑现」、`journal.assumptions` 为空、汇报里也不高亮；修法 = 新增 `util.extractAssumptionsSection`（**行式解析**：容忍编号/附录前缀/中英标题，取到下一个标题为止，正文 trim 后为空才算未记录）。**实锤 run `tf-mu34afd2-wcjaw1`**：模型确实传了 1144 字符澄清结论（会话记录可见），落盘 `journal.options` 里却完全没有该键；PRD 里确有 `## 9. 假设与待澄清`（含 A1–A3 默认值 + 若改变的后果），而 `journal.assumptions` 为 null。门禁：`test/triage-gate.test.js` 增 10 条提取用例（编号/附录/en/空正文/文末/空输入）+ smoke 4 条（execOptions 透传、不得回退直传、提取走 util、旧正则不得回归）
+- **档位不再由模型自选：`lite`/`mode` 一律过闸门 + 架构护栏强升（ADR-0006 恢复生效）**：维护者问「为啥每次都被主线程显式 `lite:true`」——查证根因是**我们自己的参数描述在推荐它**：`lite` 的说明写着 "Lightweight mode for small changes **(recommended)**"，模型在推理里**逐字引用**它（`testb`：「lite: true (最小可用版, small change) — recommended for small changes」；`test`：「teamflow_start doc: lite = lightweight mode for small changes」）。量化：全部 22 会话 / **33 次 `teamflow_start`** 里，带 `lite` 6 次（全 true）、带 `mode` 8 次（**0 次**先跑 `teamflow_triage` 预览）→ **14/33（42%）的启动完全跳过 triage**，于是澄清闸门与「架构信号 → 至少 medium」的架构护栏在近一半启动上静默失效。修法两条：**A 描述纠正**——删掉 "(recommended)"，`lite`/`mode`/工具描述统一写明「**默认不要自己选档位**：省略它们交给自动分诊（它会应用架构护栏）；仅当用户明确要求轻量/快速时才传 `lite`」；**B 护栏兜底**——启动前预检**只豁免 `patch`**（其余含显式 `lite`/`mode` 一律跑分诊，用于闸门判定 + `guardrailUpgrade`：调用方选了轻档位而分诊判 ≥medium → **升档并落 `log.modeUpgraded` 日志**；调用方已选 medium/full 则保持其选择，不做无谓 token 放大）。代价：显式档位路径多一次分诊调用（lite run 均值 ~168 calls，占比 <1%）。门禁：`triage-gate` 增 12 条护栏真值表 + smoke 6 条（描述不得再出现 "(recommended)"、只豁免 patch、两条路径都过护栏、升档可见）
+- **闸门的权威判定从「工具内预检」移到 pipeline（实测驱动，勿回退）**：维护者新开的 `testc` 工作空间里，模型已**不再自选档位**（`lite=undefined mode=undefined` ✓ A 生效），闸门也真的跑到了 —— 但 `journal.triage` 显示 `source=fallback`，且这次 `teamflow_start` **总耗时 0.4 秒**：模型分诊不可能这么快，说明工具内的分诊**当场抛错被吞掉**、静默降级成正则兜底（对照实验：同在工具上下文里调 `teamflow_triage` 返回 `source=model` ✓，差别只在预检当时**漏传了 `exec.signal`**）。另外那次还暴露一个日志 bug：调用方**没选档位**时也被记成「调用方自选档位「full」→ 已升档」。修法三件：① 预检传工具 signal，失败原因写进 `__triageError`（不再静默）；② 升档日志只在调用方**真的选过档位**时才记；③ **权威判定移到 pipeline**——除 `patch` 外**一律**跑分诊（含显式 `lite`/`mode`），在那里做架构护栏强升与闸门兜底 `abortForClarification`（`intent !== requirement` 或存在合格 must-know → `status=interrupted` + `humanIntervention`，**不建任何阶段**，汇报带 `run.needsClarification`，用户答完带 `requirementSupplement` 重启或 resume）。工具侧预检保留为**快路径**（大多数情况省一次模型调用），但正确性不再依赖它。门禁：smoke +5（预检传 signal / 失败不静默 / pipeline 除 patch 外一律分诊 / abortForClarification 存在且被调用 / 两类日志键齐备）
+- **闸门不收敛（同日 `dddd` 实测修，勿回退）**：新工作空间 `dddd` 里模型 **6 次** `teamflow_start` 全部返回 `needs-clarification`、**没有创建任何 run**，而它自己的复盘写得很清楚：「第 5、6 轮已明确回答『真实功能插件』，第 6 轮又被问『带 UI 功能插件 vs 脚手架』」，blocker 数 3 → 2 → 2 始终绕同一个问题。根因两条：① **分诊输入只有需求原话，`requirementSupplement`（澄清答复）从没进过分诊**（所以答复再多也"没被听见"）；② **没有任何收敛规则**。修法：① 分诊输入改为 `requirement + [CLARIFIED] requirementSupplement`（并写明 do NOT re-ask），tool 侧与 pipeline 侧同一口径（与 PRD 阶段已有的 `[CLARIFIED]` 同源）；② **收敛规则**：**没给过 `requirementSupplement` 才拦**；已给过（=用户已澄清一轮）→ 不再拦，残余 blocker 作假设开工并记 warn `log.clarifyProceedWithAssumptions`（假设进 PRD「假设与待澄清」段、完成汇报 `report.assumptions` 高亮）。语义：闸门只负责"**唤起第一轮对齐**"，不负责"追问到满意"——后者由 PRD 的假设可见化兜住。门禁：smoke +3（分诊输入带 supplement / 未澄清才拦 / pipeline 同规则+可见 warn）
+- **验收结论行被章节标题蒙住 → 通过却判 needs-human（实测修复，勿回退）**：`dddd` 那条 run（`tf-mu4bve7t-duux2k`）交付质量其实**已经通过**（dev 10/10 补跑完成、QA 查出 3 个阻断缺陷并打回修复、复验通过、验收报告结论 `验收结论：✅ 通过`），却被 host 判成 `failed` + 需人工：`ACCEPTANCE.md 缺少验收结论行`。根因在 `parseAcceptanceVerdict`：它用 `.find()` 取**第一个**含「验收结论」的行，而真实产物第 11 行是章节标题 `## 1. 验收结论摘要`（含这四个字却不是结论行）→ 取到标题 → 四档词全落空 → needs-human。修法：**只认字面量模板行**（行首 `验收结论：` / `整体结论：` / `Acceptance verdict:` / `Overall verdict:`，允许 `## `、列表符前缀），有多个时取**最后一个**（报告末尾的结论章才是终判）；**不认** `**验收结论：**` 这类加粗破坏冒号连写的写法（宁严勿松：不知道结论就 needs-human，不猜）。门禁：`test/verdict.test.js` 增 8 条（含用真实 98 行结构复刻的回归样本：摘要章在前仍判 accepted、同结构 ❌→rework、只有标题→needs-human、en 同构、`## `/列表符前缀可识别）+ smoke 4 条（源码形状 + 行为断言 + 样本存在性）。**改用真实产物实测**：修复后同一份 `ACCEPTANCE.md` 判定由 `needs-human` → **`accepted`**
+- **续跑不再重复跑分诊（回归修复）**：`dddd` 续跑日志里多出一行 `自动分诊 … source=fallback`——档位在首次启动就已定稿并落 `journal.options.mode`，续跑又跑一次分诊既白花一次模型调用、又可能让档位在续跑路径上漂移（架构护栏强升本不该二次触发）。成因是上一批「除 `patch` 外一律跑分诊」的条件没排除 `resume`。修法：`} else if (resume) {` 分支——**不跑分诊**，只补一条 shadow 记录（`source: 'resume'`，且**仅当 `journal.triage` 缺失时**才补，首轮真实裁决优先保留）+ 日志 `log.triageResumed`（zh/en）。门禁：smoke +2（续跑分支存在且不跑分诊 / 仅缺失时补记录）
+- **外部供应商故障（限流/无额度/上游故障/超时）不再被当成交付缺陷**：`dddd` 那条 run 第一轮 01:37 连续 6 个 dev 阶段 `stopReason=error` → 旧行为**快速重试两次就转人工**（落 `failed + human`），而**16 分钟后（01:53）同样的请求成功了**——说明那是「供应商在一段时间窗内不可用」，与阶段内容无关；旧处置让它看起来像交付质量问题（主线程因此去分析那 3 个失败任务）。现在三件事一起做：**① 错误分类**（`util.classifyExternalFailure` 纯函数：429/402/rate limit/quota/insufficient_balance/5xx/upstream/timeout/ECONNRESET/中文「限流/额度/余额/超时/上游不可用」… → `external`；上下文超限/护栏/产出过短 → `content`；未命中 → `unknown` 按内容类处置，宁严勿松。⚠️ 启发式：宿主只给 `stopReason=error` + 错误文本，无结构化错误码，故命中原文写进日志便于核对）；**② 长退避重试**（外部类走 `EXTERNAL_BACKOFF_MS = 30s→60s→120s→240s`，总等待 ≈7.5 分钟；**不计入熔断预算**——等待不烧 token；退避**不受 `RETRY_LIMIT` 约束**（那是"换做法重试"，外部故障是"等窗口过去"，两件事不共用一个计数器）；退避用 `sleepUnlessCancelled` 可被取消立刻打断）；**③ 退避用尽 → 落可续跑中断态而非 failed**（`journal.externalFailure=true` + 阶段 `interrupted/external`，汇报用 `report.externalFailure` 明写「疑似外部供应商不可用，**非交付缺陷**；窗口恢复后 `teamflow_resume` 只补跑未完成阶段，已完成阶段与产物全部复用」）。**不做"阶段内续写"**：那要动全局「产物写一次、不可变」契约 + 全部阶段完成判定，收益只在"非 dev 阶段被打断后重跑几分钟"，价值低（dev 已是任务级增量）。门禁：`verdict.test.js` +21 条（分类真值表含中英/HTTP 码/超时/连接重置/护栏优先级 + 退避序列与边界）+ smoke +7（分类与退避纯函数存在 / 外部走退避且不受 RETRY_LIMIT / 退避可取消 / 用尽落中断态 / 标记落盘与汇报 / 文案键齐备）
+- **交付形态契约：把"形态本身隐含的验收标准"变成必填 AC（实测驱动，避免"看着完整却装不上"）**：`dddd` 那条 run 交付了一个**看着完整**的 dsh 插件（host/src/client/lib 全有、功能 AC 全绿、QA 还真查出了 3 个缺陷并打回修复、验收结论 ✅ 通过），但它**装不进 dsh web profile**：缺 `cordis.patch.yml`（profile 层加载入口）、缺 `package.json` 的 `dsh.bundle.patch` 声明、`files` 白名单漏了该文件、依赖用了 `workspace:` 本地协议。根因不是"模型没做好"，而是**AC 里从来没有"宿主可加载/可安装"这一条**——PRD 把"我想开发一个 dsh 插件"展开成了功能 AC（时钟/提醒/持久化/UI），而**形态隐含的客观契约无人负责**；下游 QA/验收只验 AC 表里的东西，于是"缺胳膊少腿"照样通过。修法（**数据驱动，不靠每类插件加正则**——那会无界增长并与既有 UI/架构词表交叉）：① `triage` 增**一个维度** `artifact`（`app/plugin-host/plugin-client/plugin-full/cli/lib/docs/data/other`）+ `installable`（"done"是否意味着必须能被宿主装入）——**用单选维度覆盖所有交付物类型**，新形态只加枚举值；② host 侧 `ARTIFACT_CONTRACTS` **契约数据表**（新增一类交付物 = 加一行数据，不加判定逻辑），每项含「要求 + 判据形态」，例如 plugin-* 必含：profile 层入口声明（`name` 用包根名，子路径会被 loader 跳过）、该文件进 `files` 白名单、依赖不得用 `workspace:`、宿主运行期依赖按模块表声明为 peer、`installable` 时追加"profile 安装成功 + 重启后宿主真实加载"；③ pipeline 把契约展开进 `state.__runCtx` → `prdPrompt` **强制**把它们写成**可测 AC**（不是正文说明），并要求**去读同仓已有同类插件样本核实字段名**（`ARTIFACT_REFERENCE_SAMPLES`，**禁止凭记忆写**——宿主版本会演进）；④ `other`（既有产品内普通改动）**不注入**任何契约，防误套。门禁：`triage-gate` +13（形态归一/`other` 与 `app` 无契约/installable 分档/每项都有要求+判据/**契约表不得硬编码宿主字段名**/cli 可执行入口/lib 模块入口/plugin-* 含 workspace 与 files 两项实锤缺口）；L1 +4（triage 输出形态字段、PRD 形态契约段 zh/en、**未判形态时不得注入**）
+- **交付形态澄清项（②）+ 「📝 需求不适用」行首锚定（实测修 bug）**：
+  - **② 澄清**：`TRIAGE_PROMPT` 增一条**必问**规则——新交付物（plugin-*/cli/lib）但需求没写**交付/安装形态**（真能被宿主装入并验证 / 发 npm，还是"源码在仓库里就行"）时，这是 must-know 缺口，必须作为 blocker 问用户；形态不同 → 契约集与 AC 不同，猜错等于最后重做打包（实锤：插件缺宿主加载入口与 bundle 声明，因为"要不要能装"从未定过）。同时明确**不要**在需求已写形态、或仓库惯例/脚本/文档已能确定时问。门禁：L1 `TRIAGE-INSTALL-BLOCKER`。
+  - **📝 修 bug（`tf-mu4i779p-kze5kl`）**：r2 修复 run 的验收报告 L163 明写 `验收结论：⚠️ 有条件通过`、L120 标题写「为什么不判「📝 需求不适用」」、L122 正文写「dev 结果并非「无需改动」」——**它是在论证"不适用不成立"**，而 `parseAcceptanceVerdict` 的 `📝 需求不适用` 走**全文匹配** → 命中标题里的引用 → 判 `reject` → run 落 `failed` + 需人工（而且 `journal.humanIntervention` 还是 false，与 error 文案自相矛盾）。修法：📝 判定改**行首锚定**（剥掉 markdown/列表/表格前缀与结论标签后，该行必须以 📝 + 需求不适用 开头才算；`## 📝 需求不适用` / `验收结论：📝 需求不适用` / `| 📝 需求不适用 | … |` 都算，`5.3 为什么不判「📝 …」` 不算）；📝 出现在句中不再全文命中 → 落 needs-human（宁严勿松：误拦截=人工看一眼，误判 reject=让人去"调整或取消需求"）。**顺带修**：`reject` 分支补 `journal.humanIntervention = true`（原先只置 backlog 卡片，与 rework 分支不一致）。门禁：`verdict.test.js` +5（行首/表格/引用论证三组 + 句中 → needs-human + 真实报告结构复刻）+ smoke +3
+- **改动存档两态模型（方案 A：入口定、出口遵）——非程序员的安全网终于"看得见"**：dddd 两条 run 的产物因「工作区不是 git 仓库」**从未进入任何版本库**，而用户全程只看到「全部完成 ✅」——三个可见性缺口同时存在：入口**静默跳过**分支决策（`index.ts` 原 `if (s.ok && s.inRepo)` 对非仓库整段不问）；「状态核对不可用」只注入**子代理**提示词（`sanity.unavailable`），用户看不到；出口把提交失败记成「失败（忽略）」日志，不进汇报。这不是文案问题：对非程序员，一个 run 一个 commit / 分支隔离 / M0 现状核对 / 改动审计就是**唯一的安全网**（改坏了退不回、说不清改了什么、自己原有文件和 run 的改动混在一起）。修法（两态，不新增机制）：① **入口定**：非 git 工作区 → `needs-decision kind=git-init`，**人话问句**（"开启后：本次运行的改动会单独存成一档，随时可以整体撤销，也能看清这次改了什么；不开启：改动直接写入文件夹，之后无法一键撤销"），选项 `init`（git init + 目录不大时把现有内容作为**基线提交**，本 run 的改动因此是一份干净 diff）/ `keep`（知情选择：无法撤销、不记录）；答案写进该工作区 `state.json` 的 **`gitMode`（"repo" | "none"）**，后续 run 不再问；② **出口遵**：`gitMode="none"` → **根本不尝试提交**，日志/汇报写「未开启改动存档（用户选择）…需要的话可让 agent 把该文件夹变成可存档的」——替换「失败（忽略）」；repo → 正常收口 + 汇报新增 **「📦 本次改动已存档（1 次提交）：不满意可整体撤销」**行（`report.vcsArchived`）；③ **两层防线**（init 是灾难动作：盘根/家目录 `git add -A` 扫全盘）：**L1** `isDangerousVcsRoot`（驱动器根/家目录本身或祖先/系统目录/深度≤1）→ **不给 init 选项**只给 keep + 建议"把项目放进单独的文件夹"；**L2** `dirTooLargeForBaseline`（有界采样：>1000 文件或 >100MB 或 1s 采样超时 → 只 init **不做基线提交**；目录不可读按过大处理，宁严勿松）；④ **执行期二次校验**：`preAction="init"` 在 pipeline 执行时重判（程序化调用可绕过决策）——命中 L1 → 降级为不初始化并继续（run 不打断），`git init` 失败同理；⑤ `preAction` 扩为 `"stash" | "commit" | "init" | "keep-nogit"`。门禁：`verdict.test.js` +12（危险路径 10 例 + 大目录/不可读 2 例）+ smoke +8（决策分支/记忆/二次校验/出口遵从/汇报行）；smoke 两条提交点计数断言改为 `>= 2`（init 基线是第三个提交点，同样走 tfAddArgs+gitignore 链）
+- **安装/装载安全契约 + QA 形态探针（dddd 安装事故驱动）**：r2 修复后插件成功装进 profile（V6 全绿），但**重启宿主起不来（P0）**——根因是 `lib/index.js` 是**旧构建产物**（源码里已修的 `ctx.inject(['settings'])` 没进产物），顶层访问未注入服务直接抛错；最后靠**另开一个 agent 把插件卸载**才救回宿主。三个新契约（plugin-host / plugin-full 各自追加，plugin-client 加产物同步）：**① 构建产物与源码同步**（判据：安装前重新构建；产物含当前源码特征字符串或 mtime 晚于全部 src）；**② 装载安全**（模块顶层不得抛错——判据：`node -e "require('<产物入口>')"` 退出码 0；**非 installable 也要求**：源码目录阶段就该能加载）；**③ 安装必须带回滚**（installable 档：安装前写明卸载命令——如 `dsh plugin remove <name>` 或从 profile 依赖与 bundles 同时摘除；装后验证失败 → **先回滚再报告**，绝不把宿主留在起不来的状态）。接线：`stateSliceFor` 对 **qa/acceptance** 角色下发形态契约清单（`state.artifactContracts`，每条含可执行判据），`qaPrompt` 增 **0b 节**：契约项=必跑探针（命令+退出码进 QA-REPORT.md）+ **安装回滚纪律** + 环境做不到的（需重启宿主）必须进人工补测清单、不得沉默。门禁：`triage-gate` +5、L1 `QA-SHAPE-PROBES`。**宿主侧能力缺口记入 TODO**：`dsh plugin add` 这类改宿主启动形态的操作，理想上应由宿主提供"安装后自检/失败自动回滚"（装完先试加载，起不来自动摘除）——插件侧无法替宿主做
+- **dev 任务身份稳定化：任务合并执行后 resume 不再重复补跑（实锤根治）**：用户在 probe-cache 观察到「**T0 被触发两次，第一次明面成功了**，第二次还烧了 token」。取证（journal + 会话记录 + backlog 三向印证）——**不是模型发挥，是 host 自己的判定 bug**：① 冲突检测把 `files` 有交集的 blueprint 任务**合并**成一个子代理执行（本意是保证并发不写同一文件，是对的），合并时把 `title` **拼接**成 `"T0 … + T6 … + T7 …"`（`pipeline.ts` 里 host 自己拼的）；② 但 `taskKey` 当时只存 title，`devTaskStatuses` 按 **title 全文精确匹配**归并；③ resume 时 `buildDevTaskDefs` 重新从蓝图取回**未合并**的 `T0 …`/`T6 …`/`T7 …` → 三个都查不到 → 判「未完成」→ **重复执行已成功的工作**（backlog 里 `dev-1` 与 `dev-7` 同为 T0、`dev-8` 同为 T6，肉眼可见的重复卡；子卡匹配键同样是 title，故也建了重复卡）。**修法（用户拍板：身份必须结构化，不用产物存在性、更不用字符串规则）**：`buildDevTaskDefs` 按定义顺序生成稳定 **`dt-N`** 作任务身份（`util.devTaskIdAt`），合并时 **`taskIds` 数组累加**（`['dt-1','dt-7','dt-8']`），`stage.taskIds` 落盘，`devTaskStatuses` **逐 id 归并**、resume 判定 `taskStatuses.get(d.id)`；子卡匹配键同步改用 **`dtId`**。**为什么不用"按分隔符切分 title"之类的规则**：那是拿文本长相当身份（per-plugin 正则、固定 .gitignore 词表两次同型教训）。`devTaskStatuses` 移入 `util.ts`（纯函数；pipeline 链宿主私有 peer，行为测试取不到——同 `cancelRun` 住 context 的处置）。
+  **⚠️ 首版引入回归并当场修正（用户实测「又点了 resume，0/1/2 开始重试」）**：首版写的是"存量 stage 无 `taskIds` → **在判定里**回退 `taskKey`/`label`"。这是**给脏数据打补丁**，且回退是 **per-stage** 的——历史 stage 回退还用 title、新任务定义却用 id → **id/title 两套命名空间，永远对不上**：实测**补跑 8 个**（T0/T1/T2 明明 done 却全重跑），比修之前的 title 判定（补跑 2 个）**更差 4 倍**。**正确做法（用户："你这是为了兼容脏数据？"→ 逐条否掉双键匹配/切分 title，改为"给存量数据补 id"）**：新增 **`backfillDevTaskIds(stages, defs)`** —— 用**蓝图自己的 title** 去匹配 stage 的 `taskKey`（方向是**结构化 → 文本**，不是反解字符串），命中的即为该 stage 承载的任务；合并 title（`"T0 … + T6 … + T7 …"`）会补出**多个** id（与新逻辑"合并时数组累加"完全同构）；结果**写回 journal**（幂等，已有 `taskIds` 的跳过），日志记 `log.devIdsBackfilled`。`devTaskStatuses` **只认 id**（函数体内不出现 `taskKey`）——判定因此**始终只有一个键空间**。实测同一份真实 journal（21 个 dev stage）：补算前 8 个待补跑 → **补算后仅 1 个（`dt-6`）**，比 title 判定的 2 个还准（T7 确实被那个 done 的合并 stage 承载过，旧 title 匹配看不到拼接串里的它）。
+  门禁：**新增 `test/dev-task-id.test.js`**（25 条：合并 stage 三个 id 各自判已做、历史失败不翻案、补跑 stage 必须带 taskIds、**存量补算**（补算前 8 个全待补跑 → 补算后仅 `dt-6`、合并 title 补出多 id、幂等、空/无匹配不臆造）、`devTaskStatuses` 只认 id 的两个反向断言、空/空白/重复边界）+ smoke 11 条（含**反向断言**：判定函数体内不得出现 `taskKey`、不得按分隔符切分 title）。**同批澄清一处此前的误判**：曾推断「失败阶段 token 未记账」是 bug——实测两次失败的 T0 补跑会话 usage 全为 0（`429 soft_rate` 秒退、未产生 token），stage 显示 0 是正确的；真正的大额消耗在 T5 首次开发（5122k/67 calls，触发熔断），**已撤回该推断**（不在无证据时改代码）。
+- **`state.json` 的 `gitMode` 从来存不住（「答案记住」整条失效；白名单漏字段第四次）**：用户报「probe-cache 里 `state.json` 没有 `gitMode`」。取证：`loadState` 是**逐字段白名单重建**（`const base = emptyState()` 后逐个赋值，**不是**整体读取），而它**漏了 `gitMode`** → pipeline 明明写了 `st.gitMode='repo'; saveState(...)`（日志也有「改动存档已开启（git init 完成…）」），但**任何一次阶段 state 块合并**（`mergeStateBlock` 走 load→save 往返）都会把它丢掉 → 文件里永远没有 → **每次 run 又从头问一遍「要不要开启改动存档」**，用户当初要的「答案记住、后续 run 不再问」整条失效（这条正是 2026-09-17 方案 A 的核心承诺）。这是"白名单漏字段"同型问题的**第四次**（前三次：`journal.options` 丢 `requirementSupplement`/`__triage`、`execOptions` 丢分支策略四字段、`host/index.ts` 输出 schema 漏声明）。**修法**：`loadState` 显式搬运 `gitMode`（且**只接受 `'repo'`/`'none'` 合法值**，脏值过滤、不固化）。**门禁不再只补这一个字段**——新增 **`test/state.test.js`**：① **静态解析 `TeamflowState` 接口的顶层键**，逐个断言 `loadState` 真的搬运了它（运行时字段 `__runCtx` 与常量 `version` 豁免）→ **将来新增持久化字段忘了搬运会立刻红**，不依赖有人记得来加断言；② 行为级 save→load 往返每个字段仍在；③ `gitMode` 三态（`repo`/`none`/缺省=未知）+ 非法值过滤；④ **复刻实锤丢失路径**：写 `gitMode` 后跑一次 `mergeStateBlock`，断言 `gitMode` 仍在（修复前正是这一步抹掉它），且合并本身照常生效（不是靠跳过合并保住）。**门禁有效性已验证**：临时移除修复行 → **7 条红**；恢复 → 全绿。+ smoke 2 条指针断言。
+- **基线排除不再污染用户 `.gitignore`（方案 B 根治，用户截图实锤）**：用户打开 probe-clock 的 `.gitignore` 发现 `.pnpm-store/` **顶着「TeamFlow 运行日志（插件自有产物…）」的注释**。表象是注释张冠李戴（`mergeGitignore` 的注释是**整批一条**，`ensureCommonNoiseIgnores` 把 `.pnpm-store/`+`node_modules/` 和 `logs/teamflow/` 塞进同一个说明），**真问题是越界**：host 把"该忽略什么"写进了**用户的项目文件**——而这本该由 L2（PRD 阶段 PM 按项目技术栈规划，见 `prdPrompt` 必查项）与 L3（QA 收口探针）以及用户本人决定。修法：**删掉 `ensureCommonNoiseIgnores`**，基线提交改用 `tfAddArgs(BASELINE_NOISE_EXCLUDES, 工作区路径)` 的 **magic pathspec 索引层排除**——只影响 host 自己那一次 `git add`，**用户 `.gitignore` 一个字节都不碰**（真 git 集成测试逐字节断言）。**关键发现（temp 仓库实测，勿回退）**：`:(exclude)` 报错退出 1 的**唯一前提**是该路径**已被 `.gitignore` 忽略**（「显式点名 + 被忽略」），故排除项必须**永不出现在 .gitignore 里**——这正是本方案安全的原因，也是它与 2026-09-11→09-15「4 天没有任何 run 提交过」那个坑的分界。**自检以目标仓库为根**：初版自检用相对路径读 `.gitignore` → 读到的是**宿主进程 cwd 而非目标仓库**，两个方向同时错（目标仓库没忽略的被误拦 → 排除失效、噪音进索引；目标仓库忽略了的被误放 → 点名 + 被忽略 → **exit 1，那个坑原样复活**）；改用 **`git check-ignore -q`**（git 自己的规则引擎：通配/取反/嵌套 `.gitignore`/全局 excludesfile 全覆盖），无法判定时**一律不下发**（宁可少排、add 慢一点，也绝不让 add exit 1——失败的代价不对称）。门禁：`commit-path.test.js` +11（真 git：未忽略路径 + `:(exclude)` → exit 0 且噪音不进索引、真交付仍在面内、**用户 .gitignore 逐字节未变**、基线提交跑通、已忽略项自检拦下且 exit 0）+ `gitignore.test.js` +13（清单形状/空清单退回 4 参数/逐项独立判定）+ smoke 8 条（**反向断言**：pipeline 不得再出现写用户 .gitignore 的噪音排除、不得调用已删除的函数、忽略判定必须走 `check-ignore`、不得用相对路径读 `.gitignore`、基线清单不得含自有日志）
+- **execOptions 白名单完整性（B1 同型第三次，probe-clock 实测修复）**：用户按改动存档问句选了"开启"（`preAction='init'` 正确回传、run 正常启动），但 **git init 静默没执行**（journal 只有 sanity 的「状态核对不可用」，没有任何 init 日志）。根因：`startPipeline` 的 `execOptions` 显式携带清单漏了**分支策略四字段**（`branchPolicy/branchName/preAction/commitMessage`）——与 2026-09-16 的 `requirementSupplement`/`__triage` 丢失（B1）完全同型：`journal.options` 是审计白名单，内部字段必须经 `execOptions` 显式携带。修：补齐四字段 + **smoke 门禁**（逐字段断言 execOptions 携带，共 6 项；以后加内部字段漏一个就红）。同批：**闸门/决策五处注入文案统一 AUQ 化**（needs-clarification 每 blocker 一题 ask_user_question、题干=question、选项=readings+"其他"兜底；needs-confirmation/分支决策/改动存档/危险路径同规则）——AUQ 点选是当前 agent 主流用户习惯，且 readings 本就是互斥选项，天然适配；**start 输出 schema 补声明**（`kind`/`message`：git-init 决策与 paused/no-team 返回路径此前会被宿主 `additionalProperties:false` 拒收——probe-clock 实测两次 start 失败、零 run；render 兜底 message 直出 + git-init 决策专用渲染键）+ **smoke「输出 schema 严格性」断言**（静态抽取 execute 各 return 顶层键 ⊆ schema 声明）
+- **分诊不再问「需求里已经答过的问题」，也不再吞掉显式 `needDesign`（probe-v2 实锤，两个同源缺陷）**：用户报告「还是两次需求分诊，一次 lite、一次 medium」。取证（主人会话 + 两个分诊子代理会话 + journal 三向印证）——**缓存没坏**：git 存档决策那一程隔 **13 毫秒**就起跑（模型分诊实测 1.5–1.9 s），全程只有 **2 个**分诊子代理，`journal.triage.source="model"`，即上一批的 `pendingDecision` 缓存按设计命中；多出来的那一次是**澄清后的新输入按设计重判**（缓存键含 `requirementSupplement`，答复进来了键就不同）。真根因在第一次分诊：需求原文结尾写着「**装进我的 dsh web profile 里真实可用**」，而它**自己**已经判了 `installable: true`、`artifact: plugin-client`，却**同时**抛出「要不要真能装进 profile」的 blocker——prompt 里那句 `Do not ask it when the requirement already states the form` 就在同一份 prompt 里（会话记录逐字可查），照样被违反。这条不该问的 blocker 凭空造出一轮澄清（主线程问了用户 3 个问题）→ 输入变了 → 缓存必然不命中 → 同一需求被分诊两次。**修法不解析问句文本**（拿文本长相当判据已同型踩过两次）：blocker 新增机器可读字段 `settles`（`installable|artifact|scope|ui|data|other` = 这条问出来是为了定哪个裁决字段），宿主 `qualifyBlockers` 增加**自洽门禁**——同一次裁决里已明确判过 `installable: true` 时，`settles="installable"` 的条目与之自相矛盾 → 丢弃并计入 `blockersDropped`（沿用既有 warn 留痕）。只按 `true` 判：`false` 是「模型没给字段」的默认值，既可能是「不需要装」也可能是「还不知道」，后者正是 must-ask 缺口的合法形态（丢了会重演 dddd「插件装不进 profile」）。**同批修掉第二个症状**：分诊判 `lite` 而调用方显式传了 `needDesign=true`——`lite` 的档位定义就是「no UI design」，两者语义冲突，而旧 `guardrailUpgrade` 只比较「调用方显式 mode」，调用方只给 `needDesign` 时它不生效（prompt 里那句 `needDesign=true → 强升 medium` 只是 regex **预筛提示**，实测被模型无视）→ 现在**未给档位 + 显式 `needDesign=true`** 时由宿主抬到 ≥medium 并沿用 `log.modeUpgraded` 留痕（调用方显式给了 `mode`/`lite` 时仍以调用方为准，设计阶段由 `resolveStages` 按 flag 追加）。门禁：`triage-gate` +18（自洽门禁真值表：`installable=true` 丢弃 / `false` 保留 / 不给 ctx 保留 / 非形态类不受影响 / 归一六档；needDesign 下限真值表含「显式 lite 不抬档」「已是 medium 不放大」）+ L1 `TRIAGE-INTENT-BLOCKERS` 更新为五字段 + smoke 5 条（两条解析路径都必须把 `installable` 传给合格线、两条 start 路径都带 `needDesign`、`settles` 在 prompt 与类型里、反向断言宿主不解析问句文本）。**门禁有效性已验证**：把自洽门禁与 needDesign 下限两行各改成 `false &&` → **5 条红**；恢复 → 全绿
+- **「回复过短」不再等于「没交付」+ 熔断预算不再假设 provider 有 prompt 缓存（probe-v2 实锤，两个 host 缺口）**：用户问「真正失败的原因是啥，是不是和那个模型的问题」。取证（journal + PRD 子代理会话逐条 usage + 两次 probe 对照）——`tf-mu71waxg-4iws10` 死在 PRD 阶段，链条是**三步**：① 触发：PRD 子代理 17 次调用里 **14 次是空转式探索**（`read AGENTS.md`（不存在）→ `glob AGENTS.md` → `glob **/*.md` → 列目录 → 读 `.gitignore` 后又 `Get-Content .gitignore` → 反复找 `docs/teamflow/memory.md`…），最后**只回了一个 state 块**（284 字符）；② 判定：284 < 下限 400 → `insubstantial`「视为未交付」——**而 `PRD.md` 其实已落盘 4894 字节，子代理还调了 `present` 声明交付物**（判据只看回复文本：`runner.ts` 的 `judgeDeliverable('prd', text)` + `pipeline.ts` 的成功条件只有 `!prdR.text`）；③ 终结：该阶段 fresh **259k > 200k** → 预算门把本该有的自动重试拦掉 → `failed` + 需人工。**缺口一（判据不认文件）**：doc 类阶段（prd/design/tech/qa/acceptance）的产物**就是任务夹文件**，回复只是摘要 → 现在回复不合格时**回读任务夹产物**（`util.DOC_STAGE_FILES` 按阶段给候选文件名，`stageDocText` 取最长的一个），文件在且达该阶段长度下限 → 判交付并记 warn `diag.docDelivered`（含回复长度/文件长度/文件名）。**兜底不豁免非空回复**（pipeline 要用回复合并 state 块，空回复是真的没交付）；dev/qaFix（交付在代码 + 证据块）与 scaffold/architecture（产物是代码/蓝图对象）不入表；patch 档 PRD 刻意不产文件 → 无候选文件时机制自然不生效。**缺口二（阈值口径）**：`FRESH_TOKEN_BUDGET = 200k` 的立论是「cacheRead 是廉价重放、新增只是零头」（有缓存 provider 上实测 **1.2–2.4k/次**：`tf-mu2ioilr` dev 115 次调用 280k、`tf-mu5wcm2j` qa 153 次 177k），**而不缓存的 provider 上每轮工具调用都要重付 system prompt + 工具定义（本次实测 ~15.5k/次）** → 200k 退化成「一个阶段最多约 13 次调用」。实测对照：probe-v2（`inception/mercury-2.5`，命中率 **10.4%**、cacheWrite=0）17 次调用 259k 熔断；probe-cache（`workbuddy/hy3` 混 `deepseek-v4.1-flash`，整体命中 72.9%）同一个 PRD 阶段**只用了 6 次调用**（120k，占预算 60%）而通过——**同型阶段在命中 90%+ 的 provider 上 17 次调用只需 25–40k**。故新增 `metering.effectiveFreshBudget`：命中率 <50% 且调用数 ≥5（单次调用没有样本意义）判「该 provider 无缓存」→ 预算 ×3（保持原设计「≈两轮尝试」的相对余量），熔断日志用**独立措辞** `diag.breakerUncached` 带依据（命中率/调用数/放宽后预算）；有缓存的 provider **分毫不动**。**顺带**：`artifactText` 从 pipeline 移到 `util.ts`（pipeline/runner 共用一份，不再各写一份读文件助手）。门禁：`metering` +15（无缓存放宽 3 倍 / 有缓存不动 / 1 次调用不下结论 / 恰好 5 次 / 命中率恰 50% / 空 usage 不抛 / 不除零 / 汇报口径不含自适应）+ `verdict` +12（真实形状复刻：4894 字节 PRD.md + 284 字符回复 → 单看回复仍判未交付、文件兜底成立；文件缺失/过短/非 doc 阶段/空 journal 边界）+ smoke 6 条（含**反向断言**：兜底不得豁免非空回复）。**门禁有效性已验证**：关掉 doc 兜底 → smoke 1 红；关掉自适应预算 → smoke 1 红；关掉无缓存判定 → metering 2 红；恢复全绿。**本轮未做**（未选项）：journal 记 provider/model（这次为回答「是不是模型的锅」必须解压会话文件才拿到 `inception/mercury-2.5`——run 记录里查不到）、契约 prompt 补「样本不在本工作区别空转」——**此项经复核已否**：解压 PRD 子代理会话全文后，`plugins/dsh-plugin-teamflow` / `sibling plugin samples` / `ARTIFACT_REFERENCE_SAMPLES` **各 0 次命中**，即样本路径**根本没进过 prompt**，那 14 次空转是空工作区里的环境定位。原判断是**从 prompt 源码推出的推断、且是错的**——留作反面样本：**推断不得写成结论**
+- **交付形态契约整条链从来没生效过（第五次「白名单漏字段」——比上面两个缺口更严重）**：复核「样本路径」那条推断时顺手 grep 了 `[交付形态契约`，发现 PRD 子代理会话里命中 **0 次**，于是顺着注入链往回查：注入源是 `journal.triage.artifact`/`.installable`（`pipeline.ts` 的 `const tj = journal.triage as {...}`），而 `journal.triage` 的唯一写入点是 `triageRecordOf()`——**它只搬 9 个字段，漏了 `artifact` 与 `installable`**。于是 `normalizeArtifact(undefined)` = `'other'` → `artifactContractsFor('other')` 恒为 `[]` → `items.length` 为 0 → **`[交付形态契约 · 必填 AC]` 从未注入过任何 PRD**，`qaPrompt` 的 0b 形态探针同理。**实测（不是推断）**：全部 **64/64** 个 run 的 `triage` 都不带 `artifact` 字段；`log.artifactContract`（locale 里那条日志键一直躺着）**一次都没落过**。**后果**：2026-09-17 为 `dddd` 事故（插件"看着完整"却装不进 profile、功能 AC 全绿 → 验收照样通过）建的那道防线——`ARTIFACT_CONTRACTS` 数据表 + PRD 必填 AC 注入 + QA 形态探针——**从建起来到现在一次都没跑过**；而 `triage-gate` 的 13 条断言与 L1 的 4 条契约全在测**纯函数与手造 state 夹具**，唯独没测「verdict → journal → `__runCtx`」这条**接线**。**修法**：① `triageRecordOf` 补 `artifact: normalizeArtifact(v.artifact)` + `installable: v.installable === true`；② 把 `triageRecordOf` **从 pipeline.ts 挪进 `triage.ts`**（纯函数、门禁够得着——pipeline 链宿主任 peer，测试取不到）；③ **立接线门禁**（照 `test/state.test.js` 的做法）：静态解析 `TriageVerdict` 接口的**顶层键**（实测 14 个），逐个断言 `triageRecordOf` 真的搬运了它，只有三项豁免且**豁免表本身也被断言**（`needDesign` 落 `journal.options`、`slug` 落 `journal.runDocs`、`rationale` 只回给主线程）；④ 顺带**抓住我自己写错的一处**：接口上声明的字段叫 `upgradedFrom`，但三处写入点（护栏强升）写的是**内部标记 `__upgradedFrom`**——我搬运时写成了读 `.upgradedFrom`（**没有任何人写它**），等于读错一个下划线就让 `log.modeUpgraded` 静默消失（同型缺陷）；门禁的 SPECIAL 判据**必须看属性读取而不是类型注解**（第一版判据被同一行的类型注解 `__upgradedFrom?:` 蒙过去了 → 改成 `\.__upgradedFrom` 才真正生效）。门禁：`triage-gate` **[10] 新增 11 条**（搬运/归一/非严格 true→false/键完整性/豁免表/注入源是 journal.triage 而非透传的 `options.__triage`/有契约才注入 + 落日志）+ smoke 3 条（triageRecordOf 住 triage.ts、必须搬运两字段、升档标记属性名）。**门禁有效性已验证**：去掉两个字段的搬运 → `triage-gate` **6 红**（含"漏了：artifact, installable"那条结构化断言）+ smoke 1 红；把 `.__upgradedFrom` 改成 `.upgradedFrom` → **2 红**；恢复 → 全绿
+- **run 记录能看出「引擎是谁」了；顺带立的「序列化完整性」通用门禁首跑又抓出四个只写不落盘的字段**：上一批留了一句实话——「这次为了回答『是不是模型的锅』，我必须解压会话文件才拿到 `inception/mercury-2.5`，run 记录里查不到」。本次补齐两件：**① 引擎留痕**：`journal.engine = { provider, model }` 在 run 起跑由 `resolveChildRoute(parent)` 解析后落盘 + 落 `log.engine`（`run.log` 一眼可见）；**逐阶段**再记 `stage.provider/model`（子代理路由跟随主线程/团队配置、可被改道，与 run 起始默认不一定相同）；完成汇报新增「引擎（模型路由）：provider/model」一行——**主线程不必再翻会话文件**。**② 「序列化完整性」通用门禁**（`test/journal.test.js` [7]）：静态解析持久化形态 `JournalRecord`（32 键）与 `JournalStage`（19 键）的接口字段，逐个断言 `serializeJournal` 真的写出来；豁免表只允许 `result`（进程内运行期字段）与阶段 `tokens`（历史遗留、仅为读存量数据保留），且**豁免表本身也被断言**（防"悄悄塞进去"）。**门禁第一次跑就抓出四个「只写不落盘」的字段**：`branch`、`mergeStatus`、`guardReason`、`guardOutcome` —— 内存里写了、序列化时丢了，与 0.1.9 的 `verifyEvidence`、以及上一批的 `triage.artifact` **完全同型**。**诚实定性**：这四个字段当前**没有可见故障**（`branch`/`mergeStatus` 今天没有读者——合回工具与汇报都重新跑 `git` 查；`guardReason/guardOutcome` 只在半程内被 runner 消费，用户可见的原因已进 `stage.summary`），但「写进去就该读得出来」的意图被静默打破，且**以后谁读它们谁踩坑** → 四者一并补进序列化（各一行）。门禁有效性：不落盘 `engine`/`branch`/`guardReason` → `journal` 分别 **3 / 1 / 1 红**；`pipeline` 不写 `journal.engine`、`runner` 不记 `stage.provider` → smoke 各 **1 红**；恢复 → 全绿
+
+### 改进
+- **仓库发布流程正规化（对贡献者可见）**：`main` 只承载「已发布到 npm 的内容」，日常开发与文档改动落在当前 release 分支（`release-vX.Y.Z`），**贡献者向最新 release 分支提 PR**；发布时 release 分支 → PR → squash 合入 main → 打 tag → 发 GitHub Release → 另起下一条分支。同时落定两条 SOP 判据：**发布是否成功以写路径为准**（registry 读路径 `npm view` / packument / 版本端点可滞后数分钟；重发得到的 403 `cannot publish over the previously published versions` 才是权威回执，且幂等安全无副作用）；**`git push` 连不上先查本机 VPN/TUN 状态**，不要凭「换成 HTTP/1.1 后成功」归因（实测同一 h1 命令在链路恢复前也会失败，属伪相关）。细则见 `AGENTS.md` §4 与 `CONTRIBUTING.md`
+
+- **README 精简（面向使用者 / 贡献者分家）**：① **核心特性 17 → 8 条**——原小节把「使用者要什么」和「实现怎么做的」混在一起（沙箱约束原委、`$DSH_HOME` 路径、LangGraph checkpointer 语义、`FRESH_TOKEN_BUDGET` 阈值、93% 实测占比、`git rm --cached` 操作指引……），中文 3 924 / 英文 8 287 字符（英文最长单条 1 193 字符），且有重复（「单任务模型」与「状态机 + 事件日志」同讲一件事、4 条都在讲「文件放哪」）；现为 8 条能力描述（中文 **968** / 英文 **2 602** 字符）。② **版本锚定压缩**：1720 → **581** 字符（en 2 156 → 1 130）——保留兼容窗口 `engines.dsh` 声明、`latest`/`next` 提醒与两条升级核对点，历次核对结论与待跟进项移交给 `CHANGELOG` 0.1.6–0.1.9 与 `docs/TODO.md`。③ **目录结构压缩**：1225 → **845** 字符（en 1 470 → 1 211）——保留顶层树与「host 必须构建」，逐文件说明指向 `CONTRIBUTING.md`。机制细节全部保留在 `AGENTS.md` §4–§5 与 `CHANGELOG`；唯一留在 README 的操作指引是「历史提交混进 `logs/teamflow/` 时用 `git rm -r --cached` 移出」。④ **架构（阶段 3）压缩**：1079 → **718** 字符（en 1 384 → 1 024）——保留宿主组合树，两条硬约束压成一句，完整论证落进 `AGENTS.md` §3（「不用 `@Remote` 装饰器」+「必须是宿主级插件」及其沙箱依据）；顺带**删掉会漂移的 Remote 方法数量**（zh 原写 22、en 原写 17，实测两者都已过期）
+
+- **README 截图分语 + 补「全局面板」小节（图为待重拍占位）**：`README.en.md` 原先与中文 README **引用同一批 `docs/screenshots/*.png`** → 英文文档展示的是中文界面（而英文 UI 自 0.1.9 起已可用）；且**全局面板（0.1.8 起就有）没有任何截图与对应小节**。现：① 英文 README 的 6 张图全部改指 `docs/screenshots/en/…`，中文沿用 `docs/screenshots/…`，并把约定写进 `CONTRIBUTING.md`（**禁止 zh/en 共用同一张截图**、英文界面重拍、单张 ≤400 KB、两语同视口）；② 两语各新增第 6 项「全局面板——左栏图标 → 产品线视角（run 列表 / Backlog 标签页 / 覆盖式详情浮层）」；③ 补上英文 README 两处**滞后于中文**的内容（安装清单缺「左侧边栏图标（全局面板）」、快速上手缺「跨会话全局视角」），并把取消入口写进快速上手；④ 两语 README 的开发命令 `npm test` / `npm run …` 改回 **`pnpm …`**（仓库锁文件是 `pnpm-lock.yaml`，CI 与 `CONTRIBUTING.md` 都用 pnpm，混用会在贡献者机器上生成 `package-lock.json`）。**12 张图（zh 6 + en 6，含全局面板）已重拍替换**：zh 在 `docs/screenshots/`、en 在 `docs/screenshots/en/`（均为 3200×1662 PNG，235–413 KB；`en/*` 是**英文界面实拍**，不再复用 zh 图）；列表顺序按「全局面板 → 流水线视图 → 阶段详情 → Backlog 看板 → 看板任务详情 → 团队选择」
+
+## [0.1.9] - 2026-09-16
+
+### 新增
+- **host 侧响应与产物语言跟随界面语言（中英双语，P2）**：英文用户此前看到的工具返回、完成汇报、流水线日志与产物正文（PRD/QA-REPORT/ACCEPTANCE）仍是中文，产品呈现割裂。语言源链＝**客户端推送**（浏览器当前语言/系统探测，经既有 Remote 面 `teamflow/setLocale`）> **宿主用户显式选择** > **`en` 默认**；run 起跑时解析一次并落 run 级快照（`journal.locale`）——**同 run 语言一致、断点续跑沿用、切语言只影响之后新起的 run**；headless（无客户端）走兜底链不报错。覆盖面：11 个 prompt 工厂 + AGENTS.md/memory 模板 + 产物语言指令 + 工具返回/分支决策/完成汇报/日志/诊断/state 注入块/triage 理由。**判据层只增不改**：验收结论行 zh 四档逐字保留并新增 en 四档（`✅ Pass / ⚠️ Conditional pass / ❌ Fail / 📝 Not applicable`；解析器同时兼收 `Not passed` 等价写法）、缺陷表新增 en 表头、triage 关键词新增英文项（中文项一字不动，实测 19 个中文样本档位 0 漂移）、L2 语料只增 6 条 en 样例。仓库 `docs/` 与代码注释**不做双语**（注释统一中文）。独立验收 46/46：11 工厂 + 2 模板 en 产出 **CJK 0 处**、zh 侧逐字不回归、语言链异常不冒泡
+- **ADR-0009：不做插件级用户记忆层（否决记录）**（`docs/adr/0009-user-layer-memory.md`）——曾设计插件自建跨产品线用户层（`_user/{memory.md,index.json}` + 流水线启动时注入索引 + acceptance write-back），**经复核否决**。理由：① **场所错位**——用户偏好是多轮对话的产物，流水线是「一需求一链路」批处理，不存在该场所；② **输入不足**——流水线任一时刻只有当前产品线上下文，「跨产品可复用」的普适性只能靠猜；③ **替代路径已够且已实现**——跨产品用户约定写宿主原生的 `$DSH_HOME/AGENTS.md`（`dsh-agent-instructions` 已无条件注入，插件零代码），插件硬规矩直接进 prompt/模板（`TOKEN_HYGIENE` / `LOG-LAYOUT-SCOPED` / `DOC-BOUNDARY-POLICY` 等）；④ **突破 ADR-0002 写域边界**。**零运行时改动**，仅留决策记录与再评估触发信号。同步 ADR 索引：README / README.en / CONTRIBUTING / AGENTS 四处（AGENTS 原为 `0001~0007`，漏了 0008，一并补齐）
+- **工作区 key 迁移演练脚本（只读）**：`scripts/migrate-workspace-key-dryrun.mjs`——扫描 `$DSH_HOME/teamflow/<key>/`，从 `runs/*.json` 的 `workspacePath` 反推来源路径，用与 `store.ts` 同源的 `slugPath` 重算期望 key，产出「逐目录判定（OK/DRIFT/LEGACY/EMPTY/FALLBACK）+ 按路径分组的合并计划 + 同名文件内容冲突检测」。**不写任何数据**（`--out <file>` 只写报表）。用于给「`workspaceScopeOf` 的 UUID 分支不可达 → key 绑路径字符串」这个已知风险定价：本机实测 11 个目录 → 自洽 4、**漂移 0**、旧格式 1、空壳 6，故该风险尚未造成数据分裂，迁移优先级按风险而非损失排（详见 `docs/TODO.md`）
+
+### 修复
+- **缺陷卡点开看不出「缺陷是什么」**：QA 报告里写好的复现步骤/期望行为/实际行为/关联验收项四列此前**被整列丢弃**（解析只留编号/严重级/模块，建卡时四个字段硬编码空串，下发面也没有这几个字段）→ backlog 里点开一张缺陷卡，只看到「QA 缺陷：R3-1」+ 关联 run 的原始需求。现：解析新增富行（四列 + 原始表头映射），缺陷卡存全并幂等刷新、标题自解释（`R3-1 · 日志/注入面`）、下发面补齐字段，工作台两处详情抽屉都新增「缺陷详情」块；**并让 QA 打回修复时的缺陷清单也带上完整描述**（dev 直接看到复现/期望/实际）。附带：QA 表格单元格内的字面量 `|` 现在要求转义 `\|`（不转义会切开单元格、后续列错位）
+- **英文界面下「人看得见的三处」仍是中文（首次英文 run 实测发现）**：① **阶段子代理的回复语言**此前无人约束（只约束了产物文件的语言）→ 文件是英文、工作台里「阶段性产物」却是中文（子代理跟着中文上下文回复）；现由 `productCtx`（11 个阶段共用前缀）统一声明 `[Reply language]`，一处覆盖全部阶段。② **给模型的工具返回/会话注入**没点名回复语言 → 主会话模型仍用中文答复用户；现显式写入「用当前语言回复用户」。③ **团队名/描述**来自用户数据 `teams.json`（只有中文）→ 英文界面下拉里是中文；现支持可选 `nameEn`/`descriptionEn`（**不改写存量文件**，内置团队按 id 回落英文），并由宿主按当前语言本地化后下发。顺带：run 日志里的阶段名改走已有的 `phaseLabel`（原先直出 `teams.json` 的中文 label）
+- **QA 缺陷解析误登记（一条流水线因此被误停线）**：旧 `parseDefects` 按**列位置**认缺陷（任一含 `|` 的行 + 第 2 格 ∈ P0-P3），于是 QA 报告里的「round-2 缺陷**复验对照**」表（第 3 格是结论「已关闭」）被登记成一个新的 P2 缺陷 → 每轮复验都重生一个阻断缺陷 → **第 3 轮必然超限停线并跳过产品验收**（自我实现的停线，与交付质量无关）。现改为**按表头认表**：只有表头显式声明严重级列（`严重级(P0/P1/P2/P3)` / `Severity (P0/P1/P2/P3)`）的表格才解析，列位置由表头决定，无严重级表头的表格整表跳过。回归门禁：L2 语料新增真实停线形态 + `test/verdict.test.js` 5 条断言（conformance 18/18 → 19/19）
+- **未验收的 run 不再邀请合回 main**：完成汇报的合回指引旧条件只有「状态 completed 且无 error」——QA 超限时流程提前结束、验收被跳过，status 仍是 completed，汇报照样写「验收已通过，请询问用户是否合回」，会诱导用户在未验收时合回。现要求「已完成 + **无人工介入** + **验收阶段真的 done**」，并在需人工介入且验收未跑时显式提示「本轮未完成产品验收…不要据此合回 main」
+- **en 文案残留的全角标点**：护栏中止摘要的连接符（`runner.ts`）改走词典（en 出半角冒号）；en 验收档位行的全角 `／` 改半角 ` / `（zh 侧逐字不变）；`store.ts` 运行日志**文件头**随 run 语言；`RETRY_SUFFIX` 补 `attempt N`（词典 `dev.taskRetry` 的实际产出，无 `taskKey` 的兜底路径上任务标题归一不再漏剥离）
+- **收口提交静默失效 4 天：run 跑完却没有 commit（2026-09-11 → 09-15 全部如此）**：英文 lite run 验收时发现产物**全是 staged 但没有 commit**（`git log` 空、`.git` 无 reflog / 无 `COMMIT_EDITMSG`，而 12 个 blob 与索引的写入时间正是 run 收尾那一刻），而 journal 里 `commitDone`/`commitSkip`/`commitFail` **三条一条都没有**——故障完全不可见。根因：上一版「收口提交面」的两处写法互相拆台——`ensureLogGitignore()` 先把 `logs/teamflow/` 写进 `.gitignore`，紧随其后的 `tfAddArgs()` 又用**负 pathspec** `:(exclude)logs/teamflow` **点名**这个「显式点名且被忽略」的路径，git 直接报错**退出 1**（`The following paths are ignored by one of your .gitignore files`；索引其实已写好 → 现场就是「文件 staged 但没有 commit」）；而 `add === null ? null : git commit(...)` 用 add 的结果**短路**了提交，`if (cm !== null) … else if (add !== null) …` 又让三条日志一条都不触发。`:(exclude)logs/teamflow/**`、`:(exclude,glob)`、`:(exclude,literal)`、`-c advice.addIgnoredFile=false` 四种变体实测同样 exit 1。**修复（①+③）**：① `tfAddArgs()` 收敛为 `git add -A -- .`（忽略交给刚写好的 `.gitignore`，它才是整树 add 的唯一依赖），并新增 `sanity.tfUnstageArgs()`（`git rm -r --cached --ignore-unmatch -- logs/teamflow`，只动索引不删文件）作为**索引兜底**紧随 add 执行——真摘出东西会记 `log.logsUnstaged` warn（那是 `.gitignore` 防线失效的信号）；③ 提交不再被 add 结果短路：永远尝试提交，由提交结果分派 `commitDone`/`commitSkip`/`commitFail`（「无事可做」先用 `git status --porcelain` 空判定，`GIT_NOTHING_TO_COMMIT` 兜措辞），`gitCmd` 之外新增 **`gitRun`**（`{ok, out, error}`，失败原因进日志）——**失败可以处置，但不能不可见**。回归门禁：新增 **`test/commit-path.test.js`（真 git 集成）**——负 pathspec exit 1 的防回退锁、写规则→整树 add→索引兜底→commit 真跑通（断言提交树里没有 `logs/teamflow`）、兜底真摘出东西、失败分类；`test/gitignore.test.js` 与 smoke 断言同步改到新机制（smoke 新增「零回退」断点）。**部署后需重启 `dsh --profile web`**；此前失效期间产生的未提交 run（assetd 09-11、slugkit-en、durparse-en）需人工 `git add -A -- . && git commit`（插件不再回头补提交）
+
+### 改进
+- **QA 轮次收敛埋点（D 方案先测量再立法）**：52 个历史 run 的实测显示「真正需要第 3 轮修复」**从未发生**（打回 7/52、触达上限 1/52，且唯一那次是幻影），而「同一缺陷原样复现就早停」这条判据**按缺陷 id 判不出来**——QA 每轮重新编号（r9 三轮分别 `QA-*` / `R2-*` / `R3-*`）。所以不急着动状态机，先把数据攒起来：QA 循环每轮把阻断集合的**稳定身份**与增/减/停滞计数写进 `journal.qaRounds`（`{round, seq, blocking, p3, defects:[{id,sev,module,fp}], withCheck, withCriterion, qaCalls, fixCalls, gate, newFps, repeats, resolved, outcome}`，留最近 12 轮）。**身份优先级**：缺陷行自带的**检测命令**（B 方案起 QA 必填，机器写给机器看，最稳）> 模块+实际行为文本 > 缺陷 id（最不稳）。配套**只读读侧** `node scripts/qa-rounds-report.mjs`：逐 run 轮次表 + 聚合（收敛 vs 停滞次数、检测命令可用率 = B 落地率、门禁落地率 = A 落地率、单轮成本），让「要不要把 `QA_REWORK_LIMIT` 换成收敛判据」这个问题有数据可答。**埋点只记录、不改变任何行为**（纯函数 `util.defectFingerprint`/`compareDefectRounds`/`qaRoundEntry`，可单测）
+- **QA 打回超限时不再「验收整段跳过」（E 方案：已知问题只读验收）**：旧行为是 QA 复验超限 → 跳过产品验收 → 人工只拿到一个 needs-human 旗标，**任务夹里连 `ACCEPTANCE.md` 都没有**（实锤 tf-mu2ioilr-95l4th：那份验收记录是维护者事后手写的）。现在改成：超限时仍以 **「已知问题」只读模式**跑一次验收，产出交付级视图（逐条 AC 核对表 + **未闭环阻断缺陷清单**，含各自的检测命令）。**硬约束（信息而非判定）**：结论一律**强制为需人工裁定**——prompt 明写"结论只能是 ⚠️/❌，且本 run 不会被提交或合回"，host 侧照旧 `humanIntervention=true`、`mergeEligible` 保持 false（`accepted` 永不放行），验收失败也**不改变 run 结局**（只记 warn，保持 completed + needs-human）。汇报里新增 `report.knownIssuesNoMerge`：显式说「结论被强制为需人工裁定，不要据此合回 main」——否则 `acceptanceDone` 变真会让旧的「验收未跑、不要合回」警告消失（这正是这条改动最容易踩的坑）。定价依据（52 个真实 run）：验收阶段 **p50 10 / p90 21 calls ≈ 一个 run 的 6%**，而「需人工介入且验收未跑」历史发生 1 次——便宜且不是假设。回归：L1 新增 `ACCEPTANCE-KNOWN-ISSUES`／`ACCEPTANCE-NORMAL-NO-KNOWN-ISSUES`（后者保证常规验收 prompt 零回归），smoke 新增 5 条；`log.accSkipped`（旧的「跳过验收」文案）随之删除
+- **QA 打回闭环：治「修复不完整」而不是「少发现缺陷」（A/C/B 三件套）**：先纠正一个前提——维护者问「打回→修→打回→修 有没有解」，实测 r9 那次的停线**是幻影**（报告第 3 节的「round-2 缺陷复验对照」表被旧位置判定读成新 P2 缺陷；用修好后的解析器现场重放该真实报告 → **0 阻断**），真实轨迹是 **6 → 1 → 0 在收敛**，唯一那轮真实返工的病因是**修复不完整 / 扫描面不完整**（round-1 只改了看得见的实例，同类 4 处留在 `prompts/index.ts`）。故落地三件套：**A. 类别门禁**——`qaFixPrompt` 要求每个 P0–P2 修复落**永久可执行门禁**（verify 套件断言，或随检查一起提交的 grep/脚本断言：修复前失败、修复后通过）+ 证据块给 `gate:` 与 `class sweep:`（类别命中数 before→after）；policy 级，缺失由新增的 `FIX_GATE_PATTERN` 记 warn 留痕（host 证明不了门禁真存在，不做硬失败，避免形式主义）。**B. 缺陷的「可执行定义」**——QA 缺陷表新增 `检测命令` + `通过判据` 两列（P0–P2 必填）：`检测命令` 是**现在就能失败**的那条命令、`通过判据` 是修好后的期望输出；修复方据此验收、复验方据此回归、**误报用它当场证伪**（r9 的 R2-2a QA 误报在 round-3 就是靠一条命令自证的）。同步：富行解析新增两字段（`parseDefects` 瘦身投影形状不变、旧报告零回归）、缺陷卡持久化两列、`itemDetail` 下发、两处详情抽屉渲染；新增 L2 语料 `qa-report-check-columns.md`（conformance 19/19 → **20/20**）。**顺带修一个真 bug**：表格行原先无条件 `split('|')`——QA 按契约转义的 `\|` 照样被切开（R3-2 的「实际」串进「关联验收项」的实锤根因），而检测命令列几乎必然含 `|`；现改为**按未转义管道符切分并还原 `\|`**。**C. 复验复用**——复验轮经 `state.__runCtx.qaReverify` 显式声明（`QAREVERIFY`，不改 11 个工厂签名）：**先原样重跑上一轮探针**（就在 `logs/teamflow/<runId>/scripts/`，正是日志收口决定归档留存的那一类）**再补上一轮没覆盖的面并说明漏在哪**，必须重跑缺陷行自带的检测命令、**不得重造已有基线**（r9 实测后一轮重做了一整份 HEAD 副本 = 50 文件/1 MB）。回归：L1 新增 `FIX-CLASS-GATE`／`QA-DEFECT-EXECUTABLE-DEFINITION`／`QA-REVERIFY-REUSE`／`QA-FIRST-PASS-NO-REVERIFY-NOISE` + `test/verdict.test.js` 新增 6 条断言（含转义管道符与错列门禁）。**未动流程语义**（轮次上限、QA 独立探针要求保持原样——质量第一约束，见 `docs/TODO.md`）
+- **运行日志的根离开用户项目 + 只留有用的（`logs/teamflow` 不再长期躺在你的仓库里）**：此前命令日志直接落在项目内**没有任何清理逻辑**（实测 `products/tetris` 累计 1042 文件/17.3 MB、本插件仓 136 文件/3.0 MB），文件树遍历类工具（eslint/prettier/IDE 索引/agent 全局 grep/无 `.npmignore` 的 npm publish）都会看到它。为什么不干脆一步写进 `$DSH_HOME`：**子代理受 DSH 文件沙箱约束**——`workspace-write` 只允许写会话工作区 + 平台临时区，写 `$DSH_HOME` 直接 `FS_SANDBOX_DENIED`（实测：子代理写 `C:\Users\<u>\.dsh\...` 三步全拒，同构命令写工作区内 exit 0；`$env:TEMP` 又是**每会话**子目录、不可依赖），而 host 进程不受该约束。故改为**两段式**：子代理在工作区暂存（`logs/teamflow/<runId>/`）→ **run 终态由 host 过滤归档到 `$DSH_HOME/teamflow/<workspace>/logs/<runId>/` 并删除项目内副本**（host 自身事件日志 `run.log` 直接落归档位）。**归档只留有用的**：维护者一句「logs 里的文件基本都是没用的吧」促使实测——一次真实 run 130 文件/3.03 MB 里 **93% 是可重跑的命令输出或 git 里一模一样的源码快照**（41% `regression-*.log`+`*.out`、35% `probe/head/**` 快照、17% prompt JSON dump），唯一不可重跑且真被用过的 7% 就是检查脚本。因此归档面收敛为**白名单**：code 扩展名（`.mjs/.cjs/.js/.sh/.ps1/.py/.md`）+ `captures.json` 保留，命令输出（`*.log`/`*.out`/`*.txt`）与快照**一律丢弃**（命令输出在运行期仍有价值——把几百行输出挡在上下文之外；但**不是审计资产**，durable claim 是回复里的 `[Verification evidence]` 块）。配套：① **自愈清扫**——run 起跑按同一白名单处理上次崩溃/被 kill 残留的暂存目录与历史散落的 `<runId>.log`/笔记（`<runId>.log` 直接丢弃：内容与 journal 同源）；② **保留 K 次**——每个工作区只留最近 `LOG_ARCHIVE_KEEP=20` 次 run，按 mtime 淘汰；③ 正在运行的 run（暂存目录与归档）一律跳过；④ 归档失败只 warn，暂存留待下次自愈，**run 收尾绝不被日志管理打断**。prompt 侧新增 `[Log lifecycle · policy]`（三处 `[Log discipline]` + `TOKEN_HYGIENE` + 资源表 + AGENTS/memory 模板同源），明确「项目内只是暂存、只留脚本与笔记、dump 不留存、不得提交/自行清理/当项目产物」。收口提交面的两道防线（pathspec 排除 + `.gitignore` 幂等补写）保留，覆盖「run 进行中用户自己提交」的窗口。**存量已按新白名单就地瘦身**：本插件仓归档 136 文件/3.03 MB → **43 文件/278 KB**（丢弃 93 个可重跑输出/快照，2.7 MB）。
+- **生成量纪律：不再制造输出 dump（改由宿主截尾 + spill 承担）**：维护者追问「**为啥会产生这么多文件？是我们流水线带来的，还是 DSH 本身也会有？**」——实测两边都有，但性质不同：**DSH 原生**会把过大的工具结果截成 tail 并把全文 **spill 到会话临时区**（`dsh-spill-*`/`dsh-subprocess-*`，不进你的仓库，`dsh-spill-local` 有启动 TTL 清扫；本机 temp 里 149 个 `dsh-*` 目录共 8.4 MB，主要是 Node 编译缓存）；**我们的流水线额外要求**每个执行体把命令输出与临时脚本**落到项目内**。真正制造数量的是**执行体数量**：r9 一次 full run 起了 **10 个子代理**（PRD 1 + 技术 1 + 开发 5 = T1–T5 三个并发 + 两轮 QA 打回修复 + QA 首轮 + 两轮复验；**718 次调用 / 59 分钟，其中 61% 花在打回闭环**），每个都按旧 prompt 把整套件输出 dump 成 `regression-*.log`（一次 443 KB、同一套件重复两遍）与 23 个 per-command `.out`。故**删掉旧约定、改为不落盘**：`TOKEN_HYGIENE` 新增 `[No dump manufacturing]`（**禁止**把命令/套件输出重定向进文件；长输出由宿主截尾并把全文 spill 到你被报告的路径，需要细节时读那里），`logs/teamflow/<runId>/` 只放**要留存**的三类——一次性检查脚本 `scripts/`、不可重跑的命令载荷 `captures.json`、结论 `.md`；并要求**同一用途不得新增编号变体**（`-run2`/`dbg-repro2`/`dbg-scan3` 一律就地覆盖）、**改动前基线只物化一次**（`probe/head/` 共享，实测一次 run 因后一阶段重做而留下两整份 50 文件/1 MB）。少掉的正是「41% 的 `.out` + `regression-*.log`（1.2 MB）」与「35% 的源码快照」这两类。回归：L1 契约改写为 `LOG-NO-DUMP-MANUFACTURE`／`LOG-KEEP-ONLY-DURABLE`／`LOG-DISCIPLINE-NO-REDIRECT`（含**防回退**断点：旧写法 `APPENDED on re-run`、`regression-dev.log` 等出现即失败）；执行体数量的收敛留 `docs/TODO.md`（需人决策，先定判据）。回归：新增 `test/runlogs.test.js`（60 断言：路径契约/白名单矩阵/过滤归档/合并语义/自愈清扫/活跃 run 豁免/K 次淘汰/永不抛）+ `test/journal.test.js` 与 smoke 断言改到新落点 + L1 契约 `LOG-LIFECYCLE-ARCHIVED`／`LOG-LIFECYCLE-FILTERED`
+- **客户端界面中英双语（P1：客户端展示层，走宿主 locale 服务）**：工作台文案跟随宿主语言（设置 → 通用 → 语言）**实时切换、无需重启**，机制全部复用宿主能力——`ctx.locale.register(NS, {zh,en})` 注册词典 + `ctx.locale.bind(NS)` 取翻译函数 + slot 注册项声明 `locale: NS`（宿主切语言时重渲染每个 outlet；`sidebar.panellist` / `conversation.view` 的名称用 thunk `() => t(...)`，宿主读时求值）。落地：新增 `client/locales.ts`（247 条 key，zh/en 逐条同形）+ `scripts/i18n-client-codemod.mjs`（一次性改写脚本，186 处字面量 → `t('key')`，保留映射留痕）；`client/shared.tsx` 词表**函数化**（`runStatusText`/`kindTitle`/`roleChip`/`stText`，删掉切语言后会变陈旧的模块级常量表）+ `localeTag()` 取代硬编码 `toLocaleTimeString('zh-CN')`；`apply()` 把翻译函数注入纯函数层（词表/格式化/折叠件拿不到组件 prop，只能走模块注入）。**门禁**：smoke 新增「词典 zh/en key 集合逐条一致（en 是兜底语言，漏 key 会让用户看到 raw key）+ 客户端除 console 诊断与存量 phaseKeyOf 映射外零中文字面量 + 5 处 slot 声明 locale + 名称 thunk」。**范围边界（刻意未做）**：host 生成的完成汇报/工具返回/流水线日志、以及流水线产物文档（PRD/QA-REPORT/ACCEPTANCE…）仍是中文——产物语言与「验收结论」字面量是 host 解析契约（`util.parseAcceptanceVerdict` + 冻结语料只增不改），属 P3，见 `docs/TODO.md`
+
+### 已知待办
+- 沿用 [0.1.8] 的待办项，并新增本轮产物，见 `docs/TODO.md`
+
+## [0.1.8] - 2026-09-12
+
+### 新增
+- **全局团队工作台（`sidebar.panellist` + `main`）**：工作台从「某个会话里的一个 tab」升级为应用级主面板——左侧边栏多一个图标（inline SVG，跟随选中态），点开中央主区即整块换成 TeamFlow：左栏是**产品线**列表（`$DSH_HOME/teamflow/<key>` 扫描，含 run 计数/活跃数/最近需求与验收结论/磁盘路径），右栏是该产品线的 **run 列表 + backlog 分组**（需求/任务/缺陷，含按角色 token）。**不依附会话**：面板在 root scope（无 `useSession`/`useProjection`），所以数据面新增按**产品线 key** 寻址的 remote 方法（`products` / `productView` / `productRunDetail` / `productStageDetail` / `productItemDetail`），与会话内工作台同源装配（同一批 journal 与 state.json，非新数据模型）
+- **run 详情进右侧栏 tab**：注册 `teamflow-run` tab 类型（认领 `dsh-resource://teamflow/run/**`），在会话内点 run 即在该会话右侧栏打开完整详情（阶段表 + 官方口径 token + 阶段详情/尝试聚合/验证证据/产出/日志）。地址由 host 生成（client 不拼地址）——与产物预览同一条原则。**右侧栏的会话内容只在对话视图存在**（宿主 `RightbarRoot` 门控），所以全局面板里点 run 默认在**面板内联**显示；要并排看就点「对话右栏」——它会切回对话再打开右栏（seat 在切换后才 bind，故带小步重试）；任何一步不可用都降级面板内联并给出**可见提示**（不静默失败）
+- **状态徽章可点筛选（多选）**：分组行上的每个状态计数徽章升级为可点 `filterChip`（选中态实心 + 状态色边框），**多选 toggle**——真实问法是「还没结束的有哪些」（进行中 / 待验收 / 需人工的并集），单选会逼人来回点。**筛选优先于折叠**：选中含终态时自动展开（否则点了「已验收 19」却看不到卡片），清掉筛选回到默认折叠；行尾显示「筛选中 N 项 · 显示 x/y × 清除」，无筛选时不出现（不加噪音）。作用域：backlog **每组独立**，run 标签加同款一行（7 个状态），run 的折叠（最近 8 条 + 进行中置顶）**只作用于筛选结果**；切产品线清空筛选与展开态（面板不重挂载，显式 reset）。**纯客户端过滤**，host 数据面与 slice 上限一律不动（数据不丢，清除即见全部）
+- **右栏入口改为「去发起会话」**：右侧栏是**会话级**的（`RightbarRoot` 只渲染当前会话），旧「切回对话」跳回的仍是用户来时的会话、与 run 无关。改为 `goOwnerSessionAndOpen(target)`：host 侧 `runBrief`/`snapshotOf`/`itemDetail.runInfo` **新增 `ownerSession` 透出**（journal 早有该字段）+ 产物地址的会话段改用 run 的发起会话，client 先 `sessions.open(ownerSession)`、等 `sessions.list.getSnapshot().current` 真的切过去**且**对话 seat 挂载 bind 后再 `openResource`（带就绪判据的小步重试）；会话已清理时只提示不跳转，老数据无该字段退回旧行为
+
+### 修复
+- **交付判定信号分级（`judgeDeliverable`）**：dev/qa 产出判定由「全文拒绝词命中即否决」改为三级——① 客观形态（非空 + 阶段长度下限）→ ② **真交付信号**（`DELIVERY_EVIDENCE_PATTERN`：prompt 强制的 `[Verification evidence]` 块 = 命令 + 退出码 + 断言计数）→ ③ 措辞兜底（`REFUSAL_PATTERN` 仅在**无证据块**时才否决）。**修「如实汇报环境限制被判未交付」**：子代理自述「7 个用例与 26 项校验无法执行，属环境性失败」因命中「无法执行」被判 `insubstantial` → 提测门禁停线 → 人工 resume + 重复补跑（已完成任务被重做）。修后命中拒绝词**但有证据块** → 判交付 + 记 warn 留痕（措辞只作诊断，不再是门禁）。删 `hasSubstance`
+- **熔断改用「新增」口径（`freshTokensOf`）**：熔断预算 = `input + cacheWrite + output`（**排除 `cacheRead`**），阈值 `FRESH_TOKEN_BUDGET`（默认 200k）。旧口径把缓存重放计入——实测某 dev 任务 `totalTokens` 1,885,583 ≥ 60k 触发熔断，**真实新增仅 55,439** ⇒ **任何任务失败一次都立刻熔断、`RETRY_LIMIT` 连一次重试都走不到**。修后重试优先于熔断恢复。**汇报/展示口径 `totalTokensOf`（官方 billed）不变**，两套口径不得合并（已在 AGENTS §4/§5 锚定）
+- **收口提交面排除自有日志**：`sanity.tfAddArgs()` = `git add -A -- . ':(exclude)logs/teamflow'`（magic pathspec 强制排除，**不依赖目标仓库有没有配 `.gitignore`**；`-- .` 同时把提交面收敛到工作区），两处提交点（收口提交 + `preAction=commit`）统一走它，**禁止再出现裸 `add -A`**；新增 `util.mergeGitignore()` + `pipeline.ensureLogGitignore()` **提交前幂等补写**工作区 `.gitignore`（覆盖判定含更宽规则 `logs/`、`logs/**`；`changed=false` 时不落盘，不留无谓 diff；写失败只 warn——pathspec 仍兜底）。**修一次收口提交 227 文件里 208 个（92%）是自有日志**（真交付仅 19）——子代理 git 纪律无问题（交付报告写「logs/ remain untracked」当时属实），是 host 在最后一刻扫进去的
+- **prompt 日志布局收口**：`TOKEN_HYGIENE` 新增 `[Log layout · policy]`——**每用途一个文件**：套件输出 → `regression-<phase>.log` 且**重跑时追加**带 `--- <timestamp> <task> ---` 表头（禁止 `-run2`/`-nopipe`/`-shim` 同名变体）、一次性校验脚本 → `scripts/`、命令载荷 → 合并进 `captures.json`、探针/草稿 → `probe/`；dev/qa/qaFix 三处 `[Log discipline]` 指向该布局。**实测消灭 51 份重复套件输出（占 `.log` 78%，267.5 KB）**，同一沙箱绕行被各 agent 重新发明 6+ 次的问题一并收敛
+- **日志布局路径作用域**：上条的四条路径写成**未限定相对昵称**（`scripts/`、`probe/`）→ 模型按「最像项目约定」解析成**项目根** → 在仓库根建了 `scripts/`(5) 与 `probe/`(1) 且被收口提交扫进去（32 文件里占 6 个）。修复：四条路径全部改写为**完整限定** `logs/teamflow/<runId>/...`，段首加粗「never create scripts/ or probe/ at the project root」，三处 `[Log discipline]` 各自重申；L1 契约新增 `LOG-LAYOUT-SCOPED`（断言完整路径 + 项目根禁令，`exclude` 未限定旧写法防回退）。**教训：给模型指路径必须给完整限定路径，不能给通用昵称**
+- **右栏 run tab 卡在「读取中」**：正文读地址必须用宿主绑定的 **`useTabInfo`**（slot 声明 `hooks: { tabInfo }` 会被渲染器改名为 `use<Name>`），prop 名写成 `tabInfo` 取不到 `tab.navigation.address || tab.contentId`
+- **二次 unwrap / 空信封静默失败**：去掉阶段详情 / 条目详情 / 面板内联 run 详情的**二次 unwrap**（首层已解包，二次解包取到 `undefined` → 表现为「读取中」或空白）；`unwrap` 对 `ok=true` 但无 `value` 的**空信封显式报错**，不再静默返回 `undefined`
+- **React #310（hook 归属错位）**：`FoldableText` 被当普通函数调用（`FoldableText(...)`）而非作为组件渲染 → hook 挂到父组件，叠加条件渲染导致**每次渲染 hook 数变化**。改为组件用法
+- **工作台顶出外层页面滚动条**：面板改用宿主 `.viewArea` **高度契约**布局（不再用 `100vh` 一类硬高度），消除「页面级滚动条 + 面板内滚动条」双层滚动；并恢复看板**列内滚动**（限高 340）+ 列头/分组标题 sticky
+- **同值点击产品线卡在「读取产品线数据中…」**：重复点击同一产品线不再无响应——`viewTick` 重载 + 选中态提示
+- **窄列卡片内容溢出**：等宽数字行（token/耗时）在窄列顶破面板 → 收敛为可换行/截断
+- **详情浮层单一事实源**：修「run 详情与 backlog 详情同时存在、要关两次」——详情状态收敛为单一来源
+- **分栏改用 `grid auto-fit`**：修 `flex-wrap` 多行 flex 行高随内容 → 列被撑高、`overflow` 永不触发导致「展开后无法滚动」
+
+### 改进
+- **客户端展示层收拢**：主题 token / 状态词表 / 格式化（token 官方口径、时间、耗时、折叠文本）从 1286 行的 `client/index.tsx` 抽到 `client/shared.tsx`，会话内工作台与全局面板共用一份——两处展示语言不会再各自漂移
+- **宿主 slot 契约对齐**：`dsh.client.inject` 补 3 个 slot owner 包（`ui-layout` / `ui-sidebar` / `ui-sidebar-right`，注册进谁的 slot 就列谁）+ 对应 optional peer 声明，避免加载顺序不确定导致的「slot 不存在」
+- **全局面板第三版布局 —— 主区标签页 + 详情覆盖式浮层**：第二版把 **rail + run 栏 + backlog 栏 + 详情栏**四栏并排并叠了 `grid auto-fit` 自适应，在 1100–1400px 窗口**必然超载**（卡片被压到 ~200px、run 行折成多行、详情栏还和列表抢宽度），并触发连环故障（`flex-wrap` 行高随内容 → 列被撑高、`overflow` 永不触发 → 展开后无法滚动）。第三版**做减法**：① 主区改为**标签页**（🚀 流水线 run N ｜ 📋 Backlog M），一次只显示一个列表——宽度全给它、只剩一个滚动区；② 详情改为**覆盖式浮层**（绝对定位 + 独立滚动，与会话内两个抽屉同款），不再参与横向宽度分配；③ 删掉 panel 级 grid/flex 两栏自适应（backlog 卡片自身的 `auto-fill` 网格保留）。折叠 / 进行中置顶 / 终态收起 / 需人工不折等已确认行为全部保留。**教训：并排面板数量必须由可用宽度决定，不是由信息架构决定**
+
+### 已知待办
+- 全局面板目前**只读**（未提供 backlog 流转写路径）；run tab 未注册 `sidebar.right.pane.tab.title` seat（chip 标题取自类型定义）；两处渲染组件仍分叉（`shared.tsx` 只统一了词表/格式化）。见 `docs/TODO.md`
+- 熔断阈值（`FRESH_TOKEN_BUDGET`，默认 200k）仍是常量，未做成 service Config；护栏**复读检测**仍读已弃用的事件读取器（提醒通道与挂死判据已迁官方投影）。见 `docs/TODO.md`
+
+## [0.1.7] - 2026-09-11
+
+### 新增
+- **工作台产物一键预览**：任务卡详情里的「任务夹」现在按真实存在的产物列按钮（PRD / DESIGN / TECHNICAL / QA-REPORT / ACCEPTANCE / meta），点一下即在 DSH **右侧栏**打开预览（Markdown 由官方文档预览器接管）。地址由 host 用官方 `fileAddressFor` 生成（`dsh-resource://file/session/<id>/<相对路径>`）——客户端不拼地址、也不引宿主包进 client bundle；只列真实存在的文件（不出死按钮）；右侧栏服务缺失时静默降级
+- **产物交付（`present`）**：prd/tech/qa/acceptance 四个阶段被要求把任务夹产物交给官方 `present` 工具 → 用户在该会话得到「交付文件卡」（预览 / 默认程序打开 / 文件管理器定位）。诚实标注为 `[policy]` 增强项：文件仍是唯一事实源，缺文件依旧是硬失败；卡片渲染在**该子代理会话**的轮次尾部（主会话不显示）
+- **机械阶段推理强度降档（省 token）**：DeepSeek 路由默认 `reasoningEffort: high`，而推理 token **计入 output** 且**推理内容每个带推理回合原样回传**（同时抬高后续 input）。现对两处机械阶段下发 `low`——patch 档的「单点确认」与 `scaffold`（脚手架落地）；判据类阶段（PRD/设计/技术方案/QA/验收）保持宿主默认 `high`，**重试自动回升 `high`**（质量优先）。安全前提：先经 `llm.resolveModelInfo()` 探测该路由的 `reasoning.efforts`，只有声明支持才下发——宿主对不支持的值会 `UNSUPPORTED_REASONING_EFFORT` 硬失败且不降级；探测结果按 provider/model 缓存。阶段日志记录实际下发的档位
+
+### 修复
+- **token 计量改走官方 Session 投影（宿主弃用同步事件读取器）**：dsh 0.1.5-rc.2 起 `Session.eventAt()` / `snapshotEvents()` / `ownEvents()` 标记为 deprecated（存量可留、新调用禁止，宿主方向是不再把完整事件序列常驻内存）。计量来源改为**官方投影优先**——`ctx.sessionProjections.stateOf(session,'tokenUsage')` 取四桶（与宿主 token-meter 同一份 fold，重试替换语义更准）+ `'sessionStats'.steps` 取调用数，**零历史扫描**；投影缺失/无数据/读取异常时静默回退原事件扫描（最小 profile 与存量宿主不受影响，不虚报 0，不中断流水线）。`sessionProjections` 走可选 `ctx.inject`，不进 `static inject`——服务缺失时插件照常加载
+- **护栏适配官方通道（提醒 + 挂死检测）**：轻提醒从手写 `session.append('user/message')` + step/end flush 时序状态机，改为官方 `run.localAgent.inject()`（宿主在协议安全边界整批认领，旧注释声称的「会插进 tool_calls→tool_result 触发 400」不成立）；挂死检测从「多源取最长事件视图」长度启发式改为官方 **`subagentTiming` 投影**的 `active.through`（已提交事件时间，不受视图失明影响——上次 QA 误判 stalled 的根因）。长工具静默执行仍由 agent 活动守卫豁免；投影不可用时回退旧启发式。中止语义未变
+
+### 改进
+- **声明宿主兼容窗口**：`package.json` 新增 `engines.dsh: ">=0.1.5-rc.2 <0.2.0"` 与 `dsh.manifestVersion: 1`（dsh 0.1.5 起支持的公共 manifest 字段；当前宿主不校验，属作者声明）；README「版本锚定」段同步到 v0.1.5-rc.2，并记录本次兼容核对结论与两个待跟进项
+- **清理死注入**：`static inject` 长期硬注入 `tokenMeter` 却全仓从未使用 → 从 static inject / setRuntime / runtime 三处移除（假依赖会拖累插件的加载条件）
+- **工作区 key 文档纠偏**：`workspaceScopeOf` 的「优先用 DSH workspace UUID」分支**当前不可达**（宿主 `resolveByPath` 是异步、我们同步调用），实际生效的是路径派生 `slugPath(cwd)`；注释与 AGENTS.md 改为事实描述，真修（改异步 + 存储 key 迁移）列入 `docs/TODO.md` 待 v0.1.8
+
+### 已知待办
+- **护栏复读检测仍读已弃用的事件读取器**（提醒通道与挂死检测已改官方；复读需要流式文本内容）：官方替代是订阅 `'session/event'` post-commit 投递，需先定等价判据，见 `docs/TODO.md`（当前行为不变，存量调用被宿主明确允许）
+
+## [0.1.6] - 2026-09-07
+
+### 新增
+- **评测层 L1+L2（prompt/注入改动收益评测）**：每次改 prompt/注入后可直接验证收益——L1 行为级契约测试（直接调用 prompt 工厂断言产出锚点，29 条契约分 HOST-ENFORCED/policy/structural 三级，改 prompt 一眼看出断了哪条、丢哪级保障）+ L2 回放语料一致性门禁（冻结真实形状的 QA-REPORT/ACCEPTANCE/dev 回复/蓝图产物，喂宿主真实解析器做 golden corpus 回归，零 LLM 成本）。语料只增不改，防评测过拟合
+- **dev/qaFix 验证证据块**：开发回复末尾强制「[Verification evidence]」块（命令+退出码+断言计数+失败行引用，或显式 N/A），host 提取存证、阶段详情可见、可与命令日志交叉核对——开发阶段从「单方宣称全绿」升级为「可审计的具体自述」
+- **代码级英文化（为 UI i18n 铺路）**：代码判断/命名全英文（阶段键 prd/design/scaffold/tech/dev/qa/acceptance、任务结构化键 taskKey），中文只留展示层；存量数据提供迁移脚本
+
+### 改进
+- **resume 断点续跑状态机化**：两级状态（大阶段 + 子图任务）聚合判定——有 done 尝试的任务即成功（历史失败不算失败），resume 只补跑「聚合后未成功」任务、复用已完成产物；不再读 backlog 子卡（残留失败卡不再污染判定）；dev 部分成功时起点精确回开发补跑未完成，全 done 时正确落在 QA/验收
+- **输出单轨制**：QA/验收的完整报告只写在任务夹文件（QA-REPORT.md/ACCEPTANCE.md），子代理回复仅摘要+路径——host 直接导入文件（缺陷表/核对表），杜绝「回复与文件不一致」的双轨问题
+- **验收结论契约强度**：验收报告结论行必须为字面量模板（✅/⚠️/❌/📝 四档）且为文件最后一行；无结论行/空结论行 → 需人工确认（不再默认通过，防质量门禁漏报）
+- **prompt 约束分级**：区分 [HOST-ENFORCED]（host 真实强制，如单轨产物/结论行）与 [policy]（自律 + 轻提醒），prompt 内不再自称 hard constraint
+- **重试诊断包**：重试时把上次失败详情（outcome/护栏原因/拒绝词命中点/产出尾部）附进 prompt——盲试 → 带因重试；stalled（挂死/空转）不再自动重试
+
+### 修复
+- **token 计量适配宿主 session v2**：宿主新版会话已无 `events` 属性，计量读不到 → 流水线卡与图卡无「TOKEN · 官方口径」。修复：多源回退（snapshotEvents/ownEvents）+ usage 双路径（含 stream 内嵌），新 run 计量恢复
+- **护栏挂死误杀**：QA 子代理正常干活却被判「10 分钟无事件」（宿主事件视图失明）——事件读取多源回退 + agent 活动守卫（非 idle 且已动手即不中止）
+- **任务卡 token 统计**：子卡 usage 按 stage 引用直写（并发下不再错位/超计）
+- **存量迁移脚本 taskKey 误判**：合法中文括号结尾的任务键不再被当作历史残留（幂等无损但计数虚高）
+- **验收空结论行/裸否定词漏报**：四档词白名单校验覆盖 accepted 分支
+
+### 其他
+- AGENTS.md 注入面瘦身 64%；dsh 0.1.3-alpha.1 兼容性核对（依赖包名更新）
+
+## [0.1.5] - 2026-09-01
+
+### 新增
+- **patch 档兑现「单 agent 直改 + 自测即交付」**：阶段集精简为确认单 → 单 agent 直改（2 段，无技术方案/QA/验收），开发完成（自测通过）即统一收口提交。UI 微调（按钮换位置/挪控件/改文案/间距/颜色）、常量调整、单点修复、回滚、笔误修正走最轻路径
+
+### 改进
+- **需求分诊重构为模型主导**：档位判断交给模型（自然语言语义，天然双语）；正则收窄为确定性护栏（架构信号强升/UI 不低于轻量档/显式设计升档）。UI 微调类需求（不改变行为/交互逻辑）不再误判标准档
+- **分诊输出失败自动纠错重试**：只输出开场白无 JSON 时带提示重试一次，仍失败才走正则兜底
+
+### 修复
+- **外部中止（aborted）不再误报「预算熔断」**：重启等外部中止单独标记，明确引导断点续跑（补跑失败任务，已完成任务复用）
+- **patch 档不再误跑架构蓝图**（技术方案块补 `enabled('tech')` 门控）
+- **分支名不再被档位词污染**（「显式的用 patch 模式」不再产出 `feat/patch`）
+- **provider 错误细节记录**（阶段失败记录底层错误信息）
+
+## [0.1.4] - 2026-08-29
+
+### 修复
+- **分支决策死循环**：用户确认「新建分支」后重发启动参数仍会再次弹出分支决策（干净工作区场景）。修复：决策选项增加显式确认值，自定义分支名/工作区处理参数均视为已确认
+- **护栏误杀大文件任务**：大文件「读-改-读-改」是正常模式（每次修改后必须重读确认），可能被误判为推理复读而中止。修复：复读判定升级为状态判定——有实际修改进展时不中止，仅纯复读（零进展）才中止
+- **QA/验收只读任务不再被误杀**：执行测试脚本视为进展信号，只读分析任务（不做文件修改）不再被复读检测误伤
+- **退化中止不再自动重试**：真退化（推理复读死循环）后自动重试大概率在污染会话内复现且持续烧钱——改为直接需人工介入，引导 `teamflow_resume`（全新会话续跑）
+- **断点续跑尊重未闭环的 QA 缺陷**：阻断缺陷仍 open 时 resume 回到 QA 修复-复验闭环，不再带着已知缺陷直接进产品验收；验收失败过的 run 同样正确回 QA
+- **历史失败记录保留**：resume 不再清除失败的阶段记录（审计可追溯）
+
+### 新增
+- **提测门禁**：开发阶段有任务失败（哪怕 1 个）→ 需人工介入，不再自动进入 QA（失败任务是已知缺口，QA 检查必然重复报告）；resume 精确补跑失败任务（已完成任务产物复用，不重跑）
+- **README 界面预览**：5 张真实工作台截图（流水线视图/看板/阶段详情/看板任务详情/团队选择）
+
+### 其他
+- pnpm-lockfile 同步（依赖调整后 CI 的 frozen-lockfile 校验失败，已修复）
+
+## [0.1.3] - 2026-08-29
+
+### 新增
+- **分支策略闭环（ADR-2026-08-27）**：启动前用户决策（`needs-decision` 四情况：main+干净/main+脏/feature+干净/feature+脏，stash/commit/新建/沿用/自定义兜底）；`branchPolicy`/`branchName`/`preAction`/`commitMessage` 决策参数；auto=建 `feat/<slug|branchName>`、keep=沿用；`preAction`（stash/commit）在 sanity 前执行
+- **收尾合回决策（对称交互）**：完成汇报带「合回决策邀请」，新工具 `teamflow_merge`（host 代为合回 / 给命令自行合回 / 暂缓）；`journal.mergeStatus` 持久化（pending/merged/kept/failed）
+- **统一收口提交**：子代理只改不提交（Git discipline 硬约束），host 验收通过后单 commit（代码+任务夹产物）；结构性消灭文档漏提交与未验收中间态
+- **视觉验证能力条件化**：`llm.resolveModelInfo` 探测模型多模态能力 → QA/验收视觉条款动态生成（支持视觉=DOM 计算断言+截图看图+人工收窄；不支持=禁截图看图防幻觉/循环，只走 DOM 断言）；QA 人工补测清单收窄为音频/真机/FPS/读屏
+- **需求意图预检**：疑问/建议/反馈句式（「是不是应该」「要不要」等）→ `needs-confirmation` 不启动，主线程先向用户确认
+- **activeTeams 持久化**：会话→团队映射落盘，重启/刷新后恢复（UI 状态与启动通道一致）
+
+### 修复
+- **护栏注入通道**：`subagents.start` 句柄无 inject → 改用 DSH 官方 `session.append('user/message')`；注入改安全窗口（step/end 后 flush，防插进 tool_calls→tool/result 序列导致 provider 400，实测 tf-mtcnejqj 烧 1.98M）
+- **复读检测重复计数 bug**：轮询重复收集事件导致计数虚增（实际 4 次 × 3 轮 = 12 压线误杀，实测 tf-mtcomxpq 开发两次）→ 增量收集
+- **`isUnretryable` 覆盖 400/invalid_request**（provider 客户端拒绝不再重试烧钱）
+- **开发任务全部失败停止流水线**（无产物可测时不再继续 QA 误测；部分失败仍继续）
+- **resume 断点按阶段定位**（PRD 重试成功后不再被失败尝试带回重跑）
+- **分支 slug 派生**（branchName > triageSlug > 需求英文词 > r<N> > feature；分支检查移到 initBacklog 之后）
+- **journal.options 透传 branchPolicy 等决策参数**（keep 不再被吞，实测 tf-mtd6mbeq）
+- **DSH 0.1.2-alpha.1 事件词汇适配**（text-chunks/reasoning-chunks → assistant/chunk 双兼容）；schema 校验兼容（needs-decision 不返回 runId 字段）
+
+### 其他
+- 执行路径基准（小需求样本）与假优化判定收敛：`docs/benchmarks/hold-pipeline-vs-native.md`（多花 44% 是质量预算非浪费，cacheRead 命中价≈1/10）
+
+## [0.1.2] - 2026-08-26
+
+### 修复
+- host 就绪日志工具数改为动态计数（消除「工具 8 个」写死文案，与实际注册数一致）
+
+### 变更
+- 开源发布收尾：README 中英双语修正（架构计数 17/11、防假交付真实语义、快速上手、环境要求）；npm 元数据（keywords / homepage / bugs）；`react` 移入 peerDependencies + `peerDependenciesMeta`（防私有包 ERESOLVE）；CI 触发扩展 `main` + `release-*`；构建关闭 sourcemap（npm 包 -58%）；新增 SECURITY.md / CONTRIBUTING.md；deploy 同步清单移除 `.map`
+
+## [0.1.1] - 2026-08-26
+
+### 修复
+- npm 发布包 `files` 白名单收窄为 `lib` / `cordis.patch.yml` / `README.md`，不再携带 `AGENTS.md` 与 `docs/adr`（开发者文档仅保留在 GitHub 仓库）
+
+## [0.1.0] - 2026-08-26
+
+### 初始公开发布
+- 一句话需求 → 多 Agent 研发流水线（PRD / 设计 / 架构 / 技术方案 / 并行开发 / QA / 验收）
+- backlog 持久化 + 断点续跑（自研 journal，不依赖 LangGraph）
+- 防假交付：实质校验 + token 熔断 + 产品级并发锁 + 内存裁剪
+- 完成汇总自动汇报主线程（空闲唤醒 / 忙碌注入）
+- token 官方口径计量（输入未命中 / 命中 / 写缓存 / 输出 + 调用数 + 缓存命中率）
+- lite / tech / patch 模式 + 模型驱动需求分诊（`teamflow_triage`）
+- 🏭 团队工作台 Web tab：阶段泳道 / 拖拽看板 / 成本中心 / 人工介入中心
+- QA 打回修复有界闭环（ADR-0007，超限转 needs-human）
+- 任务夹文档制（ADR-0008）：每需求自包含任务夹，消除双归档 / memory 堆积

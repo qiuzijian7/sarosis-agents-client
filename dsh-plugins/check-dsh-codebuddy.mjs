@@ -451,6 +451,34 @@ try {
 		if (!problems.some(p => p.startsWith('⑨'))) { ok('⑨ 跨层对账（路由名 / 凭据名 / 桥方法 / 反向方法）+ 随包清单齐'); }
 	}
 
+	// ── ⑪ 模型目录可见性（2026-11-04 安装版「CodeBuddy 登录后聊天框看不到模型信息」）────────
+	//   日志/真机结论：dev 的 cordis.patch.yml 里早就持久化了 `llm-pi-ai.providers.vssaros-codebuddy`
+	//   与 `agent-default-model`，所以启动即就绪；安装版全新 profile 全靠登录瞬间的一次 volatile 写入
+	//   （不落盘、事件早于页面订阅、Host 重启即丢）⇒ 目录停在空快照。
+	//   修法不是落盘失效数据（baseURL 含随机端口 / token 会过期），而是：
+	//     ① 路由写入后补发目录刷新事件；② 客户端注册时再补发；③ Host 启动 2s 内重放路由；
+	//     ④ `saveSelection` 为 no-op 时不再打"改写成功"的假日志。
+	{
+		const checks = [
+			[/const notifyModelDirectory = \(why\) => \{/, '必须有目录刷新通知（覆盖页面订阅晚于路由写入的窗口）'],
+			[/ctx\.emit\('llm\/adapters-updated'\)/, '必须补发 llm/adapters-updated（ModelCatalogDirectory 的四个刷新事件之一）'],
+			[/ctx\.emit\('settings\/document-updated', 'llm-pi-ai'\)/, '必须补发 settings/document-updated'],
+			[/notifyModelDirectory\('route-written'\)/, '路由写入成功后必须立刻通知目录刷新'],
+			[/notifyModelDirectory\('client-register'\)/, '客户端注册时必须再补发一次（页面此刻才订阅）'],
+			[/codebuddy\.start\(\{ initialDelayMs: 2_000 \}\)/, 'Host 启动后必须尽快重放路由（不能等 20s ⇒ 页面已首拉空目录）'],
+			[/const applied = !!after && after\.provider === want\.provider && after\.model === want\.model;/, 'saveSelection 后必须读回校验（官方在无 configEditor 时是 no-op）'],
+			[/改写未生效（saveSelection 为 no-op）/, '改写未生效时必须明确留痕，不许再打"请求改写"的假成功文案'],
+		];
+		for (const [re, label] of checks) {
+			if (!re.test(indexSrc)) { fail(`⑪ 模型目录可见性：${label} ✗`); }
+		}
+		// 反向保护：不许把路由写回持久化配置（volatile 是有意为之）
+		if (/writeFileSync\([^)]*cordis\.patch\.yml/.test(indexSrc)) {
+			fail('⑪ 不许把路由/凭据写进 cordis.patch.yml（volatile 字段故意不落盘：baseURL 含随机端口、token 会过期）✗');
+		}
+		if (!problems.some(p => p.startsWith('⑪'))) { ok('⑪ 路由写入/客户端注册补发目录刷新 + 启动 2s 重放 + saveSelection 真实性校验'); }
+	}
+
 	// ── ⑩ 真跑 apply()：HTTP 面接通（GET status 200 / 写操作只认 POST / 未知操作 404 / 回执无 token）────────
 	// 正则断言（⑧）只能证明"写了"，这里证明"真能用"：用宽松假 ctx 跑插件真实的 apply()（不配 pipe ⇒ 走独立模式）。
 	{

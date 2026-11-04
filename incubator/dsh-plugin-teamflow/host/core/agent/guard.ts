@@ -1,0 +1,537 @@
+/**
+ * dsh-plugin-teamflow core — 子代理单调用护栏 v2（进行中退化检测，纯进度信号）。
+ * 依赖：constants + types。
+ *
+ * 背景（实锤）：① QA 子代理推理复读死循环 38 分钟烧 481 万 token 零产出；
+ * ② v1 护栏的裸墙钟（25min）误杀了合法长任务——medium 档 UI 重构 dev 以 10.6 次工具调用/分钟
+ *    的健康节奏工作到第 25 分钟被击落（tf-mt8fbavd dev 尝试一）。
+ *
+ * 设计原则：【只看进度信号，无任何时间配额】慢吞吐的合法任务永远不该被打断：
+ *  A. 复读检测：滑动窗口内同一规范化流式片段出现 ≥ GUARD_REPEAT_LIMIT 次，且窗口内零变更进展
+ *     （无 edit/write 等写操作）→ 真退化（纯推理打转）→ outcome='degenerated'（豁免预算门，允许一次干净重试）。
+ *     ⚠️ 状态判定（实锤 run tf-mte906e9）：大文件 read-edit 循环是正常模式——模型反复 read 同一大文件
+ *     （每次 edit 后内容已变，必须重读确认）、输出高度相似的「读后分析」，逐字片段在 400 条窗口内
+ *     可累积 ≥12 次——伴随 edit/write 变更调用时只记录观察，不中止（否则大文件修改任务全被误杀）。
+ *  B. 挂死检测：连续 GUARD_SILENCE_MS 没有**任何已提交事件**（provider 层挂起/连接静默死亡）
+ *     → outcome='stalled'（走正常预算门 → 熔断转人工，不自动重试烧钱）。
+ *     2026-09-10：时间来源改为**官方 `subagentTiming` 投影**（`active.through` = 该投影 cut 上
+ *     最新事件时间，由宿主在已提交事件上折叠）——不再依赖「三源取最长视图」的长度启发式
+ *     （r1 QA 误判的根因就是那个视图会失明）；投影不可用时回退旧启发式。长工具静默执行
+ *     （跑 12 分钟测试无输出）仍由 agent 活动守卫豁免，不做误杀。
+ *  C. 空转检测：会话仍在产出事件，但连续 GUARD_NO_TOOL_MS 没有任何工具调用
+ *    （纯推理打转/改写式循环；正常 agent 每分钟都在调工具）→ outcome='stalled'。
+ *    兜底关系：复读判定放宽后，edit 后陷入死循环的漏网场景由 C（长时间无工具调用）兜住。
+ *  D. **环境不可用检测（2026-09-23 probe-v4 实锤）**：同一工具**以完全相同错误**持续失败
+ *    （达 GUARD_TOOL_FAIL_WARN 次先注入提醒，达 GUARD_TOOL_FAIL_ABORT 次中止）→ outcome='env-unavailable'
+ *    （不自动重试，直接 needs-human 并点名环境）。实锤：`pwsh` 因 Windows 沙箱 ACL provision 失败
+ *    （`SetNamedSecurityInfoW failed (Win32 5)`）每次同样报错，架构师重试 7 次 + 90k 字符推理后撞
+ *    max-tokens 才停 —— 白烧 52.6k 输出，且汇报把真因误写成 `max-tokens`。重试/换命令/用推理代替执行
+ *    都修不好环境，所以必须在烧钱之前停下并说清原因。
+ *
+ * 中止方式：run.dispose() → run.result 结算。outcome 命名刻意避开 isUnretryable 的
+ * /token|context|limit/ 正则；只有 'degenerated' 享受干净重试豁免（runner.withRetry）。
+ */
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { GUARD_ENV_PROGRESS_GRACE_MS, GUARD_LONG_CALL_MS, GUARD_NO_TOOL_MS, GUARD_POLL_MS, GUARD_REPEAT_LIMIT, GUARD_SILENCE_MS, GUARD_TOOL_FAIL_ABORT, GUARD_TOOL_FAIL_WARN, GUARD_WINDOW_SIZE } from '../../constants.ts'
+import { clip, isFsSelfHealFailure, isToolArgFailure, isToolErrorResult, isToolScopeFailure, longCallDue, toolFailureAction, toolFailureSignature, toolResultText } from '../../util.ts'
+import { t, type HostLocale } from '../../locales.ts'
+import { runtime } from './context.ts'
+import { runLocaleOf } from '../locale.ts'
+import type { Journal, LocalChildAgentLike, SubagentRunLike } from '../../types.ts'
+import type { JournalStage } from '../../../store.ts'
+
+/** 进展工具（复读状态判定）：变更类写操作 + 脚本执行。
+ * 「有进展」= 大文件 read-edit 循环（dev）或只读分析任务的 read+跑脚本循环（QA/验收）均属正常模式；
+ * 纯 read 循环（反复整读同一文件却无变更/无脚本执行）= 真退化。实锤 run tf-mte906e9：QA 重跑
+ * 只读分析（不 edit）→ 旧判定「零变更进展」误杀，第 2 次 provider error 后 450k 熔断。 */
+const PROGRESS_TOOLS = /^(edit|write|create|apply_patch|patch|remove|delete|rm|mkdir|move|rename|append|bash|pwsh|shell|powershell)$/i
+
+/** fs 竞争类错误（2026-09-30 实锤 obs-r5 T3）：**单文件级、可自愈**，与「工作区全废」的环境故障
+ * （ACL provision 失败 / shell 不可用）不是一回事，不得据此早停。来源是宿主 fs-observation-policy
+ * 的版本检查（写一个被观察过但已变化的文件时拒绝）。
+ * 实锤代价：T3 用 `Get-Content -Raw | Set-Content` 把自建检查器损坏成非法 UTF-8 → 删掉 → 之后反复
+ * write 同一路径 → 每次报 `file no longer exists — re-read the file, then retry`（该指引对「新建文件」
+ * 场景本身是死循环：文件不存在，无从 re-read）→ 累计 3 次被 abort（env-unavailable，不重试）→ 阶段
+ * failed + needs-human。**而它随后换个文件名就写成功了、检查器 33/33 全过** —— 活是干完了的。
+ * ⚠️ 2026-10-07（issue #15）：判据已上提为 `util.isFsSelfHealFailure`，并补上同族的 `FS_NOT_OBSERVED`
+ * （`file has not been read`）—— 原正则漏了它，于是同一个 bug 换个 code 继续发生（实测 10-01
+ * scaffold `tf-mupnk8h0-1otbl2` 仍因 `pnpm-workspace.yaml` 未读被判 env-unavailable）。 */
+
+/* 「工具在这一层不适用」类判据已上提为 `util.isToolScopeFailure`（2026-10-07：搬家的同时补了
+ * `unknown tool`，并让它与 `isFsSelfHealFailure` 一样可写行为断言）。 */
+
+/** Agent 活动守卫（2026-09-06 实锤 r1）：QA 子代理正常干活却被判「10 分钟无事件」——
+ * 事件视图可能失明（session.events 缓存快照不增长）。若 agent 仍非 idle（`status` 在跑）
+ * 且本会话动过手（lastMutationAt>0）→ 不是挂死，跳过本次判定（不中止）。
+ * 纯启动静默挂死（未动手）不受影响——照常 B 触发。
+ *
+ * ⚠️ **2026-10-15 实锤（issue #20 顺带查出）：本判据此前一直是死的。** 旧实现读 ``localAgent`` 的
+ * ``phase.kind``，而宿主 `Agent` 只有 `status: 'idle' | 'running'`——那个字段从 alpha.1 到 alpha.4
+ * （`packages/core/agent/src/runtime-types.ts`）**从未存在**，`git log -S'readonly phase'` 在该包零命中
+ * ⇒ 每次 try/catch 静默返回 false，「agent 还在忙就别判挂死」这层保护从未生效。改为读 `status`。 */
+function isAgentBusy(run: SubagentRunLike | null | undefined): boolean {
+  try {
+    const agent: LocalChildAgentLike | undefined = run ? run.localAgent : undefined
+    return !!agent && typeof agent.status === 'string' && agent.status !== 'idle'
+  } catch (e) { return false }
+}
+
+/** 与 metering 同款事件访问器（session.events 可能是数组或返回数组的函数）。
+ * 2026-09-06 多源回退（实锤 json-parse r1：QA 子代理正常干活 254 事件 43 step 却被判「10 分钟
+ * 无任何新事件」——session.events 缓存快照视图对某些子代理不增长）。回退链：
+ * events（快照 getter）→ snapshotEvents()（宿主官方 API）→ ownEvents()（fork 后事件）——
+ * 取信息最多（最长）的源；全部失效返回 []（stalled 触发前会记录诊断，见 fire()）。 */
+function eventsOf(run: { localAgent?: { session?: unknown } } | null | undefined): unknown[] {
+  try {
+    const local = run && (run as { localAgent?: { session?: unknown } }).localAgent
+    const session = (local && local.session) as {
+      events?: unknown
+      snapshotEvents?: () => unknown
+      ownEvents?: () => unknown
+    } | null | undefined
+    if (!session) return []
+    const candidates: unknown[] = []
+    try {
+      const raw = (session as { events?: unknown }).events
+      if (Array.isArray(raw)) candidates.push(raw)
+      else if (typeof raw === 'function') candidates.push((raw as () => unknown)())
+    } catch (e) { /* 快照 getter 异常——降级下一源 */ }
+    try {
+      if (typeof session.snapshotEvents === 'function') candidates.push(session.snapshotEvents())
+    } catch (e) { /* 忽略 */ }
+    try {
+      if (typeof session.ownEvents === 'function') candidates.push(session.ownEvents())
+    } catch (e) { /* 忽略 */ }
+    const valid = candidates.filter((c) => Array.isArray(c)) as unknown[][]
+    if (valid.length === 0) return []
+    // 信息最多优先：最长视图（失明的缓存快照长度 < 真实日志）
+    valid.sort((a, b) => b.length - a.length)
+    return valid[0]
+  } catch (e) { return [] }
+}
+
+/** 规范化文本片段：小写 + 仅保留字母数字/CJK，供逐字重复比对。 */
+function normalizeFragment(s: string): string {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '')
+}
+
+/**
+ * 官方 `subagentTiming` 投影读数（挂死检测首选源，2026-09-10 改）。
+ * 形状 `{settledMs, active?:{since, through}}`——`through` 是该投影 cut 上**最新事件时间**，
+ * 由宿主在已提交事件上折叠，不受 session.events 快照失明影响（r1 QA 误判根因）。
+ * 返回 null = 投影不可用（未挂载 / 该子代理无 descriptor）→ 回退事件数增长启发式。
+ */
+function timingOf(run: SubagentRunLike | null | undefined): { activeThrough: number | undefined } | null {
+  try {
+    const projections = runtime.sessionProjections as { stateOf?: (s: unknown, k: string) => unknown } | undefined
+    if (!projections || typeof projections.stateOf !== 'function') return null
+    const local = run && (run as { localAgent?: { session?: unknown } }).localAgent
+    const session = local && local.session
+    if (!session) return null
+    const timing = projections.stateOf(session, 'subagentTiming') as { active?: { through?: unknown } } | null | undefined
+    if (!timing || typeof timing !== 'object') return null
+    const through = timing.active && timing.active.through
+    return { activeThrough: typeof through === 'number' && Number.isFinite(through) ? through : undefined }
+  } catch (e) { return null }
+}
+
+/** 观测→执行闭环：向运行中的子代理注入轻提醒（不打断，下一 step 可见）。
+ *
+ * 通道（2026-09-10 改）：`run.localAgent.inject()` —— 宿主官方 Agent 通道。next-step 队列由
+ * agent loop 在 `preStep` 内、tool/result 之后整批认领，因此**不存在**「插进
+ * assistant(tool_calls) → tool/result 之间触发 provider 400」的窗口；旧实现「先入队
+ * `__teamflowPending`、观察到 step/end 再 session.append」的时序状态机整体删除。
+ * （旧注释「subagents.start 句柄无 inject」是错的：`run.localAgent` 是活 Agent，
+ * 有 `inject/steer/followup` —— `packages/core/agent/src/runtime-types.ts`。）
+ *
+ * 语义：`inject` 是 best-effort（可能晚一个 step），且不唤醒 idle driver——提醒只用于
+ * 「仍在跑的 agent」；退化中止仍走 fire()/dispose()，不改为 steer 纠偏（后者是独立课题）。 */
+function injectReminder(run: SubagentRunLike, text: string, locale: HostLocale): void {
+  try {
+    const agent = run && (run as { localAgent?: { inject?: (m: unknown) => void } }).localAgent
+    if (!agent || typeof agent.inject !== 'function') return
+    agent.inject(createUserMessage({
+      content: [{ type: 'text', text }],
+      // form:'notice' 必须带 summary（宿主 ContextFormed 判别式要求一行说明）
+      source: { kind: 'plugin:dsh-plugin-teamflow', form: 'notice', summary: t(locale, 'guard.noticeSummary') },
+    }))
+  } catch (e) { /* 注入失败静默 */ }
+}
+
+export interface StageGuardTarget {
+  run: SubagentRunLike
+  journal: Journal
+  label: string
+  stage: JournalStage
+}
+
+/**
+ * 启动单调用护栏轮询，返回取消函数（runAgent finally 必须调用）。
+ * 触发时：stage.guardReason/guardOutcome 记录原因 + journal 落日志 + dispose 中止本次尝试。
+ */
+export function startStageGuard(opts: StageGuardTarget): () => void {
+  const { run, journal, label, stage } = opts
+  // 护栏文案随 run 语言快照（AC-3③④）：journal 在作用域内，无需新增传参链路
+  const locale = runLocaleOf(journal)
+  let fired = false
+  // B/C 用计数而非时间戳判断（规避事件对象时间格式差异）
+  let lastEventCount = -1
+  let lastGrowthAt = Date.now()
+  let lastToolSignalAt = Date.now()
+  let seenToolCall = false
+  const window: string[] = []
+  // token 观测（ADR 复盘 2026-08-25）：只记 warning 不中止——重复读 / 验证脚本循环
+  let processed = 0
+  const readCounts = new Map<string, number>()
+  const warnedReads = new Set<string>()
+  const scriptCounts = new Map<string, number>()
+  const warnedScripts = new Set<string>()
+  // 进展信号（复读状态判定）：出现过变更写操作或脚本执行 = 会话有实际产出能力。
+  // 初始 0 表示「尚未动手」——读文件读到复读仍未 edit/跑脚本 = 真退化；动手过之后只读不写再久也是正常模式。
+  let lastMutationAt = 0
+  let repeatWarned = false
+  let busyWarned = false
+  // 环境不可用检测（2026-09-23）：callId → 工具名（把失败的 tool/result 归因到具体工具）
+  const callNames = new Map<string, string>()
+  // 失败指纹 → 累计次数（跨轮询持久）+ 已提醒过的指纹（同一指纹只提醒一次，避免刷屏）
+  const toolFailures = new Map<string, number>()
+  const toolFailWarned = new Set<string>()
+  // 进展信号（env-unavailable 判定用）：最近一次**成功**的工具调用时间。刻意不复用 lastMutationAt ——
+  // 后者在 tool/call 就更新，而「反复调用 write 且每次都失败」恰是被误判的形态，用它等于让检测永不触发。
+  let lastSuccessAt = 0
+  let envProgressWarned = false
+  // 可自愈失败的已提醒类别（'fs' 文件门禁 / 'tool' 工具不适用）——按类去重，不刷屏
+  const selfHealWarned = new Set<'fs' | 'tool' | 'arg'>()
+
+  function warnOnce(key: string, set: Set<string>, message: string, hint?: string) {
+    if (set.has(key)) return
+    set.add(key)
+    try { journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} ${t(locale, 'guard.observeTag')} ${message}` }) } catch (e) { /* ignore */ }
+    // 观测→执行闭环：轻提醒直接经官方 Agent 通道 inject（不打断；协议安全边界由宿主保证）。
+    // 只提醒不强制——重复读常是写断言的合理需求。
+    if (hint) injectReminder(run, `[TOKEN GUARD · reminder] ${hint}`, locale)
+  }
+
+  function fire(reason: string, outcome: 'degenerated' | 'stalled' | 'env-unavailable') {
+    if (fired) return
+    fired = true
+    clearInterval(timer)
+    stage.guardReason = reason
+    stage.guardOutcome = outcome
+    // 挂死诊断（2026-09-06 实锤 r1：QA 正常干活被判「10 分钟无事件」——记录判定依据；
+    // 2026-09-10 起首选源是 subagentTiming 投影，只有回退路径才读旧事件源视图长度）
+    if (outcome === 'stalled') {
+      try {
+        const timing = timingOf(run)
+        let detail: string
+        if (timing) {
+          detail = t(locale, 'guard.diagTiming', { through: timing.activeThrough === undefined ? t(locale, 'guard.diagNoTurn') : timing.activeThrough })
+        } else {
+          const local = (run as {
+            localAgent?: { session?: { events?: unknown; snapshotEvents?: () => unknown; ownEvents?: () => unknown } }
+          }).localAgent
+          const session = local && local.session
+          const lens: string[] = []
+          if (session) {
+            try { const r = session.events; lens.push(`events=${Array.isArray(r) ? r.length : typeof r === 'function' ? (r() as unknown[]).length : '?'}`) } catch (e) { lens.push('events=err') }
+            try { lens.push(`snap=${typeof session.snapshotEvents === 'function' ? (session.snapshotEvents() as unknown[]).length : '-'}`) } catch (e) { lens.push('snap=err') }
+            try { lens.push(`own=${typeof session.ownEvents === 'function' ? (session.ownEvents() as unknown[]).length : '-'}`) } catch (e) { lens.push('own=err') }
+          }
+          detail = t(locale, 'guard.diagFallback', { detail: lens.join(' / ') || t(locale, 'guard.noSession') })
+        }
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'guard.stallDiag', { label, detail }) })
+      } catch (e) { /* 诊断失败不影响中止 */ }
+    }
+    try {
+      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'guard.fire', { label, outcome, reason }) })
+    } catch (e) { /* ignore */ }
+    try { void Promise.resolve(run.dispose()).catch(() => {}) } catch (e) { /* ignore */ }
+  }
+
+  /* ── 长命令可见化（2026-10-28）────────────────────────────────────────────
+   * 事故 tf-mvpjqs87-14qdxa：QA 把 10 个 Java 探针串进一条 pwsh，第 10 个卡死 ⇒ 命令跑满 600s 被工具
+   * 上限杀掉，前 9 个探针的成果一起作废；转后台 job 后又轮询 14 分钟，整个阶段 34/42 分钟耗在等它。
+   * 而护栏原来的阈值 `GUARD_SILENCE_MS` 也是 600s ⇒ **长命令执行期间是结构性盲区**（事件冻结，看起来
+   * 像"在干活"或"刚返回"）。这里只做一件事：让它**可见**。不中止——长构建/大 e2e 是合法形态。
+   */
+  const inFlightCalls = new Map<string, { name: string; t: number }>()
+  const longCallWarned = new Set<string>()
+  function noteInFlight(events: unknown[]) {
+    for (const ev of events) {
+      const e = ev as { type?: string; time?: unknown; data?: unknown } | null
+      if (!e) continue
+      if (e.type === 'tool/call' || e.type === 'tool-call') {
+        const d = e.data as { callId?: unknown; name?: unknown } | null
+        if (d && typeof d.callId === 'string') {
+          inFlightCalls.set(d.callId, { name: String(d.name || 'tool'), t: Number(e.time) || Date.now() })
+        }
+        continue
+      }
+      if (e.type !== 'tool/result') continue
+      const id = ((e.data as { message?: { toolCallId?: unknown } } | null) || {}).message?.toolCallId
+      if (typeof id === 'string') inFlightCalls.delete(id)
+    }
+  }
+  function warnLongCalls() {
+    const now = Date.now()
+    for (const [id, v] of inFlightCalls) {
+      if (!longCallDue(v.t, now, GUARD_LONG_CALL_MS, longCallWarned.has(id))) continue
+      longCallWarned.add(id)
+      const sec = Math.round((now - v.t) / 1000)
+      try { journal.logs.push({ t: now, level: 'warn', message: t(locale, 'guard.longCall', { label, tool: v.name, sec }) }) } catch (e) { /* ignore */ }
+      injectReminder(run, `[ENV GUARD · reminder] ${t(locale, 'guard.reminderLongCall', { tool: v.name, sec })}`, locale)
+    }
+  }
+
+  const timer = setInterval(() => {
+    if (fired || journal.cancelled) return
+    try {
+      const events = eventsOf(run)
+
+      // A. 复读检测 + token 观测 + 提醒注入：共用一次增量（只处理新事件，processed 单一指针）。
+      // ⚠️ 必须增量收集（实锤 tf-mtcomxpq 开发两次「恰好 12 次」压线）：轮询每 15s 把 events.slice(-400)
+      // 重新收集（window 不清空），同一片段被重复计数（实际 4 次 × 3 轮轮询 = 12）——调研型推理
+      // （正常引用同一代码 3-4 次）被误杀为退化。
+      if (events.length > processed) {
+        const newEvents = events.slice(processed)
+        for (const ev of newEvents) {
+          const e = ev as {
+            type?: string
+            data?: { texts?: unknown; chunk?: { type?: string; text?: string } } | null
+            texts?: unknown
+          } | null
+          if (!e) continue
+          let streamText: string | null = null
+          if (e.type === 'text-chunks' || e.type === 'reasoning-chunks') {
+            const arr = (e.data && e.data.texts) || e.texts
+            if (Array.isArray(arr)) streamText = arr.map(String).join('')
+          } else if (e.type === 'assistant/chunk') {
+            const chunk = (e.data && e.data.chunk) || null
+            if (chunk && (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta') && typeof chunk.text === 'string') {
+              streamText = chunk.text
+            }
+          }
+          if (streamText !== null && streamText.length > 0) {
+            const s = normalizeFragment(streamText)
+            if (s.length >= 12) window.push(s)
+            // 文本在流出 → 会话仍活着
+            lastGrowthAt = Date.now()
+          }
+        }
+        if (window.length > GUARD_WINDOW_SIZE) window.splice(0, window.length - GUARD_WINDOW_SIZE)
+        const counts = new Map<string, number>()
+        for (const w of window) counts.set(w, (counts.get(w) || 0) + 1)
+        for (const [, n] of counts) {
+          if (n >= GUARD_REPEAT_LIMIT) {
+            // 状态判定（实锤 run tf-mte906e9）：大文件 read-edit 循环 = 正常模式——模型反复 read 同一文件、
+            // 输出高度相似的读后分析，逐字片段可在 400 条窗口内累积 ≥12 次。此类循环伴随 edit/write 变更
+            // 调用（有实际进展），不应中止；只有「复读 + 窗口内零变更调用」（纯推理打转，还没动手或已无产出）
+            // 才是真退化。edit 后陷入死循环的漏网场景由 C 空转检测（长时间无工具调用）兜底。
+            if (lastMutationAt > 0) {
+              if (!repeatWarned) {
+                repeatWarned = true
+                try { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'guard.repeatProgress', { label }) }) } catch (e) { /* ignore */ }
+              }
+            } else {
+              fire(t(locale, 'guard.reasonRepeat', { window: window.length, n }), 'degenerated')
+              return
+            }
+          }
+        }
+        // token 观测（只记 warning）：增量处理新完成的工具调用
+        observeToolCalls(newEvents)
+        // 环境不可用检测（2026-09-23）：失败的 tool/result 增量归因 + 计数（达阈值会 fire）
+        observeToolFailures(newEvents)
+        // 在飞调用登记（长命令告警的输入；结果到达即注销）
+        noteInFlight(newEvents)
+        if (fired) return
+        processed = events.length
+      }
+      // 长命令告警：**每次轮询都查**（不依赖新事件——长命令执行期间恰恰没有新事件）
+      warnLongCalls()
+
+      // 工具活动信号（空转检测 C 依赖）：每次轮询扫描最近 200 条事件；同时提取变更类写操作
+      // （edit/write/create/patch 等——复读状态判定依赖：有过写操作 = 会话有产出能力）
+      for (const ev of events.slice(-200)) {
+        const e = ev as { type?: string; data?: { name?: string } } | null
+        if (!e) continue
+        if (e.type === 'tool-call-chunks' || e.type === 'tool/call') {
+          seenToolCall = true; lastToolSignalAt = Date.now()
+          const d = e.data || (e as unknown as { name?: string })
+          if (d && typeof d.name === 'string' && PROGRESS_TOOLS.test(d.name)) lastMutationAt = Date.now()
+          break
+        }
+      }
+
+      // B. 挂死检测（2026-09-10 改）：首选官方 subagentTiming 投影的 active.through
+      // （已提交事件时间，权威且不受视图失明影响）；投影不可用才回退事件数增长启发式。
+      const timing = timingOf(run)
+      if (timing) {
+        if (timing.activeThrough === undefined) {
+          // 无 open turn（尚未开跑 / 该 turn 已收尾）——不判挂死，保持窗口新鲜
+          lastGrowthAt = Date.now()
+        } else if (Date.now() - timing.activeThrough > GUARD_SILENCE_MS) {
+          // 长时间无已提交事件。长工具静默执行（跑十几分钟测试无输出）仍由活动守卫豁免：
+          // agent 非 idle 且本会话动过手 → 不是挂死，记一次诊断并给新窗口。
+          if (lastMutationAt > 0 && isAgentBusy(run)) {
+            if (!busyWarned) {
+              busyWarned = true
+              try { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'guard.busyTiming', { label, seconds: Math.round((Date.now() - timing.activeThrough) / 1000) }) }) } catch (e) { /* ignore */ }
+            }
+            lastGrowthAt = Date.now()
+          } else {
+            fire(t(locale, 'guard.reasonStallTiming', { minutes: Math.round(GUARD_SILENCE_MS / 60000) }), 'stalled')
+            return
+          }
+        } else {
+          lastGrowthAt = Date.now()
+        }
+      } else if (events.length !== lastEventCount) {
+        lastEventCount = events.length
+        lastGrowthAt = Date.now()
+      } else if (Date.now() - lastGrowthAt > GUARD_SILENCE_MS) {
+        // 回退路径（投影不可用）：沿用旧启发式 + agent 活动守卫（实锤 r1：QA 正常干活 254 事件
+        // 却被判「10 分钟无事件」——事件视图失明）。agent 仍非 idle 且本会话动过手 → 视为视图
+        // 失明而非挂死：记一次诊断并给新窗口，不中止（纯启动静默挂死不受影响）。
+        if (lastMutationAt > 0 && isAgentBusy(run)) {
+          if (!busyWarned) {
+            busyWarned = true
+            try { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'guard.busyEvents', { label }) }) } catch (e) { /* ignore */ }
+          }
+          lastGrowthAt = Date.now()
+        } else {
+          fire(t(locale, 'guard.reasonStallEvents', { minutes: Math.round(GUARD_SILENCE_MS / 60000) }), 'stalled')
+          return
+        }
+      }
+
+      // C. 空转检测：事件仍在增长但长期没有工具调用（正常 agent 每分钟都在调工具；
+      //    纯推理打转/改写式循环只会持续吐文本）。要求已见过至少一次工具调用，
+      //    排除「启动阶段长推理」的误伤。
+      if (seenToolCall && Date.now() - lastToolSignalAt > GUARD_NO_TOOL_MS) {
+        fire(t(locale, 'guard.reasonIdle', { minutes: Math.round(GUARD_NO_TOOL_MS / 60000) }), 'stalled')
+        return
+      }
+    } catch (e) { /* 护栏自身异常不影响流水线 */ }
+  }, GUARD_POLL_MS)
+
+  /** token 观测：增量处理已完成工具调用（tool/call 事件带完整参数）。 */
+  function observeToolCalls(events: unknown[]) {
+    for (const ev of events) {
+      const e = ev as { type?: string; data?: { name?: string; arguments?: string } } | null
+      if (!e || (e.type !== 'tool/call' && e.type !== 'tool-call')) continue
+      const d = (e as { data?: { name?: string; arguments?: string } }).data || (e as unknown as { name?: string; arguments?: string })
+      const name = d && d.name
+      const args = (d && d.arguments) || ''
+      if (name === 'read') {
+        const m = String(args).match(/"file_path"\s*:\s*"([^"]+)"/)
+        if (!m) continue
+        const key = m[1].replace(/\\\\/g, '\\').toLowerCase()
+        const n = (readCounts.get(key) || 0) + 1
+        readCounts.set(key, n)
+        if (n === 3) warnOnce(key, warnedReads, t(locale, 'guard.repeatRead', { n, file: m[1].split(/[\\/]/).pop() }), t(locale, 'guard.reminderRead', { file: m[1].split(/[\\/]/).pop() }))
+      } else if (/bash|pwsh|shell|powershell/i.test(name || '')) {
+        const sm = String(args).match(/(verify-[a-z0-9-]+\.cjs|assembly-check\.cjs|qa-e2e-jsdom\.cjs)/)
+        if (!sm) continue
+        const key = sm[1]
+        const n = (scriptCounts.get(key) || 0) + 1
+        scriptCounts.set(key, n)
+        if (n === 3) warnOnce(key, warnedScripts, t(locale, 'guard.repeatScript', { n, file: key }), t(locale, 'guard.reminderScript', { file: key }))
+      }
+    }
+  }
+
+  /** 可自愈失败只记一次（按类去重）：**绝不**进环境指纹、不写 `stage.envUnavailable`。
+   *  文件门禁类另附一次针对性补救提醒 —— 该错误的修复动作明确（先 read 再写），模型却常直接重试，
+   *  而通用 ENV GUARD 提醒只叫它停手（issue #15 实测形态：提醒反而把「差一步自愈」变成放弃）。 */
+  function noteSelfHealSkip(kind: 'fs' | 'tool' | 'arg', text: unknown) {
+    if (selfHealWarned.has(kind)) return
+    selfHealWarned.add(kind)
+    const detail = clip(String(text).replace(/\s+/g, ' ').trim(), 160)
+    try {
+      const key = kind === 'fs' ? 'guard.selfHealFs' : kind === 'tool' ? 'guard.selfHealTool' : 'guard.selfHealArg'
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, key, { detail }) })
+    } catch (e) { /* ignore */ }
+    if (kind === 'fs') injectReminder(run, `[ENV GUARD · reminder] ${t(locale, 'guard.selfHealHint', { detail })}`, locale)
+  }
+
+  /**
+   * 环境不可用检测（2026-09-23 probe-v4 实锤，增量处理**失败**的 tool/result）。
+   *
+   * 判据：同一工具**以完全相同错误**反复失败 = 工作区坏了（实锤：Windows 沙箱 ACL provision 失败
+   * `SetNamedSecurityInfoW failed (Win32 5): grantWrite(<workspace>)` → 该工作区所有命令全废）。
+   * 这类失败不是模型问题——重试、换命令绕过、用推理代替执行都修不好它，只会继续烧钱
+   * （那次架构师重试 7 次 + 90k 字符推理才撞 max-tokens 停下，白烧 52.6k 输出，且汇报把真因误写成 max-tokens）。
+   * 失败判定用结构化 `message.isError`（不猜文本）；指纹 = 工具名 + 归一化错误前 160 字符。
+   * 动作：达 WARN → 记 warn + 注入提醒（请模型停手上报）；达 ABORT → fire（outcome='env-unavailable'）。
+   */
+  function observeToolFailures(events: unknown[]) {
+    for (const ev of events) {
+      const e = ev as { type?: string; data?: unknown } | null
+      if (!e) continue
+      if (e.type === 'tool/call' || e.type === 'tool-call') {
+        const d = e.data as { callId?: unknown; name?: unknown } | null
+        if (d && typeof d.callId === 'string' && typeof d.name === 'string') callNames.set(d.callId, d.name)
+        continue
+      }
+      if (e.type !== 'tool/result') continue
+      // 成功调用 = 会话仍在产出（进展豁免的依据）
+      if (!isToolErrorResult(e.data)) {
+        lastSuccessAt = Date.now()
+        // 自愈即撤销（2026-10-27 tf-mvpjqs87-14qdxa 实锤）：warn 时落下的 `stage.envUnavailable`
+        // 是**证据**不是**判决**，而 runner 在回合结束时只看它有没有值 ⇒ 只要模型之后成功了，
+        // 这条标记就必须撤掉，否则「自己修好了」会被判成「环境坏了、别再重试」。
+        // 实锤：edit 的 `old_string was not found` 失败 2 次（18:27:27 / 18:27:52），两次都在
+        // 1–3 秒内 read→edit 成功自愈，之后又连续成功十余次；护栏仍在 18:28:03 记下标记，
+        // 18:28:13 判 env-unavailable，整条 run failed。
+        // 判据：真「环境不可用」的形态是**后续调用不可能成功**；既然成功过，工具层就是好的。
+        if (stage.envUnavailable) {
+          const detail = String(stage.envUnavailable)
+          stage.envUnavailable = undefined
+          try {
+            journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'guard.envRecovered', { label, tool: String(detail.split(':')[0] || 'tool'), detail: clip(detail, 160) }) })
+          } catch (err) { /* ignore */ }
+        }
+        continue
+      }
+      const text = toolResultText(e.data)
+      // 可自愈的防护门禁失败不进环境指纹（见 util.isFsSelfHealFailure 注释）：read 一次即愈，
+      // 与「工作区坏了」语义相反。两类各记一次（去重），文件门禁类另附一次补救提醒。
+      if (isFsSelfHealFailure(text)) { noteSelfHealSkip('fs', text); continue }
+      if (isToolScopeFailure(text)) { noteSelfHealSkip('tool', text); continue }
+      // 参数类失败（模型自己把参数传错，换个参数即可）同样不进环境指纹（见 util.isToolArgFailure 注释）。
+      if (isToolArgFailure(text)) { noteSelfHealSkip('arg', text); continue }
+      const callId = (e.data as { message?: { toolCallId?: unknown } } | null)?.message?.toolCallId
+      const tool = (typeof callId === 'string' && callNames.get(callId)) || 'command'
+      const sig = toolFailureSignature(tool, text)
+      const n = (toolFailures.get(sig) || 0) + 1
+      toolFailures.set(sig, n)
+      const detail = clip(String(text).replace(/\s+/g, ' ').trim(), 160)
+      const action = toolFailureAction(n, GUARD_TOOL_FAIL_WARN, GUARD_TOOL_FAIL_ABORT)
+      if (action === 'warn' && !toolFailWarned.has(sig)) {
+        toolFailWarned.add(sig)
+        // 证据先落 stage（不等中止）：模型**听劝停手**时回复很短，默认判定会落 insubstantial「产出过短」
+        // → 真因被掩掉并自动重试白烧两轮；有这条证据，runner 才能把它如实归成 env-unavailable。
+        stage.envUnavailable = `${tool}: ${detail}`
+        try { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'guard.toolFail', { label, tool, n, detail }) }) } catch (err) { /* ignore */ }
+        injectReminder(run, `[ENV GUARD · reminder] ${t(locale, 'guard.reminderToolFail', { tool, n, detail })}`, locale)
+      } else if (action === 'abort') {
+        // 进展豁免（2026-09-30 实锤 obs-r5 T3）：最近仍有成功调用 → 会话在推进，不是「工作区全废」型故障，
+        // 不早停（与复读检测的 lastMutationAt 豁免同款意图；差异见 lastSuccessAt 的注释）。
+        if (Date.now() - lastSuccessAt < GUARD_ENV_PROGRESS_GRACE_MS) {
+          if (!envProgressWarned) {
+            envProgressWarned = true
+            try { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'guard.envProgress', { label, tool, n, detail }) }) } catch (e2) { /* ignore */ }
+          }
+          toolFailures.set(sig, GUARD_TOOL_FAIL_ABORT - 1) // 压回阈值下：有进展就不判死，下轮可再判
+          continue
+        }
+        stage.envUnavailable = `${tool}: ${detail}`
+        fire(t(locale, 'guard.reasonToolFail', { tool, n, detail }), 'env-unavailable')
+        return
+      }
+    }
+  }
+
+  return () => { fired = true; clearInterval(timer) }
+}

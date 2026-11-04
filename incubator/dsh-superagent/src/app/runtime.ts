@@ -44,6 +44,8 @@ import { health, type Health, type SourceContext, type SourceHost } from '../sou
 import { Sessions } from './sessions.ts'
 import { Settings } from './settings.ts'
 import { Reviews } from './review.ts'
+import { Retrospective, skillsRootOf } from './retrospective.ts'
+import { sharedTeamBus, Team } from './team.ts'
 import { sourceContextOf, type SourceContextDeps } from './source-context.ts'
 import type { ResourceHost } from './resources.ts'
 import { mainTools, type MainToolsHost } from './tools/main.ts'
@@ -73,6 +75,10 @@ export class Runtime extends Service implements SourceHost {
   readonly engine: Engine
   /** VsSaros addition: changelist reviews, which alone submit to P4. */
   readonly reviews: Reviews
+  /** VsSaros addition: the main Session's team plans, given to VsSaros Bots. */
+  readonly team: Team
+  /** VsSaros addition: skills and team workflows a finished plan leaves behind. */
+  readonly retro: Retrospective
   readonly passes: Passes
   readonly ready: Promise<void>
   private readonly board = new HealthBoard()
@@ -172,7 +178,16 @@ export class Runtime extends Service implements SourceHost {
       // VsSaros addition: the review gate in front of every P4 submit, reachable only from the panel's routes.
       const reviews = this.reviews = new Reviews({ store, engine, get p4() { return runtime.context({ kind: 'p4', health: ['p4'] }) },
         release: ticketId => { this.executor.release(ticketId) } })
-      this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources,
+      // VsSaros addition: skills and workflows are written into the same library vssaros-skills reads.
+      const foundation = (ctx as unknown as { get?: (name: string) => unknown }).get?.('vssarosFoundation') as
+        { dataRootOf?: (config: object) => string } | undefined
+      const retro = this.retro = new Retrospective({ store, skillsRoot: skillsRootOf(foundation),
+        warn: message => { ctx.logger.warn('dsh-superagent: %s', message) } })
+      // VsSaros addition: team plans; each Bot's report reaches the main Session as a durable relay.
+      const team = this.team = new Team({ store, relay: (id, text) => { sessions.relay(id, text) },
+        onPlanEnd: plan => retro.onPlanEnd(plan),
+        warn: message => { ctx.logger.warn('dsh-superagent: %s', message) } })
+      this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources, team, retro,
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
         // VsSaros addition (p4 Source).
         get p4() { return runtime.context({ kind: 'p4', health: ['p4'] }) }, reviews,
@@ -222,6 +237,18 @@ export class Runtime extends Service implements SourceHost {
     }
     this.sessions.install()
     this.executor.install()
+    // VsSaros addition: take the Bots' reports from here on, and those that ended while dsh-superagent was down.
+    this.disposers.push(this.team.install())
+    // VsSaros addition: appear in the Bots roster as the supervisor. Its Session is this master Session; messages
+    // from other Bots (agent_message) arrive as steering inputs, and answers go through this plugin's own outbox.
+    const withdraw = sharedTeamBus()?.registerExternalBot?.({
+      id: 'superagent', name: 'SuperAgent', role: '主管',
+      description: '主管：评估需求、找或建 bot、组团执行任务；可用 agent_message 找它求助',
+      onMessage: ({ from, text, hop }) => {
+        this.sessions.prompt(this.masterId, key('bots-external', String(from ?? ''), String(hop), text.slice(0, 80)), text, 'steer')
+      },
+    })
+    if (withdraw) this.disposers.push(withdraw)
     await this.sessions.ensure(this.masterId, this.machine.stateDir, 'dsh-superagent orchestrator', 'orchestrator')
     for (const id of this.settings.syncable()) await this.settings.sync(id).catch(() => { /* sync() records its failure in health. */ })
     // If stop() was called while awaiting setup, session creation, or policy sync, do not start background loops.
@@ -233,8 +260,8 @@ export class Runtime extends Service implements SourceHost {
   }
   private httpHost(): HttpHost {
     const runtime = this
-    const { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, setup, passes, reviews } = this
-    return { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, reviews,
+    const { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, setup, passes, reviews, team, retro } = this
+    return { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, reviews, team, retro,
       // VsSaros addition: local lark-cli diagnostics and confirmed maintenance for the Feishu Source.
       cli: setup.cli,
       get deployment() { return setup.deployment },

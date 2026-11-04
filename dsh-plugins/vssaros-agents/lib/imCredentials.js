@@ -288,3 +288,94 @@ export async function savePlatform(config, platform, input) {
 export function saveFeishu(config, input) {
 	return savePlatform(config, 'feishu', input);
 }
+
+/* ── 多飞书应用（2026-11-04）─────────────────────────────────────────────────
+   需求：一个客户端里**不同 bot 用不同飞书应用**（各自 appId / appSecret）。
+   设计（增量、零迁移）：
+     · `accounts.feishu` 仍是**默认应用**（老绑定、老入站、设置页「渠道」原样工作）；
+     · 额外应用存 `accounts.feishuApps = { [appId]: { appSecret, name, updatedAt } }`；
+     · 绑定的 `appId` **留空 = 默认应用**（见 bindings.js）⇒ 改默认应用时老绑定跟着走，与以前一致。
+   ⚠ 飞书长连接是**集群模式、不广播**：同一应用多条连接只有随机一条收到事件 ⇒ 每个 appId
+     在整台机器上只能连一次（见 imFeishuAppLock.js），多个 bot 共用一个应用时在进程内按绑定分发。 */
+
+/** 飞书 appId 形状（`cli_` + 字母数字）。只做形状校验，不联网。 */
+export const FEISHU_APP_ID_RE = /^cli_[A-Za-z0-9]{4,64}$/;
+
+async function feishuAppsOf(config) {
+	const accounts = await readImAccounts(config).catch(() => ({}));
+	const apps = accounts.feishuApps && typeof accounts.feishuApps === 'object' && !Array.isArray(accounts.feishuApps)
+		? accounts.feishuApps : {};
+	return { accounts, apps };
+}
+
+/**
+ * 解析某个飞书应用。`appId` 为空或等于默认应用 ⇒ 默认应用（同 `resolveFeishu`）；
+ * 否则查 `feishuApps`。返回 `{ appId, appSecret, configured, source, isDefault }`（含 secret，**只给 Host 用**）。
+ */
+export async function resolveFeishuApp(config, appId, deps = {}) {
+	const want = String(appId ?? '').trim();
+	const def = await resolveFeishu(config, deps);
+	if (!want || (def.appId && want === def.appId)) {
+		return { ...def, isDefault: true };
+	}
+	const { apps } = await feishuAppsOf(config);
+	const hit = apps[want];
+	const secret = String((hit && hit.appSecret) ?? '').trim();
+	return secret
+		? { appId: want, appSecret: secret, configured: true, source: 'dsh-app', isDefault: false }
+		: { appId: want, appSecret: '', configured: false, source: 'none', isDefault: false };
+}
+
+/** 全部飞书应用（默认在前、额外的按 appId 排序；不含 secret 明文）。 */
+export async function describeFeishuApps(config) {
+	const def = await resolveFeishu(config);
+	const { apps } = await feishuAppsOf(config);
+	const out = [];
+	if (def.appId) {
+		out.push({ appId: def.appId, name: '', isDefault: true, configured: def.configured, hasSecret: !!def.appSecret, source: def.source });
+	}
+	for (const id of Object.keys(apps).sort()) {
+		if (id === def.appId) { continue; }
+		const a = apps[id] || {};
+		out.push({ appId: id, name: String(a.name ?? ''), isDefault: false, configured: !!String(a.appSecret ?? '').trim(),
+			hasSecret: !!String(a.appSecret ?? '').trim(), source: 'dsh-app' });
+	}
+	return out;
+}
+
+/**
+ * 增改/删除一个**额外**飞书应用。只有人能写（同 `savePlatform`）。
+ *   · `remove: true` ⇒ 删除；
+ *   · `appSecret` 缺省/留空 ⇒ 保留原值（新建时必填）；
+ *   · 默认应用不走这里（改默认应用用 `action:'credentials'`，避免出现两份同 appId 的记录）。
+ */
+export async function saveFeishuApp(config, input) {
+	const kind = String((input && input.actor && input.actor.kind) || 'human').trim().toLowerCase();
+	if (kind === 'bot') {
+		throw Object.assign(new Error('只有人能配置 IM 应用凭据（bot 不能改写凭据）。'), { httpStatus: 403 });
+	}
+	const appId = String((input && input.appId) ?? '').trim();
+	if (!FEISHU_APP_ID_RE.test(appId)) {
+		throw Object.assign(new Error(`飞书 App ID 格式不对：${appId || '(空)'}（应形如 cli_xxxxxxxx）`), { httpStatus: 400 });
+	}
+	const def = await resolveFeishu(config);
+	if (def.appId && appId === def.appId) {
+		throw Object.assign(new Error('这是默认飞书应用：请在「设置 → 渠道」里修改，不要再加一份。'), { httpStatus: 409 });
+	}
+	const { accounts, apps } = await feishuAppsOf(config);
+	const next = { ...apps };
+	if (input && input.remove === true) {
+		delete next[appId];
+	} else {
+		const cur = next[appId] || {};
+		const secret = String((input && input.appSecret) ?? '').trim() || String(cur.appSecret ?? '').trim();
+		if (!secret) {
+			throw Object.assign(new Error('缺少必填项：App Secret'), { httpStatus: 400 });
+		}
+		const name = input && input.name !== undefined ? String(input.name ?? '').trim().slice(0, 60) : String(cur.name ?? '');
+		next[appId] = { appSecret: secret, ...(name ? { name } : {}), updatedAt: Date.now() };
+	}
+	if (Object.keys(next).length) { accounts.feishuApps = next; } else { delete accounts.feishuApps; }
+	await writeImAccounts(config, accounts);
+	return describeFeishuApps(config);
+}

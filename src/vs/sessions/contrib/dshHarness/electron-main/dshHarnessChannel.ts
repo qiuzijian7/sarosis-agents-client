@@ -1986,6 +1986,14 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			case DshHarnessChannelCommand.ReloadView:
 				this._views.reload((arg as { viewId: string }).viewId);
 				return;
+			// ★ 2026-11-04：桌面窗口 caption「应用 / 编辑」菜单动作。
+			//   `action` 的封闭集校验在主进程 `DshViewHost.runDesktopMenuAction` 里再做一次
+			//   （channel 是信任边界 ⇒ 不把 raw 裸传下去；这里也不提前断言类型）。
+			case DshHarnessChannelCommand.DesktopMenuAction: {
+				const a = arg as { viewId?: unknown; action?: unknown };
+				if (typeof a?.viewId !== 'string' || !a.viewId) { return undefined; }
+				return this._views.runDesktopMenuAction(a.viewId, a.action);
+			}
 			case DshHarnessChannelCommand.PushTheme: {
 				const a = arg as { viewId: string; tokens: unknown; colorScheme?: unknown; backgrounds?: unknown };
 				if (typeof a.viewId === 'string' && validateThemeTokens(a.tokens)) {

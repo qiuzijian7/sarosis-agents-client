@@ -2,6 +2,7 @@
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { PromptConfig, Prompts } from './prompts.ts'
 import type { CliApplyAction, CliApplyResult, CliCheckResult } from './cli-check.ts'
+import type { TapdCredentialKind, TapdCredentialStatus } from '../sources/tapd-auth.ts'
 import type { PromptsView, StateView, TicketPageView } from './http.ts'
 import type { HistoryView } from './settings-history.ts'
 import type { OverviewView } from './views/overview.ts'
@@ -10,6 +11,8 @@ import type { SourceStatusView } from './views/sources.ts'
 import type { DecisionListView, SearchView, ThreadDetailView, ThreadListView } from './views/threads.ts'
 import type { TicketListView } from './views/tickets.ts'
 import type { AuditEntry, Review } from './review.ts'
+import type { BotApproval, BotCard, CreatedBot, CreatedBotView, PlanView, StepInput } from './team.ts'
+import type { SkillRecord, TeamWorkflow } from './retrospective.ts'
 import type { FileDiff } from '../sources/p4-change.ts'
 
 export const TICKET_FILTERS = ['open', 'person', 'working', 'idle', 'ended'] as const
@@ -45,6 +48,9 @@ export interface Api {
   // VsSaros addition: local lark-cli diagnostics and confirmed maintenance for the Feishu Source.
   'POST sources/feishu/cli-check': { body: { update?: boolean }; response: CliCheckResult }
   'POST sources/feishu/cli-apply': { body: { action: CliApplyAction; confirm: true }; response: CliApplyResult }
+  // VsSaros addition: TAPD Open API credentials, kept in the Host's credentials file; the response never carries a secret.
+  'GET sources/tapd/credentials': { response: TapdCredentialStatus }
+  'POST sources/tapd/credentials': { body: { kind?: TapdCredentialKind; id?: string; secret?: string; clear?: boolean }; response: TapdCredentialStatus }
   'GET models': { response: ModelCatalog }
   'GET prompts': { query?: { revision?: number; offset?: number }; response: PromptsView }
   'PUT prompts': { body: { config: PromptConfig; baseRevision: number }; response: { revision: number; context_delivery: Delivery } }
@@ -55,6 +61,21 @@ export interface Api {
   'POST tickets/:id/review/approve': { body: { fingerprint: string }; response: Review }
   'POST tickets/:id/review/reject': { body: { comment: string }; response: Review }
   'POST tickets/:id/review/discard': { response: Review }
+  // VsSaros addition: the main Session's team plans given to VsSaros Bots; a person may inspect and start one.
+  'GET team/plans': { response: { available: boolean; plans: PlanView[] } }
+  'GET team/bots': { response: { available: boolean; bots: BotCard[] } }
+  'POST team/plans': { body: { goal: string; ticketId?: string; steps: StepInput[] }; response: PlanView }
+  'POST team/plans/:id/stop': { response: PlanView }
+  // VsSaros addition: high-risk Bot drafts the supervisor cannot create without a person.
+  'GET team/approvals': { response: { waiting: BotApproval[]; created: CreatedBot[]; perPlan: number; global: number } }
+  'POST team/approvals/:id/approve': { response: CreatedBotView }
+  'POST team/approvals/:id/reject': { response: { rejected: true } }
+  // VsSaros addition: skills and reusable workflows a finished team plan leaves behind.
+  'GET team/retrospective': { response: { skills: SkillRecord[]; workflows: TeamWorkflow[] } }
+  'POST team/skills/:id/approve': { response: SkillRecord }
+  'POST team/skills/:id/reject': { response: SkillRecord }
+  'POST team/workflows/:id/save': { response: TeamWorkflow }
+  'POST team/workflows/:id/run': { response: PlanView }
 }
 type Path<K> = K extends `${string} ${infer P}` ? P : never
 type Params<P> = P extends `${string}:${infer Name}/${infer Rest}` ? Record<Name, string> & Params<Rest>

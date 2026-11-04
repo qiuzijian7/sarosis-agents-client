@@ -73,7 +73,7 @@ async function readLock(file) {
  *
  * @returns `{ ok: true, file }` 或 `{ ok: false, holder: { pid, dataRoot, heartbeatAt } }`
  */
-export async function tryAcquireImLock(platform, { dataRoot = '', pid = process.pid, home, staleMs = IM_LOCK_STALE_MS, now = Date.now() } = {}) {
+export async function tryAcquireImLock(platform, { dataRoot = '', pid = process.pid, home, staleMs = IM_LOCK_STALE_MS, now = Date.now(), appId = '' } = {}) {
 	const file = imLockPath(platform, home);
 	const cur = await readLock(file);
 	if (cur) {
@@ -87,6 +87,7 @@ export async function tryAcquireImLock(platform, { dataRoot = '', pid = process.
 					pid: holderPid,
 					dataRoot: String(cur.dataRoot ?? ''),
 					heartbeatAt: Number(cur.heartbeatAt ?? 0),
+					appId: String(cur.appId ?? ''),
 				},
 			};
 		}
@@ -96,6 +97,8 @@ export async function tryAcquireImLock(platform, { dataRoot = '', pid = process.
 		platform: String(platform),
 		pid: Number(pid),
 		dataRoot: String(dataRoot ?? ''),
+		/* 2026-11-04：记下是哪个飞书应用（老版本不写这项 ⇒ 读方回落到 dataRoot 的默认应用） */
+		...(appId ? { appId: String(appId) } : {}),
 		acquiredAt: now,
 		heartbeatAt: now,
 	};

@@ -1,0 +1,915 @@
+/**
+ * dsh-plugin-teamflow — 全局面板 + 右栏 run 详情 tab（v0.1.8 ①）。
+ *
+ * 与 conversation.view tab（会话内工作台）的分工：
+ * - 全局面板挂在**应用外壳**的 root slot 上：`sidebar.panellist`（侧边栏图标）+
+ *   `main`（中央主区，keyed，**必须与 panellist 同 id**——宿主 `layout.selectPanel`
+ *   对未注册的 main key 直接抛错）。它没有会话上下文，因此数据面按**产品线 key**
+ *   寻址（`remote.products/productView/...`），跨会话可用。
+ * - 右栏 run 详情 tab：tab 类型进 `ctx.sidebarRightTabs`，正文进 keyed seat
+ *   `sidebar.right.pane.tab`；地址由 host 生成（`dsh-resource://teamflow/run/<产品线>/<runId>`），
+ *   与产物预览同一条原则——client 不拼地址。右侧栏是 AppFrame 级 root slot，
+ *   全局面板占着中央区时它依然挂载（唯一失败态是"没有挂载会话"，此时降级为面板内联详情）。
+ */
+import React from 'react'
+import { T, h, MONO, SANS, flexRow, chip, FoldableText, CancelButton, stColor, stText, fmtTime, fmtDur, fmtTokens, totalTokens, hitRate, phaseIconOf, byRoleLine, stageUsageLine, runStatusText, kindTitle, stageLabelOf, stageStatusText, t } from './shared.js'
+import { bugOpenReasonKey } from './bug-open-reason.js'
+import { useUpdateStatus, UpgradeButton, canOneClick, UpdateHint } from './update-ui.js'
+
+/* ── 右栏 run tab 的类型标识（host 生成地址，client 只解析） ────────── */
+export const RUN_TAB_ID = 'dsh-plugin-teamflow/run'
+export const RUN_TAB_KIND = 'teamflow-run'
+export const RUN_TAB_PATTERN = 'dsh-resource://teamflow/run/**'
+
+/** 解析 host 生成的 run 地址 → { product, runId }（不合法 → null）。 */
+export function parseRunAddress(address) {
+  const m = /^dsh-resource:\/\/teamflow\/run\/([^/]+)\/([^/?#]+)$/.exec(String(address || ''))
+  if (!m) return null
+  try { return { product: decodeURIComponent(m[1]), runId: decodeURIComponent(m[2]) } } catch (e) { return null }
+}
+
+/** 右栏 tab 类型定义（类型本身；正文在 sidebar.right.pane.tab 的 keyed seat）。 */
+export function runTabDefinition() {
+  return {
+    id: RUN_TAB_ID,
+    kind: RUN_TAB_KIND,
+    priority: 'extension',
+    patterns: [RUN_TAB_PATTERN],
+    title: (address) => {
+      const p = parseRunAddress(address)
+      return p ? `TeamFlow · ${p.runId.slice(0, 14)}` : 'TeamFlow Run'
+    },
+  }
+}
+
+/** Typert remote 信封解包（与会话内工作台同一约定）。
+ * 空信封（`{ok:true}` 但没有 `value`）是**真实故障态**：host 方法返回了 `undefined` / 结果被丢弃——
+ * 此时不能静默返回 undefined（调用方会把它再包成「未知错误」，丢掉定位信息），故显式报出原始信封。 */
+function unwrap(res, what) {
+  if (!res || !res.ok) {
+    let detail = t('common.unknownError')
+    try { detail = (res && res.error && (res.error.message || res.error.code)) || JSON.stringify(res) || t('common.unknownError') } catch (e) { /* 循环引用等 */ }
+    try { console.warn('[teamflow] remote 调用失败', what, res) } catch (e) { /* ignore */ }
+    throw new Error(t('common.remoteCallFailed', { what: what || 'remote', detail }))
+  }
+  if (res.value === undefined) {
+    try { console.warn('[teamflow] remote 返回空信封（ok 但无 value）', what, res) } catch (e) { /* ignore */ }
+    let raw = ''
+    try { raw = JSON.stringify(res) } catch (e) { raw = String(res) }
+    throw new Error(t('common.remoteEmptyResult', { what: what || 'remote', raw }))
+  }
+  return res.value
+}
+
+/* ── 侧边栏图标（官方 owner props：{ size, active }） ───────────────── */
+/** 全局面板图标：三条泳道 + 节点（与工作台「流水线」语义一致），跟随选中态配色。 */
+export function TeamflowPanelIcon({ size = 16, active = false }) {
+  const c = active ? 'currentColor' : 'currentColor'
+  return h('svg', {
+    width: size, height: size, viewBox: '0 0 24 24', fill: 'none',
+    stroke: c, strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round',
+    'aria-hidden': 'true', focusable: 'false',
+  },
+  h('rect', { x: 3, y: 4, width: 5.2, height: 4, rx: 1.2, opacity: active ? 1 : 0.85 }),
+  h('rect', { x: 9.4, y: 10, width: 5.2, height: 4, rx: 1.2, opacity: active ? 1 : 0.85 }),
+  h('rect', { x: 3, y: 16, width: 5.2, height: 4, rx: 1.2, opacity: active ? 1 : 0.85 }),
+  h('path', { d: 'M8.4 6h3.3a1 1 0 0 1 1 1v3.4' }),
+  h('path', { d: 'M8.4 18h3.3a1 1 0 0 0 1-1v-3.4' }),
+  h('path', { d: 'M14.6 12h4.4' }),
+  )
+}
+
+/* ── 小工具 ─────────────────────────────────────────────────────── */
+const panelBtn = {
+  font: 'inherit', fontSize: 11, fontWeight: 600, padding: '3px 9px', borderRadius: 7, cursor: 'pointer',
+  border: `1px solid ${T.border}`, background: T.layer1, color: T.text, whiteSpace: 'nowrap', lineHeight: '16px',
+}
+const brandBtn = { ...panelBtn, border: `1px solid color-mix(in srgb, ${T.brand} 40%, transparent)`, background: `color-mix(in srgb, ${T.brand} 12%, transparent)`, color: T.brand }
+const sectionTitle = (text, extra?) => h('div', { style: { ...flexRow, justifyContent: 'space-between', margin: '14px 0 8px' } },
+  h('div', { style: { fontSize: 12, fontWeight: 700, color: T.text, letterSpacing: '.02em' } }, text),
+  extra || null)
+const muted = (text, style = {}) => h('div', { style: { fontSize: 11, color: T.text2, lineHeight: 1.6, ...style } }, text)
+const runUsageText = (u) => {
+  if (!u || !(u.input || u.cacheRead || u.cacheWrite || u.output)) return t('common.noUsage')
+  const hit = hitRate(u)
+  return `⇅${fmtTokens(u.input)} ⇅${fmtTokens(u.cacheRead)} ⬆${fmtTokens(u.output)}${hit !== null ? ` ·${hit}%` : ''} · ${t('common.calls', { n: u.calls })}`
+}
+
+/* ── 密度控制（v0.1.8 ①：分栏 + 默认折叠） ──────────────────────
+ * run 列表默认只渲染最近 RUN_PREVIEW 条（进行中/未完成的**无条件置顶**，不许被折叠掉）；
+ * backlog 每组的终态卡片默认收起（计数仍显示），活动项与 needs-human 始终展开。 */
+const RUN_PREVIEW = 8
+const TERMINAL_STATUSES = ['accepted', 'closed', 'verified', 'cancelled']
+
+/* ── 产品线导航（左栏） ─────────────────────────────────────────── */
+function ProductRail({ products, current, loadingKey, onSelect, onRefresh, busy }) {
+  return h('div', {
+    style: {
+      width: 236, flex: '0 0 236px', minHeight: 0, display: 'flex', flexDirection: 'column',
+      borderRight: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.layer1} 40%, transparent)`,
+    },
+  },
+  h('div', { style: { ...flexRow, justifyContent: 'space-between', padding: '10px 12px 8px' } },
+    h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text2 } }, t('panel.railTitle', { n: products.length })),
+    h('button', { style: panelBtn, onClick: onRefresh, disabled: busy, title: t('panel.rescanTip') }, busy ? t('panel.refreshing') : t('panel.refresh'))),
+  h('div', { style: { flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 8px 12px' } },
+    products.length === 0
+      ? muted(t('panel.noProducts'), { padding: '10px 4px' })
+      : products.map((p) => {
+        const on = p.key === current
+        return h('div', {
+          key: p.key,
+          onClick: () => onSelect(p.key),
+          title: p.path || p.key,
+          style: {
+            padding: '8px 10px', marginBottom: 6, borderRadius: 9, cursor: 'pointer',
+            border: `1px solid ${on ? `color-mix(in srgb, ${T.brand} 45%, transparent)` : T.border}`,
+            background: on ? `color-mix(in srgb, ${T.brand} 10%, ${T.layer1})` : 'transparent',
+          },
+        },
+        h('div', { style: { ...flexRow, justifyContent: 'space-between' } },
+          h('span', { style: { fontSize: 12, fontWeight: 600, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.title || p.key),
+          p.activeRuns > 0 ? chip(t('panel.activeRuns', { n: p.activeRuns }), T.brand, { dot: true }) : null),
+        h('div', { style: { fontSize: 10, color: T.text2, fontFamily: MONO, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.key),
+        h('div', { style: { ...flexRow, gap: 8, marginTop: 3, fontSize: 10, color: T.text2 } },
+          h('span', null, `run ${p.totalRuns}`),
+          p.updatedAt ? h('span', null, t('panel.updated', { time: fmtTime(p.updatedAt) })) : null,
+          // 选中但视图还没回来时给出明确状态：避免"卡片是选中态、右侧却在读取中"的误导
+          p.key === loadingKey ? h('span', { style: { color: T.brand, fontWeight: 600 } }, t('panel.reading')) : null),
+        p.lastRequirement ? h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 3, lineHeight: 1.45, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' } }, p.lastRequirement) : null,
+        p.lastVerdict ? h('div', { style: { marginTop: 4 } }, chip(t('panel.verdict', { v: p.lastVerdict }), stColor(p.lastVerdict === 'accepted' ? 'accepted' : p.lastVerdict))) : null,
+        )
+      })),
+  )
+}
+
+/* ── run 列表 ───────────────────────────────────────────────────── */
+function RunList({ runs, activeRunId, onOpenRun, onInlineRun, onCancel }) {
+  if (!runs.length) return muted(t('runList.empty'), { padding: '2px 2px 8px' })
+  return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+    runs.map((r) => {
+      const on = r.id === activeRunId
+      const active = r.status === 'running' || r.status === 'pending'
+      return h('div', {
+        key: r.id,
+        style: {
+          padding: '8px 11px', borderRadius: 9, border: `1px solid ${on ? `color-mix(in srgb, ${T.brand} 45%, transparent)` : T.border}`,
+          borderLeft: `3px solid ${stColor(r.status)}`,
+          background: on ? `color-mix(in srgb, ${T.brand} 8%, ${T.layer1})` : T.layer1,
+          display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
+        },
+        onClick: () => onInlineRun(r),
+      },
+      h('div', { style: { flex: 1, minWidth: 0 } },
+        h('div', { style: { ...flexRow, gap: 6 } },
+          chip(runStatusText(r.status), stColor(r.status), { dot: true }),
+          r.mode ? chip(String(r.mode), T.text2) : null,
+          h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2 } }, r.id),
+          active ? h('span', { style: { fontSize: 10, color: T.brand } }, t('runList.running')) : null),
+        h('div', { style: { fontSize: 11.5, color: T.text, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.requirement || t('runList.noRequirement')),
+        h('div', { style: { ...flexRow, gap: 10, marginTop: 3, fontSize: 10, color: T.text2, fontFamily: MONO } },
+          h('span', null, t('runList.stageProgress', { done: r.doneStages, total: r.stageCount })),
+          h('span', null, runUsageText(r.usage)),
+          h('span', null, `${fmtTime(r.startedAt)}${r.endedAt ? ` → ${fmtTime(r.endedAt)}` : ''} ${fmtDur(r.startedAt, r.endedAt)}`))),
+      /* 中断入口：与「右栏打开」并排（行整行可点开详情，按钮自己 stopPropagation） */
+      r.status === 'running' && onCancel ? h(CancelButton, {
+        runId: r.id,
+        title: t('cancel.tip', { id: r.id }),
+        onConfirm: onCancel,
+        style: { fontSize: 11, padding: '2px 9px' },
+      }) : null,
+      h('button', {
+        style: brandBtn,
+        title: t('runList.openRightBarTip'),
+        onClick: (e) => { e.stopPropagation(); onOpenRun(r) },
+      }, t('runList.openRightBar')),
+      )
+    }))
+}
+
+/* ── backlog 分组 ───────────────────────────────────────────────── */
+function BacklogCard({ kind, item, onOpen, reqMap }) {
+  const color = stColor(item.status)
+  const reason = kind === 'bug' ? bugOpenReasonKey(item, reqMap && reqMap.get(item.reqId)) : null
+  return h('div', {
+    onClick: () => onOpen(kind, item.id),
+    style: {
+      padding: '6px 9px', borderRadius: 8, border: `1px solid ${T.border}`, borderLeft: `3px solid ${color}`,
+      background: T.layer1, cursor: 'pointer', minWidth: 0, boxSizing: 'border-box', maxWidth: '100%', overflow: 'hidden',
+    },
+  },
+  h('div', { style: { ...flexRow, gap: 5, minWidth: 0 } },
+    h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.id),
+    chip(stText(item.status), color, { dot: true }),
+    kind === 'bug' && item.severity ? chip(String(item.severity), stColor('rework')) : null),
+  h('div', { style: { fontSize: 11.5, color: T.text, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.title || item.id),
+  (() => {
+    const roles = kind === 'task' ? byRoleLine(item) : ''
+    // 等宽数字串（⇅19.7k/127.0k·⬆4.7k·87%）不可断行 → 允许任意处换行，避免顶破卡片
+    return roles ? h('div', { title: roles, style: { fontSize: 10, color: T.text2, fontFamily: MONO, marginTop: 3, minWidth: 0, overflowWrap: 'anywhere', wordBreak: 'break-word' } }, roles) : null
+  })(),
+  h('div', { style: { ...flexRow, gap: 6, marginTop: 3, fontSize: 10, color: T.text2 } },
+    item.devAssign ? h('span', null, `dev ${item.devAssign}`) : null,
+    item.qaAssign ? h('span', null, `qa ${item.qaAssign}`) : null,
+    item.acceptBy ? h('span', null, t('panel.verdict', { v: item.acceptBy })) : null,
+    item.retries ? h('span', { style: { color: T.warn } }, t('board.retries', { n: item.retries })) : null,
+    item.humanIntervention ? h('span', { style: { color: T.error } }, t('status.needs-human')) : null),
+  reason ? h('div', { style: { fontSize: 10, color: reason.tone === 'warn' ? T.warn : T.text2, marginTop: 3, lineHeight: 1.4 } }, t(reason.key)) : null,
+  )
+}
+
+/** 可点筛选徽章（多选）：单击切换该状态，选中态用状态色实心；再点取消。 */
+const filterChip = (text, color, on, onToggle) => h('button', {
+  onClick: onToggle,
+  title: on ? t('panelBoard.filterChipOn') : t('panelBoard.filterChipOff'),
+  style: {
+    font: 'inherit', fontSize: 11, fontWeight: 600, padding: '1px 8px', borderRadius: 999, cursor: 'pointer',
+    lineHeight: '16px', whiteSpace: 'nowrap',
+    border: `1px solid ${on ? `color-mix(in srgb, ${color} 55%, transparent)` : T.border}`,
+    background: on ? `color-mix(in srgb, ${color} 26%, transparent)` : 'transparent',
+    color: on ? color : T.text2,
+  },
+}, text)
+
+/** run 状态展示顺序（可行动的在前）。 */
+const RUN_STATUS_ORDER = ['running', 'pending', 'interrupted', 'failed', 'cancelled', 'completed', 'superseded']
+
+function BacklogGroups({ backlog, onOpen, productKey }) {
+  const [showDone, setShowDone] = React.useState({})   // kind → 是否展开终态卡片
+  const [filters, setFilters] = React.useState({})     // kind → 选中的状态数组（多选；空 = 不筛）
+  // 切换产品线时清空筛选与展开态（面板不重挂载，必须显式重置）
+  React.useEffect(() => { setShowDone({}); setFilters({}) }, [productKey])
+  if (!backlog) return null
+  const groups = [['req', backlog.requirements || []], ['task', (backlog.tasks || []).filter((t) => t.type !== 'subtask')], ['bug', backlog.bugs || []]]
+  // 缺陷「为什么还 open」需关联来源需求（needs-human 收尾 ⇒ 未闭环真缺陷）；建映射避免逐卡现查
+  const reqMap = new Map((backlog.requirements || []).map((r) => [r.id, r]))
+  const total = groups.reduce((a, [, arr]) => a + arr.length, 0)
+  if (!total) return muted(t('panelBoard.empty'), { padding: '2px 2px 8px' })
+  return h('div', null,
+    groups.map(([kind, list]) => {
+      if (!list.length) return null
+      // 终态且非人工介入 → 默认收起（needs-human 是终态之外的独立标记，必须一直可见）
+      const done = list.filter((it) => TERMINAL_STATUSES.indexOf(it.status) !== -1 && !it.humanIntervention)
+      const active = list.filter((it) => done.indexOf(it) === -1)
+      const open = showDone[kind] === true
+      const sel = filters[kind] || []
+      const selSet = new Set(sel)
+      const filtering = sel.length > 0
+      const matched = filtering ? list.filter((it) => selSet.has(it.status)) : list
+      const byStatus = {}
+      for (const it of list) byStatus[it.status] = (byStatus[it.status] || 0) + 1
+      const toggle = (st) => setFilters((m) => {
+        const cur = new Set(m[kind] || [])
+        if (cur.has(st)) cur.delete(st); else cur.add(st)
+        return { ...m, [kind]: [...cur] }
+      })
+      // 筛选优先于折叠：点了「已验收」就要能看到卡片，不再被折叠藏住
+      const visible = filtering ? matched : (open ? list : active)
+      return h('div', { key: kind, style: { marginBottom: 12 } },
+        h('div', { style: { ...flexRow, gap: 6, marginBottom: 6, minWidth: 0 } },
+          h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text, flex: '0 0 auto' } }, t('panelBoard.groupCount', { kind: kindTitle(kind), n: list.length })),
+          h('span', { style: { fontSize: 10, color: T.text2, flex: '0 0 auto' } }, t('panelBoard.activeCount', { n: active.length })),
+          ...Object.keys(byStatus).map((s) => filterChip(`${stText(s)} ${byStatus[s]}`, stColor(s), selSet.has(s), () => toggle(s))),
+          filtering
+            ? h('button', {
+              style: { ...panelBtn, marginLeft: 'auto', flex: '0 0 auto' },
+              title: t('panelBoard.clearFilterTip'),
+              onClick: () => setFilters((m) => ({ ...m, [kind]: [] })),
+            }, t('panel.filtered', { sel: sel.length, shown: matched.length, total: list.length }))
+            : done.length
+              ? h('button', {
+                style: { ...panelBtn, marginLeft: 'auto', flex: '0 0 auto' },
+                title: open ? t('panelBoard.collapseDoneTip') : t('panelBoard.expandDoneTip'),
+                onClick: () => setShowDone((m) => ({ ...m, [kind]: !open })),
+              }, open ? t('panelBoard.collapseDone', { n: done.length }) : t('panelBoard.expandDone', { n: done.length }))
+              : null),
+        visible.length
+          ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(228px, 1fr))', gap: 6 } },
+            visible.map((it) => h(BacklogCard, { key: it.id, kind, item: it, onOpen, reqMap })))
+          : muted(t('panelBoard.emptyFiltered'), { fontSize: 10.5 }))
+    }))
+}
+
+/* ── 条目详情（面板内联；右侧栏留给 run 详情与产物） ─────────────── */
+function ItemDetailPane({ det, openArtifact, onClose, backlog }) {
+  if (!det) return null
+  const bugReason = det.kind === 'bug'
+    ? bugOpenReasonKey(det, backlog && (backlog.requirements || []).find((r) => r.id === det.reqId))
+    : null
+  const row = (k, v) => (v === null || v === undefined || v === '' ? null
+    : h('div', { style: { ...flexRow, gap: 6, fontSize: 11 } },
+      h('span', { style: { color: T.text2, flex: '0 0 auto' } }, k), h('span', { style: { color: T.text, minWidth: 0, wordBreak: 'break-word' } }, String(v))))
+  return h('div', { style: { padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8, minHeight: 0 } },
+    h('div', { style: { ...flexRow, justifyContent: 'space-between' } },
+      h('div', { style: { ...flexRow, gap: 6 } },
+        h('span', { style: { fontFamily: MONO, fontSize: 11, color: T.text2 } }, det.id),
+        chip(stText(det.status), stColor(det.status), { dot: true }),
+        h('span', { style: { fontSize: 10.5, color: T.text2 } }, kindTitle(det.kind))),
+      h('button', { style: panelBtn, onClick: onClose }, t('common.close'))),
+    h('div', { style: { fontSize: 13, fontWeight: 600, color: T.text, lineHeight: 1.45 } }, det.title),
+    /* 缺陷卡：先给缺陷自身的内容（复现/期望/实际）——用户实锤「点开只看得到关联 run 的原始需求」 */
+    det.kind === 'bug' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 10px', borderRadius: 8, background: T.layer2, border: `1px solid ${T.border}` } },
+      h('div', { style: { ...flexRow, gap: 6, flexWrap: 'wrap' } },
+        h('span', { style: { fontSize: 11, fontWeight: 700, color: T.text } }, t('panelItem.defectSection')),
+        det.severity ? chip(String(det.severity), String(det.severity) === 'P0' ? T.error : String(det.severity) === 'P1' ? T.warn : T.text2) : null,
+        bugReason ? h('span', { style: { fontSize: 10.5, color: bugReason.tone === 'warn' ? T.warn : T.text2 } }, t(bugReason.key)) : null),
+      row(t('panelItem.row.defectId'), det.defectId), row(t('panelItem.row.module'), det.module),
+      row(t('panelItem.row.reproduce'), det.reproduce), row(t('panelItem.row.expected'), det.expected),
+      row(t('panelItem.row.actual'), det.actual), row(t('panelItem.row.defectCheck'), det.defectCheck),
+      row(t('panelItem.row.defectCriterion'), det.defectCriterion), row(t('panelItem.row.defectAc'), det.defectAc),
+      (det.reproduce || det.expected || det.actual)
+        ? null
+        : h('div', { style: { fontSize: 10.5, color: T.warn, lineHeight: 1.5 } }, t('panelItem.noDefectDetail'))) : null,
+    h('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
+      row(t('panelItem.row.req'), det.reqId), row(t('panelItem.row.owner'), det.owner), row(t('panelItem.row.dev'), det.devAssign), row(t('panelItem.row.qa'), det.qaAssign),
+      row(t('panelItem.row.accept'), det.assignBy), row(t('panelItem.row.retries'), det.retries), row(t('panelItem.row.runDocs'), det.runDocs)),
+    det.spec ? h('div', null, h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 3 } }, t('panelItem.spec')), h(FoldableText, { text: det.spec })) : null,
+    det.summary ? h('div', null, h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 3 } }, t('panelItem.summary')), h(FoldableText, { text: det.summary })) : null,
+    det.artifacts && det.artifacts.length
+      ? h('div', null,
+        h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 4 } }, t('panelItem.artifacts', { n: det.artifacts.length })),
+        h('div', { style: { ...flexRow, gap: 5 } }, det.artifacts.map((a) => h('button', {
+          key: a.name,
+          style: brandBtn,
+          title: t('panelItem.artifactTip', { address: a.address }),
+          onClick: () => openArtifact && openArtifact(a.address, a.name, (det.runInfo && det.runInfo.ownerSession) || null),
+        }, a.name))))
+      : muted(t('panelItem.noArtifacts')),
+    det.subtasks && det.subtasks.length
+      ? h('div', null,
+        h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 4 } }, t('panelItem.subtasks', { n: det.subtasks.length })),
+        h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } }, det.subtasks.map((s) => h('div', {
+          key: s.id, style: { ...flexRow, gap: 6, fontSize: 11, padding: '4px 7px', borderRadius: 7, background: T.layer1, border: `1px solid ${T.border}` },
+        },
+        h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2 } }, s.id),
+        chip(stText(s.status), stColor(s.status)),
+        h('span', { style: { color: T.text, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, s.title),
+        s.failed ? chip(t('common.failed'), T.error) : null))))
+      : null,
+    det.bugs && det.bugs.length
+      ? h('div', null,
+        h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 4 } }, t('panelItem.bugs', { n: det.bugs.length })),
+        h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } }, det.bugs.map((b) => h('div', {
+          key: b.id, style: { ...flexRow, gap: 6, fontSize: 11, padding: '4px 7px', borderRadius: 7, background: T.layer1, border: `1px solid ${T.border}` },
+        },
+        h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2 } }, b.id),
+        b.severity ? chip(String(b.severity), T.warn) : null,
+        chip(stText(b.status), stColor(b.status)),
+        h('span', { style: { color: T.text, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, b.title)))))
+      : null,
+    det.events && det.events.length
+      ? h('div', null,
+        h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 4 } }, t('panelItem.events', { n: Math.min(det.events.length, 30) })),
+        h('div', { style: { display: 'flex', flexDirection: 'column', gap: 3, fontFamily: MONO, fontSize: 10, color: T.text2 } },
+          det.events.slice(-30).map((e, i) => h('div', { key: i }, `${fmtTime(e.at)} ${e.from || '—'} → ${e.to || '—'}${e.by ? ` · ${e.by}` : ''}${e.reason ? ` · ${e.reason}` : ''}`))))
+      : null,
+  )
+}
+
+/* ── run 详情（右栏 tab 正文 + 面板内联降级共用） ────────────────── */
+function RunDetailPane({ snap, product, api, onCancel }) {
+  const [sel, setSel] = React.useState(null)     // 选中的阶段详情
+  const [err, setErr] = React.useState(null)
+  React.useEffect(() => { setSel(null); setErr(null) }, [snap && snap.id])
+  if (!snap) return muted(t('detail.runMissing'), { padding: 12 })
+  const stages = snap.stages || []
+  const totals = stages.reduce((a, s) => {
+    const u = s.usage
+    if (u) {
+      a.input += u.input || 0
+      a.cacheRead += u.cacheRead || 0
+      a.cacheWrite += u.cacheWrite || 0
+      a.output += u.output || 0
+      a.calls += u.calls || 0
+    }
+    return a
+  }, { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, calls: 0 })
+  const openStage = async (s) => {
+    if (!api) return
+    // 注意：api 适配器（productApi）**已解包**，这里直接用值——再 unwrap 一次会把载荷当信封（历史 bug）
+    try { setSel(await api.stageDetail(snap.id, s.seq)); setErr(null) }
+    catch (e) { setErr(String((e && e.message) || e)) }
+  }
+  const logs = (snap.logs || []).slice(-60)
+  return h('div', { style: { padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 10, minHeight: 0, overflowY: 'auto' } },
+    h('div', { style: { ...flexRow, gap: 6 } },
+      chip(runStatusText(snap.status), stColor(snap.status), { dot: true }),
+      snap.options && snap.options.mode ? chip(String(snap.options.mode), T.text2) : null,
+      h('span', { style: { fontFamily: MONO, fontSize: 10.5, color: T.text2 } }, snap.id),
+      product ? h('span', { style: { fontSize: 10, color: T.text2, fontFamily: MONO } }, product) : null,
+      snap.status === 'running' && onCancel ? h(CancelButton, {
+        runId: snap.id,
+        title: t('cancel.tip', { id: snap.id }),
+        onConfirm: onCancel,
+        style: { marginLeft: 'auto', fontSize: 10.5, padding: '2px 9px' },
+      }) : null),
+    h('div', { style: { fontSize: 12, color: T.text, lineHeight: 1.5 } }, snap.requirement || t('runList.noRequirement')),
+    h('div', { style: { ...flexRow, gap: 12, fontSize: 10.5, color: T.text2, fontFamily: MONO } },
+      h('span', null, `${fmtTime(snap.startedAt)}${snap.endedAt ? ` → ${fmtTime(snap.endedAt)}` : ' → ' + t('detail.endedRunning')} · ${fmtDur(snap.startedAt, snap.endedAt)}`),
+      h('span', null, t('runList.stageProgress', { done: stages.filter((s) => s.status === 'done').length, total: stages.length })),
+      h('span', null, t('detail.subagents', { n: snap.agentsStarted || 0 }))),
+    h('div', { style: { ...flexRow, gap: 10, fontSize: 10.5, color: T.text2, fontFamily: MONO, padding: '6px 8px', borderRadius: 8, background: `color-mix(in srgb, ${T.layer2} 60%, transparent)`, border: `1px solid ${T.border}` } },
+      h('span', null, t('token.inputMiss', { v: fmtTokens(totals.input) || '0' })),
+      h('span', null, t('token.inputHit', { v: fmtTokens(totals.cacheRead) || '0' })),
+      h('span', null, t('token.cacheWrite', { v: fmtTokens(totals.cacheWrite) || '0' })),
+      h('span', null, t('token.output', { v: fmtTokens(totals.output) || '0' })),
+      h('span', null, t('common.callsCount', { n: totals.calls })),
+      h('span', null, t('token.total', { v: fmtTokens(totalTokens(totals)) || '0' }))),
+    sectionTitle(t('detail.stages', { n: stages.length })),
+    h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+      stages.map((s) => {
+        const on = sel && Number(sel.seq) === Number(s.seq)
+        const color = stColor(s.status)
+        return h('div', {
+          key: s.seq,
+          onClick: () => openStage(s),
+          style: {
+            padding: '6px 9px', borderRadius: 8, cursor: 'pointer', border: `1px solid ${on ? `color-mix(in srgb, ${T.brand} 45%, transparent)` : T.border}`,
+            borderLeft: `3px solid ${color}`, background: on ? `color-mix(in srgb, ${T.brand} 7%, ${T.layer1})` : T.layer1,
+          },
+        },
+        h('div', { style: { ...flexRow, gap: 6 } },
+          h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2 } }, `#${s.seq}`),
+          h('span', null, phaseIconOf(s.phase)),
+          h('span', { style: { fontSize: 11.5, color: T.text, fontWeight: 500 } }, stageLabelOf(s)),
+          chip(stageStatusText(s.status), color, { dot: true }),
+          /* outcome 是**机器词**（degenerated/stalled/insubstantial…），原文透出是刻意的诊断信息；
+               但 `cancelled` 已被左侧阶段状态说清（已中止/Stopped），再来一个原文 chip 就是同义重复。 */
+          s.outcome && s.outcome !== 'completed' && s.outcome !== 'cancelled' ? chip(String(s.outcome), stColor(s.outcome)) : null,
+          h('span', { style: { marginLeft: 'auto', fontFamily: MONO, fontSize: 10, color: T.text2 } }, `${fmtTime(s.startedAt)}${s.endedAt ? ` · ${fmtDur(s.startedAt, s.endedAt)}` : ''}`)),
+        h('div', { style: { ...flexRow, gap: 10, marginTop: 3, fontFamily: MONO, fontSize: 10, color: T.text2 } },
+          h('span', null, stageUsageLine(s) || t('common.noUsage')),
+          s.childId ? h('span', { title: s.childId }, t('detail.subagentChip', { id: String(s.childId).slice(0, 14) })) : null),
+        s.summary ? h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 3, lineHeight: 1.45 } }, String(s.summary).slice(0, 200)) : null)
+      })),
+    err ? muted(t('detail.stageFailed', { err }), { color: T.error }) : null,
+    sel ? h('div', { style: { padding: '9px 10px', borderRadius: 9, border: `1px solid ${T.border}`, background: T.layer2, display: 'flex', flexDirection: 'column', gap: 8 } },
+      h('div', { style: { ...flexRow, justifyContent: 'space-between' } },
+        h('div', { style: { ...flexRow, gap: 6 } },
+          h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text } }, t('detail.stageTitle', { seq: sel.seq })),
+          chip(stageStatusText(sel.status), stColor(sel.status))),
+        h('button', { style: panelBtn, onClick: () => setSel(null) }, t('common.collapse'))),
+      h('div', { style: { fontSize: 10.5, color: T.text2, fontFamily: MONO } }, t('token.stageLine', { v: stageUsageLine(sel) || t('common.none') })),
+      sel.verifyEvidence
+        ? h('div', null,
+          h('div', { style: { fontSize: 11, color: T.success, marginBottom: 3 } }, t('stage.evidenceTitle')),
+          h('div', { style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11, lineHeight: 1.6, color: T.text, background: `color-mix(in srgb, ${T.layer1} 70%, transparent)`, border: `1px solid ${T.border}`, borderRadius: 8, padding: '7px 9px', maxHeight: 200, overflowY: 'auto', fontFamily: MONO } }, sel.verifyEvidence))
+        : muted(t('stage.evidenceMissingShort'), { color: T.warn }),
+      sel.output ? h('div', null,
+        h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 3 } }, t('detail.output')),
+        h(FoldableText, { text: sel.output, charLimit: 400, lineLimit: 8, style: { fontFamily: MONO, fontSize: 11 } })) : null,
+      sel.attempts && sel.attempts.length > 1
+        ? h('div', null,
+          h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 3 } }, t('detail.attempts', { n: sel.attempts.length })),
+          h('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } }, sel.attempts.map((a) => h('div', {
+            key: a.seq, style: { ...flexRow, gap: 6, fontSize: 10.5, fontFamily: MONO, color: T.text2 },
+          },
+          h('span', null, `#${a.seq}`), chip(stageStatusText(a.status), stColor(a.status)), a.outcome && a.outcome !== 'cancelled' ? h('span', null, a.outcome) : null,
+          h('span', { style: { marginLeft: 'auto' } }, `${fmtTime(a.startedAt)} · ${fmtDur(a.startedAt, a.endedAt)}`)))))
+        : null)
+      : null,
+    logs.length ? h('div', null,
+      sectionTitle(t('detail.logs', { n: logs.length })),
+      h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2, fontFamily: MONO, fontSize: 10, color: T.text2, maxHeight: 220, overflowY: 'auto' } },
+        logs.map((l, i) => h('div', { key: i, style: { color: l.level === 'error' ? T.error : l.level === 'warn' ? T.warn : T.text2 } }, `${fmtTime(l.t)} [${l.level}] ${l.message}`)))) : null,
+  )
+}
+
+/** 右栏 run 详情 tab 正文（地址来自宿主导航记录；host 只认自己的地址格式）。
+ *
+ * ⚠️ prop 名：宿主渲染器把 slot 的 `hooks: { tabInfo }` 绑成 **`useTabInfo`**（约定 `hooks.<name>` → `use<Name>`；
+ * 官方 `ui-sidebar-documentpreview/TextPreview.tsx` 即用 `useTabInfo`）。2026-09-11 实锤：写成 `tabInfo`
+ * 会恒 undefined → 地址取不到、错误也没设 → 永远停在「读取 run 详情中…」。
+ */
+export function RunDetailTab(props) {
+  const readTab = props && (typeof props.useTabInfo === 'function' ? props.useTabInfo
+    : typeof props.tabInfo === 'function' ? props.tabInfo : null)
+  let info = null
+  try { info = readTab ? readTab() : null } catch (e) { info = null }
+  const tab = info && info.tab ? info.tab : null
+  // 资源型 tab：导航地址是权威（`contentId` 兜底——资源 claim 下二者同为地址）
+  const address = (tab && tab.navigation && tab.navigation.address) || (tab && tab.contentId) || null
+  const parsed = parseRunAddress(address)
+  const remote = props && props.remote
+  const [snap, setSnap] = React.useState(null)
+  const [err, setErr] = React.useState(null)
+  const [nonce, setNonce] = React.useState(0)     // 手动重试
+  const product = parsed ? parsed.product : null
+  const runId = parsed ? parsed.runId : null
+  const api = React.useMemo(() => (remote && product ? productApi(remote, product) : null), [remote, product])
+  // 兜底自愈：地址还没就绪时（宿主提交 tab 记录前的空窗，钩子可能抛错且不订阅）主动重渲染若干次
+  const [, bump] = React.useReducer((n) => n + 1, 0)
+  React.useEffect(() => {
+    if (address) return undefined
+    let tries = 0
+    const timer = setInterval(() => { tries += 1; bump(); if (tries >= 12) clearInterval(timer) }, 150)
+    return () => clearInterval(timer)
+  }, [address])
+  React.useEffect(() => {
+    let alive = true
+    if (!runId) {
+      setSnap(null)
+      setErr(address ? t('tab.resolveFailed', { address }) : (readTab ? t('tab.readingAddress') : t('tab.noHook')))
+      return undefined
+    }
+    if (!api) { setSnap(null); setErr(t('tab.remoteUnavailable')); return undefined }
+    api.runDetail(runId).then(
+      (v) => {
+        if (alive) {
+          setSnap(v)
+          setErr(null)
+        }
+      },
+      (e) => {
+        if (alive) setErr(String((e && e.message) || e))
+      },
+    )
+    const timer = setInterval(() => {
+      api.runDetail(runId).then((v) => {
+        if (!alive) return
+        setSnap(v)
+        // 结束后停止轮询（避免对已完成 run 空转）
+        if (!v || !(v.status === 'running' || v.status === 'pending')) clearInterval(timer)
+      }, () => { /* 轮询失败静默（下一次自愈） */ })
+    }, 5000)
+    return () => { alive = false; clearInterval(timer) }
+  }, [api, runId, address, nonce, readTab])
+  /** 中断后重新拉快照（nonce 触发上面那个 effect 重跑；右栏 tab 是会话级地址，与产品线选择无关）。 */
+  const onCancel = async (rid) => {
+    if (!api) return
+    try { await api.cancel(rid); setNonce((n) => n + 1) }
+    catch (e) { setErr(String((e && e.message) || e)) }
+  }
+  if (err && !snap) {
+    // 「地址还没就绪」不是错误态：tab 刚挂载的那一帧宿主可能尚未提交记录，等下一次渲染即可
+    const pending = !address && !!readTab
+    return h('div', { style: { padding: 12, display: 'flex', flexDirection: 'column', gap: 8 } },
+      muted(pending ? t('tab.readingAddress') : err, { color: pending ? T.text2 : T.error }),
+      pending ? null : h('button', { style: panelBtn, onClick: () => { setErr(null); setNonce((n) => n + 1) } }, t('common.retry')))
+  }
+  if (!snap) return muted(t('tab.readingRun'), { padding: 12 })
+  return h(RunDetailPane, { snap, product, api, onCancel })
+}
+
+/* ── 产品线 API 适配（按产品线 key 寻址的 remote 面） ─────────────── */
+export function productApi(remote, product) {
+  return {
+    view: async () => unwrap(await remote.productView(product), 'productView'),
+    runDetail: async (runId) => unwrap(await remote.productRunDetail(product, runId), 'productRunDetail'),
+    stageDetail: async (runId, seq) => unwrap(await remote.productStageDetail(product, runId, seq), 'productStageDetail'),
+    itemDetail: async (kind, id, sessionId) => unwrap(await remote.productItemDetail(product, kind, id, sessionId), 'productItemDetail'),
+    /** 中断运行：runId 全局寻址（与产品线无关），放这里是为了让面板行/详情/右栏共用同一处解包与报错。 */
+    cancel: async (runId) => {
+      const r = unwrap(await remote.cancel(runId), 'cancel')
+      if (!r || r.ok !== true) throw new Error(t('cancel.failed'))
+      return true
+    },
+  }
+}
+
+/* ── 全局面板（中央主区） ───────────────────────────────────────── */
+/** 全局面板 props：root scope 标准 props（useSessions 取当前会话）+ 插件注入（remote/打开回调）。 */
+export function GlobalPanel(props) {
+  const remote = props.remote
+  const useSessions = props.useSessions
+  const currentSessionId = (() => {
+    try { return useSessions ? useSessions((s) => s.current) : undefined } catch (e) { return undefined }
+  })()
+  const [state, setState] = React.useState({ products: [], current: null, view: null, err: null, busy: false })
+  /* 检查更新（ADR-0012）：`useUpdateStatus` 挂载自动探一次（吃 24h 缓存）；
+     `recheck()` 才是**手动强制重查**——必须 force，否则点两次都只是重读同一份缓存。 */
+  const [upd, , recheck] = useUpdateStatus(remote)
+  const [checking, setChecking] = React.useState(false)
+  /** 手动查过没有：决定要不要显示「已是最新」这类结论（自动探测不报，避免常驻噪音）。 */
+  const [checked, setChecked] = React.useState(false)
+  const [detail, setDetail] = React.useState(null)        // 单一事实源：{ kind:'item'|'run', data, run? } —— 同一时刻只可能有一个详情
+  const [hint, setHint] = React.useState(null)            // 面板内可见提示（不再只进 console）
+  const [runsExpanded, setRunsExpanded] = React.useState(false)  // run 列表：默认折叠到 RUN_PREVIEW
+  const [panelTab, setPanelTab] = React.useState('run')          // 主区标签页：run | backlog（一次只显示一个列表）
+  const [viewTick, setViewTick] = React.useState(0)              // 产品线视图重载计数器（同值点击/清单刷新都要能重新拉）
+  const [runFilter, setRunFilter] = React.useState([])           // run 标签的状态筛选（多选；空 = 不筛）
+
+  /**
+   * 右侧栏的**会话内容**宿主只在「对话被选中」时渲染（`RightbarRoot` 门控 `activePanelId === null`），
+   * 而全局面板占着 `main` → seat 不存在 → `ctx.sidebarRight` 没有 binding（抛 `no session surface
+   * is mounted`，2026-09-11 用户实测 tf-mtvrsakj-l2vj5u）。所以：先切回对话，再小步重试
+   * （seat 在切换后的 effect 里才 `bindService`）；彻底失败才降级，并把原因显示在面板里。
+   */
+  const openInConversationRightbar = (address, label, fallback?) => {
+    const attempt = (quiet) => !!(props.openResource && address && props.openResource(address, label, quiet))
+    if (attempt(false)) return
+    if (!address) {
+      setHint(t('panel.hintNoAddress', { label }))
+      if (fallback) fallback()
+      return
+    }
+    try { if (props.layout && typeof props.layout.selectPanel === 'function') props.layout.selectPanel(null) } catch (e) { /* ignore */ }
+    let tries = 0
+    const tick = () => {
+      tries += 1
+      if (attempt(true)) return
+      if (tries < 12) { setTimeout(tick, 120); return }
+      setHint(t('panel.hintRightbarFailed', { label }) + (fallback ? t('panel.hintInlineSuffix') : ''))
+      if (fallback) fallback()
+    }
+    setTimeout(tick, 140)
+  }
+
+  /**
+   * **跳到资源所属的会话，再在那个会话的右栏打开**（全局面板的正确语义）。
+   * 右侧栏是会话级的：从全局面板看 tetris 的 run 却把 tab 挂到"用户当前所在会话"上没有意义
+   * （用户 2026-09-11 提出）。所以先 `uiWorkspace.openSession(ownerSession)`，再小步重试等右栏 seat 就绪后 openResource。
+   * **2026-09-23 迁移（宿主 0.1.7-alpha.1）**：`sessions.open` 与 `sessions.openSubagent` 同批被移除，
+   * 跳会话唯一入口改为 `uiWorkspace.openSession(target)`；同时 `SessionListState` 已无 `current` 字段，
+   * 故原先"等当前会话真的切过去"的判据删除（契约变更后它恒为 undefined，等于死代码），只留时间维度的重试。
+   * @param target.ownerSession - 资源所属会话（run 的发起会话 / 产物地址里的会话）
+   * @param target.address - host 生成的 dsh-resource 地址
+   * @param target.label - 提示用的名字
+   * @param target.fallback - 没有 ownerSession 或跳转失败时的降级（通常是面板内联详情）
+   */
+  const goOwnerSessionAndOpen = (target) => {
+    const { ownerSession, address, label, fallback } = target || {}
+    const ws = props.uiWorkspace
+    if (!ownerSession || !ws || typeof ws.openSession !== 'function') {
+      // 老数据没有 ownerSession / 工作区导航服务不可用 → 退回"在当前会话右栏打开"
+      openInConversationRightbar(address, label, fallback)
+      return
+    }
+    try { ws.openSession(ownerSession) } catch (e) {
+      setHint(t('panel.hintSessionGone', { sid: String(ownerSession).slice(0, 8) }))
+      if (fallback) fallback()
+      return
+    }
+    try { if (props.layout && typeof props.layout.selectPanel === 'function') props.layout.selectPanel(null) } catch (e) { /* ignore */ }
+    let tries = 0
+    const tick = () => {
+      tries += 1
+      // openSession 同步完成导航；右栏 seat 还要等新一轮渲染挂载 → 前 6 次静默重试，之后给提示
+      if (props.openResource && address && props.openResource(address, label, tries < 6)) return
+      if (tries < 14) { setTimeout(tick, 130); return }
+      setHint(t('panel.hintSwitchedNoRightbar', { label }))
+    }
+    setTimeout(tick, 140)
+  }
+
+  const loadProducts = React.useCallback(async (preferKey?: string | null) => {
+    if (!remote || typeof remote.products !== 'function') {
+      setState((s) => ({ ...s, err: t('panel.remoteProductsUnavailable') }))
+      return
+    }
+    setState((s) => ({ ...s, busy: true }))
+    try {
+      const v = unwrap(await remote.products(currentSessionId || null), 'products') || {}
+      const list = v.products || []
+      const key =
+        preferKey || state.current || (v.current && list.some((p) => p.key === v.current) ? v.current : (list[0] && list[0].key) || null)
+      setState({ products: list, current: key, view: key === state.current ? state.view : null, err: null, busy: false })
+      setViewTick((t) => t + 1)   // 无论 key 是否变化都要重新拉取（同值点击/会话切换都不能卡在"读取中"）
+    } catch (e) {
+      setState((s) => ({ ...s, busy: false, err: String((e && e.message) || e) }))
+    }
+  }, [remote, currentSessionId, state.current, state.view])
+
+  const loadView = React.useCallback(async (key, silent?: boolean) => {
+    if (!remote || !key) return
+    const api = productApi(remote, key)
+    try {
+      const v = await api.view()
+      setState((s) => ({ ...s, view: v, err: null }))
+    } catch (e) {
+      if (!silent) setState((s) => ({ ...s, err: String((e && e.message) || e) }))
+    }
+  }, [remote])
+
+  /** 选中产品线：**同一个**产品线 = 刷新（保留现有视图，不清空 → 不会卡"读取中"且不闪）；不同产品线 = 清空 + 重新拉。 */
+  const selectProduct = (k) => {
+    closeDetail()
+    setRunsExpanded(false)
+    setRunFilter([])   // 换产品线时清筛选（面板不重挂载）
+    setState((s) => ({ ...s, current: k, view: s.current === k ? s.view : null }))
+    setViewTick((t) => t + 1)
+  }
+  /** run 状态筛选开关（多选）。 */
+  const toggleRunStatus = (st) => setRunFilter((cur) => (cur.indexOf(st) === -1 ? cur.concat([st]) : cur.filter((x) => x !== st)))
+
+  // 首次加载 + 当前会话变化时刷新产品线清单（保持用户已选产品线）
+  React.useEffect(() => { loadProducts() }, [currentSessionId])
+  // 选中产品线 / 手动刷新 / 清单刷新后拉取视图（viewTick 保证"同值点击"也能重新拉）
+  React.useEffect(() => { if (state.current) loadView(state.current) }, [state.current, viewTick, loadView])
+  // 有活跃 run 时轮询（8s；无活跃 run 不打扰）
+  React.useEffect(() => {
+    const runs = (state.view && state.view.runs) || []
+    const anyActive = runs.some((r) => r.status === 'running' || r.status === 'pending')
+    if (!anyActive || !state.current) return undefined
+    const timer = setInterval(() => { loadView(state.current, true) }, 8000)
+    return () => clearInterval(timer)
+  }, [state.current, state.view, loadView])
+
+  const api = state.current && remote ? productApi(remote, state.current) : null
+  const openItem = async (kind, id) => {
+    if (!api) return
+    // api 适配器已解包（同上，勿二次 unwrap）
+    try { setDetail({ kind: 'item', data: await api.itemDetail(kind, id, currentSessionId || null) }) }
+    catch (e) { setState((s) => ({ ...s, err: String((e && e.message) || e) })) }
+  }
+  const showInline = async (r) => {
+    if (!api) return
+    try {
+      const snap = await api.runDetail(r.id)
+      // 覆盖同一个 detail（连带 run 元信息，供列表高亮/右栏入口用）——详情只有这一个状态源
+      setDetail({ kind: 'run', data: snap, run: r })
+    } catch (e) { setState((s) => ({ ...s, err: String((e && e.message) || e) })) }
+  }
+  const closeDetail = () => setDetail(null)
+  /** 中断运行（面板内两个入口共用）：成功后刷新产品线视图；详情浮层开着就顺手把快照也换新。 */
+  const cancelRun = async (runId) => {
+    if (!api) return
+    try {
+      await api.cancel(runId)
+      loadView(state.current, true)
+      if (detail && detail.kind === 'run' && detail.data && detail.data.id === runId) {
+        setDetail({ kind: 'run', data: await api.runDetail(runId), run: detail.run })
+      }
+      setHint(t('cancel.sent'))
+    } catch (e) { setState((s) => ({ ...s, err: String((e && e.message) || e) })) }
+  }
+  const openRun = (r) => {
+    goOwnerSessionAndOpen({
+      ownerSession: r.ownerSession,
+      address: r.address,
+      label: r.id,
+      fallback: () => { void showInline(r) },
+    })
+  }
+  const openArtifactInPanel = (address, name, ownerSession) => {
+    goOwnerSessionAndOpen({ ownerSession, address, label: name })
+  }
+
+  const view = state.view
+  const product = view && view.product
+  const runs = (view && view.runs) || []
+  const detailOpen = !!detail
+  // run 状态筛选（多选；空 = 不筛）——折叠只作用在筛选结果上
+  const runSel = runFilter || []
+  const runSelSet = new Set(runSel)
+  const runFiltering = runSel.length > 0
+  const runsMatched = runFiltering ? runs.filter((r) => runSelSet.has(r.status)) : runs
+  const runStatusCounts = {}
+  for (const r of runs) runStatusCounts[r.status] = (runStatusCounts[r.status] || 0) + 1
+  // run 折叠：默认最近 RUN_PREVIEW 条，但**进行中/未完成的一律置顶显示**（别把正在跑的藏起来）
+  const headRuns = runsMatched.slice(0, RUN_PREVIEW)
+  const headIds = new Set(headRuns.map((r) => r.id))
+  const pinnedActive = runsExpanded ? [] : runsMatched.filter((r) => (r.status === 'running' || r.status === 'pending') && !headIds.has(r.id))
+  const visibleRuns = (runsExpanded || runsMatched.length <= RUN_PREVIEW) ? runsMatched : pinnedActive.concat(headRuns)
+  const bl = view && view.backlog
+  const backlogCount = bl ? ((bl.requirements || []).length + (bl.tasks || []).filter((t) => t.type !== 'subtask').length + (bl.bugs || []).length) : 0
+  /** 主区标签按钮（选中态用品牌色下划线）。 */
+  const panelTabBtn = (key, label) => h('button', {
+    key,
+    onClick: () => setPanelTab(key),
+    style: {
+      font: 'inherit', fontSize: 12, fontWeight: panelTab === key ? 700 : 500,
+      padding: '6px 12px', marginBottom: -1, cursor: 'pointer', whiteSpace: 'nowrap',
+      background: 'transparent', border: 'none',
+      borderBottom: `2px solid ${panelTab === key ? T.brand : 'transparent'}`,
+      color: panelTab === key ? T.text : T.text2,
+    },
+  }, label)
+  return h('div', {
+    style: { height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', background: T.bg, color: T.text, fontFamily: SANS, fontSize: 12 },
+  },
+  h('div', { style: { ...flexRow, justifyContent: 'space-between', padding: '10px 14px', borderBottom: `1px solid ${T.border}` } },
+    h('div', { style: { ...flexRow, gap: 8 } },
+      h('span', { style: { fontSize: 13, fontWeight: 700 } }, t('panel.title')),
+      h('span', { style: { fontSize: 11, color: T.text2 } }, t('panel.subtitle')),
+      currentSessionId ? h('span', { style: { fontSize: 10, color: T.text2, fontFamily: MONO } }, t('panel.currentSession', { sid: String(currentSessionId).slice(0, 8) })) : h('span', { style: { fontSize: 10, color: T.text2 } }, t('panel.noSession'))),
+    h('div', { style: { ...flexRow, gap: 6 } },
+      product ? h('button', { style: panelBtn, onClick: () => loadView(state.current) }, t('panel.reload')) : null,
+      h('button', {
+        style: panelBtn,
+        title: t('panel.backToChatTip'),
+        onClick: () => {
+          try {
+            const layout = props.layout
+            if (layout && layout.selectPanel) layout.selectPanel(null)
+          } catch (e) { /* ignore */ }
+        },
+      }, t('panel.backToChat')),
+      /* 检查更新（ADR-0012）：这是**唯一的手动入口**——别处都是挂载时自动探一次、且只吃 24h 缓存。
+         刻意与工作台 / 宿主插件页共用同一份 `useUpdateStatus` + `UpgradeButton`，不在面板里另做一套。 */
+      h('button', {
+        style: panelBtn,
+        disabled: checking,
+        title: t('panel.checkUpdateTip'),
+        onClick: () => { setChecking(true); recheck().finally(() => { setChecking(false); setChecked(true) }) },
+      }, checking ? t('panel.checking') : t('panel.checkUpdate')),
+      /* 结论行：**有新版本**时不再另写整句——工具条横向空间紧张，整句会把它撑成一段话
+         （用户 10-12 反馈「有点突兀」）。registry 装法直接给按钮；非 registry 给**感叹号 + 版本号**，
+         全文进 `title` 悬浮可读（见 `UpdateHint`）。「已是最新 / 查不到」只在**手动查过之后**显示，
+         避免常驻噪音；功能被关掉时 `outdated` 恒 false ⇒ 什么都不说。 */
+      canOneClick(upd)
+        ? h(UpgradeButton, { api: remote, latest: upd.latest })
+        : upd && upd.outdated
+          ? h(UpdateHint, { label: `⚠ ${String(upd.latest)}`, command: upd.command })
+          : checked && upd
+            ? h('span', { style: { fontSize: 11, color: upd.error ? T.warn : T.text2 } },
+              upd.error
+                ? (upd.error === 'registry-unreachable' ? t('update.unavailable') : t('update.failed', { reason: String(upd.error) }))
+                : t('panel.upToDate', { version: String(upd.current) }))
+            : null)),
+
+  state.err ? h('div', { style: { padding: '6px 14px', fontSize: 11, color: T.error, borderBottom: `1px solid ${T.border}` } }, state.err) : null,
+  hint ? h('div', { style: { ...flexRow, justifyContent: 'space-between', gap: 8, padding: '6px 14px', fontSize: 11, color: T.warn, borderBottom: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.warn} 8%, transparent)` } },
+    h('span', null, hint),
+    h('button', { style: panelBtn, onClick: () => setHint(null) }, t('common.gotIt'))) : null,
+  h('div', { style: { flex: 1, minHeight: 0, display: 'flex', position: 'relative' } },
+    h(ProductRail, {
+      products: state.products,
+      current: state.current,
+      loadingKey: state.view ? null : state.current,
+      busy: state.busy,
+      onRefresh: () => loadProducts(state.current),
+      onSelect: selectProduct,
+    }),
+    h('div', { style: { flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' } },
+      !state.current
+        ? h('div', { style: { padding: '12px 14px' } }, muted(t('panel.pickProduct')))
+        : !view
+          ? h('div', { style: { padding: '12px 14px' } }, muted(t('panel.loadingView')))
+          : h(React.Fragment, null,
+            /* 产品头：固定（不参与滚动） */
+            h('div', { style: { ...flexRow, justifyContent: 'space-between', gap: 10, padding: '12px 14px 6px' } },
+              h('div', { style: { minWidth: 0 } },
+                h('div', { style: { fontSize: 15, fontWeight: 700, color: T.text } }, product.title || product.key),
+                h('div', { style: { fontSize: 10.5, color: T.text2, fontFamily: MONO, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, product.path || product.key)),
+              h('div', { style: { ...flexRow, gap: 6, flex: '0 0 auto' } },
+                chip(t('panel.runChip', { n: product.totalRuns }), T.text2),
+                product.activeRuns > 0 ? chip(t('panel.activeChip', { n: product.activeRuns }), T.brand, { dot: true }) : null,
+                product.lastVerdict ? chip(t('panel.verdictChip', { v: product.lastVerdict }), stColor('accepted')) : null)),
+            /* 标签页：一次只显示一个列表 —— 宽度全给它，不再多栏挤压（第三版布局） */
+            h('div', { style: { display: 'flex', alignItems: 'flex-end', gap: 2, padding: '0 14px', borderBottom: `1px solid ${T.border}` } },
+              panelTabBtn('run', t('panel.tabRuns', { n: runs.length })),
+              panelTabBtn('backlog', t('panel.tabBacklog', { n: backlogCount })),
+              h('div', { style: { marginLeft: 'auto', ...flexRow, gap: 6, paddingBottom: 7 } },
+                panelTab === 'run' && !runsExpanded && pinnedActive.length > 0 ? chip(t('panel.pinnedActive', { n: pinnedActive.length }), T.brand, { dot: true }) : null,
+                panelTab === 'run' && runsMatched.length > RUN_PREVIEW
+                  ? h('button', { style: panelBtn, onClick: () => setRunsExpanded((v) => !v) },
+                    runsExpanded ? t('panel.showRecent', { n: RUN_PREVIEW }) : t('panel.showAll', { n: runsMatched.length }))
+                  : null)),
+            /* 单一滚动区（自己滚；页面级滚动条不会出现） */
+            h('div', { style: { flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '12px 14px 18px' } },
+              panelTab === 'run'
+                ? h(React.Fragment, null,
+                  /* run 状态筛选（多选；与 backlog 侧同款交互） */
+                  h('div', { style: { ...flexRow, gap: 6, marginBottom: 8 } },
+                    ...RUN_STATUS_ORDER.filter((st) => runStatusCounts[st]).map((st) => filterChip(
+                      `${runStatusText(st)} ${runStatusCounts[st]}`, stColor(st), runSelSet.has(st), () => toggleRunStatus(st))),
+                    runFiltering
+                      ? h('button', {
+                        style: panelBtn,
+                        title: t('panel.clearRunFilterTip'),
+                        onClick: () => setRunFilter([]),
+                      }, t('panel.filtered', { sel: runSel.length, shown: runsMatched.length, total: runs.length }))
+                      : null),
+                  visibleRuns.length
+                    ? h(RunList, { runs: visibleRuns, activeRunId: detail && detail.kind === 'run' && detail.run ? detail.run.id : null, onOpenRun: openRun, onInlineRun: showInline, onCancel: cancelRun })
+                    : muted(t('panel.emptyRunFilter'), { fontSize: 10.5 }),
+                  muted(t('panel.runHint'), { fontSize: 10, marginTop: 8 }))
+                : h(React.Fragment, null,
+                  muted(t('panel.boardHint'), { fontSize: 10, marginBottom: 8 }),
+                  h(BacklogGroups, { backlog: view.backlog, onOpen: openItem, productKey: state.current }))),
+          ),
+    ),
+    /* 详情：**覆盖式浮层**（绝对定位、自己滚动，不挤压列表宽度）——与会话内工作台的两个抽屉同款 */
+    detailOpen
+      ? h('div', {
+        style: {
+          position: 'absolute', top: 8, right: 12, bottom: 8, width: 440, zIndex: 9,
+          overflowY: 'auto', overflowX: 'hidden', borderRadius: 12,
+          border: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.layer1} 96%, transparent)`,
+          backdropFilter: 'blur(12px)', boxShadow: '0 14px 44px rgba(0,0,0,.28)',
+        },
+      },
+      detail && detail.kind === 'item'
+        ? h(ItemDetailPane, { det: detail.data, openArtifact: openArtifactInPanel, onClose: closeDetail, backlog: view.backlog })
+        : h('div', null,
+          h('div', { style: { ...flexRow, justifyContent: 'space-between', padding: '10px 12px 0' } },
+            h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text } }, t('panel.runDetail')),
+            h('div', { style: { ...flexRow, gap: 6 } },
+              detail && detail.data && detail.data.address
+                ? h('button', {
+                  style: brandBtn,
+                  title: t('panel.goOwnerSessionTip'),
+                  onClick: () => goOwnerSessionAndOpen({
+                    ownerSession: detail.data.ownerSession,
+                    address: detail.data.address,
+                    label: detail.data.id,
+                  }),
+                }, t('panel.goOwnerSession'))
+                : null,
+              h('button', { style: panelBtn, onClick: closeDetail }, t('common.close')))),
+          h(RunDetailPane, { snap: detail && detail.data, product: state.current, api, onCancel: cancelRun })))
+      : null,
+  ),
+  )
+}

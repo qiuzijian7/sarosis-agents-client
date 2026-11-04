@@ -37,6 +37,10 @@ export const feishuKind: SourceKind<FeishuConfig> = {
   fields: [
     { key: 'cli', type: 'text', label: { zh: '机器人的 lark-cli', en: 'Bot lark-cli' },
       hint: { zh: '命令名或绝对路径，指向只允许机器人身份（strict mode bot）的 lark-cli 配置；执行器以 lark-cli 调用它。保存时读取应用和机器人，然后重启 dsh-superagent。', en: 'A command name or absolute path of a lark-cli configuration that allows only the bot identity (strict mode bot); the Executor calls it as lark-cli. Saving reads the app and the bot, then restarts dsh-superagent.' } },
+    // VsSaros addition: pick the Feishu app by ID instead of preparing a lark-cli configuration per app.
+    { key: 'appId', type: 'text', label: { zh: '飞书应用 App ID', en: 'Feishu app ID' }, pattern: '(cli_[A-Za-z0-9]+)?',
+      hint: { zh: '可选，形如 cli_xxxx。留空 = 用 lark-cli 当前的 profile（原来的行为）。填了就用这个应用的 lark-cli profile（lark-cli 默认以 App ID 命名 profile）；没有的话，保存时会用 VsSaros Bots「渠道」里这个应用的 App Secret 自动添加一个只允许机器人身份的 profile —— Secret 只经 stdin 交给 lark-cli，不进设置、不进日志。Host 和执行器都固定用这个 profile。和 Bots 用同一个应用也可以：同一个 Host 里会共用 Bots 的长连接。',
+        en: 'Optional, like cli_xxxx. Empty uses lark-cli\'s active profile (the previous behaviour). Set, it uses this app\'s lark-cli profile (lark-cli names a profile after its app by default); when there is none, saving adds a bot-only profile from the App Secret the VsSaros Bots keep for this app in their channel settings — the secret goes to lark-cli through stdin only, never into settings or logs. The Host and the Executor both use this profile. Sharing an app with the Bots is fine: in one Host the Source listens through the Bots connection.' } },
     { key: 'chats', type: 'rows', label: { zh: '接收的群', en: 'Chats' },
       hint: { zh: '“仅 @”只接收 @ 机器人的消息和已有工单的线程；“全部消息”也接收其余消息，评估可以按规则从中推断工作，需要机器人有读取全部消息的权限。', en: '"@ only" receives messages that mention the bot and Threads that have Tickets; "All" also receives the rest, from which Eval may infer work under the rules; the bot needs permission to read all messages.' },
       columns: [

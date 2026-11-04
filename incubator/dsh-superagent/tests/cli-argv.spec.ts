@@ -57,10 +57,10 @@ describe('a CLI resolved to shell-free argv', () => {
   it('guards the two Host-side callers against spawning the launcher directly', () => {
     const loops = readFileSync(new URL('../src/sources/feishu-loops.ts', import.meta.url), 'utf8')
     const commands = readFileSync(new URL('../src/infra/commands.ts', import.meta.url), 'utf8')
-    expect(loops).toContain('const [program, ...prefix] = cliArgv(bot(ctx).cli)')
+    expect(loops).toContain('const [program, ...prefix] = larkArgv(bot(ctx))')
     expect(loops).toContain('spawn(program!, [...prefix, ')
     expect(loops).not.toContain('spawn(bot(ctx).cli')
-    expect(commands).toContain('const [program, ...prefix] = cliArgv(bot.cli)')
+    expect(commands).toContain('const [program, ...prefix] = larkArgv(bot)')
     expect(commands).toContain('this.run(program!, [...prefix, ...args,')
     expect(commands).not.toContain('this.run(bot.cli,')
   })

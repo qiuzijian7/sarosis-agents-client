@@ -92,19 +92,28 @@ window.__ModuleLoader__.load({
 		/** 当前工作台（只在两个载体之间同步用；读不到就回落第一个条目 ✓）。 */
 		const LS_CURRENT = "vssaros.wbNav.current";
 
-		/** 工作台条目（默认顺序；route 以各插件 cordis.patch.yml 的自托管路由为准）。 */
+		/**
+		 * 工作台条目（默认顺序；route 以各插件 cordis.patch.yml 的自托管路由为准）。
+		 *
+		 * ★ 2026-11-04（用户要求「看板 / 流程 / 生图暂时下线」）：两个标记别混 ——
+		 *   · `hidden: true` ⇒ 不进可排序列 / 启动器（scheduler 的老语义，条目仍是合法 route 白名单）；
+		 *   · `offline: true` ⇒ **临时下线**：除了 hidden 的效果，还从固定行、已开页签存档、
+		 *     商城「已装」格里摘掉（见 syncPinnedRows / retired / client.market.js::readLocalItems）。
+		 *   ⚠ 条目**不能删**：`itemByRoute()` 与 `coveredByFixedEntry()` 都靠这份全表 ⇒ 删了会让
+		 *     深链失效、宿主注册快照里又冒出同名入口。下线清单真源在 dashboard/lib/catalog.js。
+		 */
 		const DEFAULT_ITEMS = [
 			{ id: "vssaros-wb-dashboard", name: "主页", ico: "🏠", route: "/x/dashboard/" },
 			{ id: "vssaros-wb-sessions", name: "会话", ico: "💬", route: "/x/sessions/" },
 			// ★ 稿 C（2026-10-21 用户拍板）：会话磁贴矩阵 = dsh desktop 的「多会话窗口」形态
 			//   （一眼看到一批会话的状态，点一块换到那条会话）。与「会话」条目同源路由，只是 view 不同 ✓
 			{ id: "vssaros-wb-session-tiles", name: "会话磁贴", ico: "🧲", route: "/x/sessions/?view=tiles" },
-					{ id: "vssaros-wb-kanban", name: "看板", ico: "🗂️", route: "/x/kanban/" },
-			{ id: "vssaros-wb-workflow", name: "工作流", ico: "🔀", route: "/x/workflow/" },
+					{ id: "vssaros-wb-kanban", name: "看板", ico: "🗂️", route: "/x/kanban/", hidden: true, offline: true },
+			{ id: "vssaros-wb-workflow", name: "工作流", ico: "🔀", route: "/x/workflow/", hidden: true, offline: true },
 			{ id: "vssaros-wb-kb", name: "知识库", ico: "📚", route: "/x/kb/" },
 			{ id: "vssaros-wb-codebase", name: "代码库", ico: "🕸️", route: "/x/codebase/" },
 			{ id: "vssaros-wb-media", name: "媒体库", ico: "🖼️", route: "/x/media/" },
-			{ id: "vssaros-wb-imagegen", name: "生图", ico: "🎨", route: "/x/imagegen/" },
+			{ id: "vssaros-wb-imagegen", name: "生图", ico: "🎨", route: "/x/imagegen/", hidden: true, offline: true },
 			{ id: "vssaros-wb-skills", name: "工具", ico: "🧰", route: "/x/skills/" },
 			// ★ 2026-10-24（用户：「移除自动化任务 item，将自动化任务包装成一个 自动化任务工作台」）：
 			//   侧栏那条官方「自动化任务」面板被隐藏（见下面 HIDDEN_LABELS）⇒ 能力全部收到这个工作台里
@@ -806,8 +815,13 @@ window.__ModuleLoader__.load({
 			// 2026-11-03：记忆库工作台整套下线（改用 dsh-memory-evolve）⇒ 用户 localStorage 里
 			// 残留的旧页签仍会被恢复成一个点了 404 的「记忆库」条目（存档只存 id/name/route，
 			// 不校验代码里还有没有入口）。这里显式清掉并回写，避免重开窗口又冒出来。
+			// ★ 2026-11-04：临时下线（offline）的工作台同理 —— 直接从 DEFAULT_ITEMS 派生 id，
+			//   不另抄一份清单（恢复上线时只摘标记，这里自动跟着放行）。
 			{
-				const retired = new Set(["vssaros-wb-memory"]);
+				const retired = new Set([
+					"vssaros-wb-memory",
+					...DEFAULT_ITEMS.filter(i => i && i.offline).map(i => i.id),
+				]);
 				const kept = openTabs.filter(t => t && t.id && !retired.has(t.id));
 				if (kept.length !== openTabs.length) { openTabs = kept; saveTabs(openTabs); }
 				if (retired.has(activeTabId)) { activeTabId = ""; saveActiveTab(""); }
@@ -1743,6 +1757,8 @@ window.__ModuleLoader__.load({
 					if (pinnedDisposers.has(route)) { return; }
 					const it = itemByRoute(route);
 					if (!it) { return; }               // 认不出的 route（别的模块 / 第三方还没注册）⇒ 不长行 ✓
+					// ★ 2026-11-04：临时下线的工作台即使以前被用户固定过，也不再长侧栏行 ✓
+				if (it.offline) { return; }
 					// 第三方的 id 带 `:` 和 `/`（`wb:owner/repo`）⇒ 槽 key 只留安全字符
 					const id = "vssaros-wb-pinned-" + String(it.id).replace(/[^A-Za-z0-9_-]/g, "-");
 					const navDispose = safeRegister(

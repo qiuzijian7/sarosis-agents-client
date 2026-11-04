@@ -301,16 +301,27 @@ export function metaBlock({ data, summary, tally, toolsRegistered = '', liveServ
  *   三条命令**都按 route 白名单**（IDE 侧再把 route 映射成容器 id ✓）⇒ 这里写错 route 的表现是
  *   "点了没反应（命令被静默拒掉）" ✗ ✓。
  */
+/**
+ * ★ 2026-11-04（用户要求「看板 / 流程 / 生图三个工作台暂时下线」）：**临时下线清单（唯一真源）**。
+ *
+ * 口径：只收 **dsh 侧的 UI 入口**（主页卡片 / 侧栏启动器与固定行 / 已开页签 / 商城已装格 / 工具页镜像）；
+ *   插件本体、页面路由、Agent 工具、IDE 侧活动栏容器**一律保留** ⇒ 恢复 = 清空这里并摘掉各处
+ *   `offline` / `hidden` 标记，不必重新接一遍路由（守卫 `check-workbench-catalog.mjs` ⑥ 盯着同步）。
+ * ⚠ 条目**不能从 WORKBENCH_MODULES 里删**：本清单是 `check-workbench-catalog.mjs` 的登记真源，
+ *   且 `client.workbenchNav.js::DEFAULT_ITEMS` 同时是 route 白名单 ⇒ 只删一边会变红 / 点了没反应。
+ */
+export const OFFLINE_WORKBENCH_ROUTES = ['/x/kanban/', '/x/workflow/', '/x/imagegen/'];
+
 export const WORKBENCH_MODULES = [
 	// ★ 2026-10-21（用户：「主页item ui中的固定，应该默认固定状态，且不可以取消固定」）：
 	//   主页是 dsh 侧栏的**常驻入口**（那一行永远在）⇒ 活动栏里它也**恒为固定** ⇒ 卡片上
 	//   直接显示「📌 已固定」且**不给取消的入口**（按钮 disabled）✓。
 	{ route: '/x/dashboard/', name: '主页', desc: '会话遥测 / 用量与编排', icon: '🏠', alwaysPinned: true },
-	{ route: '/x/kanban/', name: '看板', desc: '看板存储与卡片工具', icon: '🗂' },
+	{ route: '/x/kanban/', name: '看板', desc: '看板存储与卡片工具', icon: '🗂', offline: true },
 	{ route: '/x/kb/', name: '知识库', desc: '知识库索引与检索', icon: '📚' },
 	{ route: '/x/codebase/', name: '代码库', desc: '代码图谱与符号检索', icon: '🕸' },
 	{ route: '/x/media/', name: '媒体库', desc: '只读 media.db 页面', icon: '🎬' },
-	{ route: '/x/imagegen/', name: '生图', desc: '生图工作台 / 最近出图画廊', icon: '🎨' },
+	{ route: '/x/imagegen/', name: '生图', desc: '生图工作台 / 最近出图画廊', icon: '🎨', offline: true },
 	// ★ 2026-10-23（用户：「技能 item 改名为 工具，描述改为 技能、工具、mcp、agent、工作流、工作台」）：
 	//   文案与侧栏 `DEFAULT_ITEMS` 对齐（那边也叫「工具」）——同一个入口在两处叫不同名字最容易让人找不到。
 	{ route: '/x/skills/', name: '工具', desc: '技能、工具、mcp、agent、工作流、工作台', icon: '🧩' },
@@ -318,7 +329,7 @@ export const WORKBENCH_MODULES = [
 	//   服务器挂载在 VsSaros 启动时用 `--patch` 做）⇒ 它既不在侧栏 `DEFAULT_ITEMS`、也不在 route 白名单里
 	//   ⇒ 这张卡片点「打开」本来就会被**静默拒掉**（表现为"点了没反应"）。移除卡片正好把这个假入口清掉 ✓。
 	//   （MCP 服务器本身仍在「工具」页的 MCP 页签里管理 ✓）
-	{ route: '/x/workflow/', name: '流程', desc: '工作流引擎与画布', icon: '⚙' },
+	{ route: '/x/workflow/', name: '流程', desc: '工作流引擎与画布', icon: '⚙', offline: true },
 	// ★ 2026-10-22（修 bug：主页没有「商城」卡片）：自营商城工作台（`@vssaros/dsh-marketplace`）。
 	//   ⚠ 漏登记的后果不止"卡片不显示"：`client.workbenchNav.js` 的 `itemByRoute()` 只认
 	//   `DEFAULT_ITEMS` 里的 route ⇒ 卡片就算加进来，点「打开」也会被 route 白名单静默拒掉
@@ -349,6 +360,12 @@ export const WORKBENCH_MODULES = [
 	//   ⇒ 漏登记 = 卡片在、点「打开」被静默拒掉 = "点了没反应"）。
 	{ route: '/x/scheduler/', name: '自动化任务', desc: '按计划自动运行 Agent；原生任务页（搜索 / 筛选 / 详情 / 投递历史）', icon: '⏰' },
 ];
+
+/**
+ * 真正交给前端渲染的那份（SSR 数据岛与 `?format=json` 都走 `buildDashboardPayload`）⇒
+ *   临时下线的模块**不出卡片**。全表 `WORKBENCH_MODULES` 保留 ⇒ 守卫的 route 登记对账不漂移 ✓。
+ */
+export const VISIBLE_WORKBENCH_MODULES = WORKBENCH_MODULES.filter(m => !m.offline);
 
 /** 按 cwd 分组（工作区 = cwd，worktree 目录天然就是另一个 cwd ⇒ 自动分开 ✓）。未知 cwd 单列、不伪造 ✓。 */
 export function groupByCwd(sessions, limit) {

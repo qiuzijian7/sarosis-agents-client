@@ -47,11 +47,15 @@ const string = (value: unknown): string | undefined => typeof value === 'string'
 export class CliCheck {
   constructor(private readonly probe: Probe, private readonly path: string, private readonly stateDir: string) {}
 
-  /** Locate the CLI, then read its version, bot identity, strict mode, bot name and (optionally) update status. */
-  async check(withUpdate = false): Promise<CliCheckResult> {
+  /**
+   * Locate the CLI, then read its version, bot identity, strict mode, bot name and (optionally) update status.
+   * VsSaros addition: `profile` (the Source's app) selects that app's lark-cli profile for the identity reads.
+   */
+  async check(withUpdate = false, profile = ''): Promise<CliCheckResult> {
     let resolved: string
     try { resolved = executable(COMMAND, this.path, workerBin(this.stateDir)) }
     catch (error) { return { found: false, command: COMMAND, error: String(error) } }
+    const select = profile ? ['--profile', profile] : []
     const run = (...argv: string[]): Promise<string> => this.probe([resolved, ...argv], ENV)
     const result: CliCheckResult = { found: true, command: COMMAND, resolved }
     const record = (error: unknown) => { result.error = [result.error, String(error)].filter(Boolean).join('; ') }
@@ -61,15 +65,15 @@ export class CliCheck {
       if (version) result.version = version
     })
     await attempt(async () => {
-      const status = json(await run('auth', 'status')) as { appId?: string; identities?: { bot?: { status?: string } } } | undefined
+      const status = json(await run(...select, 'auth', 'status')) as { appId?: string; identities?: { bot?: { status?: string } } } | undefined
       result.appId = string(status?.appId)
       result.botReady = status?.identities?.bot?.status === 'ready'
     })
     await attempt(async () => {
-      result.strictMode = /strict-mode:\s*(\w+)/.exec(await run('config', 'strict-mode'))?.[1] ?? 'unknown'
+      result.strictMode = /strict-mode:\s*(\w+)/.exec(await run(...select, 'config', 'strict-mode'))?.[1] ?? 'unknown'
     })
     await attempt(async () => {
-      const text = await run('api', 'GET', '/open-apis/bot/v3/info', '--as', 'bot', '--format', 'ndjson')
+      const text = await run(...select, 'api', 'GET', '/open-apis/bot/v3/info', '--as', 'bot', '--format', 'ndjson')
       const info = json(text.split('\n')[0] ?? '') as { bot?: { app_name?: string } } | undefined
       result.botName = string(info?.bot?.app_name)
     })
@@ -84,10 +88,10 @@ export class CliCheck {
   }
 
   /** Confirmed write: restrict the CLI to the bot identity, or let the CLI update itself. */
-  async apply(action: CliApplyAction, confirm: boolean): Promise<CliApplyResult> {
+  async apply(action: CliApplyAction, confirm: boolean, profile = ''): Promise<CliApplyResult> {
     if (!confirm) throw new Error('Confirmation required before changing the local lark-cli')
     const resolved = executable(COMMAND, this.path, workerBin(this.stateDir))
-    const argv = action === 'strict-bot' ? ['config', 'strict-mode', 'bot'] : ['update']
+    const argv = action === 'strict-bot' ? [...profile ? ['--profile', profile] : [], 'config', 'strict-mode', 'bot'] : ['update']
     const output = await this.probe([resolved, ...argv], ENV)
     return { ok: true, output: output.trim().slice(0, 4000) }
   }

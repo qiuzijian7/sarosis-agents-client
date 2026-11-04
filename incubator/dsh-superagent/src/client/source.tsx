@@ -7,6 +7,7 @@ import { SaveBar } from './draft.tsx'
 import { sourceMark } from './marks.ts'
 import { usePanel, usePanelData } from './provider.tsx'
 import { useFeishuCliCheck } from './cli-check.tsx'
+import { TapdCredentials } from './tapd-credentials.tsx'
 import { setupPage, settingsRoute, type Route } from './route.ts'
 import { ConfigHistory, Fields, SourceField, useBlockDraft, useSettings } from './settings-kit.tsx'
 import { actorName, healthText, localized, readableMarkers, reasonLabel, valueLabel, when } from './text.ts'
@@ -61,6 +62,8 @@ export function SourceCard({ source, title }: { source: SourceView; title?: stri
       </div>}
       {!source.installed && <Hint>{t('sourceNotInstalledHint')}</Hint>}
       {source.installed && source.fields.filter(spec => !spec.advanced).map(field)}
+      {/* VsSaros addition: the Open API credentials live in the Host's credentials file, not in this card's settings. */}
+      {source.installed && source.id === 'tapd' && String(value.config.transport ?? 'openapi') === 'openapi' && <TapdCredentials />}
       {source.installed && advanced.length > 0 && <DisclosureRow icon={<Icon name="settings" />} title={t('advanced')} open={advancedOpen}
         onToggle={() => setAdvancedOpen(!advancedOpen)}>
         <div className="dt-disclosure-body">{advanced.map(field)}</div>

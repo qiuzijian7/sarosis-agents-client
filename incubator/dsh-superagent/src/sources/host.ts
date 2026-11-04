@@ -12,6 +12,10 @@ export const HEALTH_TEXT = {
   setupPending: 'Waiting for the deployment check',
   sourceOff: 'Off',
   feishuCliUnset: 'The Source is on, and its bot lark-cli is not set',
+  // VsSaros addition: Feishu delivers each event to one connection of an app only.
+  feishuAppShared: 'Feishu app {app} already receives events in the Bots inbound of {holder}; Feishu delivers each event to one connection only, so give this Source its own Feishu app',
+  feishuBusBusy: 'Another event consumer already holds Feishu app {app}; Feishu delivers each event to one connection only, so stop it or give this Source its own Feishu app',
+  feishuShared: 'Receiving events of Feishu app {app} through the VsSaros Bots connection in this Host',
   // VsSaros patch (optional GitHub)
   githubUnset: 'The Source is on, and its repository and account CLI are not set',
   // VsSaros addition (p4 Source).

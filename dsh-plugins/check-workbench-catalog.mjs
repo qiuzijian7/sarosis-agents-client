@@ -21,7 +21,7 @@
 // 跑法：node dsh-plugins/check-workbench-catalog.mjs
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -265,6 +265,81 @@ if (ghosts.length === 0) {
 	ok('⑤-C 侧栏白名单里没有幽灵入口（每个 /x/<m>/ 都有对应的包）✓');
 } else {
 	fail(`⑤-C 侧栏白名单里有入口但没有对应的包（⇒ 「入口在、点不开」；删了模块忘了删这里）：${ghosts.join('、')}`);
+}
+
+// ── ⑥ 临时下线清单一致性（2026-11-04：看板 / 流程 / 生图暂时下线）──────────────────
+// 为什么必须有：下线 = 「一份真源 + 三份清单各打标 + 五个消费点各过滤一次」；漏一处就是
+//   "标了却还从某个入口冒出来"，而 ①–⑤ 只查「有没有登记」，查不到「该不该隐藏」。
+//   真源 = catalog.js::OFFLINE_WORKBENCH_ROUTES；恢复上线 = 清空它 + 摘掉各处标记 ⇒ ⑥ 逐项放行/拦截。
+{
+	const before = problems;
+	const offlineDecl = /export const OFFLINE_WORKBENCH_ROUTES = \[([^\]]*)\];/.exec(catalogSrc);
+	if (!offlineDecl) {
+		fail('⑥ 读不到 catalog.js::OFFLINE_WORKBENCH_ROUTES（下线真源缺失 ⇒ 本段会空跑）');
+	} else {
+		const offline = [...offlineDecl[1].matchAll(/'([^']+)'/g)].map(m => m[1]);
+		ok(`⑥ 临时下线清单：${offline.length} 个（${offline.join('、') || '空 = 全部上线'}）`);
+
+		// ① 运行时：主页卡片的可见清单真的过滤了（import 真模块，不比注释/字符串）
+		try {
+			const mod = await import(pathToFileURL(path.join(HERE, 'vssaros-dashboard', 'lib', 'catalog.js')).href);
+			const visible = new Set((mod.VISIBLE_WORKBENCH_MODULES || []).map(m => m.route));
+			const leaked = offline.filter(r => visible.has(r));
+			const unmarked = offline.filter(r => !(mod.WORKBENCH_MODULES || []).some(m => m.route === r && m.offline === true));
+			const stray = (mod.WORKBENCH_MODULES || []).filter(m => m.offline && !offline.includes(m.route)).map(m => m.route);
+			if (leaked.length) { fail(`⑥ 主页卡片仍会渲染下线工作台：${leaked.join('、')}`); }
+			if (unmarked.length) { fail(`⑥ catalog.js 里这些 route 没打 offline: true：${unmarked.join('、')}`); }
+			if (stray.length) { fail(`⑥ 有 offline 标记但不在下线真源里（恢复时漏摘）：${stray.join('、')}`); }
+			if (!leaked.length && !unmarked.length && !stray.length) { ok('⑥ 主页卡片：下线项已移出可见清单，标记与真源一致 ✓'); }
+		} catch (e) {
+			fail(`⑥ import catalog.js 失败（运行时判据无法执行）：${e && e.message}`);
+		}
+		if (!/workbench: VISIBLE_WORKBENCH_MODULES/.test(read(path.join(HERE, 'vssaros-dashboard', 'lib', 'index.js')))) {
+			fail('⑥ buildDashboardPayload 没用 VISIBLE_WORKBENCH_MODULES（数据岛仍会带上下线卡片）');
+		}
+
+		// ② 侧栏条目表：offline 集合必须恰好等于真源，且每条同时 hidden（否则仍进启动器/排序）
+		const navOffline = [...defaultItemsBlock.matchAll(/route: "([^"]+)"[^\n]*offline: true/g)].map(m => m[1]);
+		const navBoth = [...defaultItemsBlock.matchAll(/route: "([^"]+)", hidden: true, offline: true/g)].map(m => m[1]);
+		const sameSet = (a, b) => a.length === b.length && a.every(r => b.includes(r));
+		if (!sameSet(navOffline, offline)) {
+			fail(`⑥ DEFAULT_ITEMS 的 offline 标记与真源不一致（实际 ${navOffline.join('、') || '无'}）`);
+		}
+		if (!sameSet(navBoth, offline)) {
+			fail('⑥ 下线条目必须同时 hidden: true, offline: true（否则仍出现在启动器/可排序列）');
+		}
+		if (!/if \(it\.offline\) \{ return; \}/.test(navSrc)) {
+			fail('⑥ syncPinnedRows 未过滤 offline ⇒ 以前固定过的下线工作台仍会长侧栏行');
+		}
+		if (!/DEFAULT_ITEMS\.filter\(i => i && i\.offline\)/.test(navSrc)) {
+			fail('⑥ retired 未从 offline 派生 ⇒ localStorage 里残留的下线页签会被恢复');
+		}
+		if (!/readLocalItems[\s\S]{0,500}!it\.offline/.test(marketIconSrc)) {
+			fail('⑥ 商城「已装」格未过滤 offline ⇒ 下线工作台仍可从商城点开');
+		}
+
+		// ③ 工具页只读镜像：列出的下线条目必须打标，计数/列表只许用可见清单
+		const skillsSrc = read(path.join(HERE, 'vssaros-skills', 'lib', 'index.js'));
+		const mirror = /const TOOLS_WORKBENCHES = \[([\s\S]*?)\n\];/.exec(skillsSrc);
+		if (!mirror) {
+			fail('⑥ 读不到 TOOLS_WORKBENCHES 镜像（解析口径坏了）');
+		} else {
+			for (const line of mirror[1].split('\n')) {
+				const r = /route: '([^']+)'/.exec(line);
+				if (r && offline.includes(r[1]) && !/offline: true/.test(line)) {
+					fail(`⑥ 工具页镜像里的 ${r[1]} 没打 offline: true`);
+				}
+			}
+		}
+		if (!/const VISIBLE_TOOLS_WORKBENCHES = TOOLS_WORKBENCHES\.filter\(w => !w\.offline\)/.test(skillsSrc)) {
+			fail('⑥ 工具页缺 VISIBLE_TOOLS_WORKBENCHES 过滤清单');
+		}
+		const rawUses = (skillsSrc.match(/(?<!VISIBLE_)TOOLS_WORKBENCHES\.(?:length|map)\(/g) ?? []).length;
+		if (rawUses !== 0) {
+			fail(`⑥ 工具页渲染仍直接用全表 TOOLS_WORKBENCHES（${rawUses} 处 ⇒ 计数/列表会露出下线项）`);
+		}
+		if (problems === before) { ok('⑥ 下线链路：标记与五处入口同步 ✓'); }
+	}
 }
 
 console.log(problems === 0

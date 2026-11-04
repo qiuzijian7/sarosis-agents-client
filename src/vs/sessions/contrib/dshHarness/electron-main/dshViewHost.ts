@@ -28,6 +28,7 @@ import { isSameOrigin } from '../common/dshCli.js';
 // 2026-10-23 从本文件的 `will-navigate` 里抽出来："同源非根路径要拦"这条规则此前完全没法单测。
 import { decideMainFrameNavigation, isBlankPopupUrl } from '../common/dshViewNavigation.js';
 import { DSH_VIEW_PARTITION, DSH_VIEW_PARTITION_CHAT_POOL_PREFIX, DSH_VIEW_PARTITION_DESKTOP, DSH_VIEW_PARTITION_DESKTOP_POOL_PREFIX, DshColorScheme, DshViewSurface, IDshViewBounds, IDshViewInfo, surfaceTakesRoute } from '../common/dshHarness.js';
+import { dshDesktopEditingKeys, isDshDesktopMenuAction, type DshDesktopMenuAction } from '../common/dshDesktopMenu.js';
 import { resolveViewUrl } from '../common/dshPluginPage.js';
 import { unavailablePageUrl } from '../common/dshViewHostUnavailable.js';
 import { IViewLoadRetryState, newViewLoadRetryState, onDocumentFinishedLoad, onMainFrameNavigated, planLoadRetry, resetViewLoadRetry, shouldResetRetryBudget, VIEW_LOAD_MAX_RETRIES, withAuthRetry } from '../common/dshViewLoadRetry.js';
@@ -1604,6 +1605,64 @@ export class DshViewHost extends Disposable {
 			slot.retry = resetViewLoadRetry();   // 手动重载 = 新一轮，重新给足重试机会（否则一次失败后手动重载也不再有救）
 			void this._load(slot);
 		}
+	}
+
+	/**
+	 * **桌面窗口 caption 菜单的动作**（2026-11-04，参考 dsh-desktop `sendEditingKey` /
+	 * `executeDesktopMenuCommand`）。
+	 *
+	 * 为什么编辑键走 `sendInputEvent` 而不是 `webContents.undo()`：composer / 编辑器自己实现
+	 * 历史栈并监听按键，Chromium 的原生 undo 栈会跳过它们 ✗（参考工程同一段注释）。
+	 * macOS 把 `control` 换成 `meta`（模板是纯函数，平台判断只在这里做）。
+	 *
+	 * ⚠ 发键前先 `focus(viewId)`：隐藏/失焦窗口里 `sendInputEvent` 送不进页面
+	 * （`test/electron/channelProbe.ts:327` 真机证据）⇒ 先激活窗口 + 聚焦 webContents ✓。
+	 *
+	 * @returns 新的 zoomFactor（供「实际大小（当前 N%）」）；找不到视图时 undefined。
+	 */
+	runDesktopMenuAction(viewId: string, rawAction: unknown): number | undefined {
+		if (!isDshDesktopMenuAction(rawAction)) { return undefined; }
+		const action: DshDesktopMenuAction = rawAction;
+		const slot = this._views.get(viewId);
+		if (!slot || slot.view.webContents.isDestroyed()) { return undefined; }
+		const wc = slot.view.webContents;
+
+		const key = dshDesktopEditingKeys[action];
+		if (key) {
+			this.focus(viewId);
+			const isMac = process.platform === 'darwin';
+			const modifiers = key.modifiers.map(m => (isMac && m === 'control' ? 'meta' : m)) as Array<'control' | 'meta'>;
+			try {
+				wc.sendInputEvent({ type: 'keyDown', keyCode: key.keyCode, modifiers });
+				wc.sendInputEvent({ type: 'keyUp', keyCode: key.keyCode, modifiers });
+			} catch (err) {
+				this._logService.warn('[dshHarness] desktop menu: sendInputEvent failed', err);
+				return undefined;
+			}
+			return wc.getZoomFactor();
+		}
+
+		switch (action) {
+			case 'reload':
+				this.reload(viewId);
+				break;
+			case 'toggleDevTools':
+				if (wc.isDevToolsOpened()) { wc.closeDevTools(); }
+				else { wc.openDevTools({ mode: 'detach' }); }
+				break;
+			case 'zoomIn':
+				wc.setZoomLevel(Math.min(3, wc.getZoomLevel() + 0.5));
+				break;
+			case 'zoomOut':
+				wc.setZoomLevel(Math.max(-3, wc.getZoomLevel() - 0.5));
+				break;
+			case 'zoomReset':
+				wc.setZoomLevel(0);
+				break;
+			case 'zoomQuery':
+				break;
+		}
+		return wc.getZoomFactor();
 	}
 
 	disposeView(viewId: string): void {

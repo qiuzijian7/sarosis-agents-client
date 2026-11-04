@@ -25,7 +25,8 @@ import { DSH_UPGRADE_ASSET_KINDS, IDshUpgradeAppState, IDshUpgradeAssetRow, IDsh
 import { buildUpdateEndpoint, decideAppUpdate, parseAppUpdateResponse } from '../common/dshAppUpdate.js';
 import { getDshPluginCenterHost } from '../../agentStudio/browser/dshPluginCenterHost.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
-import { IUpdateService, StateType } from '../../../../platform/update/common/update.js';
+import { IUpdateService } from '../../../../platform/update/common/update.js';
+import { waitForUpdateReady } from '../common/dshUpdateWait.js';
 import { arch as platformArch } from '../../../../base/common/process.js';
 import { DSH_MODULE_CONTAINERS, DshModuleId, IDshModulePageState, activeModulesFromPlugins, activeModulesOf, containersFromPlugins, pagesFromPlugins, resolveContainerPageState, withWorkbenchClient } from '../common/dshModuleContainers.js';
 // `taskboard` 能力（看板"定位卡片"）：与原 `TasksViewPane` 点条目**同一套实现**（同一个 EditorInput
@@ -76,6 +77,7 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { DSH_HARNESS_CHANNEL, DshColorScheme, DshHarnessChannelCommand, DshHarnessChannelEvent, DshHarnessSettings, DshPageSurface, DshViewSurface, IDshBootstrapArgs, IDshBundledInstallResult, IDshBundledPluginRow, IDshHostStartOptions, IDshHostStatus, IDshIdeClaimReply, IDshIdeRequest, IDshPluginActivationSnapshot, IDshPluginInfo, IDshPluginRowSetResult, IDshPluginSetResult, IDshRuntimeInfo, IDshUpdateDiscoveryResult, IDshUpdatePolicy, IDshUpgradeArgs, IDshViewBounds, IDshViewInfo, IDshWorkspaceSyncState, IDshWorkspaceSyncSummary, shouldRestartForWorkspaceChange, surfaceTakesRoute } from '../common/dshHarness.js';
+import type { DshDesktopMenuAction } from '../common/dshDesktopMenu.js';
 // dsh 侧会话摘要（侧栏合并用；解析规则与测试见 common/dshSessionIndex.ts）
 import type { IDshSessionSummary } from '../common/dshSessionIndex.js';
 import { DshUpdateChannel } from '../common/dshCompat.js';
@@ -382,6 +384,12 @@ export interface IDshHarnessService {
 	 */
 	freezeView(viewId: string): Promise<string | undefined>;
 	reloadView(viewId: string): Promise<void>;
+	/**
+	 * 桌面窗口 caption 菜单动作（2026-11-04）。`action` 是 `common/dshDesktopMenu.ts` 的封闭集；
+	 * 主进程对指定的 WebContentsView 发按键 / 缩放 / 重载 / 开发者工具。
+	 * 返回新的 zoomFactor（供「实际大小（当前 N%）」）；视图不存在时 undefined。
+	 */
+	runDesktopMenuAction(viewId: string, action: DshDesktopMenuAction): Promise<number | undefined>;
 	/** 重绑聊天视图到另一个 dsh 会话（方案 5.15 切 preset）；主进程校验会话 id 形态后推给页面。 */
 	rebindSession(viewId: string, sessionId: string): Promise<void>;
 	/** 重命名该聊天视图绑定的 dsh 会话（外层页签入口）；主进程校验后推给页面执行。 */
@@ -2114,8 +2122,16 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 			this._upgradeBusy = 'downloading';
 			await this._pushUpgradeToAll();
 			await svc.checkForUpdates(true);
-			if (!(await this._waitUpdateReady(svc, 180_000))) {
-				throw new Error('下载超时（3 分钟内没就绪），请稍后重试');
+			// ★ 2026-11-04：阈值 180s → 600s（安装包实测 ≈477MB，慢网 3 分钟不够），
+			//   并且**按真实原因**报错 —— 把"更新服务被禁用 / 压根没开始下载 / 真超时"区分开。
+			const waited = await this._waitUpdateReady(svc, 600_000);
+			if (!waited.ok) {
+				const detail = waited.detail ? `：${waited.detail}` : '';
+				throw new Error(waited.reason === 'disabled'
+					? `这个构建不支持自动更新（更新服务已禁用${detail}）—— 请手动下载安装包覆盖安装`
+					: waited.reason === 'not-started'
+						? `更新服务没有开始下载（可能另一个 VsSaros 窗口正在更新，或 update.mode=none${detail}）—— 可稍后重试，或手动下载安装包`
+						: `下载超时（已等 10 分钟仍未就绪），请稍后重试；安装包约 477MB，网速慢时会更久`);
 			}
 			this._upgradeBusy = 'installing';
 			await this._pushUpgradeToAll();
@@ -2268,20 +2284,15 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		}
 	}
 
-	/** 等更新服务进入"可安装"（`Ready`/`Downloaded`）；`Idle`/`Disabled` 直接判失败（没东西可装）。 */
-	private async _waitUpdateReady(svc: IUpdateService, timeoutMs: number): Promise<boolean> {
-		const deadline = Date.now() + timeoutMs;
-		while (Date.now() < deadline) {
-			const type = svc.state.type;
-			if (type === StateType.Ready || type === StateType.Downloaded) {
-				return true;
-			}
-			if (type === StateType.Idle || type === StateType.Disabled || type === StateType.Uninitialized) {
-				return false;
-			}
-			await new Promise(resolve => setTimeout(resolve, 500));
-		}
-		return false;
+	/**
+	 * 等更新服务进入"可安装"（`Ready`/`Downloaded`）。
+	 *
+	 * 逻辑与缘由见 `common/dshUpdateWait.ts` 的文件头（真机踩过：`Idle` 一见到就判失败 ⇒
+	 * 「3 分钟超时」文案掩盖了"禁用 / 没开始下载 / 真超时"三种完全不同的原因）。
+	 * 抽成纯函数是为了能用**假状态序列**做行为测试。
+	 */
+	private _waitUpdateReady(svc: IUpdateService, timeoutMs: number) {
+		return waitForUpdateReady(() => svc.state, timeoutMs);
 	}
 
 	/** 算一份全量升级状态（不联网；`app` 用最近一次的结论）。 */
@@ -2537,6 +2548,10 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 
 	reloadView(viewId: string): Promise<void> {
 		return this._channel.call(DshHarnessChannelCommand.ReloadView, { viewId });
+	}
+
+	runDesktopMenuAction(viewId: string, action: DshDesktopMenuAction): Promise<number | undefined> {
+		return this._channel.call<number | undefined>(DshHarnessChannelCommand.DesktopMenuAction, { viewId, action });
 	}
 
 	async rebindSession(viewId: string, sessionId: string): Promise<void> {

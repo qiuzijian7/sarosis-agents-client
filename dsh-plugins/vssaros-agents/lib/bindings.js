@@ -146,6 +146,11 @@ export function normalizeBinding(input, existing) {
 	const groupAllowFrom = listOrUndef('groupAllowFrom');
 	const mentionPatterns = listOrUndef('mentionPatterns');
 	const requireMention = boolOrUndef('requireMention');
+	/* ★ 2026-11-04 多飞书应用：这条绑定走哪个飞书应用（收和发都按它）。**空 = 默认应用**
+	   （`accounts.feishu`），所以老绑定不用迁移；只有飞书有这项。 */
+	const appId = platform === 'feishu'
+		? String((input?.appId === undefined ? cur.appId : input.appId) ?? '').trim()
+		: '';
 	return {
 		webhookUrl,
 		webhookSecret,
@@ -161,6 +166,7 @@ export function normalizeBinding(input, existing) {
 		dispatchMode: dispatchModeOf({ dispatchMode: input?.dispatchMode === undefined ? cur.dispatchMode : input.dispatchMode }),
 		enabled: (input?.enabled === undefined ? (cur.enabled === undefined ? true : cur.enabled) : input.enabled) === true,
 		/* 有才写（undefined 会被 JSON 丢掉 ⇒ 旧绑定不受影响） */
+		...(appId ? { appId } : {}),
 		...(dmPolicy ? { dmPolicy } : {}),
 		...(groupPolicy ? { groupPolicy } : {}),
 		...(rooms ? { rooms } : {}),
@@ -192,11 +198,34 @@ async function assertTransport(binding, deps) {
 		return;
 	}
 	if (deps && typeof deps.appConfigured === 'function') {
-		const configured = await deps.appConfigured('feishu').catch(() => false);
+		const appId = String(binding.appId || '').trim();
+		const configured = await deps.appConfigured('feishu', appId).catch(() => false);
 		if (!configured) {
-			throw httpError(400, '飞书绑定二选一：填自定义机器人 webhook URL，或先在「设置 → 渠道」填 App ID / App Secret（应用模式，机器人需在该会话里）');
+			throw httpError(400, appId
+				? `飞书应用 ${appId} 还没有配置 App Secret：先在「设置 → 渠道」里添加这个应用，或改填自定义机器人 webhook URL`
+				: '飞书绑定二选一：填自定义机器人 webhook URL，或先在「设置 → 渠道」填 App ID / App Secret（应用模式，机器人需在该会话里）');
 		}
 	}
+}
+
+/**
+ * 2026-11-04：把绑定的 `appId` 归一 —— 等于默认应用就存成空（"空 = 默认"），
+ * 这样之后换默认应用时老绑定跟着走；`deps.defaultFeishuAppId` 没注入（单测/旧调用）⇒ 原样。
+ */
+async function canonicalizeApp(binding, deps) {
+	if (binding.platform !== 'feishu' || !binding.appId) { return binding; }
+	const def = deps && typeof deps.defaultFeishuAppId === 'function'
+		? String(await deps.defaultFeishuAppId().catch(() => '') || '') : '';
+	if (def && binding.appId === def) {
+		const { appId: _drop, ...rest } = binding;
+		return rest;
+	}
+	return binding;
+}
+
+/** 这条绑定走的飞书应用（空 = 默认）。非飞书恒为空。 */
+export function bindingAppOf(binding) {
+	return binding && binding.platform === 'feishu' ? String(binding.appId || '').trim() : '';
 }
 
 /** 校验（新建/更新共用）：目标必须存在且是合法组合。 */
@@ -213,19 +242,25 @@ async function assertBindingTarget(config, binding, deps) {
 	}
 }
 
-/** 同一 (platform, chatId) 只能绑一个目标 —— 否则入站不知道该给谁。 */
+/**
+ * 同一 (platform, 飞书应用, chatId) 只能绑一个目标 —— 否则入站不知道该给谁。
+ * 2026-11-04：同一个群里可以有**多个飞书应用的机器人**，各自绑不同 bot ⇒ 应用不同就不算重复。
+ */
 function assertChatUnique(bindings, binding, selfId) {
 	const dup = bindings.find(b => b.id !== selfId
-		&& b.platform === binding.platform && b.chatId === binding.chatId);
+		&& b.platform === binding.platform && b.chatId === binding.chatId
+		&& bindingAppOf(b) === bindingAppOf(binding));
 	if (dup) {
-		throw httpError(409, `这个 IM 会话（${binding.platform}:${binding.chatId}）已经绑给 ${dup.targetKind}:${dup.targetId} 了。`);
+		const app = bindingAppOf(binding);
+		throw httpError(409, `这个 IM 会话（${binding.platform}:${app ? app + ':' : ''}${binding.chatId}）已经绑给 ${dup.targetKind}:${dup.targetId} 了。`);
 	}
 }
 
 /** 新建绑定。 */
 export async function createBinding(config, input, deps) {
 	assertHuman(input?.actor);
-	const binding = { id: randomUUID(), ...normalizeBinding(input), createdAt: Date.now(), updatedAt: Date.now() };
+	const binding = await canonicalizeApp(
+		{ id: randomUUID(), ...normalizeBinding(input), createdAt: Date.now(), updatedAt: Date.now() }, deps);
 	await assertTransport(binding, deps);
 	await assertBindingTarget(config, binding, deps);
 	const bindings = await readBindings(config);
@@ -243,7 +278,11 @@ export async function updateBinding(config, input, deps) {
 	if (idx < 0) {
 		throw httpError(404, `没有这个绑定：${id || '(没给 id)'}`);
 	}
-	const next = { ...bindings[idx], ...normalizeBinding(input, bindings[idx]), updatedAt: Date.now() };
+	const normalized = normalizeBinding(input, bindings[idx]);
+	let next = { ...bindings[idx], ...normalized, updatedAt: Date.now() };
+	/* `normalizeBinding` 对空 appId 不写这一项 ⇒ 展开旧绑定会把旧 appId 留下来，必须显式删掉 */
+	if (!normalized.appId) { delete next.appId; }
+	next = await canonicalizeApp(next, deps);
 	await assertTransport(next, deps);
 	await assertBindingTarget(config, next, deps);
 	assertChatUnique(bindings, next, id);
@@ -423,11 +462,21 @@ export function splitOutbound(text, limit = OUT_SEGMENT_CHARS) {
 	return out;
 }
 
-/** 找 (platform, chatId) 对应的绑定。 */
-export function findBindingForChat(bindings, platform, chatId) {
+/**
+ * 找 (platform, chatId) 对应的绑定。
+ *
+ * 2026-11-04 多飞书应用：飞书还要对上**应用** —— 同一个群里不同应用的机器人可以各绑一个 bot。
+ *   `appId` 是消息来自哪个应用的长连接（空 = 默认应用的连接 / 手动演练）；
+ *   `defaultAppId` 是当前默认应用 —— 绑定或消息的应用为空时都按它算，
+ *   所以老绑定（无 appId）与老调用（不传 opts）的行为与以前完全一样。
+ */
+export function findBindingForChat(bindings, platform, chatId, { appId = '', defaultAppId = '' } = {}) {
 	const p = String(platform ?? '').trim().toLowerCase();
 	const c = String(chatId ?? '').trim();
-	return (Array.isArray(bindings) ? bindings : []).find(b => b.platform === p && b.chatId === c) || null;
+	const effective = (id) => String(id ?? '').trim() || String(defaultAppId ?? '').trim();
+	const want = effective(appId);
+	return (Array.isArray(bindings) ? bindings : []).find(b => b.platform === p && b.chatId === c
+		&& (p !== 'feishu' || effective(bindingAppOf(b)) === want)) || null;
 }
 
 /** 找某个 bot / 群**启用中的**出站绑定（可能有多条）。 */
@@ -461,7 +510,8 @@ export function createBindingHub(deps) {
 		const platform = String(msg?.platform ?? '').trim().toLowerCase();
 		const chatId = String(msg?.chatId ?? '').trim();
 		if (!platform || !chatId) { return; }
-		const key = `${platform}:${chatId}`;
+		const appId = platform === 'feishu' ? String(msg?.appId ?? '').trim() : '';
+		const key = `${platform}:${appId ? appId + ':' : ''}${chatId}`;
 		const hit = recent.find((x) => x.key === key);
 		const at = nowOf();
 		if (hit) {
@@ -472,6 +522,7 @@ export function createBindingHub(deps) {
 		}
 		recent.unshift({
 			key, platform, chatId,
+			...(appId ? { appId } : {}),
 			chatType: String(msg?.chatType ?? ''),
 			userName: String(msg?.userName ?? ''),
 			lastAt: at, count: 1,
@@ -516,7 +567,9 @@ export function createBindingHub(deps) {
 		noteRecent({ ...msg, platform });
 
 		const bindings = await readBindings(deps.config);
-		const binding = findBindingForChat(bindings, platform, chatId);
+		const defaultAppId = platform === 'feishu' && typeof deps.defaultFeishuAppId === 'function'
+			? String(await deps.defaultFeishuAppId().catch(() => '') || '') : '';
+		const binding = findBindingForChat(bindings, platform, chatId, { appId: msg?.appId, defaultAppId });
 		if (!binding) {
 			return { ok: false, reason: 'unbound', key };
 		}
@@ -524,7 +577,7 @@ export function createBindingHub(deps) {
 		   同一 `(platform, chatId)` 在窗口内超预算 ⇒ 进冷却、全拒。
 		   `sender_type=app` 只挡得住"我们自己发的"，挡不住"另一个 bot 发的"——
 		   两个 bot 互相触发能在一分钟内打爆额度与账单。 */
-		const loop = loopGuard.allow(`${platform}:${chatId}`);
+		const loop = loopGuard.allow(`${platform}:${bindingAppOf(binding) ? bindingAppOf(binding) + ':' : ''}${chatId}`);
 		if (!loop.ok) {
 			log('warn', `入站被风暴预算拦下（${platform}:${chatId}）：冷却 ${Math.ceil((loop.retryAfterMs || 0) / 1000)}s`);
 			return { ok: false, reason: 'loop', key, binding, retryAfterMs: loop.retryAfterMs };
@@ -617,11 +670,14 @@ export function createBindingHub(deps) {
 			return { ok: true, reason: 'empty', sent: 0, failed: 0, segments: 0 };
 		}
 		const segs = segments.length ? segments : [''];
+		const app = bindingAppOf(binding);
 		const ctx = {
-			sessionKey: `chat:${binding.platform}:${binding.chatId}`,
+			sessionKey: `chat:${binding.platform}:${app ? app + ':' : ''}${binding.chatId}`,
 			chatId: binding.chatId,
 			chatType: binding.chatType,
 			bindingId: binding.id,
+			/* 2026-11-04：用哪个飞书应用发（空 = 默认应用）—— 适配器按它取凭据与 token */
+			appId: app,
 			/* 平台凭据在这里交给适配器（P1：飞书的 webhook URL 与签名密钥）。
 			   ⚠ 只进内存，不进日志、不进 GET 响应（`listBindings` 会把 secret 挡掉）。 */
 			webhookUrl: binding.webhookUrl || '',
@@ -727,6 +783,7 @@ export function createBindingHub(deps) {
 		testBinding,
 		recentChats: () => recent.map((x) => ({
 			platform: x.platform, chatId: x.chatId, chatType: x.chatType,
+			...(x.appId ? { appId: x.appId } : {}),
 			userName: x.userName, lastAt: x.lastAt, count: x.count,
 		})),
 		/** 仅测试：清空幂等表。 */

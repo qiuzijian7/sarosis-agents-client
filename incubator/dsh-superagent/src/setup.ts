@@ -19,6 +19,10 @@ export const SETUP_PROBLEMS = {
   feishuBotNotReady: ['feishu', 'The bot identity of app {app} is {status}; configure the app secret with lark-cli.'],
   feishuUserIdentity: ['feishu', 'The bot lark-cli allows user identities (strict mode {mode}); give the bot its own lark-cli configuration in strict mode bot, as docs/006-deployment.md describes.'],
   feishuNoBot: ['feishu', 'The Feishu bot API did not return the bot\'s open_id.'],
+  // VsSaros addition: the Feishu Source names its app (a lark-cli profile per app).
+  feishuAppMissing: ['feishu', 'lark-cli has no profile for Feishu app {app}, and the VsSaros Bots do not keep its secret; add the app in the Bots channel settings, or run lark-cli profile add --name {app} --app-id {app} --app-secret-stdin.'],
+  feishuProfileFailed: ['feishu', 'lark-cli could not add a bot-only profile for Feishu app {app}: {output}'],
+  feishuAppMismatch: ['feishu', 'lark-cli profile {profile} belongs to app {actual}, not {app}.'],
 } as const satisfies Record<string, readonly [SetupPlace, string]>
 export type SetupCode = keyof typeof SETUP_PROBLEMS
 export interface SetupProblem { place: SetupPlace; code: SetupCode; values: Record<string, string>; detail: string }

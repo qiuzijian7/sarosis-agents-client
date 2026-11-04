@@ -1,0 +1,973 @@
+/**
+ * dsh-plugin-teamflow — Prompt 行为级契约测试（L1 评测层）。
+ *
+ * 定位：smoke.js 是「源码子串断言」（对 prompts/index.ts 源文本 grep）；本文件更进一步——
+ * **直接调用 prompt 工厂（纯函数），断言其产出的真实指令文本**仍携带关键契约锚点。
+ * 这样即使工厂内部被重构/移动段落/改写措辞，只要产出契约仍在即通过；锚点丢失即失败并指明
+ * 断的是哪条契约（id）、哪一级保障（level）、原本意图（intent）。
+ *
+ * level 语义（与 prompts 头注释对齐）：
+ * - HOST-ENFORCED：host 有真实解析/硬失败后果（验收结论行、QA 单轨、缺陷表 import）
+ * - policy：靠模型自律 + guard 观测（warn/轻提醒），措辞必须诚实描述真实机制
+ * - structural：纯结构锚（state 块、产物路径、蓝图 JSON 形状），非措辞约束
+ *
+ * 维护约定：prompt 有意改动导致锚点变化时，必须同步更新本清单条目并评审 intent
+ * ——这是评测门禁的本意，不是「测试拖累开发」。
+ */
+import {
+  prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt,
+  devPrompt, qaPrompt, qaFixPrompt, acceptancePrompt, TRIAGE_PROMPT,
+  techChangePrompt, patchConfirmPrompt, VISUAL_POLICY, brainstormSkillPrompt,
+} from '../host/prompts/index.ts'
+// 形态契约夹具需要 host 数据表（纯数据；core/triage.ts 不依赖 prompts → 无循环）
+import { artifactContractsFor } from '../host/core/triage.ts'
+
+let failed = 0
+const fail = (msg) => { console.error(`    ✗ ${msg}`); failed++ }
+
+/** 最小夹具 state（stateSliceFor 只读这些字段；无磁盘副作用）。 */
+const ST = {
+  version: 1, projectName: 'tetris', updatedAt: null,
+  product: { summary: '俄罗斯方块', techStack: 'vanilla-js' },
+  modules: { '/game.js': '核心逻辑' }, verifyScripts: ['node test/verify.js'],
+  acIndex: { 'AC-1': '最高分持久化' }, stages: { prd: '摘要' }, lastRun: null,
+  __runCtx: { runDocs: 'docs/teamflow/20260910-r9-persist', blueprint: '<!-- blueprint -->{"summary":"s"}<!-- /blueprint -->' },
+}
+const PRD = '# PRD\n基线依赖：无\nAC-1：最高分 localStorage 持久化（reload 后保留）'
+const QA_REPORT = '# QA-REPORT\n## 结论：通过\n| 编号 | 严重级(P0/P1/P2/P3) | 功能模块 | 复现步骤 | 期望行为 | 实际行为 | 关联验收项 |\n| BUG-1 | **P1** | persist.js | reload | 保留 | 丢失 | AC-1 |'
+const DEV_SUMMARY = '实现完成，verify 全绿'
+const DESIGN = '# DESIGN\n风格：霓虹圆角、发光描边、微交互反馈；HUD 常驻分数/生命/关卡'
+/** craft 开关「关」夹具（A/B 对照组）：options.craft=false 经 state.__runCtx.craft 下发。 */
+const ST_CRAFT_OFF = { ...ST, __runCtx: { ...ST.__runCtx, craft: false } }
+/**
+ * 真实体量的 DESIGN.md 夹具：design 阶段在 2b 要求下会写到万字符级（本项目 TECHNICAL.md 实测 48365 字符），
+ * 而 dev 只拿 clip(design, 4000) ⇒ **文档里的章节顺序**决定视觉规格能否到达 dev。
+ * 下面两个夹具只差「规格写在最前还是写在（填充内容之后的）中部」这一个变量。
+ */
+const DESIGN_SPEC = '## Visual quality spec\n- 圆环轨道：宽 14px，圆角端点；进度段渐变 #ff7a59 → #ff3d71，外发光 blur 12px。\n'
+const DESIGN_FILLER = Array.from({ length: 120 }, (_, i) => `- 组件 C${i + 1}：容器宽 ${280 + i * 12}px，间距 ${8 + i * 2}px，说明占位文字说明占位文字说明占位文字。\n`).join('')
+const DESIGN_SPEC_FIRST = DESIGN_SPEC + DESIGN_FILLER
+const DESIGN_SPEC_MIDDLE = DESIGN_FILLER + DESIGN_SPEC
+const DESIGN_TASK = { title: 'T1 实现持久化', files: ['/persist.js'], spec: '实现 storage 封装' }
+const ROOT = 'products/tetris'
+const RUN_ID = 'tf-eval-run'
+
+/** 全部工厂的真实产出（评测语料 = 当前实现文本，勿手工伪造）。 */
+const out = {
+  prdPrompt: prdPrompt('给游戏加最高分本地持久化', ROOT, RUN_ID, ST),
+  designPrompt: designPrompt(PRD, ROOT, RUN_ID, ST),
+  scaffoldPrompt: scaffoldPrompt('初始化 Tetris 项目', '无', ROOT, RUN_ID, ST),
+  techPrompt: techPrompt(PRD, null, null, [], ROOT, RUN_ID, ST),
+  architectPrompt: architectPrompt(PRD, ROOT, RUN_ID, ST),
+  devPrompt: devPrompt({ title: 'T1 实现持久化', files: ['/persist.js'], spec: '实现 storage 封装' }, PRD, PRD, null, ROOT, RUN_ID, ST),
+  devPromptDesign: devPrompt({ title: 'T1 实现持久化', files: ['/persist.js'], spec: '实现 storage 封装' }, PRD, PRD, DESIGN, ROOT, RUN_ID, ST),
+  /** 体量不变量夹具：同一份长文档，只差「视觉规格写在最前 vs 写在中部」。 */
+  devDesignSpecFirst: devPrompt(DESIGN_TASK, PRD, PRD, DESIGN_SPEC_FIRST, ROOT, RUN_ID, ST),
+  devDesignSpecMiddle: devPrompt(DESIGN_TASK, PRD, PRD, DESIGN_SPEC_MIDDLE, ROOT, RUN_ID, ST),
+  /** craft 开关「关」组（A/B 对照）。 */
+  designPromptCraftOff: designPrompt(PRD, ROOT, RUN_ID, ST_CRAFT_OFF),
+  devPromptDesignCraftOff: devPrompt(DESIGN_TASK, PRD, PRD, DESIGN, ROOT, RUN_ID, ST_CRAFT_OFF),
+  qaPromptCraftOff: qaPrompt(PRD, DEV_SUMMARY, ROOT, RUN_ID, ST_CRAFT_OFF, true),
+  qaPrompt: qaPrompt(PRD, DEV_SUMMARY, ROOT, RUN_ID, ST, true),
+  /** 复验轮夹具（C 方案）：pipeline 在 QA 循环里写 state.__runCtx.qaReverify=true（round ≥ 2）。 */
+  qaPromptReverify: qaPrompt(PRD, DEV_SUMMARY, ROOT, RUN_ID, { ...ST, __runCtx: { ...ST.__runCtx, qaReverify: true, qaRound: 2 } }, true),
+  /** 已知问题模式验收夹具（E 方案）：QA 打回超限时 pipeline 写 state.__runCtx.knownIssues=true。 */
+  acceptanceKnownIssues: acceptancePrompt(PRD, QA_REPORT, DEV_SUMMARY, ROOT, RUN_ID, { ...ST, __runCtx: { ...ST.__runCtx, knownIssues: true } }, true),
+  qaFixPrompt: qaFixPrompt([{ id: 'BUG-1', severity: 'P1', module: 'persist.js' }], QA_REPORT, PRD, PRD, ROOT, RUN_ID, ST),
+  acceptancePrompt: acceptancePrompt(PRD, QA_REPORT, DEV_SUMMARY, ROOT, RUN_ID, ST, true),
+  techChangePrompt: techChangePrompt('重构持久化为独立模块', ROOT, RUN_ID, ST),
+  patchConfirmPrompt: patchConfirmPrompt('修复一处按钮样式', ROOT, RUN_ID, ST),
+  triagePrompt: TRIAGE_PROMPT('给游戏加本地持久化', { needDesign: true }, { rationale: ['持久化 → medium'] }),
+  visualOn: VISUAL_POLICY(true, 'zh'),
+  visualOff: VISUAL_POLICY(false, 'zh'),
+  /** `/teamflow-brainstorm` 技能正文（与 locale 无关：它自己要求跟随用户语言）。 */
+  brainstormSkillPrompt: brainstormSkillPrompt(),
+}
+
+/**
+ * EN 夹具（AC-4/AC-5）：同一批工厂 + `state.__runCtx.locale='en'`。
+ * en 契约必须断言**真实工厂产出**（禁手写期望文本）——模板一改即红。
+ * zh 夹具（ST/out）一条不动：它是「中文零回归」的对照基准（AC-9）。
+ */
+const ST_EN = { ...ST, __runCtx: { ...ST.__runCtx, locale: 'en' } }
+const outEn = {
+  prdPrompt: prdPrompt('add local high-score persistence', ROOT, RUN_ID, ST_EN),
+  designPrompt: designPrompt(PRD, ROOT, RUN_ID, ST_EN),
+  scaffoldPrompt: scaffoldPrompt('scaffold the Tetris project', 'none', ROOT, RUN_ID, ST_EN),
+  techPrompt: techPrompt(PRD, null, null, [], ROOT, RUN_ID, ST_EN),
+  architectPrompt: architectPrompt(PRD, ROOT, RUN_ID, ST_EN),
+  devPrompt: devPrompt({ title: 'T1 persistence', files: ['/persist.js'], spec: 'implement the storage wrapper' }, PRD, PRD, null, ROOT, RUN_ID, ST_EN),
+  devPromptDesign: devPrompt({ title: 'T1 persistence', files: ['/persist.js'], spec: 'implement the storage wrapper' }, PRD, PRD, DESIGN, ROOT, RUN_ID, ST_EN),
+  qaPrompt: qaPrompt(PRD, DEV_SUMMARY, ROOT, RUN_ID, ST_EN, true),
+  qaFixPrompt: qaFixPrompt([{ id: 'BUG-1', severity: 'P1', module: 'persist.js' }], QA_REPORT, PRD, PRD, ROOT, RUN_ID, ST_EN),
+  acceptancePrompt: acceptancePrompt(PRD, QA_REPORT, DEV_SUMMARY, ROOT, RUN_ID, ST_EN, true),
+  techChangePrompt: techChangePrompt('refactor persistence into a standalone module', ROOT, RUN_ID, ST_EN),
+  patchConfirmPrompt: patchConfirmPrompt('fix one button style', ROOT, RUN_ID, ST_EN),
+  triagePrompt: TRIAGE_PROMPT('add local persistence', { needDesign: true }, { rationale: ['persistence → medium'] }, undefined, 'en'),
+  visualOn: VISUAL_POLICY(true, 'en'),
+  visualOff: VISUAL_POLICY(false, 'en'),
+}
+
+/** 带 productCtx 的阶段 prompt（triage/visual 条款不共用产品上下文，单独 target）。 */
+const STAGE_ALL = [
+  'prdPrompt', 'designPrompt', 'scaffoldPrompt', 'techPrompt', 'architectPrompt',
+  'devPrompt', 'qaPrompt', 'qaFixPrompt', 'acceptancePrompt', 'techChangePrompt', 'patchConfirmPrompt',
+]
+
+/** 断言：targets 为 key 数组（'ALL'=STAGE_ALL）；include 须全命中、exclude 须全不命中。
+ *  en=true → 断言取自 outEn（`state.__runCtx.locale='en'` 的真实工厂产出）。 */
+function assertContract({ id, level, intent, targets, include = [], exclude = [], en = false, fixture }) {
+  const tNames = targets === 'ALL' ? STAGE_ALL : (typeof targets === 'string' ? [targets] : targets)
+  const src = en ? outEn : out
+  let ok = true
+  for (const name of tNames) {
+    // `fixture`：调用方直接给工厂产出文本（用于「同一工厂 + 不同 state 上下文」的契约，
+    // 例如形态契约段只在 __runCtx 带 artifactContracts 时才注入）。
+    const text = fixture !== undefined ? fixture : src[name]
+    if (text === undefined) { fail(`${id} [${name}] 工厂产出缺失（夹具未构建？）`); ok = false; continue }
+    for (const anchor of include) {
+      const hit = anchor instanceof RegExp ? anchor.test(text) : text.includes(anchor)
+      if (!hit) {
+        fail(`${id} [${name}] 缺锚点 ${anchor instanceof RegExp ? anchor : JSON.stringify(anchor)}`)
+        ok = false
+      }
+    }
+    for (const anchor of exclude) {
+      const hit = anchor instanceof RegExp ? anchor.test(text) : text.includes(anchor)
+      if (hit) {
+        fail(`${id} [${name}] 含禁用锚点 ${anchor instanceof RegExp ? anchor : JSON.stringify(anchor)}`)
+        ok = false
+      }
+    }
+  }
+  if (ok) console.log(`  ✓ [${level}] ${id} — ${intent}`)
+  else console.error(`  ✗ [${level}] ${id} — ${intent}`)
+}
+
+console.log('── L1 prompt 行为级契约（工厂真实产出断言）──')
+
+// ── 需求澄清闸门（2026-09-16 Phase 1）：分诊的 intent/blockers 契约 + PRD 的假设段契约 ──
+// 这两条是闸门的数据源：分诊不输出 intent/blockers → 探索态需求直接开跑；PRD 不写假设段 → 假设继续不可见。
+assertContract({
+  id: 'TRIAGE-INTENT-BLOCKERS', level: 'policy', targets: 'triagePrompt',
+  intent: '分诊输出 intent（需求/探索/反馈）+ 合格 blocker 五字段（settles + question/readings≥2/changes/rework）',
+  include: [/"intent": "requirement\|exploration\|feedback"/, /"blockers": \[\{ "settles": "installable\|artifact\|host\|scope\|ui\|data\|other", "question"/, /\[INTENT — decide before mode\]/, /\[BLOCKERS — must-know gaps only\]/, /readings/, /rework/],
+})
+assertContract({
+  id: 'PRD-ASSUMPTIONS-SECTION', level: 'policy', targets: 'prdPrompt',
+  intent: 'PRD 必填「假设/待澄清」段 + 镜像进 state 块 openQuestions（假设可见化的落点）',
+  include: [/\[Assumptions · mandatory\]/, /openQuestions/, /假设与待澄清/],
+})
+assertContract({
+  id: 'PRD-ASSUMPTIONS-SECTION-EN', level: 'policy', targets: 'prdPrompt', en: true,
+  intent: 'en run 的 PRD 同样要求假设段（语言跟随 run 快照，不写死中文标题）',
+  include: [/\[Assumptions · mandatory\]/, /openQuestions/, /Assumptions & open questions/],
+})
+/**
+ * **主观决策项**（2026-10-08，用户实锤需求）。加这条的目的不是「防返工」，是**让用户确认自己要实现的东西**：
+ * 原判据只有 `under-specified`（信息不足）⇒ 「我想实现一个桌宠」这类需求**必然不列**
+ * （信息足够、模型能自查、猜错也不返工）⇒ 风格/形象/架构选型**全由模型独裁** ⇒
+ * 专业用户感官很差（「这插件也就给小白用用」）。⚠️ 这个损失**用返工率量不出来**（表现为流失/差评），
+ * 所以**不能**拿历史数据当判据 —— 判据是**产品意图**。
+ * ⚠️ 只在 prompt 层要求（§2：prompt 提标准不当保障）。
+ * 变异：删掉 (b) 段或那句「NOT a reason to omit」⇒ 本契约立刻红。
+ */
+/**
+ * **anti-goals**（2026-10-22，来源：superpowers/brainstorming 的 design doc 结构）。
+ * 为什么需要：PRD 只有 `non-goals`（不做什么功能），没有「**什么会让它即使技术可行也算失败**」。
+ * 实锤缺口：真机 PRD 里出现过「绝不静默选年」这种 anti-goal，但那是模型自由发挥——
+ * 换条需求就没了，因为没有规范要求它写。
+ * ⚠️ 判据必须锁「与 non-goals 的区分」+ 「必须可被观察/核查」，否则模型会写成
+ * 「should be fast / must be user-friendly」这类不可核查的套话。
+ * 变异：删掉 4b 段或那句 Bad 示例 ⇒ 本契约立刻红（已验证）。
+ */
+/** **修缺陷前先看变更**（2026-10-22，来源：superpowers/systematic-debugging 的「Check Recent Changes」）。
+ * 为什么：回归缺陷通常指向最后一次改动，而不是整个模块；先读 diff 比重读 500 行便宜，
+ * 也能判定「这个缺陷到底是不是本 run 引入的」（不是就别去改无关代码）。
+ * 变异：删掉 1b 段 ⇒ 本契约红。 */
+assertContract({
+  id: 'QAFIX-RECENT-CHANGES', level: 'policy', targets: 'qaFixPrompt',
+  intent: 'QA 缺陷修复必须先查最近改动（git log/diff 对 baseline），再决定动不动手',
+  include: [/\[Check what changed first\]/, /git diff/, /baseline before teamflow run/],
+})
+/** **state 文件已存在时要先读**（2026-10-23，真机 tf-mvjpfwo1 实锤）。
+ * 第 2 轮 QA 修复重写 `state/dev.json` 时踩「file has not been read」防护，
+ * 花一轮恢复 ⇒ 该轮的 `gate:` / sweep 证据丢了（日志报「没有类别门禁/命中数」）。
+ * 判据锁的是**提示语本身**：缺了它模型不知道文件可能已存在。
+ * 变异：删掉这句 ⇒ 本契约红。 */
+assertContract({
+  id: 'STATE-BLOCK-EXISTING-FILE', level: 'policy', targets: 'prdPrompt',
+  intent: 'state 块指令必须提示「文件已存在时先读再写」（重跑阶段不会白丢一轮）',
+  include: [/If this file already exists/, /read it first, then write/, /file has not been read/],
+})
+/**
+ * **`/teamflow-brainstorm` 技能正文**（2026-10-23，来源：superpowers/brainstorming 裁剪版）。
+ * 锁四件事，每件都是「抄漏就退化」的：
+ * ① 一条一问（superpowers 的核心，缺了会变成一次性罗列问题）；
+ * ② anti-goals（技术可行但产品失败 —— 与 PRD 4b 对齐）；
+ * ③ **不碰架构**（缺了它就会与「技术方案」阶段重复，这正是我们砍掉 Lay out the approaches 的理由）；
+ * ④ 收尾指向 teamflow_start（缺了「聊完接不上流水线」，那这个 skill 就白做）。
+ * 变异：删任一段 ⇒ 本契约红。
+ */
+assertContract({
+  id: 'BRAINSTORM-SKILL', level: 'policy', targets: 'brainstormSkillPrompt',
+  intent: '头脑风暴技能的正文必须：一条一问 + anti-goals + 不碰架构 + 接 teamflow_start',
+  include: [/One question per message/, /anti-goals/, /Do NOT propose architecture/, /teamflow_start/],
+})
+assertContract({
+  id: 'PRD-ANTI-GOALS', level: 'policy', targets: 'prdPrompt',
+  intent: 'PRD 必须有 anti-goals 段（技术可行但产品失败的情形），与 non-goals 区分且要求可观察',
+  include: [/\[anti-goals · mandatory, distinct from non-goals\]/, /even if it technically works/, /Bad: "should be fast"/, /\[anti-goals → openQuestions\]/],
+})
+assertContract({
+  id: 'PRD-TASTE-DECISIONS', level: 'policy', targets: 'prdPrompt',
+  intent: 'PRD 必须把「主观决策项」（多种同样成立、取决于用户品味）也列进假设段/openQuestions，且不得以「我能自己定」为由省略',
+  include: [/User-taste decisions/, /is NOT a reason to omit/, /feel "not mine"/],
+  exclude: [/If ANY part of the requirement is under-specified/],
+})
+/**
+ * **`kind` 判别位**（2026-10-08 第 2 步）：确认单的触发判据从「显式开关」改成**内容驱动** ——
+ * 只有 `kind: "taste"`（主观品味项）会暂停。没有这个判别位，host 就分不清「信息缺口」与「品味项」，
+ * 判据只能退化成「有任何待澄清项都停」，而那会毁掉 §1 的无人值守卖点。
+ *
+ * 为什么同一件事**两处都要写死**（state 块示例 ＋ (a)/(b) 两行各带一次）：MEMORY §7 的实锤——
+ * `extra` 契约当年就是「模板示例」与「散文 rules」**两份互相不覆盖的契约**，模型照模板写 ⇒
+ * 兑现率只有 ~20%。所以 `kind` 必须同时出现在**模板本体**里。
+ * 第三句锁的是**判别定义**（靠问题性质、不靠难度）：没有它，模型会把「难答的事实」误判成 taste ⇒ 乱停。
+ * 变异：把示例里的 `"kind"` 删掉 / 把 (b) 行的 `"kind": "taste"` 删掉 ⇒ 本契约立刻红。
+ */
+assertContract({
+  id: 'PRD-OPENQUESTION-KIND', level: 'policy', targets: 'prdPrompt',
+  intent: 'PRD 的 openQuestions 必须带 kind 判别位（fact=信息缺口 / taste=主观品味项），且模板示例与 (a)(b) 两行都要写死',
+  include: [/"kind": "fact\|taste"/, /"kind": "fact"/, /"kind": "taste"/, /by the NATURE of the question, not by how hard it is to answer/],
+})
+/** 第 7 条（state 块示例）必须与第 8 条（散文 rules）**互相指向**：模型写 `openQuestions` 时要按第 8 条
+ *  给的 `kind` 来标；两份契约不互相引用 = 又一次「两份冲突契约」（§7 的根因）。 */
+assertContract({
+  id: 'PRD-KIND-CROSSREF', level: 'policy', targets: 'prdPrompt',
+  intent: 'state 块示例要显式回指第 8 条的 kind 判定（两份契约必须互相指向，不能各说一套）',
+  include: [/the same `kind` rule 8 assigns it/, /every bullet ALSO goes into `openQuestions` with the matching `kind`/],
+})
+assertContract({
+  id: 'TECH-PATCH-ASSUMPTIONS', level: 'policy', targets: ['techChangePrompt', 'patchConfirmPrompt'],
+  intent: '非 PRD 档位（tech 变更单 / patch 确认单）也要一句话假设，避免覆盖缺口',
+  include: [/假设与待澄清/],
+})
+/** `tech` 档（重构/优化/架构）的**同类扩维**：架构选型同样不该由模型独裁
+ *  （用户实锤例子里明确点了「架构选项」）。`patch` 档不改 —— 它 `needConfirm` 恒关，没人消费。 */
+assertContract({
+  id: 'TECH-TASTE-DECISIONS', level: 'policy', targets: 'techChangePrompt',
+  intent: 'tech 档的假设段要含「多种同样成立的**技术**选型（模块边界/命名/加依赖/算法或架构）」',
+  include: [/several technical options were equally defensible/, /module boundaries, naming conventions, adding a dependency/],
+})
+
+// 交付形态契约（2026-09-17 实测：dddd 的插件"看着完整"却装不进 profile——"能被宿主加载"从未进过 AC）
+assertContract({
+  id: 'TRIAGE-ARTIFACT-SHAPE', level: 'policy', targets: 'triagePrompt',
+  intent: '分诊必须判「交付物形态 + 是否要求可安装」（形态决定该满足哪些客观契约）',
+  include: [/"artifact": "app\|plugin-host\|plugin-client\|plugin-full\|cli\|lib\|docs\|data\|other"/, /"installable": true\|false/, /\[ARTIFACT — what kind of deliverable/],
+})
+/** 形态契约段的夹具：`state.__runCtx` 带 artifact/installable/artifactContracts（由 pipeline 从 host 数据表展开）。
+ *  缺此上下文时 prdPrompt 不注入该段——这正是设计（形态=other 的普通改动不该被套契约）。 */
+const ST_ARTIFACT = { ...ST, __runCtx: { ...ST.__runCtx, artifact: 'plugin-full', installable: true, artifactContracts: artifactContractsFor('plugin-full', true) } }
+const prdWithContract = prdPrompt('做一个 dsh 插件', ROOT, RUN_ID, ST_ARTIFACT)
+const prdWithContractEn = prdPrompt('build a dsh plugin', ROOT, RUN_ID, { ...ST_EN, __runCtx: { ...ST_EN.__runCtx, artifact: 'plugin-full', installable: true, artifactContracts: artifactContractsFor('plugin-full', true) } })
+const prdNoContract = out.prdPrompt
+assertContract({
+  id: 'TRIAGE-INSTALL-BLOCKER', level: 'policy', targets: 'triagePrompt',
+  intent: '新交付物但需求没写「交付/安装形态」时，必须作为 must-know blocker 问用户（形态不同 → 契约集与 AC 不同）',
+  include: [/One gap is must-ask whenever it applies/, /installed\/published/, /source in the repo/, /source-only, no packaging/],
+})
+assertContract({
+  id: 'PRD-ARTIFACT-CONTRACTS', level: 'policy', targets: 'prdPrompt',
+  intent: '形态契约必须落成 PRD 必填 AC（清单由 host 数据表下发；字段名要求读本机已装插件样本核实）',
+  include: [/\[交付形态契约 · 必填 AC\]/, /必须落成 PRD 里可测的 AC/, /禁止凭记忆写/, /本机已安装的 dsh 插件/, /\$DSH_HOME\/profiles/, /package\.json/],
+  fixture: prdWithContract,
+})
+// 样本来源必须是「本机已装插件」（2026-09-21 用户实锤）——npm 包实测只发 10 文件、**不含源码**，
+// 用户的孤立工作区里既没有 `plugins/dsh-plugin-teamflow`、也没有我们的源码；而任何 dsh 插件开发者
+// 机器上一定有 profile 里装好的插件（其 package.json 的 dsh 块 + cordis.patch.yml 才是权威现场）。
+assertContract({
+  id: 'PRD-SAMPLE-SOURCE-LOCAL-FIRST', level: 'policy', targets: 'prdPrompt',
+  intent: '样本首选项 = 本机已装 dsh 插件（不能只指本仓相对路径——用户机器上不存在）',
+  include: [/先读本机已安装的 dsh 插件/, /\$DSH_HOME\/profiles\/\*\/node_modules/],
+  exclude: [/必须去读本仓已有的同类插件样本（plugins\/dsh-plugin-teamflow）\s*或宿主文档/],
+  fixture: prdWithContract,
+})
+// ── 本机安装环境注入（2026-09-21 用户实锤：「每个用户环境不一样，路径不要写死」）──
+// 用户源码运行 `pnpm dsh`（dsh 不在 PATH）、profile 名也可能不是 web；契约里写死的命令在他机器上跑不通。
+// 故 host 起跑时探测（DSH_HOME + 插件自身路径反推 profile + dsh 是否在 PATH）并注入；探测失败 → 问用户。
+const instEnvFix = { dshHome: 'C:\\u\\.dsh', profile: 'web', profileDir: 'C:\\u\\.dsh\\profiles\\web', cliOnPath: false, ok: true }
+const instCtx = { artifact: 'plugin-full', installable: true, artifactContracts: artifactContractsFor('plugin-full', true), installEnv: instEnvFix }
+const prdInstall = prdPrompt('做一个 dsh 插件', ROOT, RUN_ID, { ...ST, __runCtx: { ...ST.__runCtx, ...instCtx } })
+const prdInstallEn = prdPrompt('build a dsh plugin', ROOT, RUN_ID, { ...ST_EN, __runCtx: { ...ST_EN.__runCtx, ...instCtx } })
+assertContract({
+  id: 'PRD-INSTALL-ENV-PROBED', level: 'policy', targets: 'prdPrompt',
+  intent: 'PRD 必须带「本机环境」段（路径/命令来自运行时探测，且点明安装由主 agent 执行）',
+  include: [/【本机环境/, /禁止假设 profile 名或路径/, /主 agent 执行/],
+  fixture: prdInstall,
+})
+assertContract({
+  id: 'PRD-INSTALL-ENV-PROBED-EN', level: 'policy', targets: 'prdPrompt', en: true,
+  intent: 'en run 同段（语言跟随 run 快照）',
+  include: [/\[THIS MACHINE/, /never assume a profile name or path/, /for the main agent/],
+  fixture: prdInstallEn,
+})
+assertContract({
+  id: 'PRD-NO-INSTALL-ENV-WITHOUT-PROBE', level: 'policy', targets: 'prdPrompt',
+  intent: '没有探测结果时不注入「本机环境」段（不编路径）',
+  include: [],
+  exclude: [/【本机环境/],
+  fixture: prdWithContract,
+})
+assertContract({
+  id: 'PRD-ARTIFACT-CONTRACTS-EN', level: 'policy', targets: 'prdPrompt', en: true,
+  intent: 'en run 同契约（语言跟随 run 快照；样本同样指向本机已装插件）',
+  include: [/\[DELIVERABLE SHAPE · mandatory ACs\]/, /never write them from memory/, /dsh plugins already installed on THIS machine/, /\$DSH_HOME\/profiles/],
+  fixture: prdWithContractEn,
+})
+assertContract({
+  id: 'PRD-NO-CONTRACT-WHEN-OTHER', level: 'policy', targets: 'prdPrompt',
+  intent: '未判形态（other/缺上下文）时**不得**注入形态契约段（防给普通改动套错契约）',
+  include: [],
+  exclude: [/\[交付形态契约 · 必填 AC\]/],
+  fixture: prdNoContract,
+})
+// ── slot 挂载契约（2026-09-21 实锤：probe-v2 交付的对齐器工具条**静默不挂载**）──
+// 反例：`ctx.slots.register({ name: 'md-table-align.dock' })` —— 插件拿自己的标识当 slot 名，
+// 与 `inject` 的 slot 对不上 → 浏览器端永不出现；而功能单测 31/31 全绿、AC 全过（静默失败）。
+// 修法是 `name` == slot 名、插件标识放 `id`（同仓 5 处注册全这么写，可核实）。
+assertContract({
+  id: 'PRD-SLOT-NAME-CONTRACT', level: 'policy', targets: 'prdPrompt',
+  intent: 'UI 挂载类交付（client 半）必须把「register.name == inject 的 slot 名」写成可测 AC（防静默不挂载）',
+  include: [/UI 挂载点的 `name` 必须是 slot 名本身/, /同一个 slot 字符串/, /装进宿主后该 UI 真的出现/],
+  fixture: prdWithContract,
+})
+// ── 环境不可用政策（2026-09-23 probe-v4 实锤：工作区命令全废时，架构师重试 7 次 + 90k 字符推理才被截断）──
+// 政策块落在 `productCtx`（11 个阶段工厂共用前缀）→ 所有阶段都带，含当时踩坑的 scaffold。
+assertContract({
+  id: 'ENV-UNAVAILABLE-STOP', level: 'policy', targets: 'prdPrompt',
+  intent: '同一命令持续以同一错误失败时必须立即停手上报（禁重试 / 禁换命令绕过 / 禁用推理代替执行），并给出工具名 + 原文错误',
+  include: [/\[Env unavailable · policy\]/, /do NOT retry it/, /do NOT switch to another command/, /the RAW error text/],
+  fixture: prdWithContract,
+})
+// ── 宿主维度契约（2026-09-18 用户实锤："我开发 openclaw 插件，或者 hermes 插件……这些在 dsh 的契约在其他的不一定有效吧"）──
+// 交付物形态与目标宿主是**两个正交维度**：plugin-* 是 dsh 的词汇（profile 入口/bundle patch/client 块/files 白名单），
+// 套给别的宿主 = 反向返工；而对别的宿主我们没有权威（凭记忆写字段名正是 dddd 事故的成因）→ 改为强制"先去调研"。
+assertContract({
+  id: 'TRIAGE-HOST-AXIS', level: 'policy', targets: 'triagePrompt',
+  intent: '分诊必须判目标宿主框架（dsh / other / unknown），与 artifact 正交——契约是否适用取决于它',
+  include: [/"host": "dsh\|other\|unknown"/, /\[HOST — which framework will load this deliverable\]/, /host-contract research/],
+})
+const ST_HOST_OTHER = { ...ST, __runCtx: { ...ST.__runCtx, artifact: 'plugin-full', host: 'other', hostResearch: true } }
+const ST_HOST_DSH = { ...ST, __runCtx: { ...ST.__runCtx, artifact: 'plugin-full', installable: true, host: 'dsh', artifactContracts: artifactContractsFor('plugin-full', true) } }
+const prdHostOther = prdPrompt('开发一个 openclaw 插件', ROOT, RUN_ID, ST_HOST_OTHER)
+const prdHostDsh = prdPrompt('做一个 dsh 插件', ROOT, RUN_ID, ST_HOST_DSH)
+const prdHostOtherEn = prdPrompt('build an openclaw plugin', ROOT, RUN_ID, { ...ST_EN, __runCtx: { ...ST_EN.__runCtx, artifact: 'plugin-full', host: 'other', hostResearch: true } })
+assertContract({
+  id: 'PRD-HOST-RESEARCH-GATE', level: 'host-enforced', targets: 'prdPrompt',
+  intent: '非 dsh 宿主 + 插件形态 → PRD 必须含「宿主契约调研」段（硬门禁：缺段 = PRD 阶段失败）',
+  include: [/\[宿主契约调研 · 必填段\]/, /禁止凭记忆写字段名/, /这一段是硬门禁/],
+  fixture: prdHostOther,
+})
+assertContract({
+  id: 'PRD-HOST-RESEARCH-GATE-EN', level: 'host-enforced', targets: 'prdPrompt', en: true,
+  intent: 'en run 同门禁（语言跟随 run 快照）',
+  include: [/\[HOST CONTRACT RESEARCH · mandatory section\]/, /Never invent field names from memory/, /hard gate/],
+  fixture: prdHostOtherEn,
+})
+assertContract({
+  id: 'PRD-NO-DSH-CONTRACT-FOR-OTHER-HOST', level: 'host-enforced', targets: 'prdPrompt',
+  intent: '**非 dsh 宿主时绝不注入本仓形态契约**（profile 入口/bundle patch/client 块/files 白名单对别的宿主全不适用）',
+  include: [/\[宿主契约调研 · 必填段\]/],
+  exclude: [/\[交付形态契约 · 必填 AC\]/],
+  fixture: prdHostOther,
+})
+assertContract({
+  id: 'PRD-DSH-HOST-KEEPS-CONTRACTS', level: 'policy', targets: 'prdPrompt',
+  intent: 'dsh 宿主照旧拿到具体契约、且**不要**调研段（不误伤我们唯一有权威的场景）',
+  include: [/\[交付形态契约 · 必填 AC\]/],
+  exclude: [/\[宿主契约调研 · 必填段\]/],
+  fixture: prdHostDsh,
+})
+assertContract({
+  id: 'QA-SHAPE-PROBES', level: 'policy', targets: 'qaPrompt',
+  intent: 'QA 必须把形态契约逐条当探针跑（构建产物新鲜度/装载安全/安装回滚纪律——dddd 实锤：旧 lib 装上后宿主启动即炸，靠另开 agent 手术卸载才救回）',
+  include: [/Deliverable-shape verification · mandatory when injected/, /roll back FIRST/, /Never silently skip/],
+})
+assertContract({
+  id: 'PRD-GITIGNORE-PLAN', level: 'policy', targets: 'prdPrompt',
+  intent: '版本化工作区：PM 必须按本项目技术栈审计/规划 .gitignore（收口提交整树 add，噪音进历史=永久）——模型规划，非固定清单',
+  include: [/Version-control hygiene · mandatory when the workspace is versioned/, /read the project, don't guess from a generic list/],
+})
+assertContract({
+  id: 'QA-COMMIT-SURFACE-PROBE', level: 'policy', targets: 'qaPrompt',
+  intent: 'QA 收口探针：git status --porcelain 不得含依赖/构建产物/工具缓存/IDE/密钥；缺失 → P1 缺陷（模块=版本控制）',
+  include: [/Commit-surface hygiene probe · when the workspace is versioned/, /git status --porcelain/],
+})
+
+// ── HOST-ENFORCED：验收结论契约（parseAcceptanceVerdict 只认显式结论行）──
+assertContract({
+  id: 'ACC-VERDICT-LITERAL', level: 'HOST-ENFORCED', targets: 'acceptancePrompt',
+  intent: '回复必须给出四档字面量结论行话术，host 只解析该行',
+  include: [/Reply = brief summary only · HOST-ENFORCED/, /verdict line — verbatim/, /验收结论：✅ 通过 ／ ⚠️ 有条件通过 ／ ❌ 不通过 ／ 📝 需求不适用/],
+})
+assertContract({
+  id: 'ACC-LAST-LINE-CONTRACT', level: 'HOST-ENFORCED', targets: 'acceptancePrompt',
+  intent: '结论行必须是 ACCEPTANCE.md 最后一行且为字面量四档之一（缺失=契约违例→needs-human 停线）',
+  include: [/MUST be the LAST line of the file, verbatim one of: 验收结论：✅ 通过/, /missing it = contract violation/, /missing file = hard failure \(needs-human, pipeline stops\)/, /host parses ONLY this line/],
+})
+assertContract({
+  id: 'ACC-FILE-SINGLE-SOURCE', level: 'HOST-ENFORCED', targets: 'acceptancePrompt',
+  intent: 'ACCEPTANCE.md 即交付物（单轨制）：完整报告写文件、回复不得重复正文',
+  include: [/Acceptance report · HOST-ENFORCED/, /ACCEPTANCE\.md/, /this file IS the deliverable/, /Do NOT repeat the report body/, /≤10 lines/],
+  exclude: [/SUMMARY\.md/],
+})
+assertContract({
+  id: 'ACC-MEMORY-ONLY-CONVENTION', level: 'HOST-ENFORCED', targets: 'acceptancePrompt',
+  intent: 'memory 回写仅限约定/待办变化（幂等替换，禁止 changelog 式追加）',
+  include: [/Memory write-back · convention changes ONLY/, /same-topic line replace/, /no changelog appending/],
+})
+
+// ── HOST-ENFORCED：QA 单轨 + 缺陷表契约（parseDefects import QA-REPORT.md）──
+assertContract({
+  id: 'QA-REPLY-SUMMARY-ONLY', level: 'HOST-ENFORCED', targets: 'qaPrompt',
+  intent: 'QA 回复收敛 ≤12 行摘要 + 报告路径；报告正文不重复（host 只 import 文件）',
+  include: [/Reply = brief summary only · HOST-ENFORCED/, /≤12 lines/, /Do NOT repeat the report body/, /missing file = hard failure/, /QA-REPORT\.md/],
+})
+assertContract({
+  id: 'QA-DEFECT-TABLE', level: 'HOST-ENFORCED', targets: 'qaPrompt',
+  intent: '缺陷必须用结构化表（host parseDefects 按管道单元格导入）；无缺陷须显式声明；P0–P2 行必须带「检测命令 + 通过判据」两列（缺陷的可执行定义）',
+  include: [/Defect format · HOST-ENFORCED/, /严重级\(P0\/P1\/P2\/P3\)/, /复现步骤/, /关联验收项/, /检测命令 \| 通过判据/, /the exact command that FAILS right now/, /the table must be in QA-REPORT\.md/, /未发现缺陷/],
+})
+assertContract({
+  id: 'QA-FILE-DELIVERABLE', level: 'HOST-ENFORCED', targets: 'qaPrompt',
+  intent: 'QA-REPORT.md 是交付物与唯一事实源',
+  include: [/QA-REPORT\.md/, /this file IS the deliverable/],
+})
+assertContract({
+  id: 'FIX-CLASS-GATE', level: 'policy', targets: 'qaFixPrompt',
+  intent: 'A 方案：P0–P2 修复必须落「永久可执行门禁 + 命中数 before→after」（r9 实锤：round-1 只修看得见的实例，同类 4 处留在 prompts/index.ts → QA round-2 原样打回，白烧一整轮）',
+  include: [/\[Class gate · policy, mandatory for P0\/P1\/P2\]/, /permanent executable gate/, /hit count \*\*before → after\*\*/, /gate: <new\/updated gate command>/, /class sweep:/],
+})
+assertContract({
+  id: 'QA-DEFECT-EXECUTABLE-DEFINITION', level: 'HOST-ENFORCED', targets: 'qaPrompt',
+  intent: 'B 方案：P0–P2 行必须给「现在就能失败的命令 + 修好后的期望输出」——修复方据此验收、复验方据此回归、误报用它当场证伪',
+  include: [/\[Executable definition\]/, /the exact command that FAILS right now/, /Pass criterion/],
+})
+assertContract({
+  id: 'QA-REVERIFY-REUSE', level: 'policy', targets: 'qaPromptReverify',
+  intent: 'C 方案：复验轮先原样重跑上一轮探针（logs/teamflow/<runId>/scripts/）再补未覆盖的面，并重跑缺陷行自带的检测命令；不得重造基线（r9 实测后一轮重做了前一整份 HEAD 副本 = 50 文件/1MB）',
+  include: [/\[Re-verification round · policy\]/, /FIRST re-run every probe\/checker the previous rounds left/, /state which surface was missed and why/, /Re-run each defect row's \*\*Check command\*\*/, /Do NOT re-invent a probe or a baseline/],
+})
+assertContract({
+  id: 'QA-FIRST-PASS-NO-REVERIFY-NOISE', level: 'structural', targets: 'qaPrompt',
+  intent: '零回归：首轮 QA prompt 不得出现复验轮纪律（夹具无 qaReverify 标志 = 首轮）',
+  exclude: [/\[Re-verification round · policy\]/],
+})
+assertContract({
+  id: 'ACCEPTANCE-KNOWN-ISSUES', level: 'policy', targets: 'acceptanceKnownIssues',
+  intent: 'E 方案：QA 打回超限时验收不再整段跳过——以「已知问题」只读模式跑一次，产出 ACCEPTANCE.md + 未闭环清单，结论强制为需人工裁定（r9 实锤：停线后任务夹里连 ACCEPTANCE.md 都没有，人工只能补写）',
+  include: [/\[Known-issues acceptance · read-only · host-overridden\]/, /P0–P2 defect\(s\) are still open/, /an explicit section listing every open blocking defect/, /the verdict line MUST be ⚠️/, /never ✅/, /this run will not be committed or merged/, /do NOT re-run QA's whole suite/],
+})
+assertContract({
+  id: 'ACCEPTANCE-NORMAL-NO-KNOWN-ISSUES', level: 'structural', targets: 'acceptancePrompt',
+  intent: '零回归：常规验收 prompt 不得出现已知问题模式（夹具无 knownIssues 标志）',
+  exclude: [/\[Known-issues acceptance · read-only · host-overridden\]/],
+})
+assertContract({
+  id: 'QA-MANUAL-LIST', level: 'structural', targets: 'qaPrompt',
+  intent: '环境限制项必须进「人工补测清单」而非判失败（QA 对抗探针盲区治理）',
+  include: [/人工补测清单/, /环境限制，非交付缺陷/],
+})
+
+// ── HOST-ENFORCED：M3 架构质量门禁（QA + 验收）──
+assertContract({
+  id: 'M3-QA-ARCH-GATE', level: 'HOST-ENFORCED', targets: 'qaPrompt',
+  intent: 'QA 必须做架构核验（蓝图遵循/重复实现/该抽未抽），架构发现按 P1 进缺陷表',
+  include: [/Architecture verification · mandatory \(M3 quality gate\)/, /duplicated implementations/, /abstraction not extracted/, /severity P1, module =「架构」/],
+})
+assertContract({
+  id: 'M3-ACC-ARCH-GATE', level: 'HOST-ENFORCED', targets: 'acceptancePrompt',
+  intent: '验收架构一致性检查：功能绿但架构漂移 → ⚠️/❌，不得以 verify 全绿当无返工证据',
+  include: [/Architecture consistency check · mandatory \(M3 quality gate\)/, /⚠️ 有条件通过/, /Never treat "verify all green" as the sole evidence/],
+})
+
+// ── policy：TOKEN_HYGIENE / ONCE_DISCIPLINE / 证据块诚实分级（不自称 hard constraint）──
+assertContract({
+  id: 'TOKEN-HYGIENE-HONEST', level: 'policy', targets: ['devPrompt', 'qaPrompt', 'qaFixPrompt', 'acceptancePrompt'],
+  intent: 'token 纪律标注真实机制（warn+轻提醒从不中断），不得声称 hard constraint',
+  include: [/TOKEN HYGIENE · policy/, /warn \+ live reminder only \(never interrupts\)/],
+  exclude: [/· hard constraint\]/],
+})
+assertContract({
+  id: 'LOG-NO-DUMP-MANUFACTURE', level: 'policy', targets: ['devPrompt', 'qaPrompt', 'qaFixPrompt', 'acceptancePrompt'],
+  intent: '禁止制造命令输出 dump（改由宿主截尾 + spill 承担）：实测一次真实 run 写了 23 个 .out + 5 个 regression-*.log（1.2 MB，占它产出文件数的 41%），归档时全部被丢弃——两头都白费',
+  include: [/\[No dump manufacturing\]/, /Do NOT redirect full command\/suite output into files/, /never create per-command \.out files/, /truncates long tool output to its tail/, /spills the complete text to a path it reports/],
+  exclude: [/APPENDED on re-run/, /redirect command output to a file/],
+})
+assertContract({
+  id: 'LOG-KEEP-ONLY-DURABLE', level: 'policy', targets: ['devPrompt', 'qaPrompt', 'qaFixPrompt', 'acceptancePrompt'],
+  intent: 'logs/ 只放要留存的东西（检查脚本 scripts/ / 不可重跑载荷 captures.json / 结论 .md），并禁止编号变体；对比基线只物化一次共享',
+  include: [/\[Log layout · policy\]/, /one file per purpose/, /scripts\//, /captures\.json/, /number(ed)? variants/, /materialize HEAD ONCE/, /probe\/head\//],
+})
+assertContract({
+  id: 'LOG-LAYOUT-SCOPED', level: 'policy', targets: ['devPrompt', 'qaPrompt', 'qaFixPrompt', 'acceptancePrompt'],
+  intent: '路径必须显式限定在 logs/teamflow/<runId>/ 内并禁止项目根建 scripts//probe/——实锤 tf-mtx6fi2a：未限定时模型在项目根建了 scripts/ 与 probe/，6 个草稿被卷进交付提交',
+  include: [/INSIDE logs\/teamflow/, /never create scripts\/ or probe\/ at the project root/, /logs\/teamflow\/[^/\s]+\/scripts\//],
+  exclude: [/→ scripts\/ \(name each/],
+})
+assertContract({
+  id: 'LOG-DISCIPLINE-NO-REDIRECT', level: 'structural', targets: ['devPrompt', 'qaPrompt', 'qaFixPrompt'],
+  intent: 'dev/qa/qaFix 各自重申「输出不落文件（宿主截尾 + spill）」与项目根禁令（取代旧的 regression-<phase>.log 逐阶段约定）',
+  include: [/\[Log discipline\]/, /Do NOT redirect command\/suite output into files/, /Never create scripts\/ or probe\/ at the project root/],
+  exclude: [/regression-dev\.log|regression-qa\.log|regression-devfix\.log/],
+})
+assertContract({
+  id: 'LOG-LIFECYCLE-ARCHIVED', level: 'policy', targets: ['devPrompt', 'qaPrompt', 'qaFixPrompt', 'acceptancePrompt'],
+  intent: '日志目录定性为「项目内暂存」：run 结束由 host 归档到 $DSH_HOME/teamflow/<workspace>/logs/<runId>/ 并删除项目内副本——子代理不得提交/自行清理/当项目产物（B 方案：日志根离开用户项目）',
+  include: [/\[Log lifecycle · policy\]/, /TRANSIENT scratch inside the project/, /\$DSH_HOME\/teamflow\/<workspace>\/logs\//, /Never commit it, never delete it yourself/],
+  exclude: [/logs\/teamflow\/<runId>\/ is a permanent project artifact/],
+})
+assertContract({
+  id: 'LOG-LIFECYCLE-FILTERED', level: 'policy', targets: ['devPrompt', 'qaPrompt', 'qaFixPrompt', 'acceptancePrompt'],
+  intent: '归档只留检查脚本与笔记（code 扩展名 + captures.json），命令输出/快照丢弃——禁止把 dump 当成能过夜的证据（durable claim 是回复里的 [Verification evidence] 块）；实测一次真实 run 里 93% 是可重跑输出或 git 里已有的快照',
+  include: [/Only your checkers and notes survive/, /are DROPPED/, /\[Verification evidence\] block is the durable claim/],
+})
+assertContract({
+  targets: ['prdPrompt', 'designPrompt', 'scaffoldPrompt', 'techPrompt', 'acceptancePrompt', 'techChangePrompt', 'patchConfirmPrompt'],
+  intent: '一次成型纪律标注真实后果（cache 重放费），不得声称 hard constraint',
+  include: [/ONE-SHOT WRITE · policy/, /cache replay fees/, /No read→edit→read loops/],
+  exclude: [/· hard constraint\]/],
+})
+assertContract({
+  id: 'EVIDENCE-BLOCK-DEV', level: 'policy', targets: ['devPrompt', 'qaFixPrompt'],
+  intent: 'dev/qaFix 回复必须附 [Verification evidence] 块（命令+退出码+断言计数+失败行/N/A），缺失记 warn',
+  include: [/\[Verification evidence\]/, /cmd: <exact command> → exit <code>/, /<passed>\/<failed> asserts/, /N\/A: <explicit reason>/, /missing block = contract not honored/],
+})
+assertContract({
+  id: 'NO-HARD-CLAIM-ANYWHERE', level: 'policy', targets: 'ALL',
+  intent: '阶段 prompt 不得自称 hard constraint（措辞硬与 enforcement 脱节 → 模型脱敏）',
+  exclude: [/· hard constraint\]/],
+})
+
+// ── structural：state 块 / 产物路径 / 蓝图 JSON / git 纪律 ──
+assertContract({
+  id: 'STATE-BLOCK-EVERY-STAGE', level: 'structural', targets: 'ALL',
+  // 2026-10-08 改通道：锚点句从「Append one section at the END of your answer」换成
+  // `STATE BLOCK · MACHINE CHANNEL · do NOT put it in your reply` —— 旧措辞**就是**块泄漏到
+  // 用户 UI 的唯一原因（宿主渲染子代理回复，插件管不到）。每条还要**点名该阶段的文件路径**。
+  intent: '每个阶段必须指示把 state 块**写进文件**（且不许写进回复正文）——host 从磁盘读它，回复正文里不再出现机器契约',
+  // ⚠️ 第二段锚点锁的是**纯 JSON 契约**（2026-10-11 起文件里不再有 `<!-- state` 包裹 ——
+  // 文件是独立 .json，整份就是那个 JSON，标记只是「在自然语言里定位块」用的，在文件里纯属冗余）。
+  // 旧锚点是 `/<!-- state\r?\n/`，模板改纯 JSON 后失效。
+  include: [/STATE BLOCK · MACHINE CHANNEL · do NOT put it in your reply/, /no comment markers/, /logs\/teamflow\/[^\s`]+\/state\/[^\s`]+\.json/],
+})
+// ⚠️ 「哪个工厂对应哪个阶段键」在**渲染后文本里看不出来**（路径那时已解析成字面量）⇒ 那条映射放在
+// `smoke.js` 的**源码锁**里（`STATE-BLOCK-PATH-PER-STAGE`）。写错的表现＝该阶段永远走**回落**，
+// 不是静默错（有 warn 计数），但会污染兑现率 ⇒ 必须在源码侧钉死。
+assertContract({
+  id: 'DOC-BOUNDARY-POLICY', level: 'policy', targets: 'ALL',
+  intent: '所有阶段共用 productCtx：文档只写 docs/teamflow/，日志只写 logs/teamflow/，禁宿主 docs/ 散落',
+  include: [/Doc boundary · policy/, /docs\/teamflow/, /logs\/teamflow/],
+  exclude: [/docs\/prd|docs\/design|docs\/technical|docs\/qa\//],
+})
+assertContract({
+  id: 'AGENTS-BOUNDARY-POLICY', level: 'policy', targets: 'ALL',
+  intent: 'AGENTS.md 是团队资产：除 teamflow 托管区外不得改写/追加 changelog 节',
+  include: [/AGENTS\.md boundary · policy/, /do NOT append changelog-style sections/],
+})
+assertContract({
+  id: 'BLUEPRINT-JSON-SHAPE', level: 'structural', targets: ['techPrompt', 'architectPrompt'],
+  // 2026-10-09 改通道：蓝图从「文档末尾的 <!-- blueprint --> 块」改为**独立文件**（机器通道）——
+  // 旧形态的 open 是**自闭合注释**，紧随其后的 JSON 会裸露在 Typora / VS Code 预览里（用户截图实锤），
+  // 且真机实测占 TECHNICAL.md **31%** 字符（5403/17583）。
+  // ⚠️ 锚点必须锁**实际契约**（写文件 + 路径 + 字段说明）。旧锚点 `<!-- blueprint -->` 是**假绿**：
+  // 它一度只在 dev/qa/acceptance 的**说明文字**里出现，所以即便 tech/architect 的产出契约被整段删掉，
+  // 这条锁照样为真（本日实证，已改为锁 MACHINE CHANNEL 短语 + 文件路径）。
+  intent: 'tech/architect 必须把蓝图 JSON 写进**独立文件**（机器通道），字段含 modules/api/tasks/duplications；不得写进文档或回复',
+  include: [/ARCHITECTURE BLUEPRINT · MACHINE CHANNEL/, /logs\/teamflow\/[^\s`]+\/blueprint\.json/, /"modules"/, /"tasks"/, /duplications/],
+  exclude: [/at the end of the document/],
+})
+assertContract({
+  id: 'DEV-ON-BLUEPRINT', level: 'structural', targets: 'devPrompt',
+  intent: 'dev 必须先读蓝图再实现（既有架构上实现，勿重建）',
+  include: [/Architecture blueprint first/, /implement ON the existing architecture/],
+
+})
+assertContract({
+  id: 'DEV-DESIGN-REACHES-DEV', level: 'structural', targets: 'devPrompt',
+  intent: 'dev 必须收到 UI/UX 设计意图（视觉/质感规格），并以分层注入指向完整 DESIGN.md（修复「设计↔dev 结构性断开」根因 C）',
+  fixture: out.devPromptDesign,
+  // ⚠ 锚点必须是 **design 段专属**：`full source lives on disk` 在 TECH DESIGN 段里也有一句，
+  // 那样这条断言会被 tech 段救活（等于没锁住 design 通道，2026-09-30 实测）。
+  include: [/DESIGN NOTES/, /DESIGN\.md/, /written FIRST in DESIGN\.md/],
+})
+assertContract({
+  id: 'DEV-DESIGN-REACHES-DEV-EN', level: 'structural', targets: 'devPrompt', en: true,
+  intent: 'en：dev 同样收到 UI/UX 设计意图分层注入，零回归对照 zh',
+  fixture: outEn.devPromptDesign,
+  include: [/DESIGN NOTES/, /DESIGN\.md/, /written FIRST in DESIGN\.md/],
+})
+// ── 质量/质感（craft）通道：design 出规格 → dev 依它打磨 → QA 观察级评级 ──
+// 三者都是「引导/观察」而非硬门禁（插件跨模型：弱/本地模型产不出 craft，硬门禁会让插件不可用）。
+assertContract({
+  id: 'DESIGN-VISUAL-QUALITY-SPEC', level: 'policy', targets: 'designPrompt',
+  intent: 'design 必须出「视觉/质感规格」节（表面处理/状态反馈/动效/字体角色/反模式），这是 craft 意图唯一的上游来源',
+  include: [/Visual quality spec/, /Surface treatment/, /Anti-patterns/],
+})
+assertContract({
+  id: 'DEV-CRAFT-BAR', level: 'policy', targets: 'devPrompt',
+  intent: 'dev 的 craft bar：AC 是下限不是上限；依 DESIGN.md 打磨、持久信息全状态可见、交互有反馈（引导，非门禁）',
+  include: [/Craft bar/, /the AC is the floor, not the ceiling/, /do not leave it unstyled by default/],
+})
+assertContract({
+  id: 'QA-CRAFT-GRADE', level: 'policy', targets: 'qaPrompt',
+  intent: 'QA 把 craft 单列为 P3 观察行（永不 P0-P2、不阻断）——补上「丑永远不会被判缺陷」的漏洞',
+  include: [/Craft grade/, /P3 observation/, /never a blocking gate/],
+})
+// ── 「视觉规格必须写在 DESIGN.md 最前」：把「dev 看不看得到」从文档长度变成受控不变量 ──
+// 实测（2026-09-30）：dev 只拿 clip(design, 4000)；规格写在文档中部时，design≥9k 字符就整段丢失
+// （本仓 TECHNICAL.md 实测 48365 字符，UI 设计文档达到这个量级很常见）。
+// 不靠放大 clip 解决（那回到 token 通胀），而靠**钉死章节顺序** + dev 指向该节。
+assertContract({
+  id: 'DESIGN-VISUAL-SPEC-FIRST', level: 'policy', targets: 'designPrompt',
+  intent: 'design 必须把视觉规格写在 DESIGN.md 最前（在 IA/线框之前）——dev 只看这个文件的前 4000 字符',
+  include: [/Visual quality spec/, /this section FIRST in DESIGN\.md/],
+})
+assertContract({
+  id: 'DEV-VISUAL-SPEC-SURVIVES-CLIP', level: 'structural', targets: 'devPrompt',
+  intent: '真实体量（>4000 字符的 DESIGN.md）下，写在最前的视觉规格仍到达 dev —— 通道在此体量下成立',
+  fixture: out.devDesignSpecFirst,
+  include: [/Visual quality spec/, /圆环轨道/],
+})
+assertContract({
+  id: 'DEV-VISUAL-SPEC-MIDDLE-IS-LOST', level: 'structural', targets: 'devPrompt',
+  intent: '哨兵：同样的文档体量、规格写在中部时 clip 确实把它剪掉 —— 这是 placement rule 存在的理由；'
+    + '若将来改成全量注入或 head-tail 注入消除了这个缺口，本条应当连同 placement rule 一起评审删除',
+  fixture: out.devDesignSpecMiddle,
+  exclude: [/圆环轨道/],
+})
+// ── craft 开关（±craft 的 A/B 对照）：缺省开；craft:false 三处引导同时退场 ──
+assertContract({
+  id: 'CRAFT-SWITCH-OFF-DESIGN', level: 'structural', targets: 'designPrompt',
+  intent: 'options.craft=false 时 design 的视觉规格条款消失（A/B 的「关」组必须干净）',
+  fixture: out.designPromptCraftOff,
+  exclude: [/Visual quality spec/],
+})
+assertContract({
+  id: 'CRAFT-SWITCH-OFF-DEV', level: 'structural', targets: 'devPrompt',
+  intent: 'options.craft=false 时 dev 的 craft bar 消失，但硬契约（写路径/接口契约/边界）一条不少',
+  fixture: out.devPromptDesignCraftOff,
+  exclude: [/Craft bar/],
+  include: [/Write path · policy/, /Interface contract · mandatory/, /TOKEN HYGIENE/],
+})
+assertContract({
+  id: 'CRAFT-SWITCH-OFF-QA', level: 'structural', targets: 'qaPrompt',
+  intent: 'options.craft=false 时 QA 的 craft 观察评级消失，正确性判据（接口一致性/验证证据）不受影响',
+  fixture: out.qaPromptCraftOff,
+  exclude: [/Craft grade/],
+  include: [/Interface consistency/, /Verification evidence/],
+})
+assertContract({
+  id: 'GIT-DISCIPLINE-DEV', level: 'policy', targets: 'devPrompt',
+  intent: 'dev 禁 checkout main/merge/rebase/commit（host 验收后统一收口提交）',
+  include: [/Git discipline · policy/, /checkout main/, /host after acceptance/, /one commit per run/],
+})
+// 工程指令承接：各阶段锚点不同，逐条断言（无法共用 include 集合）
+assertContract({
+  id: 'ENG-ACTION-PRD', level: 'structural', targets: 'prdPrompt',
+  intent: 'PRD 把需求中的工程指令原样承接进「工程约束」节',
+  include: [/Engineering actions carried verbatim/, /MUST be preserved verbatim/],
+})
+assertContract({
+  id: 'ENG-ACTION-DEV', level: 'structural', targets: 'devPrompt',
+  intent: 'dev 先执行工程动作（建分支）再写码',
+  include: [/execute the action BEFORE writing code/],
+})
+assertContract({
+  id: 'ENG-ACTION-TECH', level: 'structural', targets: 'techPrompt',
+  intent: 'tech 把 PRD 工程约束里的 git 动作拆进任务，不得丢失',
+  include: [/git actions from the PRD/, /never lost/],
+})
+
+// ── 档位专属 prompt ──
+assertContract({
+  id: 'QA-FIX-CONFIRM-FIRST', level: 'structural', targets: 'qaFixPrompt',
+  intent: 'QA 打回修复：先逐条确认属实再修；误报给证据不得无视',
+  include: [/Confirm first, then fix/, /QA false positive/, /false-positive evidence/],
+})
+assertContract({
+  id: 'PATCH-VS-REALITY', level: 'structural', targets: 'patchConfirmPrompt',
+  intent: 'patch 档先核对需求与现状；不符 → 显式「需求与实际不符」不伪造改动',
+  include: [/需求与实际不符，建议取消改动或调整需求/, /no fabricated changes/, /suggest upgrading pipeline mode/],
+})
+assertContract({
+  id: 'TECH-CHANGE-SHEET', level: 'structural', targets: 'techChangePrompt',
+  intent: 'tech 档产「技术变更单」而非功能 PRD（不改写既有功能 AC）',
+  include: [/技术变更单/, /TECH-CHANGE\.md/, /do NOT rewrite any functional ACs/, /regression floor/],
+})
+assertContract({
+  id: 'TRIAGE-JSON-ONLY', level: 'structural', targets: 'triagePrompt',
+  intent: 'triage 只输出 JSON（首字符 { ），五档 mode + slug + needDesign 字段齐备',
+  include: [/The FIRST character of your reply must be '\{'/, /JSON object ONLY/, /"mode": "patch\|lite\|tech\|medium\|full"/, /"slug"/, /"needDesign"/, /"confidence": "high\|medium\|low"/],
+  exclude: [/hard constraint/i],
+})
+assertContract({
+  id: 'PRD-HEADER-META', level: 'structural', targets: 'prdPrompt',
+  intent: 'PRD 头部 meta 块 + 基线依赖/取代声明 + 本夹内 AC-1 起编号',
+  include: [/<!-- meta: summary=/, /基线依赖：/, /取代：<task folder>#<AC number>/, /Number ACs from AC-1/],
+})
+
+// ── 视觉能力条款（按模型多模态能力动态生成，两分支互斥）──
+assertContract({
+  id: 'BROWSER-AVAILABILITY-KNOWN', level: 'policy', targets: ['visualOn', 'visualOff'],
+  intent: '视觉两分支都写明「在 agent 沙箱内浏览器不可启动」+ 根因（受限令牌缺 0x200/0x800）+ 实测无效的'
+    + '绕法清单 —— 防 QA 反复试参数白烧 token、或把它当交付缺陷',
+  include: [
+    /Browser availability · NOT launchable inside the agent sandbox/,
+    /crashpad_client_win\.cc:421 OpenProcess/,
+    /PROCESS_SET_INFORMATION \(0x200\)/,
+    /--no-sandbox makes no difference/,
+    /Do NOT spend turns on flag combinations/,
+    /a browser is not required/,
+  ],
+})
+assertContract({
+  id: 'VISUAL-ON-SCRIPTED-FIRST', level: 'policy', targets: 'visualOn',
+  intent: 'vision=true：脚本断言为主（浏览器不可用也照做），截图仅限人眼类项并入人工补测清单',
+  include: [/Visual verification · enabled/, /Scripted assertions first/, /人工补测清单/, /A browser is not required/],
+})
+assertContract({
+  id: 'VISUAL-OFF-NO-SCREENSHOT', level: 'policy', targets: 'visualOff',
+  intent: 'vision=false：禁截图看图（防幻觉/循环），走 DOM/Canvas 桩的脚本断言（不需要浏览器），目测项进人工补测',
+  include: [/Visual verification · limited/, /You CANNOT interpret screenshots/, /do NOT take screenshots/, /人工补测清单/, /do NOT guess/, /A browser is not required/],
+})
+
+// ── policy：产物交付（官方 present 工具 → 交付文件卡）──
+assertContract({
+  id: 'ARTIFACT-PRESENT-CHANNEL', level: 'policy', targets: ['prdPrompt', 'techPrompt', 'qaPrompt', 'acceptancePrompt'],
+  intent: '产物写成后调官方 present 交付（文件卡）；诚实标注为增强项（文件仍是唯一事实源）且只列交付物',
+  include: [/Artifact delivery · policy/, /call the `present` tool/, /never scratch files, temp scripts or command logs/, /the file stays the single source of truth/],
+  exclude: [/present is mandatory/, /hard constraint/i],
+})
+
+// ── L1 · EN 契约（run 语言=en：语言指令 / 模板 / 结论行 / 缺陷表 / triage）──
+// 与上面 zh 条目成对：zh 保证没改坏（AC-9），en 保证新增生效（AC-4/AC-5/AC-6/AC-7）。
+/** 产出文档的阶段 prompt（architect 只回蓝图 JSON、dev/qaFix 只写代码，均无产物语言指令）。 */
+const DOC_STAGES = ['prdPrompt', 'designPrompt', 'scaffoldPrompt', 'techPrompt', 'qaPrompt', 'acceptancePrompt', 'techChangePrompt', 'patchConfirmPrompt']
+
+assertContract({
+  id: 'LANG-DIRECTIVE-ZH-ALL-STAGES', level: 'HOST-ENFORCED', targets: DOC_STAGES,
+  intent: 'zh run：全部产物阶段 prompt 的语言指令仍是字面量 Chinese Markdown（零回归对照）',
+  include: [/Chinese Markdown/], exclude: [/English Markdown/],
+})
+assertContract({
+  id: 'LANG-DIRECTIVE-EN-ALL-STAGES', level: 'HOST-ENFORCED', targets: DOC_STAGES, en: true,
+  intent: 'en run：产物语言指令切到 English Markdown（AC-5 产物英文正文由该指令传导），且不再出现 Chinese Markdown',
+  include: [/English Markdown/], exclude: [/Chinese Markdown/],
+})
+assertContract({
+  id: 'EN-REPLY-LANG', level: 'policy', targets: ['qaPrompt', 'qaFixPrompt', 'acceptancePrompt'], en: true,
+  intent: 'en run：回复正文语言随快照（≤12/≤40/≤10 行摘要改 English），回复与产物不语言分叉',
+  include: [/\(≤(12|40|10) lines, English\)/],
+  exclude: [/lines, Chinese\)/],
+})
+assertContract({
+  id: 'EN-AGENTS-MEMORY-TEMPLATE', level: 'HOST-ENFORCED', targets: 'scaffoldPrompt', en: true,
+  intent: 'AGENTS.md / memory 模板随 run 语言（标题/说明/区块标签全英文），结构资产保持原样不翻译（teamflow 托管区标记、{{占位符}}、路径）',
+  include: [/AGENTS\.md — Team rules & documentation index/, /product memory & todos/, /<!-- teamflow:begin -->/, /<!-- teamflow:end -->/, /\{\{PRODUCT\}\}/, /\$DSH_HOME\/teamflow/],
+  exclude: [/团队协作守则/, /产品记忆与待办/],
+})
+assertContract({
+  id: 'ZH-AGENTS-MEMORY-TEMPLATE-UNCHANGED', level: 'HOST-ENFORCED', targets: 'scaffoldPrompt',
+  intent: 'zh run：AGENTS.md / memory 模板仍是原中文字面量（模板双语只对 en 生效）',
+  include: [/团队协作守则与文档索引/, /产品记忆与待办/, /<!-- teamflow:begin -->/],
+})
+assertContract({
+  id: 'EN-PRD-BASELINE-HEADER', level: 'HOST-ENFORCED', targets: 'prdPrompt', en: true,
+  intent: 'en run：PRD 头部基线/取代声明用英文契约标记（与 productCtx 说明一致）',
+  include: [/Baseline dependency:/, /Baseline dependency: none/, /Supersedes: <task folder>#<AC number>/],
+})
+assertContract({
+  id: 'EN-ACC-VERDICT-LITERAL', level: 'HOST-ENFORCED', targets: 'acceptancePrompt', en: true,
+  intent: 'en 结论行四档字面量（与判据层 parseAcceptanceVerdict 的 en 分支配对；⚠️ Conditional pass 含 pass → 不得误判打回）',
+  include: [/Acceptance verdict: ✅ Pass/, /⚠️ Conditional pass/, /❌ Fail/, /📝 Not applicable/],
+})
+assertContract({
+  id: 'EN-ACC-LAST-LINE-CONTRACT', level: 'HOST-ENFORCED', targets: 'acceptancePrompt', en: true,
+  intent: 'en 结论行同样必须是 ACCEPTANCE.md 最后一行且为四档字面量之一（缺失=契约违例→停线）',
+  include: [/MUST be the LAST line of the file, verbatim one of: Acceptance verdict: ✅ Pass/, /missing it = contract violation/, /missing file = hard failure \(needs-human, pipeline stops\)/],
+})
+assertContract({
+  id: 'EN-QA-DEFECT-TABLE', level: 'HOST-ENFORCED', targets: 'qaPrompt', en: true,
+  intent: 'en 缺陷表头列序与 zh 完全一致（含新增的 Check command / Pass criterion 两列）；无缺陷须显式声明（en）',
+  include: [/\| ID \| Severity \(P0\/P1\/P2\/P3\) \| Module \| Steps \| Expected \| Actual \| Related AC \| Check command \| Pass criterion \|/, /No defects found/, /Defect format · HOST-ENFORCED/],
+  exclude: [/严重级\(P0\/P1\/P2\/P3\)/],
+})
+assertContract({
+  id: 'EN-TRIAGE-BILINGUAL', level: 'structural', targets: 'triagePrompt', en: true,
+  intent: 'AC-7：triage prompt 声明英文需求一等公民 + rationale 语言指令 + 英文档位等价示例（补在中文示例之外）',
+  include: [/English requirements are first-class/, /rationale strings must be written in English/, /6\. \[ENGLISH EQUIVALENTS\]/, /"add a settings page"/, /→ tech/],
+})
+assertContract({
+  id: 'ZH-TRIAGE-UNCHANGED', level: 'structural', targets: 'triagePrompt',
+  intent: 'zh run：triage prompt 不含英文增补段（输出与现状一致，既有 triage 行为零回归）',
+  exclude: [/English requirements are first-class/, /ENGLISH EQUIVALENTS/],
+})
+
+assertContract({
+  id: 'EN-NO-CN-SECTION-LABELS', level: 'HOST-ENFORCED',
+  targets: ['prdPrompt', 'devPrompt', 'techPrompt', 'qaPrompt', 'qaFixPrompt', 'acceptancePrompt', 'architectPrompt', 'techChangePrompt', 'patchConfirmPrompt', 'triagePrompt', 'visualOn', 'visualOff'],
+  en: true,
+  intent: 'QA-3 / R2-1：en run 的 prompt 不得再强令中文小节名/标签（否则产物正文写成中文章节名 → AC-5 破）',
+  exclude: [/人工补测清单/, /环境限制，非交付缺陷/, /已知待办/, /「架构蓝图」/, /「技术变更单」/, /「确认单」/, /「状态核对」/, /module =「架构」/, /需求与实际不符，建议取消改动或调整需求/, /待办→开发中/, /工程约束/, /统一收口提交/, /版本：vX\.Y/],
+})
+assertContract({
+  id: 'EN-ENG-CONSTRAINTS-PRD', level: 'HOST-ENFORCED', targets: 'prdPrompt', en: true,
+  intent: 'R2-1：en run 的「工程约束」节名走词典（prd 要求产出的节名与 tech/dev 引用处同一取值 → en PRD 不再被要求写中文章节名）',
+  include: [/Engineering constraints/, /No revision table, no version fields like "Version: vX\.Y \/ Status: in progress"/],
+})
+assertContract({
+  id: 'EN-ENG-CONSTRAINTS-DEV', level: 'HOST-ENFORCED', targets: 'devPrompt', en: true,
+  intent: 'R2-1：en run 的 dev 引用英文节名 + 收口提交标签英文化（引用与产出同键 → 不出现指向不存在的中文章节）',
+  include: [/Engineering constraints/, /ADR-2026-08-27, one consolidated commit/],
+})
+assertContract({
+  id: 'EN-ENG-CONSTRAINTS-TECH', level: 'HOST-ENFORCED', targets: 'techPrompt', en: true,
+  intent: 'R2-1：en run 的 tech 引用同一英文节名（PRD 工程约束 → Engineering constraints）',
+  include: [/git actions from the PRD "Engineering constraints" section/],
+})
+assertContract({
+  id: 'ZH-ENG-CONSTRAINTS-PRD-UNCHANGED', level: 'HOST-ENFORCED', targets: 'prdPrompt',
+  intent: 'R2-1 零回归对照：zh prd 的版本反例与「工程约束」节名逐字不变（AC-9）',
+  include: [/like「版本：vX\.Y \/ 状态：进行中」/, /into the "工程约束" section/],
+})
+assertContract({
+  id: 'ZH-ENG-CONSTRAINTS-DEV-UNCHANGED', level: 'HOST-ENFORCED', targets: 'devPrompt',
+  intent: 'R2-1 零回归对照：zh dev 的「工程约束」引用与「统一收口提交」标签逐字不变（AC-9）',
+  include: [/If task spec or PRD 工程约束 includes/, /统一收口提交/],
+})
+assertContract({
+  id: 'ZH-ENG-CONSTRAINTS-TECH-UNCHANGED', level: 'HOST-ENFORCED', targets: 'techPrompt',
+  intent: 'R2-1 零回归对照：zh tech 的「工程约束」引用逐字不变（AC-9）',
+  include: [/git actions from the PRD "工程约束" section/],
+})
+assertContract({
+  id: 'EN-MANUAL-CHECKLIST-LABEL', level: 'HOST-ENFORCED', targets: ['qaPrompt', 'acceptancePrompt'], en: true,
+  intent: 'QA-3：en run 的人工补测清单标签换英文（QA/验收报告小节名随 run 语言）',
+  include: [/Manual test checklist/],
+})
+assertContract({
+  id: 'EN-ENV-LIMIT-LABEL', level: 'HOST-ENFORCED', targets: ['qaPrompt', 'visualOff'], en: true,
+  intent: 'QA-3：en run 的环境限制标签换英文（视觉能力条款 vision=false 分支）',
+  include: [/"environment limitation, not a delivery defect"/],
+})
+assertContract({
+  id: 'ZH-ARCH-BLUEPRINT-LABEL-UNCHANGED', level: 'HOST-ENFORCED', targets: 'architectPrompt',
+  intent: 'QA-3 零回归对照：zh architectPrompt 标签逐字保留（架构蓝图/状态核对）',
+  include: [/「架构蓝图」/, /【状态核对】/],
+})
+assertContract({
+  id: 'ZH-TECH-CHANGE-LABEL-UNCHANGED', level: 'HOST-ENFORCED', targets: ['techChangePrompt', 'triagePrompt'],
+  intent: 'QA-3 零回归对照：zh 技术变更单标签逐字保留（techChangePrompt + triage 五档说明）',
+  include: [/「技术变更单」/],
+})
+assertContract({
+  id: 'ZH-CONFIRM-LABEL-UNCHANGED', level: 'HOST-ENFORCED', targets: 'patchConfirmPrompt',
+  intent: 'QA-3 零回归对照：zh patchConfirmPrompt 确认单标签逐字保留',
+  include: [/「确认单」/],
+})
+assertContract({
+  id: 'EN-ARCH-BLUEPRINT-LABEL', level: 'policy', targets: 'architectPrompt', en: true,
+  intent: 'QA-3：蓝图/状态核对标签英文 + architect prompt 补语言指令（AC-4② 唯一缺指令的工厂）',
+  include: [/structured "architecture blueprint"/, /\[state check\]/, /English Markdown/],
+})
+assertContract({
+  id: 'EN-TECH-CHANGE-LABEL', level: 'policy', targets: 'techChangePrompt', en: true,
+  intent: 'QA-3：技术变更单标签英文（tech 档产物标题随 run 语言）',
+  include: [/tech change sheet/],
+})
+assertContract({
+  id: 'EN-CONFIRM-SHEET-LABEL', level: 'policy', targets: 'patchConfirmPrompt', en: true,
+  intent: 'QA-3：确认单标签英文（patch 档产物标题随 run 语言）',
+  include: [/confirmation sheet/],
+})
+
+// ── 接口契约（2026-09-28，复盘 tf-mul4t5ga-ajs4i4 贪吃蛇）──
+// 事故：蓝图只定「文件边界」不定「接口」⇒ 两个任务对同一模块各写一套方法名
+// （main.js 调 GameEngine.move/render/toggleRunning，实际是 update/draw/start|stop）→ 打开页面首帧
+// TypeError；而 QA 的「文件存在 / 有 export」清单全绿放行。三条锁分别对应三层修复：
+// 蓝图必须给 api 签名 → dev 必须逐字使用 → QA 必须做静态接口一致性核对（不需要浏览器/运行时）。
+/* 声明与投递必须一致（2026-09-29 修）：
+ * devPrompt / qaPrompt / acceptancePrompt 三处都写着「if the injected blueprint JSON
+ * ("<!-- blueprint -->") is present」，但 stateSliceFor 的白名单只有 arch/tech/dev ⇒
+ * qa 与 acceptance 那两句**永远为假**，只能退回 ARCHITECTURE.md 猜契约
+ * （观察期 run tf-muliqvaq 的 QA 报告自己点出「本阶段上下文未注入 <!-- blueprint --> JSON」）。
+ * 修在 host/core/domain/state.ts 的 BLUEPRINT_ROLES；此锁防它被改回去。 */
+assertContract({
+  id: 'BLUEPRINT-REACHES-DECLARED-ROLES', level: 'structural',
+  targets: ['devPrompt', 'qaPrompt', 'qaPromptReverify', 'acceptancePrompt'],
+  intent: '凡声明「若注入蓝图则依它核对」的角色，必须真的收到蓝图（dev 依它实现；qa/acceptance 依它核对接口一致性与模块抽取）',
+  // ⚠️ 必须匹配**注入载荷**而不是 `<!-- blueprint -->` 字面量 —— 后者的标记语在 prompt 正文里也有
+  // （"if the injected blueprint JSON (<!-- blueprint -->) is present"），拿它当锚点会永远为真、锁等于没有。
+  // 这行锚点经过「临时回退修复 → 断言必须变红」验证，不是想当然。
+  include: [/\{"summary":"s"\}/],
+})
+assertContract({
+  id: 'BLUEPRINT-API-SIGNATURES', level: 'structural', targets: ['techPrompt', 'architectPrompt'],
+  intent: '蓝图 schema 与说明都要求 modules 给出 api 精确签名（下游逐字使用，不得自创成员名）',
+  include: [/"api":\[/, /api \(mandatory per module\)/],
+})
+/**
+ * **dev 自查任务的定位**（2026-10-08/09）：**保留，但降为「交付自检」**。
+ *
+ * ⚠️ 这条**不是**我拍的新主意 —— `docs/TODO.md` 观察中区早已「观点已定」（2026-09-25）：
+ * **保留**（dev 自查是全链路唯一「发现问题 → 当场修」的环节），改定位为「交付自检」：
+ * 当场修、**只记结论不写 `QA-REPORT.md`**、措辞与 QA 解耦（防「预演 QA」式全量重验）。
+ * 我第一版写成「不许有验证类任务、自测只能任务内部」＝**砍掉**它，与记录的决定相反 ⇒ 已改回。
+ *
+ * 新数据点（`tf-muzc59h9-pnbhyk`）：dev 任务「QA 三浏览器实测」**同时写了 QA-REPORT.md 和
+ * ACCEPTANCE.md**，然后在收尾 `edit` 上失手 ⇒ run 判 failed，而交付其实 13/14 AC 已验证。
+ * ⇒ 支持「重新定位」，但**不支持砍掉**。
+ * 变异：把 `IS welcome` 改成禁止式（`never`）或删掉「不许写 QA-REPORT.md」那句 ⇒ 立刻红。
+ */
+assertContract({
+  id: 'DEV-SELFCHECK-NOT-QA-REHEARSAL', level: 'policy', targets: ['techPrompt', 'architectPrompt'],
+  intent: 'dev 自查任务**保留**（当场修是唯一现场修复点），但降为「交付自检」：只记结论、不写 QA-REPORT.md/ACCEPTANCE.md、不跑 QA 式全量矩阵',
+  include: [/\[Self-check, not a QA rehearsal\]/, /IS welcome/, /do \*\*NOT\*\* write/, /do \*\*NOT\*\* run a QA-style full matrix/],
+})
+assertContract({
+  id: 'DEV-INTERFACE-CONTRACT', level: 'policy', targets: 'devPrompt',
+  intent: 'dev 只许调用蓝图/设计里声明的成员；禁止自创方法名（写调用前先 grep 目标文件确认存在）',
+  include: [/\[Interface contract · mandatory\]/, /Never invent a member name/],
+})
+assertContract({
+  id: 'QA-INTERFACE-CONSISTENCY', level: 'policy', targets: 'qaPrompt',
+  intent: 'QA 必须做接口一致性核对（静态 grep 即可）；不匹配 = P1 阻断——「文件存在/有 export」清单拦不住这类死机',
+  include: [/\[Interface consistency · mandatory · static, no runtime needed\]/, /P1 blocking defect/],
+})
+assertContract({
+  id: 'QA-VERIFICATION-EVIDENCE', level: 'policy', targets: 'qaPrompt',
+  intent: 'QA 必须用一次真实执行过的检查证明交付可用（命令+结果），跑不动 = P1（专治「一个符号反了、全程无异常」'
+    + '的静默失效）；同时锁住「不得强行执行不该执行的交付」—— 需编译/依赖服务/纯库的形态走等价检查',
+  include: [
+    /\[Verification evidence · mandatory · never sign off on existence checks alone\]/,
+    /dead on arrival/,
+    /real timer semantics/,
+    /Never force-launch something that is not meant to be launched/,
+  ],
+})
+
+assertContract({
+  id: 'QA-COMMAND-DISCIPLINE', level: 'policy', targets: 'qaPrompt',
+  intent: 'QA 跑命令时必须一条一检查、带超时、常驻进程探测后立即终止 —— 否则一条挂住的命令会吞掉整轮验证',
+  include: [
+    /\[Command discipline · mandatory · one command = one check\]/,
+    /Never chain N checks into one command/,
+    /terminate it immediately/,
+  ],
+})
+
+console.log(failed === 0 ? '\n✅ prompt-contract 全部通过' : `\n❌ prompt-contract ${failed} 项契约失败`)
+process.exit(failed === 0 ? 0 : 1)

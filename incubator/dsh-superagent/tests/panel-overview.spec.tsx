@@ -2,8 +2,10 @@
 // The overview.
 import { expect, it } from 'vitest'
 import { en, zh } from '../src/client/locales.ts'
-import { usePanel, mount, remount, all, find, tab, click, text } from './fixtures/panel.tsx'
-import { server, droppedReply, threadSummary } from './fixtures/panel-server.ts'
+import { usePanel, mount, remount, all, find, tab, click, text, type } from './fixtures/panel.tsx'
+import { server, droppedReply, threadSummary, teamPlan } from './fixtures/panel-server.ts'
+import type { BotApproval, BotCard } from '../src/app/team.ts'
+import type { SkillRecord, TeamWorkflow } from '../src/app/retrospective.ts'
 
 usePanel()
 it('leads the overview with the pending Tickets, then problems, the last day and the Executor, each linking to its stage', async () => {
@@ -24,6 +26,71 @@ it('leads the overview with the pending Tickets, then problems, the last day and
   expect(document.querySelector<HTMLAnchorElement>('a.dt-chip-link')?.href).toBe('https://github.com/acme/widgets/pull/42')
   await click(all('.dt-more-link').at(-1)!)
   expect(tab(zh['tab.execution']).getAttribute('aria-selected')).toBe('true')
+})
+
+it('a person can start a team plan by hand from the available Bots', async () => {
+  const card: BotCard = { id: 'tester', name: '测试 bot', description: '回归测试', skills: [], tools: [],
+    delegatable: true, source: 'builtin' }
+  server.teamBots = [card]
+  await mount()
+  expect(text()).toContain(zh['team.botsReady'].replace('{count}', '1'))
+  await click(zh['team.newOpen'])
+  const box = document.querySelector<HTMLElement>('[data-testid="team-new"]')!
+  await type(box.querySelector('input')!, '新手引导回归')
+  await type(box.querySelector('textarea')!, '交互稿 | 测试 bot | 出 5 屏')
+  await click(zh['team.submit'])
+  expect(server.startedPlans).toEqual([{ goal: '新手引导回归', steps: [
+    { key: 'T1', title: '交互稿', bot: '测试 bot', spec: '出 5 屏', after: [] }] }])
+})
+
+it('shows a plan\'s distilled skills and workflow, approves a risky skill and saves the workflow', async () => {
+  const skill: SkillRecord = { id: 'sk-1', name: 'team-plan-1-t2', title: '回归测试 · 测试 bot', description: '回归测试经验',
+    scope: 'bot:tester', origin: 'plan-1 · T2', evidence: 'step T2 hop 4', risk: 'medium', state: 'draft', version: 1,
+    body: '运行 npx playwright test', planId: 'plan-1', file: 'C:/fake/.drafts/SKILL.md', at: '2026-11-04T12:00:00.000Z' }
+  const workflow: TeamWorkflow = { id: 'wf-1', name: '首页新手引导上线', version: 1, fromPlanId: 'plan-1',
+    goal: '首页新手引导上线', state: 'draft', params: [{ key: 'chat', label: '通知群' }],
+    steps: [{ key: 'T1', title: '交互方案', spec: '出稿', bot: '设计 bot', after: [] }], gates: [],
+    budget: { tokens: 300_000, turns: 90, parallel: 3 }, triggers: ['manual'], runs: 0, ok: 100, at: '2026-11-04T12:00:00.000Z' }
+  server.retroSkills = [skill]
+  server.retroWorkflows = [workflow]
+  await mount()
+  expect(all('.dt-section-title').map(title => title.textContent)).toContain(`${zh['team.skillPending']}1`)
+  expect(text()).toContain('首页新手引导上线')
+  await click(zh['team.skillApprove'])
+  expect(server.approvedSkill).toBe('sk-1')
+  await click(zh['team.wfSave'])
+  expect(server.savedWorkflow).toBe('wf-1')
+})
+
+it('asks a person to approve or reject a high-risk Bot draft', async () => {
+  const approval: BotApproval = { id: 'appr-1', state: 'pending', at: '2026-11-04T10:00:00.000Z', risk: ['feishu', 'git'],
+    draft: { id: 'publisher', name: '发布 bot', description: '版本说明与通知', persona: '发通知', tools: ['feishu', 'git'] } }
+  server.approvals = [approval]
+  await mount()
+  expect(all('.dt-section-title').map(title => title.textContent)).toContain(`${zh['team.approval']}1`)
+  expect(text()).toContain('发布 bot')
+  expect(text()).toContain('feishu, git')
+  await click(zh['team.approve'])
+  expect(server.approvedBot).toBe('appr-1')
+})
+
+it('rejects a high-risk Bot draft without creating the Bot', async () => {
+  server.approvals = [{ id: 'appr-2', state: 'pending', at: '2026-11-04T10:00:00.000Z', risk: ['feishu'],
+    draft: { id: 'publisher', name: '发布 bot', persona: '发通知', tools: ['feishu'] } }]
+  await mount()
+  await click(zh['team.reject'])
+  expect(server.rejectedBot).toBe('appr-2')
+})
+
+it('shows a team plan with its steps, and stops a running one after confirmation', async () => {
+  server.plans = [teamPlan()]
+  await mount()
+  expect(all('.dt-section-title').map(title => title.textContent)).toContain(`${zh['team.pending']}1`)
+  expect(text()).toContain('T1 交互方案')
+  expect(text()).toContain('交互稿 5 屏。')
+  await click(zh['team.stop'])
+  await click(zh.confirm)
+  expect(server.requests.some(request => request.path === 'team/plans/plan-1/stop' && request.method === 'POST')).toBe(true)
 })
 
 it('re-evaluates or dismisses an unjudged Eval from the problem list', async () => {

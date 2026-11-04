@@ -1,0 +1,32 @@
+{
+  "name": "dsh-teamflow-workbench",
+  "version": "0.4.4",
+  "private": true,
+  "type": "module",
+  "description": "一句话需求到验收交付：分诊/PRD/设计/开发/QA/验收，带证据门禁与人工闸（VsSaros P2 外部包）",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js"
+  },
+  "files": [
+    "cordis.patch.yml",
+    "lib/",
+    "test/"
+  ],
+  "scripts": {
+    "check": "node ./test/run-teamflow-check.mjs",
+    "dry-run": "node ./test/dry-run.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@vssaros/dsh-workbenches"
+      ]
+    }
+  }
+}

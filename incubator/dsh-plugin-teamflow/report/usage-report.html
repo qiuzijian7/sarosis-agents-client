@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>团队研发流水线 · 框架与使用报告（VsSaros）</title>
+<style>
+:root {
+  --bg: #f6f7f9; --fg: #1c2128; --muted: #5b6472; --card: #ffffff;
+  --border: #dfe3e9; --accent: #2b5fd9; --accent-soft: #eaf0ff;
+  --ok: #15803d; --ok-soft: #e8f6ec; --warn: #a35a00; --warn-soft: #fff4e2;
+  --code: #f2f4f7; --shadow: 0 1px 3px rgba(20,30,50,.08);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161a20; --fg: #e6e9ef; --muted: #98a2b3; --card: #1e242d;
+    --border: #333b47; --accent: #7ea6ff; --accent-soft: #243049;
+    --ok: #6ee7a0; --ok-soft: #183528; --warn: #f0b86a; --warn-soft: #3a2c18;
+    --code: #232a34; --shadow: 0 1px 3px rgba(0,0,0,.35);
+  }
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 15px/1.75 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, pre, .mono { font-family: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+code { background: var(--code); padding: .12em .38em; border-radius: 4px; font-size: .9em; }
+pre {
+  background: var(--code); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 16px; overflow-x: auto; font-size: 12.5px; line-height: 1.65; white-space: pre-wrap; word-break: break-word;
+}
+.layout { max-width: 1180px; margin: 0 auto; padding: 0 20px 80px; display: grid; grid-template-columns: 210px minmax(0,1fr); gap: 34px; }
+.toc { position: sticky; top: 0; align-self: start; padding: 28px 0; font-size: 13px; }
+.toc strong { display: block; margin-bottom: 10px; letter-spacing: .05em; color: var(--muted); text-transform: uppercase; }
+.toc a { display: block; padding: 4px 0; color: var(--muted); }
+.toc a:hover { color: var(--accent); }
+main { min-width: 0; }
+header.hero {
+  margin: 28px 0 26px; padding: 26px 28px; border-radius: 14px;
+  background: linear-gradient(135deg, var(--accent-soft), var(--card));
+  border: 1px solid var(--border); box-shadow: var(--shadow);
+}
+.hero h1 { margin: 0 0 6px; font-size: 27px; letter-spacing: -.01em; }
+.hero .sub { color: var(--muted); margin: 0 0 16px; font-size: 14px; }
+.badges { display: flex; flex-wrap: wrap; gap: 8px; }
+.badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; border: 1px solid var(--border); background: var(--card); }
+.badge.ok { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+.badge.acc { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+.badge.warn { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+h2 { font-size: 20px; margin: 40px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border); scroll-margin-top: 16px; }
+h3 { font-size: 16px; margin: 26px 0 10px; scroll-margin-top: 16px; }
+p { margin: 10px 0; }
+ul, ol { padding-left: 22px; }
+li { margin: 5px 0; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; margin: 14px 0; box-shadow: var(--shadow); }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 16px 0; }
+.stat { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+.stat .n { font-size: 22px; font-weight: 650; color: var(--accent); line-height: 1.3; }
+.stat .n.ok { color: var(--ok); }
+.stat .l { font-size: 12px; color: var(--muted); }
+table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13.5px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+th, td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { background: var(--code); font-weight: 600; font-size: 12.5px; color: var(--muted); }
+tr:last-child td { border-bottom: none; }
+.tag { display: inline-block; padding: 1px 7px; border-radius: 5px; font-size: 11px; background: var(--accent-soft); color: var(--accent); }
+.tag.w { background: var(--warn-soft); color: var(--warn); }
+.tag.g { background: var(--ok-soft); color: var(--ok); }
+/* --- 界面截图与编号热点 --- */
+figure { margin: 18px 0 10px; }
+.shot { position: relative; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--card); }
+.shot img { display: block; width: 100%; height: auto; }
+.pin {
+  position: absolute; transform: translate(-50%, -50%);
+  width: 24px; height: 24px; border-radius: 50%;
+  background: var(--accent); color: #fff; font-size: 12px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px solid #fff; box-shadow: 0 1px 5px rgba(0,0,0,.35);
+}
+figcaption { color: var(--muted); font-size: 12.5px; margin-top: 8px; }
+.step { display: grid; grid-template-columns: 34px minmax(0,1fr); gap: 12px; margin: 18px 0; }
+.step .num { width: 30px; height: 30px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-weight: 700; display: flex; align-items: center; justify-content: center; font-size: 14px; }
+.step h3 { margin: 2px 0 6px; font-size: 16px; }
+.note { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 14px 0; font-size: 13.5px; }
+.note.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+.note.ok { border-left-color: var(--ok); background: var(--ok-soft); }
+.foot { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12.5px; }
+.tree { font-size: 12.5px; line-height: 1.7; }
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; gap: 0; }
+  .toc { position: static; padding: 18px 0 0; }
+  .toc a { display: inline-block; margin-right: 14px; }
+  /* 表格默认 auto 布局会被长 code 撑出横向滚动条：窄屏改为固定布局 + 强制换行 */
+  table { table-layout: fixed; }
+  th, td { overflow-wrap: anywhere; word-break: break-word; }
+}
+@media print {
+  .toc { display: none; }
+  .layout { grid-template-columns: 1fr; max-width: none; }
+  .card, .stat, table, .shot, pre { break-inside: avoid; }
+  body { background: #fff; color: #000; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="toc">
+  <strong>目录</strong>
+  <a href="#summary">1 · 报告摘要</a>
+  <a href="#framework">2 · 框架总览</a>
+  <a href="#ui">3 · 原生界面导览 ★</a>
+  <a href="#usage">4 · 使用方法（逐步）</a>
+  <a href="#tools">5 · 工具与接口</a>
+  <a href="#verify">6 · 真机验证报告</a>
+  <a href="#trouble">7 · 排障手册</a>
+  <a href="#limits">8 · 已知边界</a>
+  <a href="#commands">9 · 命令速查</a>
+</nav>
+
+<main>
+<header class="hero">
+  <h1>团队研发流水线 · 框架与使用报告</h1>
+  <p class="sub">VsSaros / dsh 外部包工作台 <code>local:dsh-teamflow-workbench</code> · 基于上游 <code>dsh-plugin-teamflow@0.3.3</code>（MIT, <code>89aec4b</code>）复刻 · 2026-11-04</p>
+  <div class="badges">
+    <span class="badge acc">工作台规范 0.3.26/566e1673</span>
+    <span class="badge acc">插件 0.2.4</span>
+    <span class="badge ok">真机 run: completed</span>
+    <span class="badge ok">独立验收: accepted</span>
+    <span class="badge">自检 91/91</span>
+    <span class="badge">等价 856 断言</span>
+  </div>
+</header>
+
+<!-- 1 -->
+<h2 id="summary">1 · 报告摘要</h2>
+<p>把开源 <code>dsh-plugin-teamflow</code> 的自动研发流水线复刻进 VsSaros：不改上游一字地镜像源码、把纯逻辑内核机械 JS 化、用本仓宿主 seam 重写胶水、以外部包工作台形态装机，并完成界面与执行链的真机取证。详细架构见 <a href="./framework.zh-CN.md">框架说明</a>。</p>
+<div class="grid">
+  <div class="stat"><div class="n">240</div><div class="l">上游文件逐字镜像 / 7.02 MB</div></div>
+  <div class="stat"><div class="n">17</div><div class="l">JS 化内核模块（零宿主运行时依赖）</div></div>
+  <div class="stat"><div class="n">856</div><div class="l">移植等价断言，14/14 组全绿</div></div>
+  <div class="stat"><div class="n">12</div><div class="l">teamflow_* 模型工具</div></div>
+  <div class="stat"><div class="n ok">5/5</div><div class="l">真机阶段全部 done</div></div>
+  <div class="stat"><div class="n ok">accepted</div><div class="l">独立 verifier 结论（selfReported:false）</div></div>
+</div>
+<div class="note ok"><strong>一句话结论：</strong>这条流水线在 VsSaros 里真机跑通了「一句话需求 → PRD/技术方案/实现/QA → 独立验收者自己重跑检查 → 交付」，并且提交闸仍留给人。</div>
+
+<!-- 2 -->
+<h2 id="framework">2 · 框架总览</h2>
+<table>
+  <tr><th>层</th><th>产物</th><th>关键决定</th></tr>
+  <tr><td>P0 镜像</td><td><code>incubator/dsh-plugin-teamflow/**</code></td><td>不进 <code>dsh-plugins/</code>（那会把插件打进所有用户 profile 种子）；只加一行 ESLint 排除</td></tr>
+  <tr><td>P1 内核</td><td><code>port/mirror/**.js</code>、<code>port/*.mjs</code></td><td>Node 内置 <code>stripTypeScriptTypes</code> 机械剥离，不手工重写；哈希漂移守卫钉住真源与副本</td></tr>
+  <tr><td>P2 外部包</td><td><code>workbench/</code>（<code>dsh-teamflow-workbench@0.2.4</code>）</td><td>身份 <code>local:&lt;包名&gt;</code>，0 处宿主清单改动；Host 半 + 注册式 React 工作台</td></tr>
+  <tr><td>P3 装机</td><td>dev profile 的 <code>file:</code> 依赖</td><td>干跑 → 官方通道 <code>dsh plugin add</code> → 重启 → 真机取证；生产 profile 未动</td></tr>
+</table>
+<h3>宿主 seam 映射</h3>
+<table>
+  <tr><th>上游</th><th>本仓</th></tr>
+  <tr><td><code>ctx.subagents.startActivation</code></td><td><code>vssarosRuns.run/cancel</code>，会话 <code>tf-&lt;runId&gt;-&lt;phase&gt;</code></td></tr>
+  <tr><td>typert / remote 描述符</td><td><code>webServer.register</code> 前缀 <code>/x/teamflow</code> + 同源 fetch</td></tr>
+  <tr><td><code>$DSH_HOME/teamflow</code></td><td><code>!!js dshHomePath('dsh-teamflow-workbench')</code></td></tr>
+  <tr><td>TS/TSX + tsdown</td><td>纯 JS chunk + <code>window.__ModuleLoader__.load</code></td></tr>
+  <tr><td>自建 run 状态</td><td>复用 <code>vssarosWorkItems</code> 账本状态机（cordis 服务，零跨包 import）</td></tr>
+</table>
+<h3>执行链</h3>
+<pre>需求 → suggestMode / resolveStages → journal 原子落盘
+     → vssarosRuns.run 逐阶段（每阶段独立会话 + 工具白名单）
+     → 证据块（命令 + 退出码 + 断言数）
+     → QA 缺陷表（P0–P2）⇒ qaFix + 复验，≤2 轮，超限停线
+     → 验收 worker 结论行 + 另一条会话 tf-&lt;id&gt;-verify 自己重跑检查
+     → 两边 accepted 且 verifier 有证据才 done
+     → ledger 账本 → /x/teamflow/api/status → React 面板</pre>
+<div class="note">本仓 bundled runtime 是 <code>0.2.1-rc.2</code>，上游要求 <code>&gt;=0.2.1-rc.5</code>。<strong>没有升运行时</strong>，而是用适配层换掉宿主胶水；升级路线的成本与风险都更高。</div>
+
+<!-- 3 -->
+<h2 id="ui">3 · VsSaros 原生界面导览 ★</h2>
+<p>下图是 <strong>VsSaros — Desktop v2.2.26224</strong> 的真实截图，工作台已打开、尚未启动任何 run。编号对应下方的区域说明表。</p>
+
+<figure>
+  <div class="shot">
+    <img src="assets/teamflow-workbench.png" alt="VsSaros Desktop 中的团队研发流水线工作台（空态）">
+    <span class="pin" style="left:10.5%;top:8%">1</span>
+    <span class="pin" style="left:88.5%;top:5.3%">2</span>
+    <span class="pin" style="left:92%;top:10.7%">3</span>
+    <span class="pin" style="left:24%;top:14.7%">4</span>
+    <span class="pin" style="left:96%;top:14.7%">5</span>
+    <span class="pin" style="left:24.5%;top:19.5%">6</span>
+    <span class="pin" style="left:53%;top:19.5%">7</span>
+  </div>
+  <figcaption>截图来源：用户提供。工作台是「注册式整页工作台」，宿主左侧栏与顶部页签栏保持可见，业务区不越出主内容区、没有自绘 iframe。</figcaption>
+</figure>
+
+<table>
+  <tr><th>#</th><th>区域（VsSaros 原生）</th><th>看到什么</th><th>怎么用</th></tr>
+  <tr>
+    <td><span class="tag">1</span></td>
+    <td><strong>左侧栏</strong>：VsSaros IDE 标识、「新会话」、主页 / SuperAgent、会话 / Bots 标签、工作区 <code>sarosis-agents-client</code> 与会话列表</td>
+    <td>宿主公共入口始终可见；底部还有登录态提示</td>
+    <td>工作台<strong>不依赖会话</strong>：没有会话也能正常用业务面板；只有要发给 Agent 的动作才需要会话。侧栏可展开/收起，工作台按自身容器宽度响应</td>
+  </tr>
+  <tr>
+    <td><span class="tag">2</span></td>
+    <td><strong>顶部页签栏</strong>：会话 / 主页 / 知识库 / 商城 / 媒体库 / SuperAgent / 自动化任务 / … / <strong>团队研发流水线</strong></td>
+    <td>当前选中的是「团队研发流水线」页签；身份 <code>local:dsh-teamflow-workbench</code></td>
+    <td>展开左侧栏 → <strong>工作台启动器</strong>里点「团队研发流水线」即可打开；注册式工作台会自动出现在启动器中，不需要额外登记清单</td>
+  </tr>
+  <tr>
+    <td><span class="tag">3</span></td>
+    <td><strong>工作台工具条</strong>：标题「团队研发流水线」、右侧 <code>0 条 run</code> 徽标、「刷新」按钮</td>
+    <td>徽标是 <code>data-teamflow-count</code> 锚点，数字来自 <code>/api/list</code></td>
+    <td>点「刷新」重新拉取运行记录；工具条内恰好一个 <code>data-dsh-workbench-toolbar</code> 锚点，窄窗口时自动换行</td>
+  </tr>
+  <tr>
+    <td><span class="tag">4</span></td>
+    <td><strong>需求输入</strong>：「一句话需求，例如：给设置页加暗色切换并补测试」</td>
+    <td>未输入时「启动流水线」是禁用态</td>
+    <td>填一句话需求。分诊是确定性的，<code>修个错别字</code> → <code>full</code>、<code>做个页面</code> → <code>lite</code></td>
+  </tr>
+  <tr>
+    <td><span class="tag">5</span></td>
+    <td><strong>工作目录输入 + 启动按钮</strong>：「工作目录（可选，留空用 Host 当前目录）」</td>
+    <td>启动回执会显示实际 <code>cwd</code>，避免静默跑错目录</td>
+    <td><strong>强烈建议填项目路径</strong>：阶段会话的 <code>cwd</code> 决定模型改哪里。点「启动流水线」后立即返回 <code>runId / mode / stages / cwd / approval</code>，阶段在后台驱动</td>
+  </tr>
+  <tr>
+    <td><span class="tag">6</span></td>
+    <td><strong>左栏「运行记录」</strong>：run 列表、每行状态 chip</td>
+    <td>空态文案「还没有 run / 在上方输入需求启动一条；或检查 Host 的数据目录」</td>
+    <td>点某条 run 即选中；状态有 <code>running / completed / needs-human / interrupted / cancelled</code>。崩溃残留的 running 会在插件加载时归正为 <code>interrupted</code></td>
+  </tr>
+  <tr>
+    <td><span class="tag">7</span></td>
+    <td><strong>右栏详情</strong>：阶段状态、证据、独立验收徽标、needs-human 回答框、「从断点续跑」/「取消」</td>
+    <td>空态文案「选左边一条 run / 这里显示阶段状态、证据与人工介入项」</td>
+    <td>看每个阶段的 <code>label / status</code>；验收阶段会显示「独立验收 accepted」徽标。停线时这里出现原因 + 补充说明输入 +「提交并继续」</td>
+  </tr>
+</table>
+
+<div class="note"><strong>视觉与响应式（真机实测）</strong>：根节点带 <code>data-vssaros-surface="workbench"</code>，用了 15 个不同 <code>wb-*</code> 原语，颜色全走 <code>var(--…)</code>，宽度用 <code>@container</code> 而非 <code>@media</code>；在 500px 视口下 <code>wb-split</code> 折叠成 <code>1fr</code> 单列、工具条换行，按钮与输入框无裁切、无横向滚动，页面 JS 错误为 <code>[]</code>。</div>
+
+<!-- 4 -->
+<h2 id="usage">4 · 使用方法（逐步）</h2>
+
+<div class="step"><div class="num">1</div><div>
+<h3>打开工作台</h3>
+<p>在 VsSaros 里展开左侧栏（区域 <span class="tag">1</span>），从<strong>工作台启动器</strong>选「团队研发流水线」；打开后它会作为顶部页签出现（区域 <span class="tag">2</span>）。不需要先建会话，工作台业务区开箱可用。</p>
+<p>如果启动器里没有：先确认插件已安装（工作台商城「已安装」），再点菜单 <strong>Harness → 重启 Harness</strong>（不是「立即重启」——那只重载窗口）。启动器底部若显示「装了但没能注册」+ 包名，按提示的原因改描述符/身份，不要重复安装。</p>
+</div></div>
+
+<div class="step"><div class="num">2</div><div>
+<h3>启动一条流水线</h3>
+<p>在区域 <span class="tag">4</span> 填一句话需求，在区域 <span class="tag">5</span> 填工作目录，点「启动流水线」。</p>
+<pre>POST /x/teamflow/api/start
+{ "requirement": "给设置页加暗色切换并补测试",
+  "options": { "cwd": "G:/your/project" } }
+
+→ 200 { ok:true, runId:"tf-…", mode:"full",
+        stages:["prd","tech","dev","qa","acceptance"],
+        cwd:"G:/your/project", approval:{ allow:[…] } }</pre>
+<p>启动是<strong>异步</strong>的：回执立即返回，阶段在后台逐条驱动。用「刷新」或 <code>teamflow_status</code> 看进度。</p>
+<div class="note ok"><strong>工具白名单（当前 fail-closed）</strong>：<code>cordis.patch.yml</code> 的 <code>allowTools</code> 是背景子会话这一轮允许的工具名；当前为 <code>[]</code>，写工具全拒。真机验证期间曾临时放行 <code>[file_read, file_write, patch, search_files, terminal, execute_code]</code>，已在 <code>0.2.4</code> 恢复。改它必须 <b>bump 版本 + 重新 pack + 新暂存目录 + plugin add</b>，HMR 不会重读 bundle 内 config。</div>
+</div></div>
+
+<div class="step"><div class="num">3</div><div>
+<h3>看阶段进度</h3>
+<p>左栏（区域 <span class="tag">6</span>）点选 run；右栏（区域 <span class="tag">7</span>）会列出每个阶段：<code>需求与验收用例 / 技术方案 / 功能实现 / 自动测试 / 产品验收</code>，各带状态 chip。验收阶段若已跑独立 verifier，会多一个「独立验收 accepted」徽标。</p>
+<p>每个阶段要求模型交 <code>[Verification evidence]</code> 块（命令 + 退出码 + 断言数）；没有证据就写「无」，不得编造。QA 发现 P0–P2 缺陷时会自动插入 <code>qaFix → qa</code> 复验，最多 2 轮。</p>
+</div></div>
+
+<div class="step"><div class="num">4</div><div>
+<h3>处理 needs-human（人工闸）</h3>
+<p>出现这些情况会停线并在右栏显示原因：worker 与独立 verifier 结论不一致、verifier 无可复核证据、QA 复验超 2 轮、<code>vssarosRuns</code> 服务不可用、普通阶段失败（空回复 / runner 异常）。</p>
+<p>在 <code>wb-diag</code> 区填补充说明，点「提交并继续」（<code>POST /api/answer</code>）；流水线会从人工项继续，已完成的阶段不重跑。</p>
+<div class="note"><strong>提交闸不给 Agent</strong>：<code>teamflow_merge</code> 永远返回 <code>blocked</code>，把 run 标为「需人工审核」。最终发布/合并必须人在界面同意。</div>
+</div></div>
+
+<div class="step"><div class="num">5</div><div>
+<h3>断点续跑 / 取消</h3>
+<p>右栏「从断点续跑」（<code>POST /api/resume</code>）：归正残留 running 账本、保留已完成阶段产物、其余阶段重置后重新驱动。Host 停机后，下次插件加载会把残留 <code>running</code> 归正为 <code>interrupted</code> 并标 <code>wasInterrupted</code>，界面能如实看到。</p>
+<p>「取消」（<code>POST /api/cancel</code>）：置 <code>cancelled</code> 并尽力取消当前活动会话。</p>
+</div></div>
+
+<div class="step"><div class="num">6</div><div>
+<h3>在会话里用模型工具</h3>
+<p>除了界面，也可在 VsSaros 会话里让 Agent 调用 <code>teamflow_start / teamflow_status / teamflow_resume / …</code>（见第 5 节）。写类工具会触发 <code>tools/pre-execute</code> 的 <code>{kind:'ask'}</code> 审批，需要你允许一次。</p>
+</div></div>
+
+<div class="step"><div class="num">7</div><div>
+<h3>收尾：恢复安全默认</h3>
+<p><strong>已在 <code>0.2.4</code> 收口</strong>：<code>allowTools</code> 已恢复 <code>[]</code>（fail-closed），仓库源与 dev profile 已装副本逐字一致；这次 bump/重装触发了 bundle 重新组装。生产 profile 从未安装过这个包。</p>
+</div></div>
+
+<!-- 5 -->
+<h2 id="tools">5 · 工具与接口</h2>
+<h3>12 个模型侧工具</h3>
+<table>
+  <tr><th>工具</th><th>类型</th><th>作用</th></tr>
+  <tr><td><code>teamflow_start</code></td><td><span class="tag w">写·ask</span></td><td>启动流水线（分诊 → 后台驱动）</td></tr>
+  <tr><td><code>teamflow_triage</code></td><td><span class="tag">读</span></td><td>分诊预览，返回档位 / 理由 / 阶段集，不建 run</td></tr>
+  <tr><td><code>teamflow_status</code></td><td><span class="tag">读</span></td><td>阶段状态、证据、验收结论、独立验收结论</td></tr>
+  <tr><td><code>teamflow_backlog</code></td><td><span class="tag">读</span></td><td>backlog 条目</td></tr>
+  <tr><td><code>teamflow_claim</code> / <code>teamflow_assign</code> / <code>teamflow_update</code></td><td><span class="tag w">写·ask</span></td><td>认领 / 指派 / 状态流转（<code>todo/doing/blocked/done</code>）</td></tr>
+  <tr><td><code>teamflow_cancel</code> / <code>teamflow_resume</code></td><td><span class="tag w">写·ask</span></td><td>取消 / 断点续跑</td></tr>
+  <tr><td><code>teamflow_pause</code> / <code>teamflow_resume_session</code></td><td><span class="tag w">写·ask</span></td><td>会话级暂停与解除</td></tr>
+  <tr><td><code>teamflow_merge</code></td><td><span class="tag w">写·ask</span></td><td><strong>明确拒绝</strong>自动合并，转人工审核</td></tr>
+</table>
+<h3>HTTP 端点</h3>
+<p><code>GET /x/teamflow/?format=json</code>、<code>GET /api/list</code>、<code>GET /api/status</code>、<code>GET /api/backlog</code>、<code>POST /api/triage</code>、<code>POST /api/start</code>、<code>POST /api/cancel</code>、<code>POST /api/resume</code>、<code>POST /api/answer</code>。工具与路由共用同一 controller，不重算判定；所有请求经 <code>connection.requestRejection</code> 的 Host/Origin 围栏与浏览器认证。</p>
+<h3>数据落盘</h3>
+<pre>&lt;数据根&gt;/dsh-teamflow-workbench/
+├── runs/&lt;runId&gt;.json   journal（原子写 + .bak 自愈）
+├── ledger.json          vssaros-workitem 账本
+└── backlog.json         需求 / 缺陷条目</pre>
+
+<!-- 6 -->
+<h2 id="verify">6 · 真机验证报告</h2>
+<h3>6.1 run <code>tf-mw1jte1l-qbvv</code></h3>
+<div class="grid">
+  <div class="stat"><div class="n ok">completed</div><div class="l">终态</div></div>
+  <div class="stat"><div class="n">full</div><div class="l">分诊档位</div></div>
+  <div class="stat"><div class="n">0</div><div class="l">QA 打回轮数</div></div>
+  <div class="stat"><div class="n">null</div><div class="l">needs-human</div></div>
+</div>
+<table>
+  <tr><th>阶段</th><th>状态</th><th>证据长度</th><th>判定</th></tr>
+  <tr><td><code>prd</code> 需求与验收用例</td><td><span class="tag g">done</span></td><td>772 字符</td><td>—</td></tr>
+  <tr><td><code>tech</code> 技术方案</td><td><span class="tag g">done</span></td><td>265 字符</td><td>退出码 0 / 断言数 3</td></tr>
+  <tr><td><code>dev</code> 功能实现</td><td><span class="tag g">done</span></td><td>407 字符</td><td>—</td></tr>
+  <tr><td><code>qa</code> 自动测试</td><td><span class="tag g">done</span></td><td>622 字符</td><td><code>defects=0</code></td></tr>
+  <tr><td><code>acceptance</code> 产品验收</td><td><span class="tag g">done</span></td><td>365 字符</td><td><code>verdict=accepted</code> + 结论行「验收结论：✅ 通过」</td></tr>
+</table>
+<h3>6.2 独立验收者（核心证据）</h3>
+<table>
+  <tr><th>字段</th><th>值</th></tr>
+  <tr><td>worker 会话</td><td><code>tf-tf-mw1jte1l-qbvv-acceptance</code></td></tr>
+  <tr><td>verifier 会话</td><td><code>tf-tf-mw1jte1l-qbvv-verify</code>（<strong>不同会话</strong>，会话文件真实存在 12:19:45 / 7174B）</td></tr>
+  <tr><td>verdict</td><td><span class="tag g">accepted</span></td></tr>
+  <tr><td>selfReported</td><td><code>false</code>（不采信实现者汇报）</td></tr>
+  <tr><td>断言</td><td>4 项全 PASS</td></tr>
+</table>
+<p>verifier 自己重跑的检查（不是抄 handoff）：</p>
+<pre>- 命令1: Get-ChildItem -Path "...\tf-min-run-final-20261104" -Force → 退出码 0；
+         目录内仅含 hello.txt（14 字节），无隐藏文件或其它条目
+- 命令2: 读取文件 + 字节/十六进制分析 → 退出码 0；
+         字节序列 68 65 6c 6c 6f 20 74 65 61 6d 66 6c 6f 77 = hello teamflow，
+         无 BOM、无尾部换行符（CRLF/LF 均为 0）
+- 断言数: 4
+  1. hello.txt 存在于指定目录 → PASS
+  2. 内容恰为 hello teamflow（大小写敏感、14 字节、无换行符） → PASS
+  3. 仅一行（按 LF 切分非空行数 = 1） → PASS
+  4. 指定目录内仅此单一产物，未植入其它文件 → PASS
+  - 注：「未改动其它目录」一项无基线快照可逐目录比对，但本次运行目录内只有这一个目标文件，
+    未发现其它目录被写入的证据。
+
+验收结论：✅ 通过</pre>
+<div class="note ok">两边都 <code>accepted</code> 且 verifier 有证据，阶段才判 <code>done</code>。交付产物 <code>hello.txt</code> 14B；账本里本 run 的 5 个阶段条目全部 <code>done</code>；<code>/api/list</code> 与 <code>/api/status</code> 与落盘 journal 逐字一致。</div>
+
+<h3>6.3 守卫与界面取证</h3>
+<table>
+  <tr><th>检查</th><th>结果</th></tr>
+  <tr><td>移植等价守卫</td><td><code>14/14</code> 组 · 上游 <code>856</code> / JS 化 <code>856</code> 断言 · 漂移 0 · 宿主依赖 0 · 内核副本 OK</td></tr>
+  <tr><td>状态机语义探针</td><td><code>23/23</code></td></tr>
+  <tr><td>包内自检（伪 ctx 真跑 apply）</td><td><code>91/91</code>，含 9 条回归与 fail-closed 守卫</td></tr>
+  <tr><td>安装前干跑</td><td><code>ok:true</code> · 身份 <code>local:dsh-teamflow-workbench</code> · 0 error / 0 warning</td></tr>
+  <tr><td>本仓守卫</td><td><code>check-plugin-files 104/104</code> · <code>check-host-config 24 项契约 0 违规</code></td></tr>
+  <tr><td>界面 DOM</td><td>15 个 <code>wb-*</code> 类 · 工具栏锚点恰好 1 · <code>container-type:inline-size</code> · 零 iframe · <code>jsErrors=[]</code></td></tr>
+  <tr><td>窄窗口（500px / 工作台 444px）</td><td><code>wb-split:1fr</code> 单列 · 工具条 <code>wrap</code> · 按钮/输入无裁切 · <code>overflowX=0</code></td></tr>
+  <tr><td>IDE 诊断</td><td>新增 JS/MJS 文件 0 条诊断</td></tr>
+</table>
+
+<!-- 7 -->
+<h2 id="trouble">7 · 排障手册</h2>
+<table>
+  <tr><th>现象</th><th>原因</th><th>处置</th></tr>
+  <tr><td>启动器里看不到「团队研发流水线」</td><td>插件未加载；Host 是 keepAlive，「立即重启」只重载窗口</td><td>点菜单 <strong>Harness → 重启 Harness</strong>；或看 <code>/api/vssaros-workbenches/install-status</code> 是否 <code>pending</code></td></tr>
+  <tr><td>启动器底部显示「装了但没能注册」</td><td>身份/描述符校验不过，或面板挂载失败</td><td>按提示的原因改描述符 / 改名，<strong>不要重复安装同一个包</strong></td></tr>
+  <tr><td>「日志里没有 teamflow」</td><td>本插件 <code>apply()</code> 不打日志（与 workitem / loop 同）</td><td>不要据此判断没加载；看数据根 <code>runs/</code> 是否创建、<code>/api/list</code> 是否 200、<code>window.__vssarosWb_teamflow</code> 是否 <code>registered:true</code></td></tr>
+  <tr><td>改了 <code>allowTools</code> 但 <code>/api/start</code> 回执仍是 <code>allow:[]</code></td><td>bundle 内 config 只在组装时读，HMR 不重读</td><td>改仓库源 → bump → <code>pnpm pack</code> → <strong>新暂存目录</strong> → <code>dsh plugin add</code>（spec 必须变化）</td></tr>
+  <tr><td><code>plugin add</code> 后页面打不开 / <code>require('compression')</code> 失败</td><td>pnpm 删掉嵌套 <code>negotiator/lib/accept.js</code></td><td>同版本从顶层复制补回，再 touch profile <code>package.json</code> 触发 HMR 自愈</td></tr>
+  <tr><td>Host 反复「父进程已退出 ⇒ 孤儿主动退出」</td><td>dev app 残留僵尸实例占 profile 锁，启动器打印 <code>HANDOFF-ZOMBIE</code></td><td><code>taskkill /F /IM "VsSaros Dev.exe"</code>（只杀 dev 专用名，不碰打包版）→ <code>node scripts/start-dev-app.mjs</code></td></tr>
+  <tr><td>阶段卡住 / 模型无响应</td><td>Host 停机、模型网关或会话无响应</td><td>看 <code>&lt;数据根&gt;/.../runs/&lt;id&gt;.json</code> 的阶段时间线与会话事件；单阶段超时由 <code>timeoutMs</code> 控制（当前 180000）</td></tr>
+  <tr><td>阶段是 <code>needs-human</code></td><td>验收证据不足 / QA 超限 / 阶段失败 / runs 不可用</td><td>右栏看原因，填补充说明点「提交并继续」；修复后普通阶段失败会立即停线，不再白跑后续阶段</td></tr>
+  <tr><td>改了子块但界面还是旧的</td><td><code>?rev</code> 由入口元数据派生，缓存 immutable</td><td>升补丁版本 + touch <code>lib/client.js</code>（包内自检会钉住入口不比子块旧）</td></tr>
+</table>
+
+<!-- 8 -->
+<h2 id="limits">8 · 已知边界</h2>
+<ul>
+  <li>阶段 prompt 是精简自写版；上游完整 <code>host/prompts/index.js</code> 已随内核带进包但未接线。</li>
+  <li>分诊用确定性 <code>suggestMode</code>，未接模型驱动的 <code>runTriage</code>；token 计量未接（<code>vssarosRuns</code> 回执无 usage），不伪造。</li>
+  <li>QA 回环 ≤2 轮停线只在包内自检触发过，真机 <code>defects=0</code> 未走到。</li>
+  <li><span class="tag g">已修复 0.2.4</span> <code>dev.outcome</code> 残留：<code>resume()</code>/<code>answer()</code> 重跑前用 <code>resetStageResult()</code> 清结果字段，成功回合把 <code>outcome</code> 置 <code>null</code>；4 条回归断言覆盖落盘一致性。</li>
+  <li>明暗主题切换未单独真机验证；CSS 无裸色、尺寸颜色全走 <code>var(--…)</code>。</li>
+  <li>数据根用 <code>dshHomePath</code>；随包化若要走 <code>foundation().dataRootOf(config)</code>，需同步 <code>check-host-config.mjs</code> 的 foundationRef 份数。</li>
+  <li>生产 profile 未安装。随包化（改名 <code>@vssaros/*</code> + 三清单 + codicon）与外部包形态<strong>互斥</strong>：并行会出现两个同名工作台入口。</li>
+</ul>
+
+<!-- 9 -->
+<h2 id="commands">9 · 命令速查</h2>
+<pre>$mir = 'g:\SarosWorkspace\sarosis-agents-client\incubator\dsh-plugin-teamflow'
+$wb  = Join-Path $mir 'workbench'
+Remove-Item Env:NODE_OPTIONS -ErrorAction SilentlyContinue
+
+node (Join-Path $mir 'port\port-core.mjs')        # 重放 JS 化 + 同步内核副本
+node (Join-Path $mir 'port\run-check.mjs')        # P1/P2 统一守卫
+node (Join-Path $mir 'port\run-bridge-check.mjs') # 状态机语义探针
+
+cd $wb
+node test/run-teamflow-check.mjs                  # 包内自检
+pnpm pack                                         # 产出 .tgz
+node test/dry-run.mjs &lt;.tgz 绝对路径&gt;             # 安装前干跑（不写盘）
+
+# 官方安装通道（spec 必须变化，否则 pnpm 不替换）
+$env:DSH_HOME = "$env:USERPROFILE\.vssaros-dev\dsh-home"
+node "$env:USERPROFILE\.vssaros-dev\dsh-runtime\0.2.1-alpha.3\node_modules\@deepseek-ai\dsh\lib\bin.js" `
+  plugin --profile vssaros add file:&lt;新暂存目录&gt;
+
+# 本仓既有守卫
+node dsh-plugins/check-plugin-files.mjs
+node dsh-plugins/check-host-config.mjs</pre>
+
+<div class="foot">
+  <p><strong>来源</strong>：上游 <code>dsh-plugin-teamflow@0.3.3</code>（MIT, <code>89aec4b094d0450b37c54d65f5dea469e0c01f02</code>）· 本仓 <code>incubator/dsh-plugin-teamflow/</code> · 工作台规范 <code>0.3.26/566e1673</code>。</p>
+  <p>配套文档：<a href="./framework.zh-CN.md">框架说明 framework.zh-CN.md</a>。本报告为离线自包含 HTML，除内嵌截图外无外部依赖；支持浅色/暗色与打印。</p>
+  <p>生成时间：2026-11-04 · 状态：dev profile 已装机并真机验证；生产 profile 未安装。</p>
+</div>
+</main>
+</div>
+</body>
+</html>

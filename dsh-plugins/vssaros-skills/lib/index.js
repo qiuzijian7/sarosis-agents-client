@@ -1875,19 +1875,25 @@ async function scanAgentsOf(config) {
  * ⚠ 真正的注册在宿主服务 `desktopWorkbenches`（IDE 活动栏管理），本插件读不到 ⇒ 维护 route 表，
  *   并如实标注只读，不假装能在这里开关。
  */
+// ★ 2026-11-04（用户要求「看板 / 流程 / 生图暂时下线」）：这份只读镜像也跟着收口。
+//   带 `offline` 的条目仍留在全表里（清单完整、便于恢复），但计数 / 徽章 / 列表一律用 VISIBLE_ 那份。
+//   下线真源在 `vssaros-dashboard/lib/catalog.js::OFFLINE_WORKBENCH_ROUTES`（守卫 ⑥ 对账）。
 const TOOLS_WORKBENCHES = [
 	{ name: '主页', desc: '会话遥测 / 用量与编排', route: '/x/dashboard/', provider: 'vssaros-dashboard' },
-	{ name: '看板', desc: '看板存储与卡片工具', route: '/x/kanban/', provider: 'vssaros-kanban' },
+	{ name: '看板', desc: '看板存储与卡片工具', route: '/x/kanban/', provider: 'vssaros-kanban', offline: true },
 	{ name: '知识库', desc: '知识库索引与检索', route: '/x/kb/', provider: 'vssaros-kb' },
 	{ name: '代码库', desc: '代码图谱与符号检索', route: '/x/codebase/', provider: 'vssaros-codebase' },
 	{ name: '历史会话', desc: '会话分组 / 人格标记 / 指示灯', route: '/x/sessions/', provider: 'vssaros-sessions' },
 	{ name: '媒体库', desc: '只读 media.db 页面', route: '/x/media/', provider: 'vssaros-media' },
 	{ name: '工具', desc: '技能 / 连接器 / 工作流 / Agent（本页）', route: '/x/skills/', provider: 'vssaros-skills' },
 	{ name: 'MCP', desc: 'MCP 服务器与工具', route: '/x/mcp/', provider: 'vssaros-mcp' },
-	{ name: '流程', desc: '工作流引擎与画布', route: '/x/workflow/', provider: 'vssaros-workflow' },
+	{ name: '流程', desc: '工作流引擎与画布', route: '/x/workflow/', provider: 'vssaros-workflow', offline: true },
 	{ name: 'Agent', desc: '.agent.md → dsh preset', route: '/x/agents/', provider: 'vssaros-agents' },
 	{ name: '商城', desc: '技能 / 工作台 / 工作流的安装与发布', route: '/x/marketplace/', provider: 'vssaros-marketplace' },
 ];
+
+/** 工具页真正渲染的那份：临时下线的工作台不计数、不出行（恢复 = 摘掉 offline 标记）。 */
+const VISIBLE_TOOLS_WORKBENCHES = TOOLS_WORKBENCHES.filter(w => !w.offline);
 
 /** 路径显示：家目录缩成 `~`，否则整行会被截断。 */
 function prettyPath(file) {
@@ -3149,7 +3155,7 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 <div class="sk-view">
 		<div class="sk-header">
 		<span class="sk-title">工具</span>
-		<span class="sk-count" data-sk-hcount>${summary.count} 技能 · ${wf.items.length} 工作流 · ${ag.items.length} Agent · ${TOOLS_WORKBENCHES.length} 工作台</span>
+		<span class="sk-count" data-sk-hcount>${summary.count} 技能 · ${wf.items.length} 工作流 · ${ag.items.length} Agent · ${VISIBLE_TOOLS_WORKBENCHES.length} 工作台</span>
 		<span class="sk-spacer"></span>
 		<label class="sk-search-h"><input data-sk-search placeholder="搜索名称 / 描述 / 路径" aria-label="搜索"><span data-sk-count>${summary.count}/${summary.count}</span></label>
 		<a class="sk-hbtn sk-hbtn-link" href="http://21.6.92.5:3040/" target="_blank" rel="noopener" data-sk-market-link title="在浏览器打开商城：http://21.6.92.5:3040/">商城 \u203A</a>
@@ -3164,7 +3170,7 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 				<button type="button" data-sk-tab="mcp">连接器 ${mcpServers.length}</button>
 				<button type="button" data-sk-tab="workflows">工作流 ${wf.items.length}</button>
 				<button type="button" data-sk-tab="agents">Agent ${ag.items.length}</button>
-				<button type="button" data-sk-tab="workbenches">工作台 ${TOOLS_WORKBENCHES.length}</button>
+				<button type="button" data-sk-tab="workbenches">工作台 ${VISIBLE_TOOLS_WORKBENCHES.length}</button>
 				<button type="button" data-sk-tab="plugins">插件 ${builtinPlugins.length + installedPlugins.length + (mk.totals?.plugin ?? 0)}</button>
 			</div>
 			<div data-sk-pane="skills">
@@ -3403,12 +3409,12 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 
 			<div data-sk-pane="workbenches" hidden>
 				${filterBarHtml('workbenches',
-					TOOLS_WORKBENCHES.map(() => ({ src: 'builtin' })).concat(marketItemsFor(mk, 'workbenches').map(i => ({ src: 'market', ver: i.version ? 'yes' : 'no' }))),
+					VISIBLE_TOOLS_WORKBENCHES.map(() => ({ src: 'builtin' })).concat(marketItemsFor(mk, 'workbenches').map(i => ({ src: 'market', ver: i.version ? 'yes' : 'no' }))),
 					[{ k: 'all', t: '全部' }, { k: 'src:builtin', t: '内置' }, { k: 'src:market', t: '可安装' }],
 					[],
 				)}
-				${foldHtml('workbenches', TOOLS_WORKBENCHES.length,
-					'<ul class="sk-list">' + TOOLS_WORKBENCHES.map(w => {
+				${foldHtml('workbenches', VISIBLE_TOOLS_WORKBENCHES.length,
+					'<ul class="sk-list">' + VISIBLE_TOOLS_WORKBENCHES.map(w => {
 						const id = w.route.replace(/^\/x\//, '').replace(/\/$/, '');
 						return renderItemRow({
 							kind: 'workbench', slug: id,
