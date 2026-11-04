@@ -61,7 +61,6 @@ if (Test-Path $repoWasmDir) {
 
 $required = @(
   "node_modules\@vscode\ripgrep\bin\rg.exe",
-  "extensions\agentmemory-memory\dist\extension.js",
   "extensions\codebuddy-provider\dist\extension.cjs.js",
   "extensions\tof-authentication\out\extension.js",
   "extensions\agent-studio\out\extension.js",

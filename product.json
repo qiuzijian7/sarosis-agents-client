@@ -1,7 +1,7 @@
 {
 	"nameShort": "VsSaros",
 	"nameLong": "VsSaros",
-	"version": "2.2.26223",
+	"version": "2.2.26224",
 	"extensionEngineVersion": "1.120.0",
 	"applicationName": "vssaros",
 	"dataFolderName": ".vssaros",
@@ -225,9 +225,6 @@
 			"type": "light"
 		}
 	],
-	"builtInExtensionsEnabledWithAutoUpdates": [
-		"agentmemory-gateway",
-		"agentmemory-memory"
-	],
+	"builtInExtensionsEnabledWithAutoUpdates": [],
 	"commit": "61889cc1deca71f56ece46a812ad4c9593395a0f"
 }
