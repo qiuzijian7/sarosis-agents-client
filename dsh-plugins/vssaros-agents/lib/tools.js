@@ -29,6 +29,7 @@ import { presetIdOf } from './core/agents.js';
 import { checkCwdGrant } from './grants.js';
 import { aggregateByPreset, liveForAgents, rowAgentOf, rowBelongsTo } from './core/live.js';
 import { lastBotIdentityOf, resolveSessionBot } from './core/botIdentity.js';
+import { legacyAgentMemoryOn } from './core/memoryLimits.js';
 import { personaSwitchMessage } from './core/persona.js';
 import { AGENT_MESSAGE_KIND } from './core/relay.js';
 import { readLiveSession, readLiveSessions } from './live.js';
@@ -500,7 +501,11 @@ export function registerAgentTools(ctx, config, state) {
 		},
 	];
 
-	const disposers = defs.map(definition => ctx.tools.register(definition));
+	// ★ 2026-11-05「记忆收敛成一套」：Bot / 工作区记忆已并入 @vssaros/dsh-memory 的 memory 工具
+	//   （target=bot / target=key）⇒ 默认不再注册 workspace_memory，避免模型看到两个写记忆的工具。
+	//   回滚见 core/memoryLimits.js 的 legacyAgentMemoryOn。
+	const live = legacyAgentMemoryOn(config) ? defs : defs.filter(definition => definition.name !== WORKSPACE_MEMORY_TOOL);
+	const disposers = live.map(definition => ctx.tools.register(definition));
 	const offGate = ctx.on('tools/pre-execute', async (exec, next) => {
 		if (!exec || !WRITE_TOOLS.includes(exec.name)) {
 			return next(); // agent_list / agent_open_session 与其它插件的工具 ⇒ 放行

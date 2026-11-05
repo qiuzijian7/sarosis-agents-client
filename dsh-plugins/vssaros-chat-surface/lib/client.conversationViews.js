@@ -921,10 +921,12 @@ window.__ModuleLoader__.load({
 				{ key: "reviewMode", dep: "reviewEnabled", label: "审查结果处理", type: "enum", options: [["suggest", "提建议，人工确认"], ["auto", "直接写入"]] },
 				{ key: "skillReviewEnabled", label: "新技能直接生效", hint: "关闭时新技能先进入待确认队列" },
 			] },
-			{ id: "key", title: "项目关键记忆注入", fields: [
+			{ id: "key", title: "记忆注入", fields: [
 				{ key: "keyProgressiveDisclosure", label: "注入方式", hint: "条目多时只注入摘要，模型按需再读全文", type: "enum", options: [["off", "始终全文"], ["auto", "按数据量自动"], ["on", "始终摘要"]] },
 				{ key: "keyFullInjectThreshold", label: "全文注入条数上限", unit: "条", type: "int", min: 1 },
 				{ key: "keyFullInjectCharLimit", label: "全文注入字符上限", unit: "字符", type: "int", min: 1 },
+				// ★ 2026-11-05「记忆收敛成一套」：原 Bot 设置里的「注入到 system prompt」上限并到这里（全局，所有 Bot 共用）
+				{ key: "botMemoryCharLimit", label: "Bot 记忆注入上限", hint: "Bot 会话注入该 Bot 自己的记忆（target=bot），按整条截断；0 = 不注入", unit: "字符", type: "int", min: 0 },
 			] },
 			{ id: "modules", title: "功能模块", open: true, fields: [
 				{ key: "todoEnabled", label: "待办", hint: "dtodo 工具与「待办」页签" },
@@ -1262,9 +1264,11 @@ window.__ModuleLoader__.load({
 			const ctx = props.__vssarosCtx;
 			const sessionId = props.sessionId || "";
 			const pick = useScopePicker(ctx, sessionId);
-			const pane = pick.scope === "bot"
-				? react.createElement(BotSettingsPane, Object.assign({}, props, { key: "bot", agentId: pick.agentId }))
-				: react.createElement(WorkspaceSettingsPane, { key: "ws:" + pick.cwd, cwd: pick.cwd, say: props.__vssarosSay });
+			// ★ 2026-11-05「记忆收敛成一套」：Bot / 工作区记忆已并入 @vssaros/dsh-memory（bot / key 轨），
+			//   dsh-agents 默认不再注入 ⇒ BotSettingsPane / WorkspaceSettingsPane 的「注入上限 / 模式 / 自动提交」不再生效，
+			//   不渲染（组件保留：回滚开关 VSSAROS_AGENTS_LEGACY_MEMORY=1 时它们仍是旧路径的设置入口）。
+			//   注入上限现在是全局「记忆注入」组里的「Bot 记忆注入上限」，条目在「记忆」页签里看。
+			const pane = null;
 			return react.createElement("div", { style: C.root, "data-vssaros-view": "bot-settings", "data-vssaros-memory-scope": pick.scope },
 				kids([
 					// 作用域分区：上半部分随「工作区 | Bot」切换，下半部分是全局设置 —— 不标出来就像分段在管整页

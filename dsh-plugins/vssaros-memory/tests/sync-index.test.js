@@ -20,7 +20,7 @@ import { spawnSync } from 'node:child_process'
 import { makeProjectDirResolver, projectSyncInfo, handleCommand, spawnWorker, syncStatusSync, installMemorySync } from '../lib/sync/index.js'
 import { ensureMemoryRepo, deviceBConnect } from '../lib/sync/repo.js'
 import { resolveProjectId } from '../lib/sync/identity.js'
-import { projectHash } from '../lib/store.js'
+import { projectHash, workspaceKeyOf } from '../lib/store.js'
 
 // This suite pins the legacy Chinese output contract; i18n.test.js covers English.
 import { setLocale } from '../lib/i18n.js'
@@ -91,13 +91,16 @@ test('makeProjectDirResolver：已初始化 sync 项目 → projectId 目录；�
   const root = tempDir()
   try {
     const { cwd, memoryDir, identity } = await bootProject(root)
-    const resolver = makeProjectDirResolver({ memoryDir })
+    // VsSaros 2026-11-05：只有同步开启时才走 projectId 口径（产品里同步被 lockedOffKeys 锁死）
+    const resolver = makeProjectDirResolver({ memoryDir, syncEnabled: true })
     // 已初始化：PROVENANCE 存在 → projectId 目录
     assert.equal(resolver(cwd), join(memoryDir, 'projects', identity.id))
     // 未初始化项目：回退 projectHash
     const plainCwd = join(root, 'no-git-project')
     mkdirSync(plainCwd, { recursive: true })
     assert.equal(resolver(plainCwd), join(memoryDir, 'projects', projectHash(plainCwd)))
+    // 同步关闭：工作区键（git 根 + realpath + 大小写归一），不起子进程
+    assert.equal(makeProjectDirResolver({ memoryDir })(plainCwd), join(memoryDir, 'projects', workspaceKeyOf(plainCwd)))
   } finally {
     clean(root)
   }

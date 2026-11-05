@@ -12,7 +12,7 @@ import { PLUGIN_SOURCE_KIND } from '../lib/coi/source.js'
 
 // This suite pins the legacy Chinese output contract; i18n.test.js covers English.
 setLocale('zh')
-import { MemoryStore, projectHash } from '../lib/store.js'
+import { MemoryStore, projectHash, workspaceKeyOf } from '../lib/store.js'
 
 /** Whether `git` is available in this environment (skip git tests otherwise). */
 function gitAvailable() {
@@ -610,7 +610,8 @@ test('memory tool layered gate: subagent project/daily writes allowed, global re
   // project write allowed
   const projectOk = await tool.execute({ action: 'add', target: 'project', content: '项目 A 的重要约定' }, subExec)
   assert.equal(projectOk.ok, true)
-  const projectFile = join(dir, 'projects', projectHash('/tmp/proj-a'), 'MEMORY.md')
+  // VsSaros 2026-11-05：apply 装配的项目目录用工作区键（store.workspaceKeyOf），不再是 projectHash
+  const projectFile = join(dir, 'projects', workspaceKeyOf('/tmp/proj-a'), 'MEMORY.md')
   assert.ok(readFileSync(projectFile, 'utf8').includes('项目 A 的重要约定'))
   // key write queues for confirmation (key is an injected track, so it gets
   // the same confirmation treatment as memory/user — nothing lands in KEY.md
@@ -618,7 +619,7 @@ test('memory tool layered gate: subagent project/daily writes allowed, global re
   const keyOk = await tool.execute({ action: 'add', target: 'key', content: '项目 A 的架构约定' }, subExec)
   assert.equal(keyOk.ok, true)
   assert.ok(keyOk.message.includes('待确认'))
-  const keyFile = join(dir, 'projects', projectHash('/tmp/proj-a'), 'KEY.md')
+  const keyFile = join(dir, 'projects', workspaceKeyOf('/tmp/proj-a'), 'KEY.md')
   assert.equal(existsSync(keyFile), false)
   const queued = readFileSync(join(dir, 'SUGGESTIONS.jsonl'), 'utf8')
   assert.ok(queued.includes('项目 A 的架构约定'))

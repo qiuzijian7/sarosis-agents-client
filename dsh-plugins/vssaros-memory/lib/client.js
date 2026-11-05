@@ -970,8 +970,8 @@ var TIME_PREFIX = {
   daily: /^\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*/,
   date: /^\[(\d{4}-\d{2}-\d{2})\]\s*/
 };
-var ENTRY_KEYS = /* @__PURE__ */ new Set(["memory", "user", "archive-memory", "archive-user", "archive-key", "project", "key", "daily"]);
-var EDIT_KEYS = /* @__PURE__ */ new Set(["memory", "user", "project", "key", "daily"]);
+var ENTRY_KEYS = /* @__PURE__ */ new Set(["memory", "user", "archive-memory", "archive-user", "archive-key", "project", "key", "daily", "bot"]);
+var EDIT_KEYS = /* @__PURE__ */ new Set(["memory", "user", "project", "key", "daily", "bot"]);
 var INJECTED_KEYS = /* @__PURE__ */ new Set(["memory", "user", "key"]);
 function parseEntries(row) {
   const prefix = row.key === "project" ? TIME_PREFIX.project : row.key === "daily" ? TIME_PREFIX.daily : TIME_PREFIX.date;

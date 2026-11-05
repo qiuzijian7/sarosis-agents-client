@@ -29,6 +29,8 @@ import { installApi } from './api.js'
 import { installSkillsManager } from './skills-manager.js'
 import { TodoStore, createTodoController } from './todo.js'
 import { installMemorySync, makeProjectDirResolver } from './sync/index.js'
+import { BOT_KEY_RE, botOfAgent, slugifyBotId } from './vssaros-bot.js'
+import { importLegacyAgentMemory } from './legacy-import.js'
 import { createSearchDocsController, searchDocsCommand } from './search-docs.js'
 import { installBroadcast, installCoi } from './coi/index.js'
 import { syncBuiltinSkillsIfEnabled } from './coi/skills-sync.js'
@@ -98,6 +100,12 @@ export const DEFAULTS = {
   keyProgressiveDisclosure: 'off', // 'auto' | 'off' | 'on' — auto=小数据量全量注入、大数据量摘要注入；off=始终全量（默认）；on=始终摘要
   keyFullInjectThreshold: 3,  // auto 模式：条目数 ≤ 此值 → 全量注入
   keyFullInjectCharLimit: 1500, // auto 模式：总字符数 ≤ 此值 → 全量注入
+  // VsSaros（2026-11-05「记忆收敛成一套」）：Bot 记忆（bot 轨）注入快照的字符上限；
+  // 0 = 不注入（仍可用 memory 工具读写）。默认 2048 与原 dsh-agents 的 memory-chars 缺省一致。
+  botMemoryCharLimit: 2048,
+  // 启动时把 @vssaros/dsh-agents 的旧 Bot / 工作区 MEMORY.md 导入 bot / key 轨（只追加、不改源）。
+  legacyAgentImport: true,
+  legacyAgentDataRoot: null, // null → VSSAROS_DATA_ROOT → ~/.vssaros（与 dsh-agents 同口径）
   // snapshot injection
   injectMemory: true,
   snapshotOrder: 500,
@@ -285,6 +293,7 @@ export const RUNTIME_KEYS = [
   'perTurnProjectWrites', 'perTurnDailyWrites', 'perTurnKeyWrites',
   'perTurnWriteGuard', 'writeGuardThreshold',
   'keyProgressiveDisclosure', 'keyFullInjectThreshold', 'keyFullInjectCharLimit',
+  'botMemoryCharLimit',
   'searchDocsEnabled', 'coiEnabled', 'broadcastEnabled', 'promptsEnabled',
   'sessionSearchEnabled', 'sessionEnabled', 'modelsEnabled', 'uiSettingsEnabled',
   'bookmarkEnabled', 'searchDocsMode', 'todoEnabled',
@@ -394,6 +403,11 @@ export function validateRuntimePatch(key, value) {
     case 'keyFullInjectCharLimit':
       if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
         throw new Error(`vssaros-memory: ${key} 必须是正整数`)
+      }
+      return
+    case 'botMemoryCharLimit':
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+        throw new Error('vssaros-memory: botMemoryCharLimit 必须是 >= 0 的整数（0 = 不注入）')
       }
       return
     default:
@@ -606,6 +620,27 @@ export function renderSnapshot(config, store, agent, counter, sessionTitleServic
   }
   if (userEntries.length > 0) {
     parts.push(`${st('snap.userHead')}\n${userEntries.map((entry) => `- ${stripEntrySummary(stripEntryId(entry))}`).join('\n')}`)
+  }
+  // VsSaros（2026-11-05「记忆收敛成一套」）：Bot 会话注入该 Bot 自己的记忆（bot 轨，原
+  // @vssaros/dsh-agents 的 Bot MEMORY.md）。非 Bot 会话没有这一段。按**整条**截断到
+  // botMemoryCharLimit（0 = 不注入），截断时说明怎么读全文——不切半条。
+  const botLimit = Number.isInteger(config.botMemoryCharLimit) ? config.botMemoryCharLimit : 2048
+  const botLoc = botLimit > 0 && typeof store.locate === 'function' ? store.locate('bot', agent) : undefined
+  if (botLoc) {
+    const botEntries = store.entriesOf('bot', agent)
+    if (botEntries.length > 0) {
+      const lines = []
+      let used = 0
+      for (const entry of botEntries) {
+        const line = `- ${stripEntrySummary(stripEntryId(entry))}`
+        if (lines.length > 0 && used + line.length + 1 > botLimit) break
+        lines.push(line)
+        used += line.length + 1
+      }
+      const head = st('snap.botHead', { bot: store.botKeyOf(agent) })
+      const more = botEntries.length - lines.length
+      parts.push(`${head}\n${lines.join('\n')}${more > 0 ? `\n${st('snap.botTruncated', { n: more, limit: botLimit })}` : ''}`)
+    }
   }
   // Project KEY facts are injected for the agent's own project only (its
   // session cwd). Same live-read/change-detected mechanism as the global
@@ -1016,7 +1051,7 @@ export function memoryTool(ctx, config, store, queue, getRuntime, archive, write
         },
         target: {
           type: 'string',
-          enum: ['memory', 'user', 'project', 'key', 'daily'],
+          enum: ['memory', 'user', 'project', 'key', 'daily', 'bot'],
           get description() { return mt('param.target') },
         },
         content: {
@@ -1193,7 +1228,8 @@ export function memoryTool(ctx, config, store, queue, getRuntime, archive, write
       // (project/key, keyed to one cwd) and daily (never injected) are safe
       // for automatic writes. The main session is never gated here (the review
       // prompt disciplines its global writes instead).
-      if (origin === 'subagent' && (target === 'memory' || target === 'user')) {
+      // VsSaros：bot 轨每个该 Bot 的会话都注入，风险等同全局轨，同一道闸。
+      if (origin === 'subagent' && (target === 'memory' || target === 'user' || target === 'bot')) {
         if (getRuntime().reviewMode !== 'auto') {
           return {
             ok: false,
@@ -1594,17 +1630,50 @@ export function apply(ctx, rawConfig = {}) {
     }))
     return () => { for (const dispose of disposers) dispose() }
   }, 'vssaros-memory: locale watcher')
+  // 三个存储共用**一个**项目目录解析器（同一口径、旧目录认领只做一次）。
+  const projectDirResolver = makeProjectDirResolver(config)
   const store = new MemoryStore(config.memoryDir, {
     ...config,
     // 记忆同步接线（施工图 §4.2/§6）：entryIdMode 随 syncEnabled 动态开关
     // （syncCtrl.sync() 里同步）；projectDirResolver 让 sync 项目（迁移到
     // projectId 目录后）的 store 读写定位到新目录，未启用项目回退原逻辑。
     entryIdMode: config.syncEnabled ? 'on' : 'off',
-    projectDirResolver: makeProjectDirResolver(config),
+    projectDirResolver,
+    // VsSaros（2026-11-05）：会话 → Bot。优先用插件 ctx 的会话投影（当前 preset + 身份记录）。
+    botKeyResolver: (agent) => {
+      let projections
+      try { projections = ctx.get?.('sessionProjections') } catch { projections = undefined }
+      return botOfAgent(agent, projections)?.key ?? null
+    },
   })
-  const archive = new ArchiveStore(config.memoryDir, { projectDirResolver: makeProjectDirResolver(config) })
+  const archive = new ArchiveStore(config.memoryDir, { projectDirResolver })
   const queue = new SuggestionQueue(config.suggestionsFile)
-  const todoStore = new TodoStore(config.memoryDir, makeProjectDirResolver(config))
+  const todoStore = new TodoStore(config.memoryDir, projectDirResolver)
+  // VsSaros（2026-11-05「记忆收敛成一套」）：把 @vssaros/dsh-agents 的旧 Bot / 工作区记忆并进来
+  // （只追加、不改源；结果记在 legacy-agent-memory.json）。
+  let legacyImport = null
+  if (config.legacyAgentImport !== false) {
+    try {
+      legacyImport = importLegacyAgentMemory(config)
+    } catch (error) {
+      legacyImport = { error: String(error?.message ?? error) }
+    }
+  }
+  // 给其它插件写 Bot 记忆的入口（dsh-agents 的 superagent 步骤证据 stepMemory.rememberStep 用）。
+  // 形状只增不改：{ version: 1, addBotEntry(botId, text) → store.add 的结果 }。
+  ctx.effect(() => {
+    const KEY = Symbol.for('vssaros.memory.store')
+    const writer = {
+      version: 1,
+      addBotEntry(botId, text) {
+        const key = slugifyBotId(botId)
+        if (!BOT_KEY_RE.test(key)) return { ok: false, message: `botId 不合法：${String(botId)}` }
+        return store.add('bot', text, { session: { header: { agentPreset: `vssaros-${key}` } } })
+      },
+    }
+    globalThis[KEY] = writer
+    return () => { if (globalThis[KEY] === writer) delete globalThis[KEY] }
+  }, 'vssaros-memory: bot memory writer')
   const stateFile = resolve(config.stateFile ?? join(config.memoryDir, 'plugin-state.json'))
   // 会话别名共享存储（aliases.json 单实例）：api 路由（/api/aliases）与
   // de_session rename 共用，避免多实例内存缓存互覆写
@@ -1853,6 +1922,8 @@ export function apply(ctx, rawConfig = {}) {
       // 共用同一内存缓存，避免多实例互覆写；api.js 缺省自建）
       aliases: aliasStore,
       resolveCwd: (sessionId) => ctx.get('agents')?.get?.(sessionId)?.session?.header?.cwd,
+      // VsSaros（2026-11-05）：bot 轨要用真实会话定位 Bot（伪造的 header 里没有 preset / 身份记录）。
+      resolveAgent: (sessionId) => ctx.get('agents')?.get?.(sessionId),
       // 记忆同步状态（/memory-evolve/memory-sync/status）：syncEnabled 时由
       // syncCtrl 提供，否则恒未启用
       syncStatus: (cwd) => (syncStatusRef ? syncStatusRef(cwd) : { enabled: false, initialized: false }),
@@ -1888,6 +1959,8 @@ export function apply(ctx, rawConfig = {}) {
     // 各接口同款模式），不再固定回退到 workspace.list()[0]；客户端请求带
     // sessionId，服务端据此解析会话工作目录。
     resolveCwd: (sessionId) => ctx.get('agents')?.get?.(sessionId)?.session?.header?.cwd,
+      // VsSaros（2026-11-05）：bot 轨要用真实会话定位 Bot（伪造的 header 里没有 preset / 身份记录）。
+      resolveAgent: (sessionId) => ctx.get('agents')?.get?.(sessionId),
   })
 
   // 6. Commands: the review command works even with review off (users may
@@ -2020,6 +2093,8 @@ export function apply(ctx, rawConfig = {}) {
         const installed = installCoi(ctx, config, {
           memoryStore: store,
           resolveCwd: (sessionId) => ctx.get('agents')?.get?.(sessionId)?.session?.header?.cwd,
+      // VsSaros（2026-11-05）：bot 轨要用真实会话定位 Bot（伪造的 header 里没有 preset / 身份记录）。
+      resolveAgent: (sessionId) => ctx.get('agents')?.get?.(sessionId),
           // 记忆上下文注入（读 memory/user/key；tracks 由 AI 经 injectTracks
           // 自主选择）。excludeDshOnly=true：跳过带 [dsh-only] 标记的条目——
           // 外部执行器不是 DSH，不必遵循 DSH 纪律/规则，注入只会让其困惑

@@ -30,9 +30,10 @@ import { getLocale, translate, STORE_DICT, STORE_TAIL_DICT } from './i18n.js'
 const st = (key, params) => translate(STORE_DICT, key, params, getLocale())
 /** Translate through STORE_TAIL_DICT in the active host locale. */
 const stt = (key, params) => translate(STORE_TAIL_DICT, key, params, getLocale())
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { extractEntryId, genEntryId, legacyIdFor, stripEntryId } from './sync/entryid.js'
+import { BOT_KEY_RE, botOfAgent } from './vssaros-bot.js'
 
 /** Entry delimiter, byte-compatible with Hermes MEMORY.md / USER.md. */
 export const ENTRY_DELIMITER = '\n§\n'
@@ -482,6 +483,74 @@ export function projectHash(cwd) {
 }
 
 /**
+ * VsSaros（2026-11-05「记忆收敛成一套」）：项目键改为**工作区键**——会话 cwd 先 realpath，
+ * 再向上找含 `.git` 的目录作为根（找不到就用 cwd 本身），Windows 下统一小写与反斜杠，
+ * 取 sha1 前 12 位。与 @vssaros/dsh-agents 的 `workspaceKeyOf(resolveWorkspace(cwd).root)`
+ * **逐字节同口径**，所以旧的工作区记忆目录名可以直接对上。
+ * 效果：同一仓库的子目录会话共用一份项目记忆；`QIUZIJ~1` 短名 / 盘符大小写不再分裂。
+ * 纯文件系统操作，**不起子进程**（旧路径每次定位都 spawn `git remote`，Windows 上闪控制台）。
+ */
+const WORKSPACE_MAX_ASCEND = 48
+const workspaceKeyCache = new Map()
+const WORKSPACE_KEY_TTL_MS = 30_000
+
+function normCasePath(p) {
+  const s = String(p ?? '')
+  return process.platform === 'win32' ? s.replace(/\//g, '\\').toLowerCase() : s
+}
+
+function trimTrailingSepPath(p) {
+  const s = resolve(String(p ?? ''))
+  if (s.length > 3 && (s.endsWith('/') || s.endsWith('\\'))) return s.slice(0, -1)
+  return s
+}
+
+/**
+ * @param {string} cwd - 会话工作目录。
+ * @returns {{ key: string, root: string, isGit: boolean } | null} 无效 cwd 返回 null。
+ */
+export function workspaceOf(cwd) {
+  const raw = typeof cwd === 'string' ? cwd.trim() : ''
+  if (!raw) return null
+  const abs = trimTrailingSepPath(raw)
+  const cacheKey = normCasePath(abs)
+  const hit = workspaceKeyCache.get(cacheKey)
+  if (hit && Date.now() - hit.at < WORKSPACE_KEY_TTL_MS) return hit.value
+  let canonical = abs
+  try { canonical = trimTrailingSepPath(realpathSync.native(abs)) } catch { canonical = abs }
+  let root = canonical
+  let isGit = false
+  let dir = canonical
+  for (let i = 0; i < WORKSPACE_MAX_ASCEND; i += 1) {
+    if (existsSync(join(dir, '.git'))) {
+      root = dir
+      isGit = true
+      break
+    }
+    const parent = dirname(dir)
+    if (!parent || parent === dir) break
+    dir = parent
+  }
+  const value = {
+    key: createHash('sha1').update(normCasePath(trimTrailingSepPath(root))).digest('hex').slice(0, 12),
+    root,
+    isGit,
+  }
+  workspaceKeyCache.set(cacheKey, { at: Date.now(), value })
+  return value
+}
+
+/** 工作区键（见 workspaceOf）；cwd 无效时退回 projectHash(cwd)，保证总有一个目录名。 */
+export function workspaceKeyOf(cwd) {
+  return workspaceOf(cwd)?.key ?? projectHash(String(cwd ?? ''))
+}
+
+/** 只给测试用：清掉 workspaceOf 的进程内缓存。 */
+export function __resetWorkspaceKeyCache() {
+  workspaceKeyCache.clear()
+}
+
+/**
  * A short, stable project label for one working directory: the basename, or
  * the last two path segments when the basename is too short or purely
  * numeric (e.g. `/data/260805/1` → `260805/1`). Tags daily-log entries with
@@ -615,16 +684,39 @@ export class MemoryStore {
     this.entryDatePrefix = options.entryDatePrefix ?? true
     this.entryIdMode = options.entryIdMode === 'on' ? 'on' : 'off'
     this.projectDirResolver = typeof options.projectDirResolver === 'function' ? options.projectDirResolver : null
+    // VsSaros（2026-11-05）：会话 → Bot 键。缺省只看会话自己（创建头 / agent.ctx 的投影服务）；
+    // 装配层可注入带插件 ctx 投影服务的版本。
+    this.botKeyResolver = typeof options.botKeyResolver === 'function'
+      ? options.botKeyResolver
+      : (agent) => botOfAgent(agent)?.key ?? null
+  }
+
+  /** 会话所属 Bot 的键（不是 Bot 会话返回 null）。 */
+  botKeyOf(agent) {
+    try {
+      const key = this.botKeyResolver(agent)
+      return typeof key === 'string' && BOT_KEY_RE.test(key) ? key : null
+    } catch {
+      return null
+    }
+  }
+
+  /** 一个工作目录对应的项目目录（project / key / 归档 / 待办共用这一处口径）。 */
+  projectDirOf(cwd) {
+    return this.projectDirResolver
+      ? this.projectDirResolver(cwd)
+      : join(this.dir, 'projects', projectHash(cwd))
   }
 
   /**
    * Resolve one target to its file location.
-   * @param {string} target - 'memory' | 'user' | 'daily' | 'project' | 'key'.
+   * @param {string} target - 'memory' | 'user' | 'daily' | 'project' | 'key' | 'bot'.
    * @param {object | undefined} agent - the calling agent; required for
-   *   'project' and 'key' (its session cwd selects the project directory).
+   *   'project' and 'key' (its session cwd selects the project directory)
+   *   and for 'bot' (its preset / identity record selects the Bot).
    * @returns {{dir: string, file: string} | undefined}
    *   the location, or undefined when it cannot be resolved (e.g. project
-   *   memory without a session cwd).
+   *   memory without a session cwd, bot memory outside a Bot session).
    */
   locate(target, agent) {
     switch (target) {
@@ -634,18 +726,18 @@ export class MemoryStore {
         return { dir: this.dir, file: 'USER.md' }
       case 'daily':
         return { dir: join(this.dir, 'daily'), file: `${todayStamp()}.md` }
+      case 'bot': {
+        // VsSaros（2026-11-05）：原 @vssaros/dsh-agents 的 Bot 记忆并入这里。
+        const key = this.botKeyOf(agent)
+        if (!key) return undefined
+        return { dir: join(this.dir, 'bots', key), file: 'MEMORY.md' }
+      }
       case 'project':
       case 'key': {
         const cwd = agent?.session?.header?.cwd
         if (!cwd) return undefined
-        // 项目目录定位：sync 已初始化的项目用 projectId 目录（迁移后），
-        // 否则回退 projectHash(cwd)（未启用同步的项目行为零变化）。
-        // projectDirResolver 由装配层注入（lib/sync/index.js）。
-        const dir = this.projectDirResolver
-          ? this.projectDirResolver(cwd)
-          : join(this.dir, 'projects', projectHash(cwd))
         return {
-          dir,
+          dir: this.projectDirOf(cwd),
           file: target === 'key' ? 'KEY.md' : 'MEMORY.md',
         }
       }
@@ -658,6 +750,9 @@ export class MemoryStore {
   resolveTarget(target, agent) {
     const loc = this.locate(target, agent)
     if (!loc) {
+      if (target === 'bot') {
+        throw new Error('vssaros-memory: 当前会话不是 Bot 会话，没有 Bot 记忆（target=bot 只在选了 Bot 的会话里可用）')
+      }
       throw new Error(`vssaros-memory: 无法定位记忆轨 "${target}"（项目记忆需要有效的会话工作目录）`)
     }
     return loc

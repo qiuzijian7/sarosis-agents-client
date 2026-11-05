@@ -391,6 +391,9 @@ export function toDshTools(names) {
 export const ALWAYS_KEEP_TOOL_NAMES = Object.freeze(['skill',
 	// 2026-11-02：记忆写入口（Bot 记忆 + 工作区记忆）。提示词里告诉 agent "用 workspace_memory 记"，
 	// 而它是 host 层全局工具 ⇒ 写了 `tools:` 的 agent 会把它一起藏掉 ⇒ 提示与能力自相矛盾 ✗。
+	// 2026-11-05「记忆收敛成一套」：记忆统一走 @vssaros/dsh-memory 的 `memory` 工具（target=bot / key），
+	// 它的快照每轮都写「用 memory 工具」⇒ 同理必须常驻；workspace_memory 只在回滚开关打开时存在，留着无害。
+	'memory',
 	'workspace_memory']);
 
 /**

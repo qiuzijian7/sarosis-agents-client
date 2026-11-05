@@ -19,10 +19,10 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { isProjectSyncEnabled, projectHash, readProvenance, withLock } from '../store.js'
+import { isProjectSyncEnabled, parseEntries, projectHash, readProvenance, serializeEntries, withLock, workspaceKeyOf } from '../store.js'
 import { translate, getLocale, getActiveLocale, SYNC_DICT } from '../i18n.js'
 
 /** Translate through SYNC_DICT in the active host locale. */
@@ -101,19 +101,80 @@ function parseWorkerOutput(run) {
 }
 
 /**
- * 项目记忆目录解析器（MemoryStore 构造注入）：sync 已初始化的项目用
- * projectId 目录（迁移后 store 读写定位到新目录），否则回退现有
- * projectHash(cwd) 目录（未启用项目零变化）。
- * @param {object} config - 插件配置（memoryDir）。
+ * 项目记忆目录解析器（MemoryStore / ArchiveStore / TodoStore 构造注入）。
+ *
+ * - 记忆同步**开启**（`config.syncEnabled === true`）：上游原逻辑——sync 已初始化的项目用
+ *   projectId 目录，否则回退 projectHash(cwd)。
+ * - 同步**关闭**（VsSaros 产品默认，`lockedOffKeys` 锁死）：VsSaros 2026-11-05「记忆收敛成一套」
+ *   改用**工作区键**（store.js 的 workspaceKeyOf：git 根 + realpath + 大小写归一），与
+ *   @vssaros/dsh-agents 的工作区记忆同口径，子目录会话共享一份项目记忆；并且**不起子进程**
+ *   （resolveProjectId 每次都 spawn `git remote`，而这个解析器每次渲染快照都会被调用）。
+ *   旧的 projectHash(cwd) 目录第一次被访问时整体认领过来（见 adoptLegacyProjectDir）。
+ * @param {object} config - 插件配置（memoryDir / syncEnabled）。
  * @returns {(cwd: string) => string}
  */
 export function makeProjectDirResolver(config) {
+  const projectsDir = join(config.memoryDir, 'projects')
+  const adopted = new Set()
   return (cwd) => {
-    const identity = resolveProjectId(cwd) // 同步本地 git 查询，毫秒级
-    const syncDir = join(config.memoryDir, 'projects', identity.id)
-    // 已初始化（有 PROVENANCE）→ 用 sync 目录；否则旧逻辑（兼容未启用项目）
-    if (existsSync(join(syncDir, 'PROVENANCE'))) return syncDir
-    return join(config.memoryDir, 'projects', projectHash(cwd))
+    if (config.syncEnabled === true) {
+      const identity = resolveProjectId(cwd) // 同步本地 git 查询，毫秒级
+      const syncDir = join(projectsDir, identity.id)
+      // 已初始化（有 PROVENANCE）→ 用 sync 目录；否则旧逻辑（兼容未启用项目）
+      if (existsSync(join(syncDir, 'PROVENANCE'))) return syncDir
+      return join(projectsDir, projectHash(cwd))
+    }
+    const dir = join(projectsDir, workspaceKeyOf(cwd))
+    const once = `${dir}\n${cwd}`
+    if (!adopted.has(once)) {
+      adopted.add(once)
+      adoptLegacyProjectDir(projectsDir, cwd, dir)
+    }
+    return dir
+  }
+}
+
+/**
+ * 把旧口径目录 `projects/<projectHash(cwd)>` 认领到新目录（幂等，失败不抛）。
+ * - 新目录不存在 ⇒ 整个目录 rename 过去（KEY.md / MEMORY.md / TODOS.md / KEY-archive.md 一起走）；
+ * - 两边都有（同一仓库的不同子目录各留过一份）⇒ 缺的文件直接搬，同名 `.md` 按条目取并集
+ *   （整条原文去重，新目录的顺序在前），旧目录挪到 `projects/.merged/<hash>-<时间>` 留底。
+ * @returns {'none' | 'renamed' | 'merged' | 'failed'}
+ */
+export function adoptLegacyProjectDir(projectsDir, cwd, dir) {
+  const legacy = join(projectsDir, projectHash(String(cwd)))
+  if (legacy === dir || !existsSync(legacy)) return 'none'
+  try {
+    if (!existsSync(dir)) {
+      renameSync(legacy, dir)
+      return 'renamed'
+    }
+    withLock(dir, () => {
+      for (const name of readdirSync(legacy)) {
+        if (name === '.memory.lock') continue
+        const from = join(legacy, name)
+        const to = join(dir, name)
+        if (!existsSync(to)) {
+          renameSync(from, to)
+          continue
+        }
+        if (!name.endsWith('.md')) continue
+        const mine = parseEntries(readFileSync(to, 'utf8'))
+        const seen = new Set(mine)
+        const extra = parseEntries(readFileSync(from, 'utf8')).filter((e) => !seen.has(e))
+        if (extra.length > 0) {
+          const tmp = `${to}.tmp.${process.pid}`
+          writeFileSync(tmp, serializeEntries([...mine, ...extra]), 'utf8')
+          renameSync(tmp, to)
+        }
+      }
+    })
+    const parked = join(projectsDir, '.merged')
+    mkdirSync(parked, { recursive: true })
+    renameSync(legacy, join(parked, `${projectHash(String(cwd))}-${Date.now()}`))
+    return 'merged'
+  } catch {
+    return 'failed' // 认领失败不影响读写：新目录照常用，旧目录原样留着
   }
 }
 

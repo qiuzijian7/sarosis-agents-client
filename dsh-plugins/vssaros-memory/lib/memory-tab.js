@@ -19,7 +19,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { resolveProjectDir } from './sync/identity.js'
 import { stripEntrySummary } from './store.js'
 import { translate, getLocale } from './i18n.js'
 
@@ -38,6 +37,7 @@ const TITLE_DICT = {
   'memoryTab.row.archiveUser': ['归档用户 USER-archive.md', 'Archived user profile USER-archive.md'],
   'memoryTab.row.archiveMemory': ['归档记忆 MEMORY-archive.md', 'Archived long-term memory MEMORY-archive.md'],
   'memoryTab.row.agents': ['全局规则 AGENTS.md', 'AGENTS.md'],
+  'memoryTab.row.bot': ['Bot 记忆（{bot}）', 'Bot memory ({bot})'],
 }
 
 /**
@@ -55,11 +55,21 @@ const TITLE_DICT = {
  * @returns {Array<object>} the file rows, in display order:
  *   { key, title, path, exists, content, truncated, available }.
  */
-export function buildMemoryFiles(config, store, cwd) {
+export function buildMemoryFiles(config, store, cwd, sessionAgent) {
   const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
   const projectAgent = cwd ? { session: { header: { cwd } } } : undefined
-  const projectDir = cwd ? resolveProjectDir(config.memoryDir, cwd) : undefined
+  // 与 store 同一口径（工作区键）；旧实现经 sync/identity 每次 spawn `git remote`。
+  const projectDir = cwd ? store.projectDirOf(cwd) : undefined
+  // VsSaros（2026-11-05）：Bot 会话多一行「Bot 记忆」（原 dsh-agents 的 Bot MEMORY.md 并入 bot 轨）。
+  const botKey = sessionAgent ? store.botKeyOf(sessionAgent) : null
   const rows = [
+    ...(botKey
+      ? [{
+        key: 'bot',
+        title: translate(TITLE_DICT, 'memoryTab.row.bot', { bot: botKey }, getLocale()),
+        path: store.pathOf('bot', sessionAgent),
+      }]
+      : []),
     {
       key: 'project',
       title: translate(TITLE_DICT, 'memoryTab.row.project', undefined, getLocale()),

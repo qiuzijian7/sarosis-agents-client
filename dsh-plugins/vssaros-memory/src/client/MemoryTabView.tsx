@@ -81,10 +81,10 @@ const TIME_PREFIX = {
 } as const
 
 /** 美观视图下按 § 条目解析的文件（AGENTS.md 始终纯文本）。 */
-const ENTRY_KEYS = new Set(['memory', 'user', 'archive-memory', 'archive-user', 'archive-key', 'project', 'key', 'daily'])
+const ENTRY_KEYS = new Set(['memory', 'user', 'archive-memory', 'archive-user', 'archive-key', 'project', 'key', 'daily', 'bot'])
 
 /** 美观视图下可编辑正文的文件（五个主轨；归档只读，可移回后编辑）。 */
-const EDIT_KEYS = new Set(['memory', 'user', 'project', 'key', 'daily'])
+const EDIT_KEYS = new Set(['memory', 'user', 'project', 'key', 'daily', 'bot'])
 
 /** 注入轨：保存后会立即进入模型上下文（编辑保存需确认）。 */
 const INJECTED_KEYS = new Set(['memory', 'user', 'key'])

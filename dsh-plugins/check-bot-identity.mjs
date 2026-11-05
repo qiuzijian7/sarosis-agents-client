@@ -59,6 +59,15 @@ for (const file of CHUNKS) {
 }
 const first = blocks.get(CHUNKS[0]);
 check('6 个 chunk 的副本块逐字一致（忽略缩进）', CHUNKS.every(f => blocks.get(f) === first), CHUNKS.filter(f => blocks.get(f) !== first).join(','));
+// ★ 2026-11-05「记忆收敛成一套」：@vssaros/dsh-memory 的 bot 轨靠同一份判据认 Bot（lib/vssaros-bot.js）。
+{
+	const vmBlock = blockOf(read('vssaros-memory/lib/vssaros-bot.js'));
+	check('vssaros-memory/lib/vssaros-bot.js：含身份副本块且与 chat-surface 副本逐字一致', !!vmBlock && vmBlock === first);
+	const vm = await load('vssaros-memory/lib/vssaros-bot.js');
+	const vmCases = [['vssaros-coder', true], ['vssaros-full', false], ['vssaros-ptc', false], ['standard', false], ['vssaros-', false], ['', false]];
+	check('vssaros-memory 副本与 Host 判据对拍（isBot）', vmCases.every(([p, want]) => vm.sessionBotOf({ agentPreset: p }).isBot === want && core.resolveSessionBot({ agentPreset: p }).isBot === want));
+	check('vssaros-memory：botKey = slugify(记录 botId) = preset 后缀', vm.botOfAgent({ session: { header: { agentPreset: 'vssaros-camelcase-bot' } } }, { stateOf: (_s, k) => (k === 'vssaros-bot' ? { botId: 'CamelCase.Bot', presetId: 'vssaros-camelcase-bot' } : undefined) })?.key === 'camelcase-bot');
+}
 
 console.log('── ② 客户端副本与 Host 判据对拍 ──');
 const clientApi = new Function(first + '\nreturn { isBotPresetId, sessionBotOf, BOT_MODE_PRESET_IDS };')();

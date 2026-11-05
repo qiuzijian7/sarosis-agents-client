@@ -115,6 +115,13 @@ function resolveSessionCwd(body, deps) {
   return cwd
 }
 
+/** VsSaros（2026-11-05）：bot 轨按会话定位 Bot —— 必须是真实会话对象（伪造的 header 里没有 preset）。 */
+function resolveBotAgent(body, deps) {
+  const agent = deps.resolveAgent?.(String(body?.sessionId ?? ''))
+  if (!agent || !deps.store.botKeyOf(agent)) throw new Error('无法定位 Bot 记忆：当前会话不是 Bot 会话')
+  return agent
+}
+
 /**
  * Install the web API.
  * @param {object} ctx - a context with the `httpServer` service.
@@ -524,7 +531,7 @@ export function installApi(ctx, deps) {
         const sessionId = url.searchParams.get('sessionId')
         const cwd = deps.resolveCwd?.(sessionId)
         sendJson(res, 200, {
-          files: buildMemoryFiles(deps.config, deps.store, cwd),
+          files: buildMemoryFiles(deps.config, deps.store, cwd, deps.resolveAgent?.(sessionId)),
           cwd: cwd ?? null,
           // Branch scope for the KEY tab: current branch + all local branches
           // ([] / null outside git — the tab then hides branch controls).
@@ -605,12 +612,14 @@ export function installApi(ctx, deps) {
         const match = String(body?.match ?? '').trim()
         if (!match) throw new Error('match 不能为空')
         const ARCHIVE = { 'archive-memory': 'memory', 'archive-user': 'user', 'archive-key': 'key' }
-        const TRACKS = new Set(['memory', 'user', 'daily', 'project', 'key', ...Object.keys(ARCHIVE)])
+        const TRACKS = new Set(['memory', 'user', 'daily', 'project', 'key', 'bot', ...Object.keys(ARCHIVE)])
         if (!TRACKS.has(target)) throw new Error(`无效的记忆轨 "${target}"`)
         let outcome
         if (target in ARCHIVE) {
           const cwd = ARCHIVE[target] === 'key' ? resolveSessionCwd(body, deps) : undefined
           outcome = archive.removeExact(ARCHIVE[target], match, cwd)
+        } else if (target === 'bot') {
+          outcome = store.removeExact('bot', match, resolveBotAgent(body, deps))
         } else {
           const sessionId = String(body?.sessionId ?? '')
           const cwd = deps.resolveCwd?.(sessionId)
@@ -637,11 +646,11 @@ export function installApi(ctx, deps) {
         const content = String(body?.content ?? '')
         if (!match) throw new Error('match 不能为空')
         if (!content.trim()) throw new Error('内容不能为空')
-        const TRACKS = new Set(['memory', 'user', 'daily', 'project', 'key'])
+        const TRACKS = new Set(['memory', 'user', 'daily', 'project', 'key', 'bot'])
         if (!TRACKS.has(target)) throw new Error(`无效的记忆轨 "${target}"`)
         const sessionId = String(body?.sessionId ?? '')
         const cwd = deps.resolveCwd?.(sessionId)
-        const agent = cwd ? { session: { header: { cwd } } } : undefined
+        const agent = target === 'bot' ? resolveBotAgent(body, deps) : (cwd ? { session: { header: { cwd } } } : undefined)
         if ((target === 'project' || target === 'key') && !cwd) {
           throw new Error('无法定位项目记忆：会话没有工作目录')
         }

@@ -29,6 +29,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { askAssignment, cancelAssignment, createAssignment, installAssignmentTracker, listAssignments } from './assignments.js';
 import { allowlistDenyOf, pickLazyEagerKeys, avatarColorOf, isDelegatableAgent, isShownAgent, presetIdOf, summarizeAgents, toPresetDefinition } from './core/agents.js';
+import { legacyAgentMemoryOn } from './core/memoryLimits.js';
 import { agentModelRouteOf, applyModelSelection, prevalidateRoutes, setAgentModelRoutes } from './modelSelection.js';
 import { botIdentityProjection } from './core/botIdentity.js';
 import { writeBotIdentity } from './botIdentityWriter.js';
@@ -330,7 +331,10 @@ function applyPersona(ctx, config) {
 	//       live   旧行为（每 60s 刷新，会话中途也会变）；显式想要"改完立刻生效"才用它。
 	//   · 装配是同步的 ⇒ 文本走缓存（挂载即读 + 每分钟定时读）；定时器**两种模式都保留**，
 	//     因为"新会话"要能读到最新内容。
-	const memoryChars = clampMemoryChars(config.memoryChars);
+	// ★ 2026-11-05「记忆收敛成一套」：Bot 记忆改由 @vssaros/dsh-memory 的 bot 轨注入（其快照里有「本 Bot 的记忆」段）
+	//   ⇒ 这里默认按 memory-chars=0 处理：不读、不起定时器、人设段不再带记忆与 workspace_memory 写法提示。
+	//   回滚：VSSAROS_AGENTS_LEGACY_MEMORY=1（见 core/memoryLimits.js 的 legacyAgentMemoryOn）。
+	const memoryChars = legacyAgentMemoryOn(config) ? clampMemoryChars(config.memoryChars) : 0;
 	const memoryMode = config.memoryMode === 'live' ? 'live' : 'session';
 	let memoryCache = '';
 	let memoryReady = memoryChars <= 0;   // 关闭注入 ⇒ 视作已就绪（下面直接返回空串）
@@ -1152,7 +1156,11 @@ function applyTopLevel(ctx, config) {
 	// 审批模板闸谓词（2026-10-16，P2）：tools.js 的 pre-execute 先查它；读失败按"没有"（照常问 ✓）。
 	state.approvalTemplates = templateGate(config);
 	// 工作区记忆注入（全局层，所有会话；见 installWorkspaceMemorySection 头注释）
-	installWorkspaceMemorySection(ctx, config);
+	// ★ 2026-11-05「记忆收敛成一套」：工作区记忆已并入 @vssaros/dsh-memory 的 key 轨（同一工作区键）
+	//   ⇒ 默认不再注入这一段；回滚见 core/memoryLimits.js 的 legacyAgentMemoryOn。
+	if (legacyAgentMemoryOn(config)) {
+		installWorkspaceMemorySection(ctx, config);
+	}
 
 	/* ── IM 绑定（2026-10-27，P0）──────────────────────────────────────────────
 	   装配顺序很重要：Hub 先建好挂到 state 上，回合结束的回复回收才能在结束那一刻
