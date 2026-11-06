@@ -25,8 +25,10 @@ import { DSH_UPGRADE_ASSET_KINDS, IDshUpgradeAppState, IDshUpgradeAssetRow, IDsh
 import { buildUpdateEndpoint, decideAppUpdate, parseAppUpdateResponse } from '../common/dshAppUpdate.js';
 import { getDshPluginCenterHost } from '../../agentStudio/browser/dshPluginCenterHost.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
-import { IUpdateService } from '../../../../platform/update/common/update.js';
+import { IUpdateService, State, StateType } from '../../../../platform/update/common/update.js';
 import { waitForUpdateReady } from '../common/dshUpdateWait.js';
+// ★ 2026-11-05：复刻 dsh-desktop 更新实现的 8 相状态机（纯函数，零平台依赖，可单测）。
+import { AppUpdateEvent, IAppUpdateStatus, initialAppUpdateStatus, percentFromBytes, reduceAppUpdateStatus } from '../common/appUpdateState.js';
 import { arch as platformArch } from '../../../../base/common/process.js';
 import { DSH_MODULE_CONTAINERS, DshModuleId, IDshModulePageState, activeModulesFromPlugins, activeModulesOf, containersFromPlugins, pagesFromPlugins, resolveContainerPageState, withWorkbenchClient } from '../common/dshModuleContainers.js';
 // `taskboard` 能力（看板"定位卡片"）：与原 `TasksViewPane` 点条目**同一套实现**（同一个 EditorInput
@@ -46,7 +48,6 @@ import { ITaskOrchestrationService } from '../../../common/agentStudioOrchestrat
 // 生态用户级技能目录（SKILL.md 规范）：与 IDE 侧 skillRegistryService **共用同一份清单**
 // （少一侧就会出现"IDE 看得见、Host 看不见"的不一致 ✗）。
 import { ecosystemUserSkillDirPaths } from '../../../common/agentStudioSkillDirs.js';
-import { ISkillRegistry } from '../../agentStudio/common/skills.js';
 // ★ 技能根清单的**单一真源**（顺序 / 来源 / trust 门控 / 去重都在它里面，IDE 侧注册表读同一份 ✓）
 import { SKILL_OFFICIAL_USER_ROOT_SETTING_ID, SKILL_PROJECT_ROOTS_SETTING_ID, officialUserSkillRootCandidates, resolveSkillRoots } from '../../../common/agentStudioSkillRoots.js';
 // worktree 列表（dsh 聊天 header 的 worktree 下拉）：宿主侧 git 事实的唯一真源。
@@ -69,7 +70,7 @@ import { STORAGE_ACTIVE, STORAGE_VAULTS } from '../../agentStudio/browser/knowle
 // 页面桥的**知识库信任口径**（2026-10-15：点知识库文件不再先问"工作区之外"一次 ✓）。
 import { knowledgeBaseTrustRoots } from '../common/dshKbTrust.js';
 import type { IKbVault } from '../../agentStudio/browser/views/knowledgeBase/kbTypes.js';
-import { IStorageService, StorageScope } from '../../../../platform/storage/common/storage.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 // `dashboardStats` 能力（数据面 E 组 / README 5.124）：**IDE 本地聚合**的用量与告警 —— 这是本文件里
 // 第一个"读 IDE 内存聚合"的适配（其余读的都是编辑器/工作区状态 ✓）。
 import { IAgentStudioDashboardService } from '../../agentStudio/browser/agentStudioDashboardService.js';
@@ -193,6 +194,13 @@ export interface IDshHarnessService {
 	 * ⚠ 更新源比本地旧 ⇒ 只推回 `action: 'downgrade'`，**不装**（否则就是一键降级 ✗，见 `common/dshAppUpdate.ts`）。
 	 */
 	upgradeApp(): Promise<void>;
+	// ★ 2026-11-05：复刻 dsh-desktop 后新增的 8 相状态机动作（页面桥命令经 contribution 转到这三个方法）。
+	/** 用户显式「检查更新」：推进 presentationId，可能弹通知卡；启动静默检查不走这里。 */
+	checkAppUpdate(): Promise<void>;
+	/** 忽略某个版本（持久化到 APPLICATION storage）；手动检查可覆盖。 */
+	skipAppUpdate(version: string): Promise<void>;
+	/** 仅在 `downloaded` 阶段允许：释放 dsh Host 文件锁后退出安装。 */
+	installAppUpdate(): Promise<void>;
 	/**
 	 * 升级一件**商城资产**（技能 / MCP / 智能体 / 工作流 / 工作台；2026-10-23）。
 	 *
@@ -546,8 +554,6 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		// worktree 列表（dsh 聊天 header 的下拉）：数据源是宿主侧 git 事实，只能由宿主推给页面（见 PushWorktrees）。
 		@IWorktreeService private readonly _worktreeService: IWorktreeService,
 		@IFileService private readonly _fileService: IFileService,
-	// ★ 2026-10-22：dsh 侧装完 skill 后要刷新（它有文件监听缺失 ⇒ 只能显式 reload）
-	@ISkillRegistry private readonly _skillRegistry: ISkillRegistry,
 		@IEditorGroupsService private readonly _editorGroupsService: IEditorGroupsService,
 		// ★ 库记录（2026-10-15）：读 IDE storage 里那对键（`agentStudio.kb.vaults` / `.active` ✓）——
 		//   真源 KB 视图写的就是它们 ✓（`kbVaultState.ts` 的常量 ✓），名字/图标只存在这里，
@@ -644,6 +650,11 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		//   ⇒ 启动后**静默查一次**：结果进 `_appUpdate`（缓存），之后每个新视图都会带上它
 		//   （`_pushUpgradeState`）⇒ 左下角那行与面板里的应用行都能立刻说出"可升级到 X" ✓。
 		this._scheduleSilentAppUpdateCheck();
+		// ★ 2026-11-05（复刻 dsh-desktop）：状态机的事件源是平台更新服务，不是定时器。
+		//   订阅由基类 Disposable._register 统一清理，不需要覆写 dispose。
+		this._appUpdateStatus = initialAppUpdateStatus(this._productService.version ?? '0.0.0');
+		this._appUpdateSkippedVersion = this._storageService.get('dsh.appUpdate.skippedVersion', StorageScope.APPLICATION);
+		this._register(this._updateService.onStateChange(state => this._onUpdateServiceState(state)));
 	}
 
 	/**
@@ -730,13 +741,7 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	private _ideEnv(): IIdeCapabilityEnv {
 		return {
 			activeResource: () => this._editorService.activeEditor?.resource,
-			// ★ 2026-10-22：dsh 侧装完 skill 后让它重读（IDE 的 skillRegistry **没有文件监听**，
-			//   只有显式 `reload()` 才会看见新目录/新 SKILL.md）✓
-			reloadSkills: async () => {
-				await this._skillRegistry.reload();
-				this._logService.info('[dshHarness] 技能库已重读（dsh 侧装完 skill 后的刷新）');
-			},
-			// 商城清单（2026-10-21）：`skills` / `mcp` 两条能力用。
+			// 商城清单（2026-10-21）：`mcp` 能力用（`skills` 那条已于 2026-11-06 下线）。
 			// ⚠ 先 `ensureLoggedIn()`：未登录时商城接口会 401，而 401 的文案没法指导用户 ⇒ 换成
 			//   "未登录商城，请先在 VsSaros 中完成 TOF 登录"（`marketplaceService` 自己那句）✓。
 			marketList: async (kind, opts) => {
@@ -1252,11 +1257,11 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	 * 此前内置与用户根挤在同一档 300、只靠数组顺序分先后 ✗ —— 现在与官方 rank 表对齐 ✓。
 	 */
 	private _skillDirs(): { readonly dirs: string[]; readonly bundledDir?: string } {
-		// FileAccess 相对 app 根解析，dev（仓库根）与打包（resources/app）两种形态都指到内置技能库。
-		let builtinDir: string | undefined;
-		try {
-			builtinDir = FileAccess.asFileUri('vs/../../resources/.agents/skills').fsPath;
-		} catch { /* 忽略 */ }
+		// ★ P1（2026-11-06）：随包技能由 `@vssaros/dsh-skill-bundle` 自己的 cordis.patch.yml
+		//   挂成官方 `bundledSkillDir`（rank 600）⇒ IDE 侧**不再计算/注入内置根**。
+		//   `renderSkillsOverlay(dirs, undefined)` 只剩用户级 + 项目级根（customSkillDirs / trust 门控）。
+		//   ⚠ 过渡期保险：插件尚未装进 profile 时，Host 旧进程仍带着上一次配置的 bundledSkillDir，
+		//     不会立刻丢技能；新插件由启动器 `dsh-plugin-deploy.mjs --changed` 自动安装。
 		// 生态用户级目录：清单已被**刻意置空** ⇒ 通常一个都不加 ✓（保留接线是为了"两处消费点同源"
 		// 这条机制还在，见 `skillEcosystemDirs.ts` 头注释 ✓）。
 		//
@@ -1286,7 +1291,8 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 				dataRoot: this._dataRoot(),
 				userHome: userHomeFsPath,
 			}),
-			builtinDirs: builtinDir ? [builtinDir] : [],
+			// ★ P1：内置技能根由 dsh 插件自持挂载 ⇒ 不再喂 builtinDirs（IDE 侧零内置根 ✓）。
+			builtinDirs: [],
 			extraUserDirs,
 			// ⚠ 这里**刻意不喂** `dshPluginSkillDirs`（IDE 侧技能库那条 `ideOnly` 根 ✓）：
 			//   dsh 插件自带的技能是**插件自己**注册的（插件包内那行 `dsh-skill-filesystem`）⇒
@@ -1306,13 +1312,15 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 			// 不静默：用户报"技能少了一半"时，这行就是答案 ✓（信任后 `_onTrustChanged` 会重启 Host 纳入 ✓）
 			this._logService.info(`[dshHarness] 工作区未受信任 ⇒ 跳过 ${resolved.skippedUntrusted.length} 个项目级技能根（${resolved.skippedUntrusted.join('、')}）；信任工作区后自动纳入 ✓`);
 		}
-		// ★ P2：内置与其余根**分开交付**（内置 ⇒ `bundledSkillDir` / rank 600；其余 ⇒ `customSkillDirs` / 300 ✓）。
-		// 内置是**单个**目录（官方 schema 就是字符串 ✗）：dsh 侧只有 `FileAccess` 那一个候选 ✓（多个时以先者为准 ✓）。
-		const bundledDir = resolved.roots.find(r => r.scope === 'builtin')?.fsPath;
+		// ★ P1（2026-11-06）：内置根由 `@vssaros/dsh-skill-bundle` 自己的 patch 挂成官方
+		//   `bundledSkillDir`（rank 600）；IDE 侧只交付用户/项目根（customSkillDirs / 300）。
+		//   保留 `bundledDir` 字段与 `_lastBundledSkillDir` 接线（值恒 undefined）⇒
+		//   sameStartOptions / serializeDshHostConfig / 主进程 existsSync 过滤都不用动 ✓。
+		const bundledDir: string | undefined = undefined;
 		const dirs = resolved.roots.filter(r => r.scope !== 'builtin').map(r => r.fsPath);
 		this._lastSkillDirs = dirs;
 		this._lastBundledSkillDir = bundledDir;
-		this._logService.info(`[dshHarness] skills roots: ${dirs.length} 个（${resolved.roots.filter(r => r.scope !== 'builtin').map(r => r.scope).join(' > ') || '无'}）+ bundled: ${bundledDir ? '1（rank 600）' : '0'}`);
+		this._logService.info(`[dshHarness] skills roots: ${dirs.length} 个（${resolved.roots.filter(r => r.scope !== 'builtin').map(r => r.scope).join(' > ') || '无'}）；bundled 由 @vssaros/dsh-skill-bundle 自持`);
 		return { dirs, bundledDir };
 	}
 
@@ -2050,6 +2058,12 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	private _appUpdate: IDshUpgradeAppState | undefined;
 	private _upgradeBusy: 'checking' | 'downloading' | 'installing' | undefined;
 	private _upgradeError: string | undefined;
+	// ★ 2026-11-05 复刻 dsh-desktop：8 相状态机是真源；上面的 `_appUpdate` 仍是
+	//   「更新源版本结论」，供 IDE 面板与旧胶囊用，两者不互相替代。
+	private _appUpdateStatus: IAppUpdateStatus = initialAppUpdateStatus('0.0.0');
+	private _appUpdatePresentation = 0;
+	private _appUpdateReleaseNotes: string | undefined;
+	private _appUpdateSkippedVersion: string | undefined;
 
 	public async refreshUpgrade(): Promise<void> {
 		this._upgradeError = undefined;
@@ -2258,6 +2272,8 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		const platform = `${isWindows ? 'win32' : isMacintosh ? 'darwin' : 'linux'}-${platformArch}`;
 		const url = buildUpdateEndpoint(base, platform, this._productService.quality ?? 'stable', this._productService.commit ?? '');
 		try {
+			// 每次检查都清掉上一版的日志，避免旧日志串到新版本。
+			this._appUpdateReleaseNotes = undefined;
 			// ★★ 2026-10-30（真机 P0：打包 exe 的更新面板红字 `Failed to fetch`）：
 			//   原来在**渲染进程**用 IRequestService（浏览器 XHR）直连更新源 —— 更新源是内网静态
 			//   托管，**不发 CORS 头** ⇒ 浏览器拦掉响应，JS 只能看到 `Failed to fetch` ✗✗
@@ -2275,6 +2291,7 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 				return { current, action: 'unknown', error: `更新源返回 HTTP ${res.status ?? 204}（空响应）` };
 			}
 			const parsed = parseAppUpdateResponse(JSON.parse(res.body));
+			this._appUpdateReleaseNotes = parsed?.notes;
 			const remote = parsed?.productVersion;
 			const action = decideAppUpdate(current, remote);
 			this._logService.info(`[dshHarness] app update: local=${current} remote=${remote ?? '-'} ⇒ ${action}`);
@@ -2282,6 +2299,133 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		} catch (e) {
 			return { current, action: 'unknown', error: String((e as Error)?.message ?? e) };
 		}
+	}
+
+	// ── 复刻 dsh-desktop 的 App 更新状态机（2026-11-05）──────────────────────────────
+
+	/**
+	 * 平台更新服务 `State` → 状态机事件的**唯一映射点**。
+	 *
+	 * ⚠ `Idle` 不带 `explicit`：只有自报 `notAvailable` / `error` 时才迁移，普通 Idle 直接 return ——
+	 *   否则一次无关的空闲回跳会把 `available`（用户还没点「更新」）冲掉 ✗。
+	 * ⚠ 自动检查在本项目是关的（`update.mode=manual`），所以这里来的状态基本都由用户动作触发；
+	 *   启动 8s 的静默检查走主进程 HTTP，不经过 `IUpdateService` ⇒ **不会弹卡片** ✓。
+	 */
+	private _onUpdateServiceState(state: State): void {
+		const versionOf = (u: { version: string; productVersion?: string }) => u.productVersion ?? u.version;
+		let event: AppUpdateEvent | undefined;
+		switch (state.type) {
+			case StateType.Uninitialized:
+				return;
+			case StateType.Idle:
+				if (state.error) {
+					event = { type: 'error', message: state.error };
+				} else if (state.notAvailable) {
+					event = { type: 'not-available' };
+				} else {
+					return;
+				}
+				break;
+			case StateType.Disabled:
+				event = { type: 'unsupported', message: '这个构建不支持自动更新，请手动下载安装包覆盖安装' };
+				break;
+			case StateType.CheckingForUpdates:
+				event = { type: 'check', manual: state.explicit, source: state.explicit ? 'manual' : 'runtime' };
+				break;
+			case StateType.AvailableForDownload:
+				event = {
+					type: 'available', version: versionOf(state.update),
+					...(this._appUpdateReleaseNotes ? { releaseNotes: this._appUpdateReleaseNotes } : {}),
+				};
+				break;
+			case StateType.Downloading: {
+				const percent = percentFromBytes(state.downloadedBytes, state.totalBytes);
+				event = { type: 'downloading', ...(percent !== undefined ? { percent } : {}) };
+				break;
+			}
+			case StateType.Updating: {
+				const percent = percentFromBytes(state.currentProgress, state.maxProgress);
+				event = { type: 'downloading', ...(percent !== undefined ? { percent } : {}) };
+				break;
+			}
+			case StateType.Overwriting:
+				event = { type: 'downloading' };
+				break;
+			case StateType.Downloaded:
+			case StateType.Ready:
+			case StateType.Restarting:
+				event = { type: 'downloaded', version: versionOf(state.update) };
+				break;
+		}
+		if (!event) {
+			return;
+		}
+		this._appUpdateStatus = reduceAppUpdateStatus(this._appUpdateStatus, event);
+		void this._pushUpgradeToAll();
+	}
+
+	/**
+	 * 用户**显式**点「检查更新」。启动静默检查继续走 `_checkAppUpdate()`（只更新版本结论、不弹 UI）。
+	 * 每次调用推进 `presentationId` ⇒ 页面能识别「这是一次新请求」，也不会被历史快照重放弹窗。
+	 */
+	public async checkAppUpdate(): Promise<void> {
+		this._appUpdatePresentation += 1;
+		const id = this._appUpdatePresentation;
+		this._appUpdateStatus = {
+			...reduceAppUpdateStatus(this._appUpdateStatus, { type: 'check', manual: true, source: 'manual' }),
+			presentationId: id,
+		};
+		// 手动检查取回被忽略的版本（官方 `skipUpdate` 的同款语义）。
+		this._appUpdateSkippedVersion = undefined;
+		this._storageService.store('dsh.appUpdate.skippedVersion', '', StorageScope.APPLICATION, StorageTarget.USER);
+		this._upgradeError = undefined;
+		this._upgradeBusy = 'checking';
+		await this._pushUpgradeToAll();
+		try {
+			this._appUpdate = await this._checkAppUpdate();
+			const a = this._appUpdate;
+			const event: AppUpdateEvent = a.action === 'upgrade' && a.remote
+				? {
+					type: 'available', version: a.remote,
+					...(this._appUpdateReleaseNotes ? { releaseNotes: this._appUpdateReleaseNotes } : {}),
+				}
+				: a.error
+					? { type: 'error', message: a.error }
+					: { type: 'not-available' };
+			// `downgrade` / `unknown` 都落到「已是最新」：绝不把「源更旧」显示成可升级 ✗
+			this._appUpdateStatus = { ...reduceAppUpdateStatus(this._appUpdateStatus, event), presentationId: id };
+		} finally {
+			this._upgradeBusy = undefined;
+			await this._pushUpgradeToAll();
+		}
+	}
+
+	/** 忽略某个版本（持久化）；下次新版本仍会问，手动检查可覆盖忽略。 */
+	public async skipAppUpdate(version: string): Promise<void> {
+		const v = String(version ?? '').trim();
+		if (!v) {
+			return;
+		}
+		this._appUpdateSkippedVersion = v;
+		this._storageService.store('dsh.appUpdate.skippedVersion', v, StorageScope.APPLICATION, StorageTarget.USER);
+		this._appUpdateStatus = reduceAppUpdateStatus(this._appUpdateStatus, { type: 'reset' });
+		await this._pushUpgradeToAll();
+	}
+
+	/**
+	 * 「重新启动并安装」。只在 `downloaded` 阶段允许；安装前先释放 dsh Host 的文件锁
+	 * （真机事故：detached Host 占着 `koffi.node` ⇒ 安装器 DeleteFile 拒绝访问 / 半装）。
+	 */
+	public async installAppUpdate(): Promise<void> {
+		if (this._appUpdateStatus.phase !== 'downloaded') {
+			return;
+		}
+		try {
+			await this._channel.call<void>(DshHarnessChannelCommand.ReleaseHost);
+		} catch (e) {
+			this._logService.warn(`[dshHarness] installAppUpdate: 释放 dsh Host 失败（安装时可能仍会撞文件锁）：${String((e as Error)?.message ?? e)}`);
+		}
+		await this._updateService.quitAndInstall();
 	}
 
 	/**
@@ -2315,6 +2459,9 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 			error = String((e as Error)?.message ?? e);
 		}
 		const app = this._appUpdate ?? { current: this._productService.version ?? '0.0.0', action: 'unknown' as const };
+		// 状态机的 error 也要出现在面板里（否则「更新失败」只有卡片说、面板还显示旧结论）。
+		const appError = this._upgradeError
+			?? (this._appUpdateStatus.phase === 'error' ? this._appUpdateStatus.message : undefined);
 		// 商城资产（技能 / MCP / 智能体 / 工作流 / 工作台）：一次快照里带上，面板按五类分组显示 ✓
 		const assets = await this._collectAssets();
 		return {
@@ -2322,7 +2469,15 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 			app: {
 				...app,
 				...(this._upgradeBusy ? { busy: this._upgradeBusy } : {}),
-				...(this._upgradeError ? { error: this._upgradeError } : {}),
+				...(appError ? { error: appError } : {}),
+				// ★ 复刻新增：页面据此渲染通知卡 / 进度条 / 发布日志 / 忽略抑制。
+				phase: this._appUpdateStatus.phase,
+				manual: this._appUpdateStatus.manual,
+				...(this._appUpdateStatus.availableVersion ? { availableVersion: this._appUpdateStatus.availableVersion } : {}),
+				...(this._appUpdateStatus.percent !== undefined ? { percent: this._appUpdateStatus.percent } : {}),
+				...(this._appUpdateStatus.releaseNotes ? { releaseNotes: this._appUpdateStatus.releaseNotes } : {}),
+				...(this._appUpdateStatus.presentationId !== undefined ? { presentationId: this._appUpdateStatus.presentationId } : {}),
+				...(this._appUpdateSkippedVersion ? { skippedVersion: this._appUpdateSkippedVersion } : {}),
 			},
 			runtime: { channel: String(this._configurationService.getValue(DshHarnessSettings.UpdateChannel) ?? 'stable') },
 			bundled,

@@ -367,11 +367,9 @@ export interface IIdeCapabilityEnv {
 	 *   不通知就会出现「dsh 装好了、IDE 技能库看不见」✗。
 	 * 可选：没接就如实报错（不让安装假装成功）。
 	 */
-	reloadSkills?(): Promise<void>;
-
 	marketplaceAction?(request: {
-		// ⚠ **不含** `reloadSkills`：它是"让 IDE 重读磁盘"，由 {@link reloadSkills} 单独处理
-		//   （执行面只做"有副作用/要认证的商城动作"）✓
+		// ★ 2026-11-06：`reloadSkills` op 已下线（dsh 侧技能写入自己 invalidate，
+		//   IDE 技能库也即将下线）⇒ 执行面只剩"有副作用/要认证的商城动作" ✓
 		readonly op: 'list' | 'detail' | 'installed' | 'install' | 'uninstall' | 'upgrade' | 'publish' | 'deletePackage' | 'deleteVersion';
 		readonly kind?: string;
 		readonly slug?: string;
@@ -1147,19 +1145,14 @@ export async function executeIdeCapability(request: { readonly capability: strin
 			await env.focusTaskboard(title);
 			return { op, focused: true, title };
 		}
-		case 'skills':
+		// ★ 2026-11-06（P1）：`skills` 能力**已下线** —— `skill_market_list` 工具移除，
+		//   技能清单查询改由 dsh 侧 `@vssaros/dsh-marketplace` 自持。
+		//   ⚠ 白名单里的 `skills` **仍保留**（profile 里旧版 vssaros-skills 的清单还声明它，
+		//     删掉会让那些插件的清单校验失败 ⇒ 整个不加载）；旧插件若真发请求会走 default
+		//     拿到明确的「IDE 能力未实现」，而不是静默失败 ✓（与 `browser` 同款兼容处理）。
 		case 'mcp': {
-			// ★ 2026-10-21：**商城清单**（`@vssaros/dsh-skills` 的 `skill_market` 与
-			//   `@vssaros/dsh-mcp` 的 `mcp_market` 两个工具走这条）。
-			//
-			// ⚠ 这两个工具**此前一直是坏的**（三重缺口，本轮一次补齐）：
-			//   ① 调用方插件的清单没声明这个能力 ⇒ 主进程**授权就拒**（"未声明能力 skills"）；
-			//   ② IDE 侧**没有执行端**（`executeIdeCapability` 里没有这个 case）；
-			//   ③ 因此真机上只表现为"市场不可用"，没有任何线索（"点了没反应"的典型形态 ✗）。
-			//
-			// 为什么清单查询放 IDE 侧：认证（商城 JWT）本来就在 IDE 侧（`IMarketplaceService`），
-			//   而 dsh 侧只拿得到 TOF 票据（企业身份），换 JWT 需要 whoami 兜底字段 ⇒ 放 IDE 侧最省、最准 ✓。
-			//   （dsh 侧**持有**企业身份这件事本身由桥 `tof.sync` 保证 ⇒ 两边同一份身份 ✓。）
+			// ★ 2026-10-21：**商城清单**（`@vssaros/dsh-mcp` 的 `mcp_market_list` 走这条）。
+			// 认证（商城 JWT）在 IDE 侧（`IMarketplaceService` 复用 TOF 登录态）⇒ dsh 侧只发意图 ✓。
 			const params = request.params ?? {};
 			const op = textParam(params, 'op') ?? 'marketList';
 			if (op !== 'marketList') {
@@ -1170,7 +1163,7 @@ export async function executeIdeCapability(request: { readonly capability: strin
 			const limit = typeof rawLimit === 'number' && Number.isFinite(rawLimit)
 				? Math.min(100, Math.max(1, Math.floor(rawLimit)))
 				: 20;
-			const kind = request.capability === 'skills' ? 'skill' : 'mcp';
+			const kind = 'mcp';
 			const listed = await env.marketList(kind, { ...(q ? { q } : {}), limit });
 			// 回执形状：dsh 侧工具的 render 直接吃 `name / version / description` ⇒ 这里给**扁平**字段 ✓
 			return {
@@ -1366,20 +1359,11 @@ export async function executeIdeCapability(request: { readonly capability: strin
 			//  · 读类 op（list / detail）**不问**（无副作用）✓。
 			const params = request.params ?? {};
 			const op = textParam(params, 'op') ?? 'list';
-			// `reloadSkills` 放读类：它只是让 IDE 重读磁盘，**没有**任何写入/删除副作用
-			// （真正的写发生在 dsh 侧，这里只是"刷新一下界面看得到"）✓
-			const READ_OPS = ['list', 'detail', 'installed', 'reloadSkills'];
+			// ★ 2026-11-06：`reloadSkills` op 已下线（dsh 侧 skill_manage / 页面 API 写后自己 invalidate）✓
+			const READ_OPS = ['list', 'detail', 'installed'];
 			const WRITE_OPS = ['install', 'uninstall', 'upgrade', 'publish', 'deletePackage', 'deleteVersion'];
 			if (!READ_OPS.includes(op) && !WRITE_OPS.includes(op)) {
 				throw new Error(`marketplace 的 op 不认识：${op}（可用：${[...READ_OPS, ...WRITE_OPS].join(' / ')}）`);
-			}
-			// ★ 刷新技能库：dsh 侧装完 skill 后调它（IDE 侧没有文件监听 ⇒ 必须显式重读）✓
-			if (op === 'reloadSkills') {
-				if (!env.reloadSkills) {
-					throw new Error('这台 IDE 没有接技能库刷新（env.reloadSkills 缺失）⇒ 装完的 skill 不会出现在技能列表里');
-				}
-				await env.reloadSkills();
-				return { op, ok: true };
 			}
 			if (!env.marketplaceAction) {
 				throw new Error('这台 IDE 没有接商城通道（env.marketplaceAction 缺失）');
@@ -1407,8 +1391,7 @@ export async function executeIdeCapability(request: { readonly capability: strin
 				}
 			}
 			const result = await env.marketplaceAction({
-				// ⚠ 这里**不含** `reloadSkills`：它在上面已经提前 return（由 `env.reloadSkills` 处理），
-			//   落到这里的 op 一定不是它 ⇒ 类型上排除，免得执行面被迫认识一个它不管的 op ✓
+				// ★ 2026-11-06：`reloadSkills` 已整体移除，这里列出的就是完整 op 集合 ✓
 			op: op as 'list' | 'detail' | 'installed' | 'install' | 'uninstall' | 'upgrade' | 'publish' | 'deletePackage' | 'deleteVersion',
 				...(kind ? { kind } : {}),
 				...(slug ? { slug } : {}),

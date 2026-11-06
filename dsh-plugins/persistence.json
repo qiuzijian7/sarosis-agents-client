@@ -52,6 +52,25 @@
       "evidence": "vssaros-agents/lib/store.js:1; vssaros-workflow/lib/agents.js:18"
     },
     {
+      "path": "<数据根>/agent-rooms.json",
+      "writer": "@vssaros/dsh-agents",
+      "readers": [
+        "@vssaros/dsh-chat-surface",
+        "@vssaros/dsh-superagent"
+      ],
+      "ownsDeclared": false,
+      "concurrency": "单进程唯一写者 lib/rooms.js：同拍合并写 + 串行队列 + tmp 原子 rename；version 比代码新 ⇒ 只读冻结不覆盖；rounds 载入时裁剪（≤50 轮 / 10min）。读者都不直接读文件：chat-surface 经 /x/agents/api/rooms，superagent 经 vssaros-group-progress 广播。跨进程：单写者租约 agent-rooms.json.owner（最新载入的实例接管；落盘前核对 token，被接管的旧实例转只读，不再整文件覆盖；卸载交还）",
+      "evidence": "vssaros-agents/lib/rooms.js; vssaros-agents/test/rooms.test.mjs"
+    },
+    {
+      "path": "$DSH_HOME/dsh-superagent/orchestrator.sqlite",
+      "writer": "@vssaros/dsh-superagent",
+      "readers": [],
+      "ownsDeclared": false,
+      "concurrency": "state lock（acquireStateLock）+ Engine 唯一写者；含 trigger/decision/ticket/desk_outbox/group_route 等表（group_route = 桌面消息去了哪个群，与 ignore 决定、建群通知同一事务写入）",
+      "evidence": "vssaros-superagent/dev/src/app/runtime.ts; vssaros-superagent/dev/src/app/state-lock.ts"
+    },
+    {
       "path": "<数据根>/skills/<dir>/SKILL.md",
       "writer": "@vssaros/dsh-skills",
       "readers": [],

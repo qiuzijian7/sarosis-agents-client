@@ -17,6 +17,7 @@
 			"path": "../vssaros-homepage"
 		},
 		{
+			"name": "saros-switch (new-api)",
 			"path": "../Saros-switch"
 		}
 	],

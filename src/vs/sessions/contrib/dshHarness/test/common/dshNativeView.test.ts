@@ -162,8 +162,7 @@ suite('dshNativeView 契约（kind=native 的解析与编排）', () => {
 			paneSrc.includes(`'${manifestRoute}'`),
 			`dshNativeTreeViewPane 的 NATIVE_DATA_SOURCES 里没有 ${manifestRoute}：清单与 IDE 数据源已漂移`,
 		);
-		// 编辑区完整页仍是插件页 ⇒ 插件必须继续提供它（否则点开条目什么都没有）。
-		assert.ok(fs.existsSync(path.join(process.cwd(), 'dsh-plugins/vssaros-agents/lib/detail.js')),
-			'编辑区完整页仍由插件自托管（lib/detail.js），迁移侧栏不能把它删掉');
+		// 2026-11-06：编辑区完整页（lib/detail.js）随 Bots 工作台一起删除（index.js 早已不加载它；
+		// bot 配置在会话视图「设置」页签）⇒ 不再断言它存在。
 	});
 });

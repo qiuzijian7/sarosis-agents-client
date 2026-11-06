@@ -12,7 +12,7 @@
  *   · 只扫 import / require 了 `node:child_process` | `child_process` 的文件；
  *   · 调用名含 promisify 别名：spawn / spawnSync / execFile / execFileSync / exec / execSync /
  *     execFileP / spawnP / execP（别名历史上真的踩过）；
- *   · 排除 node_modules / skills / assets / dist / test；
+ *   · 排除 node_modules / skills / assets / dist / test / tests；
  *   · 判据：调用起点之后 500 字符内必须出现 windowsHide；
  *   · **非空跑守卫**：扫到的候选文件 < 5 或调用点 < 6 ⇒ 直接失败（glob/反选失效时不许静默通过）。
  *
@@ -27,7 +27,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const rootArg = process.argv.indexOf('--root');
 const root = rootArg > 0 && process.argv[rootArg + 1] ? resolve(process.argv[rootArg + 1]) : here;
 
-const EXCLUDE_DIRS = new Set(['node_modules', 'skills', 'assets', 'dist', 'test', 'out']);
+// 2026-11-06：补 'tests' —— vssaros-memory 的测试目录叫 tests/（与 check-dsh-plugin-sync 的 test|tests 口径一致），
+//   测试由 node 直接跑、不在 dsh Host 里，不会闪窗；漏排除时 82 处全是它的测试文件。
+const EXCLUDE_DIRS = new Set(['node_modules', 'skills', 'assets', 'dist', 'test', 'tests', 'out']);
 const EXTS = new Set(['.js', '.mjs', '.cjs']);
 const CP_IMPORT = /(?:from\s+['"](?:node:)?child_process['"]|require\(\s*['"](?:node:)?child_process['"]\s*\))/;
 /** 调用名（含 promisify 别名）。前面不许紧跟标识符字符，避免 .exec( 之类的正则方法误伤。 */

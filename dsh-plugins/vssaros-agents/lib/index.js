@@ -29,7 +29,6 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { askAssignment, cancelAssignment, createAssignment, installAssignmentTracker, listAssignments } from './assignments.js';
 import { allowlistDenyOf, pickLazyEagerKeys, avatarColorOf, isDelegatableAgent, isShownAgent, presetIdOf, summarizeAgents, toPresetDefinition } from './core/agents.js';
-import { legacyAgentMemoryOn } from './core/memoryLimits.js';
 import { agentModelRouteOf, applyModelSelection, prevalidateRoutes, setAgentModelRoutes } from './modelSelection.js';
 import { botIdentityProjection } from './core/botIdentity.js';
 import { writeBotIdentity } from './botIdentityWriter.js';
@@ -43,18 +42,13 @@ import { createToolNameSnapshot } from './core/toolNames.js';
 import { bindWorkItems } from './workItemRef.js';
 // ★ 2026-10-22（工作台重构）：名册 JSON 接口复用**同一份**面板数据构建（页面与工作台不会各算一遍 ✓）
 import { buildHomeData } from './home.js';
-import { renderMemoryEvoPage } from './memoryEvoPage.js';
 // 给某个 agent 找活会话（IM 渠道派发用；★ 2026-11-03 从 groups.js 抽出，群聊下线后仅此一处消费）
 import { ensureAgentSession } from './agentSession.js';
 import { readLiveSessions, recentSessionPresetIds } from './live.js';
 import { markSeen, unreadSnapshot } from './seen.js';
-import { backupMemory, ensureMemoryRepo, clampMemoryChars, enableGit, gitGraphOf, gitLogOf, gitShowMemoryFile, gitStatusOf, installMemoryBackupWatcher, listBranches, listMemoryBackups, listMemoryFiles, listVersions, MEMORY_CHARS_MAX, readMemoryFile, readMemorySnapshot, restoreMemoryBackup, restoreMemoryFile, setVersion, snapshotGit, switchBranch, writeCoreMemory, memoryDirOf, memoryAutoCommitOnTurn, __memoryTurn } from './memory.js';
 // 从 AgentMemory 网关库拉一份 MEMORY.md **草稿**（只读；不落盘 —— 落盘仍走 write-memory 由人确认）
-import { importMemoryDraft, listAgentMemoryCandidates, listAgentMemoryExtras, syncMemoryToAgentMemory } from './agentmemoryImport.js';
 // 工作区记忆（2026-11-02）：记忆 = Bot × 工作区 两层；这里只用到注入、页面 API 两处
-import { addEntryForCwd, ensureWorkspaceMemory, claimWorkspaceMemory, findClaimableMemories, isWorkspaceScope, removeEntryForCwd, resolveWorkspace, scopeIdOfKey, setWorkspaceMemoryLimits, workspaceFromScopeId, workspaceMemoryView, workspaceSnapshotText, writeWorkspaceMemory } from './workspaceMemory.js';
 // 记忆偏好（2026-11-03）：「回合末自动提交」等开关，运行期可改、立刻生效
-import { readMemoryPrefs, setMemoryPrefs } from './memoryPrefs.js';
 import { ensureOutboxLoaded, outboxList, outboxRetry } from './outbox.js';
 /* IM 绑定（2026-10-27，P0）：每个 bot / 群可绑一个 IM 会话，双向流转。
    适配器端口与 `vssaros-channels/lib/core/ports.js` 同形 ⇒ 飞书适配器将来可直接搬。 */
@@ -88,7 +82,13 @@ import { createFeishuAppInbounds } from './feishuAppInbounds.js';
 import { appIdOfEvent, feishuEventBus } from './feishuEventBus.js';
 import { createTeamService } from './team.js';
 import { createTeamBot } from './teamCreate.js';
+import { memoryBus } from './memoryBus.js';
+import { decideSkillDraft, ownedSkillsOf, ownedSkillsText, rememberStep } from './stepMemory.js';
+import { distillRouteOf, makeStepDistiller } from './stepDistill.js';
 import { externalBots, externalBotRow, teamBus } from './teamBus.js';
+import { createRooms, installRooms, roomsApi } from './rooms.js';
+import { roomProjection } from './core/rooms.js';
+import { loadAppendPluginRecord } from './botIdentityWriter.js';
 /* ★ 2026-10-29：**父进程看护** —— app 退出后 Host 自己退，避免孤儿 Host 继续占用
    会话写句柄与 IM 长连接（见 hostSelfWatch.js 文件头；真机上曾攒出 3 个 Host 抢飞书事件）。 */
 import { startAppParentWatch } from './hostSelfWatch.js';
@@ -114,7 +114,7 @@ import { installRelay } from './relay.js';
 // 只导入 `scanAgentsFromConfig` 会让每个 `/x/agents/*` 请求抛 `ReferenceError` ⇒ `dsh-host-webserver`
 // 的 catch 回**裸 400**（无 body）⇒ 侧栏整页白屏（用户报「agents 的 sideview 不可见」）。
 // 教训：这类"搬模块漏 import"只有真跑一次请求才会暴露 ⇒ 由 p3-96（页面交互探针）看守。
-import { agentsRootOf, scanAgents, scanAgentsFromConfig } from './store.js';
+import { agentsRootOf, dataRootOf, scanAgents, scanAgentsFromConfig } from './store.js';
 import { addApprovalTemplate, listApprovalTemplates, removeApprovalTemplate, templateGate } from './templates.js';
 import { registerAgentTools } from './tools.js';
 
@@ -291,14 +291,6 @@ function sectionOrderOf(child) {
 	}
 }
 
-/**
- * 自证/探针用（2026-10-19）：记忆注入的当前口径，按 agentId 索引。
- *   · `byAgent`：`{ mode, chars, ready, frozenSessions, served }`
- *   · `refresh`：手动重读 MEMORY.md（`p3-128` 用它验证"live 会变 / session 冻结"两条语义）
- * 为什么不放页面自证里：这段跑在 **Host**（node）；页面读不到，但探针可以直接 import 本模块。
- */
-export const __promptMem = { byAgent: new Map(), refresh: new Map() };
-
 /** 角色 2：preset 内的人设注入 + 工具 allowlist（无状态、无页面）。 */
 function applyPersona(ctx, config) {
 	const staticPersona = String(config.persona);
@@ -321,82 +313,34 @@ function applyPersona(ctx, config) {
 			projections = undefined;
 		};
 	}));
-	// 记忆快照注入（2026-10-16；2026-10-19 升级为「可配上限 + 会话内冻结」）：
-	//   · 上限 = `.agent.md` 的 `memory-chars`（缺省 2048 字符，0 = 关闭，夹 512~20000）；
-	//   · 语义 = `memory-mode`：
-	//       session（默认）**会话内冻结** —— 第一次装配拿到的快照，这个会话之后一直用它。
-	//               为什么：装配出的 system prompt 是**前缀**，每 60s 换一次文本会让 prompt cache
-	//               每轮全失效（DSB 同样用「SOUL/MEMORY 冻结快照」换缓存命中，见其文档）。
-	//               代价：改了 MEMORY.md 要等**新会话**（或压缩）才生效 —— 这是有意的取舍 ✓。
-	//       live   旧行为（每 60s 刷新，会话中途也会变）；显式想要"改完立刻生效"才用它。
-	//   · 装配是同步的 ⇒ 文本走缓存（挂载即读 + 每分钟定时读）；定时器**两种模式都保留**，
-	//     因为"新会话"要能读到最新内容。
-	// ★ 2026-11-05「记忆收敛成一套」：Bot 记忆改由 @vssaros/dsh-memory 的 bot 轨注入（其快照里有「本 Bot 的记忆」段）
-	//   ⇒ 这里默认按 memory-chars=0 处理：不读、不起定时器、人设段不再带记忆与 workspace_memory 写法提示。
-	//   回滚：VSSAROS_AGENTS_LEGACY_MEMORY=1（见 core/memoryLimits.js 的 legacyAgentMemoryOn）。
-	const memoryChars = legacyAgentMemoryOn(config) ? clampMemoryChars(config.memoryChars) : 0;
-	const memoryMode = config.memoryMode === 'live' ? 'live' : 'session';
-	let memoryCache = '';
-	let memoryReady = memoryChars <= 0;   // 关闭注入 ⇒ 视作已就绪（下面直接返回空串）
-	const refreshMemory = () => {
-		if (memoryChars <= 0) {
-			memoryCache = '';
-			memoryReady = true;
-			return Promise.resolve('');
-		}
-		return readMemorySnapshot(config, config.agentId, memoryChars).then(text => {
-			memoryCache = text;
-			memoryReady = true;
-			return text;
-		}).catch(() => {
-			memoryCache = '';
-			memoryReady = true;
-			return '';
-		});
-	};
-	void refreshMemory();
-	// 只在**真的会注入**时才轮询：`memory-chars: 0` = 关闭注入 ⇒ 没有任何消费方，
-	// 每个 agent 一个 60s 定时器纯属白跑（N 个 agent 就是 N 个）。
-	const memoryTimer = memoryChars > 0 ? setInterval(() => { void refreshMemory(); }, 60_000) : undefined;
-	memoryTimer?.unref?.();
-	ctx.effect(() => () => { if (memoryTimer) { clearInterval(memoryTimer); } });
+	// ★ 2026-11-06「记忆收敛」S4：Bot 记忆由 @vssaros/dsh-memory 的 bot 轨注入（快照里的「本 Bot 的记忆」段），
+	//   本插件的人设段只剩人设正文与「你的技能」。
 
-	// 冻结表：**按会话**（`context.agent.session` 是每个会话自己的对象）。
-	// ⚠ 拿不到会话载体时**不冻结**（退回实时）——宁可多花 token，也不假装"冻结了"却给了空串。
-	const frozenMemory = new WeakMap();
-	const memoryStat = { mode: memoryMode, chars: memoryChars, ready: false, frozenSessions: 0, served: 0 };
+	// ★ 2026-11-05 superagent v2：bot 自己的技能（团队步骤沉淀、经人批准，frontmatter `owner: bot:<id>`）。
+	//   技能本身由 vssaros-skills 注册给所有会话；这里只在**该 bot** 的人设段列出「你的技能」，让它知道先读哪几个。
+	//   和记忆同一口径：挂载即读 + 每分钟刷新；按会话冻结（保 prompt 缓存），新批准的技能在新会话生效。
+	let skillsCache = '';
+	const refreshSkills = () => (config.agentId
+		? ownedSkillsOf(config, config.agentId).then(list => { skillsCache = ownedSkillsText(list); }, () => { skillsCache = ''; })
+		: Promise.resolve());
+	void refreshSkills();
 	if (config.agentId) {
-		__promptMem.byAgent.set(String(config.agentId), memoryStat);
-		__promptMem.refresh.set(String(config.agentId), refreshMemory);
+		const skillsTimer = setInterval(() => { void refreshSkills(); }, 60_000);
+		skillsTimer.unref?.();
+		ctx.effect(() => () => { clearInterval(skillsTimer); });
 	}
-	const memoryTextFor = (context) => {
-		memoryStat.ready = memoryReady;
-		if (!memoryReady) {
-			return '';   // 首次读取还没回来：这一轮先不注入，**也不冻结空串**
-		}
-		if (!memoryCache) {
-			return '';
-		}
-		if (memoryMode === 'live') {
-			memoryStat.served += 1;
-			return memoryCache;
-		}
+	const frozenSkills = new WeakMap();
+	const skillsTextFor = (context) => {
 		const key = context?.agent?.session ?? context?.agent ?? context?.scope;
-		if (!key || typeof key !== 'object') {
-			memoryStat.served += 1;
-			return memoryCache;
-		}
-		if (!frozenMemory.has(key)) {
-			frozenMemory.set(key, memoryCache);
-			memoryStat.frozenSessions += 1;
-		}
-		memoryStat.served += 1;
-		return frozenMemory.get(key);
+		if (!key || typeof key !== 'object') { return skillsCache; }
+		if (!frozenSkills.has(key)) { frozenSkills.set(key, skillsCache); }
+		return frozenSkills.get(key);
 	};
 
 	// 人设正文与记忆快照**都为空**时不注册这条 section（空段没有信息，只是给系统提示塞一个空块）。
 	// 工具 allowlist 在下面独立注册，不受这个条件影响 ✓。
-	const hasSectionText = Boolean(staticPersona.trim()) || memoryChars > 0;
+	// bot 有 id 时也注册：它的技能清单要放进这一段（没有人设、没有记忆、也没有技能时 text 为空串）。
+	const hasSectionText = Boolean(staticPersona.trim()) || Boolean(config.agentId);
 	if (hasSectionText) {
 		ctx.inject(['systemPrompt'], child => child.effect(() => child.systemPrompt.section({
 			name: PERSONA_SECTION_NAME,
@@ -405,20 +349,7 @@ function applyPersona(ctx, config) {
 			// 没切换过 / 取不到 → 退回 preset 自带人设，行为与从前完全一致。有记忆快照就追加 ✓。
 			text: (context) => {
 				const base = switchedPersonaText(projections, context) ?? staticPersona;
-				const mem = memoryTextFor(context);
-				/* ★ 2026-10-27：以前只注入**内容**、不说文件在哪 ⇒ agent 不知道往哪写
-				   ⇒ 记忆永远空（用户报「记忆没有显示内容」）。现在把绝对路径与写法一并给出。
-				   ⚠ 只在真有记忆内容时追加（没有记忆就不打扰每个会话）。
-				   ⚠ 路径用 `memoryDirOf` 算 —— 内置 agent 与自定义 agent 的目录不同。
-				   ★ 2026-11-02：写法从"直接编辑这个文件"改成**工具**：记忆在 `<数据根>` 下，
-				     不在 dsh 文件沙箱的写根（会话 cwd / tmp）里 ⇒ `workspace-write` 下直接编辑必被拒。 */
-				const memHint = (mem && config.agentId)
-					? ('\n\n## 记忆\n长期记忆文件：' + join(memoryDirOf(config, config.agentId), 'MEMORY.md')
-						+ '（当前 ' + String(mem.length) + ' 字符）\n'
-						+ '想把某件事记住时，用 workspace_memory 工具（scope=bot 记你自己的经验与用户偏好；scope=workspace 记项目事实），不要直接编辑文件。\n'
-						+ '改动在**新会话**生效（当前会话已冻结，以保证 prompt 缓存命中）。')
-					: '';
-				return mem ? base + mem + memHint : base;
+				return base + skillsTextFor(context);
 			},
 		})));
 	}
@@ -1068,99 +999,11 @@ async function switchPersona(state, config, body) {
 	};
 }
 
-/** 工作区记忆 section 的名字（全局层；dsh 对重名注册直接抛 ⇒ 只在顶层角色注册一次）。 */
-const WORKSPACE_MEMORY_SECTION_NAME = 'vssaros-workspace-memory';
-/** 排在部署级人设（含 Bot 记忆）之后、AgentMemory（人设 +100）之前。 */
-const WORKSPACE_MEMORY_ORDER_OFFSET = 50;
-
-/**
- * 工作区记忆注入（2026-11-02，用户拍板「所有会话都注入；Bot 会话里排在 Bot 记忆之后」）。
- *
- * · 只在**顶层角色**注册（全局层）⇒ 普通会话与每个 Bot preset 的会话都能拿到；
- *   persona / toolsOnly 两种挂载**不**注册（否则同一段记忆会进提示词两遍，见双 plane 的教训）。
- * · 语义与 Bot 记忆一致：`session`（默认）= **会话内冻结**（前缀稳定 ⇒ prompt cache 命中），
- *   `live` = 每次装配读最新（只按 mtime 读盘，稳态一次 stat）。
- * · `interpolate: false`：记忆是自由文本，`{{…}}` 绝不能被当成模板变量（未注册变量会让装配抛错）。
- * · 提供者**永不抛**：抛了 = 这个会话的装配失败 = 每一轮都起不来 ⇒ 出错只记一笔、返回空串。
- */
-export const __workspaceMem = { served: 0, frozenSessions: 0, empty: 0, errors: 0, lastError: '', order: undefined };
-
-export function installWorkspaceMemorySection(ctx, config) {
-	const frozen = new WeakMap();
-	const textFor = (context) => {
-		try {
-			const session = context?.agent?.session;
-			const cwd = session?.header?.cwd;
-			if (typeof cwd !== 'string' || !cwd) {
-				return '';
-			}
-			const ws = resolveWorkspace(cwd);
-			if (!ws) {
-				return '';
-			}
-			const { text, limits } = workspaceSnapshotText(config, ws);
-			if (limits.mode === 'live' || !session || typeof session !== 'object') {
-				__workspaceMem.served += 1;
-				if (!text) { __workspaceMem.empty += 1; }
-				return text;
-			}
-			if (!frozen.has(session)) {
-				// ⚠ 空串也冻结：会话中途写进来的记忆**新会话**才生效（与 Bot 记忆同一口径），
-				//   否则同一会话里提示词前缀会在"有 / 没有"之间变化，缓存每次都失效。
-				frozen.set(session, text);
-				__workspaceMem.frozenSessions += 1;
-			}
-			__workspaceMem.served += 1;
-			const value = frozen.get(session);
-			if (!value) { __workspaceMem.empty += 1; }
-			return value;
-		} catch (error) {
-			__workspaceMem.errors += 1;
-			__workspaceMem.lastError = String(error?.message ?? error).slice(0, 200);
-			return '';
-		}
-	};
-	ctx.inject(['systemPrompt'], child => child.effect(() => {
-		let order = WORKSPACE_MEMORY_ORDER_OFFSET;
-		try {
-			const persona = child.systemPrompt.getSectionOrder(PERSONA_ORDER_NAME);
-			if (Number.isFinite(persona)) {
-				order = persona + WORKSPACE_MEMORY_ORDER_OFFSET;
-			}
-		} catch {
-			/* 中央 order 表不可用 ⇒ 用兜底值 */
-		}
-		__workspaceMem.order = order;
-		try {
-			const dispose = child.systemPrompt.section({
-				name: WORKSPACE_MEMORY_SECTION_NAME,
-				order,
-				interpolate: false,
-				text: textFor,
-			});
-			return () => {
-				__workspaceMem.order = undefined;
-				dispose();
-			};
-		} catch (error) {
-			// 重名（同一 ctx 被装配两次）只告警，不拖垮整个插件的激活
-			console.warn(`[vssaros-agents] 工作区记忆 section 未注册：${String(error?.message ?? error)}`);
-			return undefined;
-		}
-	}));
-}
-
 /** 角色 1：顶层（注册 preset + 页面）。 */
 function applyTopLevel(ctx, config) {
 	const state = createState();
 	// 审批模板闸谓词（2026-10-16，P2）：tools.js 的 pre-execute 先查它；读失败按"没有"（照常问 ✓）。
 	state.approvalTemplates = templateGate(config);
-	// 工作区记忆注入（全局层，所有会话；见 installWorkspaceMemorySection 头注释）
-	// ★ 2026-11-05「记忆收敛成一套」：工作区记忆已并入 @vssaros/dsh-memory 的 key 轨（同一工作区键）
-	//   ⇒ 默认不再注入这一段；回滚见 core/memoryLimits.js 的 legacyAgentMemoryOn。
-	if (legacyAgentMemoryOn(config)) {
-		installWorkspaceMemorySection(ctx, config);
-	}
 
 	/* ── IM 绑定（2026-10-27，P0）──────────────────────────────────────────────
 	   装配顺序很重要：Hub 先建好挂到 state 上，回合结束的回复回收才能在结束那一刻
@@ -1367,6 +1210,8 @@ function applyTopLevel(ctx, config) {
 		child.sessionProjections.register(personaProjection());
 		// Bot 身份投影（带 wire ⇒ 页面 projectionValues["vssaros-bot"] 可读；判据见 core/botIdentity.js）
 		child.sessionProjections.register(botIdentityProjection());
+		// ★ 2026-11-05 群标记投影（projectionValues["vssaros-room"]：群会话 / 成员影子会话；见 core/rooms.js）
+		child.sessionProjections.register(roomProjection());
 		return () => {
 			state.projections = undefined;
 		};
@@ -1429,17 +1274,52 @@ function applyTopLevel(ctx, config) {
 	ctx.effect(() => installAssignmentTracker(ctx, config, state));
 	// ★ 2026-11-04 团队总线（superagent 主管组团 T0/T2）：只在顶层角色提供（委派、跟踪、建 bot 都在这里）；
 	//   卸载时撤销，总线上的订阅表保留（见 lib/teamBus.js）。
+	const teamService = createTeamService(config, state);
 	ctx.effect(() => teamBus().provide({
-		...createTeamService(config, state),
+		...teamService,
 		createBot: async (input) => createTeamBot(config, input, async () => {
 			if (state.presets) await syncPresets(state, state.presets, config);
 		}),
 	}));
+	// ★ 2026-11-06 契约修订 2：describeBot(ref) = 名册卡片（含 model / preset / 工作区），按 id 或名字找（见 lib/teamBus.js）。
+	ctx.effect(() => teamBus().provideDescribe(async (ref) => {
+		const key = String(ref ?? '').trim().toLowerCase();
+		if (!key) { return undefined; }
+		return (await teamService.listBots()).find(bot => bot.id.toLowerCase() === key || bot.name.toLowerCase() === key);
+	}));
+	// ★ 2026-11-05 多 bot 群聊（用户要求恢复；设计移植 DeepSeek-Bot 的 room，见 lib/rooms.js 文件头）：
+	//   群 = 一条专属会话 + 成员名单；群会话不调模型（llm/stream 合成 group_relay），成员在各自的影子会话里回答。
+	//   与 2026-11-03 下线的旧群聊（groups.js / agent-groups.json）互不相干。
+	ctx.inject(['workspaceRegistry'], child => child.effect(() => {
+		state.workspaceRegistry = child.workspaceRegistry;
+		return () => { state.workspaceRegistry = undefined; };
+	}));
+	state.rooms = createRooms({
+		file: join(dataRootOf(config), 'agent-rooms.json'),
+		fallbackCwd: dataRootOf(config),
+		roster: async () => (await scanAgentsFromConfig(config)).agents.filter(isShownAgent).map(a => ({ id: a.id, name: a.name ?? a.id })),
+		presetOf: presetIdOf,
+		sessions: () => state.sessionController,
+		agents: () => state.agents,
+		workspaces: () => state.workspaceRegistry,
+		append: () => loadAppendPluginRecord(),
+	});
+	ctx.effect(() => installRooms(ctx, state.rooms));
+	ctx.effect(() => teamBus().provideGroups(state.rooms));
+	// ★ 2026-11-04 记忆总线（superagent v2 P4）：团队步骤结束后的执行证据落到该 bot 的记忆 / 技能草稿区。
+	//   ★ 2026-11-06：技能草稿由模型提炼（一次性 llm.stream，不开会话），相似去重出新版本，风险分级（lib/stepDistill.js）。
+	const distill = makeStepDistiller({
+		// llm 适配器注册在应用根；隔离作用域里的 ctx.llm 可能缺适配器（vssaros-memory 评审员踩过 NO_ADAPTER）
+		llm: () => { try { return ctx.get?.('root')?.get?.('llm') ?? state.llm; } catch { return state.llm; } },
+		route: distillRouteOf({ config, agents: () => state.agents, botRoute: (botId) => agentModelRouteOf(botId) }),
+	});
+	ctx.effect(() => memoryBus().provide({
+		rememberStep: async (evidence) => rememberStep(config, evidence, { distill }),
+		decideSkillDraft: async (name, decision) => decideSkillDraft(config, name, decision),
+	}));
 
 	/* Host 退出前把 IM 幂等表落盘（写盘是去抖的，不 flush 会丢最后几条 ⇒ 重启后重复处理） */
 	ctx.effect(() => () => { void flushInboundSeen(config); });
-	// 记忆自动备份（2026-10-21）：回合结束 ⇒ 记忆变了就留一份档（DSB 的「一次对话结束」口径）。
-	ctx.effect(() => installMemoryBackupWatcher(ctx, config));
 	// Outbox 读回（2026-10-16 二期）：启动即把盘上"等回收"的条目读回内存——relay/群聊的 tracker
 	// 按 messageId 从 outbox 取 pending ⇒ 重启后回收自动续上 ✓（读失败按空队列，不炸激活 ✓）。
 	ctx.effect(() => {
@@ -1505,29 +1385,6 @@ function applyTopLevel(ctx, config) {
 		},
 		/** 本插件实际扫描的目录（调用方排查"文件放错地方"时很有用）。 */
 		agentsRoot: () => agentsRootOf(config),
-		/**
-		 * ★ 2026-11-03：给**其它插件**（记忆库的草稿提升）往工作区记忆追加一条。
-		 *
-		 * 为什么走服务而不是 HTTP：同一个 Host 进程内，直接复用 `workspaceEntryAction`
-		 * 的去重 / 提示注入扫描 / 长度上限 / 写锁，不会再出一份"第二个写入口"。
-		 * cwd 只用来**算身份**（往上找 .git + 哈希），写入永远落在 `<数据根>/workspace-memory/<key>/`。
-		 *
-		 * @param {string} cwd 会话工作目录（绝对路径）
-		 * @param {string} content 一句完整的事实
-		 * @returns {{ ok: boolean, duplicate?: boolean, message: string, workspace?: {key: string, name: string, root: string} }}
-		 */
-		addWorkspaceEntry: (cwd, content) => {
-			const r = addEntryForCwd(config, cwd, content);
-			// 写入后顺带 Git 化（软失败，不阻塞回执）；与 workspace_memory 工具同一口径
-			if (r.ok && !r.duplicate && r.workspace) { void ensureMemoryRepo(config, scopeIdOfKey(r.workspace.key), { deferTag: true }).catch(() => undefined); }
-			return r;
-		},
-		/**
-		 * 从工作区记忆里删一条（撤销提升用）。`match` 要能唯一定位那一条。
-		 * `notFound: true` 表示这条已经不在了（比如用户手改过 MEMORY.md）——调用方应当视为"已达成目标"。
-		 * @returns {{ ok: boolean, notFound?: boolean, message: string }}
-		 */
-		removeWorkspaceEntry: (cwd, match) => removeEntryForCwd(config, cwd, match),
 	});
 
 	ctx.inject(['webServer', 'connection'], page => page.effect(() => page.webServer.register({
@@ -1950,6 +1807,20 @@ function applyTopLevel(ctx, config) {
 				}
 				return;
 			}
+			// ★ 2026-11-05 多 bot 群聊（lib/rooms.js）：
+			//   GET  /api/rooms                         → { rooms: RoomView[] }（侧栏 Bots 页签）
+			//   GET  /api/rooms?id=<群 id>               → { room }
+			//   GET  /api/rooms?progress=<callId>        → { progress }（群聊工具卡跑的过程中轮询）
+			//   POST { action:'create', members, name?, notice?, admin?, mode?, workspaceId?, cwd? }
+			//   POST { action:'update', id, name?, notice?, admin?, mode?, members? }
+			//   POST { action:'flags', id, pinned?, hidden? } / { action:'delete', id }
+			if (pathname === `${ROUTE_PREFIX}/api/rooms`) {
+				const body = req.method === 'POST' ? await readJsonBody(req).catch(() => ({})) : undefined;
+				const out = await roomsApi(state.rooms, { method: req.method, query: url.searchParams, body });
+				res.writeHead(out.status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+				res.end(JSON.stringify(out.body));
+				return;
+			}
 			if (pathname === `${ROUTE_PREFIX}/api/assignments`) {
 				try {
 					if (req.method === 'GET') {
@@ -2034,337 +1905,6 @@ function applyTopLevel(ctx, config) {
 				return;
 			}
 
-			if (pathname === `${ROUTE_PREFIX}/api/agentmemory`) {
-				try {
-					/* POST：把 MEMORY.md 的条目**单向**写进 AgentMemory（只增不改，见 agentmemoryImport.js 头注释） */
-					if (req.method === 'POST') {
-						const amBody = await readJsonBody(req);
-						const amAction = String(amBody?.action ?? '').trim();
-						const amTarget = String(amBody?.agent ?? '').trim();
-						if (!amTarget) {
-							throw Object.assign(new Error('需要 agent'), { httpStatus: 400 });
-						}
-						if (amAction !== 'sync') {
-							throw Object.assign(new Error(`未知 action：${amAction || '(空)'}（支持 sync）`), { httpStatus: 400 });
-						}
-						const syncOut = await syncMemoryToAgentMemory(config, amTarget, { limit: amBody?.limit });
-						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-						res.end(JSON.stringify({ ok: true, agent: amTarget, ...syncOut }));
-						return;
-					}
-					if (req.method !== 'GET') {
-						res.writeHead(405, { 'content-type': 'text/plain; charset=utf-8', allow: 'GET, POST' });
-						res.end('GET');
-						return;
-					}
-					const amAgent = String(url.searchParams.get('agent') ?? '').trim();
-					if (!amAgent) {
-						throw Object.assign(new Error('需要 agent 参数'), { httpStatus: 400 });
-					}
-					const what = String(url.searchParams.get('what') ?? 'candidates').trim().toLowerCase();
-					/* `what=extras` ⇒ 结晶 + 治理审计（演化页签用）；默认仍是记忆候选 */
-					const amOut = what === 'extras'
-						? await listAgentMemoryExtras(config, amAgent)
-						: await listAgentMemoryCandidates(config, amAgent, { limit: url.searchParams.get('limit') });
-					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-					res.end(JSON.stringify({ ok: true, agent: amAgent, ...amOut }));
-				} catch (e) {
-					const status = Number.isInteger(e?.httpStatus) ? e.httpStatus : 500;
-					res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
-					res.end(JSON.stringify({ error: String(e?.message ?? e) }));
-				}
-				return;
-			}
-
-			// 工作区记忆 API（2026-11-02）：聊天框「记忆 / 记忆设置」页签的「工作区」那一段。
-			//   GET  ?cwd=<会话 cwd>              ⇒ 身份（git 根 / key）+ 正文 + 条目 + 注入口径 + 运行时计数
-			//   POST {cwd, action:'init'}          ⇒ 建模板（已有就什么都不覆盖）
-			//   POST {cwd, action:'write', text}   ⇒ 人在页签里整篇编辑（超 20000 直接 400）
-			//   POST {cwd, action:'set-limits', chars?, mode?}
-			// ⚠ cwd 只用来**算身份**（往上 stat 找 .git + 哈希），写入一律落在 `<数据根>/workspace-memory/<key>/`
-			//   ⇒ 页面传什么路径都写不出这个目录（见 workspaceMemory.js 头注释的安全边界）。
-			if (pathname === `${ROUTE_PREFIX}/api/workspace-memory`) {
-				const replyJson = (status, body) => {
-					res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-					res.end(JSON.stringify(body));
-				};
-				try {
-					const body = req.method === 'POST' ? await readJsonBody(req) : null;
-					const cwd = String((body?.cwd ?? url.searchParams.get('cwd')) ?? '').trim();
-					if (!cwd) {
-						throw Object.assign(new Error('需要 cwd（会话工作目录）'), { httpStatus: 400 });
-					}
-					const ws = resolveWorkspace(cwd);
-					if (!ws) {
-						throw Object.assign(new Error(`工作目录不可用：${cwd}（要是已存在的绝对路径）`), { httpStatus: 400 });
-					}
-					const scopeId = scopeIdOfKey(ws.key);
-					if (req.method === 'POST') {
-						const action = typeof body?.action === 'string' ? body.action.trim() : '';
-						if (action === 'init') {
-							ensureWorkspaceMemory(config, ws);
-						} else if (action === 'write') {
-							writeWorkspaceMemory(config, ws, body?.text);
-						} else if (action === 'set-limits') {
-							setWorkspaceMemoryLimits(config, ws, { chars: body?.chars, mode: body?.mode });
-						} else if (action === 'claim') {
-							// 认领同 remote 的旧记忆（搬家 / 改名 / 另一台机器 clone 到不同路径）：复制、不覆盖
-							claimWorkspaceMemory(config, ws, String(body?.from ?? ''));
-						} else {
-							throw Object.assign(new Error(`未知 action：${action || '(空)'}（支持 init / write / set-limits / claim）`), { httpStatus: 400 });
-						}
-						// 记忆目录 Git 化（2026-11-03，P2）：软失败（没装 git 也能用文件模式）。
-						// 放在写之后：初始提交会带上刚写的内容；已启用时 ensureMemoryRepo 幂等。
-						// deferTag：只等到"仓库可用"就响应，初始 v0 标签放后台补（实测标签一步 ≈ 3s，响应不依赖它）
-						await ensureMemoryRepo(config, scopeId, { deferTag: true }).catch(() => undefined);
-					} else if (req.method !== 'GET') {
-						replyJson(405, { error: '只接受 GET / POST' });
-						return;
-					}
-					const view = workspaceMemoryView(config, ws);
-					const injected = view.limits.chars > 0 ? Math.min(view.chars, view.limits.chars) : 0;
-					// Git 状态只在记忆已建立时查（几条 git 子进程）；失败按"未启用"如实说
-					const gitInfo = view.exists
-						? await gitStatusOf(config, scopeId).catch(() => ({ enabled: false }))
-						: { enabled: false };
-					replyJson(200, {
-						ok: true,
-						scopeId,
-						workspace: { key: ws.key, root: ws.root, cwd: ws.cwd, name: ws.name, isGit: ws.isGit, remote: ws.remote },
-						dir: view.dir,
-						exists: view.exists,
-						text: view.text,
-						chars: view.chars,
-						entries: view.entries.map(e => ({ text: e.text, raw: e.raw })),
-						limits: view.limits,
-						usage: { chars: view.chars, limit: view.limits.chars, injected },
-						// 注入侧的真实计数（进程内）：页面据此判断"section 到底有没有在跑"
-						runtime: { ...__workspaceMem },
-						// 演化图 / 回合末自动提交（P2）：与 Bot 记忆同口径，页面据此显示"已提交 N 次 · 未提交 M"
-						git: { enabled: gitInfo.enabled === true, branch: gitInfo.branch ?? '', commits: gitInfo.commits ?? 0, dirty: gitInfo.dirty ?? 0 },
-						autoCommit: { on: memoryAutoCommitOnTurn(config), turns: __memoryTurn.byAgent.get(scopeId)?.commits ?? 0 },
-						// 还没有记忆时，列出"同 remote、旧根已不存在"的旧记忆供认领（只列不自动认领）
-						claimable: view.exists ? [] : findClaimableMemories(config, ws),
-						tool: 'workspace_memory',
-					});
-				} catch (e) {
-					const status = Number.isInteger(e?.httpStatus) ? e.httpStatus : 500;
-					replyJson(status, { error: String(e?.message ?? e) });
-				}
-				return;
-			}
-
-			// 记忆偏好（2026-11-03）：目前只有「回合末自动提交」。GET 读、POST {autoCommit:boolean} 写，立刻生效。
-			//   Bot 记忆与工作区记忆共用这一个开关（见 memoryPrefs.js 头注释）。
-			if (pathname === `${ROUTE_PREFIX}/api/memory-prefs`) {
-				const replyPrefs = (status, body) => {
-					res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-					res.end(JSON.stringify(body));
-				};
-				try {
-					if (req.method === 'POST') {
-						const body = await readJsonBody(req);
-						setMemoryPrefs(config, { autoCommit: body?.autoCommit });
-					} else if (req.method !== 'GET') {
-						replyPrefs(405, { error: '只接受 GET / POST' });
-						return;
-					}
-					replyPrefs(200, {
-						ok: true,
-						autoCommit: memoryAutoCommitOnTurn(config),
-						// 谁在起作用：偏好覆盖了 config 才是 'pref'（页面据此说明"这是你设的"还是"默认值"）
-						source: typeof readMemoryPrefs(config).autoCommit === 'boolean' ? 'pref' : (config?.memoryAutoCommit === false ? 'config' : 'default'),
-					});
-				} catch (e) {
-					replyPrefs(Number.isInteger(e?.httpStatus) ? e.httpStatus : 500, { error: String(e?.message ?? e) });
-				}
-				return;
-			}
-
-			if (pathname === `${ROUTE_PREFIX}/api/memory`) {
-				try {
-					if (req.method === 'GET') {
-						// ⚠ 2026-10-19 修：这个 `agent` 校验原先在**方法分支之前**，导致 POST（body 里带 agent、
-						//   query 不带）一律 400 —— 页面的「启用 Git / 提交快照」两个按钮因此一直是坏的（只把错误
-						//   显示在 note 里，没人注意）。GET 才要求 query 参数；POST 以 body 为准、query 兜底。
-						const agentId = String(url.searchParams.get('agent') ?? '').trim();
-						if (!agentId) {
-							throw Object.assign(new Error('需要 agent 参数'), { httpStatus: 400 });
-						}
-						// ★ 2026-11-03（P2）工作区作用域 `ws.<key>`：演化页 / 聊天框共用这条读口。
-						//   身份只认 scope.json（页面传的 id 只能指向 `<数据根>/workspace-memory/<key>`），
-						//   没建立过 ⇒ 404 如实说，不替人凭空建目录（建立走 workspace-memory 的 init）。
-						const wsScope = isWorkspaceScope(agentId) ? workspaceFromScopeId(config, agentId) : null;
-						if (isWorkspaceScope(agentId) && !wsScope) {
-							throw Object.assign(new Error('这个工作区还没有记忆（先在聊天框「记忆」页签里新建）'), { httpStatus: 404 });
-						}
-						/* ★ 2026-10-27：首次读取即初始化（幂等）—— 老 bot 不用重建也能有内容。
-						   ⚠ 只读接口不该因为 git 不可用而 500 ⇒ ensureMemoryRepo 内部软失败。
-						   ⚠⚠ 2026-10-31 修**死代码**：这一句原先被写在上面 `if (!agentId) { throw … }`
-						   的**大括号里面、throw 之后** ⇒ 永远执行不到 ⇒ "首次读取即初始化"从未发生过
-						   ⇒ 从没被读过的 agent（内置 agent 尤其）记忆目录永远不会被 git 初始化
-						   ⇒ 演化 / 版本 / 分支三个页签恒空（这正是"记忆没内容"的最后一环）。 */
-						await ensureMemoryRepo(config, agentId).catch(() => undefined);
-						const file = url.searchParams.get('file');
-						// `gitLogOf` 复用刚算出的 status（旧实现三项并行 ⇒ `gitStatusOf` 在一个请求里跑两遍，
-						// 一次页面加载就是 8~10 个 git 子进程）。历史条数支持 `?limit=`（缺省 20、上限 100）。
-						const [listing, git] = await Promise.all([
-							listMemoryFiles(config, agentId),
-							gitStatusOf(config, agentId),
-						]);
-						const log = await gitLogOf(config, agentId, git, url.searchParams.get('limit'));
-						// `&rev=<hash>`：读**历史版本**里的这个文件（只读；2026-10-19 记忆面板的「看这版」）
-						// `&against=<hash|working>`：再给一份"另一个版本"，服务端算行级 diff（「对比当前」）
-						const rev = (url.searchParams.get('rev') ?? '').trim();
-						const against = (url.searchParams.get('against') ?? '').trim();
-						let content = null;
-						let diff = null;
-						if (rev) {
-							content = await gitShowMemoryFile(config, agentId, rev, file || 'MEMORY.md');
-							if (against) {
-								const other = against === 'working'
-									? await readMemoryFile(config, agentId, file || 'MEMORY.md')
-									: await gitShowMemoryFile(config, agentId, against, file || 'MEMORY.md');
-								diff = { against, leftRev: content.rev, ...lineDiff(content.text, other.text) };
-							}
-						} else if (file) {
-							content = await readMemoryFile(config, agentId, file);
-						}
-						// 记忆口径（2026-10-19，P1-2）：页面要能显示「用了多少 / 上限多少 / 什么时候生效」。
-						// 数据源 = 扫描出的 agent（`memory-chars`/`memory-mode`）+ 当前 MEMORY.md 实际字符数。
-						const scanned = await scanAgents(root, undefined).catch(() => ({ agents: [] }));
-						const meta = (scanned.agents ?? []).find(a => a.id === agentId);
-						// 工作区作用域的口径在 scope.json（不是 .agent.md）
-						const wsView = wsScope ? workspaceMemoryView(config, wsScope) : null;
-						const limitChars = wsView ? wsView.limits.chars : clampMemoryChars(meta?.memoryChars);
-						// 直接读一次（`listing` 只说明存在性；先 some 再读等于同一个文件碰两次）
-						const memoryText = await readMemoryFile(config, agentId, 'MEMORY.md').catch(() => null);
-						// `&versions=1`：版本（tag）清单 —— 只有演化面板要，普通页面请求不必多跑一条 git
-						const versions = url.searchParams.get('versions') === '1'
-							? await listVersions(config, agentId).catch(() => ({ enabled: false, versions: [] }))
-							: undefined;
-						// `&backups=1`：备份列表（2026-10-21，演化面板的「备份」标签）
-						const backups = url.searchParams.get('backups') === '1'
-							? await listMemoryBackups(config, agentId).catch(() => ({ backups: [], keep: 0 }))
-							: undefined;
-						// `&branches=1`：分支清单（2026-10-21，记忆演化的「分支」）
-						const branches = url.searchParams.get('branches') === '1'
-							? await listBranches(config, agentId).catch(() => ({ enabled: false, current: '', branches: [], dirty: 0 }))
-							: undefined;
-						// `&graph=1`：Git 分道图（2026-10-31，演化面板的「演化」标签）。
-						//   只有这一个面板要 ⇒ 按需算（一次多起 3 条 git 子进程），普通页面请求不受影响。
-						const graph = url.searchParams.get('graph') === '1'
-							? await gitGraphOf(config, agentId, git, url.searchParams.get('limit')).catch(() => ({ enabled: false, commits: [] }))
-							: undefined;
-						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-						res.end(JSON.stringify({
-							agent: agentId,
-							// 工作区作用域才有：演化页 / 聊天框据此显示"这是哪个工作区的记忆"
-							...(wsScope ? { workspace: { key: wsScope.key, root: wsScope.root, name: wsScope.name, isGit: wsScope.isGit, remote: wsScope.remote } } : {}),
-							git,
-							log: log.log,
-							...(versions ? { versions: versions.versions } : {}),
-			...(backups ? { backups: backups.backups, backupKeep: backups.keep } : {}),
-			...(branches ? { branches: branches.branches, branch: branches.current, branchDirty: branches.dirty } : {}),
-							...(graph ? { graph } : {}),
-							// 回合末自动提交（2026-10-31）：页面据此显示"自动快照：开/关 · 已提交 N 次"
-							autoCommit: {
-								on: memoryAutoCommitOnTurn(config),
-								turns: __memoryTurn.byAgent.get(agentId)?.commits ?? 0,
-							},
-							content,
-							diff,
-							limits: {
-								chars: limitChars,
-								mode: wsView ? wsView.limits.mode : (meta?.memoryMode ?? 'session'),
-								personaChars: meta?.persona?.length ?? 0,
-								max: MEMORY_CHARS_MAX,
-								// 装配时的**真实**口径（`applyPersona` 写进 __promptMem 的那份）：
-								// 页面据此显示"已装配 N 次 / 冻结 M 会话"，并与上面的上限对账 ——
-								// 两个来源不同（这里是扫 .agent.md，那边是 preset config），对不上就说明
-								// preset 还没按新口径重建。`null` = 该 agent 的 preset 从未挂载过。
-								runtime: (() => {
-									// 工作区：注入侧是一个全局 section，计数在 __workspaceMem（不是 per-agent 的 __promptMem）
-									if (wsScope) {
-										return __workspaceMem.order === undefined
-											? null
-											: { mode: wsView.limits.mode, chars: limitChars, ready: true, served: __workspaceMem.served, frozenSessions: __workspaceMem.frozenSessions };
-									}
-									const rt = __promptMem.byAgent.get(agentId);
-									return rt
-										? { mode: rt.mode, chars: rt.chars, ready: rt.ready, served: rt.served, frozenSessions: rt.frozenSessions }
-										: null;
-								})(),
-							},
-							usage: { chars: memoryText?.text.length ?? 0, limit: limitChars, injected: limitChars > 0 ? Math.min(memoryText?.text.length ?? 0, limitChars) : 0 },
-						}));
-					} else if (req.method === 'POST') {
-						const body = await readJsonBody(req);
-						const action = typeof body?.action === 'string' ? body.action.trim() : '';
-						// body 为准，query 兜底（页面的 POST 不带 query；脚本可能两处都带）
-						const target = String(body?.agent ?? url.searchParams.get('agent') ?? '').trim();
-						if (!target) {
-							throw Object.assign(new Error('需要 agent'), { httpStatus: 400 });
-						}
-						// 工作区作用域（2026-11-03，P2）：写口按 scope.json 的身份走，不碰 .agent.md
-						const wsTarget = isWorkspaceScope(target) ? workspaceFromScopeId(config, target) : null;
-						if (isWorkspaceScope(target) && !wsTarget) {
-							throw Object.assign(new Error('这个工作区还没有记忆（先在聊天框「记忆」页签里新建）'), { httpStatus: 404 });
-						}
-						if (wsTarget && action === 'import-draft') {
-							throw Object.assign(new Error('工作区记忆不支持从记忆库拉草稿（草稿按 Bot 分区）'), { httpStatus: 400 });
-						}
-						// 2026-10-19（P1-2）：新增两个**人工**写口 ——
-						//   write-memory：整篇写 `MEMORY.md`（超 20000 字符直接 400，不静默截断）
-						//   set-limits  ：只改 `.agent.md` 的 `memory-chars`/`memory-mode`（正文逐字不动）
-						// 两者都不给模型开（模型写记忆走自己的文件工具），这里是人在页面上编辑 ✓。
-						const result = action === 'enable-git' ? await enableGit(config, target)
-							// 提交快照 / 回滚**之前**先自动备份一份（DSB 同口径：恢复错了还能回来）
-						: action === 'snapshot' ? await (async () => {
-							await backupMemory(config, target, 'before-snapshot').catch(() => null);
-							return snapshotGit(config, target, body?.message);
-						})()
-								: action === 'write-memory' ? await (wsTarget ? writeWorkspaceMemory(config, wsTarget, body?.text) : writeCoreMemory(config, target, body?.text))
-									: action === 'set-limits' ? await (wsTarget
-										? setWorkspaceMemoryLimits(config, wsTarget, { chars: body?.chars, mode: body?.mode })
-										: setAgentMemoryLimits(config, target, { chars: body?.chars, mode: body?.mode }))
-										// 回滚：只覆盖那一个文件（不是 git checkout），随后自动提交一条快照 ✓
-										: action === 'restore' ? await (async () => {
-							await backupMemory(config, target, 'before-restore').catch(() => null);
-							return restoreMemoryFile(config, target, body?.rev, body?.file || 'MEMORY.md', body?.message);
-						})()
-							// 版本（tag）：演化面板的「版本」标签（2026-10-21）
-							: action === 'version-add' ? await setVersion(config, target, body?.tag, false, body?.rev)
-								: action === 'version-remove' ? await setVersion(config, target, body?.tag, true)
-									// 备份（2026-10-21，演化面板的「备份」标签）
-									: action === 'backup' ? await backupMemory(config, target, body?.reason || 'manual')
-										: action === 'restore-backup' ? await restoreMemoryBackup(config, target, body?.backup)
-											// 分支（2026-10-21）：从某次提交拉新分支 / 切回已有分支
-											: action === 'branch-create' ? await switchBranch(config, target, { name: body?.name, create: true, from: body?.from })
-												: action === 'branch-switch' ? await switchBranch(config, target, { name: body?.name, create: false })
-											// 从记忆库拉**草稿**（2026-10-20，P1-1）：只返回文本、**不写盘** ——
-											// 人看过、删改过才走 write-memory，与"提交只能人按"同一条纪律 ✓
-											: action === 'import-draft' ? await importMemoryDraft(config, target, { limit: body?.limit })
-												: (() => { throw Object.assign(new Error(`未知 action：${action || '(空)'}（支持 enable-git/snapshot/write-memory/set-limits/restore/import-draft）`), { httpStatus: 400 }); })();
-						if (action === 'set-limits' && state.presets && !wsTarget) {
-							// 改了记忆口径 ⇒ 该 agent 的 preset 定义变了（persona row 的 config），必须重新注册
-							await syncPresets(state, state.presets, config).catch(e => {
-								state.errors = [...state.errors, `改记忆上限后同步 preset 失败：${String(e?.message ?? e)}`];
-							});
-						}
-						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-						res.end(JSON.stringify(result));
-					} else {
-						res.writeHead(405, { 'content-type': 'text/plain; charset=utf-8', allow: 'GET, POST' });
-						res.end('GET or POST');
-					}
-				} catch (e) {
-					const status = Number.isInteger(e?.httpStatus) ? e.httpStatus : 400;
-					res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
-					res.end(JSON.stringify({ error: String(e?.message ?? e) }));
-				}
-				return;
-			}
 			// Outbox API（2026-10-16，二期）：GET 队列 / POST retry（手动重发 unknown-outcome，
 			// **没有自动重发口** ✗——结果不确定时自动重发会重复 ✓）。
 			if (pathname === `${ROUTE_PREFIX}/api/outbox`) {
@@ -2409,10 +1949,6 @@ function applyTopLevel(ctx, config) {
 						result = await previewAgentDraft(config, parsed.draft);
 					} else if (action === 'create') {
 						const created = await createAgentFromDraft(config, body?.draft);
-						/* ★ 2026-10-27：新建 bot 立刻初始化记忆库（模板 + git 初始提交）。
-						   不做的后果：四个页签（记忆/演化/版本/分支）全是空 —— 用户会以为功能坏了。
-						   软失败：没装 git 时仍会写模板，只是没有版本历史。 */
-						await ensureMemoryRepo(config, created.id).catch(() => undefined);
 						if (state.presets) {
 							await syncPresets(state, state.presets, config).catch(e => {
 								state.errors = [...state.errors, `同步 preset 失败：${String(e?.message ?? e)}`];
@@ -2648,34 +2184,6 @@ function applyTopLevel(ctx, config) {
 				} catch (e) {
 					res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
 					res.end(JSON.stringify({ error: String(e?.message ?? e) }));
-				}
-				return;
-			}
-			// ── 记忆演化面板（2026-10-21）────────────────────────────────────────
-			// `/x/agents/memory/<agentId>`：路径段（桥的 openModulePage 只放 [A-Za-z0-9._~/-]）。
-			// 只读为主：数据全走 `/x/agents/api/memory`（log / rev / against / restore / versions）；
-			// 回滚是**写**操作，但复用既有的 `restoreMemoryFile`（写回文件 + 自动提交快照）。
-			const memM = new RegExp(`^${ROUTE_PREFIX}/memory/([A-Za-z0-9._-]+)/?$`).exec(pathname);
-			if (memM) {
-				try {
-					const agentId = memM[1];
-					const scan = await scanAgentsFromConfig(config).catch(() => ({ agents: [] }));
-					const agent = (scan.agents ?? []).find(a => a.id === agentId);
-					// ★ 2026-11-03（P2）工作区作用域 `ws.<key>`：同一张演化页，标题换成工作区名
-					const wsScope = isWorkspaceScope(agentId) ? workspaceFromScopeId(config, agentId) : null;
-					const html = renderMemoryEvoPage({
-						agentId,
-						agentName: wsScope ? `工作区 · ${wsScope.name}` : agent?.name,
-						missing: isWorkspaceScope(agentId) ? !wsScope : !agent,
-					});
-					const encoded = encodeBody(req, html);
-					res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', ...encoded.headers });
-					res.end(encoded.body);
-				} catch (e) {
-					if (!res.headersSent) {
-						res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
-					}
-					res.end(String(e?.message ?? e));
 				}
 				return;
 			}

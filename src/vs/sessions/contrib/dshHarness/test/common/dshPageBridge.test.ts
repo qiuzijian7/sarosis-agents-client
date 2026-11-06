@@ -654,6 +654,24 @@ suite('dshPageBridge / notify 的 kind 必须覆盖页面实际用量（2026-10-
 				`页面在用 notify("${kind}") 但协议不接受（校验器/联合类型要同步补）✗`);
 		}
 	});
+
+	// ★ 2026-11-05（桥 `25 → 26`）：右侧栏内嵌浏览器。页面只能交矩形与无凭据的 http(s) URL。
+	test('rightbarBrowser：mount/bounds 必带矩形，navigate 必带 http(s) URL，危险协议与多余字段都拒收', () => {
+		const rect = { x: 1, y: 2, width: 300, height: 400 };
+		assert.deepStrictEqual(validatePageCommand({ method: 'rightbarBrowser', action: 'mount', rect, evil: 1 }),
+			{ method: 'rightbarBrowser', action: 'mount', rect });
+		assert.deepStrictEqual(validatePageCommand({ method: 'rightbarBrowser', action: 'unmount' }),
+			{ method: 'rightbarBrowser', action: 'unmount' });
+		assert.deepStrictEqual(validatePageCommand({ method: 'rightbarBrowser', action: 'navigate', url: 'https://example.com/a' }),
+			{ method: 'rightbarBrowser', action: 'navigate', url: 'https://example.com/a' });
+		assert.strictEqual(validatePageCommand({ method: 'rightbarBrowser', action: 'mount' }), undefined, 'mount 没矩形 ⇒ 宿主没法定界');
+		assert.strictEqual(validatePageCommand({ method: 'rightbarBrowser', action: 'bounds', rect: { x: 0, y: 0, width: -1, height: 10 } }), undefined, '负宽度拒收');
+		assert.strictEqual(validatePageCommand({ method: 'rightbarBrowser', action: 'navigate' }), undefined, 'navigate 没 URL 拒收');
+		for (const url of ['file:///etc/passwd', 'javascript:alert(1)', 'https://u:p@example.com', 'http://x'.repeat(400)]) {
+			assert.strictEqual(validatePageCommand({ method: 'rightbarBrowser', action: 'navigate', url }), undefined, `非法 URL：${url.slice(0, 40)}`);
+		}
+		assert.strictEqual(validatePageCommand({ method: 'rightbarBrowser', action: 'rm' }), undefined, '未知动作拒收');
+	});
 });
 
 });

@@ -11,7 +11,6 @@ import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createAgentFromDraft, previewAgentDraft } from './create.js';
 import { normalizeDraft } from './core/create.js';
-import { ensureMemoryRepo } from './memory.js';
 import { agentsRootOf } from './store.js';
 
 /** 主管创建的 bot 全局上限（调用方也有一份，这里是名册侧兜底）。 */
@@ -73,7 +72,6 @@ export async function createTeamBot(config, input, sync) {
 	}
 	const created = await createAgentFromDraft(config, draft);
 	await markSupervisor(created.file);
-	await ensureMemoryRepo(config, created.id).catch(() => undefined);
 	if (typeof sync === 'function') await sync().catch(() => undefined);
 	return { id: created.id, name: created.name, preset: created.presetId, file: created.file };
 }

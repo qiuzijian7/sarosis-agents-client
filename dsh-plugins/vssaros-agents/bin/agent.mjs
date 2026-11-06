@@ -21,6 +21,10 @@
  *                        （从 DeepSeekBot/BotHarness 的 PersonaBot 导入：SOUL.md→正文，
  *                          MEMORY.md→memory/，bot.json→name/bio/role；详见 lib/importDsb.js）
  *
+ *   vssaros-agent import-ds-bot [--ds-home <DS Bot 数据目录>] [--apply] [--json]
+ *                        （2026-11-06：DS Bot（ds-bot 插件）整个团队：Bot、skill 能力、记忆事实；群/密钥/MCP 只列出。
+ *                          默认只预览；DS Bot 目录默认 $DSH_HOME/bot 或 ~/.dsh/bot；详见 lib/core/dsBotImport.js）
+ *
  * 公共选项：
  *   --agents-root <dir>   默认 $VSSAROS_AGENTS_ROOT，否则 <home>/.vssaros/agents
  *   --data-root <dir>     `<dataRoot>/exports/` 落盘位置；默认取 agentsRoot 的上级目录
@@ -35,8 +39,10 @@ import { basename, dirname, join, resolve } from 'node:path';
 
 import { createAgentFromDraft } from '../lib/create.js';
 import { botFromSoulText, botFromTobSource, importDsbBot } from '../lib/importDsb.js';
-import { memoryDirOf, safeMemoryFileName } from '../lib/memory.js';
+// 2026-11-06：Bot 记忆在 @vssaros/dsh-memory 里（Host 内）；CLI 只看得到旧目录（收件箱，Host 启动时并入）。
+import { legacyMemoryDirOf as memoryDirOf, safeMemoryFileName } from '../lib/memoryFiles.js';
 import { exportAgent, importAgent } from '../lib/pack.js';
+import { importDsBotTeam } from '../lib/importDsBotTeam.js';
 import { scanAgents } from '../lib/store.js';
 
 function fail(message, code = 2) {
@@ -58,7 +64,7 @@ const positional = [];
 const VALUE_FLAGS = new Set([
 	'-o', '--out', '--name', '--id', '--persona', '--description', '--role', '--icon',
 	'--model', '--model-assignment', '--memory-chars', '--memory-mode', '--skills', '--tools',
-	'--agents-root', '--data-root', '--home', '--from-tob',
+	'--agents-root', '--data-root', '--home', '--from-tob', '--ds-home',
 ]);
 for (let i = 0; i < rest.length; i++) {
 	const arg = rest[i];
@@ -335,7 +341,34 @@ try {
 		process.exit(0);
 	}
 
-	fail(`未知命令：${command}（支持 list / show / create / export / import）`);
+	if (command === 'import-ds-bot') {
+		// ★ 2026-11-06：DS Bot（ds-bot 插件）整个团队离线导入；不带 --apply 只看规划（lib/importDsBotTeam.js）。
+		const result = await importDsBotTeam(config, { dsHome: values.get('--ds-home'), apply: flags.has('--apply') });
+		if (json) {
+			printJson(result);
+		} else {
+			const creating = result.bots.filter(bot => bot.action === 'create');
+			console.log(`DS Bot 团队：${result.home}`);
+			console.log(`${flags.has('--apply') ? '已导入' : '将导入'} ${creating.length} 个 Bot、${result.skills.filter(skill => skill.action === 'create').length} 项技能`
+				+ `${flags.has('--apply') ? `、${result.applied.facts} 条记忆事实（进收件箱，Host 下次启动并入）` : ''}`);
+			for (const bot of creating) {
+				console.log(`  + ${bot.name} → ${bot.id}${bot.draft.skills.length ? `（技能 ${bot.draft.skills.join(', ')}）` : ''}${bot.memory.length ? `，记忆 ${bot.memory.length} 条` : ''}`);
+				for (const note of bot.notes) { console.log(`      · ${note}`); }
+			}
+			for (const bot of result.bots.filter(item => item.action === 'skip')) {
+				console.log(`  - ${bot.name}：跳过（${{ private: '私密 Bot', 'already-imported': `已导入为 ${bot.id}`, 'no-id': '起不出不冲突的 id' }[bot.reason] ?? bot.reason}）`);
+			}
+			for (const group of result.groups) {
+				console.log(`  群「${group.name}」需要在 Bots 里手动建：成员 ${group.members.join(', ') || '（无）'}${group.missing ? `（另有 ${group.missing} 个成员没导入）` : ''}`);
+			}
+			if (result.secrets.length) { console.log(`  密钥没有导入（${result.secrets.join(', ')}）：需要的话在 VsSaros 里重新填写`); }
+			for (const failed of result.applied.failed) { console.log(`  ✗ ${failed.name}：${failed.error}`); }
+			if (!flags.has('--apply')) { console.log('（这是预览；加 --apply 才会写入）'); }
+		}
+		process.exit(result.applied.failed.length ? 1 : 0);
+	}
+
+	fail(`未知命令：${command}（支持 list / show / create / export / import / import-bot / import-ds-bot）`);
 } catch (e) {
 	const message = String(e?.message ?? e);
 	if (json) {

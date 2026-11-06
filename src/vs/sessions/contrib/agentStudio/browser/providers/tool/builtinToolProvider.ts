@@ -363,7 +363,7 @@ export class BuiltinToolProvider extends Disposable implements IToolProvider {
 		// this._registerAdvancedMemoryTools(); // 接入引擎编排/治理能力：governance/team/mesh/sentinel/obsidian/cascade
 		// this._registerRoutineCrystalFacetTools(); // 接入高阶记忆能力：routine/crystal/facet
 		// 2026-10-17（5.5 前置）：skills 工具**退役**——dsh 侧的 skills 全族已迁（4 个工具都在
-		//   `vssaros-skills` 插件里 ✓：skill_manage + skill_search + skill_market_list + read_skill +
+		//   `vssaros-skills` 插件里 ✓：skill_manage + skill_search + read_skill +
 		//   list_skills——工具快照里都有 ✓）。legacy 侧的注册注释掉 ⇒ 模型看不到了 ✓（dsh 侧的还在 ✓）。
 		//   文件留着（skillTools.ts）等 5.5 真删。
 		// this._registerSkillTools();

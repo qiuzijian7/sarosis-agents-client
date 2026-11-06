@@ -16,23 +16,20 @@
  * 跑法：node dsh-plugins/check-skill-tool-refs.mjs
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join, relative } from 'node:path';
 
 import { BUNNYSEEK_ONLY, dshToolNames, ROOT, scanToolRefs } from './scripts/skill-tool-map.mjs';
+import { BUNDLED_SKILL_ROOT, USER_SKILL_ROOTS } from './scripts/skill-bundle-paths.mjs';
 
-const SKILL_ROOTS = [
-	join(ROOT, 'resources', '.agents', 'skills'),
-	join(homedir(), '.vssaros-dev', 'skills'),
-	join(homedir(), '.vssaros', 'skills'),
-];
+// ★ P0（2026-11-06）：只扫 dsh 侧新真源；旧根由 check-skill-bundle.mjs 做迁移完整性对照。
+const SKILL_ROOTS = [BUNDLED_SKILL_ROOT, ...USER_SKILL_ROOTS];
 
 /**
  * 有意保留的旧工具名（文件相对路径 → 工具名 → 理由）。
  * 守卫纪律：**有意不同必须登记**，否则下一个人会以为又是漏改。
  */
 const DELIBERATE = [
-	// 例：{ file: 'resources/.agents/skills/xxx/SKILL.md', tool: 'read_file', why: '正文是"从 bunnyseek 迁移"的对照说明' }
+	// 例：{ file: 'dsh-plugins/vssaros-skill-bundle/skills/xxx/SKILL.md', tool: 'read_file', why: '正文是"从 bunnyseek 迁移"的对照说明' }
 ];
 
 const dshTools = dshToolNames();

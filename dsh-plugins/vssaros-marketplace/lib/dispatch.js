@@ -21,7 +21,8 @@ import { PUBLISHABLE_KINDS } from './publisher.js';
 // ★ 2026-10-27：`inspectGithub` 也是只读（只抓 GitHub 元数据，不写盘、不写商城）
 //   ⇒ 放进 LOCAL_READ_OPS，这样它不需要审批、不会误判成写操作 ✓
 // ★ 2026-10-26：`preflightPublish` 发布前体检（只抓上游元数据，不写盘、不写商城）⇒ 只读
-export const LOCAL_READ_OPS = new Set(['list', 'detail', 'installed', 'publishables', 'reviewList', 'inspectGithub', 'preflightPublish']);
+// ★ 2026-11-06（P1）：`listSkillHub` = 从内置 GitHub Hub 列可装技能（只读，dsh 侧自持）。
+export const LOCAL_READ_OPS = new Set(['list', 'detail', 'installed', 'publishables', 'reviewList', 'inspectGithub', 'preflightPublish', 'listSkillHub']);
 
 /**
  * 走本地落盘的**写** op（装 / 升 / 卸）。
@@ -31,7 +32,9 @@ export const LOCAL_READ_OPS = new Set(['list', 'detail', 'installed', 'publishab
  *   「不认识的商城动作：trash」（我在浏览器里是 stub 掉 confirm 测的，差点漏掉这条）。
  */
 // ★ 2026-10-26：`setMcpEnabled` 写的是 `<数据根>/mcp.json` 的 disabled（与装/卸同一类落盘操作）
-export const LOCAL_WRITE_OPS = new Set(['install', 'upgrade', 'uninstall', 'trash', 'setMcpEnabled']);
+// ★ 2026-11-06（P1）：`installSkillContent` = 非商城来源（内容 / 文件夹 / URL / GitHub）装技能，
+//   由 `skillSources.js` 规范化后走同一个 `installBundle` ⇒ 与商城安装共享 sha256/目录/台账契约。
+export const LOCAL_WRITE_OPS = new Set(['install', 'upgrade', 'uninstall', 'trash', 'setMcpEnabled', 'installSkillContent']);
 
 /**
  * 这三类 op 里，dsh 侧能自持的 kind。
@@ -124,6 +127,9 @@ export function resolveOp(op, params = {}) {
 	const kind = String(params?.kind ?? '');
 
 	if (LOCAL_READ_OPS.has(name)) { return 'local-read'; }
+	// ★ P1：非商城来源装技能**永远由 dsh 侧自持**，不分 kind（它固定落 skill 根）。
+	//   放在 LOCAL_WRITE_OPS 分支之前 ⇒ 调用方不必伪造一个 kind 才不会被误送去 IDE。
+	if (name === 'installSkillContent') { return 'local-write'; }
 	// 插件开关：不带 kind，按 op 名直接给 dsh 侧（能力不足时调用方退回 IDE）
 	if (PLUGIN_STATE_OPS.has(name)) { return 'local-plugin'; }
 	// mcp.json 整份保存：本地写文件（不带 kind）

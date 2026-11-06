@@ -16,17 +16,88 @@
 //     get(id)                    → Promise<AssignmentView|undefined>
 //     cancel(id, reason?)        → Promise<AssignmentView>
 //     subscribe(fn)              → 退订函数；fn(AssignmentView) 在委派**结束**（done / cancelled）时调用
-//     provide(impl) / publish(view)   → 只给本插件自己用
+//     createGroup(input) / listGroups()  → 2026-11-05 多 bot 群聊（见下面 withGroups）
+//     provide(impl) / publish(view) / provideGroups(impl)   → 只给本插件自己用
 //   }
 //   挂在 globalThis 而不是 ctx.provide：消费者不必依赖本包；任一方 HMR 重载时订阅都不会丢
 //   （订阅表在总线对象上，不在会被重新求值的模块里）。与 feishuEventBus.js 同一做法。
 
+import { presetIdOf } from './core/agents.js';
+
 const KEY = Symbol.for('vssaros.team');
+/** 群实现挂在总线对象上（HMR 重载模块也不会丢），以及 createGroup 是否已支持 originTriggerId。 */
+const GROUPS_STATE = Symbol.for('vssaros.team.groups.state');
+const GROUPS_IDEMPOTENT = Symbol.for('vssaros.team.groups.idempotent');
+
+/**
+ * ★ 2026-11-05 群聊（多 bot 群）：`createGroup(input)` / `listGroups()` / `provideGroups(impl)`。
+ * 补在已有的总线对象上（HMR 后总线可能是旧模块建的，只增不改）；实现方是 lib/rooms.js。
+ *   createGroup({ members, name?, notice?, admin?, mode?, createdBy?, workspaceId?, cwd?, originTriggerId? }) → Promise<RoomView>
+ *   listGroups() → Promise<RoomView[]>
+ *   ★ 2026-11-05 P0：`originTriggerId`（同一个 SuperAgent trigger）重复调用返回同一个群，不重复建会话。
+ */
+function withGroups(bus) {
+	const state = bus[GROUPS_STATE] ?? { groups: null };
+	bus[GROUPS_STATE] = state;
+	if (bus[GROUPS_IDEMPOTENT] && typeof bus.createGroup === 'function' && typeof bus.provideGroups === 'function') { return bus; }
+	const needGroups = () => {
+		if (!state.groups) { throw new Error('VsSaros 群聊还没就绪（Host 正在启动，或没装 @vssaros/dsh-agents）'); }
+		return state.groups;
+	};
+	bus.provideGroups = (next) => {
+		if (!next || typeof next.create !== 'function') { return () => undefined; }
+		state.groups = next;
+		return () => { if (state.groups === next) { state.groups = null; } };
+	};
+	bus.createGroup = async (input) => {
+		const { createdBy, workspaceId, cwd, originTriggerId, triggerId, ...rest } = input ?? {};
+		return needGroups().create(rest, { createdBy, workspaceId, cwd,
+			originTriggerId: typeof originTriggerId === 'string' && originTriggerId ? originTriggerId
+				: typeof triggerId === 'string' && triggerId ? triggerId : undefined });
+	};
+	bus.listGroups = async () => needGroups().list();
+	Object.defineProperty(bus, GROUPS_IDEMPOTENT, { value: true, configurable: true });
+	return bus;
+}
+
+/**
+ * ★ 2026-11-06 契约修订 2（适配层，superagent v2 第 8 项）：`version` 仍是 1 —— 它是兼容主版本，
+ *   老消费者只认 `version === 1`（如 superagent ≤0.1.62），改它就等于把老消费者踢出去，违背「只增不改」。
+ *   新能力用 `revision` + `features` 标出，消费者按 `revision >= 2` / `features.includes(...)` 检测：
+ *     revision: 2
+ *     features: ['delegate', 'externalBots', 'groups', 'presetOf', 'describeBot']
+ *     presetOf(botId)      → string                  该 bot 的 dsh preset id（与本插件注册口径同一个函数，消费者不必照抄命名规则）
+ *     describeBot(ref)     → Promise<BotDetail|undefined>  名册卡片 + model / preset / 工作区（按 id 或名字）
+ *   v1 的方法全部保留、语义不变；delegate / subscribe 在 superagent v2 里已不再使用（契约保留）。
+ */
+export const TEAM_BUS_REVISION = 2;
+export const TEAM_BUS_FEATURES = Object.freeze(['delegate', 'externalBots', 'groups', 'presetOf', 'describeBot']);
+function withRevision2(bus) {
+	if (bus.revision >= TEAM_BUS_REVISION && typeof bus.presetOf === 'function' && typeof bus.describeBot === 'function') { return bus; }
+	const state = bus[GROUPS_STATE] ?? { groups: null };
+	bus[GROUPS_STATE] = state;
+	bus.revision = TEAM_BUS_REVISION;
+	bus.features = TEAM_BUS_FEATURES;
+	bus.presetOf = (botId) => presetIdOf(String(botId ?? '').trim());
+	bus.describeBot = async (ref) => {
+		const describe = bus[DESCRIBE];
+		if (typeof describe !== 'function') { throw new Error('VsSaros Bots 还没就绪（Host 正在启动，或没装 @vssaros/dsh-agents）'); }
+		return describe(ref);
+	};
+	/** 只给本插件自己用：提供 describeBot 的实现。 */
+	bus.provideDescribe = (fn) => {
+		if (typeof fn !== 'function') { return () => undefined; }
+		bus[DESCRIBE] = fn;
+		return () => { if (bus[DESCRIBE] === fn) { bus[DESCRIBE] = undefined; } };
+	};
+	return bus;
+}
+const DESCRIBE = Symbol.for('vssaros.team.describe');
 
 /** 取（或建）进程内团队总线。`root` 只给单测注入。 */
 export function teamBus(root = globalThis) {
 	const cur = root[KEY];
-	if (cur && cur.version === 1) { return cur; }
+	if (cur && cur.version === 1) { return withRevision2(withGroups(cur)); }
 	let impl = null;
 	const subscribers = new Set();
 	// ★ 2026-11-04 外部 bot（superagent 主管）：名册只登记它，会话与消息仍由注册方自己管。
@@ -88,7 +159,7 @@ export function teamBus(root = globalThis) {
 		},
 	};
 	Object.defineProperty(root, KEY, { value: bus, configurable: true, enumerable: false, writable: false });
-	return bus;
+	return withRevision2(withGroups(bus));
 }
 
 /** 当前进程里登记的外部 bot（公开视图）。 */
@@ -101,5 +172,7 @@ export function externalBotRow(bot) {
 		id: bot.id, name: bot.name, description: String(bot.description ?? ''), icon: String(bot.icon ?? ''),
 		role: String(bot.role ?? '主管'), skills: [], tools: [], color: '#4176e6', model: '', personaBytes: 0,
 		presetId: '', registered: true, external: true, source: 'external', live: null,
+		// ★ 2026-11-04 superagent v2：主管对话的会话 id（名册点它就该打开这条会话）。
+		sessionId: String(bot.session ?? ''),
 	};
 }

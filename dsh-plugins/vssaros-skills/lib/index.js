@@ -25,13 +25,43 @@ import { parseFrontmatter, skillFromFile, summarizeCatalog, toCandidate, toDefin
 import { bindFoundation } from './foundationRef.js';
 import { rankSkills, SKILL_SEARCH_DEFAULT_LIMIT, SKILL_SEARCH_MAX_LIMIT } from './core/skillSearch.js';
 
-import { MAX_SKILL_BYTES, SKILL_MANAGE_ACTIONS, skillManage } from './core/skillManage.js';
+import { DRAFTS_DIR, MAX_SKILL_BYTES, SKILL_MANAGE_ACTIONS, skillManage } from './core/skillManage.js';
+import { buildSkillMd } from './core/skillDistill.js';
 
 import { dataRootOf, readSkillFile, scanSkills, skillDirOf, skillIdOf, skillsRootOf } from './store.js';
 
 // 跨进程写锁（协议 v2，与 workflow / kanban / IDE 同一套 ✓；**逐字复制的副本** —— 插件间不能互相
 // import ✓，包各自独立 ✓）。互通性由 `dshWorkflowWriteLock.test.ts` 拿真文件互抢验证 ✓。
 import { acquireFileLock, lockFileFor } from './lock.js';
+
+/** 页面 POST 的请求体（限长，避免一个请求吃满内存）。 */
+async function readJsonBody(req) {
+	const chunks = [];
+	let size = 0;
+	for await (const chunk of req) {
+		size += chunk.length;
+		if (size > MAX_SKILL_BYTES + 4096) { throw new Error('请求体太大（超过单个技能正文上限）'); }
+		chunks.push(chunk);
+	}
+	const text = Buffer.concat(chunks).toString('utf8');
+	return text.trim() ? JSON.parse(text) : {};
+}
+
+/** 列出草稿区的技能（create 只写这里 ⇒ 页面上必须看得见「提升」这一步）。 */
+function scanDrafts(root) {
+	const dir = join(root, DRAFTS_DIR);
+	if (!existsSync(dir)) { return []; }
+	const out = [];
+	for (const entry of readdirSync(dir, { withFileTypes: true })) {
+		if (!entry.isDirectory()) { continue; }
+		const file = join(dir, entry.name, 'SKILL.md');
+		if (!existsSync(file)) { continue; }
+		let description = '';
+		try { description = String(parseFrontmatter(readFileSync(file, 'utf8'))?.description ?? ''); } catch { /* 坏草稿照样列出，让页面能删 */ }
+		out.push({ name: entry.name, file, description });
+	}
+	return out.sort((a, b) => a.name.localeCompare(b.name));
+}
 
 
 /** 与 cordis.patch.yml 的行 id 一致（值来自 core 的单一真源，见那里的注释）。 */
@@ -64,6 +94,12 @@ function createState() {
 		/** 上次扫描的目录指纹：变化时调 `control.invalidate()` 让消费者重取目录。 */
 		lastFingerprint: '',
 		/**
+		 * ★ P1（2026-11-06）：`registerProvider` 给的 control —— 写盘后主动 invalidate，
+		 * 让 `skill_manage` 新建/编辑/删除**当回合**就反映到 `<available_skills>`，
+		 * 不再等 Host 重扫（旧描述里那句"要等重新扫描"已作废）。
+		 */
+		providerControl: undefined,
+		/**
 		 * dsh 原生 skill 工具在不在（本模块的消费者）。
 		 * ⚠️ 不能直接写 `ctx.tools.xxx`：**未在 `inject` 里声明的服务，被访问时会抛错**（实测：在页面处理器里
 		 * 访问它导致连接被切断）。本模块刻意不声明 `inject = ['tools']`（没这需求，声明了会让插件在没装
@@ -79,9 +115,7 @@ function createState() {
 		 * `mcp__probe__probe_ping` 那种形式 ✓）。把看到的名字报出来，就不用猜 ✓。
 		 */
 		skillishTools: [],
-		// 重构 4（2026-10-17）：skill_market_list 要经桥回 IDE 拉远端清单（远端认证在壳侧 ✓）。
-		// 可选注入：vssarosBridge 不在 ⇒ 市场工具如实报"桥不在" ✓，其余照常 ✓。
-		bridge: null,
+		// ★ 2026-11-06（P1）：`bridge` 状态已删 —— 本插件不再有 `ide.request` 调用。
 	};
 }
 
@@ -385,6 +419,92 @@ const SKILL_PREVIEW_SCRIPT = `
 	Array.prototype.slice.call(root.querySelectorAll('[data-sk-open-full]')).forEach(function (btn) {
 		btn.addEventListener('click', function () { openFullFrom(btn); });
 	});
+
+	/* ── 新建技能（2026-11-07）：页面入口直接调 dsh 侧 API，不依赖模型调工具 ──
+	   create 只写草稿区，promote 才生效；两个动作都由用户点按钮触发 ⇒ 等价于审批 ✓ */
+	var createBox = root.querySelector('[data-sk-create]');
+	function createNode(sel) { return createBox ? createBox.querySelector(sel) : null; }
+	function createMsg(text, bad) {
+		var el = createNode('[data-sk-create-msg]');
+		if (!el) { return; }
+		el.textContent = text;
+		el.setAttribute('data-bad', bad ? '1' : '0');
+	}
+	function managePost(payload) {
+		return fetch('/x/skills/api/manage', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			credentials: 'same-origin',
+			body: JSON.stringify(payload),
+		}).then(function (r) { return r.json(); });
+	}
+	function loadDrafts() {
+		var box = createNode('[data-sk-drafts]');
+		if (!box) { return; }
+		fetch('/x/skills/api/drafts', { credentials: 'same-origin' })
+			.then(function (r) { return r.json(); })
+			.then(function (j) {
+				var list = (j && j.drafts) || [];
+				while (box.firstChild) { box.removeChild(box.firstChild); }
+				if (!list.length) {
+					box.textContent = '暂无草稿。新建的技能先放这里，点「提升」才进入技能目录。';
+					return;
+				}
+				list.forEach(function (d) {
+					var row = document.createElement('div');
+					row.className = 'sk-draft-row';
+					var label = document.createElement('span');
+					label.textContent = String(d.name || '') + (d.description ? ' — ' + d.description : '');
+					var btn = document.createElement('button');
+					btn.type = 'button';
+					btn.textContent = '提升';
+					btn.setAttribute('data-sk-promote', String(d.name || ''));
+					row.appendChild(label);
+					row.appendChild(btn);
+					box.appendChild(row);
+				});
+			})
+			.catch(function (e) { box.textContent = '草稿读取失败：' + String((e && e.message) || e); });
+	}
+	if (createBox) {
+		root.addEventListener('click', function (ev) {
+			var t = ev.target;
+			if (!t || !t.closest) { return; }
+			var save = t.closest('[data-sk-create-save]');
+			if (save) {
+				var nameEl = createNode('[data-sk-create-name]');
+				var descEl = createNode('[data-sk-create-desc]');
+				var bodyEl = createNode('[data-sk-create-body]');
+				var name = String((nameEl && nameEl.value) || '').trim();
+				var desc = String((descEl && descEl.value) || '').trim();
+				var body = String((bodyEl && bodyEl.value) || '');
+				if (!name || !desc) { createMsg('技能名与描述都要填（描述缺了 DSH 会静默跳过这个技能）', true); return; }
+				save.disabled = true;
+				createMsg('正在存为草稿…', false);
+				managePost({ action: 'create', name: name, description: desc, body: body })
+					.then(function (j) {
+						createMsg(j && j.ok ? '已存为草稿：' + name + '（点「提升」才生效）' : '失败：' + String((j && j.error) || '未知原因'), !(j && j.ok));
+						loadDrafts();
+					})
+					.catch(function (e) { createMsg('失败：' + String((e && e.message) || e), true); })
+					.then(function () { save.disabled = false; });
+				return;
+			}
+			var promote = t.closest('[data-sk-promote]');
+			if (promote) {
+				var pname = promote.getAttribute('data-sk-promote') || '';
+				promote.disabled = true;
+				createMsg('正在提升 ' + pname + ' …', false);
+				managePost({ action: 'promote', name: pname })
+					.then(function (j) {
+						createMsg(j && j.ok ? '已生效：' + pname + '（技能目录已重建）' : '失败：' + String((j && j.error) || '未知原因'), !(j && j.ok));
+						loadDrafts();
+					})
+					.catch(function (e) { createMsg('失败：' + String((e && e.message) || e), true); });
+			}
+		});
+		loadDrafts();
+	}
 
 	/* 商城入口是普通链接（href=/x/marketplace/，2026-10-23 用户：改名「商城」并打开商城网页）
 	   ⇒ 不再需要宿主桥 openSkillMarket；没装商城插件时是 404，而不是"按钮点了没反应"。 */
@@ -3149,6 +3269,17 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 .mk-detail hr { border: 0; border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,.3)); margin: 12px 0; }
 .mk-detail a { color: var(--vscode-textLink-foreground, #3794ff); }
 .mk-detail blockquote { margin: 0 0 8px; padding-left: 10px; border-left: 2px solid var(--vscode-panel-border, rgba(128,128,128,.4)); color: var(--vscode-descriptionForeground, #999); }
+/* 新建技能（2026-11-07）：沿用仪表盘卡的紧凑行式，色值一律走 var（浅色/深色都跟着 IDE 外观） */
+.sk-create { margin: 10px 12px; padding: 9px 12px; border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.35)); border-left: 3px solid var(--vscode-textLink-foreground, var(--vscode-panel-border, rgba(128,128,128,.35))); border-radius: 6px; }
+.sk-create-h { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.sk-create label { display: block; margin: 6px 0; font-size: 12px; color: var(--vscode-descriptionForeground, inherit); }
+.sk-create input, .sk-create textarea { width: 100%; box-sizing: border-box; margin-top: 3px; padding: 5px 7px; font: inherit; color: inherit; background: var(--vscode-input-background, transparent); border: 1px solid var(--vscode-input-border, rgba(128,128,128,.35)); border-radius: 4px; }
+.sk-create-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.sk-create button { font: inherit; padding: 4px 10px; color: inherit; background: var(--vscode-button-secondaryBackground, transparent); border: 1px solid var(--vscode-panel-border, rgba(128,128,128,.35)); border-radius: 4px; cursor: pointer; }
+.sk-create [data-sk-create-msg][data-bad="1"] { color: var(--vscode-errorForeground, inherit); }
+.sk-drafts { margin-top: 8px; font-size: 12px; color: var(--vscode-descriptionForeground, inherit); }
+.sk-draft-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,.2)); }
+.sk-draft-row span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 </head>
 <body data-vssaros-page="skills" data-vssaros-skills-mcp-section="${mcpSection.state}" data-vssaros-skills-preview="enabled">
@@ -3174,6 +3305,17 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 				<button type="button" data-sk-tab="plugins">插件 ${builtinPlugins.length + installedPlugins.length + (mk.totals?.plugin ?? 0)}</button>
 			</div>
 			<div data-sk-pane="skills">
+				<div class="sk-create" data-sk-create>
+					<div class="sk-create-h">新建技能</div>
+					<label>技能名 <input type="text" data-sk-create-name placeholder="code-review" autocomplete="off" /></label>
+					<label>描述 <input type="text" data-sk-create-desc placeholder="一句话说明什么时候用它" autocomplete="off" /></label>
+					<label>指引正文 <textarea data-sk-create-body rows="3" placeholder="写清步骤、命令与注意事项"></textarea></label>
+					<div class="sk-create-actions">
+						<button type="button" data-sk-create-save>存为草稿</button>
+						<span data-sk-create-msg data-bad="0"></span>
+					</div>
+					<div class="sk-drafts" data-sk-drafts>正在读取草稿…</div>
+				</div>
 				${filterBarHtml('skills',
 					skills.map(x => ({ src: skillSrcOf(x.path), act: x.activation })).concat(marketItemsFor(mk, 'skills').map(i => ({ src: 'market', ver: i.version ? 'yes' : 'no' }))),
 					[{ k: 'all', t: '全部' }, { k: 'src:market', t: '可安装' }, { k: 'src:installed', t: '已安装' },
@@ -3876,16 +4018,8 @@ export function apply(ctx, config = {}) {
 	}
 	// ⚠ 状态**每次挂载一份**（见 `createState` 注释：preset plane 下同一个包会被多次挂载 ✓）
 	const state = createState();
-	// 桥（可选注入：vssarosBridge 不在 ⇒ 市场工具如实报"桥不在" ✓，其余照常 ✓）。
-	ctx.inject(['vssarosBridge'], scope => {
-		let svc = null;
-		try { svc = scope.vssarosBridge ?? null; } catch { /* 探针的 Proxy 假 ctx 对未知属性抛错 ⇒ 当不存在 */ }
-		if (svc && typeof svc.callIDE === 'function') {
-			state.bridge = svc;
-			return () => { state.bridge = null; };
-		}
-		return undefined;
-	});
+	// ★ 2026-11-06（P1）：`vssarosBridge` 的可选注入已随 `skill_market_list` 一起删除 ——
+	//   本插件不再有任何 `ide.request` 调用，技能清单查询归 dsh 侧 marketplace 自持。
 	// ── R13（preset plane）第 ① 类：分半边注册 ────────────────────────────────────────────────
 	// 同一个包会被挂**两次**（host plane 一行 + 我们的 preset 里一行 ✓）。`hostHalf: true` ⇒
 	// 这一次**只**注册页面/技能来源，**不注册工具**（`skill_search` 交给 preset 里那次 ✓）；
@@ -4115,7 +4249,7 @@ export function apply(ctx, config = {}) {
 				'patch: 精确替换已有 SKILL.md 里的一段文本（小改用这个更安全；old_string 默认必须唯一，replace_all=true 才全替换）。',
 				'delete: 整个删除一个技能。',
 				`⚠ 四种 action **都会写盘** ⇒ 每次调用都需要**用户在审批里确认** ✓（被拒绝是正常的，不要反复重试 ✗）。单个技能正文上限 ${MAX_SKILL_BYTES} 字节。`,
-				'⚠ 新建/删除后，本模块的页面会立即看到 ✓，但 dsh 的**技能目录**（<available_skills>）要等 Host 重新扫描才会更新 ✓。',
+				'✓ 新建/编辑/删除后技能目录会**立即重建**（provider invalidate），当回合就能看到，不必重启 Host。',
 			].join(' '),
 			parameters: {
 				type: 'object',
@@ -4159,7 +4293,7 @@ export function apply(ctx, config = {}) {
 				// ⇒ 这把锁只与"另一个 dsh 写者"互斥 ✓，**挡不住 IDE 同时写** ✗（要彻底互斥得 IDE 侧也上锁 ✓）。
 				const release = await acquireFileLock(lockFileFor(skillsRootOf(config)), { label: '技能目录' });
 				try {
-					return skillManage({
+					const result = skillManage({
 						action: params?.action,
 						name: params?.name,
 						content: params?.content,
@@ -4168,54 +4302,19 @@ export function apply(ctx, config = {}) {
 						replaceAll: params?.replace_all,
 						category: params?.category,
 					}, skillsRootOf(config));
+					// ★ P1（2026-11-06）：写盘后立刻让技能目录重建 ⇒ 新建/编辑/删除当回合可见。
+					//   control 只在 provider 注册时才有（离线/无 ctx.skills 的 profile 里为 undefined）⇒ 可选调用 ✓。
+					state.providerControl?.invalidate();
+					return result;
 				} finally {
 					await release();
 				}
 			},
 		}, {
-			// 重构 4（2026-10-17）：`skill_market_list`——浏览技能市场（只读：经桥回 IDE 拉远端清单，
-			// 远端服务在壳侧的 marketplaceService ✓）。安装入口是 skill_manage（草稿区 ✓——本工具
-			// 只浏览 ✓，不安装 ✗）。
-			name: 'skill_market_list',
-			description: '浏览技能市场：列出远端可装的技能（名称 / 描述 / 版本 / 作者）。只读（不安装——安装用 skill_manage 的 create，写草稿区后手动提升才生效）。远端服务要登录（经 IDE 侧的 marketplaceService）。',
-			parameters: {
-				type: 'object',
-				properties: {
-					query: { type: 'string', description: '搜索关键词（可选）' },
-					limit: { type: 'number', description: '最多返回几条（默认 20，上限 100）' },
-				},
-			},
-			output: {
-				schema: {
-					type: 'object',
-					properties: {
-						count: { type: 'integer' },
-						items: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, description: { type: 'string' }, version: { type: 'string' }, author: { type: 'string' } } } },
-						error: { type: 'string' },
-					},
-				},
-				render: (_args, value) => [{
-					type: 'text',
-					text: value.error
-						? `市场不可用：${value.error}`
-						: (value.count ? `${value.count} 个技能：\n${value.items.map(i => `  • ${i.name}@${i.version ?? '?'} — ${i.description ?? ''}`).join('\n')}` : '没有匹配的技能'),
-				}],
-			},
-			isConcurrencySafe: () => true,  // 只读 ✓
-			execute: async (params) => {
-				// 经桥回 IDE（远端清单要认证——壳侧的 marketplaceService 有 token ✓）
-				if (!state.bridge || typeof state.bridge.callIDE !== 'function') {
-					return { count: 0, items: [], error: '市场要经桥回 IDE（远端清单的认证在壳侧），但 vssarosBridge 不在（bridge 插件没装/没连）' };
-				}
-				const reply = await state.bridge.callIDE('ide.request', {
-					capability: 'skills',
-					pluginId: 'vssaros-skills',
-					params: { op: 'marketList', query: String(params?.query ?? '').trim() || undefined, limit: Number.isFinite(params?.limit) ? Math.min(100, Math.max(1, Math.floor(params.limit))) : 20 },
-				}, { timeoutMs: 30 * 1000 });
-				const items = Array.isArray(reply?.items) ? reply.items : [];
-				return { count: items.length, items, ...(reply?.error ? { error: String(reply.error) } : {}) };
-			},
-		}, {
+			// ★ 2026-11-06（P1）：`skill_market_list` **已下线** —— 技能清单查询统一归
+			//   `@vssaros/dsh-marketplace`（`list` / `listSkillHub` / `market_*` 工具），
+			//   它自持认证、下载、台账，不再经 IDE 的 `marketplaceService` 反向通道。
+			//   ⚠ 别把这个对象抄回来：它会重新引入 `ide.request capability:'skills'` 这条 IDE 依赖。
 			// 重构 4（2026-10-17）：`read_skill`——读技能全文（SKILL.md 正文 + 可选的支持文件）。
 			// 与 legacy `skillTools.ts` 同语义（读文件系统——dsh 侧的 skills 是文件扫描 ✓，
 			//   不是壳侧的 skillRegistry 服务 ✓）。只读 ⇒ 不挂审批闸（与 skill_search 同口径 ✓）。
@@ -4406,6 +4505,8 @@ export function apply(ctx, config = {}) {
 	// 返回值，插件停用即自动注销（方案 6.2："注册即 effect"）。
 	ctx.inject(['skills'], child => child.effect(() => child.skills.registerProvider(control => {
 		state.provider = { registered: true, reason: '' };
+		// ★ P1：把 control 交给写路径 ⇒ `skill_manage` 写盘后主动让技能目录重建（不用等 Host 重扫）。
+		state.providerControl = control;
 		return {
 			name: PROVIDER_NAME,
 			async list(options) {
@@ -4490,6 +4591,47 @@ export function apply(ctx, config = {}) {
 						content: parsed.skill.content,
 						contentBytes: Buffer.byteLength(parsed.skill.content, 'utf8'),
 					}));
+					return;
+				}
+				// ★ 2026-11-06（P1）：创建技能的**非模型入口**（页面 / API）。
+				//   create 只落草稿区、promote 才进检索面 —— 与 `skill_manage` 共用同一份 core 实现 ✓。
+				//   页面按钮是用户主动点击 ⇒ 等价于审批确认；写后 invalidate 让目录当回合重建。
+				if (pathname === `${ROUTE_PREFIX}/api/manage` && req.method === 'POST') {
+					const send = (code, value) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(value));
+					};
+					let body;
+					try { body = await readJsonBody(req); }
+					catch (e) { send(400, { ok: false, error: `请求体不是合法 JSON：${String(e?.message ?? e)}` }); return; }
+					const action = String(body?.action ?? '').trim();
+					if (action !== 'create' && action !== 'promote') {
+						send(400, { ok: false, error: `不认识的动作「${action}」（页面只支持 create / promote）` });
+						return;
+					}
+					const name = String(body?.name ?? '').trim();
+					let content;
+					if (action === 'create') {
+						try {
+							content = typeof body?.content === 'string' && body.content.trim()
+								? body.content
+								: buildSkillMd({ name, description: body?.description, body: body?.body, category: body?.category, tags: body?.tags });
+						} catch (e) { send(400, { ok: false, error: String(e?.message ?? e) }); return; }
+					}
+					const release = await acquireFileLock(lockFileFor(root), { label: '技能目录（页面创建）' });
+					try {
+						const result = skillManage({ action, name, content }, root);
+						state.providerControl?.invalidate();
+						send(200, { ok: true, ...result });
+					} catch (e) {
+						send(400, { ok: false, error: String(e?.message ?? e) });
+					} finally { await release(); }
+					return;
+				}
+				// 草稿列表：create 不生效 ⇒ 页面必须给出可见的「提升」下一步。
+				if (pathname === `${ROUTE_PREFIX}/api/drafts`) {
+					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(JSON.stringify({ root, drafts: scanDrafts(root) }));
 					return;
 				}
 				// 「加载更多」：返回**已渲染好的卡片 HTML**（客户端只需 insertAdjacentHTML）

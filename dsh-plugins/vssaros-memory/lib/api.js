@@ -527,6 +527,34 @@ export function installApi(ctx, deps) {
         sendJson(res, 200, { ok: outcome.kind === 'success', text: outcome.text ?? '' })
         return
       }
+      if (path === '/memory-evolve/api/bot-history' && (req.method === 'GET' || req.method === 'POST')) {
+        // VsSaros（2026-11-05 S2）：Bot 记忆版本历史。响应形状与 dsh-agents 旧接口
+        // `/x/agents/api/memory?agent=` 相同（log / diff），外壳的历史面板直接复用：
+        //   GET ?sessionId=&limit=      → { enabled, bot, log: [{hash, date, subject}], legacy }
+        //   GET ?sessionId=&rev=        → { rev, diff: { added, removed, rows: [{type, text}] } }（对比当前内容）
+        //   POST { sessionId, action: 'restore', rev } → 先提交当前状态，再写回该版本并提交
+        const hist = deps.botHistory
+        if (!hist || !hist.enabled) {
+          sendJson(res, 503, { ok: false, code: 'BOT_HISTORY_DISABLED', error: 'Bot 记忆历史未启用' })
+          return
+        }
+        if (req.method === 'GET') {
+          const agent = resolveBotAgent({ sessionId: url.searchParams.get('sessionId') }, deps)
+          const dir = store.locate('bot', agent).dir
+          const rev = url.searchParams.get('rev')
+          if (rev) {
+            sendJson(res, 200, await hist.compare(dir, rev))
+            return
+          }
+          sendJson(res, 200, { bot: store.botKeyOf(agent), ...(await hist.log(dir, url.searchParams.get('limit'))) })
+          return
+        }
+        const body = await readBody(req)
+        if (body?.action !== 'restore') throw new Error('action 必须是 restore')
+        const agent = resolveBotAgent(body, deps)
+        sendJson(res, 200, await hist.restore(store.locate('bot', agent).dir, String(body?.rev ?? '')))
+        return
+      }
       if (req.method === 'GET' && path === '/memory-evolve/api/memory-files') {
         const sessionId = url.searchParams.get('sessionId')
         const cwd = deps.resolveCwd?.(sessionId)

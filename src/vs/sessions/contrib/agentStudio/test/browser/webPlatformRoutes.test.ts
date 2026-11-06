@@ -29,7 +29,7 @@ import { KB_URL_PLATFORMS, detectPlatform } from '../../browser/views/knowledgeB
  */
 
 const REPO_ROOT = process.cwd();
-const SKILL_PATH = 'resources/.agents/skills/web-content-import/SKILL.md';
+const SKILL_PATH = 'dsh-plugins/vssaros-skill-bundle/skills/web-content-import/SKILL.md';
 
 /** 通道 kind → agent 侧真正的工具名（守卫自己维护：真源不该为"文案"反向依赖工具命名）。 */
 const TOOL_NAME_OF_KIND: Record<string, string> = {

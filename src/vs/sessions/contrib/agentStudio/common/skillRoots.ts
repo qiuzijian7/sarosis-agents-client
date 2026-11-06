@@ -85,7 +85,7 @@ export const SKILL_ROOT_SPECS: readonly ISkillRootSpec[] = [
 	{ base: 'workspace', rel: '.agents/skills', scope: 'project', requiresTrust: true, gatedBy: 'projectRoots', label: '项目级 .agents/skills（官方 rank 200）' },
 	{ base: 'dataRoot', rel: 'skills', scope: 'user', requiresTrust: false, label: '用户级 <数据根>/skills' },
 	{ base: 'officialUser', rel: '', scope: 'user', requiresTrust: false, gatedBy: 'officialUserRoot', label: '官方用户级 <DSH_HOME>/skills（官方 rank 400）' },
-	{ base: 'builtin', rel: '', scope: 'builtin', requiresTrust: false, label: '内置 resources/.agents/skills' },
+	{ base: 'builtin', rel: '', scope: 'builtin', requiresTrust: false, label: '内置 dsh-plugins/vssaros-skill-bundle/skills（rank 600）' },
 	// ★ 2026-10-13（P2）：**dsh 插件包自带的技能**，只给 IDE 侧（`ideOnly`——dsh 侧由插件自己注册 ✓）。
 	//   排在最末 = IDE 里优先级最低，与"dsh 侧它们与内置同为 bundled/600"的语义一致 ✓；
 	//   撞名时先到先得 ⇒ 我们自己的内置/用户技能压得住插件技能（不被插件静默改行为 ✓）。

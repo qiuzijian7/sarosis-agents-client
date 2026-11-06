@@ -1,0 +1,22 @@
+# @vssaros/dsh-skill-bundle — 随包技能根的 dsh 侧自持挂载（P1）。
+#
+# 官方 `dsh-skill-filesystem` 的 `bundledSkillDir` 是 z.string()（单个目录），
+# 语义：rank 600 / source: bundled / trustedHost: true ⇒ 用户级与项目级技能都压得住内置。
+# 路径按 archify 插件同款写法从**已安装的 npm 包身份**解析，绝不拼字符串到 baseUrl 上。
+#
+# ⚠ 为什么 providerName 必须独立：IDE 侧 `renderSkillsOverlay` 插的 `vssaros-skills-dirs`
+#   行也是 `dsh-skill-filesystem`。两行 id 相同会互相顶掉（2026-10-12 实测），
+#   providerName 相同则同名技能报两份。P3 下线 IDE 侧那行的 bundledSkillDir 后，
+#   内置技能只剩本行提供，重复消失。
+- insert:
+    # ① 插入自己（守卫要求 patch 里必须有一行 name == 包名；本行由下面的空 apply 加载）
+    - id: vssaros-skill-bundle
+      name: '@vssaros/dsh-skill-bundle'
+    # ② 配置官方 filesystem provider 去扫本包 skills/（两个 id 不能撞，撞了会互相顶掉）
+    - id: vssaros-skill-bundle-fs
+      name: '@deepseek-ai/dsh-skill-filesystem'
+      config:
+        providerName: vssaros-bundled
+        includeDefaultRoots: false
+        watch: true
+        bundledSkillDir: !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('@vssaros/dsh-skill-bundle/package.json')), 'skills')

@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..', '..', '..');
-const SKILLS_ROOT = join(REPO, 'resources', '.agents', 'skills');
+const SKILLS_ROOT = join(REPO, 'dsh-plugins', 'vssaros-skill-bundle', 'skills');
 const TARGET = 'help-me-understand';
 
 // ⚠ Windows：ESM 动态 import 必须是 file:// URL（直接传盘符路径会报 ERR_UNSUPPORTED_ESM_URL_SCHEME）

@@ -63,11 +63,7 @@ const CHAT_SURFACE_DIR = 'dsh-plugins/vssaros-chat-surface/lib';
  * ⚠ 加新页时把它的**页面入口文件**登记进来（别只写在注释里 ✗）：漏登记 = 该页的新桥调用不受 ③ 保护。
  */
 const PLUGIN_PAGE_SOURCES = [
-	// 2026-10-16 修订（方案 D 双表面拆分）：agents 页的桥调用**搬出了 index.js**——
-	// 「Agent 设置」（openAgentSettings）在完整页 detail.js，「编辑区打开 / 群条目」（openModulePage）
-	// 在 sideview.js ⇒ 采集面登记**两个页面文件**（index.js 只剩路由/逻辑，没有桥调用 ✓）。
-	'dsh-plugins/vssaros-agents/lib/detail.js',
-	'dsh-plugins/vssaros-agents/lib/sideview.js',
+	// 2026-11-06：agents 的两个页面文件（完整页 detail.js / 侧栏 sideview.js）随 Bots 工作台删除 ⇒ 不再登记。
 	// 2026-10-15 加：**集成页**（`/x/skills/`）—— 标题栏 ↗ 调 `bridge.openModulePage(location.pathname)`，
 	// 置顶主入口调 `bridge.openSkillMarket()`（打开 VsSaros 技能商城，桥 `8 → 9`）。
 	// ⚠ 它页面侧刻意把桥对象命名为 `bridge`（不是 `pageBridge` 之类）：本守卫按 `bridge.<方法名>(`

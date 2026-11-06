@@ -15,7 +15,7 @@ import { installAssignmentTracker, resetAssignments } from '../lib/assignments.j
 import { ensureOutboxLoaded, outboxPendingFor, resetOutbox } from '../lib/outbox.js';
 import { scanAgentsFromConfig } from '../lib/store.js';
 import { createTeamService } from '../lib/team.js';
-import { teamBus } from '../lib/teamBus.js';
+import { externalBotRow, teamBus } from '../lib/teamBus.js';
 import { createTeamBot, supervisorBotCount } from '../lib/teamCreate.js';
 
 let pass = 0;
@@ -133,9 +133,10 @@ await checkAsync('委派：不认识的 bot 明确报错（404），不猜', asy
 await checkAsync('外部 bot：登记/撤销、公开视图不含回调、按名字可找、旧撤销不误撤新登记', async () => {
 	const bus = teamBus({});
 	const got = [];
-	const off = bus.registerExternalBot({ id: 'superagent', name: 'SuperAgent', role: '主管', onMessage: (m) => { got.push(m); } });
+	const off = bus.registerExternalBot({ id: 'superagent', name: 'SuperAgent', role: '主管', session: 'desk-1', onMessage: (m) => { got.push(m); } });
 	assert.deepEqual(bus.externalBots().map((b) => b.id), ['superagent']);
 	assert.equal(JSON.stringify(bus.externalBots()).includes('onMessage'), false, '回调不能进公开视图');
+	assert.equal(externalBotRow(bus.externalBots()[0]).sessionId, 'desk-1', '名册行要能打开主管对话');
 	const found = bus.externalBotOf('SuperAgent');
 	assert.equal(found?.id, 'superagent');
 	await found.onMessage({ from: 's1', text: '帮我看下需求', hop: 1 });
@@ -174,6 +175,32 @@ await checkAsync('建 bot：同名 id 不覆盖，带 409', async () => {
 await checkAsync('建 bot：缺字段明确报错，不写盘', async () => {
 	await assert.rejects(() => createTeamBot(config, { draft: { id: 'no-name', persona: 'x' } }), (e) => e.httpStatus === 400);
 	assert.equal(await supervisorBotCount(config), 1);
+});
+
+// ★ 2026-11-06 契约修订 2：version 仍是 1（老消费者只认 1），revision/features 标新能力；老总线原地补齐、订阅不丢。
+await checkAsync('契约修订 2：version 不变、revision 2；presetOf 与注册口径同一；describeBot 未就绪报错、就绪按 id/名字找；老总线原地升级', async () => {
+	const fresh = {};
+	const bus = teamBus(fresh);
+	assert.equal(bus.version, 1);
+	assert.equal(bus.revision, 2);
+	assert.deepEqual([...bus.features], ['delegate', 'externalBots', 'groups', 'presetOf', 'describeBot']);
+	assert.equal(bus.presetOf('Code.Reviewer'), 'vssaros-code-reviewer');
+	await assert.rejects(bus.describeBot('x'), /还没就绪/);
+	const off = bus.provideDescribe(async (ref) => (ref === 'tester' || ref === '测试' ? { id: 'tester', name: '测试', preset: bus.presetOf('tester') } : undefined));
+	assert.deepEqual(await bus.describeBot('测试'), { id: 'tester', name: '测试', preset: 'vssaros-tester' });
+	assert.equal(await bus.describeBot('nobody'), undefined);
+	off();
+	await assert.rejects(bus.describeBot('tester'), /还没就绪/);
+	// 一条 HMR 前由老模块建的 v1 总线：同一个对象被补齐，订阅表还在
+	const heard = [];
+	const legacy = { version: 1, delegate: () => undefined, subscribe(fn) { heard.push(fn); return () => undefined; } };
+	const legacyRoot = { [Symbol.for('vssaros.team')]: legacy };
+	const upgraded = teamBus(legacyRoot);
+	assert.equal(upgraded, legacy);
+	assert.equal(upgraded.version, 1);
+	assert.equal(upgraded.revision, 2);
+	assert.equal(typeof upgraded.createGroup, 'function');
+	assert.equal(teamBus(legacyRoot), legacy, '再取一次还是同一个');
 });
 
 offBus();

@@ -417,6 +417,9 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			['vssaros-marketplace', ['dataRoot']],
 			// ★ 2026-10-31：loop —— ledger / store 落 `<数据根>/loop/` ⇒ 必须注入数据根。
 			['vssaros-loop', ['dataRoot']],
+			// ★ 2026-11-06：scheduler —— sessionBinding 用 `<数据根>/dsh-home/sessions` 判断任务的会话是否属于本数据根
+			//   （原先只靠子进程 env 兜底，现在与其它模块一样走 config）。
+			['vssaros-scheduler', ['dataRoot']],
 			// ★ 2026-10-30：小红书笔记工作台已移除 ⇒ 它原本需要的 `dataRoot` 注入项也一并删掉。
 			['vssaros-kb', ['dataRoot', 'kbRoot', 'kbVaults', 'kbActiveVaultId']],
 			['vssaros-web-content-import', ['dataRoot', 'kbRoot']],

@@ -1,0 +1,27 @@
+@vssaros/dsh-agents (VsSaros)
+
+==============================================================================
+Third-party code in this package
+==============================================================================
+
+DS Bot (DeepSeek-Bot)
+Apache License, Version 2.0, Copyright 2026 Fei2411 and the DS Bot contributors
+
+  - lib/core/rooms.js ports the room of ds-bot/src/host/groups.js and
+    roster.js: who answers in a group, @-mentions, the member prompt and the
+    group's view.
+  - lib/rooms.js ports the room runtime of ds-bot/src/host/groups.js: the relay
+    of members' turns, calling back whoever gave the work once it is done, idle
+    relays that stop, and a member's late reply starting a new round.
+  - lib/core/goals.js follows the group goal of ds-bot/src/host/goals.js:
+    stages with acceptance, passing, sending back, and nudging the admin.
+  - lib/core/dsBotImport.js reads the team DS Bot saves (its state.json,
+    capability and memory formats as in ds-bot/src/host/store.js, roster.js,
+    capabilities.js and memory.js) to import it into VsSaros Bots; it copies no
+    DS Bot code.
+
+  The Apache License, Version 2.0 is available at
+  https://www.apache.org/licenses/LICENSE-2.0.
+
+  dsh-plugins/check-dsbot-notice.mjs checks that every file of this package
+  naming a ds-bot/src/ file is listed here.

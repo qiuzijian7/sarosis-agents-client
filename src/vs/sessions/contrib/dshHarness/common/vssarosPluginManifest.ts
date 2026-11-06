@@ -166,11 +166,12 @@ export const VSSAROS_IDE_CAPABILITIES: readonly VssarosIdeCapability[] = [
 	// 生图 provider、凭据与审批都在 IDE 进程 ⇒ dsh 侧插件（`@vssaros/dsh-imagegen`）
 	// 经控制桥回调 IDE 来出图，Host 侧不存第二份 Key。
 	'media',
-	// ★ 2026-10-21：`skills` / `mcp` —— **商城清单**（`op:'marketList'`）。
-	// 商城认证（JWT）在 IDE 进程（`IMarketplaceService` 复用 TOF 登录态）⇒ dsh 侧
-	// `@vssaros/dsh-skills` 的 `skill_market` 与 `@vssaros/dsh-mcp` 的 `mcp_market`
-	// 经控制桥回调 IDE 取清单（只读，不写任何数据 ✓）。
-	// ⚠ 这两个能力此前**长期是坏的**：清单没声明 + IDE 侧没 case ⇒ 真机只表现为"市场不可用"✗。
+	// ★ 2026-10-21：`mcp` —— **商城清单**（`op:'marketList'`，`@vssaros/dsh-mcp`）。
+	// 商城认证（JWT）在 IDE 进程 ⇒ dsh 侧经控制桥回调 IDE 取清单（只读 ✓）。
+	// ★ 2026-11-06（P1）：`skills` 能力**已下线**（技能清单归 dsh 侧 marketplace 自持、
+	//   `skill_market_list` 工具已移除）；但名字**保留只为兼容**：profile 里旧版
+	//   `vssaros-skills` 的清单仍声明它，删掉会让那些插件的清单校验失败 ⇒ 整个不加载
+	//   （与 `browser` 同款处理 ✓）。旧插件真发请求会拿到明确的「IDE 能力未实现」。
 	'skills', 'mcp',
 	// ★ 2026-10-22：`workbenches` —— **安装第三方工作台**（`op:'install'`，`@vssaros/dsh-market` 用）。
 	// 有副作用（往 profile 装包，包的服务端会以 Host 的权限运行）⇒ IDE 侧**必须先问用户**（fail-closed）；
@@ -237,6 +238,12 @@ export interface IVssarosWorkbench {
 	 * 再叠一个 FAB 就是重复入口且会挡住右上角。缺省（undefined）= 沿用宿主默认（显示）。
 	 */
 	readonly floatingActions?: boolean;
+	/**
+	 * 我们独有：标准分栏（业务面板 + 右侧 AI 对话栏）。`false` = 逃生门：业务面板占满整页、不显示对话栏
+	 * （vssaros-workbenches 外壳 `conversationMode` ⇒ 'detach'）。2026-11-03 由 scheduler 首次声明；
+	 * 缺省（undefined）= 沿用宿主默认（分栏）。customFrame 工作台恒为 false（外壳自行处理）。
+	 */
+	readonly splitConversation?: boolean;
 }
 
 export type VssarosWorkbenchPane = 'catalog' | 'core';
@@ -517,7 +524,8 @@ export interface IParseManifestOptions {
 
 const WORKBENCH_PANES: readonly VssarosWorkbenchPane[] = ['catalog', 'core'];
 // 2026-10-31：新增 `floatingActions`（scheduler 用它关掉重复的浮动动作按钮）。
-const WORKBENCH_KEYS = new Set(['title', 'description', 'icon', 'repository', 'customFrame', 'headerLayout', 'layout', 'panes', 'floatingActions']);
+// 2026-11-06：补登记 `splitConversation`（11-03 scheduler 已在清单里声明、外壳也在读，这里漏了 ⇒ 校验一直报不认识）。
+const WORKBENCH_KEYS = new Set(['title', 'description', 'icon', 'repository', 'customFrame', 'headerLayout', 'layout', 'panes', 'floatingActions', 'splitConversation']);
 
 /** 标题长度按"字"算（码点数）；中英文同一上限，避免英文长名把窄入口撑爆。 */
 function lengthOf(s: string): number {
@@ -603,6 +611,9 @@ function parseWorkbench(raw: unknown, module: string | undefined, activityBar: I
 	if (raw.customFrame !== undefined && typeof raw.customFrame !== 'boolean') {
 		throw new VssarosManifestError('vssaros.workbench.customFrame 必须是布尔值');
 	}
+	if (raw.splitConversation !== undefined && typeof raw.splitConversation !== 'boolean') {
+		throw new VssarosManifestError('vssaros.workbench.splitConversation 必须是布尔值');
+	}
 	if (raw.headerLayout !== undefined && raw.headerLayout !== 'default' && raw.headerLayout !== 'compact') {
 		throw new VssarosManifestError(`vssaros.workbench.headerLayout 必须是 default / compact：${String(raw.headerLayout)}`);
 	}
@@ -653,6 +664,7 @@ function parseWorkbench(raw: unknown, module: string | undefined, activityBar: I
 		...(layout ? { layout } : {}),
 		panes,
 		...(raw.floatingActions !== undefined ? { floatingActions: raw.floatingActions === true } : {}),
+		...(raw.splitConversation !== undefined ? { splitConversation: raw.splitConversation === true } : {}),
 	};
 }
 

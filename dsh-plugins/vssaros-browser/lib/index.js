@@ -67,6 +67,8 @@ import { createLoginSessions } from './core/loginSession.js';
 import { findInSnapshot, formatFindResult, normalizeFindQuery } from './core/findInSnapshot.js';
 import { SETTLE_DEFAULT_MS, SETTLE_MAX_MS, normalizeWaitConditions, settleAfterAction, waitForCondition } from './core/interaction.js';
 import { formatLoginVerdict, loginGuidanceText } from './core/loginProbe.js';
+import { LOCAL_PAGE_OPS, localExemptionOf } from './core/localPolicy.js';
+import { SCREENSHOT_LIMITS, normalizeScreenshotParams, screenshotText } from './core/screenshot.js';
 import { MEDIA_SCRIPT, formatMedia, normalizeRawMedia } from './core/media.js';
 import { formatImages, formatSnapshot } from './core/snapshot.js';
 import { unreachableMessage } from './core/unreachable.js';
@@ -95,6 +97,8 @@ const KNOWN_OPS = [
 	// 2026-10-15：媒体清单（video/audio 元素 + og 直链 + 资源清单里的媒体请求）—— **只读** ✓
 	//（真机现场：模型判"视频拿不到"时，直链其实就在已登录页面里，缺的只是这一格 ✓）。
 	'media',
+	// 2026-11-06（P1）：截当前页面交给模型看 —— **只读** ✓（见 core/screenshot.js）
+	'screenshot',
 ];
 /** 有用户可见副作用的 op（与 IDE 侧 `BROWSER_CONSENT_OPS` 同口径）⇒ 需要配置放行。 */
 const ACTION_OPS = ['navigate', 'click', 'type', 'pressEnter', 'pressKey', 'scroll', 'back', 'reset'];
@@ -303,6 +307,10 @@ export function apply(ctx, config = {}) {
 	const askReading = typeof config.askReading === 'boolean'
 		? config.askReading
 		: flag(env.VSSAROS_BROWSER_ASK_READING ?? '');
+	/** ★ 2026-11-06：本机地址上的动作默认免问（见 `core/localPolicy.js`）；`askLocal: true` 恢复逐次确认。 */
+	const askLocal = typeof config.askLocal === 'boolean'
+		? config.askLocal
+		: flag(env.VSSAROS_BROWSER_ASK_LOCAL ?? '');
 	/** 数据根的家目录（专属 profile 与 cookie 存档都挂在它下面，保持单一来源）。 */
 	const homeDir = homedir();
 	/**
@@ -395,11 +403,17 @@ export function apply(ctx, config = {}) {
 	 * `precheckEvaluate` / `requireReachable`）⇒ 免问 ≠ 免校验，`allowCookieIO`/`allowEvaluate`
 	 * 这两道独立开关照旧 ✓。
 	 */
-	const requestConsent = async (op, exec, params) => {
+	const requestConsent = async (op, exec, params, currentUrl = '') => {
 		if (allowActions) { return; }   // ① 显式免确认（无人值守；配置项 + 环境变量两条路都能开）
 		// ② 阅读类动作：只移动视口，不改站点状态（理由与代价见文件头"确认的分档"）
 		if (!askReading && READING_OPS.includes(op)) {
 			logExemptionOnce(`reading:${op}`, `[vssaros-browser] browser.${op} 免问（阅读类动作；要恢复逐次确认：askReading=true）`);
+			return;
+		}
+		// ②′ 本机地址（bot 自己起的预览服务）：打开 / 点击 / 输入免问（2026-11-06，见 core/localPolicy.js）
+		const local = localExemptionOf(op, params, currentUrl, { askLocal });
+		if (local) {
+			logExemptionOnce(`local:${op}`, `[vssaros-browser] browser.${op} 免问（本机地址：${local}；要恢复逐次确认：askLocal=true）`);
 			return;
 		}
 		// ③ 用户显式写下的规则命中即免问（同一份文件、同一套键形 —— 与 IDE 侧行为一致）
@@ -703,6 +717,17 @@ export function apply(ctx, config = {}) {
 		},
 		/** 媒体清单（只读，2026-10-15）：`<video>/<audio>` + og 直链 + 资源清单里的媒体请求。 */
 		media: async () => formatMedia(normalizeRawMedia(await client._evaluate(MEDIA_SCRIPT, 20_000))),
+		/** 截图（只读，2026-11-06）：回 `{ text, image(base64), … }`，由 `execute` 存成附件再交给模型。 */
+		screenshot: async params => {
+			const { quality, fullPage } = normalizeScreenshotParams(params);
+			const size = fullPage
+				? 'width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight'
+				: 'width: innerWidth, height: innerHeight';
+			const page = await client._evaluate(`({ url: location.href, title: document.title, ${size} })`, 5_000).catch(() => ({}));
+			const shot = await client._send('Page.captureScreenshot', { format: 'jpeg', quality, captureBeyondViewport: fullPage }, 20_000);
+			if (typeof shot?.data !== 'string' || !shot.data) { throw new Error('截图失败：浏览器没有返回图片数据'); }
+			return { screenshot: true, image: shot.data, fullPage, url: page?.url ?? '', title: page?.title ?? '', width: page?.width, height: page?.height };
+		},
 		/**
 		 * localStorage / sessionStorage 通道（2026-10-15，P1-⑤）：`list` 只读报告（键名/条数/字节数，
 		 * **值不进上下文** ✓）、`export`/`import` 跨 profile 搬登录态（开关 + 逐次审批两道闸）。
@@ -760,6 +785,23 @@ export function apply(ctx, config = {}) {
 	});
 
 	/**
+	 * 截图字节 → DSH 附件 → 工具结果里的图片块（2026-11-06）。拿不到附件服务或保存失败 ⇒ 只回文字，如实说明。
+	 */
+	const attachScreenshot = async (shot) => {
+		const attachments = (() => { try { return ctx.get?.('attachments'); } catch { return undefined; } })();
+		let attachment;
+		if (typeof attachments?.saveImage === 'function') {
+			try {
+				attachment = await attachments.saveImage({ mediaType: 'image/jpeg', data: Buffer.from(shot.image, 'base64'), name: 'Browser screenshot' });
+			} catch (error) {
+				log(`[vssaros-browser] 截图存附件失败：${String(error?.message ?? error)}`);
+			}
+		}
+		const text = screenshotText({ ...shot, attached: !!attachment });
+		return attachment ? { text, attachment } : { text };
+	};
+
+	/**
 	 * `browser` 工具的**完整定义**（注册与注销**共用同一份** —— 拆成两份必然漂移）。
 	 *
 	 * ⚠ 它被抽成常量是为了下面那个「**可见性门控**」：同一个定义会按"浏览器此刻是否可达"
@@ -769,7 +811,9 @@ export function apply(ctx, config = {}) {
 		name: 'browser',
 		description: '用 CDP 驱动**本机真实 Chrome**（带你的登录态）：快照页面、导航、点击、输入、滚动，'
 			+ '并处理登录墙、cookie 备份与页面内取值。'
-			+ 'op：status / snapshot / images / navigate / click / type / pressEnter / pressKey / scroll / back / reset / login / cookies / evaluate / waitFor / find。'
+			+ 'op：status / snapshot / images / navigate / click / type / pressEnter / pressKey / scroll / back / reset / login / cookies / evaluate / waitFor / find / screenshot。'
+			+ '【截图】`op: "screenshot"` 截当前页面交给你看（JPEG；`fullPage: true` 截整页）：看布局、遮挡、配色、文字溢出这类文字快照看不出的问题；只读，不用批准。'
+			+ '【本机地址】打开 / 点击 / 输入本机地址（localhost、127.0.0.1）上的页面不用批准 —— 测自己起的预览服务时可以放心连点。'
 			// 【选谁】2026-10-21：装了 ego lite 之后**有两个浏览器入口**，这里只做"选哪个"的提示，
 			// 不改任何执行路径（`browser` 仍然只认 Chrome 的 CDP 端点 —— ego 是另一套，见 vssaros-ego/README）。
 			// 为什么这条必须写在描述里：模型看不到插件清单，它只看工具描述 ⇒ 不写就等于"它不知道还有另一个"。
@@ -830,6 +874,8 @@ export function apply(ctx, config = {}) {
 				done: { type: 'boolean', description: 'login 用：true = 用户已登录完，去验证登录态（只读，不导航）' },
 				expression: { type: 'string', description: 'evaluate 要执行的 JS（≤4000 字符）：要返回值就写成表达式或 IIFE，异步写成 async IIFE' },
 				timeoutMs: { type: 'integer', description: 'evaluate 的超时毫秒数（不给用默认 20s，夹在 1s～120s）' },
+				fullPage: { type: 'boolean', description: 'screenshot 用：true = 截整页（默认只截可视区域）' },
+				quality: { type: 'integer', description: 'screenshot 用：JPEG 质量 30–90（默认 70）' },
 			},
 			required: ['op'],
 		},
@@ -837,8 +883,20 @@ export function apply(ctx, config = {}) {
 		//   （缺了整条 entry 不激活：`TypeError: tool "…" must declare output`）。
 		//   本工具的每个 op 都返回**文本**（快照/说明/失败均可读）⇒ 声明 string + 文本渲染。
 		output: {
-			schema: { type: 'string' },
-			render: (_args, value) => [{ type: 'text', text: String(value ?? '') }],
+			// 2026-11-06：`screenshot` 回 `{ text, attachment }`（图片存成 DSH 附件），其余 op 照旧回文本
+			schema: { anyOf: [
+				{ type: 'string' },
+				{ type: 'object', properties: { text: { type: 'string' }, attachment: { type: 'object', additionalProperties: true } },
+					required: ['text'], additionalProperties: false },
+			] },
+			render: (_args, value) => {
+				if (value && typeof value === 'object') {
+					const blocks = [{ type: 'text', text: String(value.text ?? '') }];
+					if (value.attachment) { blocks.push({ type: 'image', attachment: value.attachment }); }
+					return blocks;
+				}
+				return [{ type: 'text', text: String(value ?? '') }];
+			},
 		},
 		// 只读 op 可并行；有副作用的独占（与 IDE 侧 `isConcurrencySafe` 同口径，但判定含参数，见 `isActionOp`）。
 		isConcurrencySafe: args => !isActionOp(args?.op, args),
@@ -873,9 +931,15 @@ export function apply(ctx, config = {}) {
 			// 确认在**参数校验之后、碰网络之前**：校验失败不该弹确认框（用户看着一个必然失败的调用被问）。
 			const acted = isActionOp(op, params);
 			if (acted) {
-				await requestConsent(op, exec, params);
+				// 点击 / 输入看的是**当前页面**是不是本机地址；读不到（还没开页面等）就当外部站点照常问
+				let currentUrl = '';
+				if (!askLocal && LOCAL_PAGE_OPS.includes(op)) {
+					try { currentUrl = String(await client._evaluate('location.href', 5_000) ?? ''); } catch { currentUrl = ''; }
+				}
+				await requestConsent(op, exec, params, currentUrl);
 			}
 			const out = await handler(params);
+			if (op === 'screenshot') { return attachScreenshot(out); }
 			// ★ 动作后**自动沉降**（2026-10-14，P0-②）：模型"点了立刻 snapshot"会拿到旧 DOM ✗ ⇒ 等页面指纹
 			//   连续两拍相同再回（预算 400ms，慢加载走显式 `waitFor`）。`settleMs: 0` 显式关掉 ✓；
 			//   它**不抛错**（沉降失败只是"信息可能旧"，不构成失败 ✓）。判据与轮询都在 `core/interaction.js`。

@@ -41,6 +41,7 @@
 **/fixtures/**
 **/node_modules/**
 **/incubator/**
+**/dsh-plugins/vssaros-superagent/**
 **/out/**
 **/out-*/**
 **/src/**/dompurify.js

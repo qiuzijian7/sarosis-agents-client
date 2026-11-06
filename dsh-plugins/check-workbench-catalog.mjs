@@ -342,6 +342,31 @@ if (ghosts.length === 0) {
 	}
 }
 
+// ── ⑦ 注册式内置工作台必须在主页有卡片（2026-11-05：SuperAgent 缺失）─────────────
+// 为什么还要这一段：⑤-B 只保证"启动器能看到注册式工作台"，**主页卡片是另一条路**
+//   （`WorkbenchCard` 从父窗口读宿主快照补卡片）。旧代码把 `vssaros/` 开头的内置工作台
+//   整类排除 ⇒ SuperAgent 有页签、有启动器项，主页卡片里却没有（用户截图实证）✗。
+//   ⇒ 钉住四件事：不一刀切 / 按固定入口去重 / 走宿主注册表打开 / 内置项不误标「第三方」。
+{
+	const before = problems;
+	const dashboardApp = read(path.join(HERE, 'vssaros-dashboard', 'lib', 'app', 'src', 'app.jsx'));
+	if (/\.indexOf\(['"]vssaros\/['"]\)\s*!==\s*0/.test(dashboardApp)) {
+		fail('⑦ 主页工作台卡片仍把 vssaros/ 开头的内置注册式工作台整类排除（⇒ SuperAgent 没有卡片）');
+	}
+	for (const [re, why] of [
+		[/function fixedEntryCovers\(/, '缺 fixedEntryCovers()：内置注册式工作台会与已有固定入口重复出卡片'],
+		[/__vssarosWorkbenchItems/, '没读父窗口的固定入口表（offline / hidden 项会借这条路复活）'],
+		[/function registeredCardItems\(/, '缺 registeredCardItems()：注册式工作台补卡片的统一入口'],
+		[/__vssarosOpenWorkbench/, '补出来的卡片必须经宿主注册表打开，不能走 IDE 模块页路由'],
+		[/data-dash-wb-registered/, '内置注册式工作台没有可断言的锚点（真机无法取证）'],
+		[/item\.thirdParty && !item\.builtin \? el\('i'/, '内置注册式工作台被标成「第三方」'],
+		[/'wb:vssaros\/superagent': 'robot'/, 'SuperAgent 卡片没有单色图标映射（会回落 grid）'],
+	]) {
+		if (!re.test(dashboardApp)) { fail(`⑦ ${why}`); }
+	}
+	if (problems === before) { ok('⑦ 主页卡片：内置注册式工作台按「无固定入口」补卡片，且不重复 / 不误标第三方 ✓'); }
+}
+
 console.log(problems === 0
 	? '\n[check-workbench-catalog] ✓ 工作台清单一致性守卫通过'
 	: `\n[check-workbench-catalog] ✗ ${problems} 项问题`);

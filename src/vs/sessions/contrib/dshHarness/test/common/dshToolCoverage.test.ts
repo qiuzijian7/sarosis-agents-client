@@ -82,7 +82,7 @@ const COVERED_BY: ReadonlyMap<string, readonly string[]> = new Map([
 	// 2026-10-16（重构 4）：mcp_install（mcp 插件从"零工具"变"有工具"）。
 	['vssaros-mcp', ['p3-109-mcp-install.mjs', 'p3-111-market-list.mjs']],  // 2026-10-17：mcp_market_list
 	['vssaros-memory', ['p3-07-memory-plugin.mjs']],
-	['vssaros-skills', ['p3-04-skills-plugin.mjs', 'p3-111-market-list.mjs']],  // 2026-10-17：skill_market_list
+	['vssaros-skills', ['p3-04-skills-plugin.mjs', 'p3-111-market-list.mjs']],  // 2026-11-06：p3-111 改验 skill_market_list 已下线 + 不发桥请求
 	// web-content-import（2026-10-15 新增）：p3-93 钉路由 / 质量判定（占位页绝不写库）/ html 输入回路 /
 	// 落盘（锁 + 原子写 + slug 派生 + 形状与 IDE 侧逐字对齐）/ 审批闸 ✓（无页面 ⇒ 进程内 + 回环 HTTP，fast ✓）。
 	['vssaros-web-content-import', ['p3-93-web-content-import.mjs']],

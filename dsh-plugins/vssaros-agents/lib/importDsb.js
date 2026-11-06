@@ -28,7 +28,7 @@ import { basename, extname, join } from 'node:path';
 import { slugify } from './core/agents.js';
 import { normalizeDraft, serializeAgentMd } from './core/create.js';
 import { zipRead } from './core/zip.js';
-import { safeMemoryFileName } from './memory.js';
+import { safeMemoryFileName } from './memoryFiles.js';
 import { agentsRootOf } from './store.js';
 
 export const DSB_DESCRIPTOR = '.botharness/bot.json';

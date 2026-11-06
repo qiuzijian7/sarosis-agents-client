@@ -136,18 +136,24 @@ suite('dshHarness / desktop 窗口的「更新」入口', () => {
 	});
 
 	// ★ 2026-10-23（用户："如果没有可升级的内容，则不用显示 更新UI"）
-	test('⑩ 没有可升级内容就整块不显示（不是显示一行"已最新"占地方）', () => {
+	// ★ 2026-11-05 语义更新：应用本体更新已归 client.appUpdate.js 的右下卡片，
+	//   这颗胶囊只按「随包插件 + 资产」判空；不许再把 app 更新算进来（否则两套 UI 同时提示）。
+	test('⑩ 没有可升级的插件/资产就整块不显示，且应用更新旧入口不得复活', () => {
 		const page = fs.readFileSync(CHUNK, 'utf8');
 		assert.ok(/const pendingCount = totalPending\(state\);/.test(page),
 			'判空必须按"随包插件 + 资产"的总数（只看插件会漏掉资产 ✗）');
-		assert.ok(/const appNew = !!\(state && state\.app && state\.app\.action === "upgrade"\);/.test(page),
-			'应用有新版也要算"可升级内容"（否则有应用更新时入口反而不显示 ✗）');
-		const at = page.indexOf('if (!open && pendingCount === 0 && !appNew && !busyNow) {');
+		const at = page.indexOf('if (!open && pendingCount === 0) {');
 		assert.ok(at > 0, '缺少"没有可升级内容 ⇒ 不渲染"的判据 ✗');
-		assert.ok(/if \(!open && pendingCount === 0 && !appNew && !busyNow\) \{\s*return null;/.test(page),
+		assert.ok(/if \(!open && pendingCount === 0\) \{\s*return null;/.test(page),
 			'判据里必须 return null（否则仍会渲染出一行"已最新" ✗）');
 		// 面板开着时不许隐藏（刚升完最后一个就凭空消失 ✗）
 		assert.ok(/!open && pendingCount === 0/.test(page), '判据必须包含"面板没开着"（`!open &&`）✗');
+		// ★ 旧入口不得复活：胶囊不许再读 app 状态、不许再画一键升级。
+		// 只禁**代码形态**（`appUp` 是 `client.appUpdate.js` 的前缀，直接搜字符串会假阳性）。
+		assert.ok(!/const appNew = |const appUp = |const appRemote = |onApp:/.test(page),
+			'胶囊不许再读应用更新状态（已归 client.appUpdate.js）✗');
+		assert.ok(!/onApp|一键升级|应用可升级/.test(page),
+			'胶囊不许再画一键升级按钮或「应用可升级」文案 ✗');
 		// 顺序：判空必须早于真正渲染
 		const firstRender = page.indexOf('return react.createElement(react.Fragment, null,');
 		assert.ok(firstRender > 0 && at < firstRender, '判空必须早于渲染 ✗');
@@ -164,20 +170,12 @@ suite('dshHarness / desktop 窗口的「更新」入口', () => {
 			order![1].split(',').map(s => s.trim().replace(/["']/g, '')),
 			['skill', 'mcp', 'agent', 'workflow', 'workbench'],
 			'KIND_ORDER 必须与协议的 DSH_UPGRADE_ASSET_KINDS 同序（否则汇总行与宿主顺序不一致）✗');
-		// ⚠ 2026-10-29（真机：打包版 2.2.26207，源上已有 2.2.26208 ⇒ 应用有新版）：
-		//   徽标数按团队口径只数"可升级的随包插件 + 可升级资产"（**不含应用**），
-		//   但那也不能让这一行写「已最新」⇒ 必须由**文案**说出真相（"应用可升级"）。
 		assert.ok(/const totalPending = s => upgradableRows\(s\)\.length \+ assetRows\(s\)\.length;/.test(page),
 			'徽标数必须是"可升级的随包插件 + 可升级资产"合计（漏了资产会让用户以为资产不用升 ✗）');
-		assert.ok(/const appUp = /.test(page) && /应用可升级/.test(page),
-			'应用自身有新版时，这一行的文案必须说「应用可升级」而不是「已最新」'
-			+ '（真机：源上 2.2.26208、本地 2.2.26207，那行却写"已最新" ⇒ 用户看不到任何信号 ✗✗）');
-		// ⚠ 只认 `action === "upgrade"`：`downgrade`（更新源比本地旧）**不算**，
-		//   否则点「一键升级」就变成"一键降级"（那正是 `decideAppUpdate` 要拦的情况）✗。
-		const auAt = page.indexOf('const appUp = ');
-		const auLine = page.slice(auAt, page.indexOf('\n', auAt));
-		assert.ok(/action === "upgrade"/.test(auLine),
-			'appUp 必须只认 action === "upgrade"（downgrade = 源比本地旧，算进去就是"一键降级" ✗）');
+		// ★ 2026-11-05：应用本体更新已归 client.appUpdate.js 的右下更新卡片。
+		//   胶囊不许再读 app 状态、不许再写「应用可升级」、不许再画一键升级（旧入口不得复活）。
+		assert.ok(!/const appUp = |应用可升级|一键升级|onApp/.test(page),
+			'胶囊不许再出现应用更新的旧入口 / 旧文案 ✗');
 	});
 
 	// ★ 2026-10-26（用户："改成只算升级"）：**未安装不算一项** —— 否则本机永远显示「2 项可用」，

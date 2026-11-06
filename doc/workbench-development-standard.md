@@ -3,7 +3,7 @@
 > 文档状态：**【规范·唯一流程源】**（2026-11-02）
 > 版本：2026-11-02 · 面向 **Agent 与第三方开发者**。本文是"把一块业务界面做成工作台"的**唯一流程源**；
 > 界面架构细节见 [`workbench-authoring-standard.md`](./workbench-authoring-standard.md)（Pane × 承载容器），
-> Agent 执行细则见内置技能 `resources/.agents/skills/workbench-authoring/SKILL.md`。
+> Agent 执行细则见内置技能 `dsh-plugins/vssaros-skill-bundle/skills/workbench-authoring/SKILL.md`。
 > 机器可读版本：响应头 `x-workbench-guide-version`（`<插件版本>/<内容 sha256 前 8 位>`）；
 > Agent 交付时要在收尾汇报里带上它。
 
@@ -14,7 +14,7 @@
 
 ## 0. 文档地图（哪份是流程，哪份不是）
 
-**写工作台只看两处**：本文（流程 / 纪律 / 验收）+ `resources/.agents/skills/workbench-authoring/`（实现细节：
+**写工作台只看两处**：本文（流程 / 纪律 / 验收）+ `dsh-plugins/vssaros-skill-bundle/skills/workbench-authoring/`（实现细节：
 形态选择、清单、UI 原语、踩坑、探针）。其余工作台文档都不是步骤依据——每份头部都有 `文档状态：` 标记，
 `check-workbench-guide` 会核对标记存在、且历史/计划文档没被当成流程引用。
 
@@ -30,7 +30,7 @@
 | `workbench-react-mounting.md` | 【历史·调研】 | 2026-10 的挂载方式调研 |
 | `third-party-workbenches-survey.md` | 【历史·调研】 | 2026-10-23 第三方工作台调研 |
 
-技能也只有一份内容：`resources/.agents/skills/workbench-authoring/`。
+技能也只有一份内容：`dsh-plugins/vssaros-skill-bundle/skills/workbench-authoring/`。
 `.codebuddy/skills/dsh-workbench-authoring/` 是**指针**（2026-11-02 收口，此前它与前者并存且内容不一致）。
 
 ## 1. 执行原则（Agent 行为）
@@ -264,6 +264,6 @@ install_local_workbench({ path: "<本机 .tgz 绝对路径>", replace: false })
 - 界面架构（Pane / Surface / 承载矩阵 / 验收矩阵）：`doc/workbench-authoring-standard.md`
 - 承载收口（新增一律 register；iframe 只留成熟应用）：`doc/workbench-carrier-consolidation.md`
 - 技能制作（frontmatter / 技能根 / `activation` 的真实语义）：`doc/skill-authoring-standard.md`
-- Agent 执行细则与真机坑位：`resources/.agents/skills/workbench-authoring/SKILL.md`
+- Agent 执行细则与真机坑位：`dsh-plugins/vssaros-skill-bundle/skills/workbench-authoring/SKILL.md`
 - 插件生效链路与排查表：`dsh-plugins/README.md`
 - 官方对照：dsh-desktop `docs/workbench-standard.zh.md`（身份/分栏/自测清单口径与本文一致）

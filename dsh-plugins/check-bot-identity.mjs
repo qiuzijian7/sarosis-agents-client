@@ -192,7 +192,8 @@ console.log('── ⑤ Host 侧会话归属收口（第 3 步合并 preset 的�
 
 	// 调用面扫描：Host 侧不许再用 `row.presetId ===/!==` 或 `presetIdOf(a.id) === <会话 preset>` 判会话归属
 	// ★ 2026-11-03：groups.js 已随群聊下线删除 ⇒ 扫描面收敛到仍在用会话归属的这几个
-	const SCAN = ['seen.js', 'home.js', 'tools.js', 'relay.js', 'memory.js', 'agentSession.js'];
+	// 2026-11-06：memory.js 随记忆收敛删除（Bot 判定在 @vssaros/dsh-memory 的 vssaros-bot.js，上面已对拍）
+	const SCAN = ['seen.js', 'home.js', 'tools.js', 'relay.js', 'agentSession.js'];
 	for (const f of SCAN) {
 		const src = strip(read('vssaros-agents/lib/' + f));
 		// 任何「…presetId…」紧跟 ===/!== 的比较（含 String(row.presetId ?? '') !== … 这类包装），以及按会话 preset 反查花名册

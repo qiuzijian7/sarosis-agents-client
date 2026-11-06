@@ -277,7 +277,6 @@ export function marketToolDefinitions(deps) {
 					}
 					// 不同 kind 的"生效条件"不一样 —— 如实带出，别让用户以为装完就能用
 					if (res.mcpNote) { lines.push(res.mcpNote); }
-					if (res.skillsReload) { lines.push(`技能库重读：${res.skillsReload}`); }
 					if (res.agentsRescan) { lines.push(`agent 重扫：${res.agentsRescan}`); }
 					return [{ type: 'text', text: lines.join('\n') }];
 				},

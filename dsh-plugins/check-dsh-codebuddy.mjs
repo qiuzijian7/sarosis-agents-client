@@ -308,6 +308,51 @@ try {
 		else { ok('④ 平台空目录 ⇒ 撤路由（不回落任何静态快照）'); }
 	}
 
+	// ── ④d/④e（2026-11-05 真机反馈包）：**模型列表里 CodeBuddy 周期性/持续不显示** ──
+	//   日志：`token refreshed` → `route removed（未登录；tick）` → `route written` 反复出现。
+	//   旧代码在目录接口 401（重试后仍 401）或 token 已过期且刷新暂时失败时，
+	//   直接 clearSession() / 撤路由 ⇒ 那一行模型从选择器里消失，下一轮 tick 又迁移回来。
+	{
+		// ④d 目录接口连续 401（刷新成功但重取仍 401）⇒ 保留登录态与路由
+		clock = 1_800_000_000_000;
+		const credentials = fakeCredentials({
+			[ACCESS_REF]: TOKEN_A,
+			VSSAROS_CODEBUDDY_SESSION: JSON.stringify({ refreshToken: REFRESH, expiresAt: clock + 3600_000, source: 'cli_external_link' }),
+		});
+		const settings = fakeSettings({ 'vssaros-codebuddy': { api: 'openai-completions', baseURL: 'https://old', displayName: 'CodeBuddy', models: [{ id: 'hy3' }] } });
+		const fetchImpl = fakeFetch([
+			['/v2/plugin/auth/token/refresh', res(200, { data: { accessToken: TOKEN_B, expiresAt: Math.floor((clock + 7200_000) / 1000) } })],
+			['/v3/config', res(401, {})],
+		]);
+		const svc = makeService({ credentials, settings, fetchImpl });
+		await svc.syncRoute('401-retry');
+		if (!credentials.store.has(ACCESS_REF) || !settings.providers['vssaros-codebuddy']) {
+			fail('④ 目录接口连续 401 就清了登录态 / 撤了模型路由 ✗（token 刚轮换/网关抖动的 401 ≠ 登出失效）');
+		} else {
+			ok('④ 目录接口 401（重试后仍失败）⇒ 保留登录态与模型路由');
+		}
+	}
+	{
+		// ④e 会话已过期 + 刷新 5xx ⇒ accessToken() 暂不可用，但会话还在 ⇒ 不撤路由
+		clock = 1_800_000_000_000;
+		const credentials = fakeCredentials({
+			[ACCESS_REF]: TOKEN_A,
+			VSSAROS_CODEBUDDY_SESSION: JSON.stringify({ refreshToken: REFRESH, expiresAt: clock - 1000, source: 'cli_external_link' }),
+		});
+		const settings = fakeSettings({ 'vssaros-codebuddy': { api: 'openai-completions', baseURL: 'https://old', displayName: 'CodeBuddy', models: [{ id: 'hy3' }] } });
+		const fetchImpl = fakeFetch([
+			['/v2/plugin/auth/token/refresh', res(503, {})],
+			['/v3/config', res(200, CONFIG_JSON)],
+		]);
+		const svc = makeService({ credentials, settings, fetchImpl });
+		await svc.syncRoute('expired-5xx');
+		if (!settings.providers['vssaros-codebuddy']) {
+			fail('④ 会话已过期但刷新仅暂时失败（5xx）就撤了模型路由 ✗（暂时失败 ≠ 登出）');
+		} else {
+			ok('④ 已过期 + 刷新 5xx ⇒ 会话仍在就不撤模型路由');
+		}
+	}
+
 	// ── 纯函数：isChatCapableModel / resolveChatModels / 身份头 ──────────────────
 	{
 		const r = cb.resolveChatModels({ code: 0, data: { agents: [], models: CONFIG_JSON.data.models } });

@@ -19,14 +19,47 @@
 //   项目/客户细节，一键动作必须是"最不意外"的那个；要带出去得显式勾选 ✓。
 //
 // 不做：签名/信任链、增量 diff、多 agent 整包（一个包一个 agent，语义最清楚）。
+//
+// ★ 2026-11-05「记忆收敛」S3：Bot 记忆已并入 @vssaros/dsh-memory 的 bot 轨。Host 里（有它的写入口
+//   `globalThis[Symbol.for('vssaros.memory.store')]`，version ≥ 2）：
+//     导出 —— memory/MEMORY.md 由统一存储的条目生成（Markdown 列表，与旧包同格式）；历史 = 统一存储的 git bundle；
+//     导入 —— memory/MEMORY.md 的条目按正文去重并入统一存储；历史另存为只读留档（与本机历史不是同一条链）。
+//   旧目录里 MEMORY.md 以外的记忆文件照旧随包走 / 写回旧目录。
+//   CLI（bin/agent.mjs，不经 Host）拿不到写入口 ⇒ 读写旧目录（收件箱，见 memoryFiles.js）；下次 Host 启动时
+//   旧目录的 MEMORY.md 会被统一存储自动导入（legacy-import.js）⇒ 不丢。
 
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { agentFromFile, slugify } from './core/agents.js';
 import { zipRead, zipWrite } from './core/zip.js';
-import { memoryBundleOf, memoryDirOf, restoreMemoryHistory, safeMemoryFileName } from './memory.js';
+import { legacyMemoryDirOf as memoryDirOf, safeMemoryFileName } from './memoryFiles.js';
 import { agentsRootOf, dataRootOf } from './store.js';
+
+/** 统一记忆存储的写入口（version ≥ 2 才有读 / 导入 / 历史方法）；拿不到（CLI、不经 Host）⇒ null。 */
+export function unifiedMemoryOf(_config, root = globalThis) {
+	const w = root[Symbol.for('vssaros.memory.store')];
+	return w && Number(w.version) >= 2 && typeof w.readBotMemory === 'function' ? w : null;
+}
+
+/** 统一存储的条目 → 包里的 memory/MEMORY.md（Markdown 列表；与旧包同格式，旧版本也能导入）。 */
+export function memoryMarkdownOf(entries) {
+	const lines = (entries ?? []).map((e) => '- ' + String(e).replace(/\s*\r?\n\s*/g, ' ').trim()).filter((l) => l.length > 2);
+	return ['# 记忆', '', ...lines, ''].join('\n');
+}
+
+/** 包里的 MEMORY.md → 条目（去模板注释、标题、空行与「还没有条目」占位行；保留日期前缀）。 */
+export function entriesFromMarkdown(text) {
+	const body = String(text ?? '').replace(/<!--[\s\S]*?-->/g, '');
+	const out = [];
+	for (const line of body.split(/\r?\n/)) {
+		const m = /^\s*[-*+]\s+(.+?)\s*$/.exec(line);
+		if (m && !/^（还没有条目/.test(m[1])) {
+			out.push(m[1]);
+		}
+	}
+	return out;
+}
 
 export const PACK_SCHEMA = 'vssaros-agent/1';
 export const MANIFEST_NAME = 'agent.json';
@@ -109,22 +142,32 @@ export async function exportAgent(config, agentId, options = {}) {
 	   且 `includeMemory === false` 时强制不带（没带记忆就没道理带它的历史）。 */
 	const includeHistory = options.includeHistory === true && includeMemory;
 	let history = null;
-	if (includeHistory) {
-		const bundle = await memoryBundleOf(config, agent.id).catch(() => null);
-		if (bundle && bundle.data) {
-			if (bundle.data.length <= MAX_HISTORY_BYTES) {
-				entries.push({ name: MEMORY_HISTORY_NAME, data: bundle.data });
-				history = { included: true, bytes: bundle.bytes, commits: bundle.commits };
+	const unified = unifiedMemoryOf(config);
+	if (includeHistory && unified) {
+		const data = await Promise.resolve(unified.bundleBotHistory(agent.id)).catch(() => null);
+		if (data && data.length) {
+			if (data.length <= MAX_HISTORY_BYTES) {
+				entries.push({ name: MEMORY_HISTORY_NAME, data });
+				history = { included: true, bytes: data.length, store: 'unified' };
 			} else {
-				history = { included: false, bytes: bundle.bytes, tooBig: true };
+				history = { included: false, bytes: data.length, tooBig: true, store: 'unified' };
 			}
 		} else {
-			history = { included: false, note: '这个 agent 还没启用 Git 版本化 ⇒ 没有历史可带' };
+			history = { included: false, note: '这个 Bot 的记忆还没有版本历史（或 git 不可用）', store: 'unified' };
 		}
+	} else if (includeHistory) {
+		history = { included: false, note: '不经 VsSaros 导出（CLI）拿不到统一记忆的版本历史' };
 	}
 
 	const memoryFiles = [];
 	if (includeMemory) {
+		if (unified) {
+			const mem = unified.readBotMemory(agent.id);
+			if (mem.entries.length) {
+				entries.push({ name: MEMORY_PREFIX + 'MEMORY.md', data: Buffer.from(memoryMarkdownOf(mem.entries), 'utf8') });
+				memoryFiles.push('MEMORY.md');
+			}
+		}
 		const memDir = memoryDirOf(config, agent.id);
 		let names = [];
 		try {
@@ -136,6 +179,9 @@ export async function exportAgent(config, agentId, options = {}) {
 			const safe = safeMemoryFileName(raw);
 			if (!safe || safe !== raw) {
 				continue;   // 目录里的怪文件不打包（也绝不改名塞进去）
+			}
+			if (unified && safe === 'MEMORY.md') {
+				continue;   // 主记忆以统一存储为准（旧目录的这份已在启动时导入）
 			}
 			const buf = await readFile(join(memDir, safe));
 			if (buf.length > MAX_ENTRY_BYTES) {
@@ -290,24 +336,37 @@ export async function importAgent(config, buffer, options = {}) {
 	wrote.push(AGENT_MD_NAME);
 	const memDir = memoryDirOf(config, id);
 	const memoryFiles = [];
-	if (memories.length) {
+	const unified = unifiedMemoryOf(config);
+	let memory = null;
+	if (unified) {
+		const main = memories.find((m) => m.name === 'MEMORY.md');
+		if (main) {
+			memory = { store: 'unified', ...unified.importBotEntries(id, entriesFromMarkdown(main.data.toString('utf8'))) };
+			memoryFiles.push('MEMORY.md');
+		}
+	}
+	const rest = unified ? memories.filter((m) => m.name !== 'MEMORY.md') : memories;
+	if (rest.length) {
 		await mkdir(memDir, { recursive: true });
-		for (const mem of memories) {
+		for (const mem of rest) {
 			await writeFile(join(memDir, mem.name), mem.data);
 			memoryFiles.push(mem.name);
 		}
 	}
 	/* ★ 装回历史 —— 放在记忆文件**之后**：只拉对象与 refs，不动工作区 ⇒ 不会覆盖刚导入的文件。 */
 	let history = null;
-	if (historyData) {
-		history = await restoreMemoryHistory(config, id, historyData)
+	if (historyData && unified) {
+		history = await Promise.resolve(unified.importBotHistory(id, historyData))
 			.catch((e) => ({ restored: false, reason: String(e?.message ?? e) }));
+	} else if (historyData) {
+		history = { restored: false, reason: '不经 VsSaros 导入（CLI）装不回版本历史；在 VsSaros 里再导入一次即可' };
 	}
 	return {
 		id,
 		name: agent.name,
 		mode: already ? 'overwritten' : 'created',
 		memoryFiles,
+		...(memory ? { memory } : {}),
 		history,
 		wrote,
 	};

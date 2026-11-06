@@ -17,7 +17,7 @@ import { join } from 'node:path';
 
 const ROOT = process.argv[2] && !process.argv[2].startsWith('--')
 	? process.argv[2]
-	: 'g:/SarosWorkspace/sarosis-agents-client/resources/.agents/skills';
+	: 'g:/SarosWorkspace/sarosis-agents-client/dsh-plugins/vssaros-skill-bundle/skills';
 const APPLY = process.argv.includes('--apply');
 const LEGAL = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 

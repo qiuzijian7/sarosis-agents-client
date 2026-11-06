@@ -92,7 +92,7 @@ const CITED = [
 	'doc/workbench-authoring-standard.md',
 	'doc/workbench-carrier-consolidation.md',
 	'doc/skill-authoring-standard.md',
-	'resources/.agents/skills/workbench-authoring/SKILL.md',
+	'dsh-plugins/vssaros-skill-bundle/skills/workbench-authoring/SKILL.md',
 	'dsh-plugins/README.md',
 	'dsh-plugins/vssaros-workbenches/lib/client.ui.js',
 ];
@@ -122,7 +122,7 @@ const IMPLEMENTED = [
 		return ide.includes('覆盖已安装的工作台') && ide.includes("confirmLabel: replacing ? '覆盖' : '安装'");
 	})()],
 	['脚手架支持 --mode external', (() => {
-		const s = read('resources/.agents/skills/workbench-authoring/scripts/scaffold_workbench.mjs');
+		const s = read('dsh-plugins/vssaros-skill-bundle/skills/workbench-authoring/scripts/scaffold_workbench.mjs');
 		return s.includes("flag('mode'") && s.includes("'external'") && s.includes('local:');
 	})()],
 	['启动器消费生效态（提示用户重启）', read('dsh-plugins/vssaros-chat-surface/lib/client.workbenchNav.js').includes('data-vssaros-restart-pending')],
@@ -279,12 +279,12 @@ if (!problems) { ok(`规范描述的 ${IMPLEMENTED.length} 项能力都能在实
 // 甚至编一个地址（入口提示词那边已经因此重写过一次）。技能文档同样是"Agent 会照做"的东西，必须一起守。
 {
 	const docs = [
-		'resources/.agents/skills/workbench-authoring/SKILL.md',
-		'resources/.agents/skills/workbench-authoring/references/manifest-and-registration.md',
-		'resources/.agents/skills/workbench-authoring/references/verification.md',
+		'dsh-plugins/vssaros-skill-bundle/skills/workbench-authoring/SKILL.md',
+		'dsh-plugins/vssaros-skill-bundle/skills/workbench-authoring/references/manifest-and-registration.md',
+		'dsh-plugins/vssaros-skill-bundle/skills/workbench-authoring/references/verification.md',
 	];
 	const OLD = /repository[^\n]{0,20}必填|必填[^\n]{0,20}Invalid workbench repository/;
-	const scaffoldSrc = read('resources/.agents/skills/workbench-authoring/scripts/scaffold_workbench.mjs');
+	const scaffoldSrc = read('dsh-plugins/vssaros-skill-bundle/skills/workbench-authoring/scripts/scaffold_workbench.mjs');
 	for (const rel of docs) {
 		const text = read(rel);
 		if (OLD.test(text)) { fail(`${rel} 仍写着「repository 必填」（本地包用 package，不写 repository）`); }
@@ -315,7 +315,7 @@ if (!problems) { ok(`规范描述的 ${IMPLEMENTED.length} 项能力都能在实
 // 现在它只能是**指针**：内容全部指向 resources 那一份。
 {
 	const CB = '.codebuddy/skills/dsh-workbench-authoring';
-	const RES = 'resources/.agents/skills/workbench-authoring';
+	const RES = 'dsh-plugins/vssaros-skill-bundle/skills/workbench-authoring';
 	const cbSkill = read(`${CB}/SKILL.md`);
 	// ① 指针必须指向真源
 	for (const must of [RES, 'development-guide', 'check_local_workbench', 'install_local_workbench']) {

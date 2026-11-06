@@ -131,7 +131,7 @@
       "parityProbe": "—（Crew 是死代码）",
       "killSwitch": "—",
       "deleteWhen": "Swarm/委派工具换实现后（Phase 4）",
-      "notes": "2026-10-16：Crew 已退役（crewTeamService/crewTeamView/crewTeam.ts 删除，IWorkflow 挪进 workflowStorage.ts）；Swarm/委派工具仍活（在工具表里），换官方 subagent 留给 Phase 4"
+      "notes": "2026-10-16：Crew 已退役（crewTeamService/crewTeamView/crewTeam.ts 删除，IWorkflow 挪进 workflowStorage.ts）；Swarm/委派工具仍活（在工具表里），换官方 subagent 留给 Phase 4。2026-11-06：dsh 侧的多 bot 编排（Trigger→Ticket→Steps、群聊派工）由 @vssaros/dsh-superagent 承担，它是 orchestrator.sqlite 的唯一写者（见 persistence.json）"
     },
     {
       "id": "agents-skills",

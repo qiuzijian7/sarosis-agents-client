@@ -131,7 +131,8 @@
 		// ★ 2026-10-21：`17 → 18`（新增 `openSettings` / `openFeedback` —— 左下角账号菜单的两条菜单项）。
 		// ★ 2026-10-23：`18 → 19`（新增 `upgradeRefresh` / `upgradeBundled` / `upgradeApp` —— desktop 窗口的「更新」入口）。
 		// ★ 2026-10-26：`19 → 20`（新增 `importCodeWorkspace` —— 从 .code-workspace 导入多根工作区）。
-		bridgeVersion: 24,
+		// ★ 2026-11-05：`25 → 26`（新增 `rightbarBrowser` —— 右侧栏内嵌浏览器）。
+		bridgeVersion: 26,
 		surface,
 		// ★ 2026-10-18：`chatOnly` 也放进 bridge（**同步可知**）。
 		//   为什么不能只靠 `data-vssaros-chat-only`：那个 DOM 标记要等 DOMContentLoaded 才写，
@@ -169,6 +170,15 @@
 		upgradeRefresh: () => invoke({ method: 'upgradeRefresh' }),
 		upgradeBundled: (name: string) => invoke({ method: 'upgradeBundled', name }),
 		upgradeApp: () => invoke({ method: 'upgradeApp' }),
+		// ★ 2026-11-05（桥 `24 → 25`）：复刻 dsh-desktop 更新卡片的三条动作。
+		//   同样是单向命令，结果仍由 `vssaros:dsh:upgrade` 推回来 ✓。
+		appUpdateCheck: () => invoke({ method: 'appUpdateCheck' }),
+		appUpdateSkip: (version: string) => invoke({ method: 'appUpdateSkip', version }),
+		appUpdateInstall: () => invoke({ method: 'appUpdateInstall' }),
+		// ★ 2026-11-05（桥 `25 → 26`）：右侧栏内嵌浏览器 —— 页面只交占位矩形 / http(s) URL / 动作，
+		//   浏览器本体（WebContentsView）由宿主持有并贴到矩形上，不读写页面内容。
+		rightbarBrowser: (action: string, options?: { rect?: { x: number; y: number; width: number; height: number }; url?: string }) =>
+			invoke({ method: 'rightbarBrowser', action, rect: options?.rect, url: options?.url }),
 		// 升级一件商城资产（技能 / MCP / 智能体 / 工作流 / 工作台）：`(kind, slug)`
 		upgradeAsset: (kind: string, slug: string) => invoke({ method: 'upgradeAsset', kind, slug }),
 		openFile: (path: string, range?: { startLine?: number; endLine?: number }) => invoke({ method: 'openFile', path, startLine: range?.startLine, endLine: range?.endLine }),

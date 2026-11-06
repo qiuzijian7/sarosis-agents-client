@@ -41,7 +41,7 @@ const SRC_CHROME_SETUP = 'src/vs/sessions/contrib/agentStudio/common/chromeDebug
 /** Host 侧**真实**工具面（权威来源；`tools-snapshot.mjs` 生成）。 */
 const TOOLS_SNAPSHOT = 'dsh-plugins/tools-snapshot.json';
 /** 技能手册（它会被**两种**运行环境读到，工具面却不一样）。 */
-const SKILL_WEB_IMPORT = 'resources/.agents/skills/web-content-import/SKILL.md';
+const SKILL_WEB_IMPORT = 'dsh-plugins/vssaros-skill-bundle/skills/web-content-import/SKILL.md';
 
 const abs = (rel: string): string => path.join(process.cwd(), rel);
 const readIf = (rel: string): string | undefined => (fs.existsSync(abs(rel)) ? fs.readFileSync(abs(rel), 'utf8') : undefined);
@@ -1321,7 +1321,7 @@ suite('vssaros-browser：evaluate（页面内取值）的闸与边界', () => {
 	});
 
 	test('★ 技能文档与能力对齐：web-content-import 不再宣称"没有执行 JS 的工具"', () => {
-		const skill = readIf('resources/.agents/skills/web-content-import/SKILL.md');
+		const skill = readIf('dsh-plugins/vssaros-skill-bundle/skills/web-content-import/SKILL.md');
 		assert.ok(skill, '读不到技能文件');
 		assert.ok(!skill.includes('没有「在页面里执行任意 JS」的工具'),
 			'能力已经补上（op: evaluate），这句陈旧的断言必须改掉 —— 否则模型永远不会想到用这条通道');

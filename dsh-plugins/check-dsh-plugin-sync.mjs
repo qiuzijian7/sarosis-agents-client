@@ -21,6 +21,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { expectedShipped } from './scripts/shipped-files.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const ROOT = path.dirname(HERE);
@@ -115,6 +116,11 @@ const trackedFilesOf = (repoRoot, pluginDir) => {
 };
 const same = (a, b) => { try { return fs.readFileSync(a).equals(fs.readFileSync(b)); } catch { return false; } };
 
+/*
+ * ★ 2026-11-06：安装副本该有哪些文件，以插件**自己声明的 `files` 白名单**为准；白名单外的运行时代码照样要求在
+ *   （防 2026-10-29 kb 白屏那类「运行时目录漏发」）。口径与单测见 scripts/shipped-files.mjs。
+ */
+
 const plugins = fs.readdirSync(PLUGINS, { withFileTypes: true })
 	.filter((d) => d.isDirectory() && fs.existsSync(path.join(PLUGINS, d.name, 'package.json')))
 	.map((d) => d.name);
@@ -174,10 +180,13 @@ for (const dir of plugins) {
 				 *   根因：**vendor/ 是运行时依赖**（lib/md/render.js 要 import 它），但部署脚本把 vendor 排除了。
 				 *   ⇒ 这里比对**整份文件清单**（不只是入口）：缺一个文件就报出来。
 				 */
-				const repoFiles = trackedFilesOf(ROOT, 'dsh-plugins/' + dir);
+				const repoFiles = expectedShipped(pkg, trackedFilesOf(ROOT, 'dsh-plugins/' + dir));
 				const copyFiles = listFiles(dirPath);
 				check(`${tag}/${prof} ${kind}：文件清单与仓库一致（缺文件 ⇒ 插件可能 import 失败 ⇒ 白屏）`, () => {
 					const missing = repoFiles.filter((f) => !copyFiles.includes(f));
+					// 2026-11-06：版本还没追平的副本（上面已记为「待下一次 F5/重装生效」）缺的是新版本才有的文件 ⇒ 同入口检查一样不算失败；
+					//   版本已追平还缺文件才是真缺件（白屏）。
+					if (missing.length && awaitingRestart) { return; }
 					if (missing.length) {
 						throw new Error(`缺 ${missing.length} 个文件（例：${missing.slice(0, 3).join(', ')}）`);
 					}

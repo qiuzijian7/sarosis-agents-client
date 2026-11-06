@@ -205,7 +205,10 @@ export class DshUpgradeEditorPane extends EditorPane {
 		const disabled = !!this._busy || !!s?.app?.busy;
 		this._body.textContent = '';
 
-		this._body.appendChild(this._renderApp(s, disabled));
+		// ★ 2026-11-05：应用（IDE）本体的升级入口**已下线**，统一由 dsh 侧
+		//   `client.appUpdate.js` 的右下更新卡片承担（复刻 dsh-desktop 更新实现）。
+		//   本面板降级为「随包插件 / 商城资产 / dsh 运行时」专用页。
+		//   ⚠ 不许再把「一键升级」加回来 —— 同一个功能有两套 UI，用户看到的会是旧的那套。
 		this._body.appendChild(this._renderBundled(s, disabled));
 		this._body.appendChild(this._renderAssets(s, disabled));
 		this._body.appendChild(this._renderRuntime(s));
@@ -269,38 +272,6 @@ export class DshUpgradeEditorPane extends EditorPane {
 		return el('div', { padding: '8px 0', color: 'var(--vscode-descriptionForeground)', fontSize: '12px' }, text);
 	}
 
-	private _renderApp(s: IDshUpgradeState | undefined, disabled: boolean): HTMLElement {
-		const box = el('div');
-		const app = s?.app;
-		const busy = app?.busy;
-		const text = busy === 'checking' ? '正在检查更新源…'
-			: busy === 'downloading' ? '下载中…（后台）'
-				: busy === 'installing' ? '正在安装，马上重启…'
-					: app?.action === 'upgrade' && app.remote ? `可升级到 ${app.remote}`
-						: app?.action === 'downgrade' ? `已是最新（更新源 ${app.remote ?? '?'} 更旧，不降级）`
-							: app?.action === 'uptodate' ? '已是最新'
-								: (app?.error ? '检查失败' : '还没检查');
-
-		box.appendChild(this._sectionTitle('应用（IDE）', this._busy === 'app' ? '升级进行中…' : undefined));
-		const appBtn = actionButton(
-			busy === 'downloading' ? '下载中…' : busy === 'installing' ? '安装中…' : '一键升级',
-			true,
-			() => void this._run('app', () => this._dsh.upgradeApp()),
-		);
-		appBtn.disabled = !(app?.action === 'upgrade') || disabled;
-		appBtn.dataset['action'] = 'upgrade-app';
-		box.appendChild(this._line(
-			[this._mono(app?.current ?? '0.0.0'), el('span', { fontSize: '12px', color: 'var(--vscode-descriptionForeground)' }, text)],
-			[appBtn],
-		));
-		box.appendChild(el('div', {
-			fontSize: '11px', color: 'var(--vscode-descriptionForeground)', padding: '4px 0 0',
-		}, '点一次即可：检查 → 比版本 → 下载 → 安装并重启（会话会中断）。更新源比本地旧时不会降级。'));
-		if (app?.error) {
-			box.appendChild(el('div', { marginTop: '4px', fontSize: '11.5px', color: 'var(--vscode-errorForeground)' }, app.error));
-		}
-		return box;
-	}
 
 	private _renderBundled(s: IDshUpgradeState | undefined, disabled: boolean): HTMLElement {
 		const box = el('div');

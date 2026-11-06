@@ -104,7 +104,10 @@ export async function extractToolSnapshot() {
 	// "Cannot read properties of undefined (reading 'context')"）⇒ **显式排除**并写明原因，
 	// 不是静默跳过：其它插件在 apply 期抛错仍会让守卫红 ✓。真机激活由
 	// /memory-evolve/api/config（200）与 host 日志的 [vssaros-memory] 行验证。
-	const OFFLINE_UNSUPPORTED = new Set(['vssaros-memory']);
+	// 2026-11-05：vssaros-superagent 同理——apply 是 async，先锁状态目录、开 SQLite、注入 agents/sessionController 等
+	//   十几个服务再注册工具（会话级工具挂在它自己建的会话上，不在全局工具表）⇒ 假 ctx 跑不起来；
+	//   真机激活由 /orchestrator/api/state 与 host 日志的 dsh-superagent 行验证。
+	const OFFLINE_UNSUPPORTED = new Set(['vssaros-memory', 'vssaros-superagent']);
 	const dirs = fs.readdirSync(HERE, { withFileTypes: true })
 		.filter(d => d.isDirectory() && d.name.startsWith('vssaros-') && !OFFLINE_UNSUPPORTED.has(d.name))
 		.map(d => d.name)

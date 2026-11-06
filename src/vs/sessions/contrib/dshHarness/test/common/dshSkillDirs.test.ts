@@ -149,14 +149,19 @@ suite('dshHarness / 技能根交付：内置单列 + 与插件 provider 的（�
 		return text;
 	};
 
-	test('★ dsh 侧真接线：内置被摘出来交给 bundledSkillDir，且不再混进 skillDirs', () => {
+	test('★ P1：内置根由 dsh 插件自持，IDE 侧不再注入 bundledSkillDir', () => {
 		const host = readSrc('src/vs/sessions/contrib/dshHarness/electron-browser/dshHarnessService.ts');
 		assert.match(host, /filter\(r => r\.scope !== 'builtin'\)/,
 			'送进 `skillDirs` 的列表必须**去掉**内置（否则它仍在 300 ✗，等于没改）');
-		assert.match(host, /find\(r => r\.scope === 'builtin'\)/,
-			'内置必须被单独找出来交给 bundledSkillDir（找不到 ⇒ 内置技能整个不生效 ✗）');
+		// ★ 2026-11-06（P1）：内置改由 `@vssaros/dsh-skill-bundle` 的 cordis.patch.yml
+		//   挂成官方 bundledSkillDir（rank 600）⇒ IDE 侧不许再"找出内置根并注入"。
+		//   方向被反转时这条会红（把旧接线抄回来 ⇒ 两份 provider 各报一份同名技能 ✗）。
+		assert.doesNotMatch(host, /find\(r => r\.scope === 'builtin'\)/,
+			'IDE 侧不许再挑内置根注入（那是 dsh 插件的活）');
+		assert.match(host, /builtinDirs: \[\]/, '根解析器不许再收到内置目录');
+		assert.match(host, /@vssaros\/dsh-skill-bundle/, '必须写明由哪个插件自持挂载');
 		assert.match(host, /\.\.\.\(skills\.bundledDir \? \{ bundledSkillDir: skills\.bundledDir \} : \{\}\)/,
-			'`_startOptions` 必须把 bundledDir 传出去（算出来不传 = 白改 ✗）');
+			'`_startOptions` 的字段接线保留（值恒 undefined ⇒ 不再产出 bundledSkillDir）');
 		// 主进程那侧：也要过滤存在性并落进 hostConfig（渲染器不查盘 ✓）
 		const sup = readSrc('src/vs/sessions/contrib/dshHarness/electron-main/dshHostSupervisor.ts');
 		assert.match(sup, /const bundledSkillDir = bundledDirRaw && existsSync\(bundledDirRaw\) \? bundledDirRaw : undefined;/,

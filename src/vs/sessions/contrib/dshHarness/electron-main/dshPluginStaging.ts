@@ -70,6 +70,20 @@ async function isUsable(dest: string): Promise<boolean> {
 }
 
 /**
+ * ★ 2026-11-05：插件顶层的 `dev/` 是否是**开发工作区**（判据：`<插件>/dev/package.json` 存在）。
+ * 开发工作区放源码、测试、文档与构建工具链（含它自己的 `node_modules`），运行时不用 ⇒ 不进暂存/profile/安装包。
+ * 同一判据：`build/saros/strip-before-pack.mjs` 的 `shippedDshPluginPath`、`dshProfileDepsRepair.ts`。
+ */
+export async function isDevWorkspace(pluginDir: string): Promise<boolean> {
+	try {
+		await fsp.access(join(pluginDir, 'dev', 'package.json'));
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
  * 把 `sourceDir` 落位到 `destDir`（并发安全、幂等）。返回 `destDir`。
  *
  * 失败时**不留下半成品**：临时目录会被清掉；旧副本会被挪回原位。
@@ -108,9 +122,15 @@ async function stageOnce({ sourceDir, destDir, uniqueSuffix }: { sourceDir: stri
 	await fsp.mkdir(tmp, { recursive: true });
 	// 只排源目录**内部**的 node_modules：源本身可能就在 node_modules 里
 	//（如官方 voice-input bundle 随运行时分发），按绝对路径排会把所有文件滤光（实测）。
+	// ★ 2026-11-05：插件顶层的开发工作区 `dev/`（有 `dev/package.json`，如 vssaros-superagent 的源码/测试/工具链）
+	//   也不进暂存 ⇒ 不进 profile（与 build/saros/strip-before-pack.mjs、dshProfileDepsRepair.ts 同一判据）。
+	const devWorkspace = await isDevWorkspace(sourceDir);
 	await fsp.cp(sourceDir, tmp, {
 		recursive: true,
-		filter: (src: string) => !/[\\/]node_modules([\\/]|$)/.test(src.slice(sourceDir.length)),
+		filter: (src: string) => {
+			const rel = src.slice(sourceDir.length);
+			return !/[\\/]node_modules([\\/]|$)/.test(rel) && !(devWorkspace && /^[\\/]dev([\\/]|$)/.test(rel));
+		},
 	});
 	// 旧的就挪开（不存在 / 正被别的进程用着 ⇒ 都只影响这一份旧副本）
 	let movedAside = false;

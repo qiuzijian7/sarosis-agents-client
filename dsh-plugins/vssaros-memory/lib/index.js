@@ -30,7 +30,8 @@ import { installSkillsManager } from './skills-manager.js'
 import { TodoStore, createTodoController } from './todo.js'
 import { installMemorySync, makeProjectDirResolver } from './sync/index.js'
 import { BOT_KEY_RE, botOfAgent, slugifyBotId } from './vssaros-bot.js'
-import { importLegacyAgentMemory } from './legacy-import.js'
+import { importLegacyAgentMemory, legacySources } from './legacy-import.js'
+import { bundleLegacyHistory, createBotHistory } from './bot-history.js'
 import { createSearchDocsController, searchDocsCommand } from './search-docs.js'
 import { installBroadcast, installCoi } from './coi/index.js'
 import { syncBuiltinSkillsIfEnabled } from './coi/skills-sync.js'
@@ -86,6 +87,10 @@ export const DEFAULTS = {
   perTurnProjectWrites: true, // snapshot hint requires a per-turn project write check
   perTurnDailyWrites: true,   // snapshot hint requires a per-turn daily write check
   perTurnKeyWrites: true,     // snapshot hint: importance-gated project KEY writes (injected)
+  // VsSaros（2026-11-05）：key 轨 add 的去向。'queue' = 一律进待确认队列（上游行为）；'direct' = 主会话
+  // 直接写 KEY.md（原 @vssaros/dsh-agents 的 workspace_memory 就是直写），子代理仍进队列。
+  // 产品默认在插件自带 cordis.patch.yml 里设 direct：没人确认时队列里的建议永远不生效。
+  keyWriteMode: 'queue',
   // 写入看门狗（2026-08-31 设计；用户拍板 2026-09-04：**默认关闭**）：
   // 长会话指令稀释——固定提示词逐渐失效，模型连续多轮不写 daily/project
   // 且程序侧毫无反馈，遗漏被静默吞掉（根源是模型指令遵循能力，强模型
@@ -106,6 +111,8 @@ export const DEFAULTS = {
   // 启动时把 @vssaros/dsh-agents 的旧 Bot / 工作区 MEMORY.md 导入 bot / key 轨（只追加、不改源）。
   legacyAgentImport: true,
   legacyAgentDataRoot: null, // null → VSSAROS_DATA_ROOT → ~/.vssaros（与 dsh-agents 同口径）
+  // Bot 记忆（bot 轨）的 git 版本历史：写入后防抖提交，可在「设置」页看历史、回滚（git 不可用时自动停用）。
+  botHistoryEnabled: true,
   // snapshot injection
   injectMemory: true,
   snapshotOrder: 500,
@@ -290,7 +297,7 @@ export const DEFAULTS = {
 /** Keys the Web UI may change at runtime (persisted to stateFile). */
 export const RUNTIME_KEYS = [
   'reviewEnabled', 'reviewInterval', 'reviewMode', 'skillReviewEnabled',
-  'perTurnProjectWrites', 'perTurnDailyWrites', 'perTurnKeyWrites',
+  'perTurnProjectWrites', 'perTurnDailyWrites', 'perTurnKeyWrites', 'keyWriteMode',
   'perTurnWriteGuard', 'writeGuardThreshold',
   'keyProgressiveDisclosure', 'keyFullInjectThreshold', 'keyFullInjectCharLimit',
   'botMemoryCharLimit',
@@ -361,6 +368,9 @@ export function validateRuntimePatch(key, value) {
       return
     case 'reviewMode':
       if (value !== 'suggest' && value !== 'auto') throw new Error('vssaros-memory: reviewMode 必须是 "suggest" 或 "auto"')
+      return
+    case 'keyWriteMode':
+      if (value !== 'queue' && value !== 'direct') throw new Error('vssaros-memory: keyWriteMode 必须是 "queue" 或 "direct"')
       return
     case 'advisorEnabled':
     case 'advisorPanelEnabled':
@@ -441,6 +451,7 @@ const POSITIVE_NUMBER_KEYS = [
 ]
 const BOOLEAN_KEYS = [
   'injectMemory', 'injectionScan', 'reviewEnabled', 'skillReviewEnabled', 'skillManageEnabled',
+  'legacyAgentImport', 'botHistoryEnabled',
   'entryDatePrefix', 'memoryTabEnabled', 'keyBranchFilter',
   'perTurnProjectWrites', 'perTurnDailyWrites', 'perTurnKeyWrites',
   'perTurnWriteGuard',
@@ -452,7 +463,7 @@ const BOOLEAN_KEYS = [
   'canvasEnabled',
 ]
 const STRING_KEYS = [
-  'toolName', 'suggestToolName', 'commandName', 'reviewMode',
+  'toolName', 'suggestToolName', 'commandName', 'reviewMode', 'keyWriteMode',
   'skillManageToolName', 'searchDocsToolName', 'searchDocsCommandName',
   'promptToolName',
 ]
@@ -510,6 +521,9 @@ export function resolveConfig(raw) {
   }
   if (config.reviewMode !== 'suggest' && config.reviewMode !== 'auto') {
     throw new Error('vssaros-memory: reviewMode 必须是 "suggest" 或 "auto"')
+  }
+  if (config.keyWriteMode !== 'queue' && config.keyWriteMode !== 'direct') {
+    throw new Error('vssaros-memory: keyWriteMode 必须是 "queue" 或 "direct"')
   }
   // MAJOR-4（复审）：Advisor 静态配置校验（与 validateRuntimePatch 同规则，
   // 防非法静态值/损坏 state 绕过运行时校验）
@@ -664,9 +678,9 @@ export function renderSnapshot(config, store, agent, counter, sessionTitleServic
     // 渐进式披露：根据配置决定全量注入还是摘要注入
     const totalChars = keyEntries.reduce((sum, e) => sum + e.length, 0)
     const mode = config.keyProgressiveDisclosure ?? 'off'
-    const useFullInject = mode === 'off' || 
+    const useFullInject = mode === 'off' ||
       (mode === 'auto' && keyEntries.length <= (config.keyFullInjectThreshold ?? 3) && totalChars <= (config.keyFullInjectCharLimit ?? 1500))
-    
+
     if (useFullInject) {
       // 全量注入（现状逻辑）
       const head = branch !== undefined
@@ -766,7 +780,7 @@ ${st('snap.readHint')}${branchHint}${todoHint}`)
           // writeTargets 元素形如 'target=daily'，直接 join(' 与 ') 拼进提示。
           duties.push(st('snap.batchWriteDuty', { targets: writeTargets.join(st('snap.and')) }))
         }
-        if (keyDuty) duties.push(st('snap.keyDuty'))
+        if (keyDuty) duties.push(st(config.keyWriteMode === 'direct' ? 'snap.keyDutyDirect' : 'snap.keyDuty'))
         // 用户情绪反馈记录（2026-08-10）：真人用户本回合输入有明显情绪时，
         // 给 daily/project 条目都带 feedback 参数（程序拼接【反馈】行，格式
         // 固定可检索）；分类按轨区分：daily 通用分层、project 项目内分层。
@@ -1019,7 +1033,10 @@ export function memoryTool(ctx, config, store, queue, getRuntime, archive, write
         finalContent = `${summaryTag}\n${finalContent}`
       }
     }
-    if (target === 'key') {
+    // VsSaros（2026-11-05）：keyWriteMode=direct 时主会话直接写 KEY.md；子代理（origin=subagent）一律进队列。
+    const keyDirect = target === 'key' && getRuntime().keyWriteMode === 'direct'
+      && exec?.agent?.session?.header?.origin !== 'subagent'
+    if (target === 'key' && !keyDirect) {
       const outcome = enqueueSuggestion(queue, 'key', finalContent, mt('msg.keySuggestReason'), exec?.agent)
       if (outcome.ok) {
         outcome.message = mt('msg.keySuggestionQueued', { queued: outcome.queued })
@@ -1624,7 +1641,7 @@ export function apply(ctx, rawConfig = {}) {
   setLocale(resolveLocale(ctx))
   ctx.effect(() => {
     const settings = ctx.get('settings')
-    if (!hasSettingsRead(settings)) return () => {}
+    if (!hasSettingsRead(settings)) return () => { }
     const disposers = SETTINGS_CHANGE_EVENTS.map((event) => ctx.on(event, (ns) => {
       if (ns === 'locale') setLocale(resolveLocale(ctx))
     }))
@@ -1632,6 +1649,9 @@ export function apply(ctx, rawConfig = {}) {
   }, 'vssaros-memory: locale watcher')
   // 三个存储共用**一个**项目目录解析器（同一口径、旧目录认领只做一次）。
   const projectDirResolver = makeProjectDirResolver(config)
+  // VsSaros（2026-11-05 S2）：Bot 记忆版本历史（bot 轨写入后防抖提交到 bots/<key>/.git）。
+  const botHistory = createBotHistory({ enabled: config.botHistoryEnabled !== false })
+  ctx.effect(() => () => botHistory.dispose(), 'vssaros-memory: bot history timers')
   const store = new MemoryStore(config.memoryDir, {
     ...config,
     // 记忆同步接线（施工图 §4.2/§6）：entryIdMode 随 syncEnabled 动态开关
@@ -1645,6 +1665,7 @@ export function apply(ctx, rawConfig = {}) {
       try { projections = ctx.get?.('sessionProjections') } catch { projections = undefined }
       return botOfAgent(agent, projections)?.key ?? null
     },
+    onWrite: (target, path) => { if (target === 'bot') botHistory.scheduleCommit(dirname(path)) },
   })
   const archive = new ArchiveStore(config.memoryDir, { projectDirResolver })
   const queue = new SuggestionQueue(config.suggestionsFile)
@@ -1658,17 +1679,64 @@ export function apply(ctx, rawConfig = {}) {
     } catch (error) {
       legacyImport = { error: String(error?.message ?? error) }
     }
+    // 旧 VA 记忆目录自带的 git 历史另存为只读的 legacy-history.bundle（异步、幂等、失败不影响启动）。
+    if (config.botHistoryEnabled !== false) {
+      void (async () => {
+        for (const src of legacySources(config)) await bundleLegacyHistory(dirname(src.source), src.destDir)
+      })().catch(() => undefined)
+    }
   }
-  // 给其它插件写 Bot 记忆的入口（dsh-agents 的 superagent 步骤证据 stepMemory.rememberStep 用）。
-  // 形状只增不改：{ version: 1, addBotEntry(botId, text) → store.add 的结果 }。
+  // 给其它插件读写 Bot 记忆的入口（dsh-agents：superagent 步骤证据 stepMemory、导出 / 导入 pack.js）。
+  // 形状只增不改：version 1 = { addBotEntry }；version 2（2026-11-05 S3）加 readBotMemory /
+  // importBotEntries / bundleBotHistory / importBotHistory。消费方按 `version >= n` 判断。
   ctx.effect(() => {
     const KEY = Symbol.for('vssaros.memory.store')
+    const keyOf = (botId) => {
+      const key = slugifyBotId(botId)
+      if (!BOT_KEY_RE.test(key)) throw new Error(`botId 不合法：${String(botId)}`)
+      return key
+    }
+    const agentOf = (key) => ({ session: { header: { agentPreset: `vssaros-${key}` } } })
+    const dirOf = (key) => store.locate('bot', agentOf(key)).dir
+    const bodyOf = (entry) => String(entry).replace(/^\[\d{4}-\d{2}-\d{2}[^\]]*\]\s*/, '').trim()
     const writer = {
-      version: 1,
+      version: 2,
       addBotEntry(botId, text) {
-        const key = slugifyBotId(botId)
-        if (!BOT_KEY_RE.test(key)) return { ok: false, message: `botId 不合法：${String(botId)}` }
-        return store.add('bot', text, { session: { header: { agentPreset: `vssaros-${key}` } } })
+        let key
+        try { key = keyOf(botId) } catch (error) { return { ok: false, message: error.message } }
+        return store.add('bot', text, agentOf(key))
+      },
+      /** → { key, entries: string[], path } */
+      readBotMemory(botId) {
+        const key = keyOf(botId)
+        return { key, entries: store.entriesOf('bot', agentOf(key)), path: store.pathOf('bot', agentOf(key)) }
+      },
+      /** 追加条目（按正文去重，忽略日期前缀；带日期的条目保留原日期）→ { ok, added, skipped } */
+      importBotEntries(botId, entries) {
+        const key = keyOf(botId)
+        const seen = new Set(store.entriesOf('bot', agentOf(key)).map(bodyOf))
+        let added = 0
+        let skipped = 0
+        for (const raw of Array.isArray(entries) ? entries : []) {
+          const text = String(raw ?? '').trim()
+          if (!text || seen.has(bodyOf(text))) { skipped += 1; continue }
+          const r = store.add('bot', text, agentOf(key))
+          if (r.ok && !r.duplicate) { added += 1; seen.add(bodyOf(text)) } else { skipped += 1 }
+        }
+        return { ok: true, added, skipped }
+      },
+      /** 版本历史打成 git bundle → Buffer | null（没有历史 / git 不可用）。 */
+      bundleBotHistory(botId) {
+        return botHistory.bundle(dirOf(keyOf(botId)))
+      },
+      /** 别处导出的历史 → 只读留档 `imported-history-<时间>.bundle`（与本机历史不是同一条链，不合并）。 */
+      importBotHistory(botId, data) {
+        const dir = dirOf(keyOf(botId))
+        mkdirSync(dir, { recursive: true })
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace(/Z$/, '')
+        const file = join(dir, `imported-history-${stamp}.bundle`)
+        writeFileSync(file, data)
+        return { restored: true, archived: true, file }
       },
     }
     globalThis[KEY] = writer
@@ -1827,7 +1895,7 @@ export function apply(ctx, rawConfig = {}) {
         // 快照注入失效 + /memory-evolve/api/* 404；其余异常照抛。
         if (error instanceof Error && error.message.includes('already registered')) {
           console.warn('[vssaros-memory] memory:snapshot 已注册，跳过重复注册（issue #23 幂等保护）')
-          return () => {}
+          return () => { }
         }
         throw error
       }
@@ -1924,6 +1992,7 @@ export function apply(ctx, rawConfig = {}) {
       resolveCwd: (sessionId) => ctx.get('agents')?.get?.(sessionId)?.session?.header?.cwd,
       // VsSaros（2026-11-05）：bot 轨要用真实会话定位 Bot（伪造的 header 里没有 preset / 身份记录）。
       resolveAgent: (sessionId) => ctx.get('agents')?.get?.(sessionId),
+      botHistory,
       // 记忆同步状态（/memory-evolve/memory-sync/status）：syncEnabled 时由
       // syncCtrl 提供，否则恒未启用
       syncStatus: (cwd) => (syncStatusRef ? syncStatusRef(cwd) : { enabled: false, initialized: false }),
@@ -1959,8 +2028,9 @@ export function apply(ctx, rawConfig = {}) {
     // 各接口同款模式），不再固定回退到 workspace.list()[0]；客户端请求带
     // sessionId，服务端据此解析会话工作目录。
     resolveCwd: (sessionId) => ctx.get('agents')?.get?.(sessionId)?.session?.header?.cwd,
-      // VsSaros（2026-11-05）：bot 轨要用真实会话定位 Bot（伪造的 header 里没有 preset / 身份记录）。
-      resolveAgent: (sessionId) => ctx.get('agents')?.get?.(sessionId),
+    // VsSaros（2026-11-05）：bot 轨要用真实会话定位 Bot（伪造的 header 里没有 preset / 身份记录）。
+    resolveAgent: (sessionId) => ctx.get('agents')?.get?.(sessionId),
+    botHistory,
   })
 
   // 6. Commands: the review command works even with review off (users may
@@ -2093,8 +2163,9 @@ export function apply(ctx, rawConfig = {}) {
         const installed = installCoi(ctx, config, {
           memoryStore: store,
           resolveCwd: (sessionId) => ctx.get('agents')?.get?.(sessionId)?.session?.header?.cwd,
-      // VsSaros（2026-11-05）：bot 轨要用真实会话定位 Bot（伪造的 header 里没有 preset / 身份记录）。
-      resolveAgent: (sessionId) => ctx.get('agents')?.get?.(sessionId),
+          // VsSaros（2026-11-05）：bot 轨要用真实会话定位 Bot（伪造的 header 里没有 preset / 身份记录）。
+          resolveAgent: (sessionId) => ctx.get('agents')?.get?.(sessionId),
+          botHistory,
           // 记忆上下文注入（读 memory/user/key；tracks 由 AI 经 injectTracks
           // 自主选择）。excludeDshOnly=true：跳过带 [dsh-only] 标记的条目——
           // 外部执行器不是 DSH，不必遵循 DSH 纪律/规则，注入只会让其困惑

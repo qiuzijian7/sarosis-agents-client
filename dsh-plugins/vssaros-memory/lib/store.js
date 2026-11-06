@@ -689,6 +689,8 @@ export class MemoryStore {
     this.botKeyResolver = typeof options.botKeyResolver === 'function'
       ? options.botKeyResolver
       : (agent) => botOfAgent(agent)?.key ?? null
+    // 写后钩子 (target, path, agent)；见 write()。
+    this.onWrite = typeof options.onWrite === 'function' ? options.onWrite : null
   }
 
   /** 会话所属 Bot 的键（不是 Bot 会话返回 null）。 */
@@ -950,6 +952,10 @@ export class MemoryStore {
     const tmp = `${path}.tmp.${process.pid}`
     writeFileSync(tmp, serializeEntries(entries))
     renameSync(tmp, path)
+    // VsSaros（2026-11-05）：写后钩子（Bot 记忆版本历史的防抖提交）。所有变更方法都经过这里。
+    if (this.onWrite) {
+      try { this.onWrite(target, path, agent) } catch { /* 历史失败不影响记忆写入 */ }
+    }
   }
 
   /**

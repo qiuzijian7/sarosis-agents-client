@@ -9,8 +9,8 @@
  *     Host 侧调用（看代码）。**任一关缺失都只会表现为"工具失败"**，日志里也没有线索
  *     （"市场不可用：…" 一句带过）⇒ 真机上极难定位 ✗。
  *   实测两个能力就是这样**长期坏着**的：
- *     · `skills` / `mcp`（`@vssaros/dsh-skills` 的 `skill_market`、`@vssaros/dsh-mcp` 的
- *       `mcp_market`）：清单没声明 + IDE 侧没 case ⇒ 两个都坏；
+ *     · `mcp`（`@vssaros/dsh-mcp` 的 `mcp_market_list`）：清单没声明 + IDE 侧没 case ⇒ 坏；
+ *       （`skills` 那条已于 2026-11-06 随 `skill_market_list` 下线，不再有调用方）
  *     · `kb`（`@vssaros/dsh-kb` 的语义检索 / 建向量索引）：要 IDE 侧的 **embedding** 实现
  *       ⇒ 本轮只**登记**为已知缺口（见 KNOWN_GAPS），修它要单独立项。
  *   ⇒ 这条守卫把"三关"变成**一次可自动核对的账** ⇒ 以后新增能力漏了哪一关立刻红 ✓。

@@ -29,7 +29,9 @@ import { readInstalled, removeInstalled, upsertInstalled } from './installedLedg
 import { installBundle, trashBundle, uninstallBundle } from './installers.js';
 import { PUBLISHABLE_KINDS, deletePackage, deleteVersion, publishDistribution, publishExternal, publishVersion } from './publisher.js';
 // ★ 2026-10-22：外部源（GitHub 地址作本体）—— 归一化 / 安全边界 / 定位安装根 / 下载
-import { downloadGitHubTarball, locateInstallRoot, resolveDownloadUrl } from './githubSource.js';
+import { downloadGitHubTarball, locateInstallRoot, parseGitHubSource, resolveDownloadUrl } from './githubSource.js';
+// ★ 2026-11-06（P1）：4 类非商城技能来源（内容 / 文件夹 / URL / GitHub）的解析与规范化
+import { ALLOWED_SKILL_URL_HOSTS, MAX_HUB_TREE_BYTES, MAX_SKILL_SOURCE_BYTES, SKILL_HUBS, SKILL_NAME, hubTreeToEntries, normalizeSkillFiles, parseSkillSource } from './skillSources.js';
 import { listTarGzEntries } from './tar.js';
 import { listPublishables, deriveVersion } from './localResources.js';
 // ★ 2026-10-23（用户「都转移到 dsh 侧实现」）：mcp 装完要注册进 `<数据根>/mcp.json`
@@ -89,6 +91,8 @@ export async function apply(ctx, config) {
 		dataRoot: null,
 		/** agent 重扫（可选）：`vssaros-agents` 提供了才能即时生效，否则重启兜底 */
 		agentsRescan: null,
+		/** ★ 2026-11-06：Hub tree 缓存（GitHub 未认证 60 次/小时 ⇒ 同一次挂载内必须复用）。 */
+		hubCache: new Map(),
 		/** ★ TOF 服务（`vssarosTof.ticket()`）：dsh 侧**唯一**的票据真源，本插件只消费不实现优先级 */
 		tof: null,
 		/** 取数据根失败的原因（self-check 会报出来，**不静默**）*/
@@ -219,6 +223,37 @@ export async function apply(ctx, config) {
 	 */
 	async function runLocal(op, params) {
 		if (op === 'publishables') { return listLocalPublishables(); }
+		// ★ 2026-11-06（P1）：内置技能 Hub 列表 —— dsh 侧自己读 GitHub tree，
+		//   不再经 IDE 的 `BUILTIN_SKILL_HUBS` / `fetchHubEntries`（那条链随 IDE 技能库一起下线）。
+		if (op === 'listSkillHub') {
+			const hubId = String(params.hub ?? '').trim();
+			const hub = SKILL_HUBS.find(h => h.id === hubId);
+			if (!hub) {
+				throw new Error(`不认识的技能 Hub「${hubId}」（可用：${SKILL_HUBS.map(h => h.id).join(' / ')}）`);
+			}
+			const cached = state.hubCache.get(hubId);
+			if (cached && Date.now() - cached.at < 5 * 60 * 1000) {
+				return { ok: true, hub: hubId, items: cached.items, cached: true };
+			}
+			const url = `https://api.github.com/repos/${hub.repo}/git/trees/${encodeURIComponent(hub.branch)}?recursive=1`;
+			const res = await fetch(url, {
+				headers: { 'User-Agent': 'VsSaros', Accept: 'application/vnd.github+json' },
+				signal: AbortSignal.timeout(15_000),
+			});
+			if (!res.ok) {
+				throw new Error(`读 ${hub.repo} 的目录树失败：HTTP ${res.status}（GitHub 未认证限额 60 次/小时，稍后再试）`);
+			}
+			const body = await res.text();
+			const bytes = Buffer.byteLength(body, 'utf8');
+			if (bytes > MAX_HUB_TREE_BYTES) {
+				throw new Error(`${hub.repo} 的目录树太大（${bytes} 字节）`);
+			}
+			let tree;
+			try { tree = JSON.parse(body); } catch { throw new Error(`GitHub 返回的不是 JSON（${hub.repo}）`); }
+			const items = hubTreeToEntries(tree, hubId);
+			state.hubCache.set(hubId, { at: Date.now(), items });
+			return { ok: true, hub: hubId, items, cached: false };
+		}
 		// 管理员审核队列（服务端 requireAdmin 判权 ⇒ 非管理员会 403，如实抛 ✓）
 		if (op === 'reviewList') {
 			const res = await market().reviewList();
@@ -369,6 +404,48 @@ export async function apply(ctx, config) {
 			await writeMcpJson(dataRoot, parsed);
 			return { ok: true, bytes: Buffer.byteLength(text, 'utf8'), backup, file };
 		}
+
+		// ★ 2026-11-06（P1）：非商城来源装技能 —— IDE 侧 `SkillInstallService` 的
+		//   Hub / Git URL / 文件夹 / URL 内容四条旁路统一收敛到这一个 op，落盘仍走 `installBundle` ✓
+		if (op === 'installSkillContent') {
+			const source = parseSkillSource(params);
+			const version = String(params.version ?? 'local').trim() || 'local';
+			const upgrade = params.upgrade === true;
+
+			// ① GitHub 整仓：复用商城已有的外部源安装链（域名白名单 / 64MB / 定位安装根都在里面 ✓）
+			if (source.type === 'github') {
+				const storeId = String(params.name ?? '').trim();
+				if (!SKILL_NAME.test(storeId)) { throw new Error('从 GitHub 装技能需要合法的 name（kebab-case）作为安装 id'); }
+				const installed = await installFromExternal({
+					dataRoot, kind: 'skill', storeId, version,
+					distribution: parseGitHubSource(source.ref), upgrade,
+				});
+				await upsertInstalled(dataRoot, { kind: 'skill', storeId, version });
+				return { ok: true, changed: true, storeId, version, fileCount: installed.fileCount, source: 'github' };
+			}
+
+			// ② URL 直链：只放行 https + GitHub 域 + 体积上限（防 SSRF 打到内网 / 超大响应）
+			let content = params.content;
+			if (source.type === 'url') {
+				let url;
+				try { url = new URL(source.url); } catch { throw new Error(`看不懂这个 URL：${source.url}`); }
+				if (url.protocol !== 'https:' || !ALLOWED_SKILL_URL_HOSTS.has(url.hostname)) {
+					throw new Error(`只支持 https 的 GitHub 直链（收到 ${url.protocol}//${url.hostname}）`);
+				}
+				const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+				if (!res.ok) { throw new Error(`下载 SKILL.md 失败：HTTP ${res.status}`); }
+				const buf = Buffer.from(await res.arrayBuffer());
+				if (buf.length > MAX_SKILL_SOURCE_BYTES) { throw new Error(`SKILL.md 太大（${buf.length} 字节）`); }
+				content = buf.toString('utf8');
+			}
+
+			// ③ 内容 / ④ 文件夹上传：同一份规范化（frontmatter 与安装 id 一致性在这里卡住）
+			const { storeId, files: bundleFiles } = normalizeSkillFiles({ content, files: params.files, name: params.name });
+			const installed = await installBundle({ dataRoot, kind: 'skill', storeId, version, files: bundleFiles, upgrade });
+			await upsertInstalled(dataRoot, { kind: 'skill', storeId, version });
+			return { ok: true, changed: true, storeId, version, fileCount: installed.fileCount, source: source.type };
+		}
+
 		const kind = String(params.kind ?? '');
 		const slug = String(params.slug ?? '');
 		if (!LOCAL_WRITE_KINDS.has(kind)) {
@@ -463,9 +540,9 @@ export async function apply(ctx, config) {
 				throw new Error(`mcp 已下载并落盘，但注册进 mcp.json 失败：${String(e?.message ?? e)}`);
 			}
 		}
-		// skill 装完**必须**让 IDE 侧技能库重读（它没有文件监听 ✗）——
-		// best-effort：刷不过**不让安装失败**（文件已经落好了），但要把原因报出来 ✓
-		const reloadNote = kind === 'skill' ? await reloadIdeSkills() : undefined;
+		// ★ P1（2026-11-06）：技能装完**不再反向通知 IDE**（IDE 技能库即将下线）。
+		//   dsh 侧 `@vssaros/dsh-skills` 的 provider 每次 list() 都重扫并比对指纹 ⇒ 失效自动生效，
+		//   新会话立刻可见；同会话由 skill_manage 的 control.invalidate() 兜住。
 		// agent：优先让 `vssaros-agents` 重扫（服务在就即时生效）；不在 ⇒ 重启兜底（如实报）
 		let agentsRescan = 'restart';
 		if (kind === 'agent') {
@@ -484,7 +561,6 @@ export async function apply(ctx, config) {
 			version: versionRow.version,
 			fileCount: installed.fileCount,
 			...(installed.backup ? { backup: installed.backup } : {}),
-			...(reloadNote ? { skillsReload: reloadNote } : {}),
 			// agent：重扫成功 ⇒ 即时可用；否则文件已落好但 preset 要重启才扫描到（如实报）
 			...(kind === 'agent' ? { restartRequired: agentsRescan !== 'ok', agentsRescan } : {}),
 			// mcp：文件 + mcp.json 都写好了；dsh 的 MCP 连接需要重启才重建（没有热重载入口）
@@ -721,29 +797,6 @@ export async function apply(ctx, config) {
 			return { ok: true };
 		}
 		throw new Error(`本地说不了这个动作：${op}`);
-	}
-
-	/**
-	 * 让 IDE 侧技能库重读磁盘（**唯一**还需要反向调用的只读动作）。
-	 *
-	 * 为什么必须借 IDE：`skillRegistryService` **没有文件监听**，只有显式 `reload()` 才能
-	 * 看见 dsh 侧刚写的目录 ⇒ 不通知就"装好了但技能列表里没有" ✗。
-	 * best-effort：失败只回报原因，**不阻断安装**（文件已经落好，用户可手动重启）✓
-	 */
-	async function reloadIdeSkills() {
-		const bridge = state.bridge;
-		if (!bridge) { return 'skipped: IDE 控制桥不在（重启 IDE 后技能会自然加载）'; }
-		try {
-			const reply = await bridge.callIDE('ide.request', {
-				capability: 'marketplace',
-				pluginId: PLUGIN_PACKAGE,
-				params: { op: 'reloadSkills' },
-			}, { timeoutMs: READ_TIMEOUT_MS });
-			if (reply?.ok === false) { return `failed: ${String(reply.error ?? 'IDE 拒绝了刷新')}`; }
-			return 'ok';
-		} catch (e) {
-			return `failed: ${String(e?.message ?? e)}`;
-		}
 	}
 
 	/** 下载某个版本的本体（带 JWT；Node 侧直接拿 Buffer ✓）。 */

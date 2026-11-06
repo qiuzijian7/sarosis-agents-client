@@ -389,12 +389,58 @@ export function toDshTools(names) {
  * （同名遮蔽在运行时还会再判一次，见 `allowlistDenyOf` 的 `shadowed`；这里是拿不到作用域视图时的兜底。）
  */
 export const ALWAYS_KEEP_TOOL_NAMES = Object.freeze(['skill',
-	// 2026-11-02：记忆写入口（Bot 记忆 + 工作区记忆）。提示词里告诉 agent "用 workspace_memory 记"，
-	// 而它是 host 层全局工具 ⇒ 写了 `tools:` 的 agent 会把它一起藏掉 ⇒ 提示与能力自相矛盾 ✗。
-	// 2026-11-05「记忆收敛成一套」：记忆统一走 @vssaros/dsh-memory 的 `memory` 工具（target=bot / key），
-	// 它的快照每轮都写「用 memory 工具」⇒ 同理必须常驻；workspace_memory 只在回滚开关打开时存在，留着无害。
-	'memory',
-	'workspace_memory']);
+	// 记忆写入口：@vssaros/dsh-memory 的 `memory` 工具（target=bot / key）。它是 host 层全局工具，快照每轮都写
+	// 「用 memory 工具」⇒ 写了 `tools:` 的 agent 不能把它藏掉，否则提示与能力自相矛盾 ✗。
+	'memory']);
+
+/** MCP 客户端注册的工具名前缀（`mcp__<服务>__<工具>`）。 */
+export const MCP_TOOL_PREFIX = 'mcp__';
+
+/**
+ * `tools` 里一项的写法（2026-11-06）：
+ *   · `name`        精确名；
+ *   · `prefix*`     通配（只支持末尾一个 `*`），如 `workflow_*`、`browser_*`、`mcp__gongfeng__*`；
+ *   · `!name` / `!prefix*`  排除，优先于一切保留，如 `!mcp__*` = 这个 bot 不要任何 MCP 工具。
+ * 不带 `!` 的通配与精确名一样是「要保留」。
+ */
+export function isToolPattern(entry) {
+	const text = String(entry ?? '').trim();
+	return text.startsWith('!') || text.endsWith('*');
+}
+
+/**
+ * 把 `tools` 列表变成「保留谁」的判定。
+ *
+ * ★ 2026-11-06：**MCP 工具默认保留**。之前白名单只认精确名，`mcp__*` 又是用户接了哪个服务才有的名字，
+ *   内置 bot 不可能事先写全 ⇒ 写了 `tools:` 的 20 个内置 bot 一个 MCP 工具都看不到（真机：三个群成员会话
+ *   MCP 工具数都是 0）。用户自己接的 MCP 本意就是给 bot 用的 ⇒ 改成默认放行，bot 真不要时写 `!mcp__*`
+ *   （或 `!mcp__某服务__*`）排除。白名单的其余口径不变：只收窄 host 层全局工具。
+ */
+export function toolRulesOf(wanted) {
+	const exact = new Set(ALWAYS_KEEP_TOOL_NAMES);
+	const prefixes = [];
+	const denyExact = new Set();
+	const denyPrefixes = [];
+	for (const raw of Array.isArray(wanted) ? wanted : []) {
+		let text = String(raw ?? '').trim();
+		if (!text) { continue; }
+		const deny = text.startsWith('!');
+		if (deny) { text = text.slice(1).trim(); }
+		if (!text) { continue; }
+		const prefix = text.endsWith('*') ? text.slice(0, -1) : undefined;
+		if (deny) { prefix !== undefined ? denyPrefixes.push(prefix) : denyExact.add(text); }
+		else if (prefix !== undefined) { prefixes.push(prefix); }
+		else { exact.add(text); }
+	}
+	const denied = (name) => denyExact.has(name) || denyPrefixes.some((prefix) => name.startsWith(prefix));
+	return {
+		keeps(name) {
+			if (denied(name)) { return false; }
+			if (exact.has(name) || prefixes.some((prefix) => name.startsWith(prefix))) { return true; }
+			return name.startsWith(MCP_TOOL_PREFIX);
+		},
+	};
+}
 
 /**
  * agent 的 `tools` allowlist → 要在 **agent 作用域** `restrict({ deny })` 的全局工具名。
@@ -411,11 +457,11 @@ export const ALWAYS_KEEP_TOOL_NAMES = Object.freeze(['skill',
  * @returns 去重、排序后的 deny 名单（不含 `run_code`：PTC 保留名，restrict 点名它会抛）
  */
 export function allowlistDenyOf(wanted, globalNames, shadowed = () => false) {
-	const keep = new Set([...(Array.isArray(wanted) ? wanted : []), ...ALWAYS_KEEP_TOOL_NAMES]);
+	const rules = toolRulesOf(wanted);
 	const out = new Set();
 	for (const raw of Array.isArray(globalNames) ? globalNames : []) {
 		const name = String(raw ?? '').trim();
-		if (!name || name === 'run_code' || keep.has(name)) { continue; }
+		if (!name || name === 'run_code' || rules.keeps(name)) { continue; }
 		let isShadowed = false;
 		try { isShadowed = shadowed(name) === true; } catch { isShadowed = false; }
 		if (!isShadowed) { out.add(name); }

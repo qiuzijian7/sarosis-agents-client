@@ -9,7 +9,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { clampImportLimit } from '../lib/agentmemoryImport.js';
 import { allowlistDenyOf, REQUIRED_BASE_ROW_IDS, rowIdsOf, toPresetDefinition } from '../lib/core/agents.js';
 import { STANDARD_BASE_ROWS } from '../lib/core/presetBase.generated.js';
 
@@ -36,6 +35,11 @@ const pkg = JSON.parse(read('package.json'));
 
 console.log('── 清单与激活 ──');
 check('包名', pkg.name === '@vssaros/dsh-agents', pkg.name);
+// ★ 2026-11-06：插件管理器的 list_bundles 把 description 原样交给模型（实测 dsh-plugin-manager types/index.js 只剥 meta）。
+//   这段曾累计到 20651 字 ⇒ 版本说明一律写 CHANGELOG.md，description 只留一段现状摘要。
+check('description 只是摘要（≤ 1000 字，版本说明写 CHANGELOG.md）', String(pkg.description || '').length <= 1000,
+	`现在 ${String(pkg.description || '').length} 字`);
+check('CHANGELOG.md 存在且随包发出', fs.existsSync(path.join(ROOT, 'CHANGELOG.md')) && (pkg.files || []).includes('CHANGELOG.md'));
 // ★ 2026-11-03：Bots 工作台下线 ⇒ 清单里只剩最小 vssaros（module + view.kind=none），
 //   不再有活动栏 / 原生视图 / 工作台。⚠ `vssaros.module` **必须留**：IDE 侧 `listBundledPlugins`
 //   只认「有 vssaros.module 的包」为随包模块插件（supervisor 自动安装/升级的输入）。
@@ -68,15 +72,23 @@ for (const f of ['lib/client.js', 'lib/client.agents.js', 'lib/client.botSetting
 	check(`${f} 已删（工作台 / 客户端 chunk 下线）`, !fs.existsSync(path.join(ROOT, f)));
 }
 
-console.log('── clampImportLimit ──');
+/* ── 记忆已并入 @vssaros/dsh-memory（★ 2026-11-06「记忆收敛」S4）──────────────────────────────
+   本插件不再有自己的记忆存储 / 注入 / 工具。反向断言：旧模块不许复活，也不许有人再 import 它们。 */
+console.log('── 记忆已并入统一记忆 ──');
 {
-	const dflt = clampImportLimit(0);
-	check('0 / 负数 / 非数字 ⇒ 回默认值', dflt > 0 && clampImportLimit(-5) === dflt && clampImportLimit('abc') === dflt, String(dflt));
-	check('字符串数字被解析', clampImportLimit(' 42 ') === 42, String(clampImportLimit(' 42 ')));
-	check('小数向下取整', clampImportLimit(12.9) === 12, String(clampImportLimit(12.9)));
-	const huge = clampImportLimit(1e9);
-	check('超大值被夹到上限（且不大于入参）', huge > 0 && huge < 1e9, String(huge));
-	check('上限是幂等的（再夹一次不变）', clampImportLimit(huge) === huge, String(clampImportLimit(huge)));
+	for (const f of ["lib/memory.js","lib/workspaceMemory.js","lib/memoryPrefs.js","lib/agentmemoryImport.js","lib/memoryEvoPage.js"]) {
+		check(`${f} 已删（记忆并入 @vssaros/dsh-memory）`, !fs.existsSync(path.join(ROOT, f)));
+	}
+	const gone = /from '[^']*\/(memory|workspaceMemory|memoryPrefs|agentmemoryImport|memoryEvoPage)\.js'/;
+	check('没有任何文件再 import 已删的记忆模块', !listLib().some((f) => gone.test(fs.readFileSync(f, 'utf8'))));
+	const idx = read('lib/index.js');
+	check('index.js 不再注册工作区记忆段 / 不再注入 Bot 记忆', !/vssaros-workspace-memory/.test(idx) && !/readMemorySnapshot/.test(idx));
+	check('旧记忆接口与演化页已删（没有转接层）', !/api\/memory`|api\/workspace-memory|api\/memory-prefs|api\/agentmemory|\/memory\/\(\[A-Za-z/.test(idx) && !fs.existsSync(path.join(ROOT, 'lib/memoryFacade.js')));
+	const { TOOL_NAMES: names } = await import('../lib/tools.js');
+	check('不再有 workspace_memory 工具', !names.includes('workspace_memory'), names.join(','));
+	const pkg2 = JSON.parse(read('package.json'));
+	check('files 白名单同步（删掉的不在、新增的在）',
+		["lib/memory.js","lib/workspaceMemory.js","lib/memoryPrefs.js","lib/agentmemoryImport.js","lib/memoryEvoPage.js"].every((f) => !pkg2.files.includes(f)) && ['lib/memoryFiles.js'].every((f) => pkg2.files.includes(f)));
 }
 
 // ── agent preset = 共享基座 ⊕ 差量（2026-10-25）────────────────────────────────────
@@ -239,7 +251,17 @@ console.log('── 工具 allowlist ──');
 {
 	const globals = ['skill', 'browser', 'kb_search', 'codebase_search', 'mcp__x__y', 'run_code', 'memory_list'];
 	const deny = allowlistDenyOf(['read', 'write', 'pwsh', 'web_search', 'skill'], globals);
-	check('saroasis 口径：deny = 其余全局工具', JSON.stringify(deny) === JSON.stringify(['browser', 'codebase_search', 'kb_search', 'mcp__x__y', 'memory_list']), JSON.stringify(deny));
+	// ★ 2026-11-06：MCP 工具默认保留（用户接的 MCP 本意就是给 bot 用的）⇒ mcp__x__y 不再进 deny
+	check('saroasis 口径：deny = 其余全局工具（MCP 工具除外）', JSON.stringify(deny) === JSON.stringify(['browser', 'codebase_search', 'kb_search', 'memory_list']), JSON.stringify(deny));
+	const optOut = allowlistDenyOf(['read', '!mcp__*'], globals);
+	check('写 !mcp__* 的 bot 藏掉全部 MCP 工具', optOut.includes('mcp__x__y'), JSON.stringify(optOut));
+	const oneServer = allowlistDenyOf(['!mcp__x__*'], ['mcp__x__y', 'mcp__z__w']);
+	check('!mcp__某服务__* 只藏那一个服务', JSON.stringify(oneServer) === JSON.stringify(['mcp__x__y']), JSON.stringify(oneServer));
+	const wild = allowlistDenyOf(['workflow_*'], ['workflow_run', 'workflow_list', 'kb_search']);
+	check('prefix* 通配保留整组工具', JSON.stringify(wild) === JSON.stringify(['kb_search']), JSON.stringify(wild));
+	const denyBeats = allowlistDenyOf(['workflow_*', '!workflow_apply'], ['workflow_run', 'workflow_apply']);
+	check('排除优先于通配保留', JSON.stringify(denyBeats) === JSON.stringify(['workflow_apply']), JSON.stringify(denyBeats));
+	check('排除也能藏掉 ALWAYS_KEEP 以外的精确名', JSON.stringify(allowlistDenyOf(['kb_search', '!kb_search'], ['kb_search'])) === JSON.stringify(['kb_search']));
 	check('基座工具名（read/pwsh…）永不进 deny', !deny.some(n => ['read', 'write', 'pwsh', 'web_search'].includes(n)));
 	const noSkill = allowlistDenyOf(['codebase_search'], globals);
 	check('没声明 skill 也不藏 skill（与基座同名，按名 deny 会连基座一起藏）', !noSkill.includes('skill') && noSkill.includes('kb_search'), JSON.stringify(noSkill));
@@ -475,7 +497,9 @@ check('侧栏 SSR 版（lib/sideview.js）已随工作台删除', !fs.existsSync
 	const { spawnSync } = await import('node:child_process');
 	// ★ 2026-11-03：群聊下线 ⇒ mentions / dispatch-budget / member-policy / owner-policy / relay-policy /
 	//   group-session / group-ops 这几个群专属单测随功能一起删除，不再在此执行。
-	for (const t of ['bindings.test.mjs', 'feishu-adapter.test.mjs', 'feishu-inbound.test.mjs', 'channel-policy.test.mjs', 'pairing.test.mjs', 'dead-letters.test.mjs', 'telegram-adapter.test.mjs', 'discord-adapter.test.mjs', 'wecom-adapter.test.mjs', 'binding-media.test.mjs', 'outbound-media.test.mjs', 'feishu-gateway.test.mjs', 'memory-dir.test.mjs', 'memory-init.test.mjs', 'workspace-memory.test.mjs', 'git-lanes.test.mjs', 'memory-restore.test.mjs', 'memory-bundle.test.mjs', 'agentmemory-candidates.test.mjs', 'agentmemory-sync.test.mjs', 'atomic-write.test.mjs', 'im-credentials.test.mjs', 'inbound-state.test.mjs', 'im-session-map.test.mjs', 'feishu-raw-ws.test.mjs', 'im-inbound-lock.test.mjs', 'host-self-watch.test.mjs']) {
+	for (const t of ['bindings.test.mjs', 'feishu-adapter.test.mjs', 'feishu-inbound.test.mjs', 'channel-policy.test.mjs', 'pairing.test.mjs', 'dead-letters.test.mjs', 'telegram-adapter.test.mjs', 'discord-adapter.test.mjs', 'wecom-adapter.test.mjs', 'binding-media.test.mjs', 'outbound-media.test.mjs', 'feishu-gateway.test.mjs', 'git-lanes.test.mjs', 'atomic-write.test.mjs', 'im-credentials.test.mjs', 'inbound-state.test.mjs', 'im-session-map.test.mjs', 'feishu-raw-ws.test.mjs', 'im-inbound-lock.test.mjs', 'host-self-watch.test.mjs', 'rooms.test.mjs', 'rooms-restart.test.mjs',
+		// ★ 2026-11-06：团队总线（含契约修订 2）、团队步骤记忆（模型提炼）、DS Bot 团队离线导入
+		'team-bus.test.mjs', 'step-memory.test.mjs', 'ds-bot-import.test.mjs']) {
 		const r = spawnSync(process.execPath, [path.join(HERE, t)], { encoding: 'utf8' });
 		const last = String(r.stdout || '').trim().split('\n').filter(Boolean).pop()
 			|| String(r.stderr || '').slice(0, 120);
@@ -507,24 +531,53 @@ check('侧栏 SSR 版（lib/sideview.js）已随工作台删除', !fs.existsSync
 	check('首页收件箱不再推导群消息（buildHomeData 无 groups 参数）', !/groups: groupsData/.test(idx));
 }
 
+/* ── ★ 2026-11-05 多 bot 群聊（新设计，lib/rooms.js；与上面下线的旧群聊互不相干）─────────────
+   群 = 一条专属会话 + 成员名单；群会话不调模型（llm/stream 合成 group_relay）；成员在影子会话里回答。
+   行为由 rooms.test.mjs 真跑；这里钉接线：路由、投影、总线、安装都在 index.js 里。 */
+{
+	const idx = strip(read('lib/index.js'));
+	check('群聊路由 /api/rooms 已接（分派在 rooms.js 的 roomsApi：create / update / flags / delete / progress）',
+		/ROUTE_PREFIX}\/api\/rooms`/.test(idx) && /roomsApi\(state\.rooms/.test(idx)
+		&& ['create', 'update', 'flags', 'delete'].every(a => read('lib/rooms.js').includes(`action === '${a}'`)));
+	check('群标记投影已注册（页面 projectionValues["vssaros-room"]）', /register\(roomProjection\(\)\)/.test(idx));
+	check('群聊运行时装在顶层角色（installRooms）且向团队总线提供建群（provideGroups）',
+		/installRooms\(ctx, state\.rooms\)/.test(idx) && /teamBus\(\)\.provideGroups\(state\.rooms\)/.test(idx));
+	const roomsSrc = strip(read('lib/rooms.js'));
+	check('@群 / 引用会话桥：session-reference ⇒ postToRoom ⇒ 群会话 user/message，唤醒 group_relay',
+		/ROOM_REFERENCE_KIND/.test(roomsSrc) && /postToRoom\(/.test(roomsSrc)
+		&& /rooms\.postToRoom\(ref\.roomId/.test(roomsSrc) && /form: ROOM_POST_FORM/.test(roomsSrc));
+	check('群执行全局进度端点 ?active=1 与 room-progress 同口径',
+		/get\?\.\('active'\)/.test(roomsSrc) && /rooms\.active\(\)/.test(roomsSrc) && /finishedAt/.test(roomsSrc));
+	check('P0 建群按 originTriggerId 幂等：rooms.create 复用旧群、总线透传幂等键',
+		/originTriggerId/.test(roomsSrc) && /const existing = \[\.\.\.rooms\.values\(\)\]\.find/.test(roomsSrc)
+		&& /originTriggerId/.test(strip(read('lib/teamBus.js'))));
+	check('群进度状态节点与错误兜底：events 独立于 replies，progress/active/工具结果都带',
+		/ROOM_WORK_GRACE_MS/.test(roomsSrc) && /pushEvent\(round, 'working'/.test(roomsSrc)
+		&& /events: round\.events/.test(roomsSrc) && /events: round\.events \|\| \[\]/.test(roomsSrc));
+	check('群执行过程落盘并重启恢复：save 写 rounds、load 读 rounds、未完成轮次收口 cut',
+		/version: ROOMS_FILE_VERSION/.test(roomsSrc) && /rounds: \[\.\.\.rounds\.values\(\)\]/.test(roomsSrc)
+		&& /Array\.isArray\(raw\?\.rounds\)/.test(roomsSrc) && /phase = 'cut'/.test(roomsSrc)
+		&& /void save\(\)/.test(roomsSrc) && /interrupted/.test(roomsSrc));
+	check('群执行持久化加固：未来版本只读冻结、同拍合并写、flush、载入裁剪、dispose 时落盘并交还租约',
+		/version > ROOMS_FILE_VERSION/.test(roomsSrc) && /if \(frozen\)/.test(roomsSrc) && /if \(queuedWrite\)/.test(roomsSrc)
+		&& /async function flush\(\)/.test(roomsSrc) && /pruneRounds\(\)/.test(roomsSrc) && /rooms\.close \?\? rooms\.flush/.test(roomsSrc));
+	check('群执行单写者租约：载入接管、落盘前核对 token、被接管即只读（行为见 rooms.test / rooms-restart.test）',
+		/const leaseFile = /.test(roomsSrc) && /await claimLease\(\)/.test(roomsSrc)
+		&& /owner\.token !== leaseToken/.test(roomsSrc) && /freeze\('superseded'/.test(roomsSrc));
+	check('群执行跨插件契约：工具结果 / progress / active 共用 roundOutput（schema + 统一 status + 关联 id）',
+		/function roundOutput\(round\)/.test(roomsSrc) && /schema: ROUND_SCHEMA/.test(roomsSrc) && /roundStatusOf\(round\)/.test(roomsSrc)
+		&& /\.\.\.roundOutput\(round\)/.test(roomsSrc) && /map\(roundView\)/.test(roomsSrc) && /originTriggerId: room\.originTriggerId/.test(roomsSrc));
+	const pkg = JSON.parse(read('package.json'));
+	check('群聊模块进了 files 白名单', ['lib/rooms.js', 'lib/core/rooms.js'].every(f => pkg.files.includes(f)));
+}
+
 /* ── 导出 / 导入**带历史**（2026-10-31，P1；对齐 DSB 的 `.botharness/git-history.bundle`）──
    以前包里只有"最后一次的记忆内容" ⇒ 换台机器装回来，演化 / 回滚 / 版本名全没了。 */
 {
 	const packSrc = strip(read('lib/pack.js'));
-	/* ⚠ memory.js **不能用 strip()**：里面有字符串 `'+refs/heads/*:refs/remotes/origin/*'`，
-	   `/*` 会被当成块注释开头 ⇒ 把代码整段删掉（刚踩到，断言莫名其妙地红）。
-	   下面这些断言都是**代码字面量**，本来也不需要去注释 ⇒ 直接读原文。 */
-	const memorySrc2 = read('lib/memory.js');
-	check('历史用 git bundle 且带 `--all`（全部分支与 tag 都在）',
-		/'bundle', 'create'/.test(memorySrc2) && /'--all'/.test(memorySrc2));
+	check('历史来自统一记忆（bundleBotHistory / importBotHistory）', /bundleBotHistory\(/.test(packSrc) && /importBotHistory\(/.test(packSrc));
 	check('★ 历史**默认不带**（里面还留着删掉过的内容 ⇒ 必须显式勾选）',
 		/options\.includeHistory === true/.test(packSrc));
-	check('★ 导入**不动工作区**（不做 reset --hard ⇒ 不会覆盖包里的文件）',
-		!/'reset', '--hard'/.test(memorySrc2));
-	/* ⚠ 必须钉到 **fetch 的 refspec** 上：只查 `refs/remotes/origin` 的话，下面那行
-	   `rev-parse refs/remotes/origin/<name>` 也含它 ⇒ 把 fetch 改坏也验不出红（假绿，刚踩到）。 */
-	check('⚠ 不能直接 fetch 进当前检出分支（git 会拒）⇒ fetch 的 refspec 必须是 remote-tracking',
-		/'fetch', tmp, '\+refs\/heads\/\*:refs\/remotes\/origin\/\*'/.test(memorySrc2) && /'update-ref'/.test(memorySrc2));
 	check('bundle 有单独的大小上限（挡"塞个大家伙进来"）', /MAX_HISTORY_BYTES/.test(packSrc));
 	/* ★ 光在库里支持不够 —— **接口也要够得着**，否则就是死配置（没人能勾） */
 	const indexSrc3 = read('lib/index.js');
@@ -542,11 +595,6 @@ check('侧栏 SSR 版（lib/sideview.js）已随工作台删除', !fs.existsSync
 
 /* ── 右栏记忆页签（★ 2026-11-03：Bots 工作台下线，页面部分删除；Host 侧演化链断言保留）── */
 {
-	const mem = read('lib/memory.js');
-	/* ⚠ 必须钉到 **gitGraphOf 那一处**（`isInitCommit(commit.subject)`）：只写 `isInit: isInitCommit`
-	   的话，gitLogOf 里还有一份 ⇒ 把分道图那条改坏也验不出红（假绿，刚踩到）。 */
-	check('★ init 提交：服务端打标（演化图不能全是噪音）',
-		/const isInitCommit = /.test(mem) && /isInit: isInitCommit\(commit\.subject\)/.test(mem));
 	check('Bots 工作台 React 已删（记忆页签 UI 随之移除）', !fs.existsSync(path.join(ROOT, 'lib/client.agents.js')));
 	check('清单里不再有 vssaros.workbench.floatingActions',
 		!(pkg.vssaros && pkg.vssaros.workbench && 'floatingActions' in pkg.vssaros.workbench));

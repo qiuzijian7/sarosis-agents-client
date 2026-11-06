@@ -28,7 +28,7 @@ import { parseAgentMd } from '../../common/agentMdFormat.js';
 import { getBuiltinAgents, USER_FACING_BUILTIN_AGENT_IDS } from '../../common/builtinAgents.js';
 
 const AGENTS_DIR = 'resources/.agents/agents';
-const SKILLS_DIR = 'resources/.agents/skills';
+const SKILLS_DIR = 'dsh-plugins/vssaros-skill-bundle/skills';
 
 /**
  * 曾经被容忍的"技能并不存在"的历史钩子（`writing` / `planning`）—— 与 `builtinSkillContracts.test.ts`

@@ -366,6 +366,8 @@ for (let i = 0; i < ourEntries.length; i++) {
 const knownSlots = new Set([...OFFICIAL_ENTRIES.map(o => o.slot), 'conversation.input.left', 'conversation.input.overlay',
 	'conversation.session.header.utilities', 'conversation.hero.brand.mark', 'conversation.hero.agentPreset',
 	'conversation.hero.workspace',
+	// `tool.call.toolview`：官方工具卡（dsh-client-ui-tool，按 key=工具名 匹配）；2026-11-05 群会话的 group_relay 回复卡
+	'tool.call.toolview',
 	// `shell.overlay`：官方"整框浮层"（list / root，默认点击穿透；条目要 pointerEvents:auto）。
 	// 曾用于窗口伙伴 client.companion.js（2026-10-17 应用户要求移除）；槽登记保留，留给以后的浮层部件 ✓
 	'shell.overlay',

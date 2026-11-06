@@ -1,0 +1,51 @@
+dsh-superagent (VsSaros copy)
+
+==============================================================================
+Third-party code in this package
+==============================================================================
+
+DS Bot (DeepSeek-Bot)
+Apache License, Version 2.0, Copyright 2026 Fei2411 and the DS Bot contributors
+
+  - src/client/characters.ts copies the character table of
+    ds-bot/src/client/characters.js (the body, paint and shade paths and the eye
+    capsules of each character) and adapts its look-from-id hashing and markup,
+    and the light inks of ds-bot/src/client/inks.js.
+  - src/client/mark.tsx adapts ds-bot/src/client/mark.js (BotMark: the states,
+    the fidgets and their moments, the settle squash and the badges), and the
+    mark styles in src/client/client.css adapt the matching rules and keyframes
+    of ds-bot/src/client/styles.js.
+  - src/app/step-approvals.ts follows the approval answerer of
+    ds-bot/src/host/approvals.js (answering ahead of DSH with prepend), and its
+    doingOf follows ds-bot/src/host/turns.js.
+  - src/client/composer.tsx adapts ds-bot/src/client/composer.js and voice.js
+    (one rounded row of "+", the draft, dictation and the voice/send button; voice
+    chat that listens, sends, reads the answer aloud and listens again), and the
+    composer styles in src/client/client.css adapt the matching rules of
+    ds-bot/src/client/styles.js.
+  - src/app/feed.ts follows the live feed of ds-bot/src/host/feed.js (a
+    Server-Sent Events stream of what changed, kept open by a comment line, read
+    again by the page).
+  - src/client/flow-card.tsx follows the handoff card of
+    ds-bot/src/client/handoff-card.js (a tool call in the chat drawn as a card
+    that follows its state live).
+
+  The paths above are relative to dev/ (the plugin's source workspace); lib/
+  bundles them. tests/notice.spec.ts checks that every source file naming a
+  ds-bot/src/ file is listed here.
+
+  The Apache License, Version 2.0 is available at
+  https://www.apache.org/licenses/LICENSE-2.0.
+
+==============================================================================
+Third-party code bundled into lib/
+==============================================================================
+
+As a VsSaros built-in the plugin has no dependencies of its own, so lib/ bundles:
+
+  - zod (https://github.com/colinhacks/zod), MIT License, Copyright (c) 2025 Colin McDonnell
+  - proper-lockfile (https://github.com/moxystudio/node-proper-lockfile), MIT License, Copyright (c) 2018 Made With MOXY Lda,
+    with graceful-fs (ISC, Copyright (c) 2011-2022 Isaac Z. Schlueter, Ben Noordhuis, and Contributors), retry (MIT,
+    Copyright (c) 2011 Tim Koschützki, Felix Geisendörfer) and signal-exit (ISC, Copyright (c) 2015, Contributors)
+  - @deepseek-ai/schemastery and @deepseek-ai/cosmokit, MIT License, Copyright (c) 2021-present Shigma
+  - react, react-dom and the DeepSeek Harness client packages are not bundled; the DSH client provides them.

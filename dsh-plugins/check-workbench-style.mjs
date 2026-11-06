@@ -20,9 +20,12 @@
 //   `//#region vssaros: native workbench adapter` ⇒ 那套分支**永远走不到**。留着就是"看着在守卫、实际不生效"
 //   的僵尸分支。将来若真有人再搬官方页面，按 git 历史把它找回即可。
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const PLUGINS = 'g:/SarosWorkspace/sarosis-agents-client/dsh-plugins';
+// ★ 2026-11-05：守卫就放在 dsh-plugins/ 根下 ⇒ 以自身位置为准，不写死机器绝对路径
+//   （原来写死 g:/SarosWorkspace/... ⇒ 换机 / 多 worktree / CI 检出路径一变就全空跑）。
+const PLUGINS = dirname(fileURLToPath(import.meta.url));
 /** 已迁到共享层的工作台（每迁完一个就把包名加进来）。 */
 // ⚠ 2026-10-23：**vssaros-dashboard 暂时移出白名单** —— 另一条会话正在重写它
 //   （`exports['./client']` 指向的 `lib/client.js` 曾一度不存在）⇒ 入列会让本守卫对别人的半成品报红。

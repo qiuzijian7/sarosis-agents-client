@@ -370,7 +370,7 @@ Rules that keep delegation effective:
 `,
 			skills: ['code-review', 'refactor', 'code-gen'],
 			suggestions: ['帮我把这个函数拆小并加测试', '这段报错是什么原因', '按现有风格实现一个新接口'],
-			tools: ['read', 'write', 'pwsh', 'glob', 'edit', 'web_search', 'grep', 'codebase_query_graph', 'codebase_architecture', 'codebase_trace', 'codebase_snippet', 'codebase_index', 'codebase_index_status', 'codebase_changes', 'codebase_search', 'codebase_manage_adr', 'skill', 'memory', 'dtodo'],
+			tools: ['read', 'write', 'pwsh', 'glob', 'edit', 'web_search', 'grep', 'codebase_query_graph', 'codebase_architecture', 'codebase_trace', 'codebase_snippet', 'codebase_index', 'codebase_index_status', 'codebase_changes', 'codebase_search', 'codebase_manage_adr', 'skill', 'memory', 'dtodo', 'get_diagnostics'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -409,7 +409,7 @@ Rules that keep delegation effective:
 `,
 			skills: ['anysearch', 'analysis', 'summarize'],
 			suggestions: ['帮我查清这个问题的现状', '这几个来源哪个更可信', '把结论整理成带引用的摘要'],
-			tools: ['read', 'glob', 'skill', 'memory', 'dtodo'],
+			tools: ['read', 'glob', 'skill', 'memory', 'dtodo', 'browser', 'content_import', 'session_search'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -563,7 +563,7 @@ Rules that keep delegation effective:
 `,
 			skills: ['summarize'],
 			suggestions: ['把这堆素材写成一篇通稿', '帮我把这段改写得更简洁', '给这篇起几个标题'],
-			tools: ['write', 'read', 'skill', 'memory', 'dtodo'],
+			tools: ['write', 'read', 'skill', 'memory', 'dtodo', 'office_template', 'office_template_write', 'kb_search', 'kb_read'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -590,7 +590,7 @@ Rules that keep delegation effective:
 1. **先看现状**：用 \`read\` 读目标页面/组件与它的样式，确认现有栅格、间距、色板、组件命名。
    有设计系统就复用；没有就在原型顶部显式列出你用的 4~6 个令牌（颜色 / 间距 / 字号）。
 2. **一句话定目标**：这次只解决什么问题（例："让用户在 3 秒内找到导出入口"）。
-   目标不止一个时，先做最主要的那个，其余在文末列进「未覆盖」。
+   目标不止一个时，先做最主要的那个，其余用 \`dtodo\` 记成待办，并在文末列进「未覆盖」。
 3. **出原型**：用 \`write\` 落一个 HTML 文件，必须含**三态** ——
    正常态 / 空态（说清"为什么空 + 下一步点哪"）/ 错误态（失败原因 + 重试入口）。
    列表与表格要给出**超长文案的截断**处理（省略号 + title 或展开）。
@@ -614,7 +614,7 @@ Rules that keep delegation effective:
 `,
 			skills: [],
 			suggestions: ['帮我出一版界面方案', '这个布局怎么改更清楚', '给这个页面配色提建议'],
-			tools: ['write', 'read', 'memory', 'dtodo'],
+			tools: ['write', 'read', 'memory', 'dtodo', 'browser', 'vision_analyze', 'render_diagram'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -652,7 +652,7 @@ Rules that keep delegation effective:
 `,
 			skills: ['analysis'],
 			suggestions: ['帮我把这个需求拆成里程碑', '这个计划有什么风险', '评估一下工期'],
-			tools: ['write', 'read', 'skill', 'memory', 'dtodo'],
+			tools: ['write', 'read', 'skill', 'memory', 'dtodo', 'render_diagram'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -672,6 +672,17 @@ Rules that keep delegation effective:
 			category: 'Development',
 			// ⚠ 本段在模板串里 ⇒ 正文里的反引号全部转义成 \`（照原 md 逐字搬，不改写）。
 			systemPrompt: `You are an expert QA engineer who orchestrates end-to-end acceptance workflows.
+
+# 在群聊里被叫到时（优先于下面的阶段流水线）
+
+消息以「[群聊「…」· 轮到你」开头时，你是群里的测试，**不走**下面的 7 阶段流水线，也**不停下来等用户确认用例**：
+
+1. **起预览**：在项目目录用 \`pwsh\`（\`run_in_background: true\`）起一个本地静态服务（例如 \`npx --yes http-server -p 5173 -c-1\` 或 \`python -m http.server 5173\`），记下地址；已有服务就直接用。
+2. **打开并点测**：用 \`browser\` 的 \`navigate\` 打开预览地址，\`snapshot\` 看页面，按需求逐项 \`click\` / \`type\`，每次操作后用 \`waitFor\` 或再 \`snapshot\` 确认结果。只测与需求有关的功能。
+3. **有问题**：在群里 **@开发**（写代码的成员），逐条写清「操作步骤 → 期望 → 实际」。**不要自己改产品代码**。开发修完后系统会把你叫回来，按同样步骤**复测**。
+4. **通过**：写「验收通过」，列出测过的功能和每项看到的结果。
+5. 最多复测 **3 轮**；第 3 轮仍有问题，就把剩下的问题列给用户，由用户决定。
+6. 浏览器打不开、服务起不来：如实写出报错，@开发 请他处理，不要编造测试结果。
 
 # 你的定位：路由器
 
@@ -743,7 +754,7 @@ Windows 执行前必须 \`export PYTHONIOENCODING=utf-8\`。
 				'qa-execution-repair', 'qa-quality-review', 'qa-acceptance-report', 'qa-core',
 				'code-gen', 'analysis', 'code-review'],
 			suggestions: ['给这个模块补一组边界测试', '这段逻辑覆盖够吗', '帮我定位这个偶发失败的用例'],
-			tools: ['write', 'read', 'edit', 'pwsh', 'glob', 'grep', 'codebase_search', 'codebase_query_graph', 'codebase_trace', 'codebase_snippet', 'codebase_architecture', 'codebase_changes', 'skill', 'read_skill', 'memory', 'dtodo'],
+			tools: ['write', 'read', 'edit', 'pwsh', 'glob', 'grep', 'codebase_search', 'codebase_query_graph', 'codebase_trace', 'codebase_snippet', 'codebase_architecture', 'codebase_changes', 'skill', 'read_skill', 'memory', 'dtodo', 'browser', 'get_diagnostics'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -854,7 +865,7 @@ Windows 执行前必须 \`export PYTHONIOENCODING=utf-8\`。
 `,
 			skills: ['analysis', 'summarize', 'code-gen'],
 			suggestions: ['帮我分析这份数据的分布', '这条 SQL 为什么慢', '这个指标该怎么算'],
-			tools: ['write', 'read', 'pwsh', 'glob', 'skill', 'memory', 'dtodo'],
+			tools: ['write', 'read', 'pwsh', 'glob', 'skill', 'memory', 'dtodo', 'render_diagram'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -1300,7 +1311,7 @@ Do all of this yourself. Never spawn a sub-agent to review part of the diff, and
 `,
 			skills: ['analysis'],
 			suggestions: ['把这个流程接成自动化', '这条工作流为什么没触发', '帮我加一个失败重试'],
-			tools: ['write', 'read', 'pwsh', 'skill', 'memory', 'dtodo'],
+			tools: ['write', 'read', 'pwsh', 'skill', 'memory', 'dtodo', 'workflow_*', 'loop_*'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,
@@ -1621,7 +1632,7 @@ Rules that keep delegation effective:
 			icon: '🗂️',
 			category: 'Design',
 			suggestions: ['把这张图归档到素材库', '这批视频素材怎么归类', '帮我找一段可复用的封面图'],
-			tools: ['media_list', 'media_stats', 'media_autotag', 'media_tag_merge', 'media_board_plan', 'media_context', 'media_export', 'memory', 'dtodo'],
+			tools: ['media_list', 'media_stats', 'media_autotag', 'media_tag_merge', 'media_board_plan', 'media_context', 'media_export', 'memory', 'dtodo', 'vision_analyze', 'video_analyze', 'extract_video_frames'],
 			skills: [],
 			userFacing: true,
 			// 默认**不**进可委派集合（`p3-149` 的黄金集合只有 code-explorer / code-reviewer /

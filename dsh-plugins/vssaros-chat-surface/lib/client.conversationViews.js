@@ -12,15 +12,11 @@
 //
 // ── 这一批的口径（2026-11-02 用户拍板「A：骨架 + 记忆页签可用」）──────────────
 //   · 4 个页签全部注册出来（机制先跑通、可见）；
-//   · 记忆：顶部「工作区 | Bot」分段（2026-11-02 第二批：记忆 = Bot × 工作区 两层）——
-//       工作区 = 会话 cwd 所在 git 根的记忆（`/x/agents/api/workspace-memory`），默认选中，
-//               普通会话也有；可首次建立、可整篇编辑；多根工作区可切根；
-//       Bot    = 只在 Bot 会话可选，真实数据只读浏览 + 「打开完整页」；
+//   · 记忆：2026-11-06 起「记忆」页签由 @vssaros/dsh-memory 提供（Bot / 工作区记忆已并入它的 bot / key 轨），
+//     本 chunk 不再注册记忆页签；设置页的 Bot 段只保留「Bot 记忆 · 版本历史」卡；
 //   · 技能：列表 + 搜索 + 原始启用徽标（数据源 `/x/skills/api/skills`）；
 //   · 待办：官方 `todos` 投影的完整清单（与 dock 那枚同一份数据，只读）；
-//   · 记忆设置：同样分段；工作区写 scope.json，Bot 走 `/x/agents/api/memory` 的 set-limits；
-//     记忆设置：同样分段；工作区写 scope.json，Bot 走 `/x/agents/api/memory` 的 set-limits；
-//     回合末自动提交（P2 起可写，全局偏好 /x/agents/api/memory-prefs）；AgentMemory 待审数只读。
+//   · 设置：「本会话」（工作区 | Bot 分段、Bot 配置卡、Bot 记忆版本历史）+「全局」（VsSaros Memory 配置面板）。
 //
 // ── 渲染写法（别改成"逗号前置"的长参数列表）────────────────────────────────
 // 本文件统一用 **children 数组**（`kids.push(...)` + `createElement(type, props, kids)`）：
@@ -296,6 +292,207 @@ window.__ModuleLoader__.load({
 			return list.filter((x) => x !== null && x !== undefined && x !== false);
 		}
 
+		// ── Markdown → React 元素（2026-11-06，用户报「对话 UI 中 markdown 内容没有正确显示」）────────────
+		// 群工具卡里成员的回复是 Markdown（**粗体**、`代码`、列表、表格、代码块），原来按纯文本 pre-wrap 显示。
+		// 官方的 `MarkdownText`（dsh-client-ui-primitives）在插件 chunk 里拿不到（只许 require("react")）⇒ 这里自带一个
+		// 轻量渲染器。纪律：
+		//   · **只产 React 元素**，不用 innerHTML ⇒ 文本天然转义，没有 XSS 面；
+		//   · 链接只放行 http(s) / mailto，其余（javascript: 等）按原文显示；
+		//   · 段内换行保留成 <br>（聊天回复常靠换行排版：「① …\n② …」，CommonMark 会把它们并成一行）；
+		//   · 粗体 / 斜体不套 CommonMark 的左右侧规则：`**已对齐**：`、`**中文（括号）**中文` 这类 CJK 写法照样加粗。
+		const MD_MAX_CHARS = 60000;
+		const MD = {
+			code: { fontFamily: "var(--dsw-font-mono, ui-monospace, SFMono-Regular, Consolas, monospace)", fontSize: "0.92em", padding: "0 4px", borderRadius: 4,
+				background: "var(--dsw-alias-bg-layer-2, rgba(128,128,128,.14))" },
+			pre: { margin: "4px 0", padding: "8px 10px", borderRadius: 6, overflowX: "auto", whiteSpace: "pre", fontSize: 12, lineHeight: "18px",
+				fontFamily: "var(--dsw-font-mono, ui-monospace, SFMono-Regular, Consolas, monospace)", background: "var(--dsw-alias-bg-layer-2, rgba(128,128,128,.14))" },
+			p: { margin: "2px 0" },
+			list: { margin: "2px 0", paddingLeft: 22 },
+			li: { margin: "1px 0" },
+			quote: { margin: "4px 0", padding: "0 0 0 10px", borderLeft: "3px solid var(--dsw-alias-border-l1, rgba(128,128,128,.35))",
+				color: "var(--dsw-alias-label-secondary, inherit)" },
+			hr: { border: 0, borderTop: "1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.3))", margin: "8px 0" },
+			table: { borderCollapse: "collapse", margin: "4px 0", fontSize: 12 },
+			cell: { border: "1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.3))", padding: "3px 8px", textAlign: "left", verticalAlign: "top" },
+			link: { color: "var(--dsw-alias-brand-primary, #3794ff)" },
+		};
+		const HEADING_SIZES = [16, 15, 14, 13.5, 13, 13];
+		/** 行内：`代码`、**粗体** / __粗体__、*斜体*、~~删除线~~、[文字](链接)。纯函数（输入文本 ⇒ React 节点数组）。 */
+		function mdInline(text, keyBase) {
+			const s = String(text || "");
+			const out = [];
+			let buf = "";
+			let n = 0;
+			const key = () => keyBase + "." + (n++);
+			const flush = () => { if (buf) { out.push(buf); buf = ""; } };
+			let i = 0;
+			while (i < s.length) {
+				const ch = s[i];
+				if (ch === "\\" && i + 1 < s.length && /[\\`*_~\[\]()#>|!-]/.test(s[i + 1])) { buf += s[i + 1]; i += 2; continue; }
+				if (ch === "`") {
+					let run = 1;
+					while (s[i + run] === "`") { run++; }
+					const fence = "`".repeat(run);
+					const end = s.indexOf(fence, i + run);
+					if (end > i) {
+						flush();
+						let body = s.slice(i + run, end);
+						if (/^ .* $/.test(body) && body.trim()) { body = body.slice(1, -1); }
+						out.push(react.createElement("code", { key: key(), style: MD.code }, body));
+						i = end + run;
+						continue;
+					}
+					buf += fence; i += run; continue;
+				}
+				const pair = (mark, tag, style) => {
+					if (!s.startsWith(mark, i)) { return false; }
+					const end = s.indexOf(mark, i + mark.length);
+					if (end <= i + mark.length || /^\s/.test(s[i + mark.length])) { return false; }
+					flush();
+					const k = key();
+					out.push(react.createElement(tag, { key: k, style }, mdInline(s.slice(i + mark.length, end), k)));
+					i = end + mark.length;
+					return true;
+				};
+				if (pair("**", "strong", { fontWeight: 600 }) || pair("__", "strong", { fontWeight: 600 }) || pair("~~", "del", null)) { continue; }
+				if (ch === "*" && pair("*", "em", null)) { continue; }
+				if (ch === "[") {
+					const m = /^\[([^\]\n]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/.exec(s.slice(i));
+					if (m) {
+						flush();
+						const k = key();
+						const href = m[2];
+						out.push(/^(https?:|mailto:)/i.test(href)
+							? react.createElement("a", { key: k, href, target: "_blank", rel: "noopener noreferrer", style: MD.link }, mdInline(m[1], k))
+							: react.createElement("span", { key: k }, m[0]));
+						i += m[0].length;
+						continue;
+					}
+				}
+				buf += ch; i++;
+			}
+			flush();
+			return out;
+		}
+		const MD_FENCE = /^\s{0,3}(`{3,}|~{3,})\s*([^`\s]*)/;
+		const MD_HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
+		const MD_HR = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/;
+		const MD_ITEM = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
+		const MD_QUOTE = /^\s{0,3}>\s?(.*)$/;
+		const MD_TABLE_SEP = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+		const mdCells = (line) => String(line).trim().replace(/^\|/, "").replace(/\|$/, "").split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|"));
+		const mdStartsBlock = (line, next) => MD_FENCE.test(line) || MD_HEADING.test(line) || MD_HR.test(line) || MD_ITEM.test(line) || MD_QUOTE.test(line)
+			|| (line.indexOf("|") >= 0 && next !== undefined && MD_TABLE_SEP.test(next));
+		/** 块级：代码块、标题、分隔线、引用、（嵌套）列表、表格、段落。纯函数（行数组 ⇒ React 节点数组）。 */
+		function mdBlocks(lines, keyBase) {
+			const out = [];
+			let n = 0;
+			const key = () => keyBase + "/" + (n++);
+			let i = 0;
+			while (i < lines.length) {
+				const line = lines[i];
+				if (!line.trim()) { i++; continue; }
+				const fence = MD_FENCE.exec(line);
+				if (fence) {
+					const close = new RegExp("^\\s{0,3}" + fence[1][0] + "{" + fence[1].length + ",}\\s*$");
+					const body = [];
+					i++;
+					while (i < lines.length && !close.test(lines[i])) { body.push(lines[i]); i++; }
+					i++;
+					out.push(react.createElement("pre", { key: key(), style: MD.pre, "data-lang": fence[2] || undefined }, react.createElement("code", null, body.join("\n"))));
+					continue;
+				}
+				const heading = MD_HEADING.exec(line);
+				if (heading) {
+					const k = key();
+					out.push(react.createElement("div", { key: k, role: "heading", "aria-level": heading[1].length,
+						style: { fontWeight: 600, fontSize: HEADING_SIZES[heading[1].length - 1], margin: "6px 0 2px" } }, mdInline(heading[2], k)));
+					i++;
+					continue;
+				}
+				if (MD_HR.test(line)) {
+					out.push(react.createElement("hr", { key: key(), style: MD.hr }));
+					i++;
+					continue;
+				}
+				if (MD_QUOTE.test(line)) {
+					const body = [];
+					while (i < lines.length && MD_QUOTE.test(lines[i])) { body.push(MD_QUOTE.exec(lines[i])[1]); i++; }
+					const k = key();
+					out.push(react.createElement("blockquote", { key: k, style: MD.quote }, mdBlocks(body, k)));
+					continue;
+				}
+				if (line.indexOf("|") >= 0 && i + 1 < lines.length && MD_TABLE_SEP.test(lines[i + 1])) {
+					const head = mdCells(line);
+					const rows = [];
+					i += 2;
+					while (i < lines.length && lines[i].trim() && lines[i].indexOf("|") >= 0) { rows.push(mdCells(lines[i])); i++; }
+					const k = key();
+					out.push(react.createElement("div", { key: k, style: { overflowX: "auto" } },
+						react.createElement("table", { style: MD.table }, [
+							react.createElement("thead", { key: "h" }, react.createElement("tr", null,
+								head.map((c, j) => react.createElement("th", { key: j, style: Object.assign({}, MD.cell, { fontWeight: 600 }) }, mdInline(c, k + "h" + j))))),
+							react.createElement("tbody", { key: "b" }, rows.map((r, ri) => react.createElement("tr", { key: ri },
+								head.map((_, j) => react.createElement("td", { key: j, style: MD.cell }, mdInline(r[j] || "", k + "r" + ri + "c" + j)))))),
+						])));
+					continue;
+				}
+				const item = MD_ITEM.exec(line);
+				if (item) {
+					const base = item[1].length;
+					const ordered = /\d/.test(item[2]);
+					const items = [];
+					while (i < lines.length) {
+						const cur = lines[i];
+						const m = MD_ITEM.exec(cur);
+						if (m && m[1].length <= base + 1 && /\d/.test(m[2]) === ordered) {
+							items.push({ marker: m[2], lines: [m[3]] });
+							i++;
+							continue;
+						}
+						if (m && m[1].length <= base + 1) { break; }   // 另一种列表 ⇒ 另起
+						if (!cur.trim()) {
+							let j = i + 1;
+							while (j < lines.length && !lines[j].trim()) { j++; }
+							const nm = j < lines.length ? MD_ITEM.exec(lines[j]) : null;
+							const indented = j < lines.length && /^\s+/.test(lines[j]) && (lines[j].match(/^\s*/)[0].length > base);
+							if ((nm && nm[1].length <= base + 1 && /\d/.test(nm[2]) === ordered) || indented) { items[items.length - 1].lines.push(""); i++; continue; }
+							break;
+						}
+						const indent = cur.match(/^\s*/)[0].length;
+						if (indent > base) { items[items.length - 1].lines.push(cur.slice(Math.min(indent, base + 2))); i++; continue; }
+						if (!mdStartsBlock(cur, lines[i + 1])) { items[items.length - 1].lines.push(cur.trim()); i++; continue; }   // 惰性续行
+						break;
+					}
+					const k = key();
+					const start = ordered ? parseInt(items[0].marker, 10) : undefined;
+					out.push(react.createElement(ordered ? "ol" : "ul", { key: k, style: MD.list, ...(ordered && start !== 1 ? { start } : {}) },
+						items.map((it, j) => {
+							const task = /^\[([ xX])\]\s+/.exec(it.lines[0]);
+							if (task) { it.lines[0] = it.lines[0].slice(task[0].length); }
+							const body = mdBlocks(it.lines, k + "i" + j);
+							const inner = body.length === 1 && body[0] && body[0].type === "p" ? body[0].props.children : body;
+							return react.createElement("li", { key: j, style: Object.assign({}, MD.li, task ? { listStyle: "none", marginLeft: -18 } : null) },
+								task ? [react.createElement("span", { key: "t", "aria-hidden": "true" }, task[1] === " " ? "☐ " : "☑ ")].concat(inner) : inner);
+						})));
+					continue;
+				}
+				const para = [];
+				while (i < lines.length && lines[i].trim() && (para.length === 0 || !mdStartsBlock(lines[i], lines[i + 1]))) { para.push(lines[i].trim()); i++; }
+				const k = key();
+				const children = [];
+				para.forEach((l, j) => { if (j) { children.push(react.createElement("br", { key: "br" + j })); } children.push(...mdInline(l, k + "l" + j)); });
+				out.push(react.createElement("p", { key: k, style: MD.p }, children));
+			}
+			return out;
+		}
+		/** 一段 Markdown ⇒ React 节点（超长 ⇒ 按纯文本显示，免得卡住渲染）。 */
+		function markdownNodes(text) {
+			const s = String(text || "");
+			if (s.length > MD_MAX_CHARS) { return [react.createElement("div", { key: "raw", style: { whiteSpace: "pre-wrap" } }, s)]; }
+			return mdBlocks(s.replace(/\r\n?/g, "\n").split("\n"), "md");
+		}
+
 		// ── 工作区（会话 cwd）────────────────────────────────────────────────────
 		// 「当前工作区 / 当前根」只认 `sessions.byId[sid].cwd`（宿主持有的硬事实）：
 		// 工作区快照里的 sessionIds 会与 cwd 分叉（2026-10-28 事故，见 client.workspaces.js 的 rootOfSession）。
@@ -383,14 +580,9 @@ window.__ModuleLoader__.load({
 			return m;
 		}
 
-		const WS_API = "/x/agents/api/workspace-memory";
-		const PREFS_API = "/x/agents/api/memory-prefs";
-
-		const MEM_API = "/x/agents/api/memory";
-
 		/**
-		 * 记忆历史（★ 2026-11-03 P3：不用再跳「完整页」）。
-		 * 数据源 = 与演化页同一个 `/x/agents/api/memory?agent=ws.<key>`（log / rev / against / restore），
+		 * 记忆历史（★ 2026-11-03 P3；2026-11-06 起只服务统一记忆的 bot 轨：props.api 必填）。
+		 * 数据源 = props.api（现在只有 @vssaros/dsh-memory 的 /memory-evolve/api/bot-history；响应 log / diff），
 		 * 所以这里只是另一个视图，不是另一套实现。默认折叠，展开才发请求（读口一次要起几条 git 子进程）。
 		 *
 		 * 回滚语义（Host 侧 `restoreMemoryFile`，只追加不改写历史）：先把未提交改动落成一条提交，
@@ -404,10 +596,15 @@ window.__ModuleLoader__.load({
 			const [confirming, setConfirming] = react.useState(false);
 			const [busy, setBusy] = react.useState(false);
 			const [err, setErr] = react.useState("");
-			const listUrl = open && scopeId ? MEM_API + "?agent=" + encodeURIComponent(scopeId) + "&limit=15&nonce=" + String(props.version || 0) : "";
+			// ★ 2026-11-05：api / scopeParam 参数化 —— Bot 记忆并入 @vssaros/dsh-memory 后，同一个面板也读它的
+			//   /memory-evolve/api/bot-history?sessionId=（响应同形：log / diff）。缺省仍是 dsh-agents 旧接口（回滚开关用）。
+			const api = props.api;
+			const scopeParam = props.scopeParam || "agent";
+			const scopeQuery = api + "?" + scopeParam + "=" + encodeURIComponent(scopeId || "");
+			const listUrl = open && scopeId ? scopeQuery + "&limit=15&nonce=" + String(props.version || 0) : "";
 			const [list, reloadList] = useLoader(() => (listUrl ? getJson(listUrl) : Promise.resolve(null)), [listUrl]);
 			const revUrl = open && sel
-				? MEM_API + "?agent=" + encodeURIComponent(scopeId) + "&rev=" + encodeURIComponent(sel) + "&against=working&file=MEMORY.md"
+				? scopeQuery + "&rev=" + encodeURIComponent(sel) + "&against=working&file=MEMORY.md"
 				: "";
 			const [rev] = useLoader(() => (revUrl ? getJson(revUrl) : Promise.resolve(null)), [revUrl]);
 			react.useEffect(() => { setSel(""); setConfirming(false); setErr(""); }, [scopeId]);
@@ -425,7 +622,7 @@ window.__ModuleLoader__.load({
 			const restore = () => {
 				setBusy(true);
 				setErr("");
-				postJson(MEM_API, { agent: scopeId, action: "restore", rev: sel, file: "MEMORY.md" })
+				postJson(api, { [scopeParam]: scopeId, action: "restore", rev: sel, file: "MEMORY.md" })
 					.then(() => {
 						if (say) { say("已回滚到 " + sel + "（回滚前的内容已另存为一条提交，可再回到）"); }
 						setConfirming(false);
@@ -450,7 +647,7 @@ window.__ModuleLoader__.load({
 					detail = react.createElement("div", { key: "d", style: C.card }, kids([
 						react.createElement("div", { key: "t", style: C.row }, kids([
 							react.createElement("span", { key: "n", style: C.title }, "版本 " + sel),
-							react.createElement("span", { key: "c", style: C.badge }, "回滚会恢复 " + restoreN + " 行 · 移除 " + dropN + " 行"),
+							react.createElement("span", { key: "c", style: C.badge }, "回滚会恢复 " + restoreN + (props.api ? " 条" : " 行") + " · 移除 " + dropN + (props.api ? " 条" : " 行")),
 							react.createElement("span", { key: "sp", style: C.grow }),
 							confirming
 								? kids([
@@ -476,10 +673,10 @@ window.__ModuleLoader__.load({
 										fontFamily: "ui-monospace, Consolas, monospace",
 										color: r.type === "del" ? "var(--dsw-alias-state-success-primary, #3fb950)" : "var(--dsw-alias-state-error-primary, #f85149)",
 									}),
-								// 条目自带 Markdown 列表符（"- [日期] …"）⇒ 去掉，否则显示成 "+ - …" / "- - …" 很难读
+									// 条目自带 Markdown 列表符（"- [日期] …"）⇒ 去掉，否则显示成 "+ - …" / "- - …" 很难读
 								}, (r.type === "del" ? "+ " : "- ") + String(r.text).replace(/^\s*[-*+]\s+/, "")))),
 						diff && (diff.rows || []).filter((r) => r.type !== "same").length > 60
-							? react.createElement("div", { key: "more", style: C.tiny }, "只显示前 60 处差异；完整对比在「完整页」。")
+							? react.createElement("div", { key: "more", style: C.tiny }, (props.api ? "只显示前 60 处差异。" : "只显示前 60 处差异；完整对比在「完整页」。"))
 							: null,
 						react.createElement("div", { key: "legend", style: Object.assign({}, C.tiny, { marginTop: 4 }) },
 							"+ 绿色：这一版有、当前没有（回滚会恢复） · - 红色：当前有、这一版没有（回滚会移除）"),
@@ -513,334 +710,26 @@ window.__ModuleLoader__.load({
 									react.createElement("span", { key: "s", style: C.grow }, String(c.subject || "")),
 									react.createElement("span", { key: "d", style: C.tiny }, String(c.date || "")),
 								])))),
-				err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
+								list.data && list.data.legacy
+					? react.createElement("div", { key: "legacy", style: C.tiny }, "旧版（dsh-agents）的历史已另存为只读的 legacy-history.bundle，与 Bot 记忆在同一目录。")
+					: null,
+err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 				detail,
 			]));
 		}
 
-		/** 工作区记忆面板（读 + 人工整篇编辑 + 首次建立）。 */
-		function WorkspaceMemoryPane(props) {
-			const say = props.say;
-			const cwd = props.cwd;
-			const url = cwd ? WS_API + "?cwd=" + encodeURIComponent(cwd) : "";
-			const [state, reload] = useLoader(() => (url ? getJson(url) : Promise.resolve(null)), [url]);
-			const [editing, setEditing] = react.useState(false);
-			const [draft, setDraft] = react.useState("");
-			const [busy, setBusy] = react.useState(false);
-			const [err, setErr] = react.useState("");
-			react.useEffect(() => { setEditing(false); setErr(""); }, [url]);
-
-			if (!cwd) {
-				return react.createElement("div", { style: C.card }, kids([
-					react.createElement("div", { key: "t", style: C.title }, "这个会话还没有工作目录"),
-					react.createElement("div", { key: "s", style: Object.assign({}, C.sub, { marginTop: 6 }) },
-						"工作区记忆按会话的工作目录（所在 git 仓库）存放 ⇒ 先在输入框上方选一个工作区再开会话。"),
-				]));
-			}
-
-			const data = state.data;
-			const post = (body, okText) => {
-				setBusy(true);
-				setErr("");
-				return postJson(WS_API, Object.assign({ cwd }, body))
-					.then(() => { if (okText) { say(okText); } setEditing(false); reload(); })
-					.catch((e) => setErr(String((e && e.message) || e)))
-					.then(() => setBusy(false));
-			};
-
-			if (state.error) {
-				return react.createElement("div", { style: C.card }, kids([
-					react.createElement("div", { key: "e", style: C.err }, "读取失败：" + explainLoadError(state.error)),
-					react.createElement("button", { key: "r", type: "button", style: Object.assign({}, C.btn, { marginTop: 8 }), onClick: reload }, "重试"),
-				]));
-			}
-			if (!data) {
-				return react.createElement("div", { style: C.tiny }, state.loading ? "正在读取工作区记忆…" : "");
-			}
-
-			const ws = data.workspace || {};
-			const limits = data.limits || {};
-			const usage = data.usage || {};
-			const limit = Number(limits.chars) || 0;
-			const used = Number(usage.chars) || 0;
-			const over = limit > 0 && used > limit;
-			const pct = limit > 0 ? Math.min(100, Math.round((Math.min(used, limit) / limit) * 100)) : 0;
-			const runtime = data.runtime || {};
-
-			const gitInfo = data.git || {};
-			const head = react.createElement("div", { key: "head", style: C.row }, kids([
-				react.createElement("span", { key: "n", style: C.title }, String(ws.name || "工作区")),
-				react.createElement("span", { key: "g", style: C.badge, title: String(ws.remote || "") },
-					ws.isGit ? "git 仓库" : "非 git 目录"),
-				react.createElement("span", { key: "u", style: limit > 0 ? C.badgeOn : C.badge },
-					limit > 0 ? ("注入 " + used + " / " + limit + " 字符") : "注入已关闭"),
-				react.createElement("span", { key: "m", style: C.badge },
-					limits.mode === "live" ? "live（每轮刷新）" : "session（会话内冻结）"),
-				// 记忆自己的版本历史（2026-11-03）：已提交几次、还有几处没提交。没启用 Git 就不画（不假装有历史）
-				data.exists && gitInfo.enabled
-					? react.createElement("span", {
-						key: "v", style: Number(gitInfo.dirty) > 0 ? C.badgeOn : C.badge,
-						title: "记忆目录自己的 Git 历史（回合结束自动落一条提交，可在完整页回滚）",
-					}, "历史 " + (Number(gitInfo.commits) || 0) + (Number(gitInfo.dirty) > 0 ? " · 未提交 " + Number(gitInfo.dirty) : ""))
-					: null,
-				react.createElement("span", { key: "sp", style: C.grow }),
-				react.createElement("button", { key: "r", type: "button", style: C.btn, disabled: busy, onClick: reload }, "刷新"),
-				data.exists && !editing
-					? react.createElement("button", {
-						key: "e", type: "button", style: C.btn, disabled: busy,
-						onClick: () => { setDraft(String(data.text || "")); setEditing(true); },
-					}, "编辑")
-					: null,
-				data.exists && data.scopeId && props.bridge
-					? react.createElement("button", {
-						key: "f", type: "button", style: C.btn,
-						onClick: () => openPage(props.bridge, "/x/agents/memory/" + encodeURIComponent(data.scopeId), say),
-						title: "打开完整记忆演化页（提交历史 / 版本 / 分支 / 备份 / 回滚）",
-					}, "完整页")
-					: null,
-			]));
-
-			const rootLine = react.createElement("div", { key: "root", style: C.tiny }, kids([
-				"归属：" + String(ws.root || ""),
-				ws.cwd && normPath(ws.cwd) !== normPath(ws.root) ? "（会话目录 " + baseName(ws.cwd) + " 归到 git 根）" : "",
-			]).join(""));
-
-			const bar = limit > 0
-				? react.createElement("div", { key: "bar", style: C.bar, title: "已用 " + used + " / 上限 " + limit },
-					react.createElement("i", {
-						style: Object.assign({}, C.barFill, {
-							width: pct + "%",
-							background: over ? "var(--dsw-alias-state-warn-label, #d29922)" : C.barFill.background,
-						}),
-					}))
-				: null;
-			const overNote = over
-				? react.createElement("div", { key: "over", style: C.tiny },
-					"超出上限 " + (used - limit) + " 字符 ⇒ 只有前 " + limit + " 字符会注入（后面的 AI 看不到）。")
-				: null;
-
-			let body;
-			if (!data.exists) {
-				// 搬家 / 改名 / 另一台机器 clone 到不同路径 ⇒ 路径变了 ⇒ 旧记忆"断链"。
-				// 只列"同 remote、旧根已不存在"的候选，由人点确认（复制不是移动，旧的不删）。
-				const claimable = Array.isArray(data.claimable) ? data.claimable : [];
-				const claimCard = claimable.length > 0
-					? react.createElement("div", { key: "claim", style: C.card }, kids([
-						react.createElement("div", { key: "t", style: C.title }, "发现这个仓库以前的记忆"),
-						react.createElement("div", { key: "s", style: Object.assign({}, C.sub, { margin: "4px 0 8px" }) },
-							"下面这些记忆属于同一个 git 远端，但原来的目录在本机已经不存在（搬家 / 改名 / 换了机器）。认领会把它复制过来，原来的不会被删除。"),
-						react.createElement("div", { key: "l", style: C.list },
-							claimable.map((c) => react.createElement("div", { key: c.key, style: Object.assign({}, C.item, { display: "flex", gap: 8, alignItems: "center" }) }, kids([
-								react.createElement("span", { key: "n", style: C.grow, title: String(c.root || "") },
-									String(c.name || c.key) + " · " + (Number(c.chars) || 0) + " 字符 · 原路径 " + String(c.root || "?")),
-								react.createElement("button", {
-									key: "b", type: "button", style: C.btnPrimary, disabled: busy,
-									onClick: () => { void post({ action: "claim", from: c.key }, "已认领旧记忆"); },
-								}, busy ? "认领中…" : "认领"),
-							])))),
-					]))
-					: null;
-				body = react.createElement("div", { key: "empty", style: C.col }, kids([
-					claimCard,
-					react.createElement("div", { key: "card", style: C.card }, kids([
-						react.createElement("div", { key: "t", style: C.title }, "这个工作区还没有记忆"),
-						react.createElement("div", { key: "s", style: Object.assign({}, C.sub, { marginTop: 6 }) },
-							"AI 发现值得长期记住的项目约定 / 决策 / 踩坑时，会用 workspace_memory 工具写进来；"
-							+ "这个工作区里的所有会话（普通会话与 Bot 会话）都会在开场注入它。"),
-						react.createElement("button", {
-							key: "b", type: "button", style: Object.assign({}, C.btnPrimary, { marginTop: 8 }), disabled: busy,
-							onClick: () => { void post({ action: "init" }, "已建立工作区记忆"); },
-						}, busy ? "建立中…" : "新建工作区记忆"),
-					])),
-				]));
-			} else if (editing) {
-				body = react.createElement("div", { key: "edit", style: C.col }, kids([
-					react.createElement("textarea", {
-						key: "ta",
-						value: draft,
-						disabled: busy,
-						onChange: (e) => setDraft(e && e.target ? e.target.value : ""),
-						style: Object.assign({}, C.input, {
-							width: "100%", minHeight: 220, boxSizing: "border-box",
-							fontFamily: "ui-monospace, Consolas, monospace", lineHeight: "18px",
-						}),
-					}),
-					react.createElement("div", { key: "ops", style: C.row }, kids([
-						react.createElement("span", { key: "c", style: C.tiny }, draft.length + " / " + (Number(limits.max) || 20000) + " 字符"),
-						react.createElement("span", { key: "sp", style: C.grow }),
-						react.createElement("button", { key: "x", type: "button", style: C.btn, disabled: busy, onClick: () => setEditing(false) }, "取消"),
-						react.createElement("button", {
-							key: "s", type: "button", style: C.btnPrimary, disabled: busy,
-							onClick: () => { void post({ action: "write", text: draft }, "工作区记忆已保存（新会话生效）"); },
-						}, busy ? "保存中…" : "保存"),
-					])),
-				]));
-			} else {
-				const lines = parseMemory(data.text);
-				body = lines.length === 0
-					? react.createElement("div", { key: "none", style: C.card },
-						react.createElement("div", { style: C.sub }, "还没有条目（点「编辑」手写，或让 AI 用 workspace_memory 工具追加）。"))
-					: react.createElement("div", { key: "list", style: C.list },
-						lines.map((ln, i) => {
-							if (ln.kind === "head") {
-								return react.createElement("div", { key: "h" + i, style: Object.assign({}, C.title, { marginTop: i > 0 ? 4 : 0 }) }, ln.text);
-							}
-							if (ln.kind === "item") {
-								return react.createElement("div", { key: "i" + i, style: Object.assign({}, C.item, { display: "flex", gap: 8 }) }, kids([
-									react.createElement("span", { key: "m", style: C.sub }, "•"),
-									react.createElement("span", { key: "x", style: C.grow }, ln.text),
-								]));
-							}
-							return react.createElement("div", { key: "t" + i, style: C.sub }, ln.text);
-						}));
-			}
-
-			const errNote = err ? react.createElement("div", { key: "err", style: C.err }, err) : null;
-			const sectionOff = runtime.order === undefined || runtime.order === null;
-			const foot = react.createElement("div", { key: "foot", style: C.tiny },
-				sectionOff
-					? "⚠ 注入 section 没有在这个 Host 里注册（插件版本旧或 systemPrompt 服务缺席）⇒ 目前只能查看，不会注入。"
-					: "所有会话共享；改动在新会话生效（当前会话的快照已冻结以保证 prompt 缓存命中）。存放：" + String(data.dir || ""));
-
-			// 历史：只在记忆已建立、Git 已启用、且不在编辑态时给（编辑中回滚会让草稿与文件错位）
-			const history = data.exists && gitInfo.enabled && data.scopeId && !editing
-				? react.createElement(MemoryHistoryPanel, {
-					key: "hist", scopeId: data.scopeId, say, version: gitInfo.commits, onChanged: reload,
-				})
-				: null;
-
-			return react.createElement("div", { style: C.col }, kids([head, rootLine, bar, overNote, errNote, body, history, foot]));
-		}
-
-		/**
-		 * 「回合末自动提交」开关卡（★ 2026-11-03 P2：从只读变可写）。
-		 * 开关是**全局偏好**（`<数据根>/memory-prefs.json`，Bot 记忆与工作区记忆共用），改完立刻生效、不用重启：
-		 * 回合结束时 Host 把这一轮的记忆改动落成一条 Git 提交，演化图才有真实节奏。
-		 * `git` / `turns` 由所在面板传入（Bot 面板与工作区面板各自的仓库状态）；没有就只画开关。
+				/**
+		 * Bot 记忆 · 版本历史（★ 2026-11-05「记忆收敛」S2）：Bot 记忆在 @vssaros/dsh-memory 的 bot 轨，
+		 * 每次写入后自动落一条 git 提交；这里看某一版与当前的差异、二次确认后回滚（历史只追加）。
+		 * 条目本身在「记忆」页签的「Bot 记忆」行里看和改。按会话定位 Bot（与记忆插件同一判据）。
 		 */
-		function AutoCommitCard(props) {
-			const say = props.say;
-			const git = props.git || null;
-			const [state, reload] = useLoader(() => getJson(PREFS_API), []);
-			const [busy, setBusy] = react.useState(false);
-			const [err, setErr] = react.useState("");
-			const data = state.data;
-			const on = data ? data.autoCommit === true : null;
-			const toggle = () => {
-				if (on === null) { return; }
-				setBusy(true);
-				setErr("");
-				postJson(PREFS_API, { autoCommit: !on })
-					.then(() => { if (say) { say(!on ? "已开启回合末自动提交" : "已关闭回合末自动提交"); } reload(); })
-					.catch((e) => setErr("保存失败：" + explainLoadError(String((e && e.message) || e))))
-					.then(() => setBusy(false));
-			};
-			const sourceNote = data && data.source === "config"
-				? "（当前由插件配置 memoryAutoCommit:false 关闭；在这里点开启会覆盖它）"
-				: data && data.source === "pref" ? "（你设置的）" : "（默认）";
-			let detail;
-			if (state.error) {
-				detail = react.createElement("div", { key: "d", style: Object.assign({}, C.err, { marginTop: 4 }) }, "读取失败：" + explainLoadError(state.error));
-			} else if (git && git.enabled) {
-				detail = react.createElement("div", { key: "d", style: Object.assign({}, C.sub, { marginTop: 4 }) },
-					"这份记忆已有 " + (Number(git.commits) || 0) + " 条历史，" + (Number(git.dirty) > 0 ? "还有 " + Number(git.dirty) + " 处未提交" : "没有未提交的改动")
-					+ "；本次运行已自动提交 " + (Number(props.turns) || 0) + " 次。");
-			} else if (props.exists === false) {
-				detail = react.createElement("div", { key: "d", style: Object.assign({}, C.sub, { marginTop: 4 }) }, "记忆还没建立 ⇒ 暂时没有可提交的历史。");
-			} else {
-				detail = react.createElement("div", { key: "d", style: Object.assign({}, C.sub, { marginTop: 4 }) }, "记忆目录还没有 Git 化（第一次写入或打开「完整页」时会自动建立）。");
-			}
-			return react.createElement("div", { style: C.card }, kids([
-				react.createElement("div", { key: "r", style: C.row }, kids([
-					react.createElement("span", { key: "t", style: C.title }, "回合末自动提交快照"),
-					react.createElement("span", { key: "sp", style: C.grow }),
-					busy ? react.createElement("span", { key: "bz", style: C.tiny }, "保存中…") : null,
-					// 与记忆模块面板同一种开关（状态即控件），不再是「徽标显示状态 + 按钮执行动作」两套语义
-					on === null ? null : react.createElement(MemSwitch, { key: "b", checked: on === true, disabled: busy, label: "回合末自动提交快照", onChange: () => toggle() }),
-				])),
-				detail,
-				err ? react.createElement("div", { key: "e", style: Object.assign({}, C.err, { marginTop: 4 }) }, err) : null,
-				react.createElement("div", { key: "h", style: Object.assign({}, C.tiny, { marginTop: 4 }) },
-					"全局开关，Bot 记忆与工作区记忆共用 " + sourceNote + "。关闭后改动仍会备份，只是不再自动落提交。"),
-			]));
-		}
-
-		/** 工作区记忆的注入口径（写 scope.json，不碰正文）。 */
-		function WorkspaceSettingsPane(props) {
-			const say = props.say;
-			const cwd = props.cwd;
-			const url = cwd ? WS_API + "?cwd=" + encodeURIComponent(cwd) : "";
-			const [state, reload] = useLoader(() => (url ? getJson(url) : Promise.resolve(null)), [url]);
-			const [chars, setChars] = react.useState(null);
-			const [mode, setMode] = react.useState(null);
-			const [saving, setSaving] = react.useState(false);
-			const [err, setErr] = react.useState("");
-			const data = state.data;
-			const initializedFor = react.useRef("");
-			react.useEffect(() => {
-				if (!data || initializedFor.current === url) { return; }
-				initializedFor.current = url;
-				const l = data.limits || {};
-				setChars(String(Number(l.chars) || 0));
-				setMode(l.mode === "live" ? "live" : "session");
-			}, [data, url]);
-
-			if (!cwd) {
-				return react.createElement("div", { style: C.card },
-					react.createElement("div", { style: C.sub }, "这个会话还没有工作目录 ⇒ 没有工作区记忆可设置。"));
-			}
-			if (state.error) {
-				return react.createElement("div", { style: C.card },
-					react.createElement("div", { style: C.err }, "读取失败：" + explainLoadError(state.error)));
-			}
-			const ws = (data && data.workspace) || {};
-			const save = () => {
-				const n = Number(String(chars).trim());
-				if (!Number.isFinite(n) || (n !== 0 && (n < 512 || n > 20000))) {
-					setErr("注入上限要是数字：0（关闭）或 512~20000 之间");
-					return;
-				}
-				setSaving(true);
-				setErr("");
-				postJson(WS_API, { cwd, action: "set-limits", chars: Math.trunc(n), mode })
-					.then(() => { say("工作区记忆口径已保存（新会话生效）"); reload(); })
-					.catch((e) => setErr("保存失败：" + String((e && e.message) || e)))
-					.then(() => setSaving(false));
-			};
-			return react.createElement("div", { style: C.col }, kids([
-				react.createElement("div", { key: "limits", style: C.card }, kids([
-					react.createElement("div", { key: "t", style: C.row }, kids([
-						react.createElement("span", { key: "n", style: C.title }, "工作区「" + String(ws.name || baseName(cwd)) + "」注入"),
-						react.createElement("span", { key: "sp", style: C.grow }),
-						react.createElement("button", { key: "s", type: "button", style: C.btnPrimary, disabled: saving || !data, onClick: save }, saving ? "保存中…" : "保存"),
-					])),
-					react.createElement("div", { key: "d", style: Object.assign({}, C.sub, { margin: "4px 0 8px" }) },
-						"工作区 MEMORY.md 的前 N 个字符会注入到本工作区的所有会话（Bot 会话里排在 Bot 记忆之后）。0 = 关闭；范围 512~20000。"),
-					react.createElement("div", { key: "r1", style: C.row }, kids([
-						react.createElement("span", { key: "l", style: C.sub }, "上限"),
-						react.createElement("input", {
-							key: "in", style: Object.assign({}, C.input, { width: 90 }),
-							type: "number", min: 0, max: 20000, step: 256,
-							value: chars === null ? "" : chars, disabled: saving || !data,
-							onChange: (e) => setChars(e && e.target ? e.target.value : ""),
-						}),
-						react.createElement("span", { key: "u", style: C.tiny }, "字符"),
-					])),
-					react.createElement("div", { key: "r2", style: Object.assign({}, C.row, { marginTop: 8 }) }, kids([
-						react.createElement("span", { key: "l", style: C.sub }, "模式"),
-						react.createElement("button", { key: "s", type: "button", style: mode === "session" ? C.btnPrimary : C.btn, disabled: saving || !data, onClick: () => setMode("session") }, "session（会话内冻结）"),
-						react.createElement("button", { key: "v", type: "button", style: mode === "live" ? C.btnPrimary : C.btn, disabled: saving || !data, onClick: () => setMode("live") }, "live（每轮刷新）"),
-					])),
-					err ? react.createElement("div", { key: "e", style: Object.assign({}, C.err, { marginTop: 6 }) }, err) : null,
-					react.createElement("div", { key: "f", style: Object.assign({}, C.tiny, { marginTop: 6 }) },
-						"存在工作区记忆目录的 scope.json 里（不改仓库里的任何文件）。"),
-				])),
-				// 回合末自动提交：全局开关（Bot 记忆与工作区记忆共用），下面带这个工作区自己的历史统计
-				react.createElement(AutoCommitCard, {
-					key: "auto", say, git: data && data.exists ? data.git : null,
-					turns: data && data.autoCommit ? data.autoCommit.turns : 0,
-					exists: !!(data && data.exists),
-				}),
+		const BOT_HISTORY_API = "/memory-evolve/api/bot-history";
+		function BotMemoryHistoryCard(props) {
+			return react.createElement("div", { style: C.card, "data-vssaros-view": "bot-memory-history" }, kids([
+				react.createElement("div", { key: "t", style: C.title }, "Bot 记忆 · 版本历史"),
+				react.createElement("div", { key: "s", style: Object.assign({}, C.sub, { marginTop: 4, marginBottom: 6 }) },
+					"每次写入 Bot 记忆后自动保存一个版本，可以对比某一版与当前内容并回滚。条目在「记忆」页签里查看和编辑。"),
+				react.createElement(MemoryHistoryPanel, { key: "p", api: BOT_HISTORY_API, scopeParam: "sessionId", scopeId: props.sessionId, say: props.say }),
 			]));
 		}
 
@@ -885,18 +774,6 @@ window.__ModuleLoader__.load({
 			return { agentId, scope: effectiveScope, cwd: picked ? picked.cwd : "", bar };
 		}
 
-		/** 记忆页签：默认看工作区记忆；有 Bot 时可切到 Bot 记忆。 */
-		function MemoryView(props) {
-			const ctx = props.__vssarosCtx;
-			const sessionId = props.sessionId || "";
-			const pick = useScopePicker(ctx, sessionId);
-			const pane = pick.scope === "bot"
-				? react.createElement(BotMemoryPane, Object.assign({}, props, { key: "bot", agentId: pick.agentId }))
-				: react.createElement(WorkspaceMemoryPane, { key: "ws:" + pick.cwd, cwd: pick.cwd, say: props.__vssarosSay, bridge: props.__vssarosBridge });
-			return react.createElement("div", { style: C.root, "data-vssaros-view": "memory", "data-vssaros-memory-scope": pick.scope },
-				kids([pick.bar, pane]));
-		}
-
 		/**
 		 * 「VsSaros Memory 模块」配置面板（★ 2026-11-03 两套页签合并；2026-11-04 扩成完整面板）。
 		 * 原 evolve「设置」页签的「配置」子页全部运行时键都在这里（同源 /memory-evolve/api/config），
@@ -908,63 +785,77 @@ window.__ModuleLoader__.load({
 		const MEM_CONFIG_API = "/memory-evolve/api/config";
 		const MEM_UPDATE_API = "/memory-evolve/api/update/status";
 		const MEM_GROUPS = [
-			{ id: "write", title: "每轮写入", open: true, hint: "快照按这些开关要求模型在回合末写记忆；每开一项，每个回合就多一次工具调用。", fields: [
-				{ key: "perTurnProjectWrites", label: "每轮写项目进展", hint: "target=project · 按项目累积的进展记录" },
-				{ key: "perTurnDailyWrites", label: "每轮写今日日志", hint: "target=daily · 按日期滚动的工作日志" },
-				{ key: "perTurnKeyWrites", label: "按需提交项目关键记忆建议", hint: "target=key · 进入待确认队列，人工确认后才注入" },
-				{ key: "perTurnWriteGuard", label: "漏写提醒", hint: "连续 N 轮没写就在快照里提醒；只在开了上面两项时有意义" },
-				{ key: "writeGuardThreshold", dep: "perTurnWriteGuard", label: "漏写提醒阈值", unit: "轮", type: "int", min: 1 },
-			] },
-			{ id: "review", title: "记忆审查", fields: [
-				{ key: "reviewEnabled", label: "回合内记忆审查", hint: "每隔几轮让模型回顾对话，提炼值得长期保留的内容" },
-				{ key: "reviewInterval", dep: "reviewEnabled", label: "审查间隔", unit: "轮", type: "int", min: 1 },
-				{ key: "reviewMode", dep: "reviewEnabled", label: "审查结果处理", type: "enum", options: [["suggest", "提建议，人工确认"], ["auto", "直接写入"]] },
-				{ key: "skillReviewEnabled", label: "新技能直接生效", hint: "关闭时新技能先进入待确认队列" },
-			] },
-			{ id: "key", title: "记忆注入", fields: [
-				{ key: "keyProgressiveDisclosure", label: "注入方式", hint: "条目多时只注入摘要，模型按需再读全文", type: "enum", options: [["off", "始终全文"], ["auto", "按数据量自动"], ["on", "始终摘要"]] },
-				{ key: "keyFullInjectThreshold", label: "全文注入条数上限", unit: "条", type: "int", min: 1 },
-				{ key: "keyFullInjectCharLimit", label: "全文注入字符上限", unit: "字符", type: "int", min: 1 },
-				// ★ 2026-11-05「记忆收敛成一套」：原 Bot 设置里的「注入到 system prompt」上限并到这里（全局，所有 Bot 共用）
-				{ key: "botMemoryCharLimit", label: "Bot 记忆注入上限", hint: "Bot 会话注入该 Bot 自己的记忆（target=bot），按整条截断；0 = 不注入", unit: "字符", type: "int", min: 0 },
-			] },
-			{ id: "modules", title: "功能模块", open: true, fields: [
-				{ key: "todoEnabled", label: "待办", hint: "dtodo 工具与「待办」页签" },
-				{ key: "modelsEnabled", label: "模型设置" },
-				{ key: "promptsEnabled", label: "提示词库" },
-				{ key: "bookmarkEnabled", label: "会话书签" },
-				{ key: "uiSettingsEnabled", label: "界面增强" },
-				{ key: "sessionEnabled", label: "会话编排", hint: "让模型创建、调度其它会话" },
-				{ key: "sessionSearchEnabled", label: "会话搜索", hint: "检索历史会话内容" },
-				{ key: "sessionImageQueryEnabled", label: "会话图片查询" },
-				{ key: "notifyEnabled", label: "渠道通知" },
-				{ key: "channelSendEnabled", label: "渠道直发" },
-				{ key: "broadcastEnabled", label: "会话广播", hint: "会话之间互发消息" },
-				{ key: "broadcastImageEnabled", dep: "broadcastEnabled", label: "广播允许带图片" },
-				{ key: "wsCoordEnabled", label: "工作区协调", hint: "多个会话同时改同一工作区时互相知会" },
-				{ key: "wsCoordEnforceWrite", dep: "wsCoordEnabled", label: "工作区协调：写入前强制检查" },
-				{ key: "wsCoordSnapshot", dep: "wsCoordEnabled", label: "工作区协调：注入快照" },
-			] },
-			{ id: "advisor", title: "Advisor 评审", fields: [
-				{ key: "advisorEnabled", label: "启用 Advisor", hint: "另一个模型旁听会话并给出评审意见" },
-				{ key: "advisorPanelEnabled", dep: "advisorEnabled", label: "显示悬浮面板" },
-				{ key: "advisorInfoInject", dep: "advisorEnabled", label: "注入 info 级意见" },
-				{ key: "advisorProvider", dep: "advisorEnabled", label: "供应商", hint: "留空 = 跟随会话", placeholder: "跟随会话", type: "str", nullable: true },
-				{ key: "advisorModel", dep: "advisorEnabled", label: "模型", hint: "留空 = 跟随会话", placeholder: "跟随会话", type: "str", nullable: true },
-				{ key: "advisorSteerSeverities", dep: "advisorEnabled", label: "会打断会话的级别", type: "multi", options: [["nit", "nit"], ["concern", "concern"], ["blocker", "blocker"]] },
-				{ key: "advisorImmuneTurns", dep: "advisorEnabled", label: "开局免评回合数", unit: "轮", type: "int", min: 0 },
-				{ key: "advisorMaxMessages", dep: "advisorEnabled", label: "每次带入消息数上限", unit: "条", type: "int", min: 0 },
-				{ key: "advisorMaxQueued", dep: "advisorEnabled", label: "排队上限", unit: "条", type: "int", min: 0 },
-				{ key: "advisorCallTimeoutMs", dep: "advisorEnabled", label: "调用超时", unit: "毫秒", type: "int", min: 1 },
-				{ key: "advisorSystemPrompt", dep: "advisorEnabled", label: "系统提示词", hint: "留空使用默认提示词", type: "text" },
-			] },
-			{ id: "unverified", title: "未通过 Windows 验证的模块", hint: "上游测试在 Windows 上未通过，已锁定为关闭。", fields: [
-				{ key: "canvasEnabled", label: "无限画板" },
-				{ key: "coiEnabled", label: "CLI 调度（COI）" },
-				{ key: "syncEnabled", label: "记忆同步" },
-				{ key: "searchDocsEnabled", label: "本地文件搜索" },
-				{ key: "searchDocsMode", dep: "searchDocsEnabled", label: "本地文件搜索范围", type: "enum", nullable: true, options: [["", "默认（跟随开关）"], ["all", "文件名 + 内容"], ["filename", "仅文件名"], ["content", "仅内容"], ["off", "关闭"]] },
-			] },
+			{
+				id: "write", title: "每轮写入", open: true, hint: "快照按这些开关要求模型在回合末写记忆；每开一项，每个回合就多一次工具调用。", fields: [
+					{ key: "perTurnProjectWrites", label: "每轮写项目进展", hint: "target=project · 按项目累积的进展记录" },
+					{ key: "perTurnDailyWrites", label: "每轮写今日日志", hint: "target=daily · 按日期滚动的工作日志" },
+					{ key: "perTurnKeyWrites", label: "按需写项目关键记忆", hint: "target=key · 本轮出现重要项目事实（约定/决策/架构/踩坑）时写一条；写入方式见下一项" },
+					// ★ 2026-11-05：key 轨 add 的去向（原 dsh-agents 的 workspace_memory 是直写，并入后默认仍直写）
+					{ key: "keyWriteMode", label: "项目关键记忆写入方式", hint: "子代理写入始终进待确认队列；队列在「记忆」页签里确认", type: "enum", options: [["direct", "主会话直接写入"], ["queue", "全部进待确认队列"]] },
+					{ key: "perTurnWriteGuard", label: "漏写提醒", hint: "连续 N 轮没写就在快照里提醒；只在开了上面两项时有意义" },
+					{ key: "writeGuardThreshold", dep: "perTurnWriteGuard", label: "漏写提醒阈值", unit: "轮", type: "int", min: 1 },
+				]
+			},
+			{
+				id: "review", title: "记忆审查", fields: [
+					{ key: "reviewEnabled", label: "回合内记忆审查", hint: "每隔几轮让模型回顾对话，提炼值得长期保留的内容" },
+					{ key: "reviewInterval", dep: "reviewEnabled", label: "审查间隔", unit: "轮", type: "int", min: 1 },
+					{ key: "reviewMode", dep: "reviewEnabled", label: "审查结果处理", type: "enum", options: [["suggest", "提建议，人工确认"], ["auto", "直接写入"]] },
+					{ key: "skillReviewEnabled", label: "新技能直接生效", hint: "关闭时新技能先进入待确认队列" },
+				]
+			},
+			{
+				id: "key", title: "记忆注入", fields: [
+					{ key: "keyProgressiveDisclosure", label: "注入方式", hint: "条目多时只注入摘要，模型按需再读全文", type: "enum", options: [["off", "始终全文"], ["auto", "按数据量自动"], ["on", "始终摘要"]] },
+					{ key: "keyFullInjectThreshold", label: "全文注入条数上限", unit: "条", type: "int", min: 1 },
+					{ key: "keyFullInjectCharLimit", label: "全文注入字符上限", unit: "字符", type: "int", min: 1 },
+					// ★ 2026-11-05「记忆收敛成一套」：原 Bot 设置里的「注入到 system prompt」上限并到这里（全局，所有 Bot 共用）
+					{ key: "botMemoryCharLimit", label: "Bot 记忆注入上限", hint: "Bot 会话注入该 Bot 自己的记忆（target=bot），按整条截断；0 = 不注入", unit: "字符", type: "int", min: 0 },
+				]
+			},
+			{
+				id: "modules", title: "功能模块", open: true, fields: [
+					{ key: "todoEnabled", label: "待办", hint: "dtodo 工具与「待办」页签" },
+					{ key: "modelsEnabled", label: "模型设置" },
+					{ key: "promptsEnabled", label: "提示词库" },
+					{ key: "bookmarkEnabled", label: "会话书签" },
+					{ key: "uiSettingsEnabled", label: "界面增强" },
+					{ key: "sessionEnabled", label: "会话编排", hint: "让模型创建、调度其它会话" },
+					{ key: "sessionSearchEnabled", label: "会话搜索", hint: "检索历史会话内容" },
+					{ key: "sessionImageQueryEnabled", label: "会话图片查询" },
+					{ key: "notifyEnabled", label: "渠道通知" },
+					{ key: "channelSendEnabled", label: "渠道直发" },
+					{ key: "broadcastEnabled", label: "会话广播", hint: "会话之间互发消息" },
+					{ key: "broadcastImageEnabled", dep: "broadcastEnabled", label: "广播允许带图片" },
+					{ key: "wsCoordEnabled", label: "工作区协调", hint: "多个会话同时改同一工作区时互相知会" },
+					{ key: "wsCoordEnforceWrite", dep: "wsCoordEnabled", label: "工作区协调：写入前强制检查" },
+					{ key: "wsCoordSnapshot", dep: "wsCoordEnabled", label: "工作区协调：注入快照" },
+				]
+			},
+			{
+				id: "advisor", title: "Advisor 评审", fields: [
+					{ key: "advisorEnabled", label: "启用 Advisor", hint: "另一个模型旁听会话并给出评审意见" },
+					{ key: "advisorPanelEnabled", dep: "advisorEnabled", label: "显示悬浮面板" },
+					{ key: "advisorInfoInject", dep: "advisorEnabled", label: "注入 info 级意见" },
+					{ key: "advisorProvider", dep: "advisorEnabled", label: "供应商", hint: "留空 = 跟随会话", placeholder: "跟随会话", type: "str", nullable: true },
+					{ key: "advisorModel", dep: "advisorEnabled", label: "模型", hint: "留空 = 跟随会话", placeholder: "跟随会话", type: "str", nullable: true },
+					{ key: "advisorSteerSeverities", dep: "advisorEnabled", label: "会打断会话的级别", type: "multi", options: [["nit", "nit"], ["concern", "concern"], ["blocker", "blocker"]] },
+					{ key: "advisorImmuneTurns", dep: "advisorEnabled", label: "开局免评回合数", unit: "轮", type: "int", min: 0 },
+					{ key: "advisorMaxMessages", dep: "advisorEnabled", label: "每次带入消息数上限", unit: "条", type: "int", min: 0 },
+					{ key: "advisorMaxQueued", dep: "advisorEnabled", label: "排队上限", unit: "条", type: "int", min: 0 },
+					{ key: "advisorCallTimeoutMs", dep: "advisorEnabled", label: "调用超时", unit: "毫秒", type: "int", min: 1 },
+					{ key: "advisorSystemPrompt", dep: "advisorEnabled", label: "系统提示词", hint: "留空使用默认提示词", type: "text" },
+				]
+			},
+			{
+				id: "unverified", title: "未通过 Windows 验证的模块", hint: "上游测试在 Windows 上未通过，已锁定为关闭。", fields: [
+					{ key: "canvasEnabled", label: "无限画板" },
+					{ key: "coiEnabled", label: "CLI 调度（COI）" },
+					{ key: "syncEnabled", label: "记忆同步" },
+					{ key: "searchDocsEnabled", label: "本地文件搜索" },
+					{ key: "searchDocsMode", dep: "searchDocsEnabled", label: "本地文件搜索范围", type: "enum", nullable: true, options: [["", "默认（跟随开关）"], ["all", "文件名 + 内容"], ["filename", "仅文件名"], ["content", "仅内容"], ["off", "关闭"]] },
+				]
+			},
 		];
 		const MEM_KNOWN = new Set(MEM_GROUPS.flatMap((g) => g.fields.map((f) => f.key)).concat(["memoryTabEnabled"]));
 		// 控件统一 26px 高；边框用 border-l3（border-l1 只有 4% 透明度，输入框几乎看不出能编辑）
@@ -1259,16 +1150,543 @@ window.__ModuleLoader__.load({
 			]));
 		}
 
+		// ── 多 bot 群聊（★ 2026-11-05；运行时在 vssaros-agents lib/rooms.js）──────────────────────────
+		//   · 「设置」页签：群会话显示**群设置卡**（群名 / 群公告 / 谁来回答 / 管理员 / 成员 / 侧栏 / 删除），
+		//     不再出现 Bot 分段（群会话不是任何一个 bot 的会话）。
+		//   · 群会话里的 `group_relay` 工具调用（群会话从不调模型，见 rooms.js）由 GroupRelayView 画成成员气泡：
+		//     跑的过程中按 callId 轮询 `/x/agents/api/rooms?progress=`，结束后读工具结果 JSON。
+		/* vssaros:room v1 —— 逐字副本，真源 vssaros-agents/lib/core/rooms.js 的 ROOM_PROJECTION_KEY / ROOM_RELAY_TOOL */
+		const ROOM_PROJECTION_KEY = "vssaros-room";
+		const ROOM_RELAY_TOOL = "group_relay";
+		/* /vssaros:room */
+		const ROOMS_API = "/x/agents/api/rooms";
+		/** 全局浮层把 `?active=1` 的进度广播给 composer 上方的只读 MemberDock（不再开一条轮询）。 */
+		const GROUP_PROGRESS_EVENT = "vssaros-group-progress";
+		/** composer dock 可见/卸载时通知全局浮层：打开群/成员会话后右栏不再叠「已发到…」tip。 */
+		const GROUP_DOCK_VISIBILITY_EVENT = "vssaros-group-composer-dock-visibility";
+		/**
+		 * ★ 2026-11-06 统一轮次状态（与 vssaros-agents core/rooms.js `roundStatusOf`、client.workspaces.js `groupRoundStatus` 逐字一致）。
+		 * 服务端已给 `status` 就直接用；旧数据才按同一规则推断。check-bots-rooms.mjs 用同一张用例表钉三处一致。
+		 */
+		const GROUP_ROUND_LABELS = { sent: "已发到群", replying: "正在回答", done: "已完成", cut: "已中断", failed: "执行失败" };
+		function groupRoundStatus(round) {
+			const r = round && typeof round === "object" ? round : {};
+			if (GROUP_ROUND_LABELS[r.status]) { return r.status; }
+			const events = Array.isArray(r.events) ? r.events : [];
+			if (r.interrupted || r.phase === "cut" || events.some((event) => event && event.kind === "cut")) { return "cut"; }
+			if (!r.done) {
+				const speaking = Array.isArray(r.speaking) ? r.speaking.length : 0;
+				return speaking > 0 ? "replying" : "sent";
+			}
+			return r.error ? "failed" : "done";
+		}
+		const MEMBER_DOCK_SLOT = "conversation.input.dock";
+		const MEMBER_DOCK_ID = "vssaros-group-members";
+		/** 官方 todo=0 / goal=10 / queue=20；本项目 -5 / 5 / 15 / 25 ⇒ 30 不 tie。 */
+		const MEMBER_DOCK_ORDER = 30;
+		/**
+		 * ★ 2026-11-05：composer 上方的 DS Bot 式活动行 / queue-steer 提示。
+		 * 与 GroupMemberDock 同一个 dock 条目渲染，不另占 order，不改官方 composer。
+		 */
+		function ensureGroupFlowStyle() {
+			try {
+				if (typeof document === "undefined" || !document.head) { return; }
+				if (document.head.querySelector("[data-vssaros-group-flow-style]")) { return; }
+				const st = document.createElement("style");
+				st.setAttribute("data-vssaros-group-flow-style", "1");
+				st.textContent = [
+					"@keyframes vssaros-group-flow-shimmer{from{background-position:200% 0}to{background-position:-200% 0}}",
+					"@keyframes vssaros-group-flow-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}",
+					"[data-vssaros-group-composer-flow]{display:flex;flex-wrap:wrap;align-items:center;gap:6px;width:100%;margin-top:2px;padding-top:4px;border-top:1px solid var(--dsw-alias-border-l3, transparent);animation:vssaros-group-flow-in .18s ease-out both}",
+					"[data-vssaros-group-composer-flow] [data-vssaros-group-composer-activity-text]{color:transparent;background:linear-gradient(90deg,var(--dsw-alias-label-tertiary) 0%,var(--dsw-alias-label-primary) 55%,var(--dsw-alias-label-tertiary) 100%);background-size:200% 100%;-webkit-background-clip:text;background-clip:text;animation:vssaros-group-flow-shimmer 2.2s steps(60) infinite;font-weight:600}",
+					"[data-vssaros-group-composer-flow] [data-vssaros-group-composer-queue-hint]{color:var(--dsw-alias-label-tertiary)}",
+					"[data-vssaros-group-composer-flow] [data-vssaros-group-composer-event]{color:var(--dsw-alias-label-secondary)}",
+					"@media (prefers-reduced-motion:reduce){[data-vssaros-group-composer-flow]{animation:none}[data-vssaros-group-composer-flow] [data-vssaros-group-composer-activity-text]{animation:none;background:none;color:var(--dsw-alias-label-primary)}}",
+				].join("");
+				document.head.appendChild(st);
+			} catch { /* 没有 head ⇒ 文本仍可读 */ }
+		}
+		/** 维护「当前有哪些群/成员会话已显示 composer dock」，并广播给全局浮层让它让位。 */
+		function setGroupComposerDockVisibility(roomId, role, visible) {
+			try {
+				const win = typeof window !== "undefined" ? window : null;
+				if (!win) { return; }
+				const key = String(roomId || "");
+				if (!key) { return; }
+				const docked = new Set(Array.isArray(win.__vssarosGroupComposerDocks) ? win.__vssarosGroupComposerDocks.map(String) : []);
+				if (visible) { docked.add(key); } else { docked.delete(key); }
+				win.__vssarosGroupComposerDocks = [...docked];
+				const Ctor = win.CustomEvent || (typeof CustomEvent !== "undefined" ? CustomEvent : null);
+				if (Ctor) { win.dispatchEvent(new Ctor(GROUP_DOCK_VISIBILITY_EVENT, { detail: { schema: 1, visible: !!visible && !!key, roomId: key, role: String(role || "") } })); }
+			} catch { /* 无 window / CustomEvent ⇒ 浮层保持原行为 */ }
+		}
+		/**
+		 * ★ 2026-11-06 composer 上方那行提示：只说**群语义**，按键交给官方。
+		 *   官方输入框已经按用户设置给出正确按键（默认 Enter 排队；有排队时占位符是「Cmd/Ctrl+Enter 插话发送全部排队消息」，
+		 *   排队 dock 每行有「插话发送」），之前这里写的「空输入 Enter 可插入当前回合」按键是错的（空草稿 Enter 官方什么都不做）。
+		 *   群语义（rooms.js 核实）：
+		 *   · 群会话：不论排队还是插话，新消息都要等本轮 group_relay 结束、下一次合成调用时才交给成员；
+		 *   · 成员会话：插话进入它这一回合 ⇒ 它在群里的回复会带上；排队消息是之后的新回合，群里收不到；
+		 *     人在成员会话里发的话不会转进群（只有群会话的消息进群收件箱）；
+		 *   · 其它会话：这个输入框与群无关 ⇒ 不给提示。
+		 */
+		function groupComposerHintOf(role, running) {
+			if (role === "room") { return running ? "新消息会在本轮结束后再交给群成员" : "可继续在这里给群聊发消息"; }
+			if (role === "member") {
+				return running ? "插话会进入这位成员本轮的工作，它在群里的回复会带上；排队的消息在本轮之后单独处理，不进群聊"
+					: "在这里发的消息只给这位成员，不会转到群里";
+			}
+			return "";
+		}
+		/** 从 `?active=1` 轮次和当前会话投影推导 composer 活动行；纯函数，便于守卫断言。 */
+		function groupComposerFlowOf(active, mark) {
+			const rounds = Array.isArray(active) ? active : [];
+			const roomId = String((mark && mark.roomId) || "");
+			const run = (roomId && rounds.find((item) => item && item.roomId === roomId)) || rounds[0];
+			if (!run) { return null; }
+			const status = groupRoundStatus(run);
+			const state = status === "failed" ? "error" : status === "cut" ? "cut" : status === "done" ? "done" : "running";
+			const speaking = Array.isArray(run.speaking) ? run.speaking : [];
+			const replies = (Array.isArray(run.replies) ? run.replies : []).filter((r) => !r || !r.kind);
+			const events = Array.isArray(run.events) ? run.events : [];
+			const lastEvent = events.length ? events[events.length - 1] : null;
+			const seconds = run.startedAt ? Math.max(0, Math.round((((run.finishedAt || Date.now()) - run.startedAt) / 1000) || 0)) : 0;
+			const activity = state === "error" ? "执行失败" : state === "cut" ? "本轮被中断 · " + replies.length + " 条回复已保留"
+				: state === "done" ? "本轮完成 · " + replies.length + " 条回复 · 用时 " + seconds + "s"
+					: speaking.length ? speaking.join("、") + " 正在输入…" : "群成员还在工作…";
+			const queueHint = groupComposerHintOf(String((mark && mark.role) || "observer"), state === "running");
+			return {
+				state, status, statusLabel: run.statusLabel || GROUP_ROUND_LABELS[status],
+				role: String((mark && mark.role) || "observer"), roomId: String(run.roomId || roomId || ""),
+				roomName: String(run.roomName || ""), activity, queueHint,
+				activityKind: state === "running" ? (speaking.length ? "typing" : "status") : state,
+				eventKind: String((lastEvent && lastEvent.kind) || ""), eventText: lastEvent ? statusNodeText(lastEvent) : "",
+			};
+		}
+		/** 会话 → 群标记（`{ roomId, role, botId? }`；不是群里的会话 ⇒ null）。 */
+		function roomMarkOfSession(ctx, sessionId) {
+			try {
+				const list = ctx && ctx.sessions && ctx.sessions.list;
+				const snap = list && typeof list.getSnapshot === "function" ? list.getSnapshot() : null;
+				const summary = sessionId && snap && snap.byId ? snap.byId[sessionId] : undefined;
+				const mark = summary && summary.projectionValues ? summary.projectionValues[ROOM_PROJECTION_KEY] : null;
+				return mark && typeof mark.roomId === "string" && mark.roomId ? mark : null;
+			} catch { return null; }
+		}
+		/** 读 `group_relay` 工具结果（文本 JSON）⇒ 回复 / 状态节点 / 错误；读不出 ⇒ null。纯函数。 */
+		function parseRelayResult(block) {
+			try {
+				const parts = block && Array.isArray(block.content) ? block.content : [];
+				const text = parts.filter((p) => p && p.type === "text").map((p) => p.text).join("");
+				if (!text) { return null; }
+				const data = JSON.parse(text);
+				if (!data || typeof data !== "object") { return null; }
+				const base = {
+					replies: Array.isArray(data.replies) ? data.replies : [],
+					passed: Array.isArray(data.passed) ? data.passed : [],
+					failed: Array.isArray(data.failed) ? data.failed : [],
+					events: Array.isArray(data.events) ? data.events : [],
+					room: data.room || null, callId: String(data.callId || ""), startedAt: data.startedAt || 0,
+					finishedAt: data.finishedAt || 0, done: true,
+					phase: String(data.phase || (data.interrupted ? "cut" : "done")), interrupted: !!data.interrupted,
+				};
+				return data.error ? { ...base, error: String(data.error) } : base;
+			} catch { return null; }
+		}
+		/** 状态节点文案（DS Bot 同词表）；后端给了 text 就用后端口径。纯函数。 */
+		function statusNodeText(event) {
+			const kind = String((event && event.kind) || "failed");
+			if (event && event.text) { return String(event.text); }
+			const map = {
+				working: "成员正在工作…", missed: "成员没能按时回答", failed: "成员执行失败", passed: "成员没有补充",
+				paused: "群聊本轮暂停", resumed: "群聊本轮继续", cut: "群聊本轮被中断", done: "群聊本轮完成",
+				approval: "成员在等你批准",
+			};
+			return map[kind] || kind;
+		}
+		/**
+		 * ★ 2026-11-06（对齐 DS Bot「等你审批」）：群成员等人确认的工具调用，在群会话的工具卡与成员栏上直接批。
+		 * 数据是轮次的 `approvals`（vssaros-agents rooms.js `decideApproval`）；回答 = POST { action:'approve', id, choice }。
+		 * 回答后不本地删行：等下一次进度（轮询 / 广播）里它消失，避免「点了但其实没生效」。
+		 */
+		function GroupApprovals(props) {
+			const list = Array.isArray(props && props.approvals) ? props.approvals.filter((a) => a && a.id) : [];
+			const [busy, setBusy] = react.useState("");
+			const [err, setErr] = react.useState("");
+			if (!list.length) { return null; }
+			const answer = (item, choice) => {
+				setBusy(item.id + ":" + choice); setErr("");
+				postJson(ROOMS_API, { action: "approve", id: item.id, choice }).then(
+					() => setBusy(""),
+					(e) => { setBusy(""); setErr(String((e && e.message) || e)); },
+				);
+			};
+			return react.createElement("div", { style: Object.assign({}, C.col, { gap: 6 }), "data-vssaros-group-approvals": String(list.length) }, kids([
+				...list.map((item) => react.createElement("div", {
+					key: item.id, "data-vssaros-group-approval": item.id, "data-vssaros-group-approval-bot": String(item.botId || ""),
+					style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, padding: "6px 8px", borderRadius: 8,
+						border: "1px solid var(--dsw-alias-state-warn-primary, #e2a03f)" },
+				}, kids([
+					react.createElement("span", { key: "t", style: { flex: "1 1 220px", minWidth: 0, wordBreak: "break-word" } },
+						"【等你批准 #" + String(item.code || "") + "】" + String(item.name || "成员") + " 要运行：" + String(item.detail || item.tool || "")),
+					react.createElement("button", { key: "a", type: "button", style: C.btnPrimary, disabled: !!busy, "data-act": "group-approval-allow",
+						onClick: () => answer(item, "allow") }, busy === item.id + ":allow" ? "处理中…" : "允许"),
+					react.createElement("button", { key: "r", type: "button", style: C.btn, disabled: !!busy, "data-act": "group-approval-reject",
+						onClick: () => answer(item, "reject") }, busy === item.id + ":reject" ? "处理中…" : "拒绝"),
+				]))),
+				err ? react.createElement("div", { key: "e", style: C.err }, err) : null,
+			]));
+		}
+		/** 群设置的改动（只带改了的字段）。纯函数。 */
+		function roomPatch(room, draft) {
+			const out = {};
+			if (!room || !draft) { return out; }
+			const curName = room.named === false ? "" : String(room.name || "");
+			if (String(draft.name || "").trim() !== curName) { out.name = String(draft.name || "").trim(); }
+			if (String(draft.notice || "") !== String(room.notice || "")) { out.notice = String(draft.notice || ""); }
+			if (draft.mode !== room.mode) { out.mode = draft.mode; }
+			if ((draft.admin || null) !== (room.admin || null)) { out.admin = draft.admin; }
+			const ids = (room.members || []).map((m) => m.id);
+			if (ids.join("\n") !== (draft.members || []).join("\n")) { out.members = draft.members.slice(); }
+			return out;
+		}
+		const ROOM_MODE_LABELS = [
+			{ id: "admin", label: "管理员主持", hint: "普通消息先给管理员，由管理员用 @名字 点名其他成员。" },
+			{ id: "everyone", label: "所有人", hint: "每位成员轮流回答，管理员先说。" },
+		];
+
+		/** 「设置」页签里的群设置卡。 */
+		function RoomSettingsCard(props) {
+			const roomId = props.roomId || "";
+			const say = props.say;
+			const [state, reload] = useLoader(() => getJson(ROOMS_API + "?id=" + encodeURIComponent(roomId)), [roomId]);
+			const [roster] = useLoader(() => getJson("/x/agents/api/home").then((j) => (Array.isArray(j && j.agents) ? j.agents : [])), []);
+			const room = state.data && state.data.room ? state.data.room : null;
+			const [draft, setDraft] = react.useState(null);
+			const [busy, setBusy] = react.useState(false);
+			const [err, setErr] = react.useState("");
+			const [confirmDel, setConfirmDel] = react.useState(false);
+			const [adding, setAdding] = react.useState("");
+			react.useEffect(() => {
+				if (!room) { return; }
+				setDraft({ name: room.named === false ? "" : room.name, notice: room.notice || "", mode: room.mode, admin: room.admin,
+					members: (room.members || []).map((m) => m.id) });
+			}, [room && JSON.stringify(room)]);
+			if (!room || !draft) {
+				return react.createElement("div", { style: C.card, "data-vssaros-room-settings": "loading" }, kids([
+					react.createElement("div", { key: "t", style: C.title }, "群设置"),
+					react.createElement("div", { key: "s", style: Object.assign({}, C.sub, { marginTop: 6 }) }, state.error ? "读取失败：" + state.error : "读取中…"),
+				]));
+			}
+			const nameOf = (id) => {
+				const hit = (room.members || []).filter((m) => m.id === id)[0] || ((roster.data || []).filter((a) => a && a.id === id)[0]);
+				return String((hit && hit.name) || id);
+			};
+			const patch = roomPatch(room, draft);
+			const dirty = Object.keys(patch).length > 0;
+			const post = (body, done) => {
+				setBusy(true); setErr("");
+				return postJson(ROOMS_API, Object.assign({ id: roomId }, body)).then(
+					(j) => { setBusy(false); reload(); if (done) { done(j); } },
+					(e) => { setBusy(false); setErr(String((e && e.message) || e)); },
+				);
+			};
+			const save = () => post(Object.assign({ action: "update" }, patch), () => { if (say) { say("群设置已保存"); } });
+			const candidates = (roster.data || []).filter((a) => a && a.registered !== false && !a.external && draft.members.indexOf(a.id) < 0);
+			const field = (label, el) => react.createElement("div", { key: "f:" + label, style: { marginTop: 8 } }, kids([
+				react.createElement("div", { key: "l", style: Object.assign({}, C.tiny, { marginBottom: 3 }) }, label), el]));
+			return react.createElement("div", { style: C.card, "data-vssaros-room-settings": roomId }, kids([
+				react.createElement("div", { key: "t", style: C.row }, kids([
+					react.createElement("span", { key: "a", style: C.title }, "群设置"),
+					react.createElement("span", { key: "b", style: C.badge }, draft.members.length + " 位成员"),
+					room.admin ? react.createElement("span", { key: "c", style: C.badge }, "管理员 " + nameOf(room.admin)) : null,
+				])),
+				field("群名", react.createElement("input", {
+					key: "n", style: Object.assign({}, C.input, { width: "100%", boxSizing: "border-box" }), value: draft.name, maxLength: 60,
+					placeholder: "留空 = 按成员命名", "data-vssaros-room-name": "1", disabled: busy,
+					onChange: (e) => setDraft(Object.assign({}, draft, { name: e.target.value })),
+				})),
+				field("群公告（每位成员发言前都会读到的共同说明）", react.createElement("textarea", {
+					key: "o", style: Object.assign({}, C.input, { width: "100%", boxSizing: "border-box", minHeight: 64, resize: "vertical" }), value: draft.notice,
+					maxLength: 2000, "data-vssaros-room-notice": "1", disabled: busy,
+					onChange: (e) => setDraft(Object.assign({}, draft, { notice: e.target.value })),
+				})),
+				field("谁来回答", react.createElement("div", { key: "m", style: C.col }, ROOM_MODE_LABELS.map((m) => react.createElement("label", {
+					key: m.id, style: Object.assign({}, C.row, { cursor: "pointer" }), "data-vssaros-room-mode": m.id,
+				}, kids([
+					react.createElement("input", { key: "r", type: "radio", name: "room-mode-" + roomId, checked: draft.mode === m.id, disabled: busy,
+						onChange: () => setDraft(Object.assign({}, draft, { mode: m.id })) }),
+					react.createElement("span", { key: "l" }, m.label),
+					react.createElement("span", { key: "h", style: C.tiny }, m.hint),
+				]))))),
+				field("成员", react.createElement("ul", { key: "ms", style: C.list }, draft.members.map((id) => react.createElement("li", {
+					key: id, style: Object.assign({}, C.item, C.row), "data-vssaros-room-member": id,
+				}, kids([
+					react.createElement("span", { key: "n", style: C.grow }, nameOf(id)),
+					draft.admin === id ? react.createElement("span", { key: "a", style: C.badgeOn }, "管理员")
+						: react.createElement("button", { key: "s", type: "button", style: C.btn, disabled: busy,
+							onClick: () => setDraft(Object.assign({}, draft, { admin: id })) }, "设为管理员"),
+					draft.members.length > 2 ? react.createElement("button", { key: "x", type: "button", style: C.btn, disabled: busy, "data-act": "room-member-remove",
+						onClick: () => {
+							const members = draft.members.filter((m) => m !== id);
+							setDraft(Object.assign({}, draft, { members, admin: draft.admin === id ? members[0] : draft.admin }));
+						} }, "移出") : null,
+				]))))),
+				candidates.length ? react.createElement("div", { key: "add", style: Object.assign({}, C.row, { marginTop: 6 }) }, kids([
+					react.createElement("select", { key: "s", style: C.input, value: adding, "data-vssaros-room-add": "1", disabled: busy,
+						onChange: (e) => setAdding(e.target.value) }, [react.createElement("option", { key: "", value: "" }, "添加成员…")]
+						.concat(candidates.map((a) => react.createElement("option", { key: a.id, value: a.id }, String(a.name || a.id))))),
+					react.createElement("button", { key: "b", type: "button", style: C.btn, disabled: busy || !adding,
+						onClick: () => { setDraft(Object.assign({}, draft, { members: draft.members.concat([adding]) })); setAdding(""); } }, "添加"),
+				])) : null,
+				react.createElement("div", { key: "save", style: Object.assign({}, C.row, { marginTop: 10 }) }, kids([
+					react.createElement("button", { key: "s", type: "button", style: C.btnPrimary, disabled: busy || !dirty, "data-act": "room-save", onClick: save }, busy ? "保存中…" : "保存"),
+					dirty ? react.createElement("button", { key: "r", type: "button", style: C.btn, disabled: busy,
+						onClick: () => setDraft({ name: room.named === false ? "" : room.name, notice: room.notice || "", mode: room.mode, admin: room.admin,
+							members: (room.members || []).map((m) => m.id) }) }, "撤销改动") : null,
+					err ? react.createElement("span", { key: "e", style: C.err }, err) : null,
+				])),
+				field("侧栏", react.createElement("div", { key: "f", style: C.row }, kids([
+					react.createElement("label", { key: "p", style: C.row }, kids([
+						react.createElement("input", { key: "c", type: "checkbox", checked: room.pinned === true, disabled: busy, "data-vssaros-room-pin": "1",
+							onChange: (e) => post({ action: "flags", pinned: e.target.checked }) }),
+						react.createElement("span", { key: "l" }, "置顶"),
+					])),
+					react.createElement("label", { key: "h", style: C.row }, kids([
+						react.createElement("input", { key: "c", type: "checkbox", checked: room.hidden === true, disabled: busy, "data-vssaros-room-hide": "1",
+							onChange: (e) => post({ action: "flags", hidden: e.target.checked }) }),
+						react.createElement("span", { key: "l" }, "从侧栏隐藏"),
+					])),
+				]))),
+				field("管理", confirmDel
+					? react.createElement("div", { key: "d", style: C.row }, kids([
+						react.createElement("span", { key: "q", style: C.sub }, "删除后群会话与成员的群内会话会被归档，确定？"),
+						react.createElement("button", { key: "y", type: "button", style: Object.assign({}, C.btn, { color: "var(--dsw-alias-state-error-primary, #e5534b)" }), disabled: busy,
+							"data-act": "room-delete-confirm", onClick: () => post({ action: "delete" }, () => { if (say) { say("群聊已删除"); } }) }, "删除"),
+						react.createElement("button", { key: "n", type: "button", style: C.btn, onClick: () => setConfirmDel(false) }, "取消"),
+					]))
+					: react.createElement("button", { key: "d", type: "button", style: Object.assign({}, C.btn, { color: "var(--dsw-alias-state-error-primary, #e5534b)" }),
+						"data-act": "room-delete", onClick: () => setConfirmDel(true) }, "删除群聊…")),
+			]));
+		}
+
+		/** 连续多少次拿不到进度（`progress:null`）就判定状态已丢失并停止轮询（重启前的旧调用 / 超过保留期）。 */
+		const RELAY_LOST_AFTER = 5;
+		/**
+		 * ★ 2026-11-06 DSH 重启时给悬空 tool-call 补的收尾结果（`dsh-session` repair：`isError` + 英文说明，
+		 * 「The tool call was interrupted …」）。它不是我们的 JSON ⇒ 群聊这一轮的真实回复要从
+		 * `?progress=`（agents 侧对被中断轮次做了按群归档）补全。纯函数。
+		 */
+		function isHostInterruptedResult(block) {
+			try {
+				if (!block || typeof block !== "object") { return false; }
+				const parts = Array.isArray(block.content) ? block.content : [];
+				const text = parts.filter((p) => p && p.type === "text").map((p) => p.text).join("").trim();
+				if (!text || text.startsWith("{")) { return false; }
+				return !!block.isError || /tool call was interrupted|outcome is unknown|no result was durably recorded/i.test(text);
+			} catch { return false; }
+		}
+		/** 群会话里 `group_relay` 工具调用的卡：成员气泡（运行中轮询进度，结束读结果）。 */
+		function GroupRelayView(props) {
+			const settled = props.phase === "result" ? parseRelayResult(props.block) : null;
+			const hostCut = props.phase === "result" && !settled && isHostInterruptedResult(props.block);
+			const callId = props.callId || "";
+			const lostAfter = Number(props.lostAfterPolls) > 0 ? Number(props.lostAfterPolls) : RELAY_LOST_AFTER;
+			const pollMs = Number(props.pollMs) > 0 ? Number(props.pollMs) : 1000;
+			const [live, setLive] = react.useState(null);
+			const [lost, setLost] = react.useState(false);
+			const liveDone = !!(live && live.done);
+			react.useEffect(() => {
+				if (settled || liveDone || lost || !callId) { return undefined; }
+				let alive = true;
+				let timer = null;
+				let finished = false;
+				let misses = 0;
+				const poll = () => {
+					getJson(ROOMS_API + "?progress=" + encodeURIComponent(callId)).then(
+						(j) => {
+							if (!alive) { return; }
+							const next = j && j.progress ? j.progress : null;
+							if (next) { misses = 0; } else if (j && j.ok) { misses += 1; }
+							if (!next && misses >= lostAfter) { finished = true; setLost(true); return; }
+							finished = !!(next && next.done);
+							if (next) { setLive(next); }
+						},
+						() => undefined, // 网络错误不算「丢失」，继续重试
+					).finally(() => {
+						if (!alive || finished) { return; }
+						timer = setTimeout(poll, typeof document !== "undefined" && document.hidden ? Math.max(5000, pollMs) : pollMs);
+					});
+				};
+				poll();
+				return () => { alive = false; if (timer) { clearTimeout(timer); } };
+			}, [callId, !!settled, liveDone, lost]);
+			const done = !!settled || liveDone || lost;
+			const data = settled || live || { replies: [], passed: [], failed: [], speaking: [] };
+			const bubble = (r, i) => react.createElement("div", { key: "r" + i, style: { display: "flex", gap: 8, alignItems: "flex-start" }, "data-vssaros-group-reply": String(r.botId || r.name || i) }, kids([
+				react.createElement("span", { key: "a", style: { width: 24, height: 24, flex: "0 0 24px", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center",
+					fontSize: 11, fontWeight: 700, color: "var(--dsw-alias-label-primary-foreground, #fff)", background: "var(--dsw-alias-brand-primary, #4d7cfe)" } },
+				String(r.name || "?").slice(0, 1)),
+				react.createElement("div", { key: "b", style: { minWidth: 0, flex: "1 1 auto" } }, kids([
+					react.createElement("div", { key: "n", style: C.tiny }, String(r.name || "") + (typeof r.ms === "number" ? " · " + Math.max(1, Math.round(r.ms / 1000)) + "s" : "")),
+					// ★ 2026-11-06：成员回复按 Markdown 渲染（原来 pre-wrap 纯文本 ⇒ `**` / 反引号 / 列表符原样露出来）
+					react.createElement("div", { key: "t", "data-vssaros-md": "1", style: Object.assign({}, C.item, { wordBreak: "break-word", lineHeight: "20px" }) }, markdownNodes(String(r.text || ""))),
+				])),
+			]));
+			const replies = (data.replies || []).filter((r) => !r || !r.kind);
+			const speaking = data.speaking || [], passed = data.passed || [], failed = data.failed || [];
+			const events = data.events || [], error = String(data.error || "");
+			const roundStatus = lost && !settled && !live ? (hostCut ? "cut" : "lost")
+				: groupRoundStatus(Object.assign({}, data, { done: done || !!data.done }, hostCut && !live ? { interrupted: true } : {}));
+			const interrupted = roundStatus === "cut";
+			const seconds = data.startedAt ? Math.max(0, Math.round((((data.finishedAt || Date.now()) - data.startedAt) / 1000) || 0)) : null;
+			const doneText = roundStatus === "lost" ? "执行状态已丢失（可能因重启或超过保留时间），本轮结果无法再读取"
+				: hostCut && !live ? "群聊本轮被重启打断，这一轮的成员回复已无法读取"
+				: (interrupted ? "群聊本轮被中断" : "群聊本轮已完成") + " · " + replies.length + " 条回复"
+					+ (seconds !== null ? " · 用时 " + seconds + "s" : "") + (failed.length ? " · " + failed.length + " 位成员没能回答" : "");
+			return react.createElement("div", {
+				style: Object.assign({}, C.col, { gap: 8, margin: "4px 0" }),
+				"data-vssaros-group-relay": roundStatus === "lost" ? "lost" : done ? "done" : "running", "data-vssaros-group-relay-done": done ? "1" : "0",
+				"data-vssaros-group-relay-interrupted": interrupted ? "1" : "0",
+				"data-vssaros-group-relay-round-status": roundStatus,
+			}, kids([
+				...replies.map(bubble),
+				...events.map((event, i) => react.createElement("div", {
+					key: "ev" + i, style: /^(failed|missed|cut)$/.test(String(event && event.kind)) ? C.err : C.tiny,
+					"data-vssaros-group-relay-status-node": String((event && event.kind) || "failed"),
+				}, statusNodeText(event))),
+				!done ? react.createElement(GroupApprovals, { key: "ap", approvals: data.approvals }) : null,
+				speaking.length ? react.createElement("div", { key: "s", style: C.tiny }, speaking.join("、") + " 正在输入…") : null,
+				!done ? react.createElement("div", { key: "run", style: C.tiny, "data-vssaros-group-relay-status": "running" },
+					replies.length || speaking.length ? "群成员还在工作…" : "正在把消息交给群成员…") : null,
+				done ? react.createElement("div", { key: "done", style: roundStatus === "lost" ? C.err : C.tiny, "data-vssaros-group-relay-status": roundStatus === "lost" ? "lost" : "done" }, doneText) : null,
+				passed.length ? react.createElement("div", { key: "p", style: C.tiny }, "没有补充：" + passed.join("、")) : null,
+				...failed.map((f, i) => react.createElement("div", { key: "f" + i, style: C.err }, String(f.name || "") + " 没能回答：" + String(f.reason || ""))),
+				error ? react.createElement("div", { key: "e", style: C.err }, error) : null,
+				done && roundStatus !== "lost" && !error && !replies.length && !failed.length && !passed.length && !events.length
+					? react.createElement("div", { key: "z", style: C.tiny }, "这条消息没有叫到任何成员。") : null,
+			]));
+		}
+
+		/**
+		 * 只读 MemberDock：composer 上方显示当前群谁在说 / 谁已回 / 谁失败 / 最新状态节点。
+		 * 数据来自全局浮层广播的 `vssaros-group-progress`，不再开一条轮询；本批不含审批/停止按钮。
+		 */
+		function GroupMemberDock(props) {
+			const initial = () => {
+				try {
+					return typeof window !== "undefined" && Array.isArray(window.__vssarosGroupProgress) ? window.__vssarosGroupProgress : [];
+				} catch { return []; }
+			};
+			const [active, setActive] = react.useState(initial);
+			react.useEffect(() => {
+				const win = typeof window !== "undefined" ? window : null;
+				if (!win || typeof win.addEventListener !== "function") { return undefined; }
+				const onProgress = (ev) => setActive(Array.isArray(ev && ev.detail && ev.detail.active) ? ev.detail.active : []);
+				win.addEventListener(GROUP_PROGRESS_EVENT, onProgress);
+				return () => { try { win.removeEventListener(GROUP_PROGRESS_EVENT, onProgress); } catch { /* 已释放 */ } };
+			}, []);
+			const ctx = props && props.__vssarosCtx;
+			const sessionId = String((props && props.sessionId) || "");
+			const mark = roomMarkOfSession(ctx, sessionId);
+			const roomId = String((mark && mark.roomId) || sessionId || "");
+			const current = active.find((item) => roomId && item && item.roomId === roomId) || active[0];
+			const flow = groupComposerFlowOf(active, mark);
+			const dockVisible = !!current && !!flow;
+			const dockRole = String((mark && mark.role) || (flow && flow.role) || "");
+			react.useEffect(() => {
+				setGroupComposerDockVisibility(roomId, dockRole, dockVisible);
+				return () => setGroupComposerDockVisibility(roomId, dockRole, false);
+			}, [roomId, dockRole, dockVisible]);
+			if (!current || !flow) { return null; }
+			const speaking = Array.isArray(current.speaking) ? current.speaking : [];
+			const replies = (Array.isArray(current.replies) ? current.replies : []).filter((r) => !r || !r.kind);
+			const events = Array.isArray(current.events) ? current.events : [];
+			const failed = Array.isArray(current.failed) ? current.failed : [];
+			const passed = Array.isArray(current.passed) ? current.passed : [];
+			const pills = [];
+			const add = (name, state, label) => {
+				const key = String(name || "").trim();
+				if (!key || pills.some((p) => p.name === key)) { return; }
+				pills.push({ name: key, state, label });
+			};
+			const waiting = Array.isArray(current.approvals) ? current.approvals : [];
+			for (const item of waiting) { add(item && item.name, "approval", "等你审批"); }
+			for (const name of speaking) { add(name, "speaking", "正在输入"); }
+			for (const event of events) {
+				if (!event || !event.name) { continue; }
+				const kind = String(event.kind || "");
+				const state = /^(failed|missed|cut)$/.test(kind) ? "failed" : kind === "working" ? "speaking"
+					: kind === "passed" ? "passed" : "waiting";
+				add(event.name, state, statusNodeText(event).slice(0, 18));
+			}
+			for (const reply of replies) { add(reply && reply.name, "replied", "已回复"); }
+			for (const item of failed) { add(item && item.name, "failed", "未回答"); }
+			for (const name of passed) { add(name, "passed", "无补充"); }
+			const lastEvent = events.length ? events[events.length - 1] : null;
+			const roundStatus = groupRoundStatus(current);
+			const status = current.statusLabel || GROUP_ROUND_LABELS[roundStatus];
+			return react.createElement("section", {
+				"data-vssaros-group-member-dock": "1", "data-vssaros-group-member-room": String(current.roomId || ""),
+				"data-vssaros-group-member-status": roundStatus === "failed" ? "error" : roundStatus === "cut" ? "cut" : current.done ? "done" : "running",
+				"data-vssaros-group-member-round-status": roundStatus,
+				"aria-label": "群成员执行状态", role: "status",
+				style: {
+					display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, margin: "2px 10px 8px",
+					padding: "6px 8px", borderRadius: 9, border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.3))",
+					background: "var(--dsw-alias-bg-layer-2, rgba(32,32,32,.92))", color: "var(--dsw-alias-label-primary, inherit)",
+					fontSize: 11,
+				},
+			}, kids([
+				react.createElement("span", { key: "g", style: { fontWeight: 600, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+					"群聊 · " + String(current.roomName || current.roomId || "")),
+				react.createElement("span", { key: "s", style: { color: roundStatus === "failed" || roundStatus === "cut" ? "var(--dsw-alias-state-error-primary, #f14c4c)" : roundStatus === "done" ? "var(--dsw-alias-state-success-primary, #4ac26b)" : "var(--dsw-alias-state-warn-primary, #e2a03f)" } }, status),
+				...pills.slice(0, 8).map((pill, i) => react.createElement("span", {
+					key: "m" + i, "data-vssaros-group-member": pill.name, "data-vssaros-group-member-state": pill.state,
+					title: pill.name + " · " + pill.label,
+					style: {
+						borderRadius: 999, padding: "2px 7px", border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.3))",
+						color: pill.state === "failed" ? "var(--dsw-alias-state-error-primary, #f14c4c)" : "inherit",
+						whiteSpace: "nowrap", maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis",
+					},
+				}, pill.name + " · " + pill.label)),
+				lastEvent && lastEvent.text ? react.createElement("span", {
+					key: "e", style: { color: "var(--dsw-alias-label-tertiary, #999)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 240 },
+					"data-vssaros-group-member-event": String(lastEvent.kind || ""),
+				}, String(lastEvent.text).slice(0, 60)) : null,
+				react.createElement("div", {
+					key: "flow", "data-vssaros-group-composer-flow": "1", "data-vssaros-group-composer-role": flow.role,
+					"data-vssaros-group-composer-state": flow.state, "data-vssaros-group-composer-activity": flow.activityKind,
+					"data-vssaros-group-composer-event": flow.eventKind, "data-vssaros-group-composer-queue-hint": "1",
+				}, kids([
+					react.createElement("span", { key: "a", "data-vssaros-group-composer-activity-text": "1" }, flow.activity),
+					flow.queueHint ? react.createElement("span", { key: "q", "data-vssaros-group-composer-queue-hint-text": "1" }, flow.queueHint) : null,
+					flow.eventText ? react.createElement("span", { key: "ev", "data-vssaros-group-composer-event-text": "1" }, String(flow.eventText).slice(0, 80)) : null,
+				])),
+				current.error ? react.createElement("span", { key: "err", style: C.err }, String(current.error).slice(0, 120)) : null,
+				// 不看本轮是否结束：群不再等的成员（迟到）也可能在干活中途请求审批
+				waiting.length ? react.createElement("div", { key: "ap", style: { flex: "1 1 100%" } },
+					react.createElement(GroupApprovals, { approvals: waiting })) : null,
+			]));
+		}
+
 		/** 设置页签：同样按「工作区 | Bot」分段；AgentMemory 卡两段都显示。 */
 		function SettingsView(props) {
 			const ctx = props.__vssarosCtx;
 			const sessionId = props.sessionId || "";
 			const pick = useScopePicker(ctx, sessionId);
-			// ★ 2026-11-05「记忆收敛成一套」：Bot / 工作区记忆已并入 @vssaros/dsh-memory（bot / key 轨），
-			//   dsh-agents 默认不再注入 ⇒ BotSettingsPane / WorkspaceSettingsPane 的「注入上限 / 模式 / 自动提交」不再生效，
-			//   不渲染（组件保留：回滚开关 VSSAROS_AGENTS_LEGACY_MEMORY=1 时它们仍是旧路径的设置入口）。
-			//   注入上限现在是全局「记忆注入」组里的「Bot 记忆注入上限」，条目在「记忆」页签里看。
-			const pane = null;
+			// ★ 2026-11-05 群会话：顶部是群设置卡，没有 Bot 分段（群会话不属于任何一个 bot）
+			const room = roomMarkOfSession(ctx, sessionId);
+			if (room && room.role === "room") {
+				return react.createElement("div", { style: C.root, "data-vssaros-view": "bot-settings", "data-vssaros-memory-scope": "room" },
+					kids([
+						react.createElement(SectionLabel, { key: "sec-room", text: "本群" }),
+						react.createElement(RoomSettingsCard, { key: "room", roomId: room.roomId, say: props.__vssarosSay }),
+						react.createElement(SectionLabel, { key: "sec-global", text: "全局（所有会话与工作区共用）" }),
+						react.createElement(MemoryModuleCard, { key: "mem-module", say: props.__vssarosSay }),
+					]));
+			}
+			// 记忆条目在「记忆」页签（@vssaros/dsh-memory）；Bot 记忆注入上限在全局「记忆注入」组。
 			return react.createElement("div", { style: C.root, "data-vssaros-view": "bot-settings", "data-vssaros-memory-scope": pick.scope },
 				kids([
 					// 作用域分区：上半部分随「工作区 | Bot」切换，下半部分是全局设置 —— 不标出来就像分段在管整页
@@ -1278,7 +1696,10 @@ window.__ModuleLoader__.load({
 					pick.scope === "bot" && pick.agentId
 						? react.createElement(BotConfigCard, { key: "cfg", agentId: pick.agentId, say: props.__vssarosSay })
 						: null,
-					pane,
+					// ★ 2026-11-05「记忆收敛」S2：Bot 记忆的版本历史（数据在 @vssaros/dsh-memory 的 bot 轨）
+					pick.scope === "bot" && pick.agentId
+						? react.createElement(BotMemoryHistoryCard, { key: "bot-hist", sessionId: sessionId, say: props.__vssarosSay })
+						: null,
 					react.createElement(SectionLabel, { key: "sec-global", text: "全局（所有会话与工作区共用）" }),
 					// ★ 2026-11-03：evolve 的「Vssaros Memory 设置」页签并入本页（全局卡，两段都显示）
 					react.createElement(MemoryModuleCard, { key: "mem-module", say: props.__vssarosSay }),
@@ -1388,139 +1809,6 @@ window.__ModuleLoader__.load({
 				err ? react.createElement("div", { key: "e", style: Object.assign({}, C.err, { marginTop: 6 }) }, err) : null,
 				note ? react.createElement("div", { key: "n", style: Object.assign({}, C.tiny, { marginTop: 6 }) }, note) : null,
 			]));
-		}
-
-		// ══════════════════════════════════════════════════════════════════════
-		// 1. 记忆 · Bot 那一段（工作区那一段见上方 WorkspaceMemoryPane）
-		// ══════════════════════════════════════════════════════════════════════
-		function BotMemoryPane(props) {
-			const bridge = props.__vssarosBridge;
-			const say = props.__vssarosSay;
-			const agentId = props.agentId || "";
-			const [file, setFile] = react.useState("MEMORY.md");
-			const url = agentId
-				? "/x/agents/api/memory?agent=" + encodeURIComponent(agentId) + "&file=" + encodeURIComponent(file)
-				: "";
-			const [state, reload] = useLoader(() => (url ? getJson(url) : Promise.resolve(null)), [url]);
-
-			if (!agentId) {
-				return react.createElement("div", { style: C.card }, kids([
-					react.createElement("div", { key: "t", style: C.title }, "当前会话没有选 Bot"),
-					react.createElement("div", { key: "s", style: Object.assign({}, C.sub, { marginTop: 6 }) },
-						"Bot 记忆按 Bot 存（preset 是 vssaros-*）；项目相关的记忆看「工作区」那一段。"),
-				]));
-			}
-
-			const data = state.data;
-			const limits = (data && data.limits) || {};
-			const usage = (data && data.usage) || {};
-			const git = (data && data.git) || {};
-			const files = (data && data.files) || [];
-			const limit = Number(limits.chars) || 0;
-			const used = Number(usage.chars) || 0;
-			const injected = Number(usage.injected) || 0;
-			const over = limit > 0 && used > limit;
-			const pct = limit > 0 ? Math.min(100, Math.round((Math.min(used, limit) / limit) * 100)) : 0;
-			const lines = parseMemory(data && data.content && data.content.text);
-
-			const head = react.createElement("div", { key: "head", style: C.row }, kids([
-				react.createElement("span", { key: "t", style: C.title }, "Bot 记忆"),
-				react.createElement("span", { key: "bot", style: C.badge }, "Bot " + agentId),
-				react.createElement("span", { key: "usage", style: limit > 0 ? C.badgeOn : C.badge },
-					limit > 0 ? ("注入 " + used + " / " + limit + " 字符") : "注入已关闭"),
-				react.createElement("span", { key: "mode", style: C.badge },
-					limits.mode === "live" ? "live（每轮刷新）" : "session（会话内冻结）"),
-				react.createElement("span", { key: "sp", style: C.grow }),
-				react.createElement("button", { key: "reload", type: "button", style: C.btn, onClick: reload, title: "重新读取" }, "刷新"),
-				react.createElement("button", {
-					key: "full", type: "button", style: C.btn,
-					onClick: () => openPage(bridge, "/x/agents/memory/" + encodeURIComponent(agentId), say),
-					title: "打开完整记忆演化页（版本 / 分支 / 备份 / 回滚）",
-				}, "完整页"),
-			]));
-
-			const usageBar = limit > 0
-				? react.createElement("div", { key: "bar", style: C.bar, title: "已用 " + used + " / 上限 " + limit },
-					react.createElement("i", {
-						style: Object.assign({}, C.barFill, {
-							width: pct + "%",
-							background: over ? "var(--dsw-alias-state-warn-label, #d29922)" : C.barFill.background,
-						}),
-					}))
-				: react.createElement("div", { key: "bar", style: C.tiny },
-					"注入上限为 0 ⇒ MEMORY.md 不会进入 system prompt（在「记忆设置」里调）。");
-
-			const overNote = over
-				? react.createElement("div", { key: "over", style: C.tiny },
-					"超出上限 " + (used - limit) + " 字符 ⇒ 实际注入只有前 " + injected + " 字符（后面的内容 AI 看不到）。")
-				: null;
-
-			const gitRow = react.createElement("div", { key: "git", style: C.row }, kids([
-				react.createElement("span", { key: "s", style: C.sub }, git.enabled ? "Git 记忆仓" : "未启用 Git 化"),
-				git.enabled ? react.createElement("span", { key: "b", style: C.badge }, "分支 " + String(git.branch || "main")) : null,
-				git.enabled ? react.createElement("span", { key: "c", style: C.badge }, "提交 " + (Number(git.commits) || 0)) : null,
-				git.enabled
-					? react.createElement("span", { key: "d", style: Number(git.dirty) > 0 ? C.badgeOn : C.badge }, "未提交 " + (Number(git.dirty) || 0))
-					: null,
-				git.note ? react.createElement("span", { key: "n", style: C.tiny }, String(git.note)) : null,
-			]));
-
-			const fileRow = files.length > 0
-				? react.createElement("div", { key: "files", style: C.row },
-					files.map((f) => react.createElement("button", {
-						key: String(f.name),
-						type: "button",
-						style: String(f.name) === file ? C.btnPrimary : C.btn,
-						onClick: () => setFile(String(f.name)),
-						title: String(f.name || "") + " · " + sizeLabel(f.size),
-					}, String(f.name))))
-				: null;
-
-			const errorCard = state.error
-				? react.createElement("div", { key: "err", style: C.card },
-					react.createElement("div", { style: C.err }, "读取失败：" + state.error))
-				: null;
-
-			const loadingNote = state.loading && !data
-				? react.createElement("div", { key: "load", style: C.tiny }, "正在读取记忆…")
-				: null;
-
-			let body = null;
-			if (data) {
-				if (lines.length === 0) {
-					body = react.createElement("div", { key: "empty", style: C.card }, kids([
-						react.createElement("div", { key: "s", style: C.sub }, "这个文件还是空的。"),
-						react.createElement("div", { key: "h", style: Object.assign({}, C.tiny, { marginTop: 6 }) },
-							"写入请在「完整页」或用文件工具 —— 本页只读，避免破坏格式。"),
-					]));
-				} else {
-					body = react.createElement("div", { key: "body", style: C.list },
-						lines.map((ln, i) => {
-							if (ln.kind === "head") {
-								return react.createElement("div", {
-									key: "h" + i,
-									style: Object.assign({}, C.title, { marginTop: i > 0 ? 4 : 0 }),
-								}, ln.text);
-							}
-							if (ln.kind === "item") {
-								return react.createElement("div", {
-									key: "i" + i,
-									style: Object.assign({}, C.item, { display: "flex", gap: 8 }),
-								}, kids([
-									react.createElement("span", { key: "m", style: C.sub }, "•"),
-									react.createElement("span", { key: "x", style: C.grow }, ln.text),
-								]));
-							}
-							return react.createElement("div", { key: "t" + i, style: C.sub }, ln.text);
-						}));
-				}
-			}
-
-			const footNote = react.createElement("div", { key: "foot", style: C.tiny },
-				"只读预览（写入走完整页，或让 Bot 用 workspace_memory 工具 scope=bot）。改动在**新会话**生效：当前会话的快照已冻结以保证 prompt 缓存命中。");
-
-			return react.createElement("div", { style: C.col },
-				kids([head, usageBar, overNote, gitRow, fileRow, errorCard, loadingNote, body, footNote]));
 		}
 
 		// ══════════════════════════════════════════════════════════════════════
@@ -1756,138 +2044,6 @@ window.__ModuleLoader__.load({
 		}
 
 		// ══════════════════════════════════════════════════════════════════════
-		// 4. 记忆设置 · Bot 那一段（工作区那一段见上方 WorkspaceSettingsPane）
-		// ══════════════════════════════════════════════════════════════════════
-		// 2026-11-03：AgentMemoryCard（网关记忆库卡片 + /x/memory/api/inbox 收件箱）随整套记忆体系下线移除。
-		function BotSettingsPane(props) {
-			const agentId = props.agentId || "";
-			const url = agentId ? "/x/agents/api/memory?agent=" + encodeURIComponent(agentId) : "";
-			const [state, reload] = useLoader(() => (url ? getJson(url) : Promise.resolve(null)), [url]);
-			// 表单草稿：只在**首次**拿到数据时初始化（之后是用户的输入，别抢）
-			const [chars, setChars] = react.useState(null);
-			const [mode, setMode] = react.useState(null);
-			const [saving, setSaving] = react.useState(false);
-			const [note, setNote] = react.useState("");
-			const [err, setErr] = react.useState("");
-			const data = state.data;
-			const limits = (data && data.limits) || {};
-			// 按 **url** 记录已初始化过的对象：切 Bot 要重置表单，同一 Bot 点「刷新」不许覆盖用户正在改的值。
-			const initializedFor = react.useRef("");
-			react.useEffect(() => {
-				if (!data || initializedFor.current === url) { return; }
-				initializedFor.current = url;
-				setChars(String(Number(limits.chars) || 0));
-				setMode(limits.mode === "live" ? "live" : "session");
-			}, [data, url]);
-
-			if (!agentId) {
-				return react.createElement("div", { style: C.card }, kids([
-					react.createElement("div", { key: "t", style: C.title }, "没有可设置的 Bot"),
-					react.createElement("div", { key: "s", style: Object.assign({}, C.sub, { marginTop: 6 }) },
-						"Bot 记忆的口径写在 Bot 的 .agent.md 里 ⇒ 当前会话不是我们的 Bot；工作区记忆在「工作区」那一段设置。"),
-				]));
-			}
-
-			const save = () => {
-				const n = Number(String(chars).trim());
-				if (!Number.isFinite(n) || (n !== 0 && (n < 512 || n > 20000))) {
-					setErr("注入上限要是数字：0（关闭）或 512~20000 之间");
-					setNote("");
-					return;
-				}
-				setSaving(true);
-				setErr("");
-				setNote("");
-				postJson("/x/agents/api/memory", { agent: agentId, action: "set-limits", chars: Math.trunc(n), mode })
-					.then(() => {
-						setNote("已保存。注入口径对**新会话**生效（当前会话的快照已冻结）。");
-						reload();
-					})
-					.catch((e) => setErr("保存失败：" + String((e && e.message) || e)))
-					.then(() => setSaving(false));
-			};
-
-			const auto = (data && data.autoCommit) || {};
-			const git = (data && data.git) || {};
-
-			const head = react.createElement("div", { key: "head", style: C.row }, kids([
-				react.createElement("span", { key: "t", style: C.title }, "Bot 记忆设置"),
-				react.createElement("span", { key: "b", style: C.badge }, "Bot " + agentId),
-				react.createElement("span", { key: "sp", style: C.grow }),
-				react.createElement("button", {
-					key: "r", type: "button", style: C.btn,
-					onClick: () => { reload(); },
-				}, "刷新"),
-			]));
-
-			const errorNote = state.error
-				? react.createElement("div", { key: "err", style: C.err }, "读取失败：" + state.error)
-				: null;
-
-			// ① 注入上限 + 模式
-			const injectCard = react.createElement("div", { key: "inject", style: C.card }, kids([
-				react.createElement("div", { key: "t", style: C.title }, "注入到 system prompt"),
-				react.createElement("div", { key: "d", style: Object.assign({}, C.sub, { margin: "4px 0 8px" }) },
-					"MEMORY.md 的前 N 个字符会拼在人设段尾部。0 = 关闭注入；范围 512~20000。"),
-				react.createElement("div", { key: "row1", style: C.row }, kids([
-					react.createElement("span", { key: "l", style: C.sub }, "上限"),
-					react.createElement("input", {
-						key: "in",
-						style: Object.assign({}, C.input, { width: 90 }),
-						type: "number", min: 0, max: 20000, step: 256,
-						value: chars === null ? "" : chars,
-						disabled: saving || !data,
-						onChange: (e) => setChars(e && e.target ? e.target.value : ""),
-					}),
-					react.createElement("span", { key: "u", style: C.tiny }, "字符"),
-					react.createElement("span", { key: "sp", style: C.grow }),
-					react.createElement("button", {
-						key: "save", type: "button", style: C.btnPrimary,
-						disabled: saving || !data, onClick: save,
-					}, saving ? "保存中…" : "保存"),
-				])),
-				react.createElement("div", { key: "row2", style: Object.assign({}, C.row, { marginTop: 8 }) }, kids([
-					react.createElement("span", { key: "l", style: C.sub }, "模式"),
-					react.createElement("button", {
-						key: "session", type: "button",
-						style: mode === "session" ? C.btnPrimary : C.btn,
-						disabled: saving || !data,
-						onClick: () => setMode("session"),
-					}, "session（会话内冻结）"),
-					react.createElement("button", {
-						key: "live", type: "button",
-						style: mode === "live" ? C.btnPrimary : C.btn,
-						disabled: saving || !data,
-						onClick: () => setMode("live"),
-					}, "live（每轮刷新）"),
-				])),
-				react.createElement("div", { key: "hint", style: Object.assign({}, C.tiny, { marginTop: 6 }) },
-					"session 命中 prompt 缓存（改动要新会话才生效）；live 改完下一轮就生效，但每轮都可能丢掉前缀缓存。"),
-				err ? react.createElement("div", { key: "e", style: Object.assign({}, C.err, { marginTop: 6 }) }, err) : null,
-				note ? react.createElement("div", { key: "n", style: Object.assign({}, C.tiny, { marginTop: 6 }) }, note) : null,
-				limits.runtime
-					? react.createElement("div", { key: "rt", style: Object.assign({}, C.tiny, { marginTop: 6 }) },
-						"已装配：" + String(limits.runtime.chars) + " 字符 · " + String(limits.runtime.mode)
-						+ " · 冻结会话 " + String(limits.runtime.frozenSessions)
-						+ " · 服务 " + String(limits.runtime.served) + " 次")
-					: null,
-			]));
-
-			// ② 回合末自动提交：全局可写开关（P2），与工作区记忆共用；git / turns 是这个 Bot 自己的仓库状态
-			const autoCard = react.createElement(AutoCommitCard, {
-				key: "auto", say: props.__vssarosSay, git, turns: auto.turns,
-			});
-
-			// ③ AgentMemory 卡已抽成 AgentMemoryCard（工作区 / Bot 两段共用，由 SettingsView 渲染一次）
-
-			const footNote = react.createElement("div", { key: "foot", style: C.tiny },
-				"每一项都写进 Bot 的 .agent.md（memory-chars / memory-mode），改完会让该 Bot 的 preset 重新注册。");
-
-			return react.createElement("div", { style: C.col },
-				kids([head, errorNote, injectCard, autoCard, footNote]));
-		}
-
-		// ══════════════════════════════════════════════════════════════════════
 
 		/** 把 ctx / bridge / say 透给组件：槽 owner 只注入自己的标准 props（同 client.todos.js 做法）。 */
 		function wrap(Comp, ctx, bridge, say) {
@@ -1912,6 +2068,8 @@ window.__ModuleLoader__.load({
 					if (bridge && bridge.notify) { bridge.notify("attention", text); }
 				} catch { /* 通知失败不阻塞 */ }
 			};
+			// ★ 2026-11-05：composer 活动行 / shimmer / 入场动画，一次性幂等注入。
+			ensureGroupFlowStyle();
 			// 2026-11-03（用户要求：两套页签合并）：「记忆 / 技能 / 待办」由内置
 			// @vssaros/dsh-memory 插件提供（分层记忆 KEY.md / 项目日志 / 技能库 / 结构化待办），
 			// 本外壳不再重复注册同名页签；只保留唯一的「设置」，并把 evolve 的
@@ -1940,14 +2098,38 @@ window.__ModuleLoader__.load({
 					say("页签「" + view.label + "」挂载失败（slot " + SLOT + "）：" + msg);
 				}
 			}
+			// ★ 2026-11-05 群会话里的 `group_relay` 调用 ⇒ 成员气泡（不注册就是一张看不懂的通用工具卡）
+			try {
+				ctx.slots.inject("tool.call.toolview", () => ctx.slots.register({ name: "tool.call.toolview", key: ROOM_RELAY_TOOL }, GroupRelayView));
+				state.vssarosGroupRelayView = true;
+			} catch (e) {
+				state.vssarosGroupRelayViewError = String((e && e.message) || e);
+			}
+			// ★ 2026-11-05：composer 上方只读 MemberDock；order 30 避开官方 0/10/20 与本项目 -5/5/15/25。
+			//   inject 把 sessionId 递进组件，wrap 把 ctx 递进组件 ⇒ 可区分群会话 / bot 影子会话。
+			try {
+				ctx.slots.inject(MEMBER_DOCK_SLOT, () => ctx.slots.register(
+					{ name: MEMBER_DOCK_SLOT, id: MEMBER_DOCK_ID, order: MEMBER_DOCK_ORDER,
+						inject: (sessionId) => ({ sessionId }) }, wrap(GroupMemberDock, ctx, bridge, say)));
+				state.vssarosGroupMemberDock = true;
+			} catch (e) {
+				state.vssarosGroupMemberDockError = String((e && e.message) || e);
+			}
 		}
 
 		exports.install = install;
 		// 仅测试/守卫用：纯逻辑与契约常量
 		exports.__test = {
-			SLOT, IDS, ORDERS, OFFICIAL, WS_API,
+			SLOT, IDS, ORDERS, OFFICIAL,
 			isAgentPreset, agentIdOf, cwdOf, isUnder, rootOptionsFor, parseMemory, sizeLabel, explainLoadError, TODO_GROUPS,
 			MemoryModuleCard, MEM_GROUPS, SettingsView,
+			// ★ 2026-11-05 多 bot 群聊：群标记 / 工具结果解析 / 设置改动 / 两个组件
+			ROOM_PROJECTION_KEY, ROOM_RELAY_TOOL, ROOMS_API, roomMarkOfSession, parseRelayResult, roomPatch, RoomSettingsCard, GroupRelayView,
+			// ★ 2026-11-05 第一批：状态节点 + 只读 MemberDock
+			GROUP_PROGRESS_EVENT, GROUP_DOCK_VISIBILITY_EVENT, MEMBER_DOCK_SLOT, MEMBER_DOCK_ID, MEMBER_DOCK_ORDER, statusNodeText, groupComposerFlowOf, GroupMemberDock,
+			GROUP_ROUND_LABELS, groupRoundStatus, RELAY_LOST_AFTER, groupComposerHintOf, isHostInterruptedResult,
+			// ★ 2026-11-06：群回复的 Markdown 渲染
+			markdownNodes,
 		};
 		return module.exports;
 	},

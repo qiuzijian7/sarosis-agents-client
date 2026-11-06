@@ -3,7 +3,7 @@
 // ⚠ 真源在 IDE 侧 `src/vs/sessions/contrib/agentStudio/common/webPlatformRoutes.ts`（2026-10-13 收敛）。
 //   本表是它的 **JS 派生副本**（插件间不能 import、`src/vs` 与 `dsh-plugins` 互相隔离 ⇒ 只能各自一份）；
 //   两侧的平台集合 / 首选通道 / `needsLogin` 由守卫对账（本插件探针 + IDE 侧 `webPlatformRoutes` 测试）✓。
-//   ⚠ 增删平台时**三处一起动**：本表 / IDE 真源 / `resources/.agents/skills/web-content-import/SKILL.md` 的表格。
+//   ⚠ 增删平台时**三处一起动**：本表 / IDE 真源 / `dsh-plugins/vssaros-skill-bundle/skills/web-content-import/SKILL.md` 的表格。
 //
 // backend `kind` 沿用 IDE 真源的值域（web-extract / browser / video-analyze / ytdlp / vision-analyze）✓；
 // 本插件的**分派**把 kind 映射到自己的实现（见 `lib/index.js`）：

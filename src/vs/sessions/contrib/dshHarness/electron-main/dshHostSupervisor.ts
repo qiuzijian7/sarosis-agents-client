@@ -160,6 +160,8 @@ const STARTUP_TIMEOUT_MS = 60_000;
 const STARTUP_MAX_MS = 300_000;
 /** URL 行出现后，再给控制桥多少时间完成握手（伴生插件在 Host 内与 webServer 同时激活）。 */
 const BRIDGE_GRACE_MS = 8_000;
+/** 等待就绪期间多久看一次"这次启动是否已被换代"（2026-11-06，见 `_awaitReady` 的 staleWatch）。 */
+const STALE_START_POLL_MS = 100;
 /** keepAlive 模式 ready 之后读 Host 日志的间隔（ready 前是 400ms；之后只为不丢日志，降频即可）。 */
 const POST_READY_LOG_POLL_MS = 2_000;
 
@@ -1684,6 +1686,12 @@ export class DshHostSupervisor extends Disposable {
 				// keepAlive 的关键细节：stdout/stderr 不能走管道——IDE 退出后管道破裂，Host 写日志
 				// EPIPE 直接崩（实测"keepAlive 存活日志打了、pid 却没了"）。常驻模式改为写日志文件，
 				// _awaitReady 轮询文件内容找 URL 行；非常驻维持管道（日志直达主进程，少一层延迟）。
+				// ★★ 2026-11-06（真机：桌面窗口「正在等待会话通道就绪（第 2/3 次）…控制桥不可用」约 23 s）：
+				//   主进程预热的启动还在途（回收孤儿 Host 1.2 s）时，渲染进程用不同选项 `restart()` ⇒ `_doStop` 先把
+				//   generation 换代、再**等这次在途启动收尾**。而它照样 spawn 了 Host，桥连接因换代被立刻判 cancelled，
+				//   只能等 URL 行 + 8 s 宽限才报 superseded ⇒ 白等 17 s，再起真正的 Host。⇒ spawn 前再判一次：
+				//   已过期就不起进程（下面 `_awaitReady` 另有换代监视，覆盖 spawn 之后才过期的情形）。
+				this._throwIfStale(generation);
 				let hostLogFile: string | undefined;
 				let child;
 				if (this._keepAlive) {
@@ -2796,12 +2804,14 @@ export class DshHostSupervisor extends Disposable {
 				child.once('exit', () => { clearInterval(timer); void tail(); });
 				this._runDisposables.add(toDisposable(() => clearInterval(timer)));
 			};
+			let staleWatch: ReturnType<typeof setInterval> | undefined;
 			const finish = (fn: () => void, ok = false) => {
 				if (!settled) {
 					settled = true;
 					deadline.dispose();
 					this._startupDeadline = undefined;
 					clearTimeout(graceTimer);
+					clearInterval(staleWatch);
 					if (filePoll) {
 						clearInterval(filePoll);
 					}
@@ -2827,6 +2837,13 @@ export class DshHostSupervisor extends Disposable {
 				})))),
 			});
 			this._startupDeadline = deadline;
+			// ★★ 2026-11-06：这次启动被 stop / restart 换代了 ⇒ 立刻收尾（`_doStop` 正等着它，随后杀掉 `this._child`），
+			//   不再等 URL 行 + 桥握手宽限（真机白等 17 s，见 spawn 前那条 `_throwIfStale` 的注释）。
+			staleWatch = setInterval(() => {
+				if (generation !== this._generation) {
+					finish(() => reject(new Error('superseded by a newer start/stop')));
+				}
+			}, STALE_START_POLL_MS);
 
 			const withTiming = <T extends object>(v: T): T & { timing: IDshHostBootTiming } => ({
 				...v,

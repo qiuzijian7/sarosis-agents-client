@@ -112,9 +112,9 @@ window.__ModuleLoader__.load({
 		const assetRows = s => (s && Array.isArray(s.assets) ? s.assets : []);
 		// 「待升级」= 可升级的随包插件 + 可升级的商城资产（**不含未安装**，见 upgradableRows 的注释）
 		//
-		// ⚠ 2026-10-29：**应用（IDE）自身可升级不进这个数**（团队口径，见同文件 `appNew` 的用法）——
-		//   但那也不能让这一行写「已最新」（真机：源上已有 2.2.26208，本地 2.2.26207，
-		//   那行却显示"已最新"⇒ 用户完全看不到信号 ✗）⇒ 由 `Row` 里的 `appUp` 改**文案**解决。
+		// ★ 2026-11-05：应用（IDE）自身的更新**完全不进这个 chunk**，由右下更新卡片
+		//   （client.appUpdate.js，复刻 dsh-desktop）承担。这里只数随包插件 + 商城资产，
+		//   所以没有可升级资产时整块不渲染是正确行为，不再需要为此改文案。
 		const totalPending = s => upgradableRows(s).length + assetRows(s).length;
 		/** 包名短名（`@vssaros/dsh-chat-surface` → `dsh-chat-surface`）：行上空间只够放短名 ✓ */
 		const shortPkg = name => {
@@ -153,28 +153,25 @@ window.__ModuleLoader__.load({
 		 *
 		 * 第一行：`↑ 更新`（强调色的徽标数在右）。
 		 * 第二行：`dsh-dashboard 0.4.71 · chat-surface 0.2.299 · +1`（列前两项，放不下靠 hover 的 title）。
-		 * 只有"应用可升级"时第二行写 `应用可升级到 <版本>`。
+		 * 只列随包插件与商城资产；应用本体的更新由右下更新卡片单独呈现（2026-11-05 起）。
 		 */
 		function Row(props) {
 			const s = props.state;
 			// 徽标数 = 随包插件 + 商城资产（用户要的是"总共几项该升"，不是只算插件）
 			const n = totalPending(s);
-			// ★ 2026-10-29（真机：打包版 2.2.26207，源上已有 2.2.26208 ⇒ 左下角那行不提示更新）：
-			//   徽标数按团队口径只数"插件 + 资产"（`totalPending`）⇒ 数字仍是 0，
-			//   但**文案不能写「已最新」**（源上明明有新版 ⇒ 误导）⇒ 有应用更新时改说「应用可升级」。
-			//   ⚠ 只认 `action === "upgrade"`：`downgrade`（源比本地旧）不算（否则像"一键降级"）✗。
-			const appUp = !!(s && s.app && s.app.action === "upgrade");
-			const appRemote = (s && s.app && s.app.remote) || "新版本";
-			const badge = n > 0 ? `${n} 项可用` : (appUp ? "应用可升级" : "已最新");
+			// ★ 2026-11-05：应用本体更新已归 `client.appUpdate.js` 的右下更新卡片。
+			//   这颗胶囊只数「随包插件 + 商城资产」，不再因 `app.action === "upgrade"` 改文案/变热点，
+			//   也不再显示 `app.busy` ⇒ 同一个功能不会有两套 UI 同时提示（旧入口不得复活）。
+			const badge = n > 0 ? `${n} 项可用` : "已最新";
 			// 第二行：**更新内容**（不是只给个数字 —— 用户 2026-10-30："显示更新内容"）
 			const items = upcomingItems(s);
 			const sub = n > 0
 				? (items.slice(0, 2).join(" · ") + (items.length > 2 ? ` · +${items.length - 2}` : ""))
-				: (appUp ? `应用可升级到 ${appRemote}` : "已是最新");
-			const tip = (n > 0 ? [`更新：${n} 项可用`, ...items] : [appUp ? `更新：应用可升级到 ${appRemote}` : "更新：已是最新"]).join("\n");
+				: "已是最新（插件 / 资产）";
+			const tip = (n > 0 ? [`更新：${n} 项可用`, ...items] : ["更新：插件 / 资产都是最新"]).join("\n");
 			return react.createElement("button", {
 				[MARK + "-row"]: "1",
-				"data-hot": (n > 0 || appUp) ? "1" : "0",
+				"data-hot": n > 0 ? "1" : "0",
 				title: tip,
 				style: props.pos,
 				onClick: () => props.onToggle(),
@@ -251,8 +248,6 @@ window.__ModuleLoader__.load({
 			const nAll = pendingRows(s).length;
 			const nUp = upgradableRows(s).length;
 			const app = (s && s.app) || {};
-			const busy = busyOf(s);
-			const appDisabled = !!busy || app.action === "uptodate";
 			return react.createElement("div", { [MARK + "-pop"]: "1", style: props.pos },
 				react.createElement("div", { className: "vu-hd" },
 					react.createElement("span", null, "↑"),
@@ -279,21 +274,13 @@ window.__ModuleLoader__.load({
 				react.createElement("div", { className: "vu-row" },
 					react.createElement("span", { className: "vu-nm" }, (s && s.runtime && s.runtime.current) || "—"),
 					react.createElement("span", { className: "vu-vs" }, "跟随应用升级（本版不支持单独切版本）")),
+				// ★ 2026-11-05：应用（IDE）本体的升级入口**已下线**，统一由 client.appUpdate.js
+				//   的右下更新卡片承担（复刻 dsh-desktop）。这里只留一句归属说明，不许再画按钮，
+				//   否则同一个功能存在两套 UI（2026-10-21 群聊重构的同款事故）。
 				react.createElement("div", { className: "vu-sec" },
 					react.createElement("span", null, "应用（IDE）"),
 					react.createElement("span", { className: "vu-sp" }),
-					react.createElement("span", { className: "vu-tag" }, "win32 · saros")),
-				react.createElement("div", { className: "vu-row" },
-					react.createElement("span", { className: "vu-nm" }, app.current || "—"),
-					react.createElement("span", { className: "vu-vs" },
-						app.action === "upgrade" && app.remote ? ["可升级到 ", react.createElement("b", null, app.remote)] : actionText(s)),
-					react.createElement("span", { className: "vu-sp" }),
-					react.createElement("button", {
-						className: "vu-btn", "data-primary": "1", disabled: appDisabled,
-						onClick: () => props.onApp(),
-					}, busy === "downloading" ? "下载中…" : busy === "installing" ? "安装中…" : busy === "checking" ? "检查中…"
-						: app.action === "uptodate" || app.action === "downgrade" ? "已是最新" : "一键升级")),
-				app.error ? react.createElement("div", { className: "vu-err" }, app.error) : null,
+					react.createElement("span", { className: "vu-tag" }, "由更新卡片负责")),
 				s && s.error ? react.createElement("div", { className: "vu-err" }, s.error) : null,
 				react.createElement("div", { className: "vu-ft" },
 					react.createElement("span", null, "检查于 ", new Date((s && s.at) || Date.now()).toLocaleTimeString()),
@@ -383,9 +370,9 @@ window.__ModuleLoader__.load({
 			//   ⚠ 还没收到任何状态（`state === null`，通常是宿主刚起来还没推）⇒ 也先不显示，
 			//     避免"闪一下空入口再消失"。
 			const pendingCount = totalPending(state);
-			const appNew = !!(state && state.app && state.app.action === "upgrade");
-			const busyNow = !!(state && state.app && state.app.busy);
-			if (!open && pendingCount === 0 && !appNew && !busyNow) {
+			// ★ 2026-11-05：应用本体更新不再让这颗胶囊出现（归 client.appUpdate.js），
+			//   也不再看 `app.busy` ⇒ 升级过程中不会「胶囊 + 卡片」两套 UI 同时冒出来。
+			if (!open && pendingCount === 0) {
 				return null;
 			}
 
@@ -423,7 +410,7 @@ window.__ModuleLoader__.load({
 							if (a.via === 'ide') { call(() => b.upgradeAsset(a.kind, a.name)); }
 						}
 					},
-					onApp: () => call(() => b.upgradeApp()),
+
 				}) : null,
 			);
 		}

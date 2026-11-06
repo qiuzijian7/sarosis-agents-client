@@ -1,0 +1,77 @@
+{
+  "name": "@vssaros/dsh-superagent",
+  "version": "0.1.66",
+  "description": "VsSaros built-in: SuperAgent, the supervisor of the VsSaros Bots. It takes requests from Feishu, GitHub, TAPD and its own desk, evaluates them under a Policy, staffs a team of Bots that a person agrees to, runs each step in its Bot's Session, and leaves skills and team workflows behind. Source, tests and build tools are in dev/ (not shipped).",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./github-watch": "./lib/github-watch.js",
+    "./feishu-watch": "./lib/feishu-watch.js",
+    "./p4-watch": "./lib/p4-watch.js",
+    "./tapd-watch": "./lib/tapd-watch.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "locale",
+    "prompts",
+    "skills",
+    "README.md",
+    "NOTICE",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "pnpm --dir dev run build",
+    "test": "pnpm --dir dev run test",
+    "check": "pnpm --dir dev run check"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@vssaros/dsh-workbenches",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    },
+    "manifestVersion": 1
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "superagent",
+    "view": {
+      "kind": "none"
+    },
+    "workbench": {
+      "title": "SuperAgent",
+      "description": "SuperAgent 主管：接收飞书、GitHub、TAPD 和主管对话里的需求，评估后组建 bot 团队，经你同意再分工执行，并沉淀技能与团队工作流。",
+      "icon": "codicon:robot",
+      "repository": "vssaros:superagent",
+      "customFrame": true,
+      "headerLayout": "default",
+      "floatingActions": false
+    }
+  },
+  "license": "MIT AND Apache-2.0",
+  "vssarosPatches": {
+    "upstream": "dsh-superagent-prototype (G:/CustomWorkspaces/AIProjects/dsh-superagent-prototype)",
+    "upstreamCommit": "6337fc823ce20251c8de8085948165c81aaa701e",
+    "patches": "dev/vssaros-patches.diff",
+    "layout": "Upstream root files map to dev/ (src, tests, docs, examples, scripts, SETUP.md, configs, package.json); prompts, skills, locale, cordis.patch.yml, README.md, NOTICE and LICENSE stay at the plugin root. dev/scripts/upstream-patches.mjs writes and checks the patch set."
+  }
+}

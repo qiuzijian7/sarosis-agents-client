@@ -1,6 +1,6 @@
 // 把 bunnyseek 的项目技能（`.bunnyseek/skills/<name>/`）导入到我们的用户技能库。
 //
-// 为什么落到**用户技能库**而不是随包 `resources/.agents/skills/`：
+// 为什么落到**用户技能库**而不是随包 `dsh-plugins/vssaros-skill-bundle/skills/`：
 //   这些技能正文写满了特定 UE 项目的路径、作弊命令、TAPD 字段名 —— 它是"某个项目的操作手册"，
 //   不是产品能力。随包会让所有用户的每轮技能索引都多出十几行（索引是每轮注入的）。
 //

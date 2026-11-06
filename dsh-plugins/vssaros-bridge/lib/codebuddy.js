@@ -536,20 +536,29 @@ export function createCodeBuddyService(deps) {
 		if (res.status === 401) {
 			// 目录接口 401 ⇒ token 不被认：先试一次刷新（只试一次，防递归）。
 			//   刷新成功 ⇒ 重取；刷新**暂时**失败（网络/5xx）⇒ 保留现状（返回 null，不撤路由 ✓）；
-			//   刷新被拒 / 没有 refresh token ⇒ 登录态确实失效 ⇒ 清掉并返回权威的空。
+			//   刷新被平台明确拒绝（refresh 返回 null ⇒ 内部已 clearSession）⇒ 登录态确实失效 ⇒ 权威的空。
+			//
+			// ★★ 2026-11-05（真机反馈包：`token refreshed` → `route removed（未登录；tick）` →
+			//   `route written` 反复出现 ⇒ dsh 聊天输入框模型列表里 CodeBuddy 周期性/持续不显示）：
+			//   旧代码在 **retried 之后仍 401** 或"没有 refresh token"时直接 `clearSession()` + 返回 `[]`
+			//   ⇒ `syncRoute` 把整个 `vssaros-codebuddy` 路由撤掉 ⇒ 模型列表那一行消失，下一轮 tick
+			//     又从本机登录态迁移回来重新写 ⇒ 反复闪烁 ✗✗。
+			//   一次（或连续两次）401 很可能只是 **token 刚轮换 / 网关抖动 / 并发刷新**，不等于登出失效。
+			//   ⇒ 除"平台明确拒绝刷新"外一律**保留登录态与路由**（返回 null = 这次取不到，见函数注释），
+			//     连续失败交给下一轮 tick 判；产品口径与"刷新 5xx / 取目录网络失败 ⇒ 保留"一致 ✓。
 			const session = await readSession();
 			if (session?.refreshToken && !retried) {
 				const next = await refresh(session);
 				if (next) { return fetchModels({ force: true, retried: true }); }
-				if (next === undefined) {
-					lastError = `目录接口 HTTP 401，刷新登录态暂时失败（${lastError || '稍后自动重试'}）`;
-					return null;
+				if (next === null) {
+					lastError = 'CodeBuddy 登录已失效（目录接口 HTTP 401 且刷新被拒），请重新登录';
+					return [];   // refresh 内部已 clearSession ⇒ syncRoute 会撤路由 ✓
 				}
-			} else {
-				await clearSession();
+				lastError = `目录接口 HTTP 401，刷新登录态暂时失败（${lastError || '稍后自动重试'}）`;
+				return null;
 			}
-			lastError = 'CodeBuddy 登录已失效（目录接口 HTTP 401），请重新登录';
-			return [];
+			lastError = 'CodeBuddy 目录接口 HTTP 401（重试后仍失败/无 refreshToken）⇒ 保留现有登录态与模型路由，稍后自动重试';
+			return null;
 		}
 		if (!res.ok) {
 			lastError = `取模型目录失败：HTTP ${res.status}`;
@@ -577,6 +586,14 @@ export function createCodeBuddyService(deps) {
 		const run = routeChain.then(async () => {
 			const token = await accessToken();
 			if (!token) {
+				// ★ 2026-11-05：区分"真的没登录"与"有会话但 token 暂时拿不到"（刷新竞态 / 平台抖动）。
+				//   旧实现一律撤路由 ⇒ 模型列表里 CodeBuddy 凭空消失（见 fetchModels 401 分支的长注释）。
+				//   只有会话确实被清掉（用户登出 / 平台明确拒刷）才撤；有会话就保留现状。
+				const session = await readSession();
+				if (session) {
+					lastRoute = { ...lastRoute, at: now(), why: `kept（token 暂不可用：${lastError || '刷新中'}）` };
+					return lastRoute;
+				}
 				const r = await writeOwnedRoute(settings, CODEBUDDY_ROUTE, null);
 				lastRoute = { written: false, models: 0, at: now(), why: r.changed ? 'removed（未登录）' : 'absent' };
 				if (r.changed) { log(`[vssaros-codebuddy] route removed（未登录；${reason}）`); }

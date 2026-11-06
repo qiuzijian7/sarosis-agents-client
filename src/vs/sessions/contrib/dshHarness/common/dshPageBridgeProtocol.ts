@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { clampPercent, isAppUpdatePhase, type AppUpdatePhase, type AppUpdateSource } from './appUpdateState.js';
+
 /**
  * 页面桥 v1：dsh 页面（WebContentsView）里的 `window.vssarosDsh` ↔ VsSaros（方案第 4.4、5.5、13.2 节）。
  *
@@ -84,7 +86,7 @@
  * 2026-10-26：`19 → 20`，新增 `importCodeWorkspace` —— 请 IDE 侧导入一个 `.code-workspace` 文件
  *   （选文件 → 解析 folders → 落一条多根工作区记录 → 各根注册进 dsh）。**只导入，不切窗口** ✓。
  */
-export const DSH_PAGE_BRIDGE_VERSION = 24;   // 2026-10-29：`23 → 24`，新增 `paneAction`（把某一栏移到极端位置 / 关掉它）
+export const DSH_PAGE_BRIDGE_VERSION = 26;   // 2026-11-05：`25 → 26`，新增 `rightbarBrowser`（右侧栏内嵌浏览器：占位矩形 / 导航 / 显隐）
 
 /** preload → 主进程的 IPC 通道（经 webContents.ipc，作用域限于该视图）。 */
 export const DSH_PAGE_IPC_INVOKE = 'vssaros:dsh:page';
@@ -250,6 +252,22 @@ export interface IDshUpgradeAppState {
 	/** 进行中的步骤（有值时面板显示进度文案 / 按钮转圈）。 */
 	readonly busy?: 'checking' | 'downloading' | 'installing';
 	readonly error?: string;
+	/**
+	 * ↓ 2026-11-05 复刻 dsh-desktop 更新实现新增（全部可选 ⇒ 老宿主推来的状态照样能解析）。
+	 * 真源是 `common/appUpdateState.ts` 的 `IAppUpdateStatus`，这里是它推给页面时的投影。
+	 */
+	readonly phase?: AppUpdatePhase;
+	readonly availableVersion?: string;
+	/** 下载百分比 0-100；拿不到总大小时缺省 ⇒ UI 走不确定进度条。 */
+	readonly percent?: number;
+	/** 纯文本更新日志；页面必须 textContent 渲染。 */
+	readonly releaseNotes?: string;
+	readonly manual?: boolean;
+	readonly source?: AppUpdateSource;
+	/** 区分新旧呈现：历史快照不得重放手动弹窗。 */
+	readonly presentationId?: number;
+	/** 被用户忽略的版本（宿主持久化，页面据此抑制通知）。 */
+	readonly skippedVersion?: string;
 }
 
 /** 商城资产类别（2026-10-23 用户："增加 skill、mcp、agent、工作流、工作台的升级检查"）。 */
@@ -300,6 +318,13 @@ export function validateUpgradeState(value: unknown): IDshUpgradeState | undefin
 	}
 	const action = app.action === 'upgrade' || app.action === 'uptodate' || app.action === 'downgrade' ? app.action : 'unknown';
 	const busy = app.busy === 'checking' || app.busy === 'downloading' || app.busy === 'installing' ? app.busy : undefined;
+	// ★ 2026-11-05：下面是复刻 dsh-desktop 后新增的字段。这里是**信任边界**：页面会把
+	//   `dataset.vssarosUpgrade` 当可信数据解析，逐字段白名单重建才能挡住脏值/超长文本。
+	//   ⚠ 新增字段时**必须同步在这里放行**，否则后端算了页面也永远拿不到（静默丢失）。
+	const phase = isAppUpdatePhase(app.phase) ? app.phase : undefined;
+	const percent = typeof app.percent === 'number' && Number.isFinite(app.percent) ? clampPercent(app.percent) : undefined;
+	const presentationId = typeof app.presentationId === 'number' && Number.isFinite(app.presentationId) ? app.presentationId : undefined;
+	const source = app.source === 'startup' || app.source === 'runtime' || app.source === 'manual' ? app.source : undefined;
 	const rows: IDshUpgradeBundledRow[] = [];
 	for (const raw of v.bundled) {
 		const r = raw as Partial<IDshUpgradeBundledRow>;
@@ -339,6 +364,14 @@ export function validateUpgradeState(value: unknown): IDshUpgradeState | undefin
 			...(typeof app.remote === 'string' ? { remote: app.remote } : {}),
 			...(busy ? { busy } : {}),
 			...(typeof app.error === 'string' ? { error: app.error } : {}),
+			...(phase ? { phase } : {}),
+			...(typeof app.availableVersion === 'string' ? { availableVersion: app.availableVersion } : {}),
+			...(percent !== undefined ? { percent } : {}),
+			...(typeof app.releaseNotes === 'string' ? { releaseNotes: app.releaseNotes.slice(0, 20_000) } : {}),
+			...(typeof app.manual === 'boolean' ? { manual: app.manual } : {}),
+			...(source ? { source } : {}),
+			...(presentationId !== undefined ? { presentationId } : {}),
+			...(typeof app.skippedVersion === 'string' ? { skippedVersion: app.skippedVersion } : {}),
 		},
 		runtime: {
 			...(typeof v.runtime?.current === 'string' ? { current: v.runtime.current } : {}),
@@ -599,6 +632,19 @@ export const DSH_CHAT_ONLY_CSS = [
 	//   （"右侧栏折叠时那个展开按钮一并隐藏"）—— 现在**必须去掉**：那是把右栏拉回来的唯一入口，
 	//   去掉它等于"右栏还在但用户永远打不开"（等于没恢复 ✗）。
 ].join('\n');
+
+/**
+ * ★ 2026-11-05（用户要求「右侧栏里显示浏览器内容」）：右侧栏页签里放一个占位元素，宿主把
+ * `IBrowserViewWorkbenchService` 的 WebContentsView 贴到这个矩形上。页面只交矩形与 http(s) URL，
+ * 不读写文件、不执行代码；浏览器本体由宿主持有。
+ */
+export type DshPageBrowserAction = 'mount' | 'bounds' | 'navigate' | 'unmount' | 'reload' | 'back' | 'forward';
+export interface IDshPageBrowserRect {
+	readonly x: number;
+	readonly y: number;
+	readonly width: number;
+	readonly height: number;
+}
 
 export type DshPageCommand =
 	| { readonly method: 'ping' }
@@ -1027,13 +1073,24 @@ export type DshPageCommand =
 	 */
 	| { readonly method: 'upgradeApp' }
 	/**
+	 * ★ 2026-11-05（桥 `24 → 25`，复刻 dsh-desktop 更新卡片）：用户显式「检查更新」。
+	 * 与 `upgradeRefresh` 的区别：这条会推进 `presentationId` 并**可能弹通知卡**；
+	 * `upgradeRefresh` 只重算状态（旧胶囊用），不产生新呈现。
+	 */
+	| { readonly method: 'appUpdateCheck' }
+	/** 忽略某个版本（宿主持久化）；`version` 只放版本号形状，由宿主核对是不是真有这一版。 */
+	| { readonly method: 'appUpdateSkip'; readonly version: string }
+	/** 「重新启动并安装」：宿主先释放 dsh Host 文件锁，再 `quitAndInstall()`。 */
+	| { readonly method: 'appUpdateInstall' }
+	/**
 	 * 升级一件**商城资产**（技能 / MCP / 智能体 / 工作流 / 工作台；2026-10-23 用户要求"增加五类的升级检查"）。
 	 *
 	 * ⚠ 只有 `kind` 是白名单里的五类才放行（`DSH_UPGRADE_ASSET_KINDS`）；
 	 *   `skill` / `workflow` 的升级由 **dsh 侧插件**自持，IDE 侧会被下线闸拒 ⇒ 面板对这两类不显示按钮，
 	 *   这里也不替它们兜底（宁可少一个按钮，也不要"点了报错" ✗）。
 	 */
-	| { readonly method: 'upgradeAsset'; readonly kind: string; readonly slug: string };
+	| { readonly method: 'upgradeAsset'; readonly kind: string; readonly slug: string }
+	| { readonly method: 'rightbarBrowser'; readonly action: DshPageBrowserAction; readonly rect?: IDshPageBrowserRect; readonly url?: string };
 
 /**
  * **不需要 IDE 主窗口露面**的页面桥命令（2026-10-21 新增；原先是 `dshHarness.contribution.ts` 里的私有静态集，
@@ -1078,6 +1135,10 @@ export const DSH_PAGE_COMMANDS_WITHOUT_IDE_UI: ReadonlySet<Exclude<DshPageComman
 	// ★ 2026-10-23（桥 `18 → 19`）：升级动作用的是**图标 + 面板**，全都长在 desktop 窗口里
 	//   ⇒ 不许因为"点了检查更新"就把 IDE 主窗口拉到前台（那正是用户要避免的形态 ✗）。
 	'upgradeRefresh', 'upgradeBundled', 'upgradeApp', 'upgradeAsset',
+	// ★ 2026-11-05：更新卡片的三条动作全在 dsh 窗口里完成，不许把 IDE 主窗口拉到前台。
+	'appUpdateCheck', 'appUpdateSkip', 'appUpdateInstall',
+	// ★ 2026-11-05：右侧栏内嵌浏览器由 dsh 桌面窗口的 WebContentsView 承载，不许把 IDE 主窗口拉到前台。
+	'rightbarBrowser',
 	// ★★ 2026-10-31：意见反馈开的是**产品自己的独立窗口**（`IFeedbackWindowService`），
 	//   根本不需要 IDE 主窗口露面。漏登记 ⇒ `_handle` 会先把 IDE 主窗口 show + Force 聚焦
 	//   ⇒ 我们刚弹出的反馈窗口被 IDE 窗口盖住，用户看到的就是"点了没反应"（真机已复现）；
@@ -1126,6 +1187,29 @@ function isPath(v: unknown): v is string {
 
 function isLine(v: unknown): v is number {
 	return typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= MAX_LINE;
+}
+
+const BROWSER_ACTIONS: readonly string[] = ['mount', 'bounds', 'navigate', 'unmount', 'reload', 'back', 'forward'];
+const MAX_BROWSER_RECT = 20_000;
+const MAX_BROWSER_URL = 2_000;
+
+function isBrowserRect(v: unknown): v is IDshPageBrowserRect {
+	if (!v || typeof v !== 'object') { return false; }
+	const r = v as Record<string, unknown>;
+	return ['x', 'y', 'width', 'height'].every(k => {
+		const n = r[k];
+		return typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= MAX_BROWSER_RECT;
+	});
+}
+
+/** 只收无凭据的 http(s) URL；其余协议（含 file / javascript / data）一律不给页面桥。 */
+function browserUrlOf(v: unknown): string | undefined {
+	if (typeof v !== 'string' || v.length === 0 || v.length > MAX_BROWSER_URL || /[\u0000-\u001f]/.test(v)) { return undefined; }
+	try {
+		const url = new URL(v);
+		if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) { return undefined; }
+		return url.href;
+	} catch { return undefined; }
 }
 
 /** 绝对路径：POSIX `/x`、Windows `C:\x` / `C:/x`、UNC `\\server\share`。不接受相对路径与 URI。 */
@@ -1260,6 +1344,16 @@ export function validatePageCommand(raw: unknown): DshPageCommand | undefined {
 			// ⚠ 漏了这个 case ⇒ 命令落到 default 被**静默丢弃** ⇒ 页面点了没反应（日志里也什么都没有）✗
 			//   —— 这正是本文件里 `newSession` 那条注释警告过的事 ⇒ 新增命令必须在这里加 case ✓。
 			return { method: 'importCodeWorkspace' };
+		}
+		case 'rightbarBrowser': {
+			// 右侧栏内嵌浏览器：mount / bounds 必带矩形，navigate 必带 http(s) URL；其余动作不带参数。
+			if (typeof r.action !== 'string' || BROWSER_ACTIONS.indexOf(r.action) < 0) { return undefined; }
+			const action = r.action as DshPageBrowserAction;
+			const rect = isBrowserRect(r.rect) ? r.rect : undefined;
+			if ((action === 'mount' || action === 'bounds') && !rect) { return undefined; }
+			const url = browserUrlOf(r.url);
+			if ((action === 'navigate' && !url) || (r.url !== undefined && !url)) { return undefined; }
+			return { method: 'rightbarBrowser', action, ...(rect ? { rect } : {}), ...(url ? { url } : {}) };
 		}
 		case 'newSession': {
 			// 「＋ 新建会话」= 给**当前页签**换一段新对话：不需要任何参数（id 由宿主派生）。
@@ -1470,6 +1564,17 @@ export function validatePageCommand(raw: unknown): DshPageCommand | undefined {
 			return { method: 'upgradeRefresh' };
 		case 'upgradeApp':
 			return { method: 'upgradeApp' };
+		// 桥 `24 → 25`：复刻后的更新卡片（检查 / 忽略 / 重启安装）。
+		case 'appUpdateCheck':
+			return { method: 'appUpdateCheck' };
+		case 'appUpdateInstall':
+			return { method: 'appUpdateInstall' };
+		case 'appUpdateSkip': {
+			if (typeof r.version !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/.test(r.version)) {
+				return undefined;
+			}
+			return { method: 'appUpdateSkip', version: r.version };
+		}
 		case 'upgradeAsset': {
 			// 只放**形状**：kind 必须在五类白名单里，slug 走 npm 包名同款字符集（`storeId` 就是 slug）
 			// （"这件东西到底存不存在 / 能不能升"由宿主用自己的台账回答 ✓）

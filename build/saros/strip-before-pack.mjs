@@ -384,7 +384,7 @@ function ensureDir(label, stagingRel, repoRel, sentinel = 'extension.js', opts =
 		}
 		rmSync(stagingAbs, { recursive: true, force: true });
 		mkdirSync(stagingAbs, { recursive: true });
-		cpSync(repoAbsForced, stagingAbs, { recursive: true });
+		cpSync(repoAbsForced, stagingAbs, { recursive: true, ...(opts.filter ? { filter: src => opts.filter(path.relative(repoAbsForced, src)) } : {}) });
 		console.log(`  ♻️  ${label} —— 已按仓库当前内容**刷新**（refresh=true，防旧副本残留）`);
 		return;
 	}
@@ -432,6 +432,19 @@ ensureDir(
 //    `dshHostSupervisor` 的注释把"老构建没带 `dsh-plugins/`"当作**合法**状态 ⇒ 整件事是静默的 ✗✗。
 //    sentinel 用 `vssaros-bridge/package.json`：它证明**目录真的被灌满**（不是只有一个空壳目录 ✗），
 //    与上面 tree-sitter 那两条同一思路。缺它会让构建在收尾统计里报错（criticalMissing ✓）。
+/**
+ * ★ 2026-11-05（superagent 转正）：插件目录里**不进包**的东西。
+ *   - 任意一层的 `node_modules`（随包插件 dependencies 全为空；有它只可能是开发工具链，几百 MB）；
+ *   - 插件顶层的 `dev/` **开发工作区**（判据：`<插件>/dev/package.json` 存在）——源码、测试、文档、构建工具
+ *     都在里面（`vssaros-superagent` 是第一个），运行时只用插件根下的产物。
+ *   ⚠ 与宿主侧同口径：`dshPluginStaging.ts`（安装暂存）、`dshProfileDepsRepair.ts`（启动补文件）。
+ * @param rel 相对 `dsh-plugins/` 的路径（任一分隔符）。
+ */
+function shippedDshPluginPath(rel) {
+	const parts = rel.split(/[\\/]/).filter(Boolean);
+	if (parts.includes('node_modules')) { return false; }
+	return !(parts.length >= 2 && parts[1] === 'dev' && existsSync(path.join(repoRoot, 'dsh-plugins', parts[0], 'dev', 'package.json')));
+}
 ensureDir(
 	'dsh-plugins',
 	'resources/app/dsh-plugins',
@@ -440,7 +453,7 @@ ensureDir(
 	// ⚠ 必须 refresh：这个目录里放的是**我们的插件源码**（每次发版都在改），
 	//   用"哨兵在就跳过"会让暂存目录停在**某次旧构建**（真机 P0：`kb/vendor/markdown-it.cjs`、
 	//   `agents/cordis.presets.yml` 永远进不了包 ⇒ 全新机器主页白屏）。
-	{ refresh: true },
+	{ refresh: true, filter: shippedDshPluginPath },
 );
 
 // 2.5b-2) ★★ 2026-10-30 完整性门禁：**逐文件**比对「暂存 vs 仓库」的 `dsh-plugins/`。
@@ -468,6 +481,8 @@ function verifyDshPluginsComplete() {
 			const rel = dir ? `${dir}/${e.name}` : e.name;
 			if (e.isDirectory()) {
 				if (e.name === 'node_modules' || rel === 'test' || rel.endsWith('/test')) { continue; }
+				// 开发工作区（`<插件>/dev/`）有意不进包 ⇒ 不计入「仓库应有」（与上面 refresh 的过滤同一判据）
+				if (root === repoPlugins && !shippedDshPluginPath(rel)) { continue; }
 				walk(root, rel, out);
 			} else {
 				out.push(rel);
@@ -854,22 +869,34 @@ ensureFile(
 	['build/saros/bin/sqlite/better_sqlite3.node'],
 );
 
-// 6) ★ 2026-09-25：内置智能体资源 `resources/.agents/**`（技能 / KB 同步脚本 / MCP 预设 / 内置工作流 / 工具）
+// 6) ★ 2026-09-25：内置智能体资源 `resources/.agents/**`（KB 同步脚本 / MCP 预设 / 内置工作流 / 工具）
 //    —— 与 kbWorker.js / tree-sitter-wasm **同一类**构件：**运行时按路径读取、从不被静态 import**
 //    ⇒ 打包拷贝只带走它认识的文件，**点目录（`.agents`）整棵被漏掉**：
-//      · 内置技能：`skillRegistryService` 用 `FileAccess.asFileUri('vs/../../resources/.agents/skills')` 扫描；
 //      · 飞书同步脚本：`feishuSyncCore.resolveSyncScript` 找 `<appRoot>/resources/.agents/kb/feishu-sync.mjs`。
+//    ★ 2026-11-06（P0）：**随包技能真源已迁到 dsh 侧**
+//      `dsh-plugins/vssaros-skill-bundle/skills/`（由 `check-skill-bundle.mjs` 与 6b 哨兵双重守），
+//      IDE 侧旧技能根已于 P3 删除（内容完整迁到上面这个 dsh 插件包内）。
 //    实测已发布包（用户报障 2026-09-25）：`resources/app/resources` 下**只有 `thirdparty`/`win32`**，
-//    `.agents` 整棵不存在 ⇒ 内置技能全部缺失，点「同步飞书」报
+//    `.agents` 整棵不存在 ⇒ 内置资源全部缺失，点「同步飞书」报
 //    「未找到内置同步脚本（resources/.agents/kb/feishu-sync.mjs）——安装可能不完整」。
 //    ⚠ 已核对 Inno 的 `[Files] Excludes`（build/win32/code.iss:114）**没有**排除 `.agents`
 //      ⇒ 根因在 staging 拷贝环节；这里整棵兜底自愈。
-//    sentinel 用 kb 脚本：技能可以后补，脚本缺了「同步飞书 / kb_feishu_sync」直接不可用。
+//    sentinel 用 kb 脚本：脚本缺了「同步飞书 / kb_feishu_sync」直接不可用。
 ensureDir(
-	'resources/.agents（内置技能 + KB 同步脚本 + MCP 预设 + 内置工作流）',
+	'resources/.agents（KB 同步脚本 + MCP 预设 + 内置工作流 + 工具）',
 	'resources/app/resources/.agents',
 	'resources/.agents',
 	'kb/feishu-sync.mjs',
+);
+
+// 6b) ★ 2026-11-06（P0）：随包技能真源缺件自检。
+//    `dsh-plugins` 走整目录拷贝（`shippedDshPluginPath` 只排 node_modules / 顶层 dev/），
+//    但 2026-09-25 的事故证明 staging 可能漏整棵点目录 ⇒ 用一个具体技能做哨兵，缺了就地自愈。
+//    CI 干净检出里 skills/ 是入库产物（check-plugins-tracked.mjs 守），所以候选一定存在。
+ensureFile(
+	'dsh-plugins/vssaros-skill-bundle/skills（随包技能真源）',
+	'resources/app/dsh-plugins/vssaros-skill-bundle/skills/code-review/SKILL.md',
+	['dsh-plugins/vssaros-skill-bundle/skills/code-review/SKILL.md'],
 );
 
 // === 5.5 ffmpeg/ffprobe（vox 口播视频节点可选依赖）===

@@ -24,6 +24,7 @@
 
 import { promises as fsp } from 'fs';
 import { dirname, join } from '../../../../base/common/path.js';
+import { isDevWorkspace } from './dshPluginStaging.js';
 
 /**
  * **补回随包插件缺失的"自带文件"**（★ 2026-10-29）。
@@ -77,8 +78,13 @@ export async function repairBundledPluginFiles(
 			continue;   // 压根没装 ⇒ 由安装流程负责
 		}
 		const have = new Set(await listFiles(destDir));
+		// ★ 2026-11-05：开发工作区（`dev/`，有 `dev/package.json`）不是运行时文件 ⇒ 不补（同 dshPluginStaging.isDevWorkspace）
+		const devWorkspace = await isDevWorkspace(srcDir);
 		for (const rel of await listFiles(srcDir)) {
 			if (have.has(rel)) {
+				continue;
+			}
+			if (devWorkspace && (rel === 'dev' || rel.startsWith('dev/'))) {
 				continue;
 			}
 			// ⚠ 只补**运行时要用的**：`test/` 是构建时有意排除的（实测 71 个"缺失"里大部分是它）

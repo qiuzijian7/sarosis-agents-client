@@ -32,8 +32,11 @@ const CHUNK = 'dsh-plugins/vssaros-chat-surface/lib/client.creative.js';
 		/ALWAYS_CHUNKS\s*=\s*\[[^\]]*"\.\/client\.creative\.js"/.test(entry), '没在 ALWAYS_CHUNKS 里');
 	truthy('① 随包文件清单登记了 client.creative.js（漏了 ⇒ 装上去没有这个文件）',
 		(Array.isArray(pkg.files) ? pkg.files : []).includes('lib/client.creative.js'));
-	truthy('① 入口构建指纹提到这次改动（浏览器才会重新取 chunk）',
-		/CLIENT_BUILD_STAMP[\s\S]{0,600}创作模型三行/.test(entry), String(entry.match(/CLIENT_BUILD_STAMP\s*=\s*"([^"]*)"/)?.[1] ?? '').slice(0, 80));
+	// 2026-11-06：原断言要求构建标记里永远带着「创作模型三行」（2026-10-22 那次改动的说明），
+	//   标记每次更新都会把旧说明挤掉 ⇒ 一次性断言，必然变红。缓存失效的持久口径是：入口有构建标记，
+	//   且版本号变化（check-dsh-release 守）⇒ 这里只查标记存在。
+	truthy('① 入口有构建指纹（浏览器据此重新取 chunk；版本递增由 check-dsh-release 守）',
+		/const CLIENT_BUILD_STAMP\s*=\s*"[^"]{8,}"/.test(entry), String(entry.match(/CLIENT_BUILD_STAMP\s*=\s*"([^"]*)"/)?.[1] ?? '').slice(0, 80));
 }
 
 // ── 装载 chunk（真 factory，真 install）────────────────────────────────────────

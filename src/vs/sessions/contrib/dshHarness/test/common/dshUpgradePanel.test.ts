@@ -81,21 +81,20 @@ suite('升级入口收敛（启动不弹 / 菜单开面板 / 行上显示内容�
 	test('④ 面板三条动作都接上，且数据只来自 getUpgradeState（不许自己算）', () => {
 		const src = stripComments(read(PANE));
 		assert.match(src, /this\._dsh\.getUpgradeState\(/, '面板必须走 getUpgradeState（与 desktop 那行同源）✗');
-		assert.match(src, /this\._dsh\.upgradeApp\(\)/, '缺少一键升级应用 ✗');
+		assert.ok(!/this\._dsh\.upgradeApp\(\)/.test(src),
+			'★ 2026-11-05：应用一键升级已归 dsh 侧 client.appUpdate.js 更新卡片，面板不许再画这个按钮（旧入口不得复活）✗');
 		assert.match(src, /this\._dsh\.upgradeBundled\(/, '缺少随包插件升级 ✗');
 		assert.match(src, /this\._dsh\.upgradeAsset\(/, '缺少商城资产升级 ✗');
 		assert.ok(!/listBundledPlugins|checkUpgrades\(/.test(src),
 			'面板不许自己读插件清单/商城（会与 service 口径漂移 ⇒ "面板 3 项、行上 2 项"）✗');
 	});
 
-	test('⑤ 一键升级按钮只认 action === "upgrade"（不降级），且 busy 时禁用', () => {
+	test('⑤ 应用一键升级旧入口不得复活（2026-11-05 起归 dsh 侧更新卡片）', () => {
 		const src = stripComments(read(PANE));
-		const at = src.indexOf("dataset['action'] = 'upgrade-app'");
-		assert.ok(at > 0, '缺少应用一键升级按钮的锚点 ✗');
-		const above = src.slice(Math.max(0, at - 400), at);
-		assert.match(above, /app\?\.action === 'upgrade'/,
-			'按钮可用性必须只认 action === "upgrade"（downgrade = 源比本地旧 ⇒ 一键降级 ✗）✗');
-		assert.match(above, /disabled/, '按钮必须受 disabled（busy / 不可升）控制 ✗');
+		assert.ok(src.indexOf("dataset['action'] = 'upgrade-app'") < 0,
+			'面板里不许再有 upgrade-app 按钮锚点 ✗');
+		assert.ok(!/upgradeApp\(/.test(src), '面板里不许再调 upgradeApp() ✗');
+		assert.ok(!/一键升级/.test(src), '面板里不许再出现「一键升级」文案 ✗');
 	});
 
 	test('⑥ service 必须暴露有返回值的 getUpgradeState（面板拿得到数据）', () => {

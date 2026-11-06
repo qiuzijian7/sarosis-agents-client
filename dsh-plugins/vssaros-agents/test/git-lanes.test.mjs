@@ -5,15 +5,9 @@
 //   ① 轨道布局：`lib/core/gitLanes.js` 是**唯一**的布局实现（页面只拼服务端算好的 path）。
 //      线性历史全在第 0 轨；有分叉才出现第 1 轨；merge 的第二父必须汇入（joins）。
 //   ② 悬空轨：`log --max-count=N` 截断处的父提交**不占轨道**（否则图右侧凭空多一列）。
-//   ③ 自动提交：回合末把改动落成一条提交；关掉开关就不提交；记账表要 +1。
-//
-// ⚠ 机器没装 git ⇒ 真仓库那一组自动跳过（文件模式的记忆本来就该照常可用，不是失败）。
+//   （③ 回合末自动提交 / 真仓库分道图随 lib/memory.js 一起删除：2026-11-06 Bot 记忆并入 @vssaros/dsh-memory，
+//    版本历史由它的 lib/bot-history.js 负责，测试在 vssaros-memory/tests/vssaros-bot-history.test.js。）
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
 import { layoutGitLanes, laneRowPaths, LANE_W, ROW_H } from '../lib/core/gitLanes.js';
 
 let pass = 0;
@@ -111,102 +105,6 @@ check('几何常量：行高与轨道宽是稳定值（页面 CSS 依赖它们�
 	assert.equal(LANE_W, 12);
 	assert.equal(ROW_H, 46);
 });
-
-/* ── 3. 真仓库：gitGraphOf + 回合末自动提交 ─────────────────────────── */
-
-const hasGit = (() => {
-	try {
-		execFileSync('git', ['--version'], { stdio: 'ignore', windowsHide: true });
-		return true;
-	} catch { return false; }
-})();
-
-if (!hasGit) {
-	console.log('（本机没有 git ⇒ 跳过真仓库一组；文件模式的记忆不受影响）');
-} else {
-	const { enableGit, gitGraphOf, gitStatusOf, memoryDirOf, setVersion, switchBranch, autoCommitAfterTurn, memoryAutoCommitOnTurn, __memoryTurn } = await import('../lib/memory.js');
-	const root = mkdtempSync(join(tmpdir(), 'vssaros-gitlanes-'));
-	const config = { agentsRoot: join(root, 'agents'), dataRoot: join(root, 'data') };
-	mkdirSync(join(config.agentsRoot, 'demo'), { recursive: true });
-	const dir = memoryDirOf(config, 'demo');
-
-	await checkAsync('建仓（enableGit 幂等）→ git 状态可用', async () => {
-		const st = await enableGit(config, 'demo');
-		assert.equal(st.enabled, true);
-		assert.ok(st.commits >= 1);
-	});
-
-	await checkAsync('★ 回合末自动提交：改动落成一条提交（演化链靠它连起来）', async () => {
-		writeFileSync(join(dir, 'MEMORY.md'), '# 记忆\n\n- 第一条：来自回合结束\n', 'utf8');
-		const before = await gitStatusOf(config, 'demo');
-		assert.equal(before.dirty, 1, '改动前应有 1 个未提交文件');
-		const r = await autoCommitAfterTurn(config, 'demo');
-		assert.equal(r.committed, true, JSON.stringify(r));
-		const after = await gitStatusOf(config, 'demo');
-		assert.equal(after.dirty, 0);
-		assert.equal(after.commits, before.commits + 1);
-	});
-
-	await checkAsync('自动提交记账：__memoryTurn 计到 1 次', async () => {
-		assert.equal(__memoryTurn.byAgent.get('demo')?.commits ?? 0, 1);
-	});
-
-	await checkAsync('★ 关掉开关（memoryAutoCommit:false）⇒ 不提交（权限边界可退回到人按按钮）', async () => {
-		writeFileSync(join(dir, 'MEMORY.md'), '# 记忆\n\n- 第二条（不该被自动提交）\n', 'utf8');
-		const r = await autoCommitAfterTurn({ ...config, memoryAutoCommit: false }, 'demo');
-		assert.equal(r.committed, false);
-		assert.match(String(r.note ?? ''), /关闭/);
-		const st = await gitStatusOf(config, 'demo');
-		assert.equal(st.dirty, 1, '改动应仍在（没被提交也没被丢）');
-	});
-
-	check('memoryAutoCommitOnTurn：缺省开、显式 false 关', () => {
-		assert.equal(memoryAutoCommitOnTurn(config), true);
-		assert.equal(memoryAutoCommitOnTurn({ memoryAutoCommit: false }), false);
-		assert.equal(memoryAutoCommitOnTurn({}), true);
-	});
-
-	await checkAsync('★ Git 图：带父提交 / 分支 / 版本 / 轨道 path', async () => {
-		// 先提交掉上一条改动（保持工作树干净才能切分支）
-		await autoCommitAfterTurn(config, 'demo');
-		await setVersion(config, 'demo', 'v1');            // 给 HEAD 起个版本名
-		await switchBranch(config, 'demo', { name: 'exp', create: true }); // 从 HEAD 拉一条分支
-		writeFileSync(join(dir, 'MEMORY.md'), '# 记忆\n\n- exp 分支上的一条\n', 'utf8');
-		await autoCommitAfterTurn(config, 'demo');
-		// ★ 切回 main 再改一次：**两条线各自前进**才有真正的岔路
-		//   （只拉分支不提交 ⇒ exp 只是领先 main 一个提交，图上是直线，width 恒 1）
-		await switchBranch(config, 'demo', { name: 'main', create: false });
-		writeFileSync(join(dir, 'MEMORY.md'), '# 记忆\n\n- main 分支上的另一条\n', 'utf8');
-		await autoCommitAfterTurn(config, 'demo');
-
-		const g = await gitGraphOf(config, 'demo', undefined, 20);
-		assert.equal(g.enabled, true);
-		assert.ok(g.commits.length >= 4, `commits=${g.commits.length}`);
-		assert.ok(g.branches.includes('exp') && g.branches.includes('main'), JSON.stringify(g.branches));
-		assert.equal(g.currentBranch, 'main');
-		// 每条提交都要有轨道与可画的 path（页面只拼这些）
-		assert.ok(g.commits.every(c => Array.isArray(c.svg?.paths) && c.svg.paths.length > 0));
-		// 分支 tip 与版本名要挂到对应提交上
-		assert.ok(g.commits.some(c => (c.branches ?? []).includes('exp')), 'exp 分支没挂到任何提交');
-		assert.ok(g.commits.some(c => (c.versions ?? []).includes('v1')), 'v1 版本没挂到任何提交');
-		// 至少有一条提交有父提交（parents 没接上就没法画分道）
-		assert.ok(g.commits.some(c => (c.parents ?? []).length > 0));
-	});
-
-	await checkAsync('★ 两条分支 ⇒ 至少有一行 width ≥ 2（图上真能看出岔路）', async () => {
-		const g = await gitGraphOf(config, 'demo', undefined, 20);
-		assert.ok(g.commits.some(c => (c.svg?.width ?? 1) >= 2),
-			`最大 width=${Math.max(...g.commits.map(c => c.svg?.width ?? 1))}`);
-	});
-
-	await checkAsync('未启用 Git 的 agent：gitGraphOf 如实返回 enabled:false（不抛、不假装）', async () => {
-		const g = await gitGraphOf(config, 'nobody', undefined, 20);
-		assert.equal(g.enabled, false);
-		assert.deepEqual(g.commits, []);
-	});
-
-	try { rmSync(root, { recursive: true, force: true, maxRetries: 2 }); } catch { /* tmp 自清 */ }
-}
 
 console.log(`\n[git-lanes] ${pass} passing / ${fails.length} failing`);
 for (const f of fails) { console.log(`  ✗ ${f}`); }

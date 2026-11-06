@@ -13,7 +13,7 @@
 //   A `tools[]` 的每个名字都必须在 **dsh 真实工具名单**里
 //     （官方 dsh-tool-* 包的注册名 ∪ 我们插件注册的工具名 [tools-snapshot.json]）。
 //   B `skills[]` 的每个名字都必须在 **dsh 可见的技能目录**里
-//     （内置 `resources/.agents/skills/<name>` ∪ 插件自带 `dsh-plugins/*/skills/<name>`）。
+//     （内置 `dsh-plugins/vssaros-skill-bundle/skills/<name>` ∪ 插件自带 `dsh-plugins/*/skills/<name>`）。
 //
 // 范围：**只查内置 agent**（`common/builtinAgents.ts`）——
 //   用户自建 agent 的工具名是用户自己的事（且可能依赖用户级技能，本机状态 ⇒ 不能进守卫）✓。
@@ -82,8 +82,10 @@ const knownTools = new Set([...officialTools, ...pluginTools, ...BUILTIN_MEMORY_
 ok(`dsh 工具名单：官方 ${officialTools.size} 个 + 插件 ${pluginTools.size} 个 + 内置记忆 ${BUILTIN_MEMORY_TOOLS.length} 个 = ${knownTools.size} 个`);
 
 // ── 2. dsh 可见的技能目录 ─────────────────────────────────────────
+// ★ P0（2026-11-06）：内置技能真源已迁到 dsh 侧插件包内，路径取单一真源模块。
+import { BUNDLED_SKILL_ROOT } from './scripts/skill-bundle-paths.mjs';
 const skillDirs = new Set();
-const builtinSkills = path.join(ROOT, 'resources', '.agents', 'skills');
+const builtinSkills = BUNDLED_SKILL_ROOT;
 if (exists(builtinSkills)) {
 	for (const d of fs.readdirSync(builtinSkills)) {
 		if (fs.existsSync(path.join(builtinSkills, d, 'SKILL.md'))) { skillDirs.add(d); }
@@ -130,9 +132,21 @@ if (ids.length === 0) {
 }
 
 // ── 4. 判据 A：tools 必须在 dsh 真实工具名单里 ─────────────────────
+// 2026-11-06：tools 支持 `prefix*` 通配与 `!name` / `!prefix*` 排除（vssaros-agents core/agents.js `toolRulesOf`）。
+//   通配必须至少匹配一个真实工具（写错前缀 = 静默什么都不保留）；排除项是「不要」，不要求存在
+//   （典型 `!mcp__*`：MCP 工具因用户而异，离线名单里本来就没有）。
 const badTools = [];
 for (const list of toolLists) {
 	for (const name of list.items) {
+		if (name.startsWith('!')) {
+			if (!/^![a-z][a-z0-9_]*\*?$/.test(name)) { badTools.push(name); }
+			continue;
+		}
+		if (name.endsWith('*')) {
+			const prefix = name.slice(0, -1);
+			if (!/^[a-z][a-z0-9_]*$/.test(prefix) || ![...knownTools].some((tool) => tool.startsWith(prefix))) { badTools.push(name); }
+			continue;
+		}
 		if (!knownTools.has(name)) { badTools.push(name); }
 	}
 }

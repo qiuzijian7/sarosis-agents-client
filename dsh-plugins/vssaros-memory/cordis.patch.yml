@@ -19,6 +19,9 @@
         # 这两项是运行时开关，可在会话「设置」页重新打开。
         perTurnDailyWrites: false
         perTurnProjectWrites: false
+        # 项目关键记忆（key 轨）主会话直接写入：原 dsh-agents 的 workspace_memory 就是直写，并入后若一律
+        # 进待确认队列，没人确认时项目记忆永远是空的。子代理写入仍进队列。运行时可在「设置」页改回 queue。
+        keyWriteMode: direct
         # 这些功能的上游测试在 Windows 上未通过（canvas 的敏感路径拦截用正斜杠片段匹配，对反斜杠
         # 路径不生效；sync/COI/searchDocs 另有路径与 git 问题）。修好并通过测试前不允许打开。
         lockedOffKeys:

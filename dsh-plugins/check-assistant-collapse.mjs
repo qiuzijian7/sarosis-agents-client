@@ -376,8 +376,10 @@ for (const wb of [MARKETS, STUDIO]) {
 	// ★ 2026-10-28（用户：「点工作区左侧会话 item 时，要求切换到会话页进行展示」）：
 	//   侧栏导航（openSession / startSession）必须**放行** selectPanel(null) ⇒ 中栏切到会话页；
 	//   只有工作台**内部**的切会话（不走这两个入口）才拦下来停靠。
+	// 2026-11-06：11-02 起判据改为 `Date.now() - lastUserNavAt()`（navIntentAt 与页面级 window.__vssarosUserNavAt 取最近）⇒ 两种写法都认
 	ck('外壳：侧栏导航放行 selectPanel(null)（切到会话页）',
-		/navIntentAt/.test(shellSrc) && /Date\.now\(\) - navIntentAt/.test(shellSrc));
+		/navIntentAt/.test(shellSrc) && /Date\.now\(\) - (navIntentAt|lastUserNavAt\(\))/.test(shellSrc)
+		&& (!/Date\.now\(\) - lastUserNavAt\(\)/.test(shellSrc) || /return Math\.max\(navIntentAt, g\)/.test(shellSrc)));
 	ck('外壳：openSession 与 startSession 都打上「用户导航」时间戳',
 		/markUserNav\(\)/.test(shellSrc) && /startSession nav/.test(shellSrc));
 	// ★ 2026-10-28（用户：「浮动工具栏仅可以在 app 最右侧上下移动」）：

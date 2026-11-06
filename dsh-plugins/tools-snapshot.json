@@ -1,6 +1,6 @@
 {
   "note": "由 dsh-plugins/tools-snapshot.mjs 生成；被 dshHarness/test/common/dshToolSnapshot.test.ts 钉住。不要手改，跑 --write。",
-  "total": 147,
+  "total": 146,
   "plugins": {
     "vssaros-agents": [
       {
@@ -1510,16 +1510,7 @@
           "old_string",
           "replace_all"
         ],
-        "descriptionHash": "ef764efa3cca"
-      },
-      {
-        "name": "skill_market_list",
-        "required": [],
-        "params": [
-          "limit",
-          "query"
-        ],
-        "descriptionHash": "78fa55581cf2"
+        "descriptionHash": "d9205e0f3713"
       },
       {
         "name": "skill_search",

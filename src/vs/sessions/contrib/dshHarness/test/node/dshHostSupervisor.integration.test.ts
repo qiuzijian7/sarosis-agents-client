@@ -201,6 +201,49 @@ const hasRuntime = existsSync(RUNTIME_ROOT) && new DshRuntimeManager(RUNTIME_ROO
 		assert.strictEqual(a.pid, b.pid);
 	});
 
+	// ★★ 2026-11-06 真机（桌面窗口「正在等待会话通道就绪（第 2/3 次）…控制桥不可用」约 23 s）：主进程预热的启动还在途时，
+	//   渲染进程用不同选项 restart ⇒ 过期的那次照样 spawn、桥被立刻判 cancelled、等 URL 行 + 8 s 宽限才报 superseded。
+	const spawnedLines = (from: number) => supervisor.getLog().slice(from).filter(l => l.includes('spawned pid'));
+	const untilLogged = async (from: number, text: string) => {
+		const deadline = Date.now() + 60_000;
+		while (!supervisor.getLog().slice(from).some(l => l.includes(text)) && Date.now() < deadline) {
+			await new Promise(r => setTimeout(r, 20));
+		}
+	};
+	test('restart while a start is still before its spawn: the superseded start spawns no Host', async () => {
+		const mark = supervisor.getLog().length;
+		const stale = supervisor.start();
+		// The start is under way (it creates the profile and installs plugins, seconds before its spawn), as the prewarm
+		// was in the real run. A restart issued before `_doStart` began would not make it stale at all.
+		await untilLogged(mark, 'creating profile');
+		assert.strictEqual(spawnedLines(mark).length, 0, 'the restart comes before the first spawn');
+		const restarted = await supervisor.restart({});
+		await stale;
+		const log = supervisor.getLog().slice(mark);
+		assert.strictEqual(restarted.state, 'running', restarted.error);
+		assert.strictEqual(restarted.bridge, 'connected', log.join('\n'));
+		assert.ok(log.some(l => l.includes('start failed: superseded by a newer start/stop')), log.join('\n'));
+		assert.strictEqual(spawnedLines(mark).length, 1, `only the restart spawns a Host:\n${spawnedLines(mark).join('\n')}`);
+	});
+
+	test('restart after a start spawned its Host: the superseded start ends at once, without waiting for the bridge grace', async () => {
+		const mark = supervisor.getLog().length;
+		const stale = supervisor.start();
+		const deadline = Date.now() + 60_000;
+		while (spawnedLines(mark).length === 0 && Date.now() < deadline) {
+			await new Promise(r => setTimeout(r, 20));
+		}
+		assert.strictEqual(spawnedLines(mark).length, 1, 'the first start spawned its Host');
+		const restarted = await supervisor.restart({});
+		await stale;
+		const log = supervisor.getLog().slice(mark);
+		assert.strictEqual(restarted.state, 'running', restarted.error);
+		assert.strictEqual(restarted.bridge, 'connected', log.join('\n'));
+		assert.ok(log.some(l => l.includes('start failed: superseded by a newer start/stop')), log.join('\n'));
+		assert.ok(!log.some(l => l.includes('bridge handshake did not complete')), `the superseded start must not sit out the URL-line fallback:\n${log.join('\n')}`);
+		assert.strictEqual(spawnedLines(mark).length, 2);
+	});
+
 	test('without the bundled plugin the Host still runs on the URL-line fallback', async () => {
 		supervisor.dispose();
 		supervisor = new DshHostSupervisor({

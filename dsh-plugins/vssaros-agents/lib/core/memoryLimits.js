@@ -9,22 +9,7 @@
 /** `memory-chars` 缺省值（= 原先的 SNAPSHOT_CHARS；单位是**字符**，不是字节）。 */
 export const MEMORY_CHARS_DEFAULT = 2048;
 
-/**
- * ★ 2026-11-05「记忆收敛成一套」：Bot 记忆与工作区记忆已并入 @vssaros/dsh-memory
- * （bot 轨 / key 轨，启动时自动导入旧 MEMORY.md，只追加、不改源文件）。本插件默认**不再**
- * 注入这两段记忆、也不再注册 `workspace_memory` 工具 —— 否则模型会看到两段记忆和两个写记忆的工具。
- *
- * 回滚（恢复旧行为）：环境变量 `VSSAROS_AGENTS_LEGACY_MEMORY=1`，或本插件 config `legacyMemory: true`。
- * ⚠ 只靠 config 不够：VsSaros 的 dataRoot 覆盖层会**整份替换**本行 config（见 cordis.patch.yml 头注释），
- *   所以环境变量才是可靠的回滚入口。
- */
-export function legacyAgentMemoryOn(config) {
-	if (config?.legacyMemory === true) {
-		return true;
-	}
-	const env = typeof process !== 'undefined' ? String(process.env?.VSSAROS_AGENTS_LEGACY_MEMORY ?? '').trim() : '';
-	return env === '1' || env.toLowerCase() === 'true';
-}
+
 /** `memory-chars` 的取值范围（0 = 关闭注入，单独允许）。 */
 export const MEMORY_CHARS_MIN = 512;
 export const MEMORY_CHARS_MAX = 20000;

@@ -154,4 +154,25 @@ suite('dshPluginStaging：并发落位', () => {
 		await staging!.stagePluginDir({ sourceDir: src, destDir: dest });
 		assert.deepStrictEqual(listFiles(dest), ['lib/docs/a.md', 'lib/index.js', 'package.json']);
 	});
+
+	test('8) ★ 开发工作区（dev/ 里有 package.json）不进暂存；没有 package.json 的 dev/ 照常是插件内容', async () => {
+		// 2026-11-05（superagent 转正）：vssaros-superagent 的源码、测试、文档与工具链（含几百 MB node_modules）在 dev/
+		//   ⇒ 进了暂存就会被装进每台机器的 profile ✗。
+		const src = makePlugin(tmpRoot, 'p8', 'v8');
+		fs.mkdirSync(path.join(src, 'dev', 'src'), { recursive: true });
+		fs.writeFileSync(path.join(src, 'dev', 'package.json'), JSON.stringify({ name: 'p8-dev', private: true }));
+		fs.writeFileSync(path.join(src, 'dev', 'src', 'index.ts'), 'source');
+		fs.mkdirSync(path.join(src, 'lib', 'dev'), { recursive: true });
+		fs.writeFileSync(path.join(src, 'lib', 'dev', 'kept.js'), 'nested dev is runtime');
+		const dest = path.join(tmpRoot, 'plugins', 'p8-1.0.0');
+		await staging!.stagePluginDir({ sourceDir: src, destDir: dest });
+		assert.deepStrictEqual(listFiles(dest), ['lib/dev/kept.js', 'lib/docs/a.md', 'lib/index.js', 'package.json']);
+		// 没有 dev/package.json ⇒ dev/ 不是开发工作区 ⇒ 原样进暂存
+		const plain = makePlugin(tmpRoot, 'p9', 'v9');
+		fs.mkdirSync(path.join(plain, 'dev'), { recursive: true });
+		fs.writeFileSync(path.join(plain, 'dev', 'asset.txt'), 'shipped');
+		const dest9 = path.join(tmpRoot, 'plugins', 'p9-1.0.0');
+		await staging!.stagePluginDir({ sourceDir: plain, destDir: dest9 });
+		assert.deepStrictEqual(listFiles(dest9), ['dev/asset.txt', 'lib/docs/a.md', 'lib/index.js', 'package.json']);
+	});
 });

@@ -1,0 +1,1014 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SuperAgent 框架 v2 · 设计细则</title>
+<style>
+/* 颜色沿用 DSH 主题包的 --dsw-alias-* 语义（浅 / 深两套取值）；单文件、离线可打开 */
+:root {
+	--dsw-alias-bg-base: #f5f6f8; --dsw-alias-bg-layer-1: #ffffff; --dsw-alias-bg-layer-2: #fafbfc; --dsw-alias-bg-module-platform: #eef0f4;
+	--dsw-alias-border-l3: #e3e6ec; --dsw-alias-border-l4: #d6dae2;
+	--dsw-alias-label-primary: #1f2329; --dsw-alias-label-secondary: #4e5969; --dsw-alias-label-tertiary: #86909c; --dsw-alias-label-caption: #9aa2af;
+	--dsw-alias-brand-primary: #3b6cf5; --dsw-alias-brand-on: #ffffff; --dsw-alias-link: #2a6df4;
+	--dsw-alias-state-success-primary: #0a8f5c; --dsw-alias-state-warn-primary: #c07800; --dsw-alias-state-error-primary: #d54941;
+	--dsw-alias-state-business-primary: #2a6df4; --purple: #7a52e0;
+	--dsw-elevation-panel: 0 1px 2px rgba(20,28,45,.06), 0 8px 24px rgba(20,28,45,.06);
+	color-scheme: light;
+}
+[data-theme="dark"] {
+	--dsw-alias-bg-base: #17191d; --dsw-alias-bg-layer-1: #1f2227; --dsw-alias-bg-layer-2: #24282e; --dsw-alias-bg-module-platform: #2c3138;
+	--dsw-alias-border-l3: #393f47; --dsw-alias-border-l4: #474e58;
+	--dsw-alias-label-primary: #e8eaed; --dsw-alias-label-secondary: #b7bec8; --dsw-alias-label-tertiary: #8d96a3; --dsw-alias-label-caption: #78828f;
+	--dsw-alias-brand-primary: #5b83f8; --dsw-alias-brand-on: #10131a; --dsw-alias-link: #7ea2ff;
+	--dsw-alias-state-success-primary: #3dbd84; --dsw-alias-state-warn-primary: #e0a33a; --dsw-alias-state-error-primary: #ef7b72;
+	--dsw-alias-state-business-primary: #7ea2ff; --purple: #a98bf5;
+	--dsw-elevation-panel: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.28);
+	color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary);
+	font: 14px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+.layout { display: flex; align-items: flex-start; }
+.toc { flex: 0 0 236px; position: sticky; top: 0; height: 100vh; overflow: auto; padding: 24px 14px 40px;
+	background: var(--dsw-alias-bg-layer-1); border-right: .5px solid var(--dsw-alias-border-l3); }
+.toc .brand { font-size: 15px; font-weight: 700; margin: 0 0 4px 8px; }
+.toc .sub { font-size: 12px; color: var(--dsw-alias-label-caption); margin: 0 0 16px 8px; }
+.toc a { display: block; padding: 5px 10px; border-radius: 8px; text-decoration: none; font-size: 13px; color: var(--dsw-alias-label-secondary); }
+.toc a:hover { background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-primary); }
+.toc a.on { background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-primary); font-weight: 600; }
+.toc .sep { height: 1px; background: var(--dsw-alias-border-l3); margin: 12px 8px; }
+.toc .note { font-size: 12px; color: var(--dsw-alias-label-caption); padding: 0 10px; line-height: 1.6; }
+main { flex: 1; min-width: 0; max-width: 1140px; margin: 0 auto; padding: 32px 34px 80px; }
+header.top { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 22px; }
+header.top .h { flex: 1; min-width: 0; }
+h1 { font-size: 26px; line-height: 1.3; margin: 0 0 8px; font-weight: 700; }
+.lede { color: var(--dsw-alias-label-secondary); margin: 0; max-width: 820px; }
+.badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.tag { display: inline-flex; align-items: center; border-radius: 999px; padding: 1px 9px; font-size: 12px; line-height: 19px;
+	background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-secondary); white-space: nowrap; }
+.tag.brand { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 14%, transparent); color: var(--dsw-alias-link); }
+.tag.ok { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 13%, transparent); color: var(--dsw-alias-state-success-primary); }
+.tag.warn { background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 15%, transparent); color: var(--dsw-alias-state-warn-primary); }
+.tag.err { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 13%, transparent); color: var(--dsw-alias-state-error-primary); }
+.tag.new { background: color-mix(in srgb, var(--purple) 15%, transparent); color: var(--purple); }
+.btn { border: .5px solid var(--dsw-alias-border-l4); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary);
+	border-radius: 9px; height: 32px; padding: 0 12px; font: inherit; font-size: 13px; cursor: pointer; }
+section { margin: 34px 0 0; scroll-margin-top: 20px; }
+h2 { font-size: 19px; margin: 0 0 6px; padding-bottom: 8px; border-bottom: .5px solid var(--dsw-alias-border-l3); }
+h2 .n { color: var(--dsw-alias-link); font-variant-numeric: tabular-nums; margin-right: 8px; }
+h3 { font-size: 15px; margin: 22px 0 8px; }
+h4 { font-size: 13.5px; margin: 16px 0 6px; }
+p { margin: 8px 0 12px; color: var(--dsw-alias-label-secondary); }
+p.tip { font-size: 13px; color: var(--dsw-alias-label-caption); }
+ul, ol { color: var(--dsw-alias-label-secondary); padding-left: 20px; }
+li { margin: 4px 0; }
+li strong, p strong, td strong { color: var(--dsw-alias-label-primary); font-weight: 600; }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; font-size: 12.5px; }
+code { padding: 1px 5px; border-radius: 5px; background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-primary); }
+pre { margin: 10px 0 14px; padding: 12px 14px; border-radius: 12px; background: var(--dsw-alias-bg-module-platform); overflow-x: auto;
+	font: 12.5px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--dsw-alias-label-primary); }
+.card { background: var(--dsw-alias-bg-layer-1); border: .5px solid var(--dsw-alias-border-l3); border-radius: 14px; padding: 14px 18px;
+	box-shadow: var(--dsw-elevation-panel); margin: 14px 0; }
+.card.warn { border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 45%, transparent); }
+.card > strong:first-child { display: block; margin-bottom: 4px; }
+.card.impl { border-left: 3px solid var(--dsw-alias-state-success-primary); background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 5%, var(--dsw-alias-bg-layer-1)); }
+.card.impl.delta { border-left-color: var(--dsw-alias-state-warn-primary); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 6%, var(--dsw-alias-bg-layer-1)); }
+.card.impl.miss { border-left-color: var(--dsw-alias-state-error-primary); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 5%, var(--dsw-alias-bg-layer-1)); }
+.card.impl > strong:first-child { color: var(--dsw-alias-label-primary); }
+.card.impl p, .card.impl li { font-size: 13px; }
+.tag.code { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 14%, transparent); color: var(--dsw-alias-link); }
+.impl-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; margin: 14px 0; }
+.figure { background: var(--dsw-alias-bg-layer-1); border: .5px solid var(--dsw-alias-border-l3); border-radius: 14px; padding: 10px 12px 6px;
+	box-shadow: var(--dsw-elevation-panel); margin: 14px 0; overflow-x: auto; }
+.figure figcaption { font-size: 12px; color: var(--dsw-alias-label-caption); padding: 4px 6px 8px; }
+svg { display: block; width: 100%; min-width: 760px; height: auto; }
+svg .lane { fill: var(--dsw-alias-bg-layer-2); stroke: var(--dsw-alias-border-l3); }
+svg .box { fill: var(--dsw-alias-bg-layer-1); stroke: var(--dsw-alias-border-l4); }
+svg .box.src { fill: color-mix(in srgb, var(--dsw-alias-brand-primary) 7%, var(--dsw-alias-bg-layer-1)); stroke: var(--dsw-alias-brand-primary); }
+svg .box.new { fill: color-mix(in srgb, var(--purple) 10%, var(--dsw-alias-bg-layer-1)); stroke: var(--purple); }
+svg .box.gate { fill: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 12%, var(--dsw-alias-bg-layer-1)); stroke: var(--dsw-alias-state-warn-primary); }
+svg .box.asset { fill: color-mix(in srgb, var(--dsw-alias-state-success-primary) 9%, var(--dsw-alias-bg-layer-1)); stroke: var(--dsw-alias-state-success-primary); }
+svg text { fill: var(--dsw-alias-label-primary); font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+svg .t-title { font-size: 13px; font-weight: 600; }
+svg .t-sub { font-size: 11px; fill: var(--dsw-alias-label-tertiary); }
+svg .t-lane { font-size: 11px; font-weight: 600; fill: var(--dsw-alias-label-tertiary); }
+svg .t-new { font-size: 10px; font-weight: 700; fill: var(--purple); }
+svg .arrow { stroke: var(--dsw-alias-brand-primary); stroke-width: 1.6; fill: none; marker-end: url(#ah); }
+svg .back { stroke: var(--dsw-alias-state-success-primary); stroke-width: 1.6; fill: none; stroke-dasharray: 4 3; marker-end: url(#ahg); }
+svg .loop { stroke: var(--dsw-alias-state-warn-primary); stroke-width: 1.4; fill: none; stroke-dasharray: 3 3; marker-end: url(#ahw); }
+svg .guide-g { stroke: var(--dsw-alias-state-success-primary); stroke-width: 1.6; fill: none; stroke-dasharray: 4 3; }
+svg .st { fill: var(--dsw-alias-bg-layer-1); stroke: var(--dsw-alias-border-l4); }
+svg .st.hl { stroke: var(--dsw-alias-brand-primary); fill: color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, var(--dsw-alias-bg-layer-1)); }
+svg .st.end { stroke: var(--dsw-alias-state-success-primary); }
+svg .st.bad { stroke: var(--dsw-alias-state-error-primary); }
+svg .t-st { font-size: 12px; font-weight: 600; }
+svg .t-edge { font-size: 10.5px; fill: var(--dsw-alias-label-tertiary); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 10px 0 16px; }
+th { text-align: left; font-weight: 500; color: var(--dsw-alias-label-caption); padding: 7px 10px 7px 0; border-bottom: .5px solid var(--dsw-alias-border-l3); white-space: nowrap; }
+td { padding: 8px 10px 8px 0; border-bottom: .5px solid var(--dsw-alias-border-l3); vertical-align: top; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin: 14px 0; }
+.tile { background: var(--dsw-alias-bg-layer-1); border: .5px solid var(--dsw-alias-border-l3); border-radius: 12px; padding: 12px 14px; }
+.tile h4 { margin: 0 0 6px; }
+.tile p { margin: 0; font-size: 12.5px; }
+.tile .k { display: block; margin-top: 6px; font-size: 11px; color: var(--dsw-alias-label-caption); }
+.flow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 10px 0 14px; font-size: 12.5px; }
+.flow .s { padding: 4px 10px; border-radius: 8px; background: var(--dsw-alias-bg-layer-1); border: .5px solid var(--dsw-alias-border-l4); }
+.flow .s.g { border-color: var(--dsw-alias-state-warn-primary); }
+.flow .a { color: var(--dsw-alias-label-caption); }
+table.dir td:first-child { width: 150px; }
+table.dir .k { font-size: 12px; color: var(--dsw-alias-label-caption); }
+.foot { margin-top: 40px; padding-top: 14px; border-top: .5px solid var(--dsw-alias-border-l3); font-size: 12px; color: var(--dsw-alias-label-caption); }
+@media (max-width: 1000px) { .toc { display: none; } main { padding: 24px 18px 60px; } }
+@media print { .toc, .btn { display: none; } body { background: #fff; } main { max-width: none; padding: 0; }
+	.card, .figure, .tile { box-shadow: none; break-inside: avoid; } }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="toc" aria-label="目录">
+	<p class="brand">SuperAgent 框架 v2</p>
+	<p class="sub">设计细则 + 实现对照 · 2026-11-06</p>
+	<a href="#s1" class="on">1 · 目标与变化</a>
+	<a href="#s2">2 · 总体框架图</a>
+	<a href="#s3">3 · 输入源</a>
+	<a href="#s4">4 · Router 与团队组建</a>
+	<a href="#s5">5 · 用户同意闸</a>
+	<a href="#s6">6 · 分发与 worker 执行</a>
+	<a href="#s7">7 · 技能沉淀（记忆系统）</a>
+	<a href="#s8">8 · 团队工作流沉淀</a>
+	<a href="#s9">9 · 数据模型</a>
+	<a href="#s10">10 · 状态机</a>
+	<a href="#s11">11 · 界面落位</a>
+	<a href="#s12">12 · 与现有代码的迁移</a>
+	<a href="#s13">13 · 分期与验收</a>
+	<a href="#s14">14 · 决策记录</a>
+	<div class="sep"></div>
+	<a href="#s15">15 · 实现对照（0.1.55）</a>
+	<a href="#s16">16 · 设计之外的新增</a>
+	<a href="#s17">17 · 遗留与下一步</a>
+	<div class="sep"></div>
+	<p class="note">第 1–14 节保留 2026-11-04 的设计基线；各节末尾的绿 / 橙 / 红卡片是 2026-11-06 对照 <span class="mono">@vssaros/dsh-superagent 0.1.55</span> 的实现状态。旧现状文档见同目录 <span class="mono">superagent-team-framework.html</span>。</p>
+</nav>
+<main>
+<header class="top">
+	<div class="h">
+		<h1>SuperAgent 框架 v2 · 设计细则</h1>
+		<p class="lede">以 superagent 的工单流水线为基础框架：四个输入源进入同一条准入与评估链路；Router 在接单后组建任务团队（查找或新建 bot），<strong>用户同意后</strong>才分发；每个 worker 是一个 VsSaros bot；每个 worker 结束时把执行证据交给记忆系统沉淀技能；整个任务结束后沉淀可复用的团队工作流，并可导出到外部工作流格式。<strong>本文状态</strong>：前 14 节是 2026-11-04 的设计基线，各节末尾标注实际落地情况；第 15–17 节给出 2026-11-06 复核的代码形态、设计外新增与遗留。</p>
+		<div class="badges">
+			<span class="tag code">代码基线 @vssaros/dsh-superagent 0.1.62（第 15–17 节逐项对照 0.1.55，0.1.56–0.1.62 的增量见 15.0）</span>
+			<span class="tag ok">P1–P5 已落地</span>
+			<span class="tag ok">运行态 UI（方案 C）与群聊快路径已落地</span>
+			<span class="tag new">新增 15 · 实现对照</span>
+			<span class="tag new">新增 16 · 设计之外的新增</span>
+			<span class="tag new">新增 17 · 遗留与下一步</span>
+			<span class="tag warn">部分设计未按原样实现（见各节状态卡）</span>
+			<span class="tag ok">已定 4 项决策（2026-11-04，见第 14 节）</span>
+		</div>
+	</div>
+	<button class="btn" id="theme" type="button">切换主题</button>
+</header>
+
+<section id="s1">
+	<h2><span class="n">1</span>目标与相对现状的变化</h2>
+	<p>现有的团队代码（0.1.31）是一条<strong>旁路</strong>：主会话直接派活给 bot，不产生 Trigger、不过 Policy 准入、不建工单、不经 Executor、结果也不回到原来源。v2 的核心是把团队<strong>并回工单主线</strong>，让团队成为工单的执行方式，而不是另一套系统。</p>
+	<table>
+		<thead><tr><th>维度</th><th>现状（0.1.31）</th><th>v2</th></tr></thead>
+		<tbody>
+			<tr><td><strong>入口</strong></td><td>飞书 / GitHub / TAPD 走工单；主管被 <code>agent_message</code> 求助时直接插队进主会话</td><td>四个输入源全部产生 Trigger，走同一个准入闸；新增 <code>superagent</code> 源承接主管对话与 bot 求助</td></tr>
+			<tr><td><strong>接单后</strong></td><td><code>Tickets.create</code> 立即 <code>executor.start</code></td><td>新增工单阶段 <code>person/staffing</code>：Router 先出组队方案，<strong>人同意后</strong>才 start</td></tr>
+			<tr><td><strong>worker</strong></td><td>固定 preset <code>dsh-superagent-worker</code>，一个工单一个会话</td><td>每个步骤一个 bot 会话：preset = <code>vssaros-&lt;botId&gt;</code>，叠加 superagent 的 worker 工具与 mandate</td></tr>
+			<tr><td><strong>团队派活</strong></td><td><code>TeamBus.delegate</code> 绕过 Executor、Assignment 与 Report</td><td>由 <code>DshExecutor</code> 统一调度：并发槽、mandate、report、attention、回复全部复用</td></tr>
+			<tr><td><strong>技能沉淀</strong></td><td>superagent 的 Retrospective 直接写技能文件</td><td>superagent 只交「执行证据」；<strong>记忆系统</strong>负责提炼、去重、版本、审核、按 bot 归属</td></tr>
+			<tr><td><strong>团队工作流</strong></td><td>计划结束生成；只在 <code>team_plan</code> 内部复用</td><td><strong>工单结束</strong>时生成；在组队阶段参与匹配；通过适配器对接 <strong>TeamFlow</strong>（<code>teams.json</code>）</td></tr>
+		</tbody>
+	</table>
+	<div class="card">
+		<strong>四条不变的约束（沿用 superagent 的原则）</strong>
+		<ol>
+			<li><strong>判断交给模型，护栏由代码保证</strong>：组队、拆步骤、选 bot 由 Router 模型完成；配额、风险、同意、并发、跳数由宿主代码强制。</li>
+			<li><strong>只有人能授权</strong>：bot 发来的请求最多是 inferred；同意组队、批准高风险 bot、审核高风险技能只能由名单内的人完成，bot 的消息永远不能充当同意。</li>
+			<li><strong>只有 Assignment 的 report 能从执行侧结束工单</strong>：团队步骤的结果汇总成工单级 report，不另开结束路径。</li>
+			<li><strong>不另起第二套</strong>：bot 名册、技能库、回复通道各只有一份；团队复用工单的 Thread、Subscription 与 Outbox。</li>
+		</ol>
+	</div>
+	<div class="card impl">
+		<strong>实现状态 · 0.1.55（2026-11-06 复核）</strong>
+		<p>v2 主线已经落地并<strong>随包内置</strong>为 <code>@vssaros/dsh-superagent</code>（工作台 <code>vssaros:superagent</code>），源码在 <code>dsh-plugins/vssaros-superagent/dev/src/</code>，构建产物 <code>lib/</code> 入库。五个输入源、<code>person/staffing</code> 同意闸、每步一个 bot 会话、执行证据交记忆系统、工单结束生成团队工作流都有对应代码。</p>
+		<p style="margin-bottom:0"><strong>但上表「v2」列是设计目标，不是全部现状</strong>：实际保留了工单自己的 worker 会话作为<strong>领队</strong>；步骤会话叫 <code>step-&lt;ticket&gt;-&lt;key&gt;</code>；技能沉淀由 <code>vssaros-agents</code> 提供总线、且不调模型提炼；旧 <code>team_*</code> 计划表与直接写技能文件的复盘代码都还在。逐项差异见 <a href="#s15">第 15.4 节</a>。</p>
+	</div>
+</section>
+
+<section id="s2">
+	<h2><span class="n">2</span>总体框架图</h2>
+	<div class="figure">
+	<svg viewBox="0 0 1110 830" role="img" aria-label="SuperAgent 框架 v2 总体框架图">
+		<defs>
+			<marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--dsw-alias-brand-primary)"/></marker>
+			<marker id="ahg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--dsw-alias-state-success-primary)"/></marker>
+			<marker id="ahw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--dsw-alias-state-warn-primary)"/></marker>
+		</defs>
+
+		<!-- 输入源 -->
+		<rect class="lane" x="8" y="8" width="1064" height="96" rx="12"/>
+		<text class="t-lane" x="20" y="28">① 输入源（Source kind）</text>
+		<rect class="box src" x="24" y="38" width="248" height="54" rx="9"/><text class="t-title" x="38" y="60">飞书</text><text class="t-sub" x="38" y="78">群 @ / 私聊 / 话题回复 · 卡片按钮</text>
+		<rect class="box src" x="284" y="38" width="248" height="54" rx="9"/><text class="t-title" x="298" y="60">GitHub</text><text class="t-sub" x="298" y="78">Issue / PR 评论 · /approve</text>
+		<rect class="box src" x="544" y="38" width="248" height="54" rx="9"/><text class="t-title" x="558" y="60">TAPD</text><text class="t-sub" x="558" y="78">需求 / 缺陷评论 · 标签 · Webhook</text>
+		<rect class="box new" x="804" y="38" width="252" height="54" rx="9"/><text class="t-title" x="818" y="60">SuperAgent（主管）</text><text class="t-new" x="1040" y="56" text-anchor="end">新增</text><text class="t-sub" x="818" y="78">主管对话会话 · 其它 bot 的 agent_message</text>
+
+		<path class="arrow" d="M 540 104 L 540 122"/>
+
+		<!-- 接入层 -->
+		<rect class="lane" x="8" y="124" width="1064" height="84" rx="12"/>
+		<text class="t-lane" x="20" y="144">② 接入（不变）</text>
+		<rect class="box" x="24" y="152" width="340" height="44" rx="9"/><text class="t-title" x="38" y="172">Trigger · Thread</text><text class="t-sub" x="38" y="188">每条消息一个不可变 Trigger，按线程归并</text>
+		<rect class="box" x="376" y="152" width="340" height="44" rx="9"/><text class="t-title" x="390" y="172">Policy 准入闸</text><text class="t-sub" x="390" y="188">名单内的人 + 点名 = explicit；bot = 最多 inferred</text>
+		<rect class="box" x="728" y="152" width="328" height="44" rx="9"/><text class="t-title" x="742" y="172">Subscription 扇出</text><text class="t-sub" x="742" y="188">已订阅线程的消息直达工单，其余进 Eval</text>
+
+		<path class="arrow" d="M 540 208 L 540 226"/>
+
+		<!-- Router -->
+		<rect class="lane" x="8" y="228" width="1064" height="168" rx="12"/>
+		<text class="t-lane" x="20" y="248">③ Router（主会话：评估 + 新增团队组建）</text>
+		<rect class="box" x="24" y="258" width="210" height="58" rx="9"/><text class="t-title" x="38" y="280">Eval · Decision</text><text class="t-sub" x="38" y="298">accept / attach / ignore / stop</text>
+		<path class="arrow" d="M 234 287 L 254 287"/>
+		<rect class="box new" x="256" y="258" width="800" height="126" rx="9"/>
+		<text class="t-title" x="270" y="280">团队组建 Staffing</text><text class="t-new" x="1040" y="276" text-anchor="end">新增</text>
+		<rect class="box" x="270" y="292" width="184" height="80" rx="8"/><text class="t-title" x="282" y="312">a · 工作流匹配</text><text class="t-sub" x="282" y="330">已保存工作流 ≥70%</text><text class="t-sub" x="282" y="346">→ 预填角色与步骤</text><text class="t-sub" x="282" y="362">未命中则从零拆解</text>
+		<rect class="box" x="466" y="292" width="184" height="80" rx="8"/><text class="t-title" x="478" y="312">b · 角色拆解</text><text class="t-sub" x="478" y="330">每个角色 = 能力描述</text><text class="t-sub" x="478" y="346">步骤 DAG · 读 / 写权限</text><text class="t-sub" x="478" y="362">预算与并行度</text>
+		<rect class="box" x="662" y="292" width="184" height="80" rx="8"/><text class="t-title" x="674" y="312">c · 选人</text><text class="t-sub" x="674" y="330">查找现有 bot（打分）</text><text class="t-sub" x="674" y="346">找不到 → 新 bot 草稿</text><text class="t-sub" x="674" y="362">草稿此时不写名册</text>
+		<rect class="box" x="858" y="292" width="186" height="80" rx="8"/><text class="t-title" x="870" y="312">d · 组队方案 vN</text><text class="t-sub" x="870" y="330">成员 · 步骤图 · 风险</text><text class="t-sub" x="870" y="346">预算 · 命中工作流</text><text class="t-sub" x="870" y="362">发到原来源等人回应</text>
+
+		<path class="arrow" d="M 540 396 L 540 414"/>
+
+		<!-- 同意闸 -->
+		<rect class="box gate" x="8" y="416" width="1064" height="64" rx="12"/>
+		<text class="t-title" x="24" y="440">④ 用户同意闸（工单阶段 person/staffing）</text><text class="t-new" x="1056" y="438" text-anchor="end">新增</text>
+		<text class="t-sub" x="24" y="460">只认名单内的人对「当前方案版本」的同意 · 面板 / 飞书卡片 / GitHub /approve / TAPD 评论 / 主管对话 · 修改意见 → 方案 v+1 · 拒绝 → 工单 dropped</text>
+		<path class="loop" d="M 1072 448 C 1100 448, 1100 352, 1058 352"/>
+
+		<path class="arrow" d="M 540 480 L 540 498"/>
+
+		<!-- 执行 -->
+		<rect class="lane" x="8" y="500" width="1064" height="160" rx="12"/>
+		<text class="t-lane" x="20" y="520">⑤ 分发与执行（DshExecutor：每个 worker 是一个 bot）</text>
+		<rect class="box" x="24" y="530" width="250" height="118" rx="9"/>
+		<text class="t-title" x="38" y="552">团队调度</text>
+		<text class="t-sub" x="38" y="572">同意后才 executor.start</text>
+		<text class="t-sub" x="38" y="590">步骤 DAG · 并行 ≤3 · 跳数 ≤6</text>
+		<text class="t-sub" x="38" y="608">写步骤按工作目录串行</text>
+		<text class="t-sub" x="38" y="626">新 bot 在此刻才写入名册</text>
+		<path class="arrow" d="M 274 588 L 294 588"/>
+		<rect class="box" x="296" y="530" width="244" height="118" rx="9"/><text class="t-title" x="310" y="552">worker · 设计 bot</text><text class="t-sub" x="310" y="572">会话 worker-&lt;ticket&gt;-T1</text><text class="t-sub" x="310" y="590">preset vssaros-designer</text><text class="t-sub" x="310" y="608">+ worker 工具 + mandate</text><text class="t-sub" x="310" y="626">orchestrator_report</text>
+		<rect class="box" x="552" y="530" width="244" height="118" rx="9"/><text class="t-title" x="566" y="552">worker · 数据 bot</text><text class="t-sub" x="566" y="572">会话 worker-&lt;ticket&gt;-T2</text><text class="t-sub" x="566" y="590">preset vssaros-data</text><text class="t-sub" x="566" y="608">bot 自己的人格 · 模型 · 记忆</text><text class="t-sub" x="566" y="626">提问 → 工单 attention</text>
+		<rect class="box" x="808" y="530" width="248" height="118" rx="9"/><text class="t-title" x="822" y="552">worker · 新建的测试 bot</text><text class="t-sub" x="822" y="572">会话 worker-&lt;ticket&gt;-T3</text><text class="t-sub" x="822" y="590">同意时创建，标「主管创建」</text><text class="t-sub" x="822" y="608">留在 Bots 名册</text><text class="t-sub" x="822" y="626">失败 → 重派 / 换人 / 问人</text>
+
+		<!-- 产出 -->
+		<rect class="lane" x="8" y="680" width="1064" height="142" rx="12"/>
+		<text class="t-lane" x="20" y="700">⑥ 结果与沉淀</text>
+		<rect class="box" x="24" y="708" width="330" height="92" rx="9"/><text class="t-title" x="38" y="730">工单收尾 · 回复原来源</text><text class="t-sub" x="38" y="750">全部步骤 ready → 汇总为工单 report</text><text class="t-sub" x="38" y="768">Router 用 orchestrator_reply 回飞书 / PR / TAPD</text><text class="t-sub" x="38" y="786">或回主管对话 / 求助的 bot</text>
+		<rect class="box asset" x="370" y="708" width="330" height="92" rx="9"/><text class="t-title" x="384" y="730">记忆系统 · 技能沉淀（每个 worker）</text><text class="t-sub" x="384" y="750">≥3 回合或失败 / 重派 → 提炼；其余只记事实</text><text class="t-sub" x="384" y="768">去重 / 新版本 · 风险审核 · 归属到该 bot</text><text class="t-sub" x="384" y="786">一次性事实进 bot 记忆，不进技能</text>
+		<rect class="box asset" x="716" y="708" width="340" height="92" rx="9"/><text class="t-title" x="730" y="730">团队工作流 · teamworkflow（每个工单）</text><text class="t-sub" x="730" y="750">工单结束后生成草稿，人确认保存 v1</text><text class="t-sub" x="730" y="768">下次在组队阶段参与匹配（回到 ③a）</text><text class="t-sub" x="730" y="786">对接 TeamFlow：导出 teams.json · 导入 · 委托执行</text>
+
+		<!-- 调度器 → 工单收尾（实线：全部步骤完成） -->
+		<path class="arrow" d="M 149 648 L 149 706"/>
+		<!-- 每个 worker 结束 → 执行证据汇入记忆系统（绿色虚线） -->
+		<path class="guide-g" d="M 418 648 L 418 668 M 674 648 L 674 668 M 932 648 L 932 668 M 418 668 L 932 668"/>
+		<path class="back" d="M 535 668 L 535 706"/>
+		<text class="t-sub" x="545" y="690">每个 worker 结束 · 执行证据</text>
+		<!-- 工单收尾 → 团队工作流（沿底边绕过记忆系统） -->
+		<path class="back" d="M 189 800 L 189 812 L 886 812 L 886 802"/>
+		<text class="t-sub" x="540" y="826" text-anchor="middle">工单结束 → 生成团队工作流草稿</text>
+		<!-- 已保存工作流 → 下次组队匹配；方案被修改 → 回到组队 -->
+		<path class="loop" d="M 1056 754 C 1098 754, 1098 330, 1058 330"/>
+	</svg>
+	<figcaption>图 1 · 蓝框为既有输入源，紫框为新增，橙色为人的同意闸，绿框为沉淀资产。蓝色实线：主流程；绿色虚线：每个 worker 结束时把执行证据交给记忆系统，工单结束后生成团队工作流；橙色虚线：方案被修改时回到组队，已保存的工作流在下一个工单的组队阶段参与匹配。<br><strong>实现差异</strong>：图中「每个 worker 一个 bot 会话」实际是「1 个领队会话 <code>worker-&lt;ticket&gt;</code> + 每步 1 个 <code>step-&lt;ticket&gt;-&lt;key&gt;</code> 会话」；「记忆系统」实际是 <code>vssaros-agents</code> 的 <code>memoryBus</code>；执行证据的沉淀是模板拼接、不调模型；另外多出 <code>P4</code> 源、步骤批复闸与 SSE 实时推送（见第 16 节）。</figcaption>
+	</div>
+	<div class="flow">
+		<span class="s">消息</span><span class="a">→</span><span class="s">Trigger</span><span class="a">→</span><span class="s">准入</span><span class="a">→</span><span class="s">Eval accept</span><span class="a">→</span><span class="s">工单 · 组队中</span><span class="a">→</span><span class="s g">人同意</span><span class="a">→</span><span class="s">建新 bot · 派步骤</span><span class="a">→</span><span class="s">各 bot 回报 → 记忆系统沉淀技能</span><span class="a">→</span><span class="s">汇总回复</span><span class="a">→</span><span class="s">工单结束 → 团队工作流</span>
+	</div>
+</section>
+
+<section id="s3">
+	<h2><span class="n">3</span>输入源</h2>
+	<p>四个源都实现同一个 <code>SourceKind</code>（<code>src/sources/kind.ts</code>）：<code>schema / fields / health / policy / channel / threadContext</code>。前三个已有，只补团队相关的回复形态；第四个是新增。</p>
+	<table>
+		<thead><tr><th>源</th><th>线程键</th><th>explicit 的条件</th><th>同意方式</th><th>回复通道</th></tr></thead>
+		<tbody>
+			<tr><td><strong>飞书</strong></td><td><code>feishu:&lt;chat&gt;:&lt;root&gt;</code></td><td>名单内的人 @ bot 或私聊</td><td>方案卡片按钮「同意 / 修改 / 取消」，或在话题里回复「同意」</td><td>话题回复（<code>sendFeishu</code>）；方案用交互卡片</td></tr>
+			<tr><td><strong>GitHub</strong></td><td><code>github:&lt;number&gt;</code></td><td>名单内账号的评论点名 bot</td><td>评论 <code>/approve</code>、<code>/revise …</code>、<code>/cancel</code></td><td>Issue / PR 评论（<code>sendGithub</code>）；方案为 Markdown 表</td></tr>
+			<tr><td><strong>TAPD</strong></td><td><code>tapd:&lt;workspace&gt;:&lt;item&gt;</code></td><td>名单内成员的评论，或带团队标签的需求</td><td>评论「同意」/「/approve」</td><td>需求评论（<code>sendTapd</code>）</td></tr>
+			<tr><td><strong>SuperAgent</strong> <span class="tag new">新增</span></td><td><code>superagent:&lt;sessionId&gt;</code><br><span class="tag code">实际</span> <code>superagent:desk:&lt;session&gt;</code> / <code>superagent:bot:&lt;session&gt;</code></td><td>主管对话里本机用户的消息（总是名单内、总是点名）</td><td>对话里回复「同意」，或点方案卡片</td><td>写回该对话会话；bot 求助则发回求助方 bot 的会话</td></tr>
+		</tbody>
+	</table>
+
+	<h3>3.1 新增 <code>superagent</code> 源：两个入口</h3>
+	<div class="grid">
+		<div class="tile"><h4>入口 A · 主管对话（人）</h4><p>在 Bots 名册里点 SuperAgent，打开一条「主管对话」会话（preset <code>dsh-superagent-desk</code>，与路由用的主会话分开）。用户在这里提需求、看方案、回复同意。</p><span class="k">Trigger：human=true · addressed='direct' · actor = 本机用户</span></div>
+		<div class="tile"><h4>入口 B · bot 求助（机器）</h4><p>其它 bot 用 <code>agent_message to=SuperAgent</code> 求助。替换现在「直接插队进主会话」的做法，改为产生 Trigger。</p><span class="k">Trigger：human=false · actor = 发起 bot · 最多 inferred</span></div>
+	</div>
+	<h4>主管对话怎样把用户原话变成 Trigger</h4>
+	<p>desk 会话的 preset 只挂一个宿主工具 <code>superagent_submit()</code>，<strong>不带文本参数</strong>：工具执行时宿主从会话事件里读取最近一条用户消息原文作为 Trigger.text，模型无法改写需求。工具返回后，desk 会话只回一句「已收到，交给主管评估」。后续的方案、进度和结果都由 <code>channel.send</code> 写回这条会话。</p>
+	<p class="tip">备选：如果 dsh 有「用户消息入列」的宿主事件，可直接拦截生成 Trigger，连模型都不用。实现前先核对事件名；没有的话就用上面的工具方案，它只依赖已知的 <code>snapshotEvents</code>。</p>
+	<h4>bot 求助的准入</h4>
+	<ul>
+		<li>Policy 的 <code>superagent</code> 部分新增 <code>bots</code> 名单（默认空），只有名单内的 bot 能过 <code>machineGate</code>。</li>
+		<li>bot 请求只能是 inferred，需要 accept mode = <code>auto</code> 且命中一条已启用规则（建议预置规则「bot 求助：明确的子任务」，默认关闭）。</li>
+		<li>即使被 accept，组队方案仍要<strong>人</strong>同意：bot 求助会出现在面板「需要你处理」和主管对话里，而不会只回给发起的 bot。</li>
+		<li>沿用 6 跳上限：Trigger.meta 记录 <code>hop</code>，worker 再向其它 bot 求助时 hop+1，超过则拒绝。</li>
+	</ul>
+	<div class="card impl delta">
+		<strong>实现状态 · 输入源（P1，0.1.32）</strong>
+		<ul style="margin-bottom:0">
+			<li><code>src/sources/superagent.ts</code> 由 Runtime 自己注册；<code>scope</code> 按 <code>meta.from</code> 分 <code>desk</code> / <code>bot</code> 两行，开关 <code>desk</code>/<code>bots</code> 默认都开；<code>policy.allowed</code> 默认 <code>local</code>（本机用户），<code>policy.bots</code> 默认空，名单内 bot 也只是 inferred，不能同意方案。</li>
+			<li><code>src/app/desk.ts</code>：desk 会话 <code>desk-&lt;key(stateDir)&gt;</code>，唯一工具 <code>superagent_submit</code> 无参数，从会话事件里取最近一条 <code>user/message</code> 原文；回复用 <code>queue</code> 注入（desk）/ <code>steer</code>（bot）。</li>
+			<li><strong>偏差</strong>：实际是 <strong>5 个源</strong>（飞书 / GitHub / TAPD / <strong>P4</strong> / superagent），设计稿只列 4 个；6 跳判在 <code>src/app/runtime.ts</code> 的 bot 求助入口，不是「worker 再求助」链；desk 后来改用 DSH 原生聊天框（第 16 节），还多了附件、定时消息、语音与群聊快路径。</li>
+			<li>Thread 键实际是 <code>superagent:desk:&lt;session&gt;</code> / <code>superagent:bot:&lt;session&gt;</code>；<code>ChannelRef.thread</code> 必须是完整线程键；Trigger id 用 DSH 消息 id 保证幂等。</li>
+		</ul>
+	</div>
+</section>
+
+<section id="s4">
+	<h2><span class="n">4</span>Router 与团队组建</h2>
+	<p>Eval 与 Decision 不变（Router 仍判定 accept / attach / ignore / stop）。变化在 accept 之后：工单进入 <code>person/staffing</code>，<strong>不立即启动执行器</strong>；Router 在同一回合里调用团队工具产出组队方案。</p>
+	<h3>4.1 组队的四步</h3>
+	<div class="card">
+		<strong>已定：所有工单都走组队，流程统一</strong>
+		<ul style="margin-bottom:0">
+			<li>单人能完成的工单 = <strong>1 个角色、1 个步骤的团队</strong>，同样经过选人、方案和同意闸，不另设快速通道。</li>
+			<li>为了不让简单工单变啰嗦，单角色方案用<strong>精简格式</strong>：一行「由 设计 bot（现有）处理：xxx · 只读 · 预算默认」+ 同意 / 修改 / 取消。</li>
+			<li>工单详情、步骤表、报告汇总的结构对单人和多人完全一样；单人工单的「汇总」就是那一份步骤报告。</li>
+			<li>原来的单会话执行（<code>worker-&lt;ticketId&gt;</code> + <code>dsh-superagent-worker</code>）不再作为默认路径，只作为兜底 bot（第 14 节问题 6）。</li>
+		</ul>
+	</div>
+	<table>
+		<thead><tr><th>步骤</th><th>谁做</th><th>做什么</th><th>宿主强制的规则</th></tr></thead>
+		<tbody>
+			<tr><td><strong>a · 工作流匹配</strong></td><td>宿主</td><td>用工单标题与原始请求对已保存的团队工作流打分</td><td>≥70% 时把命中的工作流（含参数、角色、步骤）预填进方案；草稿状态的工作流不参与匹配</td></tr>
+			<tr><td><strong>b · 角色拆解</strong></td><td>Router 模型</td><td>把需求拆成角色和步骤 DAG；每步标读 / 写权限、产出物</td><td>步骤 ≤12；依赖必须指向已有步骤且不成环；每个工单至少 1 个角色、1 个步骤（单人工单也走这里）</td></tr>
+			<tr><td><strong>c · 选人</strong></td><td>宿主打分 + 模型裁决</td><td>按角色能力在名册里查找现有 bot；没有合适的就起草一个新 bot</td><td>同名或同 id 返回现有 bot；新 bot 只是草稿，不写名册；每工单最多新建 3 个，主管创建的 bot 全局 20 个</td></tr>
+			<tr><td><strong>d · 方案</strong></td><td>宿主</td><td>组装方案 vN，按来源格式发出，等人回应</td><td>方案带版本号与内容指纹；同意必须对应当前版本</td></tr>
+		</tbody>
+	</table>
+	<h3>4.2 选人打分</h3>
+	<p>宿主对每个角色给候选 bot 打分，模型只能在前 5 名里选，或者选择「新建」：</p>
+	<pre>score = 0.45 · 能力覆盖（角色描述词 ∩ bot 名称 / 描述 / 技能）
+      + 0.20 · 历史成功率（同类步骤，来自 team_step）
+      + 0.15 · 可委派（subagent: true）
+      + 0.10 · 工作区授权匹配（workspaces-read / write 覆盖工单目录）
+      + 0.10 · 空闲度（当前没有运行中的步骤）
+低于 0.35 视为没有合适人选 → 允许起草新 bot</pre>
+	<h3>4.3 组队方案（StaffingProposal）</h3>
+	<pre>{
+  ticketId, version: 2, fingerprint: "sha256:…",       // 同意时比对，防止「看 v1 批了 v2」
+  goal, workflow?: { id, version, score },            // 命中的团队工作流
+  roles: [
+    { key: "design", need: "交互稿与动效说明", bot: { id: "designer", score: 0.81 } },
+    { key: "test",   need: "Playwright 回归",  draft: { id: "qa-runner", name: "测试 bot",
+        persona, skills, tools: ["read","bash"], risk: ["bash"] } }    // 新建，含高风险工具
+  ],
+  steps: [
+    { key: "T1", role: "design", title, spec, after: [],     access: "read",  produces: "交互稿",   phase: "design" },
+    { key: "T2", role: "test",   title, spec, after: ["T1"], access: "write", produces: "测试报告", phase: "qa" }
+  ],
+  budget: { tokens: 300000, turns: 90, parallel: 3, deadline? },
+  risk: { newBots: 1, highRiskTools: ["bash"], writeSteps: 1 },
+  expiresAt                                           // 72 小时未回应先提醒，7 天后放弃
+}</pre>
+	<h3>4.4 Router 的工具变化</h3>
+	<table>
+		<thead><tr><th>工具</th><th>状态</th><th>说明</th></tr></thead>
+		<tbody>
+			<tr><td><code>orchestrator_route</code> / <code>orchestrator_eval_decide</code></td><td>保留</td><td>accept 后工单进入 staffing；<code>title</code>、<code>acknowledgement</code> 照旧</td></tr>
+			<tr><td><code>orchestrator_team_bots</code></td><td>保留</td><td>返回带分数的候选，按角色查询</td></tr>
+			<tr><td><code>orchestrator_team_propose</code></td><td>新增 <span class="tag ok">已落地</span></td><td><code>(ticket_id, roles, steps, budget?)</code>，生成方案 vN 并发到来源；替代现在直接派活的 <code>orchestrator_team_plan</code>。<strong>实际</strong>：<code>budget</code> 参数未开放（默认 300k/90/3）；P5 增加 <code>workflow_id</code>，命中工作流时 <code>roles</code>/<code>steps</code> 可省略由 <code>prefill</code> 预填。</td></tr>
+			<tr><td><code>orchestrator_team_confirm</code></td><td>新增 <span class="tag ok">已落地</span></td><td><code>(ticket_id, trigger_id, version)</code>：Router 判断某条消息是同意时调用；宿主再校验发送者、强度与版本，三者都满足才放行</td></tr>
+			<tr><td><code>orchestrator_team_refuse</code></td><td><span class="tag code">实现新增</span></td><td>设计稿没有；因守卫禁止工具名含 <code>approve|reject|discard|submit|review</code>，实际用 <code>refuse</code> 命名，人的拒绝使工单以 <code>dropped</code> 结束</td></tr>
+			<tr><td><code>orchestrator_team_revise</code></td><td>新增 <span class="tag warn">实际未做</span></td><td>设计：按人的修改意见出 v+1；旧版本的同意全部失效。<strong>实际</strong>：再调一次 <code>propose</code> 出 v+1，<code>Staffing.propose</code> 把旧版置 <code>superseded</code>。</td></tr>
+			<tr><td><code>orchestrator_team_create_bot</code></td><td>改造</td><td>不再立即创建，只写入方案的 <code>draft</code>；同意后由宿主创建。<strong>实际</strong>：该工具连同 <code>plan/status/stop</code> 被 <code>CONSENTLESS_TOOLS</code> 从主会话摘除，仍供旧计划系统使用。</td></tr>
+			<tr><td><code>orchestrator_team_plan</code></td><td>设计：下线 <span class="tag warn">实际仍在使用</span></td><td>工单组队走 propose→confirm→steps；但旧 <code>team.plan</code> 计划系统没有下线，<code>POST team/workflows/:id/run</code> 仍走它，<code>TeamBus.delegate</code> 也还在。</td></tr>
+		</tbody>
+	</table>
+	<div class="card impl delta">
+		<strong>实现状态 · 组队（P2，0.1.33；P5 预填，0.1.36）</strong>
+		<ul style="margin-bottom:0">
+			<li><strong>已照做</strong>：所有工单进入 <code>person/staffing</code>（<code>src/core/stage.ts</code> 首行判定，<code>Tickets.create</code> 不立即 <code>executor.start</code>）；<code>src/app/staffing.ts</code> 的 <code>team_proposal</code> 按版本存方案，<code>fingerprintOf</code> 用 <code>goal/roles/steps/budget</code> 的 sha256；同意时才 <code>createAgreed</code> 建新 bot、<code>steps.plan</code> 写步骤、<code>approveStaffing</code> 启动；<code>src/policy.ts</code> 的 <code>staffing:true</code>、<code>autoApprove:false</code>。</li>
+			<li><strong>同意判据（代码口径）</strong>：<code>human</code> + <code>allowedSender</code> + <code>reached</code> 落在工单线程 + <strong>宿主接收时间 <code>disposition.at ≥ proposal.at</code></strong>（不能用来源时间戳，时钟会不一致），再由 <code>current()</code> 校验版本号。</li>
+			<li><strong>偏差</strong>：<code>Ticket.team</code> 实际是 <code>{state: proposing|proposed|approved, version, fingerprint, at, decidedBy, decidedAt, triggerId}</code>，<code>workflowId</code> 放在 <code>StaffingProposal.workflow</code>；4.2 的加权打分公式未进组队链路（现只有 <code>team.ts:255</code> 旧计划系统的词面命中 + 可委派加分），实际由主会话模型看 <code>orchestrator_team_bots</code> 的能力卡片裁决；工作流匹配用 <code>retrospective.ts</code> 的 <code>coverage()</code> ≥70%，<code>prefill()</code> 只认 <code>state:'saved'</code>。</li>
+			<li>方案消息是<strong>纯文本</strong>（单角色一行、多角色多行），没有飞书卡片按钮、命中率展示与 72 小时有效期；<code>team_proposal</code> 状态也没有 <code>expired</code>。</li>
+		</ul>
+	</div>
+</section>
+
+<section id="s5">
+	<h2><span class="n">5</span>用户同意闸</h2>
+	<p>现有领域刻意不设「等待中的 Eval」状态，所以等待放在<strong>工单</strong>上：新增阶段 <code>person/staffing</code>，排在 <code>person/delivery</code> 之后、<code>person/answer</code> 之前。工单处于这个阶段时不创建运行中的 Assignment，执行器不启动。</p>
+	<h3>5.1 什么算「同意」</h3>
+	<table>
+		<thead><tr><th>条件</th><th>规则</th></tr></thead>
+		<tbody>
+			<tr><td><strong>谁</strong></td><td>工单原始来源的名单内的人（与「只有人的 explicit 消息能 stop 工单」同一判据）；面板操作者视为本机用户。bot 消息、inferred 消息一律无效。</td></tr>
+			<tr><td><strong>哪个版本</strong></td><td>同意绑定 <code>version + fingerprint</code>。飞书卡片按钮自带版本；文字「同意」默认指最新版本，但方案在该消息之后被修改过则无效并提示重新确认。</td></tr>
+			<tr><td><strong>在哪里</strong></td><td>工单已订阅的任一线程都可以（原来源、主管对话、面板）。消息先按 Subscription 扇出到工单，再由 Router 识别意图后调用 <code>orchestrator_team_confirm</code>。</td></tr>
+			<tr><td><strong>同意的范围</strong></td><td>一次同意覆盖方案里列出的全部内容：成员、新建的 bot（含高风险工具，方案里逐个列出）、写权限步骤、预算。没列出的不在授权范围内。</td></tr>
+		</tbody>
+	</table>
+	<h3>5.2 人的三种回应</h3>
+	<table>
+		<thead><tr><th>回应</th><th>结果</th></tr></thead>
+		<tbody>
+			<tr><td><strong>同意</strong></td><td>宿主依次：创建草稿中的新 bot（写 <code>.agent.md</code>、初始化记忆、注册 preset）→ 写入步骤 → <code>executor.start</code> → 回一句「开始执行」。创建 bot 失败则整体回滚到 staffing 并说明原因。</td></tr>
+			<tr><td><strong>修改</strong>（「把测试换成 xx」「不要新建 bot」）</td><td>Router 调 <code>orchestrator_team_revise</code> 出 v+1，旧版本作废；修改意见写进 exchange。</td></tr>
+			<tr><td><strong>拒绝 / 取消</strong></td><td>工单以 <code>dropped</code> 结束，草稿 bot 丢弃，不产生任何资产。</td></tr>
+		</tbody>
+	</table>
+	<h3>5.3 可选：低风险自动同意（已定：默认关闭）</h3>
+	<p>设置 → 团队 新增 <code>autoApprove</code>，<strong>默认关闭</strong>，出厂与升级迁移都不会替用户打开。关闭时每个方案（含单人方案）都要人同意。用户手动开启后，只有同时满足以下条件的方案自动通过：全部成员是现有 bot、没有写权限步骤、没有高风险工具、预算不超过默认值、来源是 explicit。其余一律等人。</p>
+	<p class="tip">自动通过时，方案消息仍照常发出，只是标「已按设置自动同意」，并写进工单的 exchange，人随时可以停止工单。</p>
+	<h3>5.4 方案消息的样子（设计示意：飞书卡片）</h3>
+	<pre>【组队方案 v2】首页新手引导上线                          命中工作流「新手引导」93%
+成员  设计 bot（现有，0.81）   数据 bot（现有，0.77）   测试 bot（新建 · 申请 bash）
+步骤  T1 交互稿 → T2 埋点 → T3 回归测试（写）→ T4 发版说明
+预算  30 万 tokens · 90 回合 · 并行 3          有效期 72 小时
+[ 同意 ]   [ 修改… ]   [ 取消 ]</pre>
+	<div class="card impl delta">
+		<strong>实现状态 · 同意闸（P2，0.1.33）</strong>
+		<ul style="margin-bottom:0">
+			<li><strong>已照做</strong>：<code>Staffing.propose/confirm/refuse/approveFromPanel</code>、<code>POST tickets/:id/team/approve|reject</code>、<code>GET team/proposals</code>；同意绑定 <code>version + fingerprint</code> 且只认名单内的人；同意后才建 bot / 写步骤 / 启动执行器；拒绝 → <code>dropped</code>；<code>autoApprove</code> 默认关，开启后仍要求 <code>explicit</code> 且无新 bot、无写步骤、无高风险工具、预算不超默认。</li>
+			<li><strong>实际形态</strong>：方案由 <code>outbox</code> 发回原来源，是<strong>纯文本</strong>（单角色一行精简格式），没有交互卡片、按钮、命中率与有效期；面板「待确认组队」与 desk 里的 <code>FlowCard</code> 提供「同意 / 取消」，<strong>没有「修改」按钮</strong>，改方案要在主管对话里再发一条消息由主会话重新 <code>propose</code>。</li>
+			<li><strong>未做</strong>：72 小时提醒、7 天放弃、<code>expired</code> 状态；「同意范围」的逐项授权展示。</li>
+			<li><strong>别与步骤批复混为一谈</strong>：0.1.41 起另有一套 <code>StepApprovals</code>（<code>src/app/step-approvals.ts</code>），在<strong>执行期</strong>对越界命令要人批「同意 / 同意并记住 / 拒绝 #code」，见第 16.1 节。组队同意是一次性的、步骤批复是逐步的。</li>
+		</ul>
+	</div>
+</section>
+
+<section id="s6">
+	<h2><span class="n">6</span>分发与 worker 执行</h2>
+	<p>执行统一回到 <code>DshExecutor</code>，复用并发槽、mandate、report、attention 和回复。变化是：一个工单从「一个 worker 会话」变成「每个步骤一个 bot 会话」。</p>
+	<h3>6.1 worker 会话 = bot preset + superagent 的工作约束</h3>
+	<table>
+		<thead><tr><th>项</th><th>现状</th><th>v2</th></tr></thead>
+		<tbody>
+			<tr><td>会话 id</td><td><code>worker-&lt;ticketId&gt;</code></td><td><code>worker-&lt;ticketId&gt;-&lt;stepKey&gt;</code></td></tr>
+			<tr><td>preset</td><td>写死 <code>dsh-superagent-worker</code></td><td><code>Sessions.ensure</code> 增加 <code>preset</code> 参数，传 <code>vssaros-&lt;botId&gt;</code>：bot 的人格、记忆注入随 preset 生效</td></tr>
+			<tr><td>工作目录</td><td>工单 worktree</td><td>同一个工单 worktree；只读步骤可并行，写步骤按目录串行（见 6.3）</td></tr>
+			<tr><td>工具</td><td>只放行固定的 20 个 <code>WORK_TOOLS</code></td><td>放行 <code>WORK_TOOLS ∪ bot 自己声明的 tools</code>，再减去 Policy 的 <code>blockedCommands</code></td></tr>
+			<tr><td>模型</td><td><code>settings.executor.model</code> 覆盖</td><td>bot 设了 <code>model-assignment</code> 或 <code>model</code> 就用它的，否则用 executor 默认模型</td></tr>
+			<tr><td>preset 被改回</td><td><code>agent-preset/selected</code> 监听把任何 worker 会话改回 worker preset</td><td>改为「改回该步骤登记的 bot preset」</td></tr>
+			<tr><td>mandate 与报告</td><td>systemPrompt section + <code>orchestrator_report</code></td><td>不变，另加一段步骤上下文：本步骤目标、产出物、前置步骤的报告、可读写范围</td></tr>
+		</tbody>
+	</table>
+	<div class="card warn">
+		<strong>为什么不再走 <code>TeamBus.delegate</code></strong>
+		<p style="margin-bottom:0">delegate 开出的是 bot 的普通会话：没有 mandate、没有 report 工具、不受执行器并发槽约束、结果进不了工单。改为由执行器以 bot preset 开会话后，bot 的人格、记忆和模型都保留，同时具备工单约束。团队总线只保留名册（<code>listBots</code>）、建 bot（<code>createBot</code>）和外部 bot 登记三项职责。</p>
+	</div>
+	<h3>6.2 调度规则</h3>
+	<ul>
+		<li><strong>就绪</strong>：依赖的步骤都已 <code>ready</code>；前置步骤的报告（每份 ≤2000 字）注入本步骤的任务正文。</li>
+		<li><strong>并行</strong>：每个工单 ≤3 个运行中的步骤，同时受全局 <code>maxWorkers</code> 槽位限制；人的消息仍可额外占用 1 个槽。</li>
+		<li><strong>报告</strong>：每个 worker 用 <code>orchestrator_report</code> 回报，宿主把它记为<strong>步骤</strong>结果并以 <code>team_report</code> relay 给 Router；只有全部步骤完成后，宿主才把汇总写成工单级 <code>ready</code> report，保持「只有 Assignment report 能结束工单」。</li>
+		<li><strong>提问</strong>：worker 用 <code>human_action</code> 提问 → 工单 attention（<code>person/answer</code>），只阻塞这个步骤，其它独立步骤继续。</li>
+		<li><strong>失败</strong>：同一 bot 自动重试 1 次（带失败原因）；再失败交给 Router 决定换人、跳过或问人。等待它的步骤保持 pending，不会被提前跳过。</li>
+		<li><strong>跳数</strong>：worker 向其它 bot 求助时 hop+1，链路 ≤6 跳。</li>
+		<li><strong>预算</strong>：token / 回合超出方案预算的 90% 时提醒 Router；达到 100% 暂停新步骤并询问人是否追加。</li>
+	</ul>
+	<h3>6.3 写冲突</h3>
+	<p>多个 bot 共用工单 worktree。方案里 <code>access: "write"</code> 的步骤在同一目录上持有写锁，同一时刻只有一个运行；<code>read</code> 步骤不受限制。需要并行写的工单，由 Router 在方案里把写步骤分配到不同子目录，或者拆成两个工单。</p>
+	<div class="card impl delta">
+		<strong>实现状态 · 执行（P3，0.1.34；批复，0.1.41）</strong>
+		<ul style="margin-bottom:0">
+			<li><strong>最大的设计偏差：领队没取消</strong>。工单自己的 <code>worker-&lt;ticket&gt;</code> 会话仍是<strong>领队</strong>（<code>dsh-superagent-worker</code>），持有 Assignment / <code>orchestrator_report</code> / attention / 回复原来源；每个步骤另开 <code>step-&lt;ticket&gt;-&lt;key&gt;</code> 会话，preset 是 <code>botPreset() = vssaros-&lt;slugify(botId)&gt;</code>（中文名回退 <code>vssaros-agent</code>），建会话失败回退 <code>WORKER_PRESET</code>。领域核心因此没有改动。</li>
+			<li><strong>报告协议不同</strong>：步骤用新增的 <code>orchestrator_step_report</code> 回报，宿主把每份结果以 <code>engine.note</code> 转给领队；全部步骤结束后发一次「All steps finished」note，由<strong>领队自己</strong>汇总成工单级 <code>orchestrator_report</code>（未完成步骤时领队报 ready 会抛错）。没有 <code>team_report</code> relay。</li>
+			<li><strong>已照做</strong>：依赖就绪才起、每工单并行 1–3、写步骤同一时刻只跑一个（<code>schedule()</code> 的 <code>writing</code> 标志，不是文件锁）、失败自动重试 1 次（<code>STEP_ATTEMPTS=2</code>）、步骤 <code>turns</code> 在 idle 事件里累加并写入 <code>team_step</code>、工单结束 <code>stopAll</code>、重启 <code>resume</code>、30s 定时 <code>kick</code>。</li>
+			<li><strong>偏差</strong>：预算只管 <code>turns</code> 与 <code>parallel</code>（无 token 计量、无 90% 提醒）；工具并集 / bot 模型覆盖未显式实现（步骤会话不 mask 工具、不 <code>initializeRoleModel</code>，实际保留了 bot 自己的工具与模型）；无 <code>human_action → 工单 attention</code>，换人 / 跳过 / 问人由固定规则（重试 1 次后依赖步骤 <code>skipped</code>）代替；<code>TeamBus.delegate</code> 与旧计划系统仍并存。</li>
+			<li><strong>额外</strong>：<code>src/app/step-approvals.ts</code> 给步骤分 <code>read-only</code> / <code>workspace-write</code> / <code>danger-full-access</code> 三档并接管 <code>approval/request</code>；<code>POST tickets/:id/steps/:key/stop</code> 可停单步；<code>StepActivity</code> 记录每步当前工具调用（第 16.1 节）。</li>
+		</ul>
+	</div>
+</section>
+
+<section id="s7">
+	<h2><span class="n">7</span>技能沉淀（由记忆系统负责）</h2>
+	<p>分工：<strong>superagent 只负责「什么时候、交什么证据」</strong>；提炼、去重、版本、风险审核、存储和按 bot 归属全部归记忆系统。设计稿写作时（2026-11-04）这条流水线还不存在；同日已落地一条<strong>更轻</strong>的链路，实际归属与处理方式跟本节设计不同（见本节末实现状态卡）。</p>
+	<h3>7.1 时机与提炼门槛（已定）</h3>
+	<p>每个步骤的 worker 以 <code>ready</code>、<code>blocked</code>、<code>failed</code> 结束时交一次证据；重派成功的步骤把失败与修复两段证据合并成一份。被人停止的工单不交。<strong>由 superagent 宿主</strong>按下表决定这份证据走哪种处理，记忆系统照单执行：</p>
+	<table>
+		<thead><tr><th>条件（任一满足）</th><th>mode</th><th>记忆系统做什么</th><th>成本</th></tr></thead>
+		<tbody>
+			<tr><td>该步骤 worker 会话 <strong>≥3 个回合</strong>（宿主数 <code>agent/turn-stopping</code> 次数）</td><td rowspan="3"><code>skill</code></td><td rowspan="3">完整提炼：开短期子会话 → 分流技能 / 记忆 → 去重与版本 → 风险分级 → 待审核或自动生效</td><td rowspan="3">一次模型调用</td></tr>
+			<tr><td>步骤<strong>失败过</strong>（任一尝试以 <code>failed</code> 结束）</td></tr>
+			<tr><td>步骤<strong>被重派过</strong>（<code>attempts &gt; 1</code>，含换人）</td></tr>
+			<tr><td>其余（1–2 个回合一次成功，或只是 <code>blocked</code> 等人）</td><td><code>facts</code></td><td><strong>只记事实</strong>：把「工单 / 步骤 / 结果 / 报告前 300 字 / 产出物路径」按固定格式追加到该 bot 的记忆，不开子会话、不产生技能</td><td>不调模型</td></tr>
+		</tbody>
+	</table>
+	<p class="tip">回合数在宿主侧统计：执行器已经监听 worker 会话的回合结束（判定空闲、自动报 waiting），在同一处给步骤累加 <code>turns</code>，写进 <code>team_step</code>，并随证据一起交给记忆系统，记忆系统不需要再读会话来判断。</p>
+	<h3>7.2 交接契约：执行证据（DistillRequest）</h3>
+	<pre>globalThis[Symbol.for('vssaros.memory')]            // version 1，与团队总线同一种跨包做法
+  .distill({
+    requestId: "ticket-8f2c:T3:hop4",                  // 幂等键
+    bot: { id: "qa-runner", sessionId: "worker-ticket-8f2c-T3" },
+    ticket: { id, title, source: "feishu", url },
+    step:   { key: "T3", title: "回归测试", spec, produces: "测试报告" },
+    outcome: "ready" | "blocked" | "failed",
+    mode: "skill" | "facts", turns: 5,                // 由宿主按 7.1 判定
+    report, attempts: 2, failures: ["第一次：选择器超时"],
+    workspace: { cwd, key: "ws.3f9a…" },
+    at
+  }) → { accepted: true }
+  .subscribe(event => …)   // candidate / activated / rejected / merged，供 superagent 面板显示</pre>
+	<p class="tip">证据只带会话 id，不带会话全文；记忆系统需要细节时按 id 自己读会话日志，避免把大段转录塞进一次调用。</p>
+	<h3>7.3 记忆系统的处理流程</h3>
+	<div class="flow">
+		<span class="s">收到证据</span><span class="a">→</span><span class="s">读会话日志</span><span class="a">→</span><span class="s">提炼（短期子会话）</span><span class="a">→</span><span class="s">分流：技能 / 记忆 / 丢弃</span><span class="a">→</span><span class="s">去重与版本</span><span class="a">→</span><span class="s">风险分级</span><span class="a">→</span><span class="s g">自动生效 或 待审核</span><span class="a">→</span><span class="s">绑定到 bot</span>
+	</div>
+	<table>
+		<thead><tr><th>环节</th><th>规则</th></tr></thead>
+		<tbody>
+			<tr><td><strong>提炼</strong></td><td>开一条短期子会话（模型取记忆系统配置），输入为证据 + 会话日志摘要，输出固定结构：可复用的步骤 / 检查清单 / 反例 / 适用条件。</td></tr>
+			<tr><td><strong>分流</strong></td><td>可复用的做法 → 技能；一次性事实（某接口地址、某同事偏好）→ 该 bot 的记忆或工作区记忆；无价值 → 丢弃并记录原因。</td></tr>
+			<tr><td><strong>去重与版本</strong></td><td>与该 bot 已有技能做相似度比较，≥0.8 时生成新版本并保留差异，否则新建。技能 frontmatter 增加 <code>version</code>。</td></tr>
+			<tr><td><strong>风险分级</strong></td><td>正文含 shell 命令、外发（飞书 / 邮件 / webhook）、凭据或本机绝对路径 → 待审核；其余自动生效（与用户已定的规则一致）。</td></tr>
+			<tr><td><strong>归属</strong></td><td>frontmatter <code>owner: bot:&lt;id&gt;</code>（执行者）/ <code>team</code>（跨角色）/ <code>global</code>；来源字段 <code>origin: ticket-8f2c · T3</code>、<code>evidence</code>。</td></tr>
+			<tr><td><strong>淘汰</strong></td><td>使用后成功率 &lt;60%，或 30 天未被使用 → 在「技能」页提示降级或删除。</td></tr>
+		</tbody>
+	</table>
+	<h3>7.4 存储：统一到一个技能根</h3>
+	<p>现在有两套技能根（<code>~/.agents/skills</code> 与 <code>&lt;dataRoot&gt;/skills</code>），记忆插件的待审核队列已无写入方。v2 统一为 <code>vssaros-skills</code> 的 <code>&lt;dataRoot&gt;/skills</code>：</p>
+	<ul>
+		<li>生效技能：<code>&lt;dataRoot&gt;/skills/&lt;name&gt;/SKILL.md</code></li>
+		<li>待审核：<code>&lt;dataRoot&gt;/skills/.drafts/&lt;name&gt;/SKILL.md</code>，批准即 promote</li>
+		<li>记忆系统「技能」页签的「待确认技能建议」改读 <code>.drafts</code>，批准与驳回走记忆系统的路由，在进程内调用 <code>vssaros-skills</code> 的写入（不经模型工具的 ask 闸，因为这是人在页面上操作）</li>
+	</ul>
+	<h3>7.5 需要补齐的能力（跨三个插件）</h3>
+	<table>
+		<thead><tr><th>插件</th><th>要补的</th><th>原因</th></tr></thead>
+		<tbody>
+			<tr><td><strong>vssaros-memory</strong>（记忆系统）</td><td>提供 <code>vssaros.memory</code> 总线：<code>distill</code> / <code>subscribe</code>；提炼子会话；分流；待审核队列改读 <code>.drafts</code></td><td>现在没有「按会话或证据提炼」的执行者，也没有跨插件服务</td></tr>
+			<tr><td><strong>vssaros-skills</strong></td><td>进程内写入服务 <code>ctx.provide('vssarosSkills', { draft, promote, reject, list })</code>；frontmatter 支持 <code>owner</code> / <code>version</code> / <code>origin</code>；技能列表按会话的 bot 身份过滤</td><td>现在只有模型工具 <code>skill_manage</code>，且它对所有调用一律 ask，后台无法调用</td></tr>
+			<tr><td><strong>vssaros-agents</strong></td><td>让 <code>.agent.md</code> 的 <code>skills:</code> 真正生效：preset 预加载 <code>owner: bot:&lt;id&gt;</code> 的技能；提供 bot 记忆的进程内追加入口（<code>facts</code> 模式写这里，现有 <code>addWorkspaceEntry</code> 只能写工作区记忆）</td><td>现在 <code>toPresetDefinition</code> 不读 skills，字段只是台账；bot 记忆只能由 bot 自己用工具写</td></tr>
+		</tbody>
+	</table>
+	<p class="tip">设计目标：superagent 现有 <code>retrospective.ts</code> 里直接写技能文件的部分在 v2 中下线，只保留团队工作流。<strong>实际未下线</strong>，见下。</p>
+	<div class="card impl delta">
+		<strong>实现状态 · 技能沉淀（P4，0.1.35 / vssaros-agents 0.2.323）</strong>
+		<ul style="margin-bottom:0">
+			<li><strong>总线归属不同</strong>：<code>globalThis[Symbol.for('vssaros.memory')]</code> v1 由 <code>dsh-plugins/vssaros-agents/lib/memoryBus.js</code> 提供（因为 bot 记忆在该插件），接口是 <code>rememberStep(evidence)</code> / <code>decideSkillDraft(name, decision)</code>，<strong>不是</strong>本节设计的 <code>distill / subscribe</code>；<code>vssaros-memory</code> 没有接入（它另有一条 <code>vssaros.memory.store</code> 总线，别混）。已存在的总线对象会被复用、<code>writable:false</code>，加方法必须开 v2。</li>
+			<li><strong>门槛照做</strong>：<code>src/app/distill.ts</code> 的 <code>distillMode()</code> 按 turns≥3 / 有 failures / attempts&gt;1 判 <code>skill</code>，其余 <code>facts</code>；<code>team_distill</code> 表以 <code>distill:&lt;ticket&gt;:&lt;step&gt;</code> 幂等，总线不在或抛错留 pending，60s 重试、5 次后 failed；只接 <code>ready/failed</code>（设计里的 <code>blocked</code> 不交，<code>stopped/skipped</code> 也不交）。</li>
+			<li><strong>facts / skill 的实际处理</strong>（<code>vssaros-agents/lib/stepMemory.js</code>）：facts 用 <code>applyEntryAction</code> 往该 bot 的 <code>MEMORY.md</code> 追加一条「[团队工单] …」事实（≤400 字、去重、不调模型）；skill 是<strong>模板拼接</strong>的 SKILL.md，落在 <code>&lt;dataRoot&gt;/skills/.drafts/bot-&lt;slug&gt;-&lt;sha8&gt;/SKILL.md</code>，frontmatter 带 <code>owner: bot:&lt;id&gt;</code> / <code>origin</code> / <code>version:1</code>，同名已存在就不覆盖。审批走 <code>GET team/distills</code> + <code>POST team/distills/:id/approve|reject</code> → <code>decideSkillDraft</code> 转正或删草稿。<code>ownedSkillsText</code> 在 <code>applyPersona</code> 里把已生效技能列进 bot 人设（按会话冻结、60s 刷新），这是 7.5 里「让 skills: 生效」的替代做法。</li>
+			<li><strong>未做</strong>：7.3 的提炼子会话 / 分流 / 相似度去重发新版本 / 风险分级 / 淘汰（<strong>全程不调模型，一次模型调用都没有</strong>）；<code>vssaros-skills</code> 的 <code>ctx.provide('vssarosSkills')</code>；<code>vssaros-memory</code> 的待审队列改读 <code>.drafts</code>；<code>toPresetDefinition</code> 消费 <code>skills:</code>。</li>
+			<li><strong>双轨并存</strong>：<code>src/app/retrospective.ts</code> 旧计划结束时仍直接写技能文件（<code>team_skill</code> 表 + <code>approveSkill/rejectSkill</code>），设计与 7.5 要求的「下线」没有做；7.5 说要动三个插件，实际只动了 superagent + vssaros-agents 两个。</li>
+		</ul>
+	</div>
+</section>
+
+<section id="s8">
+	<h2><span class="n">8</span>团队工作流沉淀</h2>
+	<h3>8.1 时机与生成</h3>
+	<ul>
+		<li><strong>触发</strong>：工单以 <code>completed</code> 或 <code>merged</code> 结束，且团队至少 2 个步骤。失败、取消的工单不生成。</li>
+		<li><strong>草稿</strong>：宿主从工单的方案与实际执行记录生成：实际跑过的步骤（含重派后的版本）、实际用到的 bot、各步骤引用的技能及版本。</li>
+		<li><strong>确认</strong>：结果回复里附「沉淀为团队工作流」；同类工单成功 2 次后主管也会主动提议。人确认后保存为 v1。</li>
+		<li><strong>迭代</strong>：用某个工作流跑完的工单结束时，与原工作流比较差异，差异明显时生成 v+1 草稿；同时更新运行次数和成功率。</li>
+	</ul>
+	<h3>8.2 TeamWorkflow v1 格式（superagent 内的规范格式）</h3>
+	<pre>{
+  id: "wf-onboarding", name: "新手引导上线", version: 3, fromTicketId,
+  params:  [{ key: "page", label: "页面", required: true }, { key: "chat", label: "通知群" }],
+  roles:   [{ key: "design", need: "交互稿与动效说明", prefer: "designer" },          // 能力描述 + 偏好 bot
+            { key: "test",   need: "Playwright 回归",  prefer: "qa-runner", fallback: "create" }],
+  steps:   [{ key: "T1", role: "design", title, spec: "为 {{page}} 出 5 屏交互稿", after: [], access: "read",
+              phase: "design",                                   // TeamFlow 阶段映射（8.4），可空
+              executor: "bot",                                   // "bot"（默认）| "teamflow"（委托 TeamFlow 流水线）
+              skills: [{ name: "onboarding-interaction", version: 2 }] }, …],
+  gates:   [{ step: "T4", kind: "human", reason: "对外发版通知" }],
+  budget:  { tokens: 300000, turns: 90, parallel: 3 },
+  triggers:[{ kind: "manual" }, { kind: "feishu-command", text: "/新手引导" },
+            { kind: "tapd-tag", tag: "新手引导" }, { kind: "schedule", cron: "0 10 * * 1" }],
+  stats:   { runs: 6, ok: 5, avgTokens: 182000 },
+  exports: [{ adapter: "teamflow", projectKey: "ws-sarosis-agents-client-3f9a12cd", teamId: "sa-wf-onboarding",
+              runnable: false, lossy: ["T4 发版说明：TeamFlow 没有对应阶段"], at }]
+}</pre>
+	<h3>8.3 复用：回到组队阶段</h3>
+	<p>工作流在组队第 a 步参与匹配，命中 ≥70% 时：Router 只需抽取参数；角色按「偏好 bot → 按能力查找 → 按配额新建」解析成具体 bot；生成的仍是一份<strong>需要人同意</strong>的方案（一键同意即可），不会因为命中工作流而跳过同意闸。</p>
+	<h3>8.4 对接 teamworkflow = TeamFlow（已定）</h3>
+	<p>对接目标定为 <strong>TeamFlow</strong>（<code>dsh-plugin-teamflow</code>，仓库内移植版 <code>incubator/dsh-plugin-teamflow</code> 0.3.3）。核对源码后有三条硬约束，决定了适配器只能做「映射 + 委托」，不能把任意团队工作流原样塞进去：</p>
+	<div class="card warn">
+		<strong>TeamFlow 的三条约束（源码核对）</strong>
+		<ol style="margin-bottom:0">
+			<li><strong>阶段写死为 7 个</strong>：<code>PHASE_ORDER = prd / design / scaffold / tech / dev / qa / acceptance</code>（<code>host/constants.ts:147</code>）。<code>teams.json</code> 的 stages 只用来<strong>裁剪</strong>这 7 个（<code>pipeline.ts:567</code> 的 <code>enabled(key)</code>），自定义 key 的阶段不会执行。</li>
+			<li><strong><code>role</code> 只是展示文字</strong>：流水线不按 role 选执行者，阶段由 TeamFlow 自己的子代理跑，<strong>不会用到 VsSaros bot</strong>。</li>
+			<li><strong><code>saveTeams</code> 整份覆盖</strong>（<code>teams.ts:114</code>），文件位置 <code>$DSH_HOME/teamflow/&lt;projectKey&gt;/teams.json</code>，<code>projectKey = slugPath(cwd)</code> = <code>ws-&lt;目录名&gt;-&lt;sha1(路径) 前 8 位&gt;</code>（<code>store.ts:211</code>）。</li>
+		</ol>
+	</div>
+	<h4>适配器的三个方向</h4>
+	<table class="dir">
+		<thead><tr><th>方向</th><th>做法</th><th>何时可用</th></tr></thead>
+		<tbody>
+			<tr><td><strong>① 导出</strong><br><span class="k">superagent → teams.json</span></td><td>
+				每个步骤按 <code>phase</code> 分类到 7 个阶段之一（Router 在方案里给步骤标 <code>phase</code>，宿主再用标题关键词兜底）；生成一条 <code>TeamConfig</code>：<code>id = "sa-" + workflow.id</code>、<code>stages[].key = phase</code>、<code>label = 步骤标题</code>、<code>role = bot 名称</code>、未用到的阶段 <code>optional: true</code>；含 design / scaffold 时置 <code>needDesign</code> / <code>needScaffold</code>。<br>
+				写入：<strong>读取 → 按 id 合并 → 写回</strong>，只替换 <code>sa-*</code> 条目，绝不改内置 <code>dev</code> 和用户自建的团队；写前备份同目录 <code>teams.json.bak</code>。
+			</td><td>所有步骤都能映射到不同阶段时标为 <strong>可运行</strong>；否则标 <strong>仅参考</strong>（在 TeamFlow 里只能看到团队，跑起来不会执行未映射的步骤），<code>lossy</code> 逐项列出</td></tr>
+			<tr><td><strong>② 导入</strong><br><span class="k">teams.json → superagent</span></td><td>把 TeamFlow 的团队（含内置 <code>dev</code>）读成 TeamWorkflow 种子：stages → steps（线性 <code>after</code>），role → 角色的能力描述，<code>prefer</code> 为空，交给组队阶段按能力选 bot</td><td>任何时候；导入的种子以 <code>draft</code> 进入「技能 → 团队工作流」，人确认后参与匹配</td></tr>
+			<tr><td><strong>③ 委托执行</strong><br><span class="k">步骤交给 TeamFlow 跑</span></td><td>工作流步骤可设 <code>executor: "teamflow"</code>：该步骤不开 bot 会话，而是调 TeamFlow 的 <code>teamflow_start(requirement, teamId, mode)</code>，轮询 <code>snapshot(runId)</code> 到结束，把 TeamFlow 的完成汇报作为步骤报告。用于「整段软件研发」这类 TeamFlow 已经做得很完整的步骤</td><td>TeamFlow 已安装且在同一 Host；同样经过同意闸（方案里显示「由 TeamFlow 流水线执行 · 档位 medium」）。调用入口需在实现前核对（工具或 Remote）</td></tr>
+		</tbody>
+	</table>
+	<h4>映射示例</h4>
+	<pre>TeamWorkflow「新手引导上线」                        teams.json（sa-wf-onboarding）
+T1 交互稿      role=design   phase=design   ──▶   { key: "design",     label: "交互稿",     role: "设计 bot" }
+T2 埋点方案    role=data     phase=tech     ──▶   { key: "tech",       label: "埋点方案",   role: "数据 bot" }
+T3 回归测试    role=test     phase=qa       ──▶   { key: "qa",         label: "回归测试",   role: "测试 bot" }
+T4 发版说明    role=release  phase=?        ──▶   未映射 → lossy: ["T4 发版说明：TeamFlow 没有对应阶段"]
+                                                   needDesign: true · 状态：仅参考</pre>
+	<p class="tip">规范格式仍是 superagent 自己的 TeamWorkflow v1（DAG、参数、闸门、预算、触发都在这里）；TeamFlow 是导出目标和可选执行器。<code>workflow.json</code>（vssaros-workflow）适配器降为可选，不在本期。下面「dev profile 没装 TeamFlow／要先跑通 <code>teamflow_start</code>」是设计时的前置条件：<strong>导出与导入适配器已经落地，委托执行没有</strong>。</p>
+	<div class="card impl delta">
+		<strong>实现状态 · 团队工作流（P5，0.1.36）</strong>
+		<ul style="margin-bottom:0">
+			<li><strong>生成与匹配</strong>：<code>runtime.ts</code> 的 <code>ticket.ended</code> 调 <code>Retrospective.onTicketEnd(ticket, approvedProposal, request)</code>，仅 <code>completed/merged</code>；命中已保存工作流时只累加 <code>runs/ok</code>（<code>creditedTickets</code> 防重），否则生成 <code>source:'ticket'</code> 草稿。<code>goal</code> 存<strong>原始需求原文</strong>（<code>store.triggers.get(origin).text</code>），不用工单标题。<code>match()</code> 用 <code>coverage()</code> ≥70% 返回前 3 条，<code>prefill()</code> 只认 <code>saved</code>；名册不可用（Bots 插件不在）时也要照样返回 <code>workflows</code>，不能整体 refused。命中后仍要人同意。</li>
+			<li><strong>导出 / 导入已落地</strong>（<code>src/app/teamflow.ts</code>）：<code>teamflowProjectKey()</code> 对齐 TeamFlow 的 <code>slugPath</code>；<code>phaseOf()</code> 取 <code>step.phase</code> 或标题关键词；<code>toTeamflowTeam()</code> 产出 <code>sa-&lt;wfId&gt;</code>，同阶段第二步 / 无对应阶段 / 依赖逆序逐条记 <code>lossy</code>；<code>exportToTeamflow()</code> = 读 → 按 id 替换 → <code>.bak</code> → tmp+rename，只动 <code>sa-*</code>，无文件时连内置 <code>dev</code> 一起写，读不出来就抛错不覆盖；<code>importFromTeamflow()</code> 跳过 <code>sa-*</code> 生成 draft 种子。路由 <code>POST team/workflows/:id/teamflow</code> 与 <code>POST team/teamflow/import</code>，面板有工作区输入框与结果提示。★测试里调导出必须临时改 <code>process.env.DSH_HOME</code>，否则写到真实 <code>~/.dsh</code>。</li>
+			<li><strong>未做</strong>：<code>executor:"teamflow"</code> / <code>teamflow_start</code> + <code>snapshot(runId)</code> 委托执行（全目录 0 命中，<code>WorkflowStep</code> 没有 <code>executor</code> 字段）；<code>POST team/workflows/:id/run</code> 仍走旧 <code>team.plan</code>；「至少 2 个步骤」限制、成功 2 次主动提议、运行后差异生成 v+1、<code>feishu-command</code>/<code>tapd-tag</code>/<code>schedule</code> 触发均未实现（<code>triggers:['manual']</code>）。</li>
+			<li>验证：<code>tests/workflows.spec.ts</code> 5 例 + 面板 1 例；真机接口（<code>team/proposals|distills|teamflow</code>）在 2026-11-05 10:16 的 Host 上已确认存在，但「主管对话 → 出方案 → 同意 → 步骤 bot → 沉淀」的端到端人工演练仍未走完。</li>
+		</ul>
+	</div>
+</section>
+
+<section id="s9">
+	<h2><span class="n">9</span>数据模型</h2>
+	<p>工单本身只加一个摘要字段，团队细节放在 <code>team_*</code> 表里，以 <code>ticketId</code> 关联（替代现在以 <code>planId</code> 为主键的计划表）。</p>
+	<table>
+		<thead><tr><th>位置</th><th>字段 / 表</th><th>内容</th></tr></thead>
+		<tbody>
+			<tr><td><strong>Ticket</strong>（领域模型）</td><td><code>team?: { proposalVersion, state, approvedBy?, approvedAt?, workflowId? }</code></td><td>驱动阶段判定：<code>state = proposed</code> 时 stage 为 <code>person/staffing</code></td></tr>
+			<tr><td rowspan="6"><strong>orchestrator.sqlite</strong></td><td><code>team_proposal</code></td><td>每个版本一行：ticketId、version、fingerprint、方案 JSON、状态（proposed / superseded / approved / rejected / expired）、决定人与触发消息</td></tr>
+			<tr><td><code>team_step</code></td><td>ticketId + stepKey：role、botId、sessionId、after、access、phase、executor（bot / teamflow）、state、attempts、<strong>turns</strong>、report、预算消耗</td></tr>
+			<tr><td><code>team_exchange</code></td><td>保留：派活、回报、提问、失败、重派、修改意见的往来记录</td></tr>
+			<tr><td><code>team_bot</code></td><td>保留：主管创建的 bot（来源工单、配额计数）</td></tr>
+			<tr><td><code>team_distill</code></td><td>新增：发给记忆系统的证据 requestId、<code>mode</code>（skill / facts）、判定理由（回合数 / 失败 / 重派）与回执状态（用于面板显示与重试）</td></tr>
+			<tr><td><code>team_workflow</code></td><td>保留并扩展：roles、params、gates、triggers、stats、TeamFlow 导出记录（projectKey、teamId、可运行与否、lossy）</td></tr>
+			<tr><td><strong>下线</strong></td><td><code>team_plan</code>、<code>team_task</code>、<code>team_member</code>、<code>team_approval</code>、<code>team_skill</code></td><td>分别由工单、<code>team_step</code>、<code>team_step.botId</code>、<code>team_proposal</code>、记忆系统取代；保留只读迁移</td></tr>
+		</tbody>
+	</table>
+	<div class="card impl delta">
+		<strong>实现状态 · 数据模型（orchestrator.sqlite，schema 11）</strong>
+		<ul style="margin-bottom:0">
+			<li>实际共 <strong>25 张表</strong>：基础 9 张（<code>kv / trigger / disposition / thread / ticket / decision / outbox / trigger_thread / effect</code>）+ 团队与运行态 16 张（<code>team_proposal / team_step / team_exchange / team_bot / team_distill / team_plan / team_task / team_member / team_approval / team_skill / team_workflow / step_approval_rule / group_route / desk_log / desk_schedule / desk_outbox</code>）。</li>
+			<li><strong>设计里「下线」的 5 张表全部还在</strong>（<code>team_plan / team_task / team_member / team_approval / team_skill</code>），因为旧计划系统与 <code>retrospective.ts</code> 的直写技能仍在运行；只做了只读迁移，没有自动转换。</li>
+			<li><code>team_proposal</code> 每版本一行存<strong>整份方案 JSON</strong>（<code>value</code> 列），不是设计的扁平列；状态只有 <code>proposed / superseded / approved / rejected</code>（无 <code>expired</code>）。<code>team_step</code> 有 <code>preset / turns / attempts / failures / implicit / summarizedAt / unsandboxed</code>，但<strong>没有</strong> <code>sessionId / phase / executor / 预算消耗</code>。</li>
+			<li><code>Ticket.team</code> 的实际字段见第 4 节状态卡；<code>TeamWorkflow</code> 多了 <code>source / fromTicketId / goal / creditedTickets / exports</code>，<code>WorkflowStep</code> 没有 <code>executor</code>；工单结束生成的草稿 <code>params</code> 只有 <code>goal</code>、<code>gates:[]</code>、<code>triggers:['manual']</code>。</li>
+			<li>迁移：<code>src/app/migration.ts</code> 是 schema 10 → 11 的一次性迁移，把每条存储记录按当前形状重写；<code>src/app/state-lock.ts</code> 负责回收被杀掉的 Host 遗留的状态目录锁。</li>
+		</ul>
+	</div>
+</section>
+
+<section id="s10">
+	<h2><span class="n">10</span>状态机</h2>
+	<h3>10.1 工单阶段（新增 <code>person/staffing</code>）</h3>
+	<div class="figure">
+	<svg viewBox="0 0 1060 210" role="img" aria-label="工单阶段">
+		<defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--dsw-alias-brand-primary)"/></marker></defs>
+		<style>.e2{stroke:var(--dsw-alias-brand-primary);stroke-width:1.5;fill:none;marker-end:url(#ah2)}</style>
+		<rect class="st" x="10" y="80" width="120" height="44" rx="10"/><text class="t-st" x="70" y="107" text-anchor="middle">Eval accept</text>
+		<rect class="st hl" x="170" y="80" width="150" height="44" rx="10"/><text class="t-st" x="245" y="100" text-anchor="middle">person/staffing</text><text class="t-edge" x="245" y="116" text-anchor="middle">组队方案等人</text>
+		<rect class="st" x="370" y="80" width="140" height="44" rx="10"/><text class="t-st" x="440" y="100" text-anchor="middle">working</text><text class="t-edge" x="440" y="116" text-anchor="middle">步骤执行中</text>
+		<rect class="st" x="560" y="20" width="150" height="44" rx="10"/><text class="t-st" x="635" y="40" text-anchor="middle">person/answer</text><text class="t-edge" x="635" y="56" text-anchor="middle">某步骤在提问</text>
+		<rect class="st" x="560" y="140" width="150" height="44" rx="10"/><text class="t-st" x="635" y="160" text-anchor="middle">person/failed</text><text class="t-edge" x="635" y="176" text-anchor="middle">重试后仍失败</text>
+		<rect class="st" x="760" y="80" width="140" height="44" rx="10"/><text class="t-st" x="830" y="100" text-anchor="middle">person/review</text><text class="t-edge" x="830" y="116" text-anchor="middle">汇总 ready</text>
+		<rect class="st end" x="940" y="56" width="110" height="40" rx="10"/><text class="t-st" x="995" y="81" text-anchor="middle">completed</text>
+		<rect class="st bad" x="940" y="128" width="110" height="40" rx="10"/><text class="t-st" x="995" y="153" text-anchor="middle">dropped</text>
+		<path class="e2" d="M 130 102 L 168 102"/>
+		<path class="e2" d="M 320 102 L 368 102"/><text class="t-edge" x="344" y="94" text-anchor="middle">同意</text>
+		<path class="e2" d="M 245 80 C 245 40, 200 40, 200 78"/><text class="t-edge" x="222" y="34" text-anchor="middle">修改 → v+1</text>
+		<path class="e2" d="M 245 124 C 245 190, 900 200, 940 150"/><text class="t-edge" x="520" y="204" text-anchor="middle">拒绝 / 7 天未回应</text>
+		<path class="e2" d="M 510 92 L 558 50"/><path class="e2" d="M 560 54 L 512 98"/>
+		<path class="e2" d="M 510 112 L 558 154"/><path class="e2" d="M 560 150 L 512 108"/>
+		<path class="e2" d="M 510 102 L 758 102"/><text class="t-edge" x="632" y="96" text-anchor="middle">全部步骤 ready</text>
+		<path class="e2" d="M 900 96 L 938 80"/>
+	</svg>
+	<figcaption>图 2 · 只新增 staffing 一个阶段；其余阶段沿用 <code>src/core/stage.ts</code> 的判定顺序。</figcaption>
+	</div>
+	<h3>10.2 其它对象</h3>
+	<table>
+		<thead><tr><th>对象</th><th>状态流转</th></tr></thead>
+		<tbody>
+			<tr><td><strong>组队方案</strong></td><td>proposed → approved ｜ superseded（被 v+1 取代）｜ rejected ｜ expired（72 小时提醒一次，7 天放弃）</td></tr>
+			<tr><td><strong>步骤</strong></td><td>pending → running → ready ｜ blocked（等人）｜ failed → retrying(≤1) → running ｜ handed（交 Router 决定换人 / 跳过）｜ skipped ｜ cancelled</td></tr>
+			<tr><td><strong>新 bot</strong></td><td>draft（只在方案里）→ created（同意时写名册，标「主管创建」）｜ discarded（方案被拒或修改掉）</td></tr>
+			<tr><td><strong>技能沉淀</strong></td><td>sent → extracting → candidate（待审核）｜ active（自动生效）→ versioned ｜ rejected ｜ discarded（判定为无价值）</td></tr>
+			<tr><td><strong>团队工作流</strong></td><td>draft → saved v1 → v2 …（每次运行后可能生成新版本草稿）｜ retired</td></tr>
+		</tbody>
+	</table>
+	<div class="card impl delta">
+		<strong>实现状态 · 状态机</strong>
+		<ul style="margin-bottom:0">
+			<li><strong>照做</strong>：<code>src/core/stage.ts</code> 的 <code>ticketStage()</code> 首行判 <code>staffing(ticket)</code> → <code>person/staffing</code>，其余阶段沿用原有判定顺序；图 2 的主干成立。</li>
+			<li><strong>组队方案</strong>：<code>proposed → approved | superseded | rejected</code>，<code>expired</code> 未实现（72 小时提醒 / 7 天放弃都没有），图 2「7 天未回应」那条边实际不存在。</li>
+			<li><strong>步骤</strong>：<code>pending / running / ready / blocked / failed / skipped / stopped</code> 七种（设计的 <code>retrying / handed / cancelled</code> 没有）；终态是 <code>ready / failed / skipped / stopped</code>。失败自动重试 1 次，第二次失败把依赖步骤置 <code>skipped</code>；会话 idle 但没有报告时按最后一条 assistant 文本判 <code>implicit ready</code>；<code>POST tickets/:id/steps/:key/stop</code> 可停单步。</li>
+			<li><strong>新 bot</strong>：<code>draft</code> 只存在于方案 JSON 里，同意时 <code>createAgreed</code> 写名册（重名返回现有 bot、配额照查、不再二次审批）；被拒 / 被改掉的方案连同草稿留在 <code>team_proposal</code> 里，没有单独的 <code>discarded</code> 状态。</li>
+			<li><strong>技能沉淀</strong>：<code>team_distill.state = pending | sent | failed</code>，结果里 <code>skill.state = draft | active | rejected</code>；没有 <code>extracting / candidate / versioned / discarded</code>。<strong>团队工作流</strong>只有 <code>draft → saved</code>（<code>POST team/workflows/:id/save</code>），没有 v2 迭代与 <code>retired</code>。</li>
+		</ul>
+	</div>
+</section>
+
+<section id="s11">
+	<h2><span class="n">11</span>界面落位（DSH Desktop）</h2>
+	<p><strong>下表是 2026-11-04 定下的设计落位</strong>：沿用已定的页签归属——左侧会话区的对话、轨迹来自 dsh 聊天框，记忆、技能、待办、设置来自记忆系统；右侧业务区只有 superagent 的概览、来源、触发、评估、设置。0.1.39–0.1.55 的实际做法见本节末实现状态卡与第 16 节。</p>
+	<table>
+		<thead><tr><th>内容</th><th>位置</th></tr></thead>
+		<tbody>
+			<tr><td>组队方案、同意 / 修改 / 取消</td><td>右「概览 → 需要你处理」（工单卡片显示阶段「待确认组队」）；主管对话里的方案卡片；原来源的消息或评论</td></tr>
+			<tr><td>步骤 DAG 与成员实时状态</td><td>右「概览」工单详情；左「轨迹」显示每个 worker 会话的往来</td></tr>
+			<tr><td>每个 worker 的会话</td><td>dsh 侧栏会话列表，左侧 ◆ 表示归属 SuperAgent 工作台；会话名 <code>&lt;bot&gt; · T3 回归测试</code></td></tr>
+			<tr><td>待审核技能、技能版本差异</td><td>左「技能」页签（记忆系统）的「待确认技能建议」</td></tr>
+			<tr><td>团队工作流（列表、保存、运行、导出）</td><td>左「技能」页签的「团队工作流」分段</td></tr>
+			<tr><td>主管的待办清单</td><td>左「待办」：官方 todos 投影，只读，不放审批按钮</td></tr>
+			<tr><td>团队规则：配额、自动同意、选人阈值、预算默认值、bot 求助名单</td><td>右「设置 → 团队」</td></tr>
+			<tr><td>Bot 本身（人格、模型、记忆额度）</td><td>左「设置」（记忆系统的 Bot 设置）</td></tr>
+		</tbody>
+	</table>
+	<div class="card impl delta">
+		<strong>实现状态 · 界面（0.1.39–0.1.55，方案 C）</strong>
+		<ul style="margin-bottom:0">
+			<li><strong>整体形态变了</strong>：<code>@vssaros/dsh-superagent</code> 注册为 <code>vssaros:superagent</code> 的 <code>customFrame</code> 工作台（整页渲染，不是宿主标准「左会话 / 右业务」分栏）；<code>vssaros-workbenches</code> 给 customFrame 传 <code>props.{service, conversation, active}</code>。<code>src/client/index.tsx</code> 同时还注册 <code>main</code> 面板、侧栏图标、<code>tool.call.toolview</code> 与插件配置页。</li>
+			<li><strong>7 个页签</strong>（<code>src/client/route.ts:12</code>）：<code>chat / work / source / trigger / eval / execution / settings</code>，HOME = <code>chat</code>；「概况」不再是页签，降级成<strong>右侧可拖宽的概况侧栏</strong>（<code>side.tsx</code>，320–560px，签名 <code>proposal:&lt;t&gt;:v&lt;n&gt;</code> / <code>steps:&lt;t&gt;</code> / <code>approval:&lt;id&gt;</code> 出现新项时自动弹出）。设置分组只有 <code>source / eval / execution / prompts / deployment</code>，<strong>没有「团队」分组</strong>，<code>autoApprove</code> 也只有服务端 schema、没有 UI。</li>
+			<li><strong>对话仍是 DSH 原生聊天框</strong>：<code>chat.tsx</code> 直接挂 <code>native.node</code> + <code>ChatDock</code>，用 <code>service.ensureSession({sessionId: deskId})</code> 绑定 desk；只有非工作台 main 入口或 dock 失败才回退面板自绘的 <code>ChatPage</code> + <code>DeskComposer</code>。「轨迹」没有独立页签，改成聊天流里的 <code>FlowCard</code> 关键节点卡（工具视图 key <code>superagent_submit</code> → <code>GET desk/flow/:id</code>），方案卡可同意 / 取消，显示团队迷你图、批复卡、成员行。</li>
+			<li><strong>新增 work 页签</strong>承载 DAG（平移缩放）/ 看板 / 列表 / 步骤详情（<code>work.tsx</code>），<code>WorkProvider</code> 用 SSE <code>useLive</code> 刷新；另有 <code>ApprovalCard</code>、<code>StepMembers</code>、<code>MiniFlow</code>、<code>BotMark</code> 形象。概况实际顺序：待审核变更 →（TeamPlans：需要你处理 → 待确认组队 → 团队步骤 → 待确认技能建议 → 新建团队计划 → 待审核技能 → 团队工作流 → 待批准建 bot → 旧团队计划）→ 待处理工单 → 问题 → 24h 流量 → 执行器。</li>
+			<li><strong>仍按设计</strong>：Bot 人格 / 模型 / 记忆额度设置不归 superagent；审批按钮不放在待办里。<strong>没按设计</strong>：技能建议、待审核技能与团队工作流<strong>仍在 superagent 概况</strong>（记忆系统「技能」页签有「待确认技能建议」但没有「团队工作流」分段）；主管待办只读投影、worker 会话的「◆ 归属标记」与 <code>&lt;bot&gt; · T3</code> 命名、方案卡的「修改」按钮、批复规则管理 UI 都没有。</li>
+		</ul>
+	</div>
+</section>
+
+<section id="s12">
+	<h2><span class="n">12</span>与现有代码的迁移</h2>
+	<table>
+		<thead><tr><th>现有部分</th><th>处理</th><th>说明</th></tr></thead>
+		<tbody>
+			<tr><td>团队总线 <code>vssaros.team</code>：<code>listBots</code>、<code>createBot</code>、外部 bot 登记</td><td><span class="tag ok">保留</span></td><td>名册与建 bot 仍由 Bots 插件负责；<code>registerExternalBot</code> 的 <code>onMessage</code> 改为产生 <code>superagent</code> 源的 Trigger</td></tr>
+			<tr><td><code>TeamBus.delegate</code> / <code>subscribe</code></td><td><span class="tag warn">停用于团队</span></td><td>保留接口（不破坏契约），superagent 不再用它派活</td></tr>
+			<tr><td><code>Team</code> 引擎（依赖调度、并行、早到回报、对账）</td><td><span class="tag warn">改造</span></td><td>调度逻辑迁入执行器的团队调度；数据改为以 ticketId 关联</td></tr>
+			<tr><td>建 bot 的配额、查重、风险分级</td><td><span class="tag ok">保留</span></td><td>审批从独立的 <code>team_approval</code> 并入组队方案的同意</td></tr>
+			<tr><td><code>retrospective.ts</code> 的技能部分</td><td><span class="tag err">下线</span></td><td>改为发证据给记忆系统</td></tr>
+			<tr><td><code>retrospective.ts</code> 的工作流部分</td><td><span class="tag warn">改造</span></td><td>触发点从计划结束改为工单结束；增加 roles / triggers / stats 与适配器</td></tr>
+			<tr><td><code>orchestrator_team_plan</code>、<code>POST team/plans</code></td><td><span class="tag err">下线</span></td><td>由 propose / confirm 取代；面板手动发起改为「新建工单并进入组队」</td></tr>
+			<tr><td><code>Sessions.ensure</code>、<code>DshExecutor</code></td><td><span class="tag warn">改造</span></td><td>preset 参数、多会话、工具并集、模型来源、preset 守卫</td></tr>
+			<tr><td>概览的团队区块</td><td><span class="tag warn">改造</span></td><td>计划列表并入工单卡片；技能区块移到记忆系统的技能页签</td></tr>
+		</tbody>
+	</table>
+	<p class="tip">数据迁移：已有的 <code>team_plan</code> 记录只读保留，面板显示为「旧版团队计划」；不做自动转换（现有数据为演练数据）。</p>
+	<div class="card impl delta">
+		<strong>实现状态 · 迁移（上表的「下线」多数没有执行）</strong>
+		<ul style="margin-bottom:0">
+			<li><strong>保留</strong>：<code>vssaros.team</code> 总线的 <code>listBots / createBot</code> / 外部 bot 登记（<code>vssaros-agents/lib/teamBus.js</code>）；建 bot 的查重、配额（每计划 3 / 全局 20）与风险分级；<code>registerExternalBot.onMessage</code> 改为产生 <code>superagent</code> 源的 Trigger；<code>POST team/plans</code> 手动发起入口。</li>
+			<li><strong>实际是「并存」而不是「下线」</strong>：<code>TeamBus.delegate</code> 仍被旧 <code>Team</code> 计划系统使用（<code>src/app/team.ts:500</code>）；<code>Team</code> 引擎的依赖调度没有迁入执行器，仍以 <code>planId</code> 为主键；新工单链路另起 <code>team_proposal / team_step / team_distill</code> 以 <code>ticketId</code> 关联。<code>orchestrator_team_plan</code> 与 <code>POST team/plans</code> 都在，<code>orchestrator_team_plan</code> 只是不再注册给主会话。</li>
+			<li><strong>下线未做</strong>：<code>retrospective.ts</code> 的技能写入（双轨）、5 张旧 <code>team_*</code> 表、概览的「旧团队计划」区块；<code>retrospective.ts</code> 的工作流部分确实改了触发点（新增 <code>onTicketEnd</code>），但旧 <code>onPlanEnd</code> 入口也还在。</li>
+			<li><strong>照做</strong>：<code>Sessions.ensure</code> 增加 <code>'step'</code> 角色与 preset 参数、preset 守卫按步骤改回对应 bot preset；数据迁移按设计只读保留、不自动转换。工具并集 / 模型来源 / 报告汇总的偏差见第 6 节状态卡。</li>
+		</ul>
+	</div>
+</section>
+
+<section id="s13">
+	<h2><span class="n">13</span>分期与验收</h2>
+	<div class="card impl">
+		<strong>实现状态 · P1–P5 全部已落地（下表仍是设计态验收门槛）</strong>
+		<ul style="margin-bottom:0">
+			<li><strong>版本对照</strong>：P1 = <code>0.1.32</code>（配 <code>vssaros-agents 0.2.322</code>）、P2 = <code>0.1.33</code>、P3 = <code>0.1.34</code>、P4 = <code>0.1.35</code>（配 <code>agents 0.2.323</code>）、P5 = <code>0.1.36</code>；随后 <code>0.1.37</code> bot 技能清单与步骤进度、<code>0.1.39</code> 对话页签与概况侧栏、<code>0.1.40</code> 自绘 composer、<code>0.1.41</code> 步骤权限 / 分档批复 / 原生聊天框 / work 页签、<code>0.1.42</code> SSE / BotMark / FlowCard。<code>0.1.43–0.1.55</code> 又叠加了群聊 P0 快路径、<code>group_route</code>、desk 唤醒修复、TAPD Webhook 与凭据、P4 guard、review 提交闸、随包内置转正等（见第 16 节）；<strong>当前基线 0.1.55</strong>。</li>
+			<li><strong>守卫比设计更硬</strong>：<code>tsc</code> + 全量 vitest（<code>dev/tests/</code> 约 90 个 spec）+ <code>model-surface</code> 字符预算（新工具要压缩说明并写明上调原因）+ <code>dev/docs/007-architecture.md</code> 模块表 / 测试表登记（<code>tests/docs.spec.ts</code> 强制每个模块与测试都上榜）+ 补丁集 <code>apply --check</code> + <code>check-plugin-files</code> + <code>build.mjs --check</code>（校验入库的 <code>lib/</code> 与源码一致）+ <code>check-workbench-catalog</code> / <code>dshPluginPackages</code>。</li>
+			<li><strong>验收状态</strong>：各期单测均全绿（测试数从 1346 递增到 1403+），<code>team/proposals|distills|teamflow</code> 等真机接口在 2026-11-05 的 Host 上确认存在；但「主管对话 → 出方案 → 同意 → 步骤 bot → 沉淀」的端到端人工演练、SSE 在压缩代理下的真机表现、插件随包后的真机加载都还没有完整结论。偏差项与遗留见第 15.4 / 17 节。</li>
+		</ul>
+	</div>
+	<table>
+		<thead><tr><th>期</th><th>内容</th><th>涉及</th><th>验收</th></tr></thead>
+		<tbody>
+			<tr><td><strong>P1</strong></td><td><code>superagent</code> 输入源：desk 会话、<code>superagent_submit</code>、channel 回写；bot 求助改为 Trigger</td><td>superagent、vssaros-agents</td><td>主管对话里的一句话出现在「触发」页；bot 求助在 bots 名单为空时被拦下；回复写回原对话</td></tr>
+			<tr><td><strong>P2</strong></td><td>工单阶段 <code>person/staffing</code>（<strong>所有工单</strong>都进入）；propose / confirm / revise；方案消息（飞书卡片、GitHub、TAPD、desk，单角色用精简格式）；同意校验；<code>autoApprove</code> 默认关</td><td>superagent core / tools / sources</td><td>任何 accept 后执行器都不启动；单人工单也出 1 人方案；bot 消息与旧版本同意被拒；同意后才 start；拒绝后工单 dropped；全新安装与升级后 <code>autoApprove=false</code></td></tr>
+			<tr><td><strong>P3</strong></td><td>执行器多步骤：bot preset、工具并集、模型来源、写锁、重试、步骤报告汇总；每个步骤累计 <code>turns</code></td><td>superagent executor / sessions</td><td>两个 bot 并行跑、写步骤串行；某步骤提问不阻塞其它步骤；全部 ready 后工单进入 review 并回复原来源；<code>team_step.turns</code> 与会话回合数一致</td></tr>
+			<tr><td><strong>P4</strong></td><td>记忆系统技能沉淀：<code>vssaros.memory</code> 总线、<code>skill</code> / <code>facts</code> 两种模式（门槛见 7.1）、提炼子会话、统一 <code>.drafts</code>、bot 归属与预加载、bot 记忆追加入口</td><td>vssaros-memory、vssaros-skills、vssaros-agents</td><td>≥3 回合或失败 / 重派的步骤出现技能候选，其余只在 bot 记忆里多一条事实且不调用模型；高风险的不自动生效；相似技能发新版本；只有对应 bot 的会话加载到它</td></tr>
+			<tr><td><strong>P5</strong></td><td>团队工作流：工单结束生成、组队匹配、触发方式；<strong>TeamFlow 适配器</strong>（导出 <code>teams.json</code> 合并写、导入种子、可选 <code>executor: "teamflow"</code> 委托）；先在 dev profile 安装 TeamFlow 移植版</td><td>superagent、dsh-plugin-teamflow、可选 vssaros-scheduler</td><td>同类第二个工单命中 ≥70% 并预填方案、仍需同意；导出后 TeamFlow 的团队列表能看到 <code>sa-*</code> 团队，内置 <code>dev</code> 与用户团队不变；不可映射的步骤逐条列出；委托步骤的 TeamFlow 汇报回到工单</td></tr>
+		</tbody>
+	</table>
+	<p>每期都沿用现有的守卫：<code>tsc</code>、全量 vitest、<code>model-surface</code> 预算（新工具要压缩说明并写明上调原因）、<code>docs/007-architecture.md</code> 登记、补丁集 <code>apply --check</code>、插件文件守卫。</p>
+</section>
+
+<section id="s14">
+	<h2><span class="n">14</span>决策记录</h2>
+	<table>
+		<thead><tr><th>#</th><th>问题</th><th>决定</th><th>落在</th></tr></thead>
+		<tbody>
+			<tr><td>1</td><td>「teamworkflow」指什么</td><td><span class="tag ok">已定</span> <strong>TeamFlow</strong>（<code>dsh-plugin-teamflow</code>）。因其阶段写死、role 只是展示，适配器做导出（合并写 <code>sa-*</code>）、导入种子、可选委托执行三件事</td><td>8.4 · P5</td></tr>
+			<tr><td>2</td><td>所有工单都组队，还是只有多角色工单</td><td><span class="tag ok">已定</span> <strong>都走，流程统一</strong>；单人 = 1 个角色的团队，方案用精简格式</td><td>4.1 · P2</td></tr>
+			<tr><td>3</td><td>「自动同意」默认开还是关</td><td><span class="tag ok">已定</span> <strong>默认关闭</strong>，安装与升级都不替用户打开</td><td>5.3 · P2</td></tr>
+			<tr><td>4</td><td>技能提炼的范围</td><td><span class="tag ok">已定</span> <strong>只对 ≥3 回合，或发生过失败 / 重派的步骤提炼</strong>；其余只记事实（写 bot 记忆，不调模型）</td><td>7.1 · P3 · P4</td></tr>
+			<tr><td>5</td><td>多个 bot 写同一个 worktree 的冲突策略</td><td><span class="tag warn">按建议执行，可改</span> 默认写锁串行；需要并行写时由方案拆子目录或拆工单</td><td>6.3</td></tr>
+			<tr><td>6</td><td>现有 <code>dsh-superagent-worker</code> preset 是否保留</td><td><span class="tag warn">按建议执行，可改</span> 保留为「通用执行 bot」的兜底：名册里没有合适 bot、又不想新建时使用</td><td>4.1 · 6.1</td></tr>
+			<tr><td>7</td><td>运行态 UI 用哪套（2026-11-05 追加）</td><td><span class="tag ok">用户已拍板</span> <strong>方案 C · 对话 + 作战室</strong>（对话只放关键节点，侧栏管待办和成员，工作台看全局），配 SSE 推送与分档批复；取代 A 群聊协作 / B 流水线看板</td><td>16.1</td></tr>
+			<tr><td>8</td><td>步骤批复的分档规则（2026-11-05 追加）</td><td><span class="tag ok">用户已拍板</span> 只读步骤真正只读；写步骤在工作区内自动放行；<strong>越界命令才批复</strong>，可「允许并记住」；飞书来的工单把批复转回飞书。批复超时时长未指定 ⇒ 目前一直等</td><td>16.1</td></tr>
+			<tr><td>9</td><td>对话页签用哪个聊天框（2026-11-05 追加）</td><td><span class="tag ok">用户已拍板</span> <strong>DSH 原生聊天框</strong>（选项 F3）；面板自绘 composer 只作非工作台入口 / dock 失败时的回退</td><td>11 · 16.1</td></tr>
+			<tr><td>10</td><td>插件形态（2026-11-05 追加）</td><td><span class="tag ok">用户已定</span> <strong>转正随包内置</strong>：根 = 随包产物（<code>lib/</code> 入库、CI 不构建插件）、<code>dev/</code> = 源码 / 测试 / 工具链（不进包）、继续用补丁集跟踪上游</td><td>15.1</td></tr>
+			<tr><td>11</td><td>领队会话是否取消（P3 实现取舍）</td><td><span class="tag code">实现取舍</span> <strong>保留领队</strong>：<code>worker-&lt;ticket&gt;</code> 继续持有 Assignment / report / 回复，步骤另开 <code>step-*</code> 会话；领域核心不改。设计稿原写「无领队」。<br><strong>2026-11-06 定稿</strong>：「领队 = coordinator」写进领域模型（<code>core/model.ts</code> 的 <code>AssignmentRole</code> / <code>assignmentRole()</code>）：有已同意团队的工单，其 Assignment 是 coordinator——不做步骤；步骤未完成时 <code>write/edit/bash/pwsh</code> 被拒（<code>sessions.ts</code> 的 coordinator 段与闸），只转交人的回答（<code>orchestrator_step_message</code>）、全部完成后核对并报告</td><td>6 · 15.4</td></tr>
+			<tr><td>12</td><td>技能沉淀的执行者（P4 实现取舍）</td><td><span class="tag code">实现取舍</span> 落到 <code>vssaros-agents</code> 的 <code>memoryBus</code>（bot 记忆真源），草稿按证据模板拼接、<strong>不调模型</strong>；<code>vssaros-memory</code> 未接入，<code>retrospective.ts</code> 直写技能未下线</td><td>7 · 15.4</td></tr>
+			<tr><td>13</td><td>desk 里的 @群请求（2026-11-05 P0）</td><td><span class="tag code">实现取舍</span> 群聊是确定性副作用 ⇒ <strong>准入期直接建群 / 路由</strong>并记 <code>ignore</code>，不再等主会话模型评估（原链路实测约 44s）</td><td>16.2</td></tr>
+		</tbody>
+	</table>
+	<p class="foot">第 1–14 节为 2026-11-04 设计细则，依据 0.1.31 / 0.2.321 的现有代码与三项调研（superagent 流水线、记忆系统、teamworkflow 现状）；第 15–17 节为 2026-11-06 对照 <code>@vssaros/dsh-superagent 0.1.55</code> 的实现复核。颜色取自 DSH 主题的 <code>--dsw-alias-*</code> 语义，支持浅 / 深切换与打印。</p>
+</section>
+
+<section id="s15">
+	<h2><span class="n">15</span>实现对照（代码基线 0.1.55）</h2>
+	<p>本节是 2026-11-06 对 <code>dsh-plugins/vssaros-superagent/</code> 的只读复核：前 14 节仍是设计基线，这里只回答「代码里到底是什么」。所有路径相对仓库根；源码在 <code>dev/src/</code>，构建产物 <code>lib/</code> 已入库。</p>
+	<h3>15.0 · 0.1.56 – 0.1.62 增量（2026-11-06）</h3>
+	<p>下面各表仍按 0.1.55 写；这一张列出之后关掉的偏差，读到对应行时以这里为准。</p>
+	<table>
+		<thead><tr><th>方面</th><th>0.1.62 的做法</th><th>代码位置</th></tr></thead>
+		<tbody>
+			<tr><td>重启不丢状态</td><td>步骤审批挂起项、健康状态、Eval 读缓存落 SQLite；审批 30 分钟提醒、60 分钟按拒绝</td><td><code>app/step-approvals.ts</code>、<code>infra/health.ts</code>、<code>app/assessment.ts</code></td></tr>
+			<tr><td>权限回退</td><td>沙箱探测或权限预设失败 ⇒ 步骤 blocked 等人，不再自动全权限；「无沙箱」标记常驻</td><td><code>app/steps.ts</code>、<code>app/sessions.ts</code></td></tr>
+			<tr><td>Outbox</td><td>发送前记意图；结果不确定 ⇒ <code>unknown</code> 终态，只由人工重投</td><td><code>app/outbox.ts</code>、<code>app/store.ts</code></td></tr>
+			<tr><td>单轨</td><td>旧 team 计划五表归档为 <code>team_archive</code> 后删除；计划工具与路由下线；工作流运行走 v2；库表 25 张</td><td><code>app/team-archive.ts</code>、<code>tests/schema-tables.spec.ts</code></td></tr>
+			<tr><td>技能沉淀</td><td>只剩 <code>team_distill</code> → 记忆系统一条路；记忆系统用模型提炼、相似出新版本、风险分级</td><td><code>app/distill.ts</code>；<code>vssaros-agents/lib/stepDistill.js</code>、<code>lib/core/skillDistill.js</code></td></tr>
+			<tr><td>执行语义</td><td>领队 = coordinator 进领域模型；步骤工具 <code>WORK_TOOLS ∪ bot.tools</code>；token 预算硬闸（90% 提醒、100% 停新步骤）</td><td><code>core/model.ts</code>、<code>app/sessions.ts</code>、<code>app/steps.ts</code></td></tr>
+			<tr><td>用量与上下文（0.1.64）</td><td>用量账本 <code>usage_call</code>（主会话 / 主管台 / worker / 步骤每次调用，30 天，一个监听器同时喂账本与 token 预算）；空闲压实：主会话与主管台空闲且越过检查线（可用窗口 60%）时调 DSH <code>compactNow</code>（DS Bot steward 的「换新 part」分支不采纳：这两条会话 id 固定）；审批规则模板（Git 只读 / 跑测试 / 构建 / 装依赖），组合或重定向的命令永远要问</td><td><code>app/usage.ts</code>、<code>app/steward.ts</code>、<code>app/step-approvals.ts</code>、<code>client/usage.tsx</code></td></tr>
+			<tr><td>并装 DS Bot</td><td>loader 里有启用的 <code>ds-bot</code> 条目 ⇒ 总览提示它的三处全局作用（密钥脱敏、看图 OCR、全局技能）；它重发的请求只计一次用量</td><td><code>app/coexist.ts</code></td></tr>
+			<tr><td>适配层（agents 0.2.348）</td><td>团队总线契约修订 2：<code>version</code> 仍是 1，新增 <code>revision/features/presetOf/describeBot</code>；SuperAgent 用 <code>presetOf</code> 取 bot preset。DS Bot 团队离线导入 <code>vssaros-agent import-ds-bot</code>（默认预览，<code>--apply</code> 写入；密钥 / MCP / 私密 Bot / 模型不导，群只列出）</td><td><code>vssaros-agents/lib/teamBus.js</code>、<code>lib/core/dsBotImport.js</code>、<code>lib/importDsBotTeam.js</code></td></tr>
+			<tr><td>交付守卫</td><td>全量并行零失败门禁；DS Bot 派生文件 ⊆ NOTICE；随包文件必须在 git；<code>lib/build-manifest.json</code> 绑定版本与产物哈希，无工具链显式失败</td><td><code>dev/scripts/test-gate.mjs</code>、<code>dsh-plugins/check-dsbot-notice.mjs</code>、<code>check-plugins-tracked.mjs</code>、<code>dev/scripts/build.mjs</code></td></tr>
+		</tbody>
+	</table>
+
+	<h3>15.1 工程结构：已转正随包内置</h3>
+	<table class="dir">
+		<thead><tr><th>项</th><th>实际</th></tr></thead>
+		<tbody>
+			<tr><td><strong>包 / 版本</strong></td><td><code>@vssaros/dsh-superagent 0.1.55</code>，<code>private:true</code>，<code>main: lib/index.js</code>；导出 <code>.</code> / <code>./client</code> / 四个 <code>*-watch</code>。</td></tr>
+			<tr><td><strong>工作台</strong></td><td>根 <code>package.json</code> 的 <code>vssaros.workbench</code>：<code>repository: vssaros:superagent</code>、<code>customFrame: true</code>、<code>icon: codicon:robot</code>、<code>headerLayout: default</code>、<code>floatingActions: false</code>；<code>vssaros.view.kind: none</code>；<code>dsh.bundle.patch = cordis.patch.yml</code>，client inject 含 <code>@vssaros/dsh-workbenches</code>。</td></tr>
+			<tr><td><strong>根 = 随包产物</strong></td><td><code>package.json</code> / <code>cordis.patch.yml</code> / <code>lib/</code>（12 个 js，含 4 个 hash chunk）/ <code>prompts/</code> / <code>skills/</code> / <code>locale/</code> / <code>README.md</code> / <code>NOTICE</code> / <code>LICENSE</code>。CI <strong>不构建</strong>插件，<code>lib/</code> 必须随源码一起提交。</td></tr>
+			<tr><td><strong>dev/ = 开发工作区</strong></td><td><code>src/</code>（core / app / executor / sources / infra / client）、<code>tests/</code>（约 90 个 spec）、<code>docs/</code>（000–008 + SETUP）、<code>scripts/</code>、<code>configs/</code>、<code>pnpm-lock</code>；<code>dev/package.json</code> 名 <code>dsh-superagent-dev</code>（不能用 <code>@vssaros/</code> 前缀），<code>node_modules</code> 不入库。</td></tr>
+			<tr><td><strong>工具链</strong></td><td><code>pnpm --dir dsh-plugins/vssaros-superagent/dev install|check</code>；<code>dev/scripts/build.mjs</code> 写 <code>../lib</code>、<code>--check</code> 校验产物与源码一致（已接进根 <code>check:dsh-plugins</code>）；<code>dev/scripts/upstream-patches.mjs [--check]</code> 生成 / 校验 <code>dev/vssaros-patches.diff</code>，继续跟踪上游 <code>dsh-superagent-prototype</code>。</td></tr>
+			<tr><td><strong>不进包的判据</strong></td><td><code>dev/package.json</code> 存在即 dev 工作区，三处同一判据：<code>build/saros/strip-before-pack.mjs</code> 的 <code>shippedDshPluginPath</code>、<code>dshPluginStaging.ts</code> 的 <code>isDevWorkspace</code>、<code>dshProfileDepsRepair.ts</code>；守卫 <code>dshPluginStaging.test.ts</code> 用例 8（反向突变已验红）。</td></tr>
+			<tr><td><strong>身份与数据</strong></td><td>行 id 仍是 <code>dsh-superagent*</code>、stateDir <code>dshHomePath('dsh-superagent')</code>；旧包 <code>dsh-superagent</code> 与新包行 id 相同、<strong>不可共存</strong>（dev profile 已卸旧包）。数据落在 <code>orchestrator.sqlite</code>（25 张表，schema 11）。</td></tr>
+		</tbody>
+	</table>
+	<div class="card impl">
+		<strong>改这个插件的顺序（与老插件不同）</strong>
+		<p style="margin-bottom:0"><code>dev/</code> 里改源码 → <code>pnpm --dir dev check</code>（tsc + vitest + build 写 lib） → <code>build.mjs --check</code> → <strong>bump 根 <code>package.json</code> version</strong> → 重生成补丁集 → 装到两套 profile 验证。改了非入口文件不 bump 版本会「改了没生效」；<code>lib/</code> 没跟上源码会被 <code>check:dsh-plugins</code> 拦下。</p>
+	</div>
+
+	<h3>15.2 P1–P5 落地状态</h3>
+	<table>
+		<thead><tr><th>期</th><th>主要代码</th><th>版本</th><th>结论</th></tr></thead>
+		<tbody>
+			<tr><td><strong>P1</strong> 输入源</td><td><code>sources/superagent.ts</code>、<code>app/desk.ts</code>、<code>app/runtime.ts</code>、<code>vssaros-agents/lib/teamBus.js</code> 的 <code>onMessage</code></td><td>0.1.32 / agents 0.2.322</td><td><span class="tag ok">已落地</span> 另有 desk 富交互、群聊快路径等超出设计的内容</td></tr>
+			<tr><td><strong>P2</strong> 组队 + 同意闸</td><td><code>app/staffing.ts</code>、<code>core/stage.ts</code>、<code>core/model.ts</code>、<code>policy.ts</code>、<code>app/tools/team.ts</code></td><td>0.1.33</td><td><span class="tag ok">已落地</span> 方案是纯文本、无有效期、无 revise 工具</td></tr>
+			<tr><td><strong>P3</strong> 步骤执行</td><td><code>app/steps.ts</code>、<code>app/sessions.ts</code>、<code>executor/dsh.ts</code>、<code>app/step-approvals.ts</code></td><td>0.1.34 / 0.1.41</td><td><span class="tag warn">已落地但偏差最大</span> 保留领队、会话名 <code>step-*</code>、只管 turns</td></tr>
+			<tr><td><strong>P4</strong> 技能沉淀</td><td><code>app/distill.ts</code>、<code>vssaros-agents/lib/memoryBus.js</code> + <code>stepMemory.js</code></td><td>0.1.35 / agents 0.2.323</td><td><span class="tag warn">已落地但更轻</span> 模板拼接、不调模型、旧复盘直写仍并存</td></tr>
+			<tr><td><strong>P5</strong> 团队工作流</td><td><code>app/retrospective.ts</code>、<code>app/teamflow.ts</code>、<code>app/tools/team.ts</code>、<code>client/team-plans.tsx</code></td><td>0.1.36</td><td><span class="tag warn">部分</span> 生成 / 匹配 / 导出 / 导入已有；<code>executor:"teamflow"</code> 委托执行未做</td></tr>
+			<tr><td><strong>附加</strong> 运行态与运维</td><td><code>client/</code> 全套、<code>app/feed.ts</code>、<code>app/desk-flow.ts</code>、<code>app/groupFastPath.ts</code> 等</td><td>0.1.37 – 0.1.55</td><td><span class="tag new">设计稿之外</span> 见第 16 节</td></tr>
+		</tbody>
+	</table>
+
+	<h3>15.3 协议速查（以代码为准）</h3>
+	<pre>输入源   feishu / github / tapd / p4 / superagent（desk、bots 两行）
+线程键   superagent:desk:&lt;session&gt; | superagent:bot:&lt;session&gt;（完整键进 ChannelRef.thread）
+阶段     person/staffing（ticketStage 首行判定）→ working[/queued] → person/{delivery,answer,review,blocked,failed} → ended
+会话     master（Router） | desk-&lt;key(stateDir)&gt; | worker-&lt;ticket&gt;（领队） | step-&lt;ticket&gt;-&lt;key&gt;（vssaros-&lt;botId&gt; preset）
+工具     主会话 14 个 orchestrator_* + propose/confirm/refuse；执行器 6 个；步骤 step_report/step_message；desk superagent_submit
+表       25 张：基础 9 + team_proposal/step/distill/skill/workflow + step_approval_rule + group_route + desk_* + 旧 team_*
+路由     /orchestrator/api/*（约 30 GET / 35 POST / 2 PUT）+ SSE GET /orchestrator/api/stream + TAPD Webhook 独立入口
+设置     executor.staffing=true、autoApprove=false、maxWorkers=3、model=null、blockedCommands=[]；eval.mode=observe
+总线     globalThis[Symbol.for('vssaros.team')] v1   → 名册 / 建 bot / 委派 / 外部 bot
+         globalThis[Symbol.for('vssaros.memory')] v1 → rememberStep(evidence) / decideSkillDraft(name, decision)
+技能根   &lt;dataRoot&gt;/skills/.drafts/bot-&lt;slug&gt;-&lt;sha8&gt;/SKILL.md → 批准后 promote 到 &lt;dataRoot&gt;/skills/&lt;name&gt;/
+TeamFlow $DSH_HOME/teamflow/&lt;slugPath(cwd)&gt;/teams.json，只合并写 sa-* 条目，写前 .bak</pre>
+	<p class="tip">总线对象挂在 <code>globalThis</code> 且 <code>writable:false</code>：HMR 后已存在的对象会被复用，新增方法不会出现在旧对象上，要加方法必须开 version 2 并保留 v1 方法。另 <code>vssaros-memory</code> 有 <code>Symbol.for('vssaros.memory.store')</code>，与上面这条不是同一个。</p>
+
+	<h3>15.4 设计 → 实现差异清单</h3>
+	<table>
+		<thead><tr><th>设计（前 14 节）</th><th>实际（0.1.55）</th><th>代码位置</th></tr></thead>
+		<tbody>
+			<tr><td>每步一个 <code>worker-&lt;ticket&gt;-&lt;step&gt;</code> 会话、无领队；<code>TeamBus.delegate</code> 停用</td><td>领队 <code>worker-&lt;ticket&gt;</code> 保留并持有 Assignment / report / 回复；步骤是 <code>step-&lt;ticket&gt;-&lt;key&gt;</code>；旧 <code>delegate</code> 仍被计划系统使用</td><td><code>app/steps.ts:3-5,28</code> · <code>app/team.ts:500</code></td></tr>
+			<tr><td>宿主汇总步骤报告为工单级 ready report（<code>team_report</code> relay）</td><td>步骤结果以 <code>engine.note</code> 给领队，全部完成后由领队自己 <code>orchestrator_report</code>；没有 relay</td><td><code>app/steps.ts:191-193,349-356</code></td></tr>
+			<tr><td>工具并集 <code>WORK_TOOLS ∪ bot.tools</code>、bot 模型覆盖</td><td>步骤会话不 mask 工具、不 <code>initializeRoleModel</code>（实际保留 bot 的工具与模型），但没有按声明求并集的代码路径</td><td><code>app/sessions.ts:74-75,157-164,313-335</code></td></tr>
+			<tr><td>token / 回合预算 90% 提醒、100% 暂停</td><td>只统计 <code>turns</code> 与 <code>parallel</code>；达 turnsCap 不再起新步骤并通知领队</td><td><code>app/steps.ts:301-307</code></td></tr>
+			<tr><td>步骤失败交 Router 换人 / 跳过 / 问人；<code>human_action → attention</code></td><td>固定重试 1 次，第二次失败把依赖步骤 <code>skipped</code>；提问走 <code>orchestrator_step_message</code> 经领队</td><td><code>app/steps.ts:178-199,293-299</code></td></tr>
+			<tr><td><code>vssaros-memory</code> 开短期子会话提炼；<code>vssaros-skills</code> 提供进程内写服务；去重发版本、风险分级、淘汰</td><td><code>vssaros-agents</code> 的 <code>memoryBus</code> 按证据模板拼 SKILL.md，全程<strong>不调模型</strong>；<code>vssaros-memory</code> / <code>vssaros-skills</code> 都没改</td><td><code>app/distill.ts</code> · <code>agents/lib/stepMemory.js</code></td></tr>
+			<tr><td>统一到一个技能根；<code>retrospective.ts</code> 直写技能下线</td><td>新旧两条写入<strong>双轨并存</strong>（<code>team_distill</code> 与 <code>team_skill</code> 各写各的）</td><td><code>app/retrospective.ts:204-240</code></td></tr>
+			<tr><td>方案用飞书交互卡片、72 小时提醒 / 7 天放弃、<code>orchestrator_team_revise</code></td><td>纯文本（单角色一行）、无有效期 / <code>expired</code>；改方案 = 再次 <code>propose</code> 出 v+1</td><td><code>app/staffing.ts:24,92-117,240-250</code></td></tr>
+			<tr><td>工作流 ≥2 步才生成、成功 2 次主动提议、运行差异生成 v+1、多种触发方式</td><td>工单 completed/merged 即生成 draft；无 ≥2 步限制、无主动提议、无 v+1、<code>triggers:['manual']</code></td><td><code>app/retrospective.ts:287-311</code></td></tr>
+			<tr><td><code>executor:"teamflow"</code> 委托 TeamFlow 跑步骤</td><td><strong>未实现</strong>（<code>WorkflowStep</code> 无 <code>executor</code> 字段，全仓无 <code>teamflow_start</code>）；<code>workflows/:id/run</code> 仍走旧 <code>team.plan</code></td><td><code>app/http.ts:342-347</code></td></tr>
+			<tr><td>下线 <code>team_plan/task/member/approval/team_skill</code> 五张表</td><td>25 张表全在，五张旧表继续使用；只做只读展示，不做自动转换</td><td><code>app/store.ts:72-82</code> · <code>app/team.ts:118-123</code></td></tr>
+			<tr><td>4 个输入源；6 跳约束在 worker 求助链</td><td>5 个源（多 <code>P4</code>）；6 跳判在 bot 求助入口</td><td><code>sources/</code> · <code>app/runtime.ts:460-464</code></td></tr>
+			<tr><td>左会话 / 右业务标准分栏；技能与工作流进记忆系统「技能」页签；设置 → 团队；待办只读投影；◆ 会话标记</td><td><code>customFrame</code> 整页工作台 + 7 页签 + 概况侧栏 + 新增 <code>work</code> 页签；技能 / 工作流仍在 superagent 概况；设置无「团队」分组；待办投影与 ◆ 标记未做</td><td><code>client/route.ts:12</code> · <code>client/team-plans.tsx</code> · <code>client/side.tsx</code></td></tr>
+		</tbody>
+	</table>
+	<p class="tip">口径说明：「已落地」指有对应代码与单测，不等于真机端到端验收完成；真机尚未走完的链路列在第 17.3 节。</p>
+</section>
+
+<section id="s16">
+	<h2><span class="n">16</span>设计之外的新增（0.1.37 – 0.1.55）</h2>
+	<p>前 14 节没有覆盖的改动，按主题归为四块。其中方案 C 是 2026-11-05 用户看过 <code>doc/superagent-runtime-ui-options-mockup.html</code> 后拍板的运行态方向，群聊快路径是 2026-11-05 的 P0 性能修复。</p>
+
+	<h3>16.1 方案 C：对话 + 作战室</h3>
+	<div class="impl-grid">
+		<div class="tile"><h4>步骤批复（分档 + 越界才问人）</h4><p><code>src/app/step-approvals.ts</code>：读步骤 <code>read-only</code>、写步骤 <code>workspace-write</code>；Windows 上按工单目录用 <code>icacls … /setintegritylevel Low</code> 探一次（缓存），探不通则 <code>danger-full-access</code> + <code>TeamStep.unsandboxed</code>，文件工具仍限制在目录内，面板标「无沙箱」。用 <code>ctx.on('approval/request', …, {prepend:true})</code> 抢在 DSH 前接管，step 会话（含子 agent 沿 parentSession）<strong>永不 next()</strong>：读步骤直接拒、命中 <code>step_approval_rule</code>（bot + tool + 命令前两词 / 路径目录）allowed-once，否则挂起（内存态，重启即失效）。</p><span class="k">路由：POST steps/approvals/:id/answer · GET steps/rules · POST steps/rules/:id/delete · POST tickets/:id/steps/:key/stop</span></div>
+		<div class="tile"><h4>批复回到人所在的会话</h4><p>挂起时同时发面板卡与来源会话的 notice（<code>step-approval:&lt;id&gt;</code>，带 4 位 <code>#code</code>）；飞书工单发到话题、desk 发回主管对话。回复按与组队同意同一套判据（<code>human</code> / <code>allowedSender</code> / <code>reached</code> / 晚于请求）解析「同意 #code」「同意并记住 #code」「拒绝 #code」，多个待批请求用编号消歧。面板卡三按钮：拒绝 / 允许一次 / 允许并记住。</p><span class="k">★ 批复超时未实现：现在会一直等人，用户没有指定时长</span></div>
+		<div class="tile"><h4>SSE 实时推送</h4><p><code>src/app/feed.ts</code>：<code>GET /orchestrator/api/stream</code> 在 JSON 路由表之前直接 attach；topics <code>steps / tickets / desk</code>，120ms 合并、20s 心跳；<code>cache-control: no-store, no-transform</code> + <code>x-accel-buffering: no</code> + <code>res.flush?.()</code> 防 DSH 的 compression 缓冲。客户端 <code>src/client/feed.ts</code> 用 <code>fetch</code> 读流（EventSource 带不了 <code>x-orchestrator-request</code> 头），模块级单连接、指数退避重连、重连后 <code>emit('all')</code> 补读；<code>useLive(load, deps, topics)</code> 流断 5s 轮询 / 流通 60s 兜底。</p><span class="k">★ no-transform 与 flush 的真机效果未验证</span></div>
+		<div class="tile"><h4>工作台页签与形象</h4><p><code>src/client/work.tsx</code>：<code>WorkProvider</code> 单一轮询（运行时 2s）、<code>ApprovalCard</code> / <code>StepMembers</code>（含 stop）/ <code>MiniFlow</code> / DAG（glow + pulse + 平移缩放）/ 看板 / 列表 / 步骤详情，视图记忆在 <code>dsh-superagent/work-view</code>。<code>src/client/characters.ts</code> 由脚本从 DS Bot 的 <code>characters.js</code> 原样拷 20 个角色路径（Apache-2.0，包内 <code>NOTICE</code> + <code>package.json files</code>）；<code>mark.tsx</code> 的 <code>BotMark</code> 按 id 定外观（主管 = 鲸鱼），状态 idle/thinking/searching/working/sending/waiting/alert/done。</p><span class="k">★ 类名必须用 dt-bm*：.dt-mark 已被搜索高亮占用</span></div>
+		<div class="tile"><h4>DSH 原生聊天框 + 关键节点卡</h4><p><code>chat.tsx</code> 在工作台里直接挂宿主 <code>native.node</code> + <code>ChatDock</code>（把批复与组队方案压在对话上方），用 <code>service.ensureSession({sessionId: deskId})</code> 绑定 desk；非工作台入口 / dock 失败才回退面板自绘 <code>ChatPage</code>。<code>src/app/desk-flow.ts</code> 的 <code>GET desk/flow/:id</code> 返回 evaluating / filtered / declined / ticket / <strong>group</strong>（11-06 新增）等状态；<code>src/client/flow-card.tsx</code> 注册在 <code>tool.call.toolview</code> 的 <code>superagent_submit</code> key 上，画「已接管 → 方案 → 团队 → 结局」节点链。卡片在面板树外渲染，由 <code>CardProvider</code> 注入 API / 词典并向 <code>document.head</code> 塞一次面板 CSS。</p><span class="k">★ tool view 的 block.content 形状仍待真机核对</span></div>
+		<div class="tile"><h4>概况侧栏与自动弹出</h4><p><code>src/client/side.tsx</code>：状态存 <code>dsh-superagent/side</code>（默认开、宽 320–560px 可拖），已见签名存 <code>dsh-superagent/side-seen</code>（最多 200 条）；签名 <code>proposal:&lt;t&gt;:v&lt;n&gt;</code> / <code>steps:&lt;t&gt;</code> / <code>approval:&lt;id&gt;</code> 出现新项且侧栏关着才自动弹出，首次加载只记不弹。★面板测试夹具默认<strong>关</strong>侧边栏，否则概况内容会污染其它页的全局查询。</p></div>
+	</div>
+
+	<h3>16.2 P0 群聊快路径（2026-11-05 / 11-06）</h3>
+	<p>desk 里「拉个群」「@已有群」原本要等主会话模型分类再调 <code>orchestrator_team_create_group</code>（19:20 日志实测约 44s）。群聊是确定性副作用，改为<strong>准入期直接建群 / 路由</strong>并记 <code>ignore</code> decision，主会话完全不参与。</p>
+	<ul>
+		<li><code>src/app/groupFastPath.ts</code>：<code>isGroupCreationRequest</code> / <code>fastGroupPlan</code> 选最多 3 个可委派 bot 并生成群名与通知；<code>handleDeskMessage</code> 存 Trigger → <code>Team.createGroup</code>（带 <code>originTriggerId</code>，Bots 插件据此复用已有群）→ 在一个事务里落下群路由、<code>ignore</code> decision 与 <code>group-created</code> notice。</li>
+		<li><code>@已有群</code> 靠 DSH 的 <code>session-reference</code> 配对事件（<code>groupReferenceOf</code>），实际转交由 Bots 插件 <code>rooms.js</code> 负责；superagent 只记路由。<code>GROUP_REFERENCE_WAIT_MS = 1500</code>（原 40ms 会让同一条消息两头都处理）、<code>GROUP_REFERENCE_LATE_MS = 15_000</code>（与 agents 配对窗口一致）；只有以 <code>@</code> 开头的消息才 <code>mayBeGroupCommand</code> 等引用事件，其余走原准入路径。</li>
+		<li><code>src/app/group-routes.ts</code> 的 <code>group_route</code> 表记录 <code>created / routed</code> 与人的 DSH 消息 id；<code>deskFlow</code> 读它把「被群接走」显示成 <code>group</code>，不再误读成拒绝；关键节点卡按同一 message id 跟群运行。<code>tests/group-contract.spec.ts</code> 守这条契约。</li>
+	</ul>
+
+	<h3>16.3 desk 体验与运维链路</h3>
+	<table>
+		<thead><tr><th>模块</th><th>内容</th></tr></thead>
+		<tbody>
+			<tr><td><code>app/desk-chat.ts</code> · <code>client/composer.tsx</code></td><td>附件（≤5 个、每个 ≤10MB → <code>POST desk/files</code> 存 <code>&lt;stateDir&gt;/desk-files/</code>）、引用对话、定时消息（<code>desk_schedule</code> 表，<code>DeskChat.runDue</code> 每 30s，先挪 / 删再发送防重，none/daily/weekdays）、语音听写与朗读（浏览器 Web Speech，未接 DSH Voice Input；Electron 里识别可能报 <code>network</code>，真机待验）。<strong>自绘 composer 现在只作回退</strong>。</td></tr>
+			<tr><td><code>app/desk-outbox.ts</code></td><td>2026-11-05 修复：要唤醒 desk 的消息（每次回复、组队方案、步骤批复）先写 <code>pending</code> 再投递，只有 desk 的 <code>user/message</code> 回执带该 id 才标 <code>recorded</code>；启动 / 会话关闭后 / 新消息前重投 pending，按 id 只投一次。其它消息只进 <code>desk_log</code> 供面板显示。</td></tr>
+			<tr><td><code>app/tapd-webhook.ts</code> · <code>app/cli-check.ts</code></td><td>TAPD Webhook 作为独立 ingress（不属于 Source kind）与凭据面板；飞书 <code>cli-check / cli-apply</code> 本地诊断与确认式维护；飞书 profile / share 单连接。</td></tr>
+			<tr><td><code>app/review.ts</code> · <code>p4-guard</code> · <code>migration.ts</code> · <code>state-lock.ts</code></td><td>P4 提交闸（ready CL 的 review + 指纹 + 两种提交模式 + 审计，只由管理路由调用）；schema 10 → 11 一次性迁移（按当前形状重写每条记录）；状态目录锁可回收被杀 Host 的遗留锁。</td></tr>
+		</tbody>
+	</table>
+
+	<h3>16.4 配套测试与守卫</h3>
+	<p>运行态新增 <code>tests/step-approvals.spec.ts</code>、<code>tests/panel-work.spec.tsx</code>、<code>tests/feed.spec.ts</code>、<code>tests/panel-flow-card.spec.tsx</code>、<code>tests/panel-chat.spec.tsx</code>、<code>tests/panel-composer.spec.tsx</code>、<code>tests/group-fast-path.spec.ts</code>、<code>tests/group-contract.spec.ts</code> 等；组队 / 执行 / 沉淀 / 工作流分别有 <code>staffing / steps / distill / workflows / retrospective / superagent-source / superagent-desk</code> 等 spec。<code>dev/docs/007-architecture.md</code> 的模块表与测试表逐文件登记，<code>tests/docs.spec.ts</code> 强制覆盖；<code>model-surface.spec.ts</code> 守主会话 prompt + 工具字符预算（新增工具要压缩说明并写明上调原因）。</p>
+	<div class="card warn">
+		<strong>两条跑测试 / 部署的坑（反复踩到）</strong>
+		<p style="margin-bottom:0">① 某测试中途抛错没 dispose 卡片，<code>feed.ts</code> 的模块级重连计时器会残留，后续用例连不上流；② 测试里调 TeamFlow 导出接口必须临时改 <code>process.env.DSH_HOME</code>，否则写到真实 <code>~/.dsh</code>。另：同版本号重新 <code>dsh plugin add</code> 不会替换已装副本，改代码后必须 bump 版本。</p>
+	</div>
+</section>
+
+<section id="s17">
+	<h2><span class="n">17</span>遗留与下一步</h2>
+	<p>按「设计稿承诺但代码没有」「代码内已知缺口」「下次动手怎么验」三类收口。优先级是建议顺序，不是排期。</p>
+
+	<h3>17.1 设计承诺未兑现</h3>
+	<table>
+		<thead><tr><th>优先级</th><th>缺口</th><th>设计出处</th><th>现状</th></tr></thead>
+		<tbody>
+			<tr><td><span class="tag err">P1</span></td><td><code>executor:"teamflow"</code> 委托 TeamFlow 跑步骤（<code>teamflow_start</code> + <code>snapshot(runId)</code>），先在 dev profile 安装移植版并跑通一次</td><td>8.4 · P5</td><td>全仓 0 命中；<code>WorkflowStep</code> 无 <code>executor</code> 字段，<code>workflows/:id/run</code> 仍走旧 <code>team.plan</code></td></tr>
+			<tr><td><span class="tag err">P1</span></td><td>记忆系统调模型提炼：短期子会话、分流、相似度去重发版本、风险分级、淘汰</td><td>7.3</td><td>模板拼接，一次模型调用都没有</td></tr>
+			<tr><td><span class="tag err">P1</span></td><td><code>vssaros-memory</code> 待审队列改读 <code>.drafts</code>、<code>vssaros-skills</code> 的 <code>ctx.provide('vssarosSkills')</code>、<code>toPresetDefinition</code> 消费 <code>skills:</code></td><td>7.5</td><td>三个插件只动了 <code>vssaros-agents</code>；技能预加载用 <code>applyPersona</code> 的 <code>ownedSkillsText</code> 替代</td></tr>
+			<tr><td><span class="tag err">P1</span></td><td>技能写入收敛为一套（<code>retrospective.ts</code> 直写下线）、5 张旧 <code>team_*</code> 表下线、<code>TeamBus.delegate</code> 停用</td><td>9 · 12</td><td>双轨并存；旧计划系统仍是可用入口</td></tr>
+			<tr><td><span class="tag warn">P2</span></td><td>界面落位：技能建议 / 待审核技能 / 团队工作流迁到记忆系统「技能」页签；「设置 → 团队」（配额 / 自动同意 / 选人阈值 / 预算默认 / bot 求助名单）；主管待办只读投影；◆ 会话标记与 <code>&lt;bot&gt; · T3</code> 命名；方案卡「修改」；批复规则管理 UI</td><td>11</td><td>都仍在 superagent 概况或根本没有；<code>GET steps/rules</code> 有服务端无客户端</td></tr>
+			<tr><td><span class="tag warn">P2</span></td><td>方案飞书交互卡片、72 小时提醒 / 7 天放弃、<code>expired</code> 状态、<code>orchestrator_team_revise</code></td><td>4.4 · 5.4 · 10</td><td>纯文本；改方案靠重新 <code>propose</code></td></tr>
+			<tr><td><span class="tag warn">P2</span></td><td>执行约束：token 预算 90%/100%、<code>WORK_TOOLS ∪ bot.tools</code>、bot 模型来源、失败换人 / 跳过 / 问人、<code>human_action → attention</code></td><td>6.1 · 6.2</td><td><strong>2026-11-06 已实现</strong>：步骤会话显式放行 <code>WORK_TOOLS ∪ bot.tools</code>（组队时从花名册带下，<code>*</code> 通配；精确名单时 restrict 遮蔽，任何情况下 guard 硬拦）；token 预算硬闸（<code>llm/stream</code> 计量 step 会话 usage，90% 告诉领队一次，100% 不开新步骤、运行中的只能报告，人在面板追加）。失败换人 / <code>human_action → attention</code> 仍未做。原状：只管 turns 与 parallel；步骤会话靠「不 mask」间接保留 bot 能力；失败固定重试 1 次</td></tr>
+			<tr><td><span class="tag warn">P2</span></td><td>工作流：≥2 步才生成、同类成功 2 次主动提议、运行差异生成 v+1、<code>schedule</code> / <code>feishu-command</code> / <code>tapd-tag</code> 触发</td><td>8.1 · 8.2</td><td>工单成功即生成 draft；<code>triggers:['manual']</code></td></tr>
+			<tr><td><span class="tag warn">P2</span></td><td>步骤批复的超时时长</td><td>决策 8</td><td>用户未指定；现在无超时，一直等（挂起状态在内存里，重启即失效）</td></tr>
+			<tr><td><span class="tag new">P3</span></td><td>取消领队、会话名对齐 <code>worker-&lt;ticket&gt;-&lt;step&gt;</code>、<code>team_step</code> 补 <code>sessionId / phase / executor / 预算消耗</code></td><td>6.1 · 9</td><td>属于实现取舍，领域核心未改；若要改需连同 Assignment / report 协议一起动</td></tr>
+		</tbody>
+	</table>
+
+	<h3>17.2 代码内已知的 TODO 与待验点</h3>
+	<ul>
+		<li><code>dev/src/index.ts:18</code> 是源码里唯一的显式 TODO：等 DSH settings service 会重读「插件重新 active」的配置项后，可去掉那段重复读取。客户端内没有 <code>it.skip / it.todo</code>。</li>
+		<li><strong>真机未验</strong>：SSE 的 <code>no-transform</code> + <code>flush</code> 在 DSH 压缩代理下是否真的不缓冲；<code>tool.call.toolview</code> 的 <code>block.content</code> 是否如类型所示带 JSON 文本（FlowCard 依赖它）；Electron 里 Web Speech 识别报 <code>network</code>；随包版（非 dev profile）加载 <code>lib/</code> 后的完整行为。</li>
+		<li><code>FlowCard</code> 之外的 desk 回复仍是 <code>[SuperAgent]</code> 注入的纯文本，没有关键节点卡片；批复与方案靠 <code>ChatDock</code> 压在原生对话上方。</li>
+		<li>desk 会话 id 绑定工作台后不可随便改：从 <code>local:dsh-superagent</code> 迁到 <code>vssaros:superagent</code> 时要换 desk id 或做迁移处理。</li>
+		<li>宿主侧 <code>vssaros-workbenches</code> 的官方 frame 暂不支持把会话嵌进业务页；标准分栏（<code>customFrame=false</code> 的右栏）仍是后续工作，现留 <code>splitConversation:false</code> 逃生门。</li>
+		<li><code>007-architecture.md</code> 记着「没有工具做」的几件事：dismiss 不可用于 Decision、rerun setup、刷新 Source 显示名、把 Executor 的人工 follow-up 送 Eval。</li>
+	</ul>
+
+	<h3>17.3 下次动手的验证清单</h3>
+	<div class="card impl">
+		<strong>静态检查（顺序固定）</strong>
+		<ol style="margin-bottom:0">
+			<li><code>dev/</code> 里 <code>pnpm check</code>（tsc + vitest + build 写 <code>lib/</code>）→ <code>node dev/scripts/build.mjs --check</code> 确认产物与源码一致。</li>
+			<li>根仓库 <code>check-plugin-files</code> / <code>check-workbench-catalog</code> / <code>dshPluginPackages</code> / <code>check:dsh-plugins</code>；<code>dev/docs/007-architecture.md</code> 的模块表与测试表登记新文件（<code>tests/docs.spec.ts</code> 会查）。</li>
+			<li>重生成补丁集并 <code>apply --check</code>；<strong>bump 根 <code>package.json</code> version</strong>，装到两套 profile 验证。Host 是 keepAlive，装完要让 Host 重新加载才跑新代码；别直接杀 Host 进程求「只重启 Host」（会连带重启整个 app，dev 走 <code>scripts/start-dev-app.mjs</code>）。</li>
+		</ol>
+	</div>
+	<div class="card impl">
+		<strong>真机端到端（目前还没走完的一条链路）</strong>
+		<ol style="margin-bottom:0">
+			<li>主管对话发一句需求 → 「触发」页出现 Trigger → 「待确认组队」出方案（单角色精简 / 命中 ≥70% 工作流时预填，<strong>仍要人同意</strong>）→ 同意后执行器才启动。</li>
+			<li>领队 <code>worker-&lt;ticket&gt;</code> 与各 <code>step-*</code> 会话起；写步骤串行、并行 ≤3；越界命令在面板与飞书话题同时出现 <code>#code</code> 批复，回「同意并记住」后同 bot + tool + 命令头自动放行。</li>
+			<li>全部步骤 ready → 领队汇总并回复原来源 → <code>team_distill</code> 出现 <code>facts</code> 或 <code>skill</code> 草稿（≥3 回合 / 失败 / 重派）→ 工单结束生成工作流草稿 → 保存后可被下一工单匹配 → 导出 <code>teams.json</code> 只新增 / 替换 <code>sa-*</code>，内置 <code>dev</code> 与用户团队不变。</li>
+			<li>顺带核对：SSE 是否推送、升级 / 全新安装后 <code>autoApprove=false</code>、原生聊天框 dock 成功、<code>desk/flow/:id</code> 的节点卡内容、随包版 <code>lib/</code> 加载。</li>
+		</ol>
+	</div>
+</section>
+</main>
+</div>
+<script>
+(function () {
+	var root = document.documentElement;
+	document.getElementById('theme').addEventListener('click', function () {
+		root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+	});
+	var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+	var sections = links.map(function (a) { return document.querySelector(a.getAttribute('href')); });
+	function mark() {
+		var y = window.scrollY + 120, active = 0;
+		sections.forEach(function (s, i) { if (s && s.offsetTop <= y) active = i; });
+		links.forEach(function (a, i) { a.classList.toggle('on', i === active); });
+	}
+	window.addEventListener('scroll', mark, { passive: true });
+	mark();
+})();
+</script>
+</body>
+</html>

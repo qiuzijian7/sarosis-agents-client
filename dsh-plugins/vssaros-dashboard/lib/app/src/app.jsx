@@ -427,6 +427,8 @@ const WB_ICONS = {
 	'/x/marketplace/': 'cart',
 	'/x/sessions/': 'history',
 	'/x/parallel/': 'monitor',
+	// 注册式内置工作台没有 `/x/` 路由，卡片 route 是 `wb:<身份>`（其余回落 grid）。
+	'wb:vssaros/superagent': 'robot',
 };
 
 function readPinned() {
@@ -456,13 +458,60 @@ function notifyParentPin(route, pinned) {
 	return false;
 }
 
-/** 第三方工作台只注册在 dsh 客户端宿主里（`desktopWorkbenches`）⇒ 从父窗口读快照补卡片。 */
+/**
+ * 注册式工作台（`desktopWorkbenches.register()`，没有 `/x/<module>/` 页面路由）只存在于
+ * dsh 客户端宿主 ⇒ 从父窗口读快照补卡片。
+ *
+ * ★ 2026-11-05（用户报「工作台中缺少 SuperAgent」）：**内置注册式工作台也要补**。
+ *   SuperAgent（`vssaros/superagent`）与 loop 的身份以 `vssaros/` 开头，旧代码把整类内置
+ *   工作台一笔排除 ⇒ 启动器/页签能打开，主页卡片里却永远看不到（真机截图实证）。
+ *   判据与 `client.workbenchNav.js::coveredByFixedEntry` 同口径：已有固定入口的才排除 ⇒
+ *   既不重复出卡片，也不会把临时下线（仍留在固定入口表里）的模块借这条路复活。
+ */
 function parentWorkbenches() {
 	try {
 		if (!inDshWindow()) { return null; }
 		const snap = typeof window.parent.__vssarosWorkbenchesSnapshot === 'function' ? window.parent.__vssarosWorkbenchesSnapshot() : null;
 		return snap && Array.isArray(snap.workbenches) ? snap.workbenches : null;
 	} catch { return null; }
+}
+
+/** 父窗口的侧栏固定入口表（含 hidden / offline 项 ⇒ 覆盖比「可见卡片」完整）。 */
+function parentFixedEntries() {
+	try {
+		if (!inDshWindow()) { return null; }
+		return Array.isArray(window.parent.__vssarosWorkbenchItems) ? window.parent.__vssarosWorkbenchItems : null;
+	} catch { return null; }
+}
+
+/**
+ * 内置注册式工作台是否已有固定入口（`/x/<module>/`）⇒ 有就别再补一张重复卡片。
+ * 父窗口那份表还没就绪时保守回落到旧行为（内置一律不补）⇒ 宁可少一张，也不放重复卡片。
+ */
+function fixedEntryCovers(id, coveredRoutes, hasFixedEntries) {
+	const m = /^vssaros\/([a-z][a-z0-9-]*)$/.exec(String(id || '').toLowerCase());
+	if (!m) { return false; }
+	if (!hasFixedEntries) { return true; }
+	const prefix = `/x/${m[1]}/`;
+	return [...coveredRoutes].some(r => r === prefix || String(r).indexOf(prefix) === 0);
+}
+
+/** 把宿主快照里的注册式工作台变成卡片条目（打开 / 固定都走宿主注册表，与第三方同一条路）。 */
+function registeredCardItems(list, ownRoutes) {
+	const fixed = parentFixedEntries();
+	// 空表也按"没就绪"处理：否则只读到可见卡片那几条，临时下线的模块会被当成"无固定入口"复活 ✗
+	const hasFixed = !!fixed && fixed.length > 0;
+	const covered = new Set([...ownRoutes, ...(hasFixed ? fixed : []).map(it => String((it && it.route) || ''))]);
+	return (list || [])
+		.filter(w => w && w.id && !fixedEntryCovers(String(w.id), covered, hasFixed))
+		.map(w => ({
+			route: `${THIRD_PARTY_PREFIX}${String(w.id)}`,
+			id: String(w.id),
+			name: String(w.title || w.id),
+			desc: String(w.description || w.id),
+			thirdParty: true,   // 打开 / 固定走 `__vssarosOpenWorkbench`，不走 IDE 模块页路由
+			builtin: String(w.id).indexOf('vssaros/') === 0,
+		}));
 }
 
 function WorkbenchCard({ model, config, onSaveConfig, setStatus }) {
@@ -475,14 +524,13 @@ function WorkbenchCard({ model, config, onSaveConfig, setStatus }) {
 	/** 刚拖完 ⇒ 吃掉紧接着的那次 click（否则"调整顺序"会变成"打开页面" ✗）。 */
 	const justDraggedRef = React.useRef(false);
 
-	// 第三方工作台：宿主可能晚于本页就绪 / 中途装卸 ⇒ 低频复查（只在列表变化时 setState）
+	// 注册式工作台（第三方 + 无固定入口的内置）：宿主可能晚于本页就绪 / 中途装卸 ⇒ 低频复查（只在列表变化时 setState）
 	React.useEffect(() => {
 		const sync = () => {
 			const list = parentWorkbenches();
 			if (!list) { return; }
-			const wanted = list
-				.filter(w => w && w.id && String(w.id).indexOf('vssaros/') !== 0)
-				.map(w => ({ route: `${THIRD_PARTY_PREFIX}${String(w.id)}`, id: String(w.id), name: String(w.title || w.id), desc: String(w.description || w.id), thirdParty: true }));
+			const ownRoutes = (model.workbench || []).map(m => String(m.route || ''));
+			const wanted = registeredCardItems(list, ownRoutes);
 			setThirdParty(prev => {
 				const key = p => p.map(x => `${x.id}|${x.name}`).join(',');
 				return key(prev) === key(wanted) ? prev : wanted;
@@ -564,7 +612,7 @@ function WorkbenchCard({ model, config, onSaveConfig, setStatus }) {
 			} catch { /* 没有桥 ⇒ 只有 dsh 侧状态 */ }
 		}
 		setStatus?.(wantPin
-			? (item.thirdParty ? `已固定到 dsh 侧栏（第三方工作台不进 IDE 活动栏）：${item.id}` : `已固定：${item.route}`)
+			? (item.thirdParty ? `已固定到 dsh 侧栏（注册式工作台不进 IDE 活动栏）：${item.id}` : `已固定：${item.route}`)
 			: `已取消固定：${item.thirdParty ? item.id : item.route}`);
 	};
 
@@ -637,7 +685,8 @@ function WorkbenchCard({ model, config, onSaveConfig, setStatus }) {
 					key: item.route,
 					className: `dash-wb-tile${dragRoute === item.route ? ' dash-wb-dragging' : ''}${fixed ? ' is-fixed' : ''}`,
 					'data-dash-wb-route': item.route,
-					...(item.thirdParty ? { 'data-dash-wb-third-party': item.id } : {}),
+					...(item.thirdParty && !item.builtin ? { 'data-dash-wb-third-party': item.id } : {}),
+					...(item.builtin ? { 'data-dash-wb-registered': item.id } : {}),
 					role: 'button',
 					tabIndex: 0,
 					title: `${item.name} · ${item.route}`,
@@ -651,7 +700,7 @@ function WorkbenchCard({ model, config, onSaveConfig, setStatus }) {
 					el('span', { className: 'dash-wb-ico' }, el(Icon, { name: WB_ICONS[item.route] || 'grid', size: 17 })),
 					el('span', { className: 'dash-wb-body' },
 						el('span', { className: 'dash-wb-nm' }, item.name,
-							item.thirdParty ? el('i', { className: 'dash-wb-tag' }, '第三方') : null),
+							item.thirdParty && !item.builtin ? el('i', { className: 'dash-wb-tag' }, '第三方') : null),
 						el('span', { className: 'dash-wb-desc' }, item.desc || ''),
 					),
 					el('span', { className: 'dash-wb-actions' },

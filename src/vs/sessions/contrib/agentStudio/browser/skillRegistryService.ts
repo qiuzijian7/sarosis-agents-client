@@ -532,7 +532,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 		// 参考 Hermes-Agent 模式：技能从 .agents/skills/ 目录扫描加载，不再硬编码
 		// this._loadBuiltins(); // 已移除 - 技能现在从 .agents/skills/ 目录文件加载
 
-		// 内置技能目录（产品自带的 resources/.agents/skills/）
+		// 内置技能目录（产品自带的 dsh-plugins/vssaros-skill-bundle/skills/）
 		// 尝试多个候选路径以兼容不同运行环境（开发/打包、桌面/浏览器）
 		try {
 			const candidates: URI[] = [];
@@ -540,7 +540,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			// 候选1（最稳）：FileAccess.asFileUri —— 基于 vs 源码根目录推算 resources 兄弟目录
 			// 适用所有运行模式（dev / electron-packaged / browser），与 install 路径解析保持一致
 			try {
-				const uri1 = FileAccess.asFileUri('vs/../../resources/.agents/skills');
+				const uri1 = FileAccess.asFileUri('vs/../../dsh-plugins/vssaros-skill-bundle/skills');
 				this.logService.info(`[SkillRegistry] candidate1 (FileAccess): ${uri1.toString()}`);
 				candidates.push(uri1);
 			} catch (e) {
@@ -553,7 +553,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 				appRoot = (this.environmentService as INativeEnvironmentService).appRoot;
 				this.logService.info(`[SkillRegistry] appRoot: ${appRoot}`);
 				if (appRoot) {
-					const uri2 = URI.joinPath(URI.file(appRoot), 'resources', '.agents', 'skills');
+					const uri2 = URI.joinPath(URI.file(appRoot), 'dsh-plugins', 'vssaros-skill-bundle', 'skills');
 					this.logService.info(`[SkillRegistry] candidate2 (appRoot/resources): ${uri2.toString()}`);
 					if (!candidates.some(c => c.toString() === uri2.toString())) {
 						candidates.push(uri2);
@@ -567,7 +567,7 @@ export class SkillRegistry extends Disposable implements ISkillRegistry {
 			try {
 				if (appRoot) {
 					const projectRoot = path.dirname(appRoot);
-					const uri3 = URI.joinPath(URI.file(projectRoot), 'resources', '.agents', 'skills');
+					const uri3 = URI.joinPath(URI.file(projectRoot), 'dsh-plugins', 'vssaros-skill-bundle', 'skills');
 					this.logService.info(`[SkillRegistry] candidate3 (dirname(appRoot)/resources): ${uri3.toString()}`);
 					if (!candidates.some(c => c.toString() === uri3.toString())) {
 						candidates.push(uri3);

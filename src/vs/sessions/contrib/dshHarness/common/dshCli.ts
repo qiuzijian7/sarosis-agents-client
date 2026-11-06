@@ -622,7 +622,12 @@ export function renderDataRootOverlay(dataRoot: string, mcpConfigPath?: string, 
 	// ⚠ 不加这行：dev 实例的草稿会写进**生产数据根**（与 marketplace 那类同病）。
 	// loop（2026-10-31）：ledger / store 落在 `<数据根>/loop/` ⇒ 也读 `config.dataRoot`，
 	//   否则 dev 实例会写进**生产**数据根（与 marketplace / xhs-note 同病）。
-	for (const id of ['vssaros-workflow', 'vssaros-skills', 'vssaros-media', 'vssaros-dashboard', 'vssaros-marketplace', 'vssaros-loop']) {
+	// scheduler（2026-11-06）：`lib/sessionBinding.js` 用 `config.dataRoot` 判断任务绑定的会话是否属于**本数据根**
+	//   （`<数据根>/dsh-home/sessions/...`）。经 VsSaros 启动时它靠子进程 env `VSSAROS_DATA_ROOT` 兜底也能拿对，
+	//   但那只是第二道口径（不经 supervisor 起的 Host、或 env 被清掉时就退回 `~/.vssaros`，dev 任务会被判成别的数据根的）
+	//   ⇒ 与其它读数据根的模块一样走 config。与 loop 同形态：这一行只有本覆盖层写（补丁里 `config: {}`），
+	//   它另读的 notifyWebhook / allowTools / itemTimeoutMs / cwd 没有任何地方写入 ⇒ 整体替换不会抹掉什么。
+	for (const id of ['vssaros-workflow', 'vssaros-skills', 'vssaros-media', 'vssaros-dashboard', 'vssaros-marketplace', 'vssaros-loop', 'vssaros-scheduler']) {
 		lines.push(`- id: ${id}`);
 		lines.push('  config:');
 		lines.push(`    dataRoot: ${yamlSingleQuoted(dataRoot)}`);

@@ -84,6 +84,9 @@ import { TerminalLocation } from '../../../../platform/terminal/common/terminal.
 // 布局能力探询：agent 布局**底部没有 panel** ⇒ 终端不能建在 Panel 位置（否则建了也看不见 ✗）
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
+// ★ 2026-11-05：右侧栏内嵌浏览器 —— 复用集成浏览器的 WebContentsView（默认 Global storage，不做隔离）。
+import { IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
+import { IBrowserViewBounds } from '../../../../platform/browserView/common/browserView.js';
 
 const DSH_COMMAND_CHECK_UPDATES = 'dshHarness.checkUpdates';
 /**
@@ -941,6 +944,12 @@ registerWorkbenchContribution2(DshPrewarmContribution.ID, DshPrewarmContribution
 class DshPageCommandContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'sessions.dshHarness.pageCommands';
 
+	/** 右侧栏内嵌浏览器：一个 dsh 视图一条 WebContentsView；不按 Bot / 会话隔离（用户 2026-11-05 明确不做隔离）。 */
+	private readonly _rightbarBrowsers = new Map<string, {
+		input: ReturnType<IBrowserViewWorkbenchService['getOrCreateLazy']>;
+		model?: IBrowserViewModel;
+	}>();
+
 	constructor(
 		@IConfigurationService configurationService: IConfigurationService,
 		@IInstantiationService instantiationService: IInstantiationService,
@@ -965,6 +974,8 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 		// 「回到 IDE」（`focusIde`，桥 15 → 16）：页面拿不到窗口级 API ⇒ 由宿主把主窗口提到前台。
 		@INativeHostService private readonly _nativeHostService: INativeHostService,
 		@ITofAuthService private readonly _tofAuth: ITofAuthService,
+		// 右侧栏内嵌浏览器：一个 dsh 视图一条 WebContentsView，按 viewId 复用（不按 Bot 隔离）。
+		@IBrowserViewWorkbenchService private readonly _browserViews: IBrowserViewWorkbenchService,
 	) {
 		super();
 		if (!configurationService.getValue<boolean>(DshHarnessSettings.Enabled)) {
@@ -976,6 +987,82 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 				void this._handle(e.command, e.viewId).catch(err => this._notifications.error(String((err as Error)?.message ?? err)));
 			}
 		}));
+		// 窗口关闭时把贴到 dsh 窗口上的浏览器视图收起来（模型本身随 workbench 释放）。
+		this._register({ dispose: () => {
+			for (const entry of this._rightbarBrowsers.values()) {
+				if (entry.model) { void entry.model.setVisible(false).catch(() => undefined); }
+			}
+			this._rightbarBrowsers.clear();
+		} });
+	}
+
+	/** 取（或懒建）本 dsh 视图专属的集成浏览器视图；id 只由宿主派生，页面无法指定。 */
+	private _rightbarBrowserEntry(viewId: string): {
+		input: ReturnType<IBrowserViewWorkbenchService['getOrCreateLazy']>;
+		model?: IBrowserViewModel;
+	} {
+		let entry = this._rightbarBrowsers.get(viewId);
+		if (!entry) {
+			const safe = viewId.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 80);
+			const input = this._browserViews.getOrCreateLazy(`vssaros-rightbar-browser-${safe}`);
+			entry = { input };
+			this._rightbarBrowsers.set(viewId, entry);
+		}
+		return entry;
+	}
+
+	/**
+	 * ★ 2026-11-05：把集成浏览器的 WebContentsView 贴到 dsh 右侧栏的占位矩形上。
+	 * 页面只给「相对本视图视口」的矩形；这里叠加主进程记录的视图 bounds 得到窗口坐标。
+	 * 默认 Global storage scope ⇒ 所有会话共用同一份浏览器登录态（用户明确不做隔离）。
+	 */
+	private async _rightbarBrowser(
+		command: Extract<DshPageCommand, { method: 'rightbarBrowser' }>,
+		viewId: string,
+	): Promise<void> {
+		const entry = this._rightbarBrowserEntry(viewId);
+		const model = entry.model ?? await entry.input.resolve();
+		entry.model = model;
+		if (command.action === 'unmount') {
+			await model.setVisible(false);
+			return;
+		}
+		if (command.action === 'back') { await model.goBack(); return; }
+		if (command.action === 'forward') { await model.goForward(); return; }
+		if (command.action === 'reload') { await model.reload(); return; }
+		if (command.url && (command.action === 'navigate' || command.action === 'mount')) {
+			await model.loadURL(command.url);
+		}
+		if (!command.rect) { return; }
+		const rect = command.rect;
+		const views = await this._dsh.listViews();
+		const view = views.find(item => item.viewId === viewId);
+		if (!view) {
+			this._notifications.warn(localize('dshHarness.page.rightbarBrowserNoView', "找不到承载右侧栏的聊天视图，浏览器没有显示。"));
+			return;
+		}
+		const base = view.bounds;
+		const x = Math.max(0, Math.min(rect.x, base.width));
+		const y = Math.max(0, Math.min(rect.y, base.height));
+		const width = Math.min(rect.width, Math.max(0, base.width - x));
+		const height = Math.min(rect.height, Math.max(0, base.height - y));
+		if (width <= 0 || height <= 0) {
+			await model.setVisible(false);
+			return;
+		}
+		const windowId = view.attachedWindowId ?? view.ownerWindowId;
+		const bounds: IBrowserViewBounds = {
+			windowId,
+			x: base.x + x,
+			y: base.y + y,
+			width,
+			height,
+			zoomFactor: model.zoomFactor || 1,
+			cornerRadius: 0,
+		};
+		await model.setVisible(true);
+		await model.layout(bounds);
+		this._logService.info(`[dshHarness] rightbarBrowser ${command.action}: view=${viewId} window=${windowId} bounds=${bounds.x},${bounds.y},${bounds.width},${bounds.height}`);
 	}
 
 	/**
@@ -1263,6 +1350,9 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 			}
 		}
 		switch (command.method) {
+			case 'rightbarBrowser':
+				await this._rightbarBrowser(command, viewId);
+				return;
 			case 'newChat':
 			case 'openSession':
 				if (viewId.startsWith('dsh-plugin-')) {
@@ -1599,6 +1689,16 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 				// 一键升级应用：检查 → 比版本 →（更新源更新才）下载 → 安装并重启
 				this._logService.info('[dshHarness] page upgradeApp ⇒ 一键升级应用');
 				await this._dsh.upgradeApp();
+				return;
+			// ★ 2026-11-05（桥 `24 → 25`）：复刻 dsh-desktop 更新卡片。
+			case 'appUpdateCheck':
+				await this._dsh.checkAppUpdate();
+				return;
+			case 'appUpdateSkip':
+				await this._dsh.skipAppUpdate(command.version);
+				return;
+			case 'appUpdateInstall':
+				await this._dsh.installAppUpdate();
 				return;
 			case 'openMediaGallery':
 				// 媒体库（`agentStudio.openMediaGallery`，2026-10-19；触发点 = dsh 媒体库页

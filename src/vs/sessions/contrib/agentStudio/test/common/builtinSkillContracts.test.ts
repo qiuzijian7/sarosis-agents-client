@@ -30,7 +30,7 @@ import {
 } from '../../common/skillInjectionBudget.js';
 
 /** 内置技能目录（相对仓库根；测试以仓库根为 cwd，与 architectureBoundaries.test.ts 同约定）。 */
-const SKILLS_REL = 'resources/.agents/skills';
+const SKILLS_REL = 'dsh-plugins/vssaros-skill-bundle/skills';
 /** 飞书同步脚本（`feishu:` 记账字段与映射文件名的真源）。 */
 const SYNC_SCRIPT_REL = 'resources/.agents/kb/feishu-sync.mjs';
 /** 本次新增的分类↔知识库关联技能（文档契约断言的对象）。 */

@@ -95,6 +95,11 @@ export interface IAppUpdateResponse {
 	/** 安装包下载地址。 */
 	readonly url?: string;
 	readonly sha256hash?: string;
+	/**
+	 * 更新日志（2026-11-05，复刻 dsh-desktop 的「查看详情」）。
+	 * 更新源可不提供；UI 拿不到时回落「此版本暂无更新日志」。**纯文本**，不许当 HTML 渲染。
+	 */
+	readonly notes?: string;
 }
 
 /** 解析更新源返回体（只认需要的字段；形状不对 ⇒ undefined）。 */
@@ -104,11 +109,13 @@ export function parseAppUpdateResponse(raw: unknown): IAppUpdateResponse | undef
 	}
 	const o = raw as Record<string, unknown>;
 	const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+	const notes = str(o.notes);
 	const out: IAppUpdateResponse = {
 		...(str(o.version) ? { version: str(o.version) } : {}),
 		...(str(o.productVersion) ? { productVersion: str(o.productVersion) } : {}),
 		...(str(o.url) ? { url: str(o.url) } : {}),
 		...(str(o.sha256hash) ? { sha256hash: str(o.sha256hash) } : {}),
+		...(notes ? { notes: notes.slice(0, 20_000) } : {}),
 	};
 	return Object.keys(out).length ? out : undefined;
 }

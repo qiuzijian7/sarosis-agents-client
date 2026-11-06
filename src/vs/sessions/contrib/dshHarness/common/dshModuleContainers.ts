@@ -68,6 +68,10 @@ export type DshModuleId =
 	// 与 ide / channels / pele / web-content-import 同形态：在 DSH_BUILTIN_MODULES、不在容器表、
 	// 清单 `view.kind='none'`；它的界面由 `desktopWorkbenches.register()` 渲染。
 	| 'loop'
+	// 2026-11-05：SuperAgent 主管（`@vssaros/dsh-superagent`）—— **注册式工作台**，形态同 loop：
+	//   在 DSH_BUILTIN_MODULES、不在容器表/页面表、清单 `view.kind='none'`，界面由 `desktopWorkbenches.register()` 渲染。
+	//   源码、测试与工具链在本插件的 `dev/` 开发工作区（不进包），`pnpm --dir dsh-plugins/vssaros-superagent/dev check` 构建出 `lib/`。
+	| 'superagent'
 	// 2026-10-31（用户要求「移除并行工作台」）：`'parallel'` 联合体成员已删除（原本
 	//   `@vssaros/dsh-parallel` 的并行 TUI 工作台，2026-10-22 加的）；下面四张表里的登记同步删掉
 	//   （联合体 / 内置模块表 / 容器表 / 页面表）—— 漏一处就是"入口还在但点不开"✗。
@@ -142,6 +146,8 @@ export const DSH_BUILTIN_MODULES: readonly IDshBuiltinModule[] = [
 	// 宿主直接渲染 React）+ `/x/loop/api/*` 编排接口 ⇒ 没有页面路由 ⇒ 无图标模块形态
 	// （在 DSH_BUILTIN_MODULES、不在容器表、清单 view.kind='none'）。入口走工作台切换菜单。
 	{ module: 'loop', pluginName: '@vssaros/dsh-loop', summary: '无人值守循环（采集→挑单→执行 + 账本/重试/熔断；注册式工作台，无独立页面）' },
+	// 2026-11-05：SuperAgent 主管随包内置（注册式工作台，`/orchestrator` Host 路由；状态在 dshHomePath('dsh-superagent')）。
+	{ module: 'superagent', pluginName: '@vssaros/dsh-superagent', summary: 'SuperAgent 主管：飞书/GitHub/TAPD/主管对话来的需求 → 评估 → 组建 bot 团队 → 经人同意执行（注册式工作台）' },
 	// 2026-10-21：工作台商城（无 ActivityBar 图标；界面在 chat-surface 的设置面板里）。
 	{ module: 'market', pluginName: '@vssaros/dsh-market', summary: '工作台商城：读 dsh 公开市场目录（协议 v2）+ Host 侧安装路由（无 ActivityBar 图标）' },
 	// 2026-10-22：**自营商城工作台**（agent / skill / 工作台 / 工作流 四类商品）。

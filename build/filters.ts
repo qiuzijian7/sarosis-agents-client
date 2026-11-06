@@ -73,6 +73,9 @@ export const unicodeFilter = Object.freeze<string[]>([
 	// sessions/browser/agentChat uses Chinese strings for UI
 	'!src/vs/sessions/browser/agentChat/**',
 
+	// dsh-superagent (VsSaros built-in tracking an upstream) has its own code style
+	'!dsh-plugins/vssaros-superagent/**',
+
 	'!src/vs/base/browser/dompurify/**',
 	'!src/vs/workbench/services/keybinding/browser/keyboardLayouts/**',
 	'!src/vs/workbench/contrib/terminal/common/scripts/psreadline/**',
@@ -141,6 +144,9 @@ export const indentationFilter = Object.freeze<string[]>([
 
 	// sessions/contrib has its own code style
 	'!src/vs/sessions/contrib/**',
+
+	// dsh-superagent (VsSaros built-in tracking an upstream) has its own code style
+	'!dsh-plugins/vssaros-superagent/**',
 
 	// except specific file types
 	'!src/vs/*/**/*.d.ts',
@@ -220,6 +226,9 @@ export const copyrightFilter = Object.freeze<string[]>([
 
 	// sessions/contrib has its own code style
 	'!src/vs/sessions/contrib/**',
+
+	// dsh-superagent (VsSaros built-in tracking an upstream) has its own code style
+	'!dsh-plugins/vssaros-superagent/**',
 ]);
 
 export const tsFormattingFilter = Object.freeze<string[]>([

@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const ROOT = join(HERE, '..', '..');
 const TOOLS_DIR = join(ROOT, 'resources', '.agents', 'tools');
+const RUNTIME_DIR = join(ROOT, 'dsh-runtime');
 const SNAPSHOT = join(ROOT, 'dsh-plugins', 'tools-snapshot.json');
 
 /**
@@ -88,17 +89,44 @@ export const TOOL_MAP = {
 	feishu_kb_view: null,
 };
 
-/** dsh 侧**真实存在**的工具名：内建（resources/.agents/tools/*.json）+ 插件（tools-snapshot.json）。 */
-export function dshToolNames() {
+/**
+ * 官方 dsh 工具名：随包 runtime 里 `@deepseek-ai/dsh-tool-*` 的注册名。
+ * 与 `check-agent-tools.mjs` 判据 1a 同源 ⇒ 这才是「工具都用 dsh 提供的工具」的真源。
+ */
+export function officialDshToolNames() {
 	const names = new Set();
-	if (existsSync(TOOLS_DIR)) {
-		for (const file of readdirSync(TOOLS_DIR)) {
-			// `_toolsets.json` 是清单不是工具
-			if (file.endsWith('.json') && !file.startsWith('_')) {
-				names.add(file.slice(0, -'.json'.length));
+	if (!existsSync(RUNTIME_DIR)) { return names; }
+	for (const ver of readdirSync(RUNTIME_DIR)) {
+		const scope = join(RUNTIME_DIR, ver, 'node_modules', '@deepseek-ai');
+		if (!existsSync(scope)) { continue; }
+		for (const pkg of readdirSync(scope)) {
+			if (!pkg.startsWith('dsh-tool-')) { continue; }
+			const lib = join(scope, pkg, 'lib');
+			if (!existsSync(lib)) { continue; }
+			for (const file of readdirSync(lib)) {
+				if (!file.endsWith('.js')) { continue; }
+				const src = readFileSync(join(lib, file), 'utf8');
+				for (const m of src.matchAll(/\bname:\s*["']([a-z][a-z0-9_]{1,40})["']/g)) {
+					names.add(m[1]);
+				}
 			}
 		}
 	}
+	return names;
+}
+
+/**
+ * 当前环境**真实存在**的工具名。
+ *
+ * 真源 = 官方 runtime（dsh 真名） + `dsh-plugins/tools-snapshot.json`（插件工具）
+ *      + 不进离线快照的内置工具（memory / dtodo / 原生 skill）。
+ * 过渡期默认额外并入 IDE 侧 `resources/.agents/tools/*.json` 的 76 个**兼容别名**：
+ * 它们不是 dsh 工具，只为不把历史技能正文误判成悬空引用。
+ * P3 删除 IDE 侧工具文件后把 `dshOnly` 默认值翻成 true，这份别名表即可一并删掉。
+ */
+export function dshToolNames({ dshOnly = false } = {}) {
+	const names = officialDshToolNames();
+	for (const builtin of ['memory', 'dtodo', 'skill']) { names.add(builtin); }
 	try {
 		const snapshot = JSON.parse(readFileSync(SNAPSHOT, 'utf8'));
 		for (const list of Object.values(snapshot?.plugins ?? {})) {
@@ -111,6 +139,14 @@ export function dshToolNames() {
 	} catch {
 		// 快照缺失不算错：守卫会因此把插件工具当"不存在"，但那属于仓库不完整，
 		// 由 check-plugin-files / check-tool-definitions 各自报，不在这里重复判。
+	}
+	if (!dshOnly && existsSync(TOOLS_DIR)) {
+		for (const file of readdirSync(TOOLS_DIR)) {
+			// `_toolsets.json` 是清单不是工具
+			if (file.endsWith('.json') && !file.startsWith('_')) {
+				names.add(file.slice(0, -'.json'.length));
+			}
+		}
 	}
 	return names;
 }

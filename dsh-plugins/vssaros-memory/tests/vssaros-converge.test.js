@@ -152,7 +152,7 @@ test('对外写入口：globalThis[vssaros.memory.store].addBotEntry 写进 bot 
   try {
     apply(fakeCtx(), { memoryDir: dir, legacyAgentImport: false })
     const writer = globalThis[Symbol.for('vssaros.memory.store')]
-    assert.equal(writer?.version, 1)
+    assert.ok(writer?.version >= 1, '写入口版本只增不减（v2 起多了读 / 导入 / 历史方法）')
     assert.ok(writer.addBotEntry('CamelCase.Bot', '步骤证据：工单 T-1 的第 2 步成功').ok)
     const text = readFileSync(join(dir, 'bots', 'camelcase-bot', 'MEMORY.md'), 'utf8')
     assert.ok(text.includes('工单 T-1'))
@@ -173,15 +173,20 @@ test('工作区键：同一仓库的子目录会话落到同一个项目目录',
   } finally { clean(root) }
 })
 
-test('工作区键与 dsh-agents 的 workspaceKeyOf(resolveWorkspace(cwd).root) 逐字节一致', async () => {
+// dsh-agents 的旧工作区记忆目录名 workspace-memory/<key> 用的就是这个算法（2026-11-06 那份实现已删除，
+// 这里把算法写死成期望值）：key = sha1(realpath(git 根)，Windows 下小写 + 反斜杠) 的前 12 位。
+test('工作区键与旧 dsh-agents 工作区记忆目录名同一算法（写死期望值）', async () => {
   const root = tempDir('parity')
   try {
     mkdirSync(join(root, '.git'))
     mkdirSync(join(root, 'sub'))
-    const va = await import('../../vssaros-agents/lib/workspaceMemory.js')
+    const { createHash } = await import('node:crypto')
+    const { realpathSync } = await import('node:fs')
+    const norm = (p) => (process.platform === 'win32' ? p.replace(/\//g, '\\').toLowerCase() : p)
+    const expected = createHash('sha1').update(norm(realpathSync.native(root))).digest('hex').slice(0, 12)
     __resetWorkspaceKeyCache()
     for (const cwd of [root, join(root, 'sub')]) {
-      assert.equal(workspaceKeyOf(cwd), va.resolveWorkspace(cwd).key, cwd)
+      assert.equal(workspaceKeyOf(cwd), expected, cwd)
     }
   } finally { clean(root) }
 })

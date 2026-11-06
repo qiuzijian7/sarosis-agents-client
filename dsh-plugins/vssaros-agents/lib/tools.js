@@ -15,7 +15,7 @@
 //   agent_read_chat       只读：读/搜**本会话**的完整历史（P4——压缩只动模型表面、不动日志 ✓，
 //                         所以被压缩掉的早期内容能找回来；ds-bot read_own_chat 同构，真源换成
 //                         dsh 原生 `ctx.sessionQuery.filterEvents`，不自建索引 ✓）。
-//   workspace_memory      记忆写入口（会话 sandbox 外的 Host 直写；见下面的实现注释）。
+//   （记忆不在这里：2026-11-06 起统一走 @vssaros/dsh-memory 的 `memory` 工具，target=bot / key。）
 //
 // ★ 2026-11-03：群聊三件套（agent_group_create / invite / leave / invites / invite_respond）随
 //   群聊功能整体下线 —— 群概念已从本插件移除（`lib/groups.js` 等一并删除）。
@@ -29,24 +29,17 @@ import { presetIdOf } from './core/agents.js';
 import { checkCwdGrant } from './grants.js';
 import { aggregateByPreset, liveForAgents, rowAgentOf, rowBelongsTo } from './core/live.js';
 import { lastBotIdentityOf, resolveSessionBot } from './core/botIdentity.js';
-import { legacyAgentMemoryOn } from './core/memoryLimits.js';
 import { personaSwitchMessage } from './core/persona.js';
 import { AGENT_MESSAGE_KIND } from './core/relay.js';
 import { readLiveSession, readLiveSessions } from './live.js';
-import { CORE_MEMORY_TEMPLATE, ensureMemoryRepo, memoryDirOf } from './memory.js';
 import { notePendingReply } from './relay.js';
 import { agentsRootOf, scanAgents, scanAgentsFromConfig } from './store.js';
 import { externalBots, externalBotOf } from './teamBus.js';
-import { applyEntryAction, resolveWorkspace, scopeIdOfKey, workspaceEntryAction } from './workspaceMemory.js';
 /** 过闸工具（`tools/pre-execute` ⇒ ask）。名单由 `dshPluginPackages.test.ts` 逐名核对。 */
 export const WRITE_TOOLS = ['agent_switch_persona', 'agent_stop'];
 
-/** 记忆写入口的工具名（Bot 与工作区两层共用；allowlist 常驻保留，见 core/agents.js 的 ALWAYS_KEEP_TOOL_NAMES）。 */
-export const WORKSPACE_MEMORY_TOOL = 'workspace_memory';
-
 /** 全部工具名（探针/快照对账用；顺序 = 注册顺序）。 */
-export const TOOL_NAMES = ['agent_list', 'agent_open_session', 'agent_switch_persona', 'agent_stop', 'agent_message', 'agent_read_chat',
-	WORKSPACE_MEMORY_TOOL];
+export const TOOL_NAMES = ['agent_list', 'agent_open_session', 'agent_switch_persona', 'agent_stop', 'agent_message', 'agent_read_chat'];
 
 /** 消息接力跳数上限（ds-bot MAX_HOPS=6 同构）：模型传 hop 超过它就拒发——防 A→B→A 无限接力。 */
 export const MAX_HOPS = 6;
@@ -297,13 +290,27 @@ export function registerAgentTools(ctx, config, state) {
 				const external = externalBotOf(args?.to);
 				if (external) {
 					const from = exec?.agent?.id ?? null;
-					const header = `[Message from ${from ?? '未知会话'} · 第 ${thisHop} 跳]\n`;
+					// ★ 2026-11-04 superagent v2：主管按「发送 bot」过准入名单，所以要告诉它这条会话属于哪个 bot。
+					let fromBot = null;
+					let fromName = null;
+					if (from) {
+						const scanned = await scanAgentsFromConfig(config).catch(() => null);
+						const selfRow = await readLiveSession(config, from).catch(() => null);
+						const owner = selfRow?.row && scanned ? rowAgentOf(selfRow.row, scanned.agents) : undefined;
+						fromBot = owner?.id ?? null;
+						fromName = owner?.name ?? selfRow?.row?.presetId ?? null;
+					}
+					let answer;
 					try {
-						await external.onMessage({ from, text: `${header}${text}`, hop: thisHop, session: String(args?.session ?? '').trim() || undefined });
+						answer = await external.onMessage({ id: randomUUID(), from, fromBot, fromName, text, hop: thisHop,
+							session: String(args?.session ?? '').trim() || undefined });
 					} catch (e) {
 						return `转交给 ${external.name} 失败：${String(e?.message ?? e)}`;
 					}
-					return `已转交 ${external.name}（${external.id}，第 ${thisHop} 跳）：它用自己的主管会话处理，结果会通过它自己的渠道回复。别轮询、别重发。`;
+					if (answer?.received === 'filtered') {
+						return `${external.name} 现在不接收 bot 求助（它的「superagent」来源关掉了 bot 求助）。直接回复用户。`;
+					}
+					return `已转交 ${external.name}（${external.id}，第 ${thisHop} 跳）：它先判断是否接手；只有在它的名单里的 bot 发来的求助才会被处理，答复会回到你的会话。别轮询、别重发。`;
 				}
 				const scan = await scanAgents(agentsRootOf(config));
 				const { agent, error } = findAgent(scan.agents, args?.to);
@@ -424,88 +431,9 @@ export function registerAgentTools(ctx, config, state) {
 				return `${query ? `含「${query}」的 ${total} 条` : `最近 ${shown.length} 条`}（按时间正序）：\n${lines.join('\n')}${more}`;
 			},
 		},
-		// ── 记忆写入口（2026-11-02，用户拍板「专用工具直写」）────────────────────────────
-		// 为什么要专用工具：dsh 文件沙箱的写根只有 `[会话 cwd, tmp]`，记忆在 `<数据根>` 下 ⇒
-		// 以前提示词让 agent "直接编辑 MEMORY.md"，在 `workspace-write` 沙箱下**必然被拒**（本机沙箱已降级，
-		// 所以一直没暴露）。这里由 Host 写盘 ⇒ 不受沙箱限制；Bot 记忆与工作区记忆共用一份条目逻辑。
-		// 不过闸：写的是"以后注入的事实"，用户拍板直写；条目有长度上限、提示注入扫描与去重兜底。
-		{
-			name: WORKSPACE_MEMORY_TOOL,
-			description: '读写长期记忆（跨会话保留，并在**新会话**里自动注入 system prompt）。'
-				+ ' scope=workspace（默认）：当前工作区（会话目录所在的 git 仓库）的项目记忆，这个工作区里的所有会话共享 ——'
-				+ '记项目约定、关键决策、架构要点、踩过的坑；'
-				+ ' scope=bot：当前 Bot 自己的记忆（只在 Bot 会话里可用）——记用户偏好、Bot 自身的工作经验。'
-				+ ' 只记**以后仍然成立**的结论，一条一句（≤400 字），不要记一次性的进度或闲聊；写之前先 list 查重。'
-				+ ' replace / remove 用 match（能唯一定位那一条的一小段原文）。',
-			parameters: {
-				type: 'object',
-				properties: {
-					action: { type: 'string', enum: ['list', 'add', 'replace', 'remove'], description: 'list 列出 / add 追加 / replace 改写 / remove 删除' },
-					scope: { type: 'string', enum: ['workspace', 'bot'], description: 'workspace（默认）= 当前工作区；bot = 当前 Bot' },
-					content: { type: 'string', description: 'add / replace 的新正文（一句完整的事实）' },
-					match: { type: 'string', description: 'replace / remove 时，用来唯一定位那一条的一小段原文' },
-				},
-				required: ['action'],
-			},
-			output: textOutput,
-			async execute(args, exec) {
-				const header = exec?.agent?.session?.header ?? {};
-				const scope = args?.scope === 'bot' ? 'bot' : 'workspace';
-				const input = { action: args?.action, content: args?.content, match: args?.match };
-				const render = (r) => {
-					const lines = [r.message];
-					if (String(args?.action ?? '') === 'list' && Array.isArray(r.entries) && r.entries.length) {
-						r.entries.forEach((e, i) => lines.push(`${i + 1}. ${e.raw}`));
-					}
-					return lines.join('\n');
-				};
-				try {
-					if (scope === 'workspace') {
-						const cwd = typeof header.cwd === 'string' ? header.cwd : '';
-						if (!cwd) { return '这个会话没有工作目录 ⇒ 没有工作区记忆可写（打开一个工作区再试，或用 scope=bot）。'; }
-						const ws = resolveWorkspace(cwd);
-						if (!ws) { return `会话目录不可用：${cwd}（不存在或不是目录）。`; }
-						const result = workspaceEntryAction(config, ws, input);
-						// P2：首次写入后顺带 Git 化（软失败，不阻塞回执）。回合结束时 Host 会把这一轮的改动
-						// 落成一条提交；这里只保证"仓库已经存在"，不在工具调用里同步提交。
-						if (result.ok && String(args?.action ?? '') !== 'list') {
-							void ensureMemoryRepo(config, scopeIdOfKey(ws.key)).catch(() => undefined);
-						}
-						return render(result);
-					}
-					// 本会话属于哪个 Bot：当前 preset（agentPreset 投影 > 创建头）+ 身份记录（判据唯一真源 resolveSessionBot）
-					const session = exec?.agent?.session;
-					let preset = typeof header.agentPreset === 'string' ? header.agentPreset : '';
-					try {
-						const current = exec?.agent?.ctx?.get?.('sessionProjections')?.stateOf?.(session, 'agentPreset');
-						if (typeof current === 'string' && current) { preset = current; }
-					} catch { /* 拿不到投影就用创建头 */ }
-					let events = [];
-					try { events = typeof session?.snapshotEvents === 'function' ? session.snapshotEvents() : []; } catch { events = []; }
-					const scan = await scanAgentsFromConfig(config).catch(() => ({ agents: [] }));
-					const bot = resolveSessionBot({ agentPreset: preset, identity: lastBotIdentityOf(events) },
-						(p) => (scan.agents ?? []).find((a) => presetIdOf(a.id) === p)?.id);
-					if (!bot.isBot) { return '这个会话没有选 Bot ⇒ 没有 Bot 记忆（项目相关的事实请用 scope=workspace）。'; }
-					const agent = bot.botId ? (scan.agents ?? []).find((a) => a.id === bot.botId) : undefined;
-					if (!agent) { return `当前会话的 preset「${preset}」不是 Bot（或 Bot 已被删除）⇒ 没有 Bot 记忆；项目相关的事实请用 scope=workspace。`; }
-					const dir = memoryDirOf(config, agent.id);
-					return render(applyEntryAction(join(dir, 'MEMORY.md'), input, {
-						template: CORE_MEMORY_TEMPLATE,
-						lockKey: `bot:${agent.id}`,
-						label: `Bot「${agent.name ?? agent.id}」的记忆`,
-					}));
-				} catch (e) {
-					return `记忆写入失败：${String((e && e.message) || e)}`;
-				}
-			},
-		},
 	];
 
-	// ★ 2026-11-05「记忆收敛成一套」：Bot / 工作区记忆已并入 @vssaros/dsh-memory 的 memory 工具
-	//   （target=bot / target=key）⇒ 默认不再注册 workspace_memory，避免模型看到两个写记忆的工具。
-	//   回滚见 core/memoryLimits.js 的 legacyAgentMemoryOn。
-	const live = legacyAgentMemoryOn(config) ? defs : defs.filter(definition => definition.name !== WORKSPACE_MEMORY_TOOL);
-	const disposers = live.map(definition => ctx.tools.register(definition));
+	const disposers = defs.map(definition => ctx.tools.register(definition));
 	const offGate = ctx.on('tools/pre-execute', async (exec, next) => {
 		if (!exec || !WRITE_TOOLS.includes(exec.name)) {
 			return next(); // agent_list / agent_open_session 与其它插件的工具 ⇒ 放行
