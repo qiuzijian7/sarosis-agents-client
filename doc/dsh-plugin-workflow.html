@@ -448,8 +448,8 @@
 <h3 id="pack-runtime">3.3 运行时与 profile 种子（打包的难点）</h3>
 
 <ol class="steps">
-	<li><b>装运行时</b><span class="d"><code>npm install --prefix dsh-runtime/&lt;bundled&gt; @deepseek-ai/dsh@&lt;bundled&gt;</code>；版本核对 <code>--version</code> 必须相等；装完幂等 <code>prune</code>（裁掉 LibreOffice 内核 ~182MB，<b>不裁</b> sherpa 语音）。</span></li>
-	<li><b>确保 pnpm</b><span class="d">三级兜底：PATH → <code>corepack enable pnpm</code> → <code>npm i -g pnpm</code>。因为 <code>dsh plugin add</code> 直接 spawn pnpm。</span></li>
+	<li><b>装运行时</b><span class="d"><code>npm install --prefix dsh-runtime/&lt;bundled&gt; @deepseek-ai/dsh@&lt;bundled&gt;</code>；版本核对 <code>--version</code> 必须相等；装完幂等 <code>prune</code>。⚠ 2026-11-02 Office 全量路线上线后 <code>PRUNE_LIST</code> 已置空（LibreOffice 内核 182MB 是 <code>office-render/export-pdf/recalculate</code> 的执行引擎，<b>有意保留</b>），sherpa 语音同样不裁。</span></li>
+	<li><b>确保 pnpm</b><span class="d">★ 2026-11-07：<b>不再三级兜底</b>（PATH → corepack → <code>npm i -g pnpm@latest</code>）。单一真源 = 根 <code>package.json</code> 的 <code>devDependencies.pnpm</code> + <code>packageManager</code>，精确 pin <b>pnpm@11.28.5</b>（跟随上游 dsh）。<code>prepack</code> 用 <code>node_modules/pnpm/bin/pnpm.mjs</code> 造临时 shim 前置到 dsh 子进程 PATH；<code>ensure-pnpm-tool.mjs</code> 用同一份整包拷进产物 <code>tools/pnpm/</code>；<code>install-deps.ps1</code> 与 <code>check-dsh-release.mjs</code> 四处交叉校验版本。理由：CI 全局 pnpm 从 10.18.0 漂到 12.18.0 后连炸两次（<code>ERR_PNPM_IGNORED_BUILDS</code> 让种子建不出来；<code>.pnpm</code> 虚拟店让种子 234MB→573MB）。</span></li>
 	<li><b>建种子</b><span class="d"><code>DSH_HOME=&lt;seed&gt; npm_config_package_import_method=copy</code> ⇒ profile 用 web 模板初始化 ⇒ 逐个 <code>dsh plugin add file:&lt;staged&gt;</code>（repo 全部 <code>@vssaros/*</code> + 官方 web-app / voice / schedule bundle）⇒ 起一次 Host 让 web 模板依赖落盘。</span></li>
 	<li><b>去绝对路径</b><span class="d">把 profile 的 <code>package.json</code> / <code>pnpm-lock.yaml</code> 里 <code>file:&lt;构建机绝对路径&gt;</code> 改写成 <code>file:.vssaros/plugins/…</code>（相对 profile，可搬运）。</span></li>
 	<li><b>清凭证</b><span class="d">删掉试启动生成的 <code>.credentials.yaml</code>（否则全体用户共用构建机 grant）。</span></li>
@@ -484,7 +484,7 @@
 		<tr>
 			<td><b>种子把 182MB 装回来</b><br><span class="tag fix">已修</span></td>
 			<td><code>PRUNE_LIST</code> 只裁<b>运行时目录</b>；而种子的 node_modules 是 pnpm <b>平铺</b>出来的依赖闭包 ⇒ 官方包的 optionalDependencies（libreoffice 内核 ≈182MB）被装进种子 ⇒ 运行时 522MB + 种子 417MB ≈ 翻倍。</td>
-			<td>种子建完对 <code>profile/node_modules</code> 跑<b>同一份</b> PRUNE_LIST（口径一致：wrapper 留着、只删平台内核）。实测：种子 <b>417MB → 235MB</b>；发布守卫（<code>check-dsh-release.mjs</code>）在<b>产物层面</b>复查运行时 + 每个 profile 种子 + <code>--dist</code>。</td>
+			<td>种子建完对 <code>profile/node_modules</code> 跑<b>同一份</b> PRUNE_LIST（当时实测种子 <b>417MB → 235MB</b>），发布守卫在<b>产物层面</b>复查运行时 + 每个 profile 种子 + <code>--dist</code>。<br>★ <b>2026-11-02 / 11-07 现状</b>：Office 全量路线上线后 <code>PRUNE_LIST</code> 已置空（LibreOffice 内核随 <b>dsh-runtime 本体</b>分发，是 <code>office-render / export-pdf / recalculate</code> 的执行引擎，<code>prepare-office-runtime.mjs:276</code> 有说明）；<b>种子里那份是 pnpm 平铺的依赖副本</b>，引擎不指向它 ⇒ 改由 <code>VIRTUAL_STORE_HEAVY_RE</code> 只裁 <code>node_modules/.pnpm/</code> 里的副本。清单抽成纯数据模块 <code>build/saros/prune-list.mjs</code>，prepack 与发布守卫共用（守卫按清单派生检查项，避免 Office 路线置空后<b>误报拦出包</b>）。</td>
 		</tr>
 		<tr>
 			<td><b>名不副实的运行时</b><br><span class="tag fix">已修</span></td>
@@ -513,8 +513,9 @@
 		</table>
 
 		<div class="callout">
-		<strong>结论：</strong>统一 profile 原本会把运行时「近乎翻倍」（522MB → 939MB）。两条修法落地后回到 <b>757.7MB</b>：① 种子也裁 libreoffice 内核（−182MB）；② 打包只带 compat pin 的那一个运行时版本（历史上残留的旧版本每个 ≈1GB）。
+		<strong>结论（2026-10-28 快照）：</strong>统一 profile 原本会把运行时「近乎翻倍」（522MB → 939MB）。两条修法落地后回到 <b>757.7MB</b>：① 种子也裁 libreoffice 内核（−182MB）；② 打包只带 compat pin 的那一个运行时版本（历史上残留的旧版本每个 ≈1GB）。
 		<p>剩余可压：官方包与第三方依赖在 profile 里与运行时<b>同名重复 133MB / 260 包</b>（改成首启 junction 可消除），暂存副本 51MB（去重可消除）。</p>
+		<p><b>⚠ 上表是 10-28 的实测快照，别拿它当当前值。</b>2026-11-02 Office 全量路线后运行时本体保留 182MB 内核、11-07 随包插件增至 37 个且 pnpm 11 改用虚拟店布局 ⇒ 本机 <code>dsh-runtime/&lt;bundled&gt;</code>（运行时 + 种子）实测 <b>1170 MB</b>，其中种子 <b>648 MB</b>（已裁掉 <code>.pnpm</code> 里的 182MB 副本）。体积优化（O2 junction / O3 暂存副本去重）尚未做。</p>
 		</div>
 
 <h2 id="upgrade">4. 升级流程</h2>
@@ -590,6 +591,8 @@
 		<tr><td>2026-10-28</td><td>种子建不出来（CI 那次失败的真正原因）</td><td>工作区残留一份<b>引擎自报 alpha.3</b> 的坏安装 ⇒ 官方插件声明 rc.2、引擎是 alpha.3 ⇒ 每次装插件都被版本闸门拦。prepack 现在核对自报版本并重装；失败会打印 stderr 尾巴 + 保留 dsh 启动诊断</td></tr>
 		<tr><td>2026-10-28</td><td>种子把 182MB libreoffice 内核装回来 ⇒ 体积翻倍</td><td>PRUNE_LIST 只裁运行时；种子（pnpm 平铺的依赖闭包）没裁 ⇒ 种子也裁同一份清单，发布守卫复查产物</td></tr>
 		<tr><td>2026-10-28</td><td>试切 rc.4 ⇒ host 组三条探针启动即崩</td><td>rc.2 基线同组全绿 ⇒ rc.4 是回归 ⇒ <b>不切</b>；升级 bundled 必须做基线对照，不能只看版本自洽</td></tr>
+		<tr><td>2026-11-07</td><td>pnpm 10→12 版本漂移 ⇒ 种子建不出来 / 种子 234MB→573MB</td><td>构建期曾"PATH 上有就用 / 没有装 latest"，CI 全局 pnpm 12 忽略 <code>pnpm.onlyBuiltDependencies</code> 并改用 <code>.pnpm</code> 虚拟店 ⇒ 单一真源 <b>pnpm@11.28.5</b>（跟随上游 dsh）：根 <code>package.json</code> pin + prepack 造 shim + 产物整包内置 + 发布守卫/CI 四处交叉校验</td></tr>
+		<tr><td>2026-11-07</td><td>裁剪守卫与 Office 路线打架（CI 全新构建会误报拦出包）</td><td>10-28 把"不许有 libreoffice 内核"硬编码在发布守卫里；11-02 Office 路线把 <code>PRUNE_LIST</code> 置空（内核随 dsh-runtime 分发）⇒ 守卫没跟上。修法：抽 <code>build/saros/prune-list.mjs</code> 纯数据模块，prepack 与守卫共用；守卫按清单派生检查项，种子 <code>.pnpm</code> 副本另按共享正则裁</td></tr>
 	</tbody>
 </table>
 

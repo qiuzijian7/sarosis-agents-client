@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- viewport-fit=cover 才生效安全区；不写 user-scalable=no（保无障碍），缩放延迟靠 CSS touch-action 去除 -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#14182b" />
+    <title>像素番茄钟</title>
+    <link rel="stylesheet" href="/pixel.css" />
+  </head>
+  <body>
+    <main class="px-app" id="app" aria-label="像素番茄钟">
+      <header class="px-top">
+        <h1 class="px-title">Pixel 番茄</h1>
+        <span class="px-phase" id="phaseLabel">专注模式</span>
+      </header>
+
+      <section class="px-stage" id="stage">
+        <div class="px-clock" id="clock" role="timer" aria-label="剩余 25 分 0 秒">
+          <span class="px-cell" data-d="2"></span>
+          <span class="px-cell" data-d="5"></span>
+          <span class="px-cell" data-d=":"></span>
+          <span class="px-cell" data-d="0"></span>
+          <span class="px-cell" data-d="0"></span>
+        </div>
+        <p class="px-state" id="stateLabel">准备开始</p>
+      </section>
+
+      <!-- 错误态横幅：localStorage 写入失败时显示（与首页同源口径） -->
+      <div class="px-error" id="errorBanner" role="alert" hidden>
+        <div>
+          本地保存失败（localStorage 不可用或已满），已完成的番茄数可能无法保留。<br />
+          原因：浏览器隐私模式 / 存储配额超限 / 被禁用。
+        </div>
+        <button class="px-btn px-btn--ghost" id="retryBtn" type="button">重试保存</button>
+      </div>
+
+      <nav class="px-controls" aria-label="计时控制">
+        <button class="px-btn px-btn--primary" id="startBtn" type="button">开始</button>
+        <button class="px-btn px-btn--ghost" id="pauseBtn" type="button" disabled>暂停</button>
+        <button class="px-btn px-btn--ghost" id="resetBtn" type="button">重置</button>
+      </nav>
+
+      <div class="px-today">
+        今日 <b id="todayCount">0</b> 个番茄
+      </div>
+
+      <nav class="tabbar" aria-label="主导航">
+        <a href="/index.html" id="navFlat">标准版</a>
+        <a href="/pixel.html" class="active" id="navPixel" aria-current="page">像素版</a>
+      </nav>
+    </main>
+
+    <script type="module" src="/src/pixel/pixel.js"></script>
+  </body>
+</html>

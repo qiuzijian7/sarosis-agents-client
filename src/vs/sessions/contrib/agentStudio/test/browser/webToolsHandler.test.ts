@@ -20,7 +20,7 @@ import type { WebToolContext, IWebPageCacheLike } from '../../browser/providers/
 import type { ICachedPage } from '../../browser/providers/tool/webPageCache.js';
 import { WebSearchMemo } from '../../browser/providers/tool/webSearchMemo.js';
 import { WEB_EXTRACT_CHAR_LIMIT } from '../../browser/providers/tool/webSearchParse.js';
-import type { IBuiltinToolRegistration } from '../../browser/providers/tool/builtinToolProvider.js';
+import type { IBuiltinToolRegistration } from '../../browser/providers/tool/toolRegistry.js';
 import type {
 	IWebContentExtractorService,
 	WebContentExtractResult,

@@ -499,7 +499,7 @@
   function voiceUnavailableReason() {
     var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) return '这个浏览器不支持语音识别（iOS Safari / 部分国产内核不支持）';
-    if (!window.isSecureContext) return '语音需要 https：局域网 http 下浏览器不给麦克风。改用公网隧道地址，或用手机输入法自带的麦克风';
+    if (!window.isSecureContext) return '语音需要 https：局域网 http 下浏览器不给麦克风，请用手机输入法自带的麦克风';
     return '';
   }
 
@@ -992,7 +992,8 @@
         card('上游端口', p.upstreamPort == null ? '?' : String(p.upstreamPort)),
         card('代理端口', p.proxyPort == null ? '未启动' : String(p.proxyPort), p.proxyRunning ? 'on' : 'off'),
         card('局域网', p.lanUrl || '未检测到', p.lanUrl ? 'on' : 'off'),
-        card('公网隧道', tunnelCardValue(p), p.tunnelUrl ? 'on' : 'off'),
+        // cloudflared 已下线：主机明确标记关闭时不渲染公网状态卡（旧主机无该字段则保持原样）
+        p.cloudflaredEnabled === false ? '' : card('公网隧道', tunnelCardValue(p), p.tunnelUrl ? 'on' : 'off'),
         card('模型可用', f.chat ? (f.chatModels + ' 个') : '无', f.chat ? 'on' : 'off'),
         card('当前编辑器', v.activeEditor || '（无）'),
         card('文件写入', f.fileWrite ? '已开启' : '已关闭', f.fileWrite ? 'on' : 'off'),

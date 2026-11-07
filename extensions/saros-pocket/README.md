@@ -1,8 +1,11 @@
 # Saros Agents Pocket
 
-把 **VsSaros** 装进你的口袋：VsSaros 原生扩展，手机扫码即远程同步访问电脑上的 VsSaros（局域网 + 公网，实时同屏）。
+把 **VsSaros** 装进你的口袋：VsSaros 原生扩展，手机在同一 WiFi 扫码即远程同步访问电脑上的 VsSaros（局域网，实时同屏）。
 
-本项目基于 [dsh-pocket](https://github.com/shaobeichen/dsh-pocket)（GPL-2.0）二次开发，将「改头反向代理 + 访问密码 + cloudflared 隧道 + 移动端适配」这套机制从 DSH 移植到 VsSaros，并把 cordis 插件入口换成 VsSaros 扩展的 `activate()`。
+> **2026-11-07：cloudflared 公网隧道功能已整体关闭。** 目前只提供局域网入口；面板 / App / 命令面板 / 插件设置页里的公网入口已收起，扩展不会再下载或启动 `cloudflared`，也不会自动恢复历史隧道。下面文中保留的「公网」段落是历史设计说明，**当前不可用**。
+> 恢复方式：把 `lib/service.mjs` 里的 `CLOUDFLARED_ENABLED` 置回 `true`（唯一真源），并把本文提到的清单项 / 面板开关按需要补回。
+
+本项目基于 [dsh-pocket](https://github.com/shaobeichen/dsh-pocket)（GPL-2.0）二次开发，将「改头反向代理 + 访问密码 + 移动端适配」这套机制从 DSH 移植到 VsSaros，并把 cordis 插件入口换成 VsSaros 扩展的 `activate()`；移植过来的 cloudflared 隧道代码（`lib/tunnel.mjs`）保留但已停用。
 
 ---
 
@@ -19,10 +22,10 @@ Saros Pocket 扩展在激活时启动一个反向代理，监听 **`0.0.0.0:3081
 
 于是：
 
-- **局域网**：手机连同一 WiFi，扫面板里的二维码（或访问 `http://<电脑IP>:3081`）即可；
-- **公网**：开启 cloudflared 隧道，得到 `https://….trycloudflare.com`（或你自己的固定域名），任意网络可进。
+- **局域网（当前唯一入口）**：手机连同一 WiFi，扫面板里的二维码（或访问 `http://<电脑IP>:3081`）即可；
+- ~~**公网**：cloudflared 隧道~~ —— 已下线，不会再启动。
 
-两种方式都默认要求 **8 位访问密码**（公网强制、局域网可按开关关闭）。
+局域网默认要求 **8 位访问密码**（可在开关里关闭）。
 
 ---
 
@@ -32,7 +35,6 @@ Saros Pocket 扩展在激活时启动一个反向代理，监听 **`0.0.0.0:3081
 
 ```
 http://<电脑IP>:<代理端口>/pocket/      # 局域网
-https://<隧道域名>/pocket/              # 公网
 ```
 
 （电脑上直接访问 `http://127.0.0.1:3081/pocket/`，或命令面板执行 **`Saros Pocket: 打开随身 App`**；
@@ -53,7 +55,7 @@ App 不加载整个工作台，只通过两条通道与 VsSaros 通信：
 1. **电脑**：确认 VsSaros 以 server/web 模式在跑（默认 `:8000`，被占用时扩展会自动探测），
    然后 `Ctrl/Cmd+Shift+P` → **`Saros Pocket: 打开访问面板`**。
 2. **面板**：确认「局域网访问」开关已开（**默认开**）；面板顶部第一张卡片就是
-   **「Pocket App · 手机连接」**，直接给出 **局域网 / 公网两个二维码**，
+   **「Pocket App · 手机连接」**，给出 **局域网二维码**（公网二维码已随 cloudflared 下线收起），
    扫码即进 App（不用手动改地址；`127.0.0.1` 只在本机有效）。
    首次打开会要求输入 **8 位访问密码** —— 局域网密码就在下方「局域网访问」卡片里
    （默认自动生成；也可设成自己的 8 位字母数字）。
@@ -75,14 +77,14 @@ App 不加载整个工作台，只通过两条通道与 VsSaros 通信：
    所选**模式**随每条消息下发（`sessions.send` 的 `chatMode`）：在「会话列表」点进某个会话后，
    消息会**直接写进那个 Agent 会话** ⇒ 桌面端聊天框与 sideview 实时同步，回复也实时流回手机。
 
-外出（不在同一 WiFi）时：面板 → 「公网访问」→ **开启公网** → 用 **App 的公网二维码**。
-公网入口**强制**密码，且 `https` 域名对 iOS Safari 更友好（纯 `http://IP` 的局域网入口 Safari 不存 cookie，会卡在登录握手——面板会给出明确提示与重试链接）。
+外出（不在同一 WiFi）时：**当前无法连接** —— cloudflared 公网隧道已整体下线，请把手机与电脑连到同一 WiFi。
+（历史行为：面板 →「公网访问」→ 开启公网 → App 公网二维码；现已不可用。）
 
 | 想改的东西 | 在哪改 |
 | --- | --- |
 | VsSaros 端口 / 连接令牌 / 代理端口 | 插件页 `Configuration`（或设置里搜 `sarosPocket`） |
 | 局域网开关、局域网密码 | 面板「局域网访问」卡片 |
-| 公网开关、隧道模式（快速/命名）、公网密码 | 面板「公网访问」卡片 |
+| 公网开关、隧道模式、公网密码 | 已下线，入口已收起 |
 | 多网卡时局域网地址不对 | 面板「设置」→ 局域网地址覆盖（填正确 IPv4） |
 | App 里能不能写文件 / 发终端 / 远程键鼠 | 插件页 `Configuration`（`allowFileWrite` / `allowTerminal` **默认关**；`allowDesktopInput` **默认开**） |
 
@@ -219,8 +221,8 @@ vssaros --server --port 8000 --without-connection-token
    扩展激活时右下角会弹一条提示（不是状态栏常驻入口），点它不会打开面板，仍走命令面板。
 4. 面板里：
    - 局域网：开关 + 二维码 + 密码；
-   - 公网：点「开启公网」→ 等待隧道就绪 → 扫码/分享链接；
-   - 设置：自定义密码、固定局域网地址、命名隧道（Tunnel Token + 固定域名）、恢复出厂。
+   - 公网：已下线，面板里不再有「公网访问」卡片；
+   - 设置：自定义密码、固定局域网地址、恢复出厂。
 
 ---
 
@@ -232,7 +234,7 @@ vssaros --server --port 8000 --without-connection-token
 | `sarosPocket.connectionToken` | `""` | 连接令牌；留空则自动读 `<userDataDir>/token` |
 | `sarosPocket.userDataDir` | `""` | VsSaros 用户数据目录（用于自动读令牌），留空自动探测 |
 | `sarosPocket.proxyPort` | `3081` | Pocket 代理监听端口 |
-| `sarosPocket.launchPublicOnStart` | `false` | 激活时是否自动开公网隧道 |
+| `sarosPocket.launchPublicOnStart` | `false` | **【已停用】** 激活时自动开公网隧道（cloudflared 已下线，不再生效） |
 | `sarosPocket.chatModel` | `""` | App 默认模型 ID（留空 = 第一个可用模型） |
 | `sarosPocket.chatSystemPrompt` | 见设置页 | App 对话的系统提示词（只影响 App 内模型直连） |
 
@@ -250,18 +252,18 @@ vssaros --server --port 8000 --without-connection-token
 | `sarosPocket.desktopMonitor` | `-1` | `screen` 模式采集第几块屏（-1 = 主屏） |
 | `sarosPocket.allowDesktopInput` | `true`（默认开） | 允许手机远程操作鼠标/键盘（仅 Windows）。关掉后手机上的开关也会变灰 |
 | `sarosPocket.lanEnabled` | `true` | **局域网访问总开关**（= 面板里那个开关，同一份值） |
-| `sarosPocket.lanAuthEnabled` | `true` | **局域网访问是否需要密码**（公网入口始终强制密码） |
+| `sarosPocket.lanAuthEnabled` | `true` | **局域网访问是否需要密码** |
 | `sarosPocket.lanIpOverride` | `""` | **局域网地址覆盖**（IPv4；多网卡/VPN 探测不准时填） |
-| `sarosPocket.tunnelMode` | `quick` | **公网隧道模式**：`quick` 随机域名 / `named` 固定域名 |
-| `sarosPocket.tunnelHostname` | `""` | **命名隧道的固定域名**（如 `pocket.example.com`） |
+| `sarosPocket.tunnelMode` | `quick` | **【已停用】** 公网隧道模式（仅为兼容旧配置保留） |
+| `sarosPocket.tunnelHostname` | `""` | **【已停用】** 命名隧道固定域名（仅为兼容旧配置保留） |
 
 ### 插件设置页怎么组织（2026-09-21 方案 A）
 
 配置区是**左栏分组导航 + 右栏卡片**：左栏列分组（项数 + 「● 已修改」），点一下右侧即切换，不必滚动查找；
-第一个页签是 **「快速访问」**：12 个动作按钮按用途分行（连接 / 公网隧道 / 密码 / 维护），
+第一个页签是 **「快速访问」**：6 个动作按钮按用途分行（连接 / 密码 / 维护；公网隧道行的按钮已下线移除），
 **访问面板直接内嵌在这个页签里**（webview 元素，不跳独立标签页；右上角留「在新标签打开 / 刷新」备用）；
-顶部**状态条**给「局域网 / 公网 / 远程键鼠 / 上游」四个状态（数据来自扩展的 `sarosPocket.status` 命令，只回状态、不回密码）；
-12 个动作按钮收进**快捷操作卡**并按用途分行（连接 / 公网隧道 / 密码 / 维护，主操作主色、危险操作红色）；
+顶部**状态条**给「局域网 / 远程键鼠 / 上游」等状态（数据来自扩展的 `sarosPocket.status` 命令，只回状态、不回密码；公网状态恒为关闭）；
+6 个动作按钮收进**快捷操作卡**并按用途分行（连接 / 密码 / 维护，主操作主色、危险操作红色）；
 `x-advanced` 标注的 8 个低频项（上游端口 / 连接令牌 / 数据目录 / 代理端口 / 公网自启 / 进程名 / 显示器 / 单次读文件上限）
 进左栏底部「高级」默认收起；底部 sticky 保存条带「N 项已修改 / 撤销更改 / 保存设置」，左栏底部是「全部重置为默认」。
 窄屏（编辑器面板 < 760px）左栏变顶部 chips、网格降为单列。设计稿 + 实施记录：`docs/settings-mockup.html`。
@@ -271,9 +273,10 @@ vssaros --server --port 8000 --without-connection-token
 插件详情页（Plugins → Installed → `saros-pocket` → Configuration）除了上面的设置项，
 还给了一排**动作按钮**（走 VsSaros 的 `x-action` 约定：点击即执行命令，不写设置）：
 
-`打开访问面板` · `打开随身 App` · `复制 App 地址` · `开启公网访问` · `关闭公网访问` ·
-`用快速隧道（随机域名）` · `用命名隧道（固定域名）` · `设置隧道 Token` ·
-`设置局域网密码` · `刷新局域网密码` · `设置公网密码` · `恢复出厂设置`
+`打开访问面板` · `打开随身 App` · `复制 App 地址` ·
+`设置局域网密码` · `刷新局域网密码` · `恢复出厂设置`
+
+（原「开启/关闭公网访问 · 快速/命名隧道 · 设置隧道 Token · 设置公网密码」6 个按钮已随 cloudflared 下线移除。）
 
 > **为什么有 5 个开关变成了设置项**：它们原先只存在于扩展 globalStorage ⇒ 插件设置页看不到、
 > 也改不了（用户反馈「面板里有的选项，插件设置里没有」）。现在这 5 项以**设置为唯一真源**，
@@ -302,7 +305,7 @@ vssaros --server --port 8000 --without-connection-token
 
 ## 安全说明
 
-- 公网访问**强制** 8 位访问密码；局域网默认也要求，可关。
+- 局域网访问默认要求 **8 位访问密码**（可关）；公网入口已下线。
 - 登录失败有滑动窗口限速（单 IP 60s 内 ≥5 次锁 60s，全局 1 分钟 >50 次锁 30s），成功登录清空计数。
 - 密码 cookie 为 HttpOnly、有效期 30 天；VsSaros 重启 → 会话密钥变化 → 手机需重输。
 - **重启后旧 cookie 会被自动替换**：带着失效旧 cookie 用 `?token=<PIN>` 打开（「在浏览器打开（自动填密码）」就是这么打开的）时，
@@ -310,8 +313,8 @@ vssaros --server --port 8000 --without-connection-token
   不必手动清站点 cookie。
 - **「在浏览器打开（自动填密码）」**：只用于 `openExternal`（本机浏览器，地址固定走 `127.0.0.1`，
   密码不会经网络外传）；**「复制 App 地址」给的是干净地址，永远不带密码** —— 这条有断言守着。
-- 非安全上下文（http://IP）下 Safari 不保存 cookie，会导致握手循环——此时请用 Chrome/Edge，或改用公网 HTTPS 入口。
-- **VsSaros 能执行代码，公网二维码/链接请勿泄露。**
+- 非安全上下文（http://IP）下 Safari 不保存 cookie，会导致握手循环——此时请用 Chrome/Edge（公网 HTTPS 入口已下线）。
+- **VsSaros 能执行代码，局域网二维码/链接请勿泄露给不可信的人。**
 - Pocket App 的 RPC/SSE 与网页共用同一套 PIN 与局域网开关（代理在鉴权之后才接管这些路由），不额外开认证口子。
 - App 的**写操作默认全关**：`files.write` 需 `allowFileWrite`、`terminal.send` 需 `allowTerminal`、`commands.run` 只认白名单；文件读写一律限制在工作区根目录内（`..` 与跨盘符路径会被拒）。
 - 聊天走的是 VsSaros 已配置的模型（`vscode.lm`）；若 VsSaros 未暴露该 API，App 会自动隐藏「模型直连」，只留「会话列表 → 点进会话」那条通路（`sessions.send`，需开启 `sarosPocket.allowAgentControl`）。

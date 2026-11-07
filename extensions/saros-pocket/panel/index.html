@@ -33,16 +33,18 @@ input[type=text]{background:#11141a;border:1px solid var(--line);border-radius:8
 .badge.ok{color:var(--ok);border-color:var(--ok)}
 .badge.err{color:var(--err);border-color:var(--err)}
 .hidden{display:none}
+/* cloudflared 公网功能下线：默认收起所有公网入口；开关恢复时由 render 移除 body class */
+body.cloudflared-off #appPubWrap,body.cloudflared-off #pubCard,body.cloudflared-off #pubPinRow,body.cloudflared-off #pubScope{display:none!important}
 .muted{color:var(--mut);font-size:12px}
 hr{border:none;border-top:1px solid var(--line);margin:14px 0}
 </style>
 </head>
-<body>
+<body class="cloudflared-off">
 <div class="brand">
   <img class="logo" src="{{LOGO_URI}}" alt="VsSaros">
   <h1>Saros Pocket</h1>
 </div>
-<p class="sub">手机扫码即远程同步访问电脑上的 VsSaros（局域网 + 公网，实时同屏）。</p>
+<p class="sub">手机扫码即远程同步访问电脑上的 VsSaros（局域网<span id="pubScope"> + 公网</span>，实时同屏）。</p>
 
 <div class="card" id="appCard">
   <h2>Pocket App · 手机连接（扫码即用）</h2>
@@ -164,7 +166,7 @@ hr{border:none;border-top:1px solid var(--line);margin:14px 0}
 <div class="card">
   <h2>设置</h2>
   <div class="row" style="margin-bottom:8px"><input type="text" id="lanIpOverride" placeholder="局域网地址覆盖（可选，IPv4）"><button class="ghost" id="saveLanIp">保存</button></div>
-  <div class="row" style="margin-bottom:8px"><input type="text" id="pubCustom" placeholder="自定义公网密码（8 位）"><button class="ghost" id="savePubPin">设置公网密码</button></div>
+  <div class="row" id="pubPinRow" style="margin-bottom:8px"><input type="text" id="pubCustom" placeholder="自定义公网密码（8 位）"><button class="ghost" id="savePubPin">设置公网密码</button></div>
   <div class="row" style="margin-bottom:8px"><input type="text" id="lanCustom" placeholder="自定义局域网密码（8 位）"><button class="ghost" id="saveLanPin">设置局域网密码</button></div>
   <hr>
   <button class="danger" id="reset">恢复出厂设置</button>
@@ -210,6 +212,8 @@ document.querySelectorAll('input[name=tmode]').forEach(r=>r.onchange=()=>{
 });
 
 function render(s){
+  // cloudflared 下线：主机状态明确说关闭就整页收起公网入口；开关恢复（true）时自动还原。
+  document.body.classList.toggle('cloudflared-off', s.cloudflaredEnabled === false);
   document.getElementById('appUrl').textContent=s.appUrl||'—';
   // App 二维码：局域网 / 公网各自独立（公网未开时整块隐藏）
   const alq=document.getElementById('appLanQr');

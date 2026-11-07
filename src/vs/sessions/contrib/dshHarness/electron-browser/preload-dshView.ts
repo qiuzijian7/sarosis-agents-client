@@ -253,12 +253,10 @@
 		openAgentMarket: () => invoke({ method: 'openAgentMarket' }),
 		// 打开原生 Agent 列表（花名册的宿主等价入口）；宿主找不到该视图时会回落资源管理页。
 		openAgentRoster: () => invoke({ method: 'openAgentRoster' }),
-		// 打开**技能商城**（桥 `8 → 9`，2026-10-15；dsh 集成页 `/x/skills/` 的置顶主入口按钮）：
-		// 与 `openAgentMarket` 同源 —— 商城是 VsSaros 的编辑器页，**页面自己开不了** ⇒ 交宿主；
-		// 宿主只把它转成 `agentStudio.openSkillMarket` 命令 ✓（不在宿主里 new EditorInput ✓）。
-		openSkillMarket: () => invoke({ method: 'openSkillMarket' }),
+		// ★ P3（2026-11-07）：技能商城入口已改成 dsh 页面 `/x/marketplace/` 的普通链接，
+		//   `openSkillMarket` 桥方法与 IDE 侧技能商城编辑器页一并退役。
 		// 打开 **VsSaros 的媒体库**（桥 `14 → 15`，2026-10-19）：dsh 媒体库页 `/x/media/` 的置顶按钮。
-		// 与 `openSkillMarket` 同源 —— 媒体库是原生 `EditorPane`（`MediaGalleryEditorInput`），
+		// 媒体库是原生 `EditorPane`（`MediaGalleryEditorInput`），
 		// 页面（WebContentsView）创建不了编辑器 ⇒ 交宿主转成 `agentStudio.openMediaGallery` 命令 ✓。
 		// ⚠ 它**取代**了原先的 `openModulePage('/x/media/')`：那条开的是 dsh 自己的文本列表页（没有缩略图）。
 		openMediaGallery: () => invoke({ method: 'openMediaGallery' }),

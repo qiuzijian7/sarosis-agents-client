@@ -65,7 +65,6 @@ function createDriverStub(): AgentDriverService {
 	};
 	const stub = {
 		_agentOS: {},
-		_skillRegistry: {},
 		_logService: logService,
 		_configurationService: configurationService,
 		_agentStudioService: {},
@@ -74,9 +73,10 @@ function createDriverStub(): AgentDriverService {
 		_storageService: { get: () => undefined, store: () => { /* noop */ } },
 		_instantiationService: { invokeFunction: () => { throw new Error('not needed in this test'); } },
 	};
+	// ★ P3（2026-11-07）：`ISkillRegistry` 注入已从 AgentDriverService 构造函数移除 ⇒
+	//   这里同步少传一个位置参数（构造参数是位置绑定的，漏删会让后续 stub 全部错位 ✗）。
 	return new AgentDriverService(
 		stub._agentOS as never,
-		stub._skillRegistry as never,
 		logService as never,
 		configurationService as never,
 		stub._agentStudioService as never,

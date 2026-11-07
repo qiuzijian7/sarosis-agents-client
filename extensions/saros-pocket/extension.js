@@ -1,7 +1,9 @@
 // Saros Agents Pocket — VsSaros 原生扩展入口
 //
 // 激活时：发现 VsSaros server 端口与连接令牌 → 启动改头反向代理（0.0.0.0:3081）→
-// 按需开启公网隧道 → 提供访问面板（二维码 + 密码 + 开关）。手机扫码即远程同步访问。
+// 提供访问面板（二维码 + 密码 + 开关）。手机在同一 WiFi 扫码即远程同步访问。
+// ★ 2026-11-07：cloudflared 公网隧道功能整体关闭（见 CLOUDFLARED_ENABLED），
+//   下面所有公网入口只保留"兜底提示"，不会再启动/下载 cloudflared。
 //
 // 同时托管 Pocket App（/pocket/）：一个手机优先的轻量客户端，通过
 //   POST /saros-pocket/rpc/<endpoint>  +  GET /saros-pocket/events（SSE）
@@ -12,7 +14,7 @@ import * as vscode from 'vscode';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createStateStore } from './lib/state.mjs';
-import { createPocketService } from './lib/service.mjs';
+import { createPocketService, CLOUDFLARED_ENABLED, CLOUDFLARED_DISABLED_MESSAGE } from './lib/service.mjs';
 import { appEntryUrl, discoverUpstreamPort, discoverConnectionToken } from './lib/host.mjs';
 import { createEventBus } from './lib/events.mjs';
 import { createPocketRpc, RPC_PREFIX } from './lib/rpc.mjs';
@@ -30,6 +32,11 @@ let bridge = null;
 let screen = null;
 
 function cfg() { return vscode.workspace.getConfiguration('sarosPocket'); }
+
+/** cloudflared 下线后的统一兜底：所有公网命令只提示，不启动隧道、不改隧道配置。 */
+function tunnelDisabledNotice() {
+  vscode.window.showInformationMessage(`Saros Pocket · ${CLOUDFLARED_DISABLED_MESSAGE}`);
+}
 
 /**
  * 状态仓库的「开关类」后端：把 lanEnabled / lanAuthEnabled / lanIpOverride /
@@ -178,6 +185,7 @@ async function handlePanelCommand(msg = {}) {
       }
       case 'toggleLanAuth': { state.setLanAuthEnabled(msg.value); await refresh(); break; }
       case 'startTunnel': {
+        if (!CLOUDFLARED_ENABLED) { result.error = CLOUDFLARED_DISABLED_MESSAGE; break; }
         await service.startTunnel();
         result.info = '公网隧道已开启';
         await refresh();
@@ -186,6 +194,7 @@ async function handlePanelCommand(msg = {}) {
       case 'stopTunnel': { service.stopTunnel(); await refresh(); break; }
       case 'refreshLanToken': { state.refreshLanToken(); result.info = '局域网密码已刷新'; await refresh(); break; }
       case 'setTunnelConfig': {
+        if (!CLOUDFLARED_ENABLED) { result.error = CLOUDFLARED_DISABLED_MESSAGE; break; }
         state.setTunnelMode(msg.mode === 'named' ? 'named' : 'quick');
         if (msg.hostname) state.setTunnelHostname(msg.hostname);
         if (msg.token && msg.token !== '********') state.setTunnelToken(msg.token);
@@ -390,13 +399,14 @@ async function activate(context) {
       try { s = service ? await service.status() : null; } catch (err) { out?.appendLine(`Saros Pocket: status 探测失败：${err?.message ?? err}`); }
       const c = configSnapshot();
       return {
+        cloudflaredEnabled: CLOUDFLARED_ENABLED,
         lanEnabled: state.lanEnabled(),
         lanAuthEnabled: state.lanAuthEnabled(),
         lanUrl: s?.lanUrl ?? null,
         proxyRunning: s?.proxyRunning === true,
         proxyPort: s?.proxyPort ?? null,
-        tunnelRunning: s?.tunnelRunning === true,
-        tunnelUrl: s?.tunnelUrl ?? null,
+        tunnelRunning: CLOUDFLARED_ENABLED && s?.tunnelRunning === true,
+        tunnelUrl: CLOUDFLARED_ENABLED ? (s?.tunnelUrl ?? null) : null,
         upstreamOk: typeof s?.upstreamOk === 'boolean' ? s.upstreamOk : null,
         upstreamPort: s?.upstreamPort ?? null,
         desktopEnabled: c.desktopEnabled !== false,
@@ -411,17 +421,30 @@ async function activate(context) {
     vscode.commands.registerCommand('sarosPocket.panelHtml', () => buildPanelHtml(context)),
     vscode.commands.registerCommand('sarosPocket.panel', (msg) => handlePanelCommand(msg ?? {})),
     vscode.commands.registerCommand('sarosPocket.toggleLan', () => { const on = state.setLanEnabled(!state.lanEnabled()); vscode.window.showInformationMessage(`Saros Pocket · 局域网访问已${on ? '开启' : '关闭'}`); void buildStatusAndPost(); }),
-    vscode.commands.registerCommand('sarosPocket.startTunnel', async () => { try { await service.startTunnel(); vscode.window.showInformationMessage('Saros Pocket · 公网隧道已开启'); } catch (e) { vscode.window.showErrorMessage(`Saros Pocket · 隧道启动失败：${e?.message ?? e}`); } void buildStatusAndPost(); }),
-    vscode.commands.registerCommand('sarosPocket.stopTunnel', () => { service.stopTunnel(); vscode.window.showInformationMessage('Saros Pocket · 公网隧道已关闭'); void buildStatusAndPost(); }),
+    vscode.commands.registerCommand('sarosPocket.startTunnel', async () => {
+      if (!CLOUDFLARED_ENABLED) { tunnelDisabledNotice(); return; }
+      try { await service.startTunnel(); vscode.window.showInformationMessage('Saros Pocket · 公网隧道已开启'); }
+      catch (e) { vscode.window.showErrorMessage(`Saros Pocket · 隧道启动失败：${e?.message ?? e}`); }
+      void buildStatusAndPost();
+    }),
+    vscode.commands.registerCommand('sarosPocket.stopTunnel', () => {
+      // 关闭态也允许执行：用于停掉旧版本遗留的 cloudflared 进程（service 内部是幂等的）。
+      service.stopTunnel();
+      if (CLOUDFLARED_ENABLED) { vscode.window.showInformationMessage('Saros Pocket · 公网隧道已关闭'); }
+      else { tunnelDisabledNotice(); }
+      void buildStatusAndPost();
+    }),
     vscode.commands.registerCommand('sarosPocket.reset', async () => { const ok = await vscode.window.showWarningMessage('恢复出厂设置将清空所有开关与密码，确定？', { modal: true }, '确定'); if (ok === '确定') { state.resetPocketState(); service.stopTunnel(); vscode.window.showInformationMessage('Saros Pocket · 已恢复出厂设置'); void buildStatusAndPost(); } }),
 
     // ---------- 隧道模式 / Token：模式是设置项，Token 是凭据（只进扩展目录） ----------
     vscode.commands.registerCommand('sarosPocket.useQuickTunnel', () => {
+      if (!CLOUDFLARED_ENABLED) { tunnelDisabledNotice(); return; }
       state.setTunnelMode('quick');
       vscode.window.showInformationMessage('Saros Pocket · 隧道模式 = 快速（随机域名）');
       void buildStatusAndPost();
     }),
     vscode.commands.registerCommand('sarosPocket.useNamedTunnel', () => {
+      if (!CLOUDFLARED_ENABLED) { tunnelDisabledNotice(); return; }
       state.setTunnelMode('named');
       const host = state.tunnelHostname();
       vscode.window.showInformationMessage(host
@@ -430,6 +453,7 @@ async function activate(context) {
       void buildStatusAndPost();
     }),
     vscode.commands.registerCommand('sarosPocket.setTunnelToken', async () => {
+      if (!CLOUDFLARED_ENABLED) { tunnelDisabledNotice(); return; }
       const v = await vscode.window.showInputBox({
         title: 'Saros Pocket · 设置隧道 Token',
         prompt: 'Cloudflare Tunnel Token（只存扩展目录，不写进设置文件）',
@@ -469,6 +493,7 @@ async function activate(context) {
       }
     }),
     vscode.commands.registerCommand('sarosPocket.setPublicPin', async () => {
+      if (!CLOUDFLARED_ENABLED) { tunnelDisabledNotice(); return; }
       const v = await vscode.window.showInputBox({
         title: 'Saros Pocket · 设置公网密码',
         prompt: '8 位英文字母或数字（公网入口强制校验）',
@@ -499,6 +524,8 @@ async function activate(context) {
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
     if (!e.affectsConfiguration('sarosPocket')) return;
     void buildStatusAndPost();
+    // 功能关闭时改遗留的隧道设置项不允许触发「重建隧道」。
+    if (!CLOUDFLARED_ENABLED) return;
     if (e.affectsConfiguration('sarosPocket.tunnelMode') || e.affectsConfiguration('sarosPocket.tunnelHostname')) {
       Promise.resolve(service.status()).then((s) => {
         if (!s.tunnelRunning) return;
@@ -509,7 +536,12 @@ async function activate(context) {
     }
   }));
 
-  if (config.launchPublicOnStart) {
+  if (!CLOUDFLARED_ENABLED) {
+    // ★ 下线收口：停掉旧版本遗留的 cloudflared 进程、清掉自动恢复标记；
+    //   绝不走 launchPublicOnStart / restoreTunnelIfNeeded（否则会下载二进制并起进程）。
+    service.stopTunnel();
+    out.appendLine('Saros Pocket: cloudflared 公网隧道已关闭（仅提供局域网入口）');
+  } else if (config.launchPublicOnStart) {
     service.startTunnel().then(() => vscode.window.showInformationMessage('Saros Pocket · 公网隧道已自动开启')).catch((e) => vscode.window.showErrorMessage(`Saros Pocket · 自动隧道失败：${e?.message ?? e}`));
   } else {
     // ★ 必须挂 catch：之前这里裸调用，restoreTunnelIfNeeded 一抛就变成

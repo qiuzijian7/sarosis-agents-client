@@ -1247,7 +1247,9 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 
 /**
  * 启动早期（BlockRestore）注册宿主工厂：必须在恢复的聊天标签创建 pane 之前完成。
- * engine=dsh 且总开关打开时接管聊天框内容区；否则返回 undefined，pane 保持 legacy DOM 面板。
+ * ★ 2026-11-07（IDE agent loop 下线 · Step 0）：`chatEngine` 只可能是 dsh。
+ * 这里的 `engine !== 'dsh'` 判断**保留**作为 fail-closed 兜底（防止 settings.json 被手工写坏时
+ * 把 dsh 宿主挂到非 dsh 配置上），不是 legacy 回退入口；总开关关闭时不接管。
  */
 export class DshChatHostContribution extends Disposable {
 	static readonly ID = 'sessions.dshHarness.chatHost';

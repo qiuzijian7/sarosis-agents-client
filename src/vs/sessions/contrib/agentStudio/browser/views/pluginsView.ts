@@ -37,7 +37,6 @@ import { EditorInput } from '../../../../../workbench/common/editor/editorInput.
 import { IMarketplaceService, IMarketplacePackage, PackageKind } from '../../common/marketplace.js';
 import { dshPluginRecommendations } from '../../common/dshPluginRecommendations.js';
 // 插件自带技能（`<插件包>/skills`）：装完要刷技能库才看得见（见 `_dshInstallPlugin` ✓）
-import { ISkillRegistry } from '../../common/skills.js';
 // 安装通道选择（本地 / 主进程 spec / 商城那条）：真安装与"取消"按钮共用同一判据 ✓
 import { dshInstallTransport } from '../../common/dshPluginTransport.js';
 import { IDshMarketEntry, dshMarketInstallSpec, fetchDshMarketCatalog } from '../dshMarketCatalog.js';
@@ -392,7 +391,6 @@ export class PluginsViewPane extends ViewPane {
 		@IFileService private readonly fileService: IFileService,
 		@IExtensionGalleryManifestService private readonly extensionGalleryManifestService: IExtensionGalleryManifestService,
 		// 插件可能自带技能（`<插件包>/skills`）⇒ 装完要刷技能库（见 `_dshInstallPlugin` 的 finally ✓）
-		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
@@ -2329,12 +2327,9 @@ export class PluginsViewPane extends ViewPane {
 			this._dshInspect = undefined;
 			// 清单变了（装上了 / 改了组合）要重取，否则"已安装"段看不到新包。
 			await this._renderDshTab();
-			// ★ 技能库跟着刷一次（2026-10-13）：插件可能**自带技能**（`<插件包>/skills`，如
-			// `@tt-a1i/archify-dsh` 带的 archify）—— 它是否出现在 IDE 技能库里，取决于 profile 的
-			// `dsh.profile.bundles`（见 `common/dshPluginSkillRoots.ts`），而那份文件刚被这次安装改写。
-			// 不刷的话，用户装完插件去技能库看是**空的**，只能重启窗口才出现（"装了个寂寞" ✗）。
-			// 失败也刷：代价只是一次目录扫描，而漏刷的代价是"技能看不见"这种最难查的错觉 ✗。
-			void this.skillRegistry.reload().catch(err => this.logService.warn(`[PluginsView] 插件安装后刷新技能库失败：${err instanceof Error ? err.message : String(err)}`));
+			// ★ P3（2026-11-07）：不再刷新 IDE 侧技能库 —— 技能真源已迁到 dsh 侧
+			//   `@vssaros/dsh-skill-bundle` / `<数据根>/skills`，由 skills provider 自己
+			//   重扫指纹并 invalidate；IDE 侧这边的列表即将随技能库一起下线。
 		}
 	}
 

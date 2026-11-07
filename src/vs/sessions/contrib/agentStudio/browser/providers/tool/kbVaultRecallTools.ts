@@ -22,7 +22,7 @@ import type { IDisposable } from '../../../../../../base/common/lifecycle.js';
 import { NO_PARAMS_SCHEMA, type IToolResultContent } from '../../../common/providers.js';
 import type { IKbNativeKernelService, IKbFulltextHit } from '../../kbNativeKernelService.js';
 import type { IKbVectorSearchHit } from '../../views/knowledgeBase/kbVectorIndex.js';
-import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
+import type { IBuiltinToolRegistration } from './toolRegistry.js';
 
 /** 单条归一化后的检索命中。 */
 interface IRecallHit {

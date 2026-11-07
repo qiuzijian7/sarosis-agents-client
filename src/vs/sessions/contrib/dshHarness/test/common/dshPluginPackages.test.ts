@@ -2130,19 +2130,26 @@ suite('dshHarness / 打包链：内置 dsh 运行时（缺它 = 首启要用户�
 		}
 	});
 
-	test('★★ 种子也必须裁掉重型可选项（libreoffice 内核 182MB 别被装回种子）', () => {
+	test('★★ 裁剪清单单一真源：prepack 与发布守卫共用 prune-list.mjs（Office 路线置空不许误报）', () => {
 		const prepack = read(REL_PREPACK)!;
-		// 2026-10-28 实测：prepack 只裁运行时目录，而 profile 种子的 node_modules 是 pnpm
-		// **平铺**出来的依赖闭包 ⇒ 官方包的 optionalDependencies（libreoffice 内核 ≈182MB）
-		// 被装进种子 ⇒ 种子 417MB ≈ 运行时 522MB ⇒ 体积翻倍。
-		assert.match(prepack, /libreoffice-kit-win32-x64/, 'PRUNE_LIST 必须含 win32 的 libreoffice 内核');
+		const list = read('build/saros/prune-list.mjs')!;
+		// ★ 2026-11-07：10-28 的守卫把「运行时与种子都不该有 libreoffice 内核」**硬编码**在
+		//   check-dsh-release.mjs 里；11-02 Office 全量路线把 prepack 的 PRUNE_LIST 置空
+		//   （内核随 dsh-runtime 分发，是三个 Office 技能的执行引擎）后守卫没跟上
+		//   ⇒ CI 全新构建装出 182MB 时会误报并拦出包 ✗⇒ 两边必须读同一个纯数据模块。
+		assert.match(prepack, /from '\.\/saros\/prune-list\.mjs'/, 'prepack 必须从共享模块读裁剪清单');
+		assert.match(list, /export const PRUNE_LIST/, '共享模块要导出 PRUNE_LIST（可为空：Office 路线有意保留）');
+		assert.match(list, /export const VIRTUAL_STORE_HEAVY_RE/, '共享模块要导出虚拟店内核正则');
+		assert.match(list, /libreoffice-kit-/, '虚拟店正则要覆盖 libreoffice 平台内核');
+		assert.match(prepack, /VIRTUAL_STORE_HEAVY_RE\.test\(entry\)/, 'prepack 的虚拟店裁剪要用共享正则（不许另抄一份）');
 		assert.match(prepack, /prune\(profileDir/, '种子建完必须对 profile 的 node_modules 跑同一份 prune');
-		assert.match(prepack, /prune\(target\)/, '运行时也要照常裁（两条路径共用同一份 PRUNE_LIST）');
-		// 同一个 PRUNE_LIST（不是另抄一份）—— 运行时与种子的裁剪口径必须一致
+		assert.match(prepack, /prune\(target\)/, '运行时也要跑同一份 prune');
 		assert.match(prepack, /function prune\(targetDir, label = 'runtime'\)/, 'prune 要能标出裁的是哪一份（运行时 / 种子）');
 		// 发布守卫要在**产物层面**再确认一次（只看源码不够：裁剪可能失败）
 		const release = read('build/saros/check-dsh-release.mjs')!;
-		assert.match(release, /libreoffice-kit-win32-x64/, '发布守卫必须扫 libreoffice 内核');
+		assert.match(release, /from '\.\/prune-list\.mjs'/, '发布守卫必须 import 同一个共享模块');
+		assert.match(release, /PRUNE_LIST\.map/, '守卫的检查对象必须由 PRUNE_LIST 派生（不许硬编码包名）');
+		assert.match(release, /VIRTUAL_STORE_HEAVY_RE\.test\(entry\)/, '守卫扫虚拟店也用共享正则');
 		assert.match(release, /profile-seed[\s\S]{0,400}?profiles/, '发布守卫必须连**种子**一起扫（翻倍就出在这里）');
 	});
 
@@ -2154,17 +2161,25 @@ suite('dshHarness / 打包链：内置 dsh 运行时（缺它 = 首启要用户�
 		assert.strictEqual(calls.length, 1, `裸 buildProfileSeed 只应出现在 safeBuildProfileSeed 内部（实际 ${calls.length} 处）`);
 		const safeCalls = prepack.match(/await safeBuildProfileSeed\(/g) ?? [];
 		assert.ok(safeCalls.length >= 2, '两条路径（跳过安装 / 刚装完）都要走 safeBuildProfileSeed');
-		// ② pnpm 三级兜底：PATH → corepack → npm -g（dsh plugin add 直接 spawn pnpm，运行时不带它）
+		// ② ★ 2026-11-07：构建期不再"PATH → corepack → npm -g"三级兜底。
+		//   CI 全局 pnpm 从 10.18.0 漂到 12.18.0 ⇒ 连炸两次（种子建不出来 / 体积翻倍）。
+		//   ⇒ 只读仓库 pin 的那份（`node_modules/pnpm`），造 shim 前置到 dsh 子进程 PATH。
 		assert.match(prepack, /function ensurePnpm\(/, '要有 ensurePnpm');
-		assert.match(prepack, /'corepack', \['enable', 'pnpm'\]/, 'corepack 是第二级兜底（Node ≥16 自带）');
-		assert.match(prepack, /\['install', '-g', 'pnpm'/, 'npm -g 是第三级兜底（CI 的 npm 已指内网镜像）');
+		assert.match(prepack, /devDependencies\.pnpm/, '版本必须来自根 package.json 的单一真源');
+		assert.match(prepack, /bin', 'pnpm\.mjs'/, '要用仓库自带 pnpm 的入口造 shim');
+		assert.match(prepack, /env\[pathKey\] = buildPnpmShimDir/, '必须把 shim 前置到 dsh 子进程 PATH');
+		assert.ok(!/execFileSync\('corepack'|\['install', '-g', 'pnpm'\]/.test(prepack),
+			'不许再 corepack / npm -g 装任意版本（那正是漂移进来的路径）');
 		// ③ 失败要清掉半成品种子：宿主判"种子可用"只看 profiles/<p>/package.json 在不在
 		//    （`_profileSeedDir`）⇒ 半成品会被当好的整目录拷进 DSH_HOME ✗✗
 		assert.match(prepack, /removeTree\(join\(runtimeDir, 'profile-seed'\)\)/, '失败必须清掉半成品种子');
 		assert.match(prepack, /宁可没有，也不给一个装不起来的 profile/, '清理要留一行可读的说明');
 		// ④ ★ 2026-10-28：种子升为出包硬门 ⇒ 失败必须**可诊断**。原写法只打 `e.message` 第一行，
 		//    而 execFileSync 的第一行是命令行、真正原因在 stderr（CI 现场只剩 `Command failed: …` ✗）。
-		assert.match(prepack, /失败输出（末尾 2000 字符）/, '失败要打 stderr 尾巴（否则 CI 上没法定位）');
+		// stderr 与 stdout 必须**分开打**：拼起来再切片时，pnpm 的 Progress 刷屏会把 stderr 里的
+		// 真正错误挤出窗口（2026-11-07 CI 就只剩一句 `.../pnpm.log` 尾巴）。
+		assert.match(prepack, /stderr（末尾 3000 字符）/, '失败要单独打 stderr（否则 CI 上没法定位）');
+		assert.match(prepack, /stdout（末尾 1200 字符）/, 'stdout 单独打，不许挤掉 stderr');
 		assert.match(prepack, /err\?\.stderr/, '要从 err.stderr 取（execFileSync 的错误体里才有 pnpm 的报错）');
 		// ⑤ 提示口径要与出包侧一致：别再宣称"跳过种子不影响出包"
 		assert.match(prepack, /本次出包会被 verify-staging 判失败/, '跳过种子时要说清"这一包出不来"（软门口径已作废）');
@@ -2205,10 +2220,16 @@ suite('dshHarness / 打包链：内置 dsh 运行时（缺它 = 首启要用户�
 		assert.ok(verify.includes(`profile-seed\\profiles\\${profile}\\node_modules\\@vssaros\\dsh-bridge\\package.json`), `verify-staging 的伴生插件路径必须用 ${profile}`);
 	});
 
-	test('★ CI 依赖步骤要备好 pnpm（否则种子在 CI 上永远建不出来）', () => {
+	test('★ CI 依赖步骤要校验 pin 的 pnpm（版本漂移会让种子建不出来 / 体积翻倍）', () => {
+		// ★ 2026-11-07：旧口径是"PATH 上有就用 / 没有就 npm install -g pnpm@latest"。
+		//   CI 全局 pnpm 从 10.18.0 漂到 12.18.0 ⇒ 连炸两次（ERR_PNPM_IGNORED_BUILDS；
+		//   .pnpm 虚拟店让种子 234MB→573MB）⇒ 构建期改为只读仓库 pin 的那一份。
 		const deps = read(REL_INSTALL_DEPS)!;
-		assert.match(deps, /pnpm --version/, '要探测 pnpm 是否可用');
-		assert.match(deps, /npm install -g pnpm/, '缺了就装一个（显式带内网镜像更稳）');
-		assert.match(deps, /\[WARN\] pnpm 不可用/, '装不上要告警（不拦出包，但必须可见）');
+		assert.match(deps, /devDependencies\.pnpm/, '要读根 package.json 的单一真源');
+		assert.match(deps, /packageManager/, 'packageManager 与 devDependencies 必须同值');
+		assert.match(deps, /node_modules\\pnpm\\package\.json/, '要校验 npm install 装出来的那份版本');
+		assert.match(deps, /FATAL/, '版本不符/缺件必须硬失败（不许静默用错版本建种子）');
+		assert.ok(!/npm install -g pnpm/.test(deps), '不许再装 latest（构建期不读全局 pnpm）');
+		assert.match(deps, /pnpm --version/, 'PATH 上的版本仍可打出来供诊断（但构建期不用）');
 	});
 });

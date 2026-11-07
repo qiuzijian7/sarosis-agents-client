@@ -221,7 +221,8 @@ export function mentionsIn(text, members) {
 	const lower = body.toLowerCase();
 	for (let i = 0; i < body.length; i++) {
 		if (body[i] !== '@' && body[i] !== '＠') { continue; }
-		const rest = lower.slice(i + 1);
+		// ★ 2026-11-07（真机：Coder 写「@ Designer 请你出像素版视觉 spec」，Designer 从没被叫到）：@ 后允许一个空格
+		const rest = lower.slice(i + 1).replace(/^[ \u3000]/, '');
 		const word = ALL_WORDS.find(w => rest.startsWith(w.toLowerCase()));
 		if (word) { all = true; continue; }
 		const hit = names.find(n => rest.startsWith(n.label.toLowerCase()));
@@ -279,6 +280,17 @@ export function lineText(line) {
 	return `${line.who}：${line.text}`;
 }
 
+/**
+ * ★ 2026-11-07（对齐 DS Bot `ds-bot/src/host/tools.js:16-30, 954-992`）：群成员会话里不给用的工具。
+ * `ask_user_question` 会把成员的回合一直挂着等用户回答，而它的提问卡只出现在成员自己的会话里、群里看不到 ⇒
+ * 群这一轮按超时放行、显示「本轮完成」，成员却永远卡住（真机：番茄钟团队 Coder，11-07 16:26）。
+ * 群里要问用户 ⇒ 调 `group_ask`（`lib/core/asks.js`，不阻塞，输入框上方出选择卡）。
+ */
+export const ROOM_MEMBER_DENIED_TOOLS = Object.freeze(['ask_user_question']);
+/** 成员硬调被拒时给模型的话。 */
+export const ROOM_ASK_REFUSAL = '群聊里不能用 ask_user_question（提问卡只在你自己的会话里，群里看不到，你会一直卡着）。'
+	+ '要用户决定的事调 group_ask：群聊输入框上方会弹选择卡，你这一轮随即结束，用户答了会叫你回来。';
+
 /** 文本截到群消息上限（截了就注明）。 */
 export function clipLine(text) {
 	const s = String(text ?? '');
@@ -295,7 +307,7 @@ export function clipLine(text) {
  * @param input.place `{ ordered, index, total, with: string[] }` 本轮位次
  * @param input.calledBy 叫他的人（人 / 成员名）
  */
-export function roomPrompt({ room, member, members, log, seen, place, calledBy, note }) {
+export function roomPrompt({ room, member, members, log, seen, place, calledBy, note, workDir }) {
 	const lines = Array.isArray(log) ? log : [];
 	const first = typeof seen !== 'number';
 	const fresh = first ? lines.slice(-12) : lines.filter(line => line.seq > seen).slice(-ROOM_LIMITS.newLines);
@@ -307,6 +319,8 @@ export function roomPrompt({ room, member, members, log, seen, place, calledBy, 
 		`群成员：你、${others.join('、')}，还有用户。`,
 	];
 	if (room.notice) { parts.push(`群公告（每位成员都要遵守）：\n${room.notice}`); }
+	// ★ 2026-11-07：成员各自 cd 到别处 ⇒ 同一个项目出现两份代码、测的不是改的那份（真机：番茄钟团队）
+	if (workDir) { parts.push(`本群的项目目录：${workDir}\n所有文件都放在这个目录里，读写、跑命令、起服务都在这里；不要另找或另建别的目录放同一个项目（用户另有指定除外）。`); }
 	if (before.length) { parts.push(`之前的消息：\n${before.map(lineText).join('\n')}`); }
 	parts.push(`${first ? '最近的消息' : '新消息'}：\n${fresh.length ? fresh.map(lineText).join('\n') : '（没有新消息）'}`);
 	if (note) { parts.push(String(note)); } else if (calledBy) { parts.push(`是${calledBy}叫你的。`); }
@@ -321,6 +335,8 @@ export function roomPrompt({ room, member, members, log, seen, place, calledBy, 
 		'要别的成员做事或回答，就在话里 @他的名字，他会立刻开始。同一条里 @ 的几位同时开始、看不到彼此的结果；要用到某人的结果时，先 @ 他，并请他做完后 @ 下一位。',
 		'你 @ 的人做完后，系统会把结果交回给你，由你接着处理：检查、继续派活，或向用户汇报。发现问题要返工，就 @ 对方说清问题和复现步骤。',
 		'被要求做事时，在同一步就开始调用工具去做，不要只回一句「我来做」；结尾写结果和证据（改了哪些文件、跑了什么命令、看到了什么），不要承诺稍后再做。',
+		// ★ 2026-11-07：群里的选择卡（`lib/core/asks.js`）；只写文字用户点不了，也没有任何提醒
+		'需要用户决定的事（方案取舍、范围、风格等）调 group_ask：输入框上方会弹选择卡（每题标上你推荐的选项），你这一轮随即结束，用户答了会叫你回来；不要把选项写成文字等人回复，也不要用 ask_user_question。能自己查清的事先查清，不要问用户。',
 		member.id === room.admin ? '你是管理员：用户没点名时由你先回应，需要谁就 @谁；@所有人 会叫全员。' : '',
 		'没有要补充的就只回 [PASS]。',
 	].filter(Boolean).join('\n'));

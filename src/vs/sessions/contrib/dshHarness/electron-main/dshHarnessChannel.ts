@@ -395,7 +395,8 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				return; // 首次运行：没有可复用的选项，退回渲染进程触发
 			}
 			const s = this._readUserSettings();
-			if (s['sessions.dshHarness.enabled'] === false || s['sessions.dshHarness.prewarm'] === false || s['sessions.dshHarness.chatEngine'] === 'legacy') {
+			// ★ 2026-11-07（Step 0）：`chatEngine === 'legacy'` 判断已移除（enum 只有 ['dsh']，不可配）。
+			if (s['sessions.dshHarness.enabled'] === false || s['sessions.dshHarness.prewarm'] === false) {
 				return;
 			}
 			const pick = (key: string, fallback: string | undefined) => {

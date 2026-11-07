@@ -6,7 +6,7 @@
  * 比"不给提示"更糟（bunnyseek 源码注释原话）。而迁移/改名一次就会静默产生这种悬空引用。
  *
  * 判据刻意窄到零假阳性：只有**出现在工具清单里**的标识符才算工具引用
- * （清单 = resources/.agents/tools/*.json + dsh-plugins/tools-snapshot.json + bunnyseek 的旧名表）。
+ * （清单 = dsh-runtime 官方工具名 + dsh-plugins/tools-snapshot.json + bunnyseek 的旧名表；P3 起不再含 IDE 工具别名）。
  * 所以 `main.py`、`git_commit` 这类普通标识符永不误报。
  *
  * 扫描面：随包技能（顶层 `<name>/SKILL.md`）+ 用户技能根（`<数据根>/skills`，两套数据根）。
@@ -18,7 +18,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
-import { BUNNYSEEK_ONLY, dshToolNames, ROOT, scanToolRefs } from './scripts/skill-tool-map.mjs';
+import { BUNNYSEEK_ONLY, TOOL_MAP, dshToolNames, ROOT, scanToolRefs } from './scripts/skill-tool-map.mjs';
 import { BUNDLED_SKILL_ROOT, USER_SKILL_ROOTS } from './scripts/skill-bundle-paths.mjs';
 
 // ★ P0（2026-11-06）：只扫 dsh 侧新真源；旧根由 check-skill-bundle.mjs 做迁移完整性对照。
@@ -33,6 +33,18 @@ const DELIBERATE = [
 ];
 
 const dshTools = dshToolNames();
+
+// ★ P3（2026-11-07）：映射表本身不许腐烂 —— 每个非 null 目标都必须是真实存在的 dsh 工具名。
+//   之前 TOOL_MAP 指向 IDE 侧 file_read / terminal / skill_view 等别名；删掉 IDE 工具目录后，
+//   那一版会把技能正文批量判成悬空，迁移器还会把旧名换成不存在的名字（比悬空更隐蔽 ✗）。
+const badTargets = Object.entries(TOOL_MAP)
+	.filter(([, target]) => target !== null && !dshTools.has(target))
+	.map(([old, target]) => `${old} → ${target}`);
+if (badTargets.length) {
+	console.error(`[check-skill-tool-refs] ✗ TOOL_MAP 有 ${badTargets.length} 个目标不是 dsh 工具：${badTargets.join('、')}`);
+	process.exit(1);
+}
+
 const problems = [];
 let scanned = 0;
 const danglingRows = [];

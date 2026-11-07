@@ -8,7 +8,7 @@
 
 import type { IDisposable } from '../../../../../../base/common/lifecycle.js';
 import type { ILogService } from '../../../../../../platform/log/common/log.js';
-import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
+import type { IBuiltinToolRegistration } from './toolRegistry.js';
 import type { IMindmapData } from '../../../common/mindmap/mindmapTypes.js';
 import { getActiveCanvasPane } from '../../canvasEditor/canvasEditorPane.js';
 import { buildForest, getDirectChildNodes } from '../../../common/mindmap/treeModel.js';

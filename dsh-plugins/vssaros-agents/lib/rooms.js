@@ -23,11 +23,13 @@ import { dirname } from 'node:path';
 import { renameWithRetry } from './atomicWrite.js';
 import { finalAssistantText, findOurSplices } from './core/relay.js';
 import { GOAL_IDLE_NUDGES, GOAL_NUDGE_TEXT, GOAL_TOOL_PARAMETERS, applyGoal, goalPromptBlock, goalView, markTask } from './core/goals.js';
+import { ASK_TOOL_DESCRIPTION, ASK_TOOL_PARAMETERS, ROOM_ASK_TOOL, askAnswerText, askHeadline, normalizeAsk, normalizeAskAnswers, supersedeAsks } from './core/asks.js';
 import {
 	RoomError, ROOM_IDLE_RELAY_LIMIT, ROOM_LIMITS, ROOM_POST_FORM, ROOM_RECORD_TYPE, ROOM_REFERENCE_KIND, ROOM_RELAY_TOOL, ROOM_TURN_KIND,
 	ROUND_SCHEMA, ROUND_STATUS_LABELS,
 	addressedRoomReference, autoRoomName, callsFrom, clipLine, isPass, mentionsIn, normalizeRoomInput, openingCall,
 	roomPrompt, roomRecordData, roomReferenceOf, roomView, roundStatusOf, sortRooms, stripOwnName, stripRoomMention,
+	ROOM_ASK_REFUSAL, ROOM_MEMBER_DENIED_TOOLS,
 } from './core/rooms.js';
 
 /** 成员一回合最长等多久（DS Bot ROOM_REPLY_TIMEOUT_MS 同值）。★ 2026-11-06 起是「毫无进展」的时长，见 waitFor。 */
@@ -68,7 +70,7 @@ function goalLogText(reply, goal) {
 	}
 }
 /** DS Bot 同名的状态节点词表（只读 UI 用；`paused/resumed` 由新一轮抢占时补）。 */
-const ROOM_STATUS_KINDS = Object.freeze(['working', 'missed', 'failed', 'passed', 'paused', 'resumed', 'cut', 'done', 'approval']);
+const ROOM_STATUS_KINDS = Object.freeze(['working', 'missed', 'failed', 'passed', 'paused', 'resumed', 'cut', 'done', 'approval', 'ask']);
 /**
  * ★ 2026-11-06（对齐 DS Bot「等你审批」）：群成员影子会话里要人确认的工具调用。
  *   影子会话没人打开，DSH 自带的审批框画在那里没人看得见 ⇒ 成员只能干等到超时。现在由群接住：
@@ -79,6 +81,8 @@ export const ROOM_APPROVAL_MAX_MS = 15 * 60_000;
 const approvalCode = () => Math.random().toString(16).slice(2, 6).padEnd(4, '0');
 
 const textOutput = { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: String(value) }] };
+/** 成员在后台干完的回复，多久以内的还要在下一轮补发到群聊界面（更早的只在群记录里，不翻旧账）。 */
+const LATE_SHOW_MS = 2 * 60 * 60_000;
 
 /** 转投消息的确定性 id：同一条来源消息转投到群里永远是同一个 id（幂等的依据）。 */
 export const roomPostId = (fromSession, sourceMessageId) => `room-post:${fromSession}:${sourceMessageId}`;
@@ -206,6 +210,7 @@ export function createRooms(deps) {
 			startedAt: Number(round.startedAt ?? 0), finishedAt: Number(round.finishedAt ?? 0),
 			done: !!round.done, error: String(round.error ?? ''),
 			phase: String(round.phase ?? (round.done ? 'done' : 'running')), interrupted: !!round.interrupted,
+			background: Array.isArray(round.working) ? round.working : [], late: Array.isArray(round.late) ? round.late : [],
 			persisted: !!round.persisted, ...correlationOf(round),
 		};
 	}
@@ -221,6 +226,7 @@ export function createRooms(deps) {
 			startedAt: Number(item.startedAt ?? 0) || now(), finishedAt: Number(item.finishedAt ?? 0) || 0,
 			done: !!item.done, error: String(item.error ?? ''),
 			phase: String(item.phase ?? (item.done ? 'done' : 'running')), interrupted: !!item.interrupted,
+			working: Array.isArray(item.background) ? item.background.map(String) : [], late: Array.isArray(item.late) ? item.late : [],
 			persisted: true, ...correlationOf(item),
 		};
 	}
@@ -351,15 +357,40 @@ export function createRooms(deps) {
 	 */
 	function roundOutput(round) {
 		const status = roundStatusOf(round);
+		const asks = asksOf(round.roomId);
+		const busy = busyOf(round.roomId);
 		return {
 			schema: ROUND_SCHEMA, callId: String(round.callId ?? ''),
 			replies: round.replies, passed: round.passed, failed: round.failed, events: round.events || [],
 			speaking: [...(round.speaking ?? [])],
 			startedAt: round.startedAt, finishedAt: round.finishedAt || 0, done: !!round.done,
 			phase: round.phase || (round.done ? 'done' : 'running'), interrupted: !!round.interrupted,
-			status, statusLabel: ROUND_STATUS_LABELS[status], ...correlationOf(round),
+			// status 仍是统一状态机（别的插件照旧认）；这一轮做完了但有卡等人答 ⇒ 不能说「已完成」，文案说实话
+			status, statusLabel: status === 'done' && asks.length ? '等你选择' : status === 'done' && busy.length ? '后台干活中' : ROUND_STATUS_LABELS[status],
+			...correlationOf(round),
 			approvals: approvalsOf(round.roomId),
+			asks,
+			// ★ 2026-11-07：这一轮转到后台继续干的成员（不是「没回复」）；这一轮开头补发的、成员在后台干完的回复
+			background: [...(round.working ?? [])],
+			late: Array.isArray(round.late) ? round.late : [],
+			// ★ 2026-11-07（真机：Designer 在后台干活，群行与它的行 15 秒后都回到空闲）：**现在**还在后台干活的成员（实时；干完就不在了）
+			busy,
 		};
+	}
+	/** 这个群里现在还在后台干活的成员名（被放行、还没交回）。 */
+	function busyOf(roomId) {
+		const names = [];
+		for (const list of late.values()) {
+			for (const item of list) {
+				if (item.roomId === roomId && item.released && item.name && !names.includes(item.name)) { names.push(item.name); }
+			}
+		}
+		return names;
+	}
+	/** 这个群里等用户选的卡（最早的在前）。 */
+	function asksOf(roomId) {
+		const list = rooms.get(roomId)?.asks;
+		return Array.isArray(list) ? [...list].sort((a, b) => a.at - b.at) : [];
 	}
 	/** 这个群里正在等人确认的请求（对外视图，最早的在前）。 */
 	function approvalsOf(roomId) {
@@ -426,6 +457,18 @@ export function createRooms(deps) {
 		return sessionId;
 	}
 
+	/** 群的项目目录（工作区的 path，或建群时给的 cwd）；拿不到 ⇒ undefined（提示里就不写）。 */
+	function workDirOf(room) {
+		if (room.workspaceId) {
+			try {
+				const reg = deps.workspaces?.();
+				const ws = typeof reg?.get === 'function' ? reg.get(room.workspaceId) : reg?.list?.().find(item => item?.id === room.workspaceId);
+				if (ws && typeof ws.path === 'string' && ws.path) { return ws.path; }
+			} catch { /* 读不到就不写 */ }
+			return undefined;
+		}
+		return room.cwd || undefined;
+	}
 	/** 成员在这个群里的影子会话（没有就建；跑该 bot 的 preset，与群同一工作区）。 */
 	async function memberSession(room, botId, name) {
 		const known = room.sessions[botId];
@@ -466,6 +509,7 @@ export function createRooms(deps) {
 			};
 			const entry = {
 				messageId,
+				meta,
 				resolve: (value) => { clearTimeout(entry.idle); clearTimeout(entry.cap); clearTimeout(entry.grace); resolve(value); },
 				touch: (event) => {
 					clearTimeout(entry.idle);
@@ -579,7 +623,7 @@ export function createRooms(deps) {
 			const { sessionId, agent } = await memberSession(room, member.id, member.name);
 			const nameOf = (id) => members.find(m => m.id === id)?.name ?? id;
 			const goal = goalPromptBlock(room.goal, member.id, member.id === room.admin, nameOf);
-			const text = roomPrompt({ room, member, members, log: room.log, seen: room.seen[member.id], place, calledBy: slot.by, note: slot.note })
+			const text = roomPrompt({ room, member, members, log: room.log, seen: room.seen[member.id], place, calledBy: slot.by, note: slot.note, workDir: workDirOf(room) })
 				+ (goal ? `\n\n${goal}` : '');
 			room.seen[member.id] = room.seq;
 			// 管理员 @ 它 ⇒ 它在当前阶段的任务「进行中」
@@ -612,7 +656,10 @@ export function createRooms(deps) {
 				return null;
 			}
 			slot.worked = final?.worked === true;
+			// ★ 2026-11-07：这一回合调了 group_ask ⇒ 它在等用户，不是「没有补充」，派活的人也不该被叫回来看结果
+			slot.asked = (room.asks ?? []).some(item => item.botId === member.id && item.at >= started);
 			const said = stripOwnName(final?.text ?? '', member.name);
+			if (isPass(said) && slot.asked) { return null; }
 			if (isPass(said)) {
 				round.passed.push(member.name);
 				pushEvent(round, 'passed', { name: member.name, text: `${member.name} 没有补充` });
@@ -622,7 +669,7 @@ export function createRooms(deps) {
 			const line = appendLog(room, { who: member.name, botId: member.id, text: clipLine(said) });
 			room.seen[member.id] = room.seq;
 			// 管理员派的活交回了 ⇒ 它在当前阶段的任务「已交付」
-			if (room.goal && slot.byId === room.admin && member.id !== room.admin && markTask(room.goal, member.id, ['pending', 'working'], 'reported')) { touchGoal(room); }
+			if (!slot.asked && room.goal && slot.byId === room.admin && member.id !== room.admin && markTask(room.goal, member.id, ['pending', 'working'], 'reported')) { touchGoal(room); }
 			round.replies.push({ botId: member.id, name: member.name, text: line.text, at: line.at, ms: line.at - started,
 				...(final?.interrupted ? { interrupted: true } : {}) });
 			void save();
@@ -654,9 +701,11 @@ export function createRooms(deps) {
 	 */
 	async function kickRoom(room, call) {
 		const list = callbacks.get(room.id) ?? [];
-		const merged = list.some(item => item.id === call.id);
-		callbacks.set(room.id, merged ? list : [...list, call]);
-		if (list.length) { return; }
+		const same = list.find(item => item.id === call.id);
+		// 用户的答案不能因为「这人已经排着队了」被丢掉
+		if (same && call.answer) { same.note = [same.note, call.note].filter(Boolean).join('\n\n'); }
+		callbacks.set(room.id, same ? list : [...list, call]);
+		if (list.length) { return true; }
 		try {
 			const agent = await resolveAgent(room.id);
 			api.attach?.(agent);
@@ -664,9 +713,11 @@ export function createRooms(deps) {
 				source: { kind: 'user', form: ROOM_CALLBACK_FORM, roomId: room.id } };
 			if (typeof agent?.followup === 'function') { await Promise.resolve(agent.followup(message)); }
 			else if (typeof agent?.steer === 'function') { await Promise.resolve(agent.steer(message)); }
+			return true;
 		} catch (error) {
 			callbacks.delete(room.id);
 			warn(`群「${room.name}」新开一轮失败：${String(error?.message ?? error)}`);
+			return false;
 		}
 	}
 	/**
@@ -681,6 +732,7 @@ export function createRooms(deps) {
 		const adminName = round.adminName;
 		if (round.goalNudge && round.passed.includes(adminName)) { goal.idle = true; touchGoal(room); return; }
 		if (round.userMessage || round.memberWorked) { goal.nudges = 0; }
+		if ((room.asks ?? []).length) { return; } // 有卡等用户答：不是没人干活，别叫管理员
 		if (busyIn(room) || (callbacks.get(room.id) ?? []).length || (inbox.get(room.id) ?? []).length) { return; }
 		if ((goal.nudges ?? 0) >= GOAL_IDLE_NUDGES) { goal.idle = true; touchGoal(room); return; }
 		goal.nudges = (goal.nudges ?? 0) + 1;
@@ -834,6 +886,7 @@ export function createRooms(deps) {
 			const removed = room.members.filter(mid => !next.members.includes(mid));
 			const renamed = next.name !== room.name;
 			Object.assign(room, next, { updatedAt: now() });
+			if (removed.length && room.asks?.length) { room.asks = room.asks.filter(ask => !removed.includes(ask.botId)); }
 			for (const mid of removed) {
 				const sid = room.sessions[mid];
 				delete room.sessions[mid];
@@ -926,6 +979,45 @@ export function createRooms(deps) {
 			const { settle: _settle, sessionId: _sessionId, ...view } = item;
 			return { ...view, choice: allow ? 'allow' : 'reject' };
 		},
+		/** 群里等用户选的卡（不传 roomId = 全部）。 */
+		pendingAsks(roomId) {
+			return roomId ? asksOf(roomId) : [...rooms.keys()].flatMap(asksOf);
+		},
+		/**
+		 * 用户答了一张选择卡（或跳过）：写进群聊记录，新开一轮叫回提问的成员，答案带给它。
+		 * 先撤卡占住（防重复提交），叫不起来再放回去，让用户能重试。
+		 * @param payload `{ answers: [{ id, selected, custom? }] }` 或 `{ skip: true }`
+		 * @throws RoomError 404 已经不在等了 / 400 答案不全 / 503 群会话叫不起来
+		 */
+		async answerAsk(id, payload = {}) {
+			await load();
+			const askId = String(id ?? '');
+			const room = [...rooms.values()].find(item => (item.asks ?? []).some(ask => ask.id === askId));
+			if (!room) { throw new RoomError('这个问题已经不在等了（可能已回答、被新问题替换，或被你在群里的回复顶替）。', 404); }
+			const ask = room.asks.find(item => item.id === askId);
+			const skip = payload?.skip === true;
+			const checked = skip ? { answers: [] } : normalizeAskAnswers(ask, payload?.answers);
+			if (checked.error) { throw new RoomError(checked.error, 400); }
+			const before = room.asks;
+			room.asks = before.filter(item => item !== ask);
+			const lines = skip ? '' : askAnswerText(ask, checked.answers);
+			const said = skip ? `跳过了 ${ask.name} 的问题` : `回答 ${ask.name}：\n${lines}`;
+			const entry = appendLog(room, { who: '用户', kind: 'ask-answer', text: clipLine(said) });
+			const sent = await kickRoom(room, {
+				id: ask.botId, answer: true, text: said, ...(ask.askedBy ? { from: ask.askedBy } : {}),
+				event: `用户${skip ? '跳过' : '回答'}了 ${ask.name} 的问题`,
+				note: skip
+					? '用户跳过了你刚才的问题，没有给答案。有推荐答案就按推荐继续，并在回复里说明你按哪个走的；没有推荐、又确实无法继续，就说明卡在哪里，然后结束这一轮。'
+					: `用户在选择卡里回答了你刚才的问题：\n${lines}\n按这些答案接着做，在同一步就开始调用工具；不要再问同样的问题。`,
+			});
+			if (!sent) {
+				room.asks = before;
+				room.log = room.log.filter(line => line !== entry);
+				throw new RoomError('群会话现在叫不起来，答案没有送出，稍后再试。', 503);
+			}
+			await save();
+			return { id: ask.id, roomId: room.id, botId: ask.botId, name: ask.name, skipped: skip, answers: checked.answers };
+		},
 		/** 成员影子会话有新事件（工具调用、步骤…）：它还在干活 ⇒ 等它的那条重新计时。 */
 		noteActivity(sessionId, event) {
 			for (const entry of waiters.get(sessionId) ?? []) { entry.touch?.(event); }
@@ -960,6 +1052,10 @@ export function createRooms(deps) {
 				if (said && !isPass(said)) {
 					appendLog(room, { who: item.name, botId: item.botId, text: clipLine(said), late: true });
 					room.seen[item.botId] = room.seq;
+					// ★ 2026-11-07（真机：Coder 在后台干完、回复只进了群记录，群聊界面停在「这一轮没有成员回复」）：
+					//   新开一轮把这条回复显示出来（relay 开头按群记录补发，与谁先排队无关）；
+					//   点到的人 / 派活的人由 kickRoom 合并进同一个回叫队列，只发一条消息、走一轮。
+					void kickRoom(room, { id: '', show: true, text: `【${item.name} 在后台干完了】` });
 					if (room.goal && item.askedBy === room.admin && markTask(room.goal, item.botId, ['pending', 'working'], 'reported')) { touchGoal(room); }
 					void save();
 					// ★ 2026-11-06（真机：「@番茄钟 H5 开发团队 开发H5 番茄钟」管理员 Coder 干了 5 分钟、迟到回复里 @Designer @Tester
@@ -967,7 +1063,9 @@ export function createRooms(deps) {
 					//   迟到回复里 @ 到的成员新开一轮去做；他们做完再叫回这位成员看结果（relay 里按 `from` 成批）。
 					void callNamed(room, item, said);
 				}
-				if (item.released) { finished.push({ room, item, said: said && !isPass(said) ? said : '' }); }
+				// 后台成员这一回合提了问 ⇒ 它在等用户，不是干完了（答案回来时再叫它）
+				const asked = (room.asks ?? []).some(ask => ask.botId === item.botId && ask.at >= item.at);
+				if (item.released && !asked) { finished.push({ room, item, said: said && !isPass(said) ? said : '' }); }
 				}
 				if (stillLate.length) { late.set(session.id, stillLate); } else { late.delete(session.id); }
 			// ★ 2026-11-06（P2，对齐 DS Bot lateRoomReply）：放行到后台的成员干完了 ⇒ 新开一轮，叫回派活的人
@@ -992,23 +1090,37 @@ export function createRooms(deps) {
 			inbox.delete(room.id);
 			for (const text of texts) { appendLog(room, { who: '用户', text: clipLine(text) }); }
 			// ★ 2026-11-06：系统要「新开一轮」叫回的人（后台成员干完了 / 目标检查），与人的消息一起处理
-			const calls = callbacks.get(room.id) ?? [];
+			const calls = [...(callbacks.get(room.id) ?? [])];
 			callbacks.delete(room.id);
 			const { map } = await names();
 			const members = room.members.map(id => ({ id, name: map.get(id) ?? id }));
+			// ★ 2026-11-07：人没点选择卡、直接在群里打字 ⇒ 算回答（卡片撤掉）。没 @ 人时交给提问的成员，不是默认的管理员。
+			const mention = texts.length ? mentionsIn(texts.join('\n'), members) : null;
+			const superseded = texts.length ? supersedeAsks(room.asks, mention) : { taken: [], kept: [], routed: false };
+			if (superseded.taken.length) {
+				room.asks = superseded.kept;
+				for (const ask of superseded.taken) {
+					calls.push({ id: ask.botId, ...(ask.askedBy ? { from: ask.askedBy } : {}), event: `用户在群里回复了 ${ask.name} 的问题`,
+						note: '用户没有点选择卡，而是直接在群里回复了（见上面的新消息）。把它当作对你刚才问题的回答：能继续就接着做，在同一步就开始调用工具；答得不够明确时，缺的部分按你推荐的走并说明。' });
+				}
+			}
 			const round = { callId, roomId: room.id, replies: [], passed: [], failed: [], events: [], error: '',
 				speaking: new Set(), startedAt: now(), finishedAt: 0, done: false, phase: 'running', interrupted: false, persisted: false,
 				...correlationOf({ originTriggerId: room.originTriggerId }), ...(postMeta.get(room.id) ?? {}) };
 			postMeta.delete(room.id);
 			const previous = [...rounds.values()].find(item => item.roomId === room.id && !item.done);
 			if (previous) { pushEvent(previous, 'paused', { text: '新的群消息到达，上一轮暂停' }); }
+			// ★ 2026-11-07：成员在后台干完的回复（群聊界面还没显示过的）在这一轮开头补发；太旧的不翻（只在群记录里）
+			const unshown = room.log.filter(line => line && line.late && !line.shown && round.startedAt - Number(line.at ?? 0) < LATE_SHOW_MS);
+			for (const line of unshown) { line.shown = true; }
+			round.late = unshown.map(line => ({ botId: line.botId, name: line.who, text: line.text, at: line.at }));
 			rounds.set(String(callId ?? ''), round);
 			if (previous) { pushEvent(round, 'resumed', { text: '接上新一轮群消息' }); }
 			pushEvent(round, 'working', { text: '正在把消息交给群成员…' });
 			void save();
 			try {
 				if (texts.length || calls.length) {
-					const open = texts.length ? openingCall(room, mentionsIn(texts.join('\n'), members)) : { ids: [], ordered: false };
+					const open = texts.length && !superseded.routed ? openingCall(room, mention) : { ids: [], ordered: false };
 					const counts = new Map();
 					const pending = open.ids.map((id, index) => ({ id, by: '用户', index }));
 					// 系统回叫：人的消息没有点到它时才加（点到了就和人的消息一起答）
@@ -1046,7 +1158,8 @@ export function createRooms(deps) {
 						if (slot.worked) { batch.worked = true; }
 						if (slot.calledOthers) { batch.answered = true; }
 						// 放行到后台的成员还没干完：这批人里有它 ⇒ 不在本轮叫回，等它干完时新开一轮再叫（noteTurnEnd）
-						if (slot.released) { batch.released = true; }
+						// 提了问的成员同理：它在等用户，答案回来、它做完了才叫回（answerAsk 的 from）
+						if (slot.released || slot.asked) { batch.released = true; }
 						if (batch.pending.size || batch.released || !batch.done.length || !batch.worked || batch.answered || signal?.aborted) { return; }
 						if (!room.members.includes(batch.by) || pending.some(item => item.id === batch.by)) { return; }
 						if (botCalls >= ROOM_LIMITS.botCalls) { return; }
@@ -1126,6 +1239,7 @@ export function createRooms(deps) {
 			const at = now();
 			// 群里有成员在等人审批（包括群已不等它、它还在干的迟到成员）⇒ 那个群最近一轮要一直可见，按钮才有地方出
 			const waitingRooms = new Set([...approvals.values()].map(item => item.roomId));
+			for (const room of rooms.values()) { if (room.asks?.length || busyOf(room.id).length) { waitingRooms.add(room.id); } }
 			const latestOf = new Map();
 			for (const round of rounds.values()) {
 				const seen = latestOf.get(round.roomId);
@@ -1142,7 +1256,8 @@ export function createRooms(deps) {
 			// 那一轮早已结束并被清理（结束超过保留期）而成员还在等审批 ⇒ 补一条只带审批的活动项（callId 以 approvals: 开头）
 			for (const roomId of waitingRooms) {
 				if (shown.some(round => round.roomId === roomId) || !rooms.has(roomId)) { continue; }
-				const since = Math.min(...[...approvals.values()].filter(item => item.roomId === roomId).map(item => item.at));
+				const busyAt = [...late.values()].flat().filter(item => item.roomId === roomId && item.released).map(item => item.at);
+				const since = Math.min(...[...approvals.values()].filter(item => item.roomId === roomId).map(item => item.at), ...asksOf(roomId).map(item => item.at), ...busyAt);
 				shown.push({ callId: `approvals:${roomId}`, roomId, replies: [], passed: [], failed: [], events: [], speaking: new Set(),
 					startedAt: since, finishedAt: since, done: true, phase: 'done', error: '' });
 			}
@@ -1175,6 +1290,42 @@ export function createRooms(deps) {
 					appendLog(room, { who: map.get(botId) ?? botId, botId, kind: 'goal', text: clipLine(goalLogText(result.reply, room.goal)) });
 					touchGoal(room);
 					return JSON.stringify({ ...result.reply, goal: goalView(room.goal, id => map.get(id) ?? id) });
+				},
+			};
+		},
+		/**
+		 * ★ 2026-11-07 选择卡工具（`lib/core/asks.js`），挂在每位成员的影子会话上：记下问题、立刻结束回合（`concludeTurn`）。
+		 * 只有成员自己能问（子代理的回合结束不了成员的回合，官方 ask_user_question 也拒 live child）。
+		 * 同一位成员再问 ⇒ 新卡替换旧卡。
+		 */
+		askTool(roomId, botId) {
+			return {
+				name: ROOM_ASK_TOOL,
+				description: ASK_TOOL_DESCRIPTION,
+				parameters: ASK_TOOL_PARAMETERS,
+				output: textOutput,
+				async execute(args, exec) {
+					await load();
+					const room = rooms.get(roomId);
+					if (!room || !room.members.includes(botId)) { return '你已经不在这个群里了，问不了。'; }
+					const own = room.sessions?.[botId];
+					const caller = exec?.agent?.id ?? exec?.agent?.session?.id;
+					if (own && caller && caller !== own) { return '只有群成员自己能弹选择卡（子代理不行）：把问题交回给成员。'; }
+					const checked = normalizeAsk(args);
+					if (checked.error) { return checked.error; }
+					const { map } = await names();
+					const name = map.get(botId) ?? botId;
+					const waiting = (waiters.get(own) ?? []).at(-1)?.meta ?? (late.get(own) ?? []).at(-1);
+					const ask = { id: uuid(), roomId: room.id, botId, name, at: now(), questions: checked.questions,
+						...(waiting?.askedBy ? { askedBy: waiting.askedBy } : {}) };
+					room.asks = [...(room.asks ?? []).filter(item => item.botId !== botId), ask];
+					appendLog(room, { who: name, botId, kind: 'ask', text: clipLine(`问用户：${askHeadline(ask)}`) });
+					room.seen[botId] = room.seq;
+					const round = [...rounds.values()].find(item => item.roomId === room.id && !item.done);
+					if (round) { pushEvent(round, 'ask', { name, askId: ask.id, text: `${name} 提了 ${ask.questions.length} 个问题，等你选择` }); }
+					await save();
+					exec?.concludeTurn?.();
+					return '选择卡已经显示在群聊输入框上方。你这一轮到此结束；用户答了系统会叫你回来，答案带在那条消息里。';
 				},
 			};
 		},
@@ -1229,6 +1380,10 @@ export function relayAnswerText(message) {
 		return message?.isError ? '群聊这一轮被中断，没有拿到成员的回复。' : '群聊这一轮没有可显示的结果。';
 	}
 	const lines = [];
+	for (const reply of Array.isArray(result.late) ? result.late : []) {
+		const text = String(reply?.text ?? '').trim();
+		if (text) { lines.push(`**${String(reply?.name ?? reply?.botId ?? '成员')}**（在后台干完了）：${text}`); }
+	}
 	for (const reply of Array.isArray(result.replies) ? result.replies : []) {
 		const text = String(reply?.text ?? '').trim();
 		if (text) { lines.push(`**${String(reply?.name ?? reply?.botId ?? '成员')}**：${text}`); }
@@ -1237,6 +1392,14 @@ export function relayAnswerText(message) {
 		lines.push(`> ${String(failure?.name ?? failure?.botId ?? '成员')} 没能回答：${String(failure?.reason ?? '')}`);
 	}
 	if (result.error && !lines.length) { lines.push(`> 群聊执行失败：${String(result.error)}`); }
+	// ★ 2026-11-07：转到后台的成员没有交回复，但不是「没有成员回复」
+	const background = (Array.isArray(result.background) ? result.background : []).map(String).filter(Boolean);
+	if (background.length) { lines.push(`> ${[...new Set(background)].join('、')} 还在后台干活，干完会把结果发到群里。`); }
+	// 这一轮新提的问题（回合折叠后只剩正文，要让人知道不是真的完了）
+	const startedAt = Number(result.startedAt ?? 0);
+	for (const ask of (Array.isArray(result.asks) ? result.asks : []).filter(item => Number(item?.at ?? 0) >= startedAt)) {
+		lines.push(`> **${String(ask?.name ?? '成员')}** 等你选择：${askHeadline(ask)}（选择卡在输入框上方）`);
+	}
 	if (!lines.length) {
 		const passed = Array.isArray(result.passed) ? result.passed.filter(Boolean) : [];
 		lines.push(passed.length ? `${passed.join('、')} 没有补充。` : '这一轮没有成员回复。');
@@ -1337,7 +1500,9 @@ export async function roomsApi(rooms, { method, query, body }) {
 			if (!choice) { return { status: 400, body: { ok: false, error: 'choice 只能是 allow 或 reject' } }; }
 			return { status: 200, body: { ok: true, approval: rooms.answerApproval(id, choice) } };
 		}
-		return { status: 400, body: { ok: false, error: `未知 action：${action || '(空)'}（支持 create/update/flags/delete/approve）` } };
+		// ★ 2026-11-07：群聊选择卡（POST { action:'ask-answer', id, answers } 或 { action:'ask-answer', id, skip:true }）
+		if (action === 'ask-answer') { return { status: 200, body: { ok: true, ask: await rooms.answerAsk(id, pick(['answers', 'skip'])) } }; }
+		return { status: 400, body: { ok: false, error: `未知 action：${action || '(空)'}（支持 create/update/flags/delete/approve/ask-answer）` } };
 	} catch (error) {
 		return { status: error instanceof RoomError ? error.status : 500, body: { ok: false, error: String(error?.message ?? error) } };
 	}
@@ -1376,16 +1541,43 @@ export function installRooms(ctx, rooms) {
 		}
 	};
 	rooms.attach = attach;
+	// ★ 2026-11-07（对齐 DS Bot tools.js hideBotUnusedTools + guard）：群成员会话里不给 ask_user_question
+	//   ① restrict：模型看不见它（工具不存在时 restrict 会抛 ⇒ 只限制已注册的）；② guard：硬调也拒（只作用于这个成员会话）
+	const questionBlocked = new WeakSet();
+	const blockQuestions = (agent) => {
+		const tools = agent?.ctx?.tools;
+		if (!tools || questionBlocked.has(agent)) { return; }
+		questionBlocked.add(agent);
+		const known = ROOM_MEMBER_DENIED_TOOLS.filter(name => { try { return typeof tools.get !== 'function' || !!tools.get(name); } catch { return false; } });
+		if (known.length && typeof tools.restrict === 'function') {
+			try { const off = tools.restrict({ deny: known }); if (typeof off === 'function') { offs.push(off); } } catch (error) {
+				console.warn(`[vssaros-agents][rooms] 成员会话 ${agent.id} 隐藏 ${known.join(',')} 失败：${String(error?.message ?? error)}`);
+			}
+		}
+		if (typeof tools.guard === 'function') {
+			try {
+				const off = tools.guard(execution => (ROOM_MEMBER_DENIED_TOOLS.includes(String(execution?.name ?? '')) ? ROOM_ASK_REFUSAL : undefined));
+				if (typeof off === 'function') { offs.push(off); }
+			} catch (error) {
+				console.warn(`[vssaros-agents][rooms] 成员会话 ${agent.id} 挂提问拦截失败：${String(error?.message ?? error)}`);
+			}
+		}
+	};
 	// ★ 2026-11-06：成员影子会话挂 group_goal（每个会话挂一次；只有当前管理员调用时生效）
 	const goalAttached = new WeakSet();
 	rooms.attachMember = (agent, roomId, botId) => {
+		blockQuestions(agent);
 		if (!agent?.ctx?.tools || typeof agent.ctx.tools.register !== 'function' || goalAttached.has(agent) || typeof rooms.goalTool !== 'function') { return; }
 		goalAttached.add(agent);
-		try {
-			const dispose = agent.ctx.tools.register(rooms.goalTool(roomId, botId));
-			if (typeof dispose === 'function') { offs.push(dispose); }
-		} catch (error) {
-			console.warn(`[vssaros-agents][rooms] 成员会话 ${agent.id} 挂 group_goal 失败：${String(error?.message ?? error)}`);
+		for (const make of [rooms.goalTool, rooms.askTool]) {
+			if (typeof make !== 'function') { continue; }
+			const tool = make.call(rooms, roomId, botId);
+			try {
+				const dispose = agent.ctx.tools.register(tool);
+				if (typeof dispose === 'function') { offs.push(dispose); }
+			} catch (error) {
+				console.warn(`[vssaros-agents][rooms] 成员会话 ${agent.id} 挂 ${tool.name} 失败：${String(error?.message ?? error)}`);
+			}
 		}
 	};
 	offs.push(ctx.on('llm/stream', relayStream(rooms)));

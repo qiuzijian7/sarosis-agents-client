@@ -300,7 +300,8 @@ export const AGENT_STUDIO_DELEGATION_VIEW_ID = 'agentStudio.delegationView';
 
 // Toolbar View IDs (left sidebar toolbar)
 export const AGENT_STUDIO_TOOLBAR_VIEW_ID = 'agentStudio.toolbarView';
-export const AGENT_STUDIO_CLAW_CHAT_VIEW_ID = 'agentStudio.clawChatView';
+// ★ 2026-11-07（IDE agent loop 下线 · Step 1）：`AGENT_STUDIO_CLAW_CHAT_VIEW_ID` 已删 ——
+//   对应的 `views/clawChatView.ts` 是零注册、零引用的孤儿视图（直接调 sendMessage 的旧入口）。
 export const AGENT_STUDIO_WORKSPACE_VIEW_ID = 'agentStudio.workspaceView';
 export const AGENT_STUDIO_PRESET_AGENT_VIEW_ID = 'agentStudio.presetAgentView';
 export const AGENT_STUDIO_SKILLS_VIEW_ID = 'agentStudio.skillsView';

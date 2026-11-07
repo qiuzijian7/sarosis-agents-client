@@ -1245,13 +1245,19 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 			const run = (roomId && rounds.find((item) => item && item.roomId === roomId)) || rounds[0];
 			if (!run) { return null; }
 			const status = groupRoundStatus(run);
-			const state = status === "failed" ? "error" : status === "cut" ? "cut" : status === "done" ? "done" : "running";
+			const asks = Array.isArray(run.asks) ? run.asks.filter(Boolean) : [];
+			const waitingAsk = status === "done" && asks.length > 0;
+			const busy = Array.isArray(run.busy) ? run.busy.filter(Boolean) : [];
+			const background = status === "done" && !waitingAsk && busy.length > 0;
+			const state = status === "failed" ? "error" : status === "cut" ? "cut" : waitingAsk ? "waiting" : background ? "background" : status === "done" ? "done" : "running";
 			const speaking = Array.isArray(run.speaking) ? run.speaking : [];
 			const replies = (Array.isArray(run.replies) ? run.replies : []).filter((r) => !r || !r.kind);
 			const events = Array.isArray(run.events) ? run.events : [];
 			const lastEvent = events.length ? events[events.length - 1] : null;
 			const seconds = run.startedAt ? Math.max(0, Math.round((((run.finishedAt || Date.now()) - run.startedAt) / 1000) || 0)) : 0;
 			const activity = state === "error" ? "执行失败" : state === "cut" ? "本轮被中断 · " + replies.length + " 条回复已保留"
+				: state === "waiting" ? "等你选择：" + asks.map((a) => String(a.name || "成员") + " 的 " + ((a.questions || []).length || 1) + " 个问题").join("；")
+				: state === "background" ? busy.join("、") + " 还在后台干活，干完会把结果发到群里"
 				: state === "done" ? "本轮完成 · " + replies.length + " 条回复 · 用时 " + seconds + "s"
 					: speaking.length ? speaking.join("、") + " 正在输入…" : "群成员还在工作…";
 			const queueHint = groupComposerHintOf(String((mark && mark.role) || "observer"), state === "running");
@@ -1260,7 +1266,8 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 				role: String((mark && mark.role) || "observer"), roomId: String(run.roomId || roomId || ""),
 				roomName: String(run.roomName || ""), activity, queueHint,
 				activityKind: state === "running" ? (speaking.length ? "typing" : "status") : state,
-				eventKind: String((lastEvent && lastEvent.kind) || ""), eventText: lastEvent ? statusNodeText(lastEvent) : "",
+				// 等人选择时不重复「群聊本轮完成」：这正是用户要的「不要说完了」
+				eventKind: String((lastEvent && lastEvent.kind) || ""), eventText: lastEvent && state !== "waiting" && state !== "background" ? statusNodeText(lastEvent) : "",
 			};
 		}
 		/** 会话 → 群标记（`{ roomId, role, botId? }`；不是群里的会话 ⇒ null）。 */
@@ -1300,9 +1307,131 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 			const map = {
 				working: "成员正在工作…", missed: "成员没能按时回答", failed: "成员执行失败", passed: "成员没有补充",
 				paused: "群聊本轮暂停", resumed: "群聊本轮继续", cut: "群聊本轮被中断", done: "群聊本轮完成",
-				approval: "成员在等你批准",
+				approval: "成员在等你批准", ask: "成员在等你选择",
 			};
 			return map[kind] || kind;
+		}
+		/** 选择卡草稿 ⇒ 能提交的答案和还差几题（纯函数）。单选：自填优先，选项只留一个。 */
+		function askDraftResult(ask, draft) {
+			const answers = [];
+			let missing = 0;
+			for (const q of (ask && ask.questions) || []) {
+				const d = (draft && draft[q.id]) || {};
+				const selected = Array.isArray(d.selected) ? d.selected : [];
+				const custom = String(d.custom || "").trim();
+				if (!selected.length && !custom) { missing += 1; continue; }
+				answers.push(Object.assign({ id: q.id, selected: q.multiSelect ? selected : (custom ? [] : selected.slice(0, 1)) }, custom ? { custom } : {}));
+			}
+			return { answers, missing };
+		}
+		/** 「全部按推荐」的答案；有一题没标推荐 ⇒ null（按钮不出）。纯函数。 */
+		function askRecommendedAnswers(ask) {
+			const answers = [];
+			for (const q of (ask && ask.questions) || []) {
+				const picks = (q.options || []).filter((o) => o && o.recommended).map((o) => o.label);
+				if (!picks.length) { return null; }
+				answers.push({ id: q.id, selected: q.multiSelect ? picks : picks.slice(0, 1) });
+			}
+			return answers.length ? answers : null;
+		}
+		/**
+		 * ★ 2026-11-07 群聊选择卡（服务端见 vssaros-agents `lib/core/asks.js`）：成员调 `group_ask` 后，群聊输入框上方出这张卡。
+		 * 回答 = POST { action:'ask-answer', id, answers } / { action:'ask-answer', id, skip:true }。
+		 * 提交后不本地删卡：等下一次进度里它消失（和审批条同一口径），避免「点了但其实没生效」。
+		 */
+		function GroupAskCard(props) {
+			const ask = props.ask;
+			const questions = Array.isArray(ask.questions) ? ask.questions : [];
+			const [draft, setDraft] = react.useState({});
+			const [busy, setBusy] = react.useState("");
+			const [err, setErr] = react.useState("");
+			const post = (kind, payload) => {
+				setBusy(kind); setErr("");
+				postJson(ROOMS_API, Object.assign({ action: "ask-answer", id: ask.id }, payload)).then(
+					() => setBusy("sent"),
+					(e) => { setBusy(""); setErr(String((e && e.message) || e)); },
+				);
+			};
+			const { answers, missing } = askDraftResult(ask, draft);
+			const recommended = askRecommendedAnswers(ask);
+			const instant = questions.length === 1 && !questions[0].multiSelect;
+			const pick = (q, label) => {
+				const cur = draft[q.id] || {};
+				const selected = Array.isArray(cur.selected) ? cur.selected : [];
+				const nextSelected = q.multiSelect
+					? (selected.includes(label) ? selected.filter((x) => x !== label) : [...selected, label])
+					: [label];
+				setDraft(Object.assign({}, draft, { [q.id]: { selected: nextSelected, custom: q.multiSelect ? cur.custom : "" } }));
+				// 只有一道单选题：点一下就是答案（对齐 DS Bot 的卡）
+				if (instant) { post("submit", { answers: [{ id: q.id, selected: [label] }] }); }
+			};
+			const write = (q, value) => {
+				const cur = draft[q.id] || {};
+				setDraft(Object.assign({}, draft, { [q.id]: { selected: q.multiSelect ? (cur.selected || []) : (value.trim() ? [] : (cur.selected || [])), custom: value } }));
+			};
+			const submit = () => { if (!busy && !missing) { post("submit", { answers }); } };
+			const brand = "var(--dsw-alias-brand-primary, #4d7cfe)";
+			const warn = "var(--dsw-alias-state-warn-primary, #e2a03f)";
+			return react.createElement("div", {
+				"data-vssaros-group-ask": ask.id, "data-vssaros-group-ask-bot": String(ask.botId || ""), role: "group",
+				"aria-label": String(ask.name || "成员") + " 等你选择",
+				style: { display: "flex", flexDirection: "column", gap: 8, padding: "8px 10px", borderRadius: 8, border: "1px solid " + warn },
+			}, kids([
+				react.createElement("div", { key: "h", style: { fontWeight: 600, fontSize: 12 } },
+					String(ask.name || "成员") + " 等你选择" + (questions.length > 1 ? "（" + questions.length + " 个问题）" : "")),
+				...questions.map((q, index) => {
+					const d = draft[q.id] || {};
+					const selected = Array.isArray(d.selected) ? d.selected : [];
+					return react.createElement("div", { key: q.id, "data-vssaros-group-ask-question": q.id, style: Object.assign({}, C.col, { gap: 4 }) }, kids([
+						react.createElement("div", { key: "q", style: { wordBreak: "break-word" } },
+							(questions.length > 1 ? (index + 1) + ". " : "") + (q.header ? q.header + "：" : "") + String(q.question || "")
+							+ (q.multiSelect ? "（可多选）" : "")),
+						q.detail ? react.createElement("div", { key: "d", style: C.tiny }, String(q.detail)) : null,
+						react.createElement("div", { key: "o", style: { display: "flex", flexWrap: "wrap", gap: 6 } },
+							(q.options || []).map((o) => {
+								const on = selected.includes(o.label);
+								return react.createElement("button", {
+									key: o.label, type: "button", disabled: !!busy, "aria-pressed": on ? "true" : "false",
+									"data-vssaros-group-ask-option": o.label, title: o.description || o.label,
+									style: Object.assign({}, C.btn, { whiteSpace: "normal", textAlign: "left", height: "auto", maxWidth: "100%" },
+										on ? { borderColor: brand, color: brand, fontWeight: 600 } : null),
+									onClick: () => pick(q, o.label),
+								}, kids([
+									react.createElement("span", { key: "l" }, o.label),
+									o.recommended ? react.createElement("span", { key: "r", "data-vssaros-group-ask-recommended": "1", style: { marginLeft: 6, fontSize: 10.5, color: warn } }, "推荐") : null,
+									o.description ? react.createElement("div", { key: "d", style: C.tiny }, o.description) : null,
+								]));
+							})),
+						q.allowCustom ? react.createElement("input", {
+							key: "c", type: "text", disabled: !!busy, placeholder: "或者自己写…", value: String(d.custom || ""),
+							"data-vssaros-group-ask-custom": q.id,
+							style: { font: "inherit", fontSize: 11.5, padding: "3px 6px", borderRadius: 6, background: "transparent", color: "inherit",
+								border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.3))" },
+							onChange: (e) => write(q, e.target.value),
+							onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); submit(); } },
+						}) : null,
+					]));
+				}),
+				react.createElement("div", { key: "a", style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 } }, kids([
+					// 只有一道单选题时点选项就提交；但自己写的答案还要一个提交按钮
+					!instant || String((draft[questions[0] && questions[0].id] || {}).custom || "").trim()
+						? react.createElement("button", { key: "s", type: "button", style: C.btnPrimary, disabled: !!busy || missing > 0, "data-act": "group-ask-submit", onClick: submit },
+							busy === "submit" ? "提交中…" : busy === "sent" ? "已提交" : missing > 0 ? "还差 " + missing + " 题" : "提交")
+						: null,
+					recommended ? react.createElement("button", { key: "r", type: "button", style: C.btn, disabled: !!busy, "data-act": "group-ask-recommended",
+						onClick: () => post("recommended", { answers: recommended }) }, busy === "recommended" ? "提交中…" : "全部按推荐") : null,
+					react.createElement("button", { key: "k", type: "button", style: C.btn, disabled: !!busy, "data-act": "group-ask-skip",
+						onClick: () => post("skip", { skip: true }) }, busy === "skip" ? "提交中…" : "跳过"),
+					props.hint ? react.createElement("span", { key: "t", style: C.tiny }, String(props.hint)) : null,
+				])),
+				err ? react.createElement("div", { key: "e", style: C.err }, err) : null,
+			]));
+		}
+		function GroupAsks(props) {
+			const list = Array.isArray(props && props.asks) ? props.asks.filter((a) => a && a.id) : [];
+			if (!list.length) { return null; }
+			return react.createElement("div", { style: Object.assign({}, C.col, { gap: 6, maxHeight: 340, overflow: "auto" }), "data-vssaros-group-asks": String(list.length) },
+				list.map((ask) => react.createElement(GroupAskCard, { key: ask.id, ask, hint: props.hint })));
 		}
 		/**
 		 * ★ 2026-11-06（对齐 DS Bot「等你审批」）：群成员等人确认的工具调用，在群会话的工具卡与成员栏上直接批。
@@ -1590,8 +1719,11 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 			const sessionId = String((props && props.sessionId) || "");
 			const mark = roomMarkOfSession(ctx, sessionId);
 			const roomId = String((mark && mark.roomId) || sessionId || "");
-			const current = active.find((item) => roomId && item && item.roomId === roomId) || active[0];
-			const flow = groupComposerFlowOf(active, mark);
+			// ★ 2026-11-07：别的会话也要知道有卡在等 ⇒ 没有本群轮次时，优先显示有卡的那个群
+			const hasAsks = (item) => !!item && Array.isArray(item.asks) && item.asks.length > 0;
+			const ordered = [...active.filter(hasAsks), ...active.filter((item) => !hasAsks(item))];
+			const current = ordered.find((item) => roomId && item && item.roomId === roomId) || ordered[0];
+			const flow = groupComposerFlowOf(ordered, mark);
 			const dockVisible = !!current && !!flow;
 			const dockRole = String((mark && mark.role) || (flow && flow.role) || "");
 			react.useEffect(() => {
@@ -1612,6 +1744,11 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 			};
 			const waiting = Array.isArray(current.approvals) ? current.approvals : [];
 			for (const item of waiting) { add(item && item.name, "approval", "等你审批"); }
+			const asks = Array.isArray(current.asks) ? current.asks.filter(Boolean) : [];
+			const inThisRoom = !!roomId && String(current.roomId || "") === roomId;
+			for (const item of asks) { add(item && item.name, "ask", "等你选择"); }
+			const busy = Array.isArray(current.busy) ? current.busy.filter(Boolean) : [];
+			for (const name of busy) { add(name, "background", "后台干活"); }
 			for (const name of speaking) { add(name, "speaking", "正在输入"); }
 			for (const event of events) {
 				if (!event || !event.name) { continue; }
@@ -1640,7 +1777,7 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 			}, kids([
 				react.createElement("span", { key: "g", style: { fontWeight: 600, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
 					"群聊 · " + String(current.roomName || current.roomId || "")),
-				react.createElement("span", { key: "s", style: { color: roundStatus === "failed" || roundStatus === "cut" ? "var(--dsw-alias-state-error-primary, #f14c4c)" : roundStatus === "done" ? "var(--dsw-alias-state-success-primary, #4ac26b)" : "var(--dsw-alias-state-warn-primary, #e2a03f)" } }, status),
+				react.createElement("span", { key: "s", style: { color: roundStatus === "failed" || roundStatus === "cut" ? "var(--dsw-alias-state-error-primary, #f14c4c)" : roundStatus === "done" && !asks.length && !busy.length ? "var(--dsw-alias-state-success-primary, #4ac26b)" : "var(--dsw-alias-state-warn-primary, #e2a03f)" } }, status),
 				...pills.slice(0, 8).map((pill, i) => react.createElement("span", {
 					key: "m" + i, "data-vssaros-group-member": pill.name, "data-vssaros-group-member-state": pill.state,
 					title: pill.name + " · " + pill.label,
@@ -1650,7 +1787,7 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 						whiteSpace: "nowrap", maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis",
 					},
 				}, pill.name + " · " + pill.label)),
-				lastEvent && lastEvent.text ? react.createElement("span", {
+				lastEvent && lastEvent.text && !((asks.length || busy.length) && lastEvent.kind === "done") ? react.createElement("span", {
 					key: "e", style: { color: "var(--dsw-alias-label-tertiary, #999)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 240 },
 					"data-vssaros-group-member-event": String(lastEvent.kind || ""),
 				}, String(lastEvent.text).slice(0, 60)) : null,
@@ -1667,6 +1804,17 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 				// 不看本轮是否结束：群不再等的成员（迟到）也可能在干活中途请求审批
 				waiting.length ? react.createElement("div", { key: "ap", style: { flex: "1 1 100%" } },
 					react.createElement(GroupApprovals, { approvals: waiting })) : null,
+				// ★ 2026-11-07 选择卡：群会话 / 成员会话里直接答；别的会话只提示，点了去群里（不在别人的输入框上方摊开一张表单）
+				asks.length && inThisRoom ? react.createElement("div", { key: "ask", style: { flex: "1 1 100%" } },
+					react.createElement(GroupAsks, { asks, hint: dockRole === "room" ? "也可以直接在下面打字回复，算作回答" : "" })) : null,
+				asks.length && !inThisRoom ? react.createElement("div", { key: "ask-n", "data-vssaros-group-ask-notice": String(current.roomId || ""),
+					style: { flex: "1 1 100%", display: "flex", alignItems: "center", gap: 6 } }, kids([
+					react.createElement("span", { key: "t", style: { flex: "1 1 auto", minWidth: 0 } },
+						asks.map((a) => String(a.name || "成员") + " 在等你选择").join("；") + "（" + String(current.roomName || "群聊") + "）"),
+					react.createElement("button", { key: "b", type: "button", style: C.btnPrimary, "data-act": "group-ask-open", onClick: () => {
+						try { ctx.uiWorkspace.openSession(String(current.roomId)); } catch { /* 打开失败：提示还在 */ }
+					} }, "去选择"),
+				])) : null,
 			]));
 		}
 
@@ -2127,6 +2275,7 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 			ROOM_PROJECTION_KEY, ROOM_RELAY_TOOL, ROOMS_API, roomMarkOfSession, parseRelayResult, roomPatch, RoomSettingsCard, GroupRelayView,
 			// ★ 2026-11-05 第一批：状态节点 + 只读 MemberDock
 			GROUP_PROGRESS_EVENT, GROUP_DOCK_VISIBILITY_EVENT, MEMBER_DOCK_SLOT, MEMBER_DOCK_ID, MEMBER_DOCK_ORDER, statusNodeText, groupComposerFlowOf, GroupMemberDock,
+			askDraftResult, askRecommendedAnswers, GroupAsks,
 			GROUP_ROUND_LABELS, groupRoundStatus, RELAY_LOST_AFTER, groupComposerHintOf, isHostInterruptedResult,
 			// ★ 2026-11-06：群回复的 Markdown 渲染
 			markdownNodes,

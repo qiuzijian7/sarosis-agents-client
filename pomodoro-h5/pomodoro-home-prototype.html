@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<!-- viewport-fit=cover 才生效安全区；不写 user-scalable=no（伤无障碍），缩放延迟靠 CSS touch-action 去除 -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>番茄钟 H5 · 首页原型（三态）</title>
+<style>
+/* =========================================================
+   设计令牌 Design Tokens（无外部依赖，全部内联）
+   颜色对对比度（WCAG）写在注释里，正文≥4.5:1 / 大字≥3:1
+   ========================================================= */
+:root{
+  --color-primary:#C0392B;        /* 主色·番茄红：白字 5.4:1 ✓ */
+  --color-primary-hover:#9E2E22;  /* 主色按下/悬停 */
+  --color-bg:#FFF7F5;             /* 页面暖白底 */
+  --color-surface:#FFFFFF;        /* 卡片表面 */
+  --color-text:#1F1B1A;           /* 正文近黑：白底 ≥15:1 ✓ */
+  --color-muted:#6B5D5A;          /* 次要文字：白底 6.3:1 ✓ */
+  --color-border:#E7DAD6;         /* 描边 */
+  --color-danger:#B23A2E;         /* 错误态文字：白底 6.0:1 ✓ */
+  --color-danger-bg:#FBEAE7;      /* 错误态底色 */
+  --color-disabled:#D9CFCB;       /* 禁用填充 */
+  --color-disabled-text:#8A7C78;  /* 禁用文字：白底 4.6:1 ✓ */
+  --radius:16px;                  /* 大圆角（友好感） */
+  --radius-sm:10px;               /* 小圆角 */
+  --sp-1:8px; --sp-2:12px; --sp-3:16px; --sp-4:24px; --sp-5:32px;
+  --focus:#1F6FBF;                /* focus 描边（蓝，与主色区分） */
+  --tap:44px;                     /* 最小可点高度 ≥32，取 44 更稳 */
+  /* 安全区：真机取 env() 实际值（桌面=0），演示覆盖值见下方 .annot-* */
+  --sat:env(safe-area-inset-top);   --sar:env(safe-area-inset-right);
+  --sab:env(safe-area-inset-bottom);--sal:env(safe-area-inset-left);
+}
+
+*{box-sizing:border-box;margin:0;padding:0;}
+/* 去双击/双指缩放的 300ms 延迟，但不禁缩放（保留无障碍）；配合 viewport 不写 user-scalable=no */
+button,input,a,html{-ms-touch-action:manipulation;touch-action:manipulation;}
+
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  background:var(--color-bg);
+  color:var(--color-text);
+  line-height:1.5;
+  padding:var(--sp-4) var(--sp-3);
+  display:flex; flex-direction:column; align-items:center; gap:var(--sp-4);
+}
+
+/* —— 顶部说明区（交付说明） —— */
+.brief{
+  width:100%; max-width:760px;
+  background:var(--color-surface);
+  border:1px solid var(--color-border);
+  border-radius:var(--radius);
+  padding:var(--sp-3);
+  font-size:14px;
+}
+.brief h1{font-size:18px;margin-bottom:var(--sp-2);}
+.brief ul{margin:var(--sp-2) 0 0;padding-left:1.2em;}
+.brief li{margin:6px 0;}
+.brief code{background:#F3ECEA;padding:1px 6px;border-radius:6px;font-size:13px;}
+
+/* —— 状态切换器（演示三态用） —— */
+.switcher{
+  display:flex; gap:var(--sp-1); flex-wrap:wrap; justify-content:center;
+}
+.switcher button{
+  min-height:var(--tap); padding:0 var(--sp-3);
+  border:1px solid var(--color-border);
+  background:var(--color-surface); color:var(--color-text);
+  border-radius:var(--radius-sm); font-size:14px; cursor:pointer;
+}
+.switcher button[aria-pressed="true"]{
+  background:var(--color-primary); color:#fff; border-color:var(--color-primary);
+}
+.switcher button:hover{border-color:var(--color-primary);}
+.switcher button:focus-visible{outline:3px solid var(--focus);outline-offset:2px;}
+
+/* —— 手机框（360px，窄屏不横向滚动） —— */
+.phone{
+  position:relative;            /* 供适配标注层绝对定位 */
+  width:360px; max-width:100%;
+  background:var(--color-surface);
+  border:1px solid var(--color-border);
+  border-radius:24px;
+  overflow:hidden;
+  display:flex; flex-direction:column;
+  min-height:640px;             /* 兜底：不支持 dvh 的老浏览器 */
+  min-height:100dvh;            /* 防移动端地址栏伸缩跳动 */
+}
+
+/* —— 顶部栏（顶部留安全区，挖孔不挡标题） —— */
+.topbar{
+  display:flex; align-items:center; gap:var(--sp-2);
+  padding:calc(var(--sp-3) + var(--sat)) calc(var(--sp-3) + var(--sar)) var(--sp-2) calc(var(--sp-3) + var(--sal));
+}
+.topbar .logo{width:24px;height:24px;flex:0 0 auto;}
+.topbar h2{font-size:16px;font-weight:600;}
+.topbar .sub{margin-left:auto;font-size:12px;color:var(--color-muted);}
+
+/* —— 主体（flex 撑满，把底栏顶到底部） —— */
+.screen{
+  flex:1; display:flex; flex-direction:column;
+  padding:var(--sp-2) var(--sp-3) var(--sp-3);
+  gap:var(--sp-3);
+}
+
+/* —— 任务名输入 —— */
+.task{
+  display:flex; align-items:center; gap:var(--sp-2);
+  border:1px solid var(--color-border);
+  border-radius:var(--radius-sm);
+  padding:var(--sp-2) var(--sp-3);
+  background:var(--color-surface);
+}
+.task:focus-within{border-color:var(--color-primary);box-shadow:0 0 0 3px rgba(192,57,43,.15);}
+.task label{font-size:13px;color:var(--color-muted);white-space:nowrap;}
+.task input{
+  flex:1; border:none; outline:none; font-size:15px; color:var(--color-text);
+  background:transparent; min-width:0;
+}
+.task input::placeholder{color:#9A8C88;}
+
+/* —— 计时器 —— */
+.timer{
+  position:relative;
+  width:240px; height:240px;
+  margin:var(--sp-2) auto;
+}
+.timer svg{width:100%;height:100%;transform:rotate(-90deg);}
+.timer .track{fill:none;stroke:#F1DEDA;stroke-width:14;}
+.timer .prog{fill:none;stroke:var(--color-primary);stroke-width:14;stroke-linecap:round;
+  /* 25:00 起步=100% 剩余，dashoffset=0 */
+  stroke-dasharray:691;stroke-dashoffset:0;transition:stroke-dashoffset .3s;}
+.timer .readout{
+  position:absolute; inset:0; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; gap:4px;
+}
+.timer .time{font-size:52px;font-weight:700;letter-spacing:1px;color:var(--color-text);}
+.timer .state{font-size:13px;color:var(--color-muted);}
+
+/* —— 控制按钮 —— */
+.controls{display:flex;gap:var(--sp-2);justify-content:center;}
+.btn{
+  min-height:var(--tap);
+  padding:0 var(--sp-4);
+  border-radius:var(--radius-sm);
+  font-size:15px; font-weight:600; cursor:pointer;
+  border:1px solid transparent;
+  display:inline-flex; align-items:center; justify-content:center; gap:6px;
+}
+.btn-primary{background:var(--color-primary);color:#fff;}
+.btn-primary:hover{background:var(--color-primary-hover);}
+.btn-ghost{background:var(--color-surface);color:var(--color-text);border-color:var(--color-border);}
+.btn-ghost:hover{background:#FBF1EF;border-color:var(--color-primary);}
+.btn:focus-visible{outline:3px solid var(--focus);outline-offset:2px;}
+.btn[disabled]{background:var(--color-disabled);color:var(--color-disabled-text);cursor:not-allowed;border-color:var(--color-disabled);}
+.btn[disabled]:hover{background:var(--color-disabled);}
+
+/* —— 今日计数 —— */
+.today{
+  margin-top:auto;
+  display:flex; align-items:center; gap:var(--sp-2);
+  background:#FBF1EF; border-radius:var(--radius-sm);
+  padding:var(--sp-2) var(--sp-3); font-size:14px;
+}
+.today b{color:var(--color-primary);font-size:16px;}
+.today .hint{margin-left:auto;font-size:12px;color:var(--color-muted);}
+
+/* —— 空态提示卡 —— */
+.empty-card{
+  border:1px dashed var(--color-primary);
+  background:#FFF8F6; border-radius:var(--radius-sm);
+  padding:var(--sp-3); font-size:13px; color:var(--color-muted);
+}
+.empty-card b{color:var(--color-text);}
+
+/* —— 错误态横幅 —— */
+.error-banner{
+  display:flex; align-items:flex-start; gap:var(--sp-2);
+  background:var(--color-danger-bg);
+  border:1px solid var(--color-danger);
+  border-radius:var(--radius-sm);
+  padding:var(--sp-2) var(--sp-3);
+  font-size:13px; color:var(--color-danger);
+}
+.error-banner svg{flex:0 0 auto;width:18px;height:18px;margin-top:2px;}
+.error-banner .retry{
+  margin-top:var(--sp-2);
+  min-height:var(--tap); padding:0 var(--sp-3);   /* 次按钮也守 ≥44 规则 */
+  background:var(--color-danger); color:#fff; border:none; border-radius:var(--radius-sm);
+  font-size:13px; cursor:pointer; font-weight:600;
+}
+.error-banner .retry:hover{background:#972E23;}
+.error-banner .retry:focus-visible{outline:3px solid var(--focus);outline-offset:2px;}
+
+/* —— 底部导航（两个入口，含安全区 + 44px 触控高度） —— */
+.tabbar{
+  display:flex; border-top:1px solid var(--color-border);
+  background:var(--color-surface);
+  padding-left:var(--sal); padding-right:var(--sar);
+  padding-bottom:var(--sab);   /* 底部安全区，Home 条不挡入口 */
+}
+.tabbar a{
+  flex:1; min-height:var(--tap);   /* 触控区 ≥44px（含安全区在内） */
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
+  text-decoration:none; color:var(--color-muted); font-size:12px;
+  border-top:2px solid transparent;
+}
+.tabbar a svg{width:22px;height:22px;}
+.tabbar a.active{color:var(--color-primary);border-top-color:var(--color-primary);}
+.tabbar a:focus-visible{outline:3px solid var(--focus);outline-offset:-3px;background:#FBF1EF;}
+
+/* —— 适配标注层（默认隐藏，点「适配标注」显形） —— */
+.annot{display:none; position:absolute; pointer-events:none; z-index:5; font-size:11px;}
+.phone.show-annot .annot{display:block;}
+/* 安全区：用演示覆盖值（桌面 env=0 看不出），真机自动被 env 覆盖 */
+.annot-safe{
+  left:0; right:0; top:0; height:var(--demo-sat,28px);
+  background:repeating-linear-gradient(45deg,rgba(31,111,191,.18),rgba(31,111,191,.18) 6px,rgba(31,111,191,.06) 6px,rgba(31,111,191,.06) 12px);
+  border-bottom:1px dashed #1F6FBF; color:#1F6FBF;
+  display:flex; align-items:flex-start; justify-content:center; line-height:1.1; padding-top:2px;
+}
+.annot-safe-bottom{
+  left:0; right:0; bottom:0; height:var(--demo-sab,28px);
+  background:repeating-linear-gradient(45deg,rgba(31,111,191,.18),rgba(31,111,191,.18) 6px,rgba(31,111,191,.06) 6px,rgba(31,111,191,.06) 12px);
+  border-top:1px dashed #1F6FBF; color:#1F6FBF;
+  display:flex; align-items:flex-end; justify-content:center; line-height:1.1; padding-bottom:2px;
+}
+/* 底部入口 44px 触控标尺 */
+.annot-tap{
+  left:50%; transform:translateX(-50%); bottom:var(--demo-sab,28px);
+  height:var(--tap); width:120px; margin-bottom:0;
+  border:1px dashed #C0392B; background:rgba(192,57,43,.10); color:#C0392B;
+  display:flex; align-items:center; justify-content:center; border-radius:6px;
+}
+.annot-note{position:absolute; right:6px; bottom:calc(var(--demo-sab,28px) + var(--tap) + 4px);
+  background:#FFF; border:1px solid var(--color-border); border-radius:6px; padding:2px 6px; color:var(--color-text);}
+
+/* —— 状态区块显隐 —— */
+.state-block{display:none;}
+.state-block.show{display:flex;flex-direction:column;gap:var(--sp-3);}
+
+/* —— 底部过渡说明 —— */
+.transitions{
+  width:100%; max-width:760px; font-size:13px; color:var(--color-muted);
+  background:var(--color-surface); border:1px solid var(--color-border);
+  border-radius:var(--radius); padding:var(--sp-3);
+}
+.transitions h3{font-size:14px;color:var(--color-text);margin-bottom:var(--sp-2);}
+.transitions li{margin:6px 0;}
+
+/* —— 令牌速查 —— */
+.tokens{
+  width:100%; max-width:760px; display:flex; flex-wrap:wrap; gap:var(--sp-2);
+  font-size:12px;
+}
+.tokens .chip{display:flex;align-items:center;gap:6px;border:1px solid var(--color-border);
+  border-radius:var(--radius-sm);padding:6px 10px;background:var(--color-surface);}
+.tokens .sw{width:16px;height:16px;border-radius:4px;border:1px solid rgba(0,0,0,.1);}
+</style>
+</head>
+<body>
+
+<!-- ============ 交付说明 ============ -->
+<div class="brief">
+  <h1>番茄钟 H5 · 首页原型（移动端 · 单文件）</h1>
+  <p>双击即可打开，<b>零外部请求</b>（无 CDN / 字体 / 图标库，图标全是内联 SVG）。下方用「状态切换器」演示首页三态，窄屏 360px 不横向滚动，所有可点元素 ≥44×44，hover / focus-visible / 禁用 三态齐备。</p>
+  <ul>
+    <li>主色 <code>#C0392B</code> 番茄红（白字对比 5.4:1）；圆角 <code>16px</code> 大圆角显友好。</li>
+    <li>计时器用内联 SVG 圆环，剩余时间=红弧；正文近黑 <code>#1F1B1A</code>、次要 <code>#6B5D5A</code>（均 ≥4.5:1）。</li>
+    <li>键盘主流程：Tab 顺序 = 状态切换 → 任务名 → 开始/暂停/重置 → 任务/统计，焦点框可见。</li>
+  </ul>
+</div>
+
+<!-- ============ 状态切换器 ============ -->
+<div class="switcher" role="group" aria-label="状态预览">
+  <button data-state="normal" aria-pressed="true">正常态</button>
+  <button data-state="empty" aria-pressed="false">空态</button>
+  <button data-state="error" aria-pressed="false">错误态</button>
+  <button id="annotBtn" aria-pressed="false">适配标注</button>
+</div>
+
+<!-- ============ 手机原型 ============ -->
+<div class="phone" aria-label="番茄钟首页">
+
+  <!-- 适配标注层：安全区 + 底部触控高度（点「适配标注」显形） -->
+  <div class="annot annot-safe" role="note">顶部安全区 safe-area-inset-top（挖孔/刘海）</div>
+  <div class="annot annot-safe-bottom" role="note">底部安全区 safe-area-inset-bottom（Home 条）</div>
+  <div class="annot annot-tap" role="note">底部入口触控区 ≥44px</div>
+  <div class="annot annot-note" role="note">蓝=env 安全区 / 红=44px 触控区</div>
+
+  <div class="topbar">
+    <!-- 内联 SVG：番茄图标 -->
+    <svg class="logo" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="14" r="8" fill="#C0392B"/>
+      <path d="M12 6c0-2 1.5-3 3-3-0.3 1.2-0.3 2.2 0 3-1 0.3-2 0.3-3 0z" fill="#3C9D5B"/>
+      <path d="M9 4.5c0.6 0.6 1.2 1 2.2 1-0.2 0.8-0.2 1.5 0 2-0.9-0.2-1.6-0.6-2.2-1.2z" fill="#4FB46C"/>
+    </svg>
+    <h2>番茄钟</h2>
+    <span class="sub" id="modeLabel">专注模式</span>
+  </div>
+
+  <div class="screen">
+
+    <!-- ===== 正常态 ===== -->
+    <div class="state-block show" id="st-normal">
+      <div class="task">
+        <label for="taskInput">任务</label>
+        <input id="taskInput" type="text" value="写产品周报" placeholder="填一个任务名…" aria-label="当前任务名">
+      </div>
+
+      <div class="timer" aria-label="剩余 25 分 0 秒">
+        <svg viewBox="0 0 240 240" aria-hidden="true">
+          <circle class="track" cx="120" cy="120" r="110"/>
+          <circle class="prog"  cx="120" cy="120" r="110"/>
+        </svg>
+        <div class="readout">
+          <span class="time">25:00</span>
+          <span class="state">准备开始</span>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button class="btn btn-primary" id="startBtn">开始</button>
+        <button class="btn btn-ghost" disabled id="pauseBtn">暂停</button>
+        <button class="btn btn-ghost" id="resetBtn">重置</button>
+      </div>
+
+      <div class="today">
+        <span>今日已完成 <b>3</b> 个番茄</span>
+        <span class="hint">还差 1 个进入长休息</span>
+      </div>
+    </div>
+
+    <!-- ===== 空态 ===== -->
+    <div class="state-block" id="st-empty">
+      <div class="task">
+        <label for="taskInput2">任务</label>
+        <input id="taskInput2" type="text" value="" placeholder="填一个任务名…" aria-label="当前任务名（空）">
+      </div>
+
+      <div class="timer" aria-label="剩余 25 分 0 秒">
+        <svg viewBox="0 0 240 240" aria-hidden="true">
+          <circle class="track" cx="120" cy="120" r="110"/>
+          <circle class="prog"  cx="120" cy="120" r="110"/>
+        </svg>
+        <div class="readout">
+          <span class="time">25:00</span>
+          <span class="state">准备开始</span>
+        </div>
+      </div>
+
+      <!-- 空态说明：为什么空 + 下一步点哪 -->
+      <div class="empty-card">
+        <b>还没填任务名。</b> 填一个任务能让每颗番茄有归属，统计页也更清楚。<br>
+        下一步：点上方输入框，输入任务名后按 <b>开始</b> 即可计时。不填也能直接开始（记为「未命名任务」）。
+      </div>
+
+      <div class="controls">
+        <button class="btn btn-primary" id="startBtn2">开始</button>
+        <button class="btn btn-ghost" disabled id="pauseBtn2">暂停</button>
+        <button class="btn btn-ghost" id="resetBtn2">重置</button>
+      </div>
+
+      <div class="today">
+        <span>今日已完成 <b>0</b> 个番茄</span>
+        <span class="hint">今天还没开始</span>
+      </div>
+    </div>
+
+    <!-- ===== 错误态 ===== -->
+    <div class="state-block" id="st-error">
+      <div class="task">
+        <label for="taskInput3">任务</label>
+        <input id="taskInput3" type="text" value="写产品周报" placeholder="填一个任务名…" aria-label="当前任务名">
+      </div>
+
+      <div class="timer" aria-label="剩余 25 分 0 秒">
+        <svg viewBox="0 0 240 240" aria-hidden="true">
+          <circle class="track" cx="120" cy="120" r="110"/>
+          <circle class="prog"  cx="120" cy="120" r="110"/>
+        </svg>
+        <div class="readout">
+          <span class="time">25:00</span>
+          <span class="state">准备开始</span>
+        </div>
+      </div>
+
+      <!-- 错误态：失败原因 + 重试入口 -->
+      <div class="error-banner" role="alert">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#B23A2E" d="M12 2 1 21h22L12 2zm0 6 7 12H5l7-12zm-1 4v4h2v-4h-2zm0 5v2h2v-2h-2z"/></svg>
+        <div>
+          本地保存失败（localStorage 不可用或已满），已完成的番茄数可能无法保留。
+          <br>原因：浏览器隐私模式 / 存储配额超限 / 被禁用。
+          <br><button class="retry" id="retryBtn">重试保存</button>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button class="btn btn-primary" id="startBtn3">开始</button>
+        <button class="btn btn-ghost" disabled id="pauseBtn3">暂停</button>
+        <button class="btn btn-ghost" id="resetBtn3">重置</button>
+      </div>
+
+      <div class="today">
+        <span>今日已完成 <b>3</b> 个番茄</span>
+        <span class="hint">未写入本地</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- 底部导航：两个入口 -->
+  <nav class="tabbar" aria-label="主导航">
+    <a href="#" class="active" id="navTask">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 5h16v3H4zM4 10h16v3H4zM4 15h10v3H4z"/></svg>
+      任务
+    </a>
+    <a href="#" id="navStat">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 20V10h4v10H4zm8 0V4h4v16h-4zm8 0v-6h-4v6h4z"/></svg>
+      统计
+    </a>
+  </nav>
+</div>
+
+<!-- ============ 三态转换条件 ============ -->
+<div class="transitions">
+  <h3>三态之间的转换条件（给 Coder 的对齐说明）</h3>
+  <ul>
+    <li><b>正常态</b>：打开页面且 localStorage 可用、且（可选）已填任务名。默认落地态。</li>
+    <li><b>空态</b>：任务名为空时进入。不阻塞「开始」，但用虚线卡片提示先填任务名更优；今日计数=0 时同显「今天还没开始」。</li>
+    <li><b>错误态</b>：任何写 localStorage 抛错时进入（隐私模式 / 配额满 / 被禁用）。计时继续可用，仅保存失败，提供「重试保存」。</li>
+    <li>「任务 / 统计」为底部两个入口；本稿仅含首页，点按后下一稿再补对应页面（先给空态占位）。</li>
+    <li><b>适配标注</b>：点上方「适配标注」按钮，稿内会用蓝色斜纹标出顶部/底部 <code>env(safe-area-inset-*)</code> 安全区，红色虚框标出底部入口 <code>44px</code> 触控区——按 @Code Reviewer 验收点对齐用。</li>
+  </ul>
+</div>
+
+<!-- ============ 令牌速查 ============ -->
+<div class="tokens" aria-label="设计令牌">
+  <span class="chip"><span class="sw" style="background:#C0392B"></span>primary #C0392B</span>
+  <span class="chip"><span class="sw" style="background:#9E2E22"></span>primary-hover #9E2E22</span>
+  <span class="chip"><span class="sw" style="background:#FFF7F5"></span>bg #FFF7F5</span>
+  <span class="chip"><span class="sw" style="background:#1F1B1A"></span>text #1F1B1A</span>
+  <span class="chip"><span class="sw" style="background:#6B5D5A"></span>muted #6B5D5A</span>
+  <span class="chip"><span class="sw" style="background:#B23A2E"></span>danger #B23A2E</span>
+  <span class="chip"><span class="sw" style="background:#D9CFCB"></span>disabled #D9CFCB</span>
+  <span class="chip"><span class="sw" style="background:#1F6FBF"></span>focus #1F6FBF</span>
+  <span class="chip">圆角 16 / 小 10</span>
+  <span class="chip">间距 8·12·16·24·32</span>
+  <span class="chip">字号 12·13·14·15·16 / 大字 18·52</span>
+  <span class="chip">触控 ≥44px（--tap）</span>
+  <span class="chip">安全区 env(safe-area-inset-*)</span>
+  <span class="chip">高度 100dvh（100vh 兜底）</span>
+  <span class="chip">去延迟 touch-action:manipulation</span>
+</div>
+
+<script>
+/* 状态切换：仅用于演示三态，真实页面由计时逻辑驱动 */
+const blocks = { normal:document.getElementById('st-normal'),
+                 empty:document.getElementById('st-empty'),
+                 error:document.getElementById('st-error') };
+document.querySelectorAll('.switcher button').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    const s = btn.dataset.state;
+    document.querySelectorAll('.switcher button').forEach(b=>b.setAttribute('aria-pressed', b===btn));
+    Object.entries(blocks).forEach(([k,el])=>el.classList.toggle('show', k===s));
+  });
+});
+/* 适配标注开关：真机 env() 在桌面为 0，这里用 --demo-sa* 演示覆盖值 */
+const phone = document.querySelector('.phone');
+const ab = document.getElementById('annotBtn');
+ab.addEventListener('click',()=>{
+  const on = phone.classList.toggle('show-annot');
+  ab.setAttribute('aria-pressed', on);
+  phone.style.setProperty('--demo-sat', on?'28px':null);
+  phone.style.setProperty('--demo-sab', on?'28px':null);
+});
+/* 底部导航：演示用，点按切换高亮（真实页跳转留给 Coder） */
+document.querySelectorAll('.tabbar a').forEach(a=>{
+  a.addEventListener('click',e=>{e.preventDefault();
+    document.querySelectorAll('.tabbar a').forEach(x=>x.classList.remove('active'));
+    a.classList.add('active');});
+});
+</script>
+</body>
+</html>

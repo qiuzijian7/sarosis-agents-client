@@ -9,7 +9,6 @@ import { AgentTurnStatus } from '../../common/agentDriver.js';
 import { AgentDriverService } from '../../browser/agentDriverService.js';
 import type { AgentBinding } from '../../../../common/agentStudioTypes.js';
 import type { IAgentOSService } from '../../common/agentOS.js';
-import type { ISkillRegistry } from '../../common/skills.js';
 import type { IAgentStudioService } from '../../common/agentStudio.js';
 import type { ILogService } from '../../../../../platform/log/common/log.js';
 import type { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
@@ -310,13 +309,12 @@ class InMemoryAgentStudioService {
 function makeDriver(studio: InMemoryAgentStudioService): AgentDriverService {
 	const log = new P1bLogService();
 	const config = { getValue: () => undefined } as unknown as IConfigurationService;
-	// ⚠ 2026-09-21 修正：此前这里按**旧签名**注入（第 7 个位置传 IFileService、且缺最后的
-	// IInstantiationService）⇒ `_mcpService`/`_storageService` 双双错位成 `{}`。因为错位后
-	// 两边都是空对象、且这些用例不触碰 MCP/存储，所以一直"绿着"。现按真实构造签名对齐
-	// （agentOS, skills, log, config, studio, workspaceContext, **mcp**, **storage**, **instantiation**）。
+	// ★ P3（2026-11-07）：`ISkillRegistry` 注入已从构造函数移除 ⇒ 位置参数同步少一个。
+	// ⚠ 构造参数是位置绑定的（历史踩过 stub 错位：2026-09-21 那次 `_mcpService`/
+	//   `_storageService` 错位成 `{}`，测试却一直绿着）⇒ 改签名必须逐个测试桩同步。
+	// 现签名：（agentOS, log, config, studio, workspaceContext, mcp, storage, instantiation）。
 	return new AgentDriverService(
 		{} as unknown as IAgentOSService,
-		{} as unknown as ISkillRegistry,
 		log as unknown as ILogService,
 		config,
 		studio as unknown as IAgentStudioService,
@@ -492,7 +490,6 @@ suite('Agent Driver Service — resume 范式与策略提示词一致（R4 修�
 	): AgentDriverService {
 		return new AgentDriverService(
 			{} as unknown as IAgentOSService,
-			{} as unknown as ISkillRegistry,
 			new P1bLogService() as unknown as ILogService,
 			{ getValue: () => undefined } as unknown as IConfigurationService,
 			studio as unknown as IAgentStudioService,

@@ -15,7 +15,7 @@ import { reduceCardState, type MutableCardState } from '../../../common/subAgent
 import type { Agent } from '../../../../../common/agentStudioTypes.js';
 import { getBuiltinAgentIdentity } from '../../../common/builtinAgents.js';
 import { isValidSkillId } from '../../../common/skillId.js';
-import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
+import type { IBuiltinToolRegistration } from './toolRegistry.js';
 import type { ICodebaseGraphService } from '../../codebaseGraphService.js';
 import type { IWorkspaceContextService } from '../../../../../../platform/workspace/common/workspace.js';
 

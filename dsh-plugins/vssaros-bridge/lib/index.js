@@ -12,6 +12,7 @@ import { createTofService, openExternalUrl, tofToolDefinitions } from './tof.js'
 import { buildRouteProfile, routeReasoningDefault, sameProfile } from './providerProfile.js';
 import { CODEBUDDY_ROUTE, createCodeBuddyService } from './codebuddy.js';
 import { createLightAIService } from './lightai.js';
+import { createAgentLensListener, readConfig as readAgentLensConfig } from './agentlens.js';
 
 // 启动计时（2026-10-15，"首启慢"排查）：本行的打印时刻 ≈ node 引导 + dsh 核心 + cordis profile
 // 装载完成的时刻（cordis 在解析插件图时 import 本文件）；与 apply() 里那一条合起来，Host 冷启被拆成
@@ -618,6 +619,17 @@ export function apply(ctx, config = {}) {
 		});
 		return observeStream(next(), handle);
 	});
+	// ★ AgentLens（智研 LLM 监控）：每次 llm/stream 上报一条 LLM span（OTLP/HTTP JSON）。
+	//   与上面记账同钩子、互不干扰；只观察 options 与 chunk，失败静默 ⇒ 不影响模型流。
+	//   配置在 lib/agentlens.js（环境变量 VSSAROS_AGENTLENS_* 可覆盖，含开关）。
+	const agentLensConfig = readAgentLensConfig();
+	const agentLensListener = createAgentLensListener(agentLensConfig);
+	if (agentLensListener) {
+		ctx.on('llm/stream', agentLensListener);
+		console.log(`[vssaros-bridge] AgentLens 已启用：space=${agentLensConfig.space} app=${agentLensConfig.appName} endpoint=${agentLensConfig.baseUrl}`);
+	} else {
+		console.log('[vssaros-bridge] AgentLens 未启用（VSSAROS_AGENTLENS_ENABLED=0 或缺密钥/地址）');
+	}
 	// 投影：同 key + 同 stateVersion 的 register 是 ref-count 共享。`register` 内部走的是**调用方**
 	// ctx 的 effect ⇒ 随 child 作用域自动释放（与 vssaros-agents 的 persona 投影同一写法，不手动 dispose）。
 	ctx.inject(['sessionProjections'], child => child.effect(() => {

@@ -13,14 +13,19 @@
  *      `dshPluginDirectInstall` 里守住；
  *   ② **运行时**（页面里装第三方插件/技能、`dsh plugin add`）→ 仍要 pnpm ⇒ 产物必须自带一份。
  *
- * 为什么只带一个 `pnpm.cjs`：pnpm 10 的 npm 包是**单文件 bundle**（`dist/pnpm.cjs`，7.4MB，
- * 自带全部依赖）⇒ 产物只多 7.4MB，不需要 node_modules 树、不需要 bin shim。
+ * ★ 2026-11-07：pnpm 跟随上游升到 **11.28.5**，内置形态随之改变：
+ *   pnpm 10 是单文件 bundle（`dist/pnpm.cjs`，7.4MB）；pnpm 11 是**目录分发** ——
+ *   `bin/pnpm.mjs` 动态 import `dist/pnpm.mjs`（15.9MB），还要 `dist/node_modules` /
+ *   `dist/vendor` / `dist/worker.js` ⇒ 只拷入口会 ERR_MODULE_NOT_FOUND，必须整包随附（≈21MB）。
+ *
+ * 版本单一真源：根 `package.json` 的 `devDependencies.pnpm`（精确版本）+ `packageManager`。
+ * 构建期 `prepack-dsh-runtime.mjs` 用同一份造 PATH shim；`ensure-pnpm-tool.mjs` 用同一份拷进产物；
+ * `check-dsh-release.mjs` / `install-deps.ps1` 交叉校验 ⇒ 构建机 / 本机 / 用户机器三处同版本。
  *
  * 为什么 shim 必须用 `node.path`（Host 自己的解释器）而**不能**用 Electron：
- *   实测 `ELECTRON_RUN_AS_NODE=1 <exe> pnpm.cjs --version` 能出 10.18.0，
- *   但真实 `pnpm install` 会失败（Electron 39 的 node 对 pnpm 的安装阶段不够用）。
+ *   实测 Electron 39 的 node 跑 pnpm `--version` 没问题，但真实 `pnpm install` 会崩。
  *   而"别人机器没有 node"这件事由 `dshNodeInstaller` 兜着：没 node 就跑不了 dsh ⇒
- *   Host 起来时 `node.path` **一定**是可用解释器 ✓。
+ *   Host 起来时 `node.path` **一定**是可用解释器（门槛 22.19+，满足 pnpm 11 的 ≥22.13）✓。
  *
  * 运行：node src/vs/sessions/contrib/dshHarness/test/common/run-all-common-tests.mjs dshBundledPnpm
  */
@@ -46,21 +51,25 @@ function stripComments(s: string): string {
 
 suite('产物自带 pnpm', () => {
 
-	test('1) 落位脚本：目标在 resources/app/tools/pnpm，且校验大小', () => {
+	test('1) 落位脚本：pnpm 11 整包落位 + 版本 pin + 完整性校验', () => {
 		const tool = stripComments(read(TOOL));
 		assert.match(tool, /resources\/app\/tools\/pnpm/,
 			'pnpm 必须落在 resources/app/tools/pnpm（与 injectBundledPnpm 的读取路径一致）');
-		assert.match(tool, /pnpm\.cjs/,
-			'必须落 pnpm.cjs（单文件 bundle）');
-		// ⚠ 必须钉**真实比较**（`if (size >= MIN_BYTES)`），只查常量名会被"常量还在、比较改成 >= 0"骗过（实测假绿 ✗）
-		assert.match(tool, /if \(size >= MIN_BYTES\)/,
-			'"已存在"判定必须按 MIN_BYTES 真实比较（否则半截文件会被当成完整文件 ✗）');
+		// ★ pnpm 11 是目录分发：只拷 bin/pnpm.mjs 会 ERR_MODULE_NOT_FOUND
+		assert.match(tool, /bin\/pnpm\.mjs/, '入口必须是 bin/pnpm.mjs（不再是 pnpm.cjs 单文件）');
+		assert.match(tool, /dist\/pnpm\.mjs/, '必须同时落 dist/pnpm.mjs（bin 会动态 import 它）');
+		assert.match(tool, /devDependencies\.pnpm/, '版本必须来自根 package.json 的单一真源');
+		assert.match(tool, /pinnedPnpmVersion/, '要把 pin 读出来并校验仓库装的版本');
+		// ⚠ 必须钉**真实比较**，只查常量名会被"常量还在、比较改成 >= 0"骗过（实测假绿 ✗）
+		assert.match(tool, /size >= MIN_BYTES/,
+			'完整性判定必须按 MIN_BYTES 真实比较（否则半截文件会被当成完整文件 ✗）');
 		// 失败不许阻断打包（启动路径已被直装兜底覆盖）
 		assert.match(tool, /不阻断打包|process\.exit\(0\)/,
 			'拿不到 pnpm 时不许阻断打包（启动路径已有直装兜底）');
-		// 不许要求用户机器有 node（那正是我们要解决的问题）
 		assert.ok(!/require\('node:child_process'\)/.test(tool),
 			'落位脚本不许依赖运行时 node（它是构建期脚本，可以在构建机跑；但产物里不该靠它）');
+		assert.ok(!/fromGlobalPnpm/.test(tool),
+			'不许再从全局 pnpm 的 shim 位置找源（那正是 CI 版本漂移的来源）');
 	});
 
 	test('2) 打包时落位（strip-before-pack 调用它）', () => {
@@ -78,8 +87,11 @@ suite('产物自带 pnpm', () => {
 		const end = runtime.indexOf('\nexport ', at + 10);
 		const body = runtime.slice(at, end > 0 ? end : at + 3000);
 
-		assert.match(body, /bundledPnpmCjs\(\)/,
-			'必须读产物自带的 pnpm.cjs');
+		assert.match(body, /bundledPnpmEntry\(\)/,
+			'必须读产物自带的 pnpm 包入口（bin/pnpm.mjs）');
+		// dist 的完整性检查在 bundledPnpmEntry() 里（不在 injectBundledPnpm 的函数体内）⇒ 查全文
+		assert.match(runtime, /dist[\s\S]{0,120}?pnpm\.mjs/,
+			'必须同时确认 dist/pnpm.mjs 在位（pnpm 11 是目录分发，缺它会 ERR_MODULE_NOT_FOUND）');
 		assert.match(body, /hasPnpmOnPath\(/,
 			'系统已有 pnpm 时必须尊重用户环境（不注入）');
 		assert.match(body, /nodeExe/,
@@ -91,5 +103,30 @@ suite('产物自带 pnpm', () => {
 		const supervisor = stripComments(read(SUPERVISOR));
 		assert.match(supervisor, /injectBundledPnpm\(env, node\.path\)/,
 			'spawn Host 前必须调用 injectBundledPnpm(env, node.path)');
+	});
+
+	test('4) 版本单一真源：根 package.json / prepack / 发布守卫 / CI 四处同源', () => {
+		const pkg = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'));
+		const pin = String(pkg?.devDependencies?.pnpm ?? '');
+		assert.match(pin, /^\d+\.\d+\.\d+$/,
+			'devDependencies.pnpm 必须是精确版本（不许 ^/~/latest，否则 CI 会漂）');
+		assert.strictEqual(pkg.packageManager, `pnpm@${pin}`,
+			'packageManager 必须与 devDependencies 同值（Corepack/工具读的是这个字段）');
+
+		const prepack = stripComments(read('build/prepack-dsh-runtime.mjs'));
+		assert.match(prepack, /devDependencies\.pnpm/, 'prepack 要从同一个真源读 pin');
+		assert.match(prepack, /buildPnpmShimDir/, '构建期要把 pin 的那份注入 dsh 子进程 PATH');
+		assert.ok(!/'install', '-g', 'pnpm'/.test(prepack),
+			'prepack 不许再用 npm -g 装任意版本（那正是 12.18.0 漂进来的路径）');
+
+		const release = stripComments(read('build/saros/check-dsh-release.mjs'));
+		assert.match(release, /devDependencies\.pnpm/, '发布守卫要读同一个真源');
+		assert.match(release, /tools', 'pnpm'/, '发布守卫要核对**产物内置**的那份');
+		assert.match(release, /sameVersion\(prodPnpm\.version, depPin\)/,
+			'产物内置版本必须与 pin 真实比对（只查文件存在不够）');
+
+		const ci = stripComments(read('.ci/scripts/install-deps.ps1'));
+		assert.match(ci, /devDependencies\.pnpm/, 'CI 要校验同一个真源');
+		assert.ok(!/npm install -g pnpm/.test(ci), 'CI 不许再装 latest（构建期不读全局 pnpm）');
 	});
 });

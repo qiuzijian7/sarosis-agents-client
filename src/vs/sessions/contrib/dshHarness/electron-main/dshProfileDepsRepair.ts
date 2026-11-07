@@ -16,8 +16,16 @@
  * 真机时间线：10:01 / 10:06 / 10:55 三次启动全是同一个错（host 日志字节数一模一样）。
  * ⇒ **不是偶发，是"每次装插件后必坏"** ⇒ 光手工补一次没用（下次装插件又被覆盖）⇒ 必须自愈 ✓。
  *
- * 修法：装完插件之后体检一次 —— 凡是"嵌套副本比顶层同名包少文件"的，
- * 就把顶层那份**补齐**（顶层是 pnpm 装出来的那份，通常完整）⇒ 可重复、自愈 ✓。
+ * 修法：体检一次 —— 在**同名同版本的所有副本**里挑文件最全的那份当基准，把其它副本补齐
+ *   ⇒ 可重复、自愈 ✓。
+ *
+ * ★★ 2026-11-07（真机：F5 启动崩溃，Host `StartupError: 3 required plugins did not activate`，
+ *   四条 `failed to import: Cannot find module './accept'`）**基准不能再只认顶层**：
+ *   原实现拿"顶层 `negotiator`"当基准、只补嵌套副本；而这次 pnpm 把
+ *   `node_modules/negotiator`（顶层）**和** `compression/node_modules/negotiator` 都装成缺
+ *   `lib/accept.js` 的残次品，只有 `@deepseek-ai/dsh-host-webserver/node_modules/negotiator` 是完整的
+ *   ⇒ 顶层基准自己就缺 ⇒ 差集里根本没有 accept.js ⇒ **自愈静默失效** ✗✗。
+ *   ⇒ 改成在全部副本里选最完整的一份（不限顶层），顶层残缺也能被补回来 ✓。
  *
  * 为什么不用 `pnpm install` 修：pnpm 正是把它装坏的那一方（重装 = 再坏一次）。
  */
@@ -185,45 +193,67 @@ export async function repairProfileDeps(nmDir: string, log: (line: string) => vo
 	const repaired: string[] = [];
 	let scanned = 0;
 	const top = await topLevelPackages(nmDir);
-	const topFiles = new Map<string, readonly string[]>();
+
+	// ① 收集**同名同版本**的所有副本：顶层 + 每个顶层包自带的一层 node_modules。
+	//    ⚠ 按 version 分组：不同大版本的同名包文件结构不同，互相当基准会补进错版本的文件 ✗。
+	const copies = new Map<string, string[]>();
+	const addCopy = async (name: string, dir: string): Promise<void> => {
+		let version = '';
+		try {
+			version = String((JSON.parse(await fsp.readFile(join(dir, 'package.json'), 'utf8')) as { version?: string }).version ?? '');
+		} catch { /* 没有 package.json / 版本 ⇒ 归到空版本组 */ }
+		const key = name + '@' + version;
+		const list = copies.get(key) ?? [];
+		list.push(dir);
+		copies.set(key, list);
+	};
 	for (const pkg of top) {
-		topFiles.set(pkg, await listFiles(join(nmDir, pkg)));
+		await addCopy(pkg, join(nmDir, pkg));
 	}
 	for (const pkg of top) {
 		const nestedDir = join(nmDir, pkg, 'node_modules');
-		let nested;
+		let nestedNames: string[] = [];
 		try {
-			nested = await fsp.readdir(nestedDir, { withFileTypes: true });
+			nestedNames = await topLevelPackages(nestedDir);
 		} catch {
 			continue;   // 没有嵌套依赖 ⇒ 无事可做 ✓
 		}
-		for (const entry of nested) {
-			if (!entry.isDirectory() || entry.name === '.bin') {
+		for (const name of nestedNames) {
+			await addCopy(name, join(nestedDir, name));
+		}
+	}
+
+	// ② 每组选**文件最全**的一份当基准（★ 不限顶层：顶层自己也残时，完整副本可能在
+	//    `@scope/xxx/node_modules/<name>` 里 —— 2026-11-07 真机就是这种情况）。
+	for (const dirs of copies.values()) {
+		if (dirs.length < 2) {
+			continue;   // 只有一份 ⇒ 无从对照（原有"顶层没有就不动"的语义保持）✓
+		}
+		const lists: { dir: string; files: readonly string[] }[] = [];
+		for (const dir of dirs) {
+			lists.push({ dir, files: await listFiles(dir) });
+		}
+		const best = lists.reduce((a, b) => (b.files.length > a.files.length ? b : a));
+		if (best.files.length === 0) {
+			continue;   // 全都空 ⇒ 没有可用基准
+		}
+		for (const copy of lists) {
+			if (copy === best) {
 				continue;
 			}
-			const names = entry.name.startsWith('@')
-				? await topLevelPackages(nestedDir).then(all => all.filter(n => n.startsWith(entry.name + '/')))
-				: [entry.name];
-			for (const name of names) {
-				const topFilesOf = topFiles.get(name);
-				if (!topFilesOf || topFilesOf.length === 0) {
-					continue;   // 顶层没有同名包 ⇒ 无从对照 ✓
-				}
-				scanned += 1;
-				const nestedPath = join(nestedDir, name);
-				const have = await listFiles(nestedPath);
-				const missing = missingFilesInNestedCopy(have, topFilesOf);
-				for (const file of missing) {
-					const from = join(nmDir, name, file);
-					const to = join(nestedPath, file);
-					try {
-						await fsp.mkdir(join(to, '..'), { recursive: true });
-						await fsp.copyFile(from, to);
-						repaired.push(pkg + '/node_modules/' + name + '/' + file);
-						log(`deps-repair: 补齐 ${pkg}/node_modules/${name}/${file}（嵌套副本缺文件 ⇒ 会让 Host 的插件 import 失败 ✗）`);
-					} catch {
-						// best effort：补不上就让它在 Host 的失败日志里显形
-					}
+			scanned += 1;
+			const missing = missingFilesInNestedCopy(copy.files, best.files);
+			for (const file of missing) {
+				const from = join(best.dir, file);
+				const to = join(copy.dir, file);
+				try {
+					await fsp.mkdir(join(to, '..'), { recursive: true });
+					await fsp.copyFile(from, to);
+					const rel = to.slice(nmDir.length + 1).replace(/\\/g, '/');
+					repaired.push(rel);
+					log(`deps-repair: 补齐 ${rel}（副本缺文件 ⇒ 会让 Host 的插件 import 失败 ✗；基准来自另一份同名包）`);
+				} catch {
+					// best effort：补不上就让它在 Host 的失败日志里显形
 				}
 			}
 		}

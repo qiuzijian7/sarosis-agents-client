@@ -12,7 +12,7 @@ import type { IFileService } from '../../../../../../platform/files/common/files
 import type { ILogService } from '../../../../../../platform/log/common/log.js';
 import type { IAgentOSService } from '../../../common/agentOS.js';
 import { IToolResultContent, NonRetryableToolError, ToolSecurityLevel } from '../../../common/providers.js';
-import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
+import type { IBuiltinToolRegistration } from './toolRegistry.js';
 // ★ 2026-09-21：随 switch_paradigm / plan_register 正式退役，以下 5 个导入一并删除
 //   （退役说明见本文件 registerCompatibilityTools 内的「已正式退役」注释块）：
 //     ParsedPlanTask / getPlanQueueHandle / formatCurrentTaskReminder / AgentParadigm /

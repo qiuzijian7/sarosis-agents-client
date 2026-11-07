@@ -98,14 +98,18 @@ export function ensureLoopbackNoProxy(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv
 }
 
 /** 产物自带的 pnpm 单文件 bundle（打包版才有；dev 侧返回 undefined）。 */
-function bundledPnpmCjs(): string | undefined {
+function bundledPnpmEntry(): string | undefined {
 	const res = (process as unknown as { resourcesPath?: string }).resourcesPath;
 	if (!res) {
 		return undefined;
 	}
-	// 打包版：<安装根>/resources/app/tools/pnpm/pnpm.cjs（由 build/saros/ensure-pnpm-tool.mjs 落位）
-	const p = join(res, 'app', 'tools', 'pnpm', 'pnpm.cjs');
-	return existsSync(p) ? p : undefined;
+	// 打包版：<安装根>/resources/app/tools/pnpm/（由 build/saros/ensure-pnpm-tool.mjs 落位）。
+	// ★ 2026-11-07：pnpm 11.28.5 不再是单文件 bundle —— `bin/pnpm.mjs` 会动态 import
+	//   `dist/pnpm.mjs`，且还要 `dist/node_modules` / `dist/vendor` 等 ⇒ 整包随附。
+	//   两个文件都在才认（只拷 bin 会 ERR_MODULE_NOT_FOUND）。
+	const dir = join(res, 'app', 'tools', 'pnpm');
+	const entry = join(dir, 'bin', 'pnpm.mjs');
+	return existsSync(entry) && existsSync(join(dir, 'dist', 'pnpm.mjs')) ? entry : undefined;
 }
 
 /** PATH 里是否已经有 pnpm（有就尊重用户环境，不注入自带的）。 */
@@ -132,16 +136,17 @@ function hasPnpmOnPath(pathValue: string): boolean {
  *   · 「启动时装插件」已有**直装兜底**（不依赖 pnpm，实测 35/35、4.3 秒）；
  *   · 但**运行时**仍要用 pnpm（页面里装第三方插件/技能、`dsh plugin add`）⇒ 产物必须自带一份。
  *
- * 实现要点：只带**单文件 bundle**（`pnpm.cjs`，7.4MB），shim 里用
- * **Electron 自己当 node**（`ELECTRON_RUN_AS_NODE=1`）⇒ 用户机器**不需要装 node**
- * （实测 `ELECTRON_RUN_AS_NODE=1 "<exe>" pnpm.cjs --version` ⇒ 10.18.0，1.1 秒）。
+ * 实现要点（2026-11-07 起）：产物自带的是**仓库 pin 的 pnpm@11.28.5 整包**（约 21MB，
+ * 入口 `bin/pnpm.mjs` → `dist/pnpm.mjs`），版本与构建期 prepack 用的那份同源。
+ * shim 用 **Host 自己的 `node.path`** 跑它 ⇒ 用户机器**不需要装 node**（dshNodeInstaller 会托管
+ * 一个 ≥22.19 的 Node，满足 pnpm 11 的 ≥22.13 门槛）✓。
  *
  * ⚠ 与本文件顶部"不能用 Electron 跑 dsh"那条结论**不矛盾**：那条限制是 dsh 需要
  *   `node-addon-require-builtin`（Electron 39 不支持）；pnpm 是**纯 JS**，不碰那个能力 ✓。
  */
 export function injectBundledPnpm(env: NodeJS.ProcessEnv, nodeExe: string | undefined): void {
-	const cjs = bundledPnpmCjs();
-	if (!cjs || !nodeExe) {
+	const entry = bundledPnpmEntry();
+	if (!entry || !nodeExe) {
 		return;
 	}
 	const key = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
@@ -155,21 +160,21 @@ export function injectBundledPnpm(env: NodeJS.ProcessEnv, nodeExe: string | unde
 		// 每次启动都重写（tmp 可能被清理；幂等且只有几百字节）
 		//
 		// ⚠ **必须用真正在用的那个 node**（`node.path`），不能用 Electron 顶替：
-		//   实测 `ELECTRON_RUN_AS_NODE=1 <exe> pnpm.cjs --version` 能出 10.18.0，
-		//   但 `pnpm install` 装到 `added 513` 时**直接崩掉**（exit 异常）——
-		//   Electron 39 的 node 对 pnpm 的并发安装阶段不够用 ✗✗。
+		//   实测 Electron 39 的 node 跑 pnpm `--version` 没问题，但 `pnpm install` 装到
+		//   `added 513` 时**直接崩掉**（并发安装阶段不够用）✗✗。
 		//   而"别人机器没有 node"这件事由 `dshNodeInstaller` 兜着：没 node 就跑不了 dsh，
 		//   所以 Host 起来时 `node.path` **一定**是可用解释器（托管安装的或系统的）✓。
+		//   pnpm 11.28.5 还要求 Node ≥22.13，托管 Node 的门槛是 22.19+ ⇒ 满足 ✓。
 		if (isWindows) {
 			writeFileSync(
 				join(dir, 'pnpm.cmd'),
-				'@echo off\r\n"' + nodeExe + '" "' + cjs + '" %*\r\n',
+				'@echo off\r\n"' + nodeExe + '" "' + entry + '" %*\r\n',
 				'utf8',
 			);
 		} else {
 			writeFileSync(
 				join(dir, 'pnpm'),
-				'#!/bin/sh\n"' + nodeExe + '" "' + cjs + '" "$@"\n',
+				'#!/bin/sh\n"' + nodeExe + '" "' + entry + '" "$@"\n',
 				{ mode: 0o755 },
 			);
 		}

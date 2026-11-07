@@ -11,7 +11,6 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const ROOT = join(HERE, '..', '..');
-const TOOLS_DIR = join(ROOT, 'resources', '.agents', 'tools');
 const RUNTIME_DIR = join(ROOT, 'dsh-runtime');
 const SNAPSHOT = join(ROOT, 'dsh-plugins', 'tools-snapshot.json');
 
@@ -21,39 +20,42 @@ const SNAPSHOT = join(ROOT, 'dsh-plugins', 'tools-snapshot.json');
  * 或整份跳过 —— 由迁移器按 `--include-missing` 决定）。
  */
 export const TOOL_MAP = {
+	// ★ P3（2026-11-07）：映射目标一律是 **dsh 官方真名**（`dsh-runtime` 注册名 +
+	//   `tools-snapshot.json`），不再是 IDE 侧 `resources/.agents/tools/*.json` 的兼容别名。
+	//   `check-skill-tool-refs.mjs` 会逐条校验「非 null 的目标真实存在」，防这张表再次腐烂。
 	// 文件与检索
-	read_file: 'file_read',
-	write_file: 'file_write',
-	edit_file: 'patch',
-	multi_edit: 'patch',
-	read_image: 'file_read',
-	ls: 'search_files',
-	grep: 'search_files',
-	glob: 'search_files',
+	read_file: 'read',
+	write_file: 'write',
+	edit_file: 'edit',
+	multi_edit: 'edit',
+	read_image: 'read_image',
+	ls: 'glob',
+	grep: 'grep',
+	glob: 'glob',
 	// 执行
-	bash: 'terminal',
-	pwsh: 'terminal',
-	python_repl: 'execute_code',
-	bash_output: 'process',
-	kill_shell: 'process',
-	wait: 'process',
+	bash: 'bash',
+	pwsh: 'pwsh',
+	python_repl: null,
+	bash_output: 'terminal_read',
+	kill_shell: 'terminal_signal',
+	wait: 'job_output',
 	// 网络
-	web_fetch: 'web_extract',
+	web_fetch: 'web_fetch',
 	web_search: 'web_search',
 	// 计划与协同
-	todo_write: 'todo',
-	complete_step: 'todo',
+	todo_write: 'todo_write',
+	complete_step: 'todo_write',
 	enter_plan: null,
-	ask: 'clarify',
-	task: 'delegate_task',
+	ask: 'ask_user_question',
+	task: null,
 	evidence: null,
 	// 技能与记忆
-	run_skill: 'skill_view',
-	read_skill: 'skill_view',
+	run_skill: 'skill',
+	read_skill: 'read_skill',
 	install_skill: 'skill_manage',
-	remember: 'memory_remember',
-	forget: 'memory_delete',
-	memory: 'memory_search',
+	remember: 'memory',
+	forget: 'memory',
+	memory: 'memory',
 	// 模板（dsh 无对应）
 	save_template: null,
 	read_template: null,
@@ -120,11 +122,11 @@ export function officialDshToolNames() {
  *
  * 真源 = 官方 runtime（dsh 真名） + `dsh-plugins/tools-snapshot.json`（插件工具）
  *      + 不进离线快照的内置工具（memory / dtodo / 原生 skill）。
- * 过渡期默认额外并入 IDE 侧 `resources/.agents/tools/*.json` 的 76 个**兼容别名**：
- * 它们不是 dsh 工具，只为不把历史技能正文误判成悬空引用。
- * P3 删除 IDE 侧工具文件后把 `dshOnly` 默认值翻成 true，这份别名表即可一并删掉。
+ * ★ P3（2026-11-07）：IDE 侧 `resources/.agents/tools/*.json` 的 76 个兼容别名表
+ *   已随该目录一起删除；`TOOL_MAP` 的目标也已全部换成 dsh 真名。
+ *   这里不再有第二个真源 —— "工具都用 dsh 提供的工具" 在守卫层落地。
  */
-export function dshToolNames({ dshOnly = false } = {}) {
+export function dshToolNames() {
 	const names = officialDshToolNames();
 	for (const builtin of ['memory', 'dtodo', 'skill']) { names.add(builtin); }
 	try {
@@ -139,14 +141,6 @@ export function dshToolNames({ dshOnly = false } = {}) {
 	} catch {
 		// 快照缺失不算错：守卫会因此把插件工具当"不存在"，但那属于仓库不完整，
 		// 由 check-plugin-files / check-tool-definitions 各自报，不在这里重复判。
-	}
-	if (!dshOnly && existsSync(TOOLS_DIR)) {
-		for (const file of readdirSync(TOOLS_DIR)) {
-			// `_toolsets.json` 是清单不是工具
-			if (file.endsWith('.json') && !file.startsWith('_')) {
-				names.add(file.slice(0, -'.json'.length));
-			}
-		}
 	}
 	return names;
 }

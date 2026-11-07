@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-agents",
-  "version": "0.2.350",
+  "version": "0.2.354",
   "description": "VsSaros Bots module for DeepSeek Harness: registers ~/.vssaros/agents/<id>/.agent.md (built-in and custom roots) as dsh agent presets with persona and per-session model selection; persona hot switching and lifecycle tools (agent_list / agent_open_session / agent_switch_persona / agent_stop / agent_message / agent_read_chat); assignment runtime with a durable ledger; IM channels (Feishu / Telegram / Discord / WeCom) with a durable outbox; multi-bot group chats (lib/rooms.js: group_relay, member shadow sessions, agent-rooms.json with a single-writer lease); cross-plugin team bus (Symbol.for('vssaros.team')). Version history: CHANGELOG.md.",
   "private": true,
   "license": "MIT AND Apache-2.0",
@@ -74,6 +74,7 @@
     "lib/relay.js",
     "lib/seen.js",
     "lib/core/rooms.js",
+    "lib/core/asks.js",
     "lib/core/goals.js",
     "lib/core/skillDistill.js",
     "lib/core/dsBotImport.js",

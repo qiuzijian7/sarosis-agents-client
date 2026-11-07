@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VsSaros Switch · 号池注入与 LLM 日志使用说明</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --bg-2: #161923;
+    --card: #1b1f2b;
+    --card-2: #202634;
+    --border: #2a3040;
+    --border-2: #343b4e;
+    --text: #e6e9f0;
+    --text-dim: #9aa3b5;
+    --text-faint: #6b7488;
+    --accent: #7c5cff;
+    --accent-2: #5cc8ff;
+    --accent-3: #ff7ab8;
+    --green: #3ddc84;
+    --amber: #ffb454;
+    --red: #ff5c7a;
+    --mono: "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: var(--sans); line-height: 1.7; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 44px 28px 88px; }
+  a { color: var(--accent-2); }
+
+  /* ---------- header ---------- */
+  header { margin-bottom: 30px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 8px; font-size: 12px;
+    color: var(--accent-2); background: rgba(92,200,255,.08);
+    border: 1px solid rgba(92,200,255,.25); padding: 4px 12px;
+    border-radius: 999px; margin-bottom: 18px;
+  }
+  .badge::before {
+    content: ""; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--accent-2); box-shadow: 0 0 8px var(--accent-2);
+  }
+  h1 { font-size: 34px; margin: 0 0 12px; letter-spacing: -.5px; line-height: 1.3; }
+  h1 .grad {
+    background: linear-gradient(90deg, var(--accent), var(--accent-2), var(--accent-3));
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .sub { color: var(--text-dim); font-size: 15px; max-width: 760px; margin: 0 0 18px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    font-family: var(--mono); font-size: 11.5px; color: var(--text-dim);
+    background: var(--card); border: 1px solid var(--border);
+    padding: 4px 10px; border-radius: 7px;
+  }
+  .chip b { color: var(--accent-2); font-weight: 500; }
+
+  /* ---------- nav ---------- */
+  nav.toc {
+    position: sticky; top: 12px; z-index: 20; display: flex; gap: 6px; flex-wrap: wrap;
+    background: rgba(22,25,35,.92); backdrop-filter: blur(12px);
+    border: 1px solid var(--border); border-radius: 12px;
+    padding: 6px; margin: 26px 0 8px;
+  }
+  nav.toc a {
+    display: inline-flex; align-items: center; gap: 8px; text-decoration: none;
+    color: var(--text-dim); font-size: 13px; padding: 8px 14px;
+    border-radius: 8px; cursor: pointer; transition: background .2s, color .2s;
+  }
+  nav.toc a:hover { background: var(--card-2); color: var(--text); }
+  nav.toc a.active { background: rgba(124,92,255,.16); color: #cfc3ff; }
+  nav.toc svg { width: 15px; height: 15px; flex: none; }
+
+  /* ---------- sections ---------- */
+  section { margin-top: 52px; scroll-margin-top: 84px; }
+  h2 { font-size: 21px; margin: 0 0 18px; display: flex; align-items: center; gap: 12px; }
+  h2 .num {
+    width: 28px; height: 28px; border-radius: 8px; flex: none;
+    display: grid; place-items: center; font-size: 14px; font-weight: 700;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff;
+  }
+  h3 { font-size: 15px; margin: 30px 0 12px; }
+  p { margin: 0 0 12px; }
+  .lead { color: var(--text-dim); font-size: 14.5px; max-width: 820px; }
+  code.inline {
+    font-family: var(--mono); font-size: 12px; color: var(--accent-2);
+    background: rgba(92,200,255,.08); border: 1px solid rgba(92,200,255,.18);
+    padding: 2px 7px; border-radius: 5px;
+  }
+
+  .grid { display: grid; gap: 16px; }
+  .grid.cols-2 { grid-template-columns: repeat(2, 1fr); }
+  .grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
+  @media (max-width: 760px) {
+    .grid.cols-2, .grid.cols-3 { grid-template-columns: 1fr; }
+    .wrap { padding: 28px 16px 64px; }
+    h1 { font-size: 27px; }
+  }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; }
+  .card .k { font-size: 12px; color: var(--text-faint); letter-spacing: .4px; margin-bottom: 8px; text-transform: uppercase; }
+  .card .t { font-size: 15px; font-weight: 650; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+  .card .d { font-size: 13px; color: var(--text-dim); }
+  .card .mono {
+    display: inline-block; font-family: var(--mono); font-size: 11.5px;
+    color: var(--accent-2); background: rgba(92,200,255,.07);
+    border: 1px solid rgba(92,200,255,.2); padding: 2px 8px;
+    border-radius: 6px; margin-top: 10px;
+  }
+  .step-card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 14px; padding: 20px; position: relative;
+  }
+  .step-card .tag {
+    display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .5px;
+    padding: 3px 10px; border-radius: 999px; color: #fff; margin-bottom: 10px;
+  }
+  .step-card .tag.s1 { background: var(--accent); }
+  .step-card .tag.s2 { background: var(--accent-2); color: #0b2030; }
+  .step-card .tag.s3 { background: var(--accent-3); color: #3a1025; }
+  .step-card .tag.s4 { background: var(--green); color: #0a2b19; }
+  .step-card .title { font-size: 15px; font-weight: 650; margin-bottom: 6px; }
+  .step-card .desc { font-size: 13px; color: var(--text-dim); }
+
+  /* ---------- callouts ---------- */
+  .callout {
+    border-left: 3px solid var(--accent-2); background: rgba(92,200,255,.055);
+    border-radius: 0 12px 12px 0; padding: 14px 18px; margin-top: 18px;
+  }
+  .callout.warn { border-left-color: var(--amber); background: rgba(255,180,84,.06); }
+  .callout.privacy { border-left-color: var(--green); background: rgba(61,220,132,.055); }
+  .callout .ct { font-size: 13px; font-weight: 650; margin-bottom: 6px; }
+  .callout ul { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-dim); }
+  .callout li { margin: 3px 0; }
+  .callout li b { color: var(--text); font-weight: 600; }
+
+  /* ---------- table ---------- */
+  .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .tbl th, .tbl td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  .tbl th { color: var(--text-faint); font-size: 11.5px; letter-spacing: .4px; text-transform: uppercase; font-weight: 600; }
+  .tbl td b { font-weight: 600; }
+  .tbl tr:last-child td { border-bottom: 0; }
+  .pill {
+    display: inline-block; font-size: 11px; font-family: var(--mono);
+    padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border-2);
+    color: var(--text-dim); background: var(--card-2);
+  }
+  .pill.ok { color: var(--green); border-color: rgba(61,220,132,.35); background: rgba(61,220,132,.08); }
+  .pill.no { color: var(--red); border-color: rgba(255,92,122,.35); background: rgba(255,92,122,.08); }
+  .pill.hl { color: #cfc3ff; border-color: rgba(124,92,255,.4); background: rgba(124,92,255,.12); }
+
+  /* ---------- mockup shell ---------- */
+  .mock { border: 1px solid var(--border-2); border-radius: 14px; overflow: hidden; background: var(--bg-2); }
+  .mock-bar {
+    display: flex; align-items: center; gap: 8px; padding: 9px 14px;
+    background: var(--card); border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-faint);
+  }
+  .mock-bar .dots { display: flex; gap: 5px; margin-right: 8px; }
+  .mock-bar .dots i { width: 9px; height: 9px; border-radius: 50%; background: var(--border-2); display: block; }
+  .mock-bar .dots i:first-child { background: #ff5f57; }
+  .mock-bar .dots i:nth-child(2) { background: #febc2e; }
+  .mock-bar .dots i:nth-child(3) { background: #28c840; }
+  .mock-bar .url { font-family: var(--mono); color: var(--text-dim); }
+  .mock-bar .demo {
+    margin-left: auto; font-size: 10.5px; color: var(--amber);
+    border: 1px solid rgba(255,180,84,.35); background: rgba(255,180,84,.08);
+    padding: 2px 8px; border-radius: 5px;
+  }
+  .mock-body { padding: 22px; }
+
+  .mock-title { font-size: 18px; font-weight: 700; margin: 0 0 4px; }
+  .mock-hint { font-size: 12.5px; color: var(--text-dim); margin: 0 0 18px; }
+  .field { margin-bottom: 12px; }
+  .field label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 5px; }
+  input, textarea, select {
+    width: 100%; background: #12151e; color: var(--text);
+    border: 1px solid var(--border-2); border-radius: 8px;
+    padding: 9px 11px; font-size: 13px; font-family: var(--sans);
+  }
+  textarea { font-family: var(--mono); font-size: 11.5px; resize: vertical; min-height: 68px; }
+  input:focus-visible, textarea:focus-visible, select:focus-visible,
+  button:focus-visible, a:focus-visible, summary:focus-visible, .platform:focus-visible {
+    outline: 2px solid var(--accent-2); outline-offset: 2px;
+  }
+  .platforms { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 14px; }
+  .platform {
+    text-align: left; background: var(--card); border: 1px solid var(--border-2);
+    border-radius: 10px; padding: 11px 13px; cursor: pointer; color: var(--text-dim);
+    transition: border-color .2s, background .2s, color .2s;
+  }
+  .platform:hover { border-color: var(--accent); color: var(--text); }
+  .platform.on { border-color: var(--accent); background: rgba(124,92,255,.12); color: var(--text); }
+  .platform .pn { font-size: 13.5px; font-weight: 650; color: var(--text); display: flex; align-items: center; gap: 7px; }
+  .platform .ph { font-family: var(--mono); font-size: 10.5px; margin-top: 3px; }
+  .platform svg, .pn svg { width: 15px; height: 15px; flex: none; }
+  .row { display: grid; grid-template-columns: 1fr 100px auto; gap: 10px; align-items: end; }
+  @media (max-width: 620px) { .row { grid-template-columns: 1fr; } .platforms { grid-template-columns: 1fr; } }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+    background: linear-gradient(135deg, var(--accent), #6d7cff); color: #fff;
+    border: 0; border-radius: 8px; padding: 10px 18px; font-size: 13px;
+    font-weight: 600; cursor: pointer; min-height: 40px;
+    transition: filter .2s, transform .2s;
+  }
+  .btn:hover { filter: brightness(1.12); }
+  .btn:active { transform: translateY(1px); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn svg { width: 14px; height: 14px; }
+  .btn.ghost { background: var(--card-2); border: 1px solid var(--border-2); color: var(--text-dim); font-weight: 500; }
+  .btn.ghost:hover { color: var(--text); border-color: var(--accent-2); }
+
+  .list-head { display: flex; align-items: center; justify-content: space-between; margin: 22px 0 10px; }
+  .list-head .lt { font-size: 12px; letter-spacing: .5px; color: var(--text-faint); text-transform: uppercase; }
+  .list-head .count { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); }
+  .cred {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 9px; padding: 9px 12px; margin-bottom: 7px; font-size: 12.5px;
+  }
+  .cred .nm { font-weight: 600; min-width: 120px; }
+  .cred .hint { font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
+  .cred .sp { margin-left: auto; display: flex; gap: 5px; }
+  .icon-btn {
+    width: 28px; height: 28px; display: grid; place-items: center;
+    background: transparent; border: 1px solid transparent; border-radius: 6px;
+    color: var(--text-faint); cursor: pointer; transition: color .2s, background .2s;
+  }
+  .icon-btn:hover { color: var(--text); background: var(--card-2); }
+  .icon-btn svg { width: 14px; height: 14px; }
+  .state { font-size: 11px; }
+  .state.on { color: var(--green); }
+  .state.off { color: var(--text-faint); }
+  .empty { font-size: 12.5px; color: var(--text-faint); padding: 12px 0; }
+
+  /* log mockup */
+  .log-wrap { display: grid; grid-template-columns: 1fr; gap: 14px; }
+  .log-row {
+    display: grid; grid-template-columns: 128px 1fr 92px 76px 70px; gap: 10px;
+    align-items: center; background: var(--card); border: 1px solid var(--border);
+    border-radius: 9px; padding: 10px 13px; font-size: 12px; cursor: pointer;
+    transition: border-color .2s, background .2s; text-align: left; color: var(--text-dim);
+    width: 100%;
+  }
+  .log-row:hover { border-color: var(--accent); }
+  .log-row.sel { border-color: var(--accent-2); background: rgba(92,200,255,.06); }
+  .log-row .m { font-family: var(--mono); color: var(--text); font-size: 11.5px; }
+  .log-row .tm { font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
+  @media (max-width: 760px) {
+    .log-row { grid-template-columns: 1fr 1fr; }
+    .log-row .tm { grid-column: 1 / -1; }
+  }
+  .detail { background: var(--card); border: 1px solid var(--border-2); border-radius: 12px; padding: 16px; }
+  .detail .dh { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .detail .dh .t { font-size: 14px; font-weight: 650; }
+  .detail .dh .rid { font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
+  .detail .dh .btn { margin-left: auto; padding: 5px 11px; min-height: 30px; font-size: 11.5px; }
+  .pane { margin-bottom: 12px; }
+  .pane .ph { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; }
+  .pane .ph .pt { font-size: 12px; font-weight: 600; color: var(--text-dim); }
+  .pane .ph .pb {
+    font-family: var(--mono); font-size: 10px; color: var(--green);
+    border: 1px solid rgba(61,220,132,.3); background: rgba(61,220,132,.07);
+    padding: 1px 7px; border-radius: 5px;
+  }
+  pre.code {
+    margin: 0; background: #0b0e15; border: 1px solid var(--border);
+    border-radius: 8px; padding: 11px 13px; font-family: var(--mono);
+    font-size: 11px; line-height: 1.65; color: #cbd5e1;
+    max-height: 168px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+  }
+  pre.code .mask { color: var(--amber); background: rgba(255,180,84,.1); border-radius: 3px; }
+
+  details.acc {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 11px; padding: 12px 16px; margin-bottom: 9px;
+  }
+  details.acc summary { cursor: pointer; font-size: 13.5px; font-weight: 600; }
+  details.acc[open] summary { margin-bottom: 10px; }
+  details.acc .body { font-size: 13px; color: var(--text-dim); }
+  details.acc .body code { font-family: var(--mono); font-size: 11.5px; color: var(--accent-2); }
+
+  .toast {
+    position: fixed; left: 50%; bottom: 26px; transform: translate(-50%, 16px);
+    background: var(--card-2); border: 1px solid var(--accent-2); color: var(--text);
+    padding: 9px 18px; border-radius: 9px; font-size: 13px; z-index: 50;
+    opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  footer {
+    margin-top: 64px; padding-top: 22px; border-top: 1px solid var(--border);
+    font-size: 12px; color: var(--text-faint); display: flex;
+    justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="badge">VsSaros Switch · USER GUIDE</div>
+  <h1><span class="grad">号池注入</span> 与 <span class="grad">LLM 输入输出详细日志</span> 使用说明</h1>
+  <p class="sub">面向 VsSaros Switch 中转站的两项能力：把自己的平台凭证贡献进共享号池，以及按请求查看完整的 prompt 与模型回复。下方界面为可交互示意，操作只在本页模拟，不会提交到服务端。</p>
+  <div class="meta">
+    <span class="chip">VERSION <b>2026-11-06</b></span>
+    <span class="chip">LOCAL <b>http://127.0.0.1:3000</b></span>
+    <span class="chip">SCOPE <b>用户 / 管理员</b></span>
+    <span class="chip">LOGIN <b>TOF 或原 sk- Key</b></span>
+  </div>
+</header>
+
+<nav class="toc" aria-label="章节导航">
+  <a href="#pool" class="active" data-nav="pool">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+    01 号池注入
+  </a>
+  <a href="#logs" data-nav="logs">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg>
+    02 LLM 输入输出详细日志
+  </a>
+  <a href="#faq" data-nav="faq">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
+    03 常见问题
+  </a>
+</nav>
+
+<!-- ==================== 01 号池注入 ==================== -->
+<section id="pool">
+  <h2><span class="num">1</span> 号池注入</h2>
+  <p class="lead">把 CodeBuddy / ChatGPT 的上游凭证提交进共享号池，系统据此创建可调度渠道。提交人拥有该条凭证的查看、启停与删除权，凭证本身永不回显。老用户从旧站迁移过来的账号与 Key 已经自动复用，无需重新注入。</p>
+
+  <h3>支持的平台与凭证</h3>
+  <div class="grid cols-3">
+    <div class="card">
+      <div class="k">Platform 01</div>
+      <div class="t">CodeBuddy</div>
+      <div class="d"><code class="inline">ck_</code> API Key 或三段 JWT。落到渠道类型 64，默认上游 <code class="inline">copilot.tencent.com/v2</code>，模型取全局 CodeBuddy 目录。</div>
+      <div class="mono">channel type = 64</div>
+    </div>
+    <div class="card">
+      <div class="k">Platform 02 · 订阅</div>
+      <div class="t">ChatGPT（Codex）</div>
+      <div class="d">粘贴 Codex OAuth JSON，必须含 <code class="inline">access_token</code> 与 <code class="inline">account_id</code>，<code class="inline">refresh_token</code> 用于自动续期。落到渠道类型 57。</div>
+      <div class="mono">channel type = 57</div>
+    </div>
+    <div class="card">
+      <div class="k">Platform 02 · API</div>
+      <div class="t">ChatGPT（官方 Key）</div>
+      <div class="d"><code class="inline">sk-</code> 开头的官方 API Key。落到渠道类型 1，默认上游 <code class="inline">api.openai.com</code>。系统按凭证形态自动识别，不用手选。</div>
+      <div class="mono">channel type = 1</div>
+    </div>
+  </div>
+
+  <h3>操作步骤</h3>
+  <div class="grid cols-2">
+    <div class="step-card"><span class="tag s1">STEP 1</span><div class="title">登录并打开首页注入区</div><div class="desc">访问中转站首页，向下滚动到「号池注入」。未登录会显示「登录后注入」并禁用表单；从旧站迁移的账号可用原 <code class="inline">sk-</code> Key 或 TOF 登录。</div></div>
+    <div class="step-card"><span class="tag s2">STEP 2</span><div class="title">选择平台、粘贴凭证</div><div class="desc">选 CodeBuddy 或 ChatGPT。ChatGPT 会把 OAuth JSON 重建成已知字段白名单，丢弃未知字段；<code class="inline">sk-</code> Key 则按官方 API Key 处理。</div></div>
+    <div class="step-card"><span class="tag s3">STEP 3</span><div class="title">填写名称与权重并提交</div><div class="desc">名称可留空自动生成；权重 1–1000，默认 1。提交后系统做去重与限额校验，并立即建立渠道、abilities 与路由缓存。</div></div>
+    <div class="step-card"><span class="tag s4">STEP 4</span><div class="title">在「我注入的凭证」里管理</div><div class="desc">列表只显示脱敏片段（如 <code class="inline">ck_g****4Adk</code>、<code class="inline">oauth:acct****6655</code>），可随时停用/启用或删除。同样的卡片也出现在「API 密钥」页。</div></div>
+  </div>
+
+  <h3>界面示意（可交互）</h3>
+  <div class="mock">
+    <div class="mock-bar">
+      <span class="dots"><i></i><i></i><i></i></span>
+      <span class="url">http://127.0.0.1:3000/</span>
+      <span class="demo">交互演示 · 不提交服务端</span>
+    </div>
+    <div class="mock-body">
+      <p class="mock-title">号池注入</p>
+      <p class="mock-hint">贡献 CodeBuddy API Key 或 ChatGPT 订阅 / API 凭证到共享上游号池。凭证会脱敏，只有本人能查看或移除。</p>
+
+      <div class="platforms" role="group" aria-label="选择平台">
+        <button type="button" class="platform on" data-platform="codebuddy" aria-pressed="true">
+          <div class="pn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m8 9-3 3 3 3M16 9l3 3-3 3M14 4l-4 16"/></svg>
+            CodeBuddy
+          </div>
+          <div class="ph">ck_ API Key or JWT</div>
+        </button>
+        <button type="button" class="platform" data-platform="chatgpt" aria-pressed="false">
+          <div class="pn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg>
+            ChatGPT
+          </div>
+          <div class="ph">Codex OAuth JSON or sk- API Key</div>
+        </button>
+      </div>
+
+      <div class="field">
+        <label for="demo-cred" id="demo-cred-label">CodeBuddy API Key</label>
+        <input id="demo-cred" type="password" autocomplete="off" placeholder="ck_..." aria-describedby="demo-cred-tip">
+        <div id="demo-cred-tip" style="font-size:11px;color:var(--text-faint);margin-top:5px">凭证只在提交时传送，页面不会回显明文。</div>
+      </div>
+
+      <div class="row">
+        <div class="field" style="margin:0">
+          <label for="demo-name">显示名称</label>
+          <input id="demo-name" placeholder="my-codebuddy-key" autocomplete="off">
+        </div>
+        <div class="field" style="margin:0">
+          <label for="demo-weight">权重</label>
+          <input id="demo-weight" type="number" min="1" max="1000" value="1">
+        </div>
+        <button type="button" class="btn" id="demo-inject">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          注入
+        </button>
+      </div>
+
+      <div class="list-head">
+        <span class="lt">我注入的凭证</span>
+        <span class="count" id="demo-count">2 / 5</span>
+      </div>
+      <div id="demo-list"></div>
+    </div>
+  </div>
+
+  <div class="callout warn">
+    <div class="ct">规则与限制</div>
+    <ul>
+      <li>每个账号默认最多 <b>5</b> 条（三个平台共享，<code class="inline">POOL_MAX_KEYS_PER_USER</code> 可调）；完全相同的凭证会<b>拒绝重复注入</b>。</li>
+      <li>凭证进 <code class="inline">group=default</code> 全局共享调度，<b>不是</b>仅自己可用；贡献者只拥有管理权。</li>
+      <li>用户只能看/改/删自己的；「非本人」与「不存在」返回同一提示，避免探测。</li>
+      <li>渠道类型 57 上游只提供 <code class="inline">/v1/responses</code> 等端点，<b>不支持</b> <code class="inline">/v1/chat/completions</code>；类型 64 则相反。</li>
+      <li>目前没有贡献者结算 / 审核流程；ChatGPT 不认 session token。</li>
+    </ul>
+  </div>
+
+  <details class="acc">
+    <summary>API 速查（给脚本 / 排障用）</summary>
+    <div class="body">
+      <p><code>GET /api/user/pool_keys</code> 我的列表 · <code>POST /api/user/pool_keys</code> 注入（<code>platform</code> + <code>credential</code> + <code>name</code> + <code>weight</code>）</p>
+      <p><code>PATCH /api/user/pool_keys/:id</code> 改名 / 改权重 / 启停 · <code>DELETE /api/user/pool_keys/:id</code> 删除</p>
+      <p>旧字段 <code>api_key</code> 仍兼容；响应含 <code>platform</code>、<code>type</code>、<code>key_hint</code>，<b>不含明文凭证</b>。</p>
+    </div>
+  </details>
+</section>
+
+<!-- ==================== 02 日志 ==================== -->
+<section id="logs">
+  <h2><span class="num">2</span> LLM 输入输出详细日志</h2>
+  <p class="lead">在原有「使用日志」的计费元数据之外，按 <code class="inline">request_id</code> 记录每次请求发往上游的正文与模型返回的正文。正文存独立表，不塞进日志列表字段，也不写进审计日志。</p>
+
+  <div class="grid cols-2">
+    <div class="card">
+      <div class="k">原来就有</div>
+      <div class="t">计费 / 诊断元数据</div>
+      <div class="d">时间、用户、模型、渠道、token 数、耗时、是否流式、request_id、重试链、计费明细。日志详情里的「Content」是计费说明模板串，<b>不是</b> prompt。</div>
+    </div>
+    <div class="card">
+      <div class="k">本次新增</div>
+      <div class="t">请求正文 + 回复正文</div>
+      <div class="d">请求侧记录转换后发往上游的 JSON（或 PassThrough 原始报文）；响应侧从 SSE / JSON 中提取模型最终答案。一次重试记一条 attempt。</div>
+    </div>
+  </div>
+
+  <h3>谁能看</h3>
+  <table class="tbl">
+    <thead><tr><th>角色</th><th>自己的请求</th><th>所有人的请求</th><th>入口</th></tr></thead>
+    <tbody>
+      <tr><td><b>普通用户</b></td><td><span class="pill ok">可查看</span></td><td><span class="pill no">不可</span></td><td>使用日志 → 详情</td></tr>
+      <tr><td><b>zijianqiu</b></td><td><span class="pill ok">可查看</span></td><td><span class="pill ok">可查看</span></td><td>使用日志详情 + <code class="inline">/api/user/log_contents/all</code></td></tr>
+      <tr><td><b>root</b></td><td><span class="pill ok">可查看</span></td><td><span class="pill ok">可查看</span></td><td>同上，白名单始终包含 root</td></tr>
+    </tbody>
+  </table>
+  <p class="lead" style="margin-top:10px;font-size:13px">白名单可在运行时通过 <code class="inline">PUT /api/user/log_contents/settings</code> 的 <code class="inline">viewers</code> 调整，默认 <code class="inline">zijianqiu</code>。</p>
+
+  <h3>操作步骤</h3>
+  <div class="grid cols-2">
+    <div class="step-card"><span class="tag s1">STEP 1</span><div class="title">打开「使用日志」</div><div class="desc">管理员在日志列表里能看到所有人的记录，普通用户只看到自己的。列表按时间倒序，可按模型 / request_id 过滤。</div></div>
+    <div class="step-card"><span class="tag s2">STEP 2</span><div class="title">点开某条日志的「详情」</div><div class="desc">原有详情展示 token、耗时、渠道、计费明细等。页面会按该条日志的 <code class="inline">request_id</code> 自动拉取正文。</div></div>
+    <div class="step-card"><span class="tag s3">STEP 3</span><div class="title">查看「请求 &amp; 回复正文」区块</div><div class="desc">按尝试序号分组展示：请求正文是脱敏后的 JSON，回复正文是模型答案文本；每段都有复制按钮。</div></div>
+    <div class="step-card"><span class="tag s4">STEP 4</span><div class="title">按需关闭 / 调整保留期</div><div class="desc">管理员可关闭记录开关或调整白名单；保留期由 <code class="inline">LOG_CONTENT_RETENTION_DAYS</code> 控制，默认 7 天。</div></div>
+  </div>
+
+  <h3>界面示意（可交互）</h3>
+  <div class="mock">
+    <div class="mock-bar">
+      <span class="dots"><i></i><i></i><i></i></span>
+      <span class="url">/usage-logs/common</span>
+      <span class="demo">交互演示 · 示例数据</span>
+    </div>
+    <div class="mock-body">
+      <p class="mock-title">使用日志 · 详情</p>
+      <p class="mock-hint">点击任意一行切换详情。示例中的密钥、邮箱、base64 图片均已脱敏。</p>
+      <div class="log-wrap">
+        <div id="log-rows" role="list" aria-label="日志列表"></div>
+        <div class="detail" id="log-detail"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout privacy">
+    <div class="ct">隐私、体积与开关</div>
+    <ul>
+      <li>落库前脱敏：<b>密钥</b>（<code class="inline">sk-/ck_/Bearer/JWT</code>）、<b>手机号 / 邮箱 / 身份证</b>、<b>内联 base64 图片</b>；请求体里的敏感键（<code class="inline">authorization</code>、<code class="inline">api_key</code> 等）整体替换。</li>
+      <li>请求与回复各限 <b>20000 字符</b>，超出截断；上游响应捕获上限 1 MB，不影响原 handler 读取。</li>
+      <li>默认开启、默认保留 <b>7 天</b>；<code class="inline">LOG_CONTENT_ENABLED=false</code> 或设置接口可一键关闭（只影响之后的请求）。</li>
+      <li>正文<b>不进入</b>日志导出、统计聚合与 <code class="inline">AuditLog</code>（审计日志代码明确禁止记录 body）。</li>
+    </ul>
+  </div>
+
+  <div class="callout warn">
+    <div class="ct">当前覆盖范围</div>
+    <ul>
+      <li>采集挂在 <code class="inline">TextHelper</code> 链路：chat completions，含 CodeBuddy 强制流式后聚合出的完整回复。</li>
+      <li>其它 relay mode（Claude / Gemini / Responses / Audio / Images / WSS）暂不采集正文；日志导出也尚未带正文。</li>
+      <li>回复正文只保留最终答案文本，推理片段与工具调用原文不单独存；错误请求会保留脱敏后的错误体摘要。</li>
+    </ul>
+  </div>
+
+  <details class="acc">
+    <summary>API 速查与数据位置</summary>
+    <div class="body">
+      <p><code>GET /api/user/log_contents</code> 本人列表 · <code>GET /api/user/log_contents/:request_id</code> 按请求查全部 attempt</p>
+      <p><code>GET /api/user/log_contents/all</code> 白名单 / root 全量列表（可按 <code>user_id</code> 过滤）</p>
+      <p><code>GET / PUT /api/user/log_contents/settings</code> 查看或设置 <code>enabled</code> / <code>viewers</code> / <code>retention_days</code> / <code>can_view_all</code></p>
+      <p>数据落在独立表 <code>log_contents</code>（字段 <code>request_id / user_id / attempt / request_content / response_content / ...</code>），日志主表 <code>logs</code> 结构未改。</p>
+    </div>
+  </details>
+</section>
+
+<!-- ==================== FAQ ==================== -->
+<section id="faq">
+  <h2><span class="num">3</span> 常见问题</h2>
+
+  <details class="acc">
+    <summary>我是旧站用户，还需要重新注入 Key 吗？</summary>
+    <div class="body">不需要。旧站 <code>/api/auth/users</code> 的 9 个账号与原 <code>sk-</code> Key、以及 <code>codebuddy.direct_nodes</code> 里的 1 把 <code>ck_</code> Key 已导入本项目；账号按 <code>owner_login</code> 复用（<code>zijianqiu</code> 没有重复建号），原 Key 可直接访问新中转站。注意导入账号没有迁移密码，只能用原 Key 或 TOF 登录。</div>
+  </details>
+  <details class="acc">
+    <summary>为什么用原 sk- Key 调用会 401？</summary>
+    <div class="body">早期鉴权会把 <code>sk-</code> 之后的 key 按 <code>-</code> 截断，而旧站 Key 内部含 <code>-</code>。已修复为「完整 key 精确命中优先、截断兼容回退」。若仍 401，先确认本机 CPU / 磁盘保护没有在鉴权前拦截——它会返回 503 掩盖真实结果。</div>
+  </details>
+  <details class="acc">
+    <summary>注入的凭证会被别人看到吗？</summary>
+    <div class="body">不会。列表与接口只回脱敏片段，且按 <code>owner_id</code> 隔离；管理员也只能通过渠道管理页看到自己有权查看的渠道。号池调度本身是全局共享的，但凭证内容不外泄。</div>
+  </details>
+  <details class="acc">
+    <summary>日志详情里「请求 &amp; 回复正文」是空的？</summary>
+    <div class="body">常见原因：这条日志产生时记录开关是关闭的；超过 7 天保留期已被清理；请求走了尚未覆盖的 relay mode（如 Images / Audio / WSS）；或者该日志根本不是 chat 消费日志（充值 / 登录 / 管理类没有正文）。</div>
+  </details>
+  <details class="acc">
+    <summary>能不能关掉正文记录？</summary>
+    <div class="body">可以。管理员调 <code>PUT /api/user/log_contents/settings</code> 传 <code>{"enabled":false}</code>，或启动时设 <code>LOG_CONTENT_ENABLED=false</code>。关闭只影响之后的请求，已落库的正文需要等保留期清理。</div>
+  </details>
+</section>
+
+<footer>
+  <span>VsSaros Switch · 号池注入与 LLM 日志使用说明 · 2026-11-06</span>
+  <span>本页为静态交互示意，所有数据均为示例，不含任何真实凭据。</span>
+</footer>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  var toastEl = document.getElementById('toast');
+  var toastTimer = null;
+  function toast(message) {
+    toastEl.textContent = message;
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove('show'); }, 1900);
+  }
+
+  var ICON = {
+    power: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><path d="M12 2v10"/></svg>',
+    trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>',
+    copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>'
+  };
+
+  /* ---------- 01 号池注入 demo ---------- */
+  var platform = 'codebuddy';
+  var platformButtons = document.querySelectorAll('.platform');
+  var credInput = document.getElementById('demo-cred');
+  var credLabel = document.getElementById('demo-cred-label');
+  var listEl = document.getElementById('demo-list');
+  var countEl = document.getElementById('demo-count');
+  var LIMIT = 5;
+
+  var credentials = [
+    { id: 1, platform: 'chatgpt', name: 'my-chatgpt-sub', hint: 'oauth:acct****6655', on: true },
+    { id: 2, platform: 'codebuddy', name: 'CodeBuddy ck_ direct', hint: 'ck_g****4Adk', on: true }
+  ];
+  var nextId = 3;
+
+  function applyPlatform() {
+    platformButtons.forEach(function (btn) {
+      var on = btn.getAttribute('data-platform') === platform;
+      btn.classList.toggle('on', on);
+      btn.setAttribute('aria-pressed', String(on));
+    });
+    if (platform === 'codebuddy') {
+      credLabel.textContent = 'CodeBuddy API Key';
+      credInput.type = 'password';
+      credInput.placeholder = 'ck_...';
+      credInput.setAttribute('aria-label', 'CodeBuddy API Key');
+    } else {
+      credLabel.textContent = 'ChatGPT credential';
+      credInput.type = 'text';
+      credInput.placeholder = '{"access_token":"...","refresh_token":"...","account_id":"..."}\n或 sk-...';
+      credInput.setAttribute('aria-label', 'ChatGPT 凭证');
+    }
+  }
+
+  function maskHint(value, kind) {
+    var trimmed = value.trim();
+    if (kind === 'chatgpt' && trimmed.charAt(0) === '{') {
+      try {
+        var parsed = JSON.parse(trimmed);
+        var account = String(parsed.account_id || 'acct');
+        return 'oauth:' + account.slice(0, 4) + '****' + account.slice(-4);
+      } catch (e) { return 'oauth:****'; }
+    }
+    if (trimmed.length <= 8) return '****';
+    return trimmed.slice(0, 4) + '****' + trimmed.slice(-4);
+  }
+
+  function renderCredentials() {
+    listEl.innerHTML = '';
+    if (!credentials.length) {
+      var empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.textContent = '还没有注入凭证';
+      listEl.appendChild(empty);
+    }
+    credentials.forEach(function (item) {
+      var row = document.createElement('div');
+      row.className = 'cred';
+      var badge = document.createElement('span');
+      badge.className = 'pill ' + (item.platform === 'codebuddy' ? 'hl' : '');
+      badge.textContent = item.platform;
+      var name = document.createElement('span');
+      name.className = 'nm';
+      name.textContent = item.name;
+      var hint = document.createElement('code');
+      hint.className = 'hint';
+      hint.textContent = item.hint;
+      var state = document.createElement('span');
+      state.className = 'state ' + (item.on ? 'on' : 'off');
+      state.textContent = item.on ? '已启用' : '已停用';
+      var spacer = document.createElement('span');
+      spacer.style.marginLeft = 'auto';
+
+      var actions = document.createElement('span');
+      actions.className = 'sp';
+      var toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'icon-btn';
+      toggle.title = item.on ? '停用' : '启用';
+      toggle.setAttribute('aria-label', item.on ? '停用凭证' : '启用凭证');
+      toggle.innerHTML = ICON.power;
+      toggle.addEventListener('click', function () {
+        item.on = !item.on;
+        renderCredentials();
+        toast(item.on ? '已启用（演示）' : '已停用（演示）');
+      });
+      var remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'icon-btn';
+      remove.title = '删除';
+      remove.setAttribute('aria-label', '删除凭证');
+      remove.innerHTML = ICON.trash;
+      remove.addEventListener('click', function () {
+        credentials = credentials.filter(function (x) { return x.id !== item.id; });
+        renderCredentials();
+        toast('已删除（演示）');
+      });
+      actions.appendChild(toggle);
+      actions.appendChild(remove);
+      row.appendChild(badge);
+      row.appendChild(name);
+      row.appendChild(hint);
+      row.appendChild(state);
+      row.appendChild(spacer);
+      row.appendChild(actions);
+      listEl.appendChild(row);
+    });
+    countEl.textContent = credentials.length + ' / ' + LIMIT;
+  }
+
+  platformButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      platform = btn.getAttribute('data-platform');
+      applyPlatform();
+    });
+  });
+
+  document.getElementById('demo-inject').addEventListener('click', function () {
+    var value = credInput.value.trim();
+    if (!value) { toast('请先粘贴凭证'); credInput.focus(); return; }
+    if (credentials.length >= LIMIT) { toast('已达每账号上限 5 条'); return; }
+    if (platform === 'codebuddy' && !/^(ck_|eyJ)/.test(value) && value.split('.').length !== 3) {
+      toast('CodeBuddy 只接受 ck_ Key 或 JWT');
+      return;
+    }
+    if (platform === 'chatgpt' && value.charAt(0) === '{') {
+      try {
+        var parsed = JSON.parse(value);
+        if (!parsed.access_token || !parsed.account_id) { throw new Error('missing'); }
+      } catch (e) {
+        toast('OAuth JSON 需要 access_token 与 account_id');
+        return;
+      }
+    } else if (platform === 'chatgpt' && value.indexOf('sk-') !== 0) {
+      toast('ChatGPT 只接受 OAuth JSON 或 sk- Key');
+      return;
+    }
+    var nameVal = document.getElementById('demo-name').value.trim();
+    credentials.unshift({
+      id: nextId++,
+      platform: platform,
+      name: nameVal || ('my-' + platform + '-key'),
+      hint: maskHint(value, platform),
+      on: true
+    });
+    credInput.value = '';
+    document.getElementById('demo-name').value = '';
+    renderCredentials();
+    toast('注入成功（演示）· 凭证已脱敏');
+  });
+
+  applyPlatform();
+  renderCredentials();
+
+  /* ---------- 02 日志 demo ---------- */
+  var logs = [
+    {
+      id: 1, time: '06:55:12', model: 'glm-5.2-ioa', tokens: '5 / 3', ms: '842ms', status: 'success',
+      rid: '20261106065512-a7f3c1',
+      request: '{\n  "model": "glm-5.2-ioa",\n  "messages": [\n    { "role": "system", "content": "You are a helpful assistant." },\n    { "role": "user", "content": "帮我总结这段日志，联系我 user@example.com" }\n  ],\n  "stream": true\n}',
+      response: '已为你完成总结：本次请求共 1 次尝试，命中 CodeBuddy 号池渠道，输入输出分别为 5 / 3 tokens。'
+    },
+    {
+      id: 2, time: '06:52:40', model: 'gpt-5.5', tokens: '18 / 46', ms: '2.4s', status: 'success',
+      rid: '20261106065240-9c2e88',
+      request: '{\n  "model": "gpt-5.5",\n  "input": "解释 SWRR 与加权随机的区别",\n  "stream": true,\n  "authorization": "<span class="mask">[redacted]</span>"\n}',
+      response: 'SWRR（平滑加权轮询）会累积当前权重并按轮次选择，避免加权随机在短窗口内连续命中同一节点；加权随机每次独立抽样，分布无惯性。'
+    },
+    {
+      id: 3, time: '06:48:03', model: 'claude-opus-4.8', tokens: '11 / 0', ms: '1.1s', status: 'error',
+      rid: '20261106064803-b14d02',
+      request: '{\n  "model": "claude-opus-4.8",\n  "messages": [{ "role": "user", "content": "ping" }],\n  "stream": true\n}',
+      response: '{"error":{"message":"upstream rate limited","type":"rate_limit_error"}}'
+    }
+  ];
+  var selected = 1;
+  var rowsEl = document.getElementById('log-rows');
+  var detailEl = document.getElementById('log-detail');
+
+  function renderLogs() {
+    rowsEl.innerHTML = '';
+    logs.forEach(function (item) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'log-row' + (item.id === selected ? ' sel' : '');
+      btn.setAttribute('role', 'listitem');
+      btn.setAttribute('aria-label', '查看 ' + item.model + ' 的请求详情');
+      var time = document.createElement('span');
+      time.className = 'tm';
+      time.textContent = item.time;
+      var model = document.createElement('span');
+      model.className = 'm';
+      model.textContent = item.model;
+      var tokens = document.createElement('span');
+      tokens.textContent = item.tokens + ' tok';
+      var ms = document.createElement('span');
+      ms.textContent = item.ms;
+      var status = document.createElement('span');
+      status.className = 'pill ' + (item.status === 'success' ? 'ok' : 'no');
+      status.textContent = item.status === 'success' ? '成功' : '失败';
+      btn.appendChild(time);
+      btn.appendChild(model);
+      btn.appendChild(tokens);
+      btn.appendChild(ms);
+      btn.appendChild(status);
+      btn.addEventListener('click', function () { selected = item.id; renderLogs(); });
+      rowsEl.appendChild(btn);
+    });
+
+    var item = logs.filter(function (x) { return x.id === selected; })[0] || logs[0];
+    detailEl.innerHTML = '';
+    var head = document.createElement('div');
+    head.className = 'dh';
+    var title = document.createElement('span');
+    title.className = 't';
+    title.textContent = '请求 & 回复正文';
+    var attempt = document.createElement('span');
+    attempt.className = 'pill';
+    attempt.textContent = 'attempt #' + item.id;
+    var rid = document.createElement('span');
+    rid.className = 'rid';
+    rid.textContent = item.rid;
+    head.appendChild(title);
+    head.appendChild(attempt);
+    head.appendChild(rid);
+
+    var copyAll = document.createElement('button');
+    copyAll.type = 'button';
+    copyAll.className = 'btn ghost';
+    copyAll.innerHTML = ICON.copy + ' 复制回复';
+    copyAll.addEventListener('click', function () { copyText(item.response.replace(/<[^>]+>/g, ''), '回复已复制'); });
+    head.appendChild(copyAll);
+    detailEl.appendChild(head);
+
+    [
+      { label: '请求正文', value: item.request, badge: '已脱敏' },
+      { label: '回复正文', value: item.response, badge: item.status === 'error' ? '错误体' : '模型输出' }
+    ].forEach(function (pane) {
+      var box = document.createElement('div');
+      box.className = 'pane';
+      var ph = document.createElement('div');
+      ph.className = 'ph';
+      var pt = document.createElement('span');
+      pt.className = 'pt';
+      pt.textContent = pane.label;
+      var pb = document.createElement('span');
+      pb.className = 'pb';
+      pb.textContent = pane.badge;
+      ph.appendChild(pt);
+      ph.appendChild(pb);
+      var pre = document.createElement('pre');
+      pre.className = 'code';
+      pre.innerHTML = pane.value;
+      box.appendChild(ph);
+      box.appendChild(pre);
+      detailEl.appendChild(box);
+    });
+  }
+
+  function copyText(text, message) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { toast(message); }, function () { toast('复制失败，请手动选择'); });
+    } else {
+      toast('当前环境不支持自动复制，请手动选择');
+    }
+  }
+
+  renderLogs();
+
+  /* ---------- nav active ---------- */
+  var navLinks = document.querySelectorAll('nav.toc a');
+  var sections = ['pool', 'logs', 'faq'];
+  function updateNav() {
+    var current = sections[0];
+    sections.forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el && el.getBoundingClientRect().top <= 140) current = id;
+    });
+    navLinks.forEach(function (link) {
+      link.classList.toggle('active', link.getAttribute('data-nav') === current);
+    });
+  }
+  window.addEventListener('scroll', updateNav, { passive: true });
+  updateNav();
+})();
+</script>
+</body>
+</html>

@@ -34,6 +34,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// 与 prepack 共用的裁剪清单（仓库内纯数据模块，不引入 node_modules 依赖 ✓）
+import { PRUNE_LIST, VIRTUAL_STORE_HEAVY_RE } from './prune-list.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const PLUGINS_DIR = path.join(ROOT, 'dsh-plugins');
@@ -103,20 +105,33 @@ if (bundledRuntime) {
 	}
 }
 
-// ── ②bis 重型可选项：运行时与种子都不该再有 libreoffice 内核（≈182MB）────────
-// 2026-10-28 实测：prepack 只裁**运行时目录**，而 profile 种子是 pnpm 平铺装出来的依赖闭包
-// ⇒ 官方包的 optionalDependencies（libreoffice 内核）被装回种子 ⇒ 运行时 522MB + 种子 417MB
-// = 体积翻倍。现在 prepack 会对种子跑同一份 PRUNE_LIST；这条守卫负责**在产物层面**确认它真的没了。
-const HEAVY_OPTIONAL = ['libreoffice-kit-win32-x64', 'libreoffice-kit-win32-arm64', 'libreoffice-kit-darwin-x64', 'libreoffice-kit-darwin-arm64'];
+// ── ②bis 重型可选项：**只按裁剪清单检查**（清单是唯一真源）────────────────────
+// ★ 2026-11-07 修正：10-28 加这条守卫时把「运行时与种子都不该有 libreoffice 内核」
+//   **硬编码**在这里；11-02 Office 全量路线把 prepack 的 `PRUNE_LIST` 置空后守卫没跟上
+//   ⇒ CI 全新构建装出 182MB 内核时会误报并拦出包 ✗。
+//   现在共用一个纯数据模块 `prune-list.mjs`：
+//     · `PRUNE_LIST` 里的项 → 运行时本体/种子 hoisted 布局里不许存在（为空 ⇒ 不检查）；
+//     · `VIRTUAL_STORE_HEAVY_RE` → 种子 `.pnpm` 虚拟店里的**依赖副本**仍在裁，继续守着裁剪失败
+//       （Office 引擎的绝对路径指向 dsh-runtime 本体，不指向种子副本 ⇒ 裁掉是安全的）。
+const pruneTargets = PRUNE_LIST.map(rel => rel.filter(seg => seg !== 'node_modules'));
 const scanHeavy = (nodeModulesDir, label) => {
 	if (!nodeModulesDir || !fs.existsSync(nodeModulesDir)) {
 		return;
 	}
-	for (const name of HEAVY_OPTIONAL) {
-		const p = path.join(nodeModulesDir, '@deepseek-ai', name);
+	for (const rel of pruneTargets) {
+		const p = path.join(nodeModulesDir, ...rel);
 		if (fs.existsSync(p)) {
-			problem(`${label} 里还有 @deepseek-ai/${name}（≈182MB 的文档预览内核，聊天框用不到）`
-				+ ' —— 跑 node build/prepack-dsh-runtime.mjs 重新生成（它现在会同时裁运行时与种子）');
+			problem(`${label} 里还有 ${rel.join('/')}（PRUNE_LIST 列了要裁却没裁掉）`
+				+ ' —— 跑 node build/prepack-dsh-runtime.mjs 重新生成');
+		}
+	}
+	const virtualStore = path.join(nodeModulesDir, '.pnpm');
+	if (fs.existsSync(virtualStore)) {
+		for (const entry of fs.readdirSync(virtualStore)) {
+			if (VIRTUAL_STORE_HEAVY_RE.test(entry)) {
+				problem(`${label} 的 .pnpm 里还有 ${entry}（种子里的内核副本，prepack 应裁掉）`
+					+ ' —— 跑 node build/prepack-dsh-runtime.mjs 重新生成');
+			}
 		}
 	}
 };
@@ -131,7 +146,51 @@ if (bundledRuntime) {
 			}
 		}
 	}
-	note('重型可选项检查完成（运行时 + profile 种子里的 libreoffice 内核）');
+	note(pruneTargets.length === 0
+		? '重型可选项检查完成：PRUNE_LIST 为空（Office 路线有意保留运行时本体内核）；种子 .pnpm 副本仍受检查'
+		: `重型可选项检查完成（PRUNE_LIST ${pruneTargets.length} 项 + 种子 .pnpm 副本）`);
+}
+
+// ── ②ter pnpm 版本单一真源：构建期 / 产物内置 / 用户运行时三处必须同版本 ────────
+// 2026-11-07：CI 全局 pnpm 从 10.18.0 漂到 12.18.0 ⇒ 连着两次事故（ERR_PNPM_IGNORED_BUILDS
+// 让种子建不出来；.pnpm 虚拟店让种子从 234MB 涨到 573MB）。
+// ⇒ 根 package.json 的 `devDependencies.pnpm` + `packageManager` 是唯一真源；
+//   `prepack-dsh-runtime.mjs`（构建期 PATH shim）与 `ensure-pnpm-tool.mjs`（产物 tools/pnpm）
+//   都读它。这条守卫在发布前把「仓库装的版本」与「产物里那份」对齐。
+const rootPkg = readJson(path.join(ROOT, 'package.json'));
+const pmPin = typeof rootPkg?.packageManager === 'string' ? rootPkg.packageManager.replace(/^pnpm@/, '').trim() : '';
+const depPin = String(rootPkg?.devDependencies?.pnpm ?? '');
+if (!/^\d+\.\d+\.\d+$/.test(depPin) || pmPin !== depPin) {
+	problem(`pnpm 版本真源不一致/不精确：packageManager=${rootPkg?.packageManager ?? '(无)'}、`
+		+ `devDependencies.pnpm=${rootPkg?.devDependencies?.pnpm ?? '(无)'} —— 必须两处都是同一个精确版本（不许 ^/~/latest）`);
+} else {
+	note(`pnpm 单一真源 = ${depPin}（packageManager + devDependencies 一致 ✓）`);
+	const localPnpm = readJson(path.join(ROOT, 'node_modules', 'pnpm', 'package.json'));
+	if (!localPnpm) {
+		problem(`node_modules/pnpm 不存在 ⇒ 构建期 prepack 与产物内置都取不到 pin 的版本；先跑 npm install`);
+	} else if (!sameVersion(localPnpm.version, depPin)) {
+		problem(`node_modules/pnpm 是 ${localPnpm.version}，期望 ${depPin} —— 不许用未 pin 的版本建种子/拷进产物`);
+	} else {
+		note(`node_modules/pnpm = ${depPin}（构建期 shim 的源 ✓）`);
+	}
+	if (DIST) {
+		const prodDir = path.join(DIST, 'tools', 'pnpm');
+		const prodPnpm = readJson(path.join(prodDir, 'package.json'));
+		if (!prodPnpm) {
+			problem(`产物里没有 tools/pnpm/package.json ⇒ 用户机器上没有自带 pnpm（运行时装插件会失败）`);
+		} else if (!sameVersion(prodPnpm.version, depPin)) {
+			problem(`产物内置 pnpm 是 ${prodPnpm.version}，期望 pin ${depPin} —— 跑 node build/saros/ensure-pnpm-tool.mjs 重新落位`);
+		} else {
+			note(`产物内置 pnpm = ${depPin}（与构建期同版本 ✓）`);
+		}
+		// pnpm 11 是**目录分发**：只拷 bin 会 ERR_MODULE_NOT_FOUND（bin/pnpm.mjs 动态 import dist/pnpm.mjs）
+		for (const rel of ['bin/pnpm.mjs', 'dist/pnpm.mjs']) {
+			const f = path.join(prodDir, rel);
+			if (!fs.existsSync(f) || (rel.endsWith('dist/pnpm.mjs') && fs.statSync(f).size < 1024 * 1024)) {
+				problem(`产物内置 pnpm 缺 ${rel}（或文件半截）—— pnpm 11 需要整个包，不是单文件 bundle`);
+			}
+		}
+	}
 }
 
 // ── ②bis 空源文件（0 字节 .ts）────────────────────────────────────────────────

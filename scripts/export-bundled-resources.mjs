@@ -2,7 +2,9 @@
 /**
  * export-bundled-resources.mjs
  * 将 bundledMcpPresets.ts 和 bundledTools.ts 中的硬编码资源导出为 JSON 文件
- * 输出目录：resources/.agents/mcp-presets/*.json 和 resources/.agents/tools/*.json
+ * 输出目录：resources/.agents/mcp-presets/*.json
+ * ★ P3（2026-11-07）：IDE 工具 schema（resources/.agents/tools/*.json）已整体删除，
+ *   工具名真源改为 dsh-runtime 官方工具 + dsh-plugins/tools-snapshot.json。本脚本不再写 tools 目录。
  */
 
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
@@ -13,10 +15,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const ROOT = resolve(__dirname, '..');
 const OUT_MCP = resolve(ROOT, 'resources/.agents/mcp-presets');
-const OUT_TOOLS = resolve(ROOT, 'resources/.agents/tools');
 
 mkdirSync(OUT_MCP, { recursive: true });
-mkdirSync(OUT_TOOLS, { recursive: true });
 
 // ─── MCP Presets ───────────────────────────────────────────────────────────────
 // 从 bundledMcpPresets.ts 手工转写（保持与源码完全一致）
@@ -867,17 +867,11 @@ for (const preset of mcpPresets) {
 }
 console.log(`\nTotal MCP presets: ${mcpPresets.length}`);
 
-// ─── Write Tool files ──────────────────────────────────────────────────────────
-for (const tool of tools) {
-  const filePath = resolve(OUT_TOOLS, `${tool.name}.json`);
-  writeFileSync(filePath, JSON.stringify(tool, null, 2), 'utf-8');
-  console.log(`✓ Tool: ${tool.name}.json`);
-}
-console.log(`\nTotal tools: ${tools.length}`);
-
-// ─── Write Toolsets file ──────────────────────────────────────────────────────
-const toolsetsPath = resolve(OUT_TOOLS, '_toolsets.json');
-writeFileSync(toolsetsPath, JSON.stringify(toolsets, null, 2), 'utf-8');
-console.log(`\n✓ Toolsets: _toolsets.json`);
+// ─── IDE 工具 schema（P3 已下线，不再写盘）────────────────────────────────────
+// ★ 2026-11-07：`resources/.agents/tools/*.json` 与 `_toolsets.json` 已整体删除。
+//   下面的 tools / toolsets 数据仅作为历史对照留在源码里，**绝不再导出** ——
+//   否则有人跑一次本脚本就会把 IDE 侧工具目录重建出来，P3 静默回退 ✗。
+//   当前工具名真源见 dsh-plugins/scripts/skill-tool-map.mjs 的 dshToolNames()。
+console.log(`\nIDE 工具 schema 已于 P3 删除：跳过 ${tools.length} 个工具与 ${toolsets.length} 组 toolset 的导出`);
 
 console.log('\nDone!');

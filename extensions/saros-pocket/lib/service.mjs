@@ -1,9 +1,9 @@
-// Saros Agents Pocket 服务：在 VsSaros 扩展进程内跑改头代理 + 公网隧道
+// Saros Agents Pocket 服务：在 VsSaros 扩展进程内跑改头代理（cloudflared 公网隧道已下线）
 //
 // - 代理：监听 0.0.0.0:<port>（默认 3081），把入站 Host/Origin 改写成
 //   127.0.0.1:<upstreamPort>（VsSaros server 实际端口），HTTP + WebSocket 全透传，
 //   并注入 VsSaros 连接令牌（?tkn= / vscode-tkn cookie）。手机看到的界面与电脑一致、实时。
-// - 隧道：cloudflared 快速/命名隧道（可选），公网 https URL。
+// - 隧道：cloudflared 快速/命名隧道（原「公网 https URL」入口），2026-11-07 起整体关闭。
 
 import { createRequire } from 'node:module';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -13,6 +13,17 @@ import { startQuickTunnel, startNamedTunnel } from './tunnel.mjs';
 import { lanIPv4, listLanCandidates, listLanInterfaces, probeHttp, probeUpstreamPort } from './host.mjs';
 
 const require = createRequire(import.meta.url);
+
+/**
+ * cloudflared 公网隧道总开关（功能下线，2026-11-07）——**唯一真源**。
+ *
+ * 置回 true 即恢复整套公网入口（命令 / 面板 / App / 设置页 / 自动隧道），无需改其它代码；
+ * false 时运行期保证：不下载 cloudflared 二进制、不起进程、不写自动恢复标记、
+ * 不给公网 URL。所有启动路径最终都汇聚到 startTunnel()，那里有硬闸兜底。
+ */
+export const CLOUDFLARED_ENABLED = false;
+/** 下线后所有公网入口共用的提示文案。 */
+export const CLOUDFLARED_DISABLED_MESSAGE = '公网访问（cloudflared 隧道）已关闭，请使用局域网入口';
 
 /** URL → 二维码 data URL（全本地，不依赖第三方）。 */
 export async function qrDataUrl(text, { width = 220, margin = 1 } = {}) {
@@ -38,6 +49,7 @@ export async function qrDataUrl(text, { width = 220, margin = 1 } = {}) {
  *   有值时 status() 额外给出 `lanAppUrl` / `tunnelAppUrl` 与对应二维码 ——
  *   手机扫码直接进 App，而不是先进 VsSaros web 首页再手动改地址。
  * @param {object} [opts.log] 日志（VS Code OutputChannel 形状：info/warn/error）
+ * @param {boolean} [opts.cloudflaredEnabled] 公网隧道开关（默认取 CLOUDFLARED_ENABLED；测试可显式打开以回归旧逻辑）
  * @param {object} [opts.deps] 依赖替换（仅供测试）：{ createProxy, startQuickTunnel, startNamedTunnel, probeUpstream, probeHttp }
  */
 export function createPocketService({
@@ -52,6 +64,7 @@ export function createPocketService({
   appPrefix = '',
   brandHtml = '',
   log = console,
+  cloudflaredEnabled = CLOUDFLARED_ENABLED,
   deps = {},
 } = {}) {
   // ── 日志适配 ────────────────────────────────────────────────────────────
@@ -140,7 +153,8 @@ export function createPocketService({
   const autoStatePath = storageDir ? join(storageDir, 'saros-pocket', 'tunnel-auto.json') : null;
   let autoStateQueue = Promise.resolve();
   function persistAutoTunnel() {
-    if (!autoStatePath) return;
+    // 功能关闭后绝不写「上次开过隧道」标记，避免任何形式的自动复活。
+    if (!cloudflaredEnabled || !autoStatePath) return;
     autoStateQueue = autoStateQueue.then(async () => {
       try { await mkdir(dirname(autoStatePath), { recursive: true }); await writeFile(autoStatePath, JSON.stringify({ at: Date.now() }), 'utf8'); } catch { /* 忽略 */ }
     });
@@ -259,6 +273,9 @@ export function createPocketService({
     },
 
     async startTunnel() {
+      // ★ 功能硬闸：命令 / 面板 / 自动启动 / 自动恢复 / 配置变更重建最终都汇聚到这里。
+      //   必须在起代理、下载二进制、spawn 进程之前拦住，且不留任何残留状态。
+      if (!cloudflaredEnabled) throw new Error(CLOUDFLARED_DISABLED_MESSAGE);
       await this.startProxy();
       if (tunnel) return tunnel.url;
       if (tunnelPromise) return tunnelPromise;
@@ -332,11 +349,18 @@ export function createPocketService({
       tunnelState.phase = 'idle';
       tunnelState.detail = '';
       tunnelState.startedAt = null;
-      if (!keepAutoMarker) void clearAutoTunnel();
+      // 关闭态下连 dispose(keepAutoMarker:true) 也要清标记，否则会残留到下次激活。
+      if (!keepAutoMarker || !cloudflaredEnabled) void clearAutoTunnel();
     },
 
     async restoreTunnelIfNeeded() {
       logInfo('Saros Pocket: 自动恢复检查');
+      if (!cloudflaredEnabled) {
+        // 下线：清掉历史「上次开过隧道」标记并直接返回，绝不调用 startTunnel。
+        if (autoStatePath) void clearAutoTunnel();
+        logInfo('Saros Pocket: cloudflared 公网隧道已关闭，跳过自动恢复');
+        return;
+      }
       if (!autoStatePath || tunnel || tunnelPromise) return;
       let has = false;
       try { const raw = await readFile(autoStatePath, 'utf8'); has = /"at"\s*:/.test(raw); } catch { return; }
@@ -354,10 +378,13 @@ export function createPocketService({
       //   单独给出 app URL + 二维码，手机才能扫码**直接进 App**（否则先进 web 首页，还得手动改地址）。
       const lanAppUrl = lanUrl && appPrefix ? `${lanUrl}${appPrefix}` : null;
       const tunnelAppUrl = tunnel?.url && appPrefix ? `${tunnel.url}${appPrefix}` : null;
+      // 功能关闭时状态里不许出现任何公网地址/阶段，否则面板或手机端会照旧把入口画出来。
+      const tunnelOff = !cloudflaredEnabled;
       const lanIpOverride = state.lanIpOverride();
       const lanCandidates = [...new Set(await getLanCandidates())];
       if (lanIpOverride && !lanCandidates.includes(lanIpOverride)) lanCandidates.push(lanIpOverride);
       return {
+        cloudflaredEnabled,
         proxyRunning: proxy !== null,
         proxyPort,
         lanEnabled: state.lanEnabled(),
@@ -376,16 +403,16 @@ export function createPocketService({
         lanIpOverride,
         // 「本机 → 局域网地址」自检结果（ok=null 表示还没测过；由面板的「检测本机」触发）
         lanCheck: { ...lanCheckState },
-        tunnelRunning: tunnel !== null,
-        tunnelUrl: tunnel?.url ?? null,
+        tunnelRunning: !tunnelOff && tunnel !== null,
+        tunnelUrl: tunnelOff ? null : (tunnel?.url ?? null),
         // ★ 与 `lanQr` 同因：根路径 = 同屏 web 入口，桌面版 VsSaros 不监听 HTTP 端口
         //   ⇒ 扫这个码进去必然是代理返回的 502（proxy.mjs 上游不可达分支）。
         //   公网二维码因此改用 App 入口（/pocket/）；根路径地址仍在 `tunnelUrl`
         //   里以文本/链接形式给出，上游真可用时照样能进同屏 web，不丢入口。
-        tunnelQr: await qrCached(tunnelAppUrl ?? tunnel?.url ?? null),
-        tunnelAppUrl,
-        tunnelAppQr: await qrCached(tunnelAppUrl),
-        tunnelState: { ...tunnelState },
+        tunnelQr: tunnelOff ? null : await qrCached(tunnelAppUrl ?? tunnel?.url ?? null),
+        tunnelAppUrl: tunnelOff ? null : tunnelAppUrl,
+        tunnelAppQr: tunnelOff ? null : await qrCached(tunnelAppUrl),
+        tunnelState: tunnelOff ? { phase: 'idle', detail: '', startedAt: null, download: null } : { ...tunnelState },
         tunnelConfig: (() => {
           const cfg = typeof getTunnelConfig === 'function' ? (getTunnelConfig() ?? {}) : {};
           return { mode: cfg?.mode === 'named' ? 'named' : 'quick', hostname: typeof cfg?.hostname === 'string' ? cfg.hostname : '', tokenSet: Boolean(cfg?.token) };

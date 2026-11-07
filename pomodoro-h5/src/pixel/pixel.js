@@ -1,0 +1,172 @@
+// pixel.js —— 像素番茄钟视图层（独立入口）。
+// 复用已验证的纯函数核心，不自写计时或存储逻辑（见 key 记忆「像素视觉规范」第⑥点）：
+//   - src/timer.js：createTimer / PHASE / DEFAULT_DURATIONS
+//   - src/storage.js：getTodayCount / incrementToday / recordCompletion / retryPersist
+// 计时校准（endAt 绝对时间戳 + 250ms 重绘 + visibilitychange 回前台 recalibrate→tick）、
+// 跨零点、错误态重试口径，与首页 ui.js 完全一致，避免重复踩坑。
+
+import { createTimer, PHASE } from "../timer.js";
+import {
+  getTodayCount,
+  incrementToday,
+  recordCompletion,
+  retryPersist,
+  isStorageAvailable,
+} from "../storage.js";
+
+const TICK_MS = 250;
+const STATUS_TEXT = {
+  idle: "准备开始",
+  running: "专注中",
+  paused: "已暂停",
+  finished: "已完成",
+};
+
+const $ = (id) => document.getElementById(id);
+
+const els = {
+  app: $("app"),
+  phaseLabel: $("phaseLabel"),
+  cells: Array.from(document.querySelectorAll("#clock .px-cell[data-d]")),
+  stage: $("stage"),
+  stateLabel: $("stateLabel"),
+  startBtn: $("startBtn"),
+  pauseBtn: $("pauseBtn"),
+  resetBtn: $("resetBtn"),
+  todayCount: $("todayCount"),
+  errorBanner: $("errorBanner"),
+  retryBtn: $("retryBtn"),
+};
+
+const timer = createTimer();
+let tickHandle = null;
+let storageOk = true;
+
+// 像素时钟：把 "MM:SS" 写进 5 个 .px-cell 的 data-d（切数字只改属性，不重排 DOM）。
+function renderClock(text) {
+  const chars = text.split("");
+  for (let i = 0; i < els.cells.length; i++) {
+    els.cells[i].setAttribute("data-d", chars[i]);
+  }
+  els.stage.setAttribute(
+    "aria-label",
+    `剩余 ${text.replace(":", " 分 ")} 秒`
+  );
+}
+
+function fmt(ms) {
+  const totalSec = Math.ceil(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function render() {
+  const snap = timer.snapshot();
+  els.phaseLabel.textContent = snap.modeLabel;
+
+  // 阶段配色：专注=红、休息=绿，套在 .px-app 上驱动 .px-phase 颜色
+  els.app.classList.toggle("is-focus", snap.phase === PHASE.FOCUS);
+  els.app.classList.toggle("is-break", snap.phase !== PHASE.FOCUS);
+
+  renderClock(fmt(snap.remainingMs));
+  els.stateLabel.textContent = STATUS_TEXT[snap.status] || "";
+
+  // 控制按钮可用性：开始前 / 暂停中，暂停键禁用（与首页口径一致）
+  els.pauseBtn.disabled = snap.status !== "running";
+  els.startBtn.disabled = snap.status === "running";
+  els.resetBtn.disabled = snap.status === "idle" && snap.remainingMs === snap.totalMs;
+
+  // 错误态横幅：真实写失败才显示
+  els.errorBanner.hidden = storageOk;
+
+  // 今日计数（含跨零点）
+  els.todayCount.textContent = String(getTodayCount().count);
+}
+
+function startTick() {
+  if (tickHandle) return;
+  tickHandle = setInterval(onTick, TICK_MS);
+}
+
+function stopTick() {
+  if (tickHandle) {
+    clearInterval(tickHandle);
+    tickHandle = null;
+  }
+}
+
+function onTick() {
+  const res = timer.tick(Date.now());
+  if (res.finished) onPhaseFinished(res);
+  render();
+}
+
+function onPhaseFinished(res) {
+  if (res.finishedPhase === PHASE.FOCUS) {
+    // 完成一个番茄：写今日计数 + 记录完成事件（可能抛错 → 错误态）
+    try {
+      incrementToday();
+      recordCompletion(""); // MVP 无任务输入框，记「未命名任务」
+    } catch {
+      storageOk = false;
+    }
+    notifyDone("专注完成，休息一下 🍅");
+  } else {
+    notifyDone(res.finishedPhase === PHASE.LONG_BREAK ? "长休息结束" : "短休息结束");
+  }
+  // 自动进入下一阶段（idle 等待用户开始），并刷新显示
+  timer.reset();
+  stopTick();
+  startTick(); // 保持 tick 循环；reset 后 status=idle 不漂移
+  render();
+}
+
+function notifyDone(msg) {
+  if ("Notification" in window && Notification.permission === "granted") {
+    new Notification(msg);
+  }
+}
+
+// —— 事件绑定 ——
+els.startBtn.addEventListener("click", () => {
+  // 开始前先探测存储是否可用（真实写失败 → 错误态）
+  storageOk = isStorageAvailable();
+  timer.start();
+  startTick();
+  render();
+});
+
+els.pauseBtn.addEventListener("click", () => {
+  timer.pause();
+  stopTick();
+  render();
+});
+
+els.resetBtn.addEventListener("click", () => {
+  timer.reset();
+  stopTick();
+  render();
+});
+
+els.retryBtn.addEventListener("click", () => {
+  // 必须真碰 localStorage 且成功才消横幅；内存兜底写入不算成功
+  storageOk = retryPersist(getTodayCount().count, "");
+  render();
+});
+
+// 后台/锁屏回到前台：用 Date.now() 重新校准，避免节流导致少算
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    timer.recalibrate(Date.now());
+    // 后台期间若番茄已跑完：回前台必须真的触发完成 + 今日+1，
+    // 不能只把读数重绘成 0（漏计数路径）。暂停态下 recalibrate/tick 均不生效。
+    const res = timer.tick(Date.now());
+    if (res.finished) onPhaseFinished(res);
+    render();
+  }
+});
+
+// 初始化
+storageOk = isStorageAvailable();
+render();

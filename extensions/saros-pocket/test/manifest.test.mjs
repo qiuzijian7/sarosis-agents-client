@@ -102,7 +102,8 @@ test('插件详情页状态条：sarosPocket.status 已注册，且不回传任�
 // ---------- 动作按钮（x-action） ----------
 
 test('每个按钮动作都有命令声明 + 真被 registerCommand 注册', () => {
-  assert.ok(actions.length >= 10, `按钮太少（${actions.length}），面板里的动作应该都有入口`);
+  // cloudflared 下线后公网隧道的 6 个按钮已移除，剩下 6 个都是局域网 / 维护入口。
+  assert.ok(actions.length >= 6, `按钮太少（${actions.length}），面板里的动作应该都有入口`);
   const missingDecl = actions.filter(([, v]) => !commands.has(v['x-action'])).map(([, v]) => v['x-action']);
   assert.deepEqual(missingDecl, [], `package.json 里缺这些命令声明：${missingDecl.join(', ')}`);
   const missingReg = actions.filter(([, v]) => !extSrc.includes(`registerCommand('${v['x-action']}'`))
@@ -158,8 +159,8 @@ test('密码 / 隧道 Token 不得出现在设置里（凭据只落 globalStorag
   for (const key of ['sarosPocket.lanPin', 'sarosPocket.publicPin', 'sarosPocket.tunnelToken']) {
     assert.ok(!props[key], `${key} 不该是设置项 —— settings.json 会被同步/被读到`);
   }
-  // 但必须有按钮入口，否则用户没法改
-  for (const cmd of ['sarosPocket.setLanPin', 'sarosPocket.setPublicPin', 'sarosPocket.refreshLanPin', 'sarosPocket.setTunnelToken']) {
+  // 但局域网密码必须有按钮入口，否则用户没法改（公网密码 / 隧道 Token 的按钮已随功能下线移除）
+  for (const cmd of ['sarosPocket.setLanPin', 'sarosPocket.refreshLanPin']) {
     assert.ok(actions.some(([, v]) => v['x-action'] === cmd), `缺按钮入口：${cmd}`);
   }
 });
@@ -299,6 +300,41 @@ test('plugin.json 镜像覆盖同一批开关与按钮', () => {
   for (const [key] of actions) assert.ok(mirrored[key], `plugin.json 缺按钮镜像：${key}`);
   for (const k of ['lanEnabled', 'lanAuthEnabled', 'lanIpOverride', 'tunnelMode', 'tunnelHostname']) {
     assert.ok(mirrored[`sarosPocket.${k}`], `plugin.json 缺设置镜像：${k}`);
+  }
+});
+
+// ---------- cloudflared 公网功能下线守卫（2026-11-07） ----------
+
+test('公网入口已整体下线：清单 / 命令面板 / 面板 / App / 服务都不再暴露 cloudflared', () => {
+  const PUBLIC_CMDS = [
+    'sarosPocket.startTunnel', 'sarosPocket.stopTunnel',
+    'sarosPocket.useQuickTunnel', 'sarosPocket.useNamedTunnel',
+    'sarosPocket.setTunnelToken', 'sarosPocket.setPublicPin',
+  ];
+  // ① 插件设置页：不再有任何指向公网命令的 x-action，也不再有「公网隧道」按钮行
+  for (const [, v] of actions) {
+    assert.ok(!PUBLIC_CMDS.includes(v['x-action']), `按钮 ${v['x-action']} 不该再出现在清单里`);
+    assert.notEqual(v['x-actionRow'], '公网隧道', '公网隧道按钮行应整体消失');
+  }
+  // ② 命令面板：这 6 个命令即使仍注册，也必须被 when:false 隐藏
+  const hidden = new Set((pkg.contributes.menus?.commandPalette ?? [])
+    .filter((m) => m.when === 'false').map((m) => m.command));
+  for (const cmd of PUBLIC_CMDS) assert.ok(hidden.has(cmd), `命令面板未隐藏 ${cmd}`);
+  // ③ 运行期硬闸：唯一真源 + 扩展接线 + 面板 / App 收口
+  const serviceSrc = read('lib/service.mjs');
+  assert.ok(/export const CLOUDFLARED_ENABLED = false;/.test(serviceSrc), '总开关必须默认 false（注释不算）');
+  assert.ok(/if \(!cloudflaredEnabled\) throw new Error\(CLOUDFLARED_DISABLED_MESSAGE\)/.test(serviceSrc),
+    'startTunnel 里必须有硬闸（所有启动路径的唯一汇聚点）');
+  assert.ok(extSrc.includes('CLOUDFLARED_ENABLED'), '扩展必须接上总开关');
+  assert.ok(extSrc.includes('tunnelDisabledNotice()'), '公网命令必须走关闭提示，而不是照旧启动');
+  const panel = read('panel/index.html');
+  assert.ok(panel.includes('body.cloudflared-off') && panel.includes('s.cloudflaredEnabled === false'),
+    '访问面板必须按状态收起公网入口');
+  assert.ok(read('app/app.js').includes('p.cloudflaredEnabled === false'), 'App 状态页必须按状态隐藏公网隧道卡');
+  // ④ 插件镜像清单同步
+  const mirrored = (plugin.configuration && plugin.configuration.properties) || {};
+  for (const cmd of PUBLIC_CMDS) {
+    assert.ok(!Object.values(mirrored).some((v) => v['x-action'] === cmd), `plugin.json 仍镜像了 ${cmd}`);
   }
 });
 

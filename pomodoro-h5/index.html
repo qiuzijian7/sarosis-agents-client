@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- viewport-fit=cover 才生效安全区；不写 user-scalable=no（保无障碍），缩放延迟靠 CSS touch-action 去除 -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#C0392B" />
+    <title>番茄钟</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="phone" aria-label="番茄钟首页">
+      <header class="topbar">
+        <svg class="logo" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="14" r="8" fill="#C0392B" />
+          <path
+            d="M12 6c0-2 1.5-3 3-3-0.3 1.2-0.3 2.2 0 3-1 0.3-2 0.3-3 0z"
+            fill="#3C9D5B"
+          />
+          <path
+            d="M9 4.5c0.6 0.6 1.2 1 2.2 1-0.2 0.8-0.2 1.5 0 2-0.9-0.2-1.6-0.6-2.2-1.2z"
+            fill="#4FB46C"
+          />
+        </svg>
+        <h1 class="title" id="topTitle">番茄钟</h1>
+        <span class="sub" id="modeLabel">专注模式</span>
+      </header>
+
+      <section class="screen" id="view-task">
+        <div class="task">
+          <label for="taskInput">任务</label>
+          <input
+            id="taskInput"
+            type="text"
+            placeholder="填一个任务名…"
+            autocomplete="off"
+            aria-label="当前任务名"
+          />
+        </div>
+
+        <!-- 空态提示卡：任务名为空时出现（依旧可开始） -->
+        <div class="empty-card" id="emptyCard" hidden>
+          <b>还没填任务名。</b>
+          填一个任务能让每颗番茄有归属，统计页也更清楚。<br />
+          不填也能直接开始（记为「未命名任务」）。
+        </div>
+
+        <!-- 错误态横幅：localStorage 写入失败时显示 -->
+        <div class="error-banner" id="errorBanner" role="alert" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              fill="#B23A2E"
+              d="M12 2 1 21h22L12 2zm0 6 7 12H5l7-12zm-1 4v4h2v-4h-2zm0 5v2h2v-2h-2z"
+            />
+          </svg>
+          <div>
+            本地保存失败（localStorage 不可用或已满），已完成的番茄数可能无法保留。<br />
+            原因：浏览器隐私模式 / 存储配额超限 / 被禁用。
+            <br /><button class="retry" id="retryBtn" type="button">重试保存</button>
+          </div>
+        </div>
+
+        <div class="timer" id="timer" aria-label="剩余 25 分 0 秒">
+          <svg viewBox="0 0 240 240" aria-hidden="true">
+            <circle class="track" cx="120" cy="120" r="110" />
+            <circle class="prog" id="prog" cx="120" cy="120" r="110" />
+          </svg>
+          <div class="readout">
+            <span class="time" id="time">25:00</span>
+            <span class="state" id="stateLabel">准备开始</span>
+          </div>
+        </div>
+
+        <div class="controls">
+          <button class="btn btn-primary" id="startBtn" type="button">开始</button>
+          <button class="btn btn-ghost" id="pauseBtn" type="button" disabled>暂停</button>
+          <button class="btn btn-ghost" id="resetBtn" type="button">重置</button>
+        </div>
+
+        <div class="today">
+          <span>今日已完成 <b id="todayCount">0</b> 个番茄</span>
+          <span class="hint" id="todayHint">今天还没开始</span>
+        </div>
+      </section>
+
+      <section class="screen" id="view-stats" hidden>
+        <div id="statsNormal">
+          <h2 class="stats-hero-title">今日完成</h2>
+          <div class="stats-hero">
+            <span class="stats-hero-num" id="statsTodayCount">0</span>
+            <span class="stats-hero-unit">个番茄</span>
+          </div>
+
+          <div class="stats-block">
+            <h3 class="stats-block-title">最近 7 天</h3>
+            <div class="trend" id="statsTrend" aria-label="最近七天番茄数趋势"></div>
+          </div>
+
+          <div class="stats-block">
+            <h3 class="stats-block-title">专注记录</h3>
+            <ul class="history" id="statsList"></ul>
+          </div>
+        </div>
+
+        <!-- 空态：还没有完成的番茄 -->
+        <div class="empty-card stats-empty" id="statsEmpty" hidden>
+          <b>还没有完成的番茄。</b>
+          <span id="statsEmptyReason">完成第一个番茄后，这里会显示你的专注趋势。</span>
+          <button class="btn btn-primary" id="statsGoFocus" type="button">
+            去专注
+          </button>
+        </div>
+
+        <!-- 错误态：本地存储不可用 / 读取失败 -->
+        <div class="error-banner" id="statsError" role="alert" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              fill="#B23A2E"
+              d="M12 2 1 21h22L12 2zm0 6 7 12H5l7-12zm-1 4v4h2v-4h-2zm0 5v2h2v-2h-2z"
+            />
+          </svg>
+          <div>
+            本地保存失败（localStorage 不可用或已满），统计数据无法读取。<br />
+            原因：浏览器隐私模式 / 存储配额超限 / 被禁用。
+            <br /><button class="retry" id="statsRetry" type="button">重试读取</button>
+          </div>
+        </div>
+      </section>
+
+      <nav class="tabbar" aria-label="主导航">
+        <a href="#task" class="active" id="navTask" aria-current="page">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              fill="currentColor"
+              d="M4 5h16v3H4zM4 10h16v3H4zM4 15h10v3H4z"
+            />
+          </svg>
+          任务
+        </a>
+        <a href="#stats" id="navStat" aria-current="page">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              fill="currentColor"
+              d="M4 20V10h4v10H4zm8 0V4h4v16h-4zm8 0v-6h-4v6h4z"
+            />
+          </svg>
+          统计
+        </a>
+      </nav>
+    </main>
+
+    <script type="module" src="/src/ui.js"></script>
+  </body>
+</html>

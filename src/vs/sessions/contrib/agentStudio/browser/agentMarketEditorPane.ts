@@ -32,7 +32,6 @@ import {
 import { AgentMarketEditorInput } from './agentMarketEditorInput.js';
 import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../common/sarosPaths.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
-import { ISkillRegistry } from '../common/skills.js';
 
 const { $: $$ } = DOM;
 
@@ -86,7 +85,6 @@ export class AgentMarketEditorPane extends EditorPane {
 		@IFileService private readonly fileService: IFileService,
 		@ICommandService private readonly commandService: ICommandService,
 			@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
-		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
 	) {
 		super(AgentMarketEditorPane.ID, group, telemetryService, themeService, storageService);
 	}
@@ -337,11 +335,9 @@ export class AgentMarketEditorPane extends EditorPane {
 	/** 检查 agent 的依赖是否已安装，返回缺失列表 */
 	private _checkDeps(slug: string): { missingSkills: string[]; missingMcps: string[] } {
 		const { skillRefs, mcpRefs } = this._getDeps(slug);
-		// 缺失判定：既看商城安装记录（_installedSlugs），也看本地技能注册表
-		// （builtin/user 技能不在 installed-packages.json 里，只看前者会误判缺失）
-		const missingSkills = skillRefs.filter(s =>
-			!this._installedSlugs.has(s) && !this.skillRegistry.getSkill(s)
-		);
+		// ★ P3（2026-11-07）：技能真源已迁 dsh 侧，IDE 本地注册表不再参与依赖判定。
+		// 缺失判定只看商城安装记录；随包技能由 `@vssaros/dsh-skill-bundle` 提供，不在此列。
+		const missingSkills = skillRefs.filter(s => !this._installedSlugs.has(s));
 		const missingMcps = mcpRefs.filter(m => !this._installedSlugs.has(m));
 		return { missingSkills, missingMcps };
 	}

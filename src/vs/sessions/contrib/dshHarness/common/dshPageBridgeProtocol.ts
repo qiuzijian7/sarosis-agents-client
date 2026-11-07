@@ -33,10 +33,9 @@ import { clampPercent, isAppUpdatePhase, type AppUpdatePhase, type AppUpdateSour
  *   `.removeVault` ✓ ⇒ 视图公开动作 ⇒ 真源 `configFolderAsVault()` / `removeVault()` ✓）；
  *   ⚠ 与上面几条的区别：这两条会**改数据**，所以真源那两步各自带的**原生对话框**（选目录 / 确认框）
  *   就是这条线的闸 —— 详见文件头的 2026-10-15 修订 ✓。
- * 2026-10-15：`8 → 9`，新增 `openSkillMarket` —— dsh 的**集成页**（`/x/skills/`）那个置顶主入口按钮
- *   改为**打开 VsSaros 的技能商城**（`SkillMarketEditorInput` 编辑器页；用户 2026-10-15 选定）。
- *   与 `openAgentMarket` 同源：**页面自己开不了编辑器** ⇒ 交宿主；宿主只**转成 IDE 自己的命令**
- *   （`agentStudio.openSkillMarket`），不新增任何写能力 ✓。
+ * 2026-11-07（P3）：`openSkillMarket` 已**移除** —— 技能商城改由 dsh 侧 `/x/marketplace/` 页面
+ *   直接承载；原 `8 → 9` 那条「宿主代开 IDE 技能商城编辑器页」链路（协议类型 / preload 方法 /
+ *   宿主 case / IDE 命令 / `SkillMarketEditor*` 两个文件）整体退役。
  * 2026-10-15：`9 → 10`，新增 `openResourceSettings` —— 「工具」页（`/x/skills/`，原「集成」页）里
  *   **技能行 / MCP 行**的「设置」齿轮（用户要求"技能/mcp item 中增加设置按钮，点击后打开 editorpane 修改" ✓）：
  *   技能 → 资源管理详情页（`showDetailOnly('skill', id)`：改 `SKILL.md` / 启停 / 卸载都在那页 ✓）；
@@ -846,21 +845,12 @@ export type DshPageCommand =
 	 * `agentStudio.contribution.ts` 的 "Open Agent Market"），dsh 页面无法创建编辑器 ⇒ 与 `newChat` 同源。
 	 */
 	| { readonly method: 'openAgentMarket' }
-/**
- * 打开 **技能商城**（VsSaros 的 `SkillMarketEditorInput` 编辑器页）。
- *
- * 为什么必须由宿主做：与 `openAgentMarket` 同源 —— 商城是 VsSaros 的**编辑器页**，
- * dsh 页面（WebContentsView）无法创建编辑器 ⇒ 请宿主代劳 ✓。
- * 触发点：dsh **集成页**（`/x/skills/`，容器 `agentStudio.integration`）的置顶主入口按钮
- * （2026-10-15 用户选定「打开 IDE 的技能商城」）。宿主只**转成 IDE 自己的命令**
- * （`agentStudio.openSkillMarket`）⇒ 页面侧依旧拿不到任何写能力 ✓（安装/卸载都发生在商城页里、
- * 由用户在那页操作 ✓）。
- */
-| { readonly method: 'openSkillMarket' }
+// ★ P3（2026-11-07）：`openSkillMarket` 已从页面桥协议移除 —— 技能商城改由 dsh 侧
+//   `/x/marketplace/` 页面直接承载，不再需要宿主代开 IDE 编辑器页。
 /**
  * 打开 **VsSaros 的媒体库**（`MediaGalleryEditorPane`，编辑区页；2026-10-19，桥 `14 → 15`）。
  *
- * 为什么必须经宿主：与 `openSkillMarket` 同源 —— 媒体库是 VsSaros 的原生 `EditorPane`
+ * 为什么必须经宿主：与 `openAgentMarket` 同源 —— 媒体库是 VsSaros 的原生 `EditorPane`
  * （`MediaGalleryEditorInput`），dsh 页面（WebContentsView）创建不了编辑器 ✓。
  *
  * 触发点：dsh 媒体库页 `/x/media/` 的置顶「打开媒体库」按钮。**取代**了原先那条
@@ -1518,10 +1508,7 @@ export function validatePageCommand(raw: unknown): DshPageCommand | undefined {
 		}
 		case 'openAgentMarket':
 			return { method: 'openAgentMarket' };
-		// 无参命令（与 openAgentMarket 同一形态：没有可伪造的入参 ⇒ 不需要形状校验 ✓）
-		case 'openSkillMarket':
-			return { method: 'openSkillMarket' };
-		// 桥 `14 → 15`（2026-10-19）：无参命令（与上面两条同形态）。
+		// 桥 `14 → 15`（2026-10-19）：无参命令（与 openAgentMarket 同形态）。
 		case 'openMediaGallery':
 			return { method: 'openMediaGallery' };
 		// 桥 `15 → 16`（2026-10-21）：回到 IDE 主窗口。无参（与上面三条同形态）。

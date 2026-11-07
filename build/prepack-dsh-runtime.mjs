@@ -19,21 +19,15 @@
  * 注意：在 CodeBuddy IDE 里跑要净化 NODE_OPTIONS（注入的 safe-delete 会拦裁剪的批量删除）。
  */
 
-/** 安装后裁剪的重型可选负载（参考 skymecode/deepseek-harness-for-vscode 的做法）： */
-const PRUNE_LIST = [
-	// ★ 2026-11-02：LibreOffice Kit（182 MB）**不再裁剪** —— Office 全量路线上线后，它是
-	//   `office-render` / `office-export-pdf` / `office-recalculate` 三个技能的执行引擎
-	//   （`dsh-skill-office` 把它的 CLI 绝对路径写进技能正文，缺件即这三个能力不可用）。
-	//   体积代价见 `build/prepare-office-runtime.mjs` 头注释与发版说明。
-	//
-	// 注意：sherpa-onnx-*（本地语音识别，22 MB）**不裁**——语音输入是聊天框特性
-	//（voice-input bundle 由 supervisor 装进 profile，引擎靠它跑 SenseVoice）。
-];
-
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync } from 'node:fs';
-import { dirname, join, resolve, sep } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { delimiter, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// ★ 2026-11-07：裁剪清单抽成纯数据模块，prepack 与 check-dsh-release 共用同一份
+//   （10-28 的守卫把"不许有 libreoffice 内核"硬编码，11-02 Office 路线把清单置空后守卫没跟上
+//    ⇒ CI 全新构建会误报拦出包）。详见 build/saros/prune-list.mjs。
+import { PRUNE_LIST, VIRTUAL_STORE_HEAVY_RE } from './saros/prune-list.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const manifestPath = join(root, 'dsh-plugins', 'dsh-compat.json');
@@ -61,15 +55,26 @@ const force = process.argv.includes('--force');
  * 所以这里任何失败都只告警、不让 prepack 失败（对比：安装/版本不符是真失败，见上面 exit(1) ✓）。
  */
 async function safeBuildProfileSeed(runtimeDir, dshBin, dshVersion) {
-	const how = ensurePnpm();
-	if (!how) {
-		console.log('[prepack-dsh] ⚠ 找不到 pnpm（PATH / corepack / npm -g 都不行）⇒ **跳过** profile 种子。'
-			+ '⚠ 2026-10-28 起种子是**硬门**（verify-staging 缺它就判出包失败）——'
-			+ '所以这不是"可接受地降级"，而是"这一包出不来"。'
-			+ 'CI 上请让 install-deps 装一个（`.ci/scripts/install-deps.ps1` 已加）。');
+	// ⚠ `ensurePnpm()` 在 pin 不一致 / Node 版本不够时会抛（那是"绝不能建种子"的硬错误）。
+	//   但 **prepack 不许崩**：2026-10-16 生产事故里 prepack 崩在 gulp 之前 ⇒ 打包链继续往下跑
+	//   ⇒ 上传的是"上次残留的暂存目录"✗✗。⇒ 这里接住、大声报错、跳过种子，
+	//   由 verify-staging 的种子硬门判这一包出不来（早于归档上传，安全）。
+	let how;
+	try {
+		how = ensurePnpm();
+	} catch (e) {
+		console.error(`[prepack-dsh] ✗ pnpm 版本真源不可用：${String(e?.message ?? e)}`);
+		console.error('[prepack-dsh]   ⇒ 本次不建 profile 种子；verify-staging 硬门会判这一包出不来（prepack 不崩，不会上传残留目录）');
 		return;
 	}
-	console.log(`[prepack-dsh] pnpm OK（来自 ${how}）`);
+	if (!how) {
+		console.log('[prepack-dsh] ⚠ 仓库里没有 pin 的 pnpm（node_modules/pnpm/bin/pnpm.mjs 缺失）⇒ **跳过** profile 种子。'
+			+ '⚠ 2026-10-28 起种子是**硬门**（verify-staging 缺它就判出包失败）——'
+			+ '所以这不是"可接受地降级"，而是"这一包出不来"。'
+			+ '修法：先 `npm install`（根 package.json 的 devDependencies.pnpm 是精确版本），再重跑本脚本。');
+		return;
+	}
+	console.log(`[prepack-dsh] pnpm OK（${how}；不读 PATH 上的版本）`);
 	try {
 		await buildProfileSeed(runtimeDir, dshBin, dshVersion);
 	} catch (e) {
@@ -78,14 +83,21 @@ async function safeBuildProfileSeed(runtimeDir, dshBin, dshVersion) {
 		// ★ 2026-10-28：种子现在是**硬门**（verify-staging 缺它就判出包失败），所以失败必须能诊断。
 		// 原写法只打第一行，而 `execFileSync` 的第一行是命令行，**真正原因在 stderr**（2026-10-28
 		// CI 现场就只留下 `Command failed: … dsh plugin add file:…`，尾部的 pnpm 报错被吞了）。
-		const tail = [err?.stderr, err?.stdout]
-			.map(s => (typeof s === 'string' ? s : s ? String(s) : ''))
-			.filter(Boolean).join('\n').trim().slice(-2000);
+		// ★ 2026-11-07：stderr 与 stdout **分开打**。之前把两者拼起来再 slice(-2000)，
+		//   stdout 一多（pnpm 的 Progress 刷屏）就把 stderr 里的**真正错误**挤出窗口 ——
+		//   CI/本地都只剩一句 `.../pnpm.log` 的尾巴，排查靠猜。
+		const asText = (s) => typeof s === 'string' ? s : s ? String(s) : '';
+		const errOut = asText(err?.stderr);
+		const stdOut = asText(err?.stdout);
 		console.log(`[prepack-dsh] ⚠ profile 种子构建失败：${first}`);
-		console.log(`[prepack-dsh]   错误码=${err?.code ?? '?'} status=${err?.status ?? '?'} stderr=${(err?.stderr ?? '').length}B stdout=${(err?.stdout ?? '').length}B`);
-		if (tail) {
-			console.log(`[prepack-dsh]   失败输出（末尾 2000 字符）：\n${tail}`);
-		} else {
+		console.log(`[prepack-dsh]   错误码=${err?.code ?? '?'} status=${err?.status ?? '?'} stderr=${errOut.length}B stdout=${stdOut.length}B`);
+		if (errOut.trim()) {
+			console.log(`[prepack-dsh]   stderr（末尾 3000 字符）：\n${errOut.slice(-3000)}`);
+		}
+		if (stdOut.trim()) {
+			console.log(`[prepack-dsh]   stdout（末尾 1200 字符）：\n${stdOut.slice(-1200)}`);
+		}
+		if (!errOut.trim() && !stdOut.trim()) {
 			console.log(`[prepack-dsh]   （没有 stderr/stdout；完整 message 末尾 1500 字符）\n${String(err?.message ?? '').slice(-1500)}`);
 		}
 		// ★ 2026-10-28：dsh 的**启动诊断**在 `<seed>/logs/startup-*.log` —— 那是唯一说清"为什么退出"
@@ -116,43 +128,61 @@ async function safeBuildProfileSeed(runtimeDir, dshBin, dshVersion) {
 }
 
 /**
- * 保证 `pnpm` 可用（`dsh plugin add` 直接 spawn 它）。三级兜底，返回用上的那级（找不到 ⇒ undefined）：
- *   ① PATH 里已有；② `corepack enable pnpm`（Node ≥16 自带 corepack）；③ `npm i -g pnpm`
- *   （CI 里 npm 已指向内网镜像 `npm_config_registry` ⇒ 这条最可能成 ✓）。
+ * pnpm 版本的**唯一真源**：根 `package.json` 的 `devDependencies.pnpm`（精确版本，无 ^/~）。
+ * `packageManager` 字段与它同值，由 `check-dsh-release.mjs` / `install-deps.ps1` 交叉校验。
+ *
+ * ★ 2026-11-07：跟随上游 dsh（`deepseek-ai/deepseek-harness` 的 `packageManager: pnpm@11.28.5`）。
+ */
+function pinnedPnpmVersion() {
+	const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+	const v = pkg?.devDependencies?.pnpm;
+	const pm = typeof pkg?.packageManager === 'string' ? pkg.packageManager.replace(/^pnpm@/, '').trim() : '';
+	if (typeof v !== 'string' || !/^\d+\.\d+\.\d+/.test(v) || v !== pm) {
+		throw new Error(`根 package.json 的 pnpm 版本真源不一致/不精确：devDependencies.pnpm=${v}, packageManager=${pm}`);
+	}
+	return v;
+}
+
+/** 构建期 pnpm shim 目录：`dsh plugin add` spawn 的是裸 `pnpm` ⇒ 用 PATH 前置注入。 */
+let buildPnpmShimDir;
+
+/**
+ * 构建期 pnpm：**只用仓库 pin 的那一份**，不读 PATH / corepack / npm -g。
+ *
+ * 为什么改（2026-11-07 两次 CI 事故）：旧写法"PATH 上有就用、没有就装 latest"让构建机预装的
+ * pnpm 决定种子怎么装 —— CI 从 10.18.0 漂到 12.18.0 后：
+ *   ① pnpm 12 忽略 package.json 的 `pnpm.onlyBuiltDependencies` ⇒ ERR_PNPM_IGNORED_BUILDS ⇒ 种子建不出来；
+ *   ② pnpm 12 默认 `.pnpm` 虚拟店 ⇒ 种子体积翻倍、裁剪/元数据修复全失效。
+ * ⇒ 与产物内置的那份共用同一个源（`node_modules/pnpm`），构建机 / 本机 / 用户机器三处同版本。
+ *
+ * 返回给日志用的描述；找不到仓库自带的那份 ⇒ undefined（调用方提示先跑 npm install）。
  */
 function ensurePnpm() {
-	const win = process.platform === 'win32';
-	const probe = () => {
-		try {
-			execFileSync(win ? 'pnpm.cmd' : 'pnpm', ['-v'], { stdio: 'pipe', shell: win });
-			return true;
-		} catch {
-			return false;
-		}
-	};
-	if (probe()) {
-		return 'PATH';
+	const pin = pinnedPnpmVersion();
+	const pkgDir = join(root, 'node_modules', 'pnpm');
+	const entry = join(pkgDir, 'bin', 'pnpm.mjs');
+	if (!existsSync(entry) || !existsSync(join(pkgDir, 'dist', 'pnpm.mjs'))) {
+		return undefined;
 	}
-	try {
-		execFileSync('corepack', ['enable', 'pnpm'], { stdio: 'pipe', shell: win });
-		execFileSync('corepack', ['prepare', 'pnpm@latest', '--activate'], { stdio: 'pipe', shell: win });
-		if (probe()) {
-			return 'corepack';
-		}
-	} catch { /* 落到 ③ */ }
-	try {
-		const cli = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
-		const args = ['install', '-g', 'pnpm', '--no-audit', '--no-fund', '--loglevel=error'];
-		if (existsSync(cli)) {
-			execFileSync(process.execPath, [cli, ...args], { stdio: 'pipe' });
-		} else {
-			execFileSync(win ? 'npm.cmd' : 'npm', args, { stdio: 'pipe', shell: win });
-		}
-		if (probe()) {
-			return 'npm -g';
-		}
-	} catch { /* 全失败 */ }
-	return undefined;
+	const actual = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8')).version;
+	if (actual !== pin) {
+		// 硬失败：悄悄用错版本比不出包更糟（会出一个带坏种子的包）。
+		throw new Error(`node_modules/pnpm 是 ${actual}，期望 pin ${pin} —— 不许用未 pin 的版本建 profile 种子（先 npm install）`);
+	}
+	// pnpm 11.28.5 的 bin/pnpm.mjs 自己会检查 Node ≥22.13；提前给出更可诊断的错误。
+	const [maj, min] = process.versions.node.split('.').map(Number);
+	if (maj < 22 || (maj === 22 && min < 13)) {
+		throw new Error(`pnpm ${pin} 要求 Node ≥22.13，当前 ${process.versions.node}（构建机请升级 Node）`);
+	}
+	const shimDir = join(tmpdir(), `vssaros-build-pnpm-${process.pid}`);
+	mkdirSync(shimDir, { recursive: true });
+	if (process.platform === 'win32') {
+		writeFileSync(join(shimDir, 'pnpm.cmd'), `@echo off\r\n"${process.execPath}" "${entry}" %*\r\n`, 'utf8');
+	} else {
+		writeFileSync(join(shimDir, 'pnpm'), `#!/bin/sh\n"${process.execPath}" "${entry}" "$@"\n`, { mode: 0o755 });
+	}
+	buildPnpmShimDir = shimDir;
+	return `仓库自带 pnpm@${actual}（shim ${shimDir}）`;
 }
 
 if (existsSync(bin) && !force) {
@@ -333,6 +363,13 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 	removeTreeOrThrow(seed, 'dsh 要求 profile 目录不存在，由它自己创建'); // 种子里的 node_modules 很深 ⇒ 必须走扩展长度删除
 	// copy 导入模式：node_modules 是真文件而不是指向 pnpm store 的链接——否则搬不走。
 	const env = { ...process.env, DSH_HOME: seed, npm_config_package_import_method: 'copy' };
+	// ★ 2026-11-07：把**仓库 pin 的 pnpm** 前置到 dsh 子进程的 PATH（dsh plugin add spawn 裸 `pnpm`）。
+	//   Windows 上 process.env 的键可能是 `Path` 而非 `PATH` ⇒ 找到真实的那个键再改，避免多出一个
+	//   大小写不同的重复键（Node 在 Windows 上会合并，但子进程继承时行为不总一致）。
+	if (buildPnpmShimDir) {
+		const pathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
+		env[pathKey] = buildPnpmShimDir + delimiter + (env[pathKey] ?? '');
+	}
 	/**
 	 * dsh 的插件管理器有「版本闸门」：插件声明的 dsh 版本与运行时不一致时，`dsh plugin add` 会拒绝，
 	 * 并在 stderr 里给出补救命令：
@@ -390,11 +427,33 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 	try {
 		const pkgPath = join(profileDir, 'package.json');
 		const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+		// ① pnpm 10.x：读 package.json 的 `pnpm.onlyBuiltDependencies`
 		pkg.pnpm = { ...(pkg.pnpm ?? {}), onlyBuiltDependencies: APPROVED_BUILD_DEPS };
 		writeFileSync(pkgPath, JSON.stringify(pkg, undefined, 2) + '\n');
-		console.log(`[prepack-dsh] profile 已放行 ${APPROVED_BUILD_DEPS.length} 个依赖的 install 脚本（pnpm.onlyBuiltDependencies）`);
+		// ② pnpm ≥10.19 / 11 / 12：**package.json 里的 pnpm.* 被整个忽略**，设置搬到了
+		//    `pnpm-workspace.yaml`，键名也从数组 `onlyBuiltDependencies` 变成了映射 `allowBuilds`。
+		//    2026-11-07 CI 现场（pnpm 12.18.0）：
+		//      "The following keys were ignored: \"pnpm.onlyBuiltDependencies\"" ⇒ 仍报
+		//      ERR_PNPM_IGNORED_BUILDS (koffi@3.1.1) ⇒ 种子建不出来 ⇒ 打包被硬门判死。
+		//    ⇒ 两个位置都写（新旧 pnpm 各自读自己认的那份）。**这个文件随种子带到用户机器**
+		//      ⇒ 用户在插件中心装插件时也不会再被这道闸门拦。
+		const ws = [
+			'# 由 build/prepack-dsh-runtime.mjs 生成（构建期临时版本；种子完成后会降级为最小白名单）。',
+			'# pnpm ≥10.19 把设置从 package.json 搬到这里，键名 allowBuilds（映射）。',
+			'# dangerouslyAllowAllBuilds 只在**构建期**开：插件的 install 脚本名单是动态的，',
+			'#   枚举一次必然漏下一个（2026-11-07：CI 报 koffi，本机接着报 node-pty/protobufjs/…）。',
+			'# ⚠ 不强钉 nodeLinker：pnpm 12 的 .pnpm 虚拟店布局实测可正常启动 Host，',
+			'#   强切 hoisted 反而让 required 插件起不来（2026-11-07 实测）。体积由下面的',
+			'#   .pnpm 内核裁剪兜住；进一步的布局优化另做。',
+			'dangerouslyAllowAllBuilds: true',
+			'allowBuilds:',
+			...APPROVED_BUILD_DEPS.map(name => `  ${name}: true`),
+			''
+		].join('\n');
+		writeFileSync(join(profileDir, 'pnpm-workspace.yaml'), ws);
+		console.log(`[prepack-dsh] profile 已放行 ${APPROVED_BUILD_DEPS.length} 个依赖的 install 脚本（package.json + pnpm-workspace.yaml/allowBuilds）`);
 	} catch (e) {
-		console.log(`[prepack-dsh] ⚠ 写 pnpm.onlyBuiltDependencies 失败（pnpm 10+ 可能因此拦下种子构建）：${String(e?.message ?? e).split('\n')[0]}`);
+		console.log(`[prepack-dsh] ⚠ 写 pnpm build 审批失败（pnpm 10+ 可能因此拦下种子构建）：${String(e?.message ?? e).split('\n')[0]}`);
 	}
 	for (const src of pluginSources) {
 		const pkg = JSON.parse(readFileSync(join(src, 'package.json'), 'utf8'));
@@ -470,10 +529,12 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 		rmSync(seedCreds, { force: true });
 		console.log('[prepack-dsh] seed credentials scrubbed（首启自生成 ✓）');
 	}
-	// ★ 2026-10-28：种子里的 node_modules 是 pnpm **平铺**出来的依赖闭包 ⇒ 官方包的
-	//   **可选**依赖（libreoffice 内核 ≈182MB）会被一起装进来 —— 而运行时那边我们明明裁掉了
-	//   （PRUNE_LIST）。不裁的后果实测：种子 417MB ≈ 运行时 522MB ⇒ 体积翻倍。
-	//   ⇒ 种子用**同一份** PRUNE_LIST 裁一遍（口径一致：wrapper 留着，只删平台内核）。
+	// ★ 2026-10-28 / 11-02 / 11-07：种子里的 node_modules 是 pnpm **平铺**出来的依赖闭包
+	//   ⇒ 官方包的 optional 依赖会被一起装进来 ⇒ 曾经种子 417MB ≈ 运行时 522MB（体积翻倍）。
+	//   现在与运行时跑**同一份** `PRUNE_LIST`（口径一致），但 11-02 Office 全量路线已把它置空
+	//   （LibreOffice 引擎随 dsh-runtime 本体分发）；种子里那份只是**依赖副本**，由 `prune()` 的
+	//   `VIRTUAL_STORE_HEAVY_RE` 分支单独裁掉 `.pnpm/` 里的平台内核 ⇒ 两侧不冲突。
+	//   清单在 `build/saros/prune-list.mjs`，发布守卫按同一份清单派生检查项。
 	prune(profileDir, 'profile seed');
 	for (const rel of PRUNE_LIST) {
 		const p = join(profileDir, ...rel);
@@ -488,6 +549,22 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 	const seedGaps = seedPluginGaps(profileDir, wantPlugins);
 	if (seedGaps.length) {
 		throw new Error(`profile seed 不完整（${seedGaps.length}/${Object.keys(wantPlugins).length} 个插件没到位）：${seedGaps.join(', ')}`);
+	}
+	// ★ 2026-11-07：**不能把 dangerouslyAllowAllBuilds 烘进安装包**。
+	//   这份 yaml 随种子带到用户机器 ⇒ 若保留该开关，用户以后在插件中心装任意第三方插件时，
+	//   它的 install 脚本会被无条件跑（供应链风险）。⇒ 种子建成后降级为明确的最小白名单，
+	//   之后用户装带 build script 的包时 pnpm 会提示 approve-builds，由用户自己决定 ✓。
+	const wsPath = join(profileDir, 'pnpm-workspace.yaml');
+	if (existsSync(wsPath)) {
+		writeFileSync(wsPath, [
+			'# 由 build/prepack-dsh-runtime.mjs 生成：随种子分发的最小白名单。',
+			'# 只放行下面这些包运行 install 脚本；新装的第三方插件若带 build script，',
+			'# pnpm 会提示 `pnpm approve-builds`，由用户自行决定（绝不无条件放行）。',
+			'allowBuilds:',
+			...APPROVED_BUILD_DEPS.map(name => `  ${name}: true`),
+			''
+		].join('\n'));
+		console.log('[prepack-dsh] pnpm-workspace.yaml 已降级为最小白名单（dangerouslyAllowAllBuilds 不随包）');
 	}
 	writeFileSync(markerPath, JSON.stringify({ dsh: dshVersion, plugins: wantPlugins, createdAt: new Date().toISOString() }, undefined, 2));
 	console.log(`[prepack-dsh] profile seed ready (${Math.round(dirSize(seed) / 1024 / 1024)} MB)；覆盖全部 ${Object.keys(wantPlugins).length} 个随包插件 ✓`);
@@ -522,6 +599,26 @@ function prune(targetDir, label = 'runtime') {
 			console.log(`[prepack-dsh] pruned ${label}: ${rel.join('/')} (${Math.round(bytes / 1024 / 1024)} MB)`);
 		} else {
 			console.log(`[prepack-dsh] ⚠ 裁剪失败（保留原样，包会大约 ${Math.round(bytes / 1024 / 1024)} MB）：${label} ${rel.join('/')}`);
+		}
+	}
+	// ★ 2026-11-07 防御：pnpm 12 的 `.pnpm` 虚拟店布局把平台内核放在
+	//   `node_modules/.pnpm/@deepseek-ai+libreoffice-kit-win32-x64@<ver>/node_modules/...`，
+	//   上面的 PRUNE_LIST（hoisted 路径）根本命不中 ⇒ 种子实测 755MB。
+	//   即便 `nodeLinker: hoisted` 已写进 pnpm-workspace.yaml，也顺手把虚拟店里的内核裁掉。
+	const virtualStore = join(targetDir, 'node_modules', '.pnpm');
+	if (existsSync(virtualStore)) {
+		for (const entry of readdirSync(virtualStore)) {
+			if (!VIRTUAL_STORE_HEAVY_RE.test(entry)) {
+				continue;
+			}
+			const p = join(virtualStore, entry);
+			const bytes = dirSize(p);
+			if (removeTree(p)) {
+				prunedMB += bytes / 1024 / 1024;
+				console.log(`[prepack-dsh] pruned ${label}: .pnpm/${entry} (${Math.round(bytes / 1024 / 1024)} MB)`);
+			} else {
+				console.log(`[prepack-dsh] ⚠ 虚拟店内核裁剪失败（包会大约 ${Math.round(bytes / 1024 / 1024)} MB）：${entry}`);
+			}
 		}
 	}
 	if (prunedMB > 0) {

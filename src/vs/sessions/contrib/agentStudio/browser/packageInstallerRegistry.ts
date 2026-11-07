@@ -5,15 +5,16 @@
 
 /**
  * PackageInstallerRegistry 实现 —— 按 kind 管理 IPackageInstaller。
- * 当前注册：SkillInstaller。
- * Agent/MCP/Knowledge Installer 将在后续阶段（P1/P2）补充。
+ * ★ P3（2026-11-07）：`SkillInstaller` 已退役 —— 技能安装整体迁到 dsh 侧
+ *   `@vssaros/dsh-marketplace`（`installSkillContent` / `installBundle`，
+ *   `resolveOp` 里 `install` + `kind:'skill'` 固定走 `local-write`）。
+ *   当前注册：agent / mcp / knowledge / workflow 四类。
  */
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IPackageInstaller, IPackageInstallerRegistry } from '../common/packageInstaller.js';
 import { PackageKind } from '../common/marketplace.js';
-import { SkillInstaller } from './installers/skillInstaller.js';
 import { AgentInstaller } from './installers/agentInstaller.js';
 import { McpInstaller } from './installers/mcpInstaller.js';
 import { KnowledgeInstaller } from './installers/knowledgeInstaller.js';
@@ -28,10 +29,8 @@ export class PackageInstallerRegistry extends Disposable implements IPackageInst
 		@IInstantiationService instantiationService: IInstantiationService,
 	) {
 		super();
-		// 注册五类资源的 installer
-		// skill/agent/mcp/knowledge: 完整（registry reload + 版本溯源）
+		// 注册四类资源的 installer（skill 已迁 dsh 侧）
 		// workflow: 导入到工作区 .vssarosworkspace/workflows/
-		this.register(instantiationService.createInstance(SkillInstaller));
 		this.register(instantiationService.createInstance(AgentInstaller));
 		this.register(instantiationService.createInstance(McpInstaller));
 		this.register(instantiationService.createInstance(KnowledgeInstaller));

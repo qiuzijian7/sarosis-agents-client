@@ -228,19 +228,32 @@ if (Test-Path ($webviewDir + '\package.json')) {
   Write-Host "[OK] Agent Studio webview dependencies installed"
 }
 
-# ===== 9. pnpm（建 dsh profile 种子要用）=====
-# 为什么需要（2026-10-16 事故）：`dsh plugin add` 是**直接 spawn `pnpm`**（dsh 运行时不自带它），
-# 而打包期的 prepack 要跑它把 profile 种子建出来。CI 没有 pnpm 时实测：
-#   'pnpm' is not recognized as an internal or external command ⇒ 种子建不出来
-# ⇒ 装出来的包首启得自己装 profile（慢 1-2 分钟，而且**要求用户机器上也有 pnpm** 才装得上）。
-# 不拦出包（种子已在 prepack/verify-staging 里降级为"加速项"）——但要在 CI 日志里看得见 ✓。
-Write-Host "=== Ensuring pnpm (used by `dsh plugin add` when building the profile seed) ==="
-$pnpmOk = $false
-try { pnpm --version | Out-Null; $pnpmOk = $true } catch { }
-if (-not $pnpmOk) {
-  # npm 已指向内网镜像（见上面 env）；这里再显式带一次，免得受执行顺序影响。
-  npm install -g pnpm --no-audit --no-fund --registry=https://registry.npmmirror.com/ 2>&1 | Out-Null
-  try { pnpm --version | Out-Null; $pnpmOk = $true } catch { }
+# ===== 9. pnpm 版本校验（构建期与产物共用仓库 pin 的那一份）=====
+# ★ 2026-11-07：不再"PATH 上有就用 / 没有就 npm i -g pnpm@latest"。
+#   旧写法让构建机预装的 pnpm 决定种子怎么装 —— CI 上从 10.18.0 漂到 12.18.0 后连着两次事故：
+#     · pnpm 12 忽略 package.json 的 pnpm.onlyBuiltDependencies ⇒ ERR_PNPM_IGNORED_BUILDS ⇒ 种子建不出来；
+#     · pnpm 12 默认 .pnpm 虚拟店 ⇒ 种子从 234MB 涨到 573MB ⇒ 安装包白胖。
+#   ⇒ 单一真源：根 package.json 的 `devDependencies.pnpm` / `packageManager`（跟随上游 dsh 的 11.28.5）。
+#     `npm install`（本脚本第 1 步）会把它装进 node_modules/pnpm；prepack 用它造 shim 注入 dsh 子进程，
+#     `build/saros/ensure-pnpm-tool.mjs` 用同一份拷进产物 ⇒ 构建机 / 本机 / 用户机器三处同一个版本。
+#   ⚠ 版本不符必须**硬失败**： silently 用错版本比不出包更糟（会出一个带坏种子的包）。
+Write-Host "=== Checking pinned pnpm (dsh profile seed + bundled runtime tool) ==="
+$rootPkg = Get-Content (Join-Path $repoRoot 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$expected = ($rootPkg.packageManager -replace '^pnpm@', '').Trim()
+$pinned = [string]$rootPkg.devDependencies.pnpm
+if (-not $expected -or $expected -ne $pinned) {
+  Write-Error "FATAL: packageManager($expected) 与 devDependencies.pnpm($pinned) 不一致 —— pnpm 版本真源必须唯一"
+  exit 1
 }
-if ($pnpmOk) { Write-Host ('[OK] pnpm ' + (pnpm --version)) }
-else { Write-Host '[WARN] pnpm 不可用 —— prepack 会跳过 profile 种子（首启变慢；不拦出包）' }
+$localPnpmPkg = Join-Path $repoRoot 'node_modules\pnpm\package.json'
+if (-not (Test-Path $localPnpmPkg)) {
+  Write-Error "FATAL: node_modules/pnpm 不存在 —— 先跑 npm install（devDependencies 里有精确的 pnpm@$expected）"
+  exit 1
+}
+$actual = (Get-Content $localPnpmPkg -Raw -Encoding UTF8 | ConvertFrom-Json).version
+if ($actual -ne $expected) {
+  Write-Error "FATAL: node_modules/pnpm 是 $actual，期望 $expected —— 不许用未 pin 的版本建 profile 种子"
+  exit 1
+}
+Write-Host "[OK] pinned pnpm $actual（node_modules/pnpm/bin/pnpm.mjs；构建期不读 PATH）"
+try { Write-Host ('[INFO] PATH 上还有 pnpm ' + (pnpm --version) + '（仅供参考，构建期不使用）') } catch { }

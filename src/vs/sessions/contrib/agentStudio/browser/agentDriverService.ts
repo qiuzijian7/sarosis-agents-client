@@ -15,7 +15,7 @@ import type { IChatSendOptions } from '../common/agentStudio.js';
 import type { IChatAttachmentSend } from '../../../common/agentStudioService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { ISkillRegistry, ISkillDefinition } from '../common/skills.js';
+import { ISkillDefinition, ISkillInjection } from '../common/skills.js';
 import { IWorkflowExecutionService } from '../common/workflowExecutionService.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IAgentStudioService } from '../common/agentStudio.js';
@@ -308,7 +308,6 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 
 	constructor(
 		@IAgentOSService private readonly _agentOS: IAgentOSService,
-		@ISkillRegistry private readonly _skillRegistry: ISkillRegistry,
 		@ILogService logService: ILogService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IAgentStudioService private readonly _agentStudioService: IAgentStudioService,
@@ -895,9 +894,9 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 					this._logService.info(`[AgentDriver] Explicit skills added for this turn: ${newExplicitIds.join(', ')}`);
 				}
 
-				// allSkills = 所有已注册且启用的技能（展示在 <available_skills> 中）
-				const allSkills = [...this._skillRegistry.getSkills()]
-					.filter(s => s.enabled !== false);
+				// ★ P3（2026-11-07）：`<available_skills>` 目录与技能激活都由 dsh 侧
+				//   `skill` 工具 / skills provider 提供 ⇒ IDE agent loop 不再组装技能目录。
+				const allSkills: ISkillDefinition[] = [];
 
 			// ── 分层组装系统提示词（stable / context / volatile）────
 			const stableParts: string[] = [];
@@ -1227,18 +1226,11 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				let mergedMessages = [...request.messages];
 
 				if (lastUserMessage) {
-					const injections = await this._skillRegistry.resolveActivations({
-						userMessage: lastUserMessage.content,
-						agentId: request.agentId,
-						sessionId: request.sessionId,
-						explicit: explicitSkillIds,
-						// 强制加载全文：仅 agent 配置中指定的技能（不依赖 activation 关键词匹配）
-						required: [...agentSkillIds],
-					});
-
-					// 不按 agentSkillIds 过滤 —— 所有技能均可通过 activation 关键词匹配
-					// 或 <available_skills> 目录被 LLM 发现。agentSkillIds 仅决定 required（强制加载）。
-				const filteredInjections = injections;
+					// ★ P3（2026-11-07）：技能激活解析（`resolveActivations`：required /
+					//   always / auto 命中后把正文合成 user message）已整体迁到 dsh 侧。
+					//   IDE agent loop 不再注入技能正文；保留空集合让后面「长度判断 +
+					//   遍历合成消息」的代码保持形状，自然全部跳过。
+					const filteredInjections: readonly ISkillInjection[] = [];
 
 				// ── P1: 工作流型（可执行型）skill 触发 ──
 				// workflow skill 默认 manual，仅当用户显式 `/skill <id>` 时触发执行；

@@ -20,8 +20,6 @@ import { URI } from '../../../../../base/common/uri.js';
 import { autorun, IObservable } from '../../../../../base/common/observable.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { IAgentOSService } from '../../common/agentOS.js';
-import { ISkillRegistry, ISkillDefinition, isSkillReadOnly } from '../../common/skills.js';
-import { ISkillInstallService, ISkillHubEntry, ISkillFolderUploadFile } from '../../common/skillHubTypes.js';
 import { IEventBridgeService } from '../../common/eventBridge.js';
 import { IMcpService, IMcpServer, McpConnectionState, McpServerCacheState } from '../../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { startServerAndWaitForLiveTools } from '../../../../../workbench/contrib/mcp/common/mcpTypesUtils.js';
@@ -31,27 +29,24 @@ import { BUNDLED_MCP_PRESETS } from '../../common/bundled-tools/bundledMcpPreset
 import { McpServerEditorInput } from '../mcpServerEditorInput.js';
 import { McpDetailEditorInput } from '../mcpDetailEditorInput.js';
 import { CodebaseMemoryDetailEditorInput } from '../codebaseMemoryDetailEditorInput.js';
-import { SkillMarketEditorInput } from '../skillMarketEditorInput.js';
-import { ResourceManagerEditorInput } from '../resourceManagerEditorInput.js';
-import { ResourceManagerEditorPane } from '../resourceManagerEditorPane.js';
 import { IMarketplaceService, PackageKind } from '../../common/marketplace.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
-import { ISkillVersionService, SkillVersionService } from '../skillVersionService.js';
 import { IAuthenticationQueryService } from '../../../../../workbench/services/authentication/common/authenticationQuery.js';
 import { IAuthenticationService } from '../../../../../workbench/services/authentication/common/authentication.js';
 import { IAgentStudioLogService } from '../agentStudioLogService.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { SarosPath, resolveSarosPath, userDataRootFromRoamingHome } from '../../common/sarosPaths.js';
 import { IEnvironmentService } from '../../../../../platform/environment/common/environment.js';
-import { applySavedOrder, CardDragSorter, CardOrderStore, CardPinStore, showCardContextMenu } from './cardItemBehaviors.js';
 import { isMcpSourcedTool, mcpServerIdOf } from '../../common/toolApprovalPolicy.js';
 import type { IToolDefinition } from '../../common/providers.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-type IntegrationTab = 'skill' | 'mcp';
+// ★ P3（2026-11-07）：技能页签已下线（技能浏览/安装统一在 dsh 侧 /x/skills/ 与 /x/marketplace/）。
+//   只保留 MCP 页签；容器 id / 视图 id / 布局持久化键一个字都不动。
+type IntegrationTab = 'mcp';
 
 interface McpServerUI {
 	id: string;
@@ -73,29 +68,6 @@ interface McpToolUI {
 
 
 
-function skillIconFor(s: ISkillDefinition): string {
-	switch (s.category) {
-		case 'code': return '\u{1F4BB}';
-		case 'git': return '\u{1F500}';
-		case 'meta': return '\u{1F9E0}';
-		case 'docs': return '\u{1F4DD}';
-		default: return '\u{1F4A1}';
-	}
-}
-
-function skillIconForCategory(category?: string): string {
-	switch (category) {
-		case 'code': return '\u{1F4BB}';
-		case 'git': return '\u{1F500}';
-		case 'meta': return '\u{1F9E0}';
-		case 'docs': return '\u{1F4DD}';
-		case 'review': return '\u{1F50D}';
-		case 'writing': return '\u270D\uFE0F';
-		case 'data': return '\u{1F4CA}';
-		default: return '\u{1F4E6}';
-	}
-}
-
 // ─── IntegrationViewPane ─────────────────────────────────────────────────────
 
 /**
@@ -105,26 +77,12 @@ function skillIconForCategory(category?: string): string {
 export class IntegrationViewPane extends ViewPane {
 
 	// ── Tab state ──────────────────────────────────────────────────
-	private activeTab: IntegrationTab = 'skill';
+	private activeTab: IntegrationTab = 'mcp';
 	private tabBar!: HTMLElement;
 	private contentContainer!: HTMLElement;
 
 	// Track whether tabs have been rendered at least once (lazy init)
 	private tabsRendered: Set<IntegrationTab> = new Set();
-
-	// ── Skills state ──────────────────────────────────────────────
-	private skills: ISkillDefinition[] = [];
-	private skillsSearchQuery = '';
-	private skillsViewMode: 'list' | 'install-hubs' | 'install-entries' = 'list';
-	private skillsLoadingHubId: string | undefined;
-	private skillsCountBadge!: HTMLElement;
-	private skillsSearchInput!: HTMLInputElement;
-	/** 排序 + 置顶持久化 + 拖拽排序（与 preset / workflow 视图共用实现） */
-	private _skillOrderStore!: CardOrderStore;
-	private _skillPinStore!: CardPinStore;
-	private _skillDragSorter!: CardDragSorter;
-	/** 可升级的 skill id → 目标版本（_checkMarketSkillUpgrades 异步填充） */
-	private _skillUpgradeTargets = new Map<string, string>();
 
 	// ── MCP state ─────────────────────────────────────────────────
 	private mcpTools: McpToolUI[] = [];
@@ -245,13 +203,10 @@ export class IntegrationViewPane extends ViewPane {
 		@IMcpService private readonly mcpService: IMcpService,
 		@IStorageService private readonly storageService: IStorageService,
 		@IWorkbenchMcpManagementService private readonly mcpManagementService: IWorkbenchMcpManagementService,
-		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
-		@ISkillInstallService private readonly skillInstallService: ISkillInstallService,
 		@IEventBridgeService private readonly eventBridgeService: IEventBridgeService,
 		@IMarketplaceService private readonly marketplaceService: IMarketplaceService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IFileService private readonly fileService: IFileService,
-		@ISkillVersionService private readonly skillVersionService: SkillVersionService,
 		@IAgentStudioLogService private readonly logService: ILogService,
 		@IAuthenticationQueryService private readonly authenticationQueryService: IAuthenticationQueryService,
 		@IAuthenticationService private readonly authenticationService: IAuthenticationService,
@@ -302,26 +257,6 @@ export class IntegrationViewPane extends ViewPane {
 			}
 		}));
 
-		// Listen for skill changes
-		this._register(this.skillRegistry.onDidChangeSkills(() => {
-			if (this.tabsRendered.has('skill') && this.skillsViewMode === 'list') {
-				this._refreshSkills();
-			}
-		}));
-		this._register(this.skillInstallService.onDidChangeEntries(() => {
-			if (this.tabsRendered.has('skill') && this.skillsViewMode === 'install-entries' && this.skillsLoadingHubId) {
-				this._renderHubEntries(this.skillsLoadingHubId);
-			}
-		}));
-
-		// 拖拽排序 + 置顶 + 持久化（与 preset / workflow 视图共用实现）
-		this._skillOrderStore = new CardOrderStore(this.storageService, 'agentStudio.skillOrder.v1');
-		this._skillPinStore = new CardPinStore(this.storageService, 'agentStudio.skillPinned.v1');
-		this._skillDragSorter = new CardDragSorter({
-			getContainer: () => this.contentContainer?.querySelector('#integration-skills-list') as HTMLElement | null ?? undefined,
-			getVisibleIds: () => applySavedOrder(this.skills, this._skillOrderStore.load(), s => s.id, this._skillPinStore.load()).map(s => s.id),
-			onReorder: (ids) => { this._skillOrderStore.save(ids); this._renderSkillsList(); },
-		});
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
@@ -335,7 +270,6 @@ export class IntegrationViewPane extends ViewPane {
 		// Tab bar
 		this.tabBar = $('div.integration-tab-bar');
 		const tabDefs: { id: IntegrationTab; label: string; icon: string }[] = [
-			{ id: 'skill', label: '\u6280\u80FD', icon: '\u{1F4A1}' }, // 技能
 			{ id: 'mcp', label: 'MCP', icon: '\u{1F50C}' },
 		];
 		for (const tab of tabDefs) {
@@ -351,8 +285,8 @@ export class IntegrationViewPane extends ViewPane {
 		this.contentContainer = $('div.integration-content');
 		container.appendChild(this.contentContainer);
 
-		// Lazy-render the default tab (skill)
-		this._switchTab('skill');
+		// Lazy-render the only tab (MCP)
+		this._switchTab('mcp');
 	}
 
 	override setVisible(visible: boolean): void {
@@ -391,7 +325,7 @@ export class IntegrationViewPane extends ViewPane {
 		// Update tab button styles
 		const allTabs = this.tabBar.querySelectorAll('.integration-tab');
 		allTabs.forEach(b => b.classList.remove('active'));
-		const tabOrder: IntegrationTab[] = ['skill', 'mcp'];
+		const tabOrder: IntegrationTab[] = ['mcp'];
 		const idx = tabOrder.indexOf(tab);
 		if (idx >= 0) {
 			allTabs[idx].classList.add('active');
@@ -405,18 +339,6 @@ export class IntegrationViewPane extends ViewPane {
 		clearNode(this.contentContainer);
 
 		switch (this.activeTab) {
-			case 'skill':
-				if (!this.tabsRendered.has('skill')) {
-					// First time: build skill DOM structure
-					this._buildSkillsDom();
-					this.tabsRendered.add('skill');
-					setTimeout(() => this._refreshSkills(), 0);
-				} else {
-					// Already built: re-attach DOM and refresh
-					this._buildSkillsDom();
-					this._refreshSkills();
-				}
-				break;
 			case 'mcp':
 				if (!this.tabsRendered.has('mcp')) {
 					this._buildMcpDom();
@@ -427,801 +349,6 @@ export class IntegrationViewPane extends ViewPane {
 				this._renderMcpContent();
 			}
 			break;
-		}
-	}
-
-	// ══════════════════════════════════════════════════════════════════════════
-	//  SKILLS TAB
-	// ══════════════════════════════════════════════════════════════════════════
-
-	private _buildSkillsDom(): void {
-		const container = this.contentContainer;
-		clearNode(container);
-
-		// Header
-		const header = $('div.skills-header');
-		const title = $('h3.skills-title');
-		title.classList.add('integration-section-title');
-		title.textContent = '\u{1F4A1} Skills Library';
-		header.appendChild(title);
-
-		this.skillsCountBadge = $('span.skills-count');
-		header.appendChild(this.skillsCountBadge);
-
-		// Install 下拉菜单：商城 / 文件夹 / Git
-		header.style.position = 'relative';
-		const installBtn = $('button.skills-install-btn');
-		installBtn.textContent = '+ Install ▾';
-		installBtn.title = '安装技能：从商城 / 文件夹 / Git 仓库';
-		installBtn.onclick = (e) => {
-			e.stopPropagation();
-			this._toggleInstallDropdown(header);
-		};
-		header.appendChild(installBtn);
-
-		container.appendChild(header);
-
-		// Search bar
-		const searchRow = $('div.skills-search-row');
-		this.skillsSearchInput = $('input.skills-search-input') as HTMLInputElement;
-		this.skillsSearchInput.type = 'text';
-		this.skillsSearchInput.placeholder = '\u{1F50D} Search skills by name, description, or id...';
-		this.skillsSearchInput.oninput = () => {
-			this.skillsSearchQuery = this.skillsSearchInput.value.trim().toLowerCase();
-			this._renderSkillsList();
-		};
-		searchRow.appendChild(this.skillsSearchInput);
-
-		const clearBtn = $('button.skills-search-clear-btn');
-		clearBtn.textContent = '\u2715';
-		clearBtn.title = 'Clear search';
-		clearBtn.onclick = () => {
-			this.skillsSearchInput.value = '';
-			this.skillsSearchQuery = '';
-			this._renderSkillsList();
-		};
-		searchRow.appendChild(clearBtn);
-		container.appendChild(searchRow);
-
-		// Filter row
-		// List container
-		const listContainer = $('div.integration-skills-list');
-		listContainer.id = 'integration-skills-list';
-		container.appendChild(listContainer);
-	}
-
-	/** 「+ Install」下拉菜单：从商城 / 从文件夹 / 从 Git 安装 */
-	private _toggleInstallDropdown(anchor: HTMLElement): void {
-		// 已展开则关闭（toggle 语义）
-		const existing = anchor.querySelector('.skills-install-dropdown');
-		if (existing) {
-			existing.remove();
-			return;
-		}
-
-		const menu = $('div.skills-install-dropdown');
-		menu.style.position = 'absolute';
-		menu.style.top = '100%';
-		menu.style.right = '0';
-		menu.style.zIndex = '1000';
-		menu.style.minWidth = '190px';
-		menu.style.background = 'var(--vscode-editor-background)';
-		menu.style.border = '1px solid var(--vscode-panel-border)';
-		menu.style.borderRadius = '6px';
-		menu.style.boxShadow = '0 4px 16px rgba(0,0,0,0.35)';
-		menu.style.padding = '4px';
-		menu.style.marginTop = '4px';
-
-		const close = () => {
-			menu.remove();
-			document.removeEventListener('click', onOutside, true);
-		};
-		const onOutside = (e: MouseEvent) => {
-			if (!menu.contains(e.target as Node)) { close(); }
-		};
-
-		const addItem = (label: string, desc: string, onClick: () => void) => {
-			const item = $('div');
-			item.style.padding = '6px 10px';
-			item.style.borderRadius = '4px';
-			item.style.cursor = 'pointer';
-			const title = $('div');
-			title.textContent = label;
-			title.style.fontSize = '12px';
-			title.style.color = 'var(--vscode-foreground)';
-			item.appendChild(title);
-			const d = $('div');
-			d.textContent = desc;
-			d.style.fontSize = '11px';
-			d.style.color = 'var(--vscode-descriptionForeground)';
-			d.style.marginTop = '2px';
-			item.appendChild(d);
-			item.onmouseenter = () => { item.style.background = 'var(--vscode-list-hoverBackground)'; };
-			item.onmouseleave = () => { item.style.background = ''; };
-			item.onclick = (e) => { e.stopPropagation(); close(); onClick(); };
-			menu.appendChild(item);
-		};
-
-		addItem('\u{1F6D2} 技能市场（编辑区）', '打开独立商城页浏览/安装技能（含 Cola 精选抓取批次）', () => {
-			const input = SkillMarketEditorInput.getInstance();
-			this.editorService.openEditor(input, { pinned: true });
-		});
-		addItem('\u{1F5C2} 从文件夹安装', '选择本地技能文件夹', () => this._pickAndInstallSkillFolder());
-		addItem('\u{1F310} 从 Git 安装', '克隆 git 仓库中的技能', () => this._promptInstallFromGit());
-
-		anchor.appendChild(menu);
-		// 延迟注册外部点击关闭，避免本次点击立即触发
-		setTimeout(() => document.addEventListener('click', onOutside, true), 0);
-	}
-
-	/** 用 Chromium 原生 webkitdirectory 选择技能文件夹并安装（沙箱安全，不依赖原生对话框 IPC） */
-	private _pickAndInstallSkillFolder(): void {
-		const input = $('input') as HTMLInputElement;
-		input.type = 'file';
-		input.style.display = 'none';
-		input.setAttribute('webkitdirectory', '');
-		input.onchange = async () => {
-			const fileList = input.files;
-			input.remove();
-			if (!fileList || fileList.length === 0) { return; }
-			const files: ISkillFolderUploadFile[] = [];
-			for (const file of Array.from(fileList)) {
-				// webkitRelativePath 形如 "<文件夹>/SKILL.md"，去掉首段根文件夹名
-				const rawPath = file.webkitRelativePath || file.name;
-				const relativePath = rawPath.includes('/') ? rawPath.split('/').slice(1).join('/') : file.name;
-				const data = new Uint8Array(await file.arrayBuffer());
-				files.push({ relativePath, data });
-			}
-			const result = await this.skillInstallService.installFromFolderUpload(files);
-			if (result.success) {
-				this.notificationService.info(`已安装技能 "${result.skillName}"`);
-				this._refreshSkills();
-			} else {
-				await this.dialogService.info('安装失败', result.error ?? '未知错误');
-			}
-		};
-		this.contentContainer.appendChild(input);
-		input.click();
-	}
-
-	/** 从 Git 安装：弹出 URL 输入框 → 克隆 → 安装 */
-	private _promptInstallFromGit(): void {
-		const overlay = $('div.skill-paste-overlay');
-		const dialog = $('div.skill-paste-dialog');
-
-		const title = $('h4');
-		title.textContent = '从 Git 仓库安装技能';
-		dialog.appendChild(title);
-
-		const hint = $('div');
-		hint.textContent = '支持仓库地址或 GitHub/GitLab 子目录链接（.../tree/main/path/to/skill），仅 http(s)';
-		hint.style.fontSize = '11px';
-		hint.style.color = 'var(--vscode-descriptionForeground)';
-		hint.style.marginBottom = '8px';
-		dialog.appendChild(hint);
-
-		const urlInput = $('input') as HTMLInputElement;
-		urlInput.type = 'text';
-		urlInput.placeholder = 'https://github.com/owner/repo 或 .../tree/main/skill-dir';
-		urlInput.style.width = '100%';
-		urlInput.style.boxSizing = 'border-box';
-		urlInput.style.padding = '6px 10px';
-		urlInput.style.background = 'var(--vscode-input-background)';
-		urlInput.style.color = 'var(--vscode-input-foreground)';
-		urlInput.style.border = '1px solid var(--vscode-input-border)';
-		urlInput.style.borderRadius = '4px';
-		urlInput.style.marginBottom = '10px';
-		dialog.appendChild(urlInput);
-
-		const actions = $('div.skill-paste-actions');
-		const cancelBtn = $('button');
-		cancelBtn.textContent = '取消';
-		cancelBtn.onclick = () => overlay.remove();
-		actions.appendChild(cancelBtn);
-
-		const installBtn = $('button.primary') as HTMLButtonElement;
-		installBtn.textContent = '克隆并安装';
-		const submit = async () => {
-			const url = urlInput.value.trim();
-			if (!url) { urlInput.focus(); return; }
-			installBtn.textContent = '克隆中...';
-			installBtn.disabled = true;
-			try {
-				const result = await this.skillInstallService.installFromGit(url);
-				if (result.success) {
-					overlay.remove();
-					this.notificationService.info(`已安装技能 "${result.skillName}"`);
-					this._refreshSkills();
-				} else {
-					installBtn.textContent = '克隆并安装';
-					installBtn.disabled = false;
-					await this.dialogService.info('安装失败', result.error ?? '未知错误');
-				}
-			} catch (err) {
-				installBtn.textContent = '克隆并安装';
-				installBtn.disabled = false;
-				const msg = err instanceof Error ? err.message : String(err);
-				await this.dialogService.info('安装失败', msg);
-			}
-		};
-		installBtn.onclick = () => void submit();
-		urlInput.onkeydown = (e: KeyboardEvent) => {
-			if (e.isComposing || e.keyCode === 229) { return; }
-			e.stopPropagation();
-			if (e.key === 'Enter') { e.preventDefault(); void submit(); }
-			else if (e.key === 'Escape') { e.preventDefault(); overlay.remove(); }
-		};
-		actions.appendChild(installBtn);
-
-		dialog.appendChild(actions);
-		overlay.appendChild(dialog);
-		this.contentContainer.parentElement?.appendChild(overlay);
-		urlInput.focus();
-	}
-
-	private _refreshSkills(): void {
-		this.skillsViewMode = 'list';
-		const allSkills = [...this.skillRegistry.getSkills()];
-
-		// Dedup
-		// `plugin`（dsh 插件自带技能）与内置同档 0：同内容同 id 时保留先者（内置/用户根在插件根之前 ✓）
-		const sourcePriority: Record<string, number> = { user: 3, marketplace: 3, extension: 2, memory: 1, builtin: 0, plugin: 0 };
-		const deduped = new Map<string, ISkillDefinition>();
-		for (const s of allSkills) {
-			const contentKey = `${s.id}::${s.contentHash ?? 'no-hash'}`;
-			const existing = deduped.get(contentKey);
-			if (existing) {
-				const existingPri = sourcePriority[existing.source] ?? 0;
-				const newPri = sourcePriority[s.source] ?? 0;
-				if (newPri > existingPri) {
-					deduped.set(contentKey, s);
-				}
-			} else {
-				deduped.set(contentKey, s);
-			}
-		}
-		this.skills = [...deduped.values()];
-		this._updateSkillsCount();
-		this._renderSkillsList();
-	}
-
-	private _updateSkillsCount(): void {
-		const total = this.skills.length;
-		const active = this.skills.filter(s => s.activation === 'always' || s.activation === 'auto').length;
-		if (this.skillsSearchQuery) {
-			const matched = this.skills.filter(s => {
-				const q = this.skillsSearchQuery;
-				return s.name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q)
-					|| (s.description ?? '').toLowerCase().includes(q) || (s.category ?? '').toLowerCase().includes(q);
-			}).length;
-			this.skillsCountBadge.textContent = `${matched}/${total} matched`;
-		} else {
-			this.skillsCountBadge.textContent = `${active}/${total} auto-activate`;
-		}
-	}
-
-	private _renderSkillsList(): void {
-		const listEl = this.contentContainer.querySelector('#integration-skills-list') as HTMLElement;
-		if (!listEl) { return; }
-		clearNode(listEl);
-
-		if (this.skillsViewMode !== 'list') {
-			// When in install mode, the panel handles its own rendering
-			return;
-		}
-
-		// 清空过期的升级目标（_checkMarketSkillUpgrades 会异步重新填充）
-		this._skillUpgradeTargets.clear();
-
-		let filtered = this.skills;
-
-		if (this.skillsSearchQuery) {
-			filtered = filtered.filter(s => {
-				const q = this.skillsSearchQuery;
-				return s.name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q)
-					|| (s.description ?? '').toLowerCase().includes(q) || (s.category ?? '').toLowerCase().includes(q);
-			});
-		}
-
-		if (filtered.length === 0) {
-			const empty = $('div.skills-empty');
-			const p = $('p');
-			if (this.skillsSearchQuery) {
-				p.append('No skills match "', Object.assign($('b'), { textContent: this.skillsSearchQuery }), '". Try a different search term.');
-			} else {
-				p.append('No skills in this category. Click ', Object.assign($('b'), { textContent: '+ Install' }),
-					' to add from a hub, or drop a SKILL.md into ',
-					Object.assign($('code'), { textContent: '.sarosworkspace/agents/<agentDir>/skills/<id>/' }), '.');
-			}
-			empty.appendChild(p);
-			listEl.appendChild(empty);
-			return;
-		}
-
-		// 持久化排序 + 置顶优先（共享实现）
-		const ordered = applySavedOrder(filtered, this._skillOrderStore.load(), s => s.id, this._skillPinStore.load());
-
-		for (const skill of ordered) {
-			const item = $('div.skill-item');
-			item.classList.toggle('skill-enabled', skill.enabled !== false);
-
-			// 置顶标记
-			const isPinned = this._skillPinStore.isPinned(skill.id);
-			if (isPinned) { item.classList.add('pinned'); }
-
-			const toggleContainer = $('div.skill-toggle');
-			const toggle = $('input.skill-toggle-input') as HTMLInputElement;
-			toggle.type = 'checkbox';
-			toggle.checked = skill.enabled !== false;
-			toggle.title = skill.enabled !== false ? 'Disable this skill' : 'Enable this skill';
-			toggle.onchange = async () => {
-				try {
-					if (toggle.checked) {
-						this.skillRegistry.enableSkill(skill.id);
-					} else {
-						this.skillRegistry.disableSkill(skill.id);
-					}
-					skill.enabled = toggle.checked;
-					item.classList.toggle('skill-enabled', skill.enabled !== false);
-				} catch (err) {
-					this.logService.error('[IntegrationView] Failed to toggle skill:', err);
-					toggle.checked = !toggle.checked;
-				}
-			};
-			toggleContainer.onclick = (ev) => {
-				ev.stopPropagation();
-				// CSS hides the native checkbox (opacity:0; width:0; height:0)
-				// and .toggle-slider covers the container, so clicks never reach the input.
-				toggle.checked = !toggle.checked;
-				toggle.dispatchEvent(new Event('change'));
-			};
-			const toggleSlider = $('span.toggle-slider');
-			toggleContainer.appendChild(toggle);
-			toggleContainer.appendChild(toggleSlider);
-			item.appendChild(toggleContainer);
-
-			const iconEl = $('span.skill-icon');
-			iconEl.textContent = skillIconFor(skill);
-			item.appendChild(iconEl);
-
-			const info = $('div.skill-info');
-			const nameRow = $('div.skill-name-row');
-			const nameEl = $('span.skill-name');
-			nameEl.textContent = skill.name;
-			nameRow.appendChild(nameEl);
-
-			// 置顶图标
-			if (isPinned) {
-				const pinIcon = $('span.skill-pin-icon');
-				pinIcon.textContent = '📌';
-				pinIcon.title = '已置顶';
-				nameRow.appendChild(pinIcon);
-			}
-
-			// 只读来源标识（内置 / 插件自带）：两者都不可编辑/卸载，但**必须分开显示** ——
-			// 说成"内置"会让用户以为技能随产品走，实际它随**插件包**升级（2026-10-13 P2 ✗）
-			if (isSkillReadOnly(skill.source)) {
-				const builtinBadge = $('span.builtin-badge');
-				builtinBadge.textContent = skill.source === 'plugin' ? '插件' : '内置';
-				builtinBadge.title = skill.source === 'plugin' ? '随 dsh 插件分发（只读，随插件升级）' : '产品内置技能';
-				nameRow.appendChild(builtinBadge);
-			}
-
-			// Version badge
-			if (skill.version) {
-				const verBadge = $('span.skill-version-badge');
-				verBadge.textContent = `v${skill.version}`;
-				nameRow.appendChild(verBadge);
-			}
-
-			info.appendChild(nameRow);
-
-			const descEl = $('div.skill-desc');
-			descEl.textContent = skill.description || '(no description)';
-			info.appendChild(descEl);
-			item.appendChild(info);
-
-			// Unified action buttons (hover-visible)
-			const skillActions = this._createActionButtons('skill', skill.id, skill.name, {
-				// Show upload for user and builtin (not marketplace-downloaded)
-				// ⚠ 插件自带技能**不给上传**：它是第三方的，不是我们的东西（`isSkillReadOnly` 只挡"编辑/卸载"，
-				//    上架这条得在这里显式排除 —— 因此不能把 showUpload 也换成 isSkillReadOnly 的取反 ✗）
-				showUpload: skill.source === 'user' || skill.source === 'builtin',
-				// Show delete for user and marketplace（内置/插件自带是只读来源）
-				showDelete: skill.source === 'user' || skill.source === 'marketplace',
-			});
-			// Mark marketplace skills for async upgrade check
-			if (skill.source === 'marketplace') {
-				skillActions.dataset.skillId = skill.id;
-				skillActions.dataset.skillVersion = skill.version ?? '0';
-			}
-			item.appendChild(skillActions);
-			this._attachHoverActions(item);
-
-			item.style.cursor = skill.resource ? 'pointer' : 'default';
-			item.onclick = (e) => {
-				const target = e.target as HTMLElement;
-				if (target.tagName === 'INPUT' || target.tagName === 'BUTTON' || target.closest('button')) {
-					return;
-				}
-				const input = ResourceManagerEditorInput.getInstance();
-				this.editorService.openEditor(input, { pinned: true }).then((pane) => {
-					const control = pane?.getControl();
-					if (control instanceof ResourceManagerEditorPane) {
-						control.showDetailOnly('skill', skill.id);
-					}
-				});
-			};
-
-			// 右键菜单：置顶 / 复制 / 删除 / 升级(按需) / 上传(按需)（共享实现）
-			item.oncontextmenu = (e) => {
-				e.preventDefault();
-				e.stopPropagation();
-				const targetVersion = this._skillUpgradeTargets.get(skill.id);
-				const isLocalSkill = skill.source === 'user' || skill.source === 'builtin';
-				showCardContextMenu(this.contextMenuService, e, {
-					pinned: isPinned,
-					onTogglePin: () => { this._skillPinStore.toggle(skill.id); this._renderSkillsList(); },
-					onDuplicate: () => { void this._handleDuplicateSkill(skill); },
-					upgradeLabel: targetVersion ? `升级到 v${targetVersion}` : undefined,
-					onUpgrade: targetVersion ? () => { void this._handleUpgrade('skill', skill.id); } : undefined,
-					onUpload: isLocalSkill ? () => { void this._handleUpload('skill', skill.id); } : undefined,
-					// 只读来源（内置 / 插件自带）不给删除入口 —— 删的是它们自己的目录 ✗（见 `isSkillReadOnly`）
-					onDelete: isSkillReadOnly(skill.source) ? undefined : () => { void this._handleDelete('skill', skill.id, skill.name); },
-				});
-			};
-
-			// 拖拽排序（共享实现，顺序持久化）
-			this._skillDragSorter.attach(item, skill.id);
-
-			listEl.appendChild(item);
-		}
-
-		// Async check for marketplace skill upgrades
-		this._checkMarketSkillUpgrades(listEl).catch(() => { /* ignore */ });
-	}
-
-	private _showInstallHubs(): void {
-		this.skillsViewMode = 'install-hubs';
-		const listEl = this.contentContainer.querySelector('#integration-skills-list') as HTMLElement;
-		if (!listEl) { return; }
-		clearNode(listEl);
-
-		const panel = $('div.skill-install-panel');
-
-		const header = $('div.skill-install-header');
-		const title = $('h4.skill-install-title');
-		title.textContent = 'Install Skills';
-		header.appendChild(title);
-
-		const backBtn = $('button.skill-install-back-btn');
-		backBtn.textContent = '\u2190 Back';
-		backBtn.onclick = () => this._refreshSkills();
-		header.appendChild(backBtn);
-		panel.appendChild(header);
-
-		// From Hub
-		const hubSection = $('div.skill-install-section');
-		const hubTitle = $('div.skill-install-section-title');
-		hubTitle.textContent = 'From Skill Hubs';
-		hubSection.appendChild(hubTitle);
-		const hubDesc = $('div.skill-install-section-desc');
-		hubDesc.textContent = 'Browse and install skills from open-source repositories';
-		hubSection.appendChild(hubDesc);
-
-		const hubGrid = $('div.skill-hub-grid');
-		const hubs = this.skillInstallService.getHubs();
-		for (const hub of hubs) {
-			const card = $('div.skill-hub-card');
-			if (hub.official) { card.classList.add('skill-hub-card-official'); }
-
-			const hubIcon = $('span.skill-hub-icon');
-			hubIcon.textContent = hub.icon ?? '\u{1F4E6}';
-			card.appendChild(hubIcon);
-
-			const hubInfo = $('div.skill-hub-info');
-			const hubName = $('div.skill-hub-name');
-			hubName.textContent = hub.name;
-			if (hub.official) {
-				const officialBadge = $('span.skill-hub-official-badge');
-				officialBadge.textContent = 'Official';
-				hubName.appendChild(officialBadge);
-			}
-			hubInfo.appendChild(hubName);
-
-			const hubDescEl = $('div.skill-hub-desc');
-			hubDescEl.textContent = hub.description;
-			hubInfo.appendChild(hubDescEl);
-
-			const hubType = $('div.skill-hub-type');
-			hubType.textContent = hub.type === 'github' ? 'GitHub' : hub.type === 'url' ? 'URL' : hub.type === 'local' ? 'Local' : hub.type;
-			hubInfo.appendChild(hubType);
-
-			card.appendChild(hubInfo);
-			card.onclick = () => this._showHubEntries(hub.id);
-			hubGrid.appendChild(card);
-		}
-		hubSection.appendChild(hubGrid);
-		panel.appendChild(hubSection);
-
-		// From Local File
-		const localSection = $('div.skill-install-section');
-		const localTitle = $('div.skill-install-section-title');
-		localTitle.textContent = 'From Local File';
-		localSection.appendChild(localTitle);
-		const localDesc = $('div.skill-install-section-desc');
-		localDesc.textContent = 'Import a SKILL.md file from your computer';
-		localSection.appendChild(localDesc);
-
-		const localActions = $('div.skill-install-local-actions');
-		const fileInput = $('input.skill-file-input') as HTMLInputElement;
-		fileInput.type = 'file';
-		fileInput.accept = '.md,.markdown';
-		fileInput.style.display = 'none';
-		fileInput.onchange = async () => {
-			const file = fileInput.files?.[0];
-			if (!file) { return; }
-			const text = await file.text();
-			const result = await this.skillInstallService.installFromContent(text);
-			if (result.success) {
-				this._refreshSkills();
-			} else {
-				await this.dialogService.info(
-					'Installation Failed',
-					result.error ?? 'Unknown error'
-				);
-			}
-		};
-		localActions.appendChild(fileInput);
-
-		const browseBtn = $('button.skill-install-browse-btn');
-		browseBtn.textContent = '\u{1F4C1} Browse SKILL.md';
-		browseBtn.onclick = () => fileInput.click();
-		localActions.appendChild(browseBtn);
-
-		// 从文件夹安装：整体复制 + 过滤垃圾文件 + 建 git（推荐，保留配套脚本）
-		const folderBtn = $('button.skill-install-browse-btn');
-		folderBtn.textContent = '\u{1F5C2} 从文件夹安装';
-		folderBtn.title = '选择包含 SKILL.md 的技能文件夹，整体复制到 ~/.vssaros/skills（过滤 .git/__pycache__ 等并初始化 .git）';
-		folderBtn.onclick = () => this._pickAndInstallSkillFolder();
-		localActions.appendChild(folderBtn);
-
-		const pasteBtn = $('button.skill-install-paste-btn');
-		pasteBtn.textContent = '\u{1F4CB} Paste Content';
-		pasteBtn.onclick = () => this._showPasteDialog();
-		localActions.appendChild(pasteBtn);
-
-		localSection.appendChild(localActions);
-		panel.appendChild(localSection);
-
-		// From URL
-		const urlSection = $('div.skill-install-section');
-		const urlTitle = $('div.skill-install-section-title');
-		urlTitle.textContent = 'From URL';
-		urlSection.appendChild(urlTitle);
-		const urlDesc = $('div.skill-install-section-desc');
-		urlDesc.textContent = 'Install from a direct SKILL.md URL (GitHub raw, Gist, etc.)';
-		urlSection.appendChild(urlDesc);
-
-		const urlRow = $('div.skill-install-url-row');
-		const urlInput = $('input.skill-url-input') as HTMLInputElement;
-		urlInput.type = 'text';
-		urlInput.placeholder = 'https://raw.githubusercontent.com/.../SKILL.md';
-		urlRow.appendChild(urlInput);
-
-		const urlBtn = $('button.skill-install-url-btn');
-		urlBtn.textContent = 'Install';
-		urlBtn.onclick = async () => {
-			const url = urlInput.value.trim();
-			if (!url) { return; }
-			urlBtn.textContent = 'Installing...';
-			(urlBtn as HTMLButtonElement).disabled = true;
-			try {
-				const content = await this._fetchUrlContent(url);
-				if (!content) { throw new Error('Failed to download content'); }
-				const result = await this.skillInstallService.installFromContent(content);
-				if (result.success) {
-					this._refreshSkills();
-				} else {
-					await this.dialogService.info(
-						'Installation Failed',
-						result.error ?? 'Unknown error'
-					);
-				}
-			} catch (err) {
-				await this.dialogService.info(
-					'Installation Failed',
-					err instanceof Error ? err.message : String(err)
-				);
-			} finally {
-				urlBtn.textContent = 'Install';
-				(urlBtn as HTMLButtonElement).disabled = false;
-			}
-		};
-		urlRow.appendChild(urlBtn);
-		urlSection.appendChild(urlRow);
-		panel.appendChild(urlSection);
-
-		listEl.appendChild(panel);
-	}
-
-	private async _showHubEntries(hubId: string): Promise<void> {
-		this.skillsViewMode = 'install-entries';
-		this.skillsLoadingHubId = hubId;
-		const listEl = this.contentContainer.querySelector('#integration-skills-list') as HTMLElement;
-		if (!listEl) { return; }
-		clearNode(listEl);
-
-		const hub = this.skillInstallService.getHubs().find(h => h.id === hubId);
-
-		const header = $('div.skill-install-header');
-		const title = $('h4.skill-install-title');
-		title.textContent = hub?.name ?? hubId;
-		header.appendChild(title);
-
-		const backBtn = $('button.skill-install-back-btn');
-		backBtn.textContent = '\u2190 Back to Hubs';
-		backBtn.onclick = () => this._showInstallHubs();
-		header.appendChild(backBtn);
-
-		const refreshBtn = $('button.skill-hub-refresh-btn');
-		refreshBtn.textContent = '\u{1F504} Refresh';
-		refreshBtn.onclick = () => { void this.skillInstallService.fetchHubEntries(hubId); };
-		header.appendChild(refreshBtn);
-
-		listEl.appendChild(header);
-
-		const loading = $('div.skill-hub-loading');
-		loading.textContent = 'Loading skills from hub...';
-		listEl.appendChild(loading);
-
-		const entries = await this.skillInstallService.fetchHubEntries(hubId);
-		this._renderHubEntries(hubId, entries);
-	}
-
-	private _renderHubEntries(hubId: string, entries?: readonly ISkillHubEntry[]): void {
-		const listEl = this.contentContainer.querySelector('#integration-skills-list');
-		if (!listEl) { return; }
-
-		const loadingEl = listEl.querySelector('.skill-hub-loading');
-		if (loadingEl) { loadingEl.remove(); }
-
-		const existingEntries = listEl.querySelectorAll('.skill-hub-entry');
-		existingEntries.forEach(el => el.remove());
-		const existingEmpty = listEl.querySelector('.skill-hub-entries-empty');
-		if (existingEmpty) { existingEmpty.remove(); }
-
-		const allEntries = entries ?? this.skillInstallService.getCachedEntries(hubId);
-
-		if (allEntries.length === 0) {
-			const empty = $('div.skill-hub-entries-empty');
-			empty.textContent = 'No skills found in this hub. Try refreshing.';
-			listEl.appendChild(empty);
-			return;
-		}
-
-		for (const entry of allEntries) {
-			const item = $('div.skill-hub-entry');
-			if (entry.installed) { item.classList.add('skill-hub-entry-installed'); }
-
-			const icon = $('span.skill-hub-entry-icon');
-			icon.textContent = skillIconForCategory(entry.category);
-			item.appendChild(icon);
-
-			const info = $('div.skill-hub-entry-info');
-			const nameRow = $('div.skill-hub-entry-name-row');
-			const name = $('span.skill-hub-entry-name');
-			name.textContent = entry.name;
-			nameRow.appendChild(name);
-
-			if (entry.category) {
-				const catBadge = $('span.skill-category-badge');
-				catBadge.textContent = entry.category;
-				nameRow.appendChild(catBadge);
-			}
-			if (entry.activation) {
-				const actBadge = $('span.skill-category-badge');
-				actBadge.textContent = entry.activation;
-				nameRow.appendChild(actBadge);
-			}
-			if (entry.installed) {
-				const installedBadge = $('span.skill-hub-entry-installed-badge');
-				installedBadge.textContent = 'Installed';
-				nameRow.appendChild(installedBadge);
-			}
-
-			info.appendChild(nameRow);
-			const desc = $('div.skill-hub-entry-desc');
-			desc.textContent = entry.description || '(no description)';
-			info.appendChild(desc);
-			item.appendChild(info);
-
-			if (!entry.installed) {
-				const installBtn = $('button.skill-hub-entry-install-btn');
-				installBtn.textContent = 'Install';
-				installBtn.onclick = async (e) => {
-					e.stopPropagation();
-					installBtn.textContent = 'Installing...';
-					(installBtn as HTMLButtonElement).disabled = true;
-					const result = await this.skillInstallService.installFromHub(hubId, entry.id);
-					if (result.success) {
-						entry.installed = true;
-						installBtn.textContent = 'Installed \u2713';
-						(installBtn as HTMLButtonElement).disabled = true;
-						item.classList.add('skill-hub-entry-installed');
-						if (!item.querySelector('.skill-hub-entry-installed-badge')) {
-							const badge = $('span.skill-hub-entry-installed-badge');
-							badge.textContent = 'Installed';
-							nameRow.appendChild(badge);
-						}
-					} else {
-						installBtn.textContent = 'Install';
-						(installBtn as HTMLButtonElement).disabled = false;
-						await this.dialogService.info(
-							'Installation Failed',
-							`Failed to install "${entry.name}": ${result.error ?? 'Unknown error'}`
-						);
-					}
-				};
-				item.appendChild(installBtn);
-			}
-
-			listEl.appendChild(item);
-		}
-	}
-
-	private async _showPasteDialog(): Promise<void> {
-		const overlay = $('div.skill-paste-overlay');
-		const dialog = $('div.skill-paste-dialog');
-
-		const title = $('h4');
-		title.textContent = 'Paste SKILL.md Content';
-		dialog.appendChild(title);
-
-		const textarea = $('textarea.skill-paste-textarea') as HTMLTextAreaElement;
-		textarea.placeholder = 'Paste the SKILL.md content here...\n\n---\nname: my-skill\ndescription: ...\n---\nSkill body...';
-		dialog.appendChild(textarea);
-
-		const actions = $('div.skill-paste-actions');
-		const cancelBtn = $('button');
-		cancelBtn.textContent = 'Cancel';
-		cancelBtn.onclick = () => overlay.remove();
-		actions.appendChild(cancelBtn);
-
-		const installBtn = $('button.primary');
-		installBtn.textContent = 'Install';
-		installBtn.onclick = async () => {
-			const content = textarea.value.trim();
-			if (!content) { return; }
-			installBtn.textContent = 'Installing...';
-			(installBtn as HTMLButtonElement).disabled = true;
-			const result = await this.skillInstallService.installFromContent(content);
-			if (result.success) {
-				overlay.remove();
-				this._refreshSkills();
-			} else {
-				installBtn.textContent = 'Install';
-				(installBtn as HTMLButtonElement).disabled = false;
-				await this.dialogService.info(
-					'Installation Failed',
-					result.error ?? 'Unknown error'
-				);
-			}
-		};
-		actions.appendChild(installBtn);
-
-		dialog.appendChild(actions);
-		overlay.appendChild(dialog);
-		this.contentContainer.parentElement?.appendChild(overlay);
-	}
-
-	private async _fetchUrlContent(url: string): Promise<string | undefined> {
-		try {
-			const response = await fetch(url);
-			if (!response.ok) { throw new Error(`HTTP ${response.status}`); }
-			return await response.text();
-		} catch {
-			return undefined;
 		}
 	}
 
@@ -2032,15 +1159,7 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 			this.notificationService.info(`Uploading ${id} to marketplace...`);
 		const result = await this.marketplaceService.publish(id, kind, { changelog: `Upload from VsSaros at ${new Date().toISOString()}` });
 		this.notificationService.info(`\u2705 Published ${id} v${result.version} to marketplace.`);
-		// 把发布版本写回本地 SKILL.md —— 否则本地无 version 被视为 '0'，商城状态检查会误报「有升级」
-		if (kind === 'skill') {
-			await this.skillInstallService.setSkillVersion(id, result.version);
-		}
-		// Auto-commit + tag for version history（在版本写回之后，快照含 version 字段）
-		this.skillVersionService.autoCommit(id, `publish: v${result.version} to marketplace`).catch(() => {});
-			this.skillVersionService.tag(id, `v${result.version}`).catch(() => {});
-			// Refresh skill list to update button states
-			if (tab === 'skill') { this._refreshSkills(); }
+		// ★ P3：技能发布回写 / AutoGit 版本快照已随 IDE 技能页签下线（dsh 侧商城自行管理台账）。
 		} catch (err) {
 			this.notificationService.error(`Upload failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
@@ -2070,75 +1189,6 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 		}
 	}
 
-	// ── Upgrade handler ────────────────────────────────────────────
-
-	/**
-	 * Batch-check marketplace skills for available upgrades.
-	 * Adds an upgrade button to each skill item that has a newer version on the server.
-	 */
-	private async _checkMarketSkillUpgrades(listEl: HTMLElement): Promise<void> {
-		// Find all marketplace skill action containers with dataset
-		const actionContainers = listEl.querySelectorAll<HTMLElement>('div.item-actions[data-skill-id]');
-		if (actionContainers.length === 0) { return; }
-
-		// Collect upgrade check items
-		const checkItems: Array<{ storeId: string; version: string; container: HTMLElement }> = [];
-		for (const container of actionContainers) {
-			const storeId = container.dataset.skillId;
-			const version = container.dataset.skillVersion ?? '0';
-			if (storeId) { checkItems.push({ storeId, version, container }); }
-		}
-		if (checkItems.length === 0) { return; }
-
-		try {
-			const upgrades = await this.marketplaceService.checkUpgrades(
-				checkItems.map(c => ({ kind: 'skill' as PackageKind, storeId: c.storeId, version: c.version }))
-			);
-
-			// Add upgrade button to each skill that has an available upgrade
-			for (const info of upgrades) {
-				const match = checkItems.find(c => c.storeId === info.storeId);
-				if (!match) { continue; }
-
-				// Compare versions: only show if server version is higher
-				if (this._compareVersions(info.latest, info.current) <= 0) { continue; }
-
-				// 记录升级目标（供右键菜单「升级」按需显示）
-				this._skillUpgradeTargets.set(info.storeId, info.latest);
-
-				// Create upgrade button
-				const btn = $('button.act-btn.upgrade') as HTMLButtonElement;
-				btn.textContent = '\u2B06';
-				btn.title = `升级到 v${info.latest}`;
-				btn.onclick = (e) => {
-					e.stopPropagation();
-					void this._handleUpgrade('skill', info.storeId);
-				};
-				// Insert upgrade button before delete button (if any), otherwise append
-				const deleteBtn = match.container.querySelector('button.act-btn.delete');
-				if (deleteBtn) {
-					match.container.insertBefore(btn, deleteBtn);
-				} else {
-					match.container.appendChild(btn);
-				}
-			}
-		} catch {
-			// Silently ignore upgrade check failures
-		}
-	}
-
-	/** Compare semver versions. Returns >0 if a>b, 0 if equal, <0 if a<b */
-	private _compareVersions(a: string, b: string): number {
-		const pa = a.replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0);
-		const pb = b.replace(/^v/, '').split('.').map(n => parseInt(n, 10) || 0);
-		const len = Math.max(pa.length, pb.length);
-		for (let i = 0; i < len; i++) {
-			const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
-			if (diff !== 0) { return diff; }
-		}
-		return 0;
-	}
-
 	private async _handleUpgrade(kind: PackageKind, storeId: string): Promise<void> {
 		if (!this.marketplaceService.isLoggedIn()) {
 			this.notificationService.info('Please log in to the marketplace first.');
@@ -2153,48 +1203,10 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 			this.notificationService.info(`Upgrading ${storeId} to v${pkg.latestVersion}...`);
 			await this.marketplaceService.download(storeId, pkg.latestVersion, kind);
 			this.notificationService.info(`\u2705 Upgraded ${storeId} to v${pkg.latestVersion}.`);
-			this._skillUpgradeTargets.delete(storeId);
 			this._refreshActiveTab();
 		} catch (err) {
 			this.notificationService.error(`Upgrade failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
-	}
-
-	// ── Duplicate handler ──────────────────────────────────────────
-
-	/** 复制技能：读取 SKILL.md 内容，改名后经 installFromContent 安装为新技能 */
-	private async _handleDuplicateSkill(skill: ISkillDefinition): Promise<void> {
-		try {
-			if (!skill.resource) {
-				this.notificationService.warn(`Cannot duplicate "${skill.name}": no source file.`);
-				return;
-			}
-			const content = (await this.fileService.readFile(skill.resource)).value.toString();
-			const newName = `${skill.name}-copy`;
-			// 替换 frontmatter name 字段；无 frontmatter 时在头部补一个
-			const newContent = this._rewriteSkillMdName(content, skill.name, newName);
-			await this.skillInstallService.installFromContent(newContent);
-			this.notificationService.info(`✅ Duplicated "${skill.name}" as "${newName}".`);
-			this._refreshSkills();
-		} catch (err) {
-			this.notificationService.error(`Duplicate failed: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
-
-	/** 替换 SKILL.md frontmatter 中的 name 字段（无 frontmatter 则前置插入） */
-	private _rewriteSkillMdName(content: string, oldName: string, newName: string): string {
-		const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-		if (fmMatch) {
-			const fm = fmMatch[1];
-			if (/^name\s*:/m.test(fm)) {
-				const newFm = fm.replace(/^name\s*:.*$/m, `name: ${newName}`);
-				return content.replace(fmMatch[0], `---\n${newFm}\n---`);
-			}
-			// frontmatter 存在但无 name 字段 → 追加
-			return content.replace(fmMatch[0], `---\n${fm}\nname: ${newName}\n---`);
-		}
-		// 无 frontmatter → 补一个最小 frontmatter
-		return `---\nname: ${newName}\ndescription: Copy of ${oldName}\n---\n\n${content}`;
 	}
 
 	// ── Delete handler ─────────────────────────────────────────────
@@ -2208,34 +1220,21 @@ private async _waitForAgentOSTools(serverRef: IMcpServer, maxWaitMs: number): Pr
 		});
 		if (!confirmed.confirmed) { return; }
 
-		try {
-			switch (tab) {
-				case 'skill':
-					await this.skillInstallService.uninstallSkill(id);
-					this._refreshSkills();
-					break;
-			case 'mcp':
-				this.notificationService.info(`Cannot delete built-in ${tab}. Disable it via the toggle instead.`);
-				return;
-			}
-			this.notificationService.info(`\u2705 Deleted "${name}".`);
-		} catch (err) {
-			this.notificationService.error(`Delete failed: ${err instanceof Error ? err.message : String(err)}`);
-		}
+		// ★ P3（2026-11-07）：技能删除已迁 dsh 侧「工具 / 技能」页；MCP 是内置预设，
+		//   只能通过开关禁用 ⇒ 这里不再有可删资源，给一条可读提示（不是静默 return）。
+		this.notificationService.info(`"${name}" 是内置 ${tab} 资源：请用开关禁用，或在 dsh 侧管理。`);
 	}
 
 	// ── Helpers ────────────────────────────────────────────────────
 
 	private _tabToKind(tab: IntegrationTab): PackageKind | undefined {
 		switch (tab) {
-			case 'skill': return 'skill';
 			case 'mcp': return 'mcp';
 		}
 	}
 
 	private _refreshActiveTab(): void {
 		switch (this.activeTab) {
-			case 'skill': this._refreshSkills(); break;
 			case 'mcp': void this._reloadMcp(); break;
 		}
 	}

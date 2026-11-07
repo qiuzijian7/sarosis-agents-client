@@ -64,8 +64,8 @@ const CHAT_SURFACE_DIR = 'dsh-plugins/vssaros-chat-surface/lib';
  */
 const PLUGIN_PAGE_SOURCES = [
 	// 2026-11-06：agents 的两个页面文件（完整页 detail.js / 侧栏 sideview.js）随 Bots 工作台删除 ⇒ 不再登记。
-	// 2026-10-15 加：**集成页**（`/x/skills/`）—— 标题栏 ↗ 调 `bridge.openModulePage(location.pathname)`，
-	// 置顶主入口调 `bridge.openSkillMarket()`（打开 VsSaros 技能商城，桥 `8 → 9`）。
+	// 2026-10-15 加：**集成页**（`/x/skills/`）—— 标题栏 ↗ 调 `bridge.openModulePage(location.pathname)`。
+	// ★ P3（2026-11-07）：置顶主入口改成 `/x/marketplace/` 普通链接，`bridge.openSkillMarket()` 已退役。
 	// ⚠ 它页面侧刻意把桥对象命名为 `bridge`（不是 `pageBridge` 之类）：本守卫按 `bridge.<方法名>(`
 	//   这个**字面形态**采集 ⇒ 改名 = 这两个调用落进盲区（点了没反应、日志也无线索 ✗）。
 	'dsh-plugins/vssaros-skills/lib/index.js',

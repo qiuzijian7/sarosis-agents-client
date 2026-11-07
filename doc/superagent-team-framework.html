@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SuperAgent 主管组团 · 框架图文档</title>
+<style>
+/* 颜色沿用 DSH 主题包的 --dsw-alias-* 语义（浅 / 深两套取值），不依赖外部样式文件，可离线打开 */
+:root {
+	--dsw-alias-bg-base: #f5f6f8;
+	--dsw-alias-bg-layer-1: #ffffff;
+	--dsw-alias-bg-layer-2: #fafbfc;
+	--dsw-alias-bg-module-platform: #eef0f4;
+	--dsw-alias-border-l3: #e3e6ec;
+	--dsw-alias-border-l4: #d6dae2;
+	--dsw-alias-label-primary: #1f2329;
+	--dsw-alias-label-secondary: #4e5969;
+	--dsw-alias-label-tertiary: #86909c;
+	--dsw-alias-label-caption: #9aa2af;
+	--dsw-alias-brand-primary: #3b6cf5;
+	--dsw-alias-brand-on: #ffffff;
+	--dsw-alias-link: #2a6df4;
+	--dsw-alias-state-success-primary: #0a8f5c;
+	--dsw-alias-state-warn-primary: #c07800;
+	--dsw-alias-state-error-primary: #d54941;
+	--dsw-alias-state-business-primary: #2a6df4;
+	--dsw-elevation-panel: 0 1px 2px rgba(20,28,45,.06), 0 8px 24px rgba(20,28,45,.06);
+	color-scheme: light;
+}
+[data-theme="dark"] {
+	--dsw-alias-bg-base: #17191d;
+	--dsw-alias-bg-layer-1: #1f2227;
+	--dsw-alias-bg-layer-2: #24282e;
+	--dsw-alias-bg-module-platform: #2c3138;
+	--dsw-alias-border-l3: #393f47;
+	--dsw-alias-border-l4: #474e58;
+	--dsw-alias-label-primary: #e8eaed;
+	--dsw-alias-label-secondary: #b7bec8;
+	--dsw-alias-label-tertiary: #8d96a3;
+	--dsw-alias-label-caption: #78828f;
+	--dsw-alias-brand-primary: #5b83f8;
+	--dsw-alias-brand-on: #10131a;
+	--dsw-alias-link: #7ea2ff;
+	--dsw-alias-state-success-primary: #3dbd84;
+	--dsw-alias-state-warn-primary: #e0a33a;
+	--dsw-alias-state-error-primary: #ef7b72;
+	--dsw-alias-state-business-primary: #7ea2ff;
+	--dsw-elevation-panel: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.28);
+	color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary);
+	font: 14px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+.layout { display: flex; align-items: flex-start; }
+.toc { flex: 0 0 232px; position: sticky; top: 0; height: 100vh; overflow: auto; padding: 24px 14px 40px;
+	background: var(--dsw-alias-bg-layer-1); border-right: .5px solid var(--dsw-alias-border-l3); }
+.toc .brand { font-size: 15px; font-weight: 700; margin: 0 0 4px 8px; }
+.toc .sub { font-size: 12px; color: var(--dsw-alias-label-caption); margin: 0 0 18px 8px; }
+.toc a { display: block; padding: 6px 10px; border-radius: 8px; text-decoration: none; font-size: 13px;
+	color: var(--dsw-alias-label-secondary); }
+.toc a:hover { background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-primary); }
+.toc a.on { background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-primary); font-weight: 600; }
+.toc .sep { height: 1px; background: var(--dsw-alias-border-l3); margin: 14px 8px; }
+.toc .note { font-size: 12px; color: var(--dsw-alias-label-caption); padding: 0 10px; line-height: 1.6; }
+main { flex: 1; min-width: 0; max-width: 1120px; margin: 0 auto; padding: 32px 34px 80px; }
+header.top { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 26px; }
+header.top .h { flex: 1; min-width: 0; }
+h1 { font-size: 26px; line-height: 1.3; margin: 0 0 8px; font-weight: 700; }
+.lede { color: var(--dsw-alias-label-secondary); margin: 0; font-size: 14px; max-width: 780px; }
+.badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.tag { display: inline-flex; align-items: center; border-radius: 999px; padding: 2px 10px; font-size: 12px; line-height: 19px;
+	background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-secondary); }
+.tag.brand { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 14%, transparent); color: var(--dsw-alias-link); }
+.tag.ok { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 13%, transparent); color: var(--dsw-alias-state-success-primary); }
+.tag.warn { background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 15%, transparent); color: var(--dsw-alias-state-warn-primary); }
+.btn { border: .5px solid var(--dsw-alias-border-l4); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary);
+	border-radius: 9px; height: 32px; padding: 0 12px; font: inherit; font-size: 13px; cursor: pointer; }
+.btn:hover { color: var(--dsw-alias-label-primary); }
+section { margin: 34px 0 0; scroll-margin-top: 20px; }
+h2 { font-size: 19px; margin: 0 0 6px; padding-bottom: 8px; border-bottom: .5px solid var(--dsw-alias-border-l3); }
+h2 .n { color: var(--dsw-alias-link); font-variant-numeric: tabular-nums; margin-right: 8px; }
+h3 { font-size: 15px; margin: 22px 0 8px; }
+p { margin: 8px 0 12px; color: var(--dsw-alias-label-secondary); }
+p.tip { font-size: 13px; color: var(--dsw-alias-label-caption); }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; font-size: 12.5px; }
+code { padding: 1px 5px; border-radius: 5px; background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-primary); }
+.card { background: var(--dsw-alias-bg-layer-1); border: .5px solid var(--dsw-alias-border-l3); border-radius: 14px;
+	padding: 16px 18px; box-shadow: var(--dsw-elevation-panel); margin: 14px 0; }
+.figure { background: var(--dsw-alias-bg-layer-1); border: .5px solid var(--dsw-alias-border-l3); border-radius: 14px;
+	padding: 10px 12px 6px; box-shadow: var(--dsw-elevation-panel); margin: 14px 0; overflow-x: auto; }
+.figure figcaption { font-size: 12px; color: var(--dsw-alias-label-caption); padding: 4px 6px 8px; }
+svg { display: block; width: 100%; min-width: 720px; height: auto; }
+svg .lane { fill: var(--dsw-alias-bg-layer-2); stroke: var(--dsw-alias-border-l3); }
+svg .box { fill: var(--dsw-alias-bg-layer-1); stroke: var(--dsw-alias-border-l4); }
+svg .box.accent { fill: color-mix(in srgb, var(--dsw-alias-brand-primary) 9%, var(--dsw-alias-bg-layer-1)); stroke: var(--dsw-alias-brand-primary); }
+svg .box.bus { fill: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, var(--dsw-alias-bg-layer-1)); stroke: var(--dsw-alias-state-business-primary); }
+svg .box.asset { fill: color-mix(in srgb, var(--dsw-alias-state-success-primary) 9%, var(--dsw-alias-bg-layer-1)); stroke: var(--dsw-alias-state-success-primary); }
+svg text { fill: var(--dsw-alias-label-primary); font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+svg .t-title { font-size: 13px; font-weight: 600; }
+svg .t-sub { font-size: 11px; fill: var(--dsw-alias-label-tertiary); }
+svg .t-lane { font-size: 11px; font-weight: 600; fill: var(--dsw-alias-label-tertiary); }
+svg .t-num { font-size: 11px; font-weight: 700; fill: var(--dsw-alias-brand-primary); }
+svg .badge { fill: var(--dsw-alias-brand-primary); }
+svg .badge.g { fill: var(--dsw-alias-state-success-primary); }
+svg .t-badge { font-size: 11px; font-weight: 700; fill: var(--dsw-alias-brand-on); }
+svg .arrow { stroke: var(--dsw-alias-brand-primary); stroke-width: 1.6; fill: none; marker-end: url(#ah); }
+svg .back { stroke: var(--dsw-alias-state-success-primary); stroke-width: 1.6; fill: none; stroke-dasharray: 4 3; marker-end: url(#ahg); }
+svg .guide { stroke: var(--dsw-alias-border-l4); stroke-width: 1; stroke-dasharray: 3 4; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 10px 0 16px; }
+th { text-align: left; font-weight: 500; color: var(--dsw-alias-label-caption); padding: 7px 10px 7px 0;
+	border-bottom: .5px solid var(--dsw-alias-border-l3); white-space: nowrap; }
+td { padding: 8px 10px 8px 0; border-bottom: .5px solid var(--dsw-alias-border-l3); vertical-align: top;
+	color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+td strong { color: var(--dsw-alias-label-primary); font-weight: 600; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; margin: 14px 0; }
+.tile { background: var(--dsw-alias-bg-layer-1); border: .5px solid var(--dsw-alias-border-l3); border-radius: 12px; padding: 12px 14px; }
+.tile h4 { margin: 0 0 6px; font-size: 13px; }
+.tile p { margin: 0; font-size: 12.5px; }
+.tile .k { font-size: 11px; color: var(--dsw-alias-label-caption); }
+ol.steps { padding-left: 20px; margin: 10px 0; }
+ol.steps li { margin: 6px 0; color: var(--dsw-alias-label-secondary); }
+.kv { display: grid; grid-template-columns: 150px 1fr; gap: 4px 12px; font-size: 13px; margin: 8px 0; }
+.kv dt { color: var(--dsw-alias-label-caption); }
+.kv dd { margin: 0; }
+.lanes { border: .5px solid var(--dsw-alias-border-l3); border-radius: 12px; overflow: hidden; }
+.lanes .row { display: grid; grid-template-columns: 56px repeat(5, 1fr); }
+.lanes .row > div { padding: 9px 10px; border-right: .5px solid var(--dsw-alias-border-l3); border-bottom: .5px solid var(--dsw-alias-border-l3);
+	font-size: 12.5px; min-height: 42px; }
+.lanes .row > div:last-child { border-right: 0; }
+.lanes .head > div { background: var(--dsw-alias-bg-module-platform); font-weight: 600; color: var(--dsw-alias-label-secondary); }
+.lanes .step { color: var(--dsw-alias-label-caption); font-variant-numeric: tabular-nums; }
+.lanes .hit { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 9%, transparent); color: var(--dsw-alias-label-primary); font-weight: 500; }
+.lanes .hit.back { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent); }
+.lanes .row:last-child > div { border-bottom: 0; }
+.foot { margin-top: 40px; padding-top: 14px; border-top: .5px solid var(--dsw-alias-border-l3); font-size: 12px; color: var(--dsw-alias-label-caption); }
+@media (max-width: 1000px) { .toc { display: none; } main { padding: 24px 18px 60px; } }
+@media print {
+	.toc, .btn { display: none; }
+	body { background: #fff; }
+	main { max-width: none; padding: 0; }
+	.card, .figure, .tile { box-shadow: none; break-inside: avoid; }
+	section { break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="toc" aria-label="目录">
+	<p class="brand">SuperAgent 主管组团</p>
+	<p class="sub">框架图文档 · 2026-11-04</p>
+	<a href="#s1" class="on">1 · 总览与分层</a>
+	<a href="#s2">2 · 组件框架图</a>
+	<a href="#s3">3 · 一次任务的时序</a>
+	<a href="#s4">4 · 数据与存储</a>
+	<a href="#s5">5 · 契约清单</a>
+	<a href="#s6">6 · 闸门与配额</a>
+	<a href="#s7">7 · 文件地图</a>
+	<a href="#s8">8 · 状态与验证</a>
+	<div class="sep"></div>
+	<p class="note">配套：同目录 <span class="mono">superagent-team-supervisor-mockup.html</span>（交互演示）；<span class="mono">incubator/dsh-superagent/docs/007-architecture.md</span>（模块表）。</p>
+</nav>
+<main>
+<header class="top">
+	<div class="h">
+		<h1>SuperAgent 主管组团 · 框架图文档</h1>
+		<p class="lede">把一次多角色需求，从「进来的消息」到「派活、回报、汇总、沉淀技能与团队工作流」的整条链路，按实际落地的代码画成框架图。文档描述的是已实现的代码，不是提案。</p>
+		<div class="badges">
+			<span class="tag brand">dsh-superagent 0.1.31</span>
+			<span class="tag brand">vssaros-agents 0.2.321</span>
+			<span class="tag ok">T0–T4 已落地</span>
+			<span class="tag warn">真机端到端演练待重启</span>
+		</div>
+	</div>
+	<button class="btn" id="theme" type="button">切换主题</button>
+</header>
+
+<section id="s1">
+	<h2><span class="n">1</span>总览与分层</h2>
+	<p>系统分三层，边界由一条进程内总线固定下来：<strong>判断交给模型，护栏由代码保证</strong>。Bots 插件管 bot 的名册、会话、记忆与委派；superagent 管计划、任务、选人、预算与沉淀；两者不互相 import，只通过 <code>globalThis[Symbol.for('vssaros.team')]</code> 通信。</p>
+	<div class="grid">
+		<div class="tile"><h4>交互层 · DSH Desktop</h4><p>左侧会话区（对话 / 轨迹 / 记忆 / 技能 / 待办 / Bot 设置）复用 dsh 聊天框与记忆系统；右侧业务区是 superagent 自己的概览 / 来源 / 触发 / 评估 / 设置。</p><span class="k">页签归属由用户 11-04 拍板</span></div>
+		<div class="tile"><h4>主管层 · dsh-superagent</h4><p>主会话的 5 个 <code>orchestrator_team_*</code> 工具、Team Engine、Retrospective、8 张 <code>team_*</code> 表、管理 HTTP 路由与概览区块。</p><span class="k">判断与编排</span></div>
+		<div class="tile"><h4>桥接层 · 团队总线</h4><p>version 1，挂 globalThis 而非 import；任一侧 HMR 重载，订阅与登记都不丢。提供名册、委派、建 bot、外部 bot 与终态回报。</p><span class="k">唯一跨包通道</span></div>
+		<div class="tile"><h4>Bots 层 · vssaros-agents</h4><p>扫描两个根的 <code>.agent.md</code>、开新会话并 steer 任务、回合结束登记报告、写技能草稿区、注册 preset、维护外部 bot 名册。</p><span class="k">执行与资产</span></div>
+	</div>
+	<div class="card">
+		<strong>三条设计约束</strong>
+		<ol class="steps">
+			<li><strong>不另起名册</strong>：能力卡片来自 <code>scanAgentsFromConfig</code>（内置 + 自定义两个根），主管创建的 bot 写进同一个目录并带 <code>created-by: supervisor</code>。</li>
+			<li><strong>不另起技能库</strong>：复盘产出写到 <code>&lt;dataRoot&gt;/skills/&lt;id&gt;/SKILL.md</code>，待审核的放 <code>.drafts/</code>，与 <code>vssaros-skills</code> 同一格式同一目录。</li>
+			<li><strong>不另起回复通道</strong>：bot 回合结束由 <code>installAssignmentTracker</code> 发布终态到总线，Team 处理后用 durable relay 送回主会话，不走 relay 的自动回传（会重复）。</li>
+		</ol>
+	</div>
+</section>
+
+<section id="s2">
+	<h2><span class="n">2</span>组件框架图</h2>
+	<p>蓝框是 superagent 的编排组件，蓝底长条是进程内总线，绿框是产出资产。实线箭头是向下派活，绿色虚线是向上回报。</p>
+	<div class="figure">
+	<svg viewBox="0 0 1040 690" role="img" aria-label="SuperAgent 主管组团组件框架图">
+		<defs>
+			<marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--dsw-alias-brand-primary)"/></marker>
+			<marker id="ahg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--dsw-alias-state-success-primary)"/></marker>
+		</defs>
+
+		<!-- L1 交互层 -->
+		<rect class="lane" x="8" y="8" width="1024" height="92" rx="12"/>
+		<text class="t-lane" x="20" y="28">L1 · DSH Desktop</text>
+		<rect class="box" x="24" y="38" width="470" height="52" rx="9"/>
+		<text class="t-title" x="38" y="60">会话区（dsh 聊天框 + 记忆系统）</text>
+		<text class="t-sub" x="38" y="78">对话 0 · 轨迹 10 · 记忆 20 · 技能 30 · 待办 40 · Bot 设置 60</text>
+		<rect class="box" x="510" y="38" width="506" height="52" rx="9"/>
+		<text class="t-title" x="524" y="60">业务区（superagent，约 36% 宽）</text>
+		<text class="t-sub" x="524" y="78">概览 · 来源 · 触发 · 评估 · 设置 → 团队规则</text>
+
+		<!-- L2 主管层 -->
+		<rect class="lane" x="8" y="112" width="1024" height="168" rx="12"/>
+		<text class="t-lane" x="20" y="132">L2 · dsh-superagent（判断与编排）</text>
+		<rect class="box accent" x="24" y="142" width="228" height="58" rx="9"/>
+		<text class="t-title" x="38" y="164">主会话 · 5 个 team 工具</text>
+		<text class="t-sub" x="38" y="182">bots / create_bot / plan / status / stop</text>
+		<rect class="box accent" x="266" y="142" width="228" height="58" rx="9"/>
+		<text class="t-title" x="280" y="164">Team Engine</text>
+		<text class="t-sub" x="280" y="182">依赖调度 · 并行 3 · 终态汇总</text>
+		<rect class="box accent" x="508" y="142" width="228" height="58" rx="9"/>
+		<text class="t-title" x="522" y="164">Retrospective</text>
+		<text class="t-sub" x="522" y="182">技能草稿 · 团队工作流 · 匹配</text>
+		<rect class="box accent" x="750" y="142" width="266" height="58" rx="9"/>
+		<text class="t-title" x="764" y="164">管理面</text>
+		<text class="t-sub" x="764" y="182">HTTP 路由 · 概览区块 · 审批</text>
+		<rect class="box" x="24" y="212" width="992" height="54" rx="9"/>
+		<text class="t-title" x="38" y="234">8 张 team_* 表（orchestrator.sqlite）</text>
+		<text class="t-sub" x="38" y="252">team_plan · team_task · team_member · team_exchange · team_bot · team_approval · team_skill · team_workflow</text>
+		<circle class="badge" cx="994" cy="234" r="11"/>
+		<text class="t-badge" x="994" y="234" text-anchor="middle" dominant-baseline="central">2</text>
+
+		<!-- 派活 / 回报主干 -->
+		<!-- 箭头在「8 张表」条处断开，避免压住表名；编号徽章放在条与总线之间的空白带 -->
+		<path class="arrow" d="M 387 200 L 387 208"/>
+		<path class="arrow" d="M 387 270 L 387 292"/>
+		<circle class="badge" cx="405" cy="281" r="11"/>
+		<text class="t-badge" x="405" y="281" text-anchor="middle" dominant-baseline="central">1</text>
+		<path class="back" d="M 640 296 L 640 270"/>
+		<path class="back" d="M 640 208 L 640 200"/>
+		<circle class="badge g" cx="658" cy="281" r="11"/>
+		<text class="t-badge" x="658" y="281" text-anchor="middle" dominant-baseline="central">4</text>
+
+		<!-- L3 总线 -->
+		<rect class="bus box bus" x="8" y="296" width="1024" height="86" rx="12"/>
+		<text class="t-lane" x="20" y="316">L3 · 进程内团队总线　globalThis[Symbol.for('vssaros.team')] · version 1</text>
+		<text class="t-title" x="24" y="340">listBots · delegate · createBot · get · cancel · subscribe / publish</text>
+		<text class="t-sub" x="24" y="360">registerExternalBot · externalBots · provide（订阅表与外部登记挂在总线对象上，HMR 不丢）</text>
+		<circle class="badge" cx="994" cy="340" r="11"/>
+		<text class="t-badge" x="994" y="340" text-anchor="middle" dominant-baseline="central">3</text>
+
+		<!-- L4 Bots 层 -->
+		<rect class="lane" x="8" y="394" width="1024" height="168" rx="12"/>
+		<text class="t-lane" x="20" y="414">L4 · vssaros-agents（名册、会话与资产）</text>
+		<rect class="box" x="24" y="424" width="232" height="60" rx="9"/>
+		<text class="t-title" x="38" y="446">名册扫描</text>
+		<text class="t-sub" x="38" y="464">scanAgentsFromConfig（内置+自定义）</text>
+		<rect class="box" x="268" y="424" width="232" height="60" rx="9"/>
+		<text class="t-title" x="282" y="446">委派台账 assignments</text>
+		<text class="t-sub" x="282" y="464">开会话 · 选模型 · steer · 报告</text>
+		<rect class="box" x="512" y="424" width="232" height="60" rx="9"/>
+		<text class="t-title" x="526" y="446">createTeamBot</text>
+		<text class="t-sub" x="526" y="464">写 .agent.md · 记忆初始化 · 同步 preset</text>
+		<rect class="box" x="756" y="424" width="260" height="60" rx="9"/>
+		<text class="t-title" x="770" y="446">外部 bot 与技能库</text>
+		<text class="t-sub" x="770" y="464">SuperAgent 登记 · skills/ + .drafts/</text>
+		<rect class="box asset" x="24" y="496" width="484" height="52" rx="9"/>
+		<text class="t-title" x="38" y="518">技能资产 · SKILL.md</text>
+		<text class="t-sub" x="38" y="536">安全技能自动生效；含命令 / 外发的进 .drafts/ 待人批准</text>
+		<rect class="box asset" x="520" y="496" width="496" height="52" rx="9"/>
+		<text class="t-title" x="534" y="518">团队工作流 · team_workflow</text>
+		<text class="t-sub" x="534" y="536">参数 · 角色槽位 · 步骤 DAG · 闸门 · 预算 · 触发 · 命中率</text>
+
+		<!-- L5 执行层 -->
+		<rect class="lane" x="8" y="574" width="1024" height="100" rx="12"/>
+		<text class="t-lane" x="20" y="594">L5 · Bot 会话（每个委派一条新会话，身份走 agent preset）</text>
+		<rect class="box" x="24" y="604" width="310" height="54" rx="9"/>
+		<text class="t-title" x="38" y="626">会话创建 + 会话级模型选择</text>
+		<text class="t-sub" x="38" y="644">presetIdOf(agent.id) → sc.create → applyModelSelection</text>
+		<rect class="box" x="346" y="604" width="310" height="54" rx="9"/>
+		<text class="t-title" x="360" y="626">steer 带头协议的任务消息</text>
+		<text class="t-sub" x="360" y="644">[Assignment 委派 · 来自 SuperAgent 主管]</text>
+		<rect class="box" x="668" y="604" width="348" height="54" rx="9"/>
+		<text class="t-title" x="682" y="626">agent/turn-stopping → 报告登记</text>
+		<text class="t-sub" x="682" y="644">验证真消费了消息 → finalAssistantText → publish(view)</text>
+		<path class="guide" d="M 668 631 L 656 631"/>
+	</svg>
+	<figcaption>图 1 · 组件框架图。① 主会话工具或面板入口调用 Team 派活；② 计划与步骤写进 8 张表；③ 总线把就绪步骤交给 Bots 开会话并 steer；④ bot 回合结束经 tracker 发布终态，Team 处理后用 durable relay 送回主会话，并在计划结束时触发复盘。</figcaption>
+	</div>
+	<p class="tip">总线为什么挂在 <code>globalThis</code>：两个插件是独立包，不能互相 import；HMR 重载时模块闭包会重建，注册表与订阅表放在总线对象上才不会丢。<code>Team.install()</code> 另用 <code>Symbol.for('vssaros.team.subscription')</code> 保证同一进程只有一份订阅，避免新旧实例抢着推进同一个计划。</p>
+</section>
+
+<section id="s3">
+	<h2><span class="n">3</span>一次任务的时序</h2>
+	<p>从需求进来到产出可复用资产，共 9 个阶段。蓝底是向下派活，绿底是回报与沉淀。</p>
+	<div class="lanes" aria-label="任务时序泳道">
+		<div class="row head"><div>阶段</div><div>人 / 来源</div><div>主管主会话</div><div>Team / Retro</div><div>团队总线</div><div>Bot 会话</div></div>
+		<div class="row"><div class="step">1</div><div>提出需求</div><div class="hit">收到消息或人在面板发起</div><div></div><div></div><div></div></div>
+		<div class="row"><div class="step">2</div><div></div><div class="hit">workflow_match(goal)，≥70% 直接套用工作流</div><div class="hit">Retrospective.match / run</div><div></div><div></div></div>
+		<div class="row"><div class="step">3</div><div></div><div class="hit">team_bots 找人；缺角色则 team_create_bot</div><div class="hit">低风险立即写名册；高风险进 team_approval 待办</div><div class="hit">listBots / createBot</div><div></div></div>
+		<div class="row"><div class="step">4</div><div>批准高风险申请（概览或对话卡）</div><div></div><div class="hit">approve → 写 .agent.md + 同步 preset</div><div class="hit">createBot / approve</div><div></div></div>
+		<div class="row"><div class="step">5</div><div></div><div class="hit">team_plan 提交步骤与 after 依赖</div><div class="hit">校验环 / 上限 / 未知依赖；写 plan + task + exchange</div><div></div><div></div></div>
+		<div class="row"><div class="step">6</div><div></div><div></div><div class="hit">advance 派就绪步骤（≤3 并行），前置报告注入任务正文</div><div class="hit">delegate → 开会话 + 选模型 + steer</div><div class="hit">执行本步骤，最终答复即为报告</div></div>
+		<div class="row"><div class="step">7</div><div></div><div class="hit back">每份报告以 team_report 插队送回</div><div class="hit back">settled 落表 → advance 解锁后继；失败则跳过等待它的步骤</div><div class="hit back">publish(AssignmentView)</div><div class="hit back">agent/turn-stopping → finalAssistantText</div></div>
+		<div class="row"><div class="step">8</div><div></div><div class="hit back">team_plan_end；据此回答人或继续追问</div><div class="hit back">计划置 done / failed → onPlanEnd</div><div></div><div></div></div>
+		<div class="row"><div class="step">9</div><div>审核含命令 / 外发的技能；保存工作流 v1</div><div></div><div class="hit back">技能草稿（相似 ≥0.8 发新版本） + 工作流草稿（参数 / DAG / 闸门 / 预算）</div><div></div><div></div></div>
+	</div>
+	<div class="card">
+		<strong>两条回传路径，不要混淆</strong>
+		<p style="margin-bottom:0">① <strong>步骤级</strong>：bot 回合结束 → <code>installAssignmentTracker</code> 验证这回合真消费了委派消息 → 取最终 assistant 文本 → <code>teamBus().publish(view)</code> → <code>Team.settled()</code> 落表并 <code>host.relay(...)</code> 以 <code>team_report</code> 插队送进主会话。② <strong>计划级</strong>：所有步骤终态后 <code>advance()</code> 写 <code>team_plan_end</code> relay，并调用 <code>onPlanEnd</code> 触发复盘。委派创建时<strong>不</strong>登记 relay pending，否则主会话会收到两份。</p>
+	</div>
+</section>
+
+<section id="s4">
+	<h2><span class="n">4</span>数据与存储</h2>
+	<p>8 张表都在 <code>orchestrator.sqlite</code>，用 <code>CREATE TABLE IF NOT EXISTS</code> 在各自模块构造时建立，表名统一加 <code>team_</code> 前缀，避开老库 schema 6 遗留的 <code>task</code> 表。按用途分三组：</p>
+	<div class="grid">
+		<div class="tile"><h4>计划域 · 4 张</h4><p><span class="mono">team_plan</span> 计划（goal / status / cwd / ticketId）<br><span class="mono">team_task</span> 步骤（after 依赖 / state / hop / att / report / assignmentId）<br><span class="mono">team_member</span> 实际参与过的 bot<br><span class="mono">team_exchange</span> 每次给 / 报 / 失败 / 取消的往来（seq / hop / from / to / kind）</p><span class="k">TeamStore · src/app/team.ts</span></div>
+		<div class="tile"><h4>资产域 · 2 张</h4><p><span class="mono">team_bot</span> 主管创建的 bot（配额计数、preset、文件路径）<br><span class="mono">team_approval</span> 高风险建 bot 草稿（draft → approved / rejected）</p><span class="k">TeamStore · 由团队总线 createBot 写入</span></div>
+		<div class="tile"><h4>复盘域 · 2 张</h4><p><span class="mono">team_skill</span> 技能记录（scope / origin / evidence / risk / version / file）<br><span class="mono">team_workflow</span> 工作流（params / steps / gates / budget / triggers / runs / ok）</p><span class="k">RetroStore · src/app/retrospective.ts</span></div>
+	</div>
+	<h3>表之间的关系</h3>
+	<table>
+		<thead><tr><th>关系</th><th>键</th><th>说明</th></tr></thead>
+		<tbody>
+			<tr><td><strong>plan → task</strong></td><td><code>team_task.plan</code> → <code>team_plan.id</code></td><td>一个计划 ≤12 步；步骤 key 在计划内唯一，<code>after</code> 只能引用同计划已存在的 key，成环直接拒绝。</td></tr>
+			<tr><td><strong>task → exchange</strong></td><td><code>team_exchange.plan + stepId</code></td><td>每次派活、回报、失败、取消记一条；<code>hop</code> 累计跳数，上限 6。</td></tr>
+			<tr><td><strong>task → assignment</strong></td><td><code>team_task.assignmentId</code></td><td>指向 Bots 委派台账里的记录；对账时按它 <code>bus.get(id)</code> 补齐重启期间错过的终态。</td></tr>
+			<tr><td><strong>plan → bot</strong></td><td><code>team_bot.plan</code></td><td>每计划最多 3 个主管创建的 bot；全局最多 20 个。</td></tr>
+			<tr><td><strong>plan → skill / workflow</strong></td><td><code>planId</code> / <code>fromPlanId</code></td><td>计划结束时由 <code>onPlanEnd</code> 生成；幂等 + 并发保护，重复结束不会重复沉淀。</td></tr>
+			<tr><td><strong>workflow → plan（复跑）</strong></td><td><code>fromPlanId</code> 只记来源</td><td>命中已保存工作流时，用它的 steps 生成一个<strong>新</strong>计划，<code>runs+1</code>。</td></tr>
+		</tbody>
+	</table>
+	<p class="tip">技能正文不只在表里：<code>team_skill.file</code> 指向共享技能库中的 <code>SKILL.md</code>（或 <code>.drafts/SKILL.md</code>）。frontmatter 至少含 <code>name</code> / <code>description</code> / <code>version</code>，<code>title</code> 会被映射成 displayName；<code>scope</code> / <code>origin</code> / <code>evidence</code> / <code>risk</code> 写进正文（技能库元数据白名单会丢）。</p>
+</section>
+
+<section id="s5">
+	<h2><span class="n">5</span>契约清单</h2>
+	<h3>5.1 团队总线（跨包，只增不改）</h3>
+	<table>
+		<thead><tr><th>方法</th><th>方向</th><th>说明</th></tr></thead>
+		<tbody>
+			<tr><td><code>provide(impl)</code> / <code>available()</code></td><td>Bots → 总线</td><td>顶层角色注册实现；消费者先判 available，Host 启动早期会明确报错而不是静默。</td></tr>
+			<tr><td><code>listBots()</code></td><td>superagent → Bots</td><td>能力卡片数组，过滤隐藏 bot，带 <code>origin: 'supervisor'</code> 标记。</td></tr>
+			<tr><td><code>delegate({bot,task,cwd?,fromName?})</code></td><td>superagent → Bots</td><td>开新会话 + 会话级模型选择 + steer；返回 AssignmentView；并发上限 8，超限立即 409 不排队。</td></tr>
+			<tr><td><code>createBot({draft})</code></td><td>superagent → Bots</td><td>校验并写 <code>.agent.md</code>、标 <code>created-by: supervisor</code>、初始化记忆、同步 preset；全局 20 个兜底。</td></tr>
+			<tr><td><code>subscribe(fn)</code> / <code>publish(view)</code></td><td>Bots → superagent</td><td>回合结束或中断时发布终态；订阅者抛错不影响别人。</td></tr>
+			<tr><td><code>get(id)</code> / <code>cancel(id,reason?)</code></td><td>superagent → Bots</td><td>对账与停止计划时取消运行中的委派。</td></tr>
+			<tr><td><code>registerExternalBot(spec)</code></td><td>superagent → Bots</td><td>把 SuperAgent 登记进 Bots 名册；<code>agent_message</code> 命中时调 <code>onMessage</code> 送进主管会话。</td></tr>
+		</tbody>
+	</table>
+	<h3>5.2 主会话工具与 HTTP 路由</h3>
+	<table>
+		<thead><tr><th>主会话工具（模型调用）</th><th>HTTP 路由（面板 / 人）</th></tr></thead>
+		<tbody>
+			<tr><td><code>orchestrator_team_bots</code></td><td><code>GET team/bots</code></td></tr>
+			<tr><td><code>orchestrator_team_create_bot</code></td><td><code>GET team/approvals</code>、<code>POST team/approvals/:id/approve|reject</code></td></tr>
+			<tr><td><code>orchestrator_team_plan</code>（自动复用工作流）</td><td><code>POST team/plans</code>（手动发起，走同一个 <code>Team.plan()</code>）</td></tr>
+			<tr><td><code>orchestrator_team_status</code></td><td><code>GET team/plans</code></td></tr>
+			<tr><td><code>orchestrator_team_stop</code></td><td><code>POST team/plans/:id/stop</code></td></tr>
+			<tr><td>—（复盘由代码自动触发）</td><td><code>GET team/retrospective</code>、<code>POST team/skills/:id/approve|reject</code>、<code>POST team/workflows/:id/save|run</code></td></tr>
+		</tbody>
+	</table>
+	<h3>5.3 送回主会话的事件</h3>
+	<table>
+		<thead><tr><th>事件</th><th>时机</th><th>载荷要点</th></tr></thead>
+		<tbody>
+			<tr><td><code>team_report</code></td><td>每个步骤终态</td><td>plan / step / title / bot / state / report 或 error；requestId 带 hop，天然幂等。</td></tr>
+			<tr><td><code>team_plan_end</code></td><td>所有步骤终态</td><td>plan / goal / state（done / failed）/ 各步骤状态；提示用报告回答请求。</td></tr>
+		</tbody>
+	</table>
+	<p class="tip">两者都走 <code>sessions.relay()</code> 的 durable effect，Host 重启不丢。</p>
+</section>
+
+<section id="s6">
+	<h2><span class="n">6</span>闸门与配额</h2>
+	<div class="grid">
+		<div class="tile"><h4>调度</h4><p>每计划并行 <strong>3</strong>；最多 <strong>12</strong> 步（含追加）；接力最多 <strong>6</strong> 跳；报告截断 <strong>2000</strong> 字（全文留在 bot 会话日志）。</p></div>
+		<div class="tile"><h4>建 bot</h4><p>每计划 <strong>3</strong> 个、全局 <strong>20</strong> 个；同名 / 同 id 返回现有 bot，不重复创建。</p></div>
+		<div class="tile"><h4>风险分级</h4><p>申请 shell 写、外发、凭据、git push/tag 等 → <strong>待办，人批准</strong>；只读 / 查 / 跑测试 → <strong>自动批准</strong>。技能正文含命令或外发同样进 <code>.drafts/</code>。</p></div>
+		<div class="tile"><h4>沉淀</h4><p>技能描述覆盖率 ≥ <strong>0.8</strong> 命中已有技能 → 发新版本；工作流匹配 ≥ <strong>70%</strong> → 直接套用；工作流预算 300k tokens / 90 回合 / 并行 3。</p></div>
+	</div>
+	<h3>失败与恢复</h3>
+	<table>
+		<thead><tr><th>情况</th><th>代码行为</th></tr></thead>
+		<tbody>
+			<tr><td>某步骤失败 / 无文本产出</td><td>标 failed 并 relay 原因；所有等待它的步骤级联标 skipped；计划以 failed 结束，仍触发复盘产出「回归检查」技能。</td></tr>
+			<tr><td>委派并发已满 / bot 不存在</td><td>Bots 侧结构化报错（409 / 404）；<code>give()</code> 捕获后把步骤标 failed 并写明原因，不静默。</td></tr>
+			<tr><td>报告早于 <code>delegate()</code> 返回</td><td><code>Team.early</code> 先收下，登记 <code>assignmentId</code> 后再补处理。</td></tr>
+			<tr><td>任一侧重启 / 晚加载</td><td><code>install()</code> 每 30 秒重试订阅与对账，按 <code>bus.get(assignmentId)</code> 补齐错过的终态。</td></tr>
+			<tr><td>人停止计划</td><td>运行中的委派逐个 <code>cancel</code>，等待中的步骤标 skipped，计划置 cancelled（不触发复盘）。</td></tr>
+		</tbody>
+	</table>
+</section>
+
+<section id="s7">
+	<h2><span class="n">7</span>文件地图</h2>
+	<table>
+		<thead><tr><th>包</th><th>文件</th><th>职责</th></tr></thead>
+		<tbody>
+			<tr><td rowspan="8"><strong>vssaros-agents</strong><br>0.2.321</td><td><code>lib/teamBus.js</code></td><td>总线对象、订阅表、外部 bot 登记表、公开视图与行映射</td></tr>
+			<tr><td><code>lib/team.js</code></td><td>能力卡片、委派 / 查询 / 中断的团队服务实现</td></tr>
+			<tr><td><code>lib/teamCreate.js</code></td><td>写 <code>.agent.md</code>、标主管创建、初始化记忆、preset 同步回调、全局配额</td></tr>
+			<tr><td><code>lib/assignments.js</code></td><td>委派台账、并发上限、模型选择、turn-stopping 报告登记、终态 publish</td></tr>
+			<tr><td><code>lib/core/agents.js</code></td><td>解析 <code>created-by</code> 等 frontmatter 字段</td></tr>
+			<tr><td><code>lib/tools.js</code></td><td><code>agent_list</code> 列出外部 bot；<code>agent_message</code> 向主管求助</td></tr>
+			<tr><td><code>lib/index.js</code></td><td>顶层 provide 团队实现；花名册 API 追加外部 bot 行</td></tr>
+			<tr><td><code>lib/client.agents.js</code></td><td>名册行「主管创建」「主管」徽章</td></tr>
+			<tr><td rowspan="9"><strong>dsh-superagent</strong><br>0.1.31</td><td><code>src/app/team.ts</code></td><td>Team / TeamStore、6 张计划与资产表、依赖调度、建 bot 与审批、总线契约类型</td></tr>
+			<tr><td><code>src/app/retrospective.ts</code></td><td>Retrospective / RetroStore、技能落盘与审批、工作流草稿 / 匹配 / 运行</td></tr>
+			<tr><td><code>src/app/tools/team.ts</code></td><td>5 个主会话工具；计划工具自动复用工作流</td></tr>
+			<tr><td><code>src/app/runtime.ts</code></td><td>组装 Team / Retrospective、注册外部 bot、注入 onPlanEnd 与工具宿主</td></tr>
+			<tr><td><code>src/app/http.ts</code> / <code>api.ts</code></td><td>管理路由与类型契约</td></tr>
+			<tr><td><code>src/client/team-plans.tsx</code></td><td>概览：计划、审批、技能、工作流、手动发起</td></tr>
+			<tr><td><code>src/client/locales.ts</code></td><td>中英文文案</td></tr>
+			<tr><td><code>prompts/orchestrator.md</code></td><td>主会话何时使用团队工具</td></tr>
+			<tr><td><code>tests/team.spec.ts</code> / <code>retrospective.spec.ts</code> / <code>panel-overview.spec.tsx</code></td><td>闭环集成、复盘落盘、面板交互</td></tr>
+		</tbody>
+	</table>
+	<p class="tip">文档与演示：<span class="mono">doc/superagent-team-supervisor-mockup.html</span>（22 步交互演示）、<span class="mono">incubator/dsh-superagent/docs/007-architecture.md</span>（模块表 / 测试表）、<span class="mono">vssaros-patches.diff</span>（相对上游的补丁集）。</p>
+</section>
+
+<section id="s8">
+	<h2><span class="n">8</span>状态与验证</h2>
+	<table>
+		<thead><tr><th>阶段</th><th>内容</th><th>状态</th></tr></thead>
+		<tbody>
+			<tr><td>T0</td><td>团队总线、Bots 侧委派与终态回报</td><td>已落地</td></tr>
+			<tr><td>T1</td><td>Team Engine、依赖调度、报告汇总、主会话工具、概览</td><td>已落地</td></tr>
+			<tr><td>T2</td><td>建 bot：查重 / 风险分级 / 人工审批 / 配额 / 留名册</td><td>已落地</td></tr>
+			<tr><td>T3</td><td>SuperAgent 注册为 Bots 名册的外部 bot，可被 <code>agent_message</code> 求助</td><td>已落地（后端）</td></tr>
+			<tr><td>T4</td><td>自动沉淀技能 + 团队工作流（匹配 ≥70% 直接套用）</td><td>已落地</td></tr>
+			<tr><td>验证</td><td><code>tsc</code> 0 错；72 个测试文件 / 1332 passed / 22 skipped；Bots 36 个测试文件全绿；tgz 42 文件 0 error / 0 warning；补丁集 <code>apply --check</code> 通过</td><td>通过</td></tr>
+			<tr><td>真机</td><td><code>team/plans</code>、<code>team/retrospective</code> 返回 200，<code>available:true</code>；0.1.31 的 <code>GET team/bots</code> 因 HMR 嵌套事务未换服务端模块，需重启 VsSaros</td><td>待重启后演练</td></tr>
+		</tbody>
+	</table>
+	<h3>重启后的端到端演练</h3>
+	<p>向 <code>POST /orchestrator/api/team/plans</code> 提交一个单步计划（例如 <code>bot: "kb-expert"</code>，spec 为「只回复一句：团队链路已通」），再轮询 <code>GET team/plans</code> 看步骤从 running 变 done、报告回来，<code>GET team/retrospective</code> 看技能与工作流草稿落地。真实 bot 名册在 <code>~/.vssaros/agents</code>，模型为 <code>vssaros-codebuddy / hy3-ioa</code>。</p>
+	<div class="card">
+		<strong>仍未做</strong>
+		<ol class="steps" style="margin-bottom:0">
+			<li>让主会话里的模型真的调用工具、派活给真实 bot 的完整演练（要重启或由人从飞书发一条消息触发）。</li>
+			<li>页签归属的前端改造落到 <code>vssaros-chat-surface</code>：该目录尚有并行的未提交改动，未触碰；<code>client.conversationViews.js</code> 的页签顺序已与既定归属一致，demo 也已按此重做。</li>
+		</ol>
+	</div>
+	<p class="foot">本文件为单文件离线文档，颜色取自 DSH 主题的 <code>--dsw-alias-*</code> 语义，支持浅 / 深切换与打印。图与文字对应 0.1.31 / 0.2.321 的实际代码。</p>
+</section>
+</main>
+</div>
+<script>
+(function () {
+	var root = document.documentElement;
+	var btn = document.getElementById('theme');
+	btn.addEventListener('click', function () {
+		root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+	});
+	var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+	var sections = links.map(function (a) { return document.querySelector(a.getAttribute('href')); });
+	function mark() {
+		var y = window.scrollY + 120;
+		var active = 0;
+		sections.forEach(function (s, i) { if (s && s.offsetTop <= y) active = i; });
+		links.forEach(function (a, i) { a.classList.toggle('on', i === active); });
+	}
+	window.addEventListener('scroll', mark, { passive: true });
+	mark();
+})();
+</script>
+</body>
+</html>

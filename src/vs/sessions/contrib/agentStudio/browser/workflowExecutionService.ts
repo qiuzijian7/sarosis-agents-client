@@ -9,7 +9,6 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IAgentChatService } from '../common/agentStudio.js';
 import { IWorkflowStorageService, IStoredWorkflow, WorkflowNodeType, WorkflowGraphNode } from '../common/workflowStorage.js';
 import type { IComfyExecutionDelegate, ComfyExecutionInput, ComfyExecutionResult } from '../common/comfyBridge.js';
-import { ISkillRegistry, ISkillDefinition } from '../common/skills.js';
 import { IWorkflowExecutionService, WorkflowExecutionStatus, WorkflowNodeExecutionStatus, type IScriptExecutionDelegate } from '../common/workflowExecutionService.js';
 import type { IWorkflowExecutionState, IWorkflowExecutionOptions, IWorkflowNodeExecutionState, IWorkflowTraceEvent, IAskUserOption, IAskUserField, IAskUserQuestion } from '../common/workflowExecutionService.js';
 import { buildWorkflowCheckpoint, parseWorkflowCheckpoint, planWorkflowResume, type IWorkflowCheckpoint } from '../common/workflowCheckpoint.js';
@@ -394,7 +393,6 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		@IWorkflowStorageService private readonly workflowStorage: IWorkflowStorageService,
 		@IFileService private readonly fileService: IFileService,
 		@IWorkspaceRegistry private readonly workspaceRegistry: IWorkspaceRegistry,
-		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
 		@IEditorService private readonly _editorService: IEditorService,
 	) {
 		super();
@@ -2558,22 +2556,9 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 			throw new Error(`Skill node ${node.id} has no skillName`);
 		}
 
-		// P2: 双向打通 —— 若 skillName 解析到 workflow 来源的可执行 skill，
-		// 则确定性硬调用该工作流（而非软触发 prompt），把最终输出作为本节点输出。
-		const wfSkill = this._resolveWorkflowSkill(skillName);
-		if (wfSkill?.executor?.kind === 'workflow') {
-			this.logService.info(`[WorkflowExecution] Skill node ${node.id} resolves to workflow ${wfSkill.executor.workflowId} — executing deterministically`);
-			const finalOutput = await this._executeWorkflowAndAwait(wfSkill.executor.workflowId, {
-				context: { input: skillInput },
-				agentId,
-				skipVariableCollection: true,
-			});
-			const nodeState = executionState.nodeStates.get(node.id);
-			if (nodeState) {
-				nodeState.output = finalOutput ?? '';
-			}
-			return;
-		}
+		// ★ P3（2026-11-07）：「workflow 型 skill 节点确定性硬调用」链已下线 ——
+		//   技能真源与激活都在 dsh 侧，IDE 技能注册表不再提供 workflow 来源的定义。
+		//   Skill 节点统一走下面的 prompt 软触发路径（功能保留，不再硬调用工作流）。
 
 		if (!agentId) {
 			throw new Error(`Skill node ${node.id}: No agent ID available`);
@@ -2617,58 +2602,8 @@ export class WorkflowExecutionService extends Disposable implements IWorkflowExe
 		}
 	}
 
-	// ─── P2/P3: workflow 型 skill 节点的确定性硬调用 ─────────────────────
-
-	/**
-	 * 解析一个 skill 名称是否为 workflow 来源的可执行 skill。
-	 * 大小写不敏感匹配；返回第一个 source==='workflow' 的 skill 定义。
-	 */
-	private _resolveWorkflowSkill(skillName: string): ISkillDefinition | undefined {
-		const name = skillName.toLowerCase();
-		for (const s of this.skillRegistry.getSkills()) {
-			if (s.source === 'workflow' && s.name.toLowerCase() === name && s.executor?.kind === 'workflow') {
-				return s;
-			}
-		}
-		return undefined;
-	}
-
-	/**
-	 * 嵌套执行一个工作流并等待其完成，返回最终输出（供 Skill 节点作为本节点输出）。
-	 * - 环检测由 executeWorkflow 入口统一处理（递归调用会抛错），此处捕获并返回空。
-	 * - 通过订阅 onDidExecutionStatusChange 等待目标 executionId 进入终态。
-	 */
-	private async _executeWorkflowAndAwait(workflowId: string, options?: IWorkflowExecutionOptions): Promise<string | undefined> {
-		let executionId: string;
-		try {
-			executionId = await this.executeWorkflow(workflowId, options);
-		} catch (err) {
-			this.logService.warn(`[WorkflowExecution] nested workflow execution skipped (likely cyclic): ${workflowId}`, err);
-			return undefined;
-		}
-		return new Promise<string | undefined>((resolve) => {
-			const sub = this.onDidExecutionStatusChange(state => {
-				if (state.executionId !== executionId) { return; }
-				if (state.status === WorkflowExecutionStatus.Completed
-					|| state.status === WorkflowExecutionStatus.Failed
-					|| state.status === WorkflowExecutionStatus.Cancelled) {
-					sub.dispose();
-					resolve(this._extractFinalOutput(state));
-				}
-			});
-		});
-	}
-
-	/** 从执行状态中提取最终输出（最后一个 completed 且有 output 的节点）。 */
-	private _extractFinalOutput(state: IWorkflowExecutionState): string {
-		let last = '';
-		for (const ns of state.nodeStates.values()) {
-			if (ns.status === WorkflowNodeExecutionStatus.Completed && ns.output) {
-				last = ns.output;
-			}
-		}
-		return last;
-	}
+	// ★ P3（2026-11-07）：`_executeWorkflowAndAwait` / `_extractFinalOutput`
+	//   只服务于已下线的「Skill 节点硬调用工作流」分支，一并删除。
 
 	private async _executeToolNode(
 		executionState: IWorkflowExecutionState,

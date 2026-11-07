@@ -17,7 +17,7 @@ import { IRequestService, asText } from '../../../../../../platform/request/comm
 import { IToolResultContent, NonRetryableToolError, ToolSecurityLevel } from '../../../common/providers.js';
 import type { ILogService } from '../../../../../../platform/log/common/log.js';
 import type { IWebContentExtractorService } from '../../../../../../platform/webContentExtractor/common/webContentExtractor.js';
-import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
+import type { IBuiltinToolRegistration } from './toolRegistry.js';
 import {
 	DEFAULT_WEB_SEARCH_CHAR_LIMIT,
 	WEB_EXTRACT_CHAR_LIMIT,

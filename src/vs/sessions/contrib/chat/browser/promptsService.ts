@@ -15,10 +15,11 @@ import { BUILTIN_STORAGE, IBuiltinPromptPath } from '../common/builtinPromptsSto
 import { wsStage } from '../../agentStudio/browser/wsSwitchDiag.js';
 
 /** URI root for built-in skills bundled with the Agents app. */
-// 技能现在存储在 resources/.agents/skills/ 目录
+// ★ P3（2026-11-07）：IDE 侧旧技能根已删除，随包技能真源迁到 dsh 插件包内。
+//   这里仍保留 IDE 侧的 prompt-syntax 发现能力，但数据源与 dsh 侧同一份（不再有第二套技能）。
 // 使用 FileAccess.asFileUri 获取 vs/ 目录，然后向上导航到项目根目录
 // 注意：FileAccess.asFileUri 返回的是 vscode-file:// 协议的 URI，在浏览器环境中可用
-export const BUILTIN_SKILLS_URI = FileAccess.asFileUri('vs/../../resources/.agents/skills');
+export const BUILTIN_SKILLS_URI = FileAccess.asFileUri('vs/../../dsh-plugins/vssaros-skill-bundle/skills');
 
 /**
  * Sessions-specific PromptsService that additionally discovers built-in skills

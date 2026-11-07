@@ -4,10 +4,10 @@
 // 这里通过 deps 注入假代理：既能造出 EADDRINUSE 验证重试，又完全不碰网络。
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createPocketService, qrDataUrl } from '../lib/service.mjs';
+import { createPocketService, qrDataUrl, CLOUDFLARED_ENABLED } from '../lib/service.mjs';
 import { createStateStore } from '../lib/state.mjs';
 
 const tests = [];
@@ -140,6 +140,7 @@ test('日志：logger 只有 console 形状（无 appendLine）时也能打，�
       storageDir: dir,
       state,
       log: { info: (m) => infos.push(String(m)), warn: (m) => warns.push(String(m)) },
+      cloudflaredEnabled: true,   // 本用例回归「自动恢复 + 日志」旧逻辑，显式打开已下线的开关
       deps: {
         createProxy: flakyProxy(0, []),
         startQuickTunnel: async () => { throw new Error('cloudflared 不见了'); },
@@ -328,6 +329,84 @@ test('二维码：宽度参数生效（生成的图像确实不同）', async ()
   const small = await qrDataUrl('http://192.168.1.20:3081', { width: 120 });
   const large = await qrDataUrl('http://192.168.1.20:3081', { width: 320 });
   assert.notEqual(small, large, '不同宽度应产出不同图像');
+});
+
+// ---------- cloudflared 功能下线守卫（2026-11-07） ----------
+//
+// 关掉的是整条公网隧道链，不只是把按钮藏起来：默认态下任何启动路径都不能
+// 下载二进制 / 起进程 / 自动恢复，status 也不许撒谎说有公网地址。
+test('cloudflared 下线：总开关默认关闭，且 startTunnel 被硬闸拦在最前面', async () => {
+  assert.equal(CLOUDFLARED_ENABLED, false, '功能开关应默认关闭（改回 true 才算恢复功能）');
+  let tunnelCalls = 0;
+  let proxyCalls = 0;
+  await withService({
+    deps: {
+      createProxy: async ({ port }) => { proxyCalls += 1; return { port, close: async () => { } }; },
+      startQuickTunnel: async () => { tunnelCalls += 1; return 'https://x.trycloudflare.com'; },
+      startNamedTunnel: async () => { tunnelCalls += 1; return { url: 'https://x.example.com', kill() { }, onExit() { } }; },
+    },
+  }, async (service) => {
+    await assert.rejects(() => service.startTunnel(), /已关闭/);
+    assert.equal(tunnelCalls, 0, '不得调用 cloudflared 启动函数');
+    assert.equal(proxyCalls, 0, '硬闸必须在 startProxy 之前（别顺带把代理起了）');
+  });
+});
+
+test('cloudflared 下线：自动恢复被跳过、历史标记被清掉、状态恒为关闭', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'saros-pocket-tunnel-off-'));
+  try {
+    const state = createStateStore(dir);
+    mkdirSync(join(dir, 'saros-pocket'), { recursive: true });
+    const marker = join(dir, 'saros-pocket', 'tunnel-auto.json');
+    writeFileSync(marker, JSON.stringify({ at: Date.now() }));
+    let tunnelCalls = 0;
+    const service = createPocketService({
+      upstreamPort: 8000, port: 3081, storageDir: dir, state,
+      log: { info() { }, warn() { }, error() { }, appendLine() { } },
+      deps: {
+        createProxy: flakyProxy(0, []),
+        startQuickTunnel: async () => { tunnelCalls += 1; return 'https://x.trycloudflare.com'; },
+      },
+    });
+    await service.restoreTunnelIfNeeded();
+    assert.equal(tunnelCalls, 0, '不得因历史标记自动恢复隧道');
+    await new Promise((r) => setTimeout(r, 50));   // clearAutoTunnel 是排队异步写
+    assert.ok(!existsSync(marker), '历史自动恢复标记必须被清掉（否则开关恢复后会复活）');
+    const s = await service.status();
+    assert.equal(s.cloudflaredEnabled, false, 'status 要如实说功能已关闭');
+    assert.equal(s.tunnelRunning, false);
+    assert.equal(s.tunnelUrl, null);
+    assert.equal(s.tunnelAppUrl, null);
+    assert.equal(s.tunnelState.phase, 'idle');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cloudflared 开关可逆：显式置 true 后自动恢复与公网状态照旧工作', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'saros-pocket-tunnel-on-'));
+  try {
+    const state = createStateStore(dir);
+    mkdirSync(join(dir, 'saros-pocket'), { recursive: true });
+    writeFileSync(join(dir, 'saros-pocket', 'tunnel-auto.json'), JSON.stringify({ at: Date.now() }));
+    let tunnelCalls = 0;
+    const service = createPocketService({
+      upstreamPort: 8000, port: 3081, storageDir: dir, state,
+      cloudflaredEnabled: true,
+      log: { info() { }, warn() { }, error() { }, appendLine() { } },
+      deps: {
+        createProxy: flakyProxy(0, []),
+        startQuickTunnel: async () => { tunnelCalls += 1; return 'https://x.trycloudflare.com'; },
+      },
+    });
+    await service.restoreTunnelIfNeeded();
+    assert.equal(tunnelCalls, 1, '打开开关后自动恢复逻辑仍要生效');
+    const s = await service.status();
+    assert.equal(s.cloudflaredEnabled, true);
+    assert.equal(s.tunnelUrl, 'https://x.trycloudflare.com');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ---------- 执行 ----------

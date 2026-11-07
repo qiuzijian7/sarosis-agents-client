@@ -22,6 +22,7 @@ import {
 	roomOfEvent, roomProjection, roomPrompt, roomReferenceOf, roundStatusOf, sessionReferencesOf, sortRooms, stripOwnName, stripRoomMention,
 } from '../lib/core/rooms.js';
 import { GOAL_IDLE_NUDGES, applyGoal, goalPromptBlock, markTask } from '../lib/core/goals.js';
+import { askAnswerText, normalizeAsk, normalizeAskAnswers, supersedeAsks } from '../lib/core/asks.js';
 import { ROOMS_FILE_VERSION, ROUNDS_ARCHIVE_PER_ROOM, ROUNDS_KEEP_MAX, createRooms, holdsMessage, installRooms, relayAnswerText, relayStream, roomPostId, roomsApi, turnWorked, userTextOf } from '../lib/rooms.js';
 import { teamBus } from '../lib/teamBus.js';
 
@@ -153,7 +154,13 @@ function fakeHost(reply) {
 		id: s.id,
 		session: { id: s.id, get seq() { return s.seq; }, snapshotEvents: (from, to) => s.events.filter(e => e.seq > from && e.seq <= to) },
 		inbox: { get nextTurn() { return s.inbox; }, nextStep: [] },
-		ctx: { tools: { register: (def) => { s.tools.push(def.name); return () => undefined; } } },
+		ctx: { tools: {
+			register: (def) => { s.tools.push(def.name); return () => undefined; },
+			// 2026-11-07：成员会话隐藏 / 拦截 ask_user_question（对齐 DS Bot）
+			get: (name) => (name === 'ask_user_question' ? { name } : undefined),
+			restrict: (filter) => { s.restricted.push(filter); return () => undefined; },
+			guard: (fn) => { s.guards.push(fn); return () => undefined; },
+		} },
 		followup(message) {
 			s.inbox.push(message);
 			order.push({ at: 'start', session: s.id });
@@ -180,7 +187,7 @@ function fakeHost(reply) {
 		sc: {
 			create: async ({ workspaceId, cwd, agentPreset }) => {
 				const id = `s${++n}`;
-				sessions.set(id, { id, preset: agentPreset, place: workspaceId ?? cwd, title: '', records: [], inbox: [], events: [], seq: 0, tools: [] });
+				sessions.set(id, { id, preset: agentPreset, place: workspaceId ?? cwd, title: '', records: [], inbox: [], events: [], seq: 0, tools: [], restricted: [], guards: [] });
 				return { sessionId: id, agentPreset };
 			},
 			rename: async ({ sessionId, title }) => { sessions.get(sessionId).title = title; return { title, seq: 1 }; },
@@ -218,6 +225,262 @@ const memberSessionOf = (host, botId) => [...host.sessions.values()].find(s => s
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const waitUntilTrue = async (test, ms = 2000) => { const end = Date.now() + ms; while (!test()) { if (Date.now() > end) { throw new Error('等不到条件成立'); } await sleep(5); } };
 const drain = async (iter) => { const out = []; for await (const chunk of iter) { out.push(chunk); } return out; };
+
+await check('★ 群成员不能用 ask_user_question：成员会话隐藏它 + 硬调被拒（群会话不受影响）；提示词教它用 group_ask、写出项目目录', async () => {
+	const prompts = [];
+	const h = fakeHost((botId, prompt) => { prompts.push({ botId, prompt }); return botId === 'coder' ? { text: '两个问题：1. 独立目录？（推荐：是）', tools: 1 } : '[PASS]'; });
+	const rs = makeRooms(h, join(dir, 'ask.json'));
+	installRooms(h.ctx, rs);
+	const r = await rs.create({ members: ['coder', 'reviewer'], name: '提问群' });
+	rs.noteUserMessage(r.id, '做一个像素版番茄钟');
+	await rs.relayTool().execute({}, { agent: { id: r.id }, callId: 'c-ask' });
+	const coder = h.sessions.get(memberSessionOf(h, 'coder'));
+	assert.ok(coder.restricted.some(f => (f.deny ?? []).includes('ask_user_question')), JSON.stringify(coder.restricted));
+	assert.ok(coder.guards.length >= 1, '挂了兜底拦截');
+	const guard = coder.guards[0];
+	assert.match(String(guard({ name: 'ask_user_question' })), /群聊里不能用 ask_user_question.*调 group_ask/);
+	assert.equal(guard({ name: 'pwsh' }), undefined, '别的工具不拦');
+	const room = h.sessions.get(r.id);
+	assert.equal(room.restricted.length + room.guards.length, 0, '群会话本身不动（它不跑这个工具）');
+	const prompt = prompts.find(p => p.botId === 'coder').prompt;
+	assert.match(prompt, /需要用户决定的事.*调 group_ask.*不要用 ask_user_question/);
+	assert.match(prompt, /本群的项目目录：C:\/work\n所有文件都放在这个目录里/, prompt.slice(0, 400));
+});
+
+// ★ 2026-11-07 群聊选择卡（真机：管理员把三个问题写成文字，这一轮「已完成」，界面上没有任何可点的东西、也没有提醒）
+const ASK_ARGS = { questions: [
+	{ header: '交付形态', question: '放哪？', options: [{ label: '独立入口', recommended: true }, { label: '子目录', description: '另起一个' }] },
+	{ header: '范围', question: '做多少？', options: [{ label: 'MVP', recommended: true }, { label: '完整版' }] },
+] };
+const execOf = (id) => { const exec = { agent: { id }, concluded: 0, concludeTurn() { exec.concluded += 1; } }; return exec; };
+
+await check('选择卡纯逻辑：校验问题 / 校验答案 / 答案成文 / 哪些卡被人的消息顶替', () => {
+	assert.match(normalizeAsk({}).error, /至少要有一个问题/);
+	assert.match(normalizeAsk({ questions: Array.from({ length: 7 }, () => ASK_ARGS.questions[0]) }).error, /最多问 6/);
+	assert.match(normalizeAsk({ questions: [{ question: '选？', options: ['只有一个', '只有一个'] }] }).error, /至少要有 2 个不同的选项/);
+	const { questions } = normalizeAsk({ questions: [{ question: '选？', options: ['A', { label: 'B', recommended: true }, { label: 'C', recommended: true }] }] });
+	assert.deepEqual(questions[0].options, [{ label: 'A' }, { label: 'B', recommended: true }, { label: 'C' }], '字符串选项可用；单选只留第一个推荐');
+	assert.deepEqual([questions[0].id, questions[0].multiSelect, questions[0].allowCustom], ['q1', false, true]);
+	const ask = { questions: normalizeAsk({ questions: [...ASK_ARGS.questions, { question: '要哪些？', multiSelect: true, allowCustom: false, options: ['甲', '乙', '丙'] }] }).questions };
+	assert.match(normalizeAskAnswers(ask, [{ id: 'q1', selected: ['独立入口'] }]).error, /「范围」还没选/);
+	assert.match(normalizeAskAnswers(ask, [{ id: 'q1', selected: ['卡上没有的'] }]).error, /「交付形态」还没选/);
+	const good = normalizeAskAnswers(ask, [{ id: 'q1', selected: ['独立入口', '子目录'] }, { id: 'q2', selected: ['MVP'], custom: '先做计时' }, { id: 'q3', selected: ['甲', '丙'], custom: '不许自填' }]);
+	assert.deepEqual(good.answers, [{ id: 'q1', selected: ['独立入口'] }, { id: 'q2', selected: [], custom: '先做计时' }, { id: 'q3', selected: ['甲', '丙'] }], '单选只留一个、自填优先；不许自填的题丢掉 custom');
+	assert.equal(askAnswerText(ask, good.answers), '1. 交付形态：独立入口\n2. 范围：先做计时\n3. 要哪些？：甲、丙');
+	const a = { botId: 'coder' }; const b = { botId: 'reviewer' };
+	assert.deepEqual(supersedeAsks([a, b], { ids: [], all: false }), { taken: [a, b], kept: [], routed: true }, '没 @ 人 ⇒ 全部顶替，改交给提问的成员');
+	assert.deepEqual(supersedeAsks([a, b], { ids: ['coder'], all: false }), { taken: [a], kept: [b], routed: false }, '@ 了谁只顶替谁，消息照 @ 走');
+	assert.deepEqual(supersedeAsks([a, b], { ids: ['designer'], all: false }), { taken: [], kept: [a, b], routed: false }, '@ 别人不是在答这张卡');
+	assert.deepEqual(supersedeAsks([a], { ids: [], all: true }), { taken: [a], kept: [], routed: false }, '@所有人：顶替，但照常叫全员');
+	assert.deepEqual(supersedeAsks(undefined, null), { taken: [], kept: [], routed: false });
+});
+
+await check('★★ group_ask：弹卡后立刻结束回合、不算「没有补充」、这一轮写「等你选择」；用户作答 ⇒ 写进群记录并叫回成员', async () => {
+	let coderTurns = 0;
+	const prompts = [];
+	const h = fakeHost((botId, prompt) => {
+		if (botId !== 'coder') { return '[PASS]'; }
+		coderTurns += 1; prompts.push(prompt);
+		return coderTurns === 1 ? 'hang' : { text: '按独立入口开工', tools: 1 };
+	});
+	const rs = makeRooms(h, join(dir, 'ask-flow.json'));
+	installRooms(h.ctx, rs);
+	const r = await rs.create({ members: ['coder', 'reviewer'], name: '选择群' });
+	rs.noteUserMessage(r.id, '做一个像素版番茄钟');
+	const running = rs.relayTool().execute({}, { agent: { id: r.id }, callId: 'c-af-1' });
+	await waitUntilTrue(() => !!memberSessionOf(h, 'coder') && h.sessions.get(memberSessionOf(h, 'coder')).inbox.length > 0);
+	const cid = memberSessionOf(h, 'coder');
+	assert.ok(h.sessions.get(cid).tools.includes('group_ask'), '成员会话挂了 group_ask');
+	assert.equal(h.sessions.get(r.id).tools.includes('group_ask'), false, '群会话不挂');
+	// 参数错：回给模型改，回合不结束
+	const badExec = execOf(cid);
+	assert.match(await rs.askTool(r.id, 'coder').execute({ questions: [] }, badExec), /至少要有一个问题/);
+	assert.equal(badExec.concluded, 0);
+	assert.equal(rs.pendingAsks(r.id).length, 0);
+	// 子代理问不了（它结束不了成员的回合）
+	const childExec = execOf('child-session');
+	assert.match(await rs.askTool(r.id, 'coder').execute(ASK_ARGS, childExec), /子代理不行/);
+	assert.equal(childExec.concluded, 0);
+	const exec = execOf(cid);
+	assert.match(await rs.askTool(r.id, 'coder').execute(ASK_ARGS, exec), /这一轮到此结束/);
+	assert.equal(exec.concluded, 1, '调用 concludeTurn 结束成员回合');
+	const live = rs.progress('c-af-1');
+	assert.deepEqual(live.asks.map(a => [a.name, a.botId, a.questions.length]), [['Coder', 'coder', 2]]);
+	assert.ok(live.events.some(e => e.kind === 'ask' && e.name === 'Coder' && /提了 2 个问题，等你选择/.test(e.text)), JSON.stringify(live.events));
+	finishHungTurn(h, cid, ''); // 成员没写正文就调了工具
+	const out = JSON.parse(await running);
+	assert.deepEqual(out.passed, [], '提了问不是「没有补充」');
+	assert.ok(!out.events.some(e => e.kind === 'passed'), JSON.stringify(out.events));
+	assert.deepEqual([out.status, out.statusLabel, out.asks.length], ['done', '等你选择', 1], '状态机不变，文案说实话');
+	assert.match(relayAnswerText({ content: [{ type: 'text', text: JSON.stringify(out) }] }), /\*\*Coder\*\* 等你选择：交付形态 \/ 范围（选择卡在输入框上方）/);
+	assert.equal(rs.active().find(item => item.roomId === r.id)?.asks.length, 1);
+	// 接口：答不全 / 选项不对 ⇒ 400，卡还在
+	const api = (body) => roomsApi(rs, { method: 'POST', query: new URLSearchParams(), body });
+	const id = out.asks[0].id;
+	assert.equal((await api({ action: 'ask-answer', id, answers: [{ id: 'q1', selected: ['独立入口'] }] })).status, 400);
+	assert.equal((await api({ action: 'ask-answer', id: 'nope', skip: true })).status, 404);
+	assert.equal(rs.pendingAsks(r.id).length, 1);
+	const roomSession = h.sessions.get(r.id);
+	const before = roomSession.inbox.length;
+	const ok = await api({ action: 'ask-answer', id, answers: [{ id: 'q1', selected: ['独立入口'] }, { id: 'q2', custom: '只做计时' }] });
+	assert.equal(ok.status, 200, JSON.stringify(ok.body));
+	assert.equal(rs.pendingAsks(r.id).length, 0, '答完卡就撤');
+	assert.equal((await api({ action: 'ask-answer', id, skip: true })).status, 404, '同一张不能答两次');
+	assert.equal(roomSession.inbox.length, before + 1);
+	const kick = roomSession.inbox.at(-1);
+	assert.equal(kick.source.form, 'room-callback');
+	assert.equal(kick.content[0].text, '回答 Coder：\n1. 交付形态：独立入口\n2. 范围：只做计时', '群里看得到自己答了什么');
+	assert.equal(userTextOf({ type: 'user/message', data: kick }), undefined, '不进人的收件箱（否则会再转一遍）');
+	const next = JSON.parse(await rs.relayTool().execute({}, { agent: { id: r.id }, callId: 'c-af-2' }));
+	assert.deepEqual(next.replies.map(x => [x.name, x.text]), [['Coder', '按独立入口开工']]);
+	assert.deepEqual([next.statusLabel, next.asks.length], ['已完成', 0]);
+	assert.match(prompts.at(-1), /用户在选择卡里回答了你刚才的问题：\n1\. 交付形态：独立入口\n2\. 范围：只做计时/);
+	assert.match(prompts.at(-1), /回答 Coder/, '群记录里也有');
+});
+
+await check('group_ask：跳过 ⇒ 告诉成员用户跳过了；同一成员再问 ⇒ 新卡替换旧卡；移出群 ⇒ 卡一起撤', async () => {
+	const prompts = [];
+	let n = 0;
+	const h = fakeHost((botId, prompt) => { if (botId === 'coder') { n += 1; prompts.push(prompt); return n === 1 ? 'hang' : { text: '按推荐继续', tools: 1 }; } return '[PASS]'; });
+	const rs = makeRooms(h, join(dir, 'ask-skip.json'));
+	installRooms(h.ctx, rs);
+	const r = await rs.create({ members: ['coder', 'reviewer', 'designer'], name: '跳过群' });
+	rs.noteUserMessage(r.id, '做');
+	const running = rs.relayTool().execute({}, { agent: { id: r.id }, callId: 'c-sk-1' });
+	await waitUntilTrue(() => !!memberSessionOf(h, 'coder') && h.sessions.get(memberSessionOf(h, 'coder')).inbox.length > 0);
+	const cid = memberSessionOf(h, 'coder');
+	await rs.askTool(r.id, 'coder').execute(ASK_ARGS, execOf(cid));
+	const first = rs.pendingAsks(r.id)[0].id;
+	await rs.askTool(r.id, 'coder').execute({ questions: [ASK_ARGS.questions[1]] }, execOf(cid));
+	assert.deepEqual(rs.pendingAsks(r.id).map(a => a.questions.length), [1], '新卡替换旧卡');
+	assert.notEqual(rs.pendingAsks(r.id)[0].id, first);
+	finishHungTurn(h, cid, '我需要你定一下范围');
+	const out = JSON.parse(await running);
+	assert.deepEqual(out.replies.map(x => x.text), ['我需要你定一下范围'], '写了正文就照常是一条回复');
+	await rs.answerAsk(rs.pendingAsks(r.id)[0].id, { skip: true });
+	assert.equal(h.sessions.get(r.id).inbox.at(-1).content[0].text, '跳过了 Coder 的问题');
+	await rs.relayTool().execute({}, { agent: { id: r.id }, callId: 'c-sk-2' });
+	assert.match(prompts.at(-1), /用户跳过了你刚才的问题.*按推荐继续/);
+	// 移出群
+	const did = memberSessionOf(h, 'coder');
+	await rs.askTool(r.id, 'coder').execute(ASK_ARGS, execOf(did));
+	assert.equal(rs.pendingAsks(r.id).length, 1);
+	await rs.update(r.id, { members: ['reviewer', 'designer'], admin: 'reviewer' });
+	assert.equal(rs.pendingAsks(r.id).length, 0, '提问的成员走了，卡不留');
+});
+
+await check('group_ask：人直接打字算回答 —— 没 @ 人交给提问的成员（不是管理员）；@ 别人时卡不动', async () => {
+	const called = [];
+	const prompts = {};
+	let hung = true;
+	const h = fakeHost((botId, prompt) => {
+		called.push(botId); prompts[botId] = prompt;
+		if (botId === 'reviewer' && hung) { hung = false; return 'hang'; }
+		return { text: `${botId} 收到`, tools: 1 };
+	});
+	const rs = makeRooms(h, join(dir, 'ask-typed.json'));
+	installRooms(h.ctx, rs);
+	const r = await rs.create({ members: ['coder', 'reviewer'], name: '打字群' });
+	rs.noteUserMessage(r.id, '@Code Reviewer 看看');
+	const running = rs.relayTool().execute({}, { agent: { id: r.id }, callId: 'c-ty-1' });
+	await waitUntilTrue(() => !!memberSessionOf(h, 'reviewer') && h.sessions.get(memberSessionOf(h, 'reviewer')).inbox.length > 0);
+	const rid = memberSessionOf(h, 'reviewer');
+	await rs.askTool(r.id, 'reviewer').execute(ASK_ARGS, execOf(rid));
+	finishHungTurn(h, rid, '');
+	await running;
+	called.length = 0;
+	rs.noteUserMessage(r.id, '@Coder 先看下别的');
+	await rs.relayTool().execute({}, { agent: { id: r.id }, callId: 'c-ty-2' });
+	assert.deepEqual(called, ['coder']);
+	assert.equal(rs.pendingAsks(r.id).length, 1, '@ 别人不是在答这张卡');
+	called.length = 0;
+	rs.noteUserMessage(r.id, '全部按推荐');
+	const out = JSON.parse(await rs.relayTool().execute({}, { agent: { id: r.id }, callId: 'c-ty-3' }));
+	assert.deepEqual(called, ['reviewer'], '交给提问的成员，不是管理员');
+	assert.equal(rs.pendingAsks(r.id).length, 0, '卡被顶替');
+	assert.match(prompts.reviewer, /用户没有点选择卡，而是直接在群里回复了/);
+	assert.match(prompts.reviewer, /用户：全部按推荐/);
+	assert.ok(out.events.some(e => /用户在群里回复了 Code Reviewer 的问题/.test(e.text)), JSON.stringify(out.events));
+});
+
+await check('group_ask：被派活的成员提问 ⇒ 不叫回派活的人；答案回来、它做完才叫回；目标检查也不催', async () => {
+	const said = { coder: 0, reviewer: 0 };
+	const h = fakeHost((botId) => {
+		said[botId] = (said[botId] ?? 0) + 1;
+		if (botId === 'coder') { return said.coder === 1 ? { text: '@Code Reviewer 去验收', tools: 1 } : { text: '验收结果收到', tools: 1 }; }
+		if (botId === 'reviewer') { return said.reviewer === 1 ? 'hang' : { text: '验收通过', tools: 1 }; }
+		return '[PASS]';
+	});
+	const file2 = join(dir, 'ask-batch.json');
+	const rs = makeRooms(h, file2);
+	installRooms(h.ctx, rs);
+	const r = await rs.create({ members: ['coder', 'reviewer'], name: '派活群' });
+	const start = await rs.goalTool(r.id, 'coder').execute({ action: 'start', objective: '番茄钟', acceptance: '能跑', stages: [{ title: '验收', acceptance: '通过', tasks: [{ bot: 'Code Reviewer', task: '验收' }] }] });
+	assert.equal(JSON.parse(start).error, undefined, start);
+	rs.noteUserMessage(r.id, '开工');
+	const running = rs.relayTool().execute({}, { agent: { id: r.id }, callId: 'c-ba-1' });
+	await waitUntilTrue(() => !!memberSessionOf(h, 'reviewer') && h.sessions.get(memberSessionOf(h, 'reviewer')).inbox.length > 0);
+	const rid = memberSessionOf(h, 'reviewer');
+	await rs.askTool(r.id, 'reviewer').execute(ASK_ARGS, execOf(rid));
+	assert.equal(rs.pendingAsks(r.id)[0].askedBy, 'coder', '记下是谁派的活');
+	const roomSession = h.sessions.get(r.id);
+	const kicksBefore = roomSession.inbox.length;
+	// 它干过活、也写了正文（否则走不到「叫回派活的人」那条分支）
+	{ const s = h.sessions.get(rid); s.seq += 1; s.events.push({ seq: s.seq, type: 'tool/call', data: { callId: 'c-ba-t', name: 'read', arguments: {} } }); }
+	finishHungTurn(h, rid, '验收前要先定两件事');
+	const firstRound = JSON.parse(await running);
+	assert.ok(firstRound.replies.some(x => x.name === 'Code Reviewer' && x.text === '验收前要先定两件事'), JSON.stringify(firstRound.replies));
+	await sleep(20);
+	assert.equal(said.coder, 1, '它在等用户，不是做完了：不叫回派活的人');
+	assert.equal(roomSession.inbox.length, kicksBefore, '目标检查不来催（有卡等用户）');
+	await rs.answerAsk(rs.pendingAsks(r.id)[0].id, { answers: [{ id: 'q1', selected: ['独立入口'] }, { id: 'q2', selected: ['MVP'] }] });
+	const next = JSON.parse(await rs.relayTool().execute({}, { agent: { id: r.id }, callId: 'c-ba-2' }));
+	assert.deepEqual(next.replies.map(x => [x.name, x.text]), [['Code Reviewer', '验收通过'], ['Coder', '验收结果收到']], '做完了叫回派活的人');
+});
+
+await check('group_ask：后台成员提问不算干完；卡落盘，重启后还在、还能答；叫不起来群会话时卡放回去', async () => {
+	const said = { coder: 0 };
+	const h = fakeHost((botId) => {
+		said[botId] = (said[botId] ?? 0) + 1;
+		if (botId === 'coder') { return said.coder === 1 ? { text: '@Code Reviewer 写', tools: 1 } : { text: '收到', tools: 1 }; }
+		return botId === 'reviewer' && said.reviewer === 1 ? 'hang' : { text: '好', tools: 1 };
+	});
+	const file2 = join(dir, 'ask-restart.json');
+	const rs = makeRooms(h, file2, { releaseMs: 40, timeoutMs: 5000, maxWaitMs: 10_000 });
+	installRooms(h.ctx, rs);
+	const r = await rs.create({ members: ['coder', 'reviewer'], name: '重启群' });
+	rs.noteUserMessage(r.id, '开工');
+	const running = rs.relayTool().execute({}, { agent: { id: r.id }, callId: 'c-rs-1' });
+	await waitUntilTrue(() => !!memberSessionOf(h, 'reviewer') && h.sessions.get(memberSessionOf(h, 'reviewer')).inbox.length > 0);
+	const rid = memberSessionOf(h, 'reviewer');
+	h.emit('session/event', { id: rid }, { type: 'tool/call' }); // 放行到后台
+	await running;
+	await rs.askTool(r.id, 'reviewer').execute(ASK_ARGS, execOf(rid));
+	assert.equal(rs.pendingAsks(r.id)[0].askedBy, 'coder', '后台成员的派活人从 late 里取');
+	const inboxBefore = h.sessions.get(r.id).inbox.length;
+	finishHungTurn(h, rid, '');
+	await sleep(20);
+	assert.equal(h.sessions.get(r.id).inbox.length, inboxBefore, '没有「干完了」的回叫');
+	// 重启
+	await rs.flush();
+	// 20 分钟之后才重启：轮次早过了保留期，只有卡还在等 ⇒ 这个群仍要出现在活动列表里，卡才有地方出
+	const again = makeRooms(h, file2, { now: () => Date.now() + 20 * 60_000 });
+	await again.load();
+	assert.equal(again.pendingAsks(r.id).length, 1, '卡落盘');
+	const shownAgain = again.active().find(item => item.roomId === r.id);
+	assert.equal(shownAgain?.asks.length, 1, '重启后这个群还在活动列表里');
+	assert.equal(shownAgain.statusLabel, '等你选择');
+	// 群会话叫不起来 ⇒ 不吞掉用户的答案
+	const broken = fakeHost(() => '[PASS]');
+	const brokenRooms = makeRooms(broken, file2 + '.copy', { warn: () => undefined });
+	writeFileSync(file2 + '.copy', readFileSync(file2, 'utf8'));
+	await brokenRooms.load();
+	const id = brokenRooms.pendingAsks(r.id)[0].id;
+	await assert.rejects(() => brokenRooms.answerAsk(id, { skip: true }), /答案没有送出/);
+	assert.equal(brokenRooms.pendingAsks(r.id).length, 1, '卡放回去，可以重试');
+	await again.answerAsk(id, { skip: true });
+	assert.equal(again.pendingAsks(r.id).length, 0);
+});
 
 await check('接力闭环（对齐 DS Bot）：开发 @测试 → 测试发现问题 @开发 → 开发改完没 @ 人 ⇒ 自动叫回测试复测；接力规则写进提示词', async () => {
 	const said = { coder: 0, reviewer: 0 };
@@ -347,6 +610,99 @@ await check('长任务提前放行（P2）：成员调工具后到点就不等�
 
 // ★ 2026-11-06 真机：「@番茄钟 H5 开发团队 开发H5 番茄钟」管理员 Coder 被放行到后台、5 分钟后迟到回复里 @Designer @Tester
 //   派活，两人从没被叫到（群记录只有 Coder 的会话），需求停在半路。
+// ★ 2026-11-07 真机：用户回「全部按推荐」，Coder 干了 3 分钟被转到后台，群聊写「这一轮没有成员回复」；
+//   它 18:09 干完的回复只进了群记录，界面上看不见；回复里「@ Designer」（带空格）也没认出来，Designer 一直没被叫到。
+await check('★ 后台成员：这一轮写「还在后台干活」；干完（没 @ 人、没有派活人、没有目标）也新开一轮把回复显示出来，只补发一次', async () => {
+	let n = 0;
+	const h = fakeHost((botId) => { if (botId !== 'coder') { return '[PASS]'; } n += 1; return n === 1 ? 'hang' : { text: '好', tools: 1 }; });
+	const file = join(dir, 'late-show.json');
+	const rs = makeRooms(h, file, { releaseMs: 60, timeoutMs: 5000, maxWaitMs: 10_000 });
+	installRooms(h.ctx, rs);
+	const r = await rs.create({ members: ['coder', 'designer'], name: '后台群', admin: 'coder', mode: 'admin' });
+	rs.noteUserMessage(r.id, '全部按推荐');
+	const running = rs.relayTool().execute({}, { agent: { id: r.id }, callId: 'c-ls-1' });
+	await waitUntilTrue(() => !!memberSessionOf(h, 'coder') && h.sessions.get(memberSessionOf(h, 'coder')).inbox.length > 0);
+	const cid = memberSessionOf(h, 'coder');
+	h.emit('session/event', { id: cid }, { type: 'tool/call' }); // 开始干活 ⇒ 转到后台
+	const first = JSON.parse(await running);
+	assert.deepEqual([first.replies, first.background], [[], ['Coder']]);
+	const firstText = relayAnswerText({ content: [{ type: 'text', text: JSON.stringify(first) }] });
+	assert.match(firstText, /Coder 还在后台干活，干完会把结果发到群里/);
+	assert.doesNotMatch(firstText, /没有成员回复/);
+	await rs.flush();
+	assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')).rounds.find(x => x.callId === 'c-ls-1').background, ['Coder'], '落盘，重启后还说得清');
+	const roomSession = h.sessions.get(r.id);
+	const before = roomSession.inbox.length;
+	finishHungTurn(h, cid, '确认落点：pixel.html + src/pixel/');
+	await waitUntilTrue(() => roomSession.inbox.length > before);
+	assert.equal(roomSession.inbox.at(-1).content[0].text, '【Coder 在后台干完了】');
+	const next = JSON.parse(await rs.relayTool().execute({}, { agent: { id: r.id }, callId: 'c-ls-2' }));
+	assert.deepEqual([next.late.map(x => [x.name, x.text]), next.replies], [[['Coder', '确认落点：pixel.html + src/pixel/']], []], '没人要叫：只显示');
+	const nextText = relayAnswerText({ content: [{ type: 'text', text: JSON.stringify(next) }] });
+	assert.equal(nextText, '**Coder**（在后台干完了）：确认落点：pixel.html + src/pixel/');
+	rs.noteUserMessage(r.id, '继续');
+	const third = JSON.parse(await rs.relayTool().execute({}, { agent: { id: r.id }, callId: 'c-ls-3' }));
+	assert.deepEqual([third.late, third.replies.map(x => x.text)], [[], ['好']], '只补发一次');
+});
+
+// ★ 2026-11-07 真机：Designer 在后台干活，这一轮结束 15 秒后掉出活动列表，群行和 Designer 行都回到空闲
+await check('★ 后台干活的成员：busy 实时给出；有人在后台时这一轮一直在活动列表里（「后台干活中」），干完就清掉', async () => {
+	let skewMs = 0;
+	let n = 0;
+	const h = fakeHost((botId) => { if (botId !== 'designer') { return '[PASS]'; } n += 1; return n === 1 ? 'hang' : { text: '好', tools: 1 }; });
+	const rs = makeRooms(h, join(dir, 'busy.json'), { releaseMs: 60, timeoutMs: 5000, maxWaitMs: 10_000, now: () => Date.now() + skewMs });
+	installRooms(h.ctx, rs);
+	const r = await rs.create({ members: ['designer', 'coder'], name: '忙碌群', admin: 'designer', mode: 'admin' });
+	rs.noteUserMessage(r.id, '出稿');
+	const running = rs.relayTool().execute({}, { agent: { id: r.id }, callId: 'c-busy-1' });
+	await waitUntilTrue(() => !!memberSessionOf(h, 'designer') && h.sessions.get(memberSessionOf(h, 'designer')).inbox.length > 0);
+	const did = memberSessionOf(h, 'designer');
+	h.emit('session/event', { id: did }, { type: 'tool/call' });
+	const out = JSON.parse(await running);
+	assert.deepEqual([out.status, out.statusLabel, out.busy], ['done', '后台干活中', ['Designer']]);
+	skewMs = 5 * 60_000; // 远超 15 秒
+	const shown = rs.active().find(item => item.roomId === r.id);
+	assert.deepEqual([shown?.callId, shown?.busy, shown?.statusLabel], ['c-busy-1', ['Designer'], '后台干活中'], '有人在后台：这一轮一直可见');
+	finishHungTurn(h, did, '稿子在 design/pixel.md');
+	await waitUntilTrue(() => rs.progress('c-busy-1').busy.length === 0);
+	assert.equal(rs.progress('c-busy-1').statusLabel, '已完成');
+	assert.equal(rs.active().find(item => item.callId === 'c-busy-1'), undefined, '干完了：按原来的保留期走');
+});
+
+await check('★ 「@ 名字」（@ 后带一个空格）也算点名；后台成员这样派活 ⇒ 补发它的回复，同一轮叫到被点的人，做完叫回它', async () => {
+	assert.deepEqual(mentionsIn('@ Designer 出稿，＠　Coder 实现', ROSTER), { ids: ['designer', 'coder'], all: false });
+	assert.deepEqual(mentionsIn('@  Designer', ROSTER).ids, [], '只容一个空格');
+	assert.deepEqual(mentionsIn('@ 所有人 看一下', ROSTER).all, true);
+	const said = { coder: 0 };
+	const h = fakeHost((botId) => {
+		said[botId] = (said[botId] ?? 0) + 1;
+		if (botId === 'coder') { return said.coder === 1 ? 'hang' : { text: '稿子收到，开始实现', tools: 1 }; }
+		if (botId === 'designer') { return { text: '像素版 spec 在 design/pixel.md', tools: 1 }; }
+		return '[PASS]';
+	});
+	const rs = makeRooms(h, join(dir, 'late-space.json'), { releaseMs: 60, timeoutMs: 5000, maxWaitMs: 10_000 });
+	installRooms(h.ctx, rs);
+	const r = await rs.create({ members: ['coder', 'designer', 'reviewer'], name: '空格群', admin: 'coder', mode: 'admin' });
+	rs.noteUserMessage(r.id, '全部按推荐');
+	const running = rs.relayTool().execute({}, { agent: { id: r.id }, callId: 'c-sp-1' });
+	await waitUntilTrue(() => !!memberSessionOf(h, 'coder') && h.sessions.get(memberSessionOf(h, 'coder')).inbox.length > 0);
+	const cid = memberSessionOf(h, 'coder');
+	h.emit('session/event', { id: cid }, { type: 'tool/call' });
+	await running;
+	const roomSession = h.sessions.get(r.id);
+	const before = roomSession.inbox.length;
+	finishHungTurn(h, cid, '按推荐落地。@ Designer 请你出像素版视觉 spec');
+	await waitUntilTrue(() => roomSession.inbox.length > before);
+	await sleep(30); // 点人（callNamed）晚一拍排进同一个回叫队列
+	assert.equal(roomSession.inbox.length, before + 1, '补发与点人合并成一条消息、一轮');
+	const next = JSON.parse(await rs.relayTool().execute({}, { agent: { id: r.id }, callId: 'c-sp-2' }));
+	assert.deepEqual(next.late.map(x => x.name), ['Coder']);
+	assert.deepEqual(next.replies.map(x => [x.name, x.text]), [['Designer', '像素版 spec 在 design/pixel.md'], ['Coder', '稿子收到，开始实现']]);
+	const text = relayAnswerText({ content: [{ type: 'text', text: JSON.stringify(next) }] });
+	assert.match(text, /^\*\*Coder\*\*（在后台干完了）：按推荐落地。@ Designer[\s\S]*\*\*Designer\*\*：像素版 spec/);
+	assert.equal(said.reviewer ?? 0, 0, '没点到的人不叫');
+});
+
 await check('迟到回复里 @ 到的成员新开一轮去做；他们做完叫回点人的成员（对齐 DS Bot lateRoomReply）', async () => {
 	const said = { coder: 0, designer: 0, reviewer: 0 };
 	const h = fakeHost((botId) => {

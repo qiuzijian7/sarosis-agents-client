@@ -63,9 +63,9 @@ class FakeWorkflowExecutionService {
 
 function makeDriver(fakeWf: FakeWorkflowExecutionService): AgentDriverService {
 	const noopLog = { info() { }, warn() { }, error() { }, debug() { }, trace() { } };
+	// ★ P3（2026-11-07）：`ISkillRegistry` 注入已移除，位置参数同步少一个。
 	return new AgentDriverService(
 		{} as never,                                  // IAgentOSService
-		{} as never,                                  // ISkillRegistry
 		noopLog as never,                             // ILogService
 		{ getValue: () => 4 } as never,               // IConfigurationService
 		{} as never,                                  // IAgentStudioService（自愈走 catch）

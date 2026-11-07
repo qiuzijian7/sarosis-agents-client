@@ -175,7 +175,8 @@ export class DshFullWindowContribution extends Disposable {
 		super();
 		// 恢复上次的分屏比例（拖过分隔条就记住 ⇒ 下次开窗沿用）✓
 		this._splitRatio = this._readSplitRatio();
-		// 与聊天宿主同一门槛：总开关关闭或 engine=legacy 时不接管，popout 走旧实现。
+		// ★ 2026-11-07（Step 0）：与聊天宿主同一门槛。`engine !== 'dsh'` 保留作 fail-closed
+		//   （配置 enum 只有 ['dsh']，不是 legacy 回退入口）；总开关关闭时必须自己显示窗口。
 		const enabled = this._configurationService.getValue<boolean>(DshHarnessSettings.Enabled) !== false;
 		const engine = this._configurationService.getValue<string>(DshHarnessSettings.ChatEngine);
 		if (!enabled || engine !== 'dsh') {

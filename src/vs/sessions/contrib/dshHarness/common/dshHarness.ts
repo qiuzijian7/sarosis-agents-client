@@ -345,7 +345,7 @@ export const enum DshHarnessSettings {
 	PinnedVersion = 'sessions.dshHarness.pinnedVersion',
 	/** 远端签名兼容清单的地址（可选）。 */
 	CompatManifestUrl = 'sessions.dshHarness.compatManifestUrl',
-	/** 聊天框引擎：legacy（现有 DOM 聊天面板）/ dsh（dsh 聊天页面承载在聊天框 instance 内）。改动后需重载窗口。 */
+	/** 聊天框引擎：dsh 是唯一引擎（legacy 回退已于 2026-11-07 P3 下线）。改动后需重载窗口。 */
 	ChatEngine = 'sessions.dshHarness.chatEngine',
 	// ★ 2026-10-19：`sessionHistoryUi` 开关**已删除** —— 用户定稿"会话历史的数据源与 UI 全部归 dsh"，
 	//   容器只挂插件页宿主，不再有第二套 UI 可选。留一个没人读的开关只会制造"配了没效果"的假配置 ✗。

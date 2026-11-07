@@ -1,0 +1,1155 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SuperAgent · 一个任务从头到尾 · 源码流程 Demo</title>
+<style>
+/* 颜色沿用 doc/superagent-framework-v2.html 的 --dsw-alias-* 语义；单文件、离线可打开 */
+:root {
+	--dsw-alias-bg-base: #f5f6f8; --dsw-alias-bg-layer-1: #ffffff; --dsw-alias-bg-layer-2: #fafbfc; --dsw-alias-bg-module-platform: #eef0f4;
+	--dsw-alias-border-l3: #e3e6ec; --dsw-alias-border-l4: #d6dae2;
+	--dsw-alias-label-primary: #1f2329; --dsw-alias-label-secondary: #4e5969; --dsw-alias-label-tertiary: #86909c; --dsw-alias-label-caption: #9aa2af;
+	--dsw-alias-brand-primary: #3b6cf5; --dsw-alias-brand-on: #ffffff; --dsw-alias-link: #2a6df4;
+	--dsw-alias-state-success-primary: #0a8f5c; --dsw-alias-state-warn-primary: #c07800; --dsw-alias-state-error-primary: #d54941;
+	--purple: #7a52e0;
+	--dsw-elevation-panel: 0 1px 2px rgba(20,28,45,.06), 0 8px 24px rgba(20,28,45,.06);
+	color-scheme: light;
+}
+[data-theme="dark"] {
+	--dsw-alias-bg-base: #17191d; --dsw-alias-bg-layer-1: #1f2227; --dsw-alias-bg-layer-2: #24282e; --dsw-alias-bg-module-platform: #2c3138;
+	--dsw-alias-border-l3: #393f47; --dsw-alias-border-l4: #474e58;
+	--dsw-alias-label-primary: #e8eaed; --dsw-alias-label-secondary: #b7bec8; --dsw-alias-label-tertiary: #8d96a3; --dsw-alias-label-caption: #78828f;
+	--dsw-alias-brand-primary: #5b83f8; --dsw-alias-brand-on: #10131a; --dsw-alias-link: #7ea2ff;
+	--dsw-alias-state-success-primary: #3dbd84; --dsw-alias-state-warn-primary: #e0a33a; --dsw-alias-state-error-primary: #ef7b72;
+	--purple: #a98bf5;
+	--dsw-elevation-panel: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.28);
+	color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary);
+	font: 13px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+code, .mono, pre { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
+code { font-size: 11.5px; padding: 1px 5px; border-radius: 5px; background: var(--dsw-alias-bg-module-platform); }
+.wrap { max-width: 1740px; margin: 0 auto; padding: 20px 22px 60px; }
+header { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 14px; flex-wrap: wrap; }
+header .h { flex: 1; min-width: 320px; }
+h1 { font-size: 22px; margin: 0 0 4px; line-height: 1.3; }
+.lede { margin: 0; color: var(--dsw-alias-label-secondary); font-size: 12.5px; max-width: 980px; }
+.badges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.tag { display: inline-flex; align-items: center; border-radius: 999px; padding: 1px 9px; font-size: 11.5px; line-height: 19px;
+	background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-secondary); white-space: nowrap; }
+.tag.brand { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 14%, transparent); color: var(--dsw-alias-link); }
+.tag.ok { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 13%, transparent); color: var(--dsw-alias-state-success-primary); }
+.tag.warn { background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 15%, transparent); color: var(--dsw-alias-state-warn-primary); }
+.tag.new { background: color-mix(in srgb, var(--purple) 15%, transparent); color: var(--purple); }
+.btn { border: .5px solid var(--dsw-alias-border-l4); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary);
+	border-radius: 8px; height: 30px; padding: 0 11px; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.btn:hover { border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-link); }
+.btn.primary { background: var(--dsw-alias-brand-primary); color: var(--dsw-alias-brand-on); border-color: var(--dsw-alias-brand-primary); font-weight: 600; }
+.btn:disabled { opacity: .42; cursor: default; }
+.btn:disabled:hover { border-color: var(--dsw-alias-border-l4); color: var(--dsw-alias-label-secondary); }
+.panel { background: var(--dsw-alias-bg-layer-1); border: .5px solid var(--dsw-alias-border-l3); border-radius: 12px; box-shadow: var(--dsw-elevation-panel); }
+.ctl { display: flex; align-items: center; gap: 9px; padding: 9px 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.ctl .sep { width: 1px; height: 20px; background: var(--dsw-alias-border-l3); }
+.ctl label { font-size: 12px; color: var(--dsw-alias-label-tertiary); display: inline-flex; align-items: center; gap: 5px; }
+.ctl select, .ctl input[type=range] { font: inherit; font-size: 12px; }
+.ctl select { height: 28px; border-radius: 7px; border: .5px solid var(--dsw-alias-border-l4);
+	background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); padding: 0 7px; }
+.ctl input[type=range] { accent-color: var(--dsw-alias-brand-primary); }
+#progress { flex: 1 1 180px; min-width: 120px; }
+.count { font-size: 12px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cur { flex: 1 1 100%; font-size: 12.5px; color: var(--dsw-alias-label-primary); padding-top: 2px; }
+.cur b { color: var(--dsw-alias-link); }
+.overview { display: flex; align-items: stretch; gap: 0; padding: 10px; margin-bottom: 12px; overflow-x: auto; }
+.phase-chip { flex: 1 1 0; min-width: 128px; padding: 7px 10px; border-radius: 9px; border: .5px solid var(--dsw-alias-border-l3);
+	background: var(--dsw-alias-bg-layer-2); opacity: .55; transition: .25s; }
+.phase-chip .n { font-size: 10.5px; color: var(--dsw-alias-label-caption); font-variant-numeric: tabular-nums; }
+.phase-chip .t { font-size: 12.5px; font-weight: 600; margin-top: 1px; }
+.phase-chip .s { font-size: 10.5px; color: var(--dsw-alias-label-tertiary); }
+.phase-chip.done { opacity: 1; border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 55%, transparent); }
+.phase-chip.active { opacity: 1; border-color: var(--dsw-alias-brand-primary);
+	background: color-mix(in srgb, var(--dsw-alias-brand-primary) 9%, var(--dsw-alias-bg-layer-1));
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-brand-primary) 16%, transparent); }
+.phase-arrow { flex: 0 0 18px; display: grid; place-items: center; color: var(--dsw-alias-label-caption); font-size: 13px; }
+.cols { display: grid; grid-template-columns: 290px minmax(430px, 1fr) 370px; gap: 12px; align-items: start; }
+.col { min-width: 0; }
+.col-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 12px;
+	border-bottom: .5px solid var(--dsw-alias-border-l3); font-size: 12.5px; font-weight: 600; }
+.col-h .k { font-size: 11px; color: var(--dsw-alias-label-caption); font-weight: 400; }
+/* 会话窗口 */
+.chat { height: 660px; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 9px; background: var(--dsw-alias-bg-layer-2); border-radius: 0 0 12px 12px; }
+.bubble { max-width: 94%; border-radius: 10px; padding: 8px 10px; font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere;
+	border: .5px solid var(--dsw-alias-border-l3); background: var(--dsw-alias-bg-layer-1); }
+.bubble .who { display: block; font-size: 10.5px; color: var(--dsw-alias-label-caption); margin-bottom: 3px; }
+.bubble.user { align-self: flex-end; background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, var(--dsw-alias-bg-layer-1));
+	border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, transparent); }
+.bubble.superagent { align-self: flex-start; border-color: color-mix(in srgb, var(--purple) 42%, transparent); }
+.bubble.proposal { align-self: flex-start; border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 48%, transparent);
+	background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 6%, var(--dsw-alias-bg-layer-1)); font-size: 12px; line-height: 1.75; }
+.bubble.desk { align-self: flex-start; color: var(--dsw-alias-label-tertiary); font-size: 12px; }
+.bubble.fresh { animation: pop .32s ease-out; }
+@keyframes pop { from { transform: translateY(7px); opacity: 0; } to { transform: none; opacity: 1; } }
+.chat-empty { color: var(--dsw-alias-label-caption); font-size: 12px; text-align: center; margin: auto 0; }
+/* 流程泳道 */
+.flow { padding: 10px; max-height: 700px; overflow-y: auto; }
+.lane { border: .5px solid var(--dsw-alias-border-l3); border-radius: 10px; background: var(--dsw-alias-bg-layer-2);
+	padding: 8px 10px 10px; margin-bottom: 8px; transition: .25s; }
+.lane.active { border-color: var(--dsw-alias-brand-primary); background: color-mix(in srgb, var(--dsw-alias-brand-primary) 5%, var(--dsw-alias-bg-layer-2)); }
+.lane.done { opacity: .78; }
+.lane-h { display: flex; align-items: baseline; gap: 7px; margin-bottom: 7px; }
+.lane-h .no { font-size: 11px; color: var(--dsw-alias-link); font-weight: 700; }
+.lane-h .tt { font-size: 12.5px; font-weight: 600; }
+.lane-h .ss { font-size: 10.5px; color: var(--dsw-alias-label-caption); }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; align-items: stretch; }
+.chip { flex: 1 1 128px; min-width: 118px; max-width: 210px; border: .5px solid var(--dsw-alias-border-l4); border-radius: 8px;
+	background: var(--dsw-alias-bg-layer-1); padding: 6px 8px; cursor: pointer; text-align: left; font: inherit; color: inherit; position: relative; transition: .2s; }
+.chip:hover { border-color: var(--dsw-alias-brand-primary); }
+.chip .ct { font-size: 11.5px; font-weight: 600; line-height: 1.35; }
+.chip .cs { font-size: 10.5px; color: var(--dsw-alias-label-caption); line-height: 1.4; margin-top: 2px; }
+.chip .cdot { position: absolute; top: 6px; right: 6px; width: 5px; height: 5px; border-radius: 50%; background: var(--purple); }
+.chip.todo { opacity: .48; }
+.chip.done { border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 55%, transparent); }
+.chip.done .ct::before { content: "✓ "; color: var(--dsw-alias-state-success-primary); }
+.chip.active { border-color: var(--dsw-alias-brand-primary); opacity: 1;
+	background: color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, var(--dsw-alias-bg-layer-1));
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-brand-primary) 17%, transparent); animation: pulse 1.8s infinite; }
+@keyframes pulse { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--dsw-alias-brand-primary) 7%, transparent); } }
+.chip.gate.active { border-color: var(--dsw-alias-state-warn-primary); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 9%, var(--dsw-alias-bg-layer-1)); }
+.chip.asset.active { border-color: var(--dsw-alias-state-success-primary); background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 8%, var(--dsw-alias-bg-layer-1)); }
+.chip.bad.active { border-color: var(--dsw-alias-state-error-primary); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, var(--dsw-alias-bg-layer-1)); }
+.lane-link { text-align: center; color: var(--dsw-alias-label-caption); font-size: 12px; line-height: 12px; margin: -3px 0 5px; }
+/* 检查器 */
+.insp { padding: 11px 12px; }
+.iblock { margin-bottom: 12px; }
+.iblock > .lab { font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--dsw-alias-label-caption); margin-bottom: 5px; }
+.note { font-size: 12px; color: var(--dsw-alias-label-secondary); line-height: 1.7; }
+.stagebar { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.stage-val { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px;
+	background: color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent); color: var(--dsw-alias-link); }
+.stage-val.gate { background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 15%, transparent); color: var(--dsw-alias-state-warn-primary); }
+.stage-val.end { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 14%, transparent); color: var(--dsw-alias-state-success-primary); }
+.stage-val.bad { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 13%, transparent); color: var(--dsw-alias-state-error-primary); }
+pre.data { margin: 0; padding: 10px; border-radius: 9px; background: var(--dsw-alias-bg-module-platform); overflow: auto;
+	max-height: 300px; font-size: 11px; line-height: 1.55; color: var(--dsw-alias-label-primary); white-space: pre; }
+.codes { display: flex; flex-direction: column; gap: 3px; }
+.code-row { display: flex; gap: 6px; align-items: baseline; font-size: 11px; padding: 3px 6px; border-radius: 6px; background: var(--dsw-alias-bg-layer-2); }
+.code-row .f { color: var(--dsw-alias-link); font-family: ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
+.code-row .l { color: var(--dsw-alias-label-caption); font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+.code-row .fn { color: var(--dsw-alias-label-tertiary); margin-left: auto; font-family: ui-monospace, Consolas, monospace; white-space: nowrap; }
+.diff { border-left: 2px solid var(--purple); padding: 2px 0 2px 9px; font-size: 11.5px; color: var(--dsw-alias-label-secondary); line-height: 1.7; }
+.diff b { color: var(--purple); }
+/* 日志与附录 */
+.bottom { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr); gap: 12px; margin-top: 12px; align-items: start; }
+.log { height: 176px; overflow-y: auto; padding: 9px 12px; font: 11.5px/1.7 ui-monospace, Consolas, monospace; color: var(--dsw-alias-label-secondary); }
+.log div { white-space: pre-wrap; overflow-wrap: anywhere; }
+.log .now { color: var(--dsw-alias-link); font-weight: 600; }
+details.appendix { padding: 10px 12px; font-size: 12px; }
+details.appendix summary { cursor: pointer; font-weight: 600; color: var(--dsw-alias-label-primary); }
+details.appendix h4 { margin: 14px 0 5px; font-size: 12.5px; }
+table { width: 100%; border-collapse: collapse; font-size: 11.5px; margin: 6px 0 12px; }
+th { text-align: left; font-weight: 500; color: var(--dsw-alias-label-caption); padding: 5px 8px 5px 0; border-bottom: .5px solid var(--dsw-alias-border-l3); }
+td { padding: 6px 8px 6px 0; border-bottom: .5px solid var(--dsw-alias-border-l3); vertical-align: top; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+.appendix p { color: var(--dsw-alias-label-secondary); margin: 5px 0; }
+.appendix .callout { border-left: 2px solid var(--purple); padding: 4px 0 4px 9px; margin: 8px 0; font-size: 11.5px; line-height: 1.7; color: var(--dsw-alias-label-secondary); }
+.appendix .callout b { color: var(--purple); }
+/* 多 Worker 并发沙盘 */
+.wb { margin-top: 14px; }
+.wb-ctl { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-bottom: .5px solid var(--dsw-alias-border-l3); flex-wrap: wrap; }
+.wb-ctl label { font-size: 12px; color: var(--dsw-alias-label-tertiary); display: inline-flex; align-items: center; gap: 5px; }
+.wb-ctl select { height: 28px; border-radius: 7px; border: .5px solid var(--dsw-alias-border-l4); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); padding: 0 7px; font: inherit; font-size: 12px; }
+.wb-ctl input[type=range] { accent-color: var(--dsw-alias-brand-primary); flex: 1 1 120px; min-width: 100px; }
+.wb-ctl .count { font-size: 12px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.wb-ctl .sep { width: 1px; height: 20px; background: var(--dsw-alias-border-l3); }
+.wb-body { padding: 12px; }
+.wb-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(146px, 1fr)); gap: 9px; margin-bottom: 12px; }
+.wb-metric { border: .5px solid var(--dsw-alias-border-l3); border-radius: 10px; padding: 8px 11px; background: var(--dsw-alias-bg-layer-2); }
+.wb-metric .k { font-size: 11px; color: var(--dsw-alias-label-caption); }
+.wb-metric .v { font-size: 20px; font-weight: 700; line-height: 1.35; font-variant-numeric: tabular-nums; }
+.wb-metric .v.brand { color: var(--dsw-alias-link); }
+.wb-metric .v.warn { color: var(--dsw-alias-state-warn-primary); }
+.wb-metric .v.ok { color: var(--dsw-alias-state-success-primary); }
+.wb-metric .h { font-size: 10.5px; color: var(--dsw-alias-label-tertiary); }
+.wb-main { display: grid; grid-template-columns: minmax(0, 1fr) 292px; gap: 12px; align-items: start; }
+.gantt { overflow-x: auto; border: .5px solid var(--dsw-alias-border-l3); border-radius: 10px; background: var(--dsw-alias-bg-layer-2); }
+.gantt table { min-width: 660px; width: 100%; margin: 0; border-collapse: separate; border-spacing: 0; }
+.gantt th, .gantt td { border: 0; padding: 0; }
+.gantt .gh { font: 10px/1.5 ui-monospace, Consolas, monospace; color: var(--dsw-alias-label-caption); text-align: center; padding: 5px 0; border-bottom: .5px solid var(--dsw-alias-border-l3); }
+.gantt .gh.now { color: var(--dsw-alias-link); font-weight: 700; }
+.gantt .gl { font-size: 11px; color: var(--dsw-alias-label-secondary); padding: 3px 8px 3px 10px; white-space: nowrap; border-bottom: .5px solid var(--dsw-alias-border-l3); background: var(--dsw-alias-bg-layer-1); }
+.gantt .gl.lead { color: var(--dsw-alias-link); font-weight: 600; }
+.gantt .gl small { color: var(--dsw-alias-label-caption); font-size: 10px; }
+.gcell { display: block; height: 17px; margin: 1px; border-radius: 3px; background: transparent; border-bottom: .5px solid var(--dsw-alias-border-l3); }
+.gcell.run { background: var(--dsw-alias-brand-primary); }
+.gcell.lead { background: color-mix(in srgb, var(--dsw-alias-brand-primary) 52%, var(--dsw-alias-bg-layer-1)); }
+.gcell.ready { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 40%, transparent); }
+.gcell.slot { background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--dsw-alias-state-warn-primary) 48%, transparent) 0 3px, transparent 3px 6px); }
+.gcell.write { background: color-mix(in srgb, var(--purple) 45%, transparent); }
+.gcell.wait { background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 16%, transparent); }
+.gcell.now { outline: 1.5px solid var(--dsw-alias-brand-primary); outline-offset: -1px; }
+.wb-legend { display: flex; flex-wrap: wrap; gap: 9px; font-size: 10.5px; color: var(--dsw-alias-label-tertiary); margin: 9px 0 12px; }
+.wb-legend i { display: inline-block; width: 11px; height: 11px; border-radius: 3px; vertical-align: -1px; margin-right: 4px; }
+.wb-log { height: 210px; overflow-y: auto; padding: 9px 11px; font: 11px/1.65 ui-monospace, Consolas, monospace; color: var(--dsw-alias-label-secondary); }
+.wb-log div { white-space: pre-wrap; overflow-wrap: anywhere; margin-bottom: 2px; }
+.wb-rules { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 4px; }
+.wb-rules .card2 { border: .5px solid var(--dsw-alias-border-l3); border-radius: 10px; padding: 10px 12px; background: var(--dsw-alias-bg-layer-2); }
+.wb-rules h4 { margin: 0 0 6px; font-size: 12.5px; }
+.wb-rules ul { margin: 0; padding-left: 16px; font-size: 11.5px; color: var(--dsw-alias-label-secondary); }
+.wb-rules li { margin: 3px 0; }
+.wb-note { font-size: 11px; color: var(--dsw-alias-label-caption); margin: 10px 0 0; }
+.foot { margin-top: 18px; font-size: 11px; color: var(--dsw-alias-label-caption); text-align: center; }
+@media (max-width: 900px) { .wb-main, .wb-rules { grid-template-columns: 1fr; } }
+@media (max-width: 1280px) { .cols { grid-template-columns: 1fr 1fr; } .flow { grid-column: 1 / -1; order: 3; } .chat-col { order: 1; } .insp-col { order: 2; } }
+@media (max-width: 780px) { .wrap { padding: 14px 12px 40px; } .cols, .bottom { grid-template-columns: 1fr; } .flow { grid-column: auto; } .chat { height: 340px; } .flow { max-height: none; } }
+@media print { .ctl, .btn { display: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+	<div class="h">
+		<h1>SuperAgent · 一个任务从头到尾</h1>
+		<p class="lede">交互演示：在「主管对话」里发一句话，经过 <b>输入源 → 接入 → Router 组队 → 人同意 → 分发执行 → 结果与沉淀</b> 回到原会话。每一步的数据、源码位置与工单阶段都取自真实实现（<span class="mono">incubator/dsh-superagent</span> + <span class="mono">dsh-plugins/vssaros-agents</span>），并标出与 <span class="mono">doc/superagent-framework-v2.html</span> 设计稿不一致的地方。</p>
+		<div class="badges">
+			<span class="tag brand">框架 v2 · 六段流水线</span>
+			<span class="tag new">源码实证 · 0.1.35</span>
+			<span class="tag ok">P1–P4 已落地</span>
+			<span class="tag warn">P5 仍双轨</span>
+			<span class="tag">单文件 · 离线</span>
+		</div>
+	</div>
+	<button class="btn" id="theme" type="button">切换主题</button>
+</header>
+
+<div class="panel ctl">
+	<button class="btn primary" id="play" type="button">▶ 播放</button>
+	<button class="btn" id="prev" type="button">⏮ 上一步</button>
+	<button class="btn" id="next" type="button">下一步 ⏭</button>
+	<button class="btn" id="reset" type="button">↺ 重头</button>
+	<div class="sep"></div>
+	<label>速度 <select id="speed"><option value="1600">1×</option><option value="800" selected>2×</option><option value="400">4×</option></select></label>
+	<label>分支 <select id="scenario">
+		<option value="agree">同意（正常闭环）</option>
+		<option value="revise">修改 → 方案 v2 → 同意</option>
+		<option value="refuse">拒绝 → dropped</option>
+	</select></label>
+	<label><input type="checkbox" id="showdiff" checked> 设计↔源码 差异</label>
+	<div class="sep"></div>
+	<input type="range" id="progress" min="0" max="21" value="0">
+	<span class="count" id="count">1 / 22</span>
+	<div class="cur" id="cur"></div>
+</div>
+
+<div class="panel overview" id="overview"></div>
+
+<div class="cols">
+	<section class="panel col chat-col">
+		<div class="col-h">主管对话 <span class="k mono">desk-3a7f9c</span></div>
+		<div class="chat" id="chat"></div>
+	</section>
+
+	<section class="panel col flow-col">
+		<div class="col-h">运行链路 <span class="k">点任意节点可跳转 · 紫点 = 与设计稿有差异</span></div>
+		<div class="flow" id="flow"></div>
+	</section>
+
+	<section class="panel col insp-col">
+		<div class="col-h">当前状态 <span class="k" id="stepId"></span></div>
+		<div class="insp">
+			<div class="iblock">
+				<div class="lab">工单阶段 · ticketStage()</div>
+				<div class="stagebar"><span class="stage-val" id="stage">—</span><span class="note" id="stageNote"></span></div>
+			</div>
+			<div class="iblock">
+				<div class="lab">这一步在做什么</div>
+				<div class="note" id="note"></div>
+			</div>
+			<div class="iblock" id="diffBlock">
+				<div class="lab">设计稿 ↔ 源码</div>
+				<div class="diff" id="diff"></div>
+			</div>
+			<div class="iblock">
+				<div class="lab">数据对象 · <span id="dataLabel" style="text-transform:none;letter-spacing:0"></span></div>
+				<pre class="data" id="data"></pre>
+			</div>
+			<div class="iblock">
+				<div class="lab">源码位置</div>
+				<div class="codes" id="codes"></div>
+			</div>
+		</div>
+	</section>
+</div>
+
+<div class="bottom">
+	<section class="panel">
+		<div class="col-h">事件日志 <span class="k">随时间线累积</span></div>
+		<div class="log" id="log"></div>
+	</section>
+	<details class="panel appendix" open>
+		<summary>附录 · 四源对照 / 差异清单 / 代码地图</summary>
+		<h4>四个输入源（Trigger 之后完全同构）</h4>
+		<table>
+			<thead><tr><th>源</th><th>线程键</th><th>explicit 条件</th><th>回复通道</th></tr></thead>
+			<tbody>
+				<tr><td><b>SuperAgent 主管</b><br>（本 demo 主线）</td><td class="mono">superagent:desk:&lt;session&gt;<br>superagent:bot:&lt;session&gt;</td><td>名单内的人（默认 <code>local</code>）在主管对话里发的消息，<code>human:true</code> + <code>addressed:direct</code></td><td><code>deliverReply</code>：desk 用 <code>[SuperAgent]</code> + inject 不唤醒；bot 求助用 steer</td></tr>
+				<tr><td>飞书</td><td class="mono">feishu:&lt;chat&gt;:&lt;root&gt;</td><td>名单内的人 @ bot 或私聊</td><td><code>sendFeishu</code> 话题内回复</td></tr>
+				<tr><td>GitHub</td><td class="mono">github:&lt;number&gt;</td><td>名单内账号评论点名</td><td><code>sendGithub</code> Issue / PR 评论</td></tr>
+				<tr><td>TAPD</td><td class="mono">tapd:&lt;workspace&gt;:&lt;type&gt;:&lt;id&gt;</td><td>名单内成员评论 / 带团队标签</td><td><code>sendTapd</code> 需求评论</td></tr>
+			</tbody>
+		</table>
+		<p>设计稿写的是 <code>superagent:&lt;sessionId&gt;</code>；源码按 <code>meta.from</code> 分成 <code>desk</code> / <code>bot</code> 两行，且 <code>channel.thread</code> 必须是完整线程键。</p>
+		<h4>最容易被设计稿误导的 8 处（源码为准）</h4>
+		<table>
+			<thead><tr><th>#</th><th>设计稿</th><th>源码</th></tr></thead>
+			<tbody>
+				<tr><td>1</td><td>无领队，每步一个 worker 会话，宿主汇总工单 report</td><td>保留 <code>worker-&lt;ticket&gt;</code> 领队持有 Assignment / report / attention；步骤会话是额外的 <code>step-&lt;ticket&gt;-&lt;key&gt;</code></td></tr>
+				<tr><td>2</td><td>步骤报告用 <code>orchestrator_report</code></td><td>步骤用 <code>orchestrator_step_report</code>，领队才有 <code>orchestrator_report</code>，且被 <code>unfinished()</code> 闸门拦住</td></tr>
+				<tr><td>3</td><td>飞书交互卡片 + 72h/7d 过期 + <code>orchestrator_team_revise</code></td><td>纯文本 <code>kind:notice</code>、无 <code>expiresAt</code>、改方案 = 再 <code>propose</code> 出 v+1</td></tr>
+				<tr><td>4</td><td>选人打分 0.45/0.20/0.15/0.10/0.10</td><td>未实现；<code>orchestrator_team_bots</code> 只是名册 + 工作流匹配</td></tr>
+				<tr><td>5</td><td>staffing 排在 <code>person/delivery</code> 之后、不建 Assignment</td><td><code>ticketStage</code> 把它排最前；仍建一个 <code>pending</code> Assignment，只跳过 <code>executor.start</code></td></tr>
+				<tr><td>6</td><td>同意后建 bot 失败要整体回滚</td><td><code>createAgreed</code> 在事务外，失败只让工单继续等</td></tr>
+				<tr><td>7</td><td>记忆系统开子会话提炼 + 相似度去重 + 风险分级</td><td>P4 是按证据拼模板、<b>不调模型</b>、无去重；v1 的 <code>Retrospective.writeSkill</code> 仍在线直接写文件</td></tr>
+				<tr><td>8</td><td>下线 <code>orchestrator_team_plan</code> / <code>POST team/plans</code> / <code>team_plan</code> / <code>team_skill</code></td><td>代码与路由都还在，只是 <code>CONSENTLESS_TOOLS</code> 让主会话拿不到；工作流 <code>onPlanEnd</code> 与 <code>onTicketEnd</code> 双触发</td></tr>
+			</tbody>
+		</table>
+		<h4>代码地图（相对 <span class="mono">incubator/dsh-superagent</span>）</h4>
+		<table>
+			<thead><tr><th>层</th><th>文件</th><th>职责</th></tr></thead>
+			<tbody>
+				<tr><td>源</td><td class="mono">src/sources/superagent.ts</td><td>scope / deskTrigger / botTrigger / channel.send</td></tr>
+				<tr><td>desk</td><td class="mono">src/app/desk.ts</td><td>DESK_PROMPT / latestPersonMessage / superagent_submit / deliverReply</td></tr>
+				<tr><td>接入</td><td class="mono">src/core/intake.ts · src/app/passes.ts</td><td>幂等 / scope / 扇出 / queueForEval / pump</td></tr>
+				<tr><td>准入</td><td class="mono">src/policy.ts · src/core/evals.ts</td><td>gate / machineGate / Evaluation / Decision</td></tr>
+				<tr><td>工单</td><td class="mono">src/core/tickets.ts · stage.ts · model.ts</td><td>create / proposeStaffing / approveStaffing / ticketStage</td></tr>
+				<tr><td>组队</td><td class="mono">src/app/staffing.ts · tools/team.ts</td><td>propose / consent / agree / refuse / 方案文本</td></tr>
+				<tr><td>执行</td><td class="mono">src/executor/dsh.ts · app/steps.ts · app/sessions.ts</td><td>领队 launch / 步骤调度 / bot preset / guard</td></tr>
+				<tr><td>收尾</td><td class="mono">src/core/assignments.ts · replies.ts · app/outbox.ts</td><td>report → end → reply → channel.send</td></tr>
+				<tr><td>沉淀</td><td class="mono">src/app/distill.ts · retrospective.ts</td><td>StepEvidence / team_distill / 团队工作流</td></tr>
+				<tr><td>记忆</td><td class="mono">dsh-plugins/vssaros-agents/lib/memoryBus.js · stepMemory.js</td><td><code>Symbol.for('vssaros.memory')</code> / MEMORY.md / .drafts</td></tr>
+			</tbody>
+		</table>
+		<p>示例中的 ticket id、message id、fingerprint 为示意值；字段名、状态机、工具名与调用顺序均按源码。</p>
+	</details>
+</div>
+
+<details class="panel appendix" open>
+	<summary>三方架构对照 · 团队研发流水线 TeamFlow / DeepSeek-Bot / superagent 团队任务</summary>
+	<p>本对照基于 <span class="mono">G:\CustomWorkspaces\AIProjects\DeepSeek-Bot\ds-bot</span>（源码核对）与前面两轮的 TeamFlow / superagent 调研。三者不在同一层，不是三选一。</p>
+	<table>
+		<thead><tr><th>维度</th><th>团队研发流水线 TeamFlow</th><th>DeepSeek-Bot（ds-bot 0.1.2）</th><th>superagent 团队任务</th></tr></thead>
+		<tbody>
+			<tr><td><b>定位 / 产物</b></td><td>一句话需求 → 按固定研发阶段产出可验收代码；PRD 确认单、QA 打回、验收证据</td><td>把 dsh 改造成「一族长驻 Bot」：私聊 / 群聊 / 长期记忆 / 用量；产物是对话与工作，不是工单</td><td>一条 Trigger → 工单 → 组队 → 人同意 → 步骤 DAG → 报告 → 沉淀</td></tr>
+			<tr><td><b>身份 / 执行者</b></td><td>插件自起 DSH 子代理或 <code>tf-*</code> runs 会话；<code>stages[].role</code> 只是展示文字</td><td>每个 Bot = 一条 DSH root Session；身份是 <code>state.json</code> 里一条 <code>bots[id]</code> 记录；Main Bot（Chief）管其他 Bot</td><td>每步一个真实 VsSaros Bot 会话 <code>step-&lt;ticket&gt;-&lt;key&gt;</code>，身份是声明式 <code>.agent.md</code> + preset</td></tr>
+			<tr><td><b>组织方式</b></td><td><code>PHASE_ORDER</code> 写死 7 阶段 + 档位（full/medium/lite/tech/patch）+ 团队勾选裁剪，线性</td><td>Main Bot 指名 / 群聊轮次（<code>ROOM_MODES</code>、<code>[PASS]</code>、每成员每群一条隐藏 Session）；无依赖关系图</td><td>任意 DAG（<code>after</code>）、≤12 步、并行 ≤3、写步骤串行、失败重试、预算与闸门</td></tr>
+			<tr><td><b>人的闸门</b></td><td>启动前澄清 / 分支决策 / PRD 确认 / merge 前问人；B 版写工具全 <code>ask</code>；<b>没有「同意团队组成」</b></td><td>工具调用审批与 <code>ask_user</code>；建 Bot / 建群直接生效，无需人批准</td><td>版本化 staffing 提案：<code>human / allowedSender / reached / 宿主时钟 / version+fingerprint</code> 全过才建 Bot 起 worker</td></tr>
+			<tr><td><b>并发 / 防失控</b></td><td>阶段串行推进，档位决定阶段集合</td><td>群聊严格串行；<code>MAX_HOPS=6</code> / 12 成员 / 3 bot 轮次 / 600 exchanges；<b>无并发池</b></td><td>两层独立：<code>maxWorkers=3</code>（领队）+ 每单 <code>parallel=3</code>（步骤，不计入全局槽）；写串行、<code>Effects.limit</code></td></tr>
+			<tr><td><b>状态 / 落盘</b></td><td><code>$DSH_HOME/teamflow/&lt;projectKey&gt;/{teams,backlog,journal}.json</code>，<code>saveTeams</code> 整份覆盖</td><td><code>~/.dsh/bot/state.json</code>（bots / rooms / exchanges / questions）+ Markdown 双 scope 记忆 + journal</td><td><code>orchestrator.sqlite</code>：<code>team_proposal / team_step / team_workflow / team_distill</code> + Trigger / Subscription / Outbox 回执</td></tr>
+			<tr><td><b>回报 / 闭环</b></td><td>阶段完成汇报、QA 打回、独立验收与证据门禁</td><td><code>turn/end</code> 自动补 <code>[Reply from …]</code>（失败也补，防 sender 永等）；<code>reportRound()</code>；<b>无 orchestrator</b></td><td>步骤 <code>orchestrator_step_report</code> → 领队 <code>orchestrator_report(ready)</code> → <code>Tickets.end</code> → <code>orchestrator_reply</code> 回原来源</td></tr>
+			<tr><td><b>沉淀 / 复用</b></td><td>run ledger 与看板</td><td>Markdown 记忆 + 每回合自动 review；<b>无技能沉淀、无工作流模板</b></td><td>执行证据 → 记忆系统 <code>MEMORY.md</code> / <code>.drafts</code>；团队工作流草稿，≥70% 命中预填下次组队</td></tr>
+			<tr><td><b>与本项目关系</b></td><td>incubator 外部包，dev profile 手动装、不默认；superagent 只有单向 <code>teams.json</code> 适配器</td><td><b>外部参考仓库，从未装进本工作区</b>；Apache-2.0，只借鉴设计不抄代码</td><td>incubator P1（dev），产品侧运行时依赖 <code>vssaros-agents</code></td></tr>
+		</tbody>
+	</table>
+
+	<h4>① 与 TeamFlow 7 阶段流水线零对应</h4>
+	<p>DeepSeek-Bot 全库找不到 <code>pipeline / workflow / stage / phase</code> 的研发阶段语义（<code>phase</code> 仅用于更新状态 <code>phase:'idle'</code>）。它只有「群聊一轮内的 speaking order」与「上下文 part / checkpoint」，都是运行时状态，不是阶段门、无产出物门禁、无流水线定义。</p>
+
+	<h4>② DeepSeek-Bot 对本项目实际落地的部分（源码核实，分三档）</h4>
+	<table>
+		<thead><tr><th>档</th><th>内容</th><th>证据</th></tr></thead>
+		<tbody>
+			<tr><td><b>已同构 / 移植</b></td><td>跳数上限与防环、<code>[Message from …]</code> / <code>[Reply from …]</code> 头协议、steer / followup 双通道、回合结束验证消费并取最终文本回传、unknown-outcome 不自动重发、Git 记忆收窄版</td><td class="mono">ds-bot/src/host/{delivery.js:15-25,57-67; turns.js:302-362; constants.js:23} → vssaros-agents/lib/{core/relay.js:3-8,96-101; assignments.js:8-9,309-352; tools.js:50-51,362-363; outbox.js:8-11; memory.js:3}；二传到 superagent 的只有 SUPERAGENT_HOPS_MAX=6（src/sources/superagent.ts:17-18）</td></tr>
+			<tr><td><b>借鉴但未实现 / 只在设计口径</b></td><td><code>idle → implicit ready</code>、结构化 <code>orchestrator_step_report</code>、turns 预算、技能沉淀、Policy 准入、<code>report_to_orchestrator</code> / <code>Assignment Ask</code></td><td class="mono">superagent/src/app/steps.ts:189-230,315-324；后两项在两侧与整个 DeepSeek-Bot 仓库均 0 命中</td></tr>
+			<tr><td><b>明确不搬（有注释为证）</b></td><td><code>state.json</code> 身份（改 <code>.agent.md</code>）、<code>steward</code> 上下文管家、<code>ROOM_MODES</code> / <code>[PASS]</code> 群轮、SQLite per-recipient admission、<code>create_agent</code>、超限排队、unknown-outcome 自动重发</td><td class="mono">vssaros-agents/lib/{importDsb.js:15,17-22; groups.js:401-405; tools.js:3-5; assignments.js:6-7; relay.js:3}</td></tr>
+		</tbody>
+	</table>
+
+	<h4>③ 两处容易踩的口径坑</h4>
+	<div class="callout">
+		<p><b>别混两个同名仓库。</b>本次对比对象是 <span class="mono">DeepSeek-Bot</span>（带连字符，<span class="mono">ds-bot</span> 插件，Apache-2.0，每个 Bot 一条 DSH Session）；另有 <span class="mono">DeepSeekBot</span>（无连字符，pnpm monorepo / botharness，MIT）。<code>Orchestrator↔Assignment 会话分离</code>、<code>并发上限 8</code>、<code>Inbox Admission</code>、<code>report_to_orchestrator</code> 属于<b>后者</b>；当前 ds-bot 里这些词 0 命中，群聊是严格串行、没有 8 个并发槽（<span class="mono">ds-bot/src/host/groups.js:5,141,338</span>）。<span class="mono">vssaros-agents/lib/assignments.js:42-43</span> 注释的「BotHarness 默认 8 同构」借的是 botharness 的口径。</p>
+		<p><b>「superagent 移植了 DeepSeek-Bot 的 delivery/turns 运行骨架」要收窄。</b><span class="mono">incubator/dsh-superagent/src</span> 里 DSB 移植代码 <b>0 行</b>，模块头全是 <code>VsSaros addition / VsSaros patch</code>；它的运行骨架是 DSH 原生 <code>agent/status</code> / <code>agent/error</code> + 自研 <code>AgentDelivery</code> / <code>Outbox</code> / <code>Assignments</code>。真正同构落地的是 <b>vssaros-agents 侧</b>的 5～6 个机制（且是「同构重写 / v1 收窄版」，不是搬代码）。</p>
+	</div>
+
+	<h4>④ 对「能否仅保留 superagent 侧」的影响</h4>
+	<ul>
+		<li><b>结论不变，且不需要动 DeepSeek-Bot</b>：它是外部参考仓库，从未安装进本工作区，不存在「下线」问题。</li>
+		<li><b>但「仅保留 superagent 侧」准确说是保留两层</b>：<code>incubator/dsh-superagent</code>（任务治理）+ <code>dsh-plugins/vssaros-agents</code>（Bot 名册 / 会话 / 团队总线 / 记忆）。后者已吸收 DSB 的 delivery/turns 收窄版，删掉它 superagent 起不来。</li>
+		<li><b>代价要合并看</b>：只留 superagent = 放弃 TeamFlow 的「研发阶段门禁与验收证据」和 DSB 的「长驻 Bot 身份、群聊轮次、上下文治理、每回合记忆 review」，换来一个纯粹的<b>任务治理层</b>。三者是互补的层，不是三份重复实现。</li>
+		<li><b>若要收口</b>：把 DSB 定位为「运行时参考实现」保留在仓库外；把 TeamFlow 降为 v2 第 8.4 节 ③ 的<b>可选执行器</b>（<code>executor: "teamflow"</code> 目前尚未实现，<code>teamflow_start</code> 在 superagent 全 <code>src/</code> 0 命中），superagent 专管「谁做、怎么授权、怎么沉淀」。</li>
+	</ul>
+</details>
+
+<section class="panel wb" id="wb">
+	<div class="col-h">多 Worker 并发沙盘 <span class="k">按源码调度规则做的离散事件模拟 · 键盘 ← → / 空格 作用于最近操作的视图</span></div>
+	<div class="wb-ctl">
+		<button class="btn primary" id="wPlay" type="button">▶ 播放</button>
+		<button class="btn" id="wPrev" type="button">⏮</button>
+		<button class="btn" id="wNext" type="button">⏭</button>
+		<button class="btn" id="wReset" type="button">↺</button>
+		<div class="sep"></div>
+		<label>速度 <select id="wSpeed"><option value="1200">1×</option><option value="600" selected>2×</option><option value="300">4×</option></select></label>
+		<label>maxWorkers <select id="wMax"><option value="1">1</option><option value="2">2</option><option value="3" selected>3</option><option value="4">4</option><option value="5">5</option></select></label>
+		<label>budget.parallel <select id="wPar"><option value="1">1</option><option value="2">2</option><option value="3" selected>3</option></select></label>
+		<label><input type="checkbox" id="wCountSteps"> 对照组：step 也占全局槽（非源码）</label>
+		<div class="sep"></div>
+		<input type="range" id="wProgress" min="0" max="1" value="0">
+		<span class="count" id="wCount">tick 0 / 0</span>
+	</div>
+	<div class="wb-body">
+		<div class="wb-metrics" id="wMetrics"></div>
+		<div class="wb-main">
+			<div>
+				<div class="gantt" id="wGantt"></div>
+				<div class="wb-legend" id="wLegend"></div>
+			</div>
+			<div class="panel">
+				<div class="col-h">本 tick 调度决策 <span class="k" id="wTickLabel">tick 0</span></div>
+				<div class="wb-log" id="wLog"></div>
+			</div>
+		</div>
+		<div class="wb-rules">
+			<div class="card2">
+				<h4>并发上限（源码）</h4>
+				<ul>
+					<li><code>maxWorkers</code> 默认 3、范围 1–16，是<b>工单/领队</b>槽 <span class="mono">src/policy.ts:93 · src/limits.ts:6</span></li>
+					<li><code>WorkerSlots.running()</code> 只认 <code>worker-&lt;ticket&gt;</code> 领队会话，<b>step 会话不计入</b> <span class="mono">src/executor/dsh.ts:419</span></li>
+					<li><code>launch</code> effect 上限 = <code>slots.launches()</code>；人的 follow-up 可多占 1 槽 <span class="mono">dsh.ts:195, 239</span></li>
+					<li>每工单 <code>parallel = clamp(1..3, budget.parallel)</code> <span class="mono">src/app/staffing.ts:37 · src/app/steps.ts:107</span></li>
+					<li><code>slots = parallel - running.length</code>；写步骤遇 <code>writing</code> 只 <code>continue</code>，读步骤仍可起 <span class="mono">src/app/steps.ts:258-266</span></li>
+					<li><code>kick(ticketId)</code> 用 Promise 链<b>按工单</b>串行；不同工单互不阻塞，30s 定时再 kick <span class="mono">steps.ts:132, 199</span></li>
+				</ul>
+			</div>
+			<div class="card2">
+				<h4>刻意串行 / 边界</h4>
+				<ul>
+					<li><code>reply</code> effect <code>limit:1</code>，同一会话按消息顺序 <span class="mono">src/app/outbox.ts:24, 45</span></li>
+					<li><code>relay</code> / <code>notice</code> <code>ordered:true</code>，全部注入<b>单一主会话</b> <span class="mono">src/app/sessions.ts:116</span></li>
+					<li><code>delivery</code> / <code>assessment</code> 各 <code>limit:4</code> <span class="mono">dsh.ts:242 · assessment.ts:101</span></li>
+					<li>所有领域写走 <code>repo.atomic()</code> 单事务 <span class="mono">src/core/engine.ts:48</span></li>
+					<li><code>stateDir</code> 独占锁：同 stateDir 第二个 Runtime 被拒，不能多开实例扩容 <span class="mono">src/app/state-lock.ts:58</span></li>
+					<li>写冲突只有<b>单工单内</b>的调度布尔，跨工单共用目录无互斥 <span class="mono">steps.ts:258</span></li>
+				</ul>
+			</div>
+		</div>
+		<p class="wb-note">1 tick ≈ 一次 <code>Effects.dispatch()</code> + <code>TeamSteps.kick()</code> 调度轮；工单、步骤、耗时为示意值，调度判据与上限按源码。理论上限是 <code>maxWorkers</code> 张工单 × 每单 <code>budget.parallel</code> 个步骤会话，两层相互独立，所以「同时活跃 / 峰值」可以明显超过 <code>maxWorkers</code>（本沙盘受依赖与写串行约束，会低于理论值）。把 <code>maxWorkers</code> 或 <code>budget.parallel</code> 调成 1，可直接看到排队与串行如何拉长时间线。勾选「对照组」是<b>反向突变</b>：模拟「假如 step 会话也占全局槽」—— 当 <code>maxWorkers=3</code> 时领队会占满槽、步骤永远拿不到槽而无法推进，正说明源码为何不让 step 计入全局槽；该项不是可配置行为。</p>
+	</div>
+</section>
+<p class="foot">基于 doc/superagent-framework-v2.html 的框架 + 源码实证 · 键盘 ← → 步进、空格播放/暂停</p>
+</div>
+
+<script>
+(function () {
+	"use strict";
+	var TICKET = "ticket-8f2c1d4e", SESSION = "desk-3a7f9c", MSG1 = "msg-8f2c01", MSG2 = "msg-8f2c02";
+	var GOAL = "首页新手引导上线";
+	var USER_TEXT = "首页新手引导上线：先出 5 屏交互稿，再给埋点方案，最后跑一遍 Playwright 回归测试。";
+	var THREAD = "superagent:desk:" + SESSION;
+	var CHANNEL = { source: "superagent", thread: THREAD, address: { kind: "desk", session: SESSION } };
+	var BUDGET = { tokens: 300000, turns: 90, parallel: 3 };
+	var ROLES = [
+		{ key: "design", need: "交互稿与动效说明", bot: { id: "designer", name: "设计 bot" } },
+		{ key: "data", need: "埋点方案", bot: { id: "data-bot", name: "数据 bot" } },
+		{ key: "test", need: "Playwright 回归", draft: { id: "qa-runner", name: "测试 bot", tools: ["read", "bash"] } }
+	];
+	var STEPS = [
+		{ key: "T1", role: "design", title: "交互稿", spec: "5 屏交互稿 + 动效说明", after: [], access: "read", phase: "design" },
+		{ key: "T2", role: "data", title: "埋点方案", spec: "新手引导埋点字段与上报时机", after: ["T1"], access: "read", phase: "tech" },
+		{ key: "T3", role: "test", title: "回归测试", spec: "Playwright 跑一遍新手引导", after: ["T2"], access: "write", phase: "qa" }
+	];
+	var PROPOSAL_TEXT = "[SuperAgent] 【组队方案 v1】首页新手引导上线\n成员：设计 bot（现有）、数据 bot（现有）、测试 bot（新建 · 申请 bash）\n步骤：T1 交互稿 → T2 埋点方案（等 T1） → T3 回归测试（写）（等 T2）\n预算：30 万 tokens · 90 回合 · 并行 3\n回复「同意」开始执行；直接写修改意见会出新版本；回复「取消」放弃这张工单。";
+
+	function trigger(id, text, at) {
+		return { id: "superagent:desk:" + id, source: "superagent", threads: [{ source: "superagent", id: "desk:" + SESSION }],
+			actor: { source: "superagent", id: "local" }, human: true, addressed: "direct", at: at, text: text,
+			channel: CHANNEL, meta: { from: "desk", session: SESSION } };
+	}
+	function proposal(version) {
+		var fp = version === 2 ? "sha256:4b70e1c9a5d83f2601cb8e77af94d2e0" : "sha256:9c1fa7d30e25b48169f0c73ad2be8451f";
+		var roles = version === 2 ? [ROLES[0], ROLES[1], { key: "test", need: "Playwright 回归", bot: { id: "qa-bot", name: "回归 bot" } }] : ROLES;
+		var risk = version === 2 ? { newBots: 0, highRiskTools: [], writeSteps: 1 } : { newBots: 1, highRiskTools: ["bash"], writeSteps: 1 };
+		return { ticketId: TICKET, version: version, fingerprint: fp, goal: GOAL, roles: roles, steps: STEPS, budget: BUDGET,
+			risk: risk, state: "proposed", at: version === 2 ? "2026-11-05T10:02:25.000Z" : "2026-11-05T10:01:12.000Z" };
+	}
+	function teamStep(key, state, extra) {
+		var base = STEPS.filter(function (s) { return s.key === key; })[0];
+		var bot = key === "T1" ? { id: "designer", name: "设计 bot" } : key === "T2" ? { id: "data-bot", name: "数据 bot" } : { id: "qa-runner", name: "测试 bot" };
+		return Object.assign({ ticketId: TICKET, key: key, role: base.role, title: base.title, spec: base.spec, after: base.after,
+			access: base.access, bot: bot, preset: "vssaros-" + bot.id, state: state, attempts: 1, turns: 1, failures: [],
+			parallel: 3, turnsCap: 90 }, extra || {});
+	}
+
+	var PHASES = [
+		{ t: "输入源", s: "desk / 四源同构" },
+		{ t: "接入", s: "Trigger · 准入 · 扇出" },
+		{ t: "Router", s: "Eval → 工单" },
+		{ t: "组队 + 同意闸", s: "方案 vN · 只有人能授权" },
+		{ t: "分发与执行", s: "领队 + 每步一个 bot" },
+		{ t: "结果与沉淀", s: "回复 · 技能 · 工作流" }
+	];
+
+	function makeSteps(scenario) {
+		var V0 = 1, V = scenario === "revise" ? 2 : 1;
+		var list = [];
+		function add(o) { list.push(o); }
+
+		add({ id: "s1", p: 0, k: "new", t: "用户发话", s: "desk · user/message", dl: "desk 会话事件",
+			data: { sessionId: SESSION, agentPreset: "dsh-superagent-router", event: "user/message", message: {
+				id: MSG1, source: { kind: "user" }, content: [{ type: "text", text: USER_TEXT }] },
+				decoration: { section: "dsh-superagent-desk", complete: true, tools: ["superagent_submit"], restrict: { allow: [] } } },
+			note: "主管对话是一个 DSH 会话，preset 与 Router 主会话相同；Sessions.decorateDesk 用一段 complete 提示词把它改成「只转交、不干活」的壳，并用 tools.restrict({allow:[]}) 屏蔽 preset 自带工具，只留 superagent_submit。",
+			diff: "设计稿 3.1 要求专用 preset <b>dsh-superagent-desk</b>；源码共用 <b>dsh-superagent-router</b>，靠 decorate 隔离。",
+			code: [["src/app/desk.ts", "16", "DESK_PROMPT"], ["src/app/desk.ts", "29", "latestPersonMessage"], ["src/app/sessions.ts", "322", "decorateDesk"], ["src/app/runtime.ts", "302", "Runtime.initialize"]],
+			chat: [["user", USER_TEXT, "本机用户"]], log: ["[desk] user/message " + MSG1 + " · session=" + SESSION] });
+
+		add({ id: "s2", p: 0, k: "new", t: "submit → Trigger", s: "无参数工具，宿主读原文", dl: "Trigger（不可变）",
+			data: trigger(MSG1, USER_TEXT, "2026-11-05T10:01:02.000Z"),
+			note: "superagent_submit 的 schema 是 z.object({}).strict() —— 不带文本参数，模型改写不了需求。宿主倒序扫 snapshotEvents()，取最近一条 user/message 且 source.kind==='user' 的原文，用 DSH 消息 id 作为 Trigger.id，所以重复转交只会得到 duplicate。desk 会话自己只回一句「已收到」。",
+			diff: "设计稿写线程键 <b>superagent:&lt;sessionId&gt;</b>；源码按 meta.from 分成 <b>superagent:desk:&lt;session&gt;</b> / <b>bot:&lt;session&gt;</b>，channel.thread 必须是完整线程键。",
+			code: [["src/app/desk.ts", "42", "deskTools/submit.execute"], ["src/sources/superagent.ts", "105", "deskTrigger"], ["src/core/model.ts", "23", "interface Trigger"], ["src/app/runtime.ts", "142", "register(makeSuperagentKind)"]],
+			chat: [["desk", "已收到，交给主管评估。", "主管对话"]],
+			log: ["[tool] superagent_submit() · 无参数", "[source] deskTrigger → superagent:desk:" + MSG1, "[intake] receive → passes.receive"] });
+
+		add({ id: "s3", p: 1, k: "src", t: "Intake · scope + 幂等", s: "第一道闸在 Source 层", dl: "scope 结果 / disposition",
+			data: { id: "superagent:desk:" + MSG1, scope: { listened: true, observed: false, row: "desk" },
+				duplicateCheck: "triggers.get(id) → miss", stored: true,
+				disposition: { fanout: [], at: "2026-11-05T10:01:02.100Z" },
+				rejectReasons: ["superagent_desk_off", "superagent_bots_off", "superagent_unknown", "source_not_installed", "source_disabled"] },
+			note: "Intake.receive 在单事务里归一化时间、查 id 幂等、调 SourceRegistry.scope。superagent 源的 scope 只看 meta.from：desk 开关关掉就回 superagent_desk_off；observed:false 表示不接收未寻址消息。被过滤的 Trigger 仍落库，只是 disposition.filtered 带原因、返回 filtered。",
+			code: [["src/core/intake.ts", "19", "Intake.receive"], ["src/sources/registry.ts", "124", "SourceRegistry.scope"], ["src/sources/superagent.ts", "47", "makeSuperagentKind.scope"]],
+			log: ["[intake] scope=desk listened=true observed=false", "[store] trigger saved · disposition.at=10:01:02.100Z"] });
+
+		add({ id: "s4", p: 1, k: "src", t: "扇出 → 排队 Eval", s: "Subscription / Passes.pump", dl: "disposition",
+			data: { threads: [THREAD], subscriptions: [], fanout: [], owners: [],
+				queued: { threadKey: THREAD, pending: ["superagent:desk:" + MSG1] },
+				result: "stored", driver: "Passes.pumpOnce → effects.kick() → engine.evaluateDue()" },
+			note: "遍历 trigger.threads 更新 Thread.lastAt；对已订阅工单算 reached 并 wake。此刻没有工单认领（owners 为空），于是把 id 压进 primary.pending，发 trigger.received 事件。Passes 既有事件驱动也有 2s 定时，最终由 evaluateDue 启动 Eval。",
+			code: [["src/core/intake.ts", "31", "Intake.receive"], ["src/core/part.ts", "59", "queueForEval"], ["src/app/passes.ts", "34", "Passes.receive"], ["src/core/engine.ts", "75", "evaluateDue"]],
+			log: ["[intake] no owners → queueForEval(primary.pending)", "[pass] effects.kick → evaluateDue"] });
+
+		add({ id: "s5", p: 1, k: "gate", t: "Policy 准入", s: "strength = explicit", dl: "Policy.gate 结果",
+			data: { triggerId: "superagent:desk:" + MSG1, human: true, actor: { source: "superagent", id: "local" },
+				allowed: [{ id: "local", name: "本机用户" }], addressed: "direct",
+				gate: { admissible: true, strength: "explicit", basis: { via: "addressed", addressed: "direct" } },
+				machineGate: "human:false ⇒ 两条放行分支都硬编码 inferred；还须 mode=auto 且命中启用规则" },
+			note: "第二道闸在 Eval 内：human:true + 名单内 + 被点名 ⇒ admissible / explicit。bot 求助走 machineGate，最多 inferred；若 accept mode 不是 auto，assessmentOutcome 只会记 would_accept 并返回 ignore。名单是 Runtime.listDeskPerson() 在 Policy 缺 superagent 段时写的一次默认配置。",
+			diff: "设计稿 3 节称主管对话「总是名单内、总是点名」；源码名单可被移除，移除后落到 <b>unlistedAddressed</b>（ADMISSION_DEFAULTS 默认 ignore）。",
+			code: [["src/core/evals.ts", "96", "Evals.start / gate"], ["src/policy.ts", "195", "Policy.gate"], ["src/policy.ts", "123", "allowedSender"], ["src/policy.ts", "175", "machineGate"], ["src/app/runtime.ts", "321", "listDeskPerson"]],
+			log: ["[policy] gate → admissible=true strength=explicit basis.via=addressed"] });
+
+		add({ id: "s6", p: 2, k: "src", t: "Eval → candidate", s: "送到主会话", dl: "Evaluation / candidate card",
+			data: { evalId: "eval-b71c…", threadKey: THREAD, triggerIds: ["superagent:desk:" + MSG1],
+				primary: "superagent:desk:" + MSG1, strength: "explicit", policyVersion: 7, startedAt: "2026-11-05T10:01:03.000Z",
+				thread: { evaluating: true }, assessor: { kind: "candidate", deliver: "sessions.prompt(masterId, 'candidate:<id>', …, 'steer')" },
+				note: "explicit 候选不走 orchestrator_eval*：MasterAssessor.evalFor 会抛 EXPLICIT" },
+			note: "Evals.start 把 thread.evaluating 写全（triggerIds / primary / strength / basis / policyVersion / deadline），emit eval.started，再让 Assessor 把 candidate 卡投进主会话。主会话 id 是 orchestrator-<key(stateDir)>。",
+			code: [["src/core/evals.ts", "71", "Evals.start"], ["src/app/assessment.ts", "39", "evalFor/EXPLICIT"], ["src/app/assessment.ts", "96", "MasterAssessor.request"], ["src/app/runtime.ts", "172", "deliver → sessions.prompt"]],
+			log: ["[eval] evaluating=<explicit> → candidate", "[master] steer: candidate:eval-b71c…"] });
+
+		add({ id: "s7", p: 2, k: "src", t: "route(accept) → Decision", s: "主会话拍板", dl: "Decision",
+			data: { tool: "orchestrator_route", item: { kind: "accept", trigger_id: "superagent:desk:" + MSG1,
+				title: GOAL, scope: GOAL, reason: { code: "explicitRouted" }, acknowledgement: "收到，我先组队，等你确认后开始。" },
+				decision: { id: "decision-e91a…", kind: "accept", strength: "explicit", ticketId: TICKET,
+					mandate: { strength: "explicit", policyVersion: 7, basis: { via: "addressed" }, actor: { source: "superagent", id: "local" }, scope: GOAL } } },
+			note: "主会话用 orchestrator_route 直接判 accept / attach / ignore / stop（explicit 不走评估问答）。Evals.decide 校验 strength，accept 分支生成 Mandate 与 ticketId，再 finish + Tickets.create。acknowledgement 由 Replies.acknowledgeAccepted 发回原会话。",
+			code: [["src/app/tools/main.ts", "127", "routeTool / orchestrator_route"], ["src/core/engine.ts", "100", "Engine.decide"], ["src/core/evals.ts", "305", "Evals.accept"], ["src/core/tickets.ts", "55", "acknowledgeAccepted"]],
+			chat: [["superagent", "[SuperAgent] 收到，我先组队，等你确认后开始。", "SuperAgent · acknowledgement"]],
+			log: ["[tool] orchestrator_route kind=accept", "[decision] accept → " + TICKET] });
+
+		add({ id: "s8", p: 2, k: "gate", t: "Tickets.create", s: "挂 team，不 start", stage: "person/staffing", sn: "执行器被三处 !staffing 守卫挡住", dl: "Ticket",
+			data: { id: TICKET, title: GOAL, decisionId: "decision-e91a…", mandate: { strength: "explicit", scope: GOAL },
+				channels: [CHANNEL], origin: { triggerId: "superagent:desk:" + MSG1, triggerIds: ["superagent:desk:" + MSG1] },
+				team: { state: "proposing", version: 0, at: "2026-11-05T10:01:04.000Z" },
+				assignments: [{ id: "assignment-1", state: "pending" }], inputs: [], undelivered: [],
+				executor: "未调用 start()", stage: "person/staffing" },
+			note: "staffing 设置默认 true ⇒ 给 ticket 挂 team.state='proposing'；仍 newAssignment() 生成 pending Assignment、订阅所有线程、发 acknowledgement，唯独跳过 executor.start。ticketStage 是派生值：staffing 判定排在最前。addInput / DshExecutor.resume / launchQueued 三处都有 !staffing 守卫。",
+			diff: "设计稿 5.1 说 staffing 排在 <b>person/delivery 之后</b>、且「不创建运行中的 Assignment」；源码 <b>ticketStage 把它排最前</b>，并仍建一个 pending Assignment（只是不启动）。另：staffing 是可关设置，不是「所有工单必然走」。",
+			code: [["src/core/tickets.ts", "37", "Tickets.create"], ["src/core/tickets.ts", "51", "team.state=proposing"], ["src/core/tickets.ts", "56", "if (!staffing) executor.start"], ["src/core/model.ts", "327", "staffing()"], ["src/core/stage.ts", "12", "ticketStage"], ["src/executor/dsh.ts", "284", "launchQueued 守卫"]],
+			log: ["[ticket] created " + TICKET + " · team=proposing", "[guards] addInput / resume / launchQueued 均跳过 start", "[stage] person/staffing"] });
+
+		add({ id: "s9", p: 3, k: "new", t: "查 bot 名册", s: "orchestrator_team_bots", dl: "名册能力卡片",
+			data: { tool: "orchestrator_team_bots", need: "交互稿 / 埋点 / Playwright 回归",
+				bots: [{ id: "designer", name: "设计 bot", skills: ["交互稿"], delegatable: true },
+					{ id: "data-bot", name: "数据 bot", skills: ["埋点"], delegatable: true },
+					{ id: "kb-expert", name: "资料库 bot", skills: ["检索"], delegatable: false }],
+				mainSessionTools: ["orchestrator_team_bots", "orchestrator_team_propose", "orchestrator_team_confirm", "orchestrator_team_refuse"],
+				CONSENTLESS_TOOLS: ["orchestrator_team_plan", "orchestrator_team_create_bot", "orchestrator_team_status", "orchestrator_team_stop"] },
+			note: "主会话能拿到的团队工具只剩 bots + propose/confirm/refuse：先于同意闸派活 / 查状态 / 停计划的四个旧工具被 CONSENTLESS_TOOLS 从 mainTools 里过滤掉（代码仍在，面板与旧 Team 引擎还用）。工具名不能含 approve/reject/submit/review —— review.spec 有断言。",
+			diff: "设计稿 4.2 的 <b>0.45/0.20/0.15/0.10/0.10 打分公式</b>与「模型只能在前 5 名里选」未实现；源码 team.ts 只是词命中计数 + delegatable ? 0.5。",
+			code: [["src/app/tools/team.ts", "44", "orchestrator_team_bots"], ["src/app/tools/team.ts", "119", "CONSENTLESS_TOOLS"], ["src/app/tools/main.ts", "302", "mainTools 过滤"], ["src/app/team.ts", "240", "botCard 打分"], ["tests/review.spec.ts", "125", "工具名守卫"]],
+			log: ["[tool] orchestrator_team_bots → 3 张能力卡片", "[roster] 无合适测试 bot ⇒ 起草 qa-runner"] });
+
+		add({ id: "s10", p: 3, k: "gate", t: "propose v" + V0 + " → 方案", s: "指纹 + 发回原来源", dl: "StaffingProposal",
+			data: proposal(V0),
+			note: "Staffing.propose 校验：role 恰好 bot/draft 之一、步骤 1..12、依赖存在且拓扑无环、draft ≤3；fingerprint = sha256([goal,roles,steps,budget]) 前 32 位；旧 proposed 版本置 superseded；engine.staffingProposed 写 ticket.team。方案经 Outbox 以 kind:notice 发回原 Trigger 的频道，id 带版本号做幂等。autoApprove 默认关闭。",
+			diff: "设计稿 5.4 是飞书交互卡片 <b>[同意][修改][取消]</b> + <b>expiresAt</b>（72h 提醒 / 7 天放弃）+ workflow.score + 独立 <b>orchestrator_team_revise</b>；源码是纯文本 notice、无 expiresAt / score / revise，改方案 = 再 propose 出 v+1。",
+			code: [["src/app/tools/team.ts", "143", "orchestrator_team_propose"], ["src/app/staffing.ts", "92", "Staffing.propose"], ["src/app/staffing.ts", "41", "fingerprintOf"], ["src/app/staffing.ts", "226", "send → outbox"], ["src/app/staffing.ts", "240", "proposalText"], ["src/app/staffing.ts", "47", "team_proposal 表"]],
+			chat: [["proposal", PROPOSAL_TEXT, "SuperAgent · 组队方案 v" + V0]],
+			log: ["[staffing] v" + V0 + " fingerprint=sha256:9c1f…", "[outbox] team-proposal:" + TICKET + ":v" + V0 + " · kind=notice", "[ticket] team.state=proposed"] });
+
+		add({ id: "s11", p: 3, k: "gate", t: scenario === "refuse" ? "人回复「取消」" : "人回应 → follow_up", s: scenario === "revise" ? "写修改意见" : "回复同意", dl: "同意 Trigger / confirm 参数",
+			data: { trigger: trigger(MSG2, scenario === "agree" ? "同意" : scenario === "revise" ? "把测试换成现有的回归 bot，不要新建" : "取消", "2026-11-05T10:02:20.000Z"),
+				fanout: [TICKET], followupNotice: "STAFFING_NOTE → confirm / refuse / propose again",
+				tool: scenario === "agree" ? "orchestrator_team_confirm" : scenario === "revise" ? "orchestrator_team_propose (again)" : "orchestrator_team_refuse",
+				args: scenario === "revise"
+					? { ticket_id: TICKET, roles: "…（按修改意见重出方案）", steps: "…", note: "改方案 = 再 propose，不传 version" }
+					: { ticket_id: TICKET, trigger_id: "superagent:desk:" + MSG2, version: V } },
+			note: "人的回复又产生一个 Trigger，按 Subscription 扇出到这张工单（fanout），同时 followupNotice 把 STAFFING_NOTE relay 给主会话。主会话判断意图后，带 (ticket_id, trigger_id, version) 调用 confirm / refuse，或再 propose。面板路径 approveFromPanel 会绕过消息校验，用 by:'panel'。",
+			code: [["src/app/notices.ts", "86", "followupNotice / STAFFING_NOTE"], ["src/core/intake.ts", "49", "fanout → wake"], ["src/app/tools/team.ts", "168", "orchestrator_team_confirm"], ["src/app/tools/team.ts", "174", "orchestrator_team_refuse"], ["src/app/staffing.ts", "124", "Staffing.confirm"]],
+			chat: [["user", scenario === "agree" ? "同意" : scenario === "revise" ? "把测试换成现有的回归 bot，不要新建" : "取消", "本机用户"]],
+			log: ["[intake] trigger " + MSG2 + " → fanout=[" + TICKET + "]", "[master] STAFFING_NOTE relay"] });
+
+		if (scenario === "revise") {
+			add({ id: "s11r", p: 3, k: "new", t: "修改 → 方案 v2", s: "v1 作废", dl: "版本更替",
+				data: { v1: { version: 1, state: "superseded" }, v2: { version: 2, state: "proposed", fingerprint: "sha256:4b70e1c9…",
+					roles: [{ key: "test", bot: { id: "qa-bot", name: "回归 bot" } }], risk: { newBots: 0, highRiskTools: [], writeSteps: 1 } },
+					ticketTeam: { state: "proposed", version: 2 }, text: "【组队方案 v2】…成员：设计 bot、数据 bot、回归 bot（现有）…" },
+				note: "没有独立的 revise 工具：主会话按修改意见重新 orchestrator_team_propose，version+1、重算 fingerprint，旧 proposed 置 superseded。consent 用「宿主接收时间 ≥ 新 proposal.at」比较，所以拿 v1 的同意去批 v2 会被拒；current(version) 也会因版本不符抛错。",
+				diff: "设计稿 4.4 列了 <b>orchestrator_team_revise</b> 工具；源码不存在，修改与 propose 是同一个工具。",
+				code: [["src/app/staffing.ts", "104", "version = previous + 1"], ["src/app/staffing.ts", "107", "superseded"], ["src/app/staffing.ts", "184", "current(version)"], ["src/app/staffing.ts", "181", "disposition.at ≥ proposal.at"]],
+				chat: [["proposal", "[SuperAgent] 【组队方案 v2】首页新手引导上线\n成员：设计 bot（现有）、数据 bot（现有）、回归 bot（现有）\n步骤：T1 交互稿 → T2 埋点方案（等 T1） → T3 回归测试（写）（等 T2）\n预算：30 万 tokens · 90 回合 · 并行 3\n回复「同意」开始执行；直接写修改意见会出新版本；回复「取消」放弃这张工单。", "SuperAgent · 组队方案 v2"]],
+				log: ["[staffing] v1 → superseded", "[staffing] v2 proposed · 无新建 bot / 无高风险工具", "[outbox] team-proposal:" + TICKET + ":v2"] });
+			add({ id: "s11c", p: 3, k: "gate", t: "同意 v2", s: "confirm(version=2)", dl: "confirm 参数",
+				data: { tool: "orchestrator_team_confirm", ticket_id: TICKET, trigger_id: "superagent:desk:msg-8f2c03", version: 2,
+					checks: ["current: state=proposed", "version=2 匹配", "fingerprint 匹配", "consent 四重校验"] },
+				note: "人再回复「同意」，产生新 Trigger；主会话带 version=2 调 confirm。版本 + fingerprint 双重绑定，防止「看 v1 批了 v2」。",
+				code: [["src/app/staffing.ts", "124", "Staffing.confirm"], ["src/core/tickets.ts", "80", "staleProposal 校验"]],
+				chat: [["user", "同意", "本机用户"]], log: ["[master] confirm(ticket, trigger, version=2)"] });
+		}
+		if (scenario === "refuse") {
+			add({ id: "s11x", p: 3, k: "bad", t: "拒绝 → dropped", s: "不留任何资产", stage: "ended · dropped", sn: "工单由人结束", dl: "refuse 结果",
+				data: { proposal: { version: 1, state: "rejected", decidedBy: "local", reason: "a person refused the team" },
+					ticket: { ended: { at: "2026-11-05T10:02:22.000Z", by: "human", outcome: "dropped" } },
+					createdBots: [], team_step_rows: 0, distills: 0, workflows: 0,
+					reply: { kind: "reply", purpose: "result", text: "已取消组队，未创建任何 bot，也没有步骤与沉淀。" } },
+				note: "orchestrator_team_refuse → Staffing.refuse 同样过 consent 四重校验，事务内把 proposal 记 rejected 并 engine.rejectStaffing → Tickets.end(human, dropped)。草稿 bot 丢弃、team_step 不写、Distiller 不触发、不生成工作流。主会话仍可用 orchestrator_reply(purpose=result) 回一句。",
+				code: [["src/app/tools/team.ts", "174", "orchestrator_team_refuse"], ["src/app/staffing.ts", "136", "Staffing.refuse"], ["src/core/engine.ts", "183", "rejectStaffing"], ["src/core/tickets.ts", "379", "Tickets.end"]],
+				chat: [["superagent", "[SuperAgent] 已取消组队，未创建任何 bot，也没有步骤与沉淀。", "SuperAgent"]],
+				log: ["[staffing] proposal v1 → rejected", "[ticket] ended by=human outcome=dropped", "[reply] inject 回主管对话"] });
+			return list;
+		}
+
+		add({ id: "s12", p: 3, k: "gate", t: "consent → agree", s: "四重校验 + 建 bot", dl: "同意后的写入",
+			data: { consent: { "1 human": true, "2 allowedSender": "local ∈ allowed", "3 reached": THREAD + " 已订阅本工单",
+				"4 宿主时钟": "disposition.at(同意消息) ≥ proposal.at(当前 v" + V + ")，用宿主接收时间而非来源时间戳",
+				example: scenario === "revise" ? "10:02:40 ≥ v2.at 10:02:25 ✓（v1 的同意已随 superseded 失效）" : "10:02:20 ≥ v1.at 10:01:12 ✓" },
+				current: { state: "proposed", version: V, fingerprintMatched: true },
+				createdBots: scenario === "revise" ? [] : [{ id: "qa-runner", preset: "vssaros-qa-runner", createdBy: "supervisor" }],
+				team_step: ["step-" + TICKET + "-T1", "step-" + TICKET + "-T2", "step-" + TICKET + "-T3"],
+				ticketTeam: { state: "approved", version: V, decidedBy: "local", triggerId: "superagent:desk:" + MSG2 },
+				next: "executor.start(ticket, pendingAssignment)" },
+			note: "consent 四重：① trigger.human ② allowedSender ③ reached(本工单线程，非 context-only) ④ 宿主接收时间 disposition.at ≥ proposal.at。current() 还要求 state==='proposed' 且版本一致，否则 staleProposal。同意后才 createAgreed(draft) 查重 / 配额（每单 3、全局 20）写 .agent.md 与 preset；随后一个事务里 steps.plan + note(teamNote) + approveStaffing → executor.start。",
+			diff: "设计稿 5.2 说「创建 bot 失败则<b>整体回滚到 staffing</b>」；源码 createAgreed 在事务<b>外</b>，失败只让工单继续等待，不回滚。设计稿说宿主汇总工单级 report，源码由领队会话自己 report。",
+			code: [["src/app/staffing.ts", "171", "Staffing.consent"], ["src/app/staffing.ts", "149", "Staffing.agree"], ["src/app/team.ts", "359", "Team.createAgreed"], ["src/app/staffing.ts", "254", "teamNote"], ["src/app/steps.ts", "95", "TeamSteps.plan"], ["src/core/tickets.ts", "77", "Tickets.approveStaffing"]],
+			log: ["[consent] human ✓ allowedSender ✓ reached ✓ 宿主时钟 ✓", "[bots] createAgreed qa-runner → .agent.md + preset", "[steps] plan: T1/T2/T3 → team_step", "[ticket] team=approved → executor.start"] });
+
+		add({ id: "s13", p: 4, k: "new", t: "executor.start → 领队", s: "worker-<ticket>", stage: "working", sn: "领队持有 Assignment", dl: "Assignment / 领队会话",
+			data: { effect: "launch", assignmentId: "assignment-1", slots: { reserved: "launch", maxWorkers: "settings.executor.maxWorkers" },
+				session: { id: "worker-" + TICKET, role: "worker", preset: "dsh-superagent-worker", title: GOAL, cwd: "<worktree>" },
+				prompt: { requestId: "assignment:" + TICKET, mode: "queue" },
+				assignment: { id: "assignment-1", state: "running", startedAt: "2026-11-05T10:02:24.000Z" },
+				then: "host.launched(ticketId) → steps.kick(ticketId)" },
+			note: "start 只 enqueue 一个 launch effect；launchQueued 的 staffing 守卫此时已放行，reserve 槽位后 launch：prepareDirectory → Sessions.ensure(worker-<ticket>) → prompt('assignment:<ticket>', 'queue') → engine.assignmentStarted → host.launched() 触发 steps.kick。",
+			diff: "设计稿 4.1 说单会话执行「不再作为默认路径，只作兜底」；源码<b>明确保留 worker-&lt;ticket&gt; 作领队</b>：持有 Assignment / orchestrator_report / attention / 回复，teamNote 写的是「You lead it」。",
+			code: [["src/executor/dsh.ts", "271", "DshExecutor.start"], ["src/executor/dsh.ts", "279", "launchQueued"], ["src/executor/dsh.ts", "437", "DshExecutor.launch"], ["src/executor/dsh.ts", "483", "host.launched"], ["src/app/runtime.ts", "169", "launched → steps.kick"]],
+			log: ["[executor] launch worker-" + TICKET, "[assignment] pending → running", "[steps] kick(" + TICKET + ")"] });
+
+		add({ id: "s14", p: 4, k: "src", t: "TeamSteps.kick", s: "依赖 / 并行 / 写串行", dl: "调度快照",
+			data: { guards: ["!staffing(ticket)", "runningAssignment(ticket)", "worktree 目录存在（领队 launch 时建）"],
+				ready: "pending && after.every(state === 'ready')", parallel: 3, writing: 1,
+				steps: [{ key: "T1", state: "running", after: [], access: "read" }, { key: "T2", state: "pending", after: ["T1"], access: "read" },
+					{ key: "T3", state: "pending", after: ["T2"], access: "write" }],
+				turnsCap: 90, kickInterval: "30s 兜底" },
+			note: "kick 按 ticket 串行化；schedule 先检查领队已跑且目录存在，把依赖 failed/skipped/stopped 的下游置 skipped，再挑就绪步骤。每工单最多 parallel(≤3) 个 running；access:write 的步骤同一时刻只允许一个（调度循环里的 writing 布尔，不是文件锁）；turns 达 budget.turns 不再起新步骤。",
+			diff: "设计稿 6.2 说步骤会话也受全局 <b>maxWorkers</b> 槽位限制；源码 WorkerSlots 只数 worker- 会话，step 会话不计入。6.3 的「写锁」源码只是调度布尔。",
+			code: [["src/app/steps.ts", "114", "TeamSteps.kick"], ["src/app/steps.ts", "214", "TeamSteps.schedule"], ["src/app/steps.ts", "240", "写步骤串行"], ["src/app/steps.ts", "181", "30s 定时 kick"]],
+			log: ["[schedule] T1 就绪 → running", "[schedule] T2/T3 等前置报告", "[guard] write 步骤同时最多 1 个"] });
+
+		add({ id: "s15", p: 4, k: "new", t: "step 会话 = bot preset", s: "step-<ticket>-<key>", dl: "TeamStep + 工作约束",
+			data: { sessionId: "step-" + TICKET + "-T1", title: GOAL + " · T1 交互稿", preset: "vssaros-designer",
+				fallbackPreset: "dsh-superagent-worker", model: "不覆盖，用 bot 自己的 model",
+				section: { name: "dsh-superagent-step", complete: false, text: "Do only your step and report it with orchestrator_step_report" },
+				tools: ["bot 自己声明的 tools", "orchestrator_step_report"],
+				guard: ["工单结束 / 步骤 stopped|skipped|failed ⇒ 拒绝一切", "access:read ⇒ 拒绝 write / edit"],
+				prompt: { requestId: "step:" + TICKET + ":T1:1", fields: ["ticket_id", "step", "title", "spec", "access", "directory", "request", "team", "upstream", "rules"] } },
+			note: "Sessions.ensure(..., 'step', step.preset) 用 bot preset 建会话且不 initializeRoleModel（保留 bot 模型/人格/技能）；decorateStep 只加一段工作约束 + 报告工具 + guard，不 restrict 工具。preset 守卫会在 agent-preset/selected 时把它拉回登记的 bot preset。",
+			diff: "设计稿 6.1 写会话 <b>worker-&lt;ticket&gt;-&lt;stepKey&gt;</b>、preset <b>vssaros-&lt;botId&gt;</b> 原样；源码是 <b>step-&lt;ticket&gt;-&lt;key&gt;</b> 且经 slugify（中文名会落到 vssaros-agent），并有 fallback preset。",
+			code: [["src/app/steps.ts", "25", "botPreset / stepSessionId"], ["src/app/steps.ts", "251", "TeamSteps.start"], ["src/app/sessions.ts", "155", "Sessions.ensure"], ["src/app/sessions.ts", "300", "decorateStep"], ["src/app/sessions.ts", "136", "preset 守卫"]],
+			log: ["[session] ensure step-" + TICKET + "-T1 · preset=vssaros-designer", "[prompt] step:" + TICKET + ":T1:1"] });
+
+		add({ id: "s16", p: 4, k: "src", t: "步骤回报 / 失败重试", s: "step_report · implicit ready", dl: "team_step 终态",
+			data: { tool: "orchestrator_step_report", STEP_ATTEMPTS: 2,
+				rows: [teamStep("T1", "ready", { report: "5 屏交互稿 + 动效说明已出。", turns: 2 }),
+					teamStep("T2", "ready", { report: "埋点 6 个字段，含曝光 / 完成 / 跳过。", turns: 2 }),
+					teamStep("T3", "ready", { attempts: 2, turns: 4, failures: ["第一次：选择器超时"],
+						report: "重派后回归通过：12 用例全绿。" })],
+				retry: "failed && attempts < 2 ⇒ 回 pending，prompt 带 previous_attempt_failed",
+				implicitReady: "会话 agent/status=idle ⇒ turns+1；本轮没报告就取最后一条 assistant 文本当 ready",
+				onFailed: "第二次失败直接 failed；下游依赖置 skipped" },
+			note: "每个步骤 bot 用 orchestrator_step_report(state, summary) 回报；TeamSteps.report 落终态、note 给领队，并在 ready/failed 时触发 host.ended(step) → Distiller。T3 演示了失败自动重派 1 次（attempts=2）。agent/error 会直接报 failed；会话 idle 会计 turns+1 并兜底 implicit ready。",
+			diff: "设计稿 6.2 说 worker 用 <b>human_action</b> 提问 → 工单 attention、再失败交 Router 换人/跳过/问人、预算 90% 提醒、6 跳上限；源码 blocked 只给领队 note，第二次失败直接 failed + 下游 skipped，只有 turns 100% 暂停，无 hop / 无 90% 提醒。",
+			code: [["src/app/steps.ts", "297", "stepTools / orchestrator_step_report"], ["src/app/steps.ts", "125", "TeamSteps.report"], ["src/app/steps.ts", "200", "idle → implicit ready"], ["src/app/steps.ts", "169", "agent/error → failed"], ["src/app/runtime.ts", "229", "ended → distiller.stepEnded"]],
+			log: ["[step] T1 ready (2 turns)", "[step] T3 failed ×1 → 重派 attempts=2", "[step] T3 ready · turns=4 · implicit=false", "[step] T2 ready (2 turns)"] });
+
+		add({ id: "s17", p: 4, k: "gate", t: "summarize → 领队", s: "只有领队能报 ready", dl: "汇总 note",
+			data: { FINAL: ["ready", "failed", "skipped", "stopped"], unfinished: [], summarizedAt: "第 0 条步骤行（幂等）",
+				note: "All steps of the team finished:\n- T1 交互稿 · 设计 bot · ready: 5 屏交互稿…\n- T2 埋点方案 · 数据 bot · ready: 埋点 6 个字段…\n- T3 回归测试 · 测试 bot · ready: 12 用例全绿\nCheck their results … then report the ticket with orchestrator_report (ready, blocked or failed).",
+				gate: "orchestrator_report(state=ready) 前检查 host.steps.unfinished(ticketId)，非空抛错" },
+			note: "所有步骤进终态且 !summarizedAt 时，宿主只给领队会话发一条 note，把步骤清单和「该报工单了」交回去；工单级 report 仍由领队自己调 orchestrator_report。executorTools 用 unfinished() 闸门拦住提前报 ready。",
+			diff: "设计稿 6.2 说「<b>宿主</b>把汇总写成工单级 ready report，并以 team_report relay 给 Router」；源码没有 team_report，只有给领队的 note。",
+			code: [["src/app/steps.ts", "277", "TeamSteps.summarize"], ["src/app/steps.ts", "110", "unfinished()"], ["src/app/tools/executor.ts", "99", "ready 闸门"], ["src/core/tickets.ts", "429", "Tickets.note"]],
+			log: ["[steps] all final → summarize (once)", "[lead] note: All steps of the team finished", "[gate] unfinished=[] ⇒ ready 放行"] });
+
+		add({ id: "s18", p: 4, k: "asset", t: "工单 report → completed", s: "Assignment 结束工单", stage: "person/review → ended · completed", sn: "Tickets.end(by=executor)", dl: "report / ticket.ended",
+			data: { tool: "orchestrator_report", args: { state: "ready", summary: "交互稿、埋点方案、回归测试全部完成，12 用例全绿。" },
+				assignment: { id: "assignment-1", state: "ended", report: { state: "ready", summary: "…", at: "2026-11-05T10:06:40.000Z" } },
+				ticket: { ended: { at: "2026-11-05T10:06:40.000Z", by: "executor", outcome: "completed" } },
+				rules: ["ready 且无跟随线程 ⇒ completed", "emit ticket.ended ⇒ steps.stopAll / 工作流记账", "只有 Assignment 的 report 能结束工单"] },
+			note: "engine.report → Assignments.report 写 assignment.report；ready 且 ticket.follows 已完结 ⇒ Tickets.end('executor', 'completed')。ticketStage 先给出 person/review（主会话还要回复），结束态为 ended。ticket.ended 事件让 Runtime 取消所有 step 会话。",
+			code: [["src/app/tools/executor.ts", "84", "orchestrator_report"], ["src/core/engine.ts", "264", "Engine.report"], ["src/core/assignments.ts", "112", "Assignments.report"], ["src/core/tickets.ts", "379", "Tickets.end"], ["src/app/runtime.ts", "197", "ticket.ended 监听"]],
+			log: ["[report] ready → assignment ended", "[ticket] ended by=executor outcome=completed", "[steps] stopAll(" + TICKET + ")"] });
+
+		add({ id: "s19", p: 5, k: "asset", t: "执行证据 → Distiller", s: "mode = skill / facts", dl: "StepEvidence",
+			data: { id: "distill:" + TICKET + ":T3", bus: "globalThis[Symbol.for('vssaros.memory')]", call: "bus.rememberStep(evidence)",
+				evidence: { requestId: "distill:" + TICKET + ":T3", botId: "qa-runner", botName: "测试 bot", ticketId: TICKET,
+					ticketTitle: GOAL, stepKey: "T3", stepTitle: "回归测试", spec: "Playwright 跑一遍新手引导",
+					outcome: "ready", mode: "skill", turns: 4, attempts: 2, failures: ["第一次：选择器超时"],
+					report: "重派后回归通过：12 用例全绿。", request: USER_TEXT, at: "2026-11-05T10:06:41.000Z" },
+				decision: { "T1 (2 turns, 无失败)": "facts", "T2 (2 turns, 无失败)": "facts",
+					"T3 (4 turns / 1 failed / attempts=2)": "skill", reasons: ["4 turns", "1 failed attempt(s)", "given 2 times"] },
+				retry: "总线不在 ⇒ 留 pending，60s 重试，5 次后 failed" },
+			note: "每个 ready/failed 的步骤终局触发一次 host.ended(step)（skipped/stopped 不交）；Distiller 用 id 幂等，组装 StepEvidence 写 team_distill 再投递。门槛由 superagent 宿主判定：turns≥3 / failures / attempts>1 ⇒ skill，其余 facts。",
+			diff: "设计稿 7.2 的交接契约是 <b>bus.distill(DistillRequest)</b>（ticket/step/workspace 嵌套、带 outcome:blocked）；源码是 <b>bus.rememberStep(StepEvidence)</b> 的扁平结构，mode 由宿主先判好，且只接 ready/failed。",
+			code: [["src/app/runtime.ts", "225", "ended: stepEnded"], ["src/app/distill.ts", "65", "Distiller.stepEnded"], ["src/app/distill.ts", "44", "distillMode"], ["src/app/distill.ts", "120", "deliver / 60s 重试"], ["src/app/distill.ts", "60", "team_distill 表"]],
+			log: ["[distill] T3 → mode=skill reasons=[4 turns, 1 failed, given 2 times]", "[distill] T1/T2 → mode=facts（不调模型）", "[bus] rememberStep → accepted"] });
+
+		add({ id: "s20", p: 5, k: "asset", t: "记忆系统落盘", s: "MEMORY.md / .drafts", dl: "RememberResult",
+			data: { result: { fact: { ok: true, message: "已追加 [团队工单] …", duplicate: false },
+				skill: { name: "bot-qa-runner-7d31c0a9", path: "<dataRoot>/skills/.drafts/bot-qa-runner-7d31c0a9/SKILL.md", created: true, state: "draft" } },
+				facts: "applyEntryAction(<memoryDirOf(bot)>/MEMORY.md, add) · ≤400 字 · 去重",
+				skill: "同上一条事实 + .drafts/<name>/SKILL.md（frontmatter: name/description/category: team-step/metadata.owner=bot:<id>）",
+				panel: ["GET team/distills", "POST team/distills/:id/approve", "POST team/distills/:id/reject"],
+				decide: "bus.decideSkillDraft(name, approve|reject) → 转正 <root>/<name>/SKILL.md 或删草稿" },
+			note: "vssaros-agents 的 memoryBus 提供 v1 契约；stepMemory.js 全程是文件读写：facts 只往该 bot 的 MEMORY.md 追加一行固定格式事实；skill 额外写一份待审技能草稿，同名已存在就不覆盖。人在 superagent 概览审批，转发 decideSkillDraft 转正/删除。",
+			diff: "设计稿 7.3 要求<b>开短期子会话提炼</b>、相似度≥0.8 发新版本、风险分级自动生效、owner 归属；源码 P4 <b>没有模型提炼、没有去重</b>（按证据拼模板），草稿一律待人审。更要注意 v1 遗留 <b>Retrospective.onPlanEnd → writeSkill()</b> 仍在线直接写技能文件，正是 v2 要求下线的那条。",
+			code: [["dsh-plugins/vssaros-agents/lib/memoryBus.js", "19", "memoryBus v1"], ["dsh-plugins/vssaros-agents/lib/stepMemory.js", "89", "rememberStep"], ["dsh-plugins/vssaros-agents/lib/stepMemory.js", "116", "decideSkillDraft"], ["dsh-plugins/vssaros-agents/lib/index.js", "1432", "ctx.effect(provide)"], ["src/app/http.ts", "278", "GET team/distills"]],
+			log: ["[memory] facts → 测试 bot/MEMORY.md", "[memory] skill draft → .drafts/bot-qa-runner-7d31c0a9", "[panel] 概览「待确认的技能建议」+1"] });
+
+		add({ id: "s21", p: 5, k: "asset", t: "工单结束 → 团队工作流", s: "draft，人确认后存 v1", dl: "TeamWorkflow draft",
+			data: { source: "ticket", fromTicketId: TICKET, fromPlanId: "", name: "新手引导上线", version: 1, state: "draft", goal: GOAL,
+				params: [{ key: "page", label: "页面", value: "首页" }],
+				roles: [{ key: "design", need: "交互稿与动效说明", bot: { id: "designer", name: "设计 bot" } }],
+				steps: [{ key: "T1", title: "交互稿", bot: "designer", after: [], role: "design", access: "read", phase: "design" }],
+				gates: [], budget: BUDGET, triggers: [], runs: 0, ok: 0, creditedTickets: [],
+				match: "WORKFLOW_MATCH_THRESHOLD = 0.7 · 只匹配 state=saved · 命中后在组队阶段预填方案（仍需人同意）",
+				routes: ["GET team/retrospective", "POST team/workflows/:id/save", "POST team/workflows/:id/run"] },
+			note: "Runtime 监听 ticket.ended，取 approved 方案交给 Retrospective.onTicketEnd：completed/merged 才留 draft。人确认保存 v1 后，下个工单在组队阶段用 match(request) ≥70% 预填；exportTeamflow / importTeamflow 已加（只读-按 id 合并-写回 sa-* 团队）。",
+			diff: "设计稿 8.1 说<b>只在工单结束</b>生成、v1 技能部分与 team_skill 表下线；源码 <b>onPlanEnd（计划结束）与 onTicketEnd 双触发</b>，team_skill 表、writeSkill()、orchestrator_team_plan、POST team/plans、team_plan/task/member 表都还在 —— P5 是双轨现状。",
+			code: [["src/app/runtime.ts", "198", "ticket.ended 监听"], ["src/app/retrospective.ts", "287", "onTicketEnd"], ["src/app/retrospective.ts", "128", "onPlanEnd（遗留双轨）"], ["src/app/retrospective.ts", "265", "match ≥ 0.7"], ["src/app/retrospective.ts", "327", "exportTeamflow"], ["src/app/http.ts", "292", "retrospective / save / run 路由"]],
+			log: ["[retro] onTicketEnd(completed) → workflow draft", "[retro] onPlanEnd 仍会另写一份技能草稿（遗留）", "[panel] 技能 → 团队工作流：待确认 1 条"] });
+
+		add({ id: "s22", p: 5, k: "asset", t: "回复原来源 · 闭环", s: "Outbox → deliverReply", dl: "OutboundMessage / 回写",
+			data: { tool: "orchestrator_reply", args: { purpose: "result", ticket_id: TICKET, text: "首页新手引导上线已完成：5 屏交互稿、6 个埋点字段、回归 12 用例全绿。已沉淀 1 条待确认技能与 1 份团队工作流草稿。" },
+				allowed: "purpose=result 仅对 ready / completed / merged / dropped 放行",
+				message: { id: "reply:" + TICKET + ":result", kind: "reply", channel: CHANNEL, ticketId: TICKET,
+					text: "首页新手引导上线已完成：…" },
+				chain: "Replies.reply → Outbox.send(receipt + effects.enqueue('reply')) → SourceRegistry.send → superagent.channel.send → deliverReply",
+				deliver: { prefix: "[SuperAgent] ", mode: "{ inject: 'SuperAgent' }", wake: false, session: SESSION,
+					botVariant: "[SuperAgent 主管回复] + 'steer'（唤醒求助 bot 的会话）" } },
+			note: "主会话用 orchestrator_reply(purpose=result) 汇总；Outbox 持久化 receipt 并按会话顺序投递，SourceRegistry 交给 superagent 源的 channel.send，最后 deliverReply 把带 [SuperAgent] 前缀的文本 inject 回主管对话（不唤醒模型）；session/not-found 时回 gone。这样工单的 thread / subscription / outbox 全程只有一套。",
+			code: [["src/app/tools/main.ts", "225", "orchestrator_reply"], ["src/core/replies.ts", "36", "Replies.reply"], ["src/app/outbox.ts", "27", "Outbox.send"], ["src/sources/registry.ts", "95", "SourceRegistry.send"], ["src/sources/superagent.ts", "52", "channel.send"], ["src/app/desk.ts", "68", "deliverReply"]],
+			chat: [["superagent", "[SuperAgent] 首页新手引导上线已完成：5 屏交互稿、6 个埋点字段、回归 12 用例全绿。已沉淀 1 条待确认技能与 1 份团队工作流草稿。", "SuperAgent · result"]],
+			log: ["[reply] purpose=result → outbox receipt", "[outbox] sent · " + THREAD, "[desk] inject 到主管对话（不唤醒）", "✔ 闭环完成"] });
+
+		return list;
+	}
+
+	var $ = function (id) { return document.getElementById(id); };
+	var state = { scenario: "agree", steps: [], index: 0, playing: false, timer: null, showDiff: true };
+	var N = 0;
+
+	function buildOverview() {
+		var box = $("overview"); box.textContent = "";
+		PHASES.forEach(function (p, i) {
+			if (i) { var a = document.createElement("div"); a.className = "phase-arrow"; a.textContent = "→"; box.appendChild(a); }
+			var c = document.createElement("div"); c.className = "phase-chip"; c.dataset.phase = i;
+			c.innerHTML = '<div class="n">0' + (i + 1) + '</div><div class="t"></div><div class="s"></div>';
+			c.querySelector(".t").textContent = p.t; c.querySelector(".s").textContent = p.s;
+			box.appendChild(c);
+		});
+	}
+	function buildFlow() {
+		var flow = $("flow"); flow.textContent = "";
+		PHASES.forEach(function (p, pi) {
+			var lane = document.createElement("div"); lane.className = "lane"; lane.dataset.phase = pi;
+			var h = document.createElement("div"); h.className = "lane-h";
+			h.innerHTML = '<span class="no">0' + (pi + 1) + '</span><span class="tt"></span><span class="ss"></span>';
+			h.querySelector(".tt").textContent = p.t; h.querySelector(".ss").textContent = p.s;
+			lane.appendChild(h);
+			var chips = document.createElement("div"); chips.className = "chips";
+			state.steps.forEach(function (st, i) {
+				if (st.p !== pi) return;
+				var b = document.createElement("button"); b.type = "button"; b.className = "chip " + st.k;
+				b.dataset.i = i;
+				b.innerHTML = '<div class="ct"></div><div class="cs"></div>';
+				b.querySelector(".ct").textContent = st.t; b.querySelector(".cs").textContent = st.s;
+				if (st.diff && state.showDiff) { var dot = document.createElement("span"); dot.className = "cdot"; dot.title = "与设计稿有差异"; b.appendChild(dot); }
+				b.addEventListener("click", function () { pause(); go(i); });
+				chips.appendChild(b);
+			});
+			lane.appendChild(chips); flow.appendChild(lane);
+			if (pi < PHASES.length - 1) { var l = document.createElement("div"); l.className = "lane-link"; l.textContent = "↓"; flow.appendChild(l); }
+		});
+	}
+	function render() {
+		var i = state.index, cur = state.steps[i];
+		$("progress").max = String(N - 1); $("progress").value = String(i);
+		$("count").textContent = (i + 1) + " / " + N;
+		$("cur").innerHTML = "<b>" + cur.t + "</b> · " + cur.s + "　<span style='color:var(--dsw-alias-label-caption)'>阶段 0" + (cur.p + 1) + " " + PHASES[cur.p].t + "</span>";
+		$("stepId").textContent = cur.id;
+		$("note").textContent = cur.note || "";
+		$("dataLabel").textContent = cur.dl || "数据";
+		$("data").textContent = JSON.stringify(cur.data || {}, null, 2);
+
+		var phaseNow = cur.p;
+		Array.prototype.forEach.call(document.querySelectorAll(".phase-chip"), function (el) {
+			var p = Number(el.dataset.phase);
+			el.className = "phase-chip" + (p < phaseNow ? " done" : p === phaseNow ? " active" : "");
+		});
+		Array.prototype.forEach.call(document.querySelectorAll(".lane"), function (el) {
+			var p = Number(el.dataset.phase);
+			el.className = "lane" + (p < phaseNow ? " done" : p === phaseNow ? " active" : "");
+		});
+		Array.prototype.forEach.call(document.querySelectorAll(".chip"), function (el) {
+			var n = Number(el.dataset.i), base = "chip " + state.steps[n].k;
+			el.className = base + (n < i ? " done" : n === i ? " active" : " todo");
+		});
+		var flow = $("flow"), active = flow.querySelector(".chip.active");
+		if (active) {
+			var fr = flow.getBoundingClientRect(), ar = active.getBoundingClientRect();
+			if (ar.top < fr.top + 8) flow.scrollTop -= fr.top + 8 - ar.top;
+			else if (ar.bottom > fr.bottom - 8) flow.scrollTop += ar.bottom - (fr.bottom - 8);
+		}
+
+		var stage = "—", stageNote = "", cls = "stage-val";
+		for (var k = 0; k <= i; k++) if (state.steps[k].stage) { stage = state.steps[k].stage; stageNote = state.steps[k].sn || ""; }
+		$("stage").textContent = stage;
+		if (/staffing|review/.test(stage)) cls += " gate";
+		if (/completed/.test(stage)) cls += " end";
+		if (/dropped|failed/.test(stage)) cls += " bad";
+		$("stage").className = cls; $("stageNote").textContent = stageNote;
+
+		var diffBlock = $("diffBlock");
+		if (cur.diff && state.showDiff) { diffBlock.style.display = ""; $("diff").innerHTML = "<b>差异 · </b>" + cur.diff; }
+		else diffBlock.style.display = "none";
+
+		var codes = $("codes"); codes.textContent = "";
+		(cur.code || []).forEach(function (c) {
+			var row = document.createElement("div"); row.className = "code-row";
+			row.innerHTML = '<span class="f"></span><span class="l"></span><span class="fn"></span>';
+			row.querySelector(".f").textContent = c[0];
+			row.querySelector(".l").textContent = ":" + c[1];
+			row.querySelector(".fn").textContent = c[2];
+			codes.appendChild(row);
+		});
+
+		var chat = $("chat"); chat.textContent = ""; var msgs = [];
+		for (var m = 0; m <= i; m++) (state.steps[m].chat || []).forEach(function (c) { msgs.push(c); });
+		if (!msgs.length) { var e = document.createElement("div"); e.className = "chat-empty"; e.textContent = "点「播放」，看一句话怎样走完整条流水线"; chat.appendChild(e); }
+		msgs.forEach(function (c, n) {
+			var b = document.createElement("div"); b.className = "bubble " + c[0] + (n === msgs.length - 1 ? " fresh" : "");
+			var w = document.createElement("span"); w.className = "who"; w.textContent = c[2] || (c[0] === "user" ? "本机用户" : "SuperAgent");
+			b.appendChild(w); b.appendChild(document.createTextNode(c[1])); chat.appendChild(b);
+		});
+		chat.scrollTop = chat.scrollHeight;
+
+		var log = $("log"); log.textContent = ""; var lines = [];
+		for (var q = 0; q <= i; q++) (state.steps[q].log || []).forEach(function (l) { lines.push([l, q === i]); });
+		lines.forEach(function (pair, n) {
+			var d = document.createElement("div"); if (pair[1]) d.className = "now";
+			d.textContent = String(n + 1).padStart(2, "0") + "  " + pair[0]; log.appendChild(d);
+		});
+		log.scrollTop = log.scrollHeight;
+		$("prev").disabled = i === 0; $("next").disabled = i === N - 1;
+	}
+	function go(i) { state.index = Math.max(0, Math.min(N - 1, i)); render(); }
+	function pause() { state.playing = false; clearTimeout(state.timer); $("play").textContent = "▶ 播放"; }
+	function tick() {
+		if (!state.playing) return;
+		if (state.index >= N - 1) { pause(); return; }
+		go(state.index + 1);
+		state.timer = setTimeout(tick, Number($("speed").value));
+	}
+	function play() {
+		if (state.index >= N - 1) go(0);
+		state.playing = true; $("play").textContent = "⏸ 暂停";
+		state.timer = setTimeout(tick, Number($("speed").value));
+	}
+	function rebuild(scenario) {
+		pause(); state.scenario = scenario; state.steps = makeSteps(scenario); N = state.steps.length;
+		state.index = 0; buildFlow(); render();
+	}
+	$("play").addEventListener("click", function () { state.playing ? pause() : play(); });
+	$("prev").addEventListener("click", function () { pause(); go(state.index - 1); });
+	$("next").addEventListener("click", function () { pause(); go(state.index + 1); });
+	$("reset").addEventListener("click", function () { pause(); go(0); });
+	$("progress").addEventListener("input", function () { pause(); go(Number(this.value)); });
+	$("speed").addEventListener("change", function () { if (state.playing) { clearTimeout(state.timer); state.timer = setTimeout(tick, Number(this.value)); } });
+	$("scenario").addEventListener("change", function () { rebuild(this.value); });
+	$("showdiff").addEventListener("change", function () { state.showDiff = this.checked; buildFlow(); render(); });
+	$("theme").addEventListener("click", function () {
+		var r = document.documentElement; r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+	});
+	document.addEventListener("keydown", function (e) {
+		if (e.target && /INPUT|SELECT|TEXTAREA/.test(e.target.tagName)) return;
+		if (window.__wbFocus && typeof window.__wbKey === "function") { window.__wbKey(e); return; }
+		if (e.key === "ArrowRight") { pause(); go(state.index + 1); e.preventDefault(); }
+		else if (e.key === "ArrowLeft") { pause(); go(state.index - 1); e.preventDefault(); }
+		else if (e.key === " ") { state.playing ? pause() : play(); e.preventDefault(); }
+	});
+	/* ===== 多 Worker 并发沙盘：按源码调度规则的离散事件模拟 ===== */
+	var WB = { frames: [], rows: [], index: 0, playing: false, timer: null };
+
+	function wbSim(maxWorkers, parallel, countSteps) {
+		var defs = [
+			{ id: "a1", name: "新手引导上线", steps: [
+				{ key: "T1", access: "read", after: [], dur: 2 },
+				{ key: "T2", access: "read", after: ["T1"], dur: 2 },
+				{ key: "T3", access: "write", after: ["T1"], dur: 3 },
+				{ key: "T4", access: "write", after: ["T2"], dur: 2 } ] },
+			{ id: "b2", name: "埋点回归", steps: [
+				{ key: "T1", access: "read", after: [], dur: 2 },
+				{ key: "T2", access: "write", after: [], dur: 3 },
+				{ key: "T3", access: "read", after: ["T1"], dur: 2 } ] },
+			{ id: "c3", name: "资料库重建", steps: [
+				{ key: "T1", access: "read", after: [], dur: 3 },
+				{ key: "T2", access: "read", after: [], dur: 2 },
+				{ key: "T3", access: "write", after: ["T1", "T2"], dur: 2 } ] },
+			{ id: "d4", name: "发版说明（排队）", steps: [
+				{ key: "T1", access: "read", after: [], dur: 2 },
+				{ key: "T2", access: "write", after: ["T1"], dur: 2 } ] }
+		];
+		var tickets = defs.map(function (d) {
+			return { id: d.id, name: d.name, phase: "queued", readyAt: -1,
+				steps: d.steps.map(function (s) { return { key: s.key, access: s.access, after: s.after, dur: s.dur,
+					state: "pending", remain: 0, mark: "" }; }) };
+		});
+		var rows = [];
+		tickets.forEach(function (t) {
+			rows.push({ key: "lead:" + t.id, label: "worker-" + t.id, sub: t.name, lead: true });
+			t.steps.forEach(function (s) {
+				rows.push({ key: "step:" + t.id + ":" + s.key, label: "step-" + t.id + "-" + s.key, sub: s.access, lead: false });
+			});
+		});
+		var frames = [], peak = 0, stalled = 0;
+		for (var tk = 0; tk <= 45; tk++) {
+			var log = [];
+			tickets.forEach(function (t) { t.steps.forEach(function (s) { s.mark = ""; }); });
+			// ① 步骤回合结束 → orchestrator_step_report → ready
+			tickets.forEach(function (t) {
+				t.steps.forEach(function (s) {
+					if (s.state !== "running") return;
+					s.remain -= 1;
+					if (s.remain <= 0) { s.state = "ready"; log.push("[step] " + t.id + " " + s.key + " → ready · orchestrator_step_report"); }
+				});
+			});
+			// ② 全部步骤终态 ⇒ 领队 orchestrator_report(ready) ⇒ Tickets.end ⇒ 释放全局槽
+			tickets.forEach(function (t) {
+				if (t.phase !== "running" || tk < t.readyAt) return;
+				if (t.steps.every(function (s) { return s.state === "ready"; })) {
+					t.phase = "done";
+					log.push("[ticket] " + t.id + " 领队 report(ready) → completed，释放槽");
+				}
+			});
+			// ③ Effects.dispatch('launch')：只有领队占全局槽
+			var leads = tickets.filter(function (t) { return t.phase === "running"; }).length;
+			tickets.forEach(function (t) {
+				if (t.phase !== "queued") return;
+				if (leads < maxWorkers) {
+					t.phase = "running"; t.readyAt = tk + 1; leads += 1;
+					log.push("[effects] launch " + t.id + " 拿到领队槽 " + leads + "/" + maxWorkers + " → host.launched()");
+				} else log.push("[effects] launch " + t.id + " → Later: No worker slot is free（排队）");
+			});
+			// ④ 各工单独立 TeamSteps.kick / schedule
+			var activeSteps = tickets.reduce(function (n, t) {
+				return n + t.steps.filter(function (s) { return s.state === "running"; }).length; }, 0);
+			var globalFree = countSteps ? Math.max(0, maxWorkers - leads - activeSteps) : Infinity;
+			tickets.forEach(function (t) {
+				if (t.phase !== "running" || tk < t.readyAt) return;
+				var running = t.steps.filter(function (s) { return s.state === "running"; });
+				var slots = parallel - running.length;
+				if (countSteps) slots = Math.min(slots, globalFree);
+				var writing = running.some(function (s) { return s.access === "write"; });
+				var ready = t.steps.filter(function (s) {
+					return s.state === "pending" && s.after.every(function (k) {
+						var d = t.steps.filter(function (x) { return x.key === k; })[0];
+						return d && d.state === "ready";
+					});
+				});
+				ready.forEach(function (s) {
+					if (s.access === "write" && writing) {
+						s.mark = "write";
+						log.push("[schedule] " + t.id + " " + s.key + " 跳过：已有写步骤 running（写串行）");
+						return;
+					}
+					if (slots <= 0 || (countSteps && globalFree <= 0)) { s.mark = "slot"; return; }
+					s.state = "running"; s.remain = s.dur; s.mark = "run"; slots -= 1;
+					if (countSteps) globalFree -= 1;
+					if (s.access === "write") writing = true;
+					log.push("[schedule] ensure step-" + t.id + "-" + s.key + " · " + s.access + " · 本单剩余 slots=" + slots);
+				});
+			});
+			var cells = {};
+			tickets.forEach(function (t) {
+				cells["lead:" + t.id] = t.phase === "done" ? "ready" : t.phase === "running" ? "lead" : "slot";
+				t.steps.forEach(function (s) {
+					var v;
+					if (s.state === "running") v = "run";
+					else if (s.state === "ready" || t.phase === "done") v = "ready";
+					else if (t.phase === "queued") v = "wait";
+					else if (s.mark === "write") v = "write";
+					else if (s.mark === "slot") v = "slot";
+					else v = "wait";
+					cells["step:" + t.id + ":" + s.key] = v;
+				});
+			});
+			var leadsNow = tickets.filter(function (t) { return t.phase === "running"; }).length;
+			var stepsNow = tickets.reduce(function (n, t) {
+				return n + t.steps.filter(function (s) { return s.state === "running"; }).length; }, 0);
+			var active = leadsNow + stepsNow;
+			peak = Math.max(peak, active);
+			var writers = [];
+			tickets.forEach(function (t) { t.steps.forEach(function (s) {
+				if (s.state === "running" && s.access === "write") writers.push(t.id + "/" + s.key); }); });
+			frames.push({ tick: tk, cells: cells, leads: leadsNow, steps: stepsNow, active: active, peak: peak,
+				queued: tickets.filter(function (t) { return t.phase === "queued"; }).length, writers: writers,
+				maxWorkers: maxWorkers, parallel: parallel, countSteps: countSteps,
+				log: log.length ? log : ["[idle] 本轮无新调度，等待会话回合结束"] });
+			if (tickets.every(function (t) { return t.phase === "done"; })) break;
+			var progressed = log.some(function (l) { return /拿到领队槽|→ ready|ensure |→ completed/.test(l); });
+			stalled = progressed ? 0 : stalled + 1;
+			if (stalled >= 3) {
+				log.push("[对照组的后果] 领队已占满全局槽，step 拿不到槽 ⇒ 无法推进（源码不会这样）");
+				frames[frames.length - 1].log = log;
+				break;
+			}
+		}
+		return { frames: frames, rows: rows };
+	}
+	function wbRender() {
+		var f = WB.frames[WB.index];
+		if (!f) return;
+		$("wProgress").max = String(WB.frames.length - 1);
+		$("wProgress").value = String(WB.index);
+		$("wCount").textContent = "tick " + f.tick + " / " + (WB.frames.length - 1);
+		$("wTickLabel").textContent = "tick " + f.tick;
+		$("wPlay").textContent = WB.playing ? "⏸ 暂停" : "▶ 播放";
+		$("wPrev").disabled = WB.index === 0;
+		$("wNext").disabled = WB.index === WB.frames.length - 1;
+
+		var metrics = [
+			{ k: "全局领队槽 · WorkerSlots", v: f.leads + " / " + f.maxWorkers, c: "brand", h: "只数 worker-<ticket>" },
+			{ k: "活跃 step 会话", v: String(f.steps), c: "ok", h: f.countSteps ? "对照组：被全局槽压住" : "不计入 maxWorkers" },
+			{ k: "同时活跃 / 峰值", v: f.active + " / " + f.peak, c: "brand", h: "领队 + 步骤会话" },
+			{ k: "排队工单", v: String(f.queued), c: "warn", h: "Later: No worker slot" },
+			{ k: "写步骤（每单 ≤1）", v: String(f.writers.length), c: "warn", h: f.writers.length ? f.writers.join("、") : "当前无写步骤" }
+		];
+		var box = $("wMetrics"); box.textContent = "";
+		metrics.forEach(function (item) {
+			var d = document.createElement("div"); d.className = "wb-metric";
+			d.innerHTML = '<div class="k"></div><div class="v"></div><div class="h"></div>';
+			d.querySelector(".k").textContent = item.k;
+			d.querySelector(".v").className = "v " + item.c;
+			d.querySelector(".v").textContent = item.v;
+			d.querySelector(".h").textContent = item.h;
+			box.appendChild(d);
+		});
+
+		var g = $("wGantt"); g.textContent = "";
+		var table = document.createElement("table");
+		var thead = document.createElement("thead"), hr = document.createElement("tr");
+		var th0 = document.createElement("th"); th0.className = "gl"; th0.textContent = "会话 / tick"; hr.appendChild(th0);
+		for (var t = 0; t <= f.tick; t++) {
+			var th = document.createElement("th"); th.className = "gh" + (t === f.tick ? " now" : "");
+			th.textContent = String(t); hr.appendChild(th);
+		}
+		thead.appendChild(hr); table.appendChild(thead);
+		var tbody = document.createElement("tbody");
+		WB.rows.forEach(function (row) {
+			var tr = document.createElement("tr");
+			var td0 = document.createElement("td"); td0.className = "gl" + (row.lead ? " lead" : "");
+			td0.textContent = row.label;
+			if (!row.lead) { var sm = document.createElement("small"); sm.textContent = "  " + row.sub; td0.appendChild(sm); }
+			tr.appendChild(td0);
+			for (var t2 = 0; t2 <= f.tick; t2++) {
+				var td = document.createElement("td"), cell = document.createElement("span");
+				var st = WB.frames[t2].cells[row.key] || "wait";
+				cell.className = "gcell " + st + (t2 === f.tick ? " now" : "");
+				cell.title = row.label + " · tick " + t2 + " · " + st;
+				td.appendChild(cell); tr.appendChild(td);
+			}
+			tbody.appendChild(tr);
+		});
+		table.appendChild(tbody); g.appendChild(table);
+		g.scrollLeft = g.scrollWidth;
+
+		var legend = [["lead", "领队 running"], ["run", "step running"], ["ready", "ready / 完成"],
+			["write", "等写串行"], ["slot", "等槽 / 并行满"], ["wait", "等依赖 / 未开始"]];
+		var lb = $("wLegend"); lb.textContent = "";
+		legend.forEach(function (p) {
+			var s = document.createElement("span"), i = document.createElement("i");
+			i.className = "gcell " + p[0]; i.style.margin = "0"; i.style.border = "0";
+			s.appendChild(i); s.appendChild(document.createTextNode(p[1])); lb.appendChild(s);
+		});
+
+		var lg = $("wLog"); lg.textContent = "";
+		f.log.forEach(function (line) {
+			var d = document.createElement("div");
+			if (/Later|跳过|排队|对照组|后果/.test(line)) d.className = "warn";
+			else if (/ensure |拿到领队槽|→ completed/.test(line)) d.className = "hl";
+			d.textContent = line; lg.appendChild(d);
+		});
+		lg.scrollTop = lg.scrollHeight;
+	}
+	function wbGo(i) { WB.index = Math.max(0, Math.min(WB.frames.length - 1, i)); wbRender(); }
+	function wbPause() { WB.playing = false; clearTimeout(WB.timer); $("wPlay").textContent = "▶ 播放"; }
+	function wbTick() {
+		if (!WB.playing) return;
+		if (WB.index >= WB.frames.length - 1) { wbPause(); return; }
+		wbGo(WB.index + 1);
+		WB.timer = setTimeout(wbTick, Number($("wSpeed").value));
+	}
+	function wbPlay() {
+		if (WB.index >= WB.frames.length - 1) wbGo(0);
+		WB.playing = true; $("wPlay").textContent = "⏸ 暂停";
+		WB.timer = setTimeout(wbTick, Number($("wSpeed").value));
+	}
+	function wbRebuild() {
+		wbPause();
+		var sim = wbSim(Number($("wMax").value), Number($("wPar").value), $("wCountSteps").checked);
+		WB.frames = sim.frames; WB.rows = sim.rows; WB.index = 0; wbRender();
+	}
+	$("wPlay").addEventListener("click", function () { WB.playing ? wbPause() : wbPlay(); });
+	$("wPrev").addEventListener("click", function () { wbPause(); wbGo(WB.index - 1); });
+	$("wNext").addEventListener("click", function () { wbPause(); wbGo(WB.index + 1); });
+	$("wReset").addEventListener("click", function () { wbPause(); wbGo(0); });
+	$("wProgress").addEventListener("input", function () { wbPause(); wbGo(Number(this.value)); });
+	["wMax", "wPar", "wCountSteps"].forEach(function (id) {
+		$(id).addEventListener("change", wbRebuild);
+	});
+	$("wSpeed").addEventListener("change", function () {
+		if (WB.playing) { clearTimeout(WB.timer); WB.timer = setTimeout(wbTick, Number(this.value)); }
+	});
+	window.__wbKey = function (e) {
+		if (e.key === "ArrowRight") { wbPause(); wbGo(WB.index + 1); e.preventDefault(); }
+		else if (e.key === "ArrowLeft") { wbPause(); wbGo(WB.index - 1); e.preventDefault(); }
+		else if (e.key === " ") { WB.playing ? wbPause() : wbPlay(); e.preventDefault(); }
+	};
+	$("wb").addEventListener("click", function () { window.__wbFocus = true; }, true);
+	$("wb").addEventListener("change", function () { window.__wbFocus = true; }, true);
+	document.querySelector(".ctl").addEventListener("click", function () { window.__wbFocus = false; }, true);
+	wbRebuild();
+
+	buildOverview(); rebuild("agree");
+})();
+</script>
+</body>
+</html>

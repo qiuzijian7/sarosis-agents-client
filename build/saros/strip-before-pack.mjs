@@ -883,7 +883,7 @@ ensureFile(
 //      ⇒ 根因在 staging 拷贝环节；这里整棵兜底自愈。
 //    sentinel 用 kb 脚本：脚本缺了「同步飞书 / kb_feishu_sync」直接不可用。
 ensureDir(
-	'resources/.agents（KB 同步脚本 + MCP 预设 + 内置工作流 + 工具）',
+	'resources/.agents（KB 同步脚本 + MCP 预设 + 内置工作流）',
 	'resources/app/resources/.agents',
 	'resources/.agents',
 	'kb/feishu-sync.mjs',
@@ -960,10 +960,11 @@ if (criticalMissing > 0) {
 // === 产物自带 pnpm（2026-10-29）================================================
 //   为什么：用户机器上通常**没有 pnpm**（那是开发工具）⇒ 启动时装插件已由「直装」兜底，
 //   但运行时（在页面里装第三方插件 / 技能、`dsh plugin add`）仍要用 pnpm ⇒ 产物必须自带一份。
-//   ⚠ 只带**单文件 bundle**（`dist/pnpm.cjs`，7.4MB，自带全部依赖）；
-//     它需要 node 解释器 ⇒ 由 IDE 侧用 **Electron 自己的 `ELECTRON_RUN_AS_NODE=1`** 来跑
-//     （实测 `ELECTRON_RUN_AS_NODE=1 "<exe>" pnpm.cjs --version` ⇒ 10.18.0，1.1 秒）
-//     ⇒ **不要求用户机器装 node** ✓。
+//   ⚠ 2026-11-07：随包的是**仓库 pin 的 pnpm@11.28.5 整包**（`bin/pnpm.mjs` → `dist/pnpm.mjs`，
+//     约 21MB / 450 文件）——pnpm 11 不再是 pnpm 10 那种单文件 bundle，只拷入口会
+//     ERR_MODULE_NOT_FOUND。IDE 侧用 **Host 自己的 `node.path`** 跑它（不能用 Electron 顶替，
+//     实测并发安装阶段会崩）；托管 Node 门槛 22.19+ 满足 pnpm 11 的 ≥22.13 ⇒ 用户机器不需装 node ✓。
+//     版本真源：根 package.json 的 devDependencies.pnpm（与构建期 prepack 同一份）。
 //   ⚠ 失败**不阻断**打包（启动路径已被直装覆盖，这只影响"运行时能不能用 pnpm"）。
 {
 	const tool = join(__dirname, 'ensure-pnpm-tool.mjs');

@@ -13,7 +13,7 @@
 
 import { BUNDLED_TOOL_DEFINITIONS } from '../../../common/bundled-tools/bundledTools.js';
 import type { ILogService } from '../../../../../../platform/log/common/log.js';
-import type { IBuiltinToolRegistration } from './builtinToolProvider.js';
+import type { IBuiltinToolRegistration } from './toolRegistry.js';
 
 /** Kanban 工具中已实现真实 handler 的名字集合（由 _registerKanbanTools 注册） */
 const KANBAN_TOOLS_WITH_HANDLER = new Set<string>([

@@ -43,7 +43,8 @@ suite('子代理 trace 归属过滤 + 兜底挂载', () => {
 	const AGENT_OS = 'src/vs/sessions/contrib/agentStudio/common/agentOS.ts';
 	const PANE = 'src/vs/sessions/contrib/agentStudio/browser/nativeChatEditorPane.ts';
 	const DELEGATION = 'src/vs/sessions/contrib/agentStudio/browser/providers/tool/delegationTools.ts';
-	const PLAN_EXPLORE = 'src/vs/sessions/contrib/agentStudio/browser/providers/tool/planExploreTool.ts';
+	// ★ 2026-11-07（IDE agent loop 下线 · Step 1）：`planExploreTool.ts` 已退役（零生产引用），
+	//   它那 1 个 fire 点的身份契约随之消失，本套件只钉 delegationTools 的 3 处。
 	const SVC = 'src/vs/sessions/contrib/agentStudio/browser/agentOSService.ts';
 
 	test('★★★ 快照契约必须携带父回合身份（agentId/sessionId，可选以兼容 workflow 未接线）', () => {
@@ -55,8 +56,8 @@ suite('子代理 trace 归属过滤 + 兜底挂载', () => {
 		assert.ok(body.includes('sessionId?: string'), '快照必须带 sessionId（归属过滤的前提）✗');
 	});
 
-	test('★★★ 生产者必须填充身份（delegationTools 三处 + planExploreTool 一处）', () => {
-		for (const [rel, count] of [[DELEGATION, 3], [PLAN_EXPLORE, 1]] as Array<[string, number]>) {
+	test('★★★ 生产者必须填充身份（delegationTools 三处）', () => {
+		for (const [rel, count] of [[DELEGATION, 3]] as Array<[string, number]>) {
 			const src = code(rel);
 			const fireIdx: number[] = [];
 			for (let i = src.indexOf('fireSubAgentTrace({'); i !== -1; i = src.indexOf('fireSubAgentTrace({', i + 1)) { fireIdx.push(i); }

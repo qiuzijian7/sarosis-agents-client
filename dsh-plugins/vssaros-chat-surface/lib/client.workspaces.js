@@ -380,8 +380,12 @@ window.__ModuleLoader__.load({
 			return (Array.isArray(list) ? list : []).filter((item) => item && typeof item === "object" && item.roomId)
 				.map((item) => {
 					const status = groupRoundStatus(item);
-					return Object.assign({}, item, {
-						schema: Number(item.schema) || GROUP_ACTIVITY_SCHEMA, status, statusLabel: GROUP_ROUND_LABELS[status],
+					const asks = Array.isArray(item.asks) ? item.asks.filter((a) => a && a.id) : [];
+					const busy = Array.isArray(item.busy) ? item.busy.map(String).filter(Boolean) : undefined;
+					return Object.assign({}, item, busy ? { busy } : null, {
+						// 状态机不变；这一轮做完了但有选择卡等人答 ⇒ 不能说「已完成」（与 rooms.js roundOutput 同口径）
+						schema: Number(item.schema) || GROUP_ACTIVITY_SCHEMA, status, asks,
+						statusLabel: status === "done" && asks.length ? "等你选择" : status === "done" && busy && busy.length ? "后台干活中" : GROUP_ROUND_LABELS[status],
 						replies: Array.isArray(item.replies) ? item.replies : [], events: Array.isArray(item.events) ? item.events : [],
 						speaking: Array.isArray(item.speaking) ? item.speaking : [], passed: Array.isArray(item.passed) ? item.passed : [],
 						failed: Array.isArray(item.failed) ? item.failed : [],
@@ -399,6 +403,10 @@ window.__ModuleLoader__.load({
 				(item.failed || []).length, (item.passed || []).length, item.finishedAt || 0,
 				// ★ 2026-11-06：待审批变化（新请求 / 被批 / 超时撤回）也要广播，成员栏的「允许 / 拒绝」才跟得上
 				(Array.isArray(item.approvals) ? item.approvals : []).map((a) => a && a.id).join(","),
+				// ★ 2026-11-07：选择卡出现 / 被答掉也要广播，输入框上方的卡才跟得上
+				(Array.isArray(item.asks) ? item.asks : []).map((a) => a && a.id).join(","),
+				// ★ 2026-11-07：后台成员干完（离开 busy）也要广播，群行 / 成员行才会从「后台干活」变回去
+				(Array.isArray(item.busy) ? item.busy : []).join(","),
 				item.status === "sent" || item.status === "replying" ? bucket : ""].join(":")).join("|");
 		}
 		/**
@@ -438,6 +446,13 @@ window.__ModuleLoader__.load({
 				if (!round || typeof round !== "object") { continue; }
 				const room = roomOf(round);
 				const member = room && Array.isArray(room.members) ? room.members.find((m) => m && String(m.id) === id) : null;
+				// ★ 2026-11-07：它提了问、在等用户选（比这一轮别的状态都新）
+				const myAsk = (Array.isArray(round.asks) ? round.asks : []).find((a) => a && String(a.botId) === id);
+				if (myAsk) { return result(round, "waiting", "等你选择 · " + ((myAsk.questions || []).length || 1) + " 个问题", "ask"); }
+				// ★ 2026-11-07：服务端实时给出谁还在后台干活（`busy`）。在里面 ⇒ 干活中；有这个字段却不在里面 ⇒ 它已经干完了，
+				//   不能再按这一轮那条「这一轮先不等它」事件显示成在干活
+				const busy = Array.isArray(round.busy) ? round.busy : null;
+				if (busy && busy.some((who) => isAgent(round, "", who))) { return result(round, "working", "在后台干活…", "background"); }
 				const failed = Array.isArray(round.failed) ? round.failed : [];
 				for (const item of failed) {
 					if (item && isAgent(round, item.botId, item.name)) { return result(round, "alert", item.reason || "没能回答", "failed"); }
@@ -460,6 +475,7 @@ window.__ModuleLoader__.load({
 				for (const event of events) {
 					if (!event || !isAgent(round, "", event.name)) { continue; }
 					const kind = String(event.kind || "");
+					if (kind === "working" && busy && /先不等它/.test(String(event.text || ""))) { continue; }
 					if (kind === "working") { return result(round, stateFromText(event.text), event.text || "在做了…", kind); }
 					if (kind === "resumed") { return result(round, "orbit", event.text || "群内待命…", kind); }
 				}
@@ -469,6 +485,72 @@ window.__ModuleLoader__.load({
 				if (round.done && member) { return result(round, "done", "本轮完成", "done"); }
 			}
 			return { state: "idle", label: "", roomId: "", roomName: "", eventKind: "" };
+		}
+		/**
+		 * ★ 2026-11-07（用户报「群聊的 item 没有实时更新状态」）：群行原来只画 `room.preview`（群里最后一条消息），
+		 *   成员行都在动、群行却停在「用户：…」。这里把同一份 `?active=1` 轮次聚合成群这一行的状态，词表与 `botStateOf` 同。
+		 *   优先级：等人批准 > 等人选择 > 正在回答 > 已发到群 > 中断 / 失败 > 成员还在后台干活 > 本轮完成。
+		 *   没有这个群的轮次 ⇒ idle（行上照旧显示 preview）。纯函数，check-bots-rooms.mjs 直接断言。
+		 */
+		function roomStateOf(active, room) {
+			const id = String((room && room.id) || "");
+			const sid = String((room && room.sessionId) || id);
+			const idle = { state: "idle", label: "", status: "", callId: "" };
+			if (!id) { return idle; }
+			const rounds = (Array.isArray(active) ? active : []).filter((r) => r && (String(r.roomId) === id || String(r.roomId) === sid));
+			if (!rounds.length) { return idle; }
+			const startedAt = (r) => Number(r.startedAt || 0);
+			const byNewest = (a, b) => startedAt(b) - startedAt(a);
+			const round = rounds.filter((r) => !r.done).sort(byNewest)[0] || rounds.slice().sort(byNewest)[0];
+			const status = groupRoundStatus(round);
+			const out = (state, label) => ({ state, label, status, callId: String(round.callId || "") });
+			const approvals = (Array.isArray(round.approvals) ? round.approvals : []).filter(Boolean);
+			if (approvals.length) {
+				const first = approvals[0];
+				return out("waiting", "等你批准：" + String(first.name || "成员") + (first.tool ? " 的 " + String(first.tool) : "")
+					+ (approvals.length > 1 ? "（共 " + approvals.length + " 项）" : ""));
+			}
+			const asks = (Array.isArray(round.asks) ? round.asks : []).filter(Boolean);
+			if (asks.length) {
+				const total = asks.reduce((n, a) => n + ((a.questions || []).length || 1), 0);
+				return out("waiting", "等你选择：" + String(asks[0].name || "成员") + (asks.length > 1 ? " 等 " + asks.length + " 位" : " 的 " + total + " 个问题"));
+			}
+			const events = (Array.isArray(round.events) ? round.events : []).filter(Boolean);
+			if (status === "replying") {
+				const speaking = Array.isArray(round.speaking) ? round.speaking : [];
+				return out("thinking", speaking.length ? speaking.join("、") + " 正在输入…" : "正在回答…");
+			}
+			if (status === "sent") {
+				const working = events.filter((e) => e.kind === "working" && e.text);
+				return out("working", working.length ? String(working[working.length - 1].text) : "已发到群，等成员开始…");
+			}
+			if (status === "cut") { return out("alert", "本轮被中断"); }
+			if (status === "failed") { return out("alert", "执行失败" + (round.error ? "：" + String(round.error) : "")); }
+			// 这一轮结束了，但放行到后台的成员还没交结果（rooms.js 放行时发的那条 working 事件）
+			const replies = (Array.isArray(round.replies) ? round.replies : []).filter((r) => r && !r.kind);
+			// 服务端给了实时的 `busy` 就以它为准（干完的不再算）；老数据才从「这一轮先不等它」事件推
+			const background = Array.isArray(round.busy) ? round.busy.map(String).filter(Boolean)
+				: events.filter((e) => e.kind === "working" && e.name && /先不等它/.test(String(e.text || "")))
+					.map((e) => String(e.name)).filter((name, i, all) => all.indexOf(name) === i && !replies.some((r) => r.name === name));
+			if (background.length) { return out("working", background.join("、") + " 还在后台干活"); }
+			return out("done", "本轮完成 · " + replies.length + " 条回复");
+		}
+		/**
+		 * ★ 2026-11-07：新出现的选择卡要亮哪些群的未读点。人正看着那个群（输入框上方已经有卡）就不亮；每张卡只亮一次。
+		 * @param seen 见过的卡 id（Set，就地更新）；纯函数便于守卫断言。
+		 */
+		function askUnreadTargets(list, seen, docked) {
+			const open = Array.isArray(docked) ? docked.map(String) : [];
+			const out = [];
+			for (const item of Array.isArray(list) ? list : []) {
+				for (const ask of Array.isArray(item && item.asks) ? item.asks : []) {
+					if (!ask || !ask.id || seen.has(ask.id)) { continue; }
+					seen.add(ask.id);
+					const roomId = String(item.roomId || "");
+					if (roomId && !open.includes(roomId) && !out.includes(roomId)) { out.push(roomId); }
+				}
+			}
+			return out;
 		}
 		/**
 		 * ★ 2026-11-06（用户报「正在执行任务的 bot，点击其 item，没有打开对应的对话窗口」）：
@@ -482,6 +564,8 @@ window.__ModuleLoader__.load({
 			const id = String((agent && agent.id) || "");
 			const room = (Array.isArray(rooms) ? rooms : []).find((r) => r && (r.id === bs.roomId || r.sessionId === bs.roomId));
 			if (!room) { return String(bs.roomId); }
+			// 它在等用户选：要答的卡在群里，打开群（不是它自己那条会话）
+			if (bs.eventKind === "ask") { return String(room.sessionId || room.id || bs.roomId); }
 			const member = Array.isArray(room.members) ? room.members.find((m) => m && String(m.id) === id) : null;
 			return String((member && member.sessionId) || room.sessionId || room.id || bs.roomId);
 		}
@@ -2132,6 +2216,9 @@ window.__ModuleLoader__.load({
 										const seq = (Number(win.__vssarosGroupProgressSeq) || 0) + 1;
 										win.__vssarosGroupProgressSeq = seq;
 										win.__vssarosGroupProgress = list;
+										// ★ 2026-11-07：有选择卡等人答 ⇒ 群行亮未读（这里是唯一一直在跑的轮询）
+										win.__vssarosGroupAskSeen = win.__vssarosGroupAskSeen || new Set();
+										for (const roomId of askUnreadTargets(list, win.__vssarosGroupAskSeen, win.__vssarosGroupComposerDocks)) { setSessionUnread(roomId, true); }
 										const Ctor = win.CustomEvent || (typeof CustomEvent !== "undefined" ? CustomEvent : null);
 										if (Ctor) { win.dispatchEvent(new Ctor(GROUP_PROGRESS_EVENT, { detail: { schema: GROUP_ACTIVITY_SCHEMA, seq, active: list } })); }
 									} catch { /* MemberDock 拿不到事件时也不影响浮层 */ }
@@ -2191,8 +2278,10 @@ window.__ModuleLoader__.load({
 					const lastEvent = events.length ? events[events.length - 1] : null;
 					const roundStatus = groupRoundStatus(item);
 					const status = item.statusLabel || GROUP_ROUND_LABELS[roundStatus];
+					const asks = Array.isArray(item.asks) ? item.asks : [];
 					return react.createElement("div", {
 						key: item.callId || item.roomId, "data-vssaros-group-activity-room": String(item.roomId || ""),
+						"data-vssaros-group-activity-asks": String(asks.length),
 						"data-vssaros-group-activity-state": item.done ? "done" : "running",
 						"data-vssaros-group-activity-round-status": roundStatus,
 						style: { display: "flex", flexDirection: "column", gap: 4 },
@@ -2200,19 +2289,21 @@ window.__ModuleLoader__.load({
 						react.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
 							react.createElement("span", { style: { fontWeight: 600, flex: "1 1 auto", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
 								"已发到「" + String(item.roomName || item.roomId || "群聊") + "」"),
-							react.createElement("span", { "data-vssaros-group-activity-status": "1", style: { fontSize: 11, color: statusColor(roundStatus) } }, status),
+							react.createElement("span", { "data-vssaros-group-activity-status": "1", style: { fontSize: 11, color: asks.length || (Array.isArray(item.busy) && item.busy.length) ? statusColor("waiting") : statusColor(roundStatus) } }, status),
 							react.createElement("button", {
 								type: "button", "data-act": "open-room", style: {
 									flex: "none", borderRadius: 6, padding: "2px 7px", cursor: "pointer", fontSize: 11,
 									border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.35))",
 									background: "transparent", color: "inherit",
 								}, onClick: () => open(item.roomId),
-							}, "打开群聊")),
+							}, asks.length ? "去选择" : "打开群聊")),
 						react.createElement("div", { style: { fontSize: 11, color: "var(--dsw-alias-label-tertiary, #999)" } },
 							(speaking.length ? speaking.join("、") + " 正在输入… · " : "") + replies.length + " 条回复 · 用时 " + elapsed(item) + "s"
 							+ (failed.length ? " · " + failed.length + " 位成员没能回答" : "")
 							+ (lastEvent && lastEvent.text ? " · " + String(lastEvent.text).slice(0, 40) : "")
 							+ (item.error ? " · " + String(item.error).slice(0, 80) : "")),
+						asks.length ? react.createElement("div", { "data-vssaros-group-activity-ask": "1", style: { fontSize: 11, color: statusColor("waiting") } },
+							asks.map((a) => String((a && a.name) || "成员") + " 提了 " + (((a && a.questions) || []).length || 1) + " 个问题").join("；")) : null,
 						last ? react.createElement("div", { style: { fontSize: 11, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } },
 							String(last.name || "") + "：" + String(last.text || "").slice(0, 80)) : null);
 				}));
@@ -3657,10 +3748,19 @@ window.__ModuleLoader__.load({
 					const unread = unreadIds.indexOf(id) >= 0;
 					const isCur = id === currentId;
 					const renamingThis = !!(roomRename && roomRename.id === id);
+					const rs = roomStateOf(groupActivity, room);
+					const roomActive = rs.state !== "idle";
+					const roomDot = rs.state === "alert" ? "var(--dsw-alias-state-error-primary, currentColor)"
+						: rs.state === "waiting" ? "var(--dsw-alias-state-warn-primary, currentColor)"
+							: "var(--dsw-alias-state-success-primary, currentColor)";
 					const tip = name + "\n" + members.map((m) => String((m && m.name) || (m && m.id) || "")).join("、")
-						+ (room.notice ? "\n公告：" + String(room.notice).slice(0, 120) : "") + "\n点击 ⇒ 在中栏打开群聊；右键 ⇒ 更多";
+						+ (room.notice ? "\n公告：" + String(room.notice).slice(0, 120) : "")
+						+ (roomActive ? "\n" + rs.label : "") + "\n点击 ⇒ 在中栏打开群聊；右键 ⇒ 更多";
 					return react.createElement("div", {
 						key: "room:" + id, "data-vssaros-room": id, "data-vssaros-room-pinned": room.pinned ? "1" : "0",
+						// 复用成员行的姿态 / shimmer / 彩点样式（选择器只看这几个属性）
+						"data-vssaros-bot-state": rs.state, "data-vssaros-room-round-status": rs.status,
+						"aria-label": name + (roomActive ? " · " + rs.label : ""),
 						style: Object.assign({}, S.botRow, isCur ? { background: "var(--dsw-alias-bg-layer-2, rgba(128,128,128,.16))" } : null), title: tip,
 						onClick: () => { if (!renamingThis) { openRoom(room); } },
 						onContextMenu: (e) => {
@@ -3674,7 +3774,7 @@ window.__ModuleLoader__.load({
 							setRoomMenu({ id, x, y, unread });
 						},
 					},
-						react.createElement("span", { style: Object.assign({}, S.botAv, { background: "var(--dsw-alias-brand-primary, #4d7cfe)", fontSize: 10 }) }, roomInitials(room)),
+						react.createElement("span", { "data-vssaros-bot-avatar": rs.state, style: Object.assign({}, S.botAv, { background: "var(--dsw-alias-brand-primary, #4d7cfe)", fontSize: 10 }) }, roomInitials(room)),
 						react.createElement("span", { style: S.botMain },
 							renamingThis ? react.createElement("input", {
 								style: S.rename, value: roomRename.draft, autoFocus: true, placeholder: "留空 = 按成员命名",
@@ -3692,7 +3792,10 @@ window.__ModuleLoader__.load({
 								room.pinned ? react.createElement("span", { style: S.botPill, title: "已置顶" }, "置顶") : null,
 								room.hidden ? react.createElement("span", { style: S.botPill, title: "已从侧栏隐藏（打开着所以还显示）" }, "隐藏") : null,
 								unread ? react.createElement("span", { style: S.unreadDot, "data-vssaros-room-unread": "1" }) : null),
-							react.createElement("span", { style: S.botL2 }, room.preview ? String(room.preview) : (members.length + " 位成员"))));
+							roomActive
+								? react.createElement("span", { "data-vssaros-bot-state-label": "1", "data-vssaros-room-state-label": "1", style: S.botStateText, title: rs.label }, rs.label)
+								: react.createElement("span", { style: S.botL2 }, room.preview ? String(room.preview) : (members.length + " 位成员"))),
+						roomActive ? react.createElement("span", { "data-vssaros-bot-dot": "1", "aria-hidden": "true", style: Object.assign({}, S.botStateDot, { background: roomDot }) }) : null);
 				};
 				const botsSection = (label, count, rows) => (count > 0 ? react.createElement(react.Fragment, null,
 					react.createElement("div", { key: "sec:" + label, style: S.botsSec }, label, react.createElement("span", { style: S.botsSecCt }, String(count))),
@@ -4659,7 +4762,7 @@ window.__ModuleLoader__.load({
 			// ★ 2026-11-05 多 bot 群聊：群行识别 / 可见与排序 / 右键菜单 7 项 / 菜单动作调度 / 「群设置」直达设置页签
 			AGENTS_API_ROOMS, ROOM_PROJECTION_KEY, SETTINGS_VIEW_ID, roomMarkOf, visibleRooms, roomMenuItems, roomMenuAction, roomInitials, presetConversationView,
 			// ★ 2026-11-05：@群执行后的实时反馈（全局浮层 + Bots 页签自动刷新）
-			AGENTS_API_ROOMS_ACTIVE, ROOMS_CHANGED_EVENT, GROUP_PROGRESS_EVENT, GROUP_DOCK_VISIBILITY_EVENT, roomsSignature, botStateOf, botOpenTargetOf, fetchRoomsOnly, fetchRoomActivity,
+			AGENTS_API_ROOMS_ACTIVE, ROOMS_CHANGED_EVENT, GROUP_PROGRESS_EVENT, GROUP_DOCK_VISIBILITY_EVENT, roomsSignature, botStateOf, roomStateOf, askUnreadTargets, botOpenTargetOf, fetchRoomsOnly, fetchRoomActivity,
 			GROUP_ACTIVITY_SCHEMA, GROUP_ROUND_LABELS, groupRoundStatus, normalizeGroupActivity, activitySignature,
 			// ★ 2026-11-06 前台页面声明不要「已发到…」tip（SuperAgent 工作台）
 			GROUP_TIP_OFF_ATTR, groupTipSuppressed,

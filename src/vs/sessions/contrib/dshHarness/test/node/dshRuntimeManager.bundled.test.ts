@@ -22,6 +22,14 @@ function makeFakeRuntime(root: string, version: string): string {
 	const bin = join(root, version, ...BIN_REL);
 	mkdirSync(join(bin, '..'), { recursive: true });
 	writeFileSync(bin, `console.log('${version}');\n`);
+	// ★ 2026-11-07：`resolveDsh` 在选中 managed 之前会做 `runtimeInstallMissing` 廉价体检
+	//   （10-29 真机事故：托管副本里 `@deepseek-ai/dsh-app-boot` 是空目录 ⇒ Host 一次都没起来）。
+	//   fixture 必须造齐体检要的三个构件，否则 managed 会被判"不完整"而回落 bundled，
+	//   这条用例就再也测不到「用户显式安装/升级必须被尊重」的语义了。
+	const scope = join(root, version, 'node_modules', '@deepseek-ai');
+	writeFileSync(join(scope, 'dsh', 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version }));
+	mkdirSync(join(scope, 'dsh-app-boot'), { recursive: true });
+	writeFileSync(join(scope, 'dsh-app-boot', 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-app-boot', version }));
 	return bin;
 }
 

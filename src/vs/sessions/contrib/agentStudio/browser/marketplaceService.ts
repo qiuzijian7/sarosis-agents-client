@@ -416,10 +416,17 @@ export class MarketplaceService extends Disposable implements IMarketplaceServic
 			throw new Error('包内缺少 manifest.json');
 		}
 
+		// ★ P3（2026-11-07）：技能安装已整体迁到 dsh 侧，IDE 商城不再装 skill。
+		//   不能落到下面「无 installer ⇒ 通用解压」的回退分支 —— 那条路不校验
+		//   SKILL.md / frontmatter，会静默装出一个 dsh 看不见的目录 ✗。
+		//   正规链：`resolveOp` 把 install + kind:'skill' 固定路由到 dsh 侧 local-write。
+		if (kind === 'skill') {
+			throw new Error('技能安装已迁到 dsh 侧：请在「工具 / 技能」页或 /x/marketplace/ 安装（IDE 商城不再装技能）');
+		}
+
 		// 4. 委托 installer 安装；无 installer 则回退到通用解压
 		let result: IInstallResult;
-		// 防御性检查：manifest 包含 mcp 配置（即使 kind 被错分类为 skill 等）→ 走 MCP 路径
-		// 解决：商城把 MCP 包错误注册为 skill 类型时，SkillInstaller 会报"包内缺少 SKILL.md"
+		// 防御性检查：manifest 包含 mcp 配置（即使 kind 被错分类）→ 走 MCP 路径
 		const isMcpByManifest = !!(manifest as any).mcp || !!(manifest as any).config;
 		if (isMcpByManifest) {
 			this.logService.info(`[Marketplace] manifest 含 mcp/config 字段，按 MCP 路径安装（kind=${kind} → mcp）`);

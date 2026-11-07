@@ -993,7 +993,8 @@ export class DshHostSupervisor extends Disposable {
 				env.NODE_COMPILE_CACHE = join(this._opts.runDir, 'node-compile-cache');
 			}
 			// ★ 2026-10-29（真机：别人机器上 `'pnpm' 不是内部或外部命令` ⇒ 35 个随包插件全没装上）：
-			//   系统没有 pnpm 时，把**产物自带**的那份（`resources/app/tools/pnpm/pnpm.cjs`）注入 PATH。
+			//   系统没有 pnpm 时，把**产物自带**的那份
+			//   （`resources/app/tools/pnpm/bin/pnpm.mjs`，pnpm@11.28.5 整包）注入 PATH。
 			//   · 启动时装随包插件**不依赖**它（走直装兜底，实测 35/35、4.3 秒）；
 			//   · 但它支撑**运行时**能力：在页面里装第三方插件/技能、`dsh plugin add` 等。
 			//   ⚠ shim 用 `node.path`（Host 自己的解释器）跑，不用 Electron 顶替 ——

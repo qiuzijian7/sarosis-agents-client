@@ -2259,7 +2259,9 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 				}
 			})();
 		}, 8_000);
-		timer.unref?.();
+		// ⚠ CI 全量编译时全局 setTimeout 可能解析到 src/typings/base-common.d.ts 的
+		//   `TimeoutHandle`（空接口，类型上没有 unref）⇒ 结构化断言调用（与 runJournal.ts / app.ts 同口径）。
+		(timer as { unref?: () => void })?.unref?.();
 		this._register({ dispose: () => clearTimeout(timer) });
 	}
 

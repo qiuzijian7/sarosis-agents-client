@@ -43,7 +43,7 @@ const SPACE_EXISTING = '7709999999999xyz';
 const CATEGORY = '深度学习';
 /** 内置脚本与技能手册的相对路径。 */
 const SCRIPT_REL = 'resources/.agents/kb/feishu-sync.mjs';
-const SKILL_REL = 'resources/.agents/skills/kb-category-feishu/SKILL.md';
+const SKILL_REL = 'dsh-plugins/vssaros-skill-bundle/skills/kb-category-feishu/SKILL.md';
 
 // ─── fixture ────────────────────────────────────────────────────────────────
 

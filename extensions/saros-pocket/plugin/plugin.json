@@ -69,7 +69,7 @@
       "sarosPocket.lanAuthEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "局域网访问需要密码。关掉后同一局域网内任何设备都能直接打开（公网入口仍强制密码）。"
+        "description": "局域网访问需要密码。关掉后同一局域网内任何设备都能直接打开。"
       },
       "sarosPocket.lanIpOverride": {
         "type": "string",
@@ -79,12 +79,12 @@
       "sarosPocket.tunnelMode": {
         "type": "string",
         "default": "quick",
-        "description": "公网隧道模式：quick = 随机域名（trycloudflare.com）；named = 固定域名（需先设置隧道 Token 与固定域名）。"
+        "description": "【已停用】公网隧道模式（cloudflared 功能已关闭，保留仅为兼容旧配置）。"
       },
       "sarosPocket.tunnelHostname": {
         "type": "string",
         "default": "",
-        "description": "命名隧道的固定域名，如 pocket.example.com（tunnelMode = named 时必填）。"
+        "description": "【已停用】命名隧道固定域名（cloudflared 功能已关闭，保留仅为兼容旧配置）。"
       },
       "sarosPocket.openPanelAction": {
         "type": "boolean",
@@ -113,46 +113,6 @@
         "x-actionLabel": "复制 App 地址",
         "x-actionRow": "连接"
       },
-      "sarosPocket.startTunnelAction": {
-        "type": "boolean",
-        "default": false,
-        "description": "启动 cloudflared 隧道，拿到公网 https 地址（点击即执行，无需保存）。",
-        "x-action": "sarosPocket.startTunnel",
-        "x-actionLabel": "开启公网访问",
-        "x-actionRow": "公网隧道"
-      },
-      "sarosPocket.stopTunnelAction": {
-        "type": "boolean",
-        "default": false,
-        "description": "停掉隧道（手机改用局域网入口）（点击即执行，无需保存）。",
-        "x-action": "sarosPocket.stopTunnel",
-        "x-actionLabel": "关闭公网访问",
-        "x-actionRow": "公网隧道"
-      },
-      "sarosPocket.quickTunnelAction": {
-        "type": "boolean",
-        "default": false,
-        "description": "适合临时用；重启后域名会变（点击即执行，无需保存）。",
-        "x-action": "sarosPocket.useQuickTunnel",
-        "x-actionLabel": "用快速隧道（随机域名）",
-        "x-actionRow": "公网隧道"
-      },
-      "sarosPocket.namedTunnelAction": {
-        "type": "boolean",
-        "default": false,
-        "description": "需要先设置隧道 Token 与固定域名（点击即执行，无需保存）。",
-        "x-action": "sarosPocket.useNamedTunnel",
-        "x-actionLabel": "用命名隧道（固定域名）",
-        "x-actionRow": "公网隧道"
-      },
-      "sarosPocket.tunnelTokenAction": {
-        "type": "boolean",
-        "default": false,
-        "description": "Cloudflare Tunnel Token（凭据只进扩展目录，不写进设置文件）（点击即执行，无需保存）。",
-        "x-action": "sarosPocket.setTunnelToken",
-        "x-actionLabel": "设置隧道 Token",
-        "x-actionRow": "公网隧道"
-      },
       "sarosPocket.lanPinAction": {
         "type": "boolean",
         "default": false,
@@ -167,14 +127,6 @@
         "description": "随机生成一个新的 8 位密码（点击即执行，无需保存）。",
         "x-action": "sarosPocket.refreshLanPin",
         "x-actionLabel": "刷新局域网密码",
-        "x-actionRow": "密码"
-      },
-      "sarosPocket.publicPinAction": {
-        "type": "boolean",
-        "default": false,
-        "description": "公网入口强制校验（点击即执行，无需保存）。",
-        "x-action": "sarosPocket.setPublicPin",
-        "x-actionLabel": "设置公网密码",
         "x-actionRow": "密码"
       },
       "sarosPocket.resetAction": {

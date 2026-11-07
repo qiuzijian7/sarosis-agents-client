@@ -1,0 +1,199 @@
+/* pixel.css —— 像素番茄钟独立入口样式（Designer 规范 → 落地版）
+   - 纯前端、零外部依赖、可离线：无任何字体 CDN / 图标库 / 图片外链。
+   - 像素数字 = 纯 CSS box-shadow 点阵（3×5 网格，0-9 + 冒号），每个数字一套 box-shadow。
+   - 标签/按钮字体用系统等宽栈模拟像素感，不引外部字体文件。
+   - 经典 8-bit：border-radius:0、2-3px 实线描边 + 硬投影（无模糊）、image-rendering:pixelated。
+   - 移动端优先：按钮/触控 ≥48px、100dvh + safe-area-inset-*、touch-action:manipulation。
+*/
+
+/* ============ 全局显隐兜底 ============ */
+/* 作者样式 display 会盖过浏览器 UA 的 [hidden]{display:none}，必须强制覆盖，
+   否则错误横幅无法真正隐藏（与 styles.css 同源约定）。 */
+[hidden] { display: none !important; }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+
+/* ============ 设计令牌（CSS 自定义属性） ============ */
+:root {
+  --bg:        #14182b;   /* 背景：深夜蓝黑 */
+  --panel:     #2b3a67;   /* 面板：中蓝 */
+  --panel-2:   #3d5aa6;   /* 面板描边内高亮 */
+  --ink:       #f4f4f4;   /* 文字：近白（正文，对比度见下） */
+  --muted:     #9badb7;   /* 次要文字：灰蓝（正文对比度 ≥4.5） */
+  --primary:   #c0392b;   /* 主强调：像素番茄红（专注），白字对比 5.44:1 */
+  --break:     #1e7d34;   /* 休息绿，白字对比 5.17:1 */
+  --digit:     #f4f4f4;   /* 像素数字色 */
+  --line:      #0d0f1a;   /* 硬描边 / 硬投影色（近黑） */
+  --focus:     #ffd23f;   /* 键盘焦点框：像素黄（可见度高） */
+  --border:    3px;                       /* 方块描边粗细 */
+  --shadow:    4px 4px 0 0 var(--line);   /* 硬投影（无模糊） */
+  --px:        12px;                      /* 像素数字单元格尺寸 */
+  --tap:       48px;                      /* 触控最小高度 */
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: ui-monospace, "Courier New", Consolas, monospace; /* 系统等宽栈模拟像素感 */
+  letter-spacing: .5px;
+  -webkit-text-size-adjust: 100%;
+  touch-action: manipulation;            /* 去 300ms 点击延迟，不禁用缩放 */
+  image-rendering: pixelated;            /* 硬边感 */
+  min-height: 100dvh;
+}
+
+/* ============ 布局骨架 ============ */
+.px-app {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: calc(env(safe-area-inset-top) + 16px) 16px calc(env(safe-area-inset-bottom) + 16px);
+  max-width: 420px;
+  margin: 0 auto;
+}
+.px-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  border-bottom: var(--border) solid var(--line);
+  padding-bottom: 10px;
+}
+.px-title { font-size: 18px; font-weight: 700; text-transform: uppercase; margin: 0; }
+.px-phase { font-size: 14px; color: var(--muted); text-transform: uppercase; }
+.px-app.is-focus .px-phase { color: var(--primary); }
+.px-app.is-break .px-phase { color: var(--break); }
+
+.px-stage {
+  background: var(--panel);
+  border: var(--border) solid var(--line);
+  box-shadow: var(--shadow);
+  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.px-state { color: var(--muted); font-size: 14px; margin: 0; text-transform: uppercase; }
+
+/* ============ 像素数字（box-shadow 3×5 点阵） ============ */
+.px-clock { display: flex; align-items: flex-end; gap: 6px; image-rendering: pixelated; }
+.px-cell {
+  width: calc(3 * var(--px));
+  height: calc(5 * var(--px));
+  background: transparent;          /* 基元素透明，仅用 box-shadow 点亮格子 */
+}
+/* 0 */ .px-cell[data-d="0"] { box-shadow:
+    0 0 0 0 var(--digit), var(--px) 0 0 0 var(--digit), calc(2*var(--px)) 0 0 0 var(--digit),
+    0 var(--px) 0 0 var(--digit), calc(2*var(--px)) var(--px) 0 0 var(--digit),
+    0 calc(2*var(--px)) 0 0 var(--digit), calc(2*var(--px)) calc(2*var(--px)) 0 0 var(--digit),
+    0 calc(3*var(--px)) 0 0 var(--digit), calc(2*var(--px)) calc(3*var(--px)) 0 0 var(--digit),
+    0 calc(4*var(--px)) 0 0 var(--digit), var(--px) calc(4*var(--px)) 0 0 var(--digit), calc(2*var(--px)) calc(4*var(--px)) 0 0 var(--digit); }
+/* 1 */ .px-cell[data-d="1"] { box-shadow:
+    var(--px) 0 0 0 var(--digit), var(--px) var(--px) 0 0 var(--digit), var(--px) calc(2*var(--px)) 0 0 var(--digit),
+    var(--px) calc(3*var(--px)) 0 0 var(--digit), var(--px) calc(4*var(--px)) 0 0 var(--digit); }
+/* 2 */ .px-cell[data-d="2"] { box-shadow:
+    0 0 0 0 var(--digit), var(--px) 0 0 0 var(--digit), calc(2*var(--px)) 0 0 0 var(--digit),
+    calc(2*var(--px)) var(--px) 0 0 var(--digit),
+    0 calc(2*var(--px)) 0 0 var(--digit), var(--px) calc(2*var(--px)) 0 0 var(--digit), calc(2*var(--px)) calc(2*var(--px)) 0 0 var(--digit),
+    0 calc(3*var(--px)) 0 0 var(--digit),
+    0 calc(4*var(--px)) 0 0 var(--digit), var(--px) calc(4*var(--px)) 0 0 var(--digit), calc(2*var(--px)) calc(4*var(--px)) 0 0 var(--digit); }
+/* 3 */ .px-cell[data-d="3"] { box-shadow:
+    0 0 0 0 var(--digit), var(--px) 0 0 0 var(--digit), calc(2*var(--px)) 0 0 0 var(--digit),
+    calc(2*var(--px)) var(--px) 0 0 var(--digit),
+    0 calc(2*var(--px)) 0 0 var(--digit), var(--px) calc(2*var(--px)) 0 0 var(--digit), calc(2*var(--px)) calc(2*var(--px)) 0 0 var(--digit),
+    calc(2*var(--px)) calc(3*var(--px)) 0 0 var(--digit),
+    0 calc(4*var(--px)) 0 0 var(--digit), var(--px) calc(4*var(--px)) 0 0 var(--digit), calc(2*var(--px)) calc(4*var(--px)) 0 0 var(--digit); }
+/* 4 */ .px-cell[data-d="4"] { box-shadow:
+    0 0 0 0 var(--digit), calc(2*var(--px)) 0 0 0 var(--digit),
+    0 var(--px) 0 0 var(--digit), calc(2*var(--px)) var(--px) 0 0 var(--digit),
+    0 calc(2*var(--px)) 0 0 var(--digit), var(--px) calc(2*var(--px)) 0 0 var(--digit), calc(2*var(--px)) calc(2*var(--px)) 0 0 var(--digit),
+    calc(2*var(--px)) calc(3*var(--px)) 0 0 var(--digit), calc(2*var(--px)) calc(4*var(--px)) 0 0 var(--digit); }
+/* 5 */ .px-cell[data-d="5"] { box-shadow:
+    0 0 0 0 var(--digit), var(--px) 0 0 0 var(--digit), calc(2*var(--px)) 0 0 0 var(--digit),
+    0 var(--px) 0 0 var(--digit),
+    0 calc(2*var(--px)) 0 0 var(--digit), var(--px) calc(2*var(--px)) 0 0 var(--digit), calc(2*var(--px)) calc(2*var(--px)) 0 0 var(--digit),
+    calc(2*var(--px)) calc(3*var(--px)) 0 0 var(--digit),
+    0 calc(4*var(--px)) 0 0 var(--digit), var(--px) calc(4*var(--px)) 0 0 var(--digit), calc(2*var(--px)) calc(4*var(--px)) 0 0 var(--digit); }
+/* 6 */ .px-cell[data-d="6"] { box-shadow:
+    0 0 0 0 var(--digit), var(--px) 0 0 0 var(--digit), calc(2*var(--px)) 0 0 0 var(--digit),
+    0 var(--px) 0 0 var(--digit),
+    0 calc(2*var(--px)) 0 0 var(--digit), var(--px) calc(2*var(--px)) 0 0 var(--digit), calc(2*var(--px)) calc(2*var(--px)) 0 0 var(--digit),
+    0 calc(3*var(--px)) 0 0 var(--digit), calc(2*var(--px)) calc(3*var(--px)) 0 0 var(--digit),
+    0 calc(4*var(--px)) 0 0 var(--digit), var(--px) calc(4*var(--px)) 0 0 var(--digit), calc(2*var(--px)) calc(4*var(--px)) 0 0 var(--digit); }
+/* 7 */ .px-cell[data-d="7"] { box-shadow:
+    0 0 0 0 var(--digit), var(--px) 0 0 0 var(--digit), calc(2*var(--px)) 0 0 0 var(--digit),
+    calc(2*var(--px)) var(--px) 0 0 var(--digit), calc(2*var(--px)) calc(2*var(--px)) 0 0 var(--digit),
+    calc(2*var(--px)) calc(3*var(--px)) 0 0 var(--digit), calc(2*var(--px)) calc(4*var(--px)) 0 0 var(--digit); }
+/* 8 */ .px-cell[data-d="8"] { box-shadow:
+    0 0 0 0 var(--digit), var(--px) 0 0 0 var(--digit), calc(2*var(--px)) 0 0 0 var(--digit),
+    0 var(--px) 0 0 var(--digit), calc(2*var(--px)) var(--px) 0 0 var(--digit),
+    0 calc(2*var(--px)) 0 0 var(--digit), var(--px) calc(2*var(--px)) 0 0 var(--digit), calc(2*var(--px)) calc(2*var(--px)) 0 0 var(--digit),
+    0 calc(3*var(--px)) 0 0 var(--digit), calc(2*var(--px)) calc(3*var(--px)) 0 0 var(--digit),
+    0 calc(4*var(--px)) 0 0 var(--digit), var(--px) calc(4*var(--px)) 0 0 var(--digit), calc(2*var(--px)) calc(4*var(--px)) 0 0 var(--digit); }
+/* 9 */ .px-cell[data-d="9"] { box-shadow:
+    0 0 0 0 var(--digit), var(--px) 0 0 0 var(--digit), calc(2*var(--px)) 0 0 0 var(--digit),
+    0 var(--px) 0 0 var(--digit), calc(2*var(--px)) var(--px) 0 0 var(--digit),
+    0 calc(2*var(--px)) 0 0 var(--digit), var(--px) calc(2*var(--px)) 0 0 var(--digit), calc(2*var(--px)) calc(2*var(--px)) 0 0 var(--digit),
+    calc(2*var(--px)) calc(3*var(--px)) 0 0 var(--digit),
+    0 calc(4*var(--px)) 0 0 var(--digit), var(--px) calc(4*var(--px)) 0 0 var(--digit), calc(2*var(--px)) calc(4*var(--px)) 0 0 var(--digit); }
+/* : */ .px-cell[data-d=":"] { box-shadow:
+    var(--px) var(--px) 0 0 var(--digit), var(--px) calc(3*var(--px)) 0 0 var(--digit); }
+
+/* ============ 控制按钮 ============ */
+.px-controls { display: flex; gap: 12px; }
+.px-btn {
+  flex: 1;
+  min-height: var(--tap);
+  padding: 0 14px;
+  font: inherit;
+  font-weight: 700;
+  font-size: 16px;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: var(--panel-2);
+  border: var(--border) solid var(--line);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  transition: transform .04s steps(2), box-shadow .04s steps(2);
+}
+.px-btn--primary { background: var(--primary); }
+.px-btn--ghost { background: var(--panel-2); }
+/* hover：抬起 + 投影变大 */
+.px-btn:hover:not(:disabled) { transform: translate(-2px, -2px); box-shadow: 6px 6px 0 0 var(--line); }
+/* active：按下 */
+.px-btn:active:not(:disabled) { transform: translate(2px, 2px); box-shadow: 2px 2px 0 0 var(--line); }
+/* 键盘焦点：像素黄描边，清晰可见 */
+.px-btn:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+/* 禁用：去投影、降透明、禁用指针 —— 与正常态明显区分 */
+.px-btn:disabled { opacity: .45; box-shadow: none; transform: none; cursor: not-allowed; border-style: dashed; }
+
+/* ============ 今日数 ============ */
+.px-today {
+  align-self: center;
+  font-size: 14px;
+  color: var(--muted);
+  text-transform: uppercase;
+  border: var(--border) solid var(--line);
+  padding: 8px 14px;
+  box-shadow: var(--shadow);
+  background: var(--panel);
+}
+.px-today b { color: var(--ink); font-size: 18px; }
+
+/* ============ 错误态横幅（localStorage 写入失败） ============ */
+.px-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+  background: var(--break);   /* Designer 规范：错误态底色用休息绿（照规范落地） */
+  color: var(--ink);
+  border: var(--border) solid var(--line);
+  box-shadow: var(--shadow);
+  padding: 12px 14px;
+  font-size: 13px;
+}
+.px-error .px-btn { flex: 0 0 auto; min-height: 40px; font-size: 13px; }

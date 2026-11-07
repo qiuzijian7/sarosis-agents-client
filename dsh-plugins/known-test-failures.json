@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "updated": "2026-11-07",
+  "runner": "src/vs/sessions/contrib/agentStudio/test/browser/run-browser-test.mjs",
+  "note": "既存失败基线：这些测试在 IDE agent loop / config.html 退役开始前就已红，并经「改动前状态」严格对账确认与本任务无关。清单只减不增：失败数变多 = 新增回归（FAIL），变少 = 修好了要回来销账（FAIL 提示）。新测试的红不允许写进这里。",
+  "entries": [
+    {
+      "test": "src/vs/sessions/contrib/agentStudio/test/browser/agentChatPanel.channelBinding.test.ts",
+      "passing": 7,
+      "failing": 1,
+      "reason": "设置页与 chat panel 的文案口径断言，HEAD 版本同样 7p/1f"
+    },
+    {
+      "test": "src/vs/sessions/contrib/agentStudio/test/browser/larkCli.test.ts",
+      "passing": 40,
+      "failing": 2,
+      "reason": "飞书渠道分组 / host 注入类断言，改动前状态完全相同"
+    },
+    {
+      "test": "src/vs/sessions/contrib/agentStudio/test/browser/guardrailWiring.test.ts",
+      "passing": 36,
+      "failing": 4,
+      "reason": "引用的 coreTools.ts 等死代码工具已在早期轮次删除，守卫未同步"
+    },
+    {
+      "test": "src/vs/sessions/contrib/agentStudio/browser/knowledge/feishuSyncCore.test.ts",
+      "passing": 34,
+      "failing": 1,
+      "reason": "逗号分隔去空白的纯逻辑断言，与本任务无关"
+    },
+    {
+      "test": "src/vs/sessions/contrib/agentStudio/browser/kbBuildCacheParity.test.ts",
+      "passing": 0,
+      "failing": 1,
+      "reason": "跨引擎黄金读数，改动前状态完全相同"
+    },
+    {
+      "test": "src/vs/sessions/contrib/agentStudio/test/browser/bridgeIpcStores.test.ts",
+      "passing": null,
+      "failing": null,
+      "exit": 1,
+      "fingerprints": [
+        "Could not resolve \"../../common/bridgeStore.js\"",
+        "Could not resolve \"../../browser/bridge/bridgeIpcStores.js\""
+      ],
+      "reason": "runner 编译阶段就失败（两个被删模块的孤儿测试），无 mocha 摘要；用稳定的 esbuild 解析错误指纹判定"
+    }
+  ]
+}
