@@ -53,7 +53,9 @@ check('接线：审批前先查本机地址，截图走附件、不内联 base64
 	assert.match(src, /blocks\.push\(\{ type: 'image', attachment: value\.attachment \}\)/);
 	const actionOps = /const ACTION_OPS = \[([^\]]*)\]/.exec(src)?.[1] ?? '';
 	assert.ok(!actionOps.includes('screenshot'));
-	assert.match(src, /'screenshot',\s*\n\];/);
+	// screenshot 在 KNOWN_OPS 里（2026-11-07 起它后面还有 handoff / resume / task，不再要求是最后一个）
+	const knownOps = /const KNOWN_OPS = \[([\s\S]*?)\n\];/.exec(src.replace(/\r\n/g, '\n'))?.[1] ?? '';
+	assert.ok(knownOps.includes("'screenshot'"));
 });
 
 console.log(`local-policy: ${pass} passed${fail.length ? `, ${fail.length} failed` : ''}`);

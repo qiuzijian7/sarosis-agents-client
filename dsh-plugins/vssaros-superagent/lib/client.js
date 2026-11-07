@@ -1515,15 +1515,11 @@ window.__ModuleLoader__.load({
 			"recent",
 			"all"
 		];
-		//#endregion
-		//#region src/client/route.ts
-		/** Typed panel routes, route parser, and sessionStorage location history. */
 		/**
-		* VsSaros change: the supervisor desk's conversation (`chat`) is the first tab and home; the former Overview lives in the
-		* side panel (see `side.tsx`), so a stored `overview` route opens `chat`. Plan C adds the Workbench (`work`): the teams'
-		* steps as a flow, a board or a list.
+		* VsSaros change (2026-11-07, user request): the tabs the header shows. The Workbench (`work`) is no longer a tab; its
+		* page stays a route, reached from the links that open a team's flow (`team-plans.tsx`, `work.openFlow`).
 		*/
-		const TABS = [
+		const NAV_TABS = [
 			"chat",
 			"work",
 			"source",
@@ -1531,7 +1527,7 @@ window.__ModuleLoader__.load({
 			"eval",
 			"execution",
 			"settings"
-		];
+		].filter((tab) => tab !== "work");
 		const SETTINGS_GROUPS = [
 			"source",
 			"eval",
@@ -3550,6 +3546,23 @@ window.__ModuleLoader__.load({
 									line: tokens(item.line ?? 0)
 								})
 							] }, item.session))
+						}),
+						usage.day.relays.resent + usage.day.relays.side > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "dt-hint",
+							"data-testid": "usage-relays",
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", { children: [t(usage.coexist.dsBot ? "usageRelaysDsBot" : "usageRelaysOther", {
+								resent: String(usage.day.relays.resent),
+								side: String(usage.day.relays.side)
+							}), !usage.sideCalls && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [" ", t("sideCallsOff")] })] }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+								className: "dt-list",
+								children: usage.day.relays.sessions.slice(0, 5).map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
+									className: "dt-row-meta",
+									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [t(`usageRole.${item.role}`), item.step ? ` · ${item.step}` : ""] }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("usageRelaySession", {
+										resent: String(item.resent),
+										side: String(item.side)
+									}) })]
+								}, item.session))
+							})]
 						})
 					] })]
 				})
@@ -4574,6 +4587,12 @@ window.__ModuleLoader__.load({
 											spellCheck: false,
 											onChange: (event) => edit({ blockedCommands: event.target.value })
 										})
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SwitchRow, {
+										label: t("sideCalls"),
+										hint: t("sideCallsHint"),
+										checked: value.sideCalls,
+										onChange: (sideCalls) => edit({ sideCalls })
 									})
 								]
 							})]
@@ -5579,6 +5598,14 @@ window.__ModuleLoader__.load({
 			"usageDay": ["24 小时 {total} tokens · {calls} 次调用", "24 hours: {total} tokens · {calls} calls"],
 			"usageWeek": ["7 天 {total}", "7 days: {total}"],
 			"usageCache": ["其中缓存读 {read}", "cache reads {read}"],
+			"usageRelaysDsBot": ["24 小时内 DS Bot 改写重发了 SuperAgent 会话的请求 {resent} 次，另用看图模型读了 {side} 次（都只计一次用量）。", "In 24 hours DS Bot sent SuperAgent's requests again {resent} times and read them with its image model {side} times (each counted once)."],
+			"usageRelaysOther": ["24 小时内有其它插件重发了 SuperAgent 会话的请求 {resent} 次，另用别的模型读了 {side} 次（都只计一次用量）。", "In 24 hours another plugin sent SuperAgent's requests again {resent} times and read them with another model {side} times (each counted once)."],
+			"usageRelaySession": ["改写 {resent} 次 · 看图 {side} 次", "{resent} rewritten · {side} read on the side"],
+			"ticketRelaysDsBot": ["被 DS Bot 改写", "Rewritten by DS Bot"],
+			"ticketRelaysOther": ["被其它插件改写", "Rewritten by another plugin"],
+			"sideCalls": ["允许其它插件用别的模型读 SuperAgent 会话", "Let other plugins read SuperAgent's Sessions with another model"],
+			"sideCallsHint": ["DS Bot 的看图：会话模型不能看图时，它用自己的 OCR 模型读图片。关掉后 SuperAgent 的会话拒绝这类调用，DS Bot 会告诉模型「图片现在读不了」；密钥脱敏的改写重发不受影响。", "DS Bot's images: when a Session's model cannot read images, it reads them with its OCR model. Off, SuperAgent's Sessions refuse such calls and DS Bot tells the model the image could not be read; its secrets rewrite still goes."],
+			"sideCallsOff": ["（执行设置里已关闭「别的模型读会话」，这类调用会被拒绝。）", "(Reading with another model is off in the execution settings; such calls are refused.)"],
 			"usageCalls": ["{calls} 次", "{calls} calls"],
 			"usageRole.master": ["主会话", "Main Session"],
 			"usageRole.desk": ["主管台", "Supervisor desk"],
@@ -5603,9 +5630,9 @@ window.__ModuleLoader__.load({
 			"rulesForget": ["删除", "Delete"],
 			"rulesNone": ["还没有规则", "No rules yet"],
 			"coexistDsBot": ["这个 Host 里同时装着 DS Bot。它的大部分功能只管自己的 Bot，但有三处也作用于 SuperAgent 的会话：", "DS Bot runs in this Host too. Most of it acts on its own Bots only; three parts also reach SuperAgent's Sessions:"],
-			"coexistEffect.secrets": ["密钥脱敏：在 DS Bot 里存过的密钥值，会从所有工具结果和模型请求里替换掉（改写过的请求会重新发一次，步骤用量只计一次）", "Secrets: a value saved in DS Bot is replaced in every tool result and model request (a rewritten request is sent again; step usage counts it once)"],
-			"coexistEffect.images": ["看图：会话的模型不能看图时，DS Bot 用它的 OCR 模型读图片，再把文字发给原模型——步骤里的图片会发给那个模型", "Images: when a Session's model cannot read images, DS Bot reads them with its OCR model and sends the text instead, so step images reach that model"],
-			"coexistEffect.skills": ["技能：goal-grill、office、office-tools 对所有会话可见", "Skills: goal-grill, office and office-tools are offered to every Session"],
+			"coexistEffect.secrets": ["密钥脱敏：在 DS Bot 里存过的密钥值，会从所有工具结果和模型请求里替换掉（改写过的请求会重新发一次，用量只计一次；次数见执行页「用量」与工单详情）", "Secrets: a value saved in DS Bot is replaced in every tool result and model request (a rewritten request is sent again and counted once; how often shows under Usage and on the ticket)"],
+			"coexistEffect.images": ["看图：会话的模型不能看图时，DS Bot 用它的 OCR 模型读图片，再把文字发给原模型——步骤里的图片会发给那个模型；可在执行设置里关闭", "Images: when a Session's model cannot read images, DS Bot reads them with its OCR model and sends the text instead, so step images reach that model; you can turn this off in the execution settings"],
+			"coexistEffect.skills": ["技能：goal-grill、office、office-tools 进 DSH 的技能目录，主会话与步骤看得到，主管台看不到；不占主会话的 prompt 预算", "Skills: goal-grill, office and office-tools join DSH's skill catalog, seen by the main Session and steps but not the desk; they take nothing from the main Session's prompt budget"],
 			"team.budgetLine": ["预算：{tokens} / {tokensCap} tokens · {turns} / {turnsCap} 回合", "Budget: {tokens} / {tokensCap} tokens · {turns} / {turnsCap} turns"],
 			"team.budgetReached": ["预算用完：不再开新步骤", "Budget used: no new step starts"],
 			"team.budgetRaise": ["追加一半预算", "Raise by half"],
@@ -7002,6 +7029,25 @@ window.__ModuleLoader__.load({
 				run?.abort();
 				setLive(false);
 			};
+		}
+		/**
+		* VsSaros addition (2026-11-07, the module's "hot dispose"): ends the stream and its reconnect timer and forgets every
+		* listener, whatever views are still mounted. The client plugin calls it when DSH disposes it (`apply` → `ctx.effect`): a
+		* plugin reload loads a new copy of this module, and DSH's client has no `import.meta.hot`, so without this the old copy's
+		* connection and backoff timer lived on until its last view unmounted (or forever, after a view that never did). A listener
+		* that subscribes afterwards opens a new stream; a view of the old plugin that unsubscribes later closes nothing of it, since
+		* a stream is closed only once no listener is left.
+		*/
+		function disposeFeed() {
+			clearTimeout(retry);
+			retry = void 0;
+			const run = current;
+			current = void 0;
+			run?.abort();
+			listeners.clear();
+			setLive(false);
+			connected = false;
+			failures = 0;
 		}
 		/** Whether the stream is open now. */
 		function useFeedLive() {
@@ -11102,6 +11148,20 @@ window.__ModuleLoader__.load({
 						/* @__PURE__ */ (0, react_jsx_runtime.jsx)(LabelValue, {
 							label: t("ticketUpdatedLabel"),
 							value: when(data.updatedAt, t("lang"))
+						}),
+						data.relays.resent + data.relays.side > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							"data-testid": "ticket-relays",
+							title: data.relays.sessions.map((item) => `${item.step ?? t("usageRole.worker")}: ${t("usageRelaySession", {
+								resent: String(item.resent),
+								side: String(item.side)
+							})}`).join("\n"),
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(LabelValue, {
+								label: t(data.coexist.dsBot ? "ticketRelaysDsBot" : "ticketRelaysOther"),
+								value: t("usageRelaySession", {
+									resent: String(data.relays.resent),
+									side: String(data.relays.side)
+								})
+							})
 						})
 					]
 				}),
@@ -11638,7 +11698,7 @@ window.__ModuleLoader__.load({
 								label: t("pagesLabel"),
 								value: route.page,
 								onChange: openTab,
-								items: TABS.map((value) => ({
+								items: NAV_TABS.map((value) => ({
 									value,
 									label: t(`tab.${value}`),
 									id: `dt-tab-${value}`,
@@ -12154,6 +12214,9 @@ window.__ModuleLoader__.load({
 				zh,
 				en
 			}), "dsh-superagent: dictionaries");
+			ctx.effect(() => () => {
+				disposeFeed();
+			}, "dsh-superagent: change stream");
 			const t = ctx.locale.bind(NS);
 			ctx.slots.inject("main", () => ctx.slots.register({
 				name: "main",

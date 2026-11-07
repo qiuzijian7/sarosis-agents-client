@@ -3,6 +3,7 @@ import { act, useState, type ComponentType } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, expect, it, vi } from 'vitest'
 import { ApiError, caller, usePoll } from '../src/client/api.ts'
+import { disposeFeed, feedState, subscribe } from '../src/client/feed.ts'
 import { apply, RECEIPT_TOOL_NAME } from '../src/client/index.tsx'
 import { RECEIPT_TOOL } from '../src/app/desk.ts'
 import { zh } from '../src/client/locales.ts'
@@ -16,6 +17,8 @@ const t = ((key: keyof typeof zh) => zh[key] ?? key) as never
 function fixture(listed: string[], workbenches?: { register: ReturnType<typeof vi.fn> }) {
   const entries: Entry[] = []
   const dictionaries: Record<string, unknown> = {}
+  // What the plugin's effects leave to undo: DSH runs them when it disposes the plugin (as a reload does).
+  const disposers: (() => void)[] = []
   const ctx = {
     // VsSaros addition: a slot entry can be withdrawn, as the sidebar entry is once the workbench host appears.
     slots: { inject: (_name: string, register: () => void) => register(), register: (options: Entry['options'], component: Entry['component']) => {
@@ -24,7 +27,7 @@ function fixture(listed: string[], workbenches?: { register: ReturnType<typeof v
       return () => { const at = entries.indexOf(entry); if (at >= 0) entries.splice(at, 1) }
     } },
     locale: { register: (ns: string, value: unknown) => { dictionaries[ns] = value; return () => {} }, bind: () => t },
-    effect: (effect: () => unknown) => { effect() },
+    effect: (effect: () => unknown) => { const undo = effect(); if (typeof undo === 'function') disposers.push(undo as () => void) },
     sessions: { list: { getSnapshot: () => ({ phase: 'ready', byId: Object.fromEntries(listed.map(id => [id, {}])) }) }, refresh: vi.fn(async () => {}) },
     uiWorkspace: { openSession: vi.fn() },
     // Omit config form service so Deployment renders read-only; VsSaros's workbench host only when given.
@@ -34,7 +37,8 @@ function fixture(listed: string[], workbenches?: { register: ReturnType<typeof v
   }
   apply(ctx as never)
   const entry = (name: string) => entries.find(item => item.options.name === name)!
-  return { ctx, entries, dictionaries, main: entry('main'), nav: entry('sidebar.panellist') }
+  return { ctx, entries, dictionaries, main: entry('main'), nav: entry('sidebar.panellist'),
+    dispose: () => { for (const undo of disposers.splice(0).reverse()) undo() } }
 }
 async function render(entry: Entry, props: Record<string, unknown>) {
   const container = document.createElement('div'); document.body.append(container)
@@ -88,7 +92,7 @@ it('registers a whole-page workbench in VsSaros instead of the sidebar entry, wh
   expect(container.querySelector('[data-vssaros-surface="workbench"] .dt-tabs')).not.toBeNull()
   // chat-surface's floating "sent to group" tip stays off over this workbench (it shows group runs itself).
   expect(container.querySelector('[data-vssaros-surface="workbench"]')?.getAttribute('data-vssaros-group-tip')).toBe('off')
-  expect([...container.querySelectorAll('[role="tab"]')].map(tab => tab.textContent)).toEqual([zh['tab.chat'], zh['tab.work'], zh['tab.source'],
+  expect([...container.querySelectorAll('[role="tab"]')].map(tab => tab.textContent)).toEqual([zh['tab.chat'], zh['tab.source'],
     zh['tab.trigger'], zh['tab.eval'], zh['tab.execution'], zh['tab.settings']])
   // Without the host's conversation, the Chat tab is the panel's own.
   expect(container.querySelector('[data-testid="native-chat"]')).toBeNull()
@@ -176,6 +180,53 @@ it('polls one request at a time, keeps the data while new dependencies load, and
   expect(calls).toHaveLength(5)
   act(() => { root.unmount() })
   vi.useRealTimers()
+})
+
+// VsSaros addition (2026-11-07): DSH's client has no `import.meta.hot`; a plugin reload disposes the plugin and loads a new copy
+// of its modules. The old copy's change stream and its reconnect timer must end with the plugin, whatever views still listen.
+it('ends the change stream and its reconnect timer when DSH disposes the client plugin', async () => {
+  const streams: { signal: AbortSignal }[] = []
+  let answer: 'stream' | 'down' = 'stream'
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+    if (answer === 'down') return new Response(null, { status: 503 })
+    streams.push({ signal: init!.signal! })
+    return new Response(new ReadableStream<Uint8Array>({ start: controller => {
+      init!.signal!.addEventListener('abort', () => { try { controller.error(new DOMException('aborted', 'AbortError')) } catch { /* closed */ } })
+    } }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  }))
+  const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setTimeout(resolve, 0)) }
+  const plugin = fixture([])
+  // A view listens (as a card that never unmounted would): the stream opens.
+  subscribe(() => {})
+  await settle()
+  expect(feedState()).toEqual({ connecting: true, retrying: false, listeners: 1 })
+  plugin.dispose()
+  await settle()
+  expect(streams[0]!.signal.aborted).toBe(true)
+  expect(feedState()).toEqual({ connecting: false, retrying: false, listeners: 0 })
+  // A stream that is down waits to reconnect; disposing the plugin ends that wait too.
+  const again = fixture([])
+  answer = 'down'
+  subscribe(() => {})
+  await settle()
+  expect(feedState()).toMatchObject({ connecting: false, retrying: true })
+  again.dispose()
+  expect(feedState()).toEqual({ connecting: false, retrying: false, listeners: 0 })
+  // A view that unsubscribes after the plugin was disposed closes nothing of a newer listener's stream.
+  answer = 'stream'
+  const third = fixture([])
+  const stale = subscribe(() => {})
+  await settle()
+  third.dispose()
+  const fresh = subscribe(() => {})
+  await settle()
+  const opened = streams.at(-1)!
+  stale()
+  expect(opened.signal.aborted).toBe(false)
+  expect(feedState()).toEqual({ connecting: true, retrying: false, listeners: 1 })
+  fresh()
+  expect(opened.signal.aborted).toBe(true)
+  disposeFeed()
 })
 
 it('tells a dsh-superagent that does not answer from a record it does not have, and words each failure by what failed', async () => {

@@ -1,5 +1,5 @@
 diff --git a/src/app/api.ts b/src/app/api.ts
-index bc71d625db9..6c40ae052ba 100644
+index bc71d625db9..c0cfbc8b31c 100644
 --- a/src/app/api.ts
 +++ b/src/app/api.ts
 @@ -1,6 +1,8 @@
@@ -11,7 +11,7 @@ index bc71d625db9..6c40ae052ba 100644
  import type { PromptsView, StateView, TicketPageView } from './http.ts'
  import type { HistoryView } from './settings-history.ts'
  import type { OverviewView } from './views/overview.ts'
-@@ -8,6 +10,21 @@ import type { SettingsView } from './views/settings.ts'
+@@ -8,6 +10,22 @@ import type { SettingsView } from './views/settings.ts'
  import type { SourceStatusView } from './views/sources.ts'
  import type { DecisionListView, SearchView, ThreadDetailView, ThreadListView } from './views/threads.ts'
  import type { TicketListView } from './views/tickets.ts'
@@ -25,6 +25,7 @@ index bc71d625db9..6c40ae052ba 100644
 +import type { StepsView } from './steps.ts'
 +import type { ApprovalChoice, ApprovalRule, ApprovalTemplateId, StepApprovalView } from './step-approvals.ts'
 +import type { UsageSummary } from './usage.ts'
++import type { Coexistence } from './coexist.ts'
 +import type { StewardView } from './steward.ts'
 +import type { DeskFlow } from './desk-flow.ts'
 +import type { DeskFile, DeskMessage, DeskSchedule } from './desk-chat.ts'
@@ -33,7 +34,7 @@ index bc71d625db9..6c40ae052ba 100644
  
  export const TICKET_FILTERS = ['open', 'person', 'working', 'idle', 'ended'] as const
  export const THREAD_FILTERS = ['subscribed', 'evaluating', 'recent', 'all'] as const
-@@ -39,10 +56,71 @@ export interface Api {
+@@ -39,10 +57,71 @@ export interface Api {
    'GET policy/history': { response: HistoryView }
    'POST policy-sync/:id': { response: { policy: unknown } }
    'POST setup/check': { response: { restarting: true } }
@@ -70,7 +71,7 @@ index bc71d625db9..6c40ae052ba 100644
 +  /** VsSaros addition (2026-11-06): a person gives a Bot a template's remembered answers. */
 +  'POST steps/rules/templates/:id/apply': { body: { botId: string; botName: string }; response: { added: number } }
 +  /** VsSaros addition (2026-11-06): the usage ledger of SuperAgent's Sessions (last day and week) and the steward's work. */
-+  'GET usage': { response: { day: UsageSummary; week: UsageSummary['total']; steward: StewardView[] } }
++  'GET usage': { response: { day: UsageSummary; week: UsageSummary['total']; steward: StewardView[]; coexist: Coexistence; sideCalls: boolean } }
 +  'POST steps/rules/:id/delete': { response: { deleted: true } }
 +  'POST tickets/:id/steps/:key/stop': { response: { step: string; state: string } }
 +  /** VsSaros addition (2026-11-06): a person raises a team's budget (new caps above what is used). */
@@ -331,10 +332,10 @@ index 00000000000..2bbb4f28af0
 +}
 diff --git a/src/app/coexist.ts b/src/app/coexist.ts
 new file mode 100644
-index 00000000000..9e595de4a86
+index 00000000000..7673f7358ce
 --- /dev/null
 +++ b/src/app/coexist.ts
-@@ -0,0 +1,41 @@
+@@ -0,0 +1,52 @@
 +/**
 + * VsSaros addition (2026-11-06, P3 · co-install): what other Bot plugins share this Host, and what they do to every Session.
 + *
@@ -348,8 +349,19 @@ index 00000000000..9e595de4a86
 + *   with the text, so a step's images then go to that model.
 + * - `skills`: its skills `goal-grill`, `office` and `office-tools` are offered to every Session.
 + *
-+ * Found through the cordis loader's entries (an entry named `ds-bot` that is not disabled). Nothing is changed: the panel
-+ * says so, and the log says so once.
++ * Found through the cordis loader's entries (an entry named `ds-bot` that is not disabled). Nothing of DS Bot is changed: the
++ * panel says so, and the log says so once.
++ *
++ * VsSaros addition (2026-11-07, P0 · co-install semantics): the three are observable and the side effect can be turned off.
++ * - The usage ledger's listener runs first (`prepend`), so a request DS Bot sends again passes through it again: each such
++ *   call is recorded once, marked `resent` (same model) or `side` (its OCR model), counted on `GET usage` (`day.relays`) and a
++ *   ticket's page (`relays`). `executor.sideCalls` off refuses side calls in SuperAgent's Sessions (DS Bot then tells the
++ *   model the image could not be read); the secrets rewrite, which only hides values, is never refused.
++ * - Team steps' approvals are decided by `step-approvals.ts` (step_approval_rule, else a person), whichever way the model's
++ *   request was sent; DS Bot's approval answerer hands on every Session not its own.
++ * - Its skills reach DSH's skill catalog message (`dsh-tool-skill`), not SuperAgent's prompt sections or its prompt budget, and
++ *   never the desk, whose every tool is masked.
++ * `tests/dsb-coexist.spec.ts` guards all four with a fake DS Bot made the way ds-bot 0.2.7 does it.
 + */
 +export const DS_BOT_ENTRY = 'ds-bot'
 +export type CoexistEffect = 'secrets' | 'images' | 'skills'
@@ -800,10 +812,10 @@ index 00000000000..9a7fa931322
 +}
 diff --git a/src/app/desk.ts b/src/app/desk.ts
 new file mode 100644
-index 00000000000..ef7b811a8c0
+index 00000000000..74539a0fb43
 --- /dev/null
 +++ b/src/app/desk.ts
-@@ -0,0 +1,241 @@
+@@ -0,0 +1,308 @@
 +/**
 + * VsSaros addition: the supervisor desk, a DSH Session where a person talks to SuperAgent directly. The desk does no work
 + * itself: its one tool hands the person's latest message, word for word, to the `superagent` Source, so the request goes
@@ -981,7 +993,37 @@ index 00000000000..ef7b811a8c0
 +interface StreamMessage { id?: unknown; role?: unknown; source?: { kind?: unknown }; toolCallId?: unknown; content?: unknown; isError?: unknown }
 +interface StreamOptions { sessionId?: unknown; purpose?: unknown; messages?: readonly StreamMessage[]; tools?: readonly { name?: unknown }[] }
 +/** What the desk's stream needs: the desk's id, and which ticket's end a delivered message tells (desk outbox). */
-+export interface DeskStreamHost { deskId: string; ticketEndedOf(messageId: string): string | undefined }
++export interface DeskStreamHost {
++  deskId: string
++  ticketEndedOf(messageId: string): string | undefined
++  /**
++   * VsSaros addition (2026-11-07): resolves once the person's message (by its DSH message id) was handed over as it arrived
++   * (or after a bounded wait), so the turn's own `superagent_submit` finds it handed over and never races the group paths.
++   * Without it, a turn of the person's messages goes to the desk's model as before.
++   */
++  handedOver?(messageId: string): Promise<void>
++  /** The desk's one line for a `superagent_submit` result: where the message went. */
++  submitLine?(result: SubmitResult): Promise<string>
++}
++/** What `superagent_submit` returns, as the desk's line reads it. */
++export interface SubmitResult { submitted?: boolean; result?: string; trigger?: string }
++/** Tool-call ids of the `superagent_submit` calls `deskReceiptStream` makes, so it knows its own results. */
++export const SUBMIT_CALL_PREFIX = 'toolu_superagent_submit_'
++const SUBMIT_TOOL = 'superagent_submit'
++
++/** Where a desk message went, as the desk's line reads it. */
++export interface SubmitView { result?: string; route?: { roomName: string; kind: 'created' | 'routed' | 'updated' }; filtered?: boolean; tickets?: readonly string[] }
++/** The desk's line for a message it handed over (no model): the flow card above it shows the rest. */
++export function submitText(view: SubmitView | undefined): string {
++  if (!view?.result) return '这条消息没能交给主管，可以再发一次。'
++  if (view.result === 'filtered' || view.filtered) return '这条消息没交给主管：主管台在 superagent 来源里没有放行，可以到 SuperAgent 设置里查看。'
++  if (view.route) {
++    const name = `「${view.route.roomName}」`
++    return view.route.kind === 'created' ? `已建群${name}，群里的 Bots 接着做。` : view.route.kind === 'updated' ? `已更新群${name}。` : `已转给群${name}。`
++  }
++  if (view.tickets?.length) return `已转给正在做的工单${view.tickets.map(title => `「${title}」`).join('、')}。`
++  return '主管收到了，需要你回复的消息会发到这里。'
++}
 +
 +const textOf = (message: StreamMessage): string => {
 +  const content = message.content
@@ -1016,9 +1058,30 @@ index 00000000000..ef7b811a8c0
 +      let start = last
 +      while (start > 0 && messages[start - 1]?.role === 'tool') start -= 1
 +      const results = messages.slice(start, last + 1)
-+      const ours = results.every(message => typeof message.toolCallId === 'string' && message.toolCallId.startsWith(RECEIPT_CALL_PREFIX))
-+      if (!ours || fresh.length) return next()
++      const callOf = (prefix: string) => results.every(message => typeof message.toolCallId === 'string' && message.toolCallId.startsWith(prefix))
++      if (fresh.length) return next()
++      if (callOf(SUBMIT_CALL_PREFIX) && host.submitLine) {
++        const line = host.submitLine
++        const parsed = (() => { try { return JSON.parse(textOf(results.at(-1)!).trim()) as SubmitResult } catch { return {} } })()
++        return (async function* submitted() { yield* say(await line(results.at(-1)!.isError === true ? {} : parsed)) })()
++      }
++      if (!callOf(RECEIPT_CALL_PREFIX)) return next()
 +      return say(receiptText(results.map(parseView)))
++    }
++    // VsSaros addition (2026-11-07): a turn of nothing but the person's own messages hands them over with no model (each was
++    // handed over as it arrived already; the call keeps the flow card), then says where it went. 6.8万 tokens a message before.
++    if (fresh.length && fresh.every(message => message.source?.kind === 'user')) {
++      const latest = fresh.at(-1)!
++      if (!host.handedOver || typeof latest.id !== 'string' || !(options.tools ?? []).some(tool => tool?.name === SUBMIT_TOOL)) return next()
++      const handedOver = host.handedOver, messageId = latest.id
++      const id = `${SUBMIT_CALL_PREFIX}${uuid().replace(/-/g, '')}`
++      return (async function* submitCall() {
++        await handedOver(messageId)
++        yield { type: 'block-start', index: 0, blockType: 'tool-call' }
++        yield { type: 'tool-call-delta', index: 0, id, name: SUBMIT_TOOL, argumentsDelta: '{}' }
++        yield { type: 'block-end', index: 0, block: { type: 'tool-call', id, name: SUBMIT_TOOL, arguments: '{}' } }
++        yield { type: 'finish', reason: { kind: 'tool-calls' } }
++      })()
 +    }
 +    if (!fresh.length || fresh.some(message => message.source?.kind === 'user')) return next()
 +    const tickets = fresh.map(message => typeof message.id === 'string' ? host.ticketEndedOf(message.id) : undefined)
@@ -1034,6 +1097,22 @@ index 00000000000..ef7b811a8c0
 +      }
 +      yield { type: 'finish', reason: { kind: 'tool-calls' } }
 +    })()
++  }
++}
++
++/**
++ * VsSaros fix (2026-11-07, real machine, found by `dev/scripts/e2e-dsb-coexist.mjs`): the desk masks every tool, `skill` too,
++ * but its first step ran before the mask, so DSH's `dsh-tool-skill` put the profile's whole skill catalog into its history
++ * (173 skills, 72 KB, DS Bot's among them) and every later desk call carried it. The desk uses no skill: this `llm/stream`
++ * listener drops skill catalog messages from every request of the desk, the one already in its history too.
++ */
++export function deskWithoutCatalog(deskId: string) {
++  const catalog = (message: unknown) => (message as { source?: { kind?: unknown } } | undefined)?.source?.kind === 'skill-catalog'
++  return (options: { sessionId?: unknown; messages?: readonly unknown[] } | undefined, next: () => unknown): unknown => {
++    if (options?.sessionId === deskId && Array.isArray(options.messages) && options.messages.some(catalog)) {
++      try { (options as { messages: unknown[] }).messages = options.messages.filter(message => !catalog(message)) } catch { /* frozen: sent as it is */ }
++    }
++    return next()
 +  }
 +}
 +
@@ -1580,7 +1659,7 @@ index 00000000000..1fd383f9eec
 +	}
 +}
 diff --git a/src/app/http.ts b/src/app/http.ts
-index 13c0115e7b3..adce8655774 100644
+index 13c0115e7b3..0647b5aeee8 100644
 --- a/src/app/http.ts
 +++ b/src/app/http.ts
 @@ -14,6 +14,8 @@ import { SetupError, type SetupProblem } from '../setup.ts'
@@ -1654,7 +1733,7 @@ index 13c0115e7b3..adce8655774 100644
 +  /** VsSaros addition (plan C): team steps' requests waiting for a person, and remembered answers. */
 +  readonly stepApprovals: Pick<StepApprovals, 'list' | 'answer' | 'rules' | 'forget' | 'applyTemplate'>
 +  /** VsSaros addition (2026-11-06): the usage ledger and the context steward. */
-+  readonly usage: Pick<UsageLedger, 'summary'>
++  readonly usage: Pick<UsageLedger, 'summary' | 'relaysOf'>
 +  readonly steward: Pick<ContextSteward, 'list'>
 +  /** VsSaros addition (plan C): changes pushed to open pages, and where one desk message stands. */
 +  readonly feed: Pick<Feed, 'attach' | 'close'>
@@ -1703,7 +1782,18 @@ index 13c0115e7b3..adce8655774 100644
  }
  const views = (runtime: HttpHost): ViewHost => ({ store: runtime.store, sources: runtime.sources, links: runtime.links() })
  const setupState = (runtime: HttpHost): SetupState => ({ deployment: runtime.configured() ? runtime.deployment : undefined,
-@@ -146,6 +205,8 @@ const count = z.coerce.number().int().nonnegative()
+@@ -116,7 +175,9 @@ export type StateView = ReturnType<typeof stateView>
+ function ticketPage(runtime: HttpHost, id: string) {
+   const detail = ticketDetail(views(runtime), id), ticket = runtime.store.tickets.get(id)
+   if (!detail || !ticket) throw new RouteError(404, 'Ticket not found')
+-  return { ...detail, environment: runtime.configured() ? runtime.ticketEnvironment(ticket) : [] }
++  return { ...detail, environment: runtime.configured() ? runtime.ticketEnvironment(ticket) : [],
++    // VsSaros addition (2026-11-07): calls another plugin (DS Bot) made inside this ticket's Sessions: sent again or on the side.
++    relays: runtime.usage.relaysOf(id), coexist: runtime.coexist?.() ?? {} }
+ }
+ export type TicketPageView = ReturnType<typeof ticketPage>
+ function promptsView(runtime: HttpHost, revision: number | undefined, offset: number) {
+@@ -146,6 +207,8 @@ const count = z.coerce.number().int().nonnegative()
  const PromptsQuery = z.object({ revision: count.optional(), offset: count.default(0) })
  const SourceBlock = z.templateLiteral(['source:', z.string().regex(/^[a-z][a-z0-9-]*$/)])
  const SettingsBlockSchema = z.union([z.enum(['policy', 'eval', 'executor']), SourceBlock])
@@ -1712,7 +1802,7 @@ index 13c0115e7b3..adce8655774 100644
  const SaveRequest = z.object({ value: z.unknown(), revision: z.number().int().nonnegative() })
  
  function routes(runtime: HttpHost): Routes {
-@@ -155,7 +216,7 @@ function routes(runtime: HttpHost): Routes {
+@@ -155,7 +218,7 @@ function routes(runtime: HttpHost): Routes {
    return {
      'GET state': () => stateView(runtime),
      'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
@@ -1721,7 +1811,7 @@ index 13c0115e7b3..adce8655774 100644
      'GET search': ({ query }) => search(views(runtime), query.q ?? '', runtime.sourceLinks),
      'GET sources': () => sourcesStatus(views(runtime), runtime.health, setupState(runtime)),
      'GET settings': () => settingsView(store, runtime.sources, runtime.health, setupState(runtime), runtime.machine.stateDir),
-@@ -203,6 +264,19 @@ function routes(runtime: HttpHost): Routes {
+@@ -203,6 +266,19 @@ function routes(runtime: HttpHost): Routes {
      'GET policy/history': () => policyHistory(store, runtime.sources, policyVersion(store.settings())),
      'POST policy-sync/:id': async ({ params }) => ({ policy: await runtime.settings.sync(params.id) }),
      'POST setup/check': () => { runtime.checkSetup(); return { restarting: true } },
@@ -1741,7 +1831,7 @@ index 13c0115e7b3..adce8655774 100644
      'GET models': () => runtime.models(),
      'GET prompts': ({ query }) => { const { revision, offset } = PromptsQuery.parse(query); return promptsView(runtime, revision, offset) },
      'PUT prompts': async input => {
-@@ -210,6 +284,99 @@ function routes(runtime: HttpHost): Routes {
+@@ -210,6 +286,101 @@ function routes(runtime: HttpHost): Routes {
        return savePrompts(runtime, request.config, request.baseRevision, 'panel')
      },
      'POST prompts/preview': async input => runtime.prompts.preview(await promptBody(input)),
@@ -1771,7 +1861,9 @@ index 13c0115e7b3..adce8655774 100644
 +    },
 +    'GET usage': () => {
 +      const day = new Date(Date.now() - 86_400_000).toISOString(), week = new Date(Date.now() - 7 * 86_400_000).toISOString()
-+      return { day: runtime.usage.summary(day), week: runtime.usage.summary(week).total, steward: runtime.steward.list() }
++      return { day: runtime.usage.summary(day), week: runtime.usage.summary(week).total, steward: runtime.steward.list(),
++        // VsSaros addition (2026-11-07): who the relayed calls (`day.relays`) are from, and whether side calls are refused.
++        coexist: runtime.coexist?.() ?? {}, sideCalls: runtime.store.settings().executor.sideCalls }
 +    },
 +    'POST steps/rules/:id/delete': ({ params }) => { runtime.stepApprovals.forget(params.id); return { deleted: true as const } },
 +    'POST tickets/:id/steps/:key/stop': async ({ params }) => {
@@ -1841,7 +1933,7 @@ index 13c0115e7b3..adce8655774 100644
    }
  }
  function decoded(segment: string): string {
-@@ -233,8 +400,20 @@ export function registerHttp(ctx: Context, runtime: HttpHost): () => void {
+@@ -233,8 +404,20 @@ export function registerHttp(ctx: Context, runtime: HttpHost): () => void {
    const disposers = [
      ctx.webServer.register({ kind: 'prefix', path: '/orchestrator', handler: async (req, res) => {
        const url = new URL(req.url ?? '/', 'http://localhost')
@@ -1862,7 +1954,7 @@ index 13c0115e7b3..adce8655774 100644
        try {
          await runtime.ready
          const route = match(table, req.method ?? 'GET', url.pathname.slice('/orchestrator/api/'.length).split('/'))
-@@ -243,5 +422,5 @@ export function registerHttp(ctx: Context, runtime: HttpHost): () => void {
+@@ -243,5 +426,5 @@ export function registerHttp(ctx: Context, runtime: HttpHost): () => void {
          json(res, 200, await route.run({ params: route.params as never, query, body: maxBytes => readBody(req, maxBytes) }))
        } catch (error) { json(res, ...failure(error)) }
      } })]
@@ -2416,7 +2508,7 @@ index 5b01e6bfe72..c8f914df9ed 100644
  
  /** Resolve a configured route through the live provider; catalog membership is not a restriction. */
 diff --git a/src/app/runtime.ts b/src/app/runtime.ts
-index a8cfe52df7b..6b8cf7f48d4 100644
+index a8cfe52df7b..c1cdee11c11 100644
 --- a/src/app/runtime.ts
 +++ b/src/app/runtime.ts
 @@ -1,5 +1,6 @@
@@ -2469,11 +2561,11 @@ index a8cfe52df7b..6b8cf7f48d4 100644
 +import { ContextSteward } from './steward.ts'
 +import { coexistenceOf, type Coexistence } from './coexist.ts'
 +import { Distiller } from './distill.ts'
-+import { deliverReply, deskReceiptStream, deskRequestId, deskSessionId, deskTools, latestPersonMessage, TICKET_ENDED_NOTICE, ticketEndedNotice } from './desk.ts'
++import { deliverReply, deskReceiptStream, deskRequestId, deskSessionId, deskTools, deskWithoutCatalog, latestPersonMessage, submitText, TICKET_ENDED_NOTICE, ticketEndedNotice } from './desk.ts'
 +import { DeskChat } from './desk-chat.ts'
 +import { DeskOutbox, wakesDesk } from './desk-outbox.ts'
-+import { GROUP_REFERENCE_KIND, GROUP_REFERENCE_LATE_MS, GROUP_REFERENCE_WAIT_MS, handleDeskGroupCommand, handleDeskMessage, mayBeGroupCommand,
-+  type GroupSettlement } from './groupFastPath.ts'
++import { GROUP_REFERENCE_KIND, GROUP_REFERENCE_LATE_MS, GROUP_REFERENCE_WAIT_MS, handleDeskGroupCommand, handleDeskMessage, isGroupCreationRequest,
++  mayBeGroupCommand, type GroupSettlement } from './groupFastPath.ts'
 +import { GroupRoutes } from './group-routes.ts'
 +import { sandboxWorks, StepActivity, StepApprovals, stepPermission } from './step-approvals.ts'
 +import { Feed } from './feed.ts'
@@ -2482,7 +2574,22 @@ index a8cfe52df7b..6b8cf7f48d4 100644
  import { sourceContextOf, type SourceContextDeps } from './source-context.ts'
  import type { ResourceHost } from './resources.ts'
  import { mainTools, type MainToolsHost } from './tools/main.ts'
-@@ -69,11 +91,41 @@ export class Runtime extends Service implements SourceHost {
+@@ -50,6 +72,14 @@ import { executorTools, type ExecutorToolsHost } from './tools/executor.ts'
+ // Source plugins interact with dsh-superagent exclusively through the `SourceHost` service interface.
+ declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
+ const now = (): string => new Date().toISOString()
++/** VsSaros addition (2026-11-07): how long the desk's no-model turn waits past the group wait for the message's hand-over. */
++const DESK_HANDOVER_GRACE_MS = 3000
++/** How long the desk's line waits for the group a message asks for to be made or found. */
++const DESK_GROUP_ROUTE_WAIT_MS = 20_000
++/** Resolves once `ready()` holds, or after `ms` (then the caller goes on as before). */
++async function waitFor(ready: () => boolean, ms: number): Promise<void> {
++  for (const until = Date.now() + ms; !ready() && Date.now() < until;) await new Promise(resolve => setTimeout(resolve, 50))
++}
+ 
+ /**
+  * Composition root of dsh-superagent that connects `Store`, `Setup`, `Engine`, `SourceRegistry`, `Effects`, `Outbox`, `Passes`, `Sessions`, `Settings`, `Prompts`, `DshExecutor`, and `MasterAssessor`.
+@@ -69,11 +99,41 @@ export class Runtime extends Service implements SourceHost {
    readonly assessor: MasterAssessor
    readonly outbox: Outbox
    readonly engine: Engine
@@ -2524,7 +2631,7 @@ index a8cfe52df7b..6b8cf7f48d4 100644
    private readonly sourceLinks = new TextCache(200_000)
    private readonly stopped = new AbortController()
    private readonly disposers: (() => void)[] = []
-@@ -88,9 +140,11 @@ export class Runtime extends Service implements SourceHost {
+@@ -88,9 +148,11 @@ export class Runtime extends Service implements SourceHost {
      super(ctx, 'orchestrator')
      const runtime = this
      // Lock the state directory before opening the database so another process cannot migrate or write concurrently.
@@ -2537,7 +2644,7 @@ index a8cfe52df7b..6b8cf7f48d4 100644
      this.releaseLock = async () => { release() }
      let opened: Store | undefined
      try {
-@@ -103,8 +157,11 @@ export class Runtime extends Service implements SourceHost {
+@@ -103,8 +165,11 @@ export class Runtime extends Service implements SourceHost {
        const prompts = this.prompts = new Prompts(store, () => machine.promptMaxChars.get(), deployed, feishu)
        const masterId = this.masterId = store.get(KV.runtime.masterId) ?? `orchestrator-${key(machine.stateDir)}`
        store.set(KV.runtime.masterId, masterId)
@@ -2549,7 +2656,7 @@ index a8cfe52df7b..6b8cf7f48d4 100644
        const effects = this.effects = new Effects(store, board)
        const sources = this.sources = new SourceRegistry(() => store.settings(), board, kind => {
          // Sync source member lists once startup completes when a source plugin loads dynamically.
-@@ -112,6 +169,24 @@ export class Runtime extends Service implements SourceHost {
+@@ -112,6 +177,24 @@ export class Runtime extends Service implements SourceHost {
            .catch(() => { /* sync() records its failure in health. */ })
          return () => {}
        })
@@ -2574,7 +2681,7 @@ index a8cfe52df7b..6b8cf7f48d4 100644
        const links: LinkHost = { store, links: this.sourceLinks, commands, sources, lifetime: this.lifetime }
        const link = (trigger: Trigger, signal?: AbortSignal) => sourceLink(links, trigger, signal)
        const environment = (ticket: Ticket) => this.ticketEnvironment(ticket)
-@@ -121,21 +196,96 @@ export class Runtime extends Service implements SourceHost {
+@@ -121,21 +204,117 @@ export class Runtime extends Service implements SourceHost {
        const sessions = this.sessions = new Sessions({ context: ctx, store, prompts, effects, health: board.claim('models'), masterId,
          lifetime: this.lifetime,
          closing: () => this.closing(), environment,
@@ -2600,10 +2707,28 @@ index a8cfe52df7b..6b8cf7f48d4 100644
 +        recorded: message => sessions.recorded(deskId, deskRequestId(message.id)),
 +        warn: message => { ctx.logger.warn('dsh-superagent: %s', message) } })
 +      // VsSaros addition (2026-11-06): the desk answers a ticket's end with its end card and one line, without its model.
-+      const llmEvents = ctx as unknown as { on(name: 'llm/stream', listener: ReturnType<typeof deskReceiptStream>): () => void }
++      const llmEvents = ctx as unknown as { on(name: 'llm/stream', listener: ReturnType<typeof deskReceiptStream>, options?: { prepend: boolean }): () => void }
++      // VsSaros fix (2026-11-07): no skill catalog in any request of the desk (see `deskWithoutCatalog`).
++      this.disposers.push(llmEvents.on('llm/stream', deskWithoutCatalog(deskId), { prepend: true }))
 +      this.disposers.push(llmEvents.on('llm/stream', deskReceiptStream({ deskId, ticketEndedOf: messageId => {
 +        const message = this.deskOutbox.messageOf(messageId)
 +        return message?.id.startsWith(`${TICKET_ENDED_NOTICE}:`) ? message.ticketId : undefined
++      },
++      // VsSaros addition (2026-11-07): the desk hands the person's messages over with no model (see `deskReceiptStream`).
++      handedOver: messageId => waitFor(() => !!store.triggers.get(deskTrigger({ session: deskId, messageId, text: '', at: now() }).id),
++        GROUP_REFERENCE_WAIT_MS + DESK_HANDOVER_GRACE_MS),
++      submitLine: async result => {
++        const id = result.trigger
++        const trigger = id ? store.triggers.get(id) : undefined
++        // A group the message asks for is made (or found) a moment after the message is stored: wait for its route.
++        if (id && trigger && (mayBeGroupCommand(trigger.text) || isGroupCreationRequest(trigger.text))) {
++          await waitFor(() => !!this.groupRoutes.get(id), DESK_GROUP_ROUTE_WAIT_MS)
++        }
++        const route = id ? this.groupRoutes.get(id) : undefined
++        const disposition = id ? store.triggers.disposition(id) : undefined
++        const tickets = (disposition?.fanout ?? []).flatMap(ticketId => store.tickets.get(ticketId)?.title ?? [])
++        return submitText({ ...result.result ? { result: result.result } : {}, ...route ? { route } : {},
++          ...disposition?.filtered ? { filtered: true } : {}, tickets })
 +      } })))
 +      // VsSaros addition (2026-11-06): the usage ledger of SuperAgent's Sessions; its one listener also meters team steps'
 +      // tokens for the team's token budget (a hard gate), so both count each call once.
@@ -2617,10 +2742,13 @@ index a8cfe52df7b..6b8cf7f48d4 100644
 +        const step = runtime.steps?.step(sessionId)
 +        return { role: 'step', ticketId: ref.ticketId, step: ref.key, ...step ? { bot: step.bot.name } : {} }
 +      })
-+      this.disposers.push((ctx as unknown as { on(name: 'llm/stream', listener: ReturnType<UsageLedger['listener']>): () => void })
++      // VsSaros change (2026-11-07, co-install): first in the waterfall, so a request another listener sends again through it
++      // (DS Bot's) passes through it again and is told apart (`UsageRelay`); `executor.sideCalls` off refuses a side call.
++      this.disposers.push((ctx as unknown as { on(name: 'llm/stream', listener: ReturnType<UsageLedger['listener']>, options: { prepend: boolean }): () => void })
 +        .on('llm/stream', this.usage.listener(call => {
 +          if (call.role === 'step') runtime.steps?.meter(call.session, { inputTokens: call.input, outputTokens: call.output, cacheReadTokens: call.cacheRead, cacheWriteTokens: call.cacheWrite })
-+        })))
++        }, () => store.settings().executor.sideCalls ? undefined
++          : 'SuperAgent does not let another plugin read its Sessions with another model (executor.sideCalls is off)'), { prepend: true }))
 +      // VsSaros addition (2026-11-06): the main Session and the desk are compacted while idle, past their check line.
 +      const ledger = this.usage, windows = new Map<string, Promise<{ window: number; maxOutput?: number } | undefined>>()
 +      this.steward = new ContextSteward({ watched: id => id === masterId ? 'master' : id === deskId ? 'desk' : undefined, last: id => ledger.last(id),
@@ -2675,7 +2803,7 @@ index a8cfe52df7b..6b8cf7f48d4 100644
            // Notify the main Session only about domain events it did not initiate itself.
            const notice = this.quiet ? undefined : eventNotice(event, id => store.tickets.get(id))
            if (notice) sessions.notify(...notice)
-@@ -144,11 +294,26 @@ export class Runtime extends Service implements SourceHost {
+@@ -144,11 +323,26 @@ export class Runtime extends Service implements SourceHost {
            const followed = !this.quiet && (event.type === 'trigger.received' || event.type === 'ticket.resumed' || event.type === 'trigger.followup')
            const followup = followed ? followupNotice(store, sources, event.data.triggerId) : undefined
            if (followup) sessions.relay(followup.id, followup.text)
@@ -2704,7 +2832,7 @@ index a8cfe52df7b..6b8cf7f48d4 100644
            }
          } })
        // Update the `evals` health entry on every pass if an evaluation failed as unavailable within the last hour.
-@@ -159,9 +324,51 @@ export class Runtime extends Service implements SourceHost {
+@@ -159,9 +353,51 @@ export class Runtime extends Service implements SourceHost {
        this.sourceDeps = { store, engine, outbox, commands, sources, get ready() { return runtime.ready },
          get deployment() { return setup.deployment }, configured: () => setup.configured(),
          get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, receive: trigger => passes.receive(trigger) }
@@ -2757,7 +2885,7 @@ index a8cfe52df7b..6b8cf7f48d4 100644
          quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
        this.ready = this.initialize()
      } catch (error) {
-@@ -207,19 +414,172 @@ export class Runtime extends Service implements SourceHost {
+@@ -207,19 +443,172 @@ export class Runtime extends Service implements SourceHost {
      }
      this.sessions.install()
      this.executor.install()
@@ -5929,10 +6057,10 @@ index 00000000000..cb97f827498
 +}
 diff --git a/src/app/usage.ts b/src/app/usage.ts
 new file mode 100644
-index 00000000000..90649900d02
+index 00000000000..b2e4015ccc5
 --- /dev/null
 +++ b/src/app/usage.ts
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,198 @@
 +/**
 + * VsSaros addition (2026-11-06, P2 · usage ledger, after DS Bot's `usage.js`): every model call of SuperAgent's own Sessions —
 + * the main Session, the supervisor desk, each ticket's worker (or coordinator) and each team step — with its tokens, kept in
@@ -5948,12 +6076,26 @@ index 00000000000..90649900d02
 +/** Whose a Session is: its role, and its ticket, step and Bot when it has them. */
 +export interface UsageOwner { role: UsageRole; ticketId?: string; step?: string; bot?: string }
 +export interface UsageTokens { input: number; cacheRead: number; cacheWrite: number; output: number }
++/**
++ * VsSaros addition (2026-11-07, P0 · co-install observability): how another plugin's listener made a call while one of this
++ * Session's calls was under way. DS Bot does both on every Session (`coexist.ts`):
++ * - `resent`: the same model, the request sent again as a new call (its `secrets` rewrite, its `images` text instead of images);
++ * - `side`: another model, called on the side (its OCR reading the request's images).
++ */
++export type UsageRelay = 'resent' | 'side'
 +export interface UsageCall extends UsageOwner, UsageTokens {
 +  at: string; session: string; provider: string; model: string
 +  /** DSH's purpose of an auxiliary call (`compaction`, `title`, …); unset for a conversation turn. */
 +  purpose?: string
++  /** Set on a call another listener made inside one of this Session's calls. */
++  relay?: UsageRelay
 +}
 +export interface UsageTotals extends UsageTokens { calls: number; total: number }
++/** Calls another listener made inside a Session's calls: `resent` and `side` counts, by Session. */
++export interface UsageRelays {
++  resent: number; side: number
++  sessions: ({ session: string; role: UsageRole; ticketId?: string; step?: string; resent: number; side: number })[]
++}
 +export interface UsageSummary {
 +  since: string
 +  total: UsageTotals
@@ -5961,6 +6103,7 @@ index 00000000000..90649900d02
 +  byModel: ({ provider: string; model: string } & UsageTotals)[]
 +  byBot: ({ bot: string } & UsageTotals)[]
 +  byTicket: ({ ticketId: string } & UsageTotals)[]
++  relays: UsageRelays
 +}
 +/** What the ledger reads of DSH's stream options. */
 +export interface StreamOptions { sessionId?: string; provider?: string; model?: string; purpose?: string }
@@ -5976,20 +6119,52 @@ index 00000000000..90649900d02
 +/**
 + * DSH's `llm/stream` waterfall listener that hands each usage chunk of the Sessions `own` accepts to `onUsage`, once, and
 + * passes every chunk on unchanged. Every other call passes through untouched.
++ *
++ * VsSaros addition (2026-11-07): it tells a call another listener made inside one of the Session's calls (`UsageRelay`): one
++ * that starts while a call of the same Session and purpose runs. Registered first (`prepend`), it is the outermost listener,
++ * so a listener that sends a request again through the whole waterfall, as DS Bot's do, passes through it again. A `side`
++ * call `refuse` names a reason for is refused (its stream throws); DS Bot then tells the model the image could not be read.
 + */
-+export function meteredStream(own: (sessionId: string) => boolean, onUsage: (options: StreamOptions & { sessionId: string }, usage: Record<string, number | undefined>) => void) {
++export function meteredStream(own: (sessionId: string) => boolean,
++  onUsage: (options: StreamOptions & { sessionId: string; relay?: UsageRelay }, usage: Record<string, number | undefined>) => void,
++  hooks: { refuse?(options: StreamOptions & { sessionId: string }): string | undefined } = {}) {
 +  const counted = new WeakSet<object>()
++  /** The calls under way, by Session and purpose, outermost first. */
++  const active = new Map<string, StreamOptions[]>()
++  const keyOf = (options: StreamOptions) => `${options.sessionId}\u0000${options.purpose ?? ''}`
++  const relayOf = (options: StreamOptions): UsageRelay | undefined => {
++    const outer = active.get(keyOf(options))?.[0]
++    if (!outer) return undefined
++    return (outer.provider ?? '') === (options.provider ?? '') && (outer.model ?? '') === (options.model ?? '') ? 'resent' : 'side'
++  }
++  const refusal = (options: StreamOptions & { sessionId: string }) => relayOf(options) === 'side' ? hooks.refuse?.(options) : undefined
++  const refused = (reason: string) => (async function* (): AsyncGenerator<never> { throw new Error(reason) })()
 +  return (options: StreamOptions | undefined, next: () => unknown): unknown => {
 +    const sessionId = options?.sessionId
 +    if (!sessionId || !own(sessionId)) return next()
++    // A side call that starts while the Session's call streams (DS Bot's OCR) is known here, before the model is asked.
++    const early = refusal({ ...options, sessionId })
++    if (early) return refused(early)
 +    const result = next()
 +    const iterate = async function* (stream: AsyncIterable<UsageChunk>) {
-+      for await (const chunk of stream) {
-+        if (chunk?.type === 'usage' && chunk.usage && !counted.has(chunk)) {
-+          counted.add(chunk)
-+          try { onUsage({ ...options, sessionId }, chunk.usage) } catch { /* metering never breaks a turn */ }
++      // A request sent again at once (DS Bot's secrets) is known only once its stream is read, inside the outer one.
++      const relay = relayOf(options)
++      const late = refusal({ ...options, sessionId })
++      if (late) throw new Error(late)
++      const key = keyOf(options), stack = active.get(key) ?? []
++      stack.push(options)
++      active.set(key, stack)
++      try {
++        for await (const chunk of stream) {
++          if (chunk?.type === 'usage' && chunk.usage && !counted.has(chunk)) {
++            counted.add(chunk)
++            try { onUsage({ ...options, sessionId, ...relay ? { relay } : {} }, chunk.usage) } catch { /* metering never breaks a turn */ }
++          }
++          yield chunk
 +        }
-+        yield chunk
++      } finally {
++        stack.splice(stack.lastIndexOf(options), 1)
++        if (!stack.length) active.delete(key)
 +      }
 +    }
 +    if (result && typeof (result as AsyncIterable<unknown>)[Symbol.asyncIterator] === 'function') return iterate(result as AsyncIterable<never>)
@@ -6001,6 +6176,19 @@ index 00000000000..90649900d02
 +}
 +
 +const empty = (): UsageTotals => ({ calls: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, total: 0 })
++/** The relayed calls among `calls`, counted by Session (the 20 with the most). */
++export function relaysOf(calls: readonly UsageCall[]): UsageRelays {
++  const sessions = new Map<string, UsageRelays['sessions'][number]>()
++  let resent = 0, side = 0
++  for (const call of calls) {
++    if (!call.relay) continue
++    if (call.relay === 'resent') resent += 1; else side += 1
++    const item = sessions.get(call.session) ?? sessions.set(call.session, { session: call.session, role: call.role,
++      ...call.ticketId ? { ticketId: call.ticketId } : {}, ...call.step ? { step: call.step } : {}, resent: 0, side: 0 }).get(call.session)!
++    item[call.relay] += 1
++  }
++  return { resent, side, sessions: [...sessions.values()].sort((a, b) => b.resent + b.side - a.resent - a.side).slice(0, 20) }
++}
 +const add = (into: UsageTotals, call: UsageTokens) => {
 +  into.calls += 1; into.input += call.input; into.cacheRead += call.cacheRead; into.cacheWrite += call.cacheWrite; into.output += call.output
 +  into.total += totalOf(call)
@@ -6014,38 +6202,48 @@ index 00000000000..90649900d02
 +    db.exec('CREATE INDEX IF NOT EXISTS usage_call_session ON usage_call (session, id)')
 +    this.prune()
 +  }
-+  /** The `llm/stream` listener; `also` hears each counted call too (the team's token budget). */
-+  listener(also?: (call: UsageCall) => void) {
++  /**
++   * The `llm/stream` listener; `also` hears each counted call too (the team's token budget). `refuse` names why a `side`
++   * call of a Session is refused (`executor.sideCalls` off), or undefined to let it run.
++   */
++  listener(also?: (call: UsageCall) => void, refuse?: (sessionId: string) => string | undefined) {
 +    return meteredStream(id => this.owner(id) !== undefined, (options, usage) => {
 +      const call = this.record(options, usage)
 +      if (call) also?.(call)
-+    })
++    }, { refuse: options => refuse?.(options.sessionId) })
 +  }
 +  /** Records one call's usage. @returns the call, or undefined when its Session is not SuperAgent's or it used nothing. */
-+  record(options: StreamOptions & { sessionId: string }, usage: Record<string, number | undefined>): UsageCall | undefined {
++  record(options: StreamOptions & { sessionId: string; relay?: UsageRelay }, usage: Record<string, number | undefined>): UsageCall | undefined {
 +    const owner = this.owner(options.sessionId)
 +    const tokens = tokensOf(usage)
 +    if (!owner || !totalOf(tokens)) return undefined
 +    const call: UsageCall = { at: new Date(this.now()).toISOString(), session: options.sessionId, ...owner, provider: options.provider ?? '',
-+      model: options.model ?? '', ...options.purpose ? { purpose: options.purpose } : {}, ...tokens }
++      model: options.model ?? '', ...options.purpose ? { purpose: options.purpose } : {}, ...options.relay ? { relay: options.relay } : {}, ...tokens }
 +    this.db.prepare('INSERT INTO usage_call (at, session, value) VALUES (?,?,?)').run(call.at, call.session, JSON.stringify(call))
 +    return call
 +  }
-+  /** The latest conversation call of a Session (no auxiliary purpose): what its context held then. */
++  /** The latest conversation call of a Session (no auxiliary purpose, not another model's side call): what its context held then. */
 +  last(sessionId: string): UsageCall | undefined {
 +    for (const row of this.db.prepare('SELECT value FROM usage_call WHERE session=? ORDER BY id DESC LIMIT 20').all(sessionId)) {
 +      const call = JSON.parse(String(row.value)) as UsageCall
-+      if (!call.purpose) return call
++      if (!call.purpose && call.relay !== 'side') return call
 +    }
 +    return undefined
++  }
++  /** VsSaros addition (2026-11-07): the calls other listeners made inside a ticket's Sessions (its worker and its steps), kept days. */
++  relaysOf(ticketId: string): UsageRelays {
++    const rows = this.db.prepare('SELECT value FROM usage_call WHERE session = ? OR session LIKE ?').all(`worker-${ticketId}`, `step-${ticketId}-%`)
++    return relaysOf(rows.map(row => JSON.parse(String(row.value)) as UsageCall))
 +  }
 +  /** Totals since `since` (ISO), by role, model, Bot and ticket (the 20 largest of each). */
 +  summary(since: string): UsageSummary {
 +    const total = empty(), byRole = { master: empty(), desk: empty(), worker: empty(), step: empty() } as Record<UsageRole, UsageTotals>
 +    const models = new Map<string, { provider: string; model: string } & UsageTotals>(), bots = new Map<string, { bot: string } & UsageTotals>()
 +    const tickets = new Map<string, { ticketId: string } & UsageTotals>()
++    const calls: UsageCall[] = []
 +    for (const row of this.db.prepare('SELECT value FROM usage_call WHERE at >= ?').all(since)) {
 +      const call = JSON.parse(String(row.value)) as UsageCall
++      calls.push(call)
 +      add(total, call)
 +      add(byRole[call.role] ??= empty(), call)
 +      const modelKey = `${call.provider}/${call.model}`
@@ -6054,7 +6252,7 @@ index 00000000000..90649900d02
 +      if (call.ticketId) add(tickets.get(call.ticketId) ?? tickets.set(call.ticketId, { ticketId: call.ticketId, ...empty() }).get(call.ticketId)!, call)
 +    }
 +    const top = <T extends UsageTotals>(map: Map<string, T>) => [...map.values()].sort((a, b) => b.total - a.total).slice(0, 20)
-+    return { since, total, byRole, byModel: top(models), byBot: top(bots), byTicket: top(tickets) }
++    return { since, total, byRole, byModel: top(models), byBot: top(bots), byTicket: top(tickets), relays: relaysOf(calls) }
 +  }
 +  /** Drops calls older than `USAGE_KEEP_DAYS`. */
 +  prune(): void {
@@ -6156,7 +6354,7 @@ index f58f44ee1ae..5c65b1832ce 100644
    }
    return value as T
 diff --git a/src/client/app.tsx b/src/client/app.tsx
-index 3263005de94..d7ea461ba4d 100644
+index 3263005de94..f635c1077c8 100644
 --- a/src/client/app.tsx
 +++ b/src/client/app.tsx
 @@ -1,4 +1,7 @@
@@ -6168,7 +6366,7 @@ index 3263005de94..d7ea461ba4d 100644
  import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
  import type { SearchView } from './api.ts'
  import { Button, Dot, Icon, Input, Modal, SegmentedTabs } from './controls.tsx'
-@@ -7,7 +10,9 @@ import { EvalStatus } from './eval.tsx'
+@@ -7,9 +10,11 @@ import { EvalStatus } from './eval.tsx'
  import { ExecutionStatus } from './execution.tsx'
  import { ticketMark } from './marks.ts'
  import { GLOSSARY, GLOSSARY_VALUES, en, zh, type DshSuperagentKey } from './locales.ts'
@@ -6177,8 +6375,11 @@ index 3263005de94..d7ea461ba4d 100644
 +import { SidePanel, SideProvider, useSide } from './side.tsx'
 +import { WorkPage, WorkProvider } from './work.tsx'
  import { PanelProvider, usePanel, usePanelData } from './provider.tsx'
- import { HOME, TABS, initialLocation, lastSettingsGroup, remember, routeLabel, settingsRoute, type Location, type Route,
+-import { HOME, TABS, initialLocation, lastSettingsGroup, remember, routeLabel, settingsRoute, type Location, type Route,
++import { HOME, NAV_TABS, initialLocation, lastSettingsGroup, remember, routeLabel, settingsRoute, type Location, type Route,
    type Tab } from './route.ts'
+ import { SettingsPage } from './settings.tsx'
+ import { SourceStatus } from './source.tsx'
 @@ -22,6 +27,8 @@ import { When } from './widgets.tsx'
  export interface AppProps {
    t: T; openSession: (sessionId: string) => Promise<void>
@@ -6240,7 +6441,7 @@ index 3263005de94..d7ea461ba4d 100644
 +        <Header />
 +        {error && state && <p className="dt-error" role="status">{error.message}</p>}
 +        <SegmentedTabs className="dt-tabs" label={t('pagesLabel')} value={route.page} onChange={openTab}
-+          items={TABS.map(value => ({ value, label: t(`tab.${value}`), id: `dt-tab-${value}`, panelId: 'dt-page' }))} />
++          items={NAV_TABS.map(value => ({ value, label: t(`tab.${value}`), id: `dt-tab-${value}`, panelId: 'dt-page' }))} />
 +        <main id="dt-page" role="tabpanel" aria-labelledby={`dt-tab-${route.page}`} className="dt-main">{page}</main>
 +      </div>
      </div>
@@ -7421,7 +7622,7 @@ index 8f894da5674..7535cfa0522 100644
  export type IconName = keyof typeof ICON_PATHS
  export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
 diff --git a/src/client/execution.tsx b/src/client/execution.tsx
-index 8c018387b4f..50ee87c17cb 100644
+index 8c018387b4f..7007704641b 100644
 --- a/src/client/execution.tsx
 +++ b/src/client/execution.tsx
 @@ -5,9 +5,13 @@ import { LIMITS } from '../limits.ts'
@@ -7431,9 +7632,10 @@ index 8c018387b4f..50ee87c17cb 100644
 +import { GroupRuns } from './group-runs.tsx'
  import { usePanel } from './provider.tsx'
  import { TicketLine } from './rows.tsx'
+-import { ConfigHistory, Field, Fields, ModelField, numberOf, useBlockDraft, useSettings } from './settings-kit.tsx'
 +import { ApprovalRulesPanel, UsagePanel } from './usage.tsx'
 +import { settingsRoute } from './route.ts'
- import { ConfigHistory, Field, Fields, ModelField, numberOf, useBlockDraft, useSettings } from './settings-kit.tsx'
++import { ConfigHistory, Field, Fields, ModelField, numberOf, SwitchRow, useBlockDraft, useSettings } from './settings-kit.tsx'
 +import { SourceCard } from './source.tsx'
  import { localized } from './text.ts'
  import { ConfirmButton, Hint, LabelValue, LoadMore, LoadState, Section, StatusHead } from './widgets.tsx'
@@ -7467,7 +7669,14 @@ index 8c018387b4f..50ee87c17cb 100644
    // Keep raw user text (such as separators between blocked commands) in the draft and parse only on save.
    const executor = blocks.executor.value
    const saved = { ...executor, maxWorkers: String(executor.maxWorkers), blockedCommands: executor.blockedCommands.join(' ') }
-@@ -123,5 +135,8 @@ export function ExecutionSettings() {
+@@ -118,10 +130,15 @@ export function ExecutionSettings() {
+             <Input className="dt-mono" value={value.blockedCommands} placeholder={t('blockedCommandsNone')} spellCheck={false}
+               onChange={event => edit({ blockedCommands: event.target.value })} />
+           </Field>
++          {/* VsSaros addition (2026-11-07, co-install): another plugin (DS Bot's OCR) may read SuperAgent's Sessions with another model. */}
++          <SwitchRow label={t('sideCalls')} hint={t('sideCallsHint')} checked={value.sideCalls} onChange={sideCalls => edit({ sideCalls })} />
+         </div>
+       </Fields>
        <SaveBar {...draft} onDiscard={draft.discard} />
      </form>
      <ConfigHistory blocks={['executor', 'pause']} />
@@ -7478,10 +7687,10 @@ index 8c018387b4f..50ee87c17cb 100644
  }
 diff --git a/src/client/feed.ts b/src/client/feed.ts
 new file mode 100644
-index 00000000000..3f278007b70
+index 00000000000..c5f156475c9
 --- /dev/null
 +++ b/src/client/feed.ts
-@@ -0,0 +1,104 @@
+@@ -0,0 +1,126 @@
 +/**
 + * VsSaros addition (plan C): the change stream from dsh-superagent (`/orchestrator/api/stream`), shared by every view on
 + * the page: one connection while anything listens, none after. Views read their data again when a topic they show changes,
@@ -7563,6 +7772,28 @@ index 00000000000..3f278007b70
 +    run?.abort()
 +    setLive(false)
 +  }
++}
++/**
++ * VsSaros addition (2026-11-07, the module's "hot dispose"): ends the stream and its reconnect timer and forgets every
++ * listener, whatever views are still mounted. The client plugin calls it when DSH disposes it (`apply` → `ctx.effect`): a
++ * plugin reload loads a new copy of this module, and DSH's client has no `import.meta.hot`, so without this the old copy's
++ * connection and backoff timer lived on until its last view unmounted (or forever, after a view that never did). A listener
++ * that subscribes afterwards opens a new stream; a view of the old plugin that unsubscribes later closes nothing of it, since
++ * a stream is closed only once no listener is left.
++ */
++export function disposeFeed(): void {
++  clearTimeout(retry); retry = undefined
++  const run = current
++  current = undefined
++  run?.abort()
++  listeners.clear()
++  setLive(false)
++  connected = false
++  failures = 0
++}
++/** Whether the stream is open or about to reconnect, and how many listen (for tests). */
++export function feedState(): { connecting: boolean; retrying: boolean; listeners: number } {
++  return { connecting: !!current, retrying: !!retry, listeners: listeners.size }
 +}
 +/** Whether the stream is open now. */
 +export function useFeedLive(): boolean {
@@ -7982,7 +8213,7 @@ index 00000000000..b6cb7438054
 +  </section>
 +}
 diff --git a/src/client/index.tsx b/src/client/index.tsx
-index fb0b84ba920..c105674db76 100644
+index fb0b84ba920..1c661295bbc 100644
 --- a/src/client/index.tsx
 +++ b/src/client/index.tsx
 @@ -1,5 +1,5 @@
@@ -7992,18 +8223,19 @@ index fb0b84ba920..c105674db76 100644
  import type { Context } from '@deepseek-ai/cordis'
  import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client'
  import type { SidebarPanelIconOwnerProps } from '@deepseek-ai/dsh-client-ui-sidebar/client'
-@@ -12,6 +12,10 @@ import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
+@@ -12,6 +12,11 @@ import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
  import type { SessionId } from '@deepseek-ai/dsh-session/types'
  import { openKnownSession, SessionNavigationError } from '../navigation.ts'
  import { App } from './app.tsx'
 +import type { NativeConversation } from './chat.tsx'
++import { disposeFeed } from './feed.ts'
 +import { FlowCard, triggerOfResult } from './flow-card.tsx'
 +import { BotMark } from './mark.tsx'
 +import { CardProvider } from './provider.tsx'
  import { PluginConfig, usePageForm } from './deployment.tsx'
  import { en, zh } from './locales.ts'
  import type { T } from './text.ts'
-@@ -19,7 +23,10 @@ import type { T } from './text.ts'
+@@ -19,7 +24,10 @@ import type { T } from './text.ts'
  type ClientContext = Context & { sessions: ISessions }
  const NS = 'dshSuperagent'
  const PANEL_ID = 'dsh-superagent' as MainPanelId
@@ -8014,7 +8246,7 @@ index fb0b84ba920..c105674db76 100644
  
  function HammerIcon({ size }: SidebarPanelIconOwnerProps) {
    return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-@@ -27,8 +34,22 @@ function HammerIcon({ size }: SidebarPanelIconOwnerProps) {
+@@ -27,8 +35,22 @@ function HammerIcon({ size }: SidebarPanelIconOwnerProps) {
    </svg>
  }
  
@@ -8038,7 +8270,7 @@ index fb0b84ba920..c105674db76 100644
    const pending = useRef<AbortController>(undefined)
    useEffect(() => () => { pending.current?.abort() }, [])
    const openSession = useCallback(async (id: string) => {
-@@ -42,17 +63,79 @@ function Mounted({ ctx, t }: { ctx: ClientContext; t: T }) {
+@@ -42,17 +64,81 @@ function Mounted({ ctx, t }: { ctx: ClientContext; t: T }) {
      }
    }, [ctx, t])
    const form = usePageForm(ctx.get('configForms')?.get<Record<string, unknown>>(ENTRY))
@@ -8087,6 +8319,8 @@ index fb0b84ba920..c105674db76 100644
  /** Registers the panel, sidebar icon, and Plugin Manager config view; `configForms` is optional (without it, machine settings are read-only). */
  export function apply(ctx: ClientContext): void {
    ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-superagent: dictionaries')
++  // VsSaros addition (2026-11-07): the change stream's module state ends with this plugin (`disposeFeed`).
++  ctx.effect(() => () => { disposeFeed() }, 'dsh-superagent: change stream')
    const t = ctx.locale.bind(NS)
    ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_ID, locale: NS, inject: () => ({}) },
      (props: { t: T }) => <Mounted ctx={ctx} t={props.t} />))
@@ -8122,7 +8356,7 @@ index fb0b84ba920..c105674db76 100644
      (props: PluginConfigViewProps & { t: T }) => <PluginConfig t={props.t} view={props.view} form={props.form} />))
  }
 diff --git a/src/client/locales.ts b/src/client/locales.ts
-index d81d0d4e9c7..6fb6e4a6010 100644
+index d81d0d4e9c7..6e9a9e33f78 100644
 --- a/src/client/locales.ts
 +++ b/src/client/locales.ts
 @@ -111,7 +111,183 @@ const TEXT = {
@@ -8349,7 +8583,7 @@ index d81d0d4e9c7..6fb6e4a6010 100644
    'userError.assignmentEnded': ['这个派工已结束，工单已由较新的派工接手。', USER_ERRORS.assignmentEnded[1]],
    'userError.evalFinished': ['评估 {eval} 已结束，或已被之后的评估取代；请对这个触发当前的评估做决定。', USER_ERRORS.evalFinished[1]],
    'userError.notAdmissible': ['这个触发未通过准入：{reason}', USER_ERRORS.notAdmissible[1]],
-@@ -741,11 +929,204 @@ const TEXT = {
+@@ -741,11 +929,213 @@ const TEXT = {
    'setup.feishuBotNotReady': ['应用 {app} 的机器人身份状态是 {status}；用 lark-cli 配置应用密钥。', SETUP_PROBLEMS.feishuBotNotReady[1]],
    'setup.feishuUserIdentity': ['机器人的 lark-cli 允许用户身份（strict mode 为 {mode}）；按 docs/006-deployment.md 给机器人一份 strict mode 为 bot 的单独配置。', SETUP_PROBLEMS.feishuUserIdentity[1]],
    'setup.feishuNoBot': ['飞书机器人接口没有返回机器人的 open_id。', SETUP_PROBLEMS.feishuNoBot[1]],
@@ -8399,6 +8633,15 @@ index d81d0d4e9c7..6fb6e4a6010 100644
 +  'usageDay': ['24 小时 {total} tokens · {calls} 次调用', '24 hours: {total} tokens · {calls} calls'],
 +  'usageWeek': ['7 天 {total}', '7 days: {total}'],
 +  'usageCache': ['其中缓存读 {read}', 'cache reads {read}'],
++  // VsSaros addition (2026-11-07): calls another plugin made inside SuperAgent's Sessions (usage.ts UsageRelay).
++  'usageRelaysDsBot': ['24 小时内 DS Bot 改写重发了 SuperAgent 会话的请求 {resent} 次，另用看图模型读了 {side} 次（都只计一次用量）。', 'In 24 hours DS Bot sent SuperAgent\'s requests again {resent} times and read them with its image model {side} times (each counted once).'],
++  'usageRelaysOther': ['24 小时内有其它插件重发了 SuperAgent 会话的请求 {resent} 次，另用别的模型读了 {side} 次（都只计一次用量）。', 'In 24 hours another plugin sent SuperAgent\'s requests again {resent} times and read them with another model {side} times (each counted once).'],
++  'usageRelaySession': ['改写 {resent} 次 · 看图 {side} 次', '{resent} rewritten · {side} read on the side'],
++  'ticketRelaysDsBot': ['被 DS Bot 改写', 'Rewritten by DS Bot'],
++  'ticketRelaysOther': ['被其它插件改写', 'Rewritten by another plugin'],
++  'sideCalls': ['允许其它插件用别的模型读 SuperAgent 会话', 'Let other plugins read SuperAgent\'s Sessions with another model'],
++  'sideCallsHint': ['DS Bot 的看图：会话模型不能看图时，它用自己的 OCR 模型读图片。关掉后 SuperAgent 的会话拒绝这类调用，DS Bot 会告诉模型「图片现在读不了」；密钥脱敏的改写重发不受影响。', 'DS Bot\'s images: when a Session\'s model cannot read images, it reads them with its OCR model. Off, SuperAgent\'s Sessions refuse such calls and DS Bot tells the model the image could not be read; its secrets rewrite still goes.'],
++  'sideCallsOff': ['（执行设置里已关闭「别的模型读会话」，这类调用会被拒绝。）', '(Reading with another model is off in the execution settings; such calls are refused.)'],
 +  'usageCalls': ['{calls} 次', '{calls} calls'],
 +  'usageRole.master': ['主会话', 'Main Session'],
 +  'usageRole.desk': ['主管台', 'Supervisor desk'],
@@ -8423,9 +8666,9 @@ index d81d0d4e9c7..6fb6e4a6010 100644
 +  'rulesForget': ['删除', 'Delete'],
 +  'rulesNone': ['还没有规则', 'No rules yet'],
 +  'coexistDsBot': ['这个 Host 里同时装着 DS Bot。它的大部分功能只管自己的 Bot，但有三处也作用于 SuperAgent 的会话：', 'DS Bot runs in this Host too. Most of it acts on its own Bots only; three parts also reach SuperAgent\'s Sessions:'],
-+  'coexistEffect.secrets': ['密钥脱敏：在 DS Bot 里存过的密钥值，会从所有工具结果和模型请求里替换掉（改写过的请求会重新发一次，步骤用量只计一次）', 'Secrets: a value saved in DS Bot is replaced in every tool result and model request (a rewritten request is sent again; step usage counts it once)'],
-+  'coexistEffect.images': ['看图：会话的模型不能看图时，DS Bot 用它的 OCR 模型读图片，再把文字发给原模型——步骤里的图片会发给那个模型', 'Images: when a Session\'s model cannot read images, DS Bot reads them with its OCR model and sends the text instead, so step images reach that model'],
-+  'coexistEffect.skills': ['技能：goal-grill、office、office-tools 对所有会话可见', 'Skills: goal-grill, office and office-tools are offered to every Session'],
++  'coexistEffect.secrets': ['密钥脱敏：在 DS Bot 里存过的密钥值，会从所有工具结果和模型请求里替换掉（改写过的请求会重新发一次，用量只计一次；次数见执行页「用量」与工单详情）', 'Secrets: a value saved in DS Bot is replaced in every tool result and model request (a rewritten request is sent again and counted once; how often shows under Usage and on the ticket)'],
++  'coexistEffect.images': ['看图：会话的模型不能看图时，DS Bot 用它的 OCR 模型读图片，再把文字发给原模型——步骤里的图片会发给那个模型；可在执行设置里关闭', 'Images: when a Session\'s model cannot read images, DS Bot reads them with its OCR model and sends the text instead, so step images reach that model; you can turn this off in the execution settings'],
++  'coexistEffect.skills': ['技能：goal-grill、office、office-tools 进 DSH 的技能目录，主会话与步骤看得到，主管台看不到；不占主会话的 prompt 预算', 'Skills: goal-grill, office and office-tools join DSH\'s skill catalog, seen by the main Session and steps but not the desk; they take nothing from the main Session\'s prompt budget'],
 +  'team.budgetLine': ['预算：{tokens} / {tokensCap} tokens · {turns} / {turnsCap} 回合', 'Budget: {tokens} / {tokensCap} tokens · {turns} / {turnsCap} turns'],
 +  'team.budgetReached': ['预算用完：不再开新步骤', 'Budget used: no new step starts'],
 +  'team.budgetRaise': ['追加一半预算', 'Raise by half'],
@@ -8554,7 +8797,7 @@ index d81d0d4e9c7..6fb6e4a6010 100644
  } as const satisfies Record<string, readonly [string, string]>
  export type DshSuperagentKey = keyof typeof TEXT
  const language = (index: 0 | 1) => Object.fromEntries(Object.entries(TEXT).map(([key, pair]) => [key, pair[index]])) as Record<DshSuperagentKey, string>
-@@ -761,7 +1142,7 @@ export const GLOSSARY = {
+@@ -761,7 +1151,7 @@ export const GLOSSARY = {
  } as const
  export const GLOSSARY_VALUES = {
    decision: ['decision.accept', 'decision.reopen', 'decision.stop', 'decision.ignore', 'decision.unavailable'], strength: ['strength.explicit', 'strength.inferred'],
@@ -8865,10 +9108,10 @@ index 00000000000..3715edac154
 +  </Section>
 +}
 diff --git a/src/client/route.ts b/src/client/route.ts
-index 61413b6229a..e429135e9c7 100644
+index 61413b6229a..a696e1bf1c4 100644
 --- a/src/client/route.ts
 +++ b/src/client/route.ts
-@@ -4,18 +4,24 @@ import type { SetupPlace } from '../setup.ts'
+@@ -4,18 +4,29 @@ import type { SetupPlace } from '../setup.ts'
  import { DECISION_FILTERS, type DecisionFilter } from './api.ts'
  import type { T } from './text.ts'
  
@@ -8880,6 +9123,11 @@ index 61413b6229a..e429135e9c7 100644
 + */
 +export const TABS = ['chat', 'work', 'source', 'trigger', 'eval', 'execution', 'settings'] as const
  export type Tab = typeof TABS[number]
++/**
++ * VsSaros change (2026-11-07, user request): the tabs the header shows. The Workbench (`work`) is no longer a tab; its
++ * page stays a route, reached from the links that open a team's flow (`team-plans.tsx`, `work.openFlow`).
++ */
++export const NAV_TABS: readonly Tab[] = TABS.filter(tab => tab !== 'work')
  export const SETTINGS_GROUPS = ['source', 'eval', 'execution', 'prompts', 'deployment'] as const
  export type SettingsGroup = typeof SETTINGS_GROUPS[number]
 -export type Route = { page: 'overview' | 'source'; id?: undefined; query?: undefined }
@@ -8896,7 +9144,7 @@ index 61413b6229a..e429135e9c7 100644
  export const settingsRoute = (group: SettingsGroup, query: { source?: string; version?: string } = {}): Route =>
    ({ page: 'settings', query: { group, ...query } })
  export const setupPage = (place: SetupPlace): Route =>
-@@ -34,7 +40,9 @@ export function parseRoute(value: unknown): Route | undefined {
+@@ -34,7 +45,9 @@ export function parseRoute(value: unknown): Route | undefined {
    const text = (name: string) => typeof query?.[name] === 'string' ? query[name] as string : undefined
    const record = typeof id === 'string' && id ? id : undefined
    switch (page) {
@@ -8908,10 +9156,10 @@ index 61413b6229a..e429135e9c7 100644
        : { page, query: compact({ filter: pick(THREAD_FILTERS, query?.filter) }) }
      case 'eval': return { page, query: compact({ filter: pick(DECISION_FILTERS, query?.filter),
 diff --git a/src/client/settings-kit.tsx b/src/client/settings-kit.tsx
-index 4a36a6521d0..7c844af8d05 100644
+index 4a36a6521d0..cac01d419ff 100644
 --- a/src/client/settings-kit.tsx
 +++ b/src/client/settings-kit.tsx
-@@ -53,12 +53,14 @@ export function Fields({ disabled, children }: { disabled: boolean; children: Re
+@@ -53,15 +53,17 @@ export function Fields({ disabled, children }: { disabled: boolean; children: Re
    }, [disabled])
    return <fieldset ref={set} className="dt-fieldset" disabled={disabled}>{children}</fieldset>
  }
@@ -8929,7 +9177,11 @@ index 4a36a6521d0..7c844af8d05 100644
 +    {note && <small>{note}</small>}
    </div>
  }
- function SwitchRow({ label, hint, checked,
+-function SwitchRow({ label, hint, checked,
++export function SwitchRow({ label, hint, checked,
+   onChange }: { label: string; hint?: string | undefined; checked: boolean; onChange: (next: boolean) => void }) {
+   return <div className="dt-switch-row">
+     <div className="dt-field-head">{label}{hint && <InfoTip text={hint} />}</div><Switch checked={checked} onChange={onChange}
 @@ -120,7 +122,9 @@ function changeText(t: T, change: HistoryChange, sources: SourceView[]): string
   * Collapsible revision history for the specified settings blocks, optionally including all Policy-changing saves.
   * Revisions saved before per-block tracking existed have no `block` and appear under `policy`.
@@ -9537,7 +9789,7 @@ index 00000000000..7c82b61d546
 +  </>
 +}
 diff --git a/src/client/ticket.tsx b/src/client/ticket.tsx
-index f240a953279..b562fdc392e 100644
+index f240a953279..d43ea795e45 100644
 --- a/src/client/ticket.tsx
 +++ b/src/client/ticket.tsx
 @@ -4,6 +4,7 @@ import { ApiError, usePoll, type TicketPageView } from './api.ts'
@@ -9548,7 +9800,19 @@ index f240a953279..b562fdc392e 100644
  import { settingsRoute } from './route.ts'
  import { Earlier, ThreadLine, automatedRuns } from './rows.tsx'
  import { actorName, localized, readableMarkers, reasonLabel, valueLabel, when } from './text.ts'
-@@ -154,6 +155,8 @@ export function TicketPage({ id }: { id: string }) {
+@@ -139,6 +140,11 @@ export function TicketPage({ id }: { id: string }) {
+       <LabelValue label={t('ticketMandateLabel')} value={valueLabel(t, 'strength', data.mandate.strength)} />
+       <LabelValue label={t('ticketActorLabel')} value={`${valueLabel(t, 'source', data.mandate.actor.source)} · ${actor}`} />
+       <LabelValue label={t('ticketUpdatedLabel')} value={when(data.updatedAt, t('lang'))} />
++      {/* VsSaros addition (2026-11-07): calls another plugin (DS Bot) made inside this ticket's Sessions. */}
++      {data.relays.resent + data.relays.side > 0 && <span data-testid="ticket-relays" title={data.relays.sessions.map(item =>
++        `${item.step ?? t('usageRole.worker')}: ${t('usageRelaySession', { resent: String(item.resent), side: String(item.side) })}`).join('\n')}>
++        <LabelValue label={t(data.coexist.dsBot ? 'ticketRelaysDsBot' : 'ticketRelaysOther')}
++          value={t('usageRelaySession', { resent: String(data.relays.resent), side: String(data.relays.side) })} /></span>}
+     </div>
+     {ended && <Hint>{ended}</Hint>}
+     {data.attention && <div className="dt-banner"><span className="dt-banner-label">{t('attentionPrefix')}</span><MarkdownLite
+@@ -154,6 +160,8 @@ export function TicketPage({ id }: { id: string }) {
        <span className="dt-banner-label">{t('deliveryFailedPrefix')}</span>{data.deliveryError}
      </p>}
      <MandateDetails ticket={data} actor={actor} />
@@ -9559,10 +9823,10 @@ index f240a953279..b562fdc392e 100644
        <InputList inputs={undelivered} />
 diff --git a/src/client/usage.tsx b/src/client/usage.tsx
 new file mode 100644
-index 00000000000..345ba97f9a3
+index 00000000000..d940983fe31
 --- /dev/null
 +++ b/src/client/usage.tsx
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,86 @@
 +/**
 + * VsSaros addition (2026-11-06, P2): on the execution page, what SuperAgent's Sessions used (the usage ledger, with the
 + * context steward's last work), and the approval rules a person gave team Bots, with the templates to give more at once.
@@ -9604,6 +9868,14 @@ index 00000000000..345ba97f9a3
 +        {usage.steward.length > 0 && <div className="dt-row-meta" data-testid="steward">{usage.steward.map(item =>
 +          <span key={item.session}>{t(`usageRole.${item.role}`)}{t('listSeparator')}
 +            {t(`steward.${item.outcome}`, { context: tokens(item.context ?? 0), line: tokens(item.line ?? 0) })}</span>)}</div>}
++        {/* VsSaros addition (2026-11-07): calls another plugin made inside SuperAgent's Sessions (DS Bot's rewrites and OCR). */}
++        {usage.day.relays.resent + usage.day.relays.side > 0 && <div className="dt-hint" data-testid="usage-relays">
++          <p>{t(usage.coexist.dsBot ? 'usageRelaysDsBot' : 'usageRelaysOther', { resent: String(usage.day.relays.resent), side: String(usage.day.relays.side) })}
++            {!usage.sideCalls && <> {t('sideCallsOff')}</>}</p>
++          <ul className="dt-list">{usage.day.relays.sessions.slice(0, 5).map(item => <li key={item.session} className="dt-row-meta">
++            <span>{t(`usageRole.${item.role}`)}{item.step ? ` · ${item.step}` : ''}</span>
++            <span>{t('usageRelaySession', { resent: String(item.resent), side: String(item.side) })}</span></li>)}</ul>
++        </div>}
 +      </>}
 +    </div>
 +  </DisclosureRow>
@@ -11095,10 +11367,10 @@ index e7ed6953eb1..2cbf84c932b 100644
 +  reviews: { review: family<Review, [ticket: string]>('p4-review:'), audit: record<AuditEntry[]>('p4-review-audit') },
  }
 diff --git a/src/policy.ts b/src/policy.ts
-index b6a66cfd102..679d4c4f355 100644
+index b6a66cfd102..6b598ba7e4c 100644
 --- a/src/policy.ts
 +++ b/src/policy.ts
-@@ -94,6 +94,10 @@ export const ExecutorConfigSchema = z.object({
+@@ -94,6 +94,14 @@ export const ExecutorConfigSchema = z.object({
    directory: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'An absolute path, or empty for <stateDir>/work').default(''),
    prepare: z.string().max(LIMITS.prepareCommand).default(''),
    blockedCommands: z.array(CommandNameSchema).default([]),
@@ -11106,6 +11378,10 @@ index b6a66cfd102..679d4c4f355 100644
 +  // a low-risk proposal is agreed automatically only once a person switches `autoApprove` on.
 +  staffing: z.boolean().default(true),
 +  autoApprove: z.boolean().default(false),
++  // VsSaros addition (2026-11-07, co-install): whether another plugin may read a SuperAgent Session's request with another
++  // model on the side, as DS Bot's OCR reads its images (`usage.ts` UsageRelay `side`). Off, such a call is refused and DS Bot
++  // tells the model the image could not be read; a request sent again to the same model (its secrets rewrite) still goes.
++  sideCalls: z.boolean().default(true),
  }).strict()
  export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
  export const SettingsSchema = z.object({
@@ -13209,20 +13485,21 @@ index 00000000000..4254711432e
 +  })
 +})
 diff --git a/tests/client.spec.tsx b/tests/client.spec.tsx
-index 22417991cd5..b35f38dcaaa 100644
+index 22417991cd5..293b7d66a3d 100644
 --- a/tests/client.spec.tsx
 +++ b/tests/client.spec.tsx
-@@ -3,7 +3,8 @@ import { act, useState, type ComponentType } from 'react'
+@@ -3,7 +3,9 @@ import { act, useState, type ComponentType } from 'react'
  import { createRoot } from 'react-dom/client'
  import { afterEach, expect, it, vi } from 'vitest'
  import { ApiError, caller, usePoll } from '../src/client/api.ts'
 -import { apply } from '../src/client/index.tsx'
++import { disposeFeed, feedState, subscribe } from '../src/client/feed.ts'
 +import { apply, RECEIPT_TOOL_NAME } from '../src/client/index.tsx'
 +import { RECEIPT_TOOL } from '../src/app/desk.ts'
  import { zh } from '../src/client/locales.ts'
  import { SettingsSchema } from '../src/policy.ts'
  
-@@ -12,17 +13,24 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true
+@@ -12,21 +14,31 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true
  
  type Entry = { options: { name: string; id?: string; key?: string; order?: number; locale?: string; label?: () => string }; component: ComponentType<Record<string, unknown>> }
  const t = ((key: keyof typeof zh) => zh[key] ?? key) as never
@@ -13230,6 +13507,8 @@ index 22417991cd5..b35f38dcaaa 100644
 +function fixture(listed: string[], workbenches?: { register: ReturnType<typeof vi.fn> }) {
    const entries: Entry[] = []
    const dictionaries: Record<string, unknown> = {}
++  // What the plugin's effects leave to undo: DSH runs them when it disposes the plugin (as a reload does).
++  const disposers: (() => void)[] = []
    const ctx = {
 -    slots: { inject: (_name: string, register: () => void) => register(), register: (options: Entry['options'], component: Entry['component']) => { entries.push({ options, component }); return () => {} } },
 +    // VsSaros addition: a slot entry can be withdrawn, as the sidebar entry is once the workbench host appears.
@@ -13239,7 +13518,8 @@ index 22417991cd5..b35f38dcaaa 100644
 +      return () => { const at = entries.indexOf(entry); if (at >= 0) entries.splice(at, 1) }
 +    } },
      locale: { register: (ns: string, value: unknown) => { dictionaries[ns] = value; return () => {} }, bind: () => t },
-     effect: (effect: () => unknown) => { effect() },
+-    effect: (effect: () => unknown) => { effect() },
++    effect: (effect: () => unknown) => { const undo = effect(); if (typeof undo === 'function') disposers.push(undo as () => void) },
      sessions: { list: { getSnapshot: () => ({ phase: 'ready', byId: Object.fromEntries(listed.map(id => [id, {}])) }) }, refresh: vi.fn(async () => {}) },
      uiWorkspace: { openSession: vi.fn() },
 -    // Omit config form service so Deployment renders read-only.
@@ -13251,7 +13531,13 @@ index 22417991cd5..b35f38dcaaa 100644
    }
    apply(ctx as never)
    const entry = (name: string) => entries.find(item => item.options.name === name)!
-@@ -36,29 +44,79 @@ async function render(entry: Entry, props: Record<string, unknown>) {
+-  return { ctx, entries, dictionaries, main: entry('main'), nav: entry('sidebar.panellist') }
++  return { ctx, entries, dictionaries, main: entry('main'), nav: entry('sidebar.panellist'),
++    dispose: () => { for (const undo of disposers.splice(0).reverse()) undo() } }
+ }
+ async function render(entry: Entry, props: Record<string, unknown>) {
+   const container = document.createElement('div'); document.body.append(container)
+@@ -36,29 +48,79 @@ async function render(entry: Entry, props: Record<string, unknown>) {
    return { container, dispose: () => { act(() => { root.unmount() }); container.remove() } }
  }
  const openMaster = async (container: HTMLElement) => {
@@ -13303,7 +13589,7 @@ index 22417991cd5..b35f38dcaaa 100644
 +  expect(container.querySelector('[data-vssaros-surface="workbench"] .dt-tabs')).not.toBeNull()
 +  // chat-surface's floating "sent to group" tip stays off over this workbench (it shows group runs itself).
 +  expect(container.querySelector('[data-vssaros-surface="workbench"]')?.getAttribute('data-vssaros-group-tip')).toBe('off')
-+  expect([...container.querySelectorAll('[role="tab"]')].map(tab => tab.textContent)).toEqual([zh['tab.chat'], zh['tab.work'], zh['tab.source'],
++  expect([...container.querySelectorAll('[role="tab"]')].map(tab => tab.textContent)).toEqual([zh['tab.chat'], zh['tab.source'],
 +    zh['tab.trigger'], zh['tab.eval'], zh['tab.execution'], zh['tab.settings']])
 +  // Without the host's conversation, the Chat tab is the panel's own.
 +  expect(container.querySelector('[data-testid="native-chat"]')).toBeNull()
@@ -13335,6 +13621,60 @@ index 22417991cd5..b35f38dcaaa 100644
  it('opens a listed Session through the workspace from the main panel', async () => {
    serve()
    const { ctx, main } = fixture(['master'])
+@@ -120,6 +182,53 @@ it('polls one request at a time, keeps the data while new dependencies load, and
+   vi.useRealTimers()
+ })
+ 
++// VsSaros addition (2026-11-07): DSH's client has no `import.meta.hot`; a plugin reload disposes the plugin and loads a new copy
++// of its modules. The old copy's change stream and its reconnect timer must end with the plugin, whatever views still listen.
++it('ends the change stream and its reconnect timer when DSH disposes the client plugin', async () => {
++  const streams: { signal: AbortSignal }[] = []
++  let answer: 'stream' | 'down' = 'stream'
++  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
++    if (answer === 'down') return new Response(null, { status: 503 })
++    streams.push({ signal: init!.signal! })
++    return new Response(new ReadableStream<Uint8Array>({ start: controller => {
++      init!.signal!.addEventListener('abort', () => { try { controller.error(new DOMException('aborted', 'AbortError')) } catch { /* closed */ } })
++    } }), { status: 200, headers: { 'content-type': 'text/event-stream' } })
++  }))
++  const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setTimeout(resolve, 0)) }
++  const plugin = fixture([])
++  // A view listens (as a card that never unmounted would): the stream opens.
++  subscribe(() => {})
++  await settle()
++  expect(feedState()).toEqual({ connecting: true, retrying: false, listeners: 1 })
++  plugin.dispose()
++  await settle()
++  expect(streams[0]!.signal.aborted).toBe(true)
++  expect(feedState()).toEqual({ connecting: false, retrying: false, listeners: 0 })
++  // A stream that is down waits to reconnect; disposing the plugin ends that wait too.
++  const again = fixture([])
++  answer = 'down'
++  subscribe(() => {})
++  await settle()
++  expect(feedState()).toMatchObject({ connecting: false, retrying: true })
++  again.dispose()
++  expect(feedState()).toEqual({ connecting: false, retrying: false, listeners: 0 })
++  // A view that unsubscribes after the plugin was disposed closes nothing of a newer listener's stream.
++  answer = 'stream'
++  const third = fixture([])
++  const stale = subscribe(() => {})
++  await settle()
++  third.dispose()
++  const fresh = subscribe(() => {})
++  await settle()
++  const opened = streams.at(-1)!
++  stale()
++  expect(opened.signal.aborted).toBe(false)
++  expect(feedState()).toEqual({ connecting: true, retrying: false, listeners: 1 })
++  fresh()
++  expect(opened.signal.aborted).toBe(true)
++  disposeFeed()
++})
++
+ it('tells a dsh-superagent that does not answer from a record it does not have, and words each failure by what failed', async () => {
+   const messages = { offline: 'offline', notRunning: 'not running', serverError: (status: number) => `server ${status}`,
+     requestFailed: (status: number) => `request ${status}`, setup: () => 'setup', user: ({ code }: { code: string }) => `user ${code}` }
 diff --git a/tests/coexist.spec.ts b/tests/coexist.spec.ts
 new file mode 100644
 index 00000000000..c3e47bd782f
@@ -13745,6 +14085,207 @@ index f41b456ad0b..7f7e4cfd485 100644
        return dirname(linked) === join(ROOT, 'docs') && number !== undefined && number < name.slice(0, 3) ? [] : [`${name} → ${target}`]
      }))
      expect(violations).toEqual([])
+diff --git a/tests/dsb-coexist.spec.ts b/tests/dsb-coexist.spec.ts
+new file mode 100644
+index 00000000000..a9819982e4f
+--- /dev/null
++++ b/tests/dsb-coexist.spec.ts
+@@ -0,0 +1,195 @@
++// VsSaros addition (2026-11-07, P0 · co-install semantics): with DS Bot in the same Host, SuperAgent's own guarantees still
++// hold — the only risk that exists because SuperAgent is made to live next to DS Bot. A fake DS Bot made the way ds-bot 0.2.7
++// acts on every Session (tests/fixtures/ds-bot.ts) runs after SuperAgent, and:
++//   ① each model call is counted once in usage_call (and in a team's token budget), whether DS Bot sent it again or read its
++//     images on the side, and those calls are told apart and shown (GET usage, a ticket's page);
++//   ② a team step's tool call is still decided by step_approval_rule (never by DS Bot's approval answerer, which hands on
++//     every Session not its own), after DS Bot rewrote and sent again the request that made it;
++//   ③ DS Bot's global skills reach DSH's skill catalog only: none of SuperAgent's prompt sections or skills, never the desk,
++//     and a bounded addition to the catalog the main Session sees;
++//   ④ team_distill's evidence is still the step that ran: its Session, its report and its turns, not DS Bot's extra calls.
++// And the side effect can be turned off: `executor.sideCalls` off refuses DS Bot's OCR in SuperAgent's Sessions.
++import { afterEach, expect, it, vi } from 'vitest'
++import { MEMORY_BUS_KEY, type MemoryBus, type StepEvidence } from '../src/app/distill.ts'
++import { stepSessionId } from '../src/app/steps.ts'
++import type { UsageCall } from '../src/app/usage.ts'
++import { waitUntil } from './fixtures/async.ts'
++import { catalogLine, drain, DS_BOT_SKILLS, DSH_CATALOG_DESCRIPTION_MAX, fakeModel, installFakeDsBot, user, withImage } from './fixtures/ds-bot.ts'
++import { feishu, startRuntime, type Host } from './fixtures/host.ts'
++
++let h: Host | undefined
++let dsBot: ReturnType<typeof installFakeDsBot> | undefined
++const root = globalThis as unknown as Record<symbol, unknown>
++afterEach(async () => { dsBot?.dispose(); dsBot = undefined; await h?.stop(); h = undefined; delete root[MEMORY_BUS_KEY] })
++
++const SECRET = 'sk-live-7f3a9c'
++/** The most DS Bot's skills may add to a Session's skill catalog: its three lines (~600 characters) and a little room. */
++const DS_BOT_CATALOG_CHARS = 800
++let clock = 0
++const reply = (id: string, text: string) => feishu(id, text, { mentions: [], root_id: 'om_1', create_time: String(Date.now() + 1000 + (clock += 1000)) })
++/** A designer's read-only step and a builder's write step after it. */
++const TEAM = {
++  roles: [{ key: 'design', need: '交互稿', bot: 'designer' }, { key: 'build', need: '实现', bot: 'builder' }],
++  steps: [{ key: 'T1', role: 'design', title: '交互稿', spec: '出稿' }, { key: 'T2', role: 'build', title: '实现浮层', spec: '写代码', after: ['T1'], access: 'write' }],
++}
++const loader = (names: string[]) => ({ *entries() { for (const name of names) yield { options: { name } } } })
++/**
++ * A Host with DS Bot, with a ticket whose team a person agreed to (its first step running). DS Bot runs after SuperAgent, or
++ * `first`, as a plugin the Host loaded earlier: SuperAgent's listeners are `prepend`ed, so either way they come first.
++ */
++async function agreedWithDsBot(model = fakeModel(), first = false) {
++  const install = (ctx: unknown) => { dsBot = installFakeDsBot(ctx, model.model, { secrets: [SECRET], own: ['ds-bot-session'] }) }
++  h = await startRuntime(undefined, { staffing: true, ...first ? { before: install } : {} })
++  h.ctx.reflect.provide('loader', loader(['vssaros-agents', 'ds-bot']) as never)
++  if (!first) install(h.ctx)
++  const { ticket } = await h.acceptedTicket(feishu('1', '@bot 首页新手引导要上线'))
++  await h.runTool(h.runtime.masterId, 'orchestrator_team_propose', { ticket_id: ticket.id, ...TEAM })
++  await new Promise(resolve => setTimeout(resolve, 5))
++  const yes = reply('2', '同意'); h.runtime.receive(yes); await h.runtime.idle()
++  await h.runTool(h.runtime.masterId, 'orchestrator_team_confirm', { ticket_id: ticket.id, trigger_id: yes.id, version: 1 })
++  await h.runtime.idle()
++  await waitUntil(() => h!.runtime.steps.tables.get(ticket.id, 'T1')?.state === 'running')
++  return { ticketId: ticket.id, model }
++}
++const callsOf = (session: string) => h!.runtime.store.db.prepare('SELECT value FROM usage_call WHERE session=? ORDER BY id').all(session)
++  .map(row => JSON.parse(String(row.value)) as UsageCall)
++/** One of a Session's requests, as DSH would send it; DS Bot's listeners act on it on the way. */
++const ask = (sessionId: string, message = user('继续')) => drain(dsBot!.stream({ sessionId, provider: 'p', model: 'm', messages: [message] }))
++
++it.each([['after', false], ['before', true]] as const)('① counts each model call once, with DS Bot (loaded %s SuperAgent) rewriting a request or reading its images on the side, and tells which', async (_order, first) => {
++  const { ticketId, model } = await agreedWithDsBot(fakeModel(), first)
++  const master = h!.runtime.masterId, t1 = stepSessionId(ticketId, 'T1')
++  await ask(master)
++  await ask(master, user(`部署用 ${SECRET}`))
++  await ask(t1, withImage('照这张图出稿'))
++  // The model got: the plain call, the rewritten one (never the secret), the OCR read and the text in place of the image.
++  expect(model.calls.map(call => `${call.sessionId === master ? 'master' : 'T1'}/${call.model}`)).toEqual(['master/m', 'master/m', 'T1/ocr-vl', 'T1/m'])
++  expect(JSON.stringify(model.calls)).not.toContain(SECRET)
++  expect(model.calls[3]!.messages[0]!.content[1]!.text).toContain('图里是一个番茄钟')
++  // One usage_call row a model call, told apart.
++  expect(callsOf(master).map(call => call.relay ?? 'own')).toEqual(['own', 'resent'])
++  expect(callsOf(t1).map(call => [call.model, call.relay, call.step])).toEqual([['ocr-vl', 'side', 'T1'], ['m', 'resent', 'T1']])
++  // The team's token budget heard the step's two calls once each, as the ledger did.
++  expect(h!.runtime.steps.tables.get(ticketId, 'T1')!.tokens).toBe(2 * 110)
++  // Observable: GET usage and the ticket's page say how often, and that it is DS Bot.
++  const usage = (await h!.api('GET', 'usage')).body as unknown as { day: { total: { calls: number }; relays: unknown }; coexist: unknown; sideCalls: boolean }
++  expect(usage.day.total.calls).toBe(model.calls.length)
++  expect(usage.day.relays).toEqual({ resent: 2, side: 1, sessions: expect.arrayContaining([
++    { session: master, role: 'master', resent: 1, side: 0 }, { session: t1, role: 'step', ticketId, step: 'T1', resent: 1, side: 1 }]) })
++  expect(usage.coexist).toEqual({ dsBot: { effects: ['secrets', 'images', 'skills'] } })
++  expect(usage.sideCalls).toBe(true)
++  const page = (await h!.api('GET', `tickets/${ticketId}`)).body as unknown as { relays: unknown; coexist: unknown }
++  expect(page.relays).toEqual({ resent: 1, side: 1, sessions: [{ session: t1, role: 'step', ticketId, step: 'T1', resent: 1, side: 1 }] })
++  expect(page.coexist).toEqual({ dsBot: { effects: ['secrets', 'images', 'skills'] } })
++})
++
++it('① with executor.sideCalls off, refuses DS Bot\'s OCR in SuperAgent\'s Sessions only, and still lets its secrets rewrite go', async () => {
++  const { ticketId, model } = await agreedWithDsBot()
++  const settings = h!.runtime.store.settings()
++  h!.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, sideCalls: false } })
++  const t1 = stepSessionId(ticketId, 'T1')
++  await ask(t1, withImage(`照这张图出稿，密钥 ${SECRET}`))
++  // No OCR call reached a model; DS Bot told the model the image could not be read, and its rewrite still went.
++  expect(model.calls.map(call => call.model)).toEqual(['m'])
++  expect(dsBot!.ocrFailures).toEqual([expect.stringContaining('executor.sideCalls is off')])
++  expect(model.calls[0]!.messages[0]!.content.map(block => block.text).join(' ')).toMatch(/could not be read right now.*\[secret:1\]|\[secret:1\].*could not be read/s)
++  expect(callsOf(t1).map(call => call.relay)).toEqual(['resent'])
++  // A Session that is not SuperAgent's keeps DS Bot's OCR.
++  await ask('ds-bot-session', withImage('看图'))
++  expect(model.calls.slice(1).map(call => call.model)).toEqual(['ocr-vl', 'm'])
++  expect((await h!.api('GET', 'usage')).body).toMatchObject({ sideCalls: false })
++})
++
++it.each([['after', false], ['before', true]] as const)('② decides a team step\'s tool call by step_approval_rule, never by DS Bot (loaded %s SuperAgent), after DS Bot rewrote the request that made it', async (_order, first) => {
++  const { ticketId } = await agreedWithDsBot(fakeModel(), first)
++  await h!.runTool(stepSessionId(ticketId, 'T1'), 'orchestrator_step_report', { state: 'ready', summary: '5 屏' })
++  await waitUntil(() => h!.runtime.steps.tables.get(ticketId, 'T2')?.state === 'running')
++  const t2 = stepSessionId(ticketId, 'T2')
++  const agentOf = (sessionId: string, command: string) => ({ id: sessionId, session: { header: {},
++    snapshotEvents: () => [{ type: 'tool/call', data: { callId: 'c1', name: 'pwsh', arguments: JSON.stringify({ command }) } }] } })
++  const approval = (sessionId: string, command: string) => (h!.ctx as unknown as { waterfall(name: string, request: unknown, next: () => unknown): Promise<string> })
++    .waterfall('approval/request', { agent: agentOf(sessionId, command), toolName: 'pwsh', callId: 'c1' }, () => 'unavailable')
++  // The step's request carried a saved value: DS Bot sent it again, rewritten, and the model asked for a command.
++  await ask(t2, user(`装依赖，token ${SECRET}`))
++  expect(callsOf(t2).map(call => call.relay)).toEqual(['resent'])
++  const asked = approval(t2, 'pnpm add -D @floating-ui/react')
++  const [pending] = h!.runtime.stepApprovals.list()
++  expect(pending).toMatchObject({ ticketId, step: 'T2', bot: { id: 'builder' }, tool: 'pwsh' })
++  h!.runtime.stepApprovals.answer(pending!.id, 'remember', 'panel')
++  expect(await asked).toBe('allowed-once')
++  // Rewritten again: the same Bot, tool and command head goes by the rule; another head asks; DS Bot answered none of them.
++  await ask(t2, user(`再装一个，token ${SECRET}`))
++  expect(await approval(t2, 'pnpm add zod')).toBe('allowed-once')
++  void approval(t2, 'git push origin')
++  expect(h!.runtime.stepApprovals.list()).toEqual([expect.objectContaining({ step: 'T2', detail: expect.objectContaining({ code: 'git push origin' }) })])
++  expect(dsBot!.answered).toEqual([])
++  // DS Bot still answers its own Bots' Sessions, which SuperAgent hands on.
++  expect(await approval('ds-bot-session', 'rm -rf build')).toBe('approved')
++  expect(dsBot!.answered).toEqual(['ds-bot-session'])
++})
++
++it('③ keeps DS Bot\'s global skills to DSH\'s skill catalog: out of SuperAgent\'s prompts and skills, out of the desk, bounded', async () => {
++  await agreedWithDsBot()
++  // As ds-bot registers them: a provider in the global skill registry (office-skills.js:77, goal-skills.js:47).
++  const providers: unknown[] = []
++  h!.ctx.reflect.provide('skills', { registerProvider: (create: unknown) => { providers.push(create); return () => {} } } as never)
++  const registry = (h!.ctx as unknown as { skills: { registerProvider(create: unknown): () => void } }).skills
++  registry.registerProvider(() => ({ list: async () => DS_BOT_SKILLS }))
++  expect(providers).toHaveLength(1)
++  const master = h!.runtime.masterId, desk = h!.runtime.deskId
++  // Nothing of DS Bot in SuperAgent's own prompt sections or skills, which its prompt budget (model-surface.spec.ts) measures.
++  const textOf = (sessionId: string) => (h!.sections.get(sessionId) ?? []).map(section => typeof section.text === 'function'
++    ? String((section.text as (context: object) => unknown)({})) : String(section.text ?? '')).join('\n')
++  for (const sessionId of [master, desk]) {
++    const text = textOf(sessionId), own = (h!.skills.get(sessionId) ?? []).map(skill => skill.name)
++    for (const skill of DS_BOT_SKILLS) {
++      expect(text).not.toContain(skill.name)
++      expect(own).not.toContain(skill.name)
++    }
++  }
++  expect(textOf(master).length).toBeGreaterThan(1000)
++  // The desk masks every tool, `skill` too, so DSH shows it no skill catalog at all.
++  const restrict = (h!.agents.get(desk) as unknown as { ctx: { tools: { restrict: { mock: { calls: unknown[][] } } } } }).ctx.tools.restrict
++  expect(restrict.mock.calls).toContainEqual([{ allow: [] }])
++  // Real machine (2026-11-07): the desk's first step ran before that mask and its history kept the whole catalog (173 skills,
++  // 72 KB, DS Bot's among them). No request of the desk carries one: the model gets the rest.
++  const sent: unknown[][] = []
++  const waterfall = (h!.ctx as unknown as { waterfall(name: string, options: unknown, next: () => unknown): unknown }).waterfall.bind(h!.ctx)
++  const catalog = { id: 'cat-1', role: 'user', source: { kind: 'skill-catalog', form: 'catalog', entries: DS_BOT_SKILLS },
++    content: [{ type: 'text', text: `<available_skills>\n${DS_BOT_SKILLS.map(catalogLine).join('\n')}\n</available_skills>` }] }
++  const news = { id: 'news-1', role: 'user', source: { kind: 'dsh-superagent' }, content: [{ type: 'text', text: '[SuperAgent] 团队方案…' }] }
++  for (const sessionId of [desk, master]) {
++    const request = { sessionId, provider: 'p', model: 'm', messages: [catalog, news] }
++    await drain(waterfall('llm/stream', request, () => { sent.push(request.messages); return fakeModel().model(request as never) }))
++  }
++  expect(sent).toEqual([[news], [catalog, news]])
++  // What DS Bot adds to the catalog the main Session and steps see: three lines, each within DSH's description cap.
++  for (const skill of DS_BOT_SKILLS) expect(skill.description.length).toBeLessThanOrEqual(DSH_CATALOG_DESCRIPTION_MAX)
++  const added = DS_BOT_SKILLS.map(catalogLine).join('\n').length
++  expect(added, `DS Bot adds ${added} characters to the skill catalog`).toBeLessThanOrEqual(DS_BOT_CATALOG_CHARS)
++})
++
++it('④ hands team_distill the evidence of the step that ran, whatever DS Bot sent again inside it', async () => {
++  const given: StepEvidence[] = []
++  root[MEMORY_BUS_KEY] = { version: 1, available: vi.fn(() => true),
++    rememberStep: vi.fn(async (evidence: StepEvidence) => { given.push(evidence); return { fact: { ok: true, message: '已追加' } } }),
++    decideSkillDraft: vi.fn(async (name: string) => ({ name, state: 'active' as const })) } satisfies MemoryBus
++  const { ticketId } = await agreedWithDsBot()
++  const t1 = stepSessionId(ticketId, 'T1'), t2 = stepSessionId(ticketId, 'T2')
++  // T1 made three requests; DS Bot rewrote one and read the images of another on the side: five model calls in T1's Session.
++  await ask(t1); await ask(t1, user(`读配置 ${SECRET}`)); await ask(t1, withImage('照这张图出稿'))
++  expect(callsOf(t1)).toHaveLength(4)
++  await h!.runTool(t1, 'orchestrator_step_report', { state: 'ready', summary: '交互稿 5 屏' })
++  await waitUntil(() => h!.runtime.steps.tables.get(ticketId, 'T2')?.state === 'running')
++  await ask(t2)
++  await h!.runTool(t2, 'orchestrator_step_report', { state: 'ready', summary: '浮层已实现' })
++  await waitUntil(() => given.length === 2)
++  const step = h!.runtime.steps.tables.get(ticketId, 'T1')!
++  expect(given.map(item => [item.stepKey, item.sessionId, item.botId, item.report])).toEqual([
++    ['T1', t1, 'designer', '交互稿 5 屏'], ['T2', t2, 'builder', '浮层已实现']])
++  // Its turns are the step's own (turn ends), not the model calls DS Bot added.
++  expect(given[0]!.turns).toBe(step.turns)
++  expect(given[0]!.turns).toBeLessThan(callsOf(t1).length)
++  // The calls DS Bot added are recorded on the same step the evidence names.
++  expect(callsOf(t1).filter(call => call.relay).every(call => call.ticketId === given[0]!.ticketId && call.step === given[0]!.stepKey)).toBe(true)
++})
 diff --git a/tests/environment.spec.ts b/tests/environment.spec.ts
 index db2bf3e921e..459911b2c54 100644
 --- a/tests/environment.spec.ts
@@ -14236,20 +14777,171 @@ index f3d919a963d..3f892244101 100644
  })
  export const testDeployment = (overrides: Partial<Deployment> = {}): Deployment => ({
    ...testMachine(), repository: 'acme/widgets',
+diff --git a/tests/fixtures/ds-bot.ts b/tests/fixtures/ds-bot.ts
+new file mode 100644
+index 00000000000..6b3e2c090db
+--- /dev/null
++++ b/tests/fixtures/ds-bot.ts
+@@ -0,0 +1,114 @@
++/**
++ * VsSaros addition (2026-11-07, P0 · co-install semantics): a DS Bot made the way ds-bot 0.2.7 acts on every Session, for
++ * `tests/dsb-coexist.spec.ts`. Each part follows its source (G:/…/ds-bot/src/host):
++ * - `secrets.js:505`: an `llm/stream` listener that, when a request holds a saved value, sends the rewritten request again
++ *   through the whole waterfall (`ctx.llm.stream`) at once, instead of calling `next()`;
++ * - `images.js:179`: an `llm/stream` listener that, when a request holds images its model cannot read, reads each with its OCR
++ *   model on the side (a call of its own, the same `sessionId`) and sends the request again with the text; a read that fails
++ *   becomes "it could not be read right now" (`images.js:141`);
++ * - its approval answerer acts on its own Bots' Sessions only and hands every other request on;
++ * - `office-skills.js:77` / `goal-skills.js:47`: a provider in DSH's global skill registry, so its skills join every Session's
++ *   skill catalog (`dsh-tool-skill`), whose descriptions DSH clips at `DSH_CATALOG_DESCRIPTION_MAX`.
++ */
++export interface FakeMessage { role: string; content: { type: string; text?: string; name?: string }[] }
++export interface FakeStreamOptions { sessionId?: string; provider?: string; model?: string; purpose?: string; messages: FakeMessage[] }
++type Model = (options: FakeStreamOptions) => AsyncIterable<Record<string, unknown>>
++interface WaterfallHost {
++  waterfall(name: string, options: unknown, next: () => unknown): unknown
++  on(name: string, listener: (...args: never[]) => unknown): () => void
++}
++
++/** ds-bot 0.2.7's global skills, as their SKILL.md frontmatter describes them (quoted from DS Bot, Apache-2.0, for this test only). */
++export const DS_BOT_SKILLS = [
++  { name: 'goal-grill', description: 'Align with the user before writing a group goal — find the facts yourself, ask only the open decisions in one numbered round with a recommended answer each, then write the goal with checks and stages.' },
++  { name: 'office', description: 'Create, edit, inspect, or convert Office documents, spreadsheets, presentations, and PDFs. Load to choose the relevant workflow.' },
++  { name: 'office-tools', description: 'Inspect, check, and edit .docx/.pptx/.xlsx packages in place — block-level reading, comments, tracked changes, slide inventory and layout checks, slide reorder/duplicate/cleanup, workbook errors, package checks, contact sheets. Works offline; nothing to install.' },
++] as const
++/** `dsh-tool-skill`'s `DEFAULT_CATALOG_DESCRIPTION_MAX_LENGTH`: a catalog line's description is clipped there. */
++export const DSH_CATALOG_DESCRIPTION_MAX = 500
++/** One skill's line in DSH's skill catalog message, near enough to measure what it adds. */
++export const catalogLine = (skill: { name: string; description: string }) => `- ${skill.name}: ${skill.description.slice(0, DSH_CATALOG_DESCRIPTION_MAX)}`
++
++export const user = (text: string): FakeMessage => ({ role: 'user', content: [{ type: 'text', text }] })
++export const withImage = (text: string, name = 'shot.png'): FakeMessage => ({ role: 'user', content: [{ type: 'text', text }, { type: 'image', name }] })
++
++/** A model that answers every call with one usage chunk (a new object each call), and remembers the calls it got. */
++export function fakeModel(usage: Record<string, number> = { inputTokens: 100, outputTokens: 10 }) {
++  const calls: FakeStreamOptions[] = []
++  const model: Model = options => (async function* () {
++    calls.push(options)
++    yield { type: 'text-delta', text: options.model === 'ocr-vl' ? '图里是一个番茄钟' : 'ok' }
++    yield { type: 'usage', usage: { ...usage } }
++  })()
++  return { calls, model }
++}
++
++/**
++ * Installs the fake DS Bot on a Host's root context, after SuperAgent (as a plugin loaded later is).
++ * @param options.secrets - values saved in DS Bot, replaced by `[secret:N]`.
++ * @param options.ocr - its OCR route; the Sessions' own models cannot read images.
++ * @param options.own - its own Bots' Session ids, whose approvals it answers.
++ */
++export function installFakeDsBot(ctx: unknown, model: Model, options: { secrets?: string[]; ocr?: { provider: string; model: string }; own?: string[] } = {}) {
++  const host = ctx as WaterfallHost
++  const secrets = options.secrets ?? []
++  const ocr = options.ocr ?? { provider: 'ocr', model: 'ocr-vl' }
++  const own = new Set(options.own ?? [])
++  /** `ctx.llm.stream`: the whole waterfall, then the model. */
++  const stream = (request: FakeStreamOptions) => host.waterfall('llm/stream', request, () => model(request)) as AsyncIterable<Record<string, unknown>>
++  const answered: string[] = [], ocrFailures: string[] = []
++  const redact = (messages: FakeMessage[]) => {
++    let changed = false
++    const fresh = messages.map(message => ({ ...message, content: message.content.map(block => {
++      if (block.type !== 'text' || !block.text) return block
++      const text = secrets.reduce((rest, value, index) => rest.split(value).join(`[secret:${index + 1}]`), block.text)
++      if (text !== block.text) changed = true
++      return { ...block, text }
++    }) }))
++    return changed ? fresh : messages
++  }
++  const hasImages = (messages: FakeMessage[]) => messages.some(message => message.content.some(block => block.type === 'image'))
++  const read = async (request: FakeStreamOptions, name: string) => {
++    let text = ''
++    try {
++      for await (const chunk of stream({ sessionId: request.sessionId, provider: ocr.provider, model: ocr.model, messages: [user(`Read the image ${name}.`)] })) {
++        if (chunk.type === 'text-delta') text += String(chunk.text ?? '')
++      }
++      return `[Image "${name}". You cannot see images, so ${ocr.model} read it for you:] ${text} [End of image "${name}"]`
++    } catch (error) {
++      ocrFailures.push(String((error as Error).message))
++      return `[Image "${name}": you cannot see images and it could not be read right now. Ask the user what it shows if it matters.]`
++    }
++  }
++  const disposers = [
++    host.on('llm/stream', ((request: FakeStreamOptions, next: () => unknown) => {
++      if (!secrets.length) return next()
++      const fresh = redact(request.messages)
++      if (fresh === request.messages) return next()
++      return stream({ ...request, messages: fresh })
++    }) as never),
++    host.on('llm/stream', ((request: FakeStreamOptions, next: () => AsyncIterable<unknown>) => (async function* () {
++      if (!request.sessionId || request.model === ocr.model || !hasImages(request.messages)) { yield* next(); return }
++      const messages: FakeMessage[] = []
++      for (const message of request.messages) {
++        const content: FakeMessage['content'] = []
++        for (const block of message.content) content.push(block.type === 'image' ? { type: 'text', text: await read(request, block.name ?? 'image') } : block)
++        messages.push({ ...message, content })
++      }
++      yield* stream({ ...request, messages })
++    })()) as never),
++    host.on('approval/request', ((request: { agent?: { id?: string } }, next: () => unknown) => {
++      if (!own.has(String(request.agent?.id))) return next()
++      answered.push(String(request.agent?.id))
++      return 'approved'
++    }) as never),
++  ]
++  return { stream, answered, ocrFailures, dispose: () => { for (const dispose of disposers) dispose() } }
++}
++
++/** Reads a stream to its end. */
++export async function drain(value: unknown): Promise<Record<string, unknown>[]> {
++  const out: Record<string, unknown>[] = []
++  for await (const chunk of value as AsyncIterable<Record<string, unknown>>) out.push(chunk)
++  return out
++}
 diff --git a/tests/fixtures/host.ts b/tests/fixtures/host.ts
-index 70ace2effab..5c0c2f03ff1 100644
+index 70ace2effab..7f766e48b65 100644
 --- a/tests/fixtures/host.ts
 +++ b/tests/fixtures/host.ts
-@@ -132,7 +132,7 @@ export function subagentRuntime(agents: Map<string, FakeAgent>) {
+@@ -132,7 +132,11 @@ export function subagentRuntime(agents: Map<string, FakeAgent>) {
  }
  
  /** @param seed - writes to the database before the Runtime opens it, such as records an earlier version stored. */
 -export async function startRuntime(seed?: (store: Store) => void) {
-+export async function startRuntime(seed?: (store: Store) => void, options: { staffing?: boolean } = {}) {
++/**
++ * @param options.before - VsSaros addition (2026-11-07): runs on the Host's root context before SuperAgent starts, as a
++ *   plugin the Host loaded earlier (tests/dsb-coexist.spec.ts installs DS Bot there).
++ */
++export async function startRuntime(seed?: (store: Store) => void, options: { staffing?: boolean; before?: (ctx: Context) => void } = {}) {
    const directory = mkdtempSync(join(tmpdir(), 'orchestrator-host-'))
    const AGENT = join(directory, 'agent-gh'), BOT = join(directory, 'lark-bot')
    const repository = { default_branch: 'master', permissions: { push: true } }
-@@ -253,7 +253,9 @@ export async function startRuntime(seed?: (store: Store) => void) {
+@@ -164,6 +168,7 @@ export async function startRuntime(seed?: (store: Store) => void) {
+   /** Each Session's next step, which takes the messages that wait for one. */
+   const steps = new Map<string, () => void>(), claims = new Map<string, () => void>()
+   const tools = new Map<string, Map<string, RegisteredTool>>()
++  const skills = new Map<string, { name: string; description: string }[]>(), sections = new Map<string, { name?: string; text: unknown }[]>()
+   const deliveries = vi.fn<(request: Delivery) => void>()
+   let http!: HttpHandler
+   const resolveDefault = async (id: string) => agents.has(id) ? { agent: agents.get(id) } : { error: { code: 'session/not-found' } }
+@@ -175,8 +180,11 @@ export async function startRuntime(seed?: (store: Store) => void) {
+       tools.set(sessionId, sessionTools)
+       const register = (tool: RegisteredTool) => { sessionTools.set(tool.name, tool); return () => sessionTools.delete(tool.name) }
+       agentCtx.reflect.provide('tools', { register, get: () => undefined, restrict: vi.fn(() => () => {}), guard: vi.fn(() => () => {}) })
+-      agentCtx.reflect.provide('skills', { register: () => () => {} })
+-      agentCtx.reflect.provide('systemPrompt', { section: () => () => {} })
++      // VsSaros addition (2026-11-07): what SuperAgent put into each Session's prompt and skills (tests/dsb-coexist.spec.ts).
++      const ownSkills: { name: string; description: string }[] = [], ownSections: { name?: string; text: unknown }[] = []
++      skills.set(sessionId, ownSkills); sections.set(sessionId, ownSections)
++      agentCtx.reflect.provide('skills', { register: (skill: { name: string; description: string }) => { ownSkills.push(skill); return () => {} } })
++      agentCtx.reflect.provide('systemPrompt', { section: (spec: { name?: string; text: unknown }) => { ownSections.push(spec); return () => {} } })
+       const inbox = { nextTurn: [] as UserMessage[], nextStep: [] as UserMessage[],
+         // A pending message taken out, as DSH's inbox does by its id.
+         remove: (id: string) => [inbox.nextTurn, inbox.nextStep].some(list => {
+@@ -249,11 +257,14 @@ export async function startRuntime(seed?: (store: Store) => void) {
+   seeded.saveSettings(SettingsSchema.parse({ ...seeded.settings(), sources }))
+   seed?.(seeded)
+   seeded.close()
++  options.before?.(ctx)
+   const runtime = new Runtime(ctx, testMachine({ stateDir: directory }), vi.fn())
    await runtime.ready
    runtime.sources.register(feishuKind); runtime.sources.register(githubKind)
    const settings = runtime.store.settings()
@@ -14259,8 +14951,17 @@ index 70ace2effab..5c0c2f03ff1 100644
      policy: { ...settings.policy, sources: { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT }, github: { allowed: [{ id: 'alice' }] } } },
      sources: { ...sources, feishu: { enabled: true, config: { cli: BOT, chats: [{ chatId: CHAT, listen: 'all' }], directMessages: true } } } })
    deliveries.mockClear()
+@@ -293,7 +304,7 @@ export async function startRuntime(seed?: (store: Store) => void) {
+   const step = (sessionId: string) => { steps.get(sessionId)!() }
+   /** A step of the worker claims what waits for it, and is cut off before the Session took it. */
+   const claim = (sessionId: string) => { claims.get(sessionId)!() }
+-  return { runtime, ctx, directory, agents, tools, deliveries, relays, candidates, runTool, route, acceptedTicket, api, controller, subprocess, hooks, resolveDefault, stop,
++  return { runtime, ctx, directory, agents, tools, skills, sections, deliveries, relays, candidates, runTool, route, acceptedTicket, api, controller, subprocess, hooks, resolveDefault, stop,
+     jobs, subagents, step, claim }
+ }
+ export type Host = Awaited<ReturnType<typeof startRuntime>>
 diff --git a/tests/fixtures/panel-server.ts b/tests/fixtures/panel-server.ts
-index 513d91aad3e..305e735ef0f 100644
+index 513d91aad3e..a84d2090564 100644
 --- a/tests/fixtures/panel-server.ts
 +++ b/tests/fixtures/panel-server.ts
 @@ -20,6 +20,21 @@ import { githubChannel } from '../../src/sources/github-trigger.ts'
@@ -14370,11 +15071,11 @@ index 513d91aad3e..305e735ef0f 100644
 +const totals = (total = 0) => ({ calls: total ? 1 : 0, input: total, cacheRead: 0, cacheWrite: 0, output: 0, total })
 +/** No usage yet. */
 +export const emptyUsage = (): ApiResponse<'GET usage'> => ({ day: { since: '', total: totals(), byRole: { master: totals(), desk: totals(), worker: totals(),
-+  step: totals() }, byModel: [], byBot: [], byTicket: [] }, week: totals(), steward: [] })
++  step: totals() }, byModel: [], byBot: [], byTicket: [], relays: { resent: 0, side: 0, sessions: [] } }, week: totals(), steward: [], coexist: {}, sideCalls: true })
  const overviewView = (): ApiResponse<'GET overview'> => {
    const { problem, feishuProblem } = server.setup
    const setup = problem ?? feishuProblem
-@@ -199,6 +272,7 @@ const overviewView = (): ApiResponse<'GET overview'> => {
+@@ -199,13 +272,14 @@ const overviewView = (): ApiResponse<'GET overview'> => {
      flow: { received: 12, filtered: 2, triggers: 10, judged: 5, accepted: 1, evaluating: 0,
        dropped: server.dropped.filter(item => item.dropped.at >= dayAgo()).length },
      policyVersion: 'abcdef1234567890',
@@ -14382,6 +15083,14 @@ index 513d91aad3e..305e735ef0f 100644
    }
  }
  export const acceptDecision = (): NonNullable<TicketPageView['decision']> => ({ id: 'd1', kind: 'accept', outcome: 'accept',
+   reason: [{ code: 'explicitRouted' }], at: '2026-09-22T00:00:00Z', strength: 'explicit', ticketId: undefined,
+   triggerIds: ['e1'], thread: 'feishu:oc_1:om_root', rules: [], preview: '@bot 修一下', ticketTitle: undefined })
+ const ticketDetail = (): TicketPageView => ({
+-  ...ticketSummary(), paused: false, decision: acceptDecision(), threads: [threadSummary()],
++  ...ticketSummary(), paused: false, decision: acceptDecision(), threads: [threadSummary()], relays: { resent: 0, side: 0, sessions: [] }, coexist: {},
+   mandate: { strength: 'explicit', policyVersion: 'abcdef1234567890', basis: { via: 'addressed', sender: 'Alice', addressed: 'mention' },
+     actor: actor('feishu', MEMBER), scope: '修复登录页回归' },
+   basis: { facts: [{ name: 'sender', value: 'Alice' }, { name: 'addressed', value: 'mention' }], legacy: false },
 @@ -247,7 +321,8 @@ function initial(): PanelServer {
      en: 'Feishu message' } }
    const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
@@ -15192,7 +15901,7 @@ index 00000000000..3e180648e19
 +})
 diff --git a/tests/panel-chat.spec.tsx b/tests/panel-chat.spec.tsx
 new file mode 100644
-index 00000000000..483b7a9908f
+index 00000000000..1165845dd54
 --- /dev/null
 +++ b/tests/panel-chat.spec.tsx
 @@ -0,0 +1,179 @@
@@ -15223,7 +15932,7 @@ index 00000000000..483b7a9908f
 +  localStorage.clear()
 +  await mount()
 +  expect(tab(zh['tab.chat']).getAttribute('aria-selected')).toBe('true')
-+  expect(all('[role="tab"]').map(item => item.textContent)).toEqual(['对话', '工作台', '来源', '触发', '评估', '执行', '设置'])
++  expect(all('[role="tab"]').map(item => item.textContent)).toEqual(['对话', '来源', '触发', '评估', '执行', '设置'])
 +  expect(text()).toContain(zh['chat.empty'])
 +  const side = () => document.querySelector('.dt-side')
 +  expect(side()?.textContent).toContain(zh.pendingTickets)
@@ -15700,10 +16409,10 @@ index 0fca556af59..a679ffdf11f 100644
 +})
 diff --git a/tests/panel-flow-card.spec.tsx b/tests/panel-flow-card.spec.tsx
 new file mode 100644
-index 00000000000..6ed82a64b45
+index 00000000000..ca6d08c0013
 --- /dev/null
 +++ b/tests/panel-flow-card.spec.tsx
-@@ -0,0 +1,203 @@
+@@ -0,0 +1,204 @@
 +// @vitest-environment jsdom
 +// VsSaros addition (plan C): the key-node card in the desk's DSH conversation, the Bots' marks, and the change stream.
 +import { act } from 'react'
@@ -15717,7 +16426,7 @@ index 00000000000..6ed82a64b45
 +import { stepMarkState, toolState } from '../src/client/mark.tsx'
 +import { CardProvider } from '../src/client/provider.tsx'
 +import { zh } from '../src/client/locales.ts'
-+import { all, click, find, mount, settle, tab, translator, usePanel } from './fixtures/panel.tsx'
++import { all, at, click, find, mount, settle, tab, translator, usePanel } from './fixtures/panel.tsx'
 +import { pushChange, server } from './fixtures/panel-server.ts'
 +
 +usePanel()
@@ -15895,8 +16604,9 @@ index 00000000000..6ed82a64b45
 +
 +it('reads the teams again as soon as the stream says steps changed', async () => {
 +  server.streaming = true
++  // VsSaros change (2026-11-07): the Workbench is no longer a tab; start on its page.
++  at({ page: 'work' })
 +  await mount()
-+  await click(tab(zh['tab.work']))
 +  expect(document.querySelector('.dt-work')?.textContent).toContain(zh['work.empty'])
 +  server.teamSteps = [team]
 +  const before = server.requests.filter(request => request.path === 'team/steps').length
@@ -15908,7 +16618,7 @@ index 00000000000..6ed82a64b45
 +  expect(all('.dt-flow-node .dt-bm').map(mark => mark.getAttribute('data-state'))).toEqual(['idle', 'working'])
 +})
 diff --git a/tests/panel-overview.spec.tsx b/tests/panel-overview.spec.tsx
-index 1ac9f611e39..6d7cae9069b 100644
+index 1ac9f611e39..e47687f422c 100644
 --- a/tests/panel-overview.spec.tsx
 +++ b/tests/panel-overview.spec.tsx
 @@ -1,15 +1,30 @@
@@ -15944,7 +16654,7 @@ index 1ac9f611e39..6d7cae9069b 100644
 -  expect(tab(zh['tab.overview']).getAttribute('aria-selected')).toBe('true')
 -  expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['概览', '来源', '触发', '评估', '执行', '设置'])
 +  expect(tab(zh['tab.chat']).getAttribute('aria-selected')).toBe('true')
-+  expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['对话', '工作台', '来源', '触发', '评估', '执行', '设置'])
++  expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['对话', '来源', '触发', '评估', '执行', '设置'])
    expect(all('.dt-section-title').map(title => title.textContent)).toEqual(['待处理工单2', '系统问题2', '过去 24 小时详情 ›', '执行器详情 ›'])
    expect(all('.dt-cards .dt-ticket-stage').map(item => item.textContent)).toEqual(['待回答', '待处理失败'])
    expect(all('.dt-cards .dt-att-what').map(item => item.textContent)).toEqual(['飞书 来源异常', '评估未完成：这个文案好奇怪'])
@@ -16089,7 +16799,7 @@ index 1ac9f611e39..6d7cae9069b 100644
    expect(server.requests.some(request => request.path.startsWith('threads/github:9'))).toBe(true)
  })
 diff --git a/tests/panel-panel.spec.tsx b/tests/panel-panel.spec.tsx
-index 0f0a953b994..7e6e0e00c9e 100644
+index 0f0a953b994..119cdaaf8a1 100644
 --- a/tests/panel-panel.spec.tsx
 +++ b/tests/panel-panel.spec.tsx
 @@ -3,7 +3,7 @@
@@ -16116,7 +16826,7 @@ index 0f0a953b994..7e6e0e00c9e 100644
  it('shows domain terms in the interface language only and lists both languages in the (?) glossary', async () => {
    await mount(en)
 -  expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['Overview', 'Source', 'Trigger', 'Eval', 'Execution', 'Settings'])
-+  expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['Chat', 'Workbench', 'Source', 'Trigger', 'Eval', 'Execution', 'Settings'])
++  expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['Chat', 'Source', 'Trigger', 'Eval', 'Execution', 'Settings'])
    await click('Glossary')
    const dialog = document.querySelector('[role="dialog"]')!
    const row = [...dialog.querySelectorAll('tr')].find(item => item.textContent?.startsWith('Ticket'))!
@@ -16238,15 +16948,20 @@ index 00000000000..65f657cbb6d
 +  expect(find(en['review.approve'])).toBeDefined()
 +})
 diff --git a/tests/panel-settings.spec.tsx b/tests/panel-settings.spec.tsx
-index 0208e063435..a366e0e6d02 100644
+index 0208e063435..f847b5c04d6 100644
 --- a/tests/panel-settings.spec.tsx
 +++ b/tests/panel-settings.spec.tsx
-@@ -53,7 +53,7 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
+@@ -52,8 +52,12 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
+   await type(workerProvider as HTMLInputElement, 'worker-provider'); await type(workerModel as HTMLInputElement,
      'worker-model'); await type(effort as HTMLInputElement, 'high')
    expect([...document.querySelectorAll('#dt-worker-model-efforts option')].map(option => option.getAttribute('value'))).toEqual(['high'])
++  // VsSaros addition (2026-11-07): another plugin's side calls (DS Bot's OCR) are allowed until a person turns them off here.
++  const sideCalls = find(zh.sideCalls, '[role="switch"]')
++  expect(sideCalls.getAttribute('aria-checked')).toBe('true')
++  await click(sideCalls)
    await click(zh.save)
 -  expect(server.settings.executor).toEqual({ maxWorkers: 5, directory: '/srv/work',
-+  expect(server.settings.executor).toEqual({ maxWorkers: 5, directory: '/srv/work', staffing: true, autoApprove: false,
++  expect(server.settings.executor).toEqual({ maxWorkers: 5, directory: '/srv/work', staffing: true, autoApprove: false, sideCalls: false,
      prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"', blockedCommands: ['gh-personal', 'gh.other'], model: { provider: 'worker-provider',
        model: 'worker-model', reasoningEffort: 'high' } })
    expect(server.requests.filter(request => request.method === 'PUT').map(request => request.path)).toEqual(['settings/eval',
@@ -16355,10 +17070,10 @@ index 781155e26a9..b09f1eef916 100644
 +})
 diff --git a/tests/panel-work.spec.tsx b/tests/panel-work.spec.tsx
 new file mode 100644
-index 00000000000..fa37615c2b5
+index 00000000000..0179af0671a
 --- /dev/null
 +++ b/tests/panel-work.spec.tsx
-@@ -0,0 +1,187 @@
+@@ -0,0 +1,189 @@
 +// @vitest-environment jsdom
 +// VsSaros addition (superagent runtime UI, plan C): what waits for the person in the side panel, the teams' members, and
 +// the Workbench tab's flow, board and list.
@@ -16367,7 +17082,7 @@ index 00000000000..fa37615c2b5
 +import { zh } from '../src/client/locales.ts'
 +import { elapsedLabel, layoutSteps } from '../src/client/work.tsx'
 +import { AGENTS_ROOMS_ACTIVE, groupRoundStatus, groupRunSource, groupRunsConfig, normalizeGroupRuns } from '../src/client/group-runs.tsx'
-+import { all, click, find, mount, settle, tab, text, usePanel } from './fixtures/panel.tsx'
++import { all, at, click, find, mount, settle, tab, text, usePanel } from './fixtures/panel.tsx'
 +import { server } from './fixtures/panel-server.ts'
 +import type { StepsView } from '../src/app/steps.ts'
 +
@@ -16421,8 +17136,10 @@ index 00000000000..fa37615c2b5
 +it('shows a team in the Workbench tab as a flow, a board and a list, with a step\'s details beside them', async () => {
 +  server.teamSteps = [team()]
 +  server.stepApprovals = [approval]
++  // VsSaros change (2026-11-07): the Workbench is no longer a tab; its page is still a route (the flow links open it).
++  at({ page: 'work' })
 +  await mount()
-+  await click(tab(zh['tab.work']))
++  expect(all('[role="tab"]').map(item => item.textContent)).not.toContain(zh['tab.work'])
 +  const nodes = () => all('.dt-flow-node')
 +  expect(nodes().map(node => node.getAttribute('data-state'))).toEqual(['ready', 'alert', 'running', 'pending'])
 +  expect(nodes()[3]!.textContent).toContain('↻2')
@@ -16445,8 +17162,8 @@ index 00000000000..fa37615c2b5
 +})
 +
 +it('says when no team is at work', async () => {
++  at({ page: 'work' })
 +  await mount()
-+  await click(tab(zh['tab.work']))
 +  expect(text()).toContain(zh['work.empty'])
 +})
 +
@@ -16465,8 +17182,8 @@ index 00000000000..fa37615c2b5
 +    return panelFetch(url, init)
 +  }))
 +  try {
++    at({ page: 'work' })
 +    await mount()
-+    await click(tab(zh['tab.work']))
 +    await act(async () => { await new Promise(resolve => setTimeout(resolve, 80)) })
 +    expect(agentsCalls[0]).toBe(AGENTS_ROOMS_ACTIVE)
 +    expect(document.querySelector('[data-vssaros-group-run="c-fb"]')?.getAttribute('data-vssaros-group-run-round-status')).toBe('replying')
@@ -16508,8 +17225,8 @@ index 00000000000..fa37615c2b5
 +  }]
 +  win.__vssarosGroupProgress = active
 +  try {
++    at({ page: 'work' })
 +    await mount()
-+    await click(tab(zh['tab.work']))
 +    const section = document.querySelector('[data-testid="group-runs"]')
 +    expect(section).not.toBeNull()
 +    expect(section!.textContent).toContain('番茄钟 H5 开发团队')
@@ -16547,16 +17264,17 @@ index 00000000000..fa37615c2b5
 +  }
 +})
 diff --git a/tests/policy.spec.ts b/tests/policy.spec.ts
-index 4a25b144cfe..f2dca9d0867 100644
+index 4a25b144cfe..9107f64bae2 100644
 --- a/tests/policy.spec.ts
 +++ b/tests/policy.spec.ts
-@@ -254,7 +254,8 @@ describe('settings migration', () => {
+@@ -254,7 +254,9 @@ describe('settings migration', () => {
        sources: { feishu: feishuSource({ chats: [{ chatId: CHAT, listen: 'mentions' }, { chatId: OBSERVED, listen: 'all' }], directMessages: false }), github: { enabled: true, config: { pollSeconds: 120 } } },
        policy: { rules: [], sources: { feishu: { allowed: [{ id: MEMBER, name: 'A' }], admission: {} }, github: { allowed: [{ id: 'a' }], admission: {} } } },
        eval: { mode: 'auto', timeoutSeconds: 90, model: { provider: 'p', model: 'm' } },
 -      executor: { model: null, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [] },
 +      // VsSaros addition (superagent v2): an upgrade turns team staffing on and never turns auto-approval on.
-+      executor: { model: null, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [], staffing: true, autoApprove: false },
++      // VsSaros addition (2026-11-07): another plugin's side calls (DS Bot's OCR) stay as they were, allowed.
++      executor: { model: null, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [], staffing: true, autoApprove: false, sideCalls: true },
      })
      expect(migrateSettings(migrated)).toEqual(migrated)
    })
@@ -18278,16 +18996,16 @@ index 61d4c4cff9d..3b938ee2e6f 100644
    for (const line of css.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map(text => text.trim()).filter(Boolean)) {
 diff --git a/tests/superagent-desk.spec.ts b/tests/superagent-desk.spec.ts
 new file mode 100644
-index 00000000000..90c7f43100a
+index 00000000000..5187fe3e276
 --- /dev/null
 +++ b/tests/superagent-desk.spec.ts
-@@ -0,0 +1,422 @@
+@@ -0,0 +1,485 @@
 +// VsSaros addition: the Runtime's supervisor desk and Bots asking SuperAgent for help, end to end on the fake Host.
 +import { readFileSync } from 'node:fs'
 +import { join } from 'node:path'
 +import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 +import { DESK_FILE_BYTES } from '../src/app/desk-chat.ts'
-+import { deskReceiptStream, RECEIPT_CALL_PREFIX, RECEIPT_TOOL, receiptText, receiptView, ticketEndedNotice } from '../src/app/desk.ts'
++import { deskReceiptStream, RECEIPT_CALL_PREFIX, RECEIPT_TOOL, receiptText, receiptView, submitText, ticketEndedNotice } from '../src/app/desk.ts'
 +import { deskFlow } from '../src/app/desk-flow.ts'
 +import type { Ticket } from '../src/core/index.ts'
 +import { GROUP_REFERENCE_WAIT_MS } from '../src/app/groupFastPath.ts'
@@ -18656,6 +19374,69 @@ index 00000000000..90c7f43100a
 +  } finally {
 +    if (previous === undefined) { delete globals[key] } else { globals[key] = previous }
 +  }
++})
++
++// VsSaros addition (2026-11-07): every message typed in the desk cost the desk's model a turn (~2 calls, ~6.8万 tokens),
++// though the fast path had handed it over (and often to a group) as it arrived.
++it('answers the person\'s own message in the desk with no model: the hand-over call (flow card), then where it went', async () => {
++  listSuperagent()
++  const key = Symbol.for('vssaros.team')
++  const globals = globalThis as unknown as Record<symbol, unknown>
++  const previous = globals[key]
++  const room = { id: 'room-tomato', sessionId: 'room-tomato', name: '番茄钟 H5 开发团队', members: [{ id: 'coder', name: 'Coder' }],
++    admin: 'coder', mode: 'admin', notice: '', pinned: false, hidden: false, createdBy: 'superagent' }
++  globals[key] = { version: 1, available: () => true, listBots: async () => [], delegate: async () => ({}), get: async () => undefined,
++    cancel: async () => ({}), subscribe: () => () => undefined, createGroup: vi.fn(), listGroups: async () => [room] }
++  try {
++    const waterfall = (h.ctx as unknown as { waterfall(name: string, options: unknown, next: () => unknown): unknown }).waterfall.bind(h.ctx)
++    const emit = (h.ctx as unknown as { emit(name: string, ...args: unknown[]): void }).emit.bind(h.ctx)
++    const drain = async (value: unknown) => { const out: Record<string, unknown>[] = []; for await (const chunk of value as AsyncIterable<Record<string, unknown>>) out.push(chunk); return out }
++    const noModel = () => { throw new Error('the desk\'s model must not be called') }
++    const tools = [{ name: 'superagent_submit' }, { name: RECEIPT_TOOL }]
++    const person = (id: string, text: string) => ({ id, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] })
++    const turn = async (id: string, text: string) => {
++      emit('session/event', { id: h.runtime.deskId }, { type: 'user/message', data: { id, source: { kind: 'user' }, content: [{ type: 'text', text }] } })
++      const call = await drain(waterfall('llm/stream', { sessionId: h.runtime.deskId, messages: [person(id, text)], tools }, noModel))
++      const block = call.find(chunk => chunk.type === 'block-end')!.block as { id: string; name: string; arguments: string }
++      // By the time the call is made, the fast path has the message: the call finds it handed over.
++      const trigger = deskTrigger({ session: h.runtime.deskId, messageId: id, text, at: '' }).id
++      expect(h.runtime.store.triggers.get(trigger)).toBeDefined()
++      const result = { role: 'tool', toolCallId: block.id, content: [{ type: 'text', text: JSON.stringify({ submitted: false, result: 'duplicate', trigger }) }] }
++      const line = await drain(waterfall('llm/stream', { sessionId: h.runtime.deskId, messages: [person(id, text), { role: 'assistant' }, result], tools }, noModel))
++      return { block, call, line: String(line[1]!.text), trigger }
++    }
++    const asked = await turn('dsh-ask', '帮我看看现在有哪些工单')
++    expect(asked.block).toMatchObject({ name: 'superagent_submit', arguments: '{}', id: expect.stringMatching(/^toolu_superagent_submit_/) })
++    expect(asked.call.at(-1)).toEqual({ type: 'finish', reason: { kind: 'tool-calls' } })
++    expect(asked.line).toBe('主管收到了，需要你回复的消息会发到这里。')
++    // An @group message waits for its session reference; the call waits for the fast path, and the line names the group.
++    const pending = turn('dsh-tomato', '@番茄钟 H5 开发团队 开发H5 番茄钟')
++    await tick(20)
++    emit('session/event', { id: h.runtime.deskId }, { type: 'user/message', data: { id: 'ref-dsh-tomato', role: 'user',
++      source: { kind: 'session-reference', form: 'recall', version: 1, references: [{ sessionId: 'room-tomato', label: room.name }] },
++      content: [{ type: 'text', text: '## Referenced sessions' }] } })
++    const grouped = await pending
++    expect(h.runtime.groupRoutes.get(grouped.trigger)).toMatchObject({ roomId: 'room-tomato', kind: 'routed' })
++    expect(grouped.line).toBe('已转给群「番茄钟 H5 开发团队」。')
++    // SuperAgent's news with the person's message, or news alone, still goes to the desk's model.
++    const MODEL = Symbol('model')
++    const news = { id: 'm-news', role: 'user', source: { kind: 'dsh-superagent' }, content: [{ type: 'text', text: '[SuperAgent] 团队方案…' }] }
++    expect(waterfall('llm/stream', { sessionId: h.runtime.deskId, messages: [news, person('dsh-x', '同意')], tools }, () => MODEL)).toBe(MODEL)
++    expect(waterfall('llm/stream', { sessionId: h.runtime.deskId, messages: [news], tools }, () => MODEL)).toBe(MODEL)
++    // A turn in another Session is not the desk's.
++    expect(waterfall('llm/stream', { sessionId: 'other', messages: [person('dsh-y', 'hi')], tools }, () => MODEL)).toBe(MODEL)
++  } finally {
++    if (previous === undefined) { delete globals[key] } else { globals[key] = previous }
++  }
++})
++
++it('says where a handed-over desk message went', () => {
++  expect(submitText({ result: 'stored' })).toBe('主管收到了，需要你回复的消息会发到这里。')
++  expect(submitText({ result: 'duplicate', route: { roomName: '番茄钟', kind: 'created' } })).toBe('已建群「番茄钟」，群里的 Bots 接着做。')
++  expect(submitText({ result: 'stored', tickets: ['做番茄钟'] })).toBe('已转给正在做的工单「做番茄钟」。')
++  expect(submitText({ result: 'filtered' })).toMatch(/没交给主管/)
++  expect(submitText({ result: 'stored', filtered: true })).toMatch(/没交给主管/)
++  expect(submitText(undefined)).toMatch(/没能交给主管/)
 +})
 +
 +// 2026-11-06: the agents plugin pairs "message + session reference" within 15s. A reference that arrives after the desk's
@@ -20179,7 +20960,7 @@ index 00000000000..7f3fbc33ec6
 +  expect(existsSync(teamflowFile({ cwd: '/work/demo', dshHome }))).toBe(true)
 +})
 diff --git a/docs/007-architecture.md b/docs/007-architecture.md
-index 184ea543da4..97ab3138413 100644
+index 184ea543da4..023e9b00c71 100644
 --- a/docs/007-architecture.md
 +++ b/docs/007-architecture.md
 @@ -2,6 +2,8 @@
@@ -20238,7 +21019,7 @@ index 184ea543da4..97ab3138413 100644
 +| `src/app/steward.ts` | VsSaros addition (2026-11-06, P2, after DS Bot's steward): `ContextSteward` compacts the main Session and the desk with DSH's `compactNow` when they go idle past a check line (60% of the usable window, read from the ledger's last call and DSH's model info), then waits 10 minutes; DS Bot's switch-to-a-new-part branch is not taken (these Sessions keep their ids) |
 +| `src/app/coexist.ts` | VsSaros addition (2026-11-06, P3 · co-install): `coexistenceOf` reads the cordis loader for an enabled `ds-bot` entry; the overview says DS Bot shares the Host and which of its hooks reach SuperAgent's Sessions (secrets redaction, image reading, skills), and the log says so once |
 +| `src/app/team-archive.ts` | VsSaros change (2026-11-06, P1 · one track): `TeamArchive`: the retired team track — plans with their steps, Bots and exchanges, and template skills — copied once into `team_archive` and its five tables (`RETIRED_TEAM_TABLES`) dropped; read-only views for the panel (`GET team/plans`, `GET team/retrospective`) |
-+| `src/app/teamflow.ts` | VsSaros addition: the TeamFlow adapter: TeamFlow's project key (its `slugPath`), steps mapped onto its seven fixed stages with what is lost, an export that replaces only its own `sa-*` team in `teams.json` (with a backup, never over an unreadable file), and TeamFlow's teams imported as workflow seeds |
++| `src/app/teamflow.ts` | VsSaros addition: the TeamFlow adapter: TeamFlow's project key (its `slugPath`), steps mapped onto its seven fixed stages with what is lost, an export that replaces only its own `sa-*` team in `teams.json` (with a backup, never over an unreadable file), and TeamFlow's teams imported as workflow seeds. It never runs a step: delegating a step to TeamFlow (`executor: "teamflow"`) is not done (decision 14 of `doc/superagent-framework-v2.html`, 2026-11-07), as such a step would bypass step approvals, the token budget, the distill evidence and the usage ledger |
  | `src/app/settings-history.ts` | `policyHistory`: each saved settings revision with what it changed from the one before |
  | `src/app/prompts.ts` | Prompts, `builtInParts`, the built-in parts a team may override, and `promptParts`, the order of a role's prompt sections |
  | `src/app/context.ts` | The built-in prompt text, read from `prompts/`, and the transcript entries Sessions read |
@@ -20248,7 +21029,7 @@ index 184ea543da4..97ab3138413 100644
  | `src/app/delivery.ts` | `AgentDelivery`: delivers a message to a DeepSeek Harness agent once per request id, also across a restored Session |
 +| `src/app/distill.ts` | VsSaros addition: `Distiller`: each team step that ended ready or failed hands its evidence, once, to the VsSaros memory system through `Symbol.for('vssaros.memory')` (provided by @vssaros/dsh-agents): `skill` for a step of at least 3 turns, a failure or a retry, else `facts`; records in `team_distill`, retried while the memory system is absent or busy, and relays a person's decision on the skill draft it wrote |
 +| `src/app/desk-chat.ts` | VsSaros addition: `DeskChat`: the desk conversation the panel's Chat tab shows, a person's messages from the desk Thread's Triggers and SuperAgent's replies logged in `desk_log` as they are delivered to the desk, and a message from the panel received as a desk Trigger; the composer's attachments kept under `<stateDir>/desk-files` (10 MB each), and scheduled messages in `desk_schedule` (once, every day or weekdays) sent as the person's when due |
-+| `src/app/desk.ts` | VsSaros addition: the supervisor desk, a Session where a person talks to SuperAgent: its prompt, its one tool `superagent_submit` (which hands the person's latest message over word for word), and replies written back into the desk or an asking Bot's Session. 2026-11-06: a desk ticket's end comes back to the desk, as DeepSeek-Bot's answer comes back to whoever asked: on `ticket.ended` the Runtime sends a `ticket-ended:<ticket>:<at>` notice (`ticketEndedNotice`) through the desk outbox, and `deskReceiptStream` (`llm/stream`) answers a desk turn of nothing but such notices without the model: a call of `superagent_ticket_result`, drawn as the ticket's end card (`FlowCard receipt`), then one line (`receiptText`) that stays when DSH folds the turn |
++| `src/app/desk.ts` | VsSaros addition: the supervisor desk, a Session where a person talks to SuperAgent: its prompt, its one tool `superagent_submit` (which hands the person's latest message over word for word), and replies written back into the desk or an asking Bot's Session. 2026-11-06: a desk ticket's end comes back to the desk, as DeepSeek-Bot's answer comes back to whoever asked: on `ticket.ended` the Runtime sends a `ticket-ended:<ticket>:<at>` notice (`ticketEndedNotice`) through the desk outbox, and `deskReceiptStream` (`llm/stream`) answers a desk turn of nothing but such notices without the model: a call of `superagent_ticket_result`, drawn as the ticket's end card (`FlowCard receipt`), then one line (`receiptText`) that stays when DSH folds the turn. 2026-11-07: a desk turn of nothing but the person's own messages needs no model either (it cost ~6.8万 tokens a message): `deskReceiptStream` waits for the fast path to have handed the message over (`handedOver`, so it never races the group paths), makes the `superagent_submit` call itself (`SUBMIT_CALL_PREFIX`, which keeps the flow card), and after its result says where the message went (`submitLine` → `submitText`: the group it went to, the live ticket it reached, or that the supervisor has it). SuperAgent's news still goes to the desk's model |
  | `src/app/retry-health.ts` | `RetryHealth`: which Sessions wait on a model budget retry, for the `models` health entry |
  | `src/app/role-models.ts` | Resolves the Eval and Executor models, and seeds a new Session with its role's model |
 -| `src/app/assessment.ts` | The MasterAssessor, the assessment schema and the window `orchestrator_eval` answers |
@@ -20306,7 +21087,7 @@ index 184ea543da4..97ab3138413 100644
 +| `src/client/side.tsx` | VsSaros addition: the side panel with the Overview: open state and width kept across loads, resized from its left edge, and opened by itself when the supervisor starts new work (a new proposal version, a team's steps beginning, or a step's request for the person) unless that work was shown before |
 +| `src/client/work.tsx` | VsSaros addition (plan C): the teams at work, kept current by the change stream (polled every 2 s while a step runs and the stream is down): a step's request card (allow once, allow and remember, refuse), each team's members with their Bot marks, what they do now, for how long and a stop button, a small flow chart, and the Workbench tab with a team's dependency graph (pan, zoom, glow on what runs, attempts on one card), a board by state, a list, and a step's details; it also mounts the live group-run section below |
 +| `src/client/group-runs.tsx` | VsSaros addition (2026-11-05): a read-only live section for group-chat relays in the Workbench and Execution tabs. It reuses the chat-surface `vssaros-group-progress` window event and `window.__vssarosGroupProgress`, maps `?active=1` rounds into group name/state/member pills/reply count/elapsed/latest status, and does not alter orchestrator Ticket, Step, Executor or SSE semantics |
-+| `src/client/feed.ts` | VsSaros addition (plan C): the change stream on the page: one `fetch`-read connection while anything listens, reconnecting with backoff; `useLive` reads data again when its topics change, polls while the stream is down (every minute while up), and reads everything again after a reconnect |
++| `src/client/feed.ts` | VsSaros addition (plan C): the change stream on the page: one `fetch`-read connection while anything listens, reconnecting with backoff; `useLive` reads data again when its topics change, polls while the stream is down (every minute while up), and reads everything again after a reconnect. 2026-11-07: `disposeFeed` ends the stream, its reconnect timer and its listeners when DSH disposes the client plugin (`apply` → `ctx.effect`; DSH's client has no `import.meta.hot`, a reload loads a new copy of the module) |
 +| `src/client/characters.ts`, `src/client/mark.tsx` | VsSaros addition (plan C): the Bots' marks, ported from DS Bot (Apache-2.0; see NOTICE): 20 characters with eyes cut out, a look from the Bot id, the supervisor's whale; states idle, thinking, searching, working, sending, waiting, alert and done, each with its motion (`dt-bm-*` keyframes), blinks and fidgets at rest on list marks, a settle squash, and the "?" and working badges |
 +| `src/client/flow-card.tsx` | VsSaros addition (plan C): the key-node card that DSH's chat of the desk draws for the desk's `superagent_submit` call (`tool.call.toolview`): from the trigger in its result, the message's state live from the change stream: evaluating, declined, the ticket, the proposal with agree and refuse, the team at work with its flow, requests and members, and how it ended. `CardProvider` (in `provider.tsx`) gives a card outside the panel the API and translator and adds the panel's styles to the page once |
  | `src/client/provider.tsx` | What every page reads from its host: copy, calls, navigation, notices, the state poll, and `restart`, which reads the state quickly while dsh-superagent restarts |
@@ -20321,7 +21102,7 @@ index 184ea543da4..97ab3138413 100644
  | `src/client/settings.tsx` | The Settings tab: the group navigation and the group on screen |
  | `src/client/settings-kit.tsx` | The building blocks of settings blocks: the settings the stage groups share, `useBlockDraft`, the fields, among them a Source kind's, and the history of saves |
  | `src/client/prompts.tsx` | The Prompts settings: the page owns the view it read and its editor the draft, and the Edit, Full prompt and History tabs render from them; a built-in part's editor shows a changed default and keeps or drops the override |
-@@ -399,15 +447,53 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -399,15 +447,54 @@ Some generic modules still refer directly to GitHub or Feishu:
  
  `src/sources/github.ts` and `src/sources/feishu.ts` are also the entries of the two Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch` and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts the three plugins, with Feishu disabled.
  
@@ -20344,6 +21125,7 @@ index 184ea543da4..97ab3138413 100644
  | --- | --- |
 +| `tests/usage.spec.ts` | VsSaros addition (2026-11-06): the usage ledger (own Sessions only, sums, 30 days, one listener for ledger and token budget), the context steward's idle compaction (check line, cooldown, unknown window), and approval rule templates with chained lines never covered |
 +| `tests/coexist.spec.ts` | VsSaros addition (2026-11-06): DS Bot found through the loader's `ds-bot` entry and said on the overview; a step call another listener sends again is metered once |
++| `tests/dsb-coexist.spec.ts` | VsSaros addition (2026-11-07, P0 · co-install semantics): with a DS Bot made as ds-bot 0.2.7 acts on every Session (`tests/fixtures/ds-bot.ts`), loaded before or after SuperAgent: ① each model call is counted once in `usage_call` and a team's token budget, a call DS Bot sent again (`resent`) or made on the side (`side`, its OCR) is marked and shown on GET usage and a ticket's page, and `executor.sideCalls` off refuses side calls in SuperAgent's Sessions only; ② a step's tool call is still decided by `step_approval_rule`, never by DS Bot; ③ its global skills stay out of SuperAgent's prompt sections and skills and out of every desk request (`deskWithoutCatalog`), and add at most 800 characters to a catalog; ④ `team_distill` evidence is of the step that ran. Its real-machine case: `dev/scripts/e2e-dsb-coexist.mjs` |
 +| `tests/notice.spec.ts` | VsSaros addition (2026-11-06): every source file naming a `ds-bot/src/` file it adapts is listed in NOTICE, NOTICE names only existing files, and the package declares `MIT AND Apache-2.0` |
 +| `tests/schema-tables.spec.ts` | VsSaros addition (2026-11-06): the 25 tables the orchestrator database holds after a start, none of the retired team track; its plans read-only through `GET team/plans`, no `POST team/plans` |
  | `tests/core-engine.spec.ts` | Domain rules on in-memory repositories: receiving, Eval, fan-out, resume and stop, interrupted Assignments, the pause, Policy changes, reports and outcomes, attaching, replies, failed deliveries and dismissed problems |
@@ -20375,7 +21157,7 @@ index 184ea543da4..97ab3138413 100644
  | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
  | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
  | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
-@@ -422,6 +508,7 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -422,6 +509,7 @@ Some generic modules still refer directly to GitHub or Feishu:
  | `tests/followups.spec.ts` | A person's follow-up on a Ticket's Thread: its notice to the main Session, the tools that act on it, what a burst costs; a worker's hand-back and context follow, and the main Session's note |
  | `tests/health.spec.ts` | One health entry per part, each cleared by its own next success |
  | `tests/delivery.spec.ts` | `AgentDelivery` |
@@ -20383,7 +21165,7 @@ index 184ea543da4..97ab3138413 100644
  | `tests/retry-health.spec.ts`, `tests/role-models.spec.ts` | Model budget retries, and the models of the two roles |
  | `tests/runtime.spec.ts` | The whole application on a simulated DeepSeek Harness host, through tools and HTTP |
  | `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
-@@ -429,6 +516,7 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -429,6 +517,7 @@ Some generic modules still refer directly to GitHub or Feishu:
  | `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries |
  | `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, and the refusals of the pause, a sync and a block |
  | `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to |
@@ -20391,7 +21173,7 @@ index 184ea543da4..97ab3138413 100644
  | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
  | `tests/migration.spec.ts` | The schema 11 migration: every stored record in its current shape, and the refusal of older schemas |
  | `tests/store.spec.ts` | Repositories and their working sets, in SQLite as in memory, the kv area, with every key of `KV` spelled only in `src/kv.ts` and the migration, settings history and queries |
-@@ -439,6 +527,14 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -439,6 +528,14 @@ Some generic modules still refer directly to GitHub or Feishu:
  | `tests/service-script.spec.ts` | `scripts/dsh-superagent` against fake `ps`, `tmux` and `dsh` |
  | `tests/client.spec.tsx`, `tests/navigation.spec.ts`, `tests/controls.spec.tsx` | The client plugin's registration and polling, Session navigation and route memory, the local controls, and the panel's imports, which have no cycle |
  | `tests/panel-overview.spec.tsx`, `panel-source.spec.tsx`, `panel-trigger.spec.tsx`, `panel-eval.spec.tsx`, `panel-execution.spec.tsx` | Each page of the panel, against a fake management API answered by route |
@@ -20406,7 +21188,7 @@ index 184ea543da4..97ab3138413 100644
  | `tests/panel-settings.spec.tsx`, `panel-prompts.spec.tsx`, `panel-deployment.spec.tsx`, `panel-panel.spec.tsx` | The settings groups, drafts and history, the prompts, the Deployment page, and the panel's search, glossary and route memory |
  | `tests/draft.spec.ts`, `tests/prompt-config.spec.ts`, `tests/markdown.spec.ts`, `tests/marks.spec.ts` | Draft states, merges and the save bar's line; the prompt configuration by section and the line diff; the Markdown subset and its links; the mark of every state the views classify |
  | `tests/locales.spec.ts`, `tests/styles.spec.ts` | The copy in both languages, the stylesheet |
-@@ -611,6 +707,30 @@ A settings save that changes a Source field setup reads, such as an account's CL
+@@ -611,6 +708,30 @@ A settings save that changes a Source field setup reads, such as an account's CL
  
  Point `DSH_HOME` at a temporary directory and create a new profile there. Copy the database from a backup, disable every Source, pause processing and remove the main Session id. Give the GitHub and Feishu CLIs read-only stand-ins.
  
@@ -20439,10 +21221,10 @@ index 184ea543da4..97ab3138413 100644
  - Trust: which Trigger fields are trusted, such as the Source's actor and Thread membership, and which are not, such as the body and quotes.
 diff --git a/scripts/build.mjs b/scripts/build.mjs
 new file mode 100644
-index 00000000000..3471f1e7681
+index 00000000000..36093951751
 --- /dev/null
 +++ b/scripts/build.mjs
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,134 @@
 +#!/usr/bin/env node
 +// VsSaros addition: builds the shipped lib/ of the VsSaros built-in @vssaros/dsh-superagent from this dev/ workspace.
 +// lib/ is committed, because the release pipeline builds no plugin.
@@ -20458,6 +21240,9 @@ index 00000000000..3471f1e7681
 +// hash of its files. A build whose lib/ differs from the last one under the same version fails ("bump the version": the
 +// Host refreshes an installed plugin only on a new version, so the change would not take effect), and `--check` fails when
 +// the manifest's hash is not lib/'s or its version is not package.json's.
++//
++// VsSaros addition (2026-11-07): `--check` also fails when doc/superagent-framework-v2.html is not for this version (its
++// `data-baseline` and the end of its 15.0 heading), so the doc cannot drift behind the code again.
 +import { spawnSync } from 'node:child_process'
 +import { createHash } from 'node:crypto'
 +import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -20486,6 +21271,26 @@ index 00000000000..3471f1e7681
 +  return `sha256:${hash.digest('hex')}`
 +}
 +const manifestOf = dir => { try { return JSON.parse(readFileSync(join(dir, MANIFEST), 'utf8')) } catch { return undefined } }
++/**
++ * VsSaros addition (2026-11-07, doc version guard): the design doc's code baseline must be the package's version, as the
++ * manifest's is — it says so twice, `data-baseline="<version>"` on its baseline tag and the end of its 15.0 heading's range
++ * (「15.0 · 0.1.56 – <version> …」). Concurrent work bumped the version without the doc (0.1.62 in the doc at 0.1.65).
++ * A checkout without the doc (the plugin outside this repository) has nothing to check.
++ * @returns why the doc is not for this version, or undefined.
++ */
++function docBaselineProblem(text = readDoc(), version = versionOf()) {
++  if (text === undefined) return undefined
++  const declared = /data-baseline="([^"]+)"/.exec(text)?.[1]
++  const range = /<h3>15\.0 · \S+ – (\S+)/.exec(text)?.[1]
++  if (declared === version && range === version) return undefined
++  return `${DOC_NAME} says baseline ${declared ?? '(none)'} and 15.0 up to ${range ?? '(none)'}, but dsh-plugins/vssaros-superagent is ${version}:`
++    + ` update its data-baseline, its 15.0 heading, and 15.0's rows for what changed`
++}
++const DOC_NAME = 'doc/superagent-framework-v2.html'
++function readDoc() {
++  const path = join(DEV, '..', '..', '..', DOC_NAME)
++  return existsSync(path) ? readFileSync(path, 'utf8') : undefined
++}
 +/** Runs tsdown from this workspace; it writes ../lib. */
 +function build() {
 +  const bin = join(DEV, 'node_modules', 'tsdown', 'dist', 'run.mjs')
@@ -20502,7 +21307,9 @@ index 00000000000..3471f1e7681
 +    const manifest = manifestOf(LIB)
 +    const ok = manifest && manifest.hash === hashOf(LIB) && manifest.version === versionOf()
 +    console.warn(`⚠ dsh-plugins/vssaros-superagent/lib: NOT rebuilt (DSH_SUPERAGENT_ALLOW_NO_TOOLCHAIN=1); ${message}. Manifest ${ok ? 'matches' : 'does NOT match'} lib/ and package.json.`)
-+    process.exit(ok ? 0 : 1)
++    const doc = docBaselineProblem()
++    if (doc) console.error(`✗ ${doc}`)
++    process.exit(ok && !doc ? 0 : 1)
 +  }
 +  console.error(`✗ dsh-plugins/vssaros-superagent/lib: cannot be checked, ${message}. (Set DSH_SUPERAGENT_ALLOW_NO_TOOLCHAIN=1 to check only its manifest.)`)
 +  process.exit(1)
@@ -20538,7 +21345,13 @@ index 00000000000..3471f1e7681
 +      console.error('Run: node dsh-plugins/vssaros-superagent/dev/scripts/build.mjs')
 +      process.exitCode = 1
 +    } else console.log(`dsh-plugins/vssaros-superagent/lib matches dev/src (${after.length} files, version ${version})`)
-+  } else console.log(`built dsh-plugins/vssaros-superagent/lib: ${filesOf(LIB).length} files`)
++    const doc = docBaselineProblem()
++    if (doc) { console.error(`✗ ${doc}`); process.exitCode = 1 } else if (readDoc() !== undefined) console.log(`${DOC_NAME} is for version ${version}`)
++  } else {
++    console.log(`built dsh-plugins/vssaros-superagent/lib: ${filesOf(LIB).length} files`)
++    const doc = docBaselineProblem()
++    if (doc) console.warn(`⚠ ${doc} (build.mjs --check fails until it is)`)
++  }
 +} catch (error) {
 +  restore = true
 +  throw error
@@ -20546,6 +21359,131 @@ index 00000000000..3471f1e7681
 +  if (restore) { rmSync(LIB, { recursive: true, force: true }); cpSync(kept, LIB, { recursive: true }) }
 +  rmSync(kept, { recursive: true, force: true })
 +}
+diff --git a/scripts/e2e-dsb-coexist.mjs b/scripts/e2e-dsb-coexist.mjs
+new file mode 100644
+index 00000000000..ec5a2137aaf
+--- /dev/null
++++ b/scripts/e2e-dsb-coexist.mjs
+@@ -0,0 +1,119 @@
++#!/usr/bin/env node
++/**
++ * VsSaros addition (2026-11-07, P0 · co-install semantics): the real-machine case of `tests/dsb-coexist.spec.ts`.
++ *
++ * Reads, without changing anything, a real VsSaros data root (default `~/.vssaros-dev`): SuperAgent's `orchestrator.sqlite`
++ * and the DSH session logs, and checks on what really ran that, with DS Bot (`ds-bot`) in the same profile:
++ *   ① no model call is counted twice in `usage_call` (no relayed row has an own twin: same Session, model and tokens, within
++ *      3 s), and DS Bot's relayed calls are recorded (`relay`), so GET usage and a ticket's page can show them;
++ *   ② no team step's approval waits for a person while one of the person's `step_approval_rule`s covers it;
++ *   ③ DS Bot's skills add at most 800 characters to the main Session's skill catalog (and how much the desk's history holds,
++ *      which no desk request carries since 0.1.68);
++ *   ④ every `team_distill` evidence names the step that ran (`sessionId` = step-<ticket>-<key>), and every relayed call of a
++ *      step Session belongs to a step SuperAgent ran.
++ * Each check prints PASS, FAIL or SKIP (no such data yet). Exit code 1 when one fails.
++ *
++ * To make the data: install ds-bot in the profile, save a value in DS Bot's secrets, set a text-only model for a team Bot,
++ * then send the supervisor a team request whose text holds that value and an image, and answer one step's out-of-bounds
++ * command with 「同意并记住」. Run: node dsh-plugins/vssaros-superagent/dev/scripts/e2e-dsb-coexist.mjs [--data <root>]
++ */
++import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
++import { homedir } from 'node:os'
++import { join } from 'node:path'
++import { DatabaseSync } from 'node:sqlite'
++import zlib from 'node:zlib'
++
++const at = process.argv.indexOf('--data')
++const data = at > 0 ? process.argv[at + 1] : join(homedir(), '.vssaros-dev')
++const home = join(data, 'dsh-home')
++const results = []
++const say = (check, state, detail) => { results.push(state); console.log(`${state.padEnd(4)} ${check}: ${detail}`) }
++
++// DS Bot in the profile (as the Host loads it): a bundle of the vssaros profile named ds-bot.
++const profile = JSON.parse(readFileSync(join(home, 'profiles', 'vssaros', 'package.json'), 'utf8'))
++const bundles = profile.dsh?.profile?.bundles ?? []
++const dsBot = bundles.includes('ds-bot') || existsSync(join(home, 'profiles', 'vssaros', 'node_modules', 'ds-bot', 'package.json'))
++console.log(`data root ${data}; ds-bot ${dsBot ? 'installed' : 'NOT installed (the checks still run on what is there)'}`)
++
++const db = new DatabaseSync(join(home, 'dsh-superagent', 'orchestrator.sqlite'), { readOnly: true })
++const rows = (sql, ...args) => db.prepare(sql).all(...args)
++const calls = rows('SELECT id, value FROM usage_call ORDER BY id').map(row => ({ id: row.id, ...JSON.parse(String(row.value)) }))
++
++// ①
++const relayed = calls.filter(call => call.relay)
++const twins = relayed.filter(call => calls.some(other => other.id !== call.id && !other.relay && other.session === call.session && other.model === call.model
++  && other.input === call.input && other.output === call.output && Math.abs(Date.parse(other.at) - Date.parse(call.at)) < 3000))
++if (twins.length) say('①', 'FAIL', `${twins.length} relayed call(s) also counted as their own: ${twins.slice(0, 3).map(call => `${call.session}#${call.id}`).join(', ')}`)
++else if (!relayed.length) say('①', 'SKIP', `${calls.length} calls, none relayed yet (no DS Bot rewrite or OCR in SuperAgent's Sessions)`)
++else say('①', 'PASS', `${calls.length} calls; ${relayed.filter(call => call.relay === 'resent').length} resent and ${relayed.filter(call => call.relay === 'side').length} side, none counted twice`)
++
++// ②
++const rules = rows("SELECT value FROM step_approval_rule").map(row => JSON.parse(String(row.value)))
++const pending = rows("SELECT name FROM sqlite_master WHERE type='table' AND name='step_approval'").length
++  ? rows("SELECT value FROM step_approval").map(row => JSON.parse(String(row.value))).filter(item => !item.answer && !item.outcome) : []
++const covered = pending.filter(item => rules.some(rule => rule.bot?.id === item.bot?.id && rule.tool === item.tool
++  && typeof item.detail?.code === 'string' && (item.detail.code === rule.head || item.detail.code.startsWith(`${rule.head} `))))
++if (covered.length) say('②', 'FAIL', `${covered.length} waiting approval(s) a rule covers: ${covered.map(item => item.detail.code).join(', ')}`)
++else if (!rules.length) say('②', 'SKIP', 'no step_approval_rule yet (answer a step\'s command with 「同意并记住」)')
++else say('②', 'PASS', `${rules.length} rule(s); ${pending.length} waiting approval(s), none of them covered by a rule`)
++
++// ③ The latest skill catalog DSH put into the main Session, and none in the desk.
++function sessionLog(id) {
++  const root = join(home, 'sessions')
++  for (const workspace of readdirSync(root)) {
++    const file = join(root, workspace, id, 'session.v4.jsonl.zstd')
++    if (existsSync(file)) return file
++  }
++  return undefined
++}
++function events(file) {
++  const buf = readFileSync(file), magic = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]), starts = []
++  for (let i = buf.indexOf(magic); i >= 0; i = buf.indexOf(magic, i + 1)) starts.push(i)
++  let text = ''
++  for (let k = 0; k < starts.length; k++) { try { text += zlib.zstdDecompressSync(buf.subarray(starts[k], starts[k + 1] ?? buf.length)).toString('utf8') } catch { /* a magic number inside data */ } }
++  return text.split('\n').filter(Boolean).flatMap(line => { try { return [JSON.parse(line)] } catch { return [] } })
++}
++/** The `entries` of a skill catalog message (DSH writes `source: { kind: 'skill-catalog', entries }`) anywhere in an event. */
++function catalogEntries(value) {
++  if (!value || typeof value !== 'object') return undefined
++  if (value.kind === 'skill-catalog' && Array.isArray(value.entries)) return value.entries
++  for (const child of Object.values(value)) {
++    const found = catalogEntries(child)
++    if (found) return found
++  }
++  return undefined
++}
++const catalogs = file => events(file).flatMap(event => { const found = catalogEntries(event); return found ? [found] : [] })
++const ids = Object.fromEntries(rows("SELECT name FROM sqlite_master WHERE type='table' AND name='kv'").length
++  ? rows("SELECT key, value FROM kv WHERE key IN ('master', 'desk')").map(row => [row.key, String(row.value)]) : [])
++const newest = prefix => readdirSync(join(home, 'sessions')).flatMap(workspace => readdirSync(join(home, 'sessions', workspace))
++  .filter(name => name.startsWith(prefix)).map(name => join(home, 'sessions', workspace, name, 'session.v4.jsonl.zstd')))
++  .filter(existsSync).sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0]
++const masterLog = ids.master ? sessionLog(ids.master) : newest('orchestrator-')
++const deskLog = ids.desk ? sessionLog(ids.desk) : newest('desk-')
++const DS_BOT_SKILLS = ['goal-grill', 'office', 'office-tools']
++const last = masterLog ? catalogs(masterLog).at(-1) : undefined
++const listed = last ?? []
++const fromDsBot = listed.filter(entry => DS_BOT_SKILLS.includes(entry.name))
++const added = fromDsBot.map(entry => `- ${entry.name}: ${entry.description}`).join('\n').length
++const total = listed.map(entry => `- ${entry.name}: ${entry.description}`).join('\n').length
++const deskCatalogs = deskLog ? catalogs(deskLog) : []
++const deskChars = deskCatalogs.reduce((sum, entries) => sum + entries.map(entry => `- ${entry.name}: ${entry.description}`).join('\n').length, 0)
++// The desk masks every tool, but its first step can run before the mask: SuperAgent 0.1.68+ drops a catalog from every desk
++// request (`deskWithoutCatalog`), so one in its history is reported, not failed.
++if (deskCatalogs.length) console.log(`NOTE ③: the desk's history holds ${deskCatalogs.length} skill catalog(s), ${deskChars} characters; no desk request carries them (deskWithoutCatalog)`)
++if (added > 800) say('③', 'FAIL', `DS Bot adds ${added} characters to the main Session's skill catalog (cap 800)`)
++else if (!last) say('③', 'SKIP', 'no skill catalog in the main Session\'s log yet')
++else say('③', 'PASS', `main Session catalog: ${listed.length} skills (${total} characters), ${fromDsBot.length} of DS Bot (${added} characters)`)
++
++// ④
++const distills = rows('SELECT value FROM team_distill').map(row => JSON.parse(String(row.value)))
++const wrong = distills.filter(item => item.evidence && item.evidence.sessionId && item.evidence.sessionId !== `step-${item.evidence.ticketId}-${item.evidence.stepKey}`)
++const steps = new Set(rows('SELECT ticket, key FROM team_step').map(row => `${row.ticket}/${row.key}`))
++const strays = relayed.filter(call => call.role === 'step' && !steps.has(`${call.ticketId}/${call.step}`))
++if (wrong.length || strays.length) say('④', 'FAIL', `${wrong.length} evidence(s) naming another Session; ${strays.length} relayed step call(s) of no step`)
++else if (!distills.length) say('④', 'SKIP', 'no team_distill evidence yet')
++else say('④', 'PASS', `${distills.length} evidence(s), each of the step that ran; ${relayed.filter(call => call.role === 'step').length} relayed step call(s), all of known steps`)
++
++db.close()
++process.exitCode = results.includes('FAIL') ? 1 : 0
 diff --git a/scripts/test-gate.mjs b/scripts/test-gate.mjs
 new file mode 100644
 index 00000000000..e26f78928a0

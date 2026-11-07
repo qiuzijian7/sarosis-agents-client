@@ -140,6 +140,11 @@ export function TicketPage({ id }: { id: string }) {
       <LabelValue label={t('ticketMandateLabel')} value={valueLabel(t, 'strength', data.mandate.strength)} />
       <LabelValue label={t('ticketActorLabel')} value={`${valueLabel(t, 'source', data.mandate.actor.source)} · ${actor}`} />
       <LabelValue label={t('ticketUpdatedLabel')} value={when(data.updatedAt, t('lang'))} />
+      {/* VsSaros addition (2026-11-07): calls another plugin (DS Bot) made inside this ticket's Sessions. */}
+      {data.relays.resent + data.relays.side > 0 && <span data-testid="ticket-relays" title={data.relays.sessions.map(item =>
+        `${item.step ?? t('usageRole.worker')}: ${t('usageRelaySession', { resent: String(item.resent), side: String(item.side) })}`).join('\n')}>
+        <LabelValue label={t(data.coexist.dsBot ? 'ticketRelaysDsBot' : 'ticketRelaysOther')}
+          value={t('usageRelaySession', { resent: String(data.relays.resent), side: String(data.relays.side) })} /></span>}
     </div>
     {ended && <Hint>{ended}</Hint>}
     {data.attention && <div className="dt-banner"><span className="dt-banner-label">{t('attentionPrefix')}</span><MarkdownLite

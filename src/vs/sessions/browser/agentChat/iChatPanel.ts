@@ -4,7 +4,6 @@
  *--------------------------------------------------------------------------------------------*/
 
 import type { IDisposable } from '../../../base/common/lifecycle.js';
-import type { ConfigHtmlCfg } from '../../contrib/agentStudio/common/configHtmlConfig.js';
 import type {
 	IAgentChatMessage,
 	IAgentInfo,
@@ -157,17 +156,7 @@ export interface IChatPanelCallbacks {
 	 */
 	onRunSlashCommand?: (command: string, arg: string) => void | Promise<void>;
 
-	// ── ConfigHtml（URL 面板 / 本地 HTML）相关回调（对齐 AgentSettingsEditorPane）──
-	/** 读取 ConfigHtml 配置（url / htmlPath / displayMode / server）。 */
-	onGetConfigHtmlCfg?: () => Promise<ConfigHtmlCfg | undefined>;
-	/** 保存 ConfigHtml 配置（写回 agent 元数据）。 */
-	onSaveConfigHtmlCfg?: (cfg: ConfigHtmlCfg) => Promise<void>;
-	/** 探测/拉起面板服务（未启动则由主进程自动 spawn）。 */
-	onEnsureConfigHtmlServer?: (spec: Record<string, unknown>) => Promise<{ ok: boolean; alreadyRunning?: boolean; starting?: boolean; error?: string }>;
-	/** 停止面板服务（按端口查杀）。 */
-	onStopConfigHtmlServer?: (spec: { url: string; port?: number }) => Promise<{ ok: boolean; killed: number[] }>;
-	/** 打开 URL 面板预览（UrlPreview 编辑器）。 */
-	onOpenConfigHtmlPreview?: (url: string) => Promise<void> | void;
+	// ★ 2026-11-07（移除 config.html）：ConfigHtml 回调接口字段已整体退役。
 }
 
 /**

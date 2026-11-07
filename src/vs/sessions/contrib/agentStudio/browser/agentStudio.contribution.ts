@@ -92,8 +92,7 @@ import { IEventBridgeService, EventBridgeService } from '../common/eventBridge.j
 import { TaskOrchestrationService } from './taskOrchestrationService.js';
 import { IWorkspaceLifecycleService } from '../common/workspaceLifecycle.js';
 import { WorkspaceLifecycleService } from './workspaceLifecycleService.js';
-import { ISkillLifecycleService } from '../common/skillLifecycle.js';
-import { SkillLifecycleService } from './skillLifecycleService.js';
+// ★ P3（2026-11-07）：技能生命周期事件总线已下线（无订阅者、能力已迁 dsh 侧）。
 import { IKbNativeKernelService, KbNativeKernelService } from './kbNativeKernelService.js';
 // ── Explorer 右键「移动到知识库」(2026-09-23) 所需依赖 ──────────────────────
 import { IListService } from '../../../../platform/list/browser/listService.js';
@@ -102,7 +101,7 @@ import { IViewsService } from '../../../../workbench/services/views/common/views
 import { IRequestService } from '../../../../platform/request/common/request.js';
 import { Severity } from '../../../../platform/notification/common/notification.js';
 import { basename } from '../../../../base/common/path.js';
-import { KbImportController } from './kbImportController.js';
+import { KbImportController, openKbBuildDshPage } from './kbImportController.js';
 import { migrateLegacyKbSessions } from './knowledge/kbLegacyMigration.js';
 import { loadActiveKbVault, resolveVaultNotesDir, resolveKbRootUri, vaultRootsOf, STORAGE_VAULTS } from './knowledge/kbVaultState.js';
 // ★ 2026-10-15（README 5.138「甲」）：知识库"命令要用的动作"（库增删 / 目录 / op-log …）的宿主服务
@@ -112,7 +111,6 @@ import { IKbVault } from './views/knowledgeBase/kbTypes.js';
 import { collectMediaToolchainStatus, formatMediaToolchainReport, summarizeMediaToolchain } from './providers/tool/mediaToolchainDoctor.js';
 import { execShortCommand } from './knowledge/feishuSyncCore.js';
 import { KbVersionService, IKbVersionService } from './kbVersionService.js';
-import { SkillVersionService, ISkillVersionService } from './skillVersionService.js';
 import { AgentVersionService } from './agentVersionService.js';
 import { IAgentVersionService } from '../common/agentVersionTypes.js';
 import { IEmbeddingService, EmbeddingService } from './embedding/embeddingService.js';
@@ -248,8 +246,6 @@ import { McpServerEditorPane } from './mcpServerEditorPane.js';
 import { McpServerEditorInput } from './mcpServerEditorInput.js';
 import { McpDetailEditorPane } from './mcpDetailEditorPane.js';
 import { McpDetailEditorInput } from './mcpDetailEditorInput.js';
-import { SkillMarketEditorPane } from './skillMarketEditorPane.js';
-import { SkillMarketEditorInput } from './skillMarketEditorInput.js';
 import { WorkflowMarketEditorPane } from './workflowMarketEditorPane.js';
 import { WorkflowMarketEditorInput } from './workflowMarketEditorInput.js';
 import { MarketplaceEditorPane } from './marketplaceEditorPane.js';
@@ -1259,11 +1255,8 @@ registerSingleton(IConfigHtmlService, ConfigHtmlService, InstantiationType.Delay
 // (`agentStudio.workspaceLifecycle.register/unregister/list`) are available
 // before any extension is activated.
 registerSingleton(IWorkspaceLifecycleService, WorkspaceLifecycleService, InstantiationType.Eager);
-// Skill lifecycle event bus — generic, decoupled hook system used by
-// CLI/provider extensions (e.g. demo-agui) to react to skill mutations
-// (add / remove / batch sync) on agent instances. Eager so its
-// extension-facing commands are available before any extension is activated.
-registerSingleton(ISkillLifecycleService, SkillLifecycleService, InstantiationType.Eager);
+// ★ P3（2026-11-07）：`ISkillLifecycleService` 注册已摘除 —— 该事件总线没有任何订阅者，
+//   技能变更通知改由 dsh 侧 provider invalidate 承接，IDE 侧不再有生命周期逻辑。
 // ISettingsTabRegistry is still registered for the legacy SettingsViewPane (sidebar).
 // Plugin-specific settings (like Knot) now open as independent EditorPanes
 // rather than appearing as tabs in the Settings page.
@@ -1316,7 +1309,6 @@ registerWorkbenchContribution2(WorkbenchManagerInitializer.ID, WorkbenchManagerI
 // already-built backlink/mention index instead of re-scanning the vault.
 registerSingleton(IKbNativeKernelService, KbNativeKernelService, InstantiationType.Delayed);
 registerSingleton(IKbVersionService, KbVersionService, InstantiationType.Delayed);
-registerSingleton(ISkillVersionService, SkillVersionService, InstantiationType.Delayed);
 registerSingleton(IAgentVersionService, AgentVersionService, InstantiationType.Delayed);
 registerSingleton(IEmbeddingService, EmbeddingService, InstantiationType.Delayed);
 
@@ -1715,19 +1707,8 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	]
 );
 
-// Register SkillMarketEditorPane so that the Skill Marketplace page opens
-// in the editor area. Triggered by clicking "+ Install" in the Integration
-// sidebar view's Skill tab.
-Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
-	EditorPaneDescriptor.create(
-		SkillMarketEditorPane,
-		SkillMarketEditorPane.ID,
-		localize('skillMarketEditor', "Skill Marketplace"),
-	),
-	[
-		new SyncDescriptor(SkillMarketEditorInput)
-	]
-);
+// ★ P3（2026-11-07）：IDE 侧「技能商城」编辑器页已退役 —— 技能浏览/安装统一在
+//   dsh 侧 `/x/marketplace/` 与 `/x/skills/` 完成，页面桥 `openSkillMarket` 也一并删除。
 
 // Register WorkflowMarketEditorPane so that the Workflow Marketplace page opens
 // in the editor area. Triggered by clicking "Install" in the Workflow
@@ -2308,57 +2289,24 @@ function readSelectionFromFocusedList(listService: IListService): URI[] {
  */
 async function analyzeStagedLibraryFiles(
 	staged: { name: string; savedPath: string }[],
-	kbImport: KbImportController,
+	editorService: IEditorService,
 	agentStudioService: IAgentStudioService,
-	configService: IConfigurationService,
-	notificationService: INotificationService,
 	logService: ILogService,
 ): Promise<void> {
-	// ★ 前置检查（2026-09-23 需求）：分析归类要调用「知识库专家」，它没配 Provider/模型时
-	//   弹**一次**通知并跳过分析（阶段 A 的文件已安全落库，不会丢）——
-	//   否则会逐个文件白跑 agent 轮次，用户只看到「一直转圈、没有产出」。
-	if (KbImportController.kbAgentConfigState(agentStudioService, configService) === 'missing') {
-		KbImportController.warnKbAgentNotConfigured(notificationService, '分析归类并生成笔记');
-		agentStudioService.reportKbProcessing({ active: false });
-		agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'new', count: 1 });
-		return;
-	}
-	const failed: string[] = [];
-	let ok = 0;
+	// ★ 2026-11-07（换 UI 宿主）：阶段 A 已把素材安全落库；「分析归类 / 构建笔记」改由
+	//   dsh `/x/kb/` 页的 `kb_build` 工具 + 会话 + 批授权承接（IDE 侧不再逐个跑 agent 轮次、
+	//   不再新建 IDE 聊天 tab 展示过程）。IDE 侧只负责打开页面，并照旧收尾徽标。
+	//   ⚠ 没有「未配模型」前置检查了：dsh 会话自己管 provider/模型，IDE 侧不代它判断。
 	try {
-		for (let i = 0; i < staged.length; i++) {
-			const { name, savedPath } = staged[i];
-			logService.info(`[agentStudio.kb.importToLibrary] [B ${i + 1}/${staged.length}] analyzing: ${savedPath}`);
-			try {
-				// ⚠ 必须用**实例**方法（否则是另一个 3 参的 static 版）；progressLabel 让它显示
-				//   「分析中 i/N：文件名」—— 进度由这个方法内部统一上报，避免与别处互相覆盖。
-				const notePath = await kbImport.buildNotesFromLibrary(URI.file(savedPath), undefined, {
-					progressLabel: `分析中 ${i + 1}/${staged.length}：${name}`,
-				});
-				if (notePath) {
-					ok++;
-					logService.info(`[agentStudio.kb.importToLibrary] [B ${i + 1}/${staged.length}] note: ${notePath}`);
-				} else {
-					logService.warn(`[agentStudio.kb.importToLibrary] [B ${i + 1}/${staged.length}] no note produced: ${name}`);
-					failed.push(name);
-				}
-			} catch (err) {
-				logService.warn(`[agentStudio.kb.importToLibrary] [B ${i + 1}/${staged.length}] analyze failed: ${name}`, err);
-				failed.push(name);
-			}
-		}
+		await openKbBuildDshPage(editorService);
+		logService.info(`[agentStudio.kb.importToLibrary] stage B handed over to dsh /x/kb/ (${staged.length} staged file(s) already on disk)`);
+	} catch (err) {
+		logService.warn('[agentStudio.kb.importToLibrary] 打开 dsh 知识库页失败（素材已落库，可在侧栏手动打开）：', err);
 	} finally {
 		// 收尾：清掉视图内「处理中」状态；把 activitybar 徽标从「转圈」转为「有新增」
 		// （提示用户回资料库查看产出）—— 这就是全部的过程反馈，没有通知弹窗。
 		agentStudioService.reportKbProcessing({ active: false });
 		agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'new', count: 1 });
-	}
-	const summary = `知识库分析完成：生成笔记 ${ok}/${staged.length} 篇`
-		+ (failed.length ? `；失败 ${failed.length} 个：${failed.slice(0, 5).join('、')}${failed.length > 5 ? '…' : ''}` : '');
-	logService.info(`[agentStudio.kb.importToLibrary] stage B done: ${summary}`);
-	// ⚠ 分析失败是**真实错误**（不是过程噪声）⇒ 仍需可见
-	if (failed.length) {
-		notificationService.error(`后台分析归类：${summary}`);
 	}
 }
 
@@ -2598,7 +2546,7 @@ registerAction2(class extends Action2 {
 
 			// ── 阶段 B：后台分析归类 → 生成笔记（**不 await** ⇒ 不阻塞用户）──────────
 			if (staged.length) {
-				void analyzeStagedLibraryFiles(staged, kbImport, agentStudioService, configurationService, notificationService, logService);
+				void analyzeStagedLibraryFiles(staged, accessor.get(IEditorService), agentStudioService, logService);
 			} else {
 				// 没有可分析的文件 ⇒ 收尾（否则徽标会一直转圈）
 				agentStudioService.reportKbProcessing({ active: false });
@@ -2775,36 +2723,11 @@ registerAction2(class extends Action2 {
 	}
 });
 
-// Register a command to open the Skill Market (技能商城) editor directly.
-// Invoked by the dsh **integration page** (`/x/skills/`, container `agentStudio.integration`)'s
-// primary entry button, 经页面桥 `openSkillMarket` 转过来（桥 `8 → 9`，2026-10-15）。
-// 为什么单独要一条命令：技能商城此前**只能**从集成视图那个 "+ Install ▾" 下拉进
-// （`integrationView.ts` 里直接 `editorService.openEditor(SkillMarketEditorInput.getInstance())`）——
-// 那条路要视图实例在场；dsh 页面侧没有视图 ⇒ 交宿主执行命令 ✓（与 `agentStudio.openMarket` 同款）。
-registerAction2(class extends Action2 {
-	constructor() {
-		super({
-			id: 'agentStudio.openSkillMarket',
-			title: localize2('agentStudio.openSkillMarket', 'Open Skill Market'),
-			f1: true,
-			category: localize2('agentStudio.category', 'Agent Studio'),
-		});
-	}
-	async run(accessor: ServicesAccessor): Promise<void> {
-		const editorService = accessor.get(IEditorService);
-		const editorGroupsService = accessor.get(IEditorGroupsService);
-		const input = SkillMarketEditorInput.getInstance();
-		const groups = editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */);
-		if (groups.length <= 1) {
-			await editorService.openEditor(input, { pinned: true }, SIDE_GROUP);
-		} else {
-			await editorService.openEditor(input, { pinned: true }, groups[0]);
-		}
-	}
-});
+// ★ P3（2026-11-07）：`agentStudio.openSkillMarket` 命令已退役 —— 页面桥链路
+//   （协议类型 / preload 方法 / 宿主 case / 集成视图菜单）在同一批里一并删除。
 
 // 打开 **媒体库** —— dsh 媒体库页 `/x/media/` 的「在编辑区打开」按钮经页面桥
-// `openMediaGallery` 转过来（桥 `14 → 15`，2026-10-19）。与 `agentStudio.openSkillMarket` 同款理由：
+// `openMediaGallery` 转过来（桥 `14 → 15`，2026-10-19）。与原先的技能商城命令同款理由：
 // 页面开不了编辑器 ⇒ 交宿主执行命令 ✓。
 //
 // ★ 2026-10-26（媒体库真源已全在 dsh 侧）：**dsh 引擎下改成打开 dsh 自己的三栏页 `/x/media/`**
@@ -3684,14 +3607,10 @@ registerWorkbenchContribution2(BYOKProviderContribution.ID, BYOKProviderContribu
 import { LanguageModelsToAgentOSBridge } from './languageModelsBridge.js';
 registerWorkbenchContribution2(LanguageModelsToAgentOSBridge.ID, LanguageModelsToAgentOSBridge, WorkbenchPhase.AfterRestored);
 
-// --- Built-in Capability Providers (Skill / Tool / MCP / Memory) ----------------
-// 把"四件套"内置 Provider 一次性注入 IAgentOSService。
-// 每一项都可独立失败而不影响其他能力 —— 我们对每个 Provider 用 try/catch 兜底。
-import { ISkillRegistry } from '../common/skills.js';
-import { SkillRegistry } from './skillRegistryService.js';
-import { ISkillInstallService } from '../common/skillHubTypes.js';
-import { SkillInstallService } from './skillInstallService.js';
-import { BuiltinToolProvider } from './providers/tool/builtinToolProvider.js';
+// --- Built-in Capability Providers (Tool / MCP / Memory) ----------------------
+// ★ P3（2026-11-07）：Skill / Tool 两类内置 Provider 与三个 IDE 技能服务的
+//   registerSingleton 已整体摘除 —— 技能真源与加载都在 dsh 侧。此处只登记
+//   kanban / triage / diagnostics / swarm 等仍由 IDE 侧接入的能力。
 import { JsonFileKanbanProvider } from './providers/kanban/jsonFileKanbanProvider.js';
 import { ITriageService } from '../common/triageService.js';
 import { LlmTriageService } from './providers/triage/llmTriageService.js';
@@ -3720,15 +3639,13 @@ import { PackageInstallerRegistry } from './packageInstallerRegistry.js';
 import { IDiagramRenderer, PeleDiagramRenderer } from './peleDiagramRenderer.js';
 import { IDrawioInlineRenderer, DrawioInlineRenderer } from './drawioInlineRenderer.js';
 
-registerSingleton(ISkillRegistry, SkillRegistry, InstantiationType.Delayed);
-registerSingleton(ISkillInstallService, SkillInstallService, InstantiationType.Delayed);
 registerSingleton(ICheckpointService, CheckpointService, InstantiationType.Delayed);
 // Re-added to repair partial-revert state: AgentStudioWebviewController injects
 // IAgentStudioWebviewPool, so the DI must have a registration for it.
 registerSingleton(IAgentStudioWebviewPool, AgentStudioWebviewPool, InstantiationType.Delayed);
 // Marketplace: 对接线上商城，实现 agent/skill/mcp/knowledge 的上传下载与升级
 registerSingleton(IMarketplaceService, MarketplaceService, InstantiationType.Delayed);
-// PackageInstallerRegistry: 按 kind 分发安装/打包逻辑（skill 已实现，其他后续补充）
+// PackageInstallerRegistry: 按 kind 分发安装/打包逻辑（skill 安装已迁 dsh 侧，见 marketplaceService 的拒绝分支）
 registerSingleton(IPackageInstallerRegistry, PackageInstallerRegistry, InstantiationType.Delayed);
 // PeleDiagramRenderer: 渲染进程内直接跑随包的 pele（`dsh-plugins/vssaros-pele/assets/`），
 // 把 Mermaid 源码**同步**渲染为 SVG 字符串（供 agent 工具卡片 / 笔记 / 图表文件预览内联展示）。
@@ -4058,14 +3975,8 @@ class BuiltinCapabilityContribution extends Disposable implements IWorkbenchCont
 		@IConfigurationService configurationService: IConfigurationService,
 		@IAgentOSService private readonly agentOSService: IAgentOSService,
 		@ILogService private readonly logService: ILogService,
-		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IMcpService private readonly mcpService: IMcpService,
 		@IAgentTaskBoardService private readonly taskBoardService: IAgentTaskBoardService,
-		// Touch ISkillRegistry so the singleton is created and starts its filesystem
-		// scan early — `_skillRegistry` is otherwise unused here, but the service
-		// becomes addressable through DI everywhere else (slash commands, UI,
-		// PlanningProvider) once it has been instantiated at least once.
-		@ISkillRegistry _skillRegistry: ISkillRegistry,
 	) {
 		super();
 
@@ -4073,24 +3984,13 @@ class BuiltinCapabilityContribution extends Disposable implements IWorkbenchCont
 			return;
 		}
 
-		this._registerBuiltinTools();
+		// ★ P3（2026-11-07）：IDE 侧内置工具 provider 与技能注册表预热已下线 ——
+		//   工具由 dsh 侧提供、技能由 dsh-skill-bundle 挂载；这里只保留 MCP / 看板两类
+		//   仍由 IDE 侧接入的能力。
 		this._registerMcpTools();
 		// SessionMemoryProvider 已废弃：记忆统一由 AgentMemoryProviderV2 提供
 		// （extensions/agentmemory-memory，经网关宿主 + renderer 代理注册，priority=1000）。
 		this._registerKanbanProvider();
-	}
-
-	private _registerBuiltinTools(): void {
-		try {
-			this.logService.info('[BuiltinCapability] _registerBuiltinTools: creating BuiltinToolProvider instance...');
-			const provider = this._register(this.instantiationService.createInstance(BuiltinToolProvider));
-			this.logService.info('[BuiltinCapability] _registerBuiltinTools: BuiltinToolProvider instance created, registering to AgentOS...');
-			// priority 50 — 让运行时由扩展注入的 ToolProvider（typically priority 100+）能覆盖。
-			this._register(this.agentOSService.registerToolProvider(provider, 50));
-			this.logService.info('[BuiltinCapability] BuiltinToolProvider registered successfully');
-		} catch (err) {
-			this.logService.error('[BuiltinCapability] BuiltinToolProvider registration failed', err);
-		}
 	}
 
 	private _registerMcpTools(): void {
@@ -4120,31 +4020,9 @@ class BuiltinCapabilityContribution extends Disposable implements IWorkbenchCont
 
 registerWorkbenchContribution2(BuiltinCapabilityContribution.ID, BuiltinCapabilityContribution, WorkbenchPhase.AfterRestored);
 
-// --- Auto-open Skill Detail after Install ----------------------------------
-// 安装（或复制）新技能成功后，自动在 ResourceManagerEditorPane 打开其详情页。
-class SkillInstallAutoOpenContribution extends Disposable implements IWorkbenchContribution {
-	static readonly ID = 'sessions.skillInstallAutoOpen';
-
-	constructor(
-		@IEditorService private readonly editorService: IEditorService,
-		@ISkillInstallService private readonly skillInstallService: ISkillInstallService,
-	) {
-		super();
-		this._register(
-			this.skillInstallService.onDidInstallSkill(({ skillId }) => {
-				const input = ResourceManagerEditorInput.getInstance();
-				this.editorService.openEditor(input, { pinned: true }).then((pane) => {
-					const control = pane?.getControl();
-					if (control instanceof ResourceManagerEditorPane) {
-						control.showDetailOnly('skill', skillId);
-					}
-				});
-			})
-		);
-	}
-}
-
-registerWorkbenchContribution2(SkillInstallAutoOpenContribution.ID, SkillInstallAutoOpenContribution, WorkbenchPhase.AfterRestored);
+// ★ P3（2026-11-07）：技能安装已整体迁到 dsh 侧 `@vssaros/dsh-marketplace` +
+//   `@vssaros/dsh-skills`，IDE 侧的「安装成功后自动打开技能详情页」contribution 不会再被触发，
+//   已从工作台注册中摘除（连带的事件订阅一并删除，避免残留 IDE 侧技能逻辑）。
 
 // --- ExecutionProvider Registration (default non-stub) ------------------------
 // 注册内置的 ExecutionProvider（实现真实 LLM 调用的 agent loop）。

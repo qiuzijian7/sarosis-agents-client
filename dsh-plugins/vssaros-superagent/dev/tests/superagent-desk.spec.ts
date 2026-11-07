@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { DESK_FILE_BYTES } from '../src/app/desk-chat.ts'
-import { deskReceiptStream, RECEIPT_CALL_PREFIX, RECEIPT_TOOL, receiptText, receiptView, ticketEndedNotice } from '../src/app/desk.ts'
+import { deskReceiptStream, RECEIPT_CALL_PREFIX, RECEIPT_TOOL, receiptText, receiptView, submitText, ticketEndedNotice } from '../src/app/desk.ts'
 import { deskFlow } from '../src/app/desk-flow.ts'
 import type { Ticket } from '../src/core/index.ts'
 import { GROUP_REFERENCE_WAIT_MS } from '../src/app/groupFastPath.ts'
@@ -372,6 +372,69 @@ it('resumes no ended ticket from the desk, still reaches a live one there, and g
   } finally {
     if (previous === undefined) { delete globals[key] } else { globals[key] = previous }
   }
+})
+
+// VsSaros addition (2026-11-07): every message typed in the desk cost the desk's model a turn (~2 calls, ~6.8万 tokens),
+// though the fast path had handed it over (and often to a group) as it arrived.
+it('answers the person\'s own message in the desk with no model: the hand-over call (flow card), then where it went', async () => {
+  listSuperagent()
+  const key = Symbol.for('vssaros.team')
+  const globals = globalThis as unknown as Record<symbol, unknown>
+  const previous = globals[key]
+  const room = { id: 'room-tomato', sessionId: 'room-tomato', name: '番茄钟 H5 开发团队', members: [{ id: 'coder', name: 'Coder' }],
+    admin: 'coder', mode: 'admin', notice: '', pinned: false, hidden: false, createdBy: 'superagent' }
+  globals[key] = { version: 1, available: () => true, listBots: async () => [], delegate: async () => ({}), get: async () => undefined,
+    cancel: async () => ({}), subscribe: () => () => undefined, createGroup: vi.fn(), listGroups: async () => [room] }
+  try {
+    const waterfall = (h.ctx as unknown as { waterfall(name: string, options: unknown, next: () => unknown): unknown }).waterfall.bind(h.ctx)
+    const emit = (h.ctx as unknown as { emit(name: string, ...args: unknown[]): void }).emit.bind(h.ctx)
+    const drain = async (value: unknown) => { const out: Record<string, unknown>[] = []; for await (const chunk of value as AsyncIterable<Record<string, unknown>>) out.push(chunk); return out }
+    const noModel = () => { throw new Error('the desk\'s model must not be called') }
+    const tools = [{ name: 'superagent_submit' }, { name: RECEIPT_TOOL }]
+    const person = (id: string, text: string) => ({ id, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] })
+    const turn = async (id: string, text: string) => {
+      emit('session/event', { id: h.runtime.deskId }, { type: 'user/message', data: { id, source: { kind: 'user' }, content: [{ type: 'text', text }] } })
+      const call = await drain(waterfall('llm/stream', { sessionId: h.runtime.deskId, messages: [person(id, text)], tools }, noModel))
+      const block = call.find(chunk => chunk.type === 'block-end')!.block as { id: string; name: string; arguments: string }
+      // By the time the call is made, the fast path has the message: the call finds it handed over.
+      const trigger = deskTrigger({ session: h.runtime.deskId, messageId: id, text, at: '' }).id
+      expect(h.runtime.store.triggers.get(trigger)).toBeDefined()
+      const result = { role: 'tool', toolCallId: block.id, content: [{ type: 'text', text: JSON.stringify({ submitted: false, result: 'duplicate', trigger }) }] }
+      const line = await drain(waterfall('llm/stream', { sessionId: h.runtime.deskId, messages: [person(id, text), { role: 'assistant' }, result], tools }, noModel))
+      return { block, call, line: String(line[1]!.text), trigger }
+    }
+    const asked = await turn('dsh-ask', '帮我看看现在有哪些工单')
+    expect(asked.block).toMatchObject({ name: 'superagent_submit', arguments: '{}', id: expect.stringMatching(/^toolu_superagent_submit_/) })
+    expect(asked.call.at(-1)).toEqual({ type: 'finish', reason: { kind: 'tool-calls' } })
+    expect(asked.line).toBe('主管收到了，需要你回复的消息会发到这里。')
+    // An @group message waits for its session reference; the call waits for the fast path, and the line names the group.
+    const pending = turn('dsh-tomato', '@番茄钟 H5 开发团队 开发H5 番茄钟')
+    await tick(20)
+    emit('session/event', { id: h.runtime.deskId }, { type: 'user/message', data: { id: 'ref-dsh-tomato', role: 'user',
+      source: { kind: 'session-reference', form: 'recall', version: 1, references: [{ sessionId: 'room-tomato', label: room.name }] },
+      content: [{ type: 'text', text: '## Referenced sessions' }] } })
+    const grouped = await pending
+    expect(h.runtime.groupRoutes.get(grouped.trigger)).toMatchObject({ roomId: 'room-tomato', kind: 'routed' })
+    expect(grouped.line).toBe('已转给群「番茄钟 H5 开发团队」。')
+    // SuperAgent's news with the person's message, or news alone, still goes to the desk's model.
+    const MODEL = Symbol('model')
+    const news = { id: 'm-news', role: 'user', source: { kind: 'dsh-superagent' }, content: [{ type: 'text', text: '[SuperAgent] 团队方案…' }] }
+    expect(waterfall('llm/stream', { sessionId: h.runtime.deskId, messages: [news, person('dsh-x', '同意')], tools }, () => MODEL)).toBe(MODEL)
+    expect(waterfall('llm/stream', { sessionId: h.runtime.deskId, messages: [news], tools }, () => MODEL)).toBe(MODEL)
+    // A turn in another Session is not the desk's.
+    expect(waterfall('llm/stream', { sessionId: 'other', messages: [person('dsh-y', 'hi')], tools }, () => MODEL)).toBe(MODEL)
+  } finally {
+    if (previous === undefined) { delete globals[key] } else { globals[key] = previous }
+  }
+})
+
+it('says where a handed-over desk message went', () => {
+  expect(submitText({ result: 'stored' })).toBe('主管收到了，需要你回复的消息会发到这里。')
+  expect(submitText({ result: 'duplicate', route: { roomName: '番茄钟', kind: 'created' } })).toBe('已建群「番茄钟」，群里的 Bots 接着做。')
+  expect(submitText({ result: 'stored', tickets: ['做番茄钟'] })).toBe('已转给正在做的工单「做番茄钟」。')
+  expect(submitText({ result: 'filtered' })).toMatch(/没交给主管/)
+  expect(submitText({ result: 'stored', filtered: true })).toMatch(/没交给主管/)
+  expect(submitText(undefined)).toMatch(/没能交给主管/)
 })
 
 // 2026-11-06: the agents plugin pairs "message + session reference" within 15s. A reference that arrives after the desk's

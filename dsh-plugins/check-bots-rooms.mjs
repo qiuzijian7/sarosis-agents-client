@@ -754,6 +754,50 @@ truthy('⑤-c 群会话 composer dock 注入 DS Bot 式活动行、shimmer 与�
 			ws.__test.botStateOf([roundFor({})], { id: 'designer', name: 'Designer' }, listedRooms).state,
 			ws.__test.botStateOf([roundFor({ done: true })], { id: 'designer', name: 'Designer' }, listedRooms).state,
 		], ['searching', 'sending', 'waiting', 'alert', 'orbit', 'done']);
+	// ★ 2026-11-07（用户报「群聊的 item 没有实时更新状态」）：群行也跟着同一份轮次走
+	const madeRoom = { id: made.id };
+	const rsOf = (extra) => ws.__test.roomStateOf([roundFor(extra)], madeRoom);
+	eq('⑤-e roomStateOf：正在回答 / 已发到群 / 等批准 / 中断 / 失败 / 后台干活 / 完成',
+		[
+			[rsOf({ speaking: ['Coder'] }).state, rsOf({ speaking: ['Coder'] }).label],
+			[rsOf({}).state, rsOf({}).label],
+			[rsOf({ speaking: ['Coder'], approvals: [{ id: 'a1', name: 'Coder', tool: 'pwsh' }] }).state, rsOf({ speaking: ['Coder'], approvals: [{ id: 'a1', name: 'Coder', tool: 'pwsh' }] }).label],
+			rsOf({ done: true, interrupted: true }).state,
+			rsOf({ done: true, error: '炸了' }).label,
+			[rsOf({ done: true, events: [{ kind: 'working', name: 'Coder', text: 'Coder 还在干活，这一轮先不等它；干完后会把结果发到群里并接着往下走' }] }).state,
+				rsOf({ done: true, events: [{ kind: 'working', name: 'Coder', text: 'Coder 还在干活，这一轮先不等它；干完后会把结果发到群里并接着往下走' }] }).label],
+			rsOf({ done: true, replies: [{ name: 'Coder', text: 'x' }] }).label,
+		],
+		[
+			['thinking', 'Coder 正在输入…'],
+			['working', '已发到群，等成员开始…'],
+			['waiting', '等你批准：Coder 的 pwsh'],
+			'alert',
+			'执行失败：炸了',
+			['working', 'Coder 还在后台干活'],
+			'本轮完成 · 1 条回复',
+		]);
+	eq('⑤-e roomStateOf：别的群的轮次不算；同群优先未结束的那轮；没有轮次 ⇒ idle',
+		[
+			ws.__test.roomStateOf([roundFor({ roomId: 'other', speaking: ['Coder'] })], madeRoom).state,
+			ws.__test.roomStateOf([roundFor({ done: true, startedAt: 9e12 }), roundFor({ speaking: ['Designer'], startedAt: 1 })], madeRoom).label,
+			ws.__test.roomStateOf([], madeRoom).state,
+		], ['idle', 'Designer 正在输入…', 'idle']);
+	await act(async () => {
+		window.dispatchEvent(new window.CustomEvent(ws.__test.GROUP_PROGRESS_EVENT, { detail: { active: [roundFor({ speaking: ['Coder'] })] } }));
+		await tick(30);
+	});
+	truthy('⑤-e 群行实时显示状态：有轮次时状态文字 + 彩点，代替 preview',
+		row()?.getAttribute('data-vssaros-bot-state') === 'thinking' && row()?.getAttribute('data-vssaros-room-round-status') === 'replying'
+		&& /Coder 正在输入/.test(row()?.querySelector('[data-vssaros-room-state-label]')?.textContent || '')
+		&& !!row()?.querySelector('[data-vssaros-bot-dot]'), (row()?.textContent || '').slice(0, 200));
+	await act(async () => {
+		window.dispatchEvent(new window.CustomEvent(ws.__test.GROUP_PROGRESS_EVENT, { detail: { active: [] } }));
+		await tick(30);
+	});
+	truthy('⑤-e 活动清空 ⇒ 群行回到 preview，没有状态灯',
+		row()?.getAttribute('data-vssaros-bot-state') === 'idle' && !row()?.querySelector('[data-vssaros-room-state-label]')
+		&& !row()?.querySelector('[data-vssaros-bot-dot]'), (row()?.textContent || '').slice(0, 200));
 	await act(async () => {
 		window.dispatchEvent(new window.CustomEvent(ws.__test.GROUP_PROGRESS_EVENT, { detail: { active: activity } }));
 		await tick(30);
@@ -784,6 +828,175 @@ truthy('⑤-c 群会话 composer dock 注入 DS Bot 式活动行、shimmer 与�
 	});
 	truthy('⑤-d 活动清空 ⇒ Bots 行回到 idle，不再显示状态灯',
 		!!q('[data-vssaros-bot="coder"][data-vssaros-bot-state="idle"]') && !q('[data-vssaros-bot-dot]'), (container.textContent || '').slice(0, 300));
+}
+
+// ── ⑤-f 群聊选择卡（2026-11-07）：真实 rooms + 真实轮询 ⇒ 卡出现、点选、提交、成员被叫回 ─────────────
+{
+	const ASK = { questions: [
+		{ header: '交付形态', question: '放哪？', options: [{ label: '独立入口', recommended: true }, { label: '子目录', description: '另起一个' }] },
+		{ header: '范围', question: '做多少？', options: [{ label: 'MVP', recommended: true }, { label: '完整版' }] },
+	] };
+	const askOf = (botId, name, n = 2) => ({ id: 'a-' + botId, botId, name, questions: Array.from({ length: n }, (_, i) => ({ id: 'q' + (i + 1) })) });
+	const runOf = (extra) => ({ callId: 'c', roomId: made.id, roomName: '群', done: true, startedAt: 1, finishedAt: 2, error: '', speaking: [], replies: [], events: [], failed: [], passed: [], ...extra });
+	const designerBot = { id: 'designer', name: 'Designer' };
+	eq('⑤-f 行状态：群行 / 成员行都是 waiting，文案说清等谁；等批准优先于等选择',
+		[
+			[ws.__test.roomStateOf([runOf({ asks: [askOf('designer', 'Designer')] })], { id: made.id }).state, ws.__test.roomStateOf([runOf({ asks: [askOf('designer', 'Designer')] })], { id: made.id }).label],
+			ws.__test.roomStateOf([runOf({ asks: [askOf('designer', 'Designer'), askOf('coder', 'Coder')] })], { id: made.id }).label,
+			ws.__test.roomStateOf([runOf({ asks: [askOf('designer', 'Designer')], approvals: [{ id: 'x', name: 'Coder', tool: 'pwsh' }] })], { id: made.id }).label,
+			[ws.__test.botStateOf([runOf({ asks: [askOf('designer', 'Designer')] })], designerBot, []).state, ws.__test.botStateOf([runOf({ asks: [askOf('designer', 'Designer')] })], designerBot, []).eventKind],
+			ws.__test.botStateOf([runOf({ asks: [askOf('coder', 'Coder')] })], designerBot, []).eventKind === 'ask',
+		],
+		[['waiting', '等你选择：Designer 的 2 个问题'], '等你选择：Designer 等 2 位', '等你批准：Coder 的 pwsh', ['waiting', 'ask'], false]);
+	eq('⑤-f 点提问成员的行 ⇒ 打开群（卡在群里），不是它自己的会话',
+		ws.__test.botOpenTargetOf({ state: 'waiting', roomId: made.id, eventKind: 'ask' }, designerBot, [{ id: made.id, sessionId: made.id, members: [{ id: 'designer', sessionId: 'member-1' }] }]), made.id);
+	const sigBase = [runOf({ status: 'done' })];
+	truthy('⑤-f 卡出现 / 答掉都会让广播签名变化', ws.__test.activitySignature(sigBase, 1) !== ws.__test.activitySignature([runOf({ status: 'done', asks: [askOf('coder', 'Coder')] })], 1));
+	eq('⑤-f 归一化：有卡的已结束轮次文案是「等你选择」，状态机仍是 done',
+		[ws.__test.normalizeGroupActivity([runOf({ asks: [askOf('coder', 'Coder')] })]).map(i => [i.status, i.statusLabel]), ws.__test.normalizeGroupActivity([runOf({})]).map(i => [i.statusLabel, i.asks])],
+		[[['done', '等你选择']], [['已完成', []]]]);
+	const seen = new Set();
+	eq('⑤-f 未读：新卡亮未读；同一张不重复亮；人正看着那个群不亮',
+		[
+			ws.__test.askUnreadTargets([runOf({ asks: [askOf('coder', 'Coder')] })], seen, []),
+			ws.__test.askUnreadTargets([runOf({ asks: [askOf('coder', 'Coder')] })], seen, []),
+			ws.__test.askUnreadTargets([runOf({ asks: [askOf('designer', 'Designer')] })], seen, [made.id]),
+		], [[made.id], [], []]);
+	const draftAsk = { questions: [{ id: 'q1', options: [{ label: 'A', recommended: true }, { label: 'B' }] }, { id: 'q2', multiSelect: true, options: [{ label: 'C', recommended: true }, { label: 'D', recommended: true }] }] };
+	eq('⑤-f 草稿 ⇒ 答案：还差几题、单选自填优先、多选保留；「全部按推荐」；有题没推荐就不给',
+		[
+			cv.__test.askDraftResult(draftAsk, {}).missing,
+			cv.__test.askDraftResult(draftAsk, { q1: { selected: ['A'], custom: ' 我的 ' }, q2: { selected: ['C', 'D'], custom: 'E' } }).answers,
+			cv.__test.askRecommendedAnswers(draftAsk),
+			cv.__test.askRecommendedAnswers({ questions: [{ id: 'q1', options: [{ label: 'A' }] }] }),
+		],
+		[2, [{ id: 'q1', selected: [], custom: '我的' }, { id: 'q2', selected: ['C', 'D'], custom: 'E' }], [{ id: 'q1', selected: ['A'] }, { id: 'q2', selected: ['C', 'D'] }], null]);
+
+	const designer = [...dsh.sessions.values()].find((s) => s.preset === 'vssaros-designer');
+	const until = async (test, ms = 4000) => { const end = Date.now() + ms; while (!test() && Date.now() < end) { await act(async () => { await tick(40); }); } return test(); };
+	const drain = (callId) => rooms.relayTool().execute({}, { agent: { id: made.id }, callId });
+	const askHost = document.createElement('div');
+	document.body.appendChild(askHost);
+	const askRoot = createRoot(askHost);
+	// 人在别的会话：真实轮询把卡带来 ⇒ 群行等你选择 + 亮未读，别的会话的输入框上方出提示
+	await act(async () => { memberRoot.render(React.createElement('div')); askRoot.render(React.createElement(MemberDock, { sessionId: 'plain-1' })); await tick(30); });
+	window.__vssarosGroupComposerDocks = [];
+	let concluded = 0;
+	const said = await rooms.askTool(made.id, 'designer').execute(ASK, { agent: { id: designer.id }, concludeTurn: () => { concluded += 1; } });
+	truthy('⑤-f group_ask 结束成员回合', concluded === 1 && /这一轮到此结束/.test(said), said);
+	truthy('⑤-f 别的会话：输入框上方出「在等你选择 · 去选择」，不摊开表单',
+		await until(() => !!askHost.querySelector('[data-vssaros-group-ask-notice="' + made.id + '"]')) && !askHost.querySelector('[data-vssaros-group-ask]'),
+		(askHost.textContent || '').slice(0, 300));
+	truthy('⑤-f 群行：等你选择 + 未读点；成员行：等你选择',
+		await until(() => row()?.getAttribute('data-vssaros-bot-state') === 'waiting' && !!row()?.querySelector('[data-vssaros-room-unread]'))
+		&& /等你选择：Designer 的 2 个问题/.test(row()?.querySelector('[data-vssaros-room-state-label]')?.textContent || '')
+		&& q('[data-vssaros-bot="designer"]')?.getAttribute('data-vssaros-bot-event') === 'ask',
+		(row()?.textContent || '').slice(0, 200));
+	await act(async () => { askHost.querySelector('[data-act="group-ask-open"]')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true })); await tick(10); });
+	eq('⑤-f 点「去选择」⇒ 打开群', calls.opened.at(-1), made.id);
+	// 打开群：卡片
+	await act(async () => { askRoot.render(React.createElement(MemberDock, { sessionId: made.id })); await tick(30); });
+	const card = () => askHost.querySelector('[data-vssaros-group-ask]');
+	const submitBtn = () => askHost.querySelector('[data-act="group-ask-submit"]');
+	truthy('⑤-f 群会话：出选择卡（两题、推荐标记、自填框、还差 2 题不能提交、全部按推荐、跳过）；这一轮不写「已完成」',
+		await until(() => !!card()) && card().querySelectorAll('[data-vssaros-group-ask-question]').length === 2
+		&& card().querySelectorAll('[data-vssaros-group-ask-recommended]').length === 2 && !!card().querySelector('[data-vssaros-group-ask-custom="q1"]')
+		&& submitBtn()?.disabled === true && /还差 2 题/.test(submitBtn()?.textContent || '')
+		&& !!askHost.querySelector('[data-act="group-ask-recommended"]') && !!askHost.querySelector('[data-act="group-ask-skip"]')
+		&& !!askHost.querySelector('[data-vssaros-group-member="Designer"][data-vssaros-group-member-state="ask"]')
+		&& askHost.querySelector('[data-vssaros-group-composer-flow]')?.getAttribute('data-vssaros-group-composer-state') === 'waiting'
+		&& /等你选择：Designer 的 2 个问题/.test(askHost.textContent || '') && !/本轮完成/.test(askHost.textContent || '')
+		&& /也可以直接在下面打字回复/.test(askHost.textContent || ''),
+		(askHost.textContent || '').slice(0, 500));
+	const click = async (el) => { await act(async () => { el?.dispatchEvent(new window.MouseEvent('click', { bubbles: true })); await tick(20); }); };
+	await click(card().querySelector('[data-vssaros-group-ask-question="q1"] [data-vssaros-group-ask-option="子目录"]'));
+	truthy('⑤-f 选了一题 ⇒ 还差 1 题，选中的按钮标 aria-pressed', /还差 1 题/.test(submitBtn()?.textContent || '')
+		&& card().querySelector('[data-vssaros-group-ask-option="子目录"]')?.getAttribute('aria-pressed') === 'true');
+	await click(card().querySelector('[data-vssaros-group-ask-question="q2"] [data-vssaros-group-ask-option="完整版"]'));
+	truthy('⑤-f 全答了 ⇒ 能提交', submitBtn()?.disabled === false && /提交/.test(submitBtn()?.textContent || ''));
+	const requestsBefore = calls.requests.length;
+	await click(submitBtn());
+	eq('⑤-f 提交 ⇒ 真 POST，卡撤掉，群会话收到回叫，答案进群记录',
+		[calls.requests.slice(requestsBefore).includes('POST /x/agents/api/rooms'), rooms.pendingAsks(made.id).length],
+		[true, 0]);
+	truthy('⑤-f 下一次进度里卡消失', await until(() => !card()), (askHost.textContent || '').slice(0, 200));
+	const designerInbox = () => designer.events.filter(e => e.type === 'agent/inbox/spliced').map(e => e.data.inserted[0]?.content?.[0]?.text ?? '');
+	const beforeTurns = designerInbox().length;
+	await drain('call-ask-1');
+	truthy('⑤-f 新开一轮叫回提问的成员，答案带在消息里',
+		designerInbox().length > beforeTurns && /用户在选择卡里回答了你刚才的问题：\n1\. 交付形态：子目录\n2\. 范围：完整版/.test(designerInbox().at(-1)),
+		designerInbox().at(-1)?.slice(-300));
+	// 全部按推荐
+	await rooms.askTool(made.id, 'designer').execute(ASK, { agent: { id: designer.id }, concludeTurn: () => undefined });
+	await until(() => !!card());
+	await click(askHost.querySelector('[data-act="group-ask-recommended"]'));
+	await until(() => !card());
+	await drain('call-ask-2');
+	truthy('⑤-f 「全部按推荐」⇒ 一键答完', /1\. 交付形态：独立入口\n2\. 范围：MVP/.test(designerInbox().at(-1)), designerInbox().at(-1)?.slice(-300));
+	// 跳过
+	await rooms.askTool(made.id, 'designer').execute(ASK, { agent: { id: designer.id }, concludeTurn: () => undefined });
+	await until(() => !!card());
+	await click(askHost.querySelector('[data-act="group-ask-skip"]'));
+	await until(() => !card());
+	await drain('call-ask-3');
+	truthy('⑤-f 「跳过」⇒ 告诉成员用户跳过了', /用户跳过了你刚才的问题/.test(designerInbox().at(-1)), designerInbox().at(-1)?.slice(-300));
+	// 只有一道单选题：点选项就提交
+	await rooms.askTool(made.id, 'designer').execute({ questions: [ASK.questions[1]] }, { agent: { id: designer.id }, concludeTurn: () => undefined });
+	await until(() => !!card());
+	truthy('⑤-f 一道单选题：不出提交按钮', !submitBtn());
+	await click(card().querySelector('[data-vssaros-group-ask-option="MVP"]'));
+	eq('⑤-f 一道单选题：点选项即提交', rooms.pendingAsks(made.id).length, 0);
+	await until(() => !card());
+	await drain('call-ask-4');
+	// 答案不全 / 已经答过：接口拒绝，页面显示原因
+	const stale = await roomsApi(rooms, { method: 'POST', query: new URLSearchParams(), body: { action: 'ask-answer', id: 'gone', skip: true } });
+	eq('⑤-f 已经不在等的卡 ⇒ 404', stale.status, 404);
+	await act(async () => { askRoot.unmount(); });
+	askHost.remove();
+}
+
+// ── ⑤-g 后台干活的成员（2026-11-07 真机：Designer 在后台干活，群行和它的行 15 秒后都回到空闲）────────────
+{
+	const runOf = (extra) => ({ callId: 'c-bg', roomId: made.id, roomName: '群', done: true, startedAt: 1, finishedAt: 2, error: '', speaking: [], replies: [], failed: [], passed: [],
+		events: [{ kind: 'working', name: 'Designer', text: 'Designer 还在干活，这一轮先不等它；干完后会把结果发到群里并接着往下走' }, { kind: 'done', text: '群聊本轮完成' }], ...extra });
+	const designerBot = { id: 'designer', name: 'Designer' };
+	eq('⑤-g 行状态：busy 里有它 ⇒ 群行 / 成员行都在干活；busy 里没了 ⇒ 不再按旧事件显示干活',
+		[
+			ws.__test.roomStateOf([runOf({ busy: ['Designer'] })], { id: made.id }).label,
+			ws.__test.roomStateOf([runOf({ busy: [] })], { id: made.id }).state,
+			[ws.__test.botStateOf([runOf({ busy: ['Designer'] })], designerBot, []).state, ws.__test.botStateOf([runOf({ busy: ['Designer'] })], designerBot, []).eventKind],
+			ws.__test.botStateOf([runOf({ busy: [] })], designerBot, []).state,
+			ws.__test.roomStateOf([runOf({})], { id: made.id }).label,
+		],
+		['Designer 还在后台干活', 'done', ['working', 'background'], 'idle', 'Designer 还在后台干活']);
+	eq('⑤-g 归一化：busy 保留；done + busy ⇒「后台干活中」；busy 变化会广播',
+		[ws.__test.normalizeGroupActivity([runOf({ busy: ['Designer'] })]).map(i => [i.statusLabel, i.busy]),
+			ws.__test.activitySignature([runOf({ status: 'done', busy: ['Designer'] })], 1) !== ws.__test.activitySignature([runOf({ status: 'done', busy: [] })], 1)],
+		[[['后台干活中', ['Designer']]], true]);
+	const flow = cv.__test.groupComposerFlowOf([runOf({ busy: ['Designer'] })], { roomId: made.id, role: 'room' });
+	eq('⑤-g 输入框上方：说谁在后台干活，不说「本轮完成」', [flow.state, flow.activity, flow.eventText],
+		['background', 'Designer 还在后台干活，干完会把结果发到群里', '']);
+	await act(async () => {
+		window.dispatchEvent(new window.CustomEvent(ws.__test.GROUP_PROGRESS_EVENT, { detail: { active: [runOf({ busy: ['Designer'] })] } }));
+		await tick(30);
+	});
+	truthy('⑤-g Bots 页签：群行与 Designer 行同时显示在后台干活',
+		row()?.getAttribute('data-vssaros-bot-state') === 'working' && /Designer 还在后台干活/.test(row()?.querySelector('[data-vssaros-room-state-label]')?.textContent || '')
+		&& q('[data-vssaros-bot="designer"]')?.getAttribute('data-vssaros-bot-state') === 'working'
+		&& q('[data-vssaros-bot="designer"]')?.getAttribute('data-vssaros-bot-event') === 'background',
+		(row()?.textContent || '').slice(0, 200));
+	await act(async () => {
+		window.dispatchEvent(new window.CustomEvent(ws.__test.GROUP_PROGRESS_EVENT, { detail: { active: [runOf({ busy: [] })] } }));
+		await tick(30);
+	});
+	truthy('⑤-g Designer 干完 ⇒ 两行一起变成「本轮完成」，都不再显示干活',
+		row()?.getAttribute('data-vssaros-bot-state') === 'done' && q('[data-vssaros-bot="designer"]')?.getAttribute('data-vssaros-bot-state') === 'done'
+		&& q('[data-vssaros-bot="designer"]')?.getAttribute('data-vssaros-bot-event') === 'done',
+		(row()?.textContent || '').slice(0, 200));
+	await act(async () => {
+		window.dispatchEvent(new window.CustomEvent(ws.__test.GROUP_PROGRESS_EVENT, { detail: { active: [] } }));
+		await tick(20);
+	});
 }
 
 // ── ⑥ 删除群聊 ──────────────────────────────────────────────────────────────────────

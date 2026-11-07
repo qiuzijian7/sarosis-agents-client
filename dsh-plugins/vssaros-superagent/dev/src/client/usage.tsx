@@ -39,6 +39,14 @@ export function UsagePanel() {
         {usage.steward.length > 0 && <div className="dt-row-meta" data-testid="steward">{usage.steward.map(item =>
           <span key={item.session}>{t(`usageRole.${item.role}`)}{t('listSeparator')}
             {t(`steward.${item.outcome}`, { context: tokens(item.context ?? 0), line: tokens(item.line ?? 0) })}</span>)}</div>}
+        {/* VsSaros addition (2026-11-07): calls another plugin made inside SuperAgent's Sessions (DS Bot's rewrites and OCR). */}
+        {usage.day.relays.resent + usage.day.relays.side > 0 && <div className="dt-hint" data-testid="usage-relays">
+          <p>{t(usage.coexist.dsBot ? 'usageRelaysDsBot' : 'usageRelaysOther', { resent: String(usage.day.relays.resent), side: String(usage.day.relays.side) })}
+            {!usage.sideCalls && <> {t('sideCallsOff')}</>}</p>
+          <ul className="dt-list">{usage.day.relays.sessions.slice(0, 5).map(item => <li key={item.session} className="dt-row-meta">
+            <span>{t(`usageRole.${item.role}`)}{item.step ? ` · ${item.step}` : ''}</span>
+            <span>{t('usageRelaySession', { resent: String(item.resent), side: String(item.side) })}</span></li>)}</ul>
+        </div>}
       </>}
     </div>
   </DisclosureRow>

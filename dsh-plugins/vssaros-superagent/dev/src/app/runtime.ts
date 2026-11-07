@@ -54,11 +54,11 @@ import { UsageLedger } from './usage.ts'
 import { ContextSteward } from './steward.ts'
 import { coexistenceOf, type Coexistence } from './coexist.ts'
 import { Distiller } from './distill.ts'
-import { deliverReply, deskReceiptStream, deskRequestId, deskSessionId, deskTools, latestPersonMessage, TICKET_ENDED_NOTICE, ticketEndedNotice } from './desk.ts'
+import { deliverReply, deskReceiptStream, deskRequestId, deskSessionId, deskTools, deskWithoutCatalog, latestPersonMessage, submitText, TICKET_ENDED_NOTICE, ticketEndedNotice } from './desk.ts'
 import { DeskChat } from './desk-chat.ts'
 import { DeskOutbox, wakesDesk } from './desk-outbox.ts'
-import { GROUP_REFERENCE_KIND, GROUP_REFERENCE_LATE_MS, GROUP_REFERENCE_WAIT_MS, handleDeskGroupCommand, handleDeskMessage, mayBeGroupCommand,
-  type GroupSettlement } from './groupFastPath.ts'
+import { GROUP_REFERENCE_KIND, GROUP_REFERENCE_LATE_MS, GROUP_REFERENCE_WAIT_MS, handleDeskGroupCommand, handleDeskMessage, isGroupCreationRequest,
+  mayBeGroupCommand, type GroupSettlement } from './groupFastPath.ts'
 import { GroupRoutes } from './group-routes.ts'
 import { sandboxWorks, StepActivity, StepApprovals, stepPermission } from './step-approvals.ts'
 import { Feed } from './feed.ts'
@@ -72,6 +72,14 @@ import { executorTools, type ExecutorToolsHost } from './tools/executor.ts'
 // Source plugins interact with dsh-superagent exclusively through the `SourceHost` service interface.
 declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
 const now = (): string => new Date().toISOString()
+/** VsSaros addition (2026-11-07): how long the desk's no-model turn waits past the group wait for the message's hand-over. */
+const DESK_HANDOVER_GRACE_MS = 3000
+/** How long the desk's line waits for the group a message asks for to be made or found. */
+const DESK_GROUP_ROUTE_WAIT_MS = 20_000
+/** Resolves once `ready()` holds, or after `ms` (then the caller goes on as before). */
+async function waitFor(ready: () => boolean, ms: number): Promise<void> {
+  for (const until = Date.now() + ms; !ready() && Date.now() < until;) await new Promise(resolve => setTimeout(resolve, 50))
+}
 
 /**
  * Composition root of dsh-superagent that connects `Store`, `Setup`, `Engine`, `SourceRegistry`, `Effects`, `Outbox`, `Passes`, `Sessions`, `Settings`, `Prompts`, `DshExecutor`, and `MasterAssessor`.
@@ -217,10 +225,28 @@ export class Runtime extends Service implements SourceHost {
         recorded: message => sessions.recorded(deskId, deskRequestId(message.id)),
         warn: message => { ctx.logger.warn('dsh-superagent: %s', message) } })
       // VsSaros addition (2026-11-06): the desk answers a ticket's end with its end card and one line, without its model.
-      const llmEvents = ctx as unknown as { on(name: 'llm/stream', listener: ReturnType<typeof deskReceiptStream>): () => void }
+      const llmEvents = ctx as unknown as { on(name: 'llm/stream', listener: ReturnType<typeof deskReceiptStream>, options?: { prepend: boolean }): () => void }
+      // VsSaros fix (2026-11-07): no skill catalog in any request of the desk (see `deskWithoutCatalog`).
+      this.disposers.push(llmEvents.on('llm/stream', deskWithoutCatalog(deskId), { prepend: true }))
       this.disposers.push(llmEvents.on('llm/stream', deskReceiptStream({ deskId, ticketEndedOf: messageId => {
         const message = this.deskOutbox.messageOf(messageId)
         return message?.id.startsWith(`${TICKET_ENDED_NOTICE}:`) ? message.ticketId : undefined
+      },
+      // VsSaros addition (2026-11-07): the desk hands the person's messages over with no model (see `deskReceiptStream`).
+      handedOver: messageId => waitFor(() => !!store.triggers.get(deskTrigger({ session: deskId, messageId, text: '', at: now() }).id),
+        GROUP_REFERENCE_WAIT_MS + DESK_HANDOVER_GRACE_MS),
+      submitLine: async result => {
+        const id = result.trigger
+        const trigger = id ? store.triggers.get(id) : undefined
+        // A group the message asks for is made (or found) a moment after the message is stored: wait for its route.
+        if (id && trigger && (mayBeGroupCommand(trigger.text) || isGroupCreationRequest(trigger.text))) {
+          await waitFor(() => !!this.groupRoutes.get(id), DESK_GROUP_ROUTE_WAIT_MS)
+        }
+        const route = id ? this.groupRoutes.get(id) : undefined
+        const disposition = id ? store.triggers.disposition(id) : undefined
+        const tickets = (disposition?.fanout ?? []).flatMap(ticketId => store.tickets.get(ticketId)?.title ?? [])
+        return submitText({ ...result.result ? { result: result.result } : {}, ...route ? { route } : {},
+          ...disposition?.filtered ? { filtered: true } : {}, tickets })
       } })))
       // VsSaros addition (2026-11-06): the usage ledger of SuperAgent's Sessions; its one listener also meters team steps'
       // tokens for the team's token budget (a hard gate), so both count each call once.
@@ -234,10 +260,13 @@ export class Runtime extends Service implements SourceHost {
         const step = runtime.steps?.step(sessionId)
         return { role: 'step', ticketId: ref.ticketId, step: ref.key, ...step ? { bot: step.bot.name } : {} }
       })
-      this.disposers.push((ctx as unknown as { on(name: 'llm/stream', listener: ReturnType<UsageLedger['listener']>): () => void })
+      // VsSaros change (2026-11-07, co-install): first in the waterfall, so a request another listener sends again through it
+      // (DS Bot's) passes through it again and is told apart (`UsageRelay`); `executor.sideCalls` off refuses a side call.
+      this.disposers.push((ctx as unknown as { on(name: 'llm/stream', listener: ReturnType<UsageLedger['listener']>, options: { prepend: boolean }): () => void })
         .on('llm/stream', this.usage.listener(call => {
           if (call.role === 'step') runtime.steps?.meter(call.session, { inputTokens: call.input, outputTokens: call.output, cacheReadTokens: call.cacheRead, cacheWriteTokens: call.cacheWrite })
-        })))
+        }, () => store.settings().executor.sideCalls ? undefined
+          : 'SuperAgent does not let another plugin read its Sessions with another model (executor.sideCalls is off)'), { prepend: true }))
       // VsSaros addition (2026-11-06): the main Session and the desk are compacted while idle, past their check line.
       const ledger = this.usage, windows = new Map<string, Promise<{ window: number; maxOutput?: number } | undefined>>()
       this.steward = new ContextSteward({ watched: id => id === masterId ? 'master' : id === deskId ? 'desk' : undefined, last: id => ledger.last(id),

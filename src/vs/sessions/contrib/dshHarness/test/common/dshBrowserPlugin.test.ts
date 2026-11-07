@@ -196,7 +196,9 @@ async function startFakeCdpEndpoint(): Promise<{ port: number; close(): Promise<
 		if (req.url?.startsWith('/json/version')) {
 			res.writeHead(200, { 'content-type': 'application/json' });
 			res.end(JSON.stringify({
-				Browser: 'FakeChrome/1.0',
+				// ⚠ 必须自报 `Chrome/…`：2026-10-28 起插件跳过非 Chrome 端点（`isChromeProduct`，防把 IDE 的 Electron
+				//   DevTools 当 Chrome）。旧值 `FakeChrome/1.0` 会被当成"不是 Chrome" ⇒ 门控测试一直红（2026-11-07 修）。
+				Browser: 'Chrome/120.0.0.0',
 				webSocketDebuggerUrl: 'ws://127.0.0.1:1/devtools/browser/fake',
 			}));
 			return;
@@ -343,10 +345,12 @@ suite('vssaros-browser（browser 族下移到 Host：CDP 不依赖 VsSaros）', 
 		// 是 Host 侧新增 op 的参数（2026-10-13：cookie 通道 2 个 + 页面内取值 2 个）；
 		// 再后 6 个（delayMs / max / regex / selector / textGone / urlContains）是 2026-10-15 的 P0 新增
 		//（`waitFor` 4 个 + `find` 2 个 —— 见 `vssaros-browser/lib/core/interaction.js` / `findInSnapshot.js`）。
+		// 2026-11-06：`screenshot` 的 fullPage / quality；2026-11-07：删除类按钮的 confirm / label（`core/riskGate.js`）、
+		//   ARIA 快照的 format / page（`core/aria.js`）、按目标委托的 goal / maxSteps（`core/task.js`）。
 		assert.deepStrictEqual(props.sort(),
-			['action', 'amount', 'append', 'delayMs', 'direction', 'done', 'expression', 'key', 'max', 'op', 'ref',
-				'regex', 'selector', 'text', 'textGone', 'timeoutMs', 'url', 'urlContains'],
-			'参数面 = IDE 侧那 8 个 + Host 新增 op 的 10 个（少了某个 = 模型按旧 schema 调用时会丢参）');
+			['action', 'amount', 'append', 'confirm', 'delayMs', 'direction', 'done', 'expression', 'format', 'fullPage', 'goal', 'key', 'label', 'max',
+				'maxSteps', 'op', 'page', 'quality', 'ref', 'regex', 'selector', 'text', 'textGone', 'timeoutMs', 'url', 'urlContains'],
+			'参数面 = IDE 侧那 8 个 + Host 新增 op 的参数（少了某个 = 模型按旧 schema 调用时会丢参）');
 		// ⚠ 退役后**不再**去 IDE 侧插件里找这些参数名（README 4.73 Step 3：那个工具已从 `vssaros-ide` 删掉）
 		//   ⇒ 参数面由上面这条**硬编码期望** + 官方工具面快照（`dsh-plugins/tools-snapshot.json`）共同钉住 ✓；
 		//   与 IDE 侧的**行为**等价性由 `dshBrowserParity.test.ts` 对着退役前的实现做逐字对照 ✓。

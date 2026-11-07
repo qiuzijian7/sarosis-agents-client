@@ -44,7 +44,7 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 		const agentJsonUri = URI.joinPath(extractedDir, 'agent.json');
 		if (!await this.fileService.exists(agentJsonUri)) {
 			// ★ 2026-10-22：**目录镜像包**（`@vssaros/dsh-marketplace` 发布的就是这种：
-			//   包里只有一个 `.agent.md` + 可选的 `config.html`）。
+			//   包里只有一个 `.agent.md`；老包可能还带一个无消费者的 config.html）。
 			//   此前只认 `agent.json` ⇒ dsh 侧发出来的 agent 包在这里**装不了** ✗。
 			//   `.agent.md` 的 frontmatter 本来就是完整定义 ⇒ `parseAgentMd` 还原即可 ✓
 			return this.installFromAgentMd(manifest, extractedDir);
@@ -53,7 +53,7 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 		const exportData = JSON.parse(raw) as {
 			agent: Partial<Agent>;
 			agentConfig?: Record<string, unknown>;
-			files?: { agentsMd?: string; soulMd?: string; identityMd?: string; toolsMd?: string; memoryMd?: string; configHtml?: string; htmlEntry?: string; htmlContent?: string; htmlStyles?: string };
+		files?: { agentsMd?: string; soulMd?: string; identityMd?: string; toolsMd?: string; memoryMd?: string };
 		};
 
 		// ── Resolve target agent dir: ~/.saros/agents/{agentId}/ ──
@@ -67,29 +67,9 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 			await this.fileService.createFolder(agentDir);
 		}
 
-		// ── Install HTML/ConfigHTML files into the agent dir ──
-		let htmlPath: string | undefined;
-		if (manifest.htmlFiles?.entry) {
-			// Copy html/ directory from package to agent dir
-			const htmlSourceDir = URI.joinPath(extractedDir, 'html');
-			if (await this.fileService.exists(htmlSourceDir)) {
-				const destHtmlDir = URI.joinPath(agentDir, 'html');
-				await this._copyDirectory(htmlSourceDir, destHtmlDir);
-			}
-			htmlPath = manifest.htmlFiles.entry.replace(/^html\//, '');
-		} else if (exportData.files?.htmlContent) {
-			// Fallback: write inline HTML content to config.html
-			const configHtmlUri = URI.joinPath(agentDir, 'config.html');
-			await this.fileService.writeFile(configHtmlUri, VSBuffer.fromString(exportData.files.htmlContent));
-			htmlPath = 'config.html';
-		}
-
-		// ── Install config source (HTML source file) ──
-		if (exportData.files?.configHtml) {
-			const configFileName = exportData.agent.configHtml?.htmlPath || 'config.html';
-			const configUri = URI.joinPath(agentDir, configFileName);
-			await this.fileService.writeFile(configUri, VSBuffer.fromString(exportData.files.configHtml));
-		}
+		// ★ 2026-11-07（移除 config.html）：不再从 agent.json 的 files 内联 HTML 字段
+		// 或 manifest.htmlFiles 生成 config.html。目录镜像包里自带的
+		// config.html 仍由 installFromAgentMd 原样搬运 ⇒ 旧包兼容不破 ✓
 
 		// 复用 createAgent 落地：写 ~/.saros/agents/{id}/agent.json + .agent.md（若有 agentsMd）
 		const createData: Partial<Agent> & { bootstrapTemplates?: { agentsMd?: string } } = {
@@ -103,7 +83,7 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 		}
 
 		await this.agentStudioService.createAgent(createData);
-		this.logService.info(`[AgentInstaller] 安装完成: ${manifest.id} v${manifest.version}${htmlPath ? ' (含 ConfigHTML)' : ''}`);
+		this.logService.info(`[AgentInstaller] 安装完成: ${manifest.id} v${manifest.version}`);
 
 		return { kind: 'agent', storeId: manifest.id, version: manifest.version, targetDir: agentDir.fsPath };
 	}
@@ -156,25 +136,6 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 		return { kind: 'agent', storeId: manifest.id, version: manifest.version, targetDir: agentDir.fsPath };
 	}
 
-	/**
-	 * Recursively copy a directory's contents.
-	 */
-	private async _copyDirectory(src: URI, dest: URI): Promise<void> {
-		const entries = await this.fileService.resolve(src);
-		if (!entries.children) { return; }
-		await this.fileService.createFolder(dest);
-		for (const child of entries.children) {
-			const srcChild = URI.joinPath(src, child.name);
-			const destChild = URI.joinPath(dest, child.name);
-			if (child.isDirectory) {
-				await this._copyDirectory(srcChild, destChild);
-			} else {
-				const content = await this.fileService.readFile(srcChild);
-				await this.fileService.writeFile(destChild, content.value);
-			}
-		}
-	}
-
 	async preparePack(localId: string): Promise<IPreparePackResult> {
 		const agent = await this.agentStudioService.getAgent(localId);
 		if (!agent) {
@@ -191,27 +152,8 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 			agentMd = (await this.fileService.readFile(agentMdUri)).value.toString();
 		}
 
-		// ── 收集 ConfigHTML 内容（从 agent 目录直接读取） ──
-		let configMdContent: string | undefined;
-		let htmlEntry: string | undefined;
-		let htmlContent: string | undefined;
-		let htmlStyles: string | undefined;
-		let htmlFilesManifest: PackageManifest['htmlFiles'] | undefined;
-
-		// Try reading config.html from the agent directory
-		const configFileName = agent.configHtml?.htmlPath || 'config.html';
-		const configUri = URI.joinPath(agentDir, configFileName);
-		if (await this.fileService.exists(configUri)) {
-			try {
-				configMdContent = (await this.fileService.readFile(configUri)).value.toString();
-				// Treat as HTML directly (ConfigHtml mode)
-				const isHtml = configMdContent.toLowerCase().includes('<!doctype') || /<html[\s>]/i.test(configMdContent);
-				if (isHtml) {
-					htmlContent = configMdContent;
-					htmlEntry = 'index.html';
-				}
-			} catch { /* read error, skip */ }
-		}
+		// ★ 2026-11-07（移除 config.html）：不再从 agent 目录收集 config.html，
+		// 也不再打包 html/ 与 config/ 目录 —— 新发布的 agent 包只含 agent.json + .agent.md。
 
 		// 组装 AgentExportData
 		const exportData = {
@@ -221,16 +163,11 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 				id: agent.id, name: agent.name, role: agent.role, description: agent.description,
 				icon: agent.icon, model: agent.model, skills: agent.skills, tools: agent.tools,
 				category: agent.category, systemPrompt: agent.systemPrompt, temperature: agent.temperature,
-				configHtml: agent.configHtml,
 				source: 'custom',
 			},
 			agentConfig: {},
 			files: {
 				agentMd,
-				configHtml: configMdContent,
-				htmlEntry,
-				htmlContent,
-				htmlStyles,
 			},
 		};
 
@@ -249,39 +186,6 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 			files.push('AGENTS.md');
 		}
 
-		// Write HTML files to html/ directory in the package
-		if (htmlContent) {
-			const htmlDir = path.join(tmpDir, 'html');
-			await this.fileService.createFolder(URI.file(htmlDir));
-			await this.fileService.writeFile(
-				URI.joinPath(URI.file(htmlDir), 'index.html'),
-				VSBuffer.fromString(htmlContent),
-			);
-			files.push('html/index.html');
-			if (htmlStyles) {
-				await this.fileService.writeFile(
-					URI.joinPath(URI.file(htmlDir), 'styles.css'),
-					VSBuffer.fromString(htmlStyles),
-				);
-				files.push('html/styles.css');
-			}
-			htmlFilesManifest = {
-				entry: 'html/index.html',
-				assets: htmlStyles ? ['html/styles.css'] : [],
-			};
-		}
-
-		// Write config source file (if available)
-		if (configMdContent) {
-			const configDir = path.join(tmpDir, 'config');
-			await this.fileService.createFolder(URI.file(configDir));
-			await this.fileService.writeFile(
-				URI.joinPath(URI.file(configDir), configFileName),
-				VSBuffer.fromString(configMdContent),
-			);
-			files.push(`config/${configFileName}`);
-		}
-
 		const manifest: PackageManifest = {
 			kind: 'agent',
 			id: localId,
@@ -291,7 +195,6 @@ export class AgentInstaller extends Disposable implements IPackageInstaller {
 			category: agent.category,
 			author: 'saros',
 			files,
-			htmlFiles: htmlFilesManifest,
 		};
 		return { localDir: URI.file(tmpDir), manifest };
 	}

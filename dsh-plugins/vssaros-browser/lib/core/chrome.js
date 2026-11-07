@@ -40,10 +40,15 @@ export function dedicatedPortFor(configuredPort) {
 /**
  * 候选端点优先级：① 配置端口（你自己的 Chrome，带登录态）② 同端口 IPv6 形态 ③ 专属实例。
  * 真源：`browserCdp.ts:91-100`。顺序**即语义**（用户自己的 Chrome 必须优先），不要"谁先回来选谁"。
+ *
+ * ★ 2026-11-07（真机）：`dedicatedOnly` ⇒ 只认专属实例。开发版的配置端口 9223 **正是正式版专属 Chrome 的端口**
+ *   （正式版 9222 + 1）⇒ 不加这一条，开发版 bot 会连进正式版的无头专属 Chrome（`~/.vssaros/browser-profile`），
+ *   还以为那是"你的 Chrome"。见 `lib/index.js` 里 `dedicatedOnly` 的取值。
  */
-export function cdpEndpointCandidates(configuredPort) {
+export function cdpEndpointCandidates(configuredPort, { dedicatedOnly = false } = {}) {
 	const dedicated = dedicatedPortFor(configuredPort);
 	const mk = (host, port) => ({ host, port, url: `http://${host}:${port}`, selfLaunched: port === dedicated });
+	if (dedicatedOnly && dedicated !== configuredPort) { return [mk('127.0.0.1', dedicated)]; }
 	const out = [mk('127.0.0.1', configuredPort), mk('[::1]', configuredPort)];
 	if (dedicated !== configuredPort) { out.push(mk('127.0.0.1', dedicated)); }
 	return out;

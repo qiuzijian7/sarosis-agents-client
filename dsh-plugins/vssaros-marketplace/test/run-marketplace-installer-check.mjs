@@ -181,8 +181,8 @@ check('① 支持 skill / workflow / agent / mcp / knowledge 五类；未知 kin
 		&& fs.readFileSync(path.join(r2.targetDir, '.agent.md'), 'utf8').includes('旧包正文'));
 	check('⑨ 旧包：agent.json 不落盘（它不是运行期文件）',
 		!fs.existsSync(path.join(r2.targetDir, 'agent.json')));
-	check('⑨ 旧包：files.configHtml 落成 config.html（与 IDE 侧同名）',
-		fs.existsSync(path.join(r2.targetDir, 'config.html')));
+	check('⑨ 旧包：files.configHtml 不再落成 config.html（config.html 已移除）',
+		!fs.existsSync(path.join(r2.targetDir, 'config.html')));
 
 	// 9c. agent.json 的 id 与商城标识不一致 ⇒ 明确拒（否则目录名和 frontmatter 对不上）
 	const mismatch = packTarGzFromMap({

@@ -13,6 +13,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { openKnownSession, SessionNavigationError } from '../navigation.ts'
 import { App } from './app.tsx'
 import type { NativeConversation } from './chat.tsx'
+import { disposeFeed } from './feed.ts'
 import { FlowCard, triggerOfResult } from './flow-card.tsx'
 import { BotMark } from './mark.tsx'
 import { CardProvider } from './provider.tsx'
@@ -107,6 +108,8 @@ interface Workbenches { register(descriptor: typeof WORKBENCH, panel: (props: Re
 /** Registers the panel, sidebar icon, and Plugin Manager config view; `configForms` is optional (without it, machine settings are read-only). */
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-superagent: dictionaries')
+  // VsSaros addition (2026-11-07): the change stream's module state ends with this plugin (`disposeFeed`).
+  ctx.effect(() => () => { disposeFeed() }, 'dsh-superagent: change stream')
   const t = ctx.locale.bind(NS)
   ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_ID, locale: NS, inject: () => ({}) },
     (props: { t: T }) => <Mounted ctx={ctx} t={props.t} />))

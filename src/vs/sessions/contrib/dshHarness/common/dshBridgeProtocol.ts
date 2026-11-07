@@ -582,6 +582,15 @@ export interface IBridgeSessionStartResult {
 
 // ─── session.run / session.cancel（重构 1.4，后台回合统一入口）──────────────────
 
+/**
+ * ★ 2026-11-07：后台回合的内嵌附件。dsh 会话的 prompt content 目前只稳定支持
+ * `text`，故 IDE 侧统一把附件序列化为「文件名 + 文本」，由桥侧转成追加的 text 块。
+ */
+export interface IBridgeTurnAttachment {
+	readonly name: string;
+	readonly text: string;
+}
+
 /** `session.run` 入参：工作目录、提示词、可选自有会话 id（重复调用即恢复续聊）、预设与超时。 */
 export interface IBridgeSessionRunArgs {
 	readonly cwd: string;
@@ -595,6 +604,8 @@ export interface IBridgeSessionRunArgs {
 	 * 缺它时背景会话的任何审批请求都会被 runs 应答者拒掉（deny-by-default ✓）。
 	 */
 	readonly approval?: { readonly allow: readonly string[] };
+	/** 内嵌附件（缺省/空数组 = 与原行为完全一致，只投递一条 text）。 */
+	readonly attachments?: readonly IBridgeTurnAttachment[];
 }
 
 export interface IBridgeSessionRunResult {

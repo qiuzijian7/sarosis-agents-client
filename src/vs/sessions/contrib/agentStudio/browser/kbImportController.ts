@@ -9,7 +9,7 @@
 
 import { URI } from '../../../../base/common/uri.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { IFileService, IFileStat } from '../../../../platform/files/common/files.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IRequestService, asText } from '../../../../platform/request/common/request.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
@@ -47,15 +47,13 @@ import { INativeEnvironmentService } from '../../../../platform/environment/comm
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IAgentChatService, IAgentStudioService } from '../common/agentStudio.js';
-import type { IToolCardHandle } from '../../../common/agentStudioService.js';
 import type { IChatModel } from './knowledge/llm.js';
 import { IViewsService } from '../../../../workbench/services/views/common/viewsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { NativeChatEditorInput } from './nativeChatEditorInput.js';
 import { AGENT_STUDIO_KB_VIEW_ID } from '../common/constants.js';
 import { isChatProviderConfigured } from './knowledge/knowledgeAdapters.js';
-import { extractSources, injectSources, normalizeSourceRef } from './knowledge/frontmatter.js';
+import { extractSources, injectSources } from './knowledge/frontmatter.js';
 import { canonicalizeTitle, loadKbAliases } from './knowledge/kbAliases.js';
 import { dirname } from '../../../../base/common/resources.js';
 import { detectCommunities } from './knowledge/communityDetection.js';
@@ -63,7 +61,6 @@ import type { CommunityEdge } from './knowledge/communityDetection.js';
 import { IKBSchema, loadKbSchema, buildSchemaPromptText, sanitizeKbTopic } from './knowledge/kbSchema.js';
 import type { SchemaClassifyResult } from './knowledge/classifier.js';
 import type { IAgentDriverService } from '../common/agentDriver.js';
-import { AGENT_STUDIO_KB_AGENTIC_BUILD } from '../common/constants.js';
 import { buildFileBlockPrompt, parseFileBlocks } from '../common/fileBlockParser.js';
 import { enrichWikilinks } from './knowledge/enrichWikilinks.js';
 import { KB_NOTE_FORMAT_RULES } from './knowledge/obsidianNoteFormat.js';
@@ -120,6 +117,22 @@ const STAGE2_SYSTEM = '你是一位笔记撰写助手。依据规划将素材落
 	+ '只输出 FILE 块，不要额外解释。';
 
 // ─── 主类 ────────────────────────────────────────────────────────────────────
+
+import { DshPluginPageEditorInput } from '../../dshHarness/electron-browser/dshPluginPageEditorInput.js';
+
+/**
+ * ★ 2026-11-07（换 UI 宿主）：知识库「分析归类 / 构建笔记」的 UI 与回合统一由
+ * dsh `/x/kb/` 页承载 —— `vssaros-kb` 的 `kb_build` 工具 + 会话 + 批授权 + 子代理
+ * （`lib/index.js:4524`、`kbAgent.js` 的 `KB_PRESET` / `ensureKbAgent`）。
+ * IDE 侧只负责把素材落盘与打开页面，不再新建 IDE 聊天 tab、不再跑 IDE agent loop。
+ *
+ * 与 `dshHarness.contribution.ts` 的 `case 'openModulePage'` 同一落点：容器单例输入
+ * （`dshModuleContainers.ts` 的 knowledgeBase 容器），tab 名取「知识库」✓
+ */
+export async function openKbBuildDshPage(editorService: IEditorService): Promise<void> {
+	const input = DshPluginPageEditorInput.getOrCreate('agentStudio.knowledgeBase', '知识库', '/x/kb/');
+	await editorService.openEditor(input, { pinned: true });
+}
 
 export class KbImportController extends Disposable {
 
@@ -183,7 +196,7 @@ export class KbImportController extends Disposable {
 		private readonly _notificationService: INotificationService,
 		@IRequestService private readonly _requestService: IRequestService,
 		/** 可选：agentic 构建模式（AGENT_STUDIO_KB_AGENTIC_BUILD=true 时）经它跑 agent 轮次。 */
-		private readonly _agentDriverService?: IAgentDriverService,
+		_agentDriverService?: IAgentDriverService,
 		/**
 		 * 可选：聊天会话服务。
 		 *
@@ -193,7 +206,7 @@ export class KbImportController extends Disposable {
 		 *   不落盘、不广播 ⇒ 即使用真实 sessionId，用户在聊天框里也什么都看不到。
 		 *   未注入时自动退回 headless（旧行为）；单测走的就是这条。
 		 */
-		private readonly _agentChatService?: IAgentChatService,
+		_agentChatService?: IAgentChatService,
 		/**
 		 * 可选：编辑器组服务。
 		 *
@@ -202,36 +215,14 @@ export class KbImportController extends Disposable {
 		 *   （与 presetAgentView「打开新聊天 tab 默认开在独立 group」同一套做法）；
 		 *   未注入时退回普通 openEditor（单测走这条）。
 		 */
-		private readonly _editorGroupsService?: IEditorGroupsService,
+		_editorGroupsService?: IEditorGroupsService,
 	) {
 		super();
 	}
 
-	/** 「知识库专家」agent id（原先散落在 `_buildNoteAgentic` 里是字面量，2026-09-23 提取）。 */
-	private static readonly KB_BUILD_AGENT_ID = 'knowledge-base-expert';
 
 	/**
-	 * 本次「构建过程」对应的**聊天会话 id**（知识库专家 agent 的真实会话，聊天框里可见）。
-	 *
-	 * 生命周期（用户要求：构建过程开**一个**新 session）：
-	 *   · 批量构建 ⇒ 整个批次**共用一个**（`buildAllPendingNotes` 先置空 ⇒ 首次使用时新建）；
-	 *   · 单文件构建 ⇒ **每次新建**（`buildNotesFromLibrary` 未传 `reuseBuildSession` 时置空）。
-	 * 置空只是"下次用的时候新建"，不会立刻创建 —— 真正创建在建不出来也无所谓的地方（`_ensureKbBuildChatSession`）。
-	 */
-	private _kbBuildSessionId: string | undefined;
-
-	/**
-	 * 该构建会话是否**已经跑过至少一个素材**（仅批量会用到）。
-	 *
-	 * ⚠ 为什么需要这道保护：`IAgentChatService.sendMessage` 会把该会话的**全量历史**作为
-	 *   `priorMessages` 下发给本轮（`agentChatService` 里 `getHistory` → `priorMessages`，
-	 *   只剔除"当前这条 user"）。若把 7 个素材都塞进同一个会话，第 2 个素材起就会把前面素材的
-	 *   **整份原文 + 整份产出**再喂一遍 ⇒（一）上下文平方级膨胀、可能触发压缩；
-	 *   （二）模型很可能**重复输出前几个文件的 FILE 块** ⇒ 写出重复笔记。
-	 *   所以：同一会话里跑**下一个素材之前先清空历史**（`replaceHistory(…, [])`），
-	 *   让每个素材的上下文与「各自独立会话」完全一致；而用户仍然只看到**一个**会话在实时工作。
-	 */
-	private _kbBuildSessionUsed = false;
+	// ★ 2026-11-07（换 UI 宿主）：IDE 侧「构建会话」字段已删 —— 构建改由 dsh `/x/kb/` 的会话承载。
 
 	/** P1-4：per-vault 互斥锁 */
 	private static _vaultLocks = new Map<string, Promise<void>>();
@@ -444,40 +435,35 @@ export class KbImportController extends Disposable {
 	}
 
 	/**
-	 * 组合入口：「入口」(落盘到库) + 「抽取」(构建为结构化笔记)。
+	 * 组合入口：「入口」(落盘到库) + 打开 dsh `/x/kb/` 页。
 	 *
-	 * 供聊天框 write_file 卡片、工作区文件右键「导入知识库」等一键操作调用：
-	 * 先走 `handleFavoriteMessage` 落盘到「库」分区（阶段 1 入口），
-	 * 再立即对刚落盘的库文件调用 `buildNotesFromLibrary` 生成笔记（阶段 2 抽取）。
+	 * ★ 2026-11-07（换 UI 宿主）：阶段 2 的「自动构建笔记」已迁到 dsh `/x/kb/` 页的
+	 *   `kb_build`（工具 + 会话 + 批授权）。IDE 侧只负责把素材落盘到「库」分区并打开页面，
+	 *   **不再跑任何构建**（连静态直连管线也不跑）。
+	 * 供聊天框 write_file 卡片、工作区文件右键「导入知识库」等一键操作调用。
 	 *
-	 * @param sourceFile 可选：原始文件 URI（文件导入场景）。传入后库分区保存原始文件副本
-	 *        （保留原文件名），抽取阶段读取该副本生成结构化笔记。
-	 * @returns 抽取阶段是否成功（入口失败时直接返回 false）。
+	 * @param sourceFile 可选：原始文件 URI（文件导入场景）。传入后库分区保存原始文件副本。
+	 * @param opts.skipOpen 跳过打开 dsh 页（批量/静默场景）。
+	 * @returns 落盘是否成功（入口失败时直接返回 false）。
 	 */
 	async importContentAndBuild(content: string, currentAgentId: string | null, vaultRootUri?: URI, sourceFile?: URI, opts?: { skipOpen?: boolean; quiet?: boolean }): Promise<boolean> {
 		try {
 			const entryOk = await this.handleFavoriteMessage(content, currentAgentId, vaultRootUri, sourceFile, opts);
 			if (!entryOk) { return false; }
 			const libUri = this._lastLibUri;
-			if (!libUri) { return true; } // 入口成功但没有可抽取的库文件，视为成功
-			try {
-				this._logService.info(`[KbImportController] starting stage2 buildNotes: ${libUri.fsPath}`);
-				const notePath = await this.buildNotesFromLibrary(libUri, vaultRootUri);
-				this._logService.info(`[KbImportController] stage2 buildNotes done, notes path: ${notePath ?? '(none)'}`);
-				return notePath !== null;
-			} catch (err) {
-				this._logService.error('[KbImportController] extraction (build) failed:', err);
-				this._notificationService.notify({
-					severity: Severity.Warning,
-					message: `内容已保存到知识库「库」分区，但自动构建笔记失败：${err instanceof Error ? err.message : String(err)}`,
-					source: 'agent-chat-favorite',
-				});
-				return false;
+			this._logService.info(`[KbImportController] staged to library: ${libUri?.fsPath ?? '(none)'}`);
+			// 落盘成功即算成功；构建由 dsh 页承接（skipOpen 时不打扰用户）。
+			if (!opts?.skipOpen) {
+				try {
+					await openKbBuildDshPage(this._editorService);
+				} catch (err) {
+					// 页面打不开不能把「已落库」误报成失败：素材是安全的，给日志即可。
+					this._logService.warn('[KbImportController] 打开 dsh 知识库页失败（素材已落库，可手动打开）：', err);
+				}
 			}
+			return true;
 		} finally {
-			// ★ 统一收尾（2026-09-23）：清掉视图内「处理中」标记，并把 activitybar 徽标从「转圈」
-			//   转成「有新增」。所有走本方法的入口（Explorer 命令 / 聊天框 write_file 卡片）至此
-			//   反馈**完全一致**；这与知识库视图内两个入口（右键构建 / 批量构建）用的是同一套通道。
+			// 统一收尾：清「处理中」标记 + 徽标转「有新增」（所有入口同一套反馈）。
 			this._reportProcessing(false);
 		}
 	}
@@ -804,25 +790,15 @@ export class KbImportController extends Disposable {
 		// 统一反馈（无通知）：徽标转圈 + 视图内 label + 该文件节点转圈。
 		// ⚠ 进度 label 支持调用方覆盖（批量/阶段 B 会传 `分析中 i/N：…`）；默认「构建中：文件名」。
 		// ⚠ 收尾（active=false）由调用方负责：批量/连续场景若在这里清理，会在文件之间闪断。
-		// ★ 2026-09-23：单文件构建 = 聊天框里**每次一个新的**会话（见 `_kbBuildSessionId` 的说明）。
-		//   批量构建会传 `reuseBuildSession: true` ⇒ 整批共用，不会被这里逐个重置成 N 个会话。
-		if (!opts?.reuseBuildSession) { this._kbBuildSessionId = undefined; this._kbBuildSessionUsed = false; }
+		// ★ 2026-11-07（换 UI 宿主）：IDE 侧聊天会话/agentic 构建已退役，`reuseBuildSession`
+		//   参数保留只为兼容既有调用签名（不再有可复用的会话）。
 		this._reportProcessing(true,
 			opts?.progressLabel ?? `构建中：${libFileUri.path.split('/').pop() ?? ''}`,
 			[libFileUri.fsPath]);
 		const vaultRoot = vaultRootUri ?? this._resolveKbRootUri();
-		// agentic 构建模式（默认开启，!== false 口径使未显式设置时也生效）：
-		// 经 AgentDriverService 以 knowledge-base-expert agent 跑一轮，
-		// 获得技能注入（obsidian-markdown/kb-build 等）与工具能力；无产出/失败回退确定性直连管线。
-		if (this._agentDriverService && this._configurationService.getValue<boolean>(AGENT_STUDIO_KB_AGENTIC_BUILD) !== false) {
-			try {
-				const agenticResult = await this._buildNoteAgentic(libFileUri, vaultRoot);
-				if (agenticResult) { return agenticResult; }
-				this._logService.warn('[KbImportController] agentic build produced no notes, falling back to direct pipeline');
-			} catch (e) {
-				this._logService.warn('[KbImportController] agentic build failed, falling back to direct pipeline:', e);
-			}
-		}
+		// ★ 2026-11-07（换 UI 宿主）：IDE 侧 agentic 构建分支已整体退役 ——
+		//   构建改由 dsh `/x/kb/` 页的 `kb_build` 承载；这里保留**静态直连管线**
+		//   （只做分类/落盘，不跑 IDE agent loop），保证「导入到知识库」仍有产物。
 		return KbImportController._buildNoteCore(
 			libFileUri,
 			vaultRoot,
@@ -835,217 +811,25 @@ export class KbImportController extends Disposable {
 		);
 	}
 
-	/**
-	 * agentic 构建路径：素材交给 AgentDriverService（agentId = knowledge-base-expert），
-	 * 收集其 FILE 块文本产出，落盘/缓存/导航/门控复用与 _buildNoteCore 相同的后半段。
-	 * chatOnly=true：构建产出以文本 FILE 块返回，落盘统一由本控制器完成（不写会话之外的文件）。
-	 */
-	private async _buildNoteAgentic(libFileUri: URI, vaultRoot: URI): Promise<string | null> {
-		// 2026-10-17（5.5 前置）：`executeFromChatOptions` 的调用删了（legacy 引擎要退役 ✓）——
-		//   `driver` 变量不再用（只在下面的前置检查里用 `this._agentDriverService` ✓）。
-		if (!this._agentDriverService) { return null; }
-		const libDir = URI.joinPath(vaultRoot, KB_LIBRARY_SUBPATH);
-		if (!libFileUri.fsPath.toLowerCase().startsWith(libDir.fsPath.toLowerCase())) { return null; }
-		// ★ 2026-09-23 语义变更：**库 = 数据源层，笔记区 = 知识体系层**。
-		//   构建产物（提炼归纳出的笔记）落**笔记区**，库只放素材与既有的存量笔记。
-		//   ⇒ 门控 / 导航 / 补链 的扫描根同步改为笔记区（否则它们会「看不见新笔记」）。
-		const notesDir = URI.joinPath(vaultRoot, KB_NOTES_SUBPATH);
-		const baseName = libFileUri.path.split('/').pop() ?? '';
-		if (SYS_INDEX_FILES.includes(baseName)) { return null; }
+	// ★ 2026-11-07（换 UI 宿主）：IDE 侧 agentic 构建链已整体退役 ——
+	//   构建改由 dsh `/x/kb/` 页的 `kb_build` 工具 + 会话 + 批授权承接；
+	//   IDE 侧只保留静态直连管线 `_buildNoteCore` / `_buildAllPendingCore` 与落盘能力。
 
-		// 构建缓存（与直连管线同一缓存文件）
-		const cache = await readBuildCache(this._fileService, vaultRoot);
-		const cachedNote = cache[libFileUri.fsPath];
-		if (cachedNote) {
-			// ★ 2026-09-24：与 `_buildNoteCore` 同一口径 —— 「缓存新鲜」（笔记存在且不比素材旧）才命中；
-			//   素材在构建后又被改过 ⇒ 逐出并重建（`_cacheEntryFresh` 的论证）。
-			if (await cacheEntryFresh(this._fileService, libFileUri, cachedNote)) { return cachedNote; }
-			delete cache[libFileUri.fsPath];
-			await writeBuildCache(this._fileService, vaultRoot, cache);
-		}
 
-		const libContent = (await this._fileService.readFile(libFileUri)).value.toString();
-		const schema = await KbImportController._getSchemaStatic(this._fileService, vaultRoot);
-		const schemaText = buildSchemaPromptText(schema);
-		const { typeToDir, defaultTypeDir } = typeDirMapping(schema);
-		// ⚠ 2026-09-23 修正（基线不对称）：基线**必须是笔记区** —— 后面是 `parseFileBlocks(gen, outputDir)`，
-		//   而 `outputDir = notesDir`。原先是 `libDir.fsPath`（库）⇒ 模型按「相对库」写路径、解析却按
-		//   「相对笔记区」，会产出嵌套错位的目录。同时把**笔记区全部子目录**（含用户手写层级）作为候选，
-		//   让落点复用既有结构（★ 用户要求：如 `01_学习/UnrealEngine/09_UI与Slate/`）。
-		const formatHint = buildFileBlockPrompt(notesDir.fsPath, await listAllNoteSubdirs(this._fileService, notesDir));
-		// 图片清单 + 视觉总结指令（2026-09-22）：导入链接时图片已本地化到 `数据源/raw/assets/<素材名>/`，
-		// 这里把清单交给 agent ⇒ 它逐张调用 vision_analyze 总结图片内容（该工具一次只接受一张图）。
-		// 笔记正文必须保留**相对引用**（`assets/<素材名>/<文件名>`）：预览与飞书同步都按相对路径解析。
-		let assetSection = '';
-		try {
-			const stem = (libFileUri.path.split('/').pop() ?? '').replace(/\.md$/i, '');
-			const entries = await this._fileService.resolve(URI.joinPath(dirname(libFileUri), 'assets', stem));
-			const imgs = (entries.children ?? []).filter(c => !c.isDirectory && /\.(png|jpe?g|gif|webp)$/i.test(c.name));
-			if (imgs.length) {
-				assetSection = [
-					'## 图片清单（已下载到本地，请用 vision_analyze **逐张**总结图片内容）',
-					...imgs.map((c, i) => `${i + 1}. ${c.name}（相对引用：assets/${stem}/${c.name}）`),
-					'',
-					`要求：对以上最多 ${Math.min(imgs.length, 8)} 张图片逐张调用 vision_analyze（一次一张图），把图片要点并入笔记；`,
-					'正文引用必须写**相对路径** `assets/<素材名>/<文件名>`（写绝对路径会导致预览与飞书同步都失效）。',
-				].join('\n');
-			}
-		} catch { /* 无 assets 目录 ⇒ 该素材没有图片 */ }
+	// ★ 2026-11-07（换 UI 宿主）：IDE 侧 agentic 构建链已整体退役 ——
+	//   构建改由 dsh `/x/kb/` 页的 `kb_build` 工具 + 会话 + 批授权承接；
+	//   IDE 侧只保留静态直连管线 `_buildNoteCore` / `_buildAllPendingCore` 与落盘能力。
 
-		const userPrompt = [
-			'请将下面这份知识库素材构建为结构化笔记（先规划，再按 FILE 块格式输出全部笔记）。',
-			'', '## Schema 类型定义', schemaText,
-			'', '## 原始素材', libContent,
-			...(assetSection ? ['', assetSection] : []),
-			'', '## 指令', '为规划出的每篇笔记输出一个 FILE 块。',
-			'若素材含视频原始链接，笔记中必须保留该 URL（原文行）；若含「字幕」段，据此总结视频内容。',
-			formatHint,
-		].join('\n');
 
-		const chunks: string[] = [];
-		// 对齐 Hermes 合成恢复语义：discard_prior_text ⇒ 已累计文本作废
-		const onDelta = (d: { type?: string; content?: unknown }): void => {
-			if (d.type === 'discard_prior_text') { chunks.length = 0; return; }
-			if (d.type === 'content_replace' && typeof d.content === 'string') {
-				chunks.length = 0; chunks.push(d.content); return;
-			}
-			if (d.type === 'text' && typeof d.content === 'string') { chunks.push(d.content); }
-		};
-		const agentId = KbImportController.KB_BUILD_AGENT_ID;
-		const sendOptions = { agentId, chatOnly: true, temperature: 0.3 };
-		// ★ 2026-09-23（用户要求「构建过程在聊天框中打开知识库专家 agent 的一个新 session」）：
-		//   这一轮改走 **`IAgentChatService.sendMessage`**，不再直接用 driver。原因（已核实）：
-		//     · `driver.executeFromChatOptions` 只**产流** —— 不落历史、不广播任何事件
-		//       ⇒ 哪怕换成**真实** sessionId，聊天页签也不会显示任何内容；
-		//     · `sendMessage` 内部会落 user/assistant 消息 + fire `onDidStreamDelta`
-		//       ⇒ 已打开、且绑定**同一** sessionId 的聊天页签会走它的「外部接管」分支**实时渲染**这一轮
-		//         （与手机端 sarosPocket 的范式一致）。
-		//   ⚠ `chatOnly: true` **保持不变**：它只过滤写文件/执行类工具（`agentTurnExecutor` 的 WRITE_TOOLS），
-		//     不影响历史落盘与可见性；笔记落盘本来就由本控制器负责。
-		const chatService = this._agentChatService;
-		const sessionId = chatService ? await this._ensureKbBuildChatSession() : undefined;
-		if (chatService && sessionId) {
-			// ⚠ 同一会话里的**后续素材**：先清空历史再跑（原因见 `_kbBuildSessionUsed` 的说明 ——
-			//   `sendMessage` 会把全量历史当下发上下文，不清就会把前面素材的原文+产出重复喂进去）。
-			if (this._kbBuildSessionUsed) {
-				try { await chatService.replaceHistory(agentId, sessionId, []); }
-				catch (e) { this._logService.warn('[KbImportController] 清空构建会话历史失败（继续构建）:', e); }
-			}
-			this._kbBuildSessionUsed = true;
-			await chatService.sendMessage(agentId, userPrompt, { ...sendOptions, agentSessionId: sessionId }, onDelta);
-		} else {
-			// 2026-10-17（5.5 前置）：兜底分支删了——`executeFromChatOptions` 是 legacy 引擎的入口
-			//   （要退役 ✓）。chatService 不在 / 会话创建失败 ⇒ 如实不跑（返回 null——调用方按
-			//   "没产出"处理 ✓），不再走 legacy 引擎的 headless 兜底 ✗。
-			this._logService.warn('[KbImportController] chatService 不在 / 会话创建失败 ⇒ 本轮构建不跑（不落历史、用户看不到）——legacy 引擎的 headless 兜底已退役');
-			return null;
-		}
-		const gen = chunks.join('');
-		if (!gen.trim()) { return null; }
+	// ★ 2026-11-07（换 UI 宿主）：IDE 侧 agentic 构建链已整体退役 ——
+	//   构建改由 dsh `/x/kb/` 页的 `kb_build` 工具 + 会话 + 批授权承接；
+	//   IDE 侧只保留静态直连管线 `_buildNoteCore` / `_buildAllPendingCore` 与落盘能力。
 
-		// ★ 2026-09-23：**产物落笔记区**（库 = 数据源层）。兜底也落笔记区 —— 产出的是笔记，不是素材。
-		const outputDir = notesDir;
-		const salvageDir = notesDir;
-		const blocks = parseFileBlocks(gen, outputDir);
-		let written: string[];
-		if (blocks.length === 0) {
-			this._logService.warn(`[KbImportController] agentic stage2 no FILE blocks parsed (output len=${gen.length})`);
-			const libCat = parseLibCategory(libContent, libDir, libFileUri, this._logService);
-			const safeName = sanitizeFsName(libCat.topic) || '未命名';
-			const salvaged = await salvageSingleNoteToDir(gen, safeName, salvageDir, this._fileService);
-			written = salvaged ? [salvaged] : [];
-		} else {
-			written = await writeFileBlocks(blocks, outputDir, vaultRoot, this._fileService, this._logService, typeToDir, defaultTypeDir);
-		}
-		if (written.length === 0) { return null; }
 
-		this._logService.info(`[KbImportController] agentic build wrote ${written.length} note(s): ${written.join('; ')}`);
-		cache[libFileUri.fsPath] = written[0];
-		await writeBuildCache(this._fileService, vaultRoot, cache);
-		const relFromLib = relativeFromLib(libFileUri, libDir);
-		await KbImportController._injectSourcesIntoFiles(this._fileService, written, relFromLib);
-		// ★ 2026-09-23：补链扫描根切到笔记区（笔记的新落点）
-		await KbImportController._enrichNewNotes(this._fileService, notesDir, written, this._logService);
-		// 导航 + 摘要：agentic 路径尝试解析 chatModel（仅用于社区/目录摘要），失败则无摘要（同视图路径行为）
-		const chatModel = await KbImportController._resolveKbChatModel(this._agentStudioService, this._configurationService, this._requestService) ?? undefined;
-		// ★ 2026-09-23：导航与门控都改扫**笔记区**（笔记的新落点；库只剩素材与存量笔记）
-		await KbImportController.maintainKbNavigation(this._fileService, notesDir, chatModel);
-		const gate = await applyDeabstractionGating(this._fileService, notesDir);
-		this._logService.info(`[KbImportController] de-abstraction gating (agentic): ${gate.active} active, ${gate.pending} pending`);
-		this._agentStudioService.requestKbRefresh();
-		this._notificationService.notify({ severity: Severity.Info, message: `笔记构建完成（agentic）: ${written.join('; ')}`, source: 'kb-build' });
-		return written[0];
-	}
+	// ★ 2026-11-07（换 UI 宿主）：IDE 侧 agentic 构建链已整体退役 ——
+	//   构建改由 dsh `/x/kb/` 页的 `kb_build` 工具 + 会话 + 批授权承接；
+	//   IDE 侧只保留静态直连管线 `_buildNoteCore` / `_buildAllPendingCore` 与落盘能力。
 
-	/** 构建会话的标题：`知识库构建 · 09-23 14:05`（便于在会话列表里一眼认出，且同一分钟内可区分）。 */
-	private static _kbBuildSessionName(now = new Date()): string {
-		const p = (n: number) => String(n).padStart(2, '0');
-		return `知识库构建 · ${p(now.getMonth() + 1)}-${p(now.getDate())} ${p(now.getHours())}:${p(now.getMinutes())}`;
-	}
-
-	/**
-	 * 确保「本次构建过程」有一个**真实登记过**的聊天会话（知识库专家 agent），并把它的页签打开。
-	 *
-	 * 为什么必须"真实登记"：`IAgentChatService.sendMessage` 会把消息写进该会话的历史，
-	 * 而**未登记**的临时 id 只会被 append 层顺手新建一个桶（用户看不到它出现在会话列表里）
-	 * ⇒ 只有 `createAgentSession` 产出的 id 才是用户在聊天框里能找到的那个会话。
-	 *
-	 * 幂等：`_kbBuildSessionId` 已存在就直接复用（批量构建整批共用一个会话的关键）。
-	 * 失败不抛：拿不到会话只是"看不到过程"，构建本身照常（调用方会退回 headless）。
-	 */
-	private async _ensureKbBuildChatSession(): Promise<string | undefined> {
-		const chat = this._agentChatService;
-		if (!chat) { return undefined; }
-		if (this._kbBuildSessionId) { return this._kbBuildSessionId; }
-		const name = KbImportController._kbBuildSessionName();
-		try {
-			const created = await chat.createAgentSession(KbImportController.KB_BUILD_AGENT_ID, name);
-			const id = String((created as { id?: unknown } | undefined)?.id ?? '');
-			if (!id) {
-				this._logService.warn('[KbImportController] createAgentSession 未返回 id ⇒ 本轮构建退回 headless');
-				return undefined;
-			}
-			this._kbBuildSessionId = id;
-			await this._openKbBuildChatTab(id, name);
-			this._logService.info(`[KbImportController] kb build chat session: ${id} (${name})`);
-			return id;
-		} catch (e) {
-			this._logService.warn('[KbImportController] 创建构建会话失败 ⇒ 退回 headless:', e);
-			return undefined;
-		}
-	}
-
-	/**
-	 * 在编辑器区打开一个**绑定该会话**的聊天页签（agent = 知识库专家）。
-	 *
-	 * ⚠ 页签必须绑到**同一个 sessionId**：nativeChatEditorPane 在消费广播 delta 时有守卫
-	 *   `if (sessionId && this._currentSessionId && this._currentSessionId !== sessionId) return;`
-	 *   ⇒ 绑错了就收不到「外部接管」的流式渲染。
-	 * `NativeChatEditorInput.create` 每次会生成**唯一 chatId**（⇒ 新页签），符合"开一个新 session"的预期。
-	 */
-	private async _openKbBuildChatTab(sessionId: string, name: string): Promise<void> {
-		try {
-			const input = NativeChatEditorInput.create(undefined, KbImportController.KB_BUILD_AGENT_ID, sessionId, name);
-			// ★ 2026-09-24（用户要求）：构建会话开在聊天框窗口的**新建 group** 里 ——
-			//   与 presetAgentView「打开新聊天 tab 默认开在独立 group」同一套做法：
-			//   优先复用空 group（避免拆出「空 group + 聊天 group」两个分栏），否则向右 addGroup 新建。
-			type IChatGroup = { editors: readonly unknown[]; openEditor(i: unknown, o: unknown): Promise<unknown> };
-			const agentPart = (this._editorGroupsService as unknown as { agentPart?: { activeGroup?: IChatGroup; groups: readonly IChatGroup[]; addGroup(g: IChatGroup, d: number): IChatGroup } } | undefined)?.agentPart;
-			if (agentPart?.activeGroup) {
-				const active = agentPart.activeGroup;
-				const targetGroup = active.editors.length === 0
-					? active
-					: (agentPart.groups.find(g => g.editors.length === 0)
-						?? agentPart.addGroup(active, 3 /* GroupDirection.RIGHT */));
-				await targetGroup.openEditor(input, { pinned: true });
-			} else {
-				await this._editorService.openEditor(input, { pinned: true });
-			}
-		} catch (e) {
-			// 打开页签失败**不该**影响构建（用户仍能在聊天框的会话列表里找到这个会话）
-			this._logService.warn('[KbImportController] 打开构建会话页签失败（不影响构建）:', e);
-		}
-	}
 
 	static async buildNotesFromLibrary(
 		libFileUri: URI,
@@ -1221,8 +1005,6 @@ export class KbImportController extends Disposable {
 		const vaultRoot = vaultRootUri ?? this._resolveKbRootUri();
 		// ★ 2026-09-23：一次批量 = 聊天框里**一个**新会话（用户要求「构建过程开一个新 session」）。
 		//   置空 ⇒ 首次进入 agentic 时新建；之后每个素材都**复用**它（不会刷出 N 个页签）。
-		this._kbBuildSessionId = undefined;
-		this._kbBuildSessionUsed = false;
 		return KbImportController._buildAllPendingCore(
 			vaultRoot,
 			this._fileService,
@@ -1232,11 +1014,11 @@ export class KbImportController extends Disposable {
 			this._agentStudioService,
 			this._requestService,
 			// ★ 批量也要享受 agent 多轮：把「单篇构建」交给**实例方法** `buildNotesFromLibrary` ——
-			//   它内部按 `AGENT_STUDIO_KB_AGENTIC_BUILD !== false`（默认开）调 `_buildNoteAgentic`
+			//   它内部走静态直连管线 `_buildNoteCore`（IDE 侧 agentic 构建已于 2026-11-07 换宿主退役）
 			//   （以 knowledge-base-expert agent 跑一轮，带技能注入与工具能力），
 			//   失败 / 无产出时**自动回落**直连 `_buildNoteCore`。
 			//   ⇒ 批量与单文件右键「构建为笔记」走的是**同一条**路径（含进度 label 透传）。
-			//   `reuseBuildSession: true` ⇒ 整批**共用**一个聊天会话（否则每个素材都会新建一个页签）
+			//   `reuseBuildSession: true` ⇒ 保持调用签名兼容（IDE 侧聊天会话已退役）
 			(file, label) => this.buildNotesFromLibrary(file, vaultRoot, { progressLabel: label, reuseBuildSession: true }),
 		);
 	}
@@ -1261,410 +1043,40 @@ export class KbImportController extends Disposable {
 		return pending.map(u => relativeFromLib(u, libDir));
 	}
 
-	/**
-	 * ★ 2026-09-23（用户需求）：**一个 agent 会话搞定整批 —— 宿主只给路径，agent 自己读、自己写**。
-	 *
-	 * 与 `_buildAllPendingCore`（宿主读文件 → 解析 FILE 块 → **宿主落盘**）的本质区别：
-	 *   · 宿主只把**素材路径清单**交给 agent，由 agent 用 `file_read` **依次读取**原文；
-	 *   · agent 用 `file_write` / `patch` **自己把笔记写进 `知识库列表/`** ⇒ 所以这一轮**绝不能**再传
-	 *     `chatOnly: true`（它会过滤掉写文件类工具）。写入落在沙箱允许根内（vault 已注册在
-	 *     `agentStudio.kb.vaults` 的 customPath 里），默认 `edit: auto` 策略对**沙箱内的写**免审批
-	 *     ⇒ 无人值守也能跑完（⚠ 提示词里明确禁用 `terminal`：execute 档会弹审批）。
-	 *   · 多文件 ⇒ **一条** prompt（不是每个文件一条），上下文由 agent 自己的阅读节奏决定。
-	 *
-	 * 随后在**同一会话**追加第二条 prompt：让 agent 依据 `知识库列表/` 现有**目录与文件**
-	 * 创建/完善**知识体系文档**（`知识库列表/知识体系.md`）—— 即「帮助用户构建知识体系」。
-	 *
-	 * 产出识别（宿主侧双保险，因为落盘不再经过宿主）：
-	 *   ① 流里的工具结果：`file_write` 返回 `wrote N chars to <绝对路径>`（coreTools 的实现）；
-	 *   ② `知识库列表/` 目录**前后快照 diff**（新增文件）。
-	 * 收尾与旧路径一致：按新笔记 frontmatter 的 `sources` 反查来源 → 写构建缓存 → 补链 → 门控 → 导航。
-	 *
-	 * 降级：没有 chat 服务 / 会话建不出来 ⇒ 自动回落 `buildAllPendingNotes`（宿主逐篇落盘）。
-	 */
-	async buildPendingAsAgentSession(
-		vaultRootUri?: URI,
-		/** 可选：合成工具卡句柄（视图传入；构建在聊天里呈现为**一次工具调用**，并由视图在 finally 收尾）。 */
-		toolCard?: IToolCardHandle,
-	): Promise<{ pending: number; built: number; skipped: number; systemDoc: string | null; usedFallback: boolean }> {
-		KbImportController._buildInFlight++;
-		try {
-			return await this._buildPendingAsAgentSessionInner(vaultRootUri, toolCard);
-		} finally {
-			KbImportController._buildInFlight--;
-		}
-	}
+	// ★ 2026-11-07（换 UI 宿主）：IDE 侧 agentic 构建链已整体退役 ——
+	//   构建改由 dsh `/x/kb/` 页的 `kb_build` 工具 + 会话 + 批授权承接；
+	//   IDE 侧只保留静态直连管线 `_buildNoteCore` / `_buildAllPendingCore` 与落盘能力。
 
-	private async _buildPendingAsAgentSessionInner(
-		vaultRootUri?: URI,
-		toolCard?: IToolCardHandle,
-	): Promise<{ pending: number; built: number; skipped: number; systemDoc: string | null; usedFallback: boolean }> {
-		const vaultRoot = vaultRootUri ?? this._resolveKbRootUri();
-		const { libDir, notesDir, pending, cache } = await collectPendingSources(
-			this._fileService, vaultRoot, this._logService, this._notificationService, this._agentStudioService,
-		);
-		if (pending.length === 0) {
-			// 用户主动点了按钮却"没有任何反应"是最糟的反馈 ⇒ 空结果必须可见（与 _buildAllPendingCore 同文案）
-			this._logService.info('[KbImportController] agent build: nothing pending');
-			this._notificationService.notify({
-				severity: Severity.Info,
-				message: '批量构建：「库」中没有待构建的素材。'
-					+ '（已构建过的笔记，以及 index / overview / insights / 知识体系 等导航文件会被自动跳过；'
-					+ '可用「导入链接 / URL」或右键导入素材后再试。）',
-				source: 'kb-build',
-			});
-			return { pending: 0, built: 0, skipped: 0, systemDoc: null, usedFallback: false };
-		}
 
-		// ⚠ 一次交给 agent 的素材数量**封顶**：这是无人工介入的长任务，路径太多会跑很久、烧很多 token
-		//   （剩余的下次构建会继续处理 —— 它们仍在 pending 里）。
-		const MAX_ASSETS = 20;
-		const assets = pending.slice(0, MAX_ASSETS);
-		const skipped = pending.length - assets.length;
+	// ★ 2026-11-07（换 UI 宿主）：IDE 侧 agentic 构建链已整体退役 ——
+	//   构建改由 dsh `/x/kb/` 页的 `kb_build` 工具 + 会话 + 批授权承接；
+	//   IDE 侧只保留静态直连管线 `_buildNoteCore` / `_buildAllPendingCore` 与落盘能力。
 
-		const chat = this._agentChatService;
-		// 新会话（用户要求「构建过程在聊天框里开一个 session」）
-		this._kbBuildSessionId = undefined;
-		this._kbBuildSessionUsed = false;
-		const sessionId = chat ? await this._ensureKbBuildChatSession() : undefined;
-		if (!chat || !sessionId) {
-			this._logService.warn('[KbImportController] agent 自主构建不可用（无 chat 服务 / 会话创建失败）⇒ 回落宿主逐篇落盘');
-			const built = await this.buildAllPendingNotes(vaultRoot);
-			return { pending: pending.length, built, skipped: 0, systemDoc: null, usedFallback: true };
-		}
 
-		// ── 聊天呈现：**一张合成工具卡**（`kb_build`），而不是把清单/目录树刷成用户气泡 ──────────
-		// ★ 2026-09-24（用户要求：「点构建按钮后聊天框显示大量文本 ⇒ 优雅些，封装成一次工具调用」）：
-		//   ① 两条 prompt 改为 `hidden`（只喂模型、不落盘不渲染，见下 `sendOptions`）—— 数据仍完整到达 agent；
-		//   ② 这里开一张 `kb_build` 合成卡（通用工具卡：标题=displayName、运行中转圈、progressText 显进度、
-		//      终态显 result），里程碑进度由下面的 `report()` 推进；
-		//   ③ 终态**由调用方收尾**（视图在 `finally` 里用 `toolCard` 句柄关卡片）⇒ 抛异常也不会卡在「执行中」。
-		const toolCallId = `kb_build_${Date.now().toString(36)}`;
-		if (toolCard) { toolCard.toolCallId = toolCallId; }
-		this._agentStudioService.requestToolCard({
-			toolCallId,
-			name: 'kb_build',
-			displayName: '构建知识库',
-			args: JSON.stringify({ assets: assets.length, skipped, vault: vaultRoot.fsPath }),
-		});
-		const report = (progressText: string, progress?: number): void => {
-			this._logService.info(`[KbImportController] kb build: ${progressText}`);
-			this._agentStudioService.toolCardProgress({ toolCallId, progress, progressText });
-		};
-		report(`准备中（${assets.length} 份素材${skipped > 0 ? `，本次先处理 ${assets.length} 份` : ''}）`, 5);
+	// ★ 2026-11-07（换 UI 宿主）：IDE 侧 agentic 构建链已整体退役 ——
+	//   构建改由 dsh `/x/kb/` 页的 `kb_build` 工具 + 会话 + 批授权承接；
+	//   IDE 侧只保留静态直连管线 `_buildNoteCore` / `_buildAllPendingCore` 与落盘能力。
 
-		const before = new Set((await collectMdFiles(this._fileService, notesDir))
-			.map(u => u.fsPath.toLowerCase()));
-		const agentId = KbImportController.KB_BUILD_AGENT_ID;
-		const toolWrites = new Set<string>();
-		const orgMoved: { from: string; to: string }[] = [];
-		const onDelta = (d: { type?: string; content?: unknown }): void => {
-			if (d.type !== 'tool_end' && d.type !== 'tool_result') { return; }
-			if (typeof d.content !== 'string') { return; }
-			// `file_write` 的结果串自带落地路径：`wrote N chars to <path>`
-			const m = /wrote\s+\d+\s+chars\s+to\s+(.+?)\s*$/im.exec(d.content);
-			if (m) { toolWrites.add(m[1].replace(/^["'`]|["'`]$/g, '')); }
-			// `kb_organize` 的结果带机器可读行（宿主据此修正构建缓存 —— 笔记被移动后，缓存里的旧路径会失效）
-			const org = /KB_ORGANIZE_RESULT\s+(\{.*\})/.exec(d.content);
-			if (org) {
-				try {
-					const parsed = JSON.parse(org[1]) as { moved?: { from?: unknown; to?: unknown }[] };
-					for (const mv of parsed.moved ?? []) {
-						if (typeof mv.from === 'string' && typeof mv.to === 'string') { orgMoved.push({ from: mv.from, to: mv.to }); }
-					}
-				} catch { /* 解析失败不影响构建 */ }
-			}
-		};
-		// ★ 2026-09-24：`hidden: true` ⇒ 这两条 prompt **只喂模型，不落盘、不广播、不渲染为用户气泡**
-		//   （此前「素材清单 + 笔记区目录树」作为用户消息显示在聊天框里 ⇒ 用户反馈「显示了大量文本」）。
-		//   聊天里的可见呈现改为上面的 `kb_build` 合成工具卡。
-		const sendOptions = { agentId, agentSessionId: sessionId, temperature: 0.3, hidden: true };
-		// ★ 2026-09-23（用户要求「构建时发送太多消息 ⇒ 抽象成技能」）：规则**全部移进技能 `kb-build`**
-		//   （`resources/.agents/skills/kb-build/SKILL.md`），消息只带**数据**（素材清单 + 目录树快照 + 路径）；
-		//   经 `explicitSkillIds` 把技能挂载进本轮（它会作为独立 user message 注入）。
-		//   schema 文件仍由宿主确保存在 —— agent 会用 file_read 自己读它（`_getSchemaStatic` 缺省时写默认值）。
-		await KbImportController._getSchemaStatic(this._fileService, vaultRoot);
-		const treeText = await KbImportController._describeNoteTree(this._fileService, notesDir);
-		const skillOptions = { ...sendOptions, explicitSkillIds: ['kb-build'] };
 
-		// ── Phase 1：素材路径清单 → agent 自行 read + write（注意：**不传 chatOnly** ⇒ 允许写工具）
-		report('Phase 1：读取素材并写入笔记…', 15);
-		await chat.sendMessage(agentId, KbImportController._kbAgentBuildPrompt(assets, libDir, notesDir, treeText), skillOptions, onDelta);
+	// ★ 2026-11-07（换 UI 宿主）：IDE 侧 agentic 构建链已整体退役 ——
+	//   构建改由 dsh `/x/kb/` 页的 `kb_build` 工具 + 会话 + 批授权承接；
+	//   IDE 侧只保留静态直连管线 `_buildNoteCore` / `_buildAllPendingCore` 与落盘能力。
 
-		// ── Phase 2：同一会话里发一句话触发技能的 Phase 2（知识体系文档 + 结构重构；规则全在技能里）
-		const phase2Text: string[] = [];
-		const onPhase2Delta = (d: { type?: string; content?: unknown }): void => {
-			onDelta(d);   // 工具结果照旧收集（用于识别「知识体系.md」的写入）
-			if (d.type === 'discard_prior_text') { phase2Text.length = 0; return; }
-			if (d.type === 'content_replace' && typeof d.content === 'string') { phase2Text.length = 0; phase2Text.push(d.content); return; }
-			if (d.type === 'text' && typeof d.content === 'string') { phase2Text.push(d.content); }
-		};
-		report('Phase 2：构建知识体系文档…', 70);
-		await chat.sendMessage(agentId, KbImportController._kbSystemDocPrompt(), skillOptions, onPhase2Delta);
 
-		// ── 收尾：找出本次产出（工具自报路径 ∪ 目录快照新增），再照旧做缓存/补链/门控/导航
-		const written = new Set<string>();
-		for (const p of toolWrites) {
-			if (p.toLowerCase().startsWith(notesDir.fsPath.toLowerCase())) { written.add(p); }
-		}
-		for (const u of await collectMdFiles(this._fileService, notesDir)) {
-			if (!before.has(u.fsPath.toLowerCase())) { written.add(u.fsPath); }
-		}
-		// 「知识体系.md」是导航类文档（已加入 SYS_INDEX_FILES），**不算**笔记 ⇒ 不参与缓存/补链
-		const docName = '知识体系.md';
-		const systemDoc = [...written].find(p => p.toLowerCase().endsWith(docName)) ?? null;
-		const notePaths = [...written].filter(p => !p.toLowerCase().endsWith(docName));
+	// ★ 2026-11-07（换 UI 宿主）：IDE 侧 agentic 构建链已整体退役 ——
+	//   构建改由 dsh `/x/kb/` 页的 `kb_build` 工具 + 会话 + 批授权承接；
+	//   IDE 侧只保留静态直连管线 `_buildNoteCore` / `_buildAllPendingCore` 与落盘能力。
 
-		// 缓存回填：按**新笔记自己的 frontmatter `sources`** 反查来源 —— agent 直接写盘后，宿主只
-		// 能靠这条线索建立「素材 → 笔记」映射（口径用 `normalizeSourceRef`，与门控/体检完全一致）。
-		const libByRef = new Map<string, URI>();
-		for (const u of pending) { libByRef.set(normalizeSourceRef(relativeFromLib(u, libDir)), u); }
-		for (const notePath of notePaths) {
-			try {
-				const text = (await this._fileService.readFile(URI.file(notePath))).value.toString();
-				for (const s of extractSources(text)) {
-					const src = libByRef.get(normalizeSourceRef(s));
-					if (src) { cache[src.fsPath] = notePath; }
-				}
-			} catch { /* 单篇读失败不影响其它 */ }
-		}
-		await writeBuildCache(this._fileService, vaultRoot, cache);
-		// agent 用 `kb_organize` 自己动了目录 ⇒ 缓存里指向旧路径的值必须跟着改，否则下次构建按幽灵路径跳过
-		if (orgMoved.length > 0) {
-			let fixed = 0;
-			for (const [k, v] of Object.entries(cache)) {
-				const hit = orgMoved.find(mv => mv.from.toLowerCase() === v.toLowerCase());
-				if (hit) { cache[k] = hit.to; fixed++; }
-			}
-			if (fixed > 0) { await writeBuildCache(this._fileService, vaultRoot, cache); }
-			this._logService.info(`[KbImportController] kb_organize: ${orgMoved.length} 项移动（构建缓存修正 ${fixed} 条）`);
-		}
-		report('收尾：构建缓存 / 补链 / 导航维护…', 88);
-		await KbImportController._enrichNewNotes(this._fileService, notesDir, notePaths, this._logService);
-		const gate = await applyDeabstractionGating(this._fileService, notesDir);
-		this._logService.info(
-			`[KbImportController] agent 自主构建：pending=${pending.length} 笔记=${notePaths.length} 体系文档=${systemDoc ?? '无'}；`
-			+ `门控 ${gate.active} active / ${gate.pending} pending`,
-		);
-		const chatModel = await KbImportController._resolveKbChatModel(this._agentStudioService, this._configurationService, this._requestService) ?? undefined;
-		await KbImportController.maintainKbNavigation(this._fileService, notesDir, chatModel);
-		this._agentStudioService.requestKbRefresh();
-		this._notificationService.notify({
-			severity: Severity.Info,
-			message: `知识库构建完成（agent 自主读取素材并写盘）：新增/更新 ${notePaths.length} 篇笔记`
-				+ `${systemDoc ? '，并已创建/完善知识体系文档' : ''}`
-				+ `${skipped > 0 ? `（本次先处理 ${assets.length} 份素材，剩余 ${skipped} 份可再次构建）` : ''}`,
-			source: 'kb-build',
-		});
-		// ── 结构重构（用户要求「LLM 也可以完善补充，甚至重构」）：解析 Phase 2 文本里的 KB_REORG 计划，
-		//    **先备份、再请用户确认**，确认后由宿主执行（agent 没有移动/删除工具 ⇒ 只能出计划）。
-		const plan = await KbImportController._parseReorgPlan(phase2Text.join(''), vaultRoot, notesDir, this._fileService, this._logService);
-		if (plan.moves.length > 0) {
-			const head = plan.moves.slice(0, 3).map(mv => `· ${mv.fromRel} → ${mv.toRel}`).join('\n');
-			this._notificationService.prompt(Severity.Info,
-				`agent 提出 ${plan.moves.length} 项目录重构建议${plan.reason ? `：${plan.reason}` : ''}\n${head}`
-					+ `${plan.moves.length > 3 ? `\n…（共 ${plan.moves.length} 项）` : ''}\n应用前会自动备份到 vault 之外。`,
-				[
-					{ label: '应用重构', run: () => { void this._applyReorgPlan(plan, vaultRoot, notesDir); } },
-					{ label: '跳过', isSecondary: true, run: () => undefined },
-				]);
-		}
-		// 合成工具卡的**成功摘要**（由视图在 finally 里连同 toolCallId 一起提交，见 `_batchBuildAll`）
-		if (toolCard) {
-			toolCard.summary = `新增/更新 ${notePaths.length} 篇笔记`
-				+ `${systemDoc ? '，并已创建/完善知识体系文档' : ''}`
-				+ `${skipped > 0 ? `（本次处理 ${assets.length} 份，剩余 ${skipped} 份可再次构建）` : ''}`;
-		}
-		report('完成', 100);
-		return { pending: pending.length, built: notePaths.length, skipped, systemDoc, usedFallback: false };
-	}
 
-	/** Phase 2 文本里的「重构计划」块：`<!-- KB_REORG {…json…} -->`。 */
-	private static readonly KB_REORG_RE = /<!--\s*KB_REORG\s*([\s\S]*?)-->/i;
+	// ★ 2026-11-07（换 UI 宿主）：IDE 侧 agentic 构建链已整体退役 ——
+	//   构建改由 dsh `/x/kb/` 页的 `kb_build` 工具 + 会话 + 批授权承接；
+	//   IDE 侧只保留静态直连管线 `_buildNoteCore` / `_buildAllPendingCore` 与落盘能力。
 
-	/** 一次重构最多接受多少项（防模型失控输出上千条）。 */
-	private static readonly KB_REORG_MAX_MOVES = 50;
 
-	/**
-	 * 解析 Phase 2 输出里的 `<!-- KB_REORG {…} -->` 计划，并做**安全校验**（不通过就丢弃该项 —— 绝不猜）。
-	 *
-	 * 为什么必须由**宿主**执行：agent 的工具集里**没有**移动/删除类工具（只有
-	 * `file_read / file_write / patch / search_files / terminal / kb_search / vision_analyze`）⇒ 它没法真正搬运
-	 * 文件；而 `terminal` 属 execute 档、会逐次弹审批，不适合无人值守。所以「允许 LLM 重构」落地为：
-	 * **LLM 出计划 → 宿主先备份 → 用户确认 → 宿主执行**（用户要求：「LLM 也可以完善补充，甚至重构」）。
-	 *
-	 * 校验规则（任一不满足即跳过该项）：
-	 *   · `from` / `to` 都必须落在**笔记区**内（保护「库」与 vault 其它内容）；
-	 *   · `from` 必须**已存在**、`to` 必须**尚不存在**（避免覆盖）；
-	 *   · 拒绝含 `..` 的路径；`from === to` 跳过；最多 `KB_REORG_MAX_MOVES` 项。
-	 */
-	private static async _parseReorgPlan(
-		text: string, vaultRoot: URI, notesDir: URI, fileService: IFileService, logService: ILogService,
-	): Promise<{ reason: string; moves: { from: URI; to: URI; fromRel: string; toRel: string }[] }> {
-		const moves: { from: URI; to: URI; fromRel: string; toRel: string }[] = [];
-		const m = KbImportController.KB_REORG_RE.exec(text);
-		if (!m) { return { reason: '', moves }; }
-		let raw: { reason?: unknown; moves?: unknown };
-		try { raw = JSON.parse(m[1].trim()); }
-		catch (e) { logService.warn('[KbImportController] KB_REORG 计划 JSON 解析失败:', e); return { reason: '', moves }; }
+	// ★ 2026-11-07（换 UI 宿主）：IDE 侧 agentic 构建链已整体退役 ——
+	//   构建改由 dsh `/x/kb/` 页的 `kb_build` 工具 + 会话 + 批授权承接；
+	//   IDE 侧只保留静态直连管线 `_buildNoteCore` / `_buildAllPendingCore` 与落盘能力。
 
-		const rel = (u: URI) => u.path.replace(vaultRoot.path, '').replace(/^\//, '');
-		const resolve = (p: unknown): URI | undefined => {
-			if (typeof p !== 'string' || !p.trim()) { return undefined; }
-			const s = p.trim().replace(/\\/g, '/').replace(/^\.\//, '');
-			if (s.includes('..')) { return undefined; }
-			return /^[a-zA-Z]:\//.test(s) || s.startsWith('/') ? URI.file(s) : URI.joinPath(vaultRoot, ...s.split('/'));
-		};
-		const notesPrefix = notesDir.fsPath.toLowerCase();
-		const list = Array.isArray(raw.moves) ? raw.moves.slice(0, KbImportController.KB_REORG_MAX_MOVES) : [];
-		for (const item of list) {
-			const it = item as { from?: unknown; to?: unknown };
-			const from = resolve(it.from);
-			const to = resolve(it.to);
-			if (!from || !to) { continue; }
-			const f = from.fsPath.toLowerCase(), t = to.fsPath.toLowerCase();
-			if (f === t) { continue; }
-			if (!f.startsWith(notesPrefix) || !t.startsWith(notesPrefix)) {
-				logService.warn(`[KbImportController] 重构项越出笔记区，已跳过: ${from.fsPath} → ${to.fsPath}`);
-				continue;
-			}
-			try { await fileService.resolve(from); } catch { continue; }        // from 必须存在
-			let exists = false;
-			try { await fileService.resolve(to); exists = true; } catch { /* 目标不存在 = 可用 */ }
-			if (exists) { logService.warn(`[KbImportController] 重构目标已存在，已跳过: ${to.fsPath}`); continue; }
-			moves.push({ from, to, fromRel: rel(from), toRel: rel(to) });
-		}
-		return { reason: typeof raw.reason === 'string' ? raw.reason : '', moves };
-	}
-
-	/**
-	 * 执行重构计划（**宿主代 agent 执行**）：
-	 *   ① **先备份**到 vault **之外**；② 逐个 `move`（自动建父目录）；③ 修正构建缓存里指向旧路径的值；
-	 *   ④ 重跑导航 / 门控并通知结果。
-	 *
-	 * ⚠ 备份目录**绝不能放进 vault 内**：知识库文件树会把 vault 内的一切列出来、备份文件还能被点开
-	 *   （此前踩过这个坑）⇒ 放 `<vault 的父目录>/<vault 名>-backup-kbreorg-<ts>/`。
-	 * ⚠ **备份失败就不搬这个文件**：宁可少搬几项，也不能让用户失去还原能力。
-	 */
-	private async _applyReorgPlan(
-		plan: { reason: string; moves: { from: URI; to: URI; fromRel: string; toRel: string }[] },
-		vaultRoot: URI, notesDir: URI,
-	): Promise<void> {
-		const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
-		const vaultName = vaultRoot.path.split('/').pop() ?? 'vault';
-		const backupDir = URI.joinPath(dirname(vaultRoot), `${vaultName}-backup-kbreorg-${stamp}`);
-		let backedUp = 0, moved = 0;
-		const failed: string[] = [];
-		for (const mv of plan.moves) {
-			try {
-				await this._fileService.copy(mv.from, URI.joinPath(backupDir, ...mv.fromRel.split('/')), true);
-				backedUp++;
-			} catch (e) {
-				failed.push(`${mv.fromRel}（备份失败：${String(e)}）`);
-				continue;
-			}
-			try {
-				await this._fileService.createFolder(dirname(mv.to));
-				await this._fileService.move(mv.from, mv.to, false);
-				moved++;
-			} catch (e) {
-				failed.push(`${mv.fromRel} → ${mv.toRel}（${String(e)}）`);
-			}
-		}
-		// 缓存里的「值」是笔记的绝对路径 ⇒ 搬完必须跟着改，否则下次构建会按幽灵路径跳过
-		try {
-			const cache = await readBuildCache(this._fileService, vaultRoot);
-			let fixed = 0;
-			for (const [k, v] of Object.entries(cache)) {
-				const hit = plan.moves.find(mv => mv.from.fsPath.toLowerCase() === v.toLowerCase());
-				if (hit) { cache[k] = hit.to.fsPath; fixed++; }
-			}
-			if (fixed > 0) { await writeBuildCache(this._fileService, vaultRoot, cache); }
-		} catch (e) { this._logService.warn('[KbImportController] 重构后修正构建缓存失败:', e); }
-
-		const chatModel = await KbImportController._resolveKbChatModel(this._agentStudioService, this._configurationService, this._requestService) ?? undefined;
-		await KbImportController.maintainKbNavigation(this._fileService, notesDir, chatModel).catch(() => undefined);
-		await applyDeabstractionGating(this._fileService, notesDir).catch(() => undefined);
-		this._agentStudioService.requestKbRefresh();
-		this._notificationService.notify({
-			severity: failed.length ? Severity.Warning : Severity.Info,
-			message: `目录重构完成：移动 ${moved} 项${backedUp ? `（已备份 ${backedUp} 份到 ${backupDir.fsPath}）` : ''}`
-				+ `${failed.length ? `；${failed.length} 项失败：${failed.slice(0, 3).join('；')}` : ''}`,
-			source: 'kb-build',
-		});
-		this._logService.info(`[KbImportController] reorg applied: moved=${moved} failed=${failed.length} backup=${backupDir.fsPath} reason=${plan.reason}`);
-	}
-
-	/**
-	 * 渲染「笔记区现有目录树」文本，供构建提示词使用。
-	 *
-	 * ★ 2026-09-23（用户要求）：落点要**依据笔记里已有的目录结构**，例如把 UI 优化笔记放进
-	 *   `知识库列表/01_学习/UnrealEngine/09_UI与Slate/`，而不是凭空新建 `知识库列表/UI优化与性能/` 这种平行树。
-	 *
-	 * ⚠ 与 `_listEngineNoteDirs()` 的口径**相反**：那个函数刻意**排除**手写区（`01_学习/…` 这类数字前缀
-	 *   目录），依据是当时「只把 LLM 自己建的目录作为候选」的旧要求；用户现在明确要求复用他自己的层级
-	 *   ⇒ 本函数**包含全部目录**（手写区也进树）。
-	 *
-	 * 预算控制（prompt 不能被超大 vault 撑爆）：深度 ≤ 4 层、总行数 ≤ 400、每个目录最多列 6 个文件名。
-	 */
-	private static async _describeNoteTree(fileService: IFileService, notesDir: URI): Promise<string> {
-		const out: string[] = [];
-		const MAX_LINES = 400, MAX_DEPTH = 4, MAX_FILES = 6;
-		let lines = 0;
-		const walk = async (dir: URI, depth: number): Promise<void> => {
-			if (depth > MAX_DEPTH || lines >= MAX_LINES) { return; }
-			let children: readonly IFileStat[];
-			try { children = (await fileService.resolve(dir)).children ?? []; } catch { return; }
-			const subdirs = children.filter(c => c.isDirectory && !c.name.startsWith('.'));
-			const files = children.filter(c => !c.isDirectory && c.name.endsWith('.md') && !SYS_INDEX_FILES.includes(c.name));
-			if (depth > 0) {
-				const shown = files.slice(0, MAX_FILES).map(f => f.name).join('、');
-				const noteInfo = files.length
-					? `  （${files.length} 篇：${shown}${files.length > MAX_FILES ? '、…' : ''}）`
-					: '';
-				out.push(`${'  '.repeat(depth - 1)}- ${dir.path.split('/').pop() ?? ''}/${noteInfo}`);
-				lines++;
-			}
-			for (const d of subdirs) {
-				if (lines >= MAX_LINES) { out.push('  …（目录过多，已截断）'); break; }
-				await walk(d.resource, depth + 1);
-			}
-		};
-		await walk(notesDir, 0);
-		return out.join('\n');
-	}
-
-	/**
-	 * Phase 1 提示词：**只给路径**，让 agent 自己 `file_read` + `file_write`（与宿主落盘路径的本质差异）。
-	 * 素材路径给的是**绝对路径**（`file_read` 可直接解析），而 `sources` 引用给的是**相对「库」的路径**
-	 * （与 wikilink / 门控 / 体检的口径一致）。
-	 *
-	 * ★ 2026-09-23（用户要求「产物满足 schema 类别 + 依据已有目录结构」）：
-	 *   · 把**真实目录树**（`treeText`，含用户手写层级）交给 agent，落点**优先复用已有目录**；
-	 *   · `type` 必须取自 schema（类别合规靠 frontmatter；schema 的 `dir` 只在无从归属时兜底）。
-	 */
-	private static _kbAgentBuildPrompt(assets: readonly URI[], libDir: URI, notesDir: URI, treeText: string): string {
-		const rows = assets.map((u, i) => `${i + 1}. 素材文件：${u.fsPath}\n   （sources 引用：${relativeFromLib(u, libDir)}）`);
-		return [
-			'执行技能 **kb-build** 的 Phase 1（把素材构建为结构化笔记）。完整手册见技能本体，本消息只带数据：',
-			'', `## 素材清单（共 ${assets.length} 份，按顺序全部处理完才算完成）`,
-			...rows,
-			'', '## 笔记区现有目录树（落点优先复用这里的目录）',
-			treeText || `（${notesDir.fsPath} 目前还没有任何目录）`,
-			'', 			`笔记区路径：${notesDir.fsPath}`,
-			'', '**三条硬约束**：① 落点优先复用上面的已有目录（能复用绝不新建）；② frontmatter 的 `sources` 必须用上面给出的引用；',
-			'③ 正文里的图片用相对路径 `assets/<素材名>/…`（绝对路径会让预览与同步失效）。其余全部按技能执行。',
-		].join('\n');
-	}
-
-	/**
-	 * Phase 2 消息：一句话触发 —— 知识体系文档 + 结构重构的完整约定在技能 `kb-build` 的 Phase 2 里
-	 * （★ 2026-09-23「规则移进技能」：消息只带触发语，不再重复整份规则）。
-	 */
-	private static _kbSystemDocPrompt(): string {
-		return '执行技能 **kb-build** 的 Phase 2：依据笔记区当前真实的目录与文件，创建或完善 `知识体系.md`，'
-			+ '并按需提交结构重构（小规模直接 kb_organize，大规模输出 KB_REORG 计划）。';
-	}
 
 	/**
 	 * 批量构建（**静态**入口：直连管线，**不跑 agent**）。
@@ -1711,7 +1123,7 @@ export class KbImportController extends Disposable {
 		 *
 		 * 存在的意义：让批量构建也能享受 **agent 多轮**。回调由**实例**调用方传入
 		 * （实例 `buildAllPendingNotes` 传的是实例方法 `buildNotesFromLibrary` ⇒ 它内部按
-		 * `AGENT_STUDIO_KB_AGENTIC_BUILD` 决定走 `_buildNoteAgentic`，失败/无产出再自动回落直连管线）。
+		 * 统一走静态直连管线 `_buildNoteCore`；完整的 LLM 构建由 dsh `/x/kb/` 页承载）。
 		 *
 		 * · 传了 ⇒ 用回调（agentic 或直连，由回调自己决定）；
 		 * · 没传（静态入口 / 单测）⇒ 保持旧行为，直接调 `_buildNoteCore` 直连管线。

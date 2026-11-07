@@ -979,7 +979,8 @@ export class WorkspaceViewPane extends ViewPane {
 	}
 
 	/**
-	 * 工作区文件右键「导入到知识库」：读取文件内容 → 入口(落盘到库) + 抽取(构建笔记)。
+	 * 工作区文件右键「导入到知识库」：读取文件内容 → 落盘到库 → 打开 dsh `/x/kb/` 页
+	 * （★ 2026-11-07 换 UI 宿主：构建改由该页的 kb_build 承接，IDE 侧不再自动构建）。
 	 * 与聊天框 write_file 卡片的「导入知识库」按钮共用同一份 KbImportController 管线。
 	 */
 	private async _importFileToKb(resource: URI): Promise<void> {

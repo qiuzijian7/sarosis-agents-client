@@ -27,14 +27,12 @@ import { useChatStore } from './store/useChatStore.js';
 import { useOrchestrationStore } from './store/useOrchestrationStore.js';
 import { useSwarmStore } from './store/useSwarmStore.js';
 import { useDebugTraceStore } from './store/useDebugTraceStore.js';
-import { dispatchConfigHtmlEvent } from './features/configmd/configHtmlBridge.js';
 import { handleSnapshotArchiveEvent, handleSnapshotMediaPutEvent, handleSnapshotQueryEvent, handleStageRunEvent, handleStageRunCancel, handleDirectStageRunEvent, handleDirectStageRunCancel } from './features/workflowEditor/comfyHost/workflowSnapshotBridgeWebview.js';
 // 2026-10-19：媒体库页「插入到画布」的落点 —— 与"拖拽资产到画布"**同一个函数**（节点类型/mediaAssetId 口径一致）。
 import { spawnAssetLoader } from './features/workflowEditor/comfyHost/actionSpawn.js';
 import { useWorkflowEditorStore } from './features/workflowEditor/store.js';
 import './styles/globals.css';
 import './styles/themes.css';
-import './styles/configHtml.css';
 import './styles/agent-editor.css';
 import './styles/workflow-editor.css';
 
@@ -356,17 +354,8 @@ initMessageClient((type, data) => {
 			window.dispatchEvent(new CustomEvent('agentStudio:decomposition-progress', { detail: data }));
 			break;
 		}
-		case 'confightml.htmlRendered':
-		case 'confightml.command':
-		case 'confightml.error':
-		case 'confightml.chatStreamDelta':
-		case 'confightml.chatStreamDone': {
-			const detail = data as { agentId: string };
-			if (detail?.agentId) {
-				dispatchConfigHtmlEvent(detail.agentId, type, data);
-			}
-			break;
-		}
+		// ★ 2026-11-07（移除 config.html）：内嵌预览面板与事件桥已整体删除，
+		//   host 不再推送 confightml.* 事件；旧的推送类型若到达，直接忽略。
 		case 'pool.activate': {
 			// Hot-path: this webview was pooled and is now being activated by
 			// the host with a real panelType. Update globals and dispatch a

@@ -525,7 +525,7 @@ function formatImages(raw) {
   lines.push(
     "",
     "Notes: only rendered `<img>` elements (incl. same-origin iframes); CSS background images are NOT listed; deduplicated by URL; images smaller than both dimensions of the filter are treated as icons.",
-    "To read text inside an image: call `vision_analyze` with the image URL directly (one image per call). To keep it in a note: download it with `execute_code` into `\u5E93/raw/assets/<slug>/` and reference it as a **relative** path."
+    "To read text inside an image: call `vision_analyze` with the image URL directly (one image per call). To keep it in a note: download it with `execute_code` into `\u6570\u636E\u6E90/raw/assets/<slug>/` and reference it as a **relative** path."
   );
   const wallNotice = browserPageWallNotice(
     raw.url,

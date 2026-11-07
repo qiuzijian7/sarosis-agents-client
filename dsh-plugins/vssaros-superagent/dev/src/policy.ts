@@ -98,6 +98,10 @@ export const ExecutorConfigSchema = z.object({
   // a low-risk proposal is agreed automatically only once a person switches `autoApprove` on.
   staffing: z.boolean().default(true),
   autoApprove: z.boolean().default(false),
+  // VsSaros addition (2026-11-07, co-install): whether another plugin may read a SuperAgent Session's request with another
+  // model on the side, as DS Bot's OCR reads its images (`usage.ts` UsageRelay `side`). Off, such a call is refused and DS Bot
+  // tells the model the image could not be read; a request sent again to the same model (its secrets rewrite) still goes.
+  sideCalls: z.boolean().default(true),
 }).strict()
 export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
 export const SettingsSchema = z.object({

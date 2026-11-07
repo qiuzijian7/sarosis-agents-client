@@ -1511,10 +1511,20 @@ async function watch(): Promise<void> {
 			// Transform changed TypeScript files in parallel
 			if (tsFiles.length > 0) {
 				console.log(`[watch] Transpiling ${tsFiles.length} file(s)...`);
-				await Promise.all(tsFiles.map(srcPath => {
+				await Promise.all(tsFiles.map(async srcPath => {
 					const relativePath = path.relative(path.join(REPO_ROOT, SRC_DIR), srcPath);
 					const destPath = path.join(REPO_ROOT, outDir, relativePath.replace(/\.ts$/, '.js'));
-					return transpileFile(srcPath, destPath);
+					// ★ gulp-watch 删除 .ts 源文件时同样会发 data 事件，而本函数上方只按
+					//   `.endsWith('.ts')` 收集、没有区分 unlink ⇒ transpileFile 读文件必然 ENOENT。
+					//   与下面 copy 分支的 ENOENT 容错对齐：跳过编译，并清掉 out/ 里对应的
+					//   陈旧 .js（否则删源码后产物还在，运行期可能误加载已删模块）。
+					try {
+						return await transpileFile(srcPath, destPath);
+					} catch (err: any) {
+						if (err?.code !== 'ENOENT') { throw err; }
+						await fs.promises.rm(destPath, { force: true });
+						return;
+					}
 				}));
 			}
 

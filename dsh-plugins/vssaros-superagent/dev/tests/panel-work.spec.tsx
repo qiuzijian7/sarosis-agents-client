@@ -6,7 +6,7 @@ import { expect, it, vi } from 'vitest'
 import { zh } from '../src/client/locales.ts'
 import { elapsedLabel, layoutSteps } from '../src/client/work.tsx'
 import { AGENTS_ROOMS_ACTIVE, groupRoundStatus, groupRunSource, groupRunsConfig, normalizeGroupRuns } from '../src/client/group-runs.tsx'
-import { all, click, find, mount, settle, tab, text, usePanel } from './fixtures/panel.tsx'
+import { all, at, click, find, mount, settle, tab, text, usePanel } from './fixtures/panel.tsx'
 import { server } from './fixtures/panel-server.ts'
 import type { StepsView } from '../src/app/steps.ts'
 
@@ -60,8 +60,10 @@ it('opens the side panel for a step\'s request, puts it first, and answers it th
 it('shows a team in the Workbench tab as a flow, a board and a list, with a step\'s details beside them', async () => {
   server.teamSteps = [team()]
   server.stepApprovals = [approval]
+  // VsSaros change (2026-11-07): the Workbench is no longer a tab; its page is still a route (the flow links open it).
+  at({ page: 'work' })
   await mount()
-  await click(tab(zh['tab.work']))
+  expect(all('[role="tab"]').map(item => item.textContent)).not.toContain(zh['tab.work'])
   const nodes = () => all('.dt-flow-node')
   expect(nodes().map(node => node.getAttribute('data-state'))).toEqual(['ready', 'alert', 'running', 'pending'])
   expect(nodes()[3]!.textContent).toContain('↻2')
@@ -84,8 +86,8 @@ it('shows a team in the Workbench tab as a flow, a board and a list, with a step
 })
 
 it('says when no team is at work', async () => {
+  at({ page: 'work' })
   await mount()
-  await click(tab(zh['tab.work']))
   expect(text()).toContain(zh['work.empty'])
 })
 
@@ -104,8 +106,8 @@ it('reads group runs itself while no chat-surface broadcast is heard, and stops 
     return panelFetch(url, init)
   }))
   try {
+    at({ page: 'work' })
     await mount()
-    await click(tab(zh['tab.work']))
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 80)) })
     expect(agentsCalls[0]).toBe(AGENTS_ROOMS_ACTIVE)
     expect(document.querySelector('[data-vssaros-group-run="c-fb"]')?.getAttribute('data-vssaros-group-run-round-status')).toBe('replying')
@@ -147,8 +149,8 @@ it('refreshes live group-chat runs in the Workbench from the chat-surface progre
   }]
   win.__vssarosGroupProgress = active
   try {
+    at({ page: 'work' })
     await mount()
-    await click(tab(zh['tab.work']))
     const section = document.querySelector('[data-testid="group-runs"]')
     expect(section).not.toBeNull()
     expect(section!.textContent).toContain('番茄钟 H5 开发团队')

@@ -20,6 +20,7 @@ import type { TeamflowExport } from './teamflow.ts'
 import type { StepsView } from './steps.ts'
 import type { ApprovalChoice, ApprovalRule, ApprovalTemplateId, StepApprovalView } from './step-approvals.ts'
 import type { UsageSummary } from './usage.ts'
+import type { Coexistence } from './coexist.ts'
 import type { StewardView } from './steward.ts'
 import type { DeskFlow } from './desk-flow.ts'
 import type { DeskFile, DeskMessage, DeskSchedule } from './desk-chat.ts'
@@ -89,7 +90,7 @@ export interface Api {
   /** VsSaros addition (2026-11-06): a person gives a Bot a template's remembered answers. */
   'POST steps/rules/templates/:id/apply': { body: { botId: string; botName: string }; response: { added: number } }
   /** VsSaros addition (2026-11-06): the usage ledger of SuperAgent's Sessions (last day and week) and the steward's work. */
-  'GET usage': { response: { day: UsageSummary; week: UsageSummary['total']; steward: StewardView[] } }
+  'GET usage': { response: { day: UsageSummary; week: UsageSummary['total']; steward: StewardView[]; coexist: Coexistence; sideCalls: boolean } }
   'POST steps/rules/:id/delete': { response: { deleted: true } }
   'POST tickets/:id/steps/:key/stop': { response: { step: string; state: string } }
   /** VsSaros addition (2026-11-06): a person raises a team's budget (new caps above what is used). */

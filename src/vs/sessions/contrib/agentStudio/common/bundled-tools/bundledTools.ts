@@ -96,6 +96,9 @@ export const BUNDLED_TOOL_DEFINITIONS: readonly IToolDefinition[] = [
 		category: "file",
 		source: 'hermes-bundled',
 	},
+	// ⚠ RETIRED（2026-10，2026-11-07 标注）：下面 12 个 `browser_*` 只是 Hermes 目录里的占位（stub，`listTools` 不列出），
+	//   IDE 侧的执行实现已删除。浏览器的唯一真源是 Host 侧单个 `browser` 工具（`dsh-plugins/vssaros-browser`）。
+	//   保留只为目录与 toolset 的双向一致性测试；不要把它们当成可用工具名（技能 / 提示词里写 `browser`（`op: "..."`））。
 	{
 		name: "browser_navigate",
 		description: "Navigate the browser to a URL. Waits for the page to load and returns a snapshot.",

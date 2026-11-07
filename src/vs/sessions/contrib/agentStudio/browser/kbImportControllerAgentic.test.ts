@@ -2,7 +2,10 @@
  *  Copyright (c) Sarosis. All rights reserved.
  *  Licensed under the MIT License.
  *
- *  kbImportControllerAgentic.test.ts — agentic 构建路径与 insights 摘要集成测试（tdd 风格）。
+ *  kbImportController.test.ts — 知识库静态管线集成测试（maintainKbInsights 社区语义摘要）。
+ *
+ *  ★ 2026-11-07（换 UI 宿主）：agentic 构建路径已整体迁到 dsh `/x/kb/`，
+ *    原 `_buildNoteAgentic` suite 与其 helper 已退役；这里保留静态能力覆盖。
  *
  *  覆盖：
  *   1. _buildNoteAgentic — FILE 块落盘 / driver 调用形态（agentId、chatOnly）/ 构建缓存 /
@@ -69,102 +72,10 @@ function createTreeFileService() {
 	};
 }
 
-const VAULT = URI.file('/vault');
 const LIB = URI.file('/vault/库');
 
-function noteBlock(path: string, type: string, title: string, body: string): string {
-	return `---FILE: ${path} ---\n---\ntype: ${type}\ntitle: ${title}\ncreated: 2026-09-19\n---\n\n# ${title}\n\n${body}\n\n---END FILE---\n`;
-}
+	// ★ 2026-11-07（换 UI 宿主）：`_buildNoteAgentic` 已整体退役，相关测试与 helper 一并删除。
 
-function createController(fs: any, driver: any) {
-	const logService = { info() {}, warn() {}, error() {} };
-	return new KbImportController(
-		{ getValue: () => undefined } as any,
-		logService as any,
-		fs,
-		{} as any, {} as any,
-		{ requestKbRefresh() {} } as any,
-		{} as any, {} as any,
-		{ notify() {} } as any,
-		undefined as any,
-		driver,
-	);
-}
-
-suite('KbImportController._buildNoteAgentic（agentic 构建模式）', () => {
-
-	test('正常路径：FILE 块落盘、driver 形态正确、构建缓存写入', async () => {
-		const fs = createTreeFileService();
-		fs.addFile('/vault/库/raw/src1.md', '---\ntype: clipping\ntopic: GC\n---\n# 素材\n垃圾回收与内存管理的讨论记录。');
-		const captured: { agentId?: string; opts?: any } = {};
-		const driver = {
-			executeFromChatOptions(agentId: string, _msg: string, opts: any) {
-				captured.agentId = agentId; captured.opts = opts;
-				return (async function* () {
-					yield { type: 'text', content: noteBlock('概念/gc.md', 'concept', 'GC 机制', '垃圾回收的核心机制与分代策略，内容足够长以构成一篇笔记。') };
-					yield { type: 'text', content: noteBlock('概念/jvm.md', 'concept', 'JVM 运行时', 'JVM 的运行时数据区与 GC 的关系，内容足够长以构成一篇笔记。') };
-					yield { type: 'done' };
-				})();
-			},
-		};
-		const controller = createController(fs.service, driver);
-		const libFile = URI.file('/vault/库/raw/src1.md');
-		const result = await (controller as any)._buildNoteAgentic(libFile, VAULT);
-
-		assert.strictEqual(captured.agentId, 'knowledge-base-expert');
-		assert.strictEqual(captured.opts.chatOnly, true, 'agentic 构建以 chatOnly 运行（落盘由控制器统一完成）');
-		assert.ok(result && result.includes('gc.md'), `应返回首篇笔记路径，实际 ${result}`);
-		assert.ok(fs.getContent('/vault/笔记/概念/gc.md')?.includes('GC 机制'), '笔记 1 已落盘');
-		assert.ok(fs.getContent('/vault/笔记/概念/jvm.md')?.includes('JVM'), '笔记 2 已落盘');
-		const cache = fs.getContent('/vault/.kb/build-cache.json');
-		assert.ok(cache?.includes('src1.md'), '构建缓存已写入');
-	});
-
-	test('discard_prior_text：作废已累计文本（Hermes 合成恢复语义）', async () => {
-		const fs = createTreeFileService();
-		fs.addFile('/vault/库/raw/src2.md', '# 素材\n内容。');
-		const driver = {
-			executeFromChatOptions() {
-				return (async function* () {
-					yield { type: 'text', content: '这段是被作废的幻觉输出，不应出现在任何文件中。' };
-					yield { type: 'discard_prior_text', metadata: { reason: 'fake-completion' } };
-					yield { type: 'text', content: noteBlock('概念/real.md', 'concept', '真实笔记', '真实的笔记正文，长度足够，包含实质内容与结构化信息。') };
-				})();
-			},
-		};
-		const controller = createController(fs.service, driver);
-		const result = await (controller as any)._buildNoteAgentic(URI.file('/vault/库/raw/src2.md'), VAULT);
-		assert.ok(result?.includes('real.md'));
-		assert.ok(!fs.allPaths().some(p => p.includes('幻觉')), '作废文本未落盘');
-		assert.ok(!fs.getContent('/vault/笔记/概念/real.md')?.includes('作废'), '落盘笔记不含作废文本');
-	});
-
-	test('空产出返回 null（调用方回退直连管线）', async () => {
-		const fs = createTreeFileService();
-		fs.addFile('/vault/库/raw/src3.md', '# 素材\n内容。');
-		const driver = {
-			executeFromChatOptions() {
-				return (async function* () { yield { type: 'done' }; })();
-			},
-		};
-		const controller = createController(fs.service, driver);
-		const result = await (controller as any)._buildNoteAgentic(URI.file('/vault/库/raw/src3.md'), VAULT);
-		assert.strictEqual(result, null);
-	});
-
-	test('构建缓存命中时直接返回（不消耗 agent 轮次）', async () => {
-		const fs = createTreeFileService();
-		fs.addFile('/vault/库/raw/src4.md', '# 素材\n内容。');
-		fs.addFile('/vault/库/概念/existing.md', '# 已构建\n已有笔记。');
-		fs.addFile('/vault/.kb/build-cache.json', JSON.stringify({ [URI.file('/vault/库/raw/src4.md').fsPath]: URI.file('/vault/库/概念/existing.md').fsPath }));
-		let driverCalled = false;
-		const driver = { executeFromChatOptions() { driverCalled = true; return (async function* () { })(); } };
-		const controller = createController(fs.service, driver);
-		const result = await (controller as any)._buildNoteAgentic(URI.file('/vault/库/raw/src4.md'), VAULT);
-		assert.strictEqual(driverCalled, false);
-		assert.ok(result?.includes('existing.md'));
-	});
-});
 
 suite('KbImportController.maintainKbInsights 集成（社区语义摘要）', () => {
 

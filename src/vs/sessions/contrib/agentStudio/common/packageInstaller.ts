@@ -34,7 +34,9 @@ export interface PackageManifest {
 	readonly skillRefs?: readonly string[];
 	/** Agent 依赖的 mcp 包 slug 列表（仅 kind=agent 时有效，可选） */
 	readonly mcpRefs?: readonly string[];
-	/** HTML 文件清单（仅 kind=agent，含 ConfigHTML 渲染资源） */
+	/** ★ 2026-11-07（移除 config.html）：历史字段。旧 agent 包的 manifest 可能仍带它，
+	 *  由上面的 `[key: string]: unknown` 索引签名兼容；IDE 侧 AgentInstaller 已不再读写、
+	 *  新发布的包也不再写。保留声明只为旧 manifest 的类型平滑。 */
 	readonly htmlFiles?: {
 		/** HTML 入口文件（相对包根路径，如 "html/index.html"） */
 		readonly entry: string;

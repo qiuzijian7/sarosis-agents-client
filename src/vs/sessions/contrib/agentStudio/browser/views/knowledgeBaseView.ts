@@ -45,17 +45,12 @@ import { DataTransfers } from '../../../../../base/browser/dnd.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { basename as uriBasename, extname as uriExtname, isEqual } from '../../../../../base/common/resources.js';
 import { IEditorService, SIDE_GROUP } from '../../../../../workbench/services/editor/common/editorService.js';
-import { IViewsService } from '../../../../../workbench/services/views/common/viewsService.js';
 import { IEditorGroupsService, GroupsOrder, IEditorGroup } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { EditorsOrder } from '../../../../../workbench/common/editor.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
-import { IRequestService } from '../../../../../platform/request/common/request.js';
-import { IEnvironmentService, INativeEnvironmentService } from '../../../../../platform/environment/common/environment.js';
-import { IAgentChatService, IAgentStudioService } from '../../common/agentStudio.js';
-import type { IToolCardHandle } from '../../../../common/agentStudioService.js';
-import { IAgentDriverService } from '../../common/agentDriver.js';
+import { IAgentStudioService } from '../../common/agentStudio.js';
 import { CodebaseGraphViewerEditorInput } from '../codebaseGraphViewerEditorInput.js';
-import { KbImportController } from '../kbImportController.js';
+import { KbImportController, openKbBuildDshPage } from '../kbImportController.js';
 import { lintVault, formatLintReport } from '../knowledge/kbLint.js';
 import { detectDuplicates, formatDedupReport, mergeDuplicates, type DedupGroup } from '../knowledge/dedup.js';
 import { writeReviewNote, listReviewNotes, approveReviewNote, routeLintToReview } from '../knowledge/reviewStore.js';
@@ -266,11 +261,8 @@ export class KnowledgeBaseViewPane extends ViewPane {
 	private _backlinksEl?: HTMLElement;
 
 	/**
-	 * 知识库导入控制器实例（视图侧唯一入口用的那份）。
-	 * ★ 2026-09-23：视图改为**自持实例** —— 「批量构建库」走实例版 `buildAllPendingNotes`，
-	 *   它把单篇构建交给 `buildNotesFromLibrary`（默认 agent 多轮、失败自动回落直连管线）。
-	 */
-	private readonly _kbImport: KbImportController;
+	// ★ 2026-11-07（换 UI 宿主）：IDE 侧不再持有 KbImportController 实例 ——
+	//   构建改由 dsh `/x/kb/` 页承载，本视图只保留「打开页面」的按钮。
 
 	/** vssaros 内置内核（零外部依赖，始终可用） */
 	private _nativeKernel: KbNativeKernel | undefined;
@@ -307,8 +299,6 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		@IEditorService private readonly editorService: IEditorService,
 		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 		@ILogService private readonly logService: ILogService,
-		@IRequestService private readonly requestService: IRequestService,
-		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 	@IKbNativeKernelService private readonly _kbKernelService: IKbNativeKernelService,
 	@IEmbeddingService private readonly _ragEmbeddingService: IEmbeddingService,
 	@IAgentStudioService private readonly agentStudioService: IAgentStudioService,
@@ -319,10 +309,6 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		@IUndoRedoService private readonly undoRedoService: IUndoRedoService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
 		// ⚠ 终端与工作区上下文（同步要在集成终端里跑、cwd 取工作区）也随同步搬进服务了（第 3 期 ✓）
-		@IViewsService private readonly viewsService: IViewsService,
-		@IAgentDriverService private readonly agentDriverService: IAgentDriverService,
-		// 「构建过程在聊天框开一个可见会话」需要它（构建会话的创建/驱动走 IAgentChatService）
-		@IAgentChatService private readonly agentChatService: IAgentChatService,
 		// 「加入 Agent Chat」（2026-10-14）：把该节点作为**引用**投进当前 dsh 聊天草稿 —— 走 dshHarness
 		// 既有的 `insertReferenceToChat` 命令（与编辑器右键那条**同一条落点** ✓），不在本视图里另写一份 ✗。
 		@ICommandService private readonly commandService: ICommandService,
@@ -333,20 +319,7 @@ export class KnowledgeBaseViewPane extends ViewPane {
 		@IKbCommandService private readonly _kbCommand: IKbCommandService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
-		// ★ 2026-09-23：视图**自持一个控制器实例**（与 workspaceView / nativeChatEditorPane 的做法一致）。
-		//   原因：「批量构建库」要走**实例**版 `buildAllPendingNotes` 才能享受 agent 多轮
-		//   （静态版是直连管线、不跑 agent）；实例版把单篇构建交给 `buildNotesFromLibrary`，
-		//   于是批量与单文件右键「构建为笔记」走**同一条**路径。
-		//   ✅ 并发安全：控制器的 per-vault 互斥锁 `_vaultLocks` 是**静态**的 ⇒ 多实例之间仍然互斥。
-		this._kbImport = new KbImportController(
-			this.configurationService, this.logService, this.fileService,
-			this.environmentService as INativeEnvironmentService, this.storageService,
-			this.agentStudioService, this.viewsService, this.editorService,
-			this.notificationService, this.requestService, this.agentDriverService,
-			this.agentChatService,
-			// 构建会话要在聊天框窗口里**新建一个 group** 打开（controller 内复用 presetAgentView 的做法）
-			this.editorGroupsService,
-		);
+		// ★ 2026-11-07：不再自持 KbImportController（构建已换宿主到 dsh /x/kb/）。
 		this._index = new KbFullTextIndex(this.fileService);
 		this._graph = new KbLinkGraph(this.fileService);
 		this._nativeKernel = new KbNativeKernel(
@@ -1664,7 +1637,9 @@ export class KnowledgeBaseViewPane extends ViewPane {
 			// 与「笔记」分区新增的「批量构建笔记」区分开（后者是知识体系侧的入口，跑同一个批量构建）。
 			const batchBuildBtn = $('span.kb-tool-btn.codicon.codicon-tools');
 			batchBuildBtn.title = '批量构建库（把库中所有未处理素材转为笔记）';
-			batchBuildBtn.onclick = (e) => { e.stopPropagation(); void this._batchBuildAll(); };
+			// ★ 2026-11-07（换 UI 宿主）：批量构建改由 dsh `/x/kb/` 页的 `kb_build` 承载，
+			//   IDE 侧只留这个按钮 → 打开页面（dsh 引擎下本视图本就不实例化，代码保持一致）。
+			batchBuildBtn.onclick = (e) => { e.stopPropagation(); void openKbBuildDshPage(this.editorService); };
 			// 「导入链接 / URL」（2026-09-22）：抓正文 + 图片本地化 → 落 库/raw ⇒ 再「构建为笔记」
 			const importUrlBtn = $('span.kb-tool-btn.codicon.codicon-link-external');
 			importUrlBtn.title = '导入链接 / URL（小红书 · 抖音 · 知乎 · YouTube · B站…）';
@@ -3380,105 +3355,23 @@ export class KnowledgeBaseViewPane extends ViewPane {
 
 	/** 右键菜单：对单个库文件构建结构化笔记。 */
 	private async _buildNoteFromLibrary(node: IKbNode): Promise<void> {
-		// ★ 前置检查（2026-09-23 需求）：构建笔记需要「知识库专家」；未配 Provider/模型 ⇒
-		//   弹通知并中止（否则 agent 轮次白跑，用户以为「点了没反应」）。
-		if (KbImportController.kbAgentConfigState(this.agentStudioService, this.configurationService) === 'missing') {
-			KbImportController.warnKbAgentNotConfigured(this.notificationService, '构建笔记');
-			return;
-		}
-		this._setNodeBuilding(node.path, true);
+		// ★ 2026-11-07（换 UI 宿主）：构建改由 dsh `/x/kb/` 页的 `kb_build` 承载
+		//   （工具 + 会话 + 批授权）；IDE 侧不再跑 agent 轮次、不再新建聊天 tab 展示过程，
+		//   只负责打开页面。收尾照旧清状态（避免徽标一直转圈）。
 		try {
-			const vaultRoot = this.vaultUri(this._activeVault!);
-			// ★ 2026-09-23：改走**实例**版 —— 与批量构建、与「聊天框里的构建会话」保持同一条路径。
-			//   （原先走静态版 = 直连管线：既不跑 agent，也不会在聊天框里开可见会话。）
-			const built = await this._kbImport.buildNotesFromLibrary(node.uri, vaultRoot);
-			if (!built) { this.notificationService.warn('构建失败或 LLM 未生成笔记。'); return; }
-			await this.refreshSection('notes');
-			await this.refreshSection('library');
-			this.markSearchDirty(); // 让新构建的笔记进入搜索索引 / 关系图谱
-			// 构建流程最后一步：生成/刷新思维导图（确保产出的是思维导图画布）
-			void this._generateMindmapAfterImport();
+			await openKbBuildDshPage(this.editorService);
 		} catch (err) {
-			this.logService.warn(`[KB] buildNoteFromLibrary: ${err}`);
-			this.notificationService.warn(`构建失败：${err}`);
+			this.logService.warn(`[KB] openKbBuildDshPage: ${err}`);
+			this.notificationService.warn(`无法打开 dsh 知识库页：${err}`);
 		} finally {
 			this._setNodeBuilding(node.path, false);
-			// 统一收尾（2026-09-23）：清「库/笔记」标题右侧状态 + 徽标转「有新增」，
-			// 与 Explorer 命令 / 批量构建走同一套反馈（不发通知）。
 			this.agentStudioService.reportKbProcessing({ active: false });
 			this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'new', count: 1 });
 		}
 	}
 
-	/** 工具栏按钮：批量构建全部库中未处理文件。 */
-	private async _batchBuildAll(): Promise<void> {
-		try {
-			if (!this._activeVault) { this.notificationService.warn('请先选择知识库。'); return; }
-			// ★ 前置检查（2026-09-23 需求）：批量构建需要「知识库专家」；未配 Provider/模型 ⇒
-			//   弹一次通知并中止（在开始前检查 ⇒ 不会逐个文件刷屏）。
-			if (KbImportController.kbAgentConfigState(this.agentStudioService, this.configurationService) === 'missing') {
-				KbImportController.warnKbAgentNotConfigured(this.notificationService, '批量构建笔记');
-				return;
-			}
-			// ★ 2026-09-24：互斥（与 agent 的 `kb_build` 共用 `KbImportController.buildInFlight`）。
-			//   构建是分钟级长任务；并发发起会各建一个会话、各自回填构建缓存/补链/导航 ⇒ 互相覆盖。
-			//   此前只靠"用户不会连点"的假设，双击按钮就能触发。
-			if (KbImportController.buildInFlight) {
-				this.notificationService.info('已有一个知识库构建正在进行中，请等它结束后再试。');
-				return;
-			}
-			const vaultRoot = this.vaultUri(this._activeVault);
-			// 标记所有库文件 item 为「构建中」
-			const libNodes = this._scroll.querySelectorAll('.kb-node[data-section="library"]:not(.dir)');
-			libNodes.forEach((n) => { this._setNodeBuilding((n as HTMLElement).dataset.path ?? '', true); });
-			// activitybar 徽标：批量构建是长任务，未打开资料库 sideview 时也要可见。
-			this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'building' });
-			// ★ 2026-09-23：**必须接住返回值**（构建出的笔记数）。
-			//   原先忽略它，并在 `finally` 里**无条件**把徽标置为「有新增」⇒ 一篇都没构建时
-			//   也会亮出「有新增」，是「点了没反应」之外的另一层误导。
-			let builtCount = 0;
-			// ★ 2026-09-24（用户要求「点构建按钮后聊天框显示大量文本 ⇒ 封装成一次工具调用」）：
-			//   把「合成工具卡」交给控制器去开（它才知道构建会话何时就绪 —— 会话是在构建流程内部建的），
-			//   这里只持句柄并在 finally 里**统一收尾** ⇒ 成功/失败/抛异常都不会留下「执行中」的卡片。
-			const toolCard: IToolCardHandle = {};
-			try {
-				// ★ 2026-09-23（用户需求）：批量改为「**一个 agent 会话 + 素材路径清单**」——
-				//   宿主**只给路径**，agent 自己用 file_read 依次读、用 file_write 写笔记；
-				//   写完再在同一会话里依据「笔记区」真实目录/文件创建或完善「知识体系.md」（构建知识体系）。
-				//   （旧的「宿主读文件 + 解析 FILE 块 + 宿主落盘」路径保留为降级兜底。）
-				const res = await this._kbImport.buildPendingAsAgentSession(vaultRoot, toolCard);
-				builtCount = res.built;
-			} finally {
-				// 清除全部构建中标记（避免刷新后残留）
-				Array.from(this._buildingPaths).forEach(p => this._setNodeBuilding(p, false));
-				// 统一收尾（2026-09-23）：清「库/笔记」标题右侧状态（进度文案由控制器在批量循环里上报）
-				this.agentStudioService.reportKbProcessing({ active: false });
-				// ★ 2026-09-24：关闭聊天里的合成工具卡（`kb_build`）。`summary` 由控制器在成功路径回填；
-				//   **未回填 ⇒ 按失败收尾**（抛异常时会走到这里，卡片不会永远停在「执行中」）。
-				if (toolCard.toolCallId) {
-					this.agentStudioService.toolCardResult({
-						toolCallId: toolCard.toolCallId,
-						ok: toolCard.summary !== undefined,
-						result: toolCard.summary,
-						error: toolCard.summary === undefined ? '构建未完成（详见通知与日志）' : undefined,
-					});
-				}
-			}
-			// 徽标：**只有真的产出了笔记**才提示「有新增」。
-			// 空结果时保持中性（"为什么没产出"由控制器发出的 Info 通知说明，这里不重复提示）。
-			if (builtCount > 0) {
-				this.agentStudioService.requestLibraryBadge({ source: 'kb', kind: 'new', count: builtCount });
-			}
-			await this.refreshSection('notes');
-			await this.refreshSection('library');
-			this.markSearchDirty(); // 让新构建的笔记进入搜索索引 / 关系图谱
-			// 批量构建末尾：生成/刷新思维导图（确保产出的是思维导图画布）
-			void this._generateMindmapAfterImport();
-		} catch (err) {
-			this.logService.warn(`[KB] batchBuildAll: ${err}`);
-			this.notificationService.warn(`批量构建失败：${err}`);
-		}
-	}
+	// ★ 2026-11-07（换 UI 宿主）：IDE 侧批量构建实现（`_batchBuildAll`）已退役 ——
+	//   批量构建改由 dsh `/x/kb/` 页的 `kb_build` 承载，工具栏按钮只负责打开页面。
 
 	/** P2: 批量删除（多选确认）。 */
 	private async _batchDeleteNodes(nodes: IKbNode[]): Promise<void> {

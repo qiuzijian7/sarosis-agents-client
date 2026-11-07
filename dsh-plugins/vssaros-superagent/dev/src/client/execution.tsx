@@ -10,7 +10,7 @@ import { usePanel } from './provider.tsx'
 import { TicketLine } from './rows.tsx'
 import { ApprovalRulesPanel, UsagePanel } from './usage.tsx'
 import { settingsRoute } from './route.ts'
-import { ConfigHistory, Field, Fields, ModelField, numberOf, useBlockDraft, useSettings } from './settings-kit.tsx'
+import { ConfigHistory, Field, Fields, ModelField, numberOf, SwitchRow, useBlockDraft, useSettings } from './settings-kit.tsx'
 import { SourceCard } from './source.tsx'
 import { localized } from './text.ts'
 import { ConfirmButton, Hint, LabelValue, LoadMore, LoadState, Section, StatusHead } from './widgets.tsx'
@@ -130,6 +130,8 @@ export function ExecutionSettings() {
             <Input className="dt-mono" value={value.blockedCommands} placeholder={t('blockedCommandsNone')} spellCheck={false}
               onChange={event => edit({ blockedCommands: event.target.value })} />
           </Field>
+          {/* VsSaros addition (2026-11-07, co-install): another plugin (DS Bot's OCR) may read SuperAgent's Sessions with another model. */}
+          <SwitchRow label={t('sideCalls')} hint={t('sideCallsHint')} checked={value.sideCalls} onChange={sideCalls => edit({ sideCalls })} />
         </div>
       </Fields>
       <SaveBar {...draft} onDiscard={draft.discard} />

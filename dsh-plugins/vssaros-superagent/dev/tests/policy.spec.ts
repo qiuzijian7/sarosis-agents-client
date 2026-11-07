@@ -255,7 +255,8 @@ describe('settings migration', () => {
       policy: { rules: [], sources: { feishu: { allowed: [{ id: MEMBER, name: 'A' }], admission: {} }, github: { allowed: [{ id: 'a' }], admission: {} } } },
       eval: { mode: 'auto', timeoutSeconds: 90, model: { provider: 'p', model: 'm' } },
       // VsSaros addition (superagent v2): an upgrade turns team staffing on and never turns auto-approval on.
-      executor: { model: null, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [], staffing: true, autoApprove: false },
+      // VsSaros addition (2026-11-07): another plugin's side calls (DS Bot's OCR) stay as they were, allowed.
+      executor: { model: null, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [], staffing: true, autoApprove: false, sideCalls: true },
     })
     expect(migrateSettings(migrated)).toEqual(migrated)
   })

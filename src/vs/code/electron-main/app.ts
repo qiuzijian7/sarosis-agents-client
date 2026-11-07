@@ -182,7 +182,6 @@ import { KbSqliteStoreChannel } from '../../sessions/contrib/agentStudio/electro
 import { KB_SQLITE_STORE_CHANNEL } from '../../sessions/contrib/agentStudio/common/kbSqliteStoreChannel.js';
 import { GitVersionChannel } from '../../sessions/contrib/agentStudio/electron-main/gitVersionChannel.js';
 import { ComfyLaunchChannel } from '../../sessions/contrib/agentStudio/electron-main/comfyLaunchChannel.js';
-import { ConfigHtmlServerChannel } from '../../sessions/contrib/agentStudio/electron-main/configHtmlServerChannel.js';
 import { VoxLaunchChannel } from '../../sessions/contrib/agentStudio/electron-main/voxLaunchChannel.js';
 import { LarkCliChannel } from '../../sessions/contrib/agentStudio/electron-main/larkCliChannel.js';
 import { RemoteControlChannel } from '../../sessions/contrib/agentStudio/electron-main/remoteControlChannel.js';
@@ -192,6 +191,7 @@ import { MEDIA_STORE_CHANNEL } from '../../sessions/contrib/agentStudio/common/m
 import { SubAgentKernelProcChannel } from '../../sessions/contrib/agentStudio/electron-main/subAgentKernelProcChannel.js';
 import { SUBAGENT_KERNEL_PROC_CHANNEL } from '../../sessions/contrib/agentStudio/common/subAgentKernelProcChannel.js';
 import { DshHarnessChannel } from '../../sessions/contrib/dshHarness/electron-main/dshHarnessChannel.js';
+import { DshRightbarCdpRelay } from '../../sessions/contrib/dshHarness/electron-main/dshRightbarCdpRelay.js';
 import { DshViewHost } from '../../sessions/contrib/dshHarness/electron-main/dshViewHost.js';
 import { DSH_HARNESS_CHANNEL } from '../../sessions/contrib/dshHarness/common/dshHarness.js';
 import { KbDocConvertChannel } from '../../sessions/contrib/agentStudio/electron-main/kbDocConvertChannel.js';
@@ -1007,8 +1007,7 @@ export class CodeApplication extends Disposable {
 	this._register(new ComfyLaunchChannel(this.logService, this.configurationService));
 
 	// ConfigHTML URL 模式：本地面板服务按需拉起 / 停止（如测试面板 127.0.0.1:5600）。
-	// 逻辑在 sessions/contrib/agentStudio/electron-main/configHtmlServerChannel.ts。
-	this._register(new ConfigHtmlServerChannel(this.logService, this.lifecycleMainService));
+		// ★ 2026-11-07（移除 config.html）：URL 模式本地服务通道已整体退役。
 
 	// Vox 口播视频节点（Vox.DirectorStage）本地 pipeline 执行：
 	// 逻辑在 sessions/contrib/agentStudio/electron-main/voxLaunchChannel.ts。
@@ -2011,6 +2010,18 @@ export class CodeApplication extends Disposable {
 			this.logService,
 		));
 		mainProcessElectronServer.registerChannel(DSH_HARNESS_CHANNEL, dshHarnessChannel);
+		// ★ 2026-11-07（P0 · 单一浏览器实例）：右栏浏览器的 CDP 中转 ⇒ Host 的 `browser` 工具操作的就是人在右栏
+		//   看到的那一页（同一个 WebContentsView、同一份 Global 登录态）。loopback + 每次启动的随机 token +
+		//   方法白名单；Host 从 `<userData>/dsh-run/rightbar-cdp.json` 取端点（见 dshRightbarCdpRelay.ts）。
+		const dshRightbarCdpRelay = this._register(new DshRightbarCdpRelay({
+			runDir: join(this.environmentMainService.userDataPath, 'dsh-run'),
+			browserViews: accessor.get(IBrowserViewMainService),
+			productService: this.productService,
+			log: line => this.logService.info(`[dshHarness] ${line}`),
+			// 2026-11-07（组合方案）：工具要页面而右栏还没有视图时，中转建一个隐藏的共享视图，挂在最近活动的窗口下
+			ownerWindowId: () => (this.windowsMainService?.getLastActiveWindow() ?? this.windowsMainService?.getWindows()[0])?.id,
+		}));
+		void dshRightbarCdpRelay.start();
 
 		// ★ 2026-10-26：媒体库**双写**接线 —— IDE 侧落库成功后，再推一份给 dsh 媒体库（真源）。
 		//   `POST <host>/x/media/api/import`（带认证 cookie，见 dshHostHttp.ts）。

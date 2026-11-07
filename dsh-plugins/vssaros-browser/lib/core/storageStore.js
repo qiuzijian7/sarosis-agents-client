@@ -6,7 +6,7 @@
  *  ② 写入走 **临时文件 + rename** 的原子替换（半截 JSON 的症状是"上次明明导出成功，这次读不出来"）。
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { parseStorageEnvelope } from './storage.js';
 
@@ -28,14 +28,15 @@ export function readStorageStore(filePath) {
 	return parseStorageEnvelope(text);
 }
 
-/** 原子写一个存储存档：`{ ok:true, path }` 或 `{ ok:false, reason }`。 */
+/** 原子写一个存储存档：`{ ok:true, path }` 或 `{ ok:false, reason }`。2026-11-07：只许本人读写（同 `writeCookieStore`）。 */
 export function writeStorageStore(filePath, envelope) {
 	if (!filePath) { return { ok: false, reason: 'no-path' }; }
 	const tmp = `${filePath}.tmp`;
 	try {
-		mkdirSync(dirname(filePath), { recursive: true });
-		writeFileSync(tmp, `${JSON.stringify(envelope, null, 2)}\n`, 'utf8');
+		mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 });
+		writeFileSync(tmp, `${JSON.stringify(envelope, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
 		renameSync(tmp, filePath);
+		try { chmodSync(filePath, 0o600); } catch { /* 改不了权限不改变"写成功"的结论 */ }
 		return { ok: true, path: filePath };
 	} catch (error) {
 		try { rmSync(tmp, { force: true }); } catch { /* 清理失败不该改变结论 */ }

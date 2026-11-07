@@ -36,7 +36,7 @@ import { userDataRootFromRoamingHome } from '../../agentStudio/common/sarosPaths
 //   否则命令注册所在的贡献模块可能在加载期就被牵连（那时所有 sarosPocket.* 命令会一起消失，
 //   现场表现就是"会话列表空 + 聊天头降级"，很难查）。
 import type { Agent, AgentBinding, Workspace } from '../../../common/agentStudioTypes.js';
-import type { IChatSendOptions } from '../../../common/agentStudioService.js';
+import { getDshSessionLauncher } from '../../../common/dshSessionLauncher.js';
 import type { IModelSelectorItem } from '../../agentStudio/common/modelSelector.js';
 import type { IModelSelection } from '../../agentStudio/common/providers.js';
 
@@ -436,33 +436,45 @@ class SarosPocketSendToSessionAction extends Action2 {
 			}
 			if (!sessionId) { throw new Error('sarosPocket.sendToSession: 无法确定会话（新建失败）'); }
 		}
-		// 与面板自己发消息时**同一套 options**（见 agentStudioWebviewController 的调用）：
-		// 会话用 agentSessionId 指定；模型/工作区随会话配置一起带上，保证执行环境与桌面一致。
-		const options: IChatSendOptions = {
+		// ① 先构造 user 消息并广播气泡：面板（若已打开）必须**立刻**看到手机发的这条。
+		//    同一条消息随后由 appendMessage 落盘，保住命令头注释里的「桌面端可见」现场需求。
+		const userMessage = {
+			id: `pocket-${Date.now()}`,
+			role: 'user' as const,
+			content: text,
 			agentId,
 			agentSessionId: sessionId,
-			...(typeof p.workspaceId === 'string' && p.workspaceId ? { workspaceId: p.workspaceId } : {}),
-			...(typeof p.modelId === 'string' && p.modelId ? { model: p.modelId } : {}),
-			...(typeof p.providerId === 'string' && p.providerId ? { providerId: p.providerId } : {}),
-			...(p.chatMode === 'craft' || p.chatMode === 'ask' || p.chatMode === 'plan' ? { chatMode: p.chatMode } : {}),
+			timestamp: new Date().toISOString(),
 		};
-
-		// ① 先广播 user 气泡：面板（若已打开）必须**立刻**看到手机发的这条
 		try {
-			chatService.fireUserMessageAdded(agentId, sessionId, {
-				id: `pocket-${Date.now()}`,
-				role: 'user',
-				content: text,
-				agentId,
-				agentSessionId: sessionId,
-				timestamp: new Date().toISOString(),
-			});
+			chatService.fireUserMessageAdded(agentId, sessionId, userMessage);
 		} catch { /* 广播失败不影响发送 */ }
 
-		// ② 真发：写盘 + 流式（面板消费流）；手机端拿最终文本显示
-		const reply = await chatService.sendMessage(agentId, text, options, () => { /* 流式由面板消费 */ });
-		const replyText = String((reply as { content?: unknown })?.content ?? '');
-		return { ok: true, agentId, sessionId, reply: replyText.slice(0, 20000) };
+		// ② ★ 2026-11-07（IDE agent loop 整体下线）：回合执行改走 dsh 控制桥 `session.run`。
+		//    · 手机端仍直接拿到 reply（本命令的返回值，不依赖 sessionEventStream）✓；
+		//    · user/assistant 两条用 `appendMessage` 显式落进 IDE 会话历史 —— 该方法只写盘、
+		//      不广播事件 ⇒ 不会与上面的 fireUserMessageAdded 产生双气泡 ✓；
+		//    · 不再经 `sendMessage` ⇒ 不跑 IDE agent loop、不推流式 delta；
+		//    · dsh 会话自管 provider / model ⇒ payload 里的 workspaceId / modelId /
+		//      providerId / chatMode 不再透传（行为差异如实记录）；
+		//    · sessionId 仍是 IDE 侧 `sess_xxx`，供手机端后续 readSessionEvents 等命令使用，
+		//      不传给 dsh（两套 id 命名空间不混用）✓。
+		const launcher = getDshSessionLauncher();
+		if (!launcher) {
+			throw new Error('sarosPocket.sendToSession: IDE agent loop 已下线且 dsh 会话启动器未就绪（Host 未运行？）');
+		}
+		await chatService.appendMessage(agentId, userMessage);
+		const result = await launcher.runTurn({ prompt: text, timeoutMs: 120_000 });
+		const replyText = String(result.finalText ?? '').slice(0, 20000);
+		await chatService.appendMessage(agentId, {
+			id: `pocket-reply-${Date.now()}`,
+			role: 'assistant' as const,
+			content: replyText,
+			agentId,
+			agentSessionId: sessionId,
+			timestamp: new Date().toISOString(),
+		});
+		return { ok: true, agentId, sessionId, reply: replyText };
 	}
 }
 

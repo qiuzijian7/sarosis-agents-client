@@ -11,7 +11,7 @@
  *     "上次明明导出成功，这次读不出来"，最难归因）。
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { parseCookieStoreEnvelope } from './cookies.js';
 
@@ -35,15 +35,20 @@ export function readCookieStore(filePath) {
 
 /**
  * 原子写一个 cookie 存档。
+ *
+ * ★ 2026-11-07（P3）：存档里是**活凭据** ⇒ 只许本人读写：文件 `0600`、新建目录 `0700`（临时文件一创建就是 0600，
+ *   rename 保留权限；已有文件也再 chmod 一次）。⚠ Windows 忽略 POSIX mode —— 那里靠的是用户目录本来的 ACL
+ *   （数据根在 `%USERPROFILE%` 下）；不加密（Node 没有内建的 DPAPI，不为它引原生模块），所以导出默认关、每次审批。
  * @returns `{ ok:true, path }` 或 `{ ok:false, reason }`。
  */
 export function writeCookieStore(filePath, envelope) {
 	if (!filePath) { return { ok: false, reason: 'no-path' }; }
 	const tmp = `${filePath}.tmp`;
 	try {
-		mkdirSync(dirname(filePath), { recursive: true });
-		writeFileSync(tmp, `${JSON.stringify(envelope, null, 2)}\n`, 'utf8');
+		mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 });
+		writeFileSync(tmp, `${JSON.stringify(envelope, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
 		renameSync(tmp, filePath);
+		try { chmodSync(filePath, 0o600); } catch { /* 改不了权限不改变"写成功"的结论 */ }
 		return { ok: true, path: filePath };
 	} catch (error) {
 		try { rmSync(tmp, { force: true }); } catch { /* 清理失败不该改变结论 */ }

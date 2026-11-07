@@ -3718,7 +3718,8 @@ const ExecutorConfigSchema = object({
 	prepare: string$1().max(LIMITS.prepareCommand).default(""),
 	blockedCommands: array(CommandNameSchema).default([]),
 	staffing: boolean().default(true),
-	autoApprove: boolean().default(false)
+	autoApprove: boolean().default(false),
+	sideCalls: boolean().default(true)
 }).strict();
 const SourceInstanceSchema = object({
 	enabled: boolean().default(true),
@@ -11535,6 +11536,20 @@ function ticketEndedNotice(ticket, origin) {
 function receiptText(views) {
 	return views.map((view) => view ? `**工单已结束 · ${view.outcomeText}**　「${view.title}」${view.summary ? `\n\n${view.summary}` : ""}` : "这张工单的结束情况没读到，可以到 SuperAgent 工作台的「工作」页查看。").join("\n\n");
 }
+/** Tool-call ids of the `superagent_submit` calls `deskReceiptStream` makes, so it knows its own results. */
+const SUBMIT_CALL_PREFIX = "toolu_superagent_submit_";
+const SUBMIT_TOOL = "superagent_submit";
+/** The desk's line for a message it handed over (no model): the flow card above it shows the rest. */
+function submitText(view) {
+	if (!view?.result) return "这条消息没能交给主管，可以再发一次。";
+	if (view.result === "filtered" || view.filtered) return "这条消息没交给主管：主管台在 superagent 来源里没有放行，可以到 SuperAgent 设置里查看。";
+	if (view.route) {
+		const name = `「${view.route.roomName}」`;
+		return view.route.kind === "created" ? `已建群${name}，群里的 Bots 接着做。` : view.route.kind === "updated" ? `已更新群${name}。` : `已转给群${name}。`;
+	}
+	if (view.tickets?.length) return `已转给正在做的工单${view.tickets.map((title) => `「${title}」`).join("、")}。`;
+	return "主管收到了，需要你回复的消息会发到这里。";
+}
 const textOf = (message) => {
 	const content = message.content;
 	if (typeof content === "string") return content;
@@ -11568,8 +11583,58 @@ function deskReceiptStream(host, uuid = randomUUID) {
 			let start = last;
 			while (start > 0 && messages[start - 1]?.role === "tool") start -= 1;
 			const results = messages.slice(start, last + 1);
-			if (!results.every((message) => typeof message.toolCallId === "string" && message.toolCallId.startsWith("toolu_superagent_receipt_")) || fresh.length) return next();
+			const callOf = (prefix) => results.every((message) => typeof message.toolCallId === "string" && message.toolCallId.startsWith(prefix));
+			if (fresh.length) return next();
+			if (callOf("toolu_superagent_submit_") && host.submitLine) {
+				const line = host.submitLine;
+				const parsed = (() => {
+					try {
+						return JSON.parse(textOf(results.at(-1)).trim());
+					} catch {
+						return {};
+					}
+				})();
+				return (async function* submitted() {
+					yield* say(await line(results.at(-1).isError === true ? {} : parsed));
+				})();
+			}
+			if (!callOf("toolu_superagent_receipt_")) return next();
 			return say(receiptText(results.map(parseView)));
+		}
+		if (fresh.length && fresh.every((message) => message.source?.kind === "user")) {
+			const latest = fresh.at(-1);
+			if (!host.handedOver || typeof latest.id !== "string" || !(options.tools ?? []).some((tool) => tool?.name === SUBMIT_TOOL)) return next();
+			const handedOver = host.handedOver, messageId = latest.id;
+			const id = `${SUBMIT_CALL_PREFIX}${uuid().replace(/-/g, "")}`;
+			return (async function* submitCall() {
+				await handedOver(messageId);
+				yield {
+					type: "block-start",
+					index: 0,
+					blockType: "tool-call"
+				};
+				yield {
+					type: "tool-call-delta",
+					index: 0,
+					id,
+					name: SUBMIT_TOOL,
+					argumentsDelta: "{}"
+				};
+				yield {
+					type: "block-end",
+					index: 0,
+					block: {
+						type: "tool-call",
+						id,
+						name: SUBMIT_TOOL,
+						arguments: "{}"
+					}
+				};
+				yield {
+					type: "finish",
+					reason: { kind: "tool-calls" }
+				};
+			})();
 		}
 		if (!fresh.length || fresh.some((message) => message.source?.kind === "user")) return next();
 		const tickets = fresh.map((message) => typeof message.id === "string" ? host.ticketEndedOf(message.id) : void 0);
@@ -11609,6 +11674,21 @@ function deskReceiptStream(host, uuid = randomUUID) {
 				reason: { kind: "tool-calls" }
 			};
 		})();
+	};
+}
+/**
+* VsSaros fix (2026-11-07, real machine, found by `dev/scripts/e2e-dsb-coexist.mjs`): the desk masks every tool, `skill` too,
+* but its first step ran before the mask, so DSH's `dsh-tool-skill` put the profile's whole skill catalog into its history
+* (173 skills, 72 KB, DS Bot's among them) and every later desk call carried it. The desk uses no skill: this `llm/stream`
+* listener drops skill catalog messages from every request of the desk, the one already in its history too.
+*/
+function deskWithoutCatalog(deskId) {
+	const catalog = (message) => message?.source?.kind === "skill-catalog";
+	return (options, next) => {
+		if (options?.sessionId === deskId && Array.isArray(options.messages) && options.messages.some(catalog)) try {
+			options.messages = options.messages.filter((message) => !catalog(message));
+		} catch {}
+		return next();
 	};
 }
 function say(text) {
@@ -12311,25 +12391,62 @@ const totalOf = (tokens) => tokens.input + tokens.cacheRead + tokens.cacheWrite 
 /**
 * DSH's `llm/stream` waterfall listener that hands each usage chunk of the Sessions `own` accepts to `onUsage`, once, and
 * passes every chunk on unchanged. Every other call passes through untouched.
+*
+* VsSaros addition (2026-11-07): it tells a call another listener made inside one of the Session's calls (`UsageRelay`): one
+* that starts while a call of the same Session and purpose runs. Registered first (`prepend`), it is the outermost listener,
+* so a listener that sends a request again through the whole waterfall, as DS Bot's do, passes through it again. A `side`
+* call `refuse` names a reason for is refused (its stream throws); DS Bot then tells the model the image could not be read.
 */
-function meteredStream(own, onUsage) {
+function meteredStream(own, onUsage, hooks = {}) {
 	const counted = /* @__PURE__ */ new WeakSet();
+	/** The calls under way, by Session and purpose, outermost first. */
+	const active = /* @__PURE__ */ new Map();
+	const keyOf = (options) => `${options.sessionId}\u0000${options.purpose ?? ""}`;
+	const relayOf = (options) => {
+		const outer = active.get(keyOf(options))?.[0];
+		if (!outer) return void 0;
+		return (outer.provider ?? "") === (options.provider ?? "") && (outer.model ?? "") === (options.model ?? "") ? "resent" : "side";
+	};
+	const refusal = (options) => relayOf(options) === "side" ? hooks.refuse?.(options) : void 0;
+	const refused = (reason) => (async function* () {
+		throw new Error(reason);
+	})();
 	return (options, next) => {
 		const sessionId = options?.sessionId;
 		if (!sessionId || !own(sessionId)) return next();
+		const early = refusal({
+			...options,
+			sessionId
+		});
+		if (early) return refused(early);
 		const result = next();
 		const iterate = async function* (stream) {
-			for await (const chunk of stream) {
-				if (chunk?.type === "usage" && chunk.usage && !counted.has(chunk)) {
-					counted.add(chunk);
-					try {
-						onUsage({
-							...options,
-							sessionId
-						}, chunk.usage);
-					} catch {}
+			const relay = relayOf(options);
+			const late = refusal({
+				...options,
+				sessionId
+			});
+			if (late) throw new Error(late);
+			const key = keyOf(options), stack = active.get(key) ?? [];
+			stack.push(options);
+			active.set(key, stack);
+			try {
+				for await (const chunk of stream) {
+					if (chunk?.type === "usage" && chunk.usage && !counted.has(chunk)) {
+						counted.add(chunk);
+						try {
+							onUsage({
+								...options,
+								sessionId,
+								...relay ? { relay } : {}
+							}, chunk.usage);
+						} catch {}
+					}
+					yield chunk;
 				}
-				yield chunk;
+			} finally {
+				stack.splice(stack.lastIndexOf(options), 1);
+				if (!stack.length) active.delete(key);
 			}
 		};
 		if (result && typeof result[Symbol.asyncIterator] === "function") return iterate(result);
@@ -12347,6 +12464,30 @@ const empty = () => ({
 	output: 0,
 	total: 0
 });
+/** The relayed calls among `calls`, counted by Session (the 20 with the most). */
+function relaysOf(calls) {
+	const sessions = /* @__PURE__ */ new Map();
+	let resent = 0, side = 0;
+	for (const call of calls) {
+		if (!call.relay) continue;
+		if (call.relay === "resent") resent += 1;
+		else side += 1;
+		const item = sessions.get(call.session) ?? sessions.set(call.session, {
+			session: call.session,
+			role: call.role,
+			...call.ticketId ? { ticketId: call.ticketId } : {},
+			...call.step ? { step: call.step } : {},
+			resent: 0,
+			side: 0
+		}).get(call.session);
+		item[call.relay] += 1;
+	}
+	return {
+		resent,
+		side,
+		sessions: [...sessions.values()].sort((a, b) => b.resent + b.side - a.resent - a.side).slice(0, 20)
+	};
+}
 const add = (into, call) => {
 	into.calls += 1;
 	into.input += call.input;
@@ -12369,12 +12510,15 @@ var UsageLedger = class {
 		db.exec("CREATE INDEX IF NOT EXISTS usage_call_session ON usage_call (session, id)");
 		this.prune();
 	}
-	/** The `llm/stream` listener; `also` hears each counted call too (the team's token budget). */
-	listener(also) {
+	/**
+	* The `llm/stream` listener; `also` hears each counted call too (the team's token budget). `refuse` names why a `side`
+	* call of a Session is refused (`executor.sideCalls` off), or undefined to let it run.
+	*/
+	listener(also, refuse) {
 		return meteredStream((id) => this.owner(id) !== void 0, (options, usage) => {
 			const call = this.record(options, usage);
 			if (call) also?.(call);
-		});
+		}, { refuse: (options) => refuse?.(options.sessionId) });
 	}
 	/** Records one call's usage. @returns the call, or undefined when its Session is not SuperAgent's or it used nothing. */
 	record(options, usage) {
@@ -12388,17 +12532,22 @@ var UsageLedger = class {
 			provider: options.provider ?? "",
 			model: options.model ?? "",
 			...options.purpose ? { purpose: options.purpose } : {},
+			...options.relay ? { relay: options.relay } : {},
 			...tokens
 		};
 		this.db.prepare("INSERT INTO usage_call (at, session, value) VALUES (?,?,?)").run(call.at, call.session, JSON.stringify(call));
 		return call;
 	}
-	/** The latest conversation call of a Session (no auxiliary purpose): what its context held then. */
+	/** The latest conversation call of a Session (no auxiliary purpose, not another model's side call): what its context held then. */
 	last(sessionId) {
 		for (const row of this.db.prepare("SELECT value FROM usage_call WHERE session=? ORDER BY id DESC LIMIT 20").all(sessionId)) {
 			const call = JSON.parse(String(row.value));
-			if (!call.purpose) return call;
+			if (!call.purpose && call.relay !== "side") return call;
 		}
+	}
+	/** VsSaros addition (2026-11-07): the calls other listeners made inside a ticket's Sessions (its worker and its steps), kept days. */
+	relaysOf(ticketId) {
+		return relaysOf(this.db.prepare("SELECT value FROM usage_call WHERE session = ? OR session LIKE ?").all(`worker-${ticketId}`, `step-${ticketId}-%`).map((row) => JSON.parse(String(row.value))));
 	}
 	/** Totals since `since` (ISO), by role, model, Bot and ticket (the 20 largest of each). */
 	summary(since) {
@@ -12410,8 +12559,10 @@ var UsageLedger = class {
 		};
 		const models = /* @__PURE__ */ new Map(), bots = /* @__PURE__ */ new Map();
 		const tickets = /* @__PURE__ */ new Map();
+		const calls = [];
 		for (const row of this.db.prepare("SELECT value FROM usage_call WHERE at >= ?").all(since)) {
 			const call = JSON.parse(String(row.value));
+			calls.push(call);
 			add(total, call);
 			add(byRole[call.role] ??= empty(), call);
 			const modelKey = `${call.provider}/${call.model}`;
@@ -12436,7 +12587,8 @@ var UsageLedger = class {
 			byRole,
 			byModel: top(models),
 			byBot: top(bots),
-			byTicket: top(tickets)
+			byTicket: top(tickets),
+			relays: relaysOf(calls)
 		};
 	}
 	/** Drops calls older than `USAGE_KEEP_DAYS`. */
@@ -14068,7 +14220,9 @@ function ticketPage(runtime, id) {
 	if (!detail || !ticket) throw new RouteError(404, "Ticket not found");
 	return {
 		...detail,
-		environment: runtime.configured() ? runtime.ticketEnvironment(ticket) : []
+		environment: runtime.configured() ? runtime.ticketEnvironment(ticket) : [],
+		relays: runtime.usage.relaysOf(id),
+		coexist: runtime.coexist?.() ?? {}
 	};
 }
 function promptsView(runtime, revision, offset) {
@@ -14293,7 +14447,9 @@ function routes(runtime) {
 			return {
 				day: runtime.usage.summary(day),
 				week: runtime.usage.summary(week).total,
-				steward: runtime.steward.list()
+				steward: runtime.steward.list(),
+				coexist: runtime.coexist?.() ?? {},
+				sideCalls: runtime.store.settings().executor.sideCalls
 			};
 		},
 		"POST steps/rules/:id/delete": ({ params }) => {
@@ -17260,6 +17416,12 @@ function executorTools(host, ticket) {
 //#endregion
 //#region src/app/runtime.ts
 const now = () => (/* @__PURE__ */ new Date()).toISOString();
+/** How long the desk's line waits for the group a message asks for to be made or found. */
+const DESK_GROUP_ROUTE_WAIT_MS = 2e4;
+/** Resolves once `ready()` holds, or after `ms` (then the caller goes on as before). */
+async function waitFor(ready, ms) {
+	for (const until = Date.now() + ms; !ready() && Date.now() < until;) await new Promise((resolve) => setTimeout(resolve, 50));
+}
 /**
 * Composition root of dsh-superagent that connects `Store`, `Setup`, `Engine`, `SourceRegistry`, `Effects`, `Outbox`, `Passes`, `Sessions`, `Settings`, `Prompts`, `DshExecutor`, and `MasterAssessor`.
 * Exposes the `SourceHost` service on the Cordis context for source plugins and coordinates startup, setup checks, HTTP route registration, and graceful shutdown.
@@ -17473,11 +17635,32 @@ var Runtime = class extends Service {
 				}
 			});
 			const llmEvents = ctx;
+			this.disposers.push(llmEvents.on("llm/stream", deskWithoutCatalog(deskId), { prepend: true }));
 			this.disposers.push(llmEvents.on("llm/stream", deskReceiptStream({
 				deskId,
 				ticketEndedOf: (messageId) => {
 					const message = this.deskOutbox.messageOf(messageId);
 					return message?.id.startsWith(`ticket-ended:`) ? message.ticketId : void 0;
+				},
+				handedOver: (messageId) => waitFor(() => !!store.triggers.get(deskTrigger({
+					session: deskId,
+					messageId,
+					text: "",
+					at: now()
+				}).id), 4500),
+				submitLine: async (result) => {
+					const id = result.trigger;
+					const trigger = id ? store.triggers.get(id) : void 0;
+					if (id && trigger && (mayBeGroupCommand(trigger.text) || isGroupCreationRequest(trigger.text))) await waitFor(() => !!this.groupRoutes.get(id), DESK_GROUP_ROUTE_WAIT_MS);
+					const route = id ? this.groupRoutes.get(id) : void 0;
+					const disposition = id ? store.triggers.disposition(id) : void 0;
+					const tickets = (disposition?.fanout ?? []).flatMap((ticketId) => store.tickets.get(ticketId)?.title ?? []);
+					return submitText({
+						...result.result ? { result: result.result } : {},
+						...route ? { route } : {},
+						...disposition?.filtered ? { filtered: true } : {},
+						tickets
+					});
 				}
 			})));
 			this.usage = new UsageLedger(store.db, (sessionId) => {
@@ -17505,7 +17688,7 @@ var Runtime = class extends Service {
 					cacheReadTokens: call.cacheRead,
 					cacheWriteTokens: call.cacheWrite
 				});
-			})));
+			}, () => store.settings().executor.sideCalls ? void 0 : "SuperAgent does not let another plugin read its Sessions with another model (executor.sideCalls is off)"), { prepend: true }));
 			const ledger = this.usage, windows = /* @__PURE__ */ new Map();
 			this.steward = new ContextSteward({
 				watched: (id) => id === masterId ? "master" : id === deskId ? "desk" : void 0,

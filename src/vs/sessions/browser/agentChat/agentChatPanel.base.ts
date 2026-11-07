@@ -8,7 +8,6 @@ import {
 	Disposable,
 	IDisposable,
 	toDisposable } from '../../../base/common/lifecycle.js';
-import type { ConfigHtmlCfg } from '../../contrib/agentStudio/common/configHtmlConfig.js';
 // ★ 2026-09-23：Channel 绑定页签的「飞书 CLI」契约（common 层，允许被本层依赖；
 //   真正的实现由 host 注入回调 —— 见下方 _onGetLarkCliStatus 等 hook 的注释）
 import type { IFeishuBotCreationUpdate, IFeishuChatSummary, ILarkCliRunResult, ILarkCliStatus } from '../../contrib/agentStudio/common/larkCli.js';
@@ -1091,12 +1090,7 @@ protected readonly _importedKbFileToolIds = new Set<string>();
 	 */
 	protected readonly _onEnsureBindingsLoaded?: () => Promise<void>;
 
-	// ── ConfigHtml（URL 面板 / 本地 HTML）回调 ──
-	protected readonly _onGetConfigHtmlCfg?: () => Promise<ConfigHtmlCfg | undefined>;
-	protected readonly _onSaveConfigHtmlCfg?: (cfg: ConfigHtmlCfg) => Promise<void>;
-	protected readonly _onEnsureConfigHtmlServer?: (spec: Record<string, unknown>) => Promise<{ ok: boolean; alreadyRunning?: boolean; starting?: boolean; error?: string }>;
-	protected readonly _onStopConfigHtmlServer?: (spec: { url: string; port?: number }) => Promise<{ ok: boolean; killed: number[] }>;
-	protected readonly _onOpenConfigHtmlPreview?: (url: string) => Promise<void> | void;
+	// ★ 2026-11-07（移除 config.html）：ConfigHtml 页签回调字段已整体退役。
 
 constructor(opts: {
 		onSendMessage: (text: string, explicitSkillIds?: string[], attachments?: IChatAttachment[], workflowTrigger?: { workflowId: string; input?: string; variables?: Record<string, string>; images?: string[] }) => void;

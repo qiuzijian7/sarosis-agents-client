@@ -13,7 +13,7 @@
  * 真逻辑在 `electron-main/larkCliChannel.ts`（探测/安装需要 child_process）。
  */
 
-import { nativeIpcBridge } from '../common/configHtmlConfig.js';
+import { nativeIpcBridge } from '../common/nativeBridge.js';
 import {
 	LARK_CLI_INSTALL_CHANNEL,
 	LARK_CLI_RUN_CHANNEL,

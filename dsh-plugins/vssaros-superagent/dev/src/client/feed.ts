@@ -80,6 +80,28 @@ export function subscribe(listener: Listener): () => void {
     setLive(false)
   }
 }
+/**
+ * VsSaros addition (2026-11-07, the module's "hot dispose"): ends the stream and its reconnect timer and forgets every
+ * listener, whatever views are still mounted. The client plugin calls it when DSH disposes it (`apply` → `ctx.effect`): a
+ * plugin reload loads a new copy of this module, and DSH's client has no `import.meta.hot`, so without this the old copy's
+ * connection and backoff timer lived on until its last view unmounted (or forever, after a view that never did). A listener
+ * that subscribes afterwards opens a new stream; a view of the old plugin that unsubscribes later closes nothing of it, since
+ * a stream is closed only once no listener is left.
+ */
+export function disposeFeed(): void {
+  clearTimeout(retry); retry = undefined
+  const run = current
+  current = undefined
+  run?.abort()
+  listeners.clear()
+  setLive(false)
+  connected = false
+  failures = 0
+}
+/** Whether the stream is open or about to reconnect, and how many listen (for tests). */
+export function feedState(): { connecting: boolean; retrying: boolean; listeners: number } {
+  return { connecting: !!current, retrying: !!retry, listeners: listeners.size }
+}
 /** Whether the stream is open now. */
 export function useFeedLive(): boolean {
   const [value, setValue] = useState(live)

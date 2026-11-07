@@ -20,6 +20,47 @@ import {
 	pickChromeExecutable, buildDedicatedChromeArgs, CHROME_PATH_ENV, DEFAULT_CDP_PORT,
 } from './chrome.js';
 import { CdpConnection, CdpTargetManager } from './cdp.js';
+import { readRightbarEndpoint, RightbarTargetManager } from './rightbar.js';
+
+/**
+ * ★ 2026-11-07（P0 · 单一实例）：正用 Chrome 时，多久再看一次"右栏浏览器是不是打开了"（打开了就切过去）；
+ *   右栏没页面时，多久内不再试它（直接走 Chrome）。都是本机 loopback 探测，代价很小。
+ */
+const RIGHTBAR_RECHECK_MS = 3_000;
+const RIGHTBAR_CONNECT_TIMEOUT_MS = 3_000;
+/** 状态文案里右栏端点的名字（`status` / 不可达文案用）。 */
+export const RIGHTBAR_ENDPOINT_LABEL = 'VsSaros 右栏浏览器';
+
+/**
+ * `status` 的 `note`：当前操作的到底是哪个浏览器、有没有人的登录态（2026-11-07，纯函数便于单测）。
+ * 起因：`mode: "chrome"` 不说清是谁，模型就把插件自己的专属实例说成"本机真实 Chrome，带你的登录态"。
+ */
+export function statusNote({ rightbar, selfLaunched, headless, profileDir, endpoint, page, pending }) {
+	const SEE = '人要看这一页：打开 VsSaros 右栏的「浏览器」页签（右下角 🌐）。';
+	if (rightbar && pending) {
+		return '用的是 VsSaros 右栏浏览器（与人共用同一个视图、同一份登录态），它现在还没有页面：第一次 navigate / snapshot 等页面操作时'
+			+ '会自动在右栏建一个（不弹出、不打断人）。' + SEE;
+	}
+	if (rightbar) {
+		const url = String(page?.url ?? '');
+		// ★ 2026-11-07（真机）：页签开着但还没打开网页时，模型把它说成"你已经在右栏打开了一个网页" ⇒ 空页直说
+		if (!url || url === 'about:blank') {
+			return '操作的是 VsSaros 右栏浏览器（与人看见的是同一个视图、同一份登录态），但右栏**还没打开任何网页**（当前是空白页）：'
+				+ '要显示网页，用 op "navigate" 带 url 打开，或请用户在右栏地址栏输入网址。' + SEE;
+		}
+		const title = String(page?.title ?? '').trim();
+		return `操作的是 VsSaros 右栏浏览器里正显示的页面${title ? `「${title}」` : ''}（${url}）：与人看见的是同一页、同一份登录态。` + SEE;
+	}
+	if (selfLaunched) {
+		return `操作的是本插件自己拉起的专属 Chrome（${headless === false ? '有窗口' : '无界面，后台运行'}`
+			+ `${profileDir ? `，独立配置目录 ${profileDir}` : '，独立配置目录'}）：`
+			+ '不是用户日常用的 Chrome，没有用户在那里的登录态，也不是右栏那一页。'
+			+ '要操作用户在右栏看见的页面：请用户先打开 VsSaros 右栏的「浏览器」页签（不用先打开网页），之后的调用会自动切过去；'
+			+ '要在这个实例里登录：op "login"。';
+	}
+	return `操作的是用户自己开了远程调试的 Chrome（${String(endpoint ?? '')}）：带用户在那里的登录态，但不是右栏那一页；`
+		+ '用户打开 VsSaros 右栏的「浏览器」页签后，之后的调用会改用右栏那一页。';
+}
 
 /** 发现端点的超时（与 IDE 侧同量级：不可达端口实测约 2.5s）。 */
 const DISCOVER_TIMEOUT_MS = 3_000;
@@ -46,7 +87,28 @@ export async function discoverEndpoint(endpointURL) {
 	if (typeof body?.webSocketDebuggerUrl !== 'string' || !body.webSocketDebuggerUrl) {
 		throw new Error('no webSocketDebuggerUrl in /json/version');
 	}
-	return { wsUrl: body.webSocketDebuggerUrl, product: typeof body.Browser === 'string' ? body.Browser : undefined };
+	return { wsUrl: body.webSocketDebuggerUrl, product: typeof body.Browser === 'string' ? body.Browser : undefined,
+		// ★ 2026-11-07：`Browser` 字段不分有头无头（都是 `Chrome/…`），UA 里才有 `HeadlessChrome` ⇒ 空闲回收靠它判
+		userAgent: typeof body['User-Agent'] === 'string' ? body['User-Agent'] : undefined };
+}
+
+/**
+ * ★ 2026-11-07（P3 · 生命周期）：我们拉起的**无头**专属 Chrome 空闲多久就关掉（默认 15 分钟；下次用到会自动再拉起，
+ * 冷启动 1~3s）。以前它一旦拉起就一直活着（真机：dev / 正式版各一个，从 10-30 跑到 11-07），测试还会漏一批。
+ */
+export const IDLE_CLOSE_DEFAULT_MS = 15 * 60_000;
+
+/**
+ * 现在能不能把这条连接当「空闲的无头专属实例」关掉（纯函数，便于单测）。
+ * 只关**我们的专属端点**上、**无头**、**没有调用在路上**、空闲够久的；右栏（人的视图）、你自己的 Chrome、有头窗口
+ * （人可能正在里面登录）一律不碰。
+ */
+export function idleReclaimable({ kind, endpoint, dedicatedEndpoint, headless, userAgent, inflight, lastUsedAt, now, idleMs }) {
+	if (!(idleMs > 0) || kind !== 'chrome' || inflight > 0) { return false; }
+	if (!String(endpoint ?? '').startsWith(String(dedicatedEndpoint))) { return false; }
+	const isHeadless = headless === false ? false : headless === true || /HeadlessChrome/.test(String(userAgent ?? ''));
+	if (!isHeadless) { return false; }
+	return now - lastUsedAt >= idleMs;
 }
 
 /**
@@ -148,6 +210,8 @@ export class CdpHost {
 			port: Number.isInteger(options.port) ? options.port : DEFAULT_CDP_PORT,
 			launchDedicated: options.launchDedicated === true,
 			headless: options.headless === true,
+			/** ★ 2026-11-07：只认专属实例（不把配置端口当"你的 Chrome"），见 `cdpEndpointCandidates`。 */
+			dedicatedOnly: options.dedicatedOnly === true,
 			homeDir: options.homeDir,
 			/**
 			 * 专属 Chrome 的 **profile 目录**（可选）。
@@ -161,7 +225,21 @@ export class CdpHost {
 			profileDir: typeof options.profileDir === 'string' && options.profileDir.trim() ? options.profileDir.trim() : undefined,
 			platform: options.platform ?? process.platform,
 			env: options.env ?? process.env,
+			/**
+			 * ★ 2026-11-07：右栏浏览器中转的发现文件（`<数据根>/dsh-run/rightbar-cdp.json`）；不给 ⇒ 不用右栏（旧行为）。
+			 * 给了且右栏开着 ⇒ **先用右栏**：人看见的就是工具操作的那一页（见 `rightbar.js`）。
+			 */
+			rightbarFile: typeof options.rightbarFile === 'string' && options.rightbarFile ? options.rightbarFile : undefined,
 		};
+		/** 当前连接是哪一种：`'rightbar'`（右栏视图）/ `'chrome'`（你的 Chrome 或专属实例）/ 未连接。 */
+		this._kind = undefined;
+		/** 右栏探测的节流（见 {@link RIGHTBAR_RECHECK_MS}）。 */
+		this._rightbarCheckedAt = 0;
+		this._skipRightbarUntil = 0;
+		/** ★ 2026-11-07（空闲回收）：最后一次用到的时间、正在路上的调用数、连接的 UA。 */
+		this._lastUsedAt = Date.now();
+		this._inflight = 0;
+		this._userAgent = undefined;
 		this._conn = undefined;
 		this._targets = undefined;
 		this._endpoint = undefined;
@@ -206,7 +284,20 @@ export class CdpHost {
 
 	/** 探一下"现在能不能连上"（不建连接、不留状态）：工具可用性/文案都要它。 */
 	async probe() {
-		const candidates = cdpEndpointCandidates(this._config.port);
+		// ★ 2026-11-07：右栏开着 ⇒ 用的就是它（与 `_connection()` 同一判据）。
+		if (this._kind === 'rightbar' && this._conn) {
+			const [page] = await this._targets.list().catch(() => []);
+			return { ok: true, endpoint: RIGHTBAR_ENDPOINT_LABEL, rightbar: true, browser: RIGHTBAR_ENDPOINT_LABEL, ...(page ? { page: { url: page.url, title: page.title } } : {}) };
+		}
+		// 只看不建（status / 可用性重探都走这里）：中转在但右栏还没有页 ⇒ 报 pending（第一次页面操作会建）
+		const rightbar = await this._tryRightbar({ peek: true }).catch(() => undefined);
+		if (rightbar) {
+			const [page] = rightbar.pages;
+			try { rightbar.conn.dispose(); } catch { /* 探测用的连接 */ }
+			return { ok: true, endpoint: RIGHTBAR_ENDPOINT_LABEL, rightbar: true, browser: RIGHTBAR_ENDPOINT_LABEL,
+				...(page ? { page: { url: page.url, title: page.title } } : { pending: true }) };
+		}
+		const candidates = cdpEndpointCandidates(this._config.port, { dedicatedOnly: this._config.dedicatedOnly });
 		try {
 			const { endpoint, value } = await connectPreferredEndpoint(
 					candidates,
@@ -221,7 +312,7 @@ export class CdpHost {
 					},
 					() => { /* 发现阶段没有要关的连接 */ },
 			);
-			return { ok: true, endpoint: endpoint.url, selfLaunched: endpoint.selfLaunched, browser: value.product };
+			return { ok: true, endpoint: endpoint.url, selfLaunched: endpoint.selfLaunched, browser: value.product, userAgent: value.userAgent };
 		} catch (error) {
 			return { ok: false, endpoint: candidates[0]?.url, error: error instanceof Error ? error.message : String(error) };
 		}
@@ -261,6 +352,70 @@ export class CdpHost {
 	}
 
 	/**
+	 * 连右栏浏览器的中转（2026-11-07）：发现文件在、端点连得上、**有页面** ⇒ 返回连接与 target 管理；否则 `undefined`。
+	 * 只用于"试一下"：调用方要么收编（`_adoptRightbar`），要么关掉。
+	 */
+	async _tryRightbar({ create = false, peek = false } = {}) {
+		const file = this._config.rightbarFile;
+		if (!file) { return undefined; }
+		const found = readRightbarEndpoint(file);
+		if (!found) { return undefined; }
+		const ws = new WebSocket(found.wsUrl);
+		await new Promise((resolve, reject) => {
+			const timer = setTimeout(() => { try { ws.close(); } catch { /* 关不掉 */ } reject(new Error('右栏浏览器中转连接超时')); }, RIGHTBAR_CONNECT_TIMEOUT_MS);
+			ws.onopen = () => { clearTimeout(timer); resolve(); };
+			ws.onerror = () => { clearTimeout(timer); reject(new Error('右栏浏览器中转拒绝了连接')); };
+		});
+		const conn = new CdpConnection(ws, this._log);
+		const targets = new RightbarTargetManager(conn, this._log);
+		let pages = await targets.list().catch(() => []);
+		// ★ 2026-11-07（组合方案）：要操作页面、右栏一页都没有 ⇒ 请中转建隐藏的共享视图（建不了就回到 Chrome）
+		if (pages.length === 0 && create) {
+			try {
+				await targets.ensureView();
+				pages = await targets.list().catch(() => []);
+			} catch (error) {
+				this._log?.info?.(`[vssaros-browser] 右栏浏览器建不了视图，改用 Chrome：${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+		if (pages.length === 0 && !peek) {
+			try { conn.dispose(); } catch { /* 关不掉 */ }
+			return undefined;
+		}
+		return { conn, targets, pages };
+	}
+
+	/** 用右栏这条连接（2026-11-07）。断线 ⇒ 清缓存，下次再按"先右栏、再 Chrome"重连。 */
+	_adoptRightbar({ conn, targets }) {
+		this._conn = conn;
+		this._targets = targets;
+		this._endpoint = RIGHTBAR_ENDPOINT_LABEL;
+		this._product = RIGHTBAR_ENDPOINT_LABEL;
+		this._kind = 'rightbar';
+		conn.onClosed(() => {
+			if (this._conn !== conn) { return; }
+			this._targets?.clearSessions();
+			this._conn = undefined;
+			this._targets = undefined;
+			this._kind = undefined;
+		});
+		this._log?.info?.('[vssaros-browser] 用的是右栏浏览器：工具操作的就是右栏里看见的那一页（共用 Global 登录态）');
+		return conn;
+	}
+
+	/** 当前是不是在操作右栏浏览器（`status` 与登录流程用）。 */
+	get usingRightbar() { return this._kind === 'rightbar' && !!this._conn; }
+
+	/**
+	 * 右栏里正显示的那一页的地址（2026-11-07，右栏页签的授权条用：页签自己只知道人敲过的地址，模型导航过去它不知道）。
+	 * 只在已经连着右栏时回答；否则 undefined（不为它去建连接）。
+	 */
+	async rightbarPageUrl() {
+		if (!this.usingRightbar || typeof this._targets?.list !== 'function') { return undefined; }
+		try { return (await this._targets.list())[0]?.url || undefined; } catch { return undefined; }
+	}
+
+	/**
 	 * 取（或建立）那条浏览器级连接。
 	 * 候选全不可达且允许拉起时，**起一个专属实例再连**（这条路不需要用户勾任何同意框）。
 	 */
@@ -268,9 +423,18 @@ export class CdpHost {
 		if (this._conn) { return this._conn; }
 		if (this._connecting) { return this._connecting; }
 		this._connecting = (async () => {
+			// ★ 2026-11-07（P0 · 单一实例）：右栏开着 ⇒ 用右栏那一页（不拉 Chrome、不另开 profile）。
+			if (Date.now() >= this._skipRightbarUntil) {
+				this._rightbarCheckedAt = Date.now();
+				const rightbar = await this._tryRightbar({ create: true }).catch(error => {
+					this._log?.info?.(`[vssaros-browser] 右栏浏览器连不上，改用 Chrome：${error instanceof Error ? error.message : String(error)}`);
+					return undefined;
+				});
+				if (rightbar) { return this._adoptRightbar(rightbar); }
+			}
 			try {
 				const { endpoint, value } = await connectPreferredEndpoint(
-					cdpEndpointCandidates(this._config.port),
+					cdpEndpointCandidates(this._config.port, { dedicatedOnly: this._config.dedicatedOnly }),
 					async ep => {
 						const found = await discoverEndpoint(ep.url);
 						// ★ 同上：不是 Chrome 的端点（IDE 的 Electron DevTools 占了 9222）⇒ 跳过
@@ -283,19 +447,22 @@ export class CdpHost {
 							ws.onerror = () => reject(new Error(`WebSocket 连接失败：${found.wsUrl}`));
 						});
 						const conn = new CdpConnection(ws, this._log);
-						return { conn, product: found.product };
+						return { conn, product: found.product, userAgent: found.userAgent };
 					},
 					v => v?.conn?.dispose(),
 				);
 				this._endpoint = endpoint.url;
 				this._product = value.product;
+				this._userAgent = value.userAgent;
 				this._conn = value.conn;
 				this._targets = new CdpTargetManager(this._conn, this._log);
+				this._kind = 'chrome';
 				// 断线后把缓存清掉，下次调用重连（目标记账保留，见 CdpTargetManager）。
 				this._conn.onClosed(() => {
 					this._targets?.clearSessions();
 					this._conn = undefined;
 					this._targets = undefined;
+					this._kind = undefined;
 				});
 				return this._conn;
 			} catch (primary) {
@@ -332,6 +499,8 @@ export class CdpHost {
 						this._targets = new CdpTargetManager(this._conn, this._log);
 						this._endpoint = url;
 						this._product = found.product;
+						this._userAgent = found.userAgent;
+						this._kind = 'chrome';
 						return this._conn;
 					} catch (e) {
 						last = e;
@@ -372,6 +541,8 @@ export class CdpHost {
 		this._targets = undefined;
 		this._endpoint = undefined;
 		this._product = undefined;
+		this._kind = undefined;
+		this._userAgent = undefined;
 	}
 
 	/**
@@ -405,6 +576,17 @@ export class CdpHost {
 	 * 2026-10-28：平时是无头（用户无感），只有要让人登录时才切有头。
 	 */
 	async ensureHeaded() {
+		// ★ 2026-11-07：右栏浏览器本来就可见（人就在那里登录）⇒ 不切、不拉 Chrome ✓
+		if (this.usingRightbar) { return; }
+		if (this._config.rightbarFile) {
+			this._rightbarCheckedAt = Date.now();
+			const rightbar = await this._tryRightbar({ create: true }).catch(() => undefined);
+			if (rightbar) {
+				this._dropConnection();
+				this._adoptRightbar(rightbar);
+				return;
+			}
+		}
 		if (!this._config.launchDedicated) { return; }
 		// 连的是**用户自己的 Chrome**（不是我们拉的）⇒ 它本来就有头 ⇒ 不用切 ✓
 		if (!String(this._endpoint || '').startsWith(this.dedicatedEndpointUrl)) {
@@ -426,6 +608,7 @@ export class CdpHost {
 	 * 确保专属实例是**无头**的（交互结束 ⇒ 回到"用户无感"状态）。
 	 */
 	async ensureHeadless() {
+		if (this.usingRightbar) { return; }
 		if (!this._config.launchDedicated) { return; }
 		if (!String(this._endpoint || '').startsWith(this.dedicatedEndpointUrl)) { return; }
 		if (this._dedicatedHeadless === true) { return; }
@@ -444,7 +627,20 @@ export class CdpHost {
 			...(probe.browser ? { browser: probe.browser } : {}),
 			...(probe.ok ? {} : { error: probe.error }),
 			selfLaunched: probe.selfLaunched === true,
-			dedicatedPort: this.dedicatedPort,
+			// ★ 2026-11-07（真机）：右栏模式下模型把 dedicatedPort 当成了端点 ⇒ 只在 Chrome 模式给；右栏模式给当前页
+			...(probe.rightbar ? { page: { url: probe.page?.url ?? '', title: probe.page?.title ?? '' }, ...(probe.pending ? { viewReady: false } : {}) } : { dedicatedPort: this.dedicatedPort }),
+			// ★ 2026-11-07：`rightbar` = 操作的是右栏里人看见的那一页；否则是 Chrome（右栏没打开时）。
+			mode: probe.rightbar ? 'rightbar' : 'chrome',
+			// ★ 2026-11-07（真机：模型把专属实例说成"带你登录态的本机 Chrome"）：每种模式都说清是哪个浏览器
+			...(probe.ok ? { note: statusNote({
+				rightbar: probe.rightbar === true,
+				selfLaunched: probe.selfLaunched === true,
+				headless: this._dedicatedHeadless ?? (probe.userAgent ? /HeadlessChrome/.test(probe.userAgent) : this._config.headless),
+				profileDir: this._config.profileDir,
+				endpoint: probe.endpoint,
+				page: probe.page,
+				pending: probe.pending === true,
+			}) } : {}),
 		};
 	}
 
@@ -462,14 +658,59 @@ export class CdpHost {
 	 * 传空/省略＝旧行为（兼容 IDE 侧那条老路径）。
 	 */
 	async ensurePage(ownerKey, url) {
+		this._lastUsedAt = Date.now();
 		await this._connection();
+		// ★ 2026-11-07：正用 Chrome、右栏刚被打开 ⇒ 切到右栏（节流）。
+		if (this._kind !== 'rightbar' && this._config.rightbarFile && Date.now() - this._rightbarCheckedAt >= RIGHTBAR_RECHECK_MS) {
+			this._rightbarCheckedAt = Date.now();
+			const rightbar = await this._tryRightbar({ create: true }).catch(() => undefined);
+			if (rightbar) {
+				this._dropConnection();
+				this._adoptRightbar(rightbar);
+			}
+		}
+		if (this._kind === 'rightbar') {
+			try {
+				return await this._targets.ensurePage(url, ownerKey);
+			} catch (error) {
+				// 右栏的视图没了（窗口关了）⇒ 一会儿内不再试右栏，回到 Chrome 路径。
+				this._log?.info?.(`[vssaros-browser] 右栏浏览器没有页面了，改用 Chrome：${error instanceof Error ? error.message : String(error)}`);
+				this._dropConnection();
+				this._skipRightbarUntil = Date.now() + RIGHTBAR_RECHECK_MS;
+				await this._connection();
+			}
+		}
 		return await this._targets.ensurePage(url, ownerKey);
 	}
 
-	/** 发一条 CDP 命令（会先确保连接）。 */
+	/** 发一条 CDP 命令（会先确保连接）。2026-11-07：记"在用"（空闲回收不会关掉一条正在用的连接）。 */
 	async command(method, params, sessionId, timeoutMs) {
-		const conn = await this._connection();
-		return await conn.send(method, params, sessionId, timeoutMs);
+		this._inflight += 1;
+		this._lastUsedAt = Date.now();
+		try {
+			const conn = await this._connection();
+			return await conn.send(method, params, sessionId, timeoutMs);
+		} finally {
+			this._inflight -= 1;
+			this._lastUsedAt = Date.now();
+		}
+	}
+
+	/**
+	 * 空闲回收（2026-11-07，见 {@link idleReclaimable}）：条件满足就让它自己退出（`Browser.close`），兜底杀我们记得的 pid。
+	 * 下次调用照常重连 / 重新拉起。@returns 关了没有
+	 */
+	async reclaimIfIdle(idleMs = IDLE_CLOSE_DEFAULT_MS, now = Date.now()) {
+		if (this._connecting || !this._conn) { return false; }
+		const ok = idleReclaimable({ kind: this._kind, endpoint: this._endpoint, dedicatedEndpoint: this.dedicatedEndpointUrl,
+			headless: this._dedicatedHeadless, userAgent: this._userAgent, inflight: this._inflight, lastUsedAt: this._lastUsedAt, now, idleMs });
+		if (!ok) { return false; }
+		this._log?.info?.(`[vssaros-browser] 专属无头 Chrome 空闲 ${Math.round((now - this._lastUsedAt) / 60_000)} 分钟 ⇒ 关掉（下次用到再拉起）`);
+		try { await this._conn.send('Browser.close', {}, undefined, 5_000); } catch { /* 关不掉就靠下面兜底 */ }
+		this._targets?.clearSessions?.();
+		this._dropConnection();
+		this._killDedicated();
+		return true;
 	}
 
 	async closeOwned(targetId, ownerKey) {
@@ -506,6 +747,7 @@ export class CdpHost {
 		try { this._conn?.dispose(); } catch { /* 忽略 */ }
 		this._conn = undefined;
 		this._targets = undefined;
+		this._kind = undefined;
 	}
 }
 

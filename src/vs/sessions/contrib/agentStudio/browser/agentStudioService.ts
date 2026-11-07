@@ -22,7 +22,7 @@ import { IAgentStudioService } from '../common/agentStudio.js';
 import type { AgentPreset, IAgentFolderUploadFile, IAgentInstallResult, IWorkflowDirectRunStart, IWorkflowDirectRunResult, IWorkflowDirectRunProgress, IToolCardStart, IToolCardProgress, IToolCardResult, ILibraryBadgeRequest, IKbProcessingState } from '../../../common/agentStudioService.js';
 import { classifyContentViaSchema, safeSchemaFallback, SchemaClassifyResult } from './knowledge/classifier.js';
 import { DEFAULT_KB_SCHEMA, IKBSchema, loadKbSchema } from './knowledge/kbSchema.js';
-import { resolveChatModel, isChatProviderConfigured, resolveConfiguredChatProviderId, createAgentOsChatModel, ResolveChatModelOpts } from './knowledge/knowledgeAdapters.js';
+import { resolveChatModel, isChatProviderConfigured, resolveConfiguredChatProviderId, createAgentOsChatModel } from './knowledge/knowledgeAdapters.js';
 import { IModelSelectorService } from '../common/modelSelector.js';
 import { IAgentOSService } from '../common/agentOS.js';
 import type { IChatModel } from './knowledge/llm.js';
@@ -1085,80 +1085,6 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 	}
 
 	/**
-	 * Hyper-Extract 风格技能提取：LLM structured output 判断是否值得沉淀技能。
-	 * 对应 Hyper-Extract `BaseAutoType._extract_data()` + Pydantic schema。
-	 * 失败时自动降级到纯启发式提取，保证按钮零中断。
-	 */
-	async extractSkillContent(
-		content: string,
-		opts?: { providerId?: string; modelId?: string },
-	): Promise<{ isSkill: boolean; name: string; description: string; prompt: string; category?: string; scripts?: Array<{ filename: string; content: string; language: string }>; source: 'llm' | 'heuristic'; reason: string }> {
-		const kbModel = this._resolveKbChatModel();
-		// 手动点击「沉淀技能」时调用方传入当前 agent 的 provider/model，
-		// 优先走 agent 的 LLM 结构化抽取；但若该 provider 未配 API key，
-		// 也要提前跳过 LLM 避免 3 次 401 网络请求后才降级。
-		const useAgentModel = !!(opts?.providerId || opts?.modelId);
-		const modelOpts: ResolveChatModelOpts = useAgentModel
-			? { providerId: opts!.providerId, modelId: opts!.modelId }
-			: kbModel;
-		// 不要硬编码 true — agent 的 provider 同样可能未配 key；
-		// 提前判断，跳过 LLM 避免 3 次 401 请求后才降级。
-		const llmAvailable = useAgentModel
-			? this._isKbChatProviderUsable(opts!.providerId)
-			: this._isKbChatProviderUsable(kbModel.providerId);
-		try {
-			// 预过滤：明显非技能内容直接拒绝
-			const { prefilterSkillIntent, validateExtractionResult, buildExtractSkillPrompt } = await import('../common/extractSkill.js');
-			const pre = prefilterSkillIntent(content);
-			if (!pre.likely) {
-				return { isSkill: false, name: '', description: '', prompt: '', source: 'heuristic', reason: pre.reason };
-			}
-
-			if (!llmAvailable) {
-				throw new Error('no chat provider configured');
-			}
-
-			const chatModel = modelOpts.providerId
-				? this._createKbChatModelFor({ providerId: modelOpts.providerId, modelId: modelOpts.modelId ?? '' })
-				: this.createKbChatModel();
-			if (!chatModel) { throw new Error('no chat model available'); }
-			const { EXTRACT_SKILL_JSON_SCHEMA } = await import('../common/extractSkill.js');
-
-			const raw = await chatModel.extract<Record<string, unknown>>({
-				prompt: buildExtractSkillPrompt(content),
-				schema: EXTRACT_SKILL_JSON_SCHEMA as any,
-			});
-
-			const validated = validateExtractionResult(raw);
-			if ('error' in validated) {
-				// LLM 返回无效 → 降级到启发式
-				throw new Error(validated.error);
-			}
-
-			return { ...validated, source: 'llm' };
-		} catch (err) {
-			// ★ 2026-09-20 修复（真机审计发现「垃圾技能」）：
-			// 原实现降级到启发式提取并**无条件 `isSkill: true`** ⇒ 只要 LLM 不可用（未配 key），
-			// **任何消息**都能被"沉淀"成技能。实测产物：
-			//   · `tool-failed-file-read`     description="当遇到错误或异常时。[Tool Failed: file_read] []…"
-			//   · `context-compressed-active-task` description="…[Context Compressed] ## Active Task…"
-			// 启发式提取**无法可靠判断"是否值得沉淀"**（`prefilterSkillIntent` 也很宽松：
-			// 只要 ≥50 字符、非纯代码块、非寒暄 ⇒ likely=true）。**宁可不沉淀，也不产出垃圾**：
-			// 明确告知用户需要配置模型。技能正文的 prompt 同样会被 `tryExtractSkillPrompt`
-			// 原样灌入（含 `[Tool Failed…]` 等系统标记），质量不可接受。
-			const reason = err instanceof Error ? err.message : String(err);
-			return {
-				isSkill: false,
-				name: '',
-				description: '',
-				prompt: '',
-				source: 'heuristic',
-				reason: `需要可用的模型才能沉淀技能（提取失败：${reason}）`,
-			};
-		}
-	}
-
-	/**
 	 * 解析知识库操作（收藏 / 分类 / 导入）使用的 chat 模型。
 	 *
 	 * 模型选择逻辑（内部始终新建 session 执行）：
@@ -1364,11 +1290,7 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		}
 		const updated: Agent = { ...existing, ...defPatch, id, updatedAt: new Date().toISOString() };
 
-		// 当启用 configHtml 时，自动将 confightml skill 加入 agent skills 列表
-		if (updated.configHtml && !(updated.skills ?? []).includes('confightml')) {
-			updated.skills = [...(updated.skills ?? existing.skills ?? []), 'confightml'];
-			this.logService.info(`[AgentStudio] Auto-added "confightml" skill for agent "${id}" (configHtml enabled)`);
-		}
+	// ★ 2026-11-07（移除 config.html）：自动注入 "confightml" 技能的逻辑已删除。
 
 		await this._writeAgentMd(updated);
 

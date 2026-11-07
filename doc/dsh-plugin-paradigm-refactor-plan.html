@@ -115,6 +115,15 @@
 <tr><td>工作流</td><td><code>workflowExecutionService.ts:1846</code> → <code>:4072</code> <code>sendMessage</code></td><td>workflow 插件不含引擎</td></tr>
 <tr><td>其它</td><td>KB 导入 <code>kbImportController.ts:934</code>；HTML 面板 <code>configHtmlService.ts:680/1539/1619</code>；Crew <code>crewTeamService.ts:488</code></td><td>无</td></tr>
 </table>
+<div class="callout info" style="margin:.8rem 0">
+  <b>实现状态（2026-11-07，规划后的实际落地）</b>
+  <ul>
+    <li><b>已收口</b>：飞书 / 调度器（早期迁移）；<b>Saros Pocket</b> 改走 <code>getDshSessionLauncher().runTurn()</code>，并用 <code>appendMessage</code> 保留 IDE 会话历史；<b>KB 导入</b> 的 IDE agentic 构建链已物理删除，改由 <code>/x/kb/</code> 承接；<b>config.html 面板</b> 整套能力已移除；<b>IDE webview / DOM 主聊天</b> 两处运行期不可达入口改走后台回合。</li>
+    <li><b>仍欠（4 处 <code>sendMessage</code>）</b>：<code>taskOrchestrationService</code> ×3（看板自动执行，广播 <code>chat.stream.delta</code>）、<code>workflowExecutionService</code> ×1（流式 + <code>Promise.race</code> 取消 + 节点级 provider/model）。桥侧 <code>session.run</code> 目前只支持 <code>cwd/prompt/sessionId/agentPreset/timeoutMs/approval</code>，缺 attachments / model / 流式 delta / cancel ⇒ 不能无损换宿主。</li>
+    <li><b>已具备的前置能力</b>：控制桥 <code>session.start</code> / <code>session.run</code> / <code>session.cancel</code> 齐备；<code>runTurn</code> 支持调用方覆盖 <code>cwd</code>（worktree 隔离场景）。</li>
+    <li>上表为 <b>2026 年规划阶段的现状记录</b>，保留原文作为决策依据；本注记只陈述后续实现状态。</li>
+  </ul>
+</div>
 <p>这些链路最后都汇到 <code>agentChatService.ts:3238</code> → <code>agentOSService.ts:2734</code>，没有任何一条按 <code>chatEngine</code> 分支。dsh 目前唯一的回合入口是桥的 <code>session.start</code>（<code>vssaros-bridge/lib/index.js:415</code>）：它支持带 prompt 以 queue 模式投递，但<b>只投递不回传结果</b>。</p>
 
 <h3>2.3 壳侧偏离范式的地方（重构的首要切入点）</h3>

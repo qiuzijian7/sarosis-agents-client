@@ -27,7 +27,7 @@ import type { IChatModel } from './llm.js';
 import { IKBSchema, sanitizeKbTopic } from './kbSchema.js';
 import { extractSources, removeSources, parseFrontmatter, setStatus, STATUS_ACTIVE, STATUS_PENDING } from './frontmatter.js';
 import { canonicalizeTitle, loadKbAliases } from './kbAliases.js';
-import { nativeIpcBridge } from '../../common/configHtmlConfig.js';
+import { nativeIpcBridge } from '../../common/nativeBridge.js';
 import { KB_EXTRACT_DOC_TEXT_CHANNEL, KB_DOC_SOURCE_EXTENSIONS, type IKbExtractDocTextResult } from '../../common/kbDocConvertChannel.js';
 
 // ─── 路径 / 存储键常量（原先是 `KbImportController` 的 static，逐字搬来，值未改动）───

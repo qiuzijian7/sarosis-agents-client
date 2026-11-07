@@ -98,6 +98,24 @@ function seqOf(session) {
 }
 
 /**
+ * ★ 2026-11-07：把内嵌附件序列化为追加的 text 块。
+ * dsh 会话的 prompt content 目前只稳定支持 text；无附件/空数组时返回的数组与
+ * 改造前**逐字一致**（单元素 prompt），保证所有既有 runTurn 调用方行为不变。
+ * 无效项（缺 text / 空文本）跳过，绝不把空块塞给模型。
+ * @param {string} prompt
+ * @param {Array<{name?: string, text?: string}>|undefined} attachments
+ */
+export function buildPromptContent(prompt, attachments) {
+	const content = [{ type: 'text', text: prompt }];
+	for (const a of Array.isArray(attachments) ? attachments : []) {
+		if (!a || typeof a.text !== 'string' || !a.text) { continue; }
+		const name = typeof a.name === 'string' && a.name.trim() ? a.name.trim() : 'unnamed';
+		content.push({ type: 'text', text: `[attachment: ${name}]\n${a.text}` });
+	}
+	return content;
+}
+
+/**
  * 创建 runs 服务。所有依赖由调用方注入（桥插件的 inject 已含它们；别处的可选注入方自行判空）。
  * @param {object} deps { agents, sessionController, workspaceRegistry }
  */
@@ -110,7 +128,7 @@ export function createRunsService(deps) {
 	 *   sessionId 缺省时由 controller 分配；同一 sessionId 重复调用 = 恢复会话再投一条（实测 ✓）。
 	 *   approval: { allow: string[] } = 本会话本轮允许的工具白名单；缺省 = 全拒（见文件头 1.5）。
 	 */
-	async function run({ sessionId, cwd, prompt, agentPreset, timeoutMs = DEFAULT_TIMEOUT_MS, approval }) {
+	async function run({ sessionId, cwd, prompt, agentPreset, timeoutMs = DEFAULT_TIMEOUT_MS, approval, attachments }) {
 		if (typeof cwd !== 'string' || !cwd) { throw new Error('session.run: cwd required'); }
 		if (typeof prompt !== 'string' || !prompt.trim()) { throw new Error('session.run: prompt required'); }
 		const workspace = await workspaceRegistry.create(cwd);
@@ -134,7 +152,7 @@ export function createRunsService(deps) {
 			requestId: `vssaros-run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
 			sessionId: id,
 			mode: 'queue',
-			content: [{ type: 'text', text: prompt }],
+			content: buildPromptContent(prompt, attachments),
 		}, new AbortController().signal);
 		let rejTimeout;
 		const timeout = new Promise((_, rej) => { rejTimeout = rej; });

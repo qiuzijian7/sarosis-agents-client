@@ -34,7 +34,6 @@ import {
 	ITaskOrchestrationService,
 	IConfigHtmlService,
 } from "../common/agentStudio.js";
-import { ISkillRegistry } from "../common/skills.js";
 import { IWorkflowStorageService } from "../common/workflowStorage.js";
 import { DEFAULT_WORKFLOW_SESSION_ID, sortSessionsByRecent } from "../common/workflowSessions.js";
 import { IWorkflowExecutionService } from "../common/workflowExecutionService.js";
@@ -43,6 +42,7 @@ import { WorkflowPublishModal } from "./workflowPublishModal.js";
 import { SAROS_CLAW_AGENT_ID } from "../common/constants.js";
 import { IAgentStudioWebviewPool } from "./agentStudioWebviewPool.js";
 import type { IChatStreamDelta } from "../common/agentStudio.js";
+import { getDshSessionLauncher } from '../../../common/dshSessionLauncher.js';
 import {
 	IEnvironmentService,
 	type INativeEnvironmentService,
@@ -66,7 +66,7 @@ import { IWorktreeService } from "../../worktree/common/worktreeService.js";
 import type { IToolApprovalHandler, IToolApprovalRequest } from "../common/providers.js";
 import { ToolApprovalDecision } from "../common/providers.js";
 import { Emitter } from '../../../../base/common/event.js';
-import { workflowAppliedEmitter } from './providers/tool/builtinToolProvider.js';
+import { workflowAppliedEmitter } from './providers/tool/workflowShared.js';
 import { canvasOpsRequestEmitter, resolveCanvasOps } from './providers/tool/canvasOpsBridge.js';
 import { snapshotArchiveEmitter, snapshotQueryEmitter, resolveSnapshotOutput, projectionArchiveEmitter, stageRunEmitter, resolveStageRun, onStageRunProgress, executionIdOfStageRun, extractStageSnapshot, markDirectStageRunHandled, notifyDirectStageRunControllerReady, directStageRunUnhandledEmitter, tryMarkOpeningCanvas, releaseOpeningCanvas, directStageRunEmitter, directStageRunCancelEmitter, resolveDirectStageRun, onDirectStageRunProgress, onDirectStageRunHeartbeat, abandonDirectStageRun, stageRunCancelEmitter, onStageRunHeartbeat, abandonStageRun, snapshotMediaPutEmitter, type SnapshotArchiveRequest, type SnapshotQueryRequest, type SnapshotResultPayload, type ProjectionArchiveRequest, type StageRunRequest, type StageRunResultPayload, type StageRunProgressPayload, type DirectStageRunPayload, type SnapshotMediaPutRequest } from './workflow/workflowSnapshotBridge.js';
 import { createComfyStageDelegate } from './workflow/comfyStageBridge.js';
@@ -102,18 +102,6 @@ import type {
 	IProviderSelectPayload,
 	IWorkspaceSessionCreatePayload,
 	IOrchestrationTaskActionPayload,
-	IConfigHtmlEventPayload,
-	IConfigHtmlChatSendPayload,
-	IConfigHtmlHtmlGeneratePayload,
-	IConfigHtmlWriteHtmlPayload,
-	IConfigHtmlGetHtmlPayload,
-	IConfigHtmlChatSendStreamPayload,
-	IConfigHtmlChatCancelStreamPayload,
-	IConfigHtmlRunTerminalPayload,
-	IConfigHtmlKvGetPayload,
-	IConfigHtmlKvSetPayload,
-	IConfigHtmlKvDeletePayload,
-	IConfigHtmlKvListPayload,
 	IFileOpenPayload,
 	IFileOpenUntitledTextPayload,
 	IFileApplyCodePayload,
@@ -186,15 +174,11 @@ export class AgentStudioWebviewController extends Disposable {
 	 * showing. Updated by the webview via `chat.activeSessionChanged`
 	 * whenever the user picks a different agent or switches session.
 	 *
-	 * Used (a) to filter `onDidRequestChatSend` events so only the chat
-	 * panel actually showing the target agent handles imgui submits,
-	 * preventing duplicate sends across multiple chat panels, and
-	 * (b) to register into `IConfigHtmlService.setActiveAgentSession` so
-	 * the preview pane can route imgui submits into the correct Fork
-	 * session.
+	 * ★ 2026-11-07：imgui 提交链已移除，原先「过滤事件防多面板重复发送」
+	 * 的用途随之退役。本字段现在只用于注册进
+	 * `IConfigHtmlService.setActiveAgentSession`。
 	 */
 	private _activeChatAgentId: string | undefined;
-	private _activeChatAgentSessionId: string | undefined;
 
 	/** Layout-sync callback — set only when the pool hot path is used. */
 	private _poolSyncLayout: (() => void) | undefined;
@@ -296,7 +280,6 @@ export class AgentStudioWebviewController extends Disposable {
 		@ICommandService private readonly commandService: ICommandService,
 		@IOpenerService private readonly openerService: IOpenerService,
 		@IConfigHtmlService private readonly _configHtmlService: IConfigHtmlService,
-		@ISkillRegistry private readonly skillRegistry: ISkillRegistry,
 		@IModelService private readonly modelService: IModelService,
 		@IWorktreeService private readonly worktreeService: IWorktreeService,
 		@ICheckpointService private readonly checkpointService: ICheckpointService,
@@ -382,31 +365,8 @@ export class AgentStudioWebviewController extends Disposable {
 		this.agentOSService.setToolApprovalHandler(approvalHandler);
 		this.logService.info('[AgentStudioWebviewController] Tool approval handler registered');
 
-		// Subscribe to ConfigHtml model write confirmations — show a tool card
-		// in the chat UI with 同意 / 放弃 / 始终同意 buttons when the LLM tries
-		// to modify config.html.
-		this._register(
-			this._configHtmlService.onDidRequestModelWriteConfirm(({ requestId, agentId, contentLen, preview }) => {
-				const toolCallId = requestId; // reuse requestId as toolCallId
-				this._pendingToolApprovals.set(toolCallId, {
-					resolve: (decision: ToolApprovalDecision) => {
-						// Map ToolApprovalDecision → 'approve' | 'deny' | 'always'
-						const mapped: 'approve' | 'deny' | 'always' =
-							decision === ToolApprovalDecision.AllowAlways ? 'always' :
-							decision === ToolApprovalDecision.AllowOnce ? 'approve' : 'deny';
-						this._configHtmlService.resolveModelWriteConfirm(requestId, mapped);
-					},
-				});
-				this._sendEvent('chat.toolApprovalRequest', {
-					toolCallId,
-					toolName: 'config.html 写入',
-					arguments: { agentId, contentLen, preview: preview.slice(0, 200) },
-					securityLevel: 'safe',
-					reason: `LLM 请求修改 agent "${agentId}" 的 config.html（${contentLen} 字符）`,
-				} as IChatToolApprovalRequestPayload);
-				this.logService.info(`[AgentStudioWebviewController] model write confirm card shown: agentId=${agentId} requestId=${requestId}`);
-			}),
-		);
+		// ★ 2026-11-07（移除 config.html）：config.html 写入确认卡片订阅已退役；
+		// 通用工具审批仍走上面的 setToolApprovalHandler / chat.toolApprovalRequest。
 
 		// Checkpoint: forward newly created checkpoints to the webview so it can
 		// render an inline checkpoint card without an extra round-trip.
@@ -1774,90 +1734,8 @@ export class AgentStudioWebviewController extends Disposable {
 				return;
 			}
 
-			// ─── ConfigHtml ────────────────────────────────────────
-			case "confightml.getHtml": {
-				const gp = p as unknown as IConfigHtmlGetHtmlPayload;
-				return this._configHtmlService.getHtml(gp.agentId);
-			}
-			case "confightml.writeHtml": {
-				const wp = p as unknown as IConfigHtmlWriteHtmlPayload;
-				return this._configHtmlService.writeHtml(wp.agentId, wp.html, {
-					origin: wp.origin,
-					baseVersion: wp.baseVersion,
-				});
-			}
-			case "confightml.event": {
-				const ep = p as unknown as IConfigHtmlEventPayload;
-				return this._configHtmlService.handleHtmlEvent(
-					ep.agentId,
-					ep.eventName,
-					ep.payload,
-					ep.agentSessionId,
-				);
-			}
-			case "confightml.chatSend": {
-				const cp = p as unknown as IConfigHtmlChatSendPayload;
-				return this._configHtmlService.handleChatSend(cp.agentId, cp.message, {
-					context: cp.context,
-					showInChat: cp.showInChat,
-					agentSessionId: cp.agentSessionId,
-				});
-			}
-			case "confightml.notify":
-				this.logService.info(
-					`[ConfigHtml] Notification from ${(p.agentId)}: ${p.message} [${p.level || "info"}]`,
-				);
-				return undefined;
-			case "confightml.previewToFile":
-				return this._configHtmlService.previewToFile((p.agentId) as string);
-
-			case "confightml.htmlGenerate": {
-				const hp = p as unknown as IConfigHtmlHtmlGeneratePayload;
-				return this._configHtmlService.htmlGenerate(hp.agentId, hp.message, {
-					currentHtml: hp.currentHtml,
-					model: hp.model,
-				});
-			}
-			case "confightml.chatSendStream": {
-				const sp = p as unknown as IConfigHtmlChatSendStreamPayload;
-				// Fire-and-forget: deltas flow back via onStreamDelta/onStreamDone events
-				const agentId = sp.agentId;
-				this._configHtmlService.handleChatSendStream(
-					sp.requestId, agentId, sp.message,
-					(delta) => this._sendEvent("confightml.chatStreamDelta", { requestId: sp.requestId, agentId, delta }),
-					(ok, fullText, error) => this._sendEvent("confightml.chatStreamDone", { requestId: sp.requestId, agentId, ok, fullText, error }),
-					{ agentSessionId: sp.agentSessionId },
-				);
-				return undefined;
-			}
-			case "confightml.chatCancelStream": {
-				const cp = p as unknown as IConfigHtmlChatCancelStreamPayload;
-				this._configHtmlService.cancelStream(cp.requestId, cp.agentId);
-				return undefined;
-			}
-			case "confightml.runTerminal": {
-				const rp = p as unknown as IConfigHtmlRunTerminalPayload;
-				return this._configHtmlService.handleRunTerminal(
-					rp.agentId, rp.command, rp.args,
-					{ cwd: rp.cwd, env: rp.env },
-				);
-			}
-			case "confightml.kvGet": {
-				const kp = p as unknown as IConfigHtmlKvGetPayload;
-				return this._configHtmlService.kvGet(kp.agentId, kp.key);
-			}
-			case "confightml.kvSet": {
-				const kp = p as unknown as IConfigHtmlKvSetPayload;
-				return this._configHtmlService.kvSet(kp.agentId, kp.key, kp.value);
-			}
-			case "confightml.kvDelete": {
-				const kp = p as unknown as IConfigHtmlKvDeletePayload;
-				return this._configHtmlService.kvDelete(kp.agentId, kp.key);
-			}
-			case "confightml.kvList": {
-				const kp = p as unknown as IConfigHtmlKvListPayload;
-				return this._configHtmlService.kvList(kp.agentId, kp.prefix);
-			}
+			// ★ 2026-11-07（移除 config.html）：`confightml.*` 请求类型与这里整段 case 已删除。
+			//   webview 侧内嵌面板/事件桥已于上一刀移除；IDE 预览编辑器的 SDK 注入下一刀退役。
 			// ─── Files ────────────────────────────────────────────
 			case "files.open": {
 				const fp = p as unknown as IFileOpenPayload;
@@ -2295,13 +2173,10 @@ export class AgentStudioWebviewController extends Disposable {
 	/**
 	 * Webview tells us which (agentId, agentSessionId) is currently
 	 * displayed in this chat panel. We update local state and register
-	 * with `IConfigHtmlService` so imgui form submits originating in a
-	 * preview pane can be routed back to the right session.
+	 * with `IConfigHtmlService.setActiveAgentSession`.
 	 *
-	 * We also use this to filter `onDidRequestChatSend` events: when
-	 * multiple chat panels are open (different Forks), only the one
-	 * whose registered agentId matches will respond — otherwise the
-	 * same imgui submit would be sent twice.
+	 * ★ 2026-11-07：imgui 提交链已移除，原先「过滤
+	 * `onDidRequestChatSend` 防多面板重复发送」的用途随之退役。
 	 */
 	private _handleChatActiveSessionChanged(
 		payload: Record<string, unknown>,
@@ -2316,7 +2191,6 @@ export class AgentStudioWebviewController extends Disposable {
 		const agentSessionId =
 			(payload.agentSessionId as string | null | undefined) || undefined;
 		this._activeChatAgentId = agentId;
-		this._activeChatAgentSessionId = agentSessionId;
 		this.logService.info(
 			`[AgentStudio] chat.activeSessionChanged: agentId=${agentId || "<none>"} ` +
 			`agentSessionId=${agentSessionId || "<none>"} (panelType=${this.panelType})`,
@@ -2330,6 +2204,33 @@ export class AgentStudioWebviewController extends Disposable {
 		if (agentId) {
 			this._configHtmlService.setActiveAgentSession(agentId, agentSessionId);
 		}
+	}
+
+	/**
+	 * ★ 2026-11-07（IDE agent loop 整体下线）：`chatEngine` 已收窄为 `['dsh']`，
+	 * `NativeChatEditorPane` 在 dsh 引擎下由 `getDshChatHostFactory()` 接管内容区、
+	 * **不初始化 IDE DOM 聊天面板**（`nativeChatEditorPane.ts:6099` 的 `_initChatPanel` 条件）
+	 * ⇒ 本 controller 的 `chat.send` 路径运行期不可达。
+	 *
+	 * 保留 4 参数调用形状只为编译期兼容（原 `onDelta` 闭包里有一串局部变量）。
+	 * 若真的误入：经 dsh 控制桥 `session.run` 跑一次后台回合并回传最终文本，
+	 * **不再跑 IDE agent loop**，也不假装成功。
+	 */
+	private async _retiredChatSend(_agentId: string, message: string, ..._rest: unknown[]): Promise<any> {
+		const launcher = getDshSessionLauncher();
+		let content: string;
+		if (!launcher) {
+			content = 'IDE 聊天面板已下线，且 dsh 会话启动器未就绪（Host 未运行？）。';
+		} else {
+			const result = await launcher.runTurn({ prompt: message });
+			content = result.finalText ?? '';
+		}
+		return {
+			id: `retired-${Date.now()}`,
+			role: 'assistant',
+			content,
+			timestamp: new Date().toISOString(),
+		};
 	}
 
 	private _handleChatSend(payload: Record<string, unknown>): {
@@ -2357,8 +2258,8 @@ export class AgentStudioWebviewController extends Disposable {
 		// Root mode without an agentSessionId: lazily create one. This path
 		// is normally avoided because the chat input front-end (`useChatStore.
 		// sendMessage`) calls `agentSession.getActive` BEFORE invoking us, but
-		// imgui-form submits arrive here directly via `onDidRequestChatSend`
-		// and may carry no sessionId at all when the user has never sent a
+		// ★ 2026-11-07：imgui 提交链已移除，但聊天发送仍可能不带 sessionId；
+		// 用户首次发消息时也可能还没有 sessionId，
 		// message yet. Without this branch, the user message would be
 		// persisted under cache key `agentId` (no session suffix) and
 		// `_persistToSessionFile` would skip writing to disk entirely —
@@ -2434,12 +2335,9 @@ export class AgentStudioWebviewController extends Disposable {
 			);
 
 			// Mirror chat-input flow: keep the registry & webview in sync
-			// so subsequent imgui submits (and the post-reload history load)
+			// so the post-reload history load
 			// aim at the same session.
 			this._configHtmlService.setActiveAgentSession(agentId, agentSessionId);
-			if (this._activeChatAgentId === agentId) {
-				this._activeChatAgentSessionId = agentSessionId;
-			}
 			this._sendEvent("workspace.sessionUpdated", {
 				agentId,
 				agentSessionId,
@@ -2615,7 +2513,7 @@ export class AgentStudioWebviewController extends Disposable {
 			}
 		}
 		try {
-			const chatMessage = await this.agentChatService.sendMessage(
+			const chatMessage = await this._retiredChatSend(
 				agentId,
 				message,
 				{
@@ -3967,113 +3865,9 @@ export class AgentStudioWebviewController extends Disposable {
 			this._sendEvent(eventType as any, payload);
 		});
 
-		// Listen for ConfigHtml html render / command events to push to WebView
-		this._register(
-			this._configHtmlService.onDidRenderHtml(
-				({ agentId, html, version, stylesContent }) => {
-					this._sendEvent("confightml.htmlRendered", {
-						agentId,
-						html,
-						version,
-						stylesContent,
-					});
-				},
-			),
-		);
-		this._register(
-			this._configHtmlService.onDidEmitCommand(({ agentId, command }) => {
-				this._sendEvent("confightml.command", { agentId, command });
-			}),
-		);
-
-		// Forward imgui-originated chat sends through this controller's own
-		// chat.send pipeline (creates a user message, persists, streams
-		// deltas back to the webview UI). Only the chat panel controller
-		// needs to react — canvas/taskboard panels would double-send.
-		//
-		// IMPORTANT: when the user types in the chat input, the webview's
-		// `useChatStore.sendMessage` does an *optimistic* append of the user
-		// message to its local `messages[]` state BEFORE invoking `chat.send`.
-		// imgui submissions bypass that store entirely (they originate inside
-		// a separate preview iframe and arrive at the host directly), so the
-		// chat panel webview never sees the user-side bubble — it only sees
-		// the assistant stream that follows. We compensate by firing an
-		// explicit `chat.userMessageAppended` event so the webview can mirror
-		// the same optimistic append the chat input would have done.
-		this._register(
-			this._configHtmlService.onDidRequestChatSend(
-				({
-					agentId,
-					message,
-					agentSessionId,
-					workspaceId,
-					workspaceSessionId,
-				}) => {
-					if (this.panelType !== "chat") {
-						return;
-					}
-					// Avoid duplicate sends when multiple chat panels are open: only
-					// the panel currently displaying this agent should respond.
-					// If no panel has registered yet (fresh open, before the webview
-					// has finished sending its first `chat.activeSessionChanged`),
-					// fall through and handle the message — losing it would feel
-					// broken for the very first imgui submit after open.
-					if (
-						this._activeChatAgentId &&
-						this._activeChatAgentId !== agentId
-					) {
-						this.logService.info(
-							`[AgentStudioWebviewController] imgui→chat.send for ${agentId} ignored by panel ` +
-							`showing ${this._activeChatAgentId}`,
-						);
-						return;
-					}
-					// Also avoid duplicate sends when multiple sessions for the same
-					// agent are open: only the panel with the matching agent session
-					// should respond.
-					if (
-						this._activeChatAgentSessionId &&
-						this._activeChatAgentSessionId !== agentSessionId
-					) {
-						this.logService.info(
-							`[AgentStudioWebviewController] imgui→chat.send for ${agentId}/${agentSessionId} ignored by panel ` +
-							`with session ${this._activeChatAgentSessionId}`,
-						);
-						return;
-					}
-					this.logService.info(
-						`[AgentStudioWebviewController] imgui→chat.send ${agentId} ` +
-						`(workspaceId=${workspaceId || "<none>"}, sessionId=${agentSessionId || "<none>"})`,
-					);
-					// 1) Notify webview UI to append the user bubble (mirrors what
-					//    the chat input would have done before sending).
-					this._sendEvent("chat.userMessageAppended", {
-						agentId,
-						agentSessionId,
-						message: {
-							id: `msg_${Date.now()}_user_imgui_${Math.random().toString(36).substring(2, 9)}`,
-							role: "user",
-							content: message,
-							timestamp: new Date().toISOString(),
-						},
-					});
-					// 2) Run the actual chat send pipeline (persist + stream).
-					//    workspaceId is forwarded so the Fork-mode lazy-create path
-					//    fires when needed — i.e. the preview was opened from a
-					//    Fork chat panel even though the user has never sent a
-					//    message there. Without it the message would be persisted
-					//    against the Root default session and "vanish" relative to
-					//    the Fork's view.
-					void this._handleChatSend({
-						agentId,
-						message,
-						agentSessionId,
-						workspaceId,
-						workspaceSessionId,
-					});
-				},
-			),
-		);
+		// ★ 2026-11-07（移除 config.html）：`onDidRenderHtml` / `onDidEmitCommand` 两个
+		//   推送订阅已删（EventType 里对应的 confightml.* 事件类型也一并移除）。
+		// ★ 2026-11-07（移除 config.html）：imgui→chat.send 订阅已整体退役。
 
 		// Listen for AI-driven workflow changes (from workflow_apply tool)
 		// and push the updated state to the webview workflow editor.
@@ -5011,35 +4805,12 @@ export class AgentStudioWebviewController extends Disposable {
 
 	/**
 	 * Handle `skills.list` message from webview.
-	 * Returns all registered skills in a format suitable for the webview.
+	 * ★ P3（2026-11-07）：技能清单已迁到 dsh 侧，IDE 侧不再持有技能注册表。
+	 *   返回空列表以维持消息协议（webview 的 skillName 下拉显示为空），
+	 *   旧的 `whenReady` + 3s 超时降级逻辑随注册表一起删除。
 	 */
 	private async _handleSkillsList(): Promise<Array<{ id: string; name: string; category: string; activation: string; description?: string }>> {
-		const t0 = Date.now();
-		this.logService.info(`[AS-PERF][host] _handleSkillsList: waiting for skillRegistry.whenReady()...`);
-		// ★★ 超时降级（3s）：whenReady 可能因磁盘 IO hang 永久 pending。
-		//   日志实证（vscode-app-1787159667152.log）：`reload() called` 后
-		//   `after builtin scan` 从未出现，skills.list 请求之后 18000+ 行日志
-		//   的时间窗内扫描仍未完成 → webview 的 skillName 下拉拿不到任何响应。
-		//   降级策略：超时后返回当前已扫描的**部分**技能（部分结果远优于
-		//   永久挂起；builtin 扫描是渐进填充 _skills 的，部分结果可用）。
-		await Promise.race([
-			this.skillRegistry.whenReady(),
-			new Promise<void>(resolve => setTimeout(resolve, 3000)),
-		]);
-		const t1 = Date.now();
-		this.logService.info(`[AS-PERF][host] _handleSkillsList: whenReady resolved (or timed out) in ${t1 - t0}ms`);
-		const skills = this.skillRegistry.getSkills();
-		const result = skills.map(skill => ({
-			id: skill.id,
-			name: skill.name,
-			category: skill.category || 'uncategorized',
-			activation: skill.activation,
-			description: skill.description || undefined,
-		}));
-		this.logService.info(
-			`[AS-PERF][host] _handleSkillsList: done in ${Date.now() - t0}ms, returned ${result.length} skills`
-		);
-		return result;
+		return [];
 	}
 
 		/**

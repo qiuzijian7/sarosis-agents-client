@@ -52,8 +52,12 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
   await type(workerProvider as HTMLInputElement, 'worker-provider'); await type(workerModel as HTMLInputElement,
     'worker-model'); await type(effort as HTMLInputElement, 'high')
   expect([...document.querySelectorAll('#dt-worker-model-efforts option')].map(option => option.getAttribute('value'))).toEqual(['high'])
+  // VsSaros addition (2026-11-07): another plugin's side calls (DS Bot's OCR) are allowed until a person turns them off here.
+  const sideCalls = find(zh.sideCalls, '[role="switch"]')
+  expect(sideCalls.getAttribute('aria-checked')).toBe('true')
+  await click(sideCalls)
   await click(zh.save)
-  expect(server.settings.executor).toEqual({ maxWorkers: 5, directory: '/srv/work', staffing: true, autoApprove: false,
+  expect(server.settings.executor).toEqual({ maxWorkers: 5, directory: '/srv/work', staffing: true, autoApprove: false, sideCalls: false,
     prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"', blockedCommands: ['gh-personal', 'gh.other'], model: { provider: 'worker-provider',
       model: 'worker-model', reasoningEffort: 'high' } })
   expect(server.requests.filter(request => request.method === 'PUT').map(request => request.path)).toEqual(['settings/eval',

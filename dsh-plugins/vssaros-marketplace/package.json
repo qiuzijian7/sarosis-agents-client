@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-marketplace",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "VsSaros marketplace workbench: agent / skill / workbench / workflow browsing, install, upgrade, uninstall, publish and admin review. Authentication, downloading, unpacking, persistence and skill installs (including content/folder/URL/GitHub sources) all happen inside the dsh Host; only workbench package add/remove still goes through the IDE bridge.",
   "private": true,
   "type": "module",

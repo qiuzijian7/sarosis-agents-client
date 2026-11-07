@@ -441,79 +441,8 @@ export class HtmlFileEditorPane extends TextFileEditor {
 			extension: undefined,
 		});
 
-		this._register(this._webview.onMessage(async (e) => {
-			const msg = e.message as { type?: string; message?: string; eventName?: string; requestId?: string; agentId?: string; level?: string; [key: string]: unknown } | undefined;
-			if (!msg || !msg.type) return;
-			const agentId = String(msg.agentId || this._previewAgentId || '');
-			this._logService.info(`[HtmlFileEditorPane] preview onMessage: type=${msg.type} agentId=${agentId} msgLen=${typeof msg.message==='string'?msg.message.length:'n/a'}`);
-			try {
-				switch (msg.type) {
-					case 'confightml.chatSend':
-						if (!agentId) throw new Error('agentId 未识别（检查文件是否在 ~/.saros/agents/{id}/config.html 路径下）');
-						await this._configHtmlService.handleChatSend(agentId, String(msg.message || ''));
-						break;
-					case 'confightml.event':
-						await this._configHtmlService.handleHtmlEvent(agentId, String(msg.eventName || ''), msg.payload);
-						break;
-					case 'confightml.notify':
-						this._logService.info(`[HtmlFileEditorPane] preview notify: ${msg.message} [${msg.level}]`);
-						break;
-					case 'confightml.runTerminal': {
-						if (!agentId) throw new Error('agentId 未识别');
-						const cmd = String(msg.command || '');
-						const args = Array.isArray(msg.args) ? msg.args.map(String) : [];
-						const rtOptions = msg as unknown as { cwd?: string; env?: Record<string, string> };
-						await this._configHtmlService.handleRunTerminal(agentId, cmd, args, { cwd: rtOptions.cwd, env: rtOptions.env });
-						break;
-					}
-					case 'confightml.writeHtml': {
-						if (!agentId) throw new Error('agentId 未识别');
-						let newHtml = String(msg.html || '');
-						// 剥离 _wrapHtmlForWebview 注入的内容
-						newHtml = newHtml
-							.replace(/<script>[\s\S]*?(?:AgentConfigHtml SDK|preview-cleanup|preview-probe)[\s\S]*?<\/script>/g, '')
-							.replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/g, '')
-							.replace(/<style>(?:body,body\s*\*\{pointer-events|#html-edit-toolbar,#html-edit-add-btn)[\s\S]*?<\/style>/g, '');
-						this._logService.info(`[HtmlFileEditorPane] preview writeHtml: agentId=${agentId} rawLen=${String(msg.html || '').length} cleanLen=${newHtml.length}`);
-						// 先 reply SDK（确保 await writeHtml() promise resolve → toast 显示）
-						this._webview?.postMessage({ type: 'sdk.reply', requestId: msg.requestId, ok: true } as unknown as Record<string, unknown>);
-						// 写盘
-						await this._configHtmlService.writeHtml(agentId, newHtml, { origin: 'html' });
-						this._rawHtml = newHtml;
-						return; // 跳过底部的统一 reply
-					}
-					case 'confightml.kvGet': {
-						if (!agentId) throw new Error('agentId 未识别');
-						const val = await this._configHtmlService.kvGet(agentId, String(msg.key || ''));
-						this._webview?.postMessage({ type: 'sdk.reply', requestId: msg.requestId, ok: true, result: val } as unknown as Record<string, unknown>);
-						return;
-					}
-					case 'confightml.kvSet': {
-						if (!agentId) throw new Error('agentId 未识别');
-						await this._configHtmlService.kvSet(agentId, String(msg.key || ''), msg.value);
-						this._webview?.postMessage({ type: 'sdk.reply', requestId: msg.requestId, ok: true } as unknown as Record<string, unknown>);
-						return;
-					}
-					case 'confightml.kvDelete': {
-						if (!agentId) throw new Error('agentId 未识别');
-						await this._configHtmlService.kvDelete(agentId, String(msg.key || ''));
-						this._webview?.postMessage({ type: 'sdk.reply', requestId: msg.requestId, ok: true } as unknown as Record<string, unknown>);
-						return;
-					}
-					case 'confightml.kvList': {
-						if (!agentId) throw new Error('agentId 未识别');
-						const keys = await this._configHtmlService.kvList(agentId, msg.prefix ? String(msg.prefix) : undefined);
-						this._webview?.postMessage({ type: 'sdk.reply', requestId: msg.requestId, ok: true, result: keys } as unknown as Record<string, unknown>);
-						return;
-					}
-				}
-				this._webview?.postMessage({ type: 'sdk.reply', requestId: msg.requestId, ok: true } as unknown as Record<string, unknown>);
-			} catch (err) {
-				const errMsg = err instanceof Error ? err.message : String(err);
-				this._logService.error(`[HtmlFileEditorPane] preview handler error: type=${msg.type} agentId=${agentId} err=${errMsg}`);
-				this._webview?.postMessage({ type: 'sdk.reply', requestId: msg.requestId, ok: false, error: errMsg } as unknown as Record<string, unknown>);
-			}
-		}));
+		// ★ 2026-11-07（移除 config.html）：`AgentConfigHtml` 预览 SDK 已整体退役，
+		//   原先的 confightml.* 消息监听随之删除。通用 HTML 预览/编辑能力不受影响。
 		this._register(this._webview);
 		this._webview.mountTo(this._previewContainer, mainWindow);
 		this._webview.setHtml(this._wrapHtmlForWebview(this._rawHtml ?? ''));
@@ -704,63 +633,27 @@ export class HtmlFileEditorPane extends TextFileEditor {
 		// （编辑保存后可能污染 body 及任意子元素），否则按钮/tab 点击显示为
 		// 文本光标，click 事件被浏览器吞掉。
 		const cleanup = `<style>#html-edit-toolbar,#html-edit-add-btn,#html-edit-add-menu{display:none!important}body,body *{pointer-events:auto!important}body.html-edit-mode{cursor:auto!important}button,a,select,[role=button],.tab{cursor:pointer!important}</style><script>(function(){function clean(){console.log('[preview-cleanup] clean() running, readyState='+document.readyState);var all=document.querySelectorAll('[contenteditable],[contentEditable]');console.log('[preview-cleanup] found '+all.length+' element(s) with contenteditable');all.forEach(function(el){console.log('[preview-cleanup] removing contenteditable from',el.tagName,el.className,el.getAttribute('contenteditable')||el.getAttribute('contentEditable'));el.removeAttribute('contenteditable');el.removeAttribute('contentEditable')});var b=document.body;if(b){var hadClass=b.classList.contains('html-edit-mode');b.classList.remove('html-edit-mode');console.log('[preview-cleanup] body html-edit-mode was='+hadClass)}console.log('[preview-cleanup] done')}function probe(){var tabs=document.querySelectorAll('nav .tab');console.log('[preview-probe] found '+tabs.length+' .tab elements');tabs.forEach(function(t,i){console.log('[preview-probe] tab['+i+'] text='+t.textContent+' contenteditable='+(t.getAttribute('contenteditable')||'none')+' pointerEvents='+getComputedStyle(t).pointerEvents+' cursor='+getComputedStyle(t).cursor)});if(tabs.length){tabs[0].addEventListener('click',function(e){console.log('[preview-probe] CLICK on tab: '+this.textContent)},true)}if(document.body){console.log('[preview-probe] body contenteditable='+(document.body.getAttribute('contenteditable')||'none')+' pointerEvents='+getComputedStyle(document.body).pointerEvents)}console.log('[preview-probe] complete')}if(document.readyState==='loading'){console.log('[preview-cleanup] waiting for DOMContentLoaded');document.addEventListener('DOMContentLoaded',function(){clean();setTimeout(probe,100)})}else{clean();setTimeout(probe,100)}})();</script>`;
-		// 注入最小 AgentConfigHtml SDK：config.html 即使在预览 webview 中
-		// 也能正常调用 chatSend / sendEvent / notify。chatSendStream 暂不
-		// 支持（预览 webview 没有 delta event relay pipeline）。
-		// SDK 用纯字符串拼接，避免 TS 模板字面量在多行 minified JS 场景下出问题。
-		const sdk = // prettier-ignore
-			'<script>console.log("[AgentConfigHtml SDK] tag-1")</script>' +
-			'<script>console.log("[AgentConfigHtml SDK] tag-2");' +
-			'!function(g){var p=new Map,l={};var v=acquireVsCodeApi();' +
-			'function log(m){try{console.log("[AgentConfigHtml SDK]",m)}catch(e){}}' +
-			'function id(){return"sdk_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,8)}' +
-			'function s(t,d){var r=id();log("send "+t+" rid="+r);return new Promise(function(res,rej){p.set(r,{resolve:res,reject:rej});' +
-			'v.postMessage(Object.assign({type:t,requestId:r},d||{}));' +
-			'setTimeout(function(){if(p.has(r)){p.delete(r);rej(new Error("timeout "+t))}},30000)})}' +
-			'window.addEventListener("message",function(e){var m=e.data;' +
-			'if(!m||typeof m!=="object")return;' +
-			'if(m.type==="sdk.reply"&&m.requestId&&p.has(m.requestId)){var h=p.get(m.requestId);p.delete(m.requestId);' +
-			'log("reply rid="+m.requestId+" ok="+m.ok+" err="+(m.error||""));' +
-			'if(m.ok)h.resolve(m.data);else h.reject(new Error(m.error||"err"))}' +
-			'});var a={on:function(ev,fn){l[ev]=l[ev]||[];l[ev].push(fn);return a},' +
-			'sendEvent:function(n,d){return s("confightml.event",{eventName:n,payload:d})},' +
-			'chatSend:function(msg,o){return s("confightml.chatSend",Object.assign({message:msg},o||{}))},' +
-			'notify:function(msg,lv){return s("confightml.notify",{message:msg,level:lv||"info"})},' +
-			'runTerminal:function(cmd,args,o){return s("confightml.runTerminal",Object.assign({command:cmd,args:args||[]},o||{}))},' +
-			'writeHtml:function(h){return s("confightml.writeHtml",{html:h})},' +
-			'kvGet:function(k){return s("confightml.kvGet",{key:k})},' +
-			'kvSet:function(k,v){return s("confightml.kvSet",{key:k,value:v})},' +
-			'kvDelete:function(k){return s("confightml.kvDelete",{key:k})},' +
-			'kvList:function(p){return s("confightml.kvList",{prefix:p||""})}};' +
-			'g.AgentConfigHtml={connect:function(){log("connect ok");return Promise.resolve(a)},isConnected:function(){return true},' +
-			'on:function(ev,fn){return a.on(ev,fn)},sendEvent:function(n,d){return a.sendEvent(n,d)},' +
-			'chatSend:function(msg,o){return a.chatSend(msg,o)},notify:function(m,l){return a.notify(m,l)},' +
-			'runTerminal:function(cmd,args,o){return a.runTerminal(cmd,args,o)},' +
-			'writeHtml:function(h){return a.writeHtml(h)},' +
-			'kvGet:function(k){return a.kvGet(k)},kvSet:function(k,v){return a.kvSet(k,v)},' +
-			'kvDelete:function(k){return a.kvDelete(k)},kvList:function(p){return a.kvList(p)}}}(window);</script>';
-
-		const sdkWrapper = `<script>console.log('[HtmlFileEditorPane] preview SDK injected, type tag present')</script>` + sdk;
+		// ★ 2026-11-07（移除 config.html）：AgentConfigHtml SDK 注入已删除。
 
 		const lower = html.toLowerCase();
 		const headIdx = lower.indexOf('<head>');
 
 		if (headIdx >= 0) {
 			const insertPos = headIdx + '<head>'.length;
-			// SDK 必须在 <head> 之后立即注入，确保用户脚本执行前
+		// 通用包装（CSP / baseStyle / cleanup）在 <head> 之后立即注入。
 			// window.AgentConfigHtml 已定义。
-			return html.slice(0, insertPos) + csp + baseStyle + cleanup + sdkWrapper + html.slice(insertPos);
+			return html.slice(0, insertPos) + csp + baseStyle + cleanup + html.slice(insertPos);
 		}
 
 		const htmlIdx = lower.indexOf('<html');
 		if (htmlIdx >= 0) {
 			const closeBracket = html.indexOf('>', htmlIdx);
 			if (closeBracket >= 0) {
-				return html.slice(0, closeBracket + 1) + `<head>${csp}${baseStyle}${cleanup}${sdkWrapper}</head>` + html.slice(closeBracket + 1);
+				return html.slice(0, closeBracket + 1) + `<head>${csp}${baseStyle}${cleanup}</head>` + html.slice(closeBracket + 1);
 			}
 		}
 
-		return `<!doctype html><html><head>${csp}${baseStyle}${cleanup}${sdkWrapper}</head><body>${html}</body></html>`;
+		return `<!doctype html><html><head>${csp}${baseStyle}${cleanup}</head><body>${html}</body></html>`;
 	}
 
 	override layout(dimension: Dimension): void {

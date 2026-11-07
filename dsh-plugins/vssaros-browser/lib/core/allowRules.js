@@ -28,8 +28,9 @@
  *   · `browser::click`     —— 只免 `click`；
  *   · `browser::*`         —— 同上（`*` 是 glob）；
  *   · `*::click`           —— 任意工具的 `click`（照 IDE 语义）。
- * 站点维度（`browser::click@host`）**这一版没做**：`host.status()` 不返回当前页 URL，
- * 为它加一次 CDP 往返不值得 ⇒ 宁可不承诺（少做一层就少一层误判）。
+ * 站点维度（`browser::click@host`）**2026-11-07 已做**（见 `siteEntryMatches`）：`execute` 在审批前本来就要读
+ * 当前页地址（本机免问、高危闸都用它），站点就从那里来，不额外多一次 CDP 往返。时限（1 小时 / 今天 / 7 天）
+ * 仍没做：它需要一个能写规则的确认 UI（官方审批缝只有一次性放行），没有写入者就不承诺。
  */
 
 import { readFileSync, statSync } from 'node:fs';
@@ -74,6 +75,33 @@ export function entryMatches(entry, toolName, command) {
 	if (t !== toolName && t !== '*') { return false; }
 	if (command === undefined || command === '') { return false; }
 	return globMatch(pattern, command);
+}
+
+/**
+ * ★ 2026-11-07（P1）：**站点维度**的规则 `browser::<op>@<host>`（`<host>` 可用 `*` glob，如 `*.github.com`）。
+ *   · 只有 Host 侧这个读者认它：IDE 侧 `entryMatches` 拿 `click@github.com` 去 glob 匹配 `click` ⇒ 永不命中 ⇒
+ *     同一份文件里写这种条目对 IDE 侧**无害**（不会被误当成 `browser::click`）；
+ *   · 不带 `@` 的条目语义一字不变（仍走上面的 `entryMatches`）；
+ *   · 站点取自本次动作**真正落在**的页面：`navigate` 看目标地址，其余看当前页（`execute` 在审批前读出来）。
+ *     读不到站点 ⇒ 站点条目一律不命中（照旧问人）。
+ * @returns 命中 ⇒ true
+ */
+export function siteEntryMatches(entry, toolName, command, host) {
+	if (typeof entry !== 'string' || !entry.includes(CMD_KEY_SEP)) { return false; }
+	const sepIdx = entry.indexOf(CMD_KEY_SEP);
+	const t = entry.slice(0, sepIdx);
+	const rest = entry.slice(sepIdx + CMD_KEY_SEP.length);
+	const at = rest.lastIndexOf('@');
+	if (at <= 0 || at === rest.length - 1) { return false; }
+	if (t !== toolName && t !== '*') { return false; }
+	const site = String(host ?? '').trim().toLowerCase();
+	if (!site || !command) { return false; }
+	return globMatch(rest.slice(0, at), command) && globMatch(rest.slice(at + 1).toLowerCase(), site);
+}
+
+/** 地址的主机名（小写）；解析不了 ⇒ ''。 */
+export function hostOf(url) {
+	try { return new URL(String(url ?? '').trim()).hostname.toLowerCase().replace(/^\[|\]$/g, ''); } catch { return ''; }
 }
 
 /**
@@ -136,7 +164,7 @@ export function createRuleReader(filePath) {
 	return {
 		path: () => filePath,
 		loaded: () => { const r = load(); return r.global.length > 0 || Object.keys(r.workspaces).length > 0; },
-		match: (toolName, command) => {
+		match: (toolName, command, host) => {
 			const rules = load();
 			// 只取 `global`：Host 侧没有工作区身份（`exec` 里只有 agent/session）⇒
 			// `workspaces[*]` 那一段在 Host 里**无法**正确归属，宁可不读（读错=把 A 工作区的授权用在 B 上 ✗）。
@@ -144,6 +172,10 @@ export function createRuleReader(filePath) {
 			const op = normalizeOp(command);
 			for (const entry of entries) {
 				if (entryMatches(entry, toolName, op)) { return entry; }
+			}
+			// ★ 2026-11-07：站点条目（`browser::click@github.com`），只在知道站点时才看
+			for (const entry of entries) {
+				if (siteEntryMatches(entry, toolName, op, host)) { return entry; }
 			}
 			return undefined;
 		},

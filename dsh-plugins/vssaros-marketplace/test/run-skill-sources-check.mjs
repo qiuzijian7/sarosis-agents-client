@@ -8,7 +8,7 @@
  * 跑法：node dsh-plugins/vssaros-marketplace/test/run-skill-sources-check.mjs
  */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -44,9 +44,18 @@ ck('Hub 共 4 个且 id 唯一', () => {
 	assert.equal(SKILL_HUBS.length, 4);
 	assert.equal(new Set(SKILL_HUBS.map(h => h.id)).size, 4);
 });
-ck('Hub 的 repo 与 IDE 侧 BUILTIN_SKILL_HUBS 逐条一致', () => {
-	const ide = readFileSync(join(REPO, 'src/vs/sessions/contrib/agentStudio/common/skillHubTypes.ts'), 'utf8');
-	for (const hub of SKILL_HUBS) { assert.ok(ide.includes(`'${hub.repo}'`), `IDE 侧找不到 ${hub.repo}`); }
+// ★ P3（2026-11-07）：过渡期这里做的是「dsh 侧 SKILL_HUBS ↔ IDE 侧 BUILTIN_SKILL_HUBS」双跑对账。
+//   IDE 侧 Hub 定义与技能安装服务已整体删除 ⇒ 对账对象不存在，改成钉住 dsh 侧这份**唯一真源**
+//   （固定 4 条 + repo/branch 形状 + IDE 文件不许重建），等价覆盖不丢。
+ck('★ P3：Hub 清单是 dsh 侧唯一真源（IDE 侧定义已删除）', () => {
+	assert.deepEqual(SKILL_HUBS.map(h => h.id),
+		['anthropic-skills', 'hermes-skills', 'awesome-copilot', 'prompt-skills']);
+	for (const hub of SKILL_HUBS) {
+		assert.match(hub.repo, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, `repo 格式不对：${hub.repo}`);
+		assert.ok(hub.branch, `Hub ${hub.id} 缺 branch`);
+	}
+	assert.ok(!existsSync(join(REPO, 'src/vs/sessions/contrib/agentStudio/common/skillHubTypes.ts')),
+		'IDE 侧 Hub 定义文件仍在 ⇒ 又变成两份真源 ✗');
 });
 
 // ── ② frontmatter 规则（与 DSH 加载器同源） ───────────────────────

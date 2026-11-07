@@ -1,0 +1,98 @@
+{
+  "$comment": "群执行跨插件契约（2026-11-06）。写方：@vssaros/dsh-agents（lib/rooms.js 的 roundOutput / roundView）与 @vssaros/dsh-chat-surface（三个 window 事件）。读方：chat-surface、@vssaros/dsh-superagent（src/client/group-runs.tsx、flow-card.tsx）。改字段先改这里并升 version；守卫：dsh-plugins/check-bots-rooms.mjs（真 roomsApi 输出与真广播都按本文件校验）、vssaros-superagent/dev/tests/group-contract.spec.ts（读方按本文件的样例读）。校验器只支持 type / required / properties / enum / items / const，见 validate.mjs。",
+  "version": 1,
+  "statuses": ["sent", "replying", "done", "cut", "failed"],
+  "definitions": {
+    "round": {
+      "type": "object",
+      "required": ["schema", "callId", "roomId", "status", "statusLabel", "done", "startedAt", "finishedAt", "replies", "events", "speaking", "passed", "failed"],
+      "properties": {
+        "schema": { "type": "number", "const": 1 },
+        "callId": { "type": "string" },
+        "roomId": { "type": "string" },
+        "roomName": { "type": "string" },
+        "status": { "type": "string", "enum": ["sent", "replying", "done", "cut", "failed"] },
+        "statusLabel": { "type": "string" },
+        "done": { "type": "boolean" },
+        "phase": { "type": "string" },
+        "interrupted": { "type": "boolean" },
+        "error": { "type": "string" },
+        "startedAt": { "type": "number" },
+        "finishedAt": { "type": "number" },
+        "originTriggerId": { "type": "string" },
+        "fromSession": { "type": "string" },
+        "sourceMessageId": { "type": "string" },
+        "replies": { "type": "array", "items": { "type": "object", "required": ["name", "text"], "properties": { "botId": { "type": "string" }, "name": { "type": "string" }, "text": { "type": "string" }, "ms": { "type": "number" } } } },
+        "events": { "type": "array", "items": { "type": "object", "required": ["kind"], "properties": { "kind": { "type": "string", "enum": ["working", "missed", "failed", "passed", "paused", "resumed", "cut", "done", "approval", "ask"] }, "name": { "type": "string" }, "text": { "type": "string" }, "at": { "type": "number" }, "approvalId": { "type": "string" }, "askId": { "type": "string" }, "code": { "type": "string" } } } },
+        "background": { "$comment": "2026-11-07：这一轮转到后台继续干的成员名（不是没回复；干完会新开一轮把回复补发出来）", "type": "array", "items": { "type": "string" } },
+        "busy": { "$comment": "2026-11-07：现在还在后台干活的成员名（实时，干完就不在；有人在里面时这个群最近一轮一直在活动列表里，statusLabel 是「后台干活中」）。background 是这一轮结束时的快照", "type": "array", "items": { "type": "string" } },
+        "late": { "$comment": "2026-11-07：这一轮开头补发的、成员在后台干完的回复（群聊界面之前没显示过）", "type": "array", "items": { "type": "object", "properties": { "botId": { "type": "string" }, "name": { "type": "string" }, "text": { "type": "string" }, "at": { "type": "number" } } } },
+        "asks": { "$comment": "2026-11-07：群聊选择卡（成员调 group_ask，等用户选；只在等的时候有，重启不丢）；POST { action: 'ask-answer', id, answers: [{ id, selected, custom? }] } 或 { action: 'ask-answer', id, skip: true } 回答。这期间已结束轮次的 status 仍是 done，statusLabel 是「等你选择」", "type": "array", "items": { "type": "object", "required": ["id", "botId", "name", "questions"], "properties": { "id": { "type": "string" }, "roomId": { "type": "string" }, "botId": { "type": "string" }, "name": { "type": "string" }, "askedBy": { "type": "string" }, "at": { "type": "number" }, "questions": { "type": "array", "items": { "type": "object", "required": ["id", "question", "options"], "properties": { "id": { "type": "string" }, "question": { "type": "string" }, "header": { "type": "string" }, "detail": { "type": "string" }, "multiSelect": { "type": "boolean" }, "allowCustom": { "type": "boolean" }, "options": { "type": "array", "items": { "type": "object", "required": ["label"], "properties": { "label": { "type": "string" }, "description": { "type": "string" }, "recommended": { "type": "boolean" } } } } } } } } } },
+        "approvals": { "$comment": "2026-11-06：群成员等人确认的工具调用（只在等的时候有）；POST { action: 'approve', id, choice: 'allow' | 'reject' } 回答", "type": "array", "items": { "type": "object", "required": ["id", "code", "botId", "name", "tool"], "properties": { "id": { "type": "string" }, "code": { "type": "string" }, "botId": { "type": "string" }, "name": { "type": "string" }, "tool": { "type": "string" }, "detail": { "type": "string" }, "at": { "type": "number" } } } },
+        "speaking": { "type": "array", "items": { "type": "string" } },
+        "passed": { "type": "array", "items": { "type": "string" } },
+        "failed": { "type": "array", "items": { "type": "object", "required": ["name"], "properties": { "botId": { "type": "string" }, "name": { "type": "string" }, "reason": { "type": "string" } } } }
+      }
+    },
+    "relayResult": {
+      "$comment": "群会话里 group_relay 的工具结果（JSON 文本，永久留在会话里）；与 round 同口径，但用 room 代替 roomId / roomName",
+      "type": "object",
+      "required": ["schema", "callId", "status", "statusLabel", "done", "replies", "events", "passed", "failed"],
+      "properties": {
+        "schema": { "type": "number", "const": 1 },
+        "callId": { "type": "string" },
+        "room": { "type": "object", "required": ["id", "name"], "properties": { "id": { "type": "string" }, "name": { "type": "string" } } },
+        "status": { "type": "string", "enum": ["sent", "replying", "done", "cut", "failed"] },
+        "statusLabel": { "type": "string" },
+        "done": { "type": "boolean" },
+        "replies": { "type": "array" },
+        "events": { "type": "array" },
+        "passed": { "type": "array" },
+        "failed": { "type": "array" }
+      }
+    },
+    "activeResponse": {
+      "$comment": "GET /x/agents/api/rooms?active=1",
+      "type": "object", "required": ["ok", "active"],
+      "properties": { "ok": { "type": "boolean", "const": true }, "active": { "type": "array", "items": { "$ref": "round" } } }
+    },
+    "progressResponse": {
+      "$comment": "GET /x/agents/api/rooms?progress=<callId>；查不到时 progress 为 null",
+      "type": "object", "required": ["ok"],
+      "properties": { "ok": { "type": "boolean", "const": true }, "progress": { "$ref": "round", "nullable": true } }
+    },
+    "progressEvent": {
+      "$comment": "window 事件 vssaros-group-progress 的 detail；同时写进 window.__vssarosGroupProgress（只放 active 数组）",
+      "type": "object", "required": ["schema", "seq", "active"],
+      "properties": { "schema": { "type": "number", "const": 1 }, "seq": { "type": "number" }, "active": { "type": "array", "items": { "$ref": "round" } } }
+    },
+    "roomsChangedEvent": {
+      "$comment": "window 事件 vssaros-rooms-changed 的 detail：群列表指纹变了才发",
+      "type": "object", "required": ["schema", "rooms"],
+      "properties": { "schema": { "type": "number", "const": 1 }, "rooms": { "type": "array", "items": { "type": "object", "required": ["id"], "properties": { "id": { "type": "string" }, "name": { "type": "string" } } } } }
+    },
+    "dockVisibilityEvent": {
+      "$comment": "window 事件 vssaros-group-composer-dock-visibility 的 detail；当前可见的 roomId 列表同时写进 window.__vssarosGroupComposerDocks",
+      "type": "object", "required": ["schema", "visible", "roomId", "role"],
+      "properties": { "schema": { "type": "number", "const": 1 }, "visible": { "type": "boolean" }, "roomId": { "type": "string" }, "role": { "type": "string" } }
+    }
+  },
+  "examples": {
+    "round": {
+      "schema": 1, "callId": "call-example", "roomId": "room-example", "roomName": "番茄钟 H5 开发团队",
+      "status": "cut", "statusLabel": "已中断", "done": true, "phase": "cut", "interrupted": true, "error": "执行被重启打断",
+      "startedAt": 1000, "finishedAt": 9000, "originTriggerId": "superagent:desk:m-1", "fromSession": "desk-1", "sourceMessageId": "m-1",
+      "replies": [{ "botId": "designer", "name": "Designer", "text": "我先出交互稿", "ms": 1200 }],
+      "events": [{ "kind": "working", "text": "正在把消息交给群成员…" }, { "kind": "cut", "text": "群聊本轮被重启中断" }],
+      "speaking": [], "passed": [], "failed": []
+    }
+  },
+  "teamBus": {
+    "$comment": "globalThis[Symbol.for('vssaros.team')]，由 vssaros-agents/lib/teamBus.js 提供、superagent 的 Team 调用（文档，不做运行时校验）",
+    "version": 1,
+    "methods": {
+      "createGroup": "({ members, name, notice, mode, originTriggerId }) => GroupView；同一 originTriggerId 返回已有的群",
+      "listGroups": "() => GroupView[]"
+    }
+  }
+}

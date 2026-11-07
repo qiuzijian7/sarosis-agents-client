@@ -122,20 +122,6 @@ export type RequestType =
 	| 'orchestration.commentTask'
 	| 'orchestration.blockTask'
 	| 'orchestration.unblockTask'
-	| 'confightml.event'            // forward HTML event to agent/model
-	| 'confightml.getHtml'          // read agent's config.html content
-	| 'confightml.writeHtml'        // write agent's config.html content
-	| 'confightml.chatSend'         // send message to model (capability: chat.send)
-	| 'confightml.notify'           // show notification
-	| 'confightml.previewToFile'    // render & write a standalone .preview.html file
-	| 'confightml.htmlGenerate'    // ConfigHtml: ask the confightml skill to generate full HTML
-	| 'confightml.chatSendStream'  // send message with streaming delta callbacks
-	| 'confightml.chatCancelStream'// cancel an active stream session
-	| 'confightml.runTerminal'     // run a command (python/node/...) in integrated terminal
-	| 'confightml.kvGet'          // read a key-value pair from agent data store
-	| 'confightml.kvSet'          // write a key-value pair to agent data store
-	| 'confightml.kvDelete'       // delete a key from agent data store
-	| 'confightml.kvList'         // list keys with optional prefix
 	| 'files.open'                // open a file in the host editor as text
 	| 'files.openHtmlPreview'     // open an HTML file as a rendered webview preview
 	| 'files.openUntitledText'    // open an in-memory text buffer as an untitled editor
@@ -259,11 +245,6 @@ export type EventType =
 	| 'agentSessions.changed'      // agent session list changed (create/rename/delete/update)
 	| 'worktree.changed'          // git worktree list changed (create/remove) — refresh worktree dropdowns
 	| 'agent.worktree.changed'    // active agent's binding worktree changed (switch) — refresh dropdowns + tool roots
-	| 'confightml.htmlRendered'     // new HTML rendered (push to preview)
-	| 'confightml.command'          // model-issued command for HTML view
-	| 'confightml.error'           // sync/render error
-	| 'confightml.chatStreamDelta'  // stream delta from agent response
-	| 'confightml.chatStreamDone'   // stream complete (success or error)
 	| 'chat.toolApprovalRequest'
 	| 'chat.injectPrompt'        // host requests webview to inject a prompt into the chat (e.g. workflow run)
 	| 'workflow.nodeValuesRemote' // P2b（2026-09-13）：其它窗口改了同一节点的值（画布 tab ↔ 节点编辑器 tab 同步；接收端以 origin='external' 应用，不回发 → 防回环）

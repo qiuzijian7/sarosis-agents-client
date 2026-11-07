@@ -248,7 +248,7 @@ const settingsView = (): ApiResponse<'GET settings'> => ({
 const totals = (total = 0) => ({ calls: total ? 1 : 0, input: total, cacheRead: 0, cacheWrite: 0, output: 0, total })
 /** No usage yet. */
 export const emptyUsage = (): ApiResponse<'GET usage'> => ({ day: { since: '', total: totals(), byRole: { master: totals(), desk: totals(), worker: totals(),
-  step: totals() }, byModel: [], byBot: [], byTicket: [] }, week: totals(), steward: [] })
+  step: totals() }, byModel: [], byBot: [], byTicket: [], relays: { resent: 0, side: 0, sessions: [] } }, week: totals(), steward: [], coexist: {}, sideCalls: true })
 const overviewView = (): ApiResponse<'GET overview'> => {
   const { problem, feishuProblem } = server.setup
   const setup = problem ?? feishuProblem
@@ -279,7 +279,7 @@ export const acceptDecision = (): NonNullable<TicketPageView['decision']> => ({ 
   reason: [{ code: 'explicitRouted' }], at: '2026-09-22T00:00:00Z', strength: 'explicit', ticketId: undefined,
   triggerIds: ['e1'], thread: 'feishu:oc_1:om_root', rules: [], preview: '@bot 修一下', ticketTitle: undefined })
 const ticketDetail = (): TicketPageView => ({
-  ...ticketSummary(), paused: false, decision: acceptDecision(), threads: [threadSummary()],
+  ...ticketSummary(), paused: false, decision: acceptDecision(), threads: [threadSummary()], relays: { resent: 0, side: 0, sessions: [] }, coexist: {},
   mandate: { strength: 'explicit', policyVersion: 'abcdef1234567890', basis: { via: 'addressed', sender: 'Alice', addressed: 'mention' },
     actor: actor('feishu', MEMBER), scope: '修复登录页回归' },
   basis: { facts: [{ name: 'sender', value: 'Alice' }, { name: 'addressed', value: 'mention' }], legacy: false },

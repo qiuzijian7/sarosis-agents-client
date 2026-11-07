@@ -27,8 +27,8 @@ interface AgentPreset {
 	source?: string;
 }
 
-/** Default skills applied to every preset-created agent (host also applies these). */
-const PRESET_DEFAULT_SKILL_IDS: readonly string[] = ['confightml'];
+// ★ 2026-11-07（移除 config.html）：预设默认技能里的 "confightml" 已删除；
+//   预设自带技能仍由 selectedPreset.skills 提供（下方 pushSkill 保留）。
 
 // Removed hardcoded AGENT_PRESETS — presets are now fetched via
 // sendRequest('agents.presets') from the host, which scans
@@ -166,7 +166,6 @@ export function CreateAgentModal({ isOpen, onClose, workspaceId }: CreateAgentMo
 				skills.push(id);
 			};
 			selectedPreset?.skills?.forEach(pushSkill);
-			PRESET_DEFAULT_SKILL_IDS.forEach(pushSkill);
 
 			const data: Partial<Agent> = {
 				name: name.trim(),

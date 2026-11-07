@@ -132,7 +132,11 @@ export function subagentRuntime(agents: Map<string, FakeAgent>) {
 }
 
 /** @param seed - writes to the database before the Runtime opens it, such as records an earlier version stored. */
-export async function startRuntime(seed?: (store: Store) => void, options: { staffing?: boolean } = {}) {
+/**
+ * @param options.before - VsSaros addition (2026-11-07): runs on the Host's root context before SuperAgent starts, as a
+ *   plugin the Host loaded earlier (tests/dsb-coexist.spec.ts installs DS Bot there).
+ */
+export async function startRuntime(seed?: (store: Store) => void, options: { staffing?: boolean; before?: (ctx: Context) => void } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'orchestrator-host-'))
   const AGENT = join(directory, 'agent-gh'), BOT = join(directory, 'lark-bot')
   const repository = { default_branch: 'master', permissions: { push: true } }
@@ -164,6 +168,7 @@ export async function startRuntime(seed?: (store: Store) => void, options: { sta
   /** Each Session's next step, which takes the messages that wait for one. */
   const steps = new Map<string, () => void>(), claims = new Map<string, () => void>()
   const tools = new Map<string, Map<string, RegisteredTool>>()
+  const skills = new Map<string, { name: string; description: string }[]>(), sections = new Map<string, { name?: string; text: unknown }[]>()
   const deliveries = vi.fn<(request: Delivery) => void>()
   let http!: HttpHandler
   const resolveDefault = async (id: string) => agents.has(id) ? { agent: agents.get(id) } : { error: { code: 'session/not-found' } }
@@ -175,8 +180,11 @@ export async function startRuntime(seed?: (store: Store) => void, options: { sta
       tools.set(sessionId, sessionTools)
       const register = (tool: RegisteredTool) => { sessionTools.set(tool.name, tool); return () => sessionTools.delete(tool.name) }
       agentCtx.reflect.provide('tools', { register, get: () => undefined, restrict: vi.fn(() => () => {}), guard: vi.fn(() => () => {}) })
-      agentCtx.reflect.provide('skills', { register: () => () => {} })
-      agentCtx.reflect.provide('systemPrompt', { section: () => () => {} })
+      // VsSaros addition (2026-11-07): what SuperAgent put into each Session's prompt and skills (tests/dsb-coexist.spec.ts).
+      const ownSkills: { name: string; description: string }[] = [], ownSections: { name?: string; text: unknown }[] = []
+      skills.set(sessionId, ownSkills); sections.set(sessionId, ownSections)
+      agentCtx.reflect.provide('skills', { register: (skill: { name: string; description: string }) => { ownSkills.push(skill); return () => {} } })
+      agentCtx.reflect.provide('systemPrompt', { section: (spec: { name?: string; text: unknown }) => { ownSections.push(spec); return () => {} } })
       const inbox = { nextTurn: [] as UserMessage[], nextStep: [] as UserMessage[],
         // A pending message taken out, as DSH's inbox does by its id.
         remove: (id: string) => [inbox.nextTurn, inbox.nextStep].some(list => {
@@ -249,6 +257,7 @@ export async function startRuntime(seed?: (store: Store) => void, options: { sta
   seeded.saveSettings(SettingsSchema.parse({ ...seeded.settings(), sources }))
   seed?.(seeded)
   seeded.close()
+  options.before?.(ctx)
   const runtime = new Runtime(ctx, testMachine({ stateDir: directory }), vi.fn())
   await runtime.ready
   runtime.sources.register(feishuKind); runtime.sources.register(githubKind)
@@ -295,7 +304,7 @@ export async function startRuntime(seed?: (store: Store) => void, options: { sta
   const step = (sessionId: string) => { steps.get(sessionId)!() }
   /** A step of the worker claims what waits for it, and is cut off before the Session took it. */
   const claim = (sessionId: string) => { claims.get(sessionId)!() }
-  return { runtime, ctx, directory, agents, tools, deliveries, relays, candidates, runTool, route, acceptedTicket, api, controller, subprocess, hooks, resolveDefault, stop,
+  return { runtime, ctx, directory, agents, tools, skills, sections, deliveries, relays, candidates, runTool, route, acceptedTicket, api, controller, subprocess, hooks, resolveDefault, stop,
     jobs, subagents, step, claim }
 }
 export type Host = Awaited<ReturnType<typeof startRuntime>>

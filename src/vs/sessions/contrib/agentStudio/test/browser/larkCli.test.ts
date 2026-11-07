@@ -267,7 +267,7 @@ suite('飞书 CLI · 聊天框 Channel 绑定页签接线守卫', () => {
 				`${name} 不得 import contrib/agentStudio/browser/**（会破坏 sessions/browser 的分层）✗✓`);
 		}
 		assert.ok(base.includes('contrib/agentStudio/common/larkCli.js'),
-			'契约类型必须来自 common 层（先例：configHtmlConfig.js）✓');
+			'契约类型必须来自 common 层（先例：nativeBridge.js）✓');
 		assert.ok(dd.includes('contrib/agentStudio/common/larkCli.js'),
 			'纯函数（larkCliStatusBadge）与命令常量必须来自 common 层 ✓');
 	});

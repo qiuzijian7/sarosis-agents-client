@@ -8,7 +8,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { FileAccess, type AppResourcePath } from '../../../../../base/common/network.js';
 import type { IFileService } from '../../../../../platform/files/common/files.js';
 import type { INativeEnvironmentService } from '../../../../../platform/environment/common/environment.js';
-import { nodeExecPath } from '../../common/configHtmlConfig.js';
+import { nodeExecPath } from '../../common/nativeBridge.js';
 
 /**
  * 知识库 → 飞书同步：核心工具集（内置脚本定位 / CLI 检测 / 参数拼装）。

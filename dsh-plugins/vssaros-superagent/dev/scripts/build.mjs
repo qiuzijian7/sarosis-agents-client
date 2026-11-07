@@ -13,6 +13,9 @@
 // hash of its files. A build whose lib/ differs from the last one under the same version fails ("bump the version": the
 // Host refreshes an installed plugin only on a new version, so the change would not take effect), and `--check` fails when
 // the manifest's hash is not lib/'s or its version is not package.json's.
+//
+// VsSaros addition (2026-11-07): `--check` also fails when doc/superagent-framework-v2.html is not for this version (its
+// `data-baseline` and the end of its 15.0 heading), so the doc cannot drift behind the code again.
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -41,6 +44,26 @@ function hashOf(dir) {
   return `sha256:${hash.digest('hex')}`
 }
 const manifestOf = dir => { try { return JSON.parse(readFileSync(join(dir, MANIFEST), 'utf8')) } catch { return undefined } }
+/**
+ * VsSaros addition (2026-11-07, doc version guard): the design doc's code baseline must be the package's version, as the
+ * manifest's is — it says so twice, `data-baseline="<version>"` on its baseline tag and the end of its 15.0 heading's range
+ * (「15.0 · 0.1.56 – <version> …」). Concurrent work bumped the version without the doc (0.1.62 in the doc at 0.1.65).
+ * A checkout without the doc (the plugin outside this repository) has nothing to check.
+ * @returns why the doc is not for this version, or undefined.
+ */
+function docBaselineProblem(text = readDoc(), version = versionOf()) {
+  if (text === undefined) return undefined
+  const declared = /data-baseline="([^"]+)"/.exec(text)?.[1]
+  const range = /<h3>15\.0 · \S+ – (\S+)/.exec(text)?.[1]
+  if (declared === version && range === version) return undefined
+  return `${DOC_NAME} says baseline ${declared ?? '(none)'} and 15.0 up to ${range ?? '(none)'}, but dsh-plugins/vssaros-superagent is ${version}:`
+    + ` update its data-baseline, its 15.0 heading, and 15.0's rows for what changed`
+}
+const DOC_NAME = 'doc/superagent-framework-v2.html'
+function readDoc() {
+  const path = join(DEV, '..', '..', '..', DOC_NAME)
+  return existsSync(path) ? readFileSync(path, 'utf8') : undefined
+}
 /** Runs tsdown from this workspace; it writes ../lib. */
 function build() {
   const bin = join(DEV, 'node_modules', 'tsdown', 'dist', 'run.mjs')
@@ -57,7 +80,9 @@ if (!existsSync(join(DEV, 'node_modules', 'tsdown'))) {
     const manifest = manifestOf(LIB)
     const ok = manifest && manifest.hash === hashOf(LIB) && manifest.version === versionOf()
     console.warn(`⚠ dsh-plugins/vssaros-superagent/lib: NOT rebuilt (DSH_SUPERAGENT_ALLOW_NO_TOOLCHAIN=1); ${message}. Manifest ${ok ? 'matches' : 'does NOT match'} lib/ and package.json.`)
-    process.exit(ok ? 0 : 1)
+    const doc = docBaselineProblem()
+    if (doc) console.error(`✗ ${doc}`)
+    process.exit(ok && !doc ? 0 : 1)
   }
   console.error(`✗ dsh-plugins/vssaros-superagent/lib: cannot be checked, ${message}. (Set DSH_SUPERAGENT_ALLOW_NO_TOOLCHAIN=1 to check only its manifest.)`)
   process.exit(1)
@@ -93,7 +118,13 @@ try {
       console.error('Run: node dsh-plugins/vssaros-superagent/dev/scripts/build.mjs')
       process.exitCode = 1
     } else console.log(`dsh-plugins/vssaros-superagent/lib matches dev/src (${after.length} files, version ${version})`)
-  } else console.log(`built dsh-plugins/vssaros-superagent/lib: ${filesOf(LIB).length} files`)
+    const doc = docBaselineProblem()
+    if (doc) { console.error(`✗ ${doc}`); process.exitCode = 1 } else if (readDoc() !== undefined) console.log(`${DOC_NAME} is for version ${version}`)
+  } else {
+    console.log(`built dsh-plugins/vssaros-superagent/lib: ${filesOf(LIB).length} files`)
+    const doc = docBaselineProblem()
+    if (doc) console.warn(`⚠ ${doc} (build.mjs --check fails until it is)`)
+  }
 } catch (error) {
   restore = true
   throw error

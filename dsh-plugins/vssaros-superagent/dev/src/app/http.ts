@@ -93,7 +93,7 @@ export interface HttpHost {
   /** VsSaros addition (plan C): team steps' requests waiting for a person, and remembered answers. */
   readonly stepApprovals: Pick<StepApprovals, 'list' | 'answer' | 'rules' | 'forget' | 'applyTemplate'>
   /** VsSaros addition (2026-11-06): the usage ledger and the context steward. */
-  readonly usage: Pick<UsageLedger, 'summary'>
+  readonly usage: Pick<UsageLedger, 'summary' | 'relaysOf'>
   readonly steward: Pick<ContextSteward, 'list'>
   /** VsSaros addition (plan C): changes pushed to open pages, and where one desk message stands. */
   readonly feed: Pick<Feed, 'attach' | 'close'>
@@ -175,7 +175,9 @@ export type StateView = ReturnType<typeof stateView>
 function ticketPage(runtime: HttpHost, id: string) {
   const detail = ticketDetail(views(runtime), id), ticket = runtime.store.tickets.get(id)
   if (!detail || !ticket) throw new RouteError(404, 'Ticket not found')
-  return { ...detail, environment: runtime.configured() ? runtime.ticketEnvironment(ticket) : [] }
+  return { ...detail, environment: runtime.configured() ? runtime.ticketEnvironment(ticket) : [],
+    // VsSaros addition (2026-11-07): calls another plugin (DS Bot) made inside this ticket's Sessions: sent again or on the side.
+    relays: runtime.usage.relaysOf(id), coexist: runtime.coexist?.() ?? {} }
 }
 export type TicketPageView = ReturnType<typeof ticketPage>
 function promptsView(runtime: HttpHost, revision: number | undefined, offset: number) {
@@ -310,7 +312,9 @@ function routes(runtime: HttpHost): Routes {
     },
     'GET usage': () => {
       const day = new Date(Date.now() - 86_400_000).toISOString(), week = new Date(Date.now() - 7 * 86_400_000).toISOString()
-      return { day: runtime.usage.summary(day), week: runtime.usage.summary(week).total, steward: runtime.steward.list() }
+      return { day: runtime.usage.summary(day), week: runtime.usage.summary(week).total, steward: runtime.steward.list(),
+        // VsSaros addition (2026-11-07): who the relayed calls (`day.relays`) are from, and whether side calls are refused.
+        coexist: runtime.coexist?.() ?? {}, sideCalls: runtime.store.settings().executor.sideCalls }
     },
     'POST steps/rules/:id/delete': ({ params }) => { runtime.stepApprovals.forget(params.id); return { deleted: true as const } },
     'POST tickets/:id/steps/:key/stop': async ({ params }) => {

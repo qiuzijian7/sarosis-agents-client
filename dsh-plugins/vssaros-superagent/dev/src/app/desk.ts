@@ -175,7 +175,37 @@ export function receiptText(views: readonly (ReceiptView | undefined)[]): string
 interface StreamMessage { id?: unknown; role?: unknown; source?: { kind?: unknown }; toolCallId?: unknown; content?: unknown; isError?: unknown }
 interface StreamOptions { sessionId?: unknown; purpose?: unknown; messages?: readonly StreamMessage[]; tools?: readonly { name?: unknown }[] }
 /** What the desk's stream needs: the desk's id, and which ticket's end a delivered message tells (desk outbox). */
-export interface DeskStreamHost { deskId: string; ticketEndedOf(messageId: string): string | undefined }
+export interface DeskStreamHost {
+  deskId: string
+  ticketEndedOf(messageId: string): string | undefined
+  /**
+   * VsSaros addition (2026-11-07): resolves once the person's message (by its DSH message id) was handed over as it arrived
+   * (or after a bounded wait), so the turn's own `superagent_submit` finds it handed over and never races the group paths.
+   * Without it, a turn of the person's messages goes to the desk's model as before.
+   */
+  handedOver?(messageId: string): Promise<void>
+  /** The desk's one line for a `superagent_submit` result: where the message went. */
+  submitLine?(result: SubmitResult): Promise<string>
+}
+/** What `superagent_submit` returns, as the desk's line reads it. */
+export interface SubmitResult { submitted?: boolean; result?: string; trigger?: string }
+/** Tool-call ids of the `superagent_submit` calls `deskReceiptStream` makes, so it knows its own results. */
+export const SUBMIT_CALL_PREFIX = 'toolu_superagent_submit_'
+const SUBMIT_TOOL = 'superagent_submit'
+
+/** Where a desk message went, as the desk's line reads it. */
+export interface SubmitView { result?: string; route?: { roomName: string; kind: 'created' | 'routed' | 'updated' }; filtered?: boolean; tickets?: readonly string[] }
+/** The desk's line for a message it handed over (no model): the flow card above it shows the rest. */
+export function submitText(view: SubmitView | undefined): string {
+  if (!view?.result) return '这条消息没能交给主管，可以再发一次。'
+  if (view.result === 'filtered' || view.filtered) return '这条消息没交给主管：主管台在 superagent 来源里没有放行，可以到 SuperAgent 设置里查看。'
+  if (view.route) {
+    const name = `「${view.route.roomName}」`
+    return view.route.kind === 'created' ? `已建群${name}，群里的 Bots 接着做。` : view.route.kind === 'updated' ? `已更新群${name}。` : `已转给群${name}。`
+  }
+  if (view.tickets?.length) return `已转给正在做的工单${view.tickets.map(title => `「${title}」`).join('、')}。`
+  return '主管收到了，需要你回复的消息会发到这里。'
+}
 
 const textOf = (message: StreamMessage): string => {
   const content = message.content
@@ -210,9 +240,30 @@ export function deskReceiptStream(host: DeskStreamHost, uuid: () => string = ran
       let start = last
       while (start > 0 && messages[start - 1]?.role === 'tool') start -= 1
       const results = messages.slice(start, last + 1)
-      const ours = results.every(message => typeof message.toolCallId === 'string' && message.toolCallId.startsWith(RECEIPT_CALL_PREFIX))
-      if (!ours || fresh.length) return next()
+      const callOf = (prefix: string) => results.every(message => typeof message.toolCallId === 'string' && message.toolCallId.startsWith(prefix))
+      if (fresh.length) return next()
+      if (callOf(SUBMIT_CALL_PREFIX) && host.submitLine) {
+        const line = host.submitLine
+        const parsed = (() => { try { return JSON.parse(textOf(results.at(-1)!).trim()) as SubmitResult } catch { return {} } })()
+        return (async function* submitted() { yield* say(await line(results.at(-1)!.isError === true ? {} : parsed)) })()
+      }
+      if (!callOf(RECEIPT_CALL_PREFIX)) return next()
       return say(receiptText(results.map(parseView)))
+    }
+    // VsSaros addition (2026-11-07): a turn of nothing but the person's own messages hands them over with no model (each was
+    // handed over as it arrived already; the call keeps the flow card), then says where it went. 6.8万 tokens a message before.
+    if (fresh.length && fresh.every(message => message.source?.kind === 'user')) {
+      const latest = fresh.at(-1)!
+      if (!host.handedOver || typeof latest.id !== 'string' || !(options.tools ?? []).some(tool => tool?.name === SUBMIT_TOOL)) return next()
+      const handedOver = host.handedOver, messageId = latest.id
+      const id = `${SUBMIT_CALL_PREFIX}${uuid().replace(/-/g, '')}`
+      return (async function* submitCall() {
+        await handedOver(messageId)
+        yield { type: 'block-start', index: 0, blockType: 'tool-call' }
+        yield { type: 'tool-call-delta', index: 0, id, name: SUBMIT_TOOL, argumentsDelta: '{}' }
+        yield { type: 'block-end', index: 0, block: { type: 'tool-call', id, name: SUBMIT_TOOL, arguments: '{}' } }
+        yield { type: 'finish', reason: { kind: 'tool-calls' } }
+      })()
     }
     if (!fresh.length || fresh.some(message => message.source?.kind === 'user')) return next()
     const tickets = fresh.map(message => typeof message.id === 'string' ? host.ticketEndedOf(message.id) : undefined)
@@ -228,6 +279,22 @@ export function deskReceiptStream(host: DeskStreamHost, uuid: () => string = ran
       }
       yield { type: 'finish', reason: { kind: 'tool-calls' } }
     })()
+  }
+}
+
+/**
+ * VsSaros fix (2026-11-07, real machine, found by `dev/scripts/e2e-dsb-coexist.mjs`): the desk masks every tool, `skill` too,
+ * but its first step ran before the mask, so DSH's `dsh-tool-skill` put the profile's whole skill catalog into its history
+ * (173 skills, 72 KB, DS Bot's among them) and every later desk call carried it. The desk uses no skill: this `llm/stream`
+ * listener drops skill catalog messages from every request of the desk, the one already in its history too.
+ */
+export function deskWithoutCatalog(deskId: string) {
+  const catalog = (message: unknown) => (message as { source?: { kind?: unknown } } | undefined)?.source?.kind === 'skill-catalog'
+  return (options: { sessionId?: unknown; messages?: readonly unknown[] } | undefined, next: () => unknown): unknown => {
+    if (options?.sessionId === deskId && Array.isArray(options.messages) && options.messages.some(catalog)) {
+      try { (options as { messages: unknown[] }).messages = options.messages.filter(message => !catalog(message)) } catch { /* frozen: sent as it is */ }
+    }
+    return next()
   }
 }
 

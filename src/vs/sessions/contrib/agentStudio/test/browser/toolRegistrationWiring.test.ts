@@ -38,10 +38,8 @@ import * as mBundled from '../../browser/providers/tool/bundledTools.js';
 import * as mCanvas from '../../browser/providers/tool/canvasTools.js';
 import * as mCodebase from '../../browser/providers/tool/codebaseTools.js';
 import * as mCompat from '../../browser/providers/tool/compatibilityTools.js';
-import * as mCore from '../../browser/providers/tool/coreTools.js';
 import * as mDelegation from '../../browser/providers/tool/delegationTools.js';
 import * as mDrawio from '../../browser/providers/tool/drawioTools.js';
-import * as mHandoff from '../../browser/providers/tool/handoffTools.js';
 import * as mImageGen from '../../browser/providers/tool/imageGenTools.js';
 import * as mKanban from '../../browser/providers/tool/kanbanTools.js';
 import * as mKbFeishuSync from '../../browser/providers/tool/kbFeishuSyncTools.js';
@@ -49,10 +47,9 @@ import * as mKbOrganize from '../../browser/providers/tool/kbOrganizeTools.js';
 import * as mKbVault from '../../browser/providers/tool/kbVaultRecallTools.js';
 import * as mMediaGen from '../../browser/providers/tool/mediaGenTools.js';
 import * as mMemory from '../../browser/providers/tool/memoryTools.js';
-import * as mMermaid from '../../browser/providers/tool/mermaidTools.js';
 import * as mMindmap from '../../browser/providers/tool/mindmapTools.js';
-import * as mPlanExplore from '../../browser/providers/tool/planExploreTool.js';
-import * as mPlanMode from '../../browser/providers/tool/planModeTools.js';
+// ★ 2026-11-07（IDE agent loop 下线 · Step 1）：`planExploreTool.ts` 已退役 ——
+//   builtinToolProvider 删除后它零生产引用，只剩本扫描表引用它。
 import * as mRoutine from '../../browser/providers/tool/routineCrystalFacetTools.js';
 import * as mScheduler from '../../browser/providers/tool/schedulerTools.js';
 import * as mSessionSearch from '../../browser/providers/tool/sessionSearchTools.js';
@@ -61,14 +58,15 @@ import * as mUnifiedMemory from '../../browser/providers/tool/unifiedMemoryTools
 // ★ 2026-10-13：`unrealTools` **已删除** ✗（unreal 族整份下移到 dsh 侧 `@vssaros/dsh-unreal`）
 // ⇒ 从本扫描表里一并移除 ✓（它检的是"IDE 侧工具模块有没有漏接线" ✓ —— 模块没了就没有可查的 ✓）。
 import * as mFeishuDrive from '../../browser/providers/tool/feishuDriveTools.js';
-import * as mProcess from '../../browser/providers/tool/processTools.js';
 import * as mKbBuild from '../../browser/providers/tool/kbBuildTools.js';
 import * as mVideoAnalyze from '../../browser/providers/tool/videoAnalyzeTools.js';
 import * as mVideoFrame from '../../browser/providers/tool/videoFrameTools.js';
 import * as mVision from '../../browser/providers/tool/visionAnalyzeTools.js';
 import * as mWeb from '../../browser/providers/tool/webTools.js';
-import * as mWorkflowTool from '../../browser/providers/tool/workflowTool.js';
 import * as mWorkflow from '../../browser/providers/tool/workflowTools.js';
+// ★ 2026-11-07（P3 / agent loop 下线）：handoffTools / planModeTools / workflowTool
+//   三个 provider 实现零生产引用（builtinToolProvider 已删），仅本扫描表引用 ⇒ 一并退役。
+// ★ 第二批：coreTools / mermaidTools / processTools 同上（共 2068 行零生产引用实现）。
 
 const MODULES: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
 	// 2026-10-17（5.5 前置）：退役的模块从 MODULES 清单摘掉——它们的注册注释掉了（builtinToolProvider
@@ -80,15 +78,13 @@ const MODULES: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
 	//   resolveScrapeSessionId ✓）⇒ ④ 要检它 ✓。
 	['bundledTools', mBundled], ['canvasTools', mCanvas],
 	['kanbanTools', mKanban],
-	['compatibilityTools', mCompat], ['coreTools', mCore],
-	['delegationTools', mDelegation], ['drawioTools', mDrawio], ['handoffTools', mHandoff],
+	['compatibilityTools', mCompat],
+	['delegationTools', mDelegation], ['drawioTools', mDrawio],
 	// ★ 2026-09-24：kb_feishu_sync / kb_feishu_spaces / kb_organize 三个工具此前**漏接本扫描**
 	// （文件有 register*Tools 导出但不在 MODULES）⇒ ①②③ 对它们长期失效；断言④正是为抓这个而存在。
-	['processTools', mProcess], ['kbFeishuSyncTools', mKbFeishuSync], ['kbOrganizeTools', mKbOrganize], ['kbVaultRecallTools', mKbVault],
-	['mermaidTools', mMermaid],
-	['mindmapTools', mMindmap], ['planExploreTool', mPlanExplore], ['planModeTools', mPlanMode],
+	['kbFeishuSyncTools', mKbFeishuSync], ['kbOrganizeTools', mKbOrganize], ['kbVaultRecallTools', mKbVault],
+	['mindmapTools', mMindmap],
 	['webTools', mWeb],
-	['workflowTool', mWorkflowTool],
 ];
 
 const ROOT = process.cwd();
@@ -130,8 +126,12 @@ async function sweepRegistrations(): Promise<ReadonlyMap<string, string>> {
 	//   `providers/tool/*.ts`）后实测只有 **52** 个，旧阈值恒红（消息模板还写着"为 0 说明代理 ctx 失效"，
 	//   容易被误读成代理坏了 ✗）。判据本意是"防空跑"：只要明显多于 0 且贴着实测留余量即可。
 	//   若工具面再扩/缩，跟着实测调这个数（并在 PR 里写清为什么）。
-	assert.ok(registrations.size >= 45,
-		`扫描必须真的注册到工具（实际 ${registrations.size} 个，期望 ≥45）—— 远低于此说明代理 ctx 失效，整条守卫变假绿`);
+	// ⚠ 2026-11-07（IDE agent loop 下线 · Step 5 第二批）：`builtinToolProvider` 删除后
+	//   `coreTools` / `mermaidTools` / `processTools` 三个 provider 零生产引用、仅本扫描表引用，
+	//   已整体退役 ⇒ 实测注册数 41。按上一条的约定把阈值 45 → **35**（仍远大于 0，
+	//   "代理 ctx 失效"的假绿依旧能被抓到 ✓）。这不是放松判据，是跟着真实工具面校准。
+	assert.ok(registrations.size >= 35,
+		`扫描必须真的注册到工具（实际 ${registrations.size} 个，期望 ≥35）—— 远低于此说明代理 ctx 失效，整条守卫变假绿`);
 	return registrations;
 }
 

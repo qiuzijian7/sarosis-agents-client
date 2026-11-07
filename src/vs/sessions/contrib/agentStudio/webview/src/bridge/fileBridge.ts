@@ -34,13 +34,7 @@ export async function openFile(path: string, options?: OpenFileOptions): Promise
 }
 
 /**
- * Open the agent's ConfigHtml source file (`config.html` by default) in the
- * host's center editor area.
- */
-export async function openAgentConfigHtml(agentId: string, options?: OpenFileOptions): Promise<void> {
-	await sendRequest('files.open', { agentId, kind: 'configHtml', ...options });
-}
-
+// ★ 2026-11-07（移除 config.html）：`openAgentConfigHtml` 已删（零调用方）。
 /**
  * Open an HTML file as a rendered webview preview in the host's center editor
  * area (browser-like view, not source code text).
@@ -70,60 +64,8 @@ export async function openHtmlPreview(
 }
 
 /**
- * Render the agent's ConfigHtml into a standalone HTML preview file
- * (`<agentDir>/.preview.html`), then open it as a rendered webview preview
- * in the host's center editor area. Returns the absolute path of the file.
- *
- * Captures the current chat/workspace context at call time so the preview's
- * imgui submits can be routed back to the same Fork session even after the
- * user changes selection in the chat panel.
- */
-export async function previewAgentConfigHtml(
-	agentId: string,
-	options?: OpenFileOptions,
-): Promise<string> {
-	const r = await sendRequest('confightml.previewToFile', { agentId }) as { path: string };
-	if (!r?.path) {
-		throw new Error('previewToFile did not return a path');
-	}
+// ★ 2026-11-07（移除 config.html）：`previewAgentConfigHtml` 已删（零调用方）。
 
-	// Best-effort context capture. The stores are imported lazily because
-	// fileBridge is loaded very early — direct top-level imports would risk
-	// circular initialization order issues in the bundle.
-	let workspaceId: string | undefined;
-	let workspaceSessionId: string | undefined;
-	let agentSessionId: string | undefined;
-	try {
-		const { useWorkspaceStore } = require('../store/useWorkspaceStore');
-		workspaceId = useWorkspaceStore.getState().activeWorkspaceId ?? undefined;
-	} catch { /* store unavailable in this entry point */ }
-	try {
-		const { useWorkspaceSessionStore } = require('../store/useWorkspaceSessionStore');
-		const sessionStore = useWorkspaceSessionStore.getState();
-		// Only meaningful in Fork mode (Root mode has activeSessionId === null).
-		workspaceSessionId = sessionStore.activeSessionId ?? undefined;
-		// Prefer the per-Fork agentSessionId mapping if available; this is
-		// how the webview maps (agent, fork) → that fork's chat session.
-		const forkAgentSessionId = sessionStore.getAgentSessionId(agentId);
-		if (forkAgentSessionId) {
-			agentSessionId = forkAgentSessionId;
-		}
-	} catch { /* store unavailable */ }
-	// Chat panel session ID lookup removed — chat is now handled natively
-	// by NativeChatEditorPane. The host resolves agent session IDs directly.
-
-	await sendRequest('files.openHtmlPreview', {
-		path: r.path,
-		agentId,
-		workspaceId,
-		workspaceSessionId,
-		agentSessionId,
-		...options,
-	});
-	return r.path;
-}
-
-/**
  * Open an in-memory text buffer as an *untitled* editor in the host's
  * center editor area. The buffer lives only in the editor model — nothing
  * is read from or written to disk — so it cannot overwrite an existing

@@ -157,7 +157,7 @@ export function parseVersion(raw?: string): [number, number, number] | undefined
 //
 // ★ 为什么放 common：聊天框面板在 `sessions/browser` 层，**不能反向依赖**
 //   `contrib/agentStudio` 的 browser 实现（见 `agentChatPanel.base.ts` 里的分层注释）；
-//   但 common 层可以依赖（先例：`configHtmlConfig.ts` 被两边共用）。
+//   但 common 层可以依赖（先例：`nativeBridge.ts` 被两边共用）。
 //   ⇒ 面板只认这些结构类型，真正的实现由 host（`nativeChatEditorPane.ts`）注入回调完成。
 
 /** 「获取 chat_id」列表里的一行（由 host 用渠道凭证查飞书群列表后给出）。 */

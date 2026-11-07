@@ -101,13 +101,21 @@
           "action",
           "amount",
           "append",
+          "confirm",
           "delayMs",
           "direction",
           "done",
           "expression",
+          "format",
+          "fullPage",
+          "goal",
           "key",
+          "label",
           "max",
+          "maxSteps",
           "op",
+          "page",
+          "quality",
           "ref",
           "regex",
           "selector",
@@ -117,7 +125,7 @@
           "url",
           "urlContains"
         ],
-        "descriptionHash": "e4bdfecc2b55"
+        "descriptionHash": "0c832603fd56"
       }
     ],
     "vssaros-codebase": [

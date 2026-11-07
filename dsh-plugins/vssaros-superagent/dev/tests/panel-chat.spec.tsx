@@ -25,7 +25,7 @@ it('opens on the Chat tab with the Overview in the side panel, and the header op
   localStorage.clear()
   await mount()
   expect(tab(zh['tab.chat']).getAttribute('aria-selected')).toBe('true')
-  expect(all('[role="tab"]').map(item => item.textContent)).toEqual(['对话', '工作台', '来源', '触发', '评估', '执行', '设置'])
+  expect(all('[role="tab"]').map(item => item.textContent)).toEqual(['对话', '来源', '触发', '评估', '执行', '设置'])
   expect(text()).toContain(zh['chat.empty'])
   const side = () => document.querySelector('.dt-side')
   expect(side()?.textContent).toContain(zh.pendingTickets)

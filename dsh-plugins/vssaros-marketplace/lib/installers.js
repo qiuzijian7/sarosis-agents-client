@@ -28,7 +28,7 @@ import { listTarGzEntries } from './tar.js';
  * 落数据根的商品类型。
  *
  * ★ 2026-10-22 晚：**agent 也搬进来了**（用户要求"继续搬 agent"）。
- *   取证结论：agent 的本地形态极简 —— `<数据根>/agents/<id>/.agent.md`（外加可选 config.html），
+ *   取证结论：agent 的本地形态极简 —— `<数据根>/agents/<id>/.agent.md`（config.html 属历史遗留，2026-11-07 起不再写入），
  *   而 `.agent.md` 的 frontmatter 就含完整定义（id/name/tools/skills/role…）⇒
  *   **能像 skill 一样解包落盘**，不需要 IDE 的 `createAgent`。
  *
@@ -85,9 +85,9 @@ export function targetRootOf(dataRoot, kind) {
  * 把 agent 包**规范化**成"磁盘上该有的样子"（★ 2026-10-22）。
  *
  * 两种包格式都要认（见 `BUNDLE_KINDS` 的注释）：
- *   · 有 `agent.json` ⇒ 从 `files.agentsMd` 取出 `.agent.md` 全文；
- *     `files.configHtml` / `files.htmlContent` 落成 `config.html`（与 IDE 侧
- *     `agentInstaller.install` 写的是同一个文件 ✓）
+ *   · 有 `agent.json` ⇒ 从 `files.agentsMd` 取出 `.agent.md` 全文。
+ *     ★ 2026-11-07（移除 config.html）：旧包的 `files.configHtml` / `files.htmlContent`
+ *     不再落成 `config.html`；包内自带的 `config.html` 文件仍原样安装 ✓
  *   · 没有 `agent.json` ⇒ 要求包内**自带** `.agent.md`（目录镜像）
  *
  * ⚠ 不解析 `agent.json` 的 `agent` 元数据：`.agent.md` 的 frontmatter 已经是完整定义
@@ -125,14 +125,9 @@ export function normalizeAgentBundle(files, storeId) {
 	}
 	const out = files.filter(f => f.path !== 'agent.json');
 	out.push({ path: '.agent.md', data: Buffer.from(agentsMd, 'utf8') });
-	if (out.every(f => f.path !== 'config.html')) {
-		const configHtml = typeof bundleFiles.configHtml === 'string'
-			? bundleFiles.configHtml
-			: (typeof bundleFiles.htmlContent === 'string' ? bundleFiles.htmlContent : '');
-		if (configHtml.trim()) {
-			out.push({ path: 'config.html', data: Buffer.from(configHtml, 'utf8') });
-		}
-	}
+	// ★ 2026-11-07（移除 config.html）：旧包 `files.configHtml` / `files.htmlContent`
+	//   不再落成 config.html —— IDE 侧 UI 已整体退役，落盘只会留下无人消费的孤儿文件。
+	//   目录镜像包里**自带**的 config.html 仍由上面的 out.filter 原样保留 ⇒ 旧包兼容不破 ✓
 	return out;
 }
 

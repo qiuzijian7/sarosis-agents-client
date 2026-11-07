@@ -11,6 +11,11 @@ import type { T } from './text.ts'
  */
 export const TABS = ['chat', 'work', 'source', 'trigger', 'eval', 'execution', 'settings'] as const
 export type Tab = typeof TABS[number]
+/**
+ * VsSaros change (2026-11-07, user request): the tabs the header shows. The Workbench (`work`) is no longer a tab; its
+ * page stays a route, reached from the links that open a team's flow (`team-plans.tsx`, `work.openFlow`).
+ */
+export const NAV_TABS: readonly Tab[] = TABS.filter(tab => tab !== 'work')
 export const SETTINGS_GROUPS = ['source', 'eval', 'execution', 'prompts', 'deployment'] as const
 export type SettingsGroup = typeof SETTINGS_GROUPS[number]
 export type Route = { page: 'chat' | 'source'; id?: undefined; query?: undefined }

@@ -42,6 +42,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { isRuntimeVersionDir } from '../common/dshCli.js';
 import { hostIdleTtlText } from '../common/dshHostConfig.js';
 import { DSH_PAGE_COMMANDS_WITHOUT_IDE_UI, DshPageCommand, IDshInsertReference, isPathInside } from '../common/dshPageBridgeProtocol.js';
+import { RIGHTBAR_SHARED_VIEW_ID } from '../common/dshRightbarCdp.js';
 import { IDshUpgradeResult } from '../common/dshUpgrade.js';
 import { DSH_MODULE_CONTAINERS, DSH_MODULE_PAGES } from '../common/dshModuleContainers.js';
 // 工作台动作（固定 / 隐藏）要改 IDE 的活动栏状态 ⇒ 用既有的工作台管理服务 ✓
@@ -108,6 +109,7 @@ const DSH_COMMAND_CHECK_APP_UPDATES = 'dshHarness.checkAppUpdates';
 const DSH_FEEDBACK_URL = FEEDBACK_FORM_URL;
 import { DshHarnessSettings, DSH_DEFAULT_PROFILE, IDshHostStatus, IDshViewInfo } from '../common/dshHarness.js';
 import { DshHarnessService, IDshHarnessService } from './dshHarnessService.js';
+import { DshSessionLauncherContribution } from './dshSessionLauncher.js';
 import { DshChatHostContribution } from './dshChatInstanceHost.js';
 import { DshFullWindowContribution, dshIdeWindowHidden } from './dshFullWindowContribution.js';
 import { DshPluginCenterHostContribution } from './dshPluginCenterHost.js';
@@ -201,13 +203,15 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 		[DshHarnessSettings.ChatEngine]: {
 			type: 'string',
-			enum: ['dsh', 'legacy'],
+			// ★ P3（2026-11-07）：legacy 回退已下线 —— IDE 侧技能/工具逻辑正在删除，
+			//   留一个能切回旧 DOM 面板的开关只会让用户在「没有工具」的引擎里踩坑 ✗。
+			//   代码里的 `engine !== 'dsh'` 判断暂留作 fail-closed（该值不可配 ⇒ 永不触发）。
+			enum: ['dsh'],
 			enumDescriptions: [
-				localize('dshHarness.config.engine.dsh', "agent 栏聊天框内承载 dsh 聊天 UI（默认）。"),
-				localize('dshHarness.config.engine.legacy', "退回现有 DOM 聊天面板（应急开关，行为与启用 dsh 之前一致）。"),
+				localize('dshHarness.config.engine.dsh', "agent 栏聊天框内承载 dsh 聊天 UI（唯一引擎）。"),
 			],
 			default: 'dsh',
-			markdownDescription: localize('dshHarness.config.chatEngine', "聊天框引擎（方案 5.12）：dsh 的聊天 UI 承载在 agent 栏的聊天框 instance 内。改动后需重载窗口；只在总开关打开时生效。"),
+			markdownDescription: localize('dshHarness.config.chatEngine', "聊天框引擎（方案 5.12 / P3）：dsh 是唯一引擎，legacy 回退已下线。改动后需重载窗口；只在总开关打开时生效。"),
 		},
 		[DshHarnessSettings.ModuleEngine]: {
 			type: 'string',
@@ -793,6 +797,10 @@ class DshHarnessWorkbenchContribution extends Disposable implements IWorkbenchCo
 registerWorkbenchContribution2(DshHarnessWorkbenchContribution.ID, DshHarnessWorkbenchContribution, WorkbenchPhase.BlockStartup);
 // 聊天宿主必须在恢复的聊天标签创建 pane 之前注册工厂。
 registerWorkbenchContribution2(DshChatHostContribution.ID, DshChatHostContribution, WorkbenchPhase.BlockRestore);
+// ★ 2026-11-07（IDE agent loop 下线）：统一会话启动钩子 —— 知识库构建 / 渠道 / 看板 /
+//   调度 / Pocket 等后台入口改经控制桥 `session.start` / `session.run`，不再走 IDE
+//   `IAgentChatService.sendMessage`。必须在恢复阶段注册，保证后台入口拿到实现 ✓。
+registerWorkbenchContribution2(DshSessionLauncherContribution.ID, DshSessionLauncherContribution, WorkbenchPhase.BlockRestore);
 // 「弹出窗口 = dsh 官方客户端完整 UI」的开窗钩子（engine=dsh 才接管 popout；否则 popout 走旧实现）。
 registerWorkbenchContribution2(DshFullWindowContribution.ID, DshFullWindowContribution, WorkbenchPhase.BlockRestore);
 // 模块 ActivityBar 的动态注册（方案 6.4）；moduleEngine=legacy 时空操作（静态注册负责）。
@@ -896,9 +904,11 @@ class DshPrewarmContribution extends Disposable implements IWorkbenchContributio
 		@ILogService log: ILogService,
 	) {
 		super();
+		// ★ 2026-11-07（IDE agent loop 下线 · Step 0）：`ChatEngine === 'legacy'` 这一条 guard
+		//   已删除 —— 配置 enum 只有 ['dsh']，该值不可配 ⇒ 判断永不成立、属于死分支。
+		//   总开关与 prewarm 开关仍是活的用户设置，保留。
 		if (configurationService.getValue<boolean>(DshHarnessSettings.Enabled) === false
-			|| configurationService.getValue<boolean>(DshHarnessSettings.Prewarm) === false
-			|| configurationService.getValue<string>(DshHarnessSettings.ChatEngine) === 'legacy') {
+			|| configurationService.getValue<boolean>(DshHarnessSettings.Prewarm) === false) {
 			return;
 		}
 		const timer = this._register(new RunOnceScheduler(() => {
@@ -944,11 +954,17 @@ registerWorkbenchContribution2(DshPrewarmContribution.ID, DshPrewarmContribution
 class DshPageCommandContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'sessions.dshHarness.pageCommands';
 
-	/** 右侧栏内嵌浏览器：一个 dsh 视图一条 WebContentsView；不按 Bot / 会话隔离（用户 2026-11-05 明确不做隔离）。 */
-	private readonly _rightbarBrowsers = new Map<string, {
+	/**
+	 * 右侧栏内嵌浏览器：**全应用一条** WebContentsView（`RIGHTBAR_SHARED_VIEW_ID`）；不按 Bot / 会话隔离（用户 2026-11-05 明确不做隔离）。
+	 * ★ 2026-11-07（组合方案，参考 DS Bot）：Host 的 `browser` 工具要页面而右栏还没有视图时，主进程中转用同一个 id 建一条**隐藏**的；
+	 *   人打开右栏「浏览器」页签时拿到的就是它 ⇒ 人看见的就是 bot 正在操作的那一页。
+	 */
+	private _rightbarBrowser_: {
 		input: ReturnType<IBrowserViewWorkbenchService['getOrCreateLazy']>;
 		model?: IBrowserViewModel;
-	}>();
+	} | undefined;
+	/** 共享视图此刻贴在哪个 dsh 视图上：多个 dsh 视图都开着页签时，后贴的那个拥有它，别的视图的 unmount 不把它藏掉。 */
+	private _rightbarPlacedBy: string | undefined;
 
 	constructor(
 		@IConfigurationService configurationService: IConfigurationService,
@@ -989,26 +1005,19 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 		}));
 		// 窗口关闭时把贴到 dsh 窗口上的浏览器视图收起来（模型本身随 workbench 释放）。
 		this._register({ dispose: () => {
-			for (const entry of this._rightbarBrowsers.values()) {
-				if (entry.model) { void entry.model.setVisible(false).catch(() => undefined); }
-			}
-			this._rightbarBrowsers.clear();
+			if (this._rightbarBrowser_?.model) { void this._rightbarBrowser_.model.setVisible(false).catch(() => undefined); }
+			this._rightbarBrowser_ = undefined;
+			this._rightbarPlacedBy = undefined;
 		} });
 	}
 
-	/** 取（或懒建）本 dsh 视图专属的集成浏览器视图；id 只由宿主派生，页面无法指定。 */
-	private _rightbarBrowserEntry(viewId: string): {
+	/** 取（或懒建）共享的集成浏览器视图；id 是宿主常量，页面无法指定。中转先建了就复用它（选项按已存在的为准）。 */
+	private _rightbarBrowserEntry(): {
 		input: ReturnType<IBrowserViewWorkbenchService['getOrCreateLazy']>;
 		model?: IBrowserViewModel;
 	} {
-		let entry = this._rightbarBrowsers.get(viewId);
-		if (!entry) {
-			const safe = viewId.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 80);
-			const input = this._browserViews.getOrCreateLazy(`vssaros-rightbar-browser-${safe}`);
-			entry = { input };
-			this._rightbarBrowsers.set(viewId, entry);
-		}
-		return entry;
+		this._rightbarBrowser_ ??= { input: this._browserViews.getOrCreateLazy(RIGHTBAR_SHARED_VIEW_ID) };
+		return this._rightbarBrowser_;
 	}
 
 	/**
@@ -1020,10 +1029,13 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 		command: Extract<DshPageCommand, { method: 'rightbarBrowser' }>,
 		viewId: string,
 	): Promise<void> {
-		const entry = this._rightbarBrowserEntry(viewId);
+		const entry = this._rightbarBrowserEntry();
 		const model = entry.model ?? await entry.input.resolve();
 		entry.model = model;
 		if (command.action === 'unmount') {
+			// 别的 dsh 视图正贴着它 ⇒ 这边收起页签不把它藏掉
+			if (this._rightbarPlacedBy !== undefined && this._rightbarPlacedBy !== viewId) { return; }
+			this._rightbarPlacedBy = undefined;
 			await model.setVisible(false);
 			return;
 		}
@@ -1060,6 +1072,7 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 			zoomFactor: model.zoomFactor || 1,
 			cornerRadius: 0,
 		};
+		this._rightbarPlacedBy = viewId;
 		await model.setVisible(true);
 		await model.layout(bounds);
 		this._logService.info(`[dshHarness] rightbarBrowser ${command.action}: view=${viewId} window=${windowId} bounds=${bounds.x},${bounds.y},${bounds.width},${bounds.height}`);
@@ -1596,13 +1609,6 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 				// ★ 留痕（2026-10-15）：转发类命令一律先记一笔（"点了没反应且日志无线索"是最差的一种 ✓）。
 				this._logService.info('[dshHarness] page openAgentMarket ⇒ 交给 IDE 命令 agentStudio.openMarket');
 				void Promise.resolve(this._commands.executeCommand('agentStudio.openMarket')).catch(() => undefined);
-				return;
-			case 'openSkillMarket':
-				// 技能商城（`agentStudio.openSkillMarket`，2026-10-15 新增；触发点 = dsh 集成页 `/x/skills/`
-				// 的置顶主入口按钮）。与上一条**同一个理由**：商城是编辑器页（`SkillMarketEditorInput`），
-				// 页面（WebContentsView）开不了 ⇒ 交宿主转成 IDE 自己的命令 ✓（不在宿主里 new EditorInput ✗）。
-				this._logService.info('[dshHarness] page openSkillMarket ⇒ 交给 IDE 命令 agentStudio.openSkillMarket');
-				void Promise.resolve(this._commands.executeCommand('agentStudio.openSkillMarket')).catch(() => undefined);
 				return;
 			case 'signInIde':
 			case 'signOutIde': {

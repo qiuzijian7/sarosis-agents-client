@@ -11,8 +11,19 @@
  *   with the text, so a step's images then go to that model.
  * - `skills`: its skills `goal-grill`, `office` and `office-tools` are offered to every Session.
  *
- * Found through the cordis loader's entries (an entry named `ds-bot` that is not disabled). Nothing is changed: the panel
- * says so, and the log says so once.
+ * Found through the cordis loader's entries (an entry named `ds-bot` that is not disabled). Nothing of DS Bot is changed: the
+ * panel says so, and the log says so once.
+ *
+ * VsSaros addition (2026-11-07, P0 · co-install semantics): the three are observable and the side effect can be turned off.
+ * - The usage ledger's listener runs first (`prepend`), so a request DS Bot sends again passes through it again: each such
+ *   call is recorded once, marked `resent` (same model) or `side` (its OCR model), counted on `GET usage` (`day.relays`) and a
+ *   ticket's page (`relays`). `executor.sideCalls` off refuses side calls in SuperAgent's Sessions (DS Bot then tells the
+ *   model the image could not be read); the secrets rewrite, which only hides values, is never refused.
+ * - Team steps' approvals are decided by `step-approvals.ts` (step_approval_rule, else a person), whichever way the model's
+ *   request was sent; DS Bot's approval answerer hands on every Session not its own.
+ * - Its skills reach DSH's skill catalog message (`dsh-tool-skill`), not SuperAgent's prompt sections or its prompt budget, and
+ *   never the desk, whose every tool is masked.
+ * `tests/dsb-coexist.spec.ts` guards all four with a fake DS Bot made the way ds-bot 0.2.7 does it.
  */
 export const DS_BOT_ENTRY = 'ds-bot'
 export type CoexistEffect = 'secrets' | 'images' | 'skills'

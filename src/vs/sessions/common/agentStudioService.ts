@@ -24,7 +24,6 @@ import type {
 	TaskAttachment,
 	OrchestrationPlan,
 	PlanTask,
-	ConfigHtmlCapability,
 } from "./agentStudioTypes.js";
 import type { IWorktreeWorkspaceOptions } from "../contrib/worktree/common/worktreeTypes.js";
 // ★ P1-5：会话**事件流**游标协议的类型（纯 type 导入 ⇒ 运行时零依赖 ✓；
@@ -276,12 +275,6 @@ export interface IAgentStudioService {
 	 */
 	classifyContent(content: string): Promise<{ category: string; label: string; confidence: number; reasoning: string; source: 'llm' | 'fallback' }>;
 
-	/**
-	 * Hyper-Extract 风格技能提取：用 LLM structured output 判断内容是否值得沉淀为技能。
-	 * isSkill=false 时直接拒绝；isSkill=true 时返回完整的 name/description/prompt/scripts。
-	 * 失败时自动降级到纯启发式提取（extractSkillComponents）。
-	 */
-	extractSkillContent(content: string, opts?: { providerId?: string; modelId?: string }): Promise<{ isSkill: boolean; name: string; description: string; prompt: string; category?: string; scripts?: Array<{ filename: string; content: string; language: string }>; source: 'llm' | 'heuristic'; reason: string }>;
 
 	createAgent(data: Partial<Agent>): Promise<Agent>;
 	updateAgent(id: string, data: Partial<Agent>): Promise<void>;
@@ -1468,43 +1461,6 @@ export interface IConfigHtmlService {
 		payload: unknown;
 	}>;
 
-	/**
-	 * Fired when an imgui button requests a chat send.
-	 */
-	readonly onDidRequestChatSend: Event<{
-		agentId: string;
-		message: string;
-		agentSessionId?: string;
-		workspaceId?: string;
-		workspaceSessionId?: string;
-	}>;
-
-	/**
-	 * 宿主侧触发一次聊天发送（等价于在预览里点击发送）。供原生 UI（如知识库视图按钮）调用，
-	 * 自动按当前激活会话把消息发给指定 agent。
-	 */
-	requestChatSend(agentId: string, message: string): void;
-
-	/**
-	 * Fired when an LLM-origin write to config.html needs user confirmation.
-	 * The UI layer should present a confirmation card and call
-	 * `resolveModelWriteConfirm` with the user's decision.
-	 */
-	readonly onDidRequestModelWriteConfirm: Event<{
-		requestId: string;
-		agentId: string;
-		contentLen: number;
-		preview: string;
-	}>;
-
-	/**
-	 * Resolve a pending model-write confirmation request.
-	 */
-	resolveModelWriteConfirm(
-		requestId: string,
-		decision: "approve" | "deny" | "always",
-	): void;
-
 	// --- Resource & State --------------------------------------------------
 
 	/**
@@ -1512,117 +1468,12 @@ export interface IConfigHtmlService {
 	 */
 	getHtml(agentId: string): Promise<{ html: string; version: number }>;
 
-	/**
-	 * Render the agent's config markdown/html and return the rendered HTML.
-	 */
-	renderHtml(agentId: string, markdown?: string): Promise<{ html: string; version: number }>;
-
-	/**
-	 * Write the agent's `config.html` content.
-	 */
-	writeHtml(
-		agentId: string,
-		html: string,
-		options?: { origin?: ConfigHtmlChangeOrigin; baseVersion?: number },
-	): Promise<{ version: number }>;
-
-	/**
-	 * Render the current HTML into a standalone document and write to
-	 * `<agentDir>/.preview.html`.
-	 */
-	previewToFile(agentId: string): Promise<{ path: string; version: number }>;
-
-	/**
-	 * ConfigHtml AI box — model generates a full self-contained HTML document.
-	 */
-	htmlGenerate(
-		agentId: string,
-		message: string,
-		options?: { currentHtml?: string; model?: string },
-	): Promise<{ html: string; raw: string }>;
-
-	// --- HTML Event Handling ---------------------------------------------
-
-	handleHtmlEvent(
-		agentId: string,
-		eventName: string,
-		payload: unknown,
-		agentSessionId?: string,
-	): Promise<void>;
-
-	handleChatSend(
-		agentId: string,
-		message: string,
-		options?: {
-			context?: string;
-			showInChat?: boolean;
-			agentSessionId?: string;
-		},
-	): Promise<ChatMessage>;
-
-	// --- Terminal Execution ----------------------------------------------
-
-	/**
-	 * Run a command in the integrated terminal and return immediately.
-	 * The terminal shows real-time stdout/stderr output.
-	 * This is used by ConfigHtml to execute Python/Node/etc scripts
-	 * with progress displayed in the VS Saros integrated terminal.
-	 */
-	handleRunTerminal(
-		agentId: string,
-		command: string,
-		args: string[],
-		options?: { cwd?: string; env?: Record<string, string> },
-	): Promise<void>;
-
-	// --- Key-Value Data Store --------------------------------------------
-	// Persistent KV storage at ~/.vssaros/agents/{agentId}/data/kv.json
-
-	/** Read a value by key. Returns undefined if not found. */
-	kvGet(agentId: string, key: string): Promise<unknown | undefined>;
-	/** Write a value by key. Overwrites existing. */
-	kvSet(agentId: string, key: string, value: unknown): Promise<void>;
-	/** Delete a key. No-op if key doesn't exist. */
-	kvDelete(agentId: string, key: string): Promise<void>;
-	/** List all keys, optionally filtered by prefix. */
-	kvList(agentId: string, prefix?: string): Promise<string[]>;
-
-	// --- Push to HTML view ----------------------------------------------
-
-	sendCommandToHtml(agentId: string, command: IConfigHtmlCommand): void;
-
 	// --- Active Agent Session Registry -----------------------------------
 
 	setActiveAgentSession(
 		agentId: string,
 		agentSessionId: string | undefined,
 	): void;
-
-	getActiveAgentSession(agentId: string): string | undefined;
-
-	// --- Capability Check -----------------------------------------------
-
-	checkCapability(
-		agentId: string,
-		capability: ConfigHtmlCapability,
-	): Promise<void>;
-
-	/**
-	 * Dispose any per-agent watchers/state.
-	 */
-
-	// --- Streaming chat (Observable pattern) -------------------------------
-
-	handleChatSendStream(
-		requestId: string,
-		agentId: string,
-		message: string,
-		onDelta: (delta: ChatStreamDelta) => void,
-		onDone: (ok: boolean, fullText?: string, error?: string) => void,
-		options?: { agentSessionId?: string },
-	): Promise<void>;
-
-	cancelStream(requestId: string, agentId: string): void;
 
 	// --- Event for stream deltas (host → webview relay) -------------------
 

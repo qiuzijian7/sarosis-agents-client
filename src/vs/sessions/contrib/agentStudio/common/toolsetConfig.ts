@@ -418,8 +418,10 @@ export const CORE_TOOLS: ReadonlySet<string> = new Set([
 	'renderdrawiodiagram',
 	// 图像分析 / 媒体生成 / 定时任务（2026-09-11 补：与 image_generate 同为用户显式意图，需 Always 豁免）
 	'vision_analyze', 'video_generate', 'text_to_speech', 'cronjob',
-	// 浏览器（2026-09-24 P1-2 起为**真实实现**：CDP 驱动用户本机真实 Chrome，
-	// 见 browser/providers/tool/browserTools.ts）。
+	// 浏览器（2026-09-24 P1-2 起曾是真实实现：CDP 驱动用户本机真实 Chrome，`browser/providers/tool/browserTools.ts`）。
+	// ⚠ 2026-10 已退役（见 doc/web-login-crawl-plan.md）：`browserTools.ts` 已删除，这些名字只剩 bundled stub，
+	//   `listTools` 跳过 stub ⇒ 模型看不到。浏览器能力的唯一真源是 Host 侧单个 `browser` 工具（`dsh-plugins/vssaros-browser`，
+	//   2026-11-07 起开着右栏时操作的就是右栏那一页）。名字留在这里只为旧会话 / 旧规则里的引用不出错，**别再加新的 browser_***。
 	// 旧注释「用于 LLM 看到浏览器工具但实际被沙箱限制时仍可调用基础导航」是**失真的** ——
 	// 这些名字长期只有 stub（`isStub` 被 `listTools` 跳过），模型从未看到过它们。
 	'browser_navigate', 'browser_snapshot', 'browser_click',

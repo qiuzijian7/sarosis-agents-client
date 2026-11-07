@@ -19,7 +19,6 @@ import { toDisposable, DisposableStore } from '../../../../base/common/lifecycle
 import { SessionFollower } from './sessionFollower.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { URI } from '../../../../base/common/uri.js';
-import { VSBuffer } from '../../../../base/common/buffer.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IModelService } from '../../../../editor/common/services/model.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
@@ -28,7 +27,6 @@ import { INotificationService, Severity } from '../../../../platform/notificatio
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IRequestService } from '../../../../platform/request/common/request.js';
 import { IMcpService } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
-import { ISkillRegistry } from '../common/skills.js';
 import { sanitizeAssistantVisibleText, addSanitizeTraceSink } from '../common/assistantVisibleText.js';
 import { IAgentOSService, type ISubAgentTraceSnapshot } from '../common/agentOS.js';
 import { buildPromptOptimizeMessages, sanitizeOptimizedOutput } from '../../../browser/agentChat/promptOptimize.js';
@@ -37,25 +35,23 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 
 import { NativeChatEditorInput, type IChatRuntimeState, type ChatTabStatus } from './nativeChatEditorInput.js';
 import { getDshChatHostFactory, IDshChatBinding } from '../../../common/dshChatHost.js';
+import { getDshSessionLauncher } from '../../../common/dshSessionLauncher.js';
 import { WorkflowTraceController } from './workflowTraceController.js';
 import { CheckpointManager } from './checkpointManager.js';
 import { KbImportController, createKbImportHandler } from './kbImportController.js';
-import { SkillExtractionController } from './skillExtractionController.js';
 import { ChatEditorIntegration } from './chatEditorIntegration.js';
 import { CompressionDetailEditorInput } from './compressionDetailEditorInput.js';
 import { AgentStreamRecorder } from './agentStreamRecorder.js';
 import { CodebaseMemoryDetailEditorInput } from './codebaseMemoryDetailEditorInput.js';
 import { AgentSettingsEditorInput } from './agentSettingsEditorInput.js';
-import { UrlPreviewEditorInput } from './urlPreviewEditorInput.js';
 import { AgentMediaEditorInput } from './agentMedia/agentMediaEditorInput.js';
 import { requestCanvasOps } from './providers/tool/canvasOpsBridge.js';
 import { AgentMediaEditorPane } from './agentMedia/agentMediaEditorPane.js';
-import { buildEnsureSpec, nativeIpcBridge, normalizePanelUrl, type ConfigHtmlCfg } from '../common/configHtmlConfig.js';
+	import { nativeIpcBridge } from '../common/nativeBridge.js';
 // ★ 2026-09-25：saros-media:// 短引用的提取/替换走**纯模块**（可单测 ✓ 两处不再各写正则 ✗）
 import { extractSarosMediaIds, replaceSarosMediaRefs } from './mediaRefResolver.js';
 // 文档（pdf/epub/docx）→ 文本：聊天框把拖入的文档转成可读文本附件（★ 2026-09-24）
 import { KB_EXTRACT_DOC_TEXT_CHANNEL, type IKbExtractDocTextResult } from '../common/kbDocConvertChannel.js';
-import { ensureConfigHtmlServerAndOpenPreview } from './configHtmlPreviewOpener.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { AgentChatPanel } from '../../../browser/agentChat/agentChatPanel.js';
 import { XtermCliPanel } from '../../../browser/agentChat/xtermTui/xtermCliPanel.js';
@@ -103,6 +99,25 @@ import { clearNode } from '../../../../base/browser/dom.js';
  * tabs, header, messages, input area) directly inside the editor container.
  */
 export class NativeChatEditorPane extends EditorPane {
+	/**
+	 * ★ 2026-11-07（IDE agent loop 整体下线）：`chatEngine` 只剩 dsh，
+	 * 本 pane 在 dsh 引擎下由 `getDshChatHostFactory()` 接管内容区、不初始化 IDE DOM
+	 * 聊天面板（`setInput` 里 `_initChatPanel()` 的条件）⇒ 本地发送路径运行期不可达。
+	 * 保留 4 参数形状（原 onDelta 闭包有几百行与一串局部变量）只为编译期兼容；
+	 * 若真的误入，经 dsh 控制桥跑一次后台回合，不再跑 IDE agent loop。
+	 */
+	private async _retiredChatSend(_agentId: string, message: string, _options: unknown, _onDelta: (delta: any) => void): Promise<any> {
+		const launcher = getDshSessionLauncher();
+		let content: string;
+		if (!launcher) {
+			content = 'IDE 聊天面板已下线，且 dsh 会话启动器未就绪（Host 未运行？）。';
+		} else {
+			const result = await launcher.runTurn({ prompt: message });
+			content = result.finalText ?? '';
+		}
+		return { id: `retired-${Date.now()}`, role: 'assistant', content, timestamp: new Date().toISOString() };
+	}
+
 
 	static readonly ID = NativeChatEditorInput.EditorID;
 
@@ -236,7 +251,6 @@ export class NativeChatEditorPane extends EditorPane {
 	private _isInitialized = false;
 	private _defaultAgentSelected = false;
 	private _currentAgentId: string | null = null;
-	private _currentAgentSkills: string[] = [];
 	private _currentSessionId: string | null = null;
 	private _currentChatOnly: boolean = false;
 	/**
@@ -476,7 +490,6 @@ export class NativeChatEditorPane extends EditorPane {
 	/** Checkpoint manager — refresh bar and handle actions. */
 	private _checkpointMgr: CheckpointManager | undefined;
 	private _kbImport: KbImportController | undefined;
-	private _skillExtract: SkillExtractionController | undefined;
 	private _editorIntegration: ChatEditorIntegration | undefined;
 
 	constructor(
@@ -499,13 +512,12 @@ export class NativeChatEditorPane extends EditorPane {
 		@IFileService private readonly _fileService: IFileService,
 		@IModelService private readonly _modelService: IModelService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
-		@IDialogService private readonly _dialogService: IDialogService,
+		@IDialogService _dialogService: IDialogService,
 		@ILogService private readonly _logService: ILogService,
 		@INativeEnvironmentService private readonly _envService: INativeEnvironmentService,
 		@INotificationService private readonly _notificationService: INotificationService,
 		@IRequestService private readonly _requestService: IRequestService,
 		@IMcpService private readonly _mcpService: IMcpService,
-		@ISkillRegistry private readonly _skillRegistry: ISkillRegistry,
 		@IAgentOSService private readonly _agentOSService: IAgentOSService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IViewsService private readonly _viewsService: IViewsService,
@@ -1167,7 +1179,7 @@ export class NativeChatEditorPane extends EditorPane {
 					// 无条件跳过本 session 的 delta，避免与下方 onDelta 回调双重处理。
 					this._localSendActiveSessionId = sessionId ?? '';
 
-					await this._chatService.sendMessage(
+					await this._retiredChatSend(
 						agentId,
 						fullText,
 						{
@@ -1378,18 +1390,9 @@ export class NativeChatEditorPane extends EditorPane {
 					this._logService.error('[NativeChatEditorPane] onOpenSettings failed:', err);
 				}
 			},
-			onListSkills: () => {
-				return this._skillRegistry.getSkills().map(s => ({
-					id: s.id,
-					name: s.name ?? s.id,
-					description: s.description ?? '',
-					activation: s.activation,
-					source: s.source,
-					version: s.version,
-					enabled: s.enabled,
-					category: s.category,
-				}));
-			},
+			// ★ P3（2026-11-07）：技能清单已迁到 dsh 侧（`/x/skills/` 页 + `skill` 工具目录），
+			//   IDE 侧不再返回技能列表；保留空数组以维持 webview 回调形状。
+			onListSkills: () => [],
 			onListWorkflows: () => {
 				// 首次为空时触发异步刷新（下次打开菜单即显示），本次返回已有缓存
 				if (this._workflowCache.length === 0) {
@@ -1461,92 +1464,11 @@ export class NativeChatEditorPane extends EditorPane {
 				}
 			},
 			onOpenHtmlPreview: () => {
-				// ★ 按 agent 的 configHtml 配置预览（与设置页「打开预览」共享同一 opener，行为一致）：
-				//   url 模式 → 探活/拉起面板服务 + 打开 URL 预览；
-				//   文件模式 → 原 config.html 逻辑（不存在则创建默认文件）。
-				if (!this._currentAgentId) {
-					this._logService.info('[NativeChatEditorPane] onOpenHtmlPreview: no agent selected');
-					return;
-				}
-				(async () => {
-					try {
-						const agentId = this._currentAgentId!;
-						const agent = await this._agentStudioService.getAgent(agentId);
-						const cfg = agent?.configHtml as ConfigHtmlCfg | undefined;
-						if (cfg?.url?.trim()) {
-							const wsRoot = this._workspaceContextService.getWorkspace().folders[0]?.uri.fsPath ?? '';
-							await ensureConfigHtmlServerAndOpenPreview({
-								url: cfg.url,
-								server: cfg.server,
-								wsRoot,
-								notificationService: this._notificationService,
-								logService: this._logService,
-								dialogService: this._dialogService,
-								open: (input, options) => this._openInMainColumn(input, options),
-							});
-							return;
-						}
-						const agentDir = await this._agentStudioService.getAgentDir(agentId);
-						const configHtmlUri = URI.joinPath(agentDir, 'config.html');
-
-						// 检查 config.html 是否存在，不存在则创建默认文件
-						if (!(await this._fileService.exists(configHtmlUri))) {
-							const safeName = agentId.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-							const defaultHtml = `<!DOCTYPE html>
-<html lang="zh-CN" data-template-edit-mode="slots">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>${safeName} · Panel</title>
-<style>
-  :root { color-scheme: light dark; }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-    line-height: 1.6;
-    color: #1f2328;
-    background: #ffffff;
-    padding: 40px 28px;
-  }
-  .wrap { max-width: 760px; margin: 0 auto; }
-  h1 { font-size: 28px; margin: 0 0 8px; }
-  .lead { color: #57606a; margin: 0 0 28px; }
-  .card {
-    border: 1px solid #d0d7de;
-    border-radius: 10px;
-    padding: 20px 22px;
-    margin: 14px 0;
-  }
-  .card h2 { font-size: 17px; margin: 0 0 6px; }
-  .card p { margin: 0; color: #424a53; }
-</style>
-</head>
-<body>
-  <div class="wrap">
-    <h1 data-edit-slot data-slot-type="text">${safeName} 的面板</h1>
-    <p class="lead" data-edit-slot data-slot-type="text">在 AI 中描述你想要的页面，或直接编辑这段 HTML。</p>
-    <div class="card">
-      <h2 data-edit-slot data-slot-type="text">开始使用</h2>
-      <p data-edit-slot data-slot-type="text">这是一个零依赖、可在浏览器内编辑的单文件 HTML 文档。</p>
-    </div>
-  </div>
-</body>
-</html>
-`;
-							await this._fileService.createFolder(agentDir);
-							await this._fileService.writeFile(configHtmlUri, VSBuffer.fromString(defaultHtml));
-							this._logService.info(`[NativeChatEditorPane] Created default config.html for agent ${agentId}`);
-						}
-
-					// 在中间栏（mainPart）文本编辑器中打开 config.html
-					await this._openInMainColumn({ resource: configHtmlUri });
-						this._logService.info(`[NativeChatEditorPane] Opened config.html for agent ${agentId} in center editor group`);
-					} catch (err) {
-						this._logService.error('[NativeChatEditorPane] onOpenHtmlPreview failed:', err);
-					}
-				})();
+				// ★ 2026-11-07（移除 config.html）：URL 模式与文件模式预览入口已整体退役。
+				//   保留回调形状，但给一条**可读提示**，避免「点了没反应」。
+				this._notificationService.info('config.html 面板预览已移除；请在 dsh 页面中使用对应能力。');
 			},
+			
 			onNewSession: async () => {
 				// Create a new session for the current agent
 				if (!this._currentAgentId) {
@@ -2181,7 +2103,7 @@ export class NativeChatEditorPane extends EditorPane {
 					() => this._currentAgentId ?? null,
 					this._chatPanelImportedIds,
 				)(messageContent, messageId),
-			/** write_file 工具卡片「导入知识库」：读取文件内容 → 入口(落盘到库)+抽取(构建笔记) */
+			/** ★ 2026-11-07（换 UI 宿主）：write_file 卡片「导入知识库」= 落盘到库 + 打开 dsh `/x/kb/` 页，构建由该页的 kb_build 承接 */
 			onImportFileToKnowledgeBase: async (filePath: string, toolId?: string): Promise<boolean> => {
 				if (!this._kbImport) { return false; }
 				try {
@@ -2197,59 +2119,12 @@ export class NativeChatEditorPane extends EditorPane {
 					return false;
 				}
 			},
-			/** P2: footer 导入知识库按钮右侧的「沉淀技能」按钮 —— 提取消息为 SKILL.md */
-			onExtractSkill: (messageContent: string) => {
-				void this._skillExtract?.handleExtractSkill(messageContent);
+			/** ★ P3（2026-11-07）：「沉淀技能」逻辑已迁到 dsh 侧 `/x/skills/`（skillDistill.js + 创建 API）。
+			 *  保留回调形状，只给一条可读提示 ⇒ 按钮不会「点了没反应」。 */
+			onExtractSkill: (_messageContent: string) => {
+				this._notificationService.info('沉淀技能已迁到 dsh 侧：请在「工具 / 技能」页的「新建技能」里创建草稿。');
 			},
-			// ── ConfigHtml（URL 面板 / 本地 HTML）—— 对齐 AgentSettingsEditorPane ──
-			onGetConfigHtmlCfg: async (): Promise<ConfigHtmlCfg | undefined> => {
-				if (!this._currentAgentId) { return undefined; }
-				try {
-					const agent = await this._agentStudioService.getAgent(this._currentAgentId);
-					return (agent?.configHtml ?? undefined) as ConfigHtmlCfg | undefined;
-				} catch {
-					return undefined;
-				}
-			},
-			onSaveConfigHtmlCfg: async (cfg: ConfigHtmlCfg): Promise<void> => {
-				if (!this._currentAgentId) { return; }
-				await this._agentStudioService.updateAgent(this._currentAgentId, { configHtml: cfg });
-			},
-			onEnsureConfigHtmlServer: async (spec: Record<string, unknown>): Promise<{ ok: boolean; alreadyRunning?: boolean; starting?: boolean; error?: string }> => {
-				const bridge = nativeIpcBridge();
-				if (!bridge?.ipcRenderer?.invoke) {
-					return { ok: false, error: '当前环境不支持' };
-				}
-				// ★ 聊天设置页只传 {url,port,healthExpect?}——这里必须走共享 buildEnsureSpec 补全
-				//   command/args/cwd（注释原本承诺「由实现方补全」但之前只透传）：
-				//   主进程收到空 args 会 spawn 一个无参数的 node（REPL）挂住 30s，表现为「点了没反应」。
-				const url = normalizePanelUrl(String(spec.url ?? ''));
-				const wsRoot = this._workspaceContextService.getWorkspace().folders[0]?.uri.fsPath ?? '';
-				const formPort = Number(spec.port ?? NaN);
-				const agent = this._currentAgentId
-					? await this._agentStudioService.getAgent(this._currentAgentId).catch(() => undefined)
-					: undefined;
-				const server = (agent?.configHtml as ConfigHtmlCfg | undefined)?.server;
-				const full = {
-					...buildEnsureSpec(url, Number.isFinite(formPort) && formPort > 0 ? formPort : undefined, wsRoot),
-					...(server?.command ? { command: server.command } : {}),
-					...(server?.args ? { args: server.args } : {}),
-					...(server?.healthPath ? { healthPath: server.healthPath } : {}),
-					...(typeof spec.healthExpect === 'string' && spec.healthExpect ? { healthExpect: spec.healthExpect } : server?.healthExpect ? { healthExpect: server.healthExpect } : {}),
-					...(server?.readyTimeoutMs ? { readyTimeoutMs: server.readyTimeoutMs } : {}),
-					...(server?.cwd ? { cwd: server.cwd.replace(/\$\{workspaceRoot\}/g, wsRoot) } : {}),
-					...(server?.env ? { env: server.env } : {}),
-				};
-				return await bridge.ipcRenderer.invoke('vscode:configHtmlEnsureServer', full) as { ok: boolean; alreadyRunning?: boolean; starting?: boolean; error?: string };
-			},
-			onStopConfigHtmlServer: async (spec: { url: string; port?: number }): Promise<{ ok: boolean; killed: number[] }> => {
-				const bridge = nativeIpcBridge();
-				if (!bridge?.ipcRenderer?.invoke) { return { ok: false, killed: [] }; }
-				return await bridge.ipcRenderer.invoke('vscode:configHtmlStopServer', spec) as { ok: boolean; killed: number[] };
-			},
-			onOpenConfigHtmlPreview: async (url: string): Promise<void> => {
-				await this._openInMainColumn(UrlPreviewEditorInput.getOrCreate(url), { pinned: true });
-			},
+			// ★ 2026-11-07（移除 config.html）：ConfigHtml 设置面板回调链已整体退役。
 		} as any) as IChatPanel);
 
 		this._container!.appendChild(this._chatPanel.element);
@@ -2982,22 +2857,9 @@ export class NativeChatEditorPane extends EditorPane {
 			this._editorGroupsService,
 		));
 
-		// Skill extraction controller — encapsulates "save skill" feature (host bridges pane state)
-		this._skillExtract = this._register(new SkillExtractionController(
-			this._notificationService, this._modelSelector, this._agentStudioService, this._fileService,
-			this._logService, this._skillRegistry, this._agentOSService, this._envService,
-			{
-				getCurrentAgentId: () => this._currentAgentId,
-				setCurrentAgentSkills: (skills) => {
-					this._currentAgentSkills = skills;
-					this._logService.debug(`[NativeChatEditorPane] skills cache updated: ${this._currentAgentSkills.length}`);
-				},
-			refreshMemoryDetailPane: async () => {
-				// ★ 2026-10-27（阶段①）：旧面板已下线；React 详情页在打开/切页签时自己拉数，
-				//   这里保留空实现以维持接口（skillExtractionController 会调）✓
-			},
-			},
-		));
+		// ★ P3（2026-11-07）：IDE 侧「沉淀技能」controller 已整体退役 ——
+		//   模板生成在 dsh 侧 `vssaros-skills/lib/core/skillDistill.js`，
+		//   创建/草稿/提升在 `/x/skills/` 页与 `/x/skills/api/manage`。
 
 		// Chat editor integration controller — file/code/terminal helpers
 		this._editorIntegration = this._register(new ChatEditorIntegration(
@@ -3161,7 +3023,6 @@ export class NativeChatEditorPane extends EditorPane {
 					this._chatPanel.setSending(false);
 				}
 				this._currentAgentId = agentId;
-				this._currentAgentSkills = emp.skills ?? [];
 				this._logService.debug(`[NativeChatEditorPane#${this._paneId}] _selectAndLoadAgent: setting _currentAgentId to ${agentId}`);
 				console.info(`[ChatFlickerDiag] _selectAndLoadAgent → setAgent("${agentId}") gen=${gen}`);
 				this._chatPanel.setAgent({
@@ -6380,7 +6241,6 @@ private _handleStreamDelta(delta: any): void {
 			if (gen !== this._loadGeneration) { return; }  // race guard
 			if (emp && this._chatPanel) {
 				this._currentAgentId = agentId;
-				this._currentAgentSkills = emp.skills ?? [];
 				// 注意：此处【不得】用 ws.path 覆盖 AgentBinding.worktreePath。
 				// worktreePath 语义是「worktree 沙箱绑定」（agent 运行在 git worktree
 				// 分支内），而「绑定到工作区目录」由常规沙箱模式自动覆盖

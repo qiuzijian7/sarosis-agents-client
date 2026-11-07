@@ -11,7 +11,7 @@ import { lookOf } from '../src/client/characters.ts'
 import { stepMarkState, toolState } from '../src/client/mark.tsx'
 import { CardProvider } from '../src/client/provider.tsx'
 import { zh } from '../src/client/locales.ts'
-import { all, click, find, mount, settle, tab, translator, usePanel } from './fixtures/panel.tsx'
+import { all, at, click, find, mount, settle, tab, translator, usePanel } from './fixtures/panel.tsx'
 import { pushChange, server } from './fixtures/panel-server.ts'
 
 usePanel()
@@ -189,8 +189,9 @@ it('matches a desk message to its own group run only', () => {
 
 it('reads the teams again as soon as the stream says steps changed', async () => {
   server.streaming = true
+  // VsSaros change (2026-11-07): the Workbench is no longer a tab; start on its page.
+  at({ page: 'work' })
   await mount()
-  await click(tab(zh['tab.work']))
   expect(document.querySelector('.dt-work')?.textContent).toContain(zh['work.empty'])
   server.teamSteps = [team]
   const before = server.requests.filter(request => request.path === 'team/steps').length
