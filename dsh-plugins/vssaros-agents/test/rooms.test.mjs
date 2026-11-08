@@ -669,6 +669,36 @@ await check('★ 后台干活的成员：busy 实时给出；有人在后台时�
 	assert.equal(rs.active().find(item => item.callId === 'c-busy-1'), undefined, '干完了：按原来的保留期走');
 });
 
+// ★ 2026-11-07：SuperAgent 的群工单靠它判断群做完没有
+await check('★ state：一轮进行中 / 成员在后台 / 有排着的消息 ⇒ 不空闲；停下来 ⇒ 空闲，带最近记录、等选的卡、目标；群删了 ⇒ missing', async () => {
+	let n = 0;
+	const h = fakeHost((botId) => { if (botId !== 'coder') { return '[PASS]'; } n += 1; return n === 1 ? 'hang' : { text: '做完了', tools: 1 }; });
+	const rs = makeRooms(h, join(dir, 'state.json'), { releaseMs: 60, timeoutMs: 5000, maxWaitMs: 10_000 });
+	installRooms(h.ctx, rs);
+	const r = await rs.create({ members: ['coder', 'designer'], name: '状态群', admin: 'coder', mode: 'admin' });
+	assert.equal(rs.state(r.id).idle, true, '新群没事做');
+	rs.noteUserMessage(r.id, '开工');
+	assert.deepEqual([rs.state(r.id).idle, rs.state(r.id).queued], [false, 1], '消息排着');
+	const running = rs.relayTool().execute({}, { agent: { id: r.id }, callId: 'c-st-1' });
+	await waitUntilTrue(() => !!memberSessionOf(h, 'coder') && h.sessions.get(memberSessionOf(h, 'coder')).inbox.length > 0);
+	assert.deepEqual([rs.state(r.id).idle, rs.state(r.id).running], [false, true], '一轮进行中');
+	const cid = memberSessionOf(h, 'coder');
+	h.emit('session/event', { id: cid }, { type: 'tool/call' });
+	await running;
+	assert.deepEqual([rs.state(r.id).idle, rs.state(r.id).running, rs.state(r.id).busy], [false, false, ['Coder']], '成员在后台');
+	finishHungTurn(h, cid, '像素版做好了');
+	assert.equal(rs.state(r.id).idle, false, '后台干完 ⇒ 回叫排着');
+	await rs.relayTool().execute({}, { agent: { id: r.id }, callId: 'c-st-2' });
+	const settled = rs.state(r.id);
+	assert.equal(settled.idle, true);
+	assert.deepEqual(settled.log.filter(line => line.who === 'Coder').map(line => [line.text, !!line.late]), [['像素版做好了', true]]);
+	assert.ok(settled.activeAt >= settled.log.at(-1).at);
+	assert.deepEqual([settled.asks, settled.goal], [[], null]);
+	await rs.askTool(r.id, 'coder').execute({ questions: [{ header: '范围', question: '做多少？', options: ['MVP', '完整版'] }] }, { agent: { id: cid }, concludeTurn() {} });
+	assert.deepEqual([rs.state(r.id).idle, rs.state(r.id).asks.map(a => [a.name, a.headline, a.questions])], [true, [['Coder', '范围', 1]]], '等选的卡不算忙');
+	assert.deepEqual(rs.state('nope'), { roomId: 'nope', missing: true });
+});
+
 await check('★ 「@ 名字」（@ 后带一个空格）也算点名；后台成员这样派活 ⇒ 补发它的回复，同一轮叫到被点的人，做完叫回它', async () => {
 	assert.deepEqual(mentionsIn('@ Designer 出稿，＠　Coder 实现', ROSTER), { ids: ['designer', 'coder'], all: false });
 	assert.deepEqual(mentionsIn('@  Designer', ROSTER).ids, [], '只容一个空格');

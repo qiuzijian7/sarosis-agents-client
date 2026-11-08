@@ -307,7 +307,14 @@ export interface Ticket {
   delivery?: { error: string; at: string }
   /** VsSaros addition: the team that does the work, which a person agrees to before any worker starts (see `staffing`). */
   team?: TicketTeam
+  /**
+   * VsSaros addition (2026-11-07): the group chat that does the work, for a desk message `@群 …`. No worker starts and no
+   * Thread is followed; the runtime reports the group's result (app/group-tickets.ts).
+   */
+  group?: TicketGroup
 }
+/** VsSaros addition (2026-11-07): the group chat a ticket was handed to (the Bots plugin's room, by its DSH Session id). */
+export interface TicketGroup { roomId: string; roomName: string }
 /**
  * VsSaros addition: a ticket's staffing. `proposing` until the main Session proposes a team, `proposed` while version
  * `version` (whose content hashes to `fingerprint`) waits for a person, `approved` once a person (or the auto-approval a

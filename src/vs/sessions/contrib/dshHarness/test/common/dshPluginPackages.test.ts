@@ -2151,6 +2151,13 @@ suite('dshHarness / 打包链：内置 dsh 运行时（缺它 = 首启要用户�
 		assert.match(release, /PRUNE_LIST\.map/, '守卫的检查对象必须由 PRUNE_LIST 派生（不许硬编码包名）');
 		assert.match(release, /VIRTUAL_STORE_HEAVY_RE\.test\(entry\)/, '守卫扫虚拟店也用共享正则');
 		assert.match(release, /profile-seed[\s\S]{0,400}?profiles/, '发布守卫必须连**种子**一起扫（翻倍就出在这里）');
+		// ★ 2026-11-07 CI（`VsSaros-Win-EXE-Package (9).log` L3428）：裁掉 `.pnpm/<pkg>@<ver>`
+		//   之后，hoist 区指向它的 junction 会悬空；gulp 用 `stat` 跟随 ⇒ ENOENT ⇒ 整个打包任务崩。
+		//   `existsSync()` 对断链返回 false ⇒ 必须 lstatSync + statSync 判定并清理。
+		assert.match(prepack, /function pruneDanglingLinks\(/, 'prepack 裁剪后必须清理悬空链接');
+		assert.match(prepack, /lstatSync\(p\)/, '断链要用 lstatSync 才看得见（existsSync 会骗过你）');
+		assert.match(prepack, /statSync\(p\)/, '要用 statSync 跟随判定是否悬空');
+		assert.match(release, /scanDanglingLinks\(/, '发布守卫也要扫悬空链接（防复发）');
 	});
 
 	test('★★ prepack 自己不许抛（种子失败由 verify-staging 判死），但必须把原因打全 + 提示与硬门一致', () => {

@@ -17,6 +17,7 @@
 //     cancel(id, reason?)        → Promise<AssignmentView>
 //     subscribe(fn)              → 退订函数；fn(AssignmentView) 在委派**结束**（done / cancelled）时调用
 //     createGroup(input) / listGroups()  → 2026-11-05 多 bot 群聊（见下面 withGroups）
+//     groupState(roomId)         → 2026-11-07 群现在在做什么（SuperAgent 给「由群执行的工单」回写结果用）
 //     provide(impl) / publish(view) / provideGroups(impl)   → 只给本插件自己用
 //   }
 //   挂在 globalThis 而不是 ctx.provide：消费者不必依赖本包；任一方 HMR 重载时订阅都不会丢
@@ -39,7 +40,8 @@ const GROUPS_IDEMPOTENT = Symbol.for('vssaros.team.groups.idempotent');
 function withGroups(bus) {
 	const state = bus[GROUPS_STATE] ?? { groups: null };
 	bus[GROUPS_STATE] = state;
-	if (bus[GROUPS_IDEMPOTENT] && typeof bus.createGroup === 'function' && typeof bus.provideGroups === 'function') { return bus; }
+	if (bus[GROUPS_IDEMPOTENT] && typeof bus.createGroup === 'function' && typeof bus.provideGroups === 'function'
+		&& typeof bus.groupState === 'function') { return bus; }
 	const needGroups = () => {
 		if (!state.groups) { throw new Error('VsSaros 群聊还没就绪（Host 正在启动，或没装 @vssaros/dsh-agents）'); }
 		return state.groups;
@@ -56,6 +58,11 @@ function withGroups(bus) {
 				: typeof triggerId === 'string' && triggerId ? triggerId : undefined });
 	};
 	bus.listGroups = async () => needGroups().list();
+	// ★ 2026-11-07：群现在在做什么（rooms.js `state`）。实现还没就绪 / 太老 ⇒ undefined（调用方下次再问），不抛
+	bus.groupState = async (roomId) => {
+		const groups = state.groups;
+		return groups && typeof groups.state === 'function' ? groups.state(roomId) : undefined;
+	};
 	Object.defineProperty(bus, GROUPS_IDEMPOTENT, { value: true, configurable: true });
 	return bus;
 }

@@ -10,6 +10,7 @@
  */
 import type { ReceiveResult, Trigger } from '../core/index.ts'
 import type { GroupRouteKind } from './group-routes.ts'
+import { groupTicketTitle } from './group-tickets.ts'
 import type { GroupView } from './team.ts'
 
 /** A Bot the roster offers; `delegatable` is enough to decide who can join a group. */
@@ -37,6 +38,11 @@ export interface GroupSettlement {
   reason: string
   route: { roomId: string; roomName: string; kind: GroupRouteKind; sourceMessageId?: string }
   notice?: { id: string; text: string }
+  /**
+   * VsSaros addition (2026-11-07): accept the Trigger as a ticket the group runs (`Ticket.group`) instead of ignoring it;
+   * the runtime falls back to `ignore` when the accept is refused.
+   */
+  ticket?: { title: string; scope: string }
 }
 export interface GroupCommandHost {
   receive(trigger: Trigger): ReceiveResult
@@ -106,6 +112,8 @@ export async function handleDeskGroupCommand(
 				reason: `Routed to existing group${options.late ? ' (late reference)' : ''}: ${ref.room.name}`,
 				route: { roomId: ref.room.id, roomName: ref.room.name, kind: 'routed',
 					...options.sourceMessageId ? { sourceMessageId: options.sourceMessageId } : {} },
+				// 2026-11-07：同时建一张由群执行的工单（迟到的引用事件不建：那时消息可能已经进了主管的批次评估）
+				...options.late ? {} : { ticket: { title: groupTicketTitle(text, ref.label || ref.room.name), scope: String(text ?? '').trim() } },
 			})
 			host.requestPass()
 		} catch (error) {

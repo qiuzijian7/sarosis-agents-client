@@ -269,10 +269,15 @@ export class DshExecutor implements Executor {
   }
   /** Enqueues a `launch` effect for an accepted or resumed assignment; launches start in queue order as worker slots free up. */
   start(ticket: Ticket, assignment: Assignment): void {
+    // VsSaros addition (2026-11-07): a group chat does a group ticket's work; it never gets a worker.
+    if (ticket.group) return
     this.host.effects.enqueue('launch', assignment.id, { ticketId: ticket.id, assignmentId: assignment.id })
   }
   /** Enqueues a `delivery` effect to steer pending inputs into `ticket`'s running worker session. */
-  deliver(ticket: Ticket, _assignment: Assignment): void { this.host.effects.enqueue('delivery', ticket.id, { ticketId: ticket.id }) }
+  deliver(ticket: Ticket, _assignment: Assignment): void {
+    if (ticket.group) return
+    this.host.effects.enqueue('delivery', ticket.id, { ticketId: ticket.id })
+  }
   /** VsSaros addition: delivers the inputs a ticket kept while it was held (see `ExecutorHost.held`). */
   release(ticketId: string): void { this.host.effects.enqueue('delivery', ticketId, { ticketId }) }
   /** Launches a queued assignment unless its ticket ended or a newer assignment replaced it meanwhile. */
@@ -281,7 +286,7 @@ export class DshExecutor implements Executor {
     const assignment = ticket && latestAssignment(ticket)
     if (!ticket || !liveTicket(ticket) || assignment?.id !== assignmentId || assignment.state !== 'pending') return
     // VsSaros addition: a launch queued before staffing began waits for the agreement, which queues it again.
-    if (staffing(ticket)) return
+    if (staffing(ticket) || ticket.group) return
     this.slots.reserve(ticketId, 'launch')
     try { await this.launch(ticket, assignment); this.transient.delete(`launch:${assignmentId}`) }
     catch (error) {

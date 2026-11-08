@@ -14,7 +14,7 @@ import type {} from '@deepseek-ai/dsh-subprocess'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { acquireStateLock } from './state-lock.ts'
-import { Engine, key, reasonText, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
+import { Engine, key, reasonText, threadKey, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
 import { allowedSender, settingsPolicy } from '../policy.ts'
 import { SourceRegistry } from '../sources/registry.ts'
 import { Commands } from '../infra/commands.ts'
@@ -60,6 +60,7 @@ import { DeskOutbox, wakesDesk } from './desk-outbox.ts'
 import { GROUP_REFERENCE_KIND, GROUP_REFERENCE_LATE_MS, GROUP_REFERENCE_WAIT_MS, handleDeskGroupCommand, handleDeskMessage, isGroupCreationRequest,
   mayBeGroupCommand, type GroupSettlement } from './groupFastPath.ts'
 import { GroupRoutes } from './group-routes.ts'
+import { GROUP_CHECK_MS, groupTicketReport } from './group-tickets.ts'
 import { sandboxWorks, StepActivity, StepApprovals, stepPermission } from './step-approvals.ts'
 import { Feed } from './feed.ts'
 import { deskFlow, type DeskFlow } from './desk-flow.ts'
@@ -134,6 +135,38 @@ export class Runtime extends Service implements SourceHost {
   readonly deskOutbox: DeskOutbox
   /** VsSaros addition (2026-11-06): which group chat a desk message went to (the link between Triggers and group runs). */
   readonly groupRoutes: GroupRoutes
+  /** VsSaros addition (2026-11-07): open group tickets being checked, so a slow Bots plugin is not asked twice at once. */
+  private groupChecking = false
+  /** Whether an Eval of the main Session holds the Trigger (with the other messages of its batch). */
+  private heldByEval(triggerId: string): boolean {
+    const trigger = this.store.triggers.get(triggerId)
+    const thread = trigger?.threads[0] && this.store.threads.get(threadKey(trigger.threads[0]))
+    return !!thread?.evaluating?.triggerIds.includes(triggerId)
+  }
+  /**
+   * VsSaros addition (2026-11-07): report each open group ticket's group result once its group settled (see
+   * app/group-tickets.ts). A report equal to the ticket's latest one is not written again.
+   */
+  async checkGroupTickets(): Promise<void> {
+    if (this.groupChecking || this.closing()) return
+    this.groupChecking = true
+    try {
+      for (const ticket of this.store.tickets.open().filter(item => item.group)) {
+        let state
+        try { state = await this.team.groupState(ticket.group!.roomId) } catch (error) {
+          this.ctx.logger.warn('dsh-superagent: could not read group %s for ticket %s: %s', ticket.group!.roomId, ticket.id, String(error))
+          continue
+        }
+        const report = groupTicketReport(ticket, state, Date.now())
+        const current = this.store.tickets.get(ticket.id)
+        const latest = current?.assignments.at(-1)?.report
+        if (!report || !current || current.ended || (latest?.state === report.state && latest.summary === report.summary)) continue
+        try { this.engine.report(ticket.id, report) } catch (error) {
+          this.ctx.logger.warn('dsh-superagent: could not report group ticket %s: %s', ticket.id, String(error))
+        }
+      }
+    } finally { this.groupChecking = false }
+  }
   private readonly sourceLinks = new TextCache(200_000)
   private readonly stopped = new AbortController()
   private readonly disposers: (() => void)[] = []
@@ -459,6 +492,18 @@ export class Runtime extends Service implements SourceHost {
     // transaction. A decision that cannot be recorded (the Trigger was decided already) is warned about; the route still holds.
     const settle = (triggerId: string, settlement: GroupSettlement) => this.store.atomic(() => {
       this.groupRoutes.record({ triggerId, ...settlement.route, at: now() })
+      // VsSaros addition (2026-11-07): the group runs a ticket for the message, unless the accept is refused (the Policy does
+      // not admit it, or an Eval of the main Session holds it with other messages, which an accept would take as one ticket).
+      if (settlement.ticket && !this.heldByEval(triggerId)) {
+        try {
+          this.engine.decide(triggerId, { kind: 'accept', title: settlement.ticket.title, scope: settlement.ticket.scope, reason: settlement.reason,
+            group: { roomId: settlement.route.roomId, roomName: settlement.route.roomName } })
+          if (settlement.notice) this.toolHost.tellTrigger?.(triggerId, settlement.notice.id, settlement.notice.text)
+          return
+        } catch (error) {
+          warnFastPath(`group intake could not open a ticket for ${triggerId}, recording it as ignored: ${String(error)}`)
+        }
+      }
       try { this.engine.decide(triggerId, { kind: 'ignore', reason: settlement.reason }) } catch (error) {
         warnFastPath(`group intake could not record the ignore decision for ${triggerId}: ${String(error)}`)
       }
@@ -546,6 +591,13 @@ export class Runtime extends Service implements SourceHost {
     // VsSaros fix (2026-11-05): the desk outbox delivers what the desk's conversation does not have yet (a closed Session
     // drops its inbox), and marks each message as the conversation records it.
     this.disposers.push(this.deskOutbox.install())
+    // VsSaros addition (2026-11-07): the tickets group chats run get their group's result (app/group-tickets.ts).
+    {
+      const timer = setInterval(() => { void this.checkGroupTickets() }, GROUP_CHECK_MS)
+      timer.unref?.()
+      this.disposers.push(() => clearInterval(timer))
+      void this.checkGroupTickets()
+    }
     // VsSaros addition: appear in the Bots roster as the supervisor. A Bot's agent_message to it becomes a Trigger of the
     // `superagent` Source, which the gate admits only from a Bot on that Source's list, and its answer goes back to the Bot.
     const withdraw = sharedTeamBus()?.registerExternalBot?.({

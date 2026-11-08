@@ -46,14 +46,18 @@ export class Tickets extends EnginePart {
       const channel = this.repo.triggers.get(triggerId)?.channel
       if (channel && !ticket.channels.some(item => sameChannel(item, channel))) ticket.channels.push(channel)
     }
-    ticket = this.options.prepareTicket?.(ticket, outcome) ?? ticket
+    // VsSaros addition (2026-11-07): a group chat does the work of a ticket begun by `@群 …`: it gets no worktree, no team
+    // to agree to and no worker, and follows no Thread (the desk is one Thread for every request: following it would take the
+    // person's next messages). Its Assignment stays pending; the runtime reports the group's result into it.
+    if (outcome.group) ticket.group = { roomId: outcome.group.roomId, roomName: outcome.group.roomName }
+    else ticket = this.options.prepareTicket?.(ticket, outcome) ?? ticket
     // VsSaros addition: the ticket waits for a person to agree to its team; its first Assignment launches only then.
-    if (this.options.staffing?.(ticket)) ticket.team = { state: 'proposing', version: 0, at }
+    if (!ticket.group && this.options.staffing?.(ticket)) ticket.team = { state: 'proposing', version: 0, at }
     const assignment = this.newAssignment(ticket)
     this.repo.tickets.save(ticket)
-    for (const triggerId of triggerIds) for (const ref of this.repo.triggers.get(triggerId)?.threads ?? []) this.subscribe(id, ref)
+    if (!ticket.group) for (const triggerId of triggerIds) for (const ref of this.repo.triggers.get(triggerId)?.threads ?? []) this.subscribe(id, ref)
     if (outcome.acknowledgement && primary) this.replies.acknowledgeAccepted(id, primary, outcome.acknowledgement)
-    if (!staffing(ticket)) this.options.executor.start(this.require(id), assignment)
+    if (!staffing(ticket) && !ticket.group) this.options.executor.start(this.require(id), assignment)
     this.emit('ticket.created', { ticketId: id, decisionId, strength: mandate.strength })
   }
   /**

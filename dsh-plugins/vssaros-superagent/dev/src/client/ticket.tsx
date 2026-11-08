@@ -140,6 +140,8 @@ export function TicketPage({ id }: { id: string }) {
       <LabelValue label={t('ticketMandateLabel')} value={valueLabel(t, 'strength', data.mandate.strength)} />
       <LabelValue label={t('ticketActorLabel')} value={`${valueLabel(t, 'source', data.mandate.actor.source)} · ${actor}`} />
       <LabelValue label={t('ticketUpdatedLabel')} value={when(data.updatedAt, t('lang'))} />
+      {/* VsSaros addition (2026-11-07): a group chat does this ticket's work. */}
+      {data.group && <span data-testid="ticket-group"><LabelValue label={t('ticketGroupLabel')} value={data.group.roomName} /></span>}
       {/* VsSaros addition (2026-11-07): calls another plugin (DS Bot) made inside this ticket's Sessions. */}
       {data.relays.resent + data.relays.side > 0 && <span data-testid="ticket-relays" title={data.relays.sessions.map(item =>
         `${item.step ?? t('usageRole.worker')}: ${t('usageRelaySession', { resent: String(item.resent), side: String(item.side) })}`).join('\n')}>

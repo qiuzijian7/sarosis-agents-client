@@ -145,6 +145,8 @@ describe('P0 synchronous group creation', () => {
     expect(h.settle).toHaveBeenCalledWith('superagent:desk:m-ref', {
       reason: expect.stringMatching(/^Routed to existing group: /),
       route: { roomId: 'room-1', roomName: '番茄钟 H5 开发团队', kind: 'routed', sourceMessageId: 'm-ref' },
+      // 2026-11-07: the group runs a ticket for it, titled without the @group it starts with
+      ticket: { title: '开始制作', scope: '@番茄钟 H5 开发团队 开始制作' },
     })
     expect(h.requestPass).toHaveBeenCalledOnce()
     expect(h.warn).not.toHaveBeenCalled()
@@ -155,6 +157,8 @@ describe('P0 synchronous group creation', () => {
     expect(await handleDeskGroupCommand(h, trigger('superagent:desk:m-late'), '@番茄钟 H5 开发团队 开始', event, { sourceMessageId: 'm-late', late: true }))
       .toBe('group-command')
     expect(h.settle).toHaveBeenCalledWith('superagent:desk:m-late', expect.objectContaining({ reason: expect.stringMatching(/late reference/) }))
+    // A late reference opens no ticket: the message may already be in the main Session's batch.
+    expect(h.settle.mock.calls[0]![1]).not.toHaveProperty('ticket')
   })
   it('only messages that start with @ may be group commands, so the others never wait for a reference', () => {
     expect([mayBeGroupCommand('@番茄钟 开始'), mayBeGroupCommand('  @x'), mayBeGroupCommand('创建开发团队'), mayBeGroupCommand('')]).toEqual([true, true, false, false])

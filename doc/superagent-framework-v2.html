@@ -158,7 +158,7 @@ table.dir .k { font-size: 12px; color: var(--dsw-alias-label-caption); }
 		<p class="lede">以 superagent 的工单流水线为基础框架：四个输入源进入同一条准入与评估链路；Router 在接单后组建任务团队（查找或新建 bot），<strong>用户同意后</strong>才分发；每个 worker 是一个 VsSaros bot；每个 worker 结束时把执行证据交给记忆系统沉淀技能；整个任务结束后沉淀可复用的团队工作流，并可导出到外部工作流格式。<strong>本文状态</strong>：前 14 节是 2026-11-04 的设计基线，各节末尾标注实际落地情况；<strong>15.0 是现状</strong>（逐版本增量，以此为准）；15.1–17 是 2026-11-06 对照 0.1.55 的复核，作为<strong>历史快照</strong>保留，其中已完成的遗留项已移入 15.0。</p>
 		<div class="badges">
 			<!-- 版本守卫：data-baseline 与 15.0 标题的区间终点必须等于 dsh-plugins/vssaros-superagent/package.json 的 version（dev/scripts/build.mjs --check） -->
-			<span class="tag code" data-baseline="0.1.70">代码基线 @vssaros/dsh-superagent 0.1.70（现状见 15.0；15.1–17 为 0.1.55 历史快照）</span>
+			<span class="tag code" data-baseline="0.1.71">代码基线 @vssaros/dsh-superagent 0.1.71（现状见 15.0；15.1–17 为 0.1.55 历史快照）</span>
 			<span class="tag ok">P1–P5 已落地</span>
 			<span class="tag ok">运行态 UI（方案 C）与群聊快路径已落地</span>
 			<span class="tag new">新增 15 · 实现对照</span>
@@ -814,12 +814,12 @@ T4 发版说明    role=release  phase=?        ──▶   未映射 → lossy:
 </section>
 
 <section id="s15">
-	<h2><span class="n">15</span>实现对照（现状 0.1.70 见 15.0；15.1–15.4 为 0.1.55 历史快照）</h2>
+	<h2><span class="n">15</span>实现对照（现状 0.1.71 见 15.0；15.1–15.4 为 0.1.55 历史快照）</h2>
 	<p>本节是对 <code>dsh-plugins/vssaros-superagent/</code> 的只读复核：前 14 节仍是设计基线，这里只回答「代码里到底是什么」。所有路径相对仓库根；源码在 <code>dev/src/</code>，构建产物 <code>lib/</code> 已入库。<strong>15.0 随版本更新、以它为准</strong>；15.1–15.4 写于 2026-11-06、对照 0.1.55，保留为历史快照，与 15.0 冲突时以 15.0 为准。</p>
-	<h3>15.0 · 0.1.56 – 0.1.70 增量（现状，2026-11-07）</h3>
+	<h3>15.0 · 0.1.56 – 0.1.71 增量（现状，2026-11-07）</h3>
 	<p>按方面列出 0.1.55 之后的实际做法。第 17.1 节里已兑现的设计承诺也移到了这里（标「原 17.1」）。</p>
 	<table>
-		<thead><tr><th>方面</th><th>0.1.70 的做法</th><th>代码位置</th></tr></thead>
+		<thead><tr><th>方面</th><th>0.1.71 的做法</th><th>代码位置</th></tr></thead>
 		<tbody>
 			<tr><td>重启不丢状态</td><td>步骤审批挂起项、健康状态、Eval 读缓存落 SQLite；审批 30 分钟提醒、60 分钟按拒绝</td><td><code>app/step-approvals.ts</code>、<code>infra/health.ts</code>、<code>app/assessment.ts</code></td></tr>
 			<tr><td>权限与 preset 回退</td><td><strong>权限预设</strong>（沙箱探测或 permission preset）失败 ⇒ 步骤 blocked 等人，不再自动全权限；「无沙箱」标记常驻。<strong>bot 的 preset 不可用仍回退 <code>fallbackPreset</code></strong>（<code>dsh-superagent-worker</code>，决策 6），并记一条警告</td><td><code>app/steps.ts</code>（<code>fallbackPreset</code>）、<code>app/sessions.ts</code></td></tr>
@@ -832,7 +832,8 @@ T4 发版说明    role=release  phase=?        ──▶   未映射 → lossy:
 			<tr><td>并装 DS Bot（0.1.68）</td><td>loader 里有启用的 <code>ds-bot</code> ⇒ 总览提示三处全局作用。<strong>可观测</strong>：账本监听器 <code>prepend</code>，DS Bot 重发的请求再穿过它一次 ⇒ 每次调用只记一行并标 <code>relay</code>（<code>resent</code> 同模型改写重发 / <code>side</code> 另一模型旁路读图）；<code>GET usage</code> 的 <code>day.relays</code> 与工单详情的 <code>relays</code> 显示「被 DS Bot 改写 N 次 · 看图 M 次」。<strong>可关闭</strong>：执行设置 <code>executor.sideCalls</code> 关掉后，SuperAgent 会话拒绝旁路调用（DS Bot 改为告诉模型「图片现在读不了」），密钥脱敏的改写重发不受影响。技能只进 DSH 技能目录（<code>dsh-tool-skill</code> 的提示消息），不进 SuperAgent 的 prompt 段与「prompt + 工具」预算</td><td><code>app/coexist.ts</code>、<code>app/usage.ts</code>、<code>policy.ts</code>、<code>client/usage.tsx</code>、<code>client/ticket.tsx</code></td></tr>
 			<tr><td>兼容语义守卫（0.1.68）</td><td><code>tests/dsb-coexist.spec.ts</code> 用按 ds-bot 0.2.7 源码仿制的 DS Bot（<code>tests/fixtures/ds-bot.ts</code>，先 / 后加载两种顺序）断言：① <code>usage_call</code> 与团队预算不重复计；② 改写重发后步骤工具调用仍走 <code>step_approval_rule</code>、DS Bot 应答器不插手；③ 全局技能不进 SuperAgent 的 prompt 与技能、不进主管台请求，进主会话目录的增量 ≤ 800 字符；④ <code>team_distill</code> 证据仍是实际执行的那一步。真机用例 <code>dev/scripts/e2e-dsb-coexist.mjs</code>（只读读状态库与会话日志，逐项 PASS / FAIL / SKIP）</td><td><code>tests/dsb-coexist.spec.ts</code>、<code>dev/scripts/e2e-dsb-coexist.mjs</code></td></tr>
 			<tr><td>运行态真机核对（0.1.69）</td><td>dev Host（dsh alpha.3）上实测：<strong>SSE</strong> 从页面 <code>fetch</code>（带 gzip/br）读 <code>/orchestrator/api/stream</code> 45 s：首块 <code>: open</code> 5 ms 到、两次 <code>: ping</code> 在 20005 / 40005 ms 各自单独到达，响应无 <code>content-encoding</code> ⇒ 不压缩、不缓冲。<strong>toolview <code>block.content</code></strong>：主管台日志里 12 条 <code>superagent_submit</code> / <code>superagent_ticket_result</code> 结果都是一个 text 块、JSON 带 <code>trigger</code>；DSH 前端把 <code>tool/result</code> 投影成 <code>ToolResultNode</code> 时 <code>content: message.content</code> 原样透传，<code>toolCallPhase</code> 在 result 阶段把该 node 作为 <code>block</code> 交给工具视图（alpha.3 与 rc.2 同码）。<strong>客户端 dispose</strong>：DSH 客户端没有 <code>import.meta.hot</code>，插件重载是 cordis 卸载旧插件、载入新一份模块 ⇒ <code>apply</code> 用 <code>ctx.effect</code> 挂 <code>disposeFeed</code>：卸载时断流、清重连计时、清监听者</td><td><code>app/feed.ts</code>、<code>client/feed.ts</code>、<code>client/index.tsx</code>、<code>client/flow-card.tsx</code></td></tr>
-			<tr><td>面板页签（0.1.70）</td><td>顶部页签去掉「工作台」（用户要求）：导航只列 <code>NAV_TABS</code>（对话 / 来源 / 触发 / 评估 / 执行 / 设置）；工作台页仍是路由 <code>work</code>，从团队流程卡片的「查看流程」链接进入</td><td><code>client/route.ts</code>（<code>NAV_TABS</code>）、<code>client/app.tsx</code></td></tr>
+			<tr><td>@群 也建工单（0.1.71）</td><td>桌面 <code>@已有群 …</code> 不再记 <code>ignore</code>，同一事务里建一张<strong>由群执行的工单</strong>（<code>Ticket.group</code>）：不建 worktree、不走组队确认、不起 worker、不订阅桌面 Thread；每 10 秒用团队总线 <code>groupState</code>（vssaros-agents 0.2.355+）看群：空闲满 5 秒后回写 —— 有成员等用户选 / 目标未完成 ⇒ <code>waiting</code>，做完 ⇒ <code>ready</code>（工单以 completed 结束，摘要是这次最后两条回复或目标总结，桌面收到工单结束通知），群删了 / 目标停止 ⇒ <code>dropped</code>。迟到的引用事件仍只记 <code>ignore</code></td><td><code>app/group-tickets.ts</code>、<code>app/runtime.ts</code>（<code>settle</code>、<code>checkGroupTickets</code>）、<code>core/tickets.ts</code>、<code>executor/dsh.ts</code></td></tr>
+<tr><td>面板页签（0.1.70）</td><td>顶部页签去掉「工作台」（用户要求）：导航只列 <code>NAV_TABS</code>（对话 / 来源 / 触发 / 评估 / 执行 / 设置）；工作台页仍是路由 <code>work</code>，从团队流程卡片的「查看流程」链接进入</td><td><code>client/route.ts</code>（<code>NAV_TABS</code>）、<code>client/app.tsx</code></td></tr>
 			<tr><td>TeamFlow 委托执行（0.1.69）</td><td><strong>不做</strong>（决策 14）：委托步骤会绕开分档批复、token 预算硬闸、执行证据与用量账本。TeamFlow 只作导出目标与导入种子</td><td><code>app/teamflow.ts</code></td></tr>
 			<tr><td>适配层（agents 0.2.348）</td><td>团队总线契约修订 2：<code>version</code> 仍是 1，新增 <code>revision/features/presetOf/describeBot</code>；SuperAgent 用 <code>presetOf</code> 取 bot preset。DS Bot 团队离线导入 <code>vssaros-agent import-ds-bot</code>（默认预览，<code>--apply</code> 写入；密钥 / MCP / 私密 Bot / 模型不导，群只列出）</td><td><code>vssaros-agents/lib/teamBus.js</code>、<code>lib/core/dsBotImport.js</code>、<code>lib/importDsBotTeam.js</code></td></tr>
 			<tr><td>交付守卫</td><td>全量并行零失败门禁；DS Bot 派生文件 ⊆ NOTICE；随包文件必须在 git；<code>lib/build-manifest.json</code> 绑定版本与产物哈希，无工具链显式失败；<strong>0.1.68</strong>：本文的基线版本（<code>data-baseline</code> 与 15.0 标题区间终点）必须等于根 <code>package.json</code> 的 version，<code>build.mjs --check</code> 拦漂移</td><td><code>dev/scripts/test-gate.mjs</code>、<code>dsh-plugins/check-dsbot-notice.mjs</code>、<code>check-plugins-tracked.mjs</code>、<code>dev/scripts/build.mjs</code></td></tr>

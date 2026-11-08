@@ -20,7 +20,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -353,6 +353,13 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 			//   ⇒ 命中 marker 之后**仍要按磁盘对账**，缺一个/版本不符就重建（而不是"已是最新"）。
 			const gaps = seedPluginGaps(profileDir, wantPlugins);
 			if (gaps.length === 0) {
+				// ★ 2026-11-07：marker 命中不代表产物是"干净"的 —— 旧种子里可能还留着上次裁剪
+				//   造成的悬空 junction（gulp 拷贝时 stat ⇒ ENOENT ⇒ 整个打包任务崩）。
+				//   ⇒ 幂等跳过之前也补跑一次断链清理（和 prune 一样是幂等自愈，秒级）。
+				const vs = join(profileDir, 'node_modules', '.pnpm');
+				if (existsSync(vs)) {
+					pruneDanglingLinks(profileDir, 'profile seed');
+				}
 				console.log('[prepack-dsh] profile seed 已是最新，跳过');
 				return;
 			}
@@ -586,6 +593,80 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
  *   **平铺**出来的依赖闭包 ⇒ 官方包的 optionalDependencies（libreoffice 内核 ≈182MB）会被装进
  *   种子 —— 而运行时那边我们明明裁掉了。不裁的后果实测：种子 417MB ≈ 运行时 522MB ⇒ 体积翻倍。
  */
+/**
+ * 清掉「裁剪 `.pnpm` 包」之后留下的**悬空链接**。
+ *
+ * ★ 2026-11-07 CI 事故（`VsSaros-Win-EXE-Package (9).log` L3428）：
+ *   pnpm 虚拟店有个 hoist 区 `node_modules/.pnpm/node_modules/<scope>/<name>`，里面每个都是指向
+ *   `.pnpm/<pkg>@<ver>/node_modules/<name>` 的 **junction / symlink**。裁掉重型内核后目标消失
+ *   ⇒ 链接悬空；gulp 的 dshRuntime 资源流（vinyl-fs，`dot: true`）用 `stat` 跟随它们 ⇒
+ *   `ENOENT: …\.pnpm\node_modules\@deepseek-ai\libreoffice-kit-win32-x64` ⇒ `vscode-win32-x64`
+ *   整个任务崩 ⇒ staging 只拷一半 ⇒ verify-staging / generate-exe 连锁失败 ⇒ 0 个 exe。
+ *   ⚠ `existsSync()` 对断链返回 **false** ⇒ 必须用 `lstatSync().isSymbolicLink()` 才能看见它
+ *     （本地复核：530 个链接里正好 1 个悬空，就是这次崩的那个）。
+ */
+function pruneDanglingLinks(targetDir, label) {
+	// ⚠ 不能只扫 `.pnpm/node_modules`（hoist 区）：实测 wrapper 包内部也有指向被裁内核的链接
+	//   （`.pnpm/@deepseek-ai+libreoffice-kit@0.1.5/node_modules/@deepseek-ai/libreoffice-kit-win32-x64`），
+	//   gulp 的 `profile-seed/**` 一样会遍历到 ⇒ 必须递归整个 node_modules。
+	const root = join(targetDir, 'node_modules');
+	let removed = 0;
+	const scan = (dir, depth) => {
+		if (depth > 8) {
+			return; // .pnpm/<pkg>/node_modules/<scope>/<name> 最多 5 层，留余量
+		}
+		let entries;
+		try {
+			entries = readdirSync(dir, { withFileTypes: true });
+		} catch {
+			return;
+		}
+		for (const e of entries) {
+			const p = join(dir, e.name);
+			let st;
+			try {
+				st = lstatSync(p);
+			} catch {
+				continue;
+			}
+			if (st.isSymbolicLink()) {
+				let target;
+				try {
+					target = readlinkSync(p);
+				} catch {
+					continue;
+				}
+				// 只动指向**本 profile 虚拟店**的链接，不碰其它链接
+				if (!/\.pnpm[\\/]/.test(target)) {
+					continue;
+				}
+				try {
+					statSync(p);
+					continue; // 目标还在 ⇒ 正常链接
+				} catch (err) {
+					if (err?.code !== 'ENOENT') {
+						continue;
+					}
+				}
+				try {
+					rmSync(p, { force: true }); // Windows junction / POSIX symlink 都适用（实测 ✓）
+					removed++;
+				} catch (err) {
+					console.log(`[prepack-dsh] ⚠ 悬空链接删不掉（gulp 仍可能 ENOENT）：${p} ${String(err?.code ?? '')}`);
+				}
+			} else if (st.isDirectory()) {
+				scan(p, depth + 1);
+			}
+		}
+	};
+	if (existsSync(root)) {
+		scan(root, 0);
+	}
+	if (removed) {
+		console.log(`[prepack-dsh] pruned ${label}: ${removed} 个悬空链接（指向已裁剪的 .pnpm 包，防 gulp ENOENT）`);
+	}
+}
+
 function prune(targetDir, label = 'runtime') {
 	let prunedMB = 0;
 	for (const rel of PRUNE_LIST) {
@@ -620,6 +701,9 @@ function prune(targetDir, label = 'runtime') {
 				console.log(`[prepack-dsh] ⚠ 虚拟店内核裁剪失败（包会大约 ${Math.round(bytes / 1024 / 1024)} MB）：${entry}`);
 			}
 		}
+		// ★ 删掉包目录之后必须清掉指向它的悬空链接，否则 gulp 的 stat 会 ENOENT（见上）。
+		//   即使这次没有裁任何包也跑一遍：上次裁剪留下的断链也在这里被兜底清掉（幂等）。
+		pruneDanglingLinks(targetDir, label);
 	}
 	if (prunedMB > 0) {
 		console.log(`[prepack-dsh] pruned total (${label}): ${Math.round(prunedMB)} MB`);

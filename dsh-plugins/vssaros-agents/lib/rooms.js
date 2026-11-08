@@ -1329,6 +1329,34 @@ export function createRooms(deps) {
 				},
 			};
 		},
+		/**
+		 * ★ 2026-11-07（用户要求「@群 时也同时建一张工单，群聊做完把结果回写到工单」）：群现在在做什么，
+		 *   给 SuperAgent 判断它的工单做完没有（vssaros-superagent `app/group-tickets.ts`）。
+		 *   `idle` = 没有进行中的一轮、没有成员在后台干活、没有排着的消息 / 回叫、没有等批准的；
+		 *   等用户选的卡（asks）不算忙 —— 群停下来就是在等人。`log` 是最近的群记录（调用方按工单开始时间筛）。
+		 * @returns 群不在了 ⇒ `{ roomId, missing: true }`
+		 */
+		state(roomId) {
+			const id = String(roomId ?? '');
+			const room = rooms.get(id);
+			if (!room) { return { roomId: id, missing: true }; }
+			const own = [...rounds.values()].filter(round => round.roomId === room.id);
+			const running = own.some(round => !round.done);
+			const busy = busyOf(room.id);
+			const queued = (callbacks.get(room.id) ?? []).length + (inbox.get(room.id) ?? []).length;
+			const waiting = approvalsOf(room.id).length;
+			const latest = own.reduce((at, round) => Math.max(at, Number(round.finishedAt || round.startedAt || 0)), 0);
+			const goal = room.goal;
+			return {
+				roomId: room.id, roomName: room.name, idle: !running && !busy.length && !queued && !waiting,
+				running, busy, queued, approvals: waiting, activeAt: Math.max(Number(room.updatedAt ?? 0), latest),
+				asks: asksOf(room.id).map(ask => ({ name: ask.name, botId: ask.botId, at: ask.at, headline: askHeadline(ask), questions: ask.questions.length })),
+				goal: goal ? { title: String(goal.title ?? ''), status: goal.status, idle: goal.idle === true, summary: String(goal.summary ?? ''),
+					...(goal.completedAt ? { completedAt: goal.completedAt } : {}), ...(goal.updatedAt ? { updatedAt: goal.updatedAt } : {}) } : null,
+				log: room.log.slice(-40).map(line => ({ at: line.at, who: line.who, ...(line.botId ? { botId: line.botId } : {}),
+					...(line.kind ? { kind: line.kind } : {}), ...(line.late ? { late: true } : {}), text: line.text })),
+			};
+		},
 		/** 群目标的对外视图（Bots 页签 / 工作台读）。 */
 		goalOf(roomId) {
 			const room = rooms.get(String(roomId ?? ''));

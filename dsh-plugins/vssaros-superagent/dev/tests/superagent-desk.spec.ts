@@ -283,7 +283,7 @@ it('makes a group at desk intake, records ignore, and never relays the candidate
 })
 
 // P0 batch 1: @existing group is routed by the agents plugin; SuperAgent must not spend a main-Session model evaluation.
-it('records an @existing-group message as ignored at intake and never relays it to the main Session', async () => {
+it('accepts an @existing-group message at intake as a ticket the group runs, with no worker, and never relays it to the main Session', async () => {
   listSuperagent()
   const key = Symbol.for('vssaros.team')
   const globals = globalThis as unknown as Record<symbol, unknown>
@@ -301,6 +301,8 @@ it('records an @existing-group message as ignored at intake and never relays it 
     delegate: async () => ({}), get: async () => undefined, cancel: async () => ({}), subscribe: () => () => undefined,
     createGroup, listGroups: async () => [room],
   }
+  // Every launch the executor queues goes through its effects; a group ticket must queue none.
+  const launches = vi.spyOn(h.runtime.effects, 'enqueue')
   try {
     const text = '@番茄钟 H5 开发团队 开始制作番茄钟H5 应用'
     const trigger = deskTrigger({ session: h.runtime.deskId, messageId: 'dsh-ref', text, at: new Date().toISOString() })
@@ -314,13 +316,80 @@ it('records an @existing-group message as ignored at intake and never relays it 
     await tick()
     await h.runtime.idle()
     const decisions = h.runtime.store.db.prepare('SELECT value FROM decision WHERE value LIKE ?').all('%Routed to existing group%')
-    expect(decisions).toHaveLength(1)
+    expect(decisions.map(row => JSON.parse(String(row.value)).kind)).toEqual(['accept'])
     expect(createGroup).not.toHaveBeenCalled()
     expect(h.candidates()).not.toContain(trigger.id)
-    expect((h.runtime.store.db.prepare('SELECT COUNT(*) AS n FROM ticket').get() as { n: number }).n).toBe(0)
+    // VsSaros change (2026-11-07): one ticket, run by the group: no worker, no worktree, no Thread followed.
+    const tickets = h.runtime.store.tickets.list()
+    expect(tickets).toHaveLength(1)
+    expect(tickets[0]).toMatchObject({ title: '开始制作番茄钟H5 应用', group: { roomId: 'room-existing', roomName: '番茄钟 H5 开发团队' } })
+    expect(tickets[0]!.execution).toBeUndefined()
+    expect(tickets[0]!.assignments.map(item => item.state)).toEqual(['pending'])
+    expect(h.agents.has(`worker-${tickets[0]!.id}`)).toBe(false)
+    expect(launches.mock.calls.filter(([kind]) => kind === 'launch' || kind === 'delivery')).toEqual([])
+    expect(tickets[0]!.assignments[0]!.startedAt).toBeUndefined()
+    expect(h.runtime.store.threads.get(`superagent:${trigger.threads[0]!.id}`)?.subscriptions ?? []).not.toContain(tickets[0]!.id)
     expect(h.runtime.deskChat.messages().some(item => String(item.id).startsWith('group-created:'))).toBe(false)
     expect(h.runtime.groupRoutes.get(trigger.id)).toMatchObject({ roomId: 'room-existing', kind: 'routed', sourceMessageId: 'dsh-ref' })
-    expect(flowOf(trigger.id)).toMatchObject({ state: 'group', group: { roomId: 'room-existing', kind: 'routed', sourceMessageId: 'dsh-ref' } })
+    expect(flowOf(trigger.id)).toMatchObject({ state: 'ticket', group: { roomId: 'room-existing', kind: 'routed', sourceMessageId: 'dsh-ref' } })
+  } finally {
+    if (previous === undefined) { delete globals[key] } else { globals[key] = previous }
+  }
+})
+
+// VsSaros addition (2026-11-07, user request「@群 时也同时建一张工单，群聊做完把结果回写到工单」).
+it('writes the group\'s result back to its ticket once the group settles: waiting while it asks, then ready with its last replies', async () => {
+  listSuperagent()
+  const key = Symbol.for('vssaros.team')
+  const globals = globalThis as unknown as Record<symbol, unknown>
+  const previous = globals[key]
+  const room = { id: 'room-px', sessionId: 'room-px', name: '番茄钟 H5 开发团队', members: [{ id: 'coder', name: 'Coder' }],
+    admin: 'coder', mode: 'admin', notice: '', pinned: false, hidden: false, createdBy: 'superagent' }
+  let state: Record<string, unknown> = { roomId: 'room-px', roomName: room.name, idle: false, log: [] }
+  globals[key] = { version: 1, available: () => true, listBots: async () => [], delegate: async () => ({}), get: async () => undefined,
+    cancel: async () => ({}), subscribe: () => () => undefined, createGroup: vi.fn(), listGroups: async () => [room],
+    groupState: async (roomId: string) => roomId === 'room-px' ? state : { roomId, missing: true } }
+  try {
+    const text = '@番茄钟 H5 开发团队 开发一个像素版的 番茄时钟'
+    const emit = (h.ctx as unknown as { emit(name: string, ...args: unknown[]): void }).emit.bind(h.ctx)
+    emit('session/event', { id: h.runtime.deskId }, { type: 'user/message', data: { id: 'dsh-px', source: { kind: 'user' }, content: [{ type: 'text', text }] } })
+    emit('session/event', { id: h.runtime.deskId }, { type: 'user/message', data: { id: 'ref-dsh-px', role: 'user',
+      source: { kind: 'session-reference', form: 'recall', version: 1, references: [{ sessionId: 'room-px', label: room.name }] },
+      content: [{ type: 'text', text: '## Referenced sessions' }] } })
+    await tick()
+    await h.runtime.idle()
+    const ticket = h.runtime.store.tickets.open().find(item => item.group)!
+    expect(ticket.title).toBe('开发一个像素版的 番茄时钟')
+    const at = Date.parse(ticket.createdAt)
+    const check = async () => { await h.runtime.checkGroupTickets(); await h.runtime.idle() }
+    // Working: nothing is written.
+    await check()
+    expect(h.runtime.store.tickets.get(ticket.id)!.assignments[0]!.report).toBeUndefined()
+    // Still, but only for a moment: not yet.
+    state = { ...state, idle: true, activeAt: Date.now(), log: [{ at: at + 10, who: 'Coder', text: '先确认三件事' }] }
+    await check()
+    expect(h.runtime.store.tickets.get(ticket.id)!.assignments[0]!.report).toBeUndefined()
+    // Settled while a member waits for the person's choice: waiting, the ticket stays open.
+    state = { ...state, activeAt: Date.now() - 60_000, asks: [{ name: 'Coder', at: at + 20, headline: '交付形态 / 范围', questions: 2 }] }
+    await check()
+    expect(h.runtime.store.tickets.get(ticket.id)!.assignments[0]!.report).toMatchObject({ state: 'waiting', summary: expect.stringMatching(/等你在群里选择：Coder（交付形态 \/ 范围）/) })
+    expect(h.runtime.store.tickets.get(ticket.id)!.ended).toBeUndefined()
+    // The same state is not written twice.
+    const firstAt = h.runtime.store.tickets.get(ticket.id)!.assignments[0]!.report!.at
+    await check()
+    expect(h.runtime.store.tickets.get(ticket.id)!.assignments[0]!.report!.at).toBe(firstAt)
+    // Done: ready with the group's last replies, and the ticket ends as completed, told to the desk.
+    state = { ...state, asks: [], log: [{ at: at - 1000, who: 'Coder', text: '上一次的事' }, { at: at + 10, who: 'Coder', text: '先确认三件事' },
+      { at: at + 30, who: '用户', text: '全部按推荐' }, { at: at + 40, who: 'Designer', text: '像素规范在 pixel-spec.html' },
+      { at: at + 50, who: 'Coder', text: 'pixel.html 做好了，测试通过' }] }
+    await check()
+    const done = h.runtime.store.tickets.get(ticket.id)!
+    expect(done.ended).toMatchObject({ by: 'executor', outcome: 'completed' })
+    const summary = done.assignments[0]!.report!.summary
+    expect(summary).toMatch(/群「番茄钟 H5 开发团队」这次的结果（3 条回复）/)
+    expect(summary).toMatch(/Designer：像素规范在 pixel-spec\.html\n\nCoder：pixel\.html 做好了，测试通过$/)
+    expect(summary).not.toMatch(/上一次的事|全部按推荐/)
+    expect(h.agents.has(`worker-${ticket.id}`)).toBe(false)
   } finally {
     if (previous === undefined) { delete globals[key] } else { globals[key] = previous }
   }
@@ -329,7 +398,7 @@ it('records an @existing-group message as ignored at intake and never relays it 
 // VsSaros fix (2026-11-06, real run): the desk is one Thread for every request. 28 minutes after a desk ticket ended, the
 // person's 「@番茄钟 H5 开发团队 开发H5 番茄钟」 resumed it (its worker read it, said it had nothing to do and ended it again,
 // telling the desk so), while the group took the message too and its ignore decision was refused (workerDecides).
-it('resumes no ended ticket from the desk, still reaches a live one there, and gives an @group message to no ticket', async () => {
+it('resumes no ended ticket from the desk, still reaches a live one there, and gives an @group message to no desk ticket', async () => {
   listSuperagent()
   const key = Symbol.for('vssaros.team')
   const globals = globalThis as unknown as Record<symbol, unknown>
@@ -365,9 +434,15 @@ it('resumes no ended ticket from the desk, still reaches a live one there, and g
     const group = desk('dsh-group', text)
     expect(h.runtime.store.triggers.disposition(group.id)).toMatchObject({ fanout: [] })
     expect(reaches(live.sessionId, group.id)).toBe(false)
+    // VsSaros change (2026-11-07): its own ticket, which the group runs; the live desk ticket does not take it.
     expect(h.runtime.store.db.prepare('SELECT value FROM decision WHERE value LIKE ?').all(`%${group.id}%`)
-      .map(row => JSON.parse(String(row.value)).kind)).toEqual(['ignore'])
-    expect(flowOf(group.id)).toMatchObject({ state: 'group', group: { roomId: 'room-tomato', kind: 'routed' } })
+      .map(row => JSON.parse(String(row.value)).kind)).toEqual(['accept'])
+    expect(flowOf(group.id)).toMatchObject({ state: 'ticket', group: { roomId: 'room-tomato', kind: 'routed' } })
+    expect(h.runtime.store.tickets.open().filter(item => item.group).map(item => item.title)).toEqual(['开发H5 番茄钟'])
+    // The person's next desk message still reaches the live desk ticket, and not the group's.
+    const next = desk('desk-steer-2', '番茄钟再加个暂停')
+    h.runtime.receive(next); await h.runtime.idle()
+    expect(h.runtime.store.triggers.disposition(next.id)!.fanout).toEqual([live.ticket.id])
     expect(h.runtime.store.tickets.get(done.ticket.id)!.ended).toBeDefined()
   } finally {
     if (previous === undefined) { delete globals[key] } else { globals[key] = previous }

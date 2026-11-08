@@ -203,6 +203,24 @@ await checkAsync('契约修订 2：version 不变、revision 2；presetOf 与注
 	assert.equal(teamBus(legacyRoot), legacy, '再取一次还是同一个');
 });
 
+// ★ 2026-11-07：SuperAgent 给「由群执行的工单」回写结果，要能问到群现在在做什么
+await checkAsync('groupState：实现没就绪 ⇒ undefined（不抛）；就绪后透传；HMR 前的老群总线也补上', async () => {
+	const fresh = {};
+	const bus = teamBus(fresh);
+	assert.equal(await bus.groupState('r1'), undefined);
+	const off = bus.provideGroups({ create: async () => ({}), list: async () => [], state: (id) => ({ roomId: id, idle: true }) });
+	assert.deepEqual(await bus.groupState('r1'), { roomId: 'r1', idle: true });
+	off();
+	assert.equal(await bus.groupState('r1'), undefined);
+	bus.provideGroups({ create: async () => ({}), list: async () => [] });
+	assert.equal(await bus.groupState('r1'), undefined, '老实现没有 state');
+	// 11-05 版建的群总线：有 createGroup / provideGroups，没有 groupState
+	const old = { version: 1, delegate: () => undefined, subscribe: () => () => undefined, createGroup: async () => ({}), provideGroups: () => () => undefined,
+		[Symbol.for('vssaros.team.groups.idempotent')]: true };
+	const upgraded = teamBus({ [Symbol.for('vssaros.team')]: old });
+	assert.equal(typeof upgraded.groupState, 'function');
+});
+
 offBus();
 try { rmSync(root, { recursive: true, force: true }); } catch { /* 忽略 */ }
 console.log(`team-bus: ${pass} passed, ${fails.length} failed`);

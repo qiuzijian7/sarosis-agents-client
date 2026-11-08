@@ -1825,17 +1825,21 @@ var Tickets = class extends EnginePart {
 			const channel = this.repo.triggers.get(triggerId)?.channel;
 			if (channel && !ticket.channels.some((item) => sameChannel(item, channel))) ticket.channels.push(channel);
 		}
-		ticket = this.options.prepareTicket?.(ticket, outcome) ?? ticket;
-		if (this.options.staffing?.(ticket)) ticket.team = {
+		if (outcome.group) ticket.group = {
+			roomId: outcome.group.roomId,
+			roomName: outcome.group.roomName
+		};
+		else ticket = this.options.prepareTicket?.(ticket, outcome) ?? ticket;
+		if (!ticket.group && this.options.staffing?.(ticket)) ticket.team = {
 			state: "proposing",
 			version: 0,
 			at
 		};
 		const assignment = this.newAssignment(ticket);
 		this.repo.tickets.save(ticket);
-		for (const triggerId of triggerIds) for (const ref of this.repo.triggers.get(triggerId)?.threads ?? []) this.subscribe(id, ref);
+		if (!ticket.group) for (const triggerId of triggerIds) for (const ref of this.repo.triggers.get(triggerId)?.threads ?? []) this.subscribe(id, ref);
 		if (outcome.acknowledgement && primary) this.replies.acknowledgeAccepted(id, primary, outcome.acknowledgement);
-		if (!staffing(ticket)) this.options.executor.start(this.require(id), assignment);
+		if (!staffing(ticket) && !ticket.group) this.options.executor.start(this.require(id), assignment);
 		this.emit("ticket.created", {
 			ticketId: id,
 			decisionId,
@@ -5045,7 +5049,11 @@ function ticketSummary(ticket) {
 		inputs: ticket.inputs.length,
 		undelivered: ticket.undelivered.length,
 		deliveryError: attribute(ticket.delivery?.error),
-		sessionId: ticket.assignments.some((item) => item.startedAt) ? workerSessionId(ticket.id) : "",
+		sessionId: ticket.group ? ticket.group.roomId : ticket.assignments.some((item) => item.startedAt) ? workerSessionId(ticket.id) : "",
+		...ticket.group ? { group: {
+			roomId: ticket.group.roomId,
+			roomName: ticket.group.roomName
+		} } : {},
 		directory: attribute(ticket.execution?.directory),
 		summary: latestReport(ticket)?.summary ?? "",
 		createdAt: ticket.createdAt,
@@ -7133,6 +7141,7 @@ var DshExecutor = class {
 	}
 	/** Enqueues a `launch` effect for an accepted or resumed assignment; launches start in queue order as worker slots free up. */
 	start(ticket, assignment) {
+		if (ticket.group) return;
 		this.host.effects.enqueue("launch", assignment.id, {
 			ticketId: ticket.id,
 			assignmentId: assignment.id
@@ -7140,6 +7149,7 @@ var DshExecutor = class {
 	}
 	/** Enqueues a `delivery` effect to steer pending inputs into `ticket`'s running worker session. */
 	deliver(ticket, _assignment) {
+		if (ticket.group) return;
 		this.host.effects.enqueue("delivery", ticket.id, { ticketId: ticket.id });
 	}
 	/** VsSaros addition: delivers the inputs a ticket kept while it was held (see `ExecutorHost.held`). */
@@ -7151,7 +7161,7 @@ var DshExecutor = class {
 		const ticket = this.host.store.tickets.get(ticketId);
 		const assignment = ticket && latestAssignment(ticket);
 		if (!ticket || !liveTicket(ticket) || assignment?.id !== assignmentId || assignment.state !== "pending") return;
-		if (staffing(ticket)) return;
+		if (staffing(ticket) || ticket.group) return;
 		this.slots.reserve(ticketId, "launch");
 		try {
 			await this.launch(ticket, assignment);
@@ -10788,6 +10798,15 @@ var Team = class {
 			throw new TeamError(`Could not create the group: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
+	/**
+	* VsSaros addition (2026-11-07): what a group is doing now (see app/group-tickets.ts); undefined when the Bots are not
+	* running here or are too old to tell, so the ticket waits for a later check.
+	*/
+	async groupState(roomId) {
+		const bus = this.bus();
+		if (!bus?.available() || typeof bus.groupState !== "function") return void 0;
+		return await bus.groupState(roomId);
+	}
 	/** 已存在的群；desk 的 `@群` 快路径用它确认引用事件指向的是群，而不是普通会话。 */
 	async groups() {
 		const bus = this.need();
@@ -11308,7 +11327,7 @@ const thread = (kind, session) => ({
 	source: SUPERAGENT_SOURCE,
 	id: `${kind}:${session}`
 });
-const clip$1 = (text) => text.trim().slice(0, 2e4);
+const clip$2 = (text) => text.trim().slice(0, 2e4);
 /** A person's message in the desk; `messageId` is the DSH message ID, so handing the same message over twice is one Trigger. */
 function deskTrigger(input) {
 	const ref = thread("desk", input.session);
@@ -11323,7 +11342,7 @@ function deskTrigger(input) {
 		human: true,
 		addressed: "direct",
 		at: input.at,
-		text: clip$1(input.text),
+		text: clip$2(input.text),
 		channel: {
 			source: SUPERAGENT_SOURCE,
 			thread: threadKey(ref),
@@ -11355,7 +11374,7 @@ function botTrigger(input) {
 		human: false,
 		addressed: "direct",
 		at: input.at,
-		text: clip$1(input.text),
+		text: clip$2(input.text),
 		channel: {
 			source: SUPERAGENT_SOURCE,
 			thread: threadKey(ref),
@@ -11499,7 +11518,7 @@ const OUTCOME_TEXT = {
 	stopped: "已停止"
 };
 const SUMMARY_CHARS = 600;
-const clip = (text, max) => text.length > max ? `${text.slice(0, max - 1)}…` : text;
+const clip$1 = (text, max) => text.length > max ? `${text.slice(0, max - 1)}…` : text;
 /** The ended ticket's view: its title, outcome and report summary (else the reason it ended); undefined while it is open. */
 function receiptView(ticket) {
 	const ended = ticket.ended;
@@ -11512,7 +11531,7 @@ function receiptView(ticket) {
 		title: ticket.title,
 		outcome: ended.outcome,
 		outcomeText: OUTCOME_TEXT[ended.outcome] ?? ended.outcome,
-		summary: clip(summary, SUMMARY_CHARS),
+		summary: clip$1(summary, SUMMARY_CHARS),
 		at: ended.at
 	};
 }
@@ -16190,6 +16209,60 @@ function toEntry(row) {
 		...row.error ? { error: String(row.error) } : {}
 	};
 }
+/** How often open group tickets are checked. */
+const GROUP_CHECK_MS = 1e4;
+/** The summary's length limit; the desk notice and the flow card shorten it further. */
+const SUMMARY_LIMIT = 1800;
+const clip = (text, limit = SUMMARY_LIMIT) => text.length > limit ? `${text.slice(0, limit)}…` : text;
+const since = (ticket) => Date.parse(ticket.createdAt) || 0;
+/**
+* The report a group ticket gets from its group's state, or none while the group works or has not started on it.
+* Pure: the runtime compares it with the ticket's latest report and only writes a change.
+*/
+function groupTicketReport(ticket, state, now) {
+	const name = state?.roomName || ticket.group?.roomName || "群聊";
+	if (!state) return void 0;
+	if (state.missing) return {
+		state: "dropped",
+		summary: `群「${name}」已经删除，这张工单没有结果。`
+	};
+	if (!state.idle) return void 0;
+	if (state.activeAt && now - state.activeAt < 5e3) return void 0;
+	const from = since(ticket);
+	const lines = (state.log ?? []).filter((line) => line.at >= from && line.who !== "用户" && line.kind !== "ask-answer" && line.text?.trim());
+	const goal = state.goal;
+	const goalChanged = !!goal && (goal.updatedAt ?? 0) >= from;
+	if (!lines.length && !goalChanged) return void 0;
+	const asks = (state.asks ?? []).filter((ask) => ask.at >= from || lines.length);
+	if (asks.length) return {
+		state: "waiting",
+		summary: `群「${name}」等你在群里选择：${asks.map((ask) => `${ask.name}（${ask.headline}）`).join("；")}`
+	};
+	if (goal && goalChanged && goal.status === "complete") return {
+		state: "ready",
+		summary: clip(`群「${name}」完成了目标「${goal.title}」${goal.summary ? `：${goal.summary}` : "。"}`)
+	};
+	if (goal && goalChanged && goal.status === "stopped") return {
+		state: "dropped",
+		summary: `群「${name}」停止了目标「${goal.title}」。`
+	};
+	if (goal && (goal.status === "active" || goal.status === "paused")) return {
+		state: "waiting",
+		summary: `群「${name}」的目标「${goal.title}」还没完成，在等你在群里回复。`
+	};
+	const last = lines.filter((line) => line.kind !== "ask").slice(-2).map((line) => `${line.who}：${line.text.trim()}`);
+	if (!last.length) return void 0;
+	return {
+		state: "ready",
+		summary: clip(`群「${name}」这次的结果（${lines.length} 条回复）：\n\n${last.join("\n\n")}`)
+	};
+}
+/** The ticket title for a message to a group: the message without the `@群名` it starts with. */
+function groupTicketTitle(text, roomName) {
+	const escaped = roomName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const title = String(text ?? "").trim().replace(new RegExp(`^@\\[${escaped}\\]\\([^)]*\\)`), "").replace(new RegExp(`^@\\[?${escaped}\\]?`), "").trim() || String(text ?? "").trim();
+	return title.length > 80 ? `${title.slice(0, 80)}…` : title;
+}
 /**
 * 一条以 @ 开头的桌面消息最多等它的引用事件多久再走常规路径。原来是 40ms：引用事件晚到一点，
 * 消息就交给了主管模型，而 agents 插件（15 秒窗口）照样把它转进群——同一条消息两头都处理。
@@ -16256,7 +16329,11 @@ async function handleDeskGroupCommand(host, trigger, text, referenceEvent, optio
 					roomName: ref.room.name,
 					kind: "routed",
 					...options.sourceMessageId ? { sourceMessageId: options.sourceMessageId } : {}
-				}
+				},
+				...options.late ? {} : { ticket: {
+					title: groupTicketTitle(text, ref.label || ref.room.name),
+					scope: String(text ?? "").trim()
+				} }
 			});
 			host.requestPass();
 		} catch (error) {
@@ -17479,6 +17556,43 @@ var Runtime = class extends Service {
 	deskOutbox;
 	/** VsSaros addition (2026-11-06): which group chat a desk message went to (the link between Triggers and group runs). */
 	groupRoutes;
+	/** VsSaros addition (2026-11-07): open group tickets being checked, so a slow Bots plugin is not asked twice at once. */
+	groupChecking = false;
+	/** Whether an Eval of the main Session holds the Trigger (with the other messages of its batch). */
+	heldByEval(triggerId) {
+		const trigger = this.store.triggers.get(triggerId);
+		return !!(trigger?.threads[0] && this.store.threads.get(threadKey(trigger.threads[0])))?.evaluating?.triggerIds.includes(triggerId);
+	}
+	/**
+	* VsSaros addition (2026-11-07): report each open group ticket's group result once its group settled (see
+	* app/group-tickets.ts). A report equal to the ticket's latest one is not written again.
+	*/
+	async checkGroupTickets() {
+		if (this.groupChecking || this.closing()) return;
+		this.groupChecking = true;
+		try {
+			for (const ticket of this.store.tickets.open().filter((item) => item.group)) {
+				let state;
+				try {
+					state = await this.team.groupState(ticket.group.roomId);
+				} catch (error) {
+					this.ctx.logger.warn("dsh-superagent: could not read group %s for ticket %s: %s", ticket.group.roomId, ticket.id, String(error));
+					continue;
+				}
+				const report = groupTicketReport(ticket, state, Date.now());
+				const current = this.store.tickets.get(ticket.id);
+				const latest = current?.assignments.at(-1)?.report;
+				if (!report || !current || current.ended || latest?.state === report.state && latest.summary === report.summary) continue;
+				try {
+					this.engine.report(ticket.id, report);
+				} catch (error) {
+					this.ctx.logger.warn("dsh-superagent: could not report group ticket %s: %s", ticket.id, String(error));
+				}
+			}
+		} finally {
+			this.groupChecking = false;
+		}
+	}
 	sourceLinks = new TextCache(2e5);
 	stopped = new AbortController();
 	disposers = [];
@@ -18099,6 +18213,22 @@ var Runtime = class extends Service {
 				...settlement.route,
 				at: now()
 			});
+			if (settlement.ticket && !this.heldByEval(triggerId)) try {
+				this.engine.decide(triggerId, {
+					kind: "accept",
+					title: settlement.ticket.title,
+					scope: settlement.ticket.scope,
+					reason: settlement.reason,
+					group: {
+						roomId: settlement.route.roomId,
+						roomName: settlement.route.roomName
+					}
+				});
+				if (settlement.notice) this.toolHost.tellTrigger?.(triggerId, settlement.notice.id, settlement.notice.text);
+				return;
+			} catch (error) {
+				warnFastPath(`group intake could not open a ticket for ${triggerId}, recording it as ignored: ${String(error)}`);
+			}
 			try {
 				this.engine.decide(triggerId, {
 					kind: "ignore",
@@ -18216,6 +18346,14 @@ var Runtime = class extends Service {
 			};
 		}));
 		this.disposers.push(this.deskOutbox.install());
+		{
+			const timer = setInterval(() => {
+				this.checkGroupTickets();
+			}, GROUP_CHECK_MS);
+			timer.unref?.();
+			this.disposers.push(() => clearInterval(timer));
+			this.checkGroupTickets();
+		}
 		const withdraw = sharedTeamBus()?.registerExternalBot?.({
 			id: "superagent",
 			name: "SuperAgent",

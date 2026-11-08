@@ -8,6 +8,7 @@
  * `steps.ts`); the old plans are kept read-only in `team_archive` (`team-archive.ts`). This module keeps two tables:
  * `team_bot` (Bots the supervisor created, for quotas and the panel) and `team_approval` (drafts waiting for a person).
  */
+import type { GroupState } from './group-tickets.ts'
 import { randomUUID } from 'node:crypto'
 import type { Store } from './store.ts'
 
@@ -70,6 +71,8 @@ export interface TeamBus {
   features?: readonly string[]
   presetOf?(botId: string): string
   describeBot?(ref: string): Promise<(BotCard & { model?: string; preset?: string; workspaces?: { read: string[]; write: string[] } }) | undefined>
+  /** VsSaros addition (2026-11-07, vssaros-agents 0.2.355+): what a group is doing now, for the ticket it runs. */
+  groupState?(roomId: string): Promise<GroupState | undefined>
 }
 /** Whether the team bus has contract revision `revision` or later. */
 export const busRevision = (bus: Partial<TeamBus> | undefined, revision: number): boolean => typeof bus?.revision === 'number' && bus.revision >= revision
@@ -204,6 +207,15 @@ export class Team {
     } catch (error) {
       throw new TeamError(`Could not create the group: ${error instanceof Error ? error.message : String(error)}`)
     }
+  }
+  /**
+   * VsSaros addition (2026-11-07): what a group is doing now (see app/group-tickets.ts); undefined when the Bots are not
+   * running here or are too old to tell, so the ticket waits for a later check.
+   */
+  async groupState(roomId: string): Promise<GroupState | undefined> {
+    const bus = this.bus()
+    if (!bus?.available() || typeof bus.groupState !== 'function') return undefined
+    return await bus.groupState(roomId)
   }
   /** 已存在的群；desk 的 `@群` 快路径用它确认引用事件指向的是群，而不是普通会话。 */
   async groups(): Promise<GroupView[]> {

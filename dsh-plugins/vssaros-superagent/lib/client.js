@@ -5179,6 +5179,7 @@ window.__ModuleLoader__.load({
 			ticketUndeliveredLabel: ["未送达", "Undelivered"],
 			ticketMandateLabel: ["授权", "Mandate"],
 			ticketActorLabel: ["发起", "From"],
+			ticketGroupLabel: ["执行群聊", "Group chat"],
 			ticketUpdatedLabel: ["更新", "Updated"],
 			executionDirectory: ["执行目录的根目录", "Ticket directory root"],
 			executionDirectoryDefault: ["留空时用 {root}", "Empty uses {root}"],
@@ -11148,6 +11149,13 @@ window.__ModuleLoader__.load({
 						/* @__PURE__ */ (0, react_jsx_runtime.jsx)(LabelValue, {
 							label: t("ticketUpdatedLabel"),
 							value: when(data.updatedAt, t("lang"))
+						}),
+						data.group && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							"data-testid": "ticket-group",
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(LabelValue, {
+								label: t("ticketGroupLabel"),
+								value: data.group.roomName
+							})
 						}),
 						data.relays.resent + data.relays.side > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 							"data-testid": "ticket-relays",

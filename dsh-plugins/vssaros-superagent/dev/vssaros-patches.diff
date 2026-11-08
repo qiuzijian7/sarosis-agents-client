@@ -1409,12 +1409,102 @@ index 00000000000..5124e2cd059
 +      ...row.source_message_id ? { sourceMessageId: String(row.source_message_id) } : {}, at: String(row.at) }
 +  }
 +}
+diff --git a/src/app/group-tickets.ts b/src/app/group-tickets.ts
+new file mode 100644
+index 00000000000..bbf157c6d0d
+--- /dev/null
++++ b/src/app/group-tickets.ts
+@@ -0,0 +1,84 @@
++/**
++ * VsSaros addition (2026-11-07, user request「@群 时也同时建一张工单，群聊做完把结果回写到工单」).
++ *
++ * A desk message `@已有群 …` used to be recorded as `ignore` and left entirely to the Bots plugin's group chat, so SuperAgent
++ * never knew whether the work finished. Now the same intake accepts it as a ticket that the group runs (`Ticket.group`): no
++ * worker starts, no Thread is followed, and the group's state is checked here, from the Bots plugin's `groupState`, until it
++ * settles. Then the ticket gets the report a worker would have given: `ready` (ends it, with the group's last replies or its
++ * goal's summary), `waiting` (the group waits for the person: a choice card, or a goal that is not done), or `dropped`
++ * (the group was deleted, or its goal was stopped).
++ *
++ * "Settled" is the Bots plugin's `idle` (no round running, no member working in the background, nothing queued, no
++ * approval waiting) for at least `GROUP_SETTLE_MS`, and a member said something since the ticket began: a message that has
++ * not reached the group yet leaves nothing to report.
++ */
++import type { Ticket } from '../core/index.ts'
++
++/** How long the group must have been still before its state is taken as the ticket's result. */
++export const GROUP_SETTLE_MS = 5000
++/** How often open group tickets are checked. */
++export const GROUP_CHECK_MS = 10_000
++/** The summary's length limit; the desk notice and the flow card shorten it further. */
++const SUMMARY_LIMIT = 1800
++
++/** One line of the group's log, as the Bots plugin gives it. */
++export interface GroupLogLine { at: number; who: string; botId?: string; kind?: string; late?: boolean; text: string }
++/** What the Bots plugin tells about a group (`TeamBus.groupState`, vssaros-agents 0.2.355+). */
++export interface GroupState {
++  roomId: string
++  roomName?: string
++  /** The group was deleted. */
++  missing?: true
++  idle?: boolean
++  /** When the group last did something (its last log line, or its latest round's start or end). */
++  activeAt?: number
++  asks?: { name: string; botId?: string; at: number; headline: string; questions: number }[]
++  goal?: { title: string; status: 'active' | 'paused' | 'complete' | 'stopped'; idle: boolean; summary: string; completedAt?: number; updatedAt?: number } | null
++  log?: GroupLogLine[]
++}
++export interface GroupReport { state: 'ready' | 'waiting' | 'dropped'; summary: string }
++
++const clip = (text: string, limit = SUMMARY_LIMIT) => text.length > limit ? `${text.slice(0, limit)}…` : text
++const since = (ticket: Pick<Ticket, 'createdAt'>) => Date.parse(ticket.createdAt) || 0
++
++/**
++ * The report a group ticket gets from its group's state, or none while the group works or has not started on it.
++ * Pure: the runtime compares it with the ticket's latest report and only writes a change.
++ */
++export function groupTicketReport(ticket: Pick<Ticket, 'createdAt' | 'group'>, state: GroupState | undefined, now: number): GroupReport | undefined {
++  const name = state?.roomName || ticket.group?.roomName || '群聊'
++  if (!state) return undefined
++  if (state.missing) return { state: 'dropped', summary: `群「${name}」已经删除，这张工单没有结果。` }
++  if (!state.idle) return undefined
++  if (state.activeAt && now - state.activeAt < GROUP_SETTLE_MS) return undefined
++  const from = since(ticket)
++  const lines = (state.log ?? []).filter(line => line.at >= from && line.who !== '用户' && line.kind !== 'ask-answer' && line.text?.trim())
++  const goal = state.goal
++  const goalChanged = !!goal && (goal.updatedAt ?? 0) >= from
++  if (!lines.length && !goalChanged) return undefined
++  const asks = (state.asks ?? []).filter(ask => ask.at >= from || lines.length)
++  if (asks.length) {
++    return { state: 'waiting', summary: `群「${name}」等你在群里选择：${asks.map(ask => `${ask.name}（${ask.headline}）`).join('；')}` }
++  }
++  if (goal && goalChanged && goal.status === 'complete') {
++    return { state: 'ready', summary: clip(`群「${name}」完成了目标「${goal.title}」${goal.summary ? `：${goal.summary}` : '。'}`) }
++  }
++  if (goal && goalChanged && goal.status === 'stopped') return { state: 'dropped', summary: `群「${name}」停止了目标「${goal.title}」。` }
++  if (goal && (goal.status === 'active' || goal.status === 'paused')) {
++    return { state: 'waiting', summary: `群「${name}」的目标「${goal.title}」还没完成，在等你在群里回复。` }
++  }
++  const last = lines.filter(line => line.kind !== 'ask').slice(-2).map(line => `${line.who}：${line.text.trim()}`)
++  if (!last.length) return undefined
++  return { state: 'ready', summary: clip(`群「${name}」这次的结果（${lines.length} 条回复）：\n\n${last.join('\n\n')}`) }
++}
++
++/** The ticket title for a message to a group: the message without the `@群名` it starts with. */
++export function groupTicketTitle(text: string, roomName: string): string {
++  const escaped = roomName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
++  const body = String(text ?? '').trim()
++    .replace(new RegExp(`^@\\[${escaped}\\]\\([^)]*\\)`), '')
++    .replace(new RegExp(`^@\\[?${escaped}\\]?`), '')
++    .trim()
++  const title = body || String(text ?? '').trim()
++  return title.length > 80 ? `${title.slice(0, 80)}…` : title
++}
 diff --git a/src/app/groupFastPath.ts b/src/app/groupFastPath.ts
 new file mode 100644
-index 00000000000..1fd383f9eec
+index 00000000000..6d59e57f05a
 --- /dev/null
 +++ b/src/app/groupFastPath.ts
-@@ -0,0 +1,243 @@
+@@ -0,0 +1,251 @@
 +/**
 + * 2026-11-05 P0: a person asks the supervisor desk to make a group of Bots. That request used to wait for the orchestrator
 + * model to classify it and call `orchestrator_team_create_group` (~44s in the 19:20 log). A group chat is a deterministic
@@ -1427,6 +1517,7 @@ index 00000000000..1fd383f9eec
 + */
 +import type { ReceiveResult, Trigger } from '../core/index.ts'
 +import type { GroupRouteKind } from './group-routes.ts'
++import { groupTicketTitle } from './group-tickets.ts'
 +import type { GroupView } from './team.ts'
 +
 +/** A Bot the roster offers; `delegatable` is enough to decide who can join a group. */
@@ -1454,6 +1545,11 @@ index 00000000000..1fd383f9eec
 +  reason: string
 +  route: { roomId: string; roomName: string; kind: GroupRouteKind; sourceMessageId?: string }
 +  notice?: { id: string; text: string }
++  /**
++   * VsSaros addition (2026-11-07): accept the Trigger as a ticket the group runs (`Ticket.group`) instead of ignoring it;
++   * the runtime falls back to `ignore` when the accept is refused.
++   */
++  ticket?: { title: string; scope: string }
 +}
 +export interface GroupCommandHost {
 +  receive(trigger: Trigger): ReceiveResult
@@ -1523,6 +1619,8 @@ index 00000000000..1fd383f9eec
 +				reason: `Routed to existing group${options.late ? ' (late reference)' : ''}: ${ref.room.name}`,
 +				route: { roomId: ref.room.id, roomName: ref.room.name, kind: 'routed',
 +					...options.sourceMessageId ? { sourceMessageId: options.sourceMessageId } : {} },
++				// 2026-11-07：同时建一张由群执行的工单（迟到的引用事件不建：那时消息可能已经进了主管的批次评估）
++				...options.late ? {} : { ticket: { title: groupTicketTitle(text, ref.label || ref.room.name), scope: String(text ?? '').trim() } },
 +			})
 +			host.requestPass()
 +		} catch (error) {
@@ -2508,7 +2606,7 @@ index 5b01e6bfe72..c8f914df9ed 100644
  
  /** Resolve a configured route through the live provider; catalog membership is not a restriction. */
 diff --git a/src/app/runtime.ts b/src/app/runtime.ts
-index a8cfe52df7b..c1cdee11c11 100644
+index a8cfe52df7b..b988c32dd7b 100644
 --- a/src/app/runtime.ts
 +++ b/src/app/runtime.ts
 @@ -1,5 +1,6 @@
@@ -2519,16 +2617,17 @@ index a8cfe52df7b..c1cdee11c11 100644
  import type { Agent } from '@deepseek-ai/dsh-agent'
  import type { SessionId } from '@deepseek-ai/dsh-session'
  import type {} from '@deepseek-ai/dsh-api-session-controller'
-@@ -12,7 +13,7 @@ import type {} from '@deepseek-ai/dsh-skill'
+@@ -12,15 +13,15 @@ import type {} from '@deepseek-ai/dsh-skill'
  import type {} from '@deepseek-ai/dsh-subprocess'
  import { mkdirSync } from 'node:fs'
  import { join } from 'node:path'
 -import { lockSync } from 'proper-lockfile'
+-import { Engine, key, reasonText, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
 +import { acquireStateLock } from './state-lock.ts'
- import { Engine, key, reasonText, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
++import { Engine, key, reasonText, threadKey, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
  import { allowedSender, settingsPolicy } from '../policy.ts'
  import { SourceRegistry } from '../sources/registry.ts'
-@@ -20,7 +21,7 @@ import { Commands } from '../infra/commands.ts'
+ import { Commands } from '../infra/commands.ts'
  import type { Deployment, Machine } from '../deployment.ts'
  import { environmentOf, ticketEnvironment, type Variable } from './execution-environment.ts'
  import type { SetupProblem } from '../setup.ts'
@@ -2537,7 +2636,7 @@ index a8cfe52df7b..c1cdee11c11 100644
  import { ticketCard } from './cards.ts'
  import { MasterAssessor } from './assessment.ts'
  import { KV } from '../kv.ts'
-@@ -34,14 +35,35 @@ import type { LinkTarget } from './views/records.ts'
+@@ -34,14 +35,36 @@ import type { LinkTarget } from './views/records.ts'
  import { candidateCard, repliedTo, sourceLink, type LinkHost } from './links.ts'
  import { eventNotice, followupNotice } from './notices.ts'
  import { pullEndNotices } from '../sources/github-pull.ts'
@@ -2567,6 +2666,7 @@ index a8cfe52df7b..c1cdee11c11 100644
 +import { GROUP_REFERENCE_KIND, GROUP_REFERENCE_LATE_MS, GROUP_REFERENCE_WAIT_MS, handleDeskGroupCommand, handleDeskMessage, isGroupCreationRequest,
 +  mayBeGroupCommand, type GroupSettlement } from './groupFastPath.ts'
 +import { GroupRoutes } from './group-routes.ts'
++import { GROUP_CHECK_MS, groupTicketReport } from './group-tickets.ts'
 +import { sandboxWorks, StepActivity, StepApprovals, stepPermission } from './step-approvals.ts'
 +import { Feed } from './feed.ts'
 +import { deskFlow, type DeskFlow } from './desk-flow.ts'
@@ -2574,7 +2674,7 @@ index a8cfe52df7b..c1cdee11c11 100644
  import { sourceContextOf, type SourceContextDeps } from './source-context.ts'
  import type { ResourceHost } from './resources.ts'
  import { mainTools, type MainToolsHost } from './tools/main.ts'
-@@ -50,6 +72,14 @@ import { executorTools, type ExecutorToolsHost } from './tools/executor.ts'
+@@ -50,6 +73,14 @@ import { executorTools, type ExecutorToolsHost } from './tools/executor.ts'
  // Source plugins interact with dsh-superagent exclusively through the `SourceHost` service interface.
  declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
  const now = (): string => new Date().toISOString()
@@ -2589,7 +2689,7 @@ index a8cfe52df7b..c1cdee11c11 100644
  
  /**
   * Composition root of dsh-superagent that connects `Store`, `Setup`, `Engine`, `SourceRegistry`, `Effects`, `Outbox`, `Passes`, `Sessions`, `Settings`, `Prompts`, `DshExecutor`, and `MasterAssessor`.
-@@ -69,11 +99,41 @@ export class Runtime extends Service implements SourceHost {
+@@ -69,11 +100,73 @@ export class Runtime extends Service implements SourceHost {
    readonly assessor: MasterAssessor
    readonly outbox: Outbox
    readonly engine: Engine
@@ -2628,10 +2728,42 @@ index a8cfe52df7b..c1cdee11c11 100644
 +  readonly deskOutbox: DeskOutbox
 +  /** VsSaros addition (2026-11-06): which group chat a desk message went to (the link between Triggers and group runs). */
 +  readonly groupRoutes: GroupRoutes
++  /** VsSaros addition (2026-11-07): open group tickets being checked, so a slow Bots plugin is not asked twice at once. */
++  private groupChecking = false
++  /** Whether an Eval of the main Session holds the Trigger (with the other messages of its batch). */
++  private heldByEval(triggerId: string): boolean {
++    const trigger = this.store.triggers.get(triggerId)
++    const thread = trigger?.threads[0] && this.store.threads.get(threadKey(trigger.threads[0]))
++    return !!thread?.evaluating?.triggerIds.includes(triggerId)
++  }
++  /**
++   * VsSaros addition (2026-11-07): report each open group ticket's group result once its group settled (see
++   * app/group-tickets.ts). A report equal to the ticket's latest one is not written again.
++   */
++  async checkGroupTickets(): Promise<void> {
++    if (this.groupChecking || this.closing()) return
++    this.groupChecking = true
++    try {
++      for (const ticket of this.store.tickets.open().filter(item => item.group)) {
++        let state
++        try { state = await this.team.groupState(ticket.group!.roomId) } catch (error) {
++          this.ctx.logger.warn('dsh-superagent: could not read group %s for ticket %s: %s', ticket.group!.roomId, ticket.id, String(error))
++          continue
++        }
++        const report = groupTicketReport(ticket, state, Date.now())
++        const current = this.store.tickets.get(ticket.id)
++        const latest = current?.assignments.at(-1)?.report
++        if (!report || !current || current.ended || (latest?.state === report.state && latest.summary === report.summary)) continue
++        try { this.engine.report(ticket.id, report) } catch (error) {
++          this.ctx.logger.warn('dsh-superagent: could not report group ticket %s: %s', ticket.id, String(error))
++        }
++      }
++    } finally { this.groupChecking = false }
++  }
    private readonly sourceLinks = new TextCache(200_000)
    private readonly stopped = new AbortController()
    private readonly disposers: (() => void)[] = []
-@@ -88,9 +148,11 @@ export class Runtime extends Service implements SourceHost {
+@@ -88,9 +181,11 @@ export class Runtime extends Service implements SourceHost {
      super(ctx, 'orchestrator')
      const runtime = this
      // Lock the state directory before opening the database so another process cannot migrate or write concurrently.
@@ -2644,7 +2776,7 @@ index a8cfe52df7b..c1cdee11c11 100644
      this.releaseLock = async () => { release() }
      let opened: Store | undefined
      try {
-@@ -103,8 +165,11 @@ export class Runtime extends Service implements SourceHost {
+@@ -103,8 +198,11 @@ export class Runtime extends Service implements SourceHost {
        const prompts = this.prompts = new Prompts(store, () => machine.promptMaxChars.get(), deployed, feishu)
        const masterId = this.masterId = store.get(KV.runtime.masterId) ?? `orchestrator-${key(machine.stateDir)}`
        store.set(KV.runtime.masterId, masterId)
@@ -2656,7 +2788,7 @@ index a8cfe52df7b..c1cdee11c11 100644
        const effects = this.effects = new Effects(store, board)
        const sources = this.sources = new SourceRegistry(() => store.settings(), board, kind => {
          // Sync source member lists once startup completes when a source plugin loads dynamically.
-@@ -112,6 +177,24 @@ export class Runtime extends Service implements SourceHost {
+@@ -112,6 +210,24 @@ export class Runtime extends Service implements SourceHost {
            .catch(() => { /* sync() records its failure in health. */ })
          return () => {}
        })
@@ -2681,7 +2813,7 @@ index a8cfe52df7b..c1cdee11c11 100644
        const links: LinkHost = { store, links: this.sourceLinks, commands, sources, lifetime: this.lifetime }
        const link = (trigger: Trigger, signal?: AbortSignal) => sourceLink(links, trigger, signal)
        const environment = (ticket: Ticket) => this.ticketEnvironment(ticket)
-@@ -121,21 +204,117 @@ export class Runtime extends Service implements SourceHost {
+@@ -121,21 +237,117 @@ export class Runtime extends Service implements SourceHost {
        const sessions = this.sessions = new Sessions({ context: ctx, store, prompts, effects, health: board.claim('models'), masterId,
          lifetime: this.lifetime,
          closing: () => this.closing(), environment,
@@ -2803,7 +2935,7 @@ index a8cfe52df7b..c1cdee11c11 100644
            // Notify the main Session only about domain events it did not initiate itself.
            const notice = this.quiet ? undefined : eventNotice(event, id => store.tickets.get(id))
            if (notice) sessions.notify(...notice)
-@@ -144,11 +323,26 @@ export class Runtime extends Service implements SourceHost {
+@@ -144,11 +356,26 @@ export class Runtime extends Service implements SourceHost {
            const followed = !this.quiet && (event.type === 'trigger.received' || event.type === 'ticket.resumed' || event.type === 'trigger.followup')
            const followup = followed ? followupNotice(store, sources, event.data.triggerId) : undefined
            if (followup) sessions.relay(followup.id, followup.text)
@@ -2832,7 +2964,7 @@ index a8cfe52df7b..c1cdee11c11 100644
            }
          } })
        // Update the `evals` health entry on every pass if an evaluation failed as unavailable within the last hour.
-@@ -159,9 +353,51 @@ export class Runtime extends Service implements SourceHost {
+@@ -159,9 +386,51 @@ export class Runtime extends Service implements SourceHost {
        this.sourceDeps = { store, engine, outbox, commands, sources, get ready() { return runtime.ready },
          get deployment() { return setup.deployment }, configured: () => setup.configured(),
          get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, receive: trigger => passes.receive(trigger) }
@@ -2885,7 +3017,7 @@ index a8cfe52df7b..c1cdee11c11 100644
          quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
        this.ready = this.initialize()
      } catch (error) {
-@@ -207,19 +443,172 @@ export class Runtime extends Service implements SourceHost {
+@@ -207,19 +476,191 @@ export class Runtime extends Service implements SourceHost {
      }
      this.sessions.install()
      this.executor.install()
@@ -2905,6 +3037,18 @@ index a8cfe52df7b..c1cdee11c11 100644
 +    // transaction. A decision that cannot be recorded (the Trigger was decided already) is warned about; the route still holds.
 +    const settle = (triggerId: string, settlement: GroupSettlement) => this.store.atomic(() => {
 +      this.groupRoutes.record({ triggerId, ...settlement.route, at: now() })
++      // VsSaros addition (2026-11-07): the group runs a ticket for the message, unless the accept is refused (the Policy does
++      // not admit it, or an Eval of the main Session holds it with other messages, which an accept would take as one ticket).
++      if (settlement.ticket && !this.heldByEval(triggerId)) {
++        try {
++          this.engine.decide(triggerId, { kind: 'accept', title: settlement.ticket.title, scope: settlement.ticket.scope, reason: settlement.reason,
++            group: { roomId: settlement.route.roomId, roomName: settlement.route.roomName } })
++          if (settlement.notice) this.toolHost.tellTrigger?.(triggerId, settlement.notice.id, settlement.notice.text)
++          return
++        } catch (error) {
++          warnFastPath(`group intake could not open a ticket for ${triggerId}, recording it as ignored: ${String(error)}`)
++        }
++      }
 +      try { this.engine.decide(triggerId, { kind: 'ignore', reason: settlement.reason }) } catch (error) {
 +        warnFastPath(`group intake could not record the ignore decision for ${triggerId}: ${String(error)}`)
 +      }
@@ -2992,6 +3136,13 @@ index a8cfe52df7b..c1cdee11c11 100644
 +    // VsSaros fix (2026-11-05): the desk outbox delivers what the desk's conversation does not have yet (a closed Session
 +    // drops its inbox), and marks each message as the conversation records it.
 +    this.disposers.push(this.deskOutbox.install())
++    // VsSaros addition (2026-11-07): the tickets group chats run get their group's result (app/group-tickets.ts).
++    {
++      const timer = setInterval(() => { void this.checkGroupTickets() }, GROUP_CHECK_MS)
++      timer.unref?.()
++      this.disposers.push(() => clearInterval(timer))
++      void this.checkGroupTickets()
++    }
 +    // VsSaros addition: appear in the Bots roster as the supervisor. A Bot's agent_message to it becomes a Trigger of the
 +    // `superagent` Source, which the gate admits only from a Bot on that Source's list, and its answer goes back to the Bot.
 +    const withdraw = sharedTeamBus()?.registerExternalBot?.({
@@ -5332,10 +5483,10 @@ index 00000000000..d3a5c32d8f5
 +}
 diff --git a/src/app/team.ts b/src/app/team.ts
 new file mode 100644
-index 00000000000..0c3f1d12d0e
+index 00000000000..0c1484fb912
 --- /dev/null
 +++ b/src/app/team.ts
-@@ -0,0 +1,293 @@
+@@ -0,0 +1,305 @@
 +/**
 + * VsSaros addition: the supervisor's link to the VsSaros Bots, through the in-process team bus of vssaros-agents
 + * (`Symbol.for('vssaros.team')`): the roster, the Bots the supervisor creates (a high-risk draft waits for a person), and
@@ -5346,6 +5497,7 @@ index 00000000000..0c3f1d12d0e
 + * `steps.ts`); the old plans are kept read-only in `team_archive` (`team-archive.ts`). This module keeps two tables:
 + * `team_bot` (Bots the supervisor created, for quotas and the panel) and `team_approval` (drafts waiting for a person).
 + */
++import type { GroupState } from './group-tickets.ts'
 +import { randomUUID } from 'node:crypto'
 +import type { Store } from './store.ts'
 +
@@ -5408,6 +5560,8 @@ index 00000000000..0c3f1d12d0e
 +  features?: readonly string[]
 +  presetOf?(botId: string): string
 +  describeBot?(ref: string): Promise<(BotCard & { model?: string; preset?: string; workspaces?: { read: string[]; write: string[] } }) | undefined>
++  /** VsSaros addition (2026-11-07, vssaros-agents 0.2.355+): what a group is doing now, for the ticket it runs. */
++  groupState?(roomId: string): Promise<GroupState | undefined>
 +}
 +/** Whether the team bus has contract revision `revision` or later. */
 +export const busRevision = (bus: Partial<TeamBus> | undefined, revision: number): boolean => typeof bus?.revision === 'number' && bus.revision >= revision
@@ -5542,6 +5696,15 @@ index 00000000000..0c3f1d12d0e
 +    } catch (error) {
 +      throw new TeamError(`Could not create the group: ${error instanceof Error ? error.message : String(error)}`)
 +    }
++  }
++  /**
++   * VsSaros addition (2026-11-07): what a group is doing now (see app/group-tickets.ts); undefined when the Bots are not
++   * running here or are too old to tell, so the ticket waits for a later check.
++   */
++  async groupState(roomId: string): Promise<GroupState | undefined> {
++    const bus = this.bus()
++    if (!bus?.available() || typeof bus.groupState !== 'function') return undefined
++    return await bus.groupState(roomId)
 +  }
 +  /** 已存在的群；desk 的 `@群` 快路径用它确认引用事件指向的是群，而不是普通会话。 */
 +  async groups(): Promise<GroupView[]> {
@@ -6290,6 +6453,22 @@ index 66f0a77ce4d..5da8a85c998 100644
    }
  }
  export type OverviewView = ReturnType<typeof overview>
+diff --git a/src/app/views/records.ts b/src/app/views/records.ts
+index 74dab2eeeab..767e716ba02 100644
+--- a/src/app/views/records.ts
++++ b/src/app/views/records.ts
+@@ -124,8 +124,10 @@ export function ticketSummary(ticket: Ticket) {
+     attention: ticket.attention && { ...ticket.attention, question: markdown(ticket.attention.question) },
+       assignments: ticket.assignments.length, inputs: ticket.inputs.length, undelivered: ticket.undelivered.length,
+     // Every started Assignment of a Ticket runs in its one shared worker Session.
+-    deliveryError: attribute(ticket.delivery?.error), sessionId: ticket.assignments.some(item => item.startedAt)
++    // VsSaros addition (2026-11-07): a group ticket opens its group chat, where the work is done.
++    deliveryError: attribute(ticket.delivery?.error), sessionId: ticket.group ? ticket.group.roomId : ticket.assignments.some(item => item.startedAt)
+       ? workerSessionId(ticket.id) : '',
++    ...ticket.group ? { group: { roomId: ticket.group.roomId, roomName: ticket.group.roomName } } : {},
+     directory: attribute(ticket.execution?.directory), summary: latestReport(ticket)?.summary ?? '', createdAt: ticket.createdAt,
+     updatedAt: ticket.updatedAt }
+ }
 diff --git a/src/app/views/sources.ts b/src/app/views/sources.ts
 index 08c9728640a..52f4946db0e 100644
 --- a/src/app/views/sources.ts
@@ -8356,7 +8535,7 @@ index fb0b84ba920..1c661295bbc 100644
      (props: PluginConfigViewProps & { t: T }) => <PluginConfig t={props.t} view={props.view} form={props.form} />))
  }
 diff --git a/src/client/locales.ts b/src/client/locales.ts
-index d81d0d4e9c7..6e9a9e33f78 100644
+index d81d0d4e9c7..25b76c922bd 100644
 --- a/src/client/locales.ts
 +++ b/src/client/locales.ts
 @@ -111,7 +111,183 @@ const TEXT = {
@@ -8552,7 +8731,15 @@ index d81d0d4e9c7..6e9a9e33f78 100644
    'stage.answer': ['待回答', 'Awaiting answer'],
    'stage.review': ['待验收', 'Awaiting review'],
    'stage.blocked': ['待处理受阻', 'Blocked'],
-@@ -609,6 +786,10 @@ const TEXT = {
+@@ -366,6 +543,7 @@ const TEXT = {
+   ticketUndeliveredLabel: ['未送达', 'Undelivered'],
+   ticketMandateLabel: ['授权', 'Mandate'],
+   ticketActorLabel: ['发起', 'From'],
++  ticketGroupLabel: ['执行群聊', 'Group chat'],
+   ticketUpdatedLabel: ['更新', 'Updated'],
+   executionDirectory: ['执行目录的根目录', 'Ticket directory root'],
+   executionDirectoryDefault: ['留空时用 {root}', 'Empty uses {root}'],
+@@ -609,6 +787,10 @@ const TEXT = {
    'reason.forwarded': ['已扇出给该线程的工单', 'Fanned out to the Thread\'s Ticket'],
    'reason.senderNotMember': ['发送者不在这个来源的名单里', 'Sender is not on this Source\'s list'],
    'reason.source_disabled': ['来源已停用', 'Source disabled'],
@@ -8563,7 +8750,7 @@ index d81d0d4e9c7..6e9a9e33f78 100644
    'reason.issue_sender_or_admission_disabled': ['Issue 发起人不在名单或主动接单已关闭', 'Issue sender not on the list, or proactive accept off'],
    'reason.source_not_installed': ['来源插件未加载', 'Source plugin not loaded'],
    'reason.issue_unclaimed_less_than_wait': ['Issue 无人认领未满等待时长', 'Issue unclaimed for less than the wait'],
-@@ -682,12 +863,19 @@ const TEXT = {
+@@ -682,12 +864,19 @@ const TEXT = {
    // User and agent error codes; English reuses the host's own text read by agents
    'userError.unknownTicket': ['找不到这个工单。', USER_ERRORS.unknownTicket[1]],
    'userError.unknownProblem': ['找不到这个未完成的评估。', USER_ERRORS.unknownProblem[1]],
@@ -8583,7 +8770,7 @@ index d81d0d4e9c7..6e9a9e33f78 100644
    'userError.assignmentEnded': ['这个派工已结束，工单已由较新的派工接手。', USER_ERRORS.assignmentEnded[1]],
    'userError.evalFinished': ['评估 {eval} 已结束，或已被之后的评估取代；请对这个触发当前的评估做决定。', USER_ERRORS.evalFinished[1]],
    'userError.notAdmissible': ['这个触发未通过准入：{reason}', USER_ERRORS.notAdmissible[1]],
-@@ -741,11 +929,213 @@ const TEXT = {
+@@ -741,11 +930,213 @@ const TEXT = {
    'setup.feishuBotNotReady': ['应用 {app} 的机器人身份状态是 {status}；用 lark-cli 配置应用密钥。', SETUP_PROBLEMS.feishuBotNotReady[1]],
    'setup.feishuUserIdentity': ['机器人的 lark-cli 允许用户身份（strict mode 为 {mode}）；按 docs/006-deployment.md 给机器人一份 strict mode 为 bot 的单独配置。', SETUP_PROBLEMS.feishuUserIdentity[1]],
    'setup.feishuNoBot': ['飞书机器人接口没有返回机器人的 open_id。', SETUP_PROBLEMS.feishuNoBot[1]],
@@ -8797,7 +8984,7 @@ index d81d0d4e9c7..6e9a9e33f78 100644
  } as const satisfies Record<string, readonly [string, string]>
  export type DshSuperagentKey = keyof typeof TEXT
  const language = (index: 0 | 1) => Object.fromEntries(Object.entries(TEXT).map(([key, pair]) => [key, pair[index]])) as Record<DshSuperagentKey, string>
-@@ -761,7 +1151,7 @@ export const GLOSSARY = {
+@@ -761,7 +1152,7 @@ export const GLOSSARY = {
  } as const
  export const GLOSSARY_VALUES = {
    decision: ['decision.accept', 'decision.reopen', 'decision.stop', 'decision.ignore', 'decision.unavailable'], strength: ['strength.explicit', 'strength.inferred'],
@@ -9789,7 +9976,7 @@ index 00000000000..7c82b61d546
 +  </>
 +}
 diff --git a/src/client/ticket.tsx b/src/client/ticket.tsx
-index f240a953279..d43ea795e45 100644
+index f240a953279..73857f98e66 100644
 --- a/src/client/ticket.tsx
 +++ b/src/client/ticket.tsx
 @@ -4,6 +4,7 @@ import { ApiError, usePoll, type TicketPageView } from './api.ts'
@@ -9800,10 +9987,12 @@ index f240a953279..d43ea795e45 100644
  import { settingsRoute } from './route.ts'
  import { Earlier, ThreadLine, automatedRuns } from './rows.tsx'
  import { actorName, localized, readableMarkers, reasonLabel, valueLabel, when } from './text.ts'
-@@ -139,6 +140,11 @@ export function TicketPage({ id }: { id: string }) {
+@@ -139,6 +140,13 @@ export function TicketPage({ id }: { id: string }) {
        <LabelValue label={t('ticketMandateLabel')} value={valueLabel(t, 'strength', data.mandate.strength)} />
        <LabelValue label={t('ticketActorLabel')} value={`${valueLabel(t, 'source', data.mandate.actor.source)} · ${actor}`} />
        <LabelValue label={t('ticketUpdatedLabel')} value={when(data.updatedAt, t('lang'))} />
++      {/* VsSaros addition (2026-11-07): a group chat does this ticket's work. */}
++      {data.group && <span data-testid="ticket-group"><LabelValue label={t('ticketGroupLabel')} value={data.group.roomName} /></span>}
 +      {/* VsSaros addition (2026-11-07): calls another plugin (DS Bot) made inside this ticket's Sessions. */}
 +      {data.relays.resent + data.relays.side > 0 && <span data-testid="ticket-relays" title={data.relays.sessions.map(item =>
 +        `${item.step ?? t('usageRole.worker')}: ${t('usageRelaySession', { resent: String(item.resent), side: String(item.side) })}`).join('\n')}>
@@ -9812,7 +10001,7 @@ index f240a953279..d43ea795e45 100644
      </div>
      {ended && <Hint>{ended}</Hint>}
      {data.attention && <div className="dt-banner"><span className="dt-banner-label">{t('attentionPrefix')}</span><MarkdownLite
-@@ -154,6 +160,8 @@ export function TicketPage({ id }: { id: string }) {
+@@ -154,6 +162,8 @@ export function TicketPage({ id }: { id: string }) {
        <span className="dt-banner-label">{t('deliveryFailedPrefix')}</span>{data.deliveryError}
      </p>}
      <MandateDetails ticket={data} actor={actor} />
@@ -10401,16 +10590,23 @@ index 145c7219208..2f7a5110888 100644
          reached.set(ticketId, { ticket, context: followed && (reached.get(ticketId)?.context ?? true) })
        }
 diff --git a/src/core/model.ts b/src/core/model.ts
-index 57783121732..a4f5a5eb149 100644
+index 57783121732..5e788a70571 100644
 --- a/src/core/model.ts
 +++ b/src/core/model.ts
-@@ -305,7 +305,38 @@ export interface Ticket {
+@@ -305,7 +305,45 @@ export interface Ticket {
    execution?: Execution
    /** The latest failed delivery of an Input to its worker, until a delivery succeeds. */
    delivery?: { error: string; at: string }
 +  /** VsSaros addition: the team that does the work, which a person agrees to before any worker starts (see `staffing`). */
 +  team?: TicketTeam
- }
++  /**
++   * VsSaros addition (2026-11-07): the group chat that does the work, for a desk message `@群 …`. No worker starts and no
++   * Thread is followed; the runtime reports the group's result (app/group-tickets.ts).
++   */
++  group?: TicketGroup
++}
++/** VsSaros addition (2026-11-07): the group chat a ticket was handed to (the Bots plugin's room, by its DSH Session id). */
++export interface TicketGroup { roomId: string; roomName: string }
 +/**
 + * VsSaros addition: a ticket's staffing. `proposing` until the main Session proposes a team, `proposed` while version
 + * `version` (whose content hashes to `fingerprint`) waits for a person, `approved` once a person (or the auto-approval a
@@ -10425,7 +10621,7 @@ index 57783121732..a4f5a5eb149 100644
 +  decidedBy?: string
 +  decidedAt?: string
 +  triggerId?: string
-+}
+ }
 +/** VsSaros addition: whether an open ticket still waits for its team to be agreed; no worker starts until then. */
 +export const staffing = (ticket: Pick<Ticket, 'ended' | 'team'>): boolean => !ticket.ended && !!ticket.team && ticket.team.state !== 'approved'
 +/**
@@ -10463,10 +10659,21 @@ index 14d5c6d47b5..27d09d3bcfd 100644
    emit?: (event: DomainEvent) => void
  }
 diff --git a/src/core/ports.ts b/src/core/ports.ts
-index 08c7a1cccfc..af1cd6ca22f 100644
+index 08c7a1cccfc..ccfd7d389b1 100644
 --- a/src/core/ports.ts
 +++ b/src/core/ports.ts
-@@ -70,8 +70,13 @@ export interface Executor {
+@@ -42,7 +42,9 @@ export type AssessmentOutcome =
+   | { kind: 'unavailable'; reason: string | Reason; audit?: Record<string, unknown> }
+   /** An accept: `rules` the assessment matched, `name` the ticket's requested short name, and `note` a routing note for its worker. */
+   | { kind: 'accept'; title: string; scope: string; reason: string | Reason; acknowledgement?: string; rules?: string[]; audit?: Record<string, unknown>;
+-    name?: string; note?: string }
++    name?: string; note?: string
++    /** VsSaros addition (2026-11-07): the group chat that does the work (see `Ticket.group`). */
++    group?: { roomId: string; roomName: string } }
+   | { kind: 'stop'; ticketId: string; reason: string | Reason; audit?: Record<string, unknown> }
+ 
+ /** Semantic judgement. `request` queues the assessment, idempotently per `evalId`; the outcome returns through `Engine.decide`. */
+@@ -70,8 +72,13 @@ export interface Executor {
  
  /** A message for a Channel; `ticketId` names the Ticket it is for, when there is one. */
  export interface OutboundMessage { id: string; channel: ChannelRef; text: string; kind: 'acknowledgement' | 'reply' | 'notice'; ticketId?: string }
@@ -10508,7 +10715,7 @@ index 62bc9e9d54a..ad2aaf1cade 100644
    if (ticket.attention) return { stage: 'person', action: 'answer' }
    const assignment = latestAssignment(ticket)
 diff --git a/src/core/tickets.ts b/src/core/tickets.ts
-index 21376e17fc8..af7ea9f5d7e 100644
+index 21376e17fc8..c84ac7625a0 100644
 --- a/src/core/tickets.ts
 +++ b/src/core/tickets.ts
 @@ -1,7 +1,7 @@
@@ -10520,18 +10727,25 @@ index 21376e17fc8..af7ea9f5d7e 100644
  import type { Assignment, ChannelRef, Evaluation, Follow, Mandate, PolicyEffect, ThreadRef, Ticket, TicketEndBy, TicketInput, TicketOutcome,
    Trigger, TriggerDisposition } from './model.ts'
  import type { AssessmentOutcome } from './ports.ts'
-@@ -47,13 +47,47 @@ export class Tickets extends EnginePart {
+@@ -46,14 +46,52 @@ export class Tickets extends EnginePart {
+       const channel = this.repo.triggers.get(triggerId)?.channel
        if (channel && !ticket.channels.some(item => sameChannel(item, channel))) ticket.channels.push(channel)
      }
-     ticket = this.options.prepareTicket?.(ticket, outcome) ?? ticket
+-    ticket = this.options.prepareTicket?.(ticket, outcome) ?? ticket
++    // VsSaros addition (2026-11-07): a group chat does the work of a ticket begun by `@群 …`: it gets no worktree, no team
++    // to agree to and no worker, and follows no Thread (the desk is one Thread for every request: following it would take the
++    // person's next messages). Its Assignment stays pending; the runtime reports the group's result into it.
++    if (outcome.group) ticket.group = { roomId: outcome.group.roomId, roomName: outcome.group.roomName }
++    else ticket = this.options.prepareTicket?.(ticket, outcome) ?? ticket
 +    // VsSaros addition: the ticket waits for a person to agree to its team; its first Assignment launches only then.
-+    if (this.options.staffing?.(ticket)) ticket.team = { state: 'proposing', version: 0, at }
++    if (!ticket.group && this.options.staffing?.(ticket)) ticket.team = { state: 'proposing', version: 0, at }
      const assignment = this.newAssignment(ticket)
      this.repo.tickets.save(ticket)
-     for (const triggerId of triggerIds) for (const ref of this.repo.triggers.get(triggerId)?.threads ?? []) this.subscribe(id, ref)
+-    for (const triggerId of triggerIds) for (const ref of this.repo.triggers.get(triggerId)?.threads ?? []) this.subscribe(id, ref)
++    if (!ticket.group) for (const triggerId of triggerIds) for (const ref of this.repo.triggers.get(triggerId)?.threads ?? []) this.subscribe(id, ref)
      if (outcome.acknowledgement && primary) this.replies.acknowledgeAccepted(id, primary, outcome.acknowledgement)
 -    this.options.executor.start(this.require(id), assignment)
-+    if (!staffing(ticket)) this.options.executor.start(this.require(id), assignment)
++    if (!staffing(ticket) && !ticket.group) this.options.executor.start(this.require(id), assignment)
      this.emit('ticket.created', { ticketId: id, decisionId, strength: mandate.strength })
    }
 +  /**
@@ -10569,7 +10783,7 @@ index 21376e17fc8..af7ea9f5d7e 100644
    /**
     * Subscribes an open ticket to `thread` and records it in `ticket.follows` (`own` when opened by the ticket).
     * @throws UserError when the ticket is unknown or has ended.
-@@ -241,7 +275,7 @@ export class Tickets extends EnginePart {
+@@ -241,7 +279,7 @@ export class Tickets extends EnginePart {
      if (!liveTicket(ticket) || held) return
      const running = runningAssignment(ticket), latest = latestAssignment(ticket)
      if (running) this.options.executor.deliver(ticket, running)
@@ -10779,7 +10993,7 @@ index 76340cbae4c..e5a3f305b9b 100644
 +  return appId
  }
 diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
-index 26234f3aa51..92a331ac1bd 100644
+index 26234f3aa51..378d52b1579 100644
 --- a/src/executor/dsh.ts
 +++ b/src/executor/dsh.ts
 @@ -4,7 +4,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
@@ -10805,10 +11019,20 @@ index 26234f3aa51..92a331ac1bd 100644
  }
  /** Looks up a ticket's origin trigger in Store. */
  export const sourceTrigger = (host: { store: Pick<Store, 'triggers'> }, ticket: Ticket): Trigger | undefined =>
-@@ -266,11 +273,15 @@ export class DshExecutor implements Executor {
+@@ -262,15 +269,24 @@ export class DshExecutor implements Executor {
+   }
+   /** Enqueues a `launch` effect for an accepted or resumed assignment; launches start in queue order as worker slots free up. */
+   start(ticket: Ticket, assignment: Assignment): void {
++    // VsSaros addition (2026-11-07): a group chat does a group ticket's work; it never gets a worker.
++    if (ticket.group) return
+     this.host.effects.enqueue('launch', assignment.id, { ticketId: ticket.id, assignmentId: assignment.id })
    }
    /** Enqueues a `delivery` effect to steer pending inputs into `ticket`'s running worker session. */
-   deliver(ticket: Ticket, _assignment: Assignment): void { this.host.effects.enqueue('delivery', ticket.id, { ticketId: ticket.id }) }
+-  deliver(ticket: Ticket, _assignment: Assignment): void { this.host.effects.enqueue('delivery', ticket.id, { ticketId: ticket.id }) }
++  deliver(ticket: Ticket, _assignment: Assignment): void {
++    if (ticket.group) return
++    this.host.effects.enqueue('delivery', ticket.id, { ticketId: ticket.id })
++  }
 +  /** VsSaros addition: delivers the inputs a ticket kept while it was held (see `ExecutorHost.held`). */
 +  release(ticketId: string): void { this.host.effects.enqueue('delivery', ticketId, { ticketId }) }
    /** Launches a queued assignment unless its ticket ended or a newer assignment replaced it meanwhile. */
@@ -10817,11 +11041,11 @@ index 26234f3aa51..92a331ac1bd 100644
      const assignment = ticket && latestAssignment(ticket)
      if (!ticket || !liveTicket(ticket) || assignment?.id !== assignmentId || assignment.state !== 'pending') return
 +    // VsSaros addition: a launch queued before staffing began waits for the agreement, which queues it again.
-+    if (staffing(ticket)) return
++    if (staffing(ticket) || ticket.group) return
      this.slots.reserve(ticketId, 'launch')
      try { await this.launch(ticket, assignment); this.transient.delete(`launch:${assignmentId}`) }
      catch (error) {
-@@ -290,6 +301,8 @@ export class DshExecutor implements Executor {
+@@ -290,6 +306,8 @@ export class DshExecutor implements Executor {
    private async deliverQueued(ticketId: string): Promise<void> {
      // A stop of the worker's background work ends with a cancel, which would drop what is delivered meanwhile.
      await this.stopped(ticketId)
@@ -10830,7 +11054,7 @@ index 26234f3aa51..92a331ac1bd 100644
      const first = this.host.store.tickets.get(ticketId)
      const target = first && liveTicket(first) ? runningAssignment(first) : undefined
      if (!first || !target || !first.undelivered.length) return
-@@ -467,6 +480,7 @@ export class DshExecutor implements Executor {
+@@ -467,6 +485,7 @@ export class DshExecutor implements Executor {
        () => { if (!current()) throw new Error('Launch authorization changed before worker delivery') },
        () => { this.host.engine.assignmentStarted(ticket.id, assignment.id) })
      this.host.engine.assignmentStarted(ticket.id, assignment.id)
@@ -10838,7 +11062,7 @@ index 26234f3aa51..92a331ac1bd 100644
    }
    /** Returns the stored ticket for `agent` when it is a worker session, or undefined otherwise. */
    private ticketOf(agent: Agent): Ticket | undefined {
-@@ -532,7 +546,8 @@ export class DshExecutor implements Executor {
+@@ -532,7 +551,8 @@ export class DshExecutor implements Executor {
          this.stopWork(ticket.id, 'dsh-superagent restarted', true)
          this.host.engine.assignmentInterrupted(ticket.id, running.id)
        }
@@ -15398,10 +15622,10 @@ index 00000000000..cf467ce49c7
 +})
 diff --git a/tests/group-fast-path.spec.ts b/tests/group-fast-path.spec.ts
 new file mode 100644
-index 00000000000..d10a4d9f0be
+index 00000000000..294bcaad97e
 --- /dev/null
 +++ b/tests/group-fast-path.spec.ts
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,177 @@
 +import { describe, expect, it, vi } from 'vitest'
 +import {
 +	GROUP_REFERENCE_KIND, addressedGroupMessage, fastGroupPlan, groupByNameMention, groupReferenceOf,
@@ -15549,6 +15773,8 @@ index 00000000000..d10a4d9f0be
 +    expect(h.settle).toHaveBeenCalledWith('superagent:desk:m-ref', {
 +      reason: expect.stringMatching(/^Routed to existing group: /),
 +      route: { roomId: 'room-1', roomName: '番茄钟 H5 开发团队', kind: 'routed', sourceMessageId: 'm-ref' },
++      // 2026-11-07: the group runs a ticket for it, titled without the @group it starts with
++      ticket: { title: '开始制作', scope: '@番茄钟 H5 开发团队 开始制作' },
 +    })
 +    expect(h.requestPass).toHaveBeenCalledOnce()
 +    expect(h.warn).not.toHaveBeenCalled()
@@ -15559,6 +15785,8 @@ index 00000000000..d10a4d9f0be
 +    expect(await handleDeskGroupCommand(h, trigger('superagent:desk:m-late'), '@番茄钟 H5 开发团队 开始', event, { sourceMessageId: 'm-late', late: true }))
 +      .toBe('group-command')
 +    expect(h.settle).toHaveBeenCalledWith('superagent:desk:m-late', expect.objectContaining({ reason: expect.stringMatching(/late reference/) }))
++    // A late reference opens no ticket: the message may already be in the main Session's batch.
++    expect(h.settle.mock.calls[0]![1]).not.toHaveProperty('ticket')
 +  })
 +  it('only messages that start with @ may be group commands, so the others never wait for a reference', () => {
 +    expect([mayBeGroupCommand('@番茄钟 开始'), mayBeGroupCommand('  @x'), mayBeGroupCommand('创建开发团队'), mayBeGroupCommand('')]).toEqual([true, true, false, false])
@@ -15573,6 +15801,60 @@ index 00000000000..d10a4d9f0be
 +    expect(await handleDeskGroupCommand(h, trigger(), '@别的会话 请看一下', event)).toBe('fallback')
 +    expect(h.receive).not.toHaveBeenCalled()
 +    expect(h.settle).not.toHaveBeenCalled()
++  })
++})
+diff --git a/tests/group-tickets.spec.ts b/tests/group-tickets.spec.ts
+new file mode 100644
+index 00000000000..885b28ca856
+--- /dev/null
++++ b/tests/group-tickets.spec.ts
+@@ -0,0 +1,48 @@
++// VsSaros addition (2026-11-07): the result a group chat writes back to the ticket it runs.
++import { describe, expect, it } from 'vitest'
++import { GROUP_SETTLE_MS, groupTicketReport, groupTicketTitle, type GroupState } from '../src/app/group-tickets.ts'
++
++const createdAt = '2026-11-07T10:00:00.000Z'
++const t0 = Date.parse(createdAt)
++const ticket = { createdAt, group: { roomId: 'r', roomName: '番茄钟群' } }
++const base: GroupState = { roomId: 'r', roomName: '番茄钟群', idle: true, activeAt: t0 + 100, log: [{ at: t0 + 50, who: 'Coder', text: '做好了' }] }
++const now = t0 + 100 + GROUP_SETTLE_MS
++
++describe('groupTicketReport', () => {
++  it('reports nothing while the group works, has just stopped, or has not started on the ticket', () => {
++    expect(groupTicketReport(ticket, undefined, now)).toBeUndefined()
++    expect(groupTicketReport(ticket, { ...base, idle: false }, now)).toBeUndefined()
++    expect(groupTicketReport(ticket, base, now - 1)).toBeUndefined()
++    expect(groupTicketReport(ticket, { ...base, log: [{ at: t0 - 1, who: 'Coder', text: '上一张的' }] }, now)).toBeUndefined()
++    expect(groupTicketReport(ticket, { ...base, log: [{ at: t0 + 1, who: '用户', text: '开工' }] }, now)).toBeUndefined()
++  })
++  it('is ready with the last two replies since the ticket began, leaving out the person and the questions', () => {
++    const log = [{ at: t0 + 1, who: '用户', text: '开工' }, { at: t0 + 2, who: 'Coder', kind: 'ask', text: '问用户：范围' },
++      { at: t0 + 3, who: 'Designer', text: '稿子好了' }, { at: t0 + 4, who: 'Tester', text: '测过了' }, { at: t0 + 5, who: 'Coder', text: '交付' }]
++    expect(groupTicketReport(ticket, { ...base, log }, now)).toEqual({ state: 'ready',
++      summary: '群「番茄钟群」这次的结果（4 条回复）：\n\nTester：测过了\n\nCoder：交付' })
++  })
++  it('waits while the group asks the person, or its goal is not done; ends with its goal', () => {
++    expect(groupTicketReport(ticket, { ...base, asks: [{ name: 'Coder', at: t0 + 60, headline: '范围', questions: 1 }] }, now))
++      .toEqual({ state: 'waiting', summary: '群「番茄钟群」等你在群里选择：Coder（范围）' })
++    const goal = { title: '像素番茄钟', status: 'active' as const, idle: true, summary: '', updatedAt: t0 + 10 }
++    expect(groupTicketReport(ticket, { ...base, goal }, now)?.state).toBe('waiting')
++    expect(groupTicketReport(ticket, { ...base, goal: { ...goal, status: 'complete', summary: '三个按钮都通过' } }, now))
++      .toEqual({ state: 'ready', summary: '群「番茄钟群」完成了目标「像素番茄钟」：三个按钮都通过' })
++    expect(groupTicketReport(ticket, { ...base, goal: { ...goal, status: 'stopped' } }, now)?.state).toBe('dropped')
++    // A goal finished before this ticket began is not this ticket's result.
++    expect(groupTicketReport(ticket, { ...base, goal: { ...goal, status: 'complete', updatedAt: t0 - 1 } }, now)?.state).toBe('ready')
++  })
++  it('drops the ticket when its group was deleted', () => {
++    expect(groupTicketReport(ticket, { roomId: 'r', missing: true }, now)).toEqual({ state: 'dropped', summary: '群「番茄钟群」已经删除，这张工单没有结果。' })
++  })
++})
++
++describe('groupTicketTitle', () => {
++  it('drops the @group the message starts with, plain or as a DSH reference', () => {
++    expect(groupTicketTitle('@番茄钟群 开发像素版', '番茄钟群')).toBe('开发像素版')
++    expect(groupTicketTitle('@[番茄钟群](dsh-session:abc) 开发像素版', '番茄钟群')).toBe('开发像素版')
++    expect(groupTicketTitle('@番茄钟群', '番茄钟群')).toBe('@番茄钟群')
++    expect(groupTicketTitle(`@番茄钟群 ${'很长'.repeat(60)}`, '番茄钟群')).toHaveLength(81)
 +  })
 +})
 diff --git a/tests/model-surface.spec.ts b/tests/model-surface.spec.ts
@@ -18996,10 +19278,10 @@ index 61d4c4cff9d..3b938ee2e6f 100644
    for (const line of css.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map(text => text.trim()).filter(Boolean)) {
 diff --git a/tests/superagent-desk.spec.ts b/tests/superagent-desk.spec.ts
 new file mode 100644
-index 00000000000..5187fe3e276
+index 00000000000..1f80dbf85b1
 --- /dev/null
 +++ b/tests/superagent-desk.spec.ts
-@@ -0,0 +1,485 @@
+@@ -0,0 +1,560 @@
 +// VsSaros addition: the Runtime's supervisor desk and Bots asking SuperAgent for help, end to end on the fake Host.
 +import { readFileSync } from 'node:fs'
 +import { join } from 'node:path'
@@ -19285,7 +19567,7 @@ index 00000000000..5187fe3e276
 +})
 +
 +// P0 batch 1: @existing group is routed by the agents plugin; SuperAgent must not spend a main-Session model evaluation.
-+it('records an @existing-group message as ignored at intake and never relays it to the main Session', async () => {
++it('accepts an @existing-group message at intake as a ticket the group runs, with no worker, and never relays it to the main Session', async () => {
 +  listSuperagent()
 +  const key = Symbol.for('vssaros.team')
 +  const globals = globalThis as unknown as Record<symbol, unknown>
@@ -19303,6 +19585,8 @@ index 00000000000..5187fe3e276
 +    delegate: async () => ({}), get: async () => undefined, cancel: async () => ({}), subscribe: () => () => undefined,
 +    createGroup, listGroups: async () => [room],
 +  }
++  // Every launch the executor queues goes through its effects; a group ticket must queue none.
++  const launches = vi.spyOn(h.runtime.effects, 'enqueue')
 +  try {
 +    const text = '@番茄钟 H5 开发团队 开始制作番茄钟H5 应用'
 +    const trigger = deskTrigger({ session: h.runtime.deskId, messageId: 'dsh-ref', text, at: new Date().toISOString() })
@@ -19316,13 +19600,80 @@ index 00000000000..5187fe3e276
 +    await tick()
 +    await h.runtime.idle()
 +    const decisions = h.runtime.store.db.prepare('SELECT value FROM decision WHERE value LIKE ?').all('%Routed to existing group%')
-+    expect(decisions).toHaveLength(1)
++    expect(decisions.map(row => JSON.parse(String(row.value)).kind)).toEqual(['accept'])
 +    expect(createGroup).not.toHaveBeenCalled()
 +    expect(h.candidates()).not.toContain(trigger.id)
-+    expect((h.runtime.store.db.prepare('SELECT COUNT(*) AS n FROM ticket').get() as { n: number }).n).toBe(0)
++    // VsSaros change (2026-11-07): one ticket, run by the group: no worker, no worktree, no Thread followed.
++    const tickets = h.runtime.store.tickets.list()
++    expect(tickets).toHaveLength(1)
++    expect(tickets[0]).toMatchObject({ title: '开始制作番茄钟H5 应用', group: { roomId: 'room-existing', roomName: '番茄钟 H5 开发团队' } })
++    expect(tickets[0]!.execution).toBeUndefined()
++    expect(tickets[0]!.assignments.map(item => item.state)).toEqual(['pending'])
++    expect(h.agents.has(`worker-${tickets[0]!.id}`)).toBe(false)
++    expect(launches.mock.calls.filter(([kind]) => kind === 'launch' || kind === 'delivery')).toEqual([])
++    expect(tickets[0]!.assignments[0]!.startedAt).toBeUndefined()
++    expect(h.runtime.store.threads.get(`superagent:${trigger.threads[0]!.id}`)?.subscriptions ?? []).not.toContain(tickets[0]!.id)
 +    expect(h.runtime.deskChat.messages().some(item => String(item.id).startsWith('group-created:'))).toBe(false)
 +    expect(h.runtime.groupRoutes.get(trigger.id)).toMatchObject({ roomId: 'room-existing', kind: 'routed', sourceMessageId: 'dsh-ref' })
-+    expect(flowOf(trigger.id)).toMatchObject({ state: 'group', group: { roomId: 'room-existing', kind: 'routed', sourceMessageId: 'dsh-ref' } })
++    expect(flowOf(trigger.id)).toMatchObject({ state: 'ticket', group: { roomId: 'room-existing', kind: 'routed', sourceMessageId: 'dsh-ref' } })
++  } finally {
++    if (previous === undefined) { delete globals[key] } else { globals[key] = previous }
++  }
++})
++
++// VsSaros addition (2026-11-07, user request「@群 时也同时建一张工单，群聊做完把结果回写到工单」).
++it('writes the group\'s result back to its ticket once the group settles: waiting while it asks, then ready with its last replies', async () => {
++  listSuperagent()
++  const key = Symbol.for('vssaros.team')
++  const globals = globalThis as unknown as Record<symbol, unknown>
++  const previous = globals[key]
++  const room = { id: 'room-px', sessionId: 'room-px', name: '番茄钟 H5 开发团队', members: [{ id: 'coder', name: 'Coder' }],
++    admin: 'coder', mode: 'admin', notice: '', pinned: false, hidden: false, createdBy: 'superagent' }
++  let state: Record<string, unknown> = { roomId: 'room-px', roomName: room.name, idle: false, log: [] }
++  globals[key] = { version: 1, available: () => true, listBots: async () => [], delegate: async () => ({}), get: async () => undefined,
++    cancel: async () => ({}), subscribe: () => () => undefined, createGroup: vi.fn(), listGroups: async () => [room],
++    groupState: async (roomId: string) => roomId === 'room-px' ? state : { roomId, missing: true } }
++  try {
++    const text = '@番茄钟 H5 开发团队 开发一个像素版的 番茄时钟'
++    const emit = (h.ctx as unknown as { emit(name: string, ...args: unknown[]): void }).emit.bind(h.ctx)
++    emit('session/event', { id: h.runtime.deskId }, { type: 'user/message', data: { id: 'dsh-px', source: { kind: 'user' }, content: [{ type: 'text', text }] } })
++    emit('session/event', { id: h.runtime.deskId }, { type: 'user/message', data: { id: 'ref-dsh-px', role: 'user',
++      source: { kind: 'session-reference', form: 'recall', version: 1, references: [{ sessionId: 'room-px', label: room.name }] },
++      content: [{ type: 'text', text: '## Referenced sessions' }] } })
++    await tick()
++    await h.runtime.idle()
++    const ticket = h.runtime.store.tickets.open().find(item => item.group)!
++    expect(ticket.title).toBe('开发一个像素版的 番茄时钟')
++    const at = Date.parse(ticket.createdAt)
++    const check = async () => { await h.runtime.checkGroupTickets(); await h.runtime.idle() }
++    // Working: nothing is written.
++    await check()
++    expect(h.runtime.store.tickets.get(ticket.id)!.assignments[0]!.report).toBeUndefined()
++    // Still, but only for a moment: not yet.
++    state = { ...state, idle: true, activeAt: Date.now(), log: [{ at: at + 10, who: 'Coder', text: '先确认三件事' }] }
++    await check()
++    expect(h.runtime.store.tickets.get(ticket.id)!.assignments[0]!.report).toBeUndefined()
++    // Settled while a member waits for the person's choice: waiting, the ticket stays open.
++    state = { ...state, activeAt: Date.now() - 60_000, asks: [{ name: 'Coder', at: at + 20, headline: '交付形态 / 范围', questions: 2 }] }
++    await check()
++    expect(h.runtime.store.tickets.get(ticket.id)!.assignments[0]!.report).toMatchObject({ state: 'waiting', summary: expect.stringMatching(/等你在群里选择：Coder（交付形态 \/ 范围）/) })
++    expect(h.runtime.store.tickets.get(ticket.id)!.ended).toBeUndefined()
++    // The same state is not written twice.
++    const firstAt = h.runtime.store.tickets.get(ticket.id)!.assignments[0]!.report!.at
++    await check()
++    expect(h.runtime.store.tickets.get(ticket.id)!.assignments[0]!.report!.at).toBe(firstAt)
++    // Done: ready with the group's last replies, and the ticket ends as completed, told to the desk.
++    state = { ...state, asks: [], log: [{ at: at - 1000, who: 'Coder', text: '上一次的事' }, { at: at + 10, who: 'Coder', text: '先确认三件事' },
++      { at: at + 30, who: '用户', text: '全部按推荐' }, { at: at + 40, who: 'Designer', text: '像素规范在 pixel-spec.html' },
++      { at: at + 50, who: 'Coder', text: 'pixel.html 做好了，测试通过' }] }
++    await check()
++    const done = h.runtime.store.tickets.get(ticket.id)!
++    expect(done.ended).toMatchObject({ by: 'executor', outcome: 'completed' })
++    const summary = done.assignments[0]!.report!.summary
++    expect(summary).toMatch(/群「番茄钟 H5 开发团队」这次的结果（3 条回复）/)
++    expect(summary).toMatch(/Designer：像素规范在 pixel-spec\.html\n\nCoder：pixel\.html 做好了，测试通过$/)
++    expect(summary).not.toMatch(/上一次的事|全部按推荐/)
++    expect(h.agents.has(`worker-${ticket.id}`)).toBe(false)
 +  } finally {
 +    if (previous === undefined) { delete globals[key] } else { globals[key] = previous }
 +  }
@@ -19331,7 +19682,7 @@ index 00000000000..5187fe3e276
 +// VsSaros fix (2026-11-06, real run): the desk is one Thread for every request. 28 minutes after a desk ticket ended, the
 +// person's 「@番茄钟 H5 开发团队 开发H5 番茄钟」 resumed it (its worker read it, said it had nothing to do and ended it again,
 +// telling the desk so), while the group took the message too and its ignore decision was refused (workerDecides).
-+it('resumes no ended ticket from the desk, still reaches a live one there, and gives an @group message to no ticket', async () => {
++it('resumes no ended ticket from the desk, still reaches a live one there, and gives an @group message to no desk ticket', async () => {
 +  listSuperagent()
 +  const key = Symbol.for('vssaros.team')
 +  const globals = globalThis as unknown as Record<symbol, unknown>
@@ -19367,9 +19718,15 @@ index 00000000000..5187fe3e276
 +    const group = desk('dsh-group', text)
 +    expect(h.runtime.store.triggers.disposition(group.id)).toMatchObject({ fanout: [] })
 +    expect(reaches(live.sessionId, group.id)).toBe(false)
++    // VsSaros change (2026-11-07): its own ticket, which the group runs; the live desk ticket does not take it.
 +    expect(h.runtime.store.db.prepare('SELECT value FROM decision WHERE value LIKE ?').all(`%${group.id}%`)
-+      .map(row => JSON.parse(String(row.value)).kind)).toEqual(['ignore'])
-+    expect(flowOf(group.id)).toMatchObject({ state: 'group', group: { roomId: 'room-tomato', kind: 'routed' } })
++      .map(row => JSON.parse(String(row.value)).kind)).toEqual(['accept'])
++    expect(flowOf(group.id)).toMatchObject({ state: 'ticket', group: { roomId: 'room-tomato', kind: 'routed' } })
++    expect(h.runtime.store.tickets.open().filter(item => item.group).map(item => item.title)).toEqual(['开发H5 番茄钟'])
++    // The person's next desk message still reaches the live desk ticket, and not the group's.
++    const next = desk('desk-steer-2', '番茄钟再加个暂停')
++    h.runtime.receive(next); await h.runtime.idle()
++    expect(h.runtime.store.triggers.disposition(next.id)!.fanout).toEqual([live.ticket.id])
 +    expect(h.runtime.store.tickets.get(done.ticket.id)!.ended).toBeDefined()
 +  } finally {
 +    if (previous === undefined) { delete globals[key] } else { globals[key] = previous }
@@ -20960,7 +21317,7 @@ index 00000000000..7f3fbc33ec6
 +  expect(existsSync(teamflowFile({ cwd: '/work/demo', dshHome }))).toBe(true)
 +})
 diff --git a/docs/007-architecture.md b/docs/007-architecture.md
-index 184ea543da4..023e9b00c71 100644
+index 184ea543da4..44903a6b90c 100644
 --- a/docs/007-architecture.md
 +++ b/docs/007-architecture.md
 @@ -2,6 +2,8 @@
@@ -20986,7 +21343,7 @@ index 184ea543da4..023e9b00c71 100644
  | `src/core/evals.ts` | `Evals`: the Evals of Threads and their Decisions |
  | `src/core/tickets.ts` | `Tickets`: the Ticket lifecycle, the Threads a Ticket follows, Subscriptions and Inputs |
  | `src/core/assignments.ts` | `Assignments`: the Executor's facts and its workers' Reports |
-@@ -314,9 +316,20 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -314,9 +316,21 @@ Some generic modules still refer directly to GitHub or Feishu:
  | `src/core/memory.ts` | `MemoryRepositories`: the Store's repositories in memory, in the Store's order and with its nested rollback, for domain tests |
  | `src/core/index.ts` | The core's exports |
  | `src/app/runtime.ts` | The Runtime, the composition root, with its start and stop |
@@ -20998,6 +21355,7 @@ index 184ea543da4..023e9b00c71 100644
 +| `src/app/desk-outbox.ts` | VsSaros fix (2026-11-05): the supervisor's messages that wake the desk (`wakesDesk`: every reply, a team proposal, a step's request, a group made for the person and (2026-11-06) a desk ticket's end), written to `desk_outbox` as `pending` before they are delivered (`followup`) and marked `recorded` only when the desk's `user/message` event with their id says its conversation has them; what is pending is delivered again, oldest first, on every start, a second after the desk Session closes and before each new message, never twice (delivery is once per id). Other messages (acknowledgements, progress) are only logged in `desk_log` for the panel |
 +| `src/app/groupFastPath.ts` | VsSaros P0 (2026-11-05): a deterministic group-chat request typed at the desk makes the group at intake time instead of waiting for an orchestrator LLM round. `isGroupCreationRequest` / `fastGroupPlan` choose up to three Bots and derive a name and notice; `handleDeskMessage` stores the Trigger, calls `Team.createGroup` with `originTriggerId` (the Bots plugin reuses an existing room), and settles it: the group route, the `ignore` decision and the `group-created` notice in one transaction. `GROUP_REFERENCE_KIND` / `groupReferenceOf` / `groupByNameMention` / `handleDeskGroupCommand` also recognise `@已有群` plus DSH's paired `session-reference` event and settle it as routed, leaving the actual relay to the Bots plugin. Only a message that starts with `@` waits for that event (`GROUP_REFERENCE_WAIT_MS`); one that arrives later, within the Bots plugin's own window (`GROUP_REFERENCE_LATE_MS`), still settles it, so the supervisor and the group never both take the message; other messages and failures follow the original intake path |
 +| `src/app/group-routes.ts` | VsSaros addition (2026-11-06): the `group_route` table, which group chat a desk Trigger went to (`created` or `routed`, with the person's DSH message id). It links the two models: `deskFlow` reads it to show the group instead of a refusal, and the card follows the group's run by that message id |
++| `src/app/group-tickets.ts` | VsSaros addition (2026-11-07): the ticket a group chat runs for a desk message `@群 …` (`Ticket.group`). `groupTicketReport` turns the Bots plugin's `groupState` (`idle`, recent log, waiting choice cards, goal) into the report a worker would give once the group has been still for `GROUP_SETTLE_MS`: `ready` with the last replies since the ticket began (or the goal's summary), `waiting` while it waits for the person, `dropped` when the group or its goal is gone. `groupTicketTitle` drops the leading `@群名`. The runtime checks open group tickets every `GROUP_CHECK_MS` (`Runtime.checkGroupTickets`) and writes only a changed report. |
 +| `src/app/staffing.ts` | VsSaros addition: `Staffing` and `StaffingStore`: a ticket's team in `person/staffing`, proposed by the main Session as versions with a fingerprint in `team_proposal`, sent to the conversation the ticket started in, agreed or refused only by a listed person's own later message on its Threads (or the panel); agreeing creates the drafted Bots and starts the worker with the team as its first note |
 +| `src/app/cli-check.ts` | VsSaros addition: `CliCheck`, local `lark-cli` diagnostics and confirmed maintenance for the Feishu Source |
 +| `src/client/cli-check.tsx` | VsSaros addition: the Feishu card's local/version checks and its two confirmed maintenance buttons |
@@ -21008,7 +21366,7 @@ index 184ea543da4..023e9b00c71 100644
  | `src/app/notices.ts` | The main Session's notices and relays: `eventNotice`, `reportRelay`, `resultRelay` and `followupRelay` |
  | `src/app/store.ts` | The Store, and `Receipt`, a message of the outbox |
  | `src/app/store-read.ts` | `storeReads`: the Store's read queries for the views, the tools and the Sources' polls, which never write |
-@@ -325,24 +338,37 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -325,24 +339,37 @@ Some generic modules still refer directly to GitHub or Feishu:
  | `src/app/versions.ts` | `Versions`: a record kept as numbered snapshots with a pointer to the current one, for the settings and the prompts |
  | `src/app/cache.ts` | `TextCache`: texts kept in memory within a size, the least recently used dropped first |
  | `src/app/settings.ts` | Settings |
@@ -21049,7 +21407,7 @@ index 184ea543da4..023e9b00c71 100644
  | `src/app/api.ts` | `Api`, every route with its parameters, query, body and response, and the filters of the lists; it imports only types, so the panel bundles it |
  | `src/app/views/text.ts` | The two forms of a view's text: `preview`, plain text on one line, and `markdown` without HTML; `plain` and `readable` |
  | `src/app/views/records.ts` | The rows the views share: Triggers, Tickets, Threads, Decisions and Channel links, and `ownersOf`, the owners of follow-ups as one request reads them |
-@@ -355,9 +381,10 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -355,9 +382,10 @@ Some generic modules still refer directly to GitHub or Feishu:
  | `src/executor/background.ts` | A worker's background work in DeepSeek Harness, the shell jobs its Session owns (`ctx.jobs`) and its subagents (`ctx.subagents`): `runningJobs`, `untilQuiet`, `killJobs`, `collectJobs`, `stopSubagents`, `stopBackground`, `until`, and `cancelled`, the workers whose turn a stop of their subagents cancelled |
  | `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
  | `src/infra/environment.ts` | The agent's process environment: command shims, the git configuration and credential helper, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
@@ -21062,7 +21420,7 @@ index 184ea543da4..023e9b00c71 100644
  | `src/sources/kind.ts` | The `SourceKind` protocol |
  | `src/sources/registry.ts` | `SourceRegistry` |
  | `src/sources/host.ts` | `SourceHost`, `SourceContext`, `Health`, `health` and the fixed health texts |
-@@ -371,17 +398,38 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -371,17 +399,38 @@ Some generic modules still refer directly to GitHub or Feishu:
  | `src/sources/feishu-trigger.ts` | Feishu messages as Triggers, by one rule for live events, history pages and topic pages |
  | `src/sources/feishu-loops.ts` | The Feishu loops: the event consumer, history recovery, chat names and polling of subscribed topics |
  | `src/sources/feishu-channel.ts` | The Feishu Channel: topic replies, `sent` or `gone` |
@@ -21102,7 +21460,7 @@ index 184ea543da4..023e9b00c71 100644
  | `src/client/settings.tsx` | The Settings tab: the group navigation and the group on screen |
  | `src/client/settings-kit.tsx` | The building blocks of settings blocks: the settings the stage groups share, `useBlockDraft`, the fields, among them a Source kind's, and the history of saves |
  | `src/client/prompts.tsx` | The Prompts settings: the page owns the view it read and its editor the draft, and the Edit, Full prompt and History tabs render from them; a built-in part's editor shows a changed default and keeps or drops the override |
-@@ -399,15 +447,54 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -399,15 +448,54 @@ Some generic modules still refer directly to GitHub or Feishu:
  
  `src/sources/github.ts` and `src/sources/feishu.ts` are also the entries of the two Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch` and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts the three plugins, with Feishu disabled.
  
@@ -21157,7 +21515,7 @@ index 184ea543da4..023e9b00c71 100644
  | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
  | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
  | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
-@@ -422,6 +509,7 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -422,6 +510,7 @@ Some generic modules still refer directly to GitHub or Feishu:
  | `tests/followups.spec.ts` | A person's follow-up on a Ticket's Thread: its notice to the main Session, the tools that act on it, what a burst costs; a worker's hand-back and context follow, and the main Session's note |
  | `tests/health.spec.ts` | One health entry per part, each cleared by its own next success |
  | `tests/delivery.spec.ts` | `AgentDelivery` |
@@ -21165,7 +21523,7 @@ index 184ea543da4..023e9b00c71 100644
  | `tests/retry-health.spec.ts`, `tests/role-models.spec.ts` | Model budget retries, and the models of the two roles |
  | `tests/runtime.spec.ts` | The whole application on a simulated DeepSeek Harness host, through tools and HTTP |
  | `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
-@@ -429,6 +517,7 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -429,6 +518,7 @@ Some generic modules still refer directly to GitHub or Feishu:
  | `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries |
  | `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, and the refusals of the pause, a sync and a block |
  | `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to |
@@ -21173,7 +21531,7 @@ index 184ea543da4..023e9b00c71 100644
  | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
  | `tests/migration.spec.ts` | The schema 11 migration: every stored record in its current shape, and the refusal of older schemas |
  | `tests/store.spec.ts` | Repositories and their working sets, in SQLite as in memory, the kv area, with every key of `KV` spelled only in `src/kv.ts` and the migration, settings history and queries |
-@@ -439,6 +528,14 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -439,6 +529,15 @@ Some generic modules still refer directly to GitHub or Feishu:
  | `tests/service-script.spec.ts` | `scripts/dsh-superagent` against fake `ps`, `tmux` and `dsh` |
  | `tests/client.spec.tsx`, `tests/navigation.spec.ts`, `tests/controls.spec.tsx` | The client plugin's registration and polling, Session navigation and route memory, the local controls, and the panel's imports, which have no cycle |
  | `tests/panel-overview.spec.tsx`, `panel-source.spec.tsx`, `panel-trigger.spec.tsx`, `panel-eval.spec.tsx`, `panel-execution.spec.tsx` | Each page of the panel, against a fake management API answered by route |
@@ -21184,11 +21542,12 @@ index 184ea543da4..023e9b00c71 100644
 +| `tests/desk-outbox.spec.ts` | VsSaros fix (2026-11-05): which messages wake the desk; a message written down first and counted delivered once the desk's conversation records it; delivered again, oldest first, after a restart or the desk closing, never what it has; a failed delivery kept pending and not overtaken |
 +| `tests/group-fast-path.spec.ts` | VsSaros P0 (2026-11-05): group requests are distinguished from commands to an existing group; suitable Bots and a derived name/notice; the desk makes the group and settles it (route, `ignore`, notice) in one step, then drives a pass; duplicates keep one `originTriggerId`; a failed Bots plugin falls back to the model path; `session-reference` / plain `@群名` are recognised and settled as routed at intake (a late reference is marked), while unrelated references fall back; only `@` messages wait for a reference |
 +| `tests/group-contract.spec.ts` | VsSaros addition (2026-11-06): the group-run contract (`dsh-plugins/contracts/group-activity.schema.json`) read the way this panel reads it: version, status words and labels, a contract example kept intact, and every field the panel reads named by the contract. The writer side is checked against the same file in `dsh-plugins/check-bots-rooms.mjs` |
++| `tests/group-tickets.spec.ts` | VsSaros addition (2026-11-07): a group ticket's report from its group's state: nothing while the group works, has just stopped or has not started on it; `ready` with the last two replies since the ticket began, without the person's lines or the questions; `waiting` for a choice card or an unfinished goal; the goal's result; `dropped` for a deleted group; the title without the leading `@群名`. |
 +| `tests/panel-composer.spec.tsx` | VsSaros addition: the Chat tab's composer: the voice button the send button replaces, the "+" menu, a chat reference, attachments kept and named in the message, a scheduled message listed and deleted, dictation and its notes, and voice chat on faked speech recognition and synthesis |
  | `tests/panel-settings.spec.tsx`, `panel-prompts.spec.tsx`, `panel-deployment.spec.tsx`, `panel-panel.spec.tsx` | The settings groups, drafts and history, the prompts, the Deployment page, and the panel's search, glossary and route memory |
  | `tests/draft.spec.ts`, `tests/prompt-config.spec.ts`, `tests/markdown.spec.ts`, `tests/marks.spec.ts` | Draft states, merges and the save bar's line; the prompt configuration by section and the line diff; the Markdown subset and its links; the mark of every state the views classify |
  | `tests/locales.spec.ts`, `tests/styles.spec.ts` | The copy in both languages, the stylesheet |
-@@ -611,6 +708,30 @@ A settings save that changes a Source field setup reads, such as an account's CL
+@@ -611,6 +710,31 @@ A settings save that changes a Source field setup reads, such as an account's CL
  
  Point `DSH_HOME` at a temporary directory and create a new profile there. Copy the database from a backup, disable every Source, pause processing and remove the main Session id. Give the GitHub and Feishu CLIs read-only stand-ins.
  
@@ -21199,10 +21558,11 @@ index 184ea543da4..023e9b00c71 100644
 +The path of one request:
 +
 +1. A person writes in the desk. `src/app/groupFastPath.ts` recognises a request for a team, creates the group at once through the team bus (`globalThis[Symbol.for('vssaros.team')]`, provided by `vssaros-agents/lib/teamBus.js`) with `originTriggerId` set to the Trigger id, then settles it in one transaction: the `group_route` row (`src/app/group-routes.ts`), the `ignore` decision and the notice to the desk. The same `originTriggerId` returns the existing group, so the fast path, `superagent_submit` and a later model call never make two. The desk's flow card reads `group_route` and shows the group rather than "not taken".
-+2. A message that `@`-names an existing group (or references its Session) is settled the same way as `routed`, with the person's DSH message id; `vssaros-agents` posts it into the group's Session as a person's message (`rooms.postToRoom`, `source.kind: 'user'`, `form: 'room-post'`, id `room-post:<session>:<message>` so it lands once however often it is posted) and remembers where it came from. Both plugins pair a message with its reference within the same 15 seconds; a reference that comes after the desk's short wait still settles the message, so the group and the supervisor never both take it.
++2. A message that `@`-names an existing group (or references its Session) is settled the same way as `routed`, with the person's DSH message id; `vssaros-agents` posts it into the group's Session as a person's message (`rooms.postToRoom`, `source.kind: 'user'`, `form: 'room-post'`, id `room-post:<session>:<message>` so it lands once however often it is posted) and remembers where it came from. Both plugins pair a message with its reference within the same 15 seconds; a reference that comes after the desk's short wait still settles the message, so the group and the supervisor never both take it. Since 2026-11-07 its Trigger is accepted rather than ignored, as a ticket the group runs (`Ticket.group`): the ticket gets no worktree, no team to agree to and no worker (both `Tickets.create` and `DshExecutor` refuse to launch one), and follows no Thread, so the desk's next messages are not taken by it. A reference that arrives late still settles the message as `ignore`, since the main Session may hold it in a batch by then. `src/app/group-tickets.ts` writes the group's result back into the ticket once the group settles (see step 6).
 +3. A group's Session never calls a model: its last person message makes the agents plugin synthesise one `group_relay` tool call. The tool hands the message to members in their own shadow Sessions, waits for each turn to end, and returns every reply as the tool result, which the Session keeps.
 +4. While it runs, every reply, status event and speaker change is written through to `agent-rooms.json` (`rounds[]`). `GET /x/agents/api/rooms?progress=<callId>` and `?active=1` read it.
 +5. In the browser one poller (`GroupActivityDock` in chat-surface) reads `?active=1` and broadcasts `vssaros-group-progress` with `{ schema, seq, active }`, keeping the last list in `window.__vssarosGroupProgress`. The Bots rows, the composer dock of group and member Sessions, the right-hand tip, the desk's flow cards and `src/client/group-runs.tsx` all listen to it. Only while no broadcast has been heard (chat-surface missing, loaded later, or in another webview) does `group-runs.tsx` read `?active=1` itself, every five seconds. The group tool card polls its own `?progress=`.
++6. `Runtime.checkGroupTickets` asks the team bus `groupState(roomId)` (`vssaros-agents` `rooms.state`, 0.2.355+) for every open group ticket every ten seconds. The group is settled when no round runs, no member works in the background, nothing is queued and no approval waits, for five seconds; its report then goes through `Engine.report` like a worker's: `ready` ends the ticket as completed and the desk is told, `waiting` keeps it open while the group waits for the person.
 +
 +The payloads of `?active=1`, `?progress=`, the tool result and the three window events (`vssaros-group-progress`, `vssaros-rooms-changed`, `vssaros-group-composer-dock-visibility`) are written down in `dsh-plugins/contracts/group-activity.schema.json`. `check-bots-rooms.mjs` validates the agents plugin's real output and chat-surface's real broadcasts against it; `tests/group-contract.spec.ts` reads its example the way this panel does.
 +

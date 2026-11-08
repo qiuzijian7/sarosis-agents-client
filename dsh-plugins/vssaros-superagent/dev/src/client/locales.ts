@@ -543,6 +543,7 @@ const TEXT = {
   ticketUndeliveredLabel: ['未送达', 'Undelivered'],
   ticketMandateLabel: ['授权', 'Mandate'],
   ticketActorLabel: ['发起', 'From'],
+  ticketGroupLabel: ['执行群聊', 'Group chat'],
   ticketUpdatedLabel: ['更新', 'Updated'],
   executionDirectory: ['执行目录的根目录', 'Ticket directory root'],
   executionDirectoryDefault: ['留空时用 {root}', 'Empty uses {root}'],

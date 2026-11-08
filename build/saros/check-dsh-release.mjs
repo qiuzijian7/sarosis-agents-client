@@ -114,6 +114,53 @@ if (bundledRuntime) {
 //     · `VIRTUAL_STORE_HEAVY_RE` → 种子 `.pnpm` 虚拟店里的**依赖副本**仍在裁，继续守着裁剪失败
 //       （Office 引擎的绝对路径指向 dsh-runtime 本体，不指向种子副本 ⇒ 裁掉是安全的）。
 const pruneTargets = PRUNE_LIST.map(rel => rel.filter(seg => seg !== 'node_modules'));
+
+/**
+ * ★ 2026-11-07 CI 事故（`VsSaros-Win-EXE-Package (9).log` L3428）：裁掉 `.pnpm/<pkg>@<ver>`
+ * 之后，hoist 区 `node_modules/.pnpm/node_modules/<scope>/<name>` 里指向它的 junction 会悬空；
+ * gulp 的 dshRuntime 资源流用 `stat` 跟随 ⇒ ENOENT ⇒ `vscode-win32-x64` 崩 ⇒ 0 个 exe。
+ * ⚠ `fs.existsSync()` 对断链返回 false ⇒ 必须 `lstatSync().isSymbolicLink()` + `statSync()` 判定。
+ */
+const scanDanglingLinks = (nodeModulesDir, label) => {
+	// ⚠ 递归整个 node_modules：不只 hoist 区，wrapper 包内部也会留指向被裁内核的链接
+	//   （实测 `.pnpm/@deepseek-ai+libreoffice-kit@0.1.5/node_modules/.../libreoffice-kit-win32-x64`）。
+	if (!fs.existsSync(nodeModulesDir)) {
+		return;
+	}
+	const scan = (dir, depth) => {
+		if (depth > 8) {
+			return;
+		}
+		let entries;
+		try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+		for (const e of entries) {
+			const p = path.join(dir, e.name);
+			let st;
+			try { st = fs.lstatSync(p); } catch { continue; }
+			if (st.isSymbolicLink()) {
+				// 只钉「指向 .pnpm 虚拟店」的断链（与 prepack 的清理口径一致，避免误报清不掉的链接）
+				let linkTarget;
+				try { linkTarget = fs.readlinkSync(p); } catch { continue; }
+				if (!/\.pnpm[\\/]/.test(linkTarget)) {
+					continue;
+				}
+				try {
+					fs.statSync(p);
+				} catch (err) {
+					if (err?.code === 'ENOENT') {
+						problem(`${label} 的 node_modules 里有悬空链接 ${path.relative(nodeModulesDir, p)}`
+							+ ' —— gulp 拷贝时 stat 会 ENOENT 并崩掉整个打包任务；'
+							+ '跑 node build/prepack-dsh-runtime.mjs 重新生成（它会清理断链）');
+					}
+				}
+			} else if (st.isDirectory()) {
+				scan(p, depth + 1);
+			}
+		}
+	};
+	scan(nodeModulesDir, 0);
+};
+
 const scanHeavy = (nodeModulesDir, label) => {
 	if (!nodeModulesDir || !fs.existsSync(nodeModulesDir)) {
 		return;
@@ -137,12 +184,16 @@ const scanHeavy = (nodeModulesDir, label) => {
 };
 if (bundledRuntime) {
 	const rt = path.join(ROOT, 'dsh-runtime', bundledRuntime);
-	scanHeavy(path.join(rt, 'node_modules'), `运行时 dsh-runtime/${bundledRuntime}`);
+	const rtModules = path.join(rt, 'node_modules');
+	scanHeavy(rtModules, `运行时 dsh-runtime/${bundledRuntime}`);
+	scanDanglingLinks(rtModules, `运行时 dsh-runtime/${bundledRuntime}`);
 	const seedProfiles = path.join(rt, 'profile-seed', 'profiles');
 	if (fs.existsSync(seedProfiles)) {
 		for (const p of fs.readdirSync(seedProfiles, { withFileTypes: true })) {
 			if (p.isDirectory()) {
-				scanHeavy(path.join(seedProfiles, p.name, 'node_modules'), `种子 profile ${p.name}`);
+				const nm = path.join(seedProfiles, p.name, 'node_modules');
+				scanHeavy(nm, `种子 profile ${p.name}`);
+				scanDanglingLinks(nm, `种子 profile ${p.name}`);
 			}
 		}
 	}
@@ -376,13 +427,17 @@ if (DIST) {
 			problem(`产物里缺少 dsh-runtime/${bundledRuntime}（首启会退化成联网安装）`);
 		}
 		if (bundledRuntime) {
-			// 产物层面再扫一遍重型可选项（运行时 + 随包种子）
-			scanHeavy(path.join(runtimeDir, bundledRuntime, 'node_modules'), '产物运行时');
+			// 产物层面再扫一遍重型可选项 + 悬空链接（运行时 + 随包种子）
+			const distModules = path.join(runtimeDir, bundledRuntime, 'node_modules');
+			scanHeavy(distModules, '产物运行时');
+			scanDanglingLinks(distModules, '产物运行时');
 			const distSeed = path.join(runtimeDir, bundledRuntime, 'profile-seed', 'profiles');
 			if (fs.existsSync(distSeed)) {
 				for (const p of fs.readdirSync(distSeed, { withFileTypes: true })) {
 					if (p.isDirectory()) {
-						scanHeavy(path.join(distSeed, p.name, 'node_modules'), `产物种子 profile ${p.name}`);
+						const nm = path.join(distSeed, p.name, 'node_modules');
+						scanHeavy(nm, `产物种子 profile ${p.name}`);
+						scanDanglingLinks(nm, `产物种子 profile ${p.name}`);
 					}
 				}
 			}

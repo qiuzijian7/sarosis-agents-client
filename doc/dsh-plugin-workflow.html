@@ -593,6 +593,7 @@
 		<tr><td>2026-10-28</td><td>试切 rc.4 ⇒ host 组三条探针启动即崩</td><td>rc.2 基线同组全绿 ⇒ rc.4 是回归 ⇒ <b>不切</b>；升级 bundled 必须做基线对照，不能只看版本自洽</td></tr>
 		<tr><td>2026-11-07</td><td>pnpm 10→12 版本漂移 ⇒ 种子建不出来 / 种子 234MB→573MB</td><td>构建期曾"PATH 上有就用 / 没有装 latest"，CI 全局 pnpm 12 忽略 <code>pnpm.onlyBuiltDependencies</code> 并改用 <code>.pnpm</code> 虚拟店 ⇒ 单一真源 <b>pnpm@11.28.5</b>（跟随上游 dsh）：根 <code>package.json</code> pin + prepack 造 shim + 产物整包内置 + 发布守卫/CI 四处交叉校验</td></tr>
 		<tr><td>2026-11-07</td><td>裁剪守卫与 Office 路线打架（CI 全新构建会误报拦出包）</td><td>10-28 把"不许有 libreoffice 内核"硬编码在发布守卫里；11-02 Office 路线把 <code>PRUNE_LIST</code> 置空（内核随 dsh-runtime 分发）⇒ 守卫没跟上。修法：抽 <code>build/saros/prune-list.mjs</code> 纯数据模块，prepack 与守卫共用；守卫按清单派生检查项，种子 <code>.pnpm</code> 副本另按共享正则裁</td></tr>
+		<tr><td>2026-11-07</td><td>裁掉 .pnpm 包 ⇒ 悬空 junction ⇒ gulp <code>ENOENT</code> 崩（Log 9，0 个 exe）</td><td>prepack 删了 <code>.pnpm/@deepseek-ai+libreoffice-kit-win32-x64@0.1.5</code>，但 pnpm 虚拟店里还有<b>两处</b>指向它的 junction：hoist 区 <code>.pnpm/node_modules/@deepseek-ai/…</code>（CI 崩在这条）与 wrapper 包内部 <code>.pnpm/@deepseek-ai+libreoffice-kit@0.1.5/node_modules/…</code>。gulp 的 vinyl-fs 用 <code>stat</code> 跟随 ⇒ <code>ENOENT</code> ⇒ <code>vscode-win32-x64</code> 崩 ⇒ staging 半截。⚠ <code>existsSync()</code> 对断链返回 <b>false</b>，必须 <code>lstatSync().isSymbolicLink()</code> + <code>statSync()</code> 才看得见。修法：prepack 递归整个 <code>node_modules</code> 清断链（<b>幂等跳过路径也补跑</b>），发布守卫同样全树扫；实测 131,747 条目 / 6,134 链接 / 悬空 0</td></tr>
 	</tbody>
 </table>
 
