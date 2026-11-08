@@ -573,6 +573,17 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 		].join('\n'));
 		console.log('[prepack-dsh] pnpm-workspace.yaml 已降级为最小白名单（dangerouslyAllowAllBuilds 不随包）');
 	}
+	// ★ 2026-11-08（Log 9 + Log 10 连续两次）：**写 marker 之前再验一遍断链**。
+	//   断链是「产物坏了」，不是「加速项缺了」——放行等于让它在 4.6 分钟后崩掉整个 gulp 任务
+	//   （staging 半截 ⇒ verify / generate-exe 连锁失败 ⇒ 0 个 exe）。⇒ 在这里就 throw：
+	//   safeBuildProfileSeed 会接住（prepack 不崩），但日志会点名断链形态，且种子不会盖章"已是最新"。
+	const remainingDangling = findDanglingLinks(profileDir);
+	if (remainingDangling.length) {
+		for (const d of remainingDangling.slice(0, 5)) {
+			console.log(`[prepack-dsh] ✗ 残留断链: ${d.p} via=${d.via} isLink=${d.isLink ?? '?'} target=${d.target ?? '(readdir 捕获)'}`);
+		}
+		throw new Error(`profile 种子里还有 ${remainingDangling.length} 个悬空链接 ⇒ gulp 的 vinyl-fs stat 会 ENOENT（本次出包必须失败）`);
+	}
 	writeFileSync(markerPath, JSON.stringify({ dsh: dshVersion, plugins: wantPlugins, createdAt: new Date().toISOString() }, undefined, 2));
 	console.log(`[prepack-dsh] profile seed ready (${Math.round(dirSize(seed) / 1024 / 1024)} MB)；覆盖全部 ${Object.keys(wantPlugins).length} 个随包插件 ✓`);
 	if (acceptedVersionGates.size) {
@@ -605,12 +616,20 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
  *   ⚠ `existsSync()` 对断链返回 **false** ⇒ 必须用 `lstatSync().isSymbolicLink()` 才能看见它
  *     （本地复核：530 个链接里正好 1 个悬空，就是这次崩的那个）。
  */
-function pruneDanglingLinks(targetDir, label) {
+function findDanglingLinks(targetDir) {
 	// ⚠ 不能只扫 `.pnpm/node_modules`（hoist 区）：实测 wrapper 包内部也有指向被裁内核的链接
 	//   （`.pnpm/@deepseek-ai+libreoffice-kit@0.1.5/node_modules/@deepseek-ai/libreoffice-kit-win32-x64`），
 	//   gulp 的 `profile-seed/**` 一样会遍历到 ⇒ 必须递归整个 node_modules。
+	//
+	// ★ 2026-11-08（Log 10，同一个 ENOENT 复发）：**不再依赖链接类型 / target 格式**。
+	//   上一版用 `lstatSync().isSymbolicLink()` + `readlinkSync()` 目标必须含 `.pnpm/` 做双重过滤；
+	//   CI（Windows Server 2016，Node 同为 22.22.1）上它一条都没删（日志里没有清理行），
+	//   但 gulp 仍 stat 到断链 ⇒ 说明 CI 上 lstat 对 junction 的类型判定/路径形态与本机不同。
+	//   ⇒ 判据统一为「**lstat 在、stat 跟随却 ENOENT**」——这正是 gulp/vinyl-fs 崩的那一步，
+	//     与链接是 symlink / junction / 被 lstat 误判成目录统统无关。两条捕获路径：
+	//       ① 条目自身 stat ENOENT；② 被当目录递归进去时 readdirSync ENOENT（断 junction）。
 	const root = join(targetDir, 'node_modules');
-	let removed = 0;
+	const found = [];
 	const scan = (dir, depth) => {
 		if (depth > 8) {
 			return; // .pnpm/<pkg>/node_modules/<scope>/<name> 最多 5 层，留余量
@@ -618,7 +637,10 @@ function pruneDanglingLinks(targetDir, label) {
 		let entries;
 		try {
 			entries = readdirSync(dir, { withFileTypes: true });
-		} catch {
+		} catch (err) {
+			if (err?.code === 'ENOENT' && dir !== root) {
+				found.push({ p: dir, via: 'readdir' });
+			}
 			return;
 		}
 		for (const e of entries) {
@@ -629,32 +651,19 @@ function pruneDanglingLinks(targetDir, label) {
 			} catch {
 				continue;
 			}
-			if (st.isSymbolicLink()) {
-				let target;
-				try {
-					target = readlinkSync(p);
-				} catch {
-					continue;
-				}
-				// 只动指向**本 profile 虚拟店**的链接，不碰其它链接
-				if (!/\.pnpm[\\/]/.test(target)) {
-					continue;
-				}
+			if (st.isSymbolicLink() || e.isSymbolicLink()) {
 				try {
 					statSync(p);
-					continue; // 目标还在 ⇒ 正常链接
 				} catch (err) {
-					if (err?.code !== 'ENOENT') {
+					if (err?.code === 'ENOENT') {
+						let target = '';
+						try { target = readlinkSync(p); } catch { /* 诊断信息，拿不到就算了 */ }
+						found.push({ p, via: 'stat', isLink: st.isSymbolicLink(), target });
 						continue;
 					}
 				}
-				try {
-					rmSync(p, { force: true }); // Windows junction / POSIX symlink 都适用（实测 ✓）
-					removed++;
-				} catch (err) {
-					console.log(`[prepack-dsh] ⚠ 悬空链接删不掉（gulp 仍可能 ENOENT）：${p} ${String(err?.code ?? '')}`);
-				}
-			} else if (st.isDirectory()) {
+			}
+			if (st.isDirectory()) {
 				scan(p, depth + 1);
 			}
 		}
@@ -662,9 +671,28 @@ function pruneDanglingLinks(targetDir, label) {
 	if (existsSync(root)) {
 		scan(root, 0);
 	}
-	if (removed) {
-		console.log(`[prepack-dsh] pruned ${label}: ${removed} 个悬空链接（指向已裁剪的 .pnpm 包，防 gulp ENOENT）`);
+	return found;
+}
+
+function pruneDanglingLinks(targetDir, label) {
+	const found = findDanglingLinks(targetDir);
+	let removed = 0;
+	for (const f of found) {
+		try {
+			rmSync(f.p, { force: true }); // Windows junction / POSIX symlink 都适用（实测 ✓）
+			removed++;
+		} catch (err) {
+			console.log(`[prepack-dsh] ⚠ 悬空链接删不掉（gulp 仍可能 ENOENT）：${f.p} ${String(err?.code ?? '')}`);
+		}
 	}
+	if (found.length) {
+		console.log(`[prepack-dsh] pruned ${label}: ${removed}/${found.length} 个悬空链接（防 gulp ENOENT）`);
+		// 诊断形态：下一台机器上若又出现\"判据不匹配\"，日志里能直接看到是哪种链接
+		for (const f of found.slice(0, 3)) {
+			console.log(`[prepack-dsh]   · via=${f.via} isLink=${f.isLink ?? '?'} target=${f.target ?? '(readdir 捕获)'} ${f.p}`);
+		}
+	}
+	return found.length - removed; // 没清掉的数量（>0 ⇒ 自检要拦）
 }
 
 function prune(targetDir, label = 'runtime') {

@@ -124,36 +124,45 @@ const pruneTargets = PRUNE_LIST.map(rel => rel.filter(seg => seg !== 'node_modul
 const scanDanglingLinks = (nodeModulesDir, label) => {
 	// ⚠ 递归整个 node_modules：不只 hoist 区，wrapper 包内部也会留指向被裁内核的链接
 	//   （实测 `.pnpm/@deepseek-ai+libreoffice-kit@0.1.5/node_modules/.../libreoffice-kit-win32-x64`）。
+	// ★ 2026-11-08：与 prepack 同判据 —— **lstat 在、stat 跟随 ENOENT** 就算断链，
+	//   不再依赖 isSymbolicLink()/readlinkSync() 目标格式（CI 上这两者与本机不一致 ⇒ 上一版漏报）。
+	//   第二条捕获路径：被 lstat 判成"目录"的断 junction，递归进去时 readdirSync 会 ENOENT。
 	if (!fs.existsSync(nodeModulesDir)) {
 		return;
 	}
+	const report = (p, via) => {
+		problem(`${label} 的 node_modules 里有悬空链接 ${path.relative(nodeModulesDir, p)}（${via}）`
+			+ ' —— gulp 拷贝时 stat 会 ENOENT 并崩掉整个打包任务；'
+			+ '跑 node build/prepack-dsh-runtime.mjs 重新生成（它会清理断链）');
+	};
 	const scan = (dir, depth) => {
 		if (depth > 8) {
 			return;
 		}
 		let entries;
-		try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+		try {
+			entries = fs.readdirSync(dir, { withFileTypes: true });
+		} catch (err) {
+			if (err?.code === 'ENOENT' && dir !== nodeModulesDir) {
+				report(dir, 'readdir ENOENT');
+			}
+			return;
+		}
 		for (const e of entries) {
 			const p = path.join(dir, e.name);
 			let st;
 			try { st = fs.lstatSync(p); } catch { continue; }
-			if (st.isSymbolicLink()) {
-				// 只钉「指向 .pnpm 虚拟店」的断链（与 prepack 的清理口径一致，避免误报清不掉的链接）
-				let linkTarget;
-				try { linkTarget = fs.readlinkSync(p); } catch { continue; }
-				if (!/\.pnpm[\\/]/.test(linkTarget)) {
-					continue;
-				}
+			if (st.isSymbolicLink() || e.isSymbolicLink()) {
 				try {
 					fs.statSync(p);
 				} catch (err) {
 					if (err?.code === 'ENOENT') {
-						problem(`${label} 的 node_modules 里有悬空链接 ${path.relative(nodeModulesDir, p)}`
-							+ ' —— gulp 拷贝时 stat 会 ENOENT 并崩掉整个打包任务；'
-							+ '跑 node build/prepack-dsh-runtime.mjs 重新生成（它会清理断链）');
+						report(p, 'stat ENOENT');
+						continue;
 					}
 				}
-			} else if (st.isDirectory()) {
+			}
+			if (st.isDirectory()) {
 				scan(p, depth + 1);
 			}
 		}

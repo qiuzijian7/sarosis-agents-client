@@ -2158,6 +2158,16 @@ suite('dshHarness / 打包链：内置 dsh 运行时（缺它 = 首启要用户�
 		assert.match(prepack, /lstatSync\(p\)/, '断链要用 lstatSync 才看得见（existsSync 会骗过你）');
 		assert.match(prepack, /statSync\(p\)/, '要用 statSync 跟随判定是否悬空');
 		assert.match(release, /scanDanglingLinks\(/, '发布守卫也要扫悬空链接（防复发）');
+		// ★ 2026-11-08（Log 10：同一个 ENOENT 复发）：上一版用 `isSymbolicLink()` +
+		//   `readlinkSync()` 目标必须含 `.pnpm/` 双重过滤，CI 上一条都没删（日志无清理行）
+		//   ⇒ 判据必须只看「lstat 在 + stat ENOENT」，并覆盖"被判成目录的断 junction"。
+		assert.match(prepack, /function findDanglingLinks\(/, '断链发现要独立成函数（写 marker 前的自检复用它）');
+		assert.match(prepack, /via: 'readdir'/, '要捕获 readdirSync ENOENT（lstat 把断 junction 判成目录的情形）');
+		assert.match(prepack, /remainingDangling/, '写 marker 前必须自检残留断链（坏种子不许盖章"已是最新"）');
+		assert.match(release, /readdir ENOENT|stat ENOENT/, '发布守卫的判据要与 prepack 完全一致');
+		assert.match(release, /report\(p, 'stat ENOENT'\)/, '守卫要用 stat ENOENT 判据');
+		assert.ok(!/let linkTarget|const linkTarget/.test(release),
+			'发布守卫不许再按 readlink 目标格式判定（CI 上会漏报）');
 	});
 
 	test('★★ prepack 自己不许抛（种子失败由 verify-staging 判死），但必须把原因打全 + 提示与硬门一致', () => {
