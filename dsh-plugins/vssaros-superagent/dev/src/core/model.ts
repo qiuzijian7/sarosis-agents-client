@@ -269,6 +269,13 @@ export interface PolicyEffect {
 }
 
 export type TicketEndBy = 'executor' | 'human'
+/**
+ * 决策 15（2026-11-09）：工单的**执行者形态**正式进领域模型。
+ * 此前群执行靠 `Ticket.group` 是否存在这个布尔旁路判别（散在 tickets / executor / runtime / records 四处），
+ * 任何一处漏判都会给群工单起 worker 或订阅 Thread。现在统一由 `ticketExecutor()` 读本字段。
+ * 可选字段是给存量 SQLite 工单用的：老数据没有 executor，`ticketExecutor()` 按 `group` 推导，零迁移。
+ */
+export type TicketExecutor = 'worker' | 'group'
 /** How a ticket ended: with its result, with its pull request merged or closed unmerged, with nothing to do, or stopped by a person. */
 export type TicketOutcome = 'completed' | 'merged' | 'closed' | 'dropped' | 'stopped'
 /** A question for a person; `triggerId` is the human message that raised it, whose conversation it goes back to. */
@@ -279,6 +286,8 @@ export interface Ticket {
   title: string
   decisionId: string
   mandate: Mandate
+  /** 决策 15：这张工单由谁执行；缺省（存量数据）由 `ticketExecutor()` 推导。 */
+  executor?: TicketExecutor
   /** The Channels of the messages it was accepted from, which its replies go to. */
   channels: ChannelRef[]
   /** When, by whom, and how the ticket ended, with a person's or the host's reason beyond the outcome; an open ticket has none. */
@@ -332,6 +341,10 @@ export interface TicketTeam {
 }
 /** VsSaros addition: whether an open ticket still waits for its team to be agreed; no worker starts until then. */
 export const staffing = (ticket: Pick<Ticket, 'ended' | 'team'>): boolean => !ticket.ended && !!ticket.team && ticket.team.state !== 'approved'
+/** 决策 15：所有「是不是群执行」的分支都必须走这里，不许再写 `ticket.group` 布尔旁路。 */
+export const ticketExecutor = (ticket: Pick<Ticket, 'executor' | 'group'>): TicketExecutor =>
+  ticket.executor ?? (ticket.group ? 'group' : 'worker')
+export const isGroupTicket = (ticket: Pick<Ticket, 'executor' | 'group'>): boolean => ticketExecutor(ticket) === 'group'
 /**
  * VsSaros addition (2026-11-06, P1 · one execution model): the role of a ticket's Assignment once a person agreed to its team.
  *

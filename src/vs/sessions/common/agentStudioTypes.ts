@@ -338,6 +338,12 @@ export interface Agent {
 	imageProviderId?: string;
 	skills: string[];
 	/**
+	 * 能力包名（2026-11-08 P1）。`agentMdFormat` 会把 `.agent.md` 里的 `capabilities`
+	 * 解析进 `Partial<Agent>`，不在这里声明就会在类型层面消失 ⇒ 回写时静默丢掉。
+	 * 只写包名，工具由 `vssaros-agents/lib/core/packs.js` 展开成**加法**（只加不减）。
+	 */
+	capabilities?: string[];
+	/**
 	 * 欢迎卡建议问题（2026-10-26）。
 	 *
 	 * ⚠ 为什么必须在这里声明：`agentMdFormat` 会把 `.agent.md` 里的 `suggestions`

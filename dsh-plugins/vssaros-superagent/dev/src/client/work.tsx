@@ -326,8 +326,9 @@ function StepDetail({ team, step, onClose }: { team: StepsView; step: Step; onCl
 
 type View = 'flow' | 'board' | 'list'
 const VIEW_KEY = 'dsh-superagent/work-view'
-/** The Workbench tab: a team's steps as a flow, a board or a list. */
-export function WorkPage({ ticketId }: { ticketId?: string }) {
+/** The team's steps as a flow, a board or a list (2026-11-09: hosted inside the Execution tab).
+ *  `embedded` = 执行页内嵌：那一页已有 <GroupRuns compact />，这里不再重复轮询群进度。 */
+export function WorkPage({ ticketId, embedded = false }: { ticketId?: string; embedded?: boolean }) {
   const { t } = usePanel()
   const { teams, approvals, loaded } = useWork()
   const [chosen, setChosen] = useState(ticketId)
@@ -335,7 +336,7 @@ export function WorkPage({ ticketId }: { ticketId?: string }) {
   const setView = (next: View) => { setViewState(next); try { sessionStorage.setItem(VIEW_KEY, next) } catch { /* a convenience */ } }
   const [selected, setSelected] = useState<string>()
   const team = teams.find(item => item.ticket.id === chosen) ?? teams[0]
-  const groupRuns = <GroupRuns />
+  const groupRuns = embedded ? null : <GroupRuns />
   if (!loaded) return <>{groupRuns}<Hint>{t('loading')}</Hint></>
   if (!team) return <div className="dt-work">{groupRuns}<Hint>{t('work.empty')}</Hint></div>
   const step = team.steps.find(item => item.key === selected)

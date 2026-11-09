@@ -22,9 +22,15 @@ import { DshBridgeMethod, IBridgeWorkspace } from '../../common/dshBridgeProtoco
 import { readCapabilityDeclarations } from '../../common/dshIdeAuthorization.js';
 
 const REPO = process.env.DSH_TEST_REPO_ROOT ?? process.cwd();
-const RUNTIME_ROOT = process.env.DSH_TEST_RUNTIME_ROOT ?? join(REPO, 'poc', 'dsh-p0', '.runtime');
+// ★ 2026-11-09 单版本模型：RUNTIME_ROOT 现在是 **bundledRoot**（构建期 prepack 的 dsh-runtime/），
+// 不再是 managed 多版本池；版本由 dsh-compat.json 的 bundled 唯一决定。
+const RUNTIME_ROOT = process.env.DSH_TEST_RUNTIME_ROOT ?? join(REPO, 'dsh-runtime');
+const BUNDLED_PIN = (() => { try { return String(JSON.parse(readFileSync(join(REPO, 'dsh-plugins', 'dsh-compat.json'), 'utf8')).bundled ?? ''); } catch { return ''; } })();
+const MANAGED_ROOT = join(REPO, 'poc', 'dsh-p0', '.runtime');
 const BRIDGE_DIR = join(REPO, 'dsh-plugins', 'vssaros-bridge');
-const hasRuntime = existsSync(RUNTIME_ROOT) && new DshRuntimeManager(RUNTIME_ROOT, () => { }).listInstalled().length > 0;
+const hasRuntime = !!BUNDLED_PIN && existsSync(join(RUNTIME_ROOT, BUNDLED_PIN, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'));
+/** 构造一个只指向 bundled pin 的管理器（managedRoot 仅剩「托管 Node」用途）。 */
+const makeRuntime = (log: (line: string) => void) => new DshRuntimeManager(MANAGED_ROOT, log, RUNTIME_ROOT, BUNDLED_PIN);
 
 (hasRuntime ? suite : suite.skip)('dshHarness / Host supervisor (integration)', function () {
 	this.timeout(240_000);
@@ -41,7 +47,7 @@ const hasRuntime = existsSync(RUNTIME_ROOT) && new DshRuntimeManager(RUNTIME_ROO
 		home = realpathSync.native(mkdtempSync(join(tmpdir(), 'vssaros-dsh-home-')));
 		runDir = realpathSync.native(mkdtempSync(join(tmpdir(), 'vssaros-dsh-run-')));
 		supervisor = new DshHostSupervisor({
-			runtime: new DshRuntimeManager(RUNTIME_ROOT, l => lines.push(l)),
+			runtime: makeRuntime(l => lines.push(l)),
 			runDir,
 			foundationPluginDir: undefined,
 			bridgePluginDir: BRIDGE_DIR,
@@ -247,7 +253,7 @@ const hasRuntime = existsSync(RUNTIME_ROOT) && new DshRuntimeManager(RUNTIME_ROO
 	test('without the bundled plugin the Host still runs on the URL-line fallback', async () => {
 		supervisor.dispose();
 		supervisor = new DshHostSupervisor({
-			runtime: new DshRuntimeManager(RUNTIME_ROOT, () => { }),
+			runtime: makeRuntime(() => { }),
 			runDir,
 			foundationPluginDir: undefined,
 			bridgePluginDir: undefined,
@@ -286,7 +292,7 @@ const hasRuntime = existsSync(RUNTIME_ROOT) && new DshRuntimeManager(RUNTIME_ROO
 		const shortRoot = mkdtempSync(join(tmpdir(), 'vssaros-short-home-'));
 		const rawHome = join(shortRoot, 'dsh-home');
 		const sup = new DshHostSupervisor({
-			runtime: new DshRuntimeManager(RUNTIME_ROOT, l => lines.push(l)),
+			runtime: makeRuntime(l => lines.push(l)),
 			runDir: join(shortRoot, 'run'),
 			foundationPluginDir: undefined,
 			bridgePluginDir: BRIDGE_DIR,
@@ -384,7 +390,7 @@ const hasRuntime = existsSync(RUNTIME_ROOT) && new DshRuntimeManager(RUNTIME_ROO
 		const startFresh = async (): Promise<{ sup: DshHostSupervisor; log: string }> => {
 			const lines: string[] = [];
 			const sup = new DshHostSupervisor({
-				runtime: new DshRuntimeManager(RUNTIME_ROOT, l => lines.push(l)),
+				runtime: makeRuntime(l => lines.push(l)),
 				runDir, foundationPluginDir: undefined,
 			bridgePluginDir: src, chatSurfacePluginDir: undefined, modulePluginDirs: [],
 				defaultDshHome: home, instanceId: 'stage-fingerprint', log: l => lines.push(l),

@@ -4,26 +4,36 @@
  *--------------------------------------------------------------------------------------------*/
 
 /**
- * 托管运行时：定位 Node 与 dsh、并列安装版本、切换指针（方案第 3.2 节）。
+ * 运行时解析：定位 Node 与**唯一的内置 dsh**（方案第 3.2 节，2026-11-09 收敛）。
  *
  * 只依赖 Node 内置模块与 vs/base，不 import electron —— 可在纯 Node 下做集成测试。
  *
  * P0-2 结论：不能用 VsSaros 自带的 Electron 以 ELECTRON_RUN_AS_NODE 运行 dsh
  * （`node-addon-require-builtin` 只认 Electron ≥43，VsSaros 为 39.8.8），因此 Node 必须是独立的。
+ *
+ * ★★ 2026-11-09：**收敛成单版本模型**（对标开源 dsh-desktop / Dataelem）。
+ *   原先这里管理 `<userData>/dsh-runtime/<version>/` 的**多版本池**：并列安装、`state.json`
+ *   的 `current` 指针、history 回滚、升级闸门快照、按版本重建 profile。产品已明确不需要
+ *   「用户自由切 runtime」，那一整套机制正是 11-07 / 11-09 两次 F5 崩溃的来源。
+ *   现在：
+ *     · dsh 只有一个来源 —— 构建期 prepack 到 `bundledRoot/<bundledPin>/` 的那份；
+ *     · 版本由 `dsh-plugins/dsh-compat.json` 的 `bundled` **构建期 pin 死**，运行期只认它，
+ *       目录里残留别的版本一律不看；缺了就报「安装包不完整」，不退回"取最高"；
+ *     · 版本升级 = 应用发版；`userData/dsh-home` **永不覆盖**（见 `_ensureProfile`）；
+ *     · `managedRoot` 只剩一个用途：托管便携 Node 的安装根（用户机器没装 Node 时）。
+ *   ⇒ 不再读写 `state.json`，不再有 `current` / `history` / `install()` / `setCurrent()`。
  */
 
 import { execFile } from 'child_process';
-import { existsSync, mkdirSync, promises as fsp, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { delimiter, join } from '../../../../base/common/path.js';
-import { compareSemver, isRuntimeVersionDir, isSupportedNodeVersion, IRuntimeState, parseRuntimeState, selectRuntimeVersion, withCurrent } from '../common/dshCli.js';
+import { isRuntimeVersionDir, isSupportedNodeVersion } from '../common/dshCli.js';
 import { DshErrorCode, IDshRuntimeInfo } from '../common/dshHarness.js';
-import { npmCliCandidates } from '../common/dshNodeDist.js';
 import { runtimeInstallMissing } from '../common/dshRuntimeInstall.js';
 import { FetchLike, installManagedNode, INodeInstallResult, managedNodePath } from './dshNodeInstaller.js';
 
 const DSH_PKG_BIN = ['node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'];
-const STATE_FILE = 'state.json';
 const isWindows = process.platform === 'win32';
 
 /** 带错误码的运行时错误：界面据错误码给出对应的修复按钮（安装 Node / 安装 dsh）。 */
@@ -43,8 +53,12 @@ export interface IResolvedNode {
 export interface IResolvedDsh {
 	readonly bin: string;
 	readonly version: string;
-	/** bundled = 安装包内置（构建期预装到 `<appPath>/dsh-runtime/<version>`，见 build/prepack-dsh-runtime.mjs）。 */
-	readonly source: 'setting' | 'managed' | 'bundled' | 'global';
+	/**
+	 * `bundled` = 安装包内置（构建期 pin 到 `<appPath>/dsh-runtime/<version>`，见 build/prepack-dsh-runtime.mjs）。
+	 * `setting` 只是**显式排障开关** `sessions.dshHarness.runtimePath`：不参与产品版本管理，
+	 * 默认永远不会命中；产品路径 100% 是 bundled。
+	 */
+	readonly source: 'setting' | 'bundled';
 }
 
 export interface IRuntimeLog {
@@ -223,122 +237,48 @@ function run(file: string, args: readonly string[], opts: { timeout?: number; en
 export class DshRuntimeManager {
 
 	constructor(
-		/** 托管根目录，如 `<userData>/dsh-runtime`；其下 `<version>/` 为 `npm i --prefix` 目标，`node/` 预留给托管 Node。 */
+		/** 用户数据根：收敛后只剩「托管便携 Node」一个用途（`<userData>/dsh-runtime/node/`）；不再是 dsh 版本池。 */
 		readonly managedRoot: string,
 		private readonly _log: IRuntimeLog,
-		/** 安装包内置运行时根目录（打包后 `<appPath>/dsh-runtime`）；缺省/不存在 = 未内置。 */
+		/** 内置运行时根目录（打包版 `<appPath>/dsh-runtime`；dev 由 channel 向上回退到仓库根 `dsh-runtime`）。 */
 		readonly bundledRoot?: string,
-		/**
-		 * 构建期 pin 的 bundled 版本（`dsh-plugins/dsh-compat.json` 的 `bundled`，与打包侧同源）。
-		 *
-		 * 为什么要 pin（2026-10-28）：旧行为取 `listBundled().at(-1)` = **目录里最高的版本**。打包侧一旦
-		 * 残留了更高但没进兼容清单的版本（本机实测 rc.1 + rc.2 并存），装出来的包就会跑一个**没验证过**
-		 * 的运行时；而 pin 的版本才是 `dsh-compat.json` 声明验证过的那一个。
-		 * 缺省（dev 直跑 / 单测）⇒ 仍退回"取最高"，保持旧行为。
-		 */
+		/** 构建期 pin 的唯一版本（`dsh-plugins/dsh-compat.json` 的 `bundled`）。 */
 		private readonly _bundledVersionPin?: string,
 	) { }
 
-	// ─── 指针 ────────────────────────────────────────────────────────────────
-
-	readState(): IRuntimeState {
-		const p = join(this.managedRoot, STATE_FILE);
-		return parseRuntimeState(existsSync(p) ? readFileSync(p, 'utf8') : undefined);
-	}
-
-	private async _writeState(state: IRuntimeState): Promise<void> {
-		await fsp.mkdir(this.managedRoot, { recursive: true });
-		const p = join(this.managedRoot, STATE_FILE);
-		const tmp = `${p}.${process.pid}.tmp`;
-		await fsp.writeFile(tmp, JSON.stringify(state, undefined, 2));
-		await fsp.rename(tmp, p);
-	}
-
-	/** 原样写回指针（升级回退用）。 */
-	restoreState(state: IRuntimeState): Promise<void> {
-		this._log(`runtime pointer restored → ${state.current ?? '(none)'}`);
-		return this._writeState(state);
-	}
-
-	listInstalled(): string[] {
-		return this._listVersions(this.managedRoot);
-	}
-
-	/** 安装包内置的 dsh 版本（构建期预装；只读，绝不写入）。 */
-	listBundled(): string[] {
-		return this.bundledRoot ? this._listVersions(this.bundledRoot) : [];
-	}
-
-	private _listVersions(root: string): string[] {
-		if (!existsSync(root)) {
-			return [];
-		}
-		return readdirSync(root)
-			.filter(isRuntimeVersionDir)
-			.filter(v => existsSync(join(root, v, ...DSH_PKG_BIN)))
-			.sort(compareSemver);
+	/** 构建期 pin 的版本；单版本模型下它就是「当前版本」，没有第二个候选。 */
+	get bundledVersion(): string | undefined {
+		return this._bundledVersionPin?.trim() || undefined;
 	}
 
 	/**
-	 * 选定本次要用的 bundled 版本：**compat 清单 pin 的版本优先**，目录里没有才退回"最高版本"。
+	 * 校验并返回**唯一**可用的内置版本。
 	 *
-	 * pin 在包里但目录里没有时不硬失败：那是"打包侧 pin 与产物不一致"，让全新安装直接起不来比
-	 * 退回最高版本更糟 ⇒ 记一行日志（运维能在日志里看到）再退回。
+	 * ★ 不再「目录里取最高」：包里残留更高但没进 compat 清单的版本一律不看
+	 *   （2026-10-28 真机踩过：rc.1 + rc.2 并存时跑到了没验证过的那个）。
+	 *   pin 缺、目录名非法、bin 缺 ⇒ **硬失败**，让构建期漏件显形，而不是悄悄降级。
+	 *   构建期由 `build/saros/check-dsh-release.mjs` 保证包内只有 pin 的这一个版本。
 	 */
-	private _selectBundled(): string | undefined {
-		const versions = this.listBundled();
-		if (versions.length === 0) {
-			return undefined;
+	private _requireBundled(): { version: string; dir: string; bin: string } {
+		const version = this.bundledVersion;
+		if (!version || !isRuntimeVersionDir(version)) {
+			throw new DshRuntimeError('dsh-missing', `安装包未声明有效的 bundled dsh 版本（dsh-plugins/dsh-compat.json 的 bundled）：${version ?? '(空)'}`);
 		}
-		const pin = this._bundledVersionPin?.trim();
-		if (pin) {
-			if (versions.includes(pin)) {
-				return pin;
-			}
-			this._log(`bundled pin ${pin}（dsh-compat.json）不在安装包里：实际有 ${versions.join(', ')} ⇒ 退回最高版本`);
+		if (!this.bundledRoot) {
+			throw new DshRuntimeError('dsh-missing', `找不到内置运行时目录（bundledRoot 为空）；bundled ${version} 随应用发版，请重新安装本应用`);
 		}
-		return versions[versions.length - 1];
+		const dir = join(this.bundledRoot, version);
+		const bin = toLongPath(join(dir, ...DSH_PKG_BIN));
+		if (!existsSync(bin)) {
+			throw new DshRuntimeError('dsh-missing', `安装包不完整：缺少内置 dsh ${version}（${bin}）。请重新安装本应用`);
+		}
+		return { version, dir, bin };
 	}
 
+	/** UI 展示用。**保留字段形状**以兼容既有调用方：单版本模型下 current / installed 都只是 bundled 版本。 */
 	getInfo(activeBin?: string): IDshRuntimeInfo {
-		return { managedRoot: this.managedRoot, current: this.readState().current, installed: this.listInstalled(), activeBin };
-	}
-
-	async setCurrent(version: string): Promise<void> {
-		if (!this.listInstalled().includes(version)) {
-			throw new Error(`dsh ${version} 未安装在 ${this.managedRoot}`);
-		}
-		await this._writeState(withCurrent(this.readState(), version));
-		this._log(`runtime pointer → ${version}`);
-	}
-
-	/**
-	 * 并列安装一个版本：装进 `<root>/<version>`，校验 `dsh --version` 与目标一致，失败则删除目录。
-	 * 不改指针 —— 切换由调用方在确认无运行中任务后执行（升级闸门，方案第 3.3 节）。
-	 */
-	async install(version: string, node: IResolvedNode): Promise<IResolvedDsh> {
-		if (!isRuntimeVersionDir(version)) {
-			throw new Error(`非法版本号：${version}`);
-		}
-		const target = join(this.managedRoot, version);
-		const bin = join(target, ...DSH_PKG_BIN);
-		if (existsSync(bin)) {
-			return { bin, version: await this._probeDshVersion(node, bin), source: 'managed' };
-		}
-		await fsp.mkdir(target, { recursive: true });
-		this._log(`installing @deepseek-ai/dsh@${version} into ${target}`);
-		const r = await this._npm(node, ['install', '--prefix', target, `@deepseek-ai/dsh@${version}`, '--no-audit', '--no-fund', '--loglevel=error'], 10 * 60_000);
-		if (r.code !== 0 || !existsSync(bin)) {
-			await fsp.rm(target, { recursive: true, force: true });
-			throw new Error(`npm install 失败（code ${r.code}）：${(r.stderr || r.stdout).trim().slice(-800)}`);
-		}
-		const actual = await this._probeDshVersion(node, bin);
-		if (actual !== version) {
-			await fsp.rm(target, { recursive: true, force: true });
-			throw new Error(`安装后版本不符：期望 ${version}，实际 ${actual}`);
-		}
-		this._log(`installed dsh ${actual}`);
-		return { bin, version: actual, source: 'managed' };
+		const v = this.bundledVersion;
+		return { managedRoot: this.managedRoot, current: v, installed: v ? [v] : [], activeBin };
 	}
 
 	// ─── 解析 ────────────────────────────────────────────────────────────────
@@ -380,48 +320,12 @@ export class DshRuntimeManager {
 		return installManagedNode({ managedRoot: this.managedRoot, fetch: fetchImpl, log: this._log, ...opts });
 	}
 
-	/** 查询 `@deepseek-ai/dsh` 的全部 dist-tags（只保留合法版本号）。 */
-	async distTags(node: IResolvedNode): Promise<Record<string, string>> {
-		const r = await this._npm(node, ['view', '@deepseek-ai/dsh', 'dist-tags', '--json'], 60_000);
-		if (r.code !== 0) {
-			throw new Error(`查询 dist-tags 失败：${(r.stderr || r.stdout).trim().slice(-400)}`);
-		}
-		const raw = JSON.parse(r.stdout) as Record<string, unknown>;
-		const out: Record<string, string> = {};
-		for (const [tag, v] of Object.entries(raw)) {
-			if (/^[a-z][a-z0-9.-]*$/i.test(tag) && typeof v === 'string' && isRuntimeVersionDir(v)) {
-				out[tag] = v;
-			}
-		}
-		return out;
-	}
-
-	/** 查询 npm 上某个 dist-tag 对应的 dsh 版本（如 `latest`）。 */
-	async distTagVersion(node: IResolvedNode, tag: string): Promise<string> {
-		if (!/^[a-z][a-z0-9.-]*$/i.test(tag)) {
-			throw new Error(`非法 dist-tag：${tag}`);
-		}
-		const r = await this._npm(node, ['view', `@deepseek-ai/dsh@${tag}`, 'version'], 60_000);
-		const v = r.stdout.trim().split(/\r?\n/).pop()?.trim() ?? '';
-		if (r.code !== 0 || !isRuntimeVersionDir(v)) {
-			throw new Error(`查询 @deepseek-ai/dsh@${tag} 失败：${(r.stderr || r.stdout).trim().slice(-400)}`);
-		}
-		return v;
-	}
-
 	/**
-	 * 用所选 Node 自带的 npm 运行（`node npm-cli.js ...`），避免依赖 PATH 中的 npm 与 Windows 的 `.cmd` + shell。
-	 * 找不到随附 npm 时才回退到 PATH 中的 npm。
+	 * 解析 dsh（★ 2026-11-09 单版本模型）：**只有两条路**
+	 *  ① `sessions.dshHarness.runtimePath` 显式覆盖 —— 仅排障用，不参与产品版本管理；
+	 *  ② 构建期 pin 的**唯一内置版本** —— 产品默认，100% 命中。
+	 * 不再有 managed 多版本池、`state.json` 指针、全局 npm 兜底。
 	 */
-	private _npm(node: IResolvedNode, args: string[], timeout: number): Promise<{ code: number; stdout: string; stderr: string }> {
-		const cli = npmCliCandidates(node.path, process.platform).find(p => existsSync(p));
-		if (cli) {
-			return run(node.path, [cli, ...args], { timeout, env: sanitizedEnv() });
-		}
-		// 参数已校验（版本号 / dist-tag 正则），不含 shell 元字符。
-		return run(isWindows ? 'npm.cmd' : 'npm', args, { timeout, shell: isWindows, env: sanitizedEnv() });
-	}
-
 	async resolveDsh(settingPath: string | undefined, node: IResolvedNode): Promise<IResolvedDsh> {
 		if (settingPath?.trim()) {
 			const bin0 = this._binFromSetting(settingPath.trim());
@@ -432,49 +336,21 @@ export class DshRuntimeManager {
 			return { bin, version: await this._probeDshVersion(node, bin), source: 'setting' };
 		}
 
-		// managed 在 bundled 之前：managed 指针只来自用户显式的安装/升级操作，必须尊重；
-		// bundled 是构建期 pin 的兜底（全新安装时 managed 必为空，自然落到 bundled）。
-		const version = selectRuntimeVersion(this.readState(), this.listInstalled());
-		if (version) {
-			// ★★ 2026-10-29（真机：打包 exe 启动即报「startSession: 控制桥不可用」）：
-			//   托管副本里的 `@deepseek-ai/dsh-app-boot` 是**空目录**（迁移复制不全），而 `state.json`
-			//   仍指向它 ⇒ 这里原来直接把 bin 交给 `_probeDshVersion` ⇒ `ERR_MODULE_NOT_FOUND` 抛出
-			//   ⇒ Host 一次都没起来、`bridge` 恒 undefined，而日志里只有"控制桥不可用"✗✗。
-			//   ⇒ 先做**廉价文件体检**（不 spawn）：缺构件就跳过这份、继续回落 bundled；
-			//     探测失败（能启动但 --version 报错）同样跳过 —— 坏副本不许劫持整个启动 ✓。
-			const installDir = join(this.managedRoot, version);
-			const missing = runtimeInstallMissing(existsSync, installDir);
-			if (missing.length) {
-				this._log(`managed dsh ${version} 不完整（缺 ${missing.join('、')}）⇒ 跳过它，回落到下一个候选`);
-			} else {
-				const bin = toLongPath(join(installDir, ...DSH_PKG_BIN));
-				try {
-					return { bin, version: await this._probeDshVersion(node, bin), source: 'managed' };
-				} catch (e) {
-					this._log(`managed dsh ${version} 探测失败（${String((e as Error)?.message ?? e)}）⇒ 跳过它，回落到下一个候选`);
-				}
-			}
+		const { version, dir, bin } = this._requireBundled();
+		// 廉价文件体检（不 spawn）：2026-10-29 真机踩过「bin.js 在但 @deepseek-ai/dsh-app-boot
+		// 是空目录」⇒ 一启动就 ERR_MODULE_NOT_FOUND，日志却只有"控制桥不可用"。
+		const missing = runtimeInstallMissing(existsSync, dir);
+		if (missing.length) {
+			throw new DshRuntimeError('dsh-missing', `内置 dsh ${version} 不完整（缺 ${missing.join('、')}）：${dir}。请重新安装本应用`);
 		}
-
-		const bundled = this._selectBundled();
-		if (bundled) {
-			const bin = toLongPath(join(this.bundledRoot!, bundled, ...DSH_PKG_BIN));
-			try {
-				const probed = await this._probeDshVersion(node, bin);
-				this._log(`using bundled dsh ${probed} (${bin})`);
-				return { bin, version: probed, source: 'bundled' };
-			} catch (e) {
-				// bundled 也坏 ⇒ 说明打包漏了构件；继续找 global，别让用户看到一句"找不到 dsh" ✗
-				this._log(`bundled dsh ${bundled} 探测失败（${String((e as Error)?.message ?? e)}）⇒ 继续找全局安装`);
-			}
+		const probed = await this._probeDshVersion(node, bin);
+		if (probed !== version) {
+			this._log(`bundled dsh --version=${probed} 与构建期 pin=${version} 不一致 ⇒ 以 pin 为准（构建期校验应拦住）`);
 		}
-
-		const global0 = await this._globalBin(node);
-		if (global0) {
-			const global = toLongPath(global0);
-			return { bin: global, version: await this._probeDshVersion(node, global), source: 'global' };
-		}
-		throw new DshRuntimeError('dsh-missing', `未找到 dsh：托管目录 ${this.managedRoot} 为空${this.bundledRoot ? '，安装包未内置运行时' : ''}，全局也未安装。可执行「DSH: 安装运行时版本」，或 npm i -g @deepseek-ai/dsh。`);
+		this._log(`using bundled dsh ${probed} (${bin})`);
+		// ⚠ 返回 **pin** 而不是 probed：`_profileSeedDir` 用 `dsh.version` 拼
+		//   `dsh-runtime/<version>/profile-seed/`，必须与目录名严格一致，否则首启找不到种子。
+		return { bin, version, source: 'bundled' };
 	}
 
 	private _binFromSetting(p: string): string | undefined {
@@ -488,20 +364,6 @@ export class DshRuntimeManager {
 			}
 		}
 		return undefined;
-	}
-
-	private async _globalBin(node: IResolvedNode): Promise<string | undefined> {
-		const r = await this._npm(node, ['root', '-g'], 15_000);
-		const root = r.stdout.trim().split(/\r?\n/).pop();
-		if (r.code !== 0 || !root) {
-			return undefined;
-		}
-		const bin = join(root, '@deepseek-ai', 'dsh', 'lib', 'bin.js');
-		try {
-			return statSync(bin).isFile() ? bin : undefined;
-		} catch {
-			return undefined;
-		}
 	}
 
 	private async _probeDshVersion(node: IResolvedNode, bin: string): Promise<string> {

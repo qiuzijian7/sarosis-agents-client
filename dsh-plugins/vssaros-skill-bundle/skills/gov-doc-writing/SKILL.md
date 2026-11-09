@@ -5,10 +5,11 @@ whenToUse: 用户要写/改/审公文，或问某个文种该怎么写、格式�
 activation: auto
 match: ["公文", "请示", "讲话稿", "述职述廉", "对照检查材料", "文种", "印发", "简报", "工作方案"]
 category: productivity
-recommended_tools: ["file_read", "file_write"]
+recommended_tools: ["read", "write"]
 version: 2.0.4
 edition: 通用版（不含行业子库）
 attribution: 源自 DSH Desktop 的 business-skills（MIT 仓库），原技能目录未单列许可声明。
+tier: core
 ---
 
 # 公文写作技能

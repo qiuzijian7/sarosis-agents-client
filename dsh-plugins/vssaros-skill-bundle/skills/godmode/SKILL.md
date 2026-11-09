@@ -4,6 +4,7 @@ description: "Jailbreak LLMs: Parseltongue, GODMODE, ULTRAPLINIAN."
 activation: manual
 match: ["godmode", "jailbreak", "red-teaming", "g0dm0d3", "parseltongue", "uncensoring", "safety-bypass", "prompt-engineering", "l1b3rt4s"]
 category: security
+tier: extended
 ---
 
 # G0DM0D3 Jailbreaking Skill

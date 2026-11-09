@@ -14,7 +14,7 @@ import type {} from '@deepseek-ai/dsh-subprocess'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { acquireStateLock } from './state-lock.ts'
-import { Engine, key, reasonText, threadKey, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
+import { Engine, isGroupTicket, key, reasonText, threadKey, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
 import { allowedSender, settingsPolicy } from '../policy.ts'
 import { SourceRegistry } from '../sources/registry.ts'
 import { Commands } from '../infra/commands.ts'
@@ -151,17 +151,22 @@ export class Runtime extends Service implements SourceHost {
     if (this.groupChecking || this.closing()) return
     this.groupChecking = true
     try {
-      for (const ticket of this.store.tickets.open().filter(item => item.group)) {
+      for (const ticket of this.store.tickets.open().filter(isGroupTicket)) {
+        const roomId = ticket.group?.roomId ?? ''
         let state
-        try { state = await this.team.groupState(ticket.group!.roomId) } catch (error) {
-          this.ctx.logger.warn('dsh-superagent: could not read group %s for ticket %s: %s', ticket.group!.roomId, ticket.id, String(error))
+        try { state = await this.team.groupState(roomId) } catch (error) {
+          this.ctx.logger.warn('dsh-superagent: could not read group %s for ticket %s: %s', roomId, ticket.id, String(error))
           continue
         }
         const report = groupTicketReport(ticket, state, Date.now())
         const current = this.store.tickets.get(ticket.id)
         const latest = current?.assignments.at(-1)?.report
         if (!report || !current || current.ended || (latest?.state === report.state && latest.summary === report.summary)) continue
-        try { this.engine.report(ticket.id, report) } catch (error) {
+        try {
+          this.engine.report(ticket.id, report)
+          // 决策 15：复用现有 report/结算，并往现有 usage_call 账本写一行群执行事件（不新建表）。
+          this.usage?.recordGroupSettlement(ticket.id, roomId, report.state)
+        } catch (error) {
           this.ctx.logger.warn('dsh-superagent: could not report group ticket %s: %s', ticket.id, String(error))
         }
       }

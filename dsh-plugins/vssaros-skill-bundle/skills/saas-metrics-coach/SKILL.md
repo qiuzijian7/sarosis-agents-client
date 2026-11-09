@@ -5,13 +5,14 @@ whenToUse: 用户报出一组收入或客户数字（哪怕只有 MRR），想�
 activation: auto
 match: ["ARR", "MRR", "churn", "流失率", "LTV", "CAC", "NRR", "SaaS 指标", "订阅收入"]
 category: data-science
-recommended_tools: ["file_read", "terminal"]
+recommended_tools: ["read", "pwsh"]
 license: MIT
 metadata:
   version: 1.0.0
   author: Abbas Mir
   category: finance
   updated: 2026-03-08
+tier: core
 ---
 
 # SaaS Metrics Coach

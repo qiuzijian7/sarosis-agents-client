@@ -40,9 +40,8 @@ import { fileURLToPath } from 'node:url';
 //   漏了它会在渲染期 `ReferenceError` ⇒ 页面直接 500 ✗）。
 import { escapeHtml, isVaultId, searchDocs, FEISHU_SYNC_SCRIPT, LIBRARY_DIR, NOTES_DIR, MAX_DOC_BYTES, TOPIC_OVERVIEW_FILE, RAW_DIR, RAW_SUBDIR, buildFeishuSyncArgs, resolveRawPath } from './core/kb.js';
 
-// ★ 2026-10-31：知识库专用 agent（让 AI 助手默认显示「知识库专家」）。
-//   落 `.agent.md` 到数据根（vssaros-agents 启动时扫描注册）⇒ preset = `vssaros-kb-expert`。
-import { ensureKbAgent, KB_PRESET, KB_PRESET_CANDIDATES } from './kbAgent.js';
+// ★ 2026-11-09：知识库收敛为单 agent —— 只用内置 `knowledge-base-expert`，
+//   本插件不再往数据根落 `kb-expert`；存量会话由 vssaros-agents 的隐藏别名接管。
 
 // ★ 2026-10-31：知识库的**本地 Git 版本管理**（不依赖任何服务器，全部在这个库目录里跑 git）。
 import { initRepo, isRepo, gitStatus, gitCommit, gitLog, gitShowFile, gitRestoreFile, readGitConfig, writeGitConfig, maybeAutoCommit } from './core/kbGit.js';
@@ -6436,24 +6435,6 @@ export function apply(ctx, config = {}) {
 		if (svc) { bindFoundation(svc); }
 	});
 	}
-	/*
-	 * ★ 2026-10-31（用户：知识库的 AI 助手应显示「知识库 agent」）：
-	 *   落 `<数据根>/agents/kb-expert/.agent.md` ⇒ `vssaros-agents` 扫描注册
-	 *   ⇒ preset `vssaros-kb-expert` 才真的存在（此前客户端选的是不存在的 id ⇒ 静默失败）。
-	 *   ⚠ 首次创建后要**重启 Host** 才会被扫到；已存在则一个字节都不动（用户可能改过）。
-	 */
-	try {
-		let kbAgentRoot = '';
-		try { kbAgentRoot = typeof config?.dataRoot === 'string' ? config.dataRoot.trim() : ''; } catch { kbAgentRoot = ''; }
-		if (!kbAgentRoot) { try { kbAgentRoot = dataRootOf(config) || ''; } catch { kbAgentRoot = ''; } }
-		void ensureKbAgent({ dataRoot: kbAgentRoot || undefined }).then((r) => {
-			try {
-				if (r && r.created && r.created.length) {
-					console.log('[kb] 已创建知识库 agent（重启 Host 后生效）：' + r.created.join(', ') + ' ⇒ preset ' + KB_PRESET);
-				}
-			} catch { /* 日志失败无所谓 */ }
-		}).catch(() => { /* 建 agent 失败不该影响插件加载 */ });
-	} catch { /* ignore */ }
 	// ★ `state.grant` = **本批一次性授权**（2026-10-12 P0，见 core/kbBatchGrant.js 文件头）：
 	//   由 `kb_build mode="build"` 在**被用户批准之后**打开（执行期 ⇒ 批准已成立 ✓），
 	//   有界（篇数）/ 有时限（TTL）/ 有归属（vault + 会话 owner）✓ ⇒ 子代理写入不再逐篇弹窗 ✓。

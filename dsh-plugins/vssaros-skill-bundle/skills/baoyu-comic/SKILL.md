@@ -4,6 +4,7 @@ description: "Knowledge comics (知识漫画): educational, biography, tutorial.
 activation: manual
 match: ["baoyu-comic", "baoyu comic", "comic", "knowledge-comic", "creative", "image-generation"]
 category: creative
+tier: extended
 ---
 
 # Knowledge Comic Creator

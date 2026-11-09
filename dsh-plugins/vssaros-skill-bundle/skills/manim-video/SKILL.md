@@ -4,6 +4,7 @@ description: "Manim CE animations: 3Blue1Brown math/algo videos."
 activation: manual
 match: ["manim-video", "manim video"]
 category: creative
+tier: extended
 ---
 
 # Manim Video Production Pipeline

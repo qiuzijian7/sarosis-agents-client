@@ -4,6 +4,7 @@ description: Create, triage, label, assign GitHub issues via gh or REST.
 activation: manual
 match: ["github-issues", "github issues", "github", "issues", "project-management", "bug-tracking", "triage"]
 category: github
+tier: extended
 ---
 
 # GitHub Issues Management

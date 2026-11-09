@@ -4,6 +4,7 @@ description: Configure, extend, or contribute to Hermes Agent.
 activation: manual
 match: ["hermes-agent", "hermes agent", "hermes", "setup", "configuration", "multi-agent", "spawning", "cli", "gateway", "development"]
 category: ai-agents
+tier: extended
 ---
 
 # Hermes Agent

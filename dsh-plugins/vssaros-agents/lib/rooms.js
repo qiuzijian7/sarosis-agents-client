@@ -118,8 +118,17 @@ export function holdsMessage(agent, id) {
  * @param deps.append `async () => appendPluginRecord | null`
  * @param deps.fallbackCwd 没有任何工作区时群会话落在哪
  * @param deps.timeoutMs / deps.now / deps.uuid / deps.warn 测试可注入
+ * @param deps.onChanged `(kind, view) => void` 群变更后通知（2026-11-09：建群成功立刻推给侧栏，不等轮询）；可缺
  */
 export function createRooms(deps) {
+	/** 群变更后广播。不抛：通知失败不能让建群失败（写盘已完成）。 */
+	const onChanged = (kind, view) => {
+		if (typeof deps.onChanged !== 'function') { return; }
+		try {
+			const r = deps.onChanged(kind, view);
+			if (r && typeof r.catch === 'function') { r.catch(() => undefined); }
+		} catch (error) { warn(`群变更通知失败：${String(error?.message ?? error)}`); }
+	};
 	const now = deps.now ?? (() => Date.now());
 	const uuid = deps.uuid ?? (() => randomUUID());
 	const warn = deps.warn ?? (message => console.warn(`[vssaros-agents][rooms] ${message}`));
@@ -785,9 +794,11 @@ export function createRooms(deps) {
 		});
 		if (room.hidden) { room.hidden = false; await save(); }
 		const nameOf = (id) => map.get(id) ?? id;
-		return { ...roomView(room, map), reused: true,
+		const view = { ...roomView(room, map), reused: true,
 			added: room.members.filter(id => !before.includes(id)).map(nameOf),
 			removed: before.filter(id => !room.members.includes(id)).map(nameOf) };
+		onChanged('updated', view);
+		return view;
 	}
 
 	const api = {
@@ -865,7 +876,9 @@ export function createRooms(deps) {
 			api.attach?.(agent);
 			await renameSession(sessionId, room.name);
 			await save();
-			return roomView(room, map);
+			const view = roomView(room, map);
+			onChanged('created', view);
+			return view;
 		},
 		/** 改群名 / 公告 / 模式 / 管理员 / 成员（只改给了的字段）。 */
 		async update(id, patch = {}) {

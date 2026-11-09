@@ -4,6 +4,7 @@ description: "W&B: log ML experiments, sweeps, model registry, dashboards."
 activation: manual
 match: ["weights-and-biases", "weights and biases", "mlops", "wandb", "experiment tracking", "hyperparameter tuning", "model registry", "collaboration", "real-time visualization", "pytorch", "tensorflow", "huggingface"]
 category: mlops
+tier: extended
 ---
 
 # Weights & Biases: ML Experiment Tracking & MLOps

@@ -379,3 +379,47 @@ export async function saveFeishuApp(config, input) {
 	await writeImAccounts(config, accounts);
 	return describeFeishuApps(config);
 }
+
+/* ── bot → 飞书应用（2026-11-09）─────────────────────────────────────────────
+   各 Bot 设置页里的「飞书配置」选的是「这个 Bot 用哪个应用」。
+   凭据池仍按 appId 全局共享（feishu / feishuApps），这里只存一层轻量映射：
+     accounts.botFeishuApps = { [botId]: appId }（没有该项 / 空 = 默认应用）
+   ⚠ 不存 secret；与 savePlatform / saveFeishuApp 一样整体读改写，保留其它键。
+   ★ 下拉框的数据源是 describeFeishuApps(config)（全局），所以任一个 Bot 配过的应用，
+     其它 Bot 的设置页都能看到并复用，不必重复填 App Secret。 */
+export async function readBotFeishuApps(config) {
+	const accounts = await readImAccounts(config).catch(() => ({}));
+	const raw = accounts && typeof accounts.botFeishuApps === 'object' && accounts.botFeishuApps
+		? accounts.botFeishuApps : {};
+	const out = {};
+	for (const [botId, appId] of Object.entries(raw)) {
+		const b = String(botId ?? '').trim();
+		const a = String(appId ?? '').trim();
+		if (b && a) { out[b] = a; }
+	}
+	return out;
+}
+
+/** 设置某个 Bot 选用的飞书应用；`appId` 留空 = 回到默认应用。返回全量映射。 */
+export async function saveBotFeishuApp(config, input) {
+	const kind = String((input && input.actor && input.actor.kind) || 'human').trim().toLowerCase();
+	if (kind === 'bot') {
+		throw Object.assign(new Error('只有人能修改 Bot 的飞书应用配置。'), { httpStatus: 403 });
+	}
+	const botId = String((input && input.botId) ?? '').trim();
+	if (!botId) { throw Object.assign(new Error('缺少 botId'), { httpStatus: 400 }); }
+	const appId = String((input && input.appId) ?? '').trim();
+	if (appId && !FEISHU_APP_ID_RE.test(appId)) {
+		throw Object.assign(new Error(`飞书 App ID 格式不对：${appId}`), { httpStatus: 400 });
+	}
+	const apps = await describeFeishuApps(config);
+	if (appId && !apps.some((a) => a.appId === appId)) {
+		throw Object.assign(new Error(`这个飞书应用还没配置：${appId}（先在「新增飞书应用」里添加）`), { httpStatus: 400 });
+	}
+	const accounts = await readImAccounts(config).catch(() => ({}));
+	const map = { ...(await readBotFeishuApps(config)) };
+	if (appId) { map[botId] = appId; } else { delete map[botId]; }
+	if (Object.keys(map).length) { accounts.botFeishuApps = map; } else { delete accounts.botFeishuApps; }
+	await writeImAccounts(config, accounts);
+	return map;
+}

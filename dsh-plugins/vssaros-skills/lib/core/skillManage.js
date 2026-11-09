@@ -19,8 +19,10 @@
 //   校验名字字符集已经挡住 `..` / 分隔符 ✓，这里再 resolve 一次做**双保险** ✓（防将来放宽名字规则 ✗）。
 
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { SKILL_FILE } from './skills.js';
+// ★ 2026-11-08 P2：promote 时校验 owner: bot:<id> 的 bot 真实存在（防沉淀技能挂到幽灵 Bot）
+import { ownerBotProblems, botExistsInDataRoot } from './agentSkills.js';
 
 /** 单个技能正文上限（照 IDE 真源 ✓）。 */
 export const MAX_SKILL_BYTES = 256_000;
@@ -116,7 +118,7 @@ function atomicWriteSync(file, text) {
 	}
 }
 
-export function skillManage(params, skillsRoot) {
+export function skillManage(params, skillsRoot, options = {}) {
 	const action = typeof params?.action === 'string' ? params.action.trim() : '';
 	if (!SKILL_MANAGE_ACTIONS.includes(action)) {
 		throw new Error(`action 必须是 ${SKILL_MANAGE_ACTIONS.join(' / ')} 之一（收到 ${action || '(空)'}）。`);
@@ -146,6 +148,11 @@ export function skillManage(params, skillsRoot) {
 		if (exists) { throw new Error(`技能 ${name} 已在生效目录（promote 不会覆盖 ✓；要更新先 edit/patch，或删掉再生效的）。`); }
 		// 草稿 → 生效：读草稿正文，原子写进生效目录，删草稿（一次性提升 ✓）。
 		const body = readFileSync(draftFile, 'utf8');
+		// ★ 2026-11-08 P2：promote 是草稿变生效的最后一道闸 ⇒ 在这里挡住幽灵 Bot。
+		//   dataRoot 默认由 skillsRoot 反推（<dataRoot>/skills）；测试可显式注入 botExists。
+		const botExists = options?.botExists ?? botExistsInDataRoot(options?.dataRoot ?? dirname(skillsRoot));
+		const ownerIssues = ownerBotProblems(body, botExists);
+		if (ownerIssues.length) { throw new Error(`技能 ${name} 提升失败：${ownerIssues.join('；')}`); }
 		mkdirSync(dir, { recursive: true });
 		atomicWriteSync(file, body);
 		rmSync(draftDir, { recursive: true, force: true });

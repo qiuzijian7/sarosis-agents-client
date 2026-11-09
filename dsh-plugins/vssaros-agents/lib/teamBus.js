@@ -123,10 +123,12 @@ export function teamBus(root = globalThis) {
 			return () => { if (impl === next) { impl = null; } };
 		},
 		listBots: async () => need().listBots(),
+	/** @deprecated SuperAgent v2 已无调用方；工单执行走 Ticket / Assignment，不要再用这条委派总线。 */
 		delegate: async (input) => need().delegate(input),
 		createBot: async (input) => need().createBot(input),
 		get: async (id) => need().get(id),
 		cancel: async (id, reason) => need().cancel(id, reason),
+	/** @deprecated 进程内订阅者，SuperAgent v2 已无调用方；群变更改由 HTTP/SSE 通知 UI。 */
 		subscribe(fn) {
 			if (typeof fn !== 'function') { return () => undefined; }
 			subscribers.add(fn);

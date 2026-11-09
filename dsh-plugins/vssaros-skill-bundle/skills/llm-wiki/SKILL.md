@@ -4,6 +4,7 @@ description: "Karpathy's LLM Wiki: build/query interlinked markdown KB."
 activation: manual
 match: ["llm-wiki", "llm wiki", "wiki", "knowledge-base", "research", "notes", "markdown", "rag-alternative"]
 category: research
+tier: extended
 ---
 
 # Karpathy's LLM Wiki

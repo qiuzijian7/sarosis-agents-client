@@ -4,6 +4,7 @@ description: "Himalaya CLI: IMAP/SMTP email from terminal."
 activation: manual
 match: ["himalaya", "email", "imap", "smtp", "cli", "communication"]
 category: email
+tier: extended
 ---
 
 # Himalaya Email CLI

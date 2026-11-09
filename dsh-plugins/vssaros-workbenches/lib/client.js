@@ -615,9 +615,9 @@ window.__ModuleLoader__.load({
 			}
 			/**
 			 * 候选 preset id（按优先级）：描述符自己声明的 `assistantPreset` > 内置表。
-			 * 为什么是**列表**：同一个 agent 在不同机器上的 id 可以不一样 ——
-			 * 知识库内置的是 `knowledge-base-expert`，而用户数据根里是 `kb-expert`（同名「知识库专家」）。
-			 * 只写死一个，在另一套环境里 `select` 就是 not-found，且**不报错**（官方 select 失败返回 `{ok:false}` 而不是抛）。
+			 * 允许数组是通用兜底机制；2026-11-09 起知识库收敛为单值 `vssaros-knowledge-base-expert`
+			 * （内置 agent 是真源，数据根的 kb-expert 已移除，存量会话由隐藏别名接管）。
+			 * 绝不猜：只认 agentPresets.list() 里真实存在的 id（select 失败返回 {ok:false} 而非抛）。
 			 */
 			presetCandidatesOf(id) {
 				const entry = id ? this.providers.get(id) : null;
@@ -1370,10 +1370,10 @@ window.__ModuleLoader__.load({
 			//   知识库是**页面型**工作台（面板里没有对话列）⇒ 点击只能走外壳兜底开会话；
 			//   而兜底要带 preset —— 之前没这一条，传空串 ⇒ `newChat('')` 等于空转 ⇒「点了没反应」。
 			//   `knowledge-base-expert` 是内置 agent（名称「知识库专家」）⇒ preset = vssaros- + id。
-			// ★ 2026-11-02：两个候选 —— 内置 agent 目录叫 `knowledge-base-expert`，而用户数据根里同名「知识库专家」是 `kb-expert`
-			//   （你的机器上实际在用后者）。只写一个，另一套环境里 select 就是 not-found 且不报错。
-			//   实际用哪个由 `agentPresets.list()` 决定（见 readyPreset），都不存在才告警。
-			'vssaros/kb': ['vssaros-kb-expert', 'vssaros-knowledge-base-expert'],
+			// ★ 2026-11-09：收敛为单 agent —— 只用内置 `knowledge-base-expert`（名称「知识库专家」）。
+			//   数据根的 `kb-expert` 移除；按用户决策不做存量会话兼容层，旧会话头里的
+			//   `vssaros-kb-expert` 不再有对应 preset，resume 会失败（已知取舍）。
+			'vssaros/kb': 'vssaros-knowledge-base-expert',
 		};
 		/**
 		 * 「用户主动导航」的时间戳（毫秒）。

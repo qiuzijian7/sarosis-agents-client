@@ -89,9 +89,11 @@ const dsh = (() => {
 	};
 })();
 const dir = mkdtempSync(join(tmpdir(), 'bots-rooms-'));
+const changed = [];
 const rooms = createRooms({
 	file: join(dir, 'agent-rooms.json'), fallbackCwd: dir, roster: async () => ROSTER, presetOf: id => `vssaros-${id}`,
 	sessions: () => dsh.sc, agents: () => dsh.agents, workspaces: () => dsh.workspaces, append: async () => dsh.append, warn: () => undefined,
+	onChanged: (kind, view) => { changed.push({ kind, id: view && view.id, name: view && view.name }); },
 });
 installRooms(dsh.ctx, rooms);
 const busRoot = {};
@@ -102,6 +104,8 @@ bus.provideGroups(rooms);
 const made = await bus.createGroup({ members: ['Designer', 'Coder'], name: '番茄钟 H5', notice: '移动端优先', createdBy: 'superagent' });
 eq('① 主管经团队总线建群：群名 / 成员 / 管理员 / 建群人', [made.name, made.members.map(m => m.name), made.admin, made.createdBy],
 	['番茄钟 H5', ['Designer', 'Coder'], 'designer', 'superagent']);
+truthy('③ 建群成功 ⇒ onChanged(created) 立刻通知（不必等 2s 轮询）',
+	changed.some(c => c.kind === 'created' && c.id === made.id && c.name === made.name), JSON.stringify(changed));
 const roomSession = dsh.sessions.get(made.id);
 eq('① 群 = 一条专属会话：在工作区里、标题是群名、带群标记、挂了 group_relay', [roomSession.place, roomSession.title, roomSession.records[0]?.data, roomSession.tools],
 	['ws-1', '番茄钟 H5', { v: 1, roomId: made.id, role: 'room' }, ['group_relay']]);
@@ -115,7 +119,7 @@ eq('① 群 = 一条专属会话：在工作区里、标题是群名、带群标
 }
 
 // ── ② 页面：fetch 直通 roomsApi；宿主服务打桩 ───────────────────────────────────────
-const calls = { opened: [], copied: [], activated: [], requests: [] };
+const calls = { opened: [], copied: [], activated: [], requests: [], pageTabs: [], closedTabs: [] };
 globalThis.fetch = async (url, init = {}) => {
 	const u = new URL(String(url), 'http://localhost');
 	const method = (init.method || 'GET').toUpperCase();
@@ -144,6 +148,9 @@ const loadChunk = (rel) => {
 };
 const ws = loadChunk('dsh-plugins/vssaros-chat-surface/lib/client.workspaces.js');
 const cv = loadChunk('dsh-plugins/vssaros-chat-surface/lib/client.conversationViews.js');
+// ★ 2026-11-09：群设置独立页。宿主 API 打桩 ⇒ 菜单要走「开独立页签」而不是旧的「开群会话 + 设置子页签」。
+window.__vssarosOpenPageTab = (it) => { calls.pageTabs.push(it); return true; };
+window.__vssarosClosePageTab = (id) => { calls.closedTabs.push(id); };
 // ★ 2026-11-06 跨插件契约：真实产出（roomsApi / 工具结果 / 三个 window 事件）都按 contracts/group-activity.schema.json 校验
 const contractLib = await imp('dsh-plugins/contracts/validate.mjs');
 const captured = { progress: [], roomsChanged: [], dock: [] };
@@ -329,10 +336,142 @@ await settle();
 eq('④ 复制对话 ID ⇒ 剪贴板里是群会话 id', calls.copied.at(-1), made.id);
 
 await openMenu();
+const openedBefore = calls.opened.length;
 await mouse(menuItem('settings'), 'mousedown');
 await settle(450);
-eq('④ 群设置 ⇒ 打开群会话并直接落在「设置」页签', [calls.opened.at(-1), JSON.parse(localStorage.getItem('dsh.conversation.' + made.id) || '{}').view, calls.activated.at(-1)],
-	[made.id, 'vssaros-bot-settings', [made.id, 'vssaros-bot-settings']]);
+{
+	const tab = calls.pageTabs.at(-1);
+	eq('④ 群设置 ⇒ 开一个独立页签（组件页 + roomId），不再打开群会话',
+		[!!tab, tab && tab.comp, tab && tab.props && tab.props.roomId, calls.opened.length === openedBefore],
+		[true, 'vssaros-room-settings', made.id, true]);
+	truthy('④ 独立页签 id 带群前缀且可重复点去重', tab && tab.id === 'room-settings:' + made.id);
+}
+// 独立页本体：组件注册表里有它，渲染出标题 + 页内「✕ 关闭」，点关闭调宿主 API
+{
+	const Comp = window.__vssarosPageComponents && window.__vssarosPageComponents['vssaros-room-settings'];
+	truthy('④ 独立页组件已登记到 window.__vssarosPageComponents', typeof Comp === 'function');
+	// 宿主侧必须真的暴露关闭 API：守卫自己打了桩，不静态钉住的话「API 被删」会假绿。
+	truthy('④ 页签条宿主暴露 __vssarosClosePageTab（与页内 ✕ 同一套状态）',
+		/window\.__vssarosClosePageTab\s*=\s*\(id\)\s*=>/.test(readFileSync(join(repo, 'dsh-plugins/vssaros-chat-surface/lib/client.workbenchNav.js'), 'utf8')));
+	const host = document.createElement('div');
+	document.body.appendChild(host);
+	const root = createRoot(host);
+	await act(async () => {
+		root.render(React.createElement(Comp, { roomId: made.id, tabId: 'room-settings:' + made.id, active: true }));
+		await tick(50);
+	});
+	const closeBtn = host.querySelector('[data-vssaros-room-settings-close]');
+	truthy('④ 独立页内有「✕ 关闭」按钮（页签条自带的那枚之外）', !!closeBtn);
+	if (closeBtn) {
+		await act(async () => { closeBtn.click(); await tick(10); });
+		eq('④ 点页内关闭 ⇒ 调 __vssarosClosePageTab(tabId)', calls.closedTabs.at(-1), 'room-settings:' + made.id);
+	}
+	await act(async () => { root.unmount(); await tick(10); });
+	host.remove();
+}
+
+// ── ④-b 官方右侧栏独立页签（2026-11-09：用户明确「在右侧栏中弹出独立页」）──────────
+//   keyed/session 槽的 body 拿不到 navigation.params ⇒ 用 factory 级目标 + 事件传 roomId；
+//   `sidebarRight.openTab` 无会话在屏会 throws ⇒ 必须同步返回 false 让菜单回落中栏页签。
+{
+	const rightTypes = [], rightInjects = [], rightBodies = [], openedRight = [], closedRight = [];
+	let mountedSession = undefined;
+	const fakeCtx = {
+		sidebarRightTabs: { register: (def) => { rightTypes.push(def); return () => undefined; } },
+		slots: {
+			inject: (name, fn) => { rightInjects.push(name); return fn(); },
+			register: (opts, comp) => { rightBodies.push({ opts, comp }); return () => undefined; },
+		},
+		effect: (fn) => { const d = fn(); return typeof d === 'function' ? d : undefined; },
+		sidebarRight: {
+			mounted: { getSnapshot: () => mountedSession },
+			openTab: (kind) => openedRight.push(kind),
+			active: () => ({ id: 'tab-right-1' }),
+			close: (id) => { closedRight.push(id); return true; },
+		},
+	};
+	const rightApi = cv.__test.installRightRoomSettings(fakeCtx);
+	const KIND = cv.__test.ROOM_SETTINGS_RIGHT_KIND;
+	eq('④-b 注册了官方右栏页签类型 + keyed body（key 等于 kind）',
+		[rightTypes.length, rightTypes[0] && rightTypes[0].kind, rightTypes[0] && rightTypes[0].priority,
+			rightInjects[0], rightBodies[0] && rightBodies[0].opts.key],
+		[1, KIND, 'extension', cv.__test.ROOM_SETTINGS_RIGHT_SLOT, KIND]);
+	truthy('④-b 页签标题是 thunk 且带当前群名', (() => {
+		rightApi.openRight(made.id, '番茄钟小组');  // 无会话在屏 ⇒ false，但目标已记录
+		return typeof rightTypes[0].title === 'function' && /群设置/.test(rightTypes[0].title());
+	})());
+	truthy('④-b 无会话在屏 ⇒ 打开同步返回 false（好让菜单回落，不白点）', rightApi.openRight(made.id, '番茄钟小组') === false
+		&& openedRight.length === 0);
+	mountedSession = 'sess-on-screen';
+	truthy('④-b 有会话在屏 ⇒ 返回 true、openTab 收到 kind、目标群 id 正确',
+		rightApi.openRight(made.id, '番茄钟小组') === true
+		&& openedRight.at(-1) === KIND
+		&& cv.__test.rightRoomTargetOf().roomId === made.id,
+		JSON.stringify({ opened: openedRight, target: cv.__test.rightRoomTargetOf() }));
+	truthy('④-b 页内 ✕ ⇒ 调 sidebarRight.close(activeTab.id)',
+		rightApi.closeRight() === true && closedRight.at(-1) === 'tab-right-1');
+	truthy('④-b 跨 chunk API 已挂到 window', typeof window.__vssarosOpenRightRoomSettings === 'function'
+		&& typeof window.__vssarosCloseRightRoomSettings === 'function');
+
+	// 菜单优先级：右栏可用 ⇒ 不再开中栏页签、也不打开群会话
+	const pageTabsBefore = calls.pageTabs.length, openedBeforeRight = calls.opened.length;
+	await openMenu();
+	await mouse(menuItem('settings'), 'mousedown');
+	await settle(450);
+	eq('④-b 点群设置优先走右栏（中栏页签与群会话都没开）',
+		[openedRight.length >= 1, calls.pageTabs.length === pageTabsBefore, calls.opened.length === openedBeforeRight],
+		[true, true, true]);
+	// 右栏不可用 ⇒ 回落中栏自绘独立页签（上一版行为保留）
+	window.__vssarosOpenRightRoomSettings = () => false;
+	await openMenu();
+	await mouse(menuItem('settings'), 'mousedown');
+	await settle(450);
+	truthy('④-b 右栏不可用 ⇒ 回落中栏独立页签（comp + roomId）',
+		calls.pageTabs.length > pageTabsBefore
+		&& calls.pageTabs.at(-1).comp === 'vssaros-room-settings'
+		&& calls.pageTabs.at(-1).props.roomId === made.id);
+
+	// 右栏页签体本身：渲染出独立页 + 页内「✕ 关闭」，点它调 close API
+	const Pane = cv.__test.RightRoomSettingsPane;
+	truthy('④-b 右栏页签体已登记', typeof Pane === 'function');
+	const host = document.createElement('div');
+	document.body.appendChild(host);
+	const root = createRoot(host);
+	await act(async () => { root.render(React.createElement(Pane, {})); await tick(50); });
+	truthy('④-b 右栏独立页显示群设置卡', !!host.querySelector('[data-vssaros-room-settings-page="' + made.id + '"]'));
+	// 切群：open 侧派事件 ⇒ 已挂载的 body 必须跟着重画（否则永远显示第一次点的那个群）
+	await act(async () => {
+		rightApi.openRight('room-other', '别的群');
+		await tick(30);
+	});
+	truthy('④-b 切群派事件 ⇒ 已挂载的右栏页签体重画成新群',
+		!!host.querySelector('[data-vssaros-room-settings-page="room-other"]')
+		&& !host.querySelector('[data-vssaros-room-settings-page="' + made.id + '"]'));
+	await act(async () => { rightApi.openRight(made.id, '番茄钟小组'); await tick(30); });
+	const rightClose = host.querySelector('[data-vssaros-room-settings-close]');
+	truthy('④-b 右栏独立页内有「✕ 关闭」按钮（官方 strip 那枚之外）', !!rightClose);
+	if (rightClose) {
+		await act(async () => { rightClose.click(); await tick(10); });
+		truthy('④-b 点页内 ✕ ⇒ 走 sidebarRight.close', closedRight.length >= 2);
+	}
+	await act(async () => { root.unmount(); await tick(10); });
+	host.remove();
+	// 恢复现场：后续菜单项测试不该受右栏 stub 影响
+	delete window.__vssarosOpenRightRoomSettings;
+	delete window.__vssarosCloseRightRoomSettings;
+	mountedSession = undefined;
+
+	// 静态钉住：菜单必须先试右栏、再回落中栏（顺序反了会永远看不到右栏）
+	const menuSrc = readFileSync(join(repo, 'dsh-plugins/vssaros-chat-surface/lib/client.workspaces.js'), 'utf8');
+	const cvSrc = readFileSync(join(repo, 'dsh-plugins/vssaros-chat-surface/lib/client.conversationViews.js'), 'utf8');
+	truthy('④-b 菜单源里右栏优先于中栏页签',
+		menuSrc.indexOf('__vssarosOpenRightRoomSettings') > 0
+		&& menuSrc.indexOf('__vssarosOpenRightRoomSettings') < menuSrc.indexOf('__vssarosOpenPageTab', menuSrc.indexOf('__vssarosOpenRightRoomSettings')));
+	// 定义处也有 installRightRoomSettings(ctx) 这个串？没有 —— 但 `slots.inject` 在定义处也有，
+	//   所以必须用「install 函数体内」的调用形态钉住，不能只查标识符存在。
+	truthy('④-b install 函数体内真的调用了右栏注册（不是只定义）',
+		/ensureGroupFlowStyle\(\);[\s\S]{0,220}try \{ installRightRoomSettings\(ctx\); \}/.test(cvSrc));
+}
 
 await openMenu();
 await mouse(menuItem('hide'), 'mousedown');
@@ -342,6 +481,149 @@ await rooms.setFlags(made.id, { hidden: false });
 await mouse(q('[data-vssaros-bots-refresh]'), 'click');
 await settle(80);
 truthy('④ 取消隐藏后刷新 ⇒ 群行回来', !!row());
+
+// ── ④-c ★ 2026-11-09：hero（无会话在屏）下「编辑 Bot」必须能打开 Bot 配置 ─────────
+// 真机报障：hero 页右键「编辑 Bot」只弹「请手动点 Bot 分段」。根因是右栏「设置」页签属于
+//   conversation.view（session 作用域），hero 下结构上不渲染 ⇒ SettingsView 不挂载、
+//   事件无人接住、binding.activate 静默失败。
+// 本桩 bots.home = {}（拿不到任何会话 id）⇒ 等价于 hero：旧实现会 openBot + 900ms 猜 sid，必然失败。
+{
+	const botEl = qa('[data-vssaros-bot]')[0];
+	const botId = botEl ? botEl.getAttribute('data-vssaros-bot') : '';
+	truthy('④-c Bots 页签里有 bot 行可供右键', !!botId, String(qa('[data-vssaros-bot]').length));
+
+	const tabsBefore = calls.pageTabs.length;
+	const openedBefore = calls.opened.length;
+	const activatedBefore = calls.activated.length;
+	await mouse(botEl, 'contextmenu');
+	const editItem = q('[data-vssaros-bot-menu] [data-act="bot-edit"]');
+	truthy('④-c bot 行右键菜单里有「编辑 Bot」', !!editItem);
+	if (editItem) { await mouse(editItem, 'mousedown'); await settle(120); }
+	const tab = calls.pageTabs.at(-1);
+	truthy('④-c hero / 无会话下「编辑 Bot」⇒ 直接开中栏独立页（comp + agentId），不依赖会话槽',
+		calls.pageTabs.length === tabsBefore + 1
+		&& !!tab && tab.comp === 'vssaros-bot-config'
+		&& tab.props && tab.props.agentId === botId
+		&& calls.opened.length === openedBefore
+		&& calls.activated.length === activatedBefore,
+		JSON.stringify({ tab, openedDelta: calls.opened.length - openedBefore, activatedDelta: calls.activated.length - activatedBefore }));
+	const Comp = window.__vssarosPageComponents && window.__vssarosPageComponents['vssaros-bot-config'];
+	truthy('④-c Bot 配置独立页组件已登记到 __vssarosPageComponents', typeof Comp === 'function');
+	if (typeof Comp === 'function') {
+		const host = document.createElement('div');
+		document.body.appendChild(host);
+		const pageRoot = createRoot(host);
+		await act(async () => { pageRoot.render(React.createElement(Comp, { agentId: botId, name: botId, tabId: 'bot-config:' + botId })); await tick(50); });
+		truthy('④-c 独立页渲染出页头与页内「✕ 关闭」（锚点带 agentId）',
+			!!host.querySelector('[data-vssaros-bot-config-page="' + botId + '"]')
+			&& !!host.querySelector('[data-vssaros-bot-config-close]'));
+		await act(async () => { pageRoot.unmount(); await tick(10); });
+		host.remove();
+	}
+}
+
+// ── ③ 建群即时推送：Host SSE 广播 + 浏览器订阅 + 401 可见（2026-11-09）─────────────────
+{
+	const agentsSrc = readFileSync(join(repo, 'dsh-plugins/vssaros-agents/lib/index.js'), 'utf8');
+	const workspacesSrc = readFileSync(join(repo, 'dsh-plugins/vssaros-chat-surface/lib/client.workspaces.js'), 'utf8');
+	const fastPathSrc = readFileSync(join(repo, 'dsh-plugins/vssaros-superagent/dev/src/app/groupFastPath.ts'), 'utf8');
+	const bundleSrc = readFileSync(join(repo, 'dsh-plugins/vssaros-superagent/lib/index.js'), 'utf8');
+	const deskSrc = readFileSync(join(repo, 'dsh-plugins/vssaros-superagent/dev/src/app/desk.ts'), 'utf8');
+
+	// ① 正则：dev 与运行 bundle 同形放宽，长标题命中 / 否定句不命中。
+	//   ★ 判定必须从**源码里抽正则再执行**（不是守卫里复刻一份），否则源码被改回旧行为守卫会假绿。
+	const predicateFrom = (src) => {
+		const at = src.indexOf('isGroupCreationRequest');
+		if (at < 0) { return undefined; }
+		const open = src.indexOf('{', at);
+		// 函数体到「行首 }」为止；dev 的类型标注只在签名里，函数体是纯 JS ⇒ 可直接编译执行
+		const close = src.indexOf('\n}', open);
+		if (open < 0 || close < 0) { return undefined; }
+		try { return new Function('text', src.slice(open + 1, close)); } catch { return undefined; }
+	};
+	const devGroup = predicateFrom(fastPathSrc);
+	const bundleGroup = predicateFrom(bundleSrc);
+	truthy('① 能从 dev / bundle 源码抽出可执行的建群判定', !!devGroup && !!bundleGroup);
+	const probe = (fn, s) => fn ? fn(s) : null;
+	truthy('① 真机长标题命中、@群名与否定句不命中（dev 与 bundle 同形）',
+		[devGroup, bundleGroup].every(fn => fn
+			&& probe(fn, '创建一个 俄罗斯方块 h5 小游戏开发团队') === true
+			&& probe(fn, '@番茄钟 H5 开发团队 开始制作') === false
+			&& probe(fn, '不要建群，先给我一个方案') === false
+			&& probe(fn, '别创建团队了，取消吧') === false),
+		`dev=${devGroup ? probe(devGroup, '创建一个 俄罗斯方块 h5 小游戏开发团队') : 'none'} bundle=${bundleGroup ? probe(bundleGroup, '创建一个 俄罗斯方块 h5 小游戏开发团队') : 'none'}`);
+	truthy('① 上限确为 48（不是注释里的数字）',
+		/\{0,48\}\(\?:群\|团队\)/u.test(fastPathSrc) && /\{0,48\}\(\?:群\|团队\)/u.test(bundleSrc));
+
+	// ①-b 群名派生（2026-11-09 真机 bug：整句被吞空 ⇒ 泛化名「开发团队群」）。
+	//   ★ 从 dev/bundle 源码里抽 `fastGroupPlan` 的**取名段**编译后真跑，不是守卫复刻一份实现。
+	const nameFrom = (src) => {
+		const at = src.indexOf('const explicit = /(?:群名|名称|叫|名为)');
+		const end = src.indexOf('const nameOf =', at);
+		if (at < 0 || end < 0) { return undefined; }
+		// 从 `const explicit` 到 `const name`（含）整段抽出来；这段只依赖 `text`，不碰成员选择 / 流程公告
+		const nameLine = src.indexOf('const name = (', at);
+		if (nameLine < 0 || nameLine > end) { return undefined; }
+		const body = src.slice(at, src.indexOf('\n', nameLine));
+		// `if (!basis) return undefined` 在纯指令时直接返回 ⇒ 用 undefined 表示「不接管」
+		try { return new Function('text', `${body}\n return name;`); } catch { return undefined; }
+	};
+	const devName = nameFrom(fastPathSrc);
+	const bundleName = nameFrom(bundleSrc);
+	truthy('①-b 能从 dev / bundle 抽出可执行的取名逻辑', !!devName && !!bundleName);
+	truthy('①-b 泛化兜底字面量已从 dev 与 bundle 删除',
+		!fastPathSrc.includes("'开发团队群'") && !bundleSrc.includes('"开发团队群"')
+		&& /const segments = raw\.split/.test(fastPathSrc) && /const segments = raw\.split/.test(bundleSrc));
+	// 静态钉住两段式的两个关键决策；抽出来的取名函数体里 `if (!basis) return` 是 bare return，
+	// 无法从函数返回值区分「不接管」与「空名」，所以这两条用源码形态判据。
+	truthy('①-b 标题优先于后续段（逗号句式仍回落后续段）',
+		/title\.length >= 2 \? title : rest/.test(fastPathSrc) && /title\.length >= 2 \? title : rest/.test(bundleSrc));
+	truthy('①-b 纯指令不接管：dev/bundle 都在取名前 return undefined',
+		/if \(!basis\) \{ return undefined \}/.test(fastPathSrc) && /if \(!basis\) return;/.test(bundleSrc));
+	const nameOf = (fn, s) => { try { return fn ? fn(s) : null; } catch { return null; } };
+	truthy('①-b 真机四类句式都取到有信息量的群名（dev / bundle 同形）',
+		[devName, bundleName].every(fn => fn
+			&& /坦克大战 H5/.test(String(nameOf(fn, '创建 坦克大战 H5 开发团队')))
+			&& /俄罗斯方块/.test(String(nameOf(fn, '创建一个 俄罗斯方块 h5 小游戏开发团队')))
+			&& /番茄钟/.test(String(nameOf(fn, '创建开发团队，制作一个番茄钟 H5应用')))
+			&& String(nameOf(fn, '群名「坦克大战」 创建 开发团队')) === '坦克大战'
+			&& !String(nameOf(fn, '创建 坦克大战 H5 开发团队')).includes('开发团队群')),
+		`dev=${nameOf(devName, '创建 坦克大战 H5 开发团队')} bundle=${nameOf(bundleName, '创建 坦克大战 H5 开发团队')}`);
+	// ② 回执：dev 与 bundle 都换成「正在按普通流程安排」
+	truthy('② 无 route 回执不再说「主管收到了」，dev/bundle 同形',
+		deskSrc.includes('正在按普通流程安排') && bundleSrc.includes('正在按普通流程安排')
+		&& !deskSrc.includes('主管收到了，需要你回复') && !bundleSrc.includes('主管收到了，需要你回复'));
+	// ③ SSE 广播：路由、广播函数、注入 dep 三处齐全
+	truthy('③ Host 有 /api/rooms-events SSE 且 createRooms 真的注入 onChanged（非注释）',
+		/if \(pathname === `\$\{ROUTE_PREFIX\}\/api\/rooms-events`/.test(agentsSrc)
+		&& /^\s*onChanged: broadcastRoomChange,/m.test(agentsSrc)
+		&& agentsSrc.includes('roomEventClients.add(res)'));
+	truthy('③ 浏览器真的启动订阅、收到帧 dispatch vssaros-rooms-changed（非注释）',
+		/^\s*const stopRoomEvents = subscribeRoomEvents\(\);/m.test(workspacesSrc)
+		&& /event:\\s\*rooms-changed/.test(workspacesSrc)
+		&& /pushed:\s*true/.test(workspacesSrc)
+		&& /ROOMS_CHANGED_EVENT, \{ detail: \{ schema:/.test(workspacesSrc));
+	// ④ 401 表面化：status 透传 + 事件 + UI 节点
+	truthy('④ fetchRoomsOnly 透出 status 并广播 vssaros-rooms-error',
+		workspacesSrc.includes('ROOMS_ERROR_EVENT') && /status\s*=\s*Number\(e && e\.status\)/.test(workspacesSrc));
+	truthy('④ Bots 页签对 401 有专门可见提示（不是静默空列表）',
+		/bots\.roomsErrorStatus === 401\s*\?\s*react\.createElement/.test(workspacesSrc)
+		&& /"data-vssaros-rooms-auth-error": "1"/.test(workspacesSrc)
+		&& /roomsErrorStatus: \(d && d\.status\)/.test(workspacesSrc));
+	// ④ DOM 实证：让 fetch 返回 401，检查轮询把错误写进状态并渲染提示
+	{
+		const prevFetch = globalThis.fetch;
+		const seen = [];
+		const onErr = (ev) => seen.push(ev && ev.detail ? ev.detail : {});
+		window.addEventListener('vssaros-rooms-error', onErr);
+		globalThis.fetch = async () => ({ ok: false, status: 401, json: async () => ({}) });
+		try {
+			const errResult = await ws.__test.fetchRoomsOnly();
+			eq('④ 401 时 fetchRoomsOnly 返回 status=401 且发全局错误事件',
+				[errResult.ok, errResult.status, seen.length, seen[0] && seen[0].status], [false, 401, 1, 401]);
+		} finally { globalThis.fetch = prevFetch; window.removeEventListener('vssaros-rooms-error', onErr); }
+	}
+}
 
 // ── ⑤ 群会话里：一轮转发的回复卡 + 「设置」页签的群设置卡 ─────────────────────────────
 rooms.noteUserMessage(made.id, '做一个番茄钟 H5');

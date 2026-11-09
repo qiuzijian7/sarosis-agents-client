@@ -4,6 +4,7 @@ description: "DSPy: declarative LM programs, auto-optimize prompts, RAG."
 activation: manual
 match: ["dspy", "prompt engineering", "declarative programming", "rag", "agents", "prompt optimization", "lm programming", "stanford nlp", "automatic optimization", "modular ai"]
 category: mlops
+tier: extended
 ---
 
 # DSPy: Declarative Language Model Programming

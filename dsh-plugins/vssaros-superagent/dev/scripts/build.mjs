@@ -64,6 +64,28 @@ function readDoc() {
   const path = join(DEV, '..', '..', '..', DOC_NAME)
   return existsSync(path) ? readFileSync(path, 'utf8') : undefined
 }
+/**
+ * VsSaros addition (2026-11-09, doc structure guard): a concurrent merge left `<<<` / `>>>` markers and
+ * duplicated closing tags in the design doc while its `data-baseline` was still correct — the version
+ * guard cannot see structural damage. `--check` also rejects conflict markers and unbalanced tags.
+ * Comments, <style> and <script> bodies are excluded: their text is not document structure.
+ * @returns why the doc is structurally broken, or undefined.
+ */
+function docStructureProblem(text = readDoc()) {
+  if (text === undefined) return undefined
+  const markers = []
+  if (text.includes('<<<') || text.includes('>>>')) markers.push('unresolved conflict markers <<< / >>>')
+  if (/^\s*={7,}\s*$/m.test(text)) markers.push('an unresolved conflict separator =======')
+  if (markers.length) return `${DOC_NAME} has ${markers.join(' and ')}: resolve the merge first`
+  const shape = text.replace(/<!--[\s\S]*?-->/g, '').replace(/<(style|script)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
+  const unbalanced = []
+  for (const tag of ['section', 'main', 'div', 'ol']) {
+    const open = (shape.match(new RegExp('<' + tag + '(?=[\\s>])', 'g')) ?? []).length
+    const close = (shape.match(new RegExp('</' + tag + '>', 'g')) ?? []).length
+    if (open !== close) unbalanced.push(`<${tag}> ${open} open / ${close} close`)
+  }
+  return unbalanced.length ? `${DOC_NAME} has unbalanced HTML tags: ${unbalanced.join(', ')}` : undefined
+}
 /** Runs tsdown from this workspace; it writes ../lib. */
 function build() {
   const bin = join(DEV, 'node_modules', 'tsdown', 'dist', 'run.mjs')
@@ -80,9 +102,10 @@ if (!existsSync(join(DEV, 'node_modules', 'tsdown'))) {
     const manifest = manifestOf(LIB)
     const ok = manifest && manifest.hash === hashOf(LIB) && manifest.version === versionOf()
     console.warn(`⚠ dsh-plugins/vssaros-superagent/lib: NOT rebuilt (DSH_SUPERAGENT_ALLOW_NO_TOOLCHAIN=1); ${message}. Manifest ${ok ? 'matches' : 'does NOT match'} lib/ and package.json.`)
-    const doc = docBaselineProblem()
+    const doc = docBaselineProblem(), shape = docStructureProblem()
     if (doc) console.error(`✗ ${doc}`)
-    process.exit(ok && !doc ? 0 : 1)
+    if (shape) console.error(`✗ ${shape}`)
+    process.exit(ok && !doc && !shape ? 0 : 1)
   }
   console.error(`✗ dsh-plugins/vssaros-superagent/lib: cannot be checked, ${message}. (Set DSH_SUPERAGENT_ALLOW_NO_TOOLCHAIN=1 to check only its manifest.)`)
   process.exit(1)
@@ -118,12 +141,15 @@ try {
       console.error('Run: node dsh-plugins/vssaros-superagent/dev/scripts/build.mjs')
       process.exitCode = 1
     } else console.log(`dsh-plugins/vssaros-superagent/lib matches dev/src (${after.length} files, version ${version})`)
-    const doc = docBaselineProblem()
-    if (doc) { console.error(`✗ ${doc}`); process.exitCode = 1 } else if (readDoc() !== undefined) console.log(`${DOC_NAME} is for version ${version}`)
+    const doc = docBaselineProblem(), shape = docStructureProblem()
+    if (doc) { console.error(`✗ ${doc}`); process.exitCode = 1 }
+    if (shape) { console.error(`✗ ${shape}`); process.exitCode = 1 }
+    if (readDoc() !== undefined && !doc && !shape) console.log(`${DOC_NAME} is for version ${version} and structurally sound`)
   } else {
     console.log(`built dsh-plugins/vssaros-superagent/lib: ${filesOf(LIB).length} files`)
-    const doc = docBaselineProblem()
+    const doc = docBaselineProblem(), shape = docStructureProblem()
     if (doc) console.warn(`⚠ ${doc} (build.mjs --check fails until it is)`)
+    if (shape) console.warn(`⚠ ${shape} (build.mjs --check fails until it is)`)
   }
 } catch (error) {
   restore = true

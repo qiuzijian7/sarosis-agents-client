@@ -4,7 +4,8 @@ description: "基于当前已暂存改动生成符合 Conventional Commits 的�
 activation: manual
 
 category: git
-recommended_tools: ["shell_exec"]
+recommended_tools: ["pwsh"]
+tier: extended
 ---
 
 You are running the **commit-message** skill.

@@ -1,14 +1,15 @@
 ---
 name: kb-build
 description: 知识库构建手册（**命中即必须先 read_skill 加载本技能再动手**，不要凭印象直接建文件）：宿主发来「素材清单」（多个文件路径）、或用户要求「构建 / 整理 / 导入 / 重建知识库」时使用。做法：把「库」里的素材构建为「笔记区」的结构化笔记，并维护知识体系文档与目录结构；允许在既有目录体系下完善补充、甚至重构（小规模直接用 kb_organize 工具；大规模输出 KB_REORG 计划由宿主执行）。不要用于：只改单篇笔记正文（那走 kb_write_note）、或同步到飞书（那是 kb-feishu-sync）。
+tier: extended
 ---
 
 <!-- 同步指针：本技能是「知识库构建流程」的执行手册（单一真源）。
      宿主侧 `src/vs/sessions/contrib/agentStudio/browser/kbImportController.ts` 的
      `buildPendingAsAgentSession()` 负责：发消息（素材清单 + 目录树快照 + 路径）、
      事后收尾（构建缓存回填 / 补链 / 门控 / 导航 / 通知）。
-     改流程时两边同步；落盘语义（笔记区 = 知识体系层、库 = 数据源层）由宿主常量
-     `KB_LIBRARY_SUBPATH='库'` / `KB_NOTES_SUBPATH='笔记'` 决定。 -->
+     改流程时两边同步；落盘目录真名由宿主常量
+     `KB_LIBRARY_SUBPATH` / `KB_NOTES_SUBPATH`（browser/knowledge/kbVaultFs.ts）决定 —— 本手册里的「库 / 笔记区」是概念俗称，不写死磁盘路径（2026-11-02 已改过一次名）。 -->
 
 # 知识库构建（kb-build）
 
@@ -97,12 +98,12 @@ mermaid 代码块的写法（用 `mermaid` 作为代码块的语言标记）：
      ```html
      <!-- KB_REORG
      {"reason":"把散落在笔记区根目录的 UI 笔记归入 UnrealEngine/09_UI与Slate；理由：…",
-      "moves":[{"from":"笔记/UI优化技巧.md","to":"笔记/01_学习/UnrealEngine/09_UI与Slate/UI优化技巧.md"}]}
+      "moves":[{"from":"知识库列表/UI优化技巧.md","to":"知识库列表/01_学习/UnrealEngine/09_UI与Slate/UI优化技巧.md"}]}
      -->
      ```
 
-     约束：`from` 必须**已存在**、`to` 必须**尚不存在**（避免覆盖）；两者都必须落在**笔记区**内（**不要动「库」**）；
-     路径用**相对 vault 根**（形如 `笔记/…`）；**改目录名 = 对该目录下每个文件各写一条 move**。
+     约束：`from` 必须**已存在**、`to` 必须**尚不存在**（避免覆盖）；两者都必须落在**笔记区**内（**不要动「数据源」**）；
+     路径用**相对 vault 根**（形如 `知识库列表/…`）；**改目录名 = 对该目录下每个文件各写一条 move**。
      若无需重构，就输出 `<!-- KB_REORG {"moves":[]} -->`。
 
 ## 完成标准

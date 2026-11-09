@@ -4,6 +4,7 @@ description: "Spotify: play, search, queue, manage playlists and devices."
 activation: manual
 match: ["spotify", "music", "playback", "playlists", "media"]
 category: media
+tier: extended
 ---
 
 # Spotify

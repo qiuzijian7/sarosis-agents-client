@@ -24,6 +24,8 @@ suite('dshHarness / MCP 配置 → 覆盖层', () => {
 		const { servers, skipped } = configOf(JSON.stringify({
 			servers: {
 				github: {
+					// ★ 2026-11-08 P1：stdio 必须显式批准才会启动本机进程
+					approved: true,
 					type: 'stdio',
 					command: '${env:NODE_BIN}',
 					args: ['-y', '@modelcontextprotocol/server-github'],
@@ -58,9 +60,23 @@ suite('dshHarness / MCP 配置 → 覆盖层', () => {
 	});
 
 	test('缺 type 但有 command 视为 stdio（上游 schema 的写法之一）', () => {
-		const { servers } = configOf(JSON.stringify({ servers: { local: { command: 'node', args: ['server.js'] } } }));
+		const { servers } = configOf(JSON.stringify({ servers: { local: { approved: true, command: 'node', args: ['server.js'] } } }));
 		assert.strictEqual(servers.length, 1);
 		assert.strictEqual(servers[0].transport, 'stdio');
+	});
+
+	// ★ 2026-11-08 P1（R1 工具授权缺口，对齐 DS Bot）：stdio 会起本机进程 ⇒ 未批准一律不挂
+	test('stdio 未 approved ⇒ 跳过，显式批准才挂载；http 不受约束', () => {
+		const unapproved = configOf(JSON.stringify({ servers: { local: { type: 'stdio', command: 'node' } } }));
+		assert.deepStrictEqual(unapproved.servers, []);
+		assert.match(unapproved.skipped[0].reason, /未批准/);
+		// ★ 2026-11-08：结构化状态 —— 「等批准」不是「配置错误」，UI / 模型要能区分
+		assert.strictEqual(unapproved.skipped[0].state, 'needs-approval');
+		const approved = configOf(JSON.stringify({ servers: { local: { approved: true, type: 'stdio', command: 'node' } } }));
+		assert.strictEqual(approved.servers.length, 1);
+		assert.strictEqual(approved.servers[0].transport, 'stdio');
+		const http = configOf(JSON.stringify({ servers: { web: { type: 'http', url: 'https://mcp.example.com/mcp' } } }));
+		assert.strictEqual(http.servers.length, 1);
 	});
 
 	test('sse 服务器被跳过并说明（dsh 无该传输）', () => {
@@ -78,14 +94,14 @@ suite('dshHarness / MCP 配置 → 覆盖层', () => {
 
 	test('${workspaceFolder} 之类解析不了的占位符：跳过并说明，不传字面量', () => {
 		const { servers, skipped } = configOf(JSON.stringify({
-			servers: { ws: { type: 'stdio', command: 'node', args: ['${workspaceFolder}/server.js'] } },
+			servers: { ws: { approved: true, type: 'stdio', command: 'node', args: ['${workspaceFolder}/server.js'] } },
 		}));
 		assert.deepStrictEqual(servers, []);
 		assert.match(skipped[0].reason, /占位符/);
 	});
 
 	test('command 缺省 / 非法结构 / 坏 JSON 都有可读原因', () => {
-		assert.match(configOf(JSON.stringify({ servers: { a: { type: 'stdio' } } })).skipped[0].reason, /command/);
+		assert.match(configOf(JSON.stringify({ servers: { a: { approved: true, type: 'stdio' } } })).skipped[0].reason, /command/);
 		assert.match(configOf(JSON.stringify({ servers: { a: 'nope' } })).skipped[0].reason, /不是对象/);
 		assert.match(configOf('{ not json').skipped[0].reason, /不是合法 JSON/);
 		assert.match(configOf('[]').skipped[0].reason, /没有 servers 对象/);

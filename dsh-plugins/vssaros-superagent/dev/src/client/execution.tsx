@@ -13,10 +13,13 @@ import { settingsRoute } from './route.ts'
 import { ConfigHistory, Field, Fields, ModelField, numberOf, SwitchRow, useBlockDraft, useSettings } from './settings-kit.tsx'
 import { SourceCard } from './source.tsx'
 import { localized } from './text.ts'
+import { WorkPage } from './work.tsx'
 import { ConfirmButton, Hint, LabelValue, LoadMore, LoadState, Section, StatusHead } from './widgets.tsx'
 
-export function ExecutionStatus({ filter: current, state, reload }: {
-  filter: TicketFilter; state: StateView; reload: () => Promise<void>
+/** ★ 2026-11-09（用户要求）：流程图 / 看板 / 列表是「执行」页的一部分，不再是独立的 work 页面。
+ *  `ticketId` 来自旧 `work?ticket=…` 深链（概况侧栏「查看流程」），用来预选团队。 */
+export function ExecutionStatus({ filter: current, state, reload, ticketId }: {
+  filter: TicketFilter; state: StateView; reload: () => Promise<void>; ticketId?: string
 }) {
   const { t, call, navigate } = usePanel()
   const [limit, setLimit] = useState(20)
@@ -58,6 +61,9 @@ export function ExecutionStatus({ filter: current, state, reload }: {
       ? <TicketLine key={ticket.id} ticket={ticket} question
         onChanged={reloadTickets} /> : <TicketLine key={ticket.id} ticket={ticket} />)}</ul> : <Hint>{t('none')}</Hint>)}
     {data?.next_offset != null && <LoadMore onMore={() => setLimit(limit + 20)} />}
+    {/* ★ 2026-11-09（用户要求）：流程 / 看板 / 列表三视图归到本页。放在工单列表之后，
+        保留上面的执行状态、用量账本、审批规则；embedded 让 WorkPage 不再重复渲染 GroupRuns。 */}
+    <WorkPage key={ticketId} ticketId={ticketId} embedded />
   </>
 }
 

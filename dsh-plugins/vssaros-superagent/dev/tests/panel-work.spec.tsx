@@ -57,13 +57,20 @@ it('opens the side panel for a step\'s request, puts it first, and answers it th
   expect(document.querySelector('[data-testid="step-approvals"]')).toBeNull()
 }, 10_000)
 
-it('shows a team in the Workbench tab as a flow, a board and a list, with a step\'s details beside them', async () => {
+it('shows a team on the Execution tab as a flow, a board and a list, with a step\'s details beside them', async () => {
   server.teamSteps = [team()]
   server.stepApprovals = [approval]
-  // VsSaros change (2026-11-07): the Workbench is no longer a tab; its page is still a route (the flow links open it).
+  // ★ 2026-11-09（用户要求）：流程图 / 看板 / 列表并入「执行」页签。
+  //   `work` 仍被接受为深链别名，但 parseRoute 归一到 execution ⇒ 页签高亮「执行」而不是无页签页面。
   at({ page: 'work' })
   await mount()
   expect(all('[role="tab"]').map(item => item.textContent)).not.toContain(zh['tab.work'])
+  expect(tab(zh['tab.execution']).getAttribute('aria-selected')).toBe('true')
+  // 执行页原有的状态 / 工单列表没被三视图挤掉
+  expect(document.querySelector('.dt-status-title')?.textContent).toBe(zh.statusTitle)
+  expect(server.requests.some(request => request.path === 'tickets?state=open&limit=20')).toBe(true)
+  // 三视图按钮就在这一个页签内
+  expect(all('[role="tab"]').map(item => item.textContent)).toContain(zh['work.view.flow'])
   const nodes = () => all('.dt-flow-node')
   expect(nodes().map(node => node.getAttribute('data-state'))).toEqual(['ready', 'alert', 'running', 'pending'])
   expect(nodes()[3]!.textContent).toContain('↻2')

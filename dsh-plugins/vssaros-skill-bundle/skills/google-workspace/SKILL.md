@@ -4,6 +4,7 @@ description: Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python.
 activation: manual
 match: ["google-workspace", "google workspace", "google", "gmail", "calendar", "drive", "sheets", "docs", "contacts", "email", "oauth"]
 category: productivity
+tier: extended
 ---
 
 # Google Workspace

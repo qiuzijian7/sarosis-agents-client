@@ -1,0 +1,39 @@
+{
+  "name": "@vssaros/dsh-computer",
+  "version": "0.1.0",
+  "description": "VsSaros desktop-control Host tool for DeepSeek Harness (P0 read-only): observes the desktop through the main process loopback relay - screenshots, screen size, and this app's windows. No input injection, no OS-wide enumeration, no app grants yet. Default disabled (fail-closed).",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/core/levels.js",
+    "lib/core/grants.js",
+    "lib/core/leases.js",
+    "lib/core/gates.js",
+    "lib/core/handoff.js",
+    "lib/core/relay.js",
+    "cordis.patch.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "view": {
+      "kind": "none"
+    }
+  },
+  "license": "MIT"
+}

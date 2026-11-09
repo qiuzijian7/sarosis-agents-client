@@ -4,6 +4,7 @@ description: "Notion API + ntn CLI: pages, databases, markdown, Workers."
 activation: manual
 match: ["notion", "productivity", "notes", "database", "api", "cli", "workers"]
 category: productivity
+tier: extended
 ---
 
 # Notion

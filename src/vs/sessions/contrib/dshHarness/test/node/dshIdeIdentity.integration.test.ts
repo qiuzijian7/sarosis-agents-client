@@ -33,9 +33,15 @@ import { DshIdeRequestGate } from '../../electron-main/dshIdeRequestGate.js';
 import { readCapabilityDeclarations } from '../../common/dshIdeAuthorization.js';
 
 const REPO = process.env.DSH_TEST_REPO_ROOT ?? process.cwd();
-const RUNTIME_ROOT = process.env.DSH_TEST_RUNTIME_ROOT ?? join(REPO, 'poc', 'dsh-p0', '.runtime');
+// ★ 2026-11-09 单版本模型：RUNTIME_ROOT 现在是 **bundledRoot**（构建期 prepack 的 dsh-runtime/），
+// 不再是 managed 多版本池；版本由 dsh-compat.json 的 bundled 唯一决定。
+const RUNTIME_ROOT = process.env.DSH_TEST_RUNTIME_ROOT ?? join(REPO, 'dsh-runtime');
+const BUNDLED_PIN = (() => { try { return String(JSON.parse(readFileSync(join(REPO, 'dsh-plugins', 'dsh-compat.json'), 'utf8')).bundled ?? ''); } catch { return ''; } })();
+const MANAGED_ROOT = join(REPO, 'poc', 'dsh-p0', '.runtime');
 const BRIDGE_DIR = join(REPO, 'dsh-plugins', 'vssaros-bridge');
-const hasRuntime = existsSync(RUNTIME_ROOT) && new DshRuntimeManager(RUNTIME_ROOT, () => { }).listInstalled().length > 0;
+const hasRuntime = !!BUNDLED_PIN && existsSync(join(RUNTIME_ROOT, BUNDLED_PIN, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'));
+/** 构造一个只指向 bundled pin 的管理器（managedRoot 仅剩「托管 Node」用途）。 */
+const makeRuntime = (log: (line: string) => void) => new DshRuntimeManager(MANAGED_ROOT, log, RUNTIME_ROOT, BUNDLED_PIN);
 
 /** 两个假插件用同一个能力：`getDiagnostics`（只读，不涉及确认闸，测试无需用户在场）。 */
 const CAPABILITY = 'getDiagnostics';
@@ -139,7 +145,7 @@ function writeFakePlugin(root: string, name: string, claimedPluginId: string): s
 			trace: () => undefined,
 		});
 		supervisor = new DshHostSupervisor({
-			runtime: new DshRuntimeManager(RUNTIME_ROOT, l => lines.push(l)),
+			runtime: makeRuntime(l => lines.push(l)),
 			runDir,
 			foundationPluginDir: undefined,
 			bridgePluginDir: BRIDGE_DIR,

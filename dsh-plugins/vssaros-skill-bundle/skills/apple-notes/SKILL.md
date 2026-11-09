@@ -4,6 +4,7 @@ description: "Manage Apple Notes via memo CLI: create, search, edit."
 activation: manual
 match: ["apple-notes", "apple notes", "notes", "note-taking"]
 category: apple
+tier: extended
 ---
 
 # Apple Notes

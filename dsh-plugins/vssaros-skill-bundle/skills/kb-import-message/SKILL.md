@@ -1,6 +1,7 @@
 ---
 name: kb-import-message
 description: 将 LLM 聊天消息导入知识库：扫描已有目录结构 → 优先复用现有分类落盘到「库」→ 结构化抽取 → 输出笔记到「笔记」→ 记录操作日志
+tier: extended
 ---
 
 # 导入 LLM 消息（kb-import-message）

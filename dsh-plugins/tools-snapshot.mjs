@@ -90,8 +90,13 @@ const CONFIG_OVERRIDES = {
 	'vssaros-workbenches': () => ({ root: path.join(os.tmpdir(), 'vssaros-snapshot-wb-root') }),
 };
 
-/** 抽全部插件的工具面。返回 `{ plugins, total, failures }`（失败**不吞**）。 */
-export async function extractToolSnapshot() {
+/**
+ * 抽工具面。返回 `{ plugins, total, failures }`（失败**不吞**）。
+ * @param only `string[] | null` —— 只抽这些插件（用于 `--only`：改了单个插件的工具时，
+ *   不必让所有插件的 apply 都在离线 fake ctx 里跑一遍；有些插件会尝试连 MCP / 恢复飞书入站而挂住）。
+ *   同一套 fakeContext / entryOf / hash，校验口径不变，只是范围收窄。
+ */
+export async function extractToolSnapshot(only = null) {
 	const plugins = {};
 	const failures = [];
 	// 重构 1.3：所有 fake ctx 共享一份真源服务（与真机"一个 Host 一个 foundation"同形态 ✓）。
@@ -111,6 +116,7 @@ export async function extractToolSnapshot() {
 	const dirs = fs.readdirSync(HERE, { withFileTypes: true })
 		.filter(d => d.isDirectory() && d.name.startsWith('vssaros-') && !OFFLINE_UNSUPPORTED.has(d.name))
 		.map(d => d.name)
+		.filter(d => !Array.isArray(only) || only.includes(d))
 		.sort();
 	for (const dir of dirs) {
 		const entry = path.join(HERE, dir, 'lib', 'index.js');
@@ -165,7 +171,9 @@ export function diffSnapshots(before, after) {
 // ── CLI ─────────────────────────────────────────────────────────────────────
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
 	const write = process.argv.includes('--write');
-	const snapshot = await extractToolSnapshot();
+	const onlyIdx = process.argv.indexOf('--only');
+	const only = onlyIdx >= 0 && process.argv[onlyIdx + 1] ? [process.argv[onlyIdx + 1]] : null;
+	const snapshot = await extractToolSnapshot(only);
 	if (snapshot.failures.length) {
 		console.error('✗ 有插件在 apply 期抛错（清单会缺一块 ⇒ 不许静默跳过）：');
 		for (const f of snapshot.failures) { console.error(`   - ${f}`); }
@@ -181,11 +189,25 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToP
 		}
 		process.exitCode = 1;
 	} else if (write) {
-		fs.writeFileSync(SNAPSHOT_PATH, serialize(snapshot), 'utf8');
-		console.log(`已写入 ${path.relative(process.cwd(), SNAPSHOT_PATH)}：${Object.keys(snapshot.plugins).length} 个插件 / ${snapshot.total} 个工具`);
+		if (only) {
+			// 局部更新：只替换 `--only` 指定插件的条目，其余插件保持原样（不能拿残缺结果覆盖完整基线）
+			const before = JSON.parse(fs.readFileSync(SNAPSHOT_PATH, 'utf8'));
+			for (const dir of only) {
+				if (snapshot.plugins[dir]) { before.plugins[dir] = snapshot.plugins[dir]; }
+				else { delete before.plugins[dir]; }
+			}
+			before.total = Object.values(before.plugins).reduce((sum, list) => sum + list.length, 0);
+			fs.writeFileSync(SNAPSHOT_PATH, serialize(before), 'utf8');
+			console.log(`已局部更新 ${only.join(',')}：${Object.keys(before.plugins).length} 个插件 / ${before.total} 个工具`);
+		} else {
+			fs.writeFileSync(SNAPSHOT_PATH, serialize(snapshot), 'utf8');
+			console.log(`已写入 ${path.relative(process.cwd(), SNAPSHOT_PATH)}：${Object.keys(snapshot.plugins).length} 个插件 / ${snapshot.total} 个工具`);
+		}
 	} else {
 		const before = fs.existsSync(SNAPSHOT_PATH) ? JSON.parse(fs.readFileSync(SNAPSHOT_PATH, 'utf8')) : { plugins: {} };
-		const problems = [...diffSnapshots(before, snapshot), ...snapshot.failures.map(f => `apply 失败：${f}`)];
+		const scoped = only ? { plugins: Object.fromEntries(only.map(d => [d, snapshot.plugins[d] ?? []])) } : snapshot;
+		const scopedBefore = only ? { plugins: Object.fromEntries(only.map(d => [d, before.plugins?.[d] ?? []])) } : before;
+		const problems = [...diffSnapshots(scopedBefore, scoped), ...snapshot.failures.map(f => `apply 失败：${f}`)];
 		if (problems.length) {
 			console.error(`✗ 工具面与快照不一致（${problems.length} 处）—— 改过工具就显式跑一次 --write 并把 diff 进 PR：`);
 			for (const p of problems) { console.error(`   - ${p}`); }

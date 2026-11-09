@@ -30,6 +30,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import { renameWithRetry } from './atomicWrite.js';
+
 /** 心跳间隔（写锁与续期都用它）。 */
 export const IM_LOCK_HEARTBEAT_MS = 30_000;
 /** 超过这个时间没续期 ⇒ 视为陈旧锁（比心跳宽 3 倍，容忍 GC / 主线程忙）。 */
@@ -75,23 +77,6 @@ async function readLock(file) {
  */
 export async function tryAcquireImLock(platform, { dataRoot = '', pid = process.pid, home, staleMs = IM_LOCK_STALE_MS, now = Date.now(), appId = '' } = {}) {
 	const file = imLockPath(platform, home);
-	const cur = await readLock(file);
-	if (cur) {
-		const holderPid = Number(cur.pid);
-		const sameProcess = holderPid === Number(pid);
-		const fresh = Number.isFinite(Number(cur.heartbeatAt)) && (now - Number(cur.heartbeatAt)) < staleMs;
-		if (!sameProcess && isPidAlive(holderPid) && fresh) {
-			return {
-				ok: false,
-				holder: {
-					pid: holderPid,
-					dataRoot: String(cur.dataRoot ?? ''),
-					heartbeatAt: Number(cur.heartbeatAt ?? 0),
-					appId: String(cur.appId ?? ''),
-				},
-			};
-		}
-	}
 	const body = {
 		format: 1,
 		platform: String(platform),
@@ -102,9 +87,67 @@ export async function tryAcquireImLock(platform, { dataRoot = '', pid = process.
 		acquiredAt: now,
 		heartbeatAt: now,
 	};
+	const text = JSON.stringify(body);
+	const holderOf = (cur) => ({
+		pid: Number(cur.pid),
+		dataRoot: String(cur.dataRoot ?? ''),
+		heartbeatAt: Number(cur.heartbeatAt ?? 0),
+		appId: String(cur.appId ?? ''),
+	});
+	const occupiedBy = (cur) => {
+		if (!cur) { return false; }
+		const holderPid = Number(cur.pid);
+		const sameProcess = holderPid === Number(pid);
+		const fresh = Number.isFinite(Number(cur.heartbeatAt)) && (now - Number(cur.heartbeatAt)) < staleMs;
+		return !sameProcess && isPidAlive(holderPid) && fresh;
+	};
 	await fs.mkdir(path.dirname(file), { recursive: true });
-	await fs.writeFile(file, JSON.stringify(body), 'utf8');
-	return { ok: true, file };
+
+	/**
+	 * ★ 2026-11-09：原来是 read → 判断 → write，两个 Host 并发时**都会**通过判活再各自覆盖
+	 *   ⇒ 同一个 appId 连出两条 WS（飞书只把事件投给其中一条，症状是"日志全绿零事件"）。
+	 *   现在先把完整内容写进唯一临时文件，再用 link() **原子地创建**锁文件：
+	 *   目标已存在（EEXIST）才去读判活，只有「自己 / 死进程 / 心跳过期」才删掉重建。
+	 *   Windows 上若文件系统不支持硬链接 ⇒ 回退 `flag:'wx'`（同样不会覆盖别人的锁）。
+	 */
+	for (let attempt = 0; attempt < 3; attempt += 1) {
+		const tmp = `${file}.${process.pid}.${Date.now().toString(36)}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+		await fs.writeFile(tmp, text, 'utf8');
+		try {
+			let linked = false;
+			try {
+				await fs.link(tmp, file);
+				linked = true;
+			} catch (e) {
+				const code = e && e.code;
+				if (code === 'EPERM' || code === 'ENOSYS' || code === 'ENOTSUP') {
+					try {
+						await fs.writeFile(file, text, { encoding: 'utf8', flag: 'wx' });
+						linked = true;
+					} catch (e2) {
+						if (!e2 || e2.code !== 'EEXIST') { throw e2; }
+					}
+				} else if (code !== 'EEXIST') {
+					throw e;
+				}
+			}
+			if (linked) { return { ok: true, file }; }
+
+			let cur = await readLock(file);
+			if (!cur) {
+				/* 读不出来可能是对方正在写（半个 JSON）⇒ 等一下再读，别急着删人家的锁。 */
+				await new Promise((r) => setTimeout(r, 10));
+				cur = await readLock(file);
+			}
+			if (occupiedBy(cur)) { return { ok: false, holder: holderOf(cur) }; }
+			/* 自己持有 / 死进程 / 心跳过期 / 坏文件 ⇒ 删掉，下一轮原子重建 */
+			await fs.unlink(file).catch(() => undefined);
+		} finally {
+			await fs.unlink(tmp).catch(() => undefined);
+		}
+	}
+	/* 三轮都没成功（有人反复抢占）⇒ 保守拒绝，绝不覆盖别人的锁。 */
+	return { ok: false, holder: { pid: Number(pid), dataRoot: String(dataRoot ?? ''), heartbeatAt: now, appId: String(appId ?? '') } };
 }
 
 /** 续期（只有自己持有才写，避免覆盖别人的锁）。 */
@@ -114,7 +157,18 @@ export async function touchImLock(platform, { pid = process.pid, home, now = Dat
 	if (!cur || Number(cur.pid) !== Number(pid)) {
 		return false;
 	}
-	await fs.writeFile(file, JSON.stringify({ ...cur, heartbeatAt: now }), 'utf8').catch(() => undefined);
+	/* ★ 2026-11-09：续期也要原子。`fs.writeFile` 会先 truncate 再写，
+	   并发读者（另一个 Host 判活 / 自检）恰好在窗口里会读到半个 JSON。 */
+	const text = JSON.stringify({ ...cur, heartbeatAt: now });
+	const tmp = `${file}.${process.pid}.${Date.now().toString(36)}.touch.tmp`;
+	try {
+		await fs.writeFile(tmp, text, 'utf8');
+		await renameWithRetry(tmp, file);
+	} catch {
+		await fs.writeFile(file, text, 'utf8').catch(() => undefined);
+	} finally {
+		await fs.unlink(tmp).catch(() => undefined);
+	}
 	return true;
 }
 

@@ -8,7 +8,8 @@ description: >
 activation: auto
 match: ["ponytail-review", "review for over-engineering", "what can we delete", "is this over-engineered", "simplify review", "过度工程审查", "精简审查", "删除冗余"]
 category: code
-recommended_tools: ["file_read", "terminal"]
+recommended_tools: ["read", "pwsh"]
+tier: core
 ---
 
 Review diffs for unnecessary complexity. One line per finding: location, what

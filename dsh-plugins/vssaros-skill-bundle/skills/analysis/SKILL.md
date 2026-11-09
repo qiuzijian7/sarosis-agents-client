@@ -4,7 +4,8 @@ description: Analyze data, code, text, or problems to extract insights and recom
 activation: auto
 match: ["analyze", "analysis", "evaluate", "assess", "review", "examine", "break down"]
 category: reasoning
-recommended_tools: ["file_read", "terminal"]
+recommended_tools: ["read", "pwsh"]
+tier: core
 ---
 
 # Analysis Skill

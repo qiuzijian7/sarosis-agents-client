@@ -1,0 +1,237 @@
+{
+  "note": "已知技术债：正文里的 IDE 退役工具名。只许减不许增；修掉后重跑 gen-skill-legacy-baseline.mjs 销账。",
+  "rows": {
+    "airtable/SKILL.md": [
+      "browser_navigate",
+      "terminal",
+      "web_extract"
+    ],
+    "anysearch/SKILL.md": [
+      "execute_code",
+      "file_write",
+      "web_extract"
+    ],
+    "architecture-diagram/SKILL.md": [
+      "file_write"
+    ],
+    "arxiv/SKILL.md": [
+      "web_extract"
+    ],
+    "ascii-art/SKILL.md": [
+      "terminal"
+    ],
+    "baoyu-comic/SKILL.md": [
+      "clarify"
+    ],
+    "baoyu-infographic/SKILL.md": [
+      "clarify",
+      "file_write"
+    ],
+    "claude-code/SKILL.md": [
+      "terminal"
+    ],
+    "codex/SKILL.md": [
+      "terminal"
+    ],
+    "design-md/SKILL.md": [
+      "file_write"
+    ],
+    "findmy/SKILL.md": [
+      "terminal"
+    ],
+    "git-config/SKILL.md": [
+      "clarify"
+    ],
+    "github-code-review/SKILL.md": [
+      "file_read",
+      "search_files"
+    ],
+    "github-pr-workflow/SKILL.md": [
+      "file_read",
+      "file_write",
+      "patch"
+    ],
+    "godmode/SKILL.md": [
+      "execute_code"
+    ],
+    "hermes-agent/SKILL.md": [
+      "clarify",
+      "delegate_task",
+      "execute_code",
+      "file_read",
+      "file_write",
+      "patch",
+      "search_files",
+      "terminal"
+    ],
+    "hermes-agent-skill-authoring/SKILL.md": [
+      "file_write",
+      "patch"
+    ],
+    "himalaya/SKILL.md": [
+      "terminal"
+    ],
+    "humanizer/SKILL.md": [
+      "file_read",
+      "file_write",
+      "patch"
+    ],
+    "imessage/SKILL.md": [
+      "terminal"
+    ],
+    "jupyter-live-kernel/SKILL.md": [
+      "execute_code",
+      "terminal"
+    ],
+    "kanban-orchestrator/SKILL.md": [
+      "delegate_task"
+    ],
+    "kanban-worker/SKILL.md": [
+      "delegate_task"
+    ],
+    "kb-build/SKILL.md": [
+      "file_read",
+      "file_write",
+      "patch",
+      "search_files"
+    ],
+    "kb-category-feishu/SKILL.md": [
+      "execute_code",
+      "file_write",
+      "patch",
+      "search_files"
+    ],
+    "kb-feishu-sync/SKILL.md": [
+      "execute_code"
+    ],
+    "kb-game-teardown/SKILL.md": [
+      "clarify"
+    ],
+    "kb-import-message/SKILL.md": [
+      "file_read",
+      "file_write"
+    ],
+    "linear/SKILL.md": [
+      "terminal",
+      "web_extract"
+    ],
+    "llm-wiki/SKILL.md": [
+      "file_read",
+      "search_files",
+      "web_extract"
+    ],
+    "macos-computer-use/SKILL.md": [
+      "file_read",
+      "file_write",
+      "patch",
+      "terminal"
+    ],
+    "nano-pdf/SKILL.md": [
+      "file_read"
+    ],
+    "native-mcp/SKILL.md": [
+      "file_read",
+      "terminal"
+    ],
+    "node-inspect-debugger/SKILL.md": [
+      "terminal"
+    ],
+    "obsidian/SKILL.md": [
+      "file_read",
+      "file_write",
+      "patch",
+      "search_files",
+      "terminal"
+    ],
+    "ocr-and-documents/SKILL.md": [
+      "execute_code",
+      "web_extract"
+    ],
+    "opencode/SKILL.md": [
+      "terminal"
+    ],
+    "p4-config/SKILL.md": [
+      "clarify"
+    ],
+    "pixel-art/SKILL.md": [
+      "clarify"
+    ],
+    "plan/SKILL.md": [
+      "file_write"
+    ],
+    "popular-web-designs/SKILL.md": [
+      "browser_vision",
+      "file_write"
+    ],
+    "pretext/SKILL.md": [
+      "file_write"
+    ],
+    "reflection/SKILL.md": [
+      "clarify",
+      "file_read",
+      "file_write",
+      "patch",
+      "terminal"
+    ],
+    "requesting-code-review/SKILL.md": [
+      "delegate_task"
+    ],
+    "research-paper-writing/SKILL.md": [
+      "clarify",
+      "delegate_task",
+      "execute_code",
+      "file_read",
+      "file_write",
+      "patch",
+      "terminal",
+      "web_extract"
+    ],
+    "sketch/SKILL.md": [
+      "browser_navigate",
+      "browser_vision",
+      "file_write",
+      "terminal"
+    ],
+    "skill-authoring/SKILL.md": [
+      "patch"
+    ],
+    "spike/SKILL.md": [
+      "delegate_task",
+      "file_read",
+      "file_write",
+      "terminal",
+      "web_extract"
+    ],
+    "subagent-driven-development/SKILL.md": [
+      "delegate_task",
+      "file_read"
+    ],
+    "systematic-debugging/SKILL.md": [
+      "delegate_task",
+      "file_read",
+      "search_files",
+      "terminal",
+      "web_extract"
+    ],
+    "test-driven-development/SKILL.md": [
+      "delegate_task",
+      "terminal"
+    ],
+    "ue-blueprint-graph/SKILL.md": [
+      "search_files"
+    ],
+    "web-content-import/SKILL.md": [
+      "clarify",
+      "execute_code",
+      "file_read",
+      "file_write",
+      "terminal",
+      "web_extract"
+    ],
+    "writing-plans/SKILL.md": [
+      "delegate_task",
+      "file_read",
+      "search_files"
+    ]
+  }
+}

@@ -43,10 +43,7 @@ import { DshRuntimeManager } from '../../electron-main/dshRuntimeManager.js';
 		assert.strictEqual(node.source, 'managed');
 		assert.strictEqual(node.version, r.version);
 
-		// The bundled npm works through `node npm-cli.js` (what install() / distTagVersion() use).
-		const latest = await rt.distTagVersion(node, 'latest');
-		assert.match(latest, /^\d+\.\d+\.\d+/);
-		console.log(`      npm view @deepseek-ai/dsh@latest via managed Node → ${latest}`);
+		// ★ 2026-11-09：`distTagVersion()`（npm 查 latest 版本）随运行时版本发现下线。
 	});
 
 	test('a tampered checksum is rejected and leaves no node/ directory', async () => {

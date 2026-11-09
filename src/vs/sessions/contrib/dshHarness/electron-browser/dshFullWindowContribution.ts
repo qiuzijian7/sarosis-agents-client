@@ -209,6 +209,10 @@ export class DshFullWindowContribution extends Disposable {
 			void this._showIdeWindow('设置里关闭了启动即打开桌面窗口');
 			return;
 		}
+		// ★★ 2026-11-09（真机：F5 启动后约 26s app 自己 `will-quit` 退出，Host 与桌面窗口都正常）：
+		//   本实例的 20s 兜底闹钟必须**能被"别的窗口已认领开窗"这条分支撤掉**。
+		//   见下面 `!first` 分支的长注释 —— 用 `let` 提前声明，让 800ms 后的回调可安全引用。
+		let startupWatchdog: ReturnType<typeof setTimeout> | undefined;
 		const timer = setTimeout(async () => {
 			// ★ 2026-10-27（真机：一次启动出现**两扇**桌面窗口）：本贡献跑在 IDE 主窗口渲染进程里，
 			//   **渲染进程重载**（心跳自愈等）会重造它 ⇒ 2.5s 后又走一遍 ⇒ 多一扇空壳（用户可能盯着
@@ -219,7 +223,20 @@ export class DshFullWindowContribution extends Disposable {
 				return true;
 			});
 			if (!first) {
-				this._log.info('[dshHarness] startup: 本窗口的启动自动开窗已经做过（渲染进程重载过）⇒ 不再开第二扇桌面窗口');
+				// ★★ 2026-11-09（真机：F5 后 app 自动退出）：`!first` 只说明**别的窗口/别的实例**
+				//   已经（或正在）开桌面窗口，本实例不负责开窗 ⇒ 它的 `_desktopWindowOpened` 会
+				//   永远是 false。旧代码在这里直接 return，却**没有撤掉本实例的 20s 兜底闹钟** ⇒
+				//   20s 后 `_quit('20s 内桌面窗口没有开出来')` 触发，把已经正常显示 desktop 的
+				//   **整个应用**退掉 ✗✗（日志：`startup: 启动自动开窗已被窗口 2 认领…` 后 20s
+				//   就是 `NativeHostMainService.quit` 的 IPC 调用栈，退出码 0、`will-quit` 有序收场）。
+				//   触发场景不限于多实例：**渲染进程重载 / 心跳自愈重建贡献 / 多 IDE 窗口**都会走到。
+				// ⇒ 撤闹钟 + 打标记（双保险：即便定时器已排进队列，回调也会检查标记）。
+				this._startupWatchdogCanceled = true;
+				if (startupWatchdog) {
+					clearTimeout(startupWatchdog);
+					startupWatchdog = undefined;
+				}
+				this._log.info('[dshHarness] startup: 本窗口的启动自动开窗已经做过 ⇒ 不再开第二扇桌面窗口，并撤掉本实例的 20s 兜底（防止误退出整个应用）');
 				return;
 			}
 			this._log.info('[dshHarness] startup: open the dsh desktop window by default');
@@ -255,19 +272,26 @@ export class DshFullWindowContribution extends Disposable {
 		// 渲染进程侧的兜底：**20s** 内连桌面窗口**壳**都没开出来 ⇒ 显示 IDE（主进程 `windowImpl` 那边还有一道
 		// 45s 的，且露过一次面就作废）。2026-10-22 起壳不再等 Host（见上）⇒ 正常路径 ~3s 就置位，
 		// 这道闹钟只兜"辅助窗口本身建不出来"这种真故障 ✓。
-		const watchdog = setTimeout(() => {
-			if (!this._desktopWindowOpened) {
+		startupWatchdog = setTimeout(() => {
+			if (!this._desktopWindowOpened && !this._startupWatchdogCanceled) {
 				// 同上：兜底也不许亮 IDE（用户 2026-10-22 明确要求）⇒ 打日志 + 退出
 				void this._quit('20s 内桌面窗口没有开出来');
 			}
 		}, 20_000);
-		this._register(toDisposable(() => clearTimeout(watchdog)));
+		this._register(toDisposable(() => {
+			if (startupWatchdog) { clearTimeout(startupWatchdog); }
+		}));
 	}
 
 	/** 启动自动开窗后是否由我们把 IDE 主窗口藏起来了（关桌面窗口时要还回去；见 `dshIdeWindowHidden`）。 */
 	private _ideHiddenByStartup = false;
 	/** 桌面窗口是否已经真的开出来过（20s 兜底用；2026-10-22 起"壳出来"就算）。 */
 	private _desktopWindowOpened = false;
+	/**
+	 * 本实例的启动 20s 兜底是否已被撤销（2026-11-09）。
+	 * `claimDesktopAutoOpen` 返回 false ⇒ 开窗由别的窗口/实例负责 ⇒ 本实例不该再判"没开出来"。
+	 */
+	private _startupWatchdogCanceled = false;
 	/** "显示 IDE"请求的代数：每次 `_showIdeWindow` +1，用来让交错的"启动后隐藏"作废。 */
 	private _ideShowEpoch = 0;
 	/** 桌面窗口里那条「会话启动失败」提示条（2026-10-27；成功/关窗时撤掉）。 */

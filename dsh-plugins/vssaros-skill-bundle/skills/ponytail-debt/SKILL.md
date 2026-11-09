@@ -8,7 +8,8 @@ description: >
 activation: manual
 match: ["ponytail-debt", "ponytail debt", "what did ponytail defer", "list the shortcuts", "ponytail ledger", "技术债务", "ponytail债务", "延迟处理"]
 category: code
-recommended_tools: ["file_read", "terminal"]
+recommended_tools: ["read", "pwsh"]
+tier: extended
 ---
 
 Every deliberate ponytail shortcut is marked with a `ponytail:` comment naming

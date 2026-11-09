@@ -1,126 +1,90 @@
 ---
 name: tapd-skill
 description: "当提及 TAPD 需求/缺陷/任务/迭代/等内容或包含 tapd.woa.com 链接时使用。不适用于：TAPD 管理后台配置、权限管理、项目创建与管理、流水线与持续集成等场景。"
-homepage: http://mcp-idc.tapd.woa.com/mcp/
+homepage: https://api.tapd.cn
 metadata:
-  version: "0.2.0"
+  version: "0.3.0"
+tier: extended
 ---
 
-## ⚠️ 重要提醒：必须通过 mcporter-internal 调用
+# TAPD Open API（随包凭据，直接调用）
 
-```
-✅ 正确方式：mcporter-internal call tapd.<工具名>
-❌ 错误方式：直接调用 tapd 工具（会失败）
-```
+本技能**只走 TAPD Open API**（`https://api.tapd.cn`）：不需要配置外部服务、不需要本人登录、不需要个人访问令牌。
 
-> 不熟悉 mcporter-internal 用法？请参考 `mcporter-internal` skill 文档，或查阅本目录下 `DEPENDENCIES.md`。
-
-## 🔧 调用流程（严格遵循）
-
-### 第一步：检查服务状态
+## 调用入口
 
 ```bash
-mcporter-internal list
-# 确认 tapd 服务状态为 healthy
+node "<skillDir>/scripts/tapd-api.mjs" <命令> [参数]
 ```
 
-### 第二步：语义搜索工具
+`<skillDir>` 用加载本技能时给出的 **Base directory 绝对路径**替换（会话 cwd 不是技能目录，别写相对路径）。
+脚本零依赖（Node 18+ 自带 fetch），stdout **恒为一个 JSON 对象**：
+
+- 成功：`{"ok":true,"command":"list","credential":"Basic TAPD_CLIENT_ID/SECRET (shipped API account)","count":N,"shown":"GET /bugs?…","data":…}`
+- 失败：`{"ok":false,"error":"…"}`，退出码 1。`shown` 是本次请求的口径，回答里可以引用它。
+
+## 凭据（随包，开箱即用）
+
+- 安装包自带 TAPD 接入应用（`TAPD_CLIENT_ID` + `TAPD_CLIENT_SECRET`），**装完即可操作 TAPD**。
+- 优先级：环境变量 > 凭据文件 > 随包账号。可覆盖的键：`TAPD_CLIENT_ID` / `TAPD_CLIENT_SECRET`、`TAPD_API_USER` / `TAPD_API_PWD`、`TAPD_API_TOKEN`、`DSH_SUPERAGENT_TAPD_BEARER` / `DSH_SUPERAGENT_TAPD_USER` / `DSH_SUPERAGENT_TAPD_PASSWORD`。
+- 凭据文件：`<DSH_HOME>/tapd.env`，或用 `TAPD_ENV_FILE` / `DSH_SUPERAGENT_TAPD_ENV_FILE` 指向已有的 `.env`（`KEY=VALUE`，只读取白名单键）。
+- 停用随包账号：设置 `DSH_SUPERAGENT_TAPD_BUNDLED=off` 后必须自己提供凭据。
+- 凭据只用于构造 `Authorization` 头，脚本输出**不含任何明文密钥**；`status` 命令可随时验证连通性与当前账号类型。
+- 私有化/代理地址：`--base <URL>` 或环境变量 `TAPD_API_BASE`；项目 ID：`--workspace <ID>` 或 `TAPD_WORKSPACE_ID`（默认 GR 项目 `68880148`）。
+
+## 命令
+
+| 命令 | 用途 |
+|---|---|
+| `status` | 验证凭据与连通性（`/quickstart/testauth`），第一次用先跑它 |
+| `list <story\|bug\|task>` | 列表；`--limit 30`、`--page N`、`--field k=v`（可重复） |
+| `get <kind> <单号>` | 详情；`--comments N` 同时取评论 |
+| `count <kind>` | 服务端精确计数，回答「有多少」一律用它 |
+| `create <kind> --name <标题>` | 创建；其它字段用 `--field k=v` |
+| `update <kind> <单号> --field k=v` | 更新（必须给单号，至少一个字段） |
+| `comment <kind> <单号> --description <HTML>` | 发评论；`--author <署名>` 可选 |
+| `statuses <bug\|story>` | 状态码 ↔ 中文（`/workflows/status_map`） |
+| `iterations` | 迭代列表 |
+| `fields <kind>` | 字段配置（`/…/fields_info`） |
+| `raw <GET\|POST> <路径> [k=v …]` | 任意 Open API 路径；删除等非常用操作走这里 |
+| `help` | 完整用法 |
+
+通用参数：`--workspace`、`--base`、`--field`、`--pretty`（缩进输出）、`--confirm`（写操作显式确认）。
+
+## 调用示例
 
 ```bash
-mcporter-internal call tapd.lookup_tapd_tool task_description="提炼后的任务描述"
+node "<skillDir>/scripts/tapd-api.mjs" status
+node "<skillDir>/scripts/tapd-api.mjs" list bug --field current_owner=邱子鉴 --limit 10
+node "<skillDir>/scripts/tapd-api.mjs" get bug 1168880148001266165 --comments 5
+node "<skillDir>/scripts/tapd-api.mjs" count story --field status=open
+node "<skillDir>/scripts/tapd-api.mjs" create story --name "新需求" --field owner=邱子鉴
+node "<skillDir>/scripts/tapd-api.mjs" update bug 1168880148001266165 --field status=resolved
+node "<skillDir>/scripts/tapd-api.mjs" comment bug 1168880148001266165 --description "<p>已修复</p>"
 ```
 
-### 第三步：执行目标工具
+## ⚠️ 高危操作确认
 
-```bash
-mcporter-internal call tapd.proxy_execute_tool tool_name="找到的工具名" tool_args='{}'
-```
+`create` / `update` / `comment` 属于普通写操作，可直接执行；但**删除、批量修改（一次影响多条记录）、以及一切 `raw` 的 POST** 必须先向用户展示操作摘要并确认。`raw` 的写/删除路径**强制**带 `--confirm`，否则 CLI 直接拒绝。
 
-> ⚠️ **高危操作确认**：以下操作需先向用户展示操作摘要并确认后再执行，其余操作可直接执行：
-> - **删除操作**（如删除需求/缺陷/任务/Wiki）
-> - **批量操作**（一次影响多条记录，如批量修改状态、批量删除）
-> - 普通创建/更新操作无需确认，直接执行。
+- 写字段白名单由 CLI 校验：`name` / `title` / `description` / `owner` / `current_owner` / `priority` / `severity` / `status` / `module` / `release_id` / `iteration_id` / `begin` / `due` / `effort` / `label` / `parent_id` 等。白名单外一律拒绝，不要绕过去手写请求。
+- `description` 是 TAPD 富文本（HTML）：只做局部增补，保留原有图片 / 附件标记。
+- 写操作完成后要**回读确认**（`get` 一次），不要假定成功。
 
-## 📋 调用示例
+## 已从真机事故固化的坑
 
-**场景1**: 用户说"帮我查一下项目 12345 的 bug 列表"（只读操作）
+1. 翻页只能用 `page`；传 `offset` 会被忽略、永远返回第 1 页 —— CLI 直接拒绝 `offset`。
+2. 缺陷负责人字段是 `current_owner`；需求才是 `owner`。传错字段 TAPD 会**静默忽略并返回全项目数据**。
+3. 负责人值形如 `邱子鉴;` / `邱子鉴;蒋小川;`，查询时不要带分号。
+4. 不存在的路径会返回 HTTP 200 + `"Hello world from TAPD API"`（看起来像成功）—— CLI 当成「接口不存在」报错。
+5. 19 位长 ID 必须当字符串传，不要做数字运算。
+6. 状态码要翻译：`rejected` = 主干待回归（不是「拒绝」）、`status_1` = 无效关闭、`status_8` = 分支待回归。
 
-```bash
-# 搜索工具
-mcporter-internal call tapd.lookup_tapd_tool task_description="查询缺陷列表"
-# → 返回: bugs_get 及其 input_schema
+## 常见错误
 
-# 直接执行（只读，无需确认）
-mcporter-internal call tapd.proxy_execute_tool tool_name="bugs_get" tool_args='{"workspace_id": "12345"}'
-```
-
-**场景2**: 用户说"帮我提一个新需求"（普通创建，直接执行）
-
-```bash
-# 搜索工具
-mcporter-internal call tapd.lookup_tapd_tool task_description="创建需求"
-# → 返回: stories_create 及其 input_schema
-
-# 直接执行（普通创建，无需确认）
-mcporter-internal call tapd.proxy_execute_tool tool_name="stories_create" tool_args='{"workspace_id": "12345", "name": "XXX"}'
-```
-
-**场景3**: 用户说"把这些过期的 bug 都删掉"（删除操作，需确认）
-
-```bash
-# 搜索工具
-mcporter-internal call tapd.lookup_tapd_tool task_description="删除缺陷"
-
-# ⚠️ 高危操作，先确认
-# AI: "即将删除项目 12345 中的 12 条缺陷记录，确认执行？"
-# 用户: "确认"
-mcporter-internal call tapd.proxy_execute_tool tool_name="bugs_delete" tool_args='{"workspace_id": "12345", "id": "xxx"}'
-```
-
-**场景4**: 多步骤串联 — 查询迭代 → 获取任务 → 更新状态
-
-```bash
-# 1. 查询当前迭代
-mcporter-internal call tapd.lookup_tapd_tool task_description="查询迭代"
-mcporter-internal call tapd.proxy_execute_tool tool_name="iterations_get" tool_args='{"workspace_id": "12345", "status": "open"}'
-# → 得到 iteration_id
-
-# 2. 获取该迭代的任务
-mcporter-internal call tapd.proxy_execute_tool tool_name="tasks_get" tool_args='{"workspace_id": "12345", "iteration_id": "xxx"}'
-
-# 3. 更新任务状态（普通更新，直接执行）
-mcporter-internal call tapd.proxy_execute_tool tool_name="tasks_update" tool_args='{"workspace_id": "12345", "id": "T-001", "status": "completed"}'
-```
-
-## 🛠️ 工具说明
-
-| 工具 | 功能 | 何时使用 |
-|------|------|----------|
-| `lookup_tapd_tool` | 语义搜索匹配 TAPD 工具 | 不确定用哪个工具时 |
-| `lookup_tool_param_schema` | 查询工具参数 schema | 已知工具名，需获取参数定义时 |
-| `proxy_execute_tool` | 代理执行任意 TAPD 工具 | 执行具体操作（删除/批量操作需确认） |
-| `tql_syntax_reference` | TAPD 查询语法参考（TQL） | 需要高级查询语法（模糊/排除/多值/集合等）时参考，无需调用 |
-
-## 📝 task_description 提炼规范
-
-调用 `lookup_tapd_tool` 前，将用户原话提炼为「动作+对象」格式：
-
-| 用户原话 | 提炼后 |
-|----------|--------|
-| "帮我看看项目里有哪些 bug" | "查询缺陷列表" |
-| "我想提一个新需求" | "创建需求" |
-| "把任务状态改成已完成" | "更新任务状态" |
-| "获取当前迭代的所有任务" | "查询迭代任务" |
-
-**标准动作词**: 查询/获取/创建/新建/更新/修改/删除/统计
-**标准对象词**: 需求/story/缺陷/bug/任务/task/迭代/iteration/Wiki/测试用例
-
-## 🚨 常见错误及解决方案
-
-| 错误信息 | 原因 | 解决 |
-|----------|------|------|
-| "Not Acceptable: Client must accept application/json" | 直接调用了 TAPD 工具 | 使用 `mcporter-internal call tapd.xxx` 格式 |
-| "Invalid request parameters" | 参数格式不正确 | 先 `mcporter-internal list` 确认服务状态 |
-| 工具调用失败 | 调用方式或参数有误 | 检查前缀、JSON 格式、重新搜索工具 |
-
-> 跨平台 JSON 参数写法差异详见 [references/json-args-guide.md](references/json-args-guide.md)
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `TAPD 拒绝了凭据（HTTP 401/403）` | 环境变量/凭据文件覆盖了随包账号且值不对 | 检查覆盖的键，或清空后重跑 `status` |
+| `接口不存在：… Hello world` | Open API 路径写错 | 用 `raw` 时按开放平台文档核对路径 |
+| `请求失败（网络或超时）` | 内网到 api.tapd.cn 不通 | 检查网络，或用 `--base` 指向可达地址 |
+| `不允许写字段「x」` | 字段名拼错 | 用 `fields <kind>` 查真实字段，白名单外不要硬写 |

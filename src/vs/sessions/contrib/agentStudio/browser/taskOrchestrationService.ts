@@ -2410,26 +2410,11 @@ Goal: ${goal}`;
 			}
 		}
 
-		// Strategy 3: Auto-create agent
-		const agentName = taskAssigneeName || `Agent-${taskTitle.slice(0, 20)}`;
-		try {
-			this.logService.info(`[Orchestration] ensureTaskAgent: [Auto-create] Creating agent "${agentName}" for task "${taskTitle}"`);
-			const newAgent = await this.agentStudioService.createAgent({
-				name: agentName,
-				role: taskRole || 'Agent',
-				workspaceId,
-			} as Partial<Agent>);
-			if (planTask) {
-				planTask.assigneeId = newAgent.id;
-				planTask.assigneeName = newAgent.name;
-				await this._writePlans(plans);
-			}
-			this.logService.info(`[Orchestration] ensureTaskAgent: Created agent "${newAgent.name}" (${newAgent.id}) for task "${taskTitle}"`);
-			return { assigneeId: newAgent.id, assigneeName: newAgent.name };
-		} catch (err) {
-			this.logService.error(`[Orchestration] ensureTaskAgent: Failed to create agent: ${err}`);
-			return undefined;
-		}
+		// ★ 2026-11-09：Strategy 3「自动补齐」整体退役 —— IDE 侧不再创建 Agent
+		//   （唯一写口在 dsh 侧 Bots 页签）。找不到现成 Agent 就如实返回 undefined，
+		//   不再静默往 ~/.vssaros/agents 写 .agent.md，也不再让一次注定失败的请求白跑。
+		this.logService.info(`[Orchestration] ensureTaskAgent: 没有可用 Agent（"${taskAssigneeName || taskTitle}"，工作区 ${workspaceId || '-'}）；创建 Bot 已统一到 dsh 侧「Bots」页签`);
+		return undefined;
 	}
 
 	/**

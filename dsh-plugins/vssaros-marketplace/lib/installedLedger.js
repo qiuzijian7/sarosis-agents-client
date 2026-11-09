@@ -69,6 +69,9 @@ export async function upsertInstalled(dataRoot, entry) {
 			// ★ 2026-10-24：插件（npm 包）的卸载只能按**包名**；slug 是商城自己的标识
 			//   （zuoyunlai-dsh-pet-plugin），和包名（dsh-pet-plugin）不是一回事 ⇒ 装的时候记下来。
 			...(entry.packageName ? { packageName: String(entry.packageName) } : {}),
+			// ★ 2026-11-09：组合包分发出来的组件记住归属包 ⇒ 冲突检测与级联卸载
+			//   才知道哪些是「自己的」，不会误删/覆盖别的 Bot 包用的同名技能。
+			...(entry.owner ? { owner: String(entry.owner) } : {}),
 			installedAt: new Date().toISOString(),
 			source: entry.source ?? 'installed',
 		});

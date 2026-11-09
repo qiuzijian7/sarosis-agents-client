@@ -13,13 +13,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-	describeFeishuApps, readImAccounts, resolveFeishuApp, saveFeishu, saveFeishuApp,
+	describeFeishuApps, readBotFeishuApps, readImAccounts, resolveFeishuApp,
+	saveBotFeishuApp, saveFeishu, saveFeishuApp,
 } from '../lib/imCredentials.js';
 import { readFeishuAppsEnabled, readInboundEnabled, setFeishuAppEnabled, setInboundEnabled } from '../lib/imInboundState.js';
 import { acquireFeishuAppLock, feishuAppHolder, feishuAppLockKey } from '../lib/imFeishuAppLock.js';
-import { imLockPath } from '../lib/imInboundLock.js';
+import { imLockPath, tryAcquireImLock } from '../lib/imInboundLock.js';
 import { createFeishuAppInbounds } from '../lib/feishuAppInbounds.js';
-import { createBinding, createBindingHub, findBindingForChat, updateBinding } from '../lib/bindings.js';
+import {
+	allowDeadLetterSender, createBinding, createBindingHub, deleteBinding,
+	findBindingForChat, inboundKeyOf, updateBinding,
+} from '../lib/bindings.js';
+import { recordDeadLetter } from '../lib/deadLetters.js';
 import { createFeishuAdapter } from '../lib/adapters/feishu.js';
 import { createFeishuGateway } from '../lib/adapters/feishuInbound.js';
 import { appIdOfEvent, feishuEventBus } from '../lib/feishuEventBus.js';
@@ -176,7 +181,10 @@ await checkAsync('额外应用：按需建网关、拿自己的锁；已连时�
 await checkAsync('锁被占 ⇒ 409 且不连；不可恢复错误 ⇒ 放锁；stop/forget ⇒ 放锁', async () => {
 	const busy = manager({ acquireOk: false });
 	await assert.rejects(busy.m.start(B), (e) => e.httpStatus === 409 && /占用/.test(e.message));
-	assert.equal(busy.made.get(B).starts, 0);
+	/* ★ 2026-11-09：抢锁失败时**不再**预先建网关（原来会留一个永不启动的 idle 网关）。 */
+	assert.equal(busy.made.size, 0, '锁被占不许连，也不许残留网关');
+	assert.equal((busy.made.get(B)?.starts ?? 0), 0);
+	assert.deepEqual(Object.keys(busy.m.appStates()), []);
 	const dead = manager({ onStart: () => ({ status: 'error', lastError: 'unavailable：缺少 app_secret' }) });
 	await dead.m.start(B);
 	assert.deepEqual(dead.released, [B]);
@@ -356,6 +364,106 @@ await checkAsync('管理器：连上后登记为提供方，stop / 不可恢复�
 	const dead = make(() => ({ status: 'error', lastError: 'unavailable：缺少 app_secret' }));
 	await dead.start(C);
 	assert.equal(bus.active(C), false);
+});
+
+/* ── ⑥ 2026-11-09 防串台回归：两个应用同时收同一条消息 & 辅助键按应用隔离 ── */
+check('★ 入站幂等键按应用分开；老调用（无 appId / 无 default）键逐字不变', () => {
+	const base = { platform: 'feishu', messageId: 'om_same', userId: 'ou_u', content: 'hi' };
+	assert.notEqual(inboundKeyOf({ ...base, appId: A }, A), inboundKeyOf({ ...base, appId: B }, A),
+		'同一条消息在两个应用里必须各算「第一次」');
+	assert.equal(inboundKeyOf(base, ''), 'feishu:om_same', '老键不许变（否则存量落盘键全量重放）');
+	assert.equal(inboundKeyOf({ platform: 'telegram', messageId: 'x' }, ''), 'telegram:x', '非飞书不受影响');
+	assert.notEqual(inboundKeyOf({ platform: 'feishu', userId: 'ou_u', content: 'hi' }, A),
+		inboundKeyOf({ platform: 'feishu', appId: B, userId: 'ou_u', content: 'hi' }, A), '退化键也要带应用');
+});
+await checkAsync('★ 同一 messageId 由两个应用先后送达 ⇒ 两条各进自己的绑定（不是 duplicate）', async () => {
+	const config = configOf();
+	writeFileSync(join(config.dataRoot, 'agent-bindings.json'), JSON.stringify({ version: 1, bindings: [
+		{ id: 'a', platform: 'feishu', chatId: 'oc_g', chatType: 'p2p', targetKind: 'agent', targetId: 'coder', enabled: true, direction: 'both', allowFrom: [] },
+		{ id: 'b', platform: 'feishu', chatId: 'oc_g', chatType: 'p2p', targetKind: 'agent', targetId: 'arch', appId: B, enabled: true, direction: 'both', allowFrom: [] },
+	] }));
+	const hub = createBindingHub({
+		config, log: () => undefined, defaultFeishuAppId: async () => A, scanAgents: AGENTS.scanAgents,
+		dispatchAgent: async (_cfg, binding) => ({ sessionId: 's-' + binding.id }),
+	});
+	const base = { platform: 'feishu', chatId: 'oc_g', chatType: 'p2p', messageId: 'om_same', userId: 'ou_u', content: 'hi' };
+	const r1 = await hub.handleInbound({ ...base, appId: A });
+	const r2 = await hub.handleInbound({ ...base, appId: B });
+	assert.notEqual(r1.reason, 'duplicate');
+	assert.notEqual(r2.reason, 'duplicate', '第二个应用的消息被静默丢掉了 ✗');
+	assert.equal(r1.binding?.id, 'a');
+	assert.equal(r2.binding?.id, 'b');
+	assert.equal((await hub.handleInbound({ ...base, appId: A })).reason, 'duplicate', '同一应用重投仍要去重');
+});
+await checkAsync('删除绑定按应用精确匹配；多条候选且没指定 ⇒ 拒删不误伤', async () => {
+	const config = configOf();
+	const deps = { ...AGENTS, appConfigured: async () => true, defaultFeishuAppId: async () => A };
+	await createBinding(config, { platform: 'feishu', chatId: 'oc_del', targetId: 'coder' }, deps);
+	const { binding: bb } = await createBinding(config, { platform: 'feishu', chatId: 'oc_del', targetId: 'arch', appId: B }, deps);
+	await assert.rejects(deleteBinding(config, { platform: 'feishu', chatId: 'oc_del' }), (e) => e.httpStatus === 409);
+	const out = await deleteBinding(config, { platform: 'feishu', chatId: 'oc_del', appId: B });
+	assert.equal(out.removed, 1);
+	assert.equal(out.bindings.some((b) => b.id === bb.id), false);
+	assert.equal(out.bindings.length, 1, '默认应用那条不许被一起删掉');
+});
+await checkAsync('一键加白按死信里的 appId 落到对应的绑定', async () => {
+	const config = configOf();
+	writeFileSync(join(config.dataRoot, 'agent-bindings.json'), JSON.stringify({ version: 1, bindings: [
+		{ id: 'a', platform: 'feishu', chatId: 'oc_dl', targetKind: 'agent', targetId: 'coder', enabled: true, direction: 'both', allowFrom: [] },
+		{ id: 'b', platform: 'feishu', chatId: 'oc_dl', targetKind: 'agent', targetId: 'arch', appId: B, enabled: true, direction: 'both', allowFrom: [] },
+	] }));
+	const rec = await recordDeadLetter(config, { reason: 'no-whitelist', platform: 'feishu', appId: B, chatId: 'oc_dl', userId: 'ou_b', text: 'hi' });
+	await allowDeadLetterSender(config, { id: rec.item.id });
+	const after = JSON.parse(readFileSync(join(config.dataRoot, 'agent-bindings.json'), 'utf8')).bindings;
+	assert.deepEqual(after.find((b) => b.id === 'b').allowFrom, ['ou_b']);
+	assert.deepEqual(after.find((b) => b.id === 'a').allowFrom, [], '别把用户加进另一个应用的绑定');
+});
+await checkAsync('锁：别人持有时并发抢锁零赢家；同进程幂等且锁文件不是半个 JSON', async () => {
+	const home = mkdtempSync(join(tmpdir(), 'vssaros-lock-race-'));
+	dirs.push(home);
+	const own = await tryAcquireImLock('race-own', { home, pid: process.pid, dataRoot: '/owner' });
+	assert.equal(own.ok, true);
+	const rs = await Promise.all([
+		tryAcquireImLock('race-own', { home, pid: 999999, dataRoot: '/x' }),
+		tryAcquireImLock('race-own', { home, pid: 999998, dataRoot: '/y' }),
+	]);
+	assert.equal(rs.filter((r) => r.ok).length, 0, '别人持有时并发不许有人抢走');
+	const again = await Promise.all([
+		tryAcquireImLock('race-own', { home, pid: process.pid, dataRoot: '/a' }),
+		tryAcquireImLock('race-own', { home, pid: process.pid, dataRoot: '/b' }),
+	]);
+	assert.equal(again.filter((r) => r.ok).length, 2, '同进程重复拿锁仍是幂等成功');
+	assert.doesNotThrow(() => JSON.parse(readFileSync(imLockPath('race-own', home), 'utf8')), '锁文件不许是半个 JSON');
+});
+
+/* ── ⑦ 2026-11-09 Bot 设置页「飞书配置」：全局应用池 + 每 Bot 选型 ────────── */
+await checkAsync('Bot 飞书应用映射：可读写、未配置应用拒选、多 Bot 共用、清空回默认', async () => {
+	const config = configOf();
+	await saveFeishu(config, { appId: A, appSecret: 'sa' });
+	await saveFeishuApp(config, { appId: B, appSecret: 'sb', name: 'B应用' });
+	assert.deepEqual(await readBotFeishuApps(config), {});
+	await assert.rejects(saveBotFeishuApp(config, { botId: 'bot1', appId: C }), (e) => e.httpStatus === 400);
+	await assert.rejects(saveBotFeishuApp(config, { botId: 'bot1', appId: B, actor: { kind: 'bot' } }), (e) => e.httpStatus === 403);
+	assert.deepEqual(await saveBotFeishuApp(config, { botId: 'bot1', appId: B }), { bot1: B });
+	assert.deepEqual(await saveBotFeishuApp(config, { botId: 'bot2', appId: B }), { bot1: B, bot2: B }, '全局池共享：两个 Bot 可共用同一个应用');
+	assert.deepEqual(await readBotFeishuApps(config), { bot1: B, bot2: B });
+	assert.deepEqual(await saveBotFeishuApp(config, { botId: 'bot1', appId: '' }), { bot2: B });
+	assert.deepEqual((await describeFeishuApps(config)).map((a) => a.appId), [A, B], '写映射不影响凭据池');
+});
+check('入站路由：绑定没写 appId 时按 Bot 选的应用匹配；不传 botApps 保持旧行为', () => {
+	const list = [{ id: 'b', platform: 'feishu', chatId: 'oc_g', targetId: 'bot1', enabled: true }];
+	const b = (extra) => findBindingForChat(list, 'feishu', 'oc_g', Object.assign({ defaultAppId: A }, extra));
+	assert.equal(b({ appId: B, botApps: { bot1: B } })?.id, 'b');
+	assert.equal(b({ appId: A, botApps: { bot1: B } }), null, '别的应用的消息不许进这个 Bot');
+	assert.equal(b({ appId: B }), null, '不传 botApps 时逐字保持旧行为');
+});
+await checkAsync('出站：绑定没写 appId 但 Bot 选了应用 ⇒ 用该应用的身份发', async () => {
+	const config = configOf();
+	const got = [];
+	const hub = createBindingHub({ config, log: () => undefined, botApps: async () => ({ bot1: B }) });
+	hub.register({ id: 'feishu', async send(ctx) { got.push(ctx.appId); } });
+	await hub.deliver({ id: 'x', platform: 'feishu', chatId: 'oc_1', targetId: 'bot1', enabled: true, direction: 'both' }, 'hi');
+	assert.deepEqual(got, [B]);
 });
 
 for (const d of dirs) { try { rmSync(d, { recursive: true, force: true }); } catch { /* 忽略 */ } }

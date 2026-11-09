@@ -15,7 +15,7 @@ import type { SourceContext } from '../sources/host.ts'
 import { itemThread, itemTrigger, resolvedConfig, signatureOf } from '../sources/tapd.ts'
 import { TAPD_SOURCE, TAPD_TYPES, tapdApi, watchWorkspace,
   type TapdApi, type TapdConfig, type TapdItem, type TapdType, type TapdWatch } from '../sources/tapd-api.ts'
-import { cleanOwner, platformMembers, refreshPlatformMembers } from '../sources/tapd-members.ts'
+import { cleanOwner } from '../sources/tapd-members.ts'
 
 /** Fixed path on the loopback Web server; TAPD needs an intranet gateway or reverse proxy to reach it. */
 export const TAPD_WEBHOOK_PATH = '/orchestrator/webhook/tapd'
@@ -150,16 +150,13 @@ export async function handleTapdWebhook(req: IncomingMessage, deps: TapdWebhookD
 
   let item: TapdItem | undefined
   try {
-    const api = deps.api?.(config, ctx) ?? tapdApi(config, ctx.commands)
+    const api = deps.api?.(config, ctx) ?? tapdApi(config)
     item = (await api.items(event.type, event.workspace, { id: event.id })).find(row => row.id === event.id)
   } catch (error) { return { status: 502, body: { error: `TAPD item reread failed: ${message(error)}` } } }
   // A deleted item, or one the account may not read: polling decides what to do with it.
   if (!item) return { status: 200, body: { ignored: 'item not found' } }
 
-  // The Webhook runs in the main bundle, which has its own member-table cache; refresh it before resolving aliases.
-  if (config.memberApi && !platformMembers(config.memberApi)) {
-    try { await refreshPlatformMembers(config.memberApi) } catch { /* static mappings still work */ }
-  }
+  // Identity aliases come from the static `members` mapping in the settings; no network lookup.
   const resolved = resolvedConfig(config)
   const watch = resolved.watches.find(candidate => watchMatches(resolved, candidate, event, item!))
   if (!watch) return { status: 200, body: { ignored: 'no matching watch' } }

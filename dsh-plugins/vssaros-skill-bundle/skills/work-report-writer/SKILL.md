@@ -5,8 +5,9 @@ whenToUse: 用户要写/整理日报、周报、月报、阶段总结，或把�
 activation: auto
 match: ["周报", "日报", "月报", "工作总结", "阶段总结", "工作汇报", "述职"]
 category: productivity
-recommended_tools: ["file_read", "file_write"]
+recommended_tools: ["read", "write"]
 license: MIT
+tier: core
 ---
 
 # 日报 周报与工作总结

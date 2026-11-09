@@ -103,6 +103,8 @@ export class FeedbackWindowMainService extends Disposable implements IFeedbackWi
 		let win: BrowserWindow;
 		try {
 			win = this._ensureWindow();
+			// ★ 先清表单草稿再加载：否则草稿里的**历史附件**会和本次的 3 个卷累加
+			await this._clearFormDraft(win, url);
 			await win.loadURL(url);
 		} catch (e) {
 			const error = e instanceof Error ? e.message : String(e);
@@ -204,6 +206,28 @@ export class FeedbackWindowMainService extends Disposable implements IFeedbackWi
 			if (!win.isDestroyed()) { win.destroy(); }
 		}));
 		return win;
+	}
+
+	/**
+	 * 清掉表单在**本地**保存的草稿（含历史附件引用）。
+	 *
+	 * ⚠⚠ 真机 2026-11-09：反馈窗口是**单例**、且用默认 session ⇒ 飞书表单的草稿一直留着，
+	 *   而 `DOM.setFileInputFiles` 对草稿里的附件是**追加**而不是替换 ⇒ 用户最后一次提交
+	 *   会一次性带上历次采集的诊断包（样本：12 个文件 = 4 次采集 × 3 卷，最早是 11-04 的）。
+	 *
+	 * 只清 storage、**不清 cookie**：表单匿名也能传附件，但企业表单提交可能要登录态。
+	 * 失败只是"可能带上历史附件"，绝不阻断打开窗口。
+	 */
+	private async _clearFormDraft(win: BrowserWindow, url: string): Promise<void> {
+		try {
+			const origin = new URL(url).origin;
+			await win.webContents.session.clearStorageData({
+				origin,
+				storages: ['localstorage', 'indexdb', 'websql', 'cachestorage', 'serviceworkers'],
+			});
+		} catch (e) {
+			this._logService.warn('[feedbackWindow] 清理表单草稿失败（可能带上历史附件）', e);
+		}
 	}
 
 	/** 用 CDP 填文件 —— 等价于用户点「添加本地文件」选中它们。 */

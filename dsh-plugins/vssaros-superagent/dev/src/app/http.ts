@@ -31,8 +31,10 @@ import { decisionList, search, threadDetail, threadList } from './views/threads.
 import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
 import { ReviewRefused, type Reviews } from './review.ts'
 import type { CliCheck } from './cli-check.ts'
-import { TAPD_SOURCE } from '../sources/tapd-api.ts'
-import { saveTapdCredential, TapdCredentialError, tapdCredentialStatus } from '../sources/tapd-auth.ts'
+import { TAPD_SOURCE, TapdConfigSchema, TapdOpenApi, type TapdTestResult } from '../sources/tapd-api.ts'
+import { saveTapdCredential, TapdCredentialError, tapdCredentialStatus, tapdCredential, tapdEnvironment,
+  type TapdSetupStatus } from '../sources/tapd-auth.ts'
+import { cleanOwner, resolveTapdName } from '../sources/tapd-members.ts'
 import { TEAM_BOTS_GLOBAL, TEAM_BOTS_PER_PLAN, TeamError, type Team } from './team.ts'
 import type { TeamArchive } from './team-archive.ts'
 import type { Retrospective } from './retrospective.ts'
@@ -108,6 +110,10 @@ export interface HttpHost {
 function feishuAppOf(runtime: Pick<HttpHost, 'store'>): string {
   const config = runtime.store.settings().sources.feishu?.config as { appId?: unknown } | undefined
   return typeof config?.appId === 'string' ? config.appId : ''
+}
+/** VsSaros addition: the saved TAPD Source config with schema defaults filled in, for the panel's setup checklist. */
+function tapdConfigOf(runtime: Pick<HttpHost, 'store'>) {
+  return TapdConfigSchema.parse(runtime.store.settings().sources.tapd?.config ?? {})
 }
 /**
  * Represents a client-facing 400 or 404 error raised during management route parsing or lookup.
@@ -278,7 +284,32 @@ function routes(runtime: HttpHost): Routes {
     'POST sources/tapd/credentials': async ({ body }) => saveTapdCredential(z.object({
       kind: z.enum(['client', 'user', 'token']).optional(), id: z.string().max(512).optional(),
       secret: z.string().max(512).optional(), clear: z.boolean().optional(),
+      bundled: z.enum(['on', 'off']).optional(),
     }).strict().parse(await body(4096))),
+    // VsSaros addition: the setup checklist is data-driven (saved config + live health), and the probe is read-only.
+    'GET sources/tapd/setup': (): TapdSetupStatus => {
+      const config = tapdConfigOf(runtime)
+      const agentResolved = resolveTapdName(config.agent, config.members)
+      return {
+        credential: tapdCredentialStatus(), watches: config.watches.length, workspace: config.workspace,
+        agent: config.agent, agentResolved,
+        agentMapped: !!config.agent && agentResolved !== cleanOwner(config.agent),
+        healthCode: runtime.health[TAPD_SOURCE]?.code ?? null,
+      }
+    },
+    'POST sources/tapd/test': async ({ body }): Promise<TapdTestResult> => {
+      const request = z.object({ api: z.string().trim().max(300).optional(),
+        workspace: z.string().trim().regex(/^\d+$/).optional() }).strict().parse(await body(4096))
+      const config = tapdConfigOf(runtime)
+      const api = new TapdOpenApi({ api: request.api ?? config.api })
+      const at = new Date().toISOString()
+      try {
+        await api.verify(request.workspace ?? config.workspace)
+        return { ok: true, method: tapdCredential(tapdEnvironment())?.method ?? '', at }
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error), at }
+      }
+    },
     'GET models': () => runtime.models(),
     'GET prompts': ({ query }) => { const { revision, offset } = PromptsQuery.parse(query); return promptsView(runtime, revision, offset) },
     'PUT prompts': async input => {

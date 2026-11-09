@@ -897,100 +897,21 @@ export class AgentStudioService extends Disposable implements IAgentStudioServic
 		}
 	}
 
+	/**
+	 * ★ 2026-11-09：IDE 侧不再具备创建 Agent 的能力 —— 唯一写口在 dsh 侧
+	 *   （聊天框左侧栏「Bots」页签 → ＋ → 新建 Bot → POST /x/agents/api/agents {action:'create'}）。
+	 *
+	 * 为什么不是「把 IDE 的创建转发到 dsh」：dsh 页面桥的安全模型明确「写入、执行类能力不走页面桥」
+	 *   （dshPageBridgeProtocol.ts），agents 模块也没有承载页（view.kind='none'），IDE 侧没有到
+	 *   dsh Host 的现成写通道 —— 再造一条桥等于把 IDE 侧写盘以另一种形式复活，且又多了一套字段模型。
+	 *
+	 * ⚠ 保留方法签名（IAgentStudioService 契约、历史调用方、退役守卫都硬读本文件），但**绝不写盘**：
+	 *   所有调用统一抛带指引的错，避免旧实现那种「写失败了还返回 agent」的假成功。
+	 *   安装 / 导入 / 自动补齐这类非用户主动路径同样落这里 ⇒ 见各自入口的引导处理。
+	 */
 	async createAgent(data: Partial<Agent>): Promise<Agent> {
-		// The caller may also supply per-workspace runtime fields (workspaceId /
-		// worktreePath / worktreeBranch / agentDir / memoryConfig). These are NOT
-		// part of the global Agent definition — they are extracted here and
-		// persisted as an AgentBinding instead.
-		const runtime = data as Partial<Agent> & {
-			workspaceId?: string; worktreePath?: string; worktreeBranch?: string;
-			agentDir?: string; memoryConfig?: AgentBinding['memoryConfig'];
-		};
-		const now = new Date().toISOString();
-		const id = data.id || this._generateId(data.name || 'agent');
-		const agent: Agent = {
-			id, name: data.name || 'New Agent', role: data.role || 'assistant',
-			description: data.description || '', icon: data.icon || '🤖',
-			// ★ 2026-10-16（Agents 方案 A 第 4 步 / Q10）：**不再兜底写 `claude-sonnet-4-20250514`**。
-			//   空串 = 跟随默认模型：`serializeAgentMd` 只在有值时才写 `model:`（agentMdFormat.ts），
-			//   dsh 侧读到"没写 model"即跟随默认 preset 模型；原生聊天 `_applyAgentDefaultModelSelection`
-			//   也是 `if (agent?.model)` 才覆盖 ⇒ 两个引擎都退回当前选中的模型 ✓。
-			//   原兜底在 dsh 引擎下**没有路由** ⇒ 新建出来的 Agent 一律「模型未映射」（用户截图里那排黄 chip）✗。
-			model: data.model || '',
-			skills: data.skills || [], tools: data.tools,
-			category: data.category || 'General',
-			systemPrompt: data.systemPrompt, temperature: data.temperature,
-			handOffs: data.handOffs, hooks: data.hooks,
-			visibility: data.visibility, agents: data.agents,
-			confidenceThreshold: data.confidenceThreshold,
-			parallelStrategy: data.parallelStrategy,
-		// config.md binding is part of the definition (same across workspaces).
-		configHtml: data.configHtml,
-			sortOrder: data.sortOrder,
-			status: data.status,
-			version: data.version,
-			storeId: data.storeId,
-			source: 'custom',
-			// owner 记录创建者（当前登录用户），用于上传权限控制；未登录时为空串（可认领式上传）
-			owner: this.tofAuthService?.currentUser?.user_id ?? '',
-			createdAt: now, updatedAt: now,
-		};
-		// NOTE: per-workspace runtime state (workspaceId / worktreePath /
-		// worktreeBranch / agentDir / memoryConfig) is intentionally NOT written
-		// here — it now lives on AgentBinding. If the caller supplied any of
-		// those, persist them as a binding for the target workspace instead.
-
-		// Create the agent's directory: ~/.vssaros/agents/{agentId}/
-		// Write .agent.md so the agent has a persistent home dir.
-		try {
-			const agentDir = await this.getAgentDir(id);
-			try {
-				await this.fileService.resolve(agentDir);
-			} catch {
-				await this.fileService.createFolder(agentDir);
-			}
-		// Write .agent.md (VS Code Chat standard format — primary definition)
-		await this._writeAgentMd(agent);
-			this.logService.info(`[AgentStudio] Created agent dir + files at ${agentDir.toString()}`);
-		} catch (err) {
-			this.logService.warn(`[AgentStudio] createAgent: failed to create agent dir for ${id}: ${err instanceof Error ? err.message : String(err)}`);
-		}
-
-		// bootstrapTemplates no longer writes a separate .agent.md —
-		// _writeAgentMd already generates the VS Code Chat compatible format.
-		// bootstrapTemplates.agentsMd body content (if provided) is appended to
-		// the agent's systemPrompt as project-level instructions.
-		const bootstrap = (data as any).bootstrapTemplates;
-		if (bootstrap?.agentsMd) {
-			try {
-				// Append bootstrap instructions to .agent.md body
-				const agentWithInstructions: Agent = {
-					...agent,
-					systemPrompt: (agent.systemPrompt || '') + '\n\n' + bootstrap.agentsMd,
-				};
-				await this._writeAgentMd(agentWithInstructions);
-			} catch (err) {
-				this.logService.warn(`[AgentStudio] createAgent: failed to append bootstrap instructions for ${id}: ${err instanceof Error ? err.message : String(err)}`);
-			}
-		}
-		if (runtime.workspaceId) {
-			try {
-				await this.upsertAgentBinding(runtime.workspaceId, id, {
-					worktreePath: runtime.worktreePath,
-					worktreeBranch: runtime.worktreeBranch,
-					agentDir: runtime.agentDir,
-					memoryConfig: runtime.memoryConfig,
-				});
-			} catch (err) {
-				this.logService.warn(`[AgentStudio] createAgent: failed to persist binding for ${id} in ${runtime.workspaceId}: ${err instanceof Error ? err.message : String(err)}`);
-			}
-		}
-		// 清除缓存，确保下次 getAgents() 返回包含新 agent 的数据
-		this._agentsCache = undefined;
-		this._onDidChangeAgents.fire();
-		// 初始化 git 仓库（版本管理）
-		this.agentVersionService.init(id).catch(() => {});
-		return agent;
+		this.logService.warn(`[AgentStudio] createAgent 已下线（拒绝 "${String(data?.name ?? data?.id ?? '')}"）：创建 Bot 统一走 dsh 侧 Bots 页签`);
+		throw new Error('IDE 侧已不提供创建 Agent 能力：请在聊天框左侧栏「Bots」页签点 ＋ → 新建 Bot（dsh 侧）。');
 	}
 
 	/**

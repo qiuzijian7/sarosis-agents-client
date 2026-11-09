@@ -204,7 +204,7 @@ export function submitText(view: SubmitView | undefined): string {
     return view.route.kind === 'created' ? `已建群${name}，群里的 Bots 接着做。` : view.route.kind === 'updated' ? `已更新群${name}。` : `已转给群${name}。`
   }
   if (view.tickets?.length) return `已转给正在做的工单${view.tickets.map(title => `「${title}」`).join('、')}。`
-  return '主管收到了，需要你回复的消息会发到这里。'
+  return '已收到，正在按普通流程安排；有进展会在这里告诉你。'
 }
 
 const textOf = (message: StreamMessage): string => {

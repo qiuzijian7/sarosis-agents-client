@@ -4,10 +4,12 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import fs from 'node:fs';
+import path from 'node:path';
 import { LineDecoder, isBridgeHello } from '../../common/dshBridgeProtocol.js';
 import {
 	bridgePipePath, buildHostArgs, buildPluginAddArgs, buildPluginAddArgsMany, buildProfileInitArgs, compareSemver, isSameOrigin,
-	isSupportedNodeVersion, localPluginDir, parseAuthUrl, parseRuntimeState, renderBridgeOverlay, renderCodebaseOverlay, renderKanbanOverlay, renderSandboxOverlay, resolveSiblingPackage, selectRuntimeVersion, toFileSpec, withCurrent,
+	isSupportedNodeVersion, localPluginDir, parseAuthUrl, renderBridgeOverlay, renderCodebaseOverlay, renderKanbanOverlay, renderSandboxOverlay, resolveSiblingPackage, toFileSpec,
 } from '../../common/dshCli.js';
 
 suite('dshHarness / CLI contract', () => {
@@ -193,21 +195,17 @@ suite('dshHarness / CLI contract', () => {
 		assert.deepStrictEqual(sorted, ['0.1.7-rc.2', '0.1.7', '0.2.0-rc.2', '0.2.0-rc.10', '0.2.0', '0.2.1-alpha.1']);
 	});
 
-	test('runtime state parsing is tolerant', () => {
-		assert.deepStrictEqual(parseRuntimeState(undefined), { history: [] });
-		assert.deepStrictEqual(parseRuntimeState('{oops'), { history: [] });
-		assert.deepStrictEqual(parseRuntimeState('{"current":"../evil","history":["0.1.0",3]}'), { current: undefined, history: ['0.1.0'] });
-		const s = withCurrent(withCurrent({ history: [] }, '0.1.7-rc.2'), '0.2.0-rc.2');
-		assert.deepStrictEqual(s, { current: '0.2.0-rc.2', history: ['0.1.7-rc.2', '0.2.0-rc.2'] });
-		assert.deepStrictEqual(withCurrent(s, '0.1.7-rc.2').history, ['0.2.0-rc.2', '0.1.7-rc.2']);
-	});
-
-	test('version selection honours the pointer and never silently prefers alpha', () => {
-		const installed = ['0.1.7-rc.2', '0.2.0-rc.2', '0.2.1-alpha.1'];
-		assert.strictEqual(selectRuntimeVersion({ current: '0.1.7-rc.2', history: [] }, installed), '0.1.7-rc.2');
-		assert.strictEqual(selectRuntimeVersion({ current: '9.9.9', history: [] }, installed), '0.2.1-alpha.1', 'no stable installed → highest prerelease');
-		assert.strictEqual(selectRuntimeVersion({ history: [] }, [...installed, '0.1.6']), '0.1.6', 'stable wins over prerelease when no pointer');
-		assert.strictEqual(selectRuntimeVersion({ history: [] }, []), undefined);
+	test('★ 单版本模型：CLI 契约里不再有 state.json 指针 / 版本选择语义', () => {
+		// ★★ 2026-11-09：产品收敛成「只保留 bundled + dsh-compat.json 构建期校验」。
+		//   `IRuntimeState` / `parseRuntimeState` / `withCurrent` / `selectRuntimeVersion`
+		//   服务于 `<userData>/dsh-runtime/state.json` 的 current 指针与多版本池，已整体删除。
+		//   这条守卫防止有人再把它加回来（那会重新引入 11-07 / 11-09 两次 F5 崩溃的成因）。
+		const src = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/contrib/dshHarness/common/dshCli.ts'), 'utf8')
+			.replace(/\/\*[\s\S]*?\*\//g, '').split(/\r?\n/).filter(l => !/^\s*\/\//.test(l)).join('\n');
+		for (const symbol of ['IRuntimeState', 'parseRuntimeState', 'withCurrent', 'selectRuntimeVersion', 'state.json']) {
+			assert.ok(!src.includes(symbol), `dshCli.ts 不该再有 ${symbol}（单版本模型）`);
+		}
+		assert.ok(src.includes('isRuntimeVersionDir'), '版本目录名校验要保留（bundled pin 与构建期脚本共用）');
 	});
 
 	test('bridge overlay quotes Windows pipe paths safely', () => {

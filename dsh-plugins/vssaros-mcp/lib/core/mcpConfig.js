@@ -49,7 +49,10 @@ export function parseMcpServers(text, env = process.env) {
 	}
 	const seen = new Set();
 	for (const [name, raw] of Object.entries(entries)) {
-		const skip = reason => skipped.push({ name, reason });
+		// ★ 2026-11-08：结构化状态（对齐 DS Bot 的 needs-approval 状态机，但不引入第二套 UI）。
+		//   state 只表达**解析期可判定**的状态；连接期 connecting/ready/error 属于运行时
+		//   dsh-mcp-client，不在这里伪造。缺省 error，只有「配置合法但等用户批准」才是 needs-approval。
+		const skip = (reason, state = 'error') => skipped.push({ name, reason, state });
 		if (!SERVER_NAME_RE.test(name)) {
 			skip(`服务器名不满足 dsh 的 [A-Za-z0-9_-]{1,32}：${name}`);
 			continue;
@@ -116,6 +119,13 @@ export function parseMcpServers(text, env = process.env) {
 		};
 
 		if (type === 'stdio' || (!type && typeof config.command === 'string')) {
+			// ★ 2026-11-08 P1（R1 工具授权缺口，对齐 DS Bot）：stdio 会在本机起外部进程，
+			//   必须显式 `approved: true` 才挂；缺省/未写一律跳过。与 IDE 侧
+			//   `dshMcpConfig.ts` 的判据逐字同形（check-mcp-approval.mjs 钉住）。
+			if (config.approved !== true) {
+				skip('stdio 服务器未批准（在 mcp.json 里给该条加 "approved": true 才会启动本机进程）', 'needs-approval');
+				continue;
+			}
 			const command = typeof config.command === 'string' ? resolve(config.command.trim()) : undefined;
 			if (command === undefined) {
 				skip(typeof config.command === 'string' ? `command 里有无法解析的占位符：${config.command}` : 'stdio 服务器缺 command');
@@ -170,6 +180,24 @@ export function parseMcpServers(text, env = process.env) {
 		skip(`未识别的 type：${type || '(缺省)'}（dsh 侧只认 stdio / http）`);
 	}
 	return { servers, skipped };
+}
+
+/**
+ * ★ 2026-11-08：把解析结果汇总成能力状态视图（DS Bot `capabilityStatusesView` 的等价物）。
+ * `ready` = 会被挂载的服务器；其余按 state 分组。`needs-approval` 单独列出，
+ * 让 UI / 模型知道「这台不是坏了，只是等批准」——这是布尔 approved 表达不出来的信息。
+ */
+export function mcpStateView(parsed) {
+	const rows = [];
+	for (const server of parsed?.servers ?? []) {
+		rows.push({ name: server.serverName, state: 'ready', reason: '' });
+	}
+	for (const item of parsed?.skipped ?? []) {
+		rows.push({ name: item.name, state: item.state ?? 'error', reason: item.reason ?? '' });
+	}
+	const counts = { ready: 0, 'needs-approval': 0, disabled: 0, error: 0 };
+	for (const row of rows) { if (row.state in counts) { counts[row.state] += 1; } }
+	return { rows, counts, pendingApproval: counts['needs-approval'] > 0 };
 }
 
 /** 计数摘要（页面自诊断用；`sse` 这类被跳过的也计数，便于"配置了但没生效"一眼可见）。 */

@@ -1166,8 +1166,12 @@ export interface IScrapeToBoardOptions {
  * session is focused we fall back to Saros Claw so `web_scrape_to_board` still
  * works from a standalone integrated-browser page.
  */
-export const SAROS_CLAW_AGENT_ID = 'saros-claw';
-const DEFAULT_SCRAPE_SESSION_ID = SAROS_CLAW_AGENT_ID;
+/**
+ * ★ 2026-11-09：通用主助理 saros-claw 已删除。这里**不是 agent id**，而是 Playwright
+ * 页面跟踪的 sessionId / 看板数据分区键；存量看板数据都写在 `chat-history/saros-claw/`
+ * 等以该字符串命名的分区里 ⇒ 保留字面值，只把导出名改成语义化的，避免误以为 agent 还在。
+ */
+export const DEFAULT_SCRAPE_SESSION_ID = 'saros-claw';
 
 /**
  * Resolve the Playwright `sessionId` used to read/scrape a browser page.
@@ -1191,11 +1195,11 @@ export function resolveScrapeSessionId(ctx: KanbanToolContext): string | undefin
 		const type = s.sessionType;
 		const path = s.resource?.toString().toLowerCase() ?? '';
 		const title = s.title.get()?.toLowerCase() ?? '';
-		if (type === SAROS_CLAW_AGENT_ID || path.includes(SAROS_CLAW_AGENT_ID) || title.includes('saros claw')) {
+		if (type === DEFAULT_SCRAPE_SESSION_ID || path.includes(DEFAULT_SCRAPE_SESSION_ID) || title.includes('saros claw')) {
 			return s.resource.toString();
 		}
 	}
-	// Final fallback: a constant session id for Saros Claw so the Playwright
+	// Final fallback: a stable legacy session id so the Playwright
 	// service can still create a session and read the globally-tracked page.
 	return DEFAULT_SCRAPE_SESSION_ID;
 }

@@ -3,13 +3,12 @@
  * none talks to TAPD or starts a Web server. Polling and its comment follow-up are deliberately left out of scope.
  */
 import type { IncomingMessage } from 'node:http'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { handleTapdWebhook, parseTapdWebhook, secretMatches, TAPD_WEBHOOK_PATH, watchMatches } from '../src/app/tapd-webhook.ts'
 import type { Trigger } from '../src/core/index.ts'
 import { KV } from '../src/kv.ts'
 import type { SourceContext } from '../src/sources/host.ts'
 import { TapdConfigSchema, type TapdApi, type TapdConfig, type TapdItem } from '../src/sources/tapd-api.ts'
-import { resetPlatformMembers } from '../src/sources/tapd-members.ts'
 
 const story: TapdItem = { type: 'story', workspace: '68880148', id: '1168880148001000001', title: '登录页 4K 下错位',
   description: '4K 屏打开登录页会错位。', status: 'open', owners: ['张三'], creator: '张三', iteration: '77',
@@ -56,8 +55,6 @@ async function deliver(body: unknown, of = config(), items: TapdItem[] = [story]
   const result = await handleTapdWebhook(request(body, options), { context: () => source.ctx, api: () => file.api })
   return { ...result, ...source, ...file }
 }
-
-afterEach(() => resetPlatformMembers())
 
 describe('the TAPD Webhook event record', () => {
   it('reads the flat record TAPD documents, including a numeric workspace', () => {

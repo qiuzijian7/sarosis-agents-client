@@ -4,6 +4,7 @@ description: "Pre-commit review: security scan, quality gates, auto-fix."
 activation: auto
 match: ["requesting-code-review", "requesting code review", "code-review", "security", "verification", "quality", "pre-commit", "auto-fix"]
 category: development
+tier: core
 ---
 
 # Pre-Commit Code Verification

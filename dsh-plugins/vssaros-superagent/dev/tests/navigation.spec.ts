@@ -63,6 +63,14 @@ it('reads each page a tab remembered with the parameters it takes, and leaves ou
     .toEqual({ page: 'settings', query: { group: 'source', source: 'feishu' } })
   expect([parseRoute('overview'), parseRoute(null)]).toEqual([undefined, undefined])
 })
+
+// ★ 2026-11-09（用户要求）：流程图 / 看板 / 列表并入「执行」页签；`work` 只是历史深链别名。
+it('normalizes a stored Workbench link to the Execution tab and keeps the ticket', () => {
+  expect(parseRoute({ page: 'work' })).toEqual({ page: 'execution' })
+  expect(parseRoute({ page: 'work', query: { ticket: 'tk-1' } })).toEqual({ page: 'execution', query: { ticket: 'tk-1' } })
+  expect(parseRoute({ page: 'execution', query: { filter: 'idle', ticket: 'tk-1' } }))
+    .toEqual({ page: 'execution', query: { filter: 'idle', ticket: 'tk-1' } })
+})
 it('opens the settings that fix each setup problem: the Deployment group, or the card of the Source it names', () => {
   expect(setupPage('deployment')).toEqual({ page: 'settings', query: { group: 'deployment' } })
   for (const place of ['github', 'feishu'] as const) expect(setupPage(place)).toEqual({ page: 'settings', query: { group: 'source', source: place } })

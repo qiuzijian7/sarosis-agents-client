@@ -153,6 +153,9 @@ window.__ModuleLoader__.load({
 		const AGENTS_API_ROOMS = "/x/agents/api/rooms";
 		/** 全局「群执行中」浮层与 Bots 页签实时刷新用的增量取数（2026-11-05，对齐 DS Bot roomProgress / state）。 */
 		const AGENTS_API_ROOMS_ACTIVE = AGENTS_API_ROOMS + "?active=1";
+		/** ★ 2026-11-09：群变更 SSE（Host 建群成功立刻推一帧，侧栏不等 2s 轮询）。 */
+		const AGENTS_API_ROOMS_EVENTS = "/x/agents/api/rooms-events";
+		const ROOMS_ERROR_EVENT = "vssaros-rooms-error";
 		/** P1：浮层轮询发现群列表变了就发这个事件，Bots 页签立刻合并，不必等下一次 2s 轮询。 */
 		const ROOMS_CHANGED_EVENT = "vssaros-rooms-changed";
 		/** 只读 MemberDock 的事件源：全局浮层把同一份 `?active=1` 进度广播给 composer dock。 */
@@ -337,11 +340,24 @@ window.__ModuleLoader__.load({
 		/** 只拉群列表（Bots 页签开着时轮询 ⇒ 群执行后 preview / updatedAt 会自己变）。纯取数。 */
 		function fetchRoomsOnly(fetchImpl) {
 			const f = fetchImpl || (typeof fetch === "function" ? fetch : null);
-			if (!f) { return Promise.resolve({ ok: false, error: "当前环境没有 fetch", rooms: [] }); }
+			if (!f) { return Promise.resolve({ ok: false, error: "当前环境没有 fetch", status: 0, rooms: [] }); }
 			return Promise.resolve(f(AGENTS_API_ROOMS, { headers: { accept: "application/json" } }))
-				.then((r) => (r && r.ok ? r.json() : Promise.reject(new Error("HTTP " + (r && r.status)))))
+				.then((r) => {
+					if (!r || !r.ok) { const err = new Error("HTTP " + (r && r.status)); err.status = r && r.status; throw err; }
+					return r.json();
+				})
 				.then((j) => ({ ok: true, rooms: Array.isArray(j && j.rooms) ? j.rooms : [] }))
-				.catch((e) => ({ ok: false, error: String((e && e.message) || e), rooms: [] }));
+				.catch((e) => {
+					const status = Number(e && e.status) || (/\b401\b/.test(String(e && e.message)) ? 401 : 0);
+					const error = String((e && e.message) || e);
+					// ★ 2026-11-09：401 不能静默。除了返回给轮询方，也给全局一条事件（account chip / 状态条可订阅）。
+					try {
+						const win = typeof window !== "undefined" ? window : null;
+						const Ctor = win && (win.CustomEvent || (typeof CustomEvent !== "undefined" ? CustomEvent : null));
+						if (Ctor) { win.dispatchEvent(new Ctor(ROOMS_ERROR_EVENT, { detail: { status, error, url: AGENTS_API_ROOMS } })); }
+					} catch { /* 事件不可用 ⇒ 轮询方仍会写 roomsError */ }
+					return { ok: false, error, status, rooms: [] };
+				});
 		}
 		/** 只拉正在跑 / 刚跑完的群轮次（全局浮层轮询）。纯取数。 */
 		function fetchRoomActivity(fetchImpl) {
@@ -571,9 +587,12 @@ window.__ModuleLoader__.load({
 		}
 		// ── 新建 Bot / 群聊：校验与预设（2026-11-02「弹出的 UI 框要完善」）──────────────
 		//
-		// 规则**与 host 同源**（不是自己另立一套）：
-		//   · Bot：`name` 必填；`id` 必须过 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`（agents `core/create.js` 的
-		//     `AGENT_ID_RE`），且不能与既有目录重名（host 会 409，这里先拦）；
+		// ★ 2026-11-09：这里**不是**权威判据，只是"边打字边给提示"的即时 UI 校验：
+		//   · Bot：`name` 必填；`id` 必须过 `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`（对齐 agents
+		//     `core/create.js` 的 `AGENT_ID_RE`），且不能与花名册里已见到的 id 重名；
+		//   · 保留名 / 以 . 结尾 / 内置根重名 / preset 碰撞 / 图标 / 模型路由等只有 host 知道
+		//     ⇒ `submitBotsNew` 提交前会再打一次 `action:'validate'`，以它的 errors 为准。
+		//     ⚠ 别把 host 规则抄第二份到这里（旧注释自称"与 host 同源"是假的，实际一直在漂移）。
 		// 都做成**纯函数** ⇒ `__test` 与守卫可以直接断言，不必真去写盘 ✓
 		function validateBotDraft(draft, existingIds) {
 			const errs = [];
@@ -587,6 +606,13 @@ window.__ModuleLoader__.load({
 		}
 		/** 新建 Bot 的图标预设（agents 侧默认就是 `lucide:bot`；也允许 emoji）。 */
 		const BOT_ICON_PRESETS = ["lucide:bot", "🧭", "🛠️", "📚", "🧪", "🎨", "📊"];
+		/** 「新建 Bot」表单的初始草稿（唯一真源：＋ 菜单与欢迎卡交接都用它，别各抄一份）。 */
+		const emptyBotDraft = () => ({
+			kind: "bot",
+			name: "", id: "", role: "", description: "",
+			icon: BOT_ICON_PRESETS[0],
+			busy: false, error: "",
+		});
 		/**
 		 * ★ 2026-11-03：群聊下线后这两个只剩"表单分支的形状"（`openBotsNew` 只会传 `'bot'`，
 		 *   群聊那一支不可达）。留着是为了不把 `submitBotsNew` / 表单里的一堆引用拆断；
@@ -695,7 +721,7 @@ window.__ModuleLoader__.load({
 			const failed = (what) => (e) => deps.say(what + "失败：" + String((e && e.message) || e), "error");
 			if (act === "pin") { return deps.post({ action: "flags", id, pinned: !room.pinned }).then(after(room.pinned ? "已取消置顶" : "已置顶"), failed("置顶")); }
 			if (act === "unread") { deps.setUnread(id, !unread); deps.say(!unread ? "已标为未读（打开这个群自动清除）" : "已标为已读", "note"); return undefined; }
-			if (act === "settings") { return deps.openSettings(id); }
+			if (act === "settings") { return deps.openSettings(id, room && room.name); }
 			if (act === "rename") { return deps.startRename(room); }
 			if (act === "copy") { return deps.copy(id); }
 			if (act === "hide") {
@@ -704,8 +730,118 @@ window.__ModuleLoader__.load({
 			}
 			if (act === "delete") { return deps.confirmDelete(room); }
 			return undefined;
-		}
-		/** 群头像：成员名首字（最多 2 个）。 */
+			}
+
+			// ── Bot 行右键菜单（★ 2026-11-09：复刻 DS Bot bot item 菜单；同日移除「设为主 Bot」⇒ 9 项 / 3 条分隔线）──
+			const BOT_FLAGS_KEY = "vssaros.ws.botFlags.v1";
+			/** 侧栏 bot 级状态（置顶 / 未读 / 隐藏）落 localStorage，窗口重启仍在。 */
+			function readBotFlags(storage) {
+			try {
+				const raw = storage && storage.getItem ? storage.getItem(BOT_FLAGS_KEY) : null;
+				const parsed = raw ? JSON.parse(raw) : {};
+				const out = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+				// ★ 2026-11-09：「设为主 Bot」已移除 ⇒ 旧数据里的 main 键就地清掉（下次 save 自愈）
+				for (const v of Object.values(out)) { if (v && typeof v === "object") { delete v.main; } }
+				return out;
+			} catch { return {}; }
+			}
+			function saveBotFlags(storage, flags) {
+			try { if (storage && storage.setItem) { storage.setItem(BOT_FLAGS_KEY, JSON.stringify(flags || {})); } } catch { /* 存不了不阻断 UI */ }
+			return flags;
+			}
+			/** 改一个 flag。纯函数 ⇒ 守卫可断言。 */
+			function toggleBotFlag(flags, id, key, on) {
+			const next = {};
+			for (const [k, v] of Object.entries(flags || {})) { next[k] = Object.assign({}, v || {}); }
+			const cur = Object.assign({}, next[id] || {});
+			cur[key] = on === undefined ? !cur[key] : !!on;
+			next[id] = cur;
+			return next;
+			}
+			/** 置顶恒在组首；稳定排序 ⇒ 其余保持名册原序。 */
+			function sortBotsWithFlags(list, flags) {
+			const f = flags || {};
+			return (Array.isArray(list) ? list : []).slice().sort((a, b) => {
+				const fa = f[a && a.id] || {}, fb = f[b && b.id] || {};
+				return Number(!!fb.pinned) - Number(!!fa.pinned);
+			});
+			}
+			/**
+			* Bot 行右键菜单：置顶 / 标为未读 ┃ 重命名 / 编辑 / 复制一份
+			* ┃ 复制对话 ID ┃ 从侧栏隐藏 / 删除(danger)。`icon` 只用于渲染，守卫按 act+label 断言。
+			* ⚠ 2026-11-09 用户要求移除「设为主 Bot」⇒ 不再有 main flag / 徽标 / 排序权重。
+			*/
+			function botMenuItems(bot, flags, unread) {
+			const f = flags || {};
+			return [
+				{ act: "pin", label: f.pinned ? "取消置顶" : "置顶", icon: "pin" },
+				{ act: "unread", label: unread ? "标为已读" : "标为未读", icon: "unread" },
+				{ sep: true },
+				{ act: "rename", label: "重命名 Bot", icon: "rename" },
+				{ act: "edit", label: "编辑 Bot", icon: "edit" },
+				{ act: "duplicate", label: "复制一份", icon: "copy" },
+				{ sep: true },
+				{ act: "copySession", label: "复制对话 ID", icon: "id" },
+				{ sep: true },
+				{ act: "hide", label: f.hidden ? "取消隐藏" : "从侧栏隐藏", icon: "hide" },
+				{ act: "delete", label: "删除", icon: "delete", danger: true },
+			];
+			}
+			/**
+			* Bot 菜单动作（纯调度，副作用全经 deps 注入 ⇒ `__test` 用假 deps 逐项断言打到哪）。
+			* deps: `{ post(body), getDraft(id), newId(name), copy(text), say(text,kind), reload(),
+			*          startRename(bot), openConfig(bot), confirmDelete(bot), setFlag(id,key,on),
+			*          setUnread(id,on), sessionIdOf(bot) }`
+			*/
+			function botMenuAction(act, bot, flags, unread, deps) {
+			const id = bot && bot.id;
+			if (!id) { return undefined; }
+			const f = flags || {};
+			const say = (t, k) => deps.say(t, k || "note");
+			if (act === "pin") { deps.setFlag(id, "pinned", !f.pinned); say(!f.pinned ? "已置顶" : "已取消置顶"); return undefined; }
+			if (act === "unread") { deps.setUnread(id, !unread); say(!unread ? "已标为未读" : "已标为已读"); return undefined; }
+			if (act === "rename") { deps.startRename(bot); return undefined; }
+			if (act === "edit") { return deps.openConfig(bot); }
+			if (act === "copySession") {
+				const sid = deps.sessionIdOf(bot);
+				if (!sid) { deps.say("这个 Bot 还没有会话（先点它开一条再复制）", "error"); return undefined; }
+				return deps.copy(sid);
+			}
+			if (act === "hide") { deps.setFlag(id, "hidden", !f.hidden); say(!f.hidden ? "已从侧栏隐藏（搜索时仍能找到并取消隐藏）" : "已取消隐藏"); return undefined; }
+			if (act === "delete") { deps.confirmDelete(bot); return undefined; }
+			if (act === "duplicate") {
+				// 没有 duplicate 接口 ⇒ 读完整 draft → 换 id/name → 走与「新建 Bot」同一条 validate→create
+				return Promise.resolve(deps.getDraft(id)).then((draft) => {
+					const name = String(bot.name || id) + " 副本";
+					const next = Object.assign({}, draft || {}, { id: deps.newId(name), name });
+					return deps.post({ action: "validate", draft: next })
+						.then((v) => { if (v && Array.isArray(v.errors) && v.errors.length) { throw new Error(v.errors.join("；")); } })
+						.then(() => deps.post({ action: "create", draft: next }))
+						.then((res) => {
+							if (res && res.registered === false) { throw new Error("preset 未注册：" + String(res.syncError || "同步失败")); }
+							deps.reload(); say("已复制为「" + name + "」");
+						});
+				});
+			}
+			return undefined;
+			}
+			/** 线性图标（16px，与 folderIcon/plusIcon 同款 createElement 写法）；对齐截图的「图标 + 文字」。 */
+			const BOT_MENU_ICON_PATHS = {
+			pin: "M6 2h4l-1 4 3 3H9l-1 5-1-5H4l3-3-1-4z",
+			unread: "M12 4a1.2 1.2 0 100 2.4A1.2 1.2 0 0012 4zM3 5h7M3 9h7M3 12h5",
+			rename: "M3 11l7-7 2 2-7 7H3v-2zM9 5l2 2M3 14h10",
+			edit: "M4 3h6l2 2v2M4 3v10h8V7M6 8h4M6 11h3",
+			copy: "M5 5h8v8H5zM3 3h8v2M3 13h2",
+			id: "M3 5h10M3 8h10M3 11h6",
+			hide: "M2 8s2.5-4 6-4 6 4 6 4-2.5 4-6 4-6-4-6-4zM3 13L13 3",
+			delete: "M4 5h8M6 5V3h4v2M5 5l1 9h4l1-9",
+			};
+			const botMenuIcon = (kind) => react.createElement("svg", {
+			width: 14, height: 14, viewBox: "0 0 16 16", fill: "none", stroke: "currentColor",
+			strokeWidth: 1.2, strokeLinecap: "round", strokeLinejoin: "round",
+			style: { flex: "0 0 auto", opacity: 0.85 }, "aria-hidden": "true",
+			}, react.createElement("path", { d: BOT_MENU_ICON_PATHS[kind] || BOT_MENU_ICON_PATHS.id }));
+			/** 群头像：成员名首字（最多 2 个）。 */
 		function roomInitials(room) {
 			const ms = room && Array.isArray(room.members) ? room.members : [];
 			const s = ms.slice(0, 2).map((m) => String((m && m.name) || (m && m.id) || "?").slice(0, 1)).join("");
@@ -2390,6 +2526,13 @@ window.__ModuleLoader__.load({
 				const [roomMenu, setRoomMenu] = react.useState(null);
 				const [roomRename, setRoomRename] = react.useState(null);
 				const [roomDel, setRoomDel] = react.useState(null);
+				// ★ 2026-11-09 Bot 行右键菜单：`{id,x,y}` / 就地改名 / 删除确认 / 侧栏 flags
+				//   ⚠ 同样必须在 railOnly 提前 return 之前声明（否则 hook 数量变化 ⇒ React #310）。
+				const [botMenu, setBotMenu] = react.useState(null);
+				const [botRename, setBotRename] = react.useState(null);
+				const [botDel, setBotDel] = react.useState(null);
+				const [botFlags, setBotFlags] = react.useState(() => readBotFlags(typeof localStorage !== "undefined" ? localStorage : null));
+				react.useEffect(() => { saveBotFlags(typeof localStorage !== "undefined" ? localStorage : null, botFlags); }, [botFlags]);
 				/**
 				 * 「新建 Bot / 新建群聊」小表单（null = 关闭）。
 				 * `{ kind:'bot'|'group', name, id, role, members[], busy, error }`
@@ -2414,7 +2557,14 @@ window.__ModuleLoader__.load({
 				// 点外面 ⇒ 关菜单（与官方菜单同口径；不关就会"菜单糊在侧栏上"✗）
 				// ★ 2026-10-29：工作区 ＋ 菜单与会话右键菜单**共用**这套关闭逻辑（两套并存会互相残留）。
 				react.useEffect(() => {
-					if (!menu && !sessMenu && !confirmDel && !wsMenu && !botsMenu && !roomMenu && !roomDel) { return undefined; }
+					if (!menu && !sessMenu && !confirmDel && !wsMenu && !botsMenu && !roomMenu && !roomDel
+						&& !botMenu && !botDel && !botRename) { return undefined; }
+					const closeAll = () => {
+						setMenu(null); setSessMenu(null); setWsMenu(null); setBotsMenu(null);
+						setConfirmDel(null); setRoomMenu(null); setRoomDel(null);
+						// ★ 2026-11-09：Bot 行右键菜单 / 删除确认 / 就地改名同走这套关闭逻辑
+						setBotMenu(null); setBotDel(null); setBotRename(null);
+					};
 					const onDown = (ev) => {
 						try {
 							const t = ev.target;
@@ -2427,31 +2577,25 @@ window.__ModuleLoader__.load({
 								// ★ 2026-11-05：群行右键菜单与删群确认层
 								|| t.closest("[data-vssaros-room-menu]")
 								|| t.closest("[data-vssaros-room-confirm]")
+								// ★ 2026-11-09：Bot 行右键菜单 / 删除确认 / 就地改名输入框
+								|| t.closest("[data-vssaros-bot-menu]")
+								|| t.closest("[data-vssaros-bot-confirm]")
+								|| t.closest("[data-vssaros-bot-rename]")
 								// 确认层是**模态**：点它的按钮不该被这里关掉（否则"取消"还没跑就被卸载）
 								|| t.closest("[data-vssaros-sess-confirm]")
 							)) { return; }
-							setMenu(null);
-							setSessMenu(null);
-							// ★ 2026-11-02：工作区行 ⋯ 菜单（wsMenu）此前**漏关**了 —— 点外面它不会消失，
-							//   会和其它菜单一起残留（本次顺手补上）；Bots 的 ＋ 菜单同理。
-							setWsMenu(null);
-							setBotsMenu(null);
-							setRoomMenu(null);
 							// 点外面 = 取消（危险操作绝不因为点偏了而执行 ✗）
-							setConfirmDel(null);
-							setRoomDel(null);
-						} catch { setMenu(null); setSessMenu(null); setWsMenu(null); setBotsMenu(null); setConfirmDel(null); setRoomMenu(null); setRoomDel(null); }
+							closeAll();
+						} catch { closeAll(); }
 					};
-					const onKey = (ev) => {
-						if (ev.key === "Escape") { setMenu(null); setSessMenu(null); setWsMenu(null); setBotsMenu(null); setConfirmDel(null); setRoomMenu(null); setRoomDel(null); }
-					};
+					const onKey = (ev) => { if (ev.key === "Escape") { closeAll(); } };
 					document.addEventListener("mousedown", onDown, true);
 					document.addEventListener("keydown", onKey, true);
 					return () => {
 						document.removeEventListener("mousedown", onDown, true);
 						document.removeEventListener("keydown", onKey, true);
 					};
-				}, [menu, sessMenu, confirmDel, wsMenu, botsMenu, roomMenu, roomDel]);
+				}, [menu, sessMenu, confirmDel, wsMenu, botsMenu, roomMenu, roomDel, botMenu, botDel, botRename]);
 				// ★ 2026-10-28：订阅官方 selection（当前会话）—— 官方导航一变就重渲染 ⇒ 高亮跟着动 ✓。
 				//   官方那个字段是私有的 ⇒ 读不到就退化成"乐观高亮 + 宿主绑定"（不会崩 ✓）。
 				react.useEffect(() => {
@@ -3508,6 +3652,27 @@ window.__ModuleLoader__.load({
 					const timer = window.setTimeout(() => { reloadBots(); }, 3000);
 					return () => { try { window.clearTimeout(timer); } catch { /* 忽略 */ } };
 				}, [view, bots.status, bots.presetsPending, bots.fetchedAt]);
+				/* ★ 2026-11-09：欢迎卡「新建 Agent」的交接。旧链路 openModulePage('/x/agents/') 指向
+				   2026-11-03 已下线的 SSR 工作台 ⇒ 404 + 点了没反应。现在由同页面的 Bots 页签接住：
+				   切页签 +（create）直接弹新建表单；detail.handled 让派发方知道真的有人接住了。
+				   ⚠ 不写依赖数组：回调要读**本次渲染**的 railOnly（窄轨形态没有可切的页签 ⇒
+				     不设 handled，派发方就会给出明确文字指引，而不是静默）。 */
+				react.useEffect(() => {
+					const onOpenBots = (ev) => {
+						const detail = ev && ev.detail;
+						if (!detail || typeof detail !== "object" || railOnly) { return; }
+						detail.handled = true;
+						switchView("bots");
+						if (detail.action === "new-bot") {
+							setBotsNew(emptyBotDraft());
+							setBotsMenu(null); // 与 openBotsNew 同款顺序：先表单、后菜单
+						}
+					};
+					try {
+						window.addEventListener("vssaros:open-bots", onOpenBots);
+						return () => { try { window.removeEventListener("vssaros:open-bots", onOpenBots); } catch { /* 忽略 */ } };
+					} catch { return undefined; }
+				});
 				/**
 				 * ★ 2026-11-05 P1 + bot item 状态：群执行时 Bots 页签不能停在旧快照。
 				 *   ① `vssaros-rooms-changed` 合并群行；② `vssaros-group-progress` 复用全局浮层的
@@ -3521,8 +3686,61 @@ window.__ModuleLoader__.load({
 						if (!alive) { return; }
 						setBots((b) => (b.status === "ready" ? Object.assign({}, b, { rooms: Array.isArray(rooms) ? rooms : [], roomsError: "" }) : b));
 					};
+					const applyRoomsError = (d) => {
+						if (!alive) { return; }
+						// ★ 2026-11-09：取数失败（尤其 401）要留在 Bots 页签里，别让空列表看起来像「没有群」。
+						setBots((b) => (b.status === "ready" ? Object.assign({}, b, {
+							rooms: [], roomsError: (d && d.error) || "未知错误", roomsErrorStatus: (d && d.status) || 0,
+						}) : b));
+					};
 					const applyActivity = (active) => { if (alive) { setGroupActivity(normalizeGroupActivity(active)); } };
-					const poll = () => { void fetchRoomsOnly().then((d) => { if (d && d.ok) { applyRooms(d.rooms); } }); };
+					const poll = () => { void fetchRoomsOnly().then((d) => { if (d && d.ok) { applyRooms(d.rooms); } else { applyRoomsError(d); } }); };
+					/** 订阅 Host 的群变更 SSE；收到一帧就重取群列表并广播事件。旧 Host 返回 404 ⇒ 只靠轮询，不重连刷屏。 */
+					const subscribeRoomEvents = () => {
+						let stopped = false;
+						let timer = null;
+						let failures = 0;
+						const win = typeof window !== "undefined" ? window : null;
+						const connect = async () => {
+							if (stopped || typeof fetch !== "function") { return; }
+							try {
+								const resp = await fetch(AGENTS_API_ROOMS_EVENTS, { headers: { accept: "text/event-stream" } });
+								if (!resp || !resp.ok || !resp.body) {
+									if (resp && resp.status === 404) { stopped = true; }  // 旧版 Host：永久回落轮询
+									throw new Error("HTTP " + (resp && resp.status));
+								}
+								failures = 0;
+								const reader = resp.body.getReader();
+								const decoder = new TextDecoder();
+								let buffer = "";
+								for (;;) {
+									const { value, done } = await reader.read();
+									if (done || stopped) { break; }
+									buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+									for (let at = buffer.indexOf("\n\n"); at >= 0; at = buffer.indexOf("\n\n")) {
+										const frame = buffer.slice(0, at);
+										buffer = buffer.slice(at + 2);
+										if (!/event:\s*rooms-changed/.test(frame)) { continue; }
+										void fetchRoomsOnly().then((d) => {
+											if (!alive || stopped) { return; }
+											if (!d || !d.ok) { applyRoomsError(d); return; }
+											applyRooms(d.rooms);
+											try {
+												const Ctor = win && (win.CustomEvent || (typeof CustomEvent !== "undefined" ? CustomEvent : null));
+												if (Ctor) { win.dispatchEvent(new Ctor(ROOMS_CHANGED_EVENT, { detail: { schema: GROUP_ACTIVITY_SCHEMA, rooms: d.rooms || [], pushed: true } })); }
+											} catch { /* 事件不可用 ⇒ applyRooms 已经生效 */ }
+										});
+									}
+								}
+							} catch { /* 断线 / 旧 Host ⇒ 走下面的重连 */ }
+							if (stopped || !alive) { return; }
+							failures += 1;
+							timer = window.setTimeout(connect, Math.min(30000, 1000 * Math.pow(2, Math.min(failures, 5))));
+						};
+						void connect();
+						return () => { stopped = true; if (timer) { try { window.clearTimeout(timer); } catch { /* noop */ } } };
+					};
+					const stopRoomEvents = subscribeRoomEvents();
 					const win = typeof window !== "undefined" ? window : null;
 					const onChanged = (ev) => applyRooms(ev && ev.detail ? ev.detail.rooms : []);
 					const onProgress = (ev) => applyActivity(ev && ev.detail ? ev.detail.active : []);
@@ -3536,6 +3754,7 @@ window.__ModuleLoader__.load({
 					return () => {
 						alive = false;
 						clearInterval(timer);
+						try { stopRoomEvents(); } catch { /* noop */ }
 						if (win && typeof win.removeEventListener === "function") {
 							win.removeEventListener(ROOMS_CHANGED_EVENT, onChanged);
 							win.removeEventListener(GROUP_PROGRESS_EVENT, onProgress);
@@ -3633,13 +3852,7 @@ window.__ModuleLoader__.load({
 					//   而菜单项是在 **mousedown（capture）** 里调的，卸载发生在同一批更新里，
 					//   实测出现过"表单 state 已写入、但 DOM 没跟上"的诡异状态。
 					//   另外这里**不改** `botsMsg`（它属于"操作反馈"，与打开表单无关）。
-					setBotsNew({
-						kind,
-						name: "", id: "", role: "", description: "",
-						icon: BOT_ICON_PRESETS[0],
-						
-						busy: false, error: "",
-					});
+					setBotsNew(Object.assign(emptyBotDraft(), { kind }));
 					setBotsMenu(null);
 					setBotsMsg(null);
 				};
@@ -3661,23 +3874,40 @@ window.__ModuleLoader__.load({
 						if (errs.length) { setBotsNew(Object.assign({}, cur, { error: errs.join("；") })); return; }
 						const next = Object.assign({}, cur, { busy: true, error: "" });
 						setBotsNew(next);
-						void postJson(AGENTS_API_AGENTS, {
-							action: "create",
-							draft: {
-								name,
-								id,
-								role: String(cur.role || "").trim(),
-								description: String(cur.description || "").trim(),
-								icon: String(cur.icon || "").trim() || BOT_ICON_PRESETS[0],
-							},
-						}).then(
-							() => {
+						const draft = {
+							name,
+							id,
+							role: String(cur.role || "").trim(),
+							description: String(cur.description || "").trim(),
+							icon: String(cur.icon || "").trim() || BOT_ICON_PRESETS[0],
+						};
+						const fail = (e) => setBotsNew((b) => Object.assign({}, b || next, { busy: false, error: "新建失败：" + String((e && e.message) || e) }));
+						/* ★ 2026-11-09：提交前打一次 `action:'validate'` —— 前端 validateBotDraft 只是即时 UI
+						   提示（id 正则 + 花名册重名），保留名 / 内置根重名 / preset 碰撞 / 图标 / 模型路由
+						   这些**只有 host 知道** ⇒ 让权威判据说话，不许两套口径各自漂移。
+						   老版本 host 没有这个 action（404）或网络抖动 ⇒ 降级为 null，绝不堵死新建：
+						   create 自己会再跑同一套校验并回 400。 */
+						const validateRemote = () => postJson(AGENTS_API_AGENTS, { action: "validate", draft })
+							.then((v) => (v && Array.isArray(v.errors) ? v : null))
+							.catch(() => null);
+						void validateRemote().then((v) => {
+							if (v && v.errors.length) { fail(new Error(v.errors.join("；"))); return; }
+							return postJson(AGENTS_API_AGENTS, { action: "create", draft }).then((res) => {
+								if (!res) { fail(new Error("host 返回了空响应")); return; }
 								setBotsNew(null);
-								setBotsMsg({ kind: "note", text: "已新建 Bot「" + name + "」（" + id + "）—— 名册刷新中…" });
+								const base = "已新建 Bot「" + name + "」（" + id + "）";
+								/* ★ 只读 HTTP 200 就提示成功 = 假成功：列表按 registered 隐藏未注册 bot，
+								   用户会看到「已新建」却找不到刚建的 bot ⇒ 把 host 的原因原样说出来。 */
+								if (res.registered === false) {
+									setBotsMsg({ kind: "error", text: base + "，但 preset 未注册（点了也开不了会话、列表会先隐藏它）：" + String(res.syncError || "同步 preset 失败") + " ⇒ 请稍后点 ＋ → 刷新名册 重试" });
+								} else {
+									const warnings = (v && Array.isArray(v.warnings)) ? v.warnings : [];
+									const needsPersona = warnings.some((w) => String(w).indexOf("人格正文") >= 0);
+									setBotsMsg({ kind: "note", text: base + (needsPersona ? " —— 还没写人格/工具，请到会话「设置」页签补全" : " —— 名册刷新中…") });
+								}
 								reloadBots();
-							},
-							(e) => setBotsNew((b) => Object.assign({}, b || next, { busy: false, error: "新建失败：" + String((e && e.message) || e) })),
-						);
+							});
+						}).catch(fail);
 						return;
 					}
 				};
@@ -3689,19 +3919,43 @@ window.__ModuleLoader__.load({
 					markSessionRead(room.id);
 					openSession(String(room.id), setBotsMsg);
 				};
-				/** 群设置 ⇒ 打开群会话并直接落在「设置」页签（群名 / 公告 / 谁来回答 / 成员）。 */
-				const openRoomSettings = (sid) => {
+				/** 群设置用的独立页签 id（同一个群重复点只激活、不开第二份）。 */
+				const ROOM_SETTINGS_TAB_PREFIX = "room-settings:";
+				const ROOM_SETTINGS_PAGE_COMP = "vssaros-room-settings";
+				// ★ 2026-11-09：Bot 配置独立页（与 conversationViews 侧同源；hero 下右栏设置页签不挂载）
+				const BOT_CONFIG_PAGE_COMP = "vssaros-bot-config";
+				/**
+				 * ★ 2026-11-09（用户要求）：群设置改为**独立页**，不再复用会话内的「设置」子页签。
+				 *   ① 首选官方**右侧栏**页签（`sidebar.right.pane.tab`，由 conversationViews 注册）：
+				 *      strip 自带「关闭」、页内另有一枚 ✕（调 `sidebarRight.close`）。
+				 *   ② 右栏不可用（无会话在屏 / 旧宿主 / 服务缺失 ⇒ openRight 返回 false）
+				 *      ⇒ 回落中栏自绘独立页签（`__vssarosOpenPageTab`，页签条 + 页内都有 ✕）。
+				 *   ③ 宿主是旧版（两个 API 都没有）⇒ 回落原来的「打开群会话 + 设置页签」，功能不丢。
+				 *   ⚠ 三级回落都不静默：右栏失败不弹提示（中栏页签照样是独立页），最后一级才开会话。
+				 */
+				const openRoomSettings = (sid, name) => {
+					const tabId = ROOM_SETTINGS_TAB_PREFIX + String(sid);
+					try {
+						const openRight = typeof window !== "undefined" ? window.__vssarosOpenRightRoomSettings : null;
+						if (typeof openRight === "function" && openRight(String(sid), name) !== false) { return; }
+					} catch { /* 右栏不可用 ⇒ 回落中栏独立页签 */ }
+					try {
+						const open = typeof window !== "undefined" ? window.__vssarosOpenPageTab : null;
+						if (typeof open === "function" && open({
+							id: tabId, name: "群设置 · " + String(name || sid).slice(0, 24), ico: "⚙",
+							comp: ROOM_SETTINGS_PAGE_COMP, props: { roomId: String(sid), tabId },
+						}) !== false) { return; }
+					} catch { /* 打开独立页失败 ⇒ 回落旧行为 */ }
 					try { presetConversationView(typeof localStorage !== "undefined" ? localStorage : null, sid, SETTINGS_VIEW_ID); } catch { /* 选不中就停在对话页 */ }
 					markSessionRead(sid);
 					openSession(String(sid), setBotsMsg);
-					// 会话视图已挂着（之前打开过）⇒ 本地存储改了它也不读 ⇒ 再经官方 binding 选一次页签
 					try {
 						window.setTimeout(() => {
 							try {
 								const uc = ctx.uiConversation;
 								const binding = uc && typeof uc.binding === "function" ? uc.binding(sid) : null;
 								if (binding && typeof binding.activate === "function") { binding.activate(SETTINGS_VIEW_ID); }
-							} catch { /* 没有这个能力 ⇒ 停在对话页，用户自己点「设置」 */ }
+							} catch { /* 没有这个能力 ⇒ 停在对话页 */ }
 						}, 400);
 					} catch { /* 无 window */ }
 				};
@@ -3800,10 +4054,147 @@ window.__ModuleLoader__.load({
 				const botsSection = (label, count, rows) => (count > 0 ? react.createElement(react.Fragment, null,
 					react.createElement("div", { key: "sec:" + label, style: S.botsSec }, label, react.createElement("span", { style: S.botsSecCt }, String(count))),
 					rows) : null);
+
+				// ── Bot 行右键菜单的动作接线（★ 2026-11-09）────────────────────
+				/** GET JSON（读完整 draft 用；错误文案与 postJson 同口径，不吞）。 */
+				const getJson = (url) => {
+					let p;
+					try { p = Promise.resolve(fetch(url, { headers: { accept: "application/json" } })); }
+					catch (e) { return Promise.reject(e); }
+					return p.then((r) => Promise.resolve(r.json().catch(() => null)).then((j) => {
+						if (!r || !r.ok) { throw new Error((j && j.error) || ("HTTP " + (r && r.status))); }
+						return j;
+					}));
+				};
+				/** 这个 Bot 最近一条会话 id（没有 ⇒ 空串；复制对话 ID 会如实提示）。 */
+				const botSessionId = (bot) => {
+					const h = bots.home && bots.home[String(bot && bot.id)];
+					const s = h && Array.isArray(h.sessions) ? h.sessions[0] : null;
+					return s && s.id ? String(s.id) : "";
+				};
+				/**
+				 * 「编辑 Bot」三级回落（★ 2026-11-09 修 hero 下点了没反应）。
+				 *   ① 中栏独立页签（root/面板级，hero 下也能开）：按 agentId 直接渲染 BotConfigCard；
+				 *   ② 老宿主没有中栏页签 API ⇒ 回落「打开会话 + 会话内设置页签 + 落到 Bot 分段」；
+				 *   ③ 两者都不可用 ⇒ 明确报错，绝不假装已打开。
+				 * ⚠ 不能把 ② 当主路径：`conversation.view` 是 session 作用域的 slot，
+				 *   hero（空会话屏）下**结构上不渲染** ⇒ SettingsView 不挂载、
+				 *   `vssaros:open-bot-config` 事件无人接住、`binding(sid).activate` 静默失败
+				 *   ⇒ 旧实现只弹「请手动点分段」（真机截图即此症状）。
+				 */
+				const openBotConfig = (bot) => {
+					const id = String((bot && bot.id) || "");
+					const name = String((bot && bot.name) || id);
+					const tabId = "bot-config:" + id;
+					// ① 首选：中栏独立页（与群设置同款；不需要 dsh 会话，也不需要 preset 派生）
+					try {
+						const open = typeof window !== "undefined" ? window.__vssarosOpenPageTab : null;
+						if (typeof open === "function" && open({
+							id: tabId, name: "Bot 配置 · " + name.slice(0, 24), ico: "⚙",
+							comp: BOT_CONFIG_PAGE_COMP, props: { agentId: id, name, tabId },
+						}) !== false) {
+							botsSay("已打开「" + name + "」的 Bot 配置", "note");
+							return;
+						}
+					} catch { /* 老宿主无中栏页签 API ⇒ 回落 ② */ }
+					// ② 兼容回落：会话已在屏时切到会话内「设置」页签，并把分段落到 Bot
+					const sid = botSessionId(bot);
+					if (!sid) {
+						botsSay("打不开 Bot 配置：当前没有会话，且宿主不支持中栏独立页签。请先打开一段会话再点「编辑 Bot」。", "error");
+						return;
+					}
+					// ⚠ 预设必须写在 openSession 之前：官方 store 只在会话视图初始化时读它
+					try { presetConversationView(typeof localStorage !== "undefined" ? localStorage : null, sid, SETTINGS_VIEW_ID); } catch { /* 选不中就停在对话页 */ }
+					openSession(sid, setBotsMsg);
+					let handled = false;
+					const fire = () => {
+						try {
+							const detail = { botId: id, sessionId: sid, handled: false };
+							window.dispatchEvent(new window.CustomEvent("vssaros:open-bot-config", { detail }));
+							handled = handled || detail.handled === true;
+						} catch { /* CustomEvent 不可用 ⇒ 页签仍会打开 */ }
+					};
+					try {
+						window.setTimeout(() => {
+							// 先激活设置页签（让 SettingsView 挂载并注册监听），再派事件
+							try {
+								const uc = ctx.uiConversation;
+								const binding = uc && typeof uc.binding === "function" ? uc.binding(sid) : null;
+								if (binding && typeof binding.activate === "function") { binding.activate(SETTINGS_VIEW_ID); }
+							} catch { /* 没有这个能力 ⇒ 停在对话页 */ }
+							fire();
+							window.setTimeout(() => {
+								if (!handled) { fire(); }
+								if (!handled) { botsSay("会话内设置页签没落到 Bot 分段：请点「工作区 | Bot」分段手动切换", "note"); }
+							}, 350);
+						}, 450);
+					} catch { /* 无 window */ }
+				};
+				const botDeps = {
+					post: (body) => postJson(AGENTS_API_AGENTS, body),
+					// ⚠ GET ?id= 返回的是 {ok, draft} **双层**结构 ⇒ 必须取 .draft；
+					//   把整个外层当 draft 提交，create 会拿到一个没有字段的假草稿。
+					getDraft: (id) => getJson(AGENTS_API_AGENTS + "?id=" + encodeURIComponent(id))
+						.then((j) => Object.assign({}, (j && j.draft) || {})),
+					newId: (name) => (slugOfName(name) || "bot-copy") + "-" + String(Date.now()).slice(-5),
+					copy: (sid) => copyPlain(sid, botsSay, "已复制对话 ID：" + sid),
+					say: botsSay,
+					reload: () => reloadBots(),
+					startRename: (bot) => setBotRename({ id: String(bot.id), draft: String(bot.name || "") }),
+					openConfig: openBotConfig,
+					confirmDelete: (bot) => setBotDel({ id: String(bot.id), name: String(bot.name || bot.id) }),
+					setFlag: (id, key, on) => setBotFlags((f) => toggleBotFlag(f, id, key, on)),
+					setUnread: (id, on) => setBotFlags((f) => toggleBotFlag(f, id, "unread", on)),
+					sessionIdOf: botSessionId,
+				};
+				const runBotAct = (act) => {
+					const cur = botMenu;
+					setBotMenu(null);
+					if (!cur) { return; }
+					const bot = (bots.agents || []).filter((a) => a && String(a.id) === cur.id)[0] || { id: cur.id };
+					const flags = botFlags[cur.id] || {};
+					void Promise.resolve(botMenuAction(act, bot, flags, !!flags.unread, botDeps))
+						.catch((e) => botsSay("操作失败：" + String((e && e.message) || e), "error"));
+				};
+				const commitBotRename = () => {
+					const cur = botRename;
+					setBotRename(null);
+					if (!cur) { return; }
+					const name = String(cur.draft || "").trim();
+					if (!name) { botsSay("名字不能为空", "error"); return; }
+					// ⚠ update 吃的是**完整 draft**（只传 name 会把人设/技能/工具清掉）⇒ 先 GET 再改一个字段。
+					void getJson(AGENTS_API_AGENTS + "?id=" + encodeURIComponent(cur.id))
+						.then((j) => {
+							// ⚠ GET ?id= 回的是 {ok, draft} 双层结构 ⇒ 只改 draft.name，
+							//   把外层当草稿交上去会清空人设/技能/工具（真机「改名后配置全丢」）。
+							const next = Object.assign({}, (j && j.draft) || {}, { name });
+							return postJson(AGENTS_API_AGENTS, { action: "update", id: cur.id, draft: next });
+						})
+						.then((res) => {
+							reloadBots();
+							if (res && res.registered === false) { botsSay("已改名，但 preset 未注册：" + String(res.syncError || "同步失败"), "error"); }
+							else { botsSay("已改名为「" + name + "」", "note"); }
+						}, (e) => botsSay("重命名失败：" + String((e && e.message) || e), "error"));
+				};
+				const deleteBot = () => {
+					const cur = botDel;
+					setBotDel(null);
+					if (!cur) { return; }
+					void postJson(AGENTS_API_AGENTS, { action: "delete", id: cur.id }).then(
+						() => {
+							setBotFlags((f) => { const n = Object.assign({}, f); delete n[cur.id]; return n; });
+							reloadBots();
+							botsSay("已删除 Bot「" + cur.name + "」", "note");
+						},
+						(e) => botsSay("删除失败：" + String((e && e.message) || e), "error"),
+					);
+				};
 				const botRow = (a) => {
 					const id = String((a && a.id) || "");
 					const name = String((a && a.name) || id);
 					const reg = a && a.registered !== false;
+					const flags = botFlags[id] || {};
+					const renamingThis = !!(botRename && botRename.id === id);
 					const total = (bots.home && bots.home[id] && typeof bots.home[id].sessionsTotal === "number")
 						? bots.home[id].sessionsTotal : 0;
 					const bs = botStateOf(groupActivity, a, bots.rooms || []);
@@ -3814,20 +4205,55 @@ window.__ModuleLoader__.load({
 							: "var(--dsw-alias-state-success-primary, currentColor)";
 					const tip = name + (a && a.role ? " · " + a.role : "") + "\n" + String((a && a.description) || "")
 						+ "\n点击 ⇒ 在中栏打开" + (activeState ? "它在「" + (bs.roomName || "群") + "」里的会话" : total ? "它最近一条会话" : "一条新会话")
-						+ (activeState ? "\n" + bs.state + "：" + bs.label : "");
+						+ (activeState ? "\n" + bs.state + "：" + bs.label : "")
+						+ "\n右键 ⇒ 更多（置顶 / 重命名 / 编辑 / 复制一份 / 隐藏 / 删除…）";
 					return react.createElement("div", {
 						key: "bot:" + id, "data-vssaros-bot": id, "data-vssaros-bot-state": bs.state,
 						"data-vssaros-bot-room": bs.roomId, "data-vssaros-bot-event": bs.eventKind,
-						"data-vssaros-bot-label": bs.label, style: S.botRow, title: tip,
+						"data-vssaros-bot-label": bs.label,
+						// ★ 2026-11-09：右键菜单的 flags 也暴露成 data-* ⇒ jsdom/守卫能读状态
+						"data-vssaros-bot-pinned": flags.pinned ? "1" : "0",
+						"data-vssaros-bot-hidden": flags.hidden ? "1" : "0",
+						"data-vssaros-bot-unread": flags.unread ? "1" : "0",
+						style: S.botRow, title: tip,
 						"aria-label": name + (activeState ? " · " + bs.label : ""),
-						onClick: () => openBot(a),
+						onClick: () => {
+							if (renamingThis) { return; }
+							// 打开即清除「标为未读」（与会话行 / 群行同语义）
+							if (flags.unread) { setBotFlags((f) => toggleBotFlag(f, id, "unread", false)); }
+							openBot(a);
+						},
+						onContextMenu: (e) => {
+							try { e.preventDefault(); e.stopPropagation(); } catch { /* 合成事件 */ }
+							const w = typeof window !== "undefined" ? window.innerWidth : 0;
+							const h = typeof window !== "undefined" ? window.innerHeight : 0;
+							let x = e.clientX || 0;
+							let y = e.clientY || 0;
+							if (w > 0) { x = Math.max(8, Math.min(x, w - 210)); }
+							if (h > 0) { y = Math.max(8, Math.min(y, h - 380)); }
+							setRoomMenu(null); setBotsMenu(null);
+							setBotMenu({ id, x, y });
+						},
 					},
 						react.createElement("span", { "data-vssaros-bot-avatar": bs.state, style: Object.assign({}, S.botAv, { background: String((a && a.color) || "") || "var(--dsw-alias-brand-primary, #4d7cfe)" }) }, name.slice(0, 1)),
 						react.createElement("span", { style: S.botMain },
-							react.createElement("span", { style: S.botL1 },
-								react.createElement("span", { style: S.botName }, name),
+							renamingThis ? react.createElement("input", {
+								style: S.rename, value: botRename.draft, autoFocus: true, placeholder: "Bot 名称",
+								"data-vssaros-bot-rename": id,
+								onClick: (e) => { try { e.stopPropagation(); } catch { /* 忽略 */ } },
+								onChange: (e) => setBotRename({ id, draft: e.target.value }),
+								onKeyDown: (e) => {
+									if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); commitBotRename(); }
+									else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setBotRename(null); }
+								},
+								onBlur: () => setBotRename(null),
+							}) : react.createElement("span", { style: S.botL1 },
+								react.createElement("span", { style: Object.assign({}, S.botName, flags.unread ? { fontWeight: 600 } : null) }, name),
 								a && a.role ? react.createElement("span", { style: S.botPill }, String(a.role)) : null,
-								reg ? null : react.createElement("span", { style: Object.assign({}, S.botPill, { color: "var(--dsw-alias-state-warn-primary, #e0a43a)" }) }, "未注册")),
+								flags.pinned ? react.createElement("span", { style: S.botPill, title: "已置顶" }, "置顶") : null,
+								flags.hidden ? react.createElement("span", { style: S.botPill, title: "已隐藏（搜索时仍可找到）" }, "隐藏") : null,
+								reg ? null : react.createElement("span", { style: Object.assign({}, S.botPill, { color: "var(--dsw-alias-state-warn-primary, #e0a43a)" }) }, "未注册"),
+								flags.unread ? react.createElement("span", { style: S.unreadDot, "data-vssaros-bot-unread-dot": "1" }) : null),
 							activeState
 								? react.createElement("span", { "data-vssaros-bot-state-label": "1", style: S.botStateText, title: bs.label }, bs.label)
 								: react.createElement("span", { style: S.botL2 }, idleLine)),
@@ -3848,7 +4274,11 @@ window.__ModuleLoader__.load({
 					// ★ 2026-11-03：群聊下线 ⇒ 名册只剩 bot。
 					const q = botsQuery.trim().toLowerCase();
 					const hit = (v) => !q || String(v || "").toLowerCase().indexOf(q) >= 0;
-					const reg = regAll.filter((a) => hit(a && a.name) || hit(a && a.id) || hit(a && a.role) || hit(a && a.description));
+					// ★ 2026-11-09：侧栏隐藏的 bot 不显示；但**搜索时仍可找到**（否则没有入口取消隐藏）。
+					//   置顶由 botFlags 排序（纯函数 sortBotsWithFlags，稳定排序不改其余顺序）。
+					const reg = sortBotsWithFlags(regAll.filter((a) =>
+						(hit(a && a.name) || hit(a && a.id) || hit(a && a.role) || hit(a && a.description))
+						&& (q.length > 0 || !(botFlags[String(a && a.id)] || {}).hidden)), botFlags);
 					// ★ 2026-11-05 群聊：置顶在前、隐藏的不显示（当前打开的除外）；搜索按群名与成员名
 					const roomsShown = visibleRooms(bots.rooms, currentId, botsQuery);
 					const searching = q.length > 0;
@@ -3939,8 +4369,11 @@ window.__ModuleLoader__.load({
 						react.createElement("div", { style: S.list, "data-vssaros-rooms": String(roomsShown.length) },
 							botsSection("群聊", roomsShown.length, roomsShown.map(roomRow)),
 							botsSection("已注册", reg.length, reg.map(botRow))),
-						bots.roomsError && !(bots.rooms || []).length ? react.createElement("div", { style: S.botsHint, "data-vssaros-rooms-error": "1" },
-							"读不到群聊（" + bots.roomsError + "）—— 需要 @vssaros/dsh-agents 0.2.325+。") : null,
+						bots.roomsError && !(bots.rooms || []).length ? (bots.roomsErrorStatus === 401
+							? react.createElement("div", { style: S.botsHint, "data-vssaros-rooms-error": "1", "data-vssaros-rooms-auth-error": "1" },
+								"登录已失效，群列表读不到（" + bots.roomsError + "）—— 请从 IDE 重新打开 / 点「重试」重载，或重新登录企业账号。")
+							: react.createElement("div", { style: S.botsHint, "data-vssaros-rooms-error": "1" },
+								"读不到群聊（" + bots.roomsError + "）—— 需要 @vssaros/dsh-agents 0.2.325+，或检查 Host 是否在运行。")) : null,
 						// ★ 2026-11-05 群行右键菜单（4 组 7 项，见 roomMenuItems）。⚠ 用 onMouseDown（理由同 ＋ 菜单）
 						roomMenu ? react.createElement("div", {
 							"data-vssaros-room-menu": roomMenu.id,
@@ -3971,6 +4404,50 @@ window.__ModuleLoader__.load({
 								react.createElement("button", { type: "button", style: S.menuItem, "data-act": "room-delete-cancel", onClick: () => setRoomDel(null) }, "取消"),
 								react.createElement("button", {
 									type: "button", "data-act": "room-delete-confirm", onClick: deleteRoom,
+									style: Object.assign({}, S.menuItem, { color: "#f48771", fontWeight: 600 }),
+								}, "删除"))) : null,
+						// ★ 2026-11-09 Bot 行右键菜单（复刻 DS Bot：线性图标 + 3 条分组分隔线 + 删除红色）
+						botMenu ? react.createElement("div", {
+							"data-vssaros-bot-menu": botMenu.id,
+							role: "menu",
+							style: Object.assign({}, S.sessMenu, {
+								left: botMenu.x, top: botMenu.y, minWidth: 196, maxHeight: 380, overflowY: "auto",
+							}),
+						}, (() => {
+							const bot = (bots.agents || []).filter((a) => a && String(a.id) === botMenu.id)[0] || { id: botMenu.id };
+							const flags = botFlags[botMenu.id] || {};
+							return botMenuItems(bot, flags, !!flags.unread).map((it, i) => (it.sep
+								? react.createElement("div", { key: "sep" + i, style: { height: 1, margin: "4px 6px", background: "var(--dsw-alias-border-l1, #3a3a3a)" } })
+								: react.createElement("button", {
+									key: it.act, type: "button", role: "menuitem", "data-act": "bot-" + it.act,
+									style: Object.assign({}, S.menuItem, {
+										display: "flex", alignItems: "center", gap: 8,
+										...(it.danger ? { color: "#f48771" } : {}),
+									}),
+									onMouseEnter: (e) => { try { e.currentTarget.style.background = "var(--dsw-alias-bg-layer-3, rgba(128,128,128,.18))"; } catch { /* 忽略 */ } },
+									onMouseLeave: (e) => { try { e.currentTarget.style.background = "none"; } catch { /* 忽略 */ } },
+									// ⚠ 必须 onMouseDown：全局 capture mousedown 会先卸载菜单 ⇒ onClick 根本不触发
+									onMouseDown: (e) => { try { e.preventDefault(); } catch { /* 忽略 */ } runBotAct(it.act); },
+								}, botMenuIcon(it.icon), react.createElement("span", null, it.label))));
+						})()) : null,
+						botDel ? react.createElement("div", {
+							"data-vssaros-bot-confirm": botDel.id,
+							style: {
+								position: "fixed", left: "50%", top: "38%", transform: "translate(-50%, -50%)",
+								zIndex: 90, width: 320, padding: "14px 14px 12px", borderRadius: 12,
+								background: "var(--dsw-alias-bg-layer-2, #262626)",
+								border: "1px solid var(--dsw-alias-border-l2, #3e3e3e)",
+								boxShadow: "0 24px 60px rgba(0,0,0,.65)",
+								color: "var(--dsw-alias-label-primary, #e6e6e6)",
+							},
+						},
+							react.createElement("div", { style: { fontSize: 13, fontWeight: 600, marginBottom: 8 } }, "删除 Bot「" + botDel.name + "」？"),
+							react.createElement("div", { style: { fontSize: 11.5, lineHeight: "1.65", color: "var(--dsw-alias-label-tertiary, #737373)", marginBottom: 12 } },
+								"会删掉它的 .agent.md 并注销 preset；这个 Bot 已有的会话不会被删除。"),
+							react.createElement("div", { style: { display: "flex", gap: 8, justifyContent: "flex-end" } },
+								react.createElement("button", { type: "button", style: S.menuItem, "data-act": "bot-delete-cancel", onClick: () => setBotDel(null) }, "取消"),
+								react.createElement("button", {
+									type: "button", "data-act": "bot-delete-confirm", onClick: deleteBot,
 									style: Object.assign({}, S.menuItem, { color: "#f48771", fontWeight: 600 }),
 								}, "删除"))) : null,
 						// ＋ 菜单（fixed；与会话页签的 ＋ 菜单同形态）
@@ -4760,12 +5237,20 @@ window.__ModuleLoader__.load({
 			// ★ 2026-11-02 侧栏「会话 / Bots」页签：默认页签 / 最近会话选取 / 取数（守卫直接断言）
 			SIDEBAR_VIEW_KEY, readSidebarView, latestSessionIdOf, fetchBotsData, pickBotWorkspaceId, isRegisteredSession,
 			// ★ 2026-11-05 多 bot 群聊：群行识别 / 可见与排序 / 右键菜单 7 项 / 菜单动作调度 / 「群设置」直达设置页签
-			AGENTS_API_ROOMS, ROOM_PROJECTION_KEY, SETTINGS_VIEW_ID, roomMarkOf, visibleRooms, roomMenuItems, roomMenuAction, roomInitials, presetConversationView,
+				AGENTS_API_ROOMS, ROOM_PROJECTION_KEY, SETTINGS_VIEW_ID, roomMarkOf, visibleRooms, roomMenuItems, roomMenuAction, roomInitials, presetConversationView,
+				// 独立页签的组件键 / 前缀与 conversationViews 侧同源（守卫按 DOM + 菜单行为断言，不导出安装期函数）
+			ROOM_SETTINGS_TAB_PREFIX: "room-settings:", ROOM_SETTINGS_PAGE_COMP: "vssaros-room-settings",
+			// ★ 2026-11-09：hero 下「编辑 Bot」走中栏独立页（不依赖 session 槽）
+			// ⚠ 与 ROOM_SETTINGS_PAGE_COMP 同款：常量声明在 botsPane 闭包内，
+			//   __test 在 factory 顶层 ⇒ 这里只能写字面量（跨 chunk 按字符串比对）。
+			BOT_CONFIG_PAGE_COMP: "vssaros-bot-config",
 			// ★ 2026-11-05：@群执行后的实时反馈（全局浮层 + Bots 页签自动刷新）
-			AGENTS_API_ROOMS_ACTIVE, ROOMS_CHANGED_EVENT, GROUP_PROGRESS_EVENT, GROUP_DOCK_VISIBILITY_EVENT, roomsSignature, botStateOf, roomStateOf, askUnreadTargets, botOpenTargetOf, fetchRoomsOnly, fetchRoomActivity,
+			AGENTS_API_ROOMS_ACTIVE, AGENTS_API_ROOMS_EVENTS, ROOMS_ERROR_EVENT, ROOMS_CHANGED_EVENT, GROUP_PROGRESS_EVENT, GROUP_DOCK_VISIBILITY_EVENT, roomsSignature, botStateOf, roomStateOf, askUnreadTargets, botOpenTargetOf, fetchRoomsOnly, fetchRoomActivity,
 			GROUP_ACTIVITY_SCHEMA, GROUP_ROUND_LABELS, groupRoundStatus, normalizeGroupActivity, activitySignature,
 			// ★ 2026-11-06 前台页面声明不要「已发到…」tip（SuperAgent 工作台）
 			GROUP_TIP_OFF_ATTR, groupTipSuppressed,
+			// ★ 2026-11-09 Bot 行右键菜单：flags 持久化 / 排序 / 菜单 10 项 / 动作调度（守卫直接断言）
+			BOT_FLAGS_KEY, readBotFlags, saveBotFlags, toggleBotFlag, sortBotsWithFlags, botMenuItems, botMenuAction,
 		};
 		return module.exports;
 	}

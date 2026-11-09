@@ -23,6 +23,13 @@ import { cp, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promis
 import { statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { listTarGzEntries } from './tar.js';
+// ★ 2026-11-09 Bot 组合包：清单契约 + MCP 注册/注销 + 台账（三者都不反向依赖 installers ⇒ 无环）
+import {
+	BOT_MANIFEST_FILE, BOT_RECEIPT, readBotManifest, scanBotSecrets, validateBotPack,
+	checkBotRequires, componentIdMap, rewriteAgentMd, rewriteSkillName,
+} from './botPack.js';
+import { registerMcpServer, removeMcpCompletely } from './mcpInstall.js';
+import { readInstalled, removeInstalled, upsertInstalled } from './installedLedger.js';
 
 /**
  * 落数据根的商品类型。
@@ -212,6 +219,174 @@ async function backupBeforeUpgrade(targetDir, backupRoot) {
 }
 
 /**
+ * ★ 2026-11-09：**Bot 组合包分发安装**。
+ *
+ * 为什么不能走普通 `installBundle` 的单目录落位：包里的 `skills/<name>/`、`mcp/<id>/`
+ * 会被原样塞进 `<数据根>/agents/<id>/`，而技能 provider 只扫 `<数据根>/skills/`、
+ * MCP 只认 `<数据根>/mcp.json` ⇒ **不报错但技能/MCP 永远不生效**（最危险的假绿）。
+ *
+ * 做法：先全量校验 + 生成落位计划 + 查冲突，再逐项写；任一步失败把本次新建的目录回滚掉。
+ * `bot.json` 留在 agent 目录里（agents 扫描器只读 `.agent.md`），供 `uninstallBundle`
+ * 级联卸载时反查「当初分发了哪些组件」。
+ */
+/**
+ * ★ 升级迁移：读旧版本落盘的 bot.json，算出「上一次分发出去的组件 id」。
+ * 老包（`namespace:false`）用裸名，新版本默认开启后带前缀 ⇒ 不清理的话
+ * 数据根会同时留两份技能，`mcp.json` 也会多一条指向旧目录的行。
+ * 没有 `installedComponents` 时回退到原声明名（更早的老包）。
+ */
+async function previousComponentIds(dataRoot, storeId) {
+	const file = join(dataRoot, 'agents', storeId, BOT_MANIFEST_FILE);
+	if (!await exists(file)) { return []; }
+	let old;
+	try { old = JSON.parse(await readFile(file, 'utf8')); } catch { return []; }
+	const installed = old.installedComponents && typeof old.installedComponents === 'object'
+		? old.installedComponents : {};
+	const skills = Array.isArray(installed.skills) ? installed.skills
+		: (Array.isArray(old.skills) ? old.skills : []);
+	const mcps = Array.isArray(installed.mcpServers) ? installed.mcpServers
+		: (Array.isArray(old.mcpServers) ? old.mcpServers : []);
+	return [
+		...skills.map(s => ({ kind: 'skill', id: String(s) })),
+		...mcps.map(m => ({ kind: 'mcp', id: String(m) })),
+	];
+}
+
+async function installBotPack({ dataRoot, storeId, version, files, bot, upgrade }) {
+	const checked = validateBotPack(files, bot);
+	if (checked.botId !== storeId) {
+		throw new Error(`bot.json 的 botId（${checked.botId}）与商城标识（${storeId}）不一致`);
+	}
+	// ★ 2026-11-09 P1：依赖范围如实核对。查不到版本 ⇒ unknown（不阻断，但回执里明说）；
+	//   明确 incompatible ⇒ 装一半也没用，直接拒。
+	const requires = checkBotRequires(bot, {});
+	if (!requires.ok) {
+		const bad = requires.results.filter(r => r.state === 'incompatible')
+			.map(r => `${r.name} 需要 ${r.range}，当前 ${r.found}`).join('；');
+		throw new Error(`Bot 依赖不满足：${bad}`);
+	}
+	// 安装端再扫一次：包可能不是从自家发布端来的（离线包 / 换过服务端）
+	const blockers = scanBotSecrets(files);
+	if (blockers.length) {
+		throw new Error('安装被凭据扫描拦下：包内含明文密钥/token，请改用 ${env:VAR} 占位符');
+	}
+	const map = componentIdMap(bot);
+	const pathsOf = (prefix) => files
+		.filter(f => f.path.startsWith(prefix))
+		.map(f => ({ ...f, path: f.path.slice(prefix.length) }));
+	const skillPrefixes = checked.skills.map(s => `skills/${s}/`);
+	const mcpPrefixes = checked.mcpServers.map(m => `mcp/${m}/`);
+	// ★ 命名空间：落位的 `.agent.md` 必须把 skills:/tools: 里的引用同步改成加前缀后的名字，
+	//   否则 Bot 会指向一个不存在的技能；落盘 bot.json 记下实际 id 供级联卸载反查。
+	const agentFiles = files.filter(f => f.path !== 'manifest.json'
+		&& !skillPrefixes.some(p => f.path.startsWith(p))
+		&& !mcpPrefixes.some(p => f.path.startsWith(p)))
+		.map(f => {
+			if (f.path === '.agent.md') {
+				return { ...f, data: Buffer.from(rewriteAgentMd(f.data.toString('utf8'), map)) };
+			}
+			if (f.path === BOT_MANIFEST_FILE) {
+				return { ...f, data: Buffer.from(JSON.stringify({
+					...bot,
+					installedComponents: {
+						prefix: checked.prefix,
+						skills: checked.installedIds.skills,
+						mcpServers: checked.installedIds.mcpServers,
+					},
+				}, null, 2)) };
+			}
+			return f;
+		});
+	const plan = [
+		{ kind: 'agent', id: storeId, dir: join(dataRoot, 'agents', storeId), files: agentFiles },
+		...checked.skills.map((s, i) => {
+			const installedId = checked.installedIds.skills[i];
+			return {
+				kind: 'skill', id: installedId, dir: join(dataRoot, 'skills', installedId),
+				files: pathsOf(`skills/${s}/`).map(f => f.path === 'SKILL.md'
+					? {
+						...f,
+						data: Buffer.from(injectSkillFrontmatter(
+							rewriteSkillName(f.data.toString('utf8'), installedId),
+							{ storeId: installedId, version })),
+					}
+					: f),
+			};
+		}),
+		...checked.mcpServers.map((m, i) => {
+			const installedId = checked.installedIds.mcpServers[i];
+			return {
+				kind: 'mcp', id: installedId, source: m,
+				dir: join(dataRoot, 'mcp', installedId), files: pathsOf(`mcp/${m}/`),
+			};
+		}),
+	];
+	// 冲突检查必须在任何写盘之前（否则会留下「装了 2/3 个组件」的残局）
+	// ★ 2026-11-09：台账的 owner 决定「这个组件是不是别人的」—— 两个 Bot 包用了
+	//   同一个通用技能名时不许静默覆盖，报错要点出占用者，让作者改名或对方先卸载。
+	const ledger = await readInstalled(dataRoot);
+	const ownerOf = (kind2, id) => ledger.find(e => e.kind === kind2 && e.storeId === id)?.owner ?? '';
+	// 必须在写盘前读：upgrade 会先 rm 掉整个 agent 目录（旧 bot.json 也一起没了）。
+	const previousIds = upgrade ? await previousComponentIds(dataRoot, storeId) : [];
+	if (!upgrade) {
+		for (const item of plan) {
+			if (await exists(item.dir)) {
+				const owner = ownerOf(item.kind, item.id);
+				if (owner && owner !== storeId) {
+					throw new Error(`「${item.id}」已被其它包占用（owner: ${owner}）：${item.dir}。请改名或让对方先卸载，不覆盖别人的组件`);
+				}
+				throw new Error(`「${item.id}」已经装过了（${item.dir}）。要更新请用「升级」，或先卸载${owner ? `（owner: ${owner}）` : ''}`);
+			}
+		}
+	}
+	const written = [];
+	try {
+		for (const item of plan) {
+			await writeFiles(item.dir, item.files, { overwrite: upgrade });
+			written.push(item);
+		}
+		for (const item of plan.filter(p => p.kind === 'mcp')) {
+			const mf = files.find(f => f.path === `mcp/${item.source}/config.json`);
+			await registerMcpServer(dataRoot, item.id, JSON.parse(mf.data.toString('utf8')));
+		}
+		// 每个组件一条台账 ⇒ 已安装页签 / 升级检查能看到全部分发物，而不是只看到 Bot
+		for (const item of plan) {
+			await upsertInstalled(dataRoot, { kind: item.kind, storeId: item.id, version, owner: storeId });
+		}
+		// ★ 升级迁移：旧版本分发过、本次不再使用的组件要清掉（老包裸名 → 新版本带前缀）。
+		//   只清 owner 属于自己的，别人的组件绝不碰；清理失败也不该让整个升级回滚。
+		const currentIds = new Set(plan.map(p => p.id));
+		for (const old of previousIds) {
+			if (currentIds.has(old.id)) { continue; }
+			const owner = ownerOf(old.kind, old.id);
+			if (owner && owner !== storeId) { continue; }
+			try {
+				if (old.kind === 'mcp') { await removeMcpCompletely(dataRoot, old.id); }
+				else { await rm(join(dataRoot, 'skills', old.id), { recursive: true, force: true }); }
+				await removeInstalled(dataRoot, old.kind, old.id);
+			} catch { /* 旧目录只是冗余；新版本已就位，不因清理失败回滚 */ }
+		}
+	} catch (e) {
+		for (const item of written) {
+			if (!upgrade) { await rm(item.dir, { recursive: true, force: true }).catch(() => undefined); }
+		}
+		for (const item of plan.filter(p => p.kind === 'mcp')) {
+			await removeMcpCompletely(dataRoot, item.id).catch(() => undefined);
+		}
+		throw e;
+	}
+	return {
+		targetDir: plan[0].dir,
+		fileCount: files.length,
+		skipped: [],
+		bot: BOT_RECEIPT,
+		// ★ 依赖状态如实回执：unknown ≠ 已满足，前端不该把「没查到」说成「都装好了」
+		requires,
+		components: plan.map(p => ({ kind: p.kind, id: p.id, dir: p.dir })),
+	};
+}
+
+/**
  * 安装一个 bundle 包（skill / workflow）。
  *
  * @param {object} args
@@ -245,6 +420,11 @@ export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer
 			: (() => { throw new Error('installBundle 需要 gzBuffer 或 files 其中之一'); })();
 	if (files.length === 0) {
 		throw new Error('包内没有任何文件（拒绝安装一个空包）');
+	}
+	// ★ 2026-11-09：包里有 bot.json ⇒ 组合包，走分发安装；普通 agent 包保持原链路 ✓
+	const bot = readBotManifest(files);
+	if (bot) {
+		return installBotPack({ dataRoot, storeId, version, files, bot, upgrade });
 	}
 	const existing = await exists(targetDir);
 	if (existing && !upgrade) {
@@ -407,6 +587,41 @@ export async function uninstallBundle({ dataRoot, kind, storeId }) {
 	const targetDir = join(root, storeId);
 	if (!await exists(targetDir)) {
 		throw new Error(`「${storeId}」没有装过（${targetDir} 不存在）`);
+	}
+	// ★ 2026-11-09 级联卸载：组合包安装时把 bot.json 留在了 agent 目录里，
+	//   按它反查当初分发出去的技能/MCP，逐个删目录 + 注销 mcp.json + 清台账。
+	//   不这么做的话，卸载 Bot 会留下一堆「装了但没人用」的技能和 MCP 行。
+	const botFile = join(targetDir, BOT_MANIFEST_FILE);
+	if (await exists(botFile)) {
+		let bot = {};
+		try { bot = JSON.parse(await readFile(botFile, 'utf8')); } catch { /* 清单坏了也要删主目录 */ }
+		// ★ 2026-11-09 P1：优先用落盘 bot.json 里的「实际落位 id」（命名空间加了前缀）。
+		//   老包没有 installedComponents ⇒ 回退到原声明名，逐字兼容。
+		const installed = bot.installedComponents && typeof bot.installedComponents === 'object'
+			? bot.installedComponents : {};
+		const skills = Array.isArray(installed.skills) ? installed.skills.map(String)
+			: (Array.isArray(bot.skills) ? bot.skills.map(String) : []);
+		const mcps = Array.isArray(installed.mcpServers) ? installed.mcpServers.map(String)
+			: (Array.isArray(bot.mcpServers) ? bot.mcpServers.map(String) : []);
+		const ledger = await readInstalled(dataRoot);
+		// ★ 2026-11-09：只清 owner 属于自己的组件。同名技能可能先被别的 Bot 包装过，
+		//   按名字一律删会跨包互相破坏（老台账没有 owner ⇒ 视为本包，保持兼容）。
+		const ownedByMe = (kind2, id) => {
+			const row = ledger.find(e => e.kind === kind2 && e.storeId === id);
+			return !row || !row.owner || row.owner === storeId;
+		};
+		for (const name of skills) {
+			if (!ownedByMe('skill', name)) { continue; }
+			await rm(join(dataRoot, 'skills', name), { recursive: true, force: true });
+			await removeInstalled(dataRoot, 'skill', name);
+		}
+		for (const name of mcps) {
+			if (!ownedByMe('mcp', name)) { continue; }
+			// 先注销 mcp.json 再删目录（反了会留下指向不存在目录的 entry）
+			await removeMcpCompletely(dataRoot, name);
+			await removeInstalled(dataRoot, 'mcp', name);
+		}
+		await removeInstalled(dataRoot, kind, storeId);
 	}
 	await rm(targetDir, { recursive: true, force: true });
 	return { targetDir };

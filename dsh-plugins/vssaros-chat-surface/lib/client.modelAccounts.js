@@ -472,19 +472,39 @@ window.__ModuleLoader__.load({
 			...body);
 		}
 
+		// 2026-11-09（本地 Agent 设置页入口）：`/x/local-agents/` 由 vssaros-local-agents 插件
+		// 自注册，默认关闭 ⇒ 卡片只给入口与说明，不假装"已启用"；不探测（探测要 fetch，
+		// 而本 chunk 走 ALWAYS_CHUNKS，headless / 无桥环境不该发请求）。零新槽注册。
+		function LocalAgentsCard() {
+			return h("li", {
+				"data-vssaros-local-agents-card": "1",
+				style: { listStyle: "none", background: C.card, border: "1px solid " + C.line, borderRadius: 20, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 8 },
+			},
+			h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, minHeight: 28 } },
+				h("span", { style: { fontWeight: 500, fontSize: 14, color: C.fg } }, "本地 Agent"),
+				h("a", {
+					href: "/x/local-agents/",
+					style: { fontSize: 11, color: C.fg2, border: "1px solid " + C.line, borderRadius: 4, padding: "1px 6px", lineHeight: "16px", textDecoration: "none" },
+				}, "打开设置 →")),
+			h("div", { style: { fontSize: 11.5, color: C.fg3 } },
+				"检测本机已安装的编程 Agent CLI、复制登录命令、重新扫描并热换模型路由。凭据归 CLI 自己管理；需先在插件配置里启用「本地 Agent」，未启用时页面会给出说明。"));
+		}
+
 		function ModelsFooter() {
 			const s = useAccountStore();
 			const l = la.use();
 			const state = cardState(s.status);
 			const showCb = s.available && state !== "unknown" && state !== "in";
 			const showLa = l.available && laState(l.status) !== "unknown";
-			if (!showCb && !showLa) { return null; }
+			const showLocal = true;
+			if (!showCb && !showLa && !showLocal) { return null; }
 			return h("div", { "data-vssaros-models-footer": "1", style: { marginTop: 18 } },
 				h("div", { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontWeight: 500, color: C.fg3, margin: "0 2px 8px" } },
 					"VsSaros 账号服务", h("span", { style: { flex: 1, height: 1, background: C.lineSoft } })),
 				h("ul", { style: { margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 8 } },
 					showCb ? h(CodeBuddyEntryCard, { store: s, state }) : null,
-					h(LightAICard, null)));
+					h(LightAICard, null),
+					showLocal ? h(LocalAgentsCard, null) : null));
 		}
 
 		// ── 注册（不许外抛：一处撞了不连累另一处 —— 同 client.workbenchNav.js 的教训）──────────

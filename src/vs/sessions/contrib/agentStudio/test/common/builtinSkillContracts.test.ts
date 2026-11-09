@@ -421,36 +421,35 @@ suite('游戏拆解技能（kb-game-teardown）', () => {
 			`技能引用的骨架文件不存在（渐进披露断链）：${TEMPLATE_REL}`);
 	});
 
-	test('★ 已挂到主助理；主助理具备读图能力（画面证据来自抽帧/截图）', () => {
-		const claw = getBuiltinAgents().find(a => a.id === 'saros-claw');
-		assert.ok(claw, '找不到内置 agent saros-claw');
-		assert.ok((claw.skills ?? []).includes(SKILL),
-			`saros-claw 未挂载 ${SKILL} —— 用户直接对助理说「拆解这个游戏」时拿不到手册`);
-		assert.ok((claw.tools ?? []).includes('vision_analyze'),
-			'saros-claw 缺 vision_analyze ⇒ 帧图/用户发的截图都看不了，画面层结论只能空着');
+	// ★ 2026-11-09：通用主助理 saros-claw 已删除。${SKILL} 是 activation:auto + tier:core，
+	//   任意 agent 的对话里都能按 match 关键词自动激活 ⇒ 不再依赖某个 agent 的显式挂载；
+	//   读图能力由 KB agent（唯一同时具备抽帧+读图+落库工具的 user-facing agent）承接。
+	test('★ 拆解能力不依赖已删除的主助理：技能 auto 激活 + KB agent 具备读图能力', () => {
+		const agentMdPath = path.join(process.cwd(), SKILLS_REL, SKILL, 'SKILL.md');
+		const skillMd = fs.readFileSync(agentMdPath, 'utf8');
+		assert.match(skillMd, /^activation:\s*auto\s*$/m,
+			`${SKILL} 必须是 auto 激活 —— 主助理删除后，靠显式挂载就拿不到手册了`);
+		assert.match(skillMd, /^tier:\s*core\s*$/m,
+			`${SKILL} 应在 40 个常驻核心里（所有 agent 默认可见）`);
+		assert.ok(!getBuiltinAgents().some(a => a.id === 'saros-claw'), '主助理 saros-claw 应已删除');
+		const kb = getBuiltinAgents().find(a => a.id === KB_AGENT_ID);
+		assert.ok(kb, `找不到承接 agent ${KB_AGENT_ID}`);
+		assert.ok((kb.tools ?? []).includes('vision_analyze'),
+			`${KB_AGENT_ID} 缺 vision_analyze ⇒ 帧图/截图都看不了，画面层结论只能空着`);
 	});
 
-	test('★ 拆解链路的工具补齐（2026-09-24）：能上网补证 / 能检索知识库 / 两端都能抽帧 / 能发起构建', () => {
-		const claw = getBuiltinAgents().find(a => a.id === 'saros-claw');
+	// ★ 2026-11-09：主助理删除后，整条「拆解 → 落库 → 补证 → 构建」链路由 KB agent 独家承接。
+	//   原来主助理那份工具清单（kb_search / 抽帧 / 读图 / kb_build）与 KB agent 重叠，
+	//   原来主助理那份工具清单与 KB agent 重叠 ⇒ 断言按**实际归属**重写。
+	test('★ 拆解链路的工具补齐（主助理删除后由 KB agent 承接）', () => {
 		const kb = getBuiltinAgents().find(a => a.id === KB_AGENT_ID);
-		assert.ok(claw && kb);
-
-		// 主助理：能检索知识库（此前完全不能 ⇒ 写内容无从复用用户既有笔记）+ 能看视频 + **能发起构建**
-		// （最后一项是「拆分游戏 → 落库 → 问用户 → 构建」闭环的收尾；缺它整条链路断在最后一步）
-		for (const tool of ['kb_search', 'extract_video_frames', 'video_analyze', 'vision_analyze', 'kb_build']) {
-			assert.ok((claw!.tools ?? []).includes(tool), `saros-claw 缺 ${tool}`);
+		assert.ok(kb, `找不到承接 agent ${KB_AGENT_ID}`);
+		for (const tool of ['kb_search', 'extract_video_frames', 'video_analyze', 'vision_analyze', 'web_search', 'web_fetch', 'content_import']) {
+			assert.ok((kb.tools ?? []).includes(tool), `${KB_AGENT_ID} 缺 ${tool}`);
 		}
-		// KB agent：能上网补证（此前完全不能 ⇒ 与「禁止编造」直接冲突）+ 能抽帧
-		// ⚠ 2026-10-20：`web_extract` 是 IDE 侧工具名，dsh 里没有对等物；
-		//   dsh 侧对应的是 `web_fetch`（`@deepseek-ai/dsh-tool-web`）⇒ 断言跟着改，
-		//   否则这条会在"agent 内容对齐 dsh 工具"后一直红（是断言过期，不是能力缺失）。
-		for (const tool of ['web_search', 'web_fetch', 'extract_video_frames', 'vision_analyze']) {
-			assert.ok((kb!.tools ?? []).includes(tool), `${KB_AGENT_ID} 缺 ${tool}`);
-		}
-		// ⚠ 反向契约：KB agent **不该**拿到 kb_build —— 构建会话正由它执行，给它构建工具
-		//   会造成「构建中再发起构建」（互斥虽能拦住，但那是把护栏当设计用）。
-		assert.ok(!(kb!.tools ?? []).includes('kb_build'),
-			`${KB_AGENT_ID} 不应挂 kb_build（构建会话由它自己执行 ⇒ 递归风险）`);
+		// 主助理删除后，发起构建的工具只剩 KB agent 这一处 ⇒ 钉住它，防止链路断在最后一步。
+		assert.ok((kb.tools ?? []).includes('kb_build'),
+			`${KB_AGENT_ID} 缺 kb_build ⇒ 「落库 → 构建」收尾断了，且已无主助理可补位`);
 	});
 });
 

@@ -5,6 +5,7 @@ description_zh: VsSaros 一键打包发版
 description_en: VsSaros end-to-end release
 disable: false
 agent_created: true
+tier: extended
 ---
 
 # vssaros-release-pipeline

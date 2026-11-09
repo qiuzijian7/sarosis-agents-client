@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>二次元番茄钟 · 统计页视觉规范（anime-stats-spec）</title>
+    <!--
+      ============================================================================
+      二次元番茄钟（anime 入口）统计页视觉规范 —— Designer 交付，Coder 照抄。
+      范围：在 anime.html 内嵌 #stats 视图（仿首页 SPA location.hash 切换 #task/#stats），
+            复用 src/stats.js 的 renderStats/computeTrend/computeList 纯函数渲染逻辑，
+            anime 只做主题适配，不重写统计聚合。
+
+      【一句话目标】让用户在二次元风格下，3 秒内看懂「今天完成几个 + 最近趋势 + 记录」，
+                    空态知道去哪开始，错误态知道怎么重试。
+
+      【设计令牌】逐字对齐 anime-spec.html :root（不新造色板），统计页额外复用其中
+        --surface-2 作趋势柱底、--primary 作今日高亮、--break 作休息点缀、--error 作错误横幅。
+        对比度色值对（WCAG）：
+          • 正文 --ink #43303B 铺 --panel #FFFFFF      ≈12.2:1  (≥4.5 ✓ 正文)
+          • 次要 --muted #6F5A68 铺 --panel #FFFFFF    ≈6.3:1   (≥4.5 ✓ 次要，绝不用透明灰字)
+          • 主按钮 --primary #D6336C 白字              =4.62:1   (≥4.5 ✓ 大字/按钮)
+          • 休息蓝 --break #2B6CB0 白字                =5.42:1   (≥4.5 ✓)
+          • 错误红 --error #C0392B 白字                =5.44:1   (≥4.5 ✓)
+          • 趋势柱 today 高亮用 --primary 底+白字      =4.62:1   (≥4.5 ✓)
+          • 普通趋势柱 --surface-2 #FCE9F3 底 + --ink 字 ≈11:1   (≥4.5 ✓)
+
+      【交互自证】（每个可点元素的表现，生产 anime.css 照此实现）
+          • 按钮（.anime-btn / .anime-btn--primary）：
+              hover  → 上浮 2px + 亮度 +4%
+              active → 下沉 3px 收底影
+              focus-visible → 深蓝 --focus #2B6CB0 的 3px 描边、offset 3px（键盘可见）
+              disabled → opacity .5 + 灰化 + cursor:not-allowed，与正常态明显区分
+          • tabbar 项（a.anime-tab）：
+              hover → 底色 #FCE9F3
+              focus-visible → 深蓝描边；.active 态用 --primary 文字 + 2px 下划线
+          • 长任务名：.history-task 单行省略（…），title 属性带全文（悬停/长按可见）
+          • 错误横幅：role="alert" 自动读屏；「重试读取」走 storage.retryPersist 真重写才消
+
+      【硬约束（与 anime MVP 同源，不因为统计页放水）】
+          • 零外部依赖、可离线：不引字体/图标 CDN；装饰一律内联 SVG，不用 emoji。
+          • 复用 src/stats.js 渲染逻辑（Coder 不重写聚合）；三态口径与首页/卡通一致。
+          • 可访问性不放松：对比 ≥4.5:1、触控 ≥44px、Tab 顺序=视觉顺序且有 focus-visible、
+            禁用态明显区分、样式表含 [hidden]{display:none!important}。
+          • 窄屏 360px 不出现横向滚动；可点目标 ≥32×32（本规范统一用 48px 高）。
+
+      【DOM 契约（关键！便于直接复用 src/stats.js，零改动驱动）】
+          anime.html 的统计区块 id 必须与首页 index.html 完全一致：
+            #view-stats / #statsNormal / #statsEmpty / #statsError
+            #statsTodayCount / #statsTrend / #statsList
+            #statsGoFocus（空态「去专注」）/ #statsEmptyReason / #statsRetry（错误态「重试读取」）
+          renderTrend/renderList 写死的 class（.trend-item/.trend-bar/.trend-label/
+            .history-item/.history-date/.history-task/.history-count/.on/.zero）由 anime.css 提供
+          二次元重着色；空态/错误态按钮由 anime 自选 class（推荐 .anime-btn--primary / .anime-btn），
+          只要 id 对齐即可（renderStats 只切容器 hidden，不碰按钮 class）。
+
+      【休息态 mascot 闭眼变体（本次一并锁定）】
+          .anime-mascot 默认睁眼（idle/running）；当 .anime-app.is-break 时切换到闭眼变体：
+          眼睛由圆点改为向下弧线（安睡感）+ 保留腮红 + 微笑，并在 mascot 右上加「Zzz」气泡
+          （aria-hidden，纯装饰）。生产版由 anime.js 在 phase===BREAK 时给 .anime-app 加 .is-break。
+      ============================================================================
+    -->
+    <style>
+      :root {
+        --bg-1: #FFF1F8;
+        --bg-2: #F1ECFB;
+        --panel: #FFFFFF;
+        --surface-2: #FCE9F3;
+        --ink: #43303B;
+        --muted: #6F5A68;
+        --primary: #D6336C;
+        --primary-d: #B02A5B;
+        --break: #2B6CB0;
+        --break-d: #1F558C;
+        --error: #C0392B;
+        --focus: #2B6CB0;
+        --radius: 24px;
+        --radius-lg: 28px;
+        --shadow: 0 8px 18px rgba(74, 51, 64, 0.16);
+        --tap: 48px;
+        --fs-time: clamp(56px, 22vw, 88px);
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; }
+      body {
+        font-family: system-ui, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+        background: linear-gradient(160deg, var(--bg-1), var(--bg-2));
+        color: var(--ink);
+        min-height: 100vh;
+        display: flex;
+        justify-content: center;
+        padding: 16px;
+      }
+      [hidden] { display: none !important; }
+
+      /* 规范说明卡（生产版删除） */
+      .spec-note {
+        max-width: 760px;
+        width: 100%;
+        background: #fff;
+        border: 1px solid #ecd9e6;
+        border-radius: 16px;
+        padding: 16px 20px;
+        margin-bottom: 16px;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      .spec-note h2 { margin: 0 0 8px; font-size: 16px; color: var(--primary-d); }
+      .spec-note code { background: #fbeef5; padding: 1px 5px; border-radius: 6px; color: var(--primary-d); }
+
+      .wrap { width: 100%; max-width: 760px; display: flex; flex-direction: column; gap: 16px; }
+
+      /* ===== 手机框 ===== */
+      .phone {
+        width: 100%;
+        max-width: 380px;
+        margin: 0 auto;
+        background: linear-gradient(160deg, var(--bg-1), var(--bg-2));
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow);
+        padding: 18px 16px calc(18px + env(safe-area-inset-bottom));
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        min-height: 640px;
+      }
+
+      .anime-top { display: flex; align-items: center; gap: 10px; }
+      .anime-logo { width: 40px; height: 40px; flex: 0 0 auto; }
+      .anime-title { font-size: 18px; margin: 0; font-weight: 700; }
+      .anime-phase {
+        margin-left: auto;
+        font-size: 13px;
+        color: var(--primary-d);
+        background: var(--surface-2);
+        padding: 4px 10px;
+        border-radius: 999px;
+      }
+      .anime-app.is-break .anime-phase { color: var(--break-d); background: #E7F0FA; }
+
+      /* 计时区（task 视图） */
+      .anime-stage {
+        position: relative;
+        text-align: center;
+        padding: 8px 0 4px;
+        border-radius: var(--radius);
+        background: radial-gradient(circle at 50% 30%, #fff 0%, var(--surface-2) 70%, var(--surface-2) 100%);
+      }
+      .anime-mascot { width: 120px; height: 120px; margin: 0 auto; display: block; }
+      .anime-time {
+        font-size: var(--fs-time);
+        font-weight: 800;
+        color: var(--time-ink, var(--ink));
+        letter-spacing: 1px;
+        font-variant-numeric: tabular-nums;
+        text-shadow: 0 0 10px rgba(214, 51, 108, 0.25), 0 1px 0 #fff;
+        margin: 4px 0 0;
+      }
+      .anime-state { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
+      .anime-caption { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+      /* 休息态闭眼变体：默认睁眼组显示，闭眼组隐藏；.is-break 反过来 */
+      .mascot-eyes-open { display: block; }
+      .mascot-eyes-closed { display: none; }
+      .anime-app.is-break .mascot-eyes-open { display: none; }
+      .anime-app.is-break .mascot-eyes-closed { display: block; }
+      .mascot-zzz { display: none; }
+      .anime-app.is-break .mascot-zzz { display: block; }
+
+      .anime-controls { display: flex; gap: 10px; }
+      .anime-btn {
+        flex: 1;
+        min-height: var(--tap);
+        border: 0;
+        border-radius: var(--radius);
+        font-size: 16px;
+        font-weight: 700;
+        cursor: pointer;
+        background: var(--surface-2);
+        color: var(--ink);
+        box-shadow: 0 4px 0 #e9c9dd;
+        transition: transform 0.08s ease, filter 0.08s ease, box-shadow 0.08s ease;
+      }
+      .anime-btn--primary { background: var(--primary); color: #fff; box-shadow: 0 4px 0 var(--primary-d); }
+      .anime-btn:hover { transform: translateY(-2px); filter: brightness(1.04); }
+      .anime-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--primary-d); }
+      .anime-btn:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+      .anime-btn:disabled { opacity: 0.5; filter: grayscale(0.4); cursor: not-allowed; transform: none; box-shadow: 0 4px 0 #e9c9dd; }
+
+      .anime-today { text-align: center; color: var(--muted); font-size: 14px; }
+      .anime-today b { color: var(--primary); font-size: 16px; }
+
+      .anime-error {
+        display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+        background: #fff; color: var(--error);
+        border: 2px solid var(--error); border-radius: var(--radius);
+        padding: 12px; font-size: 13px; line-height: 1.5;
+      }
+      .anime-error .anime-btn { flex: 0 0 auto; min-height: 40px; padding: 0 14px; }
+
+      /* ===== 统计视图（复用首页 id / class，anime 重着色） ===== */
+      .stats-hero-title { font-size: 14px; color: var(--muted); margin: 0 0 4px; font-weight: 600; }
+      .stats-hero { display: flex; align-items: baseline; gap: 6px; margin-bottom: 14px; }
+      .stats-hero-num { font-size: 44px; font-weight: 800; color: var(--primary); line-height: 1; }
+      .stats-hero-unit { font-size: 14px; color: var(--muted); }
+
+      .stats-block { margin-bottom: 14px; }
+      .stats-block-title { font-size: 14px; color: var(--ink); margin: 0 0 8px; font-weight: 700; }
+
+      .trend { display: flex; align-items: flex-end; gap: 6px; height: 120px; padding: 8px; background: var(--panel); border-radius: var(--radius); box-shadow: var(--shadow); }
+      .trend-item { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 4px; }
+      .trend-bar { width: 70%; border-radius: 8px 8px 4px 4px; background: var(--surface-2); min-height: 4px; transition: height 0.2s ease; }
+      .trend-item.on .trend-bar { background: var(--primary); }
+      .trend-bar.zero { background: #f3e6ee; }
+      .trend-label { font-size: 10px; color: var(--muted); }
+      .trend-item.on .trend-label { color: var(--primary-d); font-weight: 700; }
+
+      .history { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+      .history-item { display: flex; align-items: center; gap: 8px; background: var(--panel); border-radius: var(--radius); padding: 10px 12px; box-shadow: var(--shadow); }
+      .history-date { font-size: 12px; color: var(--muted); flex: 0 0 76px; }
+      .history-task {
+        flex: 1; font-size: 14px; color: var(--ink);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .history-count { font-size: 12px; color: var(--primary-d); font-weight: 700; flex: 0 0 auto; }
+
+      .empty-card, .error-banner {
+        background: var(--panel); border-radius: var(--radius); padding: 18px 16px;
+        box-shadow: var(--shadow); text-align: center; font-size: 14px; line-height: 1.6;
+      }
+      .empty-card b, .error-banner b { color: var(--ink); }
+      .stats-empty { color: var(--muted); }
+      .stats-empty .anime-btn { margin-top: 12px; width: 100%; }
+      .error-banner { border: 2px solid var(--error); color: var(--error); }
+      .error-banner .anime-btn { margin-top: 10px; }
+
+      /* ===== tabbar ===== */
+      .anime-tabbar { display: flex; gap: 8px; margin-top: auto; }
+      .anime-tab {
+        flex: 1; min-height: var(--tap); display: flex; align-items: center; justify-content: center; gap: 6px;
+        text-decoration: none; color: var(--muted); font-size: 14px; font-weight: 600;
+        background: var(--panel); border-radius: var(--radius); box-shadow: var(--shadow);
+      }
+      .anime-tab svg { width: 20px; height: 20px; }
+      .anime-tab:hover { background: var(--surface-2); }
+      .anime-tab:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+      .anime-tab.active { color: var(--primary); box-shadow: inset 0 -3px 0 var(--primary); }
+
+      /* 演示控制条（生产版删除） */
+      .demo-bar { max-width: 380px; margin: 0 auto; display: flex; flex-wrap: wrap; gap: 8px; }
+      .demo-bar button {
+        min-height: 40px; padding: 0 12px; border: 1px solid var(--primary); background: #fff;
+        color: var(--primary-d); border-radius: 12px; font-size: 13px; cursor: pointer; font-weight: 700;
+      }
+      .demo-bar button:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+    </style>
+  </head>
+  <body>
+    <div class="spec-note">
+      <h2>二次元番茄钟 · 统计页视觉规范（anime-stats-spec）</h2>
+      本文件是 <b>单文件 HTML 原型</b>（双击可开、零外部请求）。下方手机框含「任务」与「统计」两个视图，
+      用底部演示按钮切换 <b>统计三态</b>（正常 / 空态 / 错误态）与 <b>休息态 mascot 闭眼变体</b>。
+      生产版删除演示按钮，改由 <code>anime.js</code> 接 <code>location.hash</code> 切换 + <code>src/stats.js</code> 渲染。
+      设计令牌与 <code>anime-spec.html</code> 逐字一致；统计区块 id/class 与首页 <code>index.html</code> 对齐以便复用
+      <code>src/stats.js</code>。对比度色值对见文件头注释。
+    </div>
+
+    <div class="wrap">
+      <!-- ============ 手机原型 ============ -->
+      <div class="phone anime-app" id="app">
+        <header class="anime-top">
+          <svg class="anime-logo" viewBox="0 0 120 120" aria-hidden="true">
+            <path d="M60 14c4-6 13-8 19-3-2 4-2 8 0 12-6-2-13 0-19-2z" fill="#7BD389" stroke="#43303B" stroke-width="3" stroke-linejoin="round"/>
+            <ellipse cx="60" cy="66" rx="44" ry="40" fill="#F0577F" stroke="#43303B" stroke-width="3"/>
+            <ellipse cx="44" cy="50" rx="14" ry="10" fill="#fff" opacity=".35"/>
+            <ellipse cx="46" cy="62" rx="7" ry="9" fill="#fff" stroke="#43303B" stroke-width="2"/>
+            <ellipse cx="74" cy="62" rx="7" ry="9" fill="#fff" stroke="#43303B" stroke-width="2"/>
+            <circle cx="47" cy="64" r="4" fill="#43303B"/>
+            <circle cx="75" cy="64" r="4" fill="#43303B"/>
+            <ellipse cx="40" cy="76" rx="7" ry="4" fill="#FF9EC4" opacity=".85"/>
+            <ellipse cx="80" cy="76" rx="7" ry="4" fill="#FF9EC4" opacity=".85"/>
+            <path d="M52 78 Q60 86 68 78" stroke="#43303B" stroke-width="3" fill="none" stroke-linecap="round"/>
+          </svg>
+          <h1 class="anime-title">番茄钟</h1>
+          <span class="anime-phase" id="phaseLabel">专注模式</span>
+        </header>
+
+        <!-- ===== 任务视图（计时，MVP 口径，与 anime.html 一致） ===== -->
+        <section id="view-task">
+          <div class="anime-stage" id="stage">
+            <svg class="anime-mascot" viewBox="0 0 120 120" aria-hidden="true">
+              <!-- 叶子 -->
+              <path d="M60 14c4-6 13-8 19-3-2 4-2 8 0 12-6-2-13 0-19-2z" fill="#7BD389" stroke="#43303B" stroke-width="3" stroke-linejoin="round"/>
+              <!-- 身体 -->
+              <ellipse cx="60" cy="66" rx="44" ry="40" fill="#F0577F" stroke="#43303B" stroke-width="3"/>
+              <ellipse cx="44" cy="50" rx="14" ry="10" fill="#fff" opacity=".35"/>
+              <!-- 睁眼组 -->
+              <g class="mascot-eyes-open">
+                <ellipse cx="46" cy="62" rx="7" ry="9" fill="#fff" stroke="#43303B" stroke-width="2"/>
+                <ellipse cx="74" cy="62" rx="7" ry="9" fill="#fff" stroke="#43303B" stroke-width="2"/>
+                <circle cx="47" cy="64" r="4" fill="#43303B"/>
+                <circle cx="75" cy="64" r="4" fill="#43303B"/>
+                <circle cx="45" cy="61" r="1.6" fill="#fff"/>
+                <circle cx="73" cy="61" r="1.6" fill="#fff"/>
+              </g>
+              <!-- 闭眼组（休息态） -->
+              <g class="mascot-eyes-closed">
+                <path d="M40 64 Q46 70 52 64" stroke="#43303B" stroke-width="3" fill="none" stroke-linecap="round"/>
+                <path d="M68 64 Q74 70 80 64" stroke="#43303B" stroke-width="3" fill="none" stroke-linecap="round"/>
+              </g>
+              <!-- 腮红 -->
+              <ellipse cx="40" cy="76" rx="7" ry="4" fill="#FF9EC4" opacity=".85"/>
+              <ellipse cx="80" cy="76" rx="7" ry="4" fill="#FF9EC4" opacity=".85"/>
+              <!-- 微笑 -->
+              <path d="M52 78 Q60 86 68 78" stroke="#43303B" stroke-width="3" fill="none" stroke-linecap="round"/>
+              <!-- Zzz 气泡（休息态显示） -->
+              <g class="mascot-zzz" fill="#2B6CB0" font-family="system-ui" font-weight="700">
+                <text x="86" y="34" font-size="14">z</text>
+                <text x="94" y="26" font-size="18">Z</text>
+              </g>
+            </svg>
+            <div class="anime-time" id="time" role="timer" aria-label="剩余 25 分 0 秒">25:00</div>
+            <p class="anime-state" id="stateLabel">准备开始</p>
+            <p class="anime-caption">陪你专注的小番茄</p>
+          </div>
+
+          <nav class="anime-controls" aria-label="计时控制">
+            <button class="anime-btn anime-btn--primary" id="startBtn" type="button">开始</button>
+            <button class="anime-btn" id="pauseBtn" type="button" disabled>暂停</button>
+            <button class="anime-btn" id="resetBtn" type="button">重置</button>
+          </nav>
+
+          <footer class="anime-today">今日 <b id="todayCount">0</b> 个番茄</footer>
+
+          <div class="anime-error" id="errorBanner" role="alert" hidden>
+            <span>本地保存失败（localStorage 不可用或已满），已完成的番茄数可能无法保留。<br />原因：浏览器隐私模式 / 存储配额超限 / 被禁用。</span>
+            <button class="anime-btn" id="retryBtn" type="button">重试保存</button>
+          </div>
+        </section>
+
+        <!-- ===== 统计视图（三态，id 与首页一致，复用 src/stats.js） ===== -->
+        <section id="view-stats" hidden>
+          <!-- 正常态 -->
+          <div id="statsNormal">
+            <p class="stats-hero-title">今日完成</p>
+            <div class="stats-hero">
+              <span class="stats-hero-num" id="statsTodayCount">5</span>
+              <span class="stats-hero-unit">个番茄</span>
+            </div>
+
+            <div class="stats-block">
+              <h3 class="stats-block-title">最近 7 天</h3>
+              <div class="trend" id="statsTrend" aria-label="最近七天番茄数趋势">
+                <div class="trend-item"><div class="trend-bar" style="height:20%"></div><div class="trend-label">11/2</div></div>
+                <div class="trend-item"><div class="trend-bar" style="height:40%"></div><div class="trend-label">11/3</div></div>
+                <div class="trend-item"><div class="trend-bar" style="height:10%"></div><div class="trend-label">11/4</div></div>
+                <div class="trend-item"><div class="trend-bar zero" style="height:4%"></div><div class="trend-label">11/5</div></div>
+                <div class="trend-item"><div class="trend-bar" style="height:60%"></div><div class="trend-label">11/6</div></div>
+                <div class="trend-item"><div class="trend-bar" style="height:50%"></div><div class="trend-label">11/7</div></div>
+                <div class="trend-item on"><div class="trend-bar" style="height:80%"></div><div class="trend-label">11/8</div></div>
+              </div>
+            </div>
+
+            <div class="stats-block">
+              <h3 class="stats-block-title">专注记录</h3>
+              <ul class="history" id="statsList">
+                <li class="history-item">
+                  <span class="history-date">2026-11-08</span>
+                  <span class="history-task" title="写二次元番茄钟视觉规范写二次元番茄钟视觉规范写二次元番茄钟视觉规范">写二次元番茄钟视觉规范写二次元番茄钟视觉规范写二次元番茄钟视觉规范</span>
+                  <span class="history-count">5 个</span>
+                </li>
+                <li class="history-item">
+                  <span class="history-date">2026-11-07</span>
+                  <span class="history-task" title="阅读漫画、整理素材库、复盘日程">阅读漫画、整理素材库、复盘日程</span>
+                  <span class="history-count">3 个</span>
+                </li>
+                <li class="history-item">
+                  <span class="history-date">2026-11-06</span>
+                  <span class="history-task" title="未命名任务">未命名任务</span>
+                  <span class="history-count">1 个</span>
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <!-- 空态：还没有完成的番茄 -->
+          <div class="empty-card stats-empty" id="statsEmpty" hidden>
+            <b>还没有完成的番茄。</b>
+            <span id="statsEmptyReason">完成第一个番茄后，这里会显示你的专注趋势。</span>
+            <button class="anime-btn anime-btn--primary" id="statsGoFocus" type="button">去专注</button>
+          </div>
+
+          <!-- 错误态：本地存储不可用 / 读取失败 -->
+          <div class="error-banner" id="statsError" role="alert" hidden>
+            <div>
+              本地保存失败（localStorage 不可用或已满），统计数据无法读取。<br />
+              原因：浏览器隐私模式 / 存储配额超限 / 被禁用。
+              <br /><button class="anime-btn" id="statsRetry" type="button">重试读取</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- tabbar -->
+        <nav class="anime-tabbar" aria-label="主导航">
+          <a href="#task" class="anime-tab active" id="navTask" aria-current="page">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 5h16v3H4zM4 10h16v3H4zM4 15h10v3H4z"/></svg>
+            任务
+          </a>
+          <a href="#stats" class="anime-tab" id="navStat">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 20V10h4v10H4zm8 0V4h4v16h-4zm8 0v-6h-4v6h4z"/></svg>
+            统计
+          </a>
+        </nav>
+      </div>
+
+      <!-- 演示控制条（生产版删除） -->
+      <div class="demo-bar">
+        <button type="button" data-demo="normal">统计·正常态</button>
+        <button type="button" data-demo="empty">统计·空态</button>
+        <button type="button" data-demo="error">统计·错误态</button>
+        <button type="button" data-demo="task">回到任务视图</button>
+        <button type="button" data-demo="break">切换休息态 mascot（闭眼）</button>
+      </div>
+    </div>
+
+    <script>
+      // 仅原型演示用：生产版删除。真实切换由 anime.js 的 location.hash + src/stats.js 完成。
+      const app = document.getElementById("app");
+      const viewTask = document.getElementById("view-task");
+      const viewStats = document.getElementById("view-stats");
+      const navTask = document.getElementById("navTask");
+      const navStat = document.getElementById("navStat");
+      const statsNormal = document.getElementById("statsNormal");
+      const statsEmpty = document.getElementById("statsEmpty");
+      const statsError = document.getElementById("statsError");
+
+      function showView(which) {
+        const isStats = which === "stats";
+        viewStats.hidden = !isStats;
+        viewTask.hidden = isStats;
+        navTask.classList.toggle("active", !isStats);
+        navStat.classList.toggle("active", isStats);
+        navTask.setAttribute("aria-current", isStats ? "false" : "page");
+        navStat.setAttribute("aria-current", isStats ? "page" : "false");
+      }
+      function showStatsState(state) {
+        showView("stats");
+        statsNormal.hidden = state !== "normal";
+        statsEmpty.hidden = state !== "empty";
+        statsError.hidden = state !== "error";
+      }
+      document.querySelectorAll(".demo-bar button").forEach((b) => {
+        b.addEventListener("click", () => {
+          const d = b.dataset.demo;
+          if (d === "task") showView("task");
+          else if (d === "break") app.classList.toggle("is-break");
+          else showStatsState(d);
+        });
+      });
+    </script>
+  </body>
+</html>

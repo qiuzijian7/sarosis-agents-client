@@ -4,6 +4,7 @@ description: Decomposition playbook + anti-temptation rules for an orchestrator 
 activation: manual
 match: ["kanban-orchestrator", "kanban orchestrator", "kanban", "multi-agent", "orchestration", "routing"]
 category: devops
+tier: extended
 ---
 
 # Kanban Orchestrator — Decomposition Playbook

@@ -72,14 +72,15 @@ suite('dshHarness / update discovery', () => {
 		assert.strictEqual(discoverUpdates(base).recommended, '0.2.0-rc.2');
 	});
 
-	test('接线守卫：版本发现真的把随包模块插件的范围传进来了（防"预检写了没人喂"）', () => {
-		// `dshCompat` 是纯函数，喂不喂由主进程决定 ⇒ 只有这条能防"算了但没传"✗
-		const channel = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/contrib/dshHarness/electron-main/dshHarnessChannel.ts'), 'utf8');
-		assert.ok(/modulePluginPeerRanges:\s*listBundledPlugins\(/.test(channel),
-			'dshHarnessChannel 没把随包模块插件的 peer 范围传给 discoverUpdates ⇒ 预检恒为空（等于没做）✗');
-		const bundled = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/contrib/dshHarness/electron-main/dshBundledPlugins.ts'), 'utf8');
-		assert.ok(/peerDependencies\?\.\['@deepseek-ai\/dsh'\]/.test(bundled),
-			'listBundledPlugins 没读 peerDependencies ⇒ 传上去的范围恒为空 ✗');
+	test('★ 单版本模型：主进程不再做运行时版本发现/兼容预检', () => {
+		// ★★ 2026-11-09：dsh 版本随应用发版，由 `dsh-compat.json` 的 `bundled` 构建期 pin 死。
+		//   `discoverUpdates` / 模块插件 peer 预检 / dist-tags 查询整套从 channel 下线；
+		//   这里的纯函数保留作兼容层，但**不应再有调用方**（防止有人把版本切换重新接回去）。
+		const channel = fs.readFileSync(path.join(process.cwd(), 'src/vs/sessions/contrib/dshHarness/electron-main/dshHarnessChannel.ts'), 'utf8')
+			.split(/\r?\n/).filter(l => !/^\s*\/\//.test(l)).join('\n');
+		assert.ok(!/discoverUpdates\(/.test(channel), 'channel 不该再调用 discoverUpdates');
+		assert.ok(!/modulePluginPeerRanges/.test(channel), 'channel 不该再做运行时升级的 peer 预检');
+		assert.ok(!/distTags\(/.test(channel), 'channel 不该再查 npm dist-tags');
 	});
 
 	test('stable without a manifest recommends nothing and says why', () => {
@@ -163,18 +164,19 @@ suite('dshHarness / update discovery', () => {
 		assert.strictEqual(d2.recommended, '0.2.1-rc.1');
 	});
 
-	// 调用点源码守卫（非空跑）：主进程必须经 resolveCurrentVersion 取「当前版本」。
-	// 为什么需要：默认路径下 dsh 来自内置/全局，不写托管目录，直读托管指针会得到 undefined（界面「当前 -」）。
-	test('source guard: dshHarnessChannel derives 当前版本 via resolveCurrentVersion', function () {
+	// 调用点源码守卫：单版本模型下「当前版本」= compat 的 bundled pin，不再由运行中 Host /
+	// 托管指针推导（那两者正是多版本模型的产物）。
+	test('★ source guard: dshHarnessChannel 不再推导「当前运行时版本」', function () {
 		const rel = 'src/vs/sessions/contrib/dshHarness/electron-main/dshHarnessChannel.ts';
 		const abs = path.join(process.cwd(), rel);
 		if (!fs.existsSync(abs)) {
-			this.skip(); // 从仓库根之外运行时才跳过，避免静默通过
+			this.skip();
 		}
-		const src = fs.readFileSync(abs, 'utf8');
-		assert.match(src, /const current = resolveCurrentVersion\(\{/, '当前版本必须经 resolveCurrentVersion 推导');
-		assert.match(src, /runningVersion: this\._supervisor\.status\.dshVersion/, '必须把运行中的 Host 版本作为首选');
-		assert.doesNotMatch(src, /const current = start\.runtimePath\?\.trim\(\)/, '不得退回「只看托管指针」的旧写法');
+		const src = fs.readFileSync(abs, 'utf8')
+			.split(/\r?\n/).filter(l => !/^\s*\/\//.test(l)).join('\n');
+		assert.doesNotMatch(src, /resolveCurrentVersion\(/, '版本随应用发版，不需从 runningVersion/托管指针推导');
+		assert.doesNotMatch(src, /const current = start\.runtimePath\?\.trim\(\)/, '不得退回旧写法');
+		assert.match(src, /new DshRuntimeManager\([\s\S]{0,600}?bundledPin\)/, '唯一版本 = compat 的 bundled pin');
 	});
 
 	test('manifest parsing drops malformed entries; newer manifest wins', () => {

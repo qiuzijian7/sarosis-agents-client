@@ -133,7 +133,13 @@ export async function handleDeskGroupCommand(
 export function isGroupCreationRequest(text: string): boolean {
 	const body = String(text ?? '').trim()
 	if (!body || body.startsWith('@')) { return false }
-	return /(?:建|拉|创建|组建|成立)[^，,。！!？?]{0,12}(?:群|团队)|群聊/u.test(body)
+	// ★ 2026-11-09：真机「创建一个 俄罗斯方块 h5 小游戏开发团队」没被识别 —— 动词到「团队」
+	//   之间隔了 17 个字符，旧的 {0,12} 放不下 ⇒ 走普通 intake，用户以为建群没反应。
+	//   放宽到 {0,48}（够放长标题，又不至于跨过整句话），并用否定词排除「不要/别/无需建群」。
+	//   ⚠ 否定词要判**动词之前或紧邻动词**的短语，避免误伤「创建一个不要加班的团队」这类正向描述。
+	if (/(?:不要|别|无需|不用|不必|取消|不用再|别再)\s*(?:建|拉|创建|组建|成立)?\s*(?:群|团队)/u.test(body)) { return false }
+	if (/(?:^|[，,。！!？?\s])(?:不要|别|无需|不用|不必)\s*(?:建|拉|创建|组建|成立)/u.test(body)) { return false }
+	return /(?:建|拉|创建|组建|成立)[^，,。！!？?]{0,48}(?:群|团队)|群聊/u.test(body)
 }
 
 /** Derive a stable group name and shared notice from the request, and pick up to three suitable Bots. */
@@ -159,12 +165,31 @@ export function fastGroupPlan(text: string, roster: readonly FastGroupBot[]): Fa
 	}
 	if (ids.length < 2) { return undefined }
 	const explicit = /(?:群名|名称|叫|名为)\s*[「"']?([^」"'\n，,。]{2,40})/u.exec(text)
-	const body = String(text).replace(/^(?:请|帮我|麻烦)?(?:建|拉|创建|组建|成立)[^，,。]*?(?:群|团队)[，,：:\s]*/u, '').trim()
-	const goal = body.replace(/^(?:制作|开发|做|实现|完成)(?:一个)?/u, '').trim().replace(/[。！!？?，,]+$/u, '')
-	const name = (explicit?.[1]?.trim() || (goal ? `${goal.slice(0, 40)} 开发团队` : '开发团队群')).slice(0, 60)
+	// ★ 2026-11-09（真机「创建 坦克大战 H5 开发团队」被取名成「开发团队群」）：
+	//   旧 body 正则 `动词[^，,。]*?(?:群|团队)[，,：:\s]*` 在「标题紧跟『开发团队』、句末没有
+	//   后续目标」时会把整句吞空 ⇒ goal="" ⇒ 命中泛化兜底名。改成两段式：
+	//   ① 按逗号/冒号切段；第一段剥掉动词前缀与尾部「(开发)团队/群」得到标题，后续段是任务描述。
+	//   ② 标题为空（如「创建开发团队，制作…」）才用后续段取名；公告始终优先后续段。
+	//   ③ 连标题都提不出来（纯指令「建群」）⇒ 返回 undefined 交给普通流程，绝不回落到泛化名。
+	const raw = String(text).trim()
+	// 连「建群 / 建个群 / 创建团队」这类「动词 + 群|团队」紧连的套话一起吃掉，
+	// 否则「建群开发一个 h5 应用」会剩下一个「群」字，公告与标题都会带脏前缀。
+	const verb = /^(?:请|帮我|麻烦)?(?:建|拉|创建|组建|成立)\s*(?:一个|个)?\s*(?:群|团队)?\s*/u
+	const tail = /[\s，,。]*?(?:开发|研发|项目)?(?:团队|群)\s*[。！!？?]*$/u
+	const goalPrefix = /^(?:制作|开发|做|实现|完成)(?:一个)?/u
+	const segments = raw.split(/[，,：:]/u).map(part => part.trim()).filter(Boolean)
+	const first = segments[0] ?? ''
+	const title = first.replace(verb, '').replace(tail, '').trim()
+	const rest = segments.slice(1).join('，').trim()
+	const body = (title.length >= 2 ? title : rest) || first.replace(verb, '').trim()
+	const goal = body.replace(goalPrefix, '').replace(tail, '').trim().replace(/[。！!？?，,]+$/u, '')
+	const explicitName = explicit?.[1]?.trim()
+	const basis = explicitName || goal
+	if (!basis) { return undefined }
+	const name = (explicitName || `${basis.slice(0, 40)} 开发团队`).slice(0, 60)
 	const nameOf = (bot: FastGroupBot | undefined) => bot?.name
 	const flow = coder && tester ? groupFlowNotice({ coder: nameOf(coder)!, tester: nameOf(tester)!, designer: nameOf(designer), reviewer: nameOf(reviewer) }) : ''
-	const request = (body || text).slice(0, 2000 - (flow ? flow.length + 2 : 0))
+	const request = (rest || first.replace(verb, '').replace(/^[，,：:\s]+/u, '') || raw).slice(0, 2000 - (flow ? flow.length + 2 : 0))
 	return { members: ids.slice(0, size), name, notice: flow ? `${request}\n\n${flow}` : request, mode: 'admin' }
 }
 

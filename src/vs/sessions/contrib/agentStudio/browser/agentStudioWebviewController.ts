@@ -39,7 +39,7 @@ import { DEFAULT_WORKFLOW_SESSION_ID, sortSessionsByRecent } from "../common/wor
 import { IWorkflowExecutionService } from "../common/workflowExecutionService.js";
 import { IMarketplaceService } from "../common/marketplace.js";
 import { WorkflowPublishModal } from "./workflowPublishModal.js";
-import { SAROS_CLAW_AGENT_ID } from "../common/constants.js";
+import { DEFAULT_WORKFLOW_AGENT_ID } from "../common/constants.js";
 import { IAgentStudioWebviewPool } from "./agentStudioWebviewPool.js";
 import type { IChatStreamDelta } from "../common/agentStudio.js";
 import { getDshSessionLauncher } from '../../../common/dshSessionLauncher.js';
@@ -5444,9 +5444,9 @@ export class AgentStudioWebviewController extends Disposable {
 		try {
 			this.logService.info(`[AgentStudioWebviewController] workflow.execute: workflowId=${payload.workflowId}, agentId=${payload.agentId}`);
 
-			// v34: 画布 Run 默认在 saros-claw（内置主助理）中执行——不再创建/绑定专用 agent。
+			// 2026-11-09：通用主助理 saros-claw 已删除 ⇒ 画布 Run 默认由编排 agent 接管。
 			// 若 webview 显式传了 agentId（用户指定）则优先使用。
-			const agentId = payload.agentId || SAROS_CLAW_AGENT_ID;
+			const agentId = payload.agentId || DEFAULT_WORKFLOW_AGENT_ID;
 
 			const executionId = await this.workflowExecutionService.executeWorkflow(payload.workflowId, {
 				agentId,

@@ -68,7 +68,9 @@ it('lets the person at this machine agree to a ticket\'s team proposal from the 
 })
 
 // VsSaros change (2026-11-06, P1 · one track): no plan is started by hand, and the template skills are only counted.
-it('offers no way to start a team plan, counts the archived template skills, saves a workflow and runs it as a desk request', async () => {
+// ★ 2026-11-09（用户要求）：「团队工作流」UI 区块移除 —— 即使 Host 仍返回 workflows，面板也不得展示，
+//   也不得出现保存/运行入口。保留归档技能计数与「不能手工开计划」这两条原有契约。
+it('offers no way to start a team plan, counts the archived template skills, and shows no team-workflow UI', async () => {
   const card: BotCard = { id: 'tester', name: '测试 bot', description: '回归测试', skills: [], tools: [],
     delegatable: true, source: 'builtin' }
   server.teamBots = [card]
@@ -85,14 +87,14 @@ it('offers no way to start a team plan, counts the archived template skills, sav
   expect(document.querySelector('[data-testid="team-new"]')).toBeNull()
   expect(text()).toContain(zh['team.skillsArchived'].replace('{count}', '1'))
   expect(all('button').some(button => button.textContent === zh['team.skillApprove'])).toBe(false)
-  expect(text()).toContain('首页新手引导上线')
-  await click(zh['team.wfSave'])
-  expect(server.savedWorkflow).toBe('wf-1')
-  server.retroWorkflows = [{ ...workflow, state: 'saved' }]
-  await remount()
-  await click(zh['team.wfRun'])
-  expect(server.ranWorkflow).toBe('wf-1')
-  expect(document.querySelector('[data-testid="team-workflow-run"]')?.textContent).toBe(zh['team.wfRunSent'].replace('{name}', '首页新手引导上线'))
+  // 工作流数据仍在（Host 侧组队匹配要用），但面板不再渲染这个区块
+  expect(document.querySelector('[data-testid="team-teamflow"]')).toBeNull()
+  expect(document.querySelector('[data-testid="team-workflow-run"]')).toBeNull()
+  expect(text()).not.toContain('团队工作流')
+  expect(text()).not.toContain('首页新手引导上线')
+  expect(all('button').some(button => /保存为 v1|运行|导出到 TeamFlow/.test(button.textContent ?? ''))).toBe(false)
+  expect(server.savedWorkflow).toBeUndefined()
+  expect(server.ranWorkflow).toBeUndefined()
 })
 
 it('shows each open team ticket\'s steps with their Bot, state, turns and attempts', async () => {
@@ -112,17 +114,20 @@ it('shows each open team ticket\'s steps with their Bot, state, turns and attemp
   expect(server.stoppedSteps).toEqual(['tk-1/T2'])
 })
 
-it('exports a workflow to a TeamFlow workspace and imports TeamFlow\'s teams, telling what was lost', async () => {
+// ★ 2026-11-09（用户要求）：TeamFlow 导入/导出的 UI 一并移除。
+//   Host 侧 `team/teamflow/*` 路由与适配器保留（其它消费者仍可用），但面板上不得再有输入框/按钮。
+it('shows no TeamFlow import/export controls even when workflows exist', async () => {
   server.retroWorkflows = [{ id: 'wf-1', name: '首页新手引导上线', version: 1, fromPlanId: '', source: 'ticket', goal: '首页新手引导上线',
     state: 'saved', params: [], steps: [{ key: 'T1', title: '交互稿', spec: '出稿', bot: '设计 bot', after: [] }], gates: [],
     budget: { tokens: 300_000, turns: 90, parallel: 3 }, triggers: ['manual'], runs: 1, ok: 100, at: '2026-11-05T00:00:00.000Z' }]
   await mount()
-  await type(document.querySelector<HTMLInputElement>('[data-testid="team-teamflow"] input')!, 'G:\\Projects\\demo')
-  await click(zh['team.tfExport'])
-  expect(server.teamflowExport).toEqual({ id: 'wf-1', cwd: 'G:\\Projects\\demo' })
-  expect(document.querySelector('[data-testid="team-teamflow-result"]')?.textContent).toContain('仅供参考：T4 发版说明：TeamFlow 没有对应阶段')
-  await click(zh['team.tfImport'])
-  expect(server.teamflowImport).toBe('G:\\Projects\\demo')
+  expect(document.querySelector('[data-testid="team-teamflow"]')).toBeNull()
+  expect(document.querySelector('[data-testid="team-teamflow-result"]')).toBeNull()
+  expect(all('button').some(button => /TeamFlow|导出|导入/.test(button.textContent ?? ''))).toBe(false)
+  expect(all('input').some(input => /TeamFlow/i.test(input.getAttribute('placeholder') ?? ''))).toBe(false)
+  expect(text()).not.toContain('TeamFlow')
+  expect(server.teamflowExport).toBeUndefined()
+  expect(server.teamflowImport).toBeUndefined()
 })
 
 it('asks a person to approve or reject a high-risk Bot draft', async () => {
@@ -198,6 +203,25 @@ it('offers each Ticket that needs a person its actions on the overview: answer i
   await click(zh.confirm)
   expect(server.requests.some(request => request.path === 'tickets/t4/stop' && request.method === 'POST')).toBe(true)
   expect(text()).not.toContain('截图工具')
+})
+
+// ★ 2026-11-09 真机 bug：superagent 主管对话的 reply.url 是空串，旧的 <a href="" target="_blank">
+//   被解析成当前 DSH Web UI 的 127.0.0.1 页面，宿主 shell.openExternal ⇒ 在系统浏览器开一个网页。
+it('answers a SuperAgent desk question in the app instead of opening a blank external link', async () => {
+  const person = server.person[0]!
+  server.person = [{ ...person, reply: { source: 'superagent', url: '', label: { zh: '主管对话', en: 'Supervisor desk' } } }]
+  await mount()
+  const links = all('.dt-ticket-actions a')
+  // 没有空 href、也没有指向 loopback 的链接
+  expect(links.map(link => link.getAttribute('href'))).not.toContain('')
+  expect(links.some(link => /127\.0\.0\.1|localhost/.test(link.getAttribute('href') ?? ''))).toBe(false)
+  // 变成应用内按钮，文案说明去「主管对话」
+  const button = all('[data-vssaros-in-app-action="1"]').find(el => /主管对话/.test(el.textContent ?? ''))!
+  expect(button).toBeTruthy()
+  expect(button.tagName).toBe('BUTTON')
+  expect(button.hasAttribute('disabled')).toBe(false)
+  await click(button)
+  expect(tab(zh['tab.chat']).getAttribute('aria-selected')).toBe('true')
 })
 
 it('shows paused processing as a system problem with its resume action, and says so on the Policy records', async () => {

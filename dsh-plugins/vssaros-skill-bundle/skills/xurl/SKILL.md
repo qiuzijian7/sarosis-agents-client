@@ -4,6 +4,7 @@ description: "X/Twitter via xurl CLI: post, search, DM, media, v2 API."
 activation: manual
 match: ["xurl", "twitter", "social-media", "official-api"]
 category: social-media
+tier: extended
 ---
 
 # xurl — X (Twitter) API via the Official CLI

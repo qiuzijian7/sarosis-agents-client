@@ -4,6 +4,7 @@ description: macOS desktop automation via computer_use tool
 activation: manual
 match: ["macos-computer-use", "macos computer use", "computer-use", "desktop", "gui"]
 category: apple
+tier: extended
 ---
 
 # macOS Computer Use (universal, any-model)

@@ -27,7 +27,7 @@ import { IWorkflowStorageService, type IStoredWorkflow } from '../../common/work
 import { IWorkflowExecutionService } from '../../common/workflowExecutionService.js';
 import { IAgentStudioService } from '../../common/agentStudio.js';
 import { IModelSelectorService } from '../../common/modelSelector.js';
-import { AGENT_STUDIO_CHAT_VIEW_ID, SAROS_CLAW_AGENT_ID } from '../../common/constants.js';
+import { AGENT_STUDIO_CHAT_VIEW_ID, DEFAULT_WORKFLOW_AGENT_ID } from '../../common/constants.js';
 import { WorkflowEditorInput } from '../workflowEditorInput.js';
 import { WorkflowMarketEditorInput } from '../workflowMarketEditorInput.js';
 import { IMarketplaceService } from '../../common/marketplace.js';
@@ -471,14 +471,14 @@ export class WorkflowViewPane extends ViewPane {
 	}
 
 	/**
-	 * Open the ClawChat view with the saros-claw（内置主助理）selected, but do NOT send any message.
-	 * v34: 不再为工作流绑定专用 agent——默认选中内置主助理。
+	 * Open the chat view with the default workflow agent selected, but do NOT send any message.
+	 * 2026-11-09：通用主助理已删除，改选编排 agent。
 	 */
 	private async _selectWorkflowAgentInChat(_wf: IStoredWorkflow): Promise<void> {
 		try {
-			// Select the built-in saros-claw agent and open the chat view (no prompt).
-			this.modelSelectorService.setSelectedAgentId(SAROS_CLAW_AGENT_ID);
-			this.agentStudioService.fireSelectAgent(SAROS_CLAW_AGENT_ID);
+			// Select the default workflow agent and open the chat view (no prompt).
+			this.modelSelectorService.setSelectedAgentId(DEFAULT_WORKFLOW_AGENT_ID);
+			this.agentStudioService.fireSelectAgent(DEFAULT_WORKFLOW_AGENT_ID);
 			await this.viewsService.openView(AGENT_STUDIO_CHAT_VIEW_ID, true);
 		} catch {
 			// Silently fail — the editor is already open

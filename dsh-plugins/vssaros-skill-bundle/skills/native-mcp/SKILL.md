@@ -4,6 +4,7 @@ description: "MCP client: connect servers, register tools (stdio/HTTP)."
 activation: manual
 match: ["native-mcp", "native mcp", "mcp", "tools", "integrations"]
 category: mcp
+tier: extended
 ---
 
 # Native MCP Client

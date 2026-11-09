@@ -269,57 +269,23 @@ export function isSupportedNodeVersion(raw: string): boolean {
 	return v.major >= 24;
 }
 
-// ─── 托管运行时指针 ───────────────────────────────────────────────────────────
-
-export interface IRuntimeState {
-	readonly current?: string;
-	/** 曾经激活过的版本，最新在末尾；用于回滚。 */
-	readonly history: readonly string[];
-}
+// ─── 运行时版本目录名 ─────────────────────────────────────────────────────────
+//
+// ★★ 2026-11-09：**收敛成单版本模型**（对标 dsh-desktop）。
+//   原先这里有 `IRuntimeState` / `parseRuntimeState` / `withCurrent` / `selectRuntimeVersion`
+//   四个符号，服务于 `<userData>/dsh-runtime/state.json` 的 `current` 指针、history 回滚、
+//   以及 11-09 临时加的 `profileRebuildPending`。那一整套「用户自由切 runtime / 运行时
+//   按版本重建 profile」已经被产品否掉：
+//     · 版本只由 `dsh-plugins/dsh-compat.json` 的 `bundled` 在**构建期** pin 死；
+//     · 版本升级 = 应用发版；`userData/dsh-home` 永不覆盖；
+//     · 构建期由 `build/saros/check-dsh-release.mjs` 校验包内只有一个、且是 pin 的版本。
+//   ⇒ 运行时不再有「当前版本」这个概念，也不再读写 state.json。
+//   这里只保留版本目录名的纯校验（构建期脚本与 bundled pin 校验共用）。
 
 const VERSION_DIR_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 export function isRuntimeVersionDir(name: string): boolean {
 	return VERSION_DIR_RE.test(name);
-}
-
-/** 解析 `state.json`；任何不合法内容都退化为空状态，而不是抛错阻断启动。 */
-export function parseRuntimeState(text: string | undefined): IRuntimeState {
-	if (!text) {
-		return { history: [] };
-	}
-	let raw: unknown;
-	try {
-		raw = JSON.parse(text);
-	} catch {
-		return { history: [] };
-	}
-	if (!raw || typeof raw !== 'object') {
-		return { history: [] };
-	}
-	const obj = raw as { current?: unknown; history?: unknown };
-	const current = typeof obj.current === 'string' && isRuntimeVersionDir(obj.current) ? obj.current : undefined;
-	const history = Array.isArray(obj.history) ? obj.history.filter((v): v is string => typeof v === 'string' && isRuntimeVersionDir(v)) : [];
-	return { current, history };
-}
-
-export function withCurrent(state: IRuntimeState, version: string): IRuntimeState {
-	const history = state.history.filter(v => v !== version);
-	history.push(version);
-	return { current: version, history: history.slice(-10) };
-}
-
-/**
- * 选用哪个已安装版本：指针指向的版本已安装则用它；否则用已安装中最高的**正式版**，
- * 没有正式版再用最高的预发布版。不会因为装了 alpha 就悄悄切到 alpha。
- */
-export function selectRuntimeVersion(state: IRuntimeState, installed: readonly string[]): string | undefined {
-	if (state.current && installed.includes(state.current)) {
-		return state.current;
-	}
-	const sorted = [...installed].filter(isRuntimeVersionDir).sort(compareSemver);
-	const stable = sorted.filter(v => !parseSemver(v)?.pre);
-	return stable.at(-1) ?? sorted.at(-1);
 }
 
 // ─── 控制桥覆盖层 ─────────────────────────────────────────────────────────────

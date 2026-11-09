@@ -4,6 +4,7 @@ description: Flat, minimal light/dark SVG diagrams as HTML — physics, chemistr
 activation: manual
 match: ["concept-diagrams", "educational diagram", "svg diagram", "physics diagram", "chemistry diagram"]
 category: creative
+tier: extended
 ---
 
 # Concept Diagrams

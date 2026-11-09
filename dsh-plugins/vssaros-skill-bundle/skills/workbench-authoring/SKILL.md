@@ -5,6 +5,7 @@ version: 1.0.0
 platforms: [win32, darwin, linux]
 user-invocable: true
 disable-model-invocation: false
+tier: extended
 ---
 
 # 工作台制作（dsh / VsSaros）

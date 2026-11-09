@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Engine, MemoryRepositories, UserError, followupOwners, key, runningAssignment, ticketOutcome, ticketStage,
   waitsForPerson } from '../src/core/index.ts'
+import { awaitingAnswer, looksLikeAnswer } from '../src/core/intake.ts'
 import type { Assessor, Assignment, Candidate, EngineOptions, Executor, OutboundMessage, Outcome, Policy, Ticket, Trigger } from '../src/core/index.ts'
 
 const member = { source: 'chat', id: 'alice' }
@@ -1617,5 +1618,83 @@ describe('ignores from the card', () => {
     // Accepting an inferred candidate still takes an assessment's matched rules.
     h.engine.receive(trigger('5', { actor: guest })); h.engine.reevaluate('5'); h.pump()
     expect(() => h.engine.decide('5', { kind: 'accept', title: 'Fix', scope: 'small', reason: 'chat' })).toThrow(new UserError('notExplicit'))
+  })
+})
+
+// ★ 2026-11-09（真机）：主管台所有消息共用一个 Thread，工单订阅它 ⇒ 一条全新的请求
+//   也会被扇出给「待人回答」的旧工单，回执先说「已转给正在做的工单…」，worker 之后才 handback 退回。
+//   这里钉住：待人回答的工单只接回答，明显的新请求交回 Eval 重新分诊。
+describe('intake answer gate (2026-11-09)', () => {
+  it('recognises new work, group commands and real answers', () => {
+    // 真机那两条：一条建群、一条新请求，都不是对 cartoon.hml 提问的回答
+    expect(looksLikeAnswer('创建一个 3d像素贪吃蛇 h5 开发团队')).toBe(false)
+    expect(looksLikeAnswer('添加一个测试专家')).toBe(false)
+    expect(looksLikeAnswer('@番茄钟 H5 开发团队 开始制作')).toBe(false)
+    expect(looksLikeAnswer('请帮我新建一个番茄钟')).toBe(false)
+    // 真回答（含路径 / 选择 / 否定 / 短确认）一律放行，保守不误伤
+    expect(looksLikeAnswer('是 pomodoro-h5 里的 cartoon.html')).toBe(true)
+    expect(looksLikeAnswer('用第二个方案')).toBe(true)
+    expect(looksLikeAnswer('不是这个路径')).toBe(true)
+    expect(looksLikeAnswer('好')).toBe(true)
+    expect(looksLikeAnswer('顺便把标题也改了')).toBe(true)
+    expect(looksLikeAnswer('')).toBe(true)
+  })
+
+  it('only gates a ticket that is actually awaiting a person', () => {
+    const h = harness()
+    const id = accepted(h).ticketId!
+    expect(awaitingAnswer(h.repo.tickets.get(id)!)).toBe(false)
+    h.engine.report(id, { state: 'blocked', summary: 'needs a decision' })
+    expect(awaitingAnswer(h.repo.tickets.get(id)!)).toBe(true)
+    const withQuestion = accepted(h, '2', 't2').ticketId!
+    h.engine.report(withQuestion, { state: 'progress', summary: 'working', question: '你是指哪个 cartoon.html？' })
+    expect(h.repo.tickets.get(withQuestion)!.attention?.question).toBe('你是指哪个 cartoon.html？')
+    expect(awaitingAnswer(h.repo.tickets.get(withQuestion)!)).toBe(true)
+    h.engine.stopTicket(withQuestion, 'done')
+    expect(awaitingAnswer(h.repo.tickets.get(withQuestion)!)).toBe(false)
+  })
+
+  it('sends a new request on a blocked ticket to Eval, and still delivers a real answer to its worker', () => {
+    const h = harness()
+    const id = accepted(h).ticketId!
+    h.engine.report(id, { state: 'blocked', summary: 'needs a decision' })
+    h.requests.length = 0
+    const request = trigger('2', { text: '添加一个测试专家' })
+    h.engine.receive(request); h.pump()
+    // 不扇出 ⇒ owners 为空 ⇒ 进 Eval；旧工单也没收到这条 Input
+    expect(h.repo.triggers.disposition('2')).toMatchObject({ fanout: [] })
+    expect(h.requests.at(-1)!.triggers.map(item => item.id)).toContain('2')
+    expect(h.repo.tickets.get(id)!.inputs.filter(input => input.kind === 'trigger').map(input => input.triggerId))
+      .not.toContain('2')
+    // 一条真回答仍直投给 worker，不开 Eval
+    h.requests.length = 0
+    const answer = trigger('3', { text: '是 pomodoro-h5 里的 cartoon.html' })
+    h.engine.receive(answer); h.pump()
+    expect(h.repo.triggers.disposition('3')).toMatchObject({ fanout: [id] })
+    expect(h.repo.tickets.get(id)!.inputs.filter(input => input.kind === 'trigger').map(input => input.triggerId))
+      .toContain('3')
+    expect(h.requests).toEqual([])
+  })
+
+  it('gates a ticket with an open attention question too, and leaves working tickets alone', () => {
+    const h = harness()
+    const answerTicket = accepted(h, '1', 't1').ticketId!
+    h.engine.report(answerTicket, { state: 'progress', summary: 'working', question: '你是指哪个 cartoon.html？' })
+    h.requests.length = 0
+    h.engine.receive(trigger('2', { text: '添加一个测试专家' })); h.pump()
+    expect(h.repo.triggers.disposition('2')).toMatchObject({ fanout: [] })
+    expect(h.requests.at(-1)!.triggers.map(item => item.id)).toContain('2')
+    // 普通 working 工单的 follow-up 不受影响
+    const working = accepted(h, '3', 't3').ticketId!
+    h.engine.receive(trigger('4', { threads: [{ source: 'chat', id: 't3' }], text: '顺便把标题也改了' })); h.pump()
+    expect(h.repo.triggers.disposition('4')).toMatchObject({ fanout: [working] })
+  })
+
+  it('does not gate bot/CI messages', () => {
+    const h = harness()
+    const id = accepted(h).ticketId!
+    h.engine.report(id, { state: 'blocked', summary: 'needs a decision' })
+    h.engine.receive(trigger('2', { human: false, actor: guest, text: '添加一个测试专家' })); h.pump()
+    expect(h.repo.triggers.disposition('2')).toMatchObject({ fanout: [id] })
   })
 })

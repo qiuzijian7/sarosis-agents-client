@@ -64,7 +64,8 @@ walk(LIB);
 check('运行期 lib/*.js 里没有旧名路径字面量（注释除外）', () => {
 	const hit = [];
 	for (const p of files) {
-		if (path.basename(p) === 'kb.js') { continue; }   // 常量与 LEGACY 定义处
+		// kb.js = 常量与 LEGACY 定义处（2026-11-09 起 kb-expert 已移除，不再需要第二处豁免）。
+		if (path.basename(p) === 'kb.js') { continue; }
 		const lines = read(p).split('\n');
 		lines.forEach((l, i) => {
 			const t = l.trim();

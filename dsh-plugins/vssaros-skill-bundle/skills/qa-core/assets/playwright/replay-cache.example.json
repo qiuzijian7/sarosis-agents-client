@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "scope": "checkout/guest",
+  "spec": "tests/web/checkout/guest.spec.ts",
+  "cases": ["CASE-001", "CASE-002"],
+  "createdAt": "2026-11-09T00:00:00Z",
+  "appFingerprint": "填写 git rev-parse HEAD 或被测构建 hash",
+  "seed": {
+    "storageState": ".qa-agent/local/storageState.json",
+    "baseURL": "http://localhost:5173"
+  },
+  "actions": [
+    {
+      "step": 1,
+      "tool": "mcp__playwright__browser_navigate",
+      "args": { "url": "http://localhost:5173/" },
+      "assertion": "page.getByRole('heading', { name: '商品列表' }).toBeVisible()"
+    },
+    {
+      "step": 2,
+      "tool": "mcp__playwright__browser_click",
+      "args": { "element": "第一件商品的加入购物车按钮" },
+      "assertion": "page.getByRole('status').toContainText('1')"
+    }
+  ],
+  "replay": {
+    "command": "python <SKILL_DIR>/scripts/qa_agent.py run-e2e --repo . --spec tests/web/checkout/guest.spec.ts",
+    "modelCalls": 0,
+    "invalidateWhen": [
+      "appFingerprint 变化",
+      "spec 内容或用例 expected 变化",
+      "seed / storageState / baseURL 变化",
+      "任一断言失败"
+    ]
+  }
+}

@@ -4,6 +4,7 @@ description: "lm-eval-harness: benchmark LLMs (MMLU, GSM8K, etc.)."
 activation: manual
 match: ["evaluating-llms-harness", "evaluating llms harness", "evaluation", "lm evaluation harness", "benchmarking", "mmlu", "humaneval", "gsm8k", "eleutherai", "model quality", "academic benchmarks", "industry standard"]
 category: mlops
+tier: extended
 ---
 
 # lm-evaluation-harness - LLM Benchmarking

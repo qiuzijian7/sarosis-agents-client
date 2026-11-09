@@ -50,6 +50,8 @@ interface AgentMdRaw {
 	version?: string;
 	storeId?: string;
 	skills?: string[];
+	/** ★ 2026-11-08 P1：能力包名（加法，不替代 tools[]）；展开口径见 vssaros-agents/lib/core/packs.js。 */
+	capabilities?: string[];
 	/** 欢迎卡建议问题（YAML 列表；★ 2026-10-26）。 */
 	suggestions?: string | string[];
 	enabledToolsets?: string[];
@@ -228,6 +230,8 @@ export function buildAgentMd(agent: Agent): string {
 	if (agent.version) { fm.version = agent.version; }
 	if (agent.storeId) { fm.storeId = agent.storeId; }
 	if (agent.skills && agent.skills.length > 0) { fm.skills = agent.skills; }
+	// ★ 2026-11-08 P1：只写非空数组；能力包是加法，未声明 ⇒ 老 agent 零回归。
+	if (agent.capabilities && agent.capabilities.length > 0) { fm.capabilities = agent.capabilities; }
 	// ★ 2026-10-26：`suggestions` 必须回写 —— 否则用户在 Agent Studio 改别的字段时，
 	//   这个字段会被**静默丢掉**（聊天欢迎卡退回通用话术）。
 	if (agent.suggestions && agent.suggestions.length > 0) { fm.suggestions = agent.suggestions; }
@@ -314,6 +318,8 @@ export function parseAgentMd(content: string): { agent: Partial<Agent>; systemPr
 		version: typeof raw.version === 'string' ? raw.version : undefined,
 		storeId: typeof raw.storeId === 'string' ? raw.storeId : undefined,
 		skills: parseStringArray(raw.skills),
+		// ★ 2026-11-08 P1：能力包同口径（数组 / 逗号串都认，与 tools 一致）
+		capabilities: parseStringOrArray(raw.capabilities),
 		// ★ 2026-10-26：欢迎卡建议问题（YAML 列表或逗号串都认）
 		suggestions: parseStringArray(raw.suggestions),
 		tools: toolsArr,

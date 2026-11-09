@@ -23,8 +23,7 @@ const CLIENT = readFileSync(HERE + '../lib/client.js', 'utf8');
 const BUNDLE_SRC = readFileSync(new URL('../lib/web/kbSideview.js', import.meta.url), 'utf8');
 const CHAT = readFileSync(new URL('../../vssaros-chat-surface/lib/client.js', import.meta.url), 'utf8');
 
-// ★ 2026-10-31：知识库 agent 的两份源码（宿主侧落盘 + 被 apply 调用）
-const KB_AGENT_SRC = readFileSync(new URL('../lib/kbAgent.js', import.meta.url), 'utf8');
+// ★ 2026-11-09：知识库收敛为单 agent，宿主侧不再落盘 kb-expert。
 const INDEX_SRC = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8');
 const BUNDLE = readFileSync(HERE + '../lib/web/kbSideview.js', 'utf8');
 const INDEX = readFileSync(HERE + '../lib/index.js', 'utf8');
@@ -304,11 +303,11 @@ check('阅读进度条 + 回到顶部',
 	check('知识库客户端**不再**自己设 agent（不 select、不轮询、不带前台标志）',
 		!/__vssarosKbPreset|kbApplyPreset|KB_PRESET_IDS|__vssarosKbActive|agentPresets/.test(code));
 }
-check('★ 契约一致：本包注册的 preset（KB_PRESET）在宿主「工作台 → agent」表的知识库候选里',
-	/export const KB_PRESET = 'vssaros-kb-expert';/.test(KB_AGENT_SRC)
-		&& /'vssaros\/kb':\s*\[[^\]]*'vssaros-kb-expert'/.test(readFileSync(new URL('../../vssaros-workbenches/lib/client.js', import.meta.url), 'utf8')));
-check('宿主会把 agent 落到数据根（ensureKbAgent 被 apply 调用）',
-/ensureKbAgent\(/.test(KB_AGENT_SRC) && /void ensureKbAgent\(/.test(INDEX_SRC));
+// ★ 2026-11-09：收敛为单 agent —— 只认内置 knowledge-base-expert，插件不再落盘 kb-expert。
+check('★ 契约一致：宿主「工作台 → agent」表的知识库项指向内置知识库专家',
+	/'vssaros\/kb':\s*'vssaros-knowledge-base-expert'/.test(readFileSync(new URL('../../vssaros-workbenches/lib/client.js', import.meta.url), 'utf8')));
+check('插件入口不再落盘/迁移 kb-expert',
+	!/ensureKbAgent\(/.test(INDEX_SRC) && !/kbAgent\.js/.test(INDEX_SRC));
 
 // ── ② 聊天框与文档**不许重叠**（按商城工作台的分栏口径）─────────────────
 check('业务区基准 0%（助手栏出现时必定收缩）',

@@ -26,7 +26,6 @@ import { InstantiationType, registerSingleton } from '../../../../platform/insta
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
-import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { FocusMode, INativeHostService } from '../../../../platform/native/common/native.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
@@ -39,11 +38,9 @@ import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
-import { isRuntimeVersionDir } from '../common/dshCli.js';
 import { hostIdleTtlText } from '../common/dshHostConfig.js';
 import { DSH_PAGE_COMMANDS_WITHOUT_IDE_UI, DshPageCommand, IDshInsertReference, isPathInside } from '../common/dshPageBridgeProtocol.js';
 import { RIGHTBAR_SHARED_VIEW_ID } from '../common/dshRightbarCdp.js';
-import { IDshUpgradeResult } from '../common/dshUpgrade.js';
 import { DSH_MODULE_CONTAINERS, DSH_MODULE_PAGES } from '../common/dshModuleContainers.js';
 // 工作台动作（固定 / 隐藏）要改 IDE 的活动栏状态 ⇒ 用既有的工作台管理服务 ✓
 // （跨层 import electron-browser → agentStudio/browser 有先例：`dshChatInstanceHost.ts` 就是这么引的 ✓）
@@ -71,7 +68,7 @@ import './dshPluginPageEditor.contribution.js';
 import { DshUpgradeEditorInput } from './dshUpgradeEditorInput.js';
 // side-effect import：注册「系统与更新」面板（2026-10-30，VsSaros 菜单「检查更新…」打开它）
 import './dshUpgradeEditor.contribution.js';
-import { IDialogService, IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 // ★ 2026-10-26：`.code-workspace` 的解析口径只有这一份（sidebarPart 也用它）⇒ 不能各写一份 ✗。
 import { parseCodeWorkspaceFolders } from '../../agentStudio/common/codeWorkspaceFolders.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
@@ -89,7 +86,6 @@ import { IClipboardService } from '../../../../platform/clipboard/common/clipboa
 import { IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { IBrowserViewBounds } from '../../../../platform/browserView/common/browserView.js';
 
-const DSH_COMMAND_CHECK_UPDATES = 'dshHarness.checkUpdates';
 /**
  * 「系统与更新」面板（2026-10-30）。
  *
@@ -571,98 +567,16 @@ registerAction2(class extends Action2 {
 	}
 });
 
-registerAction2(class extends Action2 {
-	constructor() {
-		super({ id: 'dshHarness.installRuntime', title: localize2('dshHarness.installRuntime', "安装运行时版本"), category: CATEGORY, f1: true, precondition: ENABLED });
-	}
-	async run(accessor: ServicesAccessor): Promise<void> {
-		const quickInput = accessor.get(IQuickInputService);
-		const notification = accessor.get(INotificationService);
-		const dsh = accessor.get(IDshHarnessService);
-		const version = await quickInput.input({
-			prompt: localize('dshHarness.installRuntime.prompt', "要并列安装的 @deepseek-ai/dsh 精确版本（如 0.2.0-rc.2）。安装不改变当前版本。"),
-			validateInput: async v => isRuntimeVersionDir(v.trim()) ? undefined : localize('dshHarness.installRuntime.invalid', "请输入精确版本号"),
-		});
-		if (!version) {
-			return;
-		}
-		const handle = notification.notify({ severity: Severity.Info, message: localize('dshHarness.installing', "正在安装 dsh {0}…", version.trim()), progress: { infinite: true } });
-		try {
-			const v = await dsh.installRuntime(version.trim());
-			handle.close();
-			notification.info(localize('dshHarness.installed', "dsh {0} 已安装。可用「DSH: 切换运行时版本」启用它。", v));
-		} catch (e) {
-			handle.close();
-			notification.error(localize('dshHarness.installFailed', "安装失败：{0}", String((e as Error)?.message ?? e)));
-		}
-	}
-});
-
-registerAction2(class extends Action2 {
-	constructor() {
-		super({ id: 'dshHarness.switchRuntime', title: localize2('dshHarness.switchRuntime', "切换运行时版本"), category: CATEGORY, f1: true, precondition: ENABLED });
-	}
-	async run(accessor: ServicesAccessor): Promise<void> {
-		const quickInput = accessor.get(IQuickInputService);
-		const notification = accessor.get(INotificationService);
-		const dsh = accessor.get(IDshHarnessService);
-		const info = await dsh.getRuntimeInfo();
-		if (!info.installed.length) {
-			notification.info(localize('dshHarness.noRuntime', "托管目录中还没有 dsh 版本，请先执行「DSH: 安装运行时版本」。"));
-			return;
-		}
-		const pick = await quickInput.pick([...info.installed].reverse().map(v => ({ label: v, description: v === info.current ? localize('dshHarness.current', "当前") : undefined })), {
-			placeHolder: localize('dshHarness.switchRuntime.placeholder', "选择要启用的 dsh 版本（先快照，健康检查失败会自动回退）"),
-		});
-		if (!pick || pick.label === info.current) {
-			return;
-		}
-		await runUpgrade(dsh, notification, accessor.get(IDialogService), pick.label);
-	}
-});
-
-registerAction2(class extends Action2 {
-	constructor() {
-		super({ id: DSH_COMMAND_CHECK_UPDATES, title: localize2('dshHarness.checkUpdates', "检查运行时更新"), category: CATEGORY, f1: true, precondition: ENABLED });
-	}
-	async run(accessor: ServicesAccessor): Promise<void> {
-		const quickInput = accessor.get(IQuickInputService);
-		const notification = accessor.get(INotificationService);
-		const dialogs = accessor.get(IDialogService);
-		const dsh = accessor.get(IDshHarnessService);
-		const d = await dsh.discoverUpdates();
-		const channelLabel = { stable: localize('dshHarness.ch.stable', "稳定"), preview: localize('dshHarness.ch.preview', "尝鲜"), locked: localize('dshHarness.ch.locked', "锁定") }[d.channel];
-		const items = d.candidates.map(c => {
-			const desc: string[] = [];
-			if (c.current) { desc.push(localize('dshHarness.current', "当前")); }
-			if (c.version === d.recommended) { desc.push(localize('dshHarness.recommended', "推荐")); }
-			if (c.tags.length) { desc.push(c.tags.join(', ')); }
-			desc.push(c.verified ? localize('dshHarness.verified', "已验证") : localize('dshHarness.unverified', "未经 VsSaros 验证"));
-			if (c.installed) { desc.push(localize('dshHarness.installed', "已安装")); }
-			const detail = c.blocked ? localize('dshHarness.blocked', "已知问题：{0}", c.blocked) : c.problems.length ? c.problems.join('；') : undefined;
-			return { label: c.version, description: desc.join(' · '), detail, disabled: c.current || !!c.blocked || c.problems.length > 0, candidate: c };
-		});
-		const pick = await quickInput.pick(items, {
-			title: localize('dshHarness.checkUpdates.title', "dsh 运行时版本（{0}通道；清单：{1}）", channelLabel, d.manifestSource ? `${d.manifestSource} ${d.manifestGeneratedAt?.slice(0, 10) ?? ''}` : localize('dshHarness.noManifest', "无")),
-			placeHolder: d.notes.length ? d.notes.join(' ') : d.recommended ? localize('dshHarness.checkUpdates.has', "可升级到 {0}；选择版本后先快照再切换，失败自动回退", d.recommended) : localize('dshHarness.checkUpdates.none', "当前通道没有可升级的版本；仍可选择其他版本"),
-		});
-		if (!pick) {
-			return;
-		}
-		if (!pick.candidate.verified) {
-			const { confirmed } = await dialogs.confirm({
-				type: 'warning',
-				message: localize('dshHarness.unverified.confirm', "dsh {0} 未经 VsSaros 验证，界面或 IDE 联动可能异常。仍要切换吗？", pick.label),
-				detail: localize('dshHarness.unverified.detail', "切换前会快照会话与 profile，健康检查失败会自动回退。"),
-				primaryButton: localize('dshHarness.unverified.go', "仍要切换"),
-			});
-			if (!confirmed) {
-				return;
-			}
-		}
-		await runUpgrade(dsh, notification, dialogs, pick.label);
-	}
-});
+/**
+ * ★ 2026-11-09 单版本模型：以下三条命令已**整体下线**
+ *   `dshHarness.installRuntime`（并列安装运行时版本）
+ *   `dshHarness.switchRuntime`（切换当前版本）
+ *   `dshHarness.checkUpdates`（检查可升级的运行时版本）
+ * 以及它们共用的 `runUpgrade()`（快照 → 闸门切换 → 失败回退）。
+ *
+ * dsh 现在只由随包 `dsh-compat.json` 的 `bundled` 在构建期 pin 死，版本升级 = 应用发版；
+ * 「系统与更新」面板里仍保留**应用**更新检查（DSH_COMMAND_CHECK_APP_UPDATES），两者不是一回事。
+ */
 
 /**
  * 「检查更新…」（2026-10-30）：**打开面板**，检查动作留给用户点。
@@ -685,42 +599,7 @@ registerAction2(class extends Action2 {
 	}
 });
 
-/** 经升级闸门切换；有运行中的任务时先征得用户同意再强制切换。 */
-async function runUpgrade(dsh: IDshHarnessService, notification: INotificationService, dialogs: IDialogService, version: string): Promise<void> {
-	const progress = notification.notify({ severity: Severity.Info, message: localize('dshHarness.upgrading', "正在切换到 dsh {0}：快照、重启并检查…", version), progress: { infinite: true } });
-	let r: IDshUpgradeResult;
-	try {
-		r = await dsh.upgrade(version);
-		if (r.outcome === 'blocked') {
-			progress.close();
-			const { confirmed } = await dialogs.confirm({
-				type: 'warning',
-				message: r.running === -1
-					? localize('dshHarness.upgrade.unknown', "无法确认是否有正在运行的任务（控制桥不可用）。仍要切换到 dsh {0} 吗？", version)
-					: localize('dshHarness.upgrade.busy', "有 {0} 个会话正在运行，切换版本会重启 Host 并中断它们。仍要切换到 dsh {1} 吗？", r.running, version),
-				primaryButton: localize('dshHarness.upgrade.force', "中断并切换"),
-			});
-			if (!confirmed) {
-				return;
-			}
-			r = await dsh.upgrade(version, true);
-		}
-	} finally {
-		progress.close();
-	}
-	switch (r.outcome) {
-		case 'switched':
-			notification.info(localize('dshHarness.upgrade.ok', "已切换到 dsh {0}（原版本 {1}），健康检查通过。", r.to, r.from ?? '-'));
-			break;
-		case 'unchanged':
-			break;
-		case 'rolled-back':
-			notification.warn(localize('dshHarness.upgrade.rolledBack', "dsh {0} 健康检查未通过，已自动回退到 {1} 并恢复快照：{2}", r.to, r.from ?? '-', r.error ?? ''));
-			break;
-		default:
-			notification.error(localize('dshHarness.upgrade.failed', "切换到 dsh {0} 失败：{1}", r.to, r.error ?? ''));
-	}
-}
+/* `runUpgrade()` 已随「用户自由切 runtime」下线，见上一段说明。 */
 
 registerAction2(class extends Action2 {
 	constructor() {

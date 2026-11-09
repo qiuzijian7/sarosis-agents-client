@@ -362,6 +362,24 @@
 		var upTag = upgradable
 			? h('span', { className: 'vs-mp-tag warn' }, '可升级 → v' + String(pkg.latestVersion || ''))
 			: null;
+		// ★ 2026-11-09：Bot 组合包的组件摘要。
+		//   bot.json → 发布端写进 manifest.bot → shape.js 透传到列表 pkg.bot；
+		//   详情页还能从 versions[].manifest.bot 取。只存 manifest 不渲染 ⇒ 用户看不出这个包带什么。
+		function botSummaryText(p) {
+			var b = null;
+			if (p && p.bot) { b = p.bot; }
+			else if (p && p.manifest && p.manifest.bot) { b = p.manifest.bot; }
+			else if (p && Array.isArray(p.versions) && p.versions[0] && p.versions[0].manifest) {
+				b = p.versions[0].manifest.bot;
+			}
+			if (!b || typeof b !== 'object') { return null; }
+			var parts = [];
+			if (b.skills) { parts.push('技能 ' + b.skills); }
+			if (b.tools) { parts.push('工具 ' + b.tools); }
+			if (b.mcpServers) { parts.push('MCP ' + b.mcpServers); }
+			return parts.length ? '组件摘要：含 ' + parts.join(' · ') : null;
+		}
+		var botLine = botSummaryText(pkg);
 
 		var actions = [
 			h('button', { key: 'd', className: 'vs-mp-btn', onClick: function () { props.onDetail(pkg.slug); } }, '详情')
@@ -420,6 +438,7 @@
 			h('div', { className: 'vs-mp-card-desc' },
 				textOf(pkg.description) || '这个商品暂时还没有填写介绍。'
 			),
+			botLine ? h('div', { className: 'vs-mp-card-bot', 'data-mp-bot-summary': '1' }, botLine) : null,
 			h('div', { className: 'vs-mp-card-actions' }, actions)
 		);
 	}
@@ -778,7 +797,21 @@
 				setMsg({ kind: 'error', text: String((res && res.error) || '操作失败') });
 				return null;
 			}
-			if (okText) { setMsg({ kind: 'ok', text: okText }); }
+			if (okText) {
+			var text = okText;
+			// ★ 2026-11-09：Bot 组合包按 Host 的**分项回执**如实说明生效状态，
+			//   不再用泛化的「部分资源需要重启」糊过去（MCP 还要用户填环境变量）。
+			if (res.bot && res.bot.note) {
+				text = 'Bot 已安装：' + res.bot.note;
+				// ★ 依赖查不到版本 ≠ 已满足 ⇒ 逐项列出来，不静默略过。
+				var unknownDeps = (res.botRequires && Array.isArray(res.botRequires.results))
+					? res.botRequires.results.filter(function (r) { return r.state === 'unknown'; })
+						.map(function (r) { return String(r.name) + '(' + String(r.range) + ')'; })
+					: [];
+				if (unknownDeps.length) { text += ' 依赖未在本机校验：' + unknownDeps.join('、'); }
+			}
+			setMsg({ kind: 'ok', text: text });
+		}
 			void fetchPage(1, false);
 			return res;
 		}

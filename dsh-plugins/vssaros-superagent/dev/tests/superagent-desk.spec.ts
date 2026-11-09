@@ -481,7 +481,7 @@ it('answers the person\'s own message in the desk with no model: the hand-over c
     const asked = await turn('dsh-ask', '帮我看看现在有哪些工单')
     expect(asked.block).toMatchObject({ name: 'superagent_submit', arguments: '{}', id: expect.stringMatching(/^toolu_superagent_submit_/) })
     expect(asked.call.at(-1)).toEqual({ type: 'finish', reason: { kind: 'tool-calls' } })
-    expect(asked.line).toBe('主管收到了，需要你回复的消息会发到这里。')
+    expect(asked.line).toBe('已收到，正在按普通流程安排；有进展会在这里告诉你。')
     // An @group message waits for its session reference; the call waits for the fast path, and the line names the group.
     const pending = turn('dsh-tomato', '@番茄钟 H5 开发团队 开发H5 番茄钟')
     await tick(20)
@@ -503,8 +503,38 @@ it('answers the person\'s own message in the desk with no model: the hand-over c
   }
 })
 
+// ★ 2026-11-09（真机）：主管台所有消息共用一个 desk Thread，工单订阅它 ⇒ 一条全新的请求
+//   也会被扇出给「待人回答」的旧工单，回执先说「已转给正在做的工单「打开 cartoon.hml 文件」」，
+//   worker 之后才 handback 退回。这条端到端钉住：新请求交给 Eval，不再误投旧工单。
+it('keeps a new desk request out of a ticket awaiting an answer, so its receipt does not claim it was forwarded', async () => {
+  listSuperagent()
+  const desk = (messageId: string, text: string) => deskTrigger({ session: h.runtime.deskId, messageId, text, at: new Date().toISOString() })
+  const { ticket, sessionId } = await h.acceptedTicket(desk('desk-cartoon', '打开 cartoon.hml 文件'))
+  // 主管问你：相关目录里没有 cartoon.hml…（= ticket.attention 的待回答形态）
+  await h.runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: '未找到文件', human_action: '你是指 pomodoro-h5 里的 cartoon.html？' })
+  expect(h.runtime.store.tickets.get(ticket.id)!.attention).toBeDefined()
+  const before = h.candidates().length
+  const request = desk('desk-add-tester', '添加一个测试专家')
+  h.runtime.receive(request)
+  await h.runtime.idle()
+  // 不扇出给那张待人回答的工单 ⇒ 进 Eval 重新分诊
+  expect(h.runtime.store.triggers.disposition(request.id)!.fanout).toEqual([])
+  expect(h.candidates()).toContain(request.id)
+  expect(h.candidates().length).toBeGreaterThan(before)
+  expect(h.runtime.store.tickets.get(ticket.id)!.inputs.filter(input => input.kind === 'trigger')
+    .map(input => input.triggerId)).not.toContain(request.id)
+  // 回执不再说「已转给正在做的工单」
+  const titles = (h.runtime.store.triggers.disposition(request.id)!.fanout ?? [])
+    .map(id => h.runtime.store.tickets.get(id)?.title ?? '')
+  expect(submitText({ result: 'stored', tickets: titles })).toBe('已收到，正在按普通流程安排；有进展会在这里告诉你。')
+  // 真回答仍直投给那张工单
+  const answer = desk('desk-answer', '是 pomodoro-h5 里的 cartoon.html')
+  h.runtime.receive(answer)
+  await h.runtime.idle()
+  expect(h.runtime.store.triggers.disposition(answer.id)!.fanout).toEqual([ticket.id])
+})
 it('says where a handed-over desk message went', () => {
-  expect(submitText({ result: 'stored' })).toBe('主管收到了，需要你回复的消息会发到这里。')
+  expect(submitText({ result: 'stored' })).toBe('已收到，正在按普通流程安排；有进展会在这里告诉你。')
   expect(submitText({ result: 'duplicate', route: { roomName: '番茄钟', kind: 'created' } })).toBe('已建群「番茄钟」，群里的 Bots 接着做。')
   expect(submitText({ result: 'stored', tickets: ['做番茄钟'] })).toBe('已转给正在做的工单「做番茄钟」。')
   expect(submitText({ result: 'filtered' })).toMatch(/没交给主管/)

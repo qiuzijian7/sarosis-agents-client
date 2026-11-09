@@ -88,6 +88,8 @@ PLAYWRIGHT_TEMPLATE_ASSET_MAP = {
     ".codex/agents/playwright_test_generator.toml": ASSETS / "playwright" / "playwright_test_generator.toml",
     ".codex/agents/playwright_test_healer.toml": ASSETS / "playwright" / "playwright_test_healer.toml",
     ".qa-agent/fixtures/playwright-e2e-layout.example.md": ASSETS / "playwright" / "playwright-e2e-layout.example.md",
+    ".qa-agent/fixtures/seed.spec.ts": ASSETS / "playwright" / "seed.spec.ts",
+    ".qa-agent/fixtures/replay-cache.example.json": ASSETS / "playwright" / "replay-cache.example.json",
 }
 
 
@@ -752,7 +754,7 @@ def enforce_no_mojibake(path: Path, allow_mojibake: bool = False) -> None:
 def gate_env(repo: Path) -> dict[str, str]:
     """跑配置里的命令时用的环境：进程环境 + 分层 .env。
 
-    与 `run-with-env` 对齐。历史上 `run-commands` / `run-gate` 不加载 `.qa-agent`
+    与 `run-with-env` 对齐。历史上 `run-commands` / `run-loop` 不加载 `.qa-agent`
     的 .env，依赖数据库凭证的门禁命令第一次跑必然失败（表现为 QA_MYSQL_USER 为空），
     而且和 `run-with-env` 的行为不一致且无文档提示。
     """
@@ -3077,14 +3079,14 @@ def command_for_spec_task(layer: str, target_project: str, target_file: str, pro
         if is_maven:
             stem = Path(target_file).stem
             return f"cd {target_project} && mvn -q \"-Dtest={stem}\" -DskipTests=false -Dmaven.test.skip=false test"
-        return f"ming-qa manual integration execution for {target_file}"
+        return f"qa_agent.py run-with-env --repo . --script {target_file}"
     if layer == "api":
         if is_maven:
             stem = Path(target_file).stem
             return f"cd {target_project} && mvn -q \"-Dtest={stem}\" -DskipTests=false -Dmaven.test.skip=false test"
         return f"bash {target_file}"
     if layer == "e2e":
-        return f"ming-qa run-e2e --repo . --spec {target_file}"
+        return f"qa_agent.py run-e2e --repo . --spec {target_file}"
     return ""
 
 

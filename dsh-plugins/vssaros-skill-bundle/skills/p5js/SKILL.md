@@ -4,6 +4,7 @@ description: "p5.js sketches: gen art, shaders, interactive, 3D."
 activation: manual
 match: ["p5js", "creative-coding", "generative-art", "canvas", "interactive", "visualization", "webgl", "shaders", "animation"]
 category: creative
+tier: extended
 ---
 
 # p5.js Production Pipeline

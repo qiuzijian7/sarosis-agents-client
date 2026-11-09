@@ -4,6 +4,7 @@ description: Operate the Teams meeting summary pipeline via Hermes CLI — summa
 activation: manual
 match: ["teams-meeting-pipeline", "teams meeting pipeline", "teams", "microsoft graph", "meetings", "productivity", "operations"]
 category: productivity
+tier: extended
 ---
 
 # Teams Meeting Pipeline

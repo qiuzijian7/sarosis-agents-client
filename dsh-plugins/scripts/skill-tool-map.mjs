@@ -188,3 +188,52 @@ export function replaceToolRefs(text) {
 		return typeof target === 'string' ? whole.replace(ident, target) : whole;
 	});
 }
+
+// ── IDE 侧已退役工具名：守卫与基线生成器共用的单一真源 ──────────────────
+// 这些名字既不在 TOOL_MAP 也不在 dshToolNames()，scanToolRefs 会把它们静默
+// continue 掉，所以必须单独扫。口径限定「反引号包裹」或「后跟 ( 的调用」，
+// 避免把普通英文词（patch the file / terminal output）当成工具引用。
+export const IDE_LEGACY_TOOL_NAMES = Object.freeze([
+	'trace_path', 'detect_changes', 'get_architecture', 'get_code_snippet',
+	'search_graph', 'query_graph', 'index_status', 'manage_adr',
+	'file_read', 'file_write', 'file_list', 'search_files', 'search_code',
+	'terminal', 'patch', 'clarify', 'web_extract', 'shell_exec', 'execute_code',
+	'read_file', 'write_to_file', 'replace_in_file', 'grep_search', 'use_skill',
+	'browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type',
+	'browser_scroll', 'browser_back', 'browser_press', 'browser_vision',
+	'browser_console', 'browser_cdp', 'browser_dialog', 'browser_get_images',
+	'browser_evaluate', 'browser_take_screenshot', 'take_screenshot',
+	'delegate_task',
+]);
+
+const LEGACY_NAMES_RE = IDE_LEGACY_TOOL_NAMES.join('|');
+const LEGACY_CALL_RE = new RegExp('(?:`(' + LEGACY_NAMES_RE + ')`|\\b(' + LEGACY_NAMES_RE + ')\\s*\\()', 'g');
+
+/** 正文（跳过 YAML frontmatter）里出现的 IDE 退役名，去重排序。 */
+export function scanLegacyIdeToolRefs(text) {
+	const lines = String(text ?? '').split(/\r?\n/);
+	let start = 0;
+	if (lines[0]?.trim() === '---') {
+		for (let i = 1; i < lines.length; i++) {
+			if (lines[i].trim() === '---') { start = i + 1; break; }
+		}
+	}
+	const found = new Set();
+	for (const m of lines.slice(start).join('\n').matchAll(LEGACY_CALL_RE)) {
+		found.add(m[1] ?? m[2]);
+	}
+	return [...found].sort();
+}
+
+/** frontmatter 的 recommended_tools 数组内容（不做校验，交给守卫）。 */
+export function frontmatterRecommendedTools(text) {
+	const lines = String(text ?? '').split(/\r?\n/);
+	if (lines[0]?.trim() !== '---') { return []; }
+	for (let i = 1; i < lines.length; i++) {
+		if (lines[i].trim() === '---') { break; }
+		const m = /^\s*recommended_tools:\s*\[([^\]]*)\]/.exec(lines[i]);
+		if (!m) { continue; }
+		return [...m[1].matchAll(/[a-z][a-z0-9_*-]*/g)].map((x) => x[0]);
+	}
+	return [];
+}

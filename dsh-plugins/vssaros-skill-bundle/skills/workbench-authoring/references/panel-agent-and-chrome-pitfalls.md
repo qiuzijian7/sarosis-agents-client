@@ -258,8 +258,8 @@ suggestions:                     # ★ 别用半角逗号（YAML 列表会被拼
 const DESCRIPTOR = { title: '我的工作台', repository: 'vssaros:mine', customFrame: true, assistantPreset: 'vssaros-my-agent' };
 ```
 
-或者（仓库内置工作台）在宿主 `ASSIST_PRESET_BY_WB` 里加一行；同一个 agent 在不同环境 id 不同时写**候选数组**
-（例：`'vssaros/kb': ['vssaros-kb-expert', 'vssaros-knowledge-base-expert']`）。
+或者（仓库内置工作台）在宿主 `ASSIST_PRESET_BY_WB` 里加一行（单值即可，如
+`'vssaros/kb': 'vssaros-knowledge-base-expert'`）；数组形式只是通用兜底，用于同一 agent 在不同环境 id 不同的历史情形。
 
 **为什么不能自己设（五个叠加根因，反复修了四五轮才看清）**：
 1. **写入者太多**：宿主 + 知识库 + 商城 + 媒体库 + 萨罗斯各写一套，每轮只修一个，其余照跑 ⇒「修好又坏」；

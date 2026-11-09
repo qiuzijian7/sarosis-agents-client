@@ -4,6 +4,7 @@ description: Songwriting craft and Suno AI music prompts.
 activation: manual
 match: ["songwriting-and-ai-music", "songwriting and ai music"]
 category: creative
+tier: extended
 ---
 
 # Songwriting & AI Music Generation

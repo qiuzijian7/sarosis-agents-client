@@ -12,7 +12,7 @@ it('shows what SuperAgent\'s Sessions used and the steward\'s work, and gives a 
   const totals = (total: number, calls = 1) => ({ calls, input: total, cacheRead: 0, cacheWrite: 0, output: 0, total })
   server.teamBots = [{ id: 'designer', name: '设计师', description: '', skills: [], tools: [], delegatable: true, source: 'custom' }]
   server.usage = { ...emptyUsage(), day: { ...emptyUsage().day, total: totals(15_500, 2), byRole: { master: totals(15_000), desk: totals(0, 0),
-    worker: totals(0, 0), step: totals(500) }, byBot: [{ bot: '设计师', ...totals(500) }] }, week: totals(40_000, 9),
+    worker: totals(0, 0), step: totals(500), group: totals(0, 0) }, byBot: [{ bot: '设计师', ...totals(500) }] }, week: totals(40_000, 9),
     steward: [{ session: 'master-1', role: 'master', at: '', outcome: 'compacted', context: 90_000, line: 72_000 }] }
   await mount()
   await click(zh['tab.execution'])
@@ -139,6 +139,20 @@ it('links a question to its Channel, folds consecutive automated messages among 
   expect(tip.closest('.dt-field')!.textContent).not.toContain('到期后记为未完成')
   await act(async () => { tip.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })) })
   expect(document.querySelector('[role="tooltip"]')).toBeNull()
+})
+
+// ★ 2026-11-09：工单详情页的「去主管对话回答」同样不能有空 href 外链。
+it('answers a SuperAgent desk question from the Ticket page without opening a blank external link', async () => {
+  const t1 = server.ticketDetails.t1!
+  server.ticketDetails.t1 = { ...t1, stage: 'person', action: 'answer', attention: { id: 'q1', question: '需要确认按钮颜色' },
+    channels: [{ source: 'superagent', url: '', label: { zh: '主管对话', en: 'Supervisor desk' } }] }
+  at({ page: 'execution', id: 't1' })
+  await mount()
+  expect(all('.dt-banner a').map(link => link.getAttribute('href'))).not.toContain('')
+  const button = all('.dt-banner [data-vssaros-in-app-action="1"]').find(el => /主管对话/.test(el.textContent ?? ''))!
+  expect(button).toBeTruthy()
+  await click(button)
+  expect(tab(zh['tab.chat']).getAttribute('aria-selected')).toBe('true')
 })
 
 it('offers a Ticket awaiting review its review place and Session in the page head', async () => {

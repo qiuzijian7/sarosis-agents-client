@@ -1516,8 +1516,9 @@ window.__ModuleLoader__.load({
 			"all"
 		];
 		/**
-		* VsSaros change (2026-11-07, user request): the tabs the header shows. The Workbench (`work`) is no longer a tab; its
-		* page stays a route, reached from the links that open a team's flow (`team-plans.tsx`, `work.openFlow`).
+		* VsSaros change (2026-11-07, user request): the tabs the header shows. The Workbench (`work`) is no longer a tab.
+		* ★ 2026-11-09: its three views (flow / board / list) now live INSIDE the `execution` tab; `work` remains only as a
+		*   legacy route alias that `parseRoute` normalizes to `execution` (see below), so old links and stored routes still work.
 		*/
 		const NAV_TABS = [
 			"chat",
@@ -1559,7 +1560,7 @@ window.__ModuleLoader__.load({
 				case "chat":
 				case "source": return { page };
 				case "work": return {
-					page,
+					page: "execution",
 					query: compact({ ticket: text("ticket") })
 				};
 				case "overview": return { page: "chat" };
@@ -1583,7 +1584,10 @@ window.__ModuleLoader__.load({
 					id: record
 				} : {
 					page,
-					query: compact({ filter: pick(TICKET_FILTERS, query?.filter) })
+					query: compact({
+						filter: pick(TICKET_FILTERS, query?.filter),
+						ticket: text("ticket")
+					})
 				};
 				case "settings": return {
 					page,
@@ -1805,28 +1809,47 @@ window.__ModuleLoader__.load({
 			});
 		}
 		function ExternalLink({ href, children, icon = "external" }) {
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("a", {
+			const label = /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, {
+				name: icon,
+				size: 13
+			}), children] });
+			if (!href) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+				className: "dt-inline-link dt-icon-link",
+				"data-vssaros-no-link": "1",
+				children: label
+			});
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
 				className: "dt-inline-link dt-icon-link",
 				href,
 				...external,
-				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, {
-					name: icon,
-					size: 13
-				}), children]
+				children: label
 			});
 		}
-		function ActionLink({ href, children, icon = "external" }) {
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("a", {
+		/**
+		* A link to answer/open in an external Channel. When the Channel has no external URL (superagent desk),
+		* `onActivate` turns it into an in-app button instead — see the note on ExternalLink.
+		*/
+		function ActionLink({ href, children, icon = "external", onActivate }) {
+			const label = /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+				className: "dt-btn-icon",
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, {
+					name: icon,
+					size: 14
+				})
+			}), children] });
+			if (!href) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+				type: "button",
+				className: "dt-btn dt-btn-outline dt-btn-sm",
+				"data-vssaros-in-app-action": "1",
+				disabled: !onActivate,
+				onClick: onActivate,
+				children: label
+			});
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
 				className: "dt-btn dt-btn-outline dt-btn-sm",
 				href,
 				...external,
-				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-					className: "dt-btn-icon",
-					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, {
-						name: icon,
-						size: 14
-					})
-				}), children]
+				children: label
 			});
 		}
 		function StageMark({ state, icon, label }) {
@@ -1993,6 +2016,7 @@ window.__ModuleLoader__.load({
 								answer && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ActionLink, {
 									href: answer.url,
 									icon: "message",
+									onActivate: () => navigate({ page: "chat" }),
 									children: t("answerIn", { source: valueLabel(t, "source", answer.source) })
 								}),
 								ticket.actions.retry && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmButton, {
@@ -2521,6 +2545,30 @@ window.__ModuleLoader__.load({
 						children: name
 					}, option))]
 				}, column.key);
+				if (column.type === "text" && column.chooseFrom) {
+					const prefix = column.chooseFrom + ":";
+					const current = String(row[column.key] ?? "");
+					return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
+						className: "dt-select",
+						"aria-label": localized(t, column.label),
+						value: current,
+						onChange: (event) => change(event.target.value),
+						children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+								value: "",
+								children: localized(t, column.label)
+							}),
+							current && !labels[prefix + current] ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+								value: current,
+								children: current
+							}) : null,
+							Object.entries(labels).filter(([option]) => option.startsWith(prefix)).sort(byName).map(([option, name]) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+								value: option.slice(prefix.length),
+								children: name
+							}, option))
+						]
+					}, column.key);
+				}
 				if (column.type === "select") return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("select", {
 					className: "dt-select",
 					"aria-label": localized(t, column.label),
@@ -2662,7 +2710,25 @@ window.__ModuleLoader__.load({
 					hint,
 					note: localized(t, fact),
 					action,
-					children: field.choose && Object.keys(labels).length ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
+					children: field.chooseFrom ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
+						className: "dt-select",
+						value: String(value ?? ""),
+						onChange: (event) => onChange(event.target.value),
+						children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+								value: "",
+								children: field.choose ? localized(t, field.choose) : localized(t, field.label)
+							}),
+							String(value ?? "") && !labels[`${field.chooseFrom}:${value}`] ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+								value: String(value),
+								children: String(value)
+							}) : null,
+							Object.entries(labels).filter(([option]) => option.startsWith(field.chooseFrom + ":")).sort(byName).map(([option, name]) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+								value: option.slice(field.chooseFrom.length + 1),
+								children: name
+							}, option))
+						]
+					}) : field.choose && Object.keys(labels).length ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
 						className: "dt-select",
 						value: String(value ?? ""),
 						onChange: (event) => onChange(event.target.value),
@@ -3666,114 +3732,14 @@ window.__ModuleLoader__.load({
 			});
 		}
 		//#endregion
-		//#region src/client/cli-check.tsx
-		/**
-		* VsSaros addition: local `lark-cli` diagnostics on the Feishu Source card.
-		*
-		* `actions` sits to the right of the `cli` input and `details` below the field; both come from the
-		* same state. Two read-only checks report the executable, version, bot identity, strict mode and
-		* update status, and fill the `cli` field. The two maintenance actions change the machine's global
-		* CLI, so each sits behind a `ConfirmButton` and sends `confirm: true` that the host route requires.
-		*/
-		/** Returns the two fragments the `cli` field renders: buttons beside the input, results below it. */
-		function useFeishuCliCheck(onDetect) {
-			const { t, call, notify } = usePanel();
-			const [result, setResult] = (0, react.useState)();
-			const inspect = useAction(async (update) => {
-				const found = await call("POST sources/feishu/cli-check", { body: { update } });
-				setResult(found);
-				if (found.found) onDetect(found.command);
-				else notify(t("cliCheck.notFound"));
-			});
-			const apply = async (action) => {
-				await call("POST sources/feishu/cli-apply", { body: {
-					action,
-					confirm: true
-				} });
-				notify(t("cliCheck.applied"));
-				await inspect.run(false);
-			};
-			const rows = result && [
-				[t("cliCheck.path"), result.found ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-					className: "dt-mono",
-					children: result.resolved
-				}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-					tone: "danger",
-					children: t("cliCheck.notFound")
-				})],
-				[t("cliCheck.version"), result.version ?? t("empty")],
-				[t("cliCheck.bot"), result.botReady ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-					tone: "success",
-					children: result.appId ?? t("yes")
-				}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-					tone: "danger",
-					children: t("no")
-				})],
-				[t("cliCheck.strict"), result.strictMode === "bot" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-					tone: "success",
-					children: "bot"
-				}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-					tone: "warning",
-					children: result.strictMode ?? t("empty")
-				})],
-				[t("cliCheck.botName"), result.botName ?? t("empty")],
-				...result.update ? [[t("cliCheck.latest"), `${result.update.currentVersion ?? t("empty")} → ${result.update.latestVersion ?? t("empty")} (${result.update.action ?? t("empty")})`]] : []
-			];
-			return {
-				actions: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-					className: "dt-cli-actions",
-					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-						variant: "ghost",
-						size: "sm",
-						disabled: inspect.busy,
-						onClick: () => {
-							inspect.run(false);
-						},
-						children: t("cliCheck.local")
-					}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-						variant: "ghost",
-						size: "sm",
-						disabled: inspect.busy,
-						onClick: () => {
-							inspect.run(true);
-						},
-						children: t("cliCheck.update")
-					})]
-				}),
-				details: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
-					rows && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(KeyValues, { rows }),
-					result?.error && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: result.error }),
-					result?.found && result.strictMode !== "bot" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-						className: "dt-row-buttons",
-						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmButton, {
-							variant: "outline",
-							label: t("cliCheck.applyStrict"),
-							title: t("cliCheck.applyStrictTitle"),
-							message: t("cliCheck.applyStrictConfirm"),
-							onConfirm: () => apply("strict-bot")
-						})
-					}),
-					result?.found && result.update && result.update.action !== "already_up_to_date" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-						className: "dt-row-buttons",
-						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmButton, {
-							variant: "outline",
-							label: t("cliCheck.runUpdate"),
-							title: t("cliCheck.runUpdateTitle"),
-							message: t("cliCheck.runUpdateConfirm"),
-							onConfirm: () => apply("update")
-						})
-					})
-				] })
-			};
-		}
-		//#endregion
 		//#region src/client/tapd-credentials.tsx
 		/**
-		* VsSaros addition: TAPD Open API credentials on the TAPD Source card.
+		* VsSaros addition: the TAPD setup checklist and Open API credentials on the TAPD Source card.
 		*
-		* The secret is written by the Host into its credentials file (`<DSH_HOME>/tapd.env`, or the file
-		* DSH_SUPERAGENT_TAPD_ENV_FILE names) — never into the settings store, which the panel reads back — and the panel
-		* only ever gets a masked account name. The file is read on demand, so a saved credential works at once.
+		* The checklist is data-driven: the Host reports the credential source, saved watch count, resolved identity
+		* and the live health code instead of the panel guessing from static hints. The secret itself is written by the
+		* Host into its credentials file (`<DSH_HOME>/tapd.env`, or DSH_SUPERAGENT_TAPD_ENV_FILE), never into the
+		* settings store; the panel only ever gets a masked account name. The product also ships a TAPD API account.
 		*/
 		const KINDS = [
 			"client",
@@ -3784,34 +3750,77 @@ window.__ModuleLoader__.load({
 		const keepEnter = (event) => {
 			if (event.key === "Enter") event.preventDefault();
 		};
-		function TapdCredentials() {
+		/** Health codes the panel has a localized sentence for; anything else is shown verbatim. */
+		const HEALTH_MESSAGES = [
+			"sourceOff",
+			"tapdUnset",
+			"tapdWebhookUnset"
+		];
+		/** Two starter watches for the saved project: an empty workspace inherits the card's project ID. */
+		function recommendedWatches(agent) {
+			const owner = agent.trim();
+			return ["bug", "story"].map((type) => ({
+				name: type === "bug" ? "bugs" : "stories",
+				workspace: "",
+				type,
+				item: "",
+				status: "",
+				owner,
+				iteration: "",
+				mode: owner ? "assigned" : "all"
+			}));
+		}
+		function TapdCredentials({ config, onAddWatch }) {
 			const { t, call, notify } = usePanel();
 			const [status, setStatus] = (0, react.useState)();
+			const [setup, setSetup] = (0, react.useState)();
+			const [test, setTest] = (0, react.useState)();
+			const [testing, setTesting] = (0, react.useState)(false);
+			const [detailsOpen, setDetailsOpen] = (0, react.useState)(false);
+			const [customOpen, setCustomOpen] = (0, react.useState)(false);
 			const [kind, setKind] = (0, react.useState)("client");
 			const [id, setId] = (0, react.useState)("");
 			const [secret, setSecret] = (0, react.useState)("");
-			const load = async () => {
-				const next = await call("GET sources/tapd/credentials");
-				setStatus(next);
-				if (next.kind) setKind(next.kind);
+			const refresh = async () => {
+				const [credential, next] = await Promise.all([call("GET sources/tapd/credentials"), call("GET sources/tapd/setup")]);
+				setStatus(credential);
+				setSetup(next);
+				return credential;
 			};
 			(0, react.useEffect)(() => {
-				load().catch(() => {});
+				refresh().then((credential) => {
+					if (credential.kind) setKind(credential.kind);
+				}).catch(() => {});
 			}, []);
-			const same = status?.kind === kind;
+			const same = status?.kind === kind && !!status.saved;
 			const save = useAction(async () => {
 				setStatus(await call("POST sources/tapd/credentials", { body: {
 					kind,
 					id: id.trim(),
 					secret: secret.trim()
 				} }));
+				setSetup(await call("GET sources/tapd/setup"));
 				setId("");
 				setSecret("");
 				notify(t("tapdCred.saved"));
 			});
 			const clear = async () => {
 				setStatus(await call("POST sources/tapd/credentials", { body: { clear: true } }));
+				setSetup(await call("GET sources/tapd/setup"));
 				notify(t("tapdCred.cleared"));
+			};
+			const switchBundled = async (bundled) => {
+				setStatus(await call("POST sources/tapd/credentials", { body: { bundled } }));
+				setSetup(await call("GET sources/tapd/setup"));
+				notify(t("tapdCred.bundledSwitched"));
+			};
+			const runTest = async () => {
+				setTesting(true);
+				try {
+					setTest(await call("POST sources/tapd/test", { body: {} }));
+				} finally {
+					setTesting(false);
+				}
 			};
 			const idLabel = kind === "client" ? t("tapdCred.clientId") : t("tapdCred.user");
 			const secretLabel = kind === "client" ? t("tapdCred.clientSecret") : kind === "user" ? t("tapdCred.password") : t("tapdCred.token");
@@ -3822,14 +3831,82 @@ window.__ModuleLoader__.load({
 			}) : status.source === "file" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
 				tone: "success",
 				children: t("tapdCred.fromFile")
+			}) : status.source === "bundled" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+				tone: "success",
+				children: t("tapdCred.fromBundled")
 			}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
 				tone: "danger",
 				children: t("tapdCred.none")
 			});
+			const watchTag = !setup ? t("empty") : setup.watches > 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+				tone: "success",
+				children: t("tapdCheck.watchesSome", { count: String(setup.watches) })
+			}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+				tone: "danger",
+				children: t("tapdCheck.watchesNone")
+			});
+			const identityTag = !setup ? t("empty") : !setup.agent ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+				tone: "warning",
+				children: t("tapdCheck.identityEmpty")
+			}) : setup.agentMapped ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+				tone: "success",
+				children: t("tapdCheck.identityMapped", { name: setup.agentResolved })
+			}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+				tone: "warning",
+				children: t("tapdCheck.identityUnmapped", { name: setup.agent })
+			});
+			const healthLabel = (code) => !code ? t("tapdCheck.healthUnknown") : HEALTH_MESSAGES.includes(code) ? t(`healthCode.${code}`) : code;
+			const draft = config.watches;
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: "dt-field",
 				"data-tapd-credentials": "",
 				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						className: "dt-field-head",
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("label", { children: t("tapdCheck.title") })
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(KeyValues, { rows: [
+						[t("tapdCheck.credentials"), sourceTag],
+						[t("tapdCheck.watches"), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [watchTag, setup && draft !== setup.watches ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+							className: "dt-mono",
+							children: [" · ", t("tapdCheck.draftSaved", { count: String(draft) })]
+						}) : null] })],
+						[t("tapdCheck.identity"), identityTag],
+						[t("tapdCheck.health"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "dt-mono",
+							children: healthLabel(setup?.healthCode)
+						})],
+						[t("tapdCheck.connectivity"), !test ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+							tone: "neutral",
+							children: t("tapdCheck.notTested")
+						}) : test.ok ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+							tone: "success",
+							children: t("tapdCheck.testOk", { method: test.method ?? "" })
+						}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+							tone: "danger",
+							children: t("tapdCheck.testFail", { error: test.error ?? "" })
+						})]
+					] }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "dt-row-buttons",
+						children: [setup && setup.watches === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+							variant: "outline",
+							size: "sm",
+							onClick: () => {
+								onAddWatch(recommendedWatches(setup.agent));
+								notify(t("tapdCheck.watchesAdded"));
+							},
+							children: t("tapdCheck.watchesAdd")
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+							variant: "outline",
+							size: "sm",
+							disabled: testing,
+							onClick: () => {
+								runTest();
+							},
+							children: testing ? t("tapdCheck.testing") : t("tapdCheck.test")
+						})]
+					}),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 						className: "dt-field-head",
 						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("label", { children: t("tapdCred.title") })
@@ -3838,67 +3915,105 @@ window.__ModuleLoader__.load({
 						[t("tapdCred.status"), sourceTag],
 						...status?.method ? [[t("tapdCred.method"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 							className: "dt-mono",
-							children: status.method
+							children: status.source === "bundled" ? `${t("tapdCred.methodBundled")}${status.account ? ` · ${status.account}` : ""}` : status.method
 						})]] : [],
 						...status?.account ? [[t("tapdCred.account"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 							className: "dt-mono",
 							children: status.account
 						})]] : [],
-						[t("tapdCred.file"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						[t("tapdCred.writeTo"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 							className: "dt-mono",
 							children: status?.file ?? t("empty")
 						})]
 					] }),
 					status?.overridden && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("tapdCred.overridden") }),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SegmentedControl, {
-						className: "dt-segmented dt-field-segmented",
-						label: t("tapdCred.kind"),
-						value: kind,
-						onChange: setKind,
-						options: KINDS.map((value) => ({
-							value,
-							label: t(`tapdCred.kind.${value}`)
-						}))
+					status?.source === "bundled" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("tapdCred.bundledHint") }),
+					status?.bundled && !status.saved && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("tapdCred.overrideHint") }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(DisclosureRow, {
+						icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "settings" }),
+						title: t("tapdCred.custom"),
+						open: customOpen,
+						onToggle: () => setCustomOpen(!customOpen),
+						children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("tapdCred.customHint") }),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SegmentedControl, {
+								className: "dt-segmented dt-field-segmented",
+								label: t("tapdCred.kind"),
+								value: kind,
+								onChange: setKind,
+								options: KINDS.map((value) => ({
+									value,
+									label: t(`tapdCred.kind.${value}`)
+								}))
+							}),
+							kind !== "token" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
+								label: idLabel,
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
+									value: id,
+									autoComplete: "off",
+									spellCheck: false,
+									onKeyDown: keepEnter,
+									onChange: (event) => setId(event.target.value),
+									placeholder: same && status?.account ? t("tapdCred.keep", { value: status.account }) : ""
+								})
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
+								label: secretLabel,
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
+									type: "password",
+									value: secret,
+									autoComplete: "new-password",
+									onKeyDown: keepEnter,
+									onChange: (event) => setSecret(event.target.value),
+									placeholder: same ? t("tapdCred.keepSecret") : ""
+								})
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("tapdCred.hint") }),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
+								icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "settings" }),
+								title: t("tapdCred.details"),
+								open: detailsOpen,
+								onToggle: () => setDetailsOpen(!detailsOpen),
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("tapdCred.detailsHint") })
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								className: "dt-row-buttons",
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+									variant: "outline",
+									size: "sm",
+									disabled: save.busy || !ready,
+									onClick: () => {
+										save.run();
+									},
+									children: save.busy ? t("tapdCred.saving") : t("tapdCred.save")
+								})
+							})
+						]
 					}),
-					kind !== "token" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
-						label: idLabel,
-						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
-							value: id,
-							autoComplete: "off",
-							spellCheck: false,
-							onKeyDown: keepEnter,
-							onChange: (event) => setId(event.target.value),
-							placeholder: same && status?.account ? t("tapdCred.keep", { value: status.account }) : ""
-						})
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
-						label: secretLabel,
-						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
-							type: "password",
-							value: secret,
-							autoComplete: "new-password",
-							onKeyDown: keepEnter,
-							onChange: (event) => setSecret(event.target.value),
-							placeholder: same ? t("tapdCred.keepSecret") : ""
-						})
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("tapdCred.hint") }),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: "dt-row-buttons",
-						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-							variant: "outline",
-							size: "sm",
-							disabled: save.busy || !ready,
-							onClick: () => {
-								save.run();
-							},
-							children: save.busy ? t("tapdCred.saving") : t("tapdCred.save")
-						}), status?.kind && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmButton, {
-							label: t("tapdCred.clear"),
-							title: t("tapdCred.clearTitle"),
-							message: t("tapdCred.clearConfirm", { file: status.file }),
-							onConfirm: clear
-						})]
+						children: [
+							status?.saved && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmButton, {
+								label: t("tapdCred.clear"),
+								title: t("tapdCred.clearTitle"),
+								message: t("tapdCred.clearConfirm", { file: status.file }),
+								onConfirm: clear
+							}),
+							status?.bundled && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmButton, {
+								label: t("tapdCred.bundledOff"),
+								title: t("tapdCred.bundledOffTitle"),
+								message: t("tapdCred.bundledOffConfirm"),
+								onConfirm: () => switchBundled("off")
+							}),
+							status && !status.bundled && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+								variant: "outline",
+								size: "sm",
+								onClick: () => {
+									switchBundled("on");
+								},
+								children: t("tapdCred.bundledOn")
+							})
+						]
 					})
 				]
 			});
@@ -3920,42 +4035,43 @@ window.__ModuleLoader__.load({
 				await reload();
 				return added;
 			};
+			(0, react.useEffect)(() => {
+				if (source.installed && source.id === "tapd" && !Object.keys(source.labels ?? {}).some((name) => name.includes(":"))) refreshLabels().catch(() => {});
+			}, [source.id, source.installed]);
 			const draft = useBlockDraft(`source:${source.id}`, source.value, source.revision);
 			const value = draft.value;
 			const { problem, value: saved } = source;
 			const changed = (key) => String(value.config[key] ?? "") !== String(saved.config[key] ?? "");
 			const restarts = draft.dirty && source.restarts.some(changed);
 			const description = localized(t, source.description);
-			const cli = useFeishuCliCheck((command) => {
-				if (!String(value.config.cli ?? "")) draft.edit({
+			const field = (spec) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SourceField, {
+				field: spec,
+				value: value.config[spec.key],
+				saved: saved.config[spec.key],
+				labels: source.labels,
+				refreshLabels,
+				fact: spec.type === "fact" || !changed(spec.key) ? source.facts[spec.key] : void 0,
+				onChange: (next) => draft.edit({
 					...value,
 					config: {
 						...value.config,
-						cli: command
+						[spec.key]: next
 					}
-				});
-			});
-			const field = (spec) => {
-				const cliField = source.id === "feishu" && spec.key === "cli";
-				return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SourceField, {
-					field: spec,
-					value: value.config[spec.key],
-					saved: saved.config[spec.key],
-					labels: source.labels,
-					refreshLabels,
-					fact: spec.type === "fact" || !changed(spec.key) ? source.facts[spec.key] : void 0,
-					onChange: (next) => draft.edit({
-						...value,
-						config: {
-							...value.config,
-							[spec.key]: next
-						}
-					}),
-					action: cliField ? cli.actions : void 0,
-					detail: cliField ? cli.details : void 0
-				}, spec.key);
-			};
+				})
+			}, spec.key);
 			const advanced = source.fields.filter((spec) => spec.advanced);
+			const advancedGroups = (() => {
+				const groups = /* @__PURE__ */ new Map();
+				for (const spec of advanced) {
+					const title = spec.group ? localized(t, spec.group) : "";
+					if (!groups.has(title)) groups.set(title, {
+						title,
+						specs: []
+					});
+					groups.get(title).specs.push(spec);
+				}
+				return [...groups.values()];
+			})();
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("form", {
 				id: `dt-source-${source.id}`,
 				className: "dt-card",
@@ -4005,7 +4121,20 @@ window.__ModuleLoader__.load({
 						}),
 						!source.installed && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("sourceNotInstalledHint") }),
 						source.installed && source.fields.filter((spec) => !spec.advanced).map(field),
-						source.installed && source.id === "tapd" && String(value.config.transport ?? "openapi") === "openapi" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(TapdCredentials, {}),
+						source.installed && source.id === "tapd" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(TapdCredentials, {
+							config: {
+								watches: Array.isArray(value.config.watches) ? value.config.watches.length : 0,
+								agent: String(value.config.agent ?? ""),
+								workspace: String(value.config.workspace ?? "")
+							},
+							onAddWatch: (watches) => draft.edit({
+								...value,
+								config: {
+									...value.config,
+									watches
+								}
+							})
+						}),
 						source.installed && advanced.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
 							icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "settings" }),
 							title: t("advanced"),
@@ -4013,7 +4142,10 @@ window.__ModuleLoader__.load({
 							onToggle: () => setAdvancedOpen(!advancedOpen),
 							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 								className: "dt-disclosure-body",
-								children: advanced.map(field)
+								children: advancedGroups.map((group) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", { children: [group.title && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+									className: "dt-hint",
+									children: group.title
+								}), group.specs.map(field)] }, group.title || "default"))
 							})
 						})
 					]
@@ -4319,2628 +4451,6 @@ window.__ModuleLoader__.load({
 						children: data.filter((source) => source.id !== "p4").map((source) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SourceRow, { source }, source.id))
 					})
 				]
-			});
-		}
-		//#endregion
-		//#region src/client/execution.tsx
-		/** Execution status view (active Tickets and pause control) and Execution settings group (Executor capacity and workspace environment). */
-		function ExecutionStatus({ filter: current, state, reload }) {
-			const { t, call, navigate } = usePanel();
-			const [limit, setLimit] = (0, react.useState)(20);
-			const { data, error, reload: reloadTickets } = usePoll(() => call("GET tickets", { query: {
-				state: current,
-				limit
-			} }), [current, limit]);
-			const { paused, load: { maxWorkers } } = state;
-			const pause = async () => {
-				await call("POST executor/pause", { body: { paused: !paused } });
-				await reload();
-			};
-			const status = state.setup.problem ? {
-				tone: "warning",
-				label: t("executorWaitingSetup")
-			} : paused ? {
-				tone: "warning",
-				label: t("processingPaused")
-			} : {
-				tone: "ongoing",
-				label: t("executorRunning")
-			};
-			const action = paused ? "resumeProcessing" : "pauseProcessing";
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
-				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(StatusHead, {
-					hint: t("executionStatusIntro"),
-					settings: "execution"
-				}),
-				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(GroupRuns, { compact: true }),
-				/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-					className: "dt-row-meta dt-status-line",
-					children: [
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: "dt-status-text",
-							"data-state": status.tone,
-							children: status.label
-						}),
-						!state.setup.problem && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(LabelValue, {
-							label: t("executingLabel"),
-							value: `${state.load.running} / ${maxWorkers}`
-						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(LabelValue, {
-							label: t("queuedLabel"),
-							value: state.load.queued
-						})] }),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmButton, {
-							variant: "outline",
-							icon: paused ? "play" : "pause",
-							label: t(action),
-							title: t(action),
-							message: t(paused ? "resumeProcessingConfirm" : "pauseProcessingConfirm"),
-							onConfirm: pause
-						})
-					]
-				}),
-				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(UsagePanel, {}),
-				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ApprovalRulesPanel, {}),
-				state.health.p4?.code === "p4Unset" && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
-					className: "dt-hint",
-					children: [
-						t("p4UnsetHint"),
-						" ",
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-							type: "button",
-							className: "dt-textlink",
-							onClick: () => navigate(settingsRoute("execution")),
-							children: t("sourceOpenSettings")
-						})
-					]
-				}),
-				/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-					className: "dt-filters",
-					children: TICKET_FILTERS.map((value) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Pill, {
-						active: current === value,
-						onClick: () => {
-							setLimit(20);
-							navigate({
-								page: "execution",
-								query: value === "open" ? {} : { filter: value }
-							}, true);
-						},
-						children: t(`ticketFilter.${value}`)
-					}, value))
-				}),
-				current === "idle" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("idleHint") }),
-				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(LoadState, {
-					error,
-					loading: !data
-				}),
-				data && (data.items.length ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-					className: "dt-list",
-					children: data.items.map((ticket) => ticket.stage === "person" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(TicketLine, {
-						ticket,
-						question: true,
-						onChanged: reloadTickets
-					}, ticket.id) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(TicketLine, { ticket }, ticket.id))
-				}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("none") })),
-				data?.next_offset != null && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(LoadMore, { onMore: () => setLimit(limit + 20) })
-			] });
-		}
-		const firstSentence = (text) => /^[^。；;.]*(?:[。；;]|\.(?=\s|$))?/.exec(text)?.[0] ?? text;
-		function EnvironmentVariables({ groups, sources, onPick }) {
-			const { t } = usePanel();
-			const [open, setOpen] = (0, react.useState)(false);
-			const owner = (id) => id === "executor" ? t("term.executor") : localized(t, sources.find((source) => source.id === id)?.title ?? id);
-			const count = groups.reduce((sum, group) => sum + group.variables.length, 0);
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
-				icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "hash" }),
-				title: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
-					t("environmentVariables"),
-					" ",
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-						className: "dt-count",
-						children: count
-					})
-				] }),
-				open,
-				onToggle: () => setOpen(!open),
-				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-					className: "dt-disclosure-body",
-					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("environmentPick") }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("table", {
-						className: "dt-table",
-						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("thead", { children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("tr", { children: [
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("th", { children: t("environmentKey") }),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("th", { children: t("environmentDescription") }),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("th", { children: t("environmentOwner") })
-						] }) }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("tbody", { children: groups.flatMap((group) => group.variables.map((variable) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("tr", { children: [
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("td", { children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-								type: "button",
-								className: "dt-textlink dt-mono",
-								onClick: () => onPick(variable.key),
-								children: variable.key
-							}) }),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("td", {
-								title: localized(t, variable.description),
-								children: firstSentence(localized(t, variable.description))
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("td", { children: [owner(group.owner), !group.enabled && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-								className: "dt-hint",
-								children: [" · ", t("sourceOff")]
-							})] })
-						] }, variable.key))) })]
-					})]
-				})
-			});
-		}
-		function ExecutionSettings() {
-			const { t } = usePanel();
-			const { blocks, environment, sources } = useSettings().settings;
-			const p4 = sources.find((source) => source.id === "p4");
-			const executor = blocks.executor.value;
-			const draft = useBlockDraft("executor", {
-				...executor,
-				maxWorkers: String(executor.maxWorkers),
-				blockedCommands: executor.blockedCommands.join(" ")
-			}, blocks.executor.revision, (value) => ({
-				...value,
-				maxWorkers: numberOf(value.maxWorkers),
-				blockedCommands: value.blockedCommands.split(/[\s,]+/).filter(Boolean)
-			}));
-			const value = draft.value;
-			const edit = (next) => draft.edit({
-				...value,
-				...next
-			});
-			const prepare = (0, react.useRef)(null);
-			const insert = (key) => {
-				const field = prepare.current;
-				const at = field?.selectionStart ?? value.prepare.length, to = field?.selectionEnd ?? at;
-				edit({ prepare: `${value.prepare.slice(0, at)}"$${key}"${value.prepare.slice(to)}` });
-				requestAnimationFrame(() => {
-					field?.focus();
-					const caret = at + key.length + 3;
-					field?.setSelectionRange(caret, caret);
-				});
-			};
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-				className: "dt-form",
-				children: [
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("form", {
-						className: "dt-form",
-						onSubmit: (event) => {
-							draft.submit(event);
-						},
-						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Fields, {
-							disabled: draft.busy,
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-								className: "dt-form dt-block",
-								children: [
-									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("h2", {
-										className: "dt-block-title",
-										children: [t("term.executor"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(InfoTip, { text: t("executorIntro") })]
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
-										title: t("executorModel"),
-										hint: t("executorModelHint"),
-										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ModelField, {
-											id: "dt-worker-model",
-											value: value.model,
-											onChange: (model) => edit({ model })
-										})
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
-										label: t("maxWorkers"),
-										hint: t("maxWorkersHint"),
-										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
-											type: "number",
-											min: LIMITS.maxWorkers.min,
-											max: LIMITS.maxWorkers.max,
-											required: true,
-											value: value.maxWorkers,
-											onChange: (event) => edit({ maxWorkers: event.target.value })
-										})
-									})
-								]
-							}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-								className: "dt-form dt-block",
-								children: [
-									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("h2", {
-										className: "dt-block-title",
-										children: [t("term.environment"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(InfoTip, { text: t("environmentIntro") })]
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
-										label: t("executionDirectory"),
-										hint: t("executionDirectoryHint"),
-										note: value.directory ? void 0 : t("executionDirectoryDefault", { root: environment.root }),
-										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
-											className: "dt-mono",
-											value: value.directory,
-											placeholder: t("executionDirectoryEmpty"),
-											spellCheck: false,
-											pattern: "/.*",
-											onChange: (event) => edit({ directory: event.target.value })
-										})
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
-										label: t("prepareCommand"),
-										hint: t("prepareCommandHint"),
-										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
-											ref: prepare,
-											className: "dt-textarea dt-mono",
-											rows: 3,
-											maxLength: LIMITS.prepareCommand,
-											spellCheck: false,
-											placeholder: t("prepareCommandEmpty"),
-											value: value.prepare,
-											onChange: (event) => edit({ prepare: event.target.value })
-										})
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(EnvironmentVariables, {
-										groups: environment.variables,
-										sources,
-										onPick: insert
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
-										label: t("blockedCommands"),
-										hint: t("blockedCommandsHint"),
-										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
-											className: "dt-mono",
-											value: value.blockedCommands,
-											placeholder: t("blockedCommandsNone"),
-											spellCheck: false,
-											onChange: (event) => edit({ blockedCommands: event.target.value })
-										})
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SwitchRow, {
-										label: t("sideCalls"),
-										hint: t("sideCallsHint"),
-										checked: value.sideCalls,
-										onChange: (sideCalls) => edit({ sideCalls })
-									})
-								]
-							})]
-						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SaveBar, {
-							...draft,
-							onDiscard: draft.discard
-						})]
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfigHistory, { blocks: ["executor", "pause"] }),
-					p4 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SourceCard, {
-						source: p4,
-						title: t("p4Block")
-					}),
-					p4 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfigHistory, { blocks: ["source:p4"] })
-				]
-			});
-		}
-		new Intl.Segmenter("zh", { granularity: "word" });
-		//#endregion
-		//#region src/setup.ts
-		const SETUP_PROBLEMS = {
-			foreignFile: ["deployment", "{file} was not written by dsh-superagent; move it, or choose another state directory."],
-			gitTooOld: ["deployment", "git does not read the github.com credential configuration dsh-superagent writes; dsh-superagent needs git 2.32 or later."],
-			environmentFailed: ["deployment", "Preparing the agent environment failed."],
-			repositoryUnset: ["github", "The GitHub Source names no repository."],
-			agentCliUnset: ["github", "The agent GitHub CLI is not set."],
-			agentCliMissing: ["github", "The agent GitHub CLI was not found."],
-			agentCliSignedOut: ["github", "The agent GitHub CLI cannot read its account."],
-			agentCliNoAccount: ["github", "The agent GitHub CLI did not report a GitHub account."],
-			repositoryUnreadable: ["github", "@{account} cannot read {repository}."],
-			repositoryUnreported: ["github", "The agent GitHub CLI did not return {repository}."],
-			repositoryReadOnly: ["github", "@{account} cannot push to {repository}."],
-			feishuCliFailed: ["feishu", "The bot lark-cli does not work."],
-			feishuNoApp: ["feishu", "auth status of the bot lark-cli did not report the app."],
-			feishuBotNotReady: ["feishu", "The bot identity of app {app} is {status}; configure the app secret with lark-cli."],
-			feishuUserIdentity: ["feishu", "The bot lark-cli allows user identities (strict mode {mode}); give the bot its own lark-cli configuration in strict mode bot, as docs/006-deployment.md describes."],
-			feishuNoBot: ["feishu", "The Feishu bot API did not return the bot's open_id."],
-			feishuAppMissing: ["feishu", "lark-cli has no profile for Feishu app {app}, and the VsSaros Bots do not keep its secret; add the app in the Bots channel settings, or run lark-cli profile add --name {app} --app-id {app} --app-secret-stdin."],
-			feishuProfileFailed: ["feishu", "lark-cli could not add a bot-only profile for Feishu app {app}: {output}"],
-			feishuAppMismatch: ["feishu", "lark-cli profile {profile} belongs to app {actual}, not {app}."]
-		};
-		//#endregion
-		//#region src/sources/host.ts
-		/** Fixed English health templates (`{name}` placeholders); the panel localizes each `code` in the interface language. */
-		const HEALTH_TEXT = {
-			setupPending: "Waiting for the deployment check",
-			sourceOff: "Off",
-			feishuCliUnset: "The Source is on, and its bot lark-cli is not set",
-			feishuAppShared: "Feishu app {app} already receives events in the Bots inbound of {holder}; Feishu delivers each event to one connection only, so give this Source its own Feishu app",
-			feishuBusBusy: "Another event consumer already holds Feishu app {app}; Feishu delivers each event to one connection only, so stop it or give this Source its own Feishu app",
-			feishuShared: "Receiving events of Feishu app {app} through the VsSaros Bots connection in this Host",
-			githubUnset: "The Source is on, and its repository and account CLI are not set",
-			p4Unset: "P4 is on, and its server, execution account and allowed paths are not all set",
-			tapdUnset: "The Source is on, and no watch is set",
-			tapdWebhookUnset: "The TAPD Webhook is on, and its shared secret is not set",
-			feishuBotMissing: "Waiting for the Feishu bot",
-			pollFailures: "{count} consecutive failed polls; last: {error}"
-		};
-		//#endregion
-		//#region src/client/locales.ts
-		/**
-		* Bilingual UI dictionaries (`[zh, en]`) and glossary groupings, following the domain terms in `docs/001-domain.md`.
-		*/
-		const TEXT = {
-			title: ["Superagent", "Superagent"],
-			close: ["关闭", "Close"],
-			cancel: ["取消", "Cancel"],
-			confirm: ["确定", "Confirm"],
-			loading: ["正在读取…", "Loading…"],
-			loadMore: ["加载更多", "Load more"],
-			offline: ["无法连接到 dsh-superagent 服务。请确认它正在运行（dsh-superagent status），然后重试。", "Cannot reach the dsh-superagent service. Check that it is running (dsh-superagent status), then retry."],
-			serverError: ["dsh-superagent 服务内部错误（{status}），请查看运行日志后重试。", "dsh-superagent service error ({status}). Check the log, then retry."],
-			requestFailed: ["请求失败（{status}）。", "Request failed ({status})."],
-			empty: ["—", "—"],
-			yes: ["是", "Yes"],
-			no: ["否", "No"],
-			"decision.accept": ["接单", "Accept"],
-			"decision.reopen": ["续做", "Reopen"],
-			"decision.stop": ["停止", "Stop"],
-			"decision.ignore": ["忽略", "Ignore"],
-			"decision.unavailable": ["未完成", "Unavailable"],
-			"strength.explicit": ["明确", "Explicit"],
-			"strength.inferred": ["推断", "Inferred"],
-			"mode.off": ["关闭", "Off"],
-			"mode.observe": ["仅观察", "Observe"],
-			"mode.auto": ["自动接单", "Auto"],
-			"source.feishu": ["飞书", "Feishu"],
-			"source.github": ["GitHub", "GitHub"],
-			"source.github-issue": ["GitHub Issue", "GitHub Issue"],
-			"health.github": ["GitHub 来源", "GitHub Source"],
-			"health.feishu": ["飞书来源", "Feishu Source"],
-			"health.history": ["飞书补收", "Feishu recovery"],
-			"health.runtime": ["dsh-superagent", "dsh-superagent"],
-			"health.models": ["模型服务", "Model service"],
-			"health.assessment": ["发给主 Session 的评估", "Evals sent to the main Session"],
-			"health.launch": ["派工启动", "Assignment launches"],
-			"health.delivery": ["输入送达", "Input delivery to Assignments"],
-			"health.relay": ["转达给主 Session 的消息", "Relays to the main Session"],
-			"health.notice": ["给主 Session 的通知", "Notices to the main Session"],
-			"health.reply": ["发往渠道的消息", "Messages to Channels"],
-			"health.worker": ["执行器事件处理", "Executor event handling"],
-			"health.evals": ["未完成的评估", "Unavailable Evals"],
-			none: ["暂无。", "None."],
-			openSession: ["打开 Session", "Open Session"],
-			stop: ["停止", "Stop"],
-			policyVersion: ["策略版本", "Policy version"],
-			mediaMarker: ["[媒体]", "[Media]"],
-			forwardMarker: ["[合并转发]", "[Merged forward]"],
-			ticketId: ["工单 id", "Ticket id"],
-			wouldAccept: ["忽略（可接单，仅观察）", "Ignore (would accept; observe only)"],
-			timeline: ["触发时间线", "Trigger timeline"],
-			groupMember: ["飞书用户", "Feishu user"],
-			feishuBot: ["飞书机器人", "Feishu bot"],
-			unknownMention: ["@某人", "@someone"],
-			automatedNotice: ["自动通知", "Automated notice"],
-			requeue: ["重新评估", "Evaluate again"],
-			imageMarker: ["[图片]", "[image]"],
-			rules: ["接单规则", "Accept rules"],
-			remove: ["删除", "Delete"],
-			"historySource.panel": ["管理页", "Management page"],
-			"historySource.defaults": ["插件默认值", "Plugin defaults"],
-			"historySource.tool": ["主 Session 工具", "Main Session tool"],
-			"historySource.sync": ["从群同步", "Sync"],
-			"historySource.web": ["管理页", "Management page"],
-			"historySource.member-sync": ["成员同步", "Member sync"],
-			"historySource.orchestrator-tool": ["主 Session 工具", "Main Session tool"],
-			"historySource.internal": ["内部", "Internal"],
-			"historySource.policy-sync": ["从群同步", "Sync"],
-			"historySource.sections-migration": ["升级迁移", "Upgrade migration"],
-			"historySource.vocabulary-migration": ["升级迁移", "Upgrade migration"],
-			"historySource.settings-migration": ["升级迁移", "Upgrade migration"],
-			listSeparator: ["、", ", "],
-			labelSeparator: ["：", ": "],
-			lang: ["zh", "en"],
-			automatedEarlier: ["同一发送者之前还有 {count} 条自动消息", "{count} earlier automated messages from the same sender"],
-			collapse: ["收起", "Collapse"],
-			expand: ["展开全文", "Show all"],
-			cardMarker: ["[卡片消息]", "[card message]"],
-			setupProblem: ["部署检查未通过：{detail}", "Deployment check failed: {detail}"],
-			hostNotRunning: ["dsh-superagent 没有响应：它可能正在重启；持续如此时，DSH 的日志写明原因，常见的是配置有误。", "dsh-superagent is not answering: it may be restarting; if this persists, the DSH log names the cause, often a configuration error."],
-			savedRestarting: ["已保存，dsh-superagent 正在重启", "Saved; dsh-superagent is restarting"],
-			problems: ["系统问题", "System problems"],
-			dismiss: ["不再提示", "Dismiss"],
-			saved: ["已保存", "Saved"],
-			"tab.settings": ["设置", "Settings"],
-			statusTitle: ["状态", "Status"],
-			executingLabel: ["执行中", "Executing"],
-			queuedLabel: ["排队", "Queued"],
-			resumeProcessing: ["恢复处理", "Resume processing"],
-			resumeProcessingConfirm: ["恢复后继续评估、派工和发送回复。", "Resuming starts Evals, Assignments and replies again."],
-			restartInterrupts: ["保存会重启 dsh-superagent：{count} 个进行中的派工会中断，并带恢复说明重新开始。", "Saving restarts dsh-superagent: {count} running Assignments stop and start again with a recovery note."],
-			sourceOff: ["已关闭", "Off"],
-			executorWaitingSetup: ["执行器等待部署检查", "Executor waiting for the deployment check"],
-			panel: ["Superagent", "Superagent"],
-			openMaster: ["打开主 Session", "Open main Session"],
-			pagesLabel: ["dsh-superagent 页面", "dsh-superagent pages"],
-			searchPlaceholder: ["搜索工单、线程、触发或链接", "Search Tickets, Threads, Triggers or links"],
-			searchLabel: ["搜索", "Search"],
-			searchFound: ["找到 {tickets} 个工单、{threads} 个线程、{items} 条触发", "Found {tickets} Tickets, {threads} Threads and {items} Triggers"],
-			searchNone: ["没有找到。可以输入触发文字、GitHub PR 或 Issue 链接、#编号、飞书消息链接或 om_ 开头的消息 id。", "Nothing found. Try Trigger text, a GitHub PR or Issue link, #number, a Feishu message link, or an om_ message id."],
-			searchNoneGithub: ["没有找到。可以输入触发文字、GitHub PR 或 Issue 链接或 #编号。", "Nothing found. Try Trigger text, a GitHub PR or Issue link, or #number."],
-			"ticket.ended": ["已结束", "ended"],
-			sessionListNotReady: ["Session 列表尚未加载，请稍后重试。", "The Session list has not loaded yet; try again shortly."],
-			sessionNotListed: ["这个 Session 不在当前会话列表里，可能已被归档或删除。", "This Session is not in the current list; it may have been archived or deleted."],
-			searchFiltered: ["被来源过滤：{reason}", "Filtered by its Source: {reason}"],
-			searchFoundCapped: ["找到 {tickets} 个工单、{threads} 个线程、前 {items} 条触发（请缩小搜索范围）", "Found {tickets} Tickets, {threads} Threads and the first {items} Triggers (narrow the search)"],
-			inThread: ["在 {thread}", "in {thread}"],
-			"tab.overview": ["概况", "Overview"],
-			"tab.chat": ["对话", "Chat"],
-			openOverview: ["打开概况面板", "Open the overview panel"],
-			"side.open": ["打开侧边栏", "Open the side panel"],
-			"side.close": ["收起侧边栏", "Close the side panel"],
-			"side.resize": ["拖动调整侧边栏宽度", "Drag to resize the side panel"],
-			"side.autoOpened": ["主管开始了新的工作，已打开概况面板。", "The supervisor started new work; the overview panel opened."],
-			"side.autoOpenedApproval": ["有步骤在等你批准，已打开概况面板。", "A step waits for your approval; the overview panel opened."],
-			"chat.nativeOpening": ["正在打开主管对话…", "Opening the supervisor desk…"],
-			"chat.dock": ["等你处理", "Waiting for you"],
-			"chat.nativeFailed": ["主管对话没能在这里打开（{error}），先用面板里的对话。", "The supervisor desk could not open here ({error}); the panel's chat is shown instead."],
-			"tab.work": ["工作台", "Workbench"],
-			"work.needsYou": ["需要你处理", "Needs you"],
-			"work.approvalTitle": ["{bot} 想越出工作目录（{step}）", "{bot} wants to go beyond its directory ({step})"],
-			"work.approvalFeishu": ["也发到了工单的飞书话题，回复「同意 #{code}」也行。", "Also sent to the ticket's Feishu thread; replying \"同意 #{code}\" there works too."],
-			"work.allow": ["允许一次", "Allow once"],
-			"work.remember": ["允许并记住", "Allow and remember"],
-			"work.reject": ["拒绝", "Refuse"],
-			"work.waitsForYou": ["等你批准", "Waits for you"],
-			"work.writes": ["写", "Writes"],
-			"work.reads": ["只读", "Read-only"],
-			"work.approvalExpires": ["{time} 前没人批就按拒绝处理", "Refused at {time} if no one answers"],
-			"work.approvalRestored": ["SuperAgent 重启前就在等：批准后会告诉它重新运行这条命令", "It waited through a SuperAgent restart: if allowed, its Bot is told to run it again"],
-			"work.unsandboxed": ["无沙箱", "No sandbox"],
-			"work.needsSandbox": ["这台机器不能给工作目录加沙箱，等你决定", "This machine cannot sandbox the directory; waits for you"],
-			"work.needsPermission": ["权限设置失败，等你决定", "Its permission could not be set; waits for you"],
-			"work.allowUnsandboxed": ["允许无沙箱运行", "Run without a sandbox"],
-			"work.unsandboxedHint": ["这台机器不能给工作目录加沙箱：命令不受限制，只有文件工具被限制在目录内。", "This machine cannot sandbox the directory: commands are not limited; only file tools are kept inside it."],
-			"work.stop": ["停止", "Stop"],
-			"work.stopStep": ["停止步骤 {step}", "Stop step {step}"],
-			"work.turns": ["{turns} 回合", "{turns} turns"],
-			"work.now": ["正在", "Now"],
-			"work.attempts": ["尝试记录", "Attempts"],
-			"work.attempt": ["第 {n} 次", "Attempt {n}"],
-			"work.openSession": ["打开这个 bot 的会话", "Open this Bot's Session"],
-			"work.openFlow": ["在工作台查看「{title}」的流程", "Open the flow of \"{title}\" in the Workbench"],
-			"work.detail": ["步骤 {step}", "Step {step}"],
-			"work.empty": ["现在没有团队在干活。主管组好的团队开工后，流程、看板和列表会显示在这里。", "No team is at work. Once a team the supervisor staffed starts, its flow, board and list show here."],
-			"work.teams": ["团队", "Teams"],
-			"work.views": ["视图", "Views"],
-			"work.view.flow": ["流程图", "Flow"],
-			"work.view.board": ["看板", "Board"],
-			"work.view.list": ["列表", "List"],
-			"groupRuns.title": ["群聊执行", "Group chats"],
-			"groupRuns.status.running": ["已发到群", "Sent to group"],
-			"groupRuns.status.replying": ["正在回答", "Replying"],
-			"groupRuns.status.done": ["已完成", "Done"],
-			"groupRuns.status.error": ["执行失败", "Failed"],
-			"groupRuns.status.cut": ["已中断", "Interrupted"],
-			"groupRuns.note": ["群成员在各自会话里执行，不占上方「执行中」的执行器槽位。", "Group members run in their own sessions and do not take the executor slots counted above."],
-			"groupRuns.open": ["打开群聊", "Open group chat"],
-			"groupRuns.source.post": ["来自对话里的 @群", "From an @group in a conversation"],
-			"groupRuns.source.created": ["来自建群请求", "From a group request"],
-			"groupRuns.source.trigger": ["触发 {id}", "Trigger {id}"],
-			"groupRuns.replies": ["{n} 条回复", "{n} replies"],
-			"groupRuns.elapsed": ["用时 {n}s", "{n}s elapsed"],
-			"groupRuns.failed": ["{n} 位成员失败", "{n} failed"],
-			"groupRuns.member.speaking": ["正在输入", "Typing"],
-			"groupRuns.member.replied": ["已回复", "Replied"],
-			"groupRuns.member.passed": ["无补充", "Passed"],
-			"groupRuns.member.failed": ["未回答", "Failed"],
-			"groupRuns.member.waiting": ["等待中", "Waiting"],
-			"work.zoomIn": ["放大", "Zoom in"],
-			"work.zoomOut": ["缩小", "Zoom out"],
-			"work.fit": ["复位", "Reset"],
-			"work.col.pending": ["等待", "Waiting"],
-			"work.col.running": ["进行中", "Running"],
-			"work.col.blocked": ["待人处理", "Needs a person"],
-			"work.col.ready": ["完成", "Done"],
-			"work.col.ended": ["未完成结束", "Ended unfinished"],
-			"work.col.step": ["步骤", "Step"],
-			"work.col.bot": ["负责 bot", "Bot"],
-			"work.col.after": ["依赖", "After"],
-			"work.col.access": ["权限", "Access"],
-			"work.col.state": ["状态", "State"],
-			"work.col.turns": ["回合", "Turns"],
-			"work.doing.think": ["想一想", "Thinking"],
-			"work.doing.look": ["查找文件", "Looking through files"],
-			"work.doing.write": ["写入修改", "Writing changes"],
-			"work.doing.shell": ["运行命令", "Running a command"],
-			"work.doing.web": ["查网页", "Reading the web"],
-			"work.doing.subagent": ["派子任务", "Running a subagent"],
-			"work.doing.plan": ["更新待办", "Updating its plan"],
-			"work.doing.report": ["汇报结果", "Reporting"],
-			"work.doing.tool": ["使用 {tool}", "Using {tool}"],
-			"flow.handing": ["正在交给 SuperAgent 主管…", "Handing it to the SuperAgent supervisor…"],
-			"flow.handed": ["已交给 SuperAgent 主管", "Handed to the SuperAgent supervisor"],
-			"flow.evaluating": ["主管正在评估这条消息…", "The supervisor is evaluating this message…"],
-			"flow.evalRetry": ["评估暂时不可用，主管稍后再试…", "Eval is unavailable for now; the supervisor tries again…"],
-			"flow.filtered": ["没有交给主管：主管对话没有打开", "Not handed over: the supervisor desk is switched off"],
-			"flow.declined": ["主管没有接手这条消息", "The supervisor did not take this message"],
-			"flow.groupCreated": ["已建群「{name}」", "Made the group \"{name}\""],
-			"flow.groupRouted": ["已交给群「{name}」", "Handed to the group \"{name}\""],
-			"flow.groupUpdated": ["已有同名群「{name}」，已在群里更新成员", "A group named \"{name}\" existed; its members were updated"],
-			"flow.groupNote": ["由群成员接手，主管不再另行处理；群里开始后这里会显示进度。", "The group's members take it; the supervisor does not handle it again. Progress shows here once the group starts."],
-			"flow.alsoGroup": ["这条消息也交给了群「{name}」。", "This message also went to the group \"{name}\"."],
-			"flow.followup": ["已转给工单「{title}」", "Passed to the ticket \"{title}\""],
-			"flow.taken": ["主管已接手，建了工单", "The supervisor took it as a ticket"],
-			"flow.proposing": ["主管正在组队…", "The supervisor is staffing a team…"],
-			"flow.proposal": ["组队方案 v{version}", "Team proposal v{version}"],
-			"flow.risk": ["新建 {bots} 个 bot · {writes} 个写步骤", "{bots} new Bots · {writes} writing steps"],
-			"flow.team": ["团队执行 · {done}/{total} 完成", "Team at work · {done}/{total} done"],
-			"flow.teamStarting": ["团队准备开工…", "The team is getting ready…"],
-			"flow.report": ["等你看结果", "Waits for you to read the result"],
-			"flow.ended": ["结束：{outcome}", "Ended: {outcome}"],
-			"flow.receipt": ["工单已结束：{title}", "Ticket ended: {title}"],
-			"flow.receiptLoading": ["工单已结束", "A ticket ended"],
-			"chat.empty": ["还没有对话。在下面对主管说一个需求：它先评估，要接手就发组队方案给你确认。", "No conversation yet. Tell the supervisor what you need below: it evaluates it, and sends you a team proposal to agree to before any work starts."],
-			"chat.placeholder": ["给 SuperAgent 发消息", "Message SuperAgent"],
-			"chat.label": ["给主管的消息", "Message to the supervisor"],
-			"chat.send": ["发送", "Send"],
-			"chat.pending": ["发送中", "Sending"],
-			"chat.queued": ["随后送达 · 自动并入主管当前回合", "On its way · joins the supervisor's current turn"],
-			"chat.sendFailed": ["发送失败，草稿已保留", "Failed to send; draft kept"],
-			"chat.activity": ["主管正在处理…", "Supervisor is working…"],
-			"chat.queuedCount": ["{n} 条正在送达", "{n} on the way"],
-			"composer.queued": ["{n} 条正在送达；主管处理中收到的消息会自动并入当前回合", "{n} on the way; messages that arrive while the supervisor works join its current turn"],
-			"composer.add": ["添加", "Add"],
-			"composer.addFiles": ["添加文件", "Add files"],
-			"composer.reference": ["引用对话", "Reference a chat"],
-			"composer.schedule": ["定时任务", "Scheduled task"],
-			"composer.referenceTitle": ["引用哪个对话", "Which chat to reference"],
-			"composer.referenceEmpty": ["还没有可以引用的对话。", "No chat to reference yet."],
-			"composer.referenceText": ["引用对话「{title}」（线程 {key}）", "Referencing the chat \"{title}\" (Thread {key})"],
-			"composer.removeFile": ["移除 {name}", "Remove {name}"],
-			"composer.tooManyFiles": ["一条消息最多附 {count} 个文件。", "A message takes at most {count} files."],
-			"composer.fileTooBig": ["「{name}」超过 10 MB，没有加上。", "\"{name}\" is over 10 MB and was not added."],
-			"composer.uploading": ["正在上传附件…", "Uploading the attachments…"],
-			"composer.attachmentsHeader": ["附件：", "Attachments:"],
-			"composer.dictate": ["听写", "Dictate"],
-			"composer.stopDictation": ["停止听写", "Stop dictation"],
-			"composer.dictationUnavailable": ["这个环境不支持听写", "Dictation is not available here"],
-			"composer.dictationOffline": ["连不上语音识别服务", "The speech recognition service cannot be reached"],
-			"composer.micBlocked": ["麦克风权限被阻止了", "Microphone access is blocked"],
-			"composer.notHeard": ["没听清", "Couldn't hear that"],
-			"composer.voiceStart": ["开始语音对话", "Start voice chat"],
-			"composer.voiceTitle": ["语音对话", "Voice chat"],
-			"voice.listening": ["在听", "Listening"],
-			"voice.thinking": ["想一想…", "Thinking…"],
-			"voice.speaking": ["在说", "Speaking"],
-			"voice.paused": ["已暂停", "Paused"],
-			"voice.unsupported": ["这个环境不支持语音对话", "Voice chat is not available here"],
-			"voice.pause": ["暂停", "Pause"],
-			"voice.resume": ["继续听", "Resume listening"],
-			"voice.end": ["结束语音对话", "End voice chat"],
-			"voice.slow": ["主管还在处理，回复会显示在对话里。", "The supervisor is still working; the answer will show in the chat."],
-			"schedule.title": ["定时任务", "Scheduled task"],
-			"schedule.description": ["到时间后，这条消息以你的名义发给主管，和你在这里发的一样走准入、评估和组队。", "At its time, this message goes to the supervisor as yours, through the same gate, Eval and staffing as one sent here."],
-			"schedule.text": ["内容", "Message"],
-			"schedule.at": ["时间", "Time"],
-			"schedule.repeat": ["重复", "Repeat"],
-			"schedule.none": ["不重复", "Once"],
-			"schedule.daily": ["每天", "Every day"],
-			"schedule.weekdays": ["工作日", "Weekdays"],
-			"schedule.save": ["添加定时任务", "Add the scheduled task"],
-			"schedule.saved": ["已添加定时任务，{when} 发送。", "Scheduled for {when}."],
-			"schedule.list": ["已有的定时任务", "Scheduled tasks"],
-			"schedule.empty": ["还没有定时任务。", "No scheduled tasks yet."],
-			"schedule.delete": ["删除", "Delete"],
-			"schedule.close": ["关闭", "Close"],
-			"chat.supervisor": ["SuperAgent", "SuperAgent"],
-			"chat.waiting": ["待你确认", "Awaiting you"],
-			"chat.agree": ["回复同意", "Reply agree"],
-			"chat.refuse": ["回复取消", "Reply cancel"],
-			"chat.agreeText": ["同意", "Agree"],
-			"chat.refuseText": ["取消", "Cancel"],
-			"chat.viewOverview": ["在概况面板查看", "View in the overview panel"],
-			"chat.notHanded": ["没有交给主管：{reason}", "Not handed to the supervisor: {reason}"],
-			"chat.filtered": ["这条消息没有交给主管：「superagent」来源关掉了主管对话。", "This message was not handed to the supervisor: the superagent Source does not receive the desk."],
-			"tab.source": ["来源", "Source"],
-			"tab.trigger": ["触发", "Trigger"],
-			"tab.eval": ["评估", "Eval"],
-			"tab.execution": ["执行", "Execution"],
-			sourceError: ["{source} 来源异常", "{source} Source failing"],
-			needsYouNone: ["没有待处理的工单。", "No pending Tickets."],
-			pendingTickets: ["待处理工单", "Pending Tickets"],
-			problemEvalOverdue: ["评估超时未决定：{thread}", "Eval overdue: {thread}"],
-			problemSetup: ["部署检查未通过，dsh-superagent 暂不接单", "Deployment check failed; dsh-superagent takes no work"],
-			problemNoSource: ["没有运行中的来源，不会收到任何触发", "No Source is running; no Triggers arrive"],
-			actionOpenSources: ["去打开来源", "Turn on a Source"],
-			problemPaused: ["处理已暂停：不开始新的评估，不派工，不发送回复", "Processing paused: no new Evals, Assignments or replies"],
-			problemReply: ["{source} 回复发送失败（已重试 {attempts} 次）", "{source} reply failing (retried {attempts} times)"],
-			problemRuntime: ["运行异常：{name}", "{name} failing"],
-			problemEvalUnavailable: ["评估未完成：{thread}", "Eval unavailable: {thread}"],
-			sourceErrorHint: ["来源会在每次轮询时自动重试。持续出现时检查网络和该来源的登录状态。", "The Source retries on every poll. If this persists, check the network and the Source's sign-in."],
-			details: ["详情 ›", "Details ›"],
-			lastDay: ["过去 24 小时", "Last 24 hours"],
-			flowReceivedLabel: ["到达", "Arrived"],
-			flowFilteredLabel: ["被过滤", "Filtered"],
-			flowDroppedLabel: ["放弃发送", "Not sent"],
-			flowJudgedLabel: ["已评估", "Evaluated"],
-			flowAcceptedLabel: ["接单或续做", "Accepted or continued"],
-			idleLabel: ["等待新触发", "Waiting for a Trigger"],
-			problemNoAllowed: ["没有人能发起工作：各来源上的名单都为空，任何请求都不会成为工单", "No one may originate work: the lists on every Source are empty, so no request can become a Ticket"],
-			actionAddAllowed: ["去添加", "Add senders"],
-			"problemSetupFix.github": ["在设置 › 来源的 GitHub 卡片修正后保存，会重新检查；在 dsh-superagent 之外修复的（例如登录 CLI），点“重新检查”。", "Fix it on the GitHub card of the Source settings and save to check again; after a fix outside dsh-superagent, such as signing a CLI in, choose Check again."],
-			"problemSetupFix.feishu": ["在设置 › 来源的飞书卡片修正后保存，会重新检查；在 dsh-superagent 之外修复的（例如配置机器人），点“重新检查”。", "Fix it on the Feishu card of the Source settings and save to check again; after a fix outside dsh-superagent, such as configuring the bot, choose Check again."],
-			"problemSetupFix.deployment": ["在部署设置里修正后保存，会重新检查；在 dsh-superagent 之外修复的（例如升级 git），点“重新检查”。", "Fix it in the Deployment settings and save to check again; after a fix outside dsh-superagent, such as upgrading git, choose Check again."],
-			problemSetupFeishu: ["飞书机器人检查未通过，飞书来源暂停", "Feishu bot check failed; the Feishu Source is paused"],
-			labelsAdded: ["列表已更新，新增：{names}", "List updated, added: {names}"],
-			labelsCurrent: ["列表已是最新", "List is up to date"],
-			labelsFailed: ["读取失败，列表保持不变：{error}", "Could not read the list; it stays as it was: {error}"],
-			sourceNotInstalled: ["插件未安装", "Plugin not installed"],
-			sourceNotInstalledHint: ["提供这个来源的插件没有加载，配置按保存时的样子保留。", "The plugin that provides this Source is not loaded; its configuration is kept as saved."],
-			sourceEnable: ["运行来源：{name}", "Run Source: {name}"],
-			addRow: ["添加", "Add"],
-			removeRow: ["移除：{name}", "Remove: {name}"],
-			sourceFilteredTitle: ["24 小时内最近被过滤的触发", "Latest Triggers filtered in the last 24 hours"],
-			sourceDroppedTitle: ["24 小时内放弃发送的消息", "Not sent in the last 24 hours"],
-			sourceDroppedHint: ["这些消息要发往的对话已无法接收，或来源已不再监听该对话，因此放弃发送。", "Their conversation can no longer receive them, or the Source no longer listens to it, so they are not sent."],
-			sourceStatusIntro: ["每个来源是否在运行、过去 24 小时到达和被过滤的触发，以及被过滤的原因。", "Whether each Source runs, the Triggers that arrived and were filtered in the last 24 hours, and why they were filtered."],
-			sourceReceivedLabel: ["24 小时到达", "Arrived in 24 h"],
-			sourceFilteredLabel: ["被过滤", "Filtered"],
-			sourceLatestLabel: ["最近", "Latest"],
-			advanced: ["高级", "Advanced"],
-			"sourceState.done": ["运行中", "Running"],
-			"sourceState.ongoing": ["启动中", "Starting"],
-			"sourceState.warning": ["待处理", "Pending"],
-			"sourceState.error": ["出错", "Failing"],
-			sourceOpenSettings: ["去设置", "Open settings"],
-			"sourceState.setup": ["等待部署检查", "Waiting for the deployment check"],
-			setupFixLink: ["去修正", "Fix it"],
-			"openSettingsOf.deployment": ["去部署页修改", "Change it on Deployment"],
-			loadEarlier: ["加载更早的触发", "Load earlier Triggers"],
-			subscribedTickets: ["订阅此线程的工单", "Tickets subscribed to this Thread"],
-			threadNotFound: ["找不到这个线程。", "Thread not found."],
-			threadsNone: ["没有符合条件的线程。", "No matching Threads."],
-			threadLatest: ["最近 {time}", "Latest {time}"],
-			threadCreated: ["创建 {time}", "Created {time}"],
-			threadEvaluating: ["评估进行中", "Eval running"],
-			pollFailed: ["轮询失败：{error}", "Polling failed: {error}"],
-			unsubscribe: ["取消订阅", "Unsubscribe"],
-			unsubscribeTitle: ["取消订阅", "Unsubscribe"],
-			unsubscribeConfirm: ["取消后，“{title}”的新触发不再扇出给工单，直到下一次接单或关联。", "New Triggers in \"{title}\" will stop fanning out to Tickets until the next accept or attach."],
-			unsubscribePending: ["已取消订阅，结果等待注入主 Session。", "Unsubscribed; the receipt is waiting to reach the main Session."],
-			openOriginal: ["打开原文", "Open original"],
-			evaluatingBanner: ["评估进行中：{count} 条触发，{strength}，{deadline} 到期。", "Eval running: {count} Triggers, {strength}, due {deadline}."],
-			noTriggers: ["没有保留的触发。", "No retained Triggers."],
-			dispositionQueued: ["已排队，等待评估", "Queued for Eval"],
-			dispositionEvaluating: ["评估进行中", "Eval running"],
-			dispositionFanout: ["扇出到 {count} 个工单", "Fanned out to {count} Tickets"],
-			dispositionDelivered: ["已送达工单", "Delivered to Ticket"],
-			dispositionDeliveredHint: ["有人在已有工单的线程上跟进时，消息直接送达工单的执行器，不经评估，也不产生决定。", "A person's follow-up on a Thread with a Ticket goes straight to the Ticket's Executor, with no Eval and no Decision."],
-			handedBack: ["“{ticket}”的执行器把这条触发交回评估：{reason}", "The Executor of “{ticket}” handed it back for an Eval: {reason}"],
-			inputHandedBack: ["已交回评估：{reason}", "Handed back for an Eval: {reason}"],
-			contextOnly: ["仅作上下文", "Context only"],
-			contextOnlyHint: ["执行器关注这个线程只为了解情况：这里的消息会送达工单，但不带授权，也不会恢复已结束的工单。", "The Executor follows this Thread only to stay informed: its messages reach the Ticket but grant nothing and resume no ended Ticket."],
-			requeueAlready: ["这条触发已经在评估中。", "This Trigger is already in an Eval."],
-			andMore: ["等 {count} 个", " and {count} more"],
-			newestFirst: ["最新在前", "newest first"],
-			openTicket: ["查看工单", "Open Ticket"],
-			tagFiltered: ["已过滤：{reason}", "Filtered: {reason}"],
-			threadDormantShort: ["工单已结束", "Tickets ended"],
-			threadPollFailed: ["轮询失败", "Polling failed"],
-			threadQueued: ["排队 {count}", "{count} queued"],
-			threadSubscribed: ["已订阅", "Subscribed"],
-			threadUnsubscribed: ["未订阅", "Not subscribed"],
-			fanoutTo: ["扇出给", "Fans out to"],
-			unsubscribeHint: ["取消订阅后，这个线程的新触发不再扇出给工单，直到下一次接单或关联。", "After unsubscribing, new Triggers here stop fanning out to Tickets until the next accept or attach."],
-			"threadFilter.subscribed": ["已被订阅", "Subscribed"],
-			"threadFilter.evaluating": ["评估中", "Evaluating"],
-			"threadFilter.recent": ["24 小时内有新触发", "New Triggers in 24 h"],
-			"threadFilter.all": ["全部线程", "All Threads"],
-			triggerIntro: ["触发按线程归组；线程决定它们扇出给哪些工单、由哪次评估处理。", "Triggers grouped by Thread; the Thread decides which Tickets they fan out to and which Eval handles them."],
-			threadDecisions: ["这个线程的决定 · {count}", "Decisions in this Thread · {count}"],
-			policyVersionHint: ["策略版本由接单规则、各来源上的策略和评估的接单模式决定；修改任何一项都会生成新版本，并通知进行中的工单。每个工单记下接单时的版本。", "The rules, the Policy on each Source and the accept mode of Eval make up the Policy version; any change makes a new version and notifies open Tickets. Each Ticket records the version it was accepted under."],
-			syncNeedsSave: ["请先保存或放弃修改，再同步。", "Save or discard your changes before syncing."],
-			acceptMode: ["接单模式", "Accept mode"],
-			"modeOption.off": ["只处理明确的请求，不评估其他触发", "Only explicit requests are handled; other Triggers are not evaluated"],
-			"modeOption.observe": ["评估其他触发并记录研判，但不接单", "Other Triggers are evaluated and Assessments recorded, but nothing is accepted"],
-			"modeOption.auto": ["其他触发符合规则时接单", "Other Triggers that match a rule are accepted"],
-			rulesHint: ["写明可以接什么、应忽略什么，也可以写明按这条规则接下的工单请谁审阅 PR。多条命中只接一单，有冲突或不明确时不接单。", "State what to accept and what to ignore, and optionally who reviews the PRs of Tickets accepted under the rule. Several matches accept once; conflicts or ambiguity accept nothing."],
-			addRule: ["添加规则", "Add rule"],
-			rulesEmpty: ["暂无规则，不会主动接单。", "No rules; nothing is accepted proactively."],
-			ruleName: ["规则名称", "Rule name"],
-			ruleInstruction: ["接单条件", "Acceptance condition"],
-			ruleInstructionPlaceholder: ["例如：明确要求修正已有说明中的失效链接；不新增或改变产品承诺。", "For example: explicit requests to fix broken links in existing docs; no new product promises."],
-			ruleEnable: ["启用规则：{name}", "Enable rule: {name}"],
-			newRule: ["新规则", "New rule"],
-			duplicate: ["复制", "Duplicate"],
-			copySuffix: [" 副本", " copy"],
-			evalTimeout: ["单次评估时限 / 秒", "Eval time limit / seconds"],
-			evalTimeoutHint: ["主 Session 读取上下文并研判。到期后记为未完成，后续触发重新评估。", "The main Session reads context and assesses. When time runs out the Eval is unavailable and later Triggers are evaluated again."],
-			evalIntro: ["评估决定一批触发是否成为工作：推断出的候选能否接单、评估时限和研判模型。", "Eval decides whether a batch of Triggers becomes work: whether inferred candidates may be accepted, the time limit, and the assessor model."],
-			evalSettings: ["评估设置", "Eval settings"],
-			policyIntro: ["评估依据的规则：接单规则，以及各来源上谁能发起工作。修改会生成新的策略版本，并通知进行中的工单。", "The rules Eval follows: the accept rules, and who may originate work on each Source. A change makes a new Policy version and notifies open Tickets."],
-			assessorModel: ["研判模型", "Assessor model"],
-			assessorModelHint: ["主 Session 的模型，负责研判和路由。保存后用于新建的主 Session，已有 Session 保持原选择。", "Model of the main Session, which assesses and routes. Applies to a newly created main Session; existing Sessions keep their choice."],
-			ruleLabel: ["规则", "Rules"],
-			"decisionFilter.work": ["接单与续做", "Accept and reopen"],
-			"decisionFilter.stop": ["停止", "Stopped"],
-			"decisionFilter.ignore": ["忽略", "Ignored"],
-			"decisionFilter.unavailable": ["未完成", "Unavailable"],
-			"decisionFilter.all": ["全部", "All"],
-			lastDayOnly: ["仅过去 24 小时到达的触发 ✕", "Triggers from the last 24 hours only ✕"],
-			evalStatusIntro: ["评估按策略对触发做出的决定，每条写明理由。", "The Decisions Eval made on Triggers under the Policy, each with its reason."],
-			policyPerSource: ["在各来源上", "On each Source"],
-			policyPerSourceHint: ["策略在每个来源上的部分：谁能通过这个来源发起工作，用这个来源自己的身份；不同来源之间不对应。要让智能体知道同一个人在各来源的账号，写在提示词里。", "The Policy's part on each Source: who may originate work through it, in that Source's own identities, with no mapping between Sources. To tell the agents a person's account on each Source, write it in the prompts."],
-			explicitRequest: ["明确的请求", "Explicit request"],
-			admission: ["准入", "Admission"],
-			admissionHint: ["每个接收范围里，谁的什么消息算明确的请求、推断的候选，或被忽略。行来自来源设置里的接收范围。计入策略版本。", "For each receiving scope, whose messages are explicit requests, inferred candidates, or ignored. The rows come from the receiving scopes in the Source settings. Part of the Policy version."],
-			admissionScope: ["接收范围", "Receiving scope"],
-			admissionListed: ["名单内", "On the list"],
-			admissionUnlisted: ["名单外", "Not on the list"],
-			admissionAddressed: ["点名智能体", "Addresses the agent"],
-			admissionUnaddressed: ["未 @", "No mention"],
-			admissionNotReceived: ["这个范围收不到这类消息", "This scope does not receive these messages"],
-			"admissionCell.listedUnaddressed": ["名单内 · 未 @", "On the list · no mention"],
-			"admissionCell.unlistedAddressed": ["名单外 · 点名智能体", "Not on the list · addresses the agent"],
-			"admissionCell.unlistedUnaddressed": ["名单外 · 未 @", "Not on the list · no mention"],
-			"admissionValue.explicit": ["明确的请求", "Explicit request"],
-			"admissionValue.inferred": ["推断的候选", "Inferred candidate"],
-			"admissionValue.ignore": ["忽略", "Ignore"],
-			admissionAnyoneWarning: ["这个范围里任何人点名智能体都能直接发起工作", "Anyone here who addresses the agent can originate work directly"],
-			admissionFootnote: ["「推断的候选」按接单模式评估：模式为关闭时忽略。已有工单的线程里的跟进不看这张表。改成更弱的选项时，按这一格接下的进行中工单的授权失效。", "Inferred candidates follow the accept mode and are ignored when it is off. Follow-ups on Threads that have Tickets do not use this table. Weakening a cell revokes the Mandates of open Tickets accepted under it."],
-			syncDone: ["上次同步", "Last synced"],
-			evalRecordsPaused: ["处理已暂停：新的触发会被记录，但不会被评估。", "Processing is paused: new Triggers are recorded but not evaluated."],
-			resumeWhere: ["在执行状态中恢复", "Resume in the Execution status"],
-			"outcome.completed": ["已完成", "Completed"],
-			"outcome.merged": ["PR 已合并", "Pull request merged"],
-			"outcome.closed": ["PR 已关闭（未合并）", "Pull request closed unmerged"],
-			"outcome.dropped": ["无需处理", "Nothing to do"],
-			"outcome.stopped": ["人工停止", "Stopped by a person"],
-			"assignment.pending": ["待启动", "Pending"],
-			"assignment.running": ["执行中", "Running"],
-			"assignment.ended": ["已结束", "Ended"],
-			"report.queued": ["排队", "queued"],
-			"report.running": ["执行中", "running"],
-			"report.progress": ["进展", "progress"],
-			"report.waiting": ["等待", "waiting"],
-			"report.ready": ["就绪", "ready"],
-			"report.blocked": ["受阻", "blocked"],
-			"report.failed": ["失败", "failed"],
-			"report.dropped": ["无需处理", "no action needed"],
-			"report.completed": ["已完成", "completed"],
-			"report.merged": ["已合并", "merged"],
-			"report.closed": ["PR 已关闭", "PR closed"],
-			"report.stopped": ["已停止", "stopped"],
-			"report.open": ["进行中", "open"],
-			"input.trigger": ["触发", "Trigger"],
-			"input.policy-changed": ["策略变更", "Policy change"],
-			"input.reopen": ["续做", "Reopened"],
-			"input.resumed": ["恢复：线程上有人发了新消息", "Resumed by a new message on its thread"],
-			"input.text": ["dsh-superagent 说明", "dsh-superagent note"],
-			"input.note": ["主 Session 的备注", "Orchestrator note"],
-			attentionPrefix: ["待人工决定：", "Attention: "],
-			stopConfirmTitle: ["停止工单", "Stop Ticket"],
-			stopConfirm: ["停止“{title}”？当前派工结束，Session 和执行目录保留；停止收回授权，之后线程里的消息不再恢复它，要继续需要重新接单。", "Stop \"{title}\"? Its current Assignment ends; its Session and directory stay. Stopping withdraws its Mandate: later messages on its Threads do not resume it, and continuing needs a new accept."],
-			endedAt: ["{time} {outcome}：{reason}", "{time} {outcome}: {reason}"],
-			assignmentNumber: ["第 {number} 次派工", "Assignment {number}"],
-			inputDelivered: ["已送达", "Delivered"],
-			inputPausedHint: ["未送达：处理已暂停，恢复后送达", "Undelivered: processing is paused; delivery resumes with it"],
-			inputWaitingHint: ["未送达：等待派工运行", "Undelivered: waiting for the Assignment to run"],
-			inputRetryHint: ["未送达：会自动重试，直到送达", "Undelivered: delivery is retried until it succeeds"],
-			deliveryFailedPrefix: ["送达失败：", "Delivery failed: "],
-			subscribedThreads: ["订阅的线程", "Subscribed Threads"],
-			answerIn: ["去{source}回答", "Answer in {source}"],
-			ticketNotFound: ["找不到这个工单。", "Ticket not found."],
-			identifiers: ["标识", "Identifiers"],
-			"basis.admission": ["准入", "Admission"],
-			"basis.followup": ["线程内跟进", "Follow-up in Thread"],
-			"basis.observation": ["接收全部消息的群", "Chat receiving all messages"],
-			"basis.bot": ["名单内的机器人", "Listed bot"],
-			"basis.mode": ["接单模式", "Accept mode"],
-			"basis.rules": ["命中规则", "Matched rules"],
-			"basis.legacyAuthority": ["旧版授权", "Legacy authority"],
-			"legacy.explicit_mention": ["@ 智能体", "Mention"],
-			"legacy.proactive_rule": ["主动规则", "Proactive rule"],
-			"legacy.thread_followup": ["线程内跟进", "Thread follow-up"],
-			ruleMatched: ["{rule} · 匹配：{reason}", "{rule} · matched: {reason}"],
-			ruleUnmatched: ["{rule} · 不匹配：{reason}", "{rule} · not matched: {reason}"],
-			directionLine: ["实施意图：{intent}；修改依据：{basis}；{design}", "Implementation intent: {intent}; target: {basis}; {design}"],
-			intentYes: ["已明确", "established"],
-			intentNo: ["未明确", "not established"],
-			"targetBasis.specified": ["已明确目标", "specified"],
-			"targetBasis.existing-standard": ["既有规范／已验证正确状态", "existing standard or verified correct state"],
-			"targetBasis.undetermined": ["目标未定", "undetermined"],
-			designNeeded: ["仍需产品／视觉设计决策", "a product or design decision remains"],
-			designNotNeeded: ["无需新增设计决策", "no new design decision"],
-			directionEvidence: ["方向证据：{evidence}", "Evidence: {evidence}"],
-			maxWorkers: ["并行工单数", "Concurrent Tickets"],
-			maxWorkersHint: ["超过并发上限的工单排队等待。", "Tickets beyond the limit wait in a queue."],
-			"basis.sender": ["发起人", "Sender"],
-			"basis.addressed": ["点名方式", "Addressed by"],
-			"addressed.mention": ["@ 智能体", "Mention"],
-			"addressed.direct": ["私聊", "Direct message"],
-			executorIntro: ["执行器执行派工：每个工单一个执行器 Session 和执行目录。", "The Executor runs Assignments: one Executor Session and directory per Ticket."],
-			executorModel: ["执行器模型", "Executor model"],
-			executorModelHint: ["保存后用于新建的执行器 Session，已有 Session 保持原选择。留空继承 DSH 默认值。", "Applies to new Executor Sessions; existing Sessions keep their choice. Leave empty to inherit the DSH default."],
-			assignmentReportShort: ["报告：{state}", "Report: {state}"],
-			assignmentSpan: ["{from} → {to}", "{from} → {to}"],
-			inputUndelivered: ["未送达", "Undelivered"],
-			mandateDetails: ["授权详情", "Mandate details"],
-			now: ["现在", "now"],
-			stopHint: ["停止后当前派工结束，Session 和执行目录保留；停止收回授权，之后线程里的消息不再恢复它，要继续需要重新接单。", "Stopping ends the current Assignment; its Session and directory stay. Stopping withdraws its Mandate: later messages on its Threads do not resume it, and continuing needs a new accept."],
-			idleHint: ["执行器结束了当前回合，没有提出问题；这些工单订阅的线程收到新触发时继续。", "The Executor ended its turn without asking anything; a new Trigger on a subscribed Thread resumes it."],
-			"stage.staffing": ["待确认组队", "Team awaiting agreement"],
-			"stage.answer": ["待回答", "Awaiting answer"],
-			"stage.review": ["待验收", "Awaiting review"],
-			"stage.blocked": ["待处理受阻", "Blocked"],
-			"stage.failed": ["待处理失败", "Failed"],
-			"stage.delivery": ["输入未送达", "Input undelivered"],
-			"stage.queued": ["排队中", "Queued"],
-			"stage.working": ["执行中", "Working"],
-			"stage.idle": ["等待新触发", "Waiting for a Trigger"],
-			deliveredInputs: ["已送达的输入 · {count}", "Delivered Inputs · {count}"],
-			endedAtShort: ["{time} {outcome}", "{time} {outcome}"],
-			legacyAssignment: ["原始说明", "Original brief"],
-			legacyScopeShort: ["未记录（旧版导入）", "Not recorded (legacy import)"],
-			retry: ["重试", "Retry"],
-			failedPrefix: ["失败：", "Failed: "],
-			blockedPrefix: ["受阻：", "Blocked: "],
-			retryConfirm: ["为“{title}”结束当前派工并重新派工？授权和订阅不变。", "End the current Assignment of \"{title}\" and start a new one? Mandate and Subscriptions stay."],
-			retryTitle: ["重试工单", "Retry Ticket"],
-			undeliveredInputs: ["未送达的输入", "Undelivered Inputs"],
-			executionStatusIntro: ["执行器的状态，以及按在等谁分组的工单。", "The Executor's state, and the Tickets grouped by who they wait on."],
-			ticketUndeliveredLabel: ["未送达", "Undelivered"],
-			ticketMandateLabel: ["授权", "Mandate"],
-			ticketActorLabel: ["发起", "From"],
-			ticketGroupLabel: ["执行群聊", "Group chat"],
-			ticketUpdatedLabel: ["更新", "Updated"],
-			executionDirectory: ["执行目录的根目录", "Ticket directory root"],
-			executionDirectoryDefault: ["留空时用 {root}", "Empty uses {root}"],
-			executionDirectoryEmpty: ["留空：默认目录", "Empty: the default directory"],
-			openThread: ["打开 {source} 原文", "Open on {source}"],
-			executionDirectoryHint: ["每个工单在这里有自己的目录，以工单短名命名；执行器 Session 在其中工作。这只按目录分开工单，不是安全边界。", "Each Ticket gets its own directory here, named by its short name, where its Executor Session works. This separates Tickets by directory only; it is not a security boundary."],
-			prepareCommand: ["准备命令", "Prepare command"],
-			prepareCommandHint: ["新工单的目录建好前，在根目录下用 sh 运行一次，执行环境的变量是它的环境变量，例如用 git worktree 把仓库检出到 $DSH_SUPERAGENT_DIR。留空就是空目录。失败时工单显示失败，并附上命令的输出。", "Runs once with sh in the root before a new Ticket's directory exists, with the execution environment's variables as its environment, for example to check a repository out to $DSH_SUPERAGENT_DIR with git worktree. Leave it empty for an empty directory. A failure fails the Ticket with the command's output."],
-			prepareCommandEmpty: ["留空：空目录", "Empty: an empty directory"],
-			blockedCommands: ["禁止调用的命令", "Blocked commands"],
-			blockedCommandsHint: ["执行器 Session 调用这些命令名时直接失败，例如用你个人账号登录的 CLI。只拦按名字的调用，用绝对路径仍能运行，所以不是安全边界。gh、git、lark-cli 不能禁止。", "Command names that fail when an Executor Session calls them, such as a CLI signed in to your own account. Only calls by name fail; an absolute path still runs, so this is not a security boundary. gh, git and lark-cli cannot be blocked."],
-			blockedCommandsNone: ["以空格分隔；没有", "Separated by spaces; none"],
-			environmentIntro: ["执行器和各来源向执行环境登记变量，每个有键、值和说明。准备命令以环境变量读取它们，执行器 Session 在指令里读到它们和说明。工单自己的值来自它的目录和接下它的触发，其余是部署的当前值；不含任何密钥。只能在管理页修改。", "The Executor and the Sources register variables with the execution environment, each with a key, a value and a description. The prepare command reads them as environment variables, and the Executor Session reads them with their descriptions in its instructions. A Ticket's own values follow from its directory and the Trigger that started it; the others are the deployment's current values. None holds a credential. Only the management page can change these settings."],
-			environmentVariables: ["可用的环境变量", "Available variables"],
-			environmentPick: ["点击键名插入到准备命令。", "Choose a key to insert it into the prepare command."],
-			environmentKey: ["键", "Key"],
-			environmentDescription: ["说明", "Description"],
-			environmentOwner: ["注册者", "Registered by"],
-			executorRunning: ["执行器运行中", "Executor running"],
-			pauseProcessing: ["暂停处理", "Pause processing"],
-			pauseProcessingConfirm: ["暂停后，来源继续记录触发，但不开始新的评估、不派工、不发送回复，直到恢复。", "While paused, Sources keep recording Triggers, but no Evals or Assignments start and no replies are sent until processing resumes."],
-			processingPaused: ["处理已暂停", "Processing paused"],
-			"ticketFilter.open": ["进行中", "Open"],
-			"ticketFilter.person": ["待处理", "Pending"],
-			"ticketFilter.working": ["执行中", "Working"],
-			"ticketFilter.idle": ["等待新触发", "Waiting for a Trigger"],
-			"ticketFilter.ended": ["已结束", "Ended"],
-			policyVersionUnrecorded: ["最近的保存记录里没有策略版本 {version}：它来自更早的保存、首次启动时的设置或更早的数据。", "The recent saves do not include Policy version {version}: an older save, the settings at the first start, or older data made it."],
-			defaultModel: ["DSH 当前默认：{model}", "DSH default: {model}"],
-			defaultModelUnavailable: ["DSH 默认模型暂不可用", "DSH default model unavailable"],
-			modelProvider: ["服务商", "Provider"],
-			modelName: ["模型", "Model"],
-			modelEffort: ["推理强度（可选）", "Reasoning effort (optional)"],
-			modelInherit: ["继承 DSH 默认值", "Inherit the DSH default"],
-			modelEffortDefault: ["模型默认", "Model default"],
-			modelCatalogError: ["无法加载模型建议，仍可填写已知的服务商和模型：{error}", "Model suggestions are unavailable; known Provider and Model names still work: {error}"],
-			historyIntro: ["每次保存记一条；改变策略版本的保存（接单规则、各来源上的策略、接单模式）通知进行中的工单。", "Each save is one entry; saves that change the Policy version (rules, the Policy on each Source, accept mode) notify open Tickets."],
-			historyItem: ["第 {revision} 次保存 · {source}", "Save {revision} · {source}"],
-			historyPolicyChanged: ["生成策略版本 {version}", "New Policy version {version}"],
-			historyNoBaseline: ["上一个设置版本没有记录，无法比较。", "The previous revision was not recorded; nothing to compare."],
-			historyNoChanges: ["当前设置项没有变化。", "No change to current settings."],
-			historyNotified: ["因策略变更通知了 {count} 个进行中的工单：{titles}", "Policy change notified {count} open Tickets: {titles}"],
-			historyEmpty: ["还没有记录的版本；下次保存后开始记录。", "No revisions recorded yet; history starts with the next save."],
-			"change.mode": ["接单模式：{from} → {to}", "Accept mode: {from} → {to}"],
-			"change.timeout": ["评估时限：{from} → {to} 秒", "Eval time limit: {from} → {to} s"],
-			"change.ruleAdded": ["新增规则：{name}", "Rule added: {name}"],
-			"change.ruleRenamed": ["规则改名：{from} → {to}", "Rule renamed: {from} → {to}"],
-			"change.ruleInstruction": ["规则条件修改：{name}", "Rule condition changed: {name}"],
-			"change.ruleEnabled": ["规则启用：{name}", "Rule enabled: {name}"],
-			"change.ruleDisabled": ["规则停用：{name}", "Rule disabled: {name}"],
-			"change.ruleRemoved": ["删除规则：{name}", "Rule removed: {name}"],
-			"change.paused": ["暂停处理", "Processing paused"],
-			"change.resumed": ["恢复处理", "Processing resumed"],
-			"change.maxWorkers": ["并行工单数：{from} → {to}", "Concurrent Tickets: {from} → {to}"],
-			"change.executionDirectory": ["执行目录的根目录：{from} → {to}", "Ticket directory root: {from} → {to}"],
-			"change.prepareCommand": ["准备命令", "Prepare command"],
-			"change.blockedCommands": ["禁止调用的命令：{from} → {to}", "Blocked commands: {from} → {to}"],
-			configHistory: ["配置历史", "Configuration history"],
-			"change.evalModel": ["研判模型", "Assessor model"],
-			"change.executorModel": ["执行器模型", "Executor model"],
-			"change.sourceEnabled": ["启用来源：{source}", "Source enabled: {source}"],
-			"change.sourceDisabled": ["停用来源：{source}", "Source disabled: {source}"],
-			"change.sourceAdmission": ["{source} · 准入修改", "{source} · admission changed"],
-			"change.sourceField": ["{source} · {field}：{from} → {to}", "{source} · {field}: {from} → {to}"],
-			"change.sourceRowsAdded": ["{source} · {field} 新增：{items}", "{source} · {field} added: {items}"],
-			"change.sourceRowsRemoved": ["{source} · {field} 移除：{items}", "{source} · {field} removed: {items}"],
-			"change.sourceRowsChanged": ["{source} · {field} 修改：{items}", "{source} · {field} changed: {items}"],
-			draftRestored: ["未保存 · 已恢复草稿", "Unsaved · draft restored"],
-			draftKept: ["未保存 · 草稿已保留", "Unsaved · draft kept"],
-			draftFailed: ["无法保留草稿，请保存后再离开：{error}", "Could not keep the draft; save before leaving: {error}"],
-			save: ["保存", "Save"],
-			discard: ["放弃修改", "Discard changes"],
-			saveConflict: ["设置已在别处修改，其中有你也改过的项；保存会以你的修改为准。", "Settings changed elsewhere, including items you changed too; saving keeps your version of them."],
-			saveMerged: ["设置已在别处修改，你的修改已合并到最新版本；请检查后保存。", "Settings changed elsewhere; your changes are merged onto the latest version. Check them, then save."],
-			saveRebasing: ["已在别处修改，正在读取最新版本…", "Changed elsewhere; reading the latest version…"],
-			invalidSettings: ["这些字段无效：{fields}", "Invalid fields: {fields}"],
-			"settingsGroup.source": ["来源", "Sources"],
-			"settingsGroup.eval": ["评估", "Eval"],
-			"settingsGroup.execution": ["执行", "Execution"],
-			"settingsGroup.prompts": ["提示词", "Prompts"],
-			"settingsGroup.deployment": ["部署", "Deployment"],
-			unsetValue: ["未设置", "not set"],
-			promptChanges: ["{count} 处修改", "{count} changes"],
-			unsaved: ["未保存", "Unsaved"],
-			promptsDraftVersion: ["未保存 · 基于版本 {revision}", "Unsaved · based on version {revision}"],
-			"promptPart.runtime/admission": ["主 Session 接单约束", "Main Session accept constraints"],
-			"promptPart.runtime/policy": ["策略与启用的规则", "Policy and enabled rules"],
-			"promptPart.runtime/handoff/orchestrator": ["工单交付与人工确认（主 Session）", "Ticket handoff and human confirmation (main Session)"],
-			"promptPart.runtime/handoff/worker": ["工单交付与人工确认（执行器）", "Ticket handoff and human confirmation (Executor)"],
-			"promptPart.runtime/policy/none": ["策略（没有启用的规则时）", "Policy (when no rule is enabled)"],
-			"promptPart.skill/feishu": ["飞书技能", "Feishu skill"],
-			"promptPart.skill/github": ["GitHub 技能", "GitHub skill"],
-			"promptPart.runtime/environment": ["执行环境", "Execution environment"],
-			promptViewEdit: ["编辑", "Edit"],
-			promptViewFull: ["完整提示词", "Full prompt"],
-			promptViewHistory: ["历史", "History"],
-			promptSections: ["提示词段落", "Prompt sections"],
-			promptTeamGroup: ["团队约定", "Team agreements"],
-			promptSkillsGroup: ["技能", "Skills"],
-			"promptPartHint.communication": ["何时通知人、消息的写法、GitHub 首行声明、Review 的回复与 review bot", "When to notify people, how messages read, the GitHub first line, review replies and review bots"],
-			"promptPartHint.scope": ["工单何时继续、何时暂停并交草稿", "When a Ticket goes on, and when it stops with a draft"],
-			"promptPartHint.delivery": ["PR 证据、自动合并条件、提交作者", "PR evidence, the auto-merge condition, the commit author"],
-			"promptReadBy.both": ["主 Session 和执行器 Session 都会读到。", "The main Session and Executor Sessions read it."],
-			"promptReadBy.skill": ["Session 需要时按名字加载。", "Sessions load it by name when they need it."],
-			"promptReadBy.orchestrator": ["只有主 Session 会读到。", "Only the main Session reads it."],
-			"promptReadBy.worker": ["只有执行器 Session 会读到。", "Only Executor Sessions read it."],
-			promptBuiltInGroup: ["内置段落", "Built-in parts"],
-			promptTemplateHint: ["这是模板：保留占位符 {placeholders}，由系统填入内容。", "A template: keep the placeholders {placeholders}, which the system fills in."],
-			promptDefaultUpdated: ["默认内容已更新", "Default updated"],
-			promptDefaultUpdatedHint: ["升级改了这一段的默认内容，你的文本保持不变。", "An upgrade changed the default of this part; your text stays as it is."],
-			promptDefaultUpdatedKnown: ["下面是默认内容的变化。", "Below is how the default changed."],
-			promptDefaultUpdatedUnknown: ["系统没有记录你编辑时的默认内容；下面是你的文本与新默认内容的对比。", "The default you edited from was not recorded; below, your text against the new default."],
-			promptRemovedParts: ["当前插件版本已没有这些段落，你为它们写的文本不再使用，下次保存时移除：{parts}", "This version no longer has these parts; your text for them is unused and goes at the next save: {parts}"],
-			promptKeepMine: ["保留我的文本", "Keep my text"],
-			promptTakeDefault: ["改用新的默认内容", "Use the new default"],
-			promptFullState: ["共 {count} 段 · {chars} 字符 · {state}", "{count} sections · {chars} characters · {state}"],
-			promptCopyAll: ["复制全文", "Copy all"],
-			promptChanged: ["已改", "Changed"],
-			promptCompare: ["比较对象", "Compare with"],
-			promptCompareSaved: ["与已保存比较", "Against saved"],
-			promptCompareDefault: ["与默认比较", "Against defaults"],
-			promptBuiltInFolded: ["按当前设置生成，不参与比较。", "Generated from the current settings; not compared."],
-			promptSameAsSaved: ["与已保存相同。", "Same as saved."],
-			promptSameLines: ["… 相同的 {count} 行 …", "… {count} unchanged lines …"],
-			copied: ["已复制", "Copied"],
-			promptPartTeam: ["团队约定", "Team agreement"],
-			promptPartFixed: ["内置", "Built in"],
-			promptPartGenerated: ["内置 · 按当前设置生成", "Built in · from the current settings"],
-			"promptPart.communication": ["沟通方式", "Communication"],
-			"promptPart.scope": ["工单范围", "Ticket scope"],
-			"promptPart.delivery": ["交付要求", "Delivery requirements"],
-			"promptPart.legacy": ["早期版本的完整配置（载入后是内置文本加它的技能）", "A complete configuration of an earlier version (loading it gives the built-in text and its skills)"],
-			"promptPart.runtime/shared": ["共享约定", "Shared rules"],
-			"promptPart.runtime/orchestrator": ["主 Session 角色", "Main Session role"],
-			"promptPart.runtime/worker": ["执行器角色", "Executor role"],
-			"promptPart.runtime/subscriptions": ["订阅", "Subscriptions"],
-			"promptPart.runtime/replies": ["回复与确认", "Replies and acknowledgements"],
-			"promptPart.runtime/dispatch": ["路由", "Routing"],
-			"promptPart.runtime/work": ["执行", "Execution"],
-			promptViews: ["查看方式", "View"],
-			promptBody: ["Markdown 正文", "Markdown"],
-			promptResetSection: ["恢复此段默认内容", "Restore this section default"],
-			promptPreviewTarget: ["预览目标", "Preview target"],
-			promptPreviewDraft: ["未保存草稿", "unsaved draft"],
-			promptPreviewSaved: ["版本 {revision}", "version {revision}"],
-			promptEditSource: ["编辑此段", "Edit section"],
-			promptHistoryHint: ["载入会替换整套草稿：三个团队段落和团队技能；保存后才生效。", "Loading replaces the whole draft: the three team sections and the team skills; nothing changes until you save."],
-			promptHistoryItem: ["版本 {revision} · {time} · {source}", "Version {revision} · {time} · {source}"],
-			promptHistoryInitial: ["初始版本", "initial"],
-			promptHistoryChanged: ["修改段：{parts}", "Changed: {parts}"],
-			promptHistoryNone: ["初始版本或无内容变化", "Initial version or no content change"],
-			promptOlder: ["更早版本", "Older versions"],
-			promptRestore: ["将这个版本载入草稿", "Load this version into the draft"],
-			promptDefaults: ["将整套默认内容载入草稿", "Load all defaults into the draft"],
-			promptDraftFromHistory: ["整套草稿来自历史版本 {revision}；保存将创建新版本", "Draft loaded from version {revision}; saving creates a new version"],
-			promptDraftFromDefaults: ["整套草稿来自当前插件默认值", "Draft loaded from the current plugin defaults"],
-			promptDraftSectionReset: ["已恢复此段默认内容：{part}", "Restored the default of: {part}"],
-			promptAddSkill: ["添加自定义技能", "Add a custom skill"],
-			promptSkillName: ["名称，例如 testing", "Name, e.g. testing"],
-			promptAddSkillAction: ["添加到草稿", "Add to draft"],
-			promptSkillNameInvalid: ["技能名称须唯一，仅使用小写字母、数字和连字符，以字母开头。", "Skill names must be unique, start with a letter, and use lowercase letters, digits and hyphens."],
-			promptConflict: ["提示词已被修改到版本 {revision}。已保留你的草稿；请比较后重新保存。", "Prompts changed to version {revision}. Your draft is kept; compare and save again."],
-			promptConflictParts: ["提示词已被修改到版本 {revision}，其中 {parts} 你也改过；保存会以你的版本为准。", "Prompts changed to version {revision}, including {parts}, which you changed too; saving keeps your version."],
-			promptSavedPending: ["已保存；通知等待注入主 Session。", "Saved; the notice is waiting to reach the main Session."],
-			promptSessions: ["Session 最近使用的版本", "Versions used by Sessions"],
-			promptSessionItem: ["{session}：版本 {revision}", "{session}: version {revision}"],
-			promptNoSessions: ["暂无模型请求", "No model requests yet"],
-			"promptRole.orchestrator": ["主 Session", "Main Session"],
-			"promptRole.worker": ["执行器 Session", "Executor Session"],
-			deploymentIntro: ["这台机器上的 dsh-superagent 设置，存放在 DSH 配置文件的 dsh-superagent 条目里；保存后立即生效，不会重启 dsh-superagent。", "dsh-superagent's settings on this machine, kept in the dsh-superagent entry of the DSH configuration; a saved change applies at once, without restarting dsh-superagent."],
-			deploymentUnavailable: ["dsh-superagent 启动完成后才能修改这些值。", "These values can be changed once dsh-superagent has started."],
-			deploymentDerived: ["仓库与账号", "Repository and accounts"],
-			deploymentDerivedHint: ["由来源设置里的仓库和 CLI 得出。", "Derived from the repository and the CLIs in the Source settings."],
-			deploymentRepository: ["仓库", "Repository"],
-			deploymentAgent: ["智能体账号", "Agent account"],
-			deploymentFeishu: ["飞书机器人", "Feishu bot"],
-			deploymentFeishuNone: ["未设置", "Not set"],
-			deploymentAccountsWhere: ["账号在 dsh-superagent 面板的来源设置里修改。", "Accounts are changed in the Source settings of the dsh-superagent panel."],
-			deploymentMachine: ["本机设置", "This machine"],
-			deploymentStateDir: ["状态目录", "State directory"],
-			deploymentStateDirHint: ["数据库、锁、执行器的命令和智能体的 git 配置所在目录，只能在 DSH 配置文件里修改。", "Holds the database, locks, the Executor's commands and the agent's git configuration; change it only in the DSH configuration file."],
-			deploymentLimits: ["上限", "Limits"],
-			deploymentLimitsHint: ["本机资源的上限：保存的提示词最长多少字，评估读取线程上下文时最多读几页、每次读取最多等多久。", "Resource limits on this machine: how long a saved prompt may be, and how many Thread pages Eval may read and how long one read may take."],
-			deploymentPromptMaxChars: ["提示词配置的最大字符数", "Largest prompt configuration / characters"],
-			deploymentContextPages: ["一次研判可读的线程页数", "Thread pages one Assessment may read"],
-			deploymentContextTimeout: ["一次上下文读取的时限 / 毫秒", "Time limit of one context read / ms"],
-			deploymentRefused: ["DSH 拒绝了这次修改：设置可能已在别处修改。放弃修改后可看到当前值。", "DSH refused the change; the settings may have changed elsewhere. Discard to see the current values."],
-			deploymentNoForms: ["这个 DSH 版本不提供配置表单，这些值只能在 DSH 配置文件的 dsh-superagent 条目里修改。", "This DSH version has no configuration forms; change these values in the dsh-superagent entry of the DSH configuration file."],
-			deploymentReadOnly: ["只有本机上的浏览器可以修改这些值。", "Only a browser on this machine can change these values."],
-			setupCheck: ["重新检查", "Check again"],
-			setupChecking: ["正在重新检查，dsh-superagent 正在重启", "Checking again; dsh-superagent is restarting"],
-			setupCheckInterrupts: ["重新检查会重启 dsh-superagent：{count} 个进行中的派工会中断，并带恢复说明重新开始。", "Checking again restarts dsh-superagent: {count} running Assignments stop and start again with a recovery note."],
-			"reason.not_human": ["自动消息", "Automated message"],
-			"reason.not_a_member": ["发送者不在这个来源的名单里", "Sender is not on this Source's list"],
-			"reason.no_mention": ["没有点名智能体，且这个来源不接收其余消息", "Does not address the agent, and this Source does not receive the rest"],
-			"reason.admission_ignored": ["准入设为忽略", "Admission set to ignore"],
-			"reason.chat_not_allowed": ["群不在监听的群里", "Chat is not a listened chat"],
-			"reason.direct_messages_not_allowed": ["私聊未开放", "Direct messages are off"],
-			"reason.observation_only": ["仅观察的群（旧版过滤）", "Observe-only chat (legacy filter)"],
-			"reason.untracked_source": ["线程未被订阅", "Thread not subscribed"],
-			"reason.issue_assigned": ["Issue 已有负责人", "Issue has an assignee"],
-			"reason.issue_closed": ["Issue 已关闭", "Issue is closed"],
-			"reason.issue_has_pull_request": ["Issue 已有关联 PR", "Issue has a linked PR"],
-			"reason.issue_unclaimed_less_than_day": ["Issue 无人认领未满一天", "Issue unclaimed for less than a day"],
-			"reason.task_ended": ["工单已结束", "Ticket ended"],
-			"reason.task_paused": ["工单已暂停", "Ticket paused"],
-			"reason.subscription_inactive": ["订阅未生效", "Subscription inactive"],
-			"reason.subscription_removed": ["订阅已移除", "Subscription removed"],
-			"reason.issue_awaiting_eligibility": ["等待 Issue 满足资格", "Waiting for Issue eligibility"],
-			"reason.timeout": ["评估超时未决定", "Eval timed out"],
-			"reason.policyChanged": ["评估期间策略已变更", "Policy changed during the Eval"],
-			"reason.noAdmissible": ["没有可准入的触发", "No admissible Trigger"],
-			"reason.startedTicket": ["已经开过工单 {ticket}", "Already started Ticket {ticket}"],
-			"reason.acceptedBefore": ["触发 {trigger} 之前已接单", "Trigger {trigger} was accepted before"],
-			"reason.routed": ["已转给工单 {ticket}", "Routed to Ticket {ticket}"],
-			"reason.stopUnknown": ["要停止的工单不存在或已结束", "The Ticket to stop is unknown or ended"],
-			"reason.stopNotExplicit": ["停止需要名单里的人明确要求", "Stopping needs an explicit request from someone on the list"],
-			"reason.directionUnsettled": ["实现意图或目标未确定，或还要产品或设计决定", "Intent or target not settled, or a product or design decision is still open"],
-			"reason.noRuleMatched": ["没有启用的准入规则匹配", "No enabled admission rule matched"],
-			"reason.ignoredFromCard": ["仅凭候选卡片忽略，未经规则研判", "Ignored from its card, without a rule assessment"],
-			"reason.observed": ["观察模式：本会接单（{text}）", "Observe mode: would accept ({text})"],
-			"reason.explicitRouted": ["名单里的人明确请求，由主 Session 接单", "Explicit request from someone on the list, accepted by the main Session"],
-			"reason.legacyImport": ["从旧版工单记录导入", "Imported from a legacy Ticket record"],
-			"reason.channelGone": ["对话已无法接收消息", "The conversation can no longer receive messages"],
-			"reason.channelIgnored": ["来源已不再监听这个对话", "The Source no longer listens to this conversation"],
-			"reason.hostRestarted": ["dsh-superagent 重启", "dsh-superagent restarted"],
-			"reason.retried": ["人工重试", "Retried by a person"],
-			"reason.completed": ["已完成", "Completed"],
-			"reason.dropped": ["无需处理，已关闭", "No action needed; closed"],
-			"reason.merged": ["PR 已合并", "PR merged"],
-			"reason.closed": ["PR 已关闭", "PR closed"],
-			"reason.stopped": ["人工停止", "Stopped by a human"],
-			"reason.revoked": ["授权已失效", "Mandate no longer valid"],
-			"reason.humanStop": ["有人要求停止", "Someone asked to stop"],
-			"reason.forwarded": ["已扇出给该线程的工单", "Fanned out to the Thread's Ticket"],
-			"reason.senderNotMember": ["发送者不在这个来源的名单里", "Sender is not on this Source's list"],
-			"reason.source_disabled": ["来源已停用", "Source disabled"],
-			"reason.superagent_desk_off": ["没有接收主管对话", "The supervisor desk is not received"],
-			"reason.superagent_bots_off": ["没有接收 bot 求助", "Bots asking for help are not received"],
-			"reason.superagent_unknown": ["不是主管对话，也不是 bot 求助", "Neither the supervisor desk nor a Bot asking for help"],
-			"reason.issue_sender_or_admission_disabled": ["Issue 发起人不在名单或主动接单已关闭", "Issue sender not on the list, or proactive accept off"],
-			"reason.source_not_installed": ["来源插件未加载", "Source plugin not loaded"],
-			"reason.issue_unclaimed_less_than_wait": ["Issue 无人认领未满等待时长", "Issue unclaimed for less than the wait"],
-			glossary: ["术语表", "Glossary"],
-			glossaryIntro: ["界面只显示一种语言；文档、代码和工具使用英文术语。", "The interface shows one language; documents, code and tools use the English terms."],
-			glossaryChinese: ["中文", "中文"],
-			glossaryEnglish: ["English", "English"],
-			glossaryMeaning: ["含义", "Meaning"],
-			"term.source": ["来源", "Source"],
-			"term.trigger": ["触发", "Trigger"],
-			"term.thread": ["线程", "Thread"],
-			"term.correlation": ["关联", "Correlation"],
-			"term.channel": ["渠道", "Channel"],
-			"term.policy": ["策略", "Policy"],
-			"term.eval": ["评估", "Eval"],
-			"term.gate": ["准入", "Gate"],
-			"term.assessment": ["研判", "Assessment"],
-			"term.decision": ["决定", "Decision"],
-			"term.mandate": ["授权", "Mandate"],
-			"term.ticket": ["工单", "Ticket"],
-			"term.assignment": ["派工", "Assignment"],
-			"term.subscription": ["订阅", "Subscription"],
-			"term.fanout": ["扇出", "Fan-out"],
-			"term.executor": ["执行器", "Executor"],
-			"term.report": ["报告", "Report"],
-			"term.attention": ["待人工决定", "Attention"],
-			"term.disposition": ["去向", "Disposition"],
-			"term.input": ["输入", "Input"],
-			"term.scope": ["范围", "Scope"],
-			"term.strength": ["强度", "Strength"],
-			"term.agent": ["智能体", "Agent"],
-			"term.mainSession": ["主 Session", "Main Session"],
-			"term.executorSession": ["执行器 Session", "Executor Session"],
-			"term.policyVersion": ["策略版本", "Policy version"],
-			"meaning.agent": ["以 dsh-superagent 身份工作的虚拟同事：通过 GitHub 账号、飞书机器人等身份在来源上行动", "The virtual colleague dsh-superagent runs: it acts on the Sources through its identities, such as a GitHub account or a Feishu bot"],
-			"meaning.mainSession": ["评估触发、接单派工并回复的 DSH Session；提示词里称 orchestrator", "The DSH Session that evaluates Triggers, accepts and dispatches work, and replies; prompts call it the orchestrator"],
-			"meaning.executorSession": ["执行器为一个工单运行的 DSH Session；提示词里称 worker", "The DSH Session the Executor runs for one Ticket; prompts call it the worker"],
-			"meaning.policyVersion": ["接单规则、各来源上的策略和接单模式的一个组合的标识；每个工单记下接单时的版本", "The identifier of one combination of rules, the Policy on each Source and accept mode; each Ticket records the version it was accepted under"],
-			"glossaryGroup.roles": ["角色", "Roles"],
-			"meaning.source": ["产生触发的事件流；由插件提供的类型加一份配置（是否运行、监听什么）", "An event stream that produces Triggers; a plugin-provided kind plus one configuration (whether it runs, what it listens to)"],
-			"meaning.trigger": ["来源产生的单个不可变事件", "One immutable event produced by a Source"],
-			"meaning.thread": ["按时间排列的触发；同一时间只有一个评估", "Triggers in time order; one Eval at a time"],
-			"meaning.correlation": ["一个触发同属多个线程时线程之间的关系，只用来补充上下文", "Relation between Threads that share a Trigger; context only"],
-			"meaning.channel": ["线程的只写端，用于回复", "The write-only side of a Thread, for replies"],
-			"meaning.policy": ["版本化的接单规则和各来源上的名单；决定谁能发起工作、接什么", "Versioned rules and each Source's list; decides who may originate work and what is accepted"],
-			"meaning.eval": ["对一批触发做出决定的过程", "The process that turns a batch of Triggers into a Decision"],
-			"meaning.gate": ["评估的第一层：谁能发起工作、强度多少", "First Eval layer: who may originate work, and how strongly"],
-			"meaning.assessment": ["评估中的模型语义判断", "Eval step where the model judges meaning"],
-			"meaning.decision": ["评估的结果", "The result of an Eval"],
-			"meaning.mandate": ["接单时产出的授权：强度、范围、依据的策略版本", "Authorization produced by accept: strength, scope and Policy version"],
-			"meaning.ticket": ["被授权的工作单位", "An authorized unit of work"],
-			"meaning.assignment": ["工单与一个执行器 Session 的绑定", "Binding of a Ticket to one Executor Session"],
-			"meaning.subscription": ["工单与线程的关系；主 Session 只在消息明确指向某个工单时才把线程关联给它，执行器可以退订与本工单无关的线程", "Relation between a Ticket and a Thread; the main Session attaches a Thread only when its message points at the Ticket, and the Executor can drop a Thread unrelated to its Ticket"],
-			"meaning.fanout": ["订阅线程上的触发作为上下文送达工单，不带授权", "Triggers on a subscribed Thread reach the Ticket as context, without authority"],
-			"meaning.executor": ["执行派工的一方：每个工单一个执行器 Session 和执行目录", "What runs Assignments: one Executor Session and directory per Ticket"],
-			"meaning.report": ["派工向工单回报的状态", "State an Assignment reports to its Ticket"],
-			"meaning.attention": ["工单上等待人回答的问题", "A question on a Ticket waiting for a human"],
-			"meaning.disposition": ["一个触发被过滤、评估、扇出的记录", "Where a Trigger went: filtered, evaluated, fanned out"],
-			"meaning.input": ["送达工单的上下文（扇出的触发、策略变更、恢复、文本）", "Context delivered to a Ticket (fanned-out Triggers, Policy changes, resumes, text)"],
-			"meaning.scope": ["授权允许的工作范围", "The work a Mandate allows"],
-			"meaning.strength": ["授权与评估的依据强度", "How strong the grounds of a Mandate or Eval are"],
-			legendTitle: ["状态颜色", "Status colors"],
-			"legend.done": ["完成、就绪或已接单", "Done, ready or accepted"],
-			"legend.ongoing": ["执行中或评估中", "Running or evaluating"],
-			"legend.warning": ["等待、受阻或需要人", "Waiting, blocked or needs a person"],
-			"legend.error": ["失败或异常", "Failed or failing"],
-			"legend.idle": ["已结束、已停用或无后续", "Ended, disabled or no follow-up"],
-			"term.environment": ["执行环境", "Execution environment"],
-			"meaning.environment": ["每个工单的执行器 Session 和准备命令运行的环境：执行器和各来源登记的变量，每个有键、值和说明", "Where a Ticket's Executor Session and prepare command run: the variables the Executor and the Sources register, each with a key, a value and a description"],
-			"userError.unknownTicket": ["找不到这个工单。", USER_ERRORS.unknownTicket[1]],
-			"userError.unknownProblem": ["找不到这个未完成的评估。", USER_ERRORS.unknownProblem[1]],
-			"sourceUncertainTitle": ["不确定是否已发出", "Not known whether sent"],
-			"sourceUncertainHint": ["发送时超时、被中断或 SuperAgent 停了，可能已经发出。为免重复不会自动重发：先到对话里看一眼，确实没收到再点「重投」。", "Sending timed out, was cut off, or SuperAgent stopped: it may have gone out. It is not sent again by itself; check the conversation, and redeliver only if it did not arrive."],
-			"sourceRedeliver": ["重投", "Redeliver"],
-			"userError.notUnknownReply": ["这条消息不在等你重投（可能已经重投过）。", USER_ERRORS.notUnknownReply[1]],
-			"userError.unknownTrigger": ["找不到这个触发。", USER_ERRORS.unknownTrigger[1]],
-			"userError.unknownAssignment": ["找不到这个派工。", USER_ERRORS.unknownAssignment[1]],
-			"userError.unknownBlock": ["没有这个设置块：{block}", USER_ERRORS.unknownBlock[1]],
-			"userError.unknownPromptRevision": ["没有提示词版本 {revision}。", USER_ERRORS.unknownPromptRevision[1]],
-			"userError.unknownPromptPart": ["没有内置提示词段落 {part}。", USER_ERRORS.unknownPromptPart[1]],
-			"userError.ticketEnded": ["工单已结束。", USER_ERRORS.ticketEnded[1]],
-			"userError.notStaffing": ["这张工单不在等待组队，团队已经同意过了。", USER_ERRORS.notStaffing[1]],
-			"userError.staleProposal": ["同意的不是当前版本的组队方案，请按最新版本确认。", USER_ERRORS.staleProposal[1]],
-			"userError.notConsent": ["只有名单里的人在工单线程上、方案发出之后亲自发的消息才能同意或拒绝组队；{why}", USER_ERRORS.notConsent[1]],
-			"userError.assignmentEnded": ["这个派工已结束，工单已由较新的派工接手。", USER_ERRORS.assignmentEnded[1]],
-			"userError.evalFinished": ["评估 {eval} 已结束，或已被之后的评估取代；请对这个触发当前的评估做决定。", USER_ERRORS.evalFinished[1]],
-			"userError.notAdmissible": ["这个触发未通过准入：{reason}", USER_ERRORS.notAdmissible[1]],
-			"userError.notExplicit": ["通过 orchestrator_route 接单只用于名单内发送者的明确请求；主动接单的候选请用 orchestrator_eval 和 orchestrator_eval_decide 研判。", USER_ERRORS.notExplicit[1]],
-			"userError.ticketStopped": ["有人停止了这个工单；新工作需要通过 orchestrator_route 接单。", USER_ERRORS.ticketStopped[1]],
-			"userError.mandateRevoked": ["按当前策略，这个工单的授权已失效；新工作需要通过 orchestrator_route 接单。", USER_ERRORS.mandateRevoked[1]],
-			"userError.notRetryable": ["只有进行中的工单可以重试，而且仅当执行器最近一次报告为失败或受阻且此后没有人发过消息，或者向执行器送达输入失败时才可以。", USER_ERRORS.notRetryable[1]],
-			"userError.sourceThread": ["这是工单开始时所在的线程，会保持订阅。", USER_ERRORS.sourceThread[1]],
-			"userError.followedThread": ["这是工单自己的线程，例如它的 PR，会保持订阅。", USER_ERRORS.followedThread[1]],
-			"userError.notFollowing": ["这个工单没有订阅那个线程。", USER_ERRORS.notFollowing[1]],
-			"userError.questionWithResult": ["给人的问题不能同时是就绪的结果或回答，请分开报告。", USER_ERRORS.questionWithResult[1]],
-			"userError.askerWithoutQuestion": ["提出问题的消息需要附上它提出的问题。", USER_ERRORS.askerWithoutQuestion[1]],
-			"userError.notAsker": ["问题必须指明提出它的那条人发的消息，且那条消息已送达这个工单。", USER_ERRORS.notAsker[1]],
-			"userError.notAnswerable": ["回答必须指明它所回答的、由人提出的问题，且这个问题已送达这个工单。", USER_ERRORS.notAnswerable[1]],
-			"userError.ackEnded": ["工单已结束，不要确认过去的请求。", USER_ERRORS.ackEnded[1]],
-			"userError.notReached": ["这个触发不属于这个执行器。", USER_ERRORS.notReached[1]],
-			"userError.handedBack": ["这个工单已经交回过这个触发。", USER_ERRORS.handedBack[1]],
-			"userError.handedBackHere": ["这个工单的执行器已把这个触发交回，认为它超出本工单的范围：请把它作为新工作接单、关联到另一个工单，或忽略它。", USER_ERRORS.handedBackHere[1]],
-			"userError.workerDecides": ["这条消息已通过所在线程送达工单 {tickets}：由工单的执行器判断它是否属于这个工单，不属于的会被交回，之后作为候选到达。只有停止例外，用 orchestrator_route 并把 kind 设为 stop。", USER_ERRORS.workerDecides[1]],
-			"userError.ackNoChannel": ["确认需要一条已派给这个执行器、由人发出的原始消息。", USER_ERRORS.ackNoChannel[1]],
-			"userError.ackNotPerson": ["请使用最初那条人发的触发，而不是机器人、CI 或执行器的报告。", USER_ERRORS.ackNotPerson[1]],
-			"userError.notReady": ["工单还不能交付。进展只在内部保留，等待经过验证的就绪报告；不要把进展当作回答，也不要通过其他渠道发送。", USER_ERRORS.notReady[1]],
-			"userError.notAttention": ["待人工决定的消息需要在 human_action 中写明工单当前待人工决定的问题。日常未完成的工作只在内部保留。", USER_ERRORS.notAttention[1]],
-			"userError.notQuestion": ["回答必须针对最初由人提出的问题，而不是执行器报告或自动触发。", USER_ERRORS.notQuestion[1]],
-			"userError.noAnswer": ["执行器还没有回答这条人发的触发。请等待执行器的报告，或用 orchestrator_ticket_request_status 请求一份（它只对处于等待状态的执行器起作用）；普通进展不能当作回答。", USER_ERRORS.noAnswer[1]],
-			"userError.noChannel": ["这个工单或触发没有可以回复的渠道。", USER_ERRORS.noChannel[1]],
-			"userError.panelOnlyEnvironment": ["执行环境（执行目录、准备命令、禁止调用的命令）只能在管理页修改。", USER_ERRORS.panelOnlyEnvironment[1]],
-			"userError.panelOnlyAccounts": ["部署检查读取的来源字段（例如账号 CLI）只能在管理页修改。", USER_ERRORS.panelOnlyAccounts[1]],
-			"userError.setupComplete": ["部署检查已通过。", USER_ERRORS.setupComplete[1]],
-			"userError.modelUnavailable": ["{block} 的模型不可用：{error}", USER_ERRORS.modelUnavailable[1]],
-			"userError.promptTooLong": ["提示词配置超过 {limit} 个字符。", USER_ERRORS.promptTooLong[1]],
-			"userError.promptPlaceholders": ["「{part}」的模板必须保留占位符 {placeholders}，由系统填入内容。", USER_ERRORS.promptPlaceholders[1]],
-			"userError.promptPartEmpty": ["「{part}」段落不能为空；要沿用内置文本，请恢复此段默认内容。", USER_ERRORS.promptPartEmpty[1]],
-			"userError.sourceNotInstalled": ["{source} 来源的插件没有安装。", USER_ERRORS.sourceNotInstalled[1]],
-			"userError.noLabels": ["这个来源没有可以刷新的名称。", USER_ERRORS.noLabels[1]],
-			"userError.nothingToSync": ["{source} 来源上的策略没有指定从哪里同步，或者这个来源已关闭或在等待部署检查。", USER_ERRORS.nothingToSync[1]],
-			"setup.repositoryUnset": ["GitHub 来源没有设置监听的仓库。", SETUP_PROBLEMS.repositoryUnset[1]],
-			"setup.foreignFile": ["{file} 不是 dsh-superagent 写入的文件；移走它，或换一个状态目录。", SETUP_PROBLEMS.foreignFile[1]],
-			"setup.gitTooOld": ["git 没有读取 dsh-superagent 为 github.com 写的凭据配置；需要 git 2.32 或更新版本。", SETUP_PROBLEMS.gitTooOld[1]],
-			"setup.environmentFailed": ["准备智能体的运行环境失败。", SETUP_PROBLEMS.environmentFailed[1]],
-			"setup.agentCliUnset": ["没有设置智能体的 GitHub CLI。", SETUP_PROBLEMS.agentCliUnset[1]],
-			"setup.agentCliMissing": ["找不到智能体的 GitHub CLI。", SETUP_PROBLEMS.agentCliMissing[1]],
-			"setup.agentCliSignedOut": ["智能体的 GitHub CLI 读不到它的账号。", SETUP_PROBLEMS.agentCliSignedOut[1]],
-			"setup.agentCliNoAccount": ["智能体的 GitHub CLI 没有报告 GitHub 账号。", SETUP_PROBLEMS.agentCliNoAccount[1]],
-			"setup.repositoryUnreadable": ["@{account} 读不到 {repository}。", SETUP_PROBLEMS.repositoryUnreadable[1]],
-			"setup.repositoryUnreported": ["智能体的 GitHub CLI 没有返回 {repository}。", SETUP_PROBLEMS.repositoryUnreported[1]],
-			"setup.repositoryReadOnly": ["@{account} 没有 {repository} 的推送权限。", SETUP_PROBLEMS.repositoryReadOnly[1]],
-			"setup.feishuCliFailed": ["机器人的 lark-cli 不可用。", SETUP_PROBLEMS.feishuCliFailed[1]],
-			"setup.feishuNoApp": ["机器人的 lark-cli 的 auth status 没有报告应用。", SETUP_PROBLEMS.feishuNoApp[1]],
-			"setup.feishuBotNotReady": ["应用 {app} 的机器人身份状态是 {status}；用 lark-cli 配置应用密钥。", SETUP_PROBLEMS.feishuBotNotReady[1]],
-			"setup.feishuUserIdentity": ["机器人的 lark-cli 允许用户身份（strict mode 为 {mode}）；按 docs/006-deployment.md 给机器人一份 strict mode 为 bot 的单独配置。", SETUP_PROBLEMS.feishuUserIdentity[1]],
-			"setup.feishuNoBot": ["飞书机器人接口没有返回机器人的 open_id。", SETUP_PROBLEMS.feishuNoBot[1]],
-			"setup.feishuAppMissing": ["lark-cli 里没有飞书应用 {app} 的 profile，VsSaros Bots 也没有它的 App Secret；先在 Bots 的渠道设置里添加这个应用，或执行 lark-cli profile add --name {app} --app-id {app} --app-secret-stdin。", SETUP_PROBLEMS.feishuAppMissing[1]],
-			"setup.feishuProfileFailed": ["lark-cli 没能为飞书应用 {app} 添加只允许机器人身份的 profile：{output}", SETUP_PROBLEMS.feishuProfileFailed[1]],
-			"setup.feishuAppMismatch": ["lark-cli 的 profile {profile} 属于应用 {actual}，不是 {app}。", SETUP_PROBLEMS.feishuAppMismatch[1]],
-			"healthCode.setupPending": ["等待部署检查", HEALTH_TEXT.setupPending],
-			"healthCode.sourceOff": ["已关闭", HEALTH_TEXT.sourceOff],
-			"healthCode.feishuCliUnset": ["来源已打开，还没有设置机器人的 lark-cli", HEALTH_TEXT.feishuCliUnset],
-			"healthCode.feishuAppShared": ["飞书应用 {app} 已被 {holder} 的 Bots 入站占用；同一应用的事件只会推给其中一条连接，请给这个来源单独配一个飞书应用", HEALTH_TEXT.feishuAppShared],
-			"healthCode.feishuBusBusy": ["飞书应用 {app} 已有另一个事件消费者在连接；同一应用的事件只会推给其中一条连接，请停掉它或给这个来源单独配一个飞书应用", HEALTH_TEXT.feishuBusBusy],
-			"healthCode.feishuShared": ["通过本机 VsSaros Bots 的长连接接收飞书应用 {app} 的事件", HEALTH_TEXT.feishuShared],
-			"healthCode.githubUnset": ["来源已打开，还没有设置仓库和账号 CLI", HEALTH_TEXT.githubUnset],
-			"healthCode.tapdUnset": ["来源已打开，还没有设置接收项", HEALTH_TEXT.tapdUnset],
-			"healthCode.tapdWebhookUnset": ["TAPD Webhook 已打开，还没有设置验证密码", HEALTH_TEXT.tapdWebhookUnset],
-			"healthCode.p4Unset": ["P4 已打开，服务器、执行账号和允许签出的路径还没有都设置", HEALTH_TEXT.p4Unset],
-			p4Block: ["P4 变更管理", "P4 change management"],
-			p4UnsetHint: ["P4 未配置：签出、改动和提交暂时都用不了，在下面的执行设置里填服务器和执行账号。", "P4 is not set up: no checkouts, changes or submits until its server and execution account are set below."],
-			p4BlockHint: ["执行器用这个账号在 P4 里签出、改动并 shelve 改动；提交只在你审核同意之后进行。", "Workers check out, change and shelve in P4 with this account; a submit happens only after you approve it."],
-			"healthCode.feishuBotMissing": ["等待飞书机器人", HEALTH_TEXT.feishuBotMissing],
-			"healthCode.pollFailures": ["连续 {count} 次轮询失败，最近一次：{error}", HEALTH_TEXT.pollFailures],
-			"team.archivedPlans": ["旧团队计划（只读归档）", "Old team plans (archived, read-only)"],
-			"team.archivedPlansHint": ["旧的「主管直接派活」双轨已下线：这些计划不会再推进；团队工作只走「工单 → 组队 → 你同意」。", "The old track where the supervisor gave work out on its own is retired: these plans do not advance; team work runs only as a ticket whose team you agree to."],
-			"team.skillsArchived": ["旧计划按模板写过 {count} 个技能（只读归档）；技能现在只由记忆系统从团队步骤里提炼。", "Old plans wrote {count} skills by template (archived); skills are now distilled only by the memory system from team steps."],
-			"team.wfRunSent": ["已把「{name}」发到主管对话：主管按它提出团队，你同意后开工。", "Sent «{name}» to the supervisor desk: it proposes the team from it, and the work starts once you agree."],
-			"team.approval": ["待你批准建 bot", "Bots waiting for your approval"],
-			"team.approvalLine": ["申请高风险工具：{risk}", "Requests high-risk tools: {risk}"],
-			"team.approve": ["批准", "Approve"],
-			"team.reject": ["驳回", "Reject"],
-			"team.created": ["主管已创建 {count} / {global} 个 bot（每计划上限 {perPlan} 个）", "The supervisor created {count} / {global} Bots (at most {perPlan} per plan)"],
-			"team.risky": ["含命令 / 外发", "command or outbound"],
-			"team.skillApprove": ["审核通过", "Approve skill"],
-			"team.skillReject": ["驳回", "Reject"],
-			"team.workflows": ["团队工作流", "Team workflows"],
-			"team.wfDraft": ["草稿 · 待确认", "Draft"],
-			"team.wfSave": ["保存为 v1", "Save as v1"],
-			"team.wfRun": ["运行", "Run"],
-			"team.wfRuns": ["运行 {runs} 次 · 成功 {ok}%", "Run {runs} times · {ok}% success"],
-			"team.wfSteps": ["个步骤", "steps"],
-			"team.staffing": ["待确认组队", "Teams awaiting agreement"],
-			"team.distillPending": ["待确认的技能建议", "Skill suggestions awaiting review"],
-			"usageTitle": ["模型用量（24 小时）", "Model usage (24 hours)"],
-			"usageHint": ["SuperAgent 自己的会话（主会话、主管台、各工单的 worker、团队步骤）每次模型调用的 token，保留 30 天。输入含缓存读写。", "Tokens of every model call of SuperAgent's own Sessions (main, desk, ticket workers, team steps), kept 30 days. Input includes cache reads and writes."],
-			"usageDay": ["24 小时 {total} tokens · {calls} 次调用", "24 hours: {total} tokens · {calls} calls"],
-			"usageWeek": ["7 天 {total}", "7 days: {total}"],
-			"usageCache": ["其中缓存读 {read}", "cache reads {read}"],
-			"usageRelaysDsBot": ["24 小时内 DS Bot 改写重发了 SuperAgent 会话的请求 {resent} 次，另用看图模型读了 {side} 次（都只计一次用量）。", "In 24 hours DS Bot sent SuperAgent's requests again {resent} times and read them with its image model {side} times (each counted once)."],
-			"usageRelaysOther": ["24 小时内有其它插件重发了 SuperAgent 会话的请求 {resent} 次，另用别的模型读了 {side} 次（都只计一次用量）。", "In 24 hours another plugin sent SuperAgent's requests again {resent} times and read them with another model {side} times (each counted once)."],
-			"usageRelaySession": ["改写 {resent} 次 · 看图 {side} 次", "{resent} rewritten · {side} read on the side"],
-			"ticketRelaysDsBot": ["被 DS Bot 改写", "Rewritten by DS Bot"],
-			"ticketRelaysOther": ["被其它插件改写", "Rewritten by another plugin"],
-			"sideCalls": ["允许其它插件用别的模型读 SuperAgent 会话", "Let other plugins read SuperAgent's Sessions with another model"],
-			"sideCallsHint": ["DS Bot 的看图：会话模型不能看图时，它用自己的 OCR 模型读图片。关掉后 SuperAgent 的会话拒绝这类调用，DS Bot 会告诉模型「图片现在读不了」；密钥脱敏的改写重发不受影响。", "DS Bot's images: when a Session's model cannot read images, it reads them with its OCR model. Off, SuperAgent's Sessions refuse such calls and DS Bot tells the model the image could not be read; its secrets rewrite still goes."],
-			"sideCallsOff": ["（执行设置里已关闭「别的模型读会话」，这类调用会被拒绝。）", "(Reading with another model is off in the execution settings; such calls are refused.)"],
-			"usageCalls": ["{calls} 次", "{calls} calls"],
-			"usageRole.master": ["主会话", "Main Session"],
-			"usageRole.desk": ["主管台", "Supervisor desk"],
-			"usageRole.worker": ["工单 worker / 领队", "Ticket workers / leads"],
-			"usageRole.step": ["团队步骤", "Team steps"],
-			"steward.compacted": ["空闲时已压实（上下文 {context}，检查线 {line}）", "compacted while idle ({context} of context, check line {line})"],
-			"steward.below": ["上下文 {context}，未到检查线 {line}", "{context} of context, under the check line {line}"],
-			"steward.unknown": ["模型窗口未知，交给 DSH 自己压实", "model window unknown; left to DSH"],
-			"steward.cooldown": ["刚压实过，稍后再看", "compacted lately; looked at again later"],
-			"steward.busy": ["忙，下次空闲再看", "busy; looked at when next idle"],
-			"steward.unavailable": ["DSH 的压实服务不可用", "DSH compaction unavailable"],
-			"steward.nothing": ["没有可压实的部分", "nothing to compact"],
-			"steward.failed": ["空闲压实失败（见日志）", "idle compaction failed (see the log)"],
-			"rulesTitle": ["团队 Bot 的审批规则", "Approval rules of team Bots"],
-			"rulesTemplateHint": ["记住的规则让 Bot 同类命令不再问人；带 ; & | 重定向等的组合命令永远要问。选一个 Bot，一次套用一组常用规则：", "A remembered rule lets a Bot run that kind of command without asking; a chained or redirected line always asks. Pick a Bot to give it a set at once:"],
-			"rulesBot": ["选择 Bot", "Choose a Bot"],
-			"rulesTemplate.git-read": ["Git 只读", "Git read-only"],
-			"rulesTemplate.tests": ["跑测试", "Run tests"],
-			"rulesTemplate.build": ["构建与检查", "Build and lint"],
-			"rulesTemplate.install": ["装依赖", "Install dependencies"],
-			"rulesRiskMedium": ["中风险", "medium risk"],
-			"rulesForget": ["删除", "Delete"],
-			"rulesNone": ["还没有规则", "No rules yet"],
-			"coexistDsBot": ["这个 Host 里同时装着 DS Bot。它的大部分功能只管自己的 Bot，但有三处也作用于 SuperAgent 的会话：", "DS Bot runs in this Host too. Most of it acts on its own Bots only; three parts also reach SuperAgent's Sessions:"],
-			"coexistEffect.secrets": ["密钥脱敏：在 DS Bot 里存过的密钥值，会从所有工具结果和模型请求里替换掉（改写过的请求会重新发一次，用量只计一次；次数见执行页「用量」与工单详情）", "Secrets: a value saved in DS Bot is replaced in every tool result and model request (a rewritten request is sent again and counted once; how often shows under Usage and on the ticket)"],
-			"coexistEffect.images": ["看图：会话的模型不能看图时，DS Bot 用它的 OCR 模型读图片，再把文字发给原模型——步骤里的图片会发给那个模型；可在执行设置里关闭", "Images: when a Session's model cannot read images, DS Bot reads them with its OCR model and sends the text instead, so step images reach that model; you can turn this off in the execution settings"],
-			"coexistEffect.skills": ["技能：goal-grill、office、office-tools 进 DSH 的技能目录，主会话与步骤看得到，主管台看不到；不占主会话的 prompt 预算", "Skills: goal-grill, office and office-tools join DSH's skill catalog, seen by the main Session and steps but not the desk; they take nothing from the main Session's prompt budget"],
-			"team.budgetLine": ["预算：{tokens} / {tokensCap} tokens · {turns} / {turnsCap} 回合", "Budget: {tokens} / {tokensCap} tokens · {turns} / {turnsCap} turns"],
-			"team.budgetReached": ["预算用完：不再开新步骤", "Budget used: no new step starts"],
-			"team.budgetRaise": ["追加一半预算", "Raise by half"],
-			"team.distillNewVersion": ["已有技能的新版本", "a new version of a skill"],
-			"team.distillRisk.low": ["低风险", "Low risk"],
-			"team.distillRisk.medium": ["中风险：要跑命令或联网", "Medium risk: runs commands or uses the network"],
-			"team.distillRisk.high": ["高风险：外发 / 发布 / 删除 / 凭据", "High risk: sends, publishes, deletes or touches credentials"],
-			"team.distillTemplate": ["未经模型提炼", "Not distilled by a model"],
-			"team.steps": ["团队步骤进度", "Team steps"],
-			"team.stepsDone": ["{done}/{total} 完成", "{done}/{total} done"],
-			"team.stepWrite": ["（写）", " (writes)"],
-			"team.stepTurns": [" · {turns} 回合", " · {turns} turns"],
-			"team.stepAttempt": [" · 第 {attempt} 次", " · attempt {attempt}"],
-			"team.step.pending": ["等待", "Waiting"],
-			"team.step.running": ["进行中", "Running"],
-			"team.step.ready": ["完成", "Done"],
-			"team.step.blocked": ["待人回答", "Needs a person"],
-			"team.step.failed": ["失败", "Failed"],
-			"team.step.skipped": ["已跳过", "Skipped"],
-			"team.step.stopped": ["已停止", "Stopped"],
-			"team.tfWorkspace": ["TeamFlow 工作区", "TeamFlow workspace"],
-			"team.tfWorkspaceHint": ["工作区的完整路径，如 G:\\Projects\\demo", "The workspace's full path, such as /home/me/demo"],
-			"team.tfExport": ["导出到 TeamFlow", "Export to TeamFlow"],
-			"team.tfImport": ["从 TeamFlow 导入", "Import from TeamFlow"],
-			"team.tfExported": ["已导出为 TeamFlow 团队 {team}，可直接运行。", "Exported as TeamFlow team {team}; it can run as is."],
-			"team.tfExportedRef": ["已导出为 TeamFlow 团队 {team}，仅供参考：{lost}", "Exported as TeamFlow team {team}, for reference only: {lost}"],
-			"team.tfImported": ["从 TeamFlow 导入了 {count} 个工作流草稿，保存后才参与组队匹配。", "Imported {count} workflow drafts from TeamFlow; save one before staffing matches it."],
-			"team.staffingProposing": ["主管正在组队", "The supervisor is staffing"],
-			"team.staffingNew": ["（新建）", " (new)"],
-			"team.staffingAgree": ["同意并开工", "Agree and start"],
-			"team.staffingRefuse": ["取消工单", "Drop the ticket"],
-			"team.staffingRefuseTitle": ["取消这张工单？", "Drop this ticket?"],
-			"team.staffingRefuseConfirm": ["「{title}」不再执行，工单以放弃结束；之后线程里的消息不会让它恢复。", "\"{title}\" will not run: the ticket ends as dropped, and later messages on its threads do not resume it."],
-			"team.running": ["进行中 · {running} / 3 个步骤", "{running} / 3 steps running"],
-			"team.state.running": ["进行中", "Running"],
-			"team.state.done": ["已完成", "Done"],
-			"team.state.failed": ["失败", "Failed"],
-			"team.state.cancelled": ["已停止", "Stopped"],
-			"team.state.pending": ["等待", "Waiting"],
-			"team.state.skipped": ["已跳过", "Skipped"],
-			"team.step": ["{step} {title} · {bot}", "{step} {title} · {bot}"],
-			"team.after": ["等待 {after}", "after {after}"],
-			"review.pending": ["待你审核的提交", "Changelists waiting for your review"],
-			"review.section": ["提交审核 · CL {change}", "Review · CL {change}"],
-			"review.open": ["审核", "Review"],
-			"review.waitingLine": ["CL {change} · {files} 个文件 · {time}提请", "CL {change} · {files} file(s) · asked {time}"],
-			"review.workspace": ["工作区", "Workspace"],
-			"review.fingerprint": ["内容指纹", "Content fingerprint"],
-			"review.description": ["CL 描述", "CL description"],
-			"review.files": ["文件", "Files"],
-			"review.filesHint": ["逐个展开看过所有文件后，才能同意。审核期间执行器收不到新消息，不会改动这份 shelve。", "Open every file before approving. While you review, the Executor gets no new messages and does not change this shelf."],
-			"review.binary": ["二进制或没有文本差异", "Binary, or no text difference"],
-			"review.truncated": ["差异过长，只显示前一部分", "The difference is long; only its start is shown"],
-			"review.seen": ["已看 {seen} / {total}", "Seen {seen} / {total}"],
-			"review.ack": ["我已 review 全部文件，同意提交这份内容", "I reviewed every file and approve submitting this content"],
-			"review.approve": ["同意并提交", "Approve and submit"],
-			"review.approveTitle": ["同意提交 CL {change}", "Approve CL {change}"],
-			"review.approvePipeline": ["同意后，CL 描述会加上 {tags}，由服务器的提交流水线提交。提交前会再核对一次内容指纹。", "Once approved, {tags} is added to the CL description and the server's submit automation submits it. The fingerprint is checked again first."],
-			"review.approveHost": ["同意后，dsh-superagent 会以提交账号提交这份 shelve。提交前会再核对一次内容指纹。", "Once approved, dsh-superagent submits this shelf as the submit account. The fingerprint is checked again first."],
-			"review.reject": ["打回", "Send back"],
-			"review.rejectTitle": ["打回 CL {change}", "Send back CL {change}"],
-			"review.rejectHint": ["写下要执行器改什么；它改完重新 shelve 后会再请你审核。", "Say what the Executor should change; it asks again once it shelves anew."],
-			"review.rejectPlaceholder": ["例如：测试用例补一个 1x 缩放", "For example: add a test at 1x scale"],
-			"review.discard": ["放弃这次变更", "Discard the change"],
-			"review.discardTitle": ["放弃 CL {change}", "Discard CL {change}"],
-			"review.discardConfirm": ["删除 shelve、撤销签出的文件并删除这个 CL，然后停止工单。不能撤回。", "Deletes the shelf, reverts the opened files and deletes the CL, then stops the ticket. This cannot be undone."],
-			"review.changed": ["这些文件在你审核后变了：", "These files changed after you reviewed them:"],
-			"review.state.handed": ["已同意，已交给提交流水线 · {by}", "Approved and handed to the submit automation · {by}"],
-			"review.state.submitted": ["已同意并提交为 CL {submitted} · {by}", "Approved and submitted as CL {submitted} · {by}"],
-			"review.state.rejected": ["已打回 · {by}：{comment}", "Sent back · {by}: {comment}"],
-			"review.state.discarded": ["已放弃 · {by}", "Discarded · {by}"],
-			"review.state.submitting": ["正在提交…", "Submitting…"],
-			"review.lastError": ["上次提交失败，同意未被使用：{error}", "The last submit failed and the approval was not used: {error}"],
-			"cliCheck.local": ["自动本地检查", "Check locally"],
-			"cliCheck.update": ["检查版本/更新", "Check version / updates"],
-			"cliCheck.path": ["可执行文件", "Executable"],
-			"cliCheck.version": ["版本", "Version"],
-			"cliCheck.bot": ["机器人身份", "Bot identity"],
-			"cliCheck.strict": ["严格模式", "Strict mode"],
-			"cliCheck.botName": ["机器人名称", "Bot name"],
-			"cliCheck.latest": ["可用更新", "Available update"],
-			"cliCheck.notFound": ["未找到 lark-cli", "lark-cli not found"],
-			"cliCheck.applied": ["已完成，正在重新检查…", "Done; checking again…"],
-			"cliCheck.applyStrict": ["应用 strict-mode bot", "Apply strict-mode bot"],
-			"cliCheck.applyStrictTitle": ["把 lark-cli 限制为机器人身份", "Restrict lark-cli to the bot identity"],
-			"cliCheck.applyStrictConfirm": ["这会修改本机 lark-cli 的全局配置，也会影响其它使用它的功能；SuperAgent 要求 strict-mode 为 bot 才会接收消息。确定继续？", "This changes the machine-wide lark-cli configuration and affects everything else using it. SuperAgent requires strict-mode bot before it receives messages. Continue?"],
-			"cliCheck.runUpdate": ["运行 lark-cli update", "Run lark-cli update"],
-			"cliCheck.runUpdateTitle": ["更新 lark-cli", "Update lark-cli"],
-			"cliCheck.runUpdateConfirm": ["这会在本机执行 lark-cli update，可能全局升级 npm 包并需要较长时间。确定继续？", "This runs lark-cli update on this machine, which may upgrade the global npm package and take a while. Continue?"],
-			"tapdCred.title": ["Open API 凭据", "Open API credentials"],
-			"tapdCred.status": ["状态", "Status"],
-			"tapdCred.fromEnv": ["已配置 · Host 环境变量", "Set · Host environment"],
-			"tapdCred.fromFile": ["已配置 · 凭据文件", "Set · credentials file"],
-			"tapdCred.none": ["未配置", "Not set"],
-			"tapdCred.method": ["使用的凭据", "Credential in use"],
-			"tapdCred.account": ["账号", "Account"],
-			"tapdCred.file": ["凭据文件", "Credentials file"],
-			"tapdCred.overridden": ["Host 的环境变量里有优先级更高的 TAPD 凭据，正在用它而不是这里保存的；要改用这里的，请先去掉那些环境变量并重启 IDE。", "The Host environment carries a higher-priority TAPD credential, which is used instead of the one saved here; to use this one, remove those variables and restart the IDE."],
-			"tapdCred.kind": ["凭据类型", "Credential kind"],
-			"tapdCred.kind.client": ["企业 API 账号（推荐）", "API account (recommended)"],
-			"tapdCred.kind.user": ["API 用户名 / 密码", "API user / password"],
-			"tapdCred.kind.token": ["Token", "Token"],
-			"tapdCred.clientId": ["Client ID", "Client ID"],
-			"tapdCred.clientSecret": ["Client Secret", "Client Secret"],
-			"tapdCred.user": ["API 用户名", "API user"],
-			"tapdCred.password": ["API 密码", "API password"],
-			"tapdCred.token": ["Token", "Token"],
-			"tapdCred.keep": ["留空 = 保留 {value}", "Blank keeps {value}"],
-			"tapdCred.keepSecret": ["已配置 · 留空 = 不改", "Set · blank keeps it"],
-			"tapdCred.hint": ["保存到 Host 的凭据文件（仅本用户可读），不进设置、不回传明文，执行器读不到；即存即用，不用重启。", "Saved to the Host's credentials file (readable by you only), never to the settings and never sent back; Executors cannot read it. It works at once, without a restart."],
-			"tapdCred.save": ["保存凭据", "Save credentials"],
-			"tapdCred.saving": ["保存中…", "Saving…"],
-			"tapdCred.saved": ["TAPD 凭据已保存", "TAPD credentials saved"],
-			"tapdCred.clear": ["清除凭据", "Clear credentials"],
-			"tapdCred.clearTitle": ["清除 TAPD 凭据", "Clear the TAPD credentials"],
-			"tapdCred.clearConfirm": ["从 {file} 删除 TAPD 凭据（其它行保留）。之后 Open API 将无法读取 TAPD，直到重新填写。确定继续？", "This removes the TAPD credentials from {file} (other lines stay). The Open API cannot read TAPD until you enter them again. Continue?"],
-			"tapdCred.cleared": ["TAPD 凭据已清除", "TAPD credentials cleared"]
-		};
-		const language = (index) => Object.fromEntries(Object.entries(TEXT).map(([key, pair]) => [key, pair[index]]));
-		const zh = language(0);
-		const en = language(1);
-		/** Glossary terms grouped by stage flow after the acting roles; each key maps to `term.<key>` and `meaning.<key>`. */
-		const GLOSSARY = {
-			roles: [
-				"agent",
-				"mainSession",
-				"executorSession"
-			],
-			source: ["source", "channel"],
-			trigger: [
-				"trigger",
-				"thread",
-				"correlation",
-				"subscription",
-				"fanout",
-				"disposition"
-			],
-			eval: [
-				"policy",
-				"policyVersion",
-				"eval",
-				"gate",
-				"assessment",
-				"decision",
-				"mandate",
-				"scope",
-				"strength"
-			],
-			execution: [
-				"executor",
-				"environment",
-				"ticket",
-				"assignment",
-				"input",
-				"report",
-				"attention"
-			]
-		};
-		const GLOSSARY_VALUES = {
-			decision: [
-				"decision.accept",
-				"decision.reopen",
-				"decision.stop",
-				"decision.ignore",
-				"decision.unavailable"
-			],
-			strength: ["strength.explicit", "strength.inferred"],
-			ticket: [
-				"stage.staffing",
-				"stage.answer",
-				"stage.review",
-				"stage.blocked",
-				"stage.failed",
-				"stage.delivery",
-				"stage.queued",
-				"stage.working",
-				"stage.idle",
-				"ticket.ended"
-			],
-			assignment: [
-				"assignment.pending",
-				"assignment.running",
-				"assignment.ended"
-			],
-			report: [
-				"report.progress",
-				"report.waiting",
-				"report.ready",
-				"report.blocked",
-				"report.failed",
-				"report.dropped"
-			]
-		};
-		const line = (paths) => function LineIcon() {
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("svg", {
-				width: 16,
-				height: 16,
-				viewBox: "0 0 20 20",
-				fill: "none",
-				stroke: "currentColor",
-				strokeWidth: 1.6,
-				strokeLinecap: "round",
-				strokeLinejoin: "round",
-				"aria-hidden": "true",
-				children: paths.map((d) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", { d }, d))
-			});
-		};
-		const PlusIcon = () => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("svg", {
-			width: 14,
-			height: 14,
-			viewBox: "0 0 20 20",
-			"aria-hidden": "true",
-			children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", {
-				d: "M10 3.5v13M3.5 10h13",
-				stroke: "currentColor",
-				strokeWidth: 1.6,
-				strokeLinecap: "round"
-			})
-		});
-		const PaperclipIcon = line(["M15.5 9.5l-5.6 5.6a3.4 3.4 0 0 1-4.8-4.8l6.1-6.1a2.25 2.25 0 0 1 3.2 3.2l-6 6a1.1 1.1 0 0 1-1.6-1.6l5.5-5.5"]);
-		const ChatsIcon = line(["M3.5 5.5A1.5 1.5 0 0 1 5 4h7a1.5 1.5 0 0 1 1.5 1.5V10A1.5 1.5 0 0 1 12 11.5H8L5 14v-2.5A1.5 1.5 0 0 1 3.5 10z", "M13.5 7.5H15A1.5 1.5 0 0 1 16.5 9v4.5A1.5 1.5 0 0 1 15 15v2l-2.5-2h-3A1.5 1.5 0 0 1 8 13.5V13"]);
-		const ClockIcon = line(["M10 3.5a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13z", "M10 6.5V10l2.5 1.5"]);
-		const BackIcon = line(["M12 5l-5 5 5 5"]);
-		const CloseIcon = line(["M5.5 5.5l9 9M14.5 5.5l-9 9"]);
-		const MicIcon = () => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("svg", {
-			width: 16,
-			height: 16,
-			viewBox: "0 0 20 20",
-			fill: "none",
-			stroke: "currentColor",
-			strokeWidth: 1.6,
-			strokeLinecap: "round",
-			"aria-hidden": "true",
-			children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("rect", {
-				x: 7,
-				y: 2.5,
-				width: 6,
-				height: 10,
-				rx: 3,
-				fill: "currentColor",
-				stroke: "none"
-			}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", { d: "M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5" })]
-		});
-		const WaveIcon = ({ size = 16 }) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("svg", {
-			width: size,
-			height: size,
-			viewBox: "0 0 20 20",
-			fill: "currentColor",
-			"aria-hidden": "true",
-			children: [
-				[
-					3,
-					7.5,
-					5
-				],
-				[
-					6.5,
-					4.5,
-					11
-				],
-				[
-					10,
-					2.5,
-					15
-				],
-				[
-					13.5,
-					5.5,
-					9
-				],
-				[
-					17,
-					8,
-					4
-				]
-			].map(([x, y, height]) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("rect", {
-				x: x - 1,
-				y,
-				width: 2,
-				height,
-				rx: 1
-			}, x))
-		});
-		const SendIcon = () => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("svg", {
-			width: 14,
-			height: 14,
-			viewBox: "0 0 20 20",
-			fill: "none",
-			stroke: "currentColor",
-			strokeWidth: 2,
-			strokeLinecap: "round",
-			strokeLinejoin: "round",
-			"aria-hidden": "true",
-			children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", { d: "M10 16V4M5 9l5-5 5 5" })
-		});
-		/** Keeps the draft focused when a composer button is pressed. */
-		const keepFocus = (event) => event.preventDefault();
-		const speechApi = () => {
-			const scope = window;
-			return scope.SpeechRecognition ?? scope.webkitSpeechRecognition;
-		};
-		/** The note for a recognition error, or none for one that only means nothing was said. */
-		function speechNote(error) {
-			if (error === "aborted" || error === "no-speech") return void 0;
-			if (error === "not-allowed" || error === "service-not-allowed" || error === "audio-capture") return "composer.micBlocked";
-			if (error === "network") return "composer.dictationOffline";
-			return "composer.notHeard";
-		}
-		/** Dictation into the draft: `onText` gets interim text (`final` false) and each final phrase. */
-		function useDictation(onText) {
-			const { t } = usePanel();
-			const [listening, setListening] = (0, react.useState)(false);
-			const [note, setNote] = (0, react.useState)("");
-			const engine = (0, react.useRef)(void 0);
-			const latest = (0, react.useRef)(onText);
-			latest.current = onText;
-			(0, react.useEffect)(() => () => engine.current?.abort(), []);
-			(0, react.useEffect)(() => {
-				if (!note) return void 0;
-				const timer = setTimeout(() => setNote(""), 2600);
-				return () => clearTimeout(timer);
-			}, [note]);
-			const start = (options = {}) => {
-				const Api = speechApi();
-				if (!Api) {
-					setNote(t("composer.dictationUnavailable"));
-					return false;
-				}
-				const recognition = new Api();
-				let heard = false;
-				recognition.lang = navigator.language || "zh-CN";
-				recognition.interimResults = true;
-				recognition.continuous = options.continuous ?? true;
-				recognition.onresult = (event) => {
-					let interim = "";
-					for (let index = event.resultIndex; index < event.results.length; index += 1) {
-						const result = event.results[index];
-						const text = result[0]?.transcript ?? "";
-						if (result.isFinal) {
-							if (text.trim()) {
-								heard = true;
-								latest.current(text, true);
-							}
-						} else interim += text;
-					}
-					if (interim) latest.current(interim, false);
-				};
-				recognition.onerror = (event) => {
-					const key = speechNote(event.error);
-					if (!key) return;
-					setNote(t(key));
-					options.onError?.(t(key));
-				};
-				recognition.onend = () => {
-					setListening(false);
-					engine.current = void 0;
-					options.onEnd?.(heard);
-				};
-				engine.current = recognition;
-				try {
-					recognition.start();
-					setListening(true);
-					return true;
-				} catch {
-					setNote(t("composer.notHeard"));
-					return false;
-				}
-			};
-			const stop = () => engine.current?.stop();
-			const abort = () => {
-				if (engine.current) {
-					engine.current.onend = null;
-					engine.current.abort();
-					engine.current = void 0;
-					setListening(false);
-				}
-			};
-			return {
-				listening,
-				note,
-				start,
-				stop,
-				abort
-			};
-		}
-		/** A file as base64, for `POST desk/files`. */
-		function readBase64(file) {
-			return new Promise((resolve, reject) => {
-				const reader = new FileReader();
-				reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ""));
-				reader.onerror = () => reject(reader.error ?? /* @__PURE__ */ new Error("The file could not be read"));
-				reader.readAsDataURL(file);
-			});
-		}
-		const sizeLabel = (bytes) => bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-		/** The composer: the draft and its attachments, and the "+" menu. `send` gets the whole message, attachments named in it. */
-		function DeskComposer({ send, busy, onVoice, queued = 0 }) {
-			const { t, call, notify } = usePanel();
-			const [draft, setDraft] = (0, react.useState)("");
-			const [files, setFiles] = (0, react.useState)([]);
-			const [menu, setMenu] = (0, react.useState)();
-			const [scheduling, setScheduling] = (0, react.useState)(false);
-			const [uploading, setUploading] = (0, react.useState)(false);
-			const input = (0, react.useRef)(null);
-			const picker = (0, react.useRef)(null);
-			const card = (0, react.useRef)(null);
-			const insert = (text) => {
-				const box = input.current;
-				const start = box?.selectionStart ?? draft.length, end = box?.selectionEnd ?? draft.length;
-				const next = draft.slice(0, start) + text + draft.slice(end);
-				setDraft(next);
-				setTimeout(() => {
-					box?.focus();
-					box?.setSelectionRange(start + text.length, start + text.length);
-				}, 0);
-			};
-			const dictation = useDictation((text, final) => {
-				if (final) insert(text);
-			});
-			(0, react.useEffect)(() => {
-				if (!menu) return void 0;
-				const down = (event) => {
-					if (!card.current?.contains(event.target)) setMenu(void 0);
-				};
-				const key = (event) => {
-					if (event.key === "Escape") {
-						event.stopPropagation();
-						setMenu(void 0);
-					}
-				};
-				window.addEventListener("mousedown", down, true);
-				window.addEventListener("keydown", key, true);
-				return () => {
-					window.removeEventListener("mousedown", down, true);
-					window.removeEventListener("keydown", key, true);
-				};
-			}, [menu]);
-			const addFiles = (picked) => {
-				const fits = [...picked ?? []].filter((file) => {
-					if (file.size <= 10485760) return true;
-					notify(t("composer.fileTooBig", { name: file.name }));
-					return false;
-				});
-				const next = [...files, ...fits];
-				if (next.length > 5) notify(t("composer.tooManyFiles", { count: String(5) }));
-				setFiles(next.slice(0, 5));
-				if (picker.current) picker.current.value = "";
-				input.current?.focus();
-			};
-			const empty = !draft.trim() && !files.length;
-			const submit = async () => {
-				const body = draft.trim();
-				const captured = files;
-				if (!body && !captured.length) return;
-				setDraft("");
-				setFiles([]);
-				const restore = () => {
-					setDraft((previous) => previous.trim() ? previous : body);
-					setFiles((previous) => previous.length ? previous : captured);
-				};
-				let text = body;
-				if (captured.length) {
-					setUploading(true);
-					try {
-						const kept = [];
-						for (const file of captured) kept.push(await call("POST desk/files", { body: {
-							name: file.name,
-							data: await readBase64(file)
-						} }));
-						text = [body, `${t("composer.attachmentsHeader")}\n${kept.map((file) => `- ${file.name}（${sizeLabel(file.size)}）：${file.path}`).join("\n")}`].filter(Boolean).join("\n\n");
-					} catch (failure) {
-						notify(errorText(failure));
-						restore();
-						return;
-					} finally {
-						setUploading(false);
-					}
-				}
-				if (!await send(text)) restore();
-			};
-			const keys = (event) => {
-				const composing = event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || event.nativeEvent.getModifierState?.("AltGraph");
-				if (event.key !== "Enter" || event.shiftKey || composing) return;
-				event.preventDefault();
-				submit();
-			};
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-				className: "dt-composer-dock",
-				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-					ref: card,
-					className: "dt-composer",
-					"data-tall": files.length > 0 || draft.includes("\n") || void 0,
-					children: [
-						menu && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-							className: "dt-menu",
-							role: "menu",
-							"aria-label": t("composer.add"),
-							children: menu === "root" ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
-								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
-									type: "button",
-									role: "menuitem",
-									onClick: () => {
-										setMenu(void 0);
-										picker.current?.click();
-									},
-									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(PaperclipIcon, {}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("composer.addFiles") })]
-								}),
-								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
-									type: "button",
-									role: "menuitem",
-									onMouseDown: keepFocus,
-									onClick: () => setMenu("reference"),
-									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ChatsIcon, {}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("composer.reference") })]
-								}),
-								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
-									type: "button",
-									role: "menuitem",
-									onClick: () => {
-										setMenu(void 0);
-										setScheduling(true);
-									},
-									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ClockIcon, {}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("composer.schedule") })]
-								})
-							] }) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ReferenceList, {
-								onBack: () => setMenu("root"),
-								onPick: (title, key) => {
-									setMenu(void 0);
-									insert(t("composer.referenceText", {
-										title,
-										key
-									}));
-								}
-							})
-						}),
-						files.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-							className: "dt-composer-files",
-							children: files.map((file, index) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-								className: "dt-composer-file",
-								children: [
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(PaperclipIcon, {}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										className: "dt-composer-file-name",
-										children: file.name
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										className: "dt-composer-file-size",
-										children: sizeLabel(file.size)
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-										type: "button",
-										"aria-label": t("composer.removeFile", { name: file.name }),
-										title: t("composer.removeFile", { name: file.name }),
-										onClick: () => setFiles(files.filter((_, at) => at !== index)),
-										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(CloseIcon, {})
-									})
-								]
-							}, `${file.name}-${index}`))
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-							type: "button",
-							className: "dt-composer-plus",
-							"aria-label": t("composer.add"),
-							title: t("composer.add"),
-							"aria-haspopup": "menu",
-							"aria-expanded": !!menu,
-							onMouseDown: keepFocus,
-							onClick: () => setMenu(menu ? void 0 : "root"),
-							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PlusIcon, {})
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
-							ref: picker,
-							type: "file",
-							multiple: true,
-							hidden: true,
-							"aria-hidden": "true",
-							tabIndex: -1,
-							onChange: (event) => addFiles(event.target.files)
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
-							ref: input,
-							className: "dt-composer-input",
-							rows: 1,
-							value: draft,
-							"aria-label": t("chat.label"),
-							placeholder: t("chat.placeholder"),
-							"aria-busy": busy || uploading || void 0,
-							onChange: (event) => setDraft(event.target.value),
-							onKeyDown: keys
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: "dt-composer-trailing",
-							children: [empty ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-								type: "button",
-								className: "dt-composer-voice",
-								"aria-label": t("composer.voiceStart"),
-								title: t("composer.voiceTitle"),
-								onMouseDown: keepFocus,
-								onClick: onVoice,
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(WaveIcon, { size: 18 })
-							}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-								type: "button",
-								className: "dt-composer-send",
-								"aria-label": t("chat.send"),
-								title: t("chat.send"),
-								"aria-busy": busy || uploading || void 0,
-								onMouseDown: keepFocus,
-								onClick: () => {
-									submit();
-								},
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SendIcon, {})
-							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-								type: "button",
-								className: "dt-composer-mic",
-								"aria-pressed": dictation.listening,
-								"aria-label": t(dictation.listening ? "composer.stopDictation" : "composer.dictate"),
-								title: t(dictation.listening ? "composer.stopDictation" : "composer.dictate"),
-								onMouseDown: keepFocus,
-								onClick: () => {
-									if (dictation.listening) dictation.stop();
-									else dictation.start();
-								},
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(MicIcon, {})
-							})]
-						}),
-						(dictation.note || uploading || queued > 0) && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: "dt-composer-note",
-							"data-testid": "composer-queue-note",
-							role: "status",
-							children: uploading ? t("composer.uploading") : dictation.note || t("composer.queued", { n: String(queued) })
-						})
-					]
-				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ScheduleDialog, {
-					open: scheduling,
-					draft,
-					onClose: () => setScheduling(false),
-					onScheduled: (used) => {
-						if (used) setDraft("");
-					}
-				})]
-			});
-		}
-		/** The chats a message may reference: the Threads of dsh-superagent, newest first, without the desk itself. */
-		function ReferenceList({ onBack, onPick }) {
-			const { t, call } = usePanel();
-			const [threads, setThreads] = (0, react.useState)();
-			const [failure, setFailure] = (0, react.useState)("");
-			(0, react.useEffect)(() => {
-				let live = true;
-				call("GET threads", { query: {
-					filter: "all",
-					limit: 20
-				} }).then((list) => {
-					if (live) setThreads(list.items.filter((item) => !item.key.startsWith("superagent:desk:")));
-				}, (error) => {
-					if (live) setFailure(errorText(error));
-				});
-				return () => {
-					live = false;
-				};
-			}, [call]);
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
-				type: "button",
-				className: "dt-menu-head",
-				onMouseDown: keepFocus,
-				onClick: onBack,
-				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(BackIcon, {}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("composer.referenceTitle") })]
-			}), failure ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-				className: "dt-menu-note",
-				children: failure
-			}) : !threads ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-				className: "dt-menu-note",
-				children: t("loading")
-			}) : !threads.length ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-				className: "dt-menu-note",
-				children: t("composer.referenceEmpty")
-			}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-				className: "dt-menu-list",
-				children: threads.map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
-					type: "button",
-					role: "menuitem",
-					onMouseDown: keepFocus,
-					onClick: () => onPick(item.title, item.key),
-					children: [
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ChatsIcon, {}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: "dt-menu-label",
-							children: item.title
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: "dt-menu-hint",
-							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(When, { at: item.lastAt })
-						})
-					]
-				}, item.key))
-			})] });
-		}
-		/** The next whole hour, as a `datetime-local` value. */
-		function nextHourLocal(now = /* @__PURE__ */ new Date()) {
-			const next = new Date(now);
-			next.setMinutes(0, 0, 0);
-			next.setHours(next.getHours() + 1);
-			const pad = (value) => String(value).padStart(2, "0");
-			return `${next.getFullYear()}-${pad(next.getMonth() + 1)}-${pad(next.getDate())}T${pad(next.getHours())}:${pad(next.getMinutes())}`;
-		}
-		/** Schedules a message to the supervisor, and lists and removes the ones scheduled before. */
-		function ScheduleDialog({ open, draft, onClose, onScheduled }) {
-			const { t, call, notify } = usePanel();
-			const [text, setText] = (0, react.useState)("");
-			const [at, setAt] = (0, react.useState)("");
-			const [repeat, setRepeat] = (0, react.useState)("none");
-			const [list, setList] = (0, react.useState)();
-			const [busy, setBusy] = (0, react.useState)(false);
-			const load = () => call("GET desk/schedules").then((value) => setList(value.schedules), (failure) => notify(errorText(failure)));
-			(0, react.useEffect)(() => {
-				if (!open) return;
-				setText(draft.trim());
-				setAt(nextHourLocal());
-				setRepeat("none");
-				load();
-			}, [open]);
-			const save = async () => {
-				if (!text.trim() || !at || busy) return;
-				setBusy(true);
-				try {
-					const saved = await call("POST desk/schedules", { body: {
-						text: text.trim(),
-						at: new Date(at).toISOString(),
-						repeat
-					} });
-					notify(t("schedule.saved", { when: fullTime(saved.at, t("lang")) }));
-					onScheduled(!!draft.trim() && text.trim() === draft.trim());
-					onClose();
-				} catch (failure) {
-					notify(errorText(failure));
-				} finally {
-					setBusy(false);
-				}
-			};
-			const remove = async (id) => {
-				try {
-					await call("POST desk/schedules/:id/delete", { id });
-					await load();
-				} catch (failure) {
-					notify(errorText(failure));
-				}
-			};
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Modal, {
-				open,
-				onClose,
-				title: t("schedule.title"),
-				closeLabel: t("schedule.close"),
-				description: t("schedule.description"),
-				footer: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-					variant: "ghost",
-					onClick: onClose,
-					children: t("schedule.close")
-				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-					variant: "primary",
-					disabled: busy || !text.trim() || !at,
-					onClick: () => {
-						save();
-					},
-					children: t("schedule.save")
-				})] }),
-				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-					className: "dt-form dt-schedule",
-					children: [
-						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
-							className: "dt-field",
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("schedule.text") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
-								className: "dt-textarea",
-								rows: 3,
-								value: text,
-								onChange: (event) => setText(event.target.value)
-							})]
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: "dt-schedule-when",
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
-								className: "dt-field",
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("schedule.at") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
-									className: "dt-select",
-									type: "datetime-local",
-									value: at,
-									onChange: (event) => setAt(event.target.value)
-								})]
-							}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
-								className: "dt-field",
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("schedule.repeat") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("select", {
-									className: "dt-select",
-									value: repeat,
-									onChange: (event) => setRepeat(event.target.value),
-									children: [
-										"none",
-										"daily",
-										"weekdays"
-									].map((value) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-										value,
-										children: t(`schedule.${value}`)
-									}, value))
-								})]
-							})]
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: "dt-field",
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("schedule.list") }), !list?.length ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-								className: "dt-hint",
-								children: t("schedule.empty")
-							}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-								className: "dt-list",
-								"data-testid": "desk-schedules",
-								children: list.map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
-									className: "dt-row",
-									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-										className: "dt-row-main",
-										children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-											className: "dt-row-title",
-											children: item.text
-										}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-											className: "dt-row-meta",
-											children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: fullTime(item.at, t("lang")) }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t(`schedule.${item.repeat}`) })]
-										})]
-									}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-										className: "dt-row-actions",
-										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-											variant: "outline",
-											size: "sm",
-											onClick: () => {
-												remove(item.id);
-											},
-											children: t("schedule.delete")
-										})
-									})]
-								}, item.id))
-							})]
-						})
-					]
-				})
-			});
-		}
-		/** Markdown and headers read aloud as plain words. */
-		const plainSpeech = (text) => text.replace(/```[\s\S]*?```/g, " ").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[*_`#>|~]+/g, " ").replace(/\s+/g, " ").trim();
-		/**
-		* Voice chat with SuperAgent: listens, sends what the person said, reads the answer aloud, and listens again, until the
-		* person pauses or ends it. An answer that takes long is left to the conversation, and listening goes on.
-		*/
-		function VoicePane({ messages, send, onClose }) {
-			const { t } = usePanel();
-			const [phase, setPhaseState] = (0, react.useState)(speechApi() ? "listening" : "unsupported");
-			const [caption, setCaption] = (0, react.useState)("");
-			const [note, setNote] = (0, react.useState)(speechApi() ? "" : t("voice.unsupported"));
-			const heardText = (0, react.useRef)("");
-			const known = (0, react.useRef)(/* @__PURE__ */ new Set());
-			const closed = (0, react.useRef)(false);
-			const current = (0, react.useRef)({
-				phase,
-				messages
-			});
-			current.current = {
-				phase: current.current.phase,
-				messages
-			};
-			const setPhase = (next) => {
-				current.current.phase = next;
-				setPhaseState(next);
-			};
-			const dictation = useDictation((text, final) => {
-				if (final) heardText.current += text;
-				setCaption(final ? heardText.current : heardText.current + text);
-			});
-			const listen = () => {
-				if (closed.current) return;
-				heardText.current = "";
-				setCaption("");
-				setPhase("listening");
-				dictation.start({
-					continuous: false,
-					onError: (message) => {
-						setNote(message);
-						setPhase("unsupported");
-					},
-					onEnd: () => {
-						if (closed.current || current.current.phase !== "listening") return;
-						const said = heardText.current.trim();
-						if (!said) {
-							setTimeout(listen, 300);
-							return;
-						}
-						known.current = new Set(current.current.messages.filter((message) => message.role === "superagent").map((message) => message.id));
-						setPhase("thinking");
-						send(said).then((ok) => {
-							if (!ok && !closed.current) listen();
-						});
-					}
-				});
-			};
-			const speak = (text) => {
-				setCaption(text);
-				const synth = typeof window.speechSynthesis === "undefined" ? void 0 : window.speechSynthesis;
-				if (!synth || typeof SpeechSynthesisUtterance === "undefined") {
-					setTimeout(listen, 1500);
-					return;
-				}
-				setPhase("speaking");
-				const utterance = new SpeechSynthesisUtterance(plainSpeech(text).slice(0, 1200));
-				utterance.lang = navigator.language || "zh-CN";
-				utterance.onend = () => {
-					if (!closed.current) listen();
-				};
-				synth.cancel();
-				synth.speak(utterance);
-			};
-			(0, react.useEffect)(() => {
-				if (phase === "listening") listen();
-				return () => {
-					closed.current = true;
-					dictation.abort();
-					window.speechSynthesis?.cancel();
-				};
-			}, []);
-			(0, react.useEffect)(() => {
-				if (phase !== "thinking") return;
-				const answer = messages.find((message) => message.role === "superagent" && !known.current.has(message.id));
-				if (answer) speak(answer.text);
-			}, [messages, phase]);
-			(0, react.useEffect)(() => {
-				if (phase !== "thinking") return void 0;
-				const timer = setTimeout(() => {
-					setNote(t("voice.slow"));
-					listen();
-				}, 12e4);
-				return () => clearTimeout(timer);
-			}, [phase]);
-			const pause = () => {
-				dictation.abort();
-				window.speechSynthesis?.cancel();
-				setPhase("paused");
-			};
-			const end = () => {
-				closed.current = true;
-				dictation.abort();
-				window.speechSynthesis?.cancel();
-				onClose();
-			};
-			const button = (label, onClick, children, className = "dt-voice-btn") => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-				type: "button",
-				className,
-				"aria-label": label,
-				title: label,
-				onClick,
-				children
-			});
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-				className: "dt-voice",
-				role: "dialog",
-				"aria-label": t("composer.voiceTitle"),
-				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-					className: "dt-voice-stage",
-					"data-phase": phase,
-					children: [
-						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: "dt-voice-orb",
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { className: "dt-voice-ring" }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-								className: "dt-voice-mark",
-								"aria-hidden": "true",
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(WaveIcon, { size: 34 })
-							})]
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-							className: "dt-voice-name",
-							children: t("chat.supervisor")
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-							className: "dt-voice-status",
-							role: "status",
-							children: t(`voice.${phase}`)
-						}),
-						caption && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-							className: "dt-voice-caption",
-							children: caption
-						}),
-						note && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-							className: "dt-voice-note",
-							children: note
-						})
-					]
-				}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-					className: "dt-voice-bar",
-					children: [phase === "paused" || phase === "unsupported" ? phase === "paused" && button(t("voice.resume"), () => {
-						setNote("");
-						listen();
-					}, /* @__PURE__ */ (0, react_jsx_runtime.jsx)(MicIcon, {})) : button(t("voice.pause"), pause, /* @__PURE__ */ (0, react_jsx_runtime.jsx)(MicIcon, {})), button(t("voice.end"), end, /* @__PURE__ */ (0, react_jsx_runtime.jsx)(CloseIcon, {}), "dt-voice-btn dt-voice-end")]
-				})]
-			});
-		}
-		//#endregion
-		//#region src/client/review.tsx
-		/**
-		* VsSaros addition: the review of a ticket's shelved changelist, the only way to submit to P4. A person opens every file's
-		* difference, confirms, and approves the fingerprint of what they read; or sends the CL back with a comment, or discards it.
-		*/
-		function DiffLines({ diff }) {
-			const { t } = usePanel();
-			if (!diff.lines.length) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.binary") });
-			const tone = (line) => line.startsWith("@@") ? "hunk" : line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : "ctx";
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("pre", {
-				className: "dt-diff",
-				children: diff.lines.map((line, index) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-					className: `dt-diff-${tone(line)}`,
-					children: [line || " ", "\n"]
-				}, index))
-			}), diff.truncated && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.truncated") })] });
-		}
-		/** A finished review's one line, or the error of a failed submit on a waiting one. */
-		function Outcome({ review }) {
-			const { t } = usePanel();
-			const by = review.by ?? "";
-			switch (review.state) {
-				case "handed": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.handed", { by }) });
-				case "submitted": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.submitted", {
-					by,
-					submitted: String(review.submittedAs ?? "")
-				}) });
-				case "rejected": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.rejected", {
-					by,
-					comment: review.comment ?? ""
-				}) });
-				case "discarded": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.discarded", { by }) });
-				case "submitting": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.submitting") });
-				default: return null;
-			}
-		}
-		/** The review section of a ticket's page; renders nothing for a ticket without a changelist review. */
-		function ReviewSection({ id, onChanged }) {
-			const { t, call } = usePanel();
-			const { data, reload } = usePoll(() => call("GET tickets/:id/review", { id }), [id], 1e4);
-			if (!data || data.review === null) return null;
-			const { review } = data;
-			const title = t("review.section", { change: String(review.change) });
-			if (review.state !== "waiting") return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
-				title,
-				icon: "review",
-				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Outcome, { review })
-			});
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(WaitingReview, {
-				id,
-				view: data,
-				title,
-				after: async () => {
-					await reload();
-					await onChanged();
-				}
-			}, review.fingerprint);
-		}
-		function WaitingReview({ id, view, title, after }) {
-			const { t, call } = usePanel();
-			const { review, diffs, submit } = view;
-			const [seen, setSeen] = (0, react.useState)({});
-			const [open, setOpen] = (0, react.useState)();
-			const [ack, setAck] = (0, react.useState)(false);
-			const [confirming, setConfirming] = (0, react.useState)(false);
-			const [rejecting, setRejecting] = (0, react.useState)(false);
-			const [comment, setComment] = (0, react.useState)("");
-			const [changed, setChanged] = (0, react.useState)([]);
-			const ackId = (0, react.useId)();
-			const approve = useAction(async () => {
-				try {
-					await call("POST tickets/:id/review/approve", {
-						id,
-						body: { fingerprint: review.fingerprint }
-					});
-				} catch (failure) {
-					if (failure instanceof ApiError && failure.status === 409) setChanged(failure.details.changed ?? []);
-					setConfirming(false);
-					throw failure;
-				}
-				setConfirming(false);
-			}, { reload: after });
-			const reject = useAction(async () => {
-				await call("POST tickets/:id/review/reject", {
-					id,
-					body: { comment: comment.trim() }
-				});
-				setRejecting(false);
-				setComment("");
-			}, { reload: after });
-			const all = diffs.length > 0 && diffs.every((diff) => seen[diff.depotFile]);
-			const toggle = (file) => {
-				setOpen(open === file ? void 0 : file);
-				setSeen((current) => ({
-					...current,
-					[file]: true
-				}));
-			};
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Section, {
-				title,
-				icon: "review",
-				badge: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-					tone: "info",
-					children: t("review.seen", {
-						seen: String(Object.keys(seen).length),
-						total: String(diffs.length)
-					})
-				}),
-				children: [
-					review.error && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-						className: "dt-banner dt-danger",
-						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: "dt-banner-label",
-							children: t("review.lastError", { error: review.error })
-						})
-					}),
-					changed.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "dt-banner dt-danger",
-						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: "dt-banner-label",
-							children: t("review.changed")
-						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-							className: "dt-plain-list dt-mono",
-							children: changed.map((file) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", { children: file }, file))
-						})]
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(KeyValues, { rows: [
-						[t("review.description"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("pre", {
-							className: "dt-review-desc",
-							children: review.description.trim()
-						})],
-						[t("review.workspace"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: "dt-mono",
-							children: review.client
-						})],
-						[t("review.fingerprint"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: "dt-mono",
-							children: review.fingerprint
-						})]
-					] }),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.filesHint") }),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-						className: "dt-review-files",
-						children: diffs.map((diff) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
-							open: open === diff.depotFile,
-							onToggle: () => toggle(diff.depotFile),
-							icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: seen[diff.depotFile] ? "decision" : "hash" }),
-							title: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-								className: "dt-mono",
-								children: [
-									diff.depotFile,
-									"#",
-									diff.rev,
-									" ",
-									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-										className: "dt-hint",
-										children: [
-											"(",
-											diff.type,
-											")"
-										]
-									})
-								]
-							}),
-							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-								className: "dt-disclosure-body",
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DiffLines, { diff })
-							})
-						}, diff.depotFile))
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "dt-review-ack",
-						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
-							id: ackId,
-							type: "checkbox",
-							checked: ack,
-							disabled: !all,
-							onChange: (event) => setAck(event.target.checked)
-						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("label", {
-							htmlFor: ackId,
-							children: t("review.ack")
-						})]
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "dt-row-buttons",
-						children: [
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-								variant: "primary",
-								size: "sm",
-								disabled: !all || !ack || approve.busy,
-								onClick: () => setConfirming(true),
-								children: t("review.approve")
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-								variant: "outline",
-								size: "sm",
-								onClick: () => setRejecting(true),
-								children: t("review.reject")
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmButton, {
-								variant: "outline",
-								label: t("review.discard"),
-								title: t("review.discardTitle", { change: String(review.change) }),
-								message: t("review.discardConfirm"),
-								onConfirm: async () => {
-									await call("POST tickets/:id/review/discard", { id });
-									await after();
-								}
-							})
-						]
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Modal, {
-						open: confirming,
-						onClose: () => setConfirming(false),
-						closeLabel: t("close"),
-						title: t("review.approveTitle", { change: String(review.change) }),
-						description: submit.mode === "pipeline" ? t("review.approvePipeline", { tags: submit.tags }) : t("review.approveHost"),
-						footer: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-							variant: "ghost",
-							onClick: () => setConfirming(false),
-							children: t("cancel")
-						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-							variant: "primary",
-							disabled: approve.busy,
-							onClick: () => {
-								approve.run();
-							},
-							children: t("confirm")
-						})] })
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Modal, {
-						open: rejecting,
-						onClose: () => setRejecting(false),
-						closeLabel: t("close"),
-						title: t("review.rejectTitle", { change: String(review.change) }),
-						description: t("review.rejectHint"),
-						footer: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-							variant: "ghost",
-							onClick: () => setRejecting(false),
-							children: t("cancel")
-						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-							variant: "primary",
-							disabled: !comment.trim() || reject.busy,
-							onClick: () => {
-								reject.run();
-							},
-							children: t("review.reject")
-						})] }),
-						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
-							className: "dt-textarea",
-							rows: 4,
-							value: comment,
-							placeholder: t("review.rejectPlaceholder"),
-							"aria-label": t("review.rejectTitle", { change: String(review.change) }),
-							onChange: (event) => setComment(event.target.value)
-						})
-					})
-				]
-			});
-		}
-		/** The reviews waiting for a person, for the Overview; renders nothing when none waits. */
-		function PendingReviews() {
-			const { t, call, navigate } = usePanel();
-			const { data } = usePoll(() => call("GET reviews"), [], 1e4);
-			if (!data?.waiting.length) return null;
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
-				title: t("review.pending"),
-				count: data.waiting.length,
-				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-					className: "dt-list dt-cards",
-					children: data.waiting.map((review) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
-						className: "dt-row dt-link",
-						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: "dt-row-main",
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-								className: "dt-row-title",
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-									type: "button",
-									className: "dt-open",
-									onClick: () => navigate({
-										page: "execution",
-										id: review.ticketId
-									}),
-									children: review.description.split("\n")[0]?.trim() || `CL ${review.change}`
-								})
-							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-								className: "dt-row-meta",
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("review.waitingLine", {
-									change: String(review.change),
-									files: String(review.files.length),
-									time: when(review.requestedAt, t("lang"))
-								}) })
-							})]
-						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-							className: "dt-row-actions",
-							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-								variant: "outline",
-								size: "sm",
-								icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, {
-									name: "review",
-									size: 14
-								}),
-								onClick: () => navigate({
-									page: "execution",
-									id: review.ticketId
-								}),
-								children: t("review.open")
-							})
-						})]
-					}, review.ticketId))
-				})
 			});
 		}
 		//#endregion
@@ -8456,8 +5966,9 @@ window.__ModuleLoader__.load({
 			});
 		}
 		const VIEW_KEY = "dsh-superagent/work-view";
-		/** The Workbench tab: a team's steps as a flow, a board or a list. */
-		function WorkPage({ ticketId }) {
+		/** The team's steps as a flow, a board or a list (2026-11-09: hosted inside the Execution tab).
+		*  `embedded` = 执行页内嵌：那一页已有 <GroupRuns compact />，这里不再重复轮询群进度。 */
+		function WorkPage({ ticketId, embedded = false }) {
 			const { t } = usePanel();
 			const { teams, approvals, loaded } = useWork();
 			const [chosen, setChosen] = (0, react.useState)(ticketId);
@@ -8474,7 +5985,7 @@ window.__ModuleLoader__.load({
 			};
 			const [selected, setSelected] = (0, react.useState)();
 			const team = teams.find((item) => item.ticket.id === chosen) ?? teams[0];
-			const groupRuns = /* @__PURE__ */ (0, react_jsx_runtime.jsx)(GroupRuns, {});
+			const groupRuns = embedded ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(GroupRuns, {});
 			if (!loaded) return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [groupRuns, /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("loading") })] });
 			if (!team) return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: "dt-work",
@@ -8559,10 +6070,2662 @@ window.__ModuleLoader__.load({
 			});
 		}
 		//#endregion
+		//#region src/client/execution.tsx
+		/** Execution status view (active Tickets and pause control) and Execution settings group (Executor capacity and workspace environment). */
+		/** ★ 2026-11-09（用户要求）：流程图 / 看板 / 列表是「执行」页的一部分，不再是独立的 work 页面。
+		*  `ticketId` 来自旧 `work?ticket=…` 深链（概况侧栏「查看流程」），用来预选团队。 */
+		function ExecutionStatus({ filter: current, state, reload, ticketId }) {
+			const { t, call, navigate } = usePanel();
+			const [limit, setLimit] = (0, react.useState)(20);
+			const { data, error, reload: reloadTickets } = usePoll(() => call("GET tickets", { query: {
+				state: current,
+				limit
+			} }), [current, limit]);
+			const { paused, load: { maxWorkers } } = state;
+			const pause = async () => {
+				await call("POST executor/pause", { body: { paused: !paused } });
+				await reload();
+			};
+			const status = state.setup.problem ? {
+				tone: "warning",
+				label: t("executorWaitingSetup")
+			} : paused ? {
+				tone: "warning",
+				label: t("processingPaused")
+			} : {
+				tone: "ongoing",
+				label: t("executorRunning")
+			};
+			const action = paused ? "resumeProcessing" : "pauseProcessing";
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(StatusHead, {
+					hint: t("executionStatusIntro"),
+					settings: "execution"
+				}),
+				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(GroupRuns, { compact: true }),
+				/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					className: "dt-row-meta dt-status-line",
+					children: [
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "dt-status-text",
+							"data-state": status.tone,
+							children: status.label
+						}),
+						!state.setup.problem && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(LabelValue, {
+							label: t("executingLabel"),
+							value: `${state.load.running} / ${maxWorkers}`
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(LabelValue, {
+							label: t("queuedLabel"),
+							value: state.load.queued
+						})] }),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmButton, {
+							variant: "outline",
+							icon: paused ? "play" : "pause",
+							label: t(action),
+							title: t(action),
+							message: t(paused ? "resumeProcessingConfirm" : "pauseProcessingConfirm"),
+							onConfirm: pause
+						})
+					]
+				}),
+				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(UsagePanel, {}),
+				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ApprovalRulesPanel, {}),
+				state.health.p4?.code === "p4Unset" && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
+					className: "dt-hint",
+					children: [
+						t("p4UnsetHint"),
+						" ",
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							className: "dt-textlink",
+							onClick: () => navigate(settingsRoute("execution")),
+							children: t("sourceOpenSettings")
+						})
+					]
+				}),
+				/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+					className: "dt-filters",
+					children: TICKET_FILTERS.map((value) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Pill, {
+						active: current === value,
+						onClick: () => {
+							setLimit(20);
+							navigate({
+								page: "execution",
+								query: value === "open" ? {} : { filter: value }
+							}, true);
+						},
+						children: t(`ticketFilter.${value}`)
+					}, value))
+				}),
+				current === "idle" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("idleHint") }),
+				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(LoadState, {
+					error,
+					loading: !data
+				}),
+				data && (data.items.length ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+					className: "dt-list",
+					children: data.items.map((ticket) => ticket.stage === "person" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(TicketLine, {
+						ticket,
+						question: true,
+						onChanged: reloadTickets
+					}, ticket.id) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(TicketLine, { ticket }, ticket.id))
+				}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("none") })),
+				data?.next_offset != null && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(LoadMore, { onMore: () => setLimit(limit + 20) }),
+				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(WorkPage, {
+					ticketId,
+					embedded: true
+				}, ticketId)
+			] });
+		}
+		const firstSentence = (text) => /^[^。；;.]*(?:[。；;]|\.(?=\s|$))?/.exec(text)?.[0] ?? text;
+		function EnvironmentVariables({ groups, sources, onPick }) {
+			const { t } = usePanel();
+			const [open, setOpen] = (0, react.useState)(false);
+			const owner = (id) => id === "executor" ? t("term.executor") : localized(t, sources.find((source) => source.id === id)?.title ?? id);
+			const count = groups.reduce((sum, group) => sum + group.variables.length, 0);
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
+				icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "hash" }),
+				title: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+					t("environmentVariables"),
+					" ",
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						className: "dt-count",
+						children: count
+					})
+				] }),
+				open,
+				onToggle: () => setOpen(!open),
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					className: "dt-disclosure-body",
+					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("environmentPick") }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("table", {
+						className: "dt-table",
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("thead", { children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("tr", { children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("th", { children: t("environmentKey") }),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("th", { children: t("environmentDescription") }),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("th", { children: t("environmentOwner") })
+						] }) }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("tbody", { children: groups.flatMap((group) => group.variables.map((variable) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("tr", { children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("td", { children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								className: "dt-textlink dt-mono",
+								onClick: () => onPick(variable.key),
+								children: variable.key
+							}) }),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("td", {
+								title: localized(t, variable.description),
+								children: firstSentence(localized(t, variable.description))
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("td", { children: [owner(group.owner), !group.enabled && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+								className: "dt-hint",
+								children: [" · ", t("sourceOff")]
+							})] })
+						] }, variable.key))) })]
+					})]
+				})
+			});
+		}
+		function ExecutionSettings() {
+			const { t } = usePanel();
+			const { blocks, environment, sources } = useSettings().settings;
+			const p4 = sources.find((source) => source.id === "p4");
+			const executor = blocks.executor.value;
+			const draft = useBlockDraft("executor", {
+				...executor,
+				maxWorkers: String(executor.maxWorkers),
+				blockedCommands: executor.blockedCommands.join(" ")
+			}, blocks.executor.revision, (value) => ({
+				...value,
+				maxWorkers: numberOf(value.maxWorkers),
+				blockedCommands: value.blockedCommands.split(/[\s,]+/).filter(Boolean)
+			}));
+			const value = draft.value;
+			const edit = (next) => draft.edit({
+				...value,
+				...next
+			});
+			const prepare = (0, react.useRef)(null);
+			const insert = (key) => {
+				const field = prepare.current;
+				const at = field?.selectionStart ?? value.prepare.length, to = field?.selectionEnd ?? at;
+				edit({ prepare: `${value.prepare.slice(0, at)}"$${key}"${value.prepare.slice(to)}` });
+				requestAnimationFrame(() => {
+					field?.focus();
+					const caret = at + key.length + 3;
+					field?.setSelectionRange(caret, caret);
+				});
+			};
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: "dt-form",
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("form", {
+						className: "dt-form",
+						onSubmit: (event) => {
+							draft.submit(event);
+						},
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Fields, {
+							disabled: draft.busy,
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: "dt-form dt-block",
+								children: [
+									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("h2", {
+										className: "dt-block-title",
+										children: [t("term.executor"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(InfoTip, { text: t("executorIntro") })]
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
+										title: t("executorModel"),
+										hint: t("executorModelHint"),
+										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ModelField, {
+											id: "dt-worker-model",
+											value: value.model,
+											onChange: (model) => edit({ model })
+										})
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
+										label: t("maxWorkers"),
+										hint: t("maxWorkersHint"),
+										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
+											type: "number",
+											min: LIMITS.maxWorkers.min,
+											max: LIMITS.maxWorkers.max,
+											required: true,
+											value: value.maxWorkers,
+											onChange: (event) => edit({ maxWorkers: event.target.value })
+										})
+									})
+								]
+							}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: "dt-form dt-block",
+								children: [
+									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("h2", {
+										className: "dt-block-title",
+										children: [t("term.environment"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(InfoTip, { text: t("environmentIntro") })]
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
+										label: t("executionDirectory"),
+										hint: t("executionDirectoryHint"),
+										note: value.directory ? void 0 : t("executionDirectoryDefault", { root: environment.root }),
+										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
+											className: "dt-mono",
+											value: value.directory,
+											placeholder: t("executionDirectoryEmpty"),
+											spellCheck: false,
+											pattern: "/.*",
+											onChange: (event) => edit({ directory: event.target.value })
+										})
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
+										label: t("prepareCommand"),
+										hint: t("prepareCommandHint"),
+										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
+											ref: prepare,
+											className: "dt-textarea dt-mono",
+											rows: 3,
+											maxLength: LIMITS.prepareCommand,
+											spellCheck: false,
+											placeholder: t("prepareCommandEmpty"),
+											value: value.prepare,
+											onChange: (event) => edit({ prepare: event.target.value })
+										})
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(EnvironmentVariables, {
+										groups: environment.variables,
+										sources,
+										onPick: insert
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
+										label: t("blockedCommands"),
+										hint: t("blockedCommandsHint"),
+										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
+											className: "dt-mono",
+											value: value.blockedCommands,
+											placeholder: t("blockedCommandsNone"),
+											spellCheck: false,
+											onChange: (event) => edit({ blockedCommands: event.target.value })
+										})
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SwitchRow, {
+										label: t("sideCalls"),
+										hint: t("sideCallsHint"),
+										checked: value.sideCalls,
+										onChange: (sideCalls) => edit({ sideCalls })
+									})
+								]
+							})]
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SaveBar, {
+							...draft,
+							onDiscard: draft.discard
+						})]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfigHistory, { blocks: ["executor", "pause"] }),
+					p4 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SourceCard, {
+						source: p4,
+						title: t("p4Block")
+					}),
+					p4 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfigHistory, { blocks: ["source:p4"] })
+				]
+			});
+		}
+		new Intl.Segmenter("zh", { granularity: "word" });
+		//#endregion
+		//#region src/setup.ts
+		const SETUP_PROBLEMS = {
+			foreignFile: ["deployment", "{file} was not written by dsh-superagent; move it, or choose another state directory."],
+			gitTooOld: ["deployment", "git does not read the github.com credential configuration dsh-superagent writes; dsh-superagent needs git 2.32 or later."],
+			environmentFailed: ["deployment", "Preparing the agent environment failed."],
+			repositoryUnset: ["github", "The GitHub Source names no repository."],
+			agentCliUnset: ["github", "The agent GitHub CLI is not set."],
+			agentCliMissing: ["github", "The agent GitHub CLI was not found."],
+			agentCliSignedOut: ["github", "The agent GitHub CLI cannot read its account."],
+			agentCliNoAccount: ["github", "The agent GitHub CLI did not report a GitHub account."],
+			repositoryUnreadable: ["github", "@{account} cannot read {repository}."],
+			repositoryUnreported: ["github", "The agent GitHub CLI did not return {repository}."],
+			repositoryReadOnly: ["github", "@{account} cannot push to {repository}."],
+			feishuCliFailed: ["feishu", "The bot lark-cli does not work."],
+			feishuNoApp: ["feishu", "auth status of the bot lark-cli did not report the app."],
+			feishuBotNotReady: ["feishu", "The bot identity of app {app} is {status}; configure the app secret with lark-cli."],
+			feishuUserIdentity: ["feishu", "The bot lark-cli allows user identities (strict mode {mode}); give the bot its own lark-cli configuration in strict mode bot, as docs/006-deployment.md describes."],
+			feishuNoBot: ["feishu", "The Feishu bot API did not return the bot's open_id."],
+			feishuAppMissing: ["feishu", "lark-cli has no profile for Feishu app {app}, and the VsSaros Bots do not keep its secret; add the app in the Bots channel settings, or run lark-cli profile add --name {app} --app-id {app} --app-secret-stdin."],
+			feishuProfileFailed: ["feishu", "lark-cli could not add a bot-only profile for Feishu app {app}: {output}"],
+			feishuAppMismatch: ["feishu", "lark-cli profile {profile} belongs to app {actual}, not {app}."]
+		};
+		//#endregion
+		//#region src/sources/host.ts
+		/** Fixed English health templates (`{name}` placeholders); the panel localizes each `code` in the interface language. */
+		const HEALTH_TEXT = {
+			setupPending: "Waiting for the deployment check",
+			sourceOff: "Off",
+			feishuCliUnset: "The Source is on, and its bot lark-cli is not set",
+			feishuAppShared: "Feishu app {app} already receives events in the Bots inbound of {holder}; Feishu delivers each event to one connection only, so give this Source its own Feishu app",
+			feishuBusBusy: "Another event consumer already holds Feishu app {app}; Feishu delivers each event to one connection only, so stop it or give this Source its own Feishu app",
+			feishuShared: "Receiving events of Feishu app {app} through the VsSaros Bots connection in this Host",
+			githubUnset: "The Source is on, and its repository and account CLI are not set",
+			p4Unset: "P4 is on, and its server, execution account and allowed paths are not all set",
+			tapdUnset: "The Source is on, and no watch is set",
+			tapdWebhookUnset: "The TAPD Webhook is on, and its shared secret is not set",
+			feishuBotMissing: "Waiting for the Feishu bot",
+			pollFailures: "{count} consecutive failed polls; last: {error}"
+		};
+		//#endregion
+		//#region src/client/locales.ts
+		/**
+		* Bilingual UI dictionaries (`[zh, en]`) and glossary groupings, following the domain terms in `docs/001-domain.md`.
+		*/
+		const TEXT = {
+			title: ["Superagent", "Superagent"],
+			close: ["关闭", "Close"],
+			cancel: ["取消", "Cancel"],
+			confirm: ["确定", "Confirm"],
+			loading: ["正在读取…", "Loading…"],
+			loadMore: ["加载更多", "Load more"],
+			offline: ["无法连接到 dsh-superagent 服务。请确认它正在运行（dsh-superagent status），然后重试。", "Cannot reach the dsh-superagent service. Check that it is running (dsh-superagent status), then retry."],
+			serverError: ["dsh-superagent 服务内部错误（{status}），请查看运行日志后重试。", "dsh-superagent service error ({status}). Check the log, then retry."],
+			requestFailed: ["请求失败（{status}）。", "Request failed ({status})."],
+			empty: ["—", "—"],
+			yes: ["是", "Yes"],
+			no: ["否", "No"],
+			"decision.accept": ["接单", "Accept"],
+			"decision.reopen": ["续做", "Reopen"],
+			"decision.stop": ["停止", "Stop"],
+			"decision.ignore": ["忽略", "Ignore"],
+			"decision.unavailable": ["未完成", "Unavailable"],
+			"strength.explicit": ["明确", "Explicit"],
+			"strength.inferred": ["推断", "Inferred"],
+			"mode.off": ["关闭", "Off"],
+			"mode.observe": ["仅观察", "Observe"],
+			"mode.auto": ["自动接单", "Auto"],
+			"source.feishu": ["飞书", "Feishu"],
+			"source.github": ["GitHub", "GitHub"],
+			"source.github-issue": ["GitHub Issue", "GitHub Issue"],
+			"source.superagent": ["主管对话", "Supervisor desk"],
+			"health.github": ["GitHub 来源", "GitHub Source"],
+			"health.feishu": ["飞书来源", "Feishu Source"],
+			"health.history": ["飞书补收", "Feishu recovery"],
+			"health.runtime": ["dsh-superagent", "dsh-superagent"],
+			"health.models": ["模型服务", "Model service"],
+			"health.assessment": ["发给主 Session 的评估", "Evals sent to the main Session"],
+			"health.launch": ["派工启动", "Assignment launches"],
+			"health.delivery": ["输入送达", "Input delivery to Assignments"],
+			"health.relay": ["转达给主 Session 的消息", "Relays to the main Session"],
+			"health.notice": ["给主 Session 的通知", "Notices to the main Session"],
+			"health.reply": ["发往渠道的消息", "Messages to Channels"],
+			"health.worker": ["执行器事件处理", "Executor event handling"],
+			"health.evals": ["未完成的评估", "Unavailable Evals"],
+			none: ["暂无。", "None."],
+			openSession: ["打开 Session", "Open Session"],
+			stop: ["停止", "Stop"],
+			policyVersion: ["策略版本", "Policy version"],
+			mediaMarker: ["[媒体]", "[Media]"],
+			forwardMarker: ["[合并转发]", "[Merged forward]"],
+			ticketId: ["工单 id", "Ticket id"],
+			wouldAccept: ["忽略（可接单，仅观察）", "Ignore (would accept; observe only)"],
+			timeline: ["触发时间线", "Trigger timeline"],
+			groupMember: ["飞书用户", "Feishu user"],
+			feishuBot: ["飞书机器人", "Feishu bot"],
+			unknownMention: ["@某人", "@someone"],
+			automatedNotice: ["自动通知", "Automated notice"],
+			requeue: ["重新评估", "Evaluate again"],
+			imageMarker: ["[图片]", "[image]"],
+			rules: ["接单规则", "Accept rules"],
+			remove: ["删除", "Delete"],
+			"historySource.panel": ["管理页", "Management page"],
+			"historySource.defaults": ["插件默认值", "Plugin defaults"],
+			"historySource.tool": ["主 Session 工具", "Main Session tool"],
+			"historySource.sync": ["从群同步", "Sync"],
+			"historySource.web": ["管理页", "Management page"],
+			"historySource.member-sync": ["成员同步", "Member sync"],
+			"historySource.orchestrator-tool": ["主 Session 工具", "Main Session tool"],
+			"historySource.internal": ["内部", "Internal"],
+			"historySource.policy-sync": ["从群同步", "Sync"],
+			"historySource.sections-migration": ["升级迁移", "Upgrade migration"],
+			"historySource.vocabulary-migration": ["升级迁移", "Upgrade migration"],
+			"historySource.settings-migration": ["升级迁移", "Upgrade migration"],
+			listSeparator: ["、", ", "],
+			labelSeparator: ["：", ": "],
+			lang: ["zh", "en"],
+			automatedEarlier: ["同一发送者之前还有 {count} 条自动消息", "{count} earlier automated messages from the same sender"],
+			collapse: ["收起", "Collapse"],
+			expand: ["展开全文", "Show all"],
+			cardMarker: ["[卡片消息]", "[card message]"],
+			setupProblem: ["部署检查未通过：{detail}", "Deployment check failed: {detail}"],
+			hostNotRunning: ["dsh-superagent 没有响应：它可能正在重启；持续如此时，DSH 的日志写明原因，常见的是配置有误。", "dsh-superagent is not answering: it may be restarting; if this persists, the DSH log names the cause, often a configuration error."],
+			savedRestarting: ["已保存，dsh-superagent 正在重启", "Saved; dsh-superagent is restarting"],
+			problems: ["系统问题", "System problems"],
+			dismiss: ["不再提示", "Dismiss"],
+			saved: ["已保存", "Saved"],
+			"tab.settings": ["设置", "Settings"],
+			statusTitle: ["状态", "Status"],
+			executingLabel: ["执行中", "Executing"],
+			queuedLabel: ["排队", "Queued"],
+			resumeProcessing: ["恢复处理", "Resume processing"],
+			resumeProcessingConfirm: ["恢复后继续评估、派工和发送回复。", "Resuming starts Evals, Assignments and replies again."],
+			restartInterrupts: ["保存会重启 dsh-superagent：{count} 个进行中的派工会中断，并带恢复说明重新开始。", "Saving restarts dsh-superagent: {count} running Assignments stop and start again with a recovery note."],
+			sourceOff: ["已关闭", "Off"],
+			executorWaitingSetup: ["执行器等待部署检查", "Executor waiting for the deployment check"],
+			panel: ["Superagent", "Superagent"],
+			openMaster: ["打开主 Session", "Open main Session"],
+			pagesLabel: ["dsh-superagent 页面", "dsh-superagent pages"],
+			searchPlaceholder: ["搜索工单、线程、触发或链接", "Search Tickets, Threads, Triggers or links"],
+			searchLabel: ["搜索", "Search"],
+			searchFound: ["找到 {tickets} 个工单、{threads} 个线程、{items} 条触发", "Found {tickets} Tickets, {threads} Threads and {items} Triggers"],
+			searchNone: ["没有找到。可以输入触发文字、GitHub PR 或 Issue 链接、#编号、飞书消息链接或 om_ 开头的消息 id。", "Nothing found. Try Trigger text, a GitHub PR or Issue link, #number, a Feishu message link, or an om_ message id."],
+			searchNoneGithub: ["没有找到。可以输入触发文字、GitHub PR 或 Issue 链接或 #编号。", "Nothing found. Try Trigger text, a GitHub PR or Issue link, or #number."],
+			"ticket.ended": ["已结束", "ended"],
+			sessionListNotReady: ["Session 列表尚未加载，请稍后重试。", "The Session list has not loaded yet; try again shortly."],
+			sessionNotListed: ["这个 Session 不在当前会话列表里，可能已被归档或删除。", "This Session is not in the current list; it may have been archived or deleted."],
+			searchFiltered: ["被来源过滤：{reason}", "Filtered by its Source: {reason}"],
+			searchFoundCapped: ["找到 {tickets} 个工单、{threads} 个线程、前 {items} 条触发（请缩小搜索范围）", "Found {tickets} Tickets, {threads} Threads and the first {items} Triggers (narrow the search)"],
+			inThread: ["在 {thread}", "in {thread}"],
+			"tab.overview": ["概况", "Overview"],
+			"tab.chat": ["对话", "Chat"],
+			openOverview: ["打开概况面板", "Open the overview panel"],
+			"side.open": ["打开侧边栏", "Open the side panel"],
+			"side.close": ["收起侧边栏", "Close the side panel"],
+			"side.resize": ["拖动调整侧边栏宽度", "Drag to resize the side panel"],
+			"side.autoOpened": ["主管开始了新的工作，已打开概况面板。", "The supervisor started new work; the overview panel opened."],
+			"side.autoOpenedApproval": ["有步骤在等你批准，已打开概况面板。", "A step waits for your approval; the overview panel opened."],
+			"chat.nativeOpening": ["正在打开主管对话…", "Opening the supervisor desk…"],
+			"chat.dock": ["等你处理", "Waiting for you"],
+			"chat.nativeFailed": ["主管对话没能在这里打开（{error}），先用面板里的对话。", "The supervisor desk could not open here ({error}); the panel's chat is shown instead."],
+			"tab.work": ["工作台", "Workbench"],
+			"work.needsYou": ["需要你处理", "Needs you"],
+			"work.approvalTitle": ["{bot} 想越出工作目录（{step}）", "{bot} wants to go beyond its directory ({step})"],
+			"work.approvalFeishu": ["也发到了工单的飞书话题，回复「同意 #{code}」也行。", "Also sent to the ticket's Feishu thread; replying \"同意 #{code}\" there works too."],
+			"work.allow": ["允许一次", "Allow once"],
+			"work.remember": ["允许并记住", "Allow and remember"],
+			"work.reject": ["拒绝", "Refuse"],
+			"work.waitsForYou": ["等你批准", "Waits for you"],
+			"work.writes": ["写", "Writes"],
+			"work.reads": ["只读", "Read-only"],
+			"work.approvalExpires": ["{time} 前没人批就按拒绝处理", "Refused at {time} if no one answers"],
+			"work.approvalRestored": ["SuperAgent 重启前就在等：批准后会告诉它重新运行这条命令", "It waited through a SuperAgent restart: if allowed, its Bot is told to run it again"],
+			"work.unsandboxed": ["无沙箱", "No sandbox"],
+			"work.needsSandbox": ["这台机器不能给工作目录加沙箱，等你决定", "This machine cannot sandbox the directory; waits for you"],
+			"work.needsPermission": ["权限设置失败，等你决定", "Its permission could not be set; waits for you"],
+			"work.allowUnsandboxed": ["允许无沙箱运行", "Run without a sandbox"],
+			"work.unsandboxedHint": ["这台机器不能给工作目录加沙箱：命令不受限制，只有文件工具被限制在目录内。", "This machine cannot sandbox the directory: commands are not limited; only file tools are kept inside it."],
+			"work.stop": ["停止", "Stop"],
+			"work.stopStep": ["停止步骤 {step}", "Stop step {step}"],
+			"work.turns": ["{turns} 回合", "{turns} turns"],
+			"work.now": ["正在", "Now"],
+			"work.attempts": ["尝试记录", "Attempts"],
+			"work.attempt": ["第 {n} 次", "Attempt {n}"],
+			"work.openSession": ["打开这个 bot 的会话", "Open this Bot's Session"],
+			"work.openFlow": ["在执行页查看「{title}」的流程", "Open the flow of \"{title}\" on the Execution page"],
+			"work.detail": ["步骤 {step}", "Step {step}"],
+			"work.empty": ["现在没有团队在干活。主管组好的团队开工后，流程、看板和列表会显示在这里。", "No team is at work. Once a team the supervisor staffed starts, its flow, board and list show here."],
+			"work.teams": ["团队", "Teams"],
+			"work.views": ["视图", "Views"],
+			"work.view.flow": ["流程图", "Flow"],
+			"work.view.board": ["看板", "Board"],
+			"work.view.list": ["列表", "List"],
+			"groupRuns.title": ["群聊执行", "Group chats"],
+			"groupRuns.status.running": ["已发到群", "Sent to group"],
+			"groupRuns.status.replying": ["正在回答", "Replying"],
+			"groupRuns.status.done": ["已完成", "Done"],
+			"groupRuns.status.error": ["执行失败", "Failed"],
+			"groupRuns.status.cut": ["已中断", "Interrupted"],
+			"groupRuns.note": ["群成员在各自会话里执行，不占上方「执行中」的执行器槽位。", "Group members run in their own sessions and do not take the executor slots counted above."],
+			"groupRuns.open": ["打开群聊", "Open group chat"],
+			"groupRuns.source.post": ["来自对话里的 @群", "From an @group in a conversation"],
+			"groupRuns.source.created": ["来自建群请求", "From a group request"],
+			"groupRuns.source.trigger": ["触发 {id}", "Trigger {id}"],
+			"groupRuns.replies": ["{n} 条回复", "{n} replies"],
+			"groupRuns.elapsed": ["用时 {n}s", "{n}s elapsed"],
+			"groupRuns.failed": ["{n} 位成员失败", "{n} failed"],
+			"groupRuns.member.speaking": ["正在输入", "Typing"],
+			"groupRuns.member.replied": ["已回复", "Replied"],
+			"groupRuns.member.passed": ["无补充", "Passed"],
+			"groupRuns.member.failed": ["未回答", "Failed"],
+			"groupRuns.member.waiting": ["等待中", "Waiting"],
+			"work.zoomIn": ["放大", "Zoom in"],
+			"work.zoomOut": ["缩小", "Zoom out"],
+			"work.fit": ["复位", "Reset"],
+			"work.col.pending": ["等待", "Waiting"],
+			"work.col.running": ["进行中", "Running"],
+			"work.col.blocked": ["待人处理", "Needs a person"],
+			"work.col.ready": ["完成", "Done"],
+			"work.col.ended": ["未完成结束", "Ended unfinished"],
+			"work.col.step": ["步骤", "Step"],
+			"work.col.bot": ["负责 bot", "Bot"],
+			"work.col.after": ["依赖", "After"],
+			"work.col.access": ["权限", "Access"],
+			"work.col.state": ["状态", "State"],
+			"work.col.turns": ["回合", "Turns"],
+			"work.doing.think": ["想一想", "Thinking"],
+			"work.doing.look": ["查找文件", "Looking through files"],
+			"work.doing.write": ["写入修改", "Writing changes"],
+			"work.doing.shell": ["运行命令", "Running a command"],
+			"work.doing.web": ["查网页", "Reading the web"],
+			"work.doing.subagent": ["派子任务", "Running a subagent"],
+			"work.doing.plan": ["更新待办", "Updating its plan"],
+			"work.doing.report": ["汇报结果", "Reporting"],
+			"work.doing.tool": ["使用 {tool}", "Using {tool}"],
+			"flow.handing": ["正在交给 SuperAgent 主管…", "Handing it to the SuperAgent supervisor…"],
+			"flow.handed": ["已交给 SuperAgent 主管", "Handed to the SuperAgent supervisor"],
+			"flow.evaluating": ["主管正在评估这条消息…", "The supervisor is evaluating this message…"],
+			"flow.evalRetry": ["评估暂时不可用，主管稍后再试…", "Eval is unavailable for now; the supervisor tries again…"],
+			"flow.filtered": ["没有交给主管：主管对话没有打开", "Not handed over: the supervisor desk is switched off"],
+			"flow.declined": ["主管没有接手这条消息", "The supervisor did not take this message"],
+			"flow.groupCreated": ["已建群「{name}」", "Made the group \"{name}\""],
+			"flow.groupRouted": ["已交给群「{name}」", "Handed to the group \"{name}\""],
+			"flow.groupUpdated": ["已有同名群「{name}」，已在群里更新成员", "A group named \"{name}\" existed; its members were updated"],
+			"flow.groupNote": ["由群成员接手，主管不再另行处理；群里开始后这里会显示进度。", "The group's members take it; the supervisor does not handle it again. Progress shows here once the group starts."],
+			"flow.alsoGroup": ["这条消息也交给了群「{name}」。", "This message also went to the group \"{name}\"."],
+			"flow.followup": ["已转给工单「{title}」", "Passed to the ticket \"{title}\""],
+			"flow.taken": ["主管已接手，建了工单", "The supervisor took it as a ticket"],
+			"flow.proposing": ["主管正在组队…", "The supervisor is staffing a team…"],
+			"flow.proposal": ["组队方案 v{version}", "Team proposal v{version}"],
+			"flow.risk": ["新建 {bots} 个 bot · {writes} 个写步骤", "{bots} new Bots · {writes} writing steps"],
+			"flow.team": ["团队执行 · {done}/{total} 完成", "Team at work · {done}/{total} done"],
+			"flow.teamStarting": ["团队准备开工…", "The team is getting ready…"],
+			"flow.report": ["等你看结果", "Waits for you to read the result"],
+			"flow.ended": ["结束：{outcome}", "Ended: {outcome}"],
+			"flow.receipt": ["工单已结束：{title}", "Ticket ended: {title}"],
+			"flow.receiptLoading": ["工单已结束", "A ticket ended"],
+			"chat.empty": ["还没有对话。在下面对主管说一个需求：它先评估，要接手就发组队方案给你确认。", "No conversation yet. Tell the supervisor what you need below: it evaluates it, and sends you a team proposal to agree to before any work starts."],
+			"chat.placeholder": ["给 SuperAgent 发消息", "Message SuperAgent"],
+			"chat.label": ["给主管的消息", "Message to the supervisor"],
+			"chat.send": ["发送", "Send"],
+			"chat.pending": ["发送中", "Sending"],
+			"chat.queued": ["随后送达 · 自动并入主管当前回合", "On its way · joins the supervisor's current turn"],
+			"chat.sendFailed": ["发送失败，草稿已保留", "Failed to send; draft kept"],
+			"chat.activity": ["主管正在处理…", "Supervisor is working…"],
+			"chat.queuedCount": ["{n} 条正在送达", "{n} on the way"],
+			"composer.queued": ["{n} 条正在送达；主管处理中收到的消息会自动并入当前回合", "{n} on the way; messages that arrive while the supervisor works join its current turn"],
+			"composer.add": ["添加", "Add"],
+			"composer.addFiles": ["添加文件", "Add files"],
+			"composer.reference": ["引用对话", "Reference a chat"],
+			"composer.schedule": ["定时任务", "Scheduled task"],
+			"composer.referenceTitle": ["引用哪个对话", "Which chat to reference"],
+			"composer.referenceEmpty": ["还没有可以引用的对话。", "No chat to reference yet."],
+			"composer.referenceText": ["引用对话「{title}」（线程 {key}）", "Referencing the chat \"{title}\" (Thread {key})"],
+			"composer.removeFile": ["移除 {name}", "Remove {name}"],
+			"composer.tooManyFiles": ["一条消息最多附 {count} 个文件。", "A message takes at most {count} files."],
+			"composer.fileTooBig": ["「{name}」超过 10 MB，没有加上。", "\"{name}\" is over 10 MB and was not added."],
+			"composer.uploading": ["正在上传附件…", "Uploading the attachments…"],
+			"composer.attachmentsHeader": ["附件：", "Attachments:"],
+			"composer.dictate": ["听写", "Dictate"],
+			"composer.stopDictation": ["停止听写", "Stop dictation"],
+			"composer.dictationUnavailable": ["这个环境不支持听写", "Dictation is not available here"],
+			"composer.dictationOffline": ["连不上语音识别服务", "The speech recognition service cannot be reached"],
+			"composer.micBlocked": ["麦克风权限被阻止了", "Microphone access is blocked"],
+			"composer.notHeard": ["没听清", "Couldn't hear that"],
+			"composer.voiceStart": ["开始语音对话", "Start voice chat"],
+			"composer.voiceTitle": ["语音对话", "Voice chat"],
+			"voice.listening": ["在听", "Listening"],
+			"voice.thinking": ["想一想…", "Thinking…"],
+			"voice.speaking": ["在说", "Speaking"],
+			"voice.paused": ["已暂停", "Paused"],
+			"voice.unsupported": ["这个环境不支持语音对话", "Voice chat is not available here"],
+			"voice.pause": ["暂停", "Pause"],
+			"voice.resume": ["继续听", "Resume listening"],
+			"voice.end": ["结束语音对话", "End voice chat"],
+			"voice.slow": ["主管还在处理，回复会显示在对话里。", "The supervisor is still working; the answer will show in the chat."],
+			"schedule.title": ["定时任务", "Scheduled task"],
+			"schedule.description": ["到时间后，这条消息以你的名义发给主管，和你在这里发的一样走准入、评估和组队。", "At its time, this message goes to the supervisor as yours, through the same gate, Eval and staffing as one sent here."],
+			"schedule.text": ["内容", "Message"],
+			"schedule.at": ["时间", "Time"],
+			"schedule.repeat": ["重复", "Repeat"],
+			"schedule.none": ["不重复", "Once"],
+			"schedule.daily": ["每天", "Every day"],
+			"schedule.weekdays": ["工作日", "Weekdays"],
+			"schedule.save": ["添加定时任务", "Add the scheduled task"],
+			"schedule.saved": ["已添加定时任务，{when} 发送。", "Scheduled for {when}."],
+			"schedule.list": ["已有的定时任务", "Scheduled tasks"],
+			"schedule.empty": ["还没有定时任务。", "No scheduled tasks yet."],
+			"schedule.delete": ["删除", "Delete"],
+			"schedule.close": ["关闭", "Close"],
+			"chat.supervisor": ["SuperAgent", "SuperAgent"],
+			"chat.waiting": ["待你确认", "Awaiting you"],
+			"chat.agree": ["回复同意", "Reply agree"],
+			"chat.refuse": ["回复取消", "Reply cancel"],
+			"chat.agreeText": ["同意", "Agree"],
+			"chat.refuseText": ["取消", "Cancel"],
+			"chat.viewOverview": ["在概况面板查看", "View in the overview panel"],
+			"chat.notHanded": ["没有交给主管：{reason}", "Not handed to the supervisor: {reason}"],
+			"chat.filtered": ["这条消息没有交给主管：「superagent」来源关掉了主管对话。", "This message was not handed to the supervisor: the superagent Source does not receive the desk."],
+			"tab.source": ["来源", "Source"],
+			"tab.trigger": ["触发", "Trigger"],
+			"tab.eval": ["评估", "Eval"],
+			"tab.execution": ["执行", "Execution"],
+			sourceError: ["{source} 来源异常", "{source} Source failing"],
+			needsYouNone: ["没有待处理的工单。", "No pending Tickets."],
+			pendingTickets: ["待处理工单", "Pending Tickets"],
+			problemEvalOverdue: ["评估超时未决定：{thread}", "Eval overdue: {thread}"],
+			problemSetup: ["部署检查未通过，dsh-superagent 暂不接单", "Deployment check failed; dsh-superagent takes no work"],
+			problemNoSource: ["没有运行中的来源，不会收到任何触发", "No Source is running; no Triggers arrive"],
+			actionOpenSources: ["去打开来源", "Turn on a Source"],
+			problemPaused: ["处理已暂停：不开始新的评估，不派工，不发送回复", "Processing paused: no new Evals, Assignments or replies"],
+			problemReply: ["{source} 回复发送失败（已重试 {attempts} 次）", "{source} reply failing (retried {attempts} times)"],
+			problemRuntime: ["运行异常：{name}", "{name} failing"],
+			problemEvalUnavailable: ["评估未完成：{thread}", "Eval unavailable: {thread}"],
+			sourceErrorHint: ["来源会在每次轮询时自动重试。持续出现时检查网络和该来源的登录状态。", "The Source retries on every poll. If this persists, check the network and the Source's sign-in."],
+			details: ["详情 ›", "Details ›"],
+			lastDay: ["过去 24 小时", "Last 24 hours"],
+			flowReceivedLabel: ["到达", "Arrived"],
+			flowFilteredLabel: ["被过滤", "Filtered"],
+			flowDroppedLabel: ["放弃发送", "Not sent"],
+			flowJudgedLabel: ["已评估", "Evaluated"],
+			flowAcceptedLabel: ["接单或续做", "Accepted or continued"],
+			idleLabel: ["等待新触发", "Waiting for a Trigger"],
+			problemNoAllowed: ["没有人能发起工作：各来源上的名单都为空，任何请求都不会成为工单", "No one may originate work: the lists on every Source are empty, so no request can become a Ticket"],
+			actionAddAllowed: ["去添加", "Add senders"],
+			"problemSetupFix.github": ["在设置 › 来源的 GitHub 卡片修正后保存，会重新检查；在 dsh-superagent 之外修复的（例如登录 CLI），点“重新检查”。", "Fix it on the GitHub card of the Source settings and save to check again; after a fix outside dsh-superagent, such as signing a CLI in, choose Check again."],
+			"problemSetupFix.feishu": ["在设置 › 来源的飞书卡片修正后保存，会重新检查；在 dsh-superagent 之外修复的（例如配置机器人），点“重新检查”。", "Fix it on the Feishu card of the Source settings and save to check again; after a fix outside dsh-superagent, such as configuring the bot, choose Check again."],
+			"problemSetupFix.deployment": ["在部署设置里修正后保存，会重新检查；在 dsh-superagent 之外修复的（例如升级 git），点“重新检查”。", "Fix it in the Deployment settings and save to check again; after a fix outside dsh-superagent, such as upgrading git, choose Check again."],
+			problemSetupFeishu: ["飞书机器人检查未通过，飞书来源暂停", "Feishu bot check failed; the Feishu Source is paused"],
+			labelsAdded: ["列表已更新，新增：{names}", "List updated, added: {names}"],
+			labelsCurrent: ["列表已是最新", "List is up to date"],
+			labelsFailed: ["读取失败，列表保持不变：{error}", "Could not read the list; it stays as it was: {error}"],
+			sourceNotInstalled: ["插件未安装", "Plugin not installed"],
+			sourceNotInstalledHint: ["提供这个来源的插件没有加载，配置按保存时的样子保留。", "The plugin that provides this Source is not loaded; its configuration is kept as saved."],
+			sourceEnable: ["运行来源：{name}", "Run Source: {name}"],
+			addRow: ["添加", "Add"],
+			removeRow: ["移除：{name}", "Remove: {name}"],
+			sourceFilteredTitle: ["24 小时内最近被过滤的触发", "Latest Triggers filtered in the last 24 hours"],
+			sourceDroppedTitle: ["24 小时内放弃发送的消息", "Not sent in the last 24 hours"],
+			sourceDroppedHint: ["这些消息要发往的对话已无法接收，或来源已不再监听该对话，因此放弃发送。", "Their conversation can no longer receive them, or the Source no longer listens to it, so they are not sent."],
+			sourceStatusIntro: ["每个来源是否在运行、过去 24 小时到达和被过滤的触发，以及被过滤的原因。", "Whether each Source runs, the Triggers that arrived and were filtered in the last 24 hours, and why they were filtered."],
+			sourceReceivedLabel: ["24 小时到达", "Arrived in 24 h"],
+			sourceFilteredLabel: ["被过滤", "Filtered"],
+			sourceLatestLabel: ["最近", "Latest"],
+			advanced: ["高级", "Advanced"],
+			"sourceState.done": ["运行中", "Running"],
+			"sourceState.ongoing": ["启动中", "Starting"],
+			"sourceState.warning": ["待处理", "Pending"],
+			"sourceState.error": ["出错", "Failing"],
+			sourceOpenSettings: ["去设置", "Open settings"],
+			"sourceState.setup": ["等待部署检查", "Waiting for the deployment check"],
+			setupFixLink: ["去修正", "Fix it"],
+			"openSettingsOf.deployment": ["去部署页修改", "Change it on Deployment"],
+			loadEarlier: ["加载更早的触发", "Load earlier Triggers"],
+			subscribedTickets: ["订阅此线程的工单", "Tickets subscribed to this Thread"],
+			threadNotFound: ["找不到这个线程。", "Thread not found."],
+			threadsNone: ["没有符合条件的线程。", "No matching Threads."],
+			threadLatest: ["最近 {time}", "Latest {time}"],
+			threadCreated: ["创建 {time}", "Created {time}"],
+			threadEvaluating: ["评估进行中", "Eval running"],
+			pollFailed: ["轮询失败：{error}", "Polling failed: {error}"],
+			unsubscribe: ["取消订阅", "Unsubscribe"],
+			unsubscribeTitle: ["取消订阅", "Unsubscribe"],
+			unsubscribeConfirm: ["取消后，“{title}”的新触发不再扇出给工单，直到下一次接单或关联。", "New Triggers in \"{title}\" will stop fanning out to Tickets until the next accept or attach."],
+			unsubscribePending: ["已取消订阅，结果等待注入主 Session。", "Unsubscribed; the receipt is waiting to reach the main Session."],
+			openOriginal: ["打开原文", "Open original"],
+			evaluatingBanner: ["评估进行中：{count} 条触发，{strength}，{deadline} 到期。", "Eval running: {count} Triggers, {strength}, due {deadline}."],
+			noTriggers: ["没有保留的触发。", "No retained Triggers."],
+			dispositionQueued: ["已排队，等待评估", "Queued for Eval"],
+			dispositionEvaluating: ["评估进行中", "Eval running"],
+			dispositionFanout: ["扇出到 {count} 个工单", "Fanned out to {count} Tickets"],
+			dispositionDelivered: ["已送达工单", "Delivered to Ticket"],
+			dispositionDeliveredHint: ["有人在已有工单的线程上跟进时，消息直接送达工单的执行器，不经评估，也不产生决定。", "A person's follow-up on a Thread with a Ticket goes straight to the Ticket's Executor, with no Eval and no Decision."],
+			handedBack: ["“{ticket}”的执行器把这条触发交回评估：{reason}", "The Executor of “{ticket}” handed it back for an Eval: {reason}"],
+			inputHandedBack: ["已交回评估：{reason}", "Handed back for an Eval: {reason}"],
+			contextOnly: ["仅作上下文", "Context only"],
+			contextOnlyHint: ["执行器关注这个线程只为了解情况：这里的消息会送达工单，但不带授权，也不会恢复已结束的工单。", "The Executor follows this Thread only to stay informed: its messages reach the Ticket but grant nothing and resume no ended Ticket."],
+			requeueAlready: ["这条触发已经在评估中。", "This Trigger is already in an Eval."],
+			andMore: ["等 {count} 个", " and {count} more"],
+			newestFirst: ["最新在前", "newest first"],
+			openTicket: ["查看工单", "Open Ticket"],
+			tagFiltered: ["已过滤：{reason}", "Filtered: {reason}"],
+			threadDormantShort: ["工单已结束", "Tickets ended"],
+			threadPollFailed: ["轮询失败", "Polling failed"],
+			threadQueued: ["排队 {count}", "{count} queued"],
+			threadSubscribed: ["已订阅", "Subscribed"],
+			threadUnsubscribed: ["未订阅", "Not subscribed"],
+			fanoutTo: ["扇出给", "Fans out to"],
+			unsubscribeHint: ["取消订阅后，这个线程的新触发不再扇出给工单，直到下一次接单或关联。", "After unsubscribing, new Triggers here stop fanning out to Tickets until the next accept or attach."],
+			"threadFilter.subscribed": ["已被订阅", "Subscribed"],
+			"threadFilter.evaluating": ["评估中", "Evaluating"],
+			"threadFilter.recent": ["24 小时内有新触发", "New Triggers in 24 h"],
+			"threadFilter.all": ["全部线程", "All Threads"],
+			triggerIntro: ["触发按线程归组；线程决定它们扇出给哪些工单、由哪次评估处理。", "Triggers grouped by Thread; the Thread decides which Tickets they fan out to and which Eval handles them."],
+			threadDecisions: ["这个线程的决定 · {count}", "Decisions in this Thread · {count}"],
+			policyVersionHint: ["策略版本由接单规则、各来源上的策略和评估的接单模式决定；修改任何一项都会生成新版本，并通知进行中的工单。每个工单记下接单时的版本。", "The rules, the Policy on each Source and the accept mode of Eval make up the Policy version; any change makes a new version and notifies open Tickets. Each Ticket records the version it was accepted under."],
+			syncNeedsSave: ["请先保存或放弃修改，再同步。", "Save or discard your changes before syncing."],
+			acceptMode: ["接单模式", "Accept mode"],
+			"modeOption.off": ["只处理明确的请求，不评估其他触发", "Only explicit requests are handled; other Triggers are not evaluated"],
+			"modeOption.observe": ["评估其他触发并记录研判，但不接单", "Other Triggers are evaluated and Assessments recorded, but nothing is accepted"],
+			"modeOption.auto": ["其他触发符合规则时接单", "Other Triggers that match a rule are accepted"],
+			rulesHint: ["写明可以接什么、应忽略什么，也可以写明按这条规则接下的工单请谁审阅 PR。多条命中只接一单，有冲突或不明确时不接单。", "State what to accept and what to ignore, and optionally who reviews the PRs of Tickets accepted under the rule. Several matches accept once; conflicts or ambiguity accept nothing."],
+			addRule: ["添加规则", "Add rule"],
+			rulesEmpty: ["暂无规则，不会主动接单。", "No rules; nothing is accepted proactively."],
+			ruleName: ["规则名称", "Rule name"],
+			ruleInstruction: ["接单条件", "Acceptance condition"],
+			ruleInstructionPlaceholder: ["例如：明确要求修正已有说明中的失效链接；不新增或改变产品承诺。", "For example: explicit requests to fix broken links in existing docs; no new product promises."],
+			ruleEnable: ["启用规则：{name}", "Enable rule: {name}"],
+			newRule: ["新规则", "New rule"],
+			duplicate: ["复制", "Duplicate"],
+			copySuffix: [" 副本", " copy"],
+			evalTimeout: ["单次评估时限 / 秒", "Eval time limit / seconds"],
+			evalTimeoutHint: ["主 Session 读取上下文并研判。到期后记为未完成，后续触发重新评估。", "The main Session reads context and assesses. When time runs out the Eval is unavailable and later Triggers are evaluated again."],
+			evalIntro: ["评估决定一批触发是否成为工作：推断出的候选能否接单、评估时限和研判模型。", "Eval decides whether a batch of Triggers becomes work: whether inferred candidates may be accepted, the time limit, and the assessor model."],
+			evalSettings: ["评估设置", "Eval settings"],
+			policyIntro: ["评估依据的规则：接单规则，以及各来源上谁能发起工作。修改会生成新的策略版本，并通知进行中的工单。", "The rules Eval follows: the accept rules, and who may originate work on each Source. A change makes a new Policy version and notifies open Tickets."],
+			assessorModel: ["研判模型", "Assessor model"],
+			assessorModelHint: ["主 Session 的模型，负责研判和路由。保存后用于新建的主 Session，已有 Session 保持原选择。", "Model of the main Session, which assesses and routes. Applies to a newly created main Session; existing Sessions keep their choice."],
+			ruleLabel: ["规则", "Rules"],
+			"decisionFilter.work": ["接单与续做", "Accept and reopen"],
+			"decisionFilter.stop": ["停止", "Stopped"],
+			"decisionFilter.ignore": ["忽略", "Ignored"],
+			"decisionFilter.unavailable": ["未完成", "Unavailable"],
+			"decisionFilter.all": ["全部", "All"],
+			lastDayOnly: ["仅过去 24 小时到达的触发 ✕", "Triggers from the last 24 hours only ✕"],
+			evalStatusIntro: ["评估按策略对触发做出的决定，每条写明理由。", "The Decisions Eval made on Triggers under the Policy, each with its reason."],
+			policyPerSource: ["在各来源上", "On each Source"],
+			policyPerSourceHint: ["策略在每个来源上的部分：谁能通过这个来源发起工作，用这个来源自己的身份；不同来源之间不对应。要让智能体知道同一个人在各来源的账号，写在提示词里。", "The Policy's part on each Source: who may originate work through it, in that Source's own identities, with no mapping between Sources. To tell the agents a person's account on each Source, write it in the prompts."],
+			explicitRequest: ["明确的请求", "Explicit request"],
+			admission: ["准入", "Admission"],
+			admissionHint: ["每个接收范围里，谁的什么消息算明确的请求、推断的候选，或被忽略。行来自来源设置里的接收范围。计入策略版本。", "For each receiving scope, whose messages are explicit requests, inferred candidates, or ignored. The rows come from the receiving scopes in the Source settings. Part of the Policy version."],
+			admissionScope: ["接收范围", "Receiving scope"],
+			admissionListed: ["名单内", "On the list"],
+			admissionUnlisted: ["名单外", "Not on the list"],
+			admissionAddressed: ["点名智能体", "Addresses the agent"],
+			admissionUnaddressed: ["未 @", "No mention"],
+			admissionNotReceived: ["这个范围收不到这类消息", "This scope does not receive these messages"],
+			"admissionCell.listedUnaddressed": ["名单内 · 未 @", "On the list · no mention"],
+			"admissionCell.unlistedAddressed": ["名单外 · 点名智能体", "Not on the list · addresses the agent"],
+			"admissionCell.unlistedUnaddressed": ["名单外 · 未 @", "Not on the list · no mention"],
+			"admissionValue.explicit": ["明确的请求", "Explicit request"],
+			"admissionValue.inferred": ["推断的候选", "Inferred candidate"],
+			"admissionValue.ignore": ["忽略", "Ignore"],
+			admissionAnyoneWarning: ["这个范围里任何人点名智能体都能直接发起工作", "Anyone here who addresses the agent can originate work directly"],
+			admissionFootnote: ["「推断的候选」按接单模式评估：模式为关闭时忽略。已有工单的线程里的跟进不看这张表。改成更弱的选项时，按这一格接下的进行中工单的授权失效。", "Inferred candidates follow the accept mode and are ignored when it is off. Follow-ups on Threads that have Tickets do not use this table. Weakening a cell revokes the Mandates of open Tickets accepted under it."],
+			syncDone: ["上次同步", "Last synced"],
+			evalRecordsPaused: ["处理已暂停：新的触发会被记录，但不会被评估。", "Processing is paused: new Triggers are recorded but not evaluated."],
+			resumeWhere: ["在执行状态中恢复", "Resume in the Execution status"],
+			"outcome.completed": ["已完成", "Completed"],
+			"outcome.merged": ["PR 已合并", "Pull request merged"],
+			"outcome.closed": ["PR 已关闭（未合并）", "Pull request closed unmerged"],
+			"outcome.dropped": ["无需处理", "Nothing to do"],
+			"outcome.stopped": ["人工停止", "Stopped by a person"],
+			"assignment.pending": ["待启动", "Pending"],
+			"assignment.running": ["执行中", "Running"],
+			"assignment.ended": ["已结束", "Ended"],
+			"report.queued": ["排队", "queued"],
+			"report.running": ["执行中", "running"],
+			"report.progress": ["进展", "progress"],
+			"report.waiting": ["等待", "waiting"],
+			"report.ready": ["就绪", "ready"],
+			"report.blocked": ["受阻", "blocked"],
+			"report.failed": ["失败", "failed"],
+			"report.dropped": ["无需处理", "no action needed"],
+			"report.completed": ["已完成", "completed"],
+			"report.merged": ["已合并", "merged"],
+			"report.closed": ["PR 已关闭", "PR closed"],
+			"report.stopped": ["已停止", "stopped"],
+			"report.open": ["进行中", "open"],
+			"input.trigger": ["触发", "Trigger"],
+			"input.policy-changed": ["策略变更", "Policy change"],
+			"input.reopen": ["续做", "Reopened"],
+			"input.resumed": ["恢复：线程上有人发了新消息", "Resumed by a new message on its thread"],
+			"input.text": ["dsh-superagent 说明", "dsh-superagent note"],
+			"input.note": ["主 Session 的备注", "Orchestrator note"],
+			attentionPrefix: ["待人工决定：", "Attention: "],
+			stopConfirmTitle: ["停止工单", "Stop Ticket"],
+			stopConfirm: ["停止“{title}”？当前派工结束，Session 和执行目录保留；停止收回授权，之后线程里的消息不再恢复它，要继续需要重新接单。", "Stop \"{title}\"? Its current Assignment ends; its Session and directory stay. Stopping withdraws its Mandate: later messages on its Threads do not resume it, and continuing needs a new accept."],
+			endedAt: ["{time} {outcome}：{reason}", "{time} {outcome}: {reason}"],
+			assignmentNumber: ["第 {number} 次派工", "Assignment {number}"],
+			inputDelivered: ["已送达", "Delivered"],
+			inputPausedHint: ["未送达：处理已暂停，恢复后送达", "Undelivered: processing is paused; delivery resumes with it"],
+			inputWaitingHint: ["未送达：等待派工运行", "Undelivered: waiting for the Assignment to run"],
+			inputRetryHint: ["未送达：会自动重试，直到送达", "Undelivered: delivery is retried until it succeeds"],
+			deliveryFailedPrefix: ["送达失败：", "Delivery failed: "],
+			subscribedThreads: ["订阅的线程", "Subscribed Threads"],
+			answerIn: ["去{source}回答", "Answer in {source}"],
+			ticketNotFound: ["找不到这个工单。", "Ticket not found."],
+			identifiers: ["标识", "Identifiers"],
+			"basis.admission": ["准入", "Admission"],
+			"basis.followup": ["线程内跟进", "Follow-up in Thread"],
+			"basis.observation": ["接收全部消息的群", "Chat receiving all messages"],
+			"basis.bot": ["名单内的机器人", "Listed bot"],
+			"basis.mode": ["接单模式", "Accept mode"],
+			"basis.rules": ["命中规则", "Matched rules"],
+			"basis.legacyAuthority": ["旧版授权", "Legacy authority"],
+			"legacy.explicit_mention": ["@ 智能体", "Mention"],
+			"legacy.proactive_rule": ["主动规则", "Proactive rule"],
+			"legacy.thread_followup": ["线程内跟进", "Thread follow-up"],
+			ruleMatched: ["{rule} · 匹配：{reason}", "{rule} · matched: {reason}"],
+			ruleUnmatched: ["{rule} · 不匹配：{reason}", "{rule} · not matched: {reason}"],
+			directionLine: ["实施意图：{intent}；修改依据：{basis}；{design}", "Implementation intent: {intent}; target: {basis}; {design}"],
+			intentYes: ["已明确", "established"],
+			intentNo: ["未明确", "not established"],
+			"targetBasis.specified": ["已明确目标", "specified"],
+			"targetBasis.existing-standard": ["既有规范／已验证正确状态", "existing standard or verified correct state"],
+			"targetBasis.undetermined": ["目标未定", "undetermined"],
+			designNeeded: ["仍需产品／视觉设计决策", "a product or design decision remains"],
+			designNotNeeded: ["无需新增设计决策", "no new design decision"],
+			directionEvidence: ["方向证据：{evidence}", "Evidence: {evidence}"],
+			maxWorkers: ["并行工单数", "Concurrent Tickets"],
+			maxWorkersHint: ["超过并发上限的工单排队等待。", "Tickets beyond the limit wait in a queue."],
+			"basis.sender": ["发起人", "Sender"],
+			"basis.addressed": ["点名方式", "Addressed by"],
+			"addressed.mention": ["@ 智能体", "Mention"],
+			"addressed.direct": ["私聊", "Direct message"],
+			executorIntro: ["执行器执行派工：每个工单一个执行器 Session 和执行目录。", "The Executor runs Assignments: one Executor Session and directory per Ticket."],
+			executorModel: ["执行器模型", "Executor model"],
+			executorModelHint: ["保存后用于新建的执行器 Session，已有 Session 保持原选择。留空继承 DSH 默认值。", "Applies to new Executor Sessions; existing Sessions keep their choice. Leave empty to inherit the DSH default."],
+			assignmentReportShort: ["报告：{state}", "Report: {state}"],
+			assignmentSpan: ["{from} → {to}", "{from} → {to}"],
+			inputUndelivered: ["未送达", "Undelivered"],
+			mandateDetails: ["授权详情", "Mandate details"],
+			now: ["现在", "now"],
+			stopHint: ["停止后当前派工结束，Session 和执行目录保留；停止收回授权，之后线程里的消息不再恢复它，要继续需要重新接单。", "Stopping ends the current Assignment; its Session and directory stay. Stopping withdraws its Mandate: later messages on its Threads do not resume it, and continuing needs a new accept."],
+			idleHint: ["执行器结束了当前回合，没有提出问题；这些工单订阅的线程收到新触发时继续。", "The Executor ended its turn without asking anything; a new Trigger on a subscribed Thread resumes it."],
+			"stage.staffing": ["待确认组队", "Team awaiting agreement"],
+			"stage.answer": ["待回答", "Awaiting answer"],
+			"stage.review": ["待验收", "Awaiting review"],
+			"stage.blocked": ["待处理受阻", "Blocked"],
+			"stage.failed": ["待处理失败", "Failed"],
+			"stage.delivery": ["输入未送达", "Input undelivered"],
+			"stage.queued": ["排队中", "Queued"],
+			"stage.working": ["执行中", "Working"],
+			"stage.idle": ["等待新触发", "Waiting for a Trigger"],
+			deliveredInputs: ["已送达的输入 · {count}", "Delivered Inputs · {count}"],
+			endedAtShort: ["{time} {outcome}", "{time} {outcome}"],
+			legacyAssignment: ["原始说明", "Original brief"],
+			legacyScopeShort: ["未记录（旧版导入）", "Not recorded (legacy import)"],
+			retry: ["重试", "Retry"],
+			failedPrefix: ["失败：", "Failed: "],
+			blockedPrefix: ["受阻：", "Blocked: "],
+			retryConfirm: ["为“{title}”结束当前派工并重新派工？授权和订阅不变。", "End the current Assignment of \"{title}\" and start a new one? Mandate and Subscriptions stay."],
+			retryTitle: ["重试工单", "Retry Ticket"],
+			undeliveredInputs: ["未送达的输入", "Undelivered Inputs"],
+			executionStatusIntro: ["执行器的状态，以及按在等谁分组的工单。", "The Executor's state, and the Tickets grouped by who they wait on."],
+			ticketUndeliveredLabel: ["未送达", "Undelivered"],
+			ticketMandateLabel: ["授权", "Mandate"],
+			ticketActorLabel: ["发起", "From"],
+			ticketGroupLabel: ["执行群聊", "Group chat"],
+			ticketUpdatedLabel: ["更新", "Updated"],
+			executionDirectory: ["执行目录的根目录", "Ticket directory root"],
+			executionDirectoryDefault: ["留空时用 {root}", "Empty uses {root}"],
+			executionDirectoryEmpty: ["留空：默认目录", "Empty: the default directory"],
+			openThread: ["打开 {source} 原文", "Open on {source}"],
+			executionDirectoryHint: ["每个工单在这里有自己的目录，以工单短名命名；执行器 Session 在其中工作。这只按目录分开工单，不是安全边界。", "Each Ticket gets its own directory here, named by its short name, where its Executor Session works. This separates Tickets by directory only; it is not a security boundary."],
+			prepareCommand: ["准备命令", "Prepare command"],
+			prepareCommandHint: ["新工单的目录建好前，在根目录下用 sh 运行一次，执行环境的变量是它的环境变量，例如用 git worktree 把仓库检出到 $DSH_SUPERAGENT_DIR。留空就是空目录。失败时工单显示失败，并附上命令的输出。", "Runs once with sh in the root before a new Ticket's directory exists, with the execution environment's variables as its environment, for example to check a repository out to $DSH_SUPERAGENT_DIR with git worktree. Leave it empty for an empty directory. A failure fails the Ticket with the command's output."],
+			prepareCommandEmpty: ["留空：空目录", "Empty: an empty directory"],
+			blockedCommands: ["禁止调用的命令", "Blocked commands"],
+			blockedCommandsHint: ["执行器 Session 调用这些命令名时直接失败，例如用你个人账号登录的 CLI。只拦按名字的调用，用绝对路径仍能运行，所以不是安全边界。gh、git、lark-cli 不能禁止。", "Command names that fail when an Executor Session calls them, such as a CLI signed in to your own account. Only calls by name fail; an absolute path still runs, so this is not a security boundary. gh, git and lark-cli cannot be blocked."],
+			blockedCommandsNone: ["以空格分隔；没有", "Separated by spaces; none"],
+			environmentIntro: ["执行器和各来源向执行环境登记变量，每个有键、值和说明。准备命令以环境变量读取它们，执行器 Session 在指令里读到它们和说明。工单自己的值来自它的目录和接下它的触发，其余是部署的当前值；不含任何密钥。只能在管理页修改。", "The Executor and the Sources register variables with the execution environment, each with a key, a value and a description. The prepare command reads them as environment variables, and the Executor Session reads them with their descriptions in its instructions. A Ticket's own values follow from its directory and the Trigger that started it; the others are the deployment's current values. None holds a credential. Only the management page can change these settings."],
+			environmentVariables: ["可用的环境变量", "Available variables"],
+			environmentPick: ["点击键名插入到准备命令。", "Choose a key to insert it into the prepare command."],
+			environmentKey: ["键", "Key"],
+			environmentDescription: ["说明", "Description"],
+			environmentOwner: ["注册者", "Registered by"],
+			executorRunning: ["执行器运行中", "Executor running"],
+			pauseProcessing: ["暂停处理", "Pause processing"],
+			pauseProcessingConfirm: ["暂停后，来源继续记录触发，但不开始新的评估、不派工、不发送回复，直到恢复。", "While paused, Sources keep recording Triggers, but no Evals or Assignments start and no replies are sent until processing resumes."],
+			processingPaused: ["处理已暂停", "Processing paused"],
+			"ticketFilter.open": ["进行中", "Open"],
+			"ticketFilter.person": ["待处理", "Pending"],
+			"ticketFilter.working": ["执行中", "Working"],
+			"ticketFilter.idle": ["等待新触发", "Waiting for a Trigger"],
+			"ticketFilter.ended": ["已结束", "Ended"],
+			policyVersionUnrecorded: ["最近的保存记录里没有策略版本 {version}：它来自更早的保存、首次启动时的设置或更早的数据。", "The recent saves do not include Policy version {version}: an older save, the settings at the first start, or older data made it."],
+			defaultModel: ["DSH 当前默认：{model}", "DSH default: {model}"],
+			defaultModelUnavailable: ["DSH 默认模型暂不可用", "DSH default model unavailable"],
+			modelProvider: ["服务商", "Provider"],
+			modelName: ["模型", "Model"],
+			modelEffort: ["推理强度（可选）", "Reasoning effort (optional)"],
+			modelInherit: ["继承 DSH 默认值", "Inherit the DSH default"],
+			modelEffortDefault: ["模型默认", "Model default"],
+			modelCatalogError: ["无法加载模型建议，仍可填写已知的服务商和模型：{error}", "Model suggestions are unavailable; known Provider and Model names still work: {error}"],
+			historyIntro: ["每次保存记一条；改变策略版本的保存（接单规则、各来源上的策略、接单模式）通知进行中的工单。", "Each save is one entry; saves that change the Policy version (rules, the Policy on each Source, accept mode) notify open Tickets."],
+			historyItem: ["第 {revision} 次保存 · {source}", "Save {revision} · {source}"],
+			historyPolicyChanged: ["生成策略版本 {version}", "New Policy version {version}"],
+			historyNoBaseline: ["上一个设置版本没有记录，无法比较。", "The previous revision was not recorded; nothing to compare."],
+			historyNoChanges: ["当前设置项没有变化。", "No change to current settings."],
+			historyNotified: ["因策略变更通知了 {count} 个进行中的工单：{titles}", "Policy change notified {count} open Tickets: {titles}"],
+			historyEmpty: ["还没有记录的版本；下次保存后开始记录。", "No revisions recorded yet; history starts with the next save."],
+			"change.mode": ["接单模式：{from} → {to}", "Accept mode: {from} → {to}"],
+			"change.timeout": ["评估时限：{from} → {to} 秒", "Eval time limit: {from} → {to} s"],
+			"change.ruleAdded": ["新增规则：{name}", "Rule added: {name}"],
+			"change.ruleRenamed": ["规则改名：{from} → {to}", "Rule renamed: {from} → {to}"],
+			"change.ruleInstruction": ["规则条件修改：{name}", "Rule condition changed: {name}"],
+			"change.ruleEnabled": ["规则启用：{name}", "Rule enabled: {name}"],
+			"change.ruleDisabled": ["规则停用：{name}", "Rule disabled: {name}"],
+			"change.ruleRemoved": ["删除规则：{name}", "Rule removed: {name}"],
+			"change.paused": ["暂停处理", "Processing paused"],
+			"change.resumed": ["恢复处理", "Processing resumed"],
+			"change.maxWorkers": ["并行工单数：{from} → {to}", "Concurrent Tickets: {from} → {to}"],
+			"change.executionDirectory": ["执行目录的根目录：{from} → {to}", "Ticket directory root: {from} → {to}"],
+			"change.prepareCommand": ["准备命令", "Prepare command"],
+			"change.blockedCommands": ["禁止调用的命令：{from} → {to}", "Blocked commands: {from} → {to}"],
+			configHistory: ["配置历史", "Configuration history"],
+			"change.evalModel": ["研判模型", "Assessor model"],
+			"change.executorModel": ["执行器模型", "Executor model"],
+			"change.sourceEnabled": ["启用来源：{source}", "Source enabled: {source}"],
+			"change.sourceDisabled": ["停用来源：{source}", "Source disabled: {source}"],
+			"change.sourceAdmission": ["{source} · 准入修改", "{source} · admission changed"],
+			"change.sourceField": ["{source} · {field}：{from} → {to}", "{source} · {field}: {from} → {to}"],
+			"change.sourceRowsAdded": ["{source} · {field} 新增：{items}", "{source} · {field} added: {items}"],
+			"change.sourceRowsRemoved": ["{source} · {field} 移除：{items}", "{source} · {field} removed: {items}"],
+			"change.sourceRowsChanged": ["{source} · {field} 修改：{items}", "{source} · {field} changed: {items}"],
+			draftRestored: ["未保存 · 已恢复草稿", "Unsaved · draft restored"],
+			draftKept: ["未保存 · 草稿已保留", "Unsaved · draft kept"],
+			draftFailed: ["无法保留草稿，请保存后再离开：{error}", "Could not keep the draft; save before leaving: {error}"],
+			save: ["保存", "Save"],
+			discard: ["放弃修改", "Discard changes"],
+			saveConflict: ["设置已在别处修改，其中有你也改过的项；保存会以你的修改为准。", "Settings changed elsewhere, including items you changed too; saving keeps your version of them."],
+			saveMerged: ["设置已在别处修改，你的修改已合并到最新版本；请检查后保存。", "Settings changed elsewhere; your changes are merged onto the latest version. Check them, then save."],
+			saveRebasing: ["已在别处修改，正在读取最新版本…", "Changed elsewhere; reading the latest version…"],
+			invalidSettings: ["这些字段无效：{fields}", "Invalid fields: {fields}"],
+			"settingsGroup.source": ["来源", "Sources"],
+			"settingsGroup.eval": ["评估", "Eval"],
+			"settingsGroup.execution": ["执行", "Execution"],
+			"settingsGroup.prompts": ["提示词", "Prompts"],
+			"settingsGroup.deployment": ["部署", "Deployment"],
+			unsetValue: ["未设置", "not set"],
+			promptChanges: ["{count} 处修改", "{count} changes"],
+			unsaved: ["未保存", "Unsaved"],
+			promptsDraftVersion: ["未保存 · 基于版本 {revision}", "Unsaved · based on version {revision}"],
+			"promptPart.runtime/admission": ["主 Session 接单约束", "Main Session accept constraints"],
+			"promptPart.runtime/policy": ["策略与启用的规则", "Policy and enabled rules"],
+			"promptPart.runtime/handoff/orchestrator": ["工单交付与人工确认（主 Session）", "Ticket handoff and human confirmation (main Session)"],
+			"promptPart.runtime/handoff/worker": ["工单交付与人工确认（执行器）", "Ticket handoff and human confirmation (Executor)"],
+			"promptPart.runtime/policy/none": ["策略（没有启用的规则时）", "Policy (when no rule is enabled)"],
+			"promptPart.skill/feishu": ["飞书技能", "Feishu skill"],
+			"promptPart.skill/github": ["GitHub 技能", "GitHub skill"],
+			"promptPart.runtime/environment": ["执行环境", "Execution environment"],
+			promptViewEdit: ["编辑", "Edit"],
+			promptViewFull: ["完整提示词", "Full prompt"],
+			promptViewHistory: ["历史", "History"],
+			promptSections: ["提示词段落", "Prompt sections"],
+			promptTeamGroup: ["团队约定", "Team agreements"],
+			promptSkillsGroup: ["技能", "Skills"],
+			"promptPartHint.communication": ["何时通知人、消息的写法、GitHub 首行声明、Review 的回复与 review bot", "When to notify people, how messages read, the GitHub first line, review replies and review bots"],
+			"promptPartHint.scope": ["工单何时继续、何时暂停并交草稿", "When a Ticket goes on, and when it stops with a draft"],
+			"promptPartHint.delivery": ["PR 证据、自动合并条件、提交作者", "PR evidence, the auto-merge condition, the commit author"],
+			"promptReadBy.both": ["主 Session 和执行器 Session 都会读到。", "The main Session and Executor Sessions read it."],
+			"promptReadBy.skill": ["Session 需要时按名字加载。", "Sessions load it by name when they need it."],
+			"promptReadBy.orchestrator": ["只有主 Session 会读到。", "Only the main Session reads it."],
+			"promptReadBy.worker": ["只有执行器 Session 会读到。", "Only Executor Sessions read it."],
+			promptBuiltInGroup: ["内置段落", "Built-in parts"],
+			promptTemplateHint: ["这是模板：保留占位符 {placeholders}，由系统填入内容。", "A template: keep the placeholders {placeholders}, which the system fills in."],
+			promptDefaultUpdated: ["默认内容已更新", "Default updated"],
+			promptDefaultUpdatedHint: ["升级改了这一段的默认内容，你的文本保持不变。", "An upgrade changed the default of this part; your text stays as it is."],
+			promptDefaultUpdatedKnown: ["下面是默认内容的变化。", "Below is how the default changed."],
+			promptDefaultUpdatedUnknown: ["系统没有记录你编辑时的默认内容；下面是你的文本与新默认内容的对比。", "The default you edited from was not recorded; below, your text against the new default."],
+			promptRemovedParts: ["当前插件版本已没有这些段落，你为它们写的文本不再使用，下次保存时移除：{parts}", "This version no longer has these parts; your text for them is unused and goes at the next save: {parts}"],
+			promptKeepMine: ["保留我的文本", "Keep my text"],
+			promptTakeDefault: ["改用新的默认内容", "Use the new default"],
+			promptFullState: ["共 {count} 段 · {chars} 字符 · {state}", "{count} sections · {chars} characters · {state}"],
+			promptCopyAll: ["复制全文", "Copy all"],
+			promptChanged: ["已改", "Changed"],
+			promptCompare: ["比较对象", "Compare with"],
+			promptCompareSaved: ["与已保存比较", "Against saved"],
+			promptCompareDefault: ["与默认比较", "Against defaults"],
+			promptBuiltInFolded: ["按当前设置生成，不参与比较。", "Generated from the current settings; not compared."],
+			promptSameAsSaved: ["与已保存相同。", "Same as saved."],
+			promptSameLines: ["… 相同的 {count} 行 …", "… {count} unchanged lines …"],
+			copied: ["已复制", "Copied"],
+			promptPartTeam: ["团队约定", "Team agreement"],
+			promptPartFixed: ["内置", "Built in"],
+			promptPartGenerated: ["内置 · 按当前设置生成", "Built in · from the current settings"],
+			"promptPart.communication": ["沟通方式", "Communication"],
+			"promptPart.scope": ["工单范围", "Ticket scope"],
+			"promptPart.delivery": ["交付要求", "Delivery requirements"],
+			"promptPart.legacy": ["早期版本的完整配置（载入后是内置文本加它的技能）", "A complete configuration of an earlier version (loading it gives the built-in text and its skills)"],
+			"promptPart.runtime/shared": ["共享约定", "Shared rules"],
+			"promptPart.runtime/orchestrator": ["主 Session 角色", "Main Session role"],
+			"promptPart.runtime/worker": ["执行器角色", "Executor role"],
+			"promptPart.runtime/subscriptions": ["订阅", "Subscriptions"],
+			"promptPart.runtime/replies": ["回复与确认", "Replies and acknowledgements"],
+			"promptPart.runtime/dispatch": ["路由", "Routing"],
+			"promptPart.runtime/work": ["执行", "Execution"],
+			promptViews: ["查看方式", "View"],
+			promptBody: ["Markdown 正文", "Markdown"],
+			promptResetSection: ["恢复此段默认内容", "Restore this section default"],
+			promptPreviewTarget: ["预览目标", "Preview target"],
+			promptPreviewDraft: ["未保存草稿", "unsaved draft"],
+			promptPreviewSaved: ["版本 {revision}", "version {revision}"],
+			promptEditSource: ["编辑此段", "Edit section"],
+			promptHistoryHint: ["载入会替换整套草稿：三个团队段落和团队技能；保存后才生效。", "Loading replaces the whole draft: the three team sections and the team skills; nothing changes until you save."],
+			promptHistoryItem: ["版本 {revision} · {time} · {source}", "Version {revision} · {time} · {source}"],
+			promptHistoryInitial: ["初始版本", "initial"],
+			promptHistoryChanged: ["修改段：{parts}", "Changed: {parts}"],
+			promptHistoryNone: ["初始版本或无内容变化", "Initial version or no content change"],
+			promptOlder: ["更早版本", "Older versions"],
+			promptRestore: ["将这个版本载入草稿", "Load this version into the draft"],
+			promptDefaults: ["将整套默认内容载入草稿", "Load all defaults into the draft"],
+			promptDraftFromHistory: ["整套草稿来自历史版本 {revision}；保存将创建新版本", "Draft loaded from version {revision}; saving creates a new version"],
+			promptDraftFromDefaults: ["整套草稿来自当前插件默认值", "Draft loaded from the current plugin defaults"],
+			promptDraftSectionReset: ["已恢复此段默认内容：{part}", "Restored the default of: {part}"],
+			promptAddSkill: ["添加自定义技能", "Add a custom skill"],
+			promptSkillName: ["名称，例如 testing", "Name, e.g. testing"],
+			promptAddSkillAction: ["添加到草稿", "Add to draft"],
+			promptSkillNameInvalid: ["技能名称须唯一，仅使用小写字母、数字和连字符，以字母开头。", "Skill names must be unique, start with a letter, and use lowercase letters, digits and hyphens."],
+			promptConflict: ["提示词已被修改到版本 {revision}。已保留你的草稿；请比较后重新保存。", "Prompts changed to version {revision}. Your draft is kept; compare and save again."],
+			promptConflictParts: ["提示词已被修改到版本 {revision}，其中 {parts} 你也改过；保存会以你的版本为准。", "Prompts changed to version {revision}, including {parts}, which you changed too; saving keeps your version."],
+			promptSavedPending: ["已保存；通知等待注入主 Session。", "Saved; the notice is waiting to reach the main Session."],
+			promptSessions: ["Session 最近使用的版本", "Versions used by Sessions"],
+			promptSessionItem: ["{session}：版本 {revision}", "{session}: version {revision}"],
+			promptNoSessions: ["暂无模型请求", "No model requests yet"],
+			"promptRole.orchestrator": ["主 Session", "Main Session"],
+			"promptRole.worker": ["执行器 Session", "Executor Session"],
+			deploymentIntro: ["这台机器上的 dsh-superagent 设置，存放在 DSH 配置文件的 dsh-superagent 条目里；保存后立即生效，不会重启 dsh-superagent。", "dsh-superagent's settings on this machine, kept in the dsh-superagent entry of the DSH configuration; a saved change applies at once, without restarting dsh-superagent."],
+			deploymentUnavailable: ["dsh-superagent 启动完成后才能修改这些值。", "These values can be changed once dsh-superagent has started."],
+			deploymentDerived: ["仓库与账号", "Repository and accounts"],
+			deploymentDerivedHint: ["由来源设置里的仓库和 CLI 得出。", "Derived from the repository and the CLIs in the Source settings."],
+			deploymentRepository: ["仓库", "Repository"],
+			deploymentAgent: ["智能体账号", "Agent account"],
+			deploymentFeishu: ["飞书机器人", "Feishu bot"],
+			deploymentFeishuNone: ["未设置", "Not set"],
+			deploymentAccountsWhere: ["账号在 dsh-superagent 面板的来源设置里修改。", "Accounts are changed in the Source settings of the dsh-superagent panel."],
+			deploymentMachine: ["本机设置", "This machine"],
+			deploymentStateDir: ["状态目录", "State directory"],
+			deploymentStateDirHint: ["数据库、锁、执行器的命令和智能体的 git 配置所在目录，只能在 DSH 配置文件里修改。", "Holds the database, locks, the Executor's commands and the agent's git configuration; change it only in the DSH configuration file."],
+			deploymentLimits: ["上限", "Limits"],
+			deploymentLimitsHint: ["本机资源的上限：保存的提示词最长多少字，评估读取线程上下文时最多读几页、每次读取最多等多久。", "Resource limits on this machine: how long a saved prompt may be, and how many Thread pages Eval may read and how long one read may take."],
+			deploymentPromptMaxChars: ["提示词配置的最大字符数", "Largest prompt configuration / characters"],
+			deploymentContextPages: ["一次研判可读的线程页数", "Thread pages one Assessment may read"],
+			deploymentContextTimeout: ["一次上下文读取的时限 / 毫秒", "Time limit of one context read / ms"],
+			deploymentRefused: ["DSH 拒绝了这次修改：设置可能已在别处修改。放弃修改后可看到当前值。", "DSH refused the change; the settings may have changed elsewhere. Discard to see the current values."],
+			deploymentNoForms: ["这个 DSH 版本不提供配置表单，这些值只能在 DSH 配置文件的 dsh-superagent 条目里修改。", "This DSH version has no configuration forms; change these values in the dsh-superagent entry of the DSH configuration file."],
+			deploymentReadOnly: ["只有本机上的浏览器可以修改这些值。", "Only a browser on this machine can change these values."],
+			setupCheck: ["重新检查", "Check again"],
+			setupChecking: ["正在重新检查，dsh-superagent 正在重启", "Checking again; dsh-superagent is restarting"],
+			setupCheckInterrupts: ["重新检查会重启 dsh-superagent：{count} 个进行中的派工会中断，并带恢复说明重新开始。", "Checking again restarts dsh-superagent: {count} running Assignments stop and start again with a recovery note."],
+			"reason.not_human": ["自动消息", "Automated message"],
+			"reason.not_a_member": ["发送者不在这个来源的名单里", "Sender is not on this Source's list"],
+			"reason.no_mention": ["没有点名智能体，且这个来源不接收其余消息", "Does not address the agent, and this Source does not receive the rest"],
+			"reason.admission_ignored": ["准入设为忽略", "Admission set to ignore"],
+			"reason.chat_not_allowed": ["群不在监听的群里", "Chat is not a listened chat"],
+			"reason.direct_messages_not_allowed": ["私聊未开放", "Direct messages are off"],
+			"reason.observation_only": ["仅观察的群（旧版过滤）", "Observe-only chat (legacy filter)"],
+			"reason.untracked_source": ["线程未被订阅", "Thread not subscribed"],
+			"reason.issue_assigned": ["Issue 已有负责人", "Issue has an assignee"],
+			"reason.issue_closed": ["Issue 已关闭", "Issue is closed"],
+			"reason.issue_has_pull_request": ["Issue 已有关联 PR", "Issue has a linked PR"],
+			"reason.issue_unclaimed_less_than_day": ["Issue 无人认领未满一天", "Issue unclaimed for less than a day"],
+			"reason.task_ended": ["工单已结束", "Ticket ended"],
+			"reason.task_paused": ["工单已暂停", "Ticket paused"],
+			"reason.subscription_inactive": ["订阅未生效", "Subscription inactive"],
+			"reason.subscription_removed": ["订阅已移除", "Subscription removed"],
+			"reason.issue_awaiting_eligibility": ["等待 Issue 满足资格", "Waiting for Issue eligibility"],
+			"reason.timeout": ["评估超时未决定", "Eval timed out"],
+			"reason.policyChanged": ["评估期间策略已变更", "Policy changed during the Eval"],
+			"reason.noAdmissible": ["没有可准入的触发", "No admissible Trigger"],
+			"reason.startedTicket": ["已经开过工单 {ticket}", "Already started Ticket {ticket}"],
+			"reason.acceptedBefore": ["触发 {trigger} 之前已接单", "Trigger {trigger} was accepted before"],
+			"reason.routed": ["已转给工单 {ticket}", "Routed to Ticket {ticket}"],
+			"reason.stopUnknown": ["要停止的工单不存在或已结束", "The Ticket to stop is unknown or ended"],
+			"reason.stopNotExplicit": ["停止需要名单里的人明确要求", "Stopping needs an explicit request from someone on the list"],
+			"reason.directionUnsettled": ["实现意图或目标未确定，或还要产品或设计决定", "Intent or target not settled, or a product or design decision is still open"],
+			"reason.noRuleMatched": ["没有启用的准入规则匹配", "No enabled admission rule matched"],
+			"reason.ignoredFromCard": ["仅凭候选卡片忽略，未经规则研判", "Ignored from its card, without a rule assessment"],
+			"reason.observed": ["观察模式：本会接单（{text}）", "Observe mode: would accept ({text})"],
+			"reason.explicitRouted": ["名单里的人明确请求，由主 Session 接单", "Explicit request from someone on the list, accepted by the main Session"],
+			"reason.legacyImport": ["从旧版工单记录导入", "Imported from a legacy Ticket record"],
+			"reason.channelGone": ["对话已无法接收消息", "The conversation can no longer receive messages"],
+			"reason.channelIgnored": ["来源已不再监听这个对话", "The Source no longer listens to this conversation"],
+			"reason.hostRestarted": ["dsh-superagent 重启", "dsh-superagent restarted"],
+			"reason.retried": ["人工重试", "Retried by a person"],
+			"reason.completed": ["已完成", "Completed"],
+			"reason.dropped": ["无需处理，已关闭", "No action needed; closed"],
+			"reason.merged": ["PR 已合并", "PR merged"],
+			"reason.closed": ["PR 已关闭", "PR closed"],
+			"reason.stopped": ["人工停止", "Stopped by a human"],
+			"reason.revoked": ["授权已失效", "Mandate no longer valid"],
+			"reason.humanStop": ["有人要求停止", "Someone asked to stop"],
+			"reason.forwarded": ["已扇出给该线程的工单", "Fanned out to the Thread's Ticket"],
+			"reason.senderNotMember": ["发送者不在这个来源的名单里", "Sender is not on this Source's list"],
+			"reason.source_disabled": ["来源已停用", "Source disabled"],
+			"reason.superagent_desk_off": ["没有接收主管对话", "The supervisor desk is not received"],
+			"reason.superagent_bots_off": ["没有接收 bot 求助", "Bots asking for help are not received"],
+			"reason.superagent_unknown": ["不是主管对话，也不是 bot 求助", "Neither the supervisor desk nor a Bot asking for help"],
+			"reason.issue_sender_or_admission_disabled": ["Issue 发起人不在名单或主动接单已关闭", "Issue sender not on the list, or proactive accept off"],
+			"reason.source_not_installed": ["来源插件未加载", "Source plugin not loaded"],
+			"reason.issue_unclaimed_less_than_wait": ["Issue 无人认领未满等待时长", "Issue unclaimed for less than the wait"],
+			glossary: ["术语表", "Glossary"],
+			glossaryIntro: ["界面只显示一种语言；文档、代码和工具使用英文术语。", "The interface shows one language; documents, code and tools use the English terms."],
+			glossaryChinese: ["中文", "中文"],
+			glossaryEnglish: ["English", "English"],
+			glossaryMeaning: ["含义", "Meaning"],
+			"term.source": ["来源", "Source"],
+			"term.trigger": ["触发", "Trigger"],
+			"term.thread": ["线程", "Thread"],
+			"term.correlation": ["关联", "Correlation"],
+			"term.channel": ["渠道", "Channel"],
+			"term.policy": ["策略", "Policy"],
+			"term.eval": ["评估", "Eval"],
+			"term.gate": ["准入", "Gate"],
+			"term.assessment": ["研判", "Assessment"],
+			"term.decision": ["决定", "Decision"],
+			"term.mandate": ["授权", "Mandate"],
+			"term.ticket": ["工单", "Ticket"],
+			"term.assignment": ["派工", "Assignment"],
+			"term.subscription": ["订阅", "Subscription"],
+			"term.fanout": ["扇出", "Fan-out"],
+			"term.executor": ["执行器", "Executor"],
+			"term.report": ["报告", "Report"],
+			"term.attention": ["待人工决定", "Attention"],
+			"term.disposition": ["去向", "Disposition"],
+			"term.input": ["输入", "Input"],
+			"term.scope": ["范围", "Scope"],
+			"term.strength": ["强度", "Strength"],
+			"term.agent": ["智能体", "Agent"],
+			"term.mainSession": ["主 Session", "Main Session"],
+			"term.executorSession": ["执行器 Session", "Executor Session"],
+			"term.policyVersion": ["策略版本", "Policy version"],
+			"meaning.agent": ["以 dsh-superagent 身份工作的虚拟同事：通过 GitHub 账号、飞书机器人等身份在来源上行动", "The virtual colleague dsh-superagent runs: it acts on the Sources through its identities, such as a GitHub account or a Feishu bot"],
+			"meaning.mainSession": ["评估触发、接单派工并回复的 DSH Session；提示词里称 orchestrator", "The DSH Session that evaluates Triggers, accepts and dispatches work, and replies; prompts call it the orchestrator"],
+			"meaning.executorSession": ["执行器为一个工单运行的 DSH Session；提示词里称 worker", "The DSH Session the Executor runs for one Ticket; prompts call it the worker"],
+			"meaning.policyVersion": ["接单规则、各来源上的策略和接单模式的一个组合的标识；每个工单记下接单时的版本", "The identifier of one combination of rules, the Policy on each Source and accept mode; each Ticket records the version it was accepted under"],
+			"glossaryGroup.roles": ["角色", "Roles"],
+			"meaning.source": ["产生触发的事件流；由插件提供的类型加一份配置（是否运行、监听什么）", "An event stream that produces Triggers; a plugin-provided kind plus one configuration (whether it runs, what it listens to)"],
+			"meaning.trigger": ["来源产生的单个不可变事件", "One immutable event produced by a Source"],
+			"meaning.thread": ["按时间排列的触发；同一时间只有一个评估", "Triggers in time order; one Eval at a time"],
+			"meaning.correlation": ["一个触发同属多个线程时线程之间的关系，只用来补充上下文", "Relation between Threads that share a Trigger; context only"],
+			"meaning.channel": ["线程的只写端，用于回复", "The write-only side of a Thread, for replies"],
+			"meaning.policy": ["版本化的接单规则和各来源上的名单；决定谁能发起工作、接什么", "Versioned rules and each Source's list; decides who may originate work and what is accepted"],
+			"meaning.eval": ["对一批触发做出决定的过程", "The process that turns a batch of Triggers into a Decision"],
+			"meaning.gate": ["评估的第一层：谁能发起工作、强度多少", "First Eval layer: who may originate work, and how strongly"],
+			"meaning.assessment": ["评估中的模型语义判断", "Eval step where the model judges meaning"],
+			"meaning.decision": ["评估的结果", "The result of an Eval"],
+			"meaning.mandate": ["接单时产出的授权：强度、范围、依据的策略版本", "Authorization produced by accept: strength, scope and Policy version"],
+			"meaning.ticket": ["被授权的工作单位", "An authorized unit of work"],
+			"meaning.assignment": ["工单与一个执行器 Session 的绑定", "Binding of a Ticket to one Executor Session"],
+			"meaning.subscription": ["工单与线程的关系；主 Session 只在消息明确指向某个工单时才把线程关联给它，执行器可以退订与本工单无关的线程", "Relation between a Ticket and a Thread; the main Session attaches a Thread only when its message points at the Ticket, and the Executor can drop a Thread unrelated to its Ticket"],
+			"meaning.fanout": ["订阅线程上的触发作为上下文送达工单，不带授权", "Triggers on a subscribed Thread reach the Ticket as context, without authority"],
+			"meaning.executor": ["执行派工的一方：每个工单一个执行器 Session 和执行目录", "What runs Assignments: one Executor Session and directory per Ticket"],
+			"meaning.report": ["派工向工单回报的状态", "State an Assignment reports to its Ticket"],
+			"meaning.attention": ["工单上等待人回答的问题", "A question on a Ticket waiting for a human"],
+			"meaning.disposition": ["一个触发被过滤、评估、扇出的记录", "Where a Trigger went: filtered, evaluated, fanned out"],
+			"meaning.input": ["送达工单的上下文（扇出的触发、策略变更、恢复、文本）", "Context delivered to a Ticket (fanned-out Triggers, Policy changes, resumes, text)"],
+			"meaning.scope": ["授权允许的工作范围", "The work a Mandate allows"],
+			"meaning.strength": ["授权与评估的依据强度", "How strong the grounds of a Mandate or Eval are"],
+			legendTitle: ["状态颜色", "Status colors"],
+			"legend.done": ["完成、就绪或已接单", "Done, ready or accepted"],
+			"legend.ongoing": ["执行中或评估中", "Running or evaluating"],
+			"legend.warning": ["等待、受阻或需要人", "Waiting, blocked or needs a person"],
+			"legend.error": ["失败或异常", "Failed or failing"],
+			"legend.idle": ["已结束、已停用或无后续", "Ended, disabled or no follow-up"],
+			"term.environment": ["执行环境", "Execution environment"],
+			"meaning.environment": ["每个工单的执行器 Session 和准备命令运行的环境：执行器和各来源登记的变量，每个有键、值和说明", "Where a Ticket's Executor Session and prepare command run: the variables the Executor and the Sources register, each with a key, a value and a description"],
+			"userError.unknownTicket": ["找不到这个工单。", USER_ERRORS.unknownTicket[1]],
+			"userError.unknownProblem": ["找不到这个未完成的评估。", USER_ERRORS.unknownProblem[1]],
+			"sourceUncertainTitle": ["不确定是否已发出", "Not known whether sent"],
+			"sourceUncertainHint": ["发送时超时、被中断或 SuperAgent 停了，可能已经发出。为免重复不会自动重发：先到对话里看一眼，确实没收到再点「重投」。", "Sending timed out, was cut off, or SuperAgent stopped: it may have gone out. It is not sent again by itself; check the conversation, and redeliver only if it did not arrive."],
+			"sourceRedeliver": ["重投", "Redeliver"],
+			"userError.notUnknownReply": ["这条消息不在等你重投（可能已经重投过）。", USER_ERRORS.notUnknownReply[1]],
+			"userError.unknownTrigger": ["找不到这个触发。", USER_ERRORS.unknownTrigger[1]],
+			"userError.unknownAssignment": ["找不到这个派工。", USER_ERRORS.unknownAssignment[1]],
+			"userError.unknownBlock": ["没有这个设置块：{block}", USER_ERRORS.unknownBlock[1]],
+			"userError.unknownPromptRevision": ["没有提示词版本 {revision}。", USER_ERRORS.unknownPromptRevision[1]],
+			"userError.unknownPromptPart": ["没有内置提示词段落 {part}。", USER_ERRORS.unknownPromptPart[1]],
+			"userError.ticketEnded": ["工单已结束。", USER_ERRORS.ticketEnded[1]],
+			"userError.notStaffing": ["这张工单不在等待组队，团队已经同意过了。", USER_ERRORS.notStaffing[1]],
+			"userError.staleProposal": ["同意的不是当前版本的组队方案，请按最新版本确认。", USER_ERRORS.staleProposal[1]],
+			"userError.notConsent": ["只有名单里的人在工单线程上、方案发出之后亲自发的消息才能同意或拒绝组队；{why}", USER_ERRORS.notConsent[1]],
+			"userError.assignmentEnded": ["这个派工已结束，工单已由较新的派工接手。", USER_ERRORS.assignmentEnded[1]],
+			"userError.evalFinished": ["评估 {eval} 已结束，或已被之后的评估取代；请对这个触发当前的评估做决定。", USER_ERRORS.evalFinished[1]],
+			"userError.notAdmissible": ["这个触发未通过准入：{reason}", USER_ERRORS.notAdmissible[1]],
+			"userError.notExplicit": ["通过 orchestrator_route 接单只用于名单内发送者的明确请求；主动接单的候选请用 orchestrator_eval 和 orchestrator_eval_decide 研判。", USER_ERRORS.notExplicit[1]],
+			"userError.ticketStopped": ["有人停止了这个工单；新工作需要通过 orchestrator_route 接单。", USER_ERRORS.ticketStopped[1]],
+			"userError.mandateRevoked": ["按当前策略，这个工单的授权已失效；新工作需要通过 orchestrator_route 接单。", USER_ERRORS.mandateRevoked[1]],
+			"userError.notRetryable": ["只有进行中的工单可以重试，而且仅当执行器最近一次报告为失败或受阻且此后没有人发过消息，或者向执行器送达输入失败时才可以。", USER_ERRORS.notRetryable[1]],
+			"userError.sourceThread": ["这是工单开始时所在的线程，会保持订阅。", USER_ERRORS.sourceThread[1]],
+			"userError.followedThread": ["这是工单自己的线程，例如它的 PR，会保持订阅。", USER_ERRORS.followedThread[1]],
+			"userError.notFollowing": ["这个工单没有订阅那个线程。", USER_ERRORS.notFollowing[1]],
+			"userError.questionWithResult": ["给人的问题不能同时是就绪的结果或回答，请分开报告。", USER_ERRORS.questionWithResult[1]],
+			"userError.askerWithoutQuestion": ["提出问题的消息需要附上它提出的问题。", USER_ERRORS.askerWithoutQuestion[1]],
+			"userError.notAsker": ["问题必须指明提出它的那条人发的消息，且那条消息已送达这个工单。", USER_ERRORS.notAsker[1]],
+			"userError.notAnswerable": ["回答必须指明它所回答的、由人提出的问题，且这个问题已送达这个工单。", USER_ERRORS.notAnswerable[1]],
+			"userError.ackEnded": ["工单已结束，不要确认过去的请求。", USER_ERRORS.ackEnded[1]],
+			"userError.notReached": ["这个触发不属于这个执行器。", USER_ERRORS.notReached[1]],
+			"userError.handedBack": ["这个工单已经交回过这个触发。", USER_ERRORS.handedBack[1]],
+			"userError.handedBackHere": ["这个工单的执行器已把这个触发交回，认为它超出本工单的范围：请把它作为新工作接单、关联到另一个工单，或忽略它。", USER_ERRORS.handedBackHere[1]],
+			"userError.workerDecides": ["这条消息已通过所在线程送达工单 {tickets}：由工单的执行器判断它是否属于这个工单，不属于的会被交回，之后作为候选到达。只有停止例外，用 orchestrator_route 并把 kind 设为 stop。", USER_ERRORS.workerDecides[1]],
+			"userError.ackNoChannel": ["确认需要一条已派给这个执行器、由人发出的原始消息。", USER_ERRORS.ackNoChannel[1]],
+			"userError.ackNotPerson": ["请使用最初那条人发的触发，而不是机器人、CI 或执行器的报告。", USER_ERRORS.ackNotPerson[1]],
+			"userError.notReady": ["工单还不能交付。进展只在内部保留，等待经过验证的就绪报告；不要把进展当作回答，也不要通过其他渠道发送。", USER_ERRORS.notReady[1]],
+			"userError.notAttention": ["待人工决定的消息需要在 human_action 中写明工单当前待人工决定的问题。日常未完成的工作只在内部保留。", USER_ERRORS.notAttention[1]],
+			"userError.notQuestion": ["回答必须针对最初由人提出的问题，而不是执行器报告或自动触发。", USER_ERRORS.notQuestion[1]],
+			"userError.noAnswer": ["执行器还没有回答这条人发的触发。请等待执行器的报告，或用 orchestrator_ticket_request_status 请求一份（它只对处于等待状态的执行器起作用）；普通进展不能当作回答。", USER_ERRORS.noAnswer[1]],
+			"userError.noChannel": ["这个工单或触发没有可以回复的渠道。", USER_ERRORS.noChannel[1]],
+			"userError.panelOnlyEnvironment": ["执行环境（执行目录、准备命令、禁止调用的命令）只能在管理页修改。", USER_ERRORS.panelOnlyEnvironment[1]],
+			"userError.panelOnlyAccounts": ["部署检查读取的来源字段（例如账号 CLI）只能在管理页修改。", USER_ERRORS.panelOnlyAccounts[1]],
+			"userError.setupComplete": ["部署检查已通过。", USER_ERRORS.setupComplete[1]],
+			"userError.modelUnavailable": ["{block} 的模型不可用：{error}", USER_ERRORS.modelUnavailable[1]],
+			"userError.promptTooLong": ["提示词配置超过 {limit} 个字符。", USER_ERRORS.promptTooLong[1]],
+			"userError.promptPlaceholders": ["「{part}」的模板必须保留占位符 {placeholders}，由系统填入内容。", USER_ERRORS.promptPlaceholders[1]],
+			"userError.promptPartEmpty": ["「{part}」段落不能为空；要沿用内置文本，请恢复此段默认内容。", USER_ERRORS.promptPartEmpty[1]],
+			"userError.sourceNotInstalled": ["{source} 来源的插件没有安装。", USER_ERRORS.sourceNotInstalled[1]],
+			"userError.noLabels": ["这个来源没有可以刷新的名称。", USER_ERRORS.noLabels[1]],
+			"userError.nothingToSync": ["{source} 来源上的策略没有指定从哪里同步，或者这个来源已关闭或在等待部署检查。", USER_ERRORS.nothingToSync[1]],
+			"setup.repositoryUnset": ["GitHub 来源没有设置监听的仓库。", SETUP_PROBLEMS.repositoryUnset[1]],
+			"setup.foreignFile": ["{file} 不是 dsh-superagent 写入的文件；移走它，或换一个状态目录。", SETUP_PROBLEMS.foreignFile[1]],
+			"setup.gitTooOld": ["git 没有读取 dsh-superagent 为 github.com 写的凭据配置；需要 git 2.32 或更新版本。", SETUP_PROBLEMS.gitTooOld[1]],
+			"setup.environmentFailed": ["准备智能体的运行环境失败。", SETUP_PROBLEMS.environmentFailed[1]],
+			"setup.agentCliUnset": ["没有设置智能体的 GitHub CLI。", SETUP_PROBLEMS.agentCliUnset[1]],
+			"setup.agentCliMissing": ["找不到智能体的 GitHub CLI。", SETUP_PROBLEMS.agentCliMissing[1]],
+			"setup.agentCliSignedOut": ["智能体的 GitHub CLI 读不到它的账号。", SETUP_PROBLEMS.agentCliSignedOut[1]],
+			"setup.agentCliNoAccount": ["智能体的 GitHub CLI 没有报告 GitHub 账号。", SETUP_PROBLEMS.agentCliNoAccount[1]],
+			"setup.repositoryUnreadable": ["@{account} 读不到 {repository}。", SETUP_PROBLEMS.repositoryUnreadable[1]],
+			"setup.repositoryUnreported": ["智能体的 GitHub CLI 没有返回 {repository}。", SETUP_PROBLEMS.repositoryUnreported[1]],
+			"setup.repositoryReadOnly": ["@{account} 没有 {repository} 的推送权限。", SETUP_PROBLEMS.repositoryReadOnly[1]],
+			"setup.feishuCliFailed": ["机器人的 lark-cli 不可用。", SETUP_PROBLEMS.feishuCliFailed[1]],
+			"setup.feishuNoApp": ["机器人的 lark-cli 的 auth status 没有报告应用。", SETUP_PROBLEMS.feishuNoApp[1]],
+			"setup.feishuBotNotReady": ["应用 {app} 的机器人身份状态是 {status}；用 lark-cli 配置应用密钥。", SETUP_PROBLEMS.feishuBotNotReady[1]],
+			"setup.feishuUserIdentity": ["机器人的 lark-cli 允许用户身份（strict mode 为 {mode}）；按 docs/006-deployment.md 给机器人一份 strict mode 为 bot 的单独配置。", SETUP_PROBLEMS.feishuUserIdentity[1]],
+			"setup.feishuNoBot": ["飞书机器人接口没有返回机器人的 open_id。", SETUP_PROBLEMS.feishuNoBot[1]],
+			"setup.feishuAppMissing": ["lark-cli 里没有飞书应用 {app} 的 profile，VsSaros Bots 也没有它的 App Secret；先在 Bots 的渠道设置里添加这个应用，或执行 lark-cli profile add --name {app} --app-id {app} --app-secret-stdin。", SETUP_PROBLEMS.feishuAppMissing[1]],
+			"setup.feishuProfileFailed": ["lark-cli 没能为飞书应用 {app} 添加只允许机器人身份的 profile：{output}", SETUP_PROBLEMS.feishuProfileFailed[1]],
+			"setup.feishuAppMismatch": ["lark-cli 的 profile {profile} 属于应用 {actual}，不是 {app}。", SETUP_PROBLEMS.feishuAppMismatch[1]],
+			"healthCode.setupPending": ["等待部署检查", HEALTH_TEXT.setupPending],
+			"healthCode.sourceOff": ["已关闭", HEALTH_TEXT.sourceOff],
+			"healthCode.feishuCliUnset": ["来源已打开，还没有设置机器人的 lark-cli", HEALTH_TEXT.feishuCliUnset],
+			"healthCode.feishuAppShared": ["飞书应用 {app} 已被 {holder} 的 Bots 入站占用；同一应用的事件只会推给其中一条连接，请给这个来源单独配一个飞书应用", HEALTH_TEXT.feishuAppShared],
+			"healthCode.feishuBusBusy": ["飞书应用 {app} 已有另一个事件消费者在连接；同一应用的事件只会推给其中一条连接，请停掉它或给这个来源单独配一个飞书应用", HEALTH_TEXT.feishuBusBusy],
+			"healthCode.feishuShared": ["通过本机 VsSaros Bots 的长连接接收飞书应用 {app} 的事件", HEALTH_TEXT.feishuShared],
+			"healthCode.githubUnset": ["来源已打开，还没有设置仓库和账号 CLI", HEALTH_TEXT.githubUnset],
+			"healthCode.tapdUnset": ["来源已打开，还没有设置接收项", HEALTH_TEXT.tapdUnset],
+			"healthCode.tapdWebhookUnset": ["TAPD Webhook 已打开，还没有设置验证密码", HEALTH_TEXT.tapdWebhookUnset],
+			"healthCode.p4Unset": ["P4 已打开，服务器、执行账号和允许签出的路径还没有都设置", HEALTH_TEXT.p4Unset],
+			p4Block: ["P4 变更管理", "P4 change management"],
+			p4UnsetHint: ["P4 未配置：签出、改动和提交暂时都用不了，在下面的执行设置里填服务器和执行账号。", "P4 is not set up: no checkouts, changes or submits until its server and execution account are set below."],
+			p4BlockHint: ["执行器用这个账号在 P4 里签出、改动并 shelve 改动；提交只在你审核同意之后进行。", "Workers check out, change and shelve in P4 with this account; a submit happens only after you approve it."],
+			"healthCode.feishuBotMissing": ["等待飞书机器人", HEALTH_TEXT.feishuBotMissing],
+			"healthCode.pollFailures": ["连续 {count} 次轮询失败，最近一次：{error}", HEALTH_TEXT.pollFailures],
+			"team.archivedPlans": ["旧团队计划（只读归档）", "Old team plans (archived, read-only)"],
+			"team.archivedPlansHint": ["旧的「主管直接派活」双轨已下线：这些计划不会再推进；团队工作只走「工单 → 组队 → 你同意」。", "The old track where the supervisor gave work out on its own is retired: these plans do not advance; team work runs only as a ticket whose team you agree to."],
+			"team.skillsArchived": ["旧计划按模板写过 {count} 个技能（只读归档）；技能现在只由记忆系统从团队步骤里提炼。", "Old plans wrote {count} skills by template (archived); skills are now distilled only by the memory system from team steps."],
+			"team.approval": ["待你批准建 bot", "Bots waiting for your approval"],
+			"team.approvalLine": ["申请高风险工具：{risk}", "Requests high-risk tools: {risk}"],
+			"team.approve": ["批准", "Approve"],
+			"team.reject": ["驳回", "Reject"],
+			"team.created": ["主管已创建 {count} / {global} 个 bot（每计划上限 {perPlan} 个）", "The supervisor created {count} / {global} Bots (at most {perPlan} per plan)"],
+			"team.risky": ["含命令 / 外发", "command or outbound"],
+			"team.skillApprove": ["审核通过", "Approve skill"],
+			"team.skillReject": ["驳回", "Reject"],
+			"team.staffing": ["待确认组队", "Teams awaiting agreement"],
+			"team.distillPending": ["待确认的技能建议", "Skill suggestions awaiting review"],
+			"usageTitle": ["模型用量（24 小时）", "Model usage (24 hours)"],
+			"usageHint": ["SuperAgent 自己的会话（主会话、主管台、各工单的 worker、团队步骤）每次模型调用的 token，保留 30 天。输入含缓存读写。", "Tokens of every model call of SuperAgent's own Sessions (main, desk, ticket workers, team steps), kept 30 days. Input includes cache reads and writes."],
+			"usageDay": ["24 小时 {total} tokens · {calls} 次调用", "24 hours: {total} tokens · {calls} calls"],
+			"usageWeek": ["7 天 {total}", "7 days: {total}"],
+			"usageCache": ["其中缓存读 {read}", "cache reads {read}"],
+			"usageRelaysDsBot": ["24 小时内 DS Bot 改写重发了 SuperAgent 会话的请求 {resent} 次，另用看图模型读了 {side} 次（都只计一次用量）。", "In 24 hours DS Bot sent SuperAgent's requests again {resent} times and read them with its image model {side} times (each counted once)."],
+			"usageRelaysOther": ["24 小时内有其它插件重发了 SuperAgent 会话的请求 {resent} 次，另用别的模型读了 {side} 次（都只计一次用量）。", "In 24 hours another plugin sent SuperAgent's requests again {resent} times and read them with another model {side} times (each counted once)."],
+			"usageRelaySession": ["改写 {resent} 次 · 看图 {side} 次", "{resent} rewritten · {side} read on the side"],
+			"ticketRelaysDsBot": ["被 DS Bot 改写", "Rewritten by DS Bot"],
+			"ticketRelaysOther": ["被其它插件改写", "Rewritten by another plugin"],
+			"sideCalls": ["允许其它插件用别的模型读 SuperAgent 会话", "Let other plugins read SuperAgent's Sessions with another model"],
+			"sideCallsHint": ["DS Bot 的看图：会话模型不能看图时，它用自己的 OCR 模型读图片。关掉后 SuperAgent 的会话拒绝这类调用，DS Bot 会告诉模型「图片现在读不了」；密钥脱敏的改写重发不受影响。", "DS Bot's images: when a Session's model cannot read images, it reads them with its OCR model. Off, SuperAgent's Sessions refuse such calls and DS Bot tells the model the image could not be read; its secrets rewrite still goes."],
+			"sideCallsOff": ["（执行设置里已关闭「别的模型读会话」，这类调用会被拒绝。）", "(Reading with another model is off in the execution settings; such calls are refused.)"],
+			"usageCalls": ["{calls} 次", "{calls} calls"],
+			"usageRole.master": ["主会话", "Main Session"],
+			"usageRole.desk": ["主管台", "Supervisor desk"],
+			"usageRole.worker": ["工单 worker / 领队", "Ticket workers / leads"],
+			"usageRole.step": ["团队步骤", "Team steps"],
+			"usageRole.group": ["群执行", "Group execution"],
+			"steward.compacted": ["空闲时已压实（上下文 {context}，检查线 {line}）", "compacted while idle ({context} of context, check line {line})"],
+			"steward.below": ["上下文 {context}，未到检查线 {line}", "{context} of context, under the check line {line}"],
+			"steward.unknown": ["模型窗口未知，交给 DSH 自己压实", "model window unknown; left to DSH"],
+			"steward.cooldown": ["刚压实过，稍后再看", "compacted lately; looked at again later"],
+			"steward.busy": ["忙，下次空闲再看", "busy; looked at when next idle"],
+			"steward.unavailable": ["DSH 的压实服务不可用", "DSH compaction unavailable"],
+			"steward.nothing": ["没有可压实的部分", "nothing to compact"],
+			"steward.failed": ["空闲压实失败（见日志）", "idle compaction failed (see the log)"],
+			"rulesTitle": ["团队 Bot 的审批规则", "Approval rules of team Bots"],
+			"rulesTemplateHint": ["记住的规则让 Bot 同类命令不再问人；带 ; & | 重定向等的组合命令永远要问。选一个 Bot，一次套用一组常用规则：", "A remembered rule lets a Bot run that kind of command without asking; a chained or redirected line always asks. Pick a Bot to give it a set at once:"],
+			"rulesBot": ["选择 Bot", "Choose a Bot"],
+			"rulesTemplate.git-read": ["Git 只读", "Git read-only"],
+			"rulesTemplate.tests": ["跑测试", "Run tests"],
+			"rulesTemplate.build": ["构建与检查", "Build and lint"],
+			"rulesTemplate.install": ["装依赖", "Install dependencies"],
+			"rulesRiskMedium": ["中风险", "medium risk"],
+			"rulesForget": ["删除", "Delete"],
+			"rulesNone": ["还没有规则", "No rules yet"],
+			"coexistDsBot": ["这个 Host 里同时装着 DS Bot。它的大部分功能只管自己的 Bot，但有三处也作用于 SuperAgent 的会话：", "DS Bot runs in this Host too. Most of it acts on its own Bots only; three parts also reach SuperAgent's Sessions:"],
+			"coexistEffect.secrets": ["密钥脱敏：在 DS Bot 里存过的密钥值，会从所有工具结果和模型请求里替换掉（改写过的请求会重新发一次，用量只计一次；次数见执行页「用量」与工单详情）", "Secrets: a value saved in DS Bot is replaced in every tool result and model request (a rewritten request is sent again and counted once; how often shows under Usage and on the ticket)"],
+			"coexistEffect.images": ["看图：会话的模型不能看图时，DS Bot 用它的 OCR 模型读图片，再把文字发给原模型——步骤里的图片会发给那个模型；可在执行设置里关闭", "Images: when a Session's model cannot read images, DS Bot reads them with its OCR model and sends the text instead, so step images reach that model; you can turn this off in the execution settings"],
+			"coexistEffect.skills": ["技能：goal-grill、office、office-tools 进 DSH 的技能目录，主会话与步骤看得到，主管台看不到；不占主会话的 prompt 预算", "Skills: goal-grill, office and office-tools join DSH's skill catalog, seen by the main Session and steps but not the desk; they take nothing from the main Session's prompt budget"],
+			"team.budgetLine": ["预算：{tokens} / {tokensCap} tokens · {turns} / {turnsCap} 回合", "Budget: {tokens} / {tokensCap} tokens · {turns} / {turnsCap} turns"],
+			"team.budgetReached": ["预算用完：不再开新步骤", "Budget used: no new step starts"],
+			"team.budgetRaise": ["追加一半预算", "Raise by half"],
+			"team.distillNewVersion": ["已有技能的新版本", "a new version of a skill"],
+			"team.distillRisk.low": ["低风险", "Low risk"],
+			"team.distillRisk.medium": ["中风险：要跑命令或联网", "Medium risk: runs commands or uses the network"],
+			"team.distillRisk.high": ["高风险：外发 / 发布 / 删除 / 凭据", "High risk: sends, publishes, deletes or touches credentials"],
+			"team.distillTemplate": ["未经模型提炼", "Not distilled by a model"],
+			"team.steps": ["团队步骤进度", "Team steps"],
+			"team.stepsDone": ["{done}/{total} 完成", "{done}/{total} done"],
+			"team.stepWrite": ["（写）", " (writes)"],
+			"team.stepTurns": [" · {turns} 回合", " · {turns} turns"],
+			"team.stepAttempt": [" · 第 {attempt} 次", " · attempt {attempt}"],
+			"team.step.pending": ["等待", "Waiting"],
+			"team.step.running": ["进行中", "Running"],
+			"team.step.ready": ["完成", "Done"],
+			"team.step.blocked": ["待人回答", "Needs a person"],
+			"team.step.failed": ["失败", "Failed"],
+			"team.step.skipped": ["已跳过", "Skipped"],
+			"team.step.stopped": ["已停止", "Stopped"],
+			"team.staffingProposing": ["主管正在组队", "The supervisor is staffing"],
+			"team.staffingNew": ["（新建）", " (new)"],
+			"team.staffingAgree": ["同意并开工", "Agree and start"],
+			"team.staffingRefuse": ["取消工单", "Drop the ticket"],
+			"team.staffingRefuseTitle": ["取消这张工单？", "Drop this ticket?"],
+			"team.staffingRefuseConfirm": ["「{title}」不再执行，工单以放弃结束；之后线程里的消息不会让它恢复。", "\"{title}\" will not run: the ticket ends as dropped, and later messages on its threads do not resume it."],
+			"team.running": ["进行中 · {running} / 3 个步骤", "{running} / 3 steps running"],
+			"team.state.running": ["进行中", "Running"],
+			"team.state.done": ["已完成", "Done"],
+			"team.state.failed": ["失败", "Failed"],
+			"team.state.cancelled": ["已停止", "Stopped"],
+			"team.state.pending": ["等待", "Waiting"],
+			"team.state.skipped": ["已跳过", "Skipped"],
+			"team.step": ["{step} {title} · {bot}", "{step} {title} · {bot}"],
+			"team.after": ["等待 {after}", "after {after}"],
+			"review.pending": ["待你审核的提交", "Changelists waiting for your review"],
+			"review.section": ["提交审核 · CL {change}", "Review · CL {change}"],
+			"review.open": ["审核", "Review"],
+			"review.waitingLine": ["CL {change} · {files} 个文件 · {time}提请", "CL {change} · {files} file(s) · asked {time}"],
+			"review.workspace": ["工作区", "Workspace"],
+			"review.fingerprint": ["内容指纹", "Content fingerprint"],
+			"review.description": ["CL 描述", "CL description"],
+			"review.files": ["文件", "Files"],
+			"review.filesHint": ["逐个展开看过所有文件后，才能同意。审核期间执行器收不到新消息，不会改动这份 shelve。", "Open every file before approving. While you review, the Executor gets no new messages and does not change this shelf."],
+			"review.binary": ["二进制或没有文本差异", "Binary, or no text difference"],
+			"review.truncated": ["差异过长，只显示前一部分", "The difference is long; only its start is shown"],
+			"review.seen": ["已看 {seen} / {total}", "Seen {seen} / {total}"],
+			"review.ack": ["我已 review 全部文件，同意提交这份内容", "I reviewed every file and approve submitting this content"],
+			"review.approve": ["同意并提交", "Approve and submit"],
+			"review.approveTitle": ["同意提交 CL {change}", "Approve CL {change}"],
+			"review.approvePipeline": ["同意后，CL 描述会加上 {tags}，由服务器的提交流水线提交。提交前会再核对一次内容指纹。", "Once approved, {tags} is added to the CL description and the server's submit automation submits it. The fingerprint is checked again first."],
+			"review.approveHost": ["同意后，dsh-superagent 会以提交账号提交这份 shelve。提交前会再核对一次内容指纹。", "Once approved, dsh-superagent submits this shelf as the submit account. The fingerprint is checked again first."],
+			"review.reject": ["打回", "Send back"],
+			"review.rejectTitle": ["打回 CL {change}", "Send back CL {change}"],
+			"review.rejectHint": ["写下要执行器改什么；它改完重新 shelve 后会再请你审核。", "Say what the Executor should change; it asks again once it shelves anew."],
+			"review.rejectPlaceholder": ["例如：测试用例补一个 1x 缩放", "For example: add a test at 1x scale"],
+			"review.discard": ["放弃这次变更", "Discard the change"],
+			"review.discardTitle": ["放弃 CL {change}", "Discard CL {change}"],
+			"review.discardConfirm": ["删除 shelve、撤销签出的文件并删除这个 CL，然后停止工单。不能撤回。", "Deletes the shelf, reverts the opened files and deletes the CL, then stops the ticket. This cannot be undone."],
+			"review.changed": ["这些文件在你审核后变了：", "These files changed after you reviewed them:"],
+			"review.state.handed": ["已同意，已交给提交流水线 · {by}", "Approved and handed to the submit automation · {by}"],
+			"review.state.submitted": ["已同意并提交为 CL {submitted} · {by}", "Approved and submitted as CL {submitted} · {by}"],
+			"review.state.rejected": ["已打回 · {by}：{comment}", "Sent back · {by}: {comment}"],
+			"review.state.discarded": ["已放弃 · {by}", "Discarded · {by}"],
+			"review.state.submitting": ["正在提交…", "Submitting…"],
+			"review.lastError": ["上次提交失败，同意未被使用：{error}", "The last submit failed and the approval was not used: {error}"],
+			"cliCheck.local": ["自动本地检查", "Check locally"],
+			"cliCheck.update": ["检查版本/更新", "Check version / updates"],
+			"cliCheck.path": ["可执行文件", "Executable"],
+			"cliCheck.version": ["版本", "Version"],
+			"cliCheck.bot": ["机器人身份", "Bot identity"],
+			"cliCheck.strict": ["严格模式", "Strict mode"],
+			"cliCheck.botName": ["机器人名称", "Bot name"],
+			"cliCheck.latest": ["可用更新", "Available update"],
+			"cliCheck.notFound": ["未找到 lark-cli", "lark-cli not found"],
+			"cliCheck.applied": ["已完成，正在重新检查…", "Done; checking again…"],
+			"cliCheck.applyStrict": ["应用 strict-mode bot", "Apply strict-mode bot"],
+			"cliCheck.applyStrictTitle": ["把 lark-cli 限制为机器人身份", "Restrict lark-cli to the bot identity"],
+			"cliCheck.applyStrictConfirm": ["这会修改本机 lark-cli 的全局配置，也会影响其它使用它的功能；SuperAgent 要求 strict-mode 为 bot 才会接收消息。确定继续？", "This changes the machine-wide lark-cli configuration and affects everything else using it. SuperAgent requires strict-mode bot before it receives messages. Continue?"],
+			"cliCheck.runUpdate": ["运行 lark-cli update", "Run lark-cli update"],
+			"cliCheck.runUpdateTitle": ["更新 lark-cli", "Update lark-cli"],
+			"cliCheck.runUpdateConfirm": ["这会在本机执行 lark-cli update，可能全局升级 npm 包并需要较长时间。确定继续？", "This runs lark-cli update on this machine, which may upgrade the global npm package and take a while. Continue?"],
+			"tapdCred.title": ["Open API 凭据", "Open API credentials"],
+			"tapdCred.status": ["状态", "Status"],
+			"tapdCred.fromEnv": ["已配置 · Host 环境变量", "Set · Host environment"],
+			"tapdCred.fromFile": ["已配置 · 凭据文件", "Set · credentials file"],
+			"tapdCred.fromBundled": ["已配置 · 随包接入应用", "Set · shipped app"],
+			"tapdCred.bundledHint": ["安装包自带 TAPD 接入应用，装完即可读取 TAPD；在这里保存自己的凭据、写入凭据文件或设置 Host 环境变量，都会优先使用你配的那份。随包密钥是明文编译在 lib/ 里的产品凭据，轮换需要升级版本；自己的敏感账号请放在本机凭据文件里，不要写回仓库。", "This installation ships a TAPD API account, so TAPD works out of the box. A credential saved here, in the credentials file or in the Host environment takes precedence. The shipped secret is plain text compiled into lib/: rotating it needs a product update, so keep your own sensitive account in the local credentials file, never in the repository."],
+			"tapdCred.none": ["未配置", "Not set"],
+			"tapdCred.method": ["使用的凭据", "Credential in use"],
+			"tapdCred.methodBundled": ["Basic 随包接入应用（API account，内置于安装包）", "Basic shipped app (API account, built into the installation)"],
+			"tapdCred.account": ["账号", "Account"],
+			"tapdCred.file": ["凭据文件", "Credentials file"],
+			"tapdCred.overridden": ["Host 的环境变量里有优先级更高的 TAPD 凭据，正在用它而不是这里保存的；要改用这里的，请先去掉那些环境变量并重启 IDE。", "The Host environment carries a higher-priority TAPD credential, which is used instead of the one saved here; to use this one, remove those variables and restart the IDE."],
+			"tapdCred.kind": ["凭据类型", "Credential kind"],
+			"tapdCred.kind.client": ["企业 API 账号（推荐）", "API account (recommended)"],
+			"tapdCred.kind.user": ["API 用户名 / 密码", "API user / password"],
+			"tapdCred.kind.token": ["Token", "Token"],
+			"tapdCred.clientId": ["Client ID", "Client ID"],
+			"tapdCred.clientSecret": ["Client Secret", "Client Secret"],
+			"tapdCred.user": ["API 用户名", "API user"],
+			"tapdCred.password": ["API 密码", "API password"],
+			"tapdCred.token": ["Token", "Token"],
+			"tapdCred.keep": ["留空 = 保留 {value}", "Blank keeps {value}"],
+			"tapdCred.keepSecret": ["已配置 · 留空 = 不改", "Set · blank keeps it"],
+			"tapdCred.hint": ["保存到 Host 的凭据文件（仅本用户可读），不进设置、不回传明文，执行器读不到；即存即用，不用重启。保存会替换文件里全部 8 个凭据键（超时、项目等非凭据行保留），其它高优先级凭据会被清掉。", "Saved to the Host's credentials file (readable by you only), never to the settings and never sent back; Executors cannot read it. It works at once, without a restart. Saving replaces all 8 credential keys in the file (timeouts and workspace stay), so other higher-priority keys are removed."],
+			"tapdCred.custom": ["自定义凭据（可选）", "Custom credentials (optional)"],
+			"tapdCred.customHint": ["安装包已内置 TAPD 接入应用，正常情况无需在这里填写。只有要用自己的企业 API 账号 / API 用户名 / Token 覆盖内置账号时才展开；也可以直接用凭据文件或 Host 环境变量覆盖。", "A TAPD API account is built into the installation, so nothing needs to be entered here. Expand only to override it with your own enterprise API account, API user or Token; a credentials file or Host environment variables work too."],
+			"tapdCred.details": ["凭据优先级与轮换", "Credential priority and rotation"],
+			"tapdCred.detailsHint": ["只认 TAPD Open API，按优先级：① DSH_SUPERAGENT_TAPD_BEARER；② DSH_SUPERAGENT_TAPD_USER + DSH_SUPERAGENT_TAPD_PASSWORD；③ TAPD_CLIENT_ID + TAPD_CLIENT_SECRET（推荐企业 API 账号）；④ TAPD_API_USER + TAPD_API_PWD；⑤ TAPD_API_TOKEN；以上都没有时用随包账号。可放 Host 环境变量（需重启 IDE 继承），或写成 KEY=VALUE 放在 <DSH_HOME>/tapd.env / DSH_SUPERAGENT_TAPD_ENV_FILE 指向的文件（即用即读、只读白名单键、不覆盖环境变量）。轮换：面板保存新凭据，或停用随包账号后改文件；Webhook 验证密码另在高级区，与本凭据无关。", "Only TAPD Open API is used, in priority order: (1) DSH_SUPERAGENT_TAPD_BEARER; (2) DSH_SUPERAGENT_TAPD_USER + DSH_SUPERAGENT_TAPD_PASSWORD; (3) TAPD_CLIENT_ID + TAPD_CLIENT_SECRET (recommended enterprise account); (4) TAPD_API_USER + TAPD_API_PWD; (5) TAPD_API_TOKEN; otherwise the shipped account. Put them in the Host environment (restart the IDE to inherit) or as KEY=VALUE in <DSH_HOME>/tapd.env or the file DSH_SUPERAGENT_TAPD_ENV_FILE names (read on demand, whitelisted keys only, never overriding the environment). To rotate: save a new credential here, or disable the shipped account and edit the file. The Webhook secret is separate, under Advanced."],
+			"tapdCred.save": ["保存凭据", "Save credentials"],
+			"tapdCred.saving": ["保存中…", "Saving…"],
+			"tapdCred.saved": ["TAPD 凭据已保存", "TAPD credentials saved"],
+			"tapdCred.clear": ["清除凭据", "Clear credentials"],
+			"tapdCred.clearTitle": ["清除 TAPD 凭据", "Clear the TAPD credentials"],
+			"tapdCred.clearConfirm": ["从 {file} 删除你保存的 TAPD 凭据（其它行保留）。之后会回落到安装包自带的接入应用；若要完全停用，用下面的「停用随包账号」。确定继续？", "This removes your saved TAPD credentials from {file} (other lines stay). The API account shipped with the installation takes over; use \"Disable shipped account\" below to turn it off entirely. Continue?"],
+			"tapdCred.cleared": ["TAPD 凭据已清除", "TAPD credentials cleared"],
+			"tapdCred.writeTo": ["自定义凭据写入", "Custom credentials file"],
+			"tapdCred.overrideHint": ["当前用的是随包账号。要改成自己的，Client ID 与 Client Secret 都要填（不会沿用随包密钥，也不会把它写进凭据文件）。", "The shipped account is in use. To replace it, enter both Client ID and Client Secret; the shipped secret is never reused or written to the credentials file."],
+			"tapdCred.bundledOff": ["停用随包账号", "Disable shipped account"],
+			"tapdCred.bundledOffTitle": ["停用随包 TAPD 接入应用", "Disable the shipped TAPD account"],
+			"tapdCred.bundledOffConfirm": ["会在凭据文件里写入 DSH_SUPERAGENT_TAPD_BUNDLED=off，立即生效、不用重启。若没有配置其它凭据，TAPD 将无法读取，直到重新启用或填入自己的凭据。确定继续？", "This writes DSH_SUPERAGENT_TAPD_BUNDLED=off to the credentials file and takes effect at once, with no restart. Without another credential TAPD cannot be read until you enable it again or enter your own. Continue?"],
+			"tapdCred.bundledOn": ["启用随包账号", "Enable shipped account"],
+			"tapdCred.bundledSwitched": ["随包接入应用设置已更新", "Shipped account setting updated"],
+			"tapdCheck.title": ["接入检查", "Setup checklist"],
+			"tapdCheck.credentials": ["凭据", "Credentials"],
+			"tapdCheck.watches": ["接收项", "Watches"],
+			"tapdCheck.watchesNone": ["未添加 · 来源不会接收任何单", "None · the Source receives nothing"],
+			"tapdCheck.watchesSome": ["已添加 {count} 项", "{count} configured"],
+			"tapdCheck.draftSaved": ["草稿 {count} 项（保存后生效）", "draft: {count} (save to apply)"],
+			"tapdCheck.watchesAdd": ["添加推荐接收项", "Add recommended watches"],
+			"tapdCheck.watchesAdded": ["已加入两个推荐接收项，记得保存来源设置", "Added two starter watches; save the Source card to apply"],
+			"tapdCheck.identity": ["TAPD 身份名", "TAPD identity"],
+			"tapdCheck.identityEmpty": ["未填 · 接收项需设为「全部变化」", "Empty · set watches to \"All changes\""],
+			"tapdCheck.identityMapped": ["已解析为 {name}", "Resolved to {name}"],
+			"tapdCheck.identityUnmapped": ["按「{name}」原文匹配；TAPD 用中文名时请到高级加映射", "Matching \"{name}\" literally; add a mapping under Advanced if TAPD uses Chinese names"],
+			"tapdCheck.health": ["来源状态", "Source health"],
+			"tapdCheck.healthUnknown": ["尚未上报", "Not reported yet"],
+			"tapdCheck.connectivity": ["连通性", "Connectivity"],
+			"tapdCheck.notTested": ["未测试", "Not tested"],
+			"tapdCheck.test": ["测试连接", "Test connection"],
+			"tapdCheck.testing": ["测试中…", "Testing…"],
+			"tapdCheck.testOk": ["通过 · {method}", "OK · {method}"],
+			"tapdCheck.testFail": ["失败 · {error}", "Failed · {error}"]
+		};
+		const language = (index) => Object.fromEntries(Object.entries(TEXT).map(([key, pair]) => [key, pair[index]]));
+		const zh = language(0);
+		const en = language(1);
+		/** Glossary terms grouped by stage flow after the acting roles; each key maps to `term.<key>` and `meaning.<key>`. */
+		const GLOSSARY = {
+			roles: [
+				"agent",
+				"mainSession",
+				"executorSession"
+			],
+			source: ["source", "channel"],
+			trigger: [
+				"trigger",
+				"thread",
+				"correlation",
+				"subscription",
+				"fanout",
+				"disposition"
+			],
+			eval: [
+				"policy",
+				"policyVersion",
+				"eval",
+				"gate",
+				"assessment",
+				"decision",
+				"mandate",
+				"scope",
+				"strength"
+			],
+			execution: [
+				"executor",
+				"environment",
+				"ticket",
+				"assignment",
+				"input",
+				"report",
+				"attention"
+			]
+		};
+		const GLOSSARY_VALUES = {
+			decision: [
+				"decision.accept",
+				"decision.reopen",
+				"decision.stop",
+				"decision.ignore",
+				"decision.unavailable"
+			],
+			strength: ["strength.explicit", "strength.inferred"],
+			ticket: [
+				"stage.staffing",
+				"stage.answer",
+				"stage.review",
+				"stage.blocked",
+				"stage.failed",
+				"stage.delivery",
+				"stage.queued",
+				"stage.working",
+				"stage.idle",
+				"ticket.ended"
+			],
+			assignment: [
+				"assignment.pending",
+				"assignment.running",
+				"assignment.ended"
+			],
+			report: [
+				"report.progress",
+				"report.waiting",
+				"report.ready",
+				"report.blocked",
+				"report.failed",
+				"report.dropped"
+			]
+		};
+		const line = (paths) => function LineIcon() {
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("svg", {
+				width: 16,
+				height: 16,
+				viewBox: "0 0 20 20",
+				fill: "none",
+				stroke: "currentColor",
+				strokeWidth: 1.6,
+				strokeLinecap: "round",
+				strokeLinejoin: "round",
+				"aria-hidden": "true",
+				children: paths.map((d) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", { d }, d))
+			});
+		};
+		const PlusIcon = () => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("svg", {
+			width: 14,
+			height: 14,
+			viewBox: "0 0 20 20",
+			"aria-hidden": "true",
+			children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", {
+				d: "M10 3.5v13M3.5 10h13",
+				stroke: "currentColor",
+				strokeWidth: 1.6,
+				strokeLinecap: "round"
+			})
+		});
+		const PaperclipIcon = line(["M15.5 9.5l-5.6 5.6a3.4 3.4 0 0 1-4.8-4.8l6.1-6.1a2.25 2.25 0 0 1 3.2 3.2l-6 6a1.1 1.1 0 0 1-1.6-1.6l5.5-5.5"]);
+		const ChatsIcon = line(["M3.5 5.5A1.5 1.5 0 0 1 5 4h7a1.5 1.5 0 0 1 1.5 1.5V10A1.5 1.5 0 0 1 12 11.5H8L5 14v-2.5A1.5 1.5 0 0 1 3.5 10z", "M13.5 7.5H15A1.5 1.5 0 0 1 16.5 9v4.5A1.5 1.5 0 0 1 15 15v2l-2.5-2h-3A1.5 1.5 0 0 1 8 13.5V13"]);
+		const ClockIcon = line(["M10 3.5a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13z", "M10 6.5V10l2.5 1.5"]);
+		const BackIcon = line(["M12 5l-5 5 5 5"]);
+		const CloseIcon = line(["M5.5 5.5l9 9M14.5 5.5l-9 9"]);
+		const MicIcon = () => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("svg", {
+			width: 16,
+			height: 16,
+			viewBox: "0 0 20 20",
+			fill: "none",
+			stroke: "currentColor",
+			strokeWidth: 1.6,
+			strokeLinecap: "round",
+			"aria-hidden": "true",
+			children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("rect", {
+				x: 7,
+				y: 2.5,
+				width: 6,
+				height: 10,
+				rx: 3,
+				fill: "currentColor",
+				stroke: "none"
+			}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", { d: "M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5" })]
+		});
+		const WaveIcon = ({ size = 16 }) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("svg", {
+			width: size,
+			height: size,
+			viewBox: "0 0 20 20",
+			fill: "currentColor",
+			"aria-hidden": "true",
+			children: [
+				[
+					3,
+					7.5,
+					5
+				],
+				[
+					6.5,
+					4.5,
+					11
+				],
+				[
+					10,
+					2.5,
+					15
+				],
+				[
+					13.5,
+					5.5,
+					9
+				],
+				[
+					17,
+					8,
+					4
+				]
+			].map(([x, y, height]) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("rect", {
+				x: x - 1,
+				y,
+				width: 2,
+				height,
+				rx: 1
+			}, x))
+		});
+		const SendIcon = () => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("svg", {
+			width: 14,
+			height: 14,
+			viewBox: "0 0 20 20",
+			fill: "none",
+			stroke: "currentColor",
+			strokeWidth: 2,
+			strokeLinecap: "round",
+			strokeLinejoin: "round",
+			"aria-hidden": "true",
+			children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("path", { d: "M10 16V4M5 9l5-5 5 5" })
+		});
+		/** Keeps the draft focused when a composer button is pressed. */
+		const keepFocus = (event) => event.preventDefault();
+		const speechApi = () => {
+			const scope = window;
+			return scope.SpeechRecognition ?? scope.webkitSpeechRecognition;
+		};
+		/** The note for a recognition error, or none for one that only means nothing was said. */
+		function speechNote(error) {
+			if (error === "aborted" || error === "no-speech") return void 0;
+			if (error === "not-allowed" || error === "service-not-allowed" || error === "audio-capture") return "composer.micBlocked";
+			if (error === "network") return "composer.dictationOffline";
+			return "composer.notHeard";
+		}
+		/** Dictation into the draft: `onText` gets interim text (`final` false) and each final phrase. */
+		function useDictation(onText) {
+			const { t } = usePanel();
+			const [listening, setListening] = (0, react.useState)(false);
+			const [note, setNote] = (0, react.useState)("");
+			const engine = (0, react.useRef)(void 0);
+			const latest = (0, react.useRef)(onText);
+			latest.current = onText;
+			(0, react.useEffect)(() => () => engine.current?.abort(), []);
+			(0, react.useEffect)(() => {
+				if (!note) return void 0;
+				const timer = setTimeout(() => setNote(""), 2600);
+				return () => clearTimeout(timer);
+			}, [note]);
+			const start = (options = {}) => {
+				const Api = speechApi();
+				if (!Api) {
+					setNote(t("composer.dictationUnavailable"));
+					return false;
+				}
+				const recognition = new Api();
+				let heard = false;
+				recognition.lang = navigator.language || "zh-CN";
+				recognition.interimResults = true;
+				recognition.continuous = options.continuous ?? true;
+				recognition.onresult = (event) => {
+					let interim = "";
+					for (let index = event.resultIndex; index < event.results.length; index += 1) {
+						const result = event.results[index];
+						const text = result[0]?.transcript ?? "";
+						if (result.isFinal) {
+							if (text.trim()) {
+								heard = true;
+								latest.current(text, true);
+							}
+						} else interim += text;
+					}
+					if (interim) latest.current(interim, false);
+				};
+				recognition.onerror = (event) => {
+					const key = speechNote(event.error);
+					if (!key) return;
+					setNote(t(key));
+					options.onError?.(t(key));
+				};
+				recognition.onend = () => {
+					setListening(false);
+					engine.current = void 0;
+					options.onEnd?.(heard);
+				};
+				engine.current = recognition;
+				try {
+					recognition.start();
+					setListening(true);
+					return true;
+				} catch {
+					setNote(t("composer.notHeard"));
+					return false;
+				}
+			};
+			const stop = () => engine.current?.stop();
+			const abort = () => {
+				if (engine.current) {
+					engine.current.onend = null;
+					engine.current.abort();
+					engine.current = void 0;
+					setListening(false);
+				}
+			};
+			return {
+				listening,
+				note,
+				start,
+				stop,
+				abort
+			};
+		}
+		/** A file as base64, for `POST desk/files`. */
+		function readBase64(file) {
+			return new Promise((resolve, reject) => {
+				const reader = new FileReader();
+				reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ""));
+				reader.onerror = () => reject(reader.error ?? /* @__PURE__ */ new Error("The file could not be read"));
+				reader.readAsDataURL(file);
+			});
+		}
+		const sizeLabel = (bytes) => bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+		/** The composer: the draft and its attachments, and the "+" menu. `send` gets the whole message, attachments named in it. */
+		function DeskComposer({ send, busy, onVoice, queued = 0 }) {
+			const { t, call, notify } = usePanel();
+			const [draft, setDraft] = (0, react.useState)("");
+			const [files, setFiles] = (0, react.useState)([]);
+			const [menu, setMenu] = (0, react.useState)();
+			const [scheduling, setScheduling] = (0, react.useState)(false);
+			const [uploading, setUploading] = (0, react.useState)(false);
+			const input = (0, react.useRef)(null);
+			const picker = (0, react.useRef)(null);
+			const card = (0, react.useRef)(null);
+			const insert = (text) => {
+				const box = input.current;
+				const start = box?.selectionStart ?? draft.length, end = box?.selectionEnd ?? draft.length;
+				const next = draft.slice(0, start) + text + draft.slice(end);
+				setDraft(next);
+				setTimeout(() => {
+					box?.focus();
+					box?.setSelectionRange(start + text.length, start + text.length);
+				}, 0);
+			};
+			const dictation = useDictation((text, final) => {
+				if (final) insert(text);
+			});
+			(0, react.useEffect)(() => {
+				if (!menu) return void 0;
+				const down = (event) => {
+					if (!card.current?.contains(event.target)) setMenu(void 0);
+				};
+				const key = (event) => {
+					if (event.key === "Escape") {
+						event.stopPropagation();
+						setMenu(void 0);
+					}
+				};
+				window.addEventListener("mousedown", down, true);
+				window.addEventListener("keydown", key, true);
+				return () => {
+					window.removeEventListener("mousedown", down, true);
+					window.removeEventListener("keydown", key, true);
+				};
+			}, [menu]);
+			const addFiles = (picked) => {
+				const fits = [...picked ?? []].filter((file) => {
+					if (file.size <= 10485760) return true;
+					notify(t("composer.fileTooBig", { name: file.name }));
+					return false;
+				});
+				const next = [...files, ...fits];
+				if (next.length > 5) notify(t("composer.tooManyFiles", { count: String(5) }));
+				setFiles(next.slice(0, 5));
+				if (picker.current) picker.current.value = "";
+				input.current?.focus();
+			};
+			const empty = !draft.trim() && !files.length;
+			const submit = async () => {
+				const body = draft.trim();
+				const captured = files;
+				if (!body && !captured.length) return;
+				setDraft("");
+				setFiles([]);
+				const restore = () => {
+					setDraft((previous) => previous.trim() ? previous : body);
+					setFiles((previous) => previous.length ? previous : captured);
+				};
+				let text = body;
+				if (captured.length) {
+					setUploading(true);
+					try {
+						const kept = [];
+						for (const file of captured) kept.push(await call("POST desk/files", { body: {
+							name: file.name,
+							data: await readBase64(file)
+						} }));
+						text = [body, `${t("composer.attachmentsHeader")}\n${kept.map((file) => `- ${file.name}（${sizeLabel(file.size)}）：${file.path}`).join("\n")}`].filter(Boolean).join("\n\n");
+					} catch (failure) {
+						notify(errorText(failure));
+						restore();
+						return;
+					} finally {
+						setUploading(false);
+					}
+				}
+				if (!await send(text)) restore();
+			};
+			const keys = (event) => {
+				const composing = event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || event.nativeEvent.getModifierState?.("AltGraph");
+				if (event.key !== "Enter" || event.shiftKey || composing) return;
+				event.preventDefault();
+				submit();
+			};
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: "dt-composer-dock",
+				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					ref: card,
+					className: "dt-composer",
+					"data-tall": files.length > 0 || draft.includes("\n") || void 0,
+					children: [
+						menu && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							className: "dt-menu",
+							role: "menu",
+							"aria-label": t("composer.add"),
+							children: menu === "root" ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+									type: "button",
+									role: "menuitem",
+									onClick: () => {
+										setMenu(void 0);
+										picker.current?.click();
+									},
+									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(PaperclipIcon, {}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("composer.addFiles") })]
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+									type: "button",
+									role: "menuitem",
+									onMouseDown: keepFocus,
+									onClick: () => setMenu("reference"),
+									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ChatsIcon, {}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("composer.reference") })]
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+									type: "button",
+									role: "menuitem",
+									onClick: () => {
+										setMenu(void 0);
+										setScheduling(true);
+									},
+									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ClockIcon, {}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("composer.schedule") })]
+								})
+							] }) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ReferenceList, {
+								onBack: () => setMenu("root"),
+								onPick: (title, key) => {
+									setMenu(void 0);
+									insert(t("composer.referenceText", {
+										title,
+										key
+									}));
+								}
+							})
+						}),
+						files.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							className: "dt-composer-files",
+							children: files.map((file, index) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+								className: "dt-composer-file",
+								children: [
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(PaperclipIcon, {}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+										className: "dt-composer-file-name",
+										children: file.name
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+										className: "dt-composer-file-size",
+										children: sizeLabel(file.size)
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+										type: "button",
+										"aria-label": t("composer.removeFile", { name: file.name }),
+										title: t("composer.removeFile", { name: file.name }),
+										onClick: () => setFiles(files.filter((_, at) => at !== index)),
+										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(CloseIcon, {})
+									})
+								]
+							}, `${file.name}-${index}`))
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							className: "dt-composer-plus",
+							"aria-label": t("composer.add"),
+							title: t("composer.add"),
+							"aria-haspopup": "menu",
+							"aria-expanded": !!menu,
+							onMouseDown: keepFocus,
+							onClick: () => setMenu(menu ? void 0 : "root"),
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(PlusIcon, {})
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+							ref: picker,
+							type: "file",
+							multiple: true,
+							hidden: true,
+							"aria-hidden": "true",
+							tabIndex: -1,
+							onChange: (event) => addFiles(event.target.files)
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
+							ref: input,
+							className: "dt-composer-input",
+							rows: 1,
+							value: draft,
+							"aria-label": t("chat.label"),
+							placeholder: t("chat.placeholder"),
+							"aria-busy": busy || uploading || void 0,
+							onChange: (event) => setDraft(event.target.value),
+							onKeyDown: keys
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "dt-composer-trailing",
+							children: [empty ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								className: "dt-composer-voice",
+								"aria-label": t("composer.voiceStart"),
+								title: t("composer.voiceTitle"),
+								onMouseDown: keepFocus,
+								onClick: onVoice,
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(WaveIcon, { size: 18 })
+							}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								className: "dt-composer-send",
+								"aria-label": t("chat.send"),
+								title: t("chat.send"),
+								"aria-busy": busy || uploading || void 0,
+								onMouseDown: keepFocus,
+								onClick: () => {
+									submit();
+								},
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SendIcon, {})
+							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								className: "dt-composer-mic",
+								"aria-pressed": dictation.listening,
+								"aria-label": t(dictation.listening ? "composer.stopDictation" : "composer.dictate"),
+								title: t(dictation.listening ? "composer.stopDictation" : "composer.dictate"),
+								onMouseDown: keepFocus,
+								onClick: () => {
+									if (dictation.listening) dictation.stop();
+									else dictation.start();
+								},
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(MicIcon, {})
+							})]
+						}),
+						(dictation.note || uploading || queued > 0) && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "dt-composer-note",
+							"data-testid": "composer-queue-note",
+							role: "status",
+							children: uploading ? t("composer.uploading") : dictation.note || t("composer.queued", { n: String(queued) })
+						})
+					]
+				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ScheduleDialog, {
+					open: scheduling,
+					draft,
+					onClose: () => setScheduling(false),
+					onScheduled: (used) => {
+						if (used) setDraft("");
+					}
+				})]
+			});
+		}
+		/** The chats a message may reference: the Threads of dsh-superagent, newest first, without the desk itself. */
+		function ReferenceList({ onBack, onPick }) {
+			const { t, call } = usePanel();
+			const [threads, setThreads] = (0, react.useState)();
+			const [failure, setFailure] = (0, react.useState)("");
+			(0, react.useEffect)(() => {
+				let live = true;
+				call("GET threads", { query: {
+					filter: "all",
+					limit: 20
+				} }).then((list) => {
+					if (live) setThreads(list.items.filter((item) => !item.key.startsWith("superagent:desk:")));
+				}, (error) => {
+					if (live) setFailure(errorText(error));
+				});
+				return () => {
+					live = false;
+				};
+			}, [call]);
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+				type: "button",
+				className: "dt-menu-head",
+				onMouseDown: keepFocus,
+				onClick: onBack,
+				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(BackIcon, {}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("composer.referenceTitle") })]
+			}), failure ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+				className: "dt-menu-note",
+				children: failure
+			}) : !threads ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+				className: "dt-menu-note",
+				children: t("loading")
+			}) : !threads.length ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+				className: "dt-menu-note",
+				children: t("composer.referenceEmpty")
+			}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+				className: "dt-menu-list",
+				children: threads.map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
+					type: "button",
+					role: "menuitem",
+					onMouseDown: keepFocus,
+					onClick: () => onPick(item.title, item.key),
+					children: [
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ChatsIcon, {}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "dt-menu-label",
+							children: item.title
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "dt-menu-hint",
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(When, { at: item.lastAt })
+						})
+					]
+				}, item.key))
+			})] });
+		}
+		/** The next whole hour, as a `datetime-local` value. */
+		function nextHourLocal(now = /* @__PURE__ */ new Date()) {
+			const next = new Date(now);
+			next.setMinutes(0, 0, 0);
+			next.setHours(next.getHours() + 1);
+			const pad = (value) => String(value).padStart(2, "0");
+			return `${next.getFullYear()}-${pad(next.getMonth() + 1)}-${pad(next.getDate())}T${pad(next.getHours())}:${pad(next.getMinutes())}`;
+		}
+		/** Schedules a message to the supervisor, and lists and removes the ones scheduled before. */
+		function ScheduleDialog({ open, draft, onClose, onScheduled }) {
+			const { t, call, notify } = usePanel();
+			const [text, setText] = (0, react.useState)("");
+			const [at, setAt] = (0, react.useState)("");
+			const [repeat, setRepeat] = (0, react.useState)("none");
+			const [list, setList] = (0, react.useState)();
+			const [busy, setBusy] = (0, react.useState)(false);
+			const load = () => call("GET desk/schedules").then((value) => setList(value.schedules), (failure) => notify(errorText(failure)));
+			(0, react.useEffect)(() => {
+				if (!open) return;
+				setText(draft.trim());
+				setAt(nextHourLocal());
+				setRepeat("none");
+				load();
+			}, [open]);
+			const save = async () => {
+				if (!text.trim() || !at || busy) return;
+				setBusy(true);
+				try {
+					const saved = await call("POST desk/schedules", { body: {
+						text: text.trim(),
+						at: new Date(at).toISOString(),
+						repeat
+					} });
+					notify(t("schedule.saved", { when: fullTime(saved.at, t("lang")) }));
+					onScheduled(!!draft.trim() && text.trim() === draft.trim());
+					onClose();
+				} catch (failure) {
+					notify(errorText(failure));
+				} finally {
+					setBusy(false);
+				}
+			};
+			const remove = async (id) => {
+				try {
+					await call("POST desk/schedules/:id/delete", { id });
+					await load();
+				} catch (failure) {
+					notify(errorText(failure));
+				}
+			};
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Modal, {
+				open,
+				onClose,
+				title: t("schedule.title"),
+				closeLabel: t("schedule.close"),
+				description: t("schedule.description"),
+				footer: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+					variant: "ghost",
+					onClick: onClose,
+					children: t("schedule.close")
+				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+					variant: "primary",
+					disabled: busy || !text.trim() || !at,
+					onClick: () => {
+						save();
+					},
+					children: t("schedule.save")
+				})] }),
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					className: "dt-form dt-schedule",
+					children: [
+						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
+							className: "dt-field",
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("schedule.text") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
+								className: "dt-textarea",
+								rows: 3,
+								value: text,
+								onChange: (event) => setText(event.target.value)
+							})]
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "dt-schedule-when",
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
+								className: "dt-field",
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("schedule.at") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+									className: "dt-select",
+									type: "datetime-local",
+									value: at,
+									onChange: (event) => setAt(event.target.value)
+								})]
+							}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
+								className: "dt-field",
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("schedule.repeat") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("select", {
+									className: "dt-select",
+									value: repeat,
+									onChange: (event) => setRepeat(event.target.value),
+									children: [
+										"none",
+										"daily",
+										"weekdays"
+									].map((value) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+										value,
+										children: t(`schedule.${value}`)
+									}, value))
+								})]
+							})]
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "dt-field",
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("schedule.list") }), !list?.length ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+								className: "dt-hint",
+								children: t("schedule.empty")
+							}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+								className: "dt-list",
+								"data-testid": "desk-schedules",
+								children: list.map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
+									className: "dt-row",
+									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+										className: "dt-row-main",
+										children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+											className: "dt-row-title",
+											children: item.text
+										}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+											className: "dt-row-meta",
+											children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: fullTime(item.at, t("lang")) }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t(`schedule.${item.repeat}`) })]
+										})]
+									}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+										className: "dt-row-actions",
+										children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+											variant: "outline",
+											size: "sm",
+											onClick: () => {
+												remove(item.id);
+											},
+											children: t("schedule.delete")
+										})
+									})]
+								}, item.id))
+							})]
+						})
+					]
+				})
+			});
+		}
+		/** Markdown and headers read aloud as plain words. */
+		const plainSpeech = (text) => text.replace(/```[\s\S]*?```/g, " ").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[*_`#>|~]+/g, " ").replace(/\s+/g, " ").trim();
+		/**
+		* Voice chat with SuperAgent: listens, sends what the person said, reads the answer aloud, and listens again, until the
+		* person pauses or ends it. An answer that takes long is left to the conversation, and listening goes on.
+		*/
+		function VoicePane({ messages, send, onClose }) {
+			const { t } = usePanel();
+			const [phase, setPhaseState] = (0, react.useState)(speechApi() ? "listening" : "unsupported");
+			const [caption, setCaption] = (0, react.useState)("");
+			const [note, setNote] = (0, react.useState)(speechApi() ? "" : t("voice.unsupported"));
+			const heardText = (0, react.useRef)("");
+			const known = (0, react.useRef)(/* @__PURE__ */ new Set());
+			const closed = (0, react.useRef)(false);
+			const current = (0, react.useRef)({
+				phase,
+				messages
+			});
+			current.current = {
+				phase: current.current.phase,
+				messages
+			};
+			const setPhase = (next) => {
+				current.current.phase = next;
+				setPhaseState(next);
+			};
+			const dictation = useDictation((text, final) => {
+				if (final) heardText.current += text;
+				setCaption(final ? heardText.current : heardText.current + text);
+			});
+			const listen = () => {
+				if (closed.current) return;
+				heardText.current = "";
+				setCaption("");
+				setPhase("listening");
+				dictation.start({
+					continuous: false,
+					onError: (message) => {
+						setNote(message);
+						setPhase("unsupported");
+					},
+					onEnd: () => {
+						if (closed.current || current.current.phase !== "listening") return;
+						const said = heardText.current.trim();
+						if (!said) {
+							setTimeout(listen, 300);
+							return;
+						}
+						known.current = new Set(current.current.messages.filter((message) => message.role === "superagent").map((message) => message.id));
+						setPhase("thinking");
+						send(said).then((ok) => {
+							if (!ok && !closed.current) listen();
+						});
+					}
+				});
+			};
+			const speak = (text) => {
+				setCaption(text);
+				const synth = typeof window.speechSynthesis === "undefined" ? void 0 : window.speechSynthesis;
+				if (!synth || typeof SpeechSynthesisUtterance === "undefined") {
+					setTimeout(listen, 1500);
+					return;
+				}
+				setPhase("speaking");
+				const utterance = new SpeechSynthesisUtterance(plainSpeech(text).slice(0, 1200));
+				utterance.lang = navigator.language || "zh-CN";
+				utterance.onend = () => {
+					if (!closed.current) listen();
+				};
+				synth.cancel();
+				synth.speak(utterance);
+			};
+			(0, react.useEffect)(() => {
+				if (phase === "listening") listen();
+				return () => {
+					closed.current = true;
+					dictation.abort();
+					window.speechSynthesis?.cancel();
+				};
+			}, []);
+			(0, react.useEffect)(() => {
+				if (phase !== "thinking") return;
+				const answer = messages.find((message) => message.role === "superagent" && !known.current.has(message.id));
+				if (answer) speak(answer.text);
+			}, [messages, phase]);
+			(0, react.useEffect)(() => {
+				if (phase !== "thinking") return void 0;
+				const timer = setTimeout(() => {
+					setNote(t("voice.slow"));
+					listen();
+				}, 12e4);
+				return () => clearTimeout(timer);
+			}, [phase]);
+			const pause = () => {
+				dictation.abort();
+				window.speechSynthesis?.cancel();
+				setPhase("paused");
+			};
+			const end = () => {
+				closed.current = true;
+				dictation.abort();
+				window.speechSynthesis?.cancel();
+				onClose();
+			};
+			const button = (label, onClick, children, className = "dt-voice-btn") => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+				type: "button",
+				className,
+				"aria-label": label,
+				title: label,
+				onClick,
+				children
+			});
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: "dt-voice",
+				role: "dialog",
+				"aria-label": t("composer.voiceTitle"),
+				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					className: "dt-voice-stage",
+					"data-phase": phase,
+					children: [
+						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "dt-voice-orb",
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { className: "dt-voice-ring" }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: "dt-voice-mark",
+								"aria-hidden": "true",
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(WaveIcon, { size: 34 })
+							})]
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							className: "dt-voice-name",
+							children: t("chat.supervisor")
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							className: "dt-voice-status",
+							role: "status",
+							children: t(`voice.${phase}`)
+						}),
+						caption && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							className: "dt-voice-caption",
+							children: caption
+						}),
+						note && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							className: "dt-voice-note",
+							children: note
+						})
+					]
+				}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					className: "dt-voice-bar",
+					children: [phase === "paused" || phase === "unsupported" ? phase === "paused" && button(t("voice.resume"), () => {
+						setNote("");
+						listen();
+					}, /* @__PURE__ */ (0, react_jsx_runtime.jsx)(MicIcon, {})) : button(t("voice.pause"), pause, /* @__PURE__ */ (0, react_jsx_runtime.jsx)(MicIcon, {})), button(t("voice.end"), end, /* @__PURE__ */ (0, react_jsx_runtime.jsx)(CloseIcon, {}), "dt-voice-btn dt-voice-end")]
+				})]
+			});
+		}
+		//#endregion
+		//#region src/client/review.tsx
+		/**
+		* VsSaros addition: the review of a ticket's shelved changelist, the only way to submit to P4. A person opens every file's
+		* difference, confirms, and approves the fingerprint of what they read; or sends the CL back with a comment, or discards it.
+		*/
+		function DiffLines({ diff }) {
+			const { t } = usePanel();
+			if (!diff.lines.length) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.binary") });
+			const tone = (line) => line.startsWith("@@") ? "hunk" : line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : "ctx";
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("pre", {
+				className: "dt-diff",
+				children: diff.lines.map((line, index) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+					className: `dt-diff-${tone(line)}`,
+					children: [line || " ", "\n"]
+				}, index))
+			}), diff.truncated && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.truncated") })] });
+		}
+		/** A finished review's one line, or the error of a failed submit on a waiting one. */
+		function Outcome({ review }) {
+			const { t } = usePanel();
+			const by = review.by ?? "";
+			switch (review.state) {
+				case "handed": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.handed", { by }) });
+				case "submitted": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.submitted", {
+					by,
+					submitted: String(review.submittedAs ?? "")
+				}) });
+				case "rejected": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.rejected", {
+					by,
+					comment: review.comment ?? ""
+				}) });
+				case "discarded": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.discarded", { by }) });
+				case "submitting": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.submitting") });
+				default: return null;
+			}
+		}
+		/** The review section of a ticket's page; renders nothing for a ticket without a changelist review. */
+		function ReviewSection({ id, onChanged }) {
+			const { t, call } = usePanel();
+			const { data, reload } = usePoll(() => call("GET tickets/:id/review", { id }), [id], 1e4);
+			if (!data || data.review === null) return null;
+			const { review } = data;
+			const title = t("review.section", { change: String(review.change) });
+			if (review.state !== "waiting") return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
+				title,
+				icon: "review",
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Outcome, { review })
+			});
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(WaitingReview, {
+				id,
+				view: data,
+				title,
+				after: async () => {
+					await reload();
+					await onChanged();
+				}
+			}, review.fingerprint);
+		}
+		function WaitingReview({ id, view, title, after }) {
+			const { t, call } = usePanel();
+			const { review, diffs, submit } = view;
+			const [seen, setSeen] = (0, react.useState)({});
+			const [open, setOpen] = (0, react.useState)();
+			const [ack, setAck] = (0, react.useState)(false);
+			const [confirming, setConfirming] = (0, react.useState)(false);
+			const [rejecting, setRejecting] = (0, react.useState)(false);
+			const [comment, setComment] = (0, react.useState)("");
+			const [changed, setChanged] = (0, react.useState)([]);
+			const ackId = (0, react.useId)();
+			const approve = useAction(async () => {
+				try {
+					await call("POST tickets/:id/review/approve", {
+						id,
+						body: { fingerprint: review.fingerprint }
+					});
+				} catch (failure) {
+					if (failure instanceof ApiError && failure.status === 409) setChanged(failure.details.changed ?? []);
+					setConfirming(false);
+					throw failure;
+				}
+				setConfirming(false);
+			}, { reload: after });
+			const reject = useAction(async () => {
+				await call("POST tickets/:id/review/reject", {
+					id,
+					body: { comment: comment.trim() }
+				});
+				setRejecting(false);
+				setComment("");
+			}, { reload: after });
+			const all = diffs.length > 0 && diffs.every((diff) => seen[diff.depotFile]);
+			const toggle = (file) => {
+				setOpen(open === file ? void 0 : file);
+				setSeen((current) => ({
+					...current,
+					[file]: true
+				}));
+			};
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Section, {
+				title,
+				icon: "review",
+				badge: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+					tone: "info",
+					children: t("review.seen", {
+						seen: String(Object.keys(seen).length),
+						total: String(diffs.length)
+					})
+				}),
+				children: [
+					review.error && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+						className: "dt-banner dt-danger",
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "dt-banner-label",
+							children: t("review.lastError", { error: review.error })
+						})
+					}),
+					changed.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "dt-banner dt-danger",
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "dt-banner-label",
+							children: t("review.changed")
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+							className: "dt-plain-list dt-mono",
+							children: changed.map((file) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", { children: file }, file))
+						})]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(KeyValues, { rows: [
+						[t("review.description"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("pre", {
+							className: "dt-review-desc",
+							children: review.description.trim()
+						})],
+						[t("review.workspace"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "dt-mono",
+							children: review.client
+						})],
+						[t("review.fingerprint"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "dt-mono",
+							children: review.fingerprint
+						})]
+					] }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.filesHint") }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: "dt-review-files",
+						children: diffs.map((diff) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
+							open: open === diff.depotFile,
+							onToggle: () => toggle(diff.depotFile),
+							icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: seen[diff.depotFile] ? "decision" : "hash" }),
+							title: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+								className: "dt-mono",
+								children: [
+									diff.depotFile,
+									"#",
+									diff.rev,
+									" ",
+									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+										className: "dt-hint",
+										children: [
+											"(",
+											diff.type,
+											")"
+										]
+									})
+								]
+							}),
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								className: "dt-disclosure-body",
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DiffLines, { diff })
+							})
+						}, diff.depotFile))
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "dt-review-ack",
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+							id: ackId,
+							type: "checkbox",
+							checked: ack,
+							disabled: !all,
+							onChange: (event) => setAck(event.target.checked)
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("label", {
+							htmlFor: ackId,
+							children: t("review.ack")
+						})]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "dt-row-buttons",
+						children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+								variant: "primary",
+								size: "sm",
+								disabled: !all || !ack || approve.busy,
+								onClick: () => setConfirming(true),
+								children: t("review.approve")
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+								variant: "outline",
+								size: "sm",
+								onClick: () => setRejecting(true),
+								children: t("review.reject")
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmButton, {
+								variant: "outline",
+								label: t("review.discard"),
+								title: t("review.discardTitle", { change: String(review.change) }),
+								message: t("review.discardConfirm"),
+								onConfirm: async () => {
+									await call("POST tickets/:id/review/discard", { id });
+									await after();
+								}
+							})
+						]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Modal, {
+						open: confirming,
+						onClose: () => setConfirming(false),
+						closeLabel: t("close"),
+						title: t("review.approveTitle", { change: String(review.change) }),
+						description: submit.mode === "pipeline" ? t("review.approvePipeline", { tags: submit.tags }) : t("review.approveHost"),
+						footer: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+							variant: "ghost",
+							onClick: () => setConfirming(false),
+							children: t("cancel")
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+							variant: "primary",
+							disabled: approve.busy,
+							onClick: () => {
+								approve.run();
+							},
+							children: t("confirm")
+						})] })
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Modal, {
+						open: rejecting,
+						onClose: () => setRejecting(false),
+						closeLabel: t("close"),
+						title: t("review.rejectTitle", { change: String(review.change) }),
+						description: t("review.rejectHint"),
+						footer: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+							variant: "ghost",
+							onClick: () => setRejecting(false),
+							children: t("cancel")
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+							variant: "primary",
+							disabled: !comment.trim() || reject.busy,
+							onClick: () => {
+								reject.run();
+							},
+							children: t("review.reject")
+						})] }),
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
+							className: "dt-textarea",
+							rows: 4,
+							value: comment,
+							placeholder: t("review.rejectPlaceholder"),
+							"aria-label": t("review.rejectTitle", { change: String(review.change) }),
+							onChange: (event) => setComment(event.target.value)
+						})
+					})
+				]
+			});
+		}
+		/** The reviews waiting for a person, for the Overview; renders nothing when none waits. */
+		function PendingReviews() {
+			const { t, call, navigate } = usePanel();
+			const { data } = usePoll(() => call("GET reviews"), [], 1e4);
+			if (!data?.waiting.length) return null;
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
+				title: t("review.pending"),
+				count: data.waiting.length,
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+					className: "dt-list dt-cards",
+					children: data.waiting.map((review) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
+						className: "dt-row dt-link",
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "dt-row-main",
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								className: "dt-row-title",
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+									type: "button",
+									className: "dt-open",
+									onClick: () => navigate({
+										page: "execution",
+										id: review.ticketId
+									}),
+									children: review.description.split("\n")[0]?.trim() || `CL ${review.change}`
+								})
+							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								className: "dt-row-meta",
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("review.waitingLine", {
+									change: String(review.change),
+									files: String(review.files.length),
+									time: when(review.requestedAt, t("lang"))
+								}) })
+							})]
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							className: "dt-row-actions",
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+								variant: "outline",
+								size: "sm",
+								icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, {
+									name: "review",
+									size: 14
+								}),
+								onClick: () => navigate({
+									page: "execution",
+									id: review.ticketId
+								}),
+								children: t("review.open")
+							})
+						})]
+					}, review.ticketId))
+				})
+			});
+		}
+		//#endregion
 		//#region src/client/team-plans.tsx
 		/**
 		* VsSaros addition: the Overview's team work — requests and teams waiting for a person, team steps, skill drafts from the
-		* memory system, reusable workflows, Bot drafts — and, read-only, the retired team plans (2026-11-06).
+		* memory system, Bot drafts — and, read-only, the retired team plans (2026-11-06).
+		* ★ 2026-11-09: the reusable-workflows / TeamFlow section was removed from this panel (user request); the Host-side
+		*   workflow data and adapter remain, so team staffing can still reuse saved workflows.
 		*/
 		/**
 		* VsSaros addition (2026-11-06): what a team used of its budget. Its token and turn caps are hard gates; at either one, no
@@ -8613,34 +8776,8 @@ window.__ModuleLoader__.load({
 			const retro = usePoll(() => call("GET team/retrospective"), [], 1e4);
 			const approveBot = useAction((id) => call("POST team/approvals/:id/approve", { id }), { reload: drafts.reload });
 			const rejectBot = useAction((id) => call("POST team/approvals/:id/reject", { id }), { reload: drafts.reload });
-			const saveWorkflow = useAction((id) => call("POST team/workflows/:id/save", { id }), { reload: retro.reload });
-			const [ranWorkflow, setRanWorkflow] = (0, react.useState)("");
-			const runWorkflow = useAction(async (id) => {
-				const done = await call("POST team/workflows/:id/run", { id });
-				setRanWorkflow(t("team.wfRunSent", { name: done.workflow.name }));
-				return done;
-			});
-			const [tfCwd, setTfCwd] = (0, react.useState)("");
-			const [tfResult, setTfResult] = (0, react.useState)("");
-			const tfExport = useAction(async (id) => {
-				const done = await call("POST team/workflows/:id/teamflow", {
-					id,
-					body: { cwd: tfCwd.trim() }
-				});
-				setTfResult(t(done.runnable ? "team.tfExported" : "team.tfExportedRef", {
-					team: done.teamId,
-					lost: done.lossy.join("；")
-				}));
-				return done;
-			}, { reload: retro.reload });
-			const tfImport = useAction(async (cwd) => {
-				const done = await call("POST team/teamflow/import", { body: { cwd } });
-				setTfResult(t("team.tfImported", { count: String(done.imported.length) }));
-				return done;
-			}, { reload: retro.reload });
 			const waiting = drafts.data?.waiting ?? [];
 			const archivedSkills = retro.data?.skills ?? [];
-			const workflows = retro.data?.workflows ?? [];
 			const work = useWork();
 			const teams = work.proposals ?? [];
 			const teamTickets = work.teams;
@@ -8696,7 +8833,7 @@ window.__ModuleLoader__.load({
 									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(MiniFlow, {
 										team,
 										onOpen: () => navigate({
-											page: "work",
+											page: "execution",
 											query: { ticket: team.ticket.id }
 										})
 									}),
@@ -8780,115 +8917,6 @@ window.__ModuleLoader__.load({
 					})
 				}),
 				archivedSkills.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("team.skillsArchived", { count: String(archivedSkills.length) }) }),
-				workflows.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Section, {
-					title: t("team.workflows"),
-					count: workflows.length,
-					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "dt-form",
-						"data-testid": "team-teamflow",
-						children: [
-							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
-								className: "dt-field",
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("team.tfWorkspace") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
-									value: tfCwd,
-									onChange: (event) => setTfCwd(event.target.value),
-									placeholder: t("team.tfWorkspaceHint")
-								})]
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-								className: "dt-row-actions",
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-									variant: "outline",
-									size: "sm",
-									disabled: tfImport.busy || !tfCwd.trim(),
-									onClick: () => {
-										tfImport.run(tfCwd.trim());
-									},
-									children: t("team.tfImport")
-								})
-							}),
-							tfResult && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-								className: "dt-hint",
-								"data-testid": "team-teamflow-result",
-								children: tfResult
-							}),
-							ranWorkflow && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-								className: "dt-hint",
-								"data-testid": "team-workflow-run",
-								children: ranWorkflow
-							})
-						]
-					}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-						className: "dt-list dt-cards",
-						children: workflows.map((workflow) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
-							className: "dt-row dt-link",
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-								className: "dt-row-main",
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-									className: "dt-row-title",
-									children: [
-										workflow.name,
-										workflow.state === "draft" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-											className: "dt-tag",
-											"data-tone": "warning",
-											children: t("team.wfDraft")
-										}) : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-											className: "dt-tag",
-											"data-tone": "success",
-											children: ["v", workflow.version]
-										}),
-										workflow.source === "teamflow" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-											className: "dt-tag",
-											"data-tone": "neutral",
-											children: "TeamFlow"
-										})
-									]
-								}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-									className: "dt-row-meta",
-									children: [
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("team.wfRuns", {
-											runs: String(workflow.runs),
-											ok: String(workflow.ok)
-										}) }),
-										/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [
-											workflow.steps.length,
-											" ",
-											t("team.wfSteps")
-										] }),
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: workflow.triggers.join(" · ") })
-									]
-								})]
-							}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-								className: "dt-row-actions",
-								children: [workflow.state === "draft" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-									variant: "primary",
-									size: "sm",
-									disabled: saveWorkflow.busy,
-									onClick: () => {
-										saveWorkflow.run(workflow.id);
-									},
-									children: t("team.wfSave")
-								}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-									variant: "outline",
-									size: "sm",
-									disabled: runWorkflow.busy,
-									onClick: () => {
-										runWorkflow.run(workflow.id);
-									},
-									children: t("team.wfRun")
-								}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-									variant: "outline",
-									size: "sm",
-									disabled: tfExport.busy || !tfCwd.trim(),
-									onClick: () => {
-										tfExport.run(workflow.id);
-									},
-									children: t("team.tfExport")
-								})]
-							})]
-						}, workflow.id))
-					})]
-				}),
 				waiting.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
 					title: t("team.approval"),
 					count: waiting.length,
@@ -11075,7 +11103,7 @@ window.__ModuleLoader__.load({
 			});
 		}
 		function TicketPage({ id }) {
-			const { t, call } = usePanel();
+			const { t, call, navigate } = usePanel();
 			const { data, error, reload } = usePoll(() => call("GET tickets/:id", { id }), [id]);
 			const after = async (request) => {
 				await request;
@@ -11187,6 +11215,7 @@ window.__ModuleLoader__.load({
 							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ActionLink, {
 								href: channel.url,
 								icon: "message",
+								onActivate: () => navigate({ page: "chat" }),
 								children: t("answerIn", { source: valueLabel(t, "source", channel.source) })
 							})
 						})
@@ -11664,7 +11693,12 @@ window.__ModuleLoader__.load({
 			const page = (() => {
 				switch (route.page) {
 					case "chat": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ChatTab, {});
-					case "work": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(WorkPage, { ticketId: route.query?.ticket }, route.query?.ticket);
+					case "work": return state ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ExecutionStatus, {
+						filter: "open",
+						state,
+						reload,
+						ticketId: route.query?.ticket
+					}) : waiting;
 					case "source": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SourceStatus, {});
 					case "trigger": return route.id !== void 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ThreadPage, {
 						id: route.id,
@@ -11678,7 +11712,8 @@ window.__ModuleLoader__.load({
 					case "execution": return route.id !== void 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(TicketPage, { id: route.id }, route.id) : state ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ExecutionStatus, {
 						filter: route.query?.filter ?? "open",
 						state,
-						reload
+						reload,
+						ticketId: route.query?.ticket
 					}) : waiting;
 					case "settings": return state ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SettingsPage, {
 						group: route.query.group,
@@ -12162,9 +12197,13 @@ window.__ModuleLoader__.load({
 		/** The desk's ticket-end tool (`RECEIPT_TOOL` in app/desk.ts, which the client bundle does not import; a test keeps them equal). */
 		const RECEIPT_TOOL_NAME = "superagent_ticket_result";
 		/**
+		
 		* The desk's one tool in DSH's chat: while it runs, a line saying the message goes to the supervisor; once it settled, the
+		
 		* message's key-node card (`flow-card.tsx`), which follows it live. VsSaros addition (2026-11-06): with `receipt`, the
+		
 		* desk's `superagent_ticket_result` call (made by SuperAgent when a desk ticket ends) as the ticket's end card.
+		
 		*/
 		function deskToolView(ctx, t, receipt = false) {
 			const openSession = async (id) => {
@@ -12204,13 +12243,17 @@ window.__ModuleLoader__.load({
 			"uiWorkspace"
 		];
 		/**
+		
 		* VsSaros addition: in VsSaros the panel is a whole-page workbench, a built-in one whose identity is `vssaros:superagent`
+		
 		* (its package's `vssaros.workbench`; title, description and icon must match it word for word). It frames itself
+		
 		* (`customFrame`), so the host gives it DSH's own conversation to dock: the Chat tab shows the supervisor desk in it.
+		
 		*/
 		const WORKBENCH = {
 			title: "SuperAgent",
-			description: "SuperAgent 主管：接收飞书、GitHub、TAPD 和主管对话里的需求，评估后组建 bot 团队，经你同意再分工执行，并沉淀技能与团队工作流。",
+			description: "SuperAgent 主管：接收飞书、GitHub、TAPD 和主管对话里的需求，评估后组建 bot 团队，经你同意再分工执行，并沉淀技能。",
 			icon: "codicon:robot",
 			repository: "vssaros:superagent",
 			customFrame: true,

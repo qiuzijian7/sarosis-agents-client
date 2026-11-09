@@ -4,6 +4,7 @@ description: "Review PRs: diffs, inline comments via gh or REST."
 activation: auto
 match: ["github-code-review", "github code review", "github", "code-review", "pull-requests", "git", "quality"]
 category: github
+tier: core
 ---
 
 # GitHub Code Review

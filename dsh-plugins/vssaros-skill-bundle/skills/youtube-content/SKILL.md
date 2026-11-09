@@ -4,6 +4,7 @@ description: YouTube transcripts to summaries, threads, blogs.
 activation: manual
 match: ["youtube-content", "youtube content"]
 category: media
+tier: extended
 ---
 
 # YouTube Content Tool

@@ -6,7 +6,10 @@
  * with DSH_SUPERAGENT_TAPD_ENV_FILE instead of exporting secrets into the IDE process. Only whitelisted
  * TAPD keys are taken from the file, it never overrides an existing environment value, and it is read lazily
  * (not at module load) so a late-loaded credential is still picked up. The Executor never sees these values.
+ * VsSaros also ships an API account (BUNDLED_TAPD_CREDENTIALS) as the lowest-priority source, so a fresh install
+ * reads TAPD without setup; a file, the settings panel, or the Host environment still wins.
  */
+import { randomBytes } from 'node:crypto'
 import { readFileSync, statSync } from 'node:fs'
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -20,9 +23,29 @@ const KEYS = [
   'DSH_SUPERAGENT_TAPD_BEARER', 'DSH_SUPERAGENT_TAPD_USER', 'DSH_SUPERAGENT_TAPD_PASSWORD',
   'DSH_SUPERAGENT_TAPD_TIMEOUT_MS',
   'TAPD_CLIENT_ID', 'TAPD_CLIENT_SECRET', 'TAPD_API_USER', 'TAPD_API_PWD', 'TAPD_API_TOKEN',
-  'TAPD_HTTP_TIMEOUT_MS', 'TAPD_WORKSPACE_ID',
+  'TAPD_HTTP_TIMEOUT_MS', 'TAPD_WORKSPACE_ID', 'DSH_SUPERAGENT_TAPD_BUNDLED',
 ] as const
+/** The key the panel writes to disable the shipped account; it is not a credential and is never replaced by a save. */
+const BUNDLED_KEY = 'DSH_SUPERAGENT_TAPD_BUNDLED'
 const LINE = /^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/i
+
+/**
+ * VsSaros addition: the TAPD Open API account shipped with the product, so an installed VsSaros can read TAPD
+ * without any per-machine setup. It is the *lowest*-priority source: a credentials file, the settings panel, or
+ * Host environment variables all override it. Set `DSH_SUPERAGENT_TAPD_BUNDLED=off` to turn it off entirely.
+ * The secret is only ever read by the Host (it is compiled into `lib/`, which is in the package's `files`).
+ */
+export const BUNDLED_TAPD_CREDENTIALS: TapdEnv = {
+  TAPD_CLIENT_ID: 'tapd-app-889817',
+  TAPD_CLIENT_SECRET: '6E9C1B81-5443-6CFC-0D84-27C8DAEDB6FB',
+}
+
+/** The shipped account, unless the Host environment or the credentials file disables it (no IDE restart needed for the file). */
+export function bundledTapdEnv(base: TapdEnv = process.env): TapdEnv {
+  const fromFile = readTapdEnvFile(tapdEnvFile(base), base)[BUNDLED_KEY]
+  const flag = (base[BUNDLED_KEY] || fromFile || '').trim().toLowerCase()
+  return flag === 'off' ? {} : BUNDLED_TAPD_CREDENTIALS
+}
 
 /** Explicit override, else `<DSH_HOME>/tapd.env`, else `~/.dsh/tapd.env`. */
 export function tapdEnvFile(env: TapdEnv = process.env): string {
@@ -63,10 +86,10 @@ export function readTapdEnvFile(file: string, base: TapdEnv = process.env): Tapd
   return values
 }
 
-/** The Host environment plus any whitelisted keys from the credentials file. */
+/** The shipped account, then the local credentials file, then the Host environment (each overrides the last). */
 export function tapdEnvironment(base: TapdEnv = process.env): TapdEnv {
   const file = tapdEnvFile(base)
-  return { ...readTapdEnvFile(file, base), ...base }
+  return { ...bundledTapdEnv(base), ...readTapdEnvFile(file, base), ...base }
 }
 
 const basic = (user: string, password: string, method: string): TapdCredential =>
@@ -96,12 +119,13 @@ export function tapdTimeoutMs(env: TapdEnv): number {
   return Math.max(3000, Number.isFinite(parsed) && parsed > 0 ? parsed : 30_000)
 }
 
-/** What to show when nothing is configured: every accepted variable plus the local file option. */
+/** What to show when nothing is configured (only possible with the shipped account turned off). */
 export function tapdCredentialsHint(env: TapdEnv = process.env): string {
-  return 'No TAPD Open API credentials in the Host. Set one of: DSH_SUPERAGENT_TAPD_BEARER; '
+  return 'No TAPD Open API credentials in the Host (the shipped account is off). Set one of: DSH_SUPERAGENT_TAPD_BEARER; '
     + 'DSH_SUPERAGENT_TAPD_USER + DSH_SUPERAGENT_TAPD_PASSWORD; TAPD_CLIENT_ID + TAPD_CLIENT_SECRET (recommended); '
     + 'TAPD_API_USER + TAPD_API_PWD; TAPD_API_TOKEN. Or put them as KEY=VALUE in ' + tapdEnvFile(env)
-    + ' (or point DSH_SUPERAGENT_TAPD_ENV_FILE at an existing .env). Credentials stay in the Host; Executors cannot read them.'
+    + ' (or point DSH_SUPERAGENT_TAPD_ENV_FILE at an existing .env). Remove DSH_SUPERAGENT_TAPD_BUNDLED=off to use the '
+    + 'account shipped with VsSaros. Credentials stay in the Host; Executors cannot read them.'
 }
 
 /*
@@ -124,15 +148,33 @@ export interface TapdCredentialStatus {
   configured: boolean
   /** Which credential the Host uses, e.g. `Basic TAPD_CLIENT_ID/SECRET (API account)`. */
   method?: string
-  /** Where the credential in use comes from (the two are merged key by key, then picked by priority). */
-  source: 'environment' | 'file' | 'none'
+  /** Where the credential in use comes from (all sources are merged key by key, then picked by priority). */
+  source: 'environment' | 'file' | 'bundled' | 'none'
   /** The credentials file the panel writes. */
   file: string
-  /** The kind the file holds, and its account name masked. */
+  /** The kind of the credential in use (including the shipped account), and its account name masked. */
   kind?: TapdCredentialKind
   account?: string
+  /** Whether the credentials file holds a complete pair the panel saved. `kind` alone does not mean "blank keeps it". */
+  saved: boolean
+  /** Whether the product's shipped account is enabled; the panel can turn it off without restarting the IDE. */
+  bundled: boolean
   /** The file holds a credential, but a higher-priority one in the Host environment is used instead. */
   overridden: boolean
+}
+
+/** Everything the panel's TAPD setup checklist needs, in one read-only response. */
+export interface TapdSetupStatus {
+  credential: TapdCredentialStatus
+  watches: number
+  workspace: string
+  agent: string
+  /** The identity name after the member mapping is applied (TAPD compares owners as Chinese names). */
+  agentResolved: string
+  /** Whether `agent` was an alias that the mapping resolved. */
+  agentMapped: boolean
+  /** The Source's live health code, e.g. `tapdUnset` when no watch is set; null while it has not reported. */
+  healthCode: string | null
 }
 /** A credential the panel cannot save as given (missing, unknown kind, or a value that would break the file); answered with 400. */
 export class TapdCredentialError extends Error {}
@@ -152,17 +194,27 @@ function fileKind(values: TapdEnv): TapdCredentialKind | undefined {
 export function tapdCredentialStatus(base: TapdEnv = process.env): TapdCredentialStatus {
   const file = tapdEnvFile(base)
   const values = fileValues(file)
+  const bundled = bundledTapdEnv(base)
   const fromEnv = tapdCredential(base)
-  // The Host merges the two key by key (the environment wins a key both set) and then picks by priority, so the
-  // credential in use may come from either place; say which, rather than assuming the environment always wins.
-  const effective = tapdCredential({ ...values, ...base })
+  const fromFile = tapdCredential({ ...bundled, ...values })
+  // The Host merges all three key by key (the environment wins a key both set) and then picks by priority, so the
+  // credential in use may come from any of them; say which, rather than assuming the environment always wins.
+  const effective = tapdCredential({ ...bundled, ...values, ...base })
   const fromEnvInUse = !!effective && !!fromEnv && effective.header === fromEnv.header
-  const kind = fileKind(values)
+  const fromFileInUse = !!effective && !fromEnvInUse && !!tapdCredential(values) && effective.header === fromFile?.header
+  const source = !effective ? 'none' : fromEnvInUse ? 'environment' : fromFileInUse ? 'file' : 'bundled'
+  const saved = !!tapdCredential(values)
+  // The shipped account is a client pair: name it in the status so the panel can show a masked account and the
+  // right credential kind without pretending a file was saved (`same` must stay false until the panel saves one).
+  const kind: TapdCredentialKind | undefined = fileKind(values) ?? (source === 'bundled' ? 'client' : undefined)
   const id = kind && TAPD_CREDENTIAL_KEYS[kind].id
+  const account = source === 'bundled' && BUNDLED_TAPD_CREDENTIALS.TAPD_CLIENT_ID
+    ? mask(BUNDLED_TAPD_CREDENTIALS.TAPD_CLIENT_ID)
+    : id && values[id] ? mask(values[id]!) : undefined
   return {
     configured: !!effective, ...effective ? { method: effective.method } : {},
-    source: !effective ? 'none' : fromEnvInUse ? 'environment' : 'file', file,
-    ...kind ? { kind } : {}, ...id && values[id] ? { account: mask(values[id]!) } : {},
+    source, file, saved, bundled: Object.keys(bundled).length > 0,
+    ...kind ? { kind } : {}, ...account ? { account } : {},
     overridden: fromEnvInUse && !!tapdCredential(values),
   }
 }
@@ -173,19 +225,21 @@ const SAFE = /^[^\r\n"'\0]{1,512}$/
  * (timeouts, workspace, comments). An empty `id` or `secret` keeps the file's current value of the same kind, so the
  * secret need not be typed again to change the account name; `clear` removes the credential keys only.
  */
-export async function saveTapdCredential(input: { kind?: TapdCredentialKind; id?: string; secret?: string; clear?: boolean },
-  base: TapdEnv = process.env): Promise<TapdCredentialStatus> {
+export async function saveTapdCredential(input: { kind?: TapdCredentialKind; id?: string; secret?: string; clear?: boolean;
+  bundled?: 'on' | 'off' }, base: TapdEnv = process.env): Promise<TapdCredentialStatus> {
   const file = tapdEnvFile(base)
   let text = ''
   try { text = await readFile(file, 'utf8') } catch { /* A missing file starts empty. */ }
   const current = parseTapdEnv(text)
   const kept = text.split(/\r?\n/).filter(line => {
     const key = LINE.exec(line)?.[1]?.toUpperCase()
-    return !key || !CREDENTIAL_KEYS.includes(key)
+    return !key || (!CREDENTIAL_KEYS.includes(key) && key !== BUNDLED_KEY)
   })
   while (kept.length && kept.at(-1) === '') kept.pop()
   const lines = [...kept]
-  if (!input.clear) {
+  // A request that only flips the shipped-account switch must not demand a credential kind.
+  const onlySwitch = input.bundled !== undefined && !input.kind && !input.id && !input.secret && !input.clear
+  if (!input.clear && !onlySwitch) {
     const kind = input.kind
     if (!kind || !(kind in TAPD_CREDENTIAL_KEYS)) throw new TapdCredentialError('Choose a TAPD credential kind')
     const keys = TAPD_CREDENTIAL_KEYS[kind]
@@ -201,10 +255,21 @@ export async function saveTapdCredential(input: { kind?: TapdCredentialKind; id?
     if (keys.id) lines.push(`${keys.id}=${id}`)
     lines.push(`${keys.secret}=${secret}`)
   }
+  // Preserve the switch across ordinary saves, or apply the panel's request; an "on" is the absence of the line.
+  const bundledFlag = input.bundled ?? (String(current[BUNDLED_KEY] ?? '').trim().toLowerCase() === 'off' ? 'off' : 'on')
+  if (bundledFlag === 'off') lines.push(`${BUNDLED_KEY}=off`)
   await mkdir(dirname(file), { recursive: true })
-  const temporary = `${file}.${process.pid}.${Date.now().toString(36)}.tmp`
+  // Random suffix: two quick saves in the same millisecond must not share a temporary name.
+  const temporary = `${file}.${process.pid}.${Date.now().toString(36)}.${randomBytes(4).toString('hex')}.tmp`
   await writeFile(temporary, lines.length ? `${lines.join('\n')}\n` : '', { encoding: 'utf8', mode: 0o600 })
-  await rename(temporary, file)
+  // On Windows a rename over an existing file can briefly fail EPERM/EBUSY (scanner or another reader).
+  for (let attempt = 0; ; attempt++) {
+    try { await rename(temporary, file); break } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (attempt >= 2 || !['EPERM', 'EACCES', 'EBUSY'].includes(code ?? '')) throw error
+      await new Promise(resolve => setTimeout(resolve, 25 * (attempt + 1)))
+    }
+  }
   await chmod(file, 0o600).catch(() => { /* Windows has no POSIX modes. */ })
   resetTapdEnvCache()
   return tapdCredentialStatus(base)

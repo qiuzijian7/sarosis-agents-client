@@ -1,5 +1,6 @@
 /** Shared view projections for triggers, tickets, threads, decisions, and channel links. */
 import { z } from 'zod'
+import { isGroupTicket } from '../../core/model.ts'
 import { canRetry, followupOwners, latestReport, liveTicket, settled, threadKey, ticketStage, type ActorRef, type ChannelRef, type Decision,
   type DecisionKind, type Thread, type ThreadFacts, type Ticket, type TicketStage, type Trigger } from '../../core/index.ts'
 import { allowedSender, listedBot } from '../../policy.ts'
@@ -125,9 +126,9 @@ export function ticketSummary(ticket: Ticket) {
       assignments: ticket.assignments.length, inputs: ticket.inputs.length, undelivered: ticket.undelivered.length,
     // Every started Assignment of a Ticket runs in its one shared worker Session.
     // VsSaros addition (2026-11-07): a group ticket opens its group chat, where the work is done.
-    deliveryError: attribute(ticket.delivery?.error), sessionId: ticket.group ? ticket.group.roomId : ticket.assignments.some(item => item.startedAt)
+    deliveryError: attribute(ticket.delivery?.error), sessionId: isGroupTicket(ticket) ? (ticket.group?.roomId ?? '') : ticket.assignments.some(item => item.startedAt)
       ? workerSessionId(ticket.id) : '',
-    ...ticket.group ? { group: { roomId: ticket.group.roomId, roomName: ticket.group.roomName } } : {},
+    ...isGroupTicket(ticket) && ticket.group ? { group: { roomId: ticket.group.roomId, roomName: ticket.group.roomName } } : {},
     directory: attribute(ticket.execution?.directory), summary: latestReport(ticket)?.summary ?? '', createdAt: ticket.createdAt,
     updatedAt: ticket.updatedAt }
 }

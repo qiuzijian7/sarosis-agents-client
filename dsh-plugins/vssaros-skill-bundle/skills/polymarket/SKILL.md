@@ -4,6 +4,7 @@ description: "Query Polymarket: markets, prices, orderbooks, history."
 activation: manual
 match: ["polymarket"]
 category: research
+tier: extended
 ---
 
 # Polymarket — Prediction Market Data

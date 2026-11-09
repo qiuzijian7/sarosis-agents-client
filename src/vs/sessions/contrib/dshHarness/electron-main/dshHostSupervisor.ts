@@ -53,6 +53,7 @@ import { orphanLeaseCandidates } from '../common/dshHostRunOwnership.js';
 import { readPreferredHostPort, reclaimLoopbackPort, rememberHostPort, resolveHostPort } from './dshHostPortManager.js';
 import { reapOrphanHosts } from './dshHostReaper.js';
 import { repairBundledPluginFiles, repairProfileDeps } from './dshProfileDepsRepair.js';
+import { copyProfileSeed, profileSeedDirFor } from './dshProfileRuntimeSync.js';
 import { DshRuntimeError, DshRuntimeManager, injectBundledPnpm, IResolvedDsh, IResolvedNode, sanitizedEnv } from './dshRuntimeManager.js';
 import { IDshHealthReport, IHostActivity, summarizeHealth } from '../common/dshUpgrade.js';
 // ★ 2026-10-19：内置 agent 的**代码真源**（`getBuiltinAgents`）与它到 md 的序列化（`buildAgentMd`）。
@@ -2126,19 +2127,38 @@ export class DshHostSupervisor extends Disposable {
 		})();
 	}
 
+	/**
+	 * 确保 profile 存在（**仅首次创建**）。
+	 *
+	 * ★★ 2026-11-09 单版本模型：**`userData/dsh-home` 永不覆盖**。
+	 *   profile 已存在 ⇒ 原样返回，一个字节都不改（不写 marker、不比对版本、不重建）。
+	 *   历史上这里有 marker / `planProfileRuntimeSync` / `profileRebuildPending` / 按版本重建，
+	 *   服务于「用户自由切 runtime」；产品已下线该能力 ⇒ 整段删除。
+	 *
+	 *   版本升级 = 应用发版。兼容性靠两层，而不是运行时改写用户数据：
+	 *     · 构建期：`build/saros/check-dsh-release.mjs` 校验包内只有 compat pin 的唯一版本 + 完整种子；
+	 *     · 启动期：已有的 `repairProfileDeps` / `repairBundledPluginFiles` /
+	 *       `_ensureProfileBundles` / 伴生插件安装链做**有界一致性修复**。
+	 *   与开源 dsh-desktop 的口径一致：「Application upgrades do not replace profile, plugin,
+	 *   workspace, session, or model configuration data.」
+	 */
 	private async _ensureProfile(node: IResolvedNode, dsh: IResolvedDsh, profile: string, env: NodeJS.ProcessEnv): Promise<void> {
-		if (existsSync(this._profileManifest(profile, env))) {
+		const manifest = this._profileManifest(profile, env);
+		if (existsSync(manifest)) {
 			return;
 		}
-		// 构建期预置的 profile 种子（build/prepack-dsh-runtime.mjs，copy 导入模式→真文件可搬运）：
-		// 有种子就整目录本地复制——首启零下载、零 pnpm；种子缺失/损坏才退回模板初始化。
+		const dir = this._profileDir(profile, env);
 		const seedDir = this._profileSeedDir(profile, dsh);
+		// 构建期预置的种子：有就整目录本地复制（首启零下载、零 pnpm）；
+		// 种子缺失/损坏才退回 web 模板初始化。
 		if (seedDir) {
 			this._progress('正在从内置副本初始化 profile（本地拷贝，无需下载）…');
 			const t0 = Date.now();
 			try {
-				await fsp.cp(seedDir, this._profileDir(profile, env), { recursive: true });
-				if (existsSync(this._profileManifest(profile, env))) {
+				// ⚠ 必须用 copyProfileSeed（dereference: true）：仓库种子里 .pnpm 有 6097 个 symlink，
+				//   裸 fsp.cp 在 Windows 非管理员下会 EPERM ⇒ 首启崩溃（2026-11-09 真机）。
+				await copyProfileSeed(seedDir, dir);
+				if (existsSync(manifest)) {
 					this._appendLog(`profile seeded from bundled copy in ${Date.now() - t0} ms (${seedDir})`);
 					return;
 				}
@@ -2150,7 +2170,7 @@ export class DshHostSupervisor extends Disposable {
 		this._progress('正在初始化专属 profile（web 模板）…');
 		this._appendLog(`creating profile "${profile}" from the web template`);
 		const r = await this._runDsh(node, buildProfileInitArgs(dsh.bin, profile), env, 60_000);
-		if (!existsSync(this._profileManifest(profile, env))) {
+		if (!existsSync(manifest)) {
 			throw new Error(`profile 初始化失败：${r.trim().slice(-600)}`);
 		}
 	}
@@ -2430,14 +2450,38 @@ export class DshHostSupervisor extends Disposable {
 		}
 	}
 
-	/** 内置 profile 种子目录：`<bundledRoot>/<version>/profile-seed/profiles/<profile>`；不存在返回 undefined。 */
+	/**
+	 * profile 种子目录：`<appRoot>/dsh-runtime/<version>/profile-seed/profiles/<profile>`。
+	 *
+	 * ★★ 2026-11-09（B）：原先硬性要求 `dsh.source === 'bundled'` ⇒ **dev（managed）永远拿不到种子**，
+	 *   于是老 profile 被无限复用，runtime 版本一变就 `webserver (required) webStartup` ⇒ Host code 1。
+	 *   种子目录名里带的就是 dsh 版本，**版本一致即配套**，与 runtime 是 bundled 还是 managed 无关 ✓。
+	 *   ⇒ 改为按版本找，并**逐级向上**找 dsh-runtime 目录：
+	 *     ① 打包版：`runtime.bundledRoot`（`<appPath>/dsh-runtime`）；
+	 *     ② dev：`_bundledPluginsRoot()` 是 `<repo>/.build/electron/resources/app/dsh-plugins`，
+	 *        种子却在 `<repo>/dsh-runtime/` ⇒ 只查它的父级会扑空（实测 `.build/.../dsh-runtime` 不存在）。
+	 *        从 `<appPath>` 起最多向上 5 级逐级试 `<dir>/dsh-runtime` ⇒ 能命中仓库根 ✓。
+	 *   所有候选都要求 `package.json` 存在才返回 ⇒ 半成品种子不会被误用。
+	 */
 	private _profileSeedDir(profile: string, dsh: IResolvedDsh): string | undefined {
-		const bundledRoot = this._opts.runtime.bundledRoot;
-		if (!bundledRoot || dsh.source !== 'bundled') {
-			return undefined; // 种子只对内置运行时负责——其他来源的版本可能和种子不配套
+		const fromBundled = profileSeedDirFor(this._opts.runtime.bundledRoot, dsh.version, profile);
+		if (fromBundled) {
+			return fromBundled;
 		}
-		const dir = join(bundledRoot, dsh.version, 'profile-seed', 'profiles', profile);
-		return existsSync(join(dir, 'package.json')) ? dir : undefined;
+		const pluginsRoot = this._bundledPluginsRoot();
+		let dir = pluginsRoot ? dirname(pluginsRoot) : undefined;
+		for (let i = 0; dir && i < 6; i++) {
+			const found = profileSeedDirFor(join(dir, 'dsh-runtime'), dsh.version, profile);
+			if (found) {
+				return found;
+			}
+			const parent = dirname(dir);
+			if (parent === dir) {
+				break;   // 已经到盘符根了
+			}
+			dir = parent;
+		}
+		return undefined;
 	}
 
 	/**
@@ -2664,7 +2708,9 @@ export class DshHostSupervisor extends Disposable {
 	 *   而**出问题的恰恰是伴生插件**（`dsh-kb` / `dsh-agents`）⇒ 用它会漏掉真正要修的那批 ✗。
 	 */
 	private _bundledPluginsRoot(): string | undefined {
-		const sample = this._opts.modulePluginDirs[0]?.[1] ?? this._opts.browserPluginDir;
+		// ★ 2026-11-09（B）：多加 bridgePluginDir 兜底 —— `_profileSeedDir` 现在也靠它逐级向上
+		//   找 dsh-runtime/ 里的 profile 种子；modulePluginDirs / browserPluginDir 都空时不该直接放弃。
+		const sample = this._opts.modulePluginDirs[0]?.[1] ?? this._opts.browserPluginDir ?? this._opts.bridgePluginDir;
 		return sample ? dirname(sample) : undefined;
 	}
 

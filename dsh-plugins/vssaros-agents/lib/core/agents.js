@@ -24,6 +24,7 @@
 import { parseMemoryLimits } from './memoryLimits.js';
 // agent preset 的共享基座（生成物：`node dsh-plugins/preset-sync.mjs --write-agent-base`）
 import { STANDARD_BASE_ROWS } from './presetBase.generated.js';
+import { mergeCapabilities, toolBudgetProblems } from './packs.js';
 
 /** dsh 侧读的 agent 文件名（VS Code Chat 标准）。 */
 export const AGENT_FILE = '.agent.md';
@@ -124,8 +125,9 @@ export function slugify(name) {
  *
  * 2026-10-19：原先这里是"内置白名单"（只放 knowledge-base-expert），把内置目录里另外 14 个
  * agent 全藏了 —— 用户只要求过「移除助理」⇒ 改成黑名单：默认全显示，只藏明确列出的。
- * ⚠ 隐藏只影响**展示与能否被选中**（名册/群成员/委派），**不影响 preset 注册**
- *   （`saros-claw` 仍是工作流画布 Run 的默认执行 agent）。
+ * ⚠ 隐藏只影响**展示与能否被选中**（名册/群成员/委派）。
+ *   2026-11-09：用户明确不要存量会话兼容层 ⇒ 不再为已删除的 agent 注册别名 preset。
+ *   这里只剩 saros-claw 一条（2026-10-19「移除助理」的展示层需求，与兼容层无关）。
  */
 export const HIDDEN_AGENT_IDS = new Set(['saros-claw']);
 
@@ -153,7 +155,7 @@ export function isHiddenAgent(agentId) {
  *   · 页面是管理面 ⇒ 全显示（看不到就改不了）；
  *   · 委派是"把活派给谁"⇒ 只给**用户可挑**的角色（内置内部子代理 coder/tester 等由
  *     `userFacing` 决定，默认不进清单，免得模型把活派给一个用户从没见过的角色）。
- * 自定义 agent 永远可委派；隐藏的（助理）永远不行。
+ * 自定义 agent 永远可委派；隐藏的（已删除主助理）永远不行。
  */
 export function isDelegatableAgent(agent) {
 	if (!agent) { return false; }
@@ -241,8 +243,15 @@ export function agentFromFile(text, { id, file }) {
 	// role / skills（款 A mockup：sideview 角色标签 + hero 技能 chip）。真源 = agentMdFormat 的扩展字段
 	// `role` / `skills`。dsh 侧用逗号分隔口径（与 tools 一致）：`role: 检索`、`skills: anysearch, analysis`。
 	// 没写就不带（role 不显示标签、skills 不显示 chip）——不伪造"assistant"这种无信息默认 ✗。
+	// ★ 2026-11-08（P0）：skills[] 不再只是 chip —— 官方 PresetDefinition 没有 skills 键，
+	//   所以由 vssaros-skills 的 provider.list() 按 options.scope（preset id → <dataRoot>/agents/<id>/.agent.md）
+	//   反查这份声明并收窄可见技能子集；未声明 ⇒ 全量（缺省语义不变）。这里仍只负责解析与展示。
+	//   owner: bot:<id> 是另一回事（沉淀技能的归属标记，由 stepMemory.js 处理），见
+	//   doc/skill-authoring-standard.md §9。
 	const role = (meta.role || '').trim() || undefined;
 	const skills = listValue(meta.skills);
+	// ★ 2026-11-08 P1：能力包（.agent.md 只写包名，工具由 packs.js 展开成加法）
+	const capabilities = listValue(meta.capabilities);
 	// 欢迎卡建议问题（★ 2026-10-26）：`.agent.md` 的 `suggestions:`（YAML 列表）⇒ 数组。
 	const suggestions = listValue(meta.suggestions);
 	// Workspace Grant（2026-10-16 二期；mockup doc/agents-grants-outbox-mockup.html 拍板点 ①）：
@@ -282,6 +291,7 @@ export function agentFromFile(text, { id, file }) {
 			...(String(meta['created-by'] ?? '').trim().toLowerCase() === 'supervisor' ? { createdBy: 'supervisor' } : {}),
 			...(role ? { role } : {}),
 			...(skills.length ? { skills } : {}),
+		...(capabilities.length ? { capabilities } : {}),
 			// 欢迎卡的「建议问题」（★ 2026-10-26）：`.agent.md` 写 YAML 列表，
 			// `parseFrontmatter` 会拼成逗号串 ⇒ 这里 `listValue` 还原成数组。
 			// ⚠ 文案里**不要用半角逗号**（那是分隔符）；用全角「，」或「·」。
@@ -597,8 +607,13 @@ export function pickLazyEagerKeys(wantedKeys, { delegatable = new Set(), recent 
 
 export function toPresetDefinition(agent, options = {}) {
 	const notes = [];
+	// ★ 2026-11-08 P1：能力包**只加不减** —— 展开的 tools 与 agent 显式 tools[] 取并集。
+	//   未声明 capabilities ⇒ merge 返回原 tools ⇒ 老 preset 逐字不变（零回归）。
+	const merged = mergeCapabilities(agent.tools, agent.skills, agent.capabilities);
+	if (merged.unknown.length) { notes.push(`未知能力包：${merged.unknown.join(', ')}（已忽略，检查 .agent.md 的 capabilities）`); }
+	for (const problem of toolBudgetProblems(merged.tools)) { notes.push(`能力预算：${problem}`); }
 	// 先算一次（下面 length 判断与传值都要用，别调两遍）
-	const dshTools = toDshTools(agent.tools);
+	const dshTools = toDshTools(merged.tools);
 	// ★★ 2026-10-25：从**共享基座**起步（= 官方 standard 的全部行，见 presetBase.generated.js），再叠本 agent 的差量。
 	//   之前这里只有 persona / model / compaction / subagent 几行 ⇒ agent 会话里 `tool-fs` / `tool-pwsh` /
 	//   `skill-filesystem` / `tool-skill` / `agent-instructions` 一行都没有（host plane 不提供它们）⇒
@@ -615,6 +630,10 @@ export function toPresetDefinition(agent, options = {}) {
 			persona: agent.persona,
 			// ★ 2026-10-19：`tools` 是 VS Code 口径 ⇒ 先映射成 dsh 认得的名字（见 TOOL_ALIAS 的注释）
 			...(dshTools.length ? { tools: dshTools } : {}),
+			// ★ 17.1 P1（2026-11-09）：`skills:` 正式进 preset 声明（此前 merge 出来就丢了）。
+			//   applyPersona 会把它登记给 vssarosSkills 服务，目录发布器据此让这些技能绕过 tier 常驻可见；
+			//   人设段不再拼「你的技能」清单（ownedSkillsText 退出主链路）。
+			...(merged.skills.length ? { skills: merged.skills } : {}),
 			// 记忆注入口径（见 `agentFromFile` 头注释）：`memory-chars` 缺省 = 2048（`readMemorySnapshot` 的默认）
 			...(agent.memoryChars !== undefined ? { memoryChars: agent.memoryChars } : {}),
 			memoryMode: agent.memoryMode ?? 'session',
@@ -631,10 +650,12 @@ export function toPresetDefinition(agent, options = {}) {
 	if (modelText && !modelRouteOf(modelText, provider)) {
 		notes.push(`模型未映射（agent.md 写了 model=${modelText}，但没配 config.defaultProvider 且不是 provider/model 形式）→ 该 preset 跟随默认模型`);
 	}
-	if (agent.tools.length) {
+	if (merged.tools.length) {
 		// tools 转 dsh 的工具 allowlist：运行时在 **agent 作用域** `restrict({ deny })`（见 lib/index.js 的
 		// `installAllowlist` 与上面的 `allowlistDenyOf`）—— 只收窄 host 层全局工具，基座官方工具始终可用。
-		notes.push(`tools 进 allowlist（${agent.tools.length} 个：${agent.tools.slice(0, 4).join(', ')}${agent.tools.length > 4 ? '…' : ''}）；只收窄 host 层全局工具，基座里的官方工具不受约束`);
+		// ★ 2026-11-08 P1：restrict 降为**兜底**（真实默认面由「最小基座 + pack 加法」给出），
+		//   notes 里如实写出展开了多少、来自哪个包，别让加法变成看不见的隐式授权。
+		notes.push(`tools 进 allowlist（${merged.tools.length} 个${merged.fromPacks.length ? `，其中能力包展开 ${merged.fromPacks.length} 个` : ''}：${merged.tools.slice(0, 4).join(', ')}${merged.tools.length > 4 ? '…' : ''}）；只收窄 host 层全局工具，基座里的官方工具不受约束`);
 	}
 	if (!agent.persona) {
 		notes.push('agent.md 正文为空 → 该 preset 没有人设提示词');

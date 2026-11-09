@@ -4,6 +4,7 @@ description: Track Apple devices/AirTags via FindMy.app on macOS.
 activation: manual
 match: ["findmy", "airtag", "location", "tracking"]
 category: apple
+tier: extended
 ---
 
 # Find My (Apple)

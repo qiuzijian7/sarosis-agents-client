@@ -4,7 +4,8 @@ description: Summarize long texts, documents, or conversations into concise summ
 activation: auto
 match: ["summarize", "summary", "tl;dr", "condense", "brief", "overview"]
 category: text
-recommended_tools: ["file_read"]
+recommended_tools: ["read"]
+tier: core
 ---
 
 # Summarize Skill

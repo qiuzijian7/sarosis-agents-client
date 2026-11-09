@@ -5609,15 +5609,13 @@ private _handleStreamDelta(delta: any): void {
 					}))
 				);
 
-				// 默认选中 agent（多级 fallback）：
+				// 默认选中 agent（2026-11-09：通用主助理 saros-claw 已删除）：
 				//   1. 窗口重载恢复的 input.agentId（优先）
-				//   2. id / presetId 完全等于 'saros-claw' / 'claw'
-				//   3. id / presetId / name / role 不区分大小写包含 'claw'
-				//   4. 上面都没匹配到 → 列表第一个 agent
+				//   2. 默认编排 agent（工作流画布 Run 同款）
+				//   3. 上面都没匹配到 → 列表第一个 agent
+				// ⚠ 不再做 `claw` 模糊匹配：删掉主助理后它会误命中 `mediaclawer` ✗
 				if (!this._defaultAgentSelected && agents.length > 0) {
-					const lower = (s: unknown) => (typeof s === 'string' ? s.toLowerCase() : '');
-					const matchExact = (a: any) => a.id === 'saros-claw' || a.id === 'claw' || (a as any).presetId === 'claw' || (a as any).presetId === 'saros-claw';
-					const matchFuzzy = (a: any) => lower(a.id).includes('claw') || lower((a as any).presetId).includes('claw') || lower(a.name).includes('claw') || lower(a.role).includes('claw');
+					const matchDefault = (a: any) => a.id === 'workflow-agent' || (a as any).presetId === 'workflow-agent';
 
 					// 1. 窗口重载恢复的 agentId 优先
 					const restoredAgentId = (this.input instanceof NativeChatEditorInput) ? this.input.agentId : undefined;
@@ -5629,9 +5627,9 @@ private _handleStreamDelta(delta: any): void {
 						}
 					}
 
-					// 2-4. claw 精确/模糊/fallback
+					// 2-3. 默认编排 agent / 列表第一个
 					if (!target) {
-						target = agents.find(matchExact) ?? agents.find(matchFuzzy) ?? agents[0];
+						target = agents.find(matchDefault) ?? agents[0];
 					}
 
 					if (target) {

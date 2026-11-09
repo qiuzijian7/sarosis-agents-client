@@ -4,6 +4,7 @@ description: "Linear: manage issues, projects, teams via GraphQL + curl."
 activation: manual
 match: ["linear", "project management", "issues", "graphql", "api", "productivity"]
 category: productivity
+tier: extended
 ---
 
 # Linear — Issue & Project Management

@@ -1,5 +1,8 @@
 #!/usr/bin/env node
-// studio.mjs —— 萨罗斯管理平台（SaroasisStudioSystem）只读查询 CLI
+// studio.mjs —— TAPD Open API 只读查询 CLI（VsSaros 随包技能）
+//
+// 2026-11-09：内网管理平台代理与 mcporter-internal 通道整体下线，本脚本改为**直连
+// https://api.tapd.cn**，认证用 tapd-client.mjs 的随包接入应用（可被环境变量/凭据文件覆盖）。
 //
 // 为什么要有它（2026-10-25 真机日志复盘）：agent 用 26 次 pwsh 才拼出一份「我名下的缺陷」，
 // 其中 ~20 次是在踩接口的坑。下面这些坑**全部固化在本脚本里**，调用方不必再知道：
@@ -7,22 +10,22 @@
 //   2. 默认排序是 id 正序（2024 年的老单），要看最新必须 `order=created desc`。
 //   3. 缺陷的负责人字段是 `current_owner`；`owner=` 会被**静默忽略**并返回全项目数据。需求才用 `owner`。
 //   4. 负责人值形如 `邱子鉴;` / `邱子鉴;蒋小川;`，服务端是模糊匹配；带分号查反而少（459 → 386）。
-//   5. 状态码要翻译：`rejected`=主干待回归、`status_1`=无效关闭、`status_8`=分支待回归 …（workflows/status_map）。
-//   6. 计数走 `/api/tapd/<bugs|stories>/count`（~100ms），不要拉全量本地数。
-//   7. `/api/tapd/<不存在的路径>` 返回 `"Hello world from TAPD API"`（status=1，像成功）⇒ 必须当错误处理。
-//   8. 「我」是谁：成员表 `/api/tapd/members` 里有 `wecomAlias`（企微账号）→ TAPD 中文名。
-//   9. `/api/bugs/by-team` ≈206MB，本脚本不碰。
+//   5. 状态码要翻译：`rejected`=主干待回归、`status_1`=无效关闭、`status_8`=分支待回归 …（/workflows/status_map）。
+//   6. 计数走 `/<bugs|stories>/count`（~100ms），不要拉全量本地数。
+//   7. 不存在的路径返回 `"Hello world from TAPD API"`（status=1，像成功）⇒ 必须当错误处理。
+//   8. 19 位长 ID 必须当字符串处理，不要做数字运算。
 //
-// 只读：本脚本**不提供任何写操作**（写单据交给 tapd-skill）。
+// 只读：本脚本**不提供任何写操作**（写单据交给 tapd-skill 的 Open API CLI）。
 // 零依赖：Node 18+ 自带 fetch。用法见 `node studio.mjs help`。
 
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseTapdResponse, tapdAuthorization, tapdEnvironment, TAPD_API_BASE, TAPD_WORKSPACE_DEFAULT } from '../../tapd-skill/scripts/tapd-client.mjs';
 
-export const BASE_DEFAULT = 'http://saroasisstudiosystem.saroasis.woa.com:9999';
-export const WORKSPACE_DEFAULT = '68880148';
+export const BASE_DEFAULT = TAPD_API_BASE;
+export const WORKSPACE_DEFAULT = TAPD_WORKSPACE_DEFAULT;
 const PAGE_SIZE = 200;              // TAPD 单页上限（limit 再大也只回 200）
 const TIMEOUT_MS = 30000;
 const MAX_PAGES = 200;              // 安全阀：最多 4 万条
@@ -97,7 +100,8 @@ export function parseArgs(argv) {
 }
 
 // ── HTTP ─────────────────────────────────────────────────────────────────
-export function createClient({ base, workspace, fetchImpl, timeoutMs = TIMEOUT_MS }) {
+export function createClient({ base, workspace, fetchImpl, timeoutMs = TIMEOUT_MS, env = process.env }) {
+	const auth = tapdAuthorization(tapdEnvironment(env));
 	async function request(pathname, params = {}, { tapd = true } = {}) {
 		const qs = new URLSearchParams();
 		if (tapd) { qs.set('workspace_id', workspace); }
@@ -109,23 +113,22 @@ export function createClient({ base, workspace, fetchImpl, timeoutMs = TIMEOUT_M
 		const shown = `GET ${pathname}${query ? '?' + safeDecode(query.replace(/\+/g, ' ')) : ''}`;
 		let res;
 		try {
-			res = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
+			res = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs),
+				headers: { authorization: auth.header, accept: 'application/json' } });
 		} catch (e) {
 			throw new CliError(`请求失败（网络或超时 ${timeoutMs}ms）：${e?.message ?? e}\n  ${shown}`);
 		}
 		const text = await res.text();
+		if (res.status === 401 || res.status === 403) {
+			throw new CliError(`TAPD 拒绝了凭据（HTTP ${res.status}）：检查 ${auth.method}`);
+		}
 		if (!res.ok) { throw new CliError(`HTTP ${res.status}：${text.slice(0, 300)}\n  ${shown}`); }
 		let json;
-		try { json = JSON.parse(text); } catch { throw new CliError(`返回的不是 JSON：${text.slice(0, 200)}\n  ${shown}`); }
-		if (tapd) {
-			if (typeof json?.data === 'string' && /Hello world from TAPD API/i.test(json.data)) {
-				throw new CliError(`接口不存在：${pathname}（TAPD 对未知路径返回 "Hello world"，不是数据）`);
-			}
-			if (json?.status !== 1) { throw new CliError(`TAPD 返回失败：${text.slice(0, 300)}\n  ${shown}`); }
-		}
+		try { json = parseTapdResponse(text, { pathname, httpStatus: res.status, tapd }); }
+		catch (e) { throw new CliError(e?.message ?? String(e)); }
 		return { json, shown, bytes: text.length };
 	}
-	return { request };
+	return { request, auth };
 }
 
 function safeDecode(s) {
@@ -153,33 +156,14 @@ export async function statusMap(ctx, kind) {
 	const name = `status-${ctx.workspace}-${KINDS[kind].system}`;
 	const hit = cacheRead(ctx, name, 6 * 3600e3);
 	if (hit) { return hit; }
-	const { json } = await ctx.client.request('/api/tapd/workflows/status_map', { system: KINDS[kind].system });
+	const { json } = await ctx.client.request('/workflows/status_map', { system: KINDS[kind].system });
 	const map = json?.data && typeof json.data === 'object' ? json.data : {};
 	cacheWrite(ctx, name, map);
 	return map;
 }
 
-async function membersOf(ctx) {
-	const name = `members-${ctx.workspace}`;
-	const hit = cacheRead(ctx, name, 12 * 3600e3);
-	if (hit) { return hit; }
-	const { json } = await ctx.client.request('/api/tapd/members', {}, { tapd: false });
-	const byUser = new Map();
-	for (const g of Array.isArray(json?.groups) ? json.groups : []) {
-		for (const m of Array.isArray(g?.members) ? g.members : []) {
-			if (!m?.user) { continue; }
-			const cur = byUser.get(m.user) ?? {
-				user: m.user, alias: m.wecomAlias || '', position: m.wecomPosition || '',
-				dept: m.feishuDept || (m.wecomDepartments || [])[0] || '', groups: [], active: m.active !== false,
-			};
-			if (g.name && !cur.groups.includes(g.name)) { cur.groups.push(g.name); }
-			byUser.set(m.user, cur);
-		}
-	}
-	const list = [...byUser.values()];
-	cacheWrite(ctx, name, list);
-	return list;
-}
+// 成员表是已移除的内网平台代理私有接口，TAPD Open API 没有对应能力：
+// 直连后 `who` 命令下线，「我」只由本地配置保存中文名（me --set）。
 
 // ── 筛选条件 ─────────────────────────────────────────────────────────────
 export function resolveStatus(kind, value, map) {
@@ -208,8 +192,8 @@ export function resolveOwner(value, me) {
 	let v = String(value).trim();
 	if (v === 'me' || v === '我') {
 		if (!me) {
-			throw new CliError('还没设置「我」是谁。先问用户的企微账号（如 zijianqiu）或 TAPD 中文名，然后：\n'
-				+ '  node studio.mjs me --alias <企微账号>    或    node studio.mjs me --set <TAPD 中文名>');
+			throw new CliError('还没设置「我」是谁。先问用户的 TAPD 中文名，然后：\n'
+				+ '  node studio.mjs me --set <TAPD 中文名>');
 		}
 		v = me;
 	}
@@ -247,7 +231,7 @@ export async function buildParams(ctx, kind, opt) {
 
 // ── 取数 ─────────────────────────────────────────────────────────────────
 async function countOf(ctx, kind, params) {
-	const { json, shown } = await ctx.client.request(`/api/tapd/${KINDS[kind].api}/count`, params);
+	const { json, shown } = await ctx.client.request(`/${KINDS[kind].api}/count`, params);
 	const n = Number(json?.data?.count);
 	if (!Number.isFinite(n)) { throw new CliError(`计数接口返回异常：${JSON.stringify(json).slice(0, 200)}`); }
 	return { count: n, shown };
@@ -260,7 +244,7 @@ export async function fetchRows(ctx, kind, params, { max, fields, order }) {
 	let shown = '';
 	let pages = 0;
 	for (let page = 1; page <= MAX_PAGES && seen.size < max; page++) {
-		const res = await ctx.client.request(`/api/tapd/${K.api}`, { ...params, order, fields, limit: size, page });
+		const res = await ctx.client.request(`/${K.api}`, { ...params, order, fields, limit: size, page });
 		if (page === 1) { shown = res.shown; }
 		pages = page;
 		const data = Array.isArray(res.json?.data) ? res.json.data : [];
@@ -331,50 +315,32 @@ function priorityHint(ctx, kind, opt) {
 
 // ── 命令 ─────────────────────────────────────────────────────────────────
 async function cmdPing(ctx) {
-	const { json, shown } = await ctx.client.request('/api/version', {}, { tapd: false });
-	ctx.out(`平台在线：commit ${json?.runningCommit ?? '?'} · 更新于 ${json?.updatedAt ?? '?'} · pid ${json?.pid ?? '?'}`);
+	const { json, shown } = await ctx.client.request('/quickstart/testauth', {});
+	ctx.out(`TAPD Open API 连通：凭据 ${ctx.client.auth?.method ?? '已配置'} · 返回 ${JSON.stringify(json?.data ?? {}).slice(0, 200)}`);
 	provenance(ctx, shown);
 }
 
 async function cmdMe(ctx, opt) {
-	if (opt.set || opt.alias) {
-		const members = await membersOf(ctx);
-		let name;
-		if (opt.alias && opt.alias !== true) {
-			const a = String(opt.alias).toLowerCase();
-			const hit = members.find(m => m.alias.toLowerCase() === a);
-			if (!hit) { throw new CliError(`成员表里没有企微账号「${opt.alias}」。可以用 who <关键字> 找人，再 me --set <中文名>`); }
-			name = hit.user;
-		} else {
-			name = String(opt.set).trim().replace(/[;；]+$/, '');
-			if (!members.some(m => m.user === name)) { ctx.out(`> 注意：成员表里没找到「${name}」，仍按你给的写入（拼写请再确认）。`); }
-		}
-		const m = members.find(x => x.user === name);
+	if (opt.alias) { throw new CliError('me --alias 已下线（成员表来自已移除的内网平台）；请直接用 me --set <TAPD 中文名>'); }
+	if (opt.set) {
+		const name = String(opt.set === true ? '' : opt.set).trim().replace(/[;；]+$/, '');
+		if (!name) { throw new CliError('用法：me --set <TAPD 中文名>'); }
 		fs.mkdirSync(path.dirname(ctx.configPath), { recursive: true });
-		fs.writeFileSync(ctx.configPath, JSON.stringify({ me: name, alias: m?.alias || '', updatedAt: new Date().toISOString() }, null, 2), 'utf8');
-		ctx.out(`已记住「我」= ${name}${m ? `（企微 ${m.alias || '—'} · ${m.dept || m.position || ''}）` : ''}`);
+		fs.writeFileSync(ctx.configPath, JSON.stringify({ me: name, updatedAt: new Date().toISOString() }, null, 2), 'utf8');
+		ctx.out(`已记住「我」= ${name}`);
 		ctx.out(`配置：${ctx.configPath}`);
 		return;
 	}
 	if (!ctx.me) {
-		ctx.out('还没设置「我」。问用户的企微账号或 TAPD 中文名，然后：node studio.mjs me --alias <企微账号>  /  me --set <中文名>');
+		ctx.out('还没设置「我」。问用户的 TAPD 中文名，然后：node studio.mjs me --set <中文名>');
 		return;
 	}
 	ctx.out(`「我」= ${ctx.me}${ctx.meSource ? `（来源：${ctx.meSource}）` : ''}`);
 }
 
-async function cmdWho(ctx, pos) {
-	const kw = pos.join(' ').trim().toLowerCase();
-	if (!kw) { throw new CliError('用法：who <关键字>（中文名 / 企微账号 / 部门 / 职位都能搜）'); }
-	const members = await membersOf(ctx);
-	const hits = members.filter(m => [m.user, m.alias, m.position, m.dept, ...m.groups].some(v => String(v).toLowerCase().includes(kw)));
-	ctx.out(`成员表匹配「${kw}」：${hits.length} 人${hits.length > 30 ? '（只列前 30）' : ''}`);
-	if (!hits.length) { return; }
-	ctx.out('| TAPD 名 | 企微账号 | 职位 | 部门 | 用户组 |');
-	ctx.out('|---|---|---|---|---|');
-	for (const m of hits.slice(0, 30)) {
-		ctx.out(`| ${cell(m.user)} | ${cell(m.alias)} | ${cell(m.position)} | ${cell(m.dept, 40)} | ${cell(m.groups.join('、'), 40)} |`);
-	}
+async function cmdWho() {
+	throw new CliError('who 已下线：成员表是已移除的内网平台私有接口，TAPD Open API 没有对应能力。'
+		+ '请直接问用户 TAPD 中文名，用 me --set 记住。');
 }
 
 async function cmdStatuses(ctx, kind) {
@@ -499,7 +465,7 @@ async function cmdStats(ctx, kind, opt) {
 async function cmdGet(ctx, kind, id, opt) {
 	const K = KINDS[kind];
 	if (!/^\d{6,}$/.test(String(id ?? ''))) { throw new CliError(`用法：get ${kind} <单号>（纯数字，如 1168880148001266165）`); }
-	const { json, shown } = await ctx.client.request(`/api/tapd/${K.api}`, { id, fields: K.detailFields });
+	const { json, shown } = await ctx.client.request(`/${K.api}`, { id, fields: K.detailFields });
 	const row = Array.isArray(json?.data) ? (json.data[0]?.[K.key] ?? json.data[0]) : undefined;
 	if (!row) { throw new CliError(`没有找到${K.label} ${id}`); }
 	const map = await statusMap(ctx, kind);
@@ -523,7 +489,7 @@ async function cmdGet(ctx, kind, id, opt) {
 	ctx.out(`\n### 描述\n${desc ? (desc.length > limit ? desc.slice(0, limit) + `\n…（共 ${desc.length} 字，--full 看全文）` : desc) : '（空）'}`);
 	if (opt.comments) {
 		const n = opt.comments === true ? 10 : Math.max(1, Math.min(Number(opt.comments) || 10, 50));
-		const { json: cj } = await ctx.client.request('/api/tapd/comments', { entry_type: K.comment, entry_id: id, order: 'created desc', limit: n });
+		const { json: cj } = await ctx.client.request('/comments', { entry_type: K.comment, entry_id: id, order: 'created desc', limit: n });
 		const list = Array.isArray(cj?.data) ? cj.data.map(x => x?.Comment ?? x) : [];
 		ctx.out(`\n### 评论（最新 ${list.length} 条）`);
 		if (!list.length) { ctx.out('（无）'); }
@@ -537,17 +503,20 @@ function cmdUrl(ctx, kind, ids) {
 	for (const id of ids) { ctx.out(`${id}  ${KINDS[kind].url(ctx.workspace, id)}`); }
 }
 
-const HELP = `萨罗斯管理平台只读查询（TAPD workspace 由 SAROASIS_WORKSPACE 指定，默认 ${WORKSPACE_DEFAULT}）
+const HELP = `TAPD Open API 只读查询（workspace 由 TAPD_WORKSPACE_ID 指定，默认 ${WORKSPACE_DEFAULT}）
 
-  ping                                平台是否在线 + 当前部署版本
-  me [--alias 企微账号 | --set 中文名]  查看 / 设置「我」（--owner me 用它）
-  who <关键字>                        在成员表里找人（中文名 / 企微账号 / 部门 / 职位）
+  ping                                TAPD 连通性与当前凭据（/quickstart/testauth）
+  me [--set 中文名]                    查看 / 设置「我」（--owner me 用它）
   statuses bug|story                  状态码 ↔ 中文 ↔ 分组
   count bug|story [筛选]              服务端计数（秒回，统计首选）
   stats bug|story --by <维度> [筛选]   聚合：status（精确）/ owner / priority / severity / module / reporter / day / month / release
   list  bug|story [筛选] [--limit 50] [--links] [--order "modified desc"] [--out 文件.json] [--json]
   get   bug|story <单号> [--comments [N]] [--full]
   url   bug|story <单号…>              TAPD 链接
+
+凭据：随包 TAPD 接入应用（TAPD_CLIENT_ID/TAPD_CLIENT_SECRET），无需登录；
+      环境变量或 <DSH_HOME>/tapd.env 可覆盖，DSH_SUPERAGENT_TAPD_BUNDLED=off 可停用。
+地址：TAPD_API_BASE（默认 ${BASE_DEFAULT}）。改单据请用 tapd-skill 的 Open API CLI。
 
 筛选：
   --owner <中文名|me>     缺陷自动用 current_owner，需求用 owner（模糊匹配，多负责人也能命中）
@@ -565,7 +534,8 @@ const HELP = `萨罗斯管理平台只读查询（TAPD workspace 由 SAROASIS_WO
 
 // ── 入口 ─────────────────────────────────────────────────────────────────
 function loadMe(configPath, env) {
-	if (env.SAROASIS_ME) { return { me: String(env.SAROASIS_ME).trim(), meSource: '环境变量 SAROASIS_ME' }; }
+	const fromEnv = env.TAPD_ME || env.SAROASIS_ME;
+	if (fromEnv) { return { me: String(fromEnv).trim(), meSource: '环境变量 TAPD_ME / SAROASIS_ME' }; }
 	try {
 		const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 		if (cfg?.me) { return { me: String(cfg.me), meSource: configPath }; }
@@ -592,14 +562,15 @@ export async function run(argv, deps = {}) {
 		write(text);
 	};
 	const configPath = deps.configPath ?? path.join(os.homedir(), '.vssaros', 'saroasis-studio.json');
-	const workspace = String(env.SAROASIS_WORKSPACE || WORKSPACE_DEFAULT);
+	const workspace = String(env.TAPD_WORKSPACE_ID || env.SAROASIS_WORKSPACE || WORKSPACE_DEFAULT);
 	const ctx = {
 		out, configPath, workspace,
 		cacheDir: deps.noCache ? '' : (deps.cacheDir ?? path.join(os.tmpdir(), 'saroasis-studio-cache')),
 		client: createClient({
-			base: String(env.SAROASIS_BASE || BASE_DEFAULT).replace(/\/+$/, ''),
+			base: String(env.TAPD_API_BASE || env.SAROASIS_BASE || BASE_DEFAULT).replace(/\/+$/, ''),
 			workspace,
 			fetchImpl: deps.fetch ?? globalThis.fetch,
+			env,
 		}),
 		...loadMe(configPath, env),
 	};
@@ -609,7 +580,7 @@ export async function run(argv, deps = {}) {
 		switch (cmd) {
 			case 'ping': await cmdPing(ctx); break;
 			case 'me': await cmdMe(ctx, opt); break;
-			case 'who': await cmdWho(ctx, pos.slice(1)); break;
+			case 'who': await cmdWho(); break;
 			case 'statuses': case 'status': await cmdStatuses(ctx, needKind(pos[1])); break;
 			case 'count': await cmdCount(ctx, needKind(pos[1]), opt); break;
 			case 'list': await cmdList(ctx, needKind(pos[1]), opt); break;

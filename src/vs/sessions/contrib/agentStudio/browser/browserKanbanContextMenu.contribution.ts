@@ -28,7 +28,7 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { TaskBoardStatus, TaskSource } from '../common/types.js';
 import { TapdImportService } from './tapdImportService.js';
-import { SAROS_CLAW_AGENT_ID } from './providers/tool/kanbanTools.js';
+import { DEFAULT_SCRAPE_SESSION_ID } from './providers/tool/kanbanTools.js';
 
 type CardPriority = 'low' | 'medium' | 'high';
 
@@ -94,11 +94,11 @@ class BrowserKanbanContextMenuContribution extends Disposable {
 			// Extract TAPD workitem data directly from the browser page DOM via Playwright.
 			// Pass a Playwright-based downloadFn so attachments are downloaded internally
 			// with auth cookies — eliminates the old dual download path (P2-4 fix).
-			const result = await tapd.importFromBrowser(SAROS_CLAW_AGENT_ID, viewId, rawUrl, {
+			const result = await tapd.importFromBrowser(DEFAULT_SCRAPE_SESSION_ID, viewId, rawUrl, {
 				downloadAttachments: true,
 				downloadFn: async (url: string) => {
 					const dl = await this.taskBoardService.downloadUrlForAttachment(url, {
-						sessionId: SAROS_CLAW_AGENT_ID,
+						sessionId: DEFAULT_SCRAPE_SESSION_ID,
 						viewId,
 						subDir: 'tapd-inline',
 					});
@@ -145,7 +145,7 @@ class BrowserKanbanContextMenuContribution extends Disposable {
 					// real TAPD attachment name (e.g. 20260706T103214.zip) instead of
 					// the opaque URL-derived name (e.g. "story").
 					const dl = await this.taskBoardService.downloadUrlForAttachment(url, {
-						sessionId: SAROS_CLAW_AGENT_ID,
+						sessionId: DEFAULT_SCRAPE_SESSION_ID,
 						viewId,
 						filename: att.name,
 						subDir: result.id,

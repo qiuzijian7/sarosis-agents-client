@@ -103,89 +103,9 @@ async function hostReuseScenario(): Promise<void> {
 }
 
 /**
- * 托管运行时的真实升级（DSH_TEST_NPM_INSTALL=1 时运行，需联网）：托管目录里只有 P0 已装的 0.2.0-rc.2（junction），
- * Host 运行中经通道 `upgrade { installIfMissing }` 从 npm 并列安装一个未安装的带 tag 版本，再经闸门切换、再切回。
+ * ★ 2026-11-09 单版本模型：原 `managedUpgradeScenario()`（junction 托管目录 + npm 并列安装 +
+ * `upgrade` 闸门切换 + 切回）已删除 —— 运行期不再安装/切换 dsh 版本。
  */
-async function managedUpgradeScenario(): Promise<void> {
-	const base = process.env.DSH_TEST_RUNTIME_ROOT!;
-	const stable = '0.2.0-rc.2';
-	const root = mkdtempSync(join(tmpdir(), 'vssaros-dsh-managed-'));
-	const managed = join(root, 'runtime');
-	const home2 = join(root, 'home');
-	mkdirSync(managed, { recursive: true });
-	symlinkSync(join(base, stable), join(managed, stable), 'junction');
-	// 不建窗口：进程里存在第二个隐藏窗口时，合成按键到不了视图的 DOM（实测）；本场景不需要窗口。
-	const winStub = { getWindowById: () => undefined, onDidDestroyWindow: Event.None } as never;
-	let ch: DshHarnessChannel<undefined> | undefined;
-	const c = <T>(cmd: string, arg?: unknown) => ch!.call<T>(undefined, cmd, arg);
-	const timeline: string[] = [];
-	const start = { dshHome: home2 };
-	try {
-		ch = new DshHarnessChannel({ userDataPath: root, isBuilt: true, managedRoot: managed, preloadPath: process.env.DSH_TEST_PRELOAD }, winStub, { getWindowByWebContents: () => undefined } as never, log);
-		ch.listen<IDshHostStatus>(undefined, DshHarnessChannelEvent.OnDidChangeStatus)(s => timeline.push(`state:${s.state}`));
-		ch.listen<string>(undefined, DshHarnessChannelEvent.OnDidProgress)(p => timeline.push(`progress:${p}`));
-		await c(DshHarnessChannelCommand.SetCurrentRuntime, { version: stable });
-		const s = await c<IDshHostStatus>(DshHarnessChannelCommand.Start, start);
-		check('managed: Host runs from the managed pointer (no runtimePath)', s.state === 'running' && s.dshVersion === stable, `${s.dshVersion} ${s.error ?? ''}`);
-
-		const st = await c<{ recommended?: string; candidates: { version: string }[] }>(DshHarnessChannelCommand.DiscoverUpdates, { policy: { channel: 'stable' }, start });
-		check('managed: stable channel has nothing newer than the highest verified version', !st.recommended, `recommended=${st.recommended ?? 'none'}; ${st.candidates.map(x => x.version).join(', ')}`);
-		const pv = await c<{ candidates: { version: string; installed: boolean; tags: string[]; verified: boolean }[] }>(DshHarnessChannelCommand.DiscoverUpdates, { policy: { channel: 'preview' }, start });
-		// 优先未验证的带 tag 版本（最贴近"尝鲜"）；上游发布缺口时装不上，再退到未安装的已验证版本。
-		const uninstalled = [...pv.candidates.filter(x => !x.installed && x.tags.length).sort((a, b) => Number(a.verified) - Number(b.verified)),
-		...pv.candidates.filter(x => !x.installed && !x.tags.length)];
-		const target = uninstalled[0];
-		check('managed: preview lists an uninstalled tagged version', target, target && `${target.version}[${target.tags.join(',')}]${target.verified ? ' (verified)' : ''}; all: ${pv.candidates.map(x => `${x.version}${x.installed ? '(installed)' : ''}${x.verified ? '(verified)' : ''}[${x.tags.join(',')}]`).join(' ')}`);
-		if (!target) {
-			return;
-		}
-
-		timeline.length = 0;
-		const t0 = Date.now();
-		// 某个 npm 版本可能根本装不上（上游发布缺口，如 0.2.1-alpha.2 缺 dsh-jobs-local）：
-		// 依次试下一个候选；全都装不上时把这一步标为跳过并说明原因，而不是算作本产品失败。
-		type Up = { outcome: string; error?: string; health?: { checks: { name: string; ok: boolean }[] } };
-		const doUpgrade = (version: string) => c<Up>(DshHarnessChannelCommand.Upgrade, { version, installIfMissing: true, start });
-		const tried: string[] = [];
-		let up: Up | undefined;
-		let switchedTo: string | undefined;
-		let installErr: string | undefined;
-		for (const cand of uninstalled) {
-			try {
-				up = await doUpgrade(cand.version);
-				switchedTo = cand.version;
-				tried.push(cand.version);
-				break;
-			} catch (e) {
-				installErr = String((e as Error)?.message ?? e);
-				tried.push(`${cand.version}(装不上)`);
-			}
-		}
-		if (!up) {
-			check('managed: npm install + upgrade (skipped: no tagged version is installable upstream)', false, `${tried.join(' → ')}；最后错误：${(installErr ?? '').slice(-160)}`);
-			return;
-		}
-		const version = switchedTo!;
-		const installIdx = timeline.findIndex(t => t.includes('并列安装'));
-		const switchIdx = timeline.findIndex(t => t.includes('正在切换'));
-		const stoppedBeforeInstallDone = timeline.slice(installIdx, switchIdx).some(t => t.startsWith('state:') && t !== 'state:running');
-		check('managed: target installed from npm while the Host kept running', installIdx >= 0 && switchIdx > installIdx && !stoppedBeforeInstallDone, timeline.slice(0, 4).join(' > '));
-		check('managed: switched through the gate and healthy', up.outcome === 'switched', `${up.outcome} in ${Math.round((Date.now() - t0) / 1000)} s ${up.error ?? ''} ${(up.health?.checks ?? []).map(h => `${h.name}:${h.ok}`).join(' ')}`);
-		check('managed: Host now runs the new version', (await c<IDshHostStatus>(DshHarnessChannelCommand.GetStatus)).dshVersion === version);
-
-		const back = await c<{ outcome: string; error?: string }>(DshHarnessChannelCommand.Upgrade, { version: stable, start });
-		check('managed: switch back to the verified version', back.outcome === 'switched' && (await c<IDshHostStatus>(DshHarnessChannelCommand.GetStatus)).dshVersion === stable, `${back.outcome} ${back.error ?? ''}`);
-	} finally {
-		if (ch) {
-			await c(DshHarnessChannelCommand.Stop).catch(() => undefined);
-			ch.dispose();
-		}
-		try {
-			rmSync(join(managed, stable), { force: true });
-		} catch { /* junction */ }
-		rmSync(root, { recursive: true, force: true });
-	}
-}
 
 async function main(): Promise<void> {
 	const userData = mkdtempSync(join(tmpdir(), 'vssaros-dsh-userdata-'));
@@ -294,16 +214,7 @@ async function main(): Promise<void> {
 		const wsRow = listedAfter.find(w => w.path.toLowerCase().endsWith(wsName));
 		check('session.start is idempotent per sessionId (exactly one new session on the workspace)', again?.sessionId === 'vssaros-probe-chat' && wsRow?.sessions === sessionsBefore + 1, JSON.stringify({ sessionsBefore, again, wsRow }));
 
-		const sameVersion = await call<{ outcome: string }>(DshHarnessChannelCommand.Upgrade, { version: s.dshVersion, start: { runtimePath: process.env.DSH_TEST_BIN, dshHome: home } });
-		check('upgrade gate refuses while runtimePath overrides the managed pointer', sameVersion.outcome === 'failed', JSON.stringify(sameVersion).slice(0, 120));
-		const startOpts = { runtimePath: process.env.DSH_TEST_BIN, dshHome: home };
-		const disc = await call<{ manifestSource?: string; candidates: { version: string; current: boolean; verified: boolean; tags: string[] }[]; notes: string[] }>(DshHarnessChannelCommand.DiscoverUpdates, { policy: { channel: 'stable' }, start: startOpts });
-		const cur = disc.candidates.find(c => c.current);
-		check('discovery: shipped manifest loaded, current version verified', disc.manifestSource === 'bundled' && cur?.version === s.dshVersion && cur?.verified, `source=${disc.manifestSource}, current=${cur?.version} verified=${cur?.verified}`);
-		const preview = await call<typeof disc>(DshHarnessChannelCommand.DiscoverUpdates, { policy: { channel: 'preview' }, start: startOpts });
-		const tagged = preview.candidates.filter(c => c.tags.length).map(c => `${c.version}[${c.tags.join(',')}]`);
-		check('discovery: real npm dist-tags through the managed npm path (preview lists tagged versions)', preview.candidates.some(c => c.tags.includes('latest')), tagged.join(' '));
-		check('discovery: runtimePath override is reported to the user', disc.notes.some(n => n.includes('runtimePath')), disc.notes.join(' | ').slice(0, 120));
+		// ★ 2026-11-09：Upgrade / DiscoverUpdates 的探针随多版本模型一起下线。
 		check('status events: starting → running', states.join('>').includes('starting>running'), states.join('>'));
 
 		await call(DshHarnessChannelCommand.CreateView, { viewId: 'v1', windowId: win.id, surface: 'full' });
@@ -669,9 +580,7 @@ async function main(): Promise<void> {
 			await hostReuseScenario();
 		}
 
-		if (process.env.DSH_TEST_NPM_INSTALL === '1') {
-			await managedUpgradeScenario();
-		}
+		// ★ 2026-11-09：DSH_TEST_NPM_INSTALL 的托管升级场景已下线（版本随应用发版）。
 	} catch (e) {
 		check('unexpected error', false, String((e as Error)?.stack ?? e));
 	} finally {

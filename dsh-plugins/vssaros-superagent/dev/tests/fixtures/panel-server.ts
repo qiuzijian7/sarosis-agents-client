@@ -19,6 +19,7 @@ import { feishuChannel } from '../../src/sources/feishu-trigger.ts'
 import { githubChannel } from '../../src/sources/github-trigger.ts'
 import { feishuKind } from '../../src/sources/feishu.ts'
 import { githubKind } from '../../src/sources/github.ts'
+import { makeTapdKind } from '../../src/sources/tapd.ts'
 import type { Health } from '../../src/sources/host.ts'
 import type { BotApproval, BotCard, CreatedBot } from '../../src/app/team.ts'
 import type { PlanView, SkillRecord } from '../../src/app/team-archive.ts'
@@ -111,6 +112,10 @@ export interface PanelServer {
   requests: { path: string; method: string; body?: unknown }[]
   /** Requests with undeclared query params or invalid body presence; asserted empty after each test. */
   misuse: string[]
+  /** VsSaros addition: opt-in TAPD settings card, so the setup checklist can be rendered without changing the default two cards. */
+  tapdCard?: boolean
+  /** Real TAPD field specs + namespaced labels, for the dropdown rendering test. */
+  tapdFields?: boolean; tapdLabels?: Record<string, string>
   queued: Set<string>
   searching?: (query: string) => Promise<void>
   setup: SetupView
@@ -194,7 +199,7 @@ function healthOf(name: string): Health {
 }
 const problemOf_ = (id: string) => [server.setup.problem, server.setup.feishuProblem].find(item => item?.place === id) ?? undefined
 function sourceSettings(): SourceView[] {
-  return KINDS.map(kind => {
+  const cards = KINDS.map(kind => {
     const config = kind.schema.parse(server.settings.sources[kind.kind]?.config ?? {})
     const problem = problemOf_(kind.kind)
     const { admission: _admission, ...part } = server.settings.policy.sources[kind.kind] ?? { allowed: [], admission: {} }
@@ -209,6 +214,13 @@ function sourceSettings(): SourceView[] {
       labels: kind.kind === 'feishu' ? { oc_team: '团队群', oc_other: '另一个群', ...server.joined } : {}, ...problem ? { problem } : {},
       ...policy ? { policy } : {} }
   })
+  // The default kinds are Feishu and GitHub; many tests index cards 0/1, so the TAPD card is opt-in.
+  if (!server.tapdCard) return cards
+  return [...cards, { id: 'tapd', kind: 'tapd', title: { zh: 'TAPD', en: 'TAPD' }, description: { zh: '', en: '' },
+    installed: true, value: { enabled: true, config: { watches: server.tapdFields ? [{ name: 'bugs', workspace: '', type: 'bug',
+      item: '', status: '', owner: '', iteration: '', mode: 'all' }] : [], agent: '', workspace: '68880148' } },
+    revision: 0, restarts: [], fields: server.tapdFields ? makeTapdKind({ context: () => undefined }).fields : [],
+    facts: {}, labels: server.tapdLabels ?? {} } as SourceView]
 }
 function sourceStatuses(): SourceStatusRow[] {
   return KINDS.map(kind => {
@@ -248,7 +260,7 @@ const settingsView = (): ApiResponse<'GET settings'> => ({
 const totals = (total = 0) => ({ calls: total ? 1 : 0, input: total, cacheRead: 0, cacheWrite: 0, output: 0, total })
 /** No usage yet. */
 export const emptyUsage = (): ApiResponse<'GET usage'> => ({ day: { since: '', total: totals(), byRole: { master: totals(), desk: totals(), worker: totals(),
-  step: totals() }, byModel: [], byBot: [], byTicket: [], relays: { resent: 0, side: 0, sessions: [] } }, week: totals(), steward: [], coexist: {}, sideCalls: true })
+  step: totals(), group: totals() }, byModel: [], byBot: [], byTicket: [], relays: { resent: 0, side: 0, sessions: [] } }, week: totals(), steward: [], coexist: {}, sideCalls: true })
 const overviewView = (): ApiResponse<'GET overview'> => {
   const { problem, feishuProblem } = server.setup
   const setup = problem ?? feishuProblem
@@ -411,11 +423,20 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
       message: 'lark-cli 1.0.98 is already up to date' } } : {} }) },
   'POST sources/feishu/cli-apply': { body: true, answer: () => ({ ok: true, output: 'done' }) },
   // VsSaros addition: TAPD Open API credentials in the Host's credentials file; the stand-in never stores a secret.
-  'GET sources/tapd/credentials': { answer: () => ({ configured: false, source: 'none' as const, file: 'C:\\fake\\dsh-home\\tapd.env', overridden: false }) },
-  'POST sources/tapd/credentials': { body: true, answer: ({ body }) => body.clear
-    ? { configured: false, source: 'none' as const, file: 'C:\\fake\\dsh-home\\tapd.env', overridden: false }
-    : { configured: true, source: 'file' as const, file: 'C:\\fake\\dsh-home\\tapd.env', overridden: false,
-      kind: body.kind ?? 'client', method: 'Basic TAPD_CLIENT_ID/SECRET (API account)', ...body.id ? { account: 'abc…yz' } : {} } },
+  'GET sources/tapd/credentials': { answer: () => ({ configured: false, source: 'none' as const,
+    file: 'C:\\fake\\dsh-home\\tapd.env', saved: false, bundled: false, overridden: false }) },
+  'POST sources/tapd/credentials': { body: true, answer: ({ body }) => body.clear || body.bundled
+    ? { configured: false, source: 'none' as const, file: 'C:\\fake\\dsh-home\\tapd.env', saved: false,
+      bundled: body.bundled !== 'off', overridden: false }
+    : { configured: true, source: 'file' as const, file: 'C:\\fake\\dsh-home\\tapd.env', saved: true, bundled: true,
+      overridden: false, kind: body.kind ?? 'client', method: 'Basic TAPD_CLIENT_ID/SECRET (API account)',
+      ...body.id ? { account: 'abc…yz' } : {} } },
+  // VsSaros addition: the setup checklist and the read-only connectivity probe.
+  'GET sources/tapd/setup': { answer: () => ({ credential: { configured: false, source: 'none' as const,
+    file: 'C:\\fake\\dsh-home\\tapd.env', saved: false, bundled: false, overridden: false },
+    watches: 0, workspace: '68880148', agent: '', agentResolved: '', agentMapped: false, healthCode: null }) },
+  'POST sources/tapd/test': { body: true, answer: () => ({ ok: true, method: 'Basic TAPD_CLIENT_ID/SECRET (API account)',
+    at: '2026-11-09T00:00:00.000Z' }) },
   'GET threads': { query: ['filter', 'offset', 'limit'], answer: () => page(server.threads) },
   'GET threads/:key': { query: ['limit', 'before', 'around'], answer: ({ params, query }) => {
     const found = server.threadPages(params.key, query)
@@ -466,7 +487,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
       const { enabled, config: value } = SourceSave.parse(body.value)
       const config = source.schema.parse(value)
       // As on the server, a changed CLI that fails its check refuses the save with the setup problem.
-      if (config.cli === 'lark-broken') {
+      if (config.cli === 'lark-broken' || config.appId === 'cli_broken') {
         const refused = new SetupError('feishuCliFailed', { output: 'lark-cli: app secret missing' })
         return refuse(400, refused.message, { setup: refused.problem })
       }

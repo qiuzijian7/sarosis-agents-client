@@ -2,6 +2,7 @@
 name: p4-config
 description: 动态发现 P4 Perforce 连接参数（P4PORT/P4USER/P4CLIENT），按 P4CONFIG→p4config.txt→P4V→交互询问 逐级降级，最后将结果保存为 memory。
 displayName: "P4 Config 动态发现流程"
+tier: extended
 ---
 
 # P4 Config 动态发现流程
@@ -34,15 +35,11 @@ p4 -p "<P4PORT>" -u "<P4USER>" -c "<P4CLIENT>" info
 ### Shell 约定
 本技能的命令是 **PowerShell 5.1** 语法（`$env:`、`Select-Object`、`Select-String`）。
 
-**必须用 `terminal` 工具执行，不要用 `terminal`。** `terminal` 在 Windows 上是随包 busybox 的
-POSIX sh，喂给它 PowerShell 会直接语法错误（`$env:X = 'v'` → `sh: syntax error`，
-`(Get-Command ...)` → `unexpected "("`）。两者是并列的独立工具：
+**所有代码块都用 `pwsh` 执行。** dsh 侧只有 `pwsh`（PowerShell 5.1）；POSIX sh 会把
+`$env:X = 'v'` 直接报成 `sh: syntax error`，`(Get-Command ...)` 报 `unexpected "("`。
 
-- `terminal` —— PowerShell 5.1，本技能全部代码块都走它
-- `terminal` —— POSIX sh，本技能不用
-
-若某一步确实想用 POSIX 写法，就整条命令改写成 POSIX 再交给 `terminal`；不要把两种语法
-塞进同一条命令混用。
+不要引用 IDE 侧已退役的工具名，也不要把 POSIX 语法塞进 PowerShell 命令里混用。
+若某一步确实需要 POSIX 写法，整条命令改写成 POSIX 后单独执行。
 
 ---
 

@@ -4,6 +4,7 @@ description: Airtable REST API via curl. Records CRUD, filters, upserts.
 activation: manual
 match: ["airtable", "productivity", "database", "api"]
 category: productivity
+tier: extended
 ---
 
 # Airtable — Bases, Tables & Records

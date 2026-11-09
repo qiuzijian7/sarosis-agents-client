@@ -4,7 +4,8 @@ description: "对当前 diff/文件进行快速代码评审，关注正确性、
 activation: auto
 match: ["review", "code review", "评审", "审查代码", "code-review"]
 category: code
-recommended_tools: ["file_read", "terminal"]
+recommended_tools: ["read", "pwsh"]
+tier: core
 ---
 
 You are running the **code-review** skill.

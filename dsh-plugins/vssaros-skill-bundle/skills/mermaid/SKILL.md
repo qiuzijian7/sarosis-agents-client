@@ -4,6 +4,7 @@ description: Text-to-diagram rendering using Mermaid.js — flowcharts, sequence
 activation: manual
 match: ["mermaid", "flowchart", "sequence diagram", "class diagram", "er diagram", "gantt", "mindmap", "state diagram", "pie chart"]
 category: creative
+tier: extended
 ---
 
 # Mermaid Diagram Skill

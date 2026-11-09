@@ -4,7 +4,8 @@ description: QA 阶段 5——独立视角代码审查，产出 code-review.json
 activation: auto
 match: ["代码审查", "质量评审", "code review 门禁", "验收评审"]
 category: development
-recommended_tools: ["file_read", "search_graph", "trace_path", "detect_changes", "query_graph"]
+recommended_tools: ["read", "codebase_search", "codebase_trace", "codebase_changes", "codebase_query_graph"]
+tier: core
 ---
 
 # QA Quality Review — 代码审查
@@ -21,13 +22,13 @@ recommended_tools: ["file_read", "search_graph", "trace_path", "detect_changes",
 python "<qa-core>/scripts/qa_agent.py" --help    # 确认 CLI 可用
 ```
 
-配合 `detect_changes` 拿真实 diff，用 `trace_path` 看下游传播。
+配合 `codebase_changes` 拿真实 diff，用 `codebase_trace` 看下游传播。
 
 ### 2. 审查维度（按序）
 
 1. **正确性** — 逻辑错误、边界、空值、并发竞态
 2. **业务一致性** — 实现是否匹配需求/用例的 `expected`
-3. **影响面** — 用 `query_graph` 查扇入，高扇入改动需更严
+3. **影响面** — 用 `codebase_query_graph` 查扇入，高扇入改动需更严
 4. **可维护性** — 命名、重复、死代码
 5. **安全与性能** — 只报具体问题，不空泛评论
 

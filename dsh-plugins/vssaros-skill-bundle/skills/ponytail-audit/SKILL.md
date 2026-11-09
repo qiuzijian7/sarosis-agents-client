@@ -8,7 +8,8 @@ description: >
 activation: manual
 match: ["ponytail-audit", "audit for over-engineering", "what can I delete from this repo", "find bloat", "审计过度工程", "查找冗余", "全仓库审计"]
 category: code
-recommended_tools: ["file_read", "terminal"]
+recommended_tools: ["read", "pwsh"]
+tier: extended
 ---
 
 ponytail-review, repo-wide. Scan the whole tree instead of a diff. Rank

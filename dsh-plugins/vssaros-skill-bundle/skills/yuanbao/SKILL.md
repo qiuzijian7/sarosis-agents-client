@@ -4,6 +4,7 @@ description: "Yuanbao (元宝) groups: @mention users, query info/members."
 activation: manual
 match: ["yuanbao", "mention", "group", "members"]
 category: ai-agents
+tier: extended
 ---
 
 # Yuanbao Group Interaction

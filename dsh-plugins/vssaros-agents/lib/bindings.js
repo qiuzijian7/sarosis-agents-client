@@ -292,15 +292,27 @@ export async function updateBinding(config, input, deps) {
 	return { binding: next, bindings: out };
 }
 
-/** 删除绑定（`id` 或 `(platform, chatId)` 二选一）。 */
+/**
+ * 删除绑定（`id` 或 `(platform, chatId[, appId])`）。
+ *
+ * ★ 2026-11-09 多飞书应用：同一个 chat_id 可能挂着两条绑定（各属一个应用）。
+ *   按 `(platform, chatId)` 删会把两条一起删掉 ⇒ 带 appId 时精确删；
+ *   既没 id 也没 appId、却匹配到多条时**拒删**（409，要求明确指定），绝不靠「第一条」猜。
+ */
 export async function deleteBinding(config, input) {
 	assertHuman(input?.actor);
 	const id = String(input?.id ?? '').trim();
 	const platform = String(input?.platform ?? '').trim().toLowerCase();
 	const chatId = String(input?.chatId ?? '').trim();
+	const appId = String(input?.appId ?? '').trim();
 	const bindings = await readBindings(config);
-	const out = bindings.filter(b => (id ? b.id !== id
-		: !(b.platform === platform && b.chatId === chatId)));
+	const match = (b) => b.platform === platform && b.chatId === chatId
+		&& (!appId || platform !== 'feishu' || String(b.appId ?? '').trim() === appId);
+	const hits = id ? [] : bindings.filter(match);
+	if (!id && !appId && hits.length > 1) {
+		throw httpError(409, `这个 IM 会话有 ${hits.length} 条绑定（不同飞书应用）；请带 id 或 appId 指定要删哪一条。`);
+	}
+	const out = bindings.filter(b => (id ? b.id !== id : !match(b)));
 	if (out.length === bindings.length) {
 		throw httpError(404, '没找到要删的绑定。');
 	}
@@ -315,7 +327,7 @@ export async function deleteBinding(config, input) {
  * 让用户自己去「最近失败」抄 id、再回绑定页粘贴，正是"消息没反应"这条排查链最常断的地方。
  *
  * 语义（每条都别放松）：
- *   · 按 `(platform, chatId)` 找绑定；没有 ⇒ 404（**不猜**该绑给谁）
+ *   · 按 `(platform, chatId, appId)` 找绑定（★ 2026-11-09 多应用：死信带应用标识）；没有 ⇒ 404（**不猜**该绑给谁）
  *   · 已在白名单 ⇒ 幂等（`already: true`），不重复写
  *   · 缺 `userId`（有些 reason 没有）⇒ 400，别造一个空串白名单项
  *   · 成功后把该条死信删掉（已处理的东西不该继续占着"最近失败"）
@@ -328,6 +340,8 @@ export async function allowDeadLetterSender(config, input) {
 	const platform = String(entry?.platform ?? input?.platform ?? '').trim().toLowerCase();
 	const chatId = String(entry?.chatId ?? input?.chatId ?? '').trim();
 	const userId = String(entry?.userId ?? input?.userId ?? '').trim();
+	/* 老死信没有 appId ⇒ 空 = 默认应用，只匹配不带 appId 的绑定。 */
+	const appId = String(entry?.appId ?? input?.appId ?? '').trim();
 	if (!platform || !chatId) {
 		throw httpError(400, '缺 platform / chatId（要么直接给这条死信的 id）');
 	}
@@ -335,7 +349,8 @@ export async function allowDeadLetterSender(config, input) {
 		throw httpError(400, '这条记录没有发送者 id（不猜、不塞空字符串）');
 	}
 	const bindings = await readBindings(config);
-	const idx = bindings.findIndex((b) => String(b.platform) === platform && String(b.chatId) === chatId);
+	const idx = bindings.findIndex((b) => String(b.platform) === platform && String(b.chatId) === chatId
+		&& (platform !== 'feishu' || String(b.appId ?? '').trim() === appId));
 	if (idx < 0) {
 		throw httpError(404, `这个 IM 会话（${platform}:${chatId}）还没有绑定 —— 先在 Bots 里给它建一条绑定，再加发送者`);
 	}
@@ -425,14 +440,26 @@ export function shouldAcceptInbound(binding, msg, opts = {}) {
 	return { ok: true, reason: 'ok' };
 }
 
-/** 入站幂等键（平台消息 id 是唯一的；缺了就退化成时间+内容指纹）。 */
-export function inboundKeyOf(msg) {
-	const platform = String(msg?.platform ?? '').trim();
+/**
+ * 入站幂等键（平台消息 id 是唯一的；缺了就退化成时间+内容指纹）。
+ *
+ * ★ 2026-11-09 多飞书应用：同一个群里的同一条消息会被**每个应用的长连接各收一次**，
+ *   而 message_id 是消息级 ID（不是按应用投递的 event_id）⇒ 只按 platform+messageId 去重，
+ *   会把第二个应用的消息静默判 `duplicate` 丢掉（且 imSeen 落盘 ⇒ 重启也丢）。
+ *   ⇒ 飞书把「事件所属应用」也放进键；空应用折成 defaultAppId（老绑定/老调用行为不变），
+ *     两者都空时键与旧版逐字相同（存量落盘键不会全量重放）。
+ */
+export function inboundKeyOf(msg, defaultAppId = '') {
+	const platform = String(msg?.platform ?? '').trim().toLowerCase();
 	const id = String(msg?.messageId ?? '').trim();
+	const app = platform === 'feishu'
+		? (String(msg?.appId ?? '').trim() || String(defaultAppId ?? '').trim())
+		: '';
+	const scope = app ? `${platform}:${app}` : platform;
 	if (platform && id) {
-		return `${platform}:${id}`;
+		return `${scope}:${id}`;
 	}
-	return `${platform}:${String(msg?.userId ?? '')}:${String(msg?.content ?? '').slice(0, 32)}`;
+	return `${scope}:${String(msg?.userId ?? '')}:${String(msg?.content ?? '').slice(0, 32)}`;
 }
 
 /**
@@ -470,13 +497,20 @@ export function splitOutbound(text, limit = OUT_SEGMENT_CHARS) {
  *   `defaultAppId` 是当前默认应用 —— 绑定或消息的应用为空时都按它算，
  *   所以老绑定（无 appId）与老调用（不传 opts）的行为与以前完全一样。
  */
-export function findBindingForChat(bindings, platform, chatId, { appId = '', defaultAppId = '' } = {}) {
+export function findBindingForChat(bindings, platform, chatId, { appId = '', defaultAppId = '', botApps = null } = {}) {
 	const p = String(platform ?? '').trim().toLowerCase();
 	const c = String(chatId ?? '').trim();
-	const effective = (id) => String(id ?? '').trim() || String(defaultAppId ?? '').trim();
-	const want = effective(appId);
+	/* ★ 2026-11-09：绑定没写 appId 时，回落到「这条绑定所属 Bot 在设置页选的应用」。
+	   消息侧没有 bot 上下文，仍只按 appId 或默认应用算。botApps 缺省时行为与旧版逐字一致。 */
+	const effective = (id, binding) => {
+		const explicit = String(id ?? '').trim();
+		if (explicit) { return explicit; }
+		const bot = binding && botApps ? String(botApps[String(binding.targetId ?? '').trim()] ?? '').trim() : '';
+		return bot || String(defaultAppId ?? '').trim();
+	};
+	const want = effective(appId, null);
 	return (Array.isArray(bindings) ? bindings : []).find(b => b.platform === p && b.chatId === c
-		&& (p !== 'feishu' || effective(bindingAppOf(b)) === want)) || null;
+		&& (p !== 'feishu' || effective(bindingAppOf(b), b) === want)) || null;
 }
 
 /** 找某个 bot / 群**启用中的**出站绑定（可能有多条）。 */
@@ -554,7 +588,10 @@ export function createBindingHub(deps) {
 	async function handleInboundInner(msg) {
 		const platform = String(msg?.platform ?? '').trim().toLowerCase();
 		const chatId = String(msg?.chatId ?? '').trim();
-		const key = inboundKeyOf({ ...msg, platform });
+		/* ★ 幂等键要带应用维度 ⇒ defaultAppId 必须在去重之前算好（原来在查绑定时才算）。 */
+		const defaultAppId = platform === 'feishu' && typeof deps.defaultFeishuAppId === 'function'
+			? String(await deps.defaultFeishuAppId().catch(() => '') || '') : '';
+		const key = inboundKeyOf({ ...msg, platform }, defaultAppId);
 		/* 幂等：优先用**跨重启**的存储（`deps.seen`，见 imSeen.js）；
 		   没注入就退回进程内（单测/演练够用，但 Host 重启后会重复处理 —— 那条注释写在 imSeen 里）。 */
 		const firstTime = deps.seen && typeof deps.seen.mark === 'function'
@@ -567,9 +604,8 @@ export function createBindingHub(deps) {
 		noteRecent({ ...msg, platform });
 
 		const bindings = await readBindings(deps.config);
-		const defaultAppId = platform === 'feishu' && typeof deps.defaultFeishuAppId === 'function'
-			? String(await deps.defaultFeishuAppId().catch(() => '') || '') : '';
-		const binding = findBindingForChat(bindings, platform, chatId, { appId: msg?.appId, defaultAppId });
+		const botApps = typeof deps.botApps === 'function' ? await deps.botApps().catch(() => ({})) : {};
+		const binding = findBindingForChat(bindings, platform, chatId, { appId: msg?.appId, defaultAppId, botApps });
 		if (!binding) {
 			return { ok: false, reason: 'unbound', key };
 		}
@@ -585,8 +621,11 @@ export function createBindingHub(deps) {
 		/* ★ 2026-10-27：把**已批准的配对**并入判定用的白名单（与 config allowFrom 合并）。
 		   pairing 表由 `pairing.js` 提供；没注入就当作空（行为等同"仅 config 白名单"）。 */
 		let approved = [];
+		/* ★ 2026-11-09：配对批准按应用隔离 —— 别把 A 应用批准的人也算成 B 应用的白名单。
+		   老记录（无 appId）由 pairing.js 视为全局兼容，不会在升级后失效。 */
+		const appId = platform === 'feishu' ? String(msg?.appId ?? '').trim() : '';
 		if (deps.pairing && typeof deps.pairing.approvedFor === 'function') {
-			approved = await deps.pairing.approvedFor(platform).catch(() => []);
+			approved = await deps.pairing.approvedFor(platform, appId).catch(() => []);
 		}
 		const verdict = shouldAcceptInbound(binding, { ...msg, chatType: msg?.chatType ?? binding.chatType }, { approved });
 		if (!verdict.ok) {
@@ -598,6 +637,7 @@ export function createBindingHub(deps) {
 			if (verdict.reason === 'pairing-required' && deps.pairing && typeof deps.pairing.request === 'function') {
 				const pr = await deps.pairing.request({
 					platform, chatId, userId: msg?.userId, userName: msg?.userName,
+					...(appId ? { appId } : {}),
 				}).catch((e) => ({ error: String((e && e.message) || e) }));
 				if (pr && pr.code) {
 					log('info', `配对请求已登记（${platform}:${String(msg?.userId)}）⇒ 码 ${pr.code}`);
@@ -640,6 +680,10 @@ export function createBindingHub(deps) {
 			await deps.deadLetters.record({
 				reason: r.reason,
 				platform: String(msg?.platform ?? ''),
+				/* ★ 2026-11-09：死信带应用 ⇒ 「一键加白」能定位到**这条消息所属应用**的绑定，
+				   否则同 chat_id 的两条应用绑定会被按 findIndex 误改。老死信无此字段 = 默认应用。 */
+				...(String(msg?.platform ?? '').trim().toLowerCase() === 'feishu' && String(msg?.appId ?? '').trim()
+					? { appId: String(msg.appId).trim() } : {}),
 				chatId: String(msg?.chatId ?? ''),
 				chatType: String(msg?.chatType ?? ''),
 				userId: String(msg?.userId ?? ''),
@@ -670,7 +714,9 @@ export function createBindingHub(deps) {
 			return { ok: true, reason: 'empty', sent: 0, failed: 0, segments: 0 };
 		}
 		const segs = segments.length ? segments : [''];
-		const app = bindingAppOf(binding);
+		/* ★ 2026-11-09：出站身份也回落 Bot 设置页选的应用（绑定显式 appId 优先）。 */
+		const botApps = typeof deps.botApps === 'function' ? await deps.botApps().catch(() => ({})) : {};
+		const app = bindingAppOf(binding) || String(botApps[String(binding.targetId ?? '').trim()] ?? '').trim();
 		const ctx = {
 			sessionKey: `chat:${binding.platform}:${app ? app + ':' : ''}${binding.chatId}`,
 			chatId: binding.chatId,
@@ -719,12 +765,18 @@ export function createBindingHub(deps) {
 	}
 
 	/**
-	 * 把一条答复推给某个 bot / 群的**所有**出站绑定（群镜像用）。
+	 * 把一条答复推给某个 bot / 群的出站绑定。
 	 * 返回逐绑定的结果数组 —— 调用方可以把失败写进 deliveries / 日志，不静默。
+	 *
+	 * ★ 2026-11-09 多飞书应用：`opts.appId` 非空时**只**发给该应用的绑定，
+	 *   避免「一个 bot 绑了两个飞书应用」时把同一条答复广播到另一个应用（跨应用串台）。
+	 *   不传 opts 保持旧行为（全部），目前生产链路走 `deliverForEntry`（按 bindingId，天然隔离）。
 	 */
-	async function deliverForTarget(targetKind, targetId, text) {
+	async function deliverForTarget(targetKind, targetId, text, opts = {}) {
 		const bindings = await readBindings(deps.config);
-		const targets = findOutboundBindings(bindings, targetKind, targetId);
+		const want = String(opts?.appId ?? '').trim();
+		const targets = findOutboundBindings(bindings, targetKind, targetId)
+			.filter((b) => !want || (b.platform === 'feishu' && String(b.appId ?? '').trim() === want));
 		if (!targets.length) {
 			return [];
 		}

@@ -4,6 +4,7 @@ description: "ASCII art: pyfiglet, cowsay, boxes, image-to-ascii."
 activation: manual
 match: ["ascii-art", "ascii art", "ascii", "art", "banners", "creative", "unicode", "text-art", "pyfiglet", "figlet", "cowsay", "boxes"]
 category: creative
+tier: extended
 ---
 
 # ASCII Art Skill

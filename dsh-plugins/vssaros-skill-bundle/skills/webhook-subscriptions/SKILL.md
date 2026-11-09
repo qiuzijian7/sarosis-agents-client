@@ -4,6 +4,7 @@ description: "Webhook subscriptions: event-driven agent runs."
 activation: manual
 match: ["webhook-subscriptions", "webhook subscriptions", "webhook", "events", "integrations", "notifications", "push"]
 category: devops
+tier: extended
 ---
 
 # Webhook Subscriptions

@@ -4,6 +4,7 @@ description: Author/validate/export Google's DESIGN.md token spec files.
 activation: manual
 match: ["design-md", "design md", "design", "design-system", "tokens", "accessibility", "wcag", "tailwind", "dtcg", "google"]
 category: creative
+tier: extended
 ---
 
 # DESIGN.md Skill

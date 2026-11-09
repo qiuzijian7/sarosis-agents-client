@@ -4,6 +4,7 @@ description: "ASCII video: convert video/audio to colored ASCII MP4/GIF."
 activation: manual
 match: ["ascii-video", "ascii video"]
 category: creative
+tier: extended
 ---
 
 # ASCII Video Production Pipeline

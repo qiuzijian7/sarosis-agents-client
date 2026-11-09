@@ -4,6 +4,7 @@ description: "TDD: enforce RED-GREEN-REFACTOR, tests before code."
 activation: auto
 match: ["test-driven-development", "test driven development", "testing", "tdd", "development", "quality", "red-green-refactor"]
 category: development
+tier: core
 ---
 
 # Test-Driven Development (TDD)

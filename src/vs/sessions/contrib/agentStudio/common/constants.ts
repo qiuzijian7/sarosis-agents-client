@@ -287,8 +287,8 @@ export const AGENT_STUDIO_SIDEBAR_VIEW_CONTAINER_ID = 'agentStudio.sidebar';
 export const AGENT_STUDIO_AUXBAR_VIEW_CONTAINER_ID = 'agentStudio.auxiliaryBar';
 
 // View IDs
-/** 内置主助理 Agent id（saros-claw / 助理）——工作流画布 Run 的默认执行 agent。 */
-export const SAROS_CLAW_AGENT_ID = 'saros-claw';
+/** 工作流画布 Run 的默认执行 agent（2026-11-09：通用主助理 saros-claw 已删除，改由编排 agent 接管）。 */
+export const DEFAULT_WORKFLOW_AGENT_ID = 'workflow-agent';
 
 export const AGENT_STUDIO_MAIN_VIEW_ID = 'agentStudio.mainView';
 export const AGENT_STUDIO_CANVAS_VIEW_ID = 'agentStudio.canvasView';

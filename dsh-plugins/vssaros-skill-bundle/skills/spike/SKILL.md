@@ -4,6 +4,7 @@ description: Throwaway experiments to validate an idea before build.
 activation: auto
 match: ["spike", "prototype", "experiment", "feasibility", "throwaway", "exploration", "research", "planning", "mvp", "proof-of-concept"]
 category: development
+tier: core
 ---
 
 # Spike

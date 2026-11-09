@@ -12,8 +12,9 @@ import type { T } from './text.ts'
 export const TABS = ['chat', 'work', 'source', 'trigger', 'eval', 'execution', 'settings'] as const
 export type Tab = typeof TABS[number]
 /**
- * VsSaros change (2026-11-07, user request): the tabs the header shows. The Workbench (`work`) is no longer a tab; its
- * page stays a route, reached from the links that open a team's flow (`team-plans.tsx`, `work.openFlow`).
+ * VsSaros change (2026-11-07, user request): the tabs the header shows. The Workbench (`work`) is no longer a tab.
+ * ★ 2026-11-09: its three views (flow / board / list) now live INSIDE the `execution` tab; `work` remains only as a
+ *   legacy route alias that `parseRoute` normalizes to `execution` (see below), so old links and stored routes still work.
  */
 export const NAV_TABS: readonly Tab[] = TABS.filter(tab => tab !== 'work')
 export const SETTINGS_GROUPS = ['source', 'eval', 'execution', 'prompts', 'deployment'] as const
@@ -23,7 +24,7 @@ export type Route = { page: 'chat' | 'source'; id?: undefined; query?: undefined
   | { page: 'trigger'; id?: undefined; query?: { filter?: ThreadFilter } }
   | { page: 'trigger'; id: string; query?: { trigger?: string } }
   | { page: 'eval'; id?: undefined; query?: { filter?: DecisionFilter; window?: '24h' } }
-  | { page: 'execution'; id?: undefined; query?: { filter?: TicketFilter } }
+  | { page: 'execution'; id?: undefined; query?: { filter?: TicketFilter; ticket?: string } }
   | { page: 'execution'; id: string; query?: undefined }
   | { page: 'settings'; id?: undefined; query: { group: SettingsGroup; source?: string; version?: string } }
 export const HOME: Route = { page: 'chat' }
@@ -46,13 +47,16 @@ export function parseRoute(value: unknown): Route | undefined {
   const record = typeof id === 'string' && id ? id : undefined
   switch (page) {
     case 'chat': case 'source': return { page }
-    case 'work': return { page, query: compact({ ticket: text('ticket') }) }
+    // ★ 2026-11-09（用户要求）：流程图 / 看板 / 列表归到「执行」页签内。
+    //   `work` 不再有独立页面：旧深链（概况侧栏「查看流程」、sessionStorage 里记的 work 路由）
+    //   一律归一到 execution，并把 ticket 带过去选中对应团队 ⇒ 不会白屏、不会落到 HOME。
+    case 'work': return { page: 'execution', query: compact({ ticket: text('ticket') }) }
     case 'overview': return { page: 'chat' }
     case 'trigger': return record ? { page, id: record, query: compact({ trigger: text('trigger') }) }
       : { page, query: compact({ filter: pick(THREAD_FILTERS, query?.filter) }) }
     case 'eval': return { page, query: compact({ filter: pick(DECISION_FILTERS, query?.filter),
       window: query?.window === '24h' ? '24h' as const : undefined }) }
-    case 'execution': return record ? { page, id: record } : { page, query: compact({ filter: pick(TICKET_FILTERS, query?.filter) }) }
+    case 'execution': return record ? { page, id: record } : { page, query: compact({ filter: pick(TICKET_FILTERS, query?.filter), ticket: text('ticket') }) }
     case 'settings': return { page, query: { group: pick(SETTINGS_GROUPS, query?.group) ?? 'source',
       ...compact({ source: text('source'), version: text('version') }) } }
     default: return undefined

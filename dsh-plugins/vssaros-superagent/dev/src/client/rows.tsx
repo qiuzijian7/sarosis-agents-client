@@ -29,8 +29,10 @@ export function TicketLine({ ticket, question, onChanged, context }: {
       </div>
       {/* Always render the actions container so every Ticket row keeps a uniform three-line height. */}
       <div className="dt-ticket-actions">{onChanged && <>
-        {answer && <ActionLink href={answer.url} icon="message">{t('answerIn', { source: valueLabel(t, 'source',
-          answer.source) })}</ActionLink>}
+        {/* ★ 2026-11-09：superagent 主管对话没有外链（url:''）⇒ ActionLink 变成应用内按钮，
+            点了切到「对话」页回答，不再让空 href 的 <a target=_blank> 打开 127.0.0.x 网页。 */}
+        {answer && <ActionLink href={answer.url} icon="message" onActivate={() => navigate({ page: 'chat' })}>{t('answerIn',
+          { source: valueLabel(t, 'source', answer.source) })}</ActionLink>}
         {ticket.actions.retry && <ConfirmButton variant="outline" icon="refresh" label={t('retry')} title={t('retryTitle')}
           message={t('retryConfirm', { title: ticket.title })}
           onConfirm={() => after(call('POST tickets/:id/retry', { id: ticket.id }))} />}

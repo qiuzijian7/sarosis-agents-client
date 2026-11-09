@@ -4,7 +4,8 @@ description: QA 阶段 0——为仓库收集事实画像与环境证据。当�
 activation: auto
 match: ["qa-context", "收集上下文", "环境快照", "验收准备", "上下文收集"]
 category: development
-recommended_tools: ["search_graph", "trace_path", "detect_changes", "get_architecture", "terminal", "file_read"]
+recommended_tools: ["codebase_search", "codebase_trace", "codebase_changes", "codebase_architecture", "pwsh", "read"]
+tier: core
 ---
 
 # QA Context Profiling — 上下文收集
@@ -28,16 +29,18 @@ export PYTHONIOENCODING=utf-8
 python "<qa-core>/scripts/qa_agent.py" init-project --repo .
 ```
 
-### 3. 收集代码事实（用 Saros 原生工具，不用 grep）
+### 3. 收集代码事实（用 dsh 侧代码图谱工具，不用 grep）
+
+工具名一律用 dsh 侧真名（`recommended_tools` 里那几个）；IDE 侧的工具名在当前会话里不存在。
 
 | 目标 | 工具 |
 |---|---|
-| 模块结构与依赖 | `get_architecture` |
-| 关键函数定义与调用链 | `search_graph` → `trace_path` |
-| 本次改动范围 | `detect_changes` |
-| 已有测试索引 | `search_graph` + `label` 过滤 |
+| 模块结构与依赖 | `codebase_architecture` |
+| 关键函数定义与调用链 | `codebase_search` → `codebase_trace` |
+| 本次改动范围 | `codebase_changes` |
+| 已有测试索引 | `codebase_search` + `label` 过滤 |
 
-优先 `search_graph` 而非文本搜索——它理解调用关系，不会漏掉重命名/间接引用。
+优先 `codebase_search` 而非文本搜索——它理解调用关系，不会漏掉重命名/间接引用。
 
 ### 4. 环境证据
 

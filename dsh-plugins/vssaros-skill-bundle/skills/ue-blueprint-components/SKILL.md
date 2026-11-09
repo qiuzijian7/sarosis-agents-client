@@ -2,6 +2,7 @@
 name: ue-blueprint-components
 description: 通过 Python 操控 UE5 Blueprint 的【组件树 / SCS】(SubobjectDataSubsystem)：创建 BP、加/配组件、ChildActorComponent 组装，以及编译时机、句柄去重、跨组件引用、实例残留等语义坑。只管组件树——图节点/连线/变量见 ue-blueprint-graph，C++-only 接口见 ue-cpp-python-bridge。
 displayName: "UE5 Blueprint 组件层级 Python 开发指南"
+tier: extended
 ---
 
 # UE5 Blueprint 组件层级 Python 开发指南

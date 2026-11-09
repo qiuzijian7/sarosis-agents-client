@@ -4,6 +4,7 @@ description: "Author in-repo SKILL.md: frontmatter, validator, structure."
 activation: auto
 match: ["hermes-agent-skill-authoring", "hermes agent skill authoring", "skills", "authoring", "hermes-agent", "conventions", "skill-md"]
 category: development
+tier: core
 ---
 
 # Authoring Hermes-Agent Skills (in-repo)

@@ -127,7 +127,7 @@ export function executable(name: string, path: string, exclude?: string, windows
  * VsSaros patch (Windows): the argv that runs a CLI without a shell. Node refuses to spawn a `.cmd`/`.bat`
  * directly (CVE-2024-27980) and `Commands` will not pass message text through cmd.exe, so an npm/pnpm launcher
  * is replaced by the `.js` script it launches, run by the Host's own node. A `.js` path, a real executable and
- * every POSIX command pass through unchanged. Used by both the Feishu Source and the TAPD MCP transport.
+ * every POSIX command pass through unchanged. Used by the Feishu Source (the retired TAPD MCP transport used it too).
  */
 export function cliArgv(cli: string, path = process.env.PATH ?? '', windows = WINDOWS): string[] {
   if (/\.[cm]?js$/i.test(cli)) return [process.execPath, cli]

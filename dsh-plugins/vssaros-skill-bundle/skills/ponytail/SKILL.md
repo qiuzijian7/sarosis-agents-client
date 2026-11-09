@@ -8,7 +8,8 @@ description: >
 activation: auto
 match: ["ponytail", "lazy", "lazy mode", "simplest", "minimal", "yagni", "do less", "shortest path", "过度工程", "精简", "最少代码", "懒汉"]
 category: code
-recommended_tools: ["file_read", "file_write", "terminal"]
+recommended_tools: ["read", "write", "pwsh"]
+tier: core
 ---
 
 # Ponytail

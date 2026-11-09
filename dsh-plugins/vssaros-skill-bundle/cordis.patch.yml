@@ -13,10 +13,16 @@
     - id: vssaros-skill-bundle
       name: '@vssaros/dsh-skill-bundle'
     # ② 配置官方 filesystem provider 去扫本包 skills/（两个 id 不能撞，撞了会互相顶掉）
-    - id: vssaros-skill-bundle-fs
-      name: '@deepseek-ai/dsh-skill-filesystem'
-      config:
-        providerName: vssaros-bundled
-        includeDefaultRoots: false
-        watch: true
-        bundledSkillDir: !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('@vssaros/dsh-skill-bundle/package.json')), 'skills')
+    # ★ 2026-11-08 换架构：这行已停用。它把 173 个技能注册在 host 平面 = global 层，
+    #   `dsh-skill` 的 collectFresh() 会把 global 层无条件并进每个 agent 的候选集 ⇒
+    #   `<available_skills>` 永远 230 行，任何渲染期过滤都绕不过去。
+    #   改由 @vssaros/dsh-skills 的 bundledProvider 注册（同一 providerName / rank 600），
+    #   按 options.scope 给未 attach 的技能标 modelInvocable:false ⇒ 官方目录自己收窄。
+    #   一键回退：恢复本行 + 设 skills 插件 skillScopeMode: legacy。
+    # - id: vssaros-skill-bundle-fs
+    #   name: '@deepseek-ai/dsh-skill-filesystem'
+    #   disabled: true
+    #   config:
+    #     providerName: vssaros-bundled
+    #     includeDefaultRoots: false
+    #     bundledSkillDir: <本包 skills/>

@@ -7,6 +7,53 @@ import { usePanel, mount, remount, settle, all, find, tab, click, type, text, fi
 import { server, problemOf, droppedReply } from './fixtures/panel-server.ts'
 
 usePanel()
+it('shows the TAPD setup checklist and a working read-only connectivity probe', async () => {
+  server.tapdCard = true
+  await mount()
+  await click(tab(zh['tab.settings']))
+  const tapd = all('.dt-card').find(card => card.querySelector('[data-tapd-credentials]'))!
+  expect(tapd.textContent).toContain(zh['tapdCheck.title'])
+  expect(tapd.textContent).toContain(zh['tapdCheck.watchesNone'])
+  expect(tapd.textContent).toContain(zh['tapdCheck.identityEmpty'])
+  const probe = [...tapd.querySelectorAll('button')].find(button => button.textContent === zh['tapdCheck.test'])!
+  await click(probe)
+  await settle()
+  expect(tapd.textContent).toContain('通过 ·')
+  expect(server.requests.filter(request => request.path === 'sources/tapd/test')).toHaveLength(1)
+  // The built-in account is the default: kind tabs / secret inputs are hidden until the override is expanded.
+  expect(tapd.textContent).toContain(zh['tapdCred.custom'])
+  expect(tapd.textContent).not.toContain(zh['tapdCred.kind.client'])
+  const custom = [...tapd.querySelectorAll<HTMLElement>('[data-disclosure-row]')]
+    .find(row => row.textContent?.includes(zh['tapdCred.custom']))!
+  await click(custom)
+  expect(tapd.textContent).toContain(zh['tapdCred.kind.client'])
+  // With no namespaced labels the card asks TAPD for its dropdown options on first mount.
+  expect(server.requests.filter(request => request.path === 'sources/tapd/labels')).toHaveLength(1)
+})
+
+it('renders TAPD dropdowns from the namespaced labels fetched from TAPD', async () => {
+  server.tapdCard = true
+  server.tapdFields = true
+  server.tapdLabels = {
+    'workspace:68880148': 'GR 项目 (68880148)', 'workspace:12345': '另一个项目 (12345)',
+    'agent:邱子鉴': '邱子鉴（zijianqiu）', 'status:new': '新建', 'status:resolved': '已解决',
+    'iteration:77': 'Sprint 77',
+  }
+  await mount()
+  await click(tab(zh['tab.settings']))
+  const tapd = all('.dt-card').find(card => card.querySelector('[data-tapd-credentials]'))!
+  const selects = [...tapd.querySelectorAll('select')]
+  // Top-level workspace/agent, row workspace/status/iteration, plus the static type/mode selects.
+  expect(selects.length).toBeGreaterThanOrEqual(7)
+  const options = selects.map(select => [...select.options].map(option => option.textContent).join('|')).join('\n')
+  expect(options).toContain('GR 项目 (68880148)')
+  expect(options).toContain('邱子鉴（zijianqiu）')
+  expect(options).toContain('新建')
+  expect(options).toContain('Sprint 77')
+  // Options are already present => no redundant TAPD lookup on mount.
+  expect(server.requests.filter(request => request.path === 'sources/tapd/labels')).toHaveLength(0)
+})
+
 it('shows each Source\'s state on the Source status and opens its settings from a setup problem', async () => {
   await mount()
   await click(zh['tab.source'])
@@ -230,7 +277,7 @@ it('shows a refused Source save with the output of the tool that failed on its o
   await click(zh['tab.source'])
   await click(find(zh['tab.settings'], '.dt-status-head button'))
   const feishu = all('.dt-card')[0]!
-  await type(field<HTMLInputElement>('机器人的 lark-cli'), 'lark-broken')
+  await type(field<HTMLInputElement>('飞书应用 App ID'), 'cli_broken')
   await act(async () => { feishu.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await settle()
   expect(feishu.querySelector('.dt-savebar [role="alert"]')?.textContent).toBe('机器人的 lark-cli 不可用。\nlark-cli: app secret missing')
 })
@@ -317,18 +364,13 @@ it('reads the settings again as soon as dsh-superagent answers after a save rest
   expect(field<HTMLInputElement>('智能体的 GitHub CLI').value).toBe('/opt/bin/gh-agent')
 })
 
-it('keeps the lark-cli checks beside the cli input, with their result below the field', async () => {
+it('no longer exposes the lark-cli option or its local diagnostics on the Feishu card', async () => {
   at({ page: 'settings', query: { group: 'source' } })
   await mount()
   const feishu = all('.dt-card')[0]!
-  const row = feishu.querySelector('.dt-cli-row')
-  expect(row).not.toBeNull()
-  const input = row!.querySelector('input')
-  expect(input).not.toBeNull()
-  // The action is a sibling, so Field still gives the input the label's id.
-  expect(document.querySelector(`label[for="${input!.id}"]`)?.textContent).toContain('机器人的 lark-cli')
-  expect([...row!.querySelectorAll('button')].map(item => item.textContent)).toEqual(['自动本地检查', '检查版本/更新'])
-  await click([...row!.querySelectorAll('button')][0]!)
-  expect(server.requests.find(request => request.path === 'sources/feishu/cli-check')).toMatchObject({ method: 'POST' })
-  expect(feishu.querySelector('.dt-kv')).not.toBeNull()
+  expect(feishu.textContent).not.toContain('机器人的 lark-cli')
+  expect(feishu.textContent).not.toContain('自动本地检查')
+  expect(feishu.textContent).not.toContain('检查版本/更新')
+  expect(feishu.querySelector('.dt-cli-row')).toBeNull()
+  expect(server.requests.filter(request => request.path === 'sources/feishu/cli-check')).toHaveLength(0)
 })

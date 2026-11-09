@@ -92,6 +92,8 @@ export async function requestPairing(config, input, deps = {}) {
 	const now = deps.now ? deps.now() : Date.now();
 	const platform = String(input?.platform ?? '').trim().toLowerCase();
 	const userId = String(input?.userId ?? '').trim();
+	/* ★ 2026-11-09 多飞书应用：配对码按应用隔离（空 = 默认应用，老记录无此字段）。 */
+	const appId = String(input?.appId ?? '').trim();
 	if (!platform || !userId) {
 		const e = new Error('配对请求缺少 platform / userId');
 		e.httpStatus = 400;
@@ -101,7 +103,8 @@ export async function requestPairing(config, input, deps = {}) {
 	const state = await readState(config);
 	pruneExpired(state, now);
 
-	const mine = state.requests.find((r) => r.platform === platform && r.userId === userId);
+	const mine = state.requests.find((r) => r.platform === platform && r.userId === userId
+		&& String(r.appId ?? '').trim() === appId);
 	if (mine) {
 		// 复用：不重复发码，也不占额外配额
 		await writeState(config, state);
@@ -119,6 +122,7 @@ export async function requestPairing(config, input, deps = {}) {
 	state.requests.push({
 		code,
 		platform,
+		...(appId ? { appId } : {}),
 		chatId: String(input?.chatId ?? ''),
 		userId,
 		userName: String(input?.userName ?? ''),
@@ -139,6 +143,7 @@ export async function listPairings(config, deps = {}) {
 		requests: state.requests.map((r) => ({
 			code: r.code,
 			platform: r.platform,
+			...(r.appId ? { appId: r.appId } : {}),
 			chatId: r.chatId,
 			userId: r.userId,
 			userName: r.userName,
@@ -176,24 +181,34 @@ export async function approvePairing(config, input, deps = {}) {
 		throw e;
 	}
 	const req = state.requests.splice(idx, 1)[0];
-	const already = state.allowed.some((a) => a.platform === req.platform && a.userId === req.userId);
+	const reqApp = String(req.appId ?? '').trim();
+	const already = state.allowed.some((a) => a.platform === req.platform && a.userId === req.userId
+		&& String(a.appId ?? '').trim() === reqApp);
 	if (!already) {
 		state.allowed.push({
 			platform: req.platform,
+			...(reqApp ? { appId: reqApp } : {}),
 			userId: req.userId,
 			userName: req.userName || '',
 			approvedAt: now,
 		});
 	}
 	await writeState(config, state);
-	return { platform: req.platform, userId: req.userId, userName: req.userName || '', already };
+	return { platform: req.platform, userId: req.userId, userName: req.userName || '', already, ...(reqApp ? { appId: reqApp } : {}) };
 }
 
-/** 已批准的 userId 列表（喂给准入判定，与 config 的 allowFrom **合并**）。 */
-export async function approvedUserIds(config, platform) {
+/**
+ * 已批准的 userId 列表（喂给准入判定，与 config 的 allowFrom **合并**）。
+ * ★ 2026-11-09 多飞书应用：带 appId 时只认该应用的批准；
+ *   **没有 appId 的老记录视为全局兼容**（升级后原有批准不会突然失效）。
+ */
+export async function approvedUserIds(config, platform, appId = '') {
 	const p = String(platform ?? '').trim().toLowerCase();
+	const want = String(appId ?? '').trim();
 	const state = await readState(config);
-	return state.allowed.filter((a) => a.platform === p).map((a) => String(a.userId));
+	return state.allowed
+		.filter((a) => a.platform === p && (!want || !a.appId || String(a.appId).trim() === want))
+		.map((a) => String(a.userId));
 }
 
 /** 撤销某个人的 DM 批准（运营动作；OpenClaw 用 CLI，我们给接口）。 */

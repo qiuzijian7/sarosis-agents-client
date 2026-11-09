@@ -1,6 +1,7 @@
 ---
 name: storyboard-fountain
 description: 生成导演台（Storyboard Editor）可用的 Fountain 格式分镜剧本。当用户需要把故事/剧情拆成分镜（场景标题 + 动作 + 对白）时使用。
+tier: extended
 ---
 
 # 分镜剧本生成（Fountain 格式）

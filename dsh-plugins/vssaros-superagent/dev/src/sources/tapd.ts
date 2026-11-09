@@ -15,7 +15,7 @@ import type { SourceKind } from './kind.ts'
 import { cursorAt, pause, pollThreads } from './poll.ts'
 import { itemAddress, itemPage, TAPD_SOURCE, TAPD_TYPES, TapdConfigSchema, tapdConfigured, TapdError, tapdApi, tapdTime, watchWorkspace,
   type TapdApi, type TapdComment, type TapdConfig, type TapdItem, type TapdType, type TapdWatch } from './tapd-api.ts'
-import { allMembers, cleanOwner, platformMembers, refreshPlatformMembers, resolveTapdName } from './tapd-members.ts'
+import { cleanOwner, resolveTapdName } from './tapd-members.ts'
 
 const TapdPolicySchema = z.object({ allowed: z.array(z.object({ id: z.string().trim().min(1) }).strict()).default([]) }).strict()
 
@@ -73,7 +73,7 @@ export const signatureOf = (config: TapdConfig, watch: TapdWatch): string =>
   JSON.stringify([watchWorkspace(config, watch), watch.type, watchFilter(watch)])
 /** Resolve WeCom aliases to TAPD Chinese names before any owner comparison or query is made. */
 export function resolvedConfig(config: TapdConfig): TapdConfig {
-  const members = allMembers(config)
+  const members = config.members
   return { ...config, agent: resolveTapdName(config.agent, members),
     watches: config.watches.map(watch => ({ ...watch, owner: resolveTapdName(watch.owner, members) })) }
 }
@@ -133,11 +133,7 @@ export async function pollComments(ctx: SourceContext, api: TapdApi, config: Tap
 }
 /** One polling round: every watch, then the comments of every subscribed item. */
 export async function pollRound(ctx: SourceContext, api: TapdApi, config: TapdConfig, signal?: AbortSignal): Promise<number> {
-  // Refresh the alias -> Chinese name table at most every 12 hours. A failed refresh leaves the
-  // static `members` mapping working and is retried on the next round.
-  if (config.memberApi && !platformMembers(config.memberApi)) {
-    try { await refreshPlatformMembers(config.memberApi, undefined, signal) } catch { /* static mappings still work */ }
-  }
+  // Identity aliases come only from the static `members` mapping in the settings; no network lookup.
   const resolved = resolvedConfig(config)
   let received = 0
   const failures: string[] = []
@@ -158,7 +154,7 @@ export async function sendTapd(api: TapdApi, config: TapdConfig, message: Outbou
   const marker = replyMarker(message.id)
   try {
     if ((await api.comments(type as TapdType, workspace, id, undefined, signal)).some(comment => comment.text.includes(marker))) return 'sent'
-    await api.comment(type as TapdType, workspace, id, resolveTapdName(config.agent, allMembers(config)) || 'dsh-superagent',
+    await api.comment(type as TapdType, workspace, id, resolveTapdName(config.agent, config.members) || 'dsh-superagent',
       `${html(message.text)}<br/><br/><span style="color:#999">${marker}</span>`, signal)
     return 'sent'
   } catch (error) {
@@ -178,7 +174,7 @@ export interface TapdKindOptions {
   api?(config: TapdConfig, ctx: SourceContext): TapdApi
 }
 export function makeTapdKind(options: TapdKindOptions): SourceKind<TapdConfig> {
-  const apiOf = (config: TapdConfig, ctx: SourceContext) => options.api?.(config, ctx) ?? tapdApi(config, ctx.commands)
+  const apiOf = (config: TapdConfig, ctx: SourceContext) => options.api?.(config, ctx) ?? tapdApi(config)
   const kind: SourceKind<TapdConfig> = {
     kind: TAPD_SOURCE,
     title: { zh: 'TAPD', en: 'TAPD' },
@@ -186,46 +182,50 @@ export function makeTapdKind(options: TapdKindOptions): SourceKind<TapdConfig> {
     schema: TapdConfigSchema,
     fields: [
       { key: 'workspace', type: 'text', label: { zh: '项目 ID', en: 'Workspace ID' }, pattern: '\\d+',
-        hint: { zh: '默认 GR 项目 68880148（TAPD 的 workspace_id）。接收项不填项目 ID 时继承这里的值。', en: 'Defaults to the GR project 68880148 (TAPD workspace_id). A watch with no workspace ID inherits this value.' } },
+        chooseFrom: 'workspace', choose: { zh: '从 TAPD 项目里选', en: 'Choose a TAPD project' },
+        hint: { zh: '默认 GR 项目 68880148（TAPD 的 workspace_id）。下拉候选来自 TAPD「我参与的项目」，点接收项的「读取 TAPD 选项」刷新。接收项不填项目 ID 时继承这里的值。',
+          en: 'Defaults to the GR project 68880148 (TAPD workspace_id). Dropdown options come from TAPD projects the account participates in; refresh them with the watches button. A watch with no workspace ID inherits this value.' } },
       { key: 'agent', type: 'text', label: { zh: 'TAPD 身份名', en: 'TAPD identity name' },
-        hint: { zh: '可选。填 TAPD 账号体系里的名字（中文人名、机器人账号名，或企微账号——会按下面的成员映射解析成中文名），不是智能体的名字：单子指派给它、或评论里 @ 它，才算发给 SuperAgent，回评论也以它署名。它不参与取数。留空则不识别指派/@，回复署名 dsh-superagent；此时请把接收项设为「全部变化」，由策略的接收表决定。',
-          en: 'Optional. A name in TAPD\'s account system (a person\'s Chinese name or a robot account), not an agent name: only items assigned to it or comments that @ it address SuperAgent, and replies are signed with it. It is not a query parameter. Leave it empty to skip identity matching and sign replies as dsh-superagent; then set watches to "All changes" and let the Policy admission table decide.' } },
+        chooseFrom: 'agent', choose: { zh: '从 TAPD 单据里的人选', en: 'Choose a TAPD person' },
+        hint: { zh: '可选。填 TAPD 账号体系里的名字（中文人名、机器人账号名，或企微账号——会按下面的成员映射解析成中文名），不是智能体的名字：单子指派给它、或评论里 @ 它，才算发给 SuperAgent，回评论也以它署名。它不参与取数。留空则不识别指派/@，回复署名 dsh-superagent；此时请把接收项设为「全部变化」，由策略的接收表决定。下拉候选来自 TAPD 单据的处理人/创建人聚合（TAPD Open API 没有成员名单接口）与静态成员映射。',
+          en: 'Optional. A name in TAPD\'s account system (a person\'s Chinese name or a robot account), not an agent name: only items assigned to it or comments that @ it address SuperAgent, and replies are signed with it. It is not a query parameter. Leave it empty to skip identity matching and sign replies as dsh-superagent; then set watches to "All changes" and let the Policy admission table decide. Options come from owners/creators of fetched TAPD items (TAPD has no member-list endpoint) plus the static member mapping.' } },
       { key: 'watches', type: 'rows', label: { zh: '接收项', en: 'Watches' },
         hint: { zh: '项目 ID 留空就继承上面的默认项目；填了“单号”就只盯这一个单子，保存后立即接下；不填就是列表，按状态、处理人、迭代筛选，第一次保存时已在列表里的单子不处理，只看之后的变化。“仅指派/@”只接收指派给上面身份名或 @ 它的（未填身份名时只收点名的单子）；“全部变化”由策略的接收表决定。', en: 'With an item ID a watch follows that item alone and takes it up on saving; without one it is a list, filtered by status, owner and iteration, and items already in it when first saved are left alone. "Assigned/@ only" receives what is assigned to the identity name or @s it (with no identity name, only named items); "All changes" leaves it to the Policy\'s admission table.' },
         columns: [
-          { key: 'name', type: 'text', label: { zh: '名称', en: 'Name' }, pattern: '[\\w.\\-]{1,40}', refresh: { zh: '读取标题', en: 'Read titles' } },
-          { key: 'workspace', type: 'text', label: { zh: '项目 ID', en: 'Workspace ID' }, pattern: '\\d*', optional: true },
+          { key: 'name', type: 'text', label: { zh: '名称', en: 'Name' }, pattern: '[\\w.\\-]{1,40}', refresh: { zh: '读取 TAPD 选项', en: 'Read TAPD options' } },
+          { key: 'workspace', type: 'text', label: { zh: '项目 ID', en: 'Workspace ID' }, pattern: '\\d*', optional: true, chooseFrom: 'workspace' },
           { key: 'type', type: 'select', label: { zh: '类型', en: 'Type' }, options: [{ value: 'story', label: { zh: '需求', en: 'Story' } },
             { value: 'bug', label: { zh: '缺陷', en: 'Bug' } }, { value: 'task', label: { zh: '任务', en: 'Task' } }] },
           { key: 'item', type: 'text', label: { zh: '单号', en: 'Item ID' }, pattern: '\\d*', optional: true },
-          { key: 'status', type: 'text', label: { zh: '状态', en: 'Status' }, optional: true },
+          { key: 'status', type: 'text', label: { zh: '状态', en: 'Status' }, optional: true, chooseFrom: 'status' },
           { key: 'owner', type: 'text', label: { zh: '处理人', en: 'Owner' }, optional: true },
-          { key: 'iteration', type: 'text', label: { zh: '迭代 ID', en: 'Iteration ID' }, pattern: '\\d*', optional: true },
+          { key: 'iteration', type: 'text', label: { zh: '迭代 ID', en: 'Iteration ID' }, pattern: '\\d*', optional: true, chooseFrom: 'iteration' },
           { key: 'mode', type: 'select', label: { zh: '接收', en: 'Receive' }, options: [{ value: 'assigned', label: { zh: '仅指派/@', en: 'Assigned/@ only' } },
             { value: 'all', label: { zh: '全部变化', en: 'All changes' } }] }] },
-      { key: 'transport', type: 'select', label: { zh: '访问方式', en: 'How to reach TAPD' },
-        options: [{ value: 'openapi', label: { zh: 'Open API', en: 'Open API' } }, { value: 'mcp', label: { zh: 'MCP 服务', en: 'MCP server' } }],
-        hint: { zh: 'Open API 直连 api.tapd.cn。凭据按优先级认五组（与 SaroasisStudioSystem 的 .env 对齐）：DSH_SUPERAGENT_TAPD_BEARER；DSH_SUPERAGENT_TAPD_USER + DSH_SUPERAGENT_TAPD_PASSWORD；TAPD_CLIENT_ID + TAPD_CLIENT_SECRET（推荐，企业 API 账号权限最全、无需换 token/IP 白名单）；TAPD_API_USER + TAPD_API_PWD；TAPD_API_TOKEN。可放在 Host 的环境变量里（需重启 IDE 才继承），也可写成 KEY=VALUE 放在 <DSH_HOME>/tapd.env，或用 DSH_SUPERAGENT_TAPD_ENV_FILE 指向已有的 .env —— 文件即用即读，改完直接点「读取标题」即可，不用重启。文件只读白名单里的 TAPD 键、不覆盖已有环境变量，执行器读不到。MCP 服务走 mcporter-internal 的 tapd 服务，要先配好服务并用本人账号登录。两种都必须能在 Host 上实跑查询；「读取失败」通常就是这一步没配好。',
-          en: 'Open API calls api.tapd.cn directly. Five credential sources are accepted in priority order (aligned with SaroasisStudioSystem\'s .env): DSH_SUPERAGENT_TAPD_BEARER; DSH_SUPERAGENT_TAPD_USER + DSH_SUPERAGENT_TAPD_PASSWORD; TAPD_CLIENT_ID + TAPD_CLIENT_SECRET (recommended enterprise API account, full permissions, no token exchange or IP allowlist); TAPD_API_USER + TAPD_API_PWD; TAPD_API_TOKEN. Put them in the Host environment (restart the IDE to inherit) or as KEY=VALUE in <DSH_HOME>/tapd.env, or point DSH_SUPERAGENT_TAPD_ENV_FILE at an existing .env — the file is read on demand, so just press "Read titles" after editing. Only whitelisted TAPD keys are read, existing environment values win, and Executors cannot see them. MCP server uses mcporter-internal\'s tapd service, which must be configured and signed in first. Either way the Host must be able to query TAPD; a "read failed" label usually means this step is missing.' } },
       { key: 'site', type: 'text', label: { zh: 'TAPD 站点', en: 'TAPD site' }, hint: { zh: '单子链接的前缀，例如 https://www.tapd.cn。', en: 'The prefix of item links, such as https://www.tapd.cn.' } },
-      { key: 'api', type: 'text', advanced: true, label: { zh: 'Open API 地址', en: 'Open API address' } },
-      { key: 'cli', type: 'text', advanced: true, label: { zh: 'mcporter-internal 命令', en: 'mcporter-internal command' }, hint: { zh: '命令名或它的 cli.js 路径。', en: 'A command name or the path of its cli.js.' } },
-      { key: 'server', type: 'text', advanced: true, label: { zh: 'MCP 服务名', en: 'MCP server name' } },
-      { key: 'memberApi', type: 'text', advanced: true, label: { zh: '成员表地址', en: 'Member API base URL' },
-        hint: { zh: '可选。saroasis-platform 的地址，读取 /api/tapd/members 把企微账号解析成 TAPD 中文名，结果缓存 12 小时；留空只用下面的静态映射。', en: 'Optional. The saroasis-platform base URL; /api/tapd/members maps WeCom aliases to TAPD names, cached for 12 hours. Leave empty to use only the static mapping below.' } },
-      { key: 'members', type: 'rows', advanced: true, label: { zh: '企微账号 → TAPD 中文名', en: 'WeCom alias → TAPD name' },
-        hint: { zh: '身份名和接收项的「处理人」都可以填企微账号，按这里的映射换成 TAPD 中文名后再比较或查询。', en: 'The identity name and each watch owner may be a WeCom alias; this mapping turns it into the TAPD Chinese name before comparing or querying.' },
+      { key: 'api', type: 'text', advanced: true, group: { zh: '连接与凭据', en: 'Connection & credentials' },
+        label: { zh: 'Open API 地址', en: 'Open API address' },
+        hint: { zh: '默认 https://api.tapd.cn，只有私有化部署才需要改。凭据在卡片下方的「接入检查」区管理；MCP 通道已下线。',
+          en: 'Defaults to https://api.tapd.cn; change only for a private deployment. Credentials are managed in the setup checklist below; the MCP transport was retired.' } },
+      { key: 'members', type: 'rows', advanced: true, group: { zh: '接收范围', en: 'Reception scope' },
+        label: { zh: '企微账号 → TAPD 中文名', en: 'WeCom alias → TAPD name' },
+        hint: { zh: '唯一的身份映射表（静态）。身份名和接收项的「处理人」都可以填企微账号，按这里换成 TAPD 中文名后再比较或查询；没配映射的别名会按原文匹配，容易漏单。已下线的内网成员表接口不再读取。',
+          en: 'The only identity mapping (static). The identity name and each watch owner may be a WeCom alias; it is turned into the TAPD Chinese name before comparing or querying. An unlisted alias is matched literally and can miss items. The retired intranet member endpoint is no longer read.' },
         columns: [
           { key: 'alias', type: 'text', label: { zh: '企微账号', en: 'WeCom alias' } },
           { key: 'name', type: 'text', label: { zh: 'TAPD 中文名', en: 'TAPD name' } }] },
-      { key: 'webhook', type: 'switch', advanced: true, label: { zh: 'TAPD Webhook（可选）', en: 'TAPD Webhook (optional)' },
-        hint: { zh: '默认关闭。打开后让 TAPD 把需求、缺陷、任务的新建/更新/状态变更事件 POST 到本机 /orchestrator/webhook/tapd（完整地址是 http://<主机>:<端口> 加这个路径）。后台内容类型选 application/json（推荐：19 位长单号不会被截断；application/form 即 urlencoded 也兼容），secret 填成下面的验证密码；后台的「网关 Token」是给应用网关用的，本服务只校验 secret、不用填它。配置 URL 时 TAPD 会先探测连通性，本端点对 GET/HEAD 或空 body 的探测回 200，不会接收消息。Host 只监听 127.0.0.1，云端 TAPD 需要内网网关或反向代理才能送达。Webhook 只是轮询之外的加速通道：事件只带单号，收到后会重新读取单子并按接收项匹配；评论仍由轮询跟进，所以轮询不能关掉。',
-          en: 'Off by default. When on, TAPD POSTs story, bug and task create/update/status-change events to this Host at /orchestrator/webhook/tapd (preceded by http://<host>:<port>). Choose application/json in the console (recommended: 19-digit IDs keep their precision; application/form is urlencoded and accepted too) and set its secret to the value below; the console\'s optional gateway Token belongs to the application gateway, this endpoint verifies only the secret. TAPD probes the URL before saving it: GET/HEAD or an empty body answers 200 without receiving anything. The Host listens on 127.0.0.1 only, so a cloud TAPD needs an intranet gateway or reverse proxy. This is a fast lane on top of polling, not a replacement: events carry IDs only, the item is reread and matched against the watches, and comments are still followed by polling.' } },
-      { key: 'webhookSecret', type: 'text', advanced: true, label: { zh: 'Webhook 验证密码', en: 'Webhook shared secret' },
-        hint: { zh: '与 TAPD 后台配置的一致。TAPD 把它放在 POST 的 body 里；也接受 x-tapd-secret 请求头或 URL 上的 secret 参数。开启 Webhook 却留空会在来源健康里报错，所有推送返回 503。这个密码明文保存在本机状态目录里，不要用其它系统的密码。',
-          en: 'The same value configured in TAPD. TAPD sends it in the POST body; the x-tapd-secret header and a secret query parameter are accepted too. With the Webhook on and this empty, the Source reports an error and every delivery answers 503. It is stored in plain text in the local state directory, so do not reuse another system\'s password.' } },
-      { key: 'pollSeconds', type: 'number', advanced: true, min: 60, max: 3600, label: { zh: '轮询间隔 / 秒', en: 'Polling interval / seconds' } },
-      { key: 'failuresBeforeError', type: 'number', advanced: true, min: 1, max: 20, label: { zh: '连续失败几次后报告异常', en: 'Failed polls before reporting an error' } },
+      { key: 'webhook', type: 'switch', advanced: true, group: { zh: '连接与凭据', en: 'Connection & credentials' },
+        label: { zh: 'TAPD Webhook（可选）', en: 'TAPD Webhook (optional)' },
+        hint: { zh: '默认关闭。TAPD 后台把事件 POST 到本机 /orchestrator/webhook/tapd，内容类型选 application/json，secret 填下面的验证密码（「网关 Token」不用填）。Host 只监听 127.0.0.1，云端 TAPD 需要内网网关或反向代理。它只是轮询之外的加速通道：事件只带单号，会回读并按接收项匹配；评论仍由轮询跟进。',
+          en: 'Off by default. Point TAPD at the local /orchestrator/webhook/tapd, choose application/json and set the secret below (ignore the gateway Token). The Host listens on 127.0.0.1 only, so cloud TAPD needs an intranet gateway or reverse proxy. This is only a fast lane on top of polling: events carry IDs, are reread and matched against watches, and comments still come from polling.' } },
+      { key: 'webhookSecret', type: 'text', advanced: true, group: { zh: '连接与凭据', en: 'Connection & credentials' },
+        label: { zh: 'Webhook 验证密码', en: 'Webhook shared secret' },
+        hint: { zh: '与 TAPD 后台一致（POST body，或 x-tapd-secret 头 / secret 查询参数）。开启却留空会报错并让所有推送返回 503。明文保存在本机状态目录，不要复用其它系统的密码；轮换时同步改 TAPD 后台。',
+          en: 'The same value as in TAPD (POST body, x-tapd-secret header or secret query). Empty while enabled reports an error and answers 503. Stored in plain text in the local state directory; do not reuse another password and update TAPD when rotating.' } },
+      { key: 'pollSeconds', type: 'number', advanced: true, group: { zh: '运维参数', en: 'Operations' },
+        min: 60, max: 3600, label: { zh: '轮询间隔 / 秒', en: 'Polling interval / seconds' } },
+      { key: 'failuresBeforeError', type: 'number', advanced: true, group: { zh: '运维参数', en: 'Operations' },
+        min: 1, max: 20, label: { zh: '连续失败几次后报告异常', en: 'Failed polls before reporting an error' } },
     ],
     scope: ({ meta }, config) => {
       const row = meta.kind === 'comment' ? 'comments' : meta.kind === 'status' ? 'status' : 'items'
@@ -273,11 +273,37 @@ export function makeTapdKind(options: TapdKindOptions): SourceKind<TapdConfig> {
       const api = apiOf(config, ctx)
       const resolved = resolvedConfig(config)
       const labels: Record<string, string> = {}
+      // Namespaces keep the dropdown candidates apart from the watch-title labels (the first rows column).
+      const put = (prefix: string, value: string, name: string) => { if (value) labels[`${prefix}:${value}`] = name }
+      if (api.choices) {
+        for (const [kindName, prefix] of [['workspace', 'workspace'], ['status', 'status'], ['iteration', 'iteration']] as const) {
+          try {
+            for (const choice of await api.choices(kindName, resolved.workspace, signal)) put(prefix, choice.value, choice.label)
+          } catch { /* one failing lookup must not hide the others */ }
+        }
+      }
+      // TAPD Open API has no member-list endpoint (the old one was the retired intranet platform):
+      // identity candidates are the static mapping plus owners/creators of the items read below.
+      for (const member of resolved.members) put('agent', member.name, member.alias ? `${member.name}（${member.alias}）` : member.name)
+      const owners = new Set<string>()
       for (const watch of resolved.watches) {
         try {
           const items = await api.items(watch.type, watchWorkspace(resolved, watch), watchFilter(watch), signal)
           labels[watch.name] = watch.item ? (items[0] ? `#${items[0].id} ${items[0].title} · ${items[0].status}` : `#${watch.item} 不存在或无权读取`) : `${items.length} 个${TYPE_LABEL[watch.type]}`
+          for (const item of items) {
+            for (const owner of item.owners) { if (owner) owners.add(cleanOwner(owner)) }
+            if (item.creator) owners.add(cleanOwner(item.creator))
+          }
         } catch (error) { labels[watch.name] = `读取失败：${String(error).slice(0, 120)}` }
+      }
+      for (const owner of owners) if (!labels[`agent:${owner}`]) put('agent', owner, owner)
+      // A saved value must stay selectable even when TAPD did not return it in this refresh.
+      if (!labels[`workspace:${resolved.workspace}`]) put('workspace', resolved.workspace, `${resolved.workspace}（当前）`)
+      if (resolved.agent && !labels[`agent:${resolved.agent}`]) put('agent', resolved.agent, `${resolved.agent}（当前）`)
+      for (const watch of resolved.watches) {
+        if (watch.status && !labels[`status:${watch.status}`]) put('status', watch.status, `${watch.status}（当前）`)
+        if (watch.iteration && !labels[`iteration:${watch.iteration}`]) put('iteration', watch.iteration, `${watch.iteration}（当前）`)
+        if (watch.workspace && !labels[`workspace:${watch.workspace}`]) put('workspace', watch.workspace, `${watch.workspace}（当前）`)
       }
       ctx.state.set(KV.sources.labels(TAPD_SOURCE), labels)
       return labels
@@ -312,7 +338,7 @@ export function apply(ctx: Context): void {
     source = sourceContext(ctx.orchestrator, kindRef)
     const controller = new AbortController()
     // Unhandled rejections terminate the DSH process, so a failure escaping the loop is reported as source health instead.
-    const running = watch(source, controller.signal, config => tapdApi(config, source!.commands))
+    const running = watch(source, controller.signal, config => tapdApi(config))
       .catch((error: unknown) => { source?.report(TAPD_SOURCE, { state: 'error', detail: String(error) }) })
     return async () => { controller.abort(); await running; source = undefined }
   })

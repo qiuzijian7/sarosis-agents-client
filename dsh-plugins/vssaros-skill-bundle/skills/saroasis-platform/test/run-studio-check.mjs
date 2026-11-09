@@ -15,29 +15,33 @@ const throwsCli = async (fn) => { try { await fn(); return ''; } catch (e) { ret
 
 const BUG_MAP = { new: '新建', in_progress: '修复中', resolved: '已修复', status_6: '分支验证完成', verified: '验收完成', rejected: '主干待回归', status_9: '主干验收完成', reopened: '重新打开', closed: '已完成', status_1: '无效关闭', suspended: '挂起', status_8: '分支待回归' };
 
-/** 假 TAPD：/bugs 按 page 切 450 条（id 递减），故意让 offset 无效；/count 返回固定值；未知路径回 Hello world */
-function fakeFetch(log) {
+/** 假 TAPD Open API：/bugs 按 page 切 450 条（id 递减），故意让 offset 无效；/count 返回固定值；未知路径回 Hello world */
+function fakeFetch(log, authLog = []) {
 	// ⚠ id 必须拼字符串：1168880148001000000 超过 2^53，用数字加法会全部撞成同一个值
 	const all = Array.from({ length: 450 }, (_, i) => ({ id: '1168880148001' + String(600000 - i), title: 't' + i, status: 'new', current_owner: i % 2 ? '邱子鉴;' : '邱子鉴;蒋小川;', created: '2026-10-2' + (i % 5) + ' 08:00:00' }));
-	return async (url) => {
+	return async (url, init) => {
 		const u = new URL(url);
 		log.push(u.pathname + '?' + u.searchParams.toString());
+		authLog.push(init?.headers?.authorization ?? '');
 		const json = (body) => ({ ok: true, status: 200, text: async () => JSON.stringify(body) });
-		if (u.pathname === '/api/tapd/workflows/status_map') { return json({ status: 1, data: BUG_MAP, info: 'success' }); }
-		if (u.pathname === '/api/tapd/bugs/count') { return json({ status: 1, data: { count: u.searchParams.get('status') === 'new' ? 450 : 450 }, info: 'success' }); }
-		if (u.pathname === '/api/tapd/bugs') {
+		if (u.pathname === '/workflows/status_map') { return json({ status: 1, data: BUG_MAP, info: 'success' }); }
+		if (u.pathname === '/bugs/count') { return json({ status: 1, data: { count: u.searchParams.get('status') === 'new' ? 450 : 450 }, info: 'success' }); }
+		if (u.pathname === '/bugs') {
 			const limit = Number(u.searchParams.get('limit'));
 			const page = Number(u.searchParams.get('page') || 1);
 			const slice = all.slice((page - 1) * limit, page * limit).map(b => ({ Bug: b }));
 			return json({ status: 1, data: slice, info: 'success' });
 		}
-		if (u.pathname === '/api/tapd/participants') { return json({ status: 1, data: 'Hello world from TAPD API. abc', info: 'Documents…' }); }
+		if (u.pathname === '/participants') { return json({ status: 1, data: 'Hello world from TAPD API. abc', info: 'Documents…' }); }
+		if (u.pathname === '/quickstart/testauth') { return json({ status: 1, data: { user: 'fake' }, info: 'success' }); }
 		return { ok: false, status: 404, text: async () => 'Not Found' };
 	};
 }
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-check-'));
-const mkCtx = (log, me = '') => ({ workspace: '68880148', me, cacheDir: '', client: createClient({ base: 'http://fake', workspace: '68880148', fetchImpl: fakeFetch(log) }) });
+/** 固定 env：不读用户机器上可能存在的 tapd.env，断言才稳定。 */
+const fixedEnv = { TAPD_ENV_FILE: path.join(tmp, 'absent.env') };
+const mkCtx = (log, me = '') => ({ workspace: '68880148', me, cacheDir: '', client: createClient({ base: 'http://fake', workspace: '68880148', fetchImpl: fakeFetch(log), env: fixedEnv }) });
 
 console.log('── 参数解析 ──');
 {
@@ -57,7 +61,7 @@ console.log('── 状态 / 负责人 ──');
 	check('不认识的状态 ⇒ 报错且列出可选值', /不认识的状态「待处理」[\s\S]*rejected=主干待回归/.test(await throwsCli(() => resolveStatus('bug', '待处理', BUG_MAP))));
 	check('负责人去掉尾部分号（带分号会少查：459→386）', resolveOwner('邱子鉴;', '') === '邱子鉴');
 	check('me 解析为配置的人', resolveOwner('me', '邱子鉴') === '邱子鉴');
-	check('me 未配置 ⇒ 报错并提示 me --alias', /me --alias/.test(await throwsCli(() => resolveOwner('me', ''))));
+	check('me 未配置 ⇒ 报错并提示 me --set', /me --set/.test(await throwsCli(() => resolveOwner('me', ''))));
 }
 
 console.log('── 筛选防呆 ──');
@@ -86,26 +90,34 @@ console.log('── 取数 ──');
 	const log2 = [];
 	const { rows: r2 } = await fetchRows(mkCtx(log2), 'bug', {}, { max: 50, fields: 'id', order: 'created desc' });
 	check('max < 200 时只请求 1 页且 limit=max', r2.length === 50 && log2.length === 1 && /limit=50/.test(log2[0]), log2.join(' ; '));
-	const err = await throwsCli(() => mkCtx([]).client.request('/api/tapd/participants', {}));
+	const err = await throwsCli(() => mkCtx([]).client.request('/participants', {}));
 	check('"Hello world" 识别为接口不存在', /接口不存在/.test(err), err);
-	const err404 = await throwsCli(() => mkCtx([]).client.request('/api/tapd/users', {}));
+	const err404 = await throwsCli(() => mkCtx([]).client.request('/users', {}));
 	check('HTTP 404 ⇒ CliError', /HTTP 404/.test(err404), err404);
+	const auths = [];
+	const authClient = createClient({ base: 'http://fake', workspace: '68880148', fetchImpl: fakeFetch([], auths), env: fixedEnv });
+	await authClient.request('/bugs', { limit: 1 });
+	check('请求带随包账号的 Authorization', auths.length === 1 && auths[0].startsWith('Basic ')
+		&& /shipped API account/.test(authClient.auth.method), authClient.auth.method);
+	const overridden = createClient({ base: 'http://fake', workspace: '68880148', fetchImpl: fakeFetch([]),
+		env: { ...fixedEnv, TAPD_CLIENT_ID: 'my-id', TAPD_CLIENT_SECRET: 'my-secret' } });
+	check('环境变量覆盖随包账号', overridden.auth.header === `Basic ${Buffer.from('my-id:my-secret').toString('base64')}`);
 }
 
 console.log('── 命令端到端（假 fetch）──');
 {
 	const outBuf = [];
-	const deps = { env: { SAROASIS_ME: '邱子鉴' }, write: s => outBuf.push(s), fetch: fakeFetch([]), noCache: true, configPath: path.join(tmp, 'cfg.json') };
+	const deps = { env: { ...fixedEnv, SAROASIS_ME: '邱子鉴' }, write: s => outBuf.push(s), fetch: fakeFetch([]), noCache: true, configPath: path.join(tmp, 'cfg.json') };
 	const code = await run(['list', 'bug', '--owner', 'me', '--status', 'todo', '--limit', '3', '--links'], deps);
 	const text = outBuf.join('');
 	check('list 退出码 0', code === 0, text.slice(0, 300));
-	check('list 输出带口径行', /> 口径：`GET \/api\/tapd\/bugs\?/.test(text));
+	check('list 输出带口径行', /> 口径：`GET \/bugs\?/.test(text));
 	check('list 状态翻成中文', /\| 新建 \|/.test(text));
 	check('list 多负责人用顿号', /邱子鉴、蒋小川/.test(text));
 	check('list --links 带 TAPD 链接', /bugtrace\/bugs\/view\?bug_id=/.test(text));
 	const out2 = [];
-	const code2 = await run(['count', 'bug', '--owner', 'me'], { ...deps, env: {}, write: s => out2.push(s) });
-	check('未设置「我」⇒ 退出码 1 + 提示', code2 === 1 && /me --alias/.test(out2.join('')), out2.join(''));
+	const code2 = await run(['count', 'bug', '--owner', 'me'], { ...deps, env: fixedEnv, write: s => out2.push(s) });
+	check('未设置「我」⇒ 退出码 1 + 提示', code2 === 1 && /me --set/.test(out2.join('')), out2.join(''));
 	const out3 = [];
 	await run(['nope'], { ...deps, write: s => out3.push(s) });
 	check('未知命令 ⇒ 带帮助', /不认识的命令/.test(out3.join('')) && /count bug\|story/.test(out3.join('')));
@@ -116,6 +128,12 @@ console.log('── 只读约束（静态）──');
 	const src = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'studio.mjs'), 'utf8');
 	check('没有 POST / PUT / DELETE', !/method:\s*['"](POST|PUT|DELETE|PATCH)/i.test(src));
 	check('不访问 206MB 的 /api/bugs/by-team', !/fetch[^\n]*by-team|request\([^\n]*by-team/.test(src));
+	check('直连 TAPD Open API，不再引用内网平台代理', /TAPD_API_BASE/.test(src)
+		&& !/saroasisstudiosystem|\/api\/tapd\//.test(src));
+	check('成员表私有接口与 who 已下线', !/membersOf/.test(src) && /who 已下线/.test(src));
+	const otherSkill = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'tapd-skill', 'SKILL.md'), 'utf8');
+	check('tapd-skill 不再依赖 mcporter-internal / MCP', !/mcporter-internal|MCP/.test(otherSkill)
+		&& /tapd-api\.mjs/.test(otherSkill));
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });

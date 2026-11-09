@@ -4,6 +4,7 @@ description: Dark-themed SVG architecture/cloud/infra diagrams as HTML.
 activation: manual
 match: ["architecture-diagram", "architecture diagram", "architecture", "diagrams", "svg", "html", "visualization", "infrastructure", "cloud"]
 category: creative
+tier: extended
 ---
 
 # Architecture Diagram Skill

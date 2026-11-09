@@ -46,6 +46,7 @@ for (const entry of registry.entries) {
 	if (!existsSync(join(ROOT, rel))) { fail(`${label}：测试文件不存在（基线过期）`); continue; }
 	const r = spawnSync(process.execPath, [runner, rel], {
 		cwd: ROOT, encoding: 'utf8', timeout: 60_000, maxBuffer: 20 * 1024 * 1024,
+		windowsHide: true,
 	});
 	const out = stripAnsi((r.stdout ?? '') + (r.stderr ?? ''));
 	if (r.error) { fail(`${label}：runner 启动失败 ${r.error.message}`); continue; }

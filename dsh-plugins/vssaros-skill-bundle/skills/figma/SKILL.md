@@ -4,6 +4,7 @@ description: 通过 Figma MCP 读取设计稿（布局/样式/变量/资源/Code
 activation: auto
 match: ["figma", "设计稿", "设计转代码", "design to code", "design-to-code", "ui 实现", "ui实现", "ui还原", "还原设计", "切图"]
 category: design
+tier: core
 ---
 
 # Figma 设计转代码

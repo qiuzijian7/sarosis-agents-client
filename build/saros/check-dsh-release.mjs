@@ -105,6 +105,49 @@ if (bundledRuntime) {
 	}
 }
 
+// ── ②b ★ 单版本模型硬门（2026-11-09）────────────────────────────────────────
+// 产品口径：dsh 版本由 dsh-compat.json 的 `bundled` 在**构建期**唯一确定，版本升级 = 应用发版；
+// 运行期已删除 managed 多版本池 / state.json.current / 版本发现与切换（对标 dsh-desktop）。
+// ⇒ 构建期必须保证：包内只有一个、且正是 pin 的版本，配套种子也必须是同一版本。
+//   否则 `DshRuntimeManager._requireBundled()` 会在用户机器上硬失败，但那时已经晚了。
+if (bundledRuntime && compat) {
+	const VERSION_DIR_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+	const runtimeRoot = path.join(ROOT, 'dsh-runtime');
+	// ① bundled 不许被拉黑
+	if (Array.isArray(compat.blocked) && compat.blocked.some(v => String(v?.version ?? v) === bundledRuntime)) {
+		problem(`dsh-compat.json: bundled=${bundledRuntime} 同时出现在 blocked 里（自相矛盾）`);
+	}
+	if (fs.existsSync(runtimeRoot)) {
+		const dirs = fs.readdirSync(runtimeRoot, { withFileTypes: true })
+			.filter(e => e.isDirectory() && VERSION_DIR_RE.test(e.name)).map(e => e.name);
+		const extra = dirs.filter(v => v !== bundledRuntime);
+		if (extra.length) {
+			problem(`单版本模型：dsh-runtime/ 里除 bundled=${bundledRuntime} 外还残留 ${extra.join(', ')} —— 清掉再出包（运行期不再按目录挑版本）`);
+		} else {
+			note(`单版本模型：dsh-runtime/ 只有 ${bundledRuntime} ✓`);
+		}
+		// ② 种子 marker 的版本必须与 bundled 一致（种子与 runtime 不配套正是 11-07/11-09 两次 F5 崩溃的根源）
+		const seedMarker = path.join(runtimeRoot, bundledRuntime, 'profile-seed', 'seed.json');
+		const seed = readJson(seedMarker);
+		if (!seed) {
+			if (REQUIRE_RUNTIME) { problem(`缺少 profile 种子 marker：${seedMarker} —— 打包前先跑 prepack-dsh-runtime.mjs`); }
+		} else if (!sameVersion(seed.dsh ?? seed.version ?? seed.runtimeVersion, bundledRuntime)) {
+			problem(`种子版本与 bundled 不一致：seed.json = ${JSON.stringify(seed.dsh ?? seed.version ?? seed.runtimeVersion)}，bundled = ${bundledRuntime}`);
+		} else {
+			note(`profile-seed 版本 = ${bundledRuntime} ✓`);
+		}
+		// ③ 每个 profile 的种子都要有 package.json（_ensureProfile 只认这个作为「完整种子」判据）
+		const profilesRoot = path.join(runtimeRoot, bundledRuntime, 'profile-seed', 'profiles');
+		if (fs.existsSync(profilesRoot)) {
+			for (const name of fs.readdirSync(profilesRoot, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => e.name)) {
+				if (!fs.existsSync(path.join(profilesRoot, name, 'package.json'))) {
+					problem(`profile 种子不完整：${name}/package.json 缺失（_ensureProfile 会跳过它并退回 web 模板）`);
+				}
+			}
+		}
+	}
+}
+
 // ── ②bis 重型可选项：**只按裁剪清单检查**（清单是唯一真源）────────────────────
 // ★ 2026-11-07 修正：10-28 加这条守卫时把「运行时与种子都不该有 libreoffice 内核」
 //   **硬编码**在这里；11-02 Office 全量路线把 prepack 的 `PRUNE_LIST` 置空后守卫没跟上

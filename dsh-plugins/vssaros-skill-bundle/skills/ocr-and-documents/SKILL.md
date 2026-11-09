@@ -4,6 +4,7 @@ description: Extract text from PDFs/scans (pymupdf, marker-pdf).
 activation: manual
 match: ["ocr-and-documents", "ocr and documents", "pdf", "documents", "research", "arxiv", "text-extraction", "ocr"]
 category: productivity
+tier: extended
 ---
 
 # PDF & Document Extraction

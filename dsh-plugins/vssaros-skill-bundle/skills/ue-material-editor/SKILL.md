@@ -2,6 +2,7 @@
 name: ue-material-editor
 description: 操控 UE5 材质编辑器（Material Editor only）：获取/遍历/创建/连接/删除材质节点、查找未连接节点、操作材质属性输出、重新编译等。不用于非材质编辑器场景（工具栏、UI、Blueprint 等）。
 displayName: "UE5 材质编辑器操控技能"
+tier: extended
 ---
 
 # UE5 材质编辑器操控技能

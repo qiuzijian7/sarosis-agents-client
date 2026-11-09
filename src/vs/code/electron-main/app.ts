@@ -192,6 +192,8 @@ import { SubAgentKernelProcChannel } from '../../sessions/contrib/agentStudio/el
 import { SUBAGENT_KERNEL_PROC_CHANNEL } from '../../sessions/contrib/agentStudio/common/subAgentKernelProcChannel.js';
 import { DshHarnessChannel } from '../../sessions/contrib/dshHarness/electron-main/dshHarnessChannel.js';
 import { DshRightbarCdpRelay } from '../../sessions/contrib/dshHarness/electron-main/dshRightbarCdpRelay.js';
+import { DesktopControlRelay } from '../../sessions/contrib/dshHarness/electron-main/desktopControlRelay.js';
+import { DesktopControlPresence } from '../../sessions/contrib/dshHarness/electron-main/desktopControlPresence.js';
 import { DshViewHost } from '../../sessions/contrib/dshHarness/electron-main/dshViewHost.js';
 import { DSH_HARNESS_CHANNEL } from '../../sessions/contrib/dshHarness/common/dshHarness.js';
 import { KbDocConvertChannel } from '../../sessions/contrib/agentStudio/electron-main/kbDocConvertChannel.js';
@@ -2022,6 +2024,27 @@ export class CodeApplication extends Disposable {
 			ownerWindowId: () => (this.windowsMainService?.getLastActiveWindow() ?? this.windowsMainService?.getWindows()[0])?.id,
 		}));
 		void dshRightbarCdpRelay.start();
+
+		// ★ 2026-11-09（P0 · 只读）：电脑操控中继。只暴露屏幕截图 / 屏幕尺寸 / 本应用窗口列表等
+		//   只读方法，中继内没有任何键鼠注入代码；逐请求过 common/desktopControlProtocol.ts 的白名单。
+		//   Host 从 `<userData>/dsh-run/desktop-control.json` 取端点。输入注入与应用授权属 P1/P2。
+		// P2 托盘 + 浮动指示器：空闲时零 UI；「停止 / 重新允许」直接调到中继，不经 Host。
+		let desktopControlPresence: DesktopControlPresence | undefined;
+		const desktopControlRelay = this._register(new DesktopControlRelay({
+			runDir: join(this.environmentMainService.userDataPath, 'dsh-run'),
+			// P1 的后台输入是**显式开关**：默认 view ⇒ 中继逐请求强制只读，永不加载 nut-js。
+			// 要开启必须同时把这里改成 'background' 且插件侧 config.level 也放开（两道独立闸）。
+			maxLevel: 'view',
+			log: line => this.logService.info(`[dshHarness] ${line}`),
+			onStatusChange: status => desktopControlPresence?.update(status),
+		}));
+		desktopControlPresence = this._register(new DesktopControlPresence({
+			appRoot: this.environmentMainService.appRoot,
+			log: line => this.logService.info(`[dshHarness] ${line}`),
+			onStop: () => desktopControlRelay.stop(),
+			onRearm: () => desktopControlRelay.rearm(),
+		}));
+		void desktopControlRelay.start();
 
 		// ★ 2026-10-26：媒体库**双写**接线 —— IDE 侧落库成功后，再推一份给 dsh 媒体库（真源）。
 		//   `POST <host>/x/media/api/import`（带认证 cookie，见 dshHostHttp.ts）。

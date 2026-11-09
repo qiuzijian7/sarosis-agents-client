@@ -6,6 +6,7 @@ match: ["讲一下", "讲懂", "讲透", "看不懂", "没看懂", "读不懂", 
 category: knowledge
 recommended_tools: [kb_search, kb_read, kb_list, kb_topic_overviews, kb_write_note, kb_mkdir, kb_mindmap]
 version: 1.0.0
+tier: core
 ---
 
 <!-- 同步指针：知识库工具真源在 dsh-plugins/vssaros-kb/lib/index.js（IDE 侧同名工具 2026-10-17 已退役迁走）；
@@ -41,7 +42,7 @@ version: 1.0.0
 ## 执行步骤
 
 **Step 0 定位真源**（决定这次能讲多深）：知识库先查（`kb_search` → `kb_read` → `kb_list`，
-★ 库里讲过就**接着讲、别从零重讲**，冲突要指出）；否则 `file_read` 读本地文件、用抓取工具取 URL、
+★ 库里讲过就**接着讲、别从零重讲**，冲突要指出）；否则 `read` 读本地文件、用抓取工具取 URL、
 或直接用用户粘贴的内容。**拿不到真源就标 `unknown`，不许用常识补全。**
 
 **Step 1 Trace**（不许跳过）：沿真实路径走一遍，每跳能说出 `file:line` 和"这一跳决定什么"，
@@ -88,7 +89,7 @@ version: 1.0.0
 
 ## 能力边界（如实）
 
-- 不新增工具：只用 `file_read`、`kb_*`、平台抓取工具；没有的就说没有。
+- 不新增工具：只用 `read`、`kb_*`、平台抓取工具；没有的就说没有。
 - 图是手写 SVG/HTML，不是图像生成 ⇒ 画的是示意，不是精确渲染。
 - 读不到真源就标 `unknown`，不按"通常怎么做"补全。
 - 落盘会改盘 ⇒ `kb_write_note` 要用户审批，被拒是正常的，别反复重试。

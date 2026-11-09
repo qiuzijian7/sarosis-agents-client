@@ -4,6 +4,7 @@ description: "Humanize text: strip AI-isms and add real voice."
 activation: manual
 match: ["humanizer", "writing", "editing", "humanize", "anti-ai-slop", "voice", "prose", "text"]
 category: creative
+tier: extended
 ---
 
 # Humanizer: Remove AI Writing Patterns

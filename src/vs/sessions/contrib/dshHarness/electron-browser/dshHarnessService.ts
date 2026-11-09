@@ -77,7 +77,7 @@ import { IAgentStudioDashboardService } from '../../agentStudio/browser/agentStu
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
-import { DSH_HARNESS_CHANNEL, DshColorScheme, DshHarnessChannelCommand, DshHarnessChannelEvent, DshHarnessSettings, DshPageSurface, DshViewSurface, IDshBootstrapArgs, IDshBundledInstallResult, IDshBundledPluginRow, IDshHostStartOptions, IDshHostStatus, IDshIdeClaimReply, IDshIdeRequest, IDshPluginActivationSnapshot, IDshPluginInfo, IDshPluginRowSetResult, IDshPluginSetResult, IDshRuntimeInfo, IDshUpdateDiscoveryResult, IDshUpdatePolicy, IDshUpgradeArgs, IDshViewBounds, IDshViewInfo, IDshWorkspaceSyncState, IDshWorkspaceSyncSummary, shouldRestartForWorkspaceChange, surfaceTakesRoute } from '../common/dshHarness.js';
+import { DSH_HARNESS_CHANNEL, DshColorScheme, DshHarnessChannelCommand, DshHarnessChannelEvent, DshHarnessSettings, DshPageSurface, DshViewSurface, IDshBootstrapArgs, IDshBundledInstallResult, IDshBundledPluginRow, IDshHostStartOptions, IDshHostStatus, IDshIdeClaimReply, IDshIdeRequest, IDshPluginActivationSnapshot, IDshPluginInfo, IDshPluginRowSetResult, IDshPluginSetResult, IDshRuntimeInfo, IDshUpdatePolicy, IDshViewBounds, IDshViewInfo, IDshWorkspaceSyncState, IDshWorkspaceSyncSummary, shouldRestartForWorkspaceChange, surfaceTakesRoute } from '../common/dshHarness.js';
 import type { DshDesktopMenuAction } from '../common/dshDesktopMenu.js';
 // dsh 侧会话摘要（侧栏合并用；解析规则与测试见 common/dshSessionIndex.ts）
 import type { IDshSessionSummary } from '../common/dshSessionIndex.js';
@@ -91,7 +91,7 @@ import { DSH_WORKSPACE_OPTION_LIMIT, DSH_WORKSPACE_ROOT_LIMIT, DSH_WORKTREE_OPTI
 import { hasWorkspaceFileExtension } from '../../../../platform/workspace/common/workspace.js';
 import { basename } from '../../../../base/common/path.js';
 import { buildDshThemeTokens, IDshViewBackgrounds, isDshOwnWindow } from '../common/dshThemeBridge.js';
-import { IDshUpgradeResult, IHostActivity, blockingSessions } from '../common/dshUpgrade.js';
+import { IHostActivity, blockingSessions } from '../common/dshUpgrade.js';
 import { IThirdPartyPlugin } from '../common/dshPluginUpgrade.js';
 import { IAgentStudioService } from '../../../common/agentStudioService.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
@@ -324,20 +324,15 @@ export interface IDshHarnessService {
 	/** 插件启停变化（渲染进程据此重算模块 ActivityBar，方案 6.4）。 */
 	readonly onDidChangePlugins: Event<void>;
 	getRuntimeInfo(): Promise<IDshRuntimeInfo>;
-	installRuntime(version: string): Promise<string>;
-	setCurrentRuntime(version: string): Promise<void>;
-	/** 一键准备（缺 Node 装托管 Node，缺 dsh 装 latest）并启动。 */
+	/** 一键准备（缺 Node 装托管 Node）并启动；dsh 必须随包内置，缺了报「安装包不完整」。 */
 	bootstrap(): Promise<IDshHostStatus>;
 	installNode(version?: string): Promise<{ version: string; path: string }>;
-	/** 经升级闸门切换版本（未安装时先并列安装；运行中任务检查、快照、健康检查、失败回退）。 */
-	upgrade(version: string, force?: boolean): Promise<IDshUpgradeResult>;
-	/** 当前设置对应的升级通道策略。 */
+	/** 当前设置对应的升级通道策略（应用更新面板仍在用；**运行时不再据此选版本**）。 */
 	policy(): IDshUpdatePolicy;
 	/** 最近一次的工作区同步状态（同步可读，供界面与排查使用）。 */
 	readonly workspaceSync: IDshWorkspaceSyncSummary;
-
-	/** 按通道列出候选版本与推荐。 */
-	discoverUpdates(): Promise<IDshUpdateDiscoveryResult>;
+	// ★ 2026-11-09 单版本模型：`installRuntime` / `setCurrentRuntime` / `upgrade` /
+	//   `discoverUpdates` 四个接口随「用户自由切 runtime」一起下线。
 	/** 上报本窗口的工作区目录（整体替换）；控制桥已连接时立即注册为 dsh 工作区。 */
 	setWindowWorkspaces(windowId: number, paths: readonly string[]): Promise<void>;
 	/**
@@ -1680,14 +1675,7 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		return this._channel.call(DshHarnessChannelCommand.GetRuntimeInfo);
 	}
 
-	async installRuntime(version: string): Promise<string> {
-		const r = await this._channel.call<{ version: string }>(DshHarnessChannelCommand.InstallRuntime, { version, nodePath: this._startOptions().nodePath });
-		return r.version;
-	}
-
-	setCurrentRuntime(version: string): Promise<void> {
-		return this._channel.call(DshHarnessChannelCommand.SetCurrentRuntime, { version });
-	}
+	// ★ 2026-11-09：`installRuntime` / `setCurrentRuntime` 两个 IPC 实现已删除（见接口处说明）。
 
 	policy(): IDshUpdatePolicy {
 		const raw = this._configurationService.getValue<string>(DshHarnessSettings.UpdateChannel);
@@ -1760,15 +1748,10 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		return state;
 	}
 
-	discoverUpdates(): Promise<IDshUpdateDiscoveryResult> {
-		return this._channel.call(DshHarnessChannelCommand.DiscoverUpdates, { policy: this.policy(), start: this._startOptions() });
-	}
-
 	async bootstrap(): Promise<IDshHostStatus> {
 		const args: IDshBootstrapArgs = {
 			start: this._startOptions(),
 			nodeMirror: this._configurationService.getValue<string>(DshHarnessSettings.NodeMirror)?.trim() || undefined,
-			policy: this.policy(),
 		};
 		const s = await this._channel.call<IDshHostStatus>(DshHarnessChannelCommand.Bootstrap, args);
 		this._update(s);
@@ -1780,10 +1763,7 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		return this._channel.call(DshHarnessChannelCommand.InstallNode, { mirror, version });
 	}
 
-	upgrade(version: string, force?: boolean): Promise<IDshUpgradeResult> {
-		const args: IDshUpgradeArgs = { version, force, start: this._startOptions(), installIfMissing: true };
-		return this._channel.call(DshHarnessChannelCommand.Upgrade, args);
-	}
+	// ★ 2026-11-09：`upgrade` / `discoverUpdates` 两个 IPC 实现已删除。
 
 	getActivity(): Promise<IHostActivity | undefined> {
 		return this._channel.call(DshHarnessChannelCommand.GetActivity);

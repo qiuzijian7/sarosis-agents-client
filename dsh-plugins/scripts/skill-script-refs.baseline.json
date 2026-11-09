@@ -1,0 +1,103 @@
+[
+  {
+    "file": "anysearch/SKILL.md",
+    "refs": [
+      "scripts/anysearch_cli.js",
+      "scripts/anysearch_cli.py",
+      "scripts/anysearch_cli.sh"
+    ]
+  },
+  {
+    "file": "arxiv/SKILL.md",
+    "refs": [
+      "scripts/search_arxiv.py"
+    ]
+  },
+  {
+    "file": "comfyui/SKILL.md",
+    "refs": [
+      "scripts/check_deps.py",
+      "scripts/comfyui_setup.sh",
+      "scripts/extract_schema.py",
+      "scripts/fetch_logs.py",
+      "scripts/hardware_check.py",
+      "scripts/health_check.py",
+      "scripts/run_batch.py",
+      "scripts/run_workflow.py"
+    ]
+  },
+  {
+    "file": "diagram-design/SKILL.md",
+    "refs": [
+      "scripts/verify-geometry.py",
+      "scripts/verify-motion.py"
+    ]
+  },
+  {
+    "file": "frontend-slides/SKILL.md",
+    "refs": [
+      "scripts/deploy.sh",
+      "scripts/export-pdf.sh",
+      "scripts/extract-pptx.py"
+    ]
+  },
+  {
+    "file": "godmode/SKILL.md",
+    "refs": [
+      "scripts/parseltongue.py"
+    ]
+  },
+  {
+    "file": "hermes-agent/SKILL.md",
+    "refs": [
+      "scripts/keystroke_diagnostic.py"
+    ]
+  },
+  {
+    "file": "linear/SKILL.md",
+    "refs": [
+      "scripts/linear_api.py"
+    ]
+  },
+  {
+    "file": "ocr-and-documents/SKILL.md",
+    "refs": [
+      "scripts/extract_marker.py",
+      "scripts/extract_pymupdf.py"
+    ]
+  },
+  {
+    "file": "p5js/SKILL.md",
+    "refs": [
+      "scripts/export-frames.js",
+      "scripts/render.sh"
+    ]
+  },
+  {
+    "file": "powerpoint/SKILL.md",
+    "refs": [
+      "scripts/office/soffice.py",
+      "scripts/office/unpack.py",
+      "scripts/thumbnail.py"
+    ]
+  },
+  {
+    "file": "python-debugpy/SKILL.md",
+    "refs": [
+      "scripts/run_tests.sh"
+    ]
+  },
+  {
+    "file": "research-paper-writing/SKILL.md",
+    "refs": [
+      "scripts/make_figure2.py",
+      "scripts/reproduce_table1.sh"
+    ]
+  },
+  {
+    "file": "segment-anything-model/SKILL.md",
+    "refs": [
+      "scripts/export_onnx_model.py"
+    ]
+  }
+]

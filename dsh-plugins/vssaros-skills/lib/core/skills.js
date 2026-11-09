@@ -95,7 +95,22 @@ function listValue(value) {
 	if (typeof value !== 'string' || !value.trim()) {
 		return undefined;
 	}
-	const items = value.split(',').map(s => s.trim()).filter(Boolean);
+	const raw = value.trim();
+	// ★ 2026-11-08 P2：frontmatter 里 `match: ["a","b"]` 是官方 YAML 数组写法，
+	//   旧实现按逗号切会得到 `['["a"','"b"]']` 这种残留 ⇒ 显式解析数组字面量。
+	if (raw.startsWith('[') && raw.endsWith(']')) {
+		try {
+			const parsed = JSON.parse(raw);
+			if (Array.isArray(parsed)) {
+				const items = parsed.map(x => String(x).trim()).filter(Boolean);
+				return items.length ? items : undefined;
+			}
+		} catch { /* 不是 JSON 数组（单引号 YAML）⇒ 退回下面的通用切分 */ }
+		const inner = raw.slice(1, -1);
+		const items = inner.split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+		return items.length ? items : undefined;
+	}
+	const items = raw.split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
 	return items.length ? items : undefined;
 }
 
@@ -117,6 +132,16 @@ export function skillFromFile(text, { id, file }) {
 		return { error: `缺 description（dsh 用它路由）：${file}` };
 	}
 	const activation = ['manual', 'auto', 'always'].includes(meta.activation) ? meta.activation : DEFAULT_ACTIVATION;
+	// ★ 2026-11-08（P0）：归属标记（沉淀技能 owner: bot:<id>，顶层或 metadata: 下都认）。
+	//   供 skills provider 的 list() 做「别的 bot 的技能不出现在当前 agent 目录」隔离。
+	const frontmatterHead = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1] ?? '';
+	const owner = /^\s*owner:\s*["']?([^"'\r\n]+?)["']?\s*$/m.exec(frontmatterHead)?.[1]?.trim() ?? '';
+	// ★ 2026-11-08 P2：override 只许**随包技能**声明（用户技能写了也无效），
+	//   裁决走 skillRoots.ts 的根顺序（不硬编码 rank），守卫 check-skill-bundle 钉住。
+	// tier / override 是 P2 的分级与同名覆盖字段；P0 先收进 metadata（dsh 的 toSummary 会丢额外字段，
+	// 所以它们只在 provider 内用，不依赖 snapshot 返回值）。
+	const tier = meta.tier === 'core' || meta.tier === 'extended' ? meta.tier : undefined;
+	const override = String(meta.override ?? '').trim().toLowerCase() === 'true';
 	return {
 		skill: {
 			id: id || name,  // 2026-10-17（重构 4）：read_skill / list_skills 要按 id 找（目录名 / frontmatter 的 name）⇒ 放进 skill ✓
@@ -126,8 +151,11 @@ export function skillFromFile(text, { id, file }) {
 			path: file,
 			content: body.trim(),
 			activation,
+			...(owner ? { owner } : {}),
 			metadata: {
 				activation,
+				...(tier ? { tier } : {}),
+				...(override ? { override: true } : {}),
 				// ★ 2026-10-23：marketplace 安装时会往 frontmatter 注入 storeId（= 商城 slug），
 				//   它是「本地技能 ↔ 商城商品」唯一稳定的关联 ⇒ 必须带出来，否则装前装后两个名字。
 				...(meta.storeId ? { storeId: String(meta.storeId).trim() } : {}),
@@ -208,6 +236,21 @@ export function toDefinition(skill) {
 		...toCandidate(skill),
 		content: skill.content + '\n\n' + deliveryNoteFor(skill),
 	};
+}
+
+/**
+ * 一行技能摘要（activation: always 的 P0 承接形态）。
+ * 只出摘要、不出全文：全文仍由 skill_context（可 include auto）/ read_skill 取用。
+ * 纯函数，便于 check-agent-skills.mjs 直接断言预算与转义。
+ */
+export const SKILL_SUMMARY_MAX = 200;
+export function catalogSummaryLine(skill, { always = false } = {}) {
+	const name = String(skill?.name ?? '').trim();
+	if (!name) { return ''; }
+	let description = String(skill?.description ?? '').replace(/\s+/g, ' ').trim();
+	if (description.length > SKILL_SUMMARY_MAX) { description = `${description.slice(0, SKILL_SUMMARY_MAX - 1)}…`; }
+	const escaped = description.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+	return `- \`${name}\`${always ? '（常驻·每轮生效）' : ''}: ${escaped}`;
 }
 
 /** 目录统计（页面自诊断与日志用）。 */

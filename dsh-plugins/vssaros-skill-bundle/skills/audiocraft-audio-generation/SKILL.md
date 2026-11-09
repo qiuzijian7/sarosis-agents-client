@@ -4,6 +4,7 @@ description: "AudioCraft: MusicGen text-to-music, AudioGen text-to-sound."
 activation: manual
 match: ["audiocraft-audio-generation", "audiocraft audio generation", "multimodal", "audio generation", "text-to-music", "text-to-audio", "musicgen"]
 category: mlops
+tier: extended
 ---
 
 # AudioCraft: Audio Generation

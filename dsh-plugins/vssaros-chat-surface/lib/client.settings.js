@@ -19,6 +19,16 @@ window.__ModuleLoader__.load({
 		var module = { exports: {} };
 		var exports = module.exports;
 		const react = require("react");
+		// 本地 Agent 引擎徽标：与 vssaros-local-agents/lib/core/badge.js 同形（chunk realm 只允许 require("react")）。
+		// check-local-agent-badge.mjs 静态对账三份映射，改一处必须同步改另两处。
+		const LOCAL_AGENT_BADGES = { "vssaros-codex-cli": "Codex CLI", "vssaros-claude-code": "Claude Code", "vssaros-opencode": "OpenCode", "vssaros-kimi-cli": "Kimi CLI", "vssaros-hermes-cli": "Hermes Agent", "vssaros-gemini-cli": "Gemini CLI" };
+		const localAgentBadgeOf = (text) => {
+			const value = String(text == null ? "" : text).trim().toLowerCase();
+			if (value.indexOf("vssaros-") !== 0) { return undefined; }
+			const route = value.split("/")[0];
+			if (Object.prototype.hasOwnProperty.call(LOCAL_AGENT_BADGES, route)) { return LOCAL_AGENT_BADGES[route]; }
+			return route.indexOf("vssaros-acp-") === 0 ? "自定义 ACP Agent" : undefined;
+		};
 		function install(ctx, shell) {
 			const state = shell.state;
 				const UTILITIES_SLOT = "conversation.session.header.utilities";
@@ -104,7 +114,31 @@ window.__ModuleLoader__.load({
 						react.createElement("span", { style: { display: "flex", flexDirection: "column", gap: 2, minWidth: 0 } },
 							react.createElement("span", null, label),
 							hint ? react.createElement("span", { style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, currentColor)" } }, hint) : null));
-					const children = [
+					// 当前会话的模型选择投影 → 本地 Agent 引擎徽标。读不到就**不画**（不猜、不误标）。
+						const engineBadge = (() => {
+							try {
+								const sid = state && state.sessionId;
+								const snap = ctx && ctx.sessions && ctx.sessions.list && ctx.sessions.list.getSnapshot
+									? ctx.sessions.list.getSnapshot() : undefined;
+								const summary = sid && snap && snap.byId ? snap.byId[sid] : undefined;
+								const pv = summary && summary.projectionValues ? summary.projectionValues : {};
+								const sel = pv.modelSelection || pv["model-selection"] || {};
+								const picked = sel.selected || sel;
+								return localAgentBadgeOf(picked.provider) || localAgentBadgeOf(picked.model) || localAgentBadgeOf(pv.model);
+							} catch { return undefined; }
+						})();
+						const children = [
+							engineBadge ? react.createElement("span", {
+								key: "local-agent-badge", "data-vssaros-local-agent-badge": "1",
+								title: "本会话使用本地 Agent 引擎（CLI 自带登录与套餐）",
+								style: {
+									display: "inline-flex", alignItems: "center", padding: "1px 8px",
+									borderRadius: 999, fontSize: 11, lineHeight: "18px", whiteSpace: "nowrap",
+									border: "1px solid var(--dsw-alias-border-l1, transparent)",
+									background: "var(--dsw-alias-bg-layer-1, transparent)",
+									color: "var(--dsw-alias-label-secondary, currentColor)",
+								},
+							}, "⌘ " + engineBadge) : null,
 						react.createElement("button", {
 							key: "chip", type: "button", "data-vssaros-settings-chip": "1",
 							"aria-haspopup": "menu", "aria-expanded": open,

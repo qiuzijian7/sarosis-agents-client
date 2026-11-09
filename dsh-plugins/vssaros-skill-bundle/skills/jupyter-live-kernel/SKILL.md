@@ -4,6 +4,7 @@ description: Iterative Python via live Jupyter kernel (hamelnb).
 activation: manual
 match: ["jupyter-live-kernel", "jupyter live kernel", "jupyter", "notebook", "repl", "data-science", "exploration", "iterative"]
 category: data-science
+tier: extended
 ---
 
 # Jupyter Live Kernel (hamelnb)

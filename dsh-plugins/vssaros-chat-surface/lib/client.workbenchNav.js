@@ -983,6 +983,13 @@ window.__ModuleLoader__.load({
 				}
 				bumpTabs();
 			}
+			/** ★ 2026-11-09：给独立页（群设置等）的页内「✕ 关闭」用，与页签条的 ✕ 同一套状态。 */
+			try {
+				window.__vssarosClosePageTab = (id) => {
+					closeTab(String(id || ""));
+					if (!openTabs.length) { try { ctx.layout.selectPanel(null); } catch { /* 留着也行 */ } }
+				};
+			} catch { /* window 不可写 */ }
 			/** 统一入口：开一个工作台（页签 + 中栏 + 右栏 catalog）✓ */
 			function openWorkbenchTab(it) {
 				if (!it) { return; }

@@ -4,6 +4,7 @@ description: "SAM: zero-shot image segmentation via points, boxes, masks."
 activation: manual
 match: ["segment-anything-model", "segment anything model", "multimodal", "image segmentation", "computer vision", "sam", "zero-shot"]
 category: mlops
+tier: extended
 ---
 
 # Segment Anything Model (SAM)

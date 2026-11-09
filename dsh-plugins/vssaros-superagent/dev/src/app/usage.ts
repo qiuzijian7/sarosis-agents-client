@@ -9,9 +9,10 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 export const USAGE_KEEP_DAYS = 30
-export type UsageRole = 'master' | 'desk' | 'worker' | 'step'
+/** 决策 15：群执行结算也记一行；`group` 不是一次 LLM 调用，token 恒为 0，只作事件行。 */
+export type UsageRole = 'master' | 'desk' | 'worker' | 'step' | 'group'
 /** Whose a Session is: its role, and its ticket, step and Bot when it has them. */
-export interface UsageOwner { role: UsageRole; ticketId?: string; step?: string; bot?: string }
+export interface UsageOwner { role: UsageRole; ticketId?: string; step?: string; bot?: string; roomId?: string }
 export interface UsageTokens { input: number; cacheRead: number; cacheWrite: number; output: number }
 /**
  * VsSaros addition (2026-11-07, P0 · co-install observability): how another plugin's listener made a call while one of this
@@ -159,6 +160,17 @@ export class UsageLedger {
     this.db.prepare('INSERT INTO usage_call (at, session, value) VALUES (?,?,?)').run(call.at, call.session, JSON.stringify(call))
     return call
   }
+  /**
+   * 决策 15：群执行结算写一行进**已有的** `usage_call` 账本（不新建第二组计划表）。
+   * 复用 `engine.report()` 的结算结果；这里只负责让账本/用量页能看见「这张工单是群跑的」。
+   */
+  recordGroupSettlement(ticketId: string, roomId: string, state: string): UsageCall {
+    const call: UsageCall = { at: new Date(this.now()).toISOString(), session: `group-${roomId}`,
+      role: 'group', ticketId, roomId, purpose: `group:${state}`, provider: '', model: '',
+      input: 0, cacheRead: 0, cacheWrite: 0, output: 0 }
+    this.db.prepare('INSERT INTO usage_call (at, session, value) VALUES (?,?,?)').run(call.at, call.session, JSON.stringify(call))
+    return call
+  }
   /** The latest conversation call of a Session (no auxiliary purpose, not another model's side call): what its context held then. */
   last(sessionId: string): UsageCall | undefined {
     for (const row of this.db.prepare('SELECT value FROM usage_call WHERE session=? ORDER BY id DESC LIMIT 20').all(sessionId)) {
@@ -174,7 +186,7 @@ export class UsageLedger {
   }
   /** Totals since `since` (ISO), by role, model, Bot and ticket (the 20 largest of each). */
   summary(since: string): UsageSummary {
-    const total = empty(), byRole = { master: empty(), desk: empty(), worker: empty(), step: empty() } as Record<UsageRole, UsageTotals>
+    const total = empty(), byRole = { master: empty(), desk: empty(), worker: empty(), step: empty(), group: empty() } as Record<UsageRole, UsageTotals>
     const models = new Map<string, { provider: string; model: string } & UsageTotals>(), bots = new Map<string, { bot: string } & UsageTotals>()
     const tickets = new Map<string, { ticketId: string } & UsageTotals>()
     const calls: UsageCall[] = []

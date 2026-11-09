@@ -4,6 +4,7 @@ description: "HeartMuLa: Suno-like song generation from lyrics + tags."
 activation: manual
 match: ["heartmula", "music", "audio", "generation", "heartcodec", "lyrics", "songs"]
 category: media
+tier: extended
 ---
 
 # HeartMuLa - Open-Source Music Generation

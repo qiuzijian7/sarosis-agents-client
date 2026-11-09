@@ -5,6 +5,7 @@ activation: auto
 match: [confightml, config.html, config html, html 面板, html panel, 单文件 html, 可编辑 html, editable html, 生成页面, 生成网页, 制作页面, 做个页面, agent 面板, 配置面板, 海报, 卡片, 落地页, landing page, poster]
 category: creative
 recommended_tools: []
+tier: core
 ---
 
 You are running the **confightml** skill.

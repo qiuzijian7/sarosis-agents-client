@@ -4,6 +4,7 @@ description: "Plan mode: write markdown plan to .hermes/plans/, no exec."
 activation: auto
 match: ["plan", "planning", "plan-mode", "implementation", "workflow"]
 category: development
+tier: core
 ---
 
 # Plan Mode

@@ -23,6 +23,8 @@ import { join, resolve } from 'node:path';
 import { packTarGz } from './tar.js';
 // ★ 2026-10-22：`localId` 也要挡越界（`../` 会让 `join(root, ...)` 读到数据根外）
 import { assertSafeStoreId } from './installers.js';
+// ★ 2026-11-09：Bot 组合包（agent 目录镜像 + bot.json）的发布预检
+import { BOT_MANIFEST_FILE, botSummary, readBotManifest, scanBotSecrets, validateBotPack } from './botPack.js';
 // ★ 2026-10-22：外部源发布（本体就是一个 GitHub 地址）⇒ 归一化 + 安全边界在它里面
 import { parseGitHubSource, resolveCommitSha } from './githubSource.js';
 
@@ -189,13 +191,13 @@ export async function scanVaultPrivacy(dir, opts = {}) {
 	};
 }
 export async function preparePublishBundle({ dataRoot, kind, localId, version, meta = {}, sourceDir, acknowledgePrivacy = false } ) {
-	// ★ 入口先卡 kind（`localRootOf` 认得 agents 目录，但 agent **不该**由 dsh 侧打包 ⇒
-	//   只在 kind 层面拦是拦不住的，必须在打包入口拦 ✓）
+	// ★ 入口只卡「是不是可打包的 kind」。
+	//   ⚠ 2026-11-09 纠偏：下方旧注释与 `PUBLISHABLE_KINDS` 自相矛盾 —— 该数组**实际含 agent**，
+	//     `installBundle` 也能装目录镜像的 `.agent.md` 包（IDE 的 createAgent 已下线）。
+	//     所以那句「agent 必须由 IDE preparePack 组装」永远不会对 agent 触发，属过期文档。
+	//   ⇒ 这里保持纯 kind 白名单校验，Bot 组合包（agent + bot.json）由后面的预检单独把关。
 	if (!PUBLISHABLE_KINDS.includes(kind)) {
-		throw new Error(
-			`dsh 侧不支持发布这一类：${kind}（支持 ${PUBLISHABLE_KINDS.join(' / ')}）`
-			+ '—— agent 的包格式是 agent.json，必须由 IDE 侧 preparePack 组装',
-		);
+		throw new Error(`dsh 侧不支持发布这一类：${kind}（支持 ${PUBLISHABLE_KINDS.join(' / ')}）`);
 	}
 	// ★ 2026-10-22（健壮性测试抓到）：**空白版本号必须拒**。
 	//   此前不校验 ⇒ 会打出一个 `version: ""` 的包传上去（服务端可能收下 ⇒ 脏数据，
@@ -254,6 +256,28 @@ export async function preparePublishBundle({ dataRoot, kind, localId, version, m
 	if (files.length === 0) {
 		throw new Error(`「${localId}」目录里没有文件（拒绝发布一个空包）`);
 	}
+
+	// ★ 2026-11-09 Bot 组合包发布预检（三件事都必须在"上传之前"做，否则坏包会进商城）：
+	//   ① 闭包 —— 清单声明的每个技能/MCP 在包里要有实体（否则别人装完是「半个 Bot」）；
+	//   ② 凭据 —— MCP config.json / .env 不许带明文密钥（EXCLUDE_FILES 不管这些，
+	//      隐私体检又只对 knowledge 跑 ⇒ 这是唯一一道闸）；
+	//   ③ 摘要 —— 产出 manifest.bot 供商城列表/详情展示。
+	//   普通 agent 包没有 bot.json ⇒ 整段跳过，原行为不变 ✓
+	let botPackSummary;
+	if (files.some(f => f.path === BOT_MANIFEST_FILE)) {
+		const bot = readBotManifest(files);
+		validateBotPack(files, bot);
+		if (String(bot.botId ?? '').trim() !== localId) {
+			throw new Error(`bot.json 的 botId（${bot.botId}）与商城标识（${localId}）不一致 ⇒ 装完目录名会与 preset 对不上`);
+		}
+		const blockers = scanBotSecrets(files);
+		if (blockers.length) {
+			throw new Error('发布被凭据扫描拦下：Bot 包不许带明文密钥/token：\n'
+				+ blockers.map(b => `· ${b.path}：${b.title}`).join('\n')
+				+ '\n请改成 ${env:VAR} 占位符，由使用者在本机环境变量里提供。');
+		}
+		botPackSummary = botSummary(bot);
+	}
 	const manifestName = typeof base.name === 'string' && base.name.trim() ? base.name : (meta.name?.trim() || localId);
 	const manifest = {
 		...base,
@@ -269,6 +293,8 @@ export async function preparePublishBundle({ dataRoot, kind, localId, version, m
 			? { category: base.category ?? meta.category }
 			: {}),
 		files: files.map(f => f.path),
+		// ★ 2026-11-09：Bot 组合包 ⇒ 组件摘要冗余进 manifest（详情页 versions[].manifest 直接可读）
+		...(botPackSummary ? { bot: botPackSummary } : {}),
 		// ★ 2026-10-31：服务端契约里的 knowledge 块（线上已有包就是这么写的）⇒ 必须带上
 		...(kind === 'knowledge' ? {
 			knowledge: {
@@ -467,11 +493,21 @@ export async function publishVersion({ market, dataRoot, kind, localId, version,
 	}
 	const prepared = await preparePublishBundle({ dataRoot, kind, localId, version, meta });
 
+	// ★ 2026-11-09：Bot 组合包的摘要走 `tags` 冗余。
+	//   服务端 kinds.ts 不在这个仓库，商品表不会新增 `bot` 列；但建包接口本来就收 tags
+	//   ⇒ 写一条 `bot:<skills>/<tools>/<mcp>`，列表卡片零服务端改动也能显示（shape.botFromTags 解析）。
+	const botTag = prepared.manifest.bot
+		? `bot:${prepared.manifest.bot.skills}/${prepared.manifest.bot.tools}/${prepared.manifest.bot.mcpServers}`
+		: '';
+	const tags = Array.isArray(meta.tags) ? meta.tags.slice() : [];
+	if (botTag && tags.indexOf(botTag) < 0) { tags.push(botTag); }
+
 	const created = await ensurePackage({ market, kind, localId, meta: {
 		name: prepared.manifest.name,
 		description: prepared.manifest.description,
 		category: prepared.manifest.category,
 		...meta,
+		...(tags.length ? { tags } : {}),
 	} });
 
 	// ② 传版本（raw tar.gz）

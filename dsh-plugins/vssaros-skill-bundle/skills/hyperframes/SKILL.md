@@ -5,6 +5,7 @@ activation: manual
 match: ["hyperframes", "video composition", "animated title", "captioned video", "social overlay", "motion graphics", "shader transition"]
 category: creative
 required_tools: ["terminal"]
+tier: extended
 ---
 
 # HyperFrames

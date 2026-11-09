@@ -1,3 +1,6 @@
+# 参考资产（MCP 已挂载）：dsh 侧由 vssaros-mcp/cordis.patch.yml 声明式挂载 @playwright/mcp（serverName=playwright）。
+# 运行时工具名带前缀 mcp__playwright__<tool>；本文件是 Playwright Test Agents 的外部 agent 定义格式，dsh 不直接消费。
+# enabled_tools 里 planner_* 属于未挂载的 run-test-mcp-server，不要按裸名发起调用。
 name = "playwright_test_planner"
 description = "Use this agent when you need to create comprehensive test plan for a web application or website"
 sandbox_mode = "read-only"

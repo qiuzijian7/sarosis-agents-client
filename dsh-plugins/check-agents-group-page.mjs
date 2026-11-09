@@ -41,6 +41,21 @@ console.log('★ agents 插件 IM 渠道 / 原子写 / 富媒体契约\n');
 	check('IM 绑定有独立路由（GET/POST api/bindings，含 inbound 演练）',
 		/api\/bindings/.test(readFileSync(join(ROOT, 'dsh-plugins/vssaros-agents/lib/index.js'), 'utf8'))
 		&& /action === 'inbound'/.test(readFileSync(join(ROOT, 'dsh-plugins/vssaros-agents/lib/index.js'), 'utf8')), '');
+	/* ★ 2026-11-09：绑定表以渠道为主键、targetId 反向指向 Bot。渠道页只有只读表格 +
+	   「去 Bots 配置」跳转，而 Bot 设置页过去没有绑定入口 ⇒ 指引断链。这里钉住入口、
+	   human 声明与 fail-closed 提示，别让这条链路再次静默消失。 */
+	{
+		let cv = '';
+		try { cv = readFileSync(join(ROOT, 'dsh-plugins/vssaros-chat-surface/lib/client.conversationViews.js'), 'utf8'); } catch { /* 下面会红 */ }
+		check('★ Bot 设置页：有 Channel 绑定卡（按 agentId 反向过滤）',
+			/function BotChannelBindingsCard\(/.test(cv) && /"data-vssaros-botbind": agentId/.test(cv)
+			&& /targetKind \|\| "agent"/.test(cv) && /\/x\/agents\/api\/bindings/.test(cv), '');
+		check('★ Bot 设置页：绑定增删改显式声明 human + 白名单 fail-closed 提示',
+			/actor: \{ kind: "human" \}/.test(cv) && /fail-closed/.test(cv)
+			&& /action: "create"/.test(cv) && /action: "delete"/.test(cv), '');
+		check('★ Bot 设置页：平台清单只渲染 channelDefs（不写死平台 key）',
+			/Array\.isArray\(data\.channelDefs\)/.test(cv) && /defs\.map\(/.test(cv), '');
+	}
 }
 
 /* ── 飞书出站（P1，2026-10-27）────────────────────────────────────────────

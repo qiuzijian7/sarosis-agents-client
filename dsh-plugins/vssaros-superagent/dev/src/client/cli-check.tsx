@@ -1,10 +1,8 @@
 /**
- * VsSaros addition: local `lark-cli` diagnostics on the Feishu Source card.
- *
- * `actions` sits to the right of the `cli` input and `details` below the field; both come from the
- * same state. Two read-only checks report the executable, version, bot identity, strict mode and
- * update status, and fill the `cli` field. The two maintenance actions change the machine's global
- * CLI, so each sits behind a `ConfirmButton` and sends `confirm: true` that the host route requires.
+ * VsSaros addition: local `lark-cli` diagnostics, **no longer mounted on the Feishu Source card**
+ * (2026-11-09: the CLI command is a built-in schema default and the option was removed from Settings).
+ * The hook and its host routes (`POST sources/feishu/cli-check`, `/cli-apply`) are kept so the checks
+ * remain available to other callers; `SourceCard` no longer imports this module.
  */
 import { useState, type ReactNode } from 'react'
 import type { CliApplyAction, CliCheckResult } from '../app/cli-check.ts'

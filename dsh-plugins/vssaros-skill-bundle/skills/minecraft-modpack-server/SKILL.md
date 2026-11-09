@@ -4,6 +4,7 @@ description: Host modded Minecraft servers (CurseForge, Modrinth).
 activation: manual
 match: ["minecraft-modpack-server", "minecraft modpack server"]
 category: gaming
+tier: extended
 ---
 
 # Minecraft Modpack Server Setup

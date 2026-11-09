@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-superagent",
-  "version": "0.1.71",
+  "version": "0.1.86",
   "description": "VsSaros built-in: SuperAgent, the supervisor of the VsSaros Bots. It takes requests from Feishu, GitHub, TAPD and its own desk, evaluates them under a Policy, staffs a team of Bots that a person agrees to, runs each step in its Bot's Session, and leaves skills and team workflows behind. Source, tests and build tools are in dev/ (not shipped).",
   "private": true,
   "type": "module",
@@ -59,7 +59,7 @@
     },
     "workbench": {
       "title": "SuperAgent",
-      "description": "SuperAgent 主管：接收飞书、GitHub、TAPD 和主管对话里的需求，评估后组建 bot 团队，经你同意再分工执行，并沉淀技能与团队工作流。",
+      "description": "SuperAgent 主管：接收飞书、GitHub、TAPD 和主管对话里的需求，评估后组建 bot 团队，经你同意再分工执行，并沉淀技能。",
       "icon": "codicon:robot",
       "repository": "vssaros:superagent",
       "customFrame": true,

@@ -33,7 +33,11 @@ window.__ModuleLoader__.load({
 	const SLOT_SECTION = "settings.section";
 	const SLOT_ITEM = "settings.vssaros.channel.item";
 	const SECTION_ID = "vssaros-channel";
-	const BOTS_ROUTE = "/x/agents/";
+	/* ★ 2026-11-09（用户报「渠道 → 绑定 → 去 Bots 配置 ⇒ 白屏」）：
+	   Bots 工作台的 SSR 页面在 2026-11-03 已整体下线，Host 对该页面路径直接回 404。
+	   旧实现把整页导航过去 ⇒ 白屏。现在 Bots 配置在聊天框侧栏「Bots」页签，
+	   交接统一走 vssaros:open-bots 事件（监听方 client.workspaces.js，与欢迎卡 / 胶囊同口径）。
+	   ⚠ 只删「页面路由」，下面的 API 前缀仍由 agents 插件提供，别一起动。 */
 	const API = "/x/agents/api/bindings";
 
 	const SOURCE_LABEL = {
@@ -133,6 +137,30 @@ window.__ModuleLoader__.load({
 		return undefined;
 	};
 
+	/**
+	 * ★ 2026-11-09（用户报「点保存没反馈，输入的 App ID / Secret 没地方看」）：
+	 * GET /x/agents/api/bindings 的 channels 数组是 describePlatforms() 的掩码视图 ——
+	 * 非 secret 字段在 fields 对象里（打码），secret 只有平台级 hasSecret。
+	 * 旧 UI 读的是 describeFeishu() 兼容视图才有的字段（这里恒 undefined）
+	 * ⇒ 明明配好了也只显示「已配置 ·  · 来源」，用户看不到自己填了什么 ✗。
+	 * ⚠ secret 明文**永不由接口返回**，这里也绝不拼明文，只报「已配置」。
+	 */
+	function credsSummaryOf(view, defFields) {
+		const fields = (view && view.fields) || {};
+		const parts = [];
+		let hasSecretField = false;
+		for (const f of defFields || []) {
+			if (f.type === "select") { continue; }
+			if (f.secret || f.type === "password") { hasSecretField = true; continue; }
+			const val = String(fields[f.key] || "").trim();
+			parts.push(String(f.label || f.key) + "：" + (val || "未配置"));
+		}
+		if (hasSecretField) {
+			parts.push("密钥：" + (view && view.hasSecret ? "已配置（明文不回显）" : "未配置"));
+		}
+		return parts.join(" · ");
+	}
+
 	/* ── 状态文案（一处定义，表和工具条共用）────────────────────────────── */
 	function statusOf(def, ch, inb) {
 		if (!def.implemented) { return { text: "未接入", tone: "" }; }
@@ -190,6 +218,11 @@ window.__ModuleLoader__.load({
 		const [drafts, setDrafts] = react.useState({});
 		/** 手风琴：一次只展开一个平台（'feishu' / 'telegram' / ... / ''）。 */
 		const [open, setOpen] = react.useState("feishu");
+		/** 「去 Bots 配置」的就地反馈（交接有没有人接住，都必须给用户明确指引，不静默）。 */
+		const [botsHint, setBotsHint] = react.useState("");
+		/** 凭据 / 额外飞书应用保存的**就地**反馈：全局 ok/error 在页面最底部 ⇒ 看着像「点了没反应」。 */
+		const [credFeedback, setCredFeedback] = react.useState(null);
+		const [appFeedback, setAppFeedback] = react.useState(null);
 
 		const load = react.useCallback(() => {
 			setState((s0) => ({ ...s0, status: "loading" }));
@@ -204,7 +237,7 @@ window.__ModuleLoader__.load({
 
 		react.useEffect(() => { load(); }, [load]);
 
-		const post = (body, busyKey, okText) => {
+		const post = (body, busyKey, okText, onResult) => {
 			setState((s0) => ({ ...s0, busy: busyKey, ok: "", error: "" }));
 			fetch(API, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
 				.then((r) => r.json().then((j) => ({ ok: r.ok, j })))
@@ -212,8 +245,13 @@ window.__ModuleLoader__.load({
 					if (!ok || (j && j.error)) { throw new Error((j && j.error) || "HTTP"); }
 					setState((s0) => ({ ...s0, busy: "", ok: okText || "" }));
 					load();
+					/* ★ 2026-11-09：把 POST 回包交给调用方做**就地**反馈（掩码视图，无 secret 明文）。 */
+					if (onResult) { onResult({ ok: true, view: j }); }
 				})
-				.catch((e) => setState((s0) => ({ ...s0, busy: "", error: String((e && e.message) || e) })));
+				.catch((e) => {
+					setState((s0) => ({ ...s0, busy: "", error: String((e && e.message) || e) }));
+					if (onResult) { onResult({ ok: false, error: String((e && e.message) || e) }); }
+				});
 		};
 
 		/**
@@ -226,13 +264,21 @@ window.__ModuleLoader__.load({
 		 * 保存某平台凭据（写 dsh 侧 `<dataRoot>/agent-im-accounts.json`）。
 		 * 留空的字段**不发**（服务端视为"不改"）⇒ 只改 appId 不会把 secret 清掉。
 		 */
-		const savePlatform = (platform, form) => {
+		const savePlatform = (platform, form, defFields) => {
 			const payload = { action: "credentials", platform };
 			for (const k of Object.keys(form || {})) {
 				const val = String(form[k] == null ? "" : form[k]).trim();
 				if (val) { payload[k] = val; }
 			}
-			post(payload, "credentials", "已保存（dsh 侧）：" + platform);
+			setCredFeedback({ platform, status: "saving", text: "正在保存…" });
+			post(payload, "credentials", "已保存（dsh 侧）：" + platform, (r) => {
+				setCredFeedback({
+					platform,
+					status: r.ok ? "ok" : "err",
+					text: r.ok ? "已保存到本机 dsh · " + credsSummaryOf(r.view, defFields) : "保存失败：" + r.error,
+					view: r.ok ? r.view : null,
+				});
+			});
 			setDrafts((d0) => ({ ...d0, [platform]: {} }));
 		};
 
@@ -261,6 +307,26 @@ window.__ModuleLoader__.load({
 					}));
 				})
 				.catch((e) => setState((s0) => ({ ...s0, busy: "", ok: "✗ 测试失败 · " + String((e && e.message) || e) })));
+		};
+
+		/**
+		 * ★ 2026-11-09：「去 Bots 配置」改走事件交接。
+		 * 旧实现把整页导航到已下线的 Bots SSR 工作台（2026-11-03 下线）⇒ Host 回 404
+		 * ⇒ 用户看到白屏。
+		 * 现在与欢迎卡 / 胶囊逐字同口径：派发 vssaros:open-bots，由侧栏 Bots 页签切页签；
+		 * 监听方会回填 handled 标记（窄轨形态没有可切的页签 ⇒ 不回填）。
+		 * 两种情况都**就地给明确指引**：绝不整页导航、绝不静默。
+		 */
+		const handoffBots = () => {
+			const detail = { action: "view", from: "channel", handled: false };
+			try {
+				if (typeof window !== "undefined" && typeof window.CustomEvent === "function") {
+					window.dispatchEvent(new window.CustomEvent("vssaros:open-bots", { detail }));
+				}
+			} catch { /* 老环境没有 CustomEvent ⇒ 走下面的文字指引 */ }
+			setBotsHint(detail.handled
+				? "已切到左侧栏「Bots」页签；关闭本设置窗口即可查看 / 编辑 Bot 配置。"
+				: "当前窗口没有可切换的 Bots 页签：请展开左侧栏 →「Bots」页签查看 / 编辑 Bot。");
 		};
 
 		const d = state.data || {};
@@ -316,15 +382,21 @@ window.__ModuleLoader__.load({
 
 			/* ① 凭据（按 channelDefs 的字段渲染；未接入不给表单 —— 填了不生效） */
 			if (def.implemented) {
+				const flds = def.fields || [];
+				const chFields = (ch && ch.fields) || {};
+				const fb = (credFeedback && credFeedback.platform === key) ? credFeedback : null;
+				/* ★ 刚保存成功的回包优先：load() 还没回来时也能立刻看到掩码值（不是等下一次刷新）。 */
+				const shown = (fb && fb.status === "ok" && fb.view) ? fb.view : ch;
+				const currentLine = credsSummaryOf(shown, flds);
 				blocks.push(el("div", { style: S.card, "data-vssaros-channel-creds": String(ch.source || "none") },
 					el("div", { style: S.cap }, el("span", null, "凭据"), el("span", { style: S.sp }),
 						el("button", {
 							type: "button", style: S.btnPrimary, "data-vssaros-channel-act": "credentials",
-							disabled: !!state.busy || !(def.fields || []).length,
-							onClick: () => savePlatform(key, form),
+							disabled: !!state.busy || !flds.length,
+							onClick: () => savePlatform(key, form, flds),
 						}, state.busy === "credentials" ? "保存中…" : "保存")),
 					el("div", { style: S.fld },
-						(def.fields || []).map((f) => [
+						flds.map((f) => [
 							el("label", { key: "l" + f.key, style: S.lbl }, String(f.label || f.key)),
 							// ★ 2026-10-29（用户要求：飞书 channel 增加 groupPolicy 配置项）：
 							//   原来是 `type === "password" ? password : text` ⇒ **只有文本/密码两种**，
@@ -342,18 +414,28 @@ window.__ModuleLoader__.load({
 								: el("input", {
 									key: "i" + f.key, style: S.input,
 									type: f.type === "password" ? "password" : "text",
-									placeholder: (f.secret && ch.hasSecret) ? "已配置 · 留空 = 不改" : String(f.placeholder || ""),
+									placeholder: (f.secret || f.type === "password")
+									? (ch.hasSecret ? "已配置（明文不回显）· 留空 = 不改" : String(f.placeholder || "请填写"))
+									: (String(chFields[f.key] || "").trim()
+										? "当前：" + String(chFields[f.key]).trim() + " · 留空 = 不改"
+										: String(f.placeholder || "")),
 									"data-vssaros-channel-field": key + "." + f.key,
 									value: String(form[f.key] || ""),
 									onChange: (ev) => setField(f.key, ev.target.value),
 								}),
 						])),
+					el("p", { style: { ...S.p, ...S.small, padding: "0 8px 7px" }, "data-vssaros-channel-creds-current": "1" },
+						(ch.configured ? "当前生效：" : "当前状态：") + currentLine
+							+ " · 来源：" + (SOURCE_LABEL[ch.source] || ch.source || "—")
+							+ (ch.configured ? "" : " —— 填完点「保存」，再点上面的「启动入站」")),
+					fb
+						? el("p", {
+							style: { ...S.p, ...S.small, padding: "0 8px 7px", color: fb.status === "err" ? toneColor("err") : fb.status === "ok" ? toneColor("ok") : undefined },
+							"data-vssaros-channel-creds-result": fb.status,
+						}, (fb.status === "ok" ? "✓ " : fb.status === "err" ? "✗ " : "") + fb.text)
+						: null,
 					el("p", { style: { ...S.p, ...S.small, padding: "0 8px 7px" } },
-						ch.configured
-							? "已配置 · " + String(ch.appIdMasked || "") + " · 来源：" + (SOURCE_LABEL[ch.source] || ch.source || "—")
-							: "未配置 —— 填完点「保存」，再点上面的「启动入站」。"),
-					el("p", { style: { ...S.p, ...S.small, padding: "0 8px 7px" } },
-						"存在本机 dsh 侧（agent-im-accounts.json，仅本用户可读）；接口只回「是否已配置」，不回 secret。")));
+						"存在本机 dsh 侧（agent-im-accounts.json，仅本用户可读）；接口只回掩码值与「是否已配置」，不回 secret 明文。")));
 			} else {
 				blocks.push(el("div", { style: S.card },
 					el("p", { style: { ...S.p, ...S.small, padding: "8px" } },
@@ -373,7 +455,15 @@ window.__ModuleLoader__.load({
 					const body = { action: "feishu-app", appId };
 					if (String(af.appSecret || "").trim()) { body.appSecret = String(af.appSecret).trim(); }
 					if (String(af.name || "").trim()) { body.name = String(af.name).trim(); }
-					post(body, "feishu-app", "已保存飞书应用：" + appId);
+					setAppFeedback({ status: "saving", text: "正在保存…" });
+					post(body, "feishu-app", "已保存飞书应用：" + appId, (r) => {
+						setAppFeedback({
+							status: r.ok ? "ok" : "err",
+							text: r.ok
+								? "已保存应用 " + appId + "（App ID 会出现在上面的列表；Secret 不回显明文）"
+								: "保存失败：" + r.error,
+						});
+					});
 					setDrafts((d0) => ({ ...d0, feishuApp: {} }));
 				};
 				const removeApp = (appId) => {
@@ -430,6 +520,12 @@ window.__ModuleLoader__.load({
 							style: S.input, type: "text", placeholder: "可选，便于在绑定里认出", "data-vssaros-feishu-app-field": "name",
 							value: String(af.name || ""), onChange: (ev) => setApp("name", ev.target.value),
 						})),
+					appFeedback
+						? el("p", {
+							style: { ...S.p, ...S.small, padding: "4px 8px 0", color: appFeedback.status === "err" ? toneColor("err") : appFeedback.status === "ok" ? toneColor("ok") : undefined },
+							"data-vssaros-feishu-app-result": appFeedback.status,
+						}, (appFeedback.status === "ok" ? "✓ " : appFeedback.status === "err" ? "✗ " : "") + appFeedback.text)
+						: null,
 					el("div", { style: { ...S.toolbar, borderBottom: 0 } },
 						el("span", null, "每个应用只能在一台机器上连一次；dsh-superagent 填同一个 App ID 时会复用这里的 Secret。"),
 						el("span", { style: S.sp }),
@@ -445,7 +541,15 @@ window.__ModuleLoader__.load({
 			blocks.push(el("div", { style: S.card, "data-vssaros-channel-bindings": String(bList.length) },
 				el("div", { style: S.cap }, el("span", null, "绑定"),
 					el("span", { style: S.cnt }, String(bList.length)), el("span", { style: S.sp }),
-					el("button", { type: "button", style: S.btnGhost, onClick: () => { window.location.assign(BOTS_ROUTE); } }, "去 Bots 配")),
+					el("button", {
+						type: "button", style: { ...S.btnGhost, whiteSpace: "nowrap" },
+						"data-vssaros-channel-open-bots": "1",
+						title: "到左侧栏「Bots」页签查看 / 编辑 Bot 配置",
+						onClick: handoffBots,
+					}, "去 Bots 配置")),
+				botsHint
+					? el("p", { style: { ...S.p, ...S.small, padding: "6px 8px" }, "data-vssaros-channel-bots-hint": "1" }, botsHint)
+					: null,
 				bList.length
 					? el("table", { style: S.table }, el("tbody", null, bList.map((b) => el("tr", { key: String(b.id), "data-vssaros-channel-row": String(b.id) },
 						el("td", { style: S.td },
@@ -613,18 +717,13 @@ window.__ModuleLoader__.load({
 	}
 
 	function install(ctx) {
-		if (!ctx || !ctx.slots) { return; }
-		ctx.slots.inject(SLOT_SECTION, () => ctx.slots.register({
-			name: SLOT_SECTION,
-			id: SECTION_ID,
-			order: 21,
-			label: () => "渠道",
-			children: { [SLOT_ITEM]: { kind: "list", scope: "root" } },
-		}, ChannelSection));
-		ctx.slots.inject(SLOT_ITEM, () => ctx.slots.register(
-			{ name: SLOT_ITEM, id: "panel", order: 0 },
-			ChannelPanel,
-		));
+		/* ★ 2026-11-09（用户要求移除设置弹窗的「渠道」页签）：
+		   飞书应用凭据/选型迁到各 Bot 设置页的「飞书配置」卡
+		   （client.conversationViews.js 的 FeishuConfigCard），Channel 绑定卡也已在那里。
+		   ⚠ 本文件仍留在 ALWAYS_CHUNKS：删清单项会让同批 Promise.all 的 9 个 chunk
+		     一起失效，且多个静态守卫直接读本文件（删了会 ENOENT 崩溃）。
+		     ⇒ 保留文件与导出，只是**不再注册分区**，等后续整包清理。 */
+		return;
 	}
 
 	exports.install = install;

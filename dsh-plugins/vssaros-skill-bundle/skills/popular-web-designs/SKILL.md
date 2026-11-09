@@ -4,6 +4,7 @@ description: 54 real design systems (Stripe, Linear, Vercel) as HTML/CSS.
 activation: manual
 match: ["popular-web-designs", "popular web designs"]
 category: creative
+tier: extended
 ---
 
 # Popular Web Designs

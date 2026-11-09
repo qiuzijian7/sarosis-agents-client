@@ -6,7 +6,6 @@ import { DisclosureRow, Dot, Icon, InfoTip, Switch, Tag } from './controls.tsx'
 import { SaveBar } from './draft.tsx'
 import { sourceMark } from './marks.ts'
 import { useAction, usePanel, usePanelData } from './provider.tsx'
-import { useFeishuCliCheck } from './cli-check.tsx'
 import { TapdCredentials } from './tapd-credentials.tsx'
 import { setupPage, settingsRoute, type Route } from './route.ts'
 import { ConfigHistory, Fields, SourceField, useBlockDraft, useSettings } from './settings-kit.tsx'
@@ -24,6 +23,14 @@ export function SourceCard({ source, title }: { source: SourceView; title?: stri
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const refreshLabels = async () => { const { added } = await call('POST sources/:id/labels',
     { id: source.id }); await reload(); return added }
+  // TAPD dropdown options come from its Open API; load them once when this card has no candidates yet.
+  // A failed lookup stays silent (the "Read TAPD options" button retries) and the effect will not loop.
+  useEffect(() => {
+    if (source.installed && source.id === 'tapd'
+      && !Object.keys(source.labels ?? {}).some(name => name.includes(':'))) {
+      void refreshLabels().catch(() => {})
+    }
+  }, [source.id, source.installed])
   const draft = useBlockDraft(`source:${source.id}`, source.value, source.revision)
   const value = draft.value
   const { problem, value: saved } = source
@@ -31,20 +38,23 @@ export function SourceCard({ source, title }: { source: SourceView; title?: stri
   // Saving a modified setup-sensitive field restarts dsh-superagent, interrupting running Assignments.
   const restarts = draft.dirty && source.restarts.some(changed)
   const description = localized(t, source.description)
-  // VsSaros addition: the Feishu card's local CLI checks share one state between the input's action slot and the field's detail slot.
-  const cli = useFeishuCliCheck(command => {
-    if (!String(value.config.cli ?? '')) draft.edit({ ...value, config: { ...value.config, cli: command } })
-  })
-  // Hide derived facts for unsaved field edits until the new value is saved.
-  const field = (spec: FieldSpec) => {
-    const cliField = source.id === 'feishu' && spec.key === 'cli'
-    return <SourceField key={spec.key} field={spec} value={value.config[spec.key]} saved={saved.config[spec.key]}
-      labels={source.labels} refreshLabels={refreshLabels}
-      fact={spec.type === 'fact' || !changed(spec.key) ? source.facts[spec.key] : undefined}
-      onChange={next => draft.edit({ ...value, config: { ...value.config, [spec.key]: next } })}
-      action={cliField ? cli.actions : undefined} detail={cliField ? cli.details : undefined} />
-  }
+  // VsSaros addition: the Feishu card's lark-cli option and its local diagnostics were removed; the CLI
+  // command is now a schema default. Hide derived facts until the new value is saved.
+  const field = (spec: FieldSpec) => <SourceField key={spec.key} field={spec} value={value.config[spec.key]}
+    saved={saved.config[spec.key]} labels={source.labels} refreshLabels={refreshLabels}
+    fact={spec.type === 'fact' || !changed(spec.key) ? source.facts[spec.key] : undefined}
+    onChange={next => draft.edit({ ...value, config: { ...value.config, [spec.key]: next } })} />
   const advanced = source.fields.filter(spec => spec.advanced)
+  // VsSaros addition: a kind with grouped Advanced fields gets labelled subsections; ungrouped ones keep the old flat list.
+  const advancedGroups = (() => {
+    const groups = new Map<string, { title: string; specs: typeof advanced }>()
+    for (const spec of advanced) {
+      const title = spec.group ? localized(t, spec.group) : ''
+      if (!groups.has(title)) groups.set(title, { title, specs: [] })
+      groups.get(title)!.specs.push(spec)
+    }
+    return [...groups.values()]
+  })()
   return <form id={`dt-source-${source.id}`} className="dt-card" onSubmit={event => { void draft.submit(event) }}>
     <Fields disabled={draft.busy}>
       <div className="dt-card-head">
@@ -63,10 +73,16 @@ export function SourceCard({ source, title }: { source: SourceView; title?: stri
       {!source.installed && <Hint>{t('sourceNotInstalledHint')}</Hint>}
       {source.installed && source.fields.filter(spec => !spec.advanced).map(field)}
       {/* VsSaros addition: the Open API credentials live in the Host's credentials file, not in this card's settings. */}
-      {source.installed && source.id === 'tapd' && String(value.config.transport ?? 'openapi') === 'openapi' && <TapdCredentials />}
+      {source.installed && source.id === 'tapd' &&
+        <TapdCredentials config={{ watches: Array.isArray(value.config.watches) ? value.config.watches.length : 0,
+          agent: String(value.config.agent ?? ''), workspace: String(value.config.workspace ?? '') }}
+          onAddWatch={watches => draft.edit({ ...value, config: { ...value.config, watches } })} />}
       {source.installed && advanced.length > 0 && <DisclosureRow icon={<Icon name="settings" />} title={t('advanced')} open={advancedOpen}
         onToggle={() => setAdvancedOpen(!advancedOpen)}>
-        <div className="dt-disclosure-body">{advanced.map(field)}</div>
+        <div className="dt-disclosure-body">{advancedGroups.map(group => <div key={group.title || 'default'}>
+          {group.title && <p className="dt-hint">{group.title}</p>}
+          {group.specs.map(field)}
+        </div>)}</div>
       </DisclosureRow>}
     </Fields>
     <SaveBar {...draft} status={restarts && running > 0 ? t('restartInterrupts', { count: running }) : undefined}

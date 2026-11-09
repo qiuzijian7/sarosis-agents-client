@@ -10,6 +10,25 @@
 
 export const SCREENSHOT_LIMITS = Object.freeze({ qualityMin: 30, qualityMax: 90, qualityDefault: 70 });
 
+/**
+ * 2026-11-09（§4 安全闸，对齐 DS Bot `session.js:508-516` 的 180KB 上限）：
+ * 工具结果里绝不放过大的图片附件。base64 → 字节数只做估算（去掉尾部 padding 后 ×3/4），
+ * 不解码，避免为了判大小再吃一份内存。
+ */
+export const MAX_SCREENSHOT_BYTES = 180 * 1024;
+
+/** @returns 拒绝原因，或 undefined（可放行）。 */
+export function screenshotSizeProblem(base64) {
+	const text = String(base64 ?? '').replace(/=+$/, '');
+	const bytes = Math.floor(text.length * 3 / 4);
+	if (!bytes) return '截图为空，没有生成图片附件。';
+	if (bytes > MAX_SCREENSHOT_BYTES) {
+		return `截图约 ${Math.round(bytes / 1024)}KB，超过 ${Math.round(MAX_SCREENSHOT_BYTES / 1024)}KB 上限，未生成附件。`
+			+ '请降低 quality 或关掉 fullPage 后重试；页面内容不变，也可以先用 snapshot 读文字。';
+	}
+	return undefined;
+}
+
 /** 归一化截图参数：只认 `quality`（30–90，默认 70）与 `fullPage`（截整页，默认否）。 */
 export function normalizeScreenshotParams(params) {
 	const raw = Number(params?.quality);

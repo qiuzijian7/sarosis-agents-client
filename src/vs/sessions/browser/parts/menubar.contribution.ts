@@ -440,13 +440,18 @@ const DIAG_MAX_FILE_BYTES = 512 * 1024;
  */
 const DIAG_MAX_VOLUME_BYTES = 512 * 1024;
 /**
- * dsh 日志按「会话对」取几对（2026-10-31）。
+ * dsh 日志按「会话对」取几对。
  *
  * 同一次启动会产出一个 `host-<hex>.log` + 一个 `harness-<hex>.log`（**hex 各自随机、
  * 不对应**）⇒ 只能靠 mtime 邻近配对。拆散配对的话，看到 host 报错却找不到同期的
  * harness 现场，等于白取。
+ *
+ * ★ 2026-11-09 由 2 改 1：一次 dsh 启动 = **一对**。取 2 对必然把上一次 dsh 启动的
+ *   host/harness 也打进反馈包 —— 用户看到的原话是"包含了旧的日志"（真机样本里
+ *   `vssaros-dsh-2026-11-09T02-50-56.log` 混着 11-05 那次的 `host-07767248.log`）。
+ *   现在还会再按 {@link currentDshStartedAt} 做一次时间闸，双保险。
  */
-const DIAG_MAX_DSH_PAIRS = 2;
+const DIAG_MAX_DSH_PAIRS = 1;
 
 /**
  * UTF-8 字节长度。
@@ -630,17 +635,27 @@ async function latestLogSessions(fileService: IFileService, roots: readonly URI[
  *      （打进包里的是 10-16/10-23 的日志，而当时最新的在 11-02 11:39）⇒ 必须 `j > i`；
  *   ② `IFileService.resolve()` 回来的 `mtime` 可能是 `undefined` ⇒ 全为 0 ⇒ 排序退化成
  *      字典序（hex 随机 ⇒ 等于随机挑）⇒ 缺 mtime 时逐个 `stat` 兜底。
+ *
+ * ★ 2026-11-09：多了 `startedAfter` 时间闸 —— 只留**当前** dsh 会话的日志。
+ *   以前"最近 2 对"会把上一次 dsh 启动的 host/harness 也带进反馈包（用户报
+ *   "包含了旧的日志"，真机样本里 11-09 的包里躺着 11-05 的 `host-07767248.log`）。
  */
-async function latestDshLogPairs(fileService: IFileService, dshRun: URI, pairs: number): Promise<URI[]> {
-	const entries = (await listDir(fileService, dshRun))
+async function latestDshLogPairs(fileService: IFileService, dshRun: URI, pairs: number, startedAfter?: number): Promise<URI[]> {
+	let entries = (await listDir(fileService, dshRun))
 		.filter(c => !c.isDirectory && /^(host|harness)-.*\.log$/.test(basename(c.resource.fsPath)))
 		.map(c => ({ uri: c.resource, name: basename(c.resource.fsPath), mtime: c.mtime ?? 0 }));
 
-	// ② mtime 兜底（只在缺失时付 stat 的代价，978 个文件也只发生在这里）
-	if (entries.length && entries.every(e => !e.mtime)) {
-		await Promise.all(entries.map(async e => {
+	// ② mtime 兜底（只对缺的那些付 stat 代价，978 个文件也只发生在这里）
+	if (entries.some(e => !e.mtime)) {
+		await Promise.all(entries.filter(e => !e.mtime).map(async e => {
 			try { e.mtime = (await fileService.stat(e.uri)).mtime ?? 0; } catch { /* 单个失败不影响整体 */ }
 		}));
+	}
+
+	// ★ 时间闸：`startedAfter` = 当前 dsh Host 的启动时刻。mtime 拿不到（0）的**保留**
+	//   —— 宁可多带一个同一会话的，也别把当前会话漏掉。
+	if (startedAfter !== undefined) {
+		entries = entries.filter(e => !e.mtime || e.mtime >= startedAfter - 30 * 1000);
 	}
 	entries.sort((a, b) => b.mtime - a.mtime || b.name.localeCompare(a.name));
 
@@ -656,6 +671,46 @@ async function latestDshLogPairs(fileService: IFileService, dshRun: URI, pairs: 
 		if (mate >= 0) { used.add(mate); out.push(entries[mate].uri); }
 	}
 	return out;
+}
+
+/**
+ * 当前 dsh 会话的启动时刻（毫秒；拿不到 = `undefined`）。
+ *
+ * 依据 `dsh-run/owner-<runId>.json` 的 `startedAt` —— 那是当前 Host 的**接管**时刻
+ * （真机 `1794189334230` ↔ 本地 2026-11-09 09:55:34，与 `last-start.json` 的 mtime 一致）。
+ * 万一历史 runId 的 owner 文件还在，取最大值也不会选错。
+ */
+async function currentDshStartedAt(fileService: IFileService, dshRun: URI): Promise<number | undefined> {
+	let best: number | undefined;
+	for (const c of await listDir(fileService, dshRun)) {
+		if (c.isDirectory || !/^owner-[0-9a-f]+\.json$/i.test(basename(c.resource.fsPath))) { continue; }
+		try {
+			const raw = JSON.parse((await fileService.readFile(c.resource)).value.toString()) as { startedAt?: unknown };
+			const t = typeof raw.startedAt === 'number' ? raw.startedAt : undefined;
+			if (t !== undefined && (best === undefined || t > best)) { best = t; }
+		} catch { /* 单个坏了不影响 */ }
+	}
+	return best;
+}
+
+/**
+ * `app-stdout-20261109015520.log` / `app-stderr-…` 文件名里的启动时刻。
+ *
+ * ⚠ 这个 stamp 是 **UTC**（真机：会话目录 `20261109T095522` 本地 ↔ 文件 `20261109015520`），
+ *   而日志**目录**名是本地时间 ⇒ 不能字符串直接比，必须各自转成时间戳。
+ * 解析不出来（例如历史遗留的 `app-stderr-20261023234028..log` 双点）⇒ `undefined`。
+ */
+function appLogStartedAt(name: string): number | undefined {
+	const m = /^app-(?:stdout|stderr)-(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\.log$/.exec(name);
+	if (!m) { return undefined; }
+	return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]));
+}
+
+/** 日志会话目录名 `20261109T105004`（**本地时间**）⇒ 启动时刻；解析不出来 ⇒ `undefined`。 */
+function sessionStartedAt(session: URI | undefined): number | undefined {
+	const m = /[\\/](\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})$/.exec(session?.fsPath ?? '');
+	if (!m) { return undefined; }
+	return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6])).getTime();
 }
 
 /** 日志里"值得留下"的行：错误 / 警告 / 堆栈。 */
@@ -839,9 +894,18 @@ export async function buildDiagnosticVolumes(ctx: IDiagnosticContext, stamp: str
 	// ★ 2026-11-02：`app-stdout/app-stderr-*.log` 在 **logs 根**（不在会话目录里）——
 	//   那里是 Electron 主/渲染进程的原始 stdout/stderr，dsh Host 的输出、渲染进程 console、
 	//   插件装不上的报错全在（真机一份 stderr 388 KB，比 main.log 信息还密）。
+	// ★ 2026-11-09：只收**当前这次启动**的那一对。以前按 mtime 取最新 2 个 ⇒ 上一次启动的
+	//   `app-stdout/stderr` 也会进包（本机 logs 根躺着几十个 10-23/10-24 的旧文件）。
 	const logsBase = roots.find(r => !/[\\/]\d{8}T\d{6}$/.test(r.fsPath)) ?? URI.file(dirname(roots[0].fsPath));
+	const sessionStart = sessionStartedAt(sessions[0]);
 	const appLogs = (await listDir(fileService, logsBase))
 		.filter(c => !c.isDirectory && /^app-(stdout|stderr)-.*\.log$/.test(basename(c.resource.fsPath)))
+		.filter(c => {
+			// 拿不到会话启动时刻 ⇒ 保持旧行为（按 mtime 取最新），别把这一整段静默掉
+			if (sessionStart === undefined) { return true; }
+			const startedAt = appLogStartedAt(basename(c.resource.fsPath));
+			return startedAt !== undefined && Math.abs(startedAt - sessionStart) <= 5 * 60 * 1000;
+		})
 		.sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0))
 		.slice(0, 2);
 	for (const c of appLogs) {
@@ -851,10 +915,10 @@ export async function buildDiagnosticVolumes(ctx: IDiagnosticContext, stamp: str
 	}
 
 	// ── ③ dsh ────────────────────────────────────────────────────────────
-	const dshParts: string[] = ['===== dsh 日志（最近 ' + DIAG_MAX_DSH_PAIRS + ' 个会话对）====='];
-	const dshLogs = await latestDshLogPairs(fileService, dshRun, DIAG_MAX_DSH_PAIRS);
+	const dshParts: string[] = ['===== dsh 日志（当前会话，' + DIAG_MAX_DSH_PAIRS + ' 对）====='];
+	const dshLogs = await latestDshLogPairs(fileService, dshRun, DIAG_MAX_DSH_PAIRS, await currentDshStartedAt(fileService, dshRun));
 	if (!dshLogs.length) {
-		dshParts.push('（没找到 host-*.log / harness-*.log）');
+		dshParts.push('（没找到当前会话的 host-*.log / harness-*.log）');
 	}
 	for (const uri of dshLogs) {
 		dshParts.push('----- ' + basename(uri.fsPath) + ' -----');

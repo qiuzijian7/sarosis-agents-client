@@ -69,7 +69,7 @@ import { createDiscordAdapter, createDiscordGateway } from './adapters/discord.j
 import { createWecomAdapter, handleWecomCallback } from './adapters/wecom.js';
 /* IM 应用凭据（**dsh 侧真源**，2026-10-27）：设置弹窗「渠道」页读写 `<dataRoot>/agent-im-accounts.json`；
    `config.feishu`（IDE 覆盖层）降级为兼容回落 —— 优先级 dsh 文件 → config → 环境变量。 */
-import { describeFeishu, describeFeishuApps, describePlatforms, migrateLegacyFeishu, resolveFeishu, resolveFeishuApp, resolvePlatform, saveFeishuApp, savePlatform } from './imCredentials.js';
+import { describeFeishu, describeFeishuApps, describePlatforms, migrateLegacyFeishu, readBotFeishuApps, resolveFeishu, resolveFeishuApp, resolvePlatform, saveBotFeishuApp, saveFeishuApp, savePlatform } from './imCredentials.js';
 /* 入站「上次是否在跑」的开关（2026-10-29）：重启 Host 后据此恢复，别让用户以为坏了。 */
 import { readFeishuAppsEnabled, readInboundEnabled, setFeishuAppEnabled, setInboundEnabled } from './imInboundState.js';
 /* ★ 2026-10-29：**跨 dataRoot 的入站长连接互斥锁**（见 imInboundLock.js 文件头）。
@@ -83,7 +83,7 @@ import { appIdOfEvent, feishuEventBus } from './feishuEventBus.js';
 import { createTeamService } from './team.js';
 import { createTeamBot } from './teamCreate.js';
 import { memoryBus } from './memoryBus.js';
-import { decideSkillDraft, ownedSkillsOf, ownedSkillsText, rememberStep } from './stepMemory.js';
+import { decideSkillDraft, rememberStep } from './stepMemory.js';
 import { distillRouteOf, makeStepDistiller } from './stepDistill.js';
 import { externalBots, externalBotRow, teamBus } from './teamBus.js';
 import { createRooms, installRooms, roomsApi } from './rooms.js';
@@ -114,7 +114,7 @@ import { installRelay } from './relay.js';
 // 只导入 `scanAgentsFromConfig` 会让每个 `/x/agents/*` 请求抛 `ReferenceError` ⇒ `dsh-host-webserver`
 // 的 catch 回**裸 400**（无 body）⇒ 侧栏整页白屏（用户报「agents 的 sideview 不可见」）。
 // 教训：这类"搬模块漏 import"只有真跑一次请求才会暴露 ⇒ 由 p3-96（页面交互探针）看守。
-import { agentsRootOf, dataRootOf, scanAgents, scanAgentsFromConfig } from './store.js';
+import { agentsBuiltinRootOf, agentsRootOf, dataRootOf, scanAgents, scanAgentsFromConfig } from './store.js';
 import { addApprovalTemplate, listApprovalTemplates, removeApprovalTemplate, templateGate } from './templates.js';
 import { registerAgentTools } from './tools.js';
 
@@ -270,9 +270,9 @@ const ROUTE_PREFIX = '/x/agents';
 
 /**
  * 展示用名册（只做黑名单过滤）。
- * ⚠ 只影响「侧栏名册 / 编辑区页面 / `/api/agents`（聊天欢迎卡与选择器读它）」，
- *   **不影响 preset 注册** —— `saros-claw` 仍是工作流画布 Run 的默认执行 agent，
- *   注销它的 preset 会让画布跑不起来（注册留着，只是不展示）。
+ * ⚠ 只影响「侧栏名册 / 编辑区页面 / `/api/agents`（聊天欢迎卡与选择器读它）」。
+ *   2026-11-09：主助理已删除，且按用户决策不做存量会话兼容层；
+ *   画布 Run 默认改为 `workflow-agent`。
  */
 /** 展示面名册：内置按 `.agent.md` 的 `userFacing: true` 白名单（与 IDE 同一份），自定义全显。 */
 const shownAgentsOf = (agents) => (agents || []).filter(a => isShownAgent(a));
@@ -316,41 +316,30 @@ function applyPersona(ctx, config) {
 	// ★ 2026-11-06「记忆收敛」S4：Bot 记忆由 @vssaros/dsh-memory 的 bot 轨注入（快照里的「本 Bot 的记忆」段），
 	//   本插件的人设段只剩人设正文与「你的技能」。
 
-	// ★ 2026-11-05 superagent v2：bot 自己的技能（团队步骤沉淀、经人批准，frontmatter `owner: bot:<id>`）。
-	//   技能本身由 vssaros-skills 注册给所有会话；这里只在**该 bot** 的人设段列出「你的技能」，让它知道先读哪几个。
-	//   和记忆同一口径：挂载即读 + 每分钟刷新；按会话冻结（保 prompt 缓存），新批准的技能在新会话生效。
-	let skillsCache = '';
-	const refreshSkills = () => (config.agentId
-		? ownedSkillsOf(config, config.agentId).then(list => { skillsCache = ownedSkillsText(list); }, () => { skillsCache = ''; })
-		: Promise.resolve());
-	void refreshSkills();
-	if (config.agentId) {
-		const skillsTimer = setInterval(() => { void refreshSkills(); }, 60_000);
-		skillsTimer.unref?.();
-		ctx.effect(() => () => { clearInterval(skillsTimer); });
+	// ★ 17.1 P1（2026-11-09）：`skills:` 由 `toPresetDefinition` 进 preset 声明，这里登记给
+	//   vssaros-skills 的进程内写服务 ⇒ 目录发布器按 agent scope 让它们绕过 tier 常驻可见。
+	//   旧做法（每 60s 扫盘 + `ownedSkillsText` 拼进人设段）退出主链路：同一件事两条真源、
+	//   定时改写 prompt 且能力包展开的技能被丢掉。服务不可用时（老版 skills 插件）静默降级，
+	//   技能本身仍由官方 registry 提供，只是不额外置顶。
+	const declaredSkills = Array.isArray(config.skills) ? config.skills.filter(s => typeof s === 'string' && s.trim()) : [];
+	if (declaredSkills.length && config.agentId) {
+		let svc = null;
+		try { svc = ctx.get?.('vssarosSkills') ?? ctx.vssarosSkills ?? null; } catch { /* 假 ctx 会抛 */ }
+		if (svc && typeof svc.pin === 'function') {
+			try { svc.pin(config.agentId, declaredSkills); } catch { /* 登记失败不影响会话 */ }
+		}
 	}
-	const frozenSkills = new WeakMap();
-	const skillsTextFor = (context) => {
-		const key = context?.agent?.session ?? context?.agent ?? context?.scope;
-		if (!key || typeof key !== 'object') { return skillsCache; }
-		if (!frozenSkills.has(key)) { frozenSkills.set(key, skillsCache); }
-		return frozenSkills.get(key);
-	};
 
 	// 人设正文与记忆快照**都为空**时不注册这条 section（空段没有信息，只是给系统提示塞一个空块）。
 	// 工具 allowlist 在下面独立注册，不受这个条件影响 ✓。
-	// bot 有 id 时也注册：它的技能清单要放进这一段（没有人设、没有记忆、也没有技能时 text 为空串）。
-	const hasSectionText = Boolean(staticPersona.trim()) || Boolean(config.agentId);
+	const hasSectionText = Boolean(staticPersona.trim());
 	if (hasSectionText) {
 		ctx.inject(['systemPrompt'], child => child.effect(() => child.systemPrompt.section({
 			name: PERSONA_SECTION_NAME,
 			order: sectionOrderOf(child),
 			// **函数形式**：每次装配按 `context.agent` 取该会话的当前人格（会话内切换过就是新的）；
 			// 没切换过 / 取不到 → 退回 preset 自带人设，行为与从前完全一致。有记忆快照就追加 ✓。
-			text: (context) => {
-				const base = switchedPersonaText(projections, context) ?? staticPersona;
-				return base + skillsTextFor(context);
-			},
+			text: (context) => switchedPersonaText(projections, context) ?? staticPersona,
 		})));
 	}
 
@@ -626,14 +615,17 @@ async function syncPresets(state, presets, config) {
 	 * 按扫描结果构造要注册的定义。
 	 * @param allowedAgentPresets `null` = 不挂 `tool-subagent`（第一阶段）；数组 = 挂上动态清单。
 	 */
-	const buildDesired = (allowedAgentPresets) => scan.agents.map((agent) => ({
-		key: agent.id,
-		agent,
-		...toPresetDefinition(agent, {
-			provider,
-			...(allowedAgentPresets ? { allowedAgentPresets } : {}),
-		}),
-	}));
+	const buildDesired = (allowedAgentPresets) => {
+		const desired = scan.agents.map((agent) => ({
+			key: agent.id,
+			agent,
+			...toPresetDefinition(agent, {
+				provider,
+				...(allowedAgentPresets ? { allowedAgentPresets } : {}),
+			}),
+		}));
+		return desired;
+	};
 
 	// ★ 2026-11-03 诊断（只记录）：真机 `Error: unknown tool "pwsh"` / `"read"` 排查用。
 	//   这两个工具由 `@deepseek-ai/dsh-tool-pwsh` / `dsh-tool-fs` 注册，而**顶层 profile 行被官方
@@ -762,7 +754,7 @@ async function syncPresets(state, presets, config) {
 	//     （supervisor 已改为 ready 后继续读）。
 	const lazyRequested = config?.presetMode !== 'eager' && process.env.VSSAROS_DSH_PRESET_MODE !== 'off';
 	const lazyMode = lazyRequested && !state.lazyFilled;
-	const recentPresets = lazyMode ? await recentSessionPresetIds(config, { limit: 8 }) : [];
+	const recentPresets = (lazyMode ? await recentSessionPresetIds(config, { limit: 8 }) : []);
 	mark(`定义构造 + 最近会话读取完成（wanted ${wantedKeys.length}，missing ${missingKeys.length}，recent ${recentPresets.length}）`);
 	const eagerKeys = lazyMode
 		? pickLazyEagerKeys(wantedKeys, { delegatable: delegatablePresetIds, recent: recentPresets, max: LAZY_EAGER_MAX })
@@ -1014,6 +1006,8 @@ function applyTopLevel(ctx, config) {
 		config,
 		/* 2026-11-04 多飞书应用：绑定/消息的应用为空时都按当前默认应用算（老绑定行为不变） */
 		defaultFeishuAppId: async () => (await resolveFeishu(config)).appId,
+		/* ★ 2026-11-09：Bot 设置页选的应用要真正承接 —— 入站路由与出站身份都以它为回落。 */
+		botApps: async () => readBotFeishuApps(config),
 		log: (level, msg) => {
 			try { (level === 'warn' ? console.warn : console.info)(`[vssaros-agents][im] ${msg}`); } catch { /* 忽略 */ }
 		},
@@ -1024,7 +1018,7 @@ function applyTopLevel(ctx, config) {
 		/* 配对（2026-10-27）：Hub 在 `pairing-required` 时登记请求 + 回码；
 		   准入判定把**已批准的人**并入白名单（与 config allowFrom 合并）。 */
 		pairing: {
-			approvedFor: (platform) => approvedUserIds(config, platform),
+			approvedFor: (platform, appId) => approvedUserIds(config, platform, appId),
 			request: (input) => requestPairing(config, input),
 		},
 		/* 死信：只在"被拒/失败"时记（duplicate / pairing-required 不记，见 deadLetters.js 头） */
@@ -1080,10 +1074,24 @@ function applyTopLevel(ctx, config) {
 		transport: createRawWsTransport({
 			resolve: () => resolveFeishu(config),
 		}),
-		/* 事件 → 与手动演练（action:'inbound'）**同一条**入口，策略/幂等/派发完全一致 */
-		onMessage: (msg) => state.bindingHub.handleInbound(msg),
-		/* ★ 2026-11-04：原始事件扇出给同进程订阅者（如 dsh-superagent）——同一应用只能有这一条连接 */
-		onRaw: (payload) => feishuEventBus().publish(appIdOfEvent(payload) || (state.feishuApps ? state.feishuApps.defaultAppId() : ''), payload),
+		/* ★ 2026-11-09：默认网关也必须**打上连接身份**。原来只传 msg（无 appId），
+		   路由把空应用折成「当前实时默认应用」；用户把默认应用 A 改成 B 但没重启连接时，
+		   A 连接收到的事件会被派给 B 的绑定并用 B 的 token 回复（串台）。
+		   现在注入 start 成功的快照 ⇒ A 的事件只认 A 的绑定，认不上就 unbound（fail-closed）。 */
+		onMessage: (msg) => state.bindingHub.handleInbound({
+			...msg,
+			appId: String(msg?.appId ?? '').trim() || (state.feishuApps ? state.feishuApps.defaultAppId() : ''),
+		}),
+		/* ★ 2026-11-09：原始事件一律按**这条连接**的身份扇出；事件头里的 app_id 只用来校验，
+		   不再拿它决定投给谁（否则与连接不符时会把事件发给另一个应用的订阅者）。 */
+		onRaw: (payload) => {
+			const mine = state.feishuApps ? state.feishuApps.defaultAppId() : '';
+			const claimed = appIdOfEvent(payload);
+			if (claimed && mine && claimed !== mine) {
+				console.warn(`[vssaros-agents][im-in] header.app_id=${claimed} 与连接身份 ${mine} 不符，按连接身份扇出`);
+			}
+			feishuEventBus().publish(mine, payload);
+		},
 		log: (level, msg) => {
 			try { (level === 'warn' ? console.warn : console.info)(`[vssaros-agents][im-in] ${msg}`); } catch { /* 忽略 */ }
 		},
@@ -1294,6 +1302,18 @@ function applyTopLevel(ctx, config) {
 		state.workspaceRegistry = child.workspaceRegistry;
 		return () => { state.workspaceRegistry = undefined; };
 	}));
+	/**
+	 * ★ 2026-11-09：群变更的 SSE 广播。`/x/agents/api/rooms-events` 挂着浏览器订阅者，
+	 *   rooms.create / reuseRoom 成功 ⇒ onChanged ⇒ 立刻推一帧，侧栏不必等 2s 轮询。
+	 *   Set 只存 res（响应对象），断开时 req.on('close') 自己摘掉 ⇒ 不泄漏。
+	 */
+	const roomEventClients = new Set();
+	const broadcastRoomChange = (kind, view) => {
+		const frame = `event: rooms-changed\ndata: ${JSON.stringify({ kind, room: { id: view?.id ?? '', name: view?.name ?? '' } })}\n\n`;
+		for (const res of [...roomEventClients]) {
+			try { res.write(frame); } catch { roomEventClients.delete(res); }
+		}
+	};
 	state.rooms = createRooms({
 		file: join(dataRootOf(config), 'agent-rooms.json'),
 		fallbackCwd: dataRootOf(config),
@@ -1303,6 +1323,7 @@ function applyTopLevel(ctx, config) {
 		agents: () => state.agents,
 		workspaces: () => state.workspaceRegistry,
 		append: () => loadAppendPluginRecord(),
+		onChanged: broadcastRoomChange,
 	});
 	ctx.effect(() => installRooms(ctx, state.rooms));
 	ctx.effect(() => teamBus().provideGroups(state.rooms));
@@ -1385,6 +1406,35 @@ function applyTopLevel(ctx, config) {
 		},
 		/** 本插件实际扫描的目录（调用方排查"文件放错地方"时很有用）。 */
 		agentsRoot: () => agentsRootOf(config),
+		/**
+		 * ★ 2026-11-08 换架构：把「按 preset 查 agent 声明」这一个真源暴露给技能侧，
+		 *   避免 `vssaros-skills` 自己再拼一遍双根路径（原来只读 `<dataRoot>/agents/`，
+		 *   **21 个内置 agent 的 `skills[]`/`capabilities[]` 因此永远读不到**）。
+		 *   返回 `{ agentId, capabilities, skills, declared }`；查不到 ⇒ declared:false。
+		 */
+		attachmentsOf: async (preset) => {
+			const text = String(preset ?? '').trim();
+			const agentId = text.startsWith('vssaros-') ? text.slice('vssaros-'.length).trim() : '';
+			const empty = { agentId: '', capabilities: [], skills: [], declared: false };
+			if (!agentId || agentId === 'agent') { return empty; }
+			try {
+				const scan = await scanAgentsFromConfig(config);
+				const hit = scan.agents.find(a => String(a?.id ?? '') === agentId || String(a?.agent?.id ?? '') === agentId);
+				if (!hit) { return { ...empty, agentId }; }
+				const rec = hit.agent ?? hit;
+				return {
+					agentId,
+					capabilities: Array.isArray(rec.capabilities) ? rec.capabilities : [],
+					skills: Array.isArray(rec.skills) ? rec.skills : [],
+					declared: (rec.capabilities?.length ?? 0) > 0 || (rec.skills?.length ?? 0) > 0,
+				};
+			} catch (error) {
+				console.warn(`[vssaros-agents] attachmentsOf(${preset}) 失败：${String(error?.message ?? error)}`);
+				return { ...empty, agentId };
+			}
+		},
+		/** 诊断：内置根有没有注入（换架构后 21 个内置 agent 的声明全靠它）。 */
+		agentsBuiltinRoot: () => agentsBuiltinRootOf(config) ?? '',
 	});
 
 	ctx.inject(['webServer', 'connection'], page => page.effect(() => page.webServer.register({
@@ -1690,6 +1740,9 @@ function applyTopLevel(ctx, config) {
 							feishu: await describeFeishu(config),
 							/* 2026-11-04：全部飞书应用（默认在前），绑定按 appId 选；secret 只以 hasSecret 出现 */
 							feishuApps: await describeFeishuApps(config),
+							/* ★ 2026-11-09：每个 Bot 选用的飞书应用（botId → appId；空 = 默认应用）。
+							   Bot 设置页的「飞书配置」下拉消费这份映射，secret 不在这里。 */
+							botFeishuApps: await readBotFeishuApps(config),
 							/* 多渠道（2026-10-27）：每平台的掩码状态 + 字段定义。
 							   ⚠ secret 只以 `hasSecret` 出现，明文永不出这个进程。 */
 							channels: await describePlatforms(config),
@@ -1792,8 +1845,13 @@ function applyTopLevel(ctx, config) {
 									})()
 									/* 测试发送（2026-10-27）：用**真实适配器**给这条绑定发一条消息 ——
 									   "配完了到底通不通"不必再等真跑一次对话；失败原因原样返回。 */
+									/* ★ 2026-11-09：设置某个 Bot 用哪个飞书应用（botId → appId，空 = 默认）。
+									   应用凭据本身仍由 credentials / feishu-app 管，这里只写映射。 */
+									: action === 'set-bot-app' ? await (async () => ({
+										botFeishuApps: await saveBotFeishuApp(config, { ...(body || {}), actor: body?.actor }),
+									}))()
 									: action === 'test' ? await state.bindingHub.testBinding(body?.id)
-										: (() => { throw Object.assign(new Error(`未知 action：${action}（支持 create/update/delete/inbound/inbound-start/inbound-stop/credentials/feishu-app/test）`), { httpStatus: 400 }); })();
+										: (() => { throw Object.assign(new Error(`未知 action：${action}（支持 create/update/delete/inbound/inbound-start/inbound-stop/credentials/feishu-app/set-bot-app/test）`), { httpStatus: 400 }); })();
 						res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
 						res.end(JSON.stringify(result));
 					} else {
@@ -1814,6 +1872,16 @@ function applyTopLevel(ctx, config) {
 			//   POST { action:'create', members, name?, notice?, admin?, mode?, workspaceId?, cwd? }
 			//   POST { action:'update', id, name?, notice?, admin?, mode?, members? }
 			//   POST { action:'flags', id, pinned?, hidden? } / { action:'delete', id }
+			// ★ 2026-11-09：群变更 SSE（建群成功即时通知侧栏）。浏览器用 fetch 订阅，
+			//   断线自行重连；旧版 Host 没这个端点 ⇒ 404，客户端静默回落 2s 轮询。
+			if (pathname === `${ROUTE_PREFIX}/api/rooms-events` && req.method === 'GET') {
+				sseHead(res);
+				res.write(`event: ready\ndata: {}\n\n`);
+				roomEventClients.add(res);
+				const beat = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* 已断开 */ } }, 15_000);
+				req.on('close', () => { clearInterval(beat); roomEventClients.delete(res); try { res.end(); } catch { /* 已断开 */ } });
+				return;
+			}
 			if (pathname === `${ROUTE_PREFIX}/api/rooms`) {
 				const body = req.method === 'POST' ? await readJsonBody(req).catch(() => ({})) : undefined;
 				const out = await roomsApi(state.rooms, { method: req.method, query: url.searchParams, body });
@@ -1931,8 +1999,10 @@ function applyTopLevel(ctx, config) {
 				return;
 			}
 			// 新建 Agent（2026-10-16，方案 A / Q7 ①：插件直接写 .agent.md，只新建不覆盖 —— lib/create.js 头注释）。
-			// POST { action: 'validate', draft } ⇒ 只校验，返回 errors / warnings / 序列化原文（向导实时预览）；
-			// POST { action: 'create', draft } ⇒ 写盘 + 立刻增量同步 preset（不用重启 Host）。GET 仍走下面的花名册。
+			// POST { action: 'validate', draft } ⇒ 只校验，返回 errors / warnings / 序列化原文
+			//   （2026-11-09 起由聊天框侧栏「新建 Bot」表单在提交前调用；旧 SSR 向导已下线，别再找 createPage.js）；
+			// POST { action: 'create', draft } ⇒ 写盘 + 立刻增量同步 preset（不用重启 Host），
+			//   回 registered + syncError ⇒ 客户端必须据此给反馈，不许无条件提示「已新建」。GET 仍走下面的花名册。
 			if (pathname === `${ROUTE_PREFIX}/api/agents` && req.method === 'POST') {
 				try {
 					const body = await readJsonBody(req);
@@ -1949,22 +2019,36 @@ function applyTopLevel(ctx, config) {
 						result = await previewAgentDraft(config, parsed.draft);
 					} else if (action === 'create') {
 						const created = await createAgentFromDraft(config, body?.draft);
+						let syncError = '';
 						if (state.presets) {
 							await syncPresets(state, state.presets, config).catch(e => {
-								state.errors = [...state.errors, `同步 preset 失败：${String(e?.message ?? e)}`];
+								syncError = `同步 preset 失败：${String(e?.message ?? e)}`;
+								state.errors = [...state.errors, syncError];
 							});
 						}
-						result = { ...created, registered: state.roster.includes(created.presetId) };
+						// ★ 2026-11-09：同步失败不再只塞进 state.errors（前端只读 HTTP 200 会提示「已新建」，
+						//   而列表按 registered 把未注册 bot 隐藏 ⇒ 用户看到成功却找不到）。现在把原因一并回给调用方。
+						result = {
+							...created,
+							registered: state.roster.includes(created.presetId),
+							...(syncError ? { syncError } : {}),
+						};
 					} else if (action === 'update') {
 						/* 改已有 Agent 的元数据（2026-10-25，给 dsh 侧设置页用）。
 						   与 create 同一条序列化/校验链，改完立刻重注册 preset（人设变化要马上生效）。 */
 						const updated = await updateAgentFromDraft(config, body?.id, body?.draft);
+						let updateSyncError = '';
 						if (state.presets) {
 							await syncPresets(state, state.presets, config).catch(e => {
-								state.errors = [...state.errors, `同步 preset 失败：${String(e?.message ?? e)}`];
+								updateSyncError = `同步 preset 失败：${String(e?.message ?? e)}`;
+								state.errors = [...state.errors, updateSyncError];
 							});
 						}
-						result = { ...updated, registered: state.roster.includes(updated.presetId) };
+						result = {
+							...updated,
+							registered: state.roster.includes(updated.presetId),
+							...(updateSyncError ? { syncError: updateSyncError } : {}),
+						};
 					} else if (action === 'seen') {
 						// 点开一个 Agent ⇒ 记「看到了此刻」（侧栏未读角标清零；lib/seen.js 头注释有口径）
 						const id = typeof body?.id === 'string' ? body.id.trim() : '';

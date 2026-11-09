@@ -65,6 +65,8 @@ function fieldsOf(md) {
 		systemPrompt: norm(parsed.systemPrompt),
 		skills: JSON.stringify([...(a.skills ?? [])].sort()),
 		tools: JSON.stringify([...(a.tools ?? [])].sort()),
+		// ★ 2026-11-08 P1：能力包是身份字段，回写漂移必须被 --check 抓到
+		capabilities: JSON.stringify([...(a.capabilities ?? [])].sort()),
 	};
 }
 

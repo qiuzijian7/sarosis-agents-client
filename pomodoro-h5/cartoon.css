@@ -1,0 +1,167 @@
+/* cartoon.css —— 卡通番茄钟独立入口样式（Designer 规范 cartoon-spec.html → 落地版）
+   - 纯前端、零外部依赖、可离线：无任何字体 CDN / 图标库 / 图片外链。
+   - 卡通装饰 = 内联 SVG（番茄+叶子+表情），绝不用 emoji。
+   - 数字用系统圆体/粗体栈渲染大号数字 + 白描边 text-shadow，不引外部字体。
+   - 明亮糖果色 + 大圆角 + 柔和投影；阶段清晰色差（专注红 / 休息蓝）；错误态用红系。
+   - 移动端优先：按钮/触控 ≥48px、100dvh + safe-area-inset-*、touch-action:manipulation。
+ */
+
+/* ============ 全局显隐兜底 ============ */
+/* 作者样式 display 会盖过浏览器 UA 的 [hidden]{display:none}，必须强制覆盖，
+   否则错误横幅无法真正隐藏（与 styles.css / pixel.css 同源约定）。 */
+[hidden] { display: none !important; }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+
+/* ============ 设计令牌（CSS 自定义属性，逐字对齐 cartoon-spec.html） ============ */
+:root {
+  --bg:        #FFF3E0;   /* 背景：奶油桃色 */
+  --panel:     #FFFFFF;   /* 卡片面板：白 */
+  --surface-2: #FFE3C2;   /* 浅桃色面板底（计时区） */
+  --ink:       #3A2E2E;   /* 正文：深棕（铺白/奶油上 ≈13:1） */
+  --muted:     #6B5D5A;   /* 次要灰棕（铺白 ≈6.5:1，≥4.5，不用 0.3 透明灰字） */
+  --primary:   #D7352F;   /* 专注/主按钮：糖果红（白字 5.0:1） */
+  --primary-d: #B5302B;   /* 主按钮底部实影（同色深一档） */
+  --break:     #1C7ED6;   /* 休息/次按钮：糖果蓝（白字 4.7:1） */
+  --break-d:   #1769AA;   /* 次按钮底部实影 */
+  --error:     #C0392B;   /* 错误横幅底：红系（白字 5.44:1，错误态用红不用绿） */
+  --time-ink:  #3A2E2E;   /* 大号数字色（铺白，高对比） */
+  --line:      #F0D9C2;   /* 轻描边 */
+  --focus:     #1769AA;   /* 键盘焦点框：深蓝（可见度高） */
+  --radius:        24px;  /* 大圆角 */
+  --radius-lg:     28px;  /* 卡片圆角 */
+  --radius-pill:   999px; /* 胶囊按钮 */
+  --shadow:    0 8px 18px rgba(58,46,46,.16);          /* 柔和投影（带模糊） */
+  --btn-shadow-primary: 0 5px 0 0 var(--primary-d);   /* 糖果按钮立体底影 */
+  --btn-shadow-break:   0 5px 0 0 var(--break-d);
+  --tap:       48px;      /* 触控最小高度（≥44） */
+  --fs-time:   clamp(56px, 22vw, 88px);  /* 大号数字，随屏缩放不溢出 */
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "PingFang SC", "Yuanti SC", "Hiragino Sans GB", "Microsoft YaHei",
+    system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  touch-action: manipulation;            /* 去 300ms 延迟，不禁用缩放 */
+  min-height: 100dvh;
+}
+
+/* ============ 布局骨架 ============ */
+.toon-app {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: calc(env(safe-area-inset-top) + 16px) 16px calc(env(safe-area-inset-bottom) + 16px);
+  max-width: 420px;
+  margin: 0 auto;
+}
+.toon-top { display: flex; align-items: center; gap: 10px; }
+.toon-logo { width: 40px; height: 40px; flex: 0 0 auto; }
+.toon-title { font-size: 20px; font-weight: 800; margin: 0; }
+.toon-phase {
+  margin-left: auto;
+  font-size: 14px;
+  color: var(--muted);
+  font-weight: 700;
+}
+.toon-app.is-focus .toon-phase { color: var(--primary); }
+.toon-app.is-break  .toon-phase { color: var(--break); }
+
+.toon-stage {
+  background: var(--surface-2);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 22px 16px 26px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.toon-tomato { width: 96px; height: 96px; }
+.toon-time {
+  font-size: var(--fs-time);
+  font-weight: 800;
+  line-height: 1;
+  color: var(--time-ink);
+  letter-spacing: 2px;
+  /* 卡通描边/阴影：白描边 + 柔和投影，靠 text-shadow 多层叠加 */
+  text-shadow:
+    2px 2px 0 #fff, -2px 2px 0 #fff, 2px -2px 0 #fff, -2px -2px 0 #fff,
+    0 6px 10px rgba(58,46,46,.18);
+  font-variant-numeric: tabular-nums;     /* 等宽数字，跳秒不抖 */
+}
+.toon-state { color: var(--muted); font-size: 15px; font-weight: 700; margin: 0; }
+
+/* ============ 控制按钮 ============ */
+.toon-controls { display: flex; gap: 12px; }
+.toon-btn {
+  flex: 1;
+  min-height: var(--tap);
+  padding: 0 14px;
+  font: inherit;
+  font-weight: 800;
+  font-size: 17px;
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: transform .06s ease, box-shadow .06s ease, filter .06s ease;
+}
+.toon-btn--primary { background: var(--primary); box-shadow: var(--btn-shadow-primary); }
+.toon-btn--break   { background: var(--break);   box-shadow: var(--btn-shadow-break); }
+/* hover：轻微抬起 */
+.toon-btn:hover:not(:disabled) { transform: translateY(-2px); filter: brightness(1.04); }
+/* active：按下，底影收没 */
+.toon-btn:active:not(:disabled) { transform: translateY(3px); box-shadow: none; }
+/* 键盘焦点：深蓝描边，清晰可见 */
+.toon-btn:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+/* 禁用：降透明 + 去除底影 + 禁用指针，与正常态明显区分 */
+.toon-btn:disabled {
+  opacity: .5;
+  box-shadow: none;
+  transform: none;
+  cursor: not-allowed;
+  filter: grayscale(.3);
+}
+
+/* ============ 今日数 ============ */
+.toon-today {
+  align-self: center;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+  background: var(--panel);
+  border-radius: var(--radius-pill);
+  padding: 10px 18px;
+  box-shadow: var(--shadow);
+}
+.toon-today b { color: var(--primary); font-size: 20px; }
+
+/* ============ 错误态横幅（红系，localStorage 写入失败） ============ */
+.toon-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+  background: var(--error);
+  color: #fff;
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: var(--shadow);
+}
+.toon-error .toon-btn {
+  flex: 0 0 auto;
+  min-height: 40px;
+  font-size: 13px;
+  background: #fff;
+  color: var(--error);
+  box-shadow: none;
+}
+.toon-error .toon-btn:hover:not(:disabled) { filter: none; transform: none; }

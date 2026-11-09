@@ -12,9 +12,11 @@
 //    presetIdOf 做过 slugify ✓）。API 不在（老版本 ⇒ 404）⇒ 退回 remote.agentPresets 的 name/description，
 //    原因留痕 state.welcomeApiMissing（不伪装成"没有 agent" ✗）。
 // ③ **凭据两次尝试**：先带 ?token= 再不带（同 client.agents.js 的 personaUrl 口径 ✓）。
-// ④ **按钮都是"交接"不是"自己做"**：Agent 主页 / 探索记忆 / 新建 Agent = 写同源 localStorage 焦点交接
-//    （vssaros.agents.focus，值 = 前缀:参数|时间戳）+ 桥 openModulePage('/x/agents/')；模型行 = 桥 openAgentSettings。
-//    桥缺方法 ⇒ bridge.notify 说出来，不静默 ✗。
+// ④ **按钮都是"交接"不是"自己做"**（2026-11-09 改）：Agent 主页 / 探索记忆 / 新建 Agent 都派发
+//    `vssaros:open-bots` 事件，由聊天框侧栏「Bots」页签接住（create ⇒ 直接弹新建表单）；
+//    没人接住就 bridge.notify 明说去哪，绝不静默。模型行 = 桥 openAgentSettings。
+//    ⚠ 旧版的 localStorage 焦点键 + openModulePage('/x/agents/') 已废弃 —— 那个 SSR 工作台
+//    下线后是 404（且焦点键全仓无读端）⇒ 点了必定"没反应"，别再照抄。
 // ⑤ order 取 **-5**：官方 todo=0 / goal=10 / queue=20，我们 vssaros-todo=5 / vssaros-delegate=15 ⇒ -5 不 tie，
 //    且排在最前（欢迎卡应当在任务清单之上）✓。
 window.__ModuleLoader__.load({
@@ -29,7 +31,8 @@ window.__ModuleLoader__.load({
 		const ENTRY_ID = "vssaros-bot-welcome";
 		const ENTRY_ORDER = -5;
 		const API = "/x/agents/api/agents";
-		const FOCUS_KEY = "vssaros.agents.focus";
+		// ⚠ 原 `vssaros.agents.focus` 焦点键已删：SSR detail 页下线后全仓无读端，
+		//   capsule.js 那半边仍在写（遗留），欢迎卡的交接统一走 vssaros:open-bots 事件。
 		const ROSTER_TTL_MS = 30000;
 		const VSSAROS_PREFIX = "vssaros-";
 		/* vssaros:bot-identity v1 —— 逐字副本，真源 vssaros-agents/lib/core/botIdentity.js（守卫 dsh-plugins/check-bot-identity.mjs） */
@@ -264,10 +267,22 @@ window.__ModuleLoader__.load({
 				} catch { return undefined; }
 			};
 			const say = (text) => { try { if (bridge && bridge.notify) { bridge.notify("attention", text); } } catch { /* 通知失败不阻塞 */ } };
+			/** ★ 2026-11-09：Agents SSR 工作台已下线 ⇒ /x/agents/ 是 404，旧的
+			 *   「写 FOCUS_KEY（全仓无读端）+ openModulePage」点了必定静默无反应。
+			 *   改成与聊天框侧栏「Bots」页签的**同源事件**交接（监听方 = client.workspaces.js）；
+			 *   detail.handled 由监听方回填 ⇒ 没人接住（窄轨 / chunk 未加载 / 老宿主）时明确说出去哪。 */
 			const handoff = (prefix, arg) => {
-				try { if (typeof localStorage !== "undefined") { localStorage.setItem(FOCUS_KEY, handoffValue(prefix, arg, Date.now())); } } catch { /* 存不了也照样打开页面 */ }
-				if (!bridge || typeof bridge.openModulePage !== "function") { say("当前宿主不支持从聊天框打开 Agents 页（需要桥版本 3+）"); return; }
-				Promise.resolve(bridge.openModulePage("/x/agents/")).catch((e) => say("打开 Agents 页失败：" + String((e && e.message) || e)));
+				const detail = { action: prefix === "create" ? "new-bot" : "view", from: prefix, id: String(arg || ""), handled: false };
+				try {
+					if (typeof window !== "undefined" && typeof window.CustomEvent === "function") {
+						window.dispatchEvent(new window.CustomEvent("vssaros:open-bots", { detail }));
+					}
+				} catch { /* 老环境没有 CustomEvent ⇒ 走下面的文字指引 */ }
+				if (!detail.handled) {
+					say(prefix === "create"
+						? "Agents 工作台已下线：请展开左侧栏 → 「Bots」页签 → ＋ → 新建 Bot"
+						: "Agents 工作台已下线：请展开左侧栏 → 「Bots」页签查看 Bot");
+				}
 			};
 
 			function Banner(props) {

@@ -1,6 +1,7 @@
 ---
 name: generate-run-commands
 description: Generate or modify run commands for the current session. Use when the user wants to set up or update run commands that appear in the session's Run button.
+tier: extended
 ---
 <!-- Customize this skill and select save to override its behavior. Delete that copy to restore the built-in behavior. -->
 

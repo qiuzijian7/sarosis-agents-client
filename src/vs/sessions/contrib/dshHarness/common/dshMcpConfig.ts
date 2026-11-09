@@ -33,11 +33,19 @@ export interface IDshMcpServerSpec {
 	readonly headers?: Readonly<Record<string, string>>;
 }
 
+/**
+ * ★ 2026-11-08：解析期可判定的 MCP 能力状态（对齐 DS Bot 的 needs-approval 状态机）。
+ * 连接期的 connecting / ready / error 由运行时 dsh-mcp-client 决定，这里只标解析期能确定的。
+ */
+export type McpServerState = 'ready' | 'needs-approval' | 'disabled' | 'error';
+
 export interface IDshMcpSkip {
 	/** 配置里的服务器名。 */
 	readonly name: string;
 	/** 跳过原因（用户可见，别只说"不支持"）。 */
 	readonly reason: string;
+	/** 结构化状态；缺省按 error 处理（老配置零回归）。 */
+	readonly state?: McpServerState;
 }
 
 export interface IDshMcpParseResult {
@@ -98,7 +106,10 @@ export function parseMcpServers(
 	}
 	const seen = new Set<string>();
 	for (const [name, raw] of Object.entries(entries as Record<string, unknown>)) {
-		const skip = (reason: string) => skipped.push({ name, reason });
+		// ★ 2026-11-08：结构化状态（对齐 DS Bot 的 needs-approval 状态机，但不引入第二套 UI）。
+	// state 只表达**解析期可判定**的状态；连接期 connecting/ready/error 属于运行时
+	// dsh-mcp-client，不在这里伪造。缺省 error，只有「配置合法但等用户批准」才是 needs-approval。
+	const skip = (reason: string, state: McpServerState = 'error') => skipped.push({ name, reason, state });
 		if (!SERVER_NAME_RE.test(name)) {
 			skip(`服务器名不满足 dsh 的 [A-Za-z0-9_-]{1,32}：${name}`);
 			continue;
@@ -175,6 +186,13 @@ export function parseMcpServers(
 		};
 
 		if (type === 'stdio' || (!type && typeof config.command === 'string')) {
+			// ★ 2026-11-08 P1（R1 工具授权缺口，对齐 DS Bot）：stdio 会在本机起外部进程，
+			//   必须显式 `approved: true` 才挂；缺省/未写一律跳过，不让一份随手拷来的 mcp.json
+			//   静默获得命令执行能力。http 服务器不弹进程，不受这条约束。
+			if (config.approved !== true) {
+				skip('stdio 服务器未批准（在 mcp.json 里给该条加 "approved": true 才会启动本机进程）', 'needs-approval');
+				continue;
+			}
 			const command = typeof config.command === 'string' ? resolve(config.command.trim()) : undefined;
 			if (command === undefined) {
 				skip(typeof config.command === 'string' ? `command 里有无法解析的占位符：${config.command}` : 'stdio 服务器缺 command');
@@ -229,6 +247,24 @@ export function parseMcpServers(
 		skip(`未识别的 type：${type || '(缺省)'}（dsh 侧只认 stdio / http）`);
 	}
 	return { servers, skipped };
+}
+
+/**
+ * ★ 2026-11-08：把解析结果汇总成能力状态视图（DS Bot `capabilityStatusesView` 的等价物）。
+ * `ready` = 会被挂载的服务器；其余按 state 分组。`needs-approval` 单独列出，
+ * 让 UI / 模型知道「这台不是坏了，只是等批准」——这是布尔 approved 表达不出来的信息。
+ */
+export function mcpStateView(parsed: IDshMcpParseResult) {
+	const rows: { name: string; state: McpServerState; reason: string }[] = [];
+	for (const server of parsed?.servers ?? []) {
+		rows.push({ name: server.serverName, state: 'ready', reason: '' });
+	}
+	for (const item of parsed?.skipped ?? []) {
+		rows.push({ name: item.name, state: item.state ?? 'error', reason: item.reason ?? '' });
+	}
+	const counts: Record<McpServerState, number> = { ready: 0, 'needs-approval': 0, disabled: 0, error: 0 };
+	for (const row of rows) { counts[row.state] += 1; }
+	return { rows, counts, pendingApproval: counts['needs-approval'] > 0 };
 }
 
 /** 覆盖层里的行 id：`mcp-<serverName>`（稳定、可预期，便于人工核对与将来的停用）。 */

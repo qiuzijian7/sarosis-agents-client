@@ -1,11 +1,12 @@
 /**
  * VsSaros addition: the Overview's team work — requests and teams waiting for a person, team steps, skill drafts from the
- * memory system, reusable workflows, Bot drafts — and, read-only, the retired team plans (2026-11-06).
+ * memory system, Bot drafts — and, read-only, the retired team plans (2026-11-06).
+ * ★ 2026-11-09: the reusable-workflows / TeamFlow section was removed from this panel (user request); the Host-side
+ *   workflow data and adapter remain, so team staffing can still reuse saved workflows.
  */
-import { useState } from 'react'
 import { usePoll } from './api.ts'
 import type { StepsView } from '../app/steps.ts'
-import { Button, Input } from './controls.tsx'
+import { Button } from './controls.tsx'
 import { useAction, usePanel } from './provider.tsx'
 import { Hint, Section } from './widgets.tsx'
 import { ApprovalCard, MiniFlow, StaffingList, StepMembers, useWork } from './work.tsx'
@@ -35,30 +36,8 @@ export function TeamPlans() {
   const retro = usePoll(() => call('GET team/retrospective'), [], 10_000)
   const approveBot = useAction((id: string) => call('POST team/approvals/:id/approve', { id }), { reload: drafts.reload })
   const rejectBot = useAction((id: string) => call('POST team/approvals/:id/reject', { id }), { reload: drafts.reload })
-  const saveWorkflow = useAction((id: string) => call('POST team/workflows/:id/save', { id }), { reload: retro.reload })
-  // VsSaros change (2026-11-06): a saved workflow runs as v2 — a request to the desk, whose team a person agrees to.
-  const [ranWorkflow, setRanWorkflow] = useState('')
-  const runWorkflow = useAction(async (id: string) => {
-    const done = await call('POST team/workflows/:id/run', { id })
-    setRanWorkflow(t('team.wfRunSent', { name: done.workflow.name }))
-    return done
-  })
-  // VsSaros addition (superagent v2, P5): the TeamFlow adapter, for one TeamFlow workspace path.
-  const [tfCwd, setTfCwd] = useState('')
-  const [tfResult, setTfResult] = useState('')
-  const tfExport = useAction(async (id: string) => {
-    const done = await call('POST team/workflows/:id/teamflow', { id, body: { cwd: tfCwd.trim() } })
-    setTfResult(t(done.runnable ? 'team.tfExported' : 'team.tfExportedRef', { team: done.teamId, lost: done.lossy.join('；') }))
-    return done
-  }, { reload: retro.reload })
-  const tfImport = useAction(async (cwd: string) => {
-    const done = await call('POST team/teamflow/import', { body: { cwd } })
-    setTfResult(t('team.tfImported', { count: String(done.imported.length) }))
-    return done
-  }, { reload: retro.reload })
   const waiting = drafts.data?.waiting ?? []
   const archivedSkills = retro.data?.skills ?? []
-  const workflows = retro.data?.workflows ?? []
   const work = useWork()
   const teams = work.proposals ?? []
   const teamTickets = work.teams
@@ -81,7 +60,8 @@ export function TeamPlans() {
           <div className="dt-row-title">{team.ticket.title} <span className="dt-tag" data-tone="neutral">
             {t('team.stepsDone', { done: String(team.steps.filter(step => step.state === 'ready').length), total: String(team.steps.length) })}</span></div>
           {team.budget && <TeamBudget ticketId={team.ticket.id} budget={team.budget} />}
-          <MiniFlow team={team} onOpen={() => navigate({ page: 'work', query: { ticket: team.ticket.id } })} />
+          {/* ★ 2026-11-09：三视图已并入「执行」页签，深链直接指 execution（work 只是兼容别名）。 */}
+          <MiniFlow team={team} onOpen={() => navigate({ page: 'execution', query: { ticket: team.ticket.id } })} />
           <StepMembers team={team} />
         </div>
       </li>)}</ul>
@@ -105,33 +85,9 @@ export function TeamPlans() {
       </li>)}</ul>
     </Section>}
     {archivedSkills.length > 0 && <Hint>{t('team.skillsArchived', { count: String(archivedSkills.length) })}</Hint>}
-    {workflows.length > 0 && <Section title={t('team.workflows')} count={workflows.length}>
-      <div className="dt-form" data-testid="team-teamflow">
-        <label className="dt-field"><span>{t('team.tfWorkspace')}</span>
-          <Input value={tfCwd} onChange={event => setTfCwd(event.target.value)} placeholder={t('team.tfWorkspaceHint')} /></label>
-        <div className="dt-row-actions">
-          <Button variant="outline" size="sm" disabled={tfImport.busy || !tfCwd.trim()} onClick={() => { void tfImport.run(tfCwd.trim()) }}>{t('team.tfImport')}</Button>
-        </div>
-        {tfResult && <p className="dt-hint" data-testid="team-teamflow-result">{tfResult}</p>}
-        {ranWorkflow && <p className="dt-hint" data-testid="team-workflow-run">{ranWorkflow}</p>}
-      </div>
-      <ul className="dt-list dt-cards">{workflows.map(workflow => <li key={workflow.id} className="dt-row dt-link">
-        <div className="dt-row-main">
-          <div className="dt-row-title">{workflow.name}
-            {workflow.state === 'draft' ? <span className="dt-tag" data-tone="warning">{t('team.wfDraft')}</span>
-              : <span className="dt-tag" data-tone="success">v{workflow.version}</span>}
-            {workflow.source === 'teamflow' && <span className="dt-tag" data-tone="neutral">TeamFlow</span>}</div>
-          <div className="dt-row-meta"><span>{t('team.wfRuns', { runs: String(workflow.runs), ok: String(workflow.ok) })}</span>
-            <span>{workflow.steps.length} {t('team.wfSteps')}</span><span>{workflow.triggers.join(' · ')}</span></div>
-        </div>
-        <div className="dt-row-actions">
-          {workflow.state === 'draft'
-            ? <Button variant="primary" size="sm" disabled={saveWorkflow.busy} onClick={() => { void saveWorkflow.run(workflow.id) }}>{t('team.wfSave')}</Button>
-            : <Button variant="outline" size="sm" disabled={runWorkflow.busy} onClick={() => { void runWorkflow.run(workflow.id) }}>{t('team.wfRun')}</Button>}
-          <Button variant="outline" size="sm" disabled={tfExport.busy || !tfCwd.trim()} onClick={() => { void tfExport.run(workflow.id) }}>{t('team.tfExport')}</Button>
-        </div>
-      </li>)}</ul>
-    </Section>}
+    {/* ★ 2026-11-09（用户要求）：「团队工作流」UI 区块已移除。
+        Host 侧的 team/retrospective.workflows、team/workflows/:id/*、team/teamflow/* 路由与适配器
+        全部保留（组队匹配 / 沉淀仍依赖它们），只是不再在侧栏展示、不再提供手工保存/运行/导入导出。 */}
     {waiting.length > 0 && <Section title={t('team.approval')} count={waiting.length}>
       <ul className="dt-list dt-cards">{waiting.map(draft => <li key={draft.id} className="dt-row dt-link">
         <div className="dt-row-main">

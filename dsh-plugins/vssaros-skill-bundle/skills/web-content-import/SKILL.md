@@ -1,9 +1,10 @@
 ---
 name: web-content-import
-description: 多平台内容导入手册（web-content-import）—— 当用户让你把某个链接的内容抓下来 / 存进知识库 / 转成 Markdown，或直接丢来小红书、抖音、B站、快手、微博、知乎、微信公众号、掘金、CSDN、YouTube、TikTok 的帖子、视频、文章链接（含 xhslink.com、b23.tv、youtu.be 等短链），并期望你读它、总结它、归档它时使用。给出按平台分流的抓取路径（静态文章走 web_extract、强 SPA 与登录墙走 browser 工具、视频走随包自带的 yt-dlp 取元信息与字幕）、图片本地化与相对引用规则，并按既有约定把产物落到知识库 `库/raw/<slug>.md`（素材层，无 frontmatter）。Agent 无法触发知识库视图那个「导入链接 / URL」按钮 —— 本手册讲的正是"不靠那个按钮，你自己能做到哪一步"。
+description: 多平台内容导入手册（web-content-import）—— 当用户让你把某个链接的内容抓下来 / 存进知识库 / 转成 Markdown，或直接丢来小红书、抖音、B站、快手、微博、知乎、微信公众号、掘金、CSDN、YouTube、TikTok 的帖子、视频、文章链接（含 xhslink.com、b23.tv、youtu.be 等短链），并期望你读它、总结它、归档它时使用。给出按平台分流的抓取路径（静态文章走 web_extract、强 SPA 与登录墙走 browser 工具、视频走随包自带的 yt-dlp 取元信息与字幕）、图片本地化与相对引用规则，并按既有约定把产物落到知识库 `数据源/raw/<slug>.md`（素材层，无 frontmatter）。Agent 无法触发知识库视图那个「导入链接 / URL」按钮 —— 本手册讲的正是"不靠那个按钮，你自己能做到哪一步"。
 activation: auto
 match: ["小红书", "抖音", "b站", "bilibili", "知乎", "微信公众号", "公众号", "youtube", "tiktok", "快手", "微博", "掘金", "csdn", "存进知识库", "存到知识库", "导入链接", "抓取链接", "这个链接", "这篇文章", "这个视频", "这个帖子", "转成 markdown", "转成markdown", "转成md", "转 markdown", "视频字幕", "文章归档"]
 category: research
+tier: core
 ---
 
 <!-- 同步指针：本技能只讲「怎么抓、抓成什么形状、放哪」；能力边界由产品实现决定，改链路时同步：
@@ -14,12 +15,12 @@ category: research
      · 输出形状：browser/views/knowledgeBase/kbUrlScraper.ts（composeArticleMarkdown / composeVideoMarkdown /
        slugifyTitle / planImagePath / parseSubtitlesToText）
      · 宿主「导入链接」全流程：browser/kbImportController.ts（importUrl：reader-mode → OG → yt-dlp 元信息
-       → 字幕 → 图片本地化 → 落 库/raw/<slug>.md）
+       → 字幕 → 图片本地化 → 落 数据源/raw/<slug>.md）
      · agent 侧唯一的浏览器工具：`browser`（单工具 + `op` 参数；登录墙闭环是 `op: "login"` + `done: true`，
        实现见 dsh-plugins/vssaros-browser/lib/core/loginProbe.js）
      · yt-dlp 的确切命令行：browser/knowledge/kbVideoFetch.ts（--print 模板 / 字幕 flags / 「不下载本体」）
-     · 落盘语义（`库` = 数据源层 / `笔记` = 知识体系层）：宿主常量 KB_LIBRARY_SUBPATH / KB_NOTES_SUBPATH
-     · 构建侧：技能 kb-build（本技能只把素材放进 `库/raw`，**不写** `笔记/`）
+     · 落盘语义（磁盘真名 `数据源` = 素材层 / `知识库列表` = 知识体系层；`库` / `笔记` 是 2026-11-02 改名前旧称）：宿主常量 KB_LIBRARY_SUBPATH / KB_NOTES_SUBPATH
+     · 构建侧：技能 kb-build（本技能只把素材放进 `数据源/raw`，**不写** `知识库列表/`）
      本技能**不新增工具、不新增依赖**：能力全部来自已有工具 + 随包自带的 ffmpeg / ffprobe / yt-dlp。 -->
 
 # 多平台内容导入（web-content-import）
@@ -122,7 +123,7 @@ OCR 帧 = 捡了包装丢了内容。
 
 分工澄清（别再混淆三者）：
 - **口播内容** ⇒ ASR/字幕轨（`video_analyze` 内置）；
-- **画面证据** ⇒ 抽帧（`extract_video_frames`，产物落 `库/raw/assets/<slug>/` 按相对路径引用）；
+- **画面证据** ⇒ 抽帧（`extract_video_frames`，产物落 `数据源/raw/assets/<slug>/` 按相对路径引用）；
 - **屏上文字**（PPT/代码/图表类视频的画面字）⇒ 对抽出的帧 `vision_analyze` 逐张读 —— 这是**补充**，
   只有画面字本身是内容主体时才当主线。
 
@@ -166,7 +167,7 @@ yt-dlp --no-playlist --no-warnings --skip-download --write-subs --write-auto-sub
 - **来源**：静态文章 → `web_extract` 的结果里本就带 `![alt](url)`（正文图）；
   **SPA / 登录墙页面 → 用 `browser`（`op: "images"`）**（⚠ `op: "snapshot"` **不采集图片**，这也是本仓专门补这个 op 的原因：图文帖的正文常常就在图里）。
 - **读图内文字**：`vision_analyze(image=<图片 URL>, query=...)` —— 它**直接吃 http(s) URL**，不必先下载；一次一张。
-- **入库**：`execute_code` 下载到 `<vault>/库/raw/assets/<slug>/<序号>-<名>.<ext>`，正文用**相对路径**引用；
+- **入库**：`execute_code` 下载到 `<vault>/数据源/raw/assets/<slug>/<序号>-<名>.<ext>`，正文用**相对路径**引用；
   小红书这类图 CDN 常校验 `Referer`，脚本里带上 `Referer: <页面 URL>`；403/401 就**保留远程 URL 并说明**，别伪造本地文件。
 - **取舍**：只收正文区的**内容图**，跳过头像/图标/表情/1×1 像素/埋点图（`op: "images"` 已按尺寸过滤）；最多 20 张，按出现位置插在正文里，不要全堆到文末。
 
@@ -183,7 +184,7 @@ yt-dlp --no-playlist --no-warnings --skip-download \
 
 **③ 视频关键帧**（用户要看画面、或你要给画面证据时）
 
-- `extract_video_frames(source=<视频或页面 URL>, outDir="<vault>/库/raw/assets/<slug>", frames=...)`
+- `extract_video_frames(source=<视频或页面 URL>, outDir="<vault>/数据源/raw/assets/<slug>", frames=...)`
   —— ffmpeg/yt-dlp **随包自带**；返回**每张帧的路径与时间点**（`@ mm:ss`）；
 - 产物里内嵌：`![帧 03:12](assets/<slug>/frame-03.png)`；画面结论必须挂 `[帧 mm:ss]`（**没抽到的时段等于没看过**）；
 - 抽帧失败（需登录 / 反爬 / 分片流）⇒ **不要**凭标题编画面：写清失败原因、保留视频地址、建议用户给截图；
@@ -195,17 +196,17 @@ yt-dlp --no-playlist --no-warnings --skip-download \
 
 ## 第 4 步：落盘契约（要归档才做；形状必须与宿主「导入链接」产物**完全一致**）
 
-- **正文**：`<vault>/库/raw/<slug>.md`
-- **图片**：`<vault>/库/raw/assets/<slug>/<序号>-<原名>.<ext>`；正文里用**相对于笔记文件**的路径
+- **正文**：`<vault>/数据源/raw/<slug>.md`
+- **图片**：`<vault>/数据源/raw/assets/<slug>/<序号>-<原名>.<ext>`；正文里用**相对于笔记文件**的路径
   （绝对路径会让预览与飞书同步**双双失效**）。差一级就全是断图 —— 按笔记实际落点选：
-  · 笔记在 `库/raw/<slug>.md` ⇒ `![说明](assets/<slug>/1-xxx.png)`
-  · 笔记在 `库/源/<slug>.md` 或任何分类目录（`方法/概念/实体/综合`）⇒ `![说明](../raw/assets/<slug>/1-xxx.png)`
-  ⚠ 实测事故（2026-09-24）：10 张帧全写成 `assets/<slug>/…`，而笔记在 `库/源/` ⇒ **预览里一张都显示不出来**，
+  · 笔记在 `数据源/raw/<slug>.md` ⇒ `![说明](assets/<slug>/1-xxx.png)`
+  · 笔记在 `数据源/源/<slug>.md` 或任何分类目录（`方法/概念/实体/综合`）⇒ `![说明](../raw/assets/<slug>/1-xxx.png)`
+  ⚠ 实测事故（2026-09-24）：10 张帧全写成 `assets/<slug>/…`，而笔记在 `数据源/源/` ⇒ **预览里一张都显示不出来**，
   用户的观感是"图片和视频都没进笔记"（其实文件都在，只是引用少了一级）。别再犯。
 - **落盘前必须自检相对链接**（不通过就不要交付）：以**笔记所在目录**为基准，逐个解析正文里每个 `![…](…)`；
   解析不到真实文件就改对再交。不要只数"我插了几张图"。
 - ⚠ **不要为了让"能看见"而改成 `file:///` 或绝对路径**：实测（2026-09-24）产品内置的 Markdown 预览
-  **不加载任何本地图片**（相对、`/库/…`、`file:///`、`![[…]]` 六种写法全断 —— 连绝对路径都不显示），
+  **不加载任何本地图片**（相对、`/数据源/…`、`file:///`、`![[…]]` 六种写法全断 —— 连绝对路径都不显示），
   所以"内置预览里看不到图"**不等于**链接写错了。判别标准是**文件系统层面能否解析到真实文件**
   （上面那条自检），以及**在 Obsidian 里打开是否正常** —— 那才是这些链接真正的渲染环境。
   用 `file:///` 去迁就内置预览，只会让飞书同步与换机双双失效。
@@ -216,7 +217,7 @@ yt-dlp --no-playlist --no-warnings --skip-download \
   首行 `# <标题>` + 紧跟一行 `> …` 元信息，就是素材的元信息区
 - **骨架先读** `references/output-template.md`（文章 / 视频两种形态 + 字幕清洗 + 落盘前自检），按它填
 - 正文**不写** HTML / `<iframe>` / 依赖 Obsidian 社区插件的语法（Charts / Dataview 等 —— 预览与飞书都不渲染）
-- 落点是 `库/raw`（宿主 URL 导入的真实落点）。⚠ 若某处提示写「库/articles/」，**以本手册为准**
+- 落点是 `数据源/raw`（宿主 URL 导入的真实落点）。⚠ 若某处提示写「数据源/articles/」，**以本手册为准**
 
 ## 第 5 步：交付与交接（别停在「落盘成功」）
 
@@ -224,7 +225,7 @@ yt-dlp --no-playlist --no-warnings --skip-download \
 2. 拿到的写事实、没拿到的写「未获取」，两者**分开**；没读到的内容不许用常识补；
 3. 要把它变成笔记（归位 / 补链 / 去抽象化门控 / 导航 / 飞书同步）⇒ **先问用户**（有 `clarify` 就用它，避免"问完就当同意"）；
 4. 用户同意 ⇒ 调 `kb_build`（`mode:"build"`，**发起后立即返回**、不要等它跑完、不要重复发起），并说明进度在那个新会话里；
-5. **不要**自己往 `笔记/` 写（那会绕过补链/门控/台账）。
+5. **不要**自己往 `知识库列表/` 写（那会绕过补链/门控/台账）。
 
 ## 反模式（出现即不合格）
 
@@ -233,7 +234,7 @@ yt-dlp --no-playlist --no-warnings --skip-download \
 - **用抽帧 + vision 读屏上文字来冒充口播内容**（教程/讲解类视频的信息主体在**音轨**里，不在画面里；
   正确流程：下载 → ASR/字幕 → 抽帧做画面证据 → 写库，2026-09-25 用户明确纠正过）；
 - 把登录墙页面靠标题 / 摘要 / 常识**补全**成一篇像样的文章；
-- 给 `库/raw` 的素材写 `type / sources / status` 等**构建产物**字段，或直接往 `笔记/` 写；
+- 给 `数据源/raw` 的素材写 `type / sources / status` 等**构建产物**字段，或直接往 `知识库列表/` 写；
 - 图片引用用绝对路径；或把「视频未下载」说成「已保存视频」；
 - 用户明确说「存进知识库」时却只在对话里给一段结论（没落盘 = 没存）；
 - 用 `terminal` 当抓取主路径（弹审批、打断流程）—— 抓取统一走 `execute_code`。

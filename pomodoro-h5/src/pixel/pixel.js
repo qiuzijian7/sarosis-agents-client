@@ -111,21 +111,12 @@ function onPhaseFinished(res) {
     } catch {
       storageOk = false;
     }
-    notifyDone("专注完成，休息一下 🍅");
-  } else {
-    notifyDone(res.finishedPhase === PHASE.LONG_BREAK ? "长休息结束" : "短休息结束");
   }
   // 自动进入下一阶段（idle 等待用户开始），并刷新显示
   timer.reset();
   stopTick();
   startTick(); // 保持 tick 循环；reset 后 status=idle 不漂移
   render();
-}
-
-function notifyDone(msg) {
-  if ("Notification" in window && Notification.permission === "granted") {
-    new Notification(msg);
-  }
 }
 
 // —— 事件绑定 ——

@@ -79,34 +79,23 @@ suite('运行时副本可用性判据', () => {
 		assert.deepStrictEqual(runtimeInstallMissing(fsWith(OK), `${DIR}\\\\`), []);
 	});
 
-	test('⑤ 接线：管理器必须先体检、坏副本跳过、并回落（不许直接把它交给 probe）', () => {
+	test('⑤ ★ 单版本模型：resolveDsh 必须严格校验 pin + 体检唯一内置副本，缺构件就硬失败', () => {
+		// ★★ 2026-11-09：managed 多版本池 / global 兜底 / 「坏副本跳过并回落」全部下线。
+		//   现在只有一份内置 runtime，缺构件 = 安装包不完整 ⇒ 明确报错让用户重装，
+		//   绝不悄悄换成别的版本（那正是 11-07 F5 崩溃的成因之一）。
 		const src = stripComments(read(MANAGER));
 		const at = src.indexOf('async resolveDsh(');
 		assert.ok(at > 0, '找不到 resolveDsh ✗');
 		const body = src.slice(at, src.indexOf('\n\tasync ', at + 1) > 0 ? src.indexOf('\n\tasync ', at + 1) : at + 6000);
 
-		// ⚠ 用**该分支自己的**起点做基准：`setting` 分支里也有一次 `_probeDshVersion(node, bin)`，
-		//   从函数头 indexOf 会命中它 ⇒ "顺序反了"会被判成绿（实测假绿 ✗）。
-		const branchAt = body.indexOf('const installDir = join(this.managedRoot, version);');
-		assert.ok(branchAt > 0, '找不到托管分支的起点（`installDir`）✗');
-		const iCheck = body.indexOf('runtimeInstallMissing(existsSync', branchAt);
-		const iProbe = body.indexOf('_probeDshVersion(node, bin)', branchAt);
-		assert.ok(iCheck > branchAt, '选托管版本前必须调用 `runtimeInstallMissing`（缺构件就跳过 ✗）');
-		assert.ok(iProbe > iCheck, '体检必须排在**该分支的**探测之前（顺序反了等于没查 ✗）');
-		assert.match(body, /缺 \$\{missing\.join/,
-			'不可用时要明确记一行"缺什么"（否则只会看到"控制桥不可用"✗）');
-		assert.match(body, /回落到下一个候选/,
-			'跳过之后必须回落（日志要说明"回落到下一个候选"）✗');
-
-		// managed 与 bundled 两处都要兜住：坏副本不许把整个启动打断
-		assert.match(body.slice(iProbe - 200, iProbe + 300), /try \{[\s\S]{0,300}_probeDshVersion/,
-			'managed 分支的探测必须在 try 里 ✗');
-		const managedTail = body.slice(iProbe, iProbe + 800);
-		assert.ok(!/catch \(e\) \{\s*throw/.test(managedTail),
-			'managed 探测失败不许 rethrow（要记日志并回落到 bundled ✗）');
-		assert.match(managedTail, /catch \(e\) \{[\s\S]{0,200}探测失败/,
-			'catch 里必须说明"探测失败 ⇒ 跳过"（否则日志里看不出为什么换了版本 ✗）');
-		assert.match(body, /bundled dsh \$\{bundled\} 探测失败/,
-			'bundled 探测失败也要兜住并继续找 global（否则一句"找不到 dsh"就结束 ✗）');
+		const iRequire = body.indexOf('this._requireBundled()');
+		assert.ok(iRequire > 0, '必须先按 compat pin 严格校验唯一版本 ✗');
+		const iCheck = body.indexOf('runtimeInstallMissing(existsSync', iRequire);
+		const iProbe = body.indexOf('_probeDshVersion(node, bin)', iRequire);
+		assert.ok(iCheck > iRequire, '内置副本必须做 `runtimeInstallMissing` 廉价体检（10-29 真机事故）✗');
+		assert.ok(iProbe > iCheck, '体检必须排在探测之前（顺序反了等于没查 ✗）');
+		assert.match(body, /内置 dsh \$\{version\} 不完整/, '不可用时要明确说"缺什么 + 重装应用"✗');
+		assert.match(body, /source: 'bundled'/, '产品路径只能解析成 bundled');
+		assert.ok(!/managedRoot, version|_globalBin|回落到下一个候选/.test(body), '不许再有 managed/global 回落链 ✗');
 	});
 });

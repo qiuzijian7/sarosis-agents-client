@@ -4,6 +4,7 @@ description: Generate project ideas via creative constraints.
 activation: manual
 match: ["ideation", "creative", "projects", "brainstorming", "inspiration"]
 category: creative
+tier: extended
 ---
 
 # Creative Ideation

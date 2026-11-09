@@ -4,6 +4,7 @@ description: Read, search, create, and edit notes in the Obsidian vault.
 activation: manual
 match: ["obsidian"]
 category: note-taking
+tier: extended
 ---
 
 # Obsidian Vault

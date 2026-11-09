@@ -82,6 +82,9 @@ export async function recordDeadLetter(config, entry, deps = {}) {
 		at: now,
 		reason,
 		platform: String(entry?.platform ?? ''),
+		/* ★ 2026-11-09 多飞书应用：记住消息来自哪个应用，供「一键加白」精确定位绑定。
+		   老死信没有这个字段 ⇒ 按默认应用处理。 */
+		...(entry?.appId ? { appId: String(entry.appId).trim() } : {}),
 		chatId: String(entry?.chatId ?? ''),
 		chatType: String(entry?.chatType ?? ''),
 		userId: String(entry?.userId ?? ''),

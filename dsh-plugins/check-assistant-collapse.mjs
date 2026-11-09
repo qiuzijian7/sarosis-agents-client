@@ -262,8 +262,8 @@ for (const wb of [MARKETS, STUDIO]) {
 	for (const [wb, preset] of PRESETS) {
 		ck(`${wb} 默认 agent = ${preset}`, new RegExp(`'${wb}':\\s*'${preset}'`).test(shellSrc));
 	}
-	ck('vssaros/kb 默认 agent 是候选列表（kb-expert / knowledge-base-expert，同名「知识库专家」在不同环境 id 不同）',
-		/'vssaros\/kb':\s*\[\s*'vssaros-kb-expert',\s*'vssaros-knowledge-base-expert'\s*\]/.test(shellSrc));
+	ck('vssaros/kb 默认 agent 是单值内置 knowledge-base-expert',
+		/'vssaros\/kb':\s*'vssaros-knowledge-base-expert'/.test(shellSrc));
 	// 别处不许再画（扫所有插件的客户端代码；宿主自己除外）
 	const walk = (dir, out = []) => {
 		for (const entry of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
@@ -395,11 +395,9 @@ for (const wb of [MARKETS, STUDIO]) {
 	// ★ 2026-10-28（用户：「知识库的展开 AI 助手点不动，展开后应显示知识库专家」）：
 	//   知识库是页面型工作台（面板无对话列）⇒ 点击只能靠外壳兜底开会话，兜底**必须带 preset**
 	//   （空 preset 的 newChat 等于空转）。知识库专家 = 内置 agent knowledge-base-expert。
-	// ★ 2026-11-02：知识库现在是**候选列表**（['vssaros-kb-expert', 'vssaros-knowledge-base-expert']）——
-	//   同一个「知识库专家」在内置目录里叫 knowledge-base-expert、在用户数据根里叫 kb-expert。
-	//   两个都要在，实际用哪个由 agentPresets.list() 决定。
-	ck('外壳：知识库 preset 映射到知识库专家（候选含 vssaros-knowledge-base-expert 与 vssaros-kb-expert）',
-		/vssaros\/kb': \[[^\]]*'vssaros-knowledge-base-expert'[^\]]*\]/.test(shellSrc) && /vssaros\/kb': \[[^\]]*'vssaros-kb-expert'[^\]]*\]/.test(shellSrc));
+	// ★ 2026-11-09：知识库收敛为单 agent，只认内置 knowledge-base-expert。
+	ck('外壳：知识库 preset 映射到内置知识库专家',
+		/vssaros\/kb':\s*'vssaros-knowledge-base-expert'/.test(shellSrc));
 	// ★ 2026-10-28（用户第二次报「点展开没反应」）：兜底必须**优先用 startSession**
 	//   （同步切到会话页，行为可预期）；页面桥只当退路 —— 它在桌面窗口里可能"成功但开在后台"。
 	{

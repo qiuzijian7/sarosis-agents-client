@@ -4,6 +4,7 @@ description: "GitHub PR lifecycle: branch, commit, open, CI, merge."
 activation: manual
 match: ["github-pr-workflow", "github pr workflow", "github", "pull-requests", "ci/cd", "git", "merge"]
 category: github
+tier: extended
 ---
 
 # GitHub Pull Request Workflow

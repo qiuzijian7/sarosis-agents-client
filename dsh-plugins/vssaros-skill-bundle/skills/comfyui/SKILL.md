@@ -4,6 +4,7 @@ description: Generate images, video, and audio with ComfyUI — install, launch,
 activation: manual
 match: ["comfyui"]
 category: creative
+tier: extended
 ---
 
 # ComfyUI

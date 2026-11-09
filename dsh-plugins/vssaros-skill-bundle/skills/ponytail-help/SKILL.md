@@ -8,6 +8,7 @@ activation: manual
 match: ["ponytail-help", "ponytail help", "what ponytail commands", "how do I use ponytail", "ponytail帮助", "ponytail命令"]
 category: meta
 recommended_tools: []
+tier: extended
 ---
 
 # Ponytail Help

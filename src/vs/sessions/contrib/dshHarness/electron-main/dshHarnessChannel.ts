@@ -32,10 +32,10 @@ import { IWindowsMainService } from '../../../../platform/windows/electron-main/
 import { registerBeforeUpdateInstallHook } from '../../../../platform/update/electron-main/updateInstallHooks.js';
 import { DshBridgeMethod, DshBridgeReverseMethod, IBridgeBundleInfo, IBridgeBundleToggleArgs, IBridgeCodeBuddyImportResult, IBridgeCodeBuddyStatus, IBridgeCreditRecordArgs, IBridgeCreditRecordResult, IBridgeCreditRouteResult, IBridgeInspectResult, IBridgeInstallArgs, IBridgeInstallCancelArgs, IBridgeInstallCancelResult, IBridgeInstallResult, IBridgeLightAIImportResult, IBridgeLightAIStatus, IBridgePluginChangeResult, IBridgePluginInventory, IBridgePluginRegistries, IBridgePluginRow, IBridgePluginRowToggleArgs, IBridgeProvidersSyncArgs, IBridgeProvidersSyncResult, IBridgeRemoveArgs, IBridgeReverseRequest, IBridgeSessionCancelArgs, IBridgeSessionCancelResult, IBridgeSessionRunArgs, IBridgeSessionRunResult, IBridgeSessionStartArgs, IBridgeSessionStartResult, IBridgeTofStatus, IBridgeTofSyncResult, IBridgeTofTicketResult, IBridgeWorkspace, IBridgeWorkspaceContextArgs, validateBundleInspectArgs, validateBundleInstallArgs, validateBundleRemoveArgs, validateBundleToggleArgs, validateCodeBuddyImportArgs, validateCreditRouteArgs, validateInstallCancelArgs, validateLightAIImportArgs, validatePluginRowToggleArgs, validateProvidersSyncArgs, validateTofSyncArgs, validateWorkspaceContextArgs } from '../common/dshBridgeProtocol.js';
 import { DshCreditProxy, IDshCreditSample } from './dshCreditProxy.js';
-import { localPluginDir, selectRuntimeVersion, toFileSpec } from '../common/dshCli.js';
+import { localPluginDir, toFileSpec } from '../common/dshCli.js';
 import { downloadAndVerify, removeDownloaded } from './dshMarketplaceInstaller.js';
-import { discoverUpdates, resolveCurrentVersion, selectInstallTarget } from '../common/dshCompat.js';
-import { DSH_HARNESS_CHANNEL, DshColorScheme, DshHarnessChannelCommand, DshHarnessChannelEvent, IDshBootstrapArgs, IDshBundledPluginRow, IDshCreateViewArgs, IDshHostStartOptions, IDshHostStatus, IDshIdeClaimReply, IDshIdeReply, IDshIdeRequest, IDshPluginActivationSnapshot, IDshPluginInfo, IDshPluginRowSetResult, IDshPluginSetResult, IDshUpdateDiscoveryResult, IDshUpdatePolicy, IDshUpgradeArgs, IDshViewBounds, sameStartOptions, surfaceTakesRoute } from '../common/dshHarness.js';
+// ★ 2026-11-09 单版本模型：`dshCompat.js` 的版本发现/当前版本解析/安装目标选择整套下线。
+import { DSH_HARNESS_CHANNEL, DshColorScheme, DshHarnessChannelCommand, DshHarnessChannelEvent, IDshBootstrapArgs, IDshBundledPluginRow, IDshCreateViewArgs, IDshHostStartOptions, IDshHostStatus, IDshIdeClaimReply, IDshIdeReply, IDshIdeRequest, IDshPluginActivationSnapshot, IDshPluginInfo, IDshPluginRowSetResult, IDshPluginSetResult, IDshViewBounds, sameStartOptions, surfaceTakesRoute } from '../common/dshHarness.js';
 import { colorSchemeForPreference, parseThemePreference } from '../common/dshThemePreference.js';
 import { IdeRequestClaims } from '../common/dshIdeClaims.js';
 import { IIdeTargetPick, pickIdeTargetWindow } from '../common/dshIdeTargeting.js';
@@ -63,12 +63,10 @@ import { hasWorkbenchClient, IVssarosPluginManifest, isBuiltinPluginName, tryPar
 import { DshPluginActivationStore } from './dshPluginActivationStore.js';
 import { DshIdeRequestGate } from './dshIdeRequestGate.js';
 import { IDshViewBackgrounds, validateThemeTokens, validateViewBackgrounds } from '../common/dshThemeBridge.js';
-import { IDshUpgradeResult } from '../common/dshUpgrade.js';
-import { loadCompatManifest } from './dshCompatSource.js';
+// ★ 2026-11-09：升级结果类型 / 远端兼容清单 / 升级闸门随多版本模型一起下线。
 import { DshHostSupervisor } from './dshHostSupervisor.js';
 import { FetchLike } from './dshNodeInstaller.js';
 import { DshRuntimeError, DshRuntimeManager, IResolvedNode } from './dshRuntimeManager.js';
-import { DshUpgradeGate } from './dshUpgradeGate.js';
 import { DshViewHost } from './dshViewHost.js';
 import { DshWorkspaceSync } from './dshWorkspaceSync.js';
 import { markMainThreadPhase } from '../../../../code/electron-main/mainThreadBreadcrumb.js';
@@ -97,15 +95,7 @@ export interface IDshHarnessChannelOptions {
 	readonly requestQuit?: (willRestart: boolean) => Promise<boolean>;
 }
 
-/** 伴生插件的版本与它声明支持的 dsh 范围（预检 ②）。 */
-function readBridgeInfo(dir: string): { version?: string; peerRange?: string } {
-	try {
-		const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as { version?: string; peerDependencies?: Record<string, string> };
-		return { version: pkg.version, peerRange: pkg.peerDependencies?.['@deepseek-ai/dsh'] };
-	} catch {
-		return {};
-	}
-}
+// ★ 2026-11-09：`readBridgeInfo()`（读伴生插件 peer 范围做「运行时升级预检」）随版本发现下线。
 
 export class DshHarnessChannel<TContext> extends Disposable implements IServerChannel<TContext> {
 
@@ -113,7 +103,6 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 	private readonly _supervisor: DshHostSupervisor;
 	private readonly _views: DshViewHost;
 	private readonly _pluginActivation: DshPluginActivationStore;
-	private readonly _gate: DshUpgradeGate;
 	private readonly _fetch: FetchLike;
 	private readonly _onDidChangeStatus = this._register(new Emitter<IDshHostStatus>());
 	private readonly _onDidProgress = this._register(new Emitter<string>());
@@ -218,11 +207,8 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		app.on('will-quit', () => { this._cancelForceQuit(); });
 		const log = (line: string) => this._logService.info(`[dshHarness] ${line}`);
 		this._fetch = options.fetch ?? ((url: string) => net.fetch(url));
-		// 内置运行时目录（构建期 prepack，见 build/prepack-dsh-runtime.mjs）：存在即传给管理器，
-		// 解析顺序 setting → managed → bundled → global（bundled 只在全新安装时兜底）。
-		const bundledRuntime = join(app.getAppPath(), 'dsh-runtime');
 		// bundled 版本 pin：与**打包侧 / strip 自愈 / verify-staging 同源**（dsh-compat.json 的 bundled）。
-		// 缺了它，管理器取"目录里最高的版本"——包里残留旧/新版本时就会跑未验证的那个（2026-10-28）。
+		// ★ 2026-11-09 单版本模型：它是运行期**唯一**的版本来源，构建期由 check-dsh-release.mjs 校验。
 		const bundledPin = (() => {
 			try {
 				const manifestPath = options.compatBundledPath ?? join(app.getAppPath(), 'dsh-plugins', 'dsh-compat.json');
@@ -235,7 +221,37 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				return undefined;
 			}
 		})();
-		this._runtime = new DshRuntimeManager(options.managedRoot ?? join(options.userDataPath, 'dsh-runtime'), log, existsSync(bundledRuntime) ? bundledRuntime : undefined, bundledPin);
+		/**
+		 * 内置运行时根目录（构建期 prepack，见 build/prepack-dsh-runtime.mjs）。
+		 *
+		 * ★★ 2026-11-09：删掉 managed 多版本后，这是 dsh 的**唯一**来源 ⇒ dev 也必须能找到。
+		 *   打包版：`<appPath>/dsh-runtime/<pin>/` ✓
+		 *   dev：`app.getAppPath()` = `<repo>/.build/electron/resources/app`，那里**没有** dsh-runtime，
+		 *        但构建期产物在**仓库根** `<repo>/dsh-runtime/<pin>/`。旧的 seed 查找已验证从
+		 *        `.build/.../dsh-plugins` 逐级向上 3 级可命中仓库根 ⇒ 这里用同一策略。
+		 *   判据要严：只有候选目录里**真的有 pin 版本的 bin.js** 才认，避免命中空的 dsh-runtime 壳。
+		 *   找不到就留 undefined ⇒ `_requireBundled()` 会给出明确的「安装包不完整」错误，不再悄悄降级。
+		 */
+		const bundledRuntime = (() => {
+			if (!bundledPin) {
+				return undefined;
+			}
+			const tail = ['node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'];
+			let dir = app.getAppPath();
+			for (let i = 0; i < 6; i++) {
+				const candidate = join(dir, 'dsh-runtime');
+				if (existsSync(join(candidate, bundledPin, ...tail))) {
+					return candidate;
+				}
+				const parent = dirname(dir);
+				if (parent === dir) {
+					break;
+				}
+				dir = parent;
+			}
+			return undefined;
+		})();
+		this._runtime = new DshRuntimeManager(options.managedRoot ?? join(options.userDataPath, 'dsh-runtime'), log, bundledRuntime, bundledPin);
 		// 随包插件根：`vssaros-bridge` / `vssaros-chat-surface` / **模块插件**都在这一层。
 		// 伴生插件的解析与插件中心「随包」段的枚举**必须同源**（否则会出现"列表里有、装的时候找不到"）。
 		this._bundledPluginsRoot = options.bundledPluginsPath ?? join(app.getAppPath(), 'dsh-plugins');
@@ -339,9 +355,9 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		// ★ 2026-10-20：mux 路由可用 ⇒ 让页面跳过 dsh 连接剩余的退避（见 DshViewHost.notifyMuxReady）。
 		this._register(this._supervisor.onMuxReady(e => this._views.notifyMuxReady(e.afterReadyMs)));
 		this._pluginActivation = new DshPluginActivationStore(() => this._supervisor.profileDirectory(), log);
-		this._gate = new DshUpgradeGate(this._supervisor, this._runtime, join(options.userDataPath, 'dsh-snapshots'), log);
-		this._compatBundledPath = options.compatBundledPath ?? join(app.getAppPath(), 'dsh-plugins', 'dsh-compat.json');
-		this._bridgeInfo = readBridgeInfo(bundledBridge);
+		// ★ 2026-11-09 单版本模型：升级闸门（快照/切指针/健康检查失败回滚）、
+		//   远端兼容清单缓存、伴生插件 peer 预检整体下线 ——
+		//   dsh 版本随应用发版，运行期不再有「切换」这个动作，`userData/dsh-home` 也永不覆盖。
 		this._userDataPath = options.userDataPath;
 		// ⚠ 代理必须在构造函数体里建（不能在字段初始化里）：`userDataPath`/`log` 那时才就位 ✓。
 		//   `userDataPath` 是"baseURL 跨进程稳定"的前提（2026-10-15，见 `dshCreditProxy.ts` 文件头 §2）。
@@ -465,10 +481,8 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		}
 	}
 
-	private readonly _compatBundledPath: string;
 	/** 随包插件根（`<appPath>/dsh-plugins`）：伴生插件解析 + 「随包」段枚举同源。 */
 	private readonly _bundledPluginsRoot: string;
-	private readonly _bridgeInfo: { version?: string; peerRange?: string };
 	private readonly _workspaces: DshWorkspaceSync;
 	private _connectionGen = 0;
 
@@ -683,29 +697,11 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		}
 	}
 
-	/** 发现所需的外部输入：dist-tags（失败时为空）与兼容清单。 */
-	private async _updateContext(policy: IDshUpdatePolicy, node: IResolvedNode | undefined) {
-		const notes: string[] = [];
-		let distTags: Record<string, string> = {};
-		if (node) {
-			try {
-				distTags = await this._runtime.distTags(node);
-			} catch (e) {
-				notes.push(`npm dist-tags 查询失败：${String((e as Error)?.message ?? e).slice(0, 200)}`);
-			}
-		} else {
-			notes.push('没有可用的 Node，无法查询 npm。');
-		}
-		const compat = await loadCompatManifest({
-			bundledPath: this._compatBundledPath,
-			remoteUrl: policy.compatUrl,
-			cachePath: join(this._runtime.managedRoot, 'compat-cache.json'),
-			fetch: this._fetch,
-			log: line => this._logService.info(`[dshHarness] ${line}`),
-		});
-		notes.push(...compat.errors);
-		return { distTags, manifest: compat.manifest, manifestSource: compat.source, bridge: this._bridgeInfo, notes };
-	}
+	/**
+	 * ★ 2026-11-09 单版本模型：`_updateContext`（npm dist-tags 查询 + 远端兼容清单三源择新）
+	 * 随「运行时版本发现/切换」一起下线。dsh 版本现在只由**随包** `dsh-compat.json` 的
+	 * `bundled` 在构建期 pin 死，运行期不查 npm、不拉远端清单、不写 `compat-cache.json`。
+	 */
 
 	/**
 	 * 装 / 撤「IDE 主窗口不许露面」的守卫（desktop 模式，2026-10-21）。
@@ -1008,46 +1004,13 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		return true;
 	}
 
-	private async _discover(policy: IDshUpdatePolicy, start: IDshHostStartOptions): Promise<IDshUpdateDiscoveryResult> {
-		let node: IResolvedNode | undefined;
-		try {
-			node = await this._runtime.resolveNode(start.nodePath);
-		} catch {
-			node = undefined;
-		}
-		const ctx = await this._updateContext(policy, node);
-		const installed = this._runtime.listInstalled();
-		const current = resolveCurrentVersion({
-			runtimePath: start.runtimePath,
-			runningVersion: this._supervisor.status.dshVersion,
-			managedVersion: selectRuntimeVersion(this._runtime.readState(), installed),
-		});
-		const d = discoverUpdates({
-			channel: policy.channel, pinned: policy.pinned, current, installed, distTags: ctx.distTags, manifest: ctx.manifest,
-			bridgePeerRange: ctx.bridge.peerRange, bridgeVersion: ctx.bridge.version, nodeVersion: node?.version,
-			// ★ 2026-10-12：随包**模块插件**的 peer 范围也要过一遍（预检 ③）—— 运行时升到范围外时，
-			//   dsh 的准入检查会让那个插件失效，而用户只看到"某个模块凭空消失"✗。
-			modulePluginPeerRanges: listBundledPlugins(this._bundledPluginsRoot).packages.map(p => ({ name: p.name, range: p.peerRange ?? '' })),
-		});
-		if (start.runtimePath?.trim()) {
-			ctx.notes.push('设置 sessions.dshHarness.runtimePath 指定了 dsh 位置：托管版本切换不会生效。');
-		}
-		return { ...d, notes: [...d.notes, ...ctx.notes], manifestSource: ctx.manifestSource, manifestGeneratedAt: ctx.manifest?.generatedAt };
-	}
-
-	private async _upgrade(a: IDshUpgradeArgs): Promise<IDshUpgradeResult> {
-		if (a.installIfMissing && !this._runtime.listInstalled().includes(a.version)) {
-			const node = await this._runtime.resolveNode(a.nodePath ?? a.start.nodePath);
-			this._onDidProgress.fire(`正在并列安装 dsh ${a.version}（当前 Host 保持运行）…`);
-			await this._runtime.install(a.version, node);
-		}
-		this._onDidProgress.fire(`正在切换到 dsh ${a.version}：快照、重启并检查…`);
-		return this._gate.upgrade({ version: a.version, force: a.force }, a.start ?? {});
-	}
-
 	/**
-	 * 一键准备：缺 Node 就下载托管 Node，缺 dsh 就安装 npm `latest`（或指定 tag）并设为当前，然后启动。
-	 * 只补缺的部分；已有的 Node / dsh 不会被替换。
+	 * 一键准备：缺 Node 就下载托管 Node，然后启动 Host。
+	 *
+	 * ★ 2026-11-09 单版本模型：不再「缺 dsh 就 npm 安装 latest 并设 current」。
+	 *   dsh 随应用发版内置（构建期 pin），缺了 = 安装包不完整 ⇒ 明确报错、请重装应用，
+	 *   **不联网下载、不写 userData/dsh-home**。
+	 *   `_discover` / `_upgrade`（版本发现 + 快照切换闸门）已随多版本模型一起下线。
 	 */
 	private _bootstrap(args: IDshBootstrapArgs): Promise<IDshHostStatus> {
 		if (!this._bootstrapping) {
@@ -1064,22 +1027,8 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 					this._onDidProgress.fire(`托管 Node ${installed.version} 已就绪`);
 					node = await this._runtime.resolveNode(undefined);
 				}
-				try {
-					await this._runtime.resolveDsh(args.start.runtimePath, node);
-				} catch (e) {
-					if (!(e instanceof DshRuntimeError) || e.code !== 'dsh-missing') {
-						throw e;
-					}
-					this._onDidProgress.fire('正在确定要安装的 dsh 版本…');
-					const ctx = await this._updateContext(args.policy, node);
-					const version = selectInstallTarget({ channel: args.policy.channel, pinned: args.policy.pinned, installed: [], distTags: ctx.distTags, manifest: ctx.manifest, bridgePeerRange: ctx.bridge.peerRange, bridgeVersion: ctx.bridge.version, nodeVersion: node.version });
-					if (!version) {
-						throw new Error(`无法确定要安装的 dsh 版本：${ctx.notes.join('；') || '兼容清单与 npm dist-tags 都不可用'}`);
-					}
-					this._onDidProgress.fire(`正在安装 dsh ${version}（首次约 1–2 分钟）…`);
-					await this._runtime.install(version, node);
-					await this._runtime.setCurrent(version);
-				}
+				// 内置 dsh 必须随包存在；缺了让 `_requireBundled()` 的明确错误直接透出。
+				await this._runtime.resolveDsh(args.start.runtimePath, node);
 				this._onDidProgress.fire('正在启动 Host…');
 				return this._supervisor.start(args.start);
 			})().finally(() => this._bootstrapping = undefined);
@@ -1354,14 +1303,8 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			}
 			case DshHarnessChannelCommand.GetRuntimeInfo:
 				return this._runtime.getInfo();
-			case DshHarnessChannelCommand.InstallRuntime: {
-				const { version, nodePath } = arg as { version: string; nodePath?: string };
-				const node = await this._runtime.resolveNode(nodePath);
-				const installed = await this._runtime.install(version, node);
-				return { version: installed.version };
-			}
-			case DshHarnessChannelCommand.SetCurrentRuntime:
-				return this._runtime.setCurrent((arg as { version: string }).version);
+			// ★ 2026-11-09 单版本模型：`InstallRuntime` / `SetCurrentRuntime` / `Upgrade` 三个 IPC
+			//   随「用户自由切 runtime」一起下线；枚举也已删除，误调用会走 default 报未知命令。
 			case DshHarnessChannelCommand.InstallNode: {
 				const a = (arg ?? {}) as { mirror?: string; version?: string };
 				const r = await this._runtime.installNode(this._fetch, a);
@@ -1369,8 +1312,6 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			}
 			case DshHarnessChannelCommand.Bootstrap:
 				return this._bootstrap(arg as IDshBootstrapArgs);
-			case DshHarnessChannelCommand.Upgrade:
-				return this._upgrade(arg as IDshUpgradeArgs);
 			case DshHarnessChannelCommand.SetWindowWorkspaces: {
 				const a = arg as { windowId: unknown; paths: unknown };
 				if (typeof a?.windowId !== 'number') {
@@ -1841,10 +1782,8 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				}
 				return bridge.call<IBridgeTofTicketResult>(DshBridgeMethod.TofTicket, {}, 10_000);
 			}
-			case DshHarnessChannelCommand.DiscoverUpdates: {
-				const a = arg as { policy: IDshUpdatePolicy; start: IDshHostStartOptions };
-				return this._discover(a.policy, a.start ?? {});
-			}
+			// ★ 2026-11-09：`DiscoverUpdates`（查询可升级的 dsh 运行时版本）已下线 ——
+			//   版本随应用发版，运行期没有「可升级版本列表」。
 			case DshHarnessChannelCommand.SetIdeWindowHidden: {
 				// 「desktop 模式 ⇒ IDE 主窗口不露面」的守卫开关（2026-10-21）。
 				// ⚠ 载荷必须先校验（跨进程边界 ⇒ 脏值不许进来 ⇒ 也不许误伤别的窗口 ✗）。

@@ -4,6 +4,7 @@ description: "4-phase root cause debugging: understand bugs before fixing."
 activation: auto
 match: ["systematic-debugging", "systematic debugging", "debugging", "troubleshooting", "problem-solving", "root-cause", "investigation"]
 category: development
+tier: core
 ---
 
 # Systematic Debugging

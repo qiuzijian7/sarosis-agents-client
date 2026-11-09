@@ -4,6 +4,7 @@ description: "vLLM: high-throughput LLM serving, OpenAI API, quantization."
 activation: manual
 match: ["serving-llms-vllm", "serving llms vllm", "vllm", "inference serving", "pagedattention", "continuous batching", "high throughput", "production", "openai api", "quantization", "tensor parallelism"]
 category: mlops
+tier: extended
 ---
 
 # vLLM - High-Performance LLM Serving

@@ -1,0 +1,10 @@
+- insert:
+    - id: vssaros-computer
+      name: '@vssaros/dsh-computer'
+      config:
+        enabled: false
+        level: view
+        allowBackground: false
+        allowForeground: false
+        allowHandoff: false
+        presenceEnabled: false

@@ -7,6 +7,7 @@ description: >-
   built-in node validation + canvas smoke tests.
 metadata:
   allowed-tools: Bash(npx tsc:*), Bash(npx playwright:*), Bash(npm run test:e2e:*)
+tier: extended
 ---
 
 # Workflow New-Node Development

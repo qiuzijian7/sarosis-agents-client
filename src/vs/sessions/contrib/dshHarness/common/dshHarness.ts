@@ -739,17 +739,11 @@ export function shouldRestartForWorkspaceChange(input: {
 export interface IDshBootstrapArgs {
 	readonly start: IDshHostStartOptions;
 	readonly nodeMirror?: string;
-	/** 缺 dsh 时按通道选版本（稳定通道=兼容清单中最高的可用版本，缺清单时退回 npm latest）。 */
-	readonly policy: IDshUpdatePolicy;
-}
-
-export interface IDshUpgradeArgs {
-	readonly version: string;
-	readonly force?: boolean;
-	readonly start: IDshHostStartOptions;
-	/** 目标版本未安装时先并列安装（当前 Host 保持运行），再走闸门。 */
-	readonly installIfMissing?: boolean;
-	readonly nodePath?: string;
+	/**
+	 * @deprecated 2026-11-09 单版本模型后不再使用（dsh 随应用发版内置，运行期不按通道选版本）。
+	 * 保留字段只为兼容既有调用方，主进程不读它。
+	 */
+	readonly policy?: IDshUpdatePolicy;
 }
 
 /** 渲染进程上报的视图矩形：CSS px，主进程乘 zoomFactor 后设置（与上游 browserView 同口径）。 */
@@ -920,8 +914,8 @@ export const enum DshHarnessChannelCommand {
 	ConfirmUserAction = 'confirmUserAction',
 	GetLog = 'getLog',
 	GetRuntimeInfo = 'getRuntimeInfo',
-	InstallRuntime = 'installRuntime',
-	SetCurrentRuntime = 'setCurrentRuntime',
+	// ★ 2026-11-09 单版本模型：`InstallRuntime` / `SetCurrentRuntime` 已删除 ——
+	//   dsh 只有一个随包内置版本，运行期既不能安装也不能切换。
 	CreateView = 'createView',
 	LayoutView = 'layoutView',
 	SetViewVisible = 'setViewVisible',
@@ -982,13 +976,11 @@ export const enum DshHarnessChannelCommand {
 	 */
 	ListDshSessions = 'listDshSessions',
 	InstallNode = 'installNode',
-	/** 一键准备：缺 Node 装 Node、缺 dsh 装 npm `latest` 版本并设为当前，然后启动。 */
+	/** 一键准备：缺 Node 装托管 Node，然后启动 Host（dsh 必须随包内置，缺了报「安装包不完整」）。 */
 	Bootstrap = 'bootstrap',
-	/** 升级闸门：运行中任务检查 → 快照 → 切换 → 健康检查 → 失败回退。 */
-	Upgrade = 'upgrade',
+	// ★ 2026-11-09 单版本模型：`Upgrade`（快照切版本闸门）与 `DiscoverUpdates`（查可升级
+	//   运行时版本）已删除 —— 版本升级 = 应用发版，运行期没有这两个动作。
 	GetActivity = 'getActivity',
-	/** 升级发现：dist-tags + 兼容清单 → 按通道给出候选与推荐（IDshUpdateDiscovery）。 */
-	DiscoverUpdates = 'discoverUpdates',
 	/** 窗口上报自己的工作区目录（`{ windowId, paths }`，整体替换），已连接时立即注册新增的目录。 */
 	SetWindowWorkspaces = 'setWindowWorkspaces',
 	/**

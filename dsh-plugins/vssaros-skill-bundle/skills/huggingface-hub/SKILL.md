@@ -4,6 +4,7 @@ description: "HuggingFace hf CLI: search/download/upload models, datasets."
 activation: manual
 match: ["huggingface-hub", "huggingface hub"]
 category: mlops
+tier: extended
 ---
 
 # Hugging Face CLI (`hf`) Reference Guide

@@ -1,9 +1,10 @@
-import { A as key, B as settled, C as templateLiteral, D as ZodError, F as latestReport, H as threadKey, I as liveTicket, L as reached, M as followupOwners, N as isoTime, O as toJSONSchema, P as latestAssignment, R as readUntil, S as string$1, T as unknown, U as ticketOutcome, V as staffing, W as waitsForPerson, _ as literal, b as object, c as checkedImText, d as sameName, f as wordCount, g as boolean, h as array, j as assignmentRole, k as _coercedNumber, m as _enum, o as health, p as ZodNumber, w as union, x as record$1, y as number$1, z as runningAssignment } from "./poll-B_XKgl-k.js";
-import { C as machineOf, E as workerProbe, N as SetupError, P as LIMITS, T as resolveFeishuBot, _ as SETUP_FIELDS, a as runAsWorker, b as githubConfigured, c as withoutDirectory, f as Commands, i as applyEnvironment, l as workerBin, m as Config, n as WORKER_COMMANDS, o as verifyDirectory, r as agentVariables, s as verifyEnvironment, t as KV, u as writeEnvironment, w as resolveDeployment, y as executable } from "./kv-yFLC_Gcr.js";
-import { i as pullOf, m as readRepositoryPath, o as readPull, p as readGithub, r as pullEndNotices, t as claimPull } from "./github-pull-D2TwBhir.js";
-import { b as feishuTriggerId, d as feishuChatLink, f as feishuRead, g as feishuRef, m as readFeishuLink, p as feishuReferences, r as feishuSettings } from "./feishu-BldJ6s9K.js";
-import { a as fingerprint, c as p4, d as readChange, f as shelfDiffs, i as claimChangelist, n as changeEndNotices, o as inPath, r as changesOf$1, t as P4ConfigSchema, u as p4Messages } from "./p4-change-BRxSCNFA.js";
-import { C as TAPD_TYPES, D as saveTapdCredential, E as TapdCredentialError, O as tapdCredentialStatus, S as TAPD_SOURCE, T as watchWorkspace, a as itemTrigger, b as platformMembers, h as signatureOf, i as itemThread, p as resolvedConfig, w as tapdApi, x as refreshPlatformMembers, y as cleanOwner } from "./tapd-CYr7IKDV.js";
+import { A as key, B as runningAssignment, C as templateLiteral, D as ZodError, F as latestAssignment, G as ticketOutcome, H as staffing, I as latestReport, K as waitsForPerson, L as liveTicket, M as followupOwners, N as isGroupTicket, O as toJSONSchema, P as isoTime, R as reached, S as string$1, T as unknown, U as threadKey, V as settled, W as ticketExecutor, _ as literal, b as object, c as checkedImText, d as sameName, f as wordCount, g as boolean, h as array, j as assignmentRole, k as _coercedNumber, m as _enum, o as health, p as ZodNumber, w as union, x as record$1, y as number$1, z as readUntil } from "./poll-BQME6Yxb.js";
+import { C as resolveFeishuBot, M as SetupError, N as LIMITS, S as resolveDeployment, _ as executable, a as verifyDirectory, c as workerBin, d as Commands, g as SETUP_FIELDS, i as runAsWorker, l as writeEnvironment, n as agentVariables, o as verifyEnvironment, p as Config, r as applyEnvironment, s as withoutDirectory, t as WORKER_COMMANDS, v as githubConfigured, w as workerProbe, x as machineOf } from "./environment-CIcTvBAI.js";
+import { i as pullOf, m as readRepositoryPath, o as readPull, p as readGithub, r as pullEndNotices, t as claimPull } from "./github-pull-q8ze7DmO.js";
+import { b as feishuTriggerId, d as feishuChatLink, f as feishuRead, g as feishuRef, m as readFeishuLink, p as feishuReferences, r as feishuSettings } from "./feishu-C7Kcpt-I.js";
+import { t as KV } from "./kv-VTYpQIqw.js";
+import { a as fingerprint, c as p4, d as readChange, f as shelfDiffs, i as claimChangelist, n as changeEndNotices, o as inPath, r as changesOf$1, t as P4ConfigSchema, u as p4Messages } from "./p4-change-CaLiuSxp.js";
+import { A as tapdCredentialStatus, C as TapdConfigSchema, D as TapdCredentialError, E as watchWorkspace, O as saveTapdCredential, S as TAPD_TYPES, T as tapdApi, a as itemTrigger, b as resolveTapdName, h as signatureOf, i as itemThread, j as tapdEnvironment, k as tapdCredential, p as resolvedConfig, w as TapdOpenApi, x as TAPD_SOURCE, y as cleanOwner } from "./tapd-CkKoFjWG.js";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -1817,6 +1818,7 @@ var Tickets = class extends EnginePart {
 			assignments: [],
 			inputs: [],
 			undelivered: [],
+			executor: outcome.group ? "group" : "worker",
 			createdAt: at,
 			updatedAt: at,
 			origin
@@ -1830,16 +1832,17 @@ var Tickets = class extends EnginePart {
 			roomName: outcome.group.roomName
 		};
 		else ticket = this.options.prepareTicket?.(ticket, outcome) ?? ticket;
-		if (!ticket.group && this.options.staffing?.(ticket)) ticket.team = {
+		const groupRun = ticketExecutor(ticket) === "group";
+		if (!groupRun && this.options.staffing?.(ticket)) ticket.team = {
 			state: "proposing",
 			version: 0,
 			at
 		};
 		const assignment = this.newAssignment(ticket);
 		this.repo.tickets.save(ticket);
-		if (!ticket.group) for (const triggerId of triggerIds) for (const ref of this.repo.triggers.get(triggerId)?.threads ?? []) this.subscribe(id, ref);
+		if (!groupRun) for (const triggerId of triggerIds) for (const ref of this.repo.triggers.get(triggerId)?.threads ?? []) this.subscribe(id, ref);
 		if (outcome.acknowledgement && primary) this.replies.acknowledgeAccepted(id, primary, outcome.acknowledgement);
-		if (!staffing(ticket) && !ticket.group) this.options.executor.start(this.require(id), assignment);
+		if (!staffing(ticket) && !groupRun) this.options.executor.start(this.require(id), assignment);
 		this.emit("ticket.created", {
 			ticketId: id,
 			decisionId,
@@ -3005,6 +3008,27 @@ var Evals = class extends EnginePart {
 //#region src/core/intake.ts
 /** Trigger ingestion, thread correlation, subscription fan-out, and evaluation queuing. */
 /**
+* ★ 2026-11-09（真机）：主管台所有消息共用同一个 desk Thread，工单创建时订阅它，
+*   于是一条**全新的请求**也会被扇出给「待人回答」的旧工单，回执先说「已转给正在做的工单…」，
+*   worker 之后才用 handback 退回重评。用户看到的就是「转给了一个不相关的旧工单」。
+*
+*   这里只把「看起来像回答」的消息投给待人回答的工单，明显的新请求留给 Eval 重新分诊。
+*   待人回答有两种形态：worker 报了 blocked/failed 等人（`waitsForPerson`），
+*   或主管直接挂了一个未回答的提问（`ticket.attention`）——真机那张 cartoon.hml 工单是后者。
+*/
+const awaitingAnswer = (ticket) => !ticket.ended && (!!ticket.attention || waitsForPerson(ticket));
+/** 明确的新工作：以创建/添加/实现等动词开头，或整句在建群/组队。保守——其余一律当成回答，避免误伤真回答。 */
+const NEW_WORK = /^(?:(?:请|帮我|麻烦|顺便|再|又|另外|还有)\s*)*(?:创建|新建|组建|成立|添加|新增|增加|生成|实现|开发|开始|启动|拉个|拉一?个|做(?:一)?个|写(?:一)?个)/u;
+const GROUP_REQUEST = /(?:建|拉|创建|组建|成立)[^，,。！!？?]{0,48}(?:群|团队)|群聊/u;
+function looksLikeAnswer(text) {
+	const body = String(text ?? "").trim();
+	if (!body) return true;
+	if (body.startsWith("@")) return false;
+	if (NEW_WORK.test(body)) return false;
+	if (GROUP_REQUEST.test(body)) return false;
+	return true;
+}
+/**
 * Ingests incoming triggers from Sources, deduplicating and filtering them against SourceScope before recording thread correlations.
 * Fans listened triggers out to subscribed tickets via Tickets and queues for Eval, on its primary thread, every trigger no
 * ticket's worker decides (see `followupOwners`).
@@ -3051,6 +3075,7 @@ var Intake = class extends EnginePart {
 				const followed = !!thread.context?.includes(ticketId);
 				const resumes = trigger.human && ticket?.ended?.by !== "human" && !followed && !conversation;
 				if (!ticket || !liveTicket(ticket) && !resumes) continue;
+				if (trigger.human && !followed && awaitingAnswer(ticket) && !looksLikeAnswer(trigger.text)) continue;
 				reached.set(ticketId, {
 					ticket,
 					context: followed && (reached.get(ticketId)?.context ?? true)
@@ -5049,8 +5074,8 @@ function ticketSummary(ticket) {
 		inputs: ticket.inputs.length,
 		undelivered: ticket.undelivered.length,
 		deliveryError: attribute(ticket.delivery?.error),
-		sessionId: ticket.group ? ticket.group.roomId : ticket.assignments.some((item) => item.startedAt) ? workerSessionId(ticket.id) : "",
-		...ticket.group ? { group: {
+		sessionId: isGroupTicket(ticket) ? ticket.group?.roomId ?? "" : ticket.assignments.some((item) => item.startedAt) ? workerSessionId(ticket.id) : "",
+		...isGroupTicket(ticket) && ticket.group ? { group: {
 			roomId: ticket.group.roomId,
 			roomName: ticket.group.roomName
 		} } : {},
@@ -7141,7 +7166,7 @@ var DshExecutor = class {
 	}
 	/** Enqueues a `launch` effect for an accepted or resumed assignment; launches start in queue order as worker slots free up. */
 	start(ticket, assignment) {
-		if (ticket.group) return;
+		if (isGroupTicket(ticket)) return;
 		this.host.effects.enqueue("launch", assignment.id, {
 			ticketId: ticket.id,
 			assignmentId: assignment.id
@@ -7149,7 +7174,7 @@ var DshExecutor = class {
 	}
 	/** Enqueues a `delivery` effect to steer pending inputs into `ticket`'s running worker session. */
 	deliver(ticket, _assignment) {
-		if (ticket.group) return;
+		if (isGroupTicket(ticket)) return;
 		this.host.effects.enqueue("delivery", ticket.id, { ticketId: ticket.id });
 	}
 	/** VsSaros addition: delivers the inputs a ticket kept while it was held (see `ExecutorHost.held`). */
@@ -7161,7 +7186,7 @@ var DshExecutor = class {
 		const ticket = this.host.store.tickets.get(ticketId);
 		const assignment = ticket && latestAssignment(ticket);
 		if (!ticket || !liveTicket(ticket) || assignment?.id !== assignmentId || assignment.state !== "pending") return;
-		if (staffing(ticket) || ticket.group) return;
+		if (staffing(ticket) || isGroupTicket(ticket)) return;
 		this.slots.reserve(ticketId, "launch");
 		try {
 			await this.launch(ticket, assignment);
@@ -11567,7 +11592,7 @@ function submitText(view) {
 		return view.route.kind === "created" ? `已建群${name}，群里的 Bots 接着做。` : view.route.kind === "updated" ? `已更新群${name}。` : `已转给群${name}。`;
 	}
 	if (view.tickets?.length) return `已转给正在做的工单${view.tickets.map((title) => `「${title}」`).join("、")}。`;
-	return "主管收到了，需要你回复的消息会发到这里。";
+	return "已收到，正在按普通流程安排；有进展会在这里告诉你。";
 }
 const textOf = (message) => {
 	const content = message.content;
@@ -12557,6 +12582,28 @@ var UsageLedger = class {
 		this.db.prepare("INSERT INTO usage_call (at, session, value) VALUES (?,?,?)").run(call.at, call.session, JSON.stringify(call));
 		return call;
 	}
+	/**
+	* 决策 15：群执行结算写一行进**已有的** `usage_call` 账本（不新建第二组计划表）。
+	* 复用 `engine.report()` 的结算结果；这里只负责让账本/用量页能看见「这张工单是群跑的」。
+	*/
+	recordGroupSettlement(ticketId, roomId, state) {
+		const call = {
+			at: new Date(this.now()).toISOString(),
+			session: `group-${roomId}`,
+			role: "group",
+			ticketId,
+			roomId,
+			purpose: `group:${state}`,
+			provider: "",
+			model: "",
+			input: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			output: 0
+		};
+		this.db.prepare("INSERT INTO usage_call (at, session, value) VALUES (?,?,?)").run(call.at, call.session, JSON.stringify(call));
+		return call;
+	}
 	/** The latest conversation call of a Session (no auxiliary purpose, not another model's side call): what its context held then. */
 	last(sessionId) {
 		for (const row of this.db.prepare("SELECT value FROM usage_call WHERE session=? ORDER BY id DESC LIMIT 20").all(sessionId)) {
@@ -12574,7 +12621,8 @@ var UsageLedger = class {
 			master: empty(),
 			desk: empty(),
 			worker: empty(),
-			step: empty()
+			step: empty(),
+			group: empty()
 		};
 		const models = /* @__PURE__ */ new Map(), bots = /* @__PURE__ */ new Map();
 		const tickets = /* @__PURE__ */ new Map();
@@ -14053,7 +14101,7 @@ async function handleTapdWebhook(req, deps) {
 	};
 	let item;
 	try {
-		item = (await (deps.api?.(config, ctx) ?? tapdApi(config, ctx.commands)).items(event.type, event.workspace, { id: event.id })).find((row) => row.id === event.id);
+		item = (await (deps.api?.(config, ctx) ?? tapdApi(config)).items(event.type, event.workspace, { id: event.id })).find((row) => row.id === event.id);
 	} catch (error) {
 		return {
 			status: 502,
@@ -14064,9 +14112,6 @@ async function handleTapdWebhook(req, deps) {
 		status: 200,
 		body: { ignored: "item not found" }
 	};
-	if (config.memberApi && !platformMembers(config.memberApi)) try {
-		await refreshPlatformMembers(config.memberApi);
-	} catch {}
 	const resolved = resolvedConfig(config);
 	const watch = resolved.watches.find((candidate) => watchMatches(resolved, candidate, event, item));
 	if (!watch) return {
@@ -14111,6 +14156,10 @@ async function handleTapdWebhook(req, deps) {
 function feishuAppOf(runtime) {
 	const config = runtime.store.settings().sources.feishu?.config;
 	return typeof config?.appId === "string" ? config.appId : "";
+}
+/** VsSaros addition: the saved TAPD Source config with schema defaults filled in, for the panel's setup checklist. */
+function tapdConfigOf(runtime) {
+	return TapdConfigSchema.parse(runtime.store.settings().sources.tapd?.config ?? {});
 }
 /**
 * Represents a client-facing 400 or 404 error raised during management route parsing or lookup.
@@ -14396,8 +14445,45 @@ function routes(runtime) {
 			]).optional(),
 			id: string$1().max(512).optional(),
 			secret: string$1().max(512).optional(),
-			clear: boolean().optional()
+			clear: boolean().optional(),
+			bundled: _enum(["on", "off"]).optional()
 		}).strict().parse(await body(4096))),
+		"GET sources/tapd/setup": () => {
+			const config = tapdConfigOf(runtime);
+			const agentResolved = resolveTapdName(config.agent, config.members);
+			return {
+				credential: tapdCredentialStatus(),
+				watches: config.watches.length,
+				workspace: config.workspace,
+				agent: config.agent,
+				agentResolved,
+				agentMapped: !!config.agent && agentResolved !== cleanOwner(config.agent),
+				healthCode: runtime.health["tapd"]?.code ?? null
+			};
+		},
+		"POST sources/tapd/test": async ({ body }) => {
+			const request = object({
+				api: string$1().trim().max(300).optional(),
+				workspace: string$1().trim().regex(/^\d+$/).optional()
+			}).strict().parse(await body(4096));
+			const config = tapdConfigOf(runtime);
+			const api = new TapdOpenApi({ api: request.api ?? config.api });
+			const at = (/* @__PURE__ */ new Date()).toISOString();
+			try {
+				await api.verify(request.workspace ?? config.workspace);
+				return {
+					ok: true,
+					method: tapdCredential(tapdEnvironment())?.method ?? "",
+					at
+				};
+			} catch (error) {
+				return {
+					ok: false,
+					error: error instanceof Error ? error.message : String(error),
+					at
+				};
+			}
+		},
 		"GET models": () => runtime.models(),
 		"GET prompts": ({ query }) => {
 			const { revision, offset } = PromptsQuery.parse(query);
@@ -16352,7 +16438,9 @@ async function handleDeskGroupCommand(host, trigger, text, referenceEvent, optio
 function isGroupCreationRequest(text) {
 	const body = String(text ?? "").trim();
 	if (!body || body.startsWith("@")) return false;
-	return /(?:建|拉|创建|组建|成立)[^，,。！!？?]{0,12}(?:群|团队)|群聊/u.test(body);
+	if (/(?:不要|别|无需|不用|不必|取消|不用再|别再)\s*(?:建|拉|创建|组建|成立)?\s*(?:群|团队)/u.test(body)) return false;
+	if (/(?:^|[，,。！!？?\s])(?:不要|别|无需|不用|不必)\s*(?:建|拉|创建|组建|成立)/u.test(body)) return false;
+	return /(?:建|拉|创建|组建|成立)[^，,。！!？?]{0,48}(?:群|团队)|群聊/u.test(body);
 }
 /** Derive a stable group name and shared notice from the request, and pick up to three suitable Bots. */
 function fastGroupPlan(text, roster) {
@@ -16376,9 +16464,19 @@ function fastGroupPlan(text, roster) {
 	}
 	if (ids.length < 2) return;
 	const explicit = /(?:群名|名称|叫|名为)\s*[「"']?([^」"'\n，,。]{2,40})/u.exec(text);
-	const body = String(text).replace(/^(?:请|帮我|麻烦)?(?:建|拉|创建|组建|成立)[^，,。]*?(?:群|团队)[，,：:\s]*/u, "").trim();
-	const goal = body.replace(/^(?:制作|开发|做|实现|完成)(?:一个)?/u, "").trim().replace(/[。！!？?，,]+$/u, "");
-	const name = (explicit?.[1]?.trim() || (goal ? `${goal.slice(0, 40)} 开发团队` : "开发团队群")).slice(0, 60);
+	const raw = String(text).trim();
+	const verb = /^(?:请|帮我|麻烦)?(?:建|拉|创建|组建|成立)\s*(?:一个|个)?\s*(?:群|团队)?\s*/u;
+	const tail = /[\s，,。]*?(?:开发|研发|项目)?(?:团队|群)\s*[。！!？?]*$/u;
+	const goalPrefix = /^(?:制作|开发|做|实现|完成)(?:一个)?/u;
+	const segments = raw.split(/[，,：:]/u).map((part) => part.trim()).filter(Boolean);
+	const first = segments[0] ?? "";
+	const title = first.replace(verb, "").replace(tail, "").trim();
+	const rest = segments.slice(1).join("，").trim();
+	const goal = ((title.length >= 2 ? title : rest) || first.replace(verb, "").trim()).replace(goalPrefix, "").replace(tail, "").trim().replace(/[。！!？?，,]+$/u, "");
+	const explicitName = explicit?.[1]?.trim();
+	const basis = explicitName || goal;
+	if (!basis) return;
+	const name = (explicitName || `${basis.slice(0, 40)} 开发团队`).slice(0, 60);
 	const nameOf = (bot) => bot?.name;
 	const flow = coder && tester ? groupFlowNotice({
 		coder: nameOf(coder),
@@ -16386,7 +16484,7 @@ function fastGroupPlan(text, roster) {
 		designer: nameOf(designer),
 		reviewer: nameOf(reviewer)
 	}) : "";
-	const request = (body || text).slice(0, 2e3 - (flow ? flow.length + 2 : 0));
+	const request = (rest || first.replace(verb, "").replace(/^[，,：:\s]+/u, "") || raw).slice(0, 2e3 - (flow ? flow.length + 2 : 0));
 	return {
 		members: ids.slice(0, size),
 		name,
@@ -17571,12 +17669,13 @@ var Runtime = class extends Service {
 		if (this.groupChecking || this.closing()) return;
 		this.groupChecking = true;
 		try {
-			for (const ticket of this.store.tickets.open().filter((item) => item.group)) {
+			for (const ticket of this.store.tickets.open().filter(isGroupTicket)) {
+				const roomId = ticket.group?.roomId ?? "";
 				let state;
 				try {
-					state = await this.team.groupState(ticket.group.roomId);
+					state = await this.team.groupState(roomId);
 				} catch (error) {
-					this.ctx.logger.warn("dsh-superagent: could not read group %s for ticket %s: %s", ticket.group.roomId, ticket.id, String(error));
+					this.ctx.logger.warn("dsh-superagent: could not read group %s for ticket %s: %s", roomId, ticket.id, String(error));
 					continue;
 				}
 				const report = groupTicketReport(ticket, state, Date.now());
@@ -17585,6 +17684,7 @@ var Runtime = class extends Service {
 				if (!report || !current || current.ended || latest?.state === report.state && latest.summary === report.summary) continue;
 				try {
 					this.engine.report(ticket.id, report);
+					this.usage?.recordGroupSettlement(ticket.id, roomId, report.state);
 				} catch (error) {
 					this.ctx.logger.warn("dsh-superagent: could not report group ticket %s: %s", ticket.id, String(error));
 				}
@@ -18570,4 +18670,4 @@ async function apply(ctx, config) {
 	ctx.logger.info(runtime.configured() ? "dsh-superagent ready; the Superagent sidebar entry opens the management panel" : `dsh-superagent is waiting for setup: ${runtime.setupProblem?.detail ?? ""}`);
 }
 //#endregion
-export { Config, Engine, MemoryRepositories, REASONS, USER_ERRORS, UserError, apply, assignmentRole, canRetry, followupOwners, inject, isoTime, key, latestAssignment, latestReport, liveTicket, name, reached, readUntil, reasonText, runningAssignment, said, settled, staffing, threadKey, ticketOutcome, ticketStage, waitsForPerson };
+export { Config, Engine, MemoryRepositories, REASONS, USER_ERRORS, UserError, apply, assignmentRole, canRetry, followupOwners, inject, isGroupTicket, isoTime, key, latestAssignment, latestReport, liveTicket, name, reached, readUntil, reasonText, runningAssignment, said, settled, staffing, threadKey, ticketExecutor, ticketOutcome, ticketStage, waitsForPerson };

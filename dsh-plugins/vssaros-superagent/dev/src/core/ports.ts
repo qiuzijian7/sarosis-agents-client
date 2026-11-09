@@ -43,7 +43,7 @@ export type AssessmentOutcome =
   /** An accept: `rules` the assessment matched, `name` the ticket's requested short name, and `note` a routing note for its worker. */
   | { kind: 'accept'; title: string; scope: string; reason: string | Reason; acknowledgement?: string; rules?: string[]; audit?: Record<string, unknown>;
     name?: string; note?: string
-    /** VsSaros addition (2026-11-07): the group chat that does the work (see `Ticket.group`). */
+    /** 决策 15：指定群聊执行；`create()` 据此写 `Ticket.executor: 'group'`，`group` 字段只携带是哪个群。 */
     group?: { roomId: string; roomName: string } }
   | { kind: 'stop'; ticketId: string; reason: string | Reason; audit?: Record<string, unknown> }
 

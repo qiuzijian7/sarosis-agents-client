@@ -2,6 +2,7 @@
 name: ue-python-api-gotchas
 description: UE5 Python 反射里"名字猜错就报错"的坑速查表（wrong → right 对照）：GameplayTag 怎么构造、ASC 怎么读属性、protected UPROPERTY 读不到怎么绕、枚举叫 TriggerEvent 不是 ETriggerEvent、ARFilter/get_referencers 的参数形状、ObjectIterator 必须包 try、CharacterMovement 的取法等。撞到 AttributeError / "Failed to find property" / "is protected" 时先查本表，再用 unreal_help(symbol, filter=...) 自省，不要用 dir() 盲试。
 displayName: "UE5 Python API 形状坑速查"
+tier: extended
 ---
 
 # UE5 Python API 形状坑速查

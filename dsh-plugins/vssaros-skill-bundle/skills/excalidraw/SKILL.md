@@ -4,6 +4,7 @@ description: Hand-drawn Excalidraw JSON diagrams (arch, flow, seq).
 activation: manual
 match: ["excalidraw", "diagrams", "flowcharts", "architecture", "visualization", "json"]
 category: creative
+tier: extended
 ---
 
 # Excalidraw Diagram Skill
@@ -18,12 +19,12 @@ Generate `.excalidraw` files for architecture diagrams, flowcharts, sequence dia
 
 1. **Load this skill** (you already did)
 2. **Write the elements JSON** -- an array of Excalidraw element objects
-3. **Save the file** using `file_write` to create a `.excalidraw` file
-4. **Optionally upload** for a shareable link using `scripts/upload.py` via `terminal`
+3. **Save the file** using `write` to create a `.excalidraw` file
+4. **Stop here** -- this skill does not ship an upload script; share the saved file
 
 ### Saving a Diagram
 
-Wrap your elements array in the standard `.excalidraw` envelope and save with `file_write`:
+Wrap your elements array in the standard `.excalidraw` envelope and save with `write`:
 
 ```json
 {
@@ -39,15 +40,11 @@ Wrap your elements array in the standard `.excalidraw` envelope and save with `f
 
 Save to any path, e.g. `~/diagrams/my_diagram.excalidraw`.
 
-### Uploading for a Shareable Link
+### Sharing a Diagram
 
-Run the upload script (located in this skill's `scripts/` directory) via terminal:
-
-```bash
-python skills/diagramming/excalidraw/scripts/upload.py ~/diagrams/my_diagram.excalidraw
-```
-
-This uploads to excalidraw.com (no account needed) and prints a shareable URL. Requires the `cryptography` pip package (`pip install cryptography`).
+This skill does **not** ship `scripts/upload.py`. Do not invent a path or call a
+non-existent upload command. Deliver the saved `.excalidraw` file itself; the user
+can import it at excalidraw.com to get a shareable link.
 
 ---
 

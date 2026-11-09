@@ -4,6 +4,7 @@ description: Delegate coding to OpenAI Codex CLI (features, PRs).
 activation: manual
 match: ["codex", "coding-agent", "openai", "code-review", "refactoring"]
 category: ai-agents
+tier: extended
 ---
 
 # Codex CLI

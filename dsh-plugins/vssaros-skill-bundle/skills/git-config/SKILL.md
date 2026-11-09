@@ -2,16 +2,17 @@
 name: git-config
 description: 动态发现本机 Git 可执行文件路径，按 PATH→常见安装目录→UGit 嵌入版→全局搜索→交互询问 逐级降级，最后将结果保存为 memory。
 displayName: "Git Config 动态发现流程"
+tier: extended
 ---
 
 # Git Config 动态发现流程
 
 按以下优先级逐级尝试发现当前环境的 Git 可执行文件路径（`git.exe` 的完整绝对路径），不要硬编码任何路径或值。**完成后必须将发现的 Git 路径保存为 memory。**
 
-> **Shell 约定：本技能所有代码块是 PowerShell 5.1，必须用 `terminal` 工具执行，不要用
-> `terminal`。** `terminal` 在 Windows 上是随包 busybox 的 POSIX sh，`$gitExe = (Get-Command
-> git ...)` 这类写法会直接报 `sh: syntax error: unexpected "("`。两者是并列的独立
-> 工具：`terminal` 跑 PowerShell，`terminal` 跑 POSIX sh。
+> **Shell 约定：本技能所有代码块是 PowerShell 5.1，一律用 `pwsh` 执行。**
+> dsh 侧只有 `pwsh`；把 `$gitExe = (Get-Command git ...)` 这类写法交给 POSIX sh
+> 会直接报 `sh: syntax error: unexpected "("`。
+> 不要写成 POSIX 语法，也不要引用 IDE 侧已退役的工具名。
 
 ---
 

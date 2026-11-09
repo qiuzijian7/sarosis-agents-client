@@ -4,7 +4,8 @@ description: QA 阶段 2——把风险分析转成中文业务用例，并等�
 activation: auto
 match: ["测试用例", "用例设计", "验收用例", "写用例", "case design"]
 category: development
-recommended_tools: ["file_read", "file_write", "terminal"]
+recommended_tools: ["read", "write", "pwsh"]
+tier: core
 ---
 
 # QA Case Design — 用例设计（⏸ 人工门禁）

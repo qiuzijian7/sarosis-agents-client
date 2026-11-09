@@ -2586,11 +2586,12 @@ registerAction2(class extends Action2 {
 	}
 });
 
-// ─── 命令面板「新建 Agent」（2026-10-17，Agents 方案 A 待定项 ② = 乙：命令只开 Agents 页）────────
-// dsh 引擎：原生新建页（AgentCreateEditorPane）的唯一入口在旧原生侧栏上，已不可达 ⇒ 改开
-//   Agents 插件页的编辑区页，新建向导的入口（页头「＋ 新建」）在第一眼位置；**零新通道** ——
-//   不做「命令直达向导」（那要新增宿主→插件页的推送通道，见 doc/agents-botmode-decisions.html ②甲）。
-// 原生引擎：照旧开原生新建页。
+// ─── 命令面板「新建 Agent」（2026-11-09：IDE 侧创建已下线，命令只做明确指引）────────
+// 旧实现的两个分支都是「点了没反应」：dsh 分支开 `agentStudio.presetAgent` 页（该容器已删 ⇒ 空页），
+//   legacy 分支开原生新建页（AgentCreateEditorPane，侧栏容器已不注册 ⇒ 不可达）。
+// 唯一写口在 dsh 侧：聊天框左侧栏「Bots」页签 → ＋ → 新建 Bot → POST /x/agents/api/agents。
+// ⚠ 不做 IDE→dsh 转发：页面桥明确「写入、执行类能力不走页面桥」，agents 模块也无承载页，
+//   再造一条桥等于把 IDE 侧写盘换个形式复活 ✗。
 registerAction2(class extends Action2 {
 	constructor() {
 		super({
@@ -2601,22 +2602,7 @@ registerAction2(class extends Action2 {
 		});
 	}
 	async run(accessor: ServicesAccessor): Promise<void> {
-		const editorService = accessor.get(IEditorService);
-		const configurationService = accessor.get(IConfigurationService);
-		if (isDshModuleEngine(configurationService)) {
-			// 与 openModulePage 同一落点：容器单例输入（dshModuleContainers.ts 的 agents 容器）✓
-			const input = DshPluginPageEditorInput.getOrCreate('agentStudio.presetAgent', 'Agents');
-			await editorService.openEditor(input, { pinned: true });
-			return;
-		}
-		const editorGroupsService = accessor.get(IEditorGroupsService);
-		const groups = editorGroupsService.getGroups(0 /* GroupsOrder.CREATION_TIME */);
-		const input = AgentCreateEditorInput.getInstance();
-		if (groups.length <= 1) {
-			await editorService.openEditor(input, { pinned: true }, SIDE_GROUP);
-		} else {
-			await editorService.openEditor(input, { pinned: true }, groups[0]);
-		}
+		accessor.get(INotificationService).info('创建 Bot 已统一到 dsh 侧：请在聊天框左侧栏「Bots」页签点 ＋ → 新建 Bot。');
 	}
 });
 

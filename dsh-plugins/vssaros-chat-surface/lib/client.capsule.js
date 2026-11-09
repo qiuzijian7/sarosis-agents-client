@@ -27,7 +27,8 @@ window.__ModuleLoader__.load({
 		const ENTRY_ORDER = -28;
 		const MENU_ID = "vssaros-bot-capsule";
 		const API = "/x/agents/api/agents";
-		const FOCUS_KEY = "vssaros.agents.focus";
+		// ⚠ vssaros.agents.focus 焦点键已无读端（SSR detail 页下线）⇒ 不再写；
+		//   「Agent 主页」交接与欢迎卡统一走 vssaros:open-bots 事件。
 		const ROSTER_TTL_MS = 30000;
 		const VSSAROS_PREFIX = "vssaros-";
 		/* vssaros:bot-identity v1 —— 逐字副本，真源 vssaros-agents/lib/core/botIdentity.js（守卫 dsh-plugins/check-bot-identity.mjs） */
@@ -131,14 +132,19 @@ window.__ModuleLoader__.load({
 				} catch { return undefined; }
 			};
 			const say = (text) => { try { if (bridge && bridge.notify) { bridge.notify("attention", text); } } catch { /* 通知失败不阻塞 */ } };
+			/** ★ 2026-11-09：/x/agents/ 的 SSR 工作台已下线 ⇒ openModulePage 必定 404
+			 *   （2026-10-29 真机「点 Agent 主页 ⇒ 弹出黑框」就是这个）。与欢迎卡同款：
+			 *   派发 vssaros:open-bots 由 Bots 页签接住；没人接住就明说去哪，不静默。
+			 *   ⚠ 留一条 console 痕迹（页面 console 会转进 IDE 日志，否则"点了没反应"查不到）。 */
 			const handoffHome = (agentId) => {
-				try { if (typeof localStorage !== "undefined") { localStorage.setItem(FOCUS_KEY, "home:" + agentId + "|" + Date.now()); } } catch { /* 存不了也照样打开 */ }
-				// ⚠ 2026-10-29（真机报障「点 Agent 主页 ⇒ 弹出黑框」）：**先留痕**。
-				//   页面 console 会被转发成 IDE 日志的 `[dshHarness] page console(warn) …`（实测）⇒
-				//   这里每一步都写一条，否则"点了没反应 / 黑框"在日志里**一条痕迹都没有** ✗（同款坑第三次）。
-				try { console.warn("[vssaros-capsule] Agent 主页：bridge=" + (bridge ? "有" : "无") + " openModulePage=" + (bridge && typeof bridge.openModulePage === "function" ? "有" : "无")); } catch { /* 忽略 */ }
-				if (!bridge || typeof bridge.openModulePage !== "function") { say("当前宿主不支持从聊天框打开 Agents 页（需要桥版本 3+）"); return; }
-				Promise.resolve(bridge.openModulePage("/x/agents/")).catch((e) => { try { console.warn("[vssaros-capsule] Agent 主页打开失败：" + String((e && e.message) || e)); } catch { /* 忽略 */ } say("打开 Agents 页失败：" + String((e && e.message) || e)); });
+				const detail = { action: "view", from: "home", id: String(agentId || ""), handled: false };
+				try {
+					if (typeof window !== "undefined" && typeof window.CustomEvent === "function") {
+						window.dispatchEvent(new window.CustomEvent("vssaros:open-bots", { detail }));
+					}
+				} catch { /* 老环境没有 CustomEvent ⇒ 走下面的文字指引 */ }
+				try { console.warn("[vssaros-capsule] Agent 主页交接 handled=" + detail.handled); } catch { /* 忽略 */ }
+				if (!detail.handled) { say("Agents 工作台已下线：请展开左侧栏 → 「Bots」页签查看这个 Bot"); }
 			};
 
 			function BotCapsule(props) {

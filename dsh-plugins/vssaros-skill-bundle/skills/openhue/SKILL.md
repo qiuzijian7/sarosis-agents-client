@@ -4,6 +4,7 @@ description: Control Philips Hue lights, scenes, rooms via OpenHue CLI.
 activation: manual
 match: ["openhue", "smart-home", "hue", "lights", "iot"]
 category: smart-home
+tier: extended
 ---
 
 # OpenHue CLI

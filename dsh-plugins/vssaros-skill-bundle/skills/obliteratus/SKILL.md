@@ -4,6 +4,7 @@ description: "OBLITERATUS: abliterate LLM refusals (diff-in-means)."
 activation: manual
 match: ["obliteratus", "abliteration", "uncensoring", "refusal-removal", "llm", "weight-projection", "svd", "mechanistic-interpretability", "huggingface", "model-surgery"]
 category: mlops
+tier: extended
 ---
 
 # OBLITERATUS Skill

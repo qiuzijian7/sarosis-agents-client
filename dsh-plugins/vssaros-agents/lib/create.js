@@ -36,9 +36,13 @@ async function existingIdsOf(root) {
  */
 export async function previewAgentDraft(config, raw) {
 	const root = agentsRootOf(config);
+	const builtinRoot = agentsBuiltinRootOf(config);
 	const draft = normalizeDraft(raw);
 	const existingIds = await existingIdsOf(root).catch(() => []);
-	const result = validateDraft(draft, { existingIds, provider: config?.defaultProvider, isAbsolute });
+	// ★ 2026-11-09：内置根也占 id（见 validateDraft 的说明）。没注入内置根 ⇒ 空集，
+	//   行为与之前一致 ✓；读目录失败仍按「不知道有哪些」降级，写入时再查一次。
+	const builtinIds = builtinRoot ? await existingIdsOf(builtinRoot).catch(() => []) : [];
+	const result = validateDraft(draft, { existingIds, builtinIds, provider: config?.defaultProvider, isAbsolute });
 	return {
 		draft,
 		...result,
@@ -52,8 +56,7 @@ export async function createAgentFromDraft(config, raw) {
 	const root = agentsRootOf(config);
 	const preview = await previewAgentDraft(config, raw);
 	if (preview.errors.length) {
-		const dup = preview.errors.some(e => e.startsWith('已有同名目录') || e.includes('撞了 preset id'));
-		throw httpError(dup ? 409 : 400, preview.errors.join('；'), { errors: preview.errors });
+		throw httpError(preview.conflict ? 409 : 400, preview.errors.join('；'), { errors: preview.errors });
 	}
 	const dir = join(root, preview.draft.id);
 	await mkdir(root, { recursive: true });

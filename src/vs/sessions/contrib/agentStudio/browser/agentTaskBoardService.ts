@@ -24,7 +24,7 @@ import { resolveAgentStudioDataRoot, migrateLegacyAgentStudioData } from '../com
 // ★ 跨进程写锁（README 5.65）：`taskboard.json` / `boards.json` 与 **dsh 侧看板**共用同一把 `<file>.lock`
 //（dsh 侧在 `dsh-plugins/vssaros-kanban/lib/store.js` 自建同款：`open('wx')` + mtime 破门，默认 5000/15000ms ✓ 同值 ✓）。
 import { acquireFileLock, fileServiceOps, lockResourceFor } from '../common/fileWriteLock.js';
-import { SAROS_CLAW_AGENT_ID } from './providers/tool/kanbanTools.js';
+import { DEFAULT_SCRAPE_SESSION_ID } from './providers/tool/kanbanTools.js';
 // 重构 2.2：看板自动执行的入口开关（`dsh` = Host 里的 kanban runner 驱动；`legacy` = 本服务的旧执行链）。
 import { DshHarnessSettings } from '../../dshHarness/common/dshHarness.js';
 
@@ -1031,7 +1031,7 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 	}
 
 	async downloadUrlForAttachment(url: string, opts?: { sessionId?: string; viewId?: string; filename?: string; subDir?: string; extractZip?: boolean }): Promise<{ name: string; mimeType: string; base64: string; tempPath: string; isZip?: boolean; extractedFiles?: { name: string; relPath: string; isImage: boolean; dataUri?: string }[] } | undefined> {
-		const sessionId = opts?.sessionId ?? SAROS_CLAW_AGENT_ID;
+		const sessionId = opts?.sessionId ?? DEFAULT_SCRAPE_SESSION_ID;
 		const viewId = await this._resolveDownloadViewId(sessionId, opts?.viewId);
 		if (!viewId) { return undefined; }
 		try {
@@ -1203,7 +1203,7 @@ export class AgentTaskBoardService extends Disposable implements IAgentTaskBoard
 	 *   cookies. When omitted we try to locate a tracked TAPD page automatically.
 	 */
 	async downloadUrlToTemp(url: string, opts?: { sessionId?: string; viewId?: string }): Promise<string | undefined> {
-		const sessionId = opts?.sessionId ?? SAROS_CLAW_AGENT_ID;
+		const sessionId = opts?.sessionId ?? DEFAULT_SCRAPE_SESSION_ID;
 		const viewId = await this._resolveDownloadViewId(sessionId, opts?.viewId);
 		if (!viewId) {
 			this.logService.warn('[TaskBoard] downloadUrlToTemp: no browser view available (cannot authenticate download)');

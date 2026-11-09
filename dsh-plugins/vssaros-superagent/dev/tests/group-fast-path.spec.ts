@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import {
 	GROUP_REFERENCE_KIND, addressedGroupMessage, fastGroupPlan, groupByNameMention, groupReferenceOf,
@@ -42,6 +43,11 @@ describe('P0 synchronous group creation', () => {
     expect(isGroupCreationRequest('建个群，拉 Coder 和 Designer')).toBe(true)
     expect(isGroupCreationRequest('@番茄钟 H5 开发团队 开始制作')).toBe(false)
     expect(isGroupCreationRequest('同意组队方案 v1')).toBe(false)
+    // ★ 2026-11-09：真机长标题（动词与「团队」之间 17+ 字符）必须识别；否定句与 @群名 不能误建群
+    expect(isGroupCreationRequest('创建一个 俄罗斯方块 h5 小游戏开发团队')).toBe(true)
+    expect(isGroupCreationRequest('@番茄钟 H5 开发团队 开始制作')).toBe(false)
+    expect(isGroupCreationRequest('不要建群，先给我一个方案')).toBe(false)
+    expect(isGroupCreationRequest('别创建团队了，取消吧')).toBe(false)
   })
   it('picks suitable Bots, keeps SuperAgent out, and derives a name/notice from the request', () => {
     const plan = fastGroupPlan('创建开发团队，制作一个番茄钟 H5应用', ROSTER)
@@ -49,6 +55,46 @@ describe('P0 synchronous group creation', () => {
     expect(plan?.name).toContain('番茄钟')
     expect(plan?.notice).toContain('制作')
     expect(fastGroupPlan('创建开发团队', [{ id: 'coder', name: 'Coder' }])).toBeUndefined()
+  })
+  // ★ 2026-11-09 真机 bug：「创建 坦克大战 H5 开发团队」被取名成「开发团队群」——
+  //   旧的正文剥离正则把整句（含标题）吞空，命中泛化兜底。以下四条钉住各类句式。
+  describe('derives an informative group name (never the generic fallback)', () => {
+    it('keeps a title that directly ends in 开发团队', () => {
+      const plan = fastGroupPlan('创建 坦克大战 H5 开发团队', ROSTER)!
+      expect(plan.name).toContain('坦克大战 H5')
+      expect(plan.name).toContain('开发团队')
+      expect(plan.name).not.toContain('开发团队群')
+      expect(plan.notice).toContain('坦克大战')
+    })
+    it('keeps a long title with 小游戏 and a lower-case h5', () => {
+      const plan = fastGroupPlan('创建一个 俄罗斯方块 h5 小游戏开发团队', ROSTER)!
+      expect(plan.name).toContain('俄罗斯方块')
+      expect(plan.name).toContain('h5 小游戏')
+      expect(plan.name).not.toContain('开发团队群')
+    })
+    it('uses the clause after the comma as the notice, but keeps the title for the name', () => {
+      const plan = fastGroupPlan('创建 坦克大战 H5 开发团队，做一个能玩的游戏', ROSTER)!
+      expect(plan.name).toContain('坦克大战 H5')
+      expect(plan.notice).toContain('做一个能玩的游戏')
+    })
+    it('honours an explicit 群名 and keeps the old comma form working', () => {
+      expect(fastGroupPlan('群名「坦克大战」 创建 开发团队', ROSTER)?.name).toBe('坦克大战')
+      expect(fastGroupPlan('创建开发团队，制作一个番茄钟 H5应用', ROSTER)?.name).toContain('番茄钟')
+      const chat = fastGroupPlan('建群开发一个h5的番茄钟应用', ROSTER)!
+      expect(chat.notice).toMatch(/^开发一个h5的番茄钟应用/)
+    })
+    it('does not build a group for a bare command with no title at all', () => {
+      // 提不出任何标题 ⇒ 交给普通流程补名，绝不回落「开发团队群」这类无信息量的名字
+      expect(fastGroupPlan('建群', ROSTER)).toBeUndefined()
+      expect(fastGroupPlan('创建团队', ROSTER)).toBeUndefined()
+    })
+    it('反向突变：源码里不得再出现泛化兜底字面量或旧的单段剥离正则', () => {
+      const src = readFileSync(new URL('../src/app/groupFastPath.ts', import.meta.url), 'utf8')
+      expect(src, '开发团队群').not.toContain("'开发团队群'")
+      expect(src, '旧的单段剥离正则').not.toContain(']*?(?:群|团队)[，,：:\\s]*/u, \'\').trim()')
+      expect(src, '两段式切分').toContain('const segments = raw.split')
+      expect(src, '纯指令不接管').toContain('if (!basis) { return undefined }')
+    })
   })
   // VsSaros addition (2026-11-06): design → develop → review → browser test, bugs back to the developer, re-test.
   it('adds the tester to a group asked to build something, and chains the members in the notice', () => {

@@ -6,8 +6,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { readTapdEnvFile, resetTapdEnvCache, tapdCredential, tapdCredentialsHint, tapdEnvironment, tapdEnvFile, tapdTimeoutMs,
-  type TapdEnv } from '../src/sources/tapd-auth.ts'
+import { BUNDLED_TAPD_CREDENTIALS, bundledTapdEnv, readTapdEnvFile, resetTapdEnvCache, tapdCredential, tapdCredentialsHint,
+  tapdEnvironment, tapdEnvFile, tapdTimeoutMs, type TapdEnv } from '../src/sources/tapd-auth.ts'
 import { TapdOpenApi } from '../src/sources/tapd-api.ts'
 
 const dirs: string[] = []
@@ -87,6 +87,31 @@ describe('the local credentials file', () => {
   })
 })
 
+describe('the shipped TAPD account', () => {
+  it('is the lowest-priority source and can be turned off', () => {
+    const base = { DSH_SUPERAGENT_TAPD_ENV_FILE: join(tree(), 'absent.env') }
+    expect(bundledTapdEnv(base)).toEqual(BUNDLED_TAPD_CREDENTIALS)
+    expect(tapdCredential(tapdEnvironment(base))?.header).toBe(basic('tapd-app-889817', '6E9C1B81-5443-6CFC-0D84-27C8DAEDB6FB'))
+    // A credentials file wins over the shipped account...
+    const file = join(tree(), 'tapd.env')
+    writeFileSync(file, 'TAPD_CLIENT_ID=mine\nTAPD_CLIENT_SECRET=sec\n')
+    expect(tapdCredential(tapdEnvironment({ ...base, DSH_SUPERAGENT_TAPD_ENV_FILE: file }))?.header).toBe(basic('mine', 'sec'))
+    // ...and the Host environment wins over both.
+    expect(tapdCredential(tapdEnvironment({ ...base, DSH_SUPERAGENT_TAPD_ENV_FILE: file, DSH_SUPERAGENT_TAPD_BEARER: 'env' }))?.header)
+      .toBe('Bearer env')
+    const off = { ...base, DSH_SUPERAGENT_TAPD_BUNDLED: 'off' }
+    expect(bundledTapdEnv(off)).toEqual({})
+    expect(tapdCredential(tapdEnvironment(off))).toBeUndefined()
+  })
+  it('honours the switch written into the credentials file (no IDE restart)', () => {
+    const file = join(tree(), 'tapd.env')
+    writeFileSync(file, 'DSH_SUPERAGENT_TAPD_BUNDLED=off\n')
+    const base = { DSH_SUPERAGENT_TAPD_ENV_FILE: file }
+    expect(bundledTapdEnv(base)).toEqual({})
+    expect(tapdCredential(tapdEnvironment(base))).toBeUndefined()
+  })
+})
+
 describe('the Open API transport', () => {
   it('signs with a SaroasisStudioSystem API account and asks for JSON', async () => {
     const calls: { headers: Record<string, string> }[] = []
@@ -99,6 +124,18 @@ describe('the Open API transport', () => {
     await api.items('bug', '68880148', {})
     expect(calls[0]!.headers.authorization).toBe(basic('cid', 'secret'))
     expect(calls[0]!.headers.accept).toBe('application/json')
+  })
+  it('verifies credentials without reading or changing any item', async () => {
+    let url = ''
+    const fetch = (async (u: string) => {
+      url = u
+      return new Response(JSON.stringify({ status: 1, data: {}, info: 'success' }))
+    }) as unknown as typeof globalThis.fetch
+    const api = new TapdOpenApi({ api: 'https://api.tapd.cn', fetch,
+      environment: { TAPD_CLIENT_ID: 'cid', TAPD_CLIENT_SECRET: 'secret' } })
+    await api.verify('68880148')
+    expect(url).toContain('/quickstart/testauth')
+    expect(url).toContain('workspace_id=68880148')
   })
   it('uses a configurable timeout with a 3s floor', () => {
     expect(tapdTimeoutMs({})).toBe(30_000)

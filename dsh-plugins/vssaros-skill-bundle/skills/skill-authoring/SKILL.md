@@ -3,6 +3,7 @@ name: skill-authoring
 description: 如何创建和维护技能（SKILL.md）。包含：何时创建技能、何时用 edit vs patch、SKILL.md 结构模板、命名规范、验证规则。当需要沉淀知识为技能时使用。
 activation: manual
 category: development
+tier: extended
 ---
 
 # 技能创作指南 (Skill Authoring)

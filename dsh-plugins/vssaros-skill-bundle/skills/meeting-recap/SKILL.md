@@ -5,8 +5,9 @@ whenToUse: 用户给来会议录音转写、会议笔记、群聊记录，或直
 activation: auto
 match: ["会议纪要", "会议记录", "行动项", "议题", "参会人", "会议总结", "整理会议"]
 category: productivity
-recommended_tools: ["file_read", "file_write"]
+recommended_tools: ["read", "write"]
 license: MIT
+tier: core
 ---
 
 # 会议纪要

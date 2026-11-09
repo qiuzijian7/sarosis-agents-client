@@ -1,7 +1,7 @@
 /** Tickets: their lifecycle from an accept to their end, their Subscriptions and their Inputs. */
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
-import { latestAssignment, latestReport, liveTicket, readUntil, runningAssignment, settled, staffing, threadKey, waitsForPerson } from './model.ts'
+import { latestAssignment, latestReport, liveTicket, readUntil, runningAssignment, settled, staffing, threadKey, ticketExecutor, waitsForPerson } from './model.ts'
 import type { Assignment, ChannelRef, Evaluation, Follow, Mandate, PolicyEffect, ThreadRef, Ticket, TicketEndBy, TicketInput, TicketOutcome,
   Trigger, TriggerDisposition } from './model.ts'
 import type { AssessmentOutcome } from './ports.ts'
@@ -41,6 +41,8 @@ export class Tickets extends EnginePart {
     const primary = this.repo.triggers.get(evaluation.primary ?? triggerIds.at(-1)!)
     const origin = { triggerId: primary?.id ?? triggerIds[0]!, triggerIds }
     let ticket: Ticket = { id, title: outcome.title, decisionId, mandate, channels: [], assignments: [], inputs: [], undelivered: [],
+      // 决策 15：建工单时就写死执行者形态，不再靠后面的 group 字段推断。
+      executor: outcome.group ? 'group' : 'worker',
       createdAt: at, updatedAt: at, origin }
     for (const triggerId of triggerIds) {
       const channel = this.repo.triggers.get(triggerId)?.channel
@@ -51,13 +53,15 @@ export class Tickets extends EnginePart {
     // person's next messages). Its Assignment stays pending; the runtime reports the group's result into it.
     if (outcome.group) ticket.group = { roomId: outcome.group.roomId, roomName: outcome.group.roomName }
     else ticket = this.options.prepareTicket?.(ticket, outcome) ?? ticket
+    // 决策 15：四处布尔旁路全部改读领域字段；`group` 从此只携带「哪个群」的参数，不再当作开关。
+    const groupRun = ticketExecutor(ticket) === 'group'
     // VsSaros addition: the ticket waits for a person to agree to its team; its first Assignment launches only then.
-    if (!ticket.group && this.options.staffing?.(ticket)) ticket.team = { state: 'proposing', version: 0, at }
+    if (!groupRun && this.options.staffing?.(ticket)) ticket.team = { state: 'proposing', version: 0, at }
     const assignment = this.newAssignment(ticket)
     this.repo.tickets.save(ticket)
-    if (!ticket.group) for (const triggerId of triggerIds) for (const ref of this.repo.triggers.get(triggerId)?.threads ?? []) this.subscribe(id, ref)
+    if (!groupRun) for (const triggerId of triggerIds) for (const ref of this.repo.triggers.get(triggerId)?.threads ?? []) this.subscribe(id, ref)
     if (outcome.acknowledgement && primary) this.replies.acknowledgeAccepted(id, primary, outcome.acknowledgement)
-    if (!staffing(ticket) && !ticket.group) this.options.executor.start(this.require(id), assignment)
+    if (!staffing(ticket) && !groupRun) this.options.executor.start(this.require(id), assignment)
     this.emit('ticket.created', { ticketId: id, decisionId, strength: mandate.strength })
   }
   /**

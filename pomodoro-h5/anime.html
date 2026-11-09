@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- viewport-fit=cover 才生效安全区；不写 user-scalable=no（保无障碍），缩放延迟靠 CSS touch-action 去除 -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#FFF1F8" />
+    <title>二次元番茄钟</title>
+    <link rel="stylesheet" href="/anime.css" />
+  </head>
+  <body>
+    <main class="anime-app" id="app" aria-label="二次元番茄钟">
+      <header class="anime-top">
+        <!-- 番茄拟人 mascot（小，内联 SVG，赛璐珞：深描边+平涂+高光+腮红；不使用 emoji） -->
+        <svg class="anime-logo" viewBox="0 0 120 120" aria-hidden="true">
+          <path d="M60 14c4-6 13-8 19-3-2 4-2 8 0 12-6-2-13 0-19-2z" fill="#7BD389" stroke="#43303B" stroke-width="3" stroke-linejoin="round"/>
+          <ellipse cx="60" cy="66" rx="44" ry="40" fill="#F0577F" stroke="#43303B" stroke-width="3"/>
+          <ellipse cx="44" cy="50" rx="14" ry="10" fill="#fff" opacity=".35"/>
+          <ellipse cx="46" cy="62" rx="7" ry="9" fill="#fff" stroke="#43303B" stroke-width="2"/>
+          <ellipse cx="74" cy="62" rx="7" ry="9" fill="#fff" stroke="#43303B" stroke-width="2"/>
+          <circle cx="47" cy="64" r="4" fill="#43303B"/>
+          <circle cx="75" cy="64" r="4" fill="#43303B"/>
+          <circle cx="45" cy="61" r="1.6" fill="#fff"/>
+          <circle cx="73" cy="61" r="1.6" fill="#fff"/>
+          <ellipse cx="40" cy="76" rx="7" ry="4" fill="#FF9EC4" opacity=".85"/>
+          <ellipse cx="80" cy="76" rx="7" ry="4" fill="#FF9EC4" opacity=".85"/>
+          <path d="M52 78 Q60 86 68 78" stroke="#43303B" stroke-width="3" fill="none" stroke-linecap="round"/>
+        </svg>
+        <h1 class="anime-title">番茄钟</h1>
+        <span class="anime-phase" id="phaseLabel">专注模式</span>
+      </header>
+
+      <section id="view-task">
+        <section class="anime-stage" id="stage">
+          <!-- 番茄拟人 mascot（大，纯装饰 aria-hidden；休息态闭眼变体见 .mascot-eyes-* / .mascot-zzz） -->
+          <svg class="anime-mascot" viewBox="0 0 120 120" aria-hidden="true">
+            <path d="M60 14c4-6 13-8 19-3-2 4-2 8 0 12-6-2-13 0-19-2z" fill="#7BD389" stroke="#43303B" stroke-width="3" stroke-linejoin="round"/>
+            <ellipse cx="60" cy="66" rx="44" ry="40" fill="#F0577F" stroke="#43303B" stroke-width="3"/>
+            <ellipse cx="44" cy="50" rx="14" ry="10" fill="#fff" opacity=".35"/>
+            <!-- 睁眼组（idle / running） -->
+            <g class="mascot-eyes-open">
+              <ellipse cx="46" cy="62" rx="7" ry="9" fill="#fff" stroke="#43303B" stroke-width="2"/>
+              <ellipse cx="74" cy="62" rx="7" ry="9" fill="#fff" stroke="#43303B" stroke-width="2"/>
+              <circle cx="47" cy="64" r="4" fill="#43303B"/>
+              <circle cx="75" cy="64" r="4" fill="#43303B"/>
+              <circle cx="45" cy="61" r="1.6" fill="#fff"/>
+              <circle cx="73" cy="61" r="1.6" fill="#fff"/>
+            </g>
+            <!-- 闭眼组（休息态 .is-break 显示） -->
+            <g class="mascot-eyes-closed">
+              <path d="M40 64 Q46 70 52 64" stroke="#43303B" stroke-width="3" fill="none" stroke-linecap="round"/>
+              <path d="M68 64 Q74 70 80 64" stroke="#43303B" stroke-width="3" fill="none" stroke-linecap="round"/>
+            </g>
+            <!-- 腮红 -->
+            <ellipse cx="40" cy="76" rx="7" ry="4" fill="#FF9EC4" opacity=".85"/>
+            <ellipse cx="80" cy="76" rx="7" ry="4" fill="#FF9EC4" opacity=".85"/>
+            <!-- 微笑 -->
+            <path d="M52 78 Q60 86 68 78" stroke="#43303B" stroke-width="3" fill="none" stroke-linecap="round"/>
+            <!-- Zzz 气泡（休息态显示，纯装饰） -->
+            <g class="mascot-zzz" fill="#2B6CB0" font-family="system-ui" font-weight="700">
+              <text x="86" y="34" font-size="14">z</text>
+              <text x="94" y="26" font-size="18">Z</text>
+            </g>
+          </svg>
+          <div
+            class="anime-time"
+            id="time"
+            role="timer"
+            aria-label="剩余 25 分 0 秒"
+          >
+            25:00
+          </div>
+          <p class="anime-state" id="stateLabel">准备开始</p>
+          <p class="anime-caption">陪你专注的小番茄</p>
+        </section>
+
+        <nav class="anime-controls" aria-label="计时控制">
+          <button class="anime-btn anime-btn--primary" id="startBtn" type="button">
+            开始
+          </button>
+          <button class="anime-btn anime-btn--break" id="pauseBtn" type="button" disabled>
+            暂停
+          </button>
+          <button class="anime-btn anime-btn--break" id="resetBtn" type="button">
+            重置
+          </button>
+        </nav>
+
+        <footer class="anime-today">
+          今日 <b id="todayCount">0</b> 个番茄
+        </footer>
+
+        <!-- 错误态：localStorage 写入失败时出现（红系，role=alert；重试走 retryPersist 真重写才消） -->
+        <div class="anime-error" id="errorBanner" role="alert" hidden>
+          <span
+            >本地保存失败（localStorage 不可用或已满），已完成的番茄数可能无法保留。<br />
+            原因：浏览器隐私模式 / 存储配额超限 / 被禁用。</span
+          >
+          <button class="anime-btn" id="retryBtn" type="button">重试保存</button>
+        </div>
+      </section>
+
+      <!-- 统计视图（三态，id 与首页一致以复用 src/stats.js renderStats） -->
+      <section id="view-stats" hidden>
+        <div id="statsNormal">
+          <p class="stats-hero-title">今日完成</p>
+          <div class="stats-hero">
+            <span class="stats-hero-num" id="statsTodayCount">0</span>
+            <span class="stats-hero-unit">个番茄</span>
+          </div>
+
+          <div class="stats-block">
+            <h3 class="stats-block-title">最近 7 天</h3>
+            <div class="trend" id="statsTrend" aria-label="最近七天番茄数趋势"></div>
+          </div>
+
+          <div class="stats-block">
+            <h3 class="stats-block-title">专注记录</h3>
+            <ul class="history" id="statsList"></ul>
+          </div>
+        </div>
+
+        <!-- 空态：还没有完成的番茄 -->
+        <div class="empty-card stats-empty" id="statsEmpty" hidden>
+          <b>还没有完成的番茄。</b>
+          <span id="statsEmptyReason">完成第一个番茄后，这里会显示你的专注趋势。</span>
+          <button class="anime-btn anime-btn--primary" id="statsGoFocus" type="button">
+            去专注
+          </button>
+        </div>
+
+        <!-- 错误态：本地存储不可用 / 读取失败 -->
+        <div class="error-banner" id="statsError" role="alert" hidden>
+          <div>
+            本地保存失败（localStorage 不可用或已满），统计数据无法读取。<br />
+            原因：浏览器隐私模式 / 存储配额超限 / 被禁用。
+            <br /><button class="anime-btn" id="statsRetry" type="button">重试读取</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 主导航（SPA：#task / #stats） -->
+      <nav class="anime-tabbar" aria-label="主导航">
+        <a href="#task" class="anime-tab active" id="navTask" aria-current="page">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 5h16v3H4zM4 10h16v3H4zM4 15h10v3H4z"/></svg>
+          任务
+        </a>
+        <a href="#stats" class="anime-tab" id="navStat">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 20V10h4v10H4zm8 0V4h4v16h-4zm8 0v-6h-4v6h4z"/></svg>
+          统计
+        </a>
+      </nav>
+    </main>
+
+    <script type="module" src="/src/anime/anime.js"></script>
+  </body>
+</html>

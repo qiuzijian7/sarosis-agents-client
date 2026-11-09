@@ -4,6 +4,7 @@ description: "Debug Python: pdb REPL + debugpy remote (DAP)."
 activation: auto
 match: ["python-debugpy", "python debugpy", "debugging", "python", "pdb", "debugpy", "breakpoints", "dap", "post-mortem"]
 category: development
+tier: core
 ---
 
 # Python Debugger (pdb + debugpy)

@@ -95,11 +95,27 @@ export function SessionButton({ sessionId, label,
     onClick={() => { openSession(sessionId).catch(error => notify(errorText(error))) }}>{label ?? t('openSession')}</Button>
 }
 export function ExternalLink({ href, children, icon = 'external' }: { href: string; children: ReactNode; icon?: IconName }) {
-  return <a className="dt-inline-link dt-icon-link" href={href} {...external}><Icon name={icon} size={13} />{children}</a>
+  const label = <><Icon name={icon} size={13} />{children}</>
+  // ★ 2026-11-09：空 href 的 <a target="_blank"> 会被解析成当前文档 URL —— DSH Web UI 的
+  //   127.0.0.1 loopback 页 —— Electron 宿主再交给 shell.openExternal ⇒ 在系统浏览器打开一个
+  //   127.0.0.x 网页。superagent 来源没有外链（sources/superagent.ts 的 link 返回 url:''），
+  //   所以这里渲染成不可点文本，绝不产生空 href 的 <a>。
+  if (!href) { return <span className="dt-inline-link dt-icon-link" data-vssaros-no-link="1">{label}</span> }
+  return <a className="dt-inline-link dt-icon-link" href={href} {...external}>{label}</a>
 }
-export function ActionLink({ href, children, icon = 'external' }: { href: string; children: ReactNode; icon?: IconName }) {
-  return <a className="dt-btn dt-btn-outline dt-btn-sm" href={href} {...external}><span className="dt-btn-icon"><Icon name={icon}
-    size={14} /></span>{children}</a>
+/**
+ * A link to answer/open in an external Channel. When the Channel has no external URL (superagent desk),
+ * `onActivate` turns it into an in-app button instead — see the note on ExternalLink.
+ */
+export function ActionLink({ href, children, icon = 'external', onActivate }: {
+  href: string; children: ReactNode; icon?: IconName; onActivate?: () => void
+}) {
+  const label = <><span className="dt-btn-icon"><Icon name={icon} size={14} /></span>{children}</>
+  if (!href) {
+    return <button type="button" className="dt-btn dt-btn-outline dt-btn-sm" data-vssaros-in-app-action="1"
+      disabled={!onActivate} onClick={onActivate}>{label}</button>
+  }
+  return <a className="dt-btn dt-btn-outline dt-btn-sm" href={href} {...external}>{label}</a>
 }
 export function StageMark({ state, icon, label }: { state: DotState; icon: IconName; label: string }) {
   return <span className="dt-stage" data-state={state}>{state === 'ongoing' ? <StateDot state="ongoing" /> : <Icon name={icon}

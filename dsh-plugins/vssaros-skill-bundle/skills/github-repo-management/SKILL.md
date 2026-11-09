@@ -4,6 +4,7 @@ description: Clone/create/fork repos; manage remotes, releases.
 activation: manual
 match: ["github-repo-management", "github repo management", "github", "repositories", "git", "releases", "secrets", "configuration"]
 category: github
+tier: extended
 ---
 
 # GitHub Repository Management

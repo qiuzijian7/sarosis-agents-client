@@ -23,6 +23,9 @@ import {
 } from './scripts/skill-bundle-paths.mjs';
 import { loadDshYaml, skillProblems } from './check-skill-frontmatter.mjs';
 import { dshToolNames, scanToolRefs } from './scripts/skill-tool-map.mjs';
+// ★ 2026-11-08 P2：tier 分级守卫（分级而非删减，core 每轮进目录）
+import { SKILL_TIERS, SKILL_CORE_LIMIT, tierOfMd } from './vssaros-skills/lib/core/bundledSkills.js';
+import { overrideOfMd, overrideProblems } from './vssaros-skills/lib/core/overridePolicy.js';
 
 let failed = 0;
 const fail = (msg) => { failed += 1; console.error(`  ✗ ${msg}`); };
@@ -81,6 +84,29 @@ if (existsSync(LEGACY_BUNDLED_SKILL_ROOT)) {
 	if (lost.length) { fail(`旧根有 ${lost.length} 个技能没迁过来：${lost.slice(0, 6).join('、')}`); }
 } else {
 	ok('P3：IDE 侧旧技能根已删除，dsh 侧新根是唯一真源');
+}
+
+// ── 3b P2：tier 完整性 + core 上限 + override 契约 ───────────────────
+{
+	const tiers = names.map(name => {
+		const file = join(BUNDLED_SKILL_ROOT, name, 'SKILL.md');
+		if (!existsSync(file)) { return { name, tier: null, override: false }; }
+		const text = readFileSync(file, 'utf8');
+		return { name, text, tier: /^tier:\s*(\S+)\s*$/m.exec(text)?.[1] ?? null, override: overrideOfMd(text) };
+	});
+	const missing = tiers.filter(t => t.tier === null).map(t => t.name);
+	const illegal = tiers.filter(t => t.tier !== null && !SKILL_TIERS.includes(t.tier)).map(t => `${t.name}:${t.tier}`);
+	const core = tiers.filter(t => t.tier === 'core');
+	if (missing.length || illegal.length) {
+		fail(`tier 不完整/非法：缺 ${missing.length} 条（${missing.slice(0, 4).join('、')}）、非法 ${illegal.length} 条（${illegal.slice(0, 4).join('、')}）`);
+	} else if (core.length > SKILL_CORE_LIMIT) {
+		fail(`core 有 ${core.length} 条 > 上限 ${SKILL_CORE_LIMIT}（每轮目录会膨胀，请降级为 extended）`);
+	} else {
+		ok(`P2：tier 完整（core ${core.length} / extended ${tiers.length - core.length}），core ≤ ${SKILL_CORE_LIMIT}`);
+	}
+	const overrideIssues = overrideProblems(tiers.filter(t => t.override).map(t => ({ name: t.name, override: true })), []);
+	if (overrideIssues.length) { fail(`P2：override 契约违规：${overrideIssues.join('；')}`); }
+	else { ok('P2：override 只许随包显式声明，裁决走根顺序（无硬编码 rank）'); }
 }
 
 // ── 4 技能正文引用的工具名真实存在 ───────────────────────────────────

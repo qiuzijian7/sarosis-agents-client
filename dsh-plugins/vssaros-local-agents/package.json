@@ -1,0 +1,48 @@
+{
+  "name": "@vssaros/dsh-local-agents",
+  "version": "0.1.1",
+  "description": "VsSaros local agent CLI routes for DeepSeek Harness: registers installed coding CLIs as dsh LlmAdapter model routes, so a Bot can use the CLI's own sign-in and plan. P0 NDJSON + P1 ACP/MCP tool bridge + P2 image input, settings data service and a zero-JS SSR settings page at /x/local-agents/. Default disabled. Zero runtime imports beyond Node builtins.",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/core/engines.js",
+    "lib/core/discover.js",
+    "lib/core/ndjson.js",
+    "lib/core/text.js",
+    "lib/core/images.js",
+    "lib/core/settings.js",
+    "lib/core/page.js",
+    "lib/core/badge.js",
+    "lib/core/adapter.js",
+    "lib/core/queue.js",
+    "lib/core/jsonrpc.js",
+    "lib/core/mcp.js",
+    "lib/core/acp.js",
+    "lib/core/acpAdapter.js",
+    "lib/core/approval.js",
+    "cordis.patch.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "view": {
+      "kind": "none"
+    }
+  },
+  "license": "MIT"
+}

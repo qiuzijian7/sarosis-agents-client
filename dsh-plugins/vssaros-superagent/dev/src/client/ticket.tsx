@@ -107,7 +107,7 @@ function MandateDetails({ ticket, actor }: { ticket: TicketPageView; actor: stri
 }
 
 export function TicketPage({ id }: { id: string }) {
-  const { t, call } = usePanel()
+  const { t, call, navigate } = usePanel()
   const { data, error, reload } = usePoll(() => call('GET tickets/:id', { id }), [id])
   const after = async (request: Promise<unknown>) => { await request; await reload() }
   if (!data) return <><PageHead
@@ -152,7 +152,9 @@ export function TicketPage({ id }: { id: string }) {
     {data.attention && <div className="dt-banner"><span className="dt-banner-label">{t('attentionPrefix')}</span><MarkdownLite
       text={data.attention.question} />
       {channel && <div className="dt-banner-actions">
-        <ActionLink href={channel.url} icon="message">{t('answerIn', { source: valueLabel(t, 'source', channel.source) })}</ActionLink>
+        {/* ★ 2026-11-09：同 rows.tsx，无外链的主管对话改成应用内按钮切到「对话」页。 */}
+        <ActionLink href={channel.url} icon="message" onActivate={() => navigate({ page: 'chat' })}>{t('answerIn',
+          { source: valueLabel(t, 'source', channel.source) })}</ActionLink>
       </div>}</div>}
     {/* Ordinary progress stays in the Session/Channels; only a report that halted work (blocked/failed) is shown here. */}
     {data.actions.retry && data.summary && <p className={`dt-banner${failed ? ' dt-danger' : ''}${failedText ? ' dt-mono' : ''}`}>

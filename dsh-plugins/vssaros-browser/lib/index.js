@@ -85,7 +85,8 @@ import { findInSnapshot, formatFindResult, normalizeFindQuery } from './core/fin
 import { SETTLE_DEFAULT_MS, SETTLE_MAX_MS, normalizeWaitConditions, settleAfterAction, waitForCondition } from './core/interaction.js';
 import { formatLoginVerdict, loginGuidanceText } from './core/loginProbe.js';
 import { LOCAL_PAGE_OPS, localExemptionOf } from './core/localPolicy.js';
-import { SCREENSHOT_LIMITS, normalizeScreenshotParams, screenshotText } from './core/screenshot.js';
+import { SCREENSHOT_LIMITS, normalizeScreenshotParams, screenshotSizeProblem, screenshotText } from './core/screenshot.js';
+import { normalizeOpCall } from './core/alias.js';
 import { MEDIA_SCRIPT, formatMedia, normalizeRawMedia } from './core/media.js';
 import { formatImages, formatSnapshot, SAROS_REF_ATTR } from './core/snapshot.js';
 import { createGrantStore } from './core/grants.js';
@@ -862,6 +863,9 @@ export function apply(ctx, config = {}) {
 	 * 截图字节 → DSH 附件 → 工具结果里的图片块（2026-11-06）。拿不到附件服务或保存失败 ⇒ 只回文字，如实说明。
 	 */
 	const attachScreenshot = async (shot) => {
+		// ★ 体积闸：过大的图不落附件（对齐 DS Bot 180KB 口径），但要把「已拍到」和降质办法说清楚。
+		const tooBig = screenshotSizeProblem(shot?.image);
+		if (tooBig) { return { text: tooBig }; }
 		const attachments = (() => { try { return ctx.get?.('attachments'); } catch { return undefined; } })();
 		let attachment;
 		if (typeof attachments?.saveImage === 'function') {
@@ -906,7 +910,10 @@ export function apply(ctx, config = {}) {
 	 * 一次 `browser` 调用的完整执行路径（2026-11-07 从 `execute` 提出来）：`task` 的内层每一步也走它（`inner = true`），
 	 * 所以委托不会绕开任何一道闸。
 	 */
-	const runOp = async (params, exec, inner = false) => {
+	const runOp = async (rawParams, exec, inner = false) => {
+		// ★ 兼容层（2026-11-09）：DS Bot 风格工具名在**所有闸之前**归一成原生 op；
+		//   未命中时逐字不变 ⇒ 别名调用与原生调用走完全相同的校验/审批链。
+		const params = normalizeOpCall(rawParams).params;
 		const op = typeof params?.op === 'string' ? params.op.trim() : '';
 		/**
 		 * ★ 多会话隔离的**唯一入口**（2026-10-13）：`exec.agent.id` 就是 dsh 的 **SessionId**

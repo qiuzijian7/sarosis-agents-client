@@ -7,6 +7,7 @@ author: galeqin
 version: 1.0.24
 source: knot-market
 source_id: galeqin-1772594770
+tier: extended
 ---
 
 # westock-data

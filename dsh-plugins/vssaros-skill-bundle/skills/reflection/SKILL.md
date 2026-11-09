@@ -2,6 +2,7 @@
 name: reflection
 description: 审阅当前 session 历史，发现错误/低效/问题并输出结构化反思报告，末尾询问用户是否开始优化
 displayName: "Reflection Skill"
+tier: extended
 ---
 
 # Reflection Skill

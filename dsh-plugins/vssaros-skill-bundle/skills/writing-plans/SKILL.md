@@ -4,6 +4,7 @@ description: "Write implementation plans: bite-sized tasks, paths, code."
 activation: auto
 match: ["writing-plans", "writing plans", "planning", "design", "implementation", "workflow", "documentation"]
 category: development
+tier: core
 ---
 
 # Writing Implementation Plans

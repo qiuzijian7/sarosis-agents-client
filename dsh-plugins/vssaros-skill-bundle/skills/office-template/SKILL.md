@@ -5,7 +5,8 @@ whenToUse: 用户给来一份 .docx 说"按这个格式/红头文件/周报模�
 activation: auto
 match: ["Word 模板", "docx 模板", "套模板", "按这个格式", "红头文件", "同款文档", "office_template"]
 category: productivity
-recommended_tools: ["file_read", "file_write"]
+recommended_tools: ["read", "write"]
+tier: core
 ---
 
 # 按用户模板出稿（Word）

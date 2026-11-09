@@ -569,7 +569,7 @@ td { padding: 6px 8px 6px 0; border-bottom: .5px solid var(--dsw-alias-border-l3
 			data: { tool: "orchestrator_team_bots", need: "交互稿 / 埋点 / Playwright 回归",
 				bots: [{ id: "designer", name: "设计 bot", skills: ["交互稿"], delegatable: true },
 					{ id: "data-bot", name: "数据 bot", skills: ["埋点"], delegatable: true },
-					{ id: "kb-expert", name: "资料库 bot", skills: ["检索"], delegatable: false }],
+					{ id: "knowledge-base-expert", name: "资料库 bot", skills: ["检索"], delegatable: false }],
 				mainSessionTools: ["orchestrator_team_bots", "orchestrator_team_propose", "orchestrator_team_confirm", "orchestrator_team_refuse"],
 				CONSENTLESS_TOOLS: ["orchestrator_team_plan", "orchestrator_team_create_bot", "orchestrator_team_status", "orchestrator_team_stop"] },
 			note: "主会话能拿到的团队工具只剩 bots + propose/confirm/refuse：先于同意闸派活 / 查状态 / 停计划的四个旧工具被 CONSENTLESS_TOOLS 从 mainTools 里过滤掉（代码仍在，面板与旧 Team 引擎还用）。工具名不能含 approve/reject/submit/review —— review.spec 有断言。",

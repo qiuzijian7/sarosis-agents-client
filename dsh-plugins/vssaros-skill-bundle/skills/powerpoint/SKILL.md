@@ -4,6 +4,7 @@ description: Create, read, edit .pptx decks, slides, notes, templates.
 activation: manual
 match: ["powerpoint"]
 category: productivity
+tier: extended
 ---
 
 # Powerpoint Skill

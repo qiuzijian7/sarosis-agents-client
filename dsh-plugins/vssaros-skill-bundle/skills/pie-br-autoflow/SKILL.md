@@ -2,6 +2,7 @@
 name: pie-br-autoflow
 description: PIE 直开 BR（NordLand）到自动跳伞 + 落地的全自动流程（进局约 16 分钟、较易崩）；只在 bug 依赖 BR 地图/流程时用，其余用 pie-rush-autoflow 训练场。无需 WSL/大厅/输入，recipe + 信号表 + 实测坑（含多客户端 all_landed），实现代码 Content/GameScript/ueflow/br.py（旧 pie_br_flow.py 为兼容垫片）
 displayName: "PIE 直开 BR 直到「自动跳伞成功 + 落地」（无需 WSL/大厅，全自动零输入）"
+tier: extended
 ---
 
 # PIE 直开 BR 直到「自动跳伞成功 + 落地」（无需 WSL/大厅，全自动零输入）

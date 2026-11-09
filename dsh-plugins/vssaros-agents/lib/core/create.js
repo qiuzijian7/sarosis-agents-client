@@ -137,8 +137,14 @@ export function normalizeDraft(raw) {
 export function validateDraft(draft, ctx = {}) {
 	const errors = [];
 	const warnings = [];
-	const existing = new Set((ctx.existingIds ?? []).map(id => String(id).toLowerCase()));
-	const existingPresets = new Set((ctx.existingIds ?? []).map(id => presetIdOf(id)));
+	// ★ 2026-11-09：内置根也占 id —— scanAgentsFromConfig 是「custom 覆盖 builtin」，
+	//   只查自定义根时用内置 id 新建会静默劫持内置 agent（且自定义永远可见 ⇒ 凭空多一个空壳）。
+	//   ctx.builtinIds 由 previewAgentDraft 注入；conflict 让调用方不必靠字符串匹配判 409。
+	const allIds = [...(ctx.existingIds ?? []), ...(ctx.builtinIds ?? [])];
+	const existing = new Set(allIds.map(id => String(id).toLowerCase()));
+	const builtin = new Set((ctx.builtinIds ?? []).map(id => String(id).toLowerCase()));
+	const existingPresets = new Set(allIds.map(id => presetIdOf(id)));
+	let conflict = false;
 	if (!draft.name) {
 		errors.push('名称必填');
 	}
@@ -158,8 +164,12 @@ export function validateDraft(draft, ctx = {}) {
 	} else if (RESERVED_IDS.has(draft.id.toLowerCase())) {
 		errors.push('id 不能用系统保留名：' + draft.id);
 	} else if (existing.has(draft.id.toLowerCase())) {
-		errors.push('已有同名目录 ' + draft.id + '：不会覆盖，换一个 id');
+		conflict = true;
+		errors.push(builtin.has(draft.id.toLowerCase())
+			? '已有同名内置 Agent ' + draft.id + '：自定义根会覆盖内置定义，请换一个 id'
+			: '已有同名目录 ' + draft.id + '：不会覆盖，换一个 id');
 	} else if (existingPresets.has(presetIdOf(draft.id))) {
+		conflict = true;
 		errors.push('id 和已有 Agent 撞了 preset id（' + presetIdOf(draft.id) + '）：. 与 _ 会被折成 -，换一个 id');
 	}
 	for (const item of draft.skills) {
@@ -200,7 +210,7 @@ export function validateDraft(draft, ctx = {}) {
 	if (draft.workspacesWrite.length && !draft.workspacesRead.length) {
 		warnings.push('只写了可写工作区：可读会自动包含它');
 	}
-	return { errors, warnings, presetId: draft.id ? presetIdOf(draft.id) : '' };
+	return { errors, warnings, conflict, presetId: draft.id ? presetIdOf(draft.id) : '' };
 }
 
 /**

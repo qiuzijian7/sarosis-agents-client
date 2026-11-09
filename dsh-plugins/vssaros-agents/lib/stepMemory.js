@@ -165,7 +165,12 @@ export async function ownedSkillsOf(config, agentId, limit = 12) {
 	return found.sort((a, b) => a.name.localeCompare(b.name)).slice(0, limit);
 }
 
-/** 人设段末尾的「你的技能」一节；没有技能时为空串。 */
+/**
+ * 人设段末尾的「你的技能」一节；没有技能时为空串。
+ * @deprecated 17.1 P1（2026-11-09）：preset 的 `skills:` 由 `toPresetDefinition` 消费，
+ *   经 `vssarosSkills` 进程内服务置顶到技能目录；不要再把它拼进人设提示词。
+ *   保留导出只为兼容既有测试与外部调用方，主链路已不引用。
+ */
 export function ownedSkillsText(skills) {
 	if (!skills?.length) { return ''; }
 	return ['', '', '## 你的技能',

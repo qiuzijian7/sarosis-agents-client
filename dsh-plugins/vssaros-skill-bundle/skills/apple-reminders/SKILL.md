@@ -4,6 +4,7 @@ description: "Apple Reminders via remindctl: add, list, complete."
 activation: manual
 match: ["apple-reminders", "apple reminders", "reminders", "tasks", "todo"]
 category: apple
+tier: extended
 ---
 
 # Apple Reminders

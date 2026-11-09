@@ -4,7 +4,8 @@ description: QA 阶段 6——汇总门禁产物、渲染 HTML 报告、给出�
 activation: auto
 match: ["验收报告", "QA 报告", "就绪判定", "能否发布", "验收结论"]
 category: development
-recommended_tools: ["terminal", "file_read", "file_write"]
+recommended_tools: ["pwsh", "read", "write"]
+tier: core
 ---
 
 # QA Acceptance Report — 报告与最终判定

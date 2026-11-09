@@ -4,6 +4,7 @@ description: "Infographics: 21 layouts x 21 styles (信息图, 可视化)."
 activation: manual
 match: ["baoyu-infographic", "baoyu infographic", "infographic", "visual-summary", "creative", "image-generation"]
 category: creative
+tier: extended
 ---
 
 # Infographic Generator

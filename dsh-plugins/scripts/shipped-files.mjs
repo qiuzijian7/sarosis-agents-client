@@ -15,6 +15,13 @@ const RUNTIME_FILE = /\.(m?js|cjs|json|wasm|node)$/i;
  * dsh.client 指向 src/。
  */
 const NOT_RUNTIME_DIR = /^(test|tests|docs?|mockups|examples?|scripts|tools|dev|src|\.[^/]+)\//i;
+/**
+ * ★ 2026-11-08：技能**自带**的 test/ 目录（skills/<name>/test/*.mjs）也不是运行时文件。
+ * `check-dsh-plugin-sync.mjs` 的 `listFiles` 会跳过任意层级的 test/ 目录（副本侧），
+ * 而这里原先只排除插件根的 test/ ⇒ 白名单 `files:["skills"]` 把这两个 .mjs 算成必发，
+ * 副本侧又被跳过 ⇒ 守卫永久假红 2 项。两侧口径必须一致。
+ */
+const NOT_RUNTIME_SEGMENT = /\/(test|tests|e2e|dist\.e2e)\//i;
 /** 构建 / 编辑器配置，不是运行时文件。 */
 const NOT_RUNTIME_FILE = /(^|\/)(tsconfig[^/]*|jsconfig[^/]*|package-lock|pnpm-lock|[^/]*\.config)\.json$/i;
 
@@ -33,6 +40,7 @@ export function filesMatcher(pkg) {
 export function expectedShipped(pkg, tracked) {
 	const inList = filesMatcher(pkg);
 	if (!inList) { return tracked; }
-	return tracked.filter((file) => inList(file)
-		|| (RUNTIME_FILE.test(file) && !NOT_RUNTIME_DIR.test(file) && !NOT_RUNTIME_FILE.test(file)));
+	// ⚠ 任意层级的 test/ 都要排除，否则与副本侧 listFiles 的 SKIP_DIRS_FOR_LIST 口径不一致
+	return tracked.filter((file) => NOT_RUNTIME_SEGMENT.test('/' + file) ? false
+		: inList(file) || (RUNTIME_FILE.test(file) && !NOT_RUNTIME_DIR.test(file) && !NOT_RUNTIME_FILE.test(file)));
 }

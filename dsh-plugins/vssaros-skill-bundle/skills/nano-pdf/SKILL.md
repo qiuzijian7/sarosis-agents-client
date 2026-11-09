@@ -4,6 +4,7 @@ description: Edit PDF text/typos/titles via nano-pdf CLI (NL prompts).
 activation: manual
 match: ["nano-pdf", "nano pdf", "pdf", "documents", "editing", "nlp", "productivity"]
 category: productivity
+tier: extended
 ---
 
 # nano-pdf

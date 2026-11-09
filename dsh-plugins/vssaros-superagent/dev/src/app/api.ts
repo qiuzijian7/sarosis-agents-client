@@ -2,7 +2,8 @@
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { PromptConfig, Prompts } from './prompts.ts'
 import type { CliApplyAction, CliApplyResult, CliCheckResult } from './cli-check.ts'
-import type { TapdCredentialKind, TapdCredentialStatus } from '../sources/tapd-auth.ts'
+import type { TapdCredentialKind, TapdCredentialStatus, TapdSetupStatus } from '../sources/tapd-auth.ts'
+import type { TapdTestResult } from '../sources/tapd-api.ts'
 import type { PromptsView, StateView, TicketPageView } from './http.ts'
 import type { HistoryView } from './settings-history.ts'
 import type { OverviewView } from './views/overview.ts'
@@ -62,7 +63,11 @@ export interface Api {
   'POST sources/feishu/cli-apply': { body: { action: CliApplyAction; confirm: true }; response: CliApplyResult }
   // VsSaros addition: TAPD Open API credentials, kept in the Host's credentials file; the response never carries a secret.
   'GET sources/tapd/credentials': { response: TapdCredentialStatus }
-  'POST sources/tapd/credentials': { body: { kind?: TapdCredentialKind; id?: string; secret?: string; clear?: boolean }; response: TapdCredentialStatus }
+  'POST sources/tapd/credentials': { body: { kind?: TapdCredentialKind; id?: string; secret?: string; clear?: boolean;
+    bundled?: 'on' | 'off' }; response: TapdCredentialStatus }
+  // VsSaros addition: the setup checklist (watch count, identity resolution, live health) and a read-only connectivity probe.
+  'GET sources/tapd/setup': { response: TapdSetupStatus }
+  'POST sources/tapd/test': { body: { api?: string; workspace?: string }; response: TapdTestResult }
   'GET models': { response: ModelCatalog }
   'GET prompts': { query?: { revision?: number; offset?: number }; response: PromptsView }
   'PUT prompts': { body: { config: PromptConfig; baseRevision: number }; response: { revision: number; context_delivery: Delivery } }

@@ -743,6 +743,20 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 			const [rootCwd, setRootCwd] = react.useState("");
 			// 会话换了 ⇒ 回到默认（工作区 + 会话自己的根）
 			react.useEffect(() => { setScope("workspace"); setRootCwd(""); }, [sessionId]);
+			/* ★ 2026-11-09：左栏 Bots 页签右键「编辑 Bot」先打开该 Bot 会话与「设置」页签，
+			   再派 `vssaros:open-bot-config` ⇒ 这里把分段直接落到 Bot，不用用户再手点一次。
+			   `detail.handled` 回填给派发方（未挂载 / 老 chunk 时它会给明确文字指引，不静默）。 */
+			react.useEffect(() => {
+				const onOpenBotConfig = (ev) => {
+					const d = ev && ev.detail;
+					if (!d || String(d.sessionId) !== String(sessionId)) { return; }
+					if (agentId) { setScope("bot"); d.handled = true; }
+				};
+				try {
+					window.addEventListener("vssaros:open-bot-config", onOpenBotConfig);
+					return () => { try { window.removeEventListener("vssaros:open-bot-config", onOpenBotConfig); } catch { /* 忽略 */ } };
+				} catch { return undefined; }
+			}, [sessionId, agentId]);
 			const effectiveScope = scope === "bot" && !agentId ? "workspace" : scope;
 			const picked = roots.find((r) => r.cwd === rootCwd) || roots.find((r) => r.current) || roots[0];
 			const bar = react.createElement("div", { key: "scope", style: C.row }, kids([
@@ -1859,6 +1873,233 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 		 * 读 `GET /x/agents/api/agents?id=` 拿 `.agent.md` 的完整草稿，写 `POST /x/agents/api/agents {action:'update', id, draft}`。
 		 * ⚠ 只提交用户改过的**文本字段**；`id` 不可改（文件名即身份）。
 		 */
+		/**
+		 * Bot ↔ Channel 绑定卡（2026-11-09）：绑定表在 vssaros-agents 里以「渠道为主键」存，
+		 * `targetKind:'agent' + targetId` 反向指向 Bot；这里按当前 agentId 过滤出它的绑定，
+		 * 并提供人可操作的新建 / 启停 / 删除。后端 assertHuman 与 fail-closed 白名单语义不变，
+		 * 平台清单只从 `channelDefs`（imPlatforms 单一真源）渲染，客户端不写死平台 key。
+		 */
+		function BotChannelBindingsCard(props) {
+			const agentId = props.agentId || "";
+			const [state, reload] = useLoader(() => getJson("/x/agents/api/bindings"), []);
+			const [busy, setBusy] = react.useState("");
+			const [err, setErr] = react.useState("");
+			const [form, setForm] = react.useState({ platform: "", chatId: "", chatType: "group", direction: "both", allowFrom: "" });
+			const data = state.data || {};
+			const defs = Array.isArray(data.channelDefs) ? data.channelDefs : [];
+			const all = Array.isArray(data.bindings) ? data.bindings : [];
+			const mine = all.filter((b) => String(b.targetKind || "agent") === "agent" && String(b.targetId || "") === agentId);
+			const defOf = (key) => defs.find((d) => String(d.key) === String(key));
+			const labelOf = (key) => { const d = defOf(key); return d ? String(d.label || d.key) : String(key); };
+			const hintOf = (key) => { const d = defOf(key); return d ? String(d.chatIdHint || "") : ""; };
+			const set = (key, value) => setForm((f) => Object.assign({}, f || {}, { [key]: value }));
+			react.useEffect(() => {
+				if (!form.platform && defs.length) {
+					const first = defs.find((d) => d.implemented !== false) || defs[0];
+					set("platform", String(first.key));
+				}
+			}, [defs.length, form.platform]);
+			const run = (body, tag) => {
+				setBusy(tag);
+				setErr("");
+				postJson("/x/agents/api/bindings", Object.assign({ actor: { kind: "human" } }, body)).then(
+					() => {
+						setBusy("");
+						if (body.action === "create") { set("chatId", ""); set("allowFrom", ""); }
+						reload();
+					},
+					(e) => { setBusy(""); setErr(String((e && e.message) || e)); },
+				);
+			};
+			const input = (key, value, placeholder) => react.createElement("input", {
+				style: Object.assign({}, C.input, { width: "100%", boxSizing: "border-box", marginTop: 4 }),
+				value: value, placeholder: placeholder || "", disabled: !!busy,
+				["data-vssaros-botbind-" + key]: "1",
+				onChange: (e) => set(key, e && e.target ? e.target.value : ""),
+			});
+			const select = (key, value, options) => react.createElement("select", {
+				style: Object.assign({}, C.input, { width: "100%", boxSizing: "border-box", marginTop: 4 }),
+				value: value, disabled: !!busy, ["data-vssaros-botbind-" + key]: "1",
+				onChange: (e) => set(key, e && e.target ? e.target.value : ""),
+			}, options.map((o) => react.createElement("option", { key: o.value, value: o.value }, o.label)));
+			const platformOptions = defs.map((d) => ({
+				value: String(d.key), label: String(d.label || d.key) + (d.implemented === false ? "（暂未接入）" : ""),
+			}));
+			const rows = mine.map((b) => react.createElement("div", {
+				key: String(b.id), style: Object.assign({}, C.tiny, { marginTop: 6, padding: "6px 8px", border: "1px solid rgba(127,127,127,.3)", borderRadius: 4 }),
+				"data-vssaros-botbind-row": String(b.id),
+			}, kids([
+				react.createElement("span", { key: "p", style: C.badge }, labelOf(b.platform)),
+				react.createElement("span", { key: "c", style: C.tiny }, " " + String(b.chatId || "") + " · " + (b.chatType === "group" ? "群" : "私") + " · " + String(b.direction || "both") + " · " + (b.enabled === false ? "停用" : "启用")),
+				react.createElement("span", { key: "sp", style: C.grow }),
+				react.createElement("button", {
+					key: "t", type: "button", style: C.btn, disabled: !!busy,
+					"data-vssaros-botbind-toggle": String(b.id),
+					onClick: () => run({ action: "update", id: String(b.id), enabled: b.enabled === false }, "toggle:" + String(b.id)),
+				}, busy === "toggle:" + String(b.id) ? "处理中…" : (b.enabled === false ? "启用" : "停用")),
+				react.createElement("button", {
+					key: "d", type: "button", style: C.btn, disabled: !!busy,
+					"data-vssaros-botbind-delete": String(b.id),
+					onClick: () => {
+						if (window.confirm("删除这条 Channel 绑定？该会话将不再路由到这个 Bot。")) {
+							run({ action: "delete", id: String(b.id) }, "delete:" + String(b.id));
+						}
+					},
+				}, "删除"),
+			])));
+			return react.createElement("div", {
+				style: Object.assign({}, C.card, { marginTop: 10 }), "data-vssaros-botbind": agentId,
+			}, kids([
+				react.createElement("div", { key: "r", style: C.row }, kids([
+					react.createElement("span", { key: "t", style: C.title }, "Channel 绑定"),
+					react.createElement("span", { key: "b", style: C.badge }, String(mine.length) + " 条"),
+					react.createElement("span", { key: "sp", style: C.grow }),
+					react.createElement("button", { key: "reload", type: "button", style: C.btn, disabled: !!busy, onClick: () => reload() }, "刷新"),
+				])),
+				react.createElement("div", { key: "d", style: Object.assign({}, C.sub, { marginTop: 4 }) },
+					"把 IM 会话绑定到这个 Bot。只有人能创建/修改/删除绑定；入站白名单留空 = 拒绝所有入站消息（fail-closed），群里仍需 @ 机器人。飞书应用凭据在本页「飞书配置」里配。"),
+				state.error ? react.createElement("div", { key: "le", style: Object.assign({}, C.err, { marginTop: 6 }) }, "读取失败：" + String(state.error)) : null,
+				rows.length ? react.createElement("div", { key: "rows" }, ...rows) : react.createElement("div", {
+					key: "empty", style: Object.assign({}, C.tiny, { marginTop: 6 }),
+				}, "这个 Bot 还没有绑定任何会话。"),
+				react.createElement("div", { key: "new", style: Object.assign({}, C.tiny, { marginTop: 10 }) }, kids([
+					react.createElement("div", { key: "h", style: Object.assign({}, C.sub, { marginBottom: 2 }) }, "新建绑定"),
+					select("platform", form.platform, platformOptions),
+					input("chatId", form.chatId, hintOf(form.platform) || "会话 ID（chat_id）"),
+					select("chatType", form.chatType, [{ value: "group", label: "群聊（需 @ 机器人）" }, { value: "p2p", label: "私聊" }]),
+					select("direction", form.direction, [{ value: "both", label: "双向" }, { value: "in", label: "仅入站" }, { value: "out", label: "仅出站" }]),
+					input("allowFrom", form.allowFrom, "入站白名单（逗号分隔 userId；留空 = 拒绝所有入站）"),
+					react.createElement("button", {
+						key: "go", type: "button", style: Object.assign({}, C.btnPrimary, { marginTop: 6 }),
+						"data-vssaros-botbind-create": "1",
+						disabled: !!busy || !String(form.chatId || "").trim() || !form.platform,
+						onClick: () => run({
+							action: "create", targetId: agentId, platform: form.platform,
+							/* ★ 2026-11-09：飞书绑定默认跟着本 Bot 在「飞书配置」里选的应用走。 */
+							...(form.platform === "feishu" && String((data.botFeishuApps || {})[agentId] || "").trim()
+								? { appId: String(data.botFeishuApps[agentId]).trim() } : {}),
+							chatId: String(form.chatId || "").trim(), chatType: form.chatType, direction: form.direction,
+							allowFrom: String(form.allowFrom || "").split(/[,，\n]/).map((s) => s.trim()).filter(Boolean),
+						}, "create"),
+					}, busy === "create" ? "创建中…" : "创建绑定"),
+					err ? react.createElement("div", { key: "e", style: Object.assign({}, C.err, { marginTop: 6 }) }, err) : null,
+				])),
+			]));
+		}
+
+		/**
+		 * Bot 飞书配置卡（2026-11-09）：设置弹窗「渠道」页签下线后，这里是飞书应用凭据的入口。
+		 *
+		 * 凭据池是**全局**的（GET /x/agents/api/bindings 的 feishuApps = describeFeishuApps）：
+		 * 任一个 Bot 在这里新增/配置过的 App ID，会出现在其它 Bot 的下拉框里，
+		 * 不必重复填 App Secret（明文永不回传，只显示「已配置 / 缺 Secret」）。
+		 * 本 Bot 选哪个应用存 botFeishuApps[agentId]（空 = 默认应用），由 set-bot-app 写入；
+		 * 后端入站路由与出站身份都会回落到这份映射。
+		 */
+		function FeishuConfigCard(props) {
+			const agentId = props.agentId || "";
+			const [state, reload] = useLoader(() => getJson("/x/agents/api/bindings"), []);
+			const [busy, setBusy] = react.useState("");
+			const [msg, setMsg] = react.useState("");
+			const [pick, setPick] = react.useState(null);
+			const [showNew, setShowNew] = react.useState(false);
+			const [form, setForm] = react.useState({ appId: "", appSecret: "", name: "" });
+			const data = state.data || {};
+			const apps = Array.isArray(data.feishuApps) ? data.feishuApps : [];
+			const botApps = data.botFeishuApps && typeof data.botFeishuApps === "object" ? data.botFeishuApps : {};
+			const saved = String(botApps[agentId] || "").trim();
+			const value = pick === null ? saved : pick;
+			const set = (k, v) => setForm((f) => Object.assign({}, f || {}, { [k]: v }));
+			const input = (key, val, placeholder, type) => react.createElement("input", {
+				style: Object.assign({}, C.input, { width: "100%", boxSizing: "border-box", marginTop: 4 }),
+				type: type || "text", value: val, placeholder: placeholder || "", disabled: !!busy,
+				["data-vssaros-feishucfg-" + key]: "1",
+				onChange: (e) => set(key, e && e.target ? e.target.value : ""),
+			});
+			const options = [{ value: "", label: "默认飞书应用（跟随全局凭据）" }].concat(
+				apps.filter((a) => !a.isDefault).map((a) => ({
+					value: String(a.appId || ""),
+					label: (a.name ? String(a.name) + " · " : "") + String(a.appId || "") + (a.hasSecret ? "" : "（缺 App Secret）"),
+				}))
+			);
+			if (value && !options.some((o) => o.value === value)) {
+				options.push({ value: value, label: value + "（已失效，请重新选择）" });
+			}
+			const run = (body, tag, okText) => {
+				setBusy(tag); setMsg("");
+				postJson("/x/agents/api/bindings", Object.assign({ actor: { kind: "human" } }, body)).then(
+					() => { setBusy(""); setMsg(okText); setPick(null); reload(); },
+					(e) => { setBusy(""); setMsg("✗ " + String((e && e.message) || e)); },
+				);
+			};
+			const addApp = () => {
+				const appId = String(form.appId || "").trim();
+				const secret = String(form.appSecret || "").trim();
+				if (!/^cli_[A-Za-z0-9]+$/.test(appId) || !secret) { setMsg("✗ 请填 App ID 与 App Secret"); return; }
+				setBusy("add"); setMsg("");
+				postJson("/x/agents/api/bindings", {
+					actor: { kind: "human" }, action: "feishu-app", appId: appId,
+					appSecret: secret, name: String(form.name || "").trim(),
+				}).then(() => postJson("/x/agents/api/bindings", {
+					actor: { kind: "human" }, action: "set-bot-app", botId: agentId, appId: appId,
+				})).then(() => {
+					setBusy(""); setForm({ appId: "", appSecret: "", name: "" });
+					setShowNew(false); setPick(null);
+					setMsg("✓ 已添加 " + appId + " 并设为当前 Bot 的飞书应用");
+					reload();
+				}, (e) => { setBusy(""); setMsg("✗ " + String((e && e.message) || e)); });
+			};
+			const defApp = apps.find((a) => a.isDefault);
+			return react.createElement("div", {
+				style: Object.assign({}, C.card, { marginTop: 10 }), "data-vssaros-feishucfg": agentId,
+			}, kids([
+				react.createElement("div", { key: "r", style: C.row }, kids([
+					react.createElement("span", { key: "t", style: C.title }, "飞书配置"),
+					react.createElement("span", { key: "b", style: C.badge }, String(apps.length) + " 个应用"),
+					react.createElement("span", { key: "sp", style: C.grow }),
+					react.createElement("button", { key: "reload", type: "button", style: C.btn, disabled: !!busy, onClick: () => reload() }, "刷新"),
+				])),
+				react.createElement("div", { key: "d", style: Object.assign({}, C.sub, { marginTop: 4 }) },
+					"App ID / App Secret 存在本机 dsh，所有 Bot 共享同一份应用池；这里只决定当前 Bot 用哪个应用。Secret 明文不回显。"),
+				state.error ? react.createElement("div", { key: "le", style: Object.assign({}, C.err, { marginTop: 6 }) }, "读取失败：" + String(state.error)) : null,
+				react.createElement("div", { key: "cur", style: Object.assign({}, C.tiny, { marginTop: 8 }) },
+					"当前选用：" + (value ? value : "默认应用") + (defApp ? " · 默认应用 " + String(defApp.appId) + (defApp.hasSecret ? "（已配置）" : "（缺 Secret）") : " · 默认应用尚未配置")),
+				react.createElement("select", {
+					key: "pick", style: Object.assign({}, C.input, { width: "100%", boxSizing: "border-box", marginTop: 4 }),
+					value: value, disabled: !!busy, "data-vssaros-feishucfg-pick": "1",
+					onChange: (e) => setPick(e && e.target ? e.target.value : ""),
+				}, options.map((o) => react.createElement("option", { key: o.value, value: o.value }, o.label))),
+				react.createElement("button", {
+					key: "save", type: "button", style: Object.assign({}, C.btnPrimary, { marginTop: 6 }),
+					"data-vssaros-feishucfg-save": "1", disabled: !!busy || pick === null,
+					onClick: () => run({ action: "set-bot-app", botId: agentId, appId: value }, "pick",
+						"✓ 已保存：" + (value ? "当前 Bot 使用 " + value : "回到默认飞书应用")),
+				}, busy === "pick" ? "保存中…" : "保存选择"),
+				react.createElement("div", { key: "newtoggle", style: Object.assign({}, C.tiny, { marginTop: 10 }) },
+					react.createElement("button", {
+						type: "button", style: C.btn, disabled: !!busy,
+						"data-vssaros-feishucfg-new-toggle": "1",
+						onClick: () => setShowNew(!showNew),
+					}, showNew ? "收起「新增飞书应用」" : "新增飞书应用（App ID / App Secret）")),
+				showNew ? react.createElement("div", { key: "newform", style: Object.assign({}, C.tiny, { marginTop: 6 }) }, kids([
+					input("appId", form.appId, "cli_xxxxxxxx（开放平台 → 凭证与基础信息）"),
+					input("appSecret", form.appSecret, "App Secret（只写不读）", "password"),
+					input("name", form.name, "名称（可选，便于其它 Bot 认出）"),
+					react.createElement("button", {
+						key: "go", type: "button", style: Object.assign({}, C.btnPrimary, { marginTop: 6 }),
+						"data-vssaros-feishucfg-new-submit": "1", disabled: !!busy,
+						onClick: addApp,
+					}, busy === "add" ? "添加中…" : "添加并选用"),
+				])) : null,
+				apps.length ? react.createElement("div", { key: "list", style: Object.assign({}, C.tiny, { marginTop: 8 }) },
+					"全局应用池：" + apps.map((a) => String(a.appId) + (a.isDefault ? "（默认）" : "") + (a.hasSecret ? "" : "（缺 Secret）")).join(" · ")) : null,
+				msg ? react.createElement("div", {
+					key: "m", style: Object.assign({}, String(msg).indexOf("✗") === 0 ? C.err : C.tiny, { marginTop: 6 }),
+					"data-vssaros-feishucfg-result": String(msg).indexOf("✗") === 0 ? "err" : "ok",
+				}, msg) : null,
+			]));
+		}
+
 		function BotConfigCard(props) {
 			const agentId = props.agentId || "";
 			const say = props.say;
@@ -1930,8 +2171,13 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 					},
 				};
 				postJson("/x/agents/api/agents", body).then(
-					() => {
-						setNote("已保存到 .agent.md。人设改动对**新会话**生效（已有会话的工具与模型已锁定）。");
+					(res) => {
+						// ★ 2026-11-09：host 回 registered:false 时不能假装保存成功 —— 列表会按 registered 隐藏这个 bot。
+						if (res && res.registered === false) {
+							setErr("已写入 .agent.md，但 preset 未注册（点了也开不了会话）：" + String(res.syncError || "同步 preset 失败") + "。请稍后重试，或到 Bots 页签 ＋ → 刷新名册");
+						} else {
+							setNote("已保存到 .agent.md。人设改动对**新会话**生效（已有会话的工具与模型已锁定）。");
+						}
 						reload();
 					},
 					(e) => setErr("保存失败：" + String((e && e.message) || e)),
@@ -1952,10 +2198,28 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 				field("description", "描述（一行）", "在名册 / 欢迎卡里显示"),
 				field("role", "角色标签", "例如 检索 / 审阅"),
 				field("model", "模型", "provider/model（如 vssaros-codebuddy/hy4）；留空 = 跟随默认"),
+				// 本地 Agent 引擎徽标：该 Bot 的 .agent.md model 指向本地 CLI 时显示引擎名。
+				// 与 badge.js / client.settings.js 同形，check-local-agent-badge.mjs 静态对账。
+				(() => {
+					const BADGES = { "vssaros-codex-cli": "Codex CLI", "vssaros-claude-code": "Claude Code", "vssaros-opencode": "OpenCode", "vssaros-kimi-cli": "Kimi CLI", "vssaros-hermes-cli": "Hermes Agent", "vssaros-gemini-cli": "Gemini CLI" };
+					const value = String(draft.model == null ? "" : draft.model).trim().toLowerCase();
+					let badge;
+					if (value.indexOf("vssaros-") === 0) {
+						const route = value.split("/")[0];
+						badge = Object.prototype.hasOwnProperty.call(BADGES, route) ? BADGES[route]
+							: (route.indexOf("vssaros-acp-") === 0 ? "自定义 ACP Agent" : undefined);
+					}
+					return badge ? react.createElement("div", {
+						key: "local-agent-badge", "data-vssaros-local-agent-badge": "1",
+						style: Object.assign({}, C.tiny, { marginTop: 4 }),
+					}, "本地 Agent 引擎：" + badge + "（CLI 自带登录与套餐）") : null;
+				})(),
 				field("skills", "技能（逗号分隔）", "anysearch, analysis"),
 				field("persona", "人设正文（Markdown）", "你就是……", true, 160),
 				err ? react.createElement("div", { key: "e", style: Object.assign({}, C.err, { marginTop: 6 }) }, err) : null,
 				note ? react.createElement("div", { key: "n", style: Object.assign({}, C.tiny, { marginTop: 6 }) }, note) : null,
+				react.createElement(FeishuConfigCard, { key: "feishu-config", agentId: agentId }),
+				react.createElement(BotChannelBindingsCard, { key: "channel-bindings", agentId: agentId }),
 			]));
 		}
 
@@ -2218,6 +2482,9 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 			};
 			// ★ 2026-11-05：composer 活动行 / shimmer / 入场动画，一次性幂等注入。
 			ensureGroupFlowStyle();
+			// ★ 2026-11-09：官方右栏「群设置」独立页签（用户要求）；失败只影响这一个 tab，
+			//   菜单侧有中栏自绘页签兜底。放在最前面 ⇒ 用户点菜单时 open/close API 一定已挂上。
+			try { installRightRoomSettings(ctx); } catch { /* 注册失败不拖垮会话视图 */ }
 			// 2026-11-03（用户要求：两套页签合并）：「记忆 / 技能 / 待办」由内置
 			// @vssaros/dsh-memory 插件提供（分层记忆 KEY.md / 项目日志 / 技能库 / 结构化待办），
 			// 本外壳不再重复注册同名页签；只保留唯一的「设置」，并把 evolve 的
@@ -2267,11 +2534,232 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 
 		exports.install = install;
 		// 仅测试/守卫用：纯逻辑与契约常量
+		/**
+		 * ★ 2026-11-09（用户要求）：「群设置」不再复用会话内的「设置」子页签，改为在
+		 *   独立页签里开一整页。页签条由 client.workbenchNav.js 画（自带 ✕），这里的
+		 *   页内也放一枚「✕ 关闭」按钮 ⇒ 两种关闭入口都可用。
+		 *
+		 * 为什么放在本 chunk：RoomSettingsCard 就在这里（群名 / 公告 / 谁来回答 / 成员），
+		 *   同源 getJson/postJson 与样式常量都现成 ⇒ 不新建 chunk、不改 PART_CHUNKS、
+		 *   不重复实现一份群设置表单 ✓。
+		 *
+		 * 组件登记到 `window.__vssarosPageComponents`（2026-11-02 已有的组件页签机制）：
+		 *   页签 `comp: 'vssaros-room-settings'` + `props.roomId` ⇒ 中栏页签条按 key 取回渲染。
+		 */
+		const ROOM_SETTINGS_PAGE_COMP = "vssaros-room-settings";
+		/**
+		 * ★ 2026-11-09 追加（用户：「在右侧栏中，弹出一个独立页展示」）：官方右栏页签。
+		 *   `sidebar.right.pane.tab` 是 **session 作用域 + keyed slot**：body 由 kind 派发，
+		 *   插件组件拿不到 `navigation.params`（官方 `useTabInfo` 只在 slot 内部可用），
+		 *   ⇒ 用 factory 级 `rightRoomTarget` + 自定义事件把 roomId 递给 body。
+		 *   `sidebarRight.openTab()` 在无会话在屏时会 throws（service.d.ts 原话 fails loudly）
+		 *   ⇒ 打开失败必须返回 false，由 client.workspaces.js 回落中栏自绘页签（不白点）。
+		 */
+		const ROOM_SETTINGS_RIGHT_KIND = "vssaros-room-settings-right";
+		const ROOM_SETTINGS_RIGHT_SLOT = "sidebar.right.pane.tab";
+		const ROOM_SETTINGS_TARGET_EVENT = "vssaros-room-settings-target";
+		let rightRoomTarget = { roomId: "", name: "" };
+		/** 群设置独立页：页头（标题 + 关闭按钮）+ 现成的群设置卡。 */
+		function RoomSettingsPage(props) {
+			const roomId = String((props && props.roomId) || "");
+			const tabId = String((props && props.tabId) || "room-settings:" + roomId);
+			const close = () => {
+				// 右栏形态：交给宿主 `sidebarRight.close(tab.id)`；中栏形态：关自绘页签。
+				if (props && typeof props.onClose === "function") {
+					try { props.onClose(tabId); return; } catch { /* 宿主关不掉 ⇒ 还有官方 strip 的 ✕ */ }
+				}
+				try {
+					const fn = typeof window !== "undefined" ? window.__vssarosClosePageTab : null;
+					if (typeof fn === "function") { fn(tabId); return; }
+				} catch { /* 宿主没暴露 ⇒ 用页签条的 ✕ */ }
+				// 兜底：没有关闭 API 时，至少把整列收起（不假装关掉了）
+				try { if (typeof window !== "undefined") { window.dispatchEvent(new CustomEvent("vssaros-wb-tabs-change")); } } catch { /* noop */ }
+			};
+			const bar = react.createElement("div", {
+				style: { display: "flex", alignItems: "center", gap: 8, padding: "10px 14px",
+					borderBottom: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.25))", flex: "none" },
+				"data-vssaros-room-settings-page": roomId,
+			}, [
+				react.createElement("span", { key: "i", style: { fontSize: 15 } }, "⚙"),
+				react.createElement("span", { key: "t", style: { fontSize: 14, fontWeight: 600, flex: "1 1 auto" } }, "群设置"),
+				react.createElement("button", {
+					key: "x", type: "button", title: "关闭群设置", "aria-label": "关闭群设置",
+					"data-vssaros-room-settings-close": tabId, onClick: close,
+					style: { border: 0, background: "transparent", cursor: "pointer", fontSize: 16,
+						lineHeight: "24px", padding: "0 6px", color: "inherit", opacity: .75 },
+				}, "✕"),
+			]);
+			return react.createElement("div", {
+				style: { display: "flex", flexDirection: "column", height: "100%", minHeight: 0,
+					overflow: "auto", background: "var(--dsw-alias-bg-module-platform, transparent)" },
+			}, [bar, react.createElement("div", { key: "b", style: { flex: "1 1 auto", minHeight: 0, overflow: "auto", padding: "12px 14px" } },
+				react.createElement(RoomSettingsCard, { key: roomId, roomId, say: props && props.say }))]);
+		}
+
+		/**
+		 * ★ 2026-11-09：Bot 配置**独立页**（修 hero 下「编辑 Bot」点了没反应）。
+		 *
+		 * 根因：右栏「设置」页签是 `conversation.view` = session 作用域的 slot，
+		 *   hero（"探索未至之境"空会话屏）没有会话在屏 ⇒ 这个 slot 结构上不渲染 ⇒
+		 *   SettingsView / useScopePicker 根本没挂载 ⇒ `vssaros:open-bot-config` 事件无人接住，
+		 *   `binding(sid).activate` 也对不存在的绑定静默失败。旧实现靠 openSession + 定时器去赌，必然落空。
+		 *
+		 * 修法：改用中栏独立页签（root/面板级，`__vssarosOpenPageTab`，群设置同款、hero 下已验证可用），
+		 *   按 **agentId** 直接渲染 BotConfigCard —— 它自带 `/x/agents/api/agents?id=` 读写，
+		 *   不需要 sessionId、不需要 preset 派生、不需要 activate/事件。
+		 */
+		const BOT_CONFIG_PAGE_COMP = "vssaros-bot-config";
+		function BotConfigPage(props) {
+			const agentId = String((props && props.agentId) || "");
+			const name = String((props && props.name) || agentId);
+			const tabId = String((props && props.tabId) || "bot-config:" + agentId);
+			const close = () => {
+				if (props && typeof props.onClose === "function") {
+					try { props.onClose(tabId); return; } catch { /* 回落到自绘页签关闭 */ }
+				}
+				try {
+					const fn = typeof window !== "undefined" ? window.__vssarosClosePageTab : null;
+					if (typeof fn === "function") { fn(tabId); return; }
+				} catch { /* noop */ }
+				try { if (typeof window !== "undefined") { window.dispatchEvent(new CustomEvent("vssaros-wb-tabs-change")); } } catch { /* noop */ }
+			};
+			const bar = react.createElement("div", {
+				style: { display: "flex", alignItems: "center", gap: 8, padding: "10px 14px",
+					borderBottom: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.25))", flex: "none" },
+				"data-vssaros-bot-config-page": agentId,
+			}, [
+				react.createElement("span", { key: "i", style: { fontSize: 15 } }, "⚙"),
+				react.createElement("span", { key: "t", style: { fontSize: 14, fontWeight: 600, flex: "1 1 auto" } },
+					"Bot 配置 · " + name.slice(0, 24)),
+				react.createElement("button", {
+					key: "x", type: "button", title: "关闭 Bot 配置", "aria-label": "关闭 Bot 配置",
+					"data-vssaros-bot-config-close": tabId, onClick: close,
+					style: { border: 0, background: "transparent", cursor: "pointer", fontSize: 16,
+						lineHeight: "24px", padding: "0 6px", color: "inherit", opacity: .75 },
+				}, "✕"),
+			]);
+			return react.createElement("div", {
+				style: { display: "flex", flexDirection: "column", height: "100%", minHeight: 0,
+					overflow: "auto", background: "var(--dsw-alias-bg-module-platform, transparent)" },
+			}, [bar, react.createElement("div", { key: "b", style: { flex: "1 1 auto", minHeight: 0, overflow: "auto", padding: "12px 14px" } },
+				react.createElement(BotConfigCard, { key: agentId, agentId, say: props && props.say }))]);
+		}
+		try {
+			const w = typeof window !== "undefined" ? window : null;
+			if (w) {
+				if (!w.__vssarosPageComponents || typeof w.__vssarosPageComponents !== "object") { w.__vssarosPageComponents = {}; }
+				w.__vssarosPageComponents[ROOM_SETTINGS_PAGE_COMP] = RoomSettingsPage;
+				w.__vssarosPageComponents[BOT_CONFIG_PAGE_COMP] = BotConfigPage;
+				// 组件晚于页签条注册 ⇒ 通知页签条重画（workbenchNav 订阅 TAB_CHANGE_EVENT）
+				w.dispatchEvent(new CustomEvent("vssaros-wb-tabs-change"));
+			}
+		} catch { /* 宿主无 window ⇒ 页签条回落 iframe，不留死页签 */ }
+
+		/** 官方右栏页签体：跟着 factory 级目标群重画（切群时 open 侧发事件）。 */
+		function RightRoomSettingsPane() {
+			const [target, setTarget] = react.useState(rightRoomTarget);
+			react.useEffect(() => {
+				if (typeof window === "undefined" || typeof window.addEventListener !== "function") { return undefined; }
+				const onChange = () => setTarget(Object.assign({}, rightRoomTarget));
+				window.addEventListener(ROOM_SETTINGS_TARGET_EVENT, onChange);
+				return () => { try { window.removeEventListener(ROOM_SETTINGS_TARGET_EVENT, onChange); } catch { /* noop */ } };
+			}, []);
+			const close = () => {
+				try {
+					const fn = typeof window !== "undefined" ? window.__vssarosCloseRightRoomSettings : null;
+					if (typeof fn === "function") { fn(); }
+				} catch { /* 还有官方 strip 自带的「关闭」 */ }
+			};
+			const empty = react.createElement("div", {
+				style: { padding: "14px", opacity: .7, fontSize: 13 },
+				"data-vssaros-right-room-settings-empty": "1",
+			}, "从左侧 Bots 页签的群菜单里点「群设置」");
+			return target.roomId
+				? react.createElement(RoomSettingsPage, { key: target.roomId, roomId: target.roomId,
+					tabId: "right:" + target.roomId, onClose: close })
+				: empty;
+		}
+		/** 注册官方右栏页签（类型 + keyed body），并暴露跨 chunk 的 open / close API。 */
+		function installRightRoomSettings(ctx) {
+			const noteFail = (tag, e) => {
+				try { console.warn("[vssaros] 群设置右栏注册失败（" + tag + "）：" + String((e && e.message) || e)); } catch { /* 无 console */ }
+				return null;
+			};
+			// ① 页签类型（与 client.rightbarBrowser.js 同款；effect 包裹 ⇒ 重复挂载不会把别人拖垮）
+			try {
+				const registerType = () => {
+					const tabs = ctx && ctx.sidebarRightTabs;
+					if (tabs && typeof tabs.register === "function") {
+						return tabs.register({
+							id: ROOM_SETTINGS_RIGHT_KIND, kind: ROOM_SETTINGS_RIGHT_KIND, priority: "extension",
+							// thunk：每次用都重读 ⇒ 切群后页签标题跟着变（不写死群名）
+							title: () => rightRoomTarget.name ? "群设置 · " + String(rightRoomTarget.name).slice(0, 24) : "群设置",
+						});
+					}
+					return undefined;
+				};
+				if (ctx && typeof ctx.effect === "function") {
+					ctx.effect(() => { const dispose = registerType(); return typeof dispose === "function" ? dispose : undefined; },
+						"vssaros-room-settings-right:type");
+				} else { registerType(); }
+			} catch (e) { noteFail("type", e); }
+			// ② 页签体：keyed slot，key 必须等于 tab kind（session 作用域 ⇒ 撞 key 不许外抛）
+			try {
+				ctx.slots.inject(ROOM_SETTINGS_RIGHT_SLOT, () => {
+					try { return ctx.slots.register({ name: ROOM_SETTINGS_RIGHT_SLOT, key: ROOM_SETTINGS_RIGHT_KIND }, RightRoomSettingsPane); }
+					catch (e) { return noteFail("body", e); }
+				});
+			} catch (e) { noteFail("inject", e); }
+			// ③ 打开：无会话在屏时 openTab 会 throws ⇒ 先同步判据，返回 false 让调用方回落中栏页签
+			const openRight = (sid, name) => {
+				const sr = ctx && ctx.sidebarRight;
+				if (!sr || typeof sr.openTab !== "function") { return false; }
+				try {
+					const mounted = sr.mounted && typeof sr.mounted.getSnapshot === "function" ? sr.mounted.getSnapshot() : null;
+					if (!mounted) { return false; }
+				} catch { return false; }
+				rightRoomTarget = { roomId: String(sid || ""), name: String(name || "") };
+				// 用 `w.CustomEvent || globalThis.CustomEvent`：老宿主 / jsdom 里裸 `new CustomEvent`
+				// 可能抛 ReferenceError ⇒ 事件发不出去 ⇒ 已挂载的页签体不重画（一直显示上一次的群）。
+				try {
+					const w = typeof window !== "undefined" ? window : null;
+					const Ctor = w && (w.CustomEvent || (typeof CustomEvent !== "undefined" ? CustomEvent : null));
+					if (Ctor) { w.dispatchEvent(new Ctor(ROOM_SETTINGS_TARGET_EVENT)); }
+				} catch { /* noop */ }
+				const open = () => { try { sr.openTab(ROOM_SETTINGS_RIGHT_KIND); } catch { /* 无会话在屏 ⇒ 中栏兜底已准备好 */ } };
+				const expand = typeof document !== "undefined" ? document.querySelector("[data-sidebar-right-expand]") : null;
+				if (expand && typeof expand.click === "function") {
+					expand.click();
+					try { window.setTimeout(open, 180); } catch { open(); }
+				} else { open(); }
+				return true;
+			};
+			const closeRight = () => {
+				const sr = ctx && ctx.sidebarRight;
+				if (!sr || typeof sr.close !== "function") { return false; }
+				let tabId = "";
+				try { const active = typeof sr.active === "function" ? sr.active() : null; tabId = active && active.id ? String(active.id) : ""; } catch { /* noop */ }
+				if (!tabId) { return false; }
+				try { sr.close(tabId); return true; } catch { return false; }
+			};
+			try {
+				const w = typeof window !== "undefined" ? window : null;
+				if (w) { w.__vssarosOpenRightRoomSettings = openRight; w.__vssarosCloseRightRoomSettings = closeRight; }
+			} catch { /* window 不可写 */ }
+			return { openRight, closeRight };
+		}
+
 		exports.__test = {
+			ROOM_SETTINGS_RIGHT_KIND, ROOM_SETTINGS_RIGHT_SLOT, ROOM_SETTINGS_TARGET_EVENT,
+			RightRoomSettingsPane, installRightRoomSettings,
+			rightRoomTargetOf: () => Object.assign({}, rightRoomTarget),
 			SLOT, IDS, ORDERS, OFFICIAL,
 			isAgentPreset, agentIdOf, cwdOf, isUnder, rootOptionsFor, parseMemory, sizeLabel, explainLoadError, TODO_GROUPS,
 			MemoryModuleCard, MEM_GROUPS, SettingsView,
 			// ★ 2026-11-05 多 bot 群聊：群标记 / 工具结果解析 / 设置改动 / 两个组件
+			ROOM_SETTINGS_PAGE_COMP, RoomSettingsPage,
+			// ★ 2026-11-09：Bot 配置独立页（hero 下「编辑 Bot」的承载面）
+			BOT_CONFIG_PAGE_COMP, BotConfigPage,
 			ROOM_PROJECTION_KEY, ROOM_RELAY_TOOL, ROOMS_API, roomMarkOfSession, parseRelayResult, roomPatch, RoomSettingsCard, GroupRelayView,
 			// ★ 2026-11-05 第一批：状态节点 + 只读 MemberDock
 			GROUP_PROGRESS_EVENT, GROUP_DOCK_VISIBILITY_EVENT, MEMBER_DOCK_SLOT, MEMBER_DOCK_ID, MEMBER_DOCK_ORDER, statusNodeText, groupComposerFlowOf, GroupMemberDock,

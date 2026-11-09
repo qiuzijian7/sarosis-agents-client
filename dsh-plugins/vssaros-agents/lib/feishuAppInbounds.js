@@ -69,8 +69,10 @@ export function createFeishuAppInbounds({
 		const key = await keyOf(appId);
 		const def = await defaultApp();
 		const actual = key || def;
-		const gw = gatewayOf(key);
-		if (ACTIVE.has(gw.state().status)) { return gw.state(); }
+		/* ★ 2026-11-09：先判活、**再抢锁**、最后才建网关 —— 原来 `gatewayOf()` 在抢锁前
+		   就把一个 idle 网关写进 extras，锁被占（409）时这个网关永远不会被清理。 */
+		const existing = key ? extras.get(key) : defaultGateway;
+		if (existing && ACTIVE.has(existing.state().status)) { return existing.state(); }
 		/* 默认应用刚好也作为额外应用在跑（用户把默认应用换成了某个额外应用）⇒ 不能再连一条 */
 		if (!key && actual && extras.has(actual) && ACTIVE.has(extras.get(actual).state().status)) {
 			throw conflict(`飞书应用 ${actual} 已作为额外应用在接收消息：先停掉它，再启动默认应用的入站`);
@@ -82,7 +84,14 @@ export function createFeishuAppInbounds({
 			}
 			locks.set(key, lock);
 		}
-		await gw.start();
+		const gw = gatewayOf(key);
+		try {
+			await gw.start();
+		} catch (e) {
+			/* start 抛异常时别把锁白占着（原实现只在 unavailable 状态才放锁）。 */
+			await releaseKey(key);
+			throw e;
+		}
 		const after = gw.state();
 		if (after.status === 'error' && /^unavailable/.test(String(after.lastError || ''))) {
 			/* 不可恢复 ⇒ 网关已自停；锁放掉，别挡着另一个能连上的实例 */
@@ -96,20 +105,33 @@ export function createFeishuAppInbounds({
 	}
 
 	async function stop(appId) {
-		const key = await keyOf(appId);
-		const gw = key ? extras.get(key) : defaultGateway;
+		const id = String(appId ?? '').trim();
+		const key = await keyOf(id);
+		/* 默认应用被换过之后，连接可能是用旧 id 建的 ⇒ 两个键都试着停、都放锁。 */
+		let gw = key ? extras.get(key) : defaultGateway;
+		if (!gw && id) { gw = extras.get(id); }
 		if (gw) { await gw.stop(); }
 		await releaseKey(key);
+		if (id && id !== key) { await releaseKey(id); }
 		return gw ? gw.state() : null;
 	}
 
-	/** 删掉一个额外应用时调用：停连接、放锁、丢网关。 */
+	/**
+	 * 删掉一个额外应用时调用：停连接、放锁、丢网关。
+	 *
+	 * ★ 2026-11-09：`keyOf()` 每次读实时默认应用 ⇒ 默认应用被换过之后，连接建立时用的键
+	 *   与现在归一出来的键可能不同。这里把「原始 id」和「归一后的键」都清一遍，
+	 *   否则会留下一条还在跑的 WS 和一把永远不释放的锁。
+	 */
 	async function forget(appId) {
 		const id = String(appId ?? '').trim();
-		const gw = extras.get(id);
-		if (gw) { await gw.stop().catch(() => undefined); }
-		extras.delete(id);
-		await releaseKey(id);
+		const key = await keyOf(id);
+		for (const k of new Set([id, key].filter(Boolean))) {
+			const gw = extras.get(k);
+			if (gw) { await gw.stop().catch(() => undefined); }
+			extras.delete(k);
+			await releaseKey(k);
+		}
 	}
 
 	return {

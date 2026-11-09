@@ -4,6 +4,7 @@ description: Control a running TouchDesigner instance via twozero MCP — create
 activation: manual
 match: ["touchdesigner-mcp", "touchdesigner mcp", "touchdesigner", "mcp", "twozero", "creative-coding", "real-time-visuals", "generative-art", "audio-reactive", "installation", "glsl"]
 category: creative
+tier: extended
 ---
 
 # TouchDesigner Integration (twozero MCP)

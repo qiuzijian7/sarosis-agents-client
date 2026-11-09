@@ -2,6 +2,7 @@
 name: rush-hero
 description: 为Rush模式英雄技能添加技能等级养成（天赋）参数的完整操作指南，覆盖Tag注册、配置表、C++代码、蓝图资产所有步骤，基于天使技能CBT2改造实战总结
 displayName: "Rush 英雄技能等级养成（天赋参数）添加指南"
+tier: extended
 ---
 
 # Rush 英雄技能等级养成（天赋参数）添加指南

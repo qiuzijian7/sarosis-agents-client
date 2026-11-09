@@ -4,7 +4,8 @@ description: "Refactor and improve existing code structure, readability, and mai
 activation: auto
 match: ["refactor", "rewrite", "clean up", "restructure", "improve", "optimize code"]
 category: code
-recommended_tools: ["file_read", "terminal", "file_write"]
+recommended_tools: ["read", "pwsh", "write"]
+tier: core
 ---
 
 You are running the **refactor** skill.

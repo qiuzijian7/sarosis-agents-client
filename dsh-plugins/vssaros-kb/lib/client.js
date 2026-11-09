@@ -1907,8 +1907,8 @@ function install(ctx) {
 				//   被抢走就再设回来），**已删除**。它对**全局当前会话**下手，而页签条会同时挂着几个工作台 ⇒
 				//   把媒体库 / 商城的会话也改成了知识库专家（真机日志：媒体库会话 resume 报
 				//   `Unknown agent preset: vssaros-knowledge-base-expert`）。
-				//   现在默认 agent **只由宿主 vssaros-workbenches 设**（对照表 'vssaros/kb' 的候选里有本包注册的
-				//   `vssaros-kb-expert`，见 lib/kbAgent.js 的 KB_PRESET），且只改知识库自己停靠的那条会话。
+				//   现在默认 agent **只由宿主 vssaros-workbenches 设**（对照表 'vssaros/kb' 单值指向
+				//   内置 `vssaros-knowledge-base-expert`），且只改知识库自己停靠的那条会话。
 			});
 			return undefined;
 		}

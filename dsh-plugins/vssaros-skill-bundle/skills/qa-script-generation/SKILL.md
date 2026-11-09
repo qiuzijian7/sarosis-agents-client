@@ -4,7 +4,8 @@ description: QA 阶段 3——把已确认的用例转成 spec-task 蓝图与可
 activation: auto
 match: ["生成脚本", "spec-task", "测试脚本", "script generation"]
 category: development
-recommended_tools: ["file_read", "file_write", "terminal", "search_graph"]
+recommended_tools: ["read", "write", "pwsh", "codebase_search"]
+tier: core
 ---
 
 # QA Script Generation — 脚本生成
@@ -46,6 +47,6 @@ spec-task = 用例 → 脚本的映射单元，每个 spec-task 必须能独立�
 
 ## 纪律
 
-- 脚本执行会**改动产品代码、连接数据库**——只在用户要求验收时生成
+- 脚本执行会连接被测服务、写 `.qa-agent/` 产物，但**不改产品代码**——只在用户要求验收时生成
 - 不在本阶段判断质量，质量判断在阶段 5/6
 - 播报：`▶ 脚本生成完成 — 8 个 spec-task`

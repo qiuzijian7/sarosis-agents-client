@@ -15,6 +15,9 @@ Apache License, Version 2.0, Copyright 2026 Fei2411 and the DS Bot contributors
     relays that stop, and a member's late reply starting a new round.
   - lib/core/goals.js follows the group goal of ds-bot/src/host/goals.js:
     stages with acceptance, passing, sending back, and nudging the admin.
+  - lib/core/asks.js follows the non-blocking ask_user of
+    ds-bot/src/host/tools.js: a member records the question, ends its turn
+    immediately, and the answer starts a new round.
   - lib/core/dsBotImport.js reads the team DS Bot saves (its state.json,
     capability and memory formats as in ds-bot/src/host/store.js, roster.js,
     capabilities.js and memory.js) to import it into VsSaros Bots; it copies no

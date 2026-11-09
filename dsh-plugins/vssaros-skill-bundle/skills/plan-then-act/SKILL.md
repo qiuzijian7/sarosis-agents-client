@@ -4,6 +4,7 @@ description: "复杂任务先规划后执行 —— 给出步骤后再调用工�
 activation: auto
 match: ["refactor", "rewrite", "migrate", "redesign", "架构", "重构"]
 category: meta
+tier: core
 
 ---
 

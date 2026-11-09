@@ -1,27 +1,54 @@
 {
+
   "name": "@vssaros/dsh-skill-bundle",
-  "version": "0.1.0",
-  "description": "Bundled skill library for VsSaros. Data-only plugin: ships the 173 built-in SKILL.md directories and mounts them as an official dsh-skill-filesystem bundled root (rank 600). No runtime tools, no pages, no IDE-side skill logic.",
+
+  "version": "0.1.9",
+
+  "description": "Bundled skill library for VsSaros. Data-only plugin: ships the 174 built-in SKILL.md directories and mounts them as an official dsh-skill-filesystem bundled root (rank 600). No runtime tools, no pages, no IDE-side skill logic.",
+
   "private": true,
+
   "type": "module",
+
   "main": "./lib/index.js",
+
   "exports": {
+
     ".": "./lib/index.js",
+
     "./package.json": "./package.json"
+
   },
+
   "files": [
+
     "package.json",
+
     "lib/index.js",
+
     "skills",
+
     "cordis.patch.yml"
+
   ],
+
   "peerDependencies": {
+
     "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+
   },
+
   "dsh": {
+
     "bundle": {
+
       "patch": "./cordis.patch.yml"
+
     }
+
   },
+
   "license": "MIT"
+
 }
+

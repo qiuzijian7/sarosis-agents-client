@@ -1,0 +1,235 @@
+/* anime.css —— 二次元番茄钟独立入口样式（Designer 规范 anime-spec.html → 落地版）
+   - 纯前端、零外部依赖、可离线：无任何字体 CDN / 图标库 / 图片外链。
+   - 番茄拟人 mascot = 内联 SVG（赛璐珞：深描边+平涂+高光+腮红），绝不用 emoji。
+   - 数字用系统圆体/粗体栈渲染大号数字 + 白描边 + 粉系柔光 text-shadow，不引外部字体。
+   - 明亮幻想：粉→薰衣草柔和渐变 + 计时区淡粉光晕；阶段色差（专注莓粉 / 休息糖果蓝）；错误态红系。
+   - 移动端优先：按钮/触控 ≥48px、100dvh + safe-area-inset-*、touch-action:manipulation。
+ */
+
+/* ============ 全局显隐兜底 ============ */
+/* 作者样式 display 会盖过浏览器 UA 的 [hidden]{display:none}，必须强制覆盖，
+   否则错误横幅无法真正隐藏（与 styles.css / cartoon.css / pixel.css 同源约定）。 */
+[hidden] { display: none !important; }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+
+/* ============ 设计令牌（CSS 自定义属性，逐字对齐 anime-spec.html） ============ */
+:root {
+  --bg-1:      #FFF1F8;   /* 背景渐变起：浅粉 */
+  --bg-2:      #F1ECFB;   /* 背景渐变止：浅薰衣草 */
+  --panel:     #FFFFFF;   /* 卡片面板：白 */
+  --surface-2: #FCE9F3;   /* 浅粉紫计时区底 */
+  --ink:       #43303B;   /* 正文：深莓紫棕（铺白 ≈12.2:1，≥4.5） */
+  --muted:     #6F5A68;   /* 次要文字：灰紫（铺白 ≈6.3:1，≥4.5，不用 0.3 透明灰字） */
+  --primary:   #D6336C;   /* 专注/主按钮：莓粉红（白字 4.62:1，≥4.5） */
+  --primary-d: #B02A5B;   /* 主按钮底部实影（同色深一档） */
+  --break:     #2B6CB0;   /* 休息/次按钮：糖果蓝（白字 5.42:1，≥4.5） */
+  --break-d:   #1F558C;   /* 次按钮底部实影 */
+  --error:     #C0392B;   /* 错误横幅底：红系（白字 5.44:1，错误态用红不用绿） */
+  --time-ink:  #43303B;   /* 大号数字色（铺浅粉紫，≈10:1，大字 ≥3:1 富余） */
+  --mascot:    #F0577F;   /* mascot 番茄体色（莓粉） */
+  --mascot-lf: #7BD389;   /* mascot 叶子绿 */
+  --mascot-bl: #FF9EC4;   /* mascot 腮红 */
+  --line:      #F3DCEA;   /* 轻描边 */
+  --focus:     #2B6CB0;   /* 键盘焦点框：深蓝（可见度高） */
+  --radius:        24px;  /* 大圆角 */
+  --radius-lg:     28px;  /* 卡片圆角 */
+  --radius-pill:   999px; /* 胶囊按钮 */
+  --shadow:    0 8px 18px rgba(74,51,64,.16);          /* 柔和投影（带模糊，明亮幻想感） */
+  --btn-shadow-primary: 0 5px 0 0 var(--primary-d);    /* 立体底影 */
+  --btn-shadow-break:   0 5px 0 0 var(--break-d);
+  --tap:       48px;      /* 触控最小高度（≥44） */
+  --fs-time:   clamp(56px, 22vw, 88px);  /* 大号数字，随屏缩放不溢出 */
+}
+
+body {
+  /* 明亮幻想：粉→薰衣草柔和渐变；极浅，次要文字在其上仍 ≥6:1 */
+  background: linear-gradient(160deg, var(--bg-1) 0%, var(--bg-2) 100%);
+  color: var(--ink);
+  font-family: "Yuanti SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+    system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  touch-action: manipulation;            /* 去 300ms 延迟，不禁用缩放 */
+  min-height: 100dvh;
+}
+
+/* ============ 布局骨架 ============ */
+.anime-app {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: calc(env(safe-area-inset-top) + 16px) 16px calc(env(safe-area-inset-bottom) + 16px);
+  max-width: 420px;
+  margin: 0 auto;
+}
+.anime-top { display: flex; align-items: center; gap: 10px; }
+.anime-logo { width: 44px; height: 44px; flex: 0 0 auto; }
+.anime-title { font-size: 20px; font-weight: 800; margin: 0; }
+.anime-phase { margin-left: auto; font-size: 14px; color: var(--muted); font-weight: 700; }
+.anime-app.is-focus .anime-phase { color: var(--primary); }
+.anime-app.is-break  .anime-phase { color: var(--break); }
+
+.anime-stage {
+  position: relative;
+  background: var(--surface-2);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 24px 16px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  overflow: hidden;
+}
+/* 明亮幻想柔光：计时区背后一圈淡粉光晕，纯装饰（aria-hidden、不挡文字） */
+.anime-stage::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(120px 120px at 50% 38%, rgba(255,158,196,.30), transparent 70%);
+  pointer-events: none;
+}
+.anime-mascot { width: 108px; height: 108px; position: relative; }
+.anime-time {
+  position: relative;
+  font-size: var(--fs-time);
+  font-weight: 800;
+  line-height: 1;
+  color: var(--time-ink);
+  letter-spacing: 2px;
+  /* 圆润 + 柔光描边：白描边保可读 + 粉系柔光做二次元氛围 */
+  text-shadow:
+    0 1px 0 #fff, 0 -1px 0 #fff, 1px 0 0 #fff, -1px 0 0 #fff,
+    0 0 10px rgba(255,140,195,.40);
+  font-variant-numeric: tabular-nums;     /* 等宽数字，跳秒不抖 */
+}
+.anime-state { position: relative; color: var(--muted); font-size: 15px; font-weight: 700; margin: 0; }
+.anime-caption { position: relative; color: var(--muted); font-size: 13px; font-weight: 600; margin: 0; opacity: 1; }
+
+/* ============ 控制按钮（悬停/聚焦/禁用态齐全） ============ */
+.anime-controls { display: flex; gap: 12px; }
+.anime-btn {
+  flex: 1;
+  min-height: var(--tap);
+  padding: 0 14px;
+  font: inherit;
+  font-weight: 800;
+  font-size: 17px;
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: transform .06s ease, box-shadow .06s ease, filter .06s ease;
+}
+.anime-btn--primary { background: var(--primary); box-shadow: var(--btn-shadow-primary); }
+.anime-btn--break   { background: var(--break);   box-shadow: var(--btn-shadow-break); }
+/* hover：轻微抬起 */
+.anime-btn:hover:not(:disabled) { transform: translateY(-2px); filter: brightness(1.04); }
+/* active：按下，底影收没 */
+.anime-btn:active:not(:disabled) { transform: translateY(3px); box-shadow: none; }
+/* 键盘焦点：深蓝描边，清晰可见 */
+.anime-btn:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+/* 禁用：降透明 + 去除底影 + 灰化 + 禁用指针，与正常态明显区分 */
+.anime-btn:disabled {
+  opacity: .5;
+  box-shadow: none;
+  transform: none;
+  cursor: not-allowed;
+  filter: grayscale(.3);
+}
+
+/* ============ 今日数 ============ */
+.anime-today {
+  align-self: center;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+  background: var(--panel);
+  border-radius: var(--radius-pill);
+  padding: 10px 18px;
+  box-shadow: var(--shadow);
+}
+.anime-today b { color: var(--primary); font-size: 20px; }
+
+/* ============ 错误态横幅（红系，localStorage 写入失败） ============ */
+.anime-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+  background: var(--error);
+  color: #fff;
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: var(--shadow);
+}
+.anime-error .anime-btn {
+  flex: 0 0 auto;
+  min-height: 40px;
+  font-size: 13px;
+  background: #fff;
+  color: var(--error);
+  box-shadow: none;
+}
+.anime-error .anime-btn:hover:not(:disabled) { filter: none; transform: none; }
+
+/* ===== 番茄拟人 mascot 休息态闭眼变体（.is-break 切换，纯 CSS，无重绘） ===== */
+.mascot-eyes-open { display: block; }
+.mascot-eyes-closed { display: none; }
+.anime-app.is-break .mascot-eyes-open { display: none; }
+.anime-app.is-break .mascot-eyes-closed { display: block; }
+.mascot-zzz { display: none; }
+.anime-app.is-break .mascot-zzz { display: block; }
+
+/* ===== 统计视图（复用首页 id / class，anime 重着色） ===== */
+.stats-hero-title { font-size: 14px; color: var(--muted); margin: 0 0 4px; font-weight: 600; }
+.stats-hero { display: flex; align-items: baseline; gap: 6px; margin-bottom: 14px; }
+.stats-hero-num { font-size: 44px; font-weight: 800; color: var(--primary); line-height: 1; }
+.stats-hero-unit { font-size: 14px; color: var(--muted); }
+
+.stats-block { margin-bottom: 14px; }
+.stats-block-title { font-size: 14px; color: var(--ink); margin: 0 0 8px; font-weight: 700; }
+
+.trend { display: flex; align-items: flex-end; gap: 6px; height: 120px; padding: 8px; background: var(--panel); border-radius: var(--radius); box-shadow: var(--shadow); }
+.trend-item { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 4px; }
+.trend-bar { width: 70%; border-radius: 8px 8px 4px 4px; background: var(--surface-2); min-height: 4px; transition: height 0.2s ease; }
+.trend-item.on .trend-bar { background: var(--primary); }
+.trend-bar.zero { background: #f3e6ee; }
+.trend-label { font-size: 10px; color: var(--muted); }
+.trend-item.on .trend-label { color: var(--primary-d); font-weight: 700; }
+
+.history { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.history-item { display: flex; align-items: center; gap: 8px; background: var(--panel); border-radius: var(--radius); padding: 10px 12px; box-shadow: var(--shadow); }
+.history-date { font-size: 12px; color: var(--muted); flex: 0 0 76px; }
+.history-task {
+  flex: 1; font-size: 14px; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.history-count { font-size: 12px; color: var(--primary-d); font-weight: 700; flex: 0 0 auto; }
+
+.empty-card, .error-banner {
+  background: var(--panel); border-radius: var(--radius); padding: 18px 16px;
+  box-shadow: var(--shadow); text-align: center; font-size: 14px; line-height: 1.6;
+}
+.empty-card b, .error-banner b { color: var(--ink); }
+.stats-empty { color: var(--muted); }
+.stats-empty .anime-btn { margin-top: 12px; width: 100%; }
+.error-banner { border: 2px solid var(--error); color: var(--error); }
+.error-banner .anime-btn { margin-top: 10px; }
+
+/* ===== 主导航 tabbar（SPA：#task / #stats） ===== */
+.anime-tabbar { display: flex; gap: 8px; margin-top: auto; }
+.anime-tab {
+  flex: 1; min-height: var(--tap); display: flex; align-items: center; justify-content: center; gap: 6px;
+  text-decoration: none; color: var(--muted); font-size: 14px; font-weight: 600;
+  background: var(--panel); border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.anime-tab svg { width: 20px; height: 20px; }
+.anime-tab:hover { background: var(--surface-2); }
+.anime-tab:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+.anime-tab.active { color: var(--primary); box-shadow: inset 0 -3px 0 var(--primary); }

@@ -4,6 +4,7 @@ description: Use when building creative browser demos with @chenglou/pretext —
 activation: manual
 match: ["pretext", "creative-coding", "typography", "ascii-art", "canvas", "generative", "text-layout", "kinetic-typography"]
 category: creative
+tier: extended
 ---
 
 # Pretext Creative Demos

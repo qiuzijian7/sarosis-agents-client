@@ -4,6 +4,7 @@ description: Search arXiv papers by keyword, author, category, or ID.
 activation: manual
 match: ["arxiv", "research", "papers", "academic", "science", "api"]
 category: research
+tier: extended
 ---
 
 # arXiv Research

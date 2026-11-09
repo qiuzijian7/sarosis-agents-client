@@ -31,6 +31,7 @@ import path from 'node:path';
 
 const CHANNEL = 'src/vs/sessions/contrib/dshHarness/electron-main/dshHarnessChannel.ts';
 const WMS = 'src/vs/platform/windows/electron-main/windowsMainService.ts';
+const FULLWIN = 'src/vs/sessions/contrib/dshHarness/electron-browser/dshFullWindowContribution.ts';
 
 function read(rel: string): string {
 	const abs = path.join(process.cwd(), rel);
@@ -59,7 +60,24 @@ suite('一次启动只开一扇桌面窗口（IDE 不闪）', () => {
 			'旧"按 windowId 判重"的写法不许再作为唯一闸门');
 	});
 
-	test('2) startHidden 必须覆盖启动宽限期（不只是首个窗口）', () => {
+	test('2) ★ !first（别的窗口已认领开窗）必须撤掉本实例的 20s 兜底', () => {
+		// ★★ 2026-11-09 真机（F5 启动约 26s 后 app 自己 `will-quit`，退出码 0）：
+		//   `claimDesktopAutoOpen` 返回 false 的那个渲染实例不负责开窗 ⇒ 它的
+		//   `_desktopWindowOpened` 永远 false。旧代码在该分支直接 return、没撤 20s 闹钟
+		//   ⇒ 20s 后 `_quit('20s 内桌面窗口没有开出来')` 把已经正常显示 desktop 的整个 app 退掉 ✗✗。
+		//   触发场景：多 IDE 窗口 / 渲染进程重载 / 心跳自愈重建贡献 / 多实例 HANDOFF。
+		const src = code(FULLWIN);
+		const at = src.indexOf('if (!first) {');
+		assert.ok(at > 0, '找不到 !first 分支');
+		const body = src.slice(at, at + 1000);
+		assert.match(body, /clearTimeout\(startupWatchdog\)/, '必须显式清掉本实例的 20s 定时器');
+		assert.match(body, /_startupWatchdogCanceled = true/, '必须打撤销标记（定时器已排队时的第二道保险）');
+		assert.match(src, /!this\._desktopWindowOpened && !this\._startupWatchdogCanceled/,
+			'20s 回调本身也必须检查撤销标记');
+		assert.ok(!/const watchdog = setTimeout/.test(src), '不许再出现无法被撤销的裸 const watchdog');
+	});
+
+	test('3) startHidden 必须覆盖启动宽限期（不只是首个窗口）', () => {
 		const src = code(WMS);
 		assert.match(src, /private readonly _appStartedAt = Date\.now\(\);/, '缺少启动时刻字段');
 		assert.match(src, /startHidden: this\._wantsHiddenStart\(\) && \(configuration\.isInitialStartup === true \|\| Date\.now\(\) - this\._appStartedAt < 30_000\)/,

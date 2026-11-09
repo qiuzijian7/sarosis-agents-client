@@ -61,7 +61,24 @@ function baseOf(pkg) {
 		distributionType: p.distribution_type ?? 'bundle',
 		distribution: p.distribution_meta ?? null,
 		permissions: p.permissions ?? null,
+		// ★ 2026-11-09：Bot 组合包的组件摘要。列表侧由服务端冗余 `bot`（或 `manifest.bot`），
+		//   详情侧还能从 versions[].manifest.bot 读到；两者同源，避免「列表没有、详情有」。
+		bot: p.bot ?? p.manifest?.bot ?? botFromTags(p.tags) ?? null,
 	};
+}
+
+/**
+ * ★ 2026-11-09：Bot 组合包的组件摘要从商品 `tags` 兜底还原。
+ * 服务端不会冗余 `bot` 字段（kinds.ts 不在这个仓库），但发布端会在建包时写
+ * `bot:<skills>/<tools>/<mcp>` 这条 tag ⇒ 列表卡片无需改服务端即可显示。
+ * 详情页仍以 versions[].manifest.bot 为准（信息更全）。
+ */
+export function botFromTags(tags) {
+	if (!Array.isArray(tags)) { return null; }
+	const hit = tags.find(t => /^bot:\d+\/\d+\/\d+$/.test(String(t)));
+	if (!hit) { return null; }
+	const parts = String(hit).slice(4).split('/').map(Number);
+	return { skills: parts[0], tools: parts[1], mcpServers: parts[2], fromTags: true };
 }
 
 /**

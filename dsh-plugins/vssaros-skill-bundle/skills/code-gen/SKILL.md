@@ -4,7 +4,8 @@ description: "Generate code based on requirements, specifications, or user descr
 activation: auto
 match: ["code", "generate", "write code", "implement", "coding", "code-gen"]
 category: code
-recommended_tools: ["file_read", "terminal", "file_write"]
+recommended_tools: ["read", "pwsh", "write"]
+tier: core
 ---
 
 You are running the **code-gen** skill.

@@ -497,14 +497,49 @@ check('侧栏 SSR 版（lib/sideview.js）已随工作台删除', !fs.existsSync
 	const { spawnSync } = await import('node:child_process');
 	// ★ 2026-11-03：群聊下线 ⇒ mentions / dispatch-budget / member-policy / owner-policy / relay-policy /
 	//   group-session / group-ops 这几个群专属单测随功能一起删除，不再在此执行。
-	for (const t of ['bindings.test.mjs', 'feishu-adapter.test.mjs', 'feishu-inbound.test.mjs', 'channel-policy.test.mjs', 'pairing.test.mjs', 'dead-letters.test.mjs', 'telegram-adapter.test.mjs', 'discord-adapter.test.mjs', 'wecom-adapter.test.mjs', 'binding-media.test.mjs', 'outbound-media.test.mjs', 'feishu-gateway.test.mjs', 'git-lanes.test.mjs', 'atomic-write.test.mjs', 'im-credentials.test.mjs', 'inbound-state.test.mjs', 'im-session-map.test.mjs', 'feishu-raw-ws.test.mjs', 'im-inbound-lock.test.mjs', 'host-self-watch.test.mjs', 'rooms.test.mjs', 'rooms-restart.test.mjs',
+	for (const t of ['bindings.test.mjs', 'feishu-adapter.test.mjs', 'feishu-inbound.test.mjs', 'channel-policy.test.mjs', 'pairing.test.mjs', 'dead-letters.test.mjs', 'telegram-adapter.test.mjs', 'discord-adapter.test.mjs', 'wecom-adapter.test.mjs', 'binding-media.test.mjs', 'outbound-media.test.mjs', 'feishu-gateway.test.mjs', 'git-lanes.test.mjs', 'atomic-write.test.mjs', 'im-credentials.test.mjs', 'inbound-state.test.mjs', 'im-session-map.test.mjs', 'feishu-raw-ws.test.mjs', 'im-inbound-lock.test.mjs',
+		// ★ 2026-11-09：多飞书应用回归（幂等键按应用 / 辅助键隔离 / 锁原子）必须进 CI，
+		//   原来只在文件自身注释里写了跑法 ⇒ 默认 npm run check 根本不跑它。
+		'feishu-multi-app.test.mjs',
+		'host-self-watch.test.mjs', 'rooms.test.mjs', 'rooms-restart.test.mjs',
 		// ★ 2026-11-06：团队总线（含契约修订 2）、团队步骤记忆（模型提炼）、DS Bot 团队离线导入
-		'team-bus.test.mjs', 'step-memory.test.mjs', 'ds-bot-import.test.mjs']) {
+		'team-bus.test.mjs', 'step-memory.test.mjs', 'ds-bot-import.test.mjs',
+		// ★ 2026-11-09：创建链的纯函数回归 + HTTP 级集成测试（假 ctx 真跑 apply）
+		'create.test.mjs', 'create-http.test.mjs']) {
 		const r = spawnSync(process.execPath, [path.join(HERE, t)], { encoding: 'utf8' });
 		const last = String(r.stdout || '').trim().split('\n').filter(Boolean).pop()
 			|| String(r.stderr || '').slice(0, 120);
 		check(`包内单测 ${t} 通过`, r.status === 0, last);
 	}
+}
+
+/* ── ★ 2026-11-09 多飞书应用防串台（静态守卫；行为回归在 feishu-multi-app.test.mjs）──
+   事故面：两个应用在同一群各收一次同一条 message_id，幂等键若不含应用 ⇒ 第二个永久
+   被判 duplicate；默认网关不打连接身份 ⇒ 改默认应用后用错 token；辅助键只看 chatId。 */
+{
+	const bindingsSrc = fs.readFileSync(path.join(ROOT, 'lib', 'bindings.js'), 'utf8');
+	const indexSrc = fs.readFileSync(path.join(ROOT, 'lib', 'index.js'), 'utf8');
+	const lockSrc = fs.readFileSync(path.join(ROOT, 'lib', 'imInboundLock.js'), 'utf8');
+	check('入站幂等键必须带飞书应用维度（否则第二个应用的消息被判 duplicate 丢掉）',
+		/function inboundKeyOf\(msg, defaultAppId/.test(bindingsSrc) && /\$\{platform\}:\$\{app\}/.test(bindingsSrc));
+	check('默认网关入站必须打上连接身份（不许靠实时默认应用推断）',
+		/appId: String\(msg\?\.appId/.test(indexSrc));
+	check('一键加白 / 删除绑定必须看 appId',
+		/const appId = String\(entry\?\.appId/.test(bindingsSrc)
+		&& /!id && !appId && hits\.length > 1/.test(bindingsSrc));
+	check('入站锁必须原子创建（link / wx），不许 read-then-write',
+		/fs\.link\(tmp, file\)/.test(lockSrc) && /flag: 'wx'/.test(lockSrc));
+	/* ★ 2026-11-09 Bot 设置页「飞书配置」：全局应用池共享，但每个 Bot 的选型必须真正承接。 */
+	const credSrc = fs.readFileSync(path.join(ROOT, 'lib', 'imCredentials.js'), 'utf8');
+	check('Bot 飞书配置：映射持久化 + GET 下发 + set-bot-app 写口',
+		/export async function readBotFeishuApps/.test(credSrc)
+		&& /export async function saveBotFeishuApp/.test(credSrc)
+		&& /botFeishuApps: await readBotFeishuApps\(config\)/.test(indexSrc)
+		&& /action === 'set-bot-app'/.test(indexSrc));
+	check('Bot 选的应用要接到入站路由与出站身份（不能只存不用）',
+		/botApps = null/.test(bindingsSrc) && /botApps\[String\(binding\.targetId/.test(bindingsSrc)
+		&& /bindingAppOf\(binding\) \|\|/.test(bindingsSrc)
+		&& /botApps: async \(\) => readBotFeishuApps\(config\)/.test(indexSrc));
 }
 
 /* ── 群聊功能整体下线（★ 2026-11-03 用户要求「移除群聊功能和 UI 入口」）──────────────────
@@ -598,6 +633,27 @@ check('侧栏 SSR 版（lib/sideview.js）已随工作台删除', !fs.existsSync
 	check('Bots 工作台 React 已删（记忆页签 UI 随之移除）', !fs.existsSync(path.join(ROOT, 'lib/client.agents.js')));
 	check('清单里不再有 vssaros.workbench.floatingActions',
 		!(pkg.vssaros && pkg.vssaros.workbench && 'floatingActions' in pkg.vssaros.workbench));
+}
+
+/* ── 创建 Bot 链（★ 2026-11-09：双根重名 / conflict 语义 / 同步失败可见）──
+   函数级回归在 test/create.test.mjs；这里用 strip() 后的源码钉住「不许退回旧写法」。 */
+{
+	const createSrc = strip(read('lib/create.js'));
+	const coreSrc = strip(read('lib/core/create.js'));
+	const indexSrc = strip(read('lib/index.js'));
+	const teamSrc = strip(read('lib/teamCreate.js'));
+	check('previewAgentDraft 把内置根也纳入重名判据（不许只查自定义根）',
+		/agentsBuiltinRootOf\(config\)/.test(createSrc) && /builtinIds/.test(createSrc));
+	check('validateDraft 返回 conflict，create 用它判 409（不再靠错误文案字符串匹配）',
+		/let conflict = false/.test(coreSrc) && /preview\.conflict \? 409 : 400/.test(createSrc));
+	check('create / update 回 registered，且把 preset 同步失败的原因回给前端',
+		/registered: state\.roster\.includes\(created\.presetId\)/.test(indexSrc)
+		&& /registered: state\.roster\.includes\(updated\.presetId\)/.test(indexSrc)
+		&& /syncError/.test(indexSrc));
+	check('团队建 bot 与 HTTP 写口同口径（也用 conflict 判 409）',
+		/preview\.conflict \? 409 : 400/.test(teamSrc));
+	check('创建链有函数级 + HTTP 级两层回归测试',
+		fs.existsSync(path.join(HERE, 'create.test.mjs')) && fs.existsSync(path.join(HERE, 'create-http.test.mjs')));
 }
 
 console.log(`\n[agents] ${pass} passing / ${fail} failing`);

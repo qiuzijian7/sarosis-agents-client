@@ -5,8 +5,9 @@ whenToUse: 用户要把一组数字变成能直接看的图（KPI 卡、季度�
 activation: auto
 match: ["信息图", "infographic", "数据可视化", "仪表盘", "统计卡片", "生成图表"]
 category: design
-recommended_tools: ["file_read", "file_write", "terminal"]
+recommended_tools: ["read", "write", "pwsh"]
 license: MIT
+tier: core
 ---
 
 # Infographic Builder

@@ -4,6 +4,7 @@ description: Play Pokemon via headless emulator + RAM reads.
 activation: manual
 match: ["pokemon-player", "pokemon player"]
 category: gaming
+tier: extended
 ---
 
 # Pokemon Player

@@ -4,6 +4,7 @@ description: Execute plans via delegate_task subagents (2-stage review).
 activation: auto
 match: ["subagent-driven-development", "subagent driven development", "delegation", "subagent", "implementation", "workflow", "parallel"]
 category: development
+tier: core
 ---
 
 # Subagent-Driven Development

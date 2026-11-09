@@ -1,14 +1,14 @@
 /**
- * VsSaros addition: a Windows npm/pnpm `.cmd` launcher cannot be spawned by Node without a shell, so both the
- * long-lived Feishu event consumer and the TAPD MCP transport resolve it to `node <script>`. Real temporary
- * launchers are used so the exact text the parser reads is the text a package manager writes.
+ * VsSaros addition: a Windows npm/pnpm `.cmd` launcher cannot be spawned by Node without a shell, so the
+ * long-lived Feishu event consumer resolves it to `node <script>`. Real temporary launchers are used so the
+ * exact text the parser reads is the text a package manager writes. The TAPD MCP transport that also used
+ * this resolver was retired in 0.1.81.
  */
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { cliArgv } from '../src/deployment.ts'
-import { nodeCli, TapdError } from '../src/sources/tapd-api.ts'
 
 const dirs: string[] = []
 const tree = (): string => { const dir = mkdtempSync(join(tmpdir(), 'sa-cli-')); dirs.push(dir); return dir }
@@ -46,13 +46,6 @@ describe('a CLI resolved to shell-free argv', () => {
     expect(cliArgv(cmd, '', false)).toEqual([cmd])
     const odd = launcher(dir, '@echo off\necho nothing to parse\n')
     expect(() => cliArgv(odd, '', true)).toThrow(/cannot read/)
-  })
-  it('keeps the TAPD MCP transport on the same resolver, with its own error type', () => {
-    const dir = tree()
-    const cmd = launcher(dir, '@echo off\n"%dp0%\\tool.js" %*\n')
-    expect(nodeCli(cmd, '', true)).toEqual([process.execPath, join(dir, 'tool.js')])
-    const odd = launcher(dir, '@echo off\necho nothing to parse\n')
-    expect(() => nodeCli(odd, '', true)).toThrow(TapdError)
   })
   it('guards the two Host-side callers against spawning the launcher directly', () => {
     const loops = readFileSync(new URL('../src/sources/feishu-loops.ts', import.meta.url), 'utf8')

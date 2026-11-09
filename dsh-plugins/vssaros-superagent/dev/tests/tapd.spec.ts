@@ -1,19 +1,17 @@
 /**
- * VsSaros addition: the TAPD Source. The access layer is checked against TAPD's documented envelopes with a stand-in fetch
- * and a stand-in mcporter; the Source runs in the real runtime against a simulated TAPD. No test talks to TAPD.
+ * VsSaros addition: the TAPD Source. The access layer is checked against TAPD's documented envelopes with a stand-in
+ * fetch; the Source runs in the real runtime against a simulated TAPD. No test talks to TAPD. The retired MCP
+ * transport and intranet member endpoint are asserted absent rather than given stand-ins.
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Commands } from '../src/infra/commands.ts'
+import { readFileSync } from 'node:fs'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { SettingsSchema } from '../src/policy.ts'
 import { changeEndNotices } from '../src/sources/p4-change.ts'
 import { commentTrigger, itemTrigger, makeTapdKind, mentions, pollComments, pollWatch, replyMarker, resolvedConfig, sendTapd, threadItem,
   watchFilter } from '../src/sources/tapd.ts'
-import { itemAddress, itemOf, itemPage, nodeCli, plainText, records, TapdConfigSchema, TapdError, tapdConfigured, tapdInstant, TapdMcp, TapdOpenApi, tapdTime,
+import { itemAddress, itemOf, itemPage, plainText, records, TapdConfigSchema, TapdError, tapdConfigured, tapdInstant, TapdOpenApi, tapdTime,
   watchWorkspace, type TapdApi, type TapdComment, type TapdItem, type TapdType } from '../src/sources/tapd-api.ts'
-import { allMembers, cleanOwner, platformMembers, refreshPlatformMembers, resetPlatformMembers, resolveTapdName } from '../src/sources/tapd-members.ts'
+import { cleanOwner, resolveTapdName } from '../src/sources/tapd-members.ts'
 import type { Ticket } from '../src/core/index.ts'
 import { startRuntime, type Host } from './fixtures/host.ts'
 
@@ -46,8 +44,6 @@ describe('the optional TAPD identity', () => {
 })
 
 describe('saroasis-platform alignment', () => {
-  afterEach(() => resetPlatformMembers())
-
   it('defaults to the GR workspace and lets a watch inherit or override it', () => {
     const inherited = TapdConfigSchema.parse({ watches: [{ name: 'w', type: 'story' }] })
     expect(inherited.workspace).toBe('68880148')
@@ -78,16 +74,23 @@ describe('saroasis-platform alignment', () => {
     expect(itemOf('bug', { current_owner: '张三；李四;' })).toMatchObject({ owners: ['张三', '李四'] })
   })
 
-  it('caches the platform member table and merges it with static mappings', async () => {
-    const base = 'http://platform.example:9999'
-    const fetched = vi.fn(async () => ({ ok: true, json: async () => ({ groups: [{ members: [
-      { user: '邱子鉴;', wecomAlias: 'zijianqiu' }, { user: '张三', wecomAlias: 'zhangsan' }] }] }) }))
-    expect(platformMembers(base)).toBeUndefined()
-    await refreshPlatformMembers(base, fetched as unknown as typeof fetch)
-    expect(fetched).toHaveBeenCalledWith(base + '/api/tapd/members', expect.anything())
-    expect(platformMembers(base)).toEqual([{ alias: 'zijianqiu', name: '邱子鉴' }, { alias: 'zhangsan', name: '张三' }])
-    const config = TapdConfigSchema.parse({ memberApi: base, members: [{ alias: 'bot', name: '机器人' }], agent: 'zijianqiu' })
-    expect(resolveTapdName(config.agent, allMembers(config))).toBe('邱子鉴')
+  it('resolves WeCom aliases from the static mapping only', () => {
+    const config = TapdConfigSchema.parse({ members: [{ alias: 'zijianqiu', name: '邱子鉴' }], agent: 'zijianqiu' })
+    expect(resolveTapdName(config.agent, config.members)).toBe('邱子鉴')
+    expect(resolveTapdName('unknown', config.members)).toBe('unknown')
+    expect(resolvedConfig(config).agent).toBe('邱子鉴')
+  })
+  it('retired the MCP transport and the intranet member endpoint', () => {
+    // History notes in comments may name the retired pieces; the guard is about code, not prose.
+    const code = (path: string) => readFileSync(new URL(`../src/sources/${path}`, import.meta.url), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    const api = code('tapd-api.ts'), members = code('tapd-members.ts'), kind = code('tapd.ts')
+    expect(api).not.toContain('TapdMcp'); expect(api).not.toContain('nodeCli'); expect(api).not.toContain('mcporter')
+    expect(members).not.toContain('/api/tapd/members'); expect(members).not.toContain('platformMembers')
+    expect(kind).not.toContain("key: 'transport'"); expect(kind).not.toContain("key: 'memberApi'")
+    // Older saved settings with those keys must still parse; they are ignored.
+    expect(TapdConfigSchema.parse({ transport: 'mcp', cli: 'mcporter-internal', server: 'tapd', memberApi: 'http://x' }).api)
+      .toBe('https://api.tapd.cn')
   })
 
   it('rejects TAPD\'s Hello-world answer to an unknown API path', () => {
@@ -128,6 +131,44 @@ describe('TAPD data', () => {
   })
 })
 
+describe('TAPD settings dropdown choices', () => {
+  it('fetches projects, workflow statuses and iterations from the Open API', async () => {
+    const urls: string[] = []
+    const fetch = (async (url: string) => {
+      urls.push(url)
+      const body = url.includes('user_participant_projects')
+        ? { status: 1, data: [{ Workspace: { id: '68880148', name: 'GR' } }] }
+        : url.includes('iterations')
+          ? { status: 1, data: [{ Iteration: { id: '77', name: 'Sprint 77' } }] }
+          : { status: 1, data: { new: '新建', resolved: '已解决' } }
+      return new Response(JSON.stringify(body))
+    }) as unknown as typeof globalThis.fetch
+    const api = new TapdOpenApi({ api: 'https://api.tapd.cn', fetch,
+      environment: { TAPD_CLIENT_ID: 'cid', TAPD_CLIENT_SECRET: 'secret' } })
+    expect(await api.choices('workspace', '68880148')).toEqual([{ value: '68880148', label: 'GR' }])
+    expect(await api.choices('iteration', '68880148')).toEqual([{ value: '77', label: 'Sprint 77' }])
+    expect(await api.choices('status', '68880148')).toEqual([{ value: 'new', label: '新建' }, { value: 'resolved', label: '已解决' }])
+    expect(urls[0]).toContain('/workspaces/user_participant_projects')
+    expect(urls[1]).toContain('/iterations')
+    expect(urls.filter(url => url.includes('workflows/status_map')).length).toBe(2)
+  })
+  it('declares a namespaced dropdown for each of the five TAPD fields', () => {
+    const fields = JSON.stringify(makeTapdKind({ context: () => undefined }).fields)
+    expect((fields.match(/"chooseFrom":"workspace"/g) ?? []).length).toBe(2)
+    expect(fields).toContain('"chooseFrom":"agent"')
+    expect(fields).toContain('"chooseFrom":"status"')
+    expect(fields).toContain('"chooseFrom":"iteration"')
+    expect(fields).toContain('读取 TAPD 选项')
+  })
+  it('refreshLabels namespaces the candidates and keeps the watch titles', () => {
+    const src = readFileSync(new URL('../src/sources/tapd.ts', import.meta.url), 'utf8')
+    expect(src).toContain('api.choices')
+    expect(src).toContain("put('agent'")
+    expect(src).toContain('labels[watch.name]')
+    expect(src).toContain('KV.sources.labels(TAPD_SOURCE)')
+  })
+})
+
 describe('the Open API', () => {
   function stand(pages: unknown[][]) {
     const calls: { url: string; init: RequestInit }[] = []
@@ -160,31 +201,6 @@ describe('the Open API', () => {
     await expect(new TapdOpenApi({ api: 'https://api.tapd.cn', fetch: answer(401), environment: env }).items('bug', '1', {})).rejects.toThrow('refused the account')
     await expect(new TapdOpenApi({ api: 'https://api.tapd.cn', fetch: answer(404), environment: env }).items('bug', '1', {})).rejects.toMatchObject({ gone: true })
     await expect(new TapdOpenApi({ api: 'https://api.tapd.cn', environment: {} }).items('bug', '1', {})).rejects.toThrow('DSH_SUPERAGENT_TAPD_USER')
-  })
-})
-
-describe('the MCP server through mcporter-internal', () => {
-  it('calls proxy_execute_tool with the tool and its arguments, and reads the result', async () => {
-    const calls: string[][] = []
-    const commands = { withSignal: () => commands, run: async (program: string, args: string[]) => {
-      calls.push([program, ...args])
-      return JSON.stringify({ content: [{ type: 'text', text: JSON.stringify({ status: 1, data: [{ Story: story }] }) }] })
-    } } as unknown as Commands
-    const items = await new TapdMcp(commands, ['node', 'cli.js'], 'tapd').items('story', '68880148', { id: story.id })
-    expect(items.map(item => item.id)).toEqual([story.id])
-    expect(calls[0]!.slice(0, 4)).toEqual(['node', 'cli.js', 'call', 'tapd.proxy_execute_tool'])
-    const payload = JSON.parse(calls[0]![5]!) as { tool_name: string; tool_args: string }
-    expect(payload.tool_name).toBe('stories_get')
-    expect(JSON.parse(payload.tool_args)).toMatchObject({ workspace_id: '68880148', id: story.id, limit: '200', page: '1' })
-    expect(calls[0]!.slice(6)).toEqual(['--output', 'json'])
-  })
-  it('runs an npm launcher\'s script under node, as Commands runs no .cmd', () => {
-    expect(nodeCli('C:/tools/cli.js', '')).toEqual([process.execPath, 'C:/tools/cli.js'])
-    const dir = mkdtempSync(join(tmpdir(), 'npm-bin-'))
-    try {
-      writeFileSync(join(dir, 'mc.cmd'), '@ECHO off\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\@tencent\\mcporter-internal\\dist\\cli.js" %*\r\n')
-      if (process.platform === 'win32') expect(nodeCli('mc', dir, true)).toEqual([process.execPath, join(dir, 'node_modules', '@tencent', 'mcporter-internal', 'dist', 'cli.js')])
-    } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })
 

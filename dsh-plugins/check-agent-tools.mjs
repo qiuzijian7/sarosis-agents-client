@@ -83,7 +83,7 @@ ok(`dsh 工具名单：官方 ${officialTools.size} 个 + 插件 ${pluginTools.s
 
 // ── 2. dsh 可见的技能目录 ─────────────────────────────────────────
 // ★ P0（2026-11-06）：内置技能真源已迁到 dsh 侧插件包内，路径取单一真源模块。
-import { BUNDLED_SKILL_ROOT } from './scripts/skill-bundle-paths.mjs';
+import { BUNDLED_SKILL_ROOT, USER_SKILL_ROOTS } from './scripts/skill-bundle-paths.mjs';
 const skillDirs = new Set();
 const builtinSkills = BUNDLED_SKILL_ROOT;
 if (exists(builtinSkills)) {
@@ -135,6 +135,50 @@ if (ids.length === 0) {
 // 2026-11-06：tools 支持 `prefix*` 通配与 `!name` / `!prefix*` 排除（vssaros-agents core/agents.js `toolRulesOf`）。
 //   通配必须至少匹配一个真实工具（写错前缀 = 静默什么都不保留）；排除项是「不要」，不要求存在
 //   （典型 `!mcp__*`：MCP 工具因用户而异，离线名单里本来就没有）。
+// 2026-11-09：MCP 工具由 dsh-mcp-client 连接后动态注册成 mcp__<serverName>__<tool>，
+//   不可能出现在 tools-snapshot.json（它只抓插件 apply() 里的 ctx.tools.register）。
+//   ⇒ 可校验的是「server 确实在 dsh 侧声明过」：前缀形状 + 登记在位两条一起守，
+//   写错 server 名或把 cordis.patch.yml 里的行删掉都会在这里判红。
+const MCP_PATCH = path.join(ROOT, 'dsh-plugins', 'vssaros-mcp', 'cordis.patch.yml');
+const mcpServers = new Set();
+const mcpDrift = [];
+if (exists(MCP_PATCH)) {
+	const patch = read(MCP_PATCH);
+	for (const m of patch.matchAll(/serverName:\s*'([A-Za-z0-9_-]{1,32})'/g)) {
+		mcpServers.add(m[1]);
+	}
+	// 手写声明行容易与官方 renderer 漂移（缩进 / args 格式），而多个顶层 insert
+	// 会让 loader 只认第一个、后面的 server 静默消失。⇒ 真调一次 dsh 侧 renderer
+	// 重新渲染，逐行对账，而不是把行内容再抄一份到守卫里形成第二真源。
+	const { renderMcpRows, mcpRowId } = await import('./vssaros-mcp/lib/core/mcpRows.js');
+	const inserts = (patch.match(/^- insert:\s*$/gm) || []).length;
+	if (inserts !== 1) {
+		mcpDrift.push(`cordis.patch.yml 有 ${inserts} 个顶层 - insert:（必须恰好 1 个，多个会让后面的 server 静默消失）`);
+	}
+	for (const name of mcpServers) {
+		const scoped = (field) => new RegExp(`serverName:\\s*'${name}'[\\s\\S]*?${field}:\\s*'([^']+)'`).exec(patch)?.[1];
+		const transport = scoped('transport');
+		const command = scoped('command');
+		const argsRaw = new RegExp(`serverName:\\s*'${name}'[\\s\\S]*?args:\\s*\\[([^\\]]*)\\]`).exec(patch)?.[1];
+		if (!transport || (transport === 'stdio' && !command)) {
+			mcpDrift.push(`MCP server ${name} 缺 transport / command`);
+			continue;
+		}
+		const server = { serverName: name, transport, command };
+		if (argsRaw !== undefined) { server.args = [...argsRaw.matchAll(/'([^']*)'/g)].map((m) => m[1]); }
+		const expected = renderMcpRows([server], { header: [] }).trimEnd().split('\n').slice(1).filter((l) => l.trim());
+		const lines = new Set(patch.split(/\r?\n/));
+		const missing = expected.filter((l) => !lines.has(l));
+		if (missing.length) { mcpDrift.push(`MCP server ${name} 的行与官方 renderer 不一致：${missing[0]}`); }
+		if (!patch.includes(`- id: ${mcpRowId(name)}`)) { mcpDrift.push(`MCP server ${name} 的行 id 不是 ${mcpRowId(name)}`); }
+	}
+}
+if (mcpDrift.length) {
+	for (const d of mcpDrift) { fail(d); }
+} else {
+	ok(`dsh 侧已声明的 MCP server：${mcpServers.size} 个（${[...mcpServers].join(', ') || '无'}），行格式与官方 renderer 一致`);
+}
+
 const badTools = [];
 for (const list of toolLists) {
 	for (const name of list.items) {
@@ -144,6 +188,11 @@ for (const list of toolLists) {
 		}
 		if (name.endsWith('*')) {
 			const prefix = name.slice(0, -1);
+			const mcp = /^mcp__([a-z0-9_]+)__$/.exec(prefix);
+			if (mcp) {
+				if (!mcpServers.has(mcp[1])) { badTools.push(`${name}（MCP server 未在 vssaros-mcp/cordis.patch.yml 声明）`); }
+				continue;
+			}
 			if (!/^[a-z][a-z0-9_]*$/.test(prefix) || ![...knownTools].some((tool) => tool.startsWith(prefix))) { badTools.push(name); }
 			continue;
 		}
@@ -155,6 +204,28 @@ if (badTools.length === 0) {
 } else {
 	const uniq = [...new Set(badTools)].sort();
 	fail(`tools[] 里有 dsh 不认识的名字（⇒ allowlist 静默失效，该 agent 实际拿到全量工具）：${uniq.join('、')}`);
+}
+
+// ── 4b. 判据 C：能力预算（2026-11-08 P1）────────────────────────────
+// 「全给再 deny」时代没有上限：pack 加法必须有硬边界，否则默认面会重新膨胀。
+{
+	const { PACKS, PACK_TOOL_BUDGET, expandPacks, toolBudgetProblems } = await import('./vssaros-agents/lib/core/packs.js');
+	const packNames = Object.keys(PACKS);
+	const badPacks = [];
+	const phantom = [];
+	for (const name of packNames) {
+		const expanded = expandPacks([name]);
+		if (expanded.unknown.length) { badPacks.push(name); }
+		for (const tool of expanded.tools) {
+			if (!knownTools.has(tool)) { phantom.push(`${name}:${tool}`); }
+		}
+	}
+	const budgetHits = toolBudgetProblems(Array.from({ length: PACK_TOOL_BUDGET + 1 }, (_, i) => `x${i}`));
+	if (badPacks.length === 0 && phantom.length === 0 && budgetHits.length === 1) {
+		ok(`能力预算守卫：${packNames.length} 个 pack 的工具名都真实、超 ${PACK_TOOL_BUDGET} 个会判红`);
+	} else {
+		fail(`能力预算守卫异常：未知包=[${badPacks.join(',')}] 幽灵工具=[${phantom.join(',')}] 预算命中=${budgetHits.length}`);
+	}
 }
 
 // ── 5. 判据 B：skills 必须在 dsh 可见技能目录里 ────────────────────
@@ -169,6 +240,94 @@ if (badSkills.length === 0) {
 } else {
 	const uniq = [...new Set(badSkills)].sort();
 	fail(`skills[] 里有 dsh 看不见的技能（⇒ 那个技能不会注入，能力静默缺失）：${uniq.join('、')}`);
+}
+
+// ── 5. 仓库内 .agent.md 的 tools/skills 名单（2026-11-09 全量排查）──────
+// 自定义 agent / Bots 工作台 bot 就是 <dataRoot>/agents/<id>/.agent.md，
+// 与内置 agent 走同一套 wanted ∩ known allowlist，但此前完全没有守卫。
+// 用户数据根是本机状态 ⇒ 只报告不判失败；仓库内的产物与 doc 样例硬校验。
+function agentMdLists(text) {
+	const lines = String(text ?? '').split(/\r?\n/);
+	const out = { tools: [], skills: [] };
+	if (lines[0]?.trim() !== '---') { return out; }
+	let field = null;
+	for (let i = 1; i < lines.length; i++) {
+		const line = lines[i];
+		if (line.trim() === '---') { break; }
+		const head = /^\s*(tools|skills):\s*(.*)$/.exec(line);
+		if (head) {
+			field = head[1];
+			const inline = head[2].trim();
+			if (inline.startsWith('[')) {
+				out[field] = [...inline.matchAll(/['"]([^'"]+)['"]/g)].map((m) => m[1]);
+				field = null;
+			}
+			continue;
+		}
+		const item = /^\s*-\s+([A-Za-z0-9_.!*:-]+)\s*$/.exec(line);
+		if (item && field) { out[field].push(item[1]); continue; }
+		if (line.trim() && !/^\s*#/.test(line)) { field = null; }
+	}
+	return out;
+}
+
+function badAgentMdNames(lists) {
+	const bad = [];
+	for (const name of lists.tools) {
+		if (name.startsWith('!')) { continue; }
+		if (name.endsWith('*')) {
+			const prefix = name.slice(0, -1);
+			const mcp = /^mcp__([a-z0-9_]+)__$/.exec(prefix);
+			if (mcp) { if (!mcpServers.has(mcp[1])) { bad.push(`${name}（MCP server 未声明）`); } continue; }
+			if (![...knownTools].some((tool) => tool.startsWith(prefix))) { bad.push(`${name}（前缀无匹配）`); }
+			continue;
+		}
+		if (!knownTools.has(name)) { bad.push(name); }
+	}
+	for (const name of lists.skills) {
+		if (!skillDirs.has(name)) { bad.push(name); }
+	}
+	return bad;
+}
+
+const agentMdFiles = [];
+const builtinAgentsDir = path.join(ROOT, 'resources', '.agents', 'agents');
+if (exists(builtinAgentsDir)) {
+	for (const d of fs.readdirSync(builtinAgentsDir, { withFileTypes: true })) {
+		const file = path.join(builtinAgentsDir, d.name, '.agent.md');
+		if (exists(file)) { agentMdFiles.push(file); }
+	}
+}
+const docDir = path.join(ROOT, 'doc');
+if (exists(docDir)) {
+	for (const f of fs.readdirSync(docDir)) {
+		if (f.endsWith('.agent.md')) { agentMdFiles.push(path.join(docDir, f)); }
+	}
+}
+for (const file of agentMdFiles) {
+	const bad = badAgentMdNames(agentMdLists(read(file)));
+	if (bad.length) { fail(`${path.relative(ROOT, file).replace(/\\/g, '/')} 的 tools/skills 名单无效：${bad.join(', ')}`); }
+}
+if (agentMdFiles.length === 0) {
+	fail('一份 .agent.md 都没扫到（路径漂移 ⇒ 守卫空跑）');
+} else {
+	ok(`仓库内 ${agentMdFiles.length} 份 .agent.md 的 tools/skills 名单都有效`);
+}
+
+// 用户数据根：只报告，不把本机状态写进 CI 判据。
+let userHints = 0;
+for (const skillRoot of USER_SKILL_ROOTS) {
+	const agentsRoot = path.join(path.dirname(skillRoot), 'agents');
+	if (!exists(agentsRoot)) { continue; }
+	for (const d of fs.readdirSync(agentsRoot, { withFileTypes: true })) {
+		const file = path.join(agentsRoot, d.name, '.agent.md');
+		if (!exists(file)) { continue; }
+		const bad = badAgentMdNames(agentMdLists(read(file)));
+		if (bad.length && userHints < 5) {
+			console.log(`  提示（用户 agent，不判失败）${path.basename(path.dirname(file))}：${bad.join(', ')}`);
+			userHints += 1;
+		}
+	}
 }
 
 console.log(problems === 0

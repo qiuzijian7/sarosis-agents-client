@@ -4,6 +4,7 @@ description: Delegate coding to Claude Code CLI (features, PRs).
 activation: manual
 match: ["claude-code", "claude code", "coding-agent", "claude", "anthropic", "code-review", "refactoring"]
 category: ai-agents
+tier: extended
 ---
 
 # Claude Code — Hermes Orchestration Guide

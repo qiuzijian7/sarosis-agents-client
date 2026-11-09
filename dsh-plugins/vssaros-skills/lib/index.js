@@ -21,7 +21,69 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseFrontmatter, skillFromFile, summarizeCatalog, toCandidate, toDefinition, VSAROS_SKILL_PROVIDER } from './core/skills.js';
+import { parseFrontmatter, skillFromFile, summarizeCatalog, toCandidate, toDefinition, VSAROS_SKILL_PROVIDER, catalogSummaryLine } from './core/skills.js';
+// ★ 2026-11-08（P0）：预算纯函数下沉（不 import IDE 侧退役的 skillInjectionBudget.ts）+
+//   agent 的 skills:[] 真绑定（按 options.scope 读 .agent.md，缺省全量语义不变）。
+import { SKILL_BODY_MAX, SKILL_TOTAL_MAX, SKILL_CATALOG_MAX_CHARS, planCatalogLines } from './core/skillBudget.js';
+// ★ 2026-11-08 P1：长结果富媒体（前 N 行 + 完整内容路径，不把截断说成全文）
+import { clipLongOutput, longOutputNote } from './core/longOutput.js';
+import { agentIdOfPreset, filterSkillsForAgent, skillSubsetFor, ownerBotOfSkillMd } from './core/agentSkills.js';
+// ★ 2026-11-08 P2：tier 分级（目录只列 core / extended 走 skill_search）+ 随包技能检索源。
+//   随包 173 个由独立 provider 提供，snapshot 的 toSummary 丢 tier ⇒ 用自有只读索引；
+//   skill_search 原本只扫用户技能目录，不把随包加进来，133 个 extended 会彻底失联。
+import { SKILL_CORE_LIMIT, bundledRootFromPackage, bundledRootFromRepo, bundledTierIndex, partitionCatalog, extendedHint } from './core/bundledSkills.js';
+// ★ 2026-11-08 换架构：能力库 + 按 scope 收窄的随包 provider（参考 DS Bot 的 attach 模型）。
+//   官方 `dsh-tool-skill` 的目录 = `snapshot().filter(isModelInvocable)`，所以我们不改消息、
+//   不改 digest、不碰基座行，只让未 attach 的技能 `modelInvocable:false`。
+import { createBundledProvider, readBundledSkillBody } from './core/bundledProvider.js';
+import { createSkillWriteService, SKILL_WRITE_SERVICE_NAME } from './core/skillWriteService.js';
+import { buildCapabilityLibrary, parseAgentAttachments, attachmentsForAgent, expandAttachments, DEFAULT_CAPABILITY_PACK } from './core/capabilityLibrary.js';
+import { searchCapabilities, renderCapabilityRows, createCapabilityAttachments, attachProblems, CAPABILITY_SEARCH_MAX, CAPABILITY_ATTACH_MAX } from './core/capabilityTools.js';
+/** 随包 tier 索引（进程内一次，插件加载时解析包根；失败则退回仓库根，守卫可断言）。 */
+const BUNDLED_TIER_INDEX = bundledTierIndex(bundledRootFromPackage() ?? bundledRootFromRepo()).index;
+/** 能力库（name → { tier, path, description }）；由 BUNDLED_TIER_INDEX 派生，不复制身份状态。 */
+const CAPABILITY_LIBRARY = buildCapabilityLibrary(BUNDLED_TIER_INDEX);
+/** 会话级临时挂载（`capability_attach` 写、bundledProvider 读）；不持久化、不跨会话。 */
+const SESSION_ATTACHMENTS = createCapabilityAttachments();
+/** provider 的 invalidate 句柄：attach 后让官方 registry 重取候选集 ⇒ digest 变 ⇒ 官方自己重发目录。 */
+let invalidateBundled = null;
+
+/**
+ * ★ 2026-11-08 换架构：`vssaros-agents` 暴露的「按 preset 查 agent 声明」服务。
+ *   同步直读在前、`ctx.inject` 兜底在后 —— 与同文件 `vssarosFoundation` 同款，避免加载顺序竞态。
+ *   `null` ⇒ 服务没就绪，provider 退回「读单根文件」的旧路径（不会让技能消失）。
+ */
+let agentDeclarationService = null;
+/** ★ 2026-11-09：导出给 `check-skill-scope.mjs` 真跑（守卫此前用 stub，漏掉下面两条兜底分支 ⇒ 假绿）。 */
+export function bindAgentDeclarations(svc) {
+	if (svc && typeof svc.attachmentsOf === 'function') { agentDeclarationService = svc; }
+}
+export function attachmentsFromAgentService(preset, dataRoot, library, idOf) {
+	const agentId = idOf(preset);
+	if (!agentId) { return { names: null, problems: [], agentId: '', declared: false }; }
+	const svc = agentDeclarationService;
+	if (!svc) {
+		return attachmentsForAgent(preset, dataRoot, library, idOf, parseAgentAttachments);
+	}
+	// 异步服务：provider 侧会 await
+	return Promise.resolve(svc.attachmentsOf(preset)).then((decl) => {
+		if (!decl || !decl.declared) {
+			// ★ 2026-11-09 真机事故：`expandAttachments()` 返回 `{ names: Set, problems: [] }`。
+			//   旧代码把整个对象塞进 `names` ⇒ provider 的 `attached.has()` 抛 TypeError ⇒
+			//   官方 registry 把 `vssaros-bundled` 整个 skip ⇒ 173 个随包技能全丢。
+			//   **必须取 `.names`**，下面 catch 分支同。
+			const fallback = expandAttachments([DEFAULT_CAPABILITY_PACK], [], library);
+			return { names: fallback.names, problems: fallback.problems, agentId, declared: false };
+		}
+		const caps = decl.capabilities?.length ? decl.capabilities : [DEFAULT_CAPABILITY_PACK];
+		const result = expandAttachments(caps, decl.skills, library);
+		return { names: result.names, problems: result.problems, agentId, declared: true };
+	}).catch((error) => {
+		console.warn(`[vssaros-skills] attachmentsOf 失败，退回缺省 core：${String(error?.message ?? error)}`);
+		const fallback = expandAttachments([DEFAULT_CAPABILITY_PACK], [], library);
+		return { names: fallback.names, problems: fallback.problems, agentId, declared: false };
+	});
+}
 import { bindFoundation } from './foundationRef.js';
 import { rankSkills, SKILL_SEARCH_DEFAULT_LIMIT, SKILL_SEARCH_MAX_LIMIT } from './core/skillSearch.js';
 
@@ -3854,6 +3916,37 @@ export function installSkillAutoload(ctx, config, deps = {}) {
 					const createUserMessage = deps.createUserMessage ?? await loadCreateUserMessage();
 					if (!createUserMessage) { return decision; }
 					const entries = skills.map(s => ({ name: s.name, description: catalogDescriptionOf(s.description) }));
+					// ★ 2026-11-08（P2）：分级而非删减。`<available_skills>` 每轮只列 core（≤40），
+					//   extended 折叠成一行提示，由 `skill_search` BM25 命中后取全文。
+					//   agent 在 .agent.md 的 skills:[] 里**显式点名**的技能绕过 tier（绑定不能被分级抹掉）。
+					// 17.1 P1：并入 preset 声明（含能力包展开）登记的技能；`agentIdOfPreset` 与 scope 的几个
+					// 候选 id 都查一遍，不同 dsh 版本的 scope 形状不齐也能命中。
+					const pinned = new Set([
+						...(skillSubsetFor({ scope: agent }, dataRootOf(config)) ?? []),
+						...(activeSkillWriteService?.pinnedFor(agent?.id, agent?.session?.id,
+							agentIdOfPreset(agent?.session?.header?.agentPreset)) ?? []),
+					]);
+					const partition = partitionCatalog(entries, BUNDLED_TIER_INDEX, pinned.size ? pinned : null);
+					const listed = partition.core.slice(0, SKILL_CORE_LIMIT);
+					const tierOmitted = partition.extended.length + Math.max(0, partition.core.length - listed.length);
+					const visible = new Set(listed.map(entry => entry.name));
+					// ★ 2026-11-08（P0）：activation: always 真承接 —— 清单里给常驻技能一行摘要（不是全文）。
+					//   snapshot 的 toSummary() 丢掉 activation ⇒ 必须走自有 scanSkills（与 skill_context 同一条路）。
+					//   同一条 user 消息、同一个 <available_skills> ⇒ 不产生第二份技能列表、同一技能不出现两行。
+					const alwaysNames = new Set();
+					try {
+						const own = await scanSkills(skillsRootOf(config), signal);
+						for (const skill of own.skills) {
+							if (skill?.activation === 'always' && visible.has(skill.name)) { alwaysNames.add(skill.name); }
+						}
+					} catch { /* 目录读不动就只发原目录，不因摘要阻断会话 */ }
+					const lineOf = entry => alwaysNames.has(entry.name)
+						? catalogSummaryLine(entry, { always: true })
+						: `- \`${entry.name}\`: ${escapeCatalogText(entry.description)}`;
+					const ordered = [...listed.filter(entry => alwaysNames.has(entry.name)), ...listed.filter(entry => !alwaysNames.has(entry.name))];
+					const budgeted = planCatalogLines(ordered.map(lineOf), SKILL_CATALOG_MAX_CHARS);
+					const activeNote = extendedHint(tierOmitted + budgeted.omitted, 0);
+					const noteLines = activeNote ? [activeNote] : [];
 					const message = createUserMessage({
 						content: [{
 							type: 'text',
@@ -3862,7 +3955,8 @@ export function installSkillAutoload(ctx, config, deps = {}) {
 								'A skill is a reusable set of task-specific instructions. The following skills are available in this session:',
 								'',
 								'<available_skills>',
-								...entries.map(entry => `- \`${entry.name}\`: ${escapeCatalogText(entry.description)}`),
+								...budgeted.kept,
+								...noteLines,
 								'</available_skills>',
 								'',
 								'If the user names a skill, or the task clearly matches a skill\'s description, call the `skill` tool with the exact skill name before taking task actions. Load all applicable skills, then follow their full instructions. This catalog contains summaries only; do not infer or follow a skill\'s instructions until it has been loaded.',
@@ -3874,7 +3968,7 @@ export function installSkillAutoload(ctx, config, deps = {}) {
 					});
 					catalogPublished.add(agent);
 					const office = entries.map(e => e.name).filter(n => /^office/.test(n));
-					const line = `catalog-fallback session=${sid} preset=${agent?.session?.header?.agentPreset ?? '?'} published entries=${entries.length} office=[${office.join(',')}] history=${inHistory === undefined ? 'unknown' : 'none'}`;
+					const line = `catalog-fallback session=${sid} preset=${agent?.session?.header?.agentPreset ?? '?'} published core=${listed.length} extended=${partition.extended.length} always=${alwaysNames.size} omitted=${budgeted.omitted} chars=${budgeted.chars} office=[${office.join(',')}] history=${inHistory === undefined ? 'unknown' : 'none'}`;
 					void logAutoload(config, line, deps);
 					try { ctx.logger?.info?.(`[skill-catalog] ${line}`); } catch { /* 忽略 */ }
 					return { ...decision, messages: [...current, message] };
@@ -4003,7 +4097,29 @@ export function installSkillAutoload(ctx, config, deps = {}) {
 	});                // ← 闭合最外层 ctx.effect(() => …)
 }
 
+/** 17.1 P1：插件生命周期内的共享实例；目录发布器在 `installSkillAutoload` 里按 scope 读它。 */
+let activeSkillWriteService = null;
+/** 供守卫/单测读回当前服务（不写盘、不依赖 cordis）。 */
+export function skillWriteService() { return activeSkillWriteService; }
+
 export function apply(ctx, config = {}) {
+	// ★ 17.1 P1（2026-11-09）：进程内技能写服务。preset 声明的 `skills:`（含能力包展开）
+	//   由 vssaros-agents 的 applyPersona 调 `pin` 登记，目录发布器按 agent scope 取回 ⇒
+	//   「你的技能」不再靠每 60 秒扫盘拼进人设（ownedSkillsText 退出主链路）。
+	activeSkillWriteService = createSkillWriteService({
+		skillsRoot: () => { try { return skillsRootOf(config); } catch { return ''; } },
+		invalidate: () => { try { invalidateBundled?.(); } catch { /* noop */ } },
+	});
+	try { ctx.provide?.(SKILL_WRITE_SERVICE_NAME, activeSkillWriteService); } catch { /* 老宿主没有 provide ⇒ 同进程直读兜底 */ }
+	// ★ 换架构：绑定 `vssarosAgents.attachmentsOf`（双根 agent 声明的唯一真源）。
+	{
+		let ready = null;
+		try { ready = ctx.get?.('vssarosAgents') ?? ctx.vssarosAgents ?? null; } catch { /* 探针假 ctx 会抛 */ }
+		if (ready) { bindAgentDeclarations(ready); }
+		ctx.inject(['vssarosAgents'], child => {
+			try { bindAgentDeclarations(child.vssarosAgents ?? null); } catch { /* noop */ }
+		});
+	}
 	// 重构 1.3：绑定 foundation 共享服务（dataRoot/dshHome/pageShell/lock 的真源）。
 	{
 		// 同步直读在前：有插件在 apply 的**同步段**就建 store（inject 回调是异步的，会来不及 ✗）。
@@ -4167,6 +4283,102 @@ export function apply(ctx, config = {}) {
 	//   · `skill_search` 只读 ⇒ **不拦**（每次都弹窗只会造成审批疲劳 ✓）；
 	//   · `skill_manage` **写** ⇒ 已由上面那把闸拦 ✓（类级判据：写数据的工具必须有闸 ✓）。
 		const definitions = [{
+			// ★ 2026-11-08 换架构 / L3：能力库检索。与 `skill_search` 的分工 ——
+			//   skill_search 是 BM25 排序找"最相关几条"；capability_search 是带 tier/可见状态的
+			//   有界清单，专门回答"还有哪些技能没列在目录里"。两者语料同为 173 + 用户技能。
+			name: 'capability_search',
+			description: '检索能力库（含目录未列出的扩展技能），返回名字、tier、是否已可见。按任务关键词查；要取完整正文用 read_skill，要让技能常驻本会话用 capability_attach。',
+			parameters: {
+				type: 'object',
+				properties: {
+					query: { type: 'string', description: '关键词或任务描述；空查询返回全部（仍受条数上限约束）' },
+					limit: { type: 'integer', description: `返回条数上限 1–${CAPABILITY_SEARCH_MAX}（默认 ${CAPABILITY_SEARCH_MAX}）` },
+				},
+				required: ['query'],
+			},
+			output: {
+				schema: {
+					type: 'object',
+					properties: {
+						total: { type: 'integer' },
+						items: {
+							type: 'array',
+							items: {
+								type: 'object',
+								properties: {
+									name: { type: 'string' },
+									description: { type: 'string' },
+									tier: { type: 'string' },
+									attached: { type: 'boolean' },
+								},
+								required: ['name', 'tier', 'attached'],
+							},
+						},
+						omitted: { type: 'integer' },
+					},
+					required: ['total', 'items', 'omitted'],
+				},
+				render: (_args, value) => [{ type: 'text', text: renderCapabilityRows(value) }],
+			},
+			isConcurrencySafe: () => true,
+			execute: async (params, exec) => {
+				const query = String(params?.query ?? '').trim();
+				const preset = exec?.agent?.session?.header?.agentPreset ?? exec?.agent?.header?.agentPreset ?? '';
+				const sessionId = exec?.agent?.session?.id ?? exec?.agent?.id ?? '';
+				let attached = null;
+				try {
+					const decl = await attachmentsFromAgentService(preset, dataRootOf(config), CAPABILITY_LIBRARY, agentIdOfPreset);
+					attached = decl?.names ?? null;
+					const extra = SESSION_ATTACHMENTS.namesFor(sessionId);
+					if (attached instanceof Set && extra.size) { attached = new Set([...attached, ...extra]); }
+				} catch { /* 声明读失败 ⇒ 不标可见状态，不影响检索 */ }
+				return searchCapabilities(CAPABILITY_LIBRARY, attached, query, params?.limit);
+			},
+		}, {
+			// ★ `capability_attach` 只改**当前会话内存**，不写 .agent.md、不落盘、不影响别的 agent
+			//   ⇒ 不属"写用户数据"，按类级判据不需审批弹窗（与 skill_manage 的区别写在类级注释里）。
+			name: 'capability_attach',
+			description: '把能力库里的一个技能临时挂到本会话，让它出现在 `<available_skills>` 目录里。只影响当前会话、不写配置文件、重启即失效；每会话上限 40 个。',
+			parameters: {
+				type: 'object',
+				properties: {
+					name: { type: 'string', description: '能力库里的技能名（用 capability_search 查准确名字）' },
+				},
+				required: ['name'],
+			},
+			output: {
+				schema: {
+					type: 'object',
+					properties: {
+						ok: { type: 'boolean' },
+						name: { type: 'string' },
+						message: { type: 'string' },
+						attachedCount: { type: 'integer' },
+					},
+					required: ['ok', 'message'],
+				},
+				render: (_args, value) => [{ type: 'text', text: value.message }],
+			},
+			isConcurrencySafe: () => false,
+			execute: async (params, exec) => {
+				const name = String(params?.name ?? '').trim();
+				const issues = attachProblems(name, CAPABILITY_LIBRARY);
+				if (issues.length) { return { ok: false, name, message: issues.join('；'), attachedCount: 0 }; }
+				const sessionId = exec?.agent?.session?.id ?? exec?.agent?.id ?? '';
+				if (!sessionId) {
+					return { ok: false, name, message: '拿不到当前会话 id，无法做会话级挂载（改用 .agent.md 的 capabilities: 做永久绑定）', attachedCount: 0 };
+				}
+				const result = SESSION_ATTACHMENTS.attach(sessionId, name);
+				if (result === 'full') {
+					return { ok: false, name, message: `本会话已挂满 ${CAPABILITY_ATTACH_MAX} 个技能；改用 capability_attach 前先 detach，或写进 .agent.md 的 capabilities:`, attachedCount: CAPABILITY_ATTACH_MAX };
+				}
+				// 让官方 registry 重新 collect ⇒ 官方目录自己重发（我们不改任何消息）
+				try { invalidateBundled?.(); } catch { /* invalidate 失败不阻断挂载 */ }
+				const count = SESSION_ATTACHMENTS.namesFor(sessionId).size;
+				const action = result === 'exists' ? '本来就已挂载' : '已挂载到本会话';
+				return { ok: true, name, message: `\`${name}\` ${action}（本会话共 ${count} 个临时挂载）；下一步的 <available_skills> 会包含它。重启或新会话后失效。`, attachedCount: count };
+			},
+		}, {
 			name: 'skill_search',
 			description: '按任务描述检索已安装的技能（BM25 排序），返回最相关的几条及其 skill id。任务是"可能已有专门流程"时**先检索**，再用原生 `skill` 工具按 id 取完整正文——不要凭描述猜。',
 			parameters: {
@@ -4187,10 +4399,12 @@ export function apply(ctx, config = {}) {
 							type: 'array',
 							items: {
 								type: 'object',
-								properties: { id: { type: 'string' }, name: { type: 'string' }, description: { type: 'string' }, score: { type: 'number' }, skillDir: { type: 'string' } },
+								properties: { id: { type: 'string' }, name: { type: 'string' }, description: { type: 'string' }, score: { type: 'number' }, skillDir: { type: 'string' }, tier: { type: 'string' } },
 								required: ['id', 'name', 'score'],
 							},
 						},
+						truncated: { type: 'boolean' },
+						attachmentPath: { type: 'string' },
 					},
 					required: ['count', 'items'],
 				},
@@ -4204,14 +4418,20 @@ export function apply(ctx, config = {}) {
 				//   动它就要重生成快照（而快照当前正被别的改动弄漂移 ✗，不该混进来）。
 				render: (_args, value) => {
 					if (!value.count) {
-						return [{ type: 'text', text: '技能目录里没有与查询相关的技能（可用原生 skill 工具查看全部）。' }];
+						return [{ type: 'text', text: '技能目录里没有与查询相关的技能（换个关键词再试 skill_search）。' }];
 					}
 					const lines = value.items.map(item => `- ${item.id}（${item.score.toFixed(2)}）skillDir: ${item.skillDir || '(未知)'}`);
+					// ★ 2026-11-08 换架构：未 attach 的 extended 技能 modelInvocable:false，
+					//   原生 `skill` 工具会拒绝加载 ⇒ 统一引导到 `read_skill`（它直读能力库文件，173 个全可达）。
+					//   只改 render、不动 description（工具快照抓 descriptionHash，改描述就要重生成）。
+					const header = `命中 ${value.count} 条（按 id 用 \`read_skill\` 取正文；目录未列出的扩展技能也能这样加载）：\n`;
+					const tail = '\n技能内的脚本一律用上面 skillDir 的**绝对路径**调用：进程 cwd 是会话工作区、不是技能目录，'
+						+ '照 SKILL.md 里的相对路径（如 `node bin/x.mjs`）直接跑会报"找不到模块"✗。';
+					// ★ 2026-11-08 P1：命中过多时只留前 N 行，并明说去哪里取完整清单
+					const clipped = clipLongOutput(lines.join('\n'), { attachmentPath: value.attachmentPath });
 					return [{
 						type: 'text',
-						text: `命中 ${value.count} 条（按 id 用原生 skill 工具取正文）：\n${lines.join('\n')}\n`
-							+ '技能内的脚本一律用上面 skillDir 的**绝对路径**调用：进程 cwd 是会话工作区、不是技能目录，'
-							+ '照 SKILL.md 里的相对路径（如 `node bin/x.mjs`）直接跑会报"找不到模块"✗。',
+						text: header + clipped.preview + longOutputNote(clipped) + (clipped.truncated ? '' : tail),
 					}];
 				},
 			},
@@ -4230,7 +4450,23 @@ export function apply(ctx, config = {}) {
 					//（推导与边界见 `store.js` 的 `skillDirOf`，那里有事故缘由 ✓）。
 					skillDir: skillDirOf(skill.path),
 				}));
-				const items = rankSkills(skills, query, typeof params?.limit === 'number' ? params.limit : SKILL_SEARCH_DEFAULT_LIMIT);
+				// ★ 2026-11-08 P2：把随包 173 个（尤其 133 个 extended）纳入 BM25 语料。
+				//   不先 filter 再 rank —— 那会改变 totalDocs/avgDocLen 让分数漂移；按同名去重后整表一起排，
+				//   用户技能同名优先（与官方 first-wins 同口径）。
+				const seen = new Set(skills.map(skill => skill.id));
+				for (const [name, entry] of BUNDLED_TIER_INDEX) {
+					if (seen.has(name)) { continue; }
+					skills.push({ id: name, name, description: entry.description ?? '', skillDir: dirname(entry.path) });
+					seen.add(name);
+				}
+				const dirs = new Map(skills.map(skill => [skill.id, skill.skillDir]));
+				const ranked = rankSkills(skills, query, typeof params?.limit === 'number' ? params.limit : SKILL_SEARCH_DEFAULT_LIMIT);
+				// rankSkills 只回 id/name/description/score ⇒ 把 skillDir 与 tier 补回去（render 要显示绝对路径）。
+				const items = ranked.map(item => ({
+					...item,
+					skillDir: dirs.get(item.id) ?? '',
+					tier: BUNDLED_TIER_INDEX.get(item.id)?.tier ?? 'core',
+				}));
 				return { count: items.length, items };
 			},
 		}, {
@@ -4340,14 +4576,16 @@ export function apply(ctx, config = {}) {
 						skillDir: { type: 'string' },
 						supportFiles: { type: 'array', items: { type: 'string' } },
 						error: { type: 'string' },
+						truncated: { type: 'boolean' },
+						attachmentPath: { type: 'string' },
 					},
 				},
-				render: (_args, value) => [{
-					type: 'text',
-					text: value.ok
-						? `# ${value.name}（${value.id}）\n\n${String(value.content ?? '').slice(0, 2000)}${String(value.content ?? '').length > 2000 ? '\n\n…（截断）' : ''}`
-						: `读技能失败：${value.error ?? '未知原因'}`,
-				}],
+				render: (_args, value) => {
+					if (!value.ok) { return [{ type: 'text', text: `读技能失败：${value.error ?? '未知原因'}` }]; }
+					// ★ 2026-11-08 P1：正文超阈值 ⇒ 前 N 行 + 技能文件绝对路径（完整内容在那儿）
+					const clipped = clipLongOutput(value.content, { attachmentPath: value.skillDir || value.path });
+					return [{ type: 'text', text: `# ${value.name}（${value.id}）\n\n${clipped.preview}${longOutputNote(clipped)}` }];
+				},
 			},
 			isConcurrencySafe: () => true,  // 只读 ✓
 			execute: async (params) => {
@@ -4356,25 +4594,37 @@ export function apply(ctx, config = {}) {
 				const supportPath = String(params?.path ?? '').trim();
 				const scan = await scanSkills(skillsRootOf(config));
 				// 按 id（目录名）或 name（frontmatter）找
-				const skill = scan.skills.find(s => s.id === skillId || s.name === skillId);
+				let skill = scan.skills.find(s => s.id === skillId || s.name === skillId);
+				// ★ 换架构：随包 173 个不在用户技能目录里，但 `skill_search` 能搜到 ⇒
+				//   这里必须给一条取全文的路，否则 extended 技能「可检索但读不到」。
+				let bundledBody;
 				if (!skill) {
-					return { ok: false, error: `技能没找到：${skillId}（用 list_skills 看可用的 id）` };
+					bundledBody = readBundledSkillBody(BUNDLED_TIER_INDEX, skillId);
+					if (!bundledBody) {
+						return { ok: false, error: `技能没找到：${skillId}（用 list_skills / skill_search 看可用的 id）` };
+					}
 				}
 				// 读支持文件（references/scripts/assets/templates——相对路径，围栏 ✓）
 				if (supportPath) {
 					const { readFile } = await import('node:fs/promises');
 					const { resolve, sep } = await import('node:path');
-					const skillDir = resolve(skillsRootOf(config), skill.id);
+					const skillDir = bundledBody ? bundledBody.directory : resolve(skillsRootOf(config), skill.id);
 					const target = resolve(skillDir, supportPath);
 					if (target !== skillDir && !target.startsWith(skillDir + sep)) {
 						throw new Error(`路径越界：${supportPath} 解析后不在技能目录之内（已拒绝）。`);
 					}
 					try {
 						const content = await readFile(target, 'utf8');
-						return { ok: true, id: skill.id, name: skill.name, path: supportPath, content };
+						return { ok: true, id: skill?.id ?? skillId, name: skill?.name ?? bundledBody.name, path: supportPath, content,
+							skillDir, supportFiles: [] };
 					} catch (e) {
 						return { ok: false, error: `读支持文件失败：${supportPath}（${String(e?.message ?? e)}）`, supportFiles: [] };
 					}
+				}
+				// ★ 随包技能（含未 attach 的 extended）也能按 id 取全文 ⇒ 分级不是删除
+				if (bundledBody) {
+					return { ok: true, id: skillId, name: bundledBody.name, content: bundledBody.body,
+						skillDir: bundledBody.directory, supportFiles: [] };
 				}
 				return { ok: true, id: skill.id, name: skill.name, content: skill.content ?? '', skillDir: skill.path, supportFiles: [] };
 			},
@@ -4470,12 +4720,13 @@ export function apply(ctx, config = {}) {
 					if (!include.includes(skill.activation ?? 'manual')) { return false; }
 					return !category || String(skill.metadata?.category ?? '').toLowerCase() === category;
 				});
-				// 单条 4000 字、总量 20000 字上限：这些正文会进上下文，必须有硬边界
-				let budget = 20000;
+				// 单条 SKILL_BODY_MAX 字、总量 SKILL_TOTAL_MAX 字上限：这些正文会进上下文，必须有硬边界
+				// （2026-11-08 P0：常量下沉到 core/skillBudget.js，与清单预算同一真源）
+				let budget = SKILL_TOTAL_MAX;
 				let truncated = false;
 				const skills = picked.map(skill => {
 					const text = String(skill.content ?? '');
-					const keep = Math.max(0, Math.min(4000, budget));
+					const keep = Math.max(0, Math.min(SKILL_BODY_MAX, budget));
 					const slice = text.slice(0, keep);
 					budget -= slice.length;
 					if (slice.length < text.length) { truncated = true; }
@@ -4501,6 +4752,30 @@ export function apply(ctx, config = {}) {
 		};
 	});
 
+	// ★ 2026-11-08 换架构：随包 173 个技能的 provider（原全局 filesystem 行已停用）。
+	//   官方 `collect()` 的缓存键含 scopeChainOf(options.scope) ⇒ 同一个 global provider
+	//   在 list() 内按 options.scope 返回不同 invocation，每个 agent 天然隔离，
+	//   不需要 agent/created 生命周期管理，也不需要改官方消息。
+	ctx.inject(['skills'], child => child.effect(() => child.skills.registerProvider(control => {
+		invalidateBundled = () => control.invalidate();
+		return createBundledProvider({
+		index: BUNDLED_TIER_INDEX,
+		// `skillScopeMode: legacy` ⇒ 全部可见（一键回退到旧行为）；缺省 attached ⇒ 按 .agent.md 收窄
+		mode: String(config?.skillScopeMode ?? 'attached') === 'legacy' ? 'legacy' : 'attached',
+		// ★ 2026-11-09：这里原来是 `dataRootOf(config)`（同步求值）。它在 `registerProvider`
+		//   的工厂回调里执行，而 foundation 服务可能尚未绑定（`apply` 期 insert 顺序）⇒
+		//   `foundation()` 直接抛错，整个 provider 注册失败。改成惰性函数：只在 `list()` 里求值，
+		//   那时 foundation 已就绪；provider 侧还有 try/catch 兜底，失败只降级不炸插件。
+		dataRoot: () => dataRootOf(config),
+		agentIdOfPreset,
+		library: CAPABILITY_LIBRARY,
+		sessionAttachments: SESSION_ATTACHMENTS,
+		attachmentsForAgent: (preset, root, library, idOf) =>
+			attachmentsFromAgentService(preset, root, library, idOf),
+		logger: (line) => { try { console.warn(`[vssaros-skills] ${line}`); } catch { /* noop */ } },
+		});
+	})));
+
 	// 技能来源（可选依赖）：`ctx.skills` 存在时注册一个 provider；它的 disposer 就是 Cordis effect 的
 	// 返回值，插件停用即自动注销（方案 6.2："注册即 effect"）。
 	ctx.inject(['skills'], child => child.effect(() => child.skills.registerProvider(control => {
@@ -4519,7 +4794,20 @@ export function apply(ctx, config = {}) {
 					state.lastFingerprint = scan.fingerprint;
 					control.invalidate();
 				}
-				return scan.skills.map(toCandidate);
+				// ★ 2026-11-08（P0）：skills:[] 从 UI chip 变成真绑定。
+				//   官方传给 list() 的 options = { cwd, signal, scope }，scope 就是 agent；
+				//   preset 形如 vssaros-<id> ⇒ 反查 <dataRoot>/agents/<id>/.agent.md 的 skills[]。
+				//   未声明 skills[] ⇒ subset=null ⇒ 返回全量（不破坏 provider 缺省语义）。
+				//   owner: bot:<other> 的技能永远不出现在别的 agent 清单里。
+				const preset = options?.scope?.session?.header?.agentPreset ?? '';
+				const agentId = agentIdOfPreset(preset);
+				const subset = skillSubsetFor(options, dataRootOf(config));
+				const visible = filterSkillsForAgent(
+					scan.skills.map(skill => ({ name: skill.name, owner: skill.owner })),
+					subset, agentId,
+				);
+				const names = new Set(visible.map(item => item.name));
+				return scan.skills.filter(skill => names.has(skill.name)).map(toCandidate);
 			},
 			async get(candidate) {
 				// locator 由我们自己的 list() 产出（不透传外部值），但仍按"可能已不可加载"处理

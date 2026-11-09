@@ -4,6 +4,7 @@ description: "保持简短回答，避免赘述。always 类型。"
 activation: always
 
 category: meta
+tier: core
 
 ---
 

@@ -4,6 +4,7 @@ description: "Write ML papers for NeurIPS/ICML/ICLR: design→submit."
 activation: manual
 match: ["research-paper-writing", "research paper writing", "research", "paper writing", "experiments", "neurips", "icml", "iclr", "acl", "aaai", "colm", "latex", "citations", "statistical analysis"]
 category: research
+tier: extended
 ---
 
 # Research Paper Writing Pipeline

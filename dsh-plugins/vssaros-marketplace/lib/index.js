@@ -565,6 +565,12 @@ export async function apply(ctx, config) {
 			...(kind === 'agent' ? { restartRequired: agentsRescan !== 'ok', agentsRescan } : {}),
 			// mcp：文件 + mcp.json 都写好了；dsh 的 MCP 连接需要重启才重建（没有热重载入口）
 			...(kind === 'mcp' ? { mcpRegistered, restartRequired: true, mcpNote: '已写入 mcp.json；连接要重启 IDE 才建立' } : {}),
+			// ★ 2026-11-09：Bot 组合包的分项生效回执（bot/skills/tools/mcp 各自状态）。
+			//   单个 restartRequired 布尔说不清「Bot 已可见但 MCP 还没连上」⇒ 前端按它如实提示。
+			...(installed.bot ? { bot: installed.bot, botComponents: installed.components } : {}),
+			// ★ 2026-11-09 P1：依赖范围核对结果也透出去 —— `unknown` 是「本机查不到版本」，
+			//   不是「已满足」，前端必须如实说，别让用户以为万事俱备。
+			...(installed.requires ? { botRequires: installed.requires } : {}),
 		};
 	}
 

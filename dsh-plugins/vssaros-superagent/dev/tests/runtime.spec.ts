@@ -642,7 +642,8 @@ it('records each settings save with its policy change and the open tickets told 
   await runtime.settings.save('executor', { ...settings.executor, maxWorkers: 5 }, runtime.store.blockRevision('executor'), 'panel')
   // What a Source receives is its own configuration, not the Policy; who may originate work there is the Policy's.
   const feishu = runtime.sources.instance('feishu')!
-  await runtime.settings.save('source:feishu', { enabled: true, config: { ...feishu.config, directMessages: false } }, runtime.store.blockRevision('source:feishu'), 'panel')
+  // The built-in app ID is a schema default; this case checks an unchanged CLI save with no app named.
+  await runtime.settings.save('source:feishu', { enabled: true, config: { ...feishu.config, appId: '', directMessages: false } }, runtime.store.blockRevision('source:feishu'), 'panel')
   const policy = runtime.store.settings().policy
   await runtime.settings.save('policy', { ...policy, sources: { ...policy.sources, feishu: { ...policy.sources.feishu!, allowed: [...policy.sources.feishu!.allowed, { id: 'ou_bob', name: 'Bob' }] } } }, runtime.store.blockRevision('policy'), 'panel')
   await expect(runtime.settings.save('executor', settings.executor, 0, 'panel')).rejects.toThrow('Settings changed')
@@ -650,7 +651,9 @@ it('records each settings save with its policy change and the open tickets told 
   expect(history.items.slice(0, 3)).toEqual([
     // Another sender on the list bears on no open ticket, so none is told.
     expect.objectContaining({ source: 'panel', block: 'policy', policyChanged: true, notified: [], changes: [expect.objectContaining({ source: 'feishu', field: 'allowed', part: true })] }),
-    expect.objectContaining({ source: 'panel', block: 'source:feishu', policyChanged: false, notified: [], changes: [{ code: 'sourceField', source: 'feishu', field: 'directMessages', from: true, to: false }] }),
+    // Clearing the built-in app ID for the account-CLI check adds its own change record.
+    expect.objectContaining({ source: 'panel', block: 'source:feishu', policyChanged: false, notified: [],
+      changes: expect.arrayContaining([{ code: 'sourceField', source: 'feishu', field: 'directMessages', from: true, to: false }]) }),
     expect.objectContaining({ source: 'panel', block: 'executor', policyChanged: false, notified: [], changes: [{ code: 'maxWorkers', from: 3, to: 5 }] }),
   ])
 })
@@ -965,7 +968,9 @@ it('checks a changed account CLI before saving it, restarts after the save, and 
   await pending
   expect(runtime.store.settings().policy.rules).toEqual([])
   expect(runtime.store.settings().sources.github!.config).toMatchObject({ cli: AGENT() })
-  const feishuSave = (cli: string) => runtime.settings.save('source:feishu', { enabled: true, config: { ...runtime.store.settings().sources.feishu!.config, cli } },
+  // `appId: ''` keeps these account-CLI checks on the legacy "no app named" path (no profile creation).
+  const feishuSave = (cli: string) => runtime.settings.save('source:feishu', { enabled: true,
+    config: { ...runtime.store.settings().sources.feishu!.config, appId: '', cli } },
     runtime.store.blockRevision('source:feishu'), 'panel')
   expect(await feishuSave('')).toMatchObject({ restarting: true })
   answers[`${BOT()} config strict-mode`] = 'strict-mode: off (source: profile)'

@@ -4,6 +4,7 @@ description: Monitor blogs and RSS/Atom feeds via blogwatcher-cli tool.
 activation: manual
 match: ["blogwatcher", "rss", "blogs", "feed-reader", "monitoring"]
 category: research
+tier: extended
 ---
 
 # Blogwatcher

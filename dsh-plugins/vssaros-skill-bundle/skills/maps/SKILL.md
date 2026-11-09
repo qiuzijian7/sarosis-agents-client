@@ -4,6 +4,7 @@ description: Geocode, POIs, routes, timezones via OpenStreetMap/OSRM.
 activation: manual
 match: ["maps", "geocoding", "places", "routing", "distance", "directions", "nearby", "location", "openstreetmap", "nominatim", "overpass", "osrm"]
 category: productivity
+tier: extended
 ---
 
 # Maps Skill

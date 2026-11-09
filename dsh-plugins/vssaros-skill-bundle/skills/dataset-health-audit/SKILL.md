@@ -5,8 +5,9 @@ whenToUse: 拿到一张表（CSV/Excel/TSV/JSON）要判断能不能直接用，
 activation: auto
 match: ["数据质量", "数据健康度", "缺失值", "重复行", "异常值检测", "数据清洗"]
 category: data-science
-recommended_tools: ["file_read", "terminal"]
+recommended_tools: ["read", "pwsh"]
 license: MIT
+tier: core
 ---
 
 # data-quality-checker

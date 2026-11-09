@@ -619,5 +619,49 @@ for (const [rel, needles] of Object.entries(CANCEL_WIRING)) {
 }
 ok('后台回合已支持 AbortSignal 取消（控制桥 session.cancel）');
 
+// ── ⑬ ★ 2026-11-09：IDE 侧创建 Agent 已下线，唯一写口在 dsh 侧 ──────────
+// 用户拍板「IDE 侧不要有创建功能，都改到 dsh 侧」。不造 IDE→dsh 转发通道：
+//   页面桥明确「写入、执行类能力不走页面桥」，agents 模块也无承载页（view.kind='none'）。
+// 三条判据：① createAgent 只拒绝、不写盘；② 退役残留调用点只许减；
+//   ③ 用户能点到的入口（命令 / 商城安装 / 看板自动补齐）不许复活。
+{
+	const SVC_REL = 'src/vs/sessions/contrib/agentStudio/browser/agentStudioService.ts';
+	const svc = readFileSync(join(ROOT, SVC_REL), 'utf8');
+	const at = svc.indexOf('async createAgent(');
+	const end = at >= 0 ? svc.indexOf('\n\t}', at) : -1;
+	const body = at >= 0 && end > at ? svc.slice(at, end) : '';
+	const WRITE_CALLS = ['createFolder(', 'writeFile(', '_writeAgentMd(', 'upsertAgentBinding(', 'return agent;'];
+	const revived = WRITE_CALLS.filter(n => body.includes(n));
+	if (at < 0 || revived.length || !/IDE 侧已不提供创建 Agent 能力/.test(body)) {
+		fail(`IDE 侧 createAgent 又具备写盘能力（${revived.join('、') || '缺明确拒绝'}）⇒ 创建 Bot 必须统一走 dsh 侧 Bots 页签`);
+	} else {
+		ok('IDE 侧 createAgent 只拒绝、不写盘（唯一写口 = dsh /x/agents/api/agents）');
+	}
+	// 已退役/不可达路径里还留着 createAgent 调用（旧新建页、复制为、webview 桥、new_agent 工具、
+	// installer）。它们一旦被调用只会拿到明确拒绝 ⇒ 用上限钉「只许继续减」，不强求一轮删干净。
+	const MAX_CREATE_CALLS = 6;
+	const createCalls = countCalls(/\.createAgent\s*\(/);
+	if (createCalls > MAX_CREATE_CALLS) {
+		fail(`IDE 侧 createAgent 调用点回升到 ${createCalls}（上限 ${MAX_CREATE_CALLS}）⇒ 有创建入口被抄回来`);
+	} else {
+		ok(`IDE 侧 createAgent 调用点 ${createCalls} ≤ 上限 ${MAX_CREATE_CALLS}（只许继续减）`);
+	}
+	const ENTRY_FORBIDDEN = {
+		'src/vs/sessions/contrib/agentStudio/browser/agentMarketEditorPane.ts': ['createAgent('],
+		'src/vs/sessions/contrib/agentStudio/browser/taskOrchestrationService.ts': ['createAgent('],
+		'src/vs/sessions/contrib/agentStudio/browser/agentStudio.contribution.ts': [
+			"DshPluginPageEditorInput.getOrCreate('agentStudio.presetAgent'",
+		],
+	};
+	let entryIssues = 0;
+	for (const [rel, needles] of Object.entries(ENTRY_FORBIDDEN)) {
+		const text = readFileSync(join(ROOT, rel), 'utf8');
+		for (const needle of needles) {
+			if (text.includes(needle)) { fail(`${rel} 又出现 IDE 侧创建入口残留 '${needle}'`); entryIssues += 1; }
+		}
+	}
+	if (entryIssues === 0) { ok('IDE 侧用户可点的创建入口（命令 / 商城安装 / 看板自动补齐）已下线'); }
+}
+
 console.log(failed ? `\n✗ ${failed} 项不通过` : '\n✓ IDE agent loop 退役状态只许继续收敛');
 process.exit(failed ? 1 : 0);

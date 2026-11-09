@@ -64,8 +64,7 @@ export async function createTeamBot(config, input, sync) {
 	if (!draft.id || !draft.name) throw refusal(400, '建 bot 需要 id 和 name');
 	const preview = await previewAgentDraft(config, draft);
 	if (preview.errors.length) {
-		const duplicate = preview.errors.some(line => line.includes('已有同名') || line.includes('撞了 preset'));
-		throw refusal(duplicate ? 409 : 400, preview.errors.join('；'));
+		throw refusal(preview.conflict ? 409 : 400, preview.errors.join('；'));
 	}
 	if (await supervisorBotCount(config) >= SUPERVISOR_BOT_CAP) {
 		throw refusal(409, `主管创建的 bot 已达全局上限 ${SUPERVISOR_BOT_CAP} 个`);

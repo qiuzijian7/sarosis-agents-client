@@ -629,6 +629,74 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 			}
 			notes.push('client.workspaces.js + agents/index.js: Bots 页签点 bot ⇒ 复用须已登记工作区 / 新建传 workspaceId（互斥 cwd）断言通过');
 		}
+		// ── ⑤-a1 Bot 行右键菜单（2026-11-09：复刻 DS Bot，9 项 / 3 分隔线 / flags / 动作调度）──
+		{
+			const need = ['botMenuItems', 'botMenuAction', 'toggleBotFlag', 'sortBotsWithFlags', 'readBotFlags', 'BOT_FLAGS_KEY'];
+			const missing = need.filter((k) => typeof t[k] === 'undefined');
+			if (missing.length) {
+				problems.push('client.workspaces.js: __test 缺 ' + missing.join(' / ') + ' ⇒ Bot 右键菜单不可单测 ✗');
+			} else {
+				const bot = { id: 'b1', name: 'Bot 一' };
+				const items = t.botMenuItems(bot, {}, false);
+				const acts = items.filter((x) => !x.sep).map((x) => x.act);
+				const want = ['pin', 'unread', 'rename', 'edit', 'duplicate', 'copySession', 'hide', 'delete'];
+				if (acts.join(',') !== want.join(',')) {
+					problems.push('botMenuItems: 动作顺序与 DS Bot 不一致（应 ' + want.join(' / ') + '，实得 ' + acts.join(' / ') + '）✗');
+				}
+				const seps = items.filter((x) => x.sep).length;
+				if (seps !== 3) { problems.push('botMenuItems: 必须有 3 条分组分隔线（实得 ' + seps + '）✗'); }
+				const labels = items.filter((x) => !x.sep).map((x) => x.label);
+				for (const label of ['置顶', '标为未读', '重命名 Bot', '编辑 Bot', '复制一份', '复制对话 ID', '从侧栏隐藏', '删除']) {
+					if (labels.indexOf(label) < 0) { problems.push('botMenuItems: 缺菜单项「' + label + '」✗'); }
+				}
+				// ★ 2026-11-09 用户要求移除「设为主 Bot」：反向断言，防复活
+				if (acts.indexOf('main') >= 0 || labels.some((x) => String(x).indexOf('主 Bot') >= 0)) {
+					problems.push('botMenuItems: 「设为主 Bot」已移除，不许复活 ✗');
+				}
+				if (items.filter((x) => x.danger).map((x) => x.act).join(',') !== 'delete') {
+					problems.push('botMenuItems: 只有「删除」能是 danger（红色）✗');
+				}
+				const toggled = t.botMenuItems(bot, { pinned: true, hidden: true }, true);
+				const toggledLabels = toggled.filter((x) => !x.sep).map((x) => x.label);
+				for (const label of ['取消置顶', '标为已读', '取消隐藏']) {
+					if (toggledLabels.indexOf(label) < 0) { problems.push('botMenuItems: 状态改变后缺反向文案「' + label + '」✗'); }
+				}
+				// 旧 localStorage 里残留的 main 键必须被读掉（自愈，不复活排序权重）
+				const legacy = t.readBotFlags({ getItem: () => JSON.stringify({ b1: { main: true, pinned: true } }) });
+				if (legacy.b1 && 'main' in legacy.b1) { problems.push('readBotFlags: 旧数据里的 main 键没有被清掉 ✗'); }
+				const sorted = t.sortBotsWithFlags([{ id: 'a' }, { id: 'p' }, { id: 'm' }], { p: { pinned: true }, m: { main: true } });
+				if (sorted.map((x) => x.id).join(',') !== 'p,a,m') {
+					problems.push('sortBotsWithFlags: 置顶 > 其余；main 权重已移除（不许再影响顺序）✗');
+				}
+				const badFlags = t.readBotFlags({ getItem: () => '{not json' });
+				if (Object.keys(badFlags).length) { problems.push('readBotFlags: 坏 JSON 必须回落空对象（不能崩 UI）✗'); }
+				// 动作调度：每个 act 必须打到正确的依赖，不许静默
+				const calls = [];
+				const deps = {
+					post: (b) => { calls.push('post:' + b.action); return Promise.resolve({}); },
+					getDraft: (id) => { calls.push('getDraft:' + id); return Promise.resolve({ name: 'Bot 一', persona: 'p' }); },
+					newId: () => 'b1-copy', copy: (s) => calls.push('copy:' + s),
+					say: () => calls.push('say'), reload: () => calls.push('reload'),
+					startRename: () => calls.push('rename'), openConfig: () => calls.push('edit'),
+					confirmDelete: () => calls.push('delete'),
+					setFlag: (id, k, on, ex) => calls.push('flag:' + k + ':' + !!on + ':' + !!ex),
+					setUnread: (id, on) => calls.push('unread:' + !!on), sessionIdOf: () => 's1',
+				};
+				t.botMenuAction('pin', bot, {}, false, deps);
+				t.botMenuAction('unread', bot, {}, false, deps);
+				t.botMenuAction('rename', bot, {}, false, deps);
+				t.botMenuAction('edit', bot, {}, false, deps);
+				t.botMenuAction('copySession', bot, {}, false, deps);
+				t.botMenuAction('hide', bot, {}, false, deps);
+				t.botMenuAction('delete', bot, {}, false, deps);
+				t.botMenuAction('duplicate', bot, {}, false, deps);
+				for (const hit of ['flag:pinned:true:false', 'unread:true', 'rename', 'edit',
+					'copy:s1', 'flag:hidden:true:false', 'delete', 'getDraft:b1']) {
+					if (calls.indexOf(hit) < 0) { problems.push('botMenuAction: 「' + hit + '」没有被调度（点了没反应）✗'); }
+				}
+				notes.push('client.workspaces.js: Bot 行右键菜单 9 项 / 3 分隔 / flags / 排序 / 动作调度断言通过');
+			}
+		}
 		// ── ⑤-a2 「当前工作区 / 当前根」统一按**会话 cwd** 判（2026-10-28 用户报障）──────────
 		// 真机现场：会话 cwd = `…\sarosis-agents-client`（主根），而 dsh 快照的 `sessionIds` 仍把它列在
 		//   `…\Saros-switch` 条目的名下 ⇒ 侧栏 hover 卡片按条目 path 标"当前会话"、chip 下拉按 cwd 标
@@ -1386,6 +1454,36 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		['"data-vssaros-bots-new": f.kind', '新建表单必须有锚点，并带 kind（bot / group 两套字段）'],
 		['const submitBotsNew = () => {', '新建必须真的有提交实现'],
 		['const AGENTS_API_AGENTS = "/x/agents/api/agents";', '新建 Bot 必须走 agents 官方的 create 接口'],
+		// ★ 2026-11-09 创建 Bot 链路质量修复：权威校验 / 失败可见 / 欢迎卡交接
+		['const validateRemote = () => postJson(AGENTS_API_AGENTS, { action: "validate", draft })',
+			'提交前必须打 host 的 validate（前端正则只是即时提示，不是权威判据）'],
+		['.then((v) => (v && Array.isArray(v.errors) ? v : null))',
+			'validate 的回包要判空；接口不可用（老 host 404）时降级放行，不许堵死新建'],
+		['if (res.registered === false) {',
+			'create 回包必须读 registered（同步失败却提示「已新建」= 假成功）'],
+		['res.syncError || "同步 preset 失败"', 'preset 未注册时必须把 host 给的原因显示出来'],
+		['const emptyBotDraft = () => ({', '新建表单初始草稿必须单一真源（＋ 菜单与欢迎卡交接共用）'],
+		['window.addEventListener("vssaros:open-bots", onOpenBots)',
+			'必须接住欢迎卡的 Bots 交接事件（旧 /x/agents/ 是 404）'],
+		['detail.handled = true;', '交接事件必须回填 handled（否则派发方无法判断是否有人接住）'],
+		// ★ 2026-11-09 用户报障「Bots 页签 bot item 右键没反应」⇒ 复刻 DS Bot 的右键菜单
+		['function botMenuItems(', 'Bot 行右键菜单必须有纯函数定义（守卫按 act/label 逐项断言）'],
+		['const botMenuIcon = (kind) =>', 'Bot 菜单必须有线性图标（与截图同款「图标 + 文字」）'],
+		['setBotMenu({ id, x, y });', 'Bot 行必须绑 onContextMenu 并夹视口定位（右键没反应的修复点）'],
+		['"data-vssaros-bot-menu": botMenu.id', 'Bot 菜单必须有稳定 data 锚点，供「点外面关闭」排除'],
+		['"data-vssaros-bot-confirm": botDel.id', '删除 Bot 必须有二次确认层（危险操作不能点偏就执行）'],
+		['vssaros:open-bot-config', '「编辑 Bot」必须派跨 chunk 事件，让设置页把分段落到 Bot'],
+		['action: "delete", id: cur.id', '删除必须真调 host 的 delete 接口（不是只从列表移除）'],
+		['BOT_FLAGS_KEY, readBotFlags, saveBotFlags', '菜单 flags 必须落 localStorage 且导出可单测'],
+		['setBotMenu(null); setBotDel(null); setBotRename(null);', '点外面 / Esc 必须同时关掉 Bot 菜单、删除确认与就地改名'],
+		['t.closest("[data-vssaros-bot-menu]")', 'Bot 菜单必须加进「点外面关闭」白名单（否则点菜单项先被卸载）'],
+		['"data-act": "bot-" + it.act', 'Bot 菜单项必须带稳定 data-act 锚点，且走 onMouseDown 而非 onClick'],
+		['if (!handled) { fire(); }', '「编辑 Bot」必须在设置页挂载后补派一次事件（事件早于监听 ⇒ handled 恒 false）'],
+		// ★ 2026-11-09 hero 报障：右栏设置页签是 session 槽，hero 下结构上不渲染
+		['const BOT_CONFIG_PAGE_COMP = "vssaros-bot-config";', 'hero 下「编辑 Bot」必须有中栏独立页组件常量'],
+		['comp: BOT_CONFIG_PAGE_COMP, props: { agentId: id, name, tabId }',
+			'「编辑 Bot」必须优先按 agentId 开中栏独立页（不依赖 session 槽 / 不需要会话）'],
+		['(j && j.draft) || {}', 'GET ?id= 回的是 {ok, draft} 双层结构 ⇒ 重命名 / 复制必须取 .draft'],
 		// ★ 2026-11-02 二次（用户：弹出的 UI 框太简陋）—— 表单必须有这些结构件
 		['"data-vssaros-bots-modes": "1"', '群聊表单必须有唤醒策略分段（all/mentions/digest/silent）'],
 		['"data-vssaros-bots-member-query": "1"', '群聊表单成员必须可搜索'],
@@ -2620,8 +2718,54 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 	if (!/def\.inboundLabel/.test(chSrc)) {
 		problems.push('client.channel.js 的传输方式没读 def.inboundLabel ⇒ 新渠道那行的工具栏没有传输说明 ✗');
 	}
+	/* ★ 2026-11-09（用户报「渠道 → 绑定 → 去 Bots 配置 ⇒ 白屏」）：Bots 的 SSR 工作台已下线，
+	   整页导航过去只会拿到 404。交接必须走 vssaros:open-bots 事件 + handled 兜底指引。
+	   ⚠ 别把 API 前缀 /x/agents/api/* 一起禁掉：它仍由 agents 插件提供。 */
+	if (/window\.location\.(assign|replace)\(|window\.location\.href\s*=/.test(chSrc) || /BOTS_ROUTE/.test(chSrc)) {
+		problems.push('client.channel.js: 「去 Bots 配置」不能再整页导航到已下线的 Bots 工作台（404 白屏），改走 vssaros:open-bots ✗');
+	}
+	/* ⚠ 断言要钉**调用形态**（`setBotsHint(detail.handled`），只搜 `detail.handled` 会被注释命中
+	   ⇒ 反向突变（把判断改掉）时守卫假绿。 */
+	if (!/new window\.CustomEvent\("vssaros:open-bots"/.test(chSrc) || !/setBotsHint\(detail\.handled/.test(chSrc)) {
+		problems.push('client.channel.js: 「去 Bots 配置」必须派发 vssaros:open-bots 并按 handled 给就地兜底指引（不静默）✗');
+	}
+	if (!/"data-vssaros-channel-open-bots"/.test(chSrc)) {
+		problems.push('client.channel.js: 「去 Bots 配置」按钮缺锚点 data-vssaros-channel-open-bots ✗');
+	}
+	/* ★ 2026-11-09（用户报「点保存没反馈，输入的 App ID / Secret 没地方看」）：
+	   ① channels[] 是 describePlatforms() 的掩码视图 ⇒ 非 secret 字段在 fields 对象里；
+	      旧 UI 读兼容视图的 appIdMasked ⇒ 恒空 ⇒ 配好了也看不到。
+	   ② 保存结果必须在**凭据卡内**就地渲染（全局 ok/error 在页面最底部 = 看着没反应）。
+	   ③ secret 明文永不回传，只报「已配置」。
+	   ⚠ 断言钉代码形态（注释里也讲过这些名字 ⇒ 别用宽泛的 includes）。 */
+	if (/ch\.appIdMasked/.test(chSrc)) {
+		problems.push('client.channel.js: 不能读 ch.appIdMasked（channels[] 里没这个字段 ⇒ App ID 永远显示为空）✗');
+	}
+	if (!/function credsSummaryOf\(view, defFields\)/.test(chSrc) || !/String\(fields\[f\.key\] \|\| ""\)/.test(chSrc)) {
+		problems.push('client.channel.js: 凭据回显必须读 describePlatforms 的 fields 掩码视图 ✗');
+	}
+	if (!/onResult\(\{ ok: true, view: j \}\)/.test(chSrc) || !/"data-vssaros-channel-creds-result": fb\.status/.test(chSrc)) {
+		problems.push('client.channel.js: 保存凭据必须把 POST 回包转成**凭据卡内**的就地反馈（不能只在页面底部）✗');
+	}
+	if (!/"data-vssaros-channel-creds-current": "1"/.test(chSrc) || !/"data-vssaros-feishu-app-result": appFeedback\.status/.test(chSrc)) {
+		problems.push('client.channel.js: 缺「当前生效值」或额外飞书应用的就地反馈锚点 ✗');
+	}
+	if (!/明文不回显/.test(chSrc)) {
+		problems.push('client.channel.js: 必须写明 Secret 只报「已配置」、明文不回显 ✗');
+	}
 	if (!problems.some((p) => /inboundMode|startableOf/.test(p))) {
 		notes.push('渠道页：传输方式/可启停判据读 imPlatforms 的 inboundMode/inboundLabel（不按 key 硬编码）');
+	}
+	if (!problems.some((p) => /client\.channel\.js.*(open-bots|404 白屏)/.test(p))) {
+		notes.push('渠道页「去 Bots 配置」走 vssaros:open-bots 交接（旧 SSR 页是 404 白屏）');
+	}
+	if (!problems.some((p) => /client\.channel\.js.*(creds|就地反馈|appIdMasked|明文)/.test(p))) {
+		notes.push('渠道页凭据：保存就地反馈 + 掩码值回显（Secret 只报已配置，不回明文）');
+	}
+	/* ★ 2026-11-09：设置弹窗「渠道」页签整体下线，能力迁到 Bot 设置页的「飞书配置」卡。
+	   文件仍留在 ALWAYS_CHUNKS（删清单会拖垮同批 9 个 chunk），但绝不能再注册分区。 */
+	if (/ctx\.slots\.inject\(SLOT_SECTION/.test(chSrc)) {
+		problems.push('client.channel.js: 「渠道」页签已下线，不许再注册 settings.section 分区 ✗');
 	}
 }
 
@@ -2678,6 +2822,14 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		const libDir = path.join(root, 'dsh-plugins', 'vssaros-chat-surface', 'lib');
 		const ws = fs.readFileSync(path.join(libDir, 'client.workspaces.js'), 'utf8');
 		const cv = fs.readFileSync(path.join(libDir, 'client.conversationViews.js'), 'utf8');
+		/* ★ 2026-11-09：渠道页签下线后，飞书配置必须落在 Bot 设置页且下拉读全局应用池。 */
+		if (!/function FeishuConfigCard\(props\)/.test(cv) || !/data-vssaros-feishucfg-pick/.test(cv)
+			|| !/action: "set-bot-app"/.test(cv) || !/data\.feishuApps/.test(cv)) {
+			problems.push('client.conversationViews.js: 缺 Bot 设置页「飞书配置」卡（全局应用下拉 + set-bot-app）✗');
+		}
+		if (!/react\.createElement\(FeishuConfigCard,/.test(cv)) {
+			problems.push('client.conversationViews.js: 「飞书配置」卡没挂到 BotConfigCard ✗');
+		}
 		if (!ws.includes('data-vssaros-sidebar-tabs')) {
 			problems.push('client.workspaces.js: 缺侧栏页签锚点 data-vssaros-sidebar-tabs ⇒ 找不到「会话 / Bots」页签');
 		}
@@ -2706,6 +2858,23 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		if (!/action: "update"[\s\S]{0,120}id: agentId/.test(cv)) {
 			problems.push('client.conversationViews.js: Bot 配置卡必须走 POST /x/agents/api/agents {action:"update", id} ✗');
 		}
+		// ★ 2026-11-09：host 回 registered:false 时不能无条件提示「已保存」
+		if (!/res\.registered === false/.test(cv)) {
+			problems.push('client.conversationViews.js: Bot 配置保存必须读 registered（未注册还提示「已保存」= 假成功）✗');
+		}
+		// ★ 2026-11-09 hero 报障：右栏设置页签是 session 槽 ⇒ hero 下必须有中栏独立页承载面
+		if (!/function BotConfigPage\(/.test(cv)
+			|| !/w\.__vssarosPageComponents\[BOT_CONFIG_PAGE_COMP\] = BotConfigPage;/.test(cv)) {
+			problems.push('client.conversationViews.js: 缺 Bot 配置独立页组件/注册 ⇒ hero 下「编辑 Bot」没有承载面 ✗');
+		}
+		if (!/react\.createElement\(BotConfigCard, \{ key: agentId, agentId/.test(cv)) {
+			problems.push('client.conversationViews.js: Bot 配置独立页必须按 agentId 直接渲染 BotConfigCard（不依赖 sessionId）✗');
+		}
+		// ★ 2026-11-09：左栏右键「编辑 Bot」要能直达 Bot 配置卡（分段落到 bot，且回填 handled）
+		if (!/window\.addEventListener\("vssaros:open-bot-config", onOpenBotConfig\)/.test(cv)
+			|| !/setScope\("bot"\)/.test(cv) || !/d\.handled = true/.test(cv)) {
+			problems.push('client.conversationViews.js: 必须监听 vssaros:open-bot-config → setScope("bot") + 回填 handled（否则「编辑 Bot」点了只开设置页却看不到 Bot 配置）✗');
+		}
 		// ★ 2026-11-03（用户要求「只显示已注册的 bots」）：未注册那段不许回来 ——
 		//   注册失败的 bot 点了也开不了会话（session.create 报未知 preset），列出来只是噪音。
 		if (/botsSection\(\s*"未注册"/.test(ws)) {
@@ -2727,6 +2896,25 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 			}
 			if (!/pickAgent\(roster, presetId, who\.agentId\)/.test(wl)) {
 				problems.push('client.welcome.js: 名册匹配要带上人格 agentId（否则切人格后卡片还是原 bot 的）✗');
+			}
+			/* ★ 2026-11-09：/x/agents/ 的 SSR 工作台已下线（404），欢迎卡三个交接按钮
+			   曾「写无读端的 localStorage 焦点键 + openModulePage」⇒ 点了静默无反应。 */
+			if (wl.includes('openModulePage("/x/agents/")')) {
+				problems.push('client.welcome.js: 不能再调 openModulePage("/x/agents/")（已 404），交接改走 vssaros:open-bots ✗');
+			}
+			if (!/new window\.CustomEvent\("vssaros:open-bots"/.test(wl) || !/detail\.handled/.test(wl)) {
+				problems.push('client.welcome.js: 交接必须派发 vssaros:open-bots 并按 handled 给兜底指引（不静默）✗');
+			}
+		}
+		/* ★ 2026-11-09：胶囊的「Agent 主页」与欢迎卡同源，旧链路同样指向已下线的 404 页
+		   （2026-10-29 真机症状是「点 Agent 主页 ⇒ 弹出黑框」）。 */
+		{
+			const cap = fs.readFileSync(path.join(libDir, 'client.capsule.js'), 'utf8');
+			if (cap.includes('openModulePage("/x/agents/")')) {
+				problems.push('client.capsule.js: 不能再调 openModulePage("/x/agents/")（已 404），交接改走 vssaros:open-bots ✗');
+			}
+			if (!/new window\.CustomEvent\("vssaros:open-bots"/.test(cap) || !/detail\.handled/.test(cap)) {
+				problems.push('client.capsule.js: 「Agent 主页」必须派发 vssaros:open-bots 并按 handled 给兜底指引 ✗');
 			}
 		}
 		if (!problems.some((p) => /sidebar-tabs|botSettingsBtn|botSettings\.js|设置/.test(p))) {

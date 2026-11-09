@@ -4,6 +4,7 @@ description: Send and receive iMessages/SMS via the imsg CLI on macOS.
 activation: manual
 match: ["imessage", "sms", "messaging"]
 category: apple
+tier: extended
 ---
 
 # iMessage

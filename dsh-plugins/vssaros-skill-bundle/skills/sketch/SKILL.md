@@ -4,6 +4,7 @@ description: "Throwaway HTML mockups: 2-3 design variants to compare."
 activation: manual
 match: ["sketch", "mockup", "design", "prototype", "html", "variants", "exploration", "wireframe", "comparison"]
 category: creative
+tier: extended
 ---
 
 # Sketch

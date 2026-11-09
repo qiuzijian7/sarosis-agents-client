@@ -5,6 +5,7 @@ version: 3.0.1
 platforms: [win32, darwin, linux]
 user-invocable: false
 disable-model-invocation: false
+tier: extended
 ---
 
 # AnySearch

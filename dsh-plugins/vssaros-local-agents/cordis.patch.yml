@@ -1,0 +1,6 @@
+- insert:
+    - id: vssaros-local-agents
+      name: '@vssaros/dsh-local-agents'
+      config:
+        enabled: false
+        custom: []

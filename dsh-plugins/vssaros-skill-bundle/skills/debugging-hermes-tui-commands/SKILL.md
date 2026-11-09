@@ -4,6 +4,7 @@ description: "Debug Hermes TUI slash commands: Python, gateway, Ink UI."
 activation: auto
 match: ["debugging-hermes-tui-commands", "debugging hermes tui commands", "debugging", "hermes-agent", "tui", "slash-commands", "typescript", "python"]
 category: development
+tier: core
 ---
 
 # Debugging Hermes TUI Slash Commands

@@ -4,6 +4,7 @@ description: Design one-off HTML artifacts (landing, deck, prototype).
 activation: manual
 match: ["claude-design", "claude design", "design", "html", "prototype", "creative", "artifact", "deck", "motion", "design-system"]
 category: creative
+tier: extended
 ---
 
 # Claude Design for CLI/API Agents

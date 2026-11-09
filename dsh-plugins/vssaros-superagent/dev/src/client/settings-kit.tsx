@@ -207,6 +207,18 @@ function RowsField({ field, value, saved, onChange, labels, refreshLabels }: {
         {choices(id).map(([option, name]) => <option key={option} value={option}>{name}</option>)}
       </select>
     }
+    // A namespaced label slice turns any text column into a TAPD-backed dropdown (not just the first column).
+    if (column.type === 'text' && column.chooseFrom) {
+      const prefix = column.chooseFrom + ':'
+      const current = String(row[column.key] ?? '')
+      return <select key={column.key} className="dt-select" aria-label={localized(t, column.label)} value={current}
+        onChange={event => change(event.target.value)}>
+        <option value="">{localized(t, column.label)}</option>
+        {current && !labels[prefix + current] ? <option value={current}>{current}</option> : null}
+        {Object.entries(labels).filter(([option]) => option.startsWith(prefix)).sort(byName)
+          .map(([option, name]) => <option key={option} value={option.slice(prefix.length)}>{name}</option>)}
+      </select>
+    }
     if (column.type === 'select') {
       return <select key={column.key} className="dt-select" aria-label={localized(t, column.label)} value={row[column.key] ?? ''}
         onChange={event => change(event.target.value)}>
@@ -271,14 +283,22 @@ export function SourceField({ field, value, saved, fact, onChange, labels, refre
     </Field>
     case 'text': return <>
       <Field label={label} hint={hint} note={localized(t, fact)} action={action}>
-        {field.choose && Object.keys(labels).length
+        {field.chooseFrom
           ? <select className="dt-select" value={String(value ?? '')} onChange={event => onChange(event.target.value)}>
-            <option value="">{localized(t, field.choose)}</option>
-            {value && !labels[String(value)] ? <option value={String(value)}>{String(value)}</option> : null}
-            {Object.entries(labels).sort(byName).map(([option, name]) => <option key={option} value={option}>{name}</option>)}
+            <option value="">{field.choose ? localized(t, field.choose) : localized(t, field.label)}</option>
+            {String(value ?? '') && !labels[`${field.chooseFrom}:${value}`]
+              ? <option value={String(value)}>{String(value)}</option> : null}
+            {Object.entries(labels).filter(([option]) => option.startsWith(field.chooseFrom + ':')).sort(byName)
+              .map(([option, name]) => <option key={option} value={option.slice(field.chooseFrom!.length + 1)}>{name}</option>)}
           </select>
-          : <Input value={String(value ?? '')} readOnly={field.readonly} pattern={field.pattern} spellCheck={false}
-            onChange={event => onChange(event.target.value)} />}
+          : field.choose && Object.keys(labels).length
+            ? <select className="dt-select" value={String(value ?? '')} onChange={event => onChange(event.target.value)}>
+              <option value="">{localized(t, field.choose)}</option>
+              {value && !labels[String(value)] ? <option value={String(value)}>{String(value)}</option> : null}
+              {Object.entries(labels).sort(byName).map(([option, name]) => <option key={option} value={option}>{name}</option>)}
+            </select>
+            : <Input value={String(value ?? '')} readOnly={field.readonly} pattern={field.pattern} spellCheck={false}
+              onChange={event => onChange(event.target.value)} />}
       </Field>
       {detail}
     </>

@@ -4,25 +4,30 @@ description: "Exploratory QA of web apps: find bugs, evidence, reports."
 activation: manual
 match: ["dogfood", "testing", "browser", "web"]
 category: dogfood
+tier: extended
 ---
 
 # Dogfood: Systematic Web Application QA Testing
 
 ## Overview
 
-This skill guides you through systematic exploratory QA testing of web applications using the browser toolset. You will navigate the application, interact with elements, capture evidence of issues, and produce a structured bug report.
+Exploratory QA of a web app: navigate, interact, capture evidence, and produce a structured bug report.
+All browser work goes through the single dsh-side `browser` tool. Skills and tools live on the dsh
+side — do not call any per-action browser tool family.
 
 ## Prerequisites
 
-- Browser toolset must be available (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_vision`, `browser_console`, `browser_scroll`, `browser_back`, `browser_press`)
-- A target URL and testing scope from the user
+- The dsh-side `browser` tool (one tool, actions selected by `op`). It drives the user's real Chrome
+  via CDP, so the login state is already available. Common ops: status, navigate, snapshot, click,
+  type, pressKey, scroll, back, find, waitFor, evaluate, screenshot.
+- A target URL and a testing scope from the user.
 
 ## Inputs
 
 The user provides:
 1. **Target URL** — the entry point for testing
-2. **Scope** — what areas/features to focus on (or "full site" for comprehensive testing)
-3. **Output directory** (optional) — where to save screenshots and the report (default: `./dogfood-output`)
+2. **Scope** — areas/features to focus on (or "full site" for comprehensive testing)
+3. **Output directory** (optional) — where the report goes (default: `./dogfood-output`)
 
 ## Workflow
 
@@ -33,7 +38,7 @@ Follow this 5-phase systematic workflow:
 1. Create the output directory structure:
    ```
    {output_dir}/
-   ├── screenshots/       # Evidence screenshots
+   ├── screenshots/       # Evidence screenshots (when the Host can persist attachments)
    └── report.md          # Final report (generated in Phase 5)
    ```
 2. Identify the testing scope based on user input.
@@ -50,56 +55,62 @@ For each page or feature in your plan:
 
 1. **Navigate** to the page:
    ```
-   browser_navigate(url="https://example.com/page")
+   browser(op="navigate", url="https://example.com/page")
    ```
 
-2. **Take a snapshot** to understand the DOM structure:
+2. **Take a snapshot** to read the page structure and collect element refs:
    ```
-   browser_snapshot()
+   browser(op="snapshot")
    ```
+   Refs from the snapshot (`@eN`) are what the click/type ops consume.
 
-3. **Check the console** for JavaScript errors:
+3. **Look at the screen**:
    ```
-   browser_console(clear=true)
+   browser(op="screenshot")
    ```
-   Do this after every navigation and after every significant interaction. Silent JS errors are high-value findings.
+   The screenshot comes back as an image attachment in the tool result (JPEG). Text snapshots
+   cannot show broken layout, overlap, colour problems or clipped text — use the image for those.
 
-4. **Take an annotated screenshot** to visually assess the page and identify interactive elements:
+4. **Test interactive elements** systematically:
    ```
-   browser_vision(question="Describe the page layout, identify any visual issues, broken elements, or accessibility concerns", annotate=true)
+   browser(op="click", ref="@eN")
+   browser(op="type", ref="@eN", text="test input")
+   browser(op="pressKey", key="Tab")
+   browser(op="pressKey", key="Enter")
+   browser(op="scroll", direction="down")
+   browser(op="back")
+   browser(op="waitFor", textGone="Loading...")
    ```
-   The `annotate=true` flag overlays numbered `[N]` labels on interactive elements. Each `[N]` maps to ref `@eN` for subsequent browser commands.
+   Test form validation with invalid inputs and empty submissions.
 
-5. **Test interactive elements** systematically:
-   - Click buttons and links: `browser_click(ref="@eN")`
-   - Fill forms: `browser_type(ref="@eN", text="test input")`
-   - Test keyboard navigation: `browser_press(key="Tab")`, `browser_press(key="Enter")`
-   - Scroll through content: `browser_scroll(direction="down")`
-   - Test form validation with invalid inputs
-   - Test empty submissions
+5. **After each interaction**, check:
+   - `browser(op="snapshot")` — did the expected state appear?
+   - `browser(op="screenshot")` — did anything shift, overlap or overflow?
+   - Expected vs actual behaviour.
 
-6. **After each interaction**, check for:
-   - Console errors: `browser_console()`
-   - Visual changes: `browser_vision(question="What changed after the interaction?")`
-   - Expected vs actual behavior
+**Console errors**: the dsh `browser` tool has no console-reading op. Do not claim console errors were
+checked. Look for visible error banners in the snapshot/screenshot instead, and record
+"console errors: not collected" in the report. This is an honest capability gap, not a pass.
 
 ### Phase 3: Collect Evidence
 
 For every issue found:
 
-1. **Take a screenshot** showing the issue:
+1. **Capture the screen** while the issue is visible:
    ```
-   browser_vision(question="Capture and describe the issue visible on this page", annotate=false)
+   browser(op="screenshot", fullPage=true)
    ```
-   Save the `screenshot_path` from the response — you will reference it in the report.
+   The image is returned as a tool-result attachment, not a file path. Record the step id, URL and
+   whether the attachment was returned. If the Host has no attachment service, write
+   "screenshot unavailable" — never invent a path.
 
 2. **Record the details**:
    - URL where the issue occurs
    - Steps to reproduce
    - Expected behavior
    - Actual behavior
-   - Console errors (if any)
-   - Screenshot path
+   - Visible error text (console errors: not collected)
+   - Screenshot attachment reference
 
 3. **Classify the issue** using the issue taxonomy (see `references/issue-taxonomy.md`):
    - Severity: Critical / High / Medium / Low
@@ -126,34 +137,32 @@ The report must include:
    - Description of the issue
    - Steps to reproduce
    - Expected vs actual behavior
-   - Screenshot references (use `MEDIA:<screenshot_path>` for inline images)
-   - Console errors if relevant
+   - Screenshot attachment reference (or "screenshot unavailable")
+   - Visible error text, if any
 3. **Summary table** of all issues
-4. **Testing notes** — what was tested, what was not, any blockers
+4. **Testing notes** — what was tested, what was not, and the console-collection gap
 
 Save the report to `{output_dir}/report.md`.
 
 ## Tools Reference
 
-| Tool | Purpose |
+| Call | Purpose |
 |------|---------|
-| `browser_navigate` | Go to a URL |
-| `browser_snapshot` | Get DOM text snapshot (accessibility tree) |
-| `browser_click` | Click an element by ref (`@eN`) or text |
-| `browser_type` | Type into an input field |
-| `browser_scroll` | Scroll up/down on the page |
-| `browser_back` | Go back in browser history |
-| `browser_press` | Press a keyboard key |
-| `browser_vision` | Screenshot + AI analysis; use `annotate=true` for element labels |
-| `browser_console` | Get JS console output and errors |
+| `browser` op=status | Check that a page is attached |
+| `browser` op=navigate | Go to a URL |
+| `browser` op=snapshot | Text snapshot + element refs |
+| `browser` op=screenshot | Screenshot as an image attachment (fullPage/quality supported) |
+| `browser` op=click / type | Interact by ref or text |
+| `browser` op=pressKey / scroll / back | Keyboard, scrolling, history |
+| `browser` op=find / waitFor | Locate text, wait for a condition |
+| `browser` op=evaluate | Read DOM/computed state for a geometric assertion |
 
 ## Tips
 
-- **Always check `browser_console()` after navigating and after significant interactions.** Silent JS errors are among the most valuable findings.
-- **Use `annotate=true` with `browser_vision`** when you need to reason about interactive element positions or when the snapshot refs are unclear.
-- **Test with both valid and invalid inputs** — form validation bugs are common.
-- **Scroll through long pages** — content below the fold may have rendering issues.
-- **Test navigation flows** — click through multi-step processes end-to-end.
-- **Check responsive behavior** by noting any layout issues visible in screenshots.
-- **Don't forget edge cases**: empty states, very long text, special characters, rapid clicking.
-- When reporting screenshots to the user, include `MEDIA:<screenshot_path>` so they can see the evidence inline.
+- Every correctness claim needs either a snapshot observation or a machine-checkable value from
+  `browser(op="evaluate")`; a screenshot alone is an observation, not a pass verdict.
+- Test with both valid and invalid inputs — form validation bugs are common.
+- Scroll through long pages — content below the fold may have rendering issues.
+- Test navigation flows — click through multi-step processes end-to-end.
+- Check responsive behaviour by noting any layout issues visible in screenshots.
+- Don't forget edge cases: empty states, very long text, special characters, rapid clicking.

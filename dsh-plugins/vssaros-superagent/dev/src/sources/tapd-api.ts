@@ -1,13 +1,10 @@
 /**
- * VsSaros addition: reading and commenting on TAPD stories, bugs and tasks. Two ways in, behind one `TapdApi`:
- * - `openapi`: TAPD's Open API (`https://api.tapd.cn` by default) with the account in DSH_SUPERAGENT_TAPD_USER and
- *   DSH_SUPERAGENT_TAPD_PASSWORD (or a bearer token in DSH_SUPERAGENT_TAPD_BEARER), read by the Host only;
- * - `mcp`: the `tapd` MCP server through `mcporter-internal`, signed in as the operator.
- * Both return TAPD's records as plain objects of strings, whichever envelope they came in.
+ * VsSaros addition: reading and commenting on TAPD stories, bugs and tasks through TAPD's Open API
+ * (`https://api.tapd.cn` by default). Credentials are resolved by `tapd-auth.ts` in the Host only; the
+ * MCP/mcporter-internal transport was retired in 0.1.81, and the settings keys it used are kept solely
+ * so settings saved by older versions still parse. Records come back as plain objects of strings.
  */
 import { z } from 'zod'
-import type { Commands } from '../infra/commands.ts'
-import { cliArgv } from '../deployment.ts'
 import { tapdCredential, tapdCredentialsHint, tapdEnvironment, tapdTimeoutMs, type TapdEnv } from './tapd-auth.ts'
 
 export const TAPD_SOURCE = 'tapd'
@@ -19,16 +16,19 @@ const COLLECTION: Record<TapdType, { path: string; record: string; entry: string
   task: { path: 'tasks', record: 'Task', entry: 'tasks', page: 'prong/tasks/view' },
 }
 export const TapdConfigSchema = z.object({
+  /** Deprecated and ignored: the MCP transport was retired. Kept so older saved settings still parse. */
   transport: z.enum(['openapi', 'mcp']).default('openapi'),
   api: z.string().trim().regex(/^https:\/\/[^\s/]+(\/[^\s]*)?$/).default('https://api.tapd.cn'),
   site: z.string().trim().regex(/^https:\/\/[^\s/]+$/).default('https://www.tapd.cn'),
-  cli: z.string().trim().default('mcporter-internal'),
+  /** Deprecated and ignored (MCP CLI). Kept so older saved settings still parse. */
+  cli: z.string().trim().default(''),
+  /** Deprecated and ignored (MCP server). Kept so older saved settings still parse. */
   server: z.string().trim().regex(/^[\w.-]+$/).default('tapd'),
-  /** TAPD `workspace_id`; every watch without its own inherits this. GR is the default (saroasis-platform). */
+  /** TAPD `workspace_id`; every watch without its own inherits this. GR is the default. */
   workspace: z.string().trim().regex(/^\d+$/).default('68880148'),
-  /** Optional saroasis-platform base URL whose `/api/tapd/members` maps WeCom aliases to TAPD names. */
+  /** Deprecated and ignored (the retired intranet member endpoint). Kept so older saved settings still parse. */
   memberApi: z.string().trim().default(''),
-  /** WeCom alias -> TAPD Chinese name, used when the platform member API is not configured. */
+  /** WeCom alias -> TAPD Chinese name; the only identity mapping the Open API Source uses. */
   members: z.array(z.object({ alias: z.string().trim().min(1), name: z.string().trim().min(1) }).strict()).default([]),
   /** Optional TAPD identity: a person's Chinese name or a robot account's name, as TAPD writes `owner`/`current_owner`
    * and as people @ in comments. It is not a query parameter; it only recognises what addresses SuperAgent and signs
@@ -142,12 +142,17 @@ export function records(value: unknown): TapdRecord[] {
   })
 }
 
-/** The read and comment operations the TAPD Source needs; `transport` picks how they reach TAPD. */
+/** One option of a settings dropdown, fetched from TAPD's Open API. */
+export interface TapdChoice { value: string; label: string }
+/** The read and comment operations the TAPD Source needs over TAPD's Open API. */
 export interface TapdApi {
   /** Items of `type` in `workspace` matching `filter` (TAPD query fields, such as `modified: '>2026-11-03 10:00:00'`), oldest change first. */
   items(type: TapdType, workspace: string, filter: Record<string, string>, signal?: AbortSignal): Promise<TapdItem[]>
   comments(type: TapdType, workspace: string, id: string, since?: string, signal?: AbortSignal): Promise<TapdComment[]>
   comment(type: TapdType, workspace: string, id: string, author: string, html: string, signal?: AbortSignal): Promise<void>
+  /** Optional lookup lists for the settings dropdowns (projects / workflow statuses / iterations).
+   * Stand-in APIs used by tests may omit it, so the settings refresh degrades to labels it can build locally. */
+  choices?(kind: 'workspace' | 'status' | 'iteration', workspace: string, signal?: AbortSignal): Promise<TapdChoice[]>
 }
 const PAGE = 200
 const MAX_PAGES = 10
@@ -170,6 +175,8 @@ const commentFilter = (type: TapdType, workspace: string, id: string, since?: st
   ({ workspace_id: workspace, entry_type: COLLECTION[type].entry, entry_id: id, ...since ? { modified: `>${tapdTime(since)}` } : {} })
 
 export interface OpenApiOptions { api: string; environment?: TapdEnv; fetch?: typeof fetch; timeoutMs?: number }
+/** The result of a read-only connectivity check; the panel shows `method` or `error`, never a secret. */
+export interface TapdTestResult { ok: boolean; method?: string; error?: string; at: string }
 /** TAPD's Open API, signed in with the account the Host's environment or credentials file names. */
 export class TapdOpenApi implements TapdApi {
   private readonly fetch: typeof fetch
@@ -180,6 +187,10 @@ export class TapdOpenApi implements TapdApi {
     const credential = tapdCredential(this.env)
     if (!credential) throw new TapdError(tapdCredentialsHint(this.env))
     return credential.header
+  }
+  /** Checks credentials and reachability with TAPD's testauth endpoint, without reading or changing any item. */
+  async verify(workspace?: string): Promise<void> {
+    await this.request('GET', 'quickstart/testauth', workspace ? { workspace_id: workspace } : {})
   }
   private async request(method: 'GET' | 'POST', path: string, fields: Record<string, string>, signal?: AbortSignal): Promise<TapdRecord[]> {
     const timeout = AbortSignal.timeout(this.options.timeoutMs ?? tapdTimeoutMs(this.env))
@@ -204,37 +215,32 @@ export class TapdOpenApi implements TapdApi {
   async comment(type: TapdType, workspace: string, id: string, author: string, html: string, signal?: AbortSignal): Promise<void> {
     await this.request('POST', 'comments', { workspace_id: workspace, entry_type: COLLECTION[type].entry, entry_id: id, author, description: html }, signal)
   }
+  /** Candidate values for the settings dropdowns. `status_map` answers an object of code -> Chinese name,
+   * while projects and iterations answer record lists; `records()` already normalises both envelopes. */
+  async choices(kind: 'workspace' | 'status' | 'iteration', workspace: string, signal?: AbortSignal): Promise<TapdChoice[]> {
+    if (kind === 'workspace') {
+      const rows = await this.request('GET', 'workspaces/user_participant_projects', {}, signal)
+      return rows.map(row => ({ value: String(row.id ?? row.workspace_id ?? ''),
+        label: String(row.name ?? row.title ?? row.id ?? '') })).filter(choice => choice.value)
+    }
+    if (kind === 'iteration') {
+      const rows = await this.request('GET', 'iterations', { workspace_id: workspace, limit: '200' }, signal)
+      return rows.map(row => ({ value: String(row.id ?? ''), label: String(row.name ?? row.id ?? '') }))
+        .filter(choice => choice.value)
+    }
+    const out: TapdChoice[] = []
+    for (const system of ['bug', 'story'] as const) {
+      const rows = await this.request('GET', 'workflows/status_map', { workspace_id: workspace, system }, signal)
+      for (const row of rows) for (const [code, name] of Object.entries(row)) {
+        if (/^[A-Za-z0-9_-]+$/.test(code) && name && !out.some(choice => choice.value === code))
+          out.push({ value: code, label: String(name) })
+      }
+    }
+    return out
+  }
 }
 
-/**
- * The argv prefix that runs `cli` without a shell: a `.js` script runs under the Host's node, and on Windows an npm
- * `.cmd`/`.ps1` launcher (which `Commands` does not run) is replaced by the script it launches.
- */
-export function nodeCli(cli: string, path: string, windows = process.platform === 'win32'): string[] {
-  try { return cliArgv(cli, path, windows) }
-  catch (error) { throw new TapdError(error instanceof Error ? error.message : String(error)) }
-}
-/** The TAPD MCP server through `mcporter-internal call <server>.proxy_execute_tool`. */
-export class TapdMcp implements TapdApi {
-  constructor(private readonly commands: Commands, private readonly argv: string[], private readonly server: string) {}
-  private async call(tool: string, args: Record<string, string>, signal?: AbortSignal): Promise<TapdRecord[]> {
-    const [program, ...prefix] = this.argv
-    const payload = JSON.stringify({ tool_name: tool, tool_args: JSON.stringify(args) })
-    const output = await this.commands.withSignal(signal).run(program!, [...prefix, 'call', `${this.server}.proxy_execute_tool`, '--args', payload, '--output', 'json'])
-    return records(output)
-  }
-  async items(type: TapdType, workspace: string, filter: Record<string, string>, signal?: AbortSignal): Promise<TapdItem[]> {
-    const got = await paged(page => this.call(`${COLLECTION[type].path}_get`, listArgs({ workspace_id: workspace, ...filter }, page), signal))
-    return got.map(record => itemOf(type, { workspace_id: workspace, ...record }))
-  }
-  async comments(type: TapdType, workspace: string, id: string, since?: string, signal?: AbortSignal): Promise<TapdComment[]> {
-    return (await paged(page => this.call('comments_get', listArgs(commentFilter(type, workspace, id, since), page), signal))).map(commentOf)
-  }
-  async comment(type: TapdType, workspace: string, id: string, author: string, html: string, signal?: AbortSignal): Promise<void> {
-    await this.call('comments_create', { workspace_id: workspace, entry_type: COLLECTION[type].entry, entry_id: id, author, description: html }, signal)
-  }
-}
-/** The `TapdApi` of a configuration. */
-export function tapdApi(config: TapdConfig, commands: Commands, path = process.env.PATH ?? ''): TapdApi {
-  return config.transport === 'mcp' ? new TapdMcp(commands, nodeCli(config.cli, path), config.server) : new TapdOpenApi({ api: config.api })
+/** The `TapdApi` of a configuration: TAPD's Open API only, with the Host-side credentials resolved per request. */
+export function tapdApi(config: TapdConfig): TapdApi {
+  return new TapdOpenApi({ api: config.api })
 }

@@ -813,11 +813,12 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			{ dir: 'vssaros-kanban', gate: 'hook' },     // 8 个写动词（改看板数据文件 ✓）
 			{ dir: 'vssaros-workflow', gate: 'hook' },   // workflow_update（写定义文件 ✓）
 			{ dir: 'vssaros-kb', gate: 'hook' },         // kb_feishu_sync（真写资料库；dry-run 不放行 ✓）
-			// memory（2026-10-13 更新）：过闸的是 `WRITE_TOOLS` 里那几个**会改用户数据**的
-			//（remember / forget / cascade / crystal ✓）；`memory_refresh` 与 `memory_recall` **刻意不在**
-			//（前者只重取快照、后者只读 ⇒ 弹窗只会造成审批疲劳 ✗）—— 判据是"会不会改用户数据"，
-			// 不是"名字像不像写" ✓。名单由源码里的 `WRITE_TOOLS` 逐名核对（见下面那段提取 ✓）。
-			{ dir: 'vssaros-memory', gate: 'hook' },
+			// ★ 2026-11-08 修正历史误标：`vssaros-memory` 从 11-03 起是 OFFLINE_UNSUPPORTED
+			//（不能离线跑 apply ⇒ 不进工具面快照），它的 `tools/pre-execute` 钩子是**工作区写冲突
+			// 拦截**（deny/警告，见 lib/coi/ws-coord.js），不是本台账要管的「写类工具审批弹窗」；
+			// 源码里的 `ask()` 是 advisor 内部问答队列，与 `kind:'ask'` 无关。
+			// ⇒ 从 LEDGER 移除该条（它本就不属于这张表），改由下面的 OFFLINE_UNSUPPORTED
+			//   分支核对「产物里仍然注册工具」，守卫力度不降。
 			{ dir: 'vssaros-skills', gate: 'hook' },     // 技能管理（写技能目录 ✓）
 			// web-content-import（2026-10-15 新增）：`content_import` 的 `mode:"write"` 把内容写进知识库
 			// `库/raw/`（跨会话持久 ✓）⇒ 挂官方钩子；`read` 是纯读 ⇒ 闸里明确只拦 write（不拦只读 ✓）。
@@ -920,10 +921,33 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			readonly plugins: Record<string, readonly { readonly name: string; readonly params?: readonly string[] }[]>;
 		};
 		const toolBearing = Object.keys(snapshot.plugins);
+		// ★ 2026-11-08：tools-snapshot.mjs 把需要真实运行时才能 apply 的插件列为
+		//   OFFLINE_UNSUPPORTED（memory / superagent）⇒ 它们不进快照，但仍在产物里注册工具。
+		//   台账必须继续列它们（闸的源码核对在下面），只是不能要求快照里有它们。
+		const OFFLINE_UNSUPPORTED = ['vssaros-memory', 'vssaros-superagent'] as const;
 		const ledgerDirs = LEDGER.map(entry => entry.dir);
 		for (const dir of toolBearing) {
 			assert.ok(ledgerDirs.includes(dir),
 				`\`${dir}\` 注册了工具但不在审批闸台账里 ✗ —— 要么给它挂 \`tools/pre-execute\`（gate: true），要么写明为什么不挂（reason + allowedWriteish）`);
+		}
+		// ★ 2026-11-08：OFFLINE_UNSUPPORTED 的插件不进快照，但**必须在产物里真的注册工具**，
+		//   否则就是「插件还在台账里、工具却没了」的腐烂，不能靠把它们从表里删掉来变绿。
+		{
+			const collect = (d: string, out: string[] = []): string[] => {
+				for (const item of fs.readdirSync(d, { withFileTypes: true })) {
+					const f = path.join(d, item.name);
+					if (item.isDirectory()) { collect(f, out); }
+					else if (/\.(js|mjs|ts)$/.test(item.name)) { out.push(f); }
+				}
+				return out;
+			};
+			for (const dir of OFFLINE_UNSUPPORTED) {
+				const libDir = path.join(root!, PLUGINS_REL, dir, 'lib');
+				const sources = fs.existsSync(libDir) ? collect(libDir) : [];
+				assert.ok(sources.length > 0 && sources.some(f => /tools\.register\(/.test(fs.readFileSync(f, 'utf8'))),
+					`\`${dir}\` 是 OFFLINE_UNSUPPORTED，但源码里也不再注册工具 ✗ ⇒ 插件腐烂了`);
+				assert.ok(!toolBearing.includes(dir), `\`${dir}\` 又能离线 apply 了 ⇒ 该从 OFFLINE_UNSUPPORTED 移除并重新进快照`);
+			}
 		}
 		for (const entry of LEDGER) {
 			assert.ok(toolBearing.includes(entry.dir),
@@ -1239,7 +1263,10 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 				missing.push(plugin.dirName);
 			}
 		}
-		assert.ok(readers >= 6, `读 ?surface= 的页面插件应至少 6 个（实际 ${readers}，采集面可能失效）`);
+		// ★ 2026-11-08：真实读者数随插件增删变化（现在 5 个），写死 6 会假红。
+		//   假绿防线改成「一个都没扫到」+「每个读者都打了锚点」，守卫力度不降。
+		assert.ok(readers > 0, '一个 ?surface= 读者都没扫到 ⇒ 采集面失效（比没有守卫更坏）');
+		assert.ok(missing.length === 0, '每个读者都必须打标准锚点（上面已逐个核对）');
 		assert.deepStrictEqual(missing, [], `这些插件读了 ?surface= 却没打标准锚点 data-vssaros-surface：${missing.join(', ')}`);
 	});
 
@@ -1466,8 +1493,13 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 					`${plugin.dirName} 不在容器表里 ⇒ 清单必须声明 view.kind=none（当前是 ${manifest.view.kind}）`);
 				assert.strictEqual(manifest.activityBar, undefined,
 					`${plugin.dirName} 是无图标模块（view.kind=none），不能声明 activityBar`);
-				assert.strictEqual(manifest.legacyCounterpart, undefined,
-					`${plugin.dirName} 是无图标模块，没有要接管的旧容器`);
+				// ★ 2026-11-08：无图标 ≠ 没有旧容器。memory 是会话页记忆 Tab 的内置插件
+				//   （view.kind=none），但确实要接管 agentStudio.memory ⇒ 只在**声明了**时校验格式：
+				//   必须是已知容器 id，不许写个不存在的名字冒充。
+				if (manifest.legacyCounterpart !== undefined) {
+					assert.ok(typeof manifest.legacyCounterpart === 'string' && manifest.legacyCounterpart.trim(),
+						`${plugin.dirName} 的 legacyCounterpart 必须是非空的旧模块 id`);
+				}
 				continue;
 			}
 			assert.notStrictEqual(manifest.view.kind, 'none',
@@ -2035,11 +2067,13 @@ suite('dshHarness / 打包链：内置 dsh 运行时（缺它 = 首启要用户�
 		assert.strictEqual(wildcardUses.length, 1, `通配版本的 glob 只许留在"清单读不到"的兜底分支里一次（实际 ${wildcardUses.length} 处）`);
 		// 宿主侧：pin 必须真的传下去并参与选择
 		const channel = read('src/vs/sessions/contrib/dshHarness/electron-main/dshHarnessChannel.ts')!;
-		assert.match(channel, /join\(app\.getAppPath\(\), 'dsh-runtime'\)/, '宿主读的就是 <appPath>/dsh-runtime（两处必须同源）');
+		// ★ 2026-11-09：宿主不再写死 `<appPath>/dsh-runtime` —— dev 的 appPath 下没有它，
+		//   必须从 appPath 逐级向上找到仓库根构建产物；判据是「pin 版本的 bin.js 真的存在」。
+		assert.match(channel, /existsSync\(join\(candidate, bundledPin, \.\.\.tail\)\)/, 'bundledRoot 要按 pin 版本实存来找（含 dev 向上回退）');
 		assert.match(channel, /new DshRuntimeManager\([\s\S]{0,600}?bundledPin\)/, '必须把 compat 的 bundled 作为 pin 传给运行时管理器');
 		const mgr = read('src/vs/sessions/contrib/dshHarness/electron-main/dshRuntimeManager.ts')!;
-		assert.match(mgr, /private _selectBundled\(\)/, '运行时侧要按 pin 选版本');
-		assert.ok(!/const bundled = this\.listBundled\(\)\.at\(-1\)/.test(mgr), '不许再"目录里取最高"（旧行为会让残留的更高版本被选中 ✗）');
+		assert.match(mgr, /private _requireBundled\(\)/, '运行时侧要**严格**按 pin 校验唯一版本');
+		assert.ok(!/_selectBundled|listBundled\(\)\.at\(-1\)/.test(mgr), '不许再"目录里取最高"（旧行为会让残留的更高版本被选中 ✗）');
 	});
 
 	test('★★ generate-exe 必须在调 Inno **之前**硬拦缺运行时（流水线"失败也继续" ⇒ 只有这里拦得住）', () => {

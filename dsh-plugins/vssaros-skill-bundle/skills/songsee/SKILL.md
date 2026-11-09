@@ -4,6 +4,7 @@ description: Audio spectrograms/features (mel, chroma, MFCC) via CLI.
 activation: manual
 match: ["songsee", "audio", "visualization", "spectrogram", "music", "analysis"]
 category: media
+tier: extended
 ---
 
 # songsee

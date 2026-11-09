@@ -4,6 +4,7 @@ description: Search/download GIFs from Tenor via curl + jq.
 activation: manual
 match: ["gif-search", "gif search", "gif", "media", "search", "tenor", "api"]
 category: media
+tier: extended
 ---
 
 # GIF Search (Tenor API)

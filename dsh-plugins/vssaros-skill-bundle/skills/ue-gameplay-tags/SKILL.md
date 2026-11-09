@@ -2,6 +2,7 @@
 name: ue-gameplay-tags
 description: 在运行中的 UE5 编辑器里处理 GameplayTag：注册一个新 Tag 使其立即有效（无需重启），以及把 GameplayTag 类型的 UPROPERTY 设到资产/CDO 上。堵住"Python 够不到 GameplayTagsManager、手改 DefaultGameplayTags.ini 要重启才生效"这个反复踩的坑。含关键约束：Live Coding 新增的 C++ UPROPERTY 在重启前不会出现在已存在的 BP 子类上。
 displayName: "UE GameplayTag：注册 Tag + 设 Tag 属性（免重启）"
+tier: extended
 ---
 
 # UE GameplayTag：注册 Tag + 设 Tag 属性（免重启）

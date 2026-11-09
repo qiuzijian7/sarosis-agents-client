@@ -8,6 +8,7 @@ activation: manual
 match: ["ponytail-gain", "ponytail gain", "what does ponytail save", "show ponytail impact", "ponytail scoreboard", "ponytail收益", "ponytail效果"]
 category: meta
 recommended_tools: []
+tier: extended
 ---
 
 # Ponytail Gain

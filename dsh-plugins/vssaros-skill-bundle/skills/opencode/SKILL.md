@@ -4,6 +4,7 @@ description: Delegate coding to OpenCode CLI (features, PR review).
 activation: manual
 match: ["opencode", "coding-agent", "autonomous", "refactoring", "code-review"]
 category: ai-agents
+tier: extended
 ---
 
 # OpenCode CLI

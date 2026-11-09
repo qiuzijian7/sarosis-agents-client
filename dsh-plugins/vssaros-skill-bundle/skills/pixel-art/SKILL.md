@@ -4,6 +4,7 @@ description: Pixel art w/ era palettes (NES, Game Boy, PICO-8).
 activation: manual
 match: ["pixel-art", "pixel art", "creative", "arcade", "snes", "nes", "gameboy", "retro", "image", "video"]
 category: creative
+tier: extended
 ---
 
 # Pixel Art

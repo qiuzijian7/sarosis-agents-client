@@ -4,7 +4,8 @@ description: QA 阶段 1——识别高风险业务路径与必需验证点。�
 activation: auto
 match: ["风险分析", "risk", "影响面", "高风险路径", "验证点"]
 category: development
-recommended_tools: ["trace_path", "search_graph", "detect_changes", "file_read"]
+recommended_tools: ["codebase_trace", "codebase_search", "codebase_changes", "read"]
+tier: core
 ---
 
 # QA Risk Analysis — 风险分析
@@ -19,14 +20,14 @@ recommended_tools: ["trace_path", "search_graph", "detect_changes", "file_read"]
 按重要性排序：
 
 1. **业务主路径** — 必须端到端验证的核心旅程
-2. **改动影响面** — 用 `detect_changes` 拿 diff，用 `trace_path` 追下游调用
+2. **改动影响面** — 用 `codebase_changes` 拿 diff，用 `codebase_trace` 追下游调用
 3. **数据边界** — 空值、越界、并发、大额/大数据量
 4. **外部依赖** — 第三方服务、数据库、消息队列的失败路径
 5. **历史故障区** — 查 `.qa-agent/knowledge/` 经验库
 
 ### 2. 影响面传播
 
-用 `trace_path` 从改动函数向下游追（direction=callees），标记：
+用 `codebase_trace` 从改动函数向下游追（direction=callees），标记：
 - 被改动的直接下游
 - 跨模块边界的传播
 - 扇入高（inDegree 大）的节点——改动影响面广

@@ -4,6 +4,7 @@ description: "Inspect codebases w/ pygount: LOC, languages, ratios."
 activation: manual
 match: ["codebase-inspection", "codebase inspection", "loc", "code analysis", "pygount", "codebase", "metrics", "repository"]
 category: github
+tier: extended
 ---
 
 # Codebase Inspection with pygount

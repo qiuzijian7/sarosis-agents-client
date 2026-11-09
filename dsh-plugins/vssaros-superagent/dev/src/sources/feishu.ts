@@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import { FeishuBotSchema } from '../deployment.ts'
 import { feishuLink, sendFeishu } from './feishu-channel.ts'
+import { BUNDLED_FEISHU_APP } from './feishu-share.ts'
 import { feishuThreadContext } from './feishu-read.ts'
 import { refreshChatNames, runFeishu } from './feishu-loops.ts'
 import { SOURCE, feishuTriggerId } from './feishu-trigger.ts'
@@ -19,6 +20,10 @@ const MembersSchema = z.looseObject({
   has_more: z.boolean(), truncations: z.array(z.unknown()).optional(),
 })
 const FeishuConfigSchema = FeishuBotSchema.extend({
+  // VsSaros addition: the CLI command and the app are built in and no longer exposed as panel settings.
+  // Overriding (instead of changing FeishuBotSchema) keeps the deployment contract's empty defaults intact.
+  cli: z.string().trim().default('lark-cli'),
+  appId: z.string().trim().regex(/^(cli_[A-Za-z0-9]+)?$/, 'cli_…').default(BUNDLED_FEISHU_APP.appId),
   readPageSize: z.number().int().min(1).max(50).default(20),
   linkTimeoutMs: z.number().int().min(1).max(90000).default(5000),
   chats: z.array(z.object({ chatId: z.string().regex(/^oc_[a-zA-Z0-9]+$/), name: z.string().trim().max(60).optional(), listen: z.enum(['mentions', 'all']) }).strict())
@@ -35,12 +40,11 @@ export const feishuKind: SourceKind<FeishuConfig> = {
   description: { zh: '接收下列群和私聊中发给机器人的消息，补收群历史并轮询订阅的线程。', en: 'Receives messages to the bot in these chats and direct messages, recovers chat history and polls subscribed Threads.' },
   schema: FeishuConfigSchema,
   fields: [
-    { key: 'cli', type: 'text', label: { zh: '机器人的 lark-cli', en: 'Bot lark-cli' },
-      hint: { zh: '命令名或绝对路径，指向只允许机器人身份（strict mode bot）的 lark-cli 配置；执行器以 lark-cli 调用它。保存时读取应用和机器人，然后重启 dsh-superagent。', en: 'A command name or absolute path of a lark-cli configuration that allows only the bot identity (strict mode bot); the Executor calls it as lark-cli. Saving reads the app and the bot, then restarts dsh-superagent.' } },
-    // VsSaros addition: pick the Feishu app by ID instead of preparing a lark-cli configuration per app.
+    // VsSaros addition: the lark-cli command and its App Secret are built in; the CLI option and its local
+    // diagnostics were removed from the card. Only the app ID remains, so an own app can still be selected.
     { key: 'appId', type: 'text', label: { zh: '飞书应用 App ID', en: 'Feishu app ID' }, pattern: '(cli_[A-Za-z0-9]+)?',
-      hint: { zh: '可选，形如 cli_xxxx。留空 = 用 lark-cli 当前的 profile（原来的行为）。填了就用这个应用的 lark-cli profile（lark-cli 默认以 App ID 命名 profile）；没有的话，保存时会用 VsSaros Bots「渠道」里这个应用的 App Secret 自动添加一个只允许机器人身份的 profile —— Secret 只经 stdin 交给 lark-cli，不进设置、不进日志。Host 和执行器都固定用这个 profile。和 Bots 用同一个应用也可以：同一个 Host 里会共用 Bots 的长连接。',
-        en: 'Optional, like cli_xxxx. Empty uses lark-cli\'s active profile (the previous behaviour). Set, it uses this app\'s lark-cli profile (lark-cli names a profile after its app by default); when there is none, saving adds a bot-only profile from the App Secret the VsSaros Bots keep for this app in their channel settings — the secret goes to lark-cli through stdin only, never into settings or logs. The Host and the Executor both use this profile. Sharing an app with the Bots is fine: in one Host the Source listens through the Bots connection.' } },
+      hint: { zh: '默认 cli_a860911d2e7f5013（安装包自带）。该应用的 App Secret 也随包内置、明文编译在 lib/ 里，装完即可连；Bots「渠道」里给同一应用配的 Secret 会优先使用。换成自己的应用时填新的 App ID，并在 Bots 渠道里为它配 Secret。留空 = 用 lark-cli 当前 profile（旧行为）。Secret 只经 stdin 交给 lark-cli，不进设置、不进日志；随包密钥轮换需改代码并升级版本。',
+        en: 'Defaults to cli_a860911d2e7f5013 (shipped with the installation). Its App Secret is built in too (plain text in lib/), so a fresh install connects without setup; a Secret configured for the same app in the Bots channel wins. Enter another App ID to use your own app and configure its Secret there. Empty uses the active lark-cli profile. The secret only reaches lark-cli through stdin, never settings or logs; rotating the shipped secret needs a code change and a version bump.' } },
     { key: 'chats', type: 'rows', label: { zh: '接收的群', en: 'Chats' },
       hint: { zh: '“仅 @”只接收 @ 机器人的消息和已有工单的线程；“全部消息”也接收其余消息，评估可以按规则从中推断工作，需要机器人有读取全部消息的权限。', en: '"@ only" receives messages that mention the bot and Threads that have Tickets; "All" also receives the rest, from which Eval may infer work under the rules; the bot needs permission to read all messages.' },
       columns: [
@@ -126,7 +130,8 @@ export const feishuKind: SourceKind<FeishuConfig> = {
     ],
     values: ({ deployment, trigger }) => ({ DSH_SUPERAGENT_FEISHU_BOT: deployment.feishu ? deployment.feishu.name || deployment.feishu.botId : '', DSH_SUPERAGENT_FEISHU_CHAT: trigger?.source === SOURCE ? String(trigger.meta.chatId ?? '') : '' }),
   },
-  facts: (deployment): Record<string, Localized | string> => deployment?.feishu ? { cli: { zh: `当前机器人 ${deployment.feishu.name || deployment.feishu.botId}`, en: `Current bot ${deployment.feishu.name || deployment.feishu.botId}` } } : {},
+  // The current bot was a note on the `cli` field; with that option removed it rides on the app ID field instead.
+  facts: (deployment): Record<string, Localized | string> => deployment?.feishu ? { appId: { zh: `当前机器人 ${deployment.feishu.name || deployment.feishu.botId}`, en: `Current bot ${deployment.feishu.name || deployment.feishu.botId}` } } : {},
 }
 /** Returns the Feishu Source's settings, falling back to schema defaults while the Feishu plugin is disabled. */
 export const feishuSettings = (sources: SourceRegistry): FeishuConfig => sources.instance<FeishuConfig>(SOURCE)?.config ?? FeishuConfigSchema.parse({})

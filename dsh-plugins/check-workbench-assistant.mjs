@@ -200,7 +200,7 @@ async function openWorkbench(env, id) {
 
 // ── ③ 同一工作区里**两个工作台各自新建** ⇒ 两条不同的会话、各带各的 agent（不再抢同一条）──────────────
 {
-	const env = makeEnv({ presets: ['vssaros-marketplace-bot', 'vssaros-kb-expert'] });
+	const env = makeEnv({ presets: ['vssaros-marketplace-bot', 'vssaros-knowledge-base-expert'] });
 	try {
 		reg(env, '商城', 'vssaros:marketplace');
 		reg(env, '知识库', 'vssaros:kb');
@@ -214,7 +214,7 @@ async function openWorkbench(env, id) {
 		truthy('③ 两个工作台拿到的是**两条不同**的会话', !!a && !!b && a !== b, a + ' / ' + b);
 		eq('③ 各自的 agent：商城 = 商城助手，知识库 = 知识库专家',
 			[env.sessionsById[a] && env.sessionsById[a].projectionValues.agentPreset, env.sessionsById[b] && env.sessionsById[b].projectionValues.agentPreset],
-			['vssaros-marketplace-bot', 'vssaros-kb-expert']);
+			['vssaros-marketplace-bot', 'vssaros-knowledge-base-expert']);
 		eq('③ 各自归属自己', [env.service.state.sessionBindings[a], env.service.state.sessionBindings[b]], ['vssaros/marketplace', 'vssaros/kb']);
 		eq('③ 两次都没走 connectBlank', env.calls.connectBlank.length, 0);
 		truthy('③ 两条都登记进了工作区（输入框可用的前提）', env.wsItems[0].sessionIds.includes(a) && env.wsItems[0].sessionIds.includes(b));
@@ -225,7 +225,7 @@ async function openWorkbench(env, id) {
 
 // ── ④ 前台是**别的**工作台时，点这个工作台的按钮 ⇒ 仍归属这个工作台 ───────────────────────────────
 {
-	const env = makeEnv({ presets: ['vssaros-marketplace-bot', 'vssaros-kb-expert'] });
+	const env = makeEnv({ presets: ['vssaros-marketplace-bot', 'vssaros-knowledge-base-expert'] });
 	try {
 		reg(env, '商城', 'vssaros:marketplace');
 		reg(env, '知识库', 'vssaros:kb');
@@ -239,10 +239,10 @@ async function openWorkbench(env, id) {
 	} finally { env.restore(); }
 }
 
-// ── ⑤ 知识库：候选两个，以 list() 里真实存在的为准 ────────────────────────────────────────────
+// ── ⑤ 知识库：单值 preset，以 list() 里真实存在的为准 ─────────────────────────────────────────
 for (const [label, presets, expected] of [
-	['数据根里是 kb-expert（本机）', ['vssaros-kb-expert', 'vssaros-media-librarian'], 'vssaros-kb-expert'],
-	['内置目录是 knowledge-base-expert（另一套环境）', ['vssaros-knowledge-base-expert'], 'vssaros-knowledge-base-expert'],
+	['内置知识库专家已注册', ['vssaros-knowledge-base-expert'], 'vssaros-knowledge-base-expert'],
+	['名册里还有别的 agent 也不串台', ['vssaros-media-librarian', 'vssaros-knowledge-base-expert'], 'vssaros-knowledge-base-expert'],
 ]) {
 	const env = makeEnv({ presets });
 	try {
@@ -291,10 +291,10 @@ for (const [label, presets, expected] of [
 		await click(m.container.querySelector('[data-vssaros-wb-new-session]'));
 		eq('⑦ 还没注册 ⇒ 先不带 preset 建（不能因此建不出会话，也不拿未注册的 id 去撞）', env.calls.create, [{ workspaceId: 'ws-1' }]);
 		eq('⑦ 还没注册时**不** select', env.calls.select, []);
-		env.roster.push('vssaros-kb-expert');   // lazy 补齐到了
+		env.roster.push('vssaros-knowledge-base-expert');   // lazy 补齐到了
 		await act(async () => { await tick(120); });
-		eq('⑦ 注册好后补到这条会话上：select(sess-1, 知识库专家)', env.calls.select, [['sess-1', 'vssaros-kb-expert']]);
-		eq('⑦ 会话的 agent 真的变了', env.sessionsById['sess-1'].projectionValues.agentPreset, 'vssaros-kb-expert');
+		eq('⑦ 注册好后补到这条会话上：select(sess-1, 知识库专家)', env.calls.select, [['sess-1', 'vssaros-knowledge-base-expert']]);
+		eq('⑦ 会话的 agent 真的变了', env.sessionsById['sess-1'].projectionValues.agentPreset, 'vssaros-knowledge-base-expert');
 		await m.unmount();
 	} finally { env.restore(); }
 }
@@ -331,7 +331,7 @@ for (const [label, presets, expected] of [
 // 真机日志：「套用默认 agent 被拒：vssaros-media-librarian @ b553d405（Unknown agent preset: vssaros-knowledge-base-expert）」
 // ——媒体库的会话被知识库插件改过。根因是插件对**全局当前会话**下手。宿主只认「这个工作台显示的那条」。
 {
-	const env = makeEnv({ presets: ['vssaros-kb-expert', 'vssaros-media-librarian', 'vssaros-marketplace-bot'] });
+	const env = makeEnv({ presets: ['vssaros-knowledge-base-expert', 'vssaros-media-librarian', 'vssaros-marketplace-bot'] });
 	try {
 		reg(env, '知识库', 'vssaros:kb');
 		reg(env, '媒体库', 'vssaros:media');
@@ -350,7 +350,7 @@ for (const [label, presets, expected] of [
 		await act(async () => { await tick(80); });
 		const sorted = [...env.calls.select].sort((x, y) => x[0].localeCompare(y[0]));
 		eq('⑨ 三个工作台各改各的那条，一一对应（没有任何交叉）', sorted,
-			[['s-kb', 'vssaros-kb-expert'], ['s-media', 'vssaros-media-librarian'], ['s-mk', 'vssaros-marketplace-bot']]);
+			[['s-kb', 'vssaros-knowledge-base-expert'], ['s-media', 'vssaros-media-librarian'], ['s-mk', 'vssaros-marketplace-bot']]);
 		// 想让知识库去改**不是它显示的**会话 ⇒ 拒绝
 		env.sessionsById['s-other'] = { id: 's-other', blank: true, projectionValues: { agentPreset: 'vssaros-standard' } };
 		await env.service.bindSession('vssaros/media', 's-other');
@@ -379,7 +379,7 @@ for (const [label, presets, expected] of [
 		env.service.applyDefaultPreset('vssaros/kb', 's-b');
 		await tick(30);
 		env.sessionsById['s-b'].projectionValues.agentPreset = 'vssaros-ppt-slides-master';
-		env.roster.push('vssaros-kb-expert', 'vssaros-ppt-slides-master');
+		env.roster.push('vssaros-knowledge-base-expert', 'vssaros-ppt-slides-master');
 		await act(async () => { await tick(120); });
 		eq('⑩ 等待期间对话栏换了会话 ⇒ 不再改原来那条', env.calls.select.filter(c => c[0] === 's-a'), []);
 		eq('⑩ 等待期间用户手动换了 agent ⇒ 尊重，不抢回来', env.calls.select.filter(c => c[0] === 's-b'), []);
@@ -399,7 +399,7 @@ for (const [label, presets, expected] of [
 		env.service.applyDefaultPreset('vssaros/kb', 's-c');
 		await tick(30);
 		env.sessionsById['s-c'].blank = false;
-		env.roster.push('vssaros-kb-expert');
+		env.roster.push('vssaros-knowledge-base-expert');
 		await act(async () => { await tick(120); });
 		eq('⑩ 等待期间用户已经开聊 ⇒ **绝不**改进行中对话的 agent', env.calls.select, []);
 	} finally { env.restore(); }
@@ -465,7 +465,7 @@ for (const [label, presets, expected] of [
 
 // ── ⑭ 自愈：停靠的是没被工作区收录的空会话 ⇒ 给**这个**工作台建一条自己的新会话 ─────────────────────
 {
-	const env = makeEnv({ presets: ['vssaros-kb-expert', 'vssaros-marketplace-bot'] });
+	const env = makeEnv({ presets: ['vssaros-knowledge-base-expert', 'vssaros-marketplace-bot'] });
 	const cw = captureWarns();
 	try {
 		reg(env, '知识库', 'vssaros:kb');
@@ -482,7 +482,7 @@ for (const [label, presets, expected] of [
 		truthy('⑭ 知识库换上了一条新会话', !!now && now !== old, '现在是 ' + now);
 		eq('⑭ 新会话归属**知识库**（不是前台的商城）', env.service.state.sessionBindings[now], 'vssaros/kb');
 		eq('⑭ 用知识库自己的 agent 新建（sessions.create，不走 connectBlank）',
-			[env.calls.create[0], env.calls.connectBlank.length], [{ workspaceId: 'ws-1', agentPreset: 'vssaros-kb-expert' }, 0]);
+			[env.calls.create[0], env.calls.connectBlank.length], [{ workspaceId: 'ws-1', agentPreset: 'vssaros-knowledge-base-expert' }, 0]);
 		truthy('⑭ 新会话登记进了工作区', env.wsItems[0].sessionIds.includes(now));
 		truthy('⑭ 换会话时留下告警（可追溯）', cw.warns.some(w => /换一条自己的新会话/.test(w)), cw.warns.join('|').slice(0, 160));
 		eq('⑭ 商城没被动到（没有给商城建 / 绑会话）', Object.values(env.service.state.sessionBindings).filter(x => x === 'vssaros/marketplace').length, 0);
@@ -492,7 +492,7 @@ for (const [label, presets, expected] of [
 	} finally { cw.restore(); env.restore(); }
 }
 {
-	const env = makeEnv({ presets: ['vssaros-kb-expert'] });
+	const env = makeEnv({ presets: ['vssaros-knowledge-base-expert'] });
 	try {
 		reg(env, '知识库', 'vssaros:kb');
 		await env.service.load();

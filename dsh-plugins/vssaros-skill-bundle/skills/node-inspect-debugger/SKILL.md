@@ -4,6 +4,7 @@ description: Debug Node.js via --inspect + Chrome DevTools Protocol CLI.
 activation: auto
 match: ["node-inspect-debugger", "node inspect debugger", "debugging", "nodejs", "node-inspect", "cdp", "breakpoints", "ui-tui"]
 category: development
+tier: core
 ---
 
 # Node.js Inspect Debugger

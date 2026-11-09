@@ -2,6 +2,7 @@
 name: ue-blueprint-graph
 description: 通过 Python + S1Editor 里的 C++ 桥操控 UE5 Blueprint 事件图/函数图。先用 unreal_dump 导出 CDO 全貌（json1 属性视图 + json2 序列化视图），再深入图节点操作。含能力地图、桥 API、Recipe、扩展方法。
 displayName: "UE5 Blueprint Graph 操控技能"
+tier: extended
 ---
 
 # UE5 Blueprint Graph 操控技能

@@ -12,7 +12,7 @@ import { ticketMark } from './marks.ts'
 import { GLOSSARY, GLOSSARY_VALUES, en, zh, type DshSuperagentKey } from './locales.ts'
 import { ChatTab, NativeContext, type NativeConversation } from './chat.tsx'
 import { SidePanel, SideProvider, useSide } from './side.tsx'
-import { WorkPage, WorkProvider } from './work.tsx'
+import { WorkProvider } from './work.tsx'
 import { PanelProvider, usePanel, usePanelData } from './provider.tsx'
 import { HOME, NAV_TABS, initialLocation, lastSettingsGroup, remember, routeLabel, settingsRoute, type Location, type Route,
   type Tab } from './route.ts'
@@ -157,14 +157,19 @@ function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab
   const page = (() => {
     switch (route.page) {
       case 'chat': return <ChatTab />
-      case 'work': return <WorkPage key={route.query?.ticket} ticketId={route.query?.ticket} />
+      // ★ 2026-11-09（用户要求）：流程图 / 看板 / 列表归到「执行」页签内。
+      //   `work` 已由 parseRoute 归一到 execution；这个 case 只为兼容尚未归一的历史 Route 值，
+      //   渲染同样的执行页（含三视图），不再有独立页面。
+      case 'work': return state ? <ExecutionStatus filter="open" state={state} reload={reload}
+        ticketId={route.query?.ticket} /> : waiting
       case 'source': return <SourceStatus />
       case 'trigger': return route.id !== undefined ? <ThreadPage key={route.id} id={route.id} target={route.query?.trigger} />
         : <TriggerStatus filter={route.query?.filter ?? 'subscribed'} />
       case 'eval': return <EvalStatus filter={route.query?.filter ?? 'work'} window={route.query?.window}
         paused={!!state?.paused} />
       case 'execution': return route.id !== undefined ? <TicketPage key={route.id} id={route.id} />
-        : state ? <ExecutionStatus filter={route.query?.filter ?? 'open'} state={state} reload={reload} /> : waiting
+        : state ? <ExecutionStatus filter={route.query?.filter ?? 'open'} state={state} reload={reload}
+          ticketId={route.query?.ticket} /> : waiting
       case 'settings': return state ? <SettingsPage key={state.masterId} group={route.query.group} query={route.query} state={state}
         deploymentForm={deploymentForm} /> : waiting
     }

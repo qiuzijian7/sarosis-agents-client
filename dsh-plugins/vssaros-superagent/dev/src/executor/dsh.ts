@@ -4,7 +4,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { mkdir, rmdir, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { key, latestAssignment, latestReport, liveTicket, runningAssignment, staffing, threadKey, waitsForPerson } from '../core/index.ts'
+import { isGroupTicket, key, latestAssignment, latestReport, liveTicket, runningAssignment, staffing, threadKey, waitsForPerson } from '../core/index.ts'
 import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, Trigger }
   from '../core/index.ts'
 import type { Machine } from '../deployment.ts'
@@ -270,12 +270,12 @@ export class DshExecutor implements Executor {
   /** Enqueues a `launch` effect for an accepted or resumed assignment; launches start in queue order as worker slots free up. */
   start(ticket: Ticket, assignment: Assignment): void {
     // VsSaros addition (2026-11-07): a group chat does a group ticket's work; it never gets a worker.
-    if (ticket.group) return
+    if (isGroupTicket(ticket)) return
     this.host.effects.enqueue('launch', assignment.id, { ticketId: ticket.id, assignmentId: assignment.id })
   }
   /** Enqueues a `delivery` effect to steer pending inputs into `ticket`'s running worker session. */
   deliver(ticket: Ticket, _assignment: Assignment): void {
-    if (ticket.group) return
+    if (isGroupTicket(ticket)) return
     this.host.effects.enqueue('delivery', ticket.id, { ticketId: ticket.id })
   }
   /** VsSaros addition: delivers the inputs a ticket kept while it was held (see `ExecutorHost.held`). */
@@ -286,7 +286,7 @@ export class DshExecutor implements Executor {
     const assignment = ticket && latestAssignment(ticket)
     if (!ticket || !liveTicket(ticket) || assignment?.id !== assignmentId || assignment.state !== 'pending') return
     // VsSaros addition: a launch queued before staffing began waits for the agreement, which queues it again.
-    if (staffing(ticket) || ticket.group) return
+    if (staffing(ticket) || isGroupTicket(ticket)) return
     this.slots.reserve(ticketId, 'launch')
     try { await this.launch(ticket, assignment); this.transient.delete(`launch:${assignmentId}`) }
     catch (error) {

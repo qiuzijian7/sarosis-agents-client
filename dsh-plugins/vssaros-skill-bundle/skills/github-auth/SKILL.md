@@ -4,6 +4,7 @@ description: "GitHub auth setup: HTTPS tokens, SSH keys, gh CLI login."
 activation: manual
 match: ["github-auth", "github auth", "github", "authentication", "git", "gh-cli", "ssh", "setup"]
 category: github
+tier: extended
 ---
 
 # GitHub Authentication Setup

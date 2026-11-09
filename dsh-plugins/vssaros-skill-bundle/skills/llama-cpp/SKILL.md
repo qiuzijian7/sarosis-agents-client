@@ -4,6 +4,7 @@ description: llama.cpp local GGUF inference + HF Hub model discovery.
 activation: manual
 match: ["llama-cpp", "llama cpp", "llama.cpp", "gguf", "quantization", "hugging face hub", "cpu inference", "apple silicon", "edge deployment", "amd gpus", "intel gpus", "nvidia", "url-first"]
 category: mlops
+tier: extended
 ---
 
 # llama.cpp + GGUF

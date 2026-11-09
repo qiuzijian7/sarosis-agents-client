@@ -4,6 +4,7 @@ description: Pitfalls, examples, and edge cases for Hermes Kanban workers. The l
 activation: manual
 match: ["kanban-worker", "kanban worker", "kanban", "multi-agent", "collaboration", "workflow", "pitfalls"]
 category: devops
+tier: extended
 ---
 
 # Kanban Worker — Pitfalls and Examples

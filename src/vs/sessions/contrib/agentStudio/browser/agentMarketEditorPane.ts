@@ -864,38 +864,13 @@ export class AgentMarketEditorPane extends EditorPane {
 			}
 		};
 
-		// ── Install button ──
+		// ── Install button（2026-11-09：IDE 侧不再创建 Agent，安装统一由 dsh 商城承接）──
 		installBtn.onclick = async () => {
 			if (!parsedAgent) { return; }
-			const inputs = (installBtn as any)._inputs as Record<string, HTMLInputElement> | undefined;
-			if (!inputs) { return; }
-
-			const name = inputs['name']?.value?.trim();
-			if (!name) {
-				this.notificationService.warn('请输入名称');
-				return;
-			}
-
-			installBtn.disabled = true;
-			installBtn.textContent = '安装中…';
-
-			try {
-				const createData: Partial<Agent> = {
-					...parsedAgent,
-					name,
-					role: inputs['role']?.value?.trim() || 'assistant',
-					version: inputs['version']?.value?.trim() || '1.0.0',
-					description: inputs['description']?.value?.trim() || '',
-					source: 'custom',
-				};
-				await this.agentStudioService.createAgent(createData);
-				this.notificationService.info(`✅ Agent "${name}" 安装成功`);
-				overlay.remove();
-			} catch (err) {
-				this.notificationService.error(`安装失败: ${err instanceof Error ? err.message : String(err)}`);
-				installBtn.disabled = false;
-				installBtn.textContent = '✓ 安装';
-			}
+			// ⚠ 不调 createAgent：IDE 侧写口已下线；dsh 侧 vssaros-marketplace 能独立安装 agent
+			//   （其 installer 明确「不需要 IDE 的 createAgent」）。这里只给可操作的指引，不假装安装成功。
+			this.notificationService.info('安装 Agent 已统一到 dsh 侧：请在 dsh 商城安装，或到聊天框「Bots」页签新建 Bot。');
+			overlay.remove();
 		};
 	}
 
