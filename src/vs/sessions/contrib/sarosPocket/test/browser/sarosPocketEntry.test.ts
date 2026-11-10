@@ -142,8 +142,8 @@ suite('sessions 贡献入口清单 — 登记不变量', () => {
 		const src = readEntrySources();
 		// 若连这些基线项都扫不到，说明读错文件 / 注释剥离过头 —— 必须红，不能假绿。
 		assert.ok(
-			src.includes('contrib/memory/browser/memory.contribution.js'),
-			'入口清单里应含 memory.contribution —— 扫描基准或注释剥离失效了',
+			src.includes('contrib/agentStudio/browser/agentStudio.contribution.js'),
+			'入口清单里应含 agentStudio.contribution —— 扫描基准或注释剥离失效了',
 		);
 		assert.ok(
 			src.includes('services/sessions/browser/sessionsManagementService.js'),

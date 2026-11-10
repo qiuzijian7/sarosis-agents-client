@@ -1,13 +1,12 @@
 // @vssaros/dsh-marketplace — 安装器（★ 2026-10-22 S2：dsh 侧自己下载/解包/落盘）
 //
 // ★ 为什么在 dsh 侧：这三类商品落的就是**数据根**，而 dsh 侧本来就在写它
-//   （`skill_manage` / `applyWorkflow`）⇒ 没有理由绕到 IDE 去装 ✓。
+//   （`skill_manage` 等本地注册）⇒ 没有理由绕到 IDE 去装 ✓。
 //   只有 **workbench** 包（dsh 插件）仍必须走 IDE 主进程（`dsh plugin add` + 重启 Host）。
 //
 // ★ 与 IDE 侧 `installers/*` 的语义**必须一致**（两侧都可能装同一个包 ⇒ 落点与格式不能漂）：
-//   - skill：`<数据根>/skills/<id>/`，`SKILL.md` 的 frontmatter **回写 `storeId` / `version`**
-//     （升级溯源要靠它；IDE 侧 `skillInstaller.injectFrontmatter` 同款）✓
-//   - workflow：`<数据根>/workflows/<id>/workflow.json`（dsh 引擎读同一处）
+//   - skill：`<数据根>/skills/<id>/SKILL.md` **正文逐字保留**（★ 2026-11-10 P1）；
+//     安装溯源写同级 `.market.json` 侧车，不再往 frontmatter 注入宿主字段
 //   - agent：**本轮不做**（要生成 `.agent.md`，格式真源在 IDE 侧 `agentMdFormat.ts`；
 //     dsh 侧复制一份会漂 ✗ ⇒ 仍走 IDE，等包格式统一成"包内自带 `.agent.md`"再搬）
 //
@@ -25,11 +24,17 @@ import { dirname, join, resolve } from 'node:path';
 import { listTarGzEntries } from './tar.js';
 // ★ 2026-11-09 Bot 组合包：清单契约 + MCP 注册/注销 + 台账（三者都不反向依赖 installers ⇒ 无环）
 import {
-	BOT_MANIFEST_FILE, BOT_RECEIPT, readBotManifest, scanBotSecrets, validateBotPack,
+	BOT_MANIFEST_FILE, makeBotReceipt, readBotManifest, scanBotSecrets, validateBotPack,
 	checkBotRequires, componentIdMap, rewriteAgentMd, rewriteSkillName,
 } from './botPack.js';
 import { registerMcpServer, removeMcpCompletely } from './mcpInstall.js';
 import { readInstalled, removeInstalled, upsertInstalled } from './installedLedger.js';
+// ★ 2026-11-10 P1：安装溯源侧车（SKILL.md 保持纯内容，可跨生态拷贝）
+import { SIDECAR_FILE, readSidecar, sidecarOf } from './sidecar.js';
+// ★ 2026-11-10 P3：knowledge 注册表（原子写 / 串行队列 / 与 KB 同口径的路径解析）
+import { addVault, removeVault } from './knowledgeRegistry.js';
+// ★ 2026-11-10 P1-B：统一组合包清单（可选；无 components.json ⇒ 完全走原链路）
+import { COMPONENTS_FILE, COMPONENT_DIR, planComponents, readComponents, validateComponents } from './components.js';
 
 /**
  * 落数据根的商品类型。
@@ -46,7 +51,7 @@ import { readInstalled, removeInstalled, upsertInstalled } from './installedLedg
  */
 // ★ 2026-10-23（用户「都转移到 dsh 侧实现」）：加 `mcp` —— 它的本地形态同样是目录
 //   （`<数据根>/mcp/<id>/config.json`），只是装完还要**注册进 mcp.json**（见 `mcpInstall.js`）
-export const BUNDLE_KINDS = ['skill', 'workflow', 'agent', 'mcp'];
+export const BUNDLE_KINDS = ['skill', 'agent', 'mcp'];
 
 /** sha256（hex）。 */
 export function sha256Of(buffer) {
@@ -77,10 +82,9 @@ export function assertSafeStoreId(id, what = 'id') {
 	return value;
 }
 
-/** 各 kind 的落地根：`<数据根>/skills` / `workflows` / `agents`（与 IDE 侧同口径 ✓）。 */
+/** 各 kind 的落地根：`<数据根>/skills` / `agents` / `mcp` / `knowledge`（与 publisher 的 KIND_DIR 同口径 ✓）。 */
 export function targetRootOf(dataRoot, kind) {
 	if (kind === 'skill') { return join(dataRoot, 'skills'); }
-	if (kind === 'workflow') { return join(dataRoot, 'workflows'); }
 	if (kind === 'agent') { return join(dataRoot, 'agents'); }
 	if (kind === 'mcp') { return join(dataRoot, 'mcp'); }
 	// ★ 2026-10-31：知识库落到 <数据根>/knowledge/<id>/（与 publisher 的 KIND_DIR 同口径 ✓）
@@ -252,7 +256,7 @@ async function previousComponentIds(dataRoot, storeId) {
 	];
 }
 
-async function installBotPack({ dataRoot, storeId, version, files, bot, upgrade }) {
+async function installBotPack({ dataRoot, storeId, version, files, bot, upgrade, osvCheck = null }) {
 	const checked = validateBotPack(files, bot);
 	if (checked.botId !== storeId) {
 		throw new Error(`bot.json 的 botId（${checked.botId}）与商城标识（${storeId}）不一致`);
@@ -303,14 +307,13 @@ async function installBotPack({ dataRoot, storeId, version, files, bot, upgrade 
 			const installedId = checked.installedIds.skills[i];
 			return {
 				kind: 'skill', id: installedId, dir: join(dataRoot, 'skills', installedId),
-				files: pathsOf(`skills/${s}/`).map(f => f.path === 'SKILL.md'
-					? {
-						...f,
-						data: Buffer.from(injectSkillFrontmatter(
-							rewriteSkillName(f.data.toString('utf8'), installedId),
-							{ storeId: installedId, version })),
-					}
-					: f),
+				files: [
+					// ★ 2026-11-10 P1：只改 `name`（命名空间前缀必需），不再注入 storeId/version
+					...pathsOf(`skills/${s}/`).map(f => f.path === 'SKILL.md'
+						? { ...f, data: Buffer.from(rewriteSkillName(f.data.toString('utf8'), installedId)) }
+						: f),
+					{ path: SIDECAR_FILE, data: Buffer.from(sidecarOf({ storeId: installedId, version, owner: storeId }), 'utf8') },
+				],
 			};
 		}),
 		...checked.mcpServers.map((m, i) => {
@@ -347,7 +350,10 @@ async function installBotPack({ dataRoot, storeId, version, files, bot, upgrade 
 		}
 		for (const item of plan.filter(p => p.kind === 'mcp')) {
 			const mf = files.find(f => f.path === `mcp/${item.source}/config.json`);
-			await registerMcpServer(dataRoot, item.id, JSON.parse(mf.data.toString('utf8')));
+			const cfg = JSON.parse(mf.data.toString('utf8'));
+			// 供应链预检在写 mcp.json 之前；blocked 抛错会走下面的 catch 回滚已落盘文件 ✓
+			if (typeof osvCheck === 'function') { await osvCheck(cfg); }
+			await registerMcpServer(dataRoot, item.id, cfg);
 		}
 		// 每个组件一条台账 ⇒ 已安装页签 / 升级检查能看到全部分发物，而不是只看到 Bot
 		for (const item of plan) {
@@ -379,7 +385,7 @@ async function installBotPack({ dataRoot, storeId, version, files, bot, upgrade 
 		targetDir: plan[0].dir,
 		fileCount: files.length,
 		skipped: [],
-		bot: BOT_RECEIPT,
+		bot: makeBotReceipt(),
 		// ★ 依赖状态如实回执：unknown ≠ 已满足，前端不该把「没查到」说成「都装好了」
 		requires,
 		components: plan.map(p => ({ kind: p.kind, id: p.id, dir: p.dir })),
@@ -387,7 +393,98 @@ async function installBotPack({ dataRoot, storeId, version, files, bot, upgrade 
 }
 
 /**
- * 安装一个 bundle 包（skill / workflow）。
+ * ★ 2026-11-10 P1-B：统一组合包（components.json）的分发安装。
+ *
+ * 与 installBotPack 的差别：不做命名空间自动改写、不做依赖范围核对、不做
+ * 分项生效回执 —— 作者显式声明最终落位 id，安装端只按清单分组落盘。
+ * 共同点：冲突检查在任何写盘之前；失败回滚；每个组件一条带 owner 的台账。
+ */
+async function installComponentsPack({ dataRoot, kind, storeId, version, files, pack, upgrade, osvCheck }) {
+	// ★ P3：knowledge 登记失败要回执出来（必须在 try 外定义 ⇒ return 里可见）
+	const knowledgeWarnings = [];
+	const checked = validateComponents({ files, pack, kind, storeId });
+	const plan = planComponents({ buckets: checked.buckets, dataRoot });
+	const ledger = await readInstalled(dataRoot);
+	const ownerOf = (k, id) => ledger.find(e => e.kind === k && e.storeId === id)?.owner ?? '';
+	if (!upgrade) {
+		for (const item of plan) {
+			if (await exists(item.dir)) {
+				const owner = ownerOf(item.kind, item.id);
+				if (owner && owner !== storeId) {
+					throw new Error(`「${item.id}」已被其它包占用（owner: ${owner}），不覆盖别人的组件`);
+				}
+				throw new Error(`「${item.id}」已经装过了（${item.dir}）。要更新请用「升级」`);
+			}
+		}
+	}
+	// 升级：新清单不再包含的旧组件（且 owner 属于自己）要清掉，绝不碰别人的
+	const previous = upgrade
+		? ledger.filter(e => e.owner === storeId && !plan.some(p => p.kind === e.kind && p.id === e.storeId))
+		: [];
+	const written = [];
+	try {
+		for (const item of plan) {
+			const runtime = item.files.filter(f => f.path !== SIDECAR_FILE);
+			// ★ P1-A：技能正文保持纯内容，溯源写侧车
+			if (item.kind === 'skill') {
+				runtime.push({ path: SIDECAR_FILE, data: Buffer.from(sidecarOf({ storeId: item.id, version, owner: storeId }), 'utf8') });
+			}
+			await writeFiles(item.dir, runtime, { overwrite: upgrade });
+			written.push(item);
+		}
+		for (const item of plan.filter(p => p.kind === 'mcp')) {
+			const mf = item.files.find(f => f.path === 'config.json');
+			const cfg = JSON.parse(mf.data.toString('utf8'));
+			// 供应链预检在写 mcp.json 之前；blocked 抛错会走下面 catch 回滚 ✓
+			if (typeof osvCheck === 'function') { await osvCheck(cfg); }
+			await registerMcpServer(dataRoot, item.id, cfg);
+		}
+		for (const item of plan.filter(p => p.kind === 'knowledge')) {
+			const reg = await registerKnowledgeVault({ dataRoot, id: item.id, name: item.id, dir: item.dir });
+			// ★ P3：不再静默吞 —— 登记失败要回执出来，否则「装完在 KB 里看不见」无从诊断
+			if (!reg?.ok) { knowledgeWarnings.push(`${item.id}：${String(reg?.why ?? '未知原因')}`); }
+		}
+		for (const item of plan) {
+			await upsertInstalled(dataRoot, { kind: item.kind, storeId: item.id, version, owner: storeId });
+		}
+		await cascadeRemoveOwned(dataRoot, storeId, previous);
+	} catch (e) {
+		if (!upgrade) {
+			for (const w of written) { await rm(w.dir, { recursive: true, force: true }).catch(() => undefined); }
+		}
+		for (const w of written.filter(w => w.kind === 'mcp')) {
+			await removeMcpCompletely(dataRoot, w.id).catch(() => undefined);
+		}
+		throw e;
+	}
+	return {
+		targetDir: (plan.find(p => p.kind === kind && p.id === storeId) ?? plan[0]).dir,
+		fileCount: files.length,
+		skipped: [],
+		combo: { count: plan.length },
+		components: plan.map(p => ({ kind: p.kind, id: p.id, dir: p.dir })),
+		...(knowledgeWarnings.length ? { vaultWarning: '知识库未登记进 KB 清单：' + knowledgeWarnings.join('、') } : {}),
+	};
+}
+
+/** 删掉 owner 属于自己的从属组件（目录 + mcp.json 注册 + KB 登记 + 台账），幂等。 */
+async function cascadeRemoveOwned(dataRoot, storeId, rows) {
+	for (const e of rows) {
+		const dir = COMPONENT_DIR[e.kind];
+		if (e.kind === 'mcp') {
+			await removeMcpCompletely(dataRoot, e.storeId).catch(() => undefined);
+		} else if (dir) {
+			await rm(join(dataRoot, dir, e.storeId), { recursive: true, force: true }).catch(() => undefined);
+		}
+		if (e.kind === 'knowledge') {
+			await unregisterKnowledgeVault({ dataRoot, id: e.storeId }).catch(() => undefined);
+		}
+		await removeInstalled(dataRoot, e.kind, e.storeId);
+	}
+}
+
+/**
+ * 安装一个 bundle 包（skill / agent / mcp / knowledge）。
  *
  * @param {object} args
  * @param {string} args.dataRoot
@@ -397,7 +494,7 @@ async function installBotPack({ dataRoot, storeId, version, files, bot, upgrade 
  * @param {Buffer} args.gzBuffer 下载到的 package.tar.gz
  * @param {boolean} [args.upgrade] true = 覆盖（升级）；false/缺省 = 已存在则拒绝
  */
-export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer, files: unpackedFiles, expectedSha256, upgrade = false, displayName = '' }) {
+export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer, files: unpackedFiles, expectedSha256, upgrade = false, displayName = '', osvCheck = null }) {
 	// ★ 2026-10-22：id 越界检查 + **在校验完 sha256 之前不碰磁盘**（顺序很重要：
 	//   先验包、再建目录 ⇒ 坏包不会留下半个目录）✓
 	assertSafeStoreId(storeId, 'storeId');
@@ -422,9 +519,18 @@ export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer
 		throw new Error('包内没有任何文件（拒绝安装一个空包）');
 	}
 	// ★ 2026-11-09：包里有 bot.json ⇒ 组合包，走分发安装；普通 agent 包保持原链路 ✓
+	const hasCombo = files.some(f => f.path === COMPONENTS_FILE);
 	const bot = readBotManifest(files);
+	if (bot && hasCombo) {
+		throw new Error('包里同时有 bot.json 与 components.json（两套组件清单会互相矛盾，请只留一份）');
+	}
 	if (bot) {
-		return installBotPack({ dataRoot, storeId, version, files, bot, upgrade });
+		return installBotPack({ dataRoot, storeId, version, files, bot, upgrade, osvCheck });
+	}
+	// ★ 2026-11-10 P1-B：统一组合包（可选；没有 components.json ⇒ 完全走原链路）
+	const combo = readComponents(files);
+	if (combo) {
+		return installComponentsPack({ dataRoot, kind, storeId, version, files, pack: combo, upgrade, osvCheck });
 	}
 	const existing = await exists(targetDir);
 	if (existing && !upgrade) {
@@ -435,23 +541,9 @@ export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer
 		backup = await backupBeforeUpgrade(targetDir, join(root, '.upgrade-backup'));
 	}
 
-	// skill：SKILL.md 必须存在，且要回写 storeId/version（与 IDE 侧同语义 ✓）
-	if (kind === 'skill') {
-		const skillMdIndex = files.findIndex(f => f.path === 'SKILL.md');
-		if (skillMdIndex < 0) {
-			throw new Error('包里缺少 SKILL.md（技能包必须以 SKILL.md 为入口）');
-		}
-		const injected = injectSkillFrontmatter(files[skillMdIndex].data.toString('utf8'), { storeId, version, displayName });
-		files[skillMdIndex] = { path: 'SKILL.md', data: Buffer.from(injected, 'utf8'), mode: files[skillMdIndex].mode };
-	}
-	// workflow：workflow.json 必须存在
-	if (kind === 'workflow') {
-		const i = files.findIndex(f => f.path === 'workflow.json');
-		if (i < 0) {
-			throw new Error('包里缺少 workflow.json（工作流包必须带定义文件）');
-		}
-		// 2026-10-23（简化）：**不再**往 workflow.json 塞 displayName ——
-		// workflow.json 的 `name` 本来就是可读名（「动态表情包工作流」），多一个字段只会让人猜哪个算数。
+	// skill：SKILL.md 必须存在；★ 2026-11-10 P1 正文逐字保留（元数据改走侧车）
+	if (kind === 'skill' && !files.some(f => f.path === 'SKILL.md')) {
+		throw new Error('包里缺少 SKILL.md（技能包必须以 SKILL.md 为入口）');
 	}
 	// agent（★ 2026-10-22）：旧包（agent.json + files.agentsMd）要转成 `.agent.md`；
 	// 目录镜像包直接就有 `.agent.md` ✓（见 normalizeAgentBundle）
@@ -467,26 +559,36 @@ export async function installBundle({ dataRoot, kind, storeId, version, gzBuffer
 	// ★ 2026-10-22（真机端到端抓到）：`manifest.json` 是**打包元数据**，不属于资源本体
 	//   ⇒ **不落盘**（三种 kind 都一样）。此前它会跟着写进 `<数据根>/<kind根>/<id>/` ⇒
 	//   资源目录里多出一个服务端格式的文件（污染，且下次发布还会把它当资源内容打进去 ✗）
-	const runtimeFiles = files.filter(f => f.path !== 'manifest.json');
+	const runtimeFiles = files.filter(f => f.path !== 'manifest.json' && f.path !== SIDECAR_FILE);
+	// ★ 2026-11-10 P1：安装溯源写侧车 —— SKILL.md 正文一个字节都不动，
+	//   装回来的技能可原样拷到官方 dsh / Claude Code / Cursor 仍能用。
+	if (kind === 'skill') {
+		runtimeFiles.push({ path: SIDECAR_FILE, data: Buffer.from(sidecarOf({ storeId, version, displayName }), 'utf8') });
+	}
 	await writeFiles(targetDir, runtimeFiles, { overwrite: Boolean(existing) });
 	// ★ 2026-10-31：知识库装完**登记成库**（否则在知识库里看不见 ⇒ 等于没装）
 	let vault = undefined;
+	let vaultWarning = '';
 	if (kind === 'knowledge') {
+		// ⚠ 这里**没有** manifest 变量（此前误引用它 ⇒ ReferenceError 被吞 ⇒ 登记静默失败）
+		//   ⇒ 从包内的 manifest.json 里取名字；取不到就用 storeId ✓
+		let kbName = storeId;
 		try {
-			// ⚠ 这里**没有** manifest 变量（此前误引用它 ⇒ ReferenceError 被吞 ⇒ 登记静默失败）
-			//   ⇒ 从包内的 manifest.json 里取名字；取不到就用 storeId ✓
-			let kbName = storeId;
-			try {
-				const mf = files.find(f => f.path === 'manifest.json');
-				if (mf) {
-					const j = JSON.parse(mf.data.toString('utf8'));
-					if (j && typeof j.name === 'string' && j.name.trim()) { kbName = j.name.trim(); }
-				}
-			} catch { kbName = storeId; }
-			vault = await registerKnowledgeVault({ dataRoot, id: storeId, name: kbName, dir: targetDir });
-		} catch { /* best effort：登记失败不该让安装失败 */ }
+			const mf = files.find(f => f.path === 'manifest.json');
+			if (mf) {
+				const j = JSON.parse(mf.data.toString('utf8'));
+				if (j && typeof j.name === 'string' && j.name.trim()) { kbName = j.name.trim(); }
+			}
+		} catch { kbName = storeId; }
+		const reg = await registerKnowledgeVault({ dataRoot, id: storeId, name: kbName, dir: targetDir });
+		if (reg?.ok) { vault = { path: reg.path }; }
+		else {
+			// ★ P3：不再 `catch {}` 静默吞 —— 装完看不见是最伤的假绿
+			vaultWarning = `知识库已落盘，但没登记进 KB 清单（${String(reg?.why ?? '未知原因')}）：在知识库里可能看不到，请检查 KB 数据根配置`;
+		}
 	}
-	return { targetDir, fileCount: files.length, skipped, ...(vault ? { vault } : {}), ...(backup ? { backup } : {}) };
+	return { targetDir, fileCount: files.length, skipped,
+		...(vault ? { vault } : {}), ...(vaultWarning ? { vaultWarning } : {}), ...(backup ? { backup } : {}) };
 }
 
 /**
@@ -518,7 +620,7 @@ export function kbDataRootOf(dataRoot) {
  * 把一个装好的知识库登记进知识库插件的清单。
  * @returns {Promise<{ ok: boolean, path?: string, why?: string }>}
  */
-export async function registerKnowledgeVault({ dataRoot, id, name, dir }) {
+export async function registerKnowledgeVault({ dataRoot, id, name, dir, kbRoot }) {
 	const entry = {
 		id: String(id ?? ''),
 		name: String(name ?? id ?? ''),
@@ -526,25 +628,17 @@ export async function registerKnowledgeVault({ dataRoot, id, name, dir }) {
 		from: 'marketplace',
 		attachedAt: new Date().toISOString(),
 	};
-	// ① 包内标记（无论找不找得到 KB 数据根都写 ⇒ KB 侧可据此识别）
+	// ① 包内标记（守卫钉住存在性；KB 侧目前只读注册表，不依赖它）
 	try {
 		await writeFile(join(entry.path, '.kb-vault.json'), JSON.stringify(entry, null, 2), 'utf8');
-	} catch { /* best effort */ }
-	// ② 写 KB 侧注册表
-	const kbRoot = kbDataRootOf(dataRoot);
-	if (!kbRoot) { return { ok: false, why: 'kb-data-root-not-found' }; }
-	const file = join(kbRoot, MARKET_VAULTS_FILE);
-	try {
-		let list = [];
-		try { list = JSON.parse(await readFile(file, 'utf8')) ?? []; } catch { list = []; }
-		if (!Array.isArray(list)) { list = []; }
-		const idx = list.findIndex((v) => v && v.id === entry.id);
-		if (idx >= 0) { list[idx] = entry; } else { list.push(entry); }
-		await writeFile(file, JSON.stringify(list, null, 2), 'utf8');
-		return { ok: true, path: file };
-	} catch (e) {
-		return { ok: false, why: String((e && e.message) || e) };
-	}
+	} catch { /* best effort：包内标记写不了不影响落盘 */ }
+	// ② ★ P3：交给注册表服务（原子 tmp+rename、串行队列、显式 kbRoot 优先）
+	return addVault({ dataRoot, kbRoot, entry });
+}
+
+/** ★ 组合包卸载 / 导入回滚时反登记知识库（与 registerKnowledgeVault 对称）。 */
+export async function unregisterKnowledgeVault({ dataRoot, id, kbRoot }) {
+	return removeVault({ dataRoot, kbRoot, id });
 }
 
 /**
@@ -623,20 +717,33 @@ export async function uninstallBundle({ dataRoot, kind, storeId }) {
 		}
 		await removeInstalled(dataRoot, kind, storeId);
 	}
+	// ★ 2026-11-10 P1-B：组合包按台账 owner 级联清理（不依赖清单文件是否落盘）。
+	//   ⚠ 主组件自己那条台账的 owner 也指向自己 ⇒ 必须一并清掉，否则卸载后留下
+	//     「磁盘已空、台账还在」的脏条目（Bot 分支只清有 bot.json 的包）。
+	//   Bot 分支已删过的条目这里读不到 ⇒ 幂等，不会重复报错。
+	const owned = (await readInstalled(dataRoot)).filter(e => e.owner === storeId);
+	await cascadeRemoveOwned(dataRoot, storeId, owned);
 	await rm(targetDir, { recursive: true, force: true });
 	return { targetDir };
 }
 
-/** 读已装目录里的版本（skill 读 frontmatter，workflow 读 workflow.json），供"已安装"显示 ✓。 */
+/** 读已装目录里的版本（skill/agent 读 frontmatter，mcp 读 config.json），供"已安装"显示 ✓。 */
 export async function installedVersionOf({ dataRoot, kind, storeId }) {
 	assertSafeStoreId(storeId, 'storeId');
-	const root = targetRootOf(dataRoot, kind);
-	const file = kind === 'skill'
-		? join(root, storeId, 'SKILL.md')
-		: join(root, storeId, 'workflow.json');
+	// ★ 2026-11-10 P1：技能版本优先取侧车；存量技能没有侧车 ⇒ 回退正文 frontmatter（不误判没装）
+	if (kind === 'skill') {
+		const side = await readSidecar(join(dataRoot, 'skills', storeId));
+		if (side?.version) { return side.version; }
+	}
+	const entry = kind === 'skill' ? 'SKILL.md'
+		: kind === 'agent' ? '.agent.md'
+		: kind === 'mcp' ? 'config.json'
+		: null;
+	if (!entry) { return undefined; }
+	const file = join(targetRootOf(dataRoot, kind), storeId, entry);
 	try {
 		const text = await readFile(file, 'utf8');
-		if (kind === 'workflow') {
+		if (kind === 'mcp') {
 			const parsed = JSON.parse(text);
 			return typeof parsed?.version === 'string' ? parsed.version : undefined;
 		}

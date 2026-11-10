@@ -10,7 +10,7 @@ import { join } from 'node:path';
 
 import {
 	BINDING_MENTION_POLICIES, BINDING_PLATFORMS, allowDeadLetterSender, createBinding, deleteBinding,
-	findBindingForChat, findOutboundBindings, inboundKeyOf, listBindings, normalizeBinding,
+	dispatchImToAgent, findBindingForChat, findOutboundBindings, inboundKeyOf, listBindings, normalizeBinding,
 	readBindings, shouldAcceptInbound, splitOutbound, updateBinding,
 } from '../lib/bindings.js';
 import { listDeadLetters, recordDeadLetter } from '../lib/deadLetters.js';
@@ -145,8 +145,13 @@ check('★ 出站候选：排除停用与「只进不出」', () => {
 	const hit = findOutboundBindings(list, 'agent', 'bot1');
 	assert.deepEqual(hit.map((b) => b.chatId), ['a']);
 });
-check('targetKind 只剩 agent（传 group 也归一成 agent）', () => {
-	assert.equal(normalizeBinding({ targetId: 'x', targetKind: 'group', chatId: 'd' }).targetKind, 'agent');
+check('★ targetKind：缺省/非法值归一为 agent，显式 group 保留且局部更新不回退', () => {
+	assert.equal(normalizeBinding({ targetId: 'x', chatId: 'd' }).targetKind, 'agent');
+	assert.equal(normalizeBinding({ targetId: 'x', targetKind: 'bogus', chatId: 'd' }).targetKind, 'agent');
+	const g = normalizeBinding({ targetId: 'g1', targetKind: 'group', chatId: 'd' });
+	assert.equal(g.targetKind, 'group');
+	assert.equal(normalizeBinding({ chatId: 'd2' }, g).targetKind, 'group',
+		'局部更新不许把群绑定悄悄变回 bot 绑定');
 });
 
 /* ── 存储 CRUD（临时 dataRoot，不碰真机数据）────────────────────────── */
@@ -275,6 +280,49 @@ await checkAsync('更新时「密钥留空」= 保留原值（不是清除）', 
 	assert.equal(r2.binding.webhookSecret, '');
 });
 
+/* ── 群绑定（2026-11-10 群聊回归）────────────────────────────────────── */
+await checkAsync('★ 群绑定：按 roomId 建得出来，不存在的群 400，且不吃 bot 名册', async () => {
+	const gdeps = { ...deps, rooms: { isRoom: (id) => id === 'g1' } };
+	const r = await createBinding(config, { targetKind: 'group', targetId: 'g1', chatId: 'oc_room', allowFrom: [] }, gdeps);
+	assert.equal(r.binding.targetKind, 'group');
+	assert.equal(r.binding.targetId, 'g1');
+	await assert.rejects(
+		() => createBinding(config, { targetKind: 'group', targetId: 'nope', chatId: 'oc_room2', allowFrom: [] }, gdeps),
+		(e) => e.httpStatus === 400 && /没有这个群/.test(e.message),
+	);
+	await deleteBinding(config, { id: r.binding.id });
+});
+await checkAsync('★ 群绑定派发：转投 postToRoom 且带 IM 来源，不扫 bot 名册', async () => {
+	const posted = [];
+	const gdeps = {
+		rooms: {
+			postToRoom: async (roomId, text, meta) => {
+				posted.push({ roomId, text, meta });
+				return { ok: true, roomId, name: '番茄钟 H5', messageId: 'm-room-1' };
+			},
+		},
+		scanAgents: async () => { throw new Error('群绑定不该扫 bot 名册'); },
+	};
+	const binding = { id: 'b-room', targetKind: 'group', targetId: 'g1', platform: 'feishu', chatId: 'oc_room', chatType: 'group' };
+	const r = await dispatchImToAgent(config, {}, binding,
+		{ content: 'Test', messageId: 'om_1', userName: '张三', chatType: 'group' }, gdeps);
+	assert.equal(posted.length, 1);
+	assert.equal(posted[0].roomId, 'g1');
+	assert.match(posted[0].text, /Test/);
+	assert.equal(posted[0].meta.sourceMessageId, 'om_1', 'IM messageId 要交给 postToRoom 做幂等');
+	assert.equal(r.roomId, 'g1');
+	assert.equal(r.group, true);
+});
+await checkAsync('★ 群绑定派发：重复事件不重复转投（postToRoom 幂等回落）', async () => {
+	const gdeps = { rooms: { postToRoom: async () => ({ ok: true, duplicate: true, messageId: 'm-room-1' }) } };
+	const binding = { id: 'b-room-dup', targetKind: 'group', targetId: 'g1', platform: 'feishu', chatId: 'oc_room', chatType: 'group' };
+	const r = await dispatchImToAgent(config, {}, binding, { content: 'Test', messageId: 'om_1' }, gdeps);
+	assert.equal(r.duplicate, true);
+});
+
+/* 群派发用例里的 outboxNote 是 fire-and-forget 写盘 ⇒ 删临时根之前先放它落地，
+   否则进程末尾会报一次 ENOENT 噪音（不是失败，但会污染 CI 输出）。 */
+await new Promise((r) => setTimeout(r, 40));
 try { rmSync(root, { recursive: true, force: true }); } catch { /* 忽略 */ }
 
 /* ── 汇总 ──────────────────────────────────────────────────────────── */

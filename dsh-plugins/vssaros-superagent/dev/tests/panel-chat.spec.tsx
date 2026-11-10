@@ -75,6 +75,19 @@ it('shows the desk conversation and sends a message to the supervisor, with quic
   expect(server.deskSent).toHaveLength(2)
 })
 
+it('★ labels Feishu source text in a person bubble with its origin', async () => {
+  server.deskMessages = [
+    { id: 'f1', role: 'person', text: '飞书原文：请帮我看下进度', at: '2026-11-05T09:12:00.000Z', source: 'feishu', chatId: 'oc_demo' },
+    { id: 'r1', role: 'superagent', text: '已接单', at: '2026-11-05T09:13:00.000Z' },
+  ]
+  await mount()
+  const bubble = document.querySelector('.dt-msg-person[data-source="feishu"]')
+  expect(bubble?.querySelector('.dt-msg-bubble')?.textContent).toBe('飞书原文：请帮我看下进度')
+  expect(bubble?.querySelector('.dt-tag[data-source="feishu"]')?.textContent).toBe('飞书')
+  // A source message is never drawn as a SuperAgent reply.
+  expect(all('.dt-msg-text').map(item => item.textContent)).toEqual(['已接单'])
+})
+
 it('replicates DS Bot send UI: optimistic bubble, usable composer, and an honest note for messages still on their way', async () => {
   let release!: () => void
   const hold = new Promise<void>(resolve => { release = resolve })

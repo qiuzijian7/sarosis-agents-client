@@ -6,7 +6,7 @@
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IAgentDriverService, AgentTurnStatus } from '../common/agentDriver.js';
-import { IAgentTurnRequest, IMemoryProvider, ChatImageMimeType, IChatContentPart } from '../common/providers.js';
+import { IAgentTurnRequest, ChatImageMimeType, IChatContentPart } from '../common/providers.js';
 import { wrapUserQuery } from '../common/userQuery.js';
 import { resolveEffectiveWorktreeRoot } from '../common/worktreeBinding.js';
 import type { IChatStreamDelta } from '../common/providers.js';
@@ -29,7 +29,6 @@ import { detectModelFamily } from '../common/modelFamilyPrompt.js';
 import { createDeliveryQueue } from '../common/deliveryQueue.js';
 import type { DeliveryQueue } from '../common/deliveryQueue.js';
 import { snapshotPromptPrefix, diffPromptPrefix, formatPromptPrefixLog, type IPromptPrefixSnapshot } from '../common/promptDiagnostics.js';
-import { isMemoryInjectionEnabled } from './agentMemoryInjection.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IMcpService, McpConnectionState } from '../../../../workbench/contrib/mcp/common/mcpTypes.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
@@ -779,10 +778,8 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		}
 		this._turnHoldsSemaphore.add(turnId);
 
-		// 提升到 try 外供 finally 使用
-		let memoryProvider = this._agentOS.getActiveMemoryProvider();
 		const assistantChunks: string[] = [];
-		// rawDeltaChunks 累积剥离前的原始输出（含 <memory_extract> 标签），供 memory provider 端做标签剥离
+		// rawDeltaChunks 累积剥离前的原始输出（供 discard_prior_text 等流式重算复用）
 		const rawDeltaChunks: string[] = [];
 		let originalBindingWorktreePath: string | undefined;
 		let didTemporarilyOverride = false;
@@ -809,44 +806,6 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 			return;
 		}
 
-	// ── 编排流程：① Memory scope 解析 → ② Prompt 分层组装 → ③ AgentOS 执行 → ④ Memory 写回 ──
-
-	// ① 解析召回作用域（2026-07-25 修正：移除此处每轮的 loadContext 调用——
-	//   其结果从未被消费（真正的注入在下游 agentMemoryInjection 进行），
-	//   且不受 AGENTMEMORY_INJECT_CONTEXT 门控，每轮白付一次网关混合搜索
-	//   + 策展组装。scope 解析保留，经 memoryScope 传给下游。）
-	if (memoryProvider) {
-			try {
-			let recallOptions: { scope: 'agent' | 'global' } | undefined;
-			try {
-				this._logService.info(`[AgentDriver] Step 1a: resolving workspaceId (sessionId=${request.sessionId ?? 'none'})`);
-				const wsId = await this._resolveWorkspaceId(request.sessionId);
-				this._logService.info(`[AgentDriver] Step 1a: resolved workspaceId=${wsId ?? 'none'}`);
-				this._logService.info(`[AgentDriver] Step 1b: getting agent binding (agentId=${request.agentId})`);
-				const binding = wsId
-					? await this._agentStudioService.getAgentBinding(wsId, request.agentId)
-					: undefined;
-				this._logService.info(`[AgentDriver] Step 1b: got binding=${binding ? 'yes' : 'no'}`);
-				const scope: 'agent' | 'global' = binding?.memoryConfig?.scope ?? 'agent';
-
-				if (scope === 'global') {
-					recallOptions = { scope: 'global' };
-				} else {
-					recallOptions = { scope: 'agent' };
-				}
-			} catch (scopeErr) {
-				// 解析失败按最严格策略兜底
-				this._logService.warn(
-					`[AgentDriver] resolve memory scope failed, falling back to 'agent': ${scopeErr instanceof Error ? scopeErr.message : String(scopeErr)}`,
-				);
-				recallOptions = { scope: 'agent' };
-			}
-
-			resolvedMemoryScope = recallOptions.scope;
-			} catch (error) {
-				this._logService.error('[AgentDriver] Failed to resolve memory scope:', error);
-			}
-		}
 
 	// ② Prompt 分层组装（stable / context / volatile）
 	const lastUserMessage = [...request.messages].reverse().find(m => m.role === 'user');
@@ -998,66 +957,6 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		} catch (error) {
 			this._logService.warn('[AgentDriver] Failed to inject environment directive:', error);
 		}
-
-			// ── Persona Memory（用户硬事实，volatile 层）──
-			// 与 L0/L1 自动召回互补：用户显式设定、永不衰减。
-			// 放 volatile 层保持高优先级但不进前缀指纹。
-			// 注入门控：对齐 agentmemory 原版「capture 常开、注入默认关」姿态 ——
-			// 仅当 AGENTMEMORY_INJECT_CONTEXT=true 时注入；默认关闭时
-			// Persona 事实可通过 memory_search/memory_recall 工具按需召回。
-			if (isMemoryInjectionEnabled()) try {
-					const personaEntries = (personaBinding?.memoryConfig?.enabled !== false)
-						? (personaBinding?.memoryConfig?.entries || [])
-						: [];
-					if (personaEntries.length > 0) {
-						// V4（2026-07-26 §16）：Persona 预算——按 updatedAt 降序保留，
-						// 超 2000 chars 截断（防 Persona 无限增长撑大 volatile 层）。
-						const PERSONA_MAX_CHARS = 2000;
-						const sorted = [...personaEntries].sort((a, b) =>
-							String((b as { updatedAt?: string }).updatedAt ?? '').localeCompare(String((a as { updatedAt?: string }).updatedAt ?? '')));
-						const budgeted: typeof personaEntries = [];
-						let usedChars = 160; // header/footer 预留
-						let truncatedCount = 0;
-						for (const e of sorted) {
-							const lineLen = String(e.key ?? '').length + String(e.value ?? '').length + 8;
-							if (usedChars + lineLen > PERSONA_MAX_CHARS) { truncatedCount++; continue; }
-							usedChars += lineLen;
-							budgeted.push(e);
-						}
-						const lines: string[] = [
-							'',
-							'## Persona Memory (永久事实，最高优先级)',
-							'',
-							'以下是用户显式设定的硬性事实与规则。在整个对话中，你必须始终把它们当作既定真相对待，优先于其他上下文：',
-							'',
-						];
-						const grouped = new Map<string, typeof personaEntries>();
-						for (const entry of budgeted) {
-							const cat = (entry.category && entry.category.trim()) || '通用';
-							if (!grouped.has(cat)) {
-								grouped.set(cat, []);
-							}
-							grouped.get(cat)!.push(entry);
-						}
-						for (const [cat, items] of grouped) {
-							lines.push(`### ${cat}`);
-							for (const item of items) {
-								lines.push(`- **${item.key}** = ${item.value}`);
-							}
-							lines.push('');
-						}
-						lines.push('（以上事实由用户在 Persona Memory 中显式维护，永不衰减；如与你的默认假设冲突，以这些事实为准。）');
-						if (truncatedCount > 0) {
-							lines.push(`（另有 ${truncatedCount} 条 Persona 事实因注入预算未展示，可用 memory_search 工具召回。）`);
-						}
-						lines.push('');
-					const personaSection = lines.join('\n');
-					volatileParts.push(personaSection);
-					this._logService.info(`[AgentDriver] Injected Persona Memory: ${budgeted.length}/${personaEntries.length} entries (${personaSection.length} chars) into volatile tier`);
-					}
-				} catch (error) {
-					this._logService.warn('[AgentDriver] Failed to inject Persona Memory:', error);
-				}
 
 			// 注入工作区上下文，让模型始终知晓当前工作区信息（context 层，会话内稳定）
 			const workspaceContext = await this._buildWorkspaceContext(request.agentId, request.sessionId, request.worktreePath);
@@ -1293,10 +1192,10 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				}
 
 			// ── Memory Extract 提示与 Knot user 补丁已移除（2026-07-25）──
-			// 对齐 agentmemory 原版「capture 常开、注入默认关、召回走工具」姿态：
+			// 对齐既有的提示词分层姿态（记忆能力只在 dsh 侧）：
 			// 原版 prompt 中没有任何每轮记忆指令（capture 靠 PostToolUse 钩子自动
 			// 完成 + remember 工具显式写入）。本项目的等价通道全部保留且默认开启：
-			//   - turn observations（每轮自动写入 mem:obs 暂存层）
+			//   - 会话级观察不再由 IDE 侧写入
 			//   - session_end 链（compressSession→slotReflect→graphExtract，引擎侧自动）
 			//   - memory_remember 工具（LLM 显式写入）
 			// （2026-07-26：L1/L2/L3 客户端抽取管线已移除，提炼语义归引擎 session_end 链）
@@ -1716,37 +1615,6 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 				})();
 			}
 
-			// ④ 写回记忆（finally 中 fire-and-forget，防止 await 阻塞 generator 退出）
-			// 连续写 user + assistant 两条，供 vendor /capture 接口配对。
-			if (memoryProvider) {
-				const lastUserMessage = [...request.messages].reverse().find(m => m.role === 'user');
-				const rawAssistantContent = rawDeltaChunks.join('').trim();
-				const cleanedAssistantContent = assistantChunks.join('').trim();
-			const assistantContent = rawAssistantContent.length > 0 ? rawAssistantContent : cleanedAssistantContent;
-
-	// W2（2026-07-26 §16 日志实证修复）：turn 级 user/assistant 捕获复用
-		// storeTurnObservations（mem:obs 暂存层 + 内容哈希去重）——此前此处每轮
-		// writeMemory(type=working)×2 直写长期层，与 storeTurnObservations 完全
-		// 重复（§11 分层改造的漏网通道，子代理长任务下洪泛 core memory）。
-		// ExecutionProvider 路径的 turn 消息捕获也经此统一覆盖；删除噪音 UI 卡片。
-		(async () => {
-				try {
-					const turnMessages: Array<{ role: string; content: string }> = [];
-					if (lastUserMessage) {
-						turnMessages.push({ role: 'user', content: lastUserMessage.content });
-					}
-					if (assistantContent.length > 0) {
-						turnMessages.push({ role: 'assistant', content: assistantContent });
-					}
-					if (turnMessages.length > 0) {
-						await this._agentOS._storeTurnObservations(memoryProvider, request.agentId, request.sessionId ?? '', turnMessages);
-					}
-					this._logService.info(`[AgentDriver] Stored turn observations for ${request.agentId} (user=${lastUserMessage ? 'yes' : 'no'}, assistantLen=${assistantContent.length})`);
-				} catch (error) {
-					this._logService.error('[AgentDriver] Failed to store turn observations:', error);
-				}
-			})();
-			}
 		}
 		this._logService.info(`[AgentDriver] finally block END (turnId=${turnId}) — generator returning, for-await loop will exit`);
 	}
@@ -1781,9 +1649,6 @@ export class AgentDriverService extends Disposable implements IAgentDriverServic
 		return this._turnStatusMap.get(turnId) ?? AgentTurnStatus.Idle;
 	}
 
-	getActiveMemoryProvider(): IMemoryProvider | undefined {
-		return this._agentOS.getActiveMemoryProvider();
-	}
 
 	private _updateTurnStatus(turnId: string, status: AgentTurnStatus): void {
 		this._turnStatusMap.set(turnId, status);

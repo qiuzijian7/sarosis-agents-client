@@ -9,6 +9,7 @@
 //   ① 这个文件（dsh 侧，用户在「设置 → 渠道」里填的）
 //   ② `config.<platform>`（IDE 覆盖层注入的旧配置 —— 只有 feishu 有这条）
 //   ③ 环境变量（只有 feishu：`VSSAROS_FEISHU_APP_ID/SECRET`）
+//   ④ ★ 2026-11-10：随包内置的 VsSaros助手（最低优先级，只补上面没填的字段 ⇒ 干净安装也连得上）
 //   一个字段都不缺才算 `configured`（半份凭据不算 —— 否则页面显示"已配置"却连不上）。
 //
 // ── 平台与字段的**定义**不在这里 ────────────────────────────────────────────
@@ -27,6 +28,19 @@ import { dataRootOf } from './store.js';
 import { IM_PLATFORM_KEYS, platformDefOf } from './imPlatforms.js';
 
 const FILE_NAME = 'agent-im-accounts.json';
+
+/**
+ * ★ 2026-11-10：随包内置的飞书应用（VsSaros助手）。
+ * 与 `vssaros-superagent/dev/src/sources/feishu-share.ts` 的 `BUNDLED_FEISHU_APP` 是同一个应用，
+ * 两处必须逐字一致（`run-agents-check.mjs` 守卫会比对）；轮换密钥要同时改两边并 bump 版本。
+ * ⚠ 最低优先级：用户填过的字段一律优先，这里只补缺的；Secret 只在 appId 就是内置应用时补，
+ *   绝不把内置 Secret 配到用户自己的另一个 appId 上（会连错应用 / 401）。
+ * ⚠ 明文编译在 lib/ 是既有产品形态（SuperAgent 侧同样）；只经 stdin 交给 lark-cli，不进接口、不进日志。
+ */
+export const BUNDLED_FEISHU_APP = Object.freeze({
+	appId: 'cli_a860911d2e7f5013',
+	appSecret: 'ieEN6Jp4m4l0RTUDBPPROfpo1n3sc7Iz',
+});
 
 /** 凭据文件路径（单测直接用）。 */
 export function imAccountsPathOf(config) {
@@ -114,6 +128,26 @@ export async function resolvePlatform(config, platform, deps = {}) {
 	const envSec = envSectionOf(env, def.key);
 	if (isComplete(def, envSec)) {
 		return { platform: def.key, values: { ...envSec }, configured: true, source: 'env' };
+	}
+
+	/* ★ 2026-11-10：内置应用是**最低优先级**回落 —— 干净安装 / 凭据被清空时也能连。
+	   走到这里说明 dsh / config / env 都不完整：把用户填过的字段按优先级合并，只补缺的两项。
+	   ⚠ Secret 只在 appId 等于内置应用时补，绝不把内置 Secret 配到用户自己的另一个 appId 上。
+	   `source:'bundled'` 表示「用了内置回落」（可能同时含用户填的部分字段）。 */
+	if (def.key === 'feishu') {
+		const merged = {};
+		for (const src of [envSec, cfg, dsh]) {
+			for (const [k, v] of Object.entries(src || {})) {
+				if (String(v ?? '').trim()) { merged[k] = v; }
+			}
+		}
+		if (!merged.appId) { merged.appId = BUNDLED_FEISHU_APP.appId; }
+		if (!merged.appSecret && String(merged.appId).trim() === BUNDLED_FEISHU_APP.appId) {
+			merged.appSecret = BUNDLED_FEISHU_APP.appSecret;
+		}
+		if (isComplete(def, merged)) {
+			return { platform: def.key, values: merged, configured: true, source: 'bundled' };
+		}
 	}
 
 	return { platform: def.key, values: {}, configured: false, source: 'none' };
@@ -321,9 +355,14 @@ export async function resolveFeishuApp(config, appId, deps = {}) {
 	const { apps } = await feishuAppsOf(config);
 	const hit = apps[want];
 	const secret = String((hit && hit.appSecret) ?? '').trim();
-	return secret
-		? { appId: want, appSecret: secret, configured: true, source: 'dsh-app', isDefault: false }
-		: { appId: want, appSecret: '', configured: false, source: 'none', isDefault: false };
+	if (secret) {
+		return { appId: want, appSecret: secret, configured: true, source: 'dsh-app', isDefault: false };
+	}
+	/* ★ 2026-11-10：内置应用即使没在凭据池里单独登记，也能作为「非默认应用」被选中使用。 */
+	if (want === BUNDLED_FEISHU_APP.appId) {
+		return { appId: want, appSecret: BUNDLED_FEISHU_APP.appSecret, configured: true, source: 'bundled', isDefault: false };
+	}
+	return { appId: want, appSecret: '', configured: false, source: 'none', isDefault: false };
 }
 
 /** 全部飞书应用（默认在前、额外的按 appId 排序；不含 secret 明文）。 */
@@ -340,6 +379,8 @@ export async function describeFeishuApps(config) {
 		out.push({ appId: id, name: String(a.name ?? ''), isDefault: false, configured: !!String(a.appSecret ?? '').trim(),
 			hasSecret: !!String(a.appSecret ?? '').trim(), source: 'dsh-app' });
 	}
+	/* ⚠ 这里只反映凭据池；内置应用作为「下拉可选项」由 index.js 的 GET 合并，
+	   不改本函数的既有契约（列表条数 / 顺序被多处测试与 UI 消费）。 */
 	return out;
 }
 
@@ -360,7 +401,9 @@ export async function saveFeishuApp(config, input) {
 	}
 	const def = await resolveFeishu(config);
 	if (def.appId && appId === def.appId) {
-		throw Object.assign(new Error('这是默认飞书应用：请在「设置 → 渠道」里修改，不要再加一份。'), { httpStatus: 409 });
+		/* ★ 2026-11-10：内置默认应用统一叫「VsSaros助手」；旧的设置入口已下线，
+		   指引改到 Bot 设置页的绑定卡。 */
+		throw Object.assign(new Error('这是 VsSaros助手：请在 Bot 设置 → Channel 绑定里修改，不要再加一份。'), { httpStatus: 409 });
 	}
 	const { accounts, apps } = await feishuAppsOf(config);
 	const next = { ...apps };

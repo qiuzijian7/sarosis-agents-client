@@ -18,17 +18,17 @@ import { join } from 'node:path';
 import {
 	ROOM_IDLE_RELAY_LIMIT, ROOM_LIMITS, ROOM_RECORD_TYPE, ROOM_RELAY_TOOL, ROOM_TURN_KIND, ROOM_REFERENCE_KIND, ROUND_SCHEMA, ROUND_STATUSES, ROUND_STATUS_LABELS,
 	RoomError, addressedRoomReference,
-	autoRoomName, callsFrom, decodeDshSessionToken, isPass, mentionsIn, normalizeRoomInput, openingCall,
+	autoRoomName, callsFrom, decodeDshSessionToken, isPass, mentionsIn, normalizeRoomInput, normalizeWakeMode, normalizeWakeSettings, openingCall,
 	roomOfEvent, roomProjection, roomPrompt, roomReferenceOf, roundStatusOf, sessionReferencesOf, sortRooms, stripOwnName, stripRoomMention,
 } from '../lib/core/rooms.js';
 import { GOAL_IDLE_NUDGES, applyGoal, goalPromptBlock, markTask } from '../lib/core/goals.js';
 import { askAnswerText, normalizeAsk, normalizeAskAnswers, supersedeAsks } from '../lib/core/asks.js';
-import { ROOMS_FILE_VERSION, ROUNDS_ARCHIVE_PER_ROOM, ROUNDS_KEEP_MAX, createRooms, holdsMessage, installRooms, relayAnswerText, relayStream, roomPostId, roomsApi, turnWorked, userTextOf } from '../lib/rooms.js';
+import { ROOMS_FILE_VERSION, ROUNDS_ARCHIVE_PER_ROOM, ROUNDS_KEEP_MAX, createRooms, holdsMessage, migrateLateRoomId, migrateRoutedRoomId, installRooms, relayAnswerText, relayStream, roomPostId, roomsApi, turnWorked, userTextOf } from '../lib/rooms.js';
 import { teamBus } from '../lib/teamBus.js';
 
 let pass = 0;
 const fails = [];
-const check = async (name, fn) => { try { await fn(); pass += 1; } catch (e) { fails.push(`${name} → ${String((e && e.message) || e).split('\n')[0]}`); } };
+const check = async (name, fn) => { try { await fn(); pass += 1; } catch (e) { fails.push(`${name} → ${String((e && e.message) || e).split('\n').slice(0, 5).join(' | ')}`); } };
 
 const ROSTER = [{ id: 'designer', name: 'Designer' }, { id: 'coder', name: 'Coder' }, { id: 'reviewer', name: 'Code Reviewer' }, { id: 'code', name: 'Code' }];
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -1462,6 +1462,229 @@ await check('团队总线：没实现时 createGroup 明确报错；provideGroup
 	// 旧模块建的总线（HMR）也会补上群聊方法
 	const legacyRoot = { [Symbol.for('vssaros.team')]: { version: 1, delegate: () => undefined } };
 	assert.equal(typeof teamBus(legacyRoot).createGroup, 'function');
+});
+
+// ── FIX 1–3（2026-11-10）：选中态转投 / goal 槽位 / 会话失效兜底 ──────────────────
+await check('FIX 2 建群显式初始化 goal 槽位（null，不堵死 group_goal start）', async () => {
+	const h = fakeHost(() => '[PASS]');
+	const r = createRooms({ file: join(dir, 'goal-init.json'), fallbackCwd: dir, roster: async () => ROSTER,
+		presetOf: id => `vssaros-${id}`, sessions: () => h.sc, agents: () => h.agents, workspaces: () => h.workspaces,
+		append: () => h.append, warn: () => undefined });
+	const made = await r.create({ members: ['designer', 'coder'], name: '目标槽位', notice: '做一件事' }, { createdBy: 'superagent' });
+	const stored = JSON.parse(readFileSync(join(dir, 'goal-init.json'), 'utf8')).rooms.find(x => x.id === made.id);
+	assert.equal(stored.goal, null, 'goal 字段必须显式初始化为 null');
+	assert.equal(r.state(made.id).goal, null);
+	// 管理员第一次 group_goal start 仍可用（active 目标会堵死它）
+	const out = JSON.parse(await r.goalTool(made.id, 'designer').execute({ action: 'start', title: '做个东西',
+		objective: '做个东西', acceptance: '能跑', stages: [{ title: '第一步', acceptance: '完成', tasks: [{ bot: 'Coder', task: '写实现' }] }] }));
+	assert.ok(!out.error, `group_goal start 不该被预置目标堵死：${JSON.stringify(out)}`);
+	assert.equal(r.goalOf(made.id).status, 'active');
+});
+
+await check('FIX 1b 显式选中群时，@群名 无需引用事件也能转投；未选中时保持原闸门', async () => {
+	const h = fakeHost(() => '[PASS]');
+	const errors = [];
+	const r = createRooms({ file: join(dir, 'select.json'), fallbackCwd: dir, roster: async () => ROSTER,
+		presetOf: id => `vssaros-${id}`, sessions: () => h.sc, agents: () => h.agents, workspaces: () => h.workspaces,
+		append: () => h.append, warn: () => undefined, onChanged: (kind, view) => { if (kind === 'error') { errors.push(view); } } });
+	const off = installRooms(h.ctx, r);
+	const made = await r.create({ members: ['designer', 'coder'], name: '番茄钟 H5', notice: '一起做' }, { createdBy: 'superagent' });
+	const posted = [];
+	const original = r.postToRoom;
+	r.postToRoom = async function (...args) { posted.push(args); return original.apply(this, args); };
+	const userEvent = (text) => ({ type: 'user/message', data: { id: 'm1', source: { kind: 'user' }, content: [{ type: 'text', text }] } });
+	// ① 没选中群：只有真消息、没有引用事件 ⇒ 不转投（行为不变）
+	h.emit('session/event', { id: 'plain-1' }, userEvent('@番茄钟 H5 开始做'));
+	assert.equal(posted.length, 0);
+	// ② 选中群：roomsApi action:'select' 上报 ⇒ 同样的消息立刻转投
+	const sel = await roomsApi(r, { method: 'POST', query: new URLSearchParams(), body: { action: 'select', id: made.id } });
+	assert.equal(sel.body.ok, true);
+	assert.equal(r.selectedRoom(), made.id);
+	h.emit('session/event', { id: 'plain-1' }, userEvent('@番茄钟 H5 开始做'));
+	await tick();
+	assert.equal(posted.length, 1, '选中群后 @群名 应直接转投');
+	assert.equal(posted[0][0], made.id);
+	assert.match(String(posted[0][1]), /开始做/);
+	// ③ 离开群（id:''）后不再转投
+	await roomsApi(r, { method: 'POST', query: new URLSearchParams(), body: { action: 'select', id: '' } });
+	h.emit('session/event', { id: 'plain-2' }, userEvent('@番茄钟 H5 再来一条'));
+	assert.equal(posted.length, 1);
+	// ④ 不存在的群 id 被拒
+	const bad = await roomsApi(r, { method: 'POST', query: new URLSearchParams(), body: { action: 'select', id: 'no-such-room' } });
+	assert.equal(bad.status, 404);
+	off();
+});
+
+await check('FIX 3 群会话引用彻底失效时，postToRoom 不抛 503，消息落进 inbox + log 并报可见错误', async () => {
+	const h = fakeHost(() => '[PASS]');
+	const errors = [];
+	const r = createRooms({ file: join(dir, 'dead-session.json'), fallbackCwd: dir, roster: async () => ROSTER,
+		presetOf: id => `vssaros-${id}`, sessions: () => h.sc, agents: () => h.agents, workspaces: () => h.workspaces,
+		append: () => h.append, warn: () => undefined, onChanged: (kind, view) => { if (kind === 'error') { errors.push(view); } } });
+	const made = await r.create({ members: ['designer', 'coder'], name: '会话会没的群', notice: '' }, { createdBy: 'superagent' });
+	// 模拟宿主回收会话引用：agents / resolveAgent / retain 全都不救
+	h.sessions.delete(made.id);
+	h.sc.resolveAgent = async () => ({ error: { code: 'session/released' } });
+	h.sc.retain = async () => { throw new Error('is released'); };
+	const out = await r.postToRoom(made.id, '这条不能丢', { fromSession: 'desk-1', sourceMessageId: 'm-1' });
+	assert.equal(out.ok, true, '不能 503 终止');
+	assert.equal(out.deferred, true);
+	const state = r.state(made.id);
+	assert.ok(state.log.some(line => String(line.text).includes('这条不能丢')), '消息应写进群 log');
+	assert.ok(errors.some(e => /收件箱/.test(String(e.error))), '应推送可见错误帧');
+	assert.equal(r.state(made.id).queued >= 1, true, 'inbox 里还留着这条，等 relay 消费');
+});
+
+// ── 2026-11-10 群设置弹层复刻 DS Bot：四档唤醒策略 / 新字段 / 新动作 ──────────
+await check('群设置：四档唤醒策略归一化、旧值兼容、阈值钳制与非法值拒绝', () => {
+	assert.equal(normalizeWakeMode('admin'), 'mentions');
+	assert.equal(normalizeWakeMode('everyone'), 'all');
+	assert.equal(normalizeWakeMode('digest'), 'digest');
+	assert.equal(normalizeWakeMode('wat'), '');
+	const s = normalizeWakeSettings({ wakeMode: 'all', wake: { count: 999, intervalSeconds: 0 },
+		avatar: '', requireApproval: true, memberMax: 8 });
+	assert.equal(s.wakeMode, 'all');
+	assert.equal(s.wake.count, 100);
+	assert.equal(s.wake.intervalSeconds, 1);
+	assert.equal(s.requireApproval, true);
+	assert.equal(s.memberMax, 8);
+	assert.throws(() => normalizeWakeSettings({ wakeMode: 'nope' }), RoomError);
+	assert.throws(() => normalizeWakeSettings({ avatar: 'https://x/a.png' }), RoomError);
+	assert.throws(() => normalizeWakeSettings({ avatar: 'data:image/png;base64,' + 'A'.repeat(200000) }), RoomError);
+	assert.throws(() => normalizeWakeSettings({ memberMax: 1 }), RoomError);
+});
+await check('群设置：openingCall 四档真实分流，老房间回落旧两档', () => {
+	const base = { members: ['designer', 'coder'], admin: 'designer', mode: 'admin' };
+	assert.deepEqual(openingCall({ ...base, wakeMode: 'silent' }, { ids: ['coder'], all: false }).ids, []);
+	assert.deepEqual(openingCall({ ...base, wakeMode: 'mentions' }, { ids: ['coder'], all: false }).ids, ['coder']);
+	assert.deepEqual(openingCall({ ...base, wakeMode: 'mentions' }, { ids: [], all: false }).ids, []);
+	assert.deepEqual(openingCall({ ...base, wakeMode: 'all' }, { ids: [], all: false }).ids, ['designer', 'coder']);
+	assert.deepEqual(openingCall({ ...base, wakeMode: 'digest', wake: { count: 2 }, digestPending: 1 }, { ids: [], all: false }).ids, []);
+	assert.deepEqual(openingCall({ ...base, wakeMode: 'digest', wake: { count: 2 }, digestPending: 2 }, { ids: [], all: false }).ids, ['designer', 'coder']);
+	assert.deepEqual(openingCall(base, { ids: [], all: false }).ids, ['designer'], '无 wakeMode 必须完全回落旧两档');
+});
+await check('群设置：roomsApi 落盘新字段 + 加入需确认 / 清空记录 / 解散动作', async () => {
+	const h = fakeHost(() => '[PASS]');
+	const r = makeRooms(h, join(dir, 'room-settings-ui.json'));
+	const made = await r.create({ members: ['designer', 'coder'], name: '设置测试群', notice: '' }, { createdBy: 'user' });
+	const api = (body) => roomsApi(r, { method: 'POST', query: new URLSearchParams(), body });
+	const up = await api({ action: 'update', id: made.id, wakeMode: 'digest', wake: { count: 2, intervalSeconds: 30 },
+		avatar: 'data:image/png;base64,AAAA', requireApproval: true, memberMax: 8 });
+	assert.equal(up.status, 200);
+	assert.equal(up.body.room.wakeMode, 'digest');
+	assert.equal(up.body.room.wake.count, 2);
+	assert.equal(up.body.room.requireApproval, true);
+	assert.equal(up.body.room.memberMax, 8);
+	assert.equal(up.body.room.avatar, 'data:image/png;base64,AAAA');
+	const inv = await api({ action: 'invite', id: made.id, botId: 'reviewer' });
+	assert.equal(inv.status, 200);
+	assert.ok(inv.body.room.pending.includes('reviewer'), '开启加入需确认 ⇒ 邀请进 pending');
+	assert.ok(!inv.body.room.members.some(m => m.id === 'reviewer'), '不能直接进群');
+	const conf = await api({ action: 'confirm-join', id: made.id, botId: 'reviewer', allow: true });
+	assert.equal(conf.status, 200);
+	assert.ok(conf.body.room.members.some(m => m.id === 'reviewer'), '确认后并入成员');
+	const state = r.state(made.id);
+	state.log.push({ seq: 1, who: '用户', text: '一条消息', at: Date.now() });
+	state.seq = 1;
+	const clr = await api({ action: 'clear', id: made.id });
+	assert.equal(clr.status, 200);
+	// roomView.preview 来自 log 最后一行 ⇒ 清空后必须为空（比读内部 state 稳）
+	const got = await roomsApi(r, { method: 'GET', query: new URLSearchParams({ id: made.id }), body: undefined });
+	assert.equal(clr.body.room.preview, '');
+	assert.equal(got.body.room.preview, '', '清空记录后群日志应为空');
+	assert.equal(h.archived.length, 0, '清空记录不能归档会话');
+	const dis = await api({ action: 'dissolve', id: made.id });
+	assert.equal(dis.status, 200);
+	assert.equal((await r.list()).length, 0);
+	assert.ok(h.archived.includes(made.id), '解散复用归档链');
+});
+
+// ── FIX 4 rebindRoom（2026-11-10）：群会话引用真被释放 ⇒ 重建并迁移全部账本 ──────────
+await check('FIX 4 rebindRoom：retain 能救回时不换 id；救不回时重建并迁移 inbox/callbacks/postMeta/rounds/选中态', async () => {
+	const h = fakeHost(() => '[PASS]');
+	const r = createRooms({ file: join(dir, 'rebind.json'), fallbackCwd: dir, roster: async () => ROSTER,
+		presetOf: id => `vssaros-${id}`, sessions: () => h.sc, agents: () => h.agents, workspaces: () => h.workspaces,
+		append: () => h.append, warn: () => undefined });
+	const made = await r.create({ members: ['designer', 'coder'], name: '会被释放的群', notice: '' }, { createdBy: 'superagent' });
+	// ① 会话还在 ⇒ retain 路径，id 不变
+	const kept = await r.rebindRoom(made.id);
+	assert.equal(kept.ok, true);
+	assert.equal(kept.retained, true);
+	assert.equal(kept.roomId, made.id);
+	// ② 塞进各种以 room.id 为 key 的账本，再让引用彻底失效
+	r.noteUserMessage(made.id, '这条不能丢');
+	await roomsApi(r, { method: 'POST', query: new URLSearchParams(), body: { action: 'select', id: made.id } });
+	assert.equal(r.selectedRoom(), made.id);
+	h.sessions.delete(made.id);
+	h.sc.resolveAgent = async () => ({ error: { code: 'session/released' } });
+	h.sc.retain = async () => { throw new Error('is released'); };
+	const out = await roomsApi(r, { method: 'POST', query: new URLSearchParams(), body: { action: 'rebind', id: made.id } });
+	assert.equal(out.status, 200);
+	assert.equal(out.body.ok, true);
+	assert.equal(out.body.rebound, true);
+	const newId = out.body.roomId;
+	assert.ok(newId && newId !== made.id, '重建后群 id 必须变化');
+	assert.equal(r.isRoom(made.id), false, '旧 id 不再占坑');
+	assert.equal(r.isRoom(newId), true);
+	assert.equal(r.selectedRoom(), newId, '选中态跟着迁到新 id');
+	assert.ok((await r.list()).some(x => x.id === newId), '列表里是新 id');
+	// inbox 迁移：下一轮 relay 仍能消费那条消息
+	await r.noteUserMessage(newId, '重建后的消息');
+	const st = r.state(newId);
+	assert.ok(st.log.some(l => String(l.text).includes('重建后的消息')) || st.queued >= 1,
+		`账本应可用：${JSON.stringify({ log: st.log.slice(-2), queued: st.queued })}`);
+});
+
+// ── FIX 4 日志补点静态钉 ──────────────────────────────────────────────────────────
+await check('FIX 4 日志补点：relayStream / openingCall ids / postToRoom 成功与失败都带 roomId', () => {
+	const src = readFileSync(new URL('../lib/rooms.js', import.meta.url), 'utf8');
+	for (const needle of ['[relayStream] group_relay roomId=', 'openingCall ids=',
+		'[postToRoom] ok roomId=', '[postToRoom] FAILED roomId=', '[rebindRoom] rebound roomId=']) {
+		assert.ok(src.includes(needle), `缺少日志点：${needle}`);
+	}
+});
+
+// ── FIX 5（2026-11-10）：rebindRoom 补齐 late / routed 两个被漏掉的账本 ──────────
+await check('FIX 5 rebindRoom 迁移 late/routed：纯逻辑 + 真转投链路的去重键', async () => {
+	// ① 纯函数：late 的值带 roomId，routed 的键第三段是 roomId
+	const late = new Map([['shadow-1', [{ messageId: 'm1', roomId: 'old-room' }, { messageId: 'm2', roomId: 'other' }]]]);
+	assert.equal(migrateLateRoomId(late, 'old-room', 'new-room'), 1);
+	assert.equal(late.get('shadow-1')[0].roomId, 'new-room');
+	assert.equal(late.get('shadow-1')[1].roomId, 'other', '别的群不受影响');
+	const routed = new Set(['s1:m1:old-room', 's1:m1:other', 'plain']);
+	assert.equal(migrateRoutedRoomId(routed, 'old-room', 'new-room'), 1);
+	assert.equal(routed.has('s1:m1:old-room'), false);
+	assert.equal(routed.has('s1:m1:new-room'), true);
+	assert.equal(routed.has('s1:m1:other'), true);
+
+	// ② 集成：installRooms 注册钩子 → 真转投造 routed → 引用失效 rebind → 同一条消息不许重复转投
+	const h = fakeHost(() => '[PASS]');
+	const r = createRooms({ file: join(dir, 'rebind-ledgers.json'), fallbackCwd: dir, roster: async () => ROSTER,
+		presetOf: id => `vssaros-${id}`, sessions: () => h.sc, agents: () => h.agents, workspaces: () => h.workspaces,
+		append: () => h.append, warn: () => undefined });
+	const off = installRooms(h.ctx, r);
+	const made = await r.create({ members: ['designer', 'coder'], name: '账本迁移群', notice: '' }, { createdBy: 'superagent' });
+	r.postToRoom = async () => ({ ok: true });
+	await roomsApi(r, { method: 'POST', query: new URLSearchParams(), body: { action: 'select', id: made.id } });
+	const userEvent = (text) => ({ type: 'user/message', data: { id: 'm1', source: { kind: 'user' }, content: [{ type: 'text', text }] } });
+	h.emit('session/event', { id: 'plain-1' }, userEvent('@账本迁移群 干活'));
+	await tick();
+	h.sessions.delete(made.id);
+	h.sc.resolveAgent = async () => ({ error: { code: 'session/released' } });
+	h.sc.retain = async () => { throw new Error('is released'); };
+	const out = await roomsApi(r, { method: 'POST', query: new URLSearchParams(), body: { action: 'rebind', id: made.id } });
+	assert.equal(out.body.ok, true);
+	assert.equal(out.body.rebound, true);
+	assert.equal(out.body.migrated.routed, 1, 'routed 里带旧群 id 的键必须迁到新 id');
+	assert.equal(out.body.migrated.late, 0, '本例没有在途迟到回复');
+	// 迁移后再发同一条来源消息：去重键已跟到新群 ⇒ 不能重复转投
+	const posted = [];
+	r.postToRoom = async function (...args) { posted.push(args); return { ok: true }; };
+	await roomsApi(r, { method: 'POST', query: new URLSearchParams(), body: { action: 'select', id: out.body.roomId } });
+	h.emit('session/event', { id: 'plain-1' }, userEvent('@账本迁移群 干活'));
+	await tick();
+	assert.equal(posted.length, 0, 'rebind 后同一条消息不应重复转投（routed 去重键已迁移）');
+	off();
 });
 
 rmSync(dir, { recursive: true, force: true });

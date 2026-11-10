@@ -1,19 +1,15 @@
 /*---------------------------------------------------------------------------------------------
  *  turn 收尾段 —— 由 `agentTurnExecutor.ts` 迁出（2026-09-17 Part 化期 4）。
  *
- *  包含两个**互相独立**、均无 yield / 无控制流逃逸的收尾动作：
+ *  仅保有一个无 yield / 无控制流逃逸的收尾动作：
  *
- *    1. `storeTurnObservationsAtEnd`（原主文件 3917-3931）
- *       每轮 turn 结束把本轮新增对话增量外置到记忆，供后续 turn 检索取回。
- *       调用点在 while 循环之后、`finally` 之前（仍在 try 内）。
- *
- *    2. `logToolAuditSummary`（原主文件 3949-4005）
+ *  `logToolAuditSummary`（原主文件 3949-4005）
  *       [ToolAudit] SUMMARY 诊断日志。调用点在 `finally` 内 —— **必须覆盖
  *       abort / 异常 / generator return 全部退出路径**，因为「工具用得不合理」
  *       的 turn 恰恰最常以中断收尾（撞硬超时、用户取消），只在正常结束处打
  *       就会漏掉最该看的那些。
  *
- *  两者都对调用方零副作用（不改 messages / runState / loopState），失败均被
+ *  该动作对调用方零副作用（不改 messages / runState / loopState），失败被
  *  内部吞掉，绝不阻断 turn 收尾。
  *--------------------------------------------------------------------------------------------*/
 
@@ -132,61 +128,3 @@ export function logToolAuditSummary(deps: IToolAuditSummaryDeps): void {
 	}
 }
 
-/**
- * 记忆提供方 —— 本段只需判定「是否支持检索式回放」，不触碰其余能力，
- * 故刻意声明为 `object` 而非结构化窄接口：后者所有成员都可选，会触发
- * TS 的 weak type detection（`IMemoryProvider` 与之「无公共属性」而报 TS2322）。
- * 能力探测改在运行时用 `in` 完成。
- */
-export type TurnMemoryProvider = object;
-
-/** 判定该提供方是否支持检索式回放（`recallFormatted`）。 */
-function supportsRecallFormatted(provider: TurnMemoryProvider): boolean {
-	return 'recallFormatted' in provider && !!(provider as { recallFormatted?: unknown }).recallFormatted;
-}
-
-/** `storeTurnObservationsAtEnd` 的入参。 */
-export interface IStoreTurnObservationsDeps {
-	/** 检索式压缩总开关（主文件传 `RETRIEVAL_COMPACTION_ENABLED`）。 */
-	retrievalCompactionEnabled: boolean;
-	/** 取当前激活的记忆提供方；无则返回 undefined/null。 */
-	getActiveMemoryProvider: () => TurnMemoryProvider | undefined | null;
-	/** 真正的外置写入动作（主文件传 `host._storeTurnObservations`）。 */
-	storeTurnObservations: (
-		provider: TurnMemoryProvider,
-		agentId: string,
-		sessionId: string,
-		messages: ReadonlyArray<unknown>,
-	) => Promise<unknown>;
-	agentId: string | undefined;
-	sessionId: string | undefined;
-	messages: ReadonlyArray<unknown>;
-}
-
-/**
- * 每轮 turn 结束：把本轮新增对话增量外置到记忆（延续检索式上下文，而非只在
- * 压缩时才外置），供后续 turn 检索取回，逐步累积历史上下文。
- *
- * **fire-and-forget**：写入供「后续」turn 使用，绝不应阻塞本 turn 收尾——
- * 多迭代 turn（如 22 步子代理）会产生 ~40 条增量消息，串行 await 网关写
- * （IPC 往返 50-500ms/条）会在 turn 末造成数秒~分钟级卡死；网关不可达时
- * 更糟（2026-07-25 日志实证：turn 末 writeMemory 洪泛 300+ 条阻塞收尾）。
- *
- * 注意：storeTurnObservations 内部先 `seen.add(hash)` 再写，后台写入期间
- * 下一 turn 的 turn-start 外置不会重复写同内容。
- */
-export function storeTurnObservationsAtEnd(deps: IStoreTurnObservationsDeps): void {
-	if (!deps.retrievalCompactionEnabled) {
-		return;
-	}
-	const provider = deps.getActiveMemoryProvider();
-	if (!provider || !supportsRecallFormatted(provider)) {
-		return;
-	}
-	void deps.storeTurnObservations(
-		provider,
-		deps.agentId ?? 'default',
-		deps.sessionId ?? '',
-		deps.messages,
-	).catch(() => { /* 单条失败已在内部吞掉；此处兜底防 unhandled rejection */ });
-}

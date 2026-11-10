@@ -1844,16 +1844,10 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 					this._notifications.warn(localize('dshHarness.page.kbVault', "这条命令不可用：{0}", `${commandId}（${String((e as Error)?.message ?? e)}）`));
 					return;
 				}
-				// ⚠ 清单改完**本页看不到** ✗：库记录是 **Host 启动时**注入的（`dshHarnessService._kbVaultsJson()`
-				//   只在起 Host 时读 storage ✓）⇒ 顺手重启一次让注入刷新 ✓（否则用户会以为"点了没反应" ✗）。
-				//   代价如实记：页面会重载一次；dsh 会话在盘上、视图重开会自动重开（`dshChatInstanceHost` 的既有语义 ✓）。
-				if (changed) {
-					try {
-						await this._dsh.restart();
-					} catch (e) {
-						this._notifications.warn(localize('dshHarness.page.kbRestart', "知识库清单已改，但重启 Host 失败（页面上的库列表要等下次启动才刷新）：{0}", String((e as Error)?.message ?? e)));
-					}
-				}
+				// ★ 2026-11-10（以 dsh 侧配置为准）：库记录**不再由 IDE 注入到 dsh**，
+				//   ⇒ 原先"清单改完就重启 Host 刷新注入"的整段逻辑删除（它已成死代码，且会白重载一次页面）。
+				//   边界如实记：这两条命令仍写 IDE 侧 KB 视图自己的 storage 清单（视图自身能力，不属于根配置链）；
+				//   dsh 侧的库增删走 `/x/kb/api/vault-add` / `/api/vault-delete`，与这里不是同一份数据。
 				return;
 			}
 			case 'openModulePage': {

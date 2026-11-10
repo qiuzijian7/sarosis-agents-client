@@ -578,6 +578,10 @@ function KbSettingsPage({ onClose, onSwitchVault, onAddVault, vaultRef, auto }) 
 			const [cliBusy, setCliBusy] = useState(false);
 			/** CLI 路径草稿（保存到设置里的 feishu.cliPath；留空 = 走 PATH） */
 			const [cliPathDraft, setCliPathDraft] = useState('');
+			/** ★ 2026-11-10：飞书应用 App ID / App Secret 草稿；secret 不回显、不落设置文件 */
+			const [appIdDraft, setAppIdDraft] = useState('');
+			const [appSecretDraft, setAppSecretDraft] = useState('');
+			const [hasAppSecret, setHasAppSecret] = useState(false);
 			/** 目录 / 知识库两个自定义下拉的开关（原生 datalist 在 Electron 里滚不动也选不了） */
 			const [dirMenu, setDirMenu] = useState(false);
 			const [spaceMenu, setSpaceMenu] = useState(false);
@@ -602,7 +606,12 @@ function KbSettingsPage({ onClose, onSwitchVault, onAddVault, vaultRef, auto }) 
 				let alive = true;
 				fetch('/x/kb/api/kb-settings', { credentials: 'same-origin' })
 					.then((r) => r.json())
-					.then((b) => { if (alive && b && b.ok) { setSettings(b.settings); } })
+					.then((b) => {
+						if (!alive || !b || !b.ok) { return; }
+						setSettings(b.settings);
+						setAppIdDraft(String((b.settings && b.settings.feishu && b.settings.feishu.appId) || ''));
+						setHasAppSecret(Boolean(b.settings && b.settings.feishu && b.settings.feishu.hasAppSecret));
+					})
 					.catch(() => { /* 读不到就保持空，页面照常可用 */ });
 				const want = vaultRef && vaultRef.current && vaultRef.current.id;
 				fetch('/x/kb/api/view-data' + (want ? '?vault=' + encodeURIComponent(want) : ''), { credentials: 'same-origin' })
@@ -626,6 +635,22 @@ function KbSettingsPage({ onClose, onSwitchVault, onAddVault, vaultRef, auto }) 
 			const patchFeishu = (k, v) => {
 				const f = Object.assign({}, (settings && settings.feishu) || {}, { [k]: v });
 				save({ feishu: f });
+			};
+			/** ★ 2026-11-10：保存飞书应用；secret 留空 = 不改，且不进 settings state（明文不驻留）。 */
+			const saveApp = () => {
+				const f = Object.assign({}, (settings && settings.feishu) || {}, { appId: String(appIdDraft || '').trim() });
+				if (appSecretDraft) { f.appSecret = appSecretDraft; }
+				const payload = Object.assign({}, settings || {}, { feishu: f });
+				fetch('/x/kb/api/kb-settings', {
+					method: 'POST', credentials: 'same-origin',
+					headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+				}).then((r) => r.json()).then((b) => {
+					if (!b || b.ok === false) { window.alert('保存飞书应用失败：' + ((b && b.error) || '未知错误')); return; }
+					setSettings(b.settings || payload);
+					setHasAppSecret(Boolean(b.settings && b.settings.feishu && b.settings.feishu.hasAppSecret));
+					setAppSecretDraft('');
+					if (b.note) { setSpacesMsg(String(b.note)); }
+				}).catch((e) => window.alert('保存飞书应用失败：' + String((e && e.message) || e)));
 			};
 
 			/** 检测 lark-cli（版本 or 缺失原因） */
@@ -670,7 +695,10 @@ function KbSettingsPage({ onClose, onSwitchVault, onAddVault, vaultRef, auto }) 
 								setSpacesMsg('✓ 已连接，但没有可见的知识库');
 							}
 						} else {
-							setSpacesMsg('✗ ' + String((b && b.error) || '未知原因').split('\n')[0].slice(0, 160));
+							// ★ 2026-11-10：后端给的是解析过的可读文案（缺 scope / 申请入口 / log_id），
+							//   不再是原始 JSON ⇒ 压平换行后多给一点长度，别把关键对策截没了 ✗。
+							const why = String((b && b.error) || '未知原因').replace(/\s+/g, ' ').trim();
+							setSpacesMsg('✗ ' + why.slice(0, 260) + (why.length > 260 ? '…' : ''));
 						}
 					})
 					.catch((e) => setSpacesMsg('✗ ' + String((e && e.message) || e).slice(0, 160)))
@@ -996,6 +1024,22 @@ function KbSettingsPage({ onClose, onSwitchVault, onAddVault, vaultRef, auto }) 
 							}),
 							h('span', { style: { flex: 1, minWidth: 0, fontSize: 10.5, opacity: .75, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: scheduleText() }, scheduleText()),
 							h('button', { type: 'button', style: btn, onClick: () => { void loadSchedule(); } }, '刷新状态')),
+						// ★ 2026-11-10：飞书应用（App ID / App Secret）；不指定 ⇒ lark-cli 用内置/默认应用
+						h('div', { style: row },
+							h('span', null, '飞书应用'),
+							h('input', { value: appIdDraft, placeholder: 'App ID，如 cli_a1b2c3（留空 = 默认应用）',
+								onChange: (e) => setAppIdDraft(e.target.value),
+								style: { flex: 1, height: 24, padding: '0 8px', background: 'transparent', color: 'inherit', border: '1px solid rgba(127,127,127,.35)', borderRadius: 4, fontSize: 12 } }),
+							h('input', { type: 'password', value: appSecretDraft, autoComplete: 'off',
+								placeholder: hasAppSecret ? '已配置（明文不回显）· 留空 = 不改' : 'App Secret（只存凭据库）',
+								onChange: (e) => setAppSecretDraft(e.target.value),
+								style: { width: 220, height: 24, padding: '0 8px', background: 'transparent', color: 'inherit', border: '1px solid rgba(127,127,127,.35)', borderRadius: 4, fontSize: 12 } }),
+							h('button', { type: 'button', style: btn, onClick: saveApp }, '保存应用')),
+						h('div', { style: row },
+							h('span', { style: { flex: 1, minWidth: 0, fontSize: 10.5, opacity: .75 } },
+								'当前：' + String((settings && settings.feishu && settings.feishu.appId) || '未配置（lark-cli 内置/默认应用）')
+								+ ' · App Secret：' + (hasAppSecret ? '已配置' : '未配置')
+								+ ' · 保存后所有飞书命令会带 --profile 走这个应用')),
 						// 飞书 CLI：路径配置（IDE 的 `…kb.feishu.cliPath`）+ 状态 + 重新检测 + 升级
 						h('div', { style: row },
 							h('span', null, 'CLI 路径'),

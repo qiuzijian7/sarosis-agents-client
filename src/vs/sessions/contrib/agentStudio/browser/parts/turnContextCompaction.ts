@@ -68,11 +68,6 @@ const MAX_SNAPSHOT_TEXT_LEN = 50000;
 /** 值得去重的 tool 结果最小长度 —— 更短的省不下 token。 */
 const MIN_DEDUP_CONTENT_LEN = 50;
 
-/** 记忆注入预算：占已省 token 的比例、占窗口的比例、绝对上限。 */
-const INJECT_BUDGET_SAVED_RATIO = 0.1;
-const INJECT_BUDGET_MIN = 500;
-const INJECT_BUDGET_WINDOW_RATIO = 0.05;
-const INJECT_BUDGET_MAX = 2000;
 
 /** 压缩节省率低于此值计为「无效压缩」（Dashboard 指标）。 */
 const INEFFECTIVE_SAVING_RATIO = 0.1;
@@ -81,16 +76,6 @@ const INEFFECTIVE_SAVING_RATIO = 0.1;
 const CHECKPOINT_PRESSURE_RATIO = 0.85;
 
 /** 记忆提供方的最小形状（本段只用这三个成员）。 */
-interface ICompactionMemoryProvider {
-	onPreCompact?(
-		agentId: string,
-		sessionId: string,
-		messages: Array<{ role: string; content: string; timestamp: number }>,
-		budget: number,
-	): unknown;
-	writeMemory(agentId: string, entry: unknown): Promise<void>;
-	recallFormatted?: unknown;
-}
 
 /**
  * 本段用到的 host 面。
@@ -118,8 +103,6 @@ export interface IContextCompactionHost {
 	_scheduleSave(): void;
 
 	_currentWorkspaceId: string | undefined;
-	getActiveMemoryProvider(): ICompactionMemoryProvider | undefined;
-	_retrieveCompactionContext(provider: ICompactionMemoryProvider, request: unknown): unknown;
 }
 
 /**
@@ -503,53 +486,6 @@ function buildSkippedResult(
 	};
 }
 
-/** 把压缩摘要落盘为 Episodic 记忆（fire-and-forget，失败不阻断本轮）。 */
-function writeSummaryToMemory(
-	deps: IContextCompactionDeps,
-	result: ICompressionResult,
-	tokensSaved: number,
-	savePercent: number,
-): void {
-	const { host, request } = deps;
-	if (!result.summary || result.summary.length <= 10) {
-		return;
-	}
-	const memoryProvider = host.getActiveMemoryProvider();
-	if (!memoryProvider) {
-		return;
-	}
-
-	const summaryTimestamp = Date.now();
-	void (async () => {
-		try {
-			await memoryProvider.writeMemory(request.agentId, {
-				id: `compression-${summaryTimestamp}`,
-				type: 'fact',
-				content: `[Context Compressed] ${result.summary}`,
-				metadata: {
-					memoryType: 'fact',
-					source: 'context_compression',
-					originalCount: result.originalMessageCount,
-					compressedCount: result.compressedMessageCount,
-					tokensSaved,
-					savePercent,
-					workspaceId: host._currentWorkspaceId,
-					sessionId: request.sessionId,
-					noticeId: `compression-${summaryTimestamp}`,
-				},
-				timestamp: summaryTimestamp,
-			});
-			host._logService.info(
-				`[AgentOS][Compression] Summary written to memory: ${result.summary.length} chars`
-			);
-		} catch (error) {
-			host._logService.warn(
-				`[AgentOS][Compression] Failed to write summary to memory: `
-				+ `${error instanceof Error ? error.message : String(error)}`
-			);
-		}
-	})();
-}
 
 /**
  * Checkpoint 无损重建（极端压力兜底）。
@@ -692,40 +628,15 @@ export async function compactContextIfNeededImpl(
 		}
 
 		try {
-			// Pre-compact 注入回调 —— 传进 compressContext，让注入的记忆成为压缩
-			// 结果的一部分（而非压缩后再追加，那样会立刻推高 token）。
-			const memoryProvider = host.getActiveMemoryProvider();
-			const preCompactInject = memoryProvider?.onPreCompact
-				? (ctx: {
-					agentId: string;
-					sessionId: string;
-					messages: Array<{ role: string; content: string; timestamp: number }>;
-					tokensSaved: number;
-					contextWindow: number;
-				}) => {
-					const injectBudget = Math.min(
-						Math.max(Math.floor(ctx.tokensSaved * INJECT_BUDGET_SAVED_RATIO), INJECT_BUDGET_MIN),
-						Math.floor(ctx.contextWindow * INJECT_BUDGET_WINDOW_RATIO),
-						INJECT_BUDGET_MAX,
-					);
-					return memoryProvider.onPreCompact!(ctx.agentId, ctx.sessionId, ctx.messages, injectBudget);
-				}
-				: undefined;
 
-			// 检索式上下文回调（对齐 agentmemory mem::context）：从记忆系统取回
-			// 相关上下文替代同步 LLM 摘要。仅在 AgentMemory 可用时提供，否则
-			// compressContext 回退到原有 LLM 摘要路径（零行为变更）。
-			const retrieveContext = (memoryProvider && memoryProvider.recallFormatted)
-				? (retrieveRequest: unknown) => host._retrieveCompactionContext(memoryProvider, retrieveRequest)
-				: undefined;
 
 			compressionResult = await contextManager.compressContext(
 				state.messages() as unknown as ReadonlyArray<ChatMessage>,
 				undefined,
 				compressionWindow,
 				state.runState().lastRealPromptTokens,
-				preCompactInject,
-				retrieveContext,
+				undefined,
+				undefined,
 				toolsSchemaTokens > 0 ? toolsSchemaTokens : undefined,
 				force === true ? true : undefined,
 			);
@@ -819,7 +730,6 @@ export async function compactContextIfNeededImpl(
 			+ `duration=${compressionDurationMs}ms`
 		);
 
-		writeSummaryToMemory(deps, compressionResult, tokensSaved, savePercent);
 		await rebuildCheckpointIfExtreme(deps, state);
 
 		const afterText = formatMessagesSequential(state.messages());

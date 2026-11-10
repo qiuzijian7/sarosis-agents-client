@@ -26,6 +26,8 @@ import { readAliases } from './aliases.js'
 import { reviewCommand, reviewStatusTool, reviewTurnCounter, writeGapCounter, enqueueSuggestion, suggestToolDefinition } from './review.js'
 import { skillManageTool } from './skills.js'
 import { installApi } from './api.js'
+import { deriveMemoryScope } from './workspace-scope.js'
+import { workspaceKeyOf } from './store.js'
 import { installSkillsManager } from './skills-manager.js'
 import { TodoStore, createTodoController } from './todo.js'
 import { installMemorySync, makeProjectDirResolver } from './sync/index.js'
@@ -101,6 +103,9 @@ export const DEFAULTS = {
   perTurnWriteGuard: false,  // false（默认）= 不计数、不提醒；true = 启用看门狗
   writeGuardThreshold: 2,    // 连续 N 轮未写入触发提醒（正整数，>=1）
   keyBranchFilter: true,      // static (config.yaml only): inject only KEY entries whose branch scope matches the session's git branch
+  // 2026-11-10 P0：多根工作区作用域**只读可见性**。默认开（纯读、单根自动折叠）；
+  // 设为 false 一键退回旧 UI。物理分区不变，不涉及任何数据迁移。
+  multiRootScopeEnabled: true,
   // key 轨渐进式披露（2026-08-15）：摘要注入减少 token，按需展开加载全文
   keyProgressiveDisclosure: 'off', // 'auto' | 'off' | 'on' — auto=小数据量全量注入、大数据量摘要注入；off=始终全量（默认）；on=始终摘要
   keyFullInjectThreshold: 3,  // auto 模式：条目数 ≤ 此值 → 全量注入
@@ -1669,6 +1674,14 @@ export function apply(ctx, rawConfig = {}) {
   })
   const archive = new ArchiveStore(config.memoryDir, { projectDirResolver })
   const queue = new SuggestionQueue(config.suggestionsFile)
+  // 2026-11-10 P0：把 foundation 的运行期根集接进 Web API（只读）。
+  // 与 codebase/kanban 同款纪律：ctx.get 缺席/抛错一律降级为 null，不抛到页面。
+  const getWorkspaceScope = (cwd) => {
+    if (config.multiRootScopeEnabled === false) return null
+    let foundation
+    try { foundation = ctx.get?.('vssarosFoundation') ?? ctx.vssarosFoundation ?? null } catch { foundation = null }
+    return deriveMemoryScope(foundation, cwd, { workspaceKeyOf })
+  }
   const todoStore = new TodoStore(config.memoryDir, projectDirResolver)
   // VsSaros（2026-11-05「记忆收敛成一套」）：把 @vssaros/dsh-agents 的旧 Bot / 工作区记忆并进来
   // （只追加、不改源；结果记在 legacy-agent-memory.json）。
@@ -1986,6 +1999,7 @@ export function apply(ctx, rawConfig = {}) {
     webCtx.effect(() => installApi(webCtx, {
       store, archive, queue, todoStore, getRuntime, updateRuntime: applyRuntimePatch, resolveRevealTarget: resolveReveal, revealPath,
       config,
+      getWorkspaceScope,
       // 共享别名存储实例（aliases.json 单实例：api 路由与 de_session rename
       // 共用同一内存缓存，避免多实例互覆写；api.js 缺省自建）
       aliases: aliasStore,

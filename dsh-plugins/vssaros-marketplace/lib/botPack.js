@@ -26,9 +26,11 @@ export const MCP_SERVER_RE = /^[A-Za-z0-9_-]{1,32}$/;
  * 分项生效回执：一个 Bot 装完**不可能整体生效**。
  * · bot：`.agent.md` 落盘后可由 `vssarosAgents.rescan()` 增量注册 ⇒ applied；
  * · skills / tools：目录增删与插件 apply 要等下一次 Host 启动 ⇒ restart-required；
- * · mcp：`ctx.pluginManager` 没有 addRow，`mcp.json` 的行只在启动时生成 ⇒ restart-required。
+ * · mcp：2026-11-10 起由 `vssaros-mcp` 插件运行时 reconcile ⇒ 缺省 `applied`；
+ *   `VSSAROS_MCP_RUNTIME_MOUNT=0` 回退到启动期覆盖层时仍是 `restart-required`。
  * 单个 `restartRequired` 布尔表达不了这个差异（会出现「Bot 看得见但 MCP 没连上」）。
  */
+/** 启动期覆盖层模型下的回执（`=0` 回退态）。保留导出供守卫/测试对账。 */
 export const BOT_RECEIPT = Object.freeze({
 	bot: 'applied',
 	skills: 'restart-required',
@@ -36,6 +38,19 @@ export const BOT_RECEIPT = Object.freeze({
 	mcp: 'restart-required',
 	note: 'Bot 定义已落盘；技能 / 工具 / MCP 需重启 Harness 后生效。MCP 凭据需用户在本机填 ${env:VAR} 对应的环境变量。',
 });
+
+/**
+ * 按挂载模型生成分项回执。判据与 `vssaros-mcp/lib/core/mcpRuntime.js` 的
+ * `isMcpRuntimeMountEnabled` 同值（跨插件不互相 import，由 check-capability-tools ⑨ 钉住）。
+ */
+export function makeBotReceipt(env = process.env) {
+	if (env?.VSSAROS_MCP_RUNTIME_MOUNT === '0') { return BOT_RECEIPT; }
+	return Object.freeze({
+		...BOT_RECEIPT,
+		mcp: 'applied',
+		note: 'Bot 定义已落盘；技能 / 工具需重启 Harness 后生效，MCP 由运行时挂载即时生效。MCP 凭据需用户在本机填 ${env:VAR} 对应的环境变量。',
+	});
+}
 
 /**
  * 从解包后的文件里读 `bot.json`。没有 ⇒ 返回 null（普通 agent 包，走原链路）。

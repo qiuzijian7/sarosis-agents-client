@@ -144,9 +144,11 @@ export function ChatPage() {
     <div className="dt-chat-log" role="log" aria-label={t('tab.chat')}>
       {!data.messages.length && !locals.length && <Hint>{t('chat.empty')}</Hint>}
       {data.messages.map(message => message.role === 'person'
-        ? <div key={message.id} className="dt-msg dt-msg-person">
+        ? <div key={message.id} className="dt-msg dt-msg-person" data-source={message.source}>
           <div className="dt-msg-bubble">{message.text}</div>
           <div className="dt-msg-meta"><When at={message.at} />
+            {/* ★ 2026-11-10: a Feishu source text is a person bubble, explicitly labelled with its origin. */}
+            {message.source === 'feishu' && <span className="dt-tag" data-source="feishu">飞书</span>}
             {message.filtered && <span className="dt-msg-filtered">{t('chat.notHanded', { reason: reasonLabel(t, message.filtered) })}</span>}</div>
         </div>
         : <div key={message.id} className="dt-msg dt-msg-agent">

@@ -13,7 +13,7 @@ import {
 } from '../../common/dshHostConfig.js';
 import {
 	renderAgentsOverlay, renderBridgeOverlay, renderCodebaseOverlay, renderDataRootOverlay,
-	renderKanbanOverlay, renderMemoryOverlay, renderSandboxOverlay,
+	renderKanbanOverlay, renderSandboxOverlay,
 } from '../../common/dshCli.js';
 import { renderMcpOverlay } from '../../common/dshMcpConfig.js';
 import { renderSkillsOverlay } from '../../common/dshSkillDirs.js';
@@ -41,7 +41,7 @@ const SUPERVISOR = 'src/vs/sessions/contrib/dshHarness/electron-main/dshHostSupe
 const MCP_CONFIG = 'src/vs/sessions/contrib/dshHarness/common/dshMcpConfig.ts';
 
 /** 覆盖层的**固定顺序**（前者先落地；后者覆盖前者，故顺序即语义）。 */
-const ORDER: readonly DshHostOverlayKind[] = ['bridge', 'kanban', 'codebase', 'mcp', 'skills', 'agents', 'dataRoot', 'memory', 'sandbox'];
+const ORDER: readonly DshHostOverlayKind[] = ['bridge', 'kanban', 'codebase', 'mcp', 'skills', 'agents', 'dataRoot', 'sandbox'];
 
 /** 一份"全字段"配置（各字段都非空，用来断言 9 条齐出）。 */
 const fullConfig: IDshHostConfig = {
@@ -56,7 +56,6 @@ const fullConfig: IDshHostConfig = {
 	bundledSkillDir: 'C:/builtin/skills',
 	mcpServers: [{ serverName: 'kb', transport: 'stdio', command: 'node', args: ['kb.js'] }],
 	mcpConfigPath: 'C:/Users/x/.vssaros-dev/mcp.json',
-	gatewayUrl: 'http://127.0.0.1:8790',
 	// 沙箱降级（2026-10-13）：探针探不通时才有值 ⇒ 这里给上，断言它排在**最后**一条 ✓
 	sandboxMode: 'danger-full-access',
 };
@@ -91,25 +90,28 @@ suite('dshHostConfig（中立配置源：配置 → 覆盖层）', () => {
 		assert.strictEqual(byKind.get('dataRoot'), renderDataRootOverlay('C:/Users/x/.vssaros-dev', 'C:/Users/x/.vssaros-dev/mcp.json'));
 		assert.strictEqual(byKind.get('sandbox'), renderSandboxOverlay('danger-full-access', 'C:/work/repo'),
 			'沙箱降级那条打的是 base 的 `sandbox-policy` 行（探针探不通才会出现）');
-		assert.strictEqual(byKind.get('memory'), renderMemoryOverlay('http://127.0.0.1:8790', 'C:/Users/x/.vssaros-dev', 'ws-1'),
-			'记忆那份必须把**数据根**与**工作区 id** 一起写进去（同一条目的 config 是整体替换；dataRoot 供审计账本、workspaceId 供按工作区隔离分区）');
+		assert.ok(!overlays.some(o => (o.kind as string) === 'memory'),
+			'记忆网关覆盖层已随 IDE 侧 AgentMemory 一并退役（11-03 不再生成，11-10 删净生产/消费方）');
 	});
 
 	test('★ 条件渲染与主进程同口径：字段缺失/全空白 ⇒ **不产生**那一条（不是渲染空覆盖层）', () => {
-		// ★ A 组缺口（2026-10-12，同一条测试内联）：kbRoot / unrealBridgeUrl 真的进了覆盖层吗？
-		// 报告现场：用户在 IDE 里改了「知识库存储根」或「unreal bridge 地址」时，dsh 侧**过去没有任何
-		// 等价配置键** ✗ ⇒ 前者表现为"资料库/画布空着但不报错"、后者表现为"设置改了仍连 8765" ✓。
-		// 这一段钉**渲染**（纯函数 ✓ 秒级 ✓）；**真机效果**（改了设置 ⇒ Host 真跟着改）由探针负责 ✓（尚未补 ✗）。
+		// ★ 2026-11-10（用户裁决「以 dsh 侧配置为准、移除 IDE 侧配置和逻辑」）：
+		//   `kbRoot` / `kbVaults` / `kbActiveVaultId` 三个键**不再写进覆盖层**。
+		//   知识库根由 dsh 插件自持的 `<数据根>/.kb-root.json` 决定 ⇒ 这里反向钉住"IDE 不再注入"。
+		const KB_KEYS = ['kbRoot', 'kbVaults', 'kbActiveVaultId'];
 		const dataRootOnly = renderHostOverlays({ dataRoot: '/d' }).find(o => o.kind === 'dataRoot')!.text;
 		assert.ok(/- id: vssaros-kb[\s\S]*?dataRoot: '\/d'/.test(dataRootOnly), 'kb 行缺 dataRoot');
-		assert.ok(!dataRootOnly.includes('kbRoot'),
-			'用户**没改**知识库存储根时不该给 kbRoot（与插件默认同值；注入了只是多一个改错的机会 ✗）');
+		for (const key of KB_KEYS) {
+			assert.ok(!dataRootOnly.includes(key), `${key} 已移除，覆盖层里不该再出现（dsh 侧自持配置为准）`);
+		}
 		assert.ok(!dataRootOnly.includes('vssaros-unreal'),
 			'unreal 设置为空时不该渲染它的行（插件自带默认与 IDE 默认同值 ✓）');
 
-		const both = renderHostOverlays({ dataRoot: '/d', kbRoot: '/custom/kb', unrealBridgeUrl: 'http://127.0.0.1:9999' })
+		const both = renderHostOverlays({ dataRoot: '/d', unrealBridgeUrl: 'http://127.0.0.1:9999' })
 			.find(o => o.kind === 'dataRoot')!.text;
-		assert.ok(/kbRoot: '\/custom\/kb'/.test(both), 'kb 行必须带上用户的存储根');
+		for (const key of KB_KEYS) {
+			assert.ok(!both.includes(key), `带上其它设置时也不该注入 ${key}`);
+		}
 		// （2026-10-15：canvas 模块已移除 ⇒ 不再有 canvasRoot 行 ✓。）
 		assert.ok(/- id: vssaros-unreal[\s\S]*?bridgeUrl: 'http:\/\/127\.0\.0\.1:9999'/.test(both),
 			'unreal 行必须带上用户改过的 bridge 地址');
@@ -132,9 +134,10 @@ suite('dshHostConfig（中立配置源：配置 → 覆盖层）', () => {
 
 		// JSON 往返：新字段必须参与 ✓ —— 否则**独立启动器**（没有 VsSaros 的入口）读同名配置时会把它们
 		// 静默丢掉 ✗（`parseDshHostConfig` 只认它列出的字段 ✓）。
-		const roundTrip = parseDshHostConfig(serializeDshHostConfig({ dataRoot: '/d', kbRoot: '/custom/kb', unrealBridgeUrl: 'http://x' }));
-		assert.deepStrictEqual(roundTrip, { dataRoot: '/d', kbRoot: '/custom/kb', unrealBridgeUrl: 'http://x' },
-			'新字段必须能无损往返（否则独立启动器丢字段，且丢得没声音 ✗）');
+		// ★ 2026-11-10：`kbRoot` 已从中立配置删除（独立启动器同样读 dsh 侧 `.kb-root.json`）。
+		const roundTrip = parseDshHostConfig(serializeDshHostConfig({ dataRoot: '/d', unrealBridgeUrl: 'http://x' }));
+		assert.deepStrictEqual(roundTrip, { dataRoot: '/d', unrealBridgeUrl: 'http://x' },
+			'字段必须能无损往返（否则独立启动器丢字段，且丢得没声音 ✗）');
 		// browser 单独一条（它含布尔 false ⇒ 走的是另一套解析，见 `parseDshHostConfig` 里那段注释 ✓）
 		const browserRoundTrip = parseDshHostConfig(serializeDshHostConfig({
 			dataRoot: '/d', browser: { port: 9333, launchDedicated: false, headless: false },
@@ -146,7 +149,7 @@ suite('dshHostConfig（中立配置源：配置 → 覆盖层）', () => {
 		// 空白串与空数组一律当"没给"（主进程到处是 `.trim() || undefined` 与 `filter(...existsSync)`）
 		assert.deepStrictEqual(renderHostOverlays({
 			dataRoot: '   ', workspaceId: '', workspaceRoot: '\t', agentsRoot: ' ',
-			skillDirs: ['', '  '], relatedRoots: [], mcpServers: [], mcpConfigPath: ' ', gatewayUrl: '',
+			skillDirs: ['', '  '], relatedRoots: [], mcpServers: [], mcpConfigPath: ' ',
 		}), []);
 		assert.deepStrictEqual(renderHostOverlays({ bridge: { pipe: 'p', token: '   ', hideOfficialDeepseek: false } }).map(o => o.kind), [],
 			'token 为空 ⇒ 不注入 bridge 覆盖层（否则伴生插件会拿空 token 起来）');
@@ -162,7 +165,7 @@ suite('dshHostConfig（中立配置源：配置 → 覆盖层）', () => {
 		assert.ok(text.includes('\n  "dataRoot":'), text.slice(0, 120));
 		assert.deepStrictEqual(parseDshHostConfig(text), fullConfig);
 		// 只给部分字段时也不该冒出空字段（否则往返后多出 `relatedRoots: []` 这类噪声）
-		const partial: IDshHostConfig = { bridge: { pipe: 'p', token: 't', hideOfficialDeepseek: false }, gatewayUrl: 'http://127.0.0.1:1' };
+		const partial: IDshHostConfig = { bridge: { pipe: 'p', token: 't', hideOfficialDeepseek: false } };
 		assert.deepStrictEqual(parseDshHostConfig(serializeDshHostConfig(partial)), partial);
 	});
 
@@ -199,7 +202,7 @@ suite('dshHostConfig（中立配置源：配置 → 覆盖层）', () => {
 		// ② 主进程**不再**直接调这 7 个渲染器：它若又出现，就是平行实现回来了
 		for (const fn of [
 			'renderBridgeOverlay', 'renderKanbanOverlay', 'renderCodebaseOverlay',
-			'renderSkillsOverlay', 'renderAgentsOverlay', 'renderDataRootOverlay', 'renderMemoryOverlay',
+			'renderSkillsOverlay', 'renderAgentsOverlay', 'renderDataRootOverlay',
 		]) {
 			assert.ok(!new RegExp(`${fn}\\s*\\(`).test(supervisor),
 				`主进程又直接调用 ${fn} 了 ⇒ 覆盖层有了第二份实现（要么删掉它，要么把差异并进 renderHostOverlays）`);

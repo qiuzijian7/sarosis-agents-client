@@ -166,7 +166,6 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	/** provider 事件取消订阅函数 */
 	private _memoryEventUnsub: (() => void) | null = null;
 	/** 内存事件桥接是否已建立（幂等，只建立一次） */
-	private _memoryBridgeReady = false;
 
 	/** In-memory cache: compositeKey → messages */
 	private readonly _historyCache = new Map<string, ChatMessage[]>();
@@ -3039,7 +3038,6 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 		// 仅在 sessionId 缺失时退化为"同 agent 最近一次活跃流"，避免多开聊天框串台。
 		this._activeOnDeltas.set(streamKey, onDelta);
 		this._streamCreatedAt.set(streamKey, Date.now());
-		this._ensureMemoryEventBridge();
 
 		let fullContent = "";
 		let fullThinking = "";
@@ -3857,130 +3855,6 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	 * 幂等：只建立一次订阅；并发修复后用 {@link _getOnDeltaForAgent} 按 agentId
 	 * 把事件路由到该 agent 最近一次活跃流的 onDelta，避免多会话串台。
 	 */
-	private _ensureMemoryEventBridge(): void {
-		if (this._memoryBridgeReady) {
-			return;
-		}
-		this._memoryBridgeReady = true;
-
-		// Dedup: track processed noticeIds to prevent duplicate display
-		const processedNoticeIds = new Set<string>();
-		// Dedup map for Episodic/Semantic/Procedural extraction cards (no noticeId)
-		// Key: memoryType, Value: last shown timestamp — 5s window prevents duplicate cards
-		const recentExtractedTypes = new Map<string, number>();
-
-		const provider = this.driverService.getActiveMemoryProvider();
-		if (!provider?.onMemoryWritten) {
-			// Provider 不支持事件订阅（旧 provider），回退：不桥接
-			return;
-		}
-
-		const unsubWritten = provider.onMemoryWritten((agentId, data) => {
-			// 串台防护：优先按 data.sessionId 精确路由到对应会话（agentId::sessionId）；
-			// sessionId 缺失时退化为"同 agent 最近活跃流"。
-			const onDelta = this._getOnDeltaForAgent(agentId, data.sessionId);
-			if (!onDelta) {
-				return;
-			}
-			if (data.noticeId) {
-				// Dedup: skip if this noticeId was already processed
-				if (processedNoticeIds.has(data.noticeId)) {
-					return;
-				}
-				processedNoticeIds.add(data.noticeId);
-
-				// L0 写入完成：contentLength 为 0 时移除 pending 卡片，不显示"已保存"
-				if (!data.contentLength || data.contentLength === 0) {
-					onDelta({
-						type: 'memory_written' as any,
-						content: '',
-						metadata: { noticeId: data.noticeId, memoryType: data.memoryType, remove: true },
-					} as any);
-					return;
-				}
-
-			// Use actual memoryType for the label instead of hardcoding "Working"
-			const memTypeLabels: Record<string, string> = {
-				working: 'Working', semantic: 'Semantic', procedural: 'Procedural',
-				pattern: 'Pattern', preference: 'Preference', architecture: 'Architecture',
-				bug: 'Bug', workflow: 'Workflow', fact: 'Fact', instruction: 'Instruction',
-			};
-			const memLabel = memTypeLabels[data.memoryType ?? ''] ?? data.memoryType ?? 'Working';
-				onDelta({
-					type: 'memory_written' as any,
-					content: `${memLabel} 已保存 ${data.contentLength}字`,
-					metadata: { noticeId: data.noticeId, memoryType: data.memoryType },
-				} as any);
-			} else {
-				// Episodic/Semantic/Procedural 写入完成：直接显示 saved 卡片（无对应 pending 卡片）
-				// Skip 'working' type — working memory writes always go through the noticeId path above.
-				// Hook-triggered working writes (post_tool_use) are redundant with per-iteration writes.
-			const memType = data.memoryType ?? 'fact';
-			if (memType === 'working' || memType === 'short_term') {
-				return; // Working memory without noticeId = hook-triggered duplicate, skip
-			}
-			// Dedup: 同一 memoryType 在 5 秒内只显示一次（一次提取可能写入多条 fact）
-			const now = Date.now();
-			const lastShown = recentExtractedTypes.get(memType) ?? 0;
-			if (now - lastShown < 5000) {
-				return; // 5 秒内已显示过同类型卡片，跳过
-			}
-			recentExtractedTypes.set(memType, now);
-
-			const typeLabels: Record<string, string> = {
-				working: 'Working', semantic: 'Semantic', procedural: 'Procedural',
-				pattern: 'Pattern', preference: 'Preference', architecture: 'Architecture',
-				bug: 'Bug', workflow: 'Workflow', fact: 'Fact', instruction: 'Instruction',
-			};
-			const label = typeLabels[memType] ?? memType ?? 'Fact';
-				onDelta({
-					type: 'memory_extracted' as any,
-					content: `${label} 已提取`,
-					metadata: { memoryType: memType, status: 'saved' },
-				} as any);
-			}
-		});
-
-		const unsubFailed = provider.onMemoryWriteFailed?.((_agentId, data) => {
-			// 串台防护：按 data.sessionId 精确路由（缺失时退化为最近活跃流）。
-			const onDelta = this._getOnDeltaForAgent(_agentId, data.sessionId);
-			if (onDelta && data.noticeId) {
-				onDelta({
-					type: 'memory_write_failed' as any,
-					content: `Working 写入失败: ${data.error}`,
-					metadata: { noticeId: data.noticeId, error: data.error },
-				} as any);
-			}
-		}) ?? (() => { });
-
-		// 技能提取事件桥接：sweep 中自动提取技能后通知 UI
-		const providerAny = provider as any;
-		const unsubSkill = providerAny?.onEvent?.('skill_extracted', (event: any) => {
-			const agentId = event.agentId ?? '';
-			const onDelta = this._getOnDeltaForAgent(agentId);
-			if (!onDelta) {
-				return;
-			}
-			const skillId = event.data?.['skillId'] as string ?? '';
-			const title = event.data?.['title'] as string ?? '未知技能';
-			onDelta({
-				type: 'skill_extracted' as any,
-				content: `⚡ 技能已沉淀: ${title}`,
-				metadata: {
-					skillId,
-					title,
-					agentId,
-					clickable: true,
-				},
-			} as any);
-		}) ?? null;
-
-		this._memoryEventUnsub = () => {
-			unsubWritten();
-			unsubFailed();
-			if (typeof unsubSkill === 'function') { unsubSkill(); }
-		};
-	}
 
 	/**
 	 * 并发路由：给定 agentId（及可选 sessionId），返回应接收该 memory 事件的 onDelta 回调。
@@ -3991,7 +3865,7 @@ export class AgentChatService extends Disposable implements IAgentChatService {
 	 *   2. 否则退化为"同 agent 最近一次活跃流"（sessionId 缺失的事件，如
 	 *      memory_extracted / skill_extracted，仍走此兜底）。
 	 */
-	private _getOnDeltaForAgent(agentId: string, sessionId?: string): ((delta: IChatStreamDelta) => void) | undefined {
+	protected _getOnDeltaForAgent(agentId: string, sessionId?: string): ((delta: IChatStreamDelta) => void) | undefined {
 		if (!agentId) {
 			return undefined;
 		}

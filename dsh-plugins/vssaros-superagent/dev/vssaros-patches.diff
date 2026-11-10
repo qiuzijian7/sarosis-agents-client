@@ -423,10 +423,10 @@ index c64aeac9f55..ceaf95857e1 100644
      accepted?: () => void): Promise<void> {
 diff --git a/src/app/desk-chat.ts b/src/app/desk-chat.ts
 new file mode 100644
-index 00000000000..0e6e2759504
+index 00000000000..f1f85a51225
 --- /dev/null
 +++ b/src/app/desk-chat.ts
-@@ -0,0 +1,145 @@
+@@ -0,0 +1,164 @@
 +/**
 + * VsSaros addition: the supervisor desk as the panel's Chat tab. The conversation is the desk's Thread
 + * (`superagent:desk:<deskId>`): a person's messages are its Triggers, whether typed in the panel or in the desk Session,
@@ -447,6 +447,10 @@ index 00000000000..0e6e2759504
 +  /** A person's message the gate did not admit, and why. */
 +  filtered?: Reason
 +  ticketId?: string; kind?: OutboundMessage['kind']
++  /** ★ 2026-11-10: read-only projection of an IM source message (Feishu) into the Chat bubbles.
++      It never lives in the desk Thread; `chatId` only labels where the message came from. */
++  source?: 'feishu'
++  chatId?: string
 +}
 +
 +export interface DeskChatHost {
@@ -485,7 +489,22 @@ index 00000000000..0e6e2759504
 +    })
 +    const replies = db.prepare('SELECT value FROM desk_log ORDER BY at DESC LIMIT ?').all(limit)
 +      .map(row => JSON.parse(String(row.value)) as DeskMessage)
-+    return [...people, ...replies].sort((a, b) => a.at.localeCompare(b.at) || (a.role === 'person' ? -1 : 1)).slice(-limit)
++    /* ★ 2026-11-10: show Feishu source text directly in the Chat bubbles (read-only projection).
++       Feishu Triggers live in `feishu:<chatId>:<rootId>` Threads; the Chat tab used to read only the desk Thread.
++       We map `source:'feishu'` Triggers to person messages at read time: no trigger_thread / desk_log writes,
++       no Intake, no Eval kick ⇒ the supervisor is NOT woken and no reply loop can form. Display-only
++       Triggers are stored by Intake's filtered branch (`intake.ts:58`), so the text stays visible;
++       the filtered reason is deliberately NOT projected — display-only is the product, not a rejection. */
++    const feishu = db.prepare(`SELECT value FROM trigger WHERE json_extract(value,'$.source') = 'feishu'
++      ORDER BY at DESC LIMIT ?`).all(limit).map(row => {
++      const trigger = JSON.parse(String(row.value)) as Trigger & { meta?: { chatId?: string } }
++      return { id: trigger.id, role: 'person' as const, text: trigger.text, at: trigger.at,
++        source: 'feishu' as const, ...(trigger.meta?.chatId ? { chatId: trigger.meta.chatId } : {}) }
++    })
++    const seen = new Set<string>()
++    return [...people, ...feishu, ...replies]
++      .filter(message => { if (seen.has(message.id)) return false; seen.add(message.id); return true })
++      .sort((a, b) => a.at.localeCompare(b.at) || (a.role === 'person' ? -1 : 1)).slice(-limit)
 +  }
 +  /** A person's message from the panel, as a desk Trigger. */
 +  async send(text: string): Promise<{ id: string; result: ReceiveResult }> {
@@ -1506,10 +1525,10 @@ index 00000000000..bbf157c6d0d
 +}
 diff --git a/src/app/groupFastPath.ts b/src/app/groupFastPath.ts
 new file mode 100644
-index 00000000000..20abceaac8a
+index 00000000000..41dda76b18a
 --- /dev/null
 +++ b/src/app/groupFastPath.ts
-@@ -0,0 +1,276 @@
+@@ -0,0 +1,300 @@
 +/**
 + * 2026-11-05 P0: a person asks the supervisor desk to make a group of Bots. That request used to wait for the orchestrator
 + * model to classify it and call `orchestrator_team_create_group` (~44s in the 19:20 log). A group chat is a deterministic
@@ -1521,6 +1540,7 @@ index 00000000000..20abceaac8a
 + * so SuperAgent only records an `ignore` decision and does not spend another main-Session model evaluation on it.
 + */
 +import type { ReceiveResult, Trigger } from '../core/index.ts'
++import { GROUP_REQUEST } from '../core/group-request.ts'
 +import type { GroupRouteKind } from './group-routes.ts'
 +import { groupTicketTitle } from './group-tickets.ts'
 +import type { GroupView } from './team.ts'
@@ -1651,7 +1671,7 @@ index 00000000000..20abceaac8a
 +	//   ⚠ 否定词要判**动词之前或紧邻动词**的短语，避免误伤「创建一个不要加班的团队」这类正向描述。
 +	if (/(?:不要|别|无需|不用|不必|取消|不用再|别再)\s*(?:建|拉|创建|组建|成立)?\s*(?:群|团队)/u.test(body)) { return false }
 +	if (/(?:^|[，,。！!？?\s])(?:不要|别|无需|不用|不必)\s*(?:建|拉|创建|组建|成立)/u.test(body)) { return false }
-+	return /(?:建|拉|创建|组建|成立)[^，,。！!？?]{0,48}(?:群|团队)|群聊/u.test(body)
++	return GROUP_REQUEST.test(body)
 +}
 +
 +/** Derive a stable group name and shared notice from the request, and pick up to three suitable Bots. */
@@ -1700,9 +1720,15 @@ index 00000000000..20abceaac8a
 +	if (!basis) { return undefined }
 +	const name = (explicitName || `${basis.slice(0, 40)} 开发团队`).slice(0, 60)
 +	const nameOf = (bot: FastGroupBot | undefined) => bot?.name
-+	const flow = coder && tester ? groupFlowNotice({ coder: nameOf(coder)!, tester: nameOf(tester)!, designer: nameOf(designer), reviewer: nameOf(reviewer) }) : ''
++	// ★ 2026-11-10：名册没有 coder/tester（真机蛇群是 planner + code-explorer + …）时也要有分工公告。
++	//   闲聊群（BUILD_WORDS 不命中）保持原样，不带任何流程文本。
++	const chosen = ids.slice(0, size)
++	const names = chosen.map(id => nameOf(pool.find(bot => bot.id === id)) || id)
++	const flow = coder && tester
++		? groupFlowNotice({ coder: nameOf(coder)!, tester: nameOf(tester)!, designer: nameOf(designer), reviewer: nameOf(reviewer) })
++		: BUILD_WORDS.test(text) && names.length >= 2 ? divisionNotice({ admin: names[0] ?? '', others: names.slice(1) }) : ''
 +	const request = (rest || first.replace(verb, '').replace(/^[，,：:\s]+/u, '') || raw).slice(0, 2000 - (flow ? flow.length + 2 : 0))
-+	return { members: ids.slice(0, size), name, notice: flow ? `${request}\n\n${flow}` : request, mode: 'admin' }
++	return { members: chosen, name, notice: flow ? `${request}\n\n${flow}` : request, mode: 'admin' }
 +}
 +
 +/** Words of a request to build something, which then gets a tester in its group. */
@@ -1721,6 +1747,23 @@ index 00000000000..20abceaac8a
 +		`3. ${tester} 在后台起本地预览服务，用浏览器打开逐项点测；有问题 @${coder}，写清「操作步骤 → 期望 → 实际」。`,
 +		`4. ${coder} 修完后 @${tester} 复测；最多复测 3 轮，仍有问题就列给用户决定。`,
 +		`5. 全部通过后由 ${tester} 向用户汇报：测过哪些功能、各自的结果。`].join('\n')
++}
++
++/**
++ * ★ 2026-11-10（真机「3d像素贪吃蛇群没有使用成员分工」）：名册里没有 coder / tester 时，
++ *   `coder && tester ? groupFlowNotice(...)` 会整段不生成公告，群公告只剩群名 ⇒
++ *   `roomPrompt` 里没有任何派活指令，`openingCall` 又因 mode='admin' 只叫管理员一人。
++ *   这里给「做事类」群生成**角色无关**的分工公告：按实际成员点名交棒，不假设谁开发谁测试。
++ *   ⚠ 不含「协作流程」四字（闲聊群断言 `not.toContain('协作流程')` 依赖它）。
++ */
++export function divisionNotice(names: { admin: string; others: string[] }): string {
++	const { admin, others } = names
++	const roster = [admin, ...others]
++	return [`【本群分工】成员：${roster.join('、')}。管理员 ${admin} 先用 group_goal 把这件事拆成阶段，每阶段写明完成标准并分给具体成员。`,
++		`1. ${admin} 先按阶段 @ 对应成员派活；同一条里 @ 的几位同时开始，要用到某人结果就先 @ 他、请他做完后 @ 下一位。`,
++		others.length ? `2. 每位成员（${others.join('、')}）接到活就在同一步开始调工具去做，不要只回「我来做」；结尾写改了哪些文件、跑了什么命令、看到什么结果。` : '2. 接到活就在同一步开始调工具去做，结尾写结果和证据。',
++		`3. ${admin} 检查每位成员的产出：通过就 pass（附证据）进入下一阶段，不通过就 rework 写清缺什么，再 @ 对方返工。`,
++		`4. 全部阶段通过后由 ${admin} 向用户汇报做了什么、怎么验的、结论是什么；需要用户取舍时调 group_ask 出选择卡，不要把选项写成文字。`].join('\n')
 +}
 +
 +/**
@@ -6838,10 +6881,10 @@ index 00000000000..c6c3291b689
 +}
 diff --git a/src/client/chat.tsx b/src/client/chat.tsx
 new file mode 100644
-index 00000000000..7a1e1b99018
+index 00000000000..c5f6c26ba53
 --- /dev/null
 +++ b/src/client/chat.tsx
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,180 @@
 +/**
 + * VsSaros addition: the Chat tab, the supervisor desk's conversation. In a VsSaros workbench it is DSH's own chat for the desk
 + * Session (its messages and composer), which the workbench host docks here: a message typed in it is the person talking to
@@ -6988,9 +7031,11 @@ index 00000000000..7a1e1b99018
 +    <div className="dt-chat-log" role="log" aria-label={t('tab.chat')}>
 +      {!data.messages.length && !locals.length && <Hint>{t('chat.empty')}</Hint>}
 +      {data.messages.map(message => message.role === 'person'
-+        ? <div key={message.id} className="dt-msg dt-msg-person">
++        ? <div key={message.id} className="dt-msg dt-msg-person" data-source={message.source}>
 +          <div className="dt-msg-bubble">{message.text}</div>
 +          <div className="dt-msg-meta"><When at={message.at} />
++            {/* ★ 2026-11-10: a Feishu source text is a person bubble, explicitly labelled with its origin. */}
++            {message.source === 'feishu' && <span className="dt-tag" data-source="feishu">飞书</span>}
 +            {message.filtered && <span className="dt-msg-filtered">{t('chat.notHanded', { reason: reasonLabel(t, message.filtered) })}</span>}</div>
 +        </div>
 +        : <div key={message.id} className="dt-msg dt-msg-agent">
@@ -8502,10 +8547,10 @@ index 00000000000..b6cb7438054
 +  </section>
 +}
 diff --git a/src/client/index.tsx b/src/client/index.tsx
-index fb0b84ba920..75e15a87d15 100644
+index fb0b84ba920..dc89551a6a8 100644
 --- a/src/client/index.tsx
 +++ b/src/client/index.tsx
-@@ -1,58 +1,144 @@
+@@ -1,58 +1,160 @@
 -/** Browser plugin entry point registering the sidebar icon, main management panel, and Plugin Manager config view. */
 -import { useCallback, useEffect, useRef } from 'react'
 -import type { Context } from '@deepseek-ai/cordis'
@@ -8592,6 +8637,20 @@ index fb0b84ba920..75e15a87d15 100644
 +const PANEL_ID = 'dsh-superagent' as MainPanelId
 +/** The plugin row's id in the bundle patch (kept from upstream, so saved settings carry over). */
 +const ENTRY = 'dsh-superagent'
++
++/**
++ * ★ 2026-11-10：跨 chunk 旁路统一「记住的群」。
++ *   本插件的 @群 / 流程卡 / 群执行卡都会调 openSession(roomId)，但 chat-surface 的选中态
++ *   只在侧栏群行点击时更新 ⇒ Host 仍按旧群放宽转投。这里在 openSession 入口认出群 id，
++ *   走 client.workspaces.js 注册的桥（没装该 chunk 时静默跳过，不影响打开会话）。
++ */
++function noteSelectedRoom(id: string): void {
++  try {
++    const w = window as unknown as { __vssarosKnownRoomIds?: Set<string>; __vssarosSelectRoom?: (roomId: string) => void }
++    if (w.__vssarosKnownRoomIds?.has(id) && typeof w.__vssarosSelectRoom === 'function') { w.__vssarosSelectRoom(id) }
++  } catch { /* 选中态失败不影响打开会话 */ }
++}
++
 +/** VsSaros change: the package as a VsSaros built-in. */
 +const PACKAGE = '@vssaros/dsh-superagent'
 +
@@ -8620,6 +8679,7 @@ index fb0b84ba920..75e15a87d15 100644
 +  const pending = useRef<AbortController>(undefined)
 +  useEffect(() => () => { pending.current?.abort() }, [])
 +  const openSession = useCallback(async (id: string) => {
++    noteSelectedRoom(id)
 +    pending.current?.abort()
 +    const request = new AbortController(); pending.current = request
 +    try {
@@ -8646,6 +8706,7 @@ index fb0b84ba920..75e15a87d15 100644
 + */
 +function deskToolView(ctx: ClientContext, t: T, receipt = false) {
 +  const openSession = async (id: string) => {
++    noteSelectedRoom(id)
 +    try { await openKnownSession(ctx.sessions, id as SessionId, target => { ctx.uiWorkspace.openSession(target) }, new AbortController().signal) }
 +    catch (error) {
 +      if (error instanceof SessionNavigationError) throw new Error(t(error.code === 'not-ready' ? 'sessionListNotReady' : 'sessionNotListed'))
@@ -9581,7 +9642,7 @@ index 54fcd742307..a9e54b8058e 100644
            message={t('retryConfirm', { title: ticket.title })}
            onConfirm={() => after(call('POST tickets/:id/retry', { id: ticket.id }))} />}
 diff --git a/src/client/settings-kit.tsx b/src/client/settings-kit.tsx
-index 4a36a6521d0..7d5c4d850ff 100644
+index 4a36a6521d0..b52afd8fd58 100644
 --- a/src/client/settings-kit.tsx
 +++ b/src/client/settings-kit.tsx
 @@ -53,15 +53,17 @@ export function Fields({ disabled, children }: { disabled: boolean; children: Re
@@ -9684,7 +9745,7 @@ index 4a36a6521d0..7d5c4d850ff 100644
  }) {
    const { t, navigate } = usePanel()
    const label = localized(t, field.label), hint = localized(t, field.hint)
-@@ -254,16 +281,27 @@ export function SourceField({ field, value, saved, fact, onChange, labels, refre
+@@ -254,16 +281,33 @@ export function SourceField({ field, value, saved, fact, onChange, labels, refre
        <Input type="number" min={field.min} max={field.max} required value={String(value ?? '')}
          onChange={event => onChange(event.target.value === '' ? '' : Number(event.target.value))} />
      </Field>
@@ -9698,27 +9759,33 @@ index 4a36a6521d0..7d5c4d850ff 100644
 -        : <Input value={String(value ?? '')} readOnly={field.readonly} pattern={field.pattern} spellCheck={false}
 -          onChange={event => onChange(event.target.value)} />}
 -    </Field>
-+    case 'text': return <>
-+      <Field label={label} hint={hint} note={localized(t, fact)} action={action}>
-+        {field.chooseFrom
-+          ? <select className="dt-select" value={String(value ?? '')} onChange={event => onChange(event.target.value)}>
-+            <option value="">{field.choose ? localized(t, field.choose) : localized(t, field.label)}</option>
-+            {String(value ?? '') && !labels[`${field.chooseFrom}:${value}`]
-+              ? <option value={String(value)}>{String(value)}</option> : null}
-+            {Object.entries(labels).filter(([option]) => option.startsWith(field.chooseFrom + ':')).sort(byName)
-+              .map(([option, name]) => <option key={option} value={option.slice(field.chooseFrom!.length + 1)}>{name}</option>)}
-+          </select>
-+          : field.choose && Object.keys(labels).length
-+            ? <select className="dt-select" value={String(value ?? '')} onChange={event => onChange(event.target.value)}>
-+              <option value="">{localized(t, field.choose)}</option>
-+              {value && !labels[String(value)] ? <option value={String(value)}>{String(value)}</option> : null}
-+              {Object.entries(labels).sort(byName).map(([option, name]) => <option key={option} value={option}>{name}</option>)}
++    case 'text': {
++      // ★ 2026-11-10：字段可声明「不要空占位项」与「空配置时的默认选中值」。
++      //   飞书 App ID 用它们移除「留空 = lark-cli 当前 profile」并默认选中随包内置应用；
++      //   TAPD 等其它 chooseFrom 字段不声明 ⇒ 行为完全不变。
++      const selected = String(value ?? '') || String(field.defaultValue ?? '')
++      return <>
++        <Field label={label} hint={hint} note={localized(t, fact)} action={action}>
++          {field.chooseFrom
++            ? <select className="dt-select" value={selected} onChange={event => onChange(event.target.value)}>
++              {!field.noEmptyOption && <option value="">{field.choose ? localized(t, field.choose) : localized(t, field.label)}</option>}
++              {selected && !labels[`${field.chooseFrom}:${selected}`]
++                ? <option value={selected}>{selected}</option> : null}
++              {Object.entries(labels).filter(([option]) => option.startsWith(field.chooseFrom + ':')).sort(byName)
++                .map(([option, name]) => <option key={option} value={option.slice(field.chooseFrom!.length + 1)}>{name}</option>)}
 +            </select>
-+            : <Input value={String(value ?? '')} readOnly={field.readonly} pattern={field.pattern} spellCheck={false}
-+              onChange={event => onChange(event.target.value)} />}
-+      </Field>
-+      {detail}
-+    </>
++            : field.choose && Object.keys(labels).length
++              ? <select className="dt-select" value={String(value ?? '')} onChange={event => onChange(event.target.value)}>
++                <option value="">{localized(t, field.choose)}</option>
++                {value && !labels[String(value)] ? <option value={String(value)}>{String(value)}</option> : null}
++                {Object.entries(labels).sort(byName).map(([option, name]) => <option key={option} value={option}>{name}</option>)}
++              </select>
++              : <Input value={String(value ?? '')} readOnly={field.readonly} pattern={field.pattern} spellCheck={false}
++                onChange={event => onChange(event.target.value)} />}
++        </Field>
++        {detail}
++      </>
++    }
      case 'fact': return <div className="dt-field">
        <span className="dt-field-head">{label}{hint && <InfoTip text={hint} />}</span>
        <span className="dt-mono">{localized(t, fact) || t('empty')}</span>
@@ -9845,10 +9912,10 @@ index 00000000000..12551d5d251
 +  </aside>
 +}
 diff --git a/src/client/source.tsx b/src/client/source.tsx
-index 94143359f09..976c2d8e2f7 100644
+index 94143359f09..a990a72f0ce 100644
 --- a/src/client/source.tsx
 +++ b/src/client/source.tsx
-@@ -5,19 +5,32 @@ import { usePoll, type DroppedReply, type SourceStatusRow, type SourceView } fro
+@@ -5,19 +5,59 @@ import { usePoll, type DroppedReply, type SourceStatusRow, type SourceView } fro
  import { DisclosureRow, Dot, Icon, InfoTip, Switch, Tag } from './controls.tsx'
  import { SaveBar } from './draft.tsx'
  import { sourceMark } from './marks.ts'
@@ -9870,6 +9937,33 @@ index 94143359f09..976c2d8e2f7 100644
    const { running } = usePanelData()
    const { reload } = useSettings()
    const [advancedOpen, setAdvancedOpen] = useState(false)
++  /* ★ 2026-11-10：飞书 App ID 改下拉，选项与 Bot 设置里的 Channel 绑定同源
++     （Bots 的 GET /x/agents/api/bindings → feishuApps 掩码视图，不含 Secret 明文）。
++     取不到时保持空 labels：SourceField 仍渲染下拉并保留当前已保存的值，不假装成功。 */
++  const [feishuAppLabels, setFeishuAppLabels] = useState<Record<string, string>>({})
++  useEffect(() => {
++    if (source.id !== 'feishu' || !source.installed) return
++    let alive = true
++    fetch('/x/agents/api/bindings', { credentials: 'same-origin', headers: { accept: 'application/json' } })
++      .then(response => response.ok ? response.json() : { feishuApps: [] })
++      .then((data: { feishuApps?: { appId?: string; name?: string; isDefault?: boolean; hasSecret?: boolean }[] }) => {
++        if (!alive) return
++        const options: Record<string, string> = {}
++        for (const app of data.feishuApps ?? []) {
++          const id = String(app.appId ?? '').trim()
++          if (!id) continue
++          const name = String(app.name ?? '').trim()
++          /* ★ 2026-11-10：内置默认应用统一显示「VsSaros助手」（与 dsh 侧 Channel 绑定同口径）。 */
++          const label = app.isDefault ? 'VsSaros助手 · ' + id : (name ? name + ' · ' : '') + id
++          options['feishuApps:' + id] = label + (app.hasSecret ? '' : '（缺 App Secret）')
++        }
++        setFeishuAppLabels(options)
++      })
++      .catch(() => {})
++    return () => { alive = false }
++  }, [source.id, source.installed])
++  // Only the appId field gets these options: `chats` rows also read `labels` for their chat picker.
++  const appLabels = { ...source.labels, ...feishuAppLabels }
    const refreshLabels = async () => { const { added } = await call('POST sources/:id/labels',
      { id: source.id }); await reload(); return added }
 +  // TAPD dropdown options come from its Open API; load them once when this card has no candidates yet.
@@ -9883,7 +9977,7 @@ index 94143359f09..976c2d8e2f7 100644
    const draft = useBlockDraft(`source:${source.id}`, source.value, source.revision)
    const value = draft.value
    const { problem, value: saved } = source
-@@ -25,18 +38,29 @@ function SourceCard({ source }: { source: SourceView }) {
+@@ -25,18 +65,30 @@ function SourceCard({ source }: { source: SourceView }) {
    // Saving a modified setup-sensitive field restarts dsh-superagent, interrupting running Assignments.
    const restarts = draft.dirty && source.restarts.some(changed)
    const description = localized(t, source.description)
@@ -9894,7 +9988,8 @@ index 94143359f09..976c2d8e2f7 100644
 +  // VsSaros addition: the Feishu card's lark-cli option and its local diagnostics were removed; the CLI
 +  // command is now a schema default. Hide derived facts until the new value is saved.
 +  const field = (spec: FieldSpec) => <SourceField key={spec.key} field={spec} value={value.config[spec.key]}
-+    saved={saved.config[spec.key]} labels={source.labels} refreshLabels={refreshLabels}
++    saved={saved.config[spec.key]} labels={source.id === 'feishu' && spec.key === 'appId' ? appLabels : source.labels}
++    refreshLabels={refreshLabels}
 +    fact={spec.type === 'fact' || !changed(spec.key) ? source.facts[spec.key] : undefined}
      onChange={next => draft.edit({ ...value, config: { ...value.config, [spec.key]: next } })} />
    const advanced = source.fields.filter(spec => spec.advanced)
@@ -9918,7 +10013,7 @@ index 94143359f09..976c2d8e2f7 100644
              {!source.installed && <Tag tone="warning">{t('sourceNotInstalled')}</Tag>}
            </div>
          </div>
-@@ -48,9 +72,17 @@ function SourceCard({ source }: { source: SourceView }) {
+@@ -48,9 +100,17 @@ function SourceCard({ source }: { source: SourceView }) {
        </div>}
        {!source.installed && <Hint>{t('sourceNotInstalledHint')}</Hint>}
        {source.installed && source.fields.filter(spec => !spec.advanced).map(field)}
@@ -9937,7 +10032,7 @@ index 94143359f09..976c2d8e2f7 100644
        </DisclosureRow>}
      </Fields>
      <SaveBar {...draft} status={restarts && running > 0 ? t('restartInterrupts', { count: running }) : undefined}
-@@ -62,8 +94,9 @@ export function SourceSettings({ focus }: { focus?: string }) {
+@@ -62,8 +122,9 @@ export function SourceSettings({ focus }: { focus?: string }) {
    const { sources } = useSettings().settings
    useEffect(() => { if (focus) document.getElementById(`dt-source-${focus}`)?.scrollIntoView?.({ block: 'start' }) }, [focus])
    return <div className="dt-form">
@@ -9949,7 +10044,7 @@ index 94143359f09..976c2d8e2f7 100644
    </div>
  }
  
-@@ -92,11 +125,38 @@ function DroppedReplies({ items }: { items: DroppedReply[] }) {
+@@ -92,11 +153,38 @@ function DroppedReplies({ items }: { items: DroppedReply[] }) {
      </div>
    </DisclosureRow>
  }
@@ -9989,7 +10084,7 @@ index 94143359f09..976c2d8e2f7 100644
    const { dot, label: state } = sourceMark(t, source.state)
    const { received, filtered, lastAt } = source.stats
    // Omit healthy parts and suppress per-part notes when a setup problem already explains why the Source is stopped.
-@@ -133,6 +193,7 @@ function SourceRow({ source }: { source: SourceStatusRow }) {
+@@ -133,6 +221,7 @@ function SourceRow({ source }: { source: SourceStatusRow }) {
            </div></li>)}</ul>
          </div>
        </DisclosureRow>}
@@ -9997,7 +10092,7 @@ index 94143359f09..976c2d8e2f7 100644
        {dropped.length > 0 && <DroppedReplies items={dropped} />}
      </div>
    </li>
-@@ -151,6 +212,8 @@ export function SourceStatus() {
+@@ -151,6 +240,8 @@ export function SourceStatus() {
          onClick={() => navigate(setupPage(elsewhere.place))}>{t('setupFixLink')}</button>
      </p>}
      <LoadState error={error} loading={!data} />
@@ -10943,15 +11038,36 @@ index 9c7096aff7e..5de2130e256 100644
    assignmentEnded: ['refused', 'Assignment has ended; a newer assignment owns this ticket'],
    evalFinished: ['refused', 'Eval {eval} has finished or a later eval replaced it; decide the trigger\'s current eval'],
    notAdmissible: ['refused', 'Trigger is not admissible: {reason}'],
+diff --git a/src/core/group-request.ts b/src/core/group-request.ts
+new file mode 100644
+index 00000000000..99b61ea2b59
+--- /dev/null
++++ b/src/core/group-request.ts
+@@ -0,0 +1,3 @@
++/** 建群 / 组队请求的共享判据：Intake 回答闸门与群聊快路径必须同源（2026-11-10）。 */
++/** 动词到「群/团队」之间最多 48 字符（够放长标题，又不跨过整句话）；「群聊」单独命中。 */
++export const GROUP_REQUEST = /(?:建|拉|创建|组建|成立)[^，,。！!？?]{0,48}(?:群|团队)|群聊/u
+diff --git a/src/core/index.ts b/src/core/index.ts
+index 143058bca04..cecf2a19661 100644
+--- a/src/core/index.ts
++++ b/src/core/index.ts
+@@ -1,5 +1,6 @@
+ /** Reusable proactive-agent core: model, ports, engine and in-memory repositories. */
+ export * from './model.ts'
++export { GROUP_REQUEST } from './group-request.ts'
+ export * from './ports.ts'
+ export { Engine, type EngineForExecutor, type EngineForMainSession, type EngineForPeople, type EngineForSettings, type EngineForSources,
+   type EngineOptions, type Outcome, type ReceiveResult, type Reply, type ReplyRequest, type WorkerReport } from './engine.ts'
 diff --git a/src/core/intake.ts b/src/core/intake.ts
-index 145c7219208..a720d39e627 100644
+index 145c7219208..b5562fa0793 100644
 --- a/src/core/intake.ts
 +++ b/src/core/intake.ts
-@@ -1,12 +1,37 @@
+@@ -1,12 +1,39 @@
  /** Trigger ingestion, thread correlation, subscription fan-out, and evaluation queuing. */
++import { GROUP_REQUEST } from './group-request.ts'
  import { key } from './ids.ts'
 -import { isoTime, liveTicket, threadKey } from './model.ts'
-+import { isoTime, liveTicket, threadKey, waitsForPerson } from './model.ts'
++import { awaitingAnswer, isoTime, liveTicket, threadKey } from './model.ts'
  import type { Ticket, Trigger } from './model.ts'
  import { EnginePart, type EngineOptions } from './part.ts'
  import type { Tickets } from './tickets.ts'
@@ -10959,20 +11075,21 @@ index 145c7219208..a720d39e627 100644
  export type ReceiveResult = 'stored' | 'duplicate' | 'filtered'
  
 +/**
++ * ★ 2026-11-10：`awaitingAnswer` 已下沉到 core 叶子 `model.ts`，让 `tickets.addInput`
++ *   与本处的扇出闸门共用同一「待人回答」语义。这里重新导出，保持既有导入面与 bundle 契约。
++ */
++export { awaitingAnswer }
++
++/**
 + * ★ 2026-11-09（真机）：主管台所有消息共用同一个 desk Thread，工单创建时订阅它，
 + *   于是一条**全新的请求**也会被扇出给「待人回答」的旧工单，回执先说「已转给正在做的工单…」，
 + *   worker 之后才用 handback 退回重评。用户看到的就是「转给了一个不相关的旧工单」。
 + *
 + *   这里只把「看起来像回答」的消息投给待人回答的工单，明显的新请求留给 Eval 重新分诊。
-+ *   待人回答有两种形态：worker 报了 blocked/failed 等人（`waitsForPerson`），
-+ *   或主管直接挂了一个未回答的提问（`ticket.attention`）——真机那张 cartoon.hml 工单是后者。
 + */
-+export const awaitingAnswer = (ticket: Ticket): boolean =>
-+  !ticket.ended && (!!ticket.attention || waitsForPerson(ticket))
 +
 +/** 明确的新工作：以创建/添加/实现等动词开头，或整句在建群/组队。保守——其余一律当成回答，避免误伤真回答。 */
 +const NEW_WORK = /^(?:(?:请|帮我|麻烦|顺便|再|又|另外|还有)\s*)*(?:创建|新建|组建|成立|添加|新增|增加|生成|实现|开发|开始|启动|拉个|拉一?个|做(?:一)?个|写(?:一)?个)/u
-+const GROUP_REQUEST = /(?:建|拉|创建|组建|成立)[^，,。！!？?]{0,48}(?:群|团队)|群聊/u
 +
 +export function looksLikeAnswer(text: string): boolean {
 +  const body = String(text ?? '').trim()
@@ -10986,7 +11103,7 @@ index 145c7219208..a720d39e627 100644
  /**
   * Ingests incoming triggers from Sources, deduplicating and filtering them against SourceScope before recording thread correlations.
   * Fans listened triggers out to subscribed tickets via Tickets and queues for Eval, on its primary thread, every trigger no
-@@ -16,7 +41,11 @@ export type ReceiveResult = 'stored' | 'duplicate' | 'filtered'
+@@ -16,7 +43,11 @@ export type ReceiveResult = 'stored' | 'duplicate' | 'filtered'
  export class Intake extends EnginePart {
    constructor(options: EngineOptions, private readonly tickets: Tickets) { super(options) }
  
@@ -10999,7 +11116,7 @@ index 145c7219208..a720d39e627 100644
      // Normalize source timestamps (such as GitHub whole seconds) to canonical ISO form.
      const trigger = { ...received, at: isoTime(received.at) }
      if (!trigger.threads.length) throw new Error('A trigger must belong to at least one thread')
-@@ -35,13 +64,20 @@ export class Intake extends EnginePart {
+@@ -35,13 +66,20 @@ export class Intake extends EnginePart {
        const thread = this.thread(ref)
        if (!thread.lastAt || trigger.at > thread.lastAt) thread.lastAt = trigger.at
        thread.correlated = [...new Set([...thread.correlated, ...keys.filter(other => other !== thread.key)])]
@@ -11023,7 +11140,7 @@ index 145c7219208..a720d39e627 100644
        }
        this.repo.threads.save(thread)
 diff --git a/src/core/model.ts b/src/core/model.ts
-index 57783121732..41e869199b3 100644
+index 57783121732..961ca614771 100644
 --- a/src/core/model.ts
 +++ b/src/core/model.ts
 @@ -269,6 +269,13 @@ export interface PolicyEffect {
@@ -11060,7 +11177,7 @@ index 57783121732..41e869199b3 100644
 +   * Thread is followed; the runtime reports the group's result (app/group-tickets.ts).
 +   */
 +  group?: TicketGroup
-+}
+ }
 +/** VsSaros addition (2026-11-07): the group chat a ticket was handed to (the Bots plugin's room, by its DSH Session id). */
 +export interface TicketGroup { roomId: string; roomName: string }
 +/**
@@ -11077,7 +11194,7 @@ index 57783121732..41e869199b3 100644
 +  decidedBy?: string
 +  decidedAt?: string
 +  triggerId?: string
- }
++}
 +/** VsSaros addition: whether an open ticket still waits for its team to be agreed; no worker starts until then. */
 +export const staffing = (ticket: Pick<Ticket, 'ended' | 'team'>): boolean => !ticket.ended && !!ticket.team && ticket.team.state !== 'approved'
 +/** 决策 15：所有「是不是群执行」的分支都必须走这里，不许再写 `ticket.group` 布尔旁路。 */
@@ -11099,6 +11216,20 @@ index 57783121732..41e869199b3 100644
  /**
   * A Thread a ticket follows, by its key: `own` when the ticket opened it, such as its own pull request, and when and how it
   * closed. `followsDone` holds once no Thread of its own is open, or, when the ticket has no `own` Thread, once every followed
+@@ -351,3 +402,13 @@ export function waitsForPerson(ticket: Ticket): boolean {
+   if (report?.state !== 'blocked' && report?.state !== 'failed') return false
+   return !ticket.inputs.some(input => input.kind === 'trigger' && input.human && !input.context && input.at > report.at)
+ }
++
++/**
++ * ★ 2026-11-10（框架质量评估建议 3）：「待人回答」的**统一判据**，放在 core 叶子层，
++ *   让 intake（扇出闸门）与 tickets（自动化输入暂存）用同一个语义，不再各判一半。
++ *   两种形态：worker 报了 blocked/failed 等人（`waitsForPerson`），
++ *   或主管直接挂了一个未回答的提问（`ticket.attention`）——真机 cartoon.hml 工单是后者。
++ *   ⚠ `ticketStage` 仍要区分这两种形态的 action（'answer' vs report），故它不改用本函数。
++ */
++export const awaitingAnswer = (ticket: Ticket): boolean =>
++  !ticket.ended && (!!ticket.attention || waitsForPerson(ticket))
 diff --git a/src/core/part.ts b/src/core/part.ts
 index 14d5c6d47b5..27d09d3bcfd 100644
 --- a/src/core/part.ts
@@ -11175,7 +11306,7 @@ index 62bc9e9d54a..ad2aaf1cade 100644
    if (ticket.attention) return { stage: 'person', action: 'answer' }
    const assignment = latestAssignment(ticket)
 diff --git a/src/core/tickets.ts b/src/core/tickets.ts
-index 21376e17fc8..29ab4842eeb 100644
+index 21376e17fc8..9cc58d1f4eb 100644
 --- a/src/core/tickets.ts
 +++ b/src/core/tickets.ts
 @@ -1,7 +1,7 @@
@@ -11183,7 +11314,7 @@ index 21376e17fc8..29ab4842eeb 100644
  import { key } from './ids.ts'
  import { UserError } from './errors.ts'
 -import { latestAssignment, latestReport, liveTicket, readUntil, runningAssignment, settled, threadKey, waitsForPerson } from './model.ts'
-+import { latestAssignment, latestReport, liveTicket, readUntil, runningAssignment, settled, staffing, threadKey, ticketExecutor, waitsForPerson } from './model.ts'
++import { awaitingAnswer, latestAssignment, latestReport, liveTicket, readUntil, runningAssignment, settled, staffing, threadKey, ticketExecutor } from './model.ts'
  import type { Assignment, ChannelRef, Evaluation, Follow, Mandate, PolicyEffect, ThreadRef, Ticket, TicketEndBy, TicketInput, TicketOutcome,
    Trigger, TriggerDisposition } from './model.ts'
  import type { AssessmentOutcome } from './ports.ts'
@@ -11252,12 +11383,23 @@ index 21376e17fc8..29ab4842eeb 100644
    /**
     * Subscribes an open ticket to `thread` and records it in `ticket.follows` (`own` when opened by the ticket).
     * @throws UserError when the ticket is unknown or has ended.
-@@ -241,7 +283,7 @@ export class Tickets extends EnginePart {
+@@ -234,14 +276,16 @@ export class Tickets extends EnginePart {
+   addInput(ticket: Ticket, input: TicketInput): void {
+     if (ticket.inputs.some(existing => existing.id === input.id)) return
+     ticket.inputs.push(input); ticket.updatedAt = this.now()
+-    // Hold back automated inputs while the worker is waiting on a person.
+-    const held = liveTicket(ticket) && automatic(input) && waitsForPerson(ticket)
++    // Hold back automated inputs while the ticket is waiting on a person.
++    // ★ 2026-11-10：改用与 Intake 扇出闸门同一个 `awaitingAnswer` —— 原来只认 blocked/failed
++    //   报告，主管直接挂了 attention 提问的工单会被漏判，自动化输入照旧投递/启动 pending assignment。
++    const held = liveTicket(ticket) && automatic(input) && awaitingAnswer(ticket)
+     if (!held) ticket.undelivered.push(input.id)
+     this.repo.tickets.save(ticket)
      if (!liveTicket(ticket) || held) return
      const running = runningAssignment(ticket), latest = latestAssignment(ticket)
      if (running) this.options.executor.deliver(ticket, running)
 -    else if (latest?.state === 'pending' && !waitsForPerson(ticket)) this.options.executor.start(ticket, latest)
-+    else if (latest?.state === 'pending' && !waitsForPerson(ticket) && !staffing(ticket)) this.options.executor.start(ticket, latest)
++    else if (latest?.state === 'pending' && !awaitingAnswer(ticket) && !staffing(ticket)) this.options.executor.start(ticket, latest)
    }
    /**
     * Resume an ended ticket under its unchanged Mandate when a person's message on one of its Threads waits for it: no Eval
@@ -11542,27 +11684,53 @@ index 26234f3aa51..b150a34220d 100644
    }
    /** Runs background worker event handling and updates the `worker` health entry on failure or recovery. */
 diff --git a/src/index.ts b/src/index.ts
-index 1889daf5060..4866f5181b7 100644
+index 1889daf5060..8168025d45d 100644
 --- a/src/index.ts
 +++ b/src/index.ts
-@@ -2,6 +2,7 @@
+@@ -2,12 +2,29 @@
  import type { Context } from '@deepseek-ai/cordis'
  import type {} from '@deepseek-ai/dsh-settings'
  import { Runtime } from './app/runtime.ts'
+-import { Config, machineOf, type DeploymentConfig } from './deployment.ts'
 +import { loadHostModules } from './infra/host.ts'
- import { Config, machineOf, type DeploymentConfig } from './deployment.ts'
++import { Config, machineOf, type DeploymentConfig, type Machine } from './deployment.ts'
  
  export const name = 'dsh-superagent'
-@@ -18,6 +19,9 @@ export async function apply(ctx: Context, config: DeploymentConfig): Promise<voi
+ export const inject = ['agents', 'sessionController', 'sessionPersistence', 'workspaceRegistry', 'permissionPresets', 'tools', 'systemPrompt', 'skills', 'webServer', 'llm', 'subprocess']
+ export { Config }
+-export async function apply(ctx: Context, config: DeploymentConfig): Promise<void> {
++
++/**
++ * ★ 2026-11-10（门禁红灯修复）：`apply` 只用到 Runtime 的这四个成员，把它做成可注入的工厂。
++ *   真实 Host 调用 `apply(ctx, config)` 完全不变（默认构造真实 Runtime）；测试可传入轻量替身，
++ *   不再依赖 `vi.mock` —— 本环境 Vitest 4.1.8 的 mock registry 实测不生效，导致 2 个用例
++ *   拿到真实 Runtime 后在 `ctx.reflect.provide` 上崩掉。
++ */
++export interface AppliedRuntime {
++  ready: Promise<void>
++  configured(): boolean
++  stop(): Promise<void> | void
++  setupProblem?: { detail?: string }
++}
++export type RuntimeFactory = (ctx: Context, machine: Machine, restart: () => void) => AppliedRuntime
++
++export async function apply(ctx: Context, config: DeploymentConfig,
++  createRuntime: RuntimeFactory = (c, m, r) => new Runtime(c, m, r)): Promise<void> {
+   const machine = machineOf(config)
+   // The management panel provides its own settings UI, so disable DSH's auto-generated settings page.
+   ctx.inject(['settings'], child => { child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)) })
+@@ -18,7 +35,10 @@ export async function apply(ctx: Context, config: DeploymentConfig): Promise<voi
    const restart = (): void => {
      ctx.fiber.restart().then(() => { ctx.get('settings')?.describe() }).catch((error: unknown) => { ctx.logger.error('dsh-superagent restart failed: %s', String(error)) })
    }
+-  const runtime = new Runtime(ctx, machine, restart)
 +  // VsSaros addition (built-in packaging): the Host's own DSH modules that are read synchronously later (see infra/host.ts).
 +  const missing = await loadHostModules()
 +  if (missing.length) ctx.logger.warn('dsh-superagent: Host modules not found (%s); the main Session keeps every tool it has', missing.join(', '))
-   const runtime = new Runtime(ctx, machine, restart)
++  const runtime = createRuntime(ctx, machine, restart)
    ctx.effect(() => async () => { await runtime.stop() })
    await runtime.ready
+   ctx.logger.info(runtime.configured() ? 'dsh-superagent ready; the Superagent sidebar entry opens the management panel' : `dsh-superagent is waiting for setup: ${runtime.setupProblem?.detail ?? ''}`)
 diff --git a/src/infra/commands.ts b/src/infra/commands.ts
 index 120f5a47dc3..d4e096a0368 100644
 --- a/src/infra/commands.ts
@@ -12094,7 +12262,7 @@ index ecae26e3204..28ab1579b45 100644
  export type SetupCode = keyof typeof SETUP_PROBLEMS
  export interface SetupProblem { place: SetupPlace; code: SetupCode; values: Record<string, string>; detail: string }
 diff --git a/src/sources/feishu-loops.ts b/src/sources/feishu-loops.ts
-index b520face774..01d53b1e0c0 100644
+index b520face774..29f59f91eb2 100644
 --- a/src/sources/feishu-loops.ts
 +++ b/src/sources/feishu-loops.ts
 @@ -5,9 +5,11 @@ import { setTimeout as delay } from 'node:timers/promises'
@@ -12198,7 +12366,7 @@ index b520face774..01d53b1e0c0 100644
        LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1' } })
    const stdout = createInterface({ input: child.stdout }); const stderr = createInterface({ input: child.stderr })
    let chain = Promise.resolve(); let diagnostic = ''; let ready = false
-@@ -86,20 +146,13 @@ async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
+@@ -86,26 +146,28 @@ async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
    stdout.on('line', (line: string) => {
      chain = chain.then(async () => {
        if (line.length > 1_048_576) throw new Error('Feishu event exceeds 1 MiB')
@@ -12221,6 +12389,61 @@ index b520face774..01d53b1e0c0 100644
      })
    } finally { clearTimeout(timeout); signal.removeEventListener('abort', stop); stdout.close(); stderr.close(); await chain }
  }
+ 
+ /** Refreshes the map of joined chats (`chat_id -> name`); throws on failure so the previously stored list remains intact. */
+ export async function refreshChatNames(ctx: SourceContext, signal?: AbortSignal): Promise<Record<string, string>> {
++  /* ★ 2026-11-10：display-only 下不读群列表。内置应用没有 `im:chat:readonly` /
++     `im:chat` / `im:chat.group_info:readonly` / `im:chat:read` scope，手动点面板的
++     「刷新群列表」会报 99991672（前端显示「读取失败，列表保持不变」）。
++     ⚠ 判断必须放在这里：`chatNamesLoop` 是自动入口，而 `feishuKind.refreshLabels`
++       是面板按钮的另一条入口，只改 loop 挡不住手动刷新。
++     ⇒ 直接返回已存 labels，不打 lark 命令；列表保持不变，前端显示「列表已是最新」。 */
++  if (ctx.config<FeishuConfig>(SOURCE)?.displayOnly) {
++    return ctx.state.get(KV.sources.labels(SOURCE)) ?? {}
++  }
+   const commands = ctx.commands.withSignal(signal)
+   const result = z.looseObject({ chats: z.array(z.looseObject({ chat_id: z.string(), name: z.string().nullish() })).optional() })
+     .parse(await commands.lark(['im', '+chat-list', '--page-all', '--page-size', '100']))
+@@ -118,14 +180,17 @@ async function chatNamesLoop(ctx: SourceContext, signal: AbortSignal): Promise<v
+   await ctx.ready
+   if (!available(ctx)) return
+   while (!signal.aborted) {
+-    if (enabled(ctx)) {
++    const config = enabled(ctx)
++    /* ★ 2026-11-10：display-only 不需要群名，也不该每分钟打 `im +chat-list`
++       （内置应用没有相应 scope，会持续产生权限错误）。 */
++    if (config && !config.displayOnly) {
+       try { await refreshChatNames(ctx, signal) }
+       catch { /* Names are a display aid; the stored list stays until a later read succeeds. */ }
+     }
+     await delay(60_000, undefined, { signal }).catch(() => {})
+   }
+ }
+-async function backfillLoop(ctx: SourceContext, signal: AbortSignal): Promise<void> {
++export async function backfillLoop(ctx: SourceContext, signal: AbortSignal): Promise<void> {
+   await ctx.ready
+   if (!available(ctx)) { ctx.report('history', health('paused', 'feishuBotMissing')); return }
+   while (!signal.aborted) {
+@@ -135,6 +200,19 @@ async function backfillLoop(ctx: SourceContext, signal: AbortSignal): Promise<vo
+       await delay(60_000, undefined, { signal }).catch(() => {})
+       continue
+     }
++    /* ★ 2026-11-10：display-only 模式跳过整轮历史补收（backfillChat / pollThreads）。
++       ① Chat 气泡只读 `trigger` 表，而 trigger 由实时 WS 事件经 Intake 的 filtered 分支
++          落库 ⇒ 关掉补收不丢消息；补收的停机窗口历史反而不该进「只显示」的对话。
++       ② `GET /open-apis/im/v1/messages` / `+messages-mget` 等需要
++          `im:message.history:readonly` / `im:message:readonly` / `im:message`，
++          内置应用未申请 ⇒ 每 60s 报 99991672 并把 history 写成 error（持久化、重启仍在）。
++       ③ 主动 report 成 paused，覆盖 health_entry 里遗留的旧 error。
++       ⚠ 不动 watch / listenShared / take / receive ⇒ 实时事件链路完全保留。 */
++    if (config.displayOnly) {
++      ctx.report('history', { state: 'paused', detail: 'Display-only: history recovery is off', at: new Date().toISOString() })
++      await delay(60_000, undefined, { signal }).catch(() => {})
++      continue
++    }
+     const seen = ctx.state.get(KV.feishu.chats) ?? {}
+     const known = Object.entries(seen).filter(([, direct]) => direct && config.directMessages)
+     const chats = { ...Object.fromEntries(config.chats.map(chat => [chat.chatId, false])), ...Object.fromEntries(known) }
 diff --git a/src/sources/feishu-profile.ts b/src/sources/feishu-profile.ts
 new file mode 100644
 index 00000000000..4531d404141
@@ -12439,7 +12662,7 @@ index 00000000000..23e237fe894
 +  }
 +}
 diff --git a/src/sources/feishu.ts b/src/sources/feishu.ts
-index 075d5597df2..f10ab829d69 100644
+index 075d5597df2..d8d5f5e2acd 100644
 --- a/src/sources/feishu.ts
 +++ b/src/sources/feishu.ts
 @@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
@@ -12461,7 +12684,18 @@ index 075d5597df2..f10ab829d69 100644
    readPageSize: z.number().int().min(1).max(50).default(20),
    linkTimeoutMs: z.number().int().min(1).max(90000).default(5000),
    chats: z.array(z.object({ chatId: z.string().regex(/^oc_[a-zA-Z0-9]+$/), name: z.string().trim().max(60).optional(), listen: z.enum(['mentions', 'all']) }).strict())
-@@ -35,8 +40,11 @@ export const feishuKind: SourceKind<FeishuConfig> = {
+@@ -26,6 +31,10 @@ const FeishuConfigSchema = FeishuBotSchema.extend({
+     .default([]),
+   directMessages: z.boolean().default(true),
+   otherChats: z.enum(['none', 'mentions']).default('none'),
++  /* ★ 2026-11-10：仅展示模式 —— 飞书原文只进 Chat 对话气泡，不交给主管评估/建工单/回复，
++     内容由 router（Bots 的 Channel 绑定分发）执行。默认关闭以保持既有来源行为；
++     需要的环境在 settings 里一次性打开即可，此后完全不查 allowed、不用逐人配置。 */
++  displayOnly: z.boolean().default(false),
+ }).strict()
+ export type FeishuConfig = z.infer<typeof FeishuConfigSchema>
+ export const feishuKind: SourceKind<FeishuConfig> = {
+@@ -35,8 +44,20 @@ export const feishuKind: SourceKind<FeishuConfig> = {
    description: { zh: '接收下列群和私聊中发给机器人的消息，补收群历史并轮询订阅的线程。', en: 'Receives messages to the bot in these chats and direct messages, recovers chat history and polls subscribed Threads.' },
    schema: FeishuConfigSchema,
    fields: [
@@ -12470,12 +12704,41 @@ index 075d5597df2..f10ab829d69 100644
 +    // VsSaros addition: the lark-cli command and its App Secret are built in; the CLI option and its local
 +    // diagnostics were removed from the card. Only the app ID remains, so an own app can still be selected.
 +    { key: 'appId', type: 'text', label: { zh: '飞书应用 App ID', en: 'Feishu app ID' }, pattern: '(cli_[A-Za-z0-9]+)?',
-+      hint: { zh: '默认 cli_a860911d2e7f5013（安装包自带）。该应用的 App Secret 也随包内置、明文编译在 lib/ 里，装完即可连；Bots「渠道」里给同一应用配的 Secret 会优先使用。换成自己的应用时填新的 App ID，并在 Bots 渠道里为它配 Secret。留空 = 用 lark-cli 当前 profile（旧行为）。Secret 只经 stdin 交给 lark-cli，不进设置、不进日志；随包密钥轮换需改代码并升级版本。',
-+        en: 'Defaults to cli_a860911d2e7f5013 (shipped with the installation). Its App Secret is built in too (plain text in lib/), so a fresh install connects without setup; a Secret configured for the same app in the Bots channel wins. Enter another App ID to use your own app and configure its Secret there. Empty uses the active lark-cli profile. The secret only reaches lark-cli through stdin, never settings or logs; rotating the shipped secret needs a code change and a version bump.' } },
++      /* ★ 2026-11-10：改成下拉，与 Bot 设置的 Channel 绑定共用 Bots 的应用列表。
++         chooseFrom 让 SourceField 走 <select className="dt-select"> 分支；选项标签由
++         SourceCard 从 GET /x/agents/api/bindings 的 feishuApps 注入到 labels。 */
++      chooseFrom: 'feishuApps',
++      /* ★ 2026-11-10（用户）：不再提供「留空 = lark-cli 当前 profile（旧行为）」选项；
++         defaultValue 让历史空配置也显示随包内置应用。⚠ 不动 Source schema：
++         在那里归一化空值会改变运行时 profile 解析（runtime.spec.ts 当场回归）。
++         Host 侧空 appId 链路保留，兼容旧配置与直接写 API 的场景。 */
++      noEmptyOption: true, defaultValue: BUNDLED_FEISHU_APP.appId,
++      hint: { zh: '从 Bots 已配置的飞书应用中选择（与 Bot 设置里 Channel 绑定的应用下拉同源，显示「缺 App Secret」的项需要先在 Bot 绑定里补 Secret）。VsSaros助手（cli_a860911d2e7f5013）随包内置、装完即可连，也是默认选中项；Bots 里给同一应用配的 Secret 会优先使用。Secret 只经 stdin 交给 lark-cli，不进设置、不进日志；随包密钥轮换需改代码并升级版本。',
++        en: 'Pick a Feishu app configured in Bots (same list as the Bot settings channel dropdown; items marked "missing App Secret" need one there first). VsSaros Assistant (cli_a860911d2e7f5013) is shipped, works on a fresh install and is selected by default; a Secret configured for the same app in Bots wins. The secret only reaches lark-cli through stdin, never settings or logs; rotating the shipped secret needs a code change and a version bump.' } },
      { key: 'chats', type: 'rows', label: { zh: '接收的群', en: 'Chats' },
        hint: { zh: '“仅 @”只接收 @ 机器人的消息和已有工单的线程；“全部消息”也接收其余消息，评估可以按规则从中推断工作，需要机器人有读取全部消息的权限。', en: '"@ only" receives messages that mention the bot and Threads that have Tickets; "All" also receives the rest, from which Eval may infer work under the rules; the bot needs permission to read all messages.' },
        columns: [
-@@ -122,7 +130,8 @@ export const feishuKind: SourceKind<FeishuConfig> = {
+@@ -46,12 +67,19 @@ export const feishuKind: SourceKind<FeishuConfig> = {
+     { key: 'otherChats', type: 'select', label: { zh: '其他群', en: 'Other chats' }, options: [{ value: 'none', label: { zh: '不接收', en: 'Not received' } }, { value: 'mentions', label: { zh: '仅 @', en: '@ only' } }],
+       hint: { zh: '机器人已加入、但没列在上面的群。“仅 @”接收那里 @ 机器人的消息；谁的消息能发起工作看策略里的准入。', en: 'Chats the bot has joined that are not listed above. "@ only" receives messages there that mention the bot; whose messages may originate work is the Policy\'s admission.' } },
+     { key: 'directMessages', type: 'switch', label: { zh: '接收私聊', en: 'Direct messages' } },
++    { key: 'displayOnly', type: 'switch', label: { zh: '仅显示消息', en: 'Display only' },
++      hint: { zh: '打开后：飞书原文只显示在 SuperAgent 的「对话」气泡里，不交给主管评估、不建工单、不自动回复；内容由 router 分发执行。此模式不检查发送者名单，无需逐个配置 allowed。',
++        en: 'When on: Feishu text only appears in the SuperAgent Chat bubbles; it is not evaluated, does not create tickets and gets no automatic reply. The router dispatches the work. Sender allow-lists are not consulted in this mode.' } },
+     { key: 'readPageSize', type: 'number', advanced: true, min: 1, max: 50, label: { zh: '每页消息数', en: 'Messages per page' }, hint: { zh: '智能体读取线程和群历史时，每页的消息数。', en: 'Messages per page when agents read Threads and chat history.' } },
+     { key: 'linkTimeoutMs', type: 'number', advanced: true, min: 1, max: 90000, label: { zh: '原消息链接的查询时限 / 毫秒', en: 'Original message link time limit / ms' },
+       hint: { zh: '查询原消息链接最多等待的时间；超时后智能体改为直接读取原消息。', en: 'How long to wait for an original message\'s link; after that, agents read the message itself.' } },
+   ],
+   health: ['feishu', 'history'],
+   scope({ meta }, config) {
++    /* ★ 2026-11-10：仅展示模式在 Intake 的 scope 闸门就短路（intake.ts:57-59）：
++       仍落 trigger 原文供 Chat 投影读取，但不进 Eval、不建工单、不回复、不查 allowed。
++       `channel.allowed` 复用本函数 ⇒ 该模式下 SuperAgent 侧也不再向飞书发回复。 */
++    if (config.displayOnly) return { listened: false, reason: 'display_only' }
+     if (meta.direct === true) return config.directMessages ? { listened: true, observed: false, row: 'direct' } : { listened: false, reason: 'direct_messages_not_allowed' }
+     const chat = config.chats.find(item => item.chatId === meta.chatId)
+     if (chat) return { listened: true, observed: chat.listen === 'all', row: chat.chatId }
+@@ -122,7 +150,8 @@ export const feishuKind: SourceKind<FeishuConfig> = {
      ],
      values: ({ deployment, trigger }) => ({ DSH_SUPERAGENT_FEISHU_BOT: deployment.feishu ? deployment.feishu.name || deployment.feishu.botId : '', DSH_SUPERAGENT_FEISHU_CHAT: trigger?.source === SOURCE ? String(trigger.meta.chatId ?? '') : '' }),
    },
@@ -12666,7 +12929,7 @@ index 20f2088cbdf..a15e9a8f924 100644
    return { state, detail: fill(HEALTH_TEXT[code], values), code, ...Object.keys(values).length ? { values } : {} }
  }
 diff --git a/src/sources/kind.ts b/src/sources/kind.ts
-index 3a8b32e76ff..da00ef0b422 100644
+index 3a8b32e76ff..db93d790387 100644
 --- a/src/sources/kind.ts
 +++ b/src/sources/kind.ts
 @@ -7,8 +7,9 @@ import type { Commands } from '../infra/commands.ts'
@@ -12681,9 +12944,13 @@ index 3a8b32e76ff..da00ef0b422 100644
  /**
   * Configuration field specification; `rows` edits a list of records keyed by its first column, `choose` picks from
   * resolved source labels, and `fact` displays a read-only value from `facts`.
-@@ -19,7 +20,7 @@ export type FieldSpec =
+@@ -17,9 +18,10 @@ export type FieldSpec =
+   | FieldBase & { type: 'switch' }
+   | FieldBase & { type: 'select'; options: { value: string; label: Localized }[] }
    | FieldBase & { type: 'number'; min: number; max: number }
-   | FieldBase & { type: 'text'; pattern?: string; readonly?: boolean; choose?: Localized }
+-  | FieldBase & { type: 'text'; pattern?: string; readonly?: boolean; choose?: Localized }
++  /** ★ 2026-11-10：`noEmptyOption` 去掉 chooseFrom 下拉的占位空项；`defaultValue` 是空配置时显示的默认选中值。 */
++  | FieldBase & { type: 'text'; pattern?: string; readonly?: boolean; choose?: Localized; noEmptyOption?: true; defaultValue?: string }
    | FieldBase & { type: 'fact'; settings?: 'deployment' }
 -  | FieldBase & { type: 'rows'; columns: ({ key: string; label: Localized; type: 'text'; pattern?: string; optional?: boolean; choose?: Localized; refresh?: Localized } | { key: string; label: Localized; type: 'select'; options: { value: string; label: Localized }[] })[] }
 +  | FieldBase & { type: 'rows'; columns: ({ key: string; label: Localized; type: 'text'; pattern?: string; optional?: boolean; choose?: Localized; refresh?: Localized; chooseFrom?: string } | { key: string; label: Localized; type: 'select'; options: { value: string; label: Localized }[] })[] }
@@ -14224,20 +14491,36 @@ index 00000000000..2b7c6bda237
 +})
 diff --git a/tests/cli-check.spec.ts b/tests/cli-check.spec.ts
 new file mode 100644
-index 00000000000..4254711432e
+index 00000000000..5a26614b328
 --- /dev/null
 +++ b/tests/cli-check.spec.ts
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,93 @@
 +/** VsSaros addition: local lark-cli diagnostics and confirmed maintenance. */
-+import { describe, expect, it, vi } from 'vitest'
++import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 +import type { Probe } from '../src/deployment.ts'
 +import { CliCheck } from '../src/app/cli-check.ts'
 +
-+const mocked = vi.hoisted(() => ({ executable: vi.fn(() => '/fake/bin/lark-cli') }))
-+vi.mock('../src/deployment.ts', async importOriginal => {
-+  const actual = await importOriginal<typeof import('../src/deployment.ts')>()
-+  return { ...actual, executable: mocked.executable }
++/**
++ * ★ 2026-11-10（门禁红灯修复）：原本用 `vi.mock('../src/deployment.ts')` 替换 `executable`。
++ *   实测本环境 Vitest 4.1.8 的 mock registry 不生效（hoisted / doMock / 简单 factory 全部
++ *   `mock.calls === 0`），于是 6 个用例拿到 `found:false`。改为**真实临时可执行文件**，
++ *   让 `executable()` 真的在磁盘上找到它：deterministic，且不依赖框架 mock 机制。
++ *   范式与 tests/feishu-profile.spec.ts 一致。
++ */
++const windows = process.platform === 'win32'
++let dir: string
++let resolved: string
++beforeEach(() => {
++  dir = mkdtempSync(join(tmpdir(), 'sa-cli-check-'))
++  mkdirSync(join(dir, 'state', 'worker-bin'), { recursive: true })
++  resolved = join(dir, windows ? 'lark-cli.cmd' : 'lark-cli')
++  writeFileSync(resolved, windows ? '@echo off\r\n' : '#!/bin/sh\n')
++  if (!windows) chmodSync(resolved, 0o755)
 +})
++afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 +
 +const answers: Record<string, string> = {
 +  '--version': 'lark-cli version 1.0.98',
@@ -14254,12 +14537,12 @@ index 00000000000..4254711432e
 +  if (answer === undefined) throw new Error(`unexpected argv ${key}`)
 +  return answer
 +})
-+const cli = (run: Probe) => new CliCheck(run, '/fake/path', '/fake/state')
++const cli = (run: Probe) => new CliCheck(run, dir, join(dir, 'state'))
 +
 +describe('local lark-cli check', () => {
 +  it('reports the executable, version, bot identity, strict mode and bot name', async () => {
 +    const result = await cli(probe()).check()
-+    expect(result).toMatchObject({ found: true, command: 'lark-cli', resolved: '/fake/bin/lark-cli',
++    expect(result).toMatchObject({ found: true, command: 'lark-cli', resolved,
 +      version: '1.0.98', appId: 'cli_abc', botReady: true, strictMode: 'bot', botName: 'Review Bot' })
 +    expect(result.error).toBeUndefined()
 +    expect(result.update).toBeUndefined()
@@ -14278,10 +14561,10 @@ index 00000000000..4254711432e
 +  })
 +
 +  it('reports an executable that cannot be found', async () => {
-+    mocked.executable.mockImplementationOnce(() => { throw new Error('not on PATH') })
-+    const result = await cli(probe()).check()
++    // 空 PATH 目录 ⇒ 真实 executable() 抛「not an executable file on PATH」。
++    const result = await new CliCheck(probe(), join(dir, 'empty'), join(dir, 'state')).check()
 +    expect(result.found).toBe(false)
-+    expect(result.error).toContain('not on PATH')
++    expect(result.error).toContain('not an executable file on PATH')
 +  })
 +})
 +
@@ -14294,7 +14577,7 @@ index 00000000000..4254711432e
 +    const run = probe({ 'config strict-mode bot': 'Strict mode set to bot (profile)' })
 +    const result = await cli(run).apply('strict-bot', true)
 +    expect(result).toEqual({ ok: true, output: 'Strict mode set to bot (profile)' })
-+    expect(run).toHaveBeenCalledWith(['/fake/bin/lark-cli', 'config', 'strict-mode', 'bot'],
++    expect(run).toHaveBeenCalledWith([resolved, 'config', 'strict-mode', 'bot'],
 +      expect.objectContaining({ LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1' }))
 +  })
 +
@@ -14302,7 +14585,7 @@ index 00000000000..4254711432e
 +    const run = probe({ update: 'updated to 1.0.99' })
 +    const result = await cli(run).apply('update', true)
 +    expect(result).toMatchObject({ ok: true, output: 'updated to 1.0.99' })
-+    expect(run).toHaveBeenCalledWith(['/fake/bin/lark-cli', 'update'], expect.anything())
++    expect(run).toHaveBeenCalledWith([resolved, 'update'], expect.anything())
 +  })
 +})
 diff --git a/tests/client.spec.tsx b/tests/client.spec.tsx
@@ -14600,7 +14883,7 @@ index 004e65e0042..8142d5b7eff 100644
    const commands = new Commands(() => deployment, {}, lifetime.signal)
    const started = Date.now()
 diff --git a/tests/core-engine.spec.ts b/tests/core-engine.spec.ts
-index 733d134a7d6..3c0f507b08a 100644
+index 733d134a7d6..71932303829 100644
 --- a/tests/core-engine.spec.ts
 +++ b/tests/core-engine.spec.ts
 @@ -1,6 +1,7 @@
@@ -14611,7 +14894,7 @@ index 733d134a7d6..3c0f507b08a 100644
  import type { Assessor, Assignment, Candidate, EngineOptions, Executor, OutboundMessage, Outcome, Policy, Ticket, Trigger } from '../src/core/index.ts'
  
  const member = { source: 'chat', id: 'alice' }
-@@ -1619,3 +1620,81 @@ describe('ignores from the card', () => {
+@@ -1619,3 +1620,104 @@ describe('ignores from the card', () => {
      expect(() => h.engine.decide('5', { kind: 'accept', title: 'Fix', scope: 'small', reason: 'chat' })).toThrow(new UserError('notExplicit'))
    })
  })
@@ -14683,6 +14966,29 @@ index 733d134a7d6..3c0f507b08a 100644
 +    const working = accepted(h, '3', 't3').ticketId!
 +    h.engine.receive(trigger('4', { threads: [{ source: 'chat', id: 't3' }], text: '顺便把标题也改了' })); h.pump()
 +    expect(h.repo.triggers.disposition('4')).toMatchObject({ fanout: [working] })
++  })
++
++  // ★ 2026-11-10（框架质量评估建议 3）：待人回答的判据下沉 model.ts 后，
++  //   intake 扇出闸门与 tickets.addInput 必须共用同一个语义。
++  it('shares awaitingAnswer between the intake gate and addInput', () => {
++    const h = harness()
++    const id = accepted(h).ticketId!
++    h.engine.report(id, { state: 'progress', summary: 'working', question: '你是指哪个 cartoon.html？' })
++    const ticket = h.repo.tickets.get(id)!
++    // attention 形态：旧判据 waitsForPerson 会漏判（这正是 addInput 之前的分叉）
++    expect(awaitingAnswer(ticket)).toBe(true)
++    expect(waitsForPerson(ticket)).toBe(false)
++    // bot/CI 的 automatic input 在待人回答时应被 hold：不进 undelivered、不投递给 worker
++    h.engine.receive(trigger('2', { human: false, actor: guest, text: 'CI: build failed' }))
++    h.pump()
++    const after = h.repo.tickets.get(id)!
++    const auto = after.inputs.find(input => input.kind === 'trigger' && input.triggerId === '2')
++    expect(auto).toBeDefined()
++    expect(after.undelivered).not.toContain(auto!.id)
++    expect(h.delivered.some(([tid, iid]) => tid === id && iid === auto!.id)).toBe(false)
++    // 对照：清掉 attention 后判据立刻解除 ⇒ 上面的 hold 确实由 awaitingAnswer 造成，
++    // 不是 fixture 里没有 running assignment / executor 没启动之类的假象。
++    expect(awaitingAnswer({ ...after, attention: undefined })).toBe(false)
 +  })
 +
 +  it('does not gate bot/CI messages', () => {
@@ -15893,7 +16199,7 @@ index 70ace2effab..7f766e48b65 100644
  }
  export type Host = Awaited<ReturnType<typeof startRuntime>>
 diff --git a/tests/fixtures/panel-server.ts b/tests/fixtures/panel-server.ts
-index 513d91aad3e..89f37ce81bf 100644
+index 513d91aad3e..a48dd3cd001 100644
 --- a/tests/fixtures/panel-server.ts
 +++ b/tests/fixtures/panel-server.ts
 @@ -19,7 +19,23 @@ import { feishuChannel } from '../../src/sources/feishu-trigger.ts'
@@ -16293,7 +16599,7 @@ index 513d91aad3e..89f37ce81bf 100644
  }
  
  function match(method: string, segments: string[]) {
-@@ -432,11 +706,26 @@ class Reply extends Response {
+@@ -432,11 +706,35 @@ class Reply extends Response {
  export function usePanelServer(cleanup: () => void) {
    beforeEach(() => {
      sessionStorage.clear()
@@ -16304,6 +16610,15 @@ index 513d91aad3e..89f37ce81bf 100644
      vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
        if (server.down) return new Response(null, { status: 404 })
        const address = new URL(url, 'http://127.0.0.1:3082')
++      // VsSaros addition: Bots' configured Feishu apps back the SuperAgent app ID dropdown.
++      // Answer before request bookkeeping, so tests asserting the orchestrator request list are unaffected.
++      if (address.pathname === '/x/agents/api/bindings') {
++        // Plain Response, not Reply: the component reads .json(), which would never decrement Reply's pending counter.
++        return new Response(JSON.stringify({ feishuApps: [
++          { appId: 'cli_broken', name: '损坏的应用', isDefault: false, configured: false, hasSecret: false },
++          { appId: 'cli_a860911d2e7f5013', name: '随包应用', isDefault: true, configured: true, hasSecret: true },
++        ] }), { status: 200, headers: { 'content-type': 'application/json' } })
++      }
        const path = address.pathname.replace('/orchestrator/api/', '')
 +      // VsSaros addition (plan C): the change stream stays open until the page closes it; `pushChange` writes to it.
 +      if (path === 'stream') {
@@ -16384,15 +16699,15 @@ index 00000000000..cf467ce49c7
 +})
 diff --git a/tests/group-fast-path.spec.ts b/tests/group-fast-path.spec.ts
 new file mode 100644
-index 00000000000..a11304f9aca
+index 00000000000..ac514d5548b
 --- /dev/null
 +++ b/tests/group-fast-path.spec.ts
-@@ -0,0 +1,223 @@
+@@ -0,0 +1,246 @@
 +import { readFileSync } from 'node:fs'
 +import { describe, expect, it, vi } from 'vitest'
 +import {
 +	GROUP_REFERENCE_KIND, addressedGroupMessage, fastGroupPlan, groupByNameMention, groupReferenceOf,
-+	groupFlowNotice, groupMadeNotice, handleDeskGroupCommand, handleDeskMessage, isGroupCreationRequest, mayBeGroupCommand, type GroupFastPathHost,
++	groupFlowNotice, divisionNotice, groupMadeNotice, handleDeskGroupCommand, handleDeskMessage, isGroupCreationRequest, mayBeGroupCommand, type GroupFastPathHost,
 +} from '../src/app/groupFastPath.ts'
 +import { wakesDesk } from '../src/app/desk-outbox.ts'
 +import type { ReceiveResult, Trigger } from '../src/core/index.ts'
@@ -16505,6 +16820,29 @@ index 00000000000..a11304f9aca
 +    expect(chat.notice).not.toContain('协作流程')
 +    // Without a designer or reviewer the flow skips them.
 +    expect(groupFlowNotice({ coder: 'Coder', tester: 'Tester' })).toContain('Coder 开发完成后 @Tester。')
++  })
++  // ★ 2026-11-10（真机「3d像素贪吃蛇群没有使用成员分工」）：名册换成
++  //   planner / code-explorer / … 时，旧条件 coder && tester 会让公告只剩群名。
++  it('名册没有 coder / tester 时，做事类群仍生成角色无关的分工公告；闲聊群不加', () => {
++    const roster = [
++      { id: 'planner', name: 'Planner', delegatable: true },
++      { id: 'explorer', name: 'Code Explorer', delegatable: true },
++      { id: 'reviewer-x', name: 'Code Reviewer', delegatable: true },
++      { id: 'mediaclawer', name: 'MediaClawer', delegatable: true },
++    ]
++    const plan = fastGroupPlan('创建一个 3d像素贪吃蛇 h5 开发团队', roster)!
++    expect(plan.members.length).toBeGreaterThanOrEqual(2)
++    expect(plan.members.length).toBeGreaterThanOrEqual(2)
++    expect(plan.members.every(id => roster.some(b => b.id === id))).toBe(true)
++    expect(plan.notice).toContain('【本群分工】')
++    expect(plan.notice).toContain('group_goal')
++    expect(plan.notice).toContain(String(roster[0]?.name ?? 'Planner'))
++    expect(plan.notice.length).toBeLessThanOrEqual(2000)
++    expect(divisionNotice({ admin: 'Planner', others: ['Code Explorer'] })).toContain('@ 对应成员派活')
++    // 闲聊群不参与「做事」判定 ⇒ 不能出现分工/协作流程文本
++    const chat = fastGroupPlan('建个群，讨论下周排期', roster)!
++    expect(chat.notice).not.toContain('协作流程')
++    expect(chat.notice).not.toContain('【本群分工】')
 +  })
 +  it('makes the group at desk intake, records ignore, drives a pass, and tells the requester', async () => {
 +    const h = host()
@@ -16734,6 +17072,53 @@ index 00000000000..b4d1548abb8
 +    expect(runtime).toMatch(/recordGroupSettlement\(ticket\.id, roomId, report\.state\)/)
 +  })
 +})
+diff --git a/tests/index.spec.ts b/tests/index.spec.ts
+index 5f4d64297d6..9b61d10f531 100644
+--- a/tests/index.spec.ts
++++ b/tests/index.spec.ts
+@@ -2,14 +2,16 @@ import { expect, it, vi } from 'vitest'
+ import { Config, type Machine } from '../src/deployment.ts'
+ import { apply } from '../src/index.ts'
+ 
+-// Stub Runtime to capture the resolved Machine settings and restart callback.
+-const runtimes = vi.hoisted(() => [] as { machine: Machine; restart: () => void }[])
+-vi.mock('../src/app/runtime.ts', () => ({ Runtime: class {
+-  ready = Promise.resolve()
+-  constructor(_ctx: unknown, readonly machine: Machine, readonly restart: () => void) { runtimes.push(this) }
+-  configured() { return true }
+-  async stop() {}
+-} }))
++/**
++ * ★ 2026-11-10：原来用 `vi.mock('../src/app/runtime.ts')` 替身。本环境 Vitest 4.1.8 的
++ *   mock registry 不生效（实测 `vi.mock` / `vi.doMock` / 简单 factory 均无效），真实 Runtime
++ *   会在 `ctx.reflect.provide` 上崩掉。改走 `apply` 的可选 RuntimeFactory 注入，语义不变。
++ */
++const runtimes: { machine: Machine; restart: () => void }[] = []
++const stub = (_ctx: unknown, machine: Machine, restart: () => void) => {
++  runtimes.push({ machine, restart })
++  return { ready: Promise.resolve(), configured: () => true, async stop() {} }
++}
+ /** Simulate the Cordis loader updating a volatile configuration reference in place. */
+ const commit = (reference: unknown, value: unknown) => { (reference as Record<symbol, (value: unknown) => void>)[Symbol.for('cosmokit.volatile.write')]!(value) }
+ 
+@@ -31,7 +33,7 @@ function context() {
+ it('reads a limit DSH commits a new value of without a restart, and asks DSH to generate no settings page', async () => {
+   const { ctx, handlers, configure } = context()
+   const config = Config({ stateDir: '/srv/state', promptMaxChars: 5000 })
+-  await apply(ctx as never, config)
++  await apply(ctx as never, config, stub)
+   expect(configure).toHaveBeenCalledExactlyOnceWith({ auto: false }, ctx.fiber)
+   const { machine } = runtimes.at(-1)!
+   expect(machine.promptMaxChars.get()).toBe(5000)
+@@ -45,7 +47,7 @@ it('asks DSH to read its settings entry again once a restart it started finished
+   const { ctx, describe } = context()
+   let finish = () => {}
+   ctx.fiber.restart.mockImplementation(() => new Promise<void>(resolve => { finish = resolve }))
+-  await apply(ctx as never, Config({ stateDir: '/srv/state' }))
++  await apply(ctx as never, Config({ stateDir: '/srv/state' }), stub)
+   // Saving a Source account change restarts dsh-superagent, which re-runs setup and refreshes the settings descriptor.
+   runtimes.at(-1)!.restart()
+   await Promise.resolve()
 diff --git a/tests/model-surface.spec.ts b/tests/model-surface.spec.ts
 index 13f9d41f891..aae698526ce 100644
 --- a/tests/model-surface.spec.ts
@@ -17075,10 +17460,10 @@ index 00000000000..3e180648e19
 +})
 diff --git a/tests/panel-chat.spec.tsx b/tests/panel-chat.spec.tsx
 new file mode 100644
-index 00000000000..1165845dd54
+index 00000000000..1609e98b99a
 --- /dev/null
 +++ b/tests/panel-chat.spec.tsx
-@@ -0,0 +1,179 @@
+@@ -0,0 +1,192 @@
 +// @vitest-environment jsdom
 +// VsSaros addition: the Chat tab (the supervisor desk) and the side panel with the Overview.
 +import { act } from 'react'
@@ -17154,6 +17539,19 @@ index 00000000000..1165845dd54
 +  await act(async () => { composer().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true })) })
 +  await settle()
 +  expect(server.deskSent).toHaveLength(2)
++})
++
++it('★ labels Feishu source text in a person bubble with its origin', async () => {
++  server.deskMessages = [
++    { id: 'f1', role: 'person', text: '飞书原文：请帮我看下进度', at: '2026-11-05T09:12:00.000Z', source: 'feishu', chatId: 'oc_demo' },
++    { id: 'r1', role: 'superagent', text: '已接单', at: '2026-11-05T09:13:00.000Z' },
++  ]
++  await mount()
++  const bubble = document.querySelector('.dt-msg-person[data-source="feishu"]')
++  expect(bubble?.querySelector('.dt-msg-bubble')?.textContent).toBe('飞书原文：请帮我看下进度')
++  expect(bubble?.querySelector('.dt-tag[data-source="feishu"]')?.textContent).toBe('飞书')
++  // A source message is never drawn as a SuperAgent reply.
++  expect(all('.dt-msg-text').map(item => item.textContent)).toEqual(['已接单'])
 +})
 +
 +it('replicates DS Bot send UI: optimistic bubble, usable composer, and an honest note for messages still on their way', async () => {
@@ -18192,16 +18590,17 @@ index 0208e063435..f847b5c04d6 100644
        model: 'worker-model', reasoningEffort: 'high' } })
    expect(server.requests.filter(request => request.method === 'PUT').map(request => request.path)).toEqual(['settings/eval',
 diff --git a/tests/panel-source.spec.tsx b/tests/panel-source.spec.tsx
-index 781155e26a9..6fcc28b4fec 100644
+index 781155e26a9..5212f05b00b 100644
 --- a/tests/panel-source.spec.tsx
 +++ b/tests/panel-source.spec.tsx
-@@ -3,10 +3,57 @@
+@@ -3,10 +3,58 @@
  import { act } from 'react'
  import { expect, it, onTestFinished, vi } from 'vitest'
  import { zh } from '../src/client/locales.ts'
 -import { usePanel, mount, remount, settle, all, find, tab, click, type, text, field, at } from './fixtures/panel.tsx'
 +import { usePanel, mount, remount, settle, all, find, tab, click, type, text, field, at, openSide } from './fixtures/panel.tsx'
  import { server, problemOf, droppedReply } from './fixtures/panel-server.ts'
++import { feishuKind } from '../src/sources/feishu.ts'
  
  usePanel()
 +it('shows the TAPD setup checklist and a working read-only connectivity probe', async () => {
@@ -18254,7 +18653,7 @@ index 781155e26a9..6fcc28b4fec 100644
  it('shows each Source\'s state on the Source status and opens its settings from a setup problem', async () => {
    await mount()
    await click(zh['tab.source'])
-@@ -35,6 +82,21 @@ it('folds more than six chats into a line of their names', async () => {
+@@ -35,6 +83,21 @@ it('folds more than six chats into a line of their names', async () => {
    expect(summary.textContent).toBe(['团队群', 'oc_c1', 'oc_c2', 'oc_c3', 'oc_c4', 'oc_c5', 'oc_c6'].join('、'))
  })
  
@@ -18276,7 +18675,7 @@ index 781155e26a9..6fcc28b4fec 100644
  it('rereads the chats the bot has joined on request and says which are new, keeping unsaved edits', async () => {
    await mount()
    await click(zh['tab.source'])
-@@ -125,6 +187,7 @@ it('points a setup problem at the settings that fix it', async () => {
+@@ -125,6 +188,7 @@ it('points a setup problem at the settings that fix it', async () => {
    // jsdom has no scrolling; mock scrollIntoView to record which card the link brings into view.
    const scroll = vi.fn()
    Element.prototype.scrollIntoView = scroll
@@ -18284,7 +18683,7 @@ index 781155e26a9..6fcc28b4fec 100644
    await mount()
    expect(text()).toContain(zh.problemSetup)
    expect(text()).toContain(zh['setup.agentCliUnset'])
-@@ -145,8 +208,9 @@ it('points a setup problem at the settings that fix it', async () => {
+@@ -145,8 +209,9 @@ it('points a setup problem at the settings that fix it', async () => {
    expect(server.requests.filter(request => request.path === 'setup/check')).toEqual([{ path: 'setup/check', method: 'POST' }])
    expect(text()).toContain(zh.setupChecking)
    server.setup = { ...server.setup, problem: problemOf('gitTooOld') }
@@ -18295,7 +18694,7 @@ index 781155e26a9..6fcc28b4fec 100644
    await click(find(zh.problemSetup, 'button, a, [role="button"]'))
    expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.deployment'])
    expect(text()).toContain('部署检查未通过：git 没有读取 dsh-superagent 为 github.com 写的凭据配置')
-@@ -155,6 +219,7 @@ it('points a setup problem at the settings that fix it', async () => {
+@@ -155,6 +220,7 @@ it('points a setup problem at the settings that fix it', async () => {
  it('shows a failed Feishu bot check as a problem of the Feishu Source only, with a check after a fix outside dsh-superagent', async () => {
    server.setup = { ...server.setup, feishuProblem: problemOf('feishuBotNotReady', { app: 'cli_bot', status: 'missing' }),
      accounts: { ...server.setup.accounts!, feishu: null } }
@@ -18303,16 +18702,51 @@ index 781155e26a9..6fcc28b4fec 100644
    await mount()
    expect(text()).toContain(zh.problemSetupFeishu)
    expect(text()).not.toContain('飞书 来源异常')
-@@ -212,7 +277,7 @@ it('shows a refused Source save with the output of the tool that failed on its o
+@@ -212,11 +278,42 @@ it('shows a refused Source save with the output of the tool that failed on its o
    await click(zh['tab.source'])
    await click(find(zh['tab.settings'], '.dt-status-head button'))
    const feishu = all('.dt-card')[0]!
 -  await type(field<HTMLInputElement>('机器人的 lark-cli'), 'lark-broken')
-+  await type(field<HTMLInputElement>('飞书应用 App ID'), 'cli_broken')
++  await type(field<HTMLSelectElement>('飞书应用 App ID'), 'cli_broken')
    await act(async () => { feishu.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await settle()
    expect(feishu.querySelector('.dt-savebar [role="alert"]')?.textContent).toBe('机器人的 lark-cli 不可用。\nlark-cli: app secret missing')
  })
-@@ -232,6 +297,20 @@ it('shows a setup problem on its Source card within one read of the settings, wh
+ 
++// ★ 2026-11-10（用户）：移除「留空 = 用 lark-cli 当前 profile（旧行为）」，
++// 且空配置默认选中随包内置的 VsSaros助手。
++it('defaults the Feishu app picker to the bundled VsSaros助手 and offers no empty legacy option', async () => {
++  await mount()
++  await click(tab(zh['tab.settings']))
++  await settle()
++  const select = field<HTMLSelectElement>('飞书应用 App ID')
++  const options = [...select.options]
++  expect(options.some(option => option.value === '')).toBe(false)
++  expect(options.some(option => /留空|当前 profile|active lark-cli profile/i.test(option.textContent ?? ''))).toBe(false)
++  expect(select.value).toBe('cli_a860911d2e7f5013')
++  expect(options.some(option => /VsSaros助手/.test(option.textContent ?? ''))).toBe(true)
++  // 提示文案也不能再宣传「留空 = 旧行为」（hint 在 InfoTip 里，不进 textContent ⇒ 查字段定义）
++  const appIdField = feishuKind.fields.find(spec => spec.key === 'appId')!
++  expect(JSON.stringify(appIdField)).not.toContain('留空')
++  expect(JSON.stringify(appIdField)).not.toContain('当前 profile')
++  expect(JSON.stringify(appIdField)).not.toContain('active lark-cli profile')
++})
++
++// 历史空配置也必须显示内置应用（UI 层 defaultValue 回退）。Source schema 刻意不改：
++// 在那里归一化空值会改变运行时的 lark-cli profile 解析（runtime.spec.ts 有回归用例）。
++it('shows the bundled app for a stored empty Feishu app ID', async () => {
++  (server.settings.sources.feishu!.config as Record<string, unknown>).appId = ''
++  await mount()
++  await click(tab(zh['tab.settings']))
++  await settle()
++  const select = field<HTMLSelectElement>('飞书应用 App ID')
++  expect(select.value).toBe('cli_a860911d2e7f5013')
++  expect([...select.options].some(option => option.value === '')).toBe(false)
++})
++
+ it('shows a setup problem on its Source card within one read of the settings, which the settings groups share', async () => {
+   vi.useFakeTimers({ shouldAdvanceTime: true })
+   onTestFinished(() => { vi.useRealTimers() })
+@@ -232,6 +329,20 @@ it('shows a setup problem on its Source card within one read of the settings, wh
    expect(card().textContent).toContain(zh['setup.agentCliUnset'])
  })
  
@@ -18333,7 +18767,7 @@ index 781155e26a9..6fcc28b4fec 100644
  it('lists the messages a Source did not send in the last day under it, newest first, with why and where they belong', async () => {
    // Include a drop older than 24h (m0) and one with a missing thread (m1).
    server.dropped = [droppedReply('m3', 1, 'feishu', 'channelGone', { ticket: { id: 't1', title: '修复回归' } }),
-@@ -284,3 +363,14 @@ it('reads the settings again as soon as dsh-superagent answers after a save rest
+@@ -284,3 +395,14 @@ it('reads the settings again as soon as dsh-superagent answers after a save rest
    expect(field('智能体的 GitHub CLI').matches(':disabled')).toBe(false)
    expect(field<HTMLInputElement>('智能体的 GitHub CLI').value).toBe('/opt/bin/gh-agent')
  })
@@ -19007,7 +19441,7 @@ index 00000000000..8d6989e5cff
 +  })
 +})
 diff --git a/tests/runtime.spec.ts b/tests/runtime.spec.ts
-index fd737f2faea..6083297cd8b 100644
+index fd737f2faea..c13e573b17a 100644
 --- a/tests/runtime.spec.ts
 +++ b/tests/runtime.spec.ts
 @@ -3,7 +3,7 @@ import { bindScopeParent } from '@deepseek-ai/dsh-scope'
@@ -19088,7 +19522,20 @@ index fd737f2faea..6083297cd8b 100644
          'ask_user_question', 'plugin_manager', 'schedule_create', 'create_goal', 'session_create', 'session_send_message', 'feishu_doc_edit']
        const sessionTools = new Map<string, RegisteredTool>()
        tools.set(sessionId, sessionTools)
-@@ -350,6 +359,36 @@ it('records worker reports, binds the task PR, ends the ticket on ready without
+@@ -173,7 +182,11 @@ beforeEach(async () => {
+         // Preset tools are inherited; subagent is registered on the agent itself and cannot be named by restrict.
+         get: (name: string, scope?: object) => {
+           const own = scope === agents.get(sessionId)
+-          return (scope === preset || own) && inherited.includes(name) || own && name === 'subagent' ? { name } : undefined
++          // ★ 2026-11-10（门禁红灯修复）：Host 的 `@deepseek-ai/dsh-scope` 与本 spec 里
++          //   Vite 转换的实例各有自己的 WeakMap，`scopeParentOf(agent)` 在测试中返回
++          //   undefined（真 Host 只有一个实例，见 infra/host.ts:8）。把无 scope 视作
++          //   继承来的 preset 父作用域，等价真机行为；生产侧仍按自己的白名单过滤。
++          return (scope === undefined || scope === preset || own) && inherited.includes(name) || own && name === 'subagent' ? { name } : undefined
+         },
+         restrict: vi.fn((rule: { allow: string[] }) => {
+           if (rule.allow.some(name => !inherited.includes(name))) throw new Error('Restriction names a non-inherited tool')
+@@ -350,6 +363,36 @@ it('records worker reports, binds the task PR, ends the ticket on ready without
    expect(notice ?? runtime.store.replyStatus(key('pr-terminal', '42', 'feishu', JSON.stringify({ chatId: CHAT, messageId: 'om_1' }), 'merged'))).toBeTruthy()
  })
  
@@ -19125,7 +19572,28 @@ index fd737f2faea..6083297cd8b 100644
  it('lists each ticket with the Threads it subscribes to, as their Sources describe them', async () => {
    const { sessionId, ticket } = await acceptedTicket()
    await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'pr open', pr_number: 42 })
-@@ -850,10 +889,10 @@ it('reports each setup problem where the operator fixes it, and checks the agent
+@@ -603,7 +646,8 @@ it('records each settings save with its policy change and the open tickets told
+   await runtime.settings.save('executor', { ...settings.executor, maxWorkers: 5 }, runtime.store.blockRevision('executor'), 'panel')
+   // What a Source receives is its own configuration, not the Policy; who may originate work there is the Policy's.
+   const feishu = runtime.sources.instance('feishu')!
+-  await runtime.settings.save('source:feishu', { enabled: true, config: { ...feishu.config, directMessages: false } }, runtime.store.blockRevision('source:feishu'), 'panel')
++  // The built-in app ID is a schema default; this case checks an unchanged CLI save with no app named.
++  await runtime.settings.save('source:feishu', { enabled: true, config: { ...feishu.config, appId: '', directMessages: false } }, runtime.store.blockRevision('source:feishu'), 'panel')
+   const policy = runtime.store.settings().policy
+   await runtime.settings.save('policy', { ...policy, sources: { ...policy.sources, feishu: { ...policy.sources.feishu!, allowed: [...policy.sources.feishu!.allowed, { id: 'ou_bob', name: 'Bob' }] } } }, runtime.store.blockRevision('policy'), 'panel')
+   await expect(runtime.settings.save('executor', settings.executor, 0, 'panel')).rejects.toThrow('Settings changed')
+@@ -611,7 +655,9 @@ it('records each settings save with its policy change and the open tickets told
+   expect(history.items.slice(0, 3)).toEqual([
+     // Another sender on the list bears on no open ticket, so none is told.
+     expect.objectContaining({ source: 'panel', block: 'policy', policyChanged: true, notified: [], changes: [expect.objectContaining({ source: 'feishu', field: 'allowed', part: true })] }),
+-    expect.objectContaining({ source: 'panel', block: 'source:feishu', policyChanged: false, notified: [], changes: [{ code: 'sourceField', source: 'feishu', field: 'directMessages', from: true, to: false }] }),
++    // Clearing the built-in app ID for the account-CLI check adds its own change record.
++    expect.objectContaining({ source: 'panel', block: 'source:feishu', policyChanged: false, notified: [],
++      changes: expect.arrayContaining([{ code: 'sourceField', source: 'feishu', field: 'directMessages', from: true, to: false }]) }),
+     expect.objectContaining({ source: 'panel', block: 'executor', policyChanged: false, notified: [], changes: [{ code: 'maxWorkers', from: 3, to: 5 }] }),
+   ])
+ })
+@@ -850,10 +896,10 @@ it('reports each setup problem where the operator fixes it, and checks the agent
    await needs('github', 'repositoryReadOnly', { account: 'agent-bot', repository: 'acme/widgets' })
    answers[`${AGENT()} api repos/acme/widgets --jq {name: .full_name, push: .permissions.push}`] = '{"name":"acme/widgets","push":true}\n'
    // The agent CLI runs in the workers' environment: without the shims on PATH.
@@ -19140,7 +19608,18 @@ index fd737f2faea..6083297cd8b 100644
    const valid = { ...answers }
    // git older than 2.32 ignores GIT_CONFIG_GLOBAL and reads the operator's configuration.
    answers = { ...valid, [HELPERS]: 'file:/home/me/.gitconfig\0!gh auth git-credential\0' }
-@@ -970,7 +1009,7 @@ it('runs setup again while the Feishu bot check failed, and restores the process
+@@ -926,7 +972,9 @@ it('checks a changed account CLI before saving it, restarts after the save, and
+   await pending
+   expect(runtime.store.settings().policy.rules).toEqual([])
+   expect(runtime.store.settings().sources.github!.config).toMatchObject({ cli: AGENT() })
+-  const feishuSave = (cli: string) => runtime.settings.save('source:feishu', { enabled: true, config: { ...runtime.store.settings().sources.feishu!.config, cli } },
++  // `appId: ''` keeps these account-CLI checks on the legacy "no app named" path (no profile creation).
++  const feishuSave = (cli: string) => runtime.settings.save('source:feishu', { enabled: true,
++    config: { ...runtime.store.settings().sources.feishu!.config, appId: '', cli } },
+     runtime.store.blockRevision('source:feishu'), 'panel')
+   expect(await feishuSave('')).toMatchObject({ restarting: true })
+   answers[`${BOT()} config strict-mode`] = 'strict-mode: off (source: profile)'
+@@ -970,7 +1018,7 @@ it('runs setup again while the Feishu bot check failed, and restores the process
    expect(process.env.PATH?.split(':')).not.toContain(join(directory, 'worker-bin'))
  })
  
@@ -19149,7 +19628,7 @@ index fd737f2faea..6083297cd8b 100644
    const bin = join(directory, 'worker-bin')
    expect(readdirSync(bin).sort()).toEqual(['gh', 'lark-cli'])
    expect(readFileSync(join(bin, 'lark-cli'), 'utf8')).toContain(`exec '${BOT()}'`)
-@@ -990,6 +1029,25 @@ it('writes worker shims and the agent environment from the configuration only, a
+@@ -990,6 +1038,25 @@ it('writes worker shims and the agent environment from the configuration only, a
    expect(process.env.PATH?.split(':')).not.toContain(bin)
  })
  
@@ -19175,7 +19654,7 @@ index fd737f2faea..6083297cd8b 100644
  it('waits for setup when the shim directory holds a file dsh-superagent did not write, and leaves the file alone', async () => {
    writeFileSync(join(directory, 'worker-bin', 'my-script'), '#!/bin/sh\n')
    const next = await restart()
-@@ -1002,11 +1060,13 @@ it('waits for setup when the shim directory holds a file dsh-superagent did not
+@@ -1002,11 +1069,13 @@ it('waits for setup when the shim directory holds a file dsh-superagent did not
  
  it('rewrites the blocked-command shims when the Executor settings change them, without a restart', async () => {
    const bin = join(directory, 'worker-bin')
@@ -19191,7 +19670,7 @@ index fd737f2faea..6083297cd8b 100644
    // The commands workers need cannot be blocked.
    await expect(save(['gh'])).rejects.toThrow()
    expect(restarts).not.toHaveBeenCalled()
-@@ -1286,6 +1346,51 @@ it('drops a message only when its conversation is gone or not listened to, newes
+@@ -1286,6 +1355,51 @@ it('drops a message only when its conversation is gone or not listened to, newes
    expect(dropped).toMatchObject([{ id: 'ignored-reply', dropped: { reason: 'channelIgnored' } }, { id: 'gone-reply', dropped: { reason: 'channelGone' } }])
  })
  
@@ -19243,7 +19722,7 @@ index fd737f2faea..6083297cd8b 100644
  it('reports a dropped acknowledgement as dropped, with its Ticket on the Source status and in the last day\'s flow', async () => {
    const { sessionId, ticket } = await acceptedTicket()
    const followup = feishu('10', '还有这个', { mentions: [], root_id: 'om_1' })
-@@ -1566,6 +1671,17 @@ it('refuses an ended ticket\'s worker its tools, and restricts the main Session
+@@ -1566,6 +1680,17 @@ it('refuses an ended ticket\'s worker its tools, and restricts the main Session
    expect(restricts.get(sessionId)).toEqual([{ allow: ['read', 'read_image', 'grep', 'bash', 'job_output', 'job_list', 'job_kill', 'web_search', 'skill'] }])
  })
  
@@ -19306,10 +19785,19 @@ index 00000000000..f1c6618bf29
 +  expect((await h.api('POST', 'team/plans')).status).toBe(404)
 +})
 diff --git a/tests/sources.spec.ts b/tests/sources.spec.ts
-index f4d03320f97..06e3bef5230 100644
+index f4d03320f97..a7b895a622b 100644
 --- a/tests/sources.spec.ts
 +++ b/tests/sources.spec.ts
-@@ -22,6 +22,8 @@ import { SetupError, type SetupProblem } from '../src/setup.ts'
+@@ -4,7 +4,7 @@ import { backfillChat, consumerRetry, feishuKind, feishuTriggerId, feishuRef, fe
+   from '../src/sources/feishu.ts'
+ import { KV } from '../src/kv.ts'
+ import { apply as applyFeishu, pollThreads as pollFeishuThreads } from '../src/sources/feishu.ts'
+-import { runFeishu } from '../src/sources/feishu-loops.ts'
++import { backfillLoop, refreshChatNames, runFeishu } from '../src/sources/feishu-loops.ts'
+ import { commentTrigger, githubAddress, githubChannel, issueTrigger, type GithubComment, type GithubIssue } from '../src/sources/github-trigger.ts'
+ import { claimPull, observePull, pullEndNotices, pullOf, ticketBranch, type Pull } from '../src/sources/github-pull.ts'
+ import { ciCounts, ciFact, ciSummary } from '../src/sources/github-read.ts'
+@@ -22,11 +22,13 @@ import { SetupError, type SetupProblem } from '../src/setup.ts'
  import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
  import { tmpdir } from 'node:os'
  import { join } from 'node:path'
@@ -19318,7 +19806,51 @@ index f4d03320f97..06e3bef5230 100644
  
  const MEMBER = 'ou_alice'
  function host(overrides: Partial<SourceContextDeps> = {}) {
-@@ -1086,7 +1088,7 @@ describe('feishu event consumer', () => {
+   const store = new Store(join(mkdtempSync(join(tmpdir(), 'sources-')), 'db.sqlite'))
+-  const settings = SettingsSchema.parse({ policy: { sources: { feishu: { allowed: [{ id: 'ou_alice', name: 'Alice' }], syncChat: 'oc_team' }, github: { allowed: [{ id: 'alice' }] } } }, eval: { mode: 'auto' }, sources: { feishu: { enabled: true, config: { chats: [{ chatId: 'oc_team', listen: 'mentions' }, { chatId: 'oc_observed', listen: 'all' }], directMessages: true } } } })
++  const settings = SettingsSchema.parse({ policy: { sources: { feishu: { allowed: [{ id: 'ou_alice', name: 'Alice' }], syncChat: 'oc_team' }, github: { allowed: [{ id: 'alice' }] } } }, eval: { mode: 'auto' }, sources: { feishu: { enabled: true, config: { displayOnly: false, chats: [{ chatId: 'oc_team', listen: 'mentions' }, { chatId: 'oc_observed', listen: 'all' }], directMessages: true } } } })
+   store.saveSettings(settings)
+   const board = new HealthBoard()
+   const sources = new SourceRegistry(() => store.settings(), board)
+@@ -54,6 +56,37 @@ function emptyRegistry(): SourceRegistry {
+   healthOf.set(sources, board)
+   return sources
+ }
++// ★ 2026-11-10: display-only — Feishu text is recorded for the Chat bubbles but never reaches Eval,
++// and no per-sender allow-list is consulted (Intake short-circuits in its filtered branch).
++it('displayOnly short-circuits the Feishu scope and outbound replies, without an allow-list', () => {
++  const config = feishuKind.schema.parse({ displayOnly: true })
++  expect(config.displayOnly).toBe(true)
++  for (const meta of [{ direct: true }, { chatId: 'oc_team' }, { chatId: 'oc_other' }]) {
++    expect(feishuKind.scope!({ meta }, config)).toEqual({ listened: false, reason: 'display_only' })
++  }
++  expect(feishuKind.channel!.allowed!({ chatId: 'oc_team', direct: 'false' }, config)).toBe(false)
++  const defaults = feishuKind.schema.parse({})
++  // opt-in: existing sources keep their behaviour
++  expect(defaults.displayOnly).toBe(false)
++  expect(feishuKind.scope!({ meta: { direct: true } }, defaults).listened).toBe(true)
++})
++
++it('displayOnly trigger is stored as filtered: no Eval queue, no ticket, no reply', async () => {
++  const h = host()
++  const current = h.store.settings()
++  h.store.saveSettings({ ...current, sources: { ...current.sources,
++    feishu: { enabled: true, config: { displayOnly: true } } } })
++  const trigger = {
++    id: 'feishu:om_display_only', source: 'feishu', text: '飞书原文 display only', at: new Date().toISOString(),
++    actor: { source: 'feishu', id: 'ou_unlisted_sender' }, human: true, addressed: 'direct',
++    threads: [{ source: 'feishu', id: 'oc_x:om_display_only' }], meta: { direct: true },
++  } as unknown as Trigger
++  expect(await h.receive(trigger)).toBe('filtered')
++  expect(h.store.triggers.get(trigger.id)?.text).toBe('飞书原文 display only')
++  expect(h.store.threads.get('feishu:oc_x:om_display_only')?.pending ?? []).toEqual([])
++  expect(h.executor.start).not.toHaveBeenCalled()
++})
++
+ const subscribed = (h: ReturnType<typeof host>, ref: { source: string; id: string }, meta: Record<string, unknown> = {}) =>
+   h.store.threads.save({ key: `${ref.source}:${ref.id}`, ref, createdAt: new Date().toISOString(), subscriptions: ['ticket'], correlated: [], pending: [], meta })
+ const openTicket = (id: string): Ticket => ({ id, title: id, decisionId: `d-${id}`, mandate: { strength: 'explicit', policyVersion: '',
+@@ -1086,7 +1119,7 @@ describe('feishu event consumer', () => {
    const event = (id: string, chat: string, type: 'group' | 'p2p') => JSON.stringify({ message_id: id, chat_id: chat, chat_type: type,
      sender_id: 'ou_alice', sender_type: 'user', content: 'fix it', create_time: String(Date.now()),
      ...type === 'group' ? { mentions: [{ id: 'ou_bot', name: 'Bot' }] } : {} })
@@ -19327,7 +19859,7 @@ index f4d03320f97..06e3bef5230 100644
      writeFileSync(join(dir, 'events'), [event('om_1', 'oc_group', 'group'), event('om_2', 'oc_dm', 'p2p'), 'not json',
        event('om_3', 'oc_group', 'group')].join('\n') + '\n')
      const { ctx, health, store } = consumerSource(cli('events'))
-@@ -1097,7 +1099,7 @@ describe('feishu event consumer', () => {
+@@ -1097,7 +1130,7 @@ describe('feishu event consumer', () => {
      expect(health.feishu).toMatchObject({ state: 'error', detail: expect.stringContaining('JSON') })
      controller.abort(); await running; store.close()
    }, 20_000)
@@ -19336,7 +19868,7 @@ index f4d03320f97..06e3bef5230 100644
      writeFileSync(join(dir, 'events'), event('om_9', 'oc_group', 'group') + '\n')
      const { ctx, health, store, turnOff } = consumerSource(cli('late'))
      running = runFeishu(ctx, controller.signal)
-@@ -1109,6 +1111,37 @@ describe('feishu event consumer', () => {
+@@ -1109,6 +1142,37 @@ describe('feishu event consumer', () => {
      expect(store.triggers.get(feishuTriggerId('om_9'))).toBeUndefined()
      controller.abort(); await running; store.close()
    }, 20_000)
@@ -19374,16 +19906,52 @@ index f4d03320f97..06e3bef5230 100644
    it('keeps a chat\'s history cursor when its read fails, and recovers known direct chats only while direct messages are on', async () => {
      const hour = new Date(Date.now() - 3_600_000).toISOString()
      const recovered = async (directMessages: boolean) => {
-@@ -1143,7 +1176,7 @@ describe('feishu event consumer', () => {
+@@ -1143,7 +1207,43 @@ describe('feishu event consumer', () => {
      expect(off.chats).toEqual(['oc_a', 'oc_b'])
      expect(off.cursors.oc_dm).toBe(hour)
    }, 20_000)
 -  it('reports an error when the consumer is not ready within 45 seconds', async () => {
++
++  /* ★ 2026-11-10：仅展示模式不该再读历史（内置应用没有 im:message* scope ⇒ 每 60s 报 99991672）。
++     文本守卫不依赖平台，行为用例验证实时链路仍在、history 被刷成 paused。 */
++  it('display-only guards the history, chat-name and manual refresh paths in source', () => {
++    const src = readFileSync(new URL('../src/sources/feishu-loops.ts', import.meta.url), 'utf8')
++    expect(src).toMatch(/if \(config\.displayOnly\) \{[\s\S]{0,900}Display-only: history recovery is off/)
++    expect(src).toMatch(/if \(config && !config\.displayOnly\)/)
++    // The panel's "refresh chat list" button calls refreshChatNames directly, not chatNamesLoop.
++    expect(src).toMatch(/ctx\.config<FeishuConfig>\(SOURCE\)\?\.displayOnly[\s\S]{0,200}KV\.sources\.labels/)
++  })
++
++  it('display-only skips the manual chat-list refresh, keeping the stored labels without a lark call', async () => {
++    const { ctx, store } = consumerSource('', { displayOnly: true })
++    store.set(KV.sources.labels('feishu'), { oc_a: '群 A' })
++    const lark = vi.spyOn(Commands.prototype, 'lark').mockImplementation(async () => { throw new Error('must not call lark') })
++    expect(await refreshChatNames(ctx)).toEqual({ oc_a: '群 A' })
++    expect(lark).not.toHaveBeenCalled()
++    lark.mockRestore()
++    store.close()
++  })
++
++  it('display-only skips history reads and reports paused, without starting the consumer', async () => {
++    const hour = new Date(Date.now() - 3_600_000).toISOString()
++    const { ctx, health, store } = consumerSource('', { displayOnly: true, chats: [{ chatId: 'oc_a', listen: 'mentions' }] })
++    store.set(KV.feishu.chats, { oc_a: false })
++    store.set(KV.feishu.history('oc_a'), hour)
++    const lark = vi.spyOn(Commands.prototype, 'lark').mockImplementation(async () => ({ has_more: false, items: [] }))
++    const stop = new AbortController()
++    const loop = backfillLoop(ctx, AbortSignal.any([stop.signal, controller.signal]))
++    await vi.waitFor(() => expect(health.history?.state).toBe('paused'), until)
++    stop.abort(); await loop
++    expect(lark).not.toHaveBeenCalled()
++    expect(store.get(KV.feishu.history('oc_a'))).toBe(hour)
++    lark.mockRestore()
++    store.close()
++  }, 20_000)
 +  it.runIf(posix)('reports an error when the consumer is not ready within 45 seconds', async () => {
      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
      const { ctx, health, store } = consumerSource(cli('never'))
      running = runFeishu(ctx, controller.signal)
-@@ -1155,13 +1188,13 @@ describe('feishu event consumer', () => {
+@@ -1155,13 +1255,13 @@ describe('feishu event consumer', () => {
      expect(alive(pid)).toBe(false)
      controller.abort(); await running; store.close()
    }, 20_000)
@@ -19399,7 +19967,7 @@ index f4d03320f97..06e3bef5230 100644
      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
      const { ctx, health, store, turnOff } = consumerSource(cli('ready'))
      running = runFeishu(ctx, controller.signal)
-@@ -1173,7 +1206,7 @@ describe('feishu event consumer', () => {
+@@ -1173,7 +1273,7 @@ describe('feishu event consumer', () => {
      expect(alive(pid)).toBe(false)
      controller.abort(); await running; store.close()
    }, 20_000)
@@ -20283,18 +20851,18 @@ index 61d4c4cff9d..3b938ee2e6f 100644
    for (const line of css.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map(text => text.trim()).filter(Boolean)) {
 diff --git a/tests/superagent-desk.spec.ts b/tests/superagent-desk.spec.ts
 new file mode 100644
-index 00000000000..940ceefc0f7
+index 00000000000..adb8bc3e2e3
 --- /dev/null
 +++ b/tests/superagent-desk.spec.ts
-@@ -0,0 +1,590 @@
+@@ -0,0 +1,616 @@
 +// VsSaros addition: the Runtime's supervisor desk and Bots asking SuperAgent for help, end to end on the fake Host.
 +import { readFileSync } from 'node:fs'
 +import { join } from 'node:path'
 +import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-+import { DESK_FILE_BYTES } from '../src/app/desk-chat.ts'
++import { DESK_FILE_BYTES, type DeskMessage } from '../src/app/desk-chat.ts'
 +import { deskReceiptStream, RECEIPT_CALL_PREFIX, RECEIPT_TOOL, receiptText, receiptView, submitText, ticketEndedNotice } from '../src/app/desk.ts'
 +import { deskFlow } from '../src/app/desk-flow.ts'
-+import type { Ticket } from '../src/core/index.ts'
++import type { Ticket, Trigger } from '../src/core/index.ts'
 +import { GROUP_REFERENCE_WAIT_MS } from '../src/app/groupFastPath.ts'
 +import { DESK_PERSON, deskTrigger, SUPERAGENT_SOURCE } from '../src/sources/superagent.ts'
 +import { startRuntime, type Host } from './fixtures/host.ts'
@@ -20428,6 +20996,32 @@ index 00000000000..940ceefc0f7
 +    { id, role: 'person', text: '首页新手引导要上线' },
 +    { id: 'm-ack', role: 'superagent', text: '已接单：「首页新手引导上线」。', kind: 'acknowledgement' }] })
 +  expect((await h.api('POST', 'desk/messages', { text: '   ' })).status).toBeGreaterThanOrEqual(400)
++})
++
++// ★ 2026-11-10: Feishu source text is shown in the Chat bubbles as a read-only projection.
++it('projects Feishu source text into the desk Chat without writing its Thread or waking the supervisor', async () => {
++  const at = new Date(Date.now() + 1000).toISOString()
++  const trigger = {
++    id: 'feishu:om_chat_1', source: 'feishu', text: '飞书原文：请帮我看下进度', at,
++    actor: { id: 'ou_user', name: '张三' }, human: true, addressed: 'direct',
++    threads: [{ source: 'feishu', id: 'oc_demo:om_chat_1' }],
++    meta: { chatId: 'oc_demo', messageId: 'om_chat_1' },
++  } as unknown as Trigger
++  h.runtime.store.triggers.save(trigger)
++  const shown = await h.api('GET', 'desk/messages')
++  expect((shown.body as { messages: DeskMessage[] }).messages).toContainEqual(expect.objectContaining({
++    id: 'feishu:om_chat_1', role: 'person', text: '飞书原文：请帮我看下进度',
++    source: 'feishu', chatId: 'oc_demo' }))
++  // Read-only: the desk Thread got no new message, no Eval was queued, no reply was delivered.
++  expect(h.runtime.store.threads.get(h.runtime.deskChat.thread)?.pending ?? []).toEqual([])
++  expect(reaches(h.runtime.masterId, 'feishu:om_chat_1')).toBe(false)
++  // Display-only Triggers are stored by Intake's filtered branch: text stays visible,
++  // but the "not handed to the supervisor" label must NOT be projected.
++  h.runtime.store.triggers.saveDisposition(trigger.id, { filtered: { code: 'display_only' }, fanout: [], at })
++  const after = (await h.api('GET', 'desk/messages')).body as { messages: DeskMessage[] }
++  const row = after.messages.find(message => message.id === trigger.id)!
++  expect(row.text).toBe('飞书原文：请帮我看下进度')
++  expect(row.filtered).toBeUndefined()
 +})
 +
 +it('shows why a desk message was not handed to the supervisor', async () => {
@@ -22478,7 +23072,7 @@ index 00000000000..7f3fbc33ec6
 +  expect(existsSync(teamflowFile({ cwd: '/work/demo', dshHome }))).toBe(true)
 +})
 diff --git a/docs/007-architecture.md b/docs/007-architecture.md
-index 184ea543da4..8c9ceea1dca 100644
+index 184ea543da4..55b66d23be4 100644
 --- a/docs/007-architecture.md
 +++ b/docs/007-architecture.md
 @@ -2,6 +2,8 @@
@@ -22504,8 +23098,11 @@ index 184ea543da4..8c9ceea1dca 100644
  | `src/core/evals.ts` | `Evals`: the Evals of Threads and their Decisions |
  | `src/core/tickets.ts` | `Tickets`: the Ticket lifecycle, the Threads a Ticket follows, Subscriptions and Inputs |
  | `src/core/assignments.ts` | `Assignments`: the Executor's facts and its workers' Reports |
-@@ -314,9 +316,21 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -312,11 +314,24 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `src/core/reasons.ts` | `Reason`, `REASONS` and `reasonText`: why the core recorded a Decision or set a Trigger aside, by code |
+ | `src/core/ids.ts` | `key`: ids derived from their inputs, equal for equal inputs |
  | `src/core/memory.ts` | `MemoryRepositories`: the Store's repositories in memory, in the Store's order and with its nested rollback, for domain tests |
++| `src/core/group-request.ts` | `GROUP_REQUEST`: the shared group-creation predicate used by `Intake.looksLikeAnswer` and the group fast path |
  | `src/core/index.ts` | The core's exports |
  | `src/app/runtime.ts` | The Runtime, the composition root, with its start and stop |
 +| `src/app/state-lock.ts` | VsSaros addition: `acquireStateLock`, the state-directory lock that reclaims a lock a killed Host left behind |
@@ -22527,7 +23124,7 @@ index 184ea543da4..8c9ceea1dca 100644
  | `src/app/notices.ts` | The main Session's notices and relays: `eventNotice`, `reportRelay`, `resultRelay` and `followupRelay` |
  | `src/app/store.ts` | The Store, and `Receipt`, a message of the outbox |
  | `src/app/store-read.ts` | `storeReads`: the Store's read queries for the views, the tools and the Sources' polls, which never write |
-@@ -325,24 +339,37 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -325,24 +340,37 @@ Some generic modules still refer directly to GitHub or Feishu:
  | `src/app/versions.ts` | `Versions`: a record kept as numbered snapshots with a pointer to the current one, for the settings and the prompts |
  | `src/app/cache.ts` | `TextCache`: texts kept in memory within a size, the least recently used dropped first |
  | `src/app/settings.ts` | Settings |
@@ -22568,7 +23165,7 @@ index 184ea543da4..8c9ceea1dca 100644
  | `src/app/api.ts` | `Api`, every route with its parameters, query, body and response, and the filters of the lists; it imports only types, so the panel bundles it |
  | `src/app/views/text.ts` | The two forms of a view's text: `preview`, plain text on one line, and `markdown` without HTML; `plain` and `readable` |
  | `src/app/views/records.ts` | The rows the views share: Triggers, Tickets, Threads, Decisions and Channel links, and `ownersOf`, the owners of follow-ups as one request reads them |
-@@ -355,9 +382,10 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -355,9 +383,10 @@ Some generic modules still refer directly to GitHub or Feishu:
  | `src/executor/background.ts` | A worker's background work in DeepSeek Harness, the shell jobs its Session owns (`ctx.jobs`) and its subagents (`ctx.subagents`): `runningJobs`, `untilQuiet`, `killJobs`, `collectJobs`, `stopSubagents`, `stopBackground`, `until`, and `cancelled`, the workers whose turn a stop of their subagents cancelled |
  | `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
  | `src/infra/environment.ts` | The agent's process environment: command shims, the git configuration and credential helper, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
@@ -22581,7 +23178,7 @@ index 184ea543da4..8c9ceea1dca 100644
  | `src/sources/kind.ts` | The `SourceKind` protocol |
  | `src/sources/registry.ts` | `SourceRegistry` |
  | `src/sources/host.ts` | `SourceHost`, `SourceContext`, `Health`, `health` and the fixed health texts |
-@@ -371,17 +399,38 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -371,17 +400,38 @@ Some generic modules still refer directly to GitHub or Feishu:
  | `src/sources/feishu-trigger.ts` | Feishu messages as Triggers, by one rule for live events, history pages and topic pages |
  | `src/sources/feishu-loops.ts` | The Feishu loops: the event consumer, history recovery, chat names and polling of subscribed topics |
  | `src/sources/feishu-channel.ts` | The Feishu Channel: topic replies, `sent` or `gone` |
@@ -22621,7 +23218,7 @@ index 184ea543da4..8c9ceea1dca 100644
  | `src/client/settings.tsx` | The Settings tab: the group navigation and the group on screen |
  | `src/client/settings-kit.tsx` | The building blocks of settings blocks: the settings the stage groups share, `useBlockDraft`, the fields, among them a Source kind's, and the history of saves |
  | `src/client/prompts.tsx` | The Prompts settings: the page owns the view it read and its editor the draft, and the Edit, Full prompt and History tabs render from them; a built-in part's editor shows a changed default and keeps or drops the override |
-@@ -399,15 +448,54 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -399,15 +449,54 @@ Some generic modules still refer directly to GitHub or Feishu:
  
  `src/sources/github.ts` and `src/sources/feishu.ts` are also the entries of the two Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch` and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts the three plugins, with Feishu disabled.
  
@@ -22676,7 +23273,7 @@ index 184ea543da4..8c9ceea1dca 100644
  | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
  | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
  | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
-@@ -422,6 +510,7 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -422,6 +511,7 @@ Some generic modules still refer directly to GitHub or Feishu:
  | `tests/followups.spec.ts` | A person's follow-up on a Ticket's Thread: its notice to the main Session, the tools that act on it, what a burst costs; a worker's hand-back and context follow, and the main Session's note |
  | `tests/health.spec.ts` | One health entry per part, each cleared by its own next success |
  | `tests/delivery.spec.ts` | `AgentDelivery` |
@@ -22684,7 +23281,7 @@ index 184ea543da4..8c9ceea1dca 100644
  | `tests/retry-health.spec.ts`, `tests/role-models.spec.ts` | Model budget retries, and the models of the two roles |
  | `tests/runtime.spec.ts` | The whole application on a simulated DeepSeek Harness host, through tools and HTTP |
  | `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
-@@ -429,6 +518,7 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -429,6 +519,7 @@ Some generic modules still refer directly to GitHub or Feishu:
  | `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries |
  | `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, and the refusals of the pause, a sync and a block |
  | `tests/views.spec.ts` | What the management views derive from the Store, such as the Thread a dropped message belongs to |
@@ -22692,7 +23289,7 @@ index 184ea543da4..8c9ceea1dca 100644
  | `tests/timeline.spec.ts` | A Thread's pages and a Trigger's neighbours by time and then id, with every received Trigger's time in one form |
  | `tests/migration.spec.ts` | The schema 11 migration: every stored record in its current shape, and the refusal of older schemas |
  | `tests/store.spec.ts` | Repositories and their working sets, in SQLite as in memory, the kv area, with every key of `KV` spelled only in `src/kv.ts` and the migration, settings history and queries |
-@@ -439,6 +529,15 @@ Some generic modules still refer directly to GitHub or Feishu:
+@@ -439,6 +530,15 @@ Some generic modules still refer directly to GitHub or Feishu:
  | `tests/service-script.spec.ts` | `scripts/dsh-superagent` against fake `ps`, `tmux` and `dsh` |
  | `tests/client.spec.tsx`, `tests/navigation.spec.ts`, `tests/controls.spec.tsx` | The client plugin's registration and polling, Session navigation and route memory, the local controls, and the panel's imports, which have no cycle |
  | `tests/panel-overview.spec.tsx`, `panel-source.spec.tsx`, `panel-trigger.spec.tsx`, `panel-eval.spec.tsx`, `panel-execution.spec.tsx` | Each page of the panel, against a fake management API answered by route |
@@ -22708,7 +23305,7 @@ index 184ea543da4..8c9ceea1dca 100644
  | `tests/panel-settings.spec.tsx`, `panel-prompts.spec.tsx`, `panel-deployment.spec.tsx`, `panel-panel.spec.tsx` | The settings groups, drafts and history, the prompts, the Deployment page, and the panel's search, glossary and route memory |
  | `tests/draft.spec.ts`, `tests/prompt-config.spec.ts`, `tests/markdown.spec.ts`, `tests/marks.spec.ts` | Draft states, merges and the save bar's line; the prompt configuration by section and the line diff; the Markdown subset and its links; the mark of every state the views classify |
  | `tests/locales.spec.ts`, `tests/styles.spec.ts` | The copy in both languages, the stylesheet |
-@@ -611,6 +710,31 @@ A settings save that changes a Source field setup reads, such as an account's CL
+@@ -611,6 +711,31 @@ A settings save that changes a Source field setup reads, such as an account's CL
  
  Point `DSH_HOME` at a temporary directory and create a new profile there. Copy the database from a backup, disable every Source, pause processing and remove the main Session id. Give the GitHub and Feishu CLIs read-only stand-ins.
  

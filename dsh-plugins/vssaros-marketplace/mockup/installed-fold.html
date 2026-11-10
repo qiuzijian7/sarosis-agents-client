@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>商城工作台 · 已安装 item 样式 Mockup（复刻「工具」工作台）</title>
+<!--
+  只读 Mockup，不参与插件打包（package.json files 白名单不含本目录）。
+
+  样式真源：dsh-plugins/vssaros-skills/lib/index.js
+    · 折叠组 foldHtml()  :2416-2426   CSS :3258-3270
+    · 行 renderItemRow() :2324-2414
+    · 行 CSS            :2851-2876, :2924-2928, :3272-3341
+    · 图标 renderIcon() :2140-2153 / iconBgOf() :2131-2134
+  本文件逐条保留蓝本的数值与类名，只把 IDE webview 的 --vscode-* 令牌
+  换成商城独立 document 的 --vs-mp-* 变量（商城 page.css :24-83）。
+-->
+<style>
+/* ── 商城主题变量（深色档）────────────────────────────────────────────
+   带兜底：本文件在普通浏览器打开时没有宿主注入 --dsw-alias-*，
+   fallback 保证仍能正确显示。商城页面里则会自动跟随宿主外观。 */
+html[data-theme="dark"] {
+	color-scheme: dark;
+	--vs-mp-bg: var(--dsw-alias-bg-base, #1a1a1a);
+	--vs-mp-fg: var(--dsw-alias-label-primary, #e6e6e6);
+	--vs-mp-muted: var(--dsw-alias-label-tertiary, #a8a8a8);
+	--vs-mp-border: var(--dsw-alias-border-l1, rgba(127,127,127,.30));
+	--vs-mp-card: var(--dsw-alias-bg-layer-1, #232323);
+	--vs-mp-chip: var(--dsw-alias-interactive-bg-active, #303030);
+	--vs-mp-chip-hover: var(--dsw-alias-interactive-bg-hover, #3a3a3a);
+	--vs-mp-panel: var(--dsw-alias-bg-layer-1, #1e1e1e);
+	--vs-mp-brand: var(--dsw-alias-brand-primary, #4a9eff);
+	--vs-mp-link: var(--dsw-alias-brand-text, #6cb6ff);
+	--vs-mp-warn: var(--dsw-alias-state-warn-primary, #e0a43a);
+	--vs-mp-ok: var(--dsw-alias-state-success-primary, #4ade80);
+	--vs-mp-danger: var(--dsw-alias-state-error-primary, #ff9492);
+	--vs-mp-purple: #b180d7;
+	--mp-white: #fff;
+}
+/* ── 商城主题变量（浅色档）────────────────────────────────────────── */
+html[data-theme="light"] {
+	color-scheme: light;
+	--vs-mp-bg: var(--dsw-alias-bg-base, #f8f8f6);
+	--vs-mp-fg: var(--dsw-alias-label-primary, #1f1f1f);
+	--vs-mp-muted: var(--dsw-alias-label-tertiary, #6b6f76);
+	--vs-mp-border: var(--dsw-alias-border-l1, rgba(0,0,0,.14));
+	--vs-mp-card: var(--dsw-alias-bg-layer-1, #ffffff);
+	--vs-mp-chip: var(--dsw-alias-interactive-bg-active, #eef0f4);
+	--vs-mp-chip-hover: var(--dsw-alias-interactive-bg-hover, #e2e5eb);
+	--vs-mp-panel: var(--dsw-alias-bg-layer-1, #ffffff);
+	--vs-mp-brand: var(--dsw-alias-brand-primary, #007fd4);
+	--vs-mp-link: var(--dsw-alias-brand-text, #0a66c2);
+	--vs-mp-warn: var(--dsw-alias-state-warn-primary, #a86a00);
+	--vs-mp-ok: var(--dsw-alias-state-success-primary, #1a7f37);
+	--vs-mp-danger: var(--dsw-alias-state-error-primary, #c9372c);
+	--vs-mp-purple: #8250df;
+	--mp-white: #fff;
+}
+
+html, body { height: 100%; }
+body {
+	margin: 0; display: flex; flex-direction: column; overflow: hidden;
+	font: 13px/1.55 system-ui, "Segoe UI", sans-serif;
+	color: var(--vs-mp-fg); background: var(--vs-mp-bg);
+}
+[hidden] { display: none !important; }
+code, .mono { font-family: ui-monospace, Consolas, monospace; }
+
+/* ── 页面外壳（模拟商城工作台页头 / 分类页签）──────────────────────── */
+.mp-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.mp-header {
+	display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+	min-height: 44px; flex-shrink: 0; border-bottom: 1px solid var(--vs-mp-border);
+}
+.mp-title { font-size: 15px; font-weight: 600; }
+.mp-sub { font-size: 11px; color: var(--vs-mp-muted); }
+.mp-spacer { flex: 1; }
+.mp-hbtn {
+	display: inline-flex; align-items: center; justify-content: center; min-width: 26px;
+	height: 26px; padding: 0 9px; font: inherit; font-size: 12px; line-height: 1;
+	color: inherit; background: none; border: 1px solid var(--vs-mp-border);
+	border-radius: 6px; cursor: pointer; white-space: nowrap;
+}
+.mp-hbtn:hover { background: var(--vs-mp-chip-hover); }
+.mp-hbtn.on { border-color: var(--vs-mp-brand); color: var(--vs-mp-link); }
+.mp-search {
+	display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 260px; flex: 0 1 260px;
+	background: var(--vs-mp-card); border: 1px solid var(--vs-mp-border);
+	border-radius: 14px; padding: 3px 10px;
+}
+.mp-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; font-size: 12px; }
+.mp-search span { font-size: 11px; color: var(--vs-mp-muted); }
+.mp-tabs { display: flex; align-items: center; gap: 22px; margin: 0 12px; border-bottom: 1px solid var(--vs-mp-border); }
+.mp-tabs button {
+	position: relative; font: inherit; font-size: 13px; padding: 8px 0 9px;
+	background: none; border: 0; cursor: pointer; color: var(--vs-mp-muted);
+}
+.mp-tabs button:hover { color: inherit; }
+.mp-tabs button.on { color: inherit; font-weight: 600; }
+.mp-tabs button.on::after {
+	content: ''; position: absolute; left: 0; right: 0; bottom: -1px;
+	height: 2px; background: var(--vs-mp-brand); border-radius: 2px;
+}
+.mp-content { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 10px 0 24px; }
+.mp-count { font-size: 11.5px; color: var(--vs-mp-muted); margin: 0 12px 6px; }
+
+/* ══════════════════════════════════════════════════════════════════
+   以下为「工具」工作台蓝本的逐条复刻（数值/类名不变，仅换主题变量）
+   ══════════════════════════════════════════════════════════════════ */
+
+/* 折叠组 —— 蓝本 :3258-3270 */
+.sk-fold { margin: 0 10px 10px; }
+.sk-fold > summary {
+	display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
+	list-style: none; padding: 6px 4px; font-size: 11.5px; font-weight: 600;
+	color: var(--vs-mp-muted);
+}
+.sk-fold > summary::-webkit-details-marker { display: none; }
+.sk-fold > summary::before { content: '▸'; font-size: 10px; transition: transform .12s ease; }
+.sk-fold[open] > summary::before { transform: rotate(90deg); }
+.sk-fold > summary:hover { color: var(--vs-mp-fg); }
+.sk-fold > summary .sk-fold-n { font-weight: 600; color: var(--vs-mp-fg); }
+.sk-fold > .sk-list { padding: 0; }
+.sk-fold > .sk-empty { margin: 4px 2px 0; }
+
+/* 列表：卡片网格 —— 蓝本 :2851 */
+.sk-list {
+	list-style: none; margin: 0; padding: 0 10px;
+	display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+	gap: 8px; align-items: start;
+}
+
+/* 行 —— 蓝本 :2854-2876 */
+.sk-row {
+	display: flex; gap: 8px; align-items: flex-start; padding: 7px 10px 7px 0;
+	border: 1px solid var(--vs-mp-border); border-radius: 6px;
+	background: var(--vs-mp-card); cursor: pointer; overflow: hidden;
+}
+.sk-row:hover, .sk-row.open { border-color: var(--vs-mp-brand); }
+.sk-bar { flex: 0 0 3px; align-self: stretch; background: var(--vs-mp-border); }
+.sk-row[data-act="auto"] .sk-bar { background: var(--vs-mp-ok); }
+.sk-row[data-act="always"] .sk-bar { background: var(--vs-mp-purple); }
+.sk-ico {
+	display: flex; align-items: center; justify-content: center;
+	width: 28px; height: 28px; flex: 0 0 28px; margin-top: 1px;
+	border-radius: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,.08);
+	font-size: 14px; line-height: 1; user-select: none;
+}
+.sk-main { flex: 1; min-width: 0; }
+.sk-l1 { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.sk-nm {
+	font-weight: 600; font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.sk-ds {
+	color: var(--vs-mp-muted); font-size: 11.5px;
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sk-rowmeta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 3px; }
+
+/* 标签 —— 蓝本 :2924-2928, :3331-3332 */
+.sk-tag {
+	display: inline-block; font-size: 10px; line-height: 15px; padding: 0 5px;
+	border-radius: 3px; background: var(--vs-mp-chip); color: var(--vs-mp-fg);
+	vertical-align: 1px; white-space: nowrap;
+}
+.sk-tag.man, .sk-tag.ver {
+	background: transparent; border: 1px solid var(--vs-mp-border); color: var(--vs-mp-muted);
+}
+.sk-tag.ver { font-variant-numeric: tabular-nums; opacity: .9; }
+.sk-tag.auto { background: var(--vs-mp-ok); color: var(--mp-white); }
+.sk-tag.always { background: var(--vs-mp-purple); color: var(--mp-white); }
+.sk-tag.up {
+	color: var(--vs-mp-warn); border: 1px solid currentColor;
+	border-radius: 999px; padding: 0 6px; background: transparent;
+}
+.sk-tag.kind { background: var(--vs-mp-chip); color: var(--vs-mp-link); }
+
+/* 行内动作 —— 蓝本 :3272-3281, :3312-3313, :3334-3335 */
+.sk-act {
+	flex: 0 0 auto; align-self: center; margin-right: 8px; padding: 0 8px; height: 22px;
+	border-radius: 11px; font: inherit; font-size: 11px; line-height: 20px; cursor: pointer;
+	border: 1px solid var(--vs-mp-border); background: none; color: var(--vs-mp-muted);
+	opacity: 0; transition: opacity .12s ease, color .12s ease, border-color .12s ease;
+}
+.sk-row:hover .sk-act, .sk-row:focus-within .sk-act, .sk-act:focus { opacity: 1; }
+.sk-act:hover { color: var(--vs-mp-danger); border-color: currentColor; }
+.sk-act[disabled] { opacity: .6; cursor: default; }
+.sk-act-cfg, .sk-act-up { color: var(--vs-mp-link); }
+.sk-act-pub { color: var(--vs-mp-muted); }
+/* Mockup 专用：让评审时不 hover 也能看清全部按钮（默认是蓝本的 hover 才显示） */
+.mp-show-ops .sk-row .sk-act { opacity: 1; }
+
+/* 尾部控件组 —— 蓝本 :3309-3311；开关永远最右 */
+.sk-ops { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; margin-left: auto; padding-left: 4px; }
+.sk-ops .sk-act, .sk-ops .sk-sw { margin-right: 0; }
+.sk-sw {
+	flex: 0 0 auto; align-self: center; padding: 0;
+	width: 30px; height: 16px; border-radius: 8px; position: relative; cursor: pointer;
+	border: 1px solid var(--vs-mp-border); background: var(--vs-mp-chip-hover);
+	transition: background .12s ease, border-color .12s ease;
+}
+.sk-sw i {
+	position: absolute; top: 1px; left: 1px; width: 12px; height: 12px; border-radius: 50%;
+	background: var(--vs-mp-fg); transition: transform .12s ease, background .12s ease;
+}
+.sk-sw[aria-checked="true"] { background: var(--vs-mp-ok); border-color: transparent; }
+.sk-sw[aria-checked="true"] i { transform: translateX(14px); background: var(--mp-white); }
+.sk-sw:hover:not([disabled]) { border-color: var(--vs-mp-brand); }
+.sk-sw[disabled] { opacity: .4; cursor: not-allowed; }
+
+/* 停用态 —— 蓝本 :3340-3341 */
+.sk-row.is-off { opacity: .62; }
+.sk-row.is-off .sk-nm { text-decoration: line-through; text-decoration-thickness: 1px; }
+.sk-empty { color: var(--vs-mp-muted); padding: 14px 10px; font-size: 12px; margin: 0; }
+
+/* ── 折叠组下方：商城「可安装」网格（工具工作台同款结构）──────────── */
+.mk-sec { margin: 18px 10px 8px; font-size: 11px; font-weight: 600; letter-spacing: .04em;
+	text-transform: uppercase; color: var(--vs-mp-muted); }
+.mk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px; padding: 0 10px; }
+.mk-card { border: 1px solid var(--vs-mp-border); border-radius: 6px; background: var(--vs-mp-card); padding: 10px 12px; }
+.mk-card h4 { margin: 0 0 4px; font-size: 12px; font-weight: 600; }
+.mk-card p { margin: 0 0 8px; font-size: 11.5px; color: var(--vs-mp-muted); }
+.mk-card .mp-hbtn { height: 22px; font-size: 11px; border-radius: 11px; padding: 0 10px; }
+
+/* ── 规格对照表（评审用，不属于产品 UI）──────────────────────────── */
+.spec { margin: 24px 10px 0; border: 1px solid var(--vs-mp-border); border-radius: 6px; background: var(--vs-mp-panel); }
+.spec > summary { padding: 8px 12px; cursor: pointer; font-size: 11.5px; font-weight: 600; color: var(--vs-mp-muted); }
+.spec table { border-collapse: collapse; width: 100%; font-size: 11.5px; }
+.spec th, .spec td { text-align: left; padding: 6px 12px; border-top: 1px solid var(--vs-mp-border); vertical-align: top; }
+.spec th { color: var(--vs-mp-muted); font-weight: 600; white-space: nowrap; }
+.spec td code { font-size: 11px; color: var(--vs-mp-link); }
+</style>
+</head>
+<body class="mp-show-ops">
+<div class="mp-view">
+
+	<div class="mp-header">
+		<span class="mp-title">商城工作台</span>
+		<span class="mp-sub">已安装 item 样式 · 复刻「工具」工作台</span>
+		<span class="mp-spacer"></span>
+		<div class="mp-search"><span>⌕</span><input id="q" type="search" placeholder="搜索名称 / 描述 / 路径"></div>
+		<button class="mp-hbtn on" id="opsBtn" title="切换：常显行内动作 / 仅 hover 显示（蓝本行为）">常显动作</button>
+		<button class="mp-hbtn" id="themeBtn" title="切换深浅外观">切换浅色</button>
+	</div>
+
+	<div class="mp-tabs" id="tabs">
+		<button data-tab="all" class="on">全部</button>
+		<button data-tab="agent">Agent</button>
+		<button data-tab="skill">Skill</button>
+		<button data-tab="mcp">MCP</button>
+		<button data-tab="workbench">工作台</button>
+		<button data-tab="knowledge">知识库</button>
+		<button data-tab="plugin">插件</button>
+	</div>
+
+	<div class="mp-content">
+		<div class="mp-count" id="count">已安装 6 · 可安装 3</div>
+
+		<!-- ══ 折叠组（与工具工作台 foldHtml 同形）══ -->
+		<details class="sk-fold" data-sk-fold="mcp" open>
+			<summary>已安装 <span class="sk-fold-n">6</span></summary>
+			<ul class="sk-list" id="rows">
+
+				<!-- ① Skill：auto 激活 → 绿色条；可升级；开关启用 -->
+				<li class="sk-row" data-item-row data-item-kind="skill" data-slug="code-review"
+					data-act="auto" style="--h:28">
+					<i class="sk-bar"></i>
+					<span class="sk-ico" style="background:linear-gradient(135deg,hsl(28,68%,58%,.34),hsl(74,72%,46%,.16))">⚡</span>
+					<div class="sk-main">
+						<div class="sk-l1"><span class="sk-nm">code-review</span></div>
+						<div class="sk-ds">代码审阅清单：改动风险、边界条件与回归点逐项核对</div>
+						<div class="sk-rowmeta">
+							<span class="sk-tag ver">v1.2.0</span>
+							<span class="sk-tag up" title="商城已有 1.3.0">可升级 v1.3.0</span>
+							<span class="sk-tag auto">auto</span>
+							<span class="sk-tag kind">技能</span>
+						</div>
+					</div>
+					<div class="sk-ops">
+						<button class="sk-act sk-act-up" title="用商城的 1.3.0 覆盖本地">升级</button>
+						<button class="sk-act tk-del" title="移到回收站（可恢复）">删除</button>
+						<button class="sk-sw" role="switch" aria-checked="true" title="已启用（点一下停用）"><i></i></button>
+					</div>
+				</li>
+
+				<!-- ② MCP：配置 / 升级 / 卸载 / 开关，开关永远最右 -->
+				<li class="sk-row" data-item-row data-item-kind="mcp" data-slug="playwright">
+					<i class="sk-bar"></i>
+					<span class="sk-ico" style="background:linear-gradient(135deg,hsl(210,68%,58%,.34),hsl(256,72%,46%,.16))">🔌</span>
+					<div class="sk-main">
+						<div class="sk-l1"><span class="sk-nm">playwright</span></div>
+						<div class="sk-ds">浏览器自动化：导航、截图、DOM 断言（stdio · npx）</div>
+						<div class="sk-rowmeta">
+							<span class="sk-tag ver">v0.8.1</span>
+							<span class="sk-tag kind">MCP</span>
+							<span class="sk-tag man">来自商城</span>
+						</div>
+					</div>
+					<div class="sk-ops">
+						<button class="sk-act sk-act-cfg" title="打开配置">配置</button>
+						<button class="sk-act sk-act-up" title="用商城的版本覆盖本地">升级</button>
+						<button class="sk-act tk-del" title="先从 mcp.json 注销再删目录">卸载</button>
+						<button class="sk-sw" role="switch" aria-checked="true" title="已启用（点一下停用）"><i></i></button>
+					</div>
+				</li>
+
+				<!-- ③ Agent：本地自建 → 「上传」而非「升级」 -->
+				<li class="sk-row" data-item-row data-item-kind="agent" data-slug="code-reviewer">
+					<i class="sk-bar"></i>
+					<span class="sk-ico" style="background:linear-gradient(135deg,hsl(122,68%,58%,.34),hsl(168,72%,46%,.16))">🤖</span>
+					<div class="sk-main">
+						<div class="sk-l1"><span class="sk-nm">代码审阅员</span></div>
+						<div class="sk-ds">按 preset 装配的审阅 Agent，带 skills 白名单与工具约束</div>
+						<div class="sk-rowmeta">
+							<span class="sk-tag ver">v2.1.0</span>
+							<span class="sk-tag kind">Agent</span>
+							<span class="sk-tag man">manual</span>
+						</div>
+					</div>
+					<div class="sk-ops">
+						<button class="sk-act sk-act-pub" title="打包上传到商城">上传</button>
+						<button class="sk-act tk-del" title="移到回收站（可恢复）">删除</button>
+						<button class="sk-sw" role="switch" aria-checked="true" title="已启用（点一下停用）"><i></i></button>
+					</div>
+				</li>
+
+				<!-- ④ knowledge：always 激活 → 紫色条；无开关 -->
+				<li class="sk-row" data-item-row data-item-kind="knowledge" data-slug="team-kb"
+					data-act="always">
+					<i class="sk-bar"></i>
+					<span class="sk-ico" style="background:linear-gradient(135deg,hsl(268,68%,58%,.34),hsl(314,72%,46%,.16))">📚</span>
+					<div class="sk-main">
+						<div class="sk-l1"><span class="sk-nm">team-kb</span></div>
+						<div class="sk-ds">团队知识库：架构决议、排障手册与接口约定（语义检索可用）</div>
+						<div class="sk-rowmeta">
+							<span class="sk-tag ver">v1.0.0</span>
+							<span class="sk-tag always">always</span>
+							<span class="sk-tag kind">知识库</span>
+						</div>
+					</div>
+					<div class="sk-ops">
+						<button class="sk-act sk-act-up" title="用商城的版本覆盖本地">升级</button>
+						<button class="sk-act tk-del" title="反登记 KB 清单后删除目录">卸载</button>
+					</div>
+				</li>
+
+				<!-- ⑤ workbench：内置 → 开关锁定；无删除 -->
+				<li class="sk-row" data-item-row data-item-kind="workbench" data-slug="data-studio">
+					<i class="sk-bar"></i>
+					<span class="sk-ico" style="background:linear-gradient(135deg,hsl(48,68%,58%,.34),hsl(94,72%,46%,.16))">🧰</span>
+					<div class="sk-main">
+						<div class="sk-l1"><span class="sk-nm">data-studio</span></div>
+						<div class="sk-ds">数据分析工作台：内置，由插件包提供，不在商城装卸范围</div>
+						<div class="sk-rowmeta">
+							<span class="sk-tag ver">v0.9.2</span>
+							<span class="sk-tag kind">工作台</span>
+							<span class="sk-tag man">内置</span>
+						</div>
+					</div>
+					<div class="sk-ops">
+						<button class="sk-sw" role="switch" aria-checked="true" disabled title="内置项不允许停用"><i></i></button>
+					</div>
+				</li>
+
+				<!-- ⑥ plugin：停用态 is-off（半透明 + 名称删除线） -->
+				<li class="sk-row is-off" data-item-row data-item-kind="plugin" data-slug="dsh-pet-plugin">
+					<i class="sk-bar"></i>
+					<span class="sk-ico" style="background:linear-gradient(135deg,hsl(336,68%,58%,.34),hsl(22,72%,46%,.16))">🧩</span>
+					<div class="sk-main">
+						<div class="sk-l1"><span class="sk-nm">dsh-pet-plugin</span></div>
+						<div class="sk-ds">桌宠插件（已停用；代码仍在 profile，重启后不加载）</div>
+						<div class="sk-rowmeta">
+							<span class="sk-tag ver">v1.4.0</span>
+							<span class="sk-tag kind">插件</span>
+							<span class="sk-tag up" title="商城已有 1.5.0">可升级 v1.5.0</span>
+						</div>
+					</div>
+					<div class="sk-ops">
+						<button class="sk-act sk-act-up" title="用商城的版本覆盖本地">升级</button>
+						<button class="sk-act tk-del" title="卸载插件">卸载</button>
+						<button class="sk-sw" role="switch" aria-checked="false" title="已停用（点一下启用）"><i></i></button>
+					</div>
+				</li>
+			</ul>
+		</details>
+
+		<!-- ══ 折叠组下方：可安装商品（工具工作台同款「已安装折叠组 + 商城网格」结构）══ -->
+		<div class="mk-sec">可安装 · 来自商城</div>
+		<div class="mk-grid">
+			<div class="mk-card"><h4>writing-plans</h4><p>把模糊需求拆成可执行的实现计划与验收点。</p><button class="mp-hbtn">安装</button></div>
+			<div class="mk-card"><h4>github-code-review</h4><p>读 PR diff，按风险等级输出逐行审阅意见。</p><button class="mp-hbtn">安装</button></div>
+			<div class="mk-card"><h4>fs-browser</h4><p>受控文件浏览 MCP，支持只读目录白名单。</p><button class="mp-hbtn">安装</button></div>
+		</div>
+
+		<!-- ══ 规格对照（评审辅助）══ -->
+		<details class="spec" open>
+			<summary>样式规格对照 · 工具工作台 → 商城（点击收起）</summary>
+			<table>
+				<tr><th>部位</th><th>蓝本数值 / 令牌</th><th>商城落地</th></tr>
+				<tr><td>折叠组</td><td><code>margin 0 10px 10px</code>；summary <code>6px 4px</code> / 11.5px / 600</td><td>同数值；<code>--vscode-descriptionForeground → --vs-mp-muted</code></td></tr>
+				<tr><td>箭头</td><td><code>::before '▸'</code> 10px；<code>[open]</code> rotate(90deg)；隐藏原生 marker</td><td>完全一致</td></tr>
+				<tr><td>计数徽章</td><td><code>.sk-fold-n</code> 600 / 前景色</td><td><code>--vs-mp-fg</code></td></tr>
+				<tr><td>列表</td><td><code>grid / minmax(300px,1fr) / gap 8px</code>；折叠组内 <code>padding:0</code></td><td>完全一致（商城原卡片网格是 340px，这里按蓝本降到 300px）</td></tr>
+				<tr><td>行</td><td><code>flex / gap 8 / padding 7px 10px 7px 0 / radius 6 / border 1px</code></td><td><code>--vs-mp-border</code> + <code>--vs-mp-card</code>；hover 边 <code>--vs-mp-brand</code></td></tr>
+				<tr><td>左色条</td><td><code>flex 0 0 3px / align-self stretch</code>；auto 绿、always 紫</td><td><code>--vs-mp-ok</code> / <code>--vs-mp-purple</code>（新增辅助变量）</td></tr>
+				<tr><td>图标</td><td>28×28 / radius 8 / 14px emoji / seed 哈希渐变背景</td><td>完全一致；六类 emoji 同蓝本，knowledge 用 📚</td></tr>
+				<tr><td>名称</td><td><code>ui-monospace,Consolas / 12px / 600 / ellipsis / min-width:0</code></td><td>完全一致</td></tr>
+				<tr><td>描述</td><td>11.5px / 描述色 / 单行 ellipsis</td><td><code>--vs-mp-muted</code></td></tr>
+				<tr><td>标签</td><td>10px / lh15 / pad 0 5 / r3；ver 描边、up 黄胶囊、auto/always 实色</td><td>badge→<code>--vs-mp-chip</code>、黄→<code>--vs-mp-warn</code></td></tr>
+				<tr><td>行内动作</td><td>22px 高 / r11 / 11px / <b>opacity 0，hover 或 focus-within 才显</b></td><td>完全一致；cfg/up 用 <code>--vs-mp-link</code>，删除 hover 用 <code>--vs-mp-danger</code></td></tr>
+				<tr><td>控件组</td><td><code>.sk-ops margin-left:auto</code>；顺序 配置 / 升级 / 上传 / 删除 / <b>开关最右</b></td><td>完全一致</td></tr>
+				<tr><td>开关</td><td>30×16 / r8 / 内点 12×12 / 开启 translateX(14px) + 绿底白点 / disabled .4</td><td>用 <code>--vs-mp-ok</code></td></tr>
+				<tr><td>停用态</td><td><code>.is-off opacity .62</code> + 名称 1px 删除线</td><td>完全一致</td></tr>
+				<tr><td>主题</td><td>IDE webview 的 <code>--vscode-*</code>，宿主注入</td><td><b>不能照抄</b>：商城是独立 document，改用 <code>--vs-mp-*</code>（深色档 + 浅色档自动跟随）</td></tr>
+			</table>
+		</details>
+	</div>
+</div>
+
+<script>
+(function () {
+	var root = document.documentElement;
+	var fold = document.querySelector('details.sk-fold');
+	var rows = Array.prototype.slice.call(document.querySelectorAll('.sk-row'));
+	var countEl = document.getElementById('count');
+
+	/* 主题：默认跟随系统，手动切换后覆盖 */
+	if (!window.matchMedia || !window.matchMedia('(prefers-color-scheme: light)').matches) {
+		root.dataset.theme = 'dark';
+	} else {
+		root.dataset.theme = 'light';
+	}
+	var themeBtn = document.getElementById('themeBtn');
+	function syncThemeBtn() {
+		themeBtn.textContent = root.dataset.theme === 'dark' ? '切换浅色' : '切换深色';
+	}
+	syncThemeBtn();
+	themeBtn.addEventListener('click', function () {
+		root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+		syncThemeBtn();
+	});
+
+	/* 折叠状态记 localStorage —— 蓝本 :1715-1723 */
+	try {
+		var saved = localStorage.getItem('vssaros.tools.fold.mcp');
+		if (saved === '0') { fold.open = false; } else if (saved === '1') { fold.open = true; }
+	} catch (e) { /* 隐私模式读不到就用默认 */ }
+	fold.addEventListener('toggle', function () {
+		try { localStorage.setItem('vssaros.tools.fold.mcp', fold.open ? '1' : '0'); } catch (e) {}
+	});
+
+	/* 常显动作：评审辅助；关掉即回到蓝本「仅 hover 显示」 */
+	var opsBtn = document.getElementById('opsBtn');
+	opsBtn.addEventListener('click', function () {
+		var on = document.body.classList.toggle('mp-show-ops');
+		opsBtn.classList.toggle('on', on);
+		opsBtn.textContent = on ? '常显动作' : 'hover 显示';
+	});
+
+	/* 开关：就地改 aria-checked + is-off，不刷新（蓝本 :1049-1088） */
+	Array.prototype.slice.call(document.querySelectorAll('.sk-sw')).forEach(function (sw) {
+		sw.addEventListener('click', function (ev) {
+			ev.stopPropagation();
+			if (sw.disabled) { return; }
+			var on = sw.getAttribute('aria-checked') !== 'true';
+			sw.setAttribute('aria-checked', on ? 'true' : 'false');
+			sw.title = on ? '已启用（点一下停用）' : '已停用（点一下启用）';
+			var row = sw.closest('.sk-row');
+			if (row) { row.classList.toggle('is-off', !on); }
+		});
+	});
+
+	/* 搜索 + 分类页签：条件 AND，只切 hidden（蓝本 applyFilter :429-442）。
+	   切到 MCP 时折叠组只留已装 MCP，演示「mcp 页签下的已安装折叠组」这个真实场景。 */
+	var q = document.getElementById('q');
+	var activeTab = 'all';
+	var foldN = fold.querySelector('.sk-fold-n');
+	function applyFilter() {
+		var needle = String(q.value || '').trim().toLowerCase();
+		var shown = 0;
+		rows.forEach(function (row) {
+			var kind = String(row.getAttribute('data-item-kind') || '');
+			var tabHit = activeTab === 'all' || kind === activeTab;
+			var qHit = !needle || row.textContent.toLowerCase().indexOf(needle) >= 0
+				|| String(row.getAttribute('data-slug') || '').toLowerCase().indexOf(needle) >= 0;
+			var hit = tabHit && qHit;
+			row.hidden = !hit;
+			if (hit) { shown += 1; }
+		});
+		foldN.textContent = String(shown);
+		countEl.textContent = '已安装 ' + shown + ' / 6 · 可安装 3';
+	}
+	q.addEventListener('input', applyFilter);
+
+	document.getElementById('tabs').addEventListener('click', function (e) {
+		var b = e.target.closest('button');
+		if (!b) { return; }
+		Array.prototype.slice.call(this.querySelectorAll('button')).forEach(function (x) { x.classList.remove('on'); });
+		b.classList.add('on');
+		activeTab = String(b.getAttribute('data-tab') || 'all');
+		applyFilter();
+	});
+})();
+</script>
+</body>
+</html>

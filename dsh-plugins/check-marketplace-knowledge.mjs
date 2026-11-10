@@ -23,11 +23,14 @@ const KB = path.join(HERE, 'vssaros-kb/lib');
 const pub = await import('file:///' + path.join(MP, 'publisher.js').replace(/\\/g, '/'));
 const inst = await import('file:///' + path.join(MP, 'installers.js').replace(/\\/g, '/'));
 const res = await import('file:///' + path.join(MP, 'localResources.js').replace(/\\/g, '/'));
+const shape = await import('file:///' + path.join(MP, 'shape.js').replace(/\\/g, '/'));
 const src = (p) => fs.readFileSync(p, 'utf8');
 const pubSrc = src(path.join(MP, 'publisher.js'));
 const instSrc = src(path.join(MP, 'installers.js'));
 const dispSrc = src(path.join(MP, 'dispatch.js'));
 const resSrc = src(path.join(MP, 'localResources.js'));
+const idxSrc = src(path.join(MP, 'index.js'));
+const shapeSrc = src(path.join(MP, 'shape.js'));
 const kbSrc = src(path.join(KB, 'index.js'));
 
 let pass = 0;
@@ -82,15 +85,26 @@ await check('发布入口：能列出**真实的知识库**（带 sourceDir）',
 	fs.mkdirSync(prof, { recursive: true });
 	const kb = path.join(home, 'knowledge-base');
 	fs.mkdirSync(kb, { recursive: true });
+	// ★ 2026-11-10 用户裁决：单位是 `知识库列表/<文件夹>`，不是 vault 容器 id
 	const inner = path.join(kb, 'v1');
-	fs.mkdirSync(path.join(inner, '笔记'), { recursive: true });
-	fs.writeFileSync(path.join(inner, '笔记', 'a.md'), '# a\n', 'utf8');
+	fs.mkdirSync(path.join(inner, '知识库列表', 'AIAgent'), { recursive: true });
+	fs.writeFileSync(path.join(inner, '知识库列表', 'AIAgent', 'a.md'), '# a\n', 'utf8');
+	fs.mkdirSync(path.join(inner, '知识库列表', '.archive-2026-11-02'), { recursive: true });
 	fs.writeFileSync(path.join(kb, '.extra-vaults.json'), JSON.stringify([{ id: 'ext-1', name: '外挂', path: inner }]));
+	// dsh 侧唯一真源：聊天框工具卡写的 `<数据根>/.kb-root.json` ⇒ 根直接是唯一库根
+	const root = path.join(home, '我的知识库');
+	fs.mkdirSync(path.join(root, '知识库列表', '财经'), { recursive: true });
+	fs.writeFileSync(path.join(root, '知识库列表', '财经', 'b.md'), '# b\n', 'utf8');
+	fs.writeFileSync(path.join(prof, '.kb-root.json'), JSON.stringify({ version: 1, path: root }));
 	try {
 		const items = await res.listPublishables(prof);
 		const kbs = items.filter((x) => x.kind === 'knowledge');
 		if (!kbs.length) { throw new Error('列不出知识库'); }
 		if (!kbs.every((x) => x.sourceDir && path.isAbsolute(x.sourceDir))) { throw new Error('缺 sourceDir（或不是绝对路径）'); }
+		if (!kbs.some((x) => x.localId === 'AIAgent' && x.name === 'AIAgent')) { throw new Error('没列出 知识库列表/AIAgent'); }
+		if (!kbs.some((x) => x.localId === '财经' && x.name === '财经')) { throw new Error('没按 .kb-root.json 列出唯一库根下的「财经」'); }
+		if (kbs.some((x) => /^ext-/.test(String(x.localId)))) { throw new Error('仍把 ext-* 容器 id 当成知识库商品'); }
+		if (kbs.some((x) => String(x.localId).startsWith('.'))) { throw new Error('点开头归档目录没被隐藏'); }
 	} finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -165,6 +179,56 @@ await check('★ 闭环：打包 → 安装 → 登记（装完在注册表里�
 		fs.rmSync(home, { recursive: true, force: true });
 		fs.rmSync(v, { recursive: true, force: true });
 	}
+});
+
+// ★ 2026-11-10（用户裁决）：商城「已安装」的知识库 = `知识库列表/<文件夹>`，
+//   每个文件夹就是一个独立知识库；`ext-<hash>` 是 vault 容器 id，不该出现在商品列表里。
+await check('★ 已安装：本地知识库透传真实库名/描述/相对目录（不能只带 storeId）', () => {
+	if (!/displayName:\s*String\(it\.name\)/.test(idxSrc)) { throw new Error('installed op 没透传 displayName'); }
+	if (!/description:\s*String\(it\.description\)/.test(idxSrc)) { throw new Error('installed op 没透传 description'); }
+	if (!/entry\.displayName\s*\|\|\s*entry\.storeId/.test(shapeSrc)) { throw new Error('toInstalledItem 仍拿 storeId 当显示名'); }
+});
+await check('★ 已安装：按分类过滤（选「知识库」时不该混入其它 kind）', () => {
+	if (!/wantedKind/.test(idxSrc) || !/allItems\.filter\(it => it\.kind === wantedKind\)/.test(idxSrc)) {
+		throw new Error('installed op 缺 params.kind 过滤');
+	}
+});
+await check('★ 知识库枚举：用真名 知识库列表、不再把 ext-* 当商品 id、不用旧名判库', () => {
+	if (!resSrc.includes("KB_NOTES_DIR = '知识库列表'")) { throw new Error('没用真名 知识库列表'); }
+	if (/\['笔记',\s*'库'\]/.test(resSrc)) { throw new Error('还在用旧名 笔记/库 判库'); }
+	if (/String\(v\.id \|\| basename/.test(resSrc)) { throw new Error('仍在把 ext-* 登记 id 当 localId'); }
+});
+await check('★ 已安装项形状：name 是库名、description 有篇数、rel 是 知识库列表/<名>', () => {
+	const it = shape.toInstalledItem({
+		kind: 'knowledge', storeId: 'AIAgent', displayName: 'AIAgent', version: '1.0.0',
+		description: '42 篇文档 · 知识库列表/AIAgent', rel: '知识库列表/AIAgent',
+	});
+	if (it.name !== 'AIAgent') { throw new Error('name 不是库名'); }
+	if (!/篇文档/.test(String(it.description))) { throw new Error('description 丢了'); }
+	if (it.rel !== '知识库列表/AIAgent') { throw new Error('rel 丢了'); }
+	// 台账商品没有 displayName ⇒ 保持旧行为，不能被顺手改坏
+	if (shape.toInstalledItem({ kind: 'skill', storeId: 's1', version: '1' }).name !== 's1') {
+		throw new Error('台账商品的显示名被破坏');
+	}
+});
+await check('★ 根配置即唯一库根：listKnowledgeVaults 直接列出文件夹（隐藏点目录）', async () => {
+	const home = path.join(os.tmpdir(), 'mp-kb-guard-' + Date.now());
+	const prof = path.join(home, 'data');
+	const root = path.join(home, '我的知识库');
+	try {
+		fs.mkdirSync(prof, { recursive: true });
+		fs.mkdirSync(path.join(root, '知识库列表', 'AIAgent'), { recursive: true });
+		fs.writeFileSync(path.join(root, '知识库列表', 'AIAgent', 'a.md'), '# a\n', 'utf8');
+		fs.mkdirSync(path.join(root, '知识库列表', '.archive-2026-11-02'), { recursive: true });
+		fs.writeFileSync(path.join(prof, '.kb-root.json'), JSON.stringify({ version: 1, path: root }));
+		const items = await res.listKnowledgeVaults(prof);
+		if (!items.some(x => x.localId === 'AIAgent' && x.name === 'AIAgent')) { throw new Error('没列出 AIAgent'); }
+		if (items.some(x => String(x.localId).startsWith('.'))) { throw new Error('点目录没隐藏'); }
+		if (items.some(x => /^ext-/.test(String(x.localId)))) { throw new Error('出现 ext-* 容器 id'); }
+		const hit = items.find(x => x.localId === 'AIAgent');
+		if (!/1 篇文档/.test(String(hit?.description || ''))) { throw new Error('description 没给篇数'); }
+		if (hit?.rel !== '知识库列表/AIAgent') { throw new Error('rel 不对'); }
+	} finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
 console.log('\n' + (failed.length ? `✗ ${failed.length} 项失败 / 共 ${pass + failed.length} 项` : `✓ 全部 ${pass} 项通过`));

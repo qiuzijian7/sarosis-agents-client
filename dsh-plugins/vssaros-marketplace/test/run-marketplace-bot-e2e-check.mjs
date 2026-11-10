@@ -335,8 +335,10 @@ check('④-5 台账按组件分别登记（agent + skill + mcp 至少 3 条）',
 	ledger.length >= 3 && ['agent', 'skill', 'mcp'].every(k => ledger.some(e => e.kind === k)),
 	JSON.stringify(ledger.map(e => `${e.kind}:${e.storeId}`)));
 const receipt = installResult?.bot ?? null;
-check('④-6 回执分项说明生效状态（Bot 即时 / 技能与 MCP 需重启）',
-	receipt?.bot === 'applied' && receipt?.skills === 'restart-required' && receipt?.mcp === 'restart-required',
+// ★ 2026-11-10：MCP 改为运行时挂载（缺省启用）⇒ 回执应是 applied；
+//   `VSSAROS_MCP_RUNTIME_MOUNT=0` 回退态仍报 restart-required（由 check-capability-tools ⑨ 钉住）。
+check('④-6 回执分项说明生效状态（Bot 即时 / 技能需重启 / MCP 运行时即时）',
+	receipt?.bot === 'applied' && receipt?.skills === 'restart-required' && receipt?.mcp === 'applied',
 	JSON.stringify(receipt));
 check('④-7 凭据只留 ${env:VAR} 占位符，真实 token 不落盘',
 	fs.existsSync(mcpFile) && fs.readFileSync(mcpFile, 'utf8').includes('${env:REVIEW_TOKEN}')

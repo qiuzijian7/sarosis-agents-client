@@ -17,7 +17,7 @@
 // 数据契约与覆盖缺口见 `lib/core/skills.js` 文件头（三层来源只覆盖中间那层；always 的自动注入语义无等价物）。
 
 import { appendFile, readFile, readdir } from 'node:fs/promises';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, watch } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,6 +37,19 @@ import { SKILL_CORE_LIMIT, bundledRootFromPackage, bundledRootFromRepo, bundledT
 //   不改 digest、不碰基座行，只让未 attach 的技能 `modelInvocable:false`。
 import { createBundledProvider, readBundledSkillBody } from './core/bundledProvider.js';
 import { createSkillWriteService, SKILL_WRITE_SERVICE_NAME } from './core/skillWriteService.js';
+
+/**
+ * MCP 的生效模型（2026-11-10）：`vssaros-mcp` 缺省启用运行时 reconcile ⇒ 改 mcp.json 立即生效；
+ * `VSSAROS_MCP_RUNTIME_MOUNT=0` 回退到 IDE 启动期覆盖层时才需要重启。
+ * 判据与 `vssaros-mcp/lib/core/mcpRuntime.js` / `dshMcpConfig.ts` 同值（由 ⑬ 守卫钉住）。
+ * 页面里所有「重启后生效」的文案必须从这里派生，不能写死 —— 写死就会在缺省模型下变假话。
+ */
+const MCP_RUNTIME_MOUNT = process.env.VSSAROS_MCP_RUNTIME_MOUNT !== '0';
+const MCP_APPLY_HINT = MCP_RUNTIME_MOUNT
+	? '保存后由运行时挂载自动生效（无需重启 Host）'
+	: '保存后需重启 Host 才生效';
+const MCP_TOGGLE_TAIL = MCP_RUNTIME_MOUNT ? '，立即生效' : '，重启 Host 后生效';
+const MCP_DISABLED_NOTE = MCP_RUNTIME_MOUNT ? '（运行时已卸载）' : '（重启 Host 后不加载）';
 import { buildCapabilityLibrary, parseAgentAttachments, attachmentsForAgent, expandAttachments, DEFAULT_CAPABILITY_PACK } from './core/capabilityLibrary.js';
 import { searchCapabilities, renderCapabilityRows, createCapabilityAttachments, attachProblems, CAPABILITY_SEARCH_MAX, CAPABILITY_ATTACH_MAX } from './core/capabilityTools.js';
 /** 随包 tier 索引（进程内一次，插件加载时解析包根；失败则退回仓库根，守卫可断言）。 */
@@ -161,6 +174,9 @@ function createState() {
 		 * 不再等 Host 重扫（旧描述里那句"要等重新扫描"已作废）。
 		 */
 		providerControl: undefined,
+		/** ★ P3：技能目录 watcher（惰性创建；插件停用由 effect disposer 关闭，不留句柄）。 */
+		skillWatcher: undefined,
+		skillWatchTimer: undefined,
 		/**
 		 * dsh 原生 skill 工具在不在（本模块的消费者）。
 		 * ⚠️ 不能直接写 `ctx.tools.xxx`：**未在 `inject` 里声明的服务，被访问时会抛错**（实测：在页面处理器里
@@ -1071,9 +1087,11 @@ const SKILL_PREVIEW_SCRIPT = `
 				var nowOn = (j.enabled === undefined) ? !on : (j.enabled === true);
 				sw.setAttribute('aria-checked', nowOn ? 'true' : 'false');
 				sw.setAttribute(onKey, nowOn ? '1' : '0');
+				// 2026-11-10：生效方式由后端返回的 restartRequired 决定，页内文案保持中性，
+				// 不再写死「重启 Host 后生效」（运行时挂载下是假话）。
 				sw.setAttribute('title', nowOn
-					? (isMcp ? '已启用（点一下停用，重启 Host 后生效）' : '已启用（点一下停用）')
-					: (isMcp ? '已停用（点一下启用，重启 Host 后生效）' : '已停用（点一下启用）'));
+					? '已启用（点一下停用）'
+					: '已停用（点一下启用）');
 				sw.disabled = false;
 				var rowEl = sw.closest ? sw.closest('.sk-row') : null;
 				if (rowEl) { rowEl.classList.toggle('is-off', !nowOn); }
@@ -1094,7 +1112,7 @@ const SKILL_PREVIEW_SCRIPT = `
 							var factsArr = JSON.parse(factsRaw);
 							for (var fi = 0; fi < factsArr.length; fi++) {
 								if (factsArr[fi] && factsArr[fi][0] === '状态') {
-									factsArr[fi][1] = nowOn ? '已启用' : '已停用（重启 Host 后不加载）';
+									factsArr[fi][1] = nowOn ? '已启用' : '已停用';
 								}
 							}
 							rowEl.setAttribute('data-item-facts', JSON.stringify(factsArr));
@@ -2067,7 +2085,7 @@ const TOOLS_WORKBENCHES = [
 	{ name: '代码库', desc: '代码图谱与符号检索', route: '/x/codebase/', provider: 'vssaros-codebase' },
 	{ name: '历史会话', desc: '会话分组 / 人格标记 / 指示灯', route: '/x/sessions/', provider: 'vssaros-sessions' },
 	{ name: '媒体库', desc: '只读 media.db 页面', route: '/x/media/', provider: 'vssaros-media' },
-	{ name: '工具', desc: '技能 / 连接器 / 工作流 / Agent（本页）', route: '/x/skills/', provider: 'vssaros-skills' },
+	{ name: '工具', desc: '技能 / 连接器 / 工作流 / Agent（本页）', route: '/x/skills/', provider: 'vssaros-skills', offline: true },
 	{ name: 'MCP', desc: 'MCP 服务器与工具', route: '/x/mcp/', provider: 'vssaros-mcp' },
 	{ name: '流程', desc: '工作流引擎与画布', route: '/x/workflow/', provider: 'vssaros-workflow', offline: true },
 	{ name: 'Agent', desc: '.agent.md → dsh preset', route: '/x/agents/', provider: 'vssaros-agents' },
@@ -2152,7 +2170,7 @@ function pathsOf(type, cur, dataRoot) {
 	}
 	if (type === 'conn') {
 		return [
-			{ k: '配置', v: t(join(dataRoot, 'mcp.json')), note: 'mcpServers["' + String(cur.name || '') + '"] 这一条' },
+			{ k: '配置', v: t(join(dataRoot, 'mcp.json')), note: 'servers["' + String(cur.name || '') + '"] 这一条' },
 			{ k: '工具', v: '（连接后由服务端返回）', note: '工具清单不落盘', absent: true },
 		];
 	}
@@ -2507,7 +2525,14 @@ function readMcpServers(dataRoot) {
 	if (!servers || typeof servers !== 'object' || Array.isArray(servers)) { return []; }
 	return Object.keys(servers).map(name => {
 		const e = servers[name] && typeof servers[name] === 'object' ? servers[name] : {};
-		return { name, entry: e, disabled: e.disabled === true };
+		// 带 `${...}` 凭据引用的 headers / query ⇒ vssaros-mcp 会把它改挂本地凭据网关
+		//（凭据不进 mcp-client config）。query-only 的 key 型服务（如 Amap）也要算进来。
+		const refValues = [
+			...(e.headers && typeof e.headers === 'object' && !Array.isArray(e.headers) ? Object.values(e.headers) : []),
+			...(e.query && typeof e.query === 'object' && !Array.isArray(e.query) ? Object.values(e.query) : []),
+		];
+		const secured = refValues.some(v => typeof v === 'string' && v.includes('${'));
+		return { name, entry: e, disabled: e.disabled === true, secured };
 	});
 }
 
@@ -3390,7 +3415,7 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 				     整份 mcp.json 的入口放在**页签顶部**，行上不再各挂一个「配置」。 -->
 				<div class="mcp-bar">
 					<span class="mcp-bar-path">配置文件 <code>${escapeHtml(prettyPath(mcpJsonFileOf(dataRoot)))}</code></span>
-					<button type="button" class="mcp-bar-btn" data-mcp-edit title="编辑 mcp.json（保存后需重启 Host 生效）">编辑配置</button>
+					<button type="button" class="mcp-bar-btn" data-mcp-edit title="编辑 mcp.json（${MCP_APPLY_HINT}）">编辑配置</button>
 				</div>
 				<!-- ★ 2026-10-26（用户：「连接器页签下每个 mcp 的 item ui 样式复刻 skill item 的样式，
 				     增加开关，点击展开详情，详情里加删除」）：
@@ -3412,7 +3437,7 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 								+ '</div></div>'
 							: '<div class="mcp-tools"><div class="mcp-tools-h">工具</div>'
 								+ '<div class="mcp-tools-empty">Host 里还没有这台服务器的工具：可能未连接、或已停用。'
-								+ '重启 Host 后再看。</div></div>';
+								+ (MCP_RUNTIME_MOUNT ? '运行时挂载会自动重试连接。' : '重启 Host 后再看。') + '</div></div>';
 						return renderItemRow({
 							kind: 'mcp',
 							slug: s.name,
@@ -3426,29 +3451,30 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 								['服务名', s.name],
 								['传输', type],
 								[type === 'stdio' ? '命令' : '端点', target],
-								['状态', s.disabled ? '已停用（重启 Host 后不加载）' : '已启用'],
+								['状态', s.disabled ? '已停用' + MCP_DISABLED_NOTE : '已启用'],
 								['工具', toolsOfThis.length ? toolsOfThis.length + ' 个' : '（未连接或已停用）'],
+								['凭据', s.secured ? '本地网关隔离（不进 mcp-client 配置）' : '无凭据引用'],
 								['本地版本', lv || '未声明'],
-							].concat(store ? [['商城商品', String(store.slug)], ['商城版本', String(store.version || '未声明')]] : []),
+								].concat(store ? [['商城商品', String(store.slug)], ['商城版本', String(store.version || '未声明')]] : []),
 							localVer: lv,
 							src: 'installed',
 							f: { src: 'installed' },
 							tags: [
 								{ text: type },
 								s.disabled ? { text: '已停用', acc: true } : { text: '已启用' },
-							],
-							// 开关：写 mcp.json 的 disabled（dsh 侧 setMcpEnabled）；重启 Host 生效
+							].concat(s.secured ? [{ text: '凭据隔离' }] : []),
+							// 开关：写 mcp.json 的 disabled（dsh 侧 setMcpEnabled）；生效方式由挂载模型决定
 							togglePkg: s.name,
 							toggleOn: !s.disabled,
 							swAttr: 'data-mcp-sw',
 							toggleTitle: s.disabled
-								? '已停用（点一下启用，重启 Host 后生效）'
-								: '已启用（点一下停用，重启 Host 后生效）',
+								? '已停用（点一下启用' + MCP_TOGGLE_TAIL + '）'
+								: '已启用（点一下停用' + MCP_TOGGLE_TAIL + '）',
 							// 删除 = 从 mcp.json 注销 + 删目录（卸载）。用 uninstall 而不是 trash：
 							// 只挪目录会留下指向空目录的 entry。
 							delKind: 'mcp', delOp: 'uninstall', delPkg: s.name,
 							delLabel: '卸载',
-							delTitle: '从 mcp.json 注销并删除安装目录（重启 Host 后不再加载）',
+							delTitle: '从 mcp.json 注销并删除安装目录' + MCP_DISABLED_NOTE,
 							paths: toolsHtml
 								+ '<div class="path-row"><span class="pk">配置文件</span><span class="pv"><code>'
 								+ escapeHtml(prettyPath(mcpJsonFileOf(dataRoot))) + '</code></span></div>'
@@ -3681,7 +3707,7 @@ function renderPage({ skills, errors, missing, root, nativeSkillTool, provider, 
 		<textarea class="mcp-ed-ta" data-mcp-ed-text spellcheck="false" autocomplete="off"></textarea>
 		<div class="mcp-ed-err" data-mcp-ed-err></div>
 		<div class="mcp-ed-foot">
-			<span class="mcp-ed-hint">保存前自动备份；保存后**重启 Host** 才生效。</span>
+			<span class="mcp-ed-hint">保存前自动备份；${MCP_APPLY_HINT}。</span>
 			<button type="button" class="tk-btn" data-mcp-ed-cancel>关闭</button>
 			<button type="button" class="tk-btn primary" data-mcp-ed-save>保存</button>
 		</div>
@@ -4776,6 +4802,32 @@ export function apply(ctx, config = {}) {
 		});
 	})));
 
+	// ★ 2026-11-10 P3：把技能目录的**文件改动**变成主动 invalidate。
+	//   现状：每次 list() 都重扫 + 比对目录指纹，但「正文改了 / 文件增删」要等下一次
+	//   list 才被消费者看到；官方 dsh-skill-filesystem 用 chokidar watcher + skills/change。
+	//   这里用最小实现：惰性 fs.watch（只在首次 list 时建，因为 apply 期同步求值 dataRoot 会抛），
+	//   回调防抖后调写路径同款句柄 state.providerControl?.invalidate()。
+	//   ⚠ 不改 lastFingerprint ⇒ 官方 collect() 回调 list() 时不会进指纹分支二次 invalidate（无自激）。
+	function ensureSkillWatcher() {
+		if (state.skillWatcher) { return; }
+		let root;
+		try { root = skillsRootOf(config); } catch { return; }
+		if (!existsSync(root)) { return; }
+		try {
+			state.skillWatcher = watch(root, { persistent: false }, () => {
+				if (state.skillWatchTimer) { clearTimeout(state.skillWatchTimer); }
+				state.skillWatchTimer = setTimeout(() => {
+					state.skillWatchTimer = undefined;
+					state.providerControl?.invalidate();
+				}, 200);
+				state.skillWatchTimer?.unref?.();
+			});
+		} catch {
+			// watch 不可用（权限 / 平台 / 目录刚被删）⇒ 保留「每次 list 重扫」兜底，绝不让插件挂掉
+			state.skillWatcher = undefined;
+		}
+	}
+
 	// 技能来源（可选依赖）：`ctx.skills` 存在时注册一个 provider；它的 disposer 就是 Cordis effect 的
 	// 返回值，插件停用即自动注销（方案 6.2："注册即 effect"）。
 	ctx.inject(['skills'], child => child.effect(() => child.skills.registerProvider(control => {
@@ -4788,6 +4840,8 @@ export function apply(ctx, config = {}) {
 				if (options?.signal?.aborted) {
 					return [];
 				}
+				// ★ P3：首次 list 惰性启动 watcher（apply 期不能同步求值 dataRoot）
+				ensureSkillWatcher();
 				const scan = await scanSkills(skillsRootOf(config), options?.signal);
 				// 目录增删时通知消费者重取（先更新指纹再通知，避免自激循环）
 				if (scan.fingerprint !== state.lastFingerprint) {
@@ -4825,6 +4879,17 @@ export function apply(ctx, config = {}) {
 			},
 		};
 	})));
+
+	// ★ 2026-11-10 P3：watcher 的生命周期归 Cordis effect —— 插件停用/热重载时关闭，
+	//   否则旧实例的 watcher 会继续回调一个已失效的 providerControl（重复注册/残留副作用）。
+	ctx.effect(() => () => {
+		if (state.skillWatchTimer) { clearTimeout(state.skillWatchTimer); state.skillWatchTimer = undefined; }
+		if (state.skillWatcher) {
+			try { state.skillWatcher.close(); } catch { /* noop */ }
+			state.skillWatcher = undefined;
+		}
+		state.providerControl = undefined;
+	});
 
 	// 只读目录页：Host 自己的鉴权栅栏 + 同源同 partition 的 Cookie（VsSaros 侧 WebContentsView 加载）。
 	ctx.inject(['webServer', 'connection'], page => page.effect(() => page.webServer.register({

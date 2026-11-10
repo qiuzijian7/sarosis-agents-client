@@ -116,13 +116,6 @@ import type {
 	IChatGetCheckpointPayload,
 	IChatListCheckpointsPayload,
 	IChatDeleteCheckpointPayload,
-	IMemoryListPayload,
-	IMemoryDeletePayload,
-	IMemoryListL0Response,
-	IMemoryListL1Response,
-	IMemoryDeleteResponse,
-	IMemoryL0Item,
-	IMemoryL1Item,
 } from "./messageProtocol.js";
 import type {
 	ICheckpoint,
@@ -1039,7 +1032,7 @@ export class AgentStudioWebviewController extends Disposable {
 		}
 
 		// ── Perf: log incoming message with timing for key types ─────────
-		const perfTypes = new Set(['agents.list', 'skills.list', 'memory.listL0', 'memory.listL1']);
+		const perfTypes = new Set(['agents.list', 'skills.list']);
 		const t0 = perfTypes.has(type) ? Date.now() : 0;
 
 		// ★ generate 类 RPC 不打 payload（2026-09-08 日志优化）：prompt 全文与
@@ -1180,7 +1173,6 @@ export class AgentStudioWebviewController extends Disposable {
 				// 即使记忆清理失败也不阻断 Agent 删除本身（独立 try/catch，仅记日志）。
 				const agentId = p.id as string;
 				try {
-					await this._cleanupAgentMemory(agentId);
 				} catch (err) {
 					this.logService.warn(
 						`[AgentStudioWebviewController] cleanup memory for ${agentId} failed (non-fatal):`,
@@ -2146,23 +2138,6 @@ export class AgentStudioWebviewController extends Disposable {
 				return { success: true };
 			}
 
-			// ─── Memory inspection (TDB-AM gateway proxy) ──────────
-			case "memory.listL0": {
-				const mp = p as unknown as IMemoryListPayload;
-				return this._handleMemoryListL0(mp);
-			}
-			case "memory.listL1": {
-				const mp = p as unknown as IMemoryListPayload;
-				return this._handleMemoryListL1(mp);
-			}
-			case "memory.deleteL0": {
-				const mp = p as unknown as IMemoryDeletePayload;
-				return this._handleMemoryDelete(mp, "conversation");
-			}
-			case "memory.deleteL1": {
-				const mp = p as unknown as IMemoryDeletePayload;
-				return this._handleMemoryDelete(mp, "memory");
-			}
 
 			default:
 				throw new Error(`Unknown message type: ${type}`);
@@ -4959,114 +4934,14 @@ export class AgentStudioWebviewController extends Disposable {
 		return backend.setRootDir(payload.path);
 	}
 
-	// ─── Memory inspection helpers (AgentMemoryProvider) ──────────────────────
-	//
-	// Refactored from TDB-AM HTTP gateway proxy to in-process IMemoryProvider.
-	// Uses agentOSService.getActiveMemoryProvider() for data access.
 
-	private async _handleMemoryListL0(payload: IMemoryListPayload): Promise<IMemoryListL0Response> {
-		try {
-			const provider = this.agentOSService.getActiveMemoryProvider();
-			if (!provider) { return { items: [], total: 0 }; }
-			const results = await provider.searchMemory(payload.agentId || 'default', '');
-			const items: IMemoryL0Item[] = (results || [])
-				.filter(e => e.type === 'working')
-				.slice(0, payload.limit ?? 200)
-				.map(e => ({
-					recordId: e.id,
-					sessionKey: `agent:${payload.agentId ?? 'default'}`,
-					sessionId: (e.metadata?.['sessionId'] as string) ?? '',
-					role: (e.metadata?.['role'] as string) ?? '',
-					messageText: e.content,
-					recordedAt: e.timestamp ? new Date(e.timestamp).toISOString() : '',
-					timestamp: e.timestamp ?? 0,
-				}));
-			return { items, total: items.length };
-		} catch { return { items: [], total: 0 }; }
-	}
 
-	private async _handleMemoryListL1(payload: IMemoryListPayload): Promise<IMemoryListL1Response> {
-		try {
-			const provider = this.agentOSService.getActiveMemoryProvider();
-			if (!provider) { return { items: [], total: 0 }; }
-			const results = await provider.searchMemory(payload.agentId || 'default', '');
-			// L1 = 长时 Episodic 层（KV.memories，原生类型 pattern/.../fact）；working/semantic/procedural 为独立层，排除
-			const items: IMemoryL1Item[] = (results || [])
-				.filter(e => e.type !== 'working' && e.type !== 'semantic' && e.type !== 'procedural')
-				.slice(0, payload.limit ?? 200)
-				.map(e => ({
-					recordId: e.id,
-					content: e.content,
-					updatedTime: e.timestamp ? new Date(e.timestamp).toISOString() : '',
-				}));
-			return { items, total: items.length };
-		} catch { return { items: [], total: 0 }; }
-	}
-
-	private async _handleMemoryDelete(
-		payload: IMemoryDeletePayload,
-		layer: "conversation" | "memory",
-	): Promise<IMemoryDeleteResponse> {
-		// P0-5（2026-09-09）：此前恒返回 {deleted:0}（假成功，UI 逐行删除按钮无效）。
-		// 现按层路由真实删除：
-		//   conversation = L0 working/core 层 → coreMemoryRemove（接口未声明，运行时探测）
-		//   memory       = L1 episodic 层     → deleteMemory（IMemoryProvider 可选方法）
-		const ids = payload.recordIds ?? [];
-		if (ids.length === 0) { return { deleted: 0, failed: [] }; }
-		const provider = this.agentOSService.getActiveMemoryProvider();
-		if (!provider) {
-			this.logService.warn(`[AgentStudioWebviewController] memory.delete (${layer}): no memory provider available, ${ids.length} item(s) NOT deleted`);
-			return { deleted: 0, failed: [...ids] };
-		}
-		const agentId = payload.agentId || 'default';
-		let deleted = 0;
-		const failed: string[] = [];
-		for (const id of ids) {
-			try {
-				let ok: boolean;
-				if (layer === 'conversation') {
-					const coreRemove = (provider as { coreMemoryRemove?: (agentId: string, id: string) => Promise<boolean> | boolean }).coreMemoryRemove;
-					if (typeof coreRemove !== 'function') { throw new Error('provider.coreMemoryRemove unavailable'); }
-					ok = await coreRemove.call(provider, agentId, id);
-				} else {
-					ok = await provider.deleteMemory?.(agentId, id) ?? false;
-				}
-				if (ok) { deleted++; } else { failed.push(id); }
-			} catch (err) {
-				this.logService.warn(`[AgentStudioWebviewController] memory.delete (${layer}) failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
-				failed.push(id);
-			}
-		}
-		if (failed.length > 0) {
-			this.logService.warn(`[AgentStudioWebviewController] memory.delete (${layer}): ${deleted} deleted, ${failed.length} failed`);
-		}
-		return { deleted, failed };
-	}
 
 	/**
 	 * 删除指定 Agent 关联的所有记忆（级联清理）。
 	 * P0-5（2026-09-09）：此前是 no-op（假成功日志）。现调用 provider.removeAgent
 	 * （引擎侧清除该 agent 全部 KV scope；接口未声明，运行时探测，失败 fail-loud）。
 	 */
-	private async _cleanupAgentMemory(agentId: string): Promise<void> {
-		if (!agentId) { return; }
-		const provider = this.agentOSService.getActiveMemoryProvider();
-		if (!provider) {
-			this.logService.warn(`[AgentStudioWebviewController] cleanupAgentMemory(${agentId}): no memory provider, memory NOT cleaned`);
-			return;
-		}
-		const removeAgent = (provider as { removeAgent?: (agentId: string) => Promise<void> | void }).removeAgent;
-		if (typeof removeAgent !== 'function') {
-			this.logService.warn(`[AgentStudioWebviewController] cleanupAgentMemory(${agentId}): provider.removeAgent unavailable, memory NOT cleaned`);
-			return;
-		}
-		try {
-			await removeAgent.call(provider, agentId);
-			this.logService.info(`[AgentStudioWebviewController] cleanupAgentMemory(${agentId}): all memory scopes removed`);
-		} catch (err) {
-			this.logService.warn(`[AgentStudioWebviewController] cleanupAgentMemory(${agentId}) failed: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
 
 	// ─── Public API ─────────────────────────────────────────────────────────────
 

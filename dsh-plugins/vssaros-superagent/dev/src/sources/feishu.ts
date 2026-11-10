@@ -19,6 +19,9 @@ const MembersSchema = z.looseObject({
   users: z.array(z.looseObject({ member_id: z.string(), name: z.string() })),
   has_more: z.boolean(), truncations: z.array(z.unknown()).optional(),
 })
+/** ★ 2026-11-10（用户）：收到人的消息后立刻回执，避免「发出去了但不知道有没有被处理」。 */
+const RECEIPT = '已收到，正在处理…'
+
 const FeishuConfigSchema = FeishuBotSchema.extend({
   // VsSaros addition: the CLI command and the app are built in and no longer exposed as panel settings.
   // Overriding (instead of changing FeishuBotSchema) keeps the deployment contract's empty defaults intact.
@@ -31,6 +34,10 @@ const FeishuConfigSchema = FeishuBotSchema.extend({
     .default([]),
   directMessages: z.boolean().default(true),
   otherChats: z.enum(['none', 'mentions']).default('none'),
+  /* ★ 2026-11-10：仅展示模式 —— 飞书原文只进 Chat 对话气泡，不交给主管评估/建工单/回复，
+     内容由 router（Bots 的 Channel 绑定分发）执行。默认关闭以保持既有来源行为；
+     需要的环境在 settings 里一次性打开即可，此后完全不查 allowed、不用逐人配置。 */
+  displayOnly: z.boolean().default(false),
 }).strict()
 export type FeishuConfig = z.infer<typeof FeishuConfigSchema>
 export const feishuKind: SourceKind<FeishuConfig> = {
@@ -43,8 +50,17 @@ export const feishuKind: SourceKind<FeishuConfig> = {
     // VsSaros addition: the lark-cli command and its App Secret are built in; the CLI option and its local
     // diagnostics were removed from the card. Only the app ID remains, so an own app can still be selected.
     { key: 'appId', type: 'text', label: { zh: '飞书应用 App ID', en: 'Feishu app ID' }, pattern: '(cli_[A-Za-z0-9]+)?',
-      hint: { zh: '默认 cli_a860911d2e7f5013（安装包自带）。该应用的 App Secret 也随包内置、明文编译在 lib/ 里，装完即可连；Bots「渠道」里给同一应用配的 Secret 会优先使用。换成自己的应用时填新的 App ID，并在 Bots 渠道里为它配 Secret。留空 = 用 lark-cli 当前 profile（旧行为）。Secret 只经 stdin 交给 lark-cli，不进设置、不进日志；随包密钥轮换需改代码并升级版本。',
-        en: 'Defaults to cli_a860911d2e7f5013 (shipped with the installation). Its App Secret is built in too (plain text in lib/), so a fresh install connects without setup; a Secret configured for the same app in the Bots channel wins. Enter another App ID to use your own app and configure its Secret there. Empty uses the active lark-cli profile. The secret only reaches lark-cli through stdin, never settings or logs; rotating the shipped secret needs a code change and a version bump.' } },
+      /* ★ 2026-11-10：改成下拉，与 Bot 设置的 Channel 绑定共用 Bots 的应用列表。
+         chooseFrom 让 SourceField 走 <select className="dt-select"> 分支；选项标签由
+         SourceCard 从 GET /x/agents/api/bindings 的 feishuApps 注入到 labels。 */
+      chooseFrom: 'feishuApps',
+      /* ★ 2026-11-10（用户）：不再提供「留空 = lark-cli 当前 profile（旧行为）」选项；
+         defaultValue 让历史空配置也显示随包内置应用。⚠ 不动 Source schema：
+         在那里归一化空值会改变运行时 profile 解析（runtime.spec.ts 当场回归）。
+         Host 侧空 appId 链路保留，兼容旧配置与直接写 API 的场景。 */
+      noEmptyOption: true, defaultValue: BUNDLED_FEISHU_APP.appId,
+      hint: { zh: '从 Bots 已配置的飞书应用中选择（与 Bot 设置里 Channel 绑定的应用下拉同源，显示「缺 App Secret」的项需要先在 Bot 绑定里补 Secret）。VsSaros助手（cli_a860911d2e7f5013）随包内置、装完即可连，也是默认选中项；Bots 里给同一应用配的 Secret 会优先使用。Secret 只经 stdin 交给 lark-cli，不进设置、不进日志；随包密钥轮换需改代码并升级版本。',
+        en: 'Pick a Feishu app configured in Bots (same list as the Bot settings channel dropdown; items marked "missing App Secret" need one there first). VsSaros Assistant (cli_a860911d2e7f5013) is shipped, works on a fresh install and is selected by default; a Secret configured for the same app in Bots wins. The secret only reaches lark-cli through stdin, never settings or logs; rotating the shipped secret needs a code change and a version bump.' } },
     { key: 'chats', type: 'rows', label: { zh: '接收的群', en: 'Chats' },
       hint: { zh: '“仅 @”只接收 @ 机器人的消息和已有工单的线程；“全部消息”也接收其余消息，评估可以按规则从中推断工作，需要机器人有读取全部消息的权限。', en: '"@ only" receives messages that mention the bot and Threads that have Tickets; "All" also receives the rest, from which Eval may infer work under the rules; the bot needs permission to read all messages.' },
       columns: [
@@ -54,16 +70,24 @@ export const feishuKind: SourceKind<FeishuConfig> = {
     { key: 'otherChats', type: 'select', label: { zh: '其他群', en: 'Other chats' }, options: [{ value: 'none', label: { zh: '不接收', en: 'Not received' } }, { value: 'mentions', label: { zh: '仅 @', en: '@ only' } }],
       hint: { zh: '机器人已加入、但没列在上面的群。“仅 @”接收那里 @ 机器人的消息；谁的消息能发起工作看策略里的准入。', en: 'Chats the bot has joined that are not listed above. "@ only" receives messages there that mention the bot; whose messages may originate work is the Policy\'s admission.' } },
     { key: 'directMessages', type: 'switch', label: { zh: '接收私聊', en: 'Direct messages' } },
+    { key: 'displayOnly', type: 'switch', label: { zh: '仅显示消息', en: 'Display only' },
+      hint: { zh: '打开后：飞书原文只显示在 SuperAgent 的「对话」气泡里，不交给主管评估、不建工单、不自动回复；内容由 router 分发执行。此模式不检查发送者名单，无需逐个配置 allowed。',
+        en: 'When on: Feishu text only appears in the SuperAgent Chat bubbles; it is not evaluated, does not create tickets and gets no automatic reply. The router dispatches the work. Sender allow-lists are not consulted in this mode.' } },
     { key: 'readPageSize', type: 'number', advanced: true, min: 1, max: 50, label: { zh: '每页消息数', en: 'Messages per page' }, hint: { zh: '智能体读取线程和群历史时，每页的消息数。', en: 'Messages per page when agents read Threads and chat history.' } },
     { key: 'linkTimeoutMs', type: 'number', advanced: true, min: 1, max: 90000, label: { zh: '原消息链接的查询时限 / 毫秒', en: 'Original message link time limit / ms' },
       hint: { zh: '查询原消息链接最多等待的时间；超时后智能体改为直接读取原消息。', en: 'How long to wait for an original message\'s link; after that, agents read the message itself.' } },
   ],
   health: ['feishu', 'history'],
   scope({ meta }, config) {
-    if (meta.direct === true) return config.directMessages ? { listened: true, observed: false, row: 'direct' } : { listened: false, reason: 'direct_messages_not_allowed' }
+    /* ★ 2026-11-10：仅展示模式在 Intake 的 scope 闸门就短路（intake.ts:57-59）：
+       仍落 trigger 原文供 Chat 投影读取，但不进 Eval、不建工单、不回复、不查 allowed。
+       `channel.allowed` 复用本函数 ⇒ 该模式下 SuperAgent 侧也不再向飞书发回复。 */
+    if (config.displayOnly) return { listened: false, reason: 'display_only' }
+    if (meta.direct === true) return config.directMessages ? { listened: true, observed: false, row: 'direct', receipt: RECEIPT } : { listened: false, reason: 'direct_messages_not_allowed' }
     const chat = config.chats.find(item => item.chatId === meta.chatId)
-    if (chat) return { listened: true, observed: chat.listen === 'all', row: chat.chatId }
-    return config.otherChats === 'mentions' ? { listened: true, observed: false, row: 'other' } : { listened: false, reason: 'chat_not_allowed' }
+    // 群里只在 @ 机器人时回执：`listen:'all'` 的群每条消息都回会刷屏。
+    if (chat) return { listened: true, observed: chat.listen === 'all', row: chat.chatId, ...meta.mentioned === true ? { receipt: RECEIPT } : {} }
+    return config.otherChats === 'mentions' ? { listened: true, observed: false, row: 'other', receipt: RECEIPT } : { listened: false, reason: 'chat_not_allowed' }
   },
   // A reply goes only to a chat the Source still receives.
   channel: {

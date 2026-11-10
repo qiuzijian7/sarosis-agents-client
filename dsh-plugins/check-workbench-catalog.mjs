@@ -279,6 +279,12 @@ if (ghosts.length === 0) {
 	} else {
 		const offline = [...offlineDecl[1].matchAll(/'([^']+)'/g)].map(m => m[1]);
 		ok(`⑥ 临时下线清单：${offline.length} 个（${offline.join('、') || '空 = 全部上线'}）`);
+		// ★ 2026-11-10（用户要求）：主页「工具」入口下线，防止有人误把它恢复成卡片
+		if (offline.includes('/x/skills/')) {
+			ok('⑥ 主页「工具」入口已下线（页面本体 / 直接 URL 仍保留）');
+		} else {
+			fail('⑥ 用户要求移除主页「工具」入口：/x/skills/ 必须在下线真源里');
+		}
 
 		// ① 运行时：主页卡片的可见清单真的过滤了（import 真模块，不比注释/字符串）
 		try {

@@ -310,7 +310,7 @@ export function metaBlock({ data, summary, tally, toolsRegistered = '', liveServ
  * ⚠ 条目**不能从 WORKBENCH_MODULES 里删**：本清单是 `check-workbench-catalog.mjs` 的登记真源，
  *   且 `client.workbenchNav.js::DEFAULT_ITEMS` 同时是 route 白名单 ⇒ 只删一边会变红 / 点了没反应。
  */
-export const OFFLINE_WORKBENCH_ROUTES = ['/x/kanban/', '/x/workflow/', '/x/imagegen/'];
+export const OFFLINE_WORKBENCH_ROUTES = ['/x/kanban/', '/x/workflow/', '/x/imagegen/', '/x/skills/'];
 
 export const WORKBENCH_MODULES = [
 	// ★ 2026-10-21（用户：「主页item ui中的固定，应该默认固定状态，且不可以取消固定」）：
@@ -322,9 +322,11 @@ export const WORKBENCH_MODULES = [
 	{ route: '/x/codebase/', name: '代码库', desc: '代码图谱与符号检索', icon: '🕸' },
 	{ route: '/x/media/', name: '媒体库', desc: '只读 media.db 页面', icon: '🎬' },
 	{ route: '/x/imagegen/', name: '生图', desc: '生图工作台 / 最近出图画廊', icon: '🎨', offline: true },
-	// ★ 2026-10-23（用户：「技能 item 改名为 工具，描述改为 技能、工具、mcp、agent、工作流、工作台」）：
-	//   文案与侧栏 `DEFAULT_ITEMS` 对齐（那边也叫「工具」）——同一个入口在两处叫不同名字最容易让人找不到。
-	{ route: '/x/skills/', name: '工具', desc: '技能、工具、mcp、agent、工作流、工作台', icon: '🧩' },
+	// ★ 2026-11-10（用户：「移除工具工作台入口：主页中，移除工具 item ui」）：
+	//   走仓库内建的临时下线机制（offline + hidden），**条目保留** ⇒ 登记守卫仍绿、
+	//   `DEFAULT_ITEMS` 的 route 白名单不丢 ⇒ `/x/skills/` 深链与页面本体仍可访问。
+	//   恢复上线 = 从 OFFLINE_WORKBENCH_ROUTES 摘掉它 + 摘掉四处 offline/hidden 标记。
+	{ route: '/x/skills/', name: '工具', desc: '技能、工具、mcp、agent、工作流、工作台', icon: '🧩', offline: true },
 	// ★ 2026-10-23（用户：「移除 mcp 工作台」）：MCP **不是整页模块**（`DSH_MODULE_PAGES` 里没有它，
 	//   服务器挂载在 VsSaros 启动时用 `--patch` 做）⇒ 它既不在侧栏 `DEFAULT_ITEMS`、也不在 route 白名单里
 	//   ⇒ 这张卡片点「打开」本来就会被**静默拒掉**（表现为"点了没反应"）。移除卡片正好把这个假入口清掉 ✓。

@@ -182,7 +182,11 @@ beforeEach(async () => {
         // Preset tools are inherited; subagent is registered on the agent itself and cannot be named by restrict.
         get: (name: string, scope?: object) => {
           const own = scope === agents.get(sessionId)
-          return (scope === preset || own) && inherited.includes(name) || own && name === 'subagent' ? { name } : undefined
+          // ★ 2026-11-10（门禁红灯修复）：Host 的 `@deepseek-ai/dsh-scope` 与本 spec 里
+          //   Vite 转换的实例各有自己的 WeakMap，`scopeParentOf(agent)` 在测试中返回
+          //   undefined（真 Host 只有一个实例，见 infra/host.ts:8）。把无 scope 视作
+          //   继承来的 preset 父作用域，等价真机行为；生产侧仍按自己的白名单过滤。
+          return (scope === undefined || scope === preset || own) && inherited.includes(name) || own && name === 'subagent' ? { name } : undefined
         },
         restrict: vi.fn((rule: { allow: string[] }) => {
           if (rule.allow.some(name => !inherited.includes(name))) throw new Error('Restriction names a non-inherited tool')
@@ -240,7 +244,10 @@ it('relays an explicit member mention as a candidate and creates the ticket, ack
   expect(runtime.store.threads.get(`feishu:${CHAT}:om_1`)?.subscriptions).toEqual([ticket.id])
   expect(runtime.store.replyStatus(key('ack', trigger.id))).toBe('sent')
   const larkCalls = vi.mocked(Commands.prototype.lark).mock.calls.map(([args]) => args)
-  expect(larkCalls.find(args => args[1] === '+messages-reply')).toEqual(expect.arrayContaining(['--message-id', 'om_1', '--markdown', '收到，修复回归。']))
+  // ★ 2026-11-10：收到即回执先发一条，接单回执紧随其后 ⇒ 按 markdown 找接单那条，并断言回执确实发了。
+  const larkReplies = larkCalls.filter(args => args[1] === '+messages-reply')
+  expect(larkReplies.some(args => args.includes('已收到，正在处理…'))).toBe(true)
+  expect(larkReplies.find(args => args.includes('收到，修复回归。'))).toEqual(expect.arrayContaining(['--message-id', 'om_1', '--markdown', '收到，修复回归。']))
   // The first message holds the request itself: an explicit ticket has no assignment text beyond it, and nothing to read first.
   const first = relays(sessionId)[0]!
   expect(first).toEqual({ ticket_id: ticket.id, title: '修复回归', trigger: expect.objectContaining({ trigger_id: trigger.id, from: MEMBER,
@@ -772,6 +779,23 @@ it('links Channels and Threads for people, finds tickets by a bare PR number, an
   expect(threadList(viewsOf(runtime), 'all', 0, 10).items.map(thread => thread.key)).toContain(home)
   await receive(feishu('9', '别的群的消息', { chat_id: 'oc_elsewhere' }))
   expect(search(viewsOf(runtime), '别的群', new TextCache(0)).items).toEqual([expect.objectContaining({ filtered: { code: 'chat_not_allowed' }, threadTitle: undefined })])
+})
+
+it('sends the ticket result back to its Feishu conversation when a Feishu task ends', async () => {
+  const { ticket } = await acceptedTicket()
+  // 工人给了最终报告 ⇒ 结束通知里带结果摘要（而不是只报「已停止」）。
+  runtime.engine.report(ticket.id, { state: 'ready', summary: '回归已修复，改了 src/a.ts。' })
+  runtime.engine.stopTicket(ticket.id)
+  await runtime.outbox.sent()
+  const calls = vi.mocked(Commands.prototype.lark).mock.calls.map(([args]) => args.join(' '))
+  const ended = calls.filter(line => line.includes('【工单结束】'))
+  expect(ended).toHaveLength(1)
+  expect(ended[0]).toContain('修复回归')
+  expect(ended[0]).toContain('回归已修复，改了 src/a.ts。')
+  // 幂等：同一工单再结束一次（复活后再停）才应该再发；重复 stop 不重复发。
+  runtime.engine.stopTicket(ticket.id)
+  await runtime.outbox.sent()
+  expect(vi.mocked(Commands.prototype.lark).mock.calls.map(([args]) => args.join(' ')).filter(line => line.includes('【工单结束】'))).toHaveLength(1)
 })
 
 it('counts every step of the day\'s flow over the same arriving messages and lists the same accepted Decisions', async () => {

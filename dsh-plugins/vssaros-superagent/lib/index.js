@@ -1,10 +1,10 @@
-import { A as key, B as runningAssignment, C as templateLiteral, D as ZodError, F as latestAssignment, G as ticketOutcome, H as staffing, I as latestReport, K as waitsForPerson, L as liveTicket, M as followupOwners, N as isGroupTicket, O as toJSONSchema, P as isoTime, R as reached, S as string$1, T as unknown, U as threadKey, V as settled, W as ticketExecutor, _ as literal, b as object, c as checkedImText, d as sameName, f as wordCount, g as boolean, h as array, j as assignmentRole, k as _coercedNumber, m as _enum, o as health, p as ZodNumber, w as union, x as record$1, y as number$1, z as readUntil } from "./poll-BQME6Yxb.js";
-import { C as resolveFeishuBot, M as SetupError, N as LIMITS, S as resolveDeployment, _ as executable, a as verifyDirectory, c as workerBin, d as Commands, g as SETUP_FIELDS, i as runAsWorker, l as writeEnvironment, n as agentVariables, o as verifyEnvironment, p as Config, r as applyEnvironment, s as withoutDirectory, t as WORKER_COMMANDS, v as githubConfigured, w as workerProbe, x as machineOf } from "./environment-CIcTvBAI.js";
-import { i as pullOf, m as readRepositoryPath, o as readPull, p as readGithub, r as pullEndNotices, t as claimPull } from "./github-pull-q8ze7DmO.js";
-import { b as feishuTriggerId, d as feishuChatLink, f as feishuRead, g as feishuRef, m as readFeishuLink, p as feishuReferences, r as feishuSettings } from "./feishu-C7Kcpt-I.js";
+import { A as key, B as readUntil, C as templateLiteral, D as ZodError, F as isoTime, G as ticketExecutor, H as settled, I as latestAssignment, K as ticketOutcome, L as latestReport, M as awaitingAnswer, N as followupOwners, O as toJSONSchema, P as isGroupTicket, R as liveTicket, S as string$1, T as unknown, U as staffing, V as runningAssignment, W as threadKey, _ as literal, b as object, c as checkedImText, d as sameName, f as wordCount, g as boolean, h as array, j as assignmentRole, k as _coercedNumber, m as _enum, o as health, p as ZodNumber, q as waitsForPerson, w as union, x as record$1, y as number$1, z as reached } from "./poll-Btx7A8Qk.js";
+import { C as resolveFeishuBot, M as SetupError, N as LIMITS, S as resolveDeployment, _ as executable, a as verifyDirectory, c as workerBin, d as Commands, g as SETUP_FIELDS, i as runAsWorker, l as writeEnvironment, n as agentVariables, o as verifyEnvironment, p as Config, r as applyEnvironment, s as withoutDirectory, t as WORKER_COMMANDS, v as githubConfigured, w as workerProbe, x as machineOf } from "./environment-YhSAne6L.js";
+import { i as pullOf, m as readRepositoryPath, o as readPull, p as readGithub, r as pullEndNotices, t as claimPull } from "./github-pull-Bvr9qxGI.js";
+import { b as feishuTriggerId, d as feishuChatLink, f as feishuRead, g as feishuRef, m as readFeishuLink, p as feishuReferences, r as feishuSettings } from "./feishu-DdbTWkd2.js";
 import { t as KV } from "./kv-VTYpQIqw.js";
-import { a as fingerprint, c as p4, d as readChange, f as shelfDiffs, i as claimChangelist, n as changeEndNotices, o as inPath, r as changesOf$1, t as P4ConfigSchema, u as p4Messages } from "./p4-change-CaLiuSxp.js";
-import { A as tapdCredentialStatus, C as TapdConfigSchema, D as TapdCredentialError, E as watchWorkspace, O as saveTapdCredential, S as TAPD_TYPES, T as tapdApi, a as itemTrigger, b as resolveTapdName, h as signatureOf, i as itemThread, j as tapdEnvironment, k as tapdCredential, p as resolvedConfig, w as TapdOpenApi, x as TAPD_SOURCE, y as cleanOwner } from "./tapd-CkKoFjWG.js";
+import { a as fingerprint, c as p4, d as readChange, f as shelfDiffs, i as claimChangelist, n as changeEndNotices, o as inPath, r as changesOf$1, t as P4ConfigSchema, u as p4Messages } from "./p4-change-BdyYHiZ1.js";
+import { A as tapdCredentialStatus, C as TapdConfigSchema, D as TapdCredentialError, E as watchWorkspace, O as saveTapdCredential, S as TAPD_TYPES, T as tapdApi, a as itemTrigger, b as resolveTapdName, h as signatureOf, i as itemThread, j as tapdEnvironment, k as tapdCredential, p as resolvedConfig, w as TapdOpenApi, x as TAPD_SOURCE, y as cleanOwner } from "./tapd-C-suZKO-.js";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -1557,6 +1557,11 @@ function acquireStateLock(stateDir, onCompromised, options = {}) {
 	}
 }
 //#endregion
+//#region src/core/group-request.ts
+/** 建群 / 组队请求的共享判据：Intake 回答闸门与群聊快路径必须同源（2026-11-10）。 */
+/** 动词到「群/团队」之间最多 48 字符（够放长标题，又不跨过整句话）；「群聊」单独命中。 */
+const GROUP_REQUEST = /(?:建|拉|创建|组建|成立)[^，,。！!？?]{0,48}(?:群|团队)|群聊/u;
+//#endregion
 //#region src/core/errors.ts
 /** User-facing error codes mapped to their category ('missing' or 'refused') and English message template. */
 const USER_ERRORS = {
@@ -2101,13 +2106,13 @@ var Tickets = class extends EnginePart {
 		if (ticket.inputs.some((existing) => existing.id === input.id)) return;
 		ticket.inputs.push(input);
 		ticket.updatedAt = this.now();
-		const held = liveTicket(ticket) && automatic(input) && waitsForPerson(ticket);
+		const held = liveTicket(ticket) && automatic(input) && awaitingAnswer(ticket);
 		if (!held) ticket.undelivered.push(input.id);
 		this.repo.tickets.save(ticket);
 		if (!liveTicket(ticket) || held) return;
 		const running = runningAssignment(ticket), latest = latestAssignment(ticket);
 		if (running) this.options.executor.deliver(ticket, running);
-		else if (latest?.state === "pending" && !waitsForPerson(ticket) && !staffing(ticket)) this.options.executor.start(ticket, latest);
+		else if (latest?.state === "pending" && !awaitingAnswer(ticket) && !staffing(ticket)) this.options.executor.start(ticket, latest);
 	}
 	/**
 	* Resume an ended ticket under its unchanged Mandate when a person's message on one of its Threads waits for it: no Eval
@@ -3013,13 +3018,9 @@ var Evals = class extends EnginePart {
 *   worker 之后才用 handback 退回重评。用户看到的就是「转给了一个不相关的旧工单」。
 *
 *   这里只把「看起来像回答」的消息投给待人回答的工单，明显的新请求留给 Eval 重新分诊。
-*   待人回答有两种形态：worker 报了 blocked/failed 等人（`waitsForPerson`），
-*   或主管直接挂了一个未回答的提问（`ticket.attention`）——真机那张 cartoon.hml 工单是后者。
 */
-const awaitingAnswer = (ticket) => !ticket.ended && (!!ticket.attention || waitsForPerson(ticket));
 /** 明确的新工作：以创建/添加/实现等动词开头，或整句在建群/组队。保守——其余一律当成回答，避免误伤真回答。 */
 const NEW_WORK = /^(?:(?:请|帮我|麻烦|顺便|再|又|另外|还有)\s*)*(?:创建|新建|组建|成立|添加|新增|增加|生成|实现|开发|开始|启动|拉个|拉一?个|做(?:一)?个|写(?:一)?个)/u;
-const GROUP_REQUEST = /(?:建|拉|创建|组建|成立)[^，,。！!？?]{0,48}(?:群|团队)|群聊/u;
 function looksLikeAnswer(text) {
 	const body = String(text ?? "").trim();
 	if (!body) return true;
@@ -3098,7 +3099,14 @@ var Intake = class extends EnginePart {
 			at
 		};
 		this.repo.triggers.saveDisposition(trigger.id, disposition);
-		if (!this.owners(trigger).length) this.queueForEval(trigger);
+		const owners = this.owners(trigger);
+		if (trigger.human && trigger.channel && filter.receipt && !owners.length) this.options.outbox.send({
+			id: key("received", trigger.id),
+			channel: trigger.channel,
+			kind: "notice",
+			text: filter.receipt
+		});
+		if (!owners.length) this.queueForEval(trigger);
 		for (const ticketId of fanout) this.tickets.wake(ticketId);
 		this.emit("trigger.received", {
 			triggerId: trigger.id,
@@ -16010,6 +16018,30 @@ var Distiller = class {
 	}
 };
 //#endregion
+//#region src/app/ticket-notices.ts
+/** The notice id prefix of a ticket's result sent back to its IM conversation. */
+const TICKET_RESULT_NOTICE = "ticket-result";
+const FEISHU = "feishu";
+/** The result line for one ended ticket: title, outcome and the worker's report summary (else the reason). */
+function ticketResultText(ticket) {
+	const view = receiptView(ticket);
+	if (!view) return;
+	return `【工单结束】「${view.title}」${view.outcomeText}${view.summary ? `：${view.summary}` : "。"}`;
+}
+/** One notice per Feishu conversation the ticket reached; empty for tickets that never touched Feishu. */
+function ticketResultNotices(ticket) {
+	const view = receiptView(ticket);
+	const text = ticketResultText(ticket);
+	if (!view || !text) return [];
+	return (ticket.channels ?? []).filter((channel) => channel.source === FEISHU).map((channel) => ({
+		id: `${TICKET_RESULT_NOTICE}:${ticket.id}:${view.at}:${channel.thread}`,
+		channel,
+		kind: "notice",
+		ticketId: ticket.id,
+		text
+	}));
+}
+//#endregion
 //#region src/app/desk-chat.ts
 /**
 * VsSaros addition: the supervisor desk as the panel's Chat tab. The conversation is the desk's Thread
@@ -16060,7 +16092,28 @@ var DeskChat = class {
 			};
 		});
 		const replies = db.prepare("SELECT value FROM desk_log ORDER BY at DESC LIMIT ?").all(limit).map((row) => JSON.parse(String(row.value)));
-		return [...people, ...replies].sort((a, b) => a.at.localeCompare(b.at) || (a.role === "person" ? -1 : 1)).slice(-limit);
+		const feishu = db.prepare(`SELECT value FROM trigger WHERE json_extract(value,'$.source') = 'feishu'
+      ORDER BY at DESC LIMIT ?`).all(limit).map((row) => {
+			const trigger = JSON.parse(String(row.value));
+			return {
+				id: trigger.id,
+				role: "person",
+				text: trigger.text,
+				at: trigger.at,
+				source: "feishu",
+				...trigger.meta?.chatId ? { chatId: trigger.meta.chatId } : {}
+			};
+		});
+		const seen = /* @__PURE__ */ new Set();
+		return [
+			...people,
+			...feishu,
+			...replies
+		].filter((message) => {
+			if (seen.has(message.id)) return false;
+			seen.add(message.id);
+			return true;
+		}).sort((a, b) => a.at.localeCompare(b.at) || (a.role === "person" ? -1 : 1)).slice(-limit);
 	}
 	/** A person's message from the panel, as a desk Trigger. */
 	async send(text) {
@@ -16440,7 +16493,7 @@ function isGroupCreationRequest(text) {
 	if (!body || body.startsWith("@")) return false;
 	if (/(?:不要|别|无需|不用|不必|取消|不用再|别再)\s*(?:建|拉|创建|组建|成立)?\s*(?:群|团队)/u.test(body)) return false;
 	if (/(?:^|[，,。！!？?\s])(?:不要|别|无需|不用|不必)\s*(?:建|拉|创建|组建|成立)/u.test(body)) return false;
-	return /(?:建|拉|创建|组建|成立)[^，,。！!？?]{0,48}(?:群|团队)|群聊/u.test(body);
+	return GROUP_REQUEST.test(body);
 }
 /** Derive a stable group name and shared notice from the request, and pick up to three suitable Bots. */
 function fastGroupPlan(text, roster) {
@@ -16478,15 +16531,20 @@ function fastGroupPlan(text, roster) {
 	if (!basis) return;
 	const name = (explicitName || `${basis.slice(0, 40)} 开发团队`).slice(0, 60);
 	const nameOf = (bot) => bot?.name;
+	const chosen = ids.slice(0, size);
+	const names = chosen.map((id) => nameOf(pool.find((bot) => bot.id === id)) || id);
 	const flow = coder && tester ? groupFlowNotice({
 		coder: nameOf(coder),
 		tester: nameOf(tester),
 		designer: nameOf(designer),
 		reviewer: nameOf(reviewer)
+	}) : BUILD_WORDS.test(text) && names.length >= 2 ? divisionNotice({
+		admin: names[0] ?? "",
+		others: names.slice(1)
 	}) : "";
 	const request = (rest || first.replace(verb, "").replace(/^[，,：:\s]+/u, "") || raw).slice(0, 2e3 - (flow ? flow.length + 2 : 0));
 	return {
-		members: ids.slice(0, size),
+		members: chosen,
 		name,
 		notice: flow ? `${request}\n\n${flow}` : request,
 		mode: "admin"
@@ -16508,6 +16566,23 @@ function groupFlowNotice(names) {
 		`3. ${tester} 在后台起本地预览服务，用浏览器打开逐项点测；有问题 @${coder}，写清「操作步骤 → 期望 → 实际」。`,
 		`4. ${coder} 修完后 @${tester} 复测；最多复测 3 轮，仍有问题就列给用户决定。`,
 		`5. 全部通过后由 ${tester} 向用户汇报：测过哪些功能、各自的结果。`
+	].join("\n");
+}
+/**
+* ★ 2026-11-10（真机「3d像素贪吃蛇群没有使用成员分工」）：名册里没有 coder / tester 时，
+*   `coder && tester ? groupFlowNotice(...)` 会整段不生成公告，群公告只剩群名 ⇒
+*   `roomPrompt` 里没有任何派活指令，`openingCall` 又因 mode='admin' 只叫管理员一人。
+*   这里给「做事类」群生成**角色无关**的分工公告：按实际成员点名交棒，不假设谁开发谁测试。
+*   ⚠ 不含「协作流程」四字（闲聊群断言 `not.toContain('协作流程')` 依赖它）。
+*/
+function divisionNotice(names) {
+	const { admin, others } = names;
+	return [
+		`【本群分工】成员：${[admin, ...others].join("、")}。管理员 ${admin} 先用 group_goal 把这件事拆成阶段，每阶段写明完成标准并分给具体成员。`,
+		`1. ${admin} 先按阶段 @ 对应成员派活；同一条里 @ 的几位同时开始，要用到某人结果就先 @ 他、请他做完后 @ 下一位。`,
+		others.length ? `2. 每位成员（${others.join("、")}）接到活就在同一步开始调工具去做，不要只回「我来做」；结尾写改了哪些文件、跑了什么命令、看到什么结果。` : "2. 接到活就在同一步开始调工具去做，结尾写结果和证据。",
+		`3. ${admin} 检查每位成员的产出：通过就 pass（附证据）进入下一阶段，不通过就 rework 写清缺什么，再 @ 对方返工。`,
+		`4. 全部阶段通过后由 ${admin} 向用户汇报做了什么、怎么验的、结论是什么；需要用户取舍时调 group_ask 出选择卡，不要把选项写成文字。`
 	].join("\n");
 }
 /**
@@ -18028,6 +18103,7 @@ var Runtime = class extends Service {
 					if (ended) for (const message of changeEndNotices(ended, (thread) => store.threads.get(thread)?.meta)) outbox.send(message);
 					const receipt = ended ? ticketEndedNotice(ended, store.triggers.get(ended.origin.triggerId)?.channel) : void 0;
 					if (receipt) outbox.send(receipt);
+					if (ended) for (const message of ticketResultNotices(ended)) outbox.send(message);
 					if (ended) runtime.steps?.stopAll(ended.id, ended.ended?.reason ?? ended.ended?.outcome ?? "the ticket ended");
 					if (ended?.team) {
 						const agreed = runtime.staffing?.tables.versions(ended.id).find((proposal) => proposal.state === "approved");
@@ -18648,7 +18724,7 @@ const inject = [
 	"llm",
 	"subprocess"
 ];
-async function apply(ctx, config) {
+async function apply(ctx, config, createRuntime = (c, m, r) => new Runtime(c, m, r)) {
 	const machine = machineOf(config);
 	ctx.inject(["settings"], (child) => {
 		child.effect(() => child.settings.configure({ auto: false }, ctx.fiber));
@@ -18662,7 +18738,7 @@ async function apply(ctx, config) {
 	};
 	const missing = await loadHostModules();
 	if (missing.length) ctx.logger.warn("dsh-superagent: Host modules not found (%s); the main Session keeps every tool it has", missing.join(", "));
-	const runtime = new Runtime(ctx, machine, restart);
+	const runtime = createRuntime(ctx, machine, restart);
 	ctx.effect(() => async () => {
 		await runtime.stop();
 	});
@@ -18670,4 +18746,4 @@ async function apply(ctx, config) {
 	ctx.logger.info(runtime.configured() ? "dsh-superagent ready; the Superagent sidebar entry opens the management panel" : `dsh-superagent is waiting for setup: ${runtime.setupProblem?.detail ?? ""}`);
 }
 //#endregion
-export { Config, Engine, MemoryRepositories, REASONS, USER_ERRORS, UserError, apply, assignmentRole, canRetry, followupOwners, inject, isGroupTicket, isoTime, key, latestAssignment, latestReport, liveTicket, name, reached, readUntil, reasonText, runningAssignment, said, settled, staffing, threadKey, ticketExecutor, ticketOutcome, ticketStage, waitsForPerson };
+export { Config, Engine, GROUP_REQUEST, MemoryRepositories, REASONS, USER_ERRORS, UserError, apply, assignmentRole, awaitingAnswer, canRetry, followupOwners, inject, isGroupTicket, isoTime, key, latestAssignment, latestReport, liveTicket, name, reached, readUntil, reasonText, runningAssignment, said, settled, staffing, threadKey, ticketExecutor, ticketOutcome, ticketStage, waitsForPerson };

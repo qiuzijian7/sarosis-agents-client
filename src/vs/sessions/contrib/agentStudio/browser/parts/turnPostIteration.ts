@@ -52,7 +52,6 @@ const CODEBASE_TOOL_NAME_MARKERS: readonly string[] = [
 ];
 
 /** 单条 memory observe 内容的截断上限（迁出前为内联 2000）。 */
-const OBSERVE_CONTENT_MAX_CHARS = 2000;
 
 /** checkpoint 落盘频率：每 N 轮一次（迁出前为内联 `iteration % 3 === 0`）。 */
 const CHECKPOINT_PERSIST_INTERVAL = 3;
@@ -74,18 +73,8 @@ export interface IPostIterationHost {
 	readonly _durableContext: {
 		updateFromLedger(entries: unknown[]): void;
 	};
-	getActiveMemoryProvider(): IPostIterationMemoryProvider | undefined;
 }
 
-/** memory provider 的窄接口（observe 为可选能力）。 */
-export interface IPostIterationMemoryProvider {
-	observe?(agentId: string, payload: {
-		sessionId: string;
-		hookType: string;
-		timestamp: string;
-		data: Record<string, unknown>;
-	}): Promise<unknown>;
-}
 
 /** hook 总线的窄接口。 */
 export interface IPostIterationHookBus {
@@ -147,8 +136,7 @@ export interface IPostIterationInput {
 	readonly effectiveToolCalls: Array<{ name: string; arguments: unknown }>;
 	readonly startedToolIds: Set<string>;
 	readonly endedToolIds: Set<string>;
-	readonly trimmedAssistantContent: string;
-	readonly iteration: number;
+		readonly iteration: number;
 }
 
 /**
@@ -219,7 +207,6 @@ export async function* runPostIterationCleanup(
 		effectiveToolCalls,
 		startedToolIds,
 		endedToolIds,
-		trimmedAssistantContent,
 		iteration,
 	} = input;
 
@@ -405,31 +392,6 @@ export async function* runPostIterationCleanup(
 	}
 
 	// ─── per-iteration memory capture（W1，2026-07-26 §16 日志实证修复）───
-	// 此前每迭代 writeMemory(type=working) 直写长期层：子代理 40+ 迭代即
-	// 洪泛 40+ 条过程性内容进 core memory（§11 分层改造的漏网通道）。
-	// 改道 observe 会话暂存层（mem:obs，便宜 KV set + 滑动窗口 + 阈值压缩）——
-	// 保留中断安全的增量捕获，不再污染长期层；assistant 消息本体由
-	// storeTurnObservations 在 turn 边界捕获（含去重）。同时删除每迭代的
-	// 「Working 写入中」噪音 UI 卡片。
-	const memoryProvider = host.getActiveMemoryProvider();
-	if (memoryProvider && (trimmedAssistantContent || toolResults.length > 0)) {
-		const iterationContent = (trimmedAssistantContent || 'Tool execution completed')
-			+ (toolResults.length > 0
-				? ` [工具: ${effectiveToolCalls.map(call => call.name).join(', ')}]`
-				: '');
-		void memoryProvider.observe?.(request.agentId, {
-			sessionId: request.sessionId || '',
-			hookType: 'turn_observation',
-			timestamp: new Date().toISOString(),
-			data: {
-				content: iterationContent.slice(0, OBSERVE_CONTENT_MAX_CHARS),
-				role: 'assistant',
-				toolCalls: effectiveToolCalls.length,
-				toolResults: toolResults.length,
-				iteration,
-			},
-		}).catch(() => { /* fire-and-forget */ });
-	}
 
 	// ─── 预算消耗（Hermes 范式：每轮 consume；委托轮 refund 不耗父预算）──
 	if (strategy?.takeDelegationRound?.()) {

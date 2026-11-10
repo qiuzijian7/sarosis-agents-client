@@ -20,6 +20,7 @@ const dispatch = await import(pathToFileURL(path.join(LIB, 'dispatch.js')).href)
 const {
 	resolveOp, isKnownOp, ALL_OPS, WRITE_OPS,
 	LOCAL_READ_OPS, LOCAL_WRITE_OPS, LOCAL_WRITE_KINDS, LOCAL_HTTP_OPS, LOCAL_PUBLISH_OPS,
+	PORTABLE_READ_OPS, PORTABLE_WRITE_OPS,
 } = dispatch;
 
 let pass = 0;
@@ -54,7 +55,7 @@ console.log('★ 商城动作分派\n');
 // ── ② `publish` 的**唯一例外**：agent 必须交 IDE（包格式 agent.json）────
 {
 	check('② publish(skill) ⇒ local-publish', resolveOp('publish', { kind: 'skill' }) === 'local-publish');
-	check('② publish(workflow) ⇒ local-publish', resolveOp('publish', { kind: 'workflow' }) === 'local-publish');
+	check('② publish(workflow) 已不再本地发布（商品类型移除 ⇒ 交 IDE 报错）', resolveOp('publish', { kind: 'workflow' }) === 'ide');
 	// ★ 2026-10-23：agent **已能**由 dsh 打包发布 —— 因为 IDE 侧安装器现在也认目录镜像包
 	//   （`agentInstaller.installFromAgentMd`）⇒ 当年"包格式只有 IDE 会组装"的限制已消失 ✓
 	//   （历史：一度把 agent 的发布留在 IDE，别走回头路）
@@ -152,12 +153,20 @@ for (const kind of ['knowledge']) {
 
 // ── ⑧ WRITE_OPS：长超时的判定要和"确实是写"一致 ────────────────────
 {
-	const shouldBeWrite = [...LOCAL_WRITE_OPS, 'publish', ...LOCAL_PUBLISH_OPS];
+	// ★ 2026-11-10 P2：便携包导入也是写（不能因为不在 LOCAL_WRITE_OPS 就被判成只读）
+	const shouldBeWrite = [...LOCAL_WRITE_OPS, 'publish', ...LOCAL_PUBLISH_OPS, ...PORTABLE_WRITE_OPS];
 	const missing = shouldBeWrite.filter(op => !WRITE_OPS.has(op));
 	check('⑧ 所有写类 op 都在 WRITE_OPS 里（否则转 IDE 时会用读超时 ⇒ 大包超时 ✗）',
 		missing.length === 0, missing.join(', '));
 	const wrong = [...WRITE_OPS].filter(op => !shouldBeWrite.includes(op));
 	check('⑧ WRITE_OPS 里没有混进只读 op', wrong.length === 0, wrong.join(', '));
+	check('⑧ 便携包：导出/预览只读、导入算写（两步确认链不被绕过）',
+		PORTABLE_READ_OPS.has('exportPortable') && PORTABLE_READ_OPS.has('previewPortable')
+		&& PORTABLE_WRITE_OPS.has('importPortable')
+		&& resolveOp('previewPortable', {}) === 'local-read'
+		&& resolveOp('importPortable', {}) === 'local-write');
+	check('⑧ 便携包三个 op 都在 ALL_OPS 里（否则页面拿到「不认识的动作」）',
+		[...PORTABLE_READ_OPS, ...PORTABLE_WRITE_OPS].every(op => ALL_OPS.includes(op)));
 }
 
 console.log(`\n[marketplace dispatch] ${pass} passing / ${fails.length} failing`);

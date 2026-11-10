@@ -38,7 +38,7 @@ const MATRIX = {
   'vssaros-browser': ['browser'],
   'vssaros-unreal': ['unreal_health', 'unreal_exec', 'unreal_build', 'unreal_dump', 'unreal_find_asset', 'unreal_wait', 'unreal_help'],
   'vssaros-web-content-import': ['content_import'],
-  'vssaros-mcp': ['mcp_install', 'mcp_market_list'],  // 重构 4：mcp_install（2026-10-16 起不再是零工具）
+  'vssaros-mcp': ['mcp_install', 'mcp_market_list', 'mcp_import', 'mcp_catalog', 'mcp_remove', 'mcp_secret'],  // 2026-11-10：+跨应用导入、远程目录、删除、凭据仓库
   'vssaros-sessions': ['session_search'],  // 重构 4：session_search 工具（2026-10-16 起不再是零工具）
   // 重构 1.3：foundation 自身（无工具，只断言激活/服务在场/干净 dispose）。
   'vssaros-foundation': [],

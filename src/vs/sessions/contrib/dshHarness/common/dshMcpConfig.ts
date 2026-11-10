@@ -272,6 +272,24 @@ export function mcpRowId(serverName: string): string {
 	return `mcp-${serverName}`;
 }
 
+/**
+ * **运行时挂载开关**（缺省关闭）。
+ *
+ * `dsh-plugins/vssaros-mcp/lib/core/mcpRuntime.js` 用同一个环境变量决定「由插件在运行时
+ * 挂/卸 MCP 行」，这里用它决定「别再生成启动期 --patch 覆盖层」。两侧必须同源且同值，
+ * 否则同一 `serverName` 会挂两遍 —— `dsh-mcp-client` 有全局去重表，重复会直接抛错
+ * （比"后到者加载失败"更硬）。由 `check-capability-tools.mjs` 的 ⑦ 段静态守卫钉住同值。
+ *
+ * 为什么是环境变量而不是编译期常量：这是挂载模型切换，需要一个不改发版就能回退的逃生开关
+ * （与 `VSSAROS_HOST_OVERLAY_MERGE=0` 同类）。缺省启用（真 Host 已验证，见 P3-111）；
+ * 显式 `=0` 回到旧的覆盖层行为，逐字不变。
+ */
+export const MCP_RUNTIME_MOUNT_ENV = 'VSSAROS_MCP_RUNTIME_MOUNT';
+
+export function isMcpRuntimeMountEnabled(env: Record<string, string | undefined> = process.env): boolean {
+	return env[MCP_RUNTIME_MOUNT_ENV] !== '0';
+}
+
 // 本文件原本零 import（纯函数）；这里只借一个纯读函数解析 profile 的 bundles，
 // 方向是 dshMcpConfig → dshPluginActivation（反向无引用 ⇒ 不成环 ✓）。
 import { parseProfileBundles } from './dshPluginActivation.js';

@@ -295,51 +295,9 @@ suite('钩子分发面收口契约（TurnHookBus 是唯一分发面）', () => {
 			postSrc.includes(`runWithGate('after_tool'`),
 			'工具结果钩子未经总线分发 after_tool —— 记忆系统收不到工具结果',
 		);
-		assert.ok(
-			src.includes('registerMemoryProviderHooks('),
-			'executor 未注册 memory provider 的钩子转发 —— provider 将完全收不到工具级钩子',
-		);
 	});
 
-	test('注册的钩子 handler 在 turn 收尾时解绑', () => {
-		const src = stripComments(read('browser/agentTurnExecutor.ts'));
-		const finallyAt = src.lastIndexOf('} finally {');
-		assert.ok(finallyAt !== -1, '未找到 turn 级 finally 块');
-		assert.ok(
-			src.slice(finallyAt).includes('disposeMemoryHooks()'),
-			'finally 块未调用 disposeMemoryHooks() —— handler 闭包持有 memoryProvider，abort 路径下不解绑',
-		);
-	});
 
-	test('provider 转发保持 fire-and-forget，不得 await 进主循环', () => {
-		// 原实现刻意不 await：memory provider 常是跨进程代理，await 会给每个工具
-		// 调用增加一次 IPC 往返。收口到总线后这一点必须由 wiring 层继续保证 ——
-		// handler 同步返回 undefined，内部转发不阻塞。
-		const src = stripComments(read('browser/turnHookWiring.ts'));
-
-		assert.ok(
-			!/await\s+triggerHook/.test(src) && !/await\s+pending/.test(src),
-			'wiring 层 await 了 provider 转发 —— 每个工具调用会多一次 IPC 往返（性能回归）',
-		);
-		assert.ok(
-			/pending\?\.catch\(/.test(src),
-			'wiring 层未 catch 转发失败 —— 未处理的 rejection 会冒泡成 unhandled error',
-		);
-	});
-
-	test('before_tool 是 fail-closed，wiring 层 handler 不得抛错', () => {
-		// before_tool 抛错 → TurnHookGateError → 工具被拒执行。若 memory 转发
-		// 会抛错，「记忆系统不可用」就会升级成「所有工具无法执行」。
-		const src = stripComments(read('browser/turnHookWiring.ts'));
-		const forwardAt = src.indexOf('const forward =');
-		assert.ok(forwardAt !== -1, '未找到 forward 转发函数');
-
-		const forwardBody = src.slice(forwardAt, src.indexOf('bus.register('));
-		assert.ok(
-			forwardBody.includes('try {') && forwardBody.includes('catch'),
-			'forward 未用 try/catch 包裹同步抛错路径 —— provider 同步 throw 会让工具调用被 fail-closed 拒绝',
-		);
-	});
 
 	test('会话级 provider 钩子不被强行塞进 turn 总线', () => {
 		// session_start / prompt_submit / stop / session_end 的生命周期比一个 turn
@@ -352,12 +310,6 @@ suite('钩子分发面收口契约（TurnHookBus 是唯一分发面）', () => {
 			);
 		}
 
-		// 但它们必须仍在生产中被触发，不能因为「总线唯一」而被顺手删掉。
-		const injectionSrc = stripComments(read('browser/agentMemoryInjection.ts'));
-		assert.ok(
-			injectionSrc.includes(`triggerHook('session_start'`),
-			'agentMemoryInjection 不再触发 session_start —— 会话级钩子被误删',
-		);
 	});
 });
 

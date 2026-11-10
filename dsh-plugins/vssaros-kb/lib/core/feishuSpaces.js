@@ -108,3 +108,76 @@ export function findSameNameSpace(spaces, name) {
 export const LARK_CLI_MISSING_HINT =
 	'没跑成 `lark-cli`：请确认已安装并在 PATH 里（或给 `cliPath` 绝对路径），且已用**用户身份**登录'
 	+ '（`lark-cli auth login --as user`）。装好后可以用「知识库设置 → 飞书同步 → 目录映射 → 🔄 刷新知识库列表」重试。';
+
+/**
+ * ★ 2026-11-10（真机）：把 `lark-cli` 的失败输出解析成**人能看懂、能行动**的提示。
+ *
+ * 现场：`wiki +space-list` 以 bot 身份调用，飞书返回 `99991672` +
+ *   `missing_scopes: [wiki:wiki, wiki:wiki:readonly, wiki:space:retrieve]` + `console_url`。
+ *   旧实现把整段原始 JSON 的末尾 800 字符直接塞进 `error` ⇒ 设置页里一坨乱码；
+ *   `kb_feishu_spaces` 更糟 —— 它不检查退出码，`parseSpaceList` 拿不到空间就回
+ *   `ok:true, count:0` +「确认已用用户身份登录」，把**权限错误伪装成"没登录/没知识库"** ✗。
+ *
+ * 纯函数：不 import child_process；输出字段递归找（不同 lark-cli 版本嵌套不同 ✓）。
+ * @param {string} raw CLI 的 stdout+stderr
+ * @param {number} [exitCode] 进程退出码
+ */
+export function describeLarkCliFailure(raw, exitCode) {
+	const text = stripAnsi(String(raw ?? '')).trim();
+	const root = parseLoose(text);
+	let code = '', msg = '', identity = '', consoleUrl = '', troubleshooter = '', logId = '';
+	let scopes = [];
+	let notice = null;
+	const seen = new Set();
+	const walk = (node, depth) => {
+		if (!node || typeof node !== 'object' || depth > 8 || seen.has(node)) { return; }
+		seen.add(node);
+		if (Array.isArray(node)) { for (const x of node) { walk(x, depth + 1); } return; }
+		if (!code && (typeof node.code === 'number' || typeof node.code === 'string')) { code = String(node.code); }
+		if (!msg && typeof node.msg === 'string') { msg = node.msg; }
+		else if (!msg && typeof node.message === 'string' && !/^https?:/.test(node.message)) { msg = node.message; }
+		if (!identity && typeof node.identity === 'string') { identity = node.identity; }
+		if (!consoleUrl && typeof node.console_url === 'string' && /^https?:/.test(node.console_url)) { consoleUrl = node.console_url; }
+		if (!troubleshooter && typeof node.troubleshooter === 'string') { troubleshooter = node.troubleshooter; }
+		if (!logId && typeof node.log_id === 'string') { logId = node.log_id; }
+		if (!scopes.length && Array.isArray(node.missing_scopes)) {
+			scopes = node.missing_scopes.map(s => String(s ?? '').trim()).filter(Boolean);
+		}
+		const u = node?._notice?.update;
+		if (!notice && u && typeof u === 'object') {
+			notice = {
+				command: String(u.command ?? ''), current: String(u.current ?? ''),
+				latest: String(u.latest ?? ''), message: String(u.message ?? ''),
+			};
+		}
+		for (const v of Object.values(node)) { walk(v, depth + 1); }
+	};
+	walk(root, 0);
+
+	const kind = (code === '99991672' || scopes.length > 0) ? 'missing-scopes' : 'other';
+	let message;
+	if (kind === 'missing-scopes') {
+		const who = identity === 'bot' ? '飞书应用（当前是 bot 身份）'
+			: (identity ? `当前 lark-cli 身份（${identity}）` : '当前 lark-cli 身份');
+		const list = scopes.length ? scopes.join('、') : 'wiki 相关权限';
+		message = `${who}缺少飞书知识库权限：${list}。\n`
+			+ '对策：到飞书开放平台为这个应用勾选以上权限并**发布新版本**（权限变更不是即时生效），然后回来重新拉取；'
+			+ '或者改用用户身份登录 `lark-cli auth login --as user` 再拉一次。'
+			+ (consoleUrl ? `\n申请入口（复制到浏览器打开）：${consoleUrl}` : '');
+		if (logId) { message += `\n飞书 log_id（找平台方排查时给这个）：${logId}`; }
+		if (notice?.latest && notice.current && notice.latest !== notice.current) {
+			message += `\n另：lark-cli ${notice.latest} 可用（当前 ${notice.current}，可运行 \`${notice.command || 'lark-cli update'}\`）；但本次失败是权限问题，升级不会补上 scope。`;
+		}
+	} else {
+		message = `lark-cli 拉取飞书知识库失败（退出码 ${exitCode ?? -1}${code ? '，飞书错误码 ' + code : ''}）`;
+		if (msg) { message += `：${msg.slice(0, 300)}`; }
+		else if (text) { message += `：${text.slice(-300)}`; }
+		message += `\n${LARK_CLI_MISSING_HINT}`;
+	}
+	return {
+		kind, code, identity, missingScopes: scopes, consoleUrl, troubleshooter, logId, notice,
+		message,
+		// 原始尾部只留给「复制诊断信息」，不再直接糊到界面上
+		detail: text.slice(-1200),
+	};
+}

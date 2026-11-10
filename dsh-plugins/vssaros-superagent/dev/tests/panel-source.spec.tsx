@@ -5,6 +5,7 @@ import { expect, it, onTestFinished, vi } from 'vitest'
 import { zh } from '../src/client/locales.ts'
 import { usePanel, mount, remount, settle, all, find, tab, click, type, text, field, at, openSide } from './fixtures/panel.tsx'
 import { server, problemOf, droppedReply } from './fixtures/panel-server.ts'
+import { feishuKind } from '../src/sources/feishu.ts'
 
 usePanel()
 it('shows the TAPD setup checklist and a working read-only connectivity probe', async () => {
@@ -277,9 +278,40 @@ it('shows a refused Source save with the output of the tool that failed on its o
   await click(zh['tab.source'])
   await click(find(zh['tab.settings'], '.dt-status-head button'))
   const feishu = all('.dt-card')[0]!
-  await type(field<HTMLInputElement>('飞书应用 App ID'), 'cli_broken')
+  await type(field<HTMLSelectElement>('飞书应用 App ID'), 'cli_broken')
   await act(async () => { feishu.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })) }); await settle()
   expect(feishu.querySelector('.dt-savebar [role="alert"]')?.textContent).toBe('机器人的 lark-cli 不可用。\nlark-cli: app secret missing')
+})
+
+// ★ 2026-11-10（用户）：移除「留空 = 用 lark-cli 当前 profile（旧行为）」，
+// 且空配置默认选中随包内置的 VsSaros助手。
+it('defaults the Feishu app picker to the bundled VsSaros助手 and offers no empty legacy option', async () => {
+  await mount()
+  await click(tab(zh['tab.settings']))
+  await settle()
+  const select = field<HTMLSelectElement>('飞书应用 App ID')
+  const options = [...select.options]
+  expect(options.some(option => option.value === '')).toBe(false)
+  expect(options.some(option => /留空|当前 profile|active lark-cli profile/i.test(option.textContent ?? ''))).toBe(false)
+  expect(select.value).toBe('cli_a860911d2e7f5013')
+  expect(options.some(option => /VsSaros助手/.test(option.textContent ?? ''))).toBe(true)
+  // 提示文案也不能再宣传「留空 = 旧行为」（hint 在 InfoTip 里，不进 textContent ⇒ 查字段定义）
+  const appIdField = feishuKind.fields.find(spec => spec.key === 'appId')!
+  expect(JSON.stringify(appIdField)).not.toContain('留空')
+  expect(JSON.stringify(appIdField)).not.toContain('当前 profile')
+  expect(JSON.stringify(appIdField)).not.toContain('active lark-cli profile')
+})
+
+// 历史空配置也必须显示内置应用（UI 层 defaultValue 回退）。Source schema 刻意不改：
+// 在那里归一化空值会改变运行时的 lark-cli profile 解析（runtime.spec.ts 有回归用例）。
+it('shows the bundled app for a stored empty Feishu app ID', async () => {
+  (server.settings.sources.feishu!.config as Record<string, unknown>).appId = ''
+  await mount()
+  await click(tab(zh['tab.settings']))
+  await settle()
+  const select = field<HTMLSelectElement>('飞书应用 App ID')
+  expect(select.value).toBe('cli_a860911d2e7f5013')
+  expect([...select.options].some(option => option.value === '')).toBe(false)
 })
 
 it('shows a setup problem on its Source card within one read of the settings, which the settings groups share', async () => {

@@ -77,7 +77,6 @@ export class ExecutionProvider implements IExecutionProvider {
 		// 2. 获取活跃的能力槽
 		const modelProvider = slots.getActiveModelProvider();
 		const toolProvider = slots.getActiveToolProvider();
-		const memoryProvider = slots.getActiveMemoryProvider();
 
 		if (!modelProvider) {
 			this._logService.error('[ExecutionProvider] No ModelProvider available');
@@ -93,97 +92,6 @@ export class ExecutionProvider implements IExecutionProvider {
 
 		// 4. 加载记忆上下文（冻结快照模式，借鉴 Hermes Agent）
 		// ── 设计说明 ──────────────────────────────────────────────────────────
-		// Hermes 的"冻结快照"：会话开始时把 Persona/L1 注入 system prompt，
-		// 会话内不再刷新（中途写入的新记忆下次会话才生效）。
-		// 好处：保持 KV prefix cache 稳定，prefix 不变则推理服务端可复用计算结果。
-		// 参见：doc/Memory-Strategy.md §4.2 / §五.2
-		if (memoryProvider) {
-			try {
-				// 抽取最近一条 user 消息作为召回 query —— 让 vendor 能用真实意图
-				// 做 FTS5/embedding 匹配，而不是占位字符串（详见 IMemoryProvider.loadContext 注释）
-				const recallQuery = [...request.messages].reverse().find(m => m.role === 'user')?.content ?? '';
-
-				// ── 召回作用域（2026-06）─────────────────────────────────
-				// 复用 AgentDriver 在 enrichedRequest 上提前算好的 scope。
-				// 缺省按 'agent' 严格隔离。
-				const recallScope: 'agent' | 'global' = request.memoryScope ?? 'agent';
-				const recallOptions = { scope: recallScope };
-
-			const memoryContext = await memoryProvider.loadContext(
-				request.agentId,
-				request.sessionId || '',
-				recallQuery,
-				// includeEntries: 本循环的注入仍消费长/短期记忆数组（见下方
-				// Long-term/Short-term 块），显式开启——注入主路径
-				// （agentMemoryInjection）已默认关闭以省全表扫描。
-				{ ...recallOptions, includeEntries: true },
-			);
-
-				// ─── 按 memoryConfig.strategy 过滤 memoryContext ────────────
-				// 与 agentOSService 中的注入策略保持一致，详见该处注释。
-				const strategy: 'summary' | 'full' = request.memoryStrategy === 'summary' ? 'summary' : 'full';
-				const maxEntries = typeof request.memoryMaxEntries === 'number' && request.memoryMaxEntries > 0
-					? request.memoryMaxEntries
-					: undefined;
-				const cap = <T,>(arr: T[] | undefined): T[] => {
-					if (!arr || arr.length === 0) { return []; }
-					if (maxEntries === undefined) { return arr; }
-					return arr.length > maxEntries ? arr.slice(-maxEntries) : arr;
-				};
-				// L1 在 summary 与 full 两种策略下都注入；L0 仅在 full 下注入（full ⊇ summary）。
-				const filteredLongTerm = cap(memoryContext.longTermMemories);
-				const filteredShortTerm = strategy === 'full' ? cap(memoryContext.shortTermMemories) : [];
-
-				// ── 收集所有记忆内容 ──
-				const memoryParts: string[] = [];
-
-				// longTermMemories（L1/L2 召回内容）——AgentMemory 的核心记忆
-				if (filteredLongTerm.length > 0) {
-					const ltContents = filteredLongTerm
-						.map(m => m.content)
-						.filter(Boolean)
-						.join('\n\n');
-					if (ltContents.trim().length > 0) {
-						memoryParts.push(`## Long-term Memory (AgentMemory Recall)\n\n${ltContents}`);
-					}
-				}
-
-				// shortTermMemories（最近几轮摘要，通常为空，因 AgentMemory 不填此字段）
-				if (filteredShortTerm.length > 0) {
-					const stContents = filteredShortTerm
-						.map(m => m.content)
-						.filter(Boolean)
-						.join('\n\n');
-					if (stContents.trim().length > 0) {
-						memoryParts.push(`## Short-term Memory\n\n${stContents}`);
-					}
-				}
-
-				// systemPrompt（第三方 Memory Provider 可能直接返回格式化字符串）
-				// 其本质是 provider 端的摘要表述，属于 L1 范畴，因此在 summary 与 full
-				// 两种策略下均注入（full ⊇ summary）。
-				if (memoryContext.systemPrompt && memoryContext.systemPrompt.trim().length > 0) {
-					memoryParts.push(memoryContext.systemPrompt.trim());
-				}
-
-				// ── 注入为 system 消息（放在现有消息历史最前面）──
-				// 冻结语义：此处仅在每次 runAgentLoop 开头调用一次，agent loop 内部
-				// 不会再次 loadContext，因此即使中途有新记忆写入，本轮 prompt 也不会
-				// 被更新——这是"冻结快照"的核心，保证 KV prefix 在整个会话内稳定。
-				if (memoryParts.length > 0) {
-					const frozenMemoryBlock = `<memory_context>\n${memoryParts.join('\n\n')}\n</memory_context>`;
-					messages.unshift({
-						role: 'system',
-						content: frozenMemoryBlock,
-					});
-					this._logService.info(`[ExecutionProvider] Injected frozen memory snapshot (strategy=${strategy}, ${frozenMemoryBlock.length} chars, L1/L2=${filteredLongTerm.length}, L0=${filteredShortTerm.length}) into system prompt`);
-				}
-
-				this._logService.debug('[ExecutionProvider] Loaded memory context');
-			} catch (error) {
-				this._logService.error('[ExecutionProvider] Failed to load memory:', error);
-			}
-		}
 
 		// 5. 初始化上下文管理器
 		const contextManager = new ContextManager(modelProvider, this._getModelId(slots));
@@ -456,28 +364,6 @@ export class ExecutionProvider implements IExecutionProvider {
 				}
 
 
-		// 7.7 更新记忆（如果有 Memory Provider）
-		// W1（2026-07-26 §16 日志实证修复）：与 agentTurnExecutor 同款改道——
-		// 每迭代 writeMemory(type=working) 直写长期层改为 observe 会话暂存层
-		// （mem:obs，便宜 KV set + 滑动窗口 + 阈值压缩），不再洪泛 core memory。
-		if (memoryProvider) {
-			const iterContent = assistantContentChunks.join('');
-			if (iterContent.length >= 8 || toolResults.length > 0) {
-				void memoryProvider.observe?.(request.agentId, {
-					sessionId: request.sessionId || '',
-					hookType: 'turn_observation',
-					timestamp: new Date().toISOString(),
-					data: {
-						content: (iterContent || 'Tool execution completed').slice(0, 2000),
-						role: 'assistant',
-						toolCalls: assistantToolCalls?.length || 0,
-						toolResults: toolResults.length,
-					},
-				}).catch((error: unknown) => {
-					this._logService.error('[ExecutionProvider] Failed to observe iteration:', error);
-				});
-			}
-		}
 
 				// 7.8 消耗迭代预算
 				budget.consume(1);

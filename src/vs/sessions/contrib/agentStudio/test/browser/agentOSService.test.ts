@@ -7,7 +7,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { Event } from '../../../../../base/common/event.js';
 import { ModelAuthStatus } from '../../common/providers.js';
-import { IModelProvider, IMemoryProvider, IToolProvider } from '../../common/providers.js';
+import { IModelProvider, IToolProvider } from '../../common/providers.js';
 
 suite('AgentOS Service (Phase 1)', () => {
 
@@ -43,28 +43,7 @@ suite('AgentOS Service (Phase 1)', () => {
 		}
 	}
 
-	// Mock IMemoryProvider
-	class MockMemoryProvider implements IMemoryProvider {
-		readonly id: string;
-		readonly name: string;
-
-		constructor(id: string, name: string) {
-			this.id = id;
-			this.name = name;
-		}
-
-		async loadContext(agentId: string, sessionId: string): Promise<any> {
-			return {
-				shortTermMemories: [],
-				longTermMemories: [],
-			};
-		}
-
-		async writeMemory(agentId: string, entry: any): Promise<void> {}
-		async searchMemory(agentId: string, query: string): Promise<any[]> {
-			return [];
-		}
-	}
+	// Mock tool provider
 
 	// Mock IToolProvider
 	class MockToolProvider implements IToolProvider {
@@ -142,18 +121,6 @@ suite('AgentOS Service (Phase 1)', () => {
 		assert.strictEqual(osService.getModelProviders().length, 0);
 	});
 
-	test('registerMemoryProvider adds provider with priority', () => {
-		const osService = createTestAgentOSService();
-		const provider = new MockMemoryProvider('mem-1', 'Memory 1');
-
-		const disposable = osService.registerMemoryProvider(provider, 10);
-		const active = osService.getActiveMemoryProvider();
-
-		assert.ok(active);
-		assert.strictEqual(active.id, 'mem-1');
-
-		disposable.dispose();
-	});
 
 	test('registerToolProvider adds provider', () => {
 		const osService = createTestAgentOSService();
@@ -168,17 +135,6 @@ suite('AgentOS Service (Phase 1)', () => {
 		disposable.dispose();
 	});
 
-	test('getActiveMemoryProvider returns highest priority', () => {
-		const osService = createTestAgentOSService();
-		const provider1 = new MockMemoryProvider('mem-low', 'Low Priority');
-		const provider2 = new MockMemoryProvider('mem-high', 'High Priority');
-
-		osService.registerMemoryProvider(provider1, 1);
-		osService.registerMemoryProvider(provider2, 100);
-
-		const active = osService.getActiveMemoryProvider();
-		assert.strictEqual(active.id, 'mem-high');
-	});
 
 	test('getActiveToolProvider returns highest priority', () => {
 		const osService = createTestAgentOSService();
@@ -195,7 +151,6 @@ suite('AgentOS Service (Phase 1)', () => {
 	test('no providers returns undefined', () => {
 		const osService = createTestAgentOSService();
 
-		assert.strictEqual(osService.getActiveMemoryProvider(), undefined);
 		assert.strictEqual(osService.getActiveToolProvider(), undefined);
 		assert.strictEqual(osService.getActivePlanningProvider(), undefined);
 		assert.strictEqual(osService.getActiveExecutionProvider(), undefined);
@@ -241,7 +196,6 @@ function createTestAgentOSService(): any {
 	// 由于 AgentOSService 依赖 DI，这里返回一个模拟对象
 	// 实际测试中应该使用 TestInstantiationService
 	const providers: any[] = [];
-	const memoryProviders: { provider: any; priority: number }[] = [];
 	const toolProviders: { provider: any; priority: number }[] = [];
 	const planningProviders: { provider: any; priority: number }[] = [];
 	const executionProviders: { provider: any; priority: number }[] = [];
@@ -258,17 +212,6 @@ function createTestAgentOSService(): any {
 			};
 		},
 		getModelProviders: () => providers,
-		registerMemoryProvider: (p: any, priority: number) => {
-			memoryProviders.push({ provider: p, priority });
-			memoryProviders.sort((a, b) => b.priority - a.priority);
-			return {
-				dispose: () => {
-					const idx = memoryProviders.findIndex(mp => mp.provider === p);
-					if (idx !== -1) { memoryProviders.splice(idx, 1); }
-				}
-			};
-		},
-		getActiveMemoryProvider: () => memoryProviders[0]?.provider,
 		registerToolProvider: (p: any, priority: number) => {
 			toolProviders.push({ provider: p, priority });
 			toolProviders.sort((a, b) => b.priority - a.priority);

@@ -159,6 +159,15 @@ async function consume(ctx: SourceContext, signal: AbortSignal): Promise<void> {
 
 /** Refreshes the map of joined chats (`chat_id -> name`); throws on failure so the previously stored list remains intact. */
 export async function refreshChatNames(ctx: SourceContext, signal?: AbortSignal): Promise<Record<string, string>> {
+  /* ★ 2026-11-10：display-only 下不读群列表。内置应用没有 `im:chat:readonly` /
+     `im:chat` / `im:chat.group_info:readonly` / `im:chat:read` scope，手动点面板的
+     「刷新群列表」会报 99991672（前端显示「读取失败，列表保持不变」）。
+     ⚠ 判断必须放在这里：`chatNamesLoop` 是自动入口，而 `feishuKind.refreshLabels`
+       是面板按钮的另一条入口，只改 loop 挡不住手动刷新。
+     ⇒ 直接返回已存 labels，不打 lark 命令；列表保持不变，前端显示「列表已是最新」。 */
+  if (ctx.config<FeishuConfig>(SOURCE)?.displayOnly) {
+    return ctx.state.get(KV.sources.labels(SOURCE)) ?? {}
+  }
   const commands = ctx.commands.withSignal(signal)
   const result = z.looseObject({ chats: z.array(z.looseObject({ chat_id: z.string(), name: z.string().nullish() })).optional() })
     .parse(await commands.lark(['im', '+chat-list', '--page-all', '--page-size', '100']))
@@ -171,20 +180,36 @@ async function chatNamesLoop(ctx: SourceContext, signal: AbortSignal): Promise<v
   await ctx.ready
   if (!available(ctx)) return
   while (!signal.aborted) {
-    if (enabled(ctx)) {
+    const config = enabled(ctx)
+    /* ★ 2026-11-10：display-only 不需要群名，也不该每分钟打 `im +chat-list`
+       （内置应用没有相应 scope，会持续产生权限错误）。 */
+    if (config && !config.displayOnly) {
       try { await refreshChatNames(ctx, signal) }
       catch { /* Names are a display aid; the stored list stays until a later read succeeds. */ }
     }
     await delay(60_000, undefined, { signal }).catch(() => {})
   }
 }
-async function backfillLoop(ctx: SourceContext, signal: AbortSignal): Promise<void> {
+export async function backfillLoop(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   await ctx.ready
   if (!available(ctx)) { ctx.report('history', health('paused', 'feishuBotMissing')); return }
   while (!signal.aborted) {
     const config = enabled(ctx)
     if (!config) {
       ctx.report('history', health('paused', 'sourceOff'))
+      await delay(60_000, undefined, { signal }).catch(() => {})
+      continue
+    }
+    /* ★ 2026-11-10：display-only 模式跳过整轮历史补收（backfillChat / pollThreads）。
+       ① Chat 气泡只读 `trigger` 表，而 trigger 由实时 WS 事件经 Intake 的 filtered 分支
+          落库 ⇒ 关掉补收不丢消息；补收的停机窗口历史反而不该进「只显示」的对话。
+       ② `GET /open-apis/im/v1/messages` / `+messages-mget` 等需要
+          `im:message.history:readonly` / `im:message:readonly` / `im:message`，
+          内置应用未申请 ⇒ 每 60s 报 99991672 并把 history 写成 error（持久化、重启仍在）。
+       ③ 主动 report 成 paused，覆盖 health_entry 里遗留的旧 error。
+       ⚠ 不动 watch / listenShared / take / receive ⇒ 实时事件链路完全保留。 */
+    if (config.displayOnly) {
+      ctx.report('history', { state: 'paused', detail: 'Display-only: history recovery is off', at: new Date().toISOString() })
       await delay(60_000, undefined, { signal }).catch(() => {})
       continue
     }

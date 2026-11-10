@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VsSaros Switch · 多模型兼容优化方案（能力矩阵 + 出站窗口预算）</title>
+<style>
+  :root {
+    --bg: #0f1117; --bg-2: #161923; --card: #1b1f2b; --card-2: #202634;
+    --border: #2a3040; --border-2: #343b4e;
+    --text: #e6e9f0; --text-dim: #9aa3b5; --text-faint: #6b7488;
+    --accent: #7c5cff; --accent-2: #5cc8ff; --accent-3: #ff7ab8;
+    --green: #3ddc84; --amber: #ffb454; --red: #ff5c7a;
+    --mono: "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans); line-height: 1.72; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 44px 28px 96px; }
+  a { color: var(--accent-2); }
+  header { margin-bottom: 26px; }
+  .badge { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--accent-2);
+    background: rgba(92,200,255,.08); border: 1px solid rgba(92,200,255,.25); padding: 4px 12px; border-radius: 999px; margin-bottom: 18px; }
+  .badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 8px var(--accent-2); }
+  .status { display: inline-flex; align-items: center; gap: 7px; font-size: 11.5px; font-weight: 600; color: var(--amber);
+    background: rgba(255,180,84,.09); border: 1px solid rgba(255,180,84,.32); padding: 3px 11px; border-radius: 999px; margin-left: 10px; vertical-align: middle; }
+  h1 { font-size: 31px; margin: 0 0 12px; letter-spacing: -.5px; line-height: 1.35; }
+  h1 .grad { background: linear-gradient(90deg, var(--accent), var(--accent-2), var(--accent-3));
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+  .sub { color: var(--text-dim); font-size: 15px; max-width: 940px; margin: 0 0 16px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); background: var(--card);
+    border: 1px solid var(--border); padding: 4px 10px; border-radius: 7px; }
+  .chip b { color: var(--accent-2); font-weight: 500; }
+
+  .callout { border-left: 3px solid var(--accent-2); background: rgba(92,200,255,.055); border-radius: 0 12px 12px 0; padding: 13px 18px; margin: 18px 0; }
+  .callout.warn { border-left-color: var(--amber); background: rgba(255,180,84,.06); }
+  .callout.ok { border-left-color: var(--green); background: rgba(61,220,132,.055); }
+  .callout.danger { border-left-color: var(--red); background: rgba(255,92,122,.055); }
+  .callout .ct { font-size: 13px; font-weight: 650; margin-bottom: 5px; }
+  .callout p, .callout ul { font-size: 13px; color: var(--text-dim); margin: 0; }
+  .callout ul { padding-left: 18px; }
+  .callout li { margin: 3px 0; }
+  .callout b { color: var(--text); }
+
+  nav.toc { position: sticky; top: 12px; z-index: 30; display: flex; gap: 6px; flex-wrap: wrap;
+    background: rgba(22,25,35,.93); backdrop-filter: blur(12px); border: 1px solid var(--border);
+    border-radius: 12px; padding: 6px; margin: 24px 0 8px; }
+  nav.toc a { display: inline-flex; align-items: center; gap: 7px; text-decoration: none; color: var(--text-dim);
+    font-size: 13px; padding: 8px 14px; border-radius: 8px; cursor: pointer; transition: background .2s, color .2s; }
+  nav.toc a:hover { background: var(--card-2); color: var(--text); }
+  nav.toc a.active { background: rgba(124,92,255,.16); color: #cfc3ff; }
+
+  section { margin-top: 52px; scroll-margin-top: 84px; }
+  h2 { font-size: 21px; margin: 0 0 16px; display: flex; align-items: center; gap: 12px; }
+  h2 .num { width: 28px; height: 28px; border-radius: 8px; flex: none; display: grid; place-items: center;
+    font-size: 14px; font-weight: 700; background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; }
+  h3 { font-size: 15px; margin: 26px 0 11px; }
+  .lead { color: var(--text-dim); font-size: 14.5px; max-width: 960px; }
+  code.inline { font-family: var(--mono); font-size: 11.5px; color: var(--accent-2); background: rgba(92,200,255,.08);
+    border: 1px solid rgba(92,200,255,.18); padding: 2px 7px; border-radius: 5px; }
+  .grid { display: grid; gap: 16px; }
+  .grid.cols-2 { grid-template-columns: repeat(2, 1fr); }
+  .grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
+  .grid.cols-4 { grid-template-columns: repeat(4, 1fr); }
+  @media (max-width: 960px) { .grid.cols-2, .grid.cols-3, .grid.cols-4 { grid-template-columns: 1fr; } .wrap { padding: 28px 16px 64px; } h1 { font-size: 25px; } }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; }
+  .card.accent { border-color: rgba(124,92,255,.55); background: linear-gradient(160deg, rgba(124,92,255,.12), var(--card) 62%); }
+  .card.ok { border-color: rgba(61,220,132,.4); }
+  .card .k { font-size: 11.5px; color: var(--text-faint); letter-spacing: .5px; text-transform: uppercase; margin-bottom: 8px; }
+  .card .t { font-size: 15px; font-weight: 650; margin-bottom: 7px; }
+  .card .d { font-size: 13px; color: var(--text-dim); }
+  .card ul { font-size: 13px; color: var(--text-dim); padding-left: 18px; margin: 8px 0 0; }
+  .card li { margin: 4px 0; }
+  .card li b { color: var(--text); }
+  .pill { display: inline-block; font-size: 10.5px; font-family: var(--mono); padding: 2px 8px; border-radius: 999px;
+    border: 1px solid var(--border-2); color: var(--text-dim); background: var(--card-2); }
+  .pill.new { color: #d7ccff; border-color: rgba(124,92,255,.5); background: rgba(124,92,255,.16); }
+  .pill.ok { color: var(--green); border-color: rgba(61,220,132,.35); background: rgba(61,220,132,.08); }
+  .pill.no { color: var(--red); border-color: rgba(255,92,122,.35); background: rgba(255,92,122,.08); }
+  .pill.rec { color: #0f1117; border-color: transparent; background: var(--green); font-weight: 700; }
+  .pill.p0 { color: #0f1117; background: var(--accent-2); border-color: transparent; font-weight: 700; }
+  .pill.p1 { color: #0f1117; background: var(--accent); border-color: transparent; font-weight: 700; }
+  .pill.p2 { color: var(--text); background: var(--card-2); }
+  .pill.p3 { color: var(--text-faint); background: transparent; }
+
+  .tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .tbl th, .tbl td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .tbl th { color: var(--text-faint); font-size: 11px; letter-spacing: .4px; text-transform: uppercase; font-weight: 600; }
+  .tbl tr:last-child td { border-bottom: 0; }
+  .tbl code { font-family: var(--mono); font-size: 11px; color: var(--accent-2); }
+  .tbl .path { font-family: var(--mono); font-size: 11px; color: var(--text); word-break: break-all; }
+  .tbl-wrap { overflow-x: auto; }
+
+  pre { background: #12151e; border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px;
+    overflow-x: auto; font-family: var(--mono); font-size: 11.8px; line-height: 1.65; color: #cfd6e6; margin: 12px 0; }
+  pre .cm { color: #6b7488; }
+  pre .kw { color: #c4a7ff; }
+  pre .st { color: #8fd6a0; }
+  pre .fn { color: #7cc8ff; }
+
+  .flow { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; font-size: 12.5px; margin: 14px 0; }
+  .flow .node { background: var(--card-2); border: 1px solid var(--border-2); border-radius: 8px; padding: 7px 12px; color: var(--text); }
+  .flow .node.new { border-color: rgba(124,92,255,.65); background: rgba(124,92,255,.16); color: #ddd2ff; font-weight: 600; }
+  .flow .node.hot { border-color: rgba(255,180,84,.6); background: rgba(255,180,84,.12); color: #ffd9a3; }
+  .flow .arrow { color: var(--accent-2); font-family: var(--mono); }
+
+  .phase { border-left: 2px solid var(--border-2); padding-left: 20px; margin: 22px 0; }
+  .phase .ph { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+  .phase .ph .t { font-size: 15px; font-weight: 650; }
+  .phase .body { font-size: 13px; color: var(--text-dim); }
+  .phase .body ul { padding-left: 18px; margin: 8px 0 0; }
+  .phase .body li { margin: 4px 0; }
+  .phase.p0 { border-left-color: var(--accent-2); }
+  .phase.p1 { border-left-color: var(--accent); }
+  .phase.p2 { border-left-color: var(--amber); }
+  .phase.p3 { border-left-color: var(--text-faint); }
+
+  .kpi { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 18px 0; }
+  @media (max-width: 860px) { .kpi { grid-template-columns: repeat(2, 1fr); } }
+  .kpi .box { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+  .kpi .v { font-size: 22px; font-weight: 700; color: var(--accent-2); font-family: var(--mono); }
+  .kpi .l { font-size: 11.5px; color: var(--text-faint); margin-top: 3px; }
+
+  .q { border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; background: var(--card); }
+  .q .qt { font-size: 14px; font-weight: 650; margin-bottom: 6px; }
+  .q .qd { font-size: 12.5px; color: var(--text-dim); }
+  .q .opt { font-size: 12px; color: var(--accent-2); margin-top: 8px; font-family: var(--mono); }
+
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 860px) { .split { grid-template-columns: 1fr; } }
+  .split .pane { border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; }
+  .split .pane.good { border-color: rgba(61,220,132,.35); }
+  .split .pane.bad { border-color: rgba(255,92,122,.35); }
+  .split .pane h4 { margin: 0 0 10px; font-size: 14px; }
+  .split .pane ul { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--text-dim); }
+  .split .pane li { margin: 5px 0; }
+
+  footer { margin-top: 60px; padding-top: 22px; border-top: 1px solid var(--border); color: var(--text-faint); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="badge">OPTIMIZATION PLAN · P0 观测中 · P2 已上线</div>
+  <h1><span class="grad">多模型兼容优化方案</span> <span class="status">P0 observe + P2 能力声明已部署 · 2026-11-10</span></h1>
+  <p class="sub">对标 LiteLLM / Vercel AI SDK / Cline 等开源方案，补齐本中转站在「模型能力声明」与「上下文窗口管理」上的短板。核心思路：<b>不新建轮子，把已有的能力表与 tokenkit 接入 relay 热路径</b>，在出站前按窗口做预算裁剪，从根上消除长会话触发的上游 400。</p>
+  <div class="meta">
+    <span class="chip">产品 <b>VsSaros Switch</b></span>
+    <span class="chip">日期 <b>2026-11-10</b></span>
+    <span class="chip">基线 <b>be5acd7</b></span>
+    <span class="chip">阶段 <b>P0 → P3</b></span>
+    <span class="chip">主战场 <b>relay / service / setting</b></span>
+  </div>
+</header>
+
+<div class="callout ok">
+  <div class="ct">调研中最重要的发现：底层能力其实已经具备，只差接线</div>
+  <p>原以为要「新建模型能力矩阵 + 引入 tokenizer」，代码核查后发现本站<b>两者都有</b>：<code class="inline">Model.Extra</code> 已存 <code class="inline">max_input_tokens / max_output_tokens / supports_tool_call / supports_images / supports_reasoning</code>；<code class="inline">tokenkit</code> 子模块对 OpenAI 系用真 tiktoken、其余厂商用分 rune 加权估算（已用 54 段真实 agent 会话校准，平均误差 3–5%）。它们<b>目前全部只服务于计费与 /v1/models 展示，没有接进 relay 热路径</b>。因此方案从「造基础设施」降级为「接线 + 补策略」，工作量与风险都显著下降。</p>
+</div>
+
+<div class="callout warn">
+  <div class="ct">要解决的问题（均有线上证据）</div>
+  <ul>
+    <li><b>长会话触顶</b>：2026-11-09 21:50 上游 CodeBuddy 返回 <code class="inline">400 prompt is too long: 100001 tokens &gt; 100000 maximum</code>，本站不重试、不裁剪、不降级，直接透传 400。</li>
+    <li><b>compact 不可用</b>：实测上游 <code class="inline">/v2/responses/compact</code> 返回 404；桥接又明确排除 compact，客户端无路可压缩历史。</li>
+    <li><b>新模型要改 Go 代码</b>：<code class="inline">OpenAIChatCapabilities</code> 只有 5 个布尔位且按模型名硬编码，能力差异散落在 <code class="inline">if ChannelType == ...</code> 分支里。</li>
+    <li><b>新增渠道成本高</b>：编译期 37 分支 switch，注册一个渠道散落 47 个 Go 文件 + 28 个前端文件。</li>
+  </ul>
+</div>
+
+<div class="callout ok" style="margin-top:20px;">
+  <div class="ct">P0 已实施并上线（2026-11-10）· 观测采集中</div>
+  <p>默认全关 → 部署零行为变化；线上已通过 <code class="inline">PUT /api/option/ {"key":"context_budget.enabled","value":"true"}</code> 开启 observe。观测<b>只写日志与 admin_info，从不修改请求内容、不返回错误、不短路</b>。每请求一行 <code class="inline">[context-budget] {json}</code> 结构化日志（含全部原始数值），同时写入消费日志 <code class="inline">other.admin_info.context_budget</code>。能力表 35/35 命中；对 CodeBuddy(type=64) 配置了 100000 的窗口覆盖，因此日志同时保留 <code class="inline">catalog_window</code> 与 <code class="inline">effective_window</code> 两个口径。一键回滚：<code class="inline">context_budget.enabled=false</code>。3–7 天后在 anydev 执行 <code class="inline">python3 /data/newapi/context-budget-p0-aggregate.py</code>（脚本副本见 <code class="inline">doc/context-budget-p0-aggregate.py</code>），可直接得到触发率、能力表命中率、token 分位数与任意安全余量的触发率扫描。<b>P1 裁剪仍待 P0 数据校准后实施。</b></p>
+</div>
+
+<div class="callout ok" style="margin-top:16px;">
+  <div class="ct">P2 能力声明外扩 + 管理入口已上线（2026-11-10）</div>
+  <p><b>能力表优先、代码兜底</b>：<code class="inline">OpenAIChatCapabilities</code> 的 5 个硬编码布尔位改为「管理员覆盖表 → 模型目录声明 → 内置规则」三级；所有字段为 <code class="inline">*bool</code> 三态，<b>默认覆盖表为空、目录未声明 chat 位 ⇒ 内置行为逐字节不变</b>。<code class="inline">relaykit</code> 是独立 Go 模块，能力表解析放根模块，通过注册式 resolver 注入，零反向依赖。<br><b>option 覆盖表 + 热更新</b>：<code class="inline">model_capabilities.rules</code>（<code class="inline">PUT /api/option/</code>，60s 跨节点同步），支持精确模型名与正则、按优先级合并，非法 JSON 与空规则被拒。<br><b>管理入口</b>：系统设置 → 模型 → 「模型能力」，含 35 行只读有效能力表（复用 <code class="inline">StaticDataTable</code>）、上下文预算策略配置、覆盖规则 JSON 编辑器；7 语言各补 30 键。<br><b>通用声明</b>：<code class="inline">supports_tools / vision / reasoning / streaming</code> 统一命名（兼容旧别名 <code class="inline">supports_tool_call / supports_images / streaming</code>），已输出到 <code class="inline">/v1/models</code> 与 <code class="inline">/api/pricing</code> 的 capabilities。<br>★ 线上验证：P0 观测配置在重启后完好且继续产出、双协议 4/4 200、AgentLens 正常、渠道状态未动、<code class="inline">ModelCapabilitiesView</code> 为只读合成 option（写入被拒）。<b>P1 裁剪仍待 P0 数据校准。</b></p>
+</div>
+
+<nav class="toc">
+  <a href="#s1" class="active">1 目标与边界</a>
+  <a href="#s2">2 可复用基座</a>
+  <a href="#s3">3 总体架构</a>
+  <a href="#s4">4 插入点</a>
+  <a href="#s5">5 核心算法</a>
+  <a href="#s6">6 分阶段路线</a>
+  <a href="#s7">7 改动清单</a>
+  <a href="#s8">8 风险与回滚</a>
+  <a href="#s9">9 验收与测试</a>
+  <a href="#s10">10 待确认</a>
+</nav>
+
+<!-- ============ 1 ============ -->
+<section id="s1">
+  <h2><span class="num">1</span> 目标、非目标与成功标准</h2>
+  <p class="lead">先框定范围，避免把「多模型兼容优化」做成一次大重构。本次只解决<b>收发链路上的上下文与能力协商</b>，不动协议转换矩阵本身，也不实现服务端会话存储。</p>
+
+  <div class="split" style="margin-top:18px;">
+    <div class="pane good">
+      <h4>做（In scope）</h4>
+      <ul>
+        <li>把 <code class="inline">Model.Extra</code> 能力表接入 relay 热路径，提供带缓存的查询入口</li>
+        <li>新增「出站窗口预算」策略：按 contextWindow 估算、按消息边界裁剪、保留关键语义</li>
+        <li>声明式灰度开关（按渠道 / 渠道类型 / 模型正则），默认全关</li>
+        <li>裁剪可观测：诊断、消费日志、AgentLens 属性、可选响应头</li>
+        <li>配套单测与灰度验证流程</li>
+      </ul>
+    </div>
+    <div class="pane bad">
+      <h4>不做（Out of scope）</h4>
+      <ul>
+        <li><b>不实现 Responses 对象存储</b>：本站无响应存储，且展开历史后仍要全量发给上游，解决不了窗口问题（上轮已论证）</li>
+        <li><b>不做「透传 /responses/compact」</b>：上游实测 404，路径已判死</li>
+        <li>不动 12 条协议转换矩阵、toolconv IR、计费公式</li>
+        <li>不改造 37 分支 <code class="inline">GetAdaptor</code> 为插件化（列为 P3 长期方向）</li>
+        <li>不做「模型生成摘要式压缩」：需定义 prompt 与 output 契约，未知量太多</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>成功标准</h3>
+  <div class="kpi">
+    <div class="box"><div class="v">0</div><div class="l">灰度范围内因 prompt 过长导致的 400</div></div>
+    <div class="box"><div class="v">0</div><div class="l">因裁剪破坏 tool_use / tool_result 配对</div></div>
+    <div class="box"><div class="v">0</div><div class="l">能力表缺失导致的误裁剪（缺失即跳过）</div></div>
+    <div class="box"><div class="v">100%</div><div class="l">裁剪事件可追溯（诊断 + 日志）</div></div>
+  </div>
+  <div class="callout">
+    <div class="ct">明确的性能约束</div>
+    <p>裁剪发生在每次请求的热路径上，必须<b>默认关闭</b>、按渠道灰度；开启时对未超预算的请求要做到<b>零额外序列化</b>（先走便宜的粗估，超阈值才做逐条精确计数）。能力表查询必须走内存缓存，不能每次打 DB。</p>
+  </div>
+</section>
+
+<!-- ============ 2 ============ -->
+<section id="s2">
+  <h2><span class="num">2</span> 可直接复用的基座（代码已核实）</h2>
+  <p class="lead">这一节是方案成立的前提。以下每一项都在当前工作树里验证过位置与行为，实施时优先复用而非另造。</p>
+  <div class="tbl-wrap" style="margin-top:18px;">
+  <table class="tbl">
+    <thead><tr><th style="width:22%">能力</th><th style="width:38%">现有位置</th><th>如何用</th></tr></thead>
+    <tbody>
+      <tr><td><b>token 计数</b></td><td class="path">tokenkit/tokenizer.go:27<br>tokenkit/tokenkit.go:140,149<br>tokenkit/image.go</td><td><code>Count(model,text)</code> OpenAI 系走真 tiktoken（o200k/cl100k），其余走 <code>Estimate</code> 按 rune 类别加权；<code>ImageTokens</code> 处理多模态。误差 3–5%，用安全余量吸收。</td></tr>
+      <tr><td><b>能力表（已存在）</b></td><td class="path">controller/model.go:213-235<br>controller/model_import.go:35-55</td><td><code>modelCatalogMeta{ContextWindow, MaxOutputTokens, SupportsToolCall, SupportsImages, SupportsReasoning}</code> 已从 <code>Model.Extra</code> 解析。★ 当前只用于 <code>/v1/models</code> 与 <code>/api/pricing</code>，<b>需新写的是 relay 热路径的缓存读取</b>。</td></tr>
+      <tr><td><b>灰度策略范式</b></td><td class="path">setting/model_setting/global.go:13-45<br>service/openai_chat_responses_mode.go:15-54</td><td><code>ChatCompletionsToResponsesPolicy{Enabled, AllChannels, ChannelIDs, ChannelTypes, ModelPatterns}</code> + <code>IsChannelEnabled</code> + <code>matchAnyModelPattern</code>（正则 + sync.Map 缓存）。新策略照抄该结构即可。</td></tr>
+      <tr><td><b>配置热更新</b></td><td class="path">model/option.go:158-168,228-234,375-389<br>main.go:126 · common/init.go:118</td><td><code>config.GlobalConfig.Register</code> 注册，<code>UpdateOption</code> 本机立即生效，<code>SyncOptions</code> 跨节点 ≤60s 收敛。无需新表、新定时任务。</td></tr>
+      <tr><td><b>诊断链路</b></td><td class="path">relaykit/types/conversion.go:8-37<br>relay/common/conversion_diagnostics.go:25-71<br>service/log_info_generate.go:67-133</td><td><code>ConversionDiagnostic</code> + <code>info.RecordConversionDiagnostics</code> → 自动进 LogWarn 与 <code>other.admin_info</code>；<code>SetPublic</code> / <code>SetAdmin</code> 控制可见性。裁剪事件直接挂这条链。</td></tr>
+      <tr><td><b>-body 重放</b></td><td class="path">common/body_storage.go:14-38,285-304<br>relay/common/outbound_body.go:25-31</td><td>改 <code>info.Request</code> 后，每次重试由 TextHelper 重新生成出站 body；transport 级重试用 <code>GetBody</code> 恢复本次字节。只要插入点正确，两层重试天然一致。</td></tr>
+      <tr><td><b>测试夹具</b></td><td class="path">relay/chat_completions_via_responses_test.go:25-76<br>relaykit/dto/token_count_meta_test.go:14-117</td><td>httptest 假上游 + gin Context + <code>GenRelayInfo</code> + 断言出站 body，三要素齐备；四协议原始 JSON fixture 可直接复用。</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="callout danger">
+    <div class="ct">一个必须避开的坑：TokenCountMeta 不能用来裁剪</div>
+    <p><code class="inline">GetTokenCountMeta()</code>（<code class="inline">relay/request_billing.go:25-68</code>）把整个请求压平成一个 <code class="inline">CombineText</code> 字符串 + 若干计数，<b>不保留 message 边界、不写回 request</b>，是纯计费视图。裁剪必须自己遍历各 DTO 的消息数组，不能用它反推历史结构。</p>
+  </div>
+</section>
+
+<!-- ============ 3 ============ -->
+<section id="s3">
+  <h2><span class="num">3</span> 总体架构：三层 + 一条旁路</h2>
+  <p class="lead">新增代码集中在 <code class="inline">service/context_budget/</code> 一个包，对主链路的侵入只有一个调用点。</p>
+
+  <div class="grid cols-3" style="margin-top:18px;">
+    <div class="card accent">
+      <div class="k">Layer 1 · 能力数据层</div>
+      <div class="t">CapabilityResolver</div>
+      <div class="d">按「映射后的上游模型名 → 原始模型名 → 家族兜底」查 <code class="inline">Model.Extra</code>，产出 <code class="inline">{ContextWindow, MaxOutput, SupportsTools...}</code>。</div>
+      <ul>
+        <li>内存缓存 + 版本号失效，热路径零 DB</li>
+        <li>缺失 / 0 值 → 返回 unknown，<b>跳过裁剪</b></li>
+        <li>可选 option 覆盖表，支持人工修正</li>
+      </ul>
+    </div>
+    <div class="card accent">
+      <div class="k">Layer 2 · 策略层</div>
+      <div class="t">BudgetPolicy</div>
+      <div class="d">决定是否启用、预算多少、保留几条、裁剪模式（<code class="inline">trim</code> / <code class="inline">reject</code> / <code class="inline">observe</code>）。</div>
+      <ul>
+        <li>复用灰度范式：渠道 ID / 类型 / 模型正则</li>
+        <li>默认 <b>Enabled=false</b></li>
+        <li>安全余量吸收 tokenizer 误差</li>
+      </ul>
+    </div>
+    <div class="card accent">
+      <div class="k">Layer 3 · 执行层</div>
+      <div class="t">ContextTrimmer</div>
+      <div class="d">按 <code class="inline">RelayFormat</code> 分派 4 个裁剪器，原地改 <code class="inline">info.Request</code>，返回裁剪统计。</div>
+      <ul>
+        <li>OpenAI Chat / Claude / Gemini / Responses</li>
+        <li>整条消息为最小粒度，不做字符级截断</li>
+        <li>保留 system、最近 N 条、工具调用配对</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>数据流</h3>
+  <div class="flow">
+    <span class="node">入站请求解析</span><span class="arrow">→</span>
+    <span class="node">GenRelayInfo<br><span style="font-size:10.5px;color:var(--text-faint)">relay.go:134</span></span><span class="arrow">→</span>
+    <span class="node new">ContextBudget.Apply<br><span style="font-size:10.5px;opacity:.75">新增唯一调用点</span></span><span class="arrow">→</span>
+    <span class="node hot">PrepareRequestBilling<br><span style="font-size:10.5px;color:var(--text-faint)">relay.go:160</span></span><span class="arrow">→</span>
+    <span class="node">重试循环 / TextHelper</span><span class="arrow">→</span>
+    <span class="node">协议转换</span><span class="arrow">→</span>
+    <span class="node">RemoveDisabledFields / param_override</span><span class="arrow">→</span>
+    <span class="node">出站 body</span>
+  </div>
+
+  <div class="callout ok">
+    <div class="ct">为什么必须放在计费预扣之前</div>
+    <p><code class="inline">PrepareRequestBilling</code> 在重试循环<b>之外</b>、TextHelper 之前，用 <code class="inline">info.Request.GetTokenCountMeta()</code> 估算预扣额度。若裁剪只写在 TextHelper 内，预扣按裁剪前的量算，会出现临时多扣甚至「余额不足」误拒（虽然最终按上游 usage 结算会修正）。放在 <code class="inline">relay.go:134~160</code> 之间，<b>计费、param_override、日志、每次重试</b>看到的都是同一份裁剪后的 request。</p>
+  </div>
+</section>
+
+<!-- ============ 4 ============ -->
+<section id="s4">
+  <h2><span class="num">4</span> 插入点与 passthrough 处理</h2>
+  <p class="lead">这是整个方案最容易出错的地方：改内存里的 request，在 passthrough 路径上<b>完全无效</b>。</p>
+
+  <h3>主链路（唯一改动点）</h3>
+  <pre><span class="cm">// controller/relay.go — 在 GenRelayInfo 之后、PrepareRequestBilling 之前</span>
+relayInfo, err := relaycommon.<span class="fn">GenRelayInfo</span>(c, relayFormat, request, ws)
+<span class="kw">if</span> err != nil { <span class="kw">return</span> }
+
+<span class="cm">// NEW: 默认关闭；命中灰度且能力表有 contextWindow 才生效</span>
+<span class="kw">if</span> stats, changed := contextbudget.<span class="fn">Apply</span>(c, relayInfo); changed {
+    relayInfo.<span class="fn">RecordConversionDiagnostics</span>(c, stats.Diagnostic())
+    <span class="cm">// 统计挂到 RelayInfo，供日志 / AgentLens / 响应头读取</span>
+}
+
+<span class="kw">if</span> newAPIError = relay.<span class="fn">PrepareRequestBilling</span>(c, relayInfo); newAPIError != nil { <span class="kw">return</span> }</pre>
+
+  <h3>四条 passthrough 旁路（必须处理）</h3>
+  <div class="tbl-wrap">
+  <table class="tbl">
+    <thead><tr><th style="width:44%">位置</th><th>行为与处置</th></tr></thead>
+    <tbody>
+      <tr><td class="path">relay/compatible_handler.go:155-170</td><td rowspan="4">这些分支直接把<b>入站 BodyStorage 原始字节</b>发往上游，不经过 <code>info.Request</code>。且 <code>controller/relay.go:208</code> 每轮重试会把 <code>c.Request.Body</code> 复位为原始 body —— 直接替换 Body 会在下一轮被覆盖。<br><br><b>处置二选一</b>：<br>① <span class="pill rec">推荐</span> 裁剪开启时对该请求禁用 passthrough，强制走转换路径（<code>PassThroughBodyEnabled=false</code> 的一次性覆盖）；<br>② 用 <code>common.CreateBodyStorage(裁剪后 JSON)</code> 替换 <code>common.KeyBodyStorage</code> 的 gin 缓存，并处理 <code>CleanupBodyStorage</code> 生命周期。</td></tr>
+      <tr><td class="path">relay/responses_request.go:52-58</td></tr>
+      <tr><td class="path">relay/claude_handler.go:89-94</td></tr>
+      <tr><td class="path">relay/gemini_handler.go:92-97</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="callout warn">
+    <div class="ct">代价说明</div>
+    <p>选 ① 会让被灰度的渠道失去整包透传能力，但换来确定性与最小改动；若某渠道强依赖 passthrough 传私有字段，应在灰度配置里排除它，而不是给它开裁剪。<b>「裁剪」与「passthrough」互斥</b>应作为显式约束写进策略校验，避免配置出无效组合。</p>
+  </div>
+</section>
+
+<!-- ============ 5 ============ -->
+<section id="s5">
+  <h2><span class="num">5</span> 核心算法</h2>
+
+  <h3>5.1 预算公式</h3>
+  <pre>budget = contextWindow
+       − reservedOutput      <span class="cm">// max_tokens / max_output_tokens，缺省取 max_output_tokens 或窗口的 15%</span>
+       − safetyMargin        <span class="cm">// 固定 10~15% 或 max(4096, contextWindow*0.1)，吸收 tokenizer 3~5% 误差</span>
+       − toolsTokens         <span class="cm">// 工具定义通常计入 prompt，按 tokenkit.Count 估</span>
+       − systemTokens        <span class="cm">// system / instructions / systemInstruction 永不裁剪</span>
+
+used  = Σ tokenkit.Count(upstreamModel, messageText) + perMessageOverhead
+<span class="kw">if</span> used &lt;= budget → 直接返回（不裁剪）
+<span class="kw">else</span> → 从最旧的可丢弃消息开始整条移除，直到 used &lt;= budget 或触到保留集下限</pre>
+
+  <h3>5.2 保留集（误删会直接让上游 400）</h3>
+  <div class="tbl-wrap">
+  <table class="tbl">
+    <thead><tr><th style="width:20%">协议</th><th style="width:36%">结构差异</th><th>必须保留</th></tr></thead>
+    <tbody>
+      <tr><td>OpenAI Chat</td><td class="path">Messages []Message<br>openai_request.go:29-31</td><td><code>Messages[0]</code> 为 system 时保留；最近 <code>MinKeepMessages</code> 条；<code>tool_calls</code> 与其后 <code>role=tool</code> 成对保留</td></tr>
+      <tr><td>Claude</td><td class="path">System 与 Messages 分离<br>claude.go:228-246</td><td><code>System</code> 永不动；<code>thinking</code> / <code>redacted_thinking</code> block 与其签名块配对；<code>tool_use</code> / <code>tool_result</code> 成对</td></tr>
+      <tr><td>Gemini</td><td class="path">SystemInstructions 分离<br>gemini.go:14-24</td><td><code>SystemInstructions</code> 永不动；<code>functionCall</code> / <code>functionResponse</code> 成对；role 交替约束</td></tr>
+      <tr><td>Responses</td><td class="path">Input json.RawMessage<br>openai_request.go:1060-1123</td><td><code>Instructions</code> 永不动；<code>ParseInput</code> 后重组；<code>function_call</code> / <code>function_call_output</code> 成对；<b>带 previous_response_id 时跳过裁剪</b>（本站无法复现上游状态，见 §1 非目标）</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>5.3 裁剪统计与可观测</h3>
+  <pre><span class="kw">type</span> TrimStats <span class="kw">struct</span> {
+    Triggered       <span class="kw">bool</span>
+    Model           <span class="kw">string</span>
+    ContextWindow   <span class="kw">int</span>
+    Budget          <span class="kw">int</span>
+    TokensBefore    <span class="kw">int</span>
+    TokensAfter     <span class="kw">int</span>
+    DroppedMessages <span class="kw">int</span>
+    SkippedReason   <span class="kw">string</span>   <span class="cm">// capability_unknown / passthrough / stateful / under_budget</span>
+}</pre>
+  <div class="grid cols-4" style="margin-top:14px;">
+    <div class="card"><div class="k">诊断</div><div class="d"><code class="inline">context_budget_trimmed</code> 经 <code class="inline">RecordConversionDiagnostics</code> 自动进 LogWarn + <code class="inline">other.admin_info</code></div></div>
+    <div class="card"><div class="k">消费日志</div><div class="d"><code class="inline">SetPublic</code> 给用户看 <code class="inline">context_trimmed</code>；<code class="inline">SetAdmin</code> 记完整统计</div></div>
+    <div class="card"><div class="k">AgentLens</div><div class="d">Report 扩 <code class="inline">saros.context_budget_*</code> 属性，便于看板聚合</div></div>
+    <div class="card"><div class="k">响应头（可选）</div><div class="d"><code class="inline">X-Saros-Context-Trimmed</code>，流式需在首次写之前设置</div></div>
+  </div>
+
+  <h3>5.4 三种模式</h3>
+  <div class="grid cols-3" style="margin-top:14px;">
+    <div class="card"><div class="k"><span class="pill ok">默认</span></div><div class="t">observe（观测）</div><div class="d">只算不裁，记录「本会裁掉几条」。灰度第一步用它核对估算精度与触发率，零业务风险。</div></div>
+    <div class="card accent"><div class="k"><span class="pill rec">目标</span></div><div class="t">trim（裁剪）</div><div class="d">按预算整条移除旧消息，附诊断。用于已验证的渠道 / 模型。</div></div>
+    <div class="card"><div class="k"><span class="pill p2">可选</span></div><div class="t">reject（快速失败）</div><div class="d">超预算时返回明确的 <code class="inline">400 + 可读提示</code>，避免把 1m38s 的等待浪费在注定失败的上游调用上。</div></div>
+  </div>
+</section>
+
+<!-- ============ 6 ============ -->
+<section id="s6">
+  <h2><span class="num">6</span> 分阶段路线</h2>
+  <p class="lead">每阶段独立可上线、独立可回滚。P0/P1 解决线上实际问题，P2/P3 是能力建设，不阻塞前者。</p>
+
+  <div class="phase p0">
+    <div class="ph"><span class="pill p0">P0</span><span class="t">能力表接线 + 观测模式</span><span class="pill ok">建议先做</span></div>
+    <div class="body">
+      <b>内容</b>：新增 <code class="inline">service/context_budget/</code> 包；实现 <code class="inline">CapabilityResolver</code>（读 <code>Model.Extra</code> + 内存缓存 + 映射模型名回退）、<code class="inline">BudgetPolicy</code>（照抄灰度结构，默认 <code>Enabled=false</code>）、只统计不裁剪的 <code class="inline">observe</code> 实现；在 <code class="inline">relay.go:134~160</code> 加一个调用；诊断与日志字段。<br>
+      <b>价值</b>：不改任何请求内容，先在 observe 模式拿到线上真实分布 —— 有多少请求会超预算、超多少、哪些模型能力表缺值。这些数据决定 P1 的安全余量取多少。<br>
+      <b>验收</b>：灰度范围内所有请求 100% 不变（出站 body 字节一致）；诊断日志能看到触发率与能力表命中率。
+    </div>
+  </div>
+
+  <div class="phase p1">
+    <div class="ph"><span class="pill p1">P1</span><span class="t">出站窗口裁剪（核心收益）</span><span class="pill rec">根治 100001 报错</span></div>
+    <div class="body">
+      <b>内容</b>：实现四协议裁剪器与保留集；<code class="inline">trim</code> / <code class="inline">reject</code> 模式；passthrough 互斥约束（禁用透传或替换 BodyStorage）；统计可视化。先在 <b>CodeBuddy(type=64) + 长会话高频模型</b> 单渠道灰度。<br>
+      <b>价值</b>：长会话不再把全量历史顶到上游 100k 窗口；<code class="inline">100001 tokens</code> 类 400 在网关侧被消解；compact 支持从「必须做」降级为「可选增强」。<br>
+      <b>验收</b>：构造 120k+ tokens 的历史，验证出站 body 消息数下降、system 与工具配对完整、重试各轮 body 一致、计费预扣按裁剪后 token 计算。
+    </div>
+  </div>
+
+  <div class="phase p2">
+    <div class="ph"><span class="pill p2">P2</span><span class="t">能力声明外扩 + 管理入口</span></div>
+    <div class="body">
+      <b>内容</b>：把 <code class="inline">OpenAIChatCapabilities</code> 的 5 个硬编码布尔位改为「能力表优先、代码兜底」；新增 option 覆盖表与 <code class="inline">PUT /api/option/</code> 热更新；系统设置页加只读能力表视图与裁剪策略配置；补全 <code class="inline">supports_tools / vision / reasoning / streaming</code> 的通用声明。<br>
+      <b>价值</b>：新模型不用改 Go 代码；为后续按能力路由（例如把带图请求只路由到支持 vision 的渠道）打基础。<br>
+      <b>注意</b>：本阶段触及计费相关字段时，需遵守仓库 <code class="inline">AGENTS.md:130-134</code> 规定先读 <code class="inline">.agents/rules/billing.md</code>。
+    </div>
+  </div>
+
+  <div class="phase p3">
+    <div class="ph"><span class="pill p3">P3</span><span class="t">compact 支持 / provider 配置化（长期，可选）</span></div>
+    <div class="body">
+      <b>compact</b>：P1 落地后窗口已受控，compact 不再是阻塞项。若仍要做，按上轮调研的<b>路径 B</b>（本站把 compact 转成一次 chat 请求生成摘要，再包装回 <code class="inline">response.compaction</code>），且必须先抓 Codex 真实请求/响应确认 <code class="inline">output</code> item 结构 —— 目前仓库无真实抓包，盲目实现容易做出「不报错但客户端不认」的版本。<br>
+      <b>provider 配置化</b>：对标 LiteLLM「OpenAI-compatible 一个 JSON 文件」，把纯兼容渠道从 37 分支 switch 里抽成配置注册。改动面大（前后端 75 个文件），建议单独立项，不并入本次。
+    </div>
+  </div>
+</section>
+
+<!-- ============ 7 ============ -->
+<section id="s7">
+  <h2><span class="num">7</span> 改动清单（P0 + P1）</h2>
+  <div class="tbl-wrap">
+  <table class="tbl">
+    <thead><tr><th style="width:8%">类型</th><th style="width:42%">文件 / 位置</th><th>动作</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pill new">新增</span></td><td class="path">service/context_budget/{resolver,policy,trim_*,stats}.go</td><td>能力解析、灰度判定、四协议裁剪器、统计结构。全部新代码收敛在一个包。</td></tr>
+      <tr><td><span class="pill new">新增</span></td><td class="path">setting/model_setting/context_budget.go</td><td><code>ContextBudgetPolicy</code> 结构 + <code>init()</code> 注册 <code>config.GlobalConfig</code>，复用 60s 热更新。</td></tr>
+      <tr><td><span class="pill new">改</span></td><td class="path">controller/relay.go:134-160</td><td>插入唯一调用点 <code>contextbudget.Apply(c, relayInfo)</code>，必须在 <code>PrepareRequestBilling</code> 之前。</td></tr>
+      <tr><td><span class="pill new">改</span></td><td class="path">relay/compatible_handler.go:155-170<br>relay/responses_request.go:52-58<br>relay/claude_handler.go:89-94<br>relay/gemini_handler.go:92-97</td><td>裁剪开启时禁用 passthrough 或替换 BodyStorage；加策略校验禁止「裁剪 + passthrough」组合。</td></tr>
+      <tr><td><span class="pill new">改</span></td><td class="path">service/log_info_generate.go:99-133<br>agentlens/agentlens.go:30-40,167-192<br>controller/relay.go:100-119</td><td>裁剪统计写入消费日志（Public/Admin）、AgentLens 属性、可选响应头。</td></tr>
+      <tr><td><span class="pill new">改</span></td><td class="path">controller/model.go:199-237</td><td>把已有 <code>loadModelCatalogMeta()</code> 的解析结果暴露给 relay 层（加导出函数 + 缓存），不再另建表。</td></tr>
+      <tr><td><span class="pill new">改</span></td><td class="path">model/option.go:158-168,236-277,375-389</td><td>可选：注册覆盖表 option key、加 <code>validateOptionValue</code> 与 <code>updateOptionMap</code> case（P2 才需要）。</td></tr>
+      <tr><td><span class="pill new">新增</span></td><td class="path">service/context_budget/*_test.go<br>relay/context_budget_test.go</td><td>单测 + 端到端出站 body 断言。照抄 <code>chat_completions_via_responses_test.go:25-76</code> 的 httptest 夹具。</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="callout ok">
+    <div class="ct">改动量评估</div>
+    <p>P0 + P1 约 <b>9 个文件、1 个新包</b>，主链路侵入 <b>1 行调用</b>（外加 passthrough 4 处条件分支）。不涉及协议转换矩阵、计费公式、渠道注册体系，也不需要 DB 迁移 —— 这是把「已有基座接线」而非「造轮子」带来的直接收益。</p>
+  </div>
+</section>
+
+<!-- ============ 8 ============ -->
+<section id="s8">
+  <h2><span class="num">8</span> 风险、规避与回滚</h2>
+  <div class="tbl-wrap">
+  <table class="tbl">
+    <thead><tr><th style="width:22%">风险</th><th style="width:38%">成因</th><th>规避 / 回滚</th></tr></thead>
+    <tbody>
+      <tr><td><b>裁剪破坏语义</b></td><td>删掉 tool_use / tool_result 配对、thinking 签名块、Claude System 等，上游直接 400 或答非所问。</td><td>四协议各自保留集 + 配对校验；<b>裁剪后做结构自检</b>，不通过则放弃裁剪并记 warn；P0 observe 模式先跑一周核对数据；灰度从单渠道单模型开始。</td></tr>
+      <tr><td><b>tokenizer 误差</b></td><td>Claude / Gemini / Unknown 为加权估算，平均误差 3–5%，短文本更大；Unknown 权重未校准。</td><td>固定 10–15% 安全余量；只做整条消息粒度；未知家族默认不裁剪；<code>reject</code> 模式给明确提示而非静默失败。</td></tr>
+      <tr><td><b>能力表数据缺失</b></td><td><code>max_input_tokens</code> 可能为 0 / 缺失，模型别名与映射后上游名不一致。</td><td>缺失即跳过并记 <code>capability_unknown</code>；按「映射后模型名 → 原始名 → 家族」三级回退；P2 提供 option 覆盖表人工修正。</td></tr>
+      <tr><td><b>计费不一致</b></td><td>裁剪放在 TextHelper 内会导致预扣按裁剪前算，临时多扣 / 额度误拒。</td><td>强制插入 <code>relay.go:160</code> 之前；单测断言预扣 token 与裁剪后 body 一致。</td></tr>
+      <tr><td><b>重试 / 透传不一致</b></td><td>passthrough 直接发原始 BodyStorage；<code>relay.go:208</code> 每轮复位 <code>c.Request.Body</code>。</td><td>裁剪与 passthrough 互斥；端到端单测覆盖「首次 + 重试」各轮出站 body 一致。</td></tr>
+      <tr><td><b>性能回归</b></td><td>热路径逐条 token 计数、能力表查 DB。</td><td>默认关闭；粗估未超阈值就跳过精确计数；能力表内存缓存 + 版本号失效；observe 阶段量测 P99 延迟。</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="callout">
+    <div class="ct">回滚路径</div>
+    <p>策略走 <code class="inline">config.GlobalConfig</code>，<code class="inline">PUT /api/option/</code> 把 <code class="inline">Enabled=false</code> 即可<b>本机立即生效、无需重启、无需回滚二进制</b>；跨节点 ≤60s 收敛。极端情况下 <code class="inline">Apply</code> 保持默认关闭，代码本身对未灰度流量零影响。</p>
+  </div>
+</section>
+
+<!-- ============ 9 ============ -->
+<section id="s9">
+  <h2><span class="num">9</span> 验收与测试计划</h2>
+  <div class="grid cols-2" style="margin-top:16px;">
+    <div class="card">
+      <div class="k">单元测试</div>
+      <ul>
+        <li><b>能力解析</b>：正常值 / 0 值 / 缺失 / 模型别名 / 映射后名回退；缓存失效</li>
+        <li><b>灰度判定</b>：全关 / 全渠道 / 指定 ID / 指定类型 / 模型正则 / 优先级</li>
+        <li><b>预算计算</b>：under_budget / 恰好触顶 / 超大量 / max_output 缺省</li>
+        <li><b>四协议裁剪</b>：system 保留、N 条保留、工具配对、thinking 块、Responses RawMessage 重组、带 previous_response_id 跳过</li>
+        <li><b>统计与诊断</b>：字段完整、跳过原因准确、诊断去重上限</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="k">端到端 / 回归</div>
+      <ul>
+        <li>httptest 假上游，断言<b>实际出站 body</b> 的 messages 数量与顺序</li>
+        <li>首次 + 渠道级重试 + transport 重试，三轮 body 一致</li>
+        <li>passthrough 开启 / 关闭两种配置下的行为</li>
+        <li>计费预扣 token 与裁剪后 body 一致</li>
+        <li>observe 模式下出站 body <b>字节级不变</b></li>
+        <li>回归：<code>go test ./... </code>、<code>go vet</code>、前端构建、<code>read_lints</code></li>
+      </ul>
+    </div>
+  </div>
+  <h3>灰度上线顺序</h3>
+  <div class="flow">
+    <span class="node">① 全量 observe（默认关，按渠道开）</span><span class="arrow">→</span>
+    <span class="node">② 收集 3–7 天触发率 / 能力表命中率</span><span class="arrow">→</span>
+    <span class="node">③ 校准安全余量</span><span class="arrow">→</span>
+    <span class="node new">④ 单渠道 trim 灰度</span><span class="arrow">→</span>
+    <span class="node">⑤ 双协议 200 与长会话复测</span><span class="arrow">→</span>
+    <span class="node">⑥ 逐步扩面</span>
+  </div>
+  <div class="callout warn">
+    <div class="ct">复测要用真实故障样本</div>
+    <p>线上那次报错的请求（user 11、<code class="inline">POST /v1/responses</code>、耗时 1m38s、prompt_tokens 峰值 32 万）在 <code class="inline">log_contents</code> / <code class="inline">logs</code> 里<b>没有记录</b>，拿不到原始出站 body。灰度验证需自行构造 120k+ tokens 的长会话，或在 P0 observe 阶段通过 AgentLens 的原始 body（属性上限 128 KiB）留档。</p>
+  </div>
+</section>
+
+<!-- ============ 10 ============ -->
+<section id="s10">
+  <h2><span class="num">10</span> 请确认的决策项</h2>
+  <div class="grid cols-2" style="margin-top:16px;">
+    <div class="q">
+      <div class="qt">① 实施范围</div>
+      <div class="qd">是先只做 P0（观测、零风险、拿数据），还是 P0+P1 一起做（直接解决 400）？建议先 P0，用真实数据校准余量后再开裁剪。</div>
+      <div class="opt">P0 单独 / P0+P1 / 仅出方案不实施</div>
+    </div>
+    <div class="q">
+      <div class="qt">② 默认模式与灰度对象</div>
+      <div class="qd">trim 模式默认是否只作用于 CodeBuddy(type=64)？其它渠道（Claude/Gemini/DeepSeek）上游窗口更大，误裁风险更高，建议 P1 不纳入。</div>
+      <div class="opt">仅 type=64 / 含 OpenAI 兼容渠道 / 全渠道</div>
+    </div>
+    <div class="q">
+      <div class="qt">③ 裁剪 vs 快速失败</div>
+      <div class="qd">超预算时是静默裁掉旧历史（保成功率、有语义损失），还是返回明确错误让客户端自行压缩（语义无损、用户可感知）？也可按渠道配置。</div>
+      <div class="opt">trim / reject / 按渠道分别配置</div>
+    </div>
+    <div class="q">
+      <div class="qt">④ passthrough 冲突</div>
+      <div class="qd">裁剪时禁用整包透传是最小改动，但会影响依赖私有字段透传的渠道。是否接受该约束，或需要实现 BodyStorage 替换方案（改动更大）？</div>
+      <div class="opt">禁用透传（推荐） / 替换 BodyStorage</div>
+    </div>
+  </div>
+
+  <div class="callout ok" style="margin-top:22px;">
+    <div class="ct">确认后的执行顺序</div>
+    <p>按选定范围实施 → 单测 + 端到端 → 本地实例验证（严格 TOF 环境）→ 交叉编译部署 anydev → observe 灰度观测 → 再决定是否开 trim。当前仓库累计约 <b>31 个改动 + 4 个新单测未提交</b>（通用注册、登录态缓存等），实施前建议先确认这批改动是否一起提交，避免混在一起难以回滚。</p>
+  </div>
+</section>
+
+<footer>
+  VsSaros Switch · 多模型兼容优化方案 · 2026-11-10 · 基线 <code class="inline">be5acd7</code><br>
+  所有行号与行为均基于当前工作树代码核查；外部对比依据 LiteLLM 官方文档、Vercel AI SDK 官方文档、Cline <code class="inline">main</code> 分支源码。<br>
+  本文件为设计评审稿，<b>未修改任何生产代码或线上数据</b>。
+</footer>
+
+</div>
+
+<script>
+(function () {
+  var links = Array.prototype.slice.call(document.querySelectorAll('nav.toc a'));
+  links.forEach(function (a) {
+    a.addEventListener('click', function () {
+      links.forEach(function (x) { x.classList.remove('active'); });
+      a.classList.add('active');
+    });
+  });
+  var sections = Array.prototype.slice.call(document.querySelectorAll('section[id]'));
+  if ('IntersectionObserver' in window) {
+    var obs = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (!e.isIntersecting) return;
+        links.forEach(function (x) {
+          x.classList.toggle('active', x.getAttribute('href') === '#' + e.target.id);
+        });
+      });
+    }, { rootMargin: '-15% 0px -70% 0px' });
+    sections.forEach(function (s) { obs.observe(s); });
+  }
+})();
+</script>
+</body>
+</html>

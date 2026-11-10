@@ -1101,6 +1101,8 @@ function MemoryTabView(props) {
   const [files, setFiles] = (0, import_react2.useState)(null);
   const [notice, setNotice] = (0, import_react2.useState)(null);
   const [cwd, setCwd] = (0, import_react2.useState)(null);
+  // P0 (2026-11-10): multi-root scope; null = no runtime context, collapse to single-root view.
+  const [scope, setScope] = (0, import_react2.useState)(null);
   const [branch, setBranch] = (0, import_react2.useState)(null);
   const [branches, setBranches] = (0, import_react2.useState)([]);
   const [view, setView] = (0, import_react2.useState)("pretty");
@@ -1150,6 +1152,14 @@ function MemoryTabView(props) {
       setCwd(res.cwd);
       setBranch(res.branch);
       setBranches(res.branches ?? []);
+      setScope(res.scope === null || res.scope === void 0 ? null : {
+        workspaceId: res.workspaceId ?? null,
+        roots: res.roots ?? [],
+        workspaceKey: res.workspaceKey ?? null,
+        botKey: res.botKey ?? null,
+        current: res.scope.current,
+        ambiguous: res.scope.ambiguous
+      });
     }).catch((error) => {
       setNotice({ kind: "error", text: error.message });
       setFiles([]);
@@ -1380,7 +1390,34 @@ function MemoryTabView(props) {
       "\u26A0\uFE0F ",
       t2("memoryTab.warning")
     ] }),
-    cwd !== null && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("p", { className: "mt-cwd", children: [
+    scope !== null && scope.roots.length > 1 ? /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "mt-scope-bar", role: "group", "aria-label": t2("memoryTab.scope.label"), children: [
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "mt-scope-title", children: t2("memoryTab.scope.label") }),
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "mt-scope-roots", role: "radiogroup", "aria-label": t2("memoryTab.scope.roots"), children: scope.roots.map((root) => /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+        "button",
+        {
+          type: "button",
+          role: "radio",
+          "aria-checked": root.path === scope.current,
+          disabled: true,
+          title: root.path,
+          className: root.path === scope.current ? "mt-scope-root mt-scope-root-active" : "mt-scope-root",
+          children: [
+            root.name,
+            root.isPrimary ? ` (${t2("memoryTab.scope.primary")})` : ""
+          ]
+        },
+        root.path
+      )) }),
+      scope.botKey !== null && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { className: "mt-badge mt-scope-bot", title: t2("memoryTab.scope.botHint"), children: [
+        "\u{1F916} ",
+        scope.botKey
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { className: "mt-scope-meta", children: [
+        scope.ambiguous ? t2("memoryTab.scope.ambiguous") : t2("memoryTab.scope.current", { root: scope.roots.find((r) => r.path === scope.current)?.name ?? "\u2014" }),
+        scope.workspaceKey !== null ? ` \u00B7 ${t2("memoryTab.scope.key")} ${scope.workspaceKey}` : "",
+        branch !== null ? ` \u00B7 ${branch}` : ""
+      ] })
+    ] }) : cwd !== null && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("p", { className: "mt-cwd", children: [
       t2("memoryTab.cwd"),
       ": ",
       cwd
@@ -1442,6 +1479,18 @@ function MemoryTabView(props) {
           /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "mt-badge mt-badge-ro", children: t2("memoryTab.readonly") }),
           activeEntries !== null && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "mt-badge mt-badge-count", children: t2("memoryTab.entryCount", { count: activeEntries.length }) }),
           activeRow.path !== void 0 && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "mt-card-path", title: activeRow.path, children: activeRow.path }),
+          activeRow.scope === "project" && activeRow.root && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { className: "mt-badge mt-scope-badge-project", title: activeRow.root.path, children: [
+            "\u{1F4C1} ",
+            activeRow.root.name
+          ] }),
+          activeRow.scope === "bot" && scope?.botKey && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { className: "mt-badge mt-scope-badge-bot", children: [
+            "\u{1F916} ",
+            scope.botKey
+          ] }),
+          activeRow.scope === "global" && /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { className: "mt-badge mt-scope-badge-global", children: [
+            "\u{1F310} ",
+            t2("memoryTab.scope.global")
+          ] }),
           activeRow.available && /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { className: "mt-card-actions", children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("button", { type: "button", className: "mt-btn", onClick: () => openWithSystem(activeRow), children: t2("memoryTab.open") }) })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("p", { className: "mt-card-desc", children: [
@@ -14037,6 +14086,54 @@ var styles_default2 = `/**
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.mt-scope-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 4px;
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.mt-scope-title {
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary);
+}
+.mt-scope-roots {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.mt-scope-root {
+  padding: 1px 7px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  cursor: default;
+}
+.mt-scope-root-active {
+  border-color: var(--dsw-alias-state-business-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 12%, transparent);
+  color: var(--dsw-alias-label-primary);
+  font-weight: 600;
+}
+.mt-scope-bot {
+  color: var(--dsw-alias-label-secondary);
+}
+.mt-scope-meta {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mt-scope-badge-project,
+.mt-scope-badge-bot,
+.mt-scope-badge-global {
+  margin-left: 4px;
+  font-size: 10px;
+}
 
 .mt-muted {
   margin: 0;
@@ -16833,6 +16930,14 @@ var zh = {
   "todo.board.empty": "\u6B64\u8C61\u9650\u6682\u65E0\u5F85\u529E",
   "todo.board.cycleStatus": "\u70B9\u51FB\u5207\u6362\u72B6\u6001",
   "memoryTab.cwd": "\u5F53\u524D\u4F1A\u8BDD\u5DE5\u4F5C\u76EE\u5F55",
+  "memoryTab.scope.label": "\u5DE5\u4F5C\u533A\u4F5C\u7528\u57DF",
+  "memoryTab.scope.roots": "\u5DE5\u4F5C\u533A\u6839\u5217\u8868",
+  "memoryTab.scope.primary": "\u4E3B\u6839",
+  "memoryTab.scope.current": "\u5F53\u524D\u4F5C\u7528\u57DF\uFF1A{root}",
+  "memoryTab.scope.key": "\u952E",
+  "memoryTab.scope.global": "\u5168\u5C40",
+  "memoryTab.scope.botHint": "\u5F53\u524D\u4F1A\u8BDD\u7684 Bot \u8EAB\u4EFD",
+  "memoryTab.scope.ambiguous": "\u26A0\uFE0F \u5F53\u524D\u76EE\u5F55\u4E0D\u5C5E\u4E8E\u4EFB\u4F55\u6839\uFF0C\u9879\u76EE\u8BB0\u5FC6\u6309\u4E3B\u6839\u5B9A\u4F4D",
   "memoryTab.loading": "\u52A0\u8F7D\u4E2D\u2026",
   "memoryTab.warning": "\u4EE5\u4E0B\u6587\u4EF6\u4E3A \xA7 \u5206\u9694\u7684\u7ED3\u6784\u5316\u8BB0\u5FC6\uFF0C\u7528\u7CFB\u7EDF\u5DE5\u5177\u6253\u5F00\u540E\u8BF7\u8C28\u614E\u7F16\u8F91\uFF0C\u968F\u610F\u4FEE\u6539\u53EF\u80FD\u7834\u574F\u683C\u5F0F\u3001\u5BFC\u81F4\u8BB0\u5FC6\u8BFB\u53D6\u9519\u4E71\u3002",
   "memoryTab.readonly": "\u53EA\u8BFB",
@@ -17646,6 +17751,14 @@ var en = {
   "todo.board.empty": "No todos in this quadrant",
   "todo.board.cycleStatus": "Click to cycle status",
   "memoryTab.cwd": "Session working directory",
+  "memoryTab.scope.label": "Workspace scope",
+  "memoryTab.scope.roots": "Workspace roots",
+  "memoryTab.scope.primary": "primary",
+  "memoryTab.scope.current": "Current scope: {root}",
+  "memoryTab.scope.key": "key",
+  "memoryTab.scope.global": "Global",
+  "memoryTab.scope.botHint": "Bot identity of this session",
+  "memoryTab.scope.ambiguous": "Current directory is outside every root; project memory resolves to the primary root",
   "memoryTab.loading": "Loading\u2026",
   "memoryTab.warning": "These files are \xA7-delimited structured memory. If you open them with a system tool, edit with caution \u2014 careless changes can break the format and corrupt memory reads.",
   "memoryTab.readonly": "Read-only",

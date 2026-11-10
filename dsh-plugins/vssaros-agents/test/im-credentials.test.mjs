@@ -12,8 +12,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-	describeFeishu, describePlatform, describePlatforms, imAccountsPathOf, maskAppId, maskValue,
-	migrateLegacyFeishu, readImAccounts, resolveFeishu, resolvePlatform, saveFeishu, savePlatform,
+	BUNDLED_FEISHU_APP, describeFeishu, describePlatform, describePlatforms, imAccountsPathOf, maskAppId, maskValue,
+	migrateLegacyFeishu, readImAccounts, resolveFeishu, resolveFeishuApp, resolvePlatform, saveFeishu, savePlatform,
 } from '../lib/imCredentials.js';
 import { IM_PLATFORM_DEFS, IM_PLATFORM_KEYS, isPlatformImplemented, platformDefOf } from '../lib/imPlatforms.js';
 
@@ -63,10 +63,46 @@ const root = mkdtempSync(join(tmpdir(), 'vssaros-imcred-'));
 const config = { dataRoot: root };
 const ENV = { VSSAROS_FEISHU_APP_ID: 'env_id', VSSAROS_FEISHU_APP_SECRET: 'env_sec' };
 
-await checkAsync('三档全无 ⇒ configured false / source none', async () => {
-	const r = await resolvePlatform({ dataRoot: mkdtempSync(join(tmpdir(), 'vssaros-none-')) }, 'feishu', { env: {} });
-	assert.equal(r.configured, false);
-	assert.equal(r.source, 'none');
+await checkAsync('★ 三档全无 ⇒ 飞书回落到随包内置应用；其它平台仍是 configured false / source none', async () => {
+	const empty = { dataRoot: mkdtempSync(join(tmpdir(), 'vssaros-none-')) };
+	const f = await resolvePlatform(empty, 'feishu', { env: {} });
+	assert.equal(f.configured, true);
+	assert.equal(f.source, 'bundled');
+	assert.equal(f.values.appId, BUNDLED_FEISHU_APP.appId);
+	assert.equal(f.values.appSecret, BUNDLED_FEISHU_APP.appSecret);
+	const tg = await resolvePlatform(empty, 'telegram', { env: {} });
+	assert.equal(tg.configured, false);
+	assert.equal(tg.source, 'none', '内置回落只许给飞书');
+});
+
+await checkAsync('★ 用户填过的字段优先；内置 Secret 绝不配到另一个 appId 上', async () => {
+	const own = { dataRoot: mkdtempSync(join(tmpdir(), 'vssaros-own-')) };
+	await saveFeishu(own, { appId: 'cli_userownapp', appSecret: 'user-secret' });
+	const r = await resolveFeishu(own, { env: {} });
+	assert.equal(r.appId, 'cli_userownapp');
+	assert.equal(r.appSecret, 'user-secret');
+	assert.equal(r.source, 'dsh');
+	/* 只填了另一个 App ID、没填 Secret ⇒ 不能拿内置 Secret 凑（会连错应用）。
+	   saveFeishu 不允许半份凭据，直接构造文件模拟手工/旧版本留下的半份记录。 */
+	const half = { dataRoot: mkdtempSync(join(tmpdir(), 'vssaros-half-')) };
+	writeFileSync(imAccountsPathOf(half), JSON.stringify({ version: 1, accounts: { feishu: { appId: 'cli_userownapp' } } }));
+	const h = await resolveFeishu(half, { env: {} });
+	assert.equal(h.configured, false);
+	assert.equal(h.appSecret, '', '内置 Secret 绝不配到另一个 appId 上');
+});
+
+await checkAsync('★ 半份凭据只填内置 App ID ⇒ 补内置 Secret；非默认选中内置应用也能解析', async () => {
+	const half = { dataRoot: mkdtempSync(join(tmpdir(), 'vssaros-builtin-half-')) };
+	writeFileSync(imAccountsPathOf(half), JSON.stringify({ version: 1, accounts: { feishu: { appId: BUNDLED_FEISHU_APP.appId } } }));
+	const r = await resolveFeishu(half, { env: {} });
+	assert.equal(r.configured, true);
+	assert.equal(r.appSecret, BUNDLED_FEISHU_APP.appSecret);
+	const empty = { dataRoot: mkdtempSync(join(tmpdir(), 'vssaros-builtin-pick-')) };
+	await saveFeishu(empty, { appId: 'cli_anotherapp', appSecret: 'another-secret' });
+	const picked = await resolveFeishuApp(empty, BUNDLED_FEISHU_APP.appId);
+	assert.equal(picked.configured, true);
+	assert.equal(picked.appSecret, BUNDLED_FEISHU_APP.appSecret);
+	assert.equal(picked.isDefault, false);
 });
 
 await checkAsync('只有环境变量 ⇒ source=env（且只对飞书生效）', async () => {

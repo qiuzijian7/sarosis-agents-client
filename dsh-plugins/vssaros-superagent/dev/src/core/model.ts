@@ -402,3 +402,13 @@ export function waitsForPerson(ticket: Ticket): boolean {
   if (report?.state !== 'blocked' && report?.state !== 'failed') return false
   return !ticket.inputs.some(input => input.kind === 'trigger' && input.human && !input.context && input.at > report.at)
 }
+
+/**
+ * ★ 2026-11-10（框架质量评估建议 3）：「待人回答」的**统一判据**，放在 core 叶子层，
+ *   让 intake（扇出闸门）与 tickets（自动化输入暂存）用同一个语义，不再各判一半。
+ *   两种形态：worker 报了 blocked/failed 等人（`waitsForPerson`），
+ *   或主管直接挂了一个未回答的提问（`ticket.attention`）——真机 cartoon.hml 工单是后者。
+ *   ⚠ `ticketStage` 仍要区分这两种形态的 action（'answer' vs report），故它不改用本函数。
+ */
+export const awaitingAnswer = (ticket: Ticket): boolean =>
+  !ticket.ended && (!!ticket.attention || waitsForPerson(ticket))

@@ -22,9 +22,9 @@ import { imLockPath, tryAcquireImLock } from '../lib/imInboundLock.js';
 import { createFeishuAppInbounds } from '../lib/feishuAppInbounds.js';
 import {
 	allowDeadLetterSender, createBinding, createBindingHub, deleteBinding,
-	findBindingForChat, inboundKeyOf, updateBinding,
+	dispatchImToAgent, findBindingForChat, inboundKeyOf, updateBinding,
 } from '../lib/bindings.js';
-import { recordDeadLetter } from '../lib/deadLetters.js';
+import { listDeadLetters, recordDeadLetter } from '../lib/deadLetters.js';
 import { createFeishuAdapter } from '../lib/adapters/feishu.js';
 import { createFeishuGateway } from '../lib/adapters/feishuInbound.js';
 import { appIdOfEvent, feishuEventBus } from '../lib/feishuEventBus.js';
@@ -464,6 +464,95 @@ await checkAsync('出站：绑定没写 appId 但 Bot 选了应用 ⇒ 用该应
 	hub.register({ id: 'feishu', async send(ctx) { got.push(ctx.appId); } });
 	await hub.deliver({ id: 'x', platform: 'feishu', chatId: 'oc_1', targetId: 'bot1', enabled: true, direction: 'both' }, 'hi');
 	assert.deepEqual(got, [B]);
+});
+
+/* ── ⑧ 2026-11-10 派发失败不再静默 / 不再误报（真机：飞书发 test 无返回）────── */
+const BOUND = { id: 'b', platform: 'feishu', chatId: 'oc_diag', chatType: 'p2p', targetKind: 'agent', targetId: 'knowledge-base-expert' };
+await checkAsync('★ 派发：agent 名单扫描抛错 ⇒ 503 + 扫描诊断，不误报「bot 不存在」', async () => {
+	await assert.rejects(
+		() => dispatchImToAgent(configOf(), {}, BOUND, { content: 'test' }, {
+			scanAgents: async () => { throw new Error('内置根读取失败'); },
+			registeredAgentIds: async () => [],
+		}),
+		(e) => e.httpStatus === 503 && /agent 名单不可用/.test(e.message)
+			&& /内置根读取失败/.test(e.message) && !/bot 不存在/.test(e.message),
+	);
+});
+await checkAsync('★ 派发：名单正常但 id 不在其中 ⇒ 404 且列出当前名单', async () => {
+	await assert.rejects(
+		() => dispatchImToAgent(configOf(), {}, BOUND, { content: 'test' }, {
+			scanAgents: async () => ({ agents: [{ id: 'coder' }, { id: 'architect' }], errors: [] }),
+			registeredAgentIds: async () => [],
+		}),
+		(e) => e.httpStatus === 404 && /绑定指向的 bot 不存在/.test(e.message)
+			&& /当前名单 2 个：coder, architect/.test(e.message),
+	);
+});
+await checkAsync('★ 派发：内置根失效（名单 0 个）⇒ 用已注册 preset 名单兜底继续派发', async () => {
+	const steered = [];
+	const state = { agents: { get: () => ({ steer: (m) => steered.push(m) }) } };
+	await dispatchImToAgent(configOf(), state, BOUND, { content: 'test', userId: 'ou_u' }, {
+		scanAgents: async () => ({ agents: [], errors: ['内置 agent 目录读取失败'] }),
+		registeredAgentIds: async () => ['coder', 'knowledge-base-expert'],
+		ensureSession: async () => ({ sessionId: 's1', created: true }),
+		renameSession: async () => {},
+	});
+	assert.equal(steered.length, 1, '兜底命中后仍要真正派发');
+	assert.equal(steered[0].source.to, 'knowledge-base-expert');
+});
+await checkAsync('★ 派发失败：给 IM 回一条限流错误提示（第二条被 loopGuard 挡住）', async () => {
+	const config = configOf();
+	writeFileSync(join(config.dataRoot, 'agent-bindings.json'), JSON.stringify({ version: 1, bindings: [
+		{ id: 'b', platform: 'feishu', chatId: 'oc_err', chatType: 'p2p', targetKind: 'agent',
+			targetId: 'coder', enabled: true, direction: 'both', allowFrom: ['ou_u'] },
+	] }));
+	const sent = [], dead = [];
+	const hub = createBindingHub({
+		config, log: () => {}, defaultFeishuAppId: async () => A,
+		scanAgents: async () => ({ agents: [{ id: 'coder', name: 'Coder' }] }),
+		dispatchAgent: async () => { throw new Error('模拟派发失败'); },
+		deadLetters: { record: async (e) => { dead.push(e); } },
+	});
+	hub.register({ id: 'feishu', async send(_ctx, text) { sent.push(text); } });
+	const m = (id) => ({ platform: 'feishu', chatId: 'oc_err', chatType: 'p2p', messageId: id, userId: 'ou_u', content: 'test' });
+	await hub.handleInbound(m('om_err_1'));
+	await hub.handleInbound(m('om_err_2'));
+	assert.equal(sent.length, 1, '同一会话 1 分钟内只回一条错误提示');
+	assert.match(sent[0], /消息未送达/);
+	assert.match(sent[0], /模拟派发失败/);
+	assert.equal(dead.length, 2, '两条都仍要记死信');
+	assert.match(dead[0].detail, /模拟派发失败/);
+});
+
+await checkAsync('★ 归属声明：skipAppIds 里的应用不派发、不记死信，chat_id 仍进最近会话', async () => {
+	const config = configOf();
+	const dead = [], dispatched = [];
+	const hub = createBindingHub({
+		config, log: () => {}, defaultFeishuAppId: async () => A,
+		skipAppIds: async () => [A],
+		scanAgents: async () => ({ agents: [{ id: 'coder', name: 'Coder' }] }),
+		dispatchAgent: async () => { dispatched.push(1); return { ok: true }; },
+		deadLetters: { record: async (e) => { dead.push(e); } },
+	});
+	const m = (id, appId) => ({ platform: 'feishu', appId, chatId: 'oc_owned', chatType: 'p2p', messageId: id, userId: 'ou_u', content: 'hi' });
+	const r = await hub.handleInbound(m('om_own_1', A));
+	assert.equal(r.reason, 'skip-app');
+	assert.equal(dispatched.length, 0, '归 SuperAgent 的应用不能被 router 派发');
+	// hub 外层会把所有 ok:false 交给 deps.deadLetters.record；「哪些 reason 真落盘」由
+	// recordDeadLetter 的 DEAD_LETTER_REASONS 白名单决定 ⇒ 必须用真实函数验证，mock 会绕过它。
+	assert.equal(dead[0]?.reason, 'skip-app', 'router 应给出 skip-app 而不是 unbound');
+	const recorded = await recordDeadLetter(config, { reason: 'skip-app', platform: 'feishu', appId: A, chatId: 'oc_owned', text: 'hi' });
+	assert.equal(recorded.skipped, true, 'skip-app 不在 DEAD_LETTER_REASONS 里 ⇒ 不该落死信');
+	assert.equal((await listDeadLetters(config)).total, 0, '死信文件里不应出现这条');
+	assert.ok(JSON.stringify(hub.recentChats()).includes('oc_owned'), 'noteRecent 必须在跳过前执行，否则设置页拿不到 chat_id');
+	// 未列入 skip 的应用（真机 cli_aa8b… → 知识库专家）照常派发，防误伤。
+	writeFileSync(join(config.dataRoot, 'agent-bindings.json'), JSON.stringify({ version: 1, bindings: [
+		{ id: 'b', platform: 'feishu', chatId: 'oc_owned', chatType: 'p2p', targetKind: 'agent',
+			targetId: 'coder', enabled: true, direction: 'both', allowFrom: ['ou_u'], appId: B },
+	] }));
+	const r2 = await hub.handleInbound(m('om_own_2', B));
+	assert.equal(r2.ok, true, '未列入 skip 的应用仍要派发');
+	assert.equal(dispatched.length, 1);
 });
 
 for (const d of dirs) { try { rmSync(d, { recursive: true, force: true }); } catch { /* 忽略 */ } }

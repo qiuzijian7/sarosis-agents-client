@@ -1,7 +1,7 @@
 // @vssaros/dsh-marketplace — tar/tar.gz 读写（★ 2026-10-22 S2：让 dsh 侧能自己解包/打包）
 //
 // ★ 为什么要自己实现：
-//   S2 要把 agent/skill/workflow 的**安装与发布**搬回 dsh 侧，而商城的包是 `package.tar.gz`。
+//   S2 要把 agent/skill/mcp 的**安装与发布**搬回 dsh 侧，而商城的包是 `package.tar.gz`。
 //   dsh 侧**没有** tar 实现（只有 `node:zlib` 的 gzip 先例）⇒ 两条路：
 //     ① 调系统 `tar` 命令 —— 用户机器上不一定有（Windows 10 以下没有）✗
 //     ② 自己解析 ustar —— 格式简单稳定（512 字节头 + 512 对齐数据）✓ ⇒ 选 ②

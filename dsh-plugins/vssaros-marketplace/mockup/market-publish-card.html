@@ -1,0 +1,766 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>商城 bot · 发布工具卡 Mockup（VsSaros 聊天框）</title>
+<!--
+  只读 Mockup，不参与插件打包。
+
+  能力真源（只读调研 2026-11-10）：
+    · vssaros-marketplace/lib/agentTools.js:28  KIND_SET = skill/agent/mcp/plugin/workbench（无 knowledge）
+    · 同上 :302-475  market_publish 工具（只登记外部源：GitHub / npm，不传包体）
+    · vssaros-marketplace/lib/publisher.js:46  PUBLISHABLE_KINDS = skill/agent/mcp/knowledge（可打 tar.gz）
+    · vssaros-marketplace/lib/client.js:877   发布抽屉 5 类下拉（无 plugin）
+    · vssaros-marketplace/lib/index.js:1200-1225  tools/pre-execute 的 ask 审批闸
+    · vssaros-marketplace/lib/githubSource.js:34 ENTRY_OF 只有 skill/agent ⇒ 其它 kind 的
+      github-source 登记「发得出但装不上」
+
+  卡片视觉真源：
+    · vssaros-chat-surface/lib/client.kbRootPicker.js:41-82  .kbrp* 表单卡 CSS 与 data-phase 状态机
+    · 协议：tool.call.toolview（keyed slot，key = 工具名），官方 dsh-client-ui-tool 渲染
+    · 主题：--dsw-alias-*（本文件内**模拟宿主注入的两档值**；真实环境由
+      vssaros-dashboard/vendor/dsw-theme/design-platform.css 提供，聊天卡不能复用 --vs-mp-*）
+-->
+<style>
+/* ── 模拟宿主注入的 dsh 设计令牌（真实环境由 design-platform.css 提供）── */
+html[data-theme="dark"] {
+	color-scheme: dark;
+	--dsw-alias-bg-base: #18191b;
+	--dsw-alias-bg-layer-1: #222326;
+	--dsw-alias-bg-layer-2: #2b2c30;
+	--dsw-alias-border-l1: rgba(255,255,255,.08);
+	--dsw-alias-border-l2: rgba(255,255,255,.15);
+	--dsw-alias-label-primary: #e6e6e8;
+	--dsw-alias-label-secondary: #a9abb2;
+	--dsw-alias-label-tertiary: #81848c;
+	--dsw-alias-label-primary-inverted: #ffffff;
+	--dsw-alias-state-warn-primary: #e0a43a;
+	--dsw-alias-state-success-primary: #4ade80;
+	--dsw-alias-state-error-primary: #ff9492;
+	--dsw-alias-state-business-primary: #4c9aff;
+	--dsw-alias-brand-primary: #4c9aff;
+	--dsw-alias-button-primary-fill: #0a7d55;
+	--dsw-alias-interactive-bg-hover: rgba(127,127,127,.18);
+	--dsw-alias-interactive-bg-active: rgba(127,127,127,.24);
+}
+html[data-theme="light"] {
+	color-scheme: light;
+	--dsw-alias-bg-base: #f7f7f5;
+	--dsw-alias-bg-layer-1: #ffffff;
+	--dsw-alias-bg-layer-2: #f0f1f4;
+	--dsw-alias-border-l1: rgba(0,0,0,.06);
+	--dsw-alias-border-l2: rgba(0,0,0,.13);
+	--dsw-alias-label-primary: #1f2024;
+	--dsw-alias-label-secondary: #55585f;
+	--dsw-alias-label-tertiary: #7b7e86;
+	--dsw-alias-label-primary-inverted: #ffffff;
+	--dsw-alias-state-warn-primary: #a86a00;
+	--dsw-alias-state-success-primary: #1a7f37;
+	--dsw-alias-state-error-primary: #c9372c;
+	--dsw-alias-state-business-primary: #007fd4;
+	--dsw-alias-brand-primary: #007fd4;
+	--dsw-alias-button-primary-fill: #0a7d55;
+	--dsw-alias-interactive-bg-hover: rgba(127,127,127,.14);
+	--dsw-alias-interactive-bg-active: rgba(127,127,127,.20);
+}
+
+html, body { height: 100%; }
+body {
+	margin: 0; font: 13px/1.6 system-ui, "Segoe UI", sans-serif;
+	background: var(--dsw-alias-bg-base, #18191b);
+	color: var(--dsw-alias-label-primary, #e6e6e8);
+}
+[hidden] { display: none !important; }
+code, .mono { font-family: ui-monospace, Consolas, monospace; }
+
+/* ── 页面骨架（评审辅助，不属于聊天卡）── */
+.mp-page { max-width: 1000px; margin: 0 auto; padding: 18px 20px 48px; }
+.mp-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.mp-title { font-size: 17px; font-weight: 600; }
+.mp-sub { font-size: 11.5px; color: var(--dsw-alias-label-secondary, #a9abb2); }
+.mp-spacer { flex: 1; }
+.mp-btn {
+	font: inherit; font-size: 11.5px; padding: 4px 11px; border-radius: 6px; cursor: pointer;
+	background: var(--dsw-alias-bg-layer-2, #2b2c30);
+	color: var(--dsw-alias-label-primary, #e6e6e8);
+	border: 1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3));
+}
+.mp-btn:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.18)); }
+.mp-btn.on { border-color: var(--dsw-alias-brand-primary, #4c9aff); color: var(--dsw-alias-state-business-primary, #4c9aff); }
+.mp-sec { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+	color: var(--dsw-alias-label-tertiary, #81848c); margin: 24px 0 8px; }
+
+/* 能力矩阵 */
+.mp-matrix { width: 100%; border-collapse: collapse; font-size: 11.5px;
+	background: var(--dsw-alias-bg-layer-1, #222326);
+	border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.2)); border-radius: 8px; overflow: hidden; }
+.mp-matrix th, .mp-matrix td { text-align: left; padding: 8px 11px; border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.2)); vertical-align: top; }
+.mp-matrix th { font-weight: 600; color: var(--dsw-alias-label-secondary, #a9abb2); background: var(--dsw-alias-bg-layer-2, #2b2c30); }
+.mp-matrix tr:last-child td { border-bottom: 0; }
+.mp-matrix td code { font-size: 10.5px; color: var(--dsw-alias-state-business-primary, #4c9aff); }
+.mp-yes { color: var(--dsw-alias-state-success-primary, #4ade80); }
+.mp-no { color: var(--dsw-alias-state-error-primary, #ff9492); }
+.mp-warn { color: var(--dsw-alias-state-warn-primary, #e0a43a); }
+.mp-note { font-size: 11px; color: var(--dsw-alias-label-tertiary, #81848c); margin-top: 8px; line-height: 1.7; }
+
+/* 聊天流容器 */
+.mp-chat {
+	margin-top: 14px; padding: 16px; border-radius: 10px;
+	background: var(--dsw-alias-bg-base, #18191b);
+	border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.2));
+}
+.mp-bubble { max-width: 76%; margin-left: auto; padding: 9px 12px; border-radius: 12px 12px 3px 12px;
+	font-size: 12px; line-height: 1.65;
+	background: var(--dsw-alias-interactive-bg-active, rgba(127,127,127,.24));
+	color: var(--dsw-alias-label-primary, #e6e6e8); }
+.mp-toolline { font-size: 10.5px; color: var(--dsw-alias-label-tertiary, #81848c); margin: 10px 0 5px; }
+.mp-approval { max-width: 620px; margin: 0 auto 10px; padding: 8px 11px; border-radius: 8px; font-size: 11px;
+	border: 1px solid var(--dsw-alias-state-warn-primary, #e0a43a);
+	color: var(--dsw-alias-state-warn-primary, #e0a43a); }
+
+/* ══════════════════════════════════════════════════════════════════
+   以下为聊天工具卡本体：逐条复刻 client.kbRootPicker.js:41-82 的 .kbrp*
+   新增字段用 .vssPub*，但所有颜色仍只走 --dsw-alias-* 令牌
+   ══════════════════════════════════════════════════════════════════ */
+.vssPub {
+	display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 6px;
+	font-size: 11.5px; line-height: 1.6; max-width: 620px; margin: 0 auto;
+	background: var(--dsw-alias-bg-layer-1, var(--vscode-editor-background, transparent));
+	border: 1px solid var(--dsw-alias-border-l1, var(--vscode-panel-border, transparent));
+	color: var(--dsw-alias-label-primary, var(--vscode-foreground, inherit));
+}
+.vssPub-hd { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.vssPub-nm { font-family: ui-monospace, Consolas, monospace; }
+.vssPub-sp { flex: 1; }
+.vssPub-tag {
+	font-size: 10px; padding: 1px 8px; border-radius: 999px;
+	border: 1px solid var(--dsw-alias-state-warn-primary, var(--vscode-inputValidation-warningBorder, transparent));
+	color: var(--dsw-alias-state-warn-primary, var(--vscode-inputValidation-warningForeground, inherit));
+}
+.vssPub[data-phase="done"] .vssPub-tag {
+	border-color: var(--dsw-alias-state-success-primary, transparent);
+	color: var(--dsw-alias-state-success-primary, inherit);
+}
+.vssPub[data-phase="err"] .vssPub-tag {
+	border-color: var(--dsw-alias-state-error-primary, transparent);
+	color: var(--dsw-alias-state-error-primary, inherit);
+}
+.vssPub-t { font-size: 13px; font-weight: 600; }
+.vssPub-d { font-size: 11px; color: var(--dsw-alias-label-secondary, var(--vscode-descriptionForeground, inherit)); }
+.vssPub-lab { font-size: 10.5px; color: var(--dsw-alias-label-secondary, inherit); }
+.vssPub-tree {
+	font: 11px/1.7 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-all;
+	padding: 7px 9px; border-radius: 5px;
+	background: var(--dsw-alias-bg-layer-2, var(--vscode-editor-background, transparent));
+	border: 1px solid var(--dsw-alias-border-l1, transparent);
+}
+.vssPub-in {
+	width: 100%; box-sizing: border-box; min-width: 0;
+	font: inherit; font-size: 11px; padding: 4px 7px; border-radius: 4px;
+	background: var(--dsw-alias-bg-layer-2, transparent);
+	color: var(--dsw-alias-label-primary, inherit);
+	border: 1px solid var(--dsw-alias-border-l2, transparent);
+}
+/* 蓝本的 flex:1 1 220px 只适用于横向 .kbrp-row；纵向 .vssPub-field 里会把它拉成 220px 高 */
+.vssPub-row > .vssPub-in { flex: 1 1 220px; width: auto; min-width: 120px; }
+.vssPub-in::placeholder { color: var(--dsw-alias-label-tertiary, inherit); opacity: .8; }
+.vssPub-ta { width: 100%; box-sizing: border-box; resize: vertical; min-height: 42px; }
+.vssPub-btn {
+	font: inherit; font-size: 11px; padding: 3px 10px; border-radius: 4px; cursor: pointer;
+	background: var(--dsw-alias-bg-layer-2, transparent);
+	color: var(--dsw-alias-label-primary, inherit);
+	border: 1px solid var(--dsw-alias-border-l2, transparent);
+}
+.vssPub-btn:hover { background: var(--dsw-alias-interactive-bg-hover, transparent); }
+.vssPub-btn.primary {
+	background: var(--dsw-alias-button-primary-fill, var(--vscode-button-background, transparent));
+	color: var(--dsw-alias-label-primary-inverted, var(--vscode-button-foreground, inherit));
+	border-color: var(--dsw-alias-button-primary-fill, transparent);
+}
+.vssPub-btn[disabled] { opacity: .55; cursor: default; }
+.vssPub-err { font-size: 11px; color: var(--dsw-alias-state-error-primary, var(--vscode-errorForeground, inherit)); }
+.vssPub-ok { font-size: 12px; color: var(--dsw-alias-state-success-primary, inherit); }
+.vssPub-note { font-size: 10.5px; color: var(--dsw-alias-label-secondary, inherit); }
+.vssPub-prev { font-size: 10.5px; color: var(--dsw-alias-label-secondary, inherit); word-break: break-all; }
+.vssPub-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.vssPub-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
+.vssPub-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.vssPub-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* ── 图标 / 缩略图设置（复刻 PkgIcon 44×44 与 PkgCover 16:9 的分离语义）── */
+.vssPub-media { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1.3fr); gap: 10px; }
+.vssPub-media-col { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.vssPub-media-prev { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 5px;
+	background: var(--dsw-alias-bg-layer-2, transparent);
+	border: 1px solid var(--dsw-alias-border-l1, transparent); }
+.vssPub-ico-box {
+	width: 44px; height: 44px; flex: 0 0 44px; border-radius: 8px; overflow: hidden;
+	display: flex; align-items: center; justify-content: center; font-size: 20px;
+	background: var(--dsw-alias-interactive-bg-active, transparent);
+	border: 1px solid var(--dsw-alias-border-l2, transparent);
+}
+.vssPub-ico-box img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.vssPub-cover-box {
+	width: 100%; aspect-ratio: 16 / 9; border-radius: 6px; overflow: hidden;
+	display: flex; align-items: center; justify-content: center; font-size: 10.5px; text-align: center;
+	color: var(--dsw-alias-label-tertiary, inherit);
+	background: var(--dsw-alias-bg-layer-2, transparent);
+	border: 1px solid var(--dsw-alias-border-l2, transparent);
+}
+.vssPub-cover-box img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.vssPub-media-hint { font-size: 10.5px; line-height: 1.65; color: var(--dsw-alias-label-secondary, inherit); }
+.vssPub-media-hint code { font-size: 10px; color: var(--dsw-alias-state-business-primary, inherit); }
+
+/* 发布后的商城卡片预览：有 cover 时不再渲染小图标（hasCover ? null : PkgIcon） */
+.vssPub-cardprev { display: flex; flex-direction: column; max-width: 320px; border-radius: 8px; overflow: hidden;
+	background: var(--dsw-alias-bg-layer-2, transparent);
+	border: 1px solid var(--dsw-alias-border-l1, transparent); }
+.vssPub-cardprev > .vssPub-cover-box { border-radius: 0; border: 0;
+	border-bottom: 1px solid var(--dsw-alias-border-l1, transparent); }
+.vssPub-cp-body { padding: 9px 11px 11px; display: flex; flex-direction: column; gap: 5px; }
+.vssPub-cp-row { display: flex; align-items: center; gap: 8px; }
+.vssPub-cp-title { font-size: 12px; font-weight: 600; }
+.vssPub-cp-desc { font-size: 10.5px; color: var(--dsw-alias-label-secondary, inherit); }
+
+/* 类型 chips / 来源分段（沿用 .kbrp-cand 的交互态） */
+.vssPub-kinds { display: flex; gap: 5px; flex-wrap: wrap; }
+.vssPub-kind {
+	font: inherit; font-size: 11px; padding: 3px 10px; border-radius: 999px; cursor: pointer;
+	background: transparent; color: var(--dsw-alias-label-primary, inherit);
+	border: 1px solid var(--dsw-alias-border-l2, transparent);
+}
+.vssPub-kind:hover { background: var(--dsw-alias-interactive-bg-hover, transparent); }
+.vssPub-kind[aria-pressed="true"] {
+	border-color: var(--dsw-alias-brand-primary, transparent);
+	background: var(--dsw-alias-interactive-bg-active, transparent);
+}
+.vssPub-kind.unsupported { border-style: dashed; opacity: .8; }
+.vssPub-kind.unsupported::after { content: ' ✕'; color: var(--dsw-alias-state-error-primary, inherit); }
+.vssPub-seg { display: inline-flex; border-radius: 5px; overflow: hidden;
+	border: 1px solid var(--dsw-alias-border-l2, transparent); }
+.vssPub-seg button {
+	font: inherit; font-size: 11px; padding: 3px 11px; cursor: pointer; border: 0;
+	background: transparent; color: var(--dsw-alias-label-secondary, inherit);
+}
+.vssPub-seg button[aria-pressed="true"] {
+	background: var(--dsw-alias-interactive-bg-active, transparent);
+	color: var(--dsw-alias-label-primary, inherit);
+}
+
+/* 能力提示条（按 kind 切换，如实标注「能发不能装」） */
+.vssPub-cap { font-size: 11px; padding: 7px 9px; border-radius: 5px; line-height: 1.65;
+	background: var(--dsw-alias-bg-layer-2, transparent);
+	border: 1px solid var(--dsw-alias-border-l1, transparent); }
+.vssPub-cap b { font-weight: 600; }
+.vssPub-cap[data-level="ok"] { border-color: var(--dsw-alias-state-success-primary, transparent); }
+.vssPub-cap[data-level="warn"] { border-color: var(--dsw-alias-state-warn-primary, transparent); }
+.vssPub-cap[data-level="err"] { border-color: var(--dsw-alias-state-error-primary, transparent); }
+.vssPub-badge { font-size: 10px; padding: 0 6px; border-radius: 999px; white-space: nowrap;
+	border: 1px solid var(--dsw-alias-border-l2, transparent);
+	color: var(--dsw-alias-label-secondary, inherit); }
+.vssPub-badge.warn { border-color: var(--dsw-alias-state-warn-primary, transparent);
+	color: var(--dsw-alias-state-warn-primary, inherit); }
+.vssPub-badge.err { border-color: var(--dsw-alias-state-error-primary, transparent);
+	color: var(--dsw-alias-state-error-primary, inherit); }
+.vssPub-badge.ok { border-color: var(--dsw-alias-state-success-primary, transparent);
+	color: var(--dsw-alias-state-success-primary, inherit); }
+
+/* 规格表（评审辅助） */
+.mp-spec { margin-top: 22px; border-radius: 8px; padding: 4px 0;
+	background: var(--dsw-alias-bg-layer-1, #222326);
+	border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.2)); }
+.mp-spec > summary { padding: 9px 13px; cursor: pointer; font-size: 11.5px; font-weight: 600;
+	color: var(--dsw-alias-label-secondary, #a9abb2); }
+.mp-spec table { border-collapse: collapse; width: 100%; font-size: 11px; }
+.mp-spec th, .mp-spec td { text-align: left; padding: 7px 13px; vertical-align: top;
+	border-top: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.2)); }
+.mp-spec th { color: var(--dsw-alias-label-tertiary, #81848c); font-weight: 600; white-space: nowrap; }
+.mp-spec td code { font-size: 10.5px; color: var(--dsw-alias-state-business-primary, #4c9aff); }
+</style>
+</head>
+<body>
+<div class="mp-page">
+
+	<div class="mp-head">
+		<span class="mp-title">商城 bot · 发布工具卡</span>
+		<span class="mp-sub">tool.call.toolview · key = market_publish</span>
+		<span class="mp-spacer"></span>
+		<button class="mp-btn" id="themeBtn">切换浅色</button>
+	</div>
+	<div class="mp-sub">只读 mockup · 样式蓝本 <code>client.kbRootPicker.js</code> · 令牌 <code>--dsw-alias-*</code> · 不写死表面色</div>
+
+	<!-- ══ 一、能力矩阵：如实回答「是否支持发布这 5 类」══ -->
+	<div class="mp-sec">一、当前支持矩阵（代码事实，不是设计愿景）</div>
+	<table class="mp-matrix">
+		<tr>
+			<th>商品类型</th>
+			<th>bot 聊天框<br><code>market_publish</code></th>
+			<th>工作台 UI<br>打 tar.gz bundle</th>
+			<th>装得上吗</th>
+			<th>关键依据 / 缺口</th>
+		</tr>
+		<tr>
+			<td><b>技能 Skill</b></td>
+			<td class="mp-yes">✅ 可登记外部源</td>
+			<td class="mp-yes">✅ 可打包</td>
+			<td class="mp-yes">✅</td>
+			<td><code>ENTRY_OF.skill = SKILL.md</code>；两条路都通，最完整</td>
+		</tr>
+		<tr>
+			<td><b>MCP</b></td>
+			<td class="mp-yes">✅ 可登记外部源</td>
+			<td class="mp-yes">✅ 可打包（<code>config.json</code>）</td>
+			<td class="mp-warn">⚠ 部分</td>
+			<td><code>githubSource.js:34</code> 的 <code>ENTRY_OF</code> 只有 skill/agent ⇒ <b>github-source 登记发得出但装不上</b>；npm 源走 local-plugin 可装</td>
+		</tr>
+		<tr>
+			<td><b>Agent</b></td>
+			<td class="mp-yes">✅ 可登记外部源</td>
+			<td class="mp-yes">✅ 可打包（<code>.agent.md</code>）</td>
+			<td class="mp-yes">✅</td>
+			<td>agent 5MB 上限；两条路都通</td>
+		</tr>
+		<tr>
+			<td><b>工作台 workbench</b></td>
+			<td class="mp-yes">✅ <b>仅</b>登记外部源</td>
+			<td class="mp-no">❌ 不能 bundle</td>
+			<td class="mp-yes">✅ local-plugin</td>
+			<td><code>publisher.js:202</code>「dsh 侧不支持发布这一类」；<code>publishPreflight</code> 要求仓库有 <code>dsh</code> 字段；安装走 <code>dsh plugin add</code></td>
+		</tr>
+		<tr>
+			<td><b>知识库 knowledge</b></td>
+			<td class="mp-no">❌ 被本地校验拒绝</td>
+			<td class="mp-yes">✅ 可打包（50MB / 隐私体检）</td>
+			<td class="mp-yes">✅</td>
+			<td><code>agentTools.js:28</code> <code>KIND_SET</code> 无 knowledge ⇒ <code>kind 必须是 … 之一</code>；<b>这是 bot 侧唯一硬缺口</b></td>
+		</tr>
+	</table>
+	<div class="mp-note">
+		⚠ <b>三处清单不一致</b>：bot <code>KIND_SET</code> = skill / agent / mcp / <b>plugin</b> / workbench（无 knowledge）；工作台发布下拉 5 类（无 plugin）；后端 <code>KINDS</code> 6 类（含 plugin）。<br>
+		⚠ bot 的 <code>market_publish</code> <b>只登记外部源</b>（<code>/versions/external</code>，不传包体）；真正打 tar.gz 上传只有工作台 UI 的「从本机打包」。<br>
+		⚠ bot 发布有 <code>tools/pre-execute</code> 的 <code>ask</code> 审批闸，回执目前是<b>官方通用文本卡</b>（<code>output.render</code>），商城 4 个工具都<b>没有</b>专用 <code>tool.call.toolview</code> 视图。<br>
+		⚠ 人设 <code>marketAgent.js:45/60/103</code> 与工具描述仍残留已移除的「工作流」，且 <code>:170</code> 迁移锚点写 <code>## 三类任务</code> 与正文 <code>## 四类任务</code> 不匹配。<br>
+		⚠ <b>图标 / 缩略图其实是「有字段、没入口」</b>：<code>market_publish</code> 有 <code>icon</code> / <code>cover</code> 参数（<code>agentTools.js:325-326</code>）、<code>ensurePackage</code> 透传、服务端也接受，但工作台「发布」抽屉与聊天卡都<b>没有设置这两个字段的 UI</b> ⇒ 作者只能靠三级优先自动取 owner 头像，无法自定义。下方卡片把这块补上。
+	</div>
+
+	<!-- ══ 二、聊天流 + 工具卡 ══ -->
+	<div class="mp-sec">二、聊天框里的 <code>market_publish</code> 工具卡（设计稿）</div>
+	<div class="mp-chat">
+		<div class="mp-bubble">帮我把 github.com/acme/mcp-tools 发到商城，作为 MCP，版本 0.3.3</div>
+		<div class="mp-toolline">↳ 模型调用 <span class="mono">market_publish</span> · <span class="mono">tools/pre-execute</span> 先弹 ask 审批</div>
+		<div class="mp-approval">⚠ 需要授权 · 允许把「acme-mcp-tools」发布到商城？　[拒绝] [允许一次]</div>
+
+		<!-- ═══ 卡片本体 ═══ -->
+		<div class="vssPub vssPub-card" id="card"
+			data-vssaros-publish-card="1" data-phase="idle" data-source="model"
+			data-kind="mcp" data-via="auto">
+			<div class="vssPub-hd">
+				<span aria-hidden="true">▾</span>
+				<span aria-hidden="true" id="hdIcon" title="发布后的商品小图标">🛒</span>
+				<span class="vssPub-nm">market_publish</span>
+				<span class="vssPub-sp"></span>
+				<span class="vssPub-note">触发：模型工具调用</span>
+				<span class="vssPub-tag" id="phaseTag">等待你填写</span>
+			</div>
+
+			<div class="vssPub-t">发布到 VsSaros 商城</div>
+			<div class="vssPub-d" id="cardDesc">登记 GitHub / npm 来源（不上传包体）；发布后进入商城，安装时从来源取。决定权在你。</div>
+
+			<!-- 类型选择：5 类，knowledge 如实禁用 -->
+			<div>
+				<div class="vssPub-lab">商品类型 <span class="mono">kind</span></div>
+				<div class="vssPub-kinds" id="kindChips">
+					<button class="vssPub-kind" data-k="skill" aria-pressed="false">⚡ Skill</button>
+					<button class="vssPub-kind" data-k="mcp" aria-pressed="true">🔌 MCP</button>
+					<button class="vssPub-kind" data-k="agent" aria-pressed="false">🤖 Agent</button>
+					<button class="vssPub-kind" data-k="workbench" aria-pressed="false">🧰 工作台</button>
+					<button class="vssPub-kind unsupported" data-k="knowledge" aria-pressed="false" title="bot 的 KIND_SET 不含 knowledge；可选中查看原因，但发布按钮会被禁用">📚 知识库</button>
+				</div>
+			</div>
+
+			<!-- 能力提示：随 kind 变化 -->
+			<div class="vssPub-cap" id="cap" data-level="warn"></div>
+
+			<!-- 来源（bot 只有外部源一条路） -->
+			<div class="vssPub-row">
+				<span class="vssPub-lab">来源</span>
+				<div class="vssPub-seg" id="srcSeg">
+					<button data-s="external" aria-pressed="true">GitHub / npm 地址</button>
+					<button data-s="local" aria-pressed="false" disabled title="bot 目前没有 bundle 上传通道">从本机打包</button>
+				</div>
+				<span class="vssPub-badge warn" id="srcBadge">只登记来源</span>
+			</div>
+
+			<div class="vssPub-grid">
+				<label class="vssPub-field">
+					<span class="vssPub-lab">GitHub 地址 <span class="mono">source *</span></span>
+					<span class="vssPub-row">
+						<input class="vssPub-in" id="fSource" value="https://github.com/acme/mcp-tools" spellcheck="false">
+						<button class="vssPub-btn" id="autoBtn" title="调 market_inspect_github 回填">✨ 自动填写</button>
+					</span>
+				</label>
+				<label class="vssPub-field">
+					<span class="vssPub-lab">发布源形态 <span class="mono">via</span></span>
+					<select class="vssPub-in" id="fVia">
+						<option value="auto">自动识别（推荐先 inspect）</option>
+						<option value="github-source">github-source（仓库根即插件）</option>
+						<option value="npm">npm（monorepo 子包）</option>
+					</select>
+				</label>
+				<label class="vssPub-field" id="npmField" hidden>
+					<span class="vssPub-lab">npm 包名 <span class="mono">npmName *</span></span>
+					<input class="vssPub-in" id="fNpm" placeholder="@scope/pkg-name" spellcheck="false">
+				</label>
+				<label class="vssPub-field">
+					<span class="vssPub-lab">唯一标识 <span class="mono">slug *</span></span>
+					<input class="vssPub-in" id="fSlug" value="acme-mcp-tools" spellcheck="false">
+				</label>
+				<label class="vssPub-field">
+					<span class="vssPub-lab">版本 <span class="mono">version *</span></span>
+					<input class="vssPub-in" id="fVer" value="0.3.3" spellcheck="false">
+				</label>
+				<label class="vssPub-field">
+					<span class="vssPub-lab">展示名称 <span class="mono">name</span></span>
+					<input class="vssPub-in" id="fName" value="Acme MCP Tools" spellcheck="false">
+				</label>
+			</div>
+
+			<label class="vssPub-field">
+				<span class="vssPub-lab">介绍 <span class="mono">description</span> · 第一行请写清外部 CLI / 扩展依赖</span>
+				<textarea class="vssPub-in vssPub-ta" id="fDesc" rows="2">运行前依赖：Node.js ≥ 18。提供文件浏览与 DOM 断言两类工具。</textarea>
+			</label>
+			<label class="vssPub-field">
+				<span class="vssPub-lab">更新说明 <span class="mono">changelog</span></span>
+				<textarea class="vssPub-in vssPub-ta" id="fLog" rows="2">首版上架；补充 stdio 启动参数说明。</textarea>
+			</label>
+
+			<!-- ── 图标 / 缩略图设置：工具参数与服务端都支持，但现有两个 UI 都没有设置入口 ── -->
+			<div class="vssPub-lab">图标与缩略图 <span class="mono">icon / cover</span> · 只收图片 URL，不上传文件</div>
+			<div class="vssPub-media">
+				<div class="vssPub-media-col">
+					<span class="vssPub-lab">小图标 <span class="mono">icon</span> · 44×44 固定格</span>
+					<input class="vssPub-in" id="fIcon" placeholder="https://…/icon.png（留空按三级优先自动取）" spellcheck="false">
+					<div class="vssPub-media-prev">
+						<div class="vssPub-ico-box" id="iconBox" data-vssaros-publish-icon="1">🔌</div>
+						<span class="vssPub-media-hint">只认 <code>http(s)</code> / <code>data:image</code><br>失败或空值按类型退回 emoji</span>
+					</div>
+				</div>
+				<div class="vssPub-media-col">
+					<span class="vssPub-lab">缩略图 <span class="mono">cover</span> · 16:9 大图</span>
+					<input class="vssPub-in" id="fCover" placeholder="https://…/cover.png（留空则不渲染大图）" spellcheck="false">
+					<div class="vssPub-cover-box" id="coverBox" data-vssaros-publish-cover="1">未设置 · 卡片只显示小图标</div>
+				</div>
+			</div>
+			<div class="vssPub-row">
+				<button class="vssPub-btn" id="autoMediaBtn" title="调 market_inspect_github 取 owner 头像">✨ 自动获取</button>
+				<button class="vssPub-btn" id="demoMediaBtn">用示例图预览</button>
+				<button class="vssPub-btn" id="clearMediaBtn">清空</button>
+				<span class="vssPub-media-hint" id="mediaNote">三级优先：显式填写 → inspect 的 <code>logo</code> → 从 <code>source</code> 现推 owner 头像；拿不到 owner 返回空，<b>不编造 URL</b>。</span>
+			</div>
+			<div class="vssPub-lab">发布后商城卡片预览（有 <span class="mono">cover</span> 时不再显示小图标）</div>
+			<div class="vssPub-cardprev" id="cardPrev" data-vssaros-publish-preview="1">
+				<div class="vssPub-cover-box" id="cpCover" hidden>封面加载失败 · 已回退</div>
+				<div class="vssPub-cp-body">
+					<div class="vssPub-cp-row">
+						<div class="vssPub-ico-box" id="cpIcon" style="width:32px;height:32px;flex:0 0 32px;font-size:16px">🔌</div>
+						<div>
+							<span class="vssPub-badge ok" id="cpBadge">MCP</span>
+							<div class="vssPub-cp-title" id="cpTitle">Acme MCP Tools</div>
+						</div>
+					</div>
+					<div class="vssPub-cp-desc" id="cpDesc">运行前依赖：Node.js ≥ 18。提供文件浏览与 DOM 断言两类工具。</div>
+				</div>
+			</div>
+
+			<div class="vssPub-tree" id="previewBox">将发布：mcp · acme-mcp-tools · v0.3.3
+来源：github.com/acme/mcp-tools（github-source / 待 inspect 判定）
+包体：不上传 —— 只登记来源，安装时从 GitHub 取
+审批：tools/pre-execute 已弹 ask（允许一次）</div>
+
+			<div class="vssPub-err" id="errBox" hidden data-vssaros-publish-error="1"></div>
+
+			<div id="doneBox" hidden>
+				<div class="vssPub-ok">✓ 已发布 acme-mcp-tools v0.3.3 · 已锁定 commit 9f3c1ad（pin commit 可见）</div>
+				<div class="vssPub-tree">发布源：github-source · acme/mcp-tools
+商城地址：/packages/acme-mcp-tools/versions/0.3.3
+回执：由 Host 的 shaNote 回显，作者能看到锁在哪次提交</div>
+				<div class="vssPub-note">⚠ 部分成功提示：MCP 的 github-source 登记当前没有安装根判据（<code>ENTRY_OF</code> 只有 skill/agent）⇒ 上架成功但用户可能装不上。</div>
+			</div>
+
+			<div class="vssPub-actions">
+				<span class="vssPub-note" id="footNote">字段带 * 为必填；发布是写操作，提交后不可撤销。</span>
+				<span class="vssPub-sp"></span>
+				<button class="vssPub-btn" id="cancelBtn">取消</button>
+				<button class="vssPub-btn primary" id="publishBtn" data-vssaros-publish-submit="1">发布</button>
+			</div>
+		</div>
+	</div>
+
+	<!-- ══ 三、状态演示 ══ -->
+	<div class="mp-sec">三、<code>data-phase</code> 状态机（点按钮切状态；失败必须就地可见 / 取消要出声）</div>
+	<div class="vssPub-row" id="phaseBtns">
+		<button class="mp-btn on" data-p="idle">idle 待填写</button>
+		<button class="mp-btn" data-p="busy">busy 发布中</button>
+		<button class="mp-btn" data-p="done">done 成功</button>
+		<button class="mp-btn" data-p="err">err 失败</button>
+	</div>
+
+	<!-- ══ 四、规格对照 ══ -->
+	<details class="mp-spec" open>
+		<summary>规格对照 · 复刻了什么 / 落地时的硬约束（点击收起）</summary>
+		<table>
+			<tr><th>部位</th><th>蓝本 / 本稿</th><th>落地约束</th></tr>
+			<tr><td>协议</td><td><code>tool.call.toolview</code>（keyed slot，key = 工具名）</td><td><code>ctx.slots.inject(…, () =&gt; ctx.slots.register({name, key:'market_publish'}, Card))</code>；key 撞名会互相顶掉</td></tr>
+			<tr><td>根节点</td><td><code>.vssPub</code>（对齐 <code>.kbrp</code>）：radius 6 / padding 10px 12px / gap 8 / 11.5px</td><td>必带 <code>data-vssaros-publish-card</code>、<code>data-phase</code>、<code>data-source</code> 等 ≥3 个 <code>data-*</code> 锚点；探针只认锚点，不认 hash 类名</td></tr>
+			<tr><td>头行</td><td><code>▾</code> + mono 工具名 + 弹性占位 + 触发来源 + 999px 状态 chip</td><td>chip 按 <code>data-phase</code> 切 <code>state-warn / success / error-primary</code></td></tr>
+			<tr><td>字段</td><td>逐项对齐 <code>market_publish</code> 的 12 个参数；<code>required: [source, kind, slug, version]</code></td><td>提交前逐字段校验，错误写回卡内可见行，不静默</td></tr>
+			<tr><td>类型</td><td>5 类 chips；knowledge 带 ✕ 标记、可选中查看原因，但发布按钮禁用</td><td>⚠ 真实落地若补 knowledge，需同步 <code>agentTools.js:28</code>、<code>:313</code>、<code>market_search</code> enum 与 <code>run-marketplace-publish-check.mjs:1103</code> 断言</td></tr>
+			<tr><td>图标 / 缩略图</td><td><code>icon</code> 44×44 固定格 + <code>cover</code> 16:9 大图，两者分离；实时预览、三级优先、失败退回 emoji</td><td>工具参数 <code>agentTools.js:325-326</code> 与 <code>ensurePackage</code> 透传、服务端字段都支持，但<b>工作台发布抽屉与聊天卡都没有设置入口</b>；只收图片 URL（<code>http(s)</code> / <code>data:image</code>），<b>不上传文件</b>；有 cover 时卡片隐藏小图标（<code>hasCover ? null : PkgIcon</code>）</td></tr>
+			<tr><td>三级优先</td><td><code>iconOf({explicit, logo, repo})</code>：显式 → inspect 的 <code>logo</code> → 从 <code>source</code> 现推 owner 头像</td><td><code>agentTools.js:82-89</code>；第三级不能少（<code>via</code> 显式给定时不调 inspect）；拿不到 owner 返回空串，<b>不编造假 URL</b></td></tr>
+			<tr><td>能力条</td><td>按 kind 如实标「可登记 / 仅外部源 / 发得出但装不上 / bot 不支持」</td><td>不许画一个 5 类都能 bundle 的假 UI；<code>githubSource.js:34</code> 的 <code>ENTRY_OF</code> 缺口要如实说</td></tr>
+			<tr><td>状态</td><td><code>idle → busy → done | err</code> 单一真源</td><td>busy 时按钮 <code>disabled</code> + 「发布中…」；只有 <code>ok:true</code> 才算成功；<code>warnings[]</code> 拼进成功文案表达部分成功</td></tr>
+			<tr><td>回执</td><td>成功区显示 slug / version / 发布源 / <b>锁定 commit</b></td><td><code>check-marketplace-client.mjs:348</code> 要求 <code>shaNote</code> 可见；失败要有「重试」</td></tr>
+			<tr><td>取消</td><td>点击后 <code>已取消发布，未产生副作用</code></td><td>硬纪律：取消要出声，不静默（<code>kbRootPicker.js:11</code>）</td></tr>
+			<tr><td>主题</td><td>全量 <code>var(--dsw-alias-*, &lt;兜底&gt;)</code>，深浅两档</td><td>❌ 不能用 <code>--vs-mp-*</code>（自托管页专用、不跨 iframe）；❌ 写死表面色（<code>check-theme-hardcodes.mjs</code>）；❌ 不存在的 alias token；大面积描边不用 <code>brand-primary</code>（暗色下是深蓝黑，看不见）</td></tr>
+			<tr><td>动作回传</td><td>提交走 Host <code>publish</code> op；不自动回模型</td><td>❌ 不用 <code>postMessage</code> 回模型；需要回模型时用 <code>vssaros-composer-prefill</code>（只落笔、不自动发送）</td></tr>
+			<tr><td>chunk 接线</td><td>新增 <code>client.marketPublish.js</code></td><td>必须进 <code>PART_CHUNKS</code>、<code>package.json files</code>、入口 <code>CLIENT_BUILD_STAMP</code>；只 <code>require('react')</code>；注释里不许出现 ASCII 双引号</td></tr>
+		</table>
+	</details>
+
+</div>
+
+<script>
+(function () {
+	var root = document.documentElement;
+	var card = document.getElementById('card');
+	var tag = document.getElementById('phaseTag');
+	var cap = document.getElementById('cap');
+	var errBox = document.getElementById('errBox');
+	var doneBox = document.getElementById('doneBox');
+	var publishBtn = document.getElementById('publishBtn');
+	var cancelBtn = document.getElementById('cancelBtn');
+	var footNote = document.getElementById('footNote');
+	var previewBox = document.getElementById('previewBox');
+	var srcBadge = document.getElementById('srcBadge');
+	var autoBtn = document.getElementById('autoBtn');
+	var npmField = document.getElementById('npmField');
+	var fVia = document.getElementById('fVia');
+	var iconBox = document.getElementById('iconBox');
+	var coverBox = document.getElementById('coverBox');
+	var cpIcon = document.getElementById('cpIcon');
+	var cpCover = document.getElementById('cpCover');
+	var cpBadge = document.getElementById('cpBadge');
+	var cpTitle = document.getElementById('cpTitle');
+	var cpDesc = document.getElementById('cpDesc');
+	var hdIcon = document.getElementById('hdIcon');
+	var mediaNote = document.getElementById('mediaNote');
+	var KIND_EMOJI = { skill: '⚡', mcp: '🔌', agent: '🤖', workbench: '🧰', knowledge: '📚', plugin: '🧩' };
+
+	/* 主题：默认跟随系统，按钮可覆盖 */
+	if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) { root.dataset.theme = 'light'; }
+	var themeBtn = document.getElementById('themeBtn');
+	function syncTheme() { themeBtn.textContent = root.dataset.theme === 'dark' ? '切换浅色' : '切换深色'; }
+	syncTheme();
+	themeBtn.addEventListener('click', function () {
+		root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+		syncTheme();
+	});
+
+	/* 五类的真实能力（与上方矩阵一致） */
+	var CAPS = {
+		skill: { level: 'ok', label: 'Skill', badge: '可登记 · 可打包 · 可安装', cls: 'ok',
+			html: '<b>✅ Skill</b>　bot 可登记外部源，工作台 UI 也可打 tar.gz 上传（<code>SKILL.md</code>，2MB 上限）。两条路都通。' },
+		mcp: { level: 'warn', label: 'MCP', badge: '可登记 · ⚠ 能发不能装', cls: 'warn',
+			html: '<b>⚠ MCP</b>　bot 可登记 <code>github-source</code>，但 <code>githubSource.js:34</code> 的 <code>ENTRY_OF</code> 只有 skill/agent ⇒ <b>登记发得出、安装时没有安装根判据</b>。改走 <code>npm</code> 源可由 local-plugin 安装；或到工作台 UI 打 bundle（<code>config.json</code>）。' },
+		agent: { level: 'ok', label: 'Agent', badge: '可登记 · 可打包 · 可安装', cls: 'ok',
+			html: '<b>✅ Agent</b>　bot 可登记外部源，工作台 UI 也可打包（<code>.agent.md</code>，5MB 上限）。' },
+		workbench: { level: 'warn', label: '工作台', badge: '仅外部源 · 不能 bundle', cls: 'warn',
+			html: '<b>⚠ 工作台</b>　bot <b>只能登记外部源</b>：<code>publisher.js:202</code> 明确「dsh 侧不支持发布这一类」。<code>publishPreflight</code> 要求仓库根 <code>package.json</code> 带 <code>dsh</code> 字段；安装走 <code>dsh plugin add</code>（需重启 Host）。' },
+		knowledge: { level: 'err', label: '知识库', badge: 'bot 不支持', cls: 'err',
+			html: '<b>❌ 知识库</b>　<code>agentTools.js:28</code> 的 <code>KIND_SET</code> 不含 knowledge，传这个 kind 会被直接拒（<code>kind 必须是 … 之一</code>）。<b>请切到商城工作台的「发布」抽屉从本机打包</b>（50MB 上限 + 隐私体检）。要补 bot 能力需同步改 <code>KIND_SET</code>、工具描述、<code>market_search</code> enum 与对应守卫断言。' }
+	};
+
+	function val(id) { return String(document.getElementById(id).value || '').trim(); }
+	function isImg(v) { return /^(https?:\/\/|data:image\/)/i.test(String(v || '').trim()); }
+	function shortUrl(v) {
+		var s = String(v || '');
+		return s.length > 46 ? s.slice(0, 46) + '…（共 ' + s.length + ' 字符）' : s;
+	}
+	function svgData(w, h, bg, fg) {
+		var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '">'
+			+ '<rect width="' + w + '" height="' + h + '" fill="' + bg + '"/>'
+			+ '<circle cx="' + (w / 2) + '" cy="' + (h / 2) + '" r="' + (Math.min(w, h) / 4) + '" fill="' + fg + '"/>'
+			+ '</svg>';
+		return 'data:image/svg+xml,' + encodeURIComponent(svg);
+	}
+	/* 复刻 PkgIcon / PkgCover：只认图片 URL，加载失败退回 emoji / 隐藏大图 */
+	function putImg(box, url, fallbackText, onFail) {
+		box.textContent = '';
+		if (!isImg(url)) { box.textContent = fallbackText; return false; }
+		var img = document.createElement('img');
+		img.alt = ''; img.loading = 'lazy'; img.decoding = 'async'; img.referrerPolicy = 'no-referrer';
+		img.onerror = function () {
+			box.textContent = fallbackText;
+			if (typeof onFail === 'function') { onFail(); }
+		};
+		img.src = url;
+		box.appendChild(img);
+		return true;
+	}
+	function updateMedia() {
+		var emo = KIND_EMOJI[card.dataset.kind] || '📦';
+		var ic = val('fIcon');
+		var cv = val('fCover');
+		putImg(iconBox, ic, emo);
+		putImg(cpIcon, ic, emo);
+		hdIcon.textContent = isImg(ic) ? '🖼' : emo;
+		var hasCover = isImg(cv);
+		if (hasCover) {
+			putImg(coverBox, cv, '封面加载失败 · 已回退');
+			cpCover.hidden = false;
+			putImg(cpCover, cv, '封面加载失败 · 已回退', function () {
+				cpCover.hidden = true;
+				cpIcon.style.display = '';
+			});
+			cpIcon.style.display = 'none';   // hasCover ? null : PkgIcon
+		} else {
+			coverBox.textContent = '未设置 · 卡片只显示小图标';
+			cpCover.hidden = true;
+			cpIcon.style.display = '';
+		}
+		cpBadge.textContent = (CAPS[card.dataset.kind] || {}).label || card.dataset.kind;
+		cpTitle.textContent = val('fName') || val('fSlug') || '未命名商品';
+		cpDesc.textContent = val('fDesc') || '这个商品暂时还没有填写介绍。';
+	}
+	function updatePreview() {
+		var k = card.dataset.kind;
+		var via = fVia.value === 'auto' ? '待 inspect 判定' : fVia.value;
+		previewBox.textContent = '将发布：' + k + ' · ' + (val('fSlug') || '未填') + ' · v' + (val('fVer') || '未填')
+			+ '\n来源：' + (val('fSource') || '未填') + '（' + via + '）'
+			+ '\n图标 icon：' + (shortUrl(val('fIcon')) || '自动（三级优先）')
+			+ '\n缩略图 cover：' + (shortUrl(val('fCover')) || '自动（独立跑三级优先；显式给 icon 时不一定同值）')
+			+ '\n包体：不上传 —— 只登记来源，安装时从 GitHub / npm 取'
+			+ '\n审批：tools/pre-execute 已弹 ask（允许一次）';
+	}
+	function applyKind(k) {
+		card.dataset.kind = k;
+		var c = CAPS[k];
+		cap.dataset.level = c.level;
+		cap.innerHTML = c.html;
+		srcBadge.textContent = c.badge;
+		srcBadge.className = 'vssPub-badge ' + c.cls;
+		Array.prototype.slice.call(document.querySelectorAll('.vssPub-kind')).forEach(function (b) {
+			b.setAttribute('aria-pressed', b.dataset.k === k ? 'true' : 'false');
+		});
+		publishBtn.disabled = (k === 'knowledge') || card.dataset.phase !== 'idle';
+		publishBtn.title = k === 'knowledge' ? 'bot 的 KIND_SET 不含 knowledge；请到工作台 UI 打包发布' : '';
+		updatePreview();
+		updateMedia();
+	}
+
+	document.getElementById('kindChips').addEventListener('click', function (e) {
+		var b = e.target.closest('button');
+		if (!b || card.dataset.phase !== 'idle') { return; }
+		applyKind(b.dataset.k);
+		errBox.hidden = true;
+		footNote.textContent = b.dataset.k === 'knowledge'
+			? '❌ bot 不支持发布知识库；请切到商城工作台「发布」抽屉从本机打包（发布按钮已禁用）。'
+			: '字段带 * 为必填；发布是写操作，提交后不可撤销。';
+	});
+	fVia.addEventListener('change', function () {
+		npmField.hidden = fVia.value !== 'npm';
+		card.dataset.via = fVia.value;
+		updatePreview();
+	});
+	['fSource', 'fSlug', 'fVer', 'fName'].forEach(function (id) {
+		document.getElementById(id).addEventListener('input', function () { updatePreview(); updateMedia(); });
+	});
+	['fIcon', 'fCover'].forEach(function (id) {
+		document.getElementById(id).addEventListener('input', function () { updatePreview(); updateMedia(); });
+	});
+	document.getElementById('fDesc').addEventListener('input', updateMedia);
+	/* 三级优先的三个演示：自动获取 / 示例图 / 清空回到 emoji 兜底 */
+	document.getElementById('autoMediaBtn').addEventListener('click', function () {
+		var ownerAvatar = 'https://github.com/acme.png?size=200';
+		document.getElementById('fIcon').value = ownerAvatar;
+		document.getElementById('fCover').value = ownerAvatar;
+		mediaNote.innerHTML = '已按 <code>market_inspect_github</code> 的 <code>logo</code> / 从 <code>source</code> 现推的 owner 头像回填；<code>icon</code> 与 <code>cover</code> 各自独立跑三级优先。<b>外链在离线预览里可能加载失败 ⇒ 正好演示失败回退 emoji</b>。';
+		updatePreview(); updateMedia();
+	});
+	document.getElementById('demoMediaBtn').addEventListener('click', function () {
+		document.getElementById('fIcon').value = svgData(44, 44, '#0a7d55', '#4ade80');
+		document.getElementById('fCover').value = svgData(320, 180, '#0a7d55', '#4ade80');
+		mediaNote.innerHTML = '已填入 <code>data:image/svg+xml</code> 示例图（真实契约允许 <code>data:image/</code>）；仅用于预览，实际发布应填可公开访问的 URL。';
+		updatePreview(); updateMedia();
+	});
+	document.getElementById('clearMediaBtn').addEventListener('click', function () {
+		document.getElementById('fIcon').value = '';
+		document.getElementById('fCover').value = '';
+		mediaNote.innerHTML = '已清空 ⇒ 发布端按三级优先自动取；都拿不到时返回空串，<b>不编造 URL</b>，卡片按类型显示 emoji 兜底。';
+		updatePreview(); updateMedia();
+	});
+	autoBtn.addEventListener('click', function () {
+		document.getElementById('fName').value = 'Acme MCP Tools';
+		document.getElementById('fSlug').value = 'acme-mcp-tools';
+		footNote.textContent = '✨ 已按 market_inspect_github 的结果回填名称与标识；发布源形态请以 inspect 建议为准。';
+		updatePreview();
+	});
+
+	/* data-phase 单一真源 */
+	var PHASE = {
+		idle: { text: '等待你填写', btn: '发布', err: '', note: '字段带 * 为必填；发布是写操作，提交后不可撤销。' },
+		busy: { text: '发布中…', btn: '发布中…', err: '', note: '正在提交到商城，请勿重复点击。' },
+		done: { text: '已发布', btn: '发布', err: '', note: '已发布。若仓内资源依赖外部 CLI，介绍第一行已写明。' },
+		err: { text: '发布失败', btn: '重试', err: '发布失败：这一类（mcp）的 github-source 登记没有安装根判据 —— 发布会被服务端接受，但用户安装时会被拒。请改用 npm 源或到工作台 UI 打包。', note: '失败已就地显示；没有产生半个商品，也没写本机台账。' }
+	};
+	function setPhase(p) {
+		card.dataset.phase = p;
+		var s = PHASE[p];
+		tag.textContent = s.text;
+		publishBtn.textContent = s.btn;
+		footNote.textContent = s.note;
+		errBox.textContent = s.err;
+		errBox.hidden = !s.err;
+		doneBox.hidden = p !== 'done';
+		previewBox.hidden = p === 'done';
+		publishBtn.disabled = (p !== 'idle' && p !== 'err') || card.dataset.kind === 'knowledge';
+		cancelBtn.disabled = p === 'busy';
+		Array.prototype.slice.call(document.querySelectorAll('#phaseBtns button')).forEach(function (b) {
+			b.classList.toggle('on', b.dataset.p === p);
+		});
+		document.getElementById('kindChips').style.opacity = p === 'idle' ? '1' : '.6';
+	}
+	document.getElementById('phaseBtns').addEventListener('click', function (e) {
+		var b = e.target.closest('button');
+		if (b) { setPhase(b.dataset.p); }
+	});
+
+	/* 主 CTA：本地校验 → busy → done（失败态由 err 按钮演示） */
+	publishBtn.addEventListener('click', function () {
+		if (card.dataset.phase === 'done') { setPhase('idle'); return; }
+		if (!val('fSource') || !val('fSlug') || !val('fVer')) {
+			errBox.textContent = '还有必填项没填：source / slug / version。';
+			errBox.hidden = false;
+			return;
+		}
+		if (fVia.value === 'npm' && !val('fNpm')) {
+			errBox.textContent = 'via=npm 时必须给 npmName（monorepo 子包），否则装不上。';
+			errBox.hidden = false;
+			return;
+		}
+		setPhase('busy');
+		setTimeout(function () { setPhase('done'); }, 900);
+	});
+	cancelBtn.addEventListener('click', function () {
+		if (cancelBtn.disabled) { return; }
+		setPhase('idle');
+		footNote.textContent = '已取消发布，未产生副作用（取消要出声，不静默）。';
+	});
+
+	applyKind('mcp');
+	setPhase('idle');
+})();
+</script>
+</body>
+</html>

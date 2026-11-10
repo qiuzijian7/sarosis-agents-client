@@ -52,10 +52,12 @@ const TITLE_DICT = {
  * @param {import('./store.js').MemoryStore} store - the memory store.
  * @param {string | undefined} cwd - the session's working directory; project
  *   memory is keyed by it (absent cwd → project entry marked unavailable).
+ * @param {object | undefined} scope - P0 multi-root scope from deriveMemoryScope()
+ *   (optional; absent ⇒ single-root behaviour, rows carry scope only).
  * @returns {Array<object>} the file rows, in display order:
- *   { key, title, path, exists, content, truncated, available }.
+ *   { key, title, path, exists, content, truncated, available, scope, root?, workspaceKey? }.
  */
-export function buildMemoryFiles(config, store, cwd, sessionAgent) {
+export function buildMemoryFiles(config, store, cwd, sessionAgent, scope) {
   const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
   const projectAgent = cwd ? { session: { header: { cwd } } } : undefined
   // 与 store 同一口径（工作区键）；旧实现经 sync/identity 每次 spawn `git remote`。
@@ -95,7 +97,11 @@ export function buildMemoryFiles(config, store, cwd, sessionAgent) {
     { key: 'archive-memory', title: translate(TITLE_DICT, 'memoryTab.row.archiveMemory', undefined, getLocale()), path: join(config.memoryDir, 'MEMORY-archive.md') },
     { key: 'agents', title: translate(TITLE_DICT, 'memoryTab.row.agents', undefined, getLocale()), path: join(dshHome, 'AGENTS.md') },
   ]
+  // P0：作用域只作**展示元数据**。项目轨按当前根（或 cwd）归属，全局轨不分区。
+  const PROJECT_ROWS = new Set(['project', 'key', 'archive-key'])
+  const rootOf = (scope && scope.current) ? scope.roots.find(r => r.path === scope.current) : undefined
   return rows.map((row) => {
+    const rowScope = row.key === 'bot' ? 'bot' : PROJECT_ROWS.has(row.key) ? 'project' : 'global'
     const out = {
       key: row.key,
       title: row.title,
@@ -103,6 +109,11 @@ export function buildMemoryFiles(config, store, cwd, sessionAgent) {
       exists: false,
       truncated: false,
       content: '',
+      scope: rowScope,
+    }
+    if (rowScope === 'project') {
+      if (rootOf) out.root = rootOf
+      if (scope?.workspaceKey) out.workspaceKey = scope.workspaceKey
     }
     if (row.path === undefined) return out
     out.path = row.path

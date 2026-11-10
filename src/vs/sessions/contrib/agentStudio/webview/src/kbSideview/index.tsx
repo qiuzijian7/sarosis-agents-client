@@ -654,14 +654,18 @@ const TreeRow = ({ node, depth, selectedPaths, openSet, onOpen, onMove, onToggle
  * 库里那些**不该出现在树上的**条目（2026-10-23）：
  * 真机截图里 `index.md` / `insights.md` / `overview.md` / `.kb-insights-cache.json`
  * 和真正的笔记并排列着 —— 它们是索引/缓存产物，不是内容 ✗。
- * ⚠ 不按"点开头"一刀切（`.obsidian` 该隐，但库名可能带点），也**不动 `raw` 这类真目录**。
+ * ★ 2026-11-10（用户要求「知识库列表里隐藏 .xxxx 文件夹」）：口径改为**点开头一律隐藏**。
+ *   原先刻意保留点开头（怕库名带点），但真机上 `.archive-<日期>/`、`.log`、`.知识体系`
+ *   被当成知识库列出来 ⇒ 用户分不清哪个是真库。服务端 `listVaultTree` 已同源过滤，
+ *   这里再挡一层（侧栏可能吃到别的数据源 / 旧 Host 的 view-data）✓。
+ *   `raw` 这类真目录不带点 ⇒ 不受影响 ✓。
  */
 const NOISE_BASE = new Set(['index', 'insights', 'overview', 'readme']);
 
 function isNoise(name: string): boolean {
 	const n = name.toLowerCase();
 	return NOISE_BASE.has(n)
-		|| n.startsWith('.kb')
+		|| n.startsWith('.')
 		|| (n.endsWith('.json') && n.includes('cache'));
 }
 
@@ -857,6 +861,67 @@ type KbCanvasDoc = { name: string; path: string; notesRoot?: string; nodes: KbCa
  *   GET      /x/kb/api/feishu-log?lines=200  上次同步日志
  *   GET      /x/kb/api/feishu-schedule       定时状态
  */
+/**
+ * ★ 2026-11-10（用户要求）：`知识库列表/<文件夹>` = 一个独立知识库，
+ *   该知识库要**默认与飞书云端知识库关联**。
+ *
+ * 做三件事（纯函数 ⇒ 幂等，跑第二次 `changed=false` 自然收敛）：
+ *   ① 把旧布局的映射键（`笔记/01_学习/游戏设计` 等）按末段名字迁到 `知识库列表/<库名>`；
+ *   ② 每个一级知识库补一行（缺才补，不覆盖用户已填的 spaceId）；
+ *   ③ spaceId 为空的行，按库名去 `/api/feishu-spaces` 里同名匹配一个云端知识库。
+ *
+ * ⚠ 不猜路径：匹配不上的行保留空 spaceId，等用户「拉取飞书知识库」后自己选（不静默填错）。
+ */
+function normalizeFeishuMappings(mappings: any[], kbs: any[], spaces: any[]): { list: any[]; changed: boolean } {
+	const canon = (s: any) => String(s || '').toLowerCase().replace(/[_\s\-./\\]/g, '');
+	const wanted = (kbs || []).map(k => ({
+		name: String(k?.name || ''),
+		dir: String(k?.rel || ('知识库列表/' + String(k?.name || ''))),
+	})).filter(w => w.name && !w.name.startsWith('.'));
+	// ⚠ 不过滤空 dir：用户刚点「＋ 一行」时空行是**待填状态**，丢掉它 = 点了没反应 ✗
+	const list = (mappings || [])
+		.map(m => ({ ...m, dir: String(m?.dir || '').replace(/\\/g, '/').replace(/\/+$/, '') }));
+	let changed = false;
+	// ① 旧键迁移（目录改名 库/笔记 → 数据源/知识库列表 + 重组后的扁平主题库）
+	for (const m of list) {
+		if (m.dir.indexOf('知识库列表/') === 0) { continue; }
+		const base = m.dir.split('/').filter(Boolean).pop() || '';
+		// ⚠ 用户刚点「＋ 一行」时 dir 是空串 ⇒ `canon('')` 为空，`indexOf('')` 恒 0
+		//   ⇒ 会误把它迁到第一个库 ✗。空/过短的末段一律不猜，保留给用户手填。
+		if (canon(base).length < 2) { continue; }
+		// ⚠ 只做**规范化后精确相等**（`AI_Agent` → `AIAgent` 靠 canon 去下划线即可命中 ✓）；
+		//   不做 `indexOf` 模糊匹配 ⇒ 否则 `数据源/AI` 会被误判成 `AIAgent` 库 ✗。
+		const hit = wanted.find(w => canon(w.name) === canon(base));
+		if (hit && hit.dir !== m.dir) { m.dir = hit.dir; changed = true; }
+	}
+	// ② 每个一级知识库补一行
+	for (const w of wanted) {
+		if (!list.some(m => m.dir === w.dir)) { list.push({ dir: w.dir, spaceId: '', spaceName: '' }); changed = true; }
+	}
+	// ③ 同名关联飞书云端知识库
+	for (const m of list) {
+		if (m.spaceId || !spaces.length) { continue; }
+		const name = m.dir.split('/').filter(Boolean).pop() || '';
+		if (canon(name).length < 2) { continue; }   // 同上：空库名不许被同名匹配误关联
+		// 同样只认规范化后同名，不做模糊 ⇒ 不会把「AI」误绑到「AIAgent」的云端空间
+		const sp = spaces.find(s => canon(s?.name) === canon(name));
+		const id = String(sp?.id ?? sp?.spaceId ?? '');
+		if (sp && id) { m.spaceId = id; m.spaceName = String(sp.name ?? ''); changed = true; }
+	}
+	// ④ 迁移后可能两行落到同一个库 ⇒ 去重（保留有 spaceId 的那条）；
+	//    待填的空行原样带回，不参与去重（用户可能一次加了多行 ✗ 丢行 = 点了没反应）
+	const seen = new Map<string, any>();
+	const blanks: any[] = [];
+	for (const m of list) {
+		if (!m.dir) { blanks.push(m); continue; }
+		const prev = seen.get(m.dir);
+		if (!prev || (!prev.spaceId && m.spaceId)) { seen.set(m.dir, m); }
+	}
+	const deduped = [...Array.from(seen.values()), ...blanks];
+	if (deduped.length !== list.length) { changed = true; }
+	return { list: deduped, changed };
+}
+
 function KbFeishuSettings() {
 	const [open, setOpen] = useState(true);
 	const [settings, setSettings] = useState<any>(null);
@@ -866,6 +931,13 @@ function KbFeishuSettings() {
 	const [out, setOut] = useState('');
 	const [spaces, setSpaces] = useState<any[]>([]);
 	const [schedule, setSchedule] = useState<any>(null);
+	/** 「知识库列表」下的一级知识库（/api/kb-list）；每个就是一个独立知识库 */
+	const [kbs, setKbs] = useState<any[]>([]);
+	const [autoNote, setAutoNote] = useState('');
+	/** ★ 2026-11-10：可指定飞书应用。secret 只在输入框里，绝不进 settings state、不回显 */
+	const [appIdDraft, setAppIdDraft] = useState('');
+	const [appSecretDraft, setAppSecretDraft] = useState('');
+	const [hasAppSecret, setHasAppSecret] = useState(false);
 
 	/*
 	 * 面板侧点「同步飞书」的结果（2026-10-29）：面板用 DOM 事件抛过来，
@@ -891,8 +963,15 @@ function KbFeishuSettings() {
 			if (!alive || !b || !b.ok) { return; }
 			setSettings(b.settings || {});
 			setCliPath(String(feishuOf(b.settings).cliPath || ''));
+			// ★ 只回 appId 与 hasAppSecret；后端永不回 appSecret 明文
+			setAppIdDraft(String(feishuOf(b.settings).appId || ''));
+			setHasAppSecret(Boolean(feishuOf(b.settings).hasAppSecret));
 		}).catch(() => undefined);
 		api('feishu-schedule').then(r => r.json()).then((b) => { if (alive && b && b.ok) { setSchedule(b); } }).catch(() => undefined);
+		// ★ 一级知识库清单（`知识库列表/<文件夹>`）⇒ 映射表以它为单位自动带出
+		api('kb-list').then(r => r.json()).then((b) => {
+			if (alive && b && b.ok && Array.isArray(b.kbs)) { setKbs(b.kbs); }
+		}).catch(() => undefined);
 		return () => { alive = false; };
 	}, []);
 
@@ -904,6 +983,43 @@ function KbFeishuSettings() {
 			method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(next),
 		}).then(r => r.json()).then((b) => { if (!b || b.ok === false) { setOut('保存失败：' + String((b && b.error) || '未知')); } }).catch(e => setOut('保存失败：' + String(e)));
 	};
+
+	/**
+	 * ★ 2026-11-10：保存飞书应用。secret 留空 = 不改（后端沿用凭据库里的那份）；
+	 *   ⚠ 不把含 secret 的 payload 放进 settings state ⇒ 明文只在本次请求体里，不驻留内存。
+	 *   后端只回 `hasAppSecret`，永不回明文；保存成功后建/更新 lark-cli profile。
+	 */
+	const saveApp = () => {
+		setBusy('app');
+		const patch: any = { appId: appIdDraft.trim() };
+		if (appSecretDraft) { patch.appSecret = appSecretDraft; }
+		const payload = Object.assign({}, settings || {}, { feishu: Object.assign({}, feishuOf(settings), patch) });
+		api('kb-settings', {
+			method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+		}).then(r => r.json()).then((b) => {
+			if (!b || b.ok === false) { setOut('保存飞书应用失败：' + String((b && b.error) || '未知')); return; }
+			setSettings(b.settings || payload);
+			setHasAppSecret(Boolean(b.settings?.feishu?.hasAppSecret));
+			setAppSecretDraft('');
+			setOut((b.note ? String(b.note) + '\n' : '')
+				+ '当前 App ID：' + String(b.settings?.feishu?.appId || '（未配置，用 lark-cli 默认应用）')
+				+ ' · App Secret：' + (b.settings?.feishu?.hasAppSecret ? '已配置（明文不回显）' : '未配置'));
+		}).catch(e => setOut('保存飞书应用失败：' + String(e))).then(() => setBusy(''));
+	};
+
+	/**
+	 * ★ 默认关联（2026-11-10）：设置与「知识库列表」一级库清单都就绪后，归一化一次映射表。
+	 *   归一化是**幂等**的 ⇒ `save()` 里的 setSettings 会再触发本 effect，
+	 *   但第二次 `changed=false` ⇒ 自然收敛，不会写盘风暴 ✓。
+	 *   用户点「拉取飞书知识库」后 spaces 变化 ⇒ 再按同名补 spaceId（同样只写一次）。
+	 */
+	useEffect(() => {
+		if (!settings || !kbs.length) { return; }
+		const norm = normalizeFeishuMappings(feishuOf(settings).mappings || [], kbs, spaces);
+		if (!norm.changed) { return; }
+		setAutoNote(`已按「知识库列表」自动带出 ${kbs.length} 个知识库映射${spaces.length ? '，并按同名关联飞书云端知识库' : ''}`);
+		save({ mappings: norm.list });
+	}, [settings, kbs, spaces]);
 
 	const checkCli = () => {
 		setBusy('cli');
@@ -926,7 +1042,11 @@ function KbFeishuSettings() {
 		setBusy('spaces');
 		api('feishu-spaces').then(r => r.json()).then((b) => {
 			setSpaces((b && b.ok && Array.isArray(b.spaces)) ? b.spaces : []);
-			if (!b || !b.ok) { setOut('拉取飞书知识库失败：' + String((b && b.error) || '未知')); }
+			if (b && b.ok) { return; }
+			// ★ 2026-11-10：后端已把飞书 99991672（bot 缺 wiki scope）等错误解析成
+			//   **可读、可行动**的文案（权限清单 / 申请入口 / log_id）⇒ 直接展示，
+			//   不再把 CLI 的原始 JSON 糊进输出区 ✗。
+			setOut('拉取飞书知识库失败：\n' + String((b && b.error) || '未知原因'));
 		}).catch(e => setOut('拉取飞书知识库失败：' + String(e))).then(() => setBusy(''));
 	};
 
@@ -967,6 +1087,22 @@ function KbFeishuSettings() {
 
 			{!open ? null : (
 				<div style={{ paddingLeft: 14 }}>
+					{/* ★ 2026-11-10：飞书应用（App ID / App Secret）—— 不指定的话 lark-cli 用内置/默认应用 */}
+					<div style={row}>
+						<span style={{ fontSize: 11, color: c.fgFaint, width: 64, flex: '0 0 auto' }}>飞书应用</span>
+						<input value={appIdDraft} placeholder="App ID，如 cli_a1b2c3（留空 = 默认应用）"
+							onChange={e => setAppIdDraft(e.target.value)} style={{ ...inp, flex: '1 1 200px', minWidth: 170 }} />
+						<input type="password" value={appSecretDraft} autoComplete="off"
+							placeholder={hasAppSecret ? '已配置（明文不回显）· 留空 = 不改' : 'App Secret（只存凭据库）'}
+							onChange={e => setAppSecretDraft(e.target.value)} style={{ ...inp, flex: '0 1 190px', minWidth: 150 }} />
+						<button type="button" style={btn} onClick={saveApp}>{busy === 'app' ? '保存中…' : '保存应用'}</button>
+					</div>
+					<div style={{ fontSize: 10.5, color: c.fgDim, marginBottom: 8 }}>
+						当前：{String(feishuOf(settings).appId || '未配置（lark-cli 内置/默认应用）')}
+						{' · '}App Secret：{hasAppSecret ? '已配置' : '未配置'}
+						{' · '}保存后会为这个 App ID 建 lark-cli profile，后续所有飞书命令都带 --profile 走它。
+					</div>
+
 					{/* CLI */}
 					<div style={row}>
 						<span style={{ fontSize: 11, color: c.fgFaint, width: 64, flex: '0 0 auto' }}>CLI 路径</span>
@@ -996,21 +1132,27 @@ function KbFeishuSettings() {
 						</span>
 					</div>
 
-					{/* 映射 */}
+					{/* 映射：★ 以「知识库列表/<文件夹>」= 一个知识库为单位，默认带出并关联飞书云端 */}
 					<div style={{ ...row, marginTop: 4 }}>
 						<span style={{ fontSize: 11, color: c.fgFaint, width: 64, flex: '0 0 auto' }}>目录映射</span>
 						<button type="button" style={btn} onClick={loadSpaces}>{busy === 'spaces' ? '拉取中…' : '拉取飞书知识库'}</button>
 						<button type="button" style={btn} onClick={addMapping}>＋ 一行</button>
-						<span style={{ fontSize: 10.5, color: c.fgFaint }}>{mappings.length} 条</span>
+						<span style={{ fontSize: 10.5, color: c.fgFaint }}>{mappings.length} 条 · 每行 = 一个知识库</span>
 					</div>
+					{autoNote ? (
+						<div style={{ fontSize: 10.5, color: c.fgDim, marginBottom: 6 }}>{autoNote}</div>
+					) : null}
 					{mappings.map((m, i) => (
 						<div key={i} style={row}>
-							<input value={String(m.dir || '')} placeholder="笔记区相对目录，如 笔记/学习" onChange={e => setMapping(i, { dir: e.target.value })} style={{ ...inp, flex: '1 1 auto' }} />
+							<input value={String(m.dir || '')} readOnly placeholder="知识库列表/&lt;库名&gt;"
+								title="目录由「知识库列表」里的一级文件夹自动带出（每个文件夹 = 一个独立知识库）"
+								style={{ ...inp, flex: '1 1 auto', opacity: .85 }} />
 							<input value={String(m.spaceId || '')} placeholder="飞书 spaceId" onChange={e => setMapping(i, { spaceId: e.target.value })} style={{ ...inp, flex: '0 1 180px', minWidth: 120 }} />
 							{spaces.length ? (
-								<select onChange={e => e.target.value && setMapping(i, { spaceId: e.target.value })} style={{ ...inp, maxWidth: 160 }} value="">
+								<select onChange={e => e.target.value && setMapping(i, { spaceId: e.target.value, spaceName: (spaces.find((s: any) => String(s?.id ?? s?.spaceId) === e.target.value) || {}).name })} style={{ ...inp, maxWidth: 160 }} value="">
 									<option value="">选飞书库…</option>
-									{spaces.map((sp: any) => <option key={sp.spaceId || sp.name} value={sp.spaceId}>{sp.name || sp.spaceId}</option>)}
+									{/* ★ /api/feishu-spaces 回的是 { id, name }（原先用 sp.spaceId ⇒ 选了不生效 ✗） */}
+									{spaces.map((sp: any) => <option key={sp.id ?? sp.spaceId ?? sp.name} value={sp.id ?? sp.spaceId}>{sp.name || sp.id || sp.spaceId}</option>)}
 								</select>
 							) : null}
 							<button type="button" style={btn} onClick={() => removeMapping(i)}>删除</button>
@@ -3694,7 +3836,15 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 				<div
 					data-kb-settings="1"
 					role="tabpanel"
-					style={{ flex: '1 1 auto', minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))' }}
+					/*
+					 * ★ 2026-11-10（用户截图「知识库设置页面顶部有大量空白区域」）：
+					 *   与 home 页签同根因 —— 放在文档流里时，前面那段「细条 + 文档空态」
+					 *   （`data-kb-docbar` 28px ＋ 撑满剩余高度的空态 div）没按 activeView 收敛，
+					 *   仍占着约 200px ⇒ 设置标题被挤到半屏以下 ✗。
+					 *   ⇒ 照搬 home 的修法：绝对定位贴住页签条下沿（30 + 1px 边框 = 31），
+					 *     顶头渲染、盖住空态；页签条仍可点（本层从 31px 起）✓。
+					 */
+					style={{ position: 'absolute', left: 0, right: 0, top: 31, bottom: 0, zIndex: 3, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--dsw-alias-bg-base, var(--vscode-editor-background, #1e1e1e))' }}
 				>
 					<div
 						onClick={e => e.stopPropagation()}

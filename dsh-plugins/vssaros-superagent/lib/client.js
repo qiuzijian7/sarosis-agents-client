@@ -2705,55 +2705,58 @@ window.__ModuleLoader__.load({
 						onChange: (event) => onChange(event.target.value === "" ? "" : Number(event.target.value))
 					})
 				});
-				case "text": return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
-					label,
-					hint,
-					note: localized(t, fact),
-					action,
-					children: field.chooseFrom ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
-						className: "dt-select",
-						value: String(value ?? ""),
-						onChange: (event) => onChange(event.target.value),
-						children: [
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-								value: "",
-								children: field.choose ? localized(t, field.choose) : localized(t, field.label)
-							}),
-							String(value ?? "") && !labels[`${field.chooseFrom}:${value}`] ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-								value: String(value),
-								children: String(value)
-							}) : null,
-							Object.entries(labels).filter(([option]) => option.startsWith(field.chooseFrom + ":")).sort(byName).map(([option, name]) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-								value: option.slice(field.chooseFrom.length + 1),
-								children: name
-							}, option))
-						]
-					}) : field.choose && Object.keys(labels).length ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
-						className: "dt-select",
-						value: String(value ?? ""),
-						onChange: (event) => onChange(event.target.value),
-						children: [
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-								value: "",
-								children: localized(t, field.choose)
-							}),
-							value && !labels[String(value)] ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-								value: String(value),
-								children: String(value)
-							}) : null,
-							Object.entries(labels).sort(byName).map(([option, name]) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-								value: option,
-								children: name
-							}, option))
-						]
-					}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
-						value: String(value ?? ""),
-						readOnly: field.readonly,
-						pattern: field.pattern,
-						spellCheck: false,
-						onChange: (event) => onChange(event.target.value)
-					})
-				}), detail] });
+				case "text": {
+					const selected = String(value ?? "") || String(field.defaultValue ?? "");
+					return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
+						label,
+						hint,
+						note: localized(t, fact),
+						action,
+						children: field.chooseFrom ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
+							className: "dt-select",
+							value: selected,
+							onChange: (event) => onChange(event.target.value),
+							children: [
+								!field.noEmptyOption && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+									value: "",
+									children: field.choose ? localized(t, field.choose) : localized(t, field.label)
+								}),
+								selected && !labels[`${field.chooseFrom}:${selected}`] ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+									value: selected,
+									children: selected
+								}) : null,
+								Object.entries(labels).filter(([option]) => option.startsWith(field.chooseFrom + ":")).sort(byName).map(([option, name]) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+									value: option.slice(field.chooseFrom.length + 1),
+									children: name
+								}, option))
+							]
+						}) : field.choose && Object.keys(labels).length ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
+							className: "dt-select",
+							value: String(value ?? ""),
+							onChange: (event) => onChange(event.target.value),
+							children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+									value: "",
+									children: localized(t, field.choose)
+								}),
+								value && !labels[String(value)] ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+									value: String(value),
+									children: String(value)
+								}) : null,
+								Object.entries(labels).sort(byName).map(([option, name]) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+									value: option,
+									children: name
+								}, option))
+							]
+						}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
+							value: String(value ?? ""),
+							readOnly: field.readonly,
+							pattern: field.pattern,
+							spellCheck: false,
+							onChange: (event) => onChange(event.target.value)
+						})
+					}), detail] });
+				}
 				case "fact": return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 					className: "dt-field",
 					children: [
@@ -4030,6 +4033,33 @@ window.__ModuleLoader__.load({
 			const { running } = usePanelData();
 			const { reload } = useSettings();
 			const [advancedOpen, setAdvancedOpen] = (0, react.useState)(false);
+			const [feishuAppLabels, setFeishuAppLabels] = (0, react.useState)({});
+			(0, react.useEffect)(() => {
+				if (source.id !== "feishu" || !source.installed) return;
+				let alive = true;
+				fetch("/x/agents/api/bindings", {
+					credentials: "same-origin",
+					headers: { accept: "application/json" }
+				}).then((response) => response.ok ? response.json() : { feishuApps: [] }).then((data) => {
+					if (!alive) return;
+					const options = {};
+					for (const app of data.feishuApps ?? []) {
+						const id = String(app.appId ?? "").trim();
+						if (!id) continue;
+						const name = String(app.name ?? "").trim();
+						const label = app.isDefault ? "VsSaros助手 · " + id : (name ? name + " · " : "") + id;
+						options["feishuApps:" + id] = label + (app.hasSecret ? "" : "（缺 App Secret）");
+					}
+					setFeishuAppLabels(options);
+				}).catch(() => {});
+				return () => {
+					alive = false;
+				};
+			}, [source.id, source.installed]);
+			const appLabels = {
+				...source.labels,
+				...feishuAppLabels
+			};
 			const refreshLabels = async () => {
 				const { added } = await call("POST sources/:id/labels", { id: source.id });
 				await reload();
@@ -4048,7 +4078,7 @@ window.__ModuleLoader__.load({
 				field: spec,
 				value: value.config[spec.key],
 				saved: saved.config[spec.key],
-				labels: source.labels,
+				labels: source.id === "feishu" && spec.key === "appId" ? appLabels : source.labels,
 				refreshLabels,
 				fact: spec.type === "fact" || !changed(spec.key) ? source.facts[spec.key] : void 0,
 				onChange: (next) => draft.edit({
@@ -9604,15 +9634,24 @@ window.__ModuleLoader__.load({
 							!data.messages.length && !locals.length && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("chat.empty") }),
 							data.messages.map((message) => message.role === "person" ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 								className: "dt-msg dt-msg-person",
+								"data-source": message.source,
 								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 									className: "dt-msg-bubble",
 									children: message.text
 								}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 									className: "dt-msg-meta",
-									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(When, { at: message.at }), message.filtered && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-										className: "dt-msg-filtered",
-										children: t("chat.notHanded", { reason: reasonLabel(t, message.filtered) })
-									})]
+									children: [
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)(When, { at: message.at }),
+										message.source === "feishu" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											className: "dt-tag",
+											"data-source": "feishu",
+											children: "飞书"
+										}),
+										message.filtered && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											className: "dt-msg-filtered",
+											children: t("chat.notHanded", { reason: reasonLabel(t, message.filtered) })
+										})
+									]
 								})]
 							}, message.id) : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 								className: "dt-msg dt-msg-agent",
@@ -12129,6 +12168,23 @@ window.__ModuleLoader__.load({
 		const PANEL_ID = "dsh-superagent";
 		/** The plugin row's id in the bundle patch (kept from upstream, so saved settings carry over). */
 		const ENTRY = "dsh-superagent";
+		/**
+		
+		* ★ 2026-11-10：跨 chunk 旁路统一「记住的群」。
+		
+		*   本插件的 @群 / 流程卡 / 群执行卡都会调 openSession(roomId)，但 chat-surface 的选中态
+		
+		*   只在侧栏群行点击时更新 ⇒ Host 仍按旧群放宽转投。这里在 openSession 入口认出群 id，
+		
+		*   走 client.workspaces.js 注册的桥（没装该 chunk 时静默跳过，不影响打开会话）。
+		
+		*/
+		function noteSelectedRoom(id) {
+			try {
+				const w = window;
+				if (w.__vssarosKnownRoomIds?.has(id) && typeof w.__vssarosSelectRoom === "function") w.__vssarosSelectRoom(id);
+			} catch {}
+		}
 		/** VsSaros change: the package as a VsSaros built-in. */
 		const PACKAGE = "@vssaros/dsh-superagent";
 		function HammerIcon({ size }) {
@@ -12168,6 +12224,7 @@ window.__ModuleLoader__.load({
 				pending.current?.abort();
 			}, []);
 			const openSession = (0, react.useCallback)(async (id) => {
+				noteSelectedRoom(id);
 				pending.current?.abort();
 				const request = new AbortController();
 				pending.current = request;
@@ -12207,6 +12264,7 @@ window.__ModuleLoader__.load({
 		*/
 		function deskToolView(ctx, t, receipt = false) {
 			const openSession = async (id) => {
+				noteSelectedRoom(id);
 				try {
 					await openKnownSession(ctx.sessions, id, (target) => {
 						ctx.uiWorkspace.openSession(target);

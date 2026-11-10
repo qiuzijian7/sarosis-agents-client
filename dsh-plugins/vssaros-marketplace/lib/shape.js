@@ -147,14 +147,22 @@ export function toInstalledItem(entry, latest = '') {
 		id: entry.storeId,
 		kind: entry.kind,
 		slug: entry.storeId,
-		name: entry.storeId,
+		// ★ 2026-11-10：本地知识库用 `知识库列表/<文件夹>` 的真实名字，不再拿容器 id
+		//   （`ext-f0e1fcee`）当显示名。台账商品没有 displayName ⇒ 仍按旧行为用 storeId。
+		name: entry.displayName || entry.storeId,
 		version: entry.version,
 		// ★ 2026-10-29：已安装页签的卡片也必须带 `installedVersion`
 		//   —— 否则卡片按"没装"渲染，会出现「已安装列表里的商品显示『安装』按钮」✗
 		installedVersion: entry.version,
-		description: '',
+		description: entry.description || '',
 		latestVersion: latest,
 		upgradable: Boolean(latest),
 		installedAt: entry.installedAt,
+		// ★ 2026-11-10：本地新建资源（不在台账）带标记，前端据此给发布入口
+		isLocal: entry.isLocal === true,
+		...(entry.localId ? { localId: entry.localId } : {}),
+		...(entry.sourceDir ? { sourceDir: entry.sourceDir } : {}),
+		// `知识库列表/<库名>`：详情/发布时用得上，前端也可据此显示归属
+		...(entry.rel ? { rel: entry.rel } : {}),
 	};
 }

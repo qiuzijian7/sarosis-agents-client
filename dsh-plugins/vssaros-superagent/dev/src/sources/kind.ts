@@ -18,7 +18,8 @@ export type FieldSpec =
   | FieldBase & { type: 'switch' }
   | FieldBase & { type: 'select'; options: { value: string; label: Localized }[] }
   | FieldBase & { type: 'number'; min: number; max: number }
-  | FieldBase & { type: 'text'; pattern?: string; readonly?: boolean; choose?: Localized }
+  /** ★ 2026-11-10：`noEmptyOption` 去掉 chooseFrom 下拉的占位空项；`defaultValue` 是空配置时显示的默认选中值。 */
+  | FieldBase & { type: 'text'; pattern?: string; readonly?: boolean; choose?: Localized; noEmptyOption?: true; defaultValue?: string }
   | FieldBase & { type: 'fact'; settings?: 'deployment' }
   | FieldBase & { type: 'rows'; columns: ({ key: string; label: Localized; type: 'text'; pattern?: string; optional?: boolean; choose?: Localized; refresh?: Localized; chooseFrom?: string } | { key: string; label: Localized; type: 'select'; options: { value: string; label: Localized }[] })[] }
 

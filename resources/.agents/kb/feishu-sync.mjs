@@ -1023,9 +1023,14 @@ function resolveCliLaunch() {
  * 解析失败时回退旧的 `shell:true`，并**对含空格的参数手工加引号**尽量兜住。
  */
 function lark(args, cwd) {
+	// ★ 2026-11-10：Host 通过 VSSAROS_KB_FEISHU_PROFILE 传 appId（非机密），
+	//   全局参数 `--profile` 必须排在子命令之前（照 superagent 的 larkArgv）。
+	//   ⚠ appSecret 从不进这里的 argv / env —— 它只在 lark-cli 的 profile 里 ✓。
+	const appProfile = String(process.env.VSSAROS_KB_FEISHU_PROFILE || '').trim();
+	const profilePrefix = appProfile ? ['--profile', appProfile] : [];
 	const launch = resolveCliLaunch();
 	if (launch) {
-		const res = spawnSync(launch.exe, [...launch.prefix, ...args], {
+		const res = spawnSync(launch.exe, [...launch.prefix, ...profilePrefix, ...args], {
 			encoding: 'utf8',
 			shell: false,
 			cwd,
@@ -1037,7 +1042,7 @@ function lark(args, cwd) {
 		return { code: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
 	}
 	// 回退：shell 模式下 cmd 不会补引号 ⇒ 含空格/特殊字符的参数手工加引号
-	const safe = args.map(a => {
+	const safe = [...profilePrefix, ...args].map(a => {
 		const s = String(a);
 		return /[\s"&|^<>]/.test(s) ? `"${s.replace(/"/g, '')}"` : s;
 	});

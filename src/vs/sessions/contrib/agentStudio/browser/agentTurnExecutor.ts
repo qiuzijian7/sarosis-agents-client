@@ -1,7 +1,6 @@
 import {
 	IModelProvider, IModelSelection, IModelOptions,
 	IModelDelta,
-	IMemoryProvider,
 	IAgentTurnRequest, IChatStreamDelta,
 	IToolDefinition, IToolCallInfo,
 	ISandboxViolationInfo,
@@ -63,7 +62,6 @@ import type {
 	ITurnToolCall, ITurnToolResult, ISandboxResolution, IToolFinalizationDeps,
 } from './turnToolExecution.js';
 import { TurnHookBus } from '../common/turnHookBus.js';
-import { registerMemoryProviderHooks } from './turnHookWiring.js';
 import { isPlanFileWriteCall } from '../common/planFile.js';
 import { filterPlanExclusiveTools } from '../common/chatModeConfig.js';
 import { join as pathJoin } from '../../../../base/common/path.js';
@@ -163,7 +161,6 @@ import {
 } from '../common/searchToolGroups.js';
 import {
 	logToolAuditSummary,
-	storeTurnObservationsAtEnd,
 } from './parts/turnFinalization.js';
 import {
 	emitPromptBudgetReport,
@@ -189,8 +186,7 @@ import {
 } from '../common/assistantVisibleText.js';
 import { buildDurableContextSystemMessage } from '../common/durableContextMiddleware.js';
 import { AGUIChatMessageBuilder } from '../common/adapters/aguiAdapter.js';
-import { ContextManager, RETRIEVAL_COMPACTION_ENABLED, RETRIEVAL_BUDGET_RATIO } from '../common/contextManager.js';
-import { injectMemoryContext, isMemoryInjectionEnabled } from './agentMemoryInjection.js';
+import { ContextManager } from '../common/contextManager.js';
 import { getLastMcpServerStats } from './agentToolAssembly.js';
 import { IterationBudget } from '../common/iterationBudget.js';
 import { createTurnLoopState } from '../common/turnLoopState.js';
@@ -253,7 +249,6 @@ interface ITurnContext {
 	selection: IModelSelection;
 	enabledTools: IToolDefinition[];
 	messages: any[];
-	memoryProvider: IMemoryProvider | undefined;
 	/** 实际作为第一条 system 消息发送的冻结前缀（含 model 相关的 enforcement 追加）。
 	 * fork 前缀指纹与 modelOptions.systemPrompt 均基于本值，保证缓存对齐一致。 */
 	effectiveSystemPrompt: string | undefined;
@@ -422,49 +417,6 @@ interface ITurnContext {
 		host._logService.info(`[AgentOS] Injected volatile tier (${volatileContent.length} chars) after frozen prefix`);
 	}
 
-	// ─── P8 Recently Touched Files（volatile 层，2026-07-25 修复死代码）───
-	// 「最近触碰」是每轮可变语义，与 volatile 层天然匹配；此前挂在一次性策展
-	// 注入块内且 stash 每轮末清空，从未生效（doc §12 F3）。stash 现按会话
-	// 生命周期保留，turn 开始时消费上一轮工具执行收集的文件路径。
-	if (isMemoryInjectionEnabled()) {
-		const touchedFiles = host._consumeStashedFiles(request.agentId);
-		if (touchedFiles.length > 0) {
-			let filesContent = `## Recently Touched Files\n${touchedFiles.slice(0, 10).join('\n')}`;
-
-			// mem::enrich 复刻（高价值部分）：触碰文件的历史 bug 记忆提示——
-			// 「即将编辑这些文件 → 这些文件过去踩过的坑」。type=bug ∩ isLatest
-			// ∩ files 路径重叠，updatedAt 倒序 top3；失败静默降级。
-			try {
-				const provider = host.getActiveMemoryProvider();
-				const bugMemories: Array<{ id: string; title: string; content: string }> =
-					await provider?.bugMemoriesForFiles?.(request.agentId, touchedFiles) ?? [];
-				if (bugMemories.length > 0) {
-					filesContent += `\n\n<agentmemory-past-errors>\n${bugMemories.map((m: { title: string; content: string }) => `- ${m.title}: ${m.content}`).join('\n')}\n</agentmemory-past-errors>`;
-				}
-			} catch { /* best effort，不阻断 turn */ }
-
-			let filesInsertIdx = 0;
-			for (let i = 0; i < messages.length; i++) {
-				if (messages[i]?.role === 'system') { filesInsertIdx = i + 1; } else { break; }
-			}
-			messages = insertMessages(messages, filesInsertIdx, { role: 'system', content: filesContent });
-			host._logService.info(`[AgentOS] Injected recently-touched files (${touchedFiles.length} paths) as volatile tier`);
-		}
-	}
-
-		// ─── 加载 Memory 上下文并注入 system prompt（冻结快照模式）──────
-		// 委托到 agentMemoryInjection.ts 的 injectMemoryContext async generator。
-		const memoryProvider = host.getActiveMemoryProvider();
-		const memResult = yield* injectMemoryContext({
-			logService: host._logService,
-			getActiveMemoryProvider: () => memoryProvider,
-			injectedSessions: host._injectedSessions,
-			metaInjectedSessions: host._metaInjectedSessions,
-			// 用户设置 `agentStudio.memory.injectContext`（2026-10-20）：此前只能靠环境变量开，
-			// 设置 UI 里看不到这个开关。与环境变量是"或"关系（见 isMemoryInjectionEnabled）。
-			readInjectContextSetting: () => host._isMemoryInjectContextConfigured?.() === true,
-		}, request, messages);
-		messages = memResult.messages;
 
 		// ─── Inject Durable Context（借鉴 deer-flow DurableContextMiddleware）────
 		// Durable context survives summarization compression and keeps the LLM
@@ -517,10 +469,6 @@ interface ITurnContext {
 			}
 			if (lastUserIdx >= 0 && typeof messages[lastUserIdx].content === 'string') {
 				try {
-					// 2026-08-06：enrich 前从 agentmemory 记忆系统读取策展上下文
-					// 只读注入 working_memory_content 标签（数据源为 MemoryProvider，
-					// 非 .codebuddy/memory/ 文件）
-					await host._refreshWorkingMemoryContent?.(request.agentId, request.sessionId);
 					// kb_overview 标签：L1 常驻目录摘要（TTL 60s + 1.5s 超时 + 预算截断，内部不抛）
 					await host._refreshKbOverviewContent?.();
 					// ⚠ 必须在替换**之前**取原长度（2026-08-22 修，日志 1787368358120）：
@@ -558,7 +506,7 @@ interface ITurnContext {
 			}
 		}
 
-	return { modelProvider, selection, enabledTools, messages, memoryProvider, effectiveSystemPrompt };
+	return { modelProvider, selection, enabledTools, messages, effectiveSystemPrompt };
 }
 
 // ─── 模块级纯函数：见 `parts/turnHelpers.ts` ─────
@@ -618,7 +566,7 @@ interface ITurnContext {
 
 	const ctx = yield* initTurnContext(host, request);
 	if (!ctx) { return undefined; }
-	const { modelProvider, selection, memoryProvider } = ctx;
+	const { modelProvider, selection } = ctx;
 	// ─── 钩子总线（2026-09-17：拍板「总线是唯一分发面」后接线）─────────────
 	// 此前本 turn 的钩子分发有两套：策略钩子（IAgentLoopStrategy）+ 未类型化的
 	// `memoryProvider.triggerHook`（裸 string 钩子名，散落 4 个文件）。总线统一
@@ -627,12 +575,6 @@ interface ITurnContext {
 	const hookBus = new TurnHookBus((hookName, error) => {
 		host._logService.warn(`[AgentOS] Hook "${hookName}" failed: ${error.message}`);
 	});
-	const disposeMemoryHooks = registerMemoryProviderHooks(
-		hookBus,
-		memoryProvider,
-		{ agentId: request.agentId, sessionId: request.sessionId || '' },
-		message => host._logService.warn(message),
-	);
 	// 实际发送的冻结前缀（含 model 相关 enforcement）——fork 指纹与 modelOptions 统一基于本值
 	const effectiveSystemPrompt = ctx.effectiveSystemPrompt;
 	let enabledTools = ctx.enabledTools;
@@ -1150,61 +1092,6 @@ interface ITurnContext {
 		// 解析模型真实上下文窗口（token），用于计算压缩阈值
 		const compressionWindow = await host._resolveContextWindow(modelProvider, selection.modelId);
 
-		// ─── 检索式上下文：每轮 turn 开始前独立注入（对齐 agentmemory mem::context）──
-		// 把记忆检索从「仅压缩时」提前到每轮 llm_streaming 前：turn 开始时即检索相关
-		// 对话上下文并作为独立 system 消息注入，使 LLM 每轮都能拿到历史记忆；同时把
-		// 当前消息增量外置到记忆（含本 turn 新到的 user 消息），保证首轮压缩也有数据、
-		// 彻底去除首次 37s。仅在 RETRIEVAL_COMPACTION_ENABLED 开启时执行。
-		if (RETRIEVAL_COMPACTION_ENABLED) {
-			const rp = host.getActiveMemoryProvider();
-			if (rp && (rp as any).recallFormatted) {
-				// ★ P2（2026-08-21，日志 1787289570191）：先把 UI 切到「正在检索历史上下文」。
-				// 该日志 `sendMessage FIRST_DELTA elapsed=31966ms type=memory_injected`
-				// —— 用户点发送后 **32 秒**才看到任何反应，全花在下面的外置 + 检索上，
-				// 期间界面完全静默，体感等同卡死。
-				// 与 'compressing' 完全同构：phase 进 runState 供 checkpoint/UI 读取。
-				const _phaseBeforeRetrieval = runState.phase;
-				runState = reduceRunState(runState, { type: 'SET_PHASE', phase: 'retrieving' });
-				yield { type: 'phase_change', phase: runState.phase };
-				try {
-					// 1) 增量外置：先把当前 messages（含本 turn 新到的 user 消息 + 历史）
-					//    写进记忆（await 保证落盘），保证本 turn 内触发压缩时 recallFormatted
-					//    已有数据可取，彻底去除首次 37s。
-					await host._storeTurnObservations(rp, request.agentId ?? 'default', request.sessionId ?? '', messages);
-					// 2) 检索相关上下文并注入为独立 system 消息（前缀与 contextManager
-					//    INJECTED_CONTEXT_PREFIX 一致，压缩时会被剥离，避免与摘要重复）。
-					const r = await host._retrieveContextOnly(
-						rp, request.agentId ?? 'default', request.sessionId ?? '', messages,
-						Math.floor(compressionWindow * RETRIEVAL_BUDGET_RATIO),
-					);
-					if (r && r.context.trim()) {
-						messages = host._injectRetrievalSystemMessage(messages, r.context, r.source);
-						syncMessages();
-						host._logService.info(
-							`[AgentOS][Retrieval] injected retrieved context at turn start ` +
-							`(source=${r.source}, ~${Math.ceil(r.context.length / 3)} tokens) for agent ${request.agentId}`
-						);
-						yield {
-							type: 'memory_injected',
-							content: `已检索注入历史上下文 (~${Math.ceil(r.context.length / 3)} tokens)`,
-							metadata: { source: r.source, retrieval: true },
-						} as any;
-					}
-				} catch (reErr) {
-					host._logService.warn(
-						`[AgentOS][Retrieval] turn-start retrieval failed: ` +
-						`${reErr instanceof Error ? reErr.message : String(reErr)}`
-					);
-				} finally {
-					// 恢复检索前的 phase（无论成功/失败/无结果都必须复位，
-					// 否则 UI 会一直停在「正在检索历史上下文」）。
-					// 用 finally 而非在 try 末尾：上面的 catch 是"失败开放"的，
-					// 复位逻辑必须覆盖所有出口。
-					runState = reduceRunState(runState, { type: 'SET_PHASE', phase: _phaseBeforeRetrieval });
-					yield { type: 'phase_change', phase: runState.phase };
-				}
-			}
-		}
 
 		// 策略可覆盖的「本轮工具面」：delegation 范式会把主循环限制为
 		// supervisor 工具（delegate_task / new_agent / plan…），所有执行工具交由
@@ -1299,8 +1186,6 @@ interface ITurnContext {
 		effectiveToolCalls: any[],
 		startedToolIds: Set<string>,
 		endedToolIds: Set<string>,
-		trimmedAssistantContent: string,
-		memoryProvider: any,
 		iteration: number,
 	): AsyncGenerator<IChatStreamDelta, 'done' | undefined> {
 		const deps: IPostIterationDeps = {
@@ -1323,7 +1208,6 @@ interface ITurnContext {
 			effectiveToolCalls,
 			startedToolIds,
 			endedToolIds,
-			trimmedAssistantContent,
 			iteration,
 		});
 	}
@@ -1844,29 +1728,6 @@ interface ITurnContext {
 						host._totalOutputTokens += (u.outputTokens ?? 0);
 						host._totalCachedTokens += (u.cachedTokens ?? 0);
 						host._scheduleSave();
-						// ─── P5: Cache hit rate monitoring — persist cache metrics to memory observation ──
-						// Aligns with agentmemory: cache_read/cache_write tokens become first-class memory observations.
-						// W3（2026-07-26 §16）：writeMemory(type=working) → observe（mem:obs 暂存层）。
-						// 此前遥测噪音直写长期 core memory；现按注释原意成为真正的「观察」
-						// （hookType=cache_metric，importance 启发式=3，不进入注入面）。
-						if ((u.cachedTokens ?? 0) > 0 || (u.cacheWriteTokens ?? 0) > 0) {
-							const memProvider = host.getActiveMemoryProvider();
-							if (memProvider) {
-								void memProvider.observe?.(request.agentId, {
-									sessionId: request.sessionId || '',
-									hookType: 'cache_metric',
-									timestamp: new Date().toISOString(),
-									data: {
-										cacheReadTokens: u.cachedTokens ?? 0,
-										cacheWriteTokens: u.cacheWriteTokens ?? 0,
-										inputTokens: u.inputTokens ?? 0,
-										outputTokens: u.outputTokens ?? 0,
-									},
-								}).catch((err: any) => {
-									host._logService.warn(`[AgentOS][CacheMetrics] failed to observe cache metric: ${err}`);
-								});
-							}
-						}
 					}
 					// 收集完整的助手消息数据
 					// ─── 捕获 provider 本轮结束原因（finish_reason / stop_reason）──
@@ -3705,21 +3566,10 @@ interface ITurnContext {
 			} // end if (localExecutedCalls.length > 0)
 			const planResult = yield* _handlePlanModeTools(effectiveToolCalls, toolResults, endedToolIds);
 			if (planResult === 'done') { return undefined; }
-			const postResult = yield* _postIterationCleanup(toolResults, localExecutedCalls, effectiveToolCalls, startedToolIds, endedToolIds, trimmedAssistantContent, memoryProvider, loopState.iteration);
+			const postResult = yield* _postIterationCleanup(toolResults, localExecutedCalls, effectiveToolCalls, startedToolIds, endedToolIds, loopState.iteration);
 			if (postResult === 'done') { break; }
 		} // end while
 
-		// ─── 每轮 turn 结束：把本轮新增对话增量外置到记忆 ──────────────────
-		// 实现已迁出至 parts/turnFinalization.ts（fire-and-forget，绝不阻塞收尾）。
-		storeTurnObservationsAtEnd({
-			retrievalCompactionEnabled: RETRIEVAL_COMPACTION_ENABLED,
-			getActiveMemoryProvider: () => host.getActiveMemoryProvider(),
-			storeTurnObservations: (provider, agentId, sessionId, msgs) =>
-				host._storeTurnObservations(provider as any, agentId, sessionId, msgs as any[]),
-			agentId: request.agentId,
-			sessionId: request.sessionId,
-			messages,
-		});
 
 		if (loopState.iteration >= maxToolIterations) {
 			host._logService.warn(
@@ -3731,10 +3581,6 @@ interface ITurnContext {
 	} finally {
 	// ★ 2026-09-21：`_unregisterPlanQueue()` 调用随 planQueueRegistry 一并删除（见上方注册块注释）。
 
-		// 注销本 turn 注册的钩子 handler。放在 finally 的姿态与原先的计划队列句柄一致
-		// （★ 2026-09-21：该句柄已随 `planQueueRegistry` 下线 —— 见上方注册块的删除说明）。
-		// 闭包持有 memoryProvider 引用，abort / 异常路径下显式解绑更可预期。
-		disposeMemoryHooks();
 
 		// ── [ToolAudit] SUMMARY（2026-08-22）──────────────────────────────────
 		// 放在 finally：**必须覆盖 abort / 异常 / generator return 全部退出路径** ——

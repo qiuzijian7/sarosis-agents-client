@@ -6,7 +6,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
-	IMemoryProvider, IToolProvider,
+	IToolProvider,
 	IPlanningProvider, IExecutionProvider, IRetrievalProvider, IKanbanProvider,
 } from '../../common/providers.js';
 
@@ -17,7 +17,6 @@ suite('SlotRegistry (Phase 1)', () => {
 	// ─── Helper: 创建测试用的 SlotRegistry 模拟 ────────────────
 
 	function createSlotRegistry() {
-		const memoryProviders: { provider: IMemoryProvider; priority: number }[] = [];
 		const toolProviders: { provider: IToolProvider; priority: number }[] = [];
 		const planningProviders: { provider: IPlanningProvider; priority: number }[] = [];
 		const executionProviders: { provider: IExecutionProvider; priority: number }[] = [];
@@ -29,20 +28,6 @@ suite('SlotRegistry (Phase 1)', () => {
 		};
 
 		return {
-			// Memory
-			registerMemoryProvider: (provider: IMemoryProvider, priority: number = 0) => {
-				memoryProviders.push({ provider, priority });
-				sortByPriority(memoryProviders);
-				return {
-					dispose: () => {
-						const idx = memoryProviders.findIndex(p => p.provider.id === provider.id);
-						if (idx !== -1) { memoryProviders.splice(idx, 1); }
-					},
-				};
-			},
-			getActiveMemoryProvider: (): IMemoryProvider | undefined => {
-				return memoryProviders.length > 0 ? memoryProviders[0].provider : undefined;
-			},
 
 			// Tool
 			registerToolProvider: (provider: IToolProvider, priority: number = 0) => {
@@ -123,52 +108,9 @@ suite('SlotRegistry (Phase 1)', () => {
 
 	// ─── Memory Provider 测试 ───────────────────────────────────
 
-	test('registerMemoryProvider - single provider', () => {
-		const registry = createSlotRegistry();
-		const provider: IMemoryProvider = { id: 'mem-1', name: 'Memory 1', loadContext: async () => ({ shortTermMemories: [], longTermMemories: [] }), writeMemory: async () => {}, searchMemory: async () => [] };
-		const disposable = registry.registerMemoryProvider(provider, 10);
 
-		const active = registry.getActiveMemoryProvider();
-		assert.ok(active);
-		assert.strictEqual(active.id, 'mem-1');
 
-		disposable.dispose();
-		assert.strictEqual(registry.getActiveMemoryProvider(), undefined);
-	});
 
-	test('registerMemoryProvider - higher priority wins', () => {
-		const registry = createSlotRegistry();
-		const low: IMemoryProvider = { id: 'mem-low', name: 'Low', loadContext: async () => ({ shortTermMemories: [], longTermMemories: [] }), writeMemory: async () => {}, searchMemory: async () => [] };
-		const high: IMemoryProvider = { id: 'mem-high', name: 'High', loadContext: async () => ({ shortTermMemories: [], longTermMemories: [] }), writeMemory: async () => {}, searchMemory: async () => [] };
-
-		registry.registerMemoryProvider(low, 1);
-		registry.registerMemoryProvider(high, 100);
-
-		assert.strictEqual(registry.getActiveMemoryProvider()?.id, 'mem-high');
-	});
-
-	test('registerMemoryProvider - default priority is 0', () => {
-		const registry = createSlotRegistry();
-		const first: IMemoryProvider = { id: 'mem-first', name: 'First', loadContext: async () => ({ shortTermMemories: [], longTermMemories: [] }), writeMemory: async () => {}, searchMemory: async () => [] };
-		const second: IMemoryProvider = { id: 'mem-second', name: 'Second', loadContext: async () => ({ shortTermMemories: [], longTermMemories: [] }), writeMemory: async () => {}, searchMemory: async () => [] };
-
-		registry.registerMemoryProvider(first);
-		registry.registerMemoryProvider(second);
-
-		// 同优先级时，后注册的排在前面（因为 sort 是稳定排序但方向是降序）
-		assert.ok(registry.getActiveMemoryProvider());
-	});
-
-	test('unregister MemoryProvider via dispose', () => {
-		const registry = createSlotRegistry();
-		const provider: IMemoryProvider = { id: 'mem-1', name: 'Memory 1', loadContext: async () => ({ shortTermMemories: [], longTermMemories: [] }), writeMemory: async () => {}, searchMemory: async () => [] };
-
-		const d = registry.registerMemoryProvider(provider, 10);
-		assert.ok(registry.getActiveMemoryProvider());
-
-		d.dispose();
-		assert.strictEqual(registry.getActiveMemoryProvider(), undefined);
-	});
 
 	// ─── Tool Provider 测试 ─────────────────────────────────────
 
@@ -301,7 +243,6 @@ suite('SlotRegistry (Phase 1)', () => {
 	test('no providers returns undefined for all slots', () => {
 		const registry = createSlotRegistry();
 
-		assert.strictEqual(registry.getActiveMemoryProvider(), undefined);
 		assert.strictEqual(registry.getActiveToolProvider(), undefined);
 		assert.strictEqual(registry.getActivePlanningProvider(), undefined);
 		assert.strictEqual(registry.getActiveExecutionProvider(), undefined);
@@ -311,13 +252,4 @@ suite('SlotRegistry (Phase 1)', () => {
 
 	// ─── 多次 dispose 不会报错 ─────────────────────────────────
 
-	test('multiple dispose calls do not throw', () => {
-		const registry = createSlotRegistry();
-		const provider: IMemoryProvider = { id: 'mem-1', name: 'Memory 1', loadContext: async () => ({ shortTermMemories: [], longTermMemories: [] }), writeMemory: async () => {}, searchMemory: async () => [] };
-
-		const d = registry.registerMemoryProvider(provider, 10);
-		d.dispose();
-		d.dispose(); // 二次 dispose 不应报错
-		assert.strictEqual(registry.getActiveMemoryProvider(), undefined);
-	});
 });

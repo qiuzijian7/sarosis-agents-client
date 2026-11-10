@@ -35,7 +35,7 @@ function harness(policyOverrides: Partial<Policy> = {}, { emit, prepareTicket }:
     ...policyOverrides,
   }
   let clock = 0
-  const scope: EngineOptions['scope'] = { scope: t => t.meta.blocked ? { listened: false, reason: 'chat not allowed' } : { listened: true, observed: false } }
+  const scope: EngineOptions['scope'] = { scope: t => t.meta.blocked ? { listened: false, reason: 'chat not allowed' } : { listened: true, observed: false, ...t.meta.receipt ? { receipt: String(t.meta.receipt) } : {} } }
   const queued: EngineOptions['outbox'] = {
     send: message => { if (!outbox.some(item => item.id === message.id)) outbox.push(message) },
     status: id => outbox.some(item => item.id === id) ? 'pending' : undefined,
@@ -1640,6 +1640,31 @@ describe('intake answer gate (2026-11-09)', () => {
     expect(looksLikeAnswer('')).toBe(true)
   })
 
+  it('sends an immediate receipt for a person\'s message that goes to Eval, without reusing the ack id', () => {
+    const h = harness()
+    h.engine.receive(trigger('8', { meta: { receipt: '已收到，正在处理…' } }))
+    // 回执用 key('received')：key('ack') 是接单回执的 id，撞键会把真正的 acknowledgement 吞掉，
+    // 并让 Tickets.takenUp() 误判「工人已取用」。
+    expect(h.outbox).toEqual([{ id: key('received', '8'), channel: trigger('8').channel, kind: 'notice', text: '已收到，正在处理…' }])
+    expect(h.outbox.some(message => message.id === key('ack', '8'))).toBe(false)
+  })
+
+  it('sends no receipt when the scope filters the message', () => {
+    const h = harness()
+    h.engine.receive(trigger('9', { meta: { blocked: true, receipt: '已收到，正在处理…' } }))
+    expect(h.outbox).toEqual([])
+  })
+
+  it('sends no receipt when a ticket takes the message up', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    const before = h.outbox.length
+    // alice 的追问由既有工单接住（subscriptions 命中）⇒ 不再发通用回执。
+    h.engine.receive(trigger('7', { threads: [{ source: 'chat', id: 't1' }], meta: { receipt: '已收到，正在处理…' } }))
+    expect(h.repo.tickets.get(ticketId)!.inputs.some(input => input.kind === 'trigger' && input.triggerId === '7')).toBe(true)
+    expect(h.outbox.slice(before).some(message => message.id === key('received', '7'))).toBe(false)
+  })
+
   it('only gates a ticket that is actually awaiting a person', () => {
     const h = harness()
     const id = accepted(h).ticketId!
@@ -1688,6 +1713,29 @@ describe('intake answer gate (2026-11-09)', () => {
     const working = accepted(h, '3', 't3').ticketId!
     h.engine.receive(trigger('4', { threads: [{ source: 'chat', id: 't3' }], text: '顺便把标题也改了' })); h.pump()
     expect(h.repo.triggers.disposition('4')).toMatchObject({ fanout: [working] })
+  })
+
+  // ★ 2026-11-10（框架质量评估建议 3）：待人回答的判据下沉 model.ts 后，
+  //   intake 扇出闸门与 tickets.addInput 必须共用同一个语义。
+  it('shares awaitingAnswer between the intake gate and addInput', () => {
+    const h = harness()
+    const id = accepted(h).ticketId!
+    h.engine.report(id, { state: 'progress', summary: 'working', question: '你是指哪个 cartoon.html？' })
+    const ticket = h.repo.tickets.get(id)!
+    // attention 形态：旧判据 waitsForPerson 会漏判（这正是 addInput 之前的分叉）
+    expect(awaitingAnswer(ticket)).toBe(true)
+    expect(waitsForPerson(ticket)).toBe(false)
+    // bot/CI 的 automatic input 在待人回答时应被 hold：不进 undelivered、不投递给 worker
+    h.engine.receive(trigger('2', { human: false, actor: guest, text: 'CI: build failed' }))
+    h.pump()
+    const after = h.repo.tickets.get(id)!
+    const auto = after.inputs.find(input => input.kind === 'trigger' && input.triggerId === '2')
+    expect(auto).toBeDefined()
+    expect(after.undelivered).not.toContain(auto!.id)
+    expect(h.delivered.some(([tid, iid]) => tid === id && iid === auto!.id)).toBe(false)
+    // 对照：清掉 attention 后判据立刻解除 ⇒ 上面的 hold 确实由 awaitingAnswer 造成，
+    // 不是 fixture 里没有 running assignment / executor 没启动之类的假象。
+    expect(awaitingAnswer({ ...after, attention: undefined })).toBe(false)
   })
 
   it('does not gate bot/CI messages', () => {

@@ -23,6 +23,8 @@ import { join, resolve } from 'node:path';
 import { packTarGz } from './tar.js';
 // ★ 2026-10-22：`localId` 也要挡越界（`../` 会让 `join(root, ...)` 读到数据根外）
 import { assertSafeStoreId } from './installers.js';
+// ★ 2026-11-10 P1-B：发布端与安装端共用同一份组合包判据（不会「发出去但装不上」）
+import { COMPONENTS_FILE, readComponents, validateComponents } from './components.js';
 // ★ 2026-11-09：Bot 组合包（agent 目录镜像 + bot.json）的发布预检
 import { BOT_MANIFEST_FILE, botSummary, readBotManifest, scanBotSecrets, validateBotPack } from './botPack.js';
 // ★ 2026-10-22：外部源发布（本体就是一个 GitHub 地址）⇒ 归一化 + 安全边界在它里面
@@ -39,17 +41,19 @@ import { parseGitHubSource, resolveCommitSha } from './githubSource.js';
 // ★ 2026-10-31：加 `knowledge`（知识库）。
 //   服务端 `src/packages/kinds.ts` 的 PACKAGE_KINDS **早已含 knowledge**，且 isBundleKind=true
 //   ⇒ 走的正是"包本体随版本上传（tar.gz）"这条通道；线上已有 vscode-dev-guide / sarosis-handbook 两个包 ✓。
-//   ⚠ 与 skill/workflow/mcp 不同：知识库的**源目录在用户选的库里**（不在 <数据根>/<kind根>/ 下）
+//   ⚠ 与 skill/agent/mcp 不同：知识库的**源目录在用户选的库里**（不在 <数据根>/<kind根>/ 下）
 //     ⇒ 打包入口必须支持 `sourceDir`（见 preparePublishBundle）。
-export const PUBLISHABLE_KINDS = ['skill', 'workflow', 'agent', 'mcp', 'knowledge'];
+export const PUBLISHABLE_KINDS = ['skill', 'agent', 'mcp', 'knowledge'];
 
 /** 各 kind 的本地根目录名（与 IDE 侧 `SarosPath` 同口径）。 */
 // ★ 2026-10-23：加 mcp（`<数据根>/mcp/<id>/`，入口 config.json）
-const KIND_DIR = { agent: 'agents', skill: 'skills', workflow: 'workflows', mcp: 'mcp', knowledge: 'knowledge' };
+const KIND_DIR = { agent: 'agents', skill: 'skills', mcp: 'mcp', knowledge: 'knowledge' };
 
 /** 打包时**排除**的目录/文件（备份、依赖、版本库 —— 它们不属于"这个资源"）。 */
 const EXCLUDE_DIRS = new Set(['node_modules', '.git', '.upgrade-backup', '.saros']);
-const EXCLUDE_FILES = new Set(['.DS_Store', 'Thumbs.db']);
+// ★ 2026-11-10 P1：`.market.json` 是**安装溯源侧车**，属于本机状态不是作者内容。
+//   发布时排除 ⇒ 别人装到的包不会带着上一个来源的 storeId/版本。
+const EXCLUDE_FILES = new Set(['.DS_Store', 'Thumbs.db', '.market.json']);
 
 /**
  * ★ 2026-10-31：知识库打包的**额外排除项**（与 KB 的 `.gitignore` 同口径）。
@@ -70,7 +74,6 @@ const EXCLUDE_FILES_KNOWLEDGE = new Set([
 const SIZE_LIMIT = {
 	agent: 5 * 1024 * 1024,
 	skill: 2 * 1024 * 1024,
-	workflow: 2 * 1024 * 1024,
 	mcp: 2 * 1024 * 1024,
 	knowledge: 50 * 1024 * 1024,
 };
@@ -120,7 +123,7 @@ export async function collectDir(dir, opts = {}) {
  *
  * @param {object} args
  * @param {string} args.dataRoot
- * @param {string} args.kind agent|skill|workflow
+ * @param {string} args.kind agent|skill|mcp|knowledge
  * @param {string} args.localId 资源 id（= 商城 slug）
  * @param {string} args.version 版本号
  * @param {{ name?: string, description?: string, category?: string, tags?: string[] }} [args.meta]
@@ -277,6 +280,18 @@ export async function preparePublishBundle({ dataRoot, kind, localId, version, m
 				+ '\n请改成 ${env:VAR} 占位符，由使用者在本机环境变量里提供。');
 		}
 		botPackSummary = botSummary(bot);
+	}
+	// ★ 2026-11-10 P1-B：组合包发布预检 —— 闭包 / 主组件 / 命名空间 / 两份清单互斥，
+	//   必须在上传之前做完，否则坏包会进商城（别人装出来是「半个包」）。
+	//   真源始终是包内 components.json；manifest 不新增字段（服务端 zod 会 strip 未知键）。
+	const hasComponents = files.some(f => f.path === COMPONENTS_FILE);
+	if (hasComponents) {
+		if (files.some(f => f.path === BOT_MANIFEST_FILE)) {
+			throw new Error('一个包不能同时有 bot.json 与 components.json（两套组件清单会互相矛盾）');
+		}
+		const pack = readComponents(files);
+		// 复用安装端的 `validateComponents`，同一份判据；buckets 丢弃即可，只为校验
+		validateComponents({ files, pack, kind, storeId: localId });
 	}
 	const manifestName = typeof base.name === 'string' && base.name.trim() ? base.name : (meta.name?.trim() || localId);
 	const manifest = {
@@ -487,11 +502,13 @@ export async function publishDistribution({ market, kind, localId, version, dist
 	};
 }
 
-export async function publishVersion({ market, dataRoot, kind, localId, version, changelog = '', meta = {} }) {
+export async function publishVersion({ market, dataRoot, kind, localId, version, sourceDir, acknowledgePrivacy = false, changelog = '', meta = {} }) {
 	if (!/^[a-z0-9][a-z0-9_-]*$/.test(localId)) {
 		throw new Error(`slug 只能是 a-z0-9_- 且小写字母开头：${localId}（服务端规则）`);
 	}
-	const prepared = await preparePublishBundle({ dataRoot, kind, localId, version, meta });
+	// ★ 2026-11-10：sourceDir（知识库自选库）与 acknowledgePrivacy（隐私体检确认）
+	//   以前在 UI→Host→库层这一截断，导致库层能力用不上。
+	const prepared = await preparePublishBundle({ dataRoot, kind, localId, version, sourceDir, acknowledgePrivacy, meta });
 
 	// ★ 2026-11-09：Bot 组合包的摘要走 `tags` 冗余。
 	//   服务端 kinds.ts 不在这个仓库，商品表不会新增 `bot` 列；但建包接口本来就收 tags

@@ -41,12 +41,8 @@ function makeHost(overrides?: Partial<IPiKernelHost>): IPiKernelHost {
 		_lastAssistantAtByAgent: new Map(),
 		_turnKey: (a, s) => `${a ?? ''}:${s ?? ''}`,
 		_scheduleSave: () => { /* */ },
-		getActiveMemoryProvider: () => undefined, // 默认无记忆 ⇒ 检索注入不触发
 		_setCurrentModel: () => { /* */ },
 		_resolveContextWindow: async () => 128000,
-		_storeTurnObservations: async () => { /* */ },
-		_retrieveContextOnly: async () => null,
-		_injectRetrievalSystemMessage: (msgs) => msgs,
 		_estimateMessagesTokens: (msgs) => msgs.length * 100, // 默认低压 ⇒ 压缩不触发
 		_lastCompressionTime: 0,
 		_lastHardPruneBaselineTokens: 0,
@@ -55,7 +51,6 @@ function makeHost(overrides?: Partial<IPiKernelHost>): IPiKernelHost {
 		_compressionBeforeTokens: 0,
 		_compressionAfterTokens: 0,
 		_currentWorkspaceId: 'ws-test',
-		_retrieveCompactionContext: async () => null,
 		...overrides,
 	};
 }
@@ -558,7 +553,7 @@ suite('piTurnKernel（pi 内核真路径驱动器）', () => {
 		assert.ok(deltas.some(d => d.type === 'text' && d.content === 'recovered'), '拦截后应续跑收尾');
 	});
 
-	test('记忆检索注入：先外置后召回（与 legacy 同序），检索内容随种子送达模型', async () => {
+	test('★ 记忆检索注入已退役：pi 路径不再外置/召回，也不注入检索上下文', async () => {
 		let captured: unknown;
 		const provider = {
 			chat: (_id: string, msgs: unknown) => {
@@ -569,25 +564,19 @@ suite('piTurnKernel（pi 内核真路径驱动器）', () => {
 				})();
 			},
 		} as unknown as IModelProvider;
-		const calls: string[] = [];
-		const host = makeHost({
-			getActiveMemoryProvider: () => ({ recallFormatted: () => '' }) as never,
-			_storeTurnObservations: async () => { calls.push('store'); },
-			_retrieveContextOnly: async () => { calls.push('retrieve'); return { context: 'RETRIEVED_CTX', tokens: 10, source: 'mem' }; },
-			_injectRetrievalSystemMessage: (msgs, ctx) => [...msgs, { role: 'system', content: ctx }],
-		});
+		const host = makeHost();
 
 		const deltas = await collect(runPiKernelTurn(host, fakeRequest, {
 			modelProvider: provider, selection: fakeSelection, enabledTools: [],
 			messages: [{ role: 'user', content: 'hi' }],
 		}));
 
-		assert.deepStrictEqual(calls, ['store', 'retrieve'], '先外置后检索（executor:1143→1146 同序）');
 		const phases = deltas.filter(d => d.type === 'phase_change').map(d => (d as { phase?: string }).phase);
-		assert.deepStrictEqual(phases, ['retrieving', 'llm_streaming'], '检索前后应发 phase_change（32s 静默的教训）');
-		assert.ok(deltas.some(d => d.type === 'memory_injected'), '应有 memory_injected delta');
+		assert.ok(!phases.includes('retrieving'), 'IDE 侧记忆检索已下线，不得再发 retrieving phase');
+		assert.ok(!deltas.some(d => d.type === 'memory_injected'), 'IDE 侧记忆检索已下线，不得再发 memory_injected delta');
 		const msgs = captured as Array<{ role: string; content: string }>;
-		assert.ok(msgs.some(m => m.role === 'system' && m.content === 'RETRIEVED_CTX'), '检索内容应以 system 消息送达模型');
+		assert.ok(!msgs.some(m => m.role === 'system' && m.content === 'RETRIEVED_CTX'),
+			'记忆只在 dsh 侧；pi 路径不得再向模型注入检索回来的上下文');
 	});
 
 	test('pi⇄legacy 往返：压缩关注的字段（role/content/reasoning/toolCalls/toolCallId）保真', () => {

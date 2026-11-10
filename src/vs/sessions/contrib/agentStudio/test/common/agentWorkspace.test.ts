@@ -77,7 +77,6 @@ suite('Agent Workspace - Interface Definitions (Phase 4)', () => {
 			getModelProviders: () => [],
 			getActiveModelSelection: () => ({ providerId: '', modelId: '' }),
 			setActiveModelSelection: (s: any) => {},
-			getActiveMemoryProvider: () => undefined,
 			getActiveToolProvider: () => undefined,
 			getActivePlanningProvider: () => undefined,
 			getActiveExecutionProvider: () => undefined,

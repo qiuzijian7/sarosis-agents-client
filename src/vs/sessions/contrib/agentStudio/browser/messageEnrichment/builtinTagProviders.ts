@@ -193,21 +193,6 @@ export class ConversationSummaryTagProvider implements IUserMessageTagProvider {
 	}
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Provider 6: working_memory_content — 长期记忆
-// ═══════════════════════════════════════════════════════════════════════════
-
-export class WorkingMemoryTagProvider implements IUserMessageTagProvider {
-	readonly tagName = 'working_memory_content';
-	readonly tagDescription = 'Long-term memory content — cross-session project knowledge. Check these when context is needed.';
-
-	/** 由外部设置。 */
-	workingMemoryContent: string | null = null;
-
-	buildContent(_ctx: IEnrichContext): string | null {
-		return this.workingMemoryContent || null;
-	}
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Provider 6.5: kb_overview — 知识库目录摘要（L1 常驻注入，OpenViking/Aider 式渐进加载）
@@ -324,14 +309,6 @@ export class SystemReminderTagProvider implements IUserMessageTagProvider {
 
 	buildContent(ctx: IEnrichContext): string | null {
 		const reminders: string[] = [];
-		// 2026-08-06 修正：工作记忆经 working_memory_content 标签**只读**注入，
-		// 数据源为 agentmemory 记忆系统（MemoryProvider 策展上下文）。
-		// 模型无需自行做记忆持久化——原 "must update .codebuddy/memory/" 强指令
-		// 曾导致模型在工作区根目录凭空造文件（该目录是错误路径），故改为只读提示。
-		reminders.push(
-			'Working memory is provided read-only in the <working_memory_content> tag when present. '
-			+ 'Memory persistence is handled by the system — you do not need to save it yourself.'
-		);
 		if (ctx.agent && !ctx.agent.tools?.some(t => typeof t === 'string' && (t === 'file_write' || t === 'patch'))) {
 			reminders.push('This is a read-only agent — it cannot modify files on disk. Focus on research and planning.');
 		}
@@ -350,7 +327,6 @@ export function createBuiltinTagProviders(): IUserMessageTagProvider[] {
 		new GitStatusTagProvider(),
 		new ProjectContextTagProvider(),
 		new ConversationSummaryTagProvider(),
-		new WorkingMemoryTagProvider(),
 		new KbOverviewTagProvider(),
 		new AdditionalDataTagProvider(),
 		new CanvasContextTagProvider(),

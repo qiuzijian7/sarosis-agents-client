@@ -1,13 +1,17 @@
 // @vssaros/dsh-kb — store（主机侧 I/O）：vault 扫描、kernel 索引读取、正文读取（带路径围栏）。只读。
 //
 // 数据根口径与前几个模块一致：`config.dataRoot` → `VSSAROS_DATA_ROOT` → `~/.vssaros`；
-// vault 根：`config.kbRoot` → `<数据根>/knowledge-base`（与 `knowledgeStorage.ts` 的默认一致）。
+// ★ 2026-11-10：知识库根**以 dsh 侧配置为唯一真源**（`config.kbRoot` → `<数据根>/.kb-root.json`
+//   → `<数据根>/knowledge-base`）。IDE 侧那条 `agentStudio.knowledge.storage.path` + roots overlay
+//   注入链已移除；不要再在这里引 IDE 的实现或对齐它的默认值。
 
 // ⚠ `writeFile` 是 2026-10-13 补的：写构建缓存（P1）时才需要 —— 漏掉它的表现是
 // `ReferenceError: writeFile is not defined`，而且**只在"真的登记成功"那条路上**才炸 ✓
 // （p3-66 抓到的 ✓：登记函数先跑通、到了落盘那一步才抛 ⇒ 若不跑那条路，这个 bug 会一直躺着 ✓）。
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { foundation } from './foundationRef.js';
+import { LIBRARY_SUBDIR, NOTES_SUBDIR, defaultRootOf, parseRootConfig, rootConfigFileOf, rootVaultIdOf, sameRootPath } from './core/kbRootConfig.js';
 import { homedir } from 'node:os';
 
 import { dirname, join, resolve, sep } from 'node:path';
@@ -29,10 +33,66 @@ export function dataRootOf(config) {
 	return foundation().dataRootOf(config);
 }
 
-/** vault 根：`config.kbRoot` → `<数据根>/knowledge-base`。 */
+/**
+ * ★ dsh 侧根配置（模块级缓存）。`apply()` 时 `loadConfiguredRoot()` 读一次盘；
+ * 聊天框工具卡改完配置调 `setConfiguredRoot()` ⇒ **立即生效，不用重启 Host**。
+ * 为什么缓存：`kbRootOf()` 是同步函数、被 25+ 处调用（工具/路由/页面），不能每调一次就读盘。
+ */
+let configuredRoot = '';
+export function configuredRootOf() { return configuredRoot; }
+export function setConfiguredRoot(path) {
+	configuredRoot = typeof path === 'string' ? path.trim() : '';
+	return configuredRoot;
+}
+export function loadConfiguredRoot(config, dataRoot) {
+	// `dataRoot` 可由调用方显式给（探针 / foundation 尚未绑定的独立环境）；生产 `apply()`
+	// 不传 ⇒ 走 `dataRootOf(config)`，与全仓唯一的数据根口径保持一致。
+	let dr = typeof dataRoot === 'string' && dataRoot.trim() ? dataRoot.trim() : '';
+	if (!dr) {
+		try { dr = dataRootOf(config); } catch { dr = ''; }
+	}
+	if (!dr) { configuredRoot = ''; return configuredRoot; }
+	try {
+		const parsed = parseRootConfig(readFileSync(rootConfigFileOf(dr), 'utf8'));
+		configuredRoot = parsed ? parsed.path : '';
+	} catch { configuredRoot = ''; }
+	return configuredRoot;
+}
+
+/**
+ * vault 根（**dsh 侧唯一真源**）：`config.kbRoot`（独立启动器显式配置）
+ * → `<数据根>/.kb-root.json`（工具卡写入）→ `<数据根>/knowledge-base`。
+ * ⚠ 不再读 IDE 的 `agentStudio.knowledge.storage.path`（那条注入链已整体移除）。
+ */
 export function kbRootOf(config) {
-	const configured = typeof config?.kbRoot === 'string' ? config.kbRoot.trim() : '';
-	return configured || join(dataRootOf(config), 'knowledge-base');
+	const explicit = typeof config?.kbRoot === 'string' ? config.kbRoot.trim() : '';
+	return explicit || configuredRoot || defaultRootOf(dataRootOf(config));
+}
+
+/** 这个 root 是不是「根即唯一库根」（而不是装 `<vaultId>/` 的容器）。 */
+export function isSingleVaultRoot(root) {
+	return !!configuredRoot && sameRootPath(configuredRoot, root);
+}
+
+/** 把 root 本身当唯一 vault 组装一条记录（id 形态必须过 `isVaultId` ⇒ 用 `ext-<hash>`）。 */
+async function singleVaultOf(root, withDocs) {
+	const kernelPath = join(root, KERNEL_FILE);
+	let parsed = { docs: [], totalDocs: 0, notes: [] };
+	let kernelBytes = 0;
+	try {
+		const info = await stat(kernelPath);
+		kernelBytes = info.size;
+		parsed = parseKernel(await readFile(kernelPath, { encoding: 'utf8' }));
+	} catch { /* 刚配置的新根还没有索引：与扫盘那条同一处理（不报错、不刷屏） */ }
+	return {
+		id: rootVaultIdOf(root),
+		dir: root,
+		kernelBytes,
+		totalDocs: parsed.totalDocs,
+		notes: parsed.notes,
+		source: 'root',
+		...(withDocs ? { docs: parsed.docs } : {}),
+	};
 }
 
 /**
@@ -101,6 +161,17 @@ export async function pageSnapshotOf(root, { external = [] } = {}) {
  * 页面上要看正文时走只读 API / `kb_read`，那是另一条路径 ✓）。
  */
 async function pageFingerprint(root, external = []) {
+	// ★ 根即唯一库根：没有 `<vaultId>/` 子目录可指纹 ⇒ 看根自己 + 两个顶层区的 mtime，
+	//   否则指纹恒为空串 ⇒ 配置完往里写文件页面还显示旧数据（"越用越不准"那个坑）。
+	if (isSingleVaultRoot(root)) {
+		const info = await stat(root).catch(() => undefined);
+		const sub = [];
+		for (const name of [LIBRARY_SUBDIR, NOTES_SUBDIR]) {
+			const st = await stat(join(root, name)).catch(() => undefined);
+			sub.push(`${name}@${st?.mtimeMs ?? 'x'}`);
+		}
+		return `single-root:${info?.mtimeMs ?? 'x'}:${sub.join(',')}`;
+	}
 	let entries;
 	try {
 		entries = await readdir(root, { withFileTypes: true });
@@ -132,8 +203,17 @@ async function pageFingerprint(root, external = []) {
 	return parts.join('|');
 }
 
-/** 扫描 vault 根：只认 `<vaultId>/`（`_archive` / `favorites` / `notes` / 点文件一律跳过）。 */
+/**
+ * 扫描 vault 根：只认 `<vaultId>/`（`_archive` / `favorites` / `notes` / 点文件一律跳过）。
+ *
+ * ★ 2026-11-10（用户裁决「选中的根直接当唯一库根」）：一旦 dsh 侧根配置把 `root` 定成根，
+ *   就**不再按容器扫 `<vaultId>/`**（否则卡片选完仍显示「还没有知识库」），直接把 root 本身
+ *   作为唯一 vault 返回。未配置时保持旧的扫盘行为 ⇒ 存量多库机器不受影响。
+ */
 export async function listVaults(root, { withDocs = true, external = [] } = {}) {
+	if (isSingleVaultRoot(root)) {
+		return { vaults: [await singleVaultOf(root, withDocs)], root, singleRoot: true };
+	}
 	let entries;
 	try {
 		entries = await readdir(root, { withFileTypes: true });
@@ -237,7 +317,10 @@ export async function listVaults(root, { withDocs = true, external = [] } = {}) 
  *    而乱序的树比名称序更难读 ✓（这条差异写进文档 ✓）。
  * ② **上限**：真源是**懒加载**（展开才读子目录）；我们一次列完 + 深度/节点数上限，
  *    超了**如实**带 `truncated` ✓（不假装列全了 ✗）。
- * ③ 点文件**照样列出** ✓（与对照图一致，也是「未索引」的主要来源 ✓）。
+ * ③ ★ 2026-11-10（用户要求）：点开头的条目**一律不列**（`.archive-<日期>/`、`.log`、
+ *   `.知识体系`、`.kb-insights-cache.json` 这类归档/元数据）⇒ 它们不是内容，出现在
+ *   「知识库列表」里会让用户以为那也是一个知识库 ✗。这条同时覆盖 `/x/kb/` 页面树与
+ *   `/api/view-data` 的 tree（React 侧栏与设置页目录候选都吃这份数据 ✓）。
  *
  * @param {string} vaultDir `<vault>` 的绝对路径
  * @param {{section?: string, maxDepth?: number, maxNodes?: number}} [options]
@@ -264,6 +347,9 @@ export async function listVaultTree(vaultDir, { section = LIBRARY_DIR, maxDepth 
 		let missing;
 		for (const entry of entries) {
 			if (budget <= 0) { truncated = true; break; }
+			// ★ 2026-11-10：点开头的一律不进树（归档目录 / 日志 / 元数据文件）。
+			//   放在 budget 之后、拼 childRel 之前 ⇒ 隐藏项既不占节点预算也不进计数。
+			if (entry.name.startsWith('.')) { continue; }
 			const childRel = rel ? rel + '/' + entry.name : entry.name;
 			if (entry.isDirectory()) {
 				budget--;

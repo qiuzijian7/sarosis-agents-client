@@ -8,8 +8,7 @@
  * | kind        | 上传 | 安装 | 升级 | 卸载 | 谁来执行 |
  * |-------------|------|------|------|------|----------|
  * | skill       | ✓    | ✓    | ✓    | ✓    | **dsh 侧**（目录镜像打包 / 落盘 / 台账） |
- * | workflow    | ✓    | ✓    | ✓    | ✓    | **dsh 侧** |
- * | mcp         | ✓*   | →IDE | →IDE | →IDE | 上传走服务端 raw；装升卸**转给 IDE** |
+ *  * | mcp         | ✓*   | →IDE | →IDE | →IDE | 上传走服务端 raw；装升卸**转给 IDE** |
  * | workbench   | ✓*   | →IDE | →IDE | →IDE | 同上（本体是外部发布源） |
  *
  * 说明：
@@ -157,14 +156,14 @@ const stamp = () => Date.now().toString(36).slice(-6);
 
 // ── ① dsh 侧完整链路：skill / workflow（上传 → 安装 → 升级 → 卸载）──
 console.log('══ ① dsh 侧自持的品类（真跑全链路：skill / workflow / mcp）══');
-for (const kind of ['skill', 'workflow', 'mcp']) {
+for (const kind of ['skill', 'mcp']) {
 	const slug = `e2e-${kind}-${stamp()}`;
 	console.log(`\n── ${kind} / ${slug} ──`);
 
 	// 目录约定：skill = <root>/skills/<id>/SKILL.md；workflow = <root>/workflows/<id>/workflow.json
 	// ⚠ 三类各有自己的目录名与入口文件（mcp 是 `<root>/mcp/<id>/config.json`）
-	const kindDir = kind === 'skill' ? 'skills' : kind === 'mcp' ? 'mcp' : 'workflows';
-	const entryFile = kind === 'skill' ? 'SKILL.md' : kind === 'mcp' ? 'config.json' : 'workflow.json';
+	const kindDir = kind === 'skill' ? 'skills' : 'mcp';
+	const entryFile = kind === 'skill' ? 'SKILL.md' : 'config.json';
 	// 三类资源的入口文件内容形态不同：
 	//   skill   = markdown（带 frontmatter）
 	//   mcp     = config.json（transport/command/args ⇒ 装完要转成 mcp.json 的 entry）
@@ -275,13 +274,16 @@ for (const kind of ['skill', 'workflow', 'mcp']) {
 	try { await deletePackage({ market, slug }); } catch { /* ignore */ }
 }
 
-// ── ② mcp / workbench：dsh 侧**如实转交 IDE**（不假装成功）──────────
-console.log('\n══ ② 仍转给 IDE 的品类（workbench —— 要 dsh plugin add + 重启，搬不走）══');
+// ── ② workbench 分派（2026-11-10 对齐 dispatch.js 的 LOCAL_PLUGIN_KINDS）──
+// ★ 2026-10-24 起 workbench 的装/卸/升由 dsh 进程内 pluginManager 自持 ⇒ local-plugin，
+//   不再是 ide；调用方在「老 Host 没有 pluginManager」时才退回 IDE。
+//   publish（真正的打包上传）仍然是 ide。这段断言曾停留在旧的 ide 期望 ⇒ 3 条假红。
+console.log('\n══ ② workbench 的分派（装卸升 local-plugin / publish ide）══');
 for (const kind of ['workbench']) {
 	console.log(`\n── ${kind} ──`);
-	// 2a. 分派：四个动作都必须交给 IDE（这是设计，不是缺陷）
 	for (const op of ['install', 'upgrade', 'uninstall', 'publish']) {
-		check(`${kind}：${op} 转交 IDE（dsh 不越权处理）`, resolveOp(op, { kind }) === 'ide', resolveOp(op, { kind }));
+		const expected = op === 'publish' ? 'ide' : 'local-plugin';
+		check(`${kind}：${op} ⇒ ${expected}`, resolveOp(op, { kind }) === expected, resolveOp(op, { kind }));
 	}
 
 	// 2b. 服务端能接受该 kind 的包（IDE 组装、dsh 侧 raw 上传的最小包）
@@ -306,7 +308,7 @@ for (const kind of ['workbench']) {
 console.log('\n══ ③ 能力矩阵（结论）══');
 console.log('kind        | 上传      | 安装      | 升级      | 卸载');
 console.log('------------|-----------|-----------|-----------|----------');
-for (const kind of ['skill', 'workflow', 'agent', 'mcp', 'workbench']) {
+for (const kind of ['skill', 'agent', 'mcp', 'workbench']) {
 	const cell = (op) => resolveOp(op, { kind }) === 'ide' ? 'IDE 侧' : 'dsh 侧';
 	const mark = kind === 'agent' ? '（本轮未跑，历史已验证）' : '';
 	console.log(`${kind.padEnd(11)} | ${cell('publish').padEnd(9)} | ${cell('install').padEnd(9)} | ${cell('upgrade').padEnd(9)} | ${cell('uninstall').padEnd(8)} ${mark}`);

@@ -9,24 +9,22 @@
  * ## 为什么需要（2026-10-15，用户报"点击知识库里的文件打不开 editorpane"）
  *
  * 页面桥对**工作区之外**的路径一律先弹一条带「打开」按钮的通知（`dshHarness.contribution.ts` 的
- * `_notifications.prompt`）。而**知识库默认就在工作区之外**（`<数据根>/knowledge-base/…`，本机实测
- * `C:\Users\<u>\.vssaros-dev\knowledge-base` ⇒ 工作区是 `g:\SarosWorkspace\…`）✗
+ * `_notifications.prompt`）。而**知识库默认就在工作区之外**（`<数据根>/knowledge-base/…`）✗
  * ⇒ 用户每点一行都得先去点那条通知；不知道要点的人看到的就是**"点了没反应"** ✗。
  *
- * ## 信任面**没有**被放宽（这是 allowlist，不是"凡是盘上文件都免问"✗）
+ * ## ★ 2026-11-10：以 dsh 侧配置为准
  *
- * 只有两类根：
- *   ① **知识库数据根**：`kbRoot` 设置（用户改过才有 ✓，与 IDE `knowledgeBaseView.rootUri` 同一份
- *      `resolveKbRoot` 实现 ✓）缺省回落 `<数据根>/knowledge-base` ✓；
- *   ② **已登记的库根**：`agentStudio.kb.vaults` 里带 `customPath` 的那些（= 「配置文件夹为知识库」挂进来的
- *      外部目录 ✓）—— 同样只有**登记过**的才免问 ✓。
- * 其它工作区外路径**照旧**要用户点一下 ✓（协议头部那条安全模型不变 ✓）。
- * 与 VsSaros **自己的知识库视图**同一口径：它打开这些库里的文件从来不需要确认 ✓。
+ * 用户裁决「移除 IDE 侧配置和逻辑」⇒ 原先的两类根里，`kbRootOverride`（幽灵设置
+ * `agentStudio.knowledge.storage.path`）与 `vaultPaths`（IDE storage `agentStudio.kb.vaults`
+ * 的 customPath）**全部移除**。现在只认 dsh 侧：
+ *   ① `dshConfiguredRoot`：`<数据根>/.kb-root.json` 里由聊天框工具卡写入的根目录（可选）；
+ *   ② 缺省 `<数据根>/knowledge-base`。
+ *
+ * 这仍是 **allowlist**（不是"凡是盘上文件都免问"✗）：其它工作区外路径照旧要用户点一下 ✓。
  */
 export function knowledgeBaseTrustRoots(
-	kbRootOverride: string | undefined,
 	dataRoot: string | undefined,
-	vaultPaths: readonly (string | undefined | null)[] = [],
+	dshConfiguredRoot?: string,
 ): string[] {
 	const roots: string[] = [];
 	const push = (p: string | undefined | null) => {
@@ -34,17 +32,15 @@ export function knowledgeBaseTrustRoots(
 		const trimmed = p.trim();
 		if (trimmed) { roots.push(trimmed); }
 	};
-	// ① 数据根：设置过就用它；否则 `<数据根>/knowledge-base`（**与插件侧的缺省同值** ✓ ——
-	//    两条口径必须一致，否则"页面里能列出来、点了却要确认"这种半信任态 ✓）。
-	push(kbRootOverride);
+	// ① dsh 侧自持的根配置（工具卡写入；与插件 `kbRootOf` 同一份文件）
+	push(dshConfiguredRoot);
+	// ② 缺省根：与插件侧的缺省同值 ✓（两条口径必须一致，否则"页面里能列出来、点了却要确认"）
 	if (typeof dataRoot === 'string' && dataRoot.trim()) {
 		const base = dataRoot.trim().replace(/[\\/]+$/, '');
 		// ⚠ 这里刻意用 `/` 拼（不引 path 模块）：`isPathInside` 会把两种分隔符都归一 ✓，
 		//   而 common 层引 `vs/base/common/path` 反而要小心中间层约束 ✗。
 		if (base) { roots.push(`${base}/knowledge-base`); }
 	}
-	// ② 已登记库根（customPath）
-	for (const p of vaultPaths) { push(p); }
-	// 去重（数据根与某个库根可能同值；重复不影响判定，但读数里少一份噪声 ✓）
+	// 去重（配置根与缺省根可能同值；重复不影响判定，但读数里少一份噪声 ✓）
 	return Array.from(new Set(roots));
 }

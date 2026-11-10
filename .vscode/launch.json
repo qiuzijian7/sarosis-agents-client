@@ -29,6 +29,7 @@
 		{
 			"type": "node",
 			"request": "attach",
+			"preLaunchTask": "Start Dev App (attach-ready)",
 			"restart": true,
 			"name": "Attach to Extension Host",
 			"timeout": 0,
@@ -42,6 +43,7 @@
 		{
 			"type": "node",
 			"request": "attach",
+			"preLaunchTask": "Start Dev App (attach-ready)",
 			"restart": true,
 			"name": "Attach to Shared Process",
 			"timeout": 0,
@@ -53,6 +55,7 @@
 		{
 			"type": "node",
 			"request": "attach",
+			"preLaunchTask": "Start Dev App (attach-ready)",
 			"name": "Attach to Search Process",
 			"port": 5876,
 			"outFiles": [
@@ -62,6 +65,7 @@
 		{
 			"type": "node",
 			"request": "attach",
+			"preLaunchTask": "Start Dev App (attach-ready)",
 			"name": "Attach to Pty Host Process",
 			"port": 5877,
 			"outFiles": [
@@ -71,6 +75,7 @@
 		{
 			"type": "node",
 			"request": "attach",
+			"preLaunchTask": "Start Dev App (attach-ready)",
 			"name": "Attach to Agent Host Process",
 			"port": 5878,
 			"restart": true,
@@ -82,6 +87,7 @@
 		{
 			"type": "node",
 			"request": "attach",
+			"preLaunchTask": "Start Dev App (attach-ready)",
 			"name": "Attach to CLI Process",
 			"port": 5874,
 			"outFiles": [
@@ -786,7 +792,23 @@
 				"group": "monaco",
 				"order": 4
 			}
-		}
+		},
+		{
+			// ★★ 2026-11-10：F5「启动没有反应」的**备用入口** —— 绕开 `preLaunchTask`（IDE 侧任务机制）。
+			//   判据：按 F5 后 `%USERPROFILE%\.vssaros-dev\logs\launcher-invoked.log` **没有新行**
+			//   ⇒ 任务压根没被执行（不是 app / out / 启动脚本的问题）；这时在调试下拉里选这一条再按 F5。
+			//   它直接 `node scripts/spawn-detached.mjs scripts/start-dev-app.mjs`：
+			//   detached ⇒ 本调试会话秒结束也不会杀掉 app（与 `.cmd` 的启动方式完全一致）。
+			//   代价：不会 attach 到 9799 的渲染进程（没有前端断点）⇒ 需要断点时仍用上面那条。
+			"type": "node",
+			"request": "launch",
+			"name": "Launch Dev App Only (no preLaunchTask)",
+			"program": "${workspaceFolder}/scripts/spawn-detached.mjs",
+			"args": ["${workspaceFolder}/scripts/start-dev-app.mjs"],
+			"console": "internalConsole",
+			"skipFiles": ["<node_internals>/**"],
+			"presentation": { "group": "0_vscode", "order": 90 }
+		},
 	],
 	"compounds": [
 		{
@@ -895,5 +917,6 @@
 				"Attach to Agent Host Process"
 			]
 		},
+
 	]
 }

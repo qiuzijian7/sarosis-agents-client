@@ -50,18 +50,13 @@ function makeHostSpy(execResult?: (id: string, name: string) => { content: strin
 		_lastRealPromptTokensByAgent: new Map(), _lastAssistantAtByAgent: new Map(),
 		_turnKey: (a, s) => `${a ?? ''}:${s ?? ''}`,
 		_scheduleSave: () => { /* */ },
-		getActiveMemoryProvider: () => undefined,
 		_setCurrentModel: () => { /* */ },
 		_resolveContextWindow: async () => 128000,
-		_storeTurnObservations: async () => { /* */ },
-		_retrieveContextOnly: async () => null,
-		_injectRetrievalSystemMessage: (msgs) => msgs,
 		_estimateMessagesTokens: () => 100, // 低压 ⇒ 压缩恒跳过
 		_lastCompressionTime: 0, _lastHardPruneBaselineTokens: 0,
 		_compressionCount: 0, _compressionIneffectiveCount: 0,
 		_compressionBeforeTokens: 0, _compressionAfterTokens: 0,
 		_currentWorkspaceId: 'ws-test',
-		_retrieveCompactionContext: async () => null,
 	};
 	return { seenExec, host };
 }

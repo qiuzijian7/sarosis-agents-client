@@ -51,8 +51,6 @@ function makeHost(overrides: Record<string, unknown> = {}) {
 		_compressionAfterTokens: 0,
 		_scheduleSave() { /* noop */ },
 		_currentWorkspaceId: 'ws-test',
-		getActiveMemoryProvider: () => undefined,
-		_retrieveCompactionContext: () => undefined,
 		...overrides,
 	} as unknown as IContextCompactionDeps['host'];
 }

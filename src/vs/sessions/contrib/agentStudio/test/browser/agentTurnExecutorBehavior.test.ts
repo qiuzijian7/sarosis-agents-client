@@ -70,8 +70,7 @@ function silentLogger(): Record<string, (...args: unknown[]) => void> {
  * 断言所有 tool_result 都不是「执行失败」文本。
  *
  * 背景：工具执行路径会回调若干 host 方法（fresh-dispatch 边界
- * `_clearSandboxBypassRoots`、结果观察 `_observeToolResult` /
- * `_storeTurnObservations`）。mock host 漏掉任一个，executor 会把异常
+ * `_clearSandboxBypassRoots`、结果观察 `_observeToolResult`）。mock host 漏掉任一个，executor 会把异常
  * 吞成 `{"error":"Tool execution failed: host.X is not a function"}`。
  *
  * 这种污染**不会**让只看模式/文件/事件顺序的断言失败 —— 用例会静默
@@ -86,7 +85,7 @@ function assertNoToolExecutionErrors(deltas: ReadonlyArray<unknown>): void {
 			!/Tool execution failed/i.test(text),
 			`工具 ${typed.toolCallId ?? '(unknown)'} 的结果是执行错误，`
 			+ `说明 mock host 缺少必需的钩子（_clearSandboxBypassRoots / _observeToolResult / `
-			+ `_storeTurnObservations），用例已失去对真实执行路径的覆盖；实际=${JSON.stringify(text.slice(0, 200))}`,
+			+ `用例已失去对真实执行路径的覆盖；实际=${JSON.stringify(text.slice(0, 200))}`,
 		);
 	}
 }
@@ -158,7 +157,6 @@ function mockHost(overrides: Record<string, unknown> = {}): Record<string, unkno
 		_getEnabledTools: async () => [],
 		_resolveHardPermission: () => undefined,
 		// initTurnContext 的前置依赖（:293-740 实测清单）
-		getActiveMemoryProvider: () => undefined,
 		_waitForMcpTools: async (_agentId: string, tools: unknown[]) => tools,
 		_consumeStashedFiles: () => undefined,
 		_includeSkills: undefined,
@@ -167,18 +165,15 @@ function mockHost(overrides: Record<string, unknown> = {}): Record<string, unkno
 		_refreshWorkingMemoryContent: () => undefined,
 		_injectedSessions: new Set<string>(),
 		// ─── 工具执行的必经钩子（放在 base，避免每个用例重复声明）──────
-		// 三者都是 executor 工具路径无条件回调的 host 方法：
+		// 两者都是 executor 工具路径无条件回调的 host 方法：
 		//   · `_clearSandboxBypassRoots` — fresh-dispatch 边界（`:4371/:4413/:4438`）
 		//   · `_observeToolResult`       — 结果观察（`agentOSService.ts:1666`）
-		//   · `_storeTurnObservations`   — 回合观测落库（`agentOSService.ts:4094`）
 		// 缺任一个都会把 tool_result 变成
 		// `{"error":"Tool execution failed: host.X is not a function"}`，
 		// 而只看模式/文件/事件顺序的断言察觉不到 —— 用例会静默失去对真实
 		// 执行路径的覆盖。`assertNoToolExecutionErrors` 是对应的哨兵断言。
 		_clearSandboxBypassRoots: () => undefined,
 		_observeToolResult: () => undefined,
-		// 回合观测落库：无 provider 时应静默无害，给 no-op 即可。
-		_storeTurnObservations: async () => undefined,
 		_metaInjectedSessions: new Set<string>(),
 		_delegationLedger: new DelegationLedgerManager(),
 		_durableContext: new DurableContextManager(),
@@ -529,7 +524,6 @@ suite('executeAgentTurnDirect — 行为契约（真实运行主循环）', () =
 			},
 		};
 
-		let compactionRetrieveCalls = 0;
 		// 捕获真实日志流：主循环在每条恢复分支上都打了 warn/error，
 		// 日志能直接指出「错误实际走了哪条分支」，比反复猜测分支顺序可靠。
 		const logLines: string[] = [];
@@ -545,17 +539,6 @@ suite('executeAgentTurnDirect — 行为契约（真实运行主循环）', () =
 			_getActiveModelProvider: () => mockProvider,
 			getActiveModelSelection: () => ({ modelId: 'mock-model' }),
 			_getEnabledTools: async () => [],
-			// 记忆 provider 须存在且带 `recallFormatted`，否则
-			// `retrieveContext` 回调不会被提供（`agentTurnExecutor.ts:1495-1498`），
-			// `_retrieveCompactionContext` 永不触发 —— 该探针会失效。
-			getActiveMemoryProvider: () => ({
-				recallFormatted: async () => undefined,
-				triggerHook: () => undefined,
-			}),
-			_retrieveCompactionContext: async () => {
-				compactionRetrieveCalls++;
-				return undefined;
-			},
 			// 冷却必须放行：`_lastCompressionTime` 为 number（`agentOSService.ts:392`），
 			// 0 表示从未压缩 → cooldownElapsed = Infinity → 不跳过。
 			_lastCompressionTime: 0,
@@ -3480,11 +3463,6 @@ suite('executeAgentTurnDirect — 模型调用异常处置阶梯（retry / throw
 			_getEnabledTools: async () => [],
 			// 压缩链路的必要桩（与第一批溢出用例同口径）：
 			// 冷却放行 + 记忆 provider 存在，确保 force 压缩真的被执行而非静默跳过。
-			getActiveMemoryProvider: () => ({
-				recallFormatted: async () => undefined,
-				triggerHook: () => undefined,
-			}),
-			_retrieveCompactionContext: async () => undefined,
 			_lastCompressionTime: 0,
 			_compressionBeforeTokens: 0,
 			_compressionAfterTokens: 0,
@@ -5323,390 +5301,6 @@ suite('executeAgentTurnDirect — 收尾出口的共用与互斥（wrapUp.forced
 		);
 	});
 });
-
-suite('executeAgentTurnDirect — 工具级钩子总线的转发边界（fail-closed 与 fire-and-forget）', () => {
-
-	/**
-	 * `before_tool` 是**唯一** fail-closed 钩子（`turnHookBus.ts:223-225`）：
-	 * handler 抛错 → `TurnHookGateError` → 主循环 `agentTurnExecutor.ts:3261-3268`
-	 * 把该调用加入 `blockedCallIds`，拒绝执行。
-	 *
-	 * 这套语义有一个必须成立的前提：**转发层自己绝不抛错**
-	 *（`turnHookWiring.ts:44-46` 的警告 + `:115-117` 的 try/catch）。
-	 * 否则「记忆 provider 不可用」会经由 fail-closed 升级成
-	 * 「本 turn 所有工具无法执行」—— agent 表面看起来只会说话不会干活，
-	 * 而日志里只有一行 memory hook 报错，排查方向完全被误导。
-	 *
-	 * 本 suite 锁的就是这条放大链路的每一环：转发时机、同步抛错、异步 reject、
-	 * 成功/失败的钩子类型二选一、结果截断。
-	 */
-
-	function scriptedProvider(script: (round: number) => IModelDelta[]): {
-		provider: Record<string, unknown>;
-		chatCalls: () => number;
-	} {
-		let round = 0;
-		const provider = {
-			id: 'mock-provider',
-			name: 'Mock Provider',
-			chat: (_modelId: unknown, _messages: unknown, options?: { tools?: unknown[] }) => {
-				const current = round++;
-				const toolsOffered = (options?.tools?.length ?? 0) > 0;
-				return (async function* () {
-					for (const delta of script(current)) {
-						if ((delta as { type?: string }).type === 'tool_call' && !toolsOffered) {
-							continue;
-						}
-						yield delta;
-					}
-					if (!toolsOffered) {
-						yield { type: 'text', content: '（收尾轮）结论。' } as IModelDelta;
-						yield { type: 'done', finishReason: 'stop' } as IModelDelta;
-					}
-				})();
-			},
-		};
-		return { provider, chatCalls: () => round };
-	}
-
-	function toolCallDelta(id: string, name: string, args: Record<string, unknown>): IModelDelta {
-		return {
-			type: 'tool_call',
-			toolCall: { id, name, arguments: JSON.stringify(args) },
-		} as unknown as IModelDelta;
-	}
-
-	interface IHookForward {
-		readonly hookType: string;
-		readonly ctx: Record<string, unknown>;
-	}
-
-	/**
-	 * host 桩：把 `triggerHook` 的每次转发与每次真实工具执行记进**同一条**
-	 * timeline，使「钩子相对工具执行的先后」成为可断言的事实而非推测。
-	 */
-	function hookHost(
-		provider: Record<string, unknown>,
-		options: {
-			triggerHook: (hookType: string, ctx: Record<string, unknown>) => Promise<void> | undefined;
-			toolSucceeds?: boolean;
-			toolContent?: string;
-			logger?: Record<string, (...args: unknown[]) => void>;
-		},
-	): {
-		host: Record<string, unknown>;
-		timeline: string[];
-	} {
-		const timeline: string[] = [];
-		const runCalls = async (calls: Array<{ id: string; name: string }>) =>
-			calls.map(call => {
-				timeline.push(`exec:${call.name}`);
-				return {
-					toolCallId: call.id,
-					content: options.toolContent ?? 'TOOL-OK',
-					success: options.toolSucceeds !== false,
-				};
-			});
-
-		const host = mockHost({
-			...(options.logger ? { _logService: options.logger } : {}),
-			_getActiveModelProvider: () => provider,
-			getActiveModelSelection: () => ({ modelId: 'mock-model' }),
-			_getEnabledTools: async () => [
-				{ name: 'file_read', description: 'read', inputSchema: { type: 'object' } },
-			],
-			_lastAllEnabledToolNames: new Set<string>(['file_read']),
-			// provider 须**同时**提供 recallFormatted 与 triggerHook：
-			// 只有 triggerHook 存在时 `registerMemoryProviderHooks` 才注册 handler
-			//（`turnHookWiring.ts:92-95` 的早退），也才会让
-			// `hookBus.has('before_tool')` 为真、进入 `:3248` 那段闸门。
-			getActiveMemoryProvider: () => ({
-				recallFormatted: async () => undefined,
-				triggerHook: (hookType: string, ctx: Record<string, unknown>) => {
-					timeline.push(`hook:${hookType}`);
-					return options.triggerHook(hookType, ctx);
-				},
-			}),
-			_executeToolCalls: async (calls: Array<{ id: string; name: string }>) => runCalls(calls),
-			_executeToolCallsParallelStreaming: async function* (
-				calls: Array<{ id: string; name: string }>,
-			) {
-				const results = await runCalls(calls);
-				for (const result of results) { yield result as never; }
-			},
-		});
-		return { host, timeline };
-	}
-
-	/** 单轮工具调用 + 次轮收尾的标准脚本。 */
-	function oneToolCallThenStop(): (round: number) => IModelDelta[] {
-		return round => (
-			round === 0
-				? [
-					toolCallDelta('hook-call-1', 'file_read', { path: '/mock/a.ts' }),
-					{ type: 'done', finishReason: 'tool_calls' } as IModelDelta,
-				]
-				: [
-					{ type: 'text', content: '读完了。' } as IModelDelta,
-					{ type: 'done', finishReason: 'stop' } as IModelDelta,
-				]
-		);
-	}
-
-	function capturingLogger(): {
-		logger: Record<string, (...args: unknown[]) => void>;
-		lines: string[];
-	} {
-		const lines: string[] = [];
-		const logger = {
-			info: (...args: unknown[]) => { lines.push(`info: ${String(args[0])}`); },
-			warn: (...args: unknown[]) => { lines.push(`warn: ${String(args[0])}`); },
-			error: (...args: unknown[]) => { lines.push(`error: ${String(args[0])}`); },
-			debug: () => undefined,
-			trace: () => undefined,
-		};
-		return { logger, lines };
-	}
-
-	test('pre_tool_use 必须在工具真正执行之前转发，且带齐身份与调用标识', async () => {
-		// `agentTurnExecutor.ts:3248-3254`：`before_tool` 闸门在
-		// `SET_PHASE tool_executing`（:3277）之前跑完整批。
-		//
-		// 顺序不是审美问题：钩子的全部用途（权限判定、参数改写、审计留痕）
-		// 都要求「执行前」。一旦被挪到执行之后，权限钩子就从「拦截器」退化成
-		// 「事后报警器」——工具已经把文件改了，再拒绝也无意义。
-		const forwards: IHookForward[] = [];
-		const { provider } = scriptedProvider(oneToolCallThenStop());
-		const { host, timeline } = hookHost(provider, {
-			triggerHook: (hookType, ctx) => {
-				forwards.push({ hookType, ctx });
-				return undefined;
-			},
-		});
-
-		const { deltas } = await drain(
-			executeAgentTurnDirect(host, mockRequest() as never) as AsyncGenerator<IChatStreamDelta, unknown>,
-		);
-		assertNoToolExecutionErrors(deltas);
-
-		const preIndex = timeline.indexOf('hook:pre_tool_use');
-		const execIndex = timeline.indexOf('exec:file_read');
-		assert.ok(
-			preIndex >= 0,
-			`pre_tool_use 必须被转发（实际 timeline=${JSON.stringify(timeline)}）`
-			+ `——没有转发说明 before_tool 闸门被整体跳过，权限钩子形同不存在`,
-		);
-		assert.ok(
-			execIndex >= 0,
-			`工具必须真的执行（实际 timeline=${JSON.stringify(timeline)}）`,
-		);
-		assert.ok(
-			preIndex < execIndex,
-			`pre_tool_use 必须早于工具执行（实际 timeline=${JSON.stringify(timeline)}）`
-			+ `——顺序颠倒会让权限钩子从拦截器退化为事后报警器`,
-		);
-
-		const preForward = forwards.find(f => f.hookType === 'pre_tool_use');
-		assert.ok(preForward, 'pre_tool_use 转发记录必须存在');
-		assert.strictEqual(
-			preForward.ctx.toolName, 'file_read',
-			`转发必须带 toolName（实际 ctx=${JSON.stringify(preForward.ctx)}）`
-			+ `——缺了它钩子无法按工具名做任何判定`,
-		);
-		assert.strictEqual(
-			preForward.ctx.toolCallId, 'hook-call-1',
-			`转发必须带原始 toolCallId（实际 ${String(preForward.ctx.toolCallId)}）`
-			+ `——它是与 after_tool / UI 卡片对账的唯一键`,
-		);
-		assert.strictEqual(
-			preForward.ctx.agentId, 'test-agent',
-			'转发必须带 agentId（turnHookWiring.ts:106-110 的身份注入）'
-			+ '——记忆系统按 agent 隔离，缺失会把所有 agent 的经验混写成一份',
-		);
-		assert.strictEqual(
-			preForward.ctx.sessionId, 'test-session',
-			'转发必须带 sessionId——记忆系统靠它归档，缺失会把所有会话写成一锅',
-		);
-	});
-
-	test('triggerHook 同步抛错：工具仍须照常执行（记忆不可用不得升级为工具全禁）', async () => {
-		// 这是本 suite 最重要的一条。放大链路：
-		//   triggerHook 抛错 → 若 wiring 层 handler 不吞 → 总线判定
-		//   `isFailClosedHook('before_tool')` 为真（`turnHookBus.ts:301-302`）
-		//   → 抛 TurnHookGateError → `agentTurnExecutor.ts:3264` 把调用
-		//   加入 blockedCallIds → **整 turn 所有工具都被拒**。
-		//
-		// 现场表现：agent 只输出文本、从不动手；日志里只有一行
-		// memory hook 报错，与「工具全部不执行」看不出因果关系。
-		// 所以 `turnHookWiring.ts:115-117` 的 try/catch 不是防御性冗余，
-		// 而是承载这条契约的唯一实现点。
-		const { provider } = scriptedProvider(oneToolCallThenStop());
-		const { logger, lines } = capturingLogger();
-		const { host, timeline } = hookHost(provider, {
-			logger,
-			triggerHook: () => {
-				throw new Error('memory gateway down');
-			},
-		});
-
-		const { deltas } = await drain(
-			executeAgentTurnDirect(host, mockRequest() as never) as AsyncGenerator<IChatStreamDelta, unknown>,
-		);
-
-		assert.ok(
-			timeline.includes('exec:file_read'),
-			`记忆钩子抛错时工具必须照常执行（实际 timeline=${JSON.stringify(timeline)}）`
-			+ `——被拦说明转发层把异常泄漏给了 fail-closed 闸门，`
-			+ `「记忆系统故障」会静默升级成「agent 完全不干活」`,
-		);
-		assertNoToolExecutionErrors(deltas);
-		assert.ok(
-			lines.some(line => line.includes('threw synchronously')),
-			`同步抛错必须留下可排查的日志（实际日志=${JSON.stringify(lines.slice(0, 8))}）`
-			+ `——静默吞错会让记忆系统长期失效而无人发现`,
-		);
-		assert.ok(
-			!lines.some(line => line.includes('refusing execution')),
-			`不得走 fail-closed 拒绝路径（实际日志=${JSON.stringify(lines.slice(0, 8))}）`,
-		);
-	});
-
-	test('triggerHook 返回 rejected Promise：turn 正常收束，且不得污染工具结果', async () => {
-		// `turnHookWiring.ts:112-114`：转发刻意**不 await**（provider 多为跨进程
-		// 代理，await 等于每个工具调用多一次 IPC 往返），只挂 `.catch` 记日志。
-		//
-		// 不挂 catch 的后果不是「少一条日志」：Node 下未处理的 rejection 会
-		// 触发 unhandledRejection，在 Electron 主进程里表现为整个扩展宿主崩溃
-		// ——一个记忆写入失败就能带走整个会话。
-		const { provider } = scriptedProvider(oneToolCallThenStop());
-		const { logger, lines } = capturingLogger();
-		const { host, timeline } = hookHost(provider, {
-			logger,
-			triggerHook: () => Promise.reject(new Error('memory write rejected')),
-		});
-
-		const { deltas } = await drain(
-			executeAgentTurnDirect(host, mockRequest() as never) as AsyncGenerator<IChatStreamDelta, unknown>,
-		);
-		// rejection 的 catch 是微任务，可能晚于 drain 结束一个 tick。
-		await new Promise(resolve => setTimeout(resolve, 0));
-
-		assert.ok(
-			timeline.includes('exec:file_read'),
-			`异步 reject 不得阻断工具执行（实际 timeline=${JSON.stringify(timeline)}）`,
-		);
-		assertNoToolExecutionErrors(deltas);
-		const toolResults = deltas
-			.filter(d => (d as { type?: string }).type === 'tool_result')
-			.map(d => String((d as { content?: unknown }).content ?? ''));
-		assert.ok(
-			toolResults.some(text => text.includes('TOOL-OK')),
-			`工具结果必须原样透传（实际 tool_result=${JSON.stringify(toolResults)}）`
-			+ `——钩子失败被写进结果会让模型以为自己的工具调用出了问题`,
-		);
-		assert.ok(
-			lines.some(line => line.includes('rejected')),
-			`rejection 必须被 catch 并记日志（实际日志=${JSON.stringify(lines.slice(0, 8))}）`
-			+ `——漏挂 catch 会变成 unhandledRejection，在宿主进程里是致命的`,
-		);
-	});
-
-	test('工具成功走 post_tool_use、失败走 post_tool_failure：二者互斥不得同发', async () => {
-		// `turnHookWiring.ts:126-133`：`event.isError ? post_tool_failure : post_tool_use`，
-		// 而 isError 来自 `turnPostIteration.ts:255` 的 `!toolResult.success`。
-		//
-		// 记忆系统按钩子类型分流：post_tool_use 沉淀「有效经验」，
-		// post_tool_failure 沉淀「失败教训」。两者混淆的后果是把失败样本
-		// 当成正确做法写进长期记忆，后续 turn 会被自己的错误经验反复误导。
-		const failureForwards: string[] = [];
-		const { provider: failProvider } = scriptedProvider(oneToolCallThenStop());
-		const { host: failHost } = hookHost(failProvider, {
-			toolSucceeds: false,
-			toolContent: 'ENOENT: no such file',
-			triggerHook: hookType => {
-				failureForwards.push(hookType);
-				return undefined;
-			},
-		});
-		await drain(
-			executeAgentTurnDirect(failHost, mockRequest() as never) as AsyncGenerator<IChatStreamDelta, unknown>,
-		);
-
-		const successForwards: string[] = [];
-		const { provider: okProvider } = scriptedProvider(oneToolCallThenStop());
-		const { host: okHost } = hookHost(okProvider, {
-			triggerHook: hookType => {
-				successForwards.push(hookType);
-				return undefined;
-			},
-		});
-		await drain(
-			executeAgentTurnDirect(okHost, mockRequest() as never) as AsyncGenerator<IChatStreamDelta, unknown>,
-		);
-
-		assert.ok(
-			failureForwards.includes('post_tool_failure'),
-			`工具失败必须转发 post_tool_failure（实际=${JSON.stringify(failureForwards)}）`,
-		);
-		assert.ok(
-			!failureForwards.includes('post_tool_use'),
-			`工具失败时不得同时发 post_tool_use（实际=${JSON.stringify(failureForwards)}）`
-			+ `——失败样本被当成有效经验写入长期记忆，会长期误导后续 turn`,
-		);
-		assert.ok(
-			successForwards.includes('post_tool_use'),
-			`工具成功必须转发 post_tool_use（实际=${JSON.stringify(successForwards)}）`,
-		);
-		assert.ok(
-			!successForwards.includes('post_tool_failure'),
-			`工具成功时不得发 post_tool_failure（实际=${JSON.stringify(successForwards)}）`,
-		);
-	});
-
-	test('after_tool 转发的结果必须截断：巨型工具输出不得整体灌进记忆通道', async () => {
-		// `turnHookWiring.ts:66` 的 `TOOL_RESULT_TRUNCATE_LIMIT = 2000`，
-		// 而工具结果本身的上限是 `MAX_TOOL_RESULT_CHARS = 100_000`
-		//（`toolCallUtils.ts:30`）——两者相差 50 倍。
-		//
-		// 少了这道截断，一次全仓检索的输出就会原样跨进程送进记忆 provider：
-		// IPC 序列化开销与记忆库体积同时被放大，而钩子侧本来只需要一个摘要。
-		const hugeContent = 'X'.repeat(7000);
-		const forwards: IHookForward[] = [];
-		const { provider } = scriptedProvider(oneToolCallThenStop());
-		const { host } = hookHost(provider, {
-			toolContent: hugeContent,
-			triggerHook: (hookType, ctx) => {
-				forwards.push({ hookType, ctx });
-				return undefined;
-			},
-		});
-
-		await drain(
-			executeAgentTurnDirect(host, mockRequest() as never) as AsyncGenerator<IChatStreamDelta, unknown>,
-		);
-
-		const postForward = forwards.find(f => f.hookType === 'post_tool_use');
-		assert.ok(
-			postForward,
-			`post_tool_use 必须被转发（实际=${JSON.stringify(forwards.map(f => f.hookType))}）`,
-		);
-		const forwardedResult = String(postForward.ctx.toolResult ?? '');
-		assert.strictEqual(
-			forwardedResult.length, 2000,
-			`转发结果必须截断到 2000 字符（实际 ${forwardedResult.length} 字符，原始 ${hugeContent.length}）`
-			+ `——不截断会把 100K 级工具输出整体推过 IPC 并写进记忆库`,
-		);
-		assert.ok(
-			forwardedResult.startsWith('XXX'),
-			`截断必须保留开头而非丢弃内容（实际前缀=${JSON.stringify(forwardedResult.slice(0, 8))}）`,
-		);
-	});
-});
-
-
-
-
-
 
 suite('executeAgentTurnDirect — 批次提醒的延迟注入与消息相邻性（HTTP 400 code 11133）', () => {
 

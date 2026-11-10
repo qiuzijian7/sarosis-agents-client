@@ -79,7 +79,6 @@ function makeDriver(deltas: any[]) {
 				for (const d of deltas) { yield d; }
 			})();
 		},
-		getActiveMemoryProvider: () => undefined,
 		compactMessagesForSession: async () => ({ didCompact: false }),
 	};
 	return { driver, calls };

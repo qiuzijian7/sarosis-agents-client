@@ -24,7 +24,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DSH_BUILTIN_MODULES, DSH_MODULE_CONTAINERS, DSH_MODULE_PAGES, defaultPageRoute, moduleContainerOf, moduleIdForPluginName } from '../../common/dshModuleContainers.js';
 import { hasWorkbenchClient, IVssarosPluginManifest, tryParseVssarosManifest } from '../../common/vssarosPluginManifest.js';
-import { compareSemver, parseSemver, renderAgentsOverlay, renderBridgeOverlay, renderCodebaseOverlay, renderDataRootOverlay, renderKanbanOverlay, renderMemoryOverlay } from '../../common/dshCli.js';
+import { compareSemver, parseSemver, renderAgentsOverlay, renderBridgeOverlay, renderCodebaseOverlay, renderDataRootOverlay, renderKanbanOverlay } from '../../common/dshCli.js';
 import { renderSkillsOverlay } from '../../common/dshSkillDirs.js';
 import { listBundledPlugins } from '../../electron-main/dshBundledPlugins.js';
 
@@ -379,15 +379,12 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 		}
 	});
 
-	test('★ 数据根覆盖层：每个键落在它该在的那一行（库记录必须归 vssaros-kb）', () => {
+	test('★ 数据根覆盖层：每个键落在它该在的那一行（2026-11-10：kb 行只剩 dataRoot）', () => {
 		// 2026-10-15 真机事故：web-content-import 那一行被插在 kb 行与 `kbVaults` / `kbActiveVaultId` 之间
-		// ⇒ YAML 里这两个键归属于"上面最近的 `- id:`" ⇒ 全落到了 web-content-import 名下 ✗；
-		// kb 页拿不到库记录注入（提示"老 Host / 独立启动器"、已登记的自定义路径库消失、库删除分流失去依据）。
-		// 上面那条只核对"行 id 真存在" ⇒ **看不出键挂错行** ✗ ⇒ 这里按行解析、逐键钉归属 ✓。
+		// ⇒ YAML 里这两个键归属于"上面最近的 `- id:`" ⇒ 全落到了 web-content-import 名下 ✗。
+		// ★ 2026-11-10（以 dsh 侧配置为准）：那三个键连同 `kbRoot` 已整体移除 ⇒ kb 与
+		//   web-content-import 两行现在都只带 `dataRoot`；这条守卫继续钉住"没有键挂到别的行"。
 		const yml = renderDataRootOverlay('/home/probe/.vssaros-dev', '/home/probe/.vssaros-dev/mcp.json', {
-			kbRoot: '/custom/kb',
-			kbVaults: '[{"id":"20260101000000-aaaaaa1","name":"probe"}]',
-			kbActiveVaultId: '20260101000000-aaaaaa1',
 			unrealBridgeUrl: 'http://127.0.0.1:9999',
 			browser: { port: 9333, launchDedicated: false, headless: true },
 		});
@@ -421,8 +418,9 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			//   （原先只靠子进程 env 兜底，现在与其它模块一样走 config）。
 			['vssaros-scheduler', ['dataRoot']],
 			// ★ 2026-10-30：小红书笔记工作台已移除 ⇒ 它原本需要的 `dataRoot` 注入项也一并删掉。
-			['vssaros-kb', ['dataRoot', 'kbRoot', 'kbVaults', 'kbActiveVaultId']],
-			['vssaros-web-content-import', ['dataRoot', 'kbRoot']],
+			// ★ 2026-11-10：IDE 不再注入知识库配置 ⇒ 两行都只剩 dataRoot。
+			['vssaros-kb', ['dataRoot']],
+			['vssaros-web-content-import', ['dataRoot']],
 			['vssaros-dsh-mcp', ['path']],
 			['vssaros-unreal', ['bridgeUrl']],
 			['vssaros-browser', ['port', 'launchDedicated', 'headless']],
@@ -451,7 +449,6 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 		//   "真存在"核对**空转** ✗（2026-10-14 补 browser 时发现的：`renderDataRootOverlay(...)` 缺省 extras
 		//   ⇒ `vssaros-browser` 那行压根不在 yml 里，等于没被这条守卫覆盖 ✓）。
 		const yml = renderDataRootOverlay('/home/probe/.vssaros-dev', '/home/probe/.vssaros-dev/mcp.json', {
-			kbRoot: '/custom/kb',
 			unrealBridgeUrl: 'http://127.0.0.1:9999',
 			browser: { port: 9333, launchDedicated: false, headless: true },
 		});
@@ -484,10 +481,6 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 		const coveredElsewhere = new Map<string, string>([
 			['vssaros-kanban', 'renderKanbanOverlay'],
 			['vssaros-agents', 'renderAgentsOverlay'],
-			// `memory`（2026-10-12）：审计账本落 `<数据根>/memory-audit/` ⇒ 它的 `dataRoot`
-			// **真的**注在 `renderMemoryOverlay` 里（与 gatewayUrl 同一份 `config` —— 那一行已被
-			// 记忆覆盖层占用，再往 `renderDataRootOverlay` 加一条会**静默抹掉 gatewayUrl** ✗）。
-			['vssaros-memory', 'renderMemoryOverlay'],
 			// `foundation`（2026-10-16，重构 1.3）：它的 `dataRootOf/dshHomeOf` 读的是**调用方传进来的 config**
 			//   （纯函数参数），不读自己那一行的 config ⇒ 覆盖层不需要它的行。
 			//   ⚠ 前提是各**消费插件**自己的行已注入 dataRoot（上面几条保证）——否则 foundation 拿到的
@@ -510,8 +503,6 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			'看板覆盖层必须真的注入 dataRoot（看板文件在 `<数据根>/…` ⇒ 不注入会读写生产看板 ✗）');
 		assert.ok(/^\s*agentsRoot:/m.test(renderAgentsOverlay('/home/probe/.vssaros-dev/agents')),
 			'agents 覆盖层必须真的注入 agentsRoot（没有它 dev 会列生产 agent ✗）');
-		assert.ok(/^\s*dataRoot:/m.test(renderMemoryOverlay('http://127.0.0.1:8790', '/home/probe/.vssaros-dev')),
-			'记忆覆盖层必须真的注入 dataRoot（审计账本落 `<数据根>/memory-audit/` ⇒ 不注入会把账本写进**生产**数据根 ✗）');
 		// ★ **一行只能有一个覆盖层**：实测同一行被两份覆盖层打时，后者把整份 `config` **替换**掉 ✗
 		//   （2026-10-12 用 `--patch a.yml --patch b.yml` + `--dump-config` 验证：先写的键直接消失）。
 		//   ⇒ "同一个行 id 出现在两个覆盖层里"就是**静默抹掉另一个键**的隐患 ✓。
@@ -1719,12 +1710,13 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 		//（`{ kbRoot, unrealBridgeUrl }` ✓）时，按旧形态逐字匹配的这条立刻红了 ✓，而它本意只是"别漏了这次调用" ✓。
 		assert.ok(/renderDataRootOverlay\(\s*dataRoot/.test(hostConfigMod),
 			'渲染真源仍必须写数据根覆盖层（kb/canvas/workflow/skills 都读它，漏了 ⇒ dev 实例读生产数据）');
-		// ★ A 组缺口（2026-10-12 评估）：kb 的存储根与 unreal 的 bridge 地址**过去没有任何等价配置键** ✗
-		// ⇒ 用户在 IDE 里改过这两项时，dsh 侧照旧读默认（kb 表现为"资料库/画布空着但不报错" ✗）。
-		// 这条钉"渲染真源仍把它们传下去" ✓；**效果**（真机上改了设置 dsh 跟着改）由真机探针负责 ✓（尚未补 ✗）。
-		assert.ok(/kbRoot:\s*trimmed\(config\.kbRoot\)/.test(hostConfigMod)
-			&& /unrealBridgeUrl:\s*trimmed\(config\.unrealBridgeUrl\)/.test(hostConfigMod),
-			'渲染真源必须把 kbRoot / unrealBridgeUrl 传给 renderDataRootOverlay（A 组缺口：IDE 改过这两项时 dsh 要跟着改）');
+		// ★ 2026-11-10（以 dsh 侧配置为准）：kb 根 / 库清单 / 当前库三项已从 IDE 侧整体移除
+		//   ⇒ 这里反向钉住"渲染真源不再把 kbRoot 传下去"，同时仍钉住 unreal 那条 A 组缺口。
+		assert.ok(!/kbRoot:\s*trimmed\(config\.kbRoot\)/.test(hostConfigMod)
+			&& !/kbVaults:\s*trimmed\(config\.kbVaults\)/.test(hostConfigMod),
+			'知识库根以 dsh 侧配置为准 ⇒ 渲染真源不该再把 kbRoot / kbVaults 传给覆盖层');
+		assert.ok(/unrealBridgeUrl:\s*trimmed\(config\.unrealBridgeUrl\)/.test(hostConfigMod),
+			'渲染真源必须仍把 unrealBridgeUrl 传给 renderDataRootOverlay（A 组缺口：IDE 改过时 dsh 要跟着改）');
 		assert.ok(/renderKanbanOverlay\(workspaceId, dataRoot\)/.test(hostConfigMod),
 			'看板覆盖层必须**带上** dataRoot（看板文件在 `<数据根>/…` ⇒ 漏掉参数会静默退回 `~/.vssaros`、读写生产看板 ✗）');
 

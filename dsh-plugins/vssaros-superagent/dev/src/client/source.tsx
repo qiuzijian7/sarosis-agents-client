@@ -21,6 +21,33 @@ export function SourceCard({ source, title }: { source: SourceView; title?: stri
   const { running } = usePanelData()
   const { reload } = useSettings()
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  /* ★ 2026-11-10：飞书 App ID 改下拉，选项与 Bot 设置里的 Channel 绑定同源
+     （Bots 的 GET /x/agents/api/bindings → feishuApps 掩码视图，不含 Secret 明文）。
+     取不到时保持空 labels：SourceField 仍渲染下拉并保留当前已保存的值，不假装成功。 */
+  const [feishuAppLabels, setFeishuAppLabels] = useState<Record<string, string>>({})
+  useEffect(() => {
+    if (source.id !== 'feishu' || !source.installed) return
+    let alive = true
+    fetch('/x/agents/api/bindings', { credentials: 'same-origin', headers: { accept: 'application/json' } })
+      .then(response => response.ok ? response.json() : { feishuApps: [] })
+      .then((data: { feishuApps?: { appId?: string; name?: string; isDefault?: boolean; hasSecret?: boolean }[] }) => {
+        if (!alive) return
+        const options: Record<string, string> = {}
+        for (const app of data.feishuApps ?? []) {
+          const id = String(app.appId ?? '').trim()
+          if (!id) continue
+          const name = String(app.name ?? '').trim()
+          /* ★ 2026-11-10：内置默认应用统一显示「VsSaros助手」（与 dsh 侧 Channel 绑定同口径）。 */
+          const label = app.isDefault ? 'VsSaros助手 · ' + id : (name ? name + ' · ' : '') + id
+          options['feishuApps:' + id] = label + (app.hasSecret ? '' : '（缺 App Secret）')
+        }
+        setFeishuAppLabels(options)
+      })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [source.id, source.installed])
+  // Only the appId field gets these options: `chats` rows also read `labels` for their chat picker.
+  const appLabels = { ...source.labels, ...feishuAppLabels }
   const refreshLabels = async () => { const { added } = await call('POST sources/:id/labels',
     { id: source.id }); await reload(); return added }
   // TAPD dropdown options come from its Open API; load them once when this card has no candidates yet.
@@ -41,7 +68,8 @@ export function SourceCard({ source, title }: { source: SourceView; title?: stri
   // VsSaros addition: the Feishu card's lark-cli option and its local diagnostics were removed; the CLI
   // command is now a schema default. Hide derived facts until the new value is saved.
   const field = (spec: FieldSpec) => <SourceField key={spec.key} field={spec} value={value.config[spec.key]}
-    saved={saved.config[spec.key]} labels={source.labels} refreshLabels={refreshLabels}
+    saved={saved.config[spec.key]} labels={source.id === 'feishu' && spec.key === 'appId' ? appLabels : source.labels}
+    refreshLabels={refreshLabels}
     fact={spec.type === 'fact' || !changed(spec.key) ? source.facts[spec.key] : undefined}
     onChange={next => draft.edit({ ...value, config: { ...value.config, [spec.key]: next } })} />
   const advanced = source.fields.filter(spec => spec.advanced)

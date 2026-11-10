@@ -69,7 +69,9 @@ import { DEFAULT_BATCH_LIMIT, GRANT_TTL_MS, clampBatch, consumeGrant, describeGr
 import { clearFeishuBinding, createKnowledgeBase, listKnowledgeBases, readFeishuBinding, writeFeishuBinding } from './core/kbLayoutOps.js';
 // ★ 2026-11-02：知识库主页（/x/kb/home）的 HTML 渲染，纯函数、可单测
 import { renderHomePage } from './homePage.js';
-import { DEFAULT_LARK_CLI, LARK_CLI_MISSING_HINT, SPACE_LIST_ARGS, findSameNameSpace, parseCreatedSpaceId, parseSpaceList, sanitizeSpaceName, spaceCreateArgs } from './core/feishuSpaces.js';
+import { DEFAULT_LARK_CLI, LARK_CLI_MISSING_HINT, SPACE_LIST_ARGS, describeLarkCliFailure, findSameNameSpace, parseCreatedSpaceId, parseSpaceList, sanitizeSpaceName, spaceCreateArgs } from './core/feishuSpaces.js';
+// ★ 2026-11-10：知识库设置页可指定飞书应用（appId / appSecret）⇒ 用 lark-cli profile 切换
+import { credentialRefForApp, isValidAppId, profileAddArgs, profileArgsOf, sanitizeAppId, secretIntentOf } from './core/kbFeishuApp.js';
 
 // ★ 页面那唯一一条写路由（§15.33）**复用工具同款围栏** ✓：`resolveOrganizePath` 早就把
 //   "只能在「笔记」区内"判死了（真源 `kbOrganizeTools.ts` 的口径 ✓）⇒ 不另写一套判断 ✓。
@@ -114,7 +116,9 @@ import { applyActiveDir, readActiveDir, readActiveVault, writeActiveDir } from '
 //   `buildGraphData is not defined`（由新守卫 `scripts/check-plugin-scope.mjs` 抓到，不是靠人眼）。
 import { buildGraphData } from './core/kbGraphData.js';
 
-import { MAX_TOPIC_OVERVIEWS, catalogDescriptions, countFiles, dataRootOf, fulltextIndexes, kbRootOf, listTopicOverviews, listVaults, listVaultTree, noteCatalog, pageSnapshotOf, previewBuild, readDoc, registerBuildCacheEntries } from './store.js';
+import { MAX_TOPIC_OVERVIEWS, catalogDescriptions, configuredRootOf, countFiles, dataRootOf, fulltextIndexes, kbRootOf, listTopicOverviews, listVaults, listVaultTree, loadConfiguredRoot, noteCatalog, pageSnapshotOf, previewBuild, readDoc, registerBuildCacheEntries, setConfiguredRoot } from './store.js';
+// ★ 2026-11-10：dsh 侧知识库根配置（唯一真源）+ 聊天框工具卡的候选/校验口径。
+import { LIBRARY_SUBDIR, NOTES_SUBDIR, buildRootCandidates, defaultRootOf, normalizeRootPath, rootConfigFileOf, rootSectionsOf, rootVaultIdOf, serializeRootConfig } from './core/kbRootConfig.js';
 
 
 /** 随包内置的同步脚本绝对路径（真源 `resources/.agents/kb/feishu-sync.mjs`，副本由守卫钉住字节一致）。 */
@@ -140,7 +144,12 @@ function runFeishuSync(args, cwd, timeout = FEISHU_SYNC_TIMEOUT_MS) {
 				resolve(value);
 			}
 		};
-		const child = spawn(process.execPath, [FEISHU_SCRIPT_PATH, ...args], { cwd, windowsHide: true });
+		const child = spawn(process.execPath, [FEISHU_SCRIPT_PATH, ...args], {
+			cwd, windowsHide: true,
+			// ★ 2026-11-10：只把 appId（非机密）交给同步脚本，脚本据此给每条 lark-cli 命令加 --profile。
+			//   appSecret 从不进子进程环境、从不进 argv ✓。
+			env: { ...process.env, ...(KB_FEISHU_APP_ID ? { VSSAROS_KB_FEISHU_PROFILE: KB_FEISHU_APP_ID } : {}) },
+		});
 		const timer = setTimeout(() => {
 			output += `\n[超时] 超过 ${Math.round(timeout / 1000)}s 仍未结束，已终止（同步是逐篇串行的，可以用 limit 分批）。\n`;
 			try {
@@ -163,13 +172,31 @@ const FEISHU_READ_TIMEOUT_MS = 120_000;
 const FEISHU_WRITE_TIMEOUT_MS = 60_000;
 
 /**
+ * ★ 2026-11-10：设置页配置的飞书 **appId**（模块级缓存）。
+ *   `apply()` 同步读一次 `.kb-settings.json`；`/api/kb-settings` 保存后立即更新 ⇒ 不用重启 Host。
+ *   为什么缓存：`runLarkCli` 是同步函数、被 10 处调用，不能每次读盘。
+ *   ⚠ 这里**只放 appId（非机密）**；appSecret 只在保存时从凭据库取出、经 stdin 交给 CLI。
+ */
+let KB_FEISHU_APP_ID = '';
+function loadFeishuAppId(config) {
+	try {
+		const obj = JSON.parse(readFileSync(join(kbRootOf(config), '.kb-settings.json'), 'utf8'));
+		KB_FEISHU_APP_ID = sanitizeAppId(obj?.feishu?.appId);
+	} catch { KB_FEISHU_APP_ID = ''; }
+	return KB_FEISHU_APP_ID;
+}
+
+/**
  * 跑 `lark-cli`（`kb_feishu_spaces` 用 ✓）。与上面 `runFeishuSync` 的两点不同：
  *   · 可执行**由调用方给**（`cliPath` ✓ —— CLI 装在非标准位置时能指路 ✓），缺省走 PATH ✓；
  *   · **不经 shell**（`spawn(exe, args[])` ✓）：名称里就算有引号也不会被拆开 ✓（我们仍照真源净化 ✓）。
  * `missing: true` ＝ **压根起不来**（ENOENT 之类 ✓）⇒ 调用方要给"安装 + 登录"指引 ✓，
  * 不许当"命令失败"糊过去 ✗（那正是用户最需要指路的一刻 ✓）。
+ *
+ * ★ 2026-11-10：配置了 appId ⇒ 每条命令前置 `--profile <appId>`（一处注入覆盖全部 10 个调用点）。
+ *   `opts.stdin` 只用于 `profile add --app-secret-stdin` ⇒ **secret 不进 argv、不进日志** ✓。
  */
-function runLarkCli(exe, args, timeout) {
+function runLarkCli(exe, args, timeout, opts = {}) {
 	return new Promise(resolve => {
 		let stdout = '';
 		let stderr = '';
@@ -201,8 +228,14 @@ function runLarkCli(exe, args, timeout) {
 			}
 		}
 		const useShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(resolved);
-		const spawnArgs = useShell ? args.map(a => (/\s/.test(String(a)) ? '"' + String(a) + '"' : String(a))) : args;
+		// ★ 全局参数 `--profile` 必须在子命令之前（照 superagent 的 larkArgv）。
+		//   ⚠ 建 profile 那次要 skipProfile：目标 profile 还不存在，前置它反而会报「profile not found」✗。
+		const allArgs = [...(opts.skipProfile ? [] : profileArgsOf(KB_FEISHU_APP_ID)), ...args];
+		const spawnArgs = useShell ? allArgs.map(a => (/\s/.test(String(a)) ? '"' + String(a) + '"' : String(a))) : allArgs;
 		const child = spawn(resolved, spawnArgs, useShell ? { windowsHide: true, shell: true } : { windowsHide: true });
+		// ★ stdin 只在 `profile add --app-secret-stdin` 时带 secret（不进 argv / 不进日志）；
+		//   其它命令也主动 end，避免 CLI 等输入挂住 ✓。
+		try { child.stdin?.end(typeof opts.stdin === 'string' ? opts.stdin : ''); } catch { /* 子进程没开 stdin */ }
 		const timer = setTimeout(() => {
 			stderr += `\n[超时] 超过 ${Math.round(timeout / 1000)}s 仍未结束，已终止。\n`;
 			try {
@@ -446,7 +479,7 @@ async function readAsset(root, uri, extraRoots = []) {
 // 它必须与 `toolDefinitions()` 里真正注册的名字**集合相同** ✗ —— 2026-10-12 加 `kb_feishu_spaces`
 // 时正是靠 `p3-08` 的"页面 == 注册 == 声明"三方对账抓到的（同 workflow 那次 ✓：两处名单各写一份，
 // 只改一处 ⇒ 页面说 5 个、注册表里 6 个 ✗）。
-export const TOOL_NAMES = ['kb_list', 'kb_search', 'kb_read', 'kb_topic_overviews', 'kb_organize', 'kb_build', 'kb_write_note', 'kb_mkdir', 'kb_mindmap', 'feishu_doc_read', 'feishu_drive_list_comments', 'feishu_drive_list_comment_replies', 'feishu_drive_reply_comment', 'feishu_drive_add_comment', 'kb_feishu_spaces', 'kb_feishu_sync'];
+export const TOOL_NAMES = ['kb_list', 'kb_search', 'kb_read', 'kb_topic_overviews', 'kb_organize', 'kb_build', 'kb_write_note', 'kb_mkdir', 'kb_mindmap', 'feishu_doc_read', 'feishu_drive_list_comments', 'feishu_drive_list_comment_replies', 'feishu_drive_reply_comment', 'feishu_drive_add_comment', 'kb_feishu_spaces', 'kb_feishu_sync', 'kb_setup_root'];
 /** 页面最多列出的文档条数（页面是给人看的，工具才是给模型的）。 */
 const PAGE_DOC_LIMIT = 40;
 
@@ -5386,6 +5419,13 @@ function toolDefinitions(ctx, state, config) {
 			// ② 无论 list 还是 create，都问**远端真实列表** ✓（create 要靠它判重 ✓；不许用本地映射判 ✗）
 			const listed = await runLarkCli(exe, SPACE_LIST_ARGS, SPACE_LIST_TIMEOUT_MS);
 			if (listed.missing) { return { ok: false, action, message: LARK_CLI_MISSING_HINT }; }
+			// ★ 2026-11-10：**必须先检查退出码**。以前只看 `missing` ⇒ 飞书 99991672
+			//   （bot 缺 wiki scope）会被 parseSpaceList 解析成 0 条，再回一句「确认已用用户身份登录」
+			//   ⇒ 权限错误被伪装成"没登录 / 没有知识库"，模型会据此瞎建议 ✗。
+			if (listed.code !== 0) {
+				const f = describeLarkCliFailure(`${listed.stderr || ''}\n${listed.stdout || ''}`, listed.code);
+				return { ok: false, action, message: f.message };
+			}
 			const spaces = parseSpaceList(`${listed.stdout}${listed.stderr}`);
 			if (action === 'list') {
 				return {
@@ -5621,8 +5661,50 @@ function toolDefinitions(ctx, state, config) {
 			await writeFile(indexPath, Buffer.from(serializeVectorIndexBinary(indexData)));
 			return { ok: true, vaultId: vault.id, chunks: chunks.length, dimensions, tag, indexPath };
 		},
-	}];
-}
+	}, {
+		/**
+		 * ★ 2026-11-10（用户要求）：初始状态 app 没配置知识库文件夹根目录时，
+			 *   知识库专家 bot 说「创建知识库」要先停下来问用户选根 —— 本工具**只报告状态，
+			 *   绝不自己猜路径、绝不建目录**。聊天框按 `tool.call.toolview` 的 key 把结果渲染成
+			 *   交互工具卡；用户选完由卡片 POST `/x/kb/api/root-config` 落盘（不经过模型）。
+			 */
+			name: 'kb_setup_root',
+			description: '检查「知识库文件夹根目录」是否已配置。'
+				+ '★ 当用户要求创建知识库 / 加入知识库、而 app 还没配置根目录时，**必须先调用本工具**：'
+				+ 'needsPath=true 表示工具卡会让用户选根目录，你要停下来等，不要自己 mkdir、不要猜路径、'
+				+ '也不要往 知识库列表/ 下建库。已配置时返回 configured=true 与 root（= 唯一库根，'
+				+ '其下固定 数据源/ 原始文件 与 知识库列表/ 独立知识库文件夹）。'
+				+ '本工具只读，任何情况下都不会写盘。',
+			parameters: { type: 'object', properties: {} },
+			output: {
+				schema: {
+					type: 'object',
+					properties: {
+						needsPath: { type: 'boolean', description: '是否需要用户在工具卡里选根目录' },
+						configured: { type: 'boolean', description: 'dsh 侧是否已配置根目录' },
+						root: { type: 'string', description: '已配置的根目录绝对路径；未配置为空串' },
+						message: { type: 'string', description: '给人看的一句话状态' },
+					},
+					required: ['needsPath', 'configured', 'root', 'message'],
+				},
+				render: (_args, value) => [{ type: 'text', text: String(value?.message ?? '') }],
+			},
+			isConcurrencySafe: () => true,
+			execute: async () => {
+				const root = configuredRootOf();
+				if (root) {
+					return {
+						needsPath: false, configured: true, root,
+						message: `知识库文件夹根目录已配置：${root}（唯一库根；数据源/ 放原始文件，知识库列表/ 下每个文件夹是一个独立知识库）`,
+					};
+				}
+				return {
+					needsPath: true, configured: false, root: '',
+					message: '还没有配置知识库文件夹根目录。工具卡会让你选择根目录；选完才会有 数据源/ 与 知识库列表/。',
+				};
+			},
+			}];
+			}
 
 /**
  * 写入类工具（审批闸只拦这些 ✓，见 README 5.104）。
@@ -6260,7 +6342,7 @@ async function startBuildJob({ ctx, state, config, vault, pending, params, exec,
  * 与 `/api/kb-settings` 用同一份文件，避免"页面改了但同步读不到"。
  */
 async function readFeishuSettings(config) {
-	const base = { enabled: false, schedule: false, scheduleMinutes: 60, intervalMs: 800, conflict: 'skip', deleteRemote: false, mappings: [], cliPath: '' };
+	const base = { enabled: false, schedule: false, scheduleMinutes: 60, intervalMs: 800, conflict: 'skip', deleteRemote: false, mappings: [], cliPath: '', appId: '' };
 	try {
 		const obj = JSON.parse(await readFile(join(kbRootOf(config), '.kb-settings.json'), 'utf8'));
 		return Object.assign(base, obj && obj.feishu);
@@ -6416,6 +6498,12 @@ export function apply(ctx, config = {}) {
 		let ready = null;
 		try { ready = ctx.get?.('vssarosFoundation') ?? ctx.vssarosFoundation ?? null; } catch { /* 探针的 Proxy 假 ctx 对未知属性抛错 ⇒ 当不存在 */ }
 		if (ready) { bindFoundation(ready); }
+		// ★ 2026-11-10：**读 dsh 侧自持的知识库根配置**（`<数据根>/.kb-root.json`）。
+		//   必须在 bindFoundation 之后（dataRootOf 依赖它）；只在 apply 同步段读一次盘，
+		//   之后走 store 的模块级缓存 ⇒ 工具卡改完配置立即生效，不用重启 Host。
+		loadConfiguredRoot(config);
+		// ★ 2026-11-10：读设置页配置的飞书 appId（必须在 loadConfiguredRoot 之后：kbRootOf 依赖它）
+		loadFeishuAppId(config);
 		// ★ 2026-10-20：**config 拿不到 kbVaults 时，从 overlay 文件兜底读**（见 injectedRawOf 的注释）。
 		//   放在 bindFoundation 之后：`dataRootOf` 依赖 foundation，未绑定时会抛 ⇒ 三级兜底到 home。
 		{
@@ -7098,6 +7186,94 @@ export function apply(ctx, config = {}) {
 				//   POST → 整体覆盖写回（页面每次改一个字段就发整份；小文件、无并发需求）
 				//   ⚠ 只放 dsh 侧**真能生效**的项：构建方式 / 飞书开关与映射 / 同步参数。
 				//     IDE 专有的（系统选目录、Embedding provider、全局索引）不在这里假装。
+				// ★ 2026-11-10：**dsh 侧知识库根配置**（聊天框工具卡唯一的读/写通道）。
+				//   以 `<数据根>/.kb-root.json` 为真源；IDE 侧不再注入 kbRoot/kbVaults/kbActiveVaultId。
+				//   GET  /api/root-candidates → 候选根目录（只读，不猜路径）
+				//   GET  /api/root-config     → 当前根配置
+				//   POST /api/root-config     → 校验 → 建两个顶层区 → 写配置 → 立即生效
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/root-candidates`) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					if (req.method !== 'GET') { send(405, { ok: false, error: '请用 GET' }); return; }
+					try {
+						const dr = dataRootOf(config);
+						const configured = configuredRootOf();
+						// 只读扫数据根的直接子目录：含 数据源/ 或 知识库列表/ 的才算「已有根目录」。
+						const existing = [];
+						try {
+							const entries = await readdir(dr, { withFileTypes: true });
+							for (const entry of entries) {
+								if (!entry.isDirectory() || entry.name.startsWith('.')) { continue; }
+								const dir = join(dr, entry.name);
+								const sections = [];
+								for (const name of [LIBRARY_SUBDIR, NOTES_SUBDIR]) {
+									const st = await stat(join(dir, name)).catch(() => null);
+									if (st && st.isDirectory()) { sections.push(name); }
+								}
+								if (sections.length) { existing.push({ path: dir, sections }); }
+							}
+						} catch { /* 数据根还不存在：候选仍给默认位置，不谎报 */ }
+						send(200, {
+							ok: true, configured, currentRoot: kbRootOf(config), defaultRoot: defaultRootOf(dr),
+							candidates: buildRootCandidates({ dataRoot: dr, configured, workspaceRoot: '', existing: existing.slice(0, 8) }),
+						});
+					} catch (e) { send(500, { ok: false, error: String(e?.message ?? e) }); }
+					return;
+				}
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/root-config`) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					if (req.method === 'GET') {
+						send(200, { ok: true, configured: !!configuredRootOf(), currentRoot: kbRootOf(config), configFile: rootConfigFileOf(dataRootOf(config)) });
+						return;
+					}
+					if (req.method !== 'POST') { send(405, { ok: false, error: '请用 GET 或 POST' }); return; }
+					let raw = '';
+					for await (const chunk of req) {
+						raw += chunk;
+						if (raw.length > 8192) { send(413, { ok: false, error: '请求体太大' }); return; }
+					}
+					let payload;
+					try { payload = JSON.parse(raw || '{}'); } catch { send(400, { ok: false, error: '请求体不是合法 JSON' }); return; }
+					const checked = normalizeRootPath(payload?.path);
+					if (!checked.ok) { send(400, { ok: false, error: checked.error }); return; }
+					const dir = checked.path;
+					try {
+						const st = await stat(dir).catch(() => null);
+						if (st && !st.isDirectory()) { send(400, { ok: false, error: '同名文件已存在，不能当作根文件夹：' + dir }); return; }
+						if (!st) { await mkdir(dir, { recursive: true }); }
+						// 两个顶层区：已存在就**只读接入**（不移动 / 不复制 / 不改名 / 不覆盖），缺哪个补哪个。
+						const sections = rootSectionsOf(dir);
+						const created = [];
+						for (const section of [sections.library, sections.notes]) {
+							const sst = await stat(section).catch(() => null);
+							if (sst && !sst.isDirectory()) {
+								send(400, { ok: false, error: '同名文件已存在，不能当作分区目录：' + section }); return;
+							}
+							if (!sst) { await mkdir(section, { recursive: true }); created.push(basename(section)); }
+						}
+						// 配置落在**数据根**而不是知识库根 ⇒ 换根时不会把配置一起带走。
+						const dr = dataRootOf(config);
+						await mkdir(dr, { recursive: true });
+						await writeFile(rootConfigFileOf(dr), serializeRootConfig(dir), 'utf8');
+						setConfiguredRoot(dir);
+						VIEW_DATA_CACHE.clear();
+						let knowledgeBases = 0;
+						try {
+							const sub = await readdir(sections.notes, { withFileTypes: true });
+							knowledgeBases = sub.filter(e => e.isDirectory() && !e.name.startsWith('.')).length;
+						} catch { /* 数不出来就如实给 0 */ }
+						send(200, {
+							ok: true, root: dir, vaultId: rootVaultIdOf(dir), sections, created,
+							knowledgeBases, configFile: rootConfigFileOf(dr),
+						});
+					} catch (e) { send(500, { ok: false, error: String(e?.message ?? e) }); }
+					return;
+				}
 				if (url && url.pathname === `${ROUTE_PREFIX}/api/kb-settings`) {
 					const send = (code, payload) => {
 						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -7106,22 +7282,41 @@ export function apply(ctx, config = {}) {
 					const file = () => join(kbRootOf(config), '.kb-settings.json');
 					const defaults = {
 						agenticBuild: true,
-						// `scheduleMinutes`：定时同步的间隔（分钟）；`cliPath`：lark-cli 的非标准路径
-						feishu: { enabled: false, schedule: false, scheduleMinutes: 60, intervalMs: 800, conflict: 'skip', deleteRemote: false, mappings: [], cliPath: '' },
+						// `scheduleMinutes`：定时同步的间隔（分钟）；`cliPath`：lark-cli 的非标准路径；
+						// ★ `appId`：设置页指定的飞书应用（非机密）。`appSecret` **绝不**写进这份文件。
+						feishu: { enabled: false, schedule: false, scheduleMinutes: 60, intervalMs: 800, conflict: 'skip', deleteRemote: false, mappings: [], cliPath: '', appId: '' },
 					};
 					const readSettings = () => {
 						try {
-							const raw = readFileSync(file(), 'utf8');
-							const obj = JSON.parse(raw);
-							return Object.assign({}, defaults, obj, {
+							const obj = JSON.parse(readFileSync(file(), 'utf8'));
+							const merged = Object.assign({}, defaults, obj, {
 								feishu: Object.assign({}, defaults.feishu, obj && obj.feishu),
 							});
+							delete merged.feishu.appSecret;   // 历史遗留的明文也要抹掉，绝不回显
+							return merged;
 						} catch {
 							return defaults;
 						}
 					};
+					/** 凭据库里的 appSecret（只给 Host 内部用，不回前端、不进日志）。 */
+					const resolveAppSecret = async (appId) => {
+						const ref = credentialRefForApp(appId);
+						if (!ref || !KB_CREDENTIALS || typeof KB_CREDENTIALS.resolve !== 'function') { return ''; }
+						try {
+							const r = await KB_CREDENTIALS.resolve(ref);
+							return String((r && typeof r === 'object' ? r.value : r) ?? '').trim();
+						} catch { return ''; }
+					};
 					try {
-						if (req.method === 'GET') { send(200, { ok: true, settings: readSettings() }); return; }
+						if (req.method === 'GET') {
+							const settings = readSettings();
+							const appId = sanitizeAppId(settings.feishu.appId);
+							settings.feishu = Object.assign({}, settings.feishu, {
+								appId, hasAppSecret: Boolean(appId && await resolveAppSecret(appId)),
+							});
+							send(200, { ok: true, settings });
+							return;
+						}
 						if (req.method !== 'POST') { send(405, { ok: false, error: '请用 GET 或 POST' }); return; }
 						let raw = '';
 						for await (const chunk of req) {
@@ -7132,8 +7327,50 @@ export function apply(ctx, config = {}) {
 						const next = Object.assign({}, defaults, body, {
 							feishu: Object.assign({}, defaults.feishu, body && body.feishu),
 						});
+						// ★ 2026-11-10：appSecret 的三种语义（缺/空 = 不改、null = 清除、非空 = 写凭据库并建 profile）
+						const intent = secretIntentOf(next.feishu.appSecret);
+						const appId = sanitizeAppId(next.feishu.appId);
+						const typedSecret = typeof next.feishu.appSecret === 'string' ? next.feishu.appSecret.trim() : '';
+						delete next.feishu.appSecret;      // 永不落盘
+						delete next.feishu.hasAppSecret;   // 回显字段也不写盘
+						if (appId && !isValidAppId(appId)) {
+							send(400, { ok: false, error: 'App ID 形态不对：应为 cli_ 开头的字母数字（例如 cli_a1b2c3）' });
+							return;
+						}
+						next.feishu.appId = appId;
+						const ref = credentialRefForApp(appId);
+						let secret = '';
+						if (intent === 'clear' && ref && KB_CREDENTIALS && typeof KB_CREDENTIALS.unset === 'function') {
+							try { await KB_CREDENTIALS.unset(ref); } catch { /* 清除失败不阻断保存 */ }
+						} else if (intent === 'set' && ref) {
+							if (!KB_CREDENTIALS || typeof KB_CREDENTIALS.set !== 'function') {
+								send(503, { ok: false, error: '宿主没有凭据服务，无法安全保存 App Secret（不会明文落盘）' });
+								return;
+							}
+							try { await KB_CREDENTIALS.set(ref, typedSecret); secret = typedSecret; }
+							catch (e) { send(500, { ok: false, error: '保存 App Secret 失败：' + String(e?.message ?? e) }); return; }
+						} else if (appId) {
+							secret = await resolveAppSecret(appId);   // 没填新 secret ⇒ 用已存的重建 profile
+						}
+						const prevAppId = KB_FEISHU_APP_ID;
 						await writeFile(file(), JSON.stringify(next, null, 2), 'utf8');
-						send(200, { ok: true, settings: next });
+						KB_FEISHU_APP_ID = appId;   // 立即生效，无需重启 Host
+						// ★ 用凭据建/更新 lark-cli profile：secret 只经 stdin，不进 argv / 不进日志。
+						//   ⚠ 只在「填了新 secret」或「换了 appId」时重建 ⇒ 常规改 mappings/开关不会
+						//     每次保存都跑一遍 CLI（profile add 是幂等的，但会拖慢设置页并刷日志）✗。
+						let note = '';
+						if (appId && secret && (intent === 'set' || appId !== prevAppId)) {
+							const cli = String(next.feishu.cliPath || '').trim() || DEFAULT_LARK_CLI;
+							const r = await runLarkCli(cli, profileAddArgs(appId), 30000,
+								{ skipProfile: true, stdin: secret + '\n' });
+							note = r.code === 0
+								? `已为 ${appId} 建好 lark-cli profile，后续飞书命令会带 --profile ${appId}。`
+								: `lark-cli profile 建立失败（${String(r.stderr || r.stdout || '').slice(-200)}）；设置已保存，但命令可能仍用旧应用。`;
+						}
+						const out = Object.assign({}, next, {
+							feishu: Object.assign({}, next.feishu, { hasAppSecret: Boolean(appId && secret) }),
+						});
+						send(200, { ok: true, settings: out, ...(note ? { note } : {}) });
 						return;
 					} catch (e) {
 						send(500, { ok: false, error: String(e?.message ?? e) });
@@ -7432,8 +7669,10 @@ export function apply(ctx, config = {}) {
 							 *   ⚠ 规则放在**服务端**而不是只放 IDE 注入侧：注入用的 roots overlay 是
 							 *     **按内容哈希缓存复用**的（改清单不会立刻重写）⇒ 只改注入会"看起来没生效"。
 							 */
-							if (nm === '我的知识库' && !(v?.totalDocs ?? 0)) { continue; }
-							if (!((v?.totalDocs ?? 0) > 0 || registeredIds.has(String(v?.id ?? '')))) { continue; }
+							if (nm === '我的知识库' && !(v?.totalDocs ?? 0) && v?.source !== 'root') { continue; }
+							// ★ 2026-11-10：「根即唯一库根」时那条记录是全新的空库（0 篇、也没登记过）
+							//   ⇒ 不能被"空库且未登记 ⇒ 不算库"剔除，否则卡片配置完页面还是「还没有知识库」。
+							if (!(v?.source === 'root' || (v?.totalDocs ?? 0) > 0 || registeredIds.has(String(v?.id ?? '')))) { continue; }
 							const key = String(v?.dir ?? '').toLowerCase();
 							const prev = byDir.get(key);
 							if (!prev || (v?.totalDocs ?? 0) > (prev?.totalDocs ?? 0)) { byDir.set(key, v); }
@@ -7931,9 +8170,21 @@ export function apply(ctx, config = {}) {
 						}
 						const r = await runLarkCli(cli || DEFAULT_LARK_CLI, SPACE_LIST_ARGS, 30000);
 						if (r.code !== 0) {
+							// ★ 2026-11-10（真机：飞书 99991672 缺 scope）：旧实现把整段原始 JSON 的
+							//   末尾 800 字直接塞进 error ⇒ 设置页里一坨乱码。改成解析出可读、可行动的
+							//   提示 + 结构化字段（权限清单 / 申请入口 / 身份），原始输出只留在 detail。
+							const f = describeLarkCliFailure(`${r.stderr || ''}\n${r.stdout || ''}`, r.code);
 							send(200, {
 								ok: false,
-								error: String((r.stderr || r.stdout || '')).slice(-800) || LARK_CLI_MISSING_HINT,
+								error: f.message,
+								errorKind: f.kind,
+								missingScopes: f.missingScopes,
+								consoleUrl: f.consoleUrl,
+								identity: f.identity,
+								code: f.code,
+								logId: f.logId,
+								notice: f.notice,
+								detail: f.detail,
 							});
 							return;
 						}
@@ -7949,10 +8200,16 @@ export function apply(ctx, config = {}) {
 								: Array.isArray(j?.spaces) ? j.spaces
 									: Array.isArray(j?.items) ? j.items
 										: Array.isArray(j?.data?.items) ? j.data.items : [];
-							spaces = arr.map(it => ({
-								id: String(it?.space_id ?? it?.token ?? it?.id ?? ''),
-								name: String(it?.name ?? it?.title ?? ''),
-							})).filter(s => s.id);
+							spaces = arr.map(it => {
+								const id = String(it?.space_id ?? it?.token ?? it?.id ?? '');
+								return {
+									id,
+									// ★ 2026-11-10：另一份设置页（lib/client.js）与部分旧前端读 `spaceId`
+									//   ⇒ 同时给别名，避免「拉取到了但下拉 value 是 undefined、选了不生效」✗。
+									spaceId: id,
+									name: String(it?.name ?? it?.title ?? ''),
+								};
+							}).filter(s => s.id);
 						} catch { spaces = []; }
 						send(200, { ok: true, spaces });
 					} catch (e) {

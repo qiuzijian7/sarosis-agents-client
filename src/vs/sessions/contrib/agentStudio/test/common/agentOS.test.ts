@@ -30,21 +30,6 @@ suite('Agent OS - Interface Definitions (Phase 1)', () => {
 		assert.strictEqual(mockProvider.getAuthStatus(), ModelAuthStatus.NotConfigured);
 	});
 
-	test('IMemoryProvider interface structure', () => {
-		const mockProvider = {
-			id: 'test-memory',
-			name: 'Test Memory',
-			loadContext: async (agentId: string, sessionId: string) => ({
-				shortTermMemories: [],
-				longTermMemories: [],
-			}),
-			writeMemory: async (agentId: string, entry: any) => {},
-			searchMemory: async (agentId: string, query: string) => [],
-		};
-
-		assert.strictEqual(mockProvider.id, 'test-memory');
-		assert.strictEqual(mockProvider.name, 'Test Memory');
-	});
 
 	test('IToolProvider interface structure', () => {
 		const mockProvider = {

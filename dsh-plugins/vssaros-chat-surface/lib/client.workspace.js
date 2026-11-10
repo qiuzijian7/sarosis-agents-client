@@ -85,8 +85,10 @@
 //   ④ 顶部加「当前会话」栏（`cwd` 写在脸上）—— 多根之后不给它，用户会以为在 A 根、其实跑在 B 根 ✗。
 // ★ 拍板 ① 的"粘性根"**不需要另存状态**：dsh 自带"每目录一个专属会话"（宿主 `_sessionIdFor` 按目录派生 id）
 //   ⇒ 回到该工作区时，面板会把上次那个根标成「当前会话 cwd」✓（= b 由它天然提供 ✓）。
-// ⚠ 本轮**刻意不印"可写：全部 N 个根"**：写根由沙箱策略决定（当前实现 = 会话 cwd **单根**，
-//   拍板 ② 的 α「写全部根」还没接入）⇒ 印了就是假话 ✗（本仓纪律：文案必须描述"真正会发生的事" ✓）。
+// ★ 2026-11-10（P0-A/B）：上面这句"写全部根还没接入"的口径已由 foundation 的多根写围栏
+//   （lib/fsMultiRoot.js）推进了，但**客户端仍拿不到沙箱档位**（浏览器上下文里没有 sandboxPolicy）
+//   ⇒ 现在改为在「当前会话」栏打印**状态驱动的根集作用域**，并如实写"写权限由沙箱策略决定"。
+//   既不沿用过时的"单根"断言，也不反向宣称"可写：全部 N 个根" —— 两者都是会变假的写死文案 ✗。
 //
 // ── 诊断位（宿主自证快照读它们；`dshViewHost.ts` 的 PAGE_SURFACE_REPORT）──────────────
 // `state.contextEntry` / `workspaceChip` / `worktreeChip`（入口已挂载）/ `contextEntryHero`（hero 遮蔽注册成功）
@@ -100,6 +102,21 @@ window.__ModuleLoader__.load({
 		var module = { exports: {} };
 		var exports = module.exports;
 		const react = require("react");
+
+		/**
+		 * ★ P1-E（2026-11-10）：**术语分层** —— 三层各管一件事，不许互相污染：
+		 *   ① 用户可见中文（本函数 / 本面板）：统一「N 个根」「主根」「关联根」「多根工作区」；
+		 *   ② 模型提示词（foundation/workspacePrompt.js）：保持英文 `primary` / `additional` / `roots`
+		 *      （给 LLM 的结构化文本，翻译成中文只会降低可读性，且守卫 A4 按英文逐字钉住 ✓）；
+		 *   ③ 协议字段（dshBridgeProtocol.ts / workspaceContext.js）：`isPrimary` / `roots` / `relatedRoots`
+		 *      （跨进程契约，改名会打断 IDE↔Host ✗）。
+		 * 本函数是 ① 的唯一读口：`client.workspaces.js` 存有一份**逐字同形**副本（跨 chunk 不能 import ⇒
+		 * 按本仓惯例同形各存一份，由守卫 ⑤-n 对账 ✓）。纯函数 ⇒ `__test` 可直接断言 ✓。
+		 */
+		function rootCountLabel(n) {
+			const v = Number.isFinite(Number(n)) ? Math.max(0, Math.trunc(Number(n))) : 0;
+			return String(v) + " 个根";
+		}
 
 		/** 路径取末段（`/a/b/c` 与 `C:\\a\\b` 都要认）；空串/非串返回 null。 */
 		function baseName(p) {
@@ -411,6 +428,139 @@ window.__ModuleLoader__.load({
 			return { groups: groups, worktrees: worktrees };
 		}
 
+		/**
+		 * ★ P0-A/B（2026-11-10）：当前会话的**根集作用域**与「多根下」受限清单 —— 可见文案的唯一真源。
+		 *
+		 * 输入只来自本面板已有的两份事实：
+		 *   · `group.roots`：IDE 推送的工作区记录（path/name/isPrimary），与 foundation 的
+		 *     `deriveWorkspaceRoots()` 同源数据；但客户端是浏览器上下文 ⇒ 拿不到那个服务 ✗；
+		 *   · `cwd`：`readCurrentDir(sid)` —— 宿主持有、`session.start({cwd})` 落定即定死 ✓。
+		 *
+		 * ⚠⚠ **不报"可写范围"**：沙箱档位（read-only / workspace-write / danger-full-access）与
+		 *   "多根写围栏是否真的接上"只在 Host 侧（sandboxPolicy / foundation），页面读不到。
+		 *   印「可写：全部 N 个根」或「仅当前根」都会随档位变化变成假话 ✗ ⇒ 只报根集事实 +
+		 *   一句「写权限由沙箱策略决定」，符合本仓"文案必须描述真正会发生的事"的纪律 ✓。
+		 * ⚠ 受限清单只列**本仓已明文定义**的多根口径，不照搬 Cline 的 .clinerules / Checkpoints
+		 *   （那是别家功能、本项目没有 ⇒ 印出来同样是假话 ✗）。
+		 *
+		 * 纯函数、同步、零依赖 ⇒ `__test` / 守卫可直接断言 ✓。单根 ⇒ lines/limits 都为空 ⇒ 界面逐字不变。
+		 */
+		/**
+		 * ★ P2-F（2026-11-10）：「动作补齐」的诚实落地 —— **动作边界说明**，不是假入口。
+		 *
+		 * 用户方案里点名的三项（工作区重命名 / 删除 IDE 记录 / 独立设置 cwd）在 dsh 侧都做不到，
+		 * 原因是架构约束而不是没写：
+		 *   · 页面桥**单向只读**：`document.documentElement.dataset.vssarosWorkspaces` + `WORKSPACE_EVENT`
+		 *     由 IDE 下发，chunk 里没有任何写回 IDE 记录的通道（`workspaces.rename` / `workspace.setCwd`
+		 *     全仓 0 命中）。按既定方向也不往 IDE 侧加能力 ⇒ 只能告诉用户去哪里做。
+		 *   · `session.start({cwd})` 落定即定死（宿主持有）⇒ 没有「独立设置 cwd」这回事；
+		 *     换根 = 在目标根开新会话，这本来就是本面板 `switchTo` 的既有动作 ✓。
+		 *   · 「移除工作区」走官方 `workspaces.delete` **只摘 dsh 登记**，不删 IDE 记录、不动文件 ✓。
+		 *
+		 * ⚠ 不画三个点了没反应的按钮（本仓纪律：文案必须描述真正会发生的事 ✗），
+		 *   只把「为什么没有 / 该去哪做」写清楚。单根 ⇒ 不输出（旧界面逐字不变 ✓）。
+		 * 纯函数 ⇒ `__test` / 守卫 ⑤-o 可直接断言 ✓。
+		 */
+		function workspaceActionNotes(multi) {
+			if (!multi) { return []; }
+			return [
+				"重命名 / 删除工作区记录：请在 IDE 侧栏的工作区选择器操作（聊天框只读 IDE 下发的记录）。",
+				"这里的「移除工作区」只摘 dsh 侧登记，会话与磁盘文件都保留，重新添加即可恢复。",
+				"不能独立设置 cwd：会话目录由开会话时定死；要换根就点上方列表里的目标根开新会话。",
+			];
+		}
+
+		/**
+		 * ★ 方案 A（2026-11-10，用户报「hero 工作区 chip 下拉里点开会话没反应」）：
+		 *   右栏**根行 / 主命令**的分屏策略 —— 抽成纯函数 ⇒ `__test` / 守卫 ⑤-p 可直接断言 ✓。
+		 *
+		 * 为什么 hero 要只读（上一轮分析结论的可执行版）：
+		 *   · hero 是**空白会话屏**，官方语义「先选工作区、按发送才开始会话」；
+		 *   · 官方 `props.onPick` 只认 `workspaceId`，**没有**「设置待发会话 cwd」的通道 ⇒
+		 *     画一个「选为当前根」的可点按钮只会变成新的假动作 ✗（本仓纪律：文案必须描述真会发生的事）；
+		 *   · `switchWorktree(path)` 会当场 `session.start` 一条空会话、离开 hero ⇒
+		 *     截图中「已隐藏 167 条空会话 / 另有 516 条空会话」正是 5 个根行各挂一个「开会话 →」的产物。
+		 *   ⇒ hero 根行只读 + 主命令不出按钮；**左栏工作区行仍保留** 2026-10-17 的
+		 *     「点了真的切过去」决策（那次真机教训是只 `onPick` 不换会话 ⇒ 用户连点 4 次 UI 零变化 ✗）。
+		 *
+		 * header（已有会话）：换根 = 新会话、历史独立，是**真实需求** ⇒ 根行保留点击
+		 *   （IDE 侧 `dshChatSurfaceHeader.test.ts` 钉住「点根行 ⇒ bridge.switchWorktree(该根)」），
+		 *   只把行尾文案统一成明确的「在此根新建会话 →」，不再与左栏行尾 / 主命令三处口径分裂。
+		 *
+		 * @returns {{disabled:boolean, hint:string}}
+		 */
+		function rootRowPolicyOf(mode, r, canSwitch) {
+			if (mode === "hero") {
+				return { disabled: true, hint: r && r.isPrimary ? "发送后在此根开始" : "只读" };
+			}
+			const isCurrent = !!(r && r.isCurrent);
+			return {
+				disabled: isCurrent || !canSwitch,
+				hint: isCurrent ? "当前会话 cwd" : (canSwitch ? "在此根新建会话 →" : "桥不支持"),
+			};
+		}
+
+		/** 右栏主命令：hero 不出按钮（没有可落地的动作）；header 沿用原 CTA。 */
+		function detailActionPolicyOf(mode, isCurrent, canSwitch) {
+			if (mode === "hero") { return { hidden: true, disabled: true, label: "" }; }
+			return {
+				hidden: false,
+				disabled: !!isCurrent,
+				label: isCurrent ? "✓ 已在这里" : (canSwitch ? "以此主根新建会话（当前会话保持不变）" : "页面桥过旧：切不了"),
+			};
+		}
+
+		function workspaceScopeOf(group, cwd) {
+			const raw = group && Array.isArray(group.roots) ? group.roots : [];
+			const roots = raw.filter((r) => r && typeof r.path === "string" && r.path.trim());
+			const multi = roots.length > 1;
+			const primary = roots.filter((r) => r.isPrimary)[0] || roots[0] || null;
+			const primaryName = primary ? (primary.name || baseName(primary.path) || primary.path) : "";
+			const lines = [];
+			const limits = [];
+			if (multi) {
+				lines.push("根集作用域：" + rootCountLabel(roots.length) + " · 主根 " + primaryName + "；跨根请用绝对路径");
+				lines.push("写权限由沙箱策略决定（此处只报根集，不宣称可写范围）");
+				limits.push("相对路径只基准主根；其它根一律用绝对路径（同名文件靠绝对路径消歧）");
+				limits.push("会话 cwd 由 session.start 定死；切根 = 在目标目录开新会话");
+				limits.push("运行中增删 folder 不热改在跑的会话；根集变化只对新会话生效");
+				limits.push("每根 VCS / HEAD 未注入模型上下文（当前只提供路径与根名）");
+			}
+			return {
+				multi: multi, count: roots.length,
+				primaryPath: primary ? primary.path : null, primaryName: primaryName,
+				cwd: cwd || null,
+				lines: lines,                        // ★ 常驻的作用域条
+				limits: limits,                      // ★ 默认折叠的受限清单
+				actions: workspaceActionNotes(multi), // ★ P2-F：动作边界说明（默认折叠）
+			};
+		}
+
+		/**
+		 * ★ P1-D（2026-11-10）：工作区 / 切根**统一反馈文案**（成功与失败同一把尺子）。
+		 *
+		 * 只报本面板真正知道的两件事：目标路径、原会话 cwd（宿主持有、session.start 定死）。
+		 * ⚠ 不写"根集已变化 / 窗口已切换" —— 客户端拿不到 Host 侧的根集快照诊断，也不切 IDE 窗口
+		 *   ⇒ 只能写"根集若有变化，只对新会话生效"这条**规则**，不谎报本次发生了什么 ✓。
+		 * ⚠ 面板在 `switchTo` 开头就已 `onRequestClose()` ⇒ 成功 note 要**重开面板**才看得见；
+		 *   失败另有 `bridge.notify("attention", …)` 当场可见（既有通道，本刀不弱化）✓。
+		 * 纯函数 ⇒ `__test` / 守卫可断言 ✓。
+		 */
+		function switchFeedbackOf(options) {
+			const o = options || {};
+			const target = o.targetName || baseName(o.targetPath) || "目标目录";
+			const from = baseName(o.fromCwd) || "原会话";
+			if (o.ok === false) {
+			return "切换失败：" + String(o.error || "未知原因") + "（会话未改动，仍在 " + from + "）";
+			}
+			// ★ 方案 A：页面桥是**单向**的 —— promise 在主进程转发时就 resolve，渲染侧真正的
+			//   `startSession` 成败传不回页面 ⇒ 写「已在 X 开新会话」是**谎报已完成** ✗
+			//   （2026-10-16 真机报障：用户界面零变化、只一行 warn，就是这句假话掩盖的）。
+			//   改成「已请求」+ 明确宿主侧可见失败出口 ⇒ 文案只描述这次真正发生的事 ✓。
+			return "已请求在 " + target + " 新建会话（原会话仍在 " + from
+			+ "；宿主完成后聊天框会切换，若未就绪会弹出失败通知；会话 cwd 在创建时定死，根集若有变化只对新会话生效）";
+		}
+
 		function install(ctx, shell) {
 			const state = shell.state;
 			const bridge = shell.bridge;
@@ -713,6 +863,15 @@ window.__ModuleLoader__.load({
 				 * 并 rebind 回本视图 ⇒ 页面随后按 rebind 的会话重新渲染 ✓（两边不分叉 ✓）。
 				 */
 				const switchTo = (row) => {
+					// ★ 方案 A（2026-11-10）：hero 的**根行**没有可落地的动作（官方 onPick 只认
+					//   workspaceId、没有待发 cwd 通道）⇒ 即使有人绕过 `disabled` 直接调 onClick
+					//   （IDE 侧假 react 测试正是这样），也**不许**发 `switchWorktree` 造空会话 ✗。
+					//   左栏工作区行 / worktree 行不受影响（2026-10-17「点了真能切过去」的决策保留 ✓）。
+					if (mode === "hero" && row && row.kind === "root") {
+						noteWorkspaceUi({ event: "hero-root-readonly", lastSwitch: { kind: "root", path: row.path, at: Date.now(), result: "readonly" } });
+						setNote("空白会话屏里各根是只读的：选好工作区后按发送，会在标 ✓ 的主根开始会话；要指定其它根请在会话页的下拉里操作");
+						return;
+					}
 					// **先关菜单再做事**（与合并前的旧实现一致）：失败/拒绝的提示只在菜单里渲染 ⇒
 					// 用户"重新点开菜单"才看得见原因 ✓。⚠ 别顺手改成"不关菜单"—— IDE 侧用例的
 					// `reopened()` 正是靠这个顺序读原因的（点了照样 toggle ⇒ 不关就变成"关掉" ✗）。
@@ -820,21 +979,28 @@ window.__ModuleLoader__.load({
 					/** ② 让宿主在目标目录起/接管会话（与 worktree 同一条命令 ✓）。 */
 					const switchSession = () => {
 						const base = attempt;
+						// P1-D：成功/失败共用同一把尺子生成文案（纯函数，守卫可断言 ✓）
+						const feedback = (extra) => switchFeedbackOf(Object.assign({
+							targetPath: path, targetName: row.label || null, fromCwd: dir,
+						}, extra));
 						try {
 							Promise.resolve(bridge.switchWorktree(path)).then(
 								() => {
 									state.contextSwitches = (state.contextSwitches || 0) + 1;
 									noteWorkspaceUi({ event: "switch-ok", lastSwitch: Object.assign({}, base, { result: "ok", at: Date.now(), rebindsSoFar: state.workspaceRebinds || 0 }) });
+									// 面板已在 switchTo 开头关闭 ⇒ 这条 note 重开面板可见；不假装"当场弹出" ✓
+									setNote(feedback({ ok: true }));
 								},
 								(e) => {
 									const msg = String((e && e.message) || e);
 									noteWorkspaceUi({ event: "switch-fail", lastSwitchError: msg, lastSwitch: Object.assign({}, base, { result: "failed", at: Date.now() }) });
-									fail(msg);
+									// 失败走既有 fail() ⇒ 就地渲染 + bridge.notify("attention") 当场可见 ✓
+									fail(feedback({ ok: false, error: msg }));
 								});
 						} catch (e) {
 							const msg = String((e && e.message) || e);
 							noteWorkspaceUi({ event: "switch-fail", lastSwitchError: msg, lastSwitch: Object.assign({}, base, { result: "threw", at: Date.now() }) });
-							fail(msg);
+							fail(feedback({ ok: false, error: msg }));
 						}
 					};
 					/**
@@ -932,10 +1098,12 @@ window.__ModuleLoader__.load({
 				// ── 「当前会话」栏（稿 C）──────────────────────────────────────────────
 				// 多根之后"这个会话实际跑在哪个根上"必须写在脸上：不给的话用户会以为在 A 根、
 				// 其实跑在 B 根（`session.start({cwd})` 一旦定了就定死 ✓）⇒ 表现为"改不动 / 写不进去" ✗。
-				// ⚠ **只报事实、不报"可写范围"**：写根由沙箱策略决定（当前实现 = 会话 cwd 单根；
-				//   拍板 ② 的 α「写全部根」还没接入）⇒ 在这里印"可写：全部 N 个根"会是**假话** ✗
-				//   （本仓纪律：UI 文案必须描述"这次真正会发生的事" ✓）。α 落地后再补那一行 ✓。
+				// ★ P0-A/B（2026-11-10）：下面新增的两段由 `workspaceScopeOf()` **状态驱动** ——
+				//   单根 ⇒ 一行都不加（旧界面逐字不变 ✓）；多根 ⇒ 报根集事实 + 默认折叠的受限清单。
+				// ⚠ 不印"可写：全部 N 个根"：沙箱档位只在 Host 侧，页面读不到 ⇒ 任何"可写范围"
+				//   断言都会随档位变化变成假话 ✗（本仓纪律：文案必须描述真正会发生的事 ✓）。
 				const currentGroup = tree.groups.filter((g) => isCurrentGroup(g))[0] || null;
+				const scope = workspaceScopeOf(currentGroup, dir);
 				if (dir) {
 					pane.push(react.createElement("div", {
 						key: "cur-h",
@@ -944,11 +1112,46 @@ window.__ModuleLoader__.load({
 						react.createElement("span", null, "当前会话"),
 						currentGroup && currentGroup.multi ? react.createElement("span", {
 							style: { fontSize: 10, fontWeight: 400 },
-						}, currentGroup.label + " · " + currentGroup.roots.length + " 个根") : null));
+						}, currentGroup.label + " · " + rootCountLabel(currentGroup.roots.length)) : null));
 					pane.push(react.createElement("div", {
 						key: "cur-dir",
 						style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, currentColor)", padding: "0 8px 6px", wordBreak: "break-all" },
 					}, "cwd = " + String(dir)));
+					for (const line of scope.lines) {
+						pane.push(react.createElement("div", {
+							key: "cur-scope-" + line,
+							"data-vssaros-scope-line": "1",
+							style: { fontSize: 10.5, lineHeight: 1.5, color: "var(--dsw-alias-label-secondary, currentColor)", padding: "0 8px 3px" },
+						}, line));
+					}
+					// 原生 <details> ⇒ 默认折叠、键盘可达、无需新增 hook（切主题/重渲染都不丢态 ✓）
+					if (scope.limits.length) {
+						pane.push(react.createElement("details", {
+							key: "cur-limits",
+							"data-vssaros-scope-limits": "1",
+							style: { margin: "0 8px 6px", fontSize: 10.5, color: "var(--dsw-alias-label-secondary, currentColor)" },
+						},
+							react.createElement("summary", { style: { cursor: "pointer", padding: "2px 0" } },
+								"多根下 · 受限能力清单（" + scope.limits.length + "）"),
+							scope.limits.map((t, i) => react.createElement("div", {
+								key: "cur-limit-" + i,
+								style: { padding: "2px 0 0 10px", lineHeight: 1.5 },
+							}, "· " + t))));
+					}
+					// P2-F：动作边界说明 —— 单根时 actions 为空 ⇒ 不渲染（旧界面逐字不变 ✓）
+					if (scope.actions.length) {
+						pane.push(react.createElement("details", {
+							key: "cur-actions",
+							"data-vssaros-scope-actions": "1",
+							style: { margin: "0 8px 6px", fontSize: 10.5, color: "var(--dsw-alias-label-secondary, currentColor)" },
+						},
+							react.createElement("summary", { style: { cursor: "pointer", padding: "2px 0" } },
+								"工作区动作与边界（" + scope.actions.length + "）"),
+							scope.actions.map((t, i) => react.createElement("div", {
+								key: "cur-action-" + i,
+								style: { padding: "2px 0 0 10px", lineHeight: 1.5 },
+							}, "· " + t))));
+					}
 					pane.push(react.createElement("div", {
 						key: "cur-div",
 						style: { height: 1, background: "var(--dsw-alias-border-l1, transparent)", margin: "2px 8px 4px" },
@@ -1051,7 +1254,8 @@ window.__ModuleLoader__.load({
 							label: g.label,
 							// 「N 根」= 多根的**可见徽标**（稿 A 的底线能力 ✓）；
 							// `.code-workspace` 身份**只读展示**（拍板 ④-i：这一轮不许拿它去切工作区 ✓）。
-							badges: (g.multi ? g.roots.length + " 根 " : "") + (g.codeWorkspacePath ? ".code-workspace " : ""),
+							// P1-E：统一「N 个根」（原来这里是「N 根」，与 hover 卡 / IDE 侧栏 / sessions 页不一致 ✗）
+						badges: (g.multi ? rootCountLabel(g.roots.length) + " " : "") + (g.codeWorkspacePath ? ".code-workspace " : ""),
 							sub: g.path,
 							// ⚠ 行尾文案**按能力**写（不许含糊承诺）：本面板只换会话、不动 IDE 工作区
 							//   ⇒ 一律写"开会话"（写"切换工作区"就是假话 ✗）。
@@ -1059,7 +1263,7 @@ window.__ModuleLoader__.load({
 								? "当前"
 								: (!canSwitchSession
 									? "桥不支持"
-									: (g.multi ? "以主根开会话 →" : "以此根开会话 →")),
+									: (g.multi ? "以主根新建会话 →" : "在此根新建会话 →")),
 							// 悬停即"预览这条的详情"（不点也不换会话 ⇒ 安全 ✓）；键盘/鼠标都走它
 							onHover: () => setDetailKey(g.key),
 						}));
@@ -1079,40 +1283,50 @@ window.__ModuleLoader__.load({
 					detailPane.push(react.createElement("div", { key: "d-t", style: { padding: "2px 6px 0" } },
 						react.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, wordBreak: "break-all" } }, String(g.label)),
 						react.createElement("div", { style: Object.assign({}, SUB, { whiteSpace: "normal", wordBreak: "break-all", maxWidth: "none", marginTop: 2 }) },
-							(g.multi ? g.roots.length + " 根 · " : "") + (g.codeWorkspacePath ? ".code-workspace · " : "") + String(g.path))));
+							(g.multi ? rootCountLabel(g.roots.length) + " · " : "") + (g.codeWorkspacePath ? ".code-workspace · " : "") + String(g.path))));
+					// ★ 方案 A：标题按 mode 说话（hero 只读 ⇒ 不许承诺"点一行就开会话" ✗）
 					detailPane.push(react.createElement("div", {
 						key: "d-k1",
+						"data-vssaros-context-roots-heading": mode,
 						style: { fontSize: 10, letterSpacing: ".04em", color: "var(--dsw-alias-label-secondary, currentColor)", padding: "8px 6px 2px" },
-					}, isCurrent ? "根（当前会话跑在标 ✓ 的那个上）" : "根（点一行 = 在那个目录开会话）"));
+					}, mode === "hero"
+						? "根（只读；选好工作区后按发送，在标 ✓ 的主根开始会话）"
+						: (isCurrent ? "根（当前会话跑在标 ✓ 的那个上；点其它根 = 新建会话）"
+							: "根（点一行 = 在那个目录新建会话）")));
 					// 各根都作为行渲染（`root:<path>` 锚点不变 ✓）；顺序 = `g.roots`（主根在前 ✓）
 					for (const r of g.roots) {
 						const isCurRoot = !!curRoot && samePath(r.path, curRoot.path);
+						// ★ 方案 A：策略统一走纯函数（hero 只读 / header 当前根禁用且只有非当前根可点）
+						const policy = rootRowPolicyOf(mode, { isPrimary: r.isPrimary, isCurrent: isCurRoot }, canSwitchSession);
 						detailPane.push(rowButton({
 							key: "root:" + g.key + ":" + r.path,
 							attr: "root:" + r.path,
 							row: { kind: "root", path: r.path },
-							current: isCurRoot,
-							disabled: isCurRoot,
+							current: mode === "hero" ? !!r.isPrimary : isCurRoot,
+							disabled: policy.disabled,
 							label: r.name,
 							badges: r.isPrimary ? "主根 " : "关联根 ",
 							sub: r.path,
-							hint: isCurRoot ? "当前会话 cwd" : "开会话 →",
+							hint: policy.hint,
 						}));
 					}
-					// 主命令：与"点整行"完全同一件事（`switchTo(g)` ⇒ 只换会话，不动 IDE 工作区 ✓）
-					detailPane.push(react.createElement("button", {
-						key: "d-go", type: "button",
-						"data-vssaros-context-detail-action": "1",
-						disabled: busy || isCurrent,
-						onClick: () => switchTo(g),
-						style: {
-							marginTop: 10, width: "100%", padding: "6px 8px", borderRadius: 7,
-							border: "1px solid var(--dsw-alias-border-l1, transparent)",
-							background: isCurrent ? "transparent" : "var(--dsw-alias-brand-primary, transparent)",
-							color: isCurrent ? "var(--dsw-alias-label-secondary, currentColor)" : "#fff",
-							fontSize: 11.5, fontWeight: 500, cursor: isCurrent ? "default" : "pointer",
-						},
-					}, isCurrent ? "✓ 已在这里" : (canSwitchSession ? "以此主根开会话" : "页面桥过旧：切不了")));
+					// 主命令：hero 不出按钮（无动作可落地）；header 仍是唯一显式 CTA ✓
+					const action = detailActionPolicyOf(mode, isCurrent, canSwitchSession);
+					if (!action.hidden) {
+						detailPane.push(react.createElement("button", {
+							key: "d-go", type: "button",
+							"data-vssaros-context-detail-action": "1",
+							disabled: busy || action.disabled,
+							onClick: () => switchTo(g),
+							style: {
+								marginTop: 10, width: "100%", padding: "6px 8px", borderRadius: 7,
+								border: "1px solid var(--dsw-alias-border-l1, transparent)",
+								background: isCurrent ? "transparent" : "var(--dsw-alias-brand-primary, transparent)",
+								color: isCurrent ? "var(--dsw-alias-label-secondary, currentColor)" : "#fff",
+								fontSize: 11.5, fontWeight: 500, cursor: isCurrent ? "default" : "pointer",
+							},
+						}, action.label));
+					}
 				} else {
 					detailPane.push(react.createElement("div", { key: "d-e", style: EMPTY },
 						query ? "没有匹配的工作区" : "还没有工作区"));
@@ -1162,8 +1376,8 @@ window.__ModuleLoader__.load({
 					key: "note-sem",
 					style: { fontSize: 10.5, lineHeight: 1.5, color: "var(--dsw-alias-label-secondary, currentColor)", padding: "5px 8px 6px", borderTop: "1px solid var(--dsw-alias-border-l1, transparent)", marginTop: 4 },
 				}, mode === "hero"
-					? "选工作区 = 在它的主根开始会话（只换聊天框的会话，IDE 的窗口工作区不动）；选 worktree = 在那个目录开始新会话（历史独立；当前 preset 保留）"
-					: "选工作区 / worktree = 在那目录新建或接管会话（只换会话，IDE 的窗口工作区不动；历史独立；当前 preset 保留，但在新会话里重新装配）"));
+					? "空白会话屏：右栏各根只读，选好工作区后按发送即在标 ✓ 的主根开始会话；要指定其它根请在会话页的下拉里操作（只换聊天框的会话，IDE 的窗口工作区不动）"
+					: "选工作区 / worktree / 其它根 = 在那目录新建或接管会话（当前会话保持不变；只换会话，IDE 的窗口工作区不动；历史独立；当前 preset 保留，但在新会话里重新装配）"));
 				if (note) {
 					pane.push(react.createElement("div", {
 						key: "err", style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, currentColor)", padding: "2px 8px 6px" },
@@ -1259,7 +1473,7 @@ window.__ModuleLoader__.load({
 						react.createElement("span", { style: { overflow: "hidden", textOverflow: "ellipsis" } }, String(label)),
 						currentRec && currentRec.roots.length > 1 ? react.createElement("span", {
 							style: { fontSize: 10, color: "var(--dsw-alias-label-secondary, currentColor)" },
-						}, currentRec.roots.length + " 根") : null,
+						}, rootCountLabel(currentRec.roots.length)) : null,
 						" ▾"),
 					react.createElement(ContextPanel, {
 						open: open, mode: "header", data: data, sessionId: sid,
@@ -1447,6 +1661,16 @@ window.__ModuleLoader__.load({
 			parseWorkspaces, readPushedWorkspaces, WORKSPACE_EVENT,
 			// 2026-10-17：hero 面板"只认 chip 发起的 open"的来源判定（守卫 ⑤ 钉住）✓
 			isOpenFromAnchor,
+			// 2026-11-10 P0-A/B：当前会话根集作用域 / 受限清单（状态驱动，守卫 ⑤-l 直接断言）✓
+			workspaceScopeOf,
+			// 2026-11-10 P1-D：切换反馈统一文案（守卫 ⑤-m 直接断言）✓
+			switchFeedbackOf,
+			// 2026-11-10 P1-E：用户可见「N 个根」术语真源（守卫 ⑤-n 逐字对账）✓
+			rootCountLabel,
+			// 2026-11-10 P2-F：动作边界说明（守卫 ⑤-o 直接断言）✓
+			workspaceActionNotes,
+			// 2026-11-10 方案 A：hero/header 分屏策略（守卫 ⑤-p 直接断言）✓
+			rootRowPolicyOf, detailActionPolicyOf,
 		};
 		return module.exports;
 	}

@@ -22,6 +22,7 @@
  *   POST /api/suggestions/approve-all                     → report
  *   POST /api/suggestions/reject-all                      → report
  *   GET  /api/config                      → { config }
+ *   GET  /api/workspace-scope             → { scope, cwd }  (P0 multi-root, read-only)
  *   POST /api/config                      { patch }      → { config }
  *
  * Zero runtime dependencies (node:http only).
@@ -558,14 +559,28 @@ export function installApi(ctx, deps) {
       if (req.method === 'GET' && path === '/memory-evolve/api/memory-files') {
         const sessionId = url.searchParams.get('sessionId')
         const cwd = deps.resolveCwd?.(sessionId)
+        // P0（2026-11-10）：运行期根集/作用域，只读；新增字段全部可选 ⇒ 旧客户端零影响。
+        const scope = deps.getWorkspaceScope?.(cwd) ?? null
         sendJson(res, 200, {
-          files: buildMemoryFiles(deps.config, deps.store, cwd, deps.resolveAgent?.(sessionId)),
+          files: buildMemoryFiles(deps.config, deps.store, cwd, deps.resolveAgent?.(sessionId), scope),
           cwd: cwd ?? null,
           // Branch scope for the KEY tab: current branch + all local branches
           // ([] / null outside git — the tab then hides branch controls).
           branch: cwd ? gitBranch(cwd) ?? null : null,
           branches: cwd ? gitBranchList(cwd) : [],
+          workspaceId: scope?.workspaceId ?? null,
+          roots: scope?.roots ?? [],
+          workspaceKey: scope?.workspaceKey ?? null,
+          botKey: (() => { try { return deps.store.botKeyOf?.(deps.resolveAgent?.(sessionId)) ?? null } catch { return null } })(),
+          scope: scope ? { current: scope.current, ambiguous: scope.ambiguous } : null,
         })
+        return
+      }
+      // P0：多根作用域只读端点（供设置页/守卫查询；不写任何状态）。
+      if (req.method === 'GET' && path === '/memory-evolve/api/workspace-scope') {
+        const sessionId = url.searchParams.get('sessionId')
+        const cwd = deps.resolveCwd?.(sessionId)
+        sendJson(res, 200, { scope: deps.getWorkspaceScope?.(cwd) ?? null, cwd: cwd ?? null })
         return
       }
       if (req.method === 'POST' && path === '/memory-evolve/api/key/scope') {

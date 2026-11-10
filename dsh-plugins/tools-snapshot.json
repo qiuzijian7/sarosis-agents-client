@@ -1,6 +1,6 @@
 {
   "note": "由 dsh-plugins/tools-snapshot.mjs 生成；被 dshHarness/test/common/dshToolSnapshot.test.ts 钉住。不要手改，跑 --write。",
-  "total": 148,
+  "total": 153,
   "plugins": {
     "vssaros-agents": [
       {
@@ -1047,6 +1047,12 @@
         "descriptionHash": "c6675ab1000e"
       },
       {
+        "name": "kb_setup_root",
+        "required": [],
+        "params": [],
+        "descriptionHash": "956363647ec8"
+      },
+      {
         "name": "kb_topic_overviews",
         "required": [],
         "params": [
@@ -1182,6 +1188,28 @@
     ],
     "vssaros-mcp": [
       {
+        "name": "mcp_catalog",
+        "required": [],
+        "params": [
+          "action",
+          "category",
+          "id",
+          "installableOnly",
+          "query"
+        ],
+        "descriptionHash": "8175ab1771a0"
+      },
+      {
+        "name": "mcp_import",
+        "required": [],
+        "params": [
+          "action",
+          "picked",
+          "sources"
+        ],
+        "descriptionHash": "68c01bb407be"
+      },
+      {
         "name": "mcp_install",
         "required": [
           "name",
@@ -1195,7 +1223,7 @@
           "transport",
           "url"
         ],
-        "descriptionHash": "3964d5e9bc04"
+        "descriptionHash": "0349492ad2bc"
       },
       {
         "name": "mcp_market_list",
@@ -1204,7 +1232,27 @@
           "limit",
           "query"
         ],
-        "descriptionHash": "6951ea58de86"
+        "descriptionHash": "252c8e8320e5"
+      },
+      {
+        "name": "mcp_remove",
+        "required": [
+          "name"
+        ],
+        "params": [
+          "name"
+        ],
+        "descriptionHash": "0dd4f7dc9aa9"
+      },
+      {
+        "name": "mcp_secret",
+        "required": [],
+        "params": [
+          "action",
+          "fields",
+          "id"
+        ],
+        "descriptionHash": "432121f94aac"
       }
     ],
     "vssaros-media": [

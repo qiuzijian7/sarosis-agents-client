@@ -33,9 +33,13 @@ import { downloadGitHubTarball, locateInstallRoot, parseGitHubSource, resolveDow
 // ★ 2026-11-06（P1）：4 类非商城技能来源（内容 / 文件夹 / URL / GitHub）的解析与规范化
 import { ALLOWED_SKILL_URL_HOSTS, MAX_HUB_TREE_BYTES, MAX_SKILL_SOURCE_BYTES, SKILL_HUBS, SKILL_NAME, hubTreeToEntries, normalizeSkillFiles, parseSkillSource } from './skillSources.js';
 import { listTarGzEntries } from './tar.js';
+// ★ 2026-11-10（P0）：安装前预览（告警扫描 / 来源汇总），纯函数模块
+import { distributionWarnings, finishPreview, scanPackageFiles, summarizeDistribution } from './preview.js';
+// ★ 2026-11-10 P2：离线便携包（导出 / 预览 / 原子导入）
+import { exportPortable, importPortable, previewPortable } from './portable.js';
 import { listPublishables, deriveVersion } from './localResources.js';
 // ★ 2026-10-23（用户「都转移到 dsh 侧实现」）：mcp 装完要注册进 `<数据根>/mcp.json`
-import { readMcpPackageConfig, registerMcpServer, removeMcpCompletely, setMcpEnabled, mcpJsonPath, writeMcpJson } from './mcpInstall.js';
+import { checkMcpConfigOsv, readMcpJson, readMcpPackageConfig, registerMcpServer, removeMcpCompletely, setMcpEnabled, mcpJsonPath, writeMcpJson } from './mcpInstall.js';
 // ★ 2026-10-27（用户：贴 GitHub 链接自动填写并发布）
 import { inspectGithubRepo } from './githubInspect.js';
 // ★ 2026-10-26：发布前体检（发布源到底是不是一个可装的 dsh 插件）
@@ -64,17 +68,17 @@ const READ_TIMEOUT_MS = 60_000;
 const WRITE_TIMEOUT_MS = 8 * 60_000;
 
 /** 商城商品类型（与服务端 packages/kinds.ts 同口径）。 */
-const KINDS = ['agent', 'skill', 'mcp', 'knowledge', 'workflow', 'workbench'];
+const KINDS = ['agent', 'skill', 'mcp', 'knowledge', 'workbench', 'plugin'];
 
 // ★ 2026-10-23：op 清单与分派**只有一份真源**（`lib/dispatch.js`）——
 //   此前这里是手写清单，加了 publishables / reviewList / updatePackage 等 5 个 op 后
 //   `OPS` 没跟着改 ⇒ `/api/meta` 声明不全、`callIde` 白名单也不全（声明与实现漂移 ✗）
 
 /**
- * dsh 侧**自持**的写 op（S2）：skill / workflow / agent 的安装、升级、卸载。
+ * dsh 侧**自持**的写 op（S2）：skill / agent / mcp / knowledge 的安装、升级、卸载。
  *
  * ★ 为什么这三类能自持：它们落的就是数据根，dsh 侧本来就在写
- *   （`skill_manage` / `applyWorkflow`）⇒ 下载 + 解包 + 落盘 + 台账全在本地完成 ✓。
+ *   ⇒ 下载 + 解包 + 落盘 + 台账全在本地完成 ✓。
  * ★ 仍在 IDE 侧（无法消除）：`workbench`（要 `dsh plugin add` + 重启 Host）、
  *   `agent`（要生成 `.agent.md`，格式真源在 IDE 侧；等包格式统一后再搬）、
  *   以及 `publish` / `delete*`（发布要调 IDE 侧的打包与上传链，S2c 再搬）。
@@ -99,6 +103,22 @@ export async function apply(ctx, config) {
 		dataRootError: null,
 		/** ★ 2026-10-24：dsh 的进程内插件管理服务（装/卸/升插件与工作台，与 dsh plugin add 同一套） */
 		pluginManager: null,
+		/** ★ 2026-11-10：OSV 供应链预检服务（由 vssaros-mcp 可选提供；缺服务 ⇒ fail-open） */
+		mcpOsv: null,
+	};
+	// 可选注入：老 Host / 未装 vssaros-mcp 时回调不跑 ⇒ state.mcpOsv 保持 null，
+	// 安装链照常工作（fail-open），不会让整个商城插件 pending ✗。
+	ctx.inject(['vssarosMcpOsv'], scope => {
+		state.mcpOsv = scope.vssarosMcpOsv ?? null;
+		return () => { state.mcpOsv = null; };
+	});
+	/** 商城装 MCP 前的预检：只有 blocked 才阻断；服务缺失/关闭/网络失败一律放行，不假装已验证。 */
+	const assertMcpConfigSafe = async (cfg) => {
+		const verdict = await checkMcpConfigOsv(state.mcpOsv, cfg, {
+			envEndpoint: process.env.VS_SAROS_OSV_ENDPOINT,
+			warn: message => { try { console.warn(message); } catch { /* 日志不致命 */ } },
+		});
+		if (verdict.status === 'blocked') { throw new Error(verdict.message); }
 	};
 	ctx.inject(['vssarosBridge'], scope => {
 		state.bridge = scope.vssarosBridge ?? null;
@@ -221,8 +241,43 @@ export async function apply(ctx, config) {
 	 * @param {string} op
 	 * @param {object} params
 	 */
+	/**
+	 * ★ 2026-11-10：本地新建资源的详情（服务端没有这个商品时的回退）。
+	 *   判据：出现在 listPublishables（磁盘扫描）里，但不在台账里。
+	 *   kindHint 用于消除同名不同类的歧义（Card / InstalledRow 会把它一起传过来）。
+	 */
+	async function localDetailOf(dataRoot, slug, kindHint) {
+		if (!dataRoot || !slug) { return null; }
+		let items;
+		try { items = await listPublishables(dataRoot); } catch { return null; }
+		const it = (items || []).find(x => String(x.localId) === slug && (!kindHint || x.kind === kindHint));
+		if (!it) { return null; }
+		return {
+			ok: true, isLocal: true,
+			id: it.localId, kind: it.kind, slug: it.localId,
+			name: it.name || it.localId,
+			version: String(it.version || ''),
+			description: '这是本机新建的资源，商城里还没有这个商品。点「发布到商城」把它打包上架，之后可被安装与升级。',
+			localId: it.localId,
+			sourceDir: String(it.sourceDir || ''),
+			installedVersion: '', versions: [],
+			permissions: { canEdit: false, canDelete: false },
+			visibility: 'public', featured: false, category: '',
+			author: '本机', icon: '', cover: '', tags: [],
+		};
+	}
+
 	async function runLocal(op, params) {
 		if (op === 'publishables') { return listLocalPublishables(); }
+		// ★ 2026-11-10 P2：便携包导出/预览（只读；base64 走 JSON 通道，不新增路由）
+		if (op === 'exportPortable' || op === 'previewPortable') {
+			if (!state.dataRoot) { throw new Error('拿不到数据根，无法处理便携包'); }
+			const buf = Buffer.from(String(params.base64 ?? ''), 'base64');
+			if (op === 'exportPortable') {
+				return exportPortable({ dataRoot: state.dataRoot, entries: Array.isArray(params.entries) ? params.entries : [] });
+			}
+			return previewPortable({ dataRoot: state.dataRoot, gzBuffer: buf });
+		}
 		// ★ 2026-11-06（P1）：内置技能 Hub 列表 —— dsh 侧自己读 GitHub tree，
 		//   不再经 IDE 的 `BUILTIN_SKILL_HUBS` / `fetchHubEntries`（那条链随 IDE 技能库一起下线）。
 		if (op === 'listSkillHub') {
@@ -285,6 +340,94 @@ export async function apply(ctx, config) {
 			});
 		}
 
+		// ★ 2026-11-10 P0：安装前预览（两步确认的第一步）。
+		//   只读：detail + 包体解到内存，绝不落盘 / 写台账 / 注册 mcp.json。
+		if (op === 'previewInstall') {
+			const slug = String(params.slug ?? '');
+			if (!slug) { throw new Error('预览需要 slug'); }
+			const pkg = await market().detail(slug);
+			const versions = Array.isArray(pkg?.versions) ? pkg.versions : [];
+			const wanted = String(params.version ?? '').trim();
+			const row = wanted ? versions.find(v => v.version === wanted)
+				: versions.find(v => v.is_latest === true) ?? versions[0];
+			if (!row) { throw new Error(`「${slug}」没有可用版本`); }
+			const kind = String(pkg.kind ?? '');
+			const dist = row.manifest?.distribution ?? null;
+			const base = {
+				ok: true,
+				slug,
+				name: String(pkg.name ?? ''),
+				kind,
+				version: String(row.version ?? ''),
+				sha256: String(row.sha256 ?? '').trim(),
+				distribution: summarizeDistribution(dist),
+				warnings: distributionWarnings(dist, kind),
+				files: [],
+			};
+			if (dist && dist.type) {
+				// 外部发布源：预览不拉包体（可能几百 MB），只把来源 / commit / 校验值摊开
+				base.filesNote = '本体在外部发布源，安装时才下载；预览不拉取包体';
+				return finishPreview(base, null);
+			}
+			const gz = await downloadVersion(slug, String(row.version));
+			const { files } = await listTarGzEntries(gz);
+			base.files = (files || []).slice(0, 200).map(f => ({
+				path: String(f.path ?? ''), size: Number(f.data?.length ?? 0),
+			}));
+			return finishPreview(base, scanPackageFiles(files));
+		}
+
+		// ★ 2026-11-10 P0：安全模式计划（只读）。
+		//   只列「可安全停用」的第三方插件 ⇒ 排除官方 / 内置 / 本页所在插件。
+		if (op === 'safeModePlan') {
+			const pm = state.pluginManager;
+			if (!pm || typeof pm.listBundles !== 'function') {
+				return { ok: false, error: '当前 Host 没有 pluginManager，列不出插件（老版本运行时）' };
+			}
+			const bundles = await pm.listBundles();
+			const entries = state.dataRoot ? await readInstalled(state.dataRoot) : [];
+			const marketPkgs = new Set(entries
+				.filter(e => e.kind === 'plugin' || e.kind === 'workbench')
+				.map(e => String(e.packageName ?? '')).filter(Boolean));
+			const builtin = /^@(vssaros|deepseek-ai)\//;
+			const plugins = (Array.isArray(bundles) ? bundles : []).filter(b => {
+				const n = String(b?.name ?? '');
+				return n && b.installed === true && b.official !== true
+					&& !builtin.test(n) && !SELF_PLUGIN_NAME.includes(n);
+			}).map(b => ({
+				name: String(b.name),
+				enabled: b.enabled === true,
+				version: String(b.version ?? ''),
+				fromMarket: marketPkgs.has(String(b.name)),
+			}));
+			return { ok: true, plugins };
+		}
+
+		// ★ 2026-11-10：MCP 配置弹层的数据源（只读，不落盘）。
+		//   digestOnly 只做一次 stat，供 2s 轮询检测外部改动，不读/不解析整份文件。
+		if (op === 'mcpConfig') {
+			if (!state.dataRoot) { return { ok: false, error: '拿不到数据根，读不了 mcp.json' }; }
+			const file = mcpJsonPath(state.dataRoot);
+			const fsp = await import('node:fs/promises');
+			let st = null;
+			try { st = await fsp.stat(file); } catch { /* 文件还不存在 */ }
+			const digest = st ? `${st.mtimeMs}|${st.size}` : 'missing';
+			if (params.digestOnly === true) { return { ok: true, digest, path: file }; }
+			let text;
+			try { text = await fsp.readFile(file, 'utf8'); }
+			catch { text = '{\n  "servers": {}\n}'; }
+			const mcp = await readMcpJson(state.dataRoot);
+			const servers = Object.entries(mcp.servers || {}).map(([id, e]) => ({
+				id,
+				disabled: !!(e && e.disabled === true),
+				type: String((e && (e.type || e.transport)) || ''),
+				command: String((e && e.command) || ''),
+				url: String((e && e.url) || ''),
+				approved: !!(e && e.approved === true),
+			}));
+			return { ok: true, path: file, text, digest, servers, count: servers.length };
+		}
+
 		if (op === 'list') {
 			const res = await market().list({
 					...(params.kind ? { kind: String(params.kind) } : {}),
@@ -311,12 +454,21 @@ export async function apply(ctx, config) {
 		}
 		if (op === 'detail') {
 			const slug = String(params.slug ?? '');
-			const pkg = await market().detail(slug);
-			// ★ 详情抽屉与卡片必须显示同一个已装状态（同一份判据）✓
-			const installedByKey = await resolveInstalledVersions(state.dataRoot);
-			const installedVersion = installedByKey.get(installedKey(pkg.kind, pkg.slug)) ?? '';
-			// ★ 详情 = 列表的公共字段 + visibility/featured/versions（同一份 `baseOf`）
-			return { ok: true, ...toPackageDetail(pkg, { installedVersion }) };
+			const kindHint = String(params.kind ?? '');
+			try {
+				const pkg = await market().detail(slug);
+				// ★ 详情抽屉与卡片必须显示同一个已装状态（同一份判据）✓
+				const installedByKey = await resolveInstalledVersions(state.dataRoot);
+				const installedVersion = installedByKey.get(installedKey(pkg.kind, pkg.slug)) ?? '';
+				// ★ 详情 = 列表的公共字段 + visibility/featured/versions（同一份 `baseOf`）
+				return { ok: true, ...toPackageDetail(pkg, { installedVersion }) };
+			} catch (e) {
+				// ★ 2026-11-10：本地新建、商城里还没有的资源 ⇒ 回退到本机详情。
+				//   没有这层回退时 GET /packages/:slug 404 ⇒ 抽屉打不开，发布无从谈起。
+				const local = await localDetailOf(state.dataRoot, slug, kindHint);
+				if (!local) { throw e; }
+				return { ok: true, ...local };
+			}
 		}
 		// installed：本地台账 + **落地物核对** + 升级检查（全是 dsh 侧自己的 HTTP ✓）
 		//
@@ -325,30 +477,58 @@ export async function apply(ctx, config) {
 		//     点「卸载」只会报"没有装过"，用户无从判断到底装了什么 ✗）
 		//   版本也换成磁盘上那份（与升级判断的口径对齐）。
 		const entries = state.dataRoot ? await readInstalled(state.dataRoot) : [];
-		if (entries.length === 0) { return { ok: true, total: 0, items: [] }; }
 		const alive = [];
 		for (const entry of entries) {
 			const version = await resolveEntryVersion(state.dataRoot, entry);
 			if (version) { alive.push({ ...entry, version }); }
 		}
-		if (alive.length === 0) { return { ok: true, total: 0, items: [] }; }
-		let updatable = new Map();
-		try {
-			const updates = await market().checkUpgrades(alive.map(e => ({ kind: e.kind, storeId: e.storeId, version: e.version })));
-			updatable = new Map(updates.map(u => [`${u.kind}:${u.storeId}`, String(u.latest ?? '')]));
-		} catch (e) {
-			// 升级检查失败**不阻断**已安装列表（列表本身仍有用 ✓）
-			console.warn(`[marketplace] installed: 升级检查失败（不影响列表）：${String(e?.message ?? e)}`);
+		// ★ 2026-11-10：本地新建的资源不在台账里 ⇒ 以前「已安装」页根本看不到它们，
+		//   点详情也必然 404。用磁盘扫描与台账做差集，补一条带 isLocal 的条目。
+		let locals = [];
+		if (state.dataRoot) {
+			try {
+				const scanned = await listPublishables(state.dataRoot);
+				const known = new Set(entries.map(e => installedKey(e.kind, e.storeId)));
+				locals = (scanned || [])
+					.filter(it => !known.has(installedKey(it.kind, it.localId)))
+					.map(it => ({
+						kind: it.kind, storeId: it.localId, version: String(it.version || ''),
+						isLocal: true, localId: it.localId, sourceDir: String(it.sourceDir || ''),
+						installedAt: '',
+						// ★ 2026-11-10：名字/描述/相对目录必须透传到前端，否则 toInstalledItem
+						//   只能拿 storeId 当显示名（`ext-f0e1fcee` 那条老毛病就是这么来的）✗
+						...(it.name ? { displayName: String(it.name) } : {}),
+						...(it.description ? { description: String(it.description) } : {}),
+						...(it.rel ? { rel: String(it.rel) } : {}),
+					}));
+			} catch (e) {
+				console.warn(`[marketplace] installed: 本地资源扫描失败（不影响台账列表）：${String(e?.message ?? e)}`);
+			}
 		}
-		return {
-			ok: true,
-			total: alive.length,
-			items: alive.map(e => toInstalledItem(e, updatable.get(installedKey(e.kind, e.storeId)) ?? '')),
-		};
+		if (alive.length === 0 && locals.length === 0) { return { ok: true, total: 0, items: [] }; }
+		let updatable = new Map();
+		if (alive.length) {
+			try {
+				const updates = await market().checkUpgrades(alive.map(e => ({ kind: e.kind, storeId: e.storeId, version: e.version })));
+				updatable = new Map(updates.map(u => [`${u.kind}:${u.storeId}`, String(u.latest ?? '')]));
+			} catch (e) {
+				// 升级检查失败**不阻断**已安装列表（列表本身仍有用 ✓）
+				console.warn(`[marketplace] installed: 升级检查失败（不影响列表）：${String(e?.message ?? e)}`);
+			}
+		}
+		const allItems = [
+			...alive.map(e => toInstalledItem(e, updatable.get(installedKey(e.kind, e.storeId)) ?? '')),
+			...locals.map(e => toInstalledItem(e, '')),
+		];
+		// ★ 2026-11-10：「已安装」页签也要按分类过滤（之前只有商城网格过滤 ⇒ 选「知识库」
+		//   分类时已安装折叠组仍混着别的 kind）。折叠组与页签共用这份 items。
+		const wantedKind = String(params?.kind || '').trim();
+		const items = wantedKind ? allItems.filter(it => it.kind === wantedKind) : allItems;
+		return { ok: true, total: items.length, items };
 	}
 
 	/**
-	 * 列出**本地可发布**的资源（`<数据根>/skills/*` 与 `workflows/*`）。
+	 * 列出**本地可发布**的资源（`<数据根>/skills|agents|mcp|knowledge/*`）。
 	 *
 	 * 为什么需要：发布表单要让用户从"本机真实存在的资源"里挑，而不是手打 id
 	 * （手打一个不存在的 id ⇒ 报错"本地没有这个资源"，体验差且容易错）✓
@@ -361,7 +541,7 @@ export async function apply(ctx, config) {
 	}
 
 	/**
-	 * dsh 侧**自持**的写 op（S2）：skill / workflow 的 install / upgrade / uninstall。
+	 * dsh 侧**自持**的写 op（S2）：skill / agent / mcp / knowledge 的 install / upgrade / uninstall。
 	 *
 	 * 流程：商城拿版本 → 下载 tar.gz（带 JWT）→ sha256 校验 → 解包 → 落盘 → 写台账 ✓
 	 * 全程在 Host 进程内完成，**不经过 IDE 桥**。
@@ -373,6 +553,14 @@ export async function apply(ctx, config) {
 		const dataRoot = state.dataRoot;
 		if (!dataRoot) {
 			throw new Error('dsh 侧拿不到数据根（config.dataRoot 未注入，且 vssarosFoundation 服务不可用）⇒ 无法落盘');
+		}
+		// ★ 2026-11-10 P2：便携包导入（第二步，用户在预览抽屉里确认后才到这里）
+		if (op === 'importPortable') {
+			return importPortable({
+				dataRoot,
+				gzBuffer: Buffer.from(String(params.base64 ?? ''), 'base64'),
+				renames: params.renames ?? {},
+			});
 		}
 		// ★ 2026-10-26（用户：「需要一个统一的 mcp 配置按钮入口」「点击弹出二级页面可编辑」）：
 		//   整份 mcp.json 的保存。**故意不带 kind** ⇒ 必须放在下面那段 kind 校验**之前**。
@@ -457,12 +645,15 @@ export async function apply(ctx, config) {
 		if (!slug) { throw new Error(`marketplace.${op} 需要 slug`); }
 
 		// ★ 2026-10-26（用户：「连接器每个 item 增加开关」）：开关 = mcp.json 里那条的 `disabled`。
-		//   ⚠ 不是热生效：MCP 行是 Host 启动时按 mcp.json 生成覆盖层 ⇒ 重启 Host 才真正挂/摘。
+		//   运行时挂载缺省启用 ⇒ 改完即时生效；`=0` 回退到启动期覆盖层时才需要重启 Host。
 		if (op === 'setMcpEnabled') {
 			if (kind !== 'mcp') { throw new Error('setMcpEnabled 只适用于连接器（kind=mcp）'); }
 			const want = params.enabled !== false;
 			const r = await setMcpEnabled(dataRoot, slug, want);
-			return { ok: true, changed: r.changed, enabled: !r.disabled, restartRequired: true };
+			return {
+				ok: true, changed: r.changed, enabled: !r.disabled,
+				restartRequired: process.env.VSSAROS_MCP_RUNTIME_MOUNT === '0',
+			};
 		}
 
 		// ★ 2026-10-23：删除到回收站（可恢复）。工作流/Agent 这类本地条目没有商城包可重装，
@@ -516,6 +707,7 @@ export async function apply(ctx, config) {
 			//   这样它可被单测直接覆盖（此前算在这里，测试只能绕一大圈 ✗）
 			installed = await installBundle({
 				dataRoot,
+				osvCheck: assertMcpConfigSafe,
 				kind,
 				storeId: slug,
 				version: versionRow.version,
@@ -533,6 +725,9 @@ export async function apply(ctx, config) {
 		if (kind === 'mcp') {
 			try {
 				const { config } = await readMcpPackageConfig(dataRoot, slug);
+				// 普通 MCP 商品路径（不走 installBundle 的 Bot 包钩子）也要预检；
+				// blocked 抛错会走下面的 catch 如实告诉用户，不静默写进 mcp.json。
+				await assertMcpConfigSafe(config);
 				const entry = await registerMcpServer(dataRoot, slug, config);
 				mcpRegistered = { type: String(entry.type ?? 'stdio'), transport: config.transport ?? 'stdio' };
 			} catch (e) {
@@ -563,14 +758,24 @@ export async function apply(ctx, config) {
 			...(installed.backup ? { backup: installed.backup } : {}),
 			// agent：重扫成功 ⇒ 即时可用；否则文件已落好但 preset 要重启才扫描到（如实报）
 			...(kind === 'agent' ? { restartRequired: agentsRescan !== 'ok', agentsRescan } : {}),
-			// mcp：文件 + mcp.json 都写好了；dsh 的 MCP 连接需要重启才重建（没有热重载入口）
-			...(kind === 'mcp' ? { mcpRegistered, restartRequired: true, mcpNote: '已写入 mcp.json；连接要重启 IDE 才建立' } : {}),
+			// mcp：运行时挂载下即时连接；`=0` 回退到启动期覆盖层时才需要重启 Harness。
+			...(kind === 'mcp' ? {
+				mcpRegistered,
+				restartRequired: process.env.VSSAROS_MCP_RUNTIME_MOUNT === '0',
+				mcpNote: process.env.VSSAROS_MCP_RUNTIME_MOUNT === '0'
+					? '已写入 mcp.json；回退到启动期覆盖层，连接要重启 Harness 才建立'
+					: '已写入 mcp.json；运行时挂载会自动连接',
+			} : {}),
 			// ★ 2026-11-09：Bot 组合包的分项生效回执（bot/skills/tools/mcp 各自状态）。
 			//   单个 restartRequired 布尔说不清「Bot 已可见但 MCP 还没连上」⇒ 前端按它如实提示。
 			...(installed.bot ? { bot: installed.bot, botComponents: installed.components } : {}),
+			// ★ 2026-11-10 P1-B：统一组合包回执（组件清单 + 数量，前端如实提示生效边界）
+			...(installed.combo ? { combo: installed.combo, comboComponents: installed.components } : {}),
 			// ★ 2026-11-09 P1：依赖范围核对结果也透出去 —— `unknown` 是「本机查不到版本」，
 			//   不是「已满足」，前端必须如实说，别让用户以为万事俱备。
 			...(installed.requires ? { botRequires: installed.requires } : {}),
+			// ★ 2026-11-10 P3：knowledge 登记失败不再静默（装完看不见是最伤的假绿）
+			...(installed.vaultWarning ? { vaultWarning: installed.vaultWarning } : {}),
 		};
 	}
 
@@ -592,6 +797,7 @@ export async function apply(ctx, config) {
 		const located = locateInstallRoot(unpacked.files, kind);
 		return installBundle({
 			dataRoot,
+			osvCheck: assertMcpConfigSafe,
 			kind,
 			storeId,
 			version,
@@ -835,9 +1041,18 @@ export async function apply(ctx, config) {
 		const version = String(params.version ?? '').trim();
 		if (!version) { throw new Error('publish 需要 version'); }
 
+		// ★ 2026-11-10：图标 / 缩略图 —— 服务端建包 schema 接受 icon / cover，
+		//   但此前三条发布路径的 meta 都没透传 ⇒ 页面填了也写不进商品。
+		//   publisher.js::ensurePackage 会展开 meta；空白一律不带（不覆盖已有图）。
+		const mediaMeta = {
+			...(typeof params.icon === 'string' && params.icon.trim() ? { icon: params.icon.trim() } : {}),
+			...(typeof params.cover === 'string' && params.cover.trim() ? { cover: params.cover.trim() } : {}),
+		};
+
+
 		// ★ 2026-10-22（用户需求）：本体是一个 **GitHub 地址** ⇒ 只登记来源，不打包上传。
 		//   这条对**所有 kind** 都成立（服务端 external 接口不限类型）；
-		//   而"能不能装"另说：skill / workflow 可装，其余见 installFromExternal 的说明 ✓
+		//   而"能不能装"另说：skill / agent 可装，其余见 installFromExternal 的说明 ✓
 		// ★ 2026-10-26（用户：「有没有校验机制，避免发布错误」）：
 		//   登记 **npm 源**（`{type:'npm', name}`）—— 工作台/插件最常见的形态。
 		//   像 Tencent/BrowserSkill 这种 monorepo 仓库，只有子包的 npm 名才是能装的；
@@ -858,6 +1073,7 @@ export async function apply(ctx, config) {
 					...(typeof params.name === 'string' ? { name: params.name } : {}),
 					...(typeof params.description === 'string' ? { description: params.description } : {}),
 					...(typeof params.category === 'string' ? { category: params.category } : {}),
+					...mediaMeta,
 				},
 			});
 		}
@@ -875,6 +1091,7 @@ export async function apply(ctx, config) {
 					...(typeof params.name === 'string' ? { name: params.name } : {}),
 					...(typeof params.description === 'string' ? { description: params.description } : {}),
 					...(typeof params.category === 'string' ? { category: params.category } : {}),
+					...mediaMeta,
 				},
 			});
 		}
@@ -894,8 +1111,14 @@ export async function apply(ctx, config) {
 			localId,
 			version,
 			sourceDir,
+			// ★ 2026-11-10：用户确认公开后，放行标志要一路传到 preparePublishBundle
+			acknowledgePrivacy: params.acknowledgePrivacy === true,
 			changelog: String(params.changelog ?? ''),
-			meta: {},
+			meta: {
+				...mediaMeta,
+				...(typeof params.name === 'string' && params.name.trim() ? { name: params.name.trim() } : {}),
+				...(typeof params.description === 'string' && params.description.trim() ? { description: params.description.trim() } : {}),
+			},
 		});
 	}
 
@@ -1057,7 +1280,7 @@ export async function apply(ctx, config) {
 	// ── 写类工具的**审批闸**（2026-10-28）──────────────────────────────────────
 	//   与 kb / kanban / workflow 同一把：官方派发前决策钩子 `tools/pre-execute`（waterfall ✓），
 	//   返回 `{ kind: 'ask' }` ＝ 先问用户；没有审批支持的部署 degrade 成 deny（fail-closed ✓，正是想要的）。
-	//   闸这两个：`market_install` 会**真落盘**（skills / workflows + installed-packages.json 台账）、
+	//   闸这两个：`market_install` 会**真落盘**（skills / agents / mcp / knowledge + installed-packages.json 台账）、
 	//   `market_publish` 会**上传发布**（不可撤销）。`market_search` / `market_inspect_github` 纯只读 ⇒ 放行。
 	//   ⚠ 判据带上参数：`dryRun` 只出计划不落盘（预检/预览）⇒ 不该弹窗（与 kb 的 apply=true 同一取舍）。
 	ctx.effect(() => ctx.on('tools/pre-execute', (exec, next) => {
@@ -1073,7 +1296,7 @@ export async function apply(ctx, config) {
 		return {
 			kind: 'ask',
 			reason: toolName === 'market_install'
-				? `market_install 会把「${target}」落盘到本机商城安装目录（skills / workflows / installed-packages.json 台账）`
+				? `market_install 会把「${target}」落盘到本机商城安装目录（skills / agents / mcp / knowledge / installed-packages.json 台账）`
 				: `market_publish 会把「${target}」上传发布到商城（不可撤销）`,
 			displayReason: toolName === 'market_install'
 				? { zh: `允许把「${target}」安装到本机？`, en: `Allow installing "${target}" locally?` }
@@ -1088,7 +1311,7 @@ export async function apply(ctx, config) {
 			inspectGithubRepo,
 			// ★ 2026-10-26（用户：「商城助手中，增加安装功能」）：
 			//   把两条已有的安装路径**统一成一个入口**给 Agent 用 ——
-			//   · `LOCAL_WRITE_KINDS`（skill / workflow / agent / mcp）⇒ `runLocalWrite`
+			//   · `LOCAL_WRITE_KINDS`（skill / agent / mcp / knowledge）⇒ `runLocalWrite`
 			//   · `LOCAL_PLUGIN_KINDS`（plugin / workbench）⇒ `runLocalPlugin`（走 ctx.pluginManager）
 			//   ⚠ **kind 由服务端登记说了算**，不信调用方传的值（传错会装错目录 ✗）
 			installPackage: async ({ slug, version }) => {

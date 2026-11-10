@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>B · 信息卡 — Channel 绑定卡</title><link rel="stylesheet" href="common.css">
+<style>
+/* B：每条绑定一张独立卡，左侧平台色条 = 身份；卡内分区清晰。 */
+.b-list{margin-top:10px;display:flex;flex-direction:column;gap:9px}
+.b-card{position:relative;border:1px solid var(--line);border-radius:9px;background:var(--sunken);padding:10px 11px 9px 14px;overflow:hidden;transition:border-color .18s}
+.b-card:hover{border-color:var(--line2)}
+.b-card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--brand)}
+.b-card.off::before{background:var(--fg3)}
+.b-hd{display:flex;align-items:center;gap:7px}
+.b-ico{width:26px;height:26px;border-radius:7px;background:var(--brand-soft);color:var(--brand);display:flex;align-items:center;justify-content:center;flex:none}
+.b-name{font-size:12.5px;font-weight:600}
+.b-id{display:flex;align-items:center;gap:6px;margin-top:9px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--panel2)}
+.b-id .mono{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg)}
+.b-tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+.b-foot{display:flex;align-items:center;gap:6px;margin-top:9px;padding-top:8px;border-top:1px solid var(--line)}
+.b-new{margin-top:10px;width:100%;border:1px dashed var(--line2);border-radius:7px;background:transparent;color:var(--fg2);font:inherit;font-size:11.5px;padding:6px;cursor:pointer}
+.b-new:hover{border-color:var(--brand);color:var(--brand)}
+</style></head>
+<body data-ds-dark-theme="dark">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 10.5v6M12 7.4v.2" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
+<symbol id="i-msg" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4V5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
+<symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M16 8V6a2 2 0 00-2-2H6a2 2 0 00-2 2v8a2 2 0 002 2h2" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19 8a7 7 0 10 1 6M19 4v4h-4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+</defs></svg>
+
+<div class="pane">
+  <div class="pane-hd"><svg width="14" height="14" style="color:var(--brand)"><use href="#i-msg"/></svg>
+    <span>Bot 设置 · 知识库专家</span><span class="spacer"></span>
+    <button class="x" title="切换明暗" onclick="document.body.dataset.dsDarkTheme=document.body.dataset.dsDarkTheme==='dark'?'light':'dark'">◐</button>
+    <button class="x" aria-label="关闭">✕</button></div>
+  <div class="pane-bd">
+    <div class="card">
+      <div class="card-hd">
+        <h3>Channel 绑定</h3><span class="count">2 条</span>
+        <span class="tip" tabindex="0" role="button" aria-label="Channel 绑定说明"><svg width="15" height="15"><use href="#i-info"/></svg>
+          <span class="bubble" role="tooltip"><b>Channel 绑定说明</b><ul>
+            <li>把 IM 会话绑定到这个 Bot；一条绑定 = 一个应用 + 一个 <code>chat_id</code>。</li>
+            <li>只有<b>人</b>能创建 / 修改 / 删除，模型不能代劳。</li>
+            <li>入站白名单留空 = 拒绝所有入站（fail-closed）。</li>
+            <li>飞书可在此选应用或添加新应用。</li>
+            <li>群策略 <code>groupPolicy</code> 默认 open：群里仍需 @ 机器人。</li>
+          </ul></span></span>
+        <span class="spacer"></span>
+        <button class="iconbtn" aria-label="刷新"><svg width="14" height="14"><use href="#i-refresh"/></svg></button>
+      </div>
+
+      <div class="b-list">
+        <div class="b-card">
+          <div class="b-hd"><span class="b-ico"><svg width="15" height="15"><use href="#i-msg"/></svg></span>
+            <span class="b-name">飞书</span><span class="chip on"><span class="dot on"></span>启用</span>
+            <span class="spacer"></span><span class="tiny dim">#1</span></div>
+          <div class="b-id"><span class="mono">cc_aa77fd3d7ade60ae25a42d1c47fb</span>
+            <button class="iconbtn" aria-label="复制 chat_id" title="复制完整 chat_id"><svg width="13" height="13"><use href="#i-copy"/></svg></button></div>
+          <div class="b-tags"><span class="chip">群聊</span><span class="chip">双向</span>
+            <span class="chip brand">VsSaros助手</span><span class="chip">open · 需 @</span></div>
+          <div class="b-foot"><span class="tiny dim">入站白名单：未设置 → 拒绝所有入站</span>
+            <span class="spacer"></span><button class="btn">停用</button><button class="btn danger">删除</button></div>
+        </div>
+        <div class="b-card off">
+          <div class="b-hd"><span class="b-ico" style="background:transparent;color:var(--fg3);border:1px solid var(--line2)"><svg width="15" height="15"><use href="#i-msg"/></svg></span>
+            <span class="b-name">飞书</span><span class="chip off"><span class="dot off"></span>停用</span>
+            <span class="spacer"></span><span class="tiny dim">#2</span></div>
+          <div class="b-id"><span class="mono">oc_9f2b18c44de07a1b83af6d21</span>
+            <button class="iconbtn" aria-label="复制 chat_id"><svg width="13" height="13"><use href="#i-copy"/></svg></button></div>
+          <div class="b-tags"><span class="chip">群聊</span><span class="chip">仅入站</span><span class="chip">VsSaros助手</span></div>
+          <div class="b-foot"><span class="tiny dim">已停用 · 不再路由</span>
+            <span class="spacer"></span><button class="btn">启用</button><button class="btn danger">删除</button></div>
+        </div>
+      </div>
+      <button class="b-new">+ 新建绑定（点击展开表单，字段说明收进 ⓘ）</button>
+    </div>
+    <p class="tiny dim" style="margin:10px 2px 0">方案 B · 信息卡：强调「每条绑定是一个对象」，chat_id 可完整显示 / 复制；占高度最多。</p>
+  </div>
+</div>
+</body></html>

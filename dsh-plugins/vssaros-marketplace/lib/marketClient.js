@@ -9,7 +9,7 @@
 //        IDE 侧绕扩展宿主只是为了绕 renderer 的 CORS / 无 sha256 / 无 tar ⇒ **这三条 dsh 都没有** ✓
 //     ② 「装工作台包必须走主进程 `dsh plugin add`」——**成立**（且装完要重启 Host，Host 不能自杀重启）
 //     ③ 「落盘目录与注册表刷新都在 IDE 侧」——**一半错**：目录是同一处（数据根），
-//        dsh 侧本来就在写；真正缺的只是"让 IDE 界面即时看见"（skill 需 reload，agent/workflow 不需要）✓
+//        dsh 侧本来就在写；真正缺的只是"让 IDE 界面即时看见"（skill 需 reload，agent/mcp 不需要）✓
 //   ⇒ 本文件的职责：**认证 + 只读面全在 dsh 侧**；只有 workbench 的装/卸仍要借道 IDE 主进程。
 //
 // ★ 票据从哪来（两条路，按"本地自登 > IDE 同步"读 —— 与 `vssaros-bridge/lib/tof.js` 同口径）：

@@ -26,11 +26,12 @@ import { GOAL_IDLE_NUDGES, GOAL_NUDGE_TEXT, GOAL_TOOL_PARAMETERS, applyGoal, goa
 import { ASK_TOOL_DESCRIPTION, ASK_TOOL_PARAMETERS, ROOM_ASK_TOOL, askAnswerText, askHeadline, normalizeAsk, normalizeAskAnswers, supersedeAsks } from './core/asks.js';
 import {
 	RoomError, ROOM_IDLE_RELAY_LIMIT, ROOM_LIMITS, ROOM_POST_FORM, ROOM_RECORD_TYPE, ROOM_REFERENCE_KIND, ROOM_RELAY_TOOL, ROOM_TURN_KIND,
-	ROUND_SCHEMA, ROUND_STATUS_LABELS,
+	ROUND_SCHEMA, ROUND_STATUS_LABELS, normalizeWakeMode, normalizeWakeSettings,
 	addressedRoomReference, autoRoomName, callsFrom, clipLine, isPass, mentionsIn, normalizeRoomInput, openingCall,
 	roomPrompt, roomRecordData, roomReferenceOf, roomView, roundStatusOf, sortRooms, stripOwnName, stripRoomMention,
 	ROOM_ASK_REFUSAL, ROOM_MEMBER_DENIED_TOOLS,
 } from './core/rooms.js';
+import { explicitCwdOf, roomSessionGrantRefusal } from './grants.js';
 
 /** 成员一回合最长等多久（DS Bot ROOM_REPLY_TIMEOUT_MS 同值）。★ 2026-11-06 起是「毫无进展」的时长，见 waitFor。 */
 export const ROOM_REPLY_TIMEOUT_MS = 240_000;
@@ -120,6 +121,37 @@ export function holdsMessage(agent, id) {
  * @param deps.timeoutMs / deps.now / deps.uuid / deps.warn 测试可注入
  * @param deps.onChanged `(kind, view) => void` 群变更后通知（2026-11-09：建群成功立刻推给侧栏，不等轮询）；可缺
  */
+/**
+ * ★ 2026-11-10：rebindRoom 账本迁移的纯逻辑，导出供行为测试直接执行。
+ *   0.1.88 的 rebindRoom 只迁移了 7 个账本，漏掉这两个：
+ *   · late 的值携带 roomId ⇒ 重建后在途的迟到回复会按旧群 id 回投；
+ *   · routed 的键是 `${sid}:${messageId}:${roomId}` ⇒ 旧键残留、新键不命中，
+ *     同一条来源消息会重复转投进新群。
+ */
+export function migrateLateRoomId(late, oldId, newId) {
+	let count = 0;
+	for (const [sid, items] of late) {
+		if (!Array.isArray(items)) { continue; }
+		let changed = false;
+		for (const item of items) {
+			if (item && item.roomId === oldId) { item.roomId = newId; count++; changed = true; }
+		}
+		if (changed) { late.set(sid, items); }
+	}
+	return count;
+}
+export function migrateRoutedRoomId(routed, oldId, newId) {
+	let count = 0;
+	const suffix = ':' + oldId;
+	for (const key of [...routed]) {
+		if (typeof key !== 'string' || !key.endsWith(suffix)) { continue; }
+		routed.delete(key);
+		routed.add(key.slice(0, -suffix.length) + ':' + newId);
+		count++;
+	}
+	return count;
+}
+
 export function createRooms(deps) {
 	/** 群变更后广播。不抛：通知失败不能让建群失败（写盘已完成）。 */
 	const onChanged = (kind, view) => {
@@ -132,6 +164,13 @@ export function createRooms(deps) {
 	const now = deps.now ?? (() => Date.now());
 	const uuid = deps.uuid ?? (() => randomUUID());
 	const warn = deps.warn ?? (message => console.warn(`[vssaros-agents][rooms] ${message}`));
+	/**
+	 * ★ 2026-11-10：页面显式选中的群（POST /api/rooms { action:'select', id }）。
+	 *   真机上用户在「G:\snake」这类独立会话里打字，没有 @群也没有引用事件 ⇒ 消息永远进不了群，
+	 *   群 log/seq/sessions 全空、group_relay 一次都没跑。选中态是唯一能表达「我现在在这个群里」的信号。
+	 *   与 roomsApi / installRooms 同进程（同一个插件实例），故用闭包变量即可。
+	 */
+	let selectedRoomId = '';
 	const timeoutMs = deps.timeoutMs ?? ROOM_REPLY_TIMEOUT_MS;
 	const maxWaitMs = deps.maxWaitMs ?? ROOM_REPLY_MAX_MS;
 	const workGraceMs = deps.workGraceMs ?? ROOM_WORK_GRACE_MS;
@@ -156,6 +195,8 @@ export function createRooms(deps) {
 	const rounds = new Map();
 	/** 群 id → 最近一次 @群 转投的来源（relay 取走后挂到本轮上，作为与 SuperAgent trigger 的关联键）。 */
 	const postMeta = new Map();
+	/** ★ 2026-11-10：installRooms 用它注册自己闭包里账本（routed）的迁移钩子。 */
+	const rebindHooks = new Set();
 	let loaded = null;
 	let writing = Promise.resolve();
 	/** 已排队、还没开始的那次写（同一拍内的多次 save() 合并成一次整文件写）。 */
@@ -426,12 +467,29 @@ export function createRooms(deps) {
 		room.updatedAt = entry.at;
 		return entry;
 	}
+	/**
+	 * ★ 2026-11-10（真机：`Session reference "…" is released`）：群会话引用被宿主回收后
+	 *   `resolveAgent` 直接抛 503 ⇒ 连 `postToRoom` 都写不进去，用户看到「点了没反应」。
+	 *   ⇒ 先按主包 `navigate()` 同口径 `sessions.retain(sid)` 拿回引用，再二次确认；
+	 *   仍失败才抛，由调用方（postToRoom）做 inbox 兜底，不改 room.id（见 rebuildRoomAgent 注释）。
+	 */
 	async function resolveAgent(sessionId) {
 		const live = deps.agents()?.get?.(sessionId);
 		if (live) { return live; }
 		const sc = deps.sessions();
 		const got = sc && typeof sc.resolveAgent === 'function' ? await sc.resolveAgent(sessionId) : undefined;
 		if (got && 'agent' in got && got.agent) { return got.agent; }
+		if (sc && typeof sc.retain === 'function') {
+			try {
+				await Promise.resolve(sc.retain(sessionId));
+				const again = deps.agents()?.get?.(sessionId);
+				if (again) { return again; }
+				const retried = typeof sc.resolveAgent === 'function' ? await sc.resolveAgent(sessionId) : undefined;
+				if (retried && 'agent' in retried && retried.agent) { return retried.agent; }
+			} catch (error) {
+				warn(`群会话 retain 失败：${sessionId}：${String(error?.message ?? error)}`);
+			}
+		}
 		throw new RoomError(`会话不可用：${sessionId}`, 503);
 	}
 	async function mark(agent, data) {
@@ -460,6 +518,25 @@ export function createRooms(deps) {
 	async function openSession(place, agentPreset) {
 		const sc = deps.sessions();
 		if (typeof sc?.create !== 'function') { throw new RoomError('这个 dsh 组合里没有 sessionController，建不了群会话。', 503); }
+		// P1-7（2026-11-10）：群聊现开会话也过 Workspace Grant —— 这是最后一个绕过 `checkCwdGrant`
+		// 的 `sc.create` 点（其余两处：agent_open_session / 委派创建）。
+		// ⚠ `workspaceId` 与 `fallbackCwd` 是系统兜底 ⇒ 等价"缺省工作区"，按既有口径放行；
+		//   只有用户/群显式给的 cwd（HTTP body.cwd / room.cwd）才算显式（见 explicitCwdOf）。
+		// ⚠ 群主会话用 Host 默认 preset（没有对应 .agent.md）⇒ 不按 bot 的 grant 判；成员影子会话
+		//   有 preset ⇒ 对**声明了 workspaces 的 bot** 过闸。这里刻意不套用 tools.js 的"没声明就收紧
+		//   缺省"：群聊 cwd 来自 room 定义（系统注入），不是开会话时临时指定的外部输入，一刀切会
+		//   让所有默认 bot 的群聊建不起来 ✗。缺依赖时留 warn，不静默绕过 ✓。
+		if (explicitCwdOf(place, deps.fallbackCwd) && agentPreset) {
+			if (typeof deps.agentOfPreset !== 'function') {
+				warn('群聊成员会话缺少 agentOfPreset ⇒ 无法校验 Workspace Grant（不静默绕过）');
+			} else {
+				const refusal = roomSessionGrantRefusal({
+					agent: await deps.agentOfPreset(agentPreset),
+					place, fallbackCwd: deps.fallbackCwd,
+				});
+				if (refusal) { throw new RoomError(refusal, 403); }
+			}
+		}
 		const created = await sc.create({ ...place, ...(agentPreset ? { agentPreset } : {}) });
 		const sessionId = String(created?.sessionId ?? '').trim();
 		if (!sessionId) { throw new RoomError('会话建好了但没回 sessionId（dsh 版本不匹配？）。', 500); }
@@ -813,6 +890,27 @@ export function createRooms(deps) {
 		attach: deps.attach,
 		/** 群会话 / 成员影子会话的判定（同步；install 时已 load）。 */
 		isRoom: (sessionId) => rooms.has(String(sessionId ?? '')),
+		/** 页面显式选中的群（'' = 没选）。只有它还存在于表里才算有效，删群后自动失效。 */
+		selectedRoom() { return rooms.has(selectedRoomId) ? selectedRoomId : ''; },
+		setSelectedRoom(id) {
+			const next = String(id ?? '').trim();
+			if (next && !rooms.has(next)) { return false; }
+			selectedRoomId = next;
+			return true;
+		},
+		/** ★ 2026-11-10：注册 rebind 账本迁移钩子；返回注销函数。 */
+		onRebindRoom(hook) {
+			if (typeof hook !== 'function') { return () => {}; }
+			rebindHooks.add(hook);
+			return () => rebindHooks.delete(hook);
+		},
+		/** 运行时错误推给页面（onChanged('error', …) ⇒ SSE event: rooms-error）。不抛，避免打断主流程。 */
+		reportError(info) {
+			try { onChanged('error', { id: String(info?.roomId ?? ''), name: String(info?.name ?? ''), error: String(info?.error ?? '') }); }
+			catch { /* 通知失败不影响群逻辑 */ }
+		},
+		/** 按 id 取群名（同步；选中态转投拼 @群名 用）。 */
+		roomName(id) { return String(rooms.get(String(id ?? ''))?.name ?? ''); },
 		/** 纯文本 `@群名` 的兜底：按群名找群（大小写不敏感）。 */
 		roomByName(name) {
 			const key = String(name ?? '').trim().toLowerCase();
@@ -865,11 +963,16 @@ export function createRooms(deps) {
 			const agent = await resolveAgent(sessionId);
 			const at = now();
 			const room = {
-				id: sessionId, ...norm, pinned: false, hidden: false, createdAt: at, updatedAt: at,
+				id: sessionId, ...norm, ...normalizeWakeSettings(input),
+				pinned: false, hidden: false, createdAt: at, updatedAt: at,
 				createdBy: options.createdBy ? String(options.createdBy) : null,
 				...(origin ? { originTriggerId: origin } : {}),
 				...(place.workspaceId ? { workspaceId: place.workspaceId } : { cwd: place.cwd }),
 				log: [], seq: 0, seen: {}, sessions: {},
+				// ★ 2026-11-10：目标槽位显式初始化。⚠ 不能直接塞 status:'active' 的 goal ——
+				//   `applyGoal('start')` 会因「已经有一个进行中的目标」拒绝管理员的第一次设定，
+				//   且 driveGoal 会在没人说话时空转催管理员。null = 尚未设定，由 group_goal 接管。
+				goal: null,
 			};
 			rooms.set(room.id, room);
 			await mark(agent, { roomId: room.id, role: 'room' });
@@ -879,8 +982,61 @@ export function createRooms(deps) {
 			const view = roomView(room, map);
 			onChanged('created', view);
 			return view;
-		},
-		/** 改群名 / 公告 / 模式 / 管理员 / 成员（只改给了的字段）。 */
+			},
+			/**
+			* ★ 2026-11-10（真机 `Session reference "…" is released`）：群会话引用失效后的**可恢复动作**。
+			*   ① 先 `resolveAgent`（内含 retain 自愈）——多数情况能救回，id 不变、账本不动；
+			*   ② 仍失败 ⇒ 在同一 workspaceId/cwd 下新建会话，把 room.id 换成新 id，并迁移所有
+			*      以 room.id 为 key 的账本：rooms/inbox/callbacks/postMeta/rounds.roomId/
+			*      approvals.roomId/asks.roomId/选中态。成员影子会话 id 不变（late/waiters/seenSeq 不受影响）。
+			*   ⚠ 只由用户显式触发（POST action:'rebind'），绝不自动换 id —— 避免把正在跑的群踢下线。
+			*/
+			async rebindRoom(id) {
+			await load();
+			const room = need(id);
+			try {
+				const agent = await resolveAgent(room.id);
+				api.attach?.(agent);
+				warn(`[rebindRoom] retained roomId=${room.id}`);
+				return { ok: true, retained: true, roomId: room.id, name: room.name };
+			} catch (error) {
+				warn(`[rebindRoom] retain 失败 roomId=${room.id} reason=${String(error?.message ?? error)} ⇒ 重建群会话`);
+			}
+			const place = room.workspaceId ? { workspaceId: room.workspaceId } : { cwd: room.cwd || deps.fallbackCwd };
+			const newId = await openSession(place);
+			const agent = await resolveAgent(newId);
+			const oldId = room.id;
+			const wasSelected = api.selectedRoom?.() === oldId;
+			rooms.delete(oldId);
+			room.id = newId;
+			rooms.set(newId, room);
+			for (const ledger of [inbox, callbacks, postMeta]) {
+				if (ledger.has(oldId)) { ledger.set(newId, ledger.get(oldId)); ledger.delete(oldId); }
+			}
+			for (const round of rounds.values()) { if (round.roomId === oldId) { round.roomId = newId; } }
+			for (const item of approvals.values()) { if (item.roomId === oldId) { item.roomId = newId; } }
+			for (const ask of room.asks ?? []) { if (ask.roomId === oldId) { ask.roomId = newId; } }
+			// ★ 2026-11-10：补齐 0.1.88 漏掉的两个账本。late 在 createRooms 闭包里可直接改；
+			//   routed 在 installRooms 闭包里 ⇒ 通过 onRebindRoom 钩子迁移。
+			const lateCount = migrateLateRoomId(late, oldId, newId);
+			let routedCount = 0;
+			for (const hook of rebindHooks) {
+				try { routedCount += Number(hook(oldId, newId)) || 0; }
+				catch (error) { warn(`[rebindRoom] hook 失败 roomId=${newId} reason=${String(error?.message ?? error)}`); }
+			}
+			if (wasSelected) { api.setSelectedRoom?.(newId); }
+			await mark(agent, { roomId: newId, role: 'room' });
+			api.attach?.(agent);
+			await renameSession(newId, room.name);
+			room.updatedAt = now();
+			await save();
+			const { map } = await names();
+			const view = roomView(room, map);
+			onChanged('rebound', view);
+			warn(`[rebindRoom] rebound roomId=${newId} oldRoomId=${oldId} ledgers=inbox,callbacks,postMeta,rounds,approvals,asks,late,routed,selected late=${lateCount} routed=${routedCount}`);
+			return { ok: true, rebound: true, roomId: newId, oldRoomId: oldId, name: room.name, migrated: { late: lateCount, routed: routedCount } };
+			},
+			/** 改群名 / 公告 / 模式 / 管理员 / 成员（只改给了的字段）。 */
 		async update(id, patch = {}) {
 			await load();
 			const room = need(id);
@@ -898,7 +1054,15 @@ export function createRooms(deps) {
 			}, roster.concat(room.members.filter(mid => !roster.some(bot => bot.id === mid)).map(mid => ({ id: mid, name: map.get(mid) ?? mid }))));
 			const removed = room.members.filter(mid => !next.members.includes(mid));
 			const renamed = next.name !== room.name;
+			// ★ 2026-11-10 群设置 UI 复刻：新字段独立归一化后落盘。
+			//   ⚠ 不塞进 normalizeRoomInput 的精确 6 键契约 ⇒ 既有 rooms.test.mjs 断言不受影响。
+			const wakePatch = normalizeWakeSettings(patch);
+			// 每群成员上限：默认沿用全局 ROOM_LIMITS.membersMax，设置了只能更严，不能更宽松。
+			const cap = Math.min(ROOM_LIMITS.membersMax, Number(wakePatch.memberMax ?? room.memberMax) || ROOM_LIMITS.membersMax);
+			if (next.members.length > cap) { throw new RoomError(`这个群的成员上限是 ${cap} 个（现在 ${next.members.length} 个）。`); }
 			Object.assign(room, next, { updatedAt: now() });
+			Object.assign(room, wakePatch);
+			if (wakePatch.wakeMode && wakePatch.wakeMode !== 'digest') { room.digestPending = 0; }
 			if (removed.length && room.asks?.length) { room.asks = room.asks.filter(ask => !removed.includes(ask.botId)); }
 			for (const mid of removed) {
 				const sid = room.sessions[mid];
@@ -933,8 +1097,56 @@ export function createRooms(deps) {
 			}
 			await save();
 			return { ok: true, id: room.id };
-		},
-		/** 群会话里人的新消息（`session/event` 的 user/message，source.kind==='user'）。 */
+			},
+			/**
+			* ★ 2026-11-10 群设置弹层「清空记录」：只清群日志 / 序号 / 已读游标 / 攒批计数，
+			*   **不动成员影子会话、不归档**（mockup 语义：成员会话的日志仍在）。
+			*/
+			async clear(id) {
+			await load();
+			const room = need(id);
+			room.log = [];
+			room.seq = 0;
+			room.seen = {};
+			room.digestPending = 0;
+			for (const [callId, round] of rounds) { if (round.roomId === room.id && round.done) { rounds.delete(callId); } }
+			room.updatedAt = now();
+			await save();
+			const { map } = await names();
+			return { ok: true, room: roomView(room, map) };
+			},
+			/** 「加入需确认」开启时，邀请先进 pending；关闭时直接入群。 */
+			async invite(id, botId) {
+			await load();
+			const room = need(id);
+			const ref = String(botId ?? '').trim();
+			if (!ref) { throw new RoomError('邀请需要一个 Bot'); }
+			if (room.members.includes(ref)) { throw new RoomError('这个 Bot 已经在群里了'); }
+			if (room.requireApproval !== true) {
+				return this.update(id, { members: room.members.concat([ref]) });
+			}
+			room.pending = Array.isArray(room.pending) ? room.pending : [];
+			if (!room.pending.includes(ref)) { room.pending.push(ref); }
+			room.updatedAt = now();
+			await save();
+			const { map } = await names();
+			return { ok: true, room: roomView(room, map) };
+			},
+			/** 确认（allow=true）/ 拒绝待加入成员；确认后并入成员列表。 */
+			async confirmJoin(id, botId, allow) {
+			await load();
+			const room = need(id);
+			const ref = String(botId ?? '').trim();
+			room.pending = (Array.isArray(room.pending) ? room.pending : []).filter(x => x !== ref);
+			if (allow !== true) {
+				room.updatedAt = now();
+				await save();
+				const { map } = await names();
+				return { ok: true, room: roomView(room, map) };
+			}
+			return this.update(id, { members: room.members.concat([ref]) });
+			},
+			/** 群会话里人的新消息（`session/event` 的 user/message，source.kind==='user'）。 */
 		noteUserMessage(sessionId, text) {
 			if (!rooms.has(sessionId)) { return; }
 			const body = String(text ?? '').trim();
@@ -949,7 +1161,23 @@ export function createRooms(deps) {
 			await load();
 			const room = need(roomId);
 			const body = String(text ?? '').trim() || '开始协作';
-			const agent = await resolveAgent(room.id);
+			let agent;
+			try {
+				agent = await resolveAgent(room.id);
+			} catch (error) {
+				// ★ 2026-11-10：群会话引用真的救不回来时，消息也不能丢。
+				//   ⚠ 不重建 room.id：postMeta / inbox / callbacks / rounds / late / 成员 mark 全以它为 key，
+				//   换 id 会让这些账本失效（真机已有多群 is released）。改为落进 inbox + log，
+				//   等下一轮 relay 自动消费并触发分工；同时如实报出可见错误，不静默 503。
+				warn(`[postToRoom] FAILED roomId=${room.id} reason=${String(error?.message ?? error)} ⇒ 暂存群收件箱`);
+				api.noteUserMessage(room.id, body);
+				appendLog(room, { who: '用户', text: clipLine(body) });
+				room.updatedAt = now();
+				void save();
+				api.reportError?.({ kind: 'room-session-unavailable', roomId: room.id, name: room.name,
+					error: `群「${room.name}」的会话暂时打不开，消息已存进群收件箱，稍后打开群即可继续。` });
+				return { ok: true, deferred: true, roomId: room.id, name: room.name, text: body };
+			}
 			api.attach?.(agent);
 			// ★ 2026-11-06 幂等：同一条来源消息转投到同一个群只算一次（多窗口 / 事件重放 / 两条路径都想转投）。
 			//   id 由来源决定，转投前先查群会话的待处理队列和已落盘历史——与 SuperAgent AgentDelivery 同一做法。
@@ -957,6 +1185,7 @@ export function createRooms(deps) {
 			const sourceMessageId = meta.sourceMessageId ? String(meta.sourceMessageId) : '';
 			const messageId = fromSession && sourceMessageId ? roomPostId(fromSession, sourceMessageId) : uuid();
 			if (fromSession && sourceMessageId && holdsMessage(agent, messageId)) {
+				warn(`[postToRoom] duplicate roomId=${room.id} messageId=${messageId}`);
 				return { ok: true, duplicate: true, roomId: room.id, name: room.name, messageId, text: body };
 			}
 			const message = {
@@ -972,6 +1201,7 @@ export function createRooms(deps) {
 			else if (typeof agent?.steer === 'function') { await Promise.resolve(agent.steer(message)); }
 			else { throw new RoomError('群会话不支持 followup（dsh 版本不匹配？）', 503); }
 			postMeta.set(room.id, correlationOf({ fromSession, sourceMessageId }));
+			warn(`[postToRoom] ok roomId=${room.id} messageId=${messageId} len=${body.length} from=${fromSession || '-'}`);
 			return { ok: true, roomId: room.id, name: room.name, messageId, text: body };
 		},
 		/** DSH `approval/request` 的处理（installRooms 以 prepend 挂上）。 */
@@ -1133,7 +1363,18 @@ export function createRooms(deps) {
 			void save();
 			try {
 				if (texts.length || calls.length) {
+					// ★ 2026-11-10 汇总派发：每条人消息累加 digestPending；攒够 wake.count 由 openingCall 放行，
+					//   放行后清零。计数随房间持久化 ⇒ Host 重启也不会丢攒批进度。
+					if (texts.length && normalizeWakeMode(room.wakeMode) === 'digest') {
+						room.digestPending = (Number(room.digestPending) || 0) + 1;
+					}
 					const open = texts.length && !superseded.routed ? openingCall(room, mention) : { ids: [], ordered: false };
+					// ★ 2026-11-10 日志补点：一眼区分「进群但只叫了 admin」与「压根没进群」。
+					warn(`[relay] roomId=${room.id} callId=${callId} openingCall ids=[${open.ids.join(',')}] mode=${room.mode ?? '-'} admin=${room.admin ?? '-'} notice=${room.notice ? '有' : '无'} texts=${texts.length} calls=${calls.length}`);
+					if (normalizeWakeMode(room.wakeMode) === 'digest' && open.ids.length) {
+						room.digestPending = 0;
+						void save();
+					}
 					const counts = new Map();
 					const pending = open.ids.map((id, index) => ({ id, by: '用户', index }));
 					// 系统回叫：人的消息没有点到它时才加（点到了就和人的消息一起答）
@@ -1491,6 +1732,8 @@ export function relayStream(rooms, uuid = randomUUID) {
 				return;
 			}
 			const id = `toolu_relay_${uuid().replace(/-/g, '')}`;
+			// ★ 2026-11-10 日志补点：合成 group_relay 就打一行，「群里没用户消息」时这行不会出现。
+			console.warn(`[vssaros-agents][rooms][relayStream] group_relay roomId=${options.sessionId} callId=${id}`);
 			yield { type: 'block-start', index: 0, blockType: 'tool-call' };
 			yield { type: 'tool-call-delta', index: 0, id, name: ROOM_RELAY_TOOL, argumentsDelta: '{}' };
 			yield { type: 'block-end', index: 0, block: { type: 'tool-call', id, name: ROOM_RELAY_TOOL, arguments: '{}' } };
@@ -1524,7 +1767,8 @@ export async function roomsApi(rooms, { method, query, body }) {
 		if (action === 'create') {
 			const originTriggerId = typeof body.originTriggerId === 'string' && body.originTriggerId ? body.originTriggerId
 				: typeof body.triggerId === 'string' && body.triggerId ? body.triggerId : undefined;
-			const room = await rooms.create(pick(['members', 'name', 'notice', 'admin', 'mode']), {
+			const room = await rooms.create(pick(['members', 'name', 'notice', 'admin', 'mode',
+				'wakeMode', 'wake', 'avatar', 'requireApproval', 'memberMax', 'pending']), {
 				createdBy: typeof body.createdBy === 'string' && body.createdBy ? body.createdBy : 'user',
 				workspaceId: typeof body.workspaceId === 'string' && body.workspaceId ? body.workspaceId : undefined,
 				cwd: typeof body.cwd === 'string' && body.cwd ? body.cwd : undefined,
@@ -1532,9 +1776,19 @@ export async function roomsApi(rooms, { method, query, body }) {
 			});
 			return { status: 200, body: { ok: true, room } };
 		}
-		if (action === 'update') { return { status: 200, body: { ok: true, room: await rooms.update(id, pick(['name', 'notice', 'admin', 'mode', 'members'])) } }; }
+		if (action === 'update') {
+			return { status: 200, body: { ok: true, room: await rooms.update(id, pick(['name', 'notice', 'admin', 'mode', 'members',
+				'wakeMode', 'wake', 'avatar', 'requireApproval', 'memberMax', 'pending'])) } };
+		}
 		if (action === 'flags') { return { status: 200, body: { ok: true, room: await rooms.setFlags(id, pick(['pinned', 'hidden'])) } }; }
-		if (action === 'delete') { return { status: 200, body: await rooms.remove(id) }; }
+		// ★ 2026-11-10 群设置弹层：解散（复用归档）/ 清空记录 / 邀请与确认加入
+		if (action === 'delete' || action === 'dissolve') { return { status: 200, body: await rooms.remove(id) }; }
+		if (action === 'clear') { return { status: 200, body: await rooms.clear(id) }; }
+		const asView = (r) => (r && r.room && r.room.id ? r.room : r);
+		if (action === 'invite') { return { status: 200, body: { ok: true, room: asView(await rooms.invite(id, body?.botId)) } }; }
+		if (action === 'confirm-join') {
+			return { status: 200, body: { ok: true, room: asView(await rooms.confirmJoin(id, body?.botId, body?.allow === true)) } };
+		}
 		// ★ 2026-11-06：群成员等人确认的工具调用（POST { action:'approve', id: 审批 id, choice: 'allow'|'reject' }）
 		if (action === 'approve') {
 			const choice = body?.choice === 'allow' ? 'allow' : body?.choice === 'reject' ? 'reject' : '';
@@ -1543,7 +1797,20 @@ export async function roomsApi(rooms, { method, query, body }) {
 		}
 		// ★ 2026-11-07：群聊选择卡（POST { action:'ask-answer', id, answers } 或 { action:'ask-answer', id, skip:true }）
 		if (action === 'ask-answer') { return { status: 200, body: { ok: true, ask: await rooms.answerAsk(id, pick(['answers', 'skip'])) } }; }
-		return { status: 400, body: { ok: false, error: `未知 action：${action || '(空)'}（支持 create/update/flags/delete/approve/ask-answer）` } };
+		// ★ 2026-11-10：页面把「当前选中的群」上报给 Host（id:'' = 离开群）。
+		//   只有它存在时才放宽跨会话 @群 转投 ⇒ 不会把普通会话的消息误投进群。
+		if (action === 'select') {
+			await rooms.load();
+			if (id && !rooms.isRoom(id)) { return { status: 404, body: { ok: false, error: `没有这个群：${id}` } }; }
+			rooms.setSelectedRoom?.(id);
+			return { status: 200, body: { ok: true, selectedRoomId: rooms.selectedRoom?.() ?? '' } };
+		}
+		// ★ 2026-11-10：群会话引用失效时页面给的「重新绑定」动作（retain 自愈 / 重建 + 账本迁移）。
+		if (action === 'rebind') {
+			if (!id) { return { status: 400, body: { ok: false, error: 'rebind 需要 id' } }; }
+			return { status: 200, body: await rooms.rebindRoom(id) };
+		}
+		return { status: 400, body: { ok: false, error: `未知 action：${action || '(空)'}（支持 create/update/flags/delete/dissolve/clear/invite/confirm-join/approve/ask-answer/select/rebind）` } };
 	} catch (error) {
 		return { status: error instanceof RoomError ? error.status : 500, body: { ok: false, error: String(error?.message ?? error) } };
 	}
@@ -1627,12 +1894,44 @@ export function installRooms(ctx, rooms) {
 	//   只在消息确实以 @群名 开头时转投，避免把「引用一下群聊当背景资料」误当派活。
 	const lastUser = new Map();
 	const routed = new Set();
+	// ★ 2026-11-10：routed 是 installRooms 的闭包状态，rebindRoom 访问不到 ⇒ 注册迁移钩子。
+	offs.push(rooms.onRebindRoom?.((oldId, newId) => migrateRoutedRoomId(routed, oldId, newId)) ?? (() => {}));
+	/** 群名（选中态兜底路径用；与 roomByName 互为反查）。 */
+	const roomNameOf = (roomId) => String(rooms.roomName?.(roomId) ?? '');
+	/** 转投 + 失败可见（1c）：console 保留，另推一条页面事件让用户看得到。 */
+	const forward = (target, body, meta) => {
+		void rooms.postToRoom(target, body, meta).catch(error => {
+			const message = String(error?.message ?? error);
+			console.warn(`[vssaros-agents][rooms] @群转投失败：${message}`);
+			rooms.reportError?.({ kind: 'forward-failed', roomId: target, name: meta.roomLabel || '',
+				error: `消息没能发进群：${message}` });
+		});
+	};
 	offs.push(ctx.on('session/event', (session, event) => {
 		const sid = String(session?.id ?? '');
 		const text = userTextOf(event);
 		if (text) {
 			if (rooms.isRoom(sid)) { rooms.noteUserMessage(sid, text); return; }
 			lastUser.set(sid, { id: String(event.data?.id ?? ''), text, at: Date.now() });
+			// ★ 2026-11-10（用户显式选中群）：原来只有「真消息 + session-reference 引用事件」
+			//   两条齐备、且 15s 内 @群名 才转投；真机上用户在独立会话里打字根本没有引用事件
+			//   ⇒ 群永远收不到消息、一次 group_relay 都没跑。选中群时，只要文本点名了该群
+			//   就立刻转投（不要求引用事件/15s 窗口）。⚠ 没选中群时行为完全不变，不会误投。
+			const selected = rooms.selectedRoom?.();
+			if (selected) {
+				const name = roomNameOf(selected);
+				const ref = name ? { roomId: selected, label: name } : null;
+				if (ref && addressedRoomReference(text, ref)) {
+					const cached = lastUser.get(sid);
+					const key = `${sid}:${cached?.id ?? ''}:${selected}`;
+					if (!routed.has(key)) {
+						routed.add(key);
+						lastUser.delete(sid);
+						const body = stripRoomMention(text, ref.label) || '开始协作';
+						forward(selected, body, { fromSession: sid, sourceMessageId: cached?.id || event.data?.id || '', roomLabel: ref.label });
+					}
+				}
+			}
 			return;
 		}
 		if (event?.type !== 'user/message' || event.data?.source?.kind !== ROOM_REFERENCE_KIND || rooms.isRoom(sid)) { return; }
@@ -1647,7 +1946,12 @@ export function installRooms(ctx, rooms) {
 		const body = stripRoomMention(cached.text, ref.label) || '开始协作';
 		void rooms.postToRoom(ref.roomId, body, {
 			fromSession: sid, sourceMessageId: cached.id, roomLabel: ref.label,
-		}).catch(error => console.warn(`[vssaros-agents][rooms] @群转投失败：${String(error?.message ?? error)}`));
+		}).catch(error => {
+			const message = String(error?.message ?? error);
+			console.warn(`[vssaros-agents][rooms] @群转投失败：${message}`);
+			rooms.reportError?.({ kind: 'forward-failed', roomId: ref.roomId, name: ref.label,
+				error: `消息没能发进群「${ref.label}」：${message}` });
+		});
 		if (routed.size > 200) { const oldest = routed.values().next().value; if (oldest) { routed.delete(oldest); } }
 	}));
 	offs.push(ctx.on('agent/turn-stopping', payload => { rooms.noteTurnEnd(payload?.agent?.session); }));

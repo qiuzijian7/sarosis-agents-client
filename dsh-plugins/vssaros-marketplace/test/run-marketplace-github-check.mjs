@@ -120,8 +120,8 @@ console.log('★ GitHub 作为发布源\n');
 		&& !nested.files.some(f => f.path.includes('repo-main')),
 		JSON.stringify({ root: nested.root, files: nested.files.map(f => f.path) }));
 
-	check('③ workflow 认 workflow.json',
-		locateInstallRoot([{ path: 'a/b/workflow.json', data: Buffer.from('{}') }], 'workflow').root === 'a/b');
+	const wfErr = String(thrown(() => locateInstallRoot([{ path: 'a/b/workflow.json', data: Buffer.from('{}') }], 'workflow')));
+	check('③ workflow 已无安装根判据（商品类型移除 ⇒ 如实报错）', /判据|这一类/.test(wfErr), wfErr);
 	check('③ agent 认 .agent.md',
 		locateInstallRoot([{ path: 'pack/x/.agent.md', data: Buffer.from('---\nname: a\n---\n') }], 'agent').root === 'pack/x');
 
@@ -266,11 +266,14 @@ console.log('★ GitHub 作为发布源\n');
 		gzBuffer: packTarGzFromMap(Object.fromEntries(located.files.map(f => [f.path, f.data.toString('utf8')]))),
 	});
 	const skillMd = fs.readFileSync(path.join(res.targetDir, 'SKILL.md'), 'utf8');
+	const side = JSON.parse(fs.readFileSync(path.join(res.targetDir, '.market.json'), 'utf8'));
 	check('⑤ GitHub 形态的包能装到**正确目录**（不是整仓）',
 		fs.existsSync(path.join(res.targetDir, 'scripts', 'run.sh')) && !fs.existsSync(path.join(res.targetDir, 'repo-main')),
 		res.targetDir);
-	check('⑤ 装完 frontmatter 仍回写 storeId/version',
-		/^storeId: gh-demo$/m.test(skillMd) && /^version: 1\.0\.0$/m.test(skillMd));
+	// ★ 2026-11-10 P1：契约反转 —— 正文逐字保留，溯源信息写侧车
+	check('⑤ 装完 SKILL.md 正文不被污染 + 侧车记下溯源',
+		!/^storeId:/m.test(skillMd) && !/^version:/m.test(skillMd)
+		&& side.storeId === 'gh-demo' && side.installedVersion === '1.0.0', JSON.stringify(side));
 	fs.rmSync(dataRoot, { recursive: true, force: true });
 }
 
@@ -329,7 +332,7 @@ console.log('★ GitHub 作为发布源\n');
 	check('⑥ 非 GitHub 源 ⇒ 拒绝（防 SSRF）', msg.includes('GitHub') || msg.includes('evil.com'), msg);
 
 	// 所有 kind 都能登记外部源（服务端 external 不限类型）
-	for (const kind of ['skill', 'agent', 'mcp', 'workbench', 'workflow', 'knowledge']) {
+	for (const kind of ['skill', 'agent', 'mcp', 'workbench', 'knowledge']) {
 		calls.length = 0;
 		const rr = await publishExternal({ market: fakeMarket(), kind, localId: `ext-${kind}`, version: '1.0.0', source: 'o/r' });
 		check(`⑥ ${kind} 也能用 GitHub 源发布`, rr.ok === true && calls.some(c => c.urlPath.endsWith('/versions/external')));
@@ -365,8 +368,10 @@ console.log('★ GitHub 作为发布源\n');
 		fs.existsSync(path.join(res.targetDir, 'SKILL.md'))
 		&& !fs.existsSync(path.join(res.targetDir, 'repo-main')),
 		res.targetDir);
-	check('⑦ 装完仍会回写 storeId/version（升级溯源）',
-		/^storeId: ext-demo$/m.test(fs.readFileSync(path.join(res.targetDir, 'SKILL.md'), 'utf8')));
+	const extMd = fs.readFileSync(path.join(res.targetDir, 'SKILL.md'), 'utf8');
+	const extSide = JSON.parse(fs.readFileSync(path.join(res.targetDir, '.market.json'), 'utf8'));
+	check('⑦ 装完正文保持纯内容 + 侧车记下升级溯源',
+		!/^storeId:/m.test(extMd) && extSide.storeId === 'ext-demo' && extSide.installedVersion === '2.0.0');
 	fs.rmSync(dataRoot, { recursive: true, force: true });
 }
 

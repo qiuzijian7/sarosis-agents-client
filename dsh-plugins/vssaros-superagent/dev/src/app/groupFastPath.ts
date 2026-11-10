@@ -9,6 +9,7 @@
  * so SuperAgent only records an `ignore` decision and does not spend another main-Session model evaluation on it.
  */
 import type { ReceiveResult, Trigger } from '../core/index.ts'
+import { GROUP_REQUEST } from '../core/group-request.ts'
 import type { GroupRouteKind } from './group-routes.ts'
 import { groupTicketTitle } from './group-tickets.ts'
 import type { GroupView } from './team.ts'
@@ -139,7 +140,7 @@ export function isGroupCreationRequest(text: string): boolean {
 	//   ⚠ 否定词要判**动词之前或紧邻动词**的短语，避免误伤「创建一个不要加班的团队」这类正向描述。
 	if (/(?:不要|别|无需|不用|不必|取消|不用再|别再)\s*(?:建|拉|创建|组建|成立)?\s*(?:群|团队)/u.test(body)) { return false }
 	if (/(?:^|[，,。！!？?\s])(?:不要|别|无需|不用|不必)\s*(?:建|拉|创建|组建|成立)/u.test(body)) { return false }
-	return /(?:建|拉|创建|组建|成立)[^，,。！!？?]{0,48}(?:群|团队)|群聊/u.test(body)
+	return GROUP_REQUEST.test(body)
 }
 
 /** Derive a stable group name and shared notice from the request, and pick up to three suitable Bots. */
@@ -188,9 +189,15 @@ export function fastGroupPlan(text: string, roster: readonly FastGroupBot[]): Fa
 	if (!basis) { return undefined }
 	const name = (explicitName || `${basis.slice(0, 40)} 开发团队`).slice(0, 60)
 	const nameOf = (bot: FastGroupBot | undefined) => bot?.name
-	const flow = coder && tester ? groupFlowNotice({ coder: nameOf(coder)!, tester: nameOf(tester)!, designer: nameOf(designer), reviewer: nameOf(reviewer) }) : ''
+	// ★ 2026-11-10：名册没有 coder/tester（真机蛇群是 planner + code-explorer + …）时也要有分工公告。
+	//   闲聊群（BUILD_WORDS 不命中）保持原样，不带任何流程文本。
+	const chosen = ids.slice(0, size)
+	const names = chosen.map(id => nameOf(pool.find(bot => bot.id === id)) || id)
+	const flow = coder && tester
+		? groupFlowNotice({ coder: nameOf(coder)!, tester: nameOf(tester)!, designer: nameOf(designer), reviewer: nameOf(reviewer) })
+		: BUILD_WORDS.test(text) && names.length >= 2 ? divisionNotice({ admin: names[0] ?? '', others: names.slice(1) }) : ''
 	const request = (rest || first.replace(verb, '').replace(/^[，,：:\s]+/u, '') || raw).slice(0, 2000 - (flow ? flow.length + 2 : 0))
-	return { members: ids.slice(0, size), name, notice: flow ? `${request}\n\n${flow}` : request, mode: 'admin' }
+	return { members: chosen, name, notice: flow ? `${request}\n\n${flow}` : request, mode: 'admin' }
 }
 
 /** Words of a request to build something, which then gets a tester in its group. */
@@ -209,6 +216,23 @@ export function groupFlowNotice(names: { coder: string; tester: string; designer
 		`3. ${tester} 在后台起本地预览服务，用浏览器打开逐项点测；有问题 @${coder}，写清「操作步骤 → 期望 → 实际」。`,
 		`4. ${coder} 修完后 @${tester} 复测；最多复测 3 轮，仍有问题就列给用户决定。`,
 		`5. 全部通过后由 ${tester} 向用户汇报：测过哪些功能、各自的结果。`].join('\n')
+}
+
+/**
+ * ★ 2026-11-10（真机「3d像素贪吃蛇群没有使用成员分工」）：名册里没有 coder / tester 时，
+ *   `coder && tester ? groupFlowNotice(...)` 会整段不生成公告，群公告只剩群名 ⇒
+ *   `roomPrompt` 里没有任何派活指令，`openingCall` 又因 mode='admin' 只叫管理员一人。
+ *   这里给「做事类」群生成**角色无关**的分工公告：按实际成员点名交棒，不假设谁开发谁测试。
+ *   ⚠ 不含「协作流程」四字（闲聊群断言 `not.toContain('协作流程')` 依赖它）。
+ */
+export function divisionNotice(names: { admin: string; others: string[] }): string {
+	const { admin, others } = names
+	const roster = [admin, ...others]
+	return [`【本群分工】成员：${roster.join('、')}。管理员 ${admin} 先用 group_goal 把这件事拆成阶段，每阶段写明完成标准并分给具体成员。`,
+		`1. ${admin} 先按阶段 @ 对应成员派活；同一条里 @ 的几位同时开始，要用到某人结果就先 @ 他、请他做完后 @ 下一位。`,
+		others.length ? `2. 每位成员（${others.join('、')}）接到活就在同一步开始调工具去做，不要只回「我来做」；结尾写改了哪些文件、跑了什么命令、看到什么结果。` : '2. 接到活就在同一步开始调工具去做，结尾写结果和证据。',
+		`3. ${admin} 检查每位成员的产出：通过就 pass（附证据）进入下一阶段，不通过就 rework 写清缺什么，再 @ 对方返工。`,
+		`4. 全部阶段通过后由 ${admin} 向用户汇报做了什么、怎么验的、结论是什么；需要用户取舍时调 group_ask 出选择卡，不要把选项写成文字。`].join('\n')
 }
 
 /**

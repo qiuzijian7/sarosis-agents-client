@@ -434,8 +434,11 @@ export class KbCommandService extends Disposable implements IKbCommandService {
 	// ── 操作日志 ────────────────────────────────────────────────────────────────────────────
 
 	opLogRootDir(): string {
-		const cfg = this._configurationService.getValue<string>('agentStudio.knowledge.storage.path');
-		return resolveKbRoot(cfg, this._environmentService.userDataPath);
+		// ★ 2026-11-10：知识库根以 dsh 侧配置为准 ⇒ 不再读 IDE 的幽灵设置
+		//   `agentStudio.knowledge.storage.path`（全仓无声明处，只有这里与沙箱各读了一次）。
+		//   IDE 侧 KB 视图自己的 op-log 用缺省 `<userDataPath>/knowledge-base`；
+		//   dsh 侧真实根目录由 `<数据根>/.kb-root.json` 决定，两边不互相覆盖。
+		return resolveKbRoot(undefined, this._environmentService.userDataPath);
 	}
 
 	async logOp(op: string, status: KbOpStatus, extra?: IKbOpExtra): Promise<void> {

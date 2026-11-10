@@ -1,0 +1,113 @@
+{
+  "version": 1,
+  "note": "远程 MCP 服务目录（dsh 侧真源）。端点与认证形态对齐 DeepSeek-Bot connectors/catalog.js；不含任何凭据。",
+  "policy": "只把 auth=none 的服务标为可一键安装。OAuth / API-key 型服务需要凭据隔离网关（本地反向代理 + secrets 存储），当前 dsh 侧尚未落地 ⇒ 明确拒绝安装，不写永远连不上的条目。",
+  "categories": ["search", "docs", "data", "dev", "work", "design", "commerce"],
+  "entries": [
+    {
+      "id": "huggingface",
+      "name": "Hugging Face",
+      "category": "data",
+      "about": "模型、数据集与 Spaces 的检索",
+      "url": "https://huggingface.co/mcp",
+      "auth": "none"
+    },
+    {
+      "id": "exa",
+      "name": "Exa",
+      "category": "search",
+      "about": "面向 Agent 的网页搜索",
+      "url": "https://mcp.exa.ai/mcp",
+      "auth": "none"
+    },
+    {
+      "id": "deepwiki",
+      "name": "DeepWiki",
+      "category": "docs",
+      "about": "公开代码仓库的文档问答",
+      "url": "https://mcp.deepwiki.com/mcp",
+      "auth": "none"
+    },
+    {
+      "id": "context7",
+      "name": "Context7",
+      "category": "docs",
+      "about": "库文档与代码示例",
+      "url": "https://mcp.context7.com/mcp",
+      "auth": "none"
+    },
+    {
+      "id": "mslearn",
+      "name": "Microsoft Learn",
+      "category": "docs",
+      "about": "微软产品文档检索",
+      "url": "https://learn.microsoft.com/api/mcp",
+      "auth": "none"
+    },
+    {
+      "id": "cloudflare-docs",
+      "name": "Cloudflare Docs",
+      "category": "docs",
+      "about": "Cloudflare 产品文档检索",
+      "url": "https://docs.mcp.cloudflare.com/mcp",
+      "auth": "none"
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "category": "dev",
+      "about": "仓库、Issue 与 PR（需 OAuth）",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "auth": "oauth"
+    },
+    {
+      "id": "notion",
+      "name": "Notion",
+      "category": "docs",
+      "about": "页面、数据库与 Wiki（需 OAuth）",
+      "url": "https://mcp.notion.com/mcp",
+      "auth": "oauth"
+    },
+    {
+      "id": "linear",
+      "name": "Linear",
+      "category": "work",
+      "about": "Issue、项目与周期（需 OAuth）",
+      "url": "https://mcp.linear.app/mcp",
+      "auth": "oauth"
+    },
+    {
+      "id": "sentry",
+      "name": "Sentry",
+      "category": "dev",
+      "about": "错误、Trace 与发布（需 OAuth）",
+      "url": "https://mcp.sentry.dev/mcp",
+      "auth": "oauth"
+    },
+    {
+      "id": "figma",
+      "name": "Figma",
+      "category": "design",
+      "about": "设计文件、组件与评论（需 OAuth）",
+      "url": "https://mcp.figma.com/mcp",
+      "auth": "oauth"
+    },
+    {
+      "id": "slack",
+      "name": "Slack",
+      "category": "work",
+      "about": "频道与消息（需 OAuth）",
+      "url": "https://mcp.slack.com/mcp",
+      "auth": "oauth"
+    },
+    {
+      "id": "amap",
+      "name": "Amap",
+      "category": "search",
+      "about": "地图、地点与路线（需 API key，走 query 参数）",
+      "url": "https://mcp.amap.com/mcp",
+      "auth": "key",
+      "query": { "key": "${env:MCP_AMAP_KEY}" }
+    }
+  ]
+}

@@ -17,7 +17,15 @@ import {
 	FILE_LOCK_SUFFIX, FILE_LOCK_WAIT_MS, FILE_LOCK_STALE_MS, FILE_LOCK_POLL_MS, FILE_LOCK_HEARTBEAT_MS, ATOMIC_TMP_POSTFIX,
 	lockFileFor, isPidAlive, acquireFileLock, atomicWriteFile,
 } from './lock.js';
-import { createWorkspaceContextStore, normalizeWorkspaceContext, sameWorkspaceContext } from './workspaceContext.js';
+import {
+	createWorkspaceContextStore, normalizeWorkspaceContext, sameWorkspaceContext,
+	deriveWorkspaceRoots, rootNameOf, MAX_WORKSPACE_ROOTS,
+} from './workspaceContext.js';
+import {
+	renderWorkspaceRootsText, parseRootQualifiedPath, installWorkspaceRootsPrompt,
+	MAX_WORKSPACE_PROMPT_TEXT, WORKSPACE_ROOTS_SECTION_NAME, WORKSPACE_ROOTS_SECTION_ORDER,
+} from './workspacePrompt.js';
+import { withMultiRootCheckedTarget, installMultiRootFs } from './fsMultiRoot.js';
 import { installLogBridge } from './logBridge.js';
 
 export const name = 'vssaros-foundation';
@@ -45,8 +53,17 @@ export function createFoundationService() {
 		setWorkspaceContext: workspaceContext.set,
 		clearWorkspaceContext: workspaceContext.clear,
 		onDidChangeWorkspaceContext: workspaceContext.onDidChange,
+		// P0-1（2026-11-10）：**唯一读口** —— 消费插件要根集就调它，别自己拼
+		// `[workspaceRoot, ...relatedRoots]`（老载荷的 relatedRoots 全量含主根 ⇒ 会重复 ✗）。
+		// 同步、零 I/O；没有上下文 ⇒ `[]`（各自的 config 回落纪律不受影响 ✓）。
+		workspaceRoots: () => deriveWorkspaceRoots(workspaceContext.get()),
 		// 纯函数（探针/守卫直接 import 用来造夹具、比对；不进运行时热路径 ✓）
-		normalizeWorkspaceContext, sameWorkspaceContext,
+		normalizeWorkspaceContext, sameWorkspaceContext, deriveWorkspaceRoots, rootNameOf, MAX_WORKSPACE_ROOTS,
+		// P0-2（2026-11-10）：模型上下文段 / 根限定路径解析（纯函数，工具接入前的公共准备 ✓）
+		renderWorkspaceRootsText, parseRootQualifiedPath, installWorkspaceRootsPrompt,
+		MAX_WORKSPACE_PROMPT_TEXT, WORKSPACE_ROOTS_SECTION_NAME, WORKSPACE_ROOTS_SECTION_ORDER,
+		// P0-3（2026-11-10）：多根写围栏（纯函数 + 接线，守卫用假 ctx 断言 ✓）
+		withMultiRootCheckedTarget, installMultiRootFs,
 	};
 }
 
@@ -61,4 +78,12 @@ export function apply(ctx) {
 		enumerable: false,
 	});
 	ctx.provide('vssarosFoundation', service);
+	// P0-2（2026-11-10）：多根工作区注入模型上下文。
+	// ★ 走 `ctx.inject` 子作用域 ⇒ 不改插件级 `inject = []`（foundation 仍是谁都不等的底座）；
+	// ★ systemPrompt 服务缺席 / 老 Host / 离线 fake ctx ⇒ 静默跳过（与"能力不存在"逐字一致 ✓）。
+	installWorkspaceRootsPrompt(ctx, service);
+	// P0-3（2026-11-10）：把 fs 沙箱的写根接到工作区多根。
+	// ★ 同样走子作用域注入 ⇒ 不改 `inject = []`；fs 服务缺席 / 属性不可写 ⇒ 回落官方单根（fail-closed ✓）。
+	// ★ 本机已降 danger-full-access，看不出差别 ⇒ 验收靠 check-host-config.mjs 的 A5 夹具断言。
+	installMultiRootFs(ctx, service);
 }

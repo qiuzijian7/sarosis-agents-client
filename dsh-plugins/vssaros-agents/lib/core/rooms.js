@@ -54,8 +54,74 @@ export function roundStatusOf(round) {
 	}
 	return r.error ? 'failed' : 'done';
 }
-/** 「谁来回答」模式。 */
+/** 「谁来回答」模式（旧两档，保持运行时/SuperAgent 兼容；新四档走 wakeMode）。 */
 export const ROOM_MODES = Object.freeze(['admin', 'everyone']);
+/**
+ * ★ 2026-11-10 群设置 UI 复刻 DS Bot：四档唤醒策略。
+ * ⚠ 不复用 `mode`：它是旧两档且被 SuperAgent `groupFastPath` 与既有测试钉死，
+ *   直接改会破坏建群默认值。新增 `wakeMode` ⇒ 老房间没有这个字段就完全回落旧行为 ✓。
+ */
+export const WAKE_MODES = Object.freeze(['all', 'mentions', 'digest', 'silent']);
+export const WAKE_LIMITS = Object.freeze({
+	countMin: 1, countMax: 100, intervalMin: 1, intervalMax: 3600,
+	/** 群头像（data URI）上限：png/jpeg/webp，≤96KB。 */
+	avatarBytes: 96 * 1024,
+});
+/** 旧两档 → 新四档（mockup 的 normMode 同口径）。 */
+export function normalizeWakeMode(mode) {
+	const m = String(mode ?? '').trim();
+	if (m === 'admin' || m === 'open') { return 'mentions'; }
+	if (m === 'everyone') { return 'all'; }
+	return WAKE_MODES.includes(m) ? m : '';
+}
+/**
+ * 群设置新增字段的归一化（纯函数；只在传了字段时返回该字段 ⇒ 不破坏
+ * `normalizeRoomInput` 的精确 6 键契约）。
+ */
+export function normalizeWakeSettings(input) {
+	const out = {};
+	if (input === undefined || input === null) { return out; }
+	if (typeof input !== 'object' || Array.isArray(input)) { throw new RoomError('群设置必须是对象'); }
+	if (input.wakeMode !== undefined) {
+		const mapped = normalizeWakeMode(input.wakeMode);
+		if (!mapped) { throw new RoomError(`唤醒策略只能是 ${WAKE_MODES.join(' / ')}。`); }
+		out.wakeMode = mapped;
+	}
+	if (input.wake !== undefined) {
+		const w = input.wake && typeof input.wake === 'object' ? input.wake : {};
+		const clamp = (v, d, lo, hi) => {
+			const n = Number(v);
+			return Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n))) : d;
+		};
+		out.wake = {
+			count: clamp(w.count, 5, WAKE_LIMITS.countMin, WAKE_LIMITS.countMax),
+			intervalSeconds: clamp(w.intervalSeconds, 30, WAKE_LIMITS.intervalMin, WAKE_LIMITS.intervalMax),
+		};
+	}
+	if (input.avatar !== undefined) {
+		const a = input.avatar === null || input.avatar === '' ? '' : String(input.avatar);
+		if (a) {
+			if (!/^data:image\/(png|jpeg|webp);base64,/.test(a)) {
+				throw new RoomError('群头像只收 png / jpeg / webp 的图片');
+			}
+			// base64 约 4/3 倍膨胀；留 64 字节给 data URI 头
+			if (a.length > Math.ceil(WAKE_LIMITS.avatarBytes / 3) * 4 + 64) {
+				throw new RoomError('群头像超过 96KB，请换一张更小的图');
+			}
+		}
+		out.avatar = a;
+	}
+	if (input.requireApproval !== undefined) { out.requireApproval = !!input.requireApproval; }
+	if (input.memberMax !== undefined) {
+		const n = Number(input.memberMax);
+		if (!Number.isFinite(n) || n < ROOM_LIMITS.membersMin || n > ROOM_LIMITS.membersMax) {
+			throw new RoomError(`成员上限要在 ${ROOM_LIMITS.membersMin}–${ROOM_LIMITS.membersMax} 之间`);
+		}
+		out.memberMax = Math.round(n);
+	}
+	if (Array.isArray(input.pending)) { out.pending = input.pending.map(String).filter(Boolean).slice(0, 64); }
+	return out;
+}
 export const ROOM_LIMITS = Object.freeze({
 	membersMin: 2,
 	membersMax: 12,
@@ -238,6 +304,24 @@ export function mentionsIn(text, members) {
 export function openingCall(room, mention) {
 	const members = Array.isArray(room?.members) ? room.members : [];
 	const ids = (mention?.ids ?? []).filter(id => members.includes(id));
+	// ★ 2026-11-10 四档唤醒策略：只有设置了 wakeMode 的房间走这里，老房间回落旧两档 ✓
+	const wake = normalizeWakeMode(room?.wakeMode);
+	if (wake) {
+		// 静默收件：只进群记录，不唤醒任何成员（@ 也不唤醒）
+		if (wake === 'silent') { return { ids: [], ordered: false }; }
+		// 仅 @ 派发：一个都没 @ ⇒ 不派发（上层留系统提示）
+		if (wake === 'mentions') { return { ids, ordered: false }; }
+		// 汇总派发：攒够 wake.count 条才一次性派给全员（计数由 relay 累加到 digestPending）
+		if (wake === 'digest') {
+			const need = Math.max(1, Number(room?.wake?.count) || 5);
+			const held = Number(room?.digestPending) || 0;
+			if (held < need) { return { ids: [], ordered: false }; }
+			return { ids: members.slice(), ordered: false };
+		}
+		const wakeAdmin = room?.admin && members.includes(room.admin) ? room.admin : null;
+		const wakeOrder = wakeAdmin ? [wakeAdmin, ...members.filter(id => id !== wakeAdmin)] : [...members];
+		return { ids: wakeOrder, ordered: !mention?.all && wakeOrder.length > 1 };
+	}
 	if (ids.length && !mention.all) { return { ids, ordered: false }; }
 	const admin = room?.admin && members.includes(room.admin) ? room.admin : null;
 	if (!mention?.all && room?.mode === 'admin' && admin) { return { ids: [admin], ordered: false }; }
@@ -365,6 +449,13 @@ export function roomView(room, names) {
 		...(room.originTriggerId ? { originTriggerId: room.originTriggerId } : {}),
 		updatedAt: room.updatedAt ?? room.createdAt,
 		preview: last ? `${last.who}：${String(last.text).slice(0, 80)}` : '',
+		// ★ 2026-11-10 群设置 UI 复刻：增量字段（老房间不输出 ⇒ 不破坏既有视图断言）
+		...(room.wakeMode ? { wakeMode: room.wakeMode } : {}),
+		...(room.wake ? { wake: room.wake } : {}),
+		...(room.avatar ? { avatar: room.avatar } : {}),
+		...(room.requireApproval !== undefined ? { requireApproval: room.requireApproval === true } : {}),
+		...(Array.isArray(room.pending) ? { pending: room.pending.slice() } : {}),
+		...(room.memberMax ? { memberMax: room.memberMax } : {}),
 	};
 }
 

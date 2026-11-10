@@ -975,6 +975,468 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 			if (wt.isOpenFromAnchor(anchor, null) !== false) { problems.push('isOpenFromAnchor: 没有落点应为 false（宁可不开，不乱弹）✗'); }
 			if (wt.isOpenFromAnchor(null, 'composer') !== false) { problems.push('isOpenFromAnchor: 没有锚点应为 false ✗'); }
 			notes.push('client.workspace.js: hero 面板 open 来源判定断言通过');
+			}
+			// ── ⑤-l P0-A/B 状态驱动根集作用域条（2026-11-10）──────────────────────────────
+			//  两条硬规矩：① 单根 ⇒ 一行不加（旧界面逐字不变）；② **不谎报可写范围**
+			//  （沙箱档位只在 Host 侧，页面读不到 ⇒ 印"可写：全部 N 个根"必随档位变假 ✗）。
+			{
+			const scopeOf = wt && wt.workspaceScopeOf;
+			if (typeof scopeOf !== 'function') {
+				problems.push('client.workspace.js: 缺 __test.workspaceScopeOf（作用域条必须状态驱动、可单测 ✗）');
+			} else {
+				const one = { roots: [{ path: 'G:/WS/app', name: 'app', isPrimary: true }] };
+				const s1 = scopeOf(one, 'G:/WS/app');
+				if (s1.multi !== false || s1.lines.length !== 0 || s1.limits.length !== 0) {
+					problems.push('workspaceScopeOf: 单根必须 multi=false 且 lines/limits 都为空（旧界面逐字不变 ✗）');
+				}
+				if (scopeOf(null, null).lines.length !== 0) {
+					problems.push('workspaceScopeOf: 没有当前组 ⇒ 不注入任何文案 ✗');
+				}
+				const five = { roots: [
+					{ path: 'G:/WS/app', name: 'frontend', isPrimary: true },
+					{ path: 'G:/WS/lib', name: 'backend' },
+					{ path: 'G:/WS/docs', name: 'contracts' },
+				] };
+				const s5 = scopeOf(five, 'G:/WS/lib');
+				if (s5.multi !== true || s5.count !== 3 || s5.primaryName !== 'frontend' || s5.cwd !== 'G:/WS/lib') {
+					problems.push('workspaceScopeOf: 多根 ⇒ 根数/主根名/会话 cwd 必须来自状态 ✗');
+				}
+				const lines = s5.lines.join('\n');
+				if (!lines.includes('根集作用域') || !lines.includes('3 个根') || !lines.includes('主根 frontend') || !lines.includes('绝对路径')) {
+					problems.push('workspaceScopeOf: 作用域行必须报根数 / 主根 / 跨根绝对路径 ✗');
+				}
+				if (!lines.includes('写权限由沙箱策略决定')) {
+					problems.push('workspaceScopeOf: 必须如实写"写权限由沙箱策略决定"（不猜档位 ✓）✗');
+				}
+				// ★ 负对照：任何"可写：全部 N 个根"式的断言都不许出现（会随档位变假 ✗）
+				if (/可写[：:]?\s*全部|可写全部/.test(lines) || lines.includes('可写范围：全部')) {
+					problems.push('workspaceScopeOf: 不许宣称"可写：全部 N 个根" —— 页面读不到沙箱档位 ✗');
+				}
+				if (s5.limits.length !== 4) {
+					problems.push(`workspaceScopeOf: 多根受限清单应有 4 条，实际 ${s5.limits.length} ✗`);
+				}
+				const limitText = s5.limits.join('\n');
+				for (const key of ['相对路径', 'session.start', '只对新会话生效', 'VCS / HEAD']) {
+					if (!limitText.includes(key)) {
+						problems.push(`workspaceScopeOf: 受限清单缺"${key}"（只列本仓真实口径 ✓）✗`);
+					}
+				}
+				// ★ 负对照：Cline 的 .clinerules / Checkpoints 不是本仓能力，照搬就是假话 ✗
+				if (/\.clinerules|Checkpoints|禁用.*影子/.test(limitText)) {
+					problems.push('workspaceScopeOf: 受限清单不许照搬 Cline 的 rules/Checkpoints（本仓没有这套口径 ✗）');
+				}
+				notes.push('client.workspace.js: P0-A/B 状态驱动作用域条 + 本仓受限清单 + 不谎报可写范围 断言通过');
+			}
+			// 静态接线 + stale 注释必须消失
+			const wsCode = fs.readFileSync(path.join(LIB, 'client.workspace.js'), 'utf8');
+			if (!wsCode.includes('data-vssaros-scope-line') || !wsCode.includes('data-vssaros-scope-limits')) {
+				problems.push('client.workspace.js: 作用域条 / 折叠清单必须带 data 钩子（守卫与真机自证靠它 ✗）');
+			}
+			if (!/workspaceScopeOf\(currentGroup, dir\)/.test(wsCode)) {
+				problems.push('client.workspace.js: 渲染必须调 workspaceScopeOf(currentGroup, dir)（状态驱动，不许写死文案 ✗）');
+			}
+			if (wsCode.includes('α「写全部根」还没接入') || wsCode.includes('只报事实、不报')) {
+				problems.push('client.workspace.js: 2026-10-16 的"写全部根还没接入/单根"注释已 stale，必须删 ✗');
+			}
+			const wsCards = fs.readFileSync(path.join(LIB, 'client.workspaces.js'), 'utf8');
+			// ★ 2026-11-10 用户裁决：工作区 item hover 不弹 tip ⇒ hover 卡尾的指引随之退役。
+			//   P0-B 的清单真源仍在 client.workspace.js 的「当前会话」栏（上面已断言 data 钩子）。
+			if (wsCards.includes('data-vssaros-hover-scope-hint')) {
+				problems.push('client.workspaces.js: hover 卡已删除，不该残留卡尾指引（死文案 ✗）');
+			}
+			if (wsCards.includes('写权限由沙箱策略决定')) {
+				problems.push('client.workspaces.js: hover 卡不许复制第二份受限清单（会与作用域条口径分裂 ✗）');
+			}
+			notes.push('client.workspace.js / client.workspaces.js: P0-B 单一真源 + 无残留 hover 指引 + stale 注释清理 断言通过');
+			}
+			// ── ⑤-m 根列表（chip 下拉）+ P1-D 统一切换反馈（2026-11-10）────────────────
+			//  ★ 2026-11-10 **用户裁决**：推翻 11-02「行上不加徽标、只放 hover 卡」与 P1-C 的
+			//    `<details>` 常驻列表 ⇒ 改为工作区 item 行上「N 个根 ▾」**可点 chip** + 内联下拉。
+			//  两条硬规矩：① chip 与下拉必须共用同一份 workspaceRootListOf（不新增真源）；
+			//  ② 切换文案只报本面板知道的事实，不许谎报"窗口已切换 / 根集已变化"。
+			{
+			// P1-C：纯函数行为
+			const rootsOf = t && t.workspaceRootListOf;
+			if (typeof rootsOf !== 'function') {
+				problems.push('client.workspaces.js: 缺 __test.workspaceRootListOf（常驻根列表必须可单测 ✗）');
+			} else {
+				const one = { roots: [{ path: 'G:/WS/app', name: 'app', isPrimary: true }] };
+				const r1 = rootsOf(one, 'G:/WS/app');
+				if (r1.multi !== false || r1.items.length !== 0) {
+					problems.push('workspaceRootListOf: 单根必须不渲染（旧侧栏逐字不变 ✗）');
+				}
+				if (rootsOf(null, null).multi !== false) {
+					problems.push('workspaceRootListOf: 没有记录 ⇒ 不渲染 ✗');
+				}
+				const rec = { roots: [
+					{ path: 'G:/WS/app', name: 'frontend', isPrimary: true },
+					{ path: 'G:/WS/lib', name: 'backend' },
+					{ path: 'G:/WS/docs', name: 'contracts' },
+				] };
+				const r3 = rootsOf(rec, 'G:/WS/lib');
+				if (r3.multi !== true || r3.count !== 3) {
+					problems.push('workspaceRootListOf: 多根根数必须来自状态 ✗');
+				}
+				if (!r3.items[0].isPrimary || r3.items[1].isCurrent !== true || r3.items[2].isCurrent !== false) {
+					problems.push('workspaceRootListOf: 主根 / 当前会话根必须按 cwd 判（与 hover 卡同源 ✗）');
+				}
+				if (r3.items[2].name !== 'contracts' || r3.items[2].path !== 'G:/WS/docs') {
+					problems.push('workspaceRootListOf: 根名 / 路径必须来自 record.roots ✗');
+				}
+				// Windows 反斜杠 + 尾斜杠归一（samePath 同口径）
+				const rWin = rootsOf(rec, 'g:\\ws\\LIB\\');
+				if (rWin.items[1].isCurrent !== true) {
+					problems.push('workspaceRootListOf: 当前根比较须与 samePath 同口径（大小写/分隔符/尾斜杠 ✗）');
+				}
+				notes.push('client.workspaces.js: P1-C 根集视图（单根零渲染 / 主根 / cwd 判当前 / 同源）断言通过');
+				}
+				// 下拉状态机：行为断言（同时只展开一条 / 再点收起 / 畸形 key 不炸）
+				const nextOpen = t && t.nextRootsOpenKey;
+				if (typeof nextOpen !== 'function') {
+				problems.push('client.workspaces.js: 缺 __test.nextRootsOpenKey（chip 下拉状态机必须可单测 ✗）');
+				} else {
+				if (nextOpen(null, 'a') !== 'a') { problems.push('nextRootsOpenKey: 首次点击必须展开该条 ✗'); }
+				if (nextOpen('a', 'a') !== null) { problems.push('nextRootsOpenKey: 再点同一条必须收起 ✗'); }
+				if (nextOpen('a', 'b') !== 'b') { problems.push('nextRootsOpenKey: 点另一条必须切换（同时只开一条 ✗）'); }
+				notes.push('工作区 item chip：下拉状态机（展开 / 收起 / 互斥）断言通过');
+				}
+				// 静态接线（用户 11-10 裁决）：chip 必须真的挂在工作区行上，点击内联下拉
+			const wsCardsCode = fs.readFileSync(path.join(LIB, 'client.workspaces.js'), 'utf8');
+			if (!wsCardsCode.includes('"data-vssaros-ws-roots-chip": key')) {
+				problems.push('client.workspaces.js: 工作区 item 必须有「N 个根」chip（用户 11-10 裁决 ✗）');
+			}
+			if (!wsCardsCode.includes('data-vssaros-ws-roots') || !wsCardsCode.includes('rootsDropped')) {
+				problems.push('client.workspaces.js: chip 点击必须下拉出多根内容（受控展开态 ✗）');
+			}
+			if (!wsCardsCode.includes('workspaceRootListOf(row.record, currentRootPath)')) {
+				problems.push('client.workspaces.js: chip / 下拉 / hover 卡必须复用同一份 roots + currentRootPath（不新增真源 ✗）');
+			}
+			// ★ 单一真源：剥注释后恰好 2 处 = 函数定义 + 唯一调用点。
+			//   多一处就意味着又复制了一份根集读取（chip / 下拉 / hover 卡口径会分裂 ✗）。
+			const codeNoComments = wsCardsCode.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+			const viewCalls = (codeNoComments.match(/workspaceRootListOf\(/g) || []).length;
+			if (viewCalls !== 2) {
+				problems.push(`client.workspaces.js: 根集只许「1 个定义 + 1 个调用」，实际 ${viewCalls} 处 ✗`);
+			}
+			// 键盘 / 冒泡 / 窄窗口：chip 是原生 button、带 aria、且必须拦住行 onClick（否则顺手折叠组 ✗）
+			for (const [needle, why] of [
+				['"aria-expanded": rootsDropped', 'chip 必须带 aria-expanded（键盘可达 ✓）'],
+				['"aria-controls": "vssaros-ws-roots-" + key', 'chip 必须 aria-controls 指向下拉'],
+				['flex: "none", whiteSpace: "nowrap"', 'chip 必须 flex:none（窄侧栏不裁剪 ✓）'],
+				['setRootsOpenKey(nextRootsOpenKey(rootsOpenKey, key))', 'chip 必须走可单测的纯状态机（可开可收 ✗）'],
+			]) {
+				if (!wsCardsCode.includes(needle)) { problems.push(`client.workspaces.js: ${why} ✗`); }
+			}
+			// ⚠ stopPropagation 是通用写法（其它菜单按钮也用）⇒ 必须**限定在 chip 按钮块内**，
+			//   否则删掉 chip 那一处仍会绿（反向突变实证 ✗）。
+			const chipStart = wsCardsCode.indexOf('"data-vssaros-ws-roots-chip"');
+			const chipBlock = chipStart >= 0 ? wsCardsCode.slice(chipStart, chipStart + 1400) : '';
+			if (!chipBlock.includes('e.stopPropagation()')) {
+				problems.push('client.workspaces.js: chip 的 onClick 必须 stopPropagation（否则顺手折叠工作区组 ✗）');
+			}
+			if (!/rootsView\.multi \? react\.createElement\("button"/.test(wsCardsCode)) {
+				problems.push('client.workspaces.js: chip 只能在多根时渲染（单根旧界面逐字不变 ✗）');
+			}
+			// ⚠ 剥掉注释再判：说明演进史的注释里会提到 `<details>` 字样，不能算残留代码 ✗
+			const wsCodeNoComments = wsCardsCode.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+			if (/react\.createElement\("details"/.test(wsCodeNoComments)) {
+				problems.push('client.workspaces.js: 旧 <details> 常驻根列表已被 chip 下拉取代，不该残留 ✗');
+			}
+			// ★ 2026-11-10 用户裁决：工作区 item hover **不弹 tip** ⇒ 整条链路必须真的删干净
+			for (const [needle, why] of [
+				['function HoverCard(', 'HoverCard 组件不该残留（会变成死代码 ✗）'],
+				['react.createElement(HoverCard', '不许渲染工作区 hover 卡 ✗'],
+				['const [hover, setHover]', '工作区 hover state 不该残留 ✗'],
+				['openHover(', '工作区行不许有 hover 触发函数 ✗'],
+				['closeHover(', 'closeHover 调用点不该残留 ✗'],
+				['hoverTimer', '工作区 hover timer 不该残留（注释除外 ✗）'],
+			]) {
+				if (wsCodeNoComments.includes(needle)) { problems.push(`client.workspaces.js: ${why}`); }
+			}
+			// 行容器上不许再挂 onMouseEnter/onMouseLeave 的 hover 触发（官方行只保留 CSS 高亮）
+			const projRowStart = wsCodeNoComments.indexOf('className: "vssaros-ws-project"');
+			const projRow = projRowStart >= 0 ? wsCodeNoComments.slice(projRowStart, projRowStart + 900) : '';
+			if (/onMouseEnter:\s*\(e\)\s*=>\s*openHover/.test(projRow) || /onMouseLeave:\s*closeHover/.test(projRow)) {
+				problems.push('client.workspaces.js: 工作区行不许挂 hover 触发（用户裁决：不弹 tip ✗）');
+			}
+			// 会话行 hover 卡必须仍在（官方同款，别误删）
+			if (!wsCodeNoComments.includes('data-vssaros-sess-hover') || !wsCodeNoComments.includes('openSessHover')) {
+				problems.push('client.workspaces.js: 会话行官方 hover 卡必须保留（本刀只删工作区 tip ✗）');
+			}
+			notes.push('工作区 item chip：多根展示 / 点击下拉 / 单一真源 / 键盘可达 / 单根零注入 / 无 hover tip 断言通过');
+
+			// P1-D：纯函数行为
+			const feedbackOf = wt && wt.switchFeedbackOf;
+			if (typeof feedbackOf !== 'function') {
+				problems.push('client.workspace.js: 缺 __test.switchFeedbackOf（切换反馈必须统一且可单测 ✗）');
+			} else {
+				const ok = feedbackOf({ ok: true, targetPath: 'G:/WS/lib', targetName: 'backend', fromCwd: 'G:/WS/app' });
+				// ★ 方案 A：单向桥 resolve 只代表「请求已转发」⇒ 必须写「已请求」，不许谎报已完成 ✗
+				if (!ok.includes('已请求在 backend 新建会话') || !ok.includes('原会话仍在 app')) {
+					problems.push('switchFeedbackOf: 成功文案必须写「已请求」+ 报目标根 / 原会话根 ✗');
+				}
+				if (!ok.includes('只对新会话生效')) {
+					problems.push('switchFeedbackOf: 必须写明"根集若有变化只对新会话生效" ✓✗');
+				}
+				if (/已在 .* 开新会话|切换成功|已完成切换/.test(ok)) {
+					problems.push('switchFeedbackOf: 不许谎报「已开新会话」（渲染侧成败传不回页面 ✗）');
+				}
+				const bad = feedbackOf({ ok: false, targetPath: 'G:/WS/lib', fromCwd: 'G:/WS/app', error: '宿主拒绝' });
+				if (!bad.includes('切换失败') || !bad.includes('宿主拒绝') || !bad.includes('会话未改动')) {
+					problems.push('switchFeedbackOf: 失败文案必须含原因 + 明确会话未改动 ✗');
+				}
+				// ★ 负对照：客户端不知道 Host 侧根集快照、也不切 IDE 窗口 ⇒ 不许谎报
+				for (const s of [ok, bad]) {
+					if (/窗口已切换|根集已变化|IDE 窗口已|已切换到新根集/.test(s)) {
+						problems.push('switchFeedbackOf: 不许谎报"窗口已切换 / 根集已变化"（页面读不到这些事实 ✗）');
+					}
+				}
+				notes.push('client.workspace.js: P1-D 统一切换反馈（成功/失败 + 不谎报窗口/根集）断言通过');
+			}
+			// P1-D：静态接线 —— 三条分支都走统一文案；失败通道不许弱化
+			const wsEntryCode = fs.readFileSync(path.join(LIB, 'client.workspace.js'), 'utf8');
+			if (!/setNote\(feedback\(\{ ok: true \}\)\)/.test(wsEntryCode)) {
+				problems.push('client.workspace.js: 切换成功也要写 note（否则只有诊断日志、用户看不到 ✗）');
+			}
+			const failUses = (wsEntryCode.match(/fail\(feedback\(\{ ok: false/g) || []).length;
+			if (failUses !== 2) {
+				problems.push(`client.workspace.js: 失败两条分支（reject/throw）都要走统一文案，实际 ${failUses} 处 ✗`);
+			}
+			if (!/bridge\.notify\("attention", msg\)/.test(wsEntryCode)) {
+				problems.push('client.workspace.js: 失败必须仍走既有 bridge.notify("attention") 当场可见（不许弱化 ✗）');
+			}
+			notes.push('client.workspace.js / client.workspaces.js: P1-C/D 静态接线（常驻 details / 三分支统一 / 失败可见）断言通过');
+		}
+		// ── ⑤-p 方案 A：hero 根行只读 + 宿主黑洞修复 + 不谎报（2026-11-10）──────────
+		//  用户报「hero 工作区 chip 下拉里点开会话没反应」。三条硬规矩：
+		//   ① hero 根行只读（官方 onPick 只认 workspaceId ⇒ 不画「选为当前根」假动作）；
+		//   ② 宿主 not ready 早退必须**抛错**（否则 _notifySwitchFailure 永不触发 ⇒ 静默黑洞）；
+		//   ③ 页面成功文案不许谎报「已开新会话」（单向桥 resolve 只代表请求已转发）。
+		{
+			const rowPolicy = wt && wt.rootRowPolicyOf;
+			const actionPolicy = wt && wt.detailActionPolicyOf;
+			if (typeof rowPolicy !== 'function' || typeof actionPolicy !== 'function') {
+				problems.push('client.workspace.js: 缺 __test.rootRowPolicyOf / detailActionPolicyOf（分屏策略必须可单测 ✗）');
+			} else {
+				const heroPrimary = rowPolicy('hero', { isPrimary: true, isCurrent: false }, true);
+				const heroOther = rowPolicy('hero', { isPrimary: false, isCurrent: false }, true);
+				// ★ hero 所有根行一律禁用（连主根也不给「可点」假象）
+				if (heroPrimary.disabled !== true || heroOther.disabled !== true) {
+					problems.push('rootRowPolicyOf: hero 根行必须全部只读（没有待发 cwd 通道 ✗）');
+				}
+				if (heroPrimary.hint.includes('开会话') || heroOther.hint.includes('开会话')) {
+					problems.push('rootRowPolicyOf: hero 行尾不许再写「开会话 →」（5 个误导按钮的来源 ✗）');
+				}
+				// ★ header：当前根禁用；其它根可点且文案明确「新建会话」
+				const hCur = rowPolicy('header', { isPrimary: true, isCurrent: true }, true);
+				const hOther = rowPolicy('header', { isPrimary: false, isCurrent: false }, true);
+				if (hCur.disabled !== true || hOther.disabled !== false || !hOther.hint.includes('新建会话')) {
+					problems.push('rootRowPolicyOf: header 当前根禁用、其它根可点且文案必须是「新建会话」✗');
+				}
+				const hNoBridge = rowPolicy('header', { isPrimary: false, isCurrent: false }, false);
+				if (hNoBridge.disabled !== true) {
+					problems.push('rootRowPolicyOf: 页面桥不支持时必须禁用（不画点了没反应的按钮 ✗）');
+				}
+				// ★ 主命令：hero 隐藏（无动作可落地）；header 当前项禁用
+				if (actionPolicy('hero', false, true).hidden !== true || actionPolicy('hero', true, true).hidden !== true) {
+					problems.push('detailActionPolicyOf: hero 必须不出主命令按钮 ✗');
+				}
+				const aHeader = actionPolicy('header', false, true);
+				if (aHeader.hidden !== false || aHeader.disabled !== false || !aHeader.label.includes('当前会话保持不变')) {
+					problems.push('detailActionPolicyOf: header 主命令必须可见并写明「当前会话保持不变」✗');
+				}
+				if (actionPolicy('header', true, true).disabled !== true) {
+					problems.push('detailActionPolicyOf: header 当前项主命令必须禁用 ✗');
+				}
+				notes.push('方案 A：分屏策略（hero 全只读 / header 当前根禁用 / 桥缺失禁用 / 主命令显隐）断言通过');
+			}
+			const wsEntry2 = fs.readFileSync(path.join(LIB, 'client.workspace.js'), 'utf8');
+			// 接线：根行 / 主命令都走纯函数；switchTo 要有 hero 根行的防御闸
+			if (!wsEntry2.includes('rootRowPolicyOf(mode,') || !wsEntry2.includes('detailActionPolicyOf(mode, isCurrent, canSwitchSession)')) {
+				problems.push('client.workspace.js: 渲染必须调用分屏策略纯函数（不许写死文案 ✗）');
+			}
+			if (!/mode === "hero" && row && row\.kind === "root"/.test(wsEntry2)) {
+				problems.push('client.workspace.js: switchTo 必须拦住 hero 根行（绕过 disabled 直接调 onClick 也不许造空会话 ✗）');
+			}
+			if (wsEntry2.includes('"开会话 →"') || wsEntry2.includes('"以此主根开会话"')) {
+				problems.push('client.workspace.js: 旧的「开会话」文案必须清干净（统一为「新建会话」✗）');
+			}
+			// ★ 宿主黑洞：TS 侧 not ready 早退必须抛错（这是「点了没反应」的根因）
+			const hostTs = fs.readFileSync(path.join(HERE, '..', 'src', 'vs', 'sessions', 'contrib',
+				'dshHarness', 'electron-browser', 'dshChatInstanceHost.ts'), 'utf8');
+			const hostBlock = hostTs.slice(hostTs.indexOf('private async _doSwitchWorktree'), hostTs.indexOf('private async _doSwitchWorktree') + 1400);
+			if (!/not ready/.test(hostBlock) || !/throw new Error\(reason\)/.test(hostBlock)) {
+				problems.push('dshChatInstanceHost.ts: not ready 早退必须抛错，否则 _notifySwitchFailure 永不触发（静默黑洞 ✗）');
+			}
+			// 幂等早退仍应 return（不是失败，不该弹通知）
+			if (!hostTs.includes('已在该目录的会话上（幂等，无动作')) {
+				problems.push('dshChatInstanceHost.ts: 幂等早退必须保留 return（不能被当成失败弹通知 ✗）');
+			}
+			notes.push('方案 A：宿主可见失败出口 / 幂等早退保留 / 旧文案清理 断言通过');
+		}
+		// ── ⑤-n P1-E 术语统一（2026-11-10）────────────────────────────────────────
+			//  ★ 三层术语各管一件事，不许互相污染：
+			//    ① 用户可见中文 = 「N 个根」「主根」「关联根」（rootCountLabel 是唯一读口）；
+			//    ② 模型提示词 = 英文 primary / additional（foundation/workspacePrompt.js，守卫 A4 按英文钉住）；
+			//    ③ 协议字段 = isPrimary / roots / relatedRoots（dshBridgeProtocol.ts，改名会断 IDE↔Host）。
+			{
+			const labelOf = (m) => m && m.rootCountLabel;
+			const a = labelOf(t), b = labelOf(wt);
+			if (typeof a !== 'function' || typeof b !== 'function') {
+				problems.push('P1-E: 两个 chunk 都必须导出 __test.rootCountLabel（术语真源可单测 ✗）');
+			} else {
+				for (const [fn, name] of [[a, 'client.workspaces.js'], [b, 'client.workspace.js']]) {
+					if (fn(3) !== '3 个根') { problems.push(`${name}: rootCountLabel(3) 必须是"3 个根"（不许"3 根" ✗）`); }
+					if (fn(0) !== '0 个根') { problems.push(`${name}: rootCountLabel(0) 必须稳定输出 ✗`); }
+					if (fn(undefined) !== '0 个根' || fn(-2) !== '0 个根' || fn(2.7) !== '2 个根') {
+						problems.push(`${name}: 畸形/负数/小数输入必须收敛，不许出现 NaN / 负根数 ✗`);
+					}
+				}
+				if (a(5) !== b(5)) { problems.push('P1-E: 两份同形副本行为不一致 ✗'); }
+				notes.push('P1-E: rootCountLabel 行为（3 个根 / 畸形收敛 / 两份行为一致）断言通过');
+			}
+			// 逐字同形对账：把两个函数体抠出来比（本仓惯例：跨 chunk 不能 import ⇒ 同形各存一份 ✓）
+			const bodyOf = (src) => {
+				const m = src.match(/function rootCountLabel\(n\) \{[\s\S]*?\n\t\t\}/);
+				return m ? m[0].replace(/\r/g, '') : null;
+			};
+			const srcWs = fs.readFileSync(path.join(LIB, 'client.workspaces.js'), 'utf8');
+			const srcCw = fs.readFileSync(path.join(LIB, 'client.workspace.js'), 'utf8');
+			const bodyA = bodyOf(srcWs), bodyB = bodyOf(srcCw);
+			if (!bodyA || !bodyB || bodyA !== bodyB) {
+				problems.push('P1-E: 两个 chunk 的 rootCountLabel 必须**逐字同形**（同形各存一份，守卫对账 ✗）');
+			}
+			// 用户可见文案里不许再裸拼「N 根」/「N 个根」字面量（函数体内那一处除外）
+			for (const [src, name] of [[srcWs, 'client.workspaces.js'], [srcCw, 'client.workspace.js']]) {
+				const code = String(src).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+				const withoutFn = code.replace(/function rootCountLabel\(n\) \{[\s\S]*?\n\t\t\}/, '');
+				if (/\+\s*"\s*根|\+\s*"\s*个根|\+\s*'(\s*)根|\+\s*'(\s*)个根/.test(withoutFn)) {
+					problems.push(`${name}: 用户可见文案不许再裸拼"N 根"/"N 个根"，一律走 rootCountLabel() ✗`);
+				}
+			}
+			// 三层隔离：模型提示词保持英文、协议字段保持 isPrimary、UI 不出现 primary/additional 标签
+			const promptSrc = fs.readFileSync(path.join(HERE, 'vssaros-foundation', 'lib', 'workspacePrompt.js'), 'utf8');
+			if (!/\(r\.isPrimary \? 'primary' : 'additional'\)/.test(promptSrc)) {
+				problems.push('P1-E: 模型提示词必须保持英文 primary/additional（给 LLM 的结构化文本，不许中文化 ✗）');
+			}
+			if (/\? '主根' : '关联根'/.test(promptSrc)) {
+				problems.push('P1-E: 模型提示词里不许塞中文「主根/关联根」（三层术语串味 ✗）');
+			}
+			const protocolSrc = fs.readFileSync(path.join(HERE, '..', 'src', 'vs', 'sessions', 'contrib',
+				'dshHarness', 'common', 'dshBridgeProtocol.ts'), 'utf8');
+			if (!protocolSrc.includes('isPrimary')) {
+				problems.push('P1-E: 协议字段必须保持 isPrimary（改名会断 IDE↔Host ✗）');
+			}
+			for (const [src, name] of [[srcWs, 'client.workspaces.js'], [srcCw, 'client.workspace.js']]) {
+				const code = String(src).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+				if (/"\s*primary\s*"|"\s*additional\s*"/.test(code)) {
+					problems.push(`${name}: 用户可见文案不许用英文 primary/additional 当标签（三层术语串味 ✗）`);
+				}
+			}
+			notes.push('P1-E: 三层术语隔离（UI 中文 / 模型英文 / 协议字段）+ 同形对账 + 零裸拼 断言通过');
+			}
+			// ── ⑤-o P2-F 动作边界 / hover 延迟真源 / 主题色（2026-11-10）────────────────
+		//  ★ 三项都不能"补成假动作"：
+		//    ① 工作区重命名 / 删除 IDE 记录：页面桥单向只读，chunk 没有写回通道；
+		//    ② 独立设置 cwd：session.start({cwd}) 定死，换根 = 在目标根开新会话；
+		//    ③ hover 350/800 是官方对齐的刻意差异 ⇒ 统一的是**配置真源**，不合并数值。
+		{
+			const srcWs2 = fs.readFileSync(path.join(LIB, 'client.workspaces.js'), 'utf8');
+			const srcCw2 = fs.readFileSync(path.join(LIB, 'client.workspace.js'), 'utf8');
+			const codeWs = srcWs2.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+			const codeCw = srcCw2.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+			// ① hover 延迟：★ 2026-11-10 用户裁决后工作区 hover tip 已删除，只剩**会话行**一处
+			const delayOf = t && t.hoverDelayOf;
+			if (typeof delayOf !== 'function') {
+				problems.push('P2-F: 缺 __test.hoverDelayOf（hover 延迟必须有可单测的配置真源 ✗）');
+			} else {
+				if (delayOf('session') !== 800) {
+					problems.push('P2-F: 会话行必须 800ms（官方 openDelayMs=800；太快会划过一路弹卡 ✗）');
+				}
+				if (delayOf('unknown') !== 800 || delayOf(undefined) !== 800) {
+					problems.push('P2-F: 未知 kind 必须稳定回落到会话延迟（不吐 undefined ✗）');
+				}
+				if (Object.prototype.hasOwnProperty.call(t.HOVER_DELAYS || {}, 'workspace')) {
+					problems.push('P2-F: 工作区 hover 已停用，不该再留 350ms 死配置 ✗');
+				}
+			}
+			if (!t || !t.HOVER_DELAYS || !Object.isFrozen(t.HOVER_DELAYS)) {
+				problems.push('P2-F: HOVER_DELAYS 必须是冻结的配置表（运行期不许被改 ✗）');
+			}
+			if (!codeWs.includes('hoverDelayOf("session")')) {
+				problems.push('P2-F: 会话行 hover 的 setTimeout 必须走 hoverDelayOf()（不许直接引用旧常量 ✗）');
+			}
+			// ⚠ 不能用裸 `HOVER_DELAY_MS`：它是 `SESS_HOVER_DELAY_MS` 的子串 ⇒ 会误报 ✗
+			if (codeWs.includes('hoverDelayOf("workspace")') || /const\s+HOVER_DELAY_MS\s*=/.test(codeWs)) {
+				problems.push('P2-F: 工作区 hover 已停用，不该残留其延迟调用/常量 ✗');
+			}
+			if (/\},\s*SESS_HOVER_DELAY_MS\)/.test(codeWs)) {
+				problems.push('P2-F: 会话 hover setTimeout 不许直接引用命名常量 ✗');
+			}
+			// 另有 350ms 是「会话内设置页签激活兜底」的重试，**不是 hover** ⇒ 本刀刻意不动。
+			// 钉住它的特征文案与数值，防止后续有人把它误当成"第二套 hover 延迟"改掉 ✗。
+			if (!/会话内设置页签没落到 Bot 分段/.test(srcWs2)
+				|| !/botsSay\("会话内设置页签没落到 Bot 分段[\s\S]{0,120}?\}, 350\)/.test(codeWs)) {
+				problems.push('P2-F: 非 hover 的 350ms 设置页签兜底不该被改动（别误当成 hover 延迟 ✗）');
+			}
+			notes.push('P2-F: hover 延迟配置真源（350/800 刻意不同 / 冻结 / 两处调用点统一）断言通过');
+
+			// ② 主题色：HoverCard 已删除，只剩 chip 下拉里「● 当前会话」的字色
+			const styleConst = t && t.CUR_ROOT_STYLE;
+			if (!styleConst || !styleConst.color) {
+				problems.push('P2-F: 缺 __test.CUR_ROOT_STYLE.color（● 当前会话 字色可单测 ✗）');
+			} else {
+				for (const [key, value] of Object.entries(styleConst)) {
+					if (!String(value).includes('var(--dsw-alias-')) {
+						problems.push(`P2-F: CUR_ROOT_STYLE.${key} 必须用 --dsw-alias-* 主题令牌（明暗都跟随 ✗）`);
+					}
+				}
+				if ('background' in styleConst || 'outline' in styleConst) {
+					problems.push('P2-F: HoverCard 已删除，不该再留无调用点的底色/描边配置 ✗');
+				}
+			}
+			// 剥掉常量定义后，chip 下拉里不许再残留裸绿色字面量（兜底常量本身允许）
+			const withoutStyle = codeWs.replace(/const CUR_ROOT_STYLE[\s\S]*?\}\);/, '');
+			if (/rgba\(\s*67\s*,\s*184\s*,\s*96|#43b860/.test(withoutStyle)) {
+				problems.push('P2-F: chip 下拉里不许再有裸绿色字面量，一律走 CUR_ROOT_STYLE ✗');
+			}
+			if (!codeWs.includes('CUR_ROOT_STYLE.color')) {
+				problems.push('P2-F: chip 下拉的「● 当前会话」必须真的引用 CUR_ROOT_STYLE.color ✗');
+			}
+			notes.push('P2-F: chip 下拉字色收敛到主题令牌（无死配置）断言通过');
+
+			// ③ 动作边界：单根零注入 / 多根三条 / 不承诺假动作 / 接线渲染
+			const actionsOf = wt && wt.workspaceActionNotes;
+			if (typeof actionsOf !== 'function') {
+				problems.push('P2-F: 缺 __test.workspaceActionNotes（动作边界必须状态驱动、可单测 ✗）');
+			} else {
+				if (actionsOf(false).length !== 0 || actionsOf(undefined).length !== 0) {
+					problems.push('P2-F: 单根必须零注入（旧界面逐字不变 ✗）');
+				}
+				const acts = actionsOf(true);
+				if (acts.length !== 3) {
+					problems.push(`P2-F: 多根动作边界应有 3 条，实际 ${acts.length} ✗`);
+				}
+				const joined = acts.join('\n');
+				for (const key of ['IDE 侧栏', '只摘 dsh 侧登记', '不能独立设置 cwd']) {
+					if (!joined.includes(key)) {
+						problems.push(`P2-F: 动作边界必须说清"${key}"（不藏起来 ✓）✗`);
+					}
+				}
+				// ★ 负对照：不许把做不到的事写成可点的入口（会变成"点了没反应"的假动作 ✗）
+				if (/点击这里重命名|可直接设置|在这里删除 IDE|本页可改名/.test(joined)) {
+					problems.push('P2-F: 动作边界不许承诺 dsh 侧做不到的入口（假动作 ✗）');
+				}
+			}
+			if (!codeCw.includes('workspaceActionNotes(multi)') || !codeCw.includes('data-vssaros-scope-actions')) {
+				problems.push('P2-F: 动作边界必须状态驱动并真的渲染（默认折叠 details ✗）');
+			}
+			// stale 注释必须消失：removeWorkspace 早在 11-02 就实现了
+			if (srcWs2.includes('删除工作区要走宿主改 IDE 记录，另议')) {
+				problems.push('P2-F: 「删除工作区…另议」注释已 stale（removeWorkspace 已实现），必须删 ✗');
+			}
+			notes.push('P2-F: 动作边界说明（单根零注入 / 多根三条 / 无假动作 / stale 注释清理）断言通过');
 		}
 		// 折叠切换的**绝对期望值**（2026-10-17 真机 bug：约定写反 ⇒ 点了无法收缩；
 		// 相对比较型断言（两次不同）恒真 ⇒ 必须钉死每一步的值 ✓）。
@@ -1479,10 +1941,10 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		['t.closest("[data-vssaros-bot-menu]")', 'Bot 菜单必须加进「点外面关闭」白名单（否则点菜单项先被卸载）'],
 		['"data-act": "bot-" + it.act', 'Bot 菜单项必须带稳定 data-act 锚点，且走 onMouseDown 而非 onClick'],
 		['if (!handled) { fire(); }', '「编辑 Bot」必须在设置页挂载后补派一次事件（事件早于监听 ⇒ handled 恒 false）'],
-		// ★ 2026-11-09 hero 报障：右栏设置页签是 session 槽，hero 下结构上不渲染
-		['const BOT_CONFIG_PAGE_COMP = "vssaros-bot-config";', 'hero 下「编辑 Bot」必须有中栏独立页组件常量'],
+		// ★ 2026-11-10 纠偏：官方右栏页签是主承载面；中栏独立页只是 openTab 抛错时的兜底
+		['const BOT_CONFIG_PAGE_COMP = "vssaros-bot-config";', '「编辑 Bot」必须有中栏独立页组件常量（右栏不可用时的兜底）'],
 		['comp: BOT_CONFIG_PAGE_COMP, props: { agentId: id, name, tabId }',
-			'「编辑 Bot」必须优先按 agentId 开中栏独立页（不依赖 session 槽 / 不需要会话）'],
+			'「编辑 Bot」的**回落**中栏独立页必须按 agentId 渲染（右栏不可用时的兜底，不依赖会话）'],
 		['(j && j.draft) || {}', 'GET ?id= 回的是 {ok, draft} 双层结构 ⇒ 重命名 / 复制必须取 .draft'],
 		// ★ 2026-11-02 二次（用户：弹出的 UI 框太简陋）—— 表单必须有这些结构件
 		['"data-vssaros-bots-modes": "1"', '群聊表单必须有唤醒策略分段（all/mentions/digest/silent）'],
@@ -2556,6 +3018,39 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 	}
 }
 
+// ── ⑯-b 空白会话屏也必须装「会话视图 chunk」（2026-11-10 真机）────────────────────
+//   用户截图：hero 下点 Bots→编辑 Bot ⇒ 右栏没有设置页签，中栏却多出「Bot 配置 · X」并报
+//   「当前不可用：可能还在加载、已被卸载，或安装后还没重启 Harness」。两个症状是**同一个根因**：
+//   `client.conversationViews.js` 不在 BLANK_SESSION_PARTS ⇒ hero（bridge.sessionId 为空）
+//   入口只走 BLANK_SESSION_PARTS ⇒ 这个 chunk 连 require.async 都没发生 ⇒
+//     (a) factory 顶层 `__vssarosPageComponents[BOT_CONFIG_PAGE_COMP]` 没登记 ⇒ 中栏按 comp 查表失败；
+//     (b) install() 里 installRightBotSettings / installRightRoomSettings 没跑 ⇒
+//         window.__vssarosOpenRightBotSettings 不存在 ⇒ 菜单回落中栏独立页。
+//   rebind() 用 PART_CHUNKS.filter(f => BLANK_SESSION_PARTS.indexOf(f) < 0) 去重 ⇒ 不会重复 install。
+{
+	const readSrc = (rel) => fs.readFileSync(path.join(LIB, rel), 'utf8');
+	const strip = (s) => String(s).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+	const entry = strip(readSrc('client.js'));
+	const cvSrc = strip(readSrc('client.conversationViews.js'));
+	const blankAt = entry.indexOf('const BLANK_SESSION_PARTS = [');
+	const blank = blankAt >= 0 ? entry.slice(blankAt, entry.indexOf('];', blankAt)) : '';
+	if (!/bridge\.sessionId\s*\?\s*PART_CHUNKS\s*:\s*BLANK_SESSION_PARTS/.test(entry)) {
+		problems.push('client.js: 找不到 hero 装载分流（sessionId 为空 ⇒ BLANK_SESSION_PARTS）✗');
+	}
+	if (!blank.includes('"./client.conversationViews.js"')) {
+		problems.push('client.js: `client.conversationViews.js` 必须在 BLANK_SESSION_PARTS 里'
+			+ '（否则 hero 下右栏 Bot/群设置 API 与中栏组件登记全部缺席 ⇒ 编辑 Bot 只开出「当前不可用」页签，2026-11-10 真机 ✗）');
+	}
+	// 该 chunk 一装载就要同时恢复两个承载面，不许只修一半
+	if (!/__vssarosPageComponents\[BOT_CONFIG_PAGE_COMP\] = BotConfigPage/.test(cvSrc)) {
+		problems.push('client.conversationViews.js: factory 顶层必须登记中栏 Bot 配置组件 ✗');
+	}
+	if (!/w\.__vssarosOpenRightBotSettings = openRight/.test(cvSrc)
+		|| !/installRightBotSettings\(ctx\)/.test(cvSrc) || !/installRightRoomSettings\(ctx\)/.test(cvSrc)) {
+		problems.push('client.conversationViews.js: install() 必须挂右栏 Bot/群设置 open API ✗');
+	}
+}
+
 // ── ⑰ 页签面板不许出现"整片空白"（2026-10-28 用户报「会话窗口显示空」）────────────
 //   现场：点页签后中栏纯黑。实测（CDP 驱动 WebContentsView）页面其实**加载完成、内容都在**
 //   （skills 页 innerText 15986 字符）⇒ 空白是**尺寸**问题：面板根节点靠 `height:100%` 继承
@@ -2822,13 +3317,109 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		const libDir = path.join(root, 'dsh-plugins', 'vssaros-chat-surface', 'lib');
 		const ws = fs.readFileSync(path.join(libDir, 'client.workspaces.js'), 'utf8');
 		const cv = fs.readFileSync(path.join(libDir, 'client.conversationViews.js'), 'utf8');
-		/* ★ 2026-11-09：渠道页签下线后，飞书配置必须落在 Bot 设置页且下拉读全局应用池。 */
-		if (!/function FeishuConfigCard\(props\)/.test(cv) || !/data-vssaros-feishucfg-pick/.test(cv)
-			|| !/action: "set-bot-app"/.test(cv) || !/data\.feishuApps/.test(cv)) {
-			problems.push('client.conversationViews.js: 缺 Bot 设置页「飞书配置」卡（全局应用下拉 + set-bot-app）✗');
+		/* ★ 2026-11-10（用户决定）：飞书应用选择并入 Channel 绑定卡，独立「飞书配置」卡移除。
+		   ⚠ 反向断言钉住「已移除」，防止有人把那张卡加回来。 */
+		if (/function FeishuConfigCard\(props\)/.test(cv) || /data-vssaros-feishucfg/.test(cv)
+			|| /react\.createElement\(FeishuConfigCard,/.test(cv)) {
+			problems.push('client.conversationViews.js: 独立「飞书配置」卡已移除，应用选择并入 Channel 绑定卡 ✗');
 		}
-		if (!/react\.createElement\(FeishuConfigCard,/.test(cv)) {
-			problems.push('client.conversationViews.js: 「飞书配置」卡没挂到 BotConfigCard ✗');
+		if (!/Array\.isArray\(data\.feishuApps\)/.test(cv) || !/select\("appId", form\.appId, appOptions\)/.test(cv)
+			|| !/"data-vssaros-botbind-add-app": "1"/.test(cv)
+			|| !/const createBody = \(appIdOverride\)/.test(cv) || !/await addApp\(\)/.test(cv)) {
+			problems.push('client.conversationViews.js: Channel 绑定卡缺飞书应用选择 / 新增应用与创建绑定一步衔接 ✗');
+		}
+		/* ★ 2026-11-10 真机「选了添加新应用后点创建绑定没反应」：不许再静默禁用创建按钮。
+		   ⚠ 断言钉**定义行本身**：只搜 `createDisabled || (...)` 抓不到旧写法（旧代码还没这个变量，
+		     __new__ 直接写在 disabled 表达式里 ⇒ 反向突变假绿，已吃过一次亏）。 */
+		const createDisabledExpr = /const createDisabled = ([^;]*);/.exec(cv)?.[1] ?? '';
+		if (!createDisabledExpr || createDisabledExpr.includes('__new__')
+			|| !/disabled: createDisabled/.test(cv) || !/title: createDisabled \?/.test(cv)) {
+			problems.push('client.conversationViews.js: 「创建绑定」在选了添加新应用时不能静默禁用，禁用态也要有可见原因 ✗');
+		}
+		if (!/这是 VsSaros助手（内置默认应用）/.test(cv)) {
+			problems.push('client.conversationViews.js: 新增应用要预检内置默认应用（否则用户填完才吃到 409）✗');
+		}
+		/* ★ 2026-11-10（用户要求）：内置默认飞书应用对外统一叫「VsSaros助手」。 */
+		if (!/label: "VsSaros助手"/.test(cv) || /默认飞书应用（跟随全局凭据）/.test(cv)) {
+			problems.push('client.conversationViews.js: 默认飞书应用应显示为「VsSaros助手」，旧文案不许复活 ✗');
+		}
+		/* ★ 2026-11-10 用户报「Bots 页签 bot / 群行选中态不明显」：
+		   bot 行原来完全没有选中态；群行只有被主题吞掉的一层 bg-layer-2 浅底。
+		   ⇒ 两者统一走注入 CSS 的双重编码（亮底 + 2px 品牌竖条 + 亮边 + 600 字重），
+		     hover 只用弱底；判据层 isRoomSelected / data-vssaros-room-selected 一字不动。 */
+		for (const [needle, why] of [
+			['className: "vssaros-ws-bots-row"', 'bot / 群行必须挂同款选中态类（内联 style 表达不了 hover）'],
+			['.vssaros-ws-bots-row[data-selected=', '必须有 data-selected 的选中态 CSS 规则'],
+			['inset 2px 0 0 var(--dsw-alias-brand-primary', '选中行必须有 2px 品牌色左竖条（不依赖色觉的第二重编码）'],
+			['data-vssaros-bot-selected', 'bot 行必须有显式选中标记（原来完全没有）'],
+			['function isBotSelected(', 'bot 选中态必须有纯判据（守卫可单测）'],
+			['SELECTED_BOT_KEY', 'bot 选中态必须持久化'],
+			['setSelectedBot(id)', '点 bot 必须写入选中态'],
+			['aria-selected', '选中行必须对读屏可见'],
+		]) {
+			if (!ws.includes(needle)) { problems.push(`client.workspaces.js: Bots 选中态缺「${needle}」—— ${why} ✗`); }
+		}
+		if (/isCur \? \{ background: "var\(--dsw-alias-bg-layer-2/.test(ws)) {
+			problems.push('client.workspaces.js: 群行旧的 bg-layer-2 浅底选中态不许复活（真机看不清）✗');
+		}
+		/* ★ 2026-11-10：Bots 页签里「有 IM 连接」的 bot item 要显示 icon。
+		   判据必须来自 binding 级真源（/x/agents/api/bindings），不是猜 bot 字段；
+		   图标必须内联（chunk realm 只允许 require("react")，跨 chunk 不能 import）。 */
+		for (const [needle, why] of [
+			['const AGENTS_API_BINDINGS = "/x/agents/api/bindings"', 'IM 连接判据要拉 binding 真源'],
+			['function imBadgeOf(', '必须按 bot 聚合启用中的绑定（纯函数，守卫可断言）'],
+			['imBadges: imBadges', '取数结果要带进 bots 状态'],
+			['"data-vssaros-bot-im": "1"', 'bot 行必须有稳定的图标锚点'],
+			['const BOT_IM_ICON_PATH', '气泡图标必须内联描边 SVG'],
+		]) {
+			if (!ws.includes(needle)) { problems.push(`client.workspaces.js: Bots 行 IM 图标缺「${needle}」—— ${why} ✗`); }
+		}
+		/* ★ 2026-11-10：群设置里增加 Channel 绑定（复用同一张卡，目标类型 group）。
+		   ⚠ 后端 normalizeBinding 已放开 targetKind，这里必须显式带 group，
+		     否则建出来的仍是 bot 绑定 = 群设置里的假入口。 */
+		for (const [needle, why] of [
+			['const targetKind = String(props.targetKind || "agent")', '绑定卡必须支持 group 目标'],
+			['action: "create", targetKind: targetKind', '新建绑定要显式带目标类型'],
+			['"data-vssaros-bind-kind": targetKind', '卡要有目标类型锚点'],
+			['targetKind: "group", targetId: roomId', '群设置面板必须挂上群绑定卡'],
+		]) {
+			if (!cv.includes(needle)) { problems.push(`client.conversationViews.js: 群设置 Channel 绑定缺「${needle}」—— ${why} ✗`); }
+		}
+		/* ★ 2026-11-10 用户选方案 A：说明收进 ⓘ tip、绑定 item 紧凑双行、新建表单折叠。
+		   ⚠ 反向断言钉住「长说明平铺 / 超长 placeholder / 单行塞全部信息」不许复活。 */
+		for (const [needle, why] of [
+			['data-vssaros-botbind-help', '标题旁必须有 ⓘ 说明 tip'],
+			['data-vssaros-botbind-tip', '字段说明必须有短 ⓘ tip'],
+			['data-vssaros-botbind-row-top', '绑定 item 行 1（身份 / 状态 / 操作）'],
+			['data-vssaros-botbind-row-meta', '绑定 item 行 2（chat_id / 标签）'],
+			['data-vssaros-botbind-new-toggle', '新建绑定必须默认折叠'],
+			['role: "tooltip"', 'tip 富卡必须有 role=tooltip（键盘 / 读屏可达）'],
+		]) {
+			if (!cv.includes(needle)) { problems.push(`client.conversationViews.js: 方案 A 缺 ${needle}（${why}）✗`); }
+		}
+		if (cv.includes('把 IM 会话绑定到这个 Bot。只有人能创建/修改/删除绑定；入站白名单留空')) {
+			problems.push('client.conversationViews.js: Channel 说明整段平铺已下线，必须收进 ⓘ tip ✗');
+		}
+		if (cv.includes('入站白名单（逗号分隔 userId；留空 = 拒绝所有入站')) {
+			problems.push('client.conversationViews.js: 超长 placeholder 不许再承载文档（改短标签 + ⓘ tip）✗');
+		}
+		if (/\+ String\(b\.chatId \|\| ""\) \+ " · "/.test(cv)) {
+			problems.push('client.conversationViews.js: 绑定 item 不许再把所有信息拼在一行 ✗');
+		}
+		/* ★ 2026-11-10 用户要求「已经绑定的 item 可展开编辑」：
+		   update 是局部更新 ⇒ 只发 action/id + 允许改的字段；改完 reload() 走 GET（POST 返回值含未掩码密钥）。 */
+		for (const [needle, why] of [
+			['data-vssaros-botbind-edit-toggle', '已绑定 item 必须有展开编辑入口'],
+			['data-vssaros-botbind-edit', '展开后的编辑面板必须有稳定锚点'],
+			['setExpandedId', '同一时刻只展开一条绑定'],
+			// ⚠ 钉调用形态：`data-vssaros-botbind-<key>` 是运行时拼出来的，源码里没有这个字面量
+			['input("edit-chatId", ed.chatId', '编辑表单字段必须用 edit-* 锚点，与新建表单区分（否则「默认折叠」断言误判）'],
+			['const editPatch = {', '编辑保存必须构造 bindings 的局部 update patch'],
+		]) {
+			if (!cv.includes(needle)) { problems.push(`client.conversationViews.js: 已绑定 item 编辑缺「${needle}」—— ${why} ✗`); }
+		}
+		if (/input\("chatId", editDraft/.test(cv)) {
+			problems.push('client.conversationViews.js: 编辑表单不许复用新建表单的 chatId 锚点 ✗');
 		}
 		if (!ws.includes('data-vssaros-sidebar-tabs')) {
 			problems.push('client.workspaces.js: 缺侧栏页签锚点 data-vssaros-sidebar-tabs ⇒ 找不到「会话 / Bots」页签');
@@ -2862,13 +3453,72 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		if (!/res\.registered === false/.test(cv)) {
 			problems.push('client.conversationViews.js: Bot 配置保存必须读 registered（未注册还提示「已保存」= 假成功）✗');
 		}
-		// ★ 2026-11-09 hero 报障：右栏设置页签是 session 槽 ⇒ hero 下必须有中栏独立页承载面
+		// ★ 2026-11-10 纠偏：中栏独立页是**回落兜底**，不再是 hero 的主承载面。
+		//   真机 hero 下官方右栏「开始」页签就在 `sidebar.right.pane.tab` 里 ⇒ 该槽可用。
 		if (!/function BotConfigPage\(/.test(cv)
 			|| !/w\.__vssarosPageComponents\[BOT_CONFIG_PAGE_COMP\] = BotConfigPage;/.test(cv)) {
-			problems.push('client.conversationViews.js: 缺 Bot 配置独立页组件/注册 ⇒ hero 下「编辑 Bot」没有承载面 ✗');
+			problems.push('client.conversationViews.js: 缺 Bot 配置独立页组件/注册 ⇒ 官方右栏不可用时没有兜底 ✗');
 		}
 		if (!/react\.createElement\(BotConfigCard, \{ key: agentId, agentId/.test(cv)) {
 			problems.push('client.conversationViews.js: Bot 配置独立页必须按 agentId 直接渲染 BotConfigCard（不依赖 sessionId）✗');
+		}
+		// ★ 2026-11-10 群设置 UI 复刻 DS Bot（440px 遮罩弹层 / 四档唤醒 / 头像 / 加入需确认 / 清空 / 解散）
+		if (!/const WAKE_MODE_OPTIONS = \[/.test(cv) || !/data-vssaros-room-wake/.test(cv)) {
+			problems.push('client.conversationViews.js: 群设置弹层必须有四档唤醒策略卡片（all/mentions/digest/silent）✗');
+		}
+		for (const needle of ['D.mask', 'D.dlg', 'data-vssaros-room-approval', 'data-vssaros-room-avatar',
+			'data-vssaros-room-wake-count', 'data-vssaros-room-wake-interval',
+			'"data-act": "room-clear"', '"data-act": "room-delete"',
+			// ★ 2026-11-10：右栏页签体必须内联（embedded），只有中栏独立页继续用遮罩弹层
+			'dialog: !embedded', 'embedded: true', 'width: "100%", maxWidth: "100%"']) {
+			if (!cv.includes(needle)) { problems.push(`client.conversationViews.js: 群设置缺结构件 ${needle} ✗`); }
+		}
+		// 反向：右栏页签体不许再写死 dialog:true（否则又变成盖住整个窗口的遮罩弹层）
+		{
+			const at = cv.indexOf('function RightRoomSettingsPane()');
+			const end = at >= 0 ? cv.indexOf('function installRightRoomSettings(', at) : -1;
+			const body = at >= 0 && end > at ? cv.slice(at, end) : '';
+			if (!/embedded: true/.test(body) || /dialog: true/.test(body)) {
+				problems.push('client.conversationViews.js: RightRoomSettingsPane 必须传 embedded:true 且不铺遮罩弹层 ✗');
+			}
+		}
+		if (!/data-vssaros-room-avatar-img/.test(ws)) {
+			problems.push('client.workspaces.js: 侧栏群行必须优先渲染群设置里上传的头像 ✗');
+		}
+		// ★ 2026-11-10 用户：hero 下「群设置 / Bot 设置」都要是右栏里单独一个带 ✕ 的页签。
+		//   官方两段式：sidebarRightTabs.register（类型）+ sidebar.right.pane.tab keyed body + openTab；
+		//   官方 strip 自带 ✕，「开始」guide 永不关 ⇒ 天然并列。两个设置各用一个 kind 互不覆盖。
+		for (const needle of ['ROOM_SETTINGS_RIGHT_KIND', 'BOT_SETTINGS_RIGHT_KIND',
+			'RightRoomSettingsPane', 'RightBotSettingsPane', 'installRightBotSettings']) {
+			if (!cv.includes(needle)) { problems.push(`client.conversationViews.js: 缺官方右栏页签结构件 ${needle} ✗`); }
+		}
+		if (!/ctx\.slots\.inject\(BOT_SETTINGS_RIGHT_SLOT/.test(cv)) {
+			problems.push('client.conversationViews.js: Bot 设置必须注册到官方 sidebar.right.pane.tab keyed 槽 ✗');
+		}
+		if (!/w\.__vssarosOpenRightBotSettings = openRight/.test(cv)) {
+			problems.push('client.conversationViews.js: Bot 设置右栏必须暴露跨 chunk 的 open/close API ✗');
+		}
+		if (!/data-vssaros-right-bot-settings-close/.test(cv)) {
+			problems.push('client.conversationViews.js: 右栏 Bot 设置页签必须有页内 ✕ 关闭 ✗');
+		}
+		// 反向断言：不许退回覆盖式浮层、也不许用 mounted 预判（会盖住 strip / 误杀 hero）
+		if (/id: RIGHT_BOT_DOCK_ID, order: RIGHT_BOT_DOCK_ORDER/.test(cv)) {
+			problems.push('client.conversationViews.js: 不许再注册 shell.overlay 覆盖式 Bot 设置浮层（会盖住官方 strip）✗');
+		}
+		// ⚠ 只匹配**代码形态**（`const mounted = sr.mounted`），不要用裸 `mounted.getSnapshot()`：
+		//   纠偏说明的注释里也写了这个词，裸匹配会误报。
+		if (/const mounted = sr\.mounted/.test(cv)) {
+			problems.push('client.conversationViews.js: 不许用 mounted.getSnapshot() 预判右栏可用性（会误杀 hero 的 blank session）✗');
+		}
+		{
+			const at = ws.indexOf('const openBotConfig = (bot) =>');
+			const end = at >= 0 ? ws.indexOf('const botDeps = {', at) : -1;
+			const body = at >= 0 && end > at ? ws.slice(at, end) : '';
+			const rightAt = body.indexOf('__vssarosOpenRightBotSettings');
+			const pageAt = body.indexOf('__vssarosOpenPageTab');
+			if (rightAt < 0 || pageAt < 0 || rightAt > pageAt) {
+				problems.push('client.workspaces.js: 「编辑 Bot」必须先试官方右栏页签、再回落中栏独立页 ✗');
+			}
 		}
 		// ★ 2026-11-09：左栏右键「编辑 Bot」要能直达 Bot 配置卡（分段落到 bot，且回填 handled）
 		if (!/window\.addEventListener\("vssaros:open-bot-config", onOpenBotConfig\)/.test(cv)

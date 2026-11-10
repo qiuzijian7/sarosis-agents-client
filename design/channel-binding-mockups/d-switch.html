@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>D · 开关胶囊 — Channel 绑定卡</title><link rel="stylesheet" href="common.css">
+<style>
+/* D：状态做成开关（附文字，不只靠颜色），删除收进 ⋯ 菜单，最像现代设置页。 */
+.d-list{margin-top:10px;display:flex;flex-direction:column;gap:7px}
+.d-row{display:flex;align-items:center;gap:9px;padding:8px 9px;border:1px solid var(--line);border-radius:9px;background:var(--sunken);transition:border-color .18s,background-color .18s}
+.d-row:hover{border-color:var(--line2);background:var(--panel2)}
+.d-ico{width:30px;height:30px;border-radius:8px;background:var(--brand-soft);color:var(--brand);display:flex;align-items:center;justify-content:center;flex:none}
+.d-main{flex:1;min-width:0}
+.d-name{display:flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600}
+.d-sub{margin-top:2px;display:flex;align-items:center;gap:5px;font-size:10.5px;color:var(--fg2)}
+.d-cid{max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.d-right{display:flex;align-items:center;gap:6px;flex:none}
+/* switch：可点、可聚焦，状态同时用「开/关」文字表达 */
+.sw{display:inline-flex;align-items:center;gap:5px;cursor:pointer;font-size:10.5px;color:var(--fg2);user-select:none}
+.sw input{position:absolute;opacity:0;width:1px;height:1px}
+.sw .track{width:30px;height:17px;border-radius:9px;background:var(--line2);position:relative;transition:background-color .18s;flex:none}
+.sw .track::after{content:"";position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:#fff;transition:transform .18s}
+.sw input:checked + .track{background:var(--ok)}
+.sw input:checked + .track::after{transform:translateX(13px)}
+.sw input:focus-visible + .track{outline:2px solid var(--brand);outline-offset:2px}
+.sw .txt{min-width:20px}
+.more{position:relative}
+.more > .menu{position:absolute;right:0;top:26px;min-width:118px;background:var(--panel2);border:1px solid var(--line2);border-radius:7px;box-shadow:0 10px 24px rgba(0,0,0,.4);padding:4px;display:none;z-index:40}
+.more:hover > .menu,.more:focus-within > .menu{display:block}
+.more > .menu button{display:block;width:100%;text-align:left;font:inherit;font-size:11.5px;color:var(--fg);background:transparent;border:0;border-radius:5px;padding:5px 8px;cursor:pointer}
+.more > .menu button:hover{background:var(--sunken)}
+.more > .menu button.del{color:var(--err)}
+.d-new{margin-top:10px;width:100%;border:1px dashed var(--line2);border-radius:7px;background:transparent;color:var(--fg2);font:inherit;font-size:11.5px;padding:6px;cursor:pointer}
+.d-new:hover{border-color:var(--brand);color:var(--brand)}
+</style></head>
+<body data-ds-dark-theme="dark">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 10.5v6M12 7.4v.2" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></symbol>
+<symbol id="i-msg" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4V5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
+<symbol id="i-more" viewBox="0 0 24 24"><circle cx="6" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="18" cy="12" r="1.5" fill="currentColor"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19 8a7 7 0 10 1 6M19 4v4h-4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+</defs></svg>
+
+<div class="pane">
+  <div class="pane-hd"><svg width="14" height="14" style="color:var(--brand)"><use href="#i-msg"/></svg>
+    <span>Bot 设置 · 知识库专家</span><span class="spacer"></span>
+    <button class="x" title="切换明暗" onclick="document.body.dataset.dsDarkTheme=document.body.dataset.dsDarkTheme==='dark'?'light':'dark'">◐</button>
+    <button class="x" aria-label="关闭">✕</button></div>
+  <div class="pane-bd">
+    <div class="card">
+      <div class="card-hd">
+        <h3>Channel 绑定</h3><span class="count">2 条</span>
+        <span class="tip" tabindex="0" role="button" aria-label="Channel 绑定说明"><svg width="15" height="15"><use href="#i-info"/></svg>
+          <span class="bubble" role="tooltip"><b>Channel 绑定说明</b><ul>
+            <li>把 IM 会话绑定到这个 Bot；一条绑定 = 一个应用 + 一个 <code>chat_id</code>。</li>
+            <li>只有<b>人</b>能创建 / 修改 / 删除，模型不能代劳。</li>
+            <li>入站白名单留空 = 拒绝所有入站（fail-closed）。</li>
+            <li>飞书可在此选应用或添加新应用。</li>
+            <li>群策略 <code>groupPolicy</code> 默认 open：群里仍需 @ 机器人。</li>
+          </ul></span></span>
+        <span class="spacer"></span>
+        <button class="iconbtn" aria-label="刷新"><svg width="14" height="14"><use href="#i-refresh"/></svg></button>
+      </div>
+
+      <div class="d-list">
+        <div class="d-row">
+          <span class="d-ico"><svg width="16" height="16"><use href="#i-msg"/></svg></span>
+          <div class="d-main">
+            <div class="d-name">飞书 <span class="chip">群聊</span><span class="chip">双向</span></div>
+            <div class="d-sub"><span class="mono d-cid">cc_aa77fd3d…1c47fb</span>
+              <span class="tip left" tabindex="0" aria-label="完整 chat_id"><svg width="12" height="12"><use href="#i-info"/></svg>
+                <span class="bubble" role="tooltip"><b>完整 chat_id</b><code>cc_aa77fd3d7ade60ae25a42d1c47fb</code><br>应用：VsSaros助手 · 群策略 open</span></span>
+              <span>·</span><span>VsSaros助手</span></div>
+          </div>
+          <div class="d-right">
+            <label class="sw" title="启用 / 停用"><input type="checkbox" checked><span class="track"></span><span class="txt">开</span></label>
+            <span class="more" tabindex="0"><button class="iconbtn" aria-label="更多操作"><svg width="15" height="15"><use href="#i-more"/></svg></button>
+              <span class="menu"><button>复制链接</button><button>编辑</button><button class="del">删除绑定</button></span></span>
+          </div>
+        </div>
+        <div class="d-row" style="opacity:.75">
+          <span class="d-ico" style="background:transparent;color:var(--fg3);border:1px solid var(--line2)"><svg width="16" height="16"><use href="#i-msg"/></svg></span>
+          <div class="d-main">
+            <div class="d-name">飞书 <span class="chip">群聊</span><span class="chip">仅入站</span></div>
+            <div class="d-sub"><span class="mono d-cid">oc_9f2b18…6d21</span><span>·</span><span>VsSaros助手</span></div>
+          </div>
+          <div class="d-right">
+            <label class="sw" title="启用 / 停用"><input type="checkbox"><span class="track"></span><span class="txt">关</span></label>
+            <span class="more" tabindex="0"><button class="iconbtn" aria-label="更多操作"><svg width="15" height="15"><use href="#i-more"/></svg></button>
+              <span class="menu"><button>复制链接</button><button>编辑</button><button class="del">删除绑定</button></span></span>
+          </div>
+        </div>
+      </div>
+      <button class="d-new">+ 新建绑定（展开表单，字段说明收进 ⓘ）</button>
+    </div>
+    <p class="tiny dim" style="margin:10px 2px 0">方案 D · 开关胶囊：最轻的操作负担；状态用开关 + 文字双编码，删除收进 ⋯。需要新增开关与菜单组件。</p>
+  </div>
+</div>
+</body></html>

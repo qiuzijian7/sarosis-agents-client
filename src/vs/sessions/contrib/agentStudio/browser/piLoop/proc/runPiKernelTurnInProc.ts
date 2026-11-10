@@ -161,12 +161,6 @@ async function dispatchRpc(host: IPiKernelHost, proc: IKernelProcTransport,
 			case '_resolveContextWindow':
 				value = await host._resolveContextWindow(isModelStubMarker(args[0]) ? modelProvider : args[0] as never, args[1] as string);
 				break;
-			case '_storeTurnObservations':
-				value = await host._storeTurnObservations(isModelStubMarker(args[0]) ? modelProvider as never : args[0] as never, args[1] as string, args[2] as string, args[3] as never);
-				break;
-			case '_retrieveCompactionContext':
-				value = await host._retrieveCompactionContext(isModelStubMarker(args[0]) ? modelProvider as never : args[0] as never, args[1]);
-				break;
 			default:
 				throw new Error(`[proc] unknown rpc method: ${method}`);
 		}

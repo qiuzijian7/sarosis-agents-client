@@ -24,7 +24,7 @@
  *  不拖入整个宿主类型。
  *--------------------------------------------------------------------------------------------*/
 
-import type { IAgentTurnRequest, IChatStreamDelta, IMemoryProvider, IModelProvider, IModelSelection, ISandboxViolationInfo, IToolCallInfo, IToolDefinition, SandboxConfirmationDecision } from '../common/providers.js';
+import type { IAgentTurnRequest, IChatStreamDelta, IModelProvider, IModelSelection, ISandboxViolationInfo, IToolCallInfo, IToolDefinition, SandboxConfirmationDecision } from '../common/providers.js';
 import type { AgentGraph } from '../common/agentGraph.js';
 import type { IHardPermissionPolicy } from '../common/toolPermission.js';
 import type { IAskRoutingContext } from '../common/askRouting.js';
@@ -92,14 +92,7 @@ export interface ITurnHostModelTools {
  * 上下文注入面 —— 记忆、耐久上下文、委派台账、用户消息富化。
  */
 export interface ITurnHostContext {
-	getActiveMemoryProvider(): IMemoryProvider | undefined;
 
-	/**
-	 * 用户是否显式开启了 AgentMemory 检索库的上下文注入（设置 `agentStudio.memory.injectContext`，
-	 * 2026-10-20）。与 Agents 页签的 MEMORY.md 常驻注入无关 —— 那是 dsh 插件侧的 memory-chars。
-	 * 可选：拿不到配置服务时省略 ⇒ 回落到环境变量通道（见 agentMemoryInjection）。
-	 */
-	_isMemoryInjectContextConfigured?(): boolean;
 
 	/** 已注入过上下文的会话集合（executor 直接读，用于判定首轮注入）。 */
 	readonly _injectedSessions: Set<string>;
@@ -117,10 +110,6 @@ export interface ITurnHostContext {
 	 */
 	_consumeStashedFiles(sessionKey: string): string[];
 
-	/**
-	 * 刷新工作记忆内容。可选成员 —— 调用点 `:539` 用 `?.()` 保护。
-	 */
-	_refreshWorkingMemoryContent?(agentId?: string, sessionId?: string): Promise<void>;
 
 	/**
 	 * 刷新知识库目录摘要注入（kb_overview 标签，L1 常驻目录摘要）。
@@ -211,22 +200,16 @@ export interface ITurnHostExecution {
 	_observeToolResult(agentId: string, toolResult: { toolCallId: string; content: any; success: boolean; toolName?: string }, sessionId?: string): void;
 	_consumeStashedFiles(sessionKey: string): string[];
 	_resolveContextWindow(provider: IModelProvider, modelId: string): Promise<number>;
-	_refreshWorkingMemoryContent(agentId?: string, sessionId?: string): Promise<void>;
 	_refreshKbOverviewContent(): Promise<void>;
 	_awaitPlanApproval(confirmationId: string, timeoutMs?: number): Promise<'approved' | 'rejected'>;
 	_orchestratePlan(request: IAgentTurnRequest, args: { plan_summary?: string; next_mode?: string; idempotencyKey?: string }, tasks: Array<{ title: string; description: string; files?: string[]; complexity?: string; suggestedRole?: string; dependencies?: string[]; deliverable?: string }>, _toolCallId: string): AsyncGenerator<IChatStreamDelta>;
 	_readPlanFile(filePath: string): Promise<string>;
 	_writePlanFile(filePath: string, content: string): Promise<void>;
-	_retrieveCompactionContext(provider: any, req: { agentId: string; sessionId: string; middle: ReadonlyArray<any>; contextWindow: number; budget: number }): Promise<{ context: string; tokens: number; source: string } | null>;
-	_retrieveContextOnly(provider: any, agentId: string, sessionId: string, middle: ReadonlyArray<any>, budget: number): Promise<{ context: string; tokens: number; source: string } | null>;
-	_storeTurnObservations(provider: any, agentId: string, sessionId: string, messages: ReadonlyArray<any>): Promise<void>;
-	getActiveMemoryProvider(): IMemoryProvider | undefined;
 	_executeToolCallsParallelStreaming(toolCalls: IToolCallInfo[], agentId: string, worktreePath?: string, abortSignal?: AbortSignal, askRouting?: IAskRoutingContext, agentSessionId?: string): AsyncGenerator<{ toolCallId: string; content: any; success: boolean; metadata?: Record<string, unknown> }, void, unknown>;
 	_tryExtractToolCallsFromText(text: string, thinkingContent?: string, enabledTools?: IToolDefinition[]): IToolCallInfo[];
 	_adaptModelDelta(delta: any): IChatStreamDelta;
 	_setCurrentModel(provider: IModelProvider | undefined, modelId: string | undefined): void;
 	_estimateMessagesTokens(messages: ReadonlyArray<any>): number;
-	_injectRetrievalSystemMessage(messages: any[], context: string, _source: string): any[];
 	_resolveHardPermissionForWorkMode(workMode: string): IHardPermissionPolicy | undefined;
 	_getSarosRoot(): string;
 	readonly _currentWorkspaceId: string;

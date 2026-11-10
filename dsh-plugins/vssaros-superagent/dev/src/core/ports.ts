@@ -7,7 +7,11 @@ import type { Reason } from './reasons.ts'
 export type GateResult = { admissible: false; reason: string } | { admissible: true; strength: Strength; basis: MandateBasis }
 
 /** Whether a Source receives a Trigger; `observed` when it also receives messages not addressed to the agent, and `row` the receiving scope the Policy's admission table names, such as a chat. */
-export type ScopeResult = { listened: true; observed: boolean; row?: string } | { listened: false; reason: string }
+export type ScopeResult = {
+  listened: true; observed: boolean; row?: string
+  /** ★ 2026-11-10：来源要求「收到人的消息先回一条」时给的文案（如飞书「已收到，正在处理…」）。*/
+  receipt?: string
+} | { listened: false; reason: string }
 /** Source configuration as the domain sees it: listening scope per trigger or per recorded Mandate basis. */
 export interface SourceScope {
   scope(input: { source: string; meta: Record<string, unknown> }): ScopeResult

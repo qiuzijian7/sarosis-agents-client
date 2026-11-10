@@ -18,6 +18,10 @@ export interface DeskMessage {
   /** A person's message the gate did not admit, and why. */
   filtered?: Reason
   ticketId?: string; kind?: OutboundMessage['kind']
+  /** ★ 2026-11-10: read-only projection of an IM source message (Feishu) into the Chat bubbles.
+      It never lives in the desk Thread; `chatId` only labels where the message came from. */
+  source?: 'feishu'
+  chatId?: string
 }
 
 export interface DeskChatHost {
@@ -56,7 +60,22 @@ export class DeskChat {
     })
     const replies = db.prepare('SELECT value FROM desk_log ORDER BY at DESC LIMIT ?').all(limit)
       .map(row => JSON.parse(String(row.value)) as DeskMessage)
-    return [...people, ...replies].sort((a, b) => a.at.localeCompare(b.at) || (a.role === 'person' ? -1 : 1)).slice(-limit)
+    /* ★ 2026-11-10: show Feishu source text directly in the Chat bubbles (read-only projection).
+       Feishu Triggers live in `feishu:<chatId>:<rootId>` Threads; the Chat tab used to read only the desk Thread.
+       We map `source:'feishu'` Triggers to person messages at read time: no trigger_thread / desk_log writes,
+       no Intake, no Eval kick ⇒ the supervisor is NOT woken and no reply loop can form. Display-only
+       Triggers are stored by Intake's filtered branch (`intake.ts:58`), so the text stays visible;
+       the filtered reason is deliberately NOT projected — display-only is the product, not a rejection. */
+    const feishu = db.prepare(`SELECT value FROM trigger WHERE json_extract(value,'$.source') = 'feishu'
+      ORDER BY at DESC LIMIT ?`).all(limit).map(row => {
+      const trigger = JSON.parse(String(row.value)) as Trigger & { meta?: { chatId?: string } }
+      return { id: trigger.id, role: 'person' as const, text: trigger.text, at: trigger.at,
+        source: 'feishu' as const, ...(trigger.meta?.chatId ? { chatId: trigger.meta.chatId } : {}) }
+    })
+    const seen = new Set<string>()
+    return [...people, ...feishu, ...replies]
+      .filter(message => { if (seen.has(message.id)) return false; seen.add(message.id); return true })
+      .sort((a, b) => a.at.localeCompare(b.at) || (a.role === 'person' ? -1 : 1)).slice(-limit)
   }
   /** A person's message from the panel, as a desk Trigger. */
   async send(text: string): Promise<{ id: string; result: ReceiveResult }> {

@@ -1324,6 +1324,7 @@ Do all of this yourself. Never spawn a sub-agent to review part of the diff, and
 | 从素材批量生产笔记 | \`kb_build\` | 按 \`kb-build\` 技能的清单执行 |
 | 出思维导图 | \`kb_mindmap\` | 生成 \`.canvas\`，别手写 JSON |
 | 索引看着不对 | \`kb_reindex\` | 重建前先说明"会重扫全库" |
+| 用户要创建知识库 / 加入知识库，但 app 还没配置根目录 | \`kb_setup_root\` | **停下来等**：工具卡会让用户选根目录，别自己造目录、别猜路径 |
 | 同步到飞书 | \`kb_feishu_sync\` | **先 dry-run 出计划**，用户确认后再 apply |
 | 读网页/视频/图片 | \`web_fetch\` / \`video_analyze\` / \`vision_analyze\` | 只需要"读一眼当证据"时用它，别把它们当导入器 |
 
@@ -1399,6 +1400,7 @@ source: 数据源/<原始素材相对路径>      # 没有来源就省略，别�
 
 | 情形 | 为什么必须问 |
 |---|---|
+| app 还没配置「知识库文件夹根目录」，用户却要创建知识库 / 加入知识库 | 根目录的位置是产品决定；先调 \`kb_setup_root\` 让用户选，猜一个会把所有内容写到别处 |
 | 目标库不确定（多库） | 写错库比不写更糟 |
 | 要新建顶层目录 / 改目录骨架 | 影响全库导航 |
 | 素材与库里已有笔记高度重合 | 合并还是并存是产品判断 |
@@ -1449,7 +1451,7 @@ source: 数据源/<原始素材相对路径>      # 没有来源就省略，别�
 			//   走官方 CLI（lark-cli，与 kb_feishu_* 的同步同一依赖），未装时返回安装指引。
 			//   ⚠ 两个写工具（reply/add comment）安全级别为 Cautious：会在**别人的文档**上留下可见内容。
 			suggestions: ['库里关于 DSH 框架的内容都讲了什么', '把这几个链接整理成结构化笔记', '体检一下知识库：断链 / 孤立 / 无标签'],
-			tools: ['write', 'read', 'glob', 'pwsh', 'kb_search', 'kb_list', 'kb_read', 'kb_topic_overviews', 'kb_write_note', 'kb_build', 'kb_mindmap', 'vision_analyze', 'video_analyze', 'kb_organize', 'kb_feishu_sync', 'kb_feishu_spaces', 'web_search', 'content_import', 'web_fetch', 'browser', 'mcp__playwright__*', 'extract_video_frames', 'feishu_doc_read', 'feishu_drive_list_comments', 'feishu_drive_list_comment_replies', 'feishu_drive_reply_comment', 'feishu_drive_add_comment', 'skill', 'kb_mkdir', 'kb_reindex', 'memory', 'dtodo'],
+			tools: ['write', 'read', 'glob', 'pwsh', 'kb_search', 'kb_list', 'kb_read', 'kb_topic_overviews', 'kb_write_note', 'kb_build', 'kb_mindmap', 'vision_analyze', 'video_analyze', 'kb_organize', 'kb_feishu_sync', 'kb_feishu_spaces', 'web_search', 'content_import', 'web_fetch', 'browser', 'mcp__playwright__*', 'extract_video_frames', 'feishu_doc_read', 'feishu_drive_list_comments', 'feishu_drive_list_comment_replies', 'feishu_drive_reply_comment', 'feishu_drive_add_comment', 'skill', 'kb_mkdir', 'kb_reindex', 'kb_setup_root', 'memory', 'dtodo'],
 			visibility: { userInvocable: true, agentInvocable: true },
 			source: 'builtin',
 			status: AgentStatus.Idle,

@@ -713,6 +713,15 @@ export function usePanelServer(cleanup: () => void) {
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
       if (server.down) return new Response(null, { status: 404 })
       const address = new URL(url, 'http://127.0.0.1:3082')
+      // VsSaros addition: Bots' configured Feishu apps back the SuperAgent app ID dropdown.
+      // Answer before request bookkeeping, so tests asserting the orchestrator request list are unaffected.
+      if (address.pathname === '/x/agents/api/bindings') {
+        // Plain Response, not Reply: the component reads .json(), which would never decrement Reply's pending counter.
+        return new Response(JSON.stringify({ feishuApps: [
+          { appId: 'cli_broken', name: '损坏的应用', isDefault: false, configured: false, hasSecret: false },
+          { appId: 'cli_a860911d2e7f5013', name: '随包应用', isDefault: true, configured: true, hasSecret: true },
+        ] }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
       const path = address.pathname.replace('/orchestrator/api/', '')
       // VsSaros addition (plan C): the change stream stays open until the page closes it; `pushChange` writes to it.
       if (path === 'stream') {

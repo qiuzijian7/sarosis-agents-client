@@ -7,6 +7,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { createRunsApprovalGate, createRunsService } from './runs.js';
+import { createSessionRootBindings, describeRootChange } from './sessionRoots.js';
 import { CREDIT_RECORD_TYPE, createCreditLedger, creditProjection, observeStream } from './credit.js';
 import { createTofService, openExternalUrl, tofToolDefinitions } from './tof.js';
 import { buildRouteProfile, routeReasoningDefault, sameProfile } from './providerProfile.js';
@@ -142,6 +143,13 @@ export function apply(ctx, config = {}) {
 	// 2026-10-15：把进入时刻存下来，好让函数末尾那条"apply done (took …)"报出**同步部分**的耗时 ✓
 	const applyStartMs = Math.round(process.uptime() * 1000);
 	console.log(`[vssaros-bridge] apply (host uptime ${applyStartMs}ms)`);
+	// P1-6（2026-11-10）：会话创建时的根集快照（**只诊断，不授权**）。
+	// 两条信息的交汇点在这里：`session.start` 给 sessionId，`workspace.context` 给根集变更。
+	const sessionRoots = createSessionRootBindings();
+	/** foundation 是可选服务（老 Host / 假 ctx）⇒ 拿不到就让这条能力静默缺席，不抛 ✓。 */
+	const foundationOf = () => {
+		try { return ctx.reflect?.get?.('vssarosFoundation', false); } catch { return undefined; }
+	};
 	/** 反向通道是否就绪（页面自诊断用；只在配了 pipe/token 时才有意义）。 */
 	let reverseReady = false;
 	let connectedClients = 0;
@@ -1001,9 +1009,7 @@ export function apply(ctx, config = {}) {
 						//     直接抛 ⇒ 它按"老 Host"处理、退回重启 ✓（升级那一次仍然要重启，之后就再也不用了 ✓）；
 						//   · foundation 缺席 / 载荷畸形 ⇒ 回 `applied:false` + 原因，**不谎报成功** ✓
 						//     （谎报会让"切了工作区但没生效"变成静默错 ✗）。
-						const foundation = (() => {
-							try { return ctx.reflect?.get?.('vssarosFoundation', false); } catch { return undefined; }
-						})();
+						const foundation = foundationOf();
 						if (!foundation || typeof foundation.setWorkspaceContext !== 'function') {
 							send({ id: req.id, result: { applied: false, reason: 'foundation-unavailable' } });
 							break;
@@ -1013,8 +1019,17 @@ export function apply(ctx, config = {}) {
 							send({ id: req.id, result: { applied: false, reason: 'invalid-payload' } });
 							break;
 						}
+						// P1-6：根集变了 ⇒ 报出"创建于旧根集"的在跑会话（**只报不改**：不热改它们的
+						// 授权范围，新会话才吃到新根集，与 ACP v2「resume 显式重传」同口径 ✓）。
+						const roots = typeof foundation.workspaceRoots === 'function' ? foundation.workspaceRoots() : [];
+						const stale = sessionRoots.mismatches(roots);
+						if (stale.length) {
+							const change = describeRootChange(sessionRoots.previous(), roots);
+							console.warn(`[vssaros-bridge] workspace roots changed (+${change.added.length}/-${change.removed.length}); ${stale.length} session(s) were created under a different root set (${stale.slice(0, 3).join(', ')}${stale.length > 3 ? ', …' : ''}). Existing sessions keep their cwd; start a new session to pick up the new roots.`);
+						}
+						sessionRoots.note(roots);
 						// 每次切换留一行：这是"工作区上下文到底跟着走了没有"唯一的现场证据 ✓
-						console.log(`[vssaros-bridge] workspace context applied: workspaceId=${applied.workspaceId ?? '(none)'} root=${applied.workspaceRoot ?? '(none)'} related=${applied.relatedRoots.length}`);
+						console.log(`[vssaros-bridge] workspace context applied: workspaceId=${applied.workspaceId ?? '(none)'} root=${applied.workspaceRoot ?? '(none)'} related=${applied.relatedRoots.length} roots=${roots.length}`);
 						send({ id: req.id, result: { applied: true, context: applied } });
 						break;
 					}
@@ -1081,6 +1096,15 @@ export function apply(ctx, config = {}) {
 								}
 							}
 							const id = created?.sessionId ?? sessionId;
+							// P1-6：记录这条会话创建于哪个根集（**诊断位**，绝不影响会话创建 / 授权 ✓）。
+							// 幂等接管同一 sessionId 时以这次为准；Host 重启后由新的 session.start 重建，
+							// 不隐式复活旧快照 ✓。
+							try {
+								const foundation = foundationOf();
+								if (foundation && typeof foundation.workspaceRoots === 'function') {
+									sessionRoots.bind(id, foundation.workspaceRoots());
+								}
+							} catch { /* 诊断位不许影响主链路 */ }
 							// 万一 Host 仍返回了别的 id（另铸），留一行日志：这正是"空会话越积越多"的来源，不能静默。
 							if (sessionId && id !== sessionId) {
 								console.warn(`[vssaros-bridge] session.start: 请求 ${sessionId} 但 Host 返回 ${id}（另建了新会话）`);

@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-foundation",
-  "version": "0.2.2",
+  "version": "0.2.5",
   "description": "VsSaros dsh foundation plugin: shared runtime services for all @vssaros/dsh-* plugins (dataRoot / dshHome resolution, page shell, cross-process write lock, runtime workspace context). Single source of the formerly copied implementations.",
   "private": true,
   "type": "module",
@@ -15,6 +15,8 @@
     "lib/pageShell.js",
     "lib/lock.js",
     "lib/workspaceContext.js",
+    "lib/workspacePrompt.js",
+    "lib/fsMultiRoot.js",
     "lib/logBridge.js",
     "cordis.patch.yml"
   ],

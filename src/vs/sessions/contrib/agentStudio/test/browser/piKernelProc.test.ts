@@ -44,12 +44,8 @@ function makeHost(overrides?: Partial<IPiKernelHost>): IPiKernelHost {
 		_lastAssistantAtByAgent: new Map(),
 		_turnKey: (a, s) => `${a ?? ''}:${s ?? ''}`,
 		_scheduleSave: () => { /* */ },
-		getActiveMemoryProvider: () => undefined,
 		_setCurrentModel: () => { /* */ },
 		_resolveContextWindow: async () => 128000,
-		_storeTurnObservations: async () => { /* */ },
-		_retrieveContextOnly: async () => null,
-		_injectRetrievalSystemMessage: (msgs) => msgs,
 		_estimateMessagesTokens: (msgs: readonly unknown[]) => msgs.length * 100,
 		_lastCompressionTime: 0,
 		_lastHardPruneBaselineTokens: 0,
@@ -58,7 +54,6 @@ function makeHost(overrides?: Partial<IPiKernelHost>): IPiKernelHost {
 		_compressionBeforeTokens: 0,
 		_compressionAfterTokens: 0,
 		_currentWorkspaceId: 'ws-test',
-		_retrieveCompactionContext: async () => null,
 		...overrides,
 	} as IPiKernelHost;
 }

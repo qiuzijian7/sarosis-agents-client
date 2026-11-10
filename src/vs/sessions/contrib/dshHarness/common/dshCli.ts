@@ -598,40 +598,16 @@ export function renderDataRootOverlay(dataRoot: string, mcpConfigPath?: string, 
 		lines.push('  config:');
 		lines.push(`    dataRoot: ${yamlSingleQuoted(dataRoot)}`);
 	}
-	// kb：用户可以在 IDE 里把**知识库存储根**改到别处（`agentStudio.knowledge.storage.path` ✓）⇒ 那时
-	// 插件只认 `<数据根>/knowledge-base` 就会**空着**（而 IDE 侧明明有内容 ✗），且页面不报错、只是"什么都没有"
-	//（2026-10-12 评估发现的缺口 ✓）。改了就给 `config.kbRoot` ✓；没改**不给**（插件默认与 IDE 默认同值 ✓）。
-	const kbRoot = extra.kbRoot?.trim();
+	// ★ 2026-11-10（用户裁决「以 dsh 侧配置为准、移除 IDE 侧配置和逻辑」）：
+	//   `vssaros-kb` 与 `vssaros-web-content-import` 两行**只注入 dataRoot**。
+	//   原先的 `kbRoot`（幽灵设置 `agentStudio.knowledge.storage.path`）、`kbVaults`、`kbActiveVaultId`
+	//   三键全部移除 —— 知识库根由 dsh 插件自持的 `<数据根>/.kb-root.json` 决定，IDE 不再参与。
 	lines.push('- id: vssaros-kb');
 	lines.push('  config:');
 	lines.push(`    dataRoot: ${yamlSingleQuoted(dataRoot)}`);
-	if (kbRoot) {
-		lines.push(`    kbRoot: ${yamlSingleQuoted(kbRoot)}`);
-	}
-	// ★ 库记录（2026-10-15）：**同一个 `vssaros-kb` 行**（那份 config 整体替换 ⇒ 拆两份会互相擦掉 ✗）。
-	//   ⚠ 空值不渲染（本文件第一条硬约束 ✓）：没有库记录时**不产生这两行** ⇒ 插件退回"按目录列出全部库"
-	//   的旧行为 ✓（不假装 ✓）。形状是单引号包住的 **JSON 字符串**（见 `IDshOverlayExtras` 的注释 ✓）。
-	// ⚠ 2026-10-15 真机事故：这两行**必须紧跟在 kb 行里**（YAML 里键归属于"上面最近的 `- id:`"）——
-	//   web-content-import 那一行曾被插在 kb 行与这两行**之间** ⇒ 库记录全落到了它名下，kb 页拿不到注入
-	//   （页面提示"老 Host / 独立启动器"、已登记的自定义路径库消失、库删除分流失去依据）✗。
-	//   守卫：`dshPluginPackages.test.ts`「数据根覆盖层：每个键落在它该在的那一行」。
-	const kbVaults = extra.kbVaults?.trim();
-	if (kbVaults) {
-		lines.push(`    kbVaults: ${yamlSingleQuoted(kbVaults)}`);
-	}
-	const kbActiveVaultId = extra.kbActiveVaultId?.trim();
-	if (kbActiveVaultId) {
-		lines.push(`    kbActiveVaultId: ${yamlSingleQuoted(kbActiveVaultId)}`);
-	}
-	// web-content-import（2026-10-15 新增模块）：读数据根（默认口径）＋ **写** `<kbRoot>/<vault>/库/raw/`
-	// ⇒ 与 kb **同一形态**（dataRoot + 可选 kbRoot；用户改了知识库存储根时两边必须同步，否则它写去旧位置 ✗）。
-	// ⚠ 它是**写**路径（比只读的那几个更怕打空：dev 实例会把内容写进生产库 ✗）。
 	lines.push('- id: vssaros-web-content-import');
 	lines.push('  config:');
 	lines.push(`    dataRoot: ${yamlSingleQuoted(dataRoot)}`);
-	if (kbRoot) {
-		lines.push(`    kbRoot: ${yamlSingleQuoted(kbRoot)}`);
-	}
 	if (mcpConfigPath) {
 		lines.push('- id: vssaros-dsh-mcp');
 		lines.push('  config:');
@@ -673,15 +649,7 @@ export function renderDataRootOverlay(dataRoot: string, mcpConfigPath?: string, 
  * 都只能和"它们那一行的数据根"写在**同一份**里 ✓。
  */
 export interface IDshOverlayExtras {
-	/** 知识库存储根（用户改过才给；与 IDE 的 `resolveKbRoot` 同源 ✓）—— kb 与 canvas **一起**用 ✓。 */
-	readonly kbRoot?: string;
-	/**
-	 * **库记录**（2026-10-15）：IDE storage 里 `agentStudio.kb.vaults` 的展示字段，**已序列化成 JSON 字符串** ✓
-	 * （渲染器只写 YAML scalar ⇒ 不在这里实现数组/对象 emit ✗；形状的容错在插件侧 ✓）。
-	 */
-	readonly kbVaults?: string;
-	/** 同上：**当前激活的库 id**（`agentStudio.kb.active` ✓）。 */
-	readonly kbActiveVaultId?: string;
+	// ★ 2026-11-10：`kbRoot` / `kbVaults` / `kbActiveVaultId` 已删除（知识库根以 dsh 侧配置为准）。
 	/** Unreal bridge 基址（IDE 设置为空时不给 ⇒ 插件用自带默认 8765 ✓）。 */
 	readonly unrealBridgeUrl?: string;
 	/**
@@ -707,70 +675,6 @@ export interface IDshBrowserOverlayConfig {
 	readonly headless?: boolean;
 }
 
-// ─── 记忆模块的网关地址覆盖层 ────────────────────────────────────────────────
-
-/**
- * 从环境变量解出记忆网关地址（`AGENTMEMORY_URL` 优先；缺失时用 `AGENTMEMORY_PORT` 拼；两个都没有
- * ⇒ `undefined` ⇒ **不渲染覆盖层**）。
- *
- * 抽成纯函数是为了可测：这里是"要接线"与"不要猜"两条纪律的交点。`app.ts._initAgentMemoryEndpoint()`
- * 是端口规则的**唯一真源**（安装版 3111 / dev 3112 / 非默认数据目录再确定性偏移），它把这两个变量
- * 写进主进程环境 ⇒ supervisor（主进程）直接继承 ✓ —— 这里**只读**，绝不自己重算那套规则。
- */
-export function memoryGatewayUrlFromEnv(env: {
-	readonly AGENTMEMORY_URL?: string;
-	readonly AGENTMEMORY_PORT?: string;
-	/**
-	 * 索引签名只为"让宽对象能传进来"：目标类型全是可选属性 ⇒ 属 TS 的**弱类型**，而
-	 * `process.env` 与它**没有一个共同属性** ⇒ 直接 `tsgo error TS2559`（`dshHostSupervisor.ts:614` 实测）。
-	 * 有了它 `process.env` 与测试里的小对象都能传 ✓，语义没变（仍然只读这两个名字）。
-	 */
-	readonly [key: string]: string | undefined;
-} = {}): string | undefined {
-	const url = env.AGENTMEMORY_URL?.trim();
-	if (url) {
-		return url.replace(/\/+$/, '');
-	}
-	const port = Number.parseInt(env.AGENTMEMORY_PORT ?? '', 10);
-	return Number.isInteger(port) && port > 0 && port < 65536 ? `http://127.0.0.1:${port}` : undefined;
-}
-
-/**
- * 把 AgentMemory 网关地址交给记忆模块（`config.gatewayUrl`，行 id `vssaros-memory`）。
- *
- * 为什么非注入不可：模块的口径是 `config.gatewayUrl` → 环境变量 `VSSAROS_MEMORY_GATEWAY_URL` →
- * **明确报"未配置"**（`dsh-plugins/vssaros-memory/lib/gateway.js:40-47`：作者刻意**不猜端口** ——
- * "猜错会读到另一个网关的库"）。而 `VSSAROS_MEMORY_GATEWAY_URL` 全仓无人设置 ⇒ 不注入时记忆页
- * 恒为 `data-vssaros-memory-state="unconfigured"`（2026-10-11 复核：记忆这块此前**根本没有覆盖层**），
- * 看上去像"记忆没生效"，实际只是**没接线**。
- *
- * **拿不到地址就不渲染这一行** —— 维持"不猜"的美德 ✓：页面如实显示"未配置"，而不是连到一个
- * 碰巧开着的端口上，读到别人的库。
- *
- * ⚠ 行 id 必须是 **`vssaros-memory`** —— 插件自带 `cordis.patch.yml` 插入的就是这一行；
- * 名字不一致会**打空**并**静默**退回"未配置"（同一条教训见 README 4.79；`p3-07` 有契约守卫钉住）。
- */
-export function renderMemoryOverlay(gatewayUrl: string, dataRoot?: string, workspaceId?: string): string {
-	const root = (dataRoot ?? '').trim();
-	const ws = (workspaceId ?? '').trim();
-	return [
-		'# Generated by VsSaros for one Host run. Removed when the Host stops.',
-		'- id: vssaros-memory',
-		'  config:',
-		`    gatewayUrl: ${yamlSingleQuoted(gatewayUrl)}`,
-		// ⚠ **这三项必须写在同一个 `config` 里**：同一行被两份覆盖层打时 `config` 是
-		// **整体替换**（实测，见 `dshHostConfig.ts` 文件头第 1 条）⇒ 拆成两份会静默抹掉别的键 ✗
-		//（与 `renderKanbanOverlay(workspaceId, dataRoot)` 同一个坑、同一个解法 ✓）。
-		// · `dataRoot`（2026-10-12）：审计账本落 `<数据根>/memory-audit/` ⇒ 不注入时 **dev 实例会把
-		//   账本写进生产数据根**（`dshPluginPackages.test.ts` 的覆盖层对账会红 ✓）。
-		// · `workspaceId`（2026-10-12）：记忆模块按它派生命名分区（`partitionOf` ⇒ `ws-<id>`），
-		//   于是 dsh 侧记忆**按工作区隔离** ✓；不注入时回退旧分区 `default`（零行为变化 ✓）。
-		// 空值不渲染（同本目录 `dshHostConfig.ts` 文件头第 2 条：字段缺失/全空白 ⇒ 不产生那一条）。
-		...(root ? [`    dataRoot: ${yamlSingleQuoted(root)}`] : []),
-		...(ws ? [`    workspaceId: ${yamlSingleQuoted(ws)}`] : []),
-		'',
-	].join('\n');
-}
 
 // ─── Office 运行时（官方 office 技能 + 自带 Python 负载）──────────────────────
 

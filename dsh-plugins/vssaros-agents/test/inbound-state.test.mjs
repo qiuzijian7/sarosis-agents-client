@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-	INBOUND_PLATFORMS, inboundStatePathOf, readInboundEnabled, setInboundEnabled,
+	INBOUND_PLATFORMS, inboundStatePathOf, readInboundEnabled, readSkipAppIds, setFeishuAppEnabled, setInboundEnabled,
 } from '../lib/imInboundState.js';
 
 let pass = 0;
@@ -67,6 +67,20 @@ await checkAsync('★ 坏 JSON ⇒ 全 false（不能因为文件被写坏就起
 	writeFileSync(inboundStatePathOf(config), 'not-json', 'utf8');
 	const got = await readInboundEnabled(config);
 	for (const p of INBOUND_PLATFORMS) { assert.equal(got[p], false); }
+	rmSync(root, { recursive: true, force: true });
+});
+
+await checkAsync('★ 归属声明不被 UI 开关覆盖（writeState 必须保留 skipAppIds）', async () => {
+	const root = fresh();
+	const config = { dataRoot: root };
+	writeFileSync(inboundStatePathOf(config), JSON.stringify({ version: 1, enabled: { feishu: true },
+		feishuApps: { cli_b: true }, skipAppIds: ['cli_a'] }));
+	assert.deepEqual(await readSkipAppIds(config), ['cli_a']);
+	await setInboundEnabled(config, 'feishu', true);
+	assert.deepEqual(await readSkipAppIds(config), ['cli_a'], '点平台开关不能把归属声明抹掉');
+	await setFeishuAppEnabled(config, 'cli_b', true);
+	assert.deepEqual(await readSkipAppIds(config), ['cli_a'], '点额外应用开关也不能抹掉');
+	assert.equal(JSON.parse(readFileSync(inboundStatePathOf(config), 'utf8')).feishuApps.cli_b, true);
 	rmSync(root, { recursive: true, force: true });
 });
 

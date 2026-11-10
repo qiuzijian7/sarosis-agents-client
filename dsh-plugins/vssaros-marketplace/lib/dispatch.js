@@ -9,7 +9,7 @@
 //
 // 分派目标只有 5 种，每种对应 `index.js` 里的一段处理：
 //   local-read    → 走本地（认证 + HTTP + 台账），如 list / installed / publishables
-//   local-write   → 走本地落盘（skill / workflow / agent 的装升卸）
+//   local-write   → 走本地落盘（skill / agent / mcp / knowledge 的装升卸）
 //   local-http    → 走本地纯 HTTP（编辑元数据 / 管理员审核，服务端判权）
 //   local-publish → 走本地打包上传/下架
 //   ide           → 转给 IDE 控制桥（workbench 装卸、agent 发布等，见各常量注释）
@@ -22,7 +22,15 @@ import { PUBLISHABLE_KINDS } from './publisher.js';
 //   ⇒ 放进 LOCAL_READ_OPS，这样它不需要审批、不会误判成写操作 ✓
 // ★ 2026-10-26：`preflightPublish` 发布前体检（只抓上游元数据，不写盘、不写商城）⇒ 只读
 // ★ 2026-11-06（P1）：`listSkillHub` = 从内置 GitHub Hub 列可装技能（只读，dsh 侧自持）。
-export const LOCAL_READ_OPS = new Set(['list', 'detail', 'installed', 'publishables', 'reviewList', 'inspectGithub', 'preflightPublish', 'listSkillHub']);
+// ★ 2026-11-10（P0 安全与信任）：`previewInstall` = 安装前把包内容摊开给人看、
+//   `safeModePlan` = 列出可安全停用的第三方插件；两者都不写盘、不改商城 ⇒ 只读 ✓
+// ★ 2026-11-10：mcpConfig = 读整份 mcp.json（弹层数据 + 2s digest 轮询），只读 ✓
+export const LOCAL_READ_OPS = new Set(['list', 'detail', 'installed', 'publishables', 'reviewList', 'inspectGithub', 'preflightPublish', 'listSkillHub', 'previewInstall', 'safeModePlan', 'mcpConfig']);
+
+// ★ 2026-11-10 P2：离线便携包。导出/预览不写盘 ⇒ 只读；导入落盘 ⇒ 必须算写操作
+//   （不能塞进 LOCAL_READ_OPS，否则会绕过 P0 的「写操作要确认」链）。
+export const PORTABLE_READ_OPS = new Set(['exportPortable', 'previewPortable']);
+export const PORTABLE_WRITE_OPS = new Set(['importPortable']);
 
 /**
  * 走本地落盘的**写** op（装 / 升 / 卸）。
@@ -39,16 +47,16 @@ export const LOCAL_WRITE_OPS = new Set(['install', 'upgrade', 'uninstall', 'tras
 /**
  * 这三类 op 里，dsh 侧能自持的 kind。
  *
- * · `skill` / `workflow` / `agent`：都是"目录镜像落数据根"（agent 自 2026-10-22 起）
- * · `workbench`：必须 `dsh plugin add` + 重启 Host ⇒ 永远是 IDE
- * · `mcp` / `knowledge`：没有可落盘的本体（配置/文档集）⇒ 不进这条路径
+ * · `skill` / `agent` / `mcp` / `knowledge`：都是"目录镜像落数据根"+ 各自的注册表
+ *   （mcp 另写 mcp.json；knowledge 另写 .market-vaults.json）
+ * · `plugin` / `workbench`：走 local-plugin（dsh 侧 pluginManager，能力不足才退回 IDE）
  */
 // ★ 2026-10-23（用户「都转移到 dsh 侧实现」）：加 `mcp`
 //   （装完会顺带把服务器注册进 `<数据根>/mcp.json`，见 `mcpInstall.js`）
 // ★ 2026-10-31：加 knowledge。
 //   此前注释写「mcp / knowledge 没有可落盘的本体 ⇒ 不进这条路径」—— 那是**打包器还没支持**时的结论；
 //   现在 publisher 会打、installers 会落到 <数据根>/knowledge/<id>/ ⇒ 本体就是那个目录 ✓
-export const LOCAL_WRITE_KINDS = new Set(['skill', 'workflow', 'agent', 'mcp', 'knowledge']);
+export const LOCAL_WRITE_KINDS = new Set(['skill', 'agent', 'mcp', 'knowledge']);
 
 /**
  * ★ 2026-10-24（用户：「插件管理能否在 dsh 侧实现，不走 ide」）：能。
@@ -110,10 +118,12 @@ export const ALL_OPS = [
 	'self-check',
 	...PLUGIN_STATE_OPS,
 	...MCP_CONFIG_OPS,
+	...PORTABLE_READ_OPS,
+	...PORTABLE_WRITE_OPS,
 ];
 
 /** 需要用户确认、耗时较长的 op（转 IDE 时用长超时）。 */
-export const WRITE_OPS = new Set([...LOCAL_WRITE_OPS, 'publish', ...LOCAL_PUBLISH_OPS]);
+export const WRITE_OPS = new Set([...LOCAL_WRITE_OPS, 'publish', ...LOCAL_PUBLISH_OPS, ...PORTABLE_WRITE_OPS]);
 
 /**
  * 判定一个动作该在哪执行。
@@ -127,6 +137,8 @@ export function resolveOp(op, params = {}) {
 	const kind = String(params?.kind ?? '');
 
 	if (LOCAL_READ_OPS.has(name)) { return 'local-read'; }
+	if (PORTABLE_READ_OPS.has(name)) { return 'local-read'; }
+	if (PORTABLE_WRITE_OPS.has(name)) { return 'local-write'; }
 	// ★ P1：非商城来源装技能**永远由 dsh 侧自持**，不分 kind（它固定落 skill 根）。
 	//   放在 LOCAL_WRITE_OPS 分支之前 ⇒ 调用方不必伪造一个 kind 才不会被误送去 IDE。
 	if (name === 'installSkillContent') { return 'local-write'; }

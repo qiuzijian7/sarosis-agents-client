@@ -1,34 +1,95 @@
-/* 商城工作台的页面样式（★ 2026-10-22 重写：修"文字看不清"）
+/* 商城工作台的页面样式（自托管 SSR 页，独立 document）
  *
- * ★ 对比度口径（这是本轮的核心修复，别再改回去）：
- *   旧版把「描述 / 作者 / 版本 / 空态」统一用 `--dsw-fg-muted` 的兜底 `#999`，12px
- *   ⇒ 深色主题下整页发灰、看不清 ✗。
- *   新版：
- *   · **正文与描述** = 主前景色（`--dsw-fg` → `--vscode-foreground` → `#e6e6e6`），用 opacity 控层级
- *     （正因为它跟着"主前景色"走，所以浅色主题下自动变深，不会出现白底灰字）✓
- *   · grey（`muted`）只留给**真正的次要信息**（时间戳之类）
- *   · 正文最小 12px、描述 13px/1.6（旧版 12px 偏小）
+ * ★★ 2026-11-10：修「颜色不随 dsh 外观变化」。
+ *   旧版把 html/body 写死成 #1a1a1a + #e6e6e6 + color-scheme:dark，
+ *   而且变量用的是 **--dsw-fg / --dsw-card-bg / --vscode-*** —— 这三个系列
+ *   在自托管页里**一个都不存在**（dsh 真令牌是 --dsw-alias-*，且不会跨 iframe 继承）
+ *   ⇒ 所有 var() 恒走深色兜底值 ⇒ 切浅色外观时整页纹丝不动 ✗。
  *
- * ★ 颜色一律 `var(--dsw-*, var(--vscode-*, #回退))`：
- *   dsh 原生界面里没有 `--vscode-*` 这个变量 ⇒ 直接当主色令牌会被守卫判红 ✗
+ *   现在的口径（对齐 vssaros-studio/lib/page.js 的自托管页样板）：
+ *   · 页面自带一套语义变量，每个写成 `var(--dsw-alias-*, <兜底>)`
+ *     —— 宿主若注入了真令牌就自动跟随；没注入就按下面两档兜底。
+ *   · 明暗唯一开关 = `prefers-color-scheme`（宿主在建视图时用 CDP 模拟，
+ *     切「外观」时由 dshThemeBridge 活更新），light 分支给整套浅色值。
+ *   · 表面色不再写死；状态色用 `color-mix` 半透明叠底 + 语义前景 ⇒ 明暗都可读。
+ *   · 页面仍**自带底色**（不依赖宿主）⇒ 不会出现当年那个"白底浅字像白屏"。
+ *
+ * ★ 对比度口径（沿用 2026-10-22，别退化）：正文/描述跟主前景色 + opacity 控层级，
+ *   grey 只给真正的次要信息；描述 13px/1.6。
  */
 
-/* ★★ 2026-10-23 真机白屏的**根因修复**（务必保留）：
- *
- * 实测（dsh 0.2.1-rc.1 的页面 iframe）：`--dsw-fg` / `--dsw-bg` / `--vscode-foreground`
- * **全部未定义** ⇒ 所有 `var(--dsw-*, var(--vscode-*, #回退))` 都走兜底值。
- * 而页面**没有自己的背景色** ⇒ 宿主给白底 + 兜底浅色文字（#ddd）⇒ **白底浅灰字 = 看着像白屏** ✗
- *
- * ⇒ 页面必须**自带底色**、自成一体，不依赖宿主（变量将来有了也会覆盖 ✓）：
- *   `color-scheme: dark` 让滚动条/表单控件也跟着深色，避免"深色页面配白色滚动条"的割裂感。
- */
+/* ── 主题变量（深色档）─────────────────────────────────────────────
+ * ⚠ 只用 dsh 真实存在的 --dsw-alias-* 令牌（见 design-platform.css）；
+ *   令牌名不是公开契约 ⇒ 每个都必须带兜底值。 */
+:root {
+	color-scheme: dark;
+	--vs-mp-bg: var(--dsw-alias-bg-base, #1a1a1a);
+	--vs-mp-fg: var(--dsw-alias-label-primary, #e6e6e6);
+	--vs-mp-fg-dim: var(--dsw-alias-label-secondary, #e6e6e6);
+	--vs-mp-muted: var(--dsw-alias-label-tertiary, #a8a8a8);
+	--vs-mp-border: var(--dsw-alias-border-l1, rgba(127, 127, 127, .30));
+	--vs-mp-card: var(--dsw-alias-bg-layer-1, #232323);
+	--vs-mp-chip: var(--dsw-alias-interactive-bg-active, #303030);
+	--vs-mp-chip-hover: var(--dsw-alias-interactive-bg-hover, #3a3a3a);
+	--vs-mp-btn-bg: var(--dsw-alias-bg-layer-1, #333333);
+	--vs-mp-btn-hover: var(--dsw-alias-interactive-bg-hover, #404040);
+	--vs-mp-input-bg: var(--dsw-alias-bg-layer-1, #1f1f1f);
+	--vs-mp-panel: var(--dsw-alias-bg-layer-1, #1e1e1e);
+	--vs-mp-accent: var(--dsw-alias-button-primary-fill, #0a7d55);
+	--vs-mp-accent-fg: var(--dsw-alias-label-primary-inverted, #ffffff);
+	--vs-mp-brand: var(--dsw-alias-brand-primary, #4a9eff);
+	--vs-mp-link: var(--dsw-alias-brand-text, #6cb6ff);
+	--vs-mp-warn: var(--dsw-alias-state-warn-primary, #e0a43a);
+	--vs-mp-ok: var(--dsw-alias-state-success-primary, #4ade80);
+	--vs-mp-danger: var(--dsw-alias-state-error-primary, #ff9492);
+	--vs-mp-danger-fg: var(--dsw-alias-state-error-primary, #ff9492);
+	--vs-mp-mask: rgba(0, 0, 0, .45);
+	--vs-mp-shadow: rgba(0, 0, 0, .35);
+	--vs-mp-cover-a: #2b2b2b;
+	--vs-mp-cover-b: #1e1e1e;
+	--vs-mp-icon-border: rgba(127, 127, 127, .18);
+}
+
+/* ── 主题变量（浅色档）─────────────────────────────────────────────
+ * ★ 这一档是「跟随外观」的关键：宿主把 prefers-color-scheme 模拟成当前外观，
+ *   媒体查询重算 ⇒ 整套变量换值（不是靠某个兜底色假装变了）。 */
+@media (prefers-color-scheme: light) {
+	:root {
+		color-scheme: light;
+		--vs-mp-bg: var(--dsw-alias-bg-base, #f8f8f6);
+		--vs-mp-fg: var(--dsw-alias-label-primary, #1f1f1f);
+		--vs-mp-fg-dim: var(--dsw-alias-label-secondary, #45474d);
+		--vs-mp-muted: var(--dsw-alias-label-tertiary, #6b6f76);
+		--vs-mp-border: var(--dsw-alias-border-l1, rgba(0, 0, 0, .14));
+		--vs-mp-card: var(--dsw-alias-bg-layer-1, #ffffff);
+		--vs-mp-chip: var(--dsw-alias-interactive-bg-active, #eef0f4);
+		--vs-mp-chip-hover: var(--dsw-alias-interactive-bg-hover, #e2e5eb);
+		--vs-mp-btn-bg: var(--dsw-alias-bg-layer-1, #ffffff);
+		--vs-mp-btn-hover: var(--dsw-alias-interactive-bg-hover, #eceff3);
+		--vs-mp-input-bg: var(--dsw-alias-bg-layer-1, #ffffff);
+		--vs-mp-panel: var(--dsw-alias-bg-layer-1, #ffffff);
+		--vs-mp-accent: var(--dsw-alias-button-primary-fill, #0a7d55);
+		--vs-mp-accent-fg: var(--dsw-alias-label-primary-inverted, #ffffff);
+		--vs-mp-brand: var(--dsw-alias-brand-primary, #007fd4);
+		--vs-mp-link: var(--dsw-alias-brand-text, #0a66c2);
+		--vs-mp-warn: var(--dsw-alias-state-warn-primary, #a86a00);
+		--vs-mp-ok: var(--dsw-alias-state-success-primary, #1a7f37);
+		--vs-mp-danger: var(--dsw-alias-state-error-primary, #c9372c);
+		--vs-mp-danger-fg: var(--dsw-alias-state-error-primary, #b42318);
+		--vs-mp-mask: rgba(0, 0, 0, .28);
+		--vs-mp-shadow: rgba(0, 0, 0, .16);
+		--vs-mp-cover-a: #e7e9ee;
+		--vs-mp-cover-b: #d6d9e0;
+		--vs-mp-icon-border: rgba(127, 127, 127, .22);
+	}
+}
+
 html,
 body {
 	margin: 0;
 	min-height: 100%;
-	background: #1a1a1a;
-	color: #e6e6e6;
-	color-scheme: dark;
+	background: var(--vs-mp-bg);
+	color: var(--vs-mp-fg);
 }
 
 /* 挂载点铺满：内容很少时也不会露出下面的透明区域（那会被看成"白屏"）✗ */
@@ -38,14 +99,7 @@ body {
 }
 
 .vs-mp-wrap {
-	--vs-mp-fg: var(--dsw-fg, var(--vscode-foreground, #e6e6e6));
-	--vs-mp-fg-dim: var(--dsw-fg-secondary, var(--vscode-foreground, #e6e6e6));
-	--vs-mp-muted: var(--dsw-fg-muted, var(--vscode-descriptionForeground, #a8a8a8));
-	--vs-mp-border: var(--dsw-border, var(--vscode-widget-border, #3a3a3a));
-	--vs-mp-card: var(--dsw-card-bg, var(--vscode-sideBar-background, #232323));
-	--vs-mp-accent: var(--dsw-accent, var(--vscode-button-background, #0a7d55));
-	--vs-mp-accent-fg: var(--dsw-accent-fg, var(--vscode-button-foreground, #ffffff));
-	font: 13px/1.6 var(--dsw-font, var(--vscode-font-family, system-ui, -apple-system, "Segoe UI", sans-serif));
+	font: 13px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
 	color: var(--vs-mp-fg);
 	padding: 20px 24px 40px;
 	max-width: 1376px;
@@ -62,7 +116,7 @@ body {
 .vs-mp-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
 .vs-mp-input {
-	background: var(--dsw-input-bg, var(--vscode-input-background, #1f1f1f));
+	background: var(--vs-mp-input-bg);
 	color: var(--vs-mp-fg);
 	border: 1px solid var(--vs-mp-border);
 	border-radius: 6px;
@@ -74,7 +128,7 @@ body {
 .vs-mp-select { min-width: 110px; }
 
 .vs-mp-btn {
-	background: var(--dsw-btn-bg, var(--vscode-button-secondaryBackground, #333333));
+	background: var(--vs-mp-btn-bg);
 	color: var(--vs-mp-fg);
 	border: 1px solid var(--vs-mp-border);
 	border-radius: 6px;
@@ -83,16 +137,16 @@ body {
 	cursor: pointer;
 	white-space: nowrap;
 }
-.vs-mp-btn:hover { background: var(--dsw-btn-hover, var(--vscode-button-secondaryHoverBackground, #404040)); }
+.vs-mp-btn:hover { background: var(--vs-mp-btn-hover); }
 .vs-mp-btn[disabled] { opacity: .55; cursor: default; }
 .vs-mp-btn.primary { background: var(--vs-mp-accent); color: var(--vs-mp-accent-fg); border-color: transparent; font-weight: 500; }
 .vs-mp-btn.danger {
-	border-color: var(--dsw-danger-border, var(--vscode-inputValidation-errorBorder, #a33));
-	color: var(--dsw-danger, var(--vscode-inputValidation-errorForeground, #ff9492));
+	border-color: var(--vs-mp-danger);
+	color: var(--vs-mp-danger-fg);
 }
 .vs-mp-link {
 	background: none; border: none; padding: 0; margin-left: 10px;
-	color: var(--dsw-accent-text, var(--vscode-textLink-foreground, #6cb6ff));
+	color: var(--vs-mp-link);
 	font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
 }
 .vs-mp-link[disabled] { opacity: .55; cursor: default; }
@@ -107,16 +161,16 @@ body {
 .vs-mp-tab:hover { opacity: 1; }
 .vs-mp-tab.active {
 	color: var(--vs-mp-fg); opacity: 1; font-weight: 500;
-	border-bottom-color: var(--dsw-accent, var(--vscode-focusBorder, #4a9eff));
+	border-bottom-color: var(--vs-mp-brand);
 }
 .vs-mp-kinds { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
 .vs-mp-kind {
-	background: var(--dsw-chip-bg, var(--vscode-badge-background, #303030));
+	background: var(--vs-mp-chip);
 	color: var(--vs-mp-fg);
 	border: 1px solid transparent;
 	border-radius: 999px; padding: 3px 12px; font: inherit; cursor: pointer;
 }
-.vs-mp-kind.active { border-color: var(--dsw-accent, var(--vscode-focusBorder, #4a9eff)); font-weight: 500; }
+.vs-mp-kind.active { border-color: var(--vs-mp-brand); font-weight: 500; }
 .vs-mp-cats { margin-top: -2px; }
 .vs-mp-cats .vs-mp-kind { font-size: 11px; padding: 2px 10px; }
 
@@ -153,7 +207,7 @@ body {
 	transition: background 0.12s ease, color 0.12s ease;
 }
 .vs-mp-size-btn + .vs-mp-size-btn { border-left: 1px solid var(--vs-mp-border); }
-.vs-mp-size-btn:hover { background: var(--vs-mp-chip); color: var(--vs-mp-fg); }
+.vs-mp-size-btn:hover { background: var(--vs-mp-chip-hover); color: var(--vs-mp-fg); }
 .vs-mp-size-btn.on { background: var(--vs-mp-chip); color: var(--vs-mp-fg); font-weight: 600; }
 
 .vs-mp-card {
@@ -168,12 +222,19 @@ body {
 .vs-mp-kindtag, .vs-mp-tag {
 	font-size: 11px; line-height: 18px;
 	border-radius: 4px; padding: 0 7px;
-	background: var(--dsw-chip-bg, var(--vscode-badge-background, #303030));
+	background: var(--vs-mp-chip);
 	color: var(--vs-mp-fg);
 }
 .vs-mp-kindtag { font-weight: 500; }
-.vs-mp-tag.warn { background: var(--dsw-warn-bg, var(--vscode-editorWarning-foreground, #cc8a00)); color: #141414; }
-.vs-mp-tag.ok { background: var(--dsw-ok-bg, var(--vscode-testing-iconPassed, #2f9e44)); color: #ffffff; }
+/* ★ 状态色：半透明叠底 + 语义前景（不用写死 #141414 / #ffffff ⇒ 明暗都可读） */
+.vs-mp-tag.warn {
+	background: color-mix(in srgb, var(--vs-mp-warn) 18%, transparent);
+	color: var(--vs-mp-warn);
+}
+.vs-mp-tag.ok {
+	background: color-mix(in srgb, var(--vs-mp-ok) 18%, transparent);
+	color: var(--vs-mp-ok);
+}
 
 .vs-mp-card-title { font-size: 16px; font-weight: 600; color: var(--vs-mp-fg); line-height: 1.35; }
 /* ★ 元信息（作者 · 版本）：主前景色 + 降透明度（**不用 grey** ⇒ 任何主题都跟得住） */
@@ -197,25 +258,28 @@ body {
 	position: relative; display: flex; align-items: flex-start; gap: 8px;
 	margin: 12px 0; padding: 9px 34px 9px 12px; border-radius: 6px;
 	font-size: 13px; line-height: 1.55;
-	background: var(--dsw-chip-bg, var(--vscode-badge-background, #303030));
+	background: var(--vs-mp-chip);
 	color: var(--vs-mp-fg);
 }
 .vs-mp-msg-text { flex: 1; word-break: break-word; }
 .vs-mp-msg.error {
-	background: var(--dsw-error-bg, var(--vscode-inputValidation-errorBackground, #5a1d1d));
-	color: var(--dsw-error-fg, var(--vscode-foreground, #ffd7d5));
+	background: color-mix(in srgb, var(--vs-mp-danger) 14%, transparent);
+	color: var(--vs-mp-danger-fg);
 }
-.vs-mp-msg.ok { background: var(--dsw-ok-bg, var(--vscode-testing-iconPassed, #2f9e44)); color: #ffffff; }
+.vs-mp-msg.ok {
+	background: color-mix(in srgb, var(--vs-mp-ok) 18%, transparent);
+	color: var(--vs-mp-ok);
+}
 
 /* ── 抽屉 ───────────────────────────────────────────────── */
-.vs-mp-mask { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); z-index: 40; }
+.vs-mp-mask { position: fixed; inset: 0; background: var(--vs-mp-mask); z-index: 40; }
 .vs-mp-drawer {
 	position: fixed; top: 0; right: 0; bottom: 0; z-index: 41;
 	width: min(560px, 94vw); overflow: auto;
-	background: var(--dsw-panel-bg, var(--vscode-sideBar-background, #1e1e1e));
+	background: var(--vs-mp-panel);
 	border-left: 1px solid var(--vs-mp-border);
 	padding: 20px 24px 32px;
-	box-shadow: -8px 0 24px rgba(0, 0, 0, .35);
+	box-shadow: -8px 0 24px var(--vs-mp-shadow);
 	color: var(--vs-mp-fg);
 }
 .vs-mp-drawer-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
@@ -270,7 +334,7 @@ body {
 	align-items: center;
 	justify-content: center;
 	overflow: hidden;
-	border: 1px solid rgba(255, 255, 255, 0.08);
+	border: 1px solid var(--vs-mp-icon-border);
 }
 .vs-mp-icon img {
 	width: 100%;
@@ -334,8 +398,8 @@ body {
 	aspect-ratio: 16 / 9;
 	overflow: hidden;
 	border-radius: 14px 14px 0 0;
-	/* 图片还没加载出来时的底色（深灰渐变）⇒ 不留白块、也不闪 */
-	background: linear-gradient(135deg, #2b2b2b, #1e1e1e);
+	/* 图片还没加载出来时的底色（明暗各一套 ⇒ 不留白块、也不闪） */
+	background: linear-gradient(135deg, var(--vs-mp-cover-a), var(--vs-mp-cover-b));
 }
 .vs-mp-cover img {
 	width: 100%;
@@ -353,6 +417,158 @@ body {
 	margin: 0 0 12px;
 	border-radius: 12px;
 }
+
+/* ── 已安装折叠组（2026-11-10：复刻「工具」工作台 .sk-fold）────────── */
+.vs-mp-fold { margin: 0 0 12px; }
+.vs-mp-fold > summary {
+	display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
+	list-style: none; padding: 7px 4px; font-size: 11.5px; font-weight: 600;
+	color: var(--vs-mp-muted);
+}
+.vs-mp-fold > summary::-webkit-details-marker { display: none; }
+.vs-mp-fold > summary::before {
+	content: '\25B8'; font-size: 10px; color: var(--vs-mp-muted);
+	transition: transform .12s ease;
+}
+.vs-mp-fold[open] > summary::before { transform: rotate(90deg); }
+.vs-mp-fold > summary:hover { color: var(--vs-mp-fg); }
+.vs-mp-fold .vs-mp-fold-n {
+	font-weight: 600; color: var(--vs-mp-fg);
+	background: var(--vs-mp-chip); border-radius: 999px; padding: 1px 7px;
+}
+.vs-mp-fold > .vs-mp-grid { margin-top: 2px; }
+
+/* ── 已安装行：逐条复刻「工具」工作台 renderItemRow 的数值/结构 ───────── */
+.vs-mp-fold > .sk-list { padding: 0; }
+.sk-list {
+	list-style: none; margin: 0; padding: 0 10px;
+	display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+	gap: 8px; align-items: start;
+}
+.sk-row {
+	display: flex; gap: 8px; align-items: flex-start; padding: 7px 10px 7px 0;
+	border: 1px solid var(--vs-mp-border); border-radius: 6px;
+	background: var(--vs-mp-card); cursor: default; overflow: hidden;
+}
+.sk-row:hover { border-color: var(--vs-mp-brand); }
+.sk-bar { flex: 0 0 3px; align-self: stretch; background: var(--vs-mp-border); }
+.sk-row[data-vs-mp-mcp="on"] .sk-bar { background: var(--vs-mp-ok); }
+.sk-row[data-vs-mp-mcp="off"] .sk-bar { background: var(--vs-mp-muted); }
+.sk-ico {
+	display: flex; align-items: center; justify-content: center;
+	width: 28px; height: 28px; flex: 0 0 28px; margin-top: 1px;
+	border-radius: 8px; overflow: hidden; border: 1px solid var(--vs-mp-icon-border);
+	font-size: 14px; line-height: 1; user-select: none;
+}
+.sk-main { flex: 1; min-width: 0; }
+.sk-l1 { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.sk-nm {
+	font-weight: 600; font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.sk-ds {
+	color: var(--vs-mp-muted); font-size: 11.5px;
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sk-rowmeta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 3px; }
+.sk-tag {
+	display: inline-block; font-size: 10px; line-height: 15px; padding: 0 5px;
+	border-radius: 3px; background: var(--vs-mp-chip); color: var(--vs-mp-fg);
+	vertical-align: 1px; white-space: nowrap;
+}
+.sk-tag.ver {
+	background: transparent; border: 1px solid var(--vs-mp-border);
+	color: var(--vs-mp-muted); font-variant-numeric: tabular-nums;
+}
+.sk-tag.up {
+	color: var(--vs-mp-warn); border: 1px solid currentColor;
+	border-radius: 999px; padding: 0 6px; background: transparent;
+}
+.sk-tag.kind { color: var(--vs-mp-link); }
+.sk-ops { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; margin-left: auto; padding-left: 4px; }
+.sk-act {
+	flex: 0 0 auto; align-self: center; padding: 0 8px; height: 22px;
+	border-radius: 11px; font: inherit; font-size: 11px; line-height: 20px; cursor: pointer;
+	border: 1px solid var(--vs-mp-border); background: none; color: var(--vs-mp-muted);
+	opacity: 0; transition: opacity .12s ease, color .12s ease, border-color .12s ease;
+}
+.sk-row:hover .sk-act, .sk-row:focus-within .sk-act, .sk-act:focus { opacity: 1; }
+.sk-act:hover { color: var(--vs-mp-danger); border-color: currentColor; }
+.sk-act-cfg, .sk-act-up { color: var(--vs-mp-link); }
+.sk-sw {
+	flex: 0 0 auto; align-self: center; padding: 0; width: 30px; height: 16px;
+	border-radius: 8px; position: relative; cursor: pointer;
+	border: 1px solid var(--vs-mp-border); background: var(--vs-mp-chip-hover);
+	transition: background .12s ease, border-color .12s ease;
+}
+.sk-sw i {
+	position: absolute; top: 1px; left: 1px; width: 12px; height: 12px; border-radius: 50%;
+	background: var(--vs-mp-fg); transition: transform .12s ease, background .12s ease;
+}
+.sk-sw[aria-checked="true"] { background: var(--vs-mp-ok); border-color: transparent; }
+.sk-sw[aria-checked="true"] i { transform: translateX(14px); background: var(--vs-mp-card); }
+.sk-sw:hover:not([disabled]) { border-color: var(--vs-mp-brand); }
+.sk-row.is-off { opacity: .62; }
+.sk-row.is-off .sk-nm { text-decoration: line-through; text-decoration-thickness: 1px; }
+
+/* ── MCP 配置弹层：单独一页展示整份 mcp.json ──────────────────────────── */
+.vs-mp-mcp-modal {
+	position: fixed; inset: 0; z-index: 80; display: flex;
+	align-items: center; justify-content: center; background: var(--vs-mp-mask);
+}
+.vs-mp-mcp-box {
+	width: min(920px, 92vw); max-height: 86vh; display: flex; flex-direction: column;
+	background: var(--vs-mp-panel); border: 1px solid var(--vs-mp-border);
+	border-radius: 10px; padding: 14px; box-shadow: 0 12px 40px var(--vs-mp-shadow);
+}
+.vs-mp-mcp-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 8px; }
+.vs-mp-mcp-title { font-size: 15px; font-weight: 600; }
+.vs-mp-mcp-path { font-size: 11px; color: var(--vs-mp-muted); margin-top: 4px; overflow-wrap: anywhere; }
+.vs-mp-mcp-summary { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.vs-mp-mcp-chip {
+	font-size: 11px; padding: 2px 8px; border-radius: 999px;
+	background: var(--vs-mp-chip); color: var(--vs-mp-fg); border: 1px solid var(--vs-mp-border);
+}
+.vs-mp-mcp-chip.off { opacity: .55; text-decoration: line-through; }
+.vs-mp-mcp-ta {
+	flex: 1; min-height: 320px; resize: vertical; font-family: ui-monospace, Consolas, monospace;
+	font-size: 12px; line-height: 1.55; padding: 10px; border-radius: 6px;
+	color: var(--vs-mp-fg); background: var(--vs-mp-input-bg); border: 1px solid var(--vs-mp-border);
+}
+.vs-mp-mcp-foot { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.vs-mp-mcp-hint { flex: 1; font-size: 11px; color: var(--vs-mp-muted); min-width: 160px; }
+
+/* ── 离线便携包（2026-11-10 P2）────────────────────────────────── */
+.vs-mp-portable-h { font-size: 13px; margin: 18px 0 8px; }
+.vs-mp-portable-list {
+	max-height: 220px; overflow: auto; padding: 6px 10px;
+	border: 1px solid var(--vs-mp-border); border-radius: 6px;
+}
+.vs-mp-portable-row {
+	display: flex; align-items: center; gap: 8px;
+	padding: 5px 0; font-size: 12px; overflow-wrap: anywhere;
+}
+
+/* ── 安装前预览 / 安全模式（2026-11-10 P0：安全与信任）────────────── */
+.vs-mp-prev-meta { font-size: 12px; line-height: 1.8; color: var(--vs-mp-fg-dim); margin: 14px 0; overflow-wrap: anywhere; }
+.vs-mp-prev-note { font-size: 12px; color: var(--vs-mp-fg-dim); opacity: .85; margin: 8px 0; line-height: 1.6; }
+.vs-mp-prev-warns h4, .vs-mp-prev-files h4 { font-size: 13px; margin: 16px 0 6px; }
+.vs-mp-prev-warns ul, .vs-mp-prev-files ul { list-style: none; margin: 0; padding: 0; font-size: 12px; line-height: 1.7; }
+.vs-mp-prev-warns li { padding: 4px 0; color: var(--vs-mp-warn); overflow-wrap: anywhere; }
+.vs-mp-prev-warns li.danger { color: var(--vs-mp-danger); }
+.vs-mp-prev-files li { color: var(--vs-mp-fg-dim); overflow-wrap: anywhere; }
+.vs-mp-prev-blocked {
+	padding: 9px 12px; border-radius: 6px; font-size: 13px; margin: 12px 0;
+	background: color-mix(in srgb, var(--vs-mp-danger) 14%, transparent); color: var(--vs-mp-danger);
+}
+.vs-mp-prev-ok { font-size: 12px; color: var(--vs-mp-ok); margin: 12px 0; }
+.vs-mp-safe-list { list-style: none; margin: 14px 0; padding: 0; }
+.vs-mp-safe-list li {
+	display: flex; justify-content: space-between; gap: 12px; padding: 8px 0;
+	border-bottom: 1px solid var(--vs-mp-border); font-size: 12px; overflow-wrap: anywhere;
+}
+.vs-mp-safe-list .on { color: var(--vs-mp-ok); }
+.vs-mp-safe-list .off { color: var(--vs-mp-muted); }
 
 /* 「GitHub 地址 + ✨自动填写」一行（2026-10-27）：输入框占满剩余宽度，按钮不换行 */
 .vs-mp-inspect-row { display: flex; gap: 8px; align-items: stretch; }

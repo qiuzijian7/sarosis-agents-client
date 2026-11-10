@@ -139,6 +139,10 @@ const REQUIRED = {
 	'dsh-plugins/vssaros-marketplace/lib/dispatch.js': [
 		"'installSkillContent'", "'listSkillHub'",
 	],
+	// 2026-11-10：MCP 能力归属同样只认 dsh 侧（IDE 侧的预设/编辑器/桥接是退役残留）。
+	'dsh-plugins/vssaros-mcp/lib/index.js': [
+		"name: 'mcp_install'", "name: 'mcp_import'", "name: 'mcp_catalog'", "name: 'mcp_remove'", "name: 'mcp_secret'", 'planMcpInstall', 'precheckOsv', 'createMcpGateway',
+	],
 };
 for (const [rel, needles] of Object.entries(REQUIRED)) {
 	let src;
@@ -175,6 +179,44 @@ if (injections > MAX_IDE_SKILL_REGISTRY_INJECTIONS) {
 } else {
 	ok(`@ISkillRegistry 注入 ${injections} 个 ≤ 上限 ${MAX_IDE_SKILL_REGISTRY_INJECTIONS}（只许继续减）`);
 }
+
+// ── ⑤ IDE 侧 MCP 残留：只许减、不许增（2026-11-10）────────────────────────
+// 按 2026-11-09 口径，IDE 侧 agentStudio 的 MCP 预设 / 编辑器页 / 工具桥接都是退役残留。
+// 不要求一轮删干净（会牵动快照/守卫），但必须钉住「不许再往那边加」：
+// browser 及两个子目录里出现白名单之外的 mcp*.ts ⇒ 判红。
+const MCP_LEGACY = new Set([
+	'src/vs/sessions/contrib/agentStudio/browser/mcpDetailEditorInput.ts',
+	'src/vs/sessions/contrib/agentStudio/browser/mcpDetailEditorPane.ts',
+	'src/vs/sessions/contrib/agentStudio/browser/mcpServerEditorInput.ts',
+	'src/vs/sessions/contrib/agentStudio/browser/mcpServerEditorPane.ts',
+	'src/vs/sessions/contrib/agentStudio/browser/mcpSupplyChain.ts',
+	'src/vs/sessions/contrib/agentStudio/browser/installers/mcpInstaller.ts',
+	'src/vs/sessions/contrib/agentStudio/browser/providers/tool/mcpToolProvider.ts',
+]);
+const MCP_SCAN_DIRS = [
+	'src/vs/sessions/contrib/agentStudio/browser',
+	'src/vs/sessions/contrib/agentStudio/browser/installers',
+	'src/vs/sessions/contrib/agentStudio/browser/providers/tool',
+];
+const mcpAdded = [];
+let mcpFound = 0;
+for (const dir of MCP_SCAN_DIRS) {
+	if (!existsSync(abs(dir))) { continue; }
+	for (const f of readdirSync(abs(dir))) {
+		if (!/^mcp.*\.ts$/i.test(f)) { continue; }
+		mcpFound += 1;
+		const rel = `${dir}/${f}`;
+		if (!MCP_LEGACY.has(rel)) { mcpAdded.push(rel); }
+	}
+}
+if (mcpAdded.length) { fail(`IDE 侧新增了 MCP 残留文件（能力应落 dsh 侧）：${mcpAdded.join(' / ')}`); }
+else { ok(`${mcpFound} 个 IDE 侧 MCP 残留文件都在退役白名单内（只许减不许增）`); }
+// dsh 侧四个核心模块必须在位（否则「退役」等于砍了没接）。
+for (const mod of ['mcpConfig', 'mcpRuntime', 'mcpImport', 'mcpOsv', 'mcpCatalog', 'mcpGateway', 'mcpSecrets']) {
+	const rel = `dsh-plugins/vssaros-mcp/lib/core/${mod}.js`;
+	if (!existsSync(abs(rel))) { fail(`dsh 侧 MCP 能力缺失：${rel}`); }
+}
+if (!failed) { ok('dsh 侧 MCP 的归一化 / 运行时挂载 / 跨应用导入 / 供应链预检 / 远程目录 / 凭据网关 / 凭据仓库七个模块都在位'); }
 
 console.log(failed ? `\n✗ ${failed} 项不通过` : '\n✓ IDE 侧技能/工具退役状态保持完整');
 process.exit(failed ? 1 : 0);

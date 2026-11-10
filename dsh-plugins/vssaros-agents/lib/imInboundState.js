@@ -8,7 +8,10 @@
 //
 // ── 存储 ────────────────────────────────────────────────────────────────────
 //   `<dataRoot>/agent-im-inbound.json`
-//   { "version": 1, "enabled": { "feishu": true, "telegram": false } }
+//   { "version": 1, "enabled": { "feishu": true, "telegram": false },
+//     "feishuApps": { "cli_xxx": true }, "skipAppIds": ["cli_yyy"] }
+//   ★ 2026-11-10：skipAppIds = 归 SuperAgent 处理的飞书应用（router 不派发、不记死信）。
+//     只是「消息级归属声明」，不影响连接装配（默认应用仍由 enabled.feishu 控制是否连）。
 //   只记布尔，不记时间戳之外的任何东西（不涉及凭据）。
 //
 // ── 边界 ────────────────────────────────────────────────────────────────────
@@ -53,18 +56,30 @@ export async function readFeishuAppsEnabled(config) {
 	}
 }
 
-async function writeState(config, enabled, feishuApps) {
+async function writeState(config, enabled, feishuApps, skipAppIds = []) {
 	const root = dataRootOf(config);
 	await mkdir(root, { recursive: true });
 	const target = inboundStatePathOf(config);
 	const tmp = target + '.tmp-' + String(process.pid) + '-' + Date.now().toString(36);
-	const body = { version: 1, enabled, ...(Object.keys(feishuApps).length ? { feishuApps } : {}) };
+	const body = { version: 1, enabled, ...(Object.keys(feishuApps).length ? { feishuApps } : {}),
+		...(skipAppIds.length ? { skipAppIds } : {}) };
 	await writeFile(tmp, JSON.stringify(body, null, 2), { encoding: 'utf8', mode: 0o600 });
 	await renameWithRetry(tmp, target);
 	try { await chmod(target, 0o600); } catch { /* Windows 上 chmod 无意义 */ }
 }
 
 /** 写某个平台的开关（其余平台、以及额外飞书应用的开关都保持原值）。 */
+/** ★ 2026-11-10：归 SuperAgent 处理的飞书应用（消息级跳过表）。坏数据/缺文件 ⇒ 空表（router 照常工作）。 */
+export async function readSkipAppIds(config) {
+	try {
+		const body = JSON.parse(await readFile(inboundStatePathOf(config), 'utf8'));
+		const list = body && Array.isArray(body.skipAppIds) ? body.skipAppIds : [];
+		return [...new Set(list.filter(id => typeof id === 'string' && id.trim()).map(id => id.trim()))];
+	} catch {
+		return [];
+	}
+}
+
 export async function setInboundEnabled(config, platform, enabled) {
 	const key = String(platform ?? '').trim().toLowerCase();
 	if (!INBOUND_PLATFORMS.includes(key)) {
@@ -73,7 +88,7 @@ export async function setInboundEnabled(config, platform, enabled) {
 	}
 	const cur = await readInboundEnabled(config);
 	cur[key] = enabled === true;
-	await writeState(config, cur, await readFeishuAppsEnabled(config));
+	await writeState(config, cur, await readFeishuAppsEnabled(config), await readSkipAppIds(config));
 	return cur;
 }
 
@@ -83,6 +98,6 @@ export async function setFeishuAppEnabled(config, appId, enabled) {
 	const apps = await readFeishuAppsEnabled(config);
 	if (!id) { return apps; }
 	if (enabled === true) { apps[id] = true; } else { delete apps[id]; }
-	await writeState(config, await readInboundEnabled(config), apps);
+	await writeState(config, await readInboundEnabled(config), apps, await readSkipAppIds(config));
 	return apps;
 }

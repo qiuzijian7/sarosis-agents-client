@@ -47,13 +47,13 @@ async function fetchJson(url, headers = {}) {
 /** 工作台 / 插件：本体必须是一个 dsh 插件（有 dsh 字段）。 */
 const PLUGIN_KINDS = new Set(['workbench', 'plugin']);
 /** 技能 / 工作流 / Agent / 连接器：bundle 形态，由我们自己打包，不在这里体检。 */
-const BUNDLE_KINDS = new Set(['skill', 'workflow', 'agent', 'mcp', 'knowledge']);
+const BUNDLE_KINDS = new Set(['skill', 'agent', 'mcp', 'knowledge']);
 
 /**
  * 体检一个「外部发布源」是否配得上它声明的 kind。
  *
  * @param {object} args
- * @param {string} args.kind      workbench | plugin | skill | workflow | agent | mcp | knowledge
+ * @param {string} args.kind      workbench | plugin | skill | agent | mcp | knowledge
  * @param {string} [args.source]  用户填的 GitHub 地址（owner/repo 或 URL）
  * @param {string} [args.npmName] 已确定的 npm 包名（distribution.type==='npm'）
  * @param {string} [args.version] 打算发布的版本号

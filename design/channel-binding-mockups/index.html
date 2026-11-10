@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Channel 绑定卡 · 4 套 mockup 对比</title>
+<style>
+:root{--bg:#1c1c1c;--panel:#252526;--line:#3c3c3c;--line2:#4a4a4a;--fg:#e6e6e6;--fg2:#a8a8a8;--fg3:#828282;--brand:#4d7cfe;--ok:#3fb27f;--warn:#e0a43a}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;padding:24px}
+.wrap{max-width:880px;margin:0 auto}
+h1{font-size:20px;margin:0 0 6px}
+h2{font-size:14px;margin:26px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+.lede{color:var(--fg2);font-size:12.5px;margin:0 0 4px}
+.badge{display:inline-block;font-size:10.5px;line-height:1.6;padding:1px 7px;border-radius:10px;border:1px solid var(--line2);color:var(--fg2)}
+.badge.rec{color:var(--ok);border-color:var(--ok)}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.opt{background:var(--panel);border:1px solid var(--line2);border-radius:10px;overflow:hidden}
+.opt-hd{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line);font-size:12.5px;font-weight:600}
+.opt-hd .spacer{flex:1}
+.opt-hd .desc{font-weight:400;color:var(--fg3);font-size:11px}
+.opt iframe{display:block;width:100%;height:600px;border:0;background:#1f1f1f}
+.opt-ft{padding:8px 12px;border-top:1px solid var(--line);font-size:11px;color:var(--fg2)}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--fg2);font-weight:600;background:rgba(128,128,128,.06)}
+td:first-child{font-weight:600;white-space:nowrap}
+.good{color:var(--ok)}
+.mid{color:var(--warn)}
+.rec-box{border:1px solid var(--ok);background:rgba(63,178,127,.08);border-radius:9px;padding:12px 14px;font-size:12.5px}
+.rec-box b{color:var(--ok)}
+ul{margin:6px 0 0;padding-left:18px}
+li+li{margin-top:4px}
+code{font-family:ui-monospace,Consolas,monospace;font-size:11px;color:var(--brand)}
+.note{font-size:11.5px;color:var(--fg3);margin-top:8px}
+@media (max-width:820px){.grid{grid-template-columns:1fr}.opt iframe{height:560px}body{padding:12px}}
+</style></head>
+<body><div class="wrap">
+<h1>Channel 绑定卡 · 4 套 mockup</h1>
+<p class="lede">目标：① 把标题下那一大段说明收进 <b>ⓘ tip</b>；② 重排绑定 item，不再把平台 / chat_id / 类型 / 方向 / 状态 / 应用 / 两个按钮挤在一行。</p>
+<p class="lede">每格都是可交互 HTML：悬停或键盘聚焦 ⓘ 看说明，点「+ 新建绑定」展开表单，右上 ◐ 可切明暗。宽度按真机右栏 <b>380px</b> 模拟。</p>
+
+<h2>四套方案</h2>
+<div class="grid">
+  <div class="opt"><div class="opt-hd">A · 紧凑双行 <span class="badge rec">推荐</span><span class="spacer"></span><span class="desc">最小改动</span></div>
+    <iframe data-mockup="1" src="a-compact.html" title="方案 A 紧凑双行"></iframe>
+    <div class="opt-ft">身份 / 状态 / 操作在第一行，元数据在第二行。仍是列表，但层级清楚、chat_id 不挤按钮。</div></div>
+  <div class="opt"><div class="opt-hd">B · 信息卡 <span class="spacer"></span><span class="desc">最强调单条</span></div>
+    <iframe data-mockup="1" src="b-card.html" title="方案 B 信息卡"></iframe>
+    <div class="opt-ft">每条绑定一张卡，左侧平台色条；chat_id 完整显示并可复制，标签与操作分区。</div></div>
+  <div class="opt"><div class="opt-hd">C · 折叠详情 <span class="spacer"></span><span class="desc">最省空间</span></div>
+    <iframe data-mockup="1" src="c-expand.html" title="方案 C 折叠详情"></iframe>
+    <div class="opt-ft">默认一行只给结论，点 ⌄ 展开键值明细；每个字段旁还有短 ⓘ。</div></div>
+  <div class="opt"><div class="opt-hd">D · 开关胶囊 <span class="spacer"></span><span class="desc">最现代</span></div>
+    <iframe data-mockup="1" src="d-switch.html" title="方案 D 开关胶囊"></iframe>
+    <div class="opt-ft">状态改成开关（开/关文字 + 颜色双编码），删除收进 ⋯ 菜单；需新增开关与菜单组件。</div></div>
+</div>
+
+<h2>📊 四案对比</h2>
+<table>
+<tr><th></th><th>可见高度<br><span class="badge">2 条绑定</span></th><th>操作成本</th><th>看全字段</th><th>实现改动量</th><th>适合</th></tr>
+<tr><td>A 紧凑双行</td><td class="good">≈ 150px</td><td class="good">1 次点击</td><td>默认可见大部分</td><td class="good">只改 <code>rows</code> 渲染 + 删说明段</td><td>绑定 1–5 条、想最小改动</td></tr>
+<tr><td>B 信息卡</td><td class="mid">≈ 260px</td><td class="good">1 次点击</td><td class="good">全部可见</td><td>新增卡片样式 + 复制按钮</td><td>绑定很少、强调「每条是什么」</td></tr>
+<tr><td>C 折叠详情</td><td class="good">≈ 90px（收起）</td><td class="mid">2 次点击</td><td>需展开</td><td>新增 details 状态 + 键值样式</td><td>绑定多、平时只看结论</td></tr>
+<tr><td>D 开关胶囊</td><td class="good">≈ 150px</td><td class="good">1 次点击（开关）</td><td>需 ⓘ / ⋯</td><td class="mid">新增 switch + 菜单 + 状态语义</td><td>想统一成现代设置页风格</td></tr>
+</table>
+
+<h2>推荐</h2>
+<div class="rec-box"><b>建议选 A（紧凑双行）</b>，并把 C 作为「绑定超过 5 条」时的后续增强。
+<ul>
+  <li>你的诉求是「文字太多 + item 挤」，A 直接命中：说明整段移进 ⓘ 富卡，item 拆成两行，不动数据结构、不新增组件。</li>
+  <li>右栏只有 380px，B 两条就占掉大半屏；D 的开关/菜单会把「停用/删除」从明确的文字按钮变成隐式操作，运维向场景反而更容易误触。</li>
+  <li>若后续绑定变多，再给 A 加一个「展开/收起」即可平滑演进到 C，不必推翻重做。</li>
+</ul></div>
+<p class="note">ⓘ tip 的实现口径：本项目没有统一 tip 组件，生产里「富说明走 HoverCard、短提示走原生 title、二者不叠用」（<code>client.workspaces.js:3656</code> 明确去掉行上原生 title 避免双浮层）。mockup 用纯 CSS 的 <code>:hover / :focus-visible / :focus-within</code> 富卡表达，键盘可聚焦、带 <code>role="tooltip"</code>；落地时应复用 <code>S.sessHoverCard</code> 或新建等价的小 tip，并同步删掉该元素上的 <code>title</code>。色值全部走 <code>--dsw-alias-*</code> 令牌 + 兜底，不新起调色板。</p>
+
+<h2>共同的信息架构（4 案一致）</h2>
+<ul>
+  <li><b>标题行</b>：Channel 绑定 · N 条 · ⓘ（完整说明）· 刷新 —— 不再有平铺长段。</li>
+  <li><b>tip 富卡内容</b>：绑定语义（一应用 + 一 chat_id）/ 仅人可增删改 / 白名单留空 = fail-closed / 飞书可选或新增应用 / <code>groupPolicy</code> 默认 open 仍需 @。</li>
+  <li><b>绑定 item 必带</b>：平台、状态（颜色 + 文字双编码）、chat_id 摘要、类型、方向、应用；长 chat_id 用截断 + tip 显示全文。</li>
+  <li><b>新建绑定</b>：默认收起；字段说明（chat_id 来源 / 群策略 / 白名单）各挂一枚短 ⓘ，不再靠超长 placeholder 承载文档。</li>
+  <li><b>无障碍</b>：图标按钮都有 <code>aria-label</code>，tip 可键盘聚焦，focus ring 可见，状态不只靠颜色，尊重 <code>prefers-reduced-motion</code>。</li>
+</ul>
+<p class="note">本目录只做设计评审，不参与 <code>check:dsh-plugins</code> 链，也不改产品代码。选定方案后我再按「测试先行 → 实现 → 守卫 → 版本」落地。</p>
+</div></body></html>

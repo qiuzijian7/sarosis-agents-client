@@ -25,7 +25,7 @@
 
 import { normalizeRepo, detectExternalDeps } from './githubInspect.js';
 
-const KIND_SET = new Set(['skill', 'workflow', 'agent', 'mcp', 'plugin', 'workbench']);
+const KIND_SET = new Set(['skill', 'agent', 'mcp', 'plugin', 'workbench']);
 const VIA_SET = new Set(['npm', 'github-source']);
 
 /**
@@ -161,8 +161,8 @@ export function marketToolDefinitions(deps) {
 					q: { type: 'string', description: '关键词（匹配名称 / 介绍 / 标识）。留空 ⇒ 按类型/时间列最新。' },
 					kind: {
 						type: 'string',
-						description: '限定类型：skill / workflow / agent / mcp / plugin / workbench。省略 ⇒ 全部类型。',
-						enum: ['skill', 'workflow', 'agent', 'mcp', 'plugin', 'workbench'],
+						description: '限定类型：skill / agent / mcp / plugin / workbench。省略 ⇒ 全部类型。',
+						enum: ['skill', 'agent', 'mcp', 'plugin', 'workbench'],
 					},
 					sort: {
 						type: 'string',
@@ -310,7 +310,7 @@ export function marketToolDefinitions(deps) {
 				type: 'object',
 				properties: {
 					source: { type: 'string', description: 'GitHub 仓库地址（`owner/repo` 或完整 URL）。' },
-					kind: { type: 'string', description: '商品类型：skill / workflow / agent / mcp / plugin / workbench。' },
+					kind: { type: 'string', description: '商品类型：skill / agent / mcp / plugin / workbench。' },
 					slug: { type: 'string', description: '商城唯一标识（小写字母开头，只含 a-z0-9_-）。' },
 					version: { type: 'string', description: '语义化版本号，如 0.3.3。必须显式给出。' },
 					via: {

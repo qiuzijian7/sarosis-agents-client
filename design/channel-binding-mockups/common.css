@@ -1,0 +1,68 @@
+/* Channel 绑定卡 mockup 共用底稿（4 套方案共用）
+ * 色值口径：dsh 官方 --dsw-alias-* 的深色实测子集，写死以便脱离运行时直接打开 HTML。
+ * 仅用于设计稿评审，不引生产 CSS。
+ */
+:root{
+	--bg:#1f1f1f; --panel:#252526; --panel2:#2d2d30; --sunken:#1b1b1c;
+	--line:#3c3c3c; --line2:#4a4a4a;
+	--fg:#e6e6e6; --fg2:#a8a8a8; --fg3:#828282;
+	--brand:#4d7cfe; --brand-soft:rgba(77,124,254,.14);
+	--ok:#3fb27f; --ok-soft:rgba(63,178,127,.14);
+	--warn:#e0a43a; --err:#e5534b;
+	--radius:8px;
+}
+body[data-ds-dark-theme="light"]{
+	--bg:#f3f3f3; --panel:#ffffff; --panel2:#f6f6f7; --sunken:#fafafa;
+	--line:#e3e3e3; --line2:#d0d0d0;
+	--fg:#1f2328; --fg2:#57606a; --fg3:#6e7781;
+	--brand:#2f6feb; --brand-soft:rgba(47,111,235,.10);
+	--ok:#1a7f37; --ok-soft:rgba(26,127,55,.10);
+	--warn:#9a6700; --err:#cf222e;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{background:var(--bg);color:var(--fg);font:13px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;padding:22px}
+.pane{width:380px;max-width:100%;margin:0 auto;background:var(--panel);border:1px solid var(--line2);border-radius:10px;box-shadow:0 12px 30px rgba(0,0,0,.28)}
+.pane-hd{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line);font-size:12.5px;font-weight:600;background:var(--panel2)}
+.pane-hd .x{margin-left:auto;color:var(--fg3);font-size:14px;cursor:pointer;border:0;background:transparent;padding:0 4px}
+.pane-bd{padding:12px}
+.card{border:1px solid var(--line);border-radius:var(--radius);background:var(--sunken);padding:10px}
+.card-hd{display:flex;align-items:center;gap:7px}
+.card-hd h3{margin:0;font-size:13px;font-weight:600}
+.count{font-size:11px;color:var(--fg2);border:1px solid var(--line2);border-radius:10px;padding:0 7px;line-height:18px}
+.spacer{flex:1 1 auto}
+.muted{color:var(--fg2)}
+.dim{color:var(--fg3)}
+.tiny{font-size:11px}
+.mono{font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;font-size:11px;letter-spacing:-.2px}
+.btn{font:inherit;font-size:11.5px;line-height:1.4;padding:3px 9px;border-radius:6px;border:1px solid var(--line2);background:transparent;color:var(--fg);cursor:pointer;transition:background-color .18s,border-color .18s,color .18s;white-space:nowrap}
+.btn:hover{background:var(--panel2);border-color:var(--fg3)}
+.btn:focus-visible,.tip:focus-visible,.iconbtn:focus-visible,.row:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.btn.primary{background:var(--brand);border-color:transparent;color:#fff}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.danger{color:var(--err)}
+.iconbtn{width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--fg2);cursor:pointer;transition:background-color .18s,color .18s}
+.iconbtn:hover{background:var(--panel2);color:var(--fg)}
+svg{display:block;flex:none}
+.chip{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;line-height:1.5;padding:1px 6px;border-radius:5px;border:1px solid var(--line2);color:var(--fg2);white-space:nowrap}
+.chip.on{color:var(--ok);border-color:var(--ok);background:var(--ok-soft)}
+.chip.off{color:var(--fg3)}
+.chip.brand{color:var(--brand);border-color:var(--brand);background:var(--brand-soft)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--fg3);flex:none}
+.dot.on{background:var(--ok);box-shadow:0 0 0 3px var(--ok-soft)}
+.dot.off{background:var(--fg3)}
+/* ── ⓘ tip：hover + 键盘 focus 都能开；纯 CSS，不用原生 title（避免双浮层）── */
+.tip{position:relative;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;color:var(--fg2);cursor:help;flex:none}
+.tip:hover{color:var(--brand)}
+.tip > .bubble{position:absolute;top:24px;right:-8px;width:288px;max-width:78vw;z-index:50;
+	background:var(--panel2);border:1px solid var(--line2);border-radius:8px;box-shadow:0 12px 28px rgba(0,0,0,.4);
+	padding:10px 12px;color:var(--fg);font-size:11.5px;line-height:1.65;font-weight:400;text-align:left;
+	opacity:0;transform:translateY(-4px);pointer-events:none;transition:opacity .18s,transform .18s}
+.tip:hover > .bubble,.tip:focus-visible > .bubble,.tip:focus-within > .bubble{opacity:1;transform:none;pointer-events:auto}
+.tip .bubble b{display:block;font-size:12px;margin-bottom:5px;color:var(--fg)}
+.tip .bubble ul{margin:0;padding-left:15px}
+.tip .bubble li+li{margin-top:3px}
+.tip .bubble code{font-family:ui-monospace,Consolas,monospace;font-size:10.5px;color:var(--brand)}
+.tip.left > .bubble{right:auto;left:-8px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+@media (max-width:420px){body{padding:10px}.pane{width:100%}}

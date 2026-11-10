@@ -81,12 +81,12 @@ function makeSkill(localId, version, extra = {}) {
 	check('① 打包确定性（同内容同字节）', again.gzBuffer.equals(prepared.gzBuffer));
 }
 
-// ── ② workflow / agent 目录也能发布（目录镜像）─────────────────
+// ── ② workflow 已不是商品类型（2026-11-10）────────────────────
 {
-	fs.mkdirSync(path.join(dataRoot, 'workflows', 'demo-wf'), { recursive: true });
-	fs.writeFileSync(path.join(dataRoot, 'workflows', 'demo-wf', 'workflow.json'), JSON.stringify({ id: 'demo-wf', name: '演示流程', version: '2.0.0' }));
-	const wf = await preparePublishBundle({ dataRoot, kind: 'workflow', localId: 'demo-wf', version: '2.0.0' });
-	check('② workflow 目录镜像可发布（manifest 自动生成）', wf.manifest.kind === 'workflow' && wf.manifest.id === 'demo-wf' && wf.manifest.version === '2.0.0');
+	let wfThrew = '';
+	try { await preparePublishBundle({ dataRoot, kind: 'workflow', localId: 'demo-wf', version: '2.0.0' }); }
+	catch (e) { wfThrew = String(e.message ?? e); }
+	check('② workflow 不再可发布（如实报不支持这一类）', /不支持发布这一类/.test(wfThrew), wfThrew);
 
 	// ⚠ agent **不可**由 dsh 侧发布（2026-10-22 收窄）：包格式是 `agent.json`，
 	//   只有 IDE 侧 `agentInstaller.preparePack` 会正确组装（含嵌套 configHtml）⇒
@@ -100,8 +100,8 @@ function makeSkill(localId, version, extra = {}) {
 		&& (await listTarGzEntries(ag.gzBuffer)).files.some(f => f.path === '.agent.md'));
 	// ★ 2026-10-23：mcp 也能由 dsh 侧打包（目录镜像，入口 config.json）
 	// ★ 2026-10-31：加 knowledge（服务端 kinds.ts 早已支持，且线上已有 2 个知识库包）
-	check('② PUBLISHABLE_KINDS = skill / workflow / agent / mcp / knowledge',
-		PUBLISHABLE_KINDS.join(',') === 'skill,workflow,agent,mcp,knowledge', PUBLISHABLE_KINDS.join(','));
+	check('② PUBLISHABLE_KINDS = skill / agent / mcp / knowledge',
+		PUBLISHABLE_KINDS.join(',') === 'skill,agent,mcp,knowledge', PUBLISHABLE_KINDS.join(','));
 }
 
 // ── ③ 本地没有 / 空目录 / slug 非法 ⇒ 如实报错 ─────────────────
@@ -201,7 +201,11 @@ function makeSkill(localId, version, extra = {}) {
 	check('⑥ localRootOf 三类根正确',
 		localRootOf(dataRoot, 'skill') === path.join(dataRoot, 'skills')
 		&& localRootOf(dataRoot, 'agent') === path.join(dataRoot, 'agents')
-		&& localRootOf(dataRoot, 'workflow') === path.join(dataRoot, 'workflows'));
+		&& localRootOf(dataRoot, 'mcp') === path.join(dataRoot, 'mcp'));
+	let wfRootThrew = '';
+	try { localRootOf(dataRoot, 'workflow'); }
+	catch (e) { wfRootThrew = String(e.message ?? e); }
+	check('⑥ workflow 不再有本地发布根（商品类型已移除）', /不支持发布这一类/.test(wfRootThrew), wfRootThrew);
 }
 
 // ── ⑨ 本地可发布资源的枚举（发布表单的数据源）────────────────────
@@ -216,7 +220,7 @@ function makeSkill(localId, version, extra = {}) {
 	fs.writeFileSync(path.join(root2, 'skills', 'no-entry', 'README.md'), 'x');
 	// 备份目录 ⇒ 跳过
 	fs.mkdirSync(path.join(root2, 'skills', '.upgrade-backup', 'old'), { recursive: true });
-	// 正常 workflow
+	// ★ 2026-11-10：本机仍可能有 workflows 目录（工作流工作台），但不该被商城列为可发布资源
 	fs.mkdirSync(path.join(root2, 'workflows', 'ok-wf'), { recursive: true });
 	fs.writeFileSync(path.join(root2, 'workflows', 'ok-wf', 'workflow.json'), JSON.stringify({ id: 'ok-wf', version: '3.2.1' }));
 	// 普通文件（不是目录）⇒ 跳过
@@ -228,8 +232,7 @@ function makeSkill(localId, version, extra = {}) {
 	const list = await listPublishables(root2);
 	check('⑨ 列出正常的 skill（带 frontmatter 版本）',
 		list.some(it => it.kind === 'skill' && it.localId === 'ok-skill' && it.version === '2.1.0'), JSON.stringify(list));
-	check('⑨ 列出正常的 workflow（带 workflow.json 版本）',
-		list.some(it => it.kind === 'workflow' && it.localId === 'ok-wf' && it.version === '3.2.1'));
+	check('⑨ 不再列出 workflow 资源（已不是商品类型）', !list.some(it => it.kind === 'workflow'), JSON.stringify(list));
 	check('⑨ 跳过缺关键文件的目录（发布必失败的不列）', !list.some(it => it.localId === 'no-entry'));
 	check('⑨ 跳过 `.upgrade-backup` 与普通文件', !list.some(it => it.localId === '.upgrade-backup' || it.localId === 'stray.txt'));
 	// ★ 2026-10-22 晚：agent 已可发布 ⇒ **应该**列出（且版本从 `.agent.md` 的 frontmatter 读）
@@ -341,21 +344,31 @@ function makeSkill(localId, version, extra = {}) {
 }
 
 // ── ⑬ 页面**必须自带底色**（2026-10-23 真机"白屏"的根因，防回归）──────────
-//   实测：dsh 页面 iframe 里 `--dsw-*` / `--vscode-*` **全部未定义** ⇒ 所有
-//   `var(--dsw-*, …)` 都走兜底值；而页面原先**没有自己的背景色** ⇒ 宿主给白底时
-//   兜底的浅色文字（#ddd / #e6e6e6）落在白底上 ⇒ 对比度 ≈1.2:1 ⇒ **看着像白屏** ✗
-//   ⇒ 页面必须自带非透明底色，不依赖宿主变量 ✓
+//   实测：CSS 变量不跨 iframe 继承 ⇒ 页面原先没有自己的背景色 ⇒ 宿主给白底时
+//   浅色文字落在白底上 ⇒ 对比度 ≈1.2:1 ⇒ **看着像白屏** ✗
+//   ⇒ 页面必须自带不透明底色，不依赖宿主变量 ✓
+//
+// ★ 2026-11-10 更新判据（别绑实现细节）：底色改由**主题变量**提供，深浅各有一套
+//   不透明兜底 ⇒ 既防"白屏"，也允许跟随 dsh「外观」。
+//   旧断言要求 `background:#xxxxxx` / `color-scheme:dark` 写死 ⇒ 会把正确的
+//   主题跟随实现判红（这正是"写死值导致颜色不跟随"的根因，守卫不该反过来保护它）。
 {
-	const css = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'page.css'), 'utf8');
+	const css = fs.readFileSync(path.resolve(HERE, '..', 'lib', 'page.css'), 'utf8')
+		.replace(/\/\*[\s\S]*?\*\//g, '');
 	// 抓 `html, body { ... }` 这一段（允许中间有换行与空格）
 	const block = /html\s*,\s*body\s*\{([\s\S]*?)\}/.exec(css)?.[1] ?? '';
 	check('⑬ page.css 定义了 html/body 块（页面自带底色，不靠宿主）', block.length > 0);
-	check('⑬ html/body 有**非透明** background（白底宿主的根因）',
-		/background\s*:\s*#[0-9a-fA-F]{3,8}/.test(block) || /background\s*:\s*rgb/.test(block), block.slice(0, 120));
-	check('⑬ html/body 有明确的 color（不能靠继承宿主的黑字）',
-		/color\s*:\s*#[0-9a-fA-F]{3,8}/.test(block) || /color\s*:\s*rgb/.test(block));
-	check('⑬ 声明 color-scheme（滚动条/表单控件跟着深色，避免割裂）',
-		/color-scheme\s*:\s*dark/.test(block));
+	check('⑬ html/body 的底色走主题变量（不是 transparent，也不是写死色）',
+		/background\s*:\s*var\(--vs-mp-bg\)/.test(block), block.slice(0, 120));
+	check('⑬ html/body 有明确的前景色（不能靠继承宿主的黑字）',
+		/color\s*:\s*var\(--vs-mp-fg\)/.test(block));
+	// 变量必须有**不透明兜底**：宿主变量缺失时若变成透明 ⇒ 白屏复发
+	const lightBlock = /@media\s*\(prefers-color-scheme:\s*light\)\s*\{([\s\S]*?)\n\}/.exec(css)?.[1] ?? '';
+	check('⑬ 深浅两档的底色都有不透明兜底（变量缺失时仍不透明）',
+		/--vs-mp-bg\s*:\s*var\([^)]*#[0-9a-fA-F]{6}/.test(css)
+		&& /--vs-mp-bg\s*:\s*var\([^)]*#[0-9a-fA-F]{6}/.test(lightBlock), lightBlock.slice(0, 120));
+	check('⑬ 深浅两档都声明 color-scheme（滚动条/表单控件跟着当前明暗）',
+		/color-scheme\s*:\s*dark/.test(css) && /color-scheme\s*:\s*light/.test(css));
 	check('⑬ #vs-mp-root 有 min-height（内容少时不露透明区 = 另一种"白屏"）',
 		/#vs-mp-root\s*\{[\s\S]{0,160}min-height\s*:\s*100vh/.test(css));
 }
@@ -380,8 +393,8 @@ function makeSkill(localId, version, extra = {}) {
 		/referrerPolicy:\s*'no-referrer'/.test(page));
 	check('⑭ 只把 http(s)/data:image 当图片，其余（emoji/短文本）当文字',
 		/\^\(https\?:\\\/\\\/\|data:image\\\/\)/i.test(page));
-	check('⑭ 空 icon 按类型兜底（agent 🤖 / skill ⚡ / workflow 🔀 …）',
-		page.includes("agent: '🤖'") && page.includes("skill: '⚡'") && page.includes("workflow: '🔀'"));
+	check('⑭ 空 icon 按类型兜底（agent 🤖 / skill ⚡ …）',
+		page.includes("agent: '🤖'") && page.includes("skill: '⚡'") && !page.includes("workflow: '🔀'"));
 	check('⑭ 图标底色按 slug **稳定**（同一商品刷新不变色）',
 		/function hueOf\(/.test(page) && /hueOf\(pkg\.slug \|\| pkg\.name/.test(page));
 	check('⑭ 图标格**尺寸固定**（懒加载前后不跳版）',
@@ -1088,7 +1101,7 @@ function makeSkill(localId, version, extra = {}) {
 		// 全部可选：既能「按关键词搜」，也能「列出某类最新」
 		check('㊲ 参数全可选', /name: 'market_search'[\s\S]{0,900}required: \[\]/.test(at4));
 		check('㊲ kind 有 enum（不让模型瞎传）',
-			/name: 'market_search'[\s\S]{0,1400}enum: \['skill', 'workflow', 'agent', 'mcp', 'plugin', 'workbench'\]/.test(at4));
+			/name: 'market_search'[\s\S]{0,1400}enum: \['skill', 'agent', 'mcp', 'plugin', 'workbench'\]/.test(at4));
 		check('㊲ 只读 ⇒ isConcurrencySafe 为 true',
 			/name: 'market_search'[\s\S]{0,3600}isConcurrencySafe: \(\) => true/.test(at4));
 

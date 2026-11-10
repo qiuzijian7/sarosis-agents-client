@@ -49,6 +49,10 @@ export function createAcpAdapter({ engineTable = {}, deps = {} } = {}) {
 	const engineFactory = deps.engineFactory ?? ((route, spec) => new AcpEngine(route, spec, deps));
 	const mcpFactory = deps.mcpFactory ?? ((options) => new LoopbackMcp(options));
 	const cwdFor = deps.cwdFor ?? (() => process.cwd());
+	/** P1-5：工作区根集（运行期读，不快照）；缺省为空 ⇒ 老 agent 逐字不变 ✓。 */
+	const rootsFor = deps.rootsFor ?? (() => []);
+	/** P1-9：跨 Host 重启的会话映射；缺省时每次新建（与改动前逐字一致 ✓）。 */
+	const sessionMap = deps.sessionMap;
 	/** P2：由插件入口从 `attachments.readImage` 注入；缺失时 ACP 也不声明支持图片。 */
 	const readImage = deps.readImage;
 	const engines = new Map();
@@ -80,10 +84,21 @@ export function createAcpAdapter({ engineTable = {}, deps = {} } = {}) {
 			},
 		});
 		const endpoint = await mcp.start();
+		// P1-9：只有**真实** dsh sessionId 才恢复 —— 'anonymous' 是兜底键，多条匿名会话
+		// 共用一条映射会把历史串到一起 ✗。映射读取失败按"没有旧会话"处理，不阻断新建 ✓。
+		const canResume = Boolean(options?.sessionId) && sessionId !== 'anonymous';
+		const resumeId = canResume && sessionMap && typeof sessionMap.get === 'function'
+			? await sessionMap.get(sessionId).catch(() => undefined) : undefined;
 		const cliSessionId = await engine.openSession({
 			cwd: cwdFor(options),
+			roots: rootsFor(options),
+			...(resumeId ? { resumeId } : {}),
 			mcp: { url: endpoint.url, token: endpoint.token },
 		});
+		// 无论本次是 new 还是 resume，都把最终生效的 id 写回（resume 失败回退 new 时不会留旧 id ✓）
+		if (canResume && sessionMap && typeof sessionMap.set === 'function') {
+			await sessionMap.set(sessionId, cliSessionId).catch(() => { });
+		}
 		live = {
 			route, cliSessionId, engine, mcp,
 			events: engine.events(cliSessionId),
@@ -191,7 +206,7 @@ export function createAcpAdapter({ engineTable = {}, deps = {} } = {}) {
 		lives,
 
 		async listModels(route) {
-			try { return (await engineOf(route).listModels({ cwd: cwdFor() })).map((model) => ({ ...model, provider: route })); }
+			try { return (await engineOf(route).listModels({ cwd: cwdFor(), roots: rootsFor() })).map((model) => ({ ...model, provider: route })); }
 			catch { return [{ provider: route, id: 'default', name: 'CLI default' }]; }
 		},
 

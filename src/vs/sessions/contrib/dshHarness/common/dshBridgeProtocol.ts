@@ -505,7 +505,7 @@ export interface IBridgeWorkspace {
 /** 上下文里一个路径/标识串的长度上限（跨进程边界收紧；与 `MAX_PATHS_PER_WINDOW` 同一条纪律 ✓）。 */
 const MAX_WORKSPACE_CONTEXT_TEXT = 4096;
 /** 关联根条数上限（一个工作区不该有几百个根；畸形载荷在桥这一侧就被拒 ✓）。 */
-const MAX_WORKSPACE_CONTEXT_ROOTS = 64;
+export const MAX_WORKSPACE_CONTEXT_ROOTS = 64;
 
 /**
  * `workspace.context` 的入参 —— **当前**工作区上下文（运行期真源，见 `DshBridgeMethod.WorkspaceContext`）。
@@ -514,13 +514,30 @@ const MAX_WORKSPACE_CONTEXT_ROOTS = 64;
  * 目标时会把**旧工作区的值留着** ✗ —— 那正是"卡片静默写进旧工作区"那类静默错的形状）。
  * `undefined` 在这里是**有意义的**（＝"当前没有"），所以校验只做形状与边界，不要求非空 ✓。
  */
+/** P0-1（2026-11-10）：结构化工作区根。兼容期**可选**，老载荷不传 ⇒ 行为逐字不变。 */
+export interface IBridgeWorkspaceRoot {
+	/** 绝对路径（跨进程边界；相对路径由调用方保证，畸形在两道校验里都会被拒 ✓）。 */
+	readonly path: string;
+	/** 展示名（来自 `.code-workspace` 的 `folders[].name`；缺省时真源侧按目录名兜底）。 */
+	readonly name?: string;
+	readonly isPrimary?: boolean;
+}
+
 export interface IBridgeWorkspaceContextArgs {
-	/** Agent Studio 的当前工作区 id（看板按它过滤、记忆按它分区）。`undefined` = 当前没有活动工作区。 */
+	/** Agent Studio 的当前工作区 id（看板按它过滤、会话归属按它判定）。`undefined` = 当前没有活动工作区。
+	 * ⚠ 记忆**不按 workspaceId 分区**：dsh 侧项目轨按会话 cwd 上溯 git 根的 hash 分区，
+	 * Bot 轨按 botId；根集只用于作用域展示与索引（见 vssaros-memory/lib/workspace-scope.js）。 */
 	readonly workspaceId?: string;
 	/** 当前工作区根（代码图谱按它定位 `<root>/.codebase-memory/`）。`undefined` = 没有可用根。 */
 	readonly workspaceRoot?: string;
-	/** 关联根（多根工作区；`[]` = 权威的"没有关联根"）。 */
+	/** 关联根（多根工作区；**全量含主根**，`[]` = 权威的"没有关联根"）。 */
 	readonly relatedRoots?: readonly string[];
+	/**
+	 * 结构化有序根集（P0-1 兼容期新增，第一项恒为主根）。
+	 * ⚠ **本刀只定义、暂不推送**：双写启用前，任何消费方都必须经 foundation 的
+	 * `deriveWorkspaceRoots()` 读根集 —— 自己拼 `[workspaceRoot, ...relatedRoots]` 会把主根算两次 ✗。
+	 */
+	readonly roots?: readonly IBridgeWorkspaceRoot[];
 	/** 推这份上下文的窗口 id（只作诊断：Host 是多窗口共享的，**最后推的胜出** ✓）。 */
 	readonly windowId?: number;
 	/** 推送时刻（只作诊断/排序 ✓）。 */
@@ -554,6 +571,27 @@ export function validateWorkspaceContextArgs(value: unknown): value is IBridgeWo
 		}
 		if (!v.relatedRoots.every(textOk)) {
 			return false;
+		}
+	}
+	if (v.roots !== undefined) {
+		// P0-1：结构化根集是**可选**增量；给错了整份拒收（与真源侧同口径，不静默丢字段 ✓）。
+		if (!Array.isArray(v.roots) || v.roots.length > MAX_WORKSPACE_CONTEXT_ROOTS) {
+			return false;
+		}
+		for (const raw of v.roots) {
+			if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+				return false;
+			}
+			const r = raw as Record<string, unknown>;
+			if (typeof r.path !== 'string' || !r.path.trim() || !textOk(r.path)) {
+				return false;
+			}
+			if (!textOk(r.name)) {
+				return false;
+			}
+			if (r.isPrimary !== undefined && typeof r.isPrimary !== 'boolean') {
+				return false;
+			}
 		}
 	}
 	if (v.windowId !== undefined && !Number.isInteger(v.windowId)) {

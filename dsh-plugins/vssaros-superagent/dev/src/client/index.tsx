@@ -26,6 +26,20 @@ const NS = 'dshSuperagent'
 const PANEL_ID = 'dsh-superagent' as MainPanelId
 /** The plugin row's id in the bundle patch (kept from upstream, so saved settings carry over). */
 const ENTRY = 'dsh-superagent'
+
+/**
+ * ★ 2026-11-10：跨 chunk 旁路统一「记住的群」。
+ *   本插件的 @群 / 流程卡 / 群执行卡都会调 openSession(roomId)，但 chat-surface 的选中态
+ *   只在侧栏群行点击时更新 ⇒ Host 仍按旧群放宽转投。这里在 openSession 入口认出群 id，
+ *   走 client.workspaces.js 注册的桥（没装该 chunk 时静默跳过，不影响打开会话）。
+ */
+function noteSelectedRoom(id: string): void {
+  try {
+    const w = window as unknown as { __vssarosKnownRoomIds?: Set<string>; __vssarosSelectRoom?: (roomId: string) => void }
+    if (w.__vssarosKnownRoomIds?.has(id) && typeof w.__vssarosSelectRoom === 'function') { w.__vssarosSelectRoom(id) }
+  } catch { /* 选中态失败不影响打开会话 */ }
+}
+
 /** VsSaros change: the package as a VsSaros built-in. */
 const PACKAGE = '@vssaros/dsh-superagent'
 
@@ -54,6 +68,7 @@ function Mounted({ ctx, t, workbench }: { ctx: ClientContext; t: T; workbench?: 
   const pending = useRef<AbortController>(undefined)
   useEffect(() => () => { pending.current?.abort() }, [])
   const openSession = useCallback(async (id: string) => {
+    noteSelectedRoom(id)
     pending.current?.abort()
     const request = new AbortController(); pending.current = request
     try {
@@ -80,6 +95,7 @@ export const RECEIPT_TOOL_NAME = 'superagent_ticket_result'
  */
 function deskToolView(ctx: ClientContext, t: T, receipt = false) {
   const openSession = async (id: string) => {
+    noteSelectedRoom(id)
     try { await openKnownSession(ctx.sessions, id as SessionId, target => { ctx.uiWorkspace.openSession(target) }, new AbortController().signal) }
     catch (error) {
       if (error instanceof SessionNavigationError) throw new Error(t(error.code === 'not-ready' ? 'sessionListNotReady' : 'sessionNotListed'))

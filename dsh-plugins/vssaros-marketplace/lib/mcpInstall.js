@@ -22,6 +22,10 @@ export function toMcpEntry(config) {
 	/** @type {Record<string, unknown>} */
 	const entry = { disabled: false };
 	if (transport === 'stdio') {
+		// ★ 2026-11-10：显式写 approved:false，与 `vssaros-mcp` 的 planMcpInstall、
+		//   `parseMcpServers()` 的 R1 授权缺口同口径。缺省本来就是「未批准」，写出来是为了让
+		//   「装完不挂载」在 mcp.json 里可读、可被守卫断言；批准由用户显式改成 true。
+		entry.approved = false;
 		entry.type = 'stdio';
 		if (cfg.command) { entry.command = cfg.command; }
 		if (cfg.args) { entry.args = cfg.args; }
@@ -32,8 +36,33 @@ export function toMcpEntry(config) {
 		if (cfg.url) { entry.url = cfg.url; }
 		if (cfg.env) { entry.headers = cfg.env; }
 		else if (cfg.headers) { entry.headers = cfg.headers; }
+		// ★ 2026-11-10：query 型凭据（如 Amap 的 ?key=...）。值必须是 ${env:VAR} 引用，
+		//   由 vssaros-mcp 的本地网关在转发时才解析；mcp.json 里不落任何明文凭据。
+		if (cfg.query && typeof cfg.query === 'object' && !Array.isArray(cfg.query)) { entry.query = cfg.query; }
 	}
 	return entry;
+}
+
+/**
+ * 商城安装 MCP 前的 OSV 预检**纯决策**（守卫可直接做行为断言）。
+ *
+ * 服务缺失 / `VSSAROS_MCP_OSV=0` / 网络失败 ⇒ 一律放行（fail-open），
+ * 与 `vssaros-mcp` 的两个工具写口同口径；只有 `blocked` 才返回可展示的阻断文案。
+ * `osv` 由 `vssarosMcpOsv` 可选服务注入 ⇒ 商城与 MCP 插件之间没有 import 依赖。
+ */
+export async function checkMcpConfigOsv(osv, cfg, opts = {}) {
+	if (!osv || typeof osv.checkStdioEntriesAgainstOsv !== 'function' || osv.isOsvEnabled?.() === false) {
+		return { status: 'skipped' };
+	}
+	const verdict = await osv.checkStdioEntriesAgainstOsv([{
+		type: String(cfg?.transport ?? 'stdio'),
+		command: cfg?.command,
+		args: Array.isArray(cfg?.args) ? cfg.args : undefined,
+	}], opts);
+	if (verdict.status === 'blocked') {
+		return { status: 'blocked', message: osv.buildOsvBlockedMessage(verdict) };
+	}
+	return { status: verdict.status };
 }
 
 /** `<数据根>/mcp.json` 的路径。 */
@@ -86,9 +115,9 @@ export async function registerMcpServer(dataRoot, storeId, config) {
  * 做法就是写 mcp.json 里那条 entry 的 `disabled` —— 与 IDE 侧 `mcpInstaller` 读的是同一份文件、
  * 同一个字段（它注册时也会写 `disabled: false`）。
  *
- * ⚠ **不是热生效**：dsh 的 MCP 是一台服务器一个组合行，行由 Host 启动时按 mcp.json 生成的
- *   `--patch` 覆盖层决定（见 IDE 的 `dshMcpConfig.ts`）⇒ 改完要重启 Host 才真正挂上/摘掉。
- *   调用方必须把这件事如实告诉用户，不能让它看起来"点了就生效"。
+ * ⚠ 生效方式取决于挂载模型：缺省由 `vssaros-mcp` 插件运行时 reconcile（改完即时生效）；
+ *   `VSSAROS_MCP_RUNTIME_MOUNT=0` 回退到 IDE 启动期 `--patch` 覆盖层时**，才需要重启 Host**。
+ *   调用方按 `VSSAROS_MCP_RUNTIME_MOUNT` 如实提示，不能一律写死"需重启"。
  *
  * @param {string} dataRoot
  * @param {string} storeId 服务器名（mcp.json 里的 key）

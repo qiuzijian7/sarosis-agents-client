@@ -14,8 +14,7 @@
  *     （读侧自洽：worker 内产生的值 worker 自己读；父进程 Dashboard 终结时同步）；
  *   · 同步纯函数（_turnKey / _estimateMessagesTokens）⇒ 本地复刻同款实现；
  *   · plan 钩子 ⇒ 不提供（P0 进程档只对只读子代理开放，plan 工具不在其工具集里）；
- *   · 记忆检索 ⇒ P0 不接入（getActiveMemoryProvider 返回 undefined，注入段自动跳过）——
- *     已知差距，P1 评估（子代理 briefing 自包含，影响有限）。
+ *   · 记忆检索已整体下线（记忆只在 dsh 侧），proc 路径不再暴露检索 RPC。
  */
 
 import { runPiKernelTurn, type IPiKernelHost, type PiKernelTurnDeps } from '../piTurnKernel.js';
@@ -139,11 +138,8 @@ function buildProxiedHost(payload: IProcTurnStartPayload): IPiKernelHost {
 		// ⚠ 这些方法的 arg0 是 provider 对象 ⇒ 换标记过界（父侧替换回真 provider）
 		_setCurrentModel: (_provider: unknown, modelId: unknown) => rpcNotify('_setCurrentModel', [MODEL_STUB_MARKER, modelId]),
 		_resolveContextWindow: (_provider: unknown, modelId: unknown) => rpcInvoke('_resolveContextWindow', [MODEL_STUB_MARKER, modelId]),
-		_storeTurnObservations: (_provider: unknown, ...rest: unknown[]) => rpcInvoke('_storeTurnObservations', [MODEL_STUB_MARKER, ...rest]),
-		_retrieveContextOnly: () => Promise.resolve(null),
-		_injectRetrievalSystemMessage: () => { throw new Error('[proc] retrieval 未接入（P0）——不应被调用（provider=undefined 时跳过）'); },
 
-		// 压缩段：估计函数本地同款；计数器本地 + patch；检索上下文走 RPC
+		// 压缩段：估计函数本地同款；计数器本地 + patch
 		_estimateMessagesTokens: (messages: readonly unknown[]) => estimateMessagesTokens(messages as readonly never[]),
 		_lastCompressionTime: 0,
 		_lastHardPruneBaselineTokens: 0,
@@ -152,7 +148,6 @@ function buildProxiedHost(payload: IProcTurnStartPayload): IPiKernelHost {
 		_compressionBeforeTokens: 0,
 		_compressionAfterTokens: 0,
 		_currentWorkspaceId: payload.workspaceId,
-		_retrieveCompactionContext: (_provider: unknown, req: unknown) => rpcInvoke('_retrieveCompactionContext', [MODEL_STUB_MARKER, req]),
 
 		// plan 钩子：不提供（P0 只读档不暴露 plan 工具）
 	};

@@ -60,16 +60,13 @@ import { IAgentOSService } from '../../agentStudio/common/agentOS.js';
 // ★ 2026-10-21：`media`（生图 / 图生图）能力用到的 provider 类型。
 import { IModelProvider } from '../../agentStudio/common/providers.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-// A 组缺口（2026-10-12）：unreal 的 bridge 设置键 + 知识库存储根解析 —— 后者**复用 IDE 同一份实现** ✓
-//（`knowledgeBaseView.rootUri` 用的就是它 ✓；本文件已有从 `agentStudio/browser/**` import 的先例 ✓）。
+// ★ 2026-11-10（用户裁决「以 dsh 侧配置为准、移除 IDE 侧配置和逻辑」）：知识库根不再由 IDE 注入。
+//   原先的 `resolveKbRoot`（幽灵设置 `agentStudio.knowledge.storage.path`）、`STORAGE_VAULTS/ACTIVE`
+//   （IDE 库清单）以及 `kbRoot/kbVaults/kbActiveVaultId` 三个启动选项**整条链删除**。
+//   真源 = dsh 插件自持的 `<数据根>/.kb-root.json`（由聊天框工具卡写入）。
 import { AGENT_STUDIO_BROWSER_CDP_HEADLESS_SETTING, AGENT_STUDIO_BROWSER_CDP_LAUNCH_DEDICATED_SETTING, AGENT_STUDIO_BROWSER_CDP_PORT_SETTING, AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING } from '../../../common/agentStudioConstants.js';
-import { resolveKbRoot } from '../../agentStudio/browser/knowledge/knowledgeStorage.js';
-// ★ 库记录（2026-10-15，用户报"不该有 uid 式的根 / 只应显示当前库"）：与 KB 视图**同一对** storage 键
-// —— `kbVaultState.ts` 是那对键的唯一定义处 ✓（自己再硬编码一遍字符串就会与 IDE 侧漂移 ✗）。
-import { STORAGE_ACTIVE, STORAGE_VAULTS } from '../../agentStudio/browser/knowledge/kbVaultState.js';
-// 页面桥的**知识库信任口径**（2026-10-15：点知识库文件不再先问"工作区之外"一次 ✓）。
+// 页面桥的**知识库信任口径**（只认 dsh 侧缺省根，见 dshKbTrust.ts）。
 import { knowledgeBaseTrustRoots } from '../common/dshKbTrust.js';
-import type { IKbVault } from '../../agentStudio/browser/views/knowledgeBase/kbTypes.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 // `dashboardStats` 能力（数据面 E 组 / README 5.124）：**IDE 本地聚合**的用量与告警 —— 这是本文件里
 // 第一个"读 IDE 内存聚合"的适配（其余读的都是编辑器/工作区状态 ✓）。
@@ -1183,14 +1180,8 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 			// 数据根本身（kb / canvas / workflow / skills 都读它；mcp 用同一个根定位 mcp.json）——
 			// 这几个模块此前**从来没有**被注入过 ⇒ dev 实例读的是生产数据（见选项与方法注释）
 			dataRoot: this._dataRoot(),
-			// A 组缺口（2026-10-12）：知识库存储根 —— 用户改过 `agentStudio.knowledge.storage.path` 才有值 ✓
-			//（口径与 IDE 侧 `knowledgeBaseView.rootUri` 同一份实现 `resolveKbRoot` ✓）。不给的话 kb 与 canvas
-			// 只认 `<数据根>/knowledge-base` ⇒ 用户改过就**空着且不报错** ✗。
-			kbRoot: this._kbRoot(),
-			// ★ 库记录（2026-10-15）：与 kbRoot 同一份覆盖层 ✓（写进 `vssaros-kb` 那一行 ✓ —— 那份 config
-			//   整体替换 ⇒ 拆两份会互相擦掉 ✗）。拿不到 ⇒ `undefined` ⇒ 渲染器**不产生那两行** ✓。
-			kbVaults: this._kbVaultsJson(),
-			kbActiveVaultId: this._kbActiveVaultId(),
+			// ★ 2026-11-10：知识库根 / 库清单 / 当前库三项**不再注入**（dsh 侧自持配置为准）。
+			//   `roots-<id>.yml` 里 `vssaros-kb` 那一行现在只带 `dataRoot`。
 			// A 组缺口：Unreal bridge 基址 —— 这是三条里唯一**连配置键都没有**的一条 ✗（此前只能靠环境变量 ✓）。
 			// 设置为空串 ⇒ undefined ⇒ 不注入 ⇒ 插件用自带默认（与 IDE 默认同值 ✓）。
 			unrealBridgeUrl: this._configurationService.getValue<string>(AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING)?.trim() || undefined,
@@ -1320,114 +1311,21 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	}
 
 	/**
-	 * **库记录**（2026-10-15）：IDE storage 里 `agentStudio.kb.vaults` 的**展示字段**（id / name / icon /
-	 * customPath / closed ✓）—— 交给渲染器时序列化成 JSON 字符串（它只写 YAML scalar ✓，见 `dshCli.ts`）。
+	 * 见 {@link IDshHarnessService.isInsideKnowledgeBase}：判据与信任面**都在** `common/dshKbTrust.ts` ✓。
 	 *
-	 * 为什么走**注入**而不是页面桥 ✗：桥是"页面 → 宿主"的低风险**界面命令**（协议开篇写明 ✓），
-	 * 而这是"宿主 → 页面"的**数据**；协议给的既有两条路是**推送**或**同源 HTTP**（见
-	 * `DSH_PAGE_IPC_WORKTREES` 的注释 ✓）—— 注入比推送更早更简单（库记录在 Host 生命周期内不变 ✓），
-	 * 且与 `kbRoot` / `dataRoot` **同源同一次启动** ✓（写进同一份 `roots-<id>.yml` ✓）。
-	 *
-	 * ⚠ 容错口径：读不到 / 解析失败 / 一条都没有 ⇒ `undefined` ⇒ **不注入** ⇒ 插件退回"按目录列出全部库"
-	 * 的旧行为 ✓（不假装 ✓，也不让一次 storage 异常阻断 Host 启动 ✗）。
-	 */
-	private _kbVaultsSlim(): { id: string; name: string; icon: string; path?: string; closed?: true }[] | undefined {
-		try {
-			const raw = this._storageService.get(STORAGE_VAULTS, StorageScope.APPLICATION);
-			if (!raw) { return undefined; }
-			const vaults = JSON.parse(raw) as IKbVault[];
-			if (!Array.isArray(vaults)) { return undefined; }
-			// ⚠ 只带页面要用的字段（少传就少泄漏 ✓，与 `IDshWorktreeOption` 同一条纪律 ✓）。
-			const slim = vaults
-				.filter(v => v && String(v.id ?? '').trim())
-				/*
-				 * ★ 2026-10-28（用户要求：**不要提供「我的知识库」这个默认库**）：
-				 *   旧版 `initVaults()` 首次使用会自动建一个名为「我的知识库」的库；后来用户
-				 *   又把它的 customPath 指到自己的文件夹 ⇒ 但**数据根下那个空目录仍在**
-				 *   （`~/.vssaros/knowledge-base/<时间戳-id>/`，0 篇）⇒ 页面里出现"多余的一条"。
-				 *   真正的库是「本地载入文件夹」登记的 `ext-…`（同名目录、169 篇）。
-				 *   ⇒ 注入时**按名字**剔除这条默认库（不限有没有 customPath ——
-				 *     有 customPath 也一样是"用户没主动建过的那条"）。
-				 *     用户若真想要这个名字，可以自己把另一条改名成它。
-				 */
-				.filter(v => v.name !== '我的知识库')
-				.map(v => ({
-					id: String(v.id),
-					name: typeof v.name === 'string' && v.name.trim() ? v.name.trim() : String(v.id),
-					icon: typeof v.icon === 'string' && v.icon ? v.icon : '📚',
-					...(v.customPath ? { path: String(v.customPath) } : {}),
-					...(v.closed ? { closed: true as const } : {}),
-				}));
-			return slim.length > 0 ? slim : undefined;
-		} catch {
-			return undefined;
-		}
-	}
-
-	/** 见 {@link _kbVaultsSlim}：给覆盖层用的 JSON 字符串（拿不到 ⇒ `undefined` ⇒ 不渲染那一行 ✓）。 */
-	private _kbVaultsJson(): string | undefined {
-		const slim = this._kbVaultsSlim();
-		return slim ? JSON.stringify(slim) : undefined;
-	}
-
-	/**
-	 * 见 {@link IDshHarnessService.isInsideKnowledgeBase}：判据与信任面**都在** `common/dshKbTrust.ts` ✓
-	 * （本方法只负责把三个来源凑齐：kbRoot 设置 / 数据根 / 已登记库根的 customPath ✓）。
+	 * ★ 2026-11-10（以 dsh 侧配置为准）：原先这里要把「kbRoot 幽灵设置 / 数据根 / IDE storage 的
+	 *   customPath 库清单」三个来源凑齐 —— 那套 IDE 侧配置与注入逻辑已整体移除。现在只认
+	 *   `<数据根>/knowledge-base` 这个缺省根（插件侧 `kbRootOf` 的缺省同值 ✓）。
+	 *   ⚠ 如实标注：用户通过工具卡把根改到别处时，那些文件仍会走一次"工作区之外"确认
+	 *     （fail-closed，安全边界不放宽）；要免确认需让信任面读 dsh 侧 `.kb-root.json`，留待下一刀。
 	 */
 	isInsideKnowledgeBase(path: string): boolean {
 		try {
-			const roots = knowledgeBaseTrustRoots(
-				this._kbRoot(),
-				this._dataRoot(),
-				(this._kbVaultsSlim() ?? []).map(v => v.path),
-			);
+			const roots = knowledgeBaseTrustRoots(this._dataRoot());
 			return isPathInside(path, roots, isWindows || isMacintosh);
 		} catch {
-			// 任何异常 ⇒ 退回"要用户确认"（fail-closed ✓：绝不因为读不到清单就**放宽** ✓）
+			// 任何异常 ⇒ 退回"要用户确认"（fail-closed ✓：绝不因为读不到配置就**放宽** ✓）
 			return false;
-		}
-	}
-
-	/** 见 {@link _kbVaultsSlim}：当前激活的库 id（`agentStudio.kb.active` ✓）。 */
-	private _kbActiveVaultId(): string | undefined {
-		try {
-			const id = this._storageService.get(STORAGE_ACTIVE, StorageScope.APPLICATION);
-			const active = typeof id === 'string' && id.trim() ? id.trim() : undefined;
-			if (!active) { return undefined; }
-			/*
-			 * ★ 2026-10-28：激活 id 可能指向**已被过滤掉的旧默认库**（见 `_kbVaultsSlim`）。
-			 *   那种情况下继续返回它 ⇒ 页面会去激活一个清单里不存在的库（表现：标题显示旧库、内容为空）。
-			 *   ⇒ 只认 slim 清单里存在的 id。
-			 */
-			const slim = this._kbVaultsSlim();
-			if (!slim || !slim.some(v => v.id === active)) { return undefined; }
-			return active;
-		} catch {
-			return undefined;
-		}
-	}
-
-	/**
-	 * **知识库存储根**（只有用户改过 `agentStudio.knowledge.storage.path` 才有值 ✓）。
-	 *
-	 * 为什么复用 IDE 的实现而不是自己算一遍 ✗：这条规则有"空 ⇒ `<数据根>/knowledge-base`、`~` 前缀展开"
-	 * 等细节 ✓，自己算一遍就多一份**会漂移**的副本 ⇒ 直接调 `resolveKbRoot`（`knowledgeBaseView.rootUri`
-	 * 用的**同一份** ✓）。没改过时返回 `undefined` ⇒ **不注入**（与插件默认同值，注入同值只会增加改错的机会 ✗）。
-	 * 解析失败同样按"不注入"处理 ⇒ 插件退回自己的默认口径，不阻断 Host 启动 ✓。
-	 */
-	private _kbRoot(): string | undefined {
-		const setting = this._configurationService.getValue<string>('agentStudio.knowledge.storage.path')?.trim();
-		if (!setting) {
-			return undefined;
-		}
-		const dataRoot = this._dataRoot();
-		if (!dataRoot) {
-			return undefined;
-		}
-		try {
-			return resolveKbRoot(setting, dataRoot);
-		} catch {
-			return undefined;
 		}
 	}
 

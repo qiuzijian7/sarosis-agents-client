@@ -9,7 +9,6 @@ import { IDisposable } from "../../../../base/common/lifecycle.js";
 import {
 	IModelProvider,
 	IModelSelection,
-	IMemoryProvider,
 	IToolProvider,
 	IPlanningProvider,
 	IExecutionProvider,
@@ -126,13 +125,6 @@ export interface IAgentOSService {
 	 */
 	registerModelProvider(provider: IModelProvider): IDisposable;
 
-	/**
-	 * 注册 Memory Provider（优先级自动选择活跃 Provider）
-	 */
-	registerMemoryProvider(
-		provider: IMemoryProvider,
-		priority?: number,
-	): IDisposable;
 
 	/**
 	 * 注册 Tool Provider
@@ -188,7 +180,6 @@ export interface IAgentOSService {
 
 	// ─── 其他能力查询（优先级自动选择）────────────────────────────
 
-	getActiveMemoryProvider(): IMemoryProvider | undefined;
 	getActiveToolProvider(): IToolProvider | undefined;
 	getActivePlanningProvider(): IPlanningProvider | undefined;
 	getActiveExecutionProvider(): IExecutionProvider | undefined;
@@ -249,12 +240,6 @@ export interface IAgentOSService {
 	 */
 	cancelAgentLoop(agentId?: string, sessionId?: string): void;
 
-	/**
-	 * 将对话增量外置为会话观察（mem:obs 暂存层，按内容哈希去重，跳过 system 消息）。
-	 * 供 driver/turn 边界统一捕获 user/assistant 消息（2026-07-26 W2：替代直写
-	 * writeMemory(type=working) 的历史通道）。
-	 */
-	_storeTurnObservations(provider: unknown, agentId: string, sessionId: string, messages: ReadonlyArray<unknown>): Promise<void>;
 
 	// ─── Tool 启用/禁用管理 ─────────────────────────────────────
 

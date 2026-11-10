@@ -84,6 +84,13 @@ console.log('check-skill-tier：P2 技能分级与治理')
 		&& /deskWithoutCatalog\(deskId\), \{ prepend: true \}\)/.test(superagentIndex)
 		&& /options\?\.sessionId === deskId/.test(superagentIndex)
 		&& !/partitionCatalog/.test(superagentIndex))
+	// ★ 2026-11-10（框架质量评估建议 4）：本守卫只读运行 bundle，改了 TS 没 rebuild 时
+	//   上面那条会假绿。真源里这个符号必须也在；根本保障仍是 build.mjs --check 的哈希比对。
+	// 用「符号 + (」而不是裸 includes：改名成 deskWithoutCatalogXxx 也应判红。
+	ok('② dev↔bundle 同形：deskWithoutCatalog 在真源与运行 bundle 都在',
+		/deskWithoutCatalog\s*\(/.test(read('dsh-plugins/vssaros-superagent/dev/src/app/desk.ts'))
+		&& /deskWithoutCatalog\s*\(/.test(read('dsh-plugins/vssaros-superagent/dev/src/app/runtime.ts'))
+		&& /deskWithoutCatalog\s*\(/.test(superagentIndex))
 	ok('② 全局回退开关仍可用（skillScopeMode: legacy 只在显式配置时启用）',
 		/skillScopeMode \?\? 'attached'/.test(indexSrc) && indexSrc.includes("=== 'legacy'"))
 }

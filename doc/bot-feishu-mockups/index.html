@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mockup 索引 · 各 Bot 的「飞书配置为一项」四款方案</title>
+<style>
+:root{--fg:#0f1115;--fg2:#61666b;--fg3:#81858c;--line:rgba(0,0,0,.16);--line2:rgba(0,0,0,.12);--line3:rgba(0,0,0,.10);
+--panel:#f5f6f7;--surface:#fff;--pri:#2f6bff;--pri-bg:rgba(47,107,255,.08);--pri-line:rgba(47,107,255,.32)}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#eceef1;color:var(--fg);font:14px/1.55 "PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;padding:24px 28px 70px}
+.fmi-wrap{max-width:1240px;margin:0 auto}
+.fmi-banner{display:inline-block;font-size:12px;font-weight:600;color:#8a4b00;background:#fff4e0;border:1px solid #f3cf8f;border-radius:8px;padding:4px 10px;margin-bottom:9px}
+h1{font-size:20px;font-weight:600;margin-bottom:7px}
+h2{font-size:15px;font-weight:600;margin:26px 0 9px}
+.fmi-lead{font-size:13px;color:var(--fg2);max-width:1120px;margin-bottom:8px}
+.fmi-ref{font-size:12px;color:var(--fg3);line-height:1.85;margin:8px 0 16px;max-width:1120px}
+.fmi-ref code,.fmi-q code{font:11.5px ui-monospace,Consolas,monospace;background:#e2e5ea;color:#33373d;padding:0 4px;border-radius:4px}
+.fmi-cmp{width:100%;border-collapse:collapse;font-size:12.5px;background:var(--surface);border:1px solid var(--line2);border-radius:12px;overflow:hidden}
+.fmi-cmp th,.fmi-cmp td{padding:9px 11px;border-bottom:1px solid var(--line3);text-align:left;vertical-align:top}
+.fmi-cmp th{background:var(--panel);color:var(--fg3);font-size:11.5px;font-weight:600;white-space:nowrap}
+.fmi-cmp tr:last-child td{border-bottom:0}
+.fmi-cmp td:first-child{font-weight:600;white-space:nowrap}
+.fmi-cmp .fmi-hl{background:rgba(47,107,255,.05)}
+.fmi-rec{border-left:3px solid var(--pri);background:var(--pri-bg);border-radius:0 10px 10px 0;padding:11px 15px;font-size:12.5px;color:var(--fg2);line-height:1.8}
+.fmi-rec b{color:var(--fg)}
+.fmi-ctl{display:flex;flex-wrap:wrap;gap:10px 20px;align-items:center;background:var(--surface);border:1px solid var(--line2);border-radius:12px;padding:9px 13px;margin:14px 0}
+.fmi-ctl>span{font-size:12px;font-weight:600;color:var(--fg2)}
+.fmi-seg{display:inline-flex;background:var(--panel);border-radius:9px;padding:2px;gap:2px}
+.fmi-seg button{border:0;background:transparent;font:inherit;font-size:12px;padding:4px 11px;border-radius:7px;color:var(--fg2);cursor:pointer}
+.fmi-seg button.on{background:var(--surface);color:var(--fg);box-shadow:0 0 0 .5px var(--line2)}
+.fmi-seg button:focus-visible,a:focus-visible{outline:2px solid var(--pri);outline-offset:2px}
+.fmi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(470px,100%),1fr));gap:14px}
+.fmi-card{background:var(--surface);border:1px solid var(--line2);border-radius:12px;overflow:hidden}
+.fmi-cardhd{display:flex;align-items:center;gap:8px;padding:10px 13px;border-bottom:1px solid var(--line3)}
+.fmi-cardhd b{font-size:13px}
+.fmi-cardhd .fmi-tag{font-size:10.5px;padding:1px 7px;border-radius:999px;background:var(--pri-bg);color:var(--pri);border:1px solid var(--pri-line)}
+.fmi-cardhd .fmi-grow{flex:1}
+.fmi-cardhd a{font-size:11.5px;color:var(--pri);text-decoration:none;border-bottom:1px dashed var(--pri-line)}
+.fmi-thumb{position:relative;height:310px;overflow:hidden;background:var(--surface);border-bottom:1px solid var(--line3)}
+.fmi-thumb iframe{position:absolute;top:0;left:0;width:940px;height:560px;border:0;transform-origin:top left;background:var(--surface)}
+.fmi-cardft{padding:9px 13px;font-size:11.5px;color:var(--fg2);line-height:1.7}
+.fmi-cardft b{color:var(--fg)}
+.fmi-q{background:var(--surface);border:1px solid var(--line2);border-radius:12px;padding:13px 18px}
+.fmi-q ol{margin-left:18px;font-size:12.5px;color:var(--fg2);line-height:1.95}
+.fmi-foot{margin-top:20px;font-size:11.5px;color:var(--fg3);border-top:1px solid var(--line2);padding-top:10px}
+@media(max-width:560px){body{padding:14px}.fmi-cmp{font-size:11.5px}}
+</style>
+</head>
+<body>
+<div class="fmi-wrap">
+  <span class="fmi-banner">MOCKUP · 纯示意，非实现代码 · 选定方案后才改生产代码</span>
+  <h1>各 Bot 的「飞书配置为一项」· 四款方案（历史留档）</h1>
+  <div class="fmi-rec" style="margin:0 0 12px"><b>2026-11-10 用户已定稿</b>：不再按四款选型。最终形态 = <b>设置 → Channel 绑定卡</b>内选飞书应用（可选已有 / 添加新应用）+ chat_id + groupPolicy；独立「飞书配置」卡已移除。本目录四款稿与上一版单方案稿仅留档，勿按它们确认。</div>
+  <p class="fmi-lead">四款用<b>同一份数据</b>（3 个 Bot，各有自己的绑定）与<b>同一套交互</b>（切 Bot、选已有应用 / 添加新应用、填 chat_id、保存 / 删除绑定、宽窄容器、深浅外观、自证探针），差别只在「这一项放在哪」。点任意「打开完整交互版」可单独操作。</p>
+  <div class="fmi-rec" style="margin:0 0 14px"><b>2026-11-10 规格修订</b>：按你的要求<b>去掉「全局应用池」</b>与「当前 Bot 选用的应用」——后者改名为<b>「绑定」</b>。一条绑定 = 选择已有应用（或就地添加新应用：App ID / App Secret）+ 配置 <b>chat_id</b>。已有应用只是「选择已有应用」的下拉可选项，不单独展示列表；<b>不再有 bot→应用映射</b>，Channel 绑定也已并入这一项。<br><b>补充（groupPolicy）</b>：添加新应用可设默认群策略，新建绑定可单独覆盖（open / allowlist / disabled，默认 open）。它落在<b>绑定级</b>才生效——<code>action:'feishu-app'</code> 只存 appSecret/name，塞进应用表单会变成「填了不生效」的假入口。</div>
+  <p class="fmi-ref"><b>权威参考</b>：① 用户现状截图 <code>image.919b0ec3c3.png</code>（浅色会话视图，顶部「对话/轨迹/记忆/技能/待办/设置」页签条）；② <code>doc/dsh-settings-models-providers-mockup.html</code>（官方设置页实测 computed style，色值沿用，不另起调色板）；③ <code>design/channel-mockups/b-master-detail.html</code>（主从结构）；④ 官方设置弹窗左导航 / SuperAgent <code>SETTINGS_GROUPS</code>。<br><b>数据契约</b>：绑定落 <code>agent-bindings.json</code>（<code>appId</code> / <code>chatId</code> / <code>targetId</code>），应用凭据落 <code>agent-im-accounts.json</code>；写口 <code>action:'create'</code> 建绑定、<code>action:'feishu-app'</code> 添加新应用；Secret 明文永不回传。</p>
+
+  <h2>方案对比</h2>
+  <table class="fmi-cmp">
+    <thead><tr><th>方案</th><th>「一项」放在哪</th><th>顶层页签</th><th>到达飞书</th><th>窄容器</th><th>生产改动面</th></tr></thead>
+    <tbody>
+      <tr class="fmi-hl"><td>A · 顶层页签</td><td>会话视图页签条，与「设置」并列</td><td>6 → 7 项</td><td>1 次点击</td><td>页签换行（不裁剪）</td><td>中：新增 <code>conversation.view</code> 页签，把卡摘出 <code>BotConfigCard</code></td></tr>
+      <tr><td>B · 左侧分组</td><td>「设置」页内左侧竖排导航的一项</td><td>6 项不变</td><td>2 次点击</td><td>侧栏降为横排</td><td>大：新增二级导航 + 内容路由</td></tr>
+      <tr class="fmi-hl"><td>C · 顶部分段</td><td>「设置」页顶部一排分段的一段</td><td>6 项不变</td><td>2 次点击</td><td>分段换行，天然适配</td><td>小：加一条 segmented，卡变段内容</td></tr>
+      <tr><td>D · 集成项列表</td><td>「设置」页里的一行集成项，点开就地展开</td><td>6 项不变</td><td>2 次点击</td><td>列表天然适配</td><td>小：列表 + 就地展开</td></tr>
+    </tbody>
+  </table>
+
+  <h2>怎么选</h2>
+  <div class="fmi-rec">
+    若你说的「一项」是<b>与「设置」同级</b> ⇒ 选 <b>A</b>：绑定表独占一页，配置空间最大，一眼可见（对齐你截图里的页签条）。<br>
+    若<b>不想增加顶层页签</b>、要最小改动 ⇒ 选 <b>C</b>：层级最浅、窄容器最稳。<br>
+    若以后分组还会变多（模型/记忆/技能/权限…）⇒ <b>B</b> 最贴官方设置弹窗的左导航；若以后要接 Telegram / Discord 等更多渠道 ⇒ <b>D</b> 的「一行一项」扩展最自然。
+  </div>
+
+  <h2>四款预览（可切预览宽度）</h2>
+  <div class="fmi-ctl">
+    <span>预览容器宽度</span>
+    <div class="fmi-seg" id="wseg"><button data-w="980" class="on">980 · 宽</button><button data-w="520">520 · 窄</button></div>
+    <span id="probe">— 预览缩放已适配</span>
+  </div>
+  <div class="fmi-grid">
+    <div class="fmi-card">
+      <div class="fmi-cardhd"><b>A · 顶层页签独立一项</b><span class="fmi-tag">与设置同级</span><span class="fmi-grow"></span><a href="a-tab.html" target="_blank">打开完整交互版 ↗</a></div>
+      <div class="fmi-thumb"><iframe src="a-tab.html?embed=1" title="方案 A 预览" loading="lazy"></iframe></div>
+      <div class="fmi-cardft"><b>优点</b> 一眼可见、绑定页独占整屏。<b>代价</b> 页签 7 项，窄容器换行。</div>
+    </div>
+    <div class="fmi-card">
+      <div class="fmi-cardhd"><b>B · 设置页左侧分组导航</b><span class="fmi-tag">主从</span><span class="fmi-grow"></span><a href="b-settings-nav.html" target="_blank">打开完整交互版 ↗</a></div>
+      <div class="fmi-thumb"><iframe src="b-settings-nav.html?embed=1" title="方案 B 预览" loading="lazy"></iframe></div>
+      <div class="fmi-cardft"><b>优点</b> 对齐官方设置弹窗左导航，顶层不增页签。<b>代价</b> 多一层层级。</div>
+    </div>
+    <div class="fmi-card">
+      <div class="fmi-cardhd"><b>C · 设置页顶部分段</b><span class="fmi-tag">改动最小</span><span class="fmi-grow"></span><a href="c-segmented.html" target="_blank">打开完整交互版 ↗</a></div>
+      <div class="fmi-thumb"><iframe src="c-segmented.html?embed=1" title="方案 C 预览" loading="lazy"></iframe></div>
+      <div class="fmi-cardft"><b>优点</b> 层级最浅、窄容器最稳。<b>代价</b> 分组再多会挤。</div>
+    </div>
+    <div class="fmi-card">
+      <div class="fmi-cardhd"><b>D · 设置页集成项列表</b><span class="fmi-tag">最字面</span><span class="fmi-grow"></span><a href="d-item-list.html" target="_blank">打开完整交互版 ↗</a></div>
+      <div class="fmi-thumb"><iframe src="d-item-list.html?embed=1" title="方案 D 预览" loading="lazy"></iframe></div>
+      <div class="fmi-cardft"><b>优点</b> 「飞书是一项」最字面，加渠道只加一行。<b>代价</b> 多一次点击。</div>
+    </div>
+  </div>
+
+  <h2>待确认问题（选定后我才动生产代码）</h2>
+  <div class="fmi-q"><ol>
+    <li><b>选哪款</b>（A / B / C / D），或指出要把哪两款的元素合并。</li>
+    <li>页签/分组文案用「飞书」还是「飞书配置」？A 方案里放在「待办」与「设置」之间，还是「设置」之后？</li>
+    <li><b>绑定条数</b>：本稿按「一个 Bot 可以有多条绑定」画（每行一个应用 + chat_id）。若你只想保留一条，我把列表压成单张卡。</li>
+    <li><b>SuperAgent</b>：作为 Bot 走同一入口（四款都已覆盖）；SuperAgent 工作台独立的 Settings → Source 页是否也要接同一份应用下拉？</li>
+    <li>添加新应用后是否要<b>立即启动该应用的入站长连接</b>？本稿只保存凭据并用于当前绑定。</li>
+    <li>下拉里「缺 App Secret」的已有应用：本稿禁用并标注，还是允许选中后补填 Secret？</li>
+  </ol></div>
+
+  <p class="fmi-foot">这是 MOCKUP 索引（纯 HTML/CSS/JS 示意），四款方案都不读写真实数据、都不是实现代码。上一版单方案稿 <code>doc/bot-feishu-settings-mockup.html</code> 仅作历史留档（仍含旧的「全局应用池」，已被本套稿取代，请勿按它确认）。参考：旧 <code>design/channel-mockups/</code> 是全局渠道页方案，随「渠道」页签下线已不再适用。</p>
+</div>
+<script>
+(function(){
+  var w = 980;
+  function fit(){
+    document.querySelectorAll('.fmi-thumb').forEach(function(box){
+      var f = box.querySelector('iframe');
+      if(!f) return;
+      var avail = box.clientWidth;
+      var scale = Math.min(1, avail / w);
+      f.style.width = w + 'px';
+      f.style.height = Math.round(560 / Math.max(scale, .4)) + 'px';
+      f.style.transform = 'scale(' + scale + ')';
+      box.style.height = Math.round(310 * (w === 520 ? 1.42 : 1)) + 'px';
+    });
+    document.getElementById('probe').textContent = '预览缩放 ' + (Math.min(1, (document.querySelector('.fmi-thumb')||{clientWidth:980}).clientWidth / w)).toFixed(2) + '× · 容器 ' + w + 'px';
+  }
+  document.getElementById('wseg').addEventListener('click', function(e){
+    var b = e.target.closest ? e.target.closest('button') : null;
+    if(!b) return;
+    w = Number(b.getAttribute('data-w'));
+    Array.prototype.forEach.call(this.querySelectorAll('button'), function(x){ x.classList.toggle('on', x === b); });
+    fit();
+  });
+  window.addEventListener('resize', fit);
+  fit();
+})();
+</script>
+</body>
+</html>

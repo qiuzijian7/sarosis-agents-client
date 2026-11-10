@@ -6,7 +6,6 @@
 import { Disposable, DisposableStore, type IDisposable } from '../../../../base/common/lifecycle.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
-import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
@@ -198,7 +197,6 @@ import {
 	AGENT_STUDIO_SKILLS_MAX_PROMPT_CHARS_SETTING,
 	AGENT_STUDIO_TOOL_SEARCH_ENABLED_SETTING,
 	AGENT_STUDIO_TOOL_SEARCH_THRESHOLD_PCT_SETTING,
-	AGENT_STUDIO_MEMORY_INJECT_CONTEXT_SETTING,
 	AGENT_STUDIO_UNREAL_BRIDGE_URL_SETTING,
 	AGENT_STUDIO_WEB_SEARCH_PROVIDER_SETTING,
 	AGENT_STUDIO_WEB_SEARCH_SEARXNG_URL_SETTING,
@@ -1059,16 +1057,6 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			description: localize('agentStudio.webSearch.cacheEnabled', "启用检索侧的两级缓存：① `web_extract` 的页面正文本地缓存（24 小时、最多 40 页；命中时输出会标注捕获时间，模型可传 refresh=true 强制重抓）；② `web_search` 的**结果备忘**（进程内、20 分钟；键含 provider 与归一化查询，同 key 并发只打一次网）。关掉则每次都真的打网。"),
-		},
-		// ── AgentMemory 检索库注入（2026-10-20）──────────────────────────────────
-		// 与 Agents 页签的「MEMORY.md 常驻注入」是两套：那条在 dsh 插件侧（memory-chars，默认开），
-		// 这条在 IDE 侧（agentmemory 的策展块，默认关）。用户此前只能靠环境变量
-		// AGENTMEMORY_INJECT_CONTEXT 打开，设置 UI 里看不到也搜不到 ⇒ 这里补注册。
-		// 环境变量仍然有效：两者任一为真即注入（本项 default false，不会覆盖环境变量）。
-		[AGENT_STUDIO_MEMORY_INJECT_CONTEXT_SETTING]: {
-			type: 'boolean',
-			default: false,
-			description: localize('agentStudio.memory.injectContext', "每轮把 AgentMemory 检索库的策展块（<agentmemory-context>）注入系统提示。**默认关闭**：关着时召回走 memory_search / memory_recall 工具，写入（capture）始终常开 —— 这样能省掉每轮 3000~5000 字符的 token，也避免跨 agent 的记忆污染。⚠ 这不是「MEMORY.md 常驻注入」（那个由每个 agent 的 memory-chars 控制）—— 两套记忆互不写入。"),
 		},
 		// ── browser_* 工具（CDP 驱动真实 Chrome，P1-2）────────────────────────
 		[AGENT_STUDIO_BROWSER_CDP_ENABLED_SETTING]: {
@@ -2771,33 +2759,6 @@ registerAction2(class extends Action2 {
 
 // ─── Open Memory Detail Command ───────────────────────────────────────
 // Opens the Memory Detail editor pane (4-Tier consolidation model).
-// Can be invoked from:
-//   1. Command Palette (F1 → "Open Memory Detail")
-//   2. The Memory sidebar view's "打开详情" button
-//   3. Any code that calls commandService.executeCommand('agentStudio.openMemoryDetail')
-registerAction2(class extends Action2 {
-	constructor() {
-		super({
-			id: 'agentStudio.openMemoryDetail',
-			title: localize2('agentStudio.openMemoryDetail', 'Open Memory Detail'),
-			f1: true,
-			category: localize2('agentStudio.category', 'Agent Studio'),
-		});
-	}
-	async run(accessor: ServicesAccessor, _agentId?: string): Promise<void> {
-		// ★★ 2026-10-27（阶段①）：**旧面板已下线** ⇒ 只走 React 版记忆详情
-		//   （`/x/memory/react-detail`；与 dsh 客户端同一份 `webapp/src/detailView.js`，
-		//    数据只走 `GET /x/memory/api/detail` ⇒ 数据源统一 ✓）
-		//   ⚠ 失败时**明确报错**，不再静默回退到已删除的面板（回退只会让用户以为"没反应" ✗）
-		try {
-			await accessor.get(ICommandService).executeCommand('dshHarness.openMemoryDetailReact');
-		} catch (err) {
-			accessor.get(INotificationService).error(
-				`打开记忆详情失败：${err instanceof Error ? err.message : String(err)}`,
-			);
-		}
-	}
-});
 
 // ─── Codebase Memory Init Command ────────────────────────────────────
 // Opens the Memory Detail editor pane, switches to the Codebase tab,
@@ -4074,8 +4035,6 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 
 	private readonly _activatedPlugins = new Map<string, IAgentCapabilityPlugin>();
 	private _extensionPointRegistry: AgentCapabilitiesExtensionPointRegistry | undefined;
-	/** 网关地址认领的完成信号（见 `_injectAgentMemoryEndpoint()`）。两条插件激活路径都要 await 它。 */
-	private _agentMemoryEndpointReady: Promise<void> | undefined;
 
 	constructor(
 		@IConfigurationService private readonly configurationService: IConfigurationService,
@@ -4093,7 +4052,6 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 
 		// ★ 与插件激活**并行**尽早启动「网关地址认领」。两条激活路径在真正 activate 插件前
 		//   都会 await 它 —— agentmemory 走的是 Source 2（Extension Point），只 await Source 1 挡不住。
-		this._agentMemoryEndpointReady = this._injectAgentMemoryEndpoint();
 		// Source 1: built-in plugins from build-time manifest
 		this._activateBuiltInPlugins();
 		// Source 2: third-party plugins via VS Code Extension Point
@@ -4140,174 +4098,9 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 
 	// --- Source 1: Built-in plugins (build-time manifest) -------------------
 
-	/**
-	 * 把本窗口应使用的 agentmemory 网关地址**注入渲染侧**（2026-09-19 真机验证后落地）。
-	 *
-	 * 背景：渲染进程里**没有 `process`**（CDP 实测 workbench 渲染上下文 `hasProcess:false`）
-	 * ⇒ 主进程写在 `process.env.AGENTMEMORY_URL` 的端口**渲染侧根本读不到**；且
-	 * `INativeEnvironmentService.isBuilt`（= `!env['VSCODE_DEV']`）在渲染侧**恒为 true**
-	 * ⇒ 「按 dev 推导端口」这条兜底同样是死的。于是渲染侧只能"逐个端口猜"，而只要
-	 * 另一个形态（安装版 3111）在监听，dev 就会**先猜中它并锁定它** ⇒ 跨环境串味。
-	 *
-	 * 解法：**不猜端口，按数据目录认领** —— 本窗口的 `userDataPath` 决定它该连哪份数据。
-	 *   · 探到 `dataDir` 与本窗口一致 ⇒ 写 `__SAROS_AGENTMEMORY_URL__`（扩展优先使用它）
-	 *   · 探到 `dataDir` 与本窗口**不一致** ⇒ 记入 `__SAROS_AGENTMEMORY_FOREIGN__`
-	 *     （扩展会把这些地址**从候选里排除** —— 宁可探测失败也不连错库）
-	 * ⚠ 与主进程 `_probeOrSpawnAgentMemoryGateway()` 的 dataDir 比对**同源**，语义一致。
-	 * ⚠ 必须在 capability plugin（agentmemory 扩展）`activate()` **之前**完成，故由
-	 *   `_activateBuiltInPlugins()` 开头 `await`。探测失败（网关仍在重建索引 ~4s）不算错：
-	 *   此刻除异己外没有别的候选，扩展侧退避探测自然会命中自己的网关。
-	 */
-	private async _injectAgentMemoryEndpoint(): Promise<void> {
-		const g = globalThis as {
-			__SAROS_AGENTMEMORY_URL__?: string;
-			__SAROS_AGENTMEMORY_FOREIGN__?: string[];
-			__SAROS_AGENTMEMORY_WANT_DATADIR__?: string;
-			__SAROS_AGENTMEMORY_INJECT__?: boolean | string;
-		};
-
-		// ★★ 2026-10-26（方案 A）：**记忆作用域别名** —— 把"工作区 scoped id"归一到"会话真实 agent"。
-		//   问题：同一引擎里存在两套分区名 —— `ws-<workspaceId>`（dsh 插件 `partitionOf` 拼的）与
-		//   persona（`saros-claw` / `default` / `knowledge-base-expert` …）⇒ 写 A 读 B 就永远"没有记忆"
-		//   （实测：`ws-*` 四层全 0，`saros-claw` 有 4000+ 条）✗✗
-		//   ⇒ 由宿主注入一条别名（**只有这里同时知道 workspaceId 与当前 agent**），
-		//     渲染侧所有记忆调用都过 `scopedMemoryAgentId()` ⇒ **读和写必然同一个 scope** ✓
-		//   ⚠ 拿不到 agent ⇒ **不注入**（宁可保持原行为，也不做猜测性映射 ✗）
-		try {
-			const studio = this.instantiationService.invokeFunction(a => a.get(IAgentStudioService));
-			const wsId = studio.getActiveWorkspaceId();
-			const cursor = (await studio.getLastSelectedAgentId()) ?? undefined;
-			// ⚠⚠ 必须校验游标是否仍有效（2026-10-26 真机教训）：
-			//   getLastSelectedAgentId() 读的是持久游标 last-active-agent.json —— 实测它停在
-			//   2026-09-16 的 saros-claw，而 saros-claw 早已不在活动 agent 注册表
-			//   （只剩 agents-backup-... 里的旧文件）⇒ 直接拿它当别名目标会把**新记忆写进废弃分区** ✗✗
-			//   ⇒ 只有"仍在注册表里"的 agent 才允许作为目标；否则**不注入**（宁可不统一，也不写错）✓
-			const liveAgents = wsId ? await studio.getAgents().catch(() => []) : [];
-			const activeIds = new Set<string>();
-			for (const a of Array.isArray(liveAgents) ? liveAgents : []) {
-				if (a && a.id) { activeIds.add(a.id); }
-			}
-			// ★★ 2026-10-26（真机实测后补）：**没有有效 agent ⇒ 退到通用分区 default**。
-			//   实测证据（网关 3112）：`loadContext('ws-…')` 只回 124B / systemPrompt **0B** / 无语境段，
-			//   而 `default` 分区有 **4970 条** episodic、`loadContext` 回 1154B 且带 <agentmemory-context>
-			//   ⇒ 会话的 `ws-*` 是**空壳**，读写都落在那儿 = 写了没人读、读了没内容 ✗✗
-			//   ⇒ 没选 agent（游标被清 / 从未选）时退到 `default`（引擎通用分区，历史数据都在这里）✓
-			const DEFAULT_MEMORY_PARTITION = 'default';
-			const resolvedByCursor = !!(cursor && activeIds.has(cursor));
-			const persona = resolvedByCursor ? cursor! : DEFAULT_MEMORY_PARTITION;
-			const personaSource = resolvedByCursor ? 'cursor' : 'default-fallback';
-			if (wsId && cursor && !persona) {
-				this.logService.warn(
-					'[AgentMemory] 记忆作用域别名未注入：游标 agent "' + cursor + '" 已不在活动注册表（现存: '
-					+ (Array.from(activeIds).slice(0, 8).join(', ') || '(无)')
-					+ '）⇒ 为避免记忆写进已废弃分区，保持原行为。处置：在 Agent Studio 重新选一次 agent 刷新游标，或删除过期游标。',
-				);
-			}
-			if (wsId && persona) {
-				(g as { __SAROS_AGENTMEMORY_SCOPE_ALIAS__?: { from: string; to: string } }).__SAROS_AGENTMEMORY_SCOPE_ALIAS__ = {
-					from: `ws-${wsId}`,
-					to: persona,
-				};
-				this.logService.info(`[AgentMemory] 记忆作用域别名: ws-${wsId} ⇒ ${persona}（读写同一个分区；来源=${personaSource}）`);
-			// ★★ 2026-10-27：**同时落到文件**（跨进程真源）。
-			//   为什么：dsh 插件在**另一个进程**，读不到上面注入的全局对象 ⇒ 只注入全局的话，
-			//   插件仍按自己的规则解析写入分区 ⇒ 两套口径会再次分叉 ✗✗
-			//   渲染进程没有 fs（sandbox）⇒ 委托网关写文件，插件读同一个文件 ✓
-			//   best-effort：它失败只影响"插件侧能否同步到别名"，不影响渲染侧的注入 ✓
-			try {
-				const memProvider = (this.agentOSService as { getActiveMemoryProvider?: () => { setScopeAlias?: (a: { from: string; to: string }) => Promise<unknown> } | undefined } | undefined)?.getActiveMemoryProvider?.();
-				void memProvider?.setScopeAlias?.({ from: `ws-${wsId}`, to: persona });
-			} catch { /* best-effort */ }
-			} else {
-				this.logService.info(`[AgentMemory] 记忆作用域别名未注入（workspaceId=${wsId ?? '(无)'} agent=${persona ?? '(无)'}）—— 保持原行为`);
-			}
-		} catch (err) {
-			this.logService.info(`[AgentMemory] 记忆作用域别名注入失败（不影响功能）: ${err instanceof Error ? err.message : String(err)}`);
-		}
-		if (typeof g.__SAROS_AGENTMEMORY_URL__ === 'string' && g.__SAROS_AGENTMEMORY_URL__.length > 0) {
-			return; // 本窗口只注入一次
-		}
-		// 2026-09-20：注入记忆注入开关。渲染进程没有 `globalThis.process`，但 sandbox 暴露了
-		// `globalThis.vscode.process`（见 base/parts/sandbox/electron-browser/globals.ts）⇒ 从那里读
-		// 用户设置的环境变量 `AGENTMEMORY_INJECT_CONTEXT`；读不到则**默认关闭**（与上游一致：
-		// 显式 "true" 才开启，避免默认注入消耗 token）。
-		const sandboxEnv = (globalThis as { vscode?: { process?: { env?: Record<string, string> } } })
-			.vscode?.process?.env;
-		// ⚠ 必须 trim：`set X=true && ...` 在 cmd.exe 下会把空格带进值（实测 "true " ⇒ 判等失败）。
-		const injectEnabled = sandboxEnv?.['AGENTMEMORY_INJECT_CONTEXT']?.trim() === 'true';
-		g.__SAROS_AGENTMEMORY_INJECT__ = injectEnabled;
-		this.logService.info(
-			`[AgentMemory] 记忆注入开关: AGENTMEMORY_INJECT_CONTEXT=${JSON.stringify(sandboxEnv?.['AGENTMEMORY_INJECT_CONTEXT'])} `
-			+ `⇒ __SAROS_AGENTMEMORY_INJECT__=${injectEnabled}`,
-		);
-		const userDataPath = (this.environmentService as INativeEnvironmentService).userDataPath;
-		const wantDataDir = this._normalizeFsPath(`${userDataPath}/.agentmemory`);
-		const foreign: string[] = [];
-		// 候选端口排序：**本形态优先**。旧实现恒先探 3111 ⇒ 只要安装版在跑，dev 窗口
-		// 必然先撞上它：白付一次 1.2s 超时，并刷一条看起来像故障的 WARN（而跨形态共存是常态）。
-		// ⚠ 不能照抄主进程 `_resolveAgentMemoryPort()`：上方注释已说明 `isBuilt` 在渲染侧恒为
-		// true ⇒ 改由 userDataPath 是否落在 dev 数据目录推导本形态端口。
-		const candidates: string[] = [];
-		const pushPort = (p: number) => {
-			const url = `http://127.0.0.1:${p}`;
-			if (!candidates.includes(url)) {
-				candidates.push(url);
-			}
-		};
-		const explicitPort = Number.parseInt(sandboxEnv?.['AGENTMEMORY_PORT'] ?? '', 10);
-		if (Number.isInteger(explicitPort) && explicitPort > 0 && explicitPort < 65536) {
-			pushPort(explicitPort);
-		}
-		pushPort(this._normalizeFsPath(userDataPath).includes('.vssaros-dev') ? 3112 : 3111);
-		pushPort(3111);
-		pushPort(3112);
-		for (const base of candidates) {
-			try {
-				const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(1200) });
-				if (!res.ok) {
-					continue;
-				}
-				const body = await res.json() as { dataDir?: string };
-				if (typeof body?.dataDir !== 'string' || body.dataDir.length === 0) {
-					continue;
-				}
-				if (this._normalizeFsPath(body.dataDir) === wantDataDir) {
-					g.__SAROS_AGENTMEMORY_URL__ = base;
-					g.__SAROS_AGENTMEMORY_FOREIGN__ = foreign;
-					g.__SAROS_AGENTMEMORY_WANT_DATADIR__ = wantDataDir;
-					this.logService.info(`[AgentMemory] 网关地址已认领: ${base}（dataDir 与本窗口一致: ${body.dataDir}）`);
-					return;
-				}
-				foreign.push(base);
-				// dev + 安装版同时开着是常态 ⇒ 记 info。真正的告警留给下方「都没认领到」的情况。
-				this.logService.info(
-					`[AgentMemory] 跳过 ${base} 上的网关：属于**其他数据目录**（${body.dataDir}），本窗口是 ${wantDataDir}`,
-				);
-			} catch { /* 端口空闲 / 超时 ⇒ 只是还没起来，不算异己 */ }
-		}
-		g.__SAROS_AGENTMEMORY_FOREIGN__ = foreign;
-		// 把「本窗口该连哪份数据」交给扩展侧：checkHealth 据此校验 /health 的 dataDir，
-		// 使「躲开异己」从宿主的一次性快照升级为每次探测的动态校验。
-		g.__SAROS_AGENTMEMORY_WANT_DATADIR__ = wantDataDir;
-		const notClaimedMsg = `[AgentMemory] 暂未认领到网关（本窗口 dataDir=${wantDataDir}；已排除 ${foreign.length} 个异己地址）—— 交由扩展侧候选探测`;
-		if (foreign.length > 0) {
-			// 有异己网关在跑、自己那份却没起来 ⇒ 本窗口记忆会降级，这才值得 warn
-			this.logService.warn(notClaimedMsg);
-		} else {
-			this.logService.info(notClaimedMsg);
-		}
-	}
-
-	/** Windows 路径大小写不敏感、分隔符可能混用 ⇒ 归一化后比较（同主进程 `_isSamePath`）。 */
-	private _normalizeFsPath(p: string): string {
-		return p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-	}
-
+	// IDE 侧的 agentmemory 网关地址认领 / 扩展探测已随整套 AgentMemory 下线删除；
+	// 记忆能力只在 dsh 侧（@vssaros/dsh-memory），这里只负责内置能力插件的激活。
 	private async _activateBuiltInPlugins(): Promise<void> {
-		// 必须等注入完成（constructor 里已启动）—— ⚠ 这里**不要**再调一次
-		// `_injectAgentMemoryEndpoint()`：那会多跑一轮 /health 探测（实测表现为
-		// "已认领"日志出现两次）。两条激活路径统一 await 同一个 Promise。
-		await this._agentMemoryEndpointReady;
 		this.logService.info(
 			`[AgentCapabilityPlugins][Diag] _activateBuiltInPlugins() start; manifestModule=${AgentCapabilityPluginContribution.MANIFEST_MODULE}`,
 		);
@@ -4530,7 +4323,6 @@ class AgentCapabilityPluginContribution extends Disposable implements IWorkbench
 		//   必须已经写在 globalThis 上。实测教训（2026-09-19）：原先只把 await 放在 Source 1，
 		//   而 agentmemory 由本路径激活 ⇒ 扩展 17:08:42.6 已开始激活、注入 17:08:44.2 才完成，
 		//   靠扩展侧退避重试才侥幸连对 3112（若 3111 上有健康网关就会先连错并锁定）。
-		await this._agentMemoryEndpointReady;
 		this.logService.info(
 			`[AgentCapabilityPlugins][Diag] ExtensionPoint activate -- id=${resolved.extensionId} `
 			+ `path=${resolved.extensionPath} mainModule=${resolved.mainModule || '<empty>'}`,

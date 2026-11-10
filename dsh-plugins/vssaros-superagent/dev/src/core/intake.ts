@@ -1,6 +1,7 @@
 /** Trigger ingestion, thread correlation, subscription fan-out, and evaluation queuing. */
+import { GROUP_REQUEST } from './group-request.ts'
 import { key } from './ids.ts'
-import { isoTime, liveTicket, threadKey, waitsForPerson } from './model.ts'
+import { awaitingAnswer, isoTime, liveTicket, threadKey } from './model.ts'
 import type { Ticket, Trigger } from './model.ts'
 import { EnginePart, type EngineOptions } from './part.ts'
 import type { Tickets } from './tickets.ts'
@@ -8,20 +9,21 @@ import type { Tickets } from './tickets.ts'
 export type ReceiveResult = 'stored' | 'duplicate' | 'filtered'
 
 /**
+ * ★ 2026-11-10：`awaitingAnswer` 已下沉到 core 叶子 `model.ts`，让 `tickets.addInput`
+ *   与本处的扇出闸门共用同一「待人回答」语义。这里重新导出，保持既有导入面与 bundle 契约。
+ */
+export { awaitingAnswer }
+
+/**
  * ★ 2026-11-09（真机）：主管台所有消息共用同一个 desk Thread，工单创建时订阅它，
  *   于是一条**全新的请求**也会被扇出给「待人回答」的旧工单，回执先说「已转给正在做的工单…」，
  *   worker 之后才用 handback 退回重评。用户看到的就是「转给了一个不相关的旧工单」。
  *
  *   这里只把「看起来像回答」的消息投给待人回答的工单，明显的新请求留给 Eval 重新分诊。
- *   待人回答有两种形态：worker 报了 blocked/failed 等人（`waitsForPerson`），
- *   或主管直接挂了一个未回答的提问（`ticket.attention`）——真机那张 cartoon.hml 工单是后者。
  */
-export const awaitingAnswer = (ticket: Ticket): boolean =>
-  !ticket.ended && (!!ticket.attention || waitsForPerson(ticket))
 
 /** 明确的新工作：以创建/添加/实现等动词开头，或整句在建群/组队。保守——其余一律当成回答，避免误伤真回答。 */
 const NEW_WORK = /^(?:(?:请|帮我|麻烦|顺便|再|又|另外|还有)\s*)*(?:创建|新建|组建|成立|添加|新增|增加|生成|实现|开发|开始|启动|拉个|拉一?个|做(?:一)?个|写(?:一)?个)/u
-const GROUP_REQUEST = /(?:建|拉|创建|组建|成立)[^，,。！!？?]{0,48}(?:群|团队)|群聊/u
 
 export function looksLikeAnswer(text: string): boolean {
   const body = String(text ?? '').trim()
@@ -91,7 +93,16 @@ export class Intake extends EnginePart {
     this.repo.triggers.saveDisposition(trigger.id, disposition)
     // A person's message that no ticket decides, such as one that reached only tickets a person stopped or that follow the
     // Thread for context, and every bot's, goes to Eval.
-    if (!this.owners(trigger).length) this.queueForEval(trigger)
+    const owners = this.owners(trigger)
+    // ★ 2026-11-10（用户）：来源要求回执时就先回一条，让发送者知道消息没丢。
+    //   只对「没有工单接住、即将进评估」的人的消息发：回答既有工单的追问不需要再确认。
+    //   id 必须用 key('received', …) 而不是 key('ack', …)：后者是接单回执的 id，
+    //   撞键会让真正的 acknowledgement 被 receipts 的 INSERT OR IGNORE 吞掉，
+    //   还会让 Tickets.takenUp() 误判「工人已取用」。
+    if (trigger.human && trigger.channel && filter.receipt && !owners.length) {
+      this.options.outbox.send({ id: key('received', trigger.id), channel: trigger.channel, kind: 'notice', text: filter.receipt })
+    }
+    if (!owners.length) this.queueForEval(trigger)
     for (const ticketId of fanout) this.tickets.wake(ticketId)
     this.emit('trigger.received', { triggerId: trigger.id, threads: trigger.threads.map(threadKey) })
     return 'stored'

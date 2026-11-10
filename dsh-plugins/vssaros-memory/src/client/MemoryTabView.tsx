@@ -38,6 +38,20 @@ interface MemoryFileRow {
   truncated: boolean
   path?: string
   content: string
+  /** P0：作用域展示元数据（global / project / bot），可选兼容旧响应。 */
+  scope?: 'global' | 'project' | 'bot'
+  root?: { path: string; name: string; isPrimary: boolean }
+  workspaceKey?: string
+}
+
+/** P0：运行期多根作用域（来自 /api/memory-files，可缺席 ⇒ 降级单根视图）。 */
+interface WorkspaceScope {
+  workspaceId: string | null
+  roots: Array<{ path: string; name: string; isPrimary: boolean }>
+  workspaceKey: string | null
+  botKey: string | null
+  current: string | null
+  ambiguous: boolean
 }
 
 /** Locale-bound props (the `memoryEvolve` namespace). */
@@ -256,6 +270,8 @@ export function MemoryTabView(props: ConvViewProps & MemoryTabViewProps): JSX.El
   const [files, setFiles] = useState<MemoryFileRow[] | null>(null)
   const [notice, setNotice] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
   const [cwd, setCwd] = useState<string | null>(null)
+  /** P0：多根作用域；null = foundation 缺席/未推上下文 ⇒ 整条折叠成单行 cwd。 */
+  const [scope, setScope] = useState<WorkspaceScope | null>(null)
   /** 当前 git 分支（null=非 git/无法获取）；branches=全部分支（下拉选项）。 */
   const [branch, setBranch] = useState<string | null>(null)
   const [branches, setBranches] = useState<string[]>([])
@@ -318,13 +334,24 @@ export function MemoryTabView(props: ConvViewProps & MemoryTabViewProps): JSX.El
 
   const load = useCallback((): void => {
     setFiles(null)
-    void api<{ files: MemoryFileRow[]; cwd: string | null; branch: string | null; branches: string[] }>(
+    void api<{ files: MemoryFileRow[]; cwd: string | null; branch: string | null; branches: string[];
+      workspaceId?: string | null; roots?: WorkspaceScope['roots']; workspaceKey?: string | null;
+      botKey?: string | null; scope?: { current: string | null; ambiguous: boolean } | null }>(
       `/api/memory-files?sessionId=${encodeURIComponent(String(sessionId))}`,
     ).then((res) => {
       setFiles(res.files)
       setCwd(res.cwd)
       setBranch(res.branch)
       setBranches(res.branches ?? [])
+      // P0：没有运行期上下文（scope 为 null）时保持单根视图，不猜、不报错。
+      setScope(res.scope === null || res.scope === undefined ? null : {
+        workspaceId: res.workspaceId ?? null,
+        roots: res.roots ?? [],
+        workspaceKey: res.workspaceKey ?? null,
+        botKey: res.botKey ?? null,
+        current: res.scope.current,
+        ambiguous: res.scope.ambiguous,
+      })
     }).catch((error: Error) => {
       setNotice({ kind: 'error', text: error.message })
       setFiles([])
@@ -614,7 +641,33 @@ export function MemoryTabView(props: ConvViewProps & MemoryTabViewProps): JSX.El
         ))}
       </div>
       <p className="mt-warning">⚠️ {t('memoryTab.warning')}</p>
-      {cwd !== null && <p className="mt-cwd">{t('memoryTab.cwd')}: {cwd}</p>}
+      {/* P0：作用域条。单根/无上下文 ⇒ 折叠成原来的单行 cwd，零学习成本。 */}
+      {scope !== null && scope.roots.length > 1 ? (
+        <div className="mt-scope-bar" role="group" aria-label={t('memoryTab.scope.label')}>
+          <span className="mt-scope-title">{t('memoryTab.scope.label')}</span>
+          <span className="mt-scope-roots" role="radiogroup" aria-label={t('memoryTab.scope.roots')}>
+            {scope.roots.map((root) => (
+              <button
+                key={root.path}
+                type="button"
+                role="radio"
+                aria-checked={root.path === scope.current}
+                disabled
+                title={root.path}
+                className={root.path === scope.current ? 'mt-scope-root mt-scope-root-active' : 'mt-scope-root'}
+              >{root.name}{root.isPrimary ? ` (${t('memoryTab.scope.primary')})` : ''}</button>
+            ))}
+          </span>
+          {scope.botKey !== null && (
+            <span className="mt-badge mt-scope-bot" title={t('memoryTab.scope.botHint')}>🤖 {scope.botKey}</span>
+          )}
+          <span className="mt-scope-meta">
+            {scope.ambiguous ? t('memoryTab.scope.ambiguous') : t('memoryTab.scope.current', { root: scope.roots.find(r => r.path === scope.current)?.name ?? '—' })}
+            {scope.workspaceKey !== null && ` · ${t('memoryTab.scope.key')} ${scope.workspaceKey}`}
+            {branch !== null && ` · ${branch}`}
+          </span>
+        </div>
+      ) : cwd !== null && <p className="mt-cwd">{t('memoryTab.cwd')}: {cwd}</p>}
       {feature !== null ? (
         feature === 'guide' ? (
           // 记忆专属指南：详细介绍记忆 Tab 自己的功能（五轨/文件页签/分支/
@@ -678,6 +731,16 @@ export function MemoryTabView(props: ConvViewProps & MemoryTabViewProps): JSX.El
                   </span>
                 )}
                 {activeRow.path !== undefined && <span className="mt-card-path" title={activeRow.path}>{activeRow.path}</span>}
+                {/* P0：每条记忆的归属徽标（项目根 / Bot / 全局） */}
+                {activeRow.scope === 'project' && activeRow.root && (
+                  <span className="mt-badge mt-scope-badge-project" title={activeRow.root.path}>📁 {activeRow.root.name}</span>
+                )}
+                {activeRow.scope === 'bot' && scope?.botKey && (
+                  <span className="mt-badge mt-scope-badge-bot">🤖 {scope.botKey}</span>
+                )}
+                {activeRow.scope === 'global' && (
+                  <span className="mt-badge mt-scope-badge-global">🌐 {t('memoryTab.scope.global')}</span>
+                )}
                 {activeRow.available && (
                   <span className="mt-card-actions">
                     <button type="button" className="mt-btn" onClick={() => openWithSystem(activeRow)}>

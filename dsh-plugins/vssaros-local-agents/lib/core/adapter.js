@@ -66,7 +66,7 @@ export function createLocalAgentAdapter(deps = {}) {
 	// P2：图片字节由插件入口从 attachments.readImage 注入；缺失时任何路由都不声明支持图片。
 	const readImage = deps.readImage;
 	// P1：ACP 路由走独立的多轮状态机；P0 的 NDJSON 单轮路径保持原样，互不干扰。
-	const acp = createAcpAdapter({ engineTable: table, deps: { ...deps, cwdFor: deps.cwdFor, readImage } });
+	const acp = createAcpAdapter({ engineTable: table, deps: { ...deps, cwdFor: deps.cwdFor, rootsFor: deps.rootsFor, sessionMap: deps.sessionMap, readImage } });
 
 	const specOf = (route) => table[route];
 

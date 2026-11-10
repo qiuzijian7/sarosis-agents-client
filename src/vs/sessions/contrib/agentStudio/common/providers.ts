@@ -190,7 +190,22 @@ export interface IModelCapabilityConfig {
 	readonly reservedOutputTokenSpace?: number | null;
 }
 
-export const enum ModelCapability {
+/**
+ * ★★ 2026-11-10（真机：F5 启动「没有反应」）：**必须是普通 `enum`，不能是 `const enum`**。
+ *
+ * 这个文件被 7 个模块在运行时 `import { ModelCapability }`（`node/llmBridgeNode.ts`、
+ * `browser/languageModelsBridge.ts` 等）。`const enum` 在 TS 编译期会被擦除，只有
+ * `src/tsconfig.json` 的 `preserveConstEnums: true` 才让它留下运行时对象；而 **watch 增量
+ * 重编译单个文件时没带这个配置**（`src/tsconfig.base.json` 里是 false）⇒ 改一次本文件，
+ * `out/providers.js` 就不再导出 `ModelCapability`，其它模块的旧产物仍 import 它 ⇒
+ * `SyntaxError: The requested module '../common/providers.js' does not provide an export
+ * named 'ModelCapability'` ⇒ `out/main.js:139 startup()` 抛错 ⇒ Electron 主进程起不来、
+ * 没有窗口也没有日志批次（用户看到的「F5 没反应」）。
+ *
+ * 改成普通 enum 后，无论全量编译 / 增量 transpile / 单文件重编译都会生成运行时对象，
+ * 与同文件里的 `ModelAuthStatus` / `KanbanPriority` 保持一致 ✓。
+ */
+export enum ModelCapability {
 	Chat = 'chat',
 	Code = 'code',
 	Vision = 'vision',
@@ -717,266 +732,10 @@ export interface IModelUsage {
 	readonly modelId?: string;
 }
 
-// ─── Memory Provider Interface ────────────────────────────────────────────────
+
 
 /**
- * 固定槽位名（顺序即展示顺序）。对齐 extensions/agentmemory-memory/src/amSlots.ts 的
- * DEFAULT_SLOTS。记忆槽位是「固定 8 槽位模型」——无论网关是否返回数据，编辑器都应
- * 展示这 8 个固定槽位（内容为空则显示「(空)」），避免误导性的「暂无固定槽位」空态。
- */
-export const FIXED_SLOT_NAMES: readonly string[] = [
-	'persona',
-	'user_preferences',
-	'tool_guidelines',
-	'project_context',
-	'guidance',
-	'pending_items',
-	'session_patterns',
-	'self_notes',
-];
-
-export interface IMemoryProvider {
-	readonly id: string;
-	readonly name: string;
-
-	/**
-	 * 加载会话的记忆上下文。
-	 *
-	 * `query` 参数（可选）：当前轮次的用户输入文本，用于驱动 vendor 的语义/关键词
-	 * 召回。若不传，provider 实现可走"全量摘要"或返回空，但召回质量会大幅下降。
-	 *
-	 * `options.scope` (2026-06 新增) —— 控制召回的作用域：
-	 *   - 'agent'     → 仅本 Agent 自己写入的记忆（默认，严格隔离）
-	 *   - 'global'    → 全库（跨 agent 共享）
-	 * 不传时 provider 实现按"agent"兜底，保持向后兼容；老的 provider
-	 * 实现可以忽略此参数（接口已声明为可选）。
-	 */
-	loadContext(
-		agentId: string,
-		sessionId: string,
-		query?: string,
-		options?: IMemoryRecallOptions,
-	): Promise<IMemoryContext>;
-	writeMemory(agentId: string, entry: IMemoryEntry): Promise<void>;
-	searchMemory(agentId: string, query: string): Promise<IMemoryEntry[]>;
-
-	// ─── Extended Lifecycle Methods (optional, AgentMemoryProvider implements) ──
-
-	/** Pre-compact injection: called before context compression to inject relevant memories */
-	onPreCompact?(agentId: string, sessionId: string, messages: Array<{ role: string; content: string; timestamp: number }>, tokenBudget: number): { injectedContext: string; totalTokens: number };
-
-	/** Called when a task is completed */
-	onTaskCompleted?(agentId: string, sessionId: string, taskSubject: string, taskId?: string): void;
-
-	/** Called when a git commit is made */
-	onGitCommit?(commit: { sha: string; message: string; author: string; filesChanged: string[]; insertions: number; deletions: number; timestamp: number; branch?: string }): unknown;
-
-	/** Called when a subagent starts */
-	onSubagentStart?(parentAgentId: string, task: string): unknown;
-
-	/** Called when a subagent stops */
-	onSubagentStop?(agentId: string, status: 'completed' | 'failed' | 'cancelled', result?: string, error?: string): boolean;
-
-	/** Get extended stats (for memory detail pane) */
-	getExtendedStats?(agentId: string): Record<string, unknown>;
-
-	/** Run extended diagnostics */
-	runExtendedDiagnostics?(agentId: string): Record<string, unknown>;
-
-	/** 文件相关 bug 记忆（mem::enrich 复刻）：type=bug ∩ isLatest ∩ files 路径重叠，updatedAt 倒序 top3 */
-	bugMemoriesForFiles?(agentId: string, files: string[], project?: string): Promise<Array<{ id: string; title: string; content: string }>>;
-
-	/** Flush pending writes */
-	flush?(): Promise<void>;
-
-	// ─── Session Observation（mem:obs 会话暂存层，对齐 agentmemory mem::observe）───
-	/**
-	 * 写入一条会话观察（工具结果 / turn 消息等暂存事件）。
-	 * 与 writeMemory 的区别：写入 mem:obs:<agent>:<session> 会话暂存层——
-	 * 便宜 KV set + 滑动窗口上限 + 阈值自动触发会话压缩，**不走**长期记忆的
-	 * 去重/巩固管线。经 compressSession 压缩后才可能进入长期层。
-	 */
-	observe?(agentId: string, payload: { sessionId: string; hookType: string; timestamp: string; data?: unknown }): Promise<{ success: boolean; observationId?: string; error?: string } | unknown>;
-
-	// ─── Hook System (for agentOSService lifecycle integration) ────────────
-	/**
-	 * Trigger a lifecycle hook. Called by agentOSService at key lifecycle points:
-	 * session_start, prompt_submit, pre_tool_use, post_tool_use, post_tool_failure,
-	 * pre_compact, stop, session_end, task_completed.
-	 */
-	triggerHook?(type: string, ctx: Record<string, unknown>): Promise<void>;
-
-	/** Get hook system statistics (for memory detail panel).
-	 *  Renderer 代理(Opt1)返回 Promise（数据在网关进程），V2 网关实现返回同步对象。
-	 *  调用方（memoryDetailEditorPane）统一 `await`。 */
-	getHookStats?(): { totalHooks: number; hooksByType: Record<string, number>; callCounts: Record<string, number> } | Promise<{ totalHooks: number; hooksByType: Record<string, number>; callCounts: Record<string, number> }>;
-
-	// ─── Extended Memory APIs (for memory detail panel) ────────────────────
-
-	/** Get basic memory stats */
-	getStats?(agentId: string): Record<string, unknown>;
-
-	/** Get project profile */
-	getProfile?(agentId: string): Record<string, unknown> | null;
-
-	/**
-	 * Get timeline of memory events。
-	 * Opt1：真实引擎在网关进程——实现可返回 Promise（调用方 instanceof Promise 分流），
-	 * 同步返回空数组的实现是「假成功」（调用方误读为无数据），禁止。
-	 */
-	getTimeline?(agentId: string): Array<Record<string, unknown>> | Promise<Array<Record<string, unknown>>>;
-
-	/** Get all pinned slots */
-	getSlots?(agentId: string): Array<{ name: string; content: string }>;
-
-	/**
-	 * 固定槽位名（顺序即展示顺序）。对齐 extensions/agentmemory-memory/src/amSlots.ts 的
-	 * DEFAULT_SLOTS。记忆槽位是「固定 8 槽位模型」——无论网关是否返回数据，
-	 * 编辑器都应展示这 8 个固定槽位（内容为空则显示「(空)」），故以此为渲染底表。
-	 */
-	FIXED_SLOT_NAMES?: readonly string[];
-
-	/** Set a pinned slot's content */
-	setSlot?(agentId: string, label: string, content: string): void;
-
-	/** Get all lessons */
-	getLessons?(agentId: string): Array<{ id: string; content: string; context?: string; tags?: string[] }>;
-
-	/** Add a manual lesson */
-	addLesson?(agentId: string, content: string, context?: string, tags?: string[]): Record<string, unknown>;
-
-	/** Delete a lesson */
-	deleteLesson?(agentId: string, lessonId: string): void;
-
-	/** Get episodic memories (consolidated) */
-	getEpisodicMemories?(agentId: string): Array<Record<string, unknown>>;
-
-	/** Get semantic memories (consolidated) */
-	getSemanticMemories?(agentId: string): Array<Record<string, unknown>>;
-
-	/** Get procedural memories (consolidated) */
-	getProceduralMemories?(agentId: string): Array<Record<string, unknown>>;
-
-	/** Get consolidation context as text */
-	getConsolidationContext?(agentId: string): string;
-
-	/** Get relations for a memory */
-	getRelations?(agentId: string, memoryId: string): Array<Record<string, unknown>>;
-
-	/** Get relation statistics */
-	getRelationStats?(agentId: string): Record<string, number>;
-
-	/**
-	 * Trace provenance chain for a memory。
-	 * Opt1：实现可返回 Promise（同 getTimeline 注记——同步假成功禁止）。
-	 */
-	traceProvenance?(agentId: string, memoryId: string): Record<string, unknown> | null | Promise<Record<string, unknown> | null>;
-
-	/** Get audit log */
-	getAuditLog?(filter?: { operation?: string; agentId?: string; limit?: number }): Array<Record<string, unknown>> | Promise<Array<Record<string, unknown>>>;
-
-	/**
-	 * Get audit summary — memoryDetailEditorPane 审计页签消费（V2 引擎读真实 AuditLog）。
-	 * Opt1：实现可返回 Promise（同步假成功禁止）。
-	 */
-	getAuditSummary?(): Record<string, number> | Promise<Record<string, number>>;
-	/**
-	 * 审计**账本**（落盘 JSONL）—— 审计的**单一真源**（★ 2026-10-21）。
-	 *
-	 * 为什么需要它：引擎自带的 `AuditLog` 是**纯内存**（进程重启即失、也没人调 `record()`）
-	 * ⇒ 面板审计页长期空白；而真正在记审计的是 dsh 侧记忆插件写的落盘账本
-	 * `<数据根>/memory-audit/audit.jsonl` ⇒ 引擎侧新增 `getAuditLedger` 读它并**归一**字段
-	 * （`action`/`ts`/`tool` ⇒ `operation`/`timestamp`/`type`）⇒ 两侧页面看到同一份 ✓
-	 */
-	getAuditLedger?(options?: { limit?: number }): Promise<Array<Record<string, unknown>>>;
-
-	/**
-	 * 记忆服务**健康状态**（★ 2026-10-21）。
-	 *
-	 * 为什么需要它：实测网关侧 `getHealthStatus()` 一直返回 `serverAvailable:false / status:'degraded'`
-	 *（宿主模式下没有"远端 server"这回事 ⇒ 那是**误报**），而面板**完全不提示** ⇒
-	 * 用户以为一切正常，实际取数可能都在降级 ⇒ 面板据此显示告警横幅 ✓
-	 */
-	getHealthStatus?(): { status?: string; serverAvailable?: boolean; gatewayUp?: boolean; baseUrl?: string } | Promise<{ status?: string; serverAvailable?: boolean; gatewayUp?: boolean; baseUrl?: string }>;
-
-	// ─── Report & Git APIs (for memory detail panel) ──────────────────────
-
-	/** Generate a system report */
-	generateReport?(type: string, agentId: string): Promise<Record<string, unknown>>;
-
-	/** Get recent git commits captured into memory */
-	getRecentCommits?(limit?: number): Array<Record<string, unknown>>;
-
-	/** Get git commit statistics */
-	getCommitStats?(): Record<string, unknown>;
-
-	// ─── Skill Extract APIs (for memory detail panel) ─────────────────────
-
-	/** Get skill statistics.
-	 *  Renderer 代理(Opt1)返回 Promise（数据在网关进程），V2 网关实现亦返回 Promise。
-	 *  首参 agentId 对齐 host.mjs 的 /provider 路由约定（首参即 agentId）。 */
-	getSkillStats?(agentId?: string): { totalSkills: number; avgConfidence: number; avgSteps: number; totalUsage: number; writtenCount: number } | Promise<{ totalSkills: number; avgConfidence: number; avgSteps: number; totalUsage: number; writtenCount: number }>;
-
-	/** List all extracted skills. agentId 为首参；filter 可选。 */
-	listSkills?(agentId?: string, filter?: { tags?: string[]; minConfidence?: number }): Array<Record<string, unknown>> | Promise<Array<Record<string, unknown>>>;
-
-	/** Write a skill's SKILL.md file to ~/.vssaros/skills/<slug>/SKILL.md */
-	writeSkillFile?(agentId: string, skillId: string): Promise<{ ok: boolean; path?: string; error?: string }>;
-
-	/** Delete a skill's SKILL.md file */
-	deleteSkillFile?(agentId: string, skillId: string): Promise<{ ok: boolean; deleted?: boolean; error?: string }>;
-
-	/** Write SKILL.md for all pending skills */
-	writeAllSkillFiles?(agentId: string): Promise<{ written: number; failed: number; errors: string[] }>;
-
-	/** Add a manual skill (pane _addSkill) */
-	addSkill?(agentId: string, data: { title: string; trigger: string; steps: string[]; expectedOutcome?: string; tags?: string[] }): Promise<Record<string, unknown> | null>;
-
-	/** Update a skill (edit mode) */
-	updateSkill?(agentId: string, id: string, updates: Record<string, unknown>): Record<string, unknown> | null;
-
-	/** Delete a skill */
-	deleteSkill?(agentId: string, id: string): boolean;
-
-	/** Update a long-term memory entry (edit mode，updates 支持 title/content/type/concepts/files/strength) */
-	updateMemory?(agentId: string, id: string, updates: Record<string, unknown>): Record<string, unknown> | null | Promise<Record<string, unknown> | null>;
-
-	/** Delete a long-term memory entry (硬删除，含索引清理) */
-	deleteMemory?(agentId: string, id: string): boolean | Promise<boolean>;
-
-	// ─── Cross-Agent APIs (for memory detail panel) ────────────────────────
-
-	/** List all agent IDs that have memory data */
-	listAllAgentsWithData?(): Promise<string[]>;
-
-	/** Search memories across ALL agents */
-	searchAllAgents?(query: string): Promise<Array<Record<string, unknown>>>;
-
-	// ─── Memory Lifecycle Events (for accurate UI feedback) ──────────────────
-	// 替代旧的 fire-and-forget + 假"已保存" UI 反馈模式。
-	// Provider 在 writeMemory 成功/失败时通过这些回调通知调用方，
-	// 调用方据此更新聊天系统栏记忆卡片状态 (pending → saved/failed)。
-
-	/**
-	 * 订阅记忆写入成功事件。
-	 * @param handler 回调，接收 agentId、memoryId 和可选的 noticeId（来自 entry.metadata.noticeId）。
-	 * 串台防护（2026-08）：data 额外携带 sessionId（来自 entry.metadata.sessionId），
-	 * 消费方可据此按 agentId::sessionId 精确路由到对应会话，避免多开聊天框同 agent 不同
-	 * session 时记忆卡片串台。
-	 * @returns 取消订阅函数
-	 */
-	onMemoryWritten?(handler: (agentId: string, data: { memoryId: string; noticeId?: string; memoryType?: string; contentLength?: number; sessionId?: string }) => void): () => void;
-
-	/**
-	 * 订阅记忆写入失败事件。
-	 * @param handler 回调，接收 agentId、错误信息和可选的 noticeId
-	 * @returns 取消订阅函数
-	 */
-	onMemoryWriteFailed?(handler: (agentId: string, data: { noticeId?: string; error: string; memoryType?: string; sessionId?: string }) => void): () => void;
-}
-
-/**
- * 记忆召回的可选作用域参数（2026-06 新增）。详见 IMemoryProvider.loadContext 注释。
+ * 记忆召回的可选作用域参数（历史数据结构；IDE 侧 provider 已退役）。
  */
 export interface IMemoryRecallOptions {
 	scope?: 'agent' | 'global';
@@ -2074,7 +1833,6 @@ export interface IKanbanBoardChangeEvent {
 export interface ISlotRegistry {
 	getActiveModelProvider(): IModelProvider | undefined;
 	getActiveModelSelection(): IModelSelection | undefined;
-	getActiveMemoryProvider(): IMemoryProvider | undefined;
 	getActiveToolProvider(): IToolProvider | undefined;
 	getToolProviders(): IToolProvider[];
 	getActivePlanningProvider(): IPlanningProvider | undefined;

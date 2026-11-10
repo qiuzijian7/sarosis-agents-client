@@ -55,6 +55,16 @@ console.log('★ agents 插件 IM 渠道 / 原子写 / 富媒体契约\n');
 			&& /action: "create"/.test(cv) && /action: "delete"/.test(cv), '');
 		check('★ Bot 设置页：平台清单只渲染 channelDefs（不写死平台 key）',
 			/Array\.isArray\(data\.channelDefs\)/.test(cv) && /defs\.map\(/.test(cv), '');
+		/* ★ 2026-11-10（用户报「新增飞书应用里缺少 groupPolicy」）：真源在 imPlatforms 的
+		   feishu.fields，生效在 binding 级（channelPolicy.js）。别塞进 feishu-app：那个 action
+		   只存 appSecret/name ⇒ 存了不生效 = 假入口。这里钉住「表单 + 随 create 落盘」。 */
+		/* ⚠ 钉**调用形态**：只搜 groupPolicyDef 这种标识符，注释/其它引用会让它假绿
+		   （反向突变删掉定义仍通过 ⇒ 已吃过一次亏）。 */
+		check('★ Bot 设置页：飞书新建绑定可配 groupPolicy（枚举来自 channelDefs，随 create 落盘）',
+			/const groupPolicyDef = \(/.test(cv) && /groupPolicyDef\.options/.test(cv)
+			&& /f\.key\) === "groupPolicy"/.test(cv)
+			&& /select\("groupPolicy", groupPolicyValue, groupPolicyOptions\)/.test(cv)
+			&& /groupPolicy: groupPolicyValue/.test(cv) && /action: "create"/.test(cv), '');
 	}
 }
 

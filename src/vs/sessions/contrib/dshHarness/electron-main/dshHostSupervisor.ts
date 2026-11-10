@@ -33,8 +33,8 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import { basename, delimiter, dirname, join, resolve } from '../../../../base/common/path.js';
 import { DshBridgeMethod, IBridgeHello, IBridgePluginRow, IBridgeReverseRequest, IBridgeWorkspaceContextArgs, IBridgeWorkspaceContextResult } from '../common/dshBridgeProtocol.js';
-import { bridgePipePath, buildHostArgs, buildPluginAddArgs, buildPluginAddArgsMany, buildProfileInitArgs, DSH_SHARED_INSTANCE_PACKAGES, memoryGatewayUrlFromEnv, parseAuthUrl, resolveSiblingPackage, toFileSpec } from '../common/dshCli.js';
-import { isDshRowsBundleRegistered, parseMcpServers, renderMcpOverlay } from '../common/dshMcpConfig.js';
+import { bridgePipePath, buildHostArgs, buildPluginAddArgs, buildPluginAddArgsMany, buildProfileInitArgs, DSH_SHARED_INSTANCE_PACKAGES, parseAuthUrl, resolveSiblingPackage, toFileSpec } from '../common/dshCli.js';
+import { isDshRowsBundleRegistered, isMcpRuntimeMountEnabled, parseMcpServers, renderMcpOverlay } from '../common/dshMcpConfig.js';
 import { auditBundledPluginVersions, isVersionNewer, renderBundledVersionAudit } from '../common/dshPluginVersionAudit.js';
 import { describeManualUpgrade, IThirdPartyPlugin, pickThirdPartyPlugins, upgradableSpecOf } from '../common/dshPluginUpgrade.js';
 import { DSH_HOST_IDLE_TTL_MS, DshHostOverlayKind, hostOverlayFileName, IDshHostConfig, renderHostOverlays } from '../common/dshHostConfig.js';
@@ -384,8 +384,6 @@ export class DshHostSupervisor extends Disposable {
 	private _agentsOverlayFile: string | undefined;
 	/** 数据根覆盖层（`config.dataRoot` × 4 + mcp 的 `config.path`；每次启动重建）。 */
 	private _dataRootOverlayFile: string | undefined;
-	/** 记忆模块的网关地址覆盖层（`--patch`，同上；地址来自主进程的 AGENTMEMORY_URL/PORT）。 */
-	private _memoryOverlayFile: string | undefined;
 	/** 沙箱降级覆盖层（**只在启动期探针探不通时才有**，见 `common/dshSandboxCompat.ts`）。 */
 	private _sandboxOverlayFile: string | undefined;
 	/** 沙箱探针的失败说明**只 warn 一次**（Host 会被反复重启：换工作区/装插件/白屏自愈都会 ✗）。 */
@@ -1413,7 +1411,6 @@ export class DshHostSupervisor extends Disposable {
 				// （渲染器不查盘；不存在就不注入，覆盖层里只剩 customSkillDirs ✓）
 				const bundledDirRaw = options.bundledSkillDir?.trim();
 				const bundledSkillDir = bundledDirRaw && existsSync(bundledDirRaw) ? bundledDirRaw : undefined;
-				const memoryGatewayUrl = memoryGatewayUrlFromEnv(process.env);
 				// ★ 沙箱兼容探针（一个进程只探一次；完整缘由见 `common/dshSandboxCompat.ts`）：
 				// 本机若禁止写 Low 完整性标签，dsh 默认的 `workspace-write`（Windows 的 windows-acl 档）
 				// 会在**每次工具调用**的 grant 阶段失败 —— 用户端是一排
@@ -1494,15 +1491,9 @@ export class DshHostSupervisor extends Disposable {
 					...(agentsRoot ? { agentsRoot } : {}),
 				// ★ 内置 agent 目录（启动期由代码真源生成；Host 侧因此能列出内置 agent ✓）
 				...(agentsBuiltinRoot ? { agentsBuiltinRoot } : {}),
-					// A 组缺口（2026-10-12）：这两条过去**根本没有等价配置键** ⇒ 用户在 IDE 里改了知识库存储根 /
-					// unreal bridge 地址，dsh 侧照旧读默认值（前者表现为"资料库/画布空着但不报错" ✗）。
-					...(options.kbRoot?.trim() ? { kbRoot: options.kbRoot.trim() } : {}),
+					// ★ 2026-11-10：知识库根 / 库清单 / 当前库三项不再由 IDE 注入（dsh 侧自持配置为准）。
 					/* ★ IM（飞书）入站凭据（2026-10-27）：与 agentsRoot 写进**同一行**
 					   （`renderAgentsOverlay` 产出；同一行两份覆盖层时 config 是整体替换 ⇒ 不能拆）。 */
-					// ★ 库记录（2026-10-15）：与 kbRoot 同一份覆盖层 ✓（`renderDataRootOverlay` 里写进
-					//   `vssaros-kb` 那一行 ✓ —— 那份 config 整体替换 ⇒ 拆两份会互相擦掉 ✗）。
-					...(options.kbVaults?.trim() ? { kbVaults: options.kbVaults.trim() } : {}),
-					...(options.kbActiveVaultId?.trim() ? { kbActiveVaultId: options.kbActiveVaultId.trim() } : {}),
 					...(options.unrealBridgeUrl?.trim() ? { unrealBridgeUrl: options.unrealBridgeUrl.trim() } : {}),
 					// browser（2026-10-14）：同上一条缺口 —— IDE 那三个 `browserCdp.*` 设置此前到不了 Host
 					//（插件只读自己的 config / `VSSAROS_BROWSER_*`）⇒ 关掉「自动拉起调试实例」不生效，
@@ -1511,8 +1502,6 @@ export class DshHostSupervisor extends Disposable {
 					...(skillDirs.length ? { skillDirs } : {}),
 					// 内置技能单列（rank 600，见 `common/dshSkillDirs.ts`）—— 与 `skillDirs` **互不重叠** ✓
 					...(bundledSkillDir ? { bundledSkillDir } : {}),
-					// 记忆网关地址拿不到就不给（尊重模块"不猜端口"的纪律）；MCP 那条在下面**单独**处理
-					...(memoryGatewayUrl ? { gatewayUrl: memoryGatewayUrl } : {}),
 					// 沙箱降级（探针结论；探通了就**不给**这个字段 ⇒ 保持 dsh 默认 ✓）。
 					// ★ 降级时必须**同时**给沙箱行一个根：那行的 `config` 是**整体替换** ✗ ⇒ 只写 `mode`
 					//   会把 `workspaceRoot` 擦掉 ✓。有工作区就用它 ✓；没有就补 `SANDBOX_FALLBACK_ROOT`
@@ -1544,7 +1533,6 @@ export class DshHostSupervisor extends Disposable {
 						case 'skills': this._skillsOverlayFile = file; break;
 						case 'agents': this._agentsOverlayFile = file; break;
 						case 'dataRoot': this._dataRootOverlayFile = file; break;
-						case 'memory': this._memoryOverlayFile = file; break;
 						case 'sandbox': this._sandboxOverlayFile = file; break;
 						default: break;   // `mcp` 不走这里（它有"让路"逻辑，见 `_writeMcpOverlay`）
 					}
@@ -1567,7 +1555,6 @@ export class DshHostSupervisor extends Disposable {
 					skills: `skills overlay: ${skillDirs.length} dir(s)${bundledSkillDir ? ` + bundled: ${bundledSkillDir}` : ''}`,
 					...(agentsRoot ? { agents: `agents overlay: ${agentsRoot}` } : {}),
 					...(dataRoot ? { dataRoot: `data-root overlay: ${dataRoot}` } : {}),
-					...(memoryGatewayUrl ? { memory: `memory overlay: ${memoryGatewayUrl}` } : {}),
 					...(sandboxFallback ? { sandbox: `sandbox overlay: mode=${SANDBOX_FALLBACK_MODE}（本机写不了完整性标签）` } : {}),
 				};
 				let mcpPushed = false;
@@ -3075,7 +3062,7 @@ export class DshHostSupervisor extends Disposable {
 	}
 
 	private async _cleanupRunFiles(): Promise<void> {
-		const files = [this._overlayFile, this._kanbanOverlayFile, this._codebaseOverlayFile, this._mcpOverlayFile, this._skillsOverlayFile, this._agentsOverlayFile, this._dataRootOverlayFile, this._memoryOverlayFile, this._sandboxOverlayFile, this._ownershipFile];
+		const files = [this._overlayFile, this._kanbanOverlayFile, this._codebaseOverlayFile, this._mcpOverlayFile, this._skillsOverlayFile, this._agentsOverlayFile, this._dataRootOverlayFile, this._sandboxOverlayFile, this._ownershipFile];
 		this._ownershipFile = undefined;
 		this._overlayFile = undefined;
 		this._kanbanOverlayFile = undefined;
@@ -3084,7 +3071,6 @@ export class DshHostSupervisor extends Disposable {
 		this._skillsOverlayFile = undefined;
 		this._agentsOverlayFile = undefined;
 		this._dataRootOverlayFile = undefined;
-		this._memoryOverlayFile = undefined;
 		this._sandboxOverlayFile = undefined;
 		for (const f of files) {
 			if (f) {
@@ -3149,6 +3135,15 @@ export class DshHostSupervisor extends Disposable {
 	}
 
 	private async _writeMcpOverlay(configPath: string, profileManifest: string): Promise<{ file: string; text: string } | undefined> {
+		// ★ 2026-11-10：运行时挂载开关打开时，MCP 行由 `vssaros-mcp` 插件在运行时挂/卸
+		// （P3-110 官方 boot 真组合树 9/9 验证：ctx.plugin → fiber.await → dispose → 可重挂）。
+		// 插件侧读同一个环境变量，所以这里必须让路，否则同一 serverName 挂两遍（去重表会直接抛错）。
+		// `VSSAROS_MCP_RUNTIME_MOUNT=0` 可回退到下面的旧覆盖层行为（逐字不变）。
+		// 早返回不删任何渲染器/返回语句 ⇒ 静态形状守卫不受影响。
+		if (isMcpRuntimeMountEnabled()) {
+			this._appendLog('mcp rows are mounted by the plugin at runtime (VSSAROS_MCP_RUNTIME_MOUNT=0 to fall back) → skipping the shell overlay');
+			return undefined;
+		}
 		// ★ 2026-10-12：MCP 的"配置 → 组合行"已归 dsh 侧（`dsh-plugins/vssaros-mcp/bin/sync-rows.mjs`，
 		// 用官方 `dsh plugin add` 登记成 profile 的一个 bundle 层）。**登记过就必须让路** —— 两条路不能并存：
 		// `insert` 不是"同 id 后层胜出"，实测同时开会把同一台服务器挂两遍（p3-25），而 dsh 侧 serverName
@@ -3251,7 +3246,7 @@ export class DshHostSupervisor extends Disposable {
 				}
 			} catch { /* best effort */ }
 		}
-		for (const f of [this._overlayFile, this._kanbanOverlayFile, this._codebaseOverlayFile, this._mcpOverlayFile, this._skillsOverlayFile, this._agentsOverlayFile, this._dataRootOverlayFile, this._memoryOverlayFile, this._sandboxOverlayFile]) {
+		for (const f of [this._overlayFile, this._kanbanOverlayFile, this._codebaseOverlayFile, this._mcpOverlayFile, this._skillsOverlayFile, this._agentsOverlayFile, this._dataRootOverlayFile, this._sandboxOverlayFile]) {
 			if (f) {
 				try {
 					rmSync(f, { force: true });

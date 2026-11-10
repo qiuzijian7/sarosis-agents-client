@@ -136,20 +136,36 @@ window.__ModuleLoader__.load({
 			} catch { return null; }
 		}
 
-		/** 当前激活的知识库（拿不到 ⇒ 提示用户先开一个库）。 */
-		async function activeVault() {
+		/**
+		 * 当前激活的知识库。
+		 *
+		 * ★ 2026-11-10（用户要求）：初始状态 app 没配置知识库文件夹根目录时，不再抛一句 toast，
+		 *   改为打开聊天框里的「选择知识库文件夹根目录」工具卡（与模型调 `kb_setup_root`
+		 *   时渲染的是同一张卡，见 client.kbRootPicker.js）。卡片配置成功后有
+		 *   「继续导入这条消息」按钮 ⇒ 用 retry 回调把原消息接着导进去。
+		 */
+		async function activeVault(text) {
 			const r = await fetch("/x/kb/api/view-data", { credentials: "same-origin" });
 			const b = await r.json();
 			const d = (b && b.data) ? b.data : b;
 			const vaults = (d && d.vaults) || [];
 			const id = (d && d.activeVaultId) || (vaults[0] && vaults[0].id) || "";
-			if (!id) { throw new Error("还没有知识库（请先在知识库里载入一个文件夹）"); }
+			if (!id) {
+				const opener = typeof window !== "undefined" ? window.__vssarosOpenKbRootPicker : null;
+				if (typeof opener === "function") {
+					void opener("ui", { retry: () => importToKb(text) });
+					const err = new Error("已弹出「选择知识库文件夹根目录」卡片：选完点「继续导入这条消息」即可");
+					err.code = "root-picker-open";
+					throw err;
+				}
+				throw new Error("还没有知识库（请先在知识库里载入一个文件夹）");
+			}
 			return { id: id, name: (d && d.vaultName) || (vaults.find((v) => v.id === id) || {}).name || "" };
 		}
 
 		/** 把消息正文写进知识库（库/raw/<标题>.md —— ★ 2026-10-29 用户要求）。 */
 		async function importToKb(text) {
-			const vault = await activeVault();
+			const vault = await activeVault(text);
 			const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 			// ★ 2026-10-29（用户要求）：统一命名「对话导入-<时间戳>.md」，不再用消息首行当文件名。
 			const stamp = stampOf();
@@ -206,7 +222,9 @@ window.__ModuleLoader__.load({
 							}).catch((e) => {
 								btn.disabled = false;
 								btn.textContent = "导入到知识库";
-								toast("导入失败：" + String((e && e.message) || e), "err");
+								// ★ 2026-11-10：「根未配置 ⇒ 已弹出选根卡片」不是失败，别用红色错误样式误导用户 ✓
+								const opened = !!(e && e.code === "root-picker-open");
+								toast((opened ? "" : "导入失败：") + String((e && e.message) || e), opened ? null : "err");
 							});
 						});
 						row.insertBefore(btn, copy.nextSibling);

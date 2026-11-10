@@ -55,6 +55,7 @@ import { ContextSteward } from './steward.ts'
 import { coexistenceOf, type Coexistence } from './coexist.ts'
 import { Distiller } from './distill.ts'
 import { deliverReply, deskReceiptStream, deskRequestId, deskSessionId, deskTools, deskWithoutCatalog, latestPersonMessage, submitText, TICKET_ENDED_NOTICE, ticketEndedNotice } from './desk.ts'
+import { ticketResultNotices } from './ticket-notices.ts'
 import { DeskChat } from './desk-chat.ts'
 import { DeskOutbox, wakesDesk } from './desk-outbox.ts'
 import { GROUP_REFERENCE_KIND, GROUP_REFERENCE_LATE_MS, GROUP_REFERENCE_WAIT_MS, handleDeskGroupCommand, handleDeskMessage, isGroupCreationRequest,
@@ -375,6 +376,8 @@ export class Runtime extends Service implements SourceHost {
           // VsSaros addition (2026-11-06): a ticket begun in the desk tells the desk how it ended (see desk.ts).
           const receipt = ended ? ticketEndedNotice(ended, store.triggers.get(ended.origin.triggerId)?.channel) : undefined
           if (receipt) outbox.send(receipt)
+          // ★ 2026-11-10（用户）：飞书发来的任务结束后，把结果发回飞书（desk 有自己的通知，github/p4 另有终态通知）。
+          if (ended) for (const message of ticketResultNotices(ended)) outbox.send(message)
           // VsSaros addition (superagent v2, P3): its team's unfinished steps stop with it.
           if (ended) runtime.steps?.stopAll(ended.id, ended.ended?.reason ?? ended.ended?.outcome ?? 'the ticket ended')
           // VsSaros addition (superagent v2, P5): its agreed team leaves a workflow draft, or credits the workflow it reused.

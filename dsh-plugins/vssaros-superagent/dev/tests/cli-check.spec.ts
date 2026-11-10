@@ -1,13 +1,29 @@
 /** VsSaros addition: local lark-cli diagnostics and confirmed maintenance. */
-import { describe, expect, it, vi } from 'vitest'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Probe } from '../src/deployment.ts'
 import { CliCheck } from '../src/app/cli-check.ts'
 
-const mocked = vi.hoisted(() => ({ executable: vi.fn(() => '/fake/bin/lark-cli') }))
-vi.mock('../src/deployment.ts', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/deployment.ts')>()
-  return { ...actual, executable: mocked.executable }
+/**
+ * ★ 2026-11-10（门禁红灯修复）：原本用 `vi.mock('../src/deployment.ts')` 替换 `executable`。
+ *   实测本环境 Vitest 4.1.8 的 mock registry 不生效（hoisted / doMock / 简单 factory 全部
+ *   `mock.calls === 0`），于是 6 个用例拿到 `found:false`。改为**真实临时可执行文件**，
+ *   让 `executable()` 真的在磁盘上找到它：deterministic，且不依赖框架 mock 机制。
+ *   范式与 tests/feishu-profile.spec.ts 一致。
+ */
+const windows = process.platform === 'win32'
+let dir: string
+let resolved: string
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'sa-cli-check-'))
+  mkdirSync(join(dir, 'state', 'worker-bin'), { recursive: true })
+  resolved = join(dir, windows ? 'lark-cli.cmd' : 'lark-cli')
+  writeFileSync(resolved, windows ? '@echo off\r\n' : '#!/bin/sh\n')
+  if (!windows) chmodSync(resolved, 0o755)
 })
+afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
 
 const answers: Record<string, string> = {
   '--version': 'lark-cli version 1.0.98',
@@ -24,12 +40,12 @@ const probe = (overrides: Record<string, string | Error> = {}) => vi.fn(async (a
   if (answer === undefined) throw new Error(`unexpected argv ${key}`)
   return answer
 })
-const cli = (run: Probe) => new CliCheck(run, '/fake/path', '/fake/state')
+const cli = (run: Probe) => new CliCheck(run, dir, join(dir, 'state'))
 
 describe('local lark-cli check', () => {
   it('reports the executable, version, bot identity, strict mode and bot name', async () => {
     const result = await cli(probe()).check()
-    expect(result).toMatchObject({ found: true, command: 'lark-cli', resolved: '/fake/bin/lark-cli',
+    expect(result).toMatchObject({ found: true, command: 'lark-cli', resolved,
       version: '1.0.98', appId: 'cli_abc', botReady: true, strictMode: 'bot', botName: 'Review Bot' })
     expect(result.error).toBeUndefined()
     expect(result.update).toBeUndefined()
@@ -48,10 +64,10 @@ describe('local lark-cli check', () => {
   })
 
   it('reports an executable that cannot be found', async () => {
-    mocked.executable.mockImplementationOnce(() => { throw new Error('not on PATH') })
-    const result = await cli(probe()).check()
+    // 空 PATH 目录 ⇒ 真实 executable() 抛「not an executable file on PATH」。
+    const result = await new CliCheck(probe(), join(dir, 'empty'), join(dir, 'state')).check()
     expect(result.found).toBe(false)
-    expect(result.error).toContain('not on PATH')
+    expect(result.error).toContain('not an executable file on PATH')
   })
 })
 
@@ -64,7 +80,7 @@ describe('confirmed lark-cli maintenance', () => {
     const run = probe({ 'config strict-mode bot': 'Strict mode set to bot (profile)' })
     const result = await cli(run).apply('strict-bot', true)
     expect(result).toEqual({ ok: true, output: 'Strict mode set to bot (profile)' })
-    expect(run).toHaveBeenCalledWith(['/fake/bin/lark-cli', 'config', 'strict-mode', 'bot'],
+    expect(run).toHaveBeenCalledWith([resolved, 'config', 'strict-mode', 'bot'],
       expect.objectContaining({ LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1' }))
   })
 
@@ -72,6 +88,6 @@ describe('confirmed lark-cli maintenance', () => {
     const run = probe({ update: 'updated to 1.0.99' })
     const result = await cli(run).apply('update', true)
     expect(result).toMatchObject({ ok: true, output: 'updated to 1.0.99' })
-    expect(run).toHaveBeenCalledWith(['/fake/bin/lark-cli', 'update'], expect.anything())
+    expect(run).toHaveBeenCalledWith([resolved, 'update'], expect.anything())
   })
 })

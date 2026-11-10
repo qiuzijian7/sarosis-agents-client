@@ -361,6 +361,579 @@ for (const target of TARGETS) {
 	if (notes.length) { violations++; }
 }
 
+// ─── A3. P0-1 工作区根集（2026-11-10）───────────────────────────────────────
+//  兼容期两条硬规矩，全部**行为断言**（真调 foundation 服务，不靠正则猜源码）：
+//    ① 老载荷（不带 roots）⇒ normalize 输出逐字不变、store 的回落/幂等不变；
+//    ② 所有消费方只读 deriveWorkspaceRoots() ⇒ 主根去重、保序、带根名、主根恒在首位。
+{
+	const notes = [];
+	const push = r => { if (!r.ok) { notes.push(r.note); } };
+	const F = foundationSvc;
+	F.clearWorkspaceContext();
+
+	// ① 老载荷：输出（含键顺序）与"这条能力不存在"时逐字相同
+	const legacy = { workspaceId: 'ws-a', workspaceRoot: 'R:/a', relatedRoots: ['R:/a', 'R:/b', 'R:/a'], windowId: 7, at: 123 };
+	const norm = F.normalizeWorkspaceContext(legacy);
+	push(step('老载荷 ⇒ 输出逐字不变（不冒出 roots 键）', JSON.stringify(norm), JSON.stringify({
+		workspaceId: 'ws-a', workspaceRoot: 'R:/a', relatedRoots: ['R:/a', 'R:/b'], windowId: 7, at: 123,
+	})));
+	push(step('老载荷 ⇒ 主根去重/保序/首位', JSON.stringify(F.deriveWorkspaceRoots(norm)), JSON.stringify([
+		{ path: 'R:/a', name: 'a', isPrimary: true },
+		{ path: 'R:/b', name: 'b', isPrimary: false },
+	])));
+
+	// ② 没有 workspaceRoot ⇒ relatedRoots[0] 兜底为主根；空上下文 ⇒ []
+	const noRoot = F.normalizeWorkspaceContext({ relatedRoots: ['R:/a', 'R:/b'] });
+	push(step('没有 workspaceRoot ⇒ 第一根为主根',
+		JSON.stringify(F.deriveWorkspaceRoots(noRoot).map(r => `${r.path}:${r.isPrimary}`)),
+		JSON.stringify(['R:/a:true', 'R:/b:false'])));
+	push(step('没有上下文 ⇒ []（不猜）', JSON.stringify(F.deriveWorkspaceRoots(undefined)), '[]'));
+	push(step('上下文说没有根 ⇒ []', JSON.stringify(F.deriveWorkspaceRoots(F.normalizeWorkspaceContext({ relatedRoots: [] }))), '[]'));
+	// ②b 调用方绕过 normalize 手工塞重复根时也必须去重（纯函数可被直接 import ✓）。
+	//     这条专门钉"有序根集"本身：只断言老载荷时，`ordered` 的 filter 会掩盖掉去重实现被删 ✗。
+	push(step('重复根 ⇒ 派生后仍只有 2 根', JSON.stringify(F.deriveWorkspaceRoots({
+		workspaceRoot: 'R:/a', relatedRoots: ['R:/a', 'R:/b', 'R:/b'],
+	})), JSON.stringify([
+		{ path: 'R:/a', name: 'a', isPrimary: true },
+		{ path: 'R:/b', name: 'b', isPrimary: false },
+	])));
+
+	// ③ 新载荷：去重保序 + 根名 + 主根（workspaceRoot）提到首位
+	const structured = F.normalizeWorkspaceContext({
+		workspaceRoot: 'R:/a', relatedRoots: [], roots: [
+			{ path: 'R:/b', name: 'backend' },
+			{ path: 'R:/a', name: 'frontend', isPrimary: true },
+			{ path: 'R:/b', name: 'backend' },
+		],
+	});
+	push(step('结构化 roots ⇒ 去重保序 + 保留根名', JSON.stringify(structured?.roots), JSON.stringify([
+		{ path: 'R:/b', name: 'backend' },
+		{ path: 'R:/a', name: 'frontend', isPrimary: true },
+	])));
+	push(step('结构化 roots ⇒ 主根提到首位', JSON.stringify(F.deriveWorkspaceRoots(structured)), JSON.stringify([
+		{ path: 'R:/a', name: 'frontend', isPrimary: true },
+		{ path: 'R:/b', name: 'backend', isPrimary: false },
+	])));
+	push(step('rootNameOf 取到根名', String(F.rootNameOf(structured, 'R:/b')), 'backend'));
+
+	// ④ 畸形一律整份拒收（不是静默丢字段）
+	const badPayloads = [
+		['非数组', { roots: 'x' }],
+		['path 非字符串', { roots: [{ path: 123 }] }],
+		['path 空白', { roots: [{ path: '   ' }] }],
+		['name 非字符串', { roots: [{ path: 'R:/a', name: 7 }] }],
+		['name 为 null', { roots: [{ path: 'R:/a', name: null }] }],
+		['isPrimary 非布尔', { roots: [{ path: 'R:/a', isPrimary: 'yes' }] }],
+		['超上限', { roots: Array.from({ length: F.MAX_WORKSPACE_ROOTS + 1 }, (_, i) => ({ path: `R:/r${i}` })) }],
+	];
+	for (const [label, bad] of badPayloads) {
+		push(step(`畸形 roots（${label}）⇒ 整份拒收`, String(F.normalizeWorkspaceContext(bad)), 'undefined'));
+	}
+
+	// ⑤ store：拒收保留旧值、读侧跟着走、根名变化要广播
+	F.setWorkspaceContext({ workspaceRoot: 'R:/a', relatedRoots: [], roots: [{ path: 'R:/a', name: 'frontend' }] });
+	const before = F.workspaceContext();
+	push(step('store 拒收畸形 roots', String(F.setWorkspaceContext({ roots: 'x' })), 'undefined'));
+	push(step('拒收后旧值未丢', JSON.stringify(F.workspaceContext()), JSON.stringify(before)));
+	push(step('读侧 workspaceRoots() 返回有序根集', JSON.stringify(F.workspaceRoots()), JSON.stringify([
+		{ path: 'R:/a', name: 'frontend', isPrimary: true },
+	])));
+	let fired = 0;
+	const off = F.onDidChangeWorkspaceContext(() => { fired++; });
+	F.setWorkspaceContext({ workspaceRoot: 'R:/a', relatedRoots: [], roots: [{ path: 'R:/a', name: 'frontend' }], windowId: 9 });
+	push(step('根集没变 ⇒ 不重复广播', fired, 0));
+	F.setWorkspaceContext({ workspaceRoot: 'R:/a', relatedRoots: [], roots: [{ path: 'R:/a', name: 'backend' }] });
+	push(step('根名变了 ⇒ 广播一次', fired, 1));
+	off();
+	push(step('roots 从无到有 ⇒ 判为变化', String(F.sameWorkspaceContext(
+		F.normalizeWorkspaceContext({ workspaceRoot: 'R:/a', relatedRoots: [] }),
+		F.normalizeWorkspaceContext({ workspaceRoot: 'R:/a', relatedRoots: [], roots: [] }))), 'false'));
+	F.clearWorkspaceContext();
+
+	// ⑥ 跨层上限对账：foundation 与桥协议必须同值（页面桥的 16 是 UI 展示上限，别混成一个数）
+	const protocolSrc = fs.readFileSync(path.join(PLUGINS_DIR, '..', 'src', 'vs', 'sessions', 'contrib',
+		'dshHarness', 'common', 'dshBridgeProtocol.ts'), 'utf8');
+	push(step('foundation 根上限 = 64', String(F.MAX_WORKSPACE_ROOTS), '64'));
+	push(step('桥协议导出同值常量', String(new RegExp(`export const MAX_WORKSPACE_CONTEXT_ROOTS = ${F.MAX_WORKSPACE_ROOTS};`).test(protocolSrc)), 'true'));
+
+	results.push({ plugin: 'vssaros-foundation', fn: 'deriveWorkspaceRoots', notes, contract: 'workspaceRoots' });
+	if (notes.length) { violations++; }
+}
+
+// ─── A4. P0-2 模型上下文段 + 根限定路径（2026-11-10）──────────────────────
+//  两条最要紧的契约：
+//   ① 单根 / 没推过上下文 ⇒ 文本为 '' ⇒ 绝大多数会话的 system prompt 逐字不变（不击穿缓存 ✓）；
+//   ② systemPrompt.context 的 text() 必须是**函数**，每次装配重读真源 ⇒ 切工作区后不说谎。
+{
+	const notes = [];
+	const push = r => { if (!r.ok) { notes.push(r.note); } };
+	const F = foundationSvc;
+	F.clearWorkspaceContext();
+
+	push(step('没有上下文 ⇒ 不注入任何文本', F.renderWorkspaceRootsText(undefined), ''));
+	F.setWorkspaceContext({ workspaceRoot: 'R:/a', relatedRoots: [] });
+	push(step('单根 ⇒ 不注入任何文本（system prompt 逐字不变）', F.renderWorkspaceRootsText(F.workspaceContext()), ''));
+
+	F.setWorkspaceContext({
+		workspaceRoot: 'R:/a', relatedRoots: ['R:/a', 'R:/b'], roots: [
+			{ path: 'R:/a', name: 'frontend', isPrimary: true },
+			{ path: 'R:/b', name: 'backend' },
+		],
+	});
+	const roots = F.workspaceRoots();
+	const text = F.renderWorkspaceRootsText(F.workspaceContext());
+	push(step('多根 ⇒ 有 heading', String(text.includes('## Workspace roots (multi-root)')), 'true'));
+	push(step('多根 ⇒ primary/additional + 根名 + 路径都在',
+		String(text.includes('- primary  frontend  R:/a') && text.includes('- additional  backend  R:/b')), 'true'));
+	push(step('多根 ⇒ 写明相对路径只基准主根',
+		String(text.includes('Relative paths resolve ONLY against the primary root')), 'true'));
+	push(step('多根 ⇒ 提示绝对路径与同名消歧',
+		String(text.includes('always use its absolute path') && text.includes('disambiguate with the absolute path')), 'true'));
+	// ★ 文案纪律：工具还没接根限定语法 ⇒ 提示词不许提前宣传（否则模型用了会被当成普通路径 ✗）
+	push(step('提示词不宣传尚未接线的 @<root> 语法', String(!text.includes('@<root-name>')), 'true'));
+	push(step('cwd 非主根 ⇒ 如实提示',
+		String(F.renderWorkspaceRootsText(F.workspaceContext(), { cwd: 'R:/b' }).includes('not the primary root')), 'true'));
+	push(step('cwd 就是主根 ⇒ 不加多余提示',
+		String(!F.renderWorkspaceRootsText(F.workspaceContext(), { cwd: 'R:/a' }).includes('not the primary root')), 'true'));
+
+	// 动态性：接线拿到的 text 必须是函数，且切工作区后重新求值会变
+	let captured;
+	const fakeCtx = {
+		inject: (deps, cb) => {
+			if (Array.isArray(deps) && deps.includes('systemPrompt')) { cb(fakeCtx); }
+			return { dispose() { } };
+		},
+		effect: fn => { fn(); return () => { }; },
+		systemPrompt: { context: def => { captured = def; return () => { }; } },
+	};
+	push(step('接线发起了注册', String(F.installWorkspaceRootsPrompt(fakeCtx, F)), 'true'));
+	push(step('段名/顺序正确',
+		String(captured?.name === F.WORKSPACE_ROOTS_SECTION_NAME && captured?.order === F.WORKSPACE_ROOTS_SECTION_ORDER), 'true'));
+	push(step('text 是函数（每次装配动态求值）', String(typeof captured?.text === 'function'), 'true'));
+	const beforeSwitch = captured?.text?.({}) ?? '';
+	F.setWorkspaceContext({
+		workspaceRoot: 'R:/a', relatedRoots: ['R:/a', 'R:/c'], roots: [
+			{ path: 'R:/a', name: 'frontend', isPrimary: true },
+			{ path: 'R:/c', name: 'contracts' },
+		],
+	});
+	const afterSwitch = captured?.text?.({}) ?? '';
+	push(step('切工作区后 text() 跟着变（不烘焙旧根）',
+		String(!beforeSwitch.includes('R:/c') && afterSwitch.includes('R:/c') && !afterSwitch.includes('R:/b')), 'true'));
+	push(step('text() 能读会话 cwd',
+		String(captured?.text?.({ agent: { session: { header: { cwd: 'R:/c' } } } })?.includes('This session\'s cwd is R:/c')), 'true'));
+	push(step('老 Host（没有 inject）⇒ 不抛、不注册', String(F.installWorkspaceRootsPrompt({}, F)), 'false'));
+
+	// 根限定路径解析（本刀只提供函数，不改工具行为）
+	push(step('非根限定语法 ⇒ 交回调用方', String(F.parseRootQualifiedPath('src/App.tsx', roots)), 'undefined'));
+	push(step('根限定语法 ⇒ 解析到绝对路径',
+		String(F.parseRootQualifiedPath('@backend:src/App.tsx', roots)?.absolutePath
+			?? F.parseRootQualifiedPath('@backend:src/App.tsx', roots)?.error),
+		path.resolve('R:/b', 'src/App.tsx')));
+	push(step('大小写回退命中', String(typeof F.parseRootQualifiedPath('@BACKEND:x', roots)?.absolutePath === 'string'), 'true'));
+	push(step('未知根名 ⇒ 报错', String(typeof F.parseRootQualifiedPath('@nope:x', roots)?.error === 'string'), 'true'));
+	push(step('同名根 ⇒ 判为歧义', String(typeof F.parseRootQualifiedPath('@same:x', [
+		{ path: 'R:/a', name: 'same' }, { path: 'R:/b', name: 'same' },
+	])?.error === 'string'), 'true'));
+	push(step('绝对路径 ⇒ 拒收', String(typeof F.parseRootQualifiedPath('@backend:R:/x', roots)?.error === 'string'), 'true'));
+	push(step('.. 逃逸 ⇒ 拒收', String(typeof F.parseRootQualifiedPath('@backend:../x', roots)?.error === 'string'), 'true'));
+
+	// 长度上限（畸形工作区不许撑爆 system prompt）
+	const longRoots = Array.from({ length: 64 }, (_, i) => ({ path: 'R:/r' + i, name: 'x'.repeat(400) }));
+	const longText = F.renderWorkspaceRootsText({ workspaceRoot: 'R:/r0', relatedRoots: longRoots.map(r => r.path), roots: longRoots });
+	push(step('超长文本截断到上限', String(longText.length), String(F.MAX_WORKSPACE_PROMPT_TEXT)));
+
+	F.clearWorkspaceContext();
+	results.push({ plugin: 'vssaros-foundation', fn: 'renderWorkspaceRootsText', notes, contract: 'workspacePrompt' });
+	if (notes.length) { violations++; }
+}
+
+// ─── A5. P0-3 多根写围栏（2026-11-10）─────────────────────────────────────
+//  本机沙箱已降 danger-full-access ⇒ 真机看不出差别 ⇒ 用**官方形状的最小夹具**做 in-process 断言：
+//  原方法只按 policy.workspaceRoot 判 containment（真实实现另有 realpath/8.3 身份回退，
+//  我们刻意不重实现 ⇒ 每个根都仍交给官方 checkedTarget 判 ✓）。
+{
+	const notes = [];
+	const push = r => { if (!r.ok) { notes.push(r.note); } };
+	const F = foundationSvc;
+	F.clearWorkspaceContext();
+
+	const DENIED = { code: 'FS_SANDBOX_DENIED' };
+	let calls = 0;
+	const fakeOriginal = async function (target, policy) {
+		calls++;
+		const p = policy ?? this.ctx.sandboxPolicy.resolve();
+		if (p.mode === 'danger-full-access') { return { target, checkedWith: 'unfenced' }; }
+		if (p.mode !== 'workspace-write') { throw DENIED; }
+		const root = String(p.workspaceRoot).toLowerCase().replace(/\\/g, '/');
+		const file = String(target.displayPath).toLowerCase().replace(/\\/g, '/');
+		if (!(file === root || file.startsWith(root + '/'))) { throw DENIED; }
+		return { target, checkedWith: p.workspaceRoot };
+	};
+	const fakeFs = { ctx: { sandboxPolicy: { resolve: () => ({ mode: 'workspace-write', workspaceRoot: 'R:/a' }) } } };
+	const wrapped = F.withMultiRootCheckedTarget(fakeOriginal, () => F.workspaceRoots());
+	const attempt = async (displayPath, policy) => {
+		calls = 0;
+		try {
+			const out = await wrapped.call(fakeFs, { displayPath }, policy);
+			return { ok: true, checkedWith: out.checkedWith, calls };
+		} catch (e) {
+			return { ok: false, sameError: e === DENIED, calls };
+		}
+	};
+
+	// ① 单根 / 无上下文 ⇒ 与官方单根行为逐字一致（不放宽、不多调一次）
+	F.setWorkspaceContext({ workspaceRoot: 'R:/a', relatedRoots: [] });
+	let r = await attempt('R:/a/x.txt');
+	push(step('单根命中 ⇒ 一次调用即放行', String(r.ok && r.calls === 1 && r.checkedWith === 'R:/a'), 'true'));
+	r = await attempt('R:/b/x.txt');
+	push(step('单根 + 根外路径 ⇒ 拒且不额外试根', String(!r.ok && r.calls === 1 && r.sameError), 'true'));
+
+	// ② 多根 ⇒ 逐个把改写过的 policy 交给官方 containment
+	F.setWorkspaceContext({
+		workspaceRoot: 'R:/a', relatedRoots: ['R:/a', 'R:/b', 'R:/c'], roots: [
+			{ path: 'R:/a', name: 'a', isPrimary: true },
+			{ path: 'R:/b', name: 'b' },
+			{ path: 'R:/c', name: 'c' },
+		],
+	});
+	r = await attempt('R:/b/src/App.tsx');
+	push(step('第二根命中 ⇒ 放行且记下该根', String(r.ok && r.checkedWith === 'R:/b' && r.calls === 2), 'true'));
+	r = await attempt('R:/c/pkg/x.ts');
+	push(step('第三根命中 ⇒ 放行且记下该根', String(r.ok && r.checkedWith === 'R:/c' && r.calls === 3), 'true'));
+	r = await attempt('R:/outside/x.txt');
+	push(step('根外路径 ⇒ 全拒且重抛官方错对象', String(!r.ok && r.sameError && r.calls === 3), 'true'));
+
+	// ③ 模式闸门：read-only 绝不放宽；danger-full-access 原方法本就直接放行
+	r = await attempt('R:/b/x.txt', { mode: 'read-only', workspaceRoot: 'R:/a' });
+	push(step('read-only ⇒ 绝不放宽', String(!r.ok && r.calls === 1 && r.sameError), 'true'));
+	r = await attempt('R:/b/x.txt', { mode: 'danger-full-access', workspaceRoot: 'R:/a' });
+	push(step('danger-full-access ⇒ 不额外试根', String(r.ok && r.calls === 1), 'true'));
+
+	// ④ 动态根集：切工作区后立刻生效，不是快照
+	F.setWorkspaceContext({ workspaceRoot: 'R:/a', relatedRoots: [] });
+	r = await attempt('R:/b/x.txt');
+	push(step('切到单根 ⇒ 立刻不再放宽', String(!r.ok && r.calls === 1), 'true'));
+
+	// ⑤ 接线：替换 fs.checkedTarget、卸载恢复原型、服务不可写时 fail-closed
+	const proto = { checkedTarget: fakeOriginal };
+	const fsInstance = Object.create(proto);
+	let disposer = () => { };
+	const fakeCtx = {
+		inject: (deps, cb) => {
+			if (Array.isArray(deps) && deps.includes('fs')) { cb(fakeCtx); }
+			return { dispose() { } };
+		},
+		effect: fn => { disposer = fn(); return disposer; },
+		fs: fsInstance,
+	};
+	push(step('接线发起了注入', String(F.installMultiRootFs(fakeCtx, F)), 'true'));
+	push(step('fs.checkedTarget 被替换', String(typeof fsInstance.checkedTarget === 'function' && fsInstance.checkedTarget !== fakeOriginal), 'true'));
+	disposer();
+	push(step('卸载后恢复原型方法', String(!Object.prototype.hasOwnProperty.call(fsInstance, 'checkedTarget')), 'true'));
+	push(step('老 Host（没有 inject）⇒ false 且不抛', String(F.installMultiRootFs({}, F)), 'false'));
+	const frozenFs = Object.freeze({ checkedTarget: fakeOriginal });
+	const frozenCtx = {
+		...fakeCtx, fs: frozenFs,
+		effect: fn => { const d = fn(); return d; },
+	};
+	F.installMultiRootFs(frozenCtx, F);
+	push(step('服务属性不可写 ⇒ 回落官方单根', String(frozenFs.checkedTarget === fakeOriginal), 'true'));
+
+	F.clearWorkspaceContext();
+	results.push({ plugin: 'vssaros-foundation', fn: 'withMultiRootCheckedTarget', notes, contract: 'fsMultiRoot' });
+	if (notes.length) { violations++; }
+}
+
+// ─── A6. P1-4 Workspace Grant canonical 复核（2026-11-10）─────────────────
+//  用**注入的假 realpath** 模拟别名，不碰真实文件系统；真正的改法是"词法快判 + canonical 复核"。
+{
+	const notes = [];
+	const push = r => { if (!r.ok) { notes.push(r.note); } };
+	const G = await import(pathToFileURL(path.join(PLUGINS_DIR, 'vssaros-agents', 'lib', 'grants.js')).href);
+	const aliases = new Map([
+		['R:/a', 'R:/real/a'],
+		['R:/a/link', 'R:/outside'], // 词法在授权目录里，realpath 却在外面 ⇒ symlink 逃逸
+		['R:/b', 'R:/real/b'],
+	]);
+	// 忠实模拟 realpath：别名前缀要**透传到子路径**（真实 realpath('/a/x') 会跟着 /a 的
+	// symlink 一起解析），且**最长前缀优先**（/a/link 有自己的别名，不能被 /a 吃掉 ✗）。
+	const aliasEntries = [...aliases.entries()].sort((a, b) => b[0].length - a[0].length);
+	const fakeReal = p => {
+		const key = String(p).replace(/\\/g, '/');
+		for (const [from, to] of aliasEntries) {
+			if (key === from || key.startsWith(from + '/')) { return to + key.slice(from.length); }
+		}
+		return key;
+	};
+	const failReal = () => { throw new Error('ENOENT'); };
+	const agent = { name: 'bot', workspaces: { read: ['R:/a'] } };
+
+	push(step('词法快判：子目录命中 / 兄弟目录不命中',
+		String(G.cwdCoveredBy(['r:/a'], 'R:/a/x') && !G.cwdCoveredBy(['r:/a'], 'R:/a-backup/x')), 'true'));
+	push(step('按组件比较：同名前缀的兄弟目录不算子路径',
+		String(G.pathContains('R:/real/a', 'R:/real/a/x') && !G.pathContains('R:/real/a', 'R:/real/ab')), 'true'));
+	push(step('canonical 命中（正常目录）', String(G.canonicalCoveredBy(['R:/a'], 'R:/a/x', fakeReal)), 'true'));
+	push(step('★ symlink 逃逸 ⇒ 拒', String(!G.canonicalCoveredBy(['R:/a'], 'R:/a/link', fakeReal)), 'true'));
+	push(step('★ .. 消解后越界 ⇒ 拒', String(!G.canonicalCoveredBy(['R:/a'], 'R:/a/../b', fakeReal)), 'true'));
+	push(step('realpath 失败 ⇒ fail-closed', String(!G.canonicalCoveredBy(['R:/a'], 'R:/a/x', failReal)), 'true'));
+	push(step('rawScopeOf 保留原始大小写（Linux 大小写敏感）',
+		String(G.rawScopeOf({ workspaces: { read: ['R:/A'] } })[0] === 'R:/A'
+			&& G.readScopeOf({ workspaces: { read: ['R:/A'] } })[0] === 'r:/a'), 'true'));
+	push(step('checkCwdGrant：正常 ⇒ 放行', String(G.checkCwdGrant(agent, 'R:/a/x', fakeReal)), 'undefined'));
+	push(step('checkCwdGrant：缺省 cwd ⇒ 放行且不查 fs', String(G.checkCwdGrant(agent, undefined, failReal)), 'undefined'));
+	// ⚠ 用 `?? ''` 兜住"本该拒绝却放行"（返回 undefined）的情形 ⇒ 精确报失败项，
+	//   而不是让守卫自己抛 TypeError 崩掉（反向突变要靠**精确红**证明判别力 ✓）。
+	push(step('checkCwdGrant：无声明 ⇒ 旧文案',
+		String((G.checkCwdGrant({ name: 'bot' }, 'R:/a/x', fakeReal) ?? '').includes('没声明 workspaces')), 'true'));
+	push(step('checkCwdGrant：词法不命中 ⇒ 旧文案',
+		String((G.checkCwdGrant(agent, 'R:/z/x', fakeReal) ?? '').includes('不覆盖')), 'true'));
+	push(step('★ checkCwdGrant：词法命中但 canonical 失败 ⇒ 新拒绝文案',
+		String((G.checkCwdGrant(agent, 'R:/a/link', fakeReal) ?? '').includes('canonical 校验不通过')), 'true'));
+
+	results.push({ plugin: 'vssaros-agents', fn: 'checkCwdGrant', notes, contract: 'grantCanonical' });
+	if (notes.length) { violations++; }
+}
+
+// ─── A7. P1-5 ACP 多根出口（2026-11-10）───────────────────────────────────
+//  能力协商 gate + 参数构造（老 agent 逐字不变）+ 两根接线（行为断言在 acp-roots.test.mjs）。
+{
+	const notes = [];
+	const push = r => { if (!r.ok) { notes.push(r.note); } };
+	const A = await import(pathToFileURL(path.join(PLUGINS_DIR, 'vssaros-local-agents', 'lib', 'core', 'acp.js')).href);
+	push(step('能力：v1 sessionCapabilities 形状',
+		String(A.acpAdditionalDirectoriesCapable({ agentCapabilities: { sessionCapabilities: { additionalDirectories: {} } } })), 'true'));
+	push(step('能力：v2 capabilities.session 形状',
+		String(A.acpAdditionalDirectoriesCapable({ capabilities: { session: { additionalDirectories: {} } } })), 'true'));
+	push(step('能力：未声明 ⇒ false', String(A.acpAdditionalDirectoriesCapable({ agentCapabilities: {} })), 'false'));
+	const plain = A.acpSessionParams({ cwd: 'G:/a', roots: ['G:/b'], capable: false });
+	push(step('★ 未声明能力 ⇒ 不传字段（老 agent 逐字不变）', String(!('additionalDirectories' in plain)), 'true'));
+	const multi = A.acpSessionParams({
+		cwd: 'G:/a', capable: true,
+		roots: ['G:/a', 'G:/b', 'G:/b', '../c', { path: 'G:/d' }],
+	});
+	push(step('声明能力 ⇒ 排除主根 / 去重 / 拒相对路径',
+		JSON.stringify(multi.additionalDirectories), JSON.stringify(['G:/b', 'G:/d'])));
+	const cap = A.acpSessionParams({
+		cwd: 'G:/a', capable: true,
+		roots: Array.from({ length: A.MAX_ACP_ADDITIONAL_DIRECTORIES + 20 }, (_, i) => `G:/r${i}`),
+	});
+	push(step('附加根条数有上限', String(cap.additionalDirectories.length), String(A.MAX_ACP_ADDITIONAL_DIRECTORIES)));
+
+	const idxSrc = fs.readFileSync(path.join(PLUGINS_DIR, 'vssaros-local-agents', 'lib', 'index.js'), 'utf8');
+	push(step('入口把 cwd/根集接到 foundation 运行期真源',
+		String(idxSrc.includes('workspaceRoots?.()') && idxSrc.includes('cwdFor,') && idxSrc.includes('rootsFor,')), 'true'));
+	const acpSrc = fs.readFileSync(path.join(PLUGINS_DIR, 'vssaros-local-agents', 'lib', 'core', 'acp.js'), 'utf8');
+	push(step('resume 与 new 共用同一份 params（显式重传根集）',
+		String(acpSrc.includes('{ ...params, sessionId: resumeId }') && acpSrc.includes('resumeMethod')), 'true'));
+	const adapterSrc = fs.readFileSync(path.join(PLUGINS_DIR, 'vssaros-local-agents', 'lib', 'core', 'adapter.js'), 'utf8');
+	push(step('外层适配器透传 rootsFor', String(adapterSrc.includes('rootsFor: deps.rootsFor')), 'true'));
+
+	results.push({ plugin: 'vssaros-local-agents', fn: 'acpSessionParams', notes, contract: 'acpRoots' });
+	if (notes.length) { violations++; }
+}
+
+// ─── A8. P1-6 会话根集快照（2026-11-10）───────────────────────────────────
+//  ★ 快照**只作诊断、不授权**：切根集时只报出"创建于旧根集"的会话，不热改它们的权限。
+{
+	const notes = [];
+	const push = r => { if (!r.ok) { notes.push(r.note); } };
+	const R = await import(pathToFileURL(path.join(PLUGINS_DIR, 'vssaros-bridge', 'lib', 'sessionRoots.js')).href);
+	const A = ['G:/ws/app', 'G:/ws/lib'];
+	push(step('签名：字符串数组与 {path} 数组等价',
+		String(R.signatureOf(A) === R.signatureOf(A.map(p => ({ path: p })))), 'true'));
+	push(step('签名：大小写/分隔符/尾斜杠归一',
+		String(R.signatureOf(['G:\\WS\\APP\\']) === R.signatureOf(['g:/ws/app'])), 'true'));
+	push(step('签名：顺序不同 ⇒ 不同',
+		String(R.signatureOf(['G:/a', 'G:/b']) !== R.signatureOf(['G:/b', 'G:/a'])), 'true'));
+	push(step('sameRootSet 相等', String(R.sameRootSet(A, ['G:/WS/APP/', 'G:/ws/lib'])), 'true'));
+	push(step('变更摘要：added/removed', JSON.stringify(R.describeRootChange(['G:/a'], ['G:/a', 'G:/b'])),
+		JSON.stringify({ added: ['g:/b'], removed: [] })));
+
+	const B = R.createSessionRootBindings();
+	B.note(A);
+	push(step('note/previous 记录最近根集', JSON.stringify(B.previous()),
+		JSON.stringify(['g:/ws/app', 'g:/ws/lib'])));
+	B.bind('s1', A);
+	B.bind('s2', A);
+	push(step('绑定两条会话', String(B.size()), '2'));
+	push(step('相同根集 ⇒ 无不一致', JSON.stringify(B.mismatches(A)), '[]'));
+	B.bind('s2', ['G:/other']); // 让 s2 变成"创建于另一个根集"的会话
+	push(step('切根集 ⇒ 报出创建于旧根集的会话',
+		JSON.stringify(B.mismatches(['G:/new'])), JSON.stringify(['s1', 's2'])));
+	B.bind('s1', ['G:/new']);
+	push(step('幂等接管 ⇒ 以新快照为准',
+		JSON.stringify(B.mismatches(['G:/new'])), JSON.stringify(['s2'])));
+	B.clear('s2');
+	push(step('clear 生效', String(B.size()) + '/' + JSON.stringify(B.mismatches(['G:/new'])), '1/[]'));
+	B.bind('', A);
+	push(step('畸形 sessionId 不写入', String(B.size()), '1'));
+
+	const idxSrc = fs.readFileSync(path.join(PLUGINS_DIR, 'vssaros-bridge', 'lib', 'index.js'), 'utf8');
+	push(step('接线：start 绑定 / context 比对并记最近根集',
+		String(idxSrc.includes('sessionRoots.bind(id,') && idxSrc.includes('sessionRoots.mismatches(roots)')
+			&& idxSrc.includes('sessionRoots.note(roots)')), 'true'));
+	push(step('接线：变更只 console.warn，不改会话 cwd',
+		String(idxSrc.includes('Existing sessions keep their cwd')), 'true'));
+
+	results.push({ plugin: 'vssaros-bridge', fn: 'createSessionRootBindings', notes, contract: 'sessionRoots' });
+	if (notes.length) { violations++; }
+}
+
+// ─── A9. P1-7 群聊现开会话的 Workspace Grant（2026-11-10）────────────────
+//  补的是最后一个绕过 `checkCwdGrant` 的 `sc.create` 点；判据抽成纯函数 ⇒ 这里全是行为断言。
+{
+	const notes = [];
+	const push = r => { if (!r.ok) { notes.push(r.note); } };
+	const G = await import(pathToFileURL(path.join(PLUGINS_DIR, 'vssaros-agents', 'lib', 'grants.js')).href);
+	const FALL = 'G:/fallback';
+	const real = p => String(p).replace(/\\/g, '/');
+	const strict = { name: 'bot', workspaces: { read: ['G:/allowed'] } };
+	const loose = { name: 'bot' };
+	const args = (agent, place, realpath = real) => ({ agent, place, fallbackCwd: FALL, realpath });
+
+	push(step('用户显式 cwd ⇒ 命中', String(G.explicitCwdOf({ cwd: 'G:/proj' }, FALL)), 'G:/proj'));
+	push(step('系统兜底 cwd ⇒ 不算显式', String(G.explicitCwdOf({ cwd: FALL }, FALL)), 'undefined'));
+	push(step('workspaceId ⇒ 不算显式', String(G.explicitCwdOf({ workspaceId: 'ws' }, FALL)), 'undefined'));
+	push(step('空/畸形 place ⇒ 不算显式',
+		String(G.explicitCwdOf({ cwd: '  ' }, FALL) ?? G.explicitCwdOf(undefined, FALL)), 'undefined'));
+	push(step('★ 声明 workspaces + cwd 越界 ⇒ 拒',
+		String((G.roomSessionGrantRefusal(args(strict, { cwd: 'G:/elsewhere' })) ?? '').includes('不覆盖')), 'true'));
+	push(step('声明 workspaces + cwd 命中 ⇒ 放行',
+		String(G.roomSessionGrantRefusal(args(strict, { cwd: 'G:/allowed/x' }))), 'undefined'));
+	push(step('默认 bot（未声明）⇒ 行为不变（不回退群聊）',
+		String(G.roomSessionGrantRefusal(args(loose, { cwd: 'G:/elsewhere' }))), 'undefined'));
+	push(step('系统兜底 cwd ⇒ 放行（建群不被拒）',
+		String(G.roomSessionGrantRefusal(args(strict, { cwd: FALL }))), 'undefined'));
+	push(step('主会话（无 agent 定义）⇒ 放行',
+		String(G.roomSessionGrantRefusal(args(undefined, { cwd: 'G:/elsewhere' }))), 'undefined'));
+	const aliasReal = p => {
+		const k = String(p).replace(/\\/g, '/');
+		return k === 'G:/allowed/link' ? 'G:/outside' : k;
+	};
+	push(step('★ 群聊同样过 canonical 复核（symlink 逃逸）',
+		String((G.roomSessionGrantRefusal({ agent: strict, place: { cwd: 'G:/allowed/link' }, fallbackCwd: FALL, realpath: aliasReal }) ?? '').includes('canonical')), 'true'));
+
+	const roomsSrc = fs.readFileSync(path.join(PLUGINS_DIR, 'vssaros-agents', 'lib', 'rooms.js'), 'utf8');
+	const idxSrc = fs.readFileSync(path.join(PLUGINS_DIR, 'vssaros-agents', 'lib', 'index.js'), 'utf8');
+	push(step('接线：唯一 create 点调用闸 + 按 preset 找 agent',
+		String(roomsSrc.includes('roomSessionGrantRefusal({') && roomsSrc.includes('explicitCwdOf(place, deps.fallbackCwd)')
+			&& roomsSrc.includes('agentOfPreset')), 'true'));
+	push(step('接线：index 注入 agentOfPreset', String(idxSrc.includes('agentOfPreset: async')), 'true'));
+	push(step('接线：拒绝对话返回 403', String(roomsSrc.includes('throw new RoomError(refusal, 403)')), 'true'));
+
+	results.push({ plugin: 'vssaros-agents', fn: 'roomSessionGrantRefusal', notes, contract: 'roomGrant' });
+	if (notes.length) { violations++; }
+}
+
+// ─── A10. P1-8 ACP v2 握手 / resume（2026-11-10）─────────────────────────
+//  依据 ACP v2 正式规范：initialize 用 capabilities/info、版本协商 -32022、
+//  capabilities.session 即含 session/resume、MCP HTTP 为 session.mcp.http。
+{
+	const notes = [];
+	const push = r => { if (!r.ok) { notes.push(r.note); } };
+	const A = await import(pathToFileURL(path.join(PLUGINS_DIR, 'vssaros-local-agents', 'lib', 'core', 'acp.js')).href);
+	const v2 = {
+		protocolVersion: 2,
+		capabilities: { session: { mcp: { http: {} }, additionalDirectories: {} } },
+		info: { name: 'a', version: '1' },
+	};
+	const v1 = {
+		protocolVersion: 1,
+		agentCapabilities: {
+			loadSession: true, mcpCapabilities: { http: true },
+			sessionCapabilities: { additionalDirectories: {} },
+		},
+	};
+	const p2 = A.acpInitializeParams(2);
+	push(step('★ v2 initialize ⇒ 请求最新版本 2 且双写 v1/v2 字段',
+		String(p2.protocolVersion === 2 && 'capabilities' in p2 && 'info' in p2
+			&& 'clientCapabilities' in p2 && 'clientInfo' in p2), 'true'));
+	push(step('v1 回退 ⇒ 参数与改造前逐字相同', JSON.stringify(A.acpInitializeParams(1)),
+		JSON.stringify({
+			protocolVersion: 1,
+			clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+			clientInfo: { name: 'vssaros', version: '1' },
+		})));
+	push(step('版本协商：回 2 ⇒ 2 / 回 1 ⇒ 1 / 老回执无字段 ⇒ 1',
+		String(A.acpProtocolVersionOf(v2) === 2 && A.acpProtocolVersionOf(v1) === 1
+			&& A.acpProtocolVersionOf({}) === 1), 'true'));
+	push(step('★ v2 声明 session ⇒ 用 session/resume', String(A.acpResumeMethodOf(v2)), 'session/resume'));
+	push(step('v2 没声明 session ⇒ 不 resume',
+		String(A.acpResumeMethodOf({ protocolVersion: 2, capabilities: {} })), 'null'));
+	push(step('v1 loadSession ⇒ 用 session/load', String(A.acpResumeMethodOf(v1)), 'session/load'));
+	push(step('v2 MCP HTTP（session.mcp.http）',
+		String(A.acpMcpHttpCapable(v2)), 'true'));
+	push(step('v1 MCP HTTP（mcpCapabilities.http/sse）',
+		String(A.acpMcpHttpCapable(v1)
+			&& A.acpMcpHttpCapable({ protocolVersion: 1, agentCapabilities: { mcpCapabilities: { sse: true } } })), 'true'));
+	push(step('v2 不再认 sse ⇒ false',
+		String(A.acpMcpHttpCapable({ protocolVersion: 2, capabilities: { session: { mcp: { sse: {} } } } })), 'false'));
+	const c2 = A.acpCapabilitiesOf(v2);
+	push(step('能力集合：v2',
+		JSON.stringify({ v: c2.protocolVersion, r: c2.resumeMethod, m: c2.mcpHttp, a: c2.additionalDirectories }),
+		JSON.stringify({ v: 2, r: 'session/resume', m: true, a: true })));
+	const c1 = A.acpCapabilitiesOf(v1);
+	push(step('能力集合：v1',
+		JSON.stringify({ v: c1.protocolVersion, r: c1.resumeMethod, m: c1.mcpHttp, a: c1.additionalDirectories, l: c1.loadSession }),
+		JSON.stringify({ v: 1, r: 'session/load', m: true, a: true, l: true })));
+	push(step('版本拒绝识别：-32022 / 其它错误不重试',
+		String(A.acpIsVersionRejection({ code: -32022 })
+			&& A.acpIsVersionRejection({ message: 'Unsupported protocol version' })
+			&& !A.acpIsVersionRejection({ message: 'auth failed' })), 'true'));
+
+	const src = fs.readFileSync(path.join(PLUGINS_DIR, 'vssaros-local-agents', 'lib', 'core', 'acp.js'), 'utf8');
+	push(step('接线：ensure 用 v2 参数、版本拒绝时回退 v1',
+		String(src.includes('acpInitializeParams(ACP_PROTOCOL_VERSION)') && src.includes('acpInitializeParams(1)')
+			&& src.includes('acpCapabilitiesOf(reply')), 'true'));
+	push(step('接线：resume 方法按协商结果选，响应无 sessionId 时兜底',
+		String(src.includes('peer.request(resumeMethod,') && src.includes('reply?.sessionId ?? resumeId')), 'true'));
+
+	results.push({ plugin: 'vssaros-local-agents', fn: 'acpCapabilitiesOf', notes, contract: 'acpV2' });
+	if (notes.length) { violations++; }
+}
+
+// ─── A11. P1-9 ACP resume 实际触发（2026-11-10）──────────────────────────
+//  持久映射 + ensureLive 带 resumeId；★ 映射只存 id，不作授权、不隐式复活根集。
+{
+	const notes = [];
+	const push = r => { if (!r.ok) { notes.push(r.note); } };
+	const S = await import(pathToFileURL(path.join(PLUGINS_DIR, 'vssaros-local-agents', 'lib', 'core', 'sessionMap.js')).href);
+	push(step('解析：畸形 JSON / 数组 ⇒ 空映射',
+		JSON.stringify(S.parseAcpSessionMap('bad')) + JSON.stringify(S.parseAcpSessionMap('[]')), '{}{}'));
+	push(step('解析：只留合法 id 对',
+		JSON.stringify(S.parseAcpSessionMap(JSON.stringify({ a: 'x', bad: 7 }))), JSON.stringify({ a: 'x' })));
+	push(step('序列化：键序稳定',
+		String(S.serializeAcpSessionMap({ b: '2', a: '1' }) === JSON.stringify({ a: '1', b: '2' }, null, 2) + '\n'), 'true'));
+	const many = Object.fromEntries(Array.from({ length: S.MAX_ACP_SESSION_MAP_ENTRIES + 20 }, (_, i) => [`s${i}`, `c${i}`]));
+	push(step('条数上限',
+		String(Object.keys(S.parseAcpSessionMap(JSON.stringify(many))).length), String(S.MAX_ACP_SESSION_MAP_ENTRIES)));
+	let text = JSON.stringify({ s1: 'cli-old' });
+	const map = S.createAcpSessionMap({ readText: async () => text, writeText: async t => { text = t; } });
+	push(step('映射读旧 id', String(await map.get('s1')), 'cli-old'));
+	await map.set('s1', 'cli-new');
+	push(step('映射写回最终 id', String(JSON.parse(text).s1), 'cli-new'));
+	push(step('畸形 id 不写入', String(await map.set('', 'x')), 'false'));
+	await map.delete('s1');
+	push(step('删除生效', String(await map.size()), '0'));
+
+	const adapterSrc = fs.readFileSync(path.join(PLUGINS_DIR, 'vssaros-local-agents', 'lib', 'core', 'acpAdapter.js'), 'utf8');
+	push(step('接线：查映射 / 传 resumeId / 写回最终 id',
+		String(adapterSrc.includes('sessionMap.get(sessionId)')
+			&& adapterSrc.includes('...(resumeId ? { resumeId } : {})')
+			&& adapterSrc.includes('sessionMap.set(sessionId, cliSessionId)')), 'true'));
+	push(step('接线：anonymous 不恢复',
+		String(adapterSrc.includes("sessionId !== 'anonymous'")), 'true'));
+	const outerSrc = fs.readFileSync(path.join(PLUGINS_DIR, 'vssaros-local-agents', 'lib', 'core', 'adapter.js'), 'utf8');
+	const idxSrc = fs.readFileSync(path.join(PLUGINS_DIR, 'vssaros-local-agents', 'lib', 'index.js'), 'utf8');
+	push(step('接线：外层透传 / 入口原子写映射',
+		String(outerSrc.includes('sessionMap: deps.sessionMap') && idxSrc.includes('createAcpSessionMap({')
+			&& idxSrc.includes('rename(tmp, mapPath)') && idxSrc.includes('sessionMap,')), 'true'));
+
+	results.push({ plugin: 'vssaros-local-agents', fn: 'createAcpSessionMap', notes, contract: 'acpResume' });
+	if (notes.length) { violations++; }
+}
+
 // ─── B. 拷贝一致性（报告 R6）────────────────────────────────────────────────
 const walk = (dir, out = []) => {
 	for (const e of fs.readdirSync(dir, { withFileTypes: true })) {

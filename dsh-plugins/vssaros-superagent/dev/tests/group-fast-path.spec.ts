@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import {
 	GROUP_REFERENCE_KIND, addressedGroupMessage, fastGroupPlan, groupByNameMention, groupReferenceOf,
-	groupFlowNotice, groupMadeNotice, handleDeskGroupCommand, handleDeskMessage, isGroupCreationRequest, mayBeGroupCommand, type GroupFastPathHost,
+	groupFlowNotice, divisionNotice, groupMadeNotice, handleDeskGroupCommand, handleDeskMessage, isGroupCreationRequest, mayBeGroupCommand, type GroupFastPathHost,
 } from '../src/app/groupFastPath.ts'
 import { wakesDesk } from '../src/app/desk-outbox.ts'
 import type { ReceiveResult, Trigger } from '../src/core/index.ts'
@@ -115,6 +115,29 @@ describe('P0 synchronous group creation', () => {
     expect(chat.notice).not.toContain('协作流程')
     // Without a designer or reviewer the flow skips them.
     expect(groupFlowNotice({ coder: 'Coder', tester: 'Tester' })).toContain('Coder 开发完成后 @Tester。')
+  })
+  // ★ 2026-11-10（真机「3d像素贪吃蛇群没有使用成员分工」）：名册换成
+  //   planner / code-explorer / … 时，旧条件 coder && tester 会让公告只剩群名。
+  it('名册没有 coder / tester 时，做事类群仍生成角色无关的分工公告；闲聊群不加', () => {
+    const roster = [
+      { id: 'planner', name: 'Planner', delegatable: true },
+      { id: 'explorer', name: 'Code Explorer', delegatable: true },
+      { id: 'reviewer-x', name: 'Code Reviewer', delegatable: true },
+      { id: 'mediaclawer', name: 'MediaClawer', delegatable: true },
+    ]
+    const plan = fastGroupPlan('创建一个 3d像素贪吃蛇 h5 开发团队', roster)!
+    expect(plan.members.length).toBeGreaterThanOrEqual(2)
+    expect(plan.members.length).toBeGreaterThanOrEqual(2)
+    expect(plan.members.every(id => roster.some(b => b.id === id))).toBe(true)
+    expect(plan.notice).toContain('【本群分工】')
+    expect(plan.notice).toContain('group_goal')
+    expect(plan.notice).toContain(String(roster[0]?.name ?? 'Planner'))
+    expect(plan.notice.length).toBeLessThanOrEqual(2000)
+    expect(divisionNotice({ admin: 'Planner', others: ['Code Explorer'] })).toContain('@ 对应成员派活')
+    // 闲聊群不参与「做事」判定 ⇒ 不能出现分工/协作流程文本
+    const chat = fastGroupPlan('建个群，讨论下周排期', roster)!
+    expect(chat.notice).not.toContain('协作流程')
+    expect(chat.notice).not.toContain('【本群分工】')
   })
   it('makes the group at desk intake, records ignore, drives a pass, and tells the requester', async () => {
     const h = host()

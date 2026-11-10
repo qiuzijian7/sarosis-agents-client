@@ -473,7 +473,7 @@ window.__ModuleLoader__.load({
 				blocks.push(el("div", { style: S.card, "data-vssaros-feishu-apps": String(extraApps.length) },
 					el("div", { style: S.cap }, el("span", null, "其他飞书应用"),
 						el("span", { style: S.cnt }, String(extraApps.length)), el("span", { style: S.sp }),
-						el("span", { style: { ...S.p, ...S.small, fontWeight: 400 } }, "绑定时可选；不选 = 默认应用")),
+						el("span", { style: { ...S.p, ...S.small, fontWeight: 400 } }, "绑定时可选；不选 = VsSaros助手")),
 					extraApps.length
 						? el("table", { style: S.table }, el("tbody", null, extraApps.map((a) => {
 							const ast = appStatusOf(appInbounds[a.appId]);
@@ -558,7 +558,7 @@ window.__ModuleLoader__.load({
 							el("span", { style: { ...S.p, ...S.small } }, " · " + (b.enabled === false ? "停用" : "启用")),
 							key === "feishu" && extraApps.length
 								? el("span", { style: { ...S.p, ...S.small }, "data-vssaros-bind-app": String(b.appId || "") },
-									" · " + (b.appId ? "应用 " + appLabel(b.appId) : "默认应用"))
+									" · " + (b.appId ? "应用 " + appLabel(b.appId) : "VsSaros助手"))
 								: null,
 							/* ★ 2026-10-27「测试发送」：点一下就知道这条出站通不通（用真实适配器） */
 							el("button", {

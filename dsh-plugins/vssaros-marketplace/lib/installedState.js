@@ -5,7 +5,7 @@
 //   真机实测（2026-10-29）：台账里 135 条 skill，磁盘上只剩 21 个目录
 //   ⇒ 若直接拿台账给商品打「已安装」，会有 **100+ 个商品谎报已安装**
 //     （比不显示更糟：用户点进去发现并没有装，还找不到卸载入口）✗
-// ⇒ 有落地物可查的 kind（skill / workflow / agent / mcp）**一律以磁盘为准**；
+// ⇒ 有落地物可查的 kind（skill / agent / mcp / knowledge）**一律以磁盘为准**；
 //   没有落地物可查的 kind（plugin / workbench）只能信台账
 //   （它们装在 dsh profile 的 node_modules 里，本插件既不负责也无从点名）。
 //
@@ -30,7 +30,7 @@ export function installedKey(kind, storeId) {
 
 /** 这个 kind 有没有"可以核对"的落地物（没有 ⇒ 只能信台账）。 */
 export function hasDiskPresence(kind) {
-	return kind === 'skill' || kind === 'workflow' || kind === 'agent' || kind === 'mcp';
+	return kind === 'skill' || kind === 'agent' || kind === 'mcp' || kind === 'knowledge';
 }
 
 /** 路径是否存在（`stat` 成功即算）。 */
@@ -48,9 +48,10 @@ async function exists(p) {
  */
 function landingFileOf(dataRoot, kind, storeId) {
 	if (kind === 'skill') { return join(targetRootOf(dataRoot, 'skill'), storeId, 'SKILL.md'); }
-	if (kind === 'workflow') { return join(targetRootOf(dataRoot, 'workflow'), storeId, 'workflow.json'); }
 	if (kind === 'agent') { return join(targetRootOf(dataRoot, 'agent'), storeId, '.agent.md'); }
 	if (kind === 'mcp') { return join(mcpDirOf(dataRoot, storeId), 'config.json'); }
+	// ★ 2026-11-10 P1：知识库以**目录本身**为落地物（包内标记是 best-effort 生成的，不能当判据）
+	if (kind === 'knowledge') { return join(targetRootOf(dataRoot, 'knowledge'), storeId); }
 	return null;
 }
 
@@ -71,7 +72,7 @@ export async function resolveEntryVersion(dataRoot, entry, opts = {}) {
 	if (!dataRoot || !kind || !storeId) { return ''; }
 	const ledgerVersion = typeof entry.version === 'string' ? entry.version : '';
 	const landing = landingFileOf(dataRoot, kind, storeId);
-	// 没有可查的落地物（plugin / workbench / knowledge …）⇒ 只能信台账
+	// 没有可查的落地物（plugin / workbench …）⇒ 只能信台账
 	if (!landing) { return ledgerVersion; }
 	try {
 		if (!await exists(landing)) { return ''; }

@@ -33,7 +33,6 @@ export const MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024;
 /** 各 kind 在包内的"入口文件"（定位安装根的依据）。 */
 const ENTRY_OF = {
 	skill: 'SKILL.md',
-	workflow: 'workflow.json',
 	agent: '.agent.md',
 };
 
@@ -198,7 +197,7 @@ export function resolveDownloadUrl(dist) {
  * 在解出来的条目里**定位真正的安装根**。
  *
  * 规则（宁可报错也不猜）：
- *   1. 若根目录就有入口文件（`SKILL.md` / `workflow.json` / `.agent.md`）⇒ 根就是安装根；
+ *   1. 若根目录就有入口文件（`SKILL.md` / `.agent.md`）⇒ 根就是安装根；
  *   2. 否则找**唯一**一个包含入口文件的目录 ⇒ 那个目录是根（GitHub archive 的
  *      `<repo>-<ref>/xxx/SKILL.md` 就走这条）；
  *   3. 找不到、或找到多个 ⇒ 如实报错（装错目录比装不上更糟 ✗）。

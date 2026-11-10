@@ -73,7 +73,6 @@ import type { ILogService } from '../../../../../platform/log/common/log.js';
 import type {
 	IAgentTurnRequest,
 	IChatStreamDelta,
-	IMemoryProvider,
 	IModelProvider,
 	IModelSelection,
 	IToolCall,
@@ -99,7 +98,7 @@ import { COMPRESSION_COOLDOWN_MS } from '../../common/turnLoopConstants.js';
 import { xmlToolCallLeakReminder } from '../../common/loopReminders.js';
 import { deriveAskRoutingContext } from '../../common/askRouting.js';
 import { createInitialWorkState, resolveRequestWorkMode } from '../../common/workMode.js';
-import { ContextManager, RETRIEVAL_BUDGET_RATIO, RETRIEVAL_COMPACTION_ENABLED } from '../../common/contextManager.js';
+import { ContextManager } from '../../common/contextManager.js';
 import type { DeliveryQueue } from '../../common/deliveryQueue.js';
 import {
 	compactContextIfNeededImpl,
@@ -215,13 +214,8 @@ export interface IPiKernelHost {
 	_turnKey(agentId: string | undefined, sessionId: string | undefined): string;
 	_scheduleSave(): void;
 
-	// ── 记忆检索注入（executor:1123-1159 同款 host 方法，见 ITurnHostExecution）──
-	getActiveMemoryProvider(): IMemoryProvider | undefined;
 	_setCurrentModel(provider: IModelProvider | undefined, modelId: string | undefined): void;
 	_resolveContextWindow(provider: IModelProvider, modelId: string): Promise<number>;
-	_storeTurnObservations(provider: IMemoryProvider, agentId: string, sessionId: string, messages: ReadonlyArray<unknown>): Promise<void>;
-	_retrieveContextOnly(provider: IMemoryProvider, agentId: string, sessionId: string, middle: ReadonlyArray<unknown>, budget: number): Promise<{ context: string; tokens: number; source: string } | null>;
-	_injectRetrievalSystemMessage(messages: unknown[], context: string, source: string): unknown[];
 
 	// ── plan 编排面（D1；parts/turnPlanModeTools 的宿主面，全可选 —— 缺失时 plan 工具
 	//    按普通工具执行并告警，不拦截）──────────────────────────────────────────
@@ -245,7 +239,6 @@ export interface IPiKernelHost {
 	_compressionBeforeTokens: number;
 	_compressionAfterTokens: number;
 	readonly _currentWorkspaceId: string | undefined;
-	_retrieveCompactionContext(provider: IMemoryProvider, req: unknown): Promise<unknown>;
 }
 
 /** 一轮 turn 的前置产物（由 `initTurnContext` + executor 的工具门控产出）。 */
@@ -298,32 +291,9 @@ export async function* runPiKernelTurn(
 	const restored = request.resumeFrom;
 	const { restoredMessages, restoredIteration } = resolveResume(request, host._logService);
 
-	// ── 记忆检索注入（与 executor:1123-1159 同一语义、同一批 host 方法）──────────
-	// 在 **legacy 形状**的种子上操作（_retrieveContextOnly/_injectRetrievalSystemMessage
-	// 都吃 legacy 消息），注入完成后再转 pi 形状。默认开启（AGENT_OS_RETRIEVAL_COMPACTION=0 关）。
+	// ── 种子消息（IDE 侧记忆检索注入已整体下线）────────────────────
+	// 种子消息直接沿用断点续跑/请求消息（IDE 侧记忆检索注入已整体下线）。
 	let seedMessages: readonly AgentRunMessage[] = restoredMessages ?? deps.messages;
-	if (RETRIEVAL_COMPACTION_ENABLED) {
-		const rp = host.getActiveMemoryProvider();
-		if (rp && typeof (rp as { recallFormatted?: unknown }).recallFormatted === 'function') {
-			const retrievalAgentId = agentId || 'default';
-			const retrievalSessionId = request.sessionId ?? '';
-			// 与 legacy 相同：先亮「正在检索历史上下文」（32s 静默的教训，executor:1131）
-			yield { type: 'phase_change', phase: 'retrieving' } as IChatStreamDelta;
-			try {
-				await host._storeTurnObservations(rp, retrievalAgentId, retrievalSessionId, seedMessages);
-				const contextWindow = await host._resolveContextWindow(deps.modelProvider, deps.selection.modelId);
-				const r = await host._retrieveContextOnly(rp, retrievalAgentId, retrievalSessionId, seedMessages, Math.floor(contextWindow * RETRIEVAL_BUDGET_RATIO));
-				if (r && r.context.trim()) {
-					seedMessages = host._injectRetrievalSystemMessage([...seedMessages], r.context, r.source) as AgentRunMessage[];
-					host._logService.info(`[PiKernel][Retrieval] injected retrieved context at turn start (source=${r.source}, ~${Math.ceil(r.context.length / 3)} tokens)`);
-					yield { type: 'memory_injected', content: `已检索注入历史上下文 (~${Math.ceil(r.context.length / 3)} tokens)` } as IChatStreamDelta;
-				}
-			} catch (err) {
-				host._logService.warn(`[PiKernel][Retrieval] 检索注入失败（继续本轮）：${err instanceof Error ? err.message : String(err)}`);
-			}
-			yield { type: 'phase_change', phase: 'llm_streaming' } as IChatStreamDelta;
-		}
-	}
 
 	const model = { id: deps.selection.modelId, name: deps.selection.modelId, api: 'openai-completions', provider: 'saros' } as unknown as Model;
 

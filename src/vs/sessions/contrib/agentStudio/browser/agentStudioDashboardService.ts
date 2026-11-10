@@ -8,7 +8,7 @@
  *
  * 数据来源：
  * - IAgentOSService: Token/压缩/工具调用统计（getDashboardStats）、模型选择、记忆 Provider
- *   （会话面板基于 agentmemory 会话机制：KV.sessions 观察 → 压缩 → KV.summaries 摘要）
+ *   （IDE 侧记忆会话管线已退役；记忆能力只在 dsh 侧）
  * - ICodebaseGraphService: 代码图谱节点/边数（getIndexStatus）
  */
 
@@ -38,7 +38,7 @@ export interface IDashboardSession {
 	tokens: number;
 	turns: number;
 	duration: string;
-	// ─── agentmemory 会话管线 ───────────────────────────────────
+	// ─── 会话/统计快照（记忆字段恒为空，dsh 侧自持）───────────────
 	/** 所属 Agent（跨 agent 聚合时填充） */
 	agentId?: string;
 	/** 会话观察数（KV.sessions.observationCount） */
@@ -213,25 +213,14 @@ export class AgentStudioDashboardService extends Disposable implements IAgentStu
 			model: osStats.activeModelId,
 		});
 
-		// 2. 会话列表（基于 agentmemory 会话机制：KV.sessions 观察 → 压缩 → SessionSummary）
-		let sessions: IDashboardSession[] = [];
-		try {
-			sessions = await this._buildMemorySessions();
-			console.info('[Dashboard] agentmemory sessions loaded:', sessions.length);
-		} catch (err) {
-			console.warn('[Dashboard] _buildMemorySessions failed:', err);
-		}
+		// IDE 侧记忆会话管线已退役 ⇒ 会话列表恒为空（dsh 侧自持记忆）。
+		const sessions: IDashboardSession[] = [];
 
-		// 3. 记忆统计
-		let memory: IDashboardMemoryStat = {
+		// IDE 侧记忆统计已退役 ⇒ 恒为零值（dsh 侧自持记忆）。
+		const memory: IDashboardMemoryStat = {
 			total: 0, working: 0, episodic: 0, semantic: 0, procedural: 0,
 			graphNodes: 0, graphEdges: 0, totalSearches: 0, zeroResultSearches: 0, healthStatus: 'N/A',
 		};
-		try {
-			memory = await this._buildMemoryStats();
-		} catch (err) {
-			console.warn('[Dashboard] _buildMemoryStats failed:', err);
-		}
 
 		// 4. 代码图谱统计
 		let graphStats = { nodes: 0, edges: 0, files: 0, project: '', exists: false };
@@ -398,138 +387,7 @@ export class AgentStudioDashboardService extends Disposable implements IAgentStu
 		return result;
 	}
 
-	/**
-	 * 从 agentmemory 引擎聚合会话管线数据（跨 agent）。
-	 * 数据源：KV.sessions（观察注册）+ KV.summaries（压缩摘要）。
-	 * 每个会话呈现 观察数 → 是否已压缩为 SessionSummary 的管线状态。
-	 */
-	private async _buildMemorySessions(): Promise<IDashboardSession[]> {
-		const collected: Array<{ rec: any; agentId: string; summary: any; updatedMs: number }> = [];
-		const memProvider = this._agentOSService.getActiveMemoryProvider() as any;
-		if (!memProvider?.listSessions) {
-			console.info('[Dashboard] memProvider.listSessions not available');
-			return [];
-		}
-		const agents: string[] = await memProvider.listAllAgentsWithData?.().catch(() => []) ?? [];
-		for (const agentId of agents) {
-			let sessions: any[] = [];
-			let summaries: any[] = [];
-			try {
-				[sessions, summaries] = await Promise.all([
-					memProvider.listSessions(agentId).catch(() => []),
-					memProvider.listSummaries(agentId).catch(() => []),
-				]);
-			} catch { continue; }
-			const summaryById = new Map<string, any>((summaries ?? []).map((s: any) => [s?.sessionId, s]));
-			for (const rec of sessions ?? []) {
-				const updatedMs = new Date(rec?.updatedAt || rec?.startedAt || 0).getTime();
-				collected.push({ rec, agentId, summary: summaryById.get(rec?.id), updatedMs });
-			}
-		}
-		return collected
-			.sort((a, b) => b.updatedMs - a.updatedMs)
-			.slice(0, 20)
-			.map(c => this._convertMemorySession(c.rec, c.agentId, c.summary));
-	}
 
-	private _convertMemorySession(
-		rec: { id?: string; firstPrompt?: string; observationCount?: number; updatedAt?: string; startedAt?: string; project?: string },
-		agentId: string,
-		summary: { title?: string } | undefined,
-	): IDashboardSession {
-		const updatedMs = new Date(rec.updatedAt || rec.startedAt || 0).getTime();
-		const diffMin = Math.floor((Date.now() - updatedMs) / 60000);
-		const summarized = !!summary;
-		const status: IDashboardSession['status'] = summarized ? 'completed' : (diffMin < 5 ? 'running' : 'idle');
-		return {
-			id: rec.id ?? '',
-			name: rec.firstPrompt || rec.id || '未命名会话',
-			status,
-			model: agentId,
-			tokens: 0,
-			turns: rec.observationCount ?? 0,
-			duration: this._relativeTime(updatedMs),
-			agentId,
-			observationCount: rec.observationCount ?? 0,
-			summarized,
-			summaryTitle: summary?.title,
-			project: rec.project,
-		};
-	}
-
-	private _relativeTime(ms: number): string {
-		if (!ms || Number.isNaN(ms)) { return '—'; }
-		const diffMin = Math.floor((Date.now() - ms) / 60000);
-		if (diffMin < 1) { return '刚刚'; }
-		if (diffMin < 60) { return `${diffMin}分钟前`; }
-		const diffHour = Math.floor(diffMin / 60);
-		if (diffHour < 24) { return `${diffHour}小时前`; }
-		return `${Math.floor(diffHour / 24)}天前`;
-	}
-
-	private async _buildMemoryStats(): Promise<IDashboardMemoryStat> {
-		let total = 0;
-		let working = 0;
-		let episodic = 0;
-		let semantic = 0;
-		let procedural = 0;
-		let graphNodes = 0;
-		let graphEdges = 0;
-		let totalSearches = 0;
-		let zeroResultSearches = 0;
-		let healthStatus = 'N/A';
-
-		try {
-			const memProvider = this._agentOSService.getActiveMemoryProvider();
-			console.info('[Dashboard] memProvider:', memProvider ? `${memProvider.id} (${memProvider.name})` : 'null');
-			if (memProvider) {
-				// 1. 使用 getExtendedStats 获取完整统计（如果 Provider 支持）
-				if (memProvider.getExtendedStats) {
-					try {
-						const ext = memProvider.getExtendedStats('*') as Record<string, unknown>;
-						graphNodes = Number(ext['graphNodes']) || 0;
-						graphEdges = Number(ext['graphEdges']) || 0;
-						totalSearches = Number(ext['totalSearches']) || 0;
-						zeroResultSearches = Number(ext['zeroResultSearches']) || 0;
-						healthStatus = String(ext['healthStatus'] ?? 'N/A');
-						console.info('[Dashboard] getExtendedStats:', { graphNodes, graphEdges, totalSearches, healthStatus });
-					} catch (err) { console.warn('[Dashboard] getExtendedStats failed:', err); }
-				} else {
-					console.info('[Dashboard] getExtendedStats not supported by provider');
-				}
-
-			// 2. 搜索全量记忆，按 agentmemory 4 层分类计数
-			// 层模型：working→core、semantic/procedural→独立 scope、原生类型(pattern/.../fact)→Episodic 层
-			const entries = await memProvider.searchMemory('*', '*');
-			total = entries.length;
-			console.info('[Dashboard] searchMemory result:', total, 'entries');
-			working = 0; episodic = 0; semantic = 0; procedural = 0;
-			for (const entry of entries) {
-				const t = entry.type as string;
-				if (t === 'working') { working++; }
-				else if (t === 'semantic') { semantic++; }
-				else if (t === 'procedural') { procedural++; }
-				else { episodic++; } // 原生类型（pattern/preference/architecture/bug/workflow/fact）归入 Episodic 层
-			}
-				console.info('[Dashboard] memory 4-Tier:', { working, episodic, semantic, procedural });
-			}
-		} catch (err) {
-			console.warn('[Dashboard] _buildMemoryStats outer catch:', err);
-		}
-
-		return {
-			total,
-			working,
-			episodic,
-			semantic,
-			procedural,
-			graphNodes,
-			graphEdges,
-			totalSearches,
-			zeroResultSearches,
-			healthStatus,
-		};
-	}
 
 	private _buildAlerts(
 		osStats: { compressionIneffectiveCount: number },

@@ -1,7 +1,7 @@
 /** Tickets: their lifecycle from an accept to their end, their Subscriptions and their Inputs. */
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
-import { latestAssignment, latestReport, liveTicket, readUntil, runningAssignment, settled, staffing, threadKey, ticketExecutor, waitsForPerson } from './model.ts'
+import { awaitingAnswer, latestAssignment, latestReport, liveTicket, readUntil, runningAssignment, settled, staffing, threadKey, ticketExecutor } from './model.ts'
 import type { Assignment, ChannelRef, Evaluation, Follow, Mandate, PolicyEffect, ThreadRef, Ticket, TicketEndBy, TicketInput, TicketOutcome,
   Trigger, TriggerDisposition } from './model.ts'
 import type { AssessmentOutcome } from './ports.ts'
@@ -276,14 +276,16 @@ export class Tickets extends EnginePart {
   addInput(ticket: Ticket, input: TicketInput): void {
     if (ticket.inputs.some(existing => existing.id === input.id)) return
     ticket.inputs.push(input); ticket.updatedAt = this.now()
-    // Hold back automated inputs while the worker is waiting on a person.
-    const held = liveTicket(ticket) && automatic(input) && waitsForPerson(ticket)
+    // Hold back automated inputs while the ticket is waiting on a person.
+    // ★ 2026-11-10：改用与 Intake 扇出闸门同一个 `awaitingAnswer` —— 原来只认 blocked/failed
+    //   报告，主管直接挂了 attention 提问的工单会被漏判，自动化输入照旧投递/启动 pending assignment。
+    const held = liveTicket(ticket) && automatic(input) && awaitingAnswer(ticket)
     if (!held) ticket.undelivered.push(input.id)
     this.repo.tickets.save(ticket)
     if (!liveTicket(ticket) || held) return
     const running = runningAssignment(ticket), latest = latestAssignment(ticket)
     if (running) this.options.executor.deliver(ticket, running)
-    else if (latest?.state === 'pending' && !waitsForPerson(ticket) && !staffing(ticket)) this.options.executor.start(ticket, latest)
+    else if (latest?.state === 'pending' && !awaitingAnswer(ticket) && !staffing(ticket)) this.options.executor.start(ticket, latest)
   }
   /**
    * Resume an ended ticket under its unchanged Mandate when a person's message on one of its Threads waits for it: no Eval

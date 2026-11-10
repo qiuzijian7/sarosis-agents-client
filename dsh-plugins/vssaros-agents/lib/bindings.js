@@ -105,7 +105,9 @@ export function normalizeBinding(input, existing) {
 		return allowed.includes(val) ? val : fallback;
 	};
 	const platform = pick('platform', BINDING_PLATFORMS, 'loopback');
-	const targetKind = 'agent';
+	/* ★ 2026-11-10：群聊回归 ⇒ 绑定目标重新支持 `group`（targetId = roomId）。
+	   老数据没有该字段 / 写的是 agent ⇒ 归一成 agent，既有行为一字不变。 */
+	const targetKind = pick('targetKind', ['agent', 'group'], 'agent');
 	const targetId = String((input?.targetId === undefined ? cur.targetId : input.targetId) ?? '').trim();
 	const chatId = String((input?.chatId === undefined ? cur.chatId : input.chatId) ?? '').trim();
 	const chatType = String((input?.chatType === undefined ? cur.chatType : input.chatType) ?? 'p2p').trim() === 'group'
@@ -235,6 +237,14 @@ async function assertBindingTarget(config, binding, deps) {
 	}
 	if (!binding.targetId) {
 		throw httpError(400, 'targetId 不能为空（要绑定哪个 bot / 群）。');
+	}
+	/* ★ 2026-11-10：群绑定校验 roomId（它不在 bot 名册里，走 rooms.isRoom）。 */
+	if (binding.targetKind === 'group') {
+		const rooms = typeof deps.rooms === 'function' ? deps.rooms() : deps.rooms;
+		if (!rooms || typeof rooms.isRoom !== 'function' || !rooms.isRoom(binding.targetId)) {
+			throw httpError(400, `没有这个群：${binding.targetId}`);
+		}
+		return;
 	}
 	const scan = await deps.scanAgents(config);
 	if (!scan.agents.some(a => String(a.id) === binding.targetId)) {
@@ -535,6 +545,12 @@ export function createBindingHub(deps) {
 	const adapters = new Map();
 	/* 环形风暴预算（可按需覆盖：`createBindingHub({ loop: { maxEvents, windowMs, cooldownMs } })`） */
 	const loopGuard = createLoopGuard(deps.loop || {});
+	/* ★ 2026-11-10：派发失败给 IM 回一条**限流**的简短错误（原来只写死信 ⇒ 用户看到静默无返回）。
+	   与入站预算分开：这里只管错误提示，同一会话 1 分钟最多 1 条，之后冷却 1 分钟。
+	   可用 `deps.errorNoticeLoop` 注入时钟/窗口（测试），`deps.errorNotice === false` 关掉。 */
+	const errorNoticeGuard = createLoopGuard({
+		maxEvents: 1, windowMs: 60_000, cooldownMs: 60_000, ...(deps.errorNoticeLoop || {}),
+	});
 	/* 最近出现的 IM 会话（2026-10-27）：内存环形，最多 20 条。
 	   为什么内存就够：它的用途是"帮用户拿到 Telegram chat_id"这种**当下**的事，
 	   重启后重新发一句话就有；落盘反而会留下外部会话 id 的历史。 */
@@ -602,6 +618,19 @@ export function createBindingHub(deps) {
 		}
 		/* 记下这次出现过的会话 id（不论后面是被拒还是成功）—— 设置页要把它列出来给用户复制 */
 		noteRecent({ ...msg, platform });
+
+		/* ★ 2026-11-10（归属声明）：skipAppIds 里的飞书应用归 SuperAgent 处理 ——
+		   router 不该尝试派发，更不该把「本就不该由自己处理」记成 unbound 死信
+		   （设置页会显示「失败 N」和一个必然 404 的「加入白名单」按钮）。
+		   reason 用 'skip-app'：它不在 deadLetters.js 的 DEAD_LETTER_REASONS 里 ⇒ 自动不落盘。
+		   ⚠ 必须放在 noteRecent 之后：设置页要靠它列出 chat_id 供用户复制。 */
+		if (platform === 'feishu' && typeof deps.skipAppIds === 'function') {
+			const owned = await deps.skipAppIds().catch(() => []);
+			const appId = String(msg?.appId ?? '').trim() || defaultAppId;
+			if (appId && Array.isArray(owned) && owned.includes(appId)) {
+				return { ok: false, reason: 'skip-app', key };
+			}
+		}
 
 		const bindings = await readBindings(deps.config);
 		const botApps = typeof deps.botApps === 'function' ? await deps.botApps().catch(() => ({})) : {};
@@ -692,6 +721,18 @@ export function createBindingHub(deps) {
 				text: String(msg?.content ?? ''),
 				detail: r.error || (r.pairing && r.pairing.throttled ? '配对请求过多' : ''),
 			}).catch(() => undefined);
+		}
+		/* ★ 2026-11-10：派发失败不再静默 —— 给 IM 回一条限流的简短错误。
+		   只回 dispatch-error（白名单/未绑定等策略拒绝不回，避免暴露策略、也避免刷屏）；
+		   提示本身也要过独立 loopGuard，防止「错误提示 → IM 事件回来 → 又失败」成环。 */
+		if (r && r.reason === 'dispatch-error' && r.binding && deps.errorNotice !== false) {
+			const noticeKey = `${String(r.binding.platform ?? '')}:${String(r.binding.chatId ?? '')}`;
+			if (errorNoticeGuard.allow(noticeKey).ok) {
+				const brief = String(r.error || '派发失败').split('\n')[0].slice(0, 160);
+				await deliver(r.binding, `⚠ 消息未送达：${brief}`).catch((e) => {
+					log('warn', `派发失败提示也发不出去（${noticeKey}）：${String(e?.message ?? e)}`);
+				});
+			}
 		}
 		return r;
 	}
@@ -853,9 +894,73 @@ export function createBindingHub(deps) {
  *   `steer`/`followup`（与群派发同一套），否则会和交互式回合打架。
  */
 export async function dispatchImToAgent(config, state, binding, msg, deps) {
-	const agent = (await deps.scanAgents(config)).agents.find(a => String(a.id) === String(binding.targetId));
+	const targetId = String(binding?.targetId ?? '').trim();
+	/* ★ 2026-11-10：群绑定 —— IM 消息进群会话（`postToRoom` 会触发 group_relay 分工）。
+	   ⚠ 不扫 bot 名册、不建/复用 bot 会话；outbox 仍记 `kind:'im'`（sessionId = roomId），
+	     让回合结束的回复回收器把群答复推回这条 IM 会话（只对 IM 触发的回合生效，不会刷屏）。
+	   `postToRoom` 自带幂等（IM messageId 作 sourceMessageId）⇒ 重复事件不会重复转投/重复回复。 */
+	if (binding?.targetKind === 'group') {
+		const rooms = typeof deps.rooms === 'function' ? deps.rooms() : deps.rooms;
+		if (!rooms || typeof rooms.postToRoom !== 'function') {
+			throw httpError(503, '群会话服务未就绪，IM 消息进不了群（dsh 版本不匹配？）。');
+		}
+		const who = String(msg?.userName || msg?.userId || 'IM 用户');
+		const where = String(msg?.chatType ?? binding.chatType) === 'group' ? '群' : '私聊';
+		const text = `[${binding.platform} ${where} · ${who}]\n${clipDispatchText(String(msg?.content ?? ''))}`;
+		const posted = await rooms.postToRoom(targetId, text, {
+			fromSession: 'im:' + String(binding.platform || '') + ':' + String(binding.chatId || ''),
+			sourceMessageId: String(msg?.messageId ?? ''),
+			roomLabel: String(binding.chatName || 'IM'),
+		});
+		if (!posted?.ok) { throw httpError(503, `IM 消息转投群失败：${targetId}`); }
+		/* 群会话暂时打不开时 postToRoom 会把消息存进收件箱：没有可关联的 messageId ⇒ 不登记 outbox。 */
+		if (posted.duplicate || posted.deferred || !posted.messageId) {
+			return { sessionId: targetId, messageId: String(posted.messageId ?? ''), roomId: targetId,
+				duplicate: posted.duplicate === true, deferred: posted.deferred === true };
+		}
+		outboxNote(config, {
+			kind: 'im', sessionId: targetId, bindingId: binding.id,
+			messageId: String(posted.messageId),
+			agentId: targetId, agentName: String(posted.name || '群'),
+			platform: binding.platform, chatId: binding.chatId,
+		});
+		return { sessionId: targetId, messageId: String(posted.messageId), roomId: targetId, group: true };
+	}
+	/* ★ 2026-11-10（真机：飞书发 test 静默无返回，死信只写「绑定指向的 bot 不存在」）：
+	   原来 `(await scanAgents).agents.find()` 找不到就一律 404，把「名单扫描失败 / 内置 agent
+	   临时根目录失效」也误报成「bot 不存在」⇒ 排查方向全错。现在三态分开：
+	     · 名单为空 / 扫描报错 ⇒ 503 + 扫描诊断（不假装知道 bot 存不存在）
+	     · 名单正常但没有该 id ⇒ 404 + 当前名单摘要（真的是绑定写错了）
+	     · 名单扫不到但启动期注册过该 preset ⇒ 用已注册名单兜底，继续派发 */
+	let scan = null;
+	const scanErrors = [];
+	try {
+		scan = await deps.scanAgents(config);
+	} catch (e) {
+		scanErrors.push(`agent 名单扫描抛错：${String(e?.message ?? e)}`);
+	}
+	const agents = Array.isArray(scan?.agents) ? scan.agents : [];
+	if (Array.isArray(scan?.errors)) {
+		scanErrors.push(...scan.errors.filter(Boolean).map(String));
+	}
+	let agent = agents.find(a => String(a?.id ?? '') === targetId);
+	/* 内置根是 Host 启动期生成的临时副本，运行中被清理时只剩自定义目录（10 个）⇒
+	   内置 bot 全部「查无此人」。`state.registered`（Map<agentId, …>）是更硬的事实。 */
+	if (!agent && typeof deps.registeredAgentIds === 'function') {
+		let ids = [];
+		try { ids = await deps.registeredAgentIds(); } catch { ids = []; }
+		if ((Array.isArray(ids) ? ids : []).some(id => String(id) === targetId)) {
+			agent = { id: targetId, name: targetId };
+		}
+	}
 	if (!agent) {
-		throw httpError(404, `绑定指向的 bot 不存在：${binding.targetId}`);
+		const diagnosis = scanErrors.length ? `；扫描诊断：${scanErrors.slice(0, 3).join(' | ')}` : '';
+		if (!agents.length || scanErrors.length) {
+			throw httpError(503,
+				`agent 名单不可用（扫到 ${agents.length} 个，错误 ${scanErrors.length} 条），无法判断 bot ${targetId} 是否存在${diagnosis}`);
+		}
+		throw httpError(404,
+			`绑定指向的 bot 不存在：${targetId}（当前名单 ${agents.length} 个：${agents.slice(0, 8).map(a => String(a.id)).join(', ')}${agents.length > 8 ? '…' : ''}）${diagnosis}`);
 	}
 	/* ★ 2026-10-29（真机：飞书里能收到答复，但 Bots 页/工作区里只有一串「(未命名会话)」）：
 	   每个绑定**固定一条会话**，建好顺手起名。

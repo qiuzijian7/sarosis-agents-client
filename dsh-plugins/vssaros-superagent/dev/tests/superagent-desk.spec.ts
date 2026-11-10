@@ -2,10 +2,10 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { DESK_FILE_BYTES } from '../src/app/desk-chat.ts'
+import { DESK_FILE_BYTES, type DeskMessage } from '../src/app/desk-chat.ts'
 import { deskReceiptStream, RECEIPT_CALL_PREFIX, RECEIPT_TOOL, receiptText, receiptView, submitText, ticketEndedNotice } from '../src/app/desk.ts'
 import { deskFlow } from '../src/app/desk-flow.ts'
-import type { Ticket } from '../src/core/index.ts'
+import type { Ticket, Trigger } from '../src/core/index.ts'
 import { GROUP_REFERENCE_WAIT_MS } from '../src/app/groupFastPath.ts'
 import { DESK_PERSON, deskTrigger, SUPERAGENT_SOURCE } from '../src/sources/superagent.ts'
 import { startRuntime, type Host } from './fixtures/host.ts'
@@ -139,6 +139,32 @@ it('takes a message from the panel\'s Chat tab as the desk\'s, and shows the con
     { id, role: 'person', text: '首页新手引导要上线' },
     { id: 'm-ack', role: 'superagent', text: '已接单：「首页新手引导上线」。', kind: 'acknowledgement' }] })
   expect((await h.api('POST', 'desk/messages', { text: '   ' })).status).toBeGreaterThanOrEqual(400)
+})
+
+// ★ 2026-11-10: Feishu source text is shown in the Chat bubbles as a read-only projection.
+it('projects Feishu source text into the desk Chat without writing its Thread or waking the supervisor', async () => {
+  const at = new Date(Date.now() + 1000).toISOString()
+  const trigger = {
+    id: 'feishu:om_chat_1', source: 'feishu', text: '飞书原文：请帮我看下进度', at,
+    actor: { id: 'ou_user', name: '张三' }, human: true, addressed: 'direct',
+    threads: [{ source: 'feishu', id: 'oc_demo:om_chat_1' }],
+    meta: { chatId: 'oc_demo', messageId: 'om_chat_1' },
+  } as unknown as Trigger
+  h.runtime.store.triggers.save(trigger)
+  const shown = await h.api('GET', 'desk/messages')
+  expect((shown.body as { messages: DeskMessage[] }).messages).toContainEqual(expect.objectContaining({
+    id: 'feishu:om_chat_1', role: 'person', text: '飞书原文：请帮我看下进度',
+    source: 'feishu', chatId: 'oc_demo' }))
+  // Read-only: the desk Thread got no new message, no Eval was queued, no reply was delivered.
+  expect(h.runtime.store.threads.get(h.runtime.deskChat.thread)?.pending ?? []).toEqual([])
+  expect(reaches(h.runtime.masterId, 'feishu:om_chat_1')).toBe(false)
+  // Display-only Triggers are stored by Intake's filtered branch: text stays visible,
+  // but the "not handed to the supervisor" label must NOT be projected.
+  h.runtime.store.triggers.saveDisposition(trigger.id, { filtered: { code: 'display_only' }, fanout: [], at })
+  const after = (await h.api('GET', 'desk/messages')).body as { messages: DeskMessage[] }
+  const row = after.messages.find(message => message.id === trigger.id)!
+  expect(row.text).toBe('飞书原文：请帮我看下进度')
+  expect(row.filtered).toBeUndefined()
 })
 
 it('shows why a desk message was not handed to the supervisor', async () => {

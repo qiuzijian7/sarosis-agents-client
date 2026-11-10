@@ -38,7 +38,7 @@ function makeAgent(id: string, tools: string[] | undefined): Agent {
 
 function renderReminder(agent: Agent | undefined): string {
 	const content = new SystemReminderTagProvider().buildContent(buildContext(agent));
-	assert.ok(typeof content === 'string', 'system_reminder 应始终产出内容（至少含工作记忆说明）');
+	assert.ok(typeof content === 'string', 'system_reminder 应产出字符串内容');
 	return content;
 }
 
@@ -73,7 +73,10 @@ suite('Agent resolution contract (_currentAgent fix)', () => {
 			!reminder.includes(READ_ONLY_NOTICE),
 			'agent 缺失时无法判定只读 → 提醒丢失（修复前的缺陷后果）',
 		);
-		assert.ok(reminder.length > 0, '即便无 agent，工作记忆说明仍应产出');
+		assert.ok(
+			!reminder.includes('working_memory_content') && !reminder.includes('Memory persistence'),
+			'IDE 侧工作记忆提示已退役，system_reminder 不得再产出记忆说明',
+		);
 	});
 
 	test('agent.tools 为 undefined（未配置工具）→ 视为只读', () => {

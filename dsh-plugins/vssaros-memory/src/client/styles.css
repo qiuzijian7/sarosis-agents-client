@@ -748,6 +748,56 @@
   text-overflow: ellipsis;
 }
 
+/* P0 (2026-11-10): multi-root scope bar. Collapses to .mt-cwd for single-root. */
+.mt-scope-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 4px;
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.mt-scope-title {
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary);
+}
+.mt-scope-roots {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.mt-scope-root {
+  padding: 1px 7px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  cursor: default;
+}
+.mt-scope-root-active {
+  border-color: var(--dsw-alias-state-business-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 12%, transparent);
+  color: var(--dsw-alias-label-primary);
+  font-weight: 600;
+}
+.mt-scope-bot {
+  color: var(--dsw-alias-label-secondary);
+}
+.mt-scope-meta {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mt-scope-badge-project,
+.mt-scope-badge-bot,
+.mt-scope-badge-global {
+  margin-left: 4px;
+  font-size: 10px;
+}
+
 .mt-muted {
   margin: 0;
   font-size: 12px;

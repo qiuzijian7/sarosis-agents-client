@@ -69,9 +69,9 @@ import { createDiscordAdapter, createDiscordGateway } from './adapters/discord.j
 import { createWecomAdapter, handleWecomCallback } from './adapters/wecom.js';
 /* IM 应用凭据（**dsh 侧真源**，2026-10-27）：设置弹窗「渠道」页读写 `<dataRoot>/agent-im-accounts.json`；
    `config.feishu`（IDE 覆盖层）降级为兼容回落 —— 优先级 dsh 文件 → config → 环境变量。 */
-import { describeFeishu, describeFeishuApps, describePlatforms, migrateLegacyFeishu, readBotFeishuApps, resolveFeishu, resolveFeishuApp, resolvePlatform, saveBotFeishuApp, saveFeishuApp, savePlatform } from './imCredentials.js';
+import { BUNDLED_FEISHU_APP, describeFeishu, describeFeishuApps, describePlatforms, migrateLegacyFeishu, readBotFeishuApps, resolveFeishu, resolveFeishuApp, resolvePlatform, saveBotFeishuApp, saveFeishuApp, savePlatform } from './imCredentials.js';
 /* 入站「上次是否在跑」的开关（2026-10-29）：重启 Host 后据此恢复，别让用户以为坏了。 */
-import { readFeishuAppsEnabled, readInboundEnabled, setFeishuAppEnabled, setInboundEnabled } from './imInboundState.js';
+import { readFeishuAppsEnabled, readInboundEnabled, readSkipAppIds, setFeishuAppEnabled, setInboundEnabled } from './imInboundState.js';
 /* ★ 2026-10-29：**跨 dataRoot 的入站长连接互斥锁**（见 imInboundLock.js 文件头）。
    飞书对同一应用只让一条长连接真正收到事件，而这台机器上可能同时有几个 Host
    （旧 Host 未被回收 / dev 版与正式版是两个 dataRoot、互相看不见）⇒ 必须在 home 下放锁，
@@ -267,6 +267,18 @@ export const name = 'vssaros-agents';
 export const inject = ['tools'];
 
 const ROUTE_PREFIX = '/x/agents';
+
+/**
+ * ★ 2026-11-10：下拉用的飞书应用列表 = 凭据池 + 随包内置的 VsSaros助手（若尚未列出）。
+ * 内置应用不写进 `agent-im-accounts.json`，但 `resolveFeishuApp` 对它有 Secret 回落 ⇒ 选中即可用。
+ * ⚠ 只在 GET 合并：`describeFeishuApps()` 的既有契约（条数 / 顺序）被多处测试与 UI 消费，不动。
+ */
+function feishuAppsForPicker(list) {
+	const apps = Array.isArray(list) ? list : [];
+	if (apps.some((a) => a.appId === BUNDLED_FEISHU_APP.appId)) { return apps; }
+	return apps.concat([{ appId: BUNDLED_FEISHU_APP.appId, name: 'VsSaros助手（内置）', isDefault: false,
+		configured: true, hasSecret: true, source: 'bundled' }]);
+}
 
 /**
  * 展示用名册（只做黑名单过滤）。
@@ -1006,8 +1018,11 @@ function applyTopLevel(ctx, config) {
 		config,
 		/* 2026-11-04 多飞书应用：绑定/消息的应用为空时都按当前默认应用算（老绑定行为不变） */
 		defaultFeishuAppId: async () => (await resolveFeishu(config)).appId,
-		/* ★ 2026-11-09：Bot 设置页选的应用要真正承接 —— 入站路由与出站身份都以它为回落。 */
-		botApps: async () => readBotFeishuApps(config),
+		/* ★ 2026-11-10：这些应用归 SuperAgent ⇒ router 不派发也不记 unbound 死信（见 bindings.js）。 */
+		skipAppIds: async () => readSkipAppIds(config),
+		/* ★ 2026-11-10：飞书应用选择已并入 Channel 绑定（binding.appId），不再有「Bot 级选应用」。
+		   ⚠ 这里**不注入** botApps：旧 profile 里残留的 botFeishuApps 会让本应选「默认应用」的
+		     新绑定被旧映射带偏（跨应用串台）。映射 API 与 GET 字段保留仅作兼容，不参与路由/出站。 */
 		log: (level, msg) => {
 			try { (level === 'warn' ? console.warn : console.info)(`[vssaros-agents][im] ${msg}`); } catch { /* 忽略 */ }
 		},
@@ -1025,6 +1040,14 @@ function applyTopLevel(ctx, config) {
 		deadLetters: { record: (entry) => recordDeadLetter(config, entry) },
 		dispatchAgent: (cfg, binding, msg) => dispatchImToAgent(cfg, state, binding, msg, {
 			scanAgents: (c) => scanAgentsFromConfig(c),
+			/* ★ 2026-11-10：group 绑定的入站消息要转投群会话（postToRoom）。 */
+			rooms: () => state.rooms,
+			/* ★ 2026-11-10：内置 agent 根（启动期临时副本）失效时，用已注册 preset 名单兜底。
+			   `state.registered` 是 Map<agentId, {presetId,…}>，比磁盘扫描结果更可靠。 */
+			registeredAgentIds: async () => {
+				const r = state.registered;
+				return r && typeof r.keys === 'function' ? [...r.keys()] : [];
+			},
 			ensureSession: (c, st, agent) => ensureAgentSession(c, st, agent),
 			/* ★ 2026-10-29：**每条绑定固定一条会话**（否则每次派发都可能新建一条「未命名会话」，
 			   用户在 Bots 页/工作区里认不出哪条是飞书来的）。映射单独存盘，见 imSessionMap.js。 */
@@ -1309,6 +1332,15 @@ function applyTopLevel(ctx, config) {
 	 */
 	const roomEventClients = new Set();
 	const broadcastRoomChange = (kind, view) => {
+		// ★ 2026-11-10：运行时错误（群会话不可用 / 转投失败）单独推一帧，页面据此给可见提示。
+		//   正常变更仍是 rooms-changed，旧页面忽略未知 event 名，不受影响。
+		if (kind === 'error') {
+			const frame = `event: rooms-error\ndata: ${JSON.stringify({ error: String(view?.error ?? ''), room: { id: view?.id ?? '', name: view?.name ?? '' } })}\n\n`;
+			for (const res of [...roomEventClients]) {
+				try { res.write(frame); } catch { roomEventClients.delete(res); }
+			}
+			return;
+		}
 		const frame = `event: rooms-changed\ndata: ${JSON.stringify({ kind, room: { id: view?.id ?? '', name: view?.name ?? '' } })}\n\n`;
 		for (const res of [...roomEventClients]) {
 			try { res.write(frame); } catch { roomEventClients.delete(res); }
@@ -1319,6 +1351,15 @@ function applyTopLevel(ctx, config) {
 		fallbackCwd: dataRootOf(config),
 		roster: async () => (await scanAgentsFromConfig(config)).agents.filter(isShownAgent).map(a => ({ id: a.id, name: a.name ?? a.id })),
 		presetOf: presetIdOf,
+		// P1-7：群聊现开会话要过 Workspace Grant ⇒ 按 preset 反查 bot 的 .agent.md 定义
+		//（含 workspaces-read/write）。拿不到定义时由 rooms.js fail-closed，不静默绕过 ✓。
+		agentOfPreset: async (presetId) => {
+			if (!presetId) { return null; }
+			try {
+				const scan = await scanAgentsFromConfig(config);
+				return scan.agents.find(a => presetIdOf(a.id) === presetId) ?? null;
+			} catch { return null; }
+		},
 		sessions: () => state.sessionController,
 		agents: () => state.agents,
 		workspaces: () => state.workspaceRegistry,
@@ -1707,6 +1748,8 @@ function applyTopLevel(ctx, config) {
 				try {
 					const deps = {
 						scanAgents: (cfg) => scanAgentsFromConfig(cfg),
+						/* ★ 2026-11-10：群绑定建/改时要按 roomId 校验目标存在。 */
+						rooms: () => state.rooms,
 						/* 平台是否已配好应用凭据（`bindings.assertTransport` 用）：飞书没填 webhook 时
 						   改为要求「设置 → 渠道」里已有 App ID/Secret（应用模式），否则 400 —— 
 						   这样既不会拦掉"填个 chat_id 就能用"的正路，也不会让人建出一条永远发不出去的绑定。 */
@@ -1738,8 +1781,9 @@ function applyTopLevel(ctx, config) {
 								feishuApps: state.feishuApps ? state.feishuApps.appStates() : {},
 							},
 							feishu: await describeFeishu(config),
-							/* 2026-11-04：全部飞书应用（默认在前），绑定按 appId 选；secret 只以 hasSecret 出现 */
-							feishuApps: await describeFeishuApps(config),
+							/* 2026-11-04：全部飞书应用（默认在前），绑定按 appId 选；secret 只以 hasSecret 出现。
+							   ★ 2026-11-10：再补上随包内置的 VsSaros助手，两个下拉都能选到它。 */
+							feishuApps: feishuAppsForPicker(await describeFeishuApps(config)),
 							/* ★ 2026-11-09：每个 Bot 选用的飞书应用（botId → appId；空 = 默认应用）。
 							   Bot 设置页的「飞书配置」下拉消费这份映射，secret 不在这里。 */
 							botFeishuApps: await readBotFeishuApps(config),

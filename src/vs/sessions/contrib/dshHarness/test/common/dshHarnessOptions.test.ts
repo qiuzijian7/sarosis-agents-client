@@ -62,13 +62,15 @@ suite('dshHarness / startup options equality', () => {
 		assert.ok(sameStartOptions(base, { ...base }));
 	});
 
-	test('★ 喂给覆盖层的"设置 → config"字段必须参与比较（2026-10-14 补的那三条）', () => {
+	test('★ 喂给覆盖层的"设置 → config"字段必须参与比较（2026-11-10：kb 三键已移除）', () => {
 		// 为什么必须比（同 `agentsRoot` / `dataRoot` 那条的理由）：这四项决定覆盖层里对应那几行**写什么**。
 		// 漏比的现场很具体：主进程抢先预热那份来自 `last-start.json`（**旧值**）→ 渲染进程随后带**新值**
 		// → `sameStartOptions` 判成"相同" ⇒ **复用**一个带旧覆盖层的 Host ⇒ 用户改了设置**不生效**，
 		// 而且日志里连一句都没有 ✗（`agentsRoot` 曾经就是这么漏的 ✓）。
-		// 1）kbRoot：改了知识库存储根 ⇒ 不重启的话资料库/画布会一直读旧根 ✗
-		assert.ok(!sameStartOptions(base, { ...base, kbRoot: '/custom/kb' }), 'kbRoot 变了必须重启才生效');
+		// 1）★ 2026-11-10：`kbRoot` / `kbVaults` / `kbActiveVaultId` 已从 IDE 侧整体移除
+		//    （知识库根以 dsh 侧自持配置为准）⇒ 不再有"改了要重启"的 IDE 字段可比较。
+		//    这里只钉住"没有多余字段混进比较"这一条不变式。
+		assert.ok(sameStartOptions(base, { ...base }), '同样的选项必须判成相同（kb 三键移除后不引入新差异）');
 		// 2）unrealBridgeUrl：改了 bridge 地址 ⇒ 不重启 host 仍连旧的 8765 ✗
 		assert.ok(!sameStartOptions(base, { ...base, unrealBridgeUrl: 'http://127.0.0.1:9999' }), 'unreal bridge 地址变了必须重启才生效');
 		// 3）browser 三键 —— **`false` 是有意义的值**：用户关掉「自动拉起调试实例」就是要把专属实例关掉，

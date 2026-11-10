@@ -806,8 +806,15 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 		const viewId = this._viewId;
 		const preset = this._preset;
 		if (!viewId || this._dsh.status.state !== 'running') {
-			this._log.warn(`[dshHarness] switchWorktree ignored: view/host not ready (chat ${this._chatId})`);
-			return;
+			// ★ 2026-11-10（用户报「hero 下拉里点开会话没反应」）：这里从前只是 warn + return，
+			//   **不抛错** ⇒ `_switchWorktree()` 的 `.catch(_notifySwitchFailure)` 永远不触发
+			//   ⇒ 页面桥的 promise 在主进程已 resolve（页面以为成功），渲染侧却什么都没做
+			//   ⇒ 用户看到「面板关了、界面零变化、连一条提示都没有」✗✗。
+			//   改成抛出 ⇒ 复用既有的用户可见失败出口（warn 日志 + Warning 通知）✓。
+			//   ⚠ 下面「已在同目录会话上」的幂等早退**保持 return**：那不是失败，不该弹通知 ✓。
+			const reason = `view/host not ready (state=${this._dsh.status.state}, viewId=${viewId ?? 'none'})`;
+			this._log.warn(`[dshHarness] switchWorktree ignored: ${reason} (chat ${this._chatId})`);
+			throw new Error(reason);
 		}
 		const isWorktree = this._isWorktreeDir(worktreePath);
 		const target = this._sessionIdFor(preset, worktreePath);

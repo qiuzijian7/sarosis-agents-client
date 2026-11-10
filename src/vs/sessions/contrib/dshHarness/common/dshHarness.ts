@@ -590,28 +590,9 @@ export interface IDshHostStartOptions {
 	 * 2026-10-12 发现：这些模块此前**从来没有**被注入过（探针全都自己注入 ⇒ 从没暴露 ✗）。
 	 */
 	readonly dataRoot?: string;
-	/**
-	 * **知识库存储根**（只有用户改过 `agentStudio.knowledge.storage.path` 时才有值 ✓）：注入 kb
-	 * （`config.kbRoot`，行 id `vssaros-kb`）。
-	 *
-	 * 为什么必须注入：kb 只认 `<数据根>/knowledge-base` ✗，而 IDE 允许把知识库存储改到别处
-	 *（也可能整个 vault 走 `customPath`）⇒ 用户改过时 dsh 侧**空着、且页面不报错** ✓（2026-10-12 评估
-	 * 发现的 A 组缺口之一）。口径与 IDE 侧 `knowledgeBaseView.rootUri` **同一份实现**（`resolveKbRoot`）。
-	 *（2026-10-15：canvas 模块已移除 ⇒ 不再注入它 ✓。）
-	 */
-	readonly kbRoot?: string;
-	/**
-	 * **知识库的库记录**（2026-10-15 用户报"不该有 uid 式的根 / 只应显示当前库"✓）：把 IDE storage 里
-	 * `agentStudio.kb.vaults` 的**展示字段**（id / name / icon / customPath / closed ✓）序列化成 JSON
-	 * 交给 kb 插件的**页面** ✓ —— 名字与图标**只存在 IDE storage 里** ✗（库目录里只有索引缓存，
-	 * 盘上推不出来 ✓，我核过真机目录 ✓）。
-	 *
-	 * ⚠ 只带页面要用的字段（少传就少泄漏 ✓，与 `IDshWorktreeOption` 同一条纪律 ✓）。
-	 * ⚠ 与 `kbRoot` 写**同一份**覆盖层（那份 config 是整体替换 ⇒ 拆开会互相擦掉 ✗）。
-	 */
-	readonly kbVaults?: string;
-	/** 同上：**当前激活的库 id**（`agentStudio.kb.active` ✓）—— 页面据此只显示一个库 ✓。 */
-	readonly kbActiveVaultId?: string;
+	// ★ 2026-11-10（用户裁决「以 dsh 侧配置为准、移除 IDE 侧配置和逻辑」）：
+	//   `kbRoot` / `kbVaults` / `kbActiveVaultId` 三个启动选项已删除。知识库根由 dsh 插件自持
+	//   （`<数据根>/.kb-root.json`，聊天框工具卡写入），IDE 不再向 Host 注入任何知识库配置。
 	/**
 	 * **Unreal bridge 基址**（只有用户改过 `sessions.agentStudio.unreal.bridgeUrl` 时才有值 ✓）：注入
 	 * unreal 模块（`config.bridgeUrl`，行 id `vssaros-unreal`）。
@@ -691,7 +672,7 @@ export function sameStartOptions(a: IDshHostStartOptions, b: IDshHostStartOption
 		// 见上面注释）⇒ 而 `kbRoot` / `unrealBridgeUrl` / `browser` 三条**同样漏着** ✗：
 		// 现场是"抢先预热那份来自 `last-start.json`（旧值）→ 渲染进程随后带新值 → 判成相同 ⇒ 复用旧配置的
 		// Host ⇒ 改了设置不生效，且日志里一句都没有" ✓（与 `agentsRoot` 那次同一形态的静默复用）。
-		&& (a.kbRoot ?? '') === (b.kbRoot ?? '')
+		// ★ 2026-11-10：`kbRoot` 已从选项里删除（dsh 侧自持配置）⇒ 不再参与比较。
 		&& (a.unrealBridgeUrl ?? '') === (b.unrealBridgeUrl ?? '')
 		&& sameBrowserConfig(a.browser, b.browser)
 		&& (a.keepAlive === true) === (b.keepAlive === true);

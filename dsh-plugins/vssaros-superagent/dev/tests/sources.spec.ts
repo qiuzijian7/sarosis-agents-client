@@ -4,7 +4,7 @@ import { backfillChat, consumerRetry, feishuKind, feishuTriggerId, feishuRef, fe
   from '../src/sources/feishu.ts'
 import { KV } from '../src/kv.ts'
 import { apply as applyFeishu, pollThreads as pollFeishuThreads } from '../src/sources/feishu.ts'
-import { runFeishu } from '../src/sources/feishu-loops.ts'
+import { backfillLoop, refreshChatNames, runFeishu } from '../src/sources/feishu-loops.ts'
 import { commentTrigger, githubAddress, githubChannel, issueTrigger, type GithubComment, type GithubIssue } from '../src/sources/github-trigger.ts'
 import { claimPull, observePull, pullEndNotices, pullOf, ticketBranch, type Pull } from '../src/sources/github-pull.ts'
 import { ciCounts, ciFact, ciSummary } from '../src/sources/github-read.ts'
@@ -28,7 +28,7 @@ const posix = process.platform !== 'win32'
 const MEMBER = 'ou_alice'
 function host(overrides: Partial<SourceContextDeps> = {}) {
   const store = new Store(join(mkdtempSync(join(tmpdir(), 'sources-')), 'db.sqlite'))
-  const settings = SettingsSchema.parse({ policy: { sources: { feishu: { allowed: [{ id: 'ou_alice', name: 'Alice' }], syncChat: 'oc_team' }, github: { allowed: [{ id: 'alice' }] } } }, eval: { mode: 'auto' }, sources: { feishu: { enabled: true, config: { chats: [{ chatId: 'oc_team', listen: 'mentions' }, { chatId: 'oc_observed', listen: 'all' }], directMessages: true } } } })
+  const settings = SettingsSchema.parse({ policy: { sources: { feishu: { allowed: [{ id: 'ou_alice', name: 'Alice' }], syncChat: 'oc_team' }, github: { allowed: [{ id: 'alice' }] } } }, eval: { mode: 'auto' }, sources: { feishu: { enabled: true, config: { displayOnly: false, chats: [{ chatId: 'oc_team', listen: 'mentions' }, { chatId: 'oc_observed', listen: 'all' }], directMessages: true } } } })
   store.saveSettings(settings)
   const board = new HealthBoard()
   const sources = new SourceRegistry(() => store.settings(), board)
@@ -56,6 +56,37 @@ function emptyRegistry(): SourceRegistry {
   healthOf.set(sources, board)
   return sources
 }
+// ★ 2026-11-10: display-only — Feishu text is recorded for the Chat bubbles but never reaches Eval,
+// and no per-sender allow-list is consulted (Intake short-circuits in its filtered branch).
+it('displayOnly short-circuits the Feishu scope and outbound replies, without an allow-list', () => {
+  const config = feishuKind.schema.parse({ displayOnly: true })
+  expect(config.displayOnly).toBe(true)
+  for (const meta of [{ direct: true }, { chatId: 'oc_team' }, { chatId: 'oc_other' }]) {
+    expect(feishuKind.scope!({ meta }, config)).toEqual({ listened: false, reason: 'display_only' })
+  }
+  expect(feishuKind.channel!.allowed!({ chatId: 'oc_team', direct: 'false' }, config)).toBe(false)
+  const defaults = feishuKind.schema.parse({})
+  // opt-in: existing sources keep their behaviour
+  expect(defaults.displayOnly).toBe(false)
+  expect(feishuKind.scope!({ meta: { direct: true } }, defaults).listened).toBe(true)
+})
+
+it('displayOnly trigger is stored as filtered: no Eval queue, no ticket, no reply', async () => {
+  const h = host()
+  const current = h.store.settings()
+  h.store.saveSettings({ ...current, sources: { ...current.sources,
+    feishu: { enabled: true, config: { displayOnly: true } } } })
+  const trigger = {
+    id: 'feishu:om_display_only', source: 'feishu', text: '飞书原文 display only', at: new Date().toISOString(),
+    actor: { source: 'feishu', id: 'ou_unlisted_sender' }, human: true, addressed: 'direct',
+    threads: [{ source: 'feishu', id: 'oc_x:om_display_only' }], meta: { direct: true },
+  } as unknown as Trigger
+  expect(await h.receive(trigger)).toBe('filtered')
+  expect(h.store.triggers.get(trigger.id)?.text).toBe('飞书原文 display only')
+  expect(h.store.threads.get('feishu:oc_x:om_display_only')?.pending ?? []).toEqual([])
+  expect(h.executor.start).not.toHaveBeenCalled()
+})
+
 const subscribed = (h: ReturnType<typeof host>, ref: { source: string; id: string }, meta: Record<string, unknown> = {}) =>
   h.store.threads.save({ key: `${ref.source}:${ref.id}`, ref, createdAt: new Date().toISOString(), subscriptions: ['ticket'], correlated: [], pending: [], meta })
 const openTicket = (id: string): Ticket => ({ id, title: id, decisionId: `d-${id}`, mandate: { strength: 'explicit', policyVersion: '',
@@ -1175,6 +1206,42 @@ describe('feishu event consumer', () => {
     const off = await recovered(false)
     expect(off.chats).toEqual(['oc_a', 'oc_b'])
     expect(off.cursors.oc_dm).toBe(hour)
+  }, 20_000)
+
+  /* ★ 2026-11-10：仅展示模式不该再读历史（内置应用没有 im:message* scope ⇒ 每 60s 报 99991672）。
+     文本守卫不依赖平台，行为用例验证实时链路仍在、history 被刷成 paused。 */
+  it('display-only guards the history, chat-name and manual refresh paths in source', () => {
+    const src = readFileSync(new URL('../src/sources/feishu-loops.ts', import.meta.url), 'utf8')
+    expect(src).toMatch(/if \(config\.displayOnly\) \{[\s\S]{0,900}Display-only: history recovery is off/)
+    expect(src).toMatch(/if \(config && !config\.displayOnly\)/)
+    // The panel's "refresh chat list" button calls refreshChatNames directly, not chatNamesLoop.
+    expect(src).toMatch(/ctx\.config<FeishuConfig>\(SOURCE\)\?\.displayOnly[\s\S]{0,200}KV\.sources\.labels/)
+  })
+
+  it('display-only skips the manual chat-list refresh, keeping the stored labels without a lark call', async () => {
+    const { ctx, store } = consumerSource('', { displayOnly: true })
+    store.set(KV.sources.labels('feishu'), { oc_a: '群 A' })
+    const lark = vi.spyOn(Commands.prototype, 'lark').mockImplementation(async () => { throw new Error('must not call lark') })
+    expect(await refreshChatNames(ctx)).toEqual({ oc_a: '群 A' })
+    expect(lark).not.toHaveBeenCalled()
+    lark.mockRestore()
+    store.close()
+  })
+
+  it('display-only skips history reads and reports paused, without starting the consumer', async () => {
+    const hour = new Date(Date.now() - 3_600_000).toISOString()
+    const { ctx, health, store } = consumerSource('', { displayOnly: true, chats: [{ chatId: 'oc_a', listen: 'mentions' }] })
+    store.set(KV.feishu.chats, { oc_a: false })
+    store.set(KV.feishu.history('oc_a'), hour)
+    const lark = vi.spyOn(Commands.prototype, 'lark').mockImplementation(async () => ({ has_more: false, items: [] }))
+    const stop = new AbortController()
+    const loop = backfillLoop(ctx, AbortSignal.any([stop.signal, controller.signal]))
+    await vi.waitFor(() => expect(health.history?.state).toBe('paused'), until)
+    stop.abort(); await loop
+    expect(lark).not.toHaveBeenCalled()
+    expect(store.get(KV.feishu.history('oc_a'))).toBe(hour)
+    lark.mockRestore()
+    store.close()
   }, 20_000)
   it.runIf(posix)('reports an error when the consumer is not ready within 45 seconds', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })

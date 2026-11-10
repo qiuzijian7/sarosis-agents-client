@@ -580,7 +580,6 @@ import './contrib/aquarium/browser/aquarium.contribution.js';
 import './contrib/policyBlocked/browser/policyBlocked.contribution.js';
 import './contrib/agentStudio/browser/agentStudio.contribution.js';
 import './contrib/agentStudio/browser/piLoopDualRun.contribution.js';
-import './contrib/memory/browser/memory.contribution.js';
 import './contrib/sessionHistory/browser/sessionHistory.contribution.js';
 
 import './services/sessions/browser/sessionsManagementService.js';

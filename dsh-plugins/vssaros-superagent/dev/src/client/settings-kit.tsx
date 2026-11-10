@@ -281,27 +281,33 @@ export function SourceField({ field, value, saved, fact, onChange, labels, refre
       <Input type="number" min={field.min} max={field.max} required value={String(value ?? '')}
         onChange={event => onChange(event.target.value === '' ? '' : Number(event.target.value))} />
     </Field>
-    case 'text': return <>
-      <Field label={label} hint={hint} note={localized(t, fact)} action={action}>
-        {field.chooseFrom
-          ? <select className="dt-select" value={String(value ?? '')} onChange={event => onChange(event.target.value)}>
-            <option value="">{field.choose ? localized(t, field.choose) : localized(t, field.label)}</option>
-            {String(value ?? '') && !labels[`${field.chooseFrom}:${value}`]
-              ? <option value={String(value)}>{String(value)}</option> : null}
-            {Object.entries(labels).filter(([option]) => option.startsWith(field.chooseFrom + ':')).sort(byName)
-              .map(([option, name]) => <option key={option} value={option.slice(field.chooseFrom!.length + 1)}>{name}</option>)}
-          </select>
-          : field.choose && Object.keys(labels).length
-            ? <select className="dt-select" value={String(value ?? '')} onChange={event => onChange(event.target.value)}>
-              <option value="">{localized(t, field.choose)}</option>
-              {value && !labels[String(value)] ? <option value={String(value)}>{String(value)}</option> : null}
-              {Object.entries(labels).sort(byName).map(([option, name]) => <option key={option} value={option}>{name}</option>)}
+    case 'text': {
+      // ★ 2026-11-10：字段可声明「不要空占位项」与「空配置时的默认选中值」。
+      //   飞书 App ID 用它们移除「留空 = lark-cli 当前 profile」并默认选中随包内置应用；
+      //   TAPD 等其它 chooseFrom 字段不声明 ⇒ 行为完全不变。
+      const selected = String(value ?? '') || String(field.defaultValue ?? '')
+      return <>
+        <Field label={label} hint={hint} note={localized(t, fact)} action={action}>
+          {field.chooseFrom
+            ? <select className="dt-select" value={selected} onChange={event => onChange(event.target.value)}>
+              {!field.noEmptyOption && <option value="">{field.choose ? localized(t, field.choose) : localized(t, field.label)}</option>}
+              {selected && !labels[`${field.chooseFrom}:${selected}`]
+                ? <option value={selected}>{selected}</option> : null}
+              {Object.entries(labels).filter(([option]) => option.startsWith(field.chooseFrom + ':')).sort(byName)
+                .map(([option, name]) => <option key={option} value={option.slice(field.chooseFrom!.length + 1)}>{name}</option>)}
             </select>
-            : <Input value={String(value ?? '')} readOnly={field.readonly} pattern={field.pattern} spellCheck={false}
-              onChange={event => onChange(event.target.value)} />}
-      </Field>
-      {detail}
-    </>
+            : field.choose && Object.keys(labels).length
+              ? <select className="dt-select" value={String(value ?? '')} onChange={event => onChange(event.target.value)}>
+                <option value="">{localized(t, field.choose)}</option>
+                {value && !labels[String(value)] ? <option value={String(value)}>{String(value)}</option> : null}
+                {Object.entries(labels).sort(byName).map(([option, name]) => <option key={option} value={option}>{name}</option>)}
+              </select>
+              : <Input value={String(value ?? '')} readOnly={field.readonly} pattern={field.pattern} spellCheck={false}
+                onChange={event => onChange(event.target.value)} />}
+        </Field>
+        {detail}
+      </>
+    }
     case 'fact': return <div className="dt-field">
       <span className="dt-field-head">{label}{hint && <InfoTip text={hint} />}</span>
       <span className="dt-mono">{localized(t, fact) || t('empty')}</span>

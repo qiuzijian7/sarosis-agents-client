@@ -114,7 +114,7 @@ window.__ModuleLoader__.load({
 			{ id: "vssaros-wb-codebase", name: "代码库", ico: "🕸️", route: "/x/codebase/" },
 			{ id: "vssaros-wb-media", name: "媒体库", ico: "🖼️", route: "/x/media/" },
 			{ id: "vssaros-wb-imagegen", name: "生图", ico: "🎨", route: "/x/imagegen/", hidden: true, offline: true },
-			{ id: "vssaros-wb-skills", name: "工具", ico: "🧰", route: "/x/skills/" },
+			{ id: "vssaros-wb-skills", name: "工具", ico: "🧰", route: "/x/skills/", hidden: true, offline: true },
 			// ★ 2026-10-24（用户：「移除自动化任务 item，将自动化任务包装成一个 自动化任务工作台」）：
 			//   侧栏那条官方「自动化任务」面板被隐藏（见下面 HIDDEN_LABELS）⇒ 能力全部收到这个工作台里
 			//   ⇒ 名字也跟着改成「自动化任务」（与工作台标题、插槽描述符三处同值）。

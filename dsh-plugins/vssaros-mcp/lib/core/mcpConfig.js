@@ -121,7 +121,7 @@ export function parseMcpServers(text, env = process.env) {
 		if (type === 'stdio' || (!type && typeof config.command === 'string')) {
 			// ★ 2026-11-08 P1（R1 工具授权缺口，对齐 DS Bot）：stdio 会在本机起外部进程，
 			//   必须显式 `approved: true` 才挂；缺省/未写一律跳过。与 IDE 侧
-			//   `dshMcpConfig.ts` 的判据逐字同形（check-mcp-approval.mjs 钉住）。
+			//   `dshMcpConfig.ts` 的判据逐字同形（check-capability-tools.mjs ④ 与 check-agent-packs.mjs ④ 钉住）。
 			if (config.approved !== true) {
 				skip('stdio 服务器未批准（在 mcp.json 里给该条加 "approved": true 才会启动本机进程）', 'needs-approval');
 				continue;
@@ -224,7 +224,7 @@ export function endpointOf(server) {
  * 渲染片段（`view.kind=section`，宿主 = skills 页；也可单独打开自查）。
  * 只读、无副作用；`readError` / `missing` 都是**常态**（没配 MCP 的人很多），所以文案不写成报错口吻。
  */
-export function renderSection({ path, exists, readError, parsed, toolCount, toolNote, toolList }) {
+export function renderSection({ path, exists, readError, parsed, toolCount, toolNote, toolList, runtimeMount = false, runtimeStatus = null }) {
 	const summary = summarizeMcp(parsed);
 	/**
 	 * 设置齿轮（2026-10-15，桥 `9 → 10`）：与**技能行**用同一套属性 `[data-sk-settings]` ⇒ 点击由宿主页
@@ -289,12 +289,30 @@ export function renderSection({ path, exists, readError, parsed, toolCount, tool
 			+ toolItems.map(tool => '<span data-vssaros-mcp-tool="' + escapeHtml(tool.name) + '" title="' + escapeHtml(String(tool.description || '').slice(0, 200)) + '"><code>' + escapeHtml(tool.name) + '</code></span>').join('')
 			+ '</div></details>'
 		: '';
+	/**
+	 * 运行期连接状态（2026-11-10）：解析期只说「配置里写了什么」，说不出「真的连上没连上」。
+	 * `McpRuntime.statusView()` 只保留非 ready 状态（ready = 无条目），所以空对象 = 全部就绪；
+	 * `null` = 运行时挂载还没完成首次同步 ⇒ 不能谎报就绪。
+	 */
+	const runtimeHtml = !runtimeMount ? '' : runtimeStatus === null
+		? '<p class="diag">运行期挂载：首次同步尚未完成。</p>'
+		: (() => {
+			const entries = Object.entries(runtimeStatus);
+			if (entries.length === 0) { return '<p class="diag">运行期连接：<b>全部就绪</b>。</p>'; }
+			const errors = entries.filter(([, s]) => s?.state === 'error');
+			const detail = entries.map(([name, s]) => `${escapeHtml(name)}=${escapeHtml(String(s?.state ?? '?'))}${s?.error ? `（${escapeHtml(String(s.error).slice(0, 120))}）` : ''}`).join('、');
+			return `<p class="diag" data-vssaros-mcp-runtime-errors="${errors.length}">运行期连接：${errors.length ? `<b>${errors.length} 台报错</b>` : '<b>连接中</b>'} · ${detail}</p>`;
+		})();
+	/** 写操作一律走带审批的工具；本片段是只读 HTML（页面桥不承载写入）。 */
+	const manageHtml = '<p class="diag">管理动作（写操作走带审批的工具，本片段只读）：新增 <code>mcp_install</code> / <code>mcp_catalog install</code> / <code>mcp_import apply</code>，删除 <code>mcp_remove</code>，浏览远程目录 <code>mcp_catalog list</code>。</p>';
 	return `<section data-vssaros-page="mcp-section" data-vssaros-mcp-state="${!exists ? 'missing' : (readError ? 'error' : (summary.servers ? 'ok' : 'empty'))}" data-vssaros-mcp-path="${escapeHtml(path)}" data-vssaros-mcp-servers="${summary.servers}" data-vssaros-mcp-skipped="${summary.skipped}" data-vssaros-mcp-stdio="${summary.byTransport.stdio}" data-vssaros-mcp-http="${summary.byTransport['streamable-http']}" data-vssaros-mcp-tools="${escapeHtml(toolCount)}">
 <h2>MCP 服务器 <small>${summary.servers ? `挂载 ${summary.servers} 台` : '未挂载'}${summary.skipped ? ` · 跳过 ${summary.skipped}` : ''}</small></h2>
 <p class="diag">真源：<code>${escapeHtml(path)}</code> · 模型可见的 MCP 工具：<code>${escapeHtml(toolCount)}</code>${toolNote ? `（${escapeHtml(toolNote)}）` : ''}</p>
-<p class="diag">改这份文件后需<b>重启 Host</b> 才生效（dsh 的一台服务器一个组合行，只能靠启动时的覆盖层加行）。</p>
+${runtimeMount ? '<p class="diag">配置变更由插件在运行时重挂，<b>无需重启 Host</b>（<code>VSSAROS_MCP_RUNTIME_MOUNT=0</code> 可回退到启动期覆盖层）。</p>' : '<p class="diag">改这份文件后需<b>重启 Host</b> 才生效（dsh 的一台服务器一个组合行，只能靠启动时的覆盖层加行）。</p>'}
+${runtimeHtml}
 ${body}
 ${toolListHtml}
 ${skips}
+${manageHtml}
 </section>`;
 }

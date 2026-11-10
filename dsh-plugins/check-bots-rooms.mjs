@@ -132,6 +132,13 @@ globalThis.fetch = async (url, init = {}) => {
 		const out = await roomsApi(rooms, { method, query: u.searchParams, body: init.body ? JSON.parse(init.body) : undefined });
 		return json(out.status, out.body);
 	}
+	// ★ 2026-11-10：Bots 行的 IM 连接图标取数（designer 有启用的飞书绑定，coder 只有停用绑定）。
+	if (u.pathname === '/x/agents/api/bindings') {
+		return json(200, { bindings: [
+			{ id: 'b-im-1', targetKind: 'agent', targetId: 'designer', platform: 'feishu', enabled: true },
+			{ id: 'b-im-2', targetKind: 'agent', targetId: 'coder', platform: 'telegram', enabled: false },
+		] });
+	}
 	return json(404, { error: 'not found' });
 };
 Object.defineProperty(window.navigator, 'clipboard', { value: { writeText: async (text) => { calls.copied.push(text); } }, configurable: true });
@@ -287,8 +294,179 @@ const row = () => q(`[data-vssaros-room="${made.id}"]`);
 truthy('③ Bots 页签出现「群聊」分段与群行', !!row() && /群聊/.test(container.textContent || ''), (container.textContent || '').slice(0, 300));
 truthy('③ 群行显示群名、「群」标记与成员数', /番茄钟 H5/.test(row()?.textContent || '') && /群/.test(row()?.textContent || '') && /2 位成员/.test(row()?.textContent || ''), row()?.textContent);
 eq('③ 群行排在 bot 行之前', qa('[data-vssaros-room], [data-vssaros-bot]').map(el => el.hasAttribute('data-vssaros-room') ? 'room' : 'bot')[0], 'room');
+
+// ── ③-a ★ 2026-11-10：有 IM 连接的 Bot 在 item 上显示 icon ───────────────────────
+{
+	eq('③-a imBadgeOf：按 bot 聚合，忽略停用 / 非 agent / 坏项',
+		ws.__test.imBadgeOf([
+			{ targetKind: 'agent', targetId: 'designer', platform: 'feishu', enabled: true },
+			{ targetId: 'designer', platform: 'telegram' },
+			{ targetKind: 'agent', targetId: 'coder', platform: 'telegram', enabled: false },
+			{ targetKind: 'group', targetId: 'reviewer', platform: 'feishu' },
+			null, { targetKind: 'agent', targetId: '', platform: 'feishu' },
+		]), { designer: { count: 2, platforms: ['feishu', 'telegram'] } });
+	const badges = qa('[data-vssaros-bot-im]');
+	eq('③-a 只有有启用 IM 绑定的 Bot 显示 icon', badges.length, 1);
+	const badge = q('[data-vssaros-bot="designer"] [data-vssaros-bot-im]');
+	truthy('③-a 图标是气泡描边 SVG 且挂在正确的 bot 行',
+		!!badge && !!badge.querySelector('svg') && badge.querySelector('path')?.getAttribute('d') === 'M4 5h16v11H9l-5 4V5z',
+		badge?.outerHTML?.slice(0, 220));
+	eq('③-a 图标带绑定条数与平台提示',
+		[badge?.getAttribute('data-vssaros-bot-im-count'), /飞书/.test(badge?.getAttribute('title') || ''),
+			/1 条 Channel 绑定/.test(badge?.getAttribute('title') || '')], ['1', true, true]);
+	truthy('③-a 停用绑定的 coder / 无绑定的 reviewer 不显示 icon',
+		!q('[data-vssaros-bot="coder"] [data-vssaros-bot-im]')
+		&& !q('[data-vssaros-bot="reviewer"] [data-vssaros-bot-im]'));
+}
+
 await mouse(row(), 'click');
 eq('③ 点群行 ⇒ 中栏打开群会话（群 id 就是会话 id）', calls.opened.at(-1), made.id);
+
+// ── ③-b 静态契约：跨工作区群聊选中态不许被回退 ────────────────────────────────────
+{
+	const src = readFileSync(join(repo, 'dsh-plugins/vssaros-chat-surface/lib/client.workspaces.js'), 'utf8');
+	truthy('③-b 静态契约：群选中态持久化键 + 事件广播 + 纯判据都在',
+		/SELECTED_ROOM_KEY = "vssaros\.chatSurface\.selectedRoom\.v1"/.test(src)
+		&& /function readSelectedRoom\(\)/.test(src) && /function writeSelectedRoom\(/.test(src)
+		&& /function isRoomSelected\(roomId, currentId, selectedId\)/.test(src));
+	truthy('③-b 静态契约：openRoom 记住选中的群，群行用 isRoomSelected 而非裸 currentId',
+		/setSelectedRoom\(String\(room\.id\)\)/.test(src)
+		&& /const isCur = isRoomSelected\(id, currentId, readSelectedRoom\(\) \|\| selectedRoomId\)/.test(src)
+		&& !/const isCur = id === currentId;/.test(src));
+	truthy('③-b 静态契约：rebind 时把会话绑回群（不是只改高亮）',
+		/document\.addEventListener\(REBIND_EVENT, onRebind\)/.test(src)
+		&& /openSession\(roomId, report\)/.test(src)
+		&& /readSelectedRoom\(\) !== roomId/.test(src));
+	truthy('③-b 静态契约：广播用 window.Event（jsdom/真机同源，不用 Node 全局 Event）',
+		/window\.Event \|\| Event/.test(src));
+	truthy('③-b 静态契约：点普通会话/新建会话清掉记住的群',
+		// 两处都要在：会话行 onClick 与新建会话成功路径，只留一处会让另一路一直亮着旧群。
+		/onClick: \(\) => \{ if \(!isRenaming\) \{ markSessionRead\(s\.id\); setSelectedRoom\(""\); openSession\(s\.id, setMsg, setLocal\); \} \}/.test(src)
+		&& /setSelectedRoom\(""\);\s*\n\s*openSession\(String\(got\), say/.test(src)
+		&& (src.match(/setSelectedRoom\(""\)/g) ?? []).length >= 2);
+}
+
+// ── ③-c FIX 1–3 静态契约（2026-11-10 用户报「群聊没有使用成员分工」）──────────────
+{
+	const wsrc = readFileSync(join(repo, 'dsh-plugins/vssaros-chat-surface/lib/client.workspaces.js'), 'utf8');
+	const roomsSrc = readFileSync(join(repo, 'dsh-plugins/vssaros-agents/lib/rooms.js'), 'utf8');
+	const agentsIndex = readFileSync(join(repo, 'dsh-plugins/vssaros-agents/lib/index.js'), 'utf8');
+	const fastSrc = readFileSync(join(repo, 'dsh-plugins/vssaros-superagent/dev/src/app/groupFastPath.ts'), 'utf8');
+	truthy('③-c FIX 1a：SSE 解析 data，created 帧自动选中并绑定群会话',
+		/JSON\.parse\(line\)/.test(wsrc) && /data\.kind === "created"/.test(wsrc)
+		&& /if \(created &&/.test(wsrc)
+		&& /setSelectedRoom\(created\)/.test(wsrc) && /openSession\(created, null\)/.test(wsrc));
+	truthy('③-c FIX 1b：页面上报选中群 / Host 存同一状态 / 选中态才放宽转投',
+		/action: "select", id: next/.test(wsrc) && /action === 'select'/.test(roomsSrc)
+		&& /rooms\.setSelectedRoom\?\.\(id\)/.test(roomsSrc)
+		&& /rooms\.selectedRoom\?\.\(\)/.test(roomsSrc) && /if \(selected\)/.test(roomsSrc));
+	truthy('③-c FIX 1c：转投失败/会话失效推可见 rooms-error 帧，页面就地显示',
+		/event: rooms-error/.test(agentsIndex) && /if \(kind === 'error'\)/.test(agentsIndex) && /reportError/.test(roomsSrc)
+		&& wsrc.includes('/event:\\s*rooms-error/') && /setBotsMsg\(\{ kind: "error", text: message \}\)/.test(wsrc));
+	truthy('③-c FIX 2：名册无 coder 也生成角色无关分工公告，且 goal 槽位显式初始化为 null（不堵死 group_goal start）',
+		/divisionNotice/.test(fastSrc) && /BUILD_WORDS\.test\(text\) && names\.length >= 2/.test(fastSrc)
+		&& /goal: null/.test(roomsSrc) && !/status: 'active'[\s\S]{0,120}goal/.test(roomsSrc));
+	truthy('③-c FIX 2：分工公告不含「协作流程」（闲聊群断言依赖），且闲聊群不生成',
+		/【本群分工】/.test(fastSrc) && !/【本群分工】[\s\S]{0,200}协作流程/.test(fastSrc));
+	truthy('③-c FIX 3：resolveAgent retain 自愈 + postToRoom 会话失效落 inbox 兜底（不改 room.id）',
+		/sc\.retain\(sessionId\)/.test(roomsSrc) && /deferred: true/.test(roomsSrc)
+		&& /api\.noteUserMessage\(room\.id, body\)/.test(roomsSrc));
+}
+
+// ── ③-d 静态契约：会话引用失效自愈 / 旁路统一 / 日志补点（2026-11-10）─────────────
+{
+	const w = readFileSync(join(repo, 'dsh-plugins/vssaros-chat-surface/lib/client.workspaces.js'), 'utf8');
+	const r = readFileSync(join(repo, 'dsh-plugins/vssaros-agents/lib/rooms.js'), 'utf8');
+	const cv = readFileSync(join(repo, 'dsh-plugins/vssaros-chat-surface/lib/client.conversationViews.js'), 'utf8');
+	const sa = readFileSync(join(repo, 'dsh-plugins/vssaros-superagent/dev/src/client/index.tsx'), 'utf8');
+	truthy('③-d 主因：openSession 接住 retain 结果 + 终态可见失败 + 一次性 rebind 兜底',
+		/retainOk = true/.test(w) && /rebindRoomOnce\(sid, say\)/.test(w)
+		// 4 处调用都要在：rebind 进行中 / 终态失败 / 外层 catch / 重建失败；删一处就少一次可见反馈。
+		&& (w.match(/reportOpenError\(/g) ?? []).length >= 4 && /action: "rebind"/.test(w));
+	truthy('③-d 主因：Host 有 rebind action，rebindRoom 迁移全部以 room.id 为 key 的账本',
+		/action === 'rebind'/.test(r) && /async rebindRoom\(id\)/.test(r)
+		&& /for \(const ledger of \[inbox, callbacks, postMeta\]\)/.test(r)
+		&& /round\.roomId = newId/.test(r) && /api\.setSelectedRoom\?\.\(newId\)/.test(r));
+	// ★ 2026-11-10（建议 2）：0.1.88 漏掉 late（值带 roomId）与 routed（键第三段是 roomId）。
+	//   行为判据在 rooms.test.mjs；这里钉住 rebindRoom 真的调用了两个迁移并注册了跨闭包钩子。
+	truthy('③-d rebindRoom 补齐 late / routed 账本（迁移函数 + 钩子接线 + 返回计数）',
+		/const lateCount = migrateLateRoomId\(late, oldId, newId\)/.test(r)
+		&& /export function migrateRoutedRoomId\(/.test(r)
+		&& /rooms\.onRebindRoom\?\.\(/.test(r)
+		&& /migrated: \{ late: lateCount, routed: routedCount \}/.test(r));
+	truthy('③-d 日志补点：relayStream / openingCall ids / postToRoom 成功与失败各带 roomId',
+		/\[relayStream\] group_relay roomId=/.test(r) && /openingCall ids=/.test(r)
+		&& /\[postToRoom\] ok roomId=/.test(r) && /\[postToRoom\] FAILED roomId=/.test(r));
+	truthy('③-d 旁路统一：浮层 / 群设置回落 / CV 群-ask / SA 两处 openSession 都更新选中群',
+		/setSelectedRoom\(String\(id\)\)/.test(w) && /setSelectedRoom\(String\(sid\)\)/.test(w)
+		&& /__vssarosSelectRoom/.test(cv)
+		// SA 有 Mounted 与 deskToolView 两个 openSession 定义，只挂一处会漏掉一半旁路。
+		&& (sa.match(/noteSelectedRoom\(id\)/g) ?? []).length >= 2
+		&& /__vssarosKnownRoomIds = knownRoomIds/.test(w));
+	truthy('③-d rebind 条件：宿主切到另一个群时跟过去不抢回，失败清掉记忆',
+		/knownRoomIds\.has\(sid\)/.test(w) && /setSelectedRoom\(sid\)/.test(w)
+		&& /const report = \(v\)/.test(w)
+		// 必须是 report 的 error 分支里清记忆；别处（点普通会话/新建会话）也有 setSelectedRoom("")。
+		&& /if \(v\.kind === "error"\) \{\s*\n\s*setSelectedRoom\(""\);/.test(w));
+}
+
+// ── ③-b 跨工作区群聊（2026-11-09 用户报：选群 → 切工作区 → 选中态消失、发消息群会话看不到内容）────
+//   群是全局的（agent-rooms.json 不按工作区隔离），宿主 switchWorktree 却会 rebind 到新目录的空会话。
+//   修前：群行高亮只靠 id === currentId 派生 ⇒ 立刻消失；composer 绑到空会话 ⇒ 消息不进群 inbox。
+//   修后：显式记住选中的群（localStorage），rebind 后把会话绑回群 ⇒ 界面与消息目标一致。
+{
+	const KEY = ws.__test.SELECTED_ROOM_KEY;
+	const isSelected = () => row()?.getAttribute('data-vssaros-room-selected') === '1';
+	eq('③-b 点群 ⇒ 选中群已落 localStorage（跨工作区可恢复）', localStorage.getItem(KEY), made.id);
+	truthy('③-b 点群 ⇒ 群行有显式选中标记', isSelected(), JSON.stringify({ attr: row()?.getAttribute('data-vssaros-room-selected'), style: row()?.getAttribute('style'), ls: localStorage.getItem(KEY) }));
+	// 纯函数判据：官方 current 已变成别的会话时，显式选中态仍让群行高亮
+	truthy('③-b isRoomSelected：current 变了仍靠 selectedId 保持高亮',
+		ws.__test.isRoomSelected(made.id, 'some-other-session', made.id) === true
+		&& ws.__test.isRoomSelected('other-room', 'some-other-session', made.id) === false
+		&& ws.__test.isRoomSelected(made.id, '', '') === false);
+
+	// 宿主切工作区 ⇒ rebind 到新目录的空会话
+	const openedBefore = calls.opened.length;
+	await act(async () => {
+		document.dispatchEvent(new window.CustomEvent(ws.__test.REBIND_EVENT, { detail: { sessionId: 'session-new-workspace' } }));
+		await tick(60);
+	});
+	eq('③-b rebind ⇒ 会话被重新绑回群（composer 目标 = 群 id，消息才会进 inbox）', calls.opened.at(-1), made.id);
+	truthy('③-b rebind 后确实多开了一次会话', calls.opened.length === openedBefore + 1,
+		JSON.stringify({ before: openedBefore, after: calls.opened.length }));
+	truthy('③-b rebind 后选中态没有消失', isSelected(), JSON.stringify({ attr: row()?.getAttribute('data-vssaros-room-selected'), ls: localStorage.getItem(KEY) }));
+	eq('③-b rebind 后 localStorage 仍是该群', localStorage.getItem(KEY), made.id);
+
+	// 发消息：会话 id = 群 id ⇒ installRooms 的闸门把它放进群收件箱（relay 才能写进群 log）
+	const text = '切工作区之后发的这条消息';
+	rooms.noteUserMessage(made.id, text);
+	const round = await rooms.relayTool().execute({}, { agent: { id: made.id }, callId: 'call-rebind' });
+	const groupLog = rooms.state(made.id).log || [];
+	truthy('③-b 发消息 ⇒ 群会话里能看到内容（inbox 被 relay 消费进群 log）',
+		groupLog.some(line => String(line && line.text || '').includes(text)),
+		JSON.stringify({ log: groupLog.slice(-5), preview: (await rooms.get(made.id)).preview }));
+	// 「消息目标不是群」的反例：空会话 sid 不会被 isRoom 认成群 ⇒ 消息不会进任何群 log
+	truthy('③-b 反例：新工作区空会话不是群（这就是修前消息丢失的原因）',
+		rooms.isRoom('session-new-workspace') === false && rooms.isRoom(made.id) === true);
+
+	// 点普通会话 = 用户主动离开群 ⇒ 清掉记住的群，之后的 rebind 不该再把会话抢回群
+	const plain = q('[data-vssaros-sid="plain-1"]') || qa('[data-vssaros-ws-session]')[0];
+	if (plain) {
+		await mouse(plain, 'click');
+		await settle(40);
+		eq('③-b 点普通会话 ⇒ 清掉记住的群', localStorage.getItem(KEY), null);
+		const before = calls.opened.length;
+		await act(async () => {
+			document.dispatchEvent(new window.CustomEvent(ws.__test.REBIND_EVENT, { detail: { sessionId: 'session-third' } }));
+			await tick(60);
+		});
+		eq('③-b 已离开群后 rebind ⇒ 不抢回群会话', calls.opened.length, before);
+	}
+	// 恢复现场，后面的右键/隐藏/删除测试仍从「选中群」状态开始
+	ws.__test.writeSelectedRoom(made.id);
+	window.dispatchEvent(new window.Event(ws.__test.SELECTED_ROOM_EVENT));
+	await settle(30);
+}
 
 // 「会话」页签不列群会话（纯函数 = 渲染用的同一个 buildSidebar）
 const built = ws.__test.buildSidebar({ workspaces: [{ workspaceId: 'ws-1', path: 'G:/work/proj', sessionIds: [made.id, 'plain-1'] }], records: [], sessionsById: summaries(), archivedIds: [], currentSessionId: null, pinnedIds: [], orderMap: {} });
@@ -370,12 +548,14 @@ await settle(450);
 	host.remove();
 }
 
-// ── ④-b 官方右侧栏独立页签（2026-11-09：用户明确「在右侧栏中弹出独立页」）──────────
-//   keyed/session 槽的 body 拿不到 navigation.params ⇒ 用 factory 级目标 + 事件传 roomId；
-//   `sidebarRight.openTab` 无会话在屏会 throws ⇒ 必须同步返回 false 让菜单回落中栏页签。
+// ── ④-b 官方右侧栏独立页签（2026-11-09 用户「在右侧栏中弹出独立页」）────────────
+//   keyed/session 槽的 body 拿不到 navigation.params ⇒ 用 factory 级目标 + 事件传 roomId。
+// ★ 2026-11-10 纠偏：从前用 `sidebarRight.mounted.getSnapshot()` 做**预判**（本桩自造），
+//   误杀了 hero 的 blank session —— 真机 hero 下右栏「开始」页签本来就挂在这个槽里。
+//   正确判据是「同步 try `openTab`，官方 require() 抛错才返回 false 回落」。
 {
 	const rightTypes = [], rightInjects = [], rightBodies = [], openedRight = [], closedRight = [];
-	let mountedSession = undefined;
+	let openTabThrows = true;
 	const fakeCtx = {
 		sidebarRightTabs: { register: (def) => { rightTypes.push(def); return () => undefined; } },
 		slots: {
@@ -384,8 +564,11 @@ await settle(450);
 		},
 		effect: (fn) => { const d = fn(); return typeof d === 'function' ? d : undefined; },
 		sidebarRight: {
-			mounted: { getSnapshot: () => mountedSession },
-			openTab: (kind) => openedRight.push(kind),
+			// 官方 require() 的真实失败：全局面板占 main / store 未 minted，不是「hero」
+			openTab: (kind) => {
+				if (openTabThrows) { throw new Error('sidebarRight: no session surface is mounted'); }
+				openedRight.push(kind);
+			},
 			active: () => ({ id: 'tab-right-1' }),
 			close: (id) => { closedRight.push(id); return true; },
 		},
@@ -397,13 +580,13 @@ await settle(450);
 			rightInjects[0], rightBodies[0] && rightBodies[0].opts.key],
 		[1, KIND, 'extension', cv.__test.ROOM_SETTINGS_RIGHT_SLOT, KIND]);
 	truthy('④-b 页签标题是 thunk 且带当前群名', (() => {
-		rightApi.openRight(made.id, '番茄钟小组');  // 无会话在屏 ⇒ false，但目标已记录
+		rightApi.openRight(made.id, '番茄钟小组');  // 抛错 ⇒ false，但目标已记录
 		return typeof rightTypes[0].title === 'function' && /群设置/.test(rightTypes[0].title());
 	})());
-	truthy('④-b 无会话在屏 ⇒ 打开同步返回 false（好让菜单回落，不白点）', rightApi.openRight(made.id, '番茄钟小组') === false
-		&& openedRight.length === 0);
-	mountedSession = 'sess-on-screen';
-	truthy('④-b 有会话在屏 ⇒ 返回 true、openTab 收到 kind、目标群 id 正确',
+	truthy('④-b openTab 抛「no session surface」⇒ 同步返回 false、不再异步吞异常（好让菜单回落）',
+		rightApi.openRight(made.id, '番茄钟小组') === false && openedRight.length === 0);
+	openTabThrows = false;
+	truthy('④-b openTab 正常 ⇒ 返回 true、收到 kind、目标群 id 正确（hero 的 blank session 不该被预判误杀）',
 		rightApi.openRight(made.id, '番茄钟小组') === true
 		&& openedRight.at(-1) === KIND
 		&& cv.__test.rightRoomTargetOf().roomId === made.id,
@@ -439,6 +622,15 @@ await settle(450);
 	const root = createRoot(host);
 	await act(async () => { root.render(React.createElement(Pane, {})); await tick(50); });
 	truthy('④-b 右栏独立页显示群设置卡', !!host.querySelector('[data-vssaros-room-settings-page="' + made.id + '"]'));
+	// ★ 2026-11-10 用户：hero 下群设置要像「编辑 Bot」那样**内联在右栏页签里**，
+	//   不能是 440px 居中遮罩弹层（真机截图里弹层盖住了整个窗口，右栏只空着一条页签）。
+	const inlineDlg = host.querySelector('[data-vssaros-room-settings="' + made.id + '"]');
+	truthy('④-b hero 右栏页签内联显示群设置（同 Bot 设置）：无遮罩、卡片自适应右栏宽度',
+		!!inlineDlg
+		&& !host.querySelector('[data-vssaros-room-dialog]')
+		&& !/width:\s*440px/.test(String(inlineDlg && inlineDlg.getAttribute('style') || '')),
+		JSON.stringify({ dlg: !!inlineDlg, mask: !!host.querySelector('[data-vssaros-room-dialog]'),
+			style: String(inlineDlg && inlineDlg.getAttribute('style') || '').slice(0, 120) }));
 	// 切群：open 侧派事件 ⇒ 已挂载的 body 必须跟着重画（否则永远显示第一次点的那个群）
 	await act(async () => {
 		rightApi.openRight('room-other', '别的群');
@@ -459,7 +651,7 @@ await settle(450);
 	// 恢复现场：后续菜单项测试不该受右栏 stub 影响
 	delete window.__vssarosOpenRightRoomSettings;
 	delete window.__vssarosCloseRightRoomSettings;
-	mountedSession = undefined;
+	openTabThrows = true;
 
 	// 静态钉住：菜单必须先试右栏、再回落中栏（顺序反了会永远看不到右栏）
 	const menuSrc = readFileSync(join(repo, 'dsh-plugins/vssaros-chat-surface/lib/client.workspaces.js'), 'utf8');
@@ -482,15 +674,49 @@ await mouse(q('[data-vssaros-bots-refresh]'), 'click');
 await settle(80);
 truthy('④ 取消隐藏后刷新 ⇒ 群行回来', !!row());
 
-// ── ④-c ★ 2026-11-09：hero（无会话在屏）下「编辑 Bot」必须能打开 Bot 配置 ─────────
-// 真机报障：hero 页右键「编辑 Bot」只弹「请手动点 Bot 分段」。根因是右栏「设置」页签属于
-//   conversation.view（session 作用域），hero 下结构上不渲染 ⇒ SettingsView 不挂载、
-//   事件无人接住、binding.activate 静默失败。
-// 本桩 bots.home = {}（拿不到任何会话 id）⇒ 等价于 hero：旧实现会 openBot + 900ms 猜 sid，必然失败。
+// ── ④-c ★ 2026-11-10：hero 下「编辑 Bot」⇒ 官方右栏「Bot 设置」页签（带 ✕，与「开始」并列）──
+// 用户要求：右侧栏里**单独一个可关闭的页签**，不是覆盖式 fixed 浮层。
+// 真机 hero 下右栏「开始」页签本就渲染在 `sidebar.right.pane.tab` ⇒ 该槽在 hero 可用；
+// 上一轮把「conversation.view 设置页签 hero 不渲染」外推成「右栏 session 槽 hero 不渲染」
+// 是误判。这里改回官方两段式：tabs.register + keyed body + sidebarRight.openTab。
+// 本桩 bots.home = {}（拿不到会话 id）⇒ 等价 hero；右栏服务用 fakeBotCtx 打桩。
 {
 	const botEl = qa('[data-vssaros-bot]')[0];
 	const botId = botEl ? botEl.getAttribute('data-vssaros-bot') : '';
 	truthy('④-c Bots 页签里有 bot 行可供右键', !!botId, String(qa('[data-vssaros-bot]').length));
+
+	const botRightTypes = [], botRightBodies = [], openedBotRight = [], closedBotRight = [];
+	const fakeBotCtx = {
+		sidebarRightTabs: { register: (def) => { botRightTypes.push(def); return () => undefined; } },
+		slots: {
+			inject: (name, fn) => fn(),
+			register: (opts, comp) => { botRightBodies.push({ opts, comp }); return () => undefined; },
+		},
+		effect: (fn) => { const d = fn(); return typeof d === 'function' ? d : undefined; },
+		sidebarRight: {
+			openTab: (kind) => openedBotRight.push(kind),
+			active: () => ({ id: 'tab-bot-right-1' }),
+			close: (id) => { closedBotRight.push(id); return true; },
+		},
+	};
+	const botRightApi = cv.__test.installRightBotSettings(fakeBotCtx);
+	const BOT_KIND = cv.__test.BOT_SETTINGS_RIGHT_KIND;
+	const origOpenRight = window.__vssarosOpenRightBotSettings;
+	const origCloseRight = window.__vssarosCloseRightBotSettings;
+	const rightBotCalls = [];
+	// 覆盖成「右栏可用」的宿主形态（真会调 openTab / close），并 spy 参数
+	window.__vssarosOpenRightBotSettings = (id, name) => {
+		rightBotCalls.push({ id: String(id), name: String(name) });
+		return botRightApi.openRight(id, name);
+	};
+	window.__vssarosCloseRightBotSettings = botRightApi.closeRight;
+
+	eq('④-c 注册官方右栏 Bot 设置页签类型 + keyed body（与群设置不同 kind，互不覆盖）',
+		[botRightTypes.length, botRightTypes[0] && botRightTypes[0].kind, botRightTypes[0] && botRightTypes[0].priority,
+			botRightBodies[0] && botRightBodies[0].opts.key, BOT_KIND !== cv.__test.ROOM_SETTINGS_RIGHT_KIND],
+		[1, BOT_KIND, 'extension', BOT_KIND, true]);
+	truthy('④-c 页签标题是 thunk 且带 bot 名',
+		typeof botRightTypes[0]?.title === 'function' && /Bot 设置/.test(String(botRightTypes[0].title())));
 
 	const tabsBefore = calls.pageTabs.length;
 	const openedBefore = calls.opened.length;
@@ -499,27 +725,186 @@ truthy('④ 取消隐藏后刷新 ⇒ 群行回来', !!row());
 	const editItem = q('[data-vssaros-bot-menu] [data-act="bot-edit"]');
 	truthy('④-c bot 行右键菜单里有「编辑 Bot」', !!editItem);
 	if (editItem) { await mouse(editItem, 'mousedown'); await settle(120); }
-	const tab = calls.pageTabs.at(-1);
-	truthy('④-c hero / 无会话下「编辑 Bot」⇒ 直接开中栏独立页（comp + agentId），不依赖会话槽',
-		calls.pageTabs.length === tabsBefore + 1
-		&& !!tab && tab.comp === 'vssaros-bot-config'
-		&& tab.props && tab.props.agentId === botId
+	truthy('④-c hero 下「编辑 Bot」⇒ 官方右栏 tab（openTab 收到 kind），不开中栏页 / 不依赖会话槽',
+		rightBotCalls.length === 1 && rightBotCalls[0].id === botId
+		&& openedBotRight.at(-1) === BOT_KIND
+		&& calls.pageTabs.length === tabsBefore
 		&& calls.opened.length === openedBefore
 		&& calls.activated.length === activatedBefore,
-		JSON.stringify({ tab, openedDelta: calls.opened.length - openedBefore, activatedDelta: calls.activated.length - activatedBefore }));
-	const Comp = window.__vssarosPageComponents && window.__vssarosPageComponents['vssaros-bot-config'];
-	truthy('④-c Bot 配置独立页组件已登记到 __vssarosPageComponents', typeof Comp === 'function');
-	if (typeof Comp === 'function') {
+		JSON.stringify({ rightBotCalls, openedBotRight, tabsDelta: calls.pageTabs.length - tabsBefore,
+			openedDelta: calls.opened.length - openedBefore, activatedDelta: calls.activated.length - activatedBefore }));
+	truthy('④-c 不再注册 shell.overlay fixed 浮层（页签条与 ✕ 由官方 strip 提供）',
+		!slotted.some(o => o.name === 'shell.overlay' && o.id === 'vssaros-right-bot-settings'),
+		JSON.stringify(slotted.filter(o => o.name === 'shell.overlay')));
+
+	const Pane = cv.__test.RightBotSettingsPane;
+	truthy('④-c 官方右栏 Bot 设置页签体已导出', typeof Pane === 'function');
+	// 桩的 fetch 对 /x/agents/api/agents?id= 返 404 ⇒ BotConfigCard 显示「读取失败」，
+	// 锚点 data-vssaros-botcfg 就不出现。临时补真实 GET 回包，避免「读不到也放行」的假绿。
+	const prevFetch = globalThis.fetch;
+	globalThis.fetch = async (url, init = {}) => {
+		const u = new URL(String(url), 'http://localhost');
+		if (u.pathname === '/x/agents/api/agents' && u.searchParams.get('id')) {
+			return { ok: true, status: 200, json: async () => ({ ok: true, draft: {
+				name: 'Designer', persona: '', role: 'assistant', model: '', skills: [], tools: [],
+			} }) };
+		}
+		return prevFetch(url, init);
+	};
+	if (typeof Pane === 'function') {
 		const host = document.createElement('div');
 		document.body.appendChild(host);
-		const pageRoot = createRoot(host);
-		await act(async () => { pageRoot.render(React.createElement(Comp, { agentId: botId, name: botId, tabId: 'bot-config:' + botId })); await tick(50); });
-		truthy('④-c 独立页渲染出页头与页内「✕ 关闭」（锚点带 agentId）',
-			!!host.querySelector('[data-vssaros-bot-config-page="' + botId + '"]')
-			&& !!host.querySelector('[data-vssaros-bot-config-close]'));
-		await act(async () => { pageRoot.unmount(); await tick(10); });
+		const paneRoot = createRoot(host);
+		await act(async () => { paneRoot.render(React.createElement(Pane, {})); await tick(60); });
+		truthy('④-c 右栏页签体渲染页头 + Bot 配置卡 + ✕ 关闭',
+			!!host.querySelector('[data-vssaros-right-bot-settings="' + botId + '"]')
+			&& !!host.querySelector('[data-vssaros-right-bot-settings-tab="' + botId + '"]')
+			&& !!host.querySelector('[data-vssaros-right-bot-settings-close="' + botId + '"]')
+			&& !!host.querySelector('[data-vssaros-botcfg="' + botId + '"]'),
+			host.textContent.slice(0, 200));
+		// 切 Bot：工厂级 target + 事件 ⇒ 已挂载的 body 必须跟着换
+		await act(async () => { botRightApi.openRight('bot-other', '别的 Bot'); await tick(40); });
+		truthy('④-c 切 Bot ⇒ 右栏页签体重画成新 bot',
+			!!host.querySelector('[data-vssaros-right-bot-settings="bot-other"]')
+			&& !host.querySelector('[data-vssaros-right-bot-settings="' + botId + '"]'));
+		await act(async () => { botRightApi.openRight(botId, botId); await tick(40); });
+		const closeBtn = host.querySelector('[data-vssaros-right-bot-settings-close="' + botId + '"]');
+		truthy('④-c 页签上有「✕ 关闭」按钮（官方 strip 那枚之外的页内入口）', !!closeBtn);
+		if (closeBtn) {
+			await act(async () => { closeBtn.click(); await tick(40); });
+			truthy('④-c 点 ✕ ⇒ 调 sidebarRight.close 且页签体清空',
+				closedBotRight.includes('tab-bot-right-1') && !host.querySelector('[data-vssaros-right-bot-settings]'),
+				JSON.stringify(closedBotRight));
+		}
+		await act(async () => { paneRoot.unmount(); await tick(10); });
 		host.remove();
 	}
+	// 恢复现场：后续菜单测试不该受 spy / 临时 fetch 影响
+	if (typeof origOpenRight === 'function') { window.__vssarosOpenRightBotSettings = origOpenRight; }
+	else { delete window.__vssarosOpenRightBotSettings; }
+	if (typeof origCloseRight === 'function') { window.__vssarosCloseRightBotSettings = origCloseRight; }
+	else { delete window.__vssarosCloseRightBotSettings; }
+	globalThis.fetch = prevFetch;
+}
+
+// ── ④-d ★ 2026-11-10 用户选方案 A：Channel 绑定卡「说明收进 tip + item 紧凑双行」──────
+// 真机截图：标题下约 150 字说明平铺；绑定 item 把平台 / chat_id / 类型 / 方向 / 状态 /
+//   应用 / 两个按钮全塞一行。方案 A ⇒ 说明进 ⓘ 富卡、item 拆两行、新建表单默认折叠。
+// 本段单独给 /x/agents/api/bindings 打桩（不改主桩，避免影响其它断言）。
+{
+	const prevFetch = globalThis.fetch;
+	const bindingPayload = {
+		channelDefs: [{ key: 'feishu', label: '飞书', chatIdHint: 'oc_…（群）/ ou_…（私聊）', fields: [
+			{ key: 'groupPolicy', default: 'open', options: [
+				{ value: 'open', label: 'open：群里可用（需 @ 机器人）' }, { value: 'allowlist', label: '仅白名单' },
+			] },
+		] }],
+		feishuApps: [{ appId: 'cli_test01', name: '测试应用', hasSecret: true, isDefault: false }],
+		bindings: [
+			{ id: 'b-1', targetKind: 'agent', targetId: 'designer', platform: 'feishu',
+				chatId: 'cc_aa77fd3d7ade60ae25a42d1c47fb', chatType: 'group', direction: 'both',
+				enabled: true, appId: '', groupPolicy: 'open' },
+			{ id: 'b-2', targetKind: 'agent', targetId: 'designer', platform: 'feishu',
+				chatId: 'oc_9f2b18c44de07a1b83af6d21', chatType: 'group', direction: 'in',
+				enabled: false, appId: 'cli_test01' },
+		],
+	};
+	const posts = [];
+	globalThis.fetch = async (url, init = {}) => {
+		const u = new URL(String(url), 'http://localhost');
+		if (u.pathname === '/x/agents/api/bindings') {
+			if ((init.method || 'GET').toUpperCase() === 'POST') {
+				try { posts.push(JSON.parse(String(init.body || '{}'))); } catch { /* 非 JSON body 忽略 */ }
+			}
+			return { ok: true, status: 200, json: async () => bindingPayload };
+		}
+		return prevFetch(url, init);
+	};
+	const Card = cv.__test.BotChannelBindingsCard;
+	truthy('④-d Channel 绑定卡组件已导出（守卫可单测）', typeof Card === 'function');
+	if (typeof Card === 'function') {
+		const host = document.createElement('div');
+		document.body.appendChild(host);
+		const cardRoot = createRoot(host);
+		await act(async () => { cardRoot.render(React.createElement(Card, { agentId: 'designer' })); await tick(60); });
+		const card = host.querySelector('[data-vssaros-botbind="designer"]');
+		truthy('④-d 卡渲染出来', !!card, host.textContent.slice(0, 160));
+		if (card) {
+			const helpTip = card.querySelector('[data-vssaros-botbind-help]');
+			const helpBubble = helpTip && helpTip.querySelector('[role="tooltip"]');
+			const helpItems = helpBubble ? helpBubble.querySelectorAll('li') : [];
+			truthy('④-d 说明收进 ⓘ 富卡：5 条要点齐全、可键盘聚焦、不叠原生 title',
+				!!helpTip && helpTip.getAttribute('tabindex') === '0' && !helpTip.getAttribute('title')
+				&& !!helpBubble && helpItems.length >= 5
+				&& /fail-closed/.test(String(helpBubble.textContent))
+				&& /groupPolicy/.test(String(helpBubble.textContent)),
+				String(helpBubble && helpBubble.textContent).slice(0, 180));
+			const flat = [...card.children].map(n => String(n.textContent || '')).join('');
+			truthy('④-d 说明不再平铺在卡片正文', !/把 IM 会话绑定到这个 Bot/.test(flat.replace(String(helpBubble && helpBubble.textContent), '')));
+
+			const rows = card.querySelectorAll('[data-vssaros-botbind-row]');
+			truthy('④-d 两条绑定各自紧凑双行（行1 身份/状态/操作，行2 chat_id/标签）',
+				rows.length === 2
+				&& [...rows].every(r => r.querySelector('[data-vssaros-botbind-row-top]')
+					&& r.querySelector('[data-vssaros-botbind-row-meta]')),
+				JSON.stringify([...rows].map(r => r.getAttribute('data-vssaros-botbind-row'))));
+			truthy('④-d 状态是「颜色 + 文字」双编码，不只靠颜色',
+				/启用/.test(String(rows[0] && rows[0].textContent)) && /停用/.test(String(rows[1] && rows[1].textContent)));
+			const cid = rows[0] && rows[0].querySelector('[data-vssaros-botbind-row-cid]');
+			const cidTip = rows[0] && rows[0].querySelector('[role="tooltip"]');
+			truthy('④-d chat_id 摘要显示、完整值收进 tip',
+				!!cid && !!cidTip && /cc_aa77fd3d7ade60ae25a42d1c47fb/.test(String(cidTip.textContent)),
+				String(cidTip && cidTip.textContent).slice(0, 120));
+			truthy('④-d 启停 / 删除按钮仍在且带原锚点',
+				!!(rows[0] && rows[0].querySelector('[data-vssaros-botbind-toggle]'))
+				&& !!(rows[0] && rows[0].querySelector('[data-vssaros-botbind-delete]')));
+			truthy('④-d 新建绑定默认折叠',
+				!!card.querySelector('[data-vssaros-botbind-new-toggle]')
+				&& !card.querySelector('[data-vssaros-botbind-chatId]'));
+			await act(async () => { card.querySelector('[data-vssaros-botbind-new-toggle]').click(); await tick(20); });
+			truthy('④-d 展开后字段在、字段说明走短 ⓘ（超长 placeholder 不再承载文档）',
+				!!card.querySelector('[data-vssaros-botbind-chatId]')
+				&& card.querySelectorAll('[data-vssaros-botbind-tip]').length >= 3
+				&& !/入站白名单（逗号分隔 userId；留空 = 拒绝所有入站）/.test(String(card.innerHTML)),
+				String(card.innerHTML).slice(0, 200));
+
+			// ── ④-e 已绑定 item 可展开编辑（用户 2026-11-10 截图要求）──────────────
+			const firstRow = card.querySelector('[data-vssaros-botbind-row]');
+			const rid = firstRow && firstRow.getAttribute('data-vssaros-botbind-row');
+			const editToggle = firstRow && firstRow.querySelector('[data-vssaros-botbind-edit-toggle]');
+			truthy('④-e 每条已绑定 item 都有展开编辑入口', !!editToggle);
+			truthy('④-e 编辑面板默认收起', !card.querySelector('[data-vssaros-botbind-edit]'));
+			if (editToggle && rid) {
+				await act(async () => { editToggle.click(); await tick(20); });
+				const panel = card.querySelector('[data-vssaros-botbind-edit="' + rid + '"]');
+				const edChat = panel && panel.querySelector('[data-vssaros-botbind-edit-chatId]');
+				const edDir = panel && panel.querySelector('[data-vssaros-botbind-edit-direction]');
+				truthy('④-e 点开 ⇒ 面板出现并回填该条现值（chat_id / 方向 / 群策略 / 白名单）',
+					!!panel && !!edChat && edChat.value === 'cc_aa77fd3d7ade60ae25a42d1c47fb'
+					&& !!edDir && edDir.value === 'both'
+					&& !!panel.querySelector('[data-vssaros-botbind-edit-group-policy]')
+					&& !!panel.querySelector('[data-vssaros-botbind-edit-allow-from]'),
+					String(panel && panel.textContent).slice(0, 220));
+				truthy('④-e 同一时刻只展开一条', card.querySelectorAll('[data-vssaros-botbind-edit]').length === 1);
+				if (panel && panel.querySelector('[data-vssaros-botbind-edit-save]')) {
+					await act(async () => { panel.querySelector('[data-vssaros-botbind-edit-save]').click(); await tick(30); });
+					const last = posts.at(-1);
+					truthy('④-e 保存 ⇒ POST action=update、id 正确、只带可改字段（不带 targetId / platform / enabled）',
+						!!last && last.action === 'update' && last.id === rid
+						&& last.actor && last.actor.kind === 'human'
+						&& last.chatId === 'cc_aa77fd3d7ade60ae25a42d1c47fb'
+						&& last.chatType === 'group' && last.direction === 'both'
+						&& 'groupPolicy' in last && 'allowFrom' in last
+						&& last.targetId === undefined && last.platform === undefined && last.enabled === undefined,
+						JSON.stringify(last));
+					truthy('④-e 保存后面板收起', !card.querySelector('[data-vssaros-botbind-edit]'));
+				}
+			}
+			}
+		await act(async () => { cardRoot.unmount(); await tick(10); });
+		host.remove();
+	}
+	globalThis.fetch = prevFetch;
 }
 
 // ── ③ 建群即时推送：Host SSE 广播 + 浏览器订阅 + 401 可见（2026-11-09）─────────────────
@@ -527,11 +912,23 @@ truthy('④ 取消隐藏后刷新 ⇒ 群行回来', !!row());
 	const agentsSrc = readFileSync(join(repo, 'dsh-plugins/vssaros-agents/lib/index.js'), 'utf8');
 	const workspacesSrc = readFileSync(join(repo, 'dsh-plugins/vssaros-chat-surface/lib/client.workspaces.js'), 'utf8');
 	const fastPathSrc = readFileSync(join(repo, 'dsh-plugins/vssaros-superagent/dev/src/app/groupFastPath.ts'), 'utf8');
+	const groupRequestSrc = readFileSync(join(repo, 'dsh-plugins/vssaros-superagent/dev/src/core/group-request.ts'), 'utf8');
 	const bundleSrc = readFileSync(join(repo, 'dsh-plugins/vssaros-superagent/lib/index.js'), 'utf8');
 	const deskSrc = readFileSync(join(repo, 'dsh-plugins/vssaros-superagent/dev/src/app/desk.ts'), 'utf8');
 
 	// ① 正则：dev 与运行 bundle 同形放宽，长标题命中 / 否定句不命中。
 	//   ★ 判定必须从**源码里抽正则再执行**（不是守卫里复刻一份），否则源码被改回旧行为守卫会假绿。
+	// ★ 2026-11-10：建群正则抽到 core 单一常量 ⇒ 把源码里的正则真编译后注入函数体，
+	//   仍然坚持「从源码抽、真执行」，守卫不复刻一份实现。
+	const groupRequestRe = (() => {
+		const m = /export const GROUP_REQUEST = (\/[^\n]+\/u)/.exec(groupRequestSrc);
+		if (!m) { return undefined; }
+		try { return new Function('return ' + m[1])(); } catch { return undefined; }
+	})();
+	truthy('① core 单一真源：GROUP_REQUEST 能从 dev 源码真编译', groupRequestRe instanceof RegExp);
+	truthy('① 建群正则单一真源：fastPath 不再内联正则字面量（改回硬编码立即判红）',
+		!/\[\^，,。！!？?\]\{0,48\}/.test(fastPathSrc)
+		&& /return GROUP_REQUEST\.test\(body\)/.test(fastPathSrc));
 	const predicateFrom = (src) => {
 		const at = src.indexOf('isGroupCreationRequest');
 		if (at < 0) { return undefined; }
@@ -539,12 +936,12 @@ truthy('④ 取消隐藏后刷新 ⇒ 群行回来', !!row());
 		// 函数体到「行首 }」为止；dev 的类型标注只在签名里，函数体是纯 JS ⇒ 可直接编译执行
 		const close = src.indexOf('\n}', open);
 		if (open < 0 || close < 0) { return undefined; }
-		try { return new Function('text', src.slice(open + 1, close)); } catch { return undefined; }
+		try { return new Function('text', 'GROUP_REQUEST', src.slice(open + 1, close)); } catch { return undefined; }
 	};
 	const devGroup = predicateFrom(fastPathSrc);
 	const bundleGroup = predicateFrom(bundleSrc);
 	truthy('① 能从 dev / bundle 源码抽出可执行的建群判定', !!devGroup && !!bundleGroup);
-	const probe = (fn, s) => fn ? fn(s) : null;
+	const probe = (fn, s) => fn ? fn(s, groupRequestRe) : null;
 	truthy('① 真机长标题命中、@群名与否定句不命中（dev 与 bundle 同形）',
 		[devGroup, bundleGroup].every(fn => fn
 			&& probe(fn, '创建一个 俄罗斯方块 h5 小游戏开发团队') === true
@@ -552,8 +949,8 @@ truthy('④ 取消隐藏后刷新 ⇒ 群行回来', !!row());
 			&& probe(fn, '不要建群，先给我一个方案') === false
 			&& probe(fn, '别创建团队了，取消吧') === false),
 		`dev=${devGroup ? probe(devGroup, '创建一个 俄罗斯方块 h5 小游戏开发团队') : 'none'} bundle=${bundleGroup ? probe(bundleGroup, '创建一个 俄罗斯方块 h5 小游戏开发团队') : 'none'}`);
-	truthy('① 上限确为 48（不是注释里的数字）',
-		/\{0,48\}\(\?:群\|团队\)/u.test(fastPathSrc) && /\{0,48\}\(\?:群\|团队\)/u.test(bundleSrc));
+	truthy('① 上限确为 48（core 单一常量与运行 bundle 同形）',
+		/\{0,48\}\(\?:群\|团队\)/u.test(groupRequestSrc) && /\{0,48\}\(\?:群\|团队\)/u.test(bundleSrc));
 
 	// ①-b 群名派生（2026-11-09 真机 bug：整句被吞空 ⇒ 泛化名「开发团队群」）。
 	//   ★ 从 dev/bundle 源码里抽 `fastGroupPlan` 的**取名段**编译后真跑，不是守卫复刻一份实现。
@@ -623,6 +1020,35 @@ truthy('④ 取消隐藏后刷新 ⇒ 群行回来', !!row());
 				[errResult.ok, errResult.status, seen.length, seen[0] && seen[0].status], [false, 401, 1, 401]);
 		} finally { globalThis.fetch = prevFetch; window.removeEventListener('vssaros-rooms-error', onErr); }
 	}
+}
+
+// ── ⑤-0 分工与转发前置条件（2026-11-10 用户报「群聊没有使用成员分工」）──────────────
+//   原有 ⑤ 用 2 人 + 管理员必然 @Coder 的 fixture，只覆盖「有消息 + 管理员接力」。
+//   这两条钉住更前面的两个断点：谁被叫到、以及消息根本没进群时不合成 group_relay。
+{
+	const adminRoom = { members: ['designer', 'coder', 'reviewer'], admin: 'designer', mode: 'admin', notice: '' };
+	eq('⑤-0 admin 模式且公告无分工文本 ⇒ openingCall 只叫管理员 1 人（不是全员）',
+		roomCore.openingCall(adminRoom, { ids: [], all: false }).ids, ['designer']);
+	truthy('⑤-0 公告没写分工 ⇒ 群提示里没有阶段/派活指令（这要靠公告或 group_goal 补）',
+		!/【本群分工】|设成群目标的阶段|group_goal/.test(roomCore.roomPrompt({
+			room: adminRoom, member: { id: 'designer', name: 'Designer' },
+			members: [{ id: 'designer', name: 'Designer' }, { id: 'coder', name: 'Coder' }, { id: 'reviewer', name: 'Code Reviewer' }],
+			log: [], seen: undefined, place: null, calledBy: '', note: '', workDir: '',
+		})));
+	const { relayStream } = await imp('dsh-plugins/vssaros-agents/lib/rooms.js');
+	const stream = relayStream(rooms, () => 'fixed-uuid');
+	const collect = async (messages) => {
+		const out = [];
+		for await (const c of stream({ sessionId: made.id, messages, tools: [{ name: 'group_relay' }] }, () => undefined)) out.push(c);
+		return out;
+	};
+	const noUser = await collect([{ role: 'assistant', content: [{ type: 'text', text: '上一轮的回复' }] }]);
+	truthy('⑤-0 没有 user 消息 ⇒ 不合成 group_relay（只 finish/stop）',
+		noUser.every(c => c.type !== 'tool-call' && c.type !== 'tool-call-delta')
+		&& noUser.some(c => c.type === 'finish' && c.reason && c.reason.kind === 'stop'), JSON.stringify(noUser));
+	const withUser = await collect([{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '开始做' }] }]);
+	truthy('⑤-0 有 user 消息 ⇒ 合成 group_relay（对照，证明上一条判据有效）',
+		withUser.some(c => c.type === 'tool-call-delta' && c.name === 'group_relay'), JSON.stringify(withUser));
 }
 
 // ── ⑤ 群会话里：一轮转发的回复卡 + 「设置」页签的群设置卡 ─────────────────────────────
@@ -772,6 +1198,7 @@ truthy('⑤ 全局浮层：不打开群也能看到「已发到群 / 已完成 /
 const openRoomBtn = dockHost.querySelector('[data-act="open-room"]');
 await act(async () => { if (openRoomBtn) { openRoomBtn.click(); } await tick(20); });
 eq('⑤ 点浮层「打开群聊」⇒ 打开目标群会话（DS Bot GroupEvent 同款入口）', calls.opened.at(-1), made.id);
+eq('⑤ 点浮层「打开群聊」⇒ 同步记住的群（旁路不许漏）', localStorage.getItem(ws.__test.SELECTED_ROOM_KEY), made.id);
 truthy('⑤ 同一 window 只有一个活动轮询器（热重载/重复挂载由后来者接管）', !!window.__vssarosGroupActivityPoller);
 await act(async () => {
 	window.dispatchEvent(new window.CustomEvent(ws.__test.GROUP_PROGRESS_EVENT, { detail: { schema: 1, seq: 99, active: [{
@@ -836,13 +1263,32 @@ await act(async () => {
 });
 await act(async () => { await tick(80); });
 const card = relayEl.querySelector(`[data-vssaros-room-settings="${made.id}"]`);
-truthy('⑤ 群会话的「设置」页签 ⇒ 群设置卡（群名 / 公告 / 谁来回答 / 成员）', !!card && !!card.querySelector('[data-vssaros-room-notice]') && card.querySelectorAll('[data-vssaros-room-member]').length === 2, relayEl.textContent.slice(0, 200));
+// ★ 2026-11-10 群设置 UI 复刻 DS Bot 弹层：四档唤醒策略取代旧「谁来回答」两档 radio
+truthy('⑤ 群会话的「设置」页签 ⇒ 群设置弹层卡（群名 / 公告 / 四档唤醒 / 成员 / 头像 / 加入需确认 / 底栏）',
+	!!card
+	&& !!card.querySelector('[data-vssaros-room-notice]')
+	&& card.querySelectorAll('[data-vssaros-room-member]').length === 2
+	&& card.querySelectorAll('[data-vssaros-room-wake]').length === 4
+	&& !!card.querySelector('[data-vssaros-room-avatar]')
+	&& !!card.querySelector('[data-vssaros-room-approval]')
+	&& !!card.querySelector('[data-act="room-clear"]')
+	&& !!card.querySelector('[data-act="room-delete"]'),
+	relayEl.textContent.slice(0, 260));
+// ★ 2026-11-10：群设置里新增 Channel 绑定卡（目标类型 group，targetId = 本群 id）。
+{
+	const bindCard = card?.querySelector('[data-vssaros-bind-kind="group"]');
+	truthy('⑤ 群设置包含 Channel 绑定卡（group 目标，空态按群措辞）',
+		!!bindCard && bindCard.getAttribute('data-vssaros-botbind') === made.id
+		&& /这个群还没有绑定任何会话/.test(bindCard.textContent || ''),
+		bindCard?.outerHTML?.slice(0, 260));
+}
 if (card) {
-	const radio = card.querySelector('[data-vssaros-room-mode="everyone"] input');
-	await act(async () => { radio.click(); await tick(10); });
+	const allOpt = card.querySelector('[data-vssaros-room-wake="all"]');
+	await act(async () => { allOpt.click(); await tick(10); });
 	await act(async () => { card.querySelector('[data-act="room-save"]').click(); await tick(80); });
 	await act(async () => { await tick(80); });
-	eq('⑤ 群设置卡改「谁来回答」并保存 ⇒ 服务端生效', [(await rooms.get(made.id)).mode, said.at(-1)], ['everyone', '群设置已保存']);
+	eq('⑤ 群设置卡选「全员派发」并保存 ⇒ 服务端 wakeMode 生效',
+		[(await rooms.get(made.id)).wakeMode, said.at(-1)], ['all', '群设置已保存']);
 }
 
 // ── ⑤-b P1：群列表变化事件 ⇒ Bots 页签立刻刷新，不等 2s 轮询 ──────────────────────────
@@ -1176,6 +1622,7 @@ truthy('⑤-c 群会话 composer dock 注入 DS Bot 式活动行、shimmer 与�
 		(row()?.textContent || '').slice(0, 200));
 	await act(async () => { askHost.querySelector('[data-act="group-ask-open"]')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true })); await tick(10); });
 	eq('⑤-f 点「去选择」⇒ 打开群', calls.opened.at(-1), made.id);
+	eq('⑤-f 点「去选择」⇒ 跨 chunk 同步记住的群', localStorage.getItem(ws.__test.SELECTED_ROOM_KEY), made.id);
 	// 打开群：卡片
 	await act(async () => { askRoot.render(React.createElement(MemberDock, { sessionId: made.id })); await tick(30); });
 	const card = () => askHost.querySelector('[data-vssaros-group-ask]');
@@ -1290,6 +1737,231 @@ await mouse(q('[data-act="room-delete-confirm"]'), 'click');
 await settle(100);
 truthy('⑥ 确认 ⇒ 群从侧栏消失、服务端删除、群会话与成员会话归档',
 	!row() && (await rooms.list()).length === 0 && dsh.archived.includes(made.id) && dsh.archived.length === 3, JSON.stringify(dsh.archived));
+
+// ── ⑦ 跨群切换 A→B→A（2026-11-10 用户报「切群后无法切回去」）─────────────────────
+//   ⑥ 已把 made 删掉、rooms 归零 ⇒ 这里重建两个群，验证显式选中态与 composer 目标
+//   **始终跟着用户点的那个群**，且 rebind 到 B 时不把会话抢回 A。
+{
+	const KEY = ws.__test.SELECTED_ROOM_KEY;
+	const madeA = await bus.createGroup({ members: ['Designer', 'Coder'], name: '切换测试 A', notice: '', createdBy: 'superagent' });
+	const madeB = await bus.createGroup({ members: ['Designer', 'Coder'], name: '切换测试 B', notice: '', createdBy: 'superagent' });
+	const listed = await rooms.list();
+	await act(async () => {
+		window.dispatchEvent(new window.CustomEvent('vssaros-rooms-changed', { detail: { schema: 1, rooms: listed, pushed: true } }));
+		await tick(60);
+	});
+	await settle(60);
+	const rowA = () => q(`[data-vssaros-room="${madeA.id}"]`);
+	const rowB = () => q(`[data-vssaros-room="${madeB.id}"]`);
+	truthy('⑦ 侧栏同时列出 A / B 两个群（fixture 就绪）', !!rowA() && !!rowB(),
+		JSON.stringify({ a: !!rowA(), b: !!rowB(), rows: qa('[data-vssaros-room]').length }));
+
+	// 清掉 ③-b 留下的现场，从「没选群」开始
+	ws.__test.writeSelectedRoom('');
+	window.dispatchEvent(new window.Event(ws.__test.SELECTED_ROOM_EVENT));
+	await settle(20);
+
+	const opened0 = calls.opened.length;
+	await mouse(rowA(), 'click');
+	eq('⑦ 点 A ⇒ localStorage 记住 A', localStorage.getItem(KEY), madeA.id);
+	eq('⑦ 点 A ⇒ composer 目标 = A', calls.opened.at(-1), madeA.id);
+	truthy('⑦ 点 A ⇒ A 高亮、B 不高亮',
+		rowA()?.getAttribute('data-vssaros-room-selected') === '1'
+		&& rowB()?.getAttribute('data-vssaros-room-selected') !== '1');
+
+	await mouse(rowB(), 'click');
+	eq('⑦ A→B ⇒ localStorage 更新为 B（不是停在 A）', localStorage.getItem(KEY), madeB.id);
+	eq('⑦ A→B ⇒ composer 目标 = B', calls.opened.at(-1), madeB.id);
+	truthy('⑦ A→B ⇒ B 高亮、A 不高亮',
+		rowB()?.getAttribute('data-vssaros-room-selected') === '1'
+		&& rowA()?.getAttribute('data-vssaros-room-selected') !== '1');
+
+	// 选中 B 期间宿主 rebind 到 A（等价于「切到另一个群」）⇒ 不能把会话抢回 A
+	const beforeRebind = calls.opened.length;
+	await act(async () => {
+		document.dispatchEvent(new window.CustomEvent(ws.__test.REBIND_EVENT, { detail: { sessionId: madeA.id } }));
+		await tick(60);
+	});
+	eq('⑦ 选中 B 时 rebind 到 A ⇒ 记住的群跟过去（不抢回 B）', localStorage.getItem(KEY), madeA.id);
+	eq('⑦ 选中 B 时 rebind 到 A ⇒ 不再多开一次 B 会话', calls.opened.length, beforeRebind);
+
+	// 再点回 A：不能因早退/陈旧闭包而卡住
+	await mouse(rowA(), 'click');
+	eq('⑦ B→A ⇒ localStorage 回到 A', localStorage.getItem(KEY), madeA.id);
+	eq('⑦ B→A ⇒ composer 目标 = A（能切回去）', calls.opened.at(-1), madeA.id);
+	truthy('⑦ A→B→A 共多开了 3 次会话（A / B / A）', calls.opened.length === opened0 + 3,
+		JSON.stringify({ opened0, now: calls.opened.length, last3: calls.opened.slice(-3) }));
+}
+
+// ── ⑧ ★ 2026-11-10：Bots 页签 bot / 群行选中态（双重编码 + 互斥）────────────────────
+// 现状：bot 行完全没有选中态；群行只有一层 bg-layer-2 浅底、且两者都没挂选中态 CSS。
+// 本段放在所有既有断言之后，避免点行带来的 openSession / localStorage 副作用影响别人。
+{
+	const wst = ws.__test || {};
+	const RKEY = wst.SELECTED_ROOM_KEY;
+	const BKEY = wst.SELECTED_BOT_KEY;
+	truthy('⑧ bot 选中态的常量 / 事件 / 纯判据 / 写盘函数已导出',
+		!!BKEY && !!wst.SELECTED_BOT_EVENT && typeof wst.writeSelectedBot === 'function'
+		&& typeof wst.isBotSelected === 'function' && typeof wst.readSelectedBot === 'function');
+	if (typeof wst.writeSelectedBot === 'function' && BKEY) {
+		const botA = () => q('[data-vssaros-bot="designer"]');
+		const botB = () => q('[data-vssaros-bot="coder"]');
+		const roomA = () => qa('[data-vssaros-room]')[0];
+		truthy('⑧ 两个 bot 行与群行都在（fixture 就绪）', !!botA() && !!botB() && !!roomA());
+
+		// 从「什么都没选」开始
+		wst.writeSelectedBot('');
+		wst.writeSelectedRoom('');
+		window.dispatchEvent(new window.Event(wst.SELECTED_BOT_EVENT));
+		window.dispatchEvent(new window.Event(wst.SELECTED_ROOM_EVENT));
+		await settle(20);
+
+		await mouse(botA(), 'click');
+		await settle(20);
+		truthy('⑧ 点 bot A ⇒ 记住 A 并高亮（原来 bot 行零反馈）',
+			localStorage.getItem(BKEY) === 'designer'
+			&& botA()?.getAttribute('data-vssaros-bot-selected') === '1'
+			&& botA()?.getAttribute('data-selected') === '1'
+			&& botA()?.getAttribute('aria-selected') === 'true',
+			JSON.stringify({ ls: localStorage.getItem(BKEY), sel: botA()?.getAttribute('data-vssaros-bot-selected') }));
+		truthy('⑧ 点 bot ⇒ 群选中态被清掉（不许两条同时高亮）',
+			localStorage.getItem(RKEY) === null
+			&& qa('[data-vssaros-room][data-vssaros-room-selected="1"]').length === 0);
+
+		await mouse(botB(), 'click');
+		await settle(20);
+		truthy('⑧ A→B ⇒ 只有 B 高亮',
+			botB()?.getAttribute('data-vssaros-bot-selected') === '1'
+			&& botA()?.getAttribute('data-vssaros-bot-selected') !== '1');
+
+		await mouse(roomA(), 'click');
+		await settle(20);
+		truthy('⑧ 点群 ⇒ bot 取消高亮、群高亮且带视觉标记（互斥）',
+			localStorage.getItem(BKEY) === null
+			&& qa('[data-vssaros-bot][data-vssaros-bot-selected="1"]').length === 0
+			&& roomA()?.getAttribute('data-vssaros-room-selected') === '1'
+			&& roomA()?.getAttribute('data-selected') === '1');
+
+		const styleEl = document.querySelector('[data-vssaros-ws-row-style]');
+		truthy('⑧ 注入 CSS 含双重编码（interactive-bg-active 亮底 + 2px 品牌左竖条）',
+			!!styleEl && /\.vssaros-ws-bots-row\[data-selected=/.test(styleEl.textContent)
+			&& /interactive-bg-active/.test(styleEl.textContent)
+			&& /inset 2px 0 0 var\(--dsw-alias-brand-primary/.test(styleEl.textContent),
+			String(styleEl && styleEl.textContent).slice(-400));
+	}
+}
+
+// ── ⑨ 静态契约行为化（2026-11-10 评估建议 2）────────────────────────────────────
+//   ③-c / ③-d 的 11 条断言都是源码字符串匹配，可在死代码上全绿。这里给其中最关键的
+//   三处补真执行：divisionNotice 真的产出分工文本、rebind action 真的走 Host、
+//   SA 的 noteSelectedRoom 真的通过跨 chunk 桥改写选中态（本轮唯一无测试热修）。
+{
+	const KEY = ws.__test.SELECTED_ROOM_KEY;
+	const live = await rooms.list();
+	const roomA = String(live[0]?.id ?? '');
+	const roomB = String(live[1]?.id ?? live[0]?.id ?? '');
+	truthy('⑨ 行为块 fixture：至少两个存活的群', !!roomA && !!roomB, JSON.stringify(live.map(x => x.id)));
+	const saBundle = readFileSync(join(repo, 'dsh-plugins/vssaros-superagent/lib/client.js'), 'utf8');
+	const hostBundle = readFileSync(join(repo, 'dsh-plugins/vssaros-superagent/lib/index.js'), 'utf8');
+
+	// ③-c FIX 2：从运行 bundle 抽 divisionNotice 函数体编译后真调用（不是守卫复刻一份）。
+	const extractFn = (src, name) => {
+		const at = src.indexOf('function ' + name + '(');
+		if (at < 0) { return undefined; }
+		const open = src.indexOf('{', at);
+		// 与 ① 段 predicateFrom 同形：bundle 里这些函数是顶格的，函数体到「行首 }」为止。
+		const close = src.indexOf('\n}', open);
+		if (open < 0 || close < 0) { return undefined; }
+		try { return new Function('names', src.slice(open + 1, close)); } catch { return undefined; }
+	};
+	const division = extractFn(hostBundle, 'divisionNotice');
+	truthy('⑨ ③-c FIX2 行为：能从运行 bundle 抽出可执行的 divisionNotice', typeof division === 'function');
+	if (typeof division === 'function') {
+		const notice = division({ admin: 'Planner', others: ['Code Explorer', 'Tester'] });
+		truthy('⑨ ③-c FIX2 行为：分工公告点名实际成员、要求 group_goal，且不写死协作流程',
+			/【本群分工】/.test(notice) && /Planner/.test(notice) && /Code Explorer/.test(notice) && /Tester/.test(notice)
+			&& /group_goal/.test(notice) && !/协作流程/.test(notice), String(notice).slice(0, 160));
+	}
+
+	// ③-d rebind：真调 roomsApi，Host 的 retain 自愈路径应返回 ok 且不换 id。
+	const rebindOut = await roomsApi(rooms, { method: 'POST', query: new URLSearchParams(),
+		body: { action: 'rebind', id: roomA } });
+	truthy('⑨ ③-d 行为：rebind action 真走 Host，会话仍可用时 retain 自愈且不换 id',
+		rebindOut.status === 200 && rebindOut.body.ok === true && rebindOut.body.retained === true
+		&& rebindOut.body.roomId === roomA, JSON.stringify(rebindOut.body).slice(0, 160));
+
+	// ③-d / client:index.tsx 跨 chunk 旁路：真执行编译后的 noteSelectedRoom。
+	const noteAt = saBundle.indexOf('function noteSelectedRoom(id) {');
+	const noteStop = saBundle.indexOf('/** VsSaros change: the package as a VsSaros built-in. */', noteAt);
+	let note;
+	if (noteAt >= 0 && noteStop > noteAt) {
+		try { note = new Function('window', saBundle.slice(noteAt, noteStop) + '\nreturn noteSelectedRoom;')(window); }
+		catch { note = undefined; }
+	}
+	truthy('⑨ 跨 chunk 行为：能从 SA 运行 bundle 抽出可执行的 noteSelectedRoom', typeof note === 'function');
+	if (typeof note === 'function') {
+		await act(async () => {
+			window.dispatchEvent(new window.CustomEvent('vssaros-rooms-changed',
+				{ detail: { schema: 1, rooms: await rooms.list(), pushed: true } }));
+			await tick(60);
+		});
+		truthy('⑨ 跨 chunk 行为：WS 桥已登记两个已知群 id',
+			!!window.__vssarosKnownRoomIds && window.__vssarosKnownRoomIds.has(roomB)
+			&& typeof window.__vssarosSelectRoom === 'function');
+		const bridge = window.__vssarosSelectRoom;
+		const seen = [];
+		window.__vssarosSelectRoom = (id) => { seen.push(id); bridge(id); };
+		try {
+			ws.__test.writeSelectedRoom(roomA);
+			note(roomB);
+			// setSelectedRoom 上报 Host 是 fire-and-forget ⇒ 等一拍再断言 Host 侧选中态。
+			await settle(20);
+			eq('⑨ 跨 chunk 行为：noteSelectedRoom(B) 调桥并改写 localStorage', localStorage.getItem(KEY), roomB);
+			eq('⑨ 跨 chunk 行为：桥只被调一次且参数是 B', seen.join(','), roomB);
+			eq('⑨ 跨 chunk 行为：Host 的选中群同步为 B', rooms.selectedRoom(), roomB);
+			note('not-a-room');
+			eq('⑨ 跨 chunk 行为：不是群 id 时不调桥（不误投）', seen.length, 1);
+		} finally { window.__vssarosSelectRoom = bridge; }
+	}
+}
+
+// ── ⑨ ★ 2026-11-10 真机：hero 首屏装载门控（编辑 Bot 只开出中栏「当前不可用」页签）────
+//   ④-b / ④-c 用 `cv.__test.installXxx(fakeCtx)` 手工挂右栏 API，绕过了「hero 下入口
+//   到底有没有装载这个 chunk」的真问题。
+//   ★ 2026-11-10（建议 4）：原来 3 条都是 `.test(src)` 字符串匹配，删掉数组项但留着注释也能绿。
+//   改成从运行 bundle **真编译出数组**再执行 includes / filter，剩下 2 条静态判据是入口接线与 CV 导出。
+{
+	const entrySrc = readFileSync(join(repo, 'dsh-plugins/vssaros-chat-surface/lib/client.js'), 'utf8');
+	const cvSrc = readFileSync(join(repo, 'dsh-plugins/vssaros-chat-surface/lib/client.conversationViews.js'), 'utf8');
+	/** 从 bundle 里把 `const NAME = [...]` 的数组字面量真编译成 JS 数组。 */
+	const arrayFrom = (src, name) => {
+		const at = src.indexOf('const ' + name + ' = [');
+		if (at < 0) { return undefined; }
+		const open = src.indexOf('[', at), close = src.indexOf('];', open);
+		if (open < 0 || close < 0) { return undefined; }
+		try { return new Function('return ' + src.slice(open, close + 1))(); } catch { return undefined; }
+	};
+	const blankParts = arrayFrom(entrySrc, 'BLANK_SESSION_PARTS');
+	const parts = arrayFrom(entrySrc, 'PART_CHUNKS');
+	truthy('⑨ 行为：能从运行 bundle 真编译出两份装载清单', Array.isArray(blankParts) && Array.isArray(parts),
+		JSON.stringify({ blank: blankParts?.length, parts: parts?.length }));
+	truthy('⑨ 行为：hero 与全量装载清单都真含 cv chunk',
+		blankParts?.includes('./client.conversationViews.js') === true
+		&& parts?.includes('./client.conversationViews.js') === true,
+		JSON.stringify({ blankHas: blankParts?.includes('./client.conversationViews.js'), partsHas: parts?.includes('./client.conversationViews.js') }));
+	const extra = Array.isArray(parts) && Array.isArray(blankParts) ? parts.filter(f => blankParts.indexOf(f) < 0) : [];
+	truthy('⑨ 行为：rebind 补装清单按 BLANK 真去重（filter 后无交集且确实少了项）',
+		extra.length > 0 && extra.length < (parts?.length ?? 0)
+		&& extra.every(f => !blankParts.includes(f))
+		&& /PART_CHUNKS\.filter\(\(f\) => BLANK_SESSION_PARTS\.indexOf\(f\) < 0\)/.test(entrySrc),
+		JSON.stringify({ total: parts?.length, extra: extra.length }));
+	truthy('⑨ 静态：hero 入口按 bridge.sessionId 选装载清单',
+		/bridge\.sessionId\s*\?\s*PART_CHUNKS\s*:\s*BLANK_SESSION_PARTS/.test(entrySrc));
+	truthy('⑨ 静态：cv 装载后两个承载面同时恢复：中栏组件登记 + 右栏 open API',
+		/__vssarosPageComponents\[BOT_CONFIG_PAGE_COMP\] = BotConfigPage/.test(cvSrc)
+		&& /w\.__vssarosOpenRightBotSettings = openRight/.test(cvSrc)
+		&& /installRightBotSettings\(ctx\)/.test(cvSrc));
+}
 
 await act(async () => { root.unmount(); relayRoot.unmount(); dockRoot.unmount(); memberRoot.unmount(); });
 rmSync(dir, { recursive: true, force: true });

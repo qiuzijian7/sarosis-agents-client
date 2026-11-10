@@ -319,8 +319,13 @@ check('侧栏 SSR 版（lib/sideview.js）已随工作台删除', !fs.existsSync
 	/* ★ 2026-10-29 真机：飞书里能收到答复，但 Bots 页/工作区只有一串「(未命名会话)」。
 	   判据：派发必须**每个绑定固定一条会话**（imSessions 映射），且只在新建时起名。 */
 	const bindMod = read('lib/bindings.js');
-	check('IM 绑定：目标只剩 agent（dsh 群聊下线 ⇒ targetKind 恒为 agent）',
-		/const targetKind = 'agent';/.test(bindMod) && !/targetKind[^;\n]{0,40}'group'/.test(bindMod));
+	/* ★ 2026-11-10 群聊回归：绑定目标重新支持 group（targetId = roomId），
+	   老数据 / 缺省仍归一成 agent ⇒ 既有 bot 绑定行为不变。 */
+	check('IM 绑定：targetKind 支持 agent/group，缺省归一为 agent，群绑定按 roomId 校验',
+		/const targetKind = pick\('targetKind', \['agent', 'group'\], 'agent'\);/.test(bindMod)
+		&& /binding\.targetKind === 'group'/.test(bindMod)
+		&& /rooms\.isRoom\(binding\.targetId\)/.test(bindMod)
+		&& /rooms\.postToRoom\(targetId, text/.test(bindMod));
 	check('IM 派发：优先复用绑定记住的会话（imSessions.get）',
 		/deps\.imSessions/.test(bindMod) && /sessMap\.get\(config, binding\.id\)/.test(bindMod) && /sessMap\.set\(config, binding\.id, sessionId\)/.test(bindMod));
 	check('IM 派发：会话失效才重建（canDeliver 判活）',
@@ -501,6 +506,8 @@ check('侧栏 SSR 版（lib/sideview.js）已随工作台删除', !fs.existsSync
 		// ★ 2026-11-09：多飞书应用回归（幂等键按应用 / 辅助键隔离 / 锁原子）必须进 CI，
 		//   原来只在文件自身注释里写了跑法 ⇒ 默认 npm run check 根本不跑它。
 		'feishu-multi-app.test.mjs',
+		// ★ 2026-11-10：IM 回复回收（真机「Bot 答了但飞书没收到」）必须进 CI。
+		'im-reply-collector.test.mjs',
 		'host-self-watch.test.mjs', 'rooms.test.mjs', 'rooms-restart.test.mjs',
 		// ★ 2026-11-06：团队总线（含契约修订 2）、团队步骤记忆（模型提炼）、DS Bot 团队离线导入
 		'team-bus.test.mjs', 'step-memory.test.mjs', 'ds-bot-import.test.mjs',
@@ -536,10 +543,61 @@ check('侧栏 SSR 版（lib/sideview.js）已随工作台删除', !fs.existsSync
 		&& /export async function saveBotFeishuApp/.test(credSrc)
 		&& /botFeishuApps: await readBotFeishuApps\(config\)/.test(indexSrc)
 		&& /action === 'set-bot-app'/.test(indexSrc));
-	check('Bot 选的应用要接到入站路由与出站身份（不能只存不用）',
-		/botApps = null/.test(bindingsSrc) && /botApps\[String\(binding\.targetId/.test(bindingsSrc)
-		&& /bindingAppOf\(binding\) \|\|/.test(bindingsSrc)
-		&& /botApps: async \(\) => readBotFeishuApps\(config\)/.test(indexSrc));
+	/* ★ 2026-11-10：应用选择并入 Channel 绑定后，「Bot 级选应用」这层映射退出运行时。
+	   ⚠ 反向断言：Hub 再注入 botApps 会让选「默认应用」的新绑定被旧映射带偏。 */
+	check('飞书应用只按绑定判定：Hub 不许再注入 bot 级映射',
+		!/botApps: async \(\) => readBotFeishuApps\(config\)/.test(indexSrc)
+		&& /botApps = null/.test(bindingsSrc)
+		&& /botApps\[String\(binding\.targetId/.test(bindingsSrc));
+	/* ★ 2026-11-10：内置默认应用对外统一叫「VsSaros助手」；409 报错不许回到旧称或已下线的死指引。 */
+	check('默认飞书应用统一命名为 VsSaros助手',
+		/这是 VsSaros助手/.test(credSrc) && !/这是默认飞书应用/.test(credSrc)
+		&& /Bot 设置 → Channel 绑定/.test(credSrc));
+	/* ★ 2026-11-10 真机「飞书发 test 静默无返回」：派发失败的诊断与可见性不许被回退。 */
+	check('派发失败三态分类 + 已注册 preset 兜底（名单扫描失败不许误报 bot 不存在）',
+		/agent 名单不可用/.test(bindingsSrc) && /scanErrors\.slice\(0, 3\)/.test(bindingsSrc)
+		&& /registeredAgentIds/.test(bindingsSrc) && /registeredAgentIds/.test(indexSrc));
+	check('派发失败必须给 IM 回限流错误提示（不许静默无返回）',
+		/errorNoticeGuard = createLoopGuard/.test(bindingsSrc) && /消息未送达/.test(bindingsSrc)
+		&& /r\.reason === 'dispatch-error'/.test(bindingsSrc));
+	/* ★ 2026-11-10：随包内置飞书应用（VsSaros助手）。
+	   ① 两侧常量逐字一致（SuperAgent 的 feishu-share.ts 与本包 imCredentials.js）——轮换密钥必须同时改；
+	   ② Bots 侧必须有回落链路，否则干净安装连不上、两个下拉也选不到内置应用。 */
+	const builtinBlock = (text) => (/BUNDLED_FEISHU_APP = Object\.freeze\(\{([\s\S]{0,400}?)\}\)/.exec(text) || [, ''])[1];
+	const grabBuiltin = (text) => ({
+		appId: (/appId:\s*'([^']+)'/.exec(text) || [, ''])[1],
+		appSecret: (/appSecret:\s*'([^']+)'/.exec(text) || [, ''])[1],
+	});
+	const sharePath = path.join(ROOT, '..', 'vssaros-superagent', 'dev', 'src', 'sources', 'feishu-share.ts');
+	const here = grabBuiltin(builtinBlock(credSrc));
+	const there = fs.existsSync(sharePath) ? grabBuiltin(builtinBlock(fs.readFileSync(sharePath, 'utf8'))) : null;
+	check('内置飞书应用：agents 与 superagent 两侧常量逐字一致',
+		!!there && !!here.appId && !!here.appSecret
+		&& here.appId === there.appId && here.appSecret === there.appSecret);
+	check('Bots 侧内置回落：补缺字段 + 非默认选中可解析 + GET 下拉列出',
+		/def\.key === 'feishu'/.test(credSrc)
+		&& /String\(merged\.appId\)\.trim\(\) === BUNDLED_FEISHU_APP\.appId/.test(credSrc)
+		&& /merged\.appSecret = BUNDLED_FEISHU_APP\.appSecret/.test(credSrc)
+		&& /want === BUNDLED_FEISHU_APP\.appId/.test(credSrc)
+		&& /function feishuAppsForPicker\(list\)/.test(indexSrc)
+		&& /feishuApps: feishuAppsForPicker\(await describeFeishuApps\(config\)\)/.test(indexSrc));
+	/* ★ 2026-11-10 真机「Bot 答了，飞书没收到」：IM 回复回收分支曾随群聊下线一起被删，
+	   只剩 outbox 写入 / deliverForEntry API / 注释 ⇒ pending 永久堆积、零出站。
+	   ⚠ 钉**调用形态**：只搜标识符会被注释/测试里的名字假绿。 */
+	const relaySrc = fs.readFileSync(path.join(ROOT, 'lib', 'relay.js'), 'utf8');
+	/* ★ 2026-11-10 续：真机「飞书收到两条重复消息」——Host 重启后 seenSeq 归零，
+	   全量事件窗会命中历史 im pending，逐条投递就把同一份答复推了 N 次。
+	   ⚠ 下面同时钉住「只投一次」与「历史条目一并回收」，缺一都会回到重复。 */
+	check('IM 回复回收：同时回收 relay 与 im，且一回合只投递一次',
+		/e\.kind === 'relay' \|\| e\.kind === 'im'/.test(relaySrc)
+		&& /finalAssistantContent\(events\)/.test(relaySrc)
+		&& /const target = imEntries\.find\(e => e\.messageId === lastHitId\)/.test(relaySrc)
+		&& /const stale = imEntries\.filter\(e => e !== target\)/.test(relaySrc)
+		&& /await hub\.deliverForEntry\(target, content\.text, content\.images\)/.test(relaySrc)
+		&& /delivered\.push\(target\.messageId, \.\.\.stale\.map/.test(relaySrc)
+		/* ⚠ 只钉通用 `outboxMarkUnknown` 会假绿（relay 分支也调它）：再钉 IM 失败载荷形状。 */
+		&& /\{ kind: 'im', bindingId: target\.bindingId, text: content\.text, images: content\.images \}/.test(relaySrc)
+		&& /outboxResolve\(config, session\.id, delivered\)/.test(relaySrc));
 }
 
 /* ── 群聊功能整体下线（★ 2026-11-03 用户要求「移除群聊功能和 UI 入口」）──────────────────
@@ -578,6 +636,13 @@ check('侧栏 SSR 版（lib/sideview.js）已随工作台删除', !fs.existsSync
 	check('群聊运行时装在顶层角色（installRooms）且向团队总线提供建群（provideGroups）',
 		/installRooms\(ctx, state\.rooms\)/.test(idx) && /teamBus\(\)\.provideGroups\(state\.rooms\)/.test(idx));
 	const roomsSrc = strip(read('lib/rooms.js'));
+	// ★ 2026-11-10 群聊 FIX 1–3 静态钉（选中态转投 / 分工公告 / 会话失效兜底）
+	check('群聊选中态：roomsApi 支持 select、installRooms 只在选中时放宽转投',
+		/action === 'select'/.test(roomsSrc) && /rooms\.selectedRoom\?\.\(\)/.test(roomsSrc) && /if \(selected\)/.test(roomsSrc));
+	check('群会话失效自愈：retain 重试 + inbox 兜底，不抛 503 吞消息',
+		/sc\.retain\(sessionId\)/.test(roomsSrc) && /deferred: true/.test(roomsSrc)
+		&& /api\.noteUserMessage\(room\.id, body\)/.test(roomsSrc) && /goal: null/.test(roomsSrc));
+
 	check('@群 / 引用会话桥：session-reference ⇒ postToRoom ⇒ 群会话 user/message，唤醒 group_relay',
 		/ROOM_REFERENCE_KIND/.test(roomsSrc) && /postToRoom\(/.test(roomsSrc)
 		&& /rooms\.postToRoom\(ref\.roomId/.test(roomsSrc) && /form: ROOM_POST_FORM/.test(roomsSrc));
@@ -654,6 +719,28 @@ check('侧栏 SSR 版（lib/sideview.js）已随工作台删除', !fs.existsSync
 		/preview\.conflict \? 409 : 400/.test(teamSrc));
 	check('创建链有函数级 + HTTP 级两层回归测试',
 		fs.existsSync(path.join(HERE, 'create.test.mjs')) && fs.existsSync(path.join(HERE, 'create-http.test.mjs')));
+}
+
+/* ── ★ 2026-11-10：飞书应用归属声明（SuperAgent 接管默认应用） ───────────────
+   同一条飞书事件经共享总线扇出给 router 与 SuperAgent。router 对「本就不该由自己
+   派发」的应用会记成 unbound 死信，设置页因此显示「失败 N」和必然 404 的加白按钮。
+   skipAppIds 把「归 SuperAgent」落成配置；skip-app 不在 DEAD_LETTER_REASONS 里。 */
+{
+	const inboundStateSrc = read('lib/imInboundState.js');
+	const hubSrc = read('lib/bindings.js');
+	const hostSrc = read('lib/index.js');
+	check('归属声明：readSkipAppIds 可读，且 writeState 保留 skipAppIds（UI 开关不抹掉）',
+		/export async function readSkipAppIds/.test(inboundStateSrc)
+		&& /skipAppIds\.length \? \{ skipAppIds \}/.test(inboundStateSrc)
+		&& (inboundStateSrc.match(/await readSkipAppIds\(config\)/g) ?? []).length >= 2);
+	check('归属声明：router 在 noteRecent 之后按 skipAppIds 早返回 skip-app',
+		/reason: 'skip-app', key/.test(hubSrc)
+		&& /deps\.skipAppIds/.test(hubSrc)
+		&& hubSrc.indexOf('noteRecent({ ...msg, platform })') > 0
+		&& hubSrc.indexOf('noteRecent({ ...msg, platform })') < hubSrc.indexOf("reason: 'skip-app', key"));
+	check('归属声明：host 把 skipAppIds 注入 hub',
+		/import \{[^}]*readSkipAppIds[^}]*\} from '\.\/imInboundState\.js'/.test(hostSrc)
+		&& /skipAppIds: async \(\) => readSkipAppIds\(config\)/.test(hostSrc));
 }
 
 console.log(`\n[agents] ${pass} passing / ${fail} failing`);

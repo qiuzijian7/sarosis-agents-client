@@ -2,7 +2,13 @@
 //
 // 流程：发送时登记 outbox pending（消息 id 为锚）→ 目标会话的 `agent/turn-stopping`
 // （回合即将关闭、串行 ✓，与 vssaros-memory 的自动沉淀同一个钩子 ✓）→ 验证这回合真消费了我们的消息
-// → 取最终文本 → `followup` 回发送方会话（独立回合，不插队）。
+// → 取最终内容 → 按 pending 的 kind 分流：
+//   · `relay` ⇒ `followup` 回发送方会话（独立回合，不插队）
+//   · `im`    ⇒ `bindingHub.deliverForEntry` 推回该绑定对应的 IM 会话（飞书/Telegram/…）
+//
+// ★ 2026-11-10：`im` 这条曾随「群聊整体下线」一起被删掉，导致 Bot 答了、outbox 永远 pending、
+//   飞书收不到任何回复（真机日志：WS 收到事件 → 会话 outputTokens 有值 → 无任何出站记录）。
+//   outbox 写入、`deliverForEntry` API、`finalAssistantContent` 都还在，缺的只是这里的回收分支。
 //
 // ⚠ 队列真源在 **lib/outbox.js**（2026-10-16 二期起落盘，Host 重启读回 ✓；本文件的模块级 PENDING
 //    已撤）。本模块只管"回收判定 + 投递"，不管存储 ✓。
@@ -11,7 +17,7 @@
 // ⚠ relay 只装在**顶层角色**（宿主面看得到全部会话的事件）；toolsOnly 角色不装（它的事件视野未证 ✗）。
 
 import { randomUUID } from 'node:crypto';
-import { AGENT_REPLY_KIND, finalAssistantText, findOurSplices, replyText } from './core/relay.js';
+import { AGENT_REPLY_KIND, finalAssistantContent, finalAssistantText, findOurSplices, replyText } from './core/relay.js';
 import { readLiveSession } from './live.js';
 import { outboxMarkUnknown, outboxNote, outboxPendingFor, outboxResolve } from './outbox.js';
 import { agentsRootOf, scanAgents } from './store.js';
@@ -51,7 +57,8 @@ export function installRelay(ctx, config, state) {
 		if (!session?.id || typeof session.snapshotEvents !== 'function') {
 			return;
 		}
-		const pending = outboxPendingFor(session.id).filter(e => e.kind === 'relay');
+		/* ★ 2026-11-10：`kind:'im'` 也必须在这里回收（见文件头）。 */
+		const pending = outboxPendingFor(session.id).filter(e => e.kind === 'relay' || e.kind === 'im');
 		if (pending.length === 0) {
 			return; // 没人等它回：不看事件（省一次全窗扫描 ✓）
 		}
@@ -68,30 +75,87 @@ export function installRelay(ctx, config, state) {
 		if (hits.length === 0) {
 			return; // 这回合没消费我们的消息（比如用户自己开的回合）⇒ pending 留着 ✓
 		}
-		const final = finalAssistantText(events);
-		const responderName = await displayNameOf(config, session.id);
 		const answered = new Set(hits.map(m => m.id));
-		for (const entry of pending.filter(p => answered.has(p.messageId))) {
-			// 回传消息：回传**不登记 pending** ⇒ 对方的下一回合不会再触发回传（结构上断掉 ping-pong ✓）
-			const resolvedPayload = {
-				text: replyText({ responderName, responderSessionId: session.id, final }),
-				source: { kind: AGENT_REPLY_KIND, from: session.id, to: entry.from, inReplyTo: entry.messageId, hop: entry.hop },
-			};
-			const sender = entry.from ? state.agents?.get?.(entry.from) : undefined;
-			if (!sender || typeof sender.followup !== 'function') {
-				// 投递失败 ⇒ unknown-outcome（不删不自动重发 ✓；此前是 warn 后被回收删掉 = 静默丢 ✗）
-				console.warn(`[vssaros-agents] 回传投递失败（发送方会话不在运行）：${entry.from ?? '(无 id)'} ⇒ 标 unknown-outcome`);
-				outboxMarkUnknown(config, session.id, entry.messageId, resolvedPayload, '投递时发送方会话不在运行');
-				continue;
+		const matched = pending.filter(p => answered.has(p.messageId));
+		/** 只有真正投递出去的 messageId 才 resolve；失败标 unknown，绝不静默删。 */
+		const delivered = [];
+
+		/* ① relay：答复 followup 回发送方会话（既有行为逐字保留）。 */
+		const relayEntries = matched.filter(e => e.kind === 'relay');
+		if (relayEntries.length) {
+			const final = finalAssistantText(events);
+			const responderName = await displayNameOf(config, session.id);
+			for (const entry of relayEntries) {
+				// 回传消息：回传**不登记 pending** ⇒ 对方的下一回合不会再触发回传（结构上断掉 ping-pong ✓）
+				const resolvedPayload = {
+					text: replyText({ responderName, responderSessionId: session.id, final }),
+					source: { kind: AGENT_REPLY_KIND, from: session.id, to: entry.from, inReplyTo: entry.messageId, hop: entry.hop },
+				};
+				const sender = entry.from ? state.agents?.get?.(entry.from) : undefined;
+				if (!sender || typeof sender.followup !== 'function') {
+					// 投递失败 ⇒ unknown-outcome（不删不自动重发 ✓；此前是 warn 后被回收删掉 = 静默丢 ✗）
+					console.warn(`[vssaros-agents] 回传投递失败（发送方会话不在运行）：${entry.from ?? '(无 id)'} ⇒ 标 unknown-outcome`);
+					outboxMarkUnknown(config, session.id, entry.messageId, resolvedPayload, '投递时发送方会话不在运行');
+					continue;
+				}
+				sender.followup({
+					id: randomUUID(),
+					role: 'user',
+					content: [{ type: 'text', text: resolvedPayload.text }],
+					source: resolvedPayload.source,
+				});
+				delivered.push(entry.messageId);
 			}
-			sender.followup({
-				id: randomUUID(),
-				role: 'user',
-				content: [{ type: 'text', text: resolvedPayload.text }],
-				source: resolvedPayload.source,
-			});
 		}
-		// 回收成功投递的（unknown 条目 status 已不是 pending ⇒ resolve 本来就删不动它 ✓）
-		outboxResolve(config, session.id, [...answered]);
+
+		/* ② im：把最终答复（带图）推回该绑定对应的 IM 会话。
+		   ★ 2026-11-10：一个回合**只投一次**。Host 重启后 `seenSeq` 归零，
+		     `snapshotEvents(0, to)` 会返回整个历史，`findOurSplices` 可能同时命中多条
+		     历史 im pending（例如上一条没回的 Test）。逐条投递会把同一份最终答复推 N 次
+		     （真机：飞书收到两条重复消息）。⇒ 以本回合最后消费的那条为准投一次，
+		     其余命中的条目一并回收，既不重复推、也不留到下次再被全量窗口命中。 */
+		const imEntries = matched.filter(e => e.kind === 'im');
+		if (imEntries.length) {
+			const lastHitId = hits[hits.length - 1]?.id;
+			const target = imEntries.find(e => e.messageId === lastHitId) ?? imEntries[imEntries.length - 1];
+			const stale = imEntries.filter(e => e !== target);
+			const content = finalAssistantContent(events);
+			const hub = state.bindingHub;
+			if (!hub || typeof hub.deliverForEntry !== 'function') {
+				console.warn(`[vssaros-agents] IM 回复回收失败：bindingHub 未就绪（会话 ${session.id}）`);
+			} else if (!content) {
+				const why = '回合没有最终答复（assistant 无文本/图片产出）';
+				console.warn(`[vssaros-agents] IM 回复回收跳过：${why}（会话 ${session.id}）`);
+				for (const entry of imEntries) {
+					outboxMarkUnknown(config, session.id, entry.messageId,
+						{ kind: 'im', bindingId: entry.bindingId }, why);
+				}
+			} else {
+				let r;
+				try {
+					r = await hub.deliverForEntry(target, content.text, content.images);
+				} catch (e) {
+					r = { ok: false, error: String(e?.message ?? e) };
+				}
+				if (r?.ok) {
+					delivered.push(target.messageId, ...stale.map(e => e.messageId));
+				} else {
+					const why = String(r?.error || r?.reason || '未知原因');
+					console.warn(`[vssaros-agents] IM 回复投递失败（绑定 ${target.bindingId ?? ''}）：${why}`);
+					outboxMarkUnknown(config, session.id, target.messageId,
+						{ kind: 'im', bindingId: target.bindingId, text: content.text, images: content.images }, why);
+					for (const entry of stale) {
+						outboxMarkUnknown(config, session.id, entry.messageId,
+							{ kind: 'im', bindingId: entry.bindingId },
+							'同回合已有另一条 IM 消息触发答复，本条不重复投递');
+					}
+				}
+			}
+		}
+
+		// 只回收成功投递的（unknown 条目 status 已不是 pending ⇒ resolve 本来就删不动它 ✓）
+		if (delivered.length) {
+			outboxResolve(config, session.id, delivered);
+		}
 	});
 }

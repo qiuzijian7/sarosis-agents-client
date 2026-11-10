@@ -1480,7 +1480,7 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 				err ? react.createElement("div", { key: "e", style: C.err }, err) : null,
 			]));
 		}
-		/** 群设置的改动（只带改了的字段）。纯函数。 */
+		/** 群设置的改动（只带改了的字段）。纯函数；新增字段按同源 diff。 */
 		function roomPatch(room, draft) {
 			const out = {};
 			if (!room || !draft) { return out; }
@@ -1491,17 +1491,81 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 			if ((draft.admin || null) !== (room.admin || null)) { out.admin = draft.admin; }
 			const ids = (room.members || []).map((m) => m.id);
 			if (ids.join("\n") !== (draft.members || []).join("\n")) { out.members = draft.members.slice(); }
+			// ★ 2026-11-10 群设置弹层复刻：四档唤醒策略 / 阈值 / 头像 / 加入需确认 / 成员上限
+			const wake = String(draft.wakeMode || "");
+			const oldWake = String(room.wakeMode || "");
+			if (wake && wake !== oldWake) { out.wakeMode = wake; }
+			if (JSON.stringify(draft.wake || {}) !== JSON.stringify(room.wake || {})) { out.wake = draft.wake; }
+			if (String(draft.avatar || "") !== String(room.avatar || "")) { out.avatar = draft.avatar || ""; }
+			if (!!draft.requireApproval !== !!room.requireApproval) { out.requireApproval = !!draft.requireApproval; }
+			if (Number(draft.memberMax || 0) !== Number(room.memberMax || 0)) { out.memberMax = Number(draft.memberMax || 0) || undefined; }
 			return out;
 		}
-		const ROOM_MODE_LABELS = [
-			{ id: "admin", label: "管理员主持", hint: "普通消息先给管理员，由管理员用 @名字 点名其他成员。" },
-			{ id: "everyone", label: "所有人", hint: "每位成员轮流回答，管理员先说。" },
+		/** 四档唤醒策略（DS Bot 的 all / mentions / digest / silent 同款文案）。 */
+		const WAKE_MODE_OPTIONS = [
+			{ id: "all", label: "全员派发", hint: "每条消息都派给所有成员，适合头脑风暴" },
+			{ id: "mentions", label: "仅 @ 派发", hint: "只发被 @ 的成员；一个都没 @ 就留一条系统提示、不派发" },
+			{ id: "digest", label: "汇总派发", hint: "消息先攒着，满 N 条再汇总派发一次" },
+			{ id: "silent", label: "静默收件", hint: "只进群记录，不唤醒任何成员（@ 也不唤醒）" },
 		];
+		/** 旧两档 → 四档（与后端 normalizeWakeMode 同口径）。 */
+		function normWakeMode(m) {
+			const s = String(m || "");
+			if (s === "admin" || s === "open") { return "mentions"; }
+			if (s === "everyone") { return "all"; }
+			return WAKE_MODE_OPTIONS.some((o) => o.id === s) ? s : "mentions";
+		}
+		/**
+		 * 群设置弹层样式（逐项对齐 `poc/dsh-p0/mockups/group-chat.html` L146-174）：
+		 * 440px / radius 10 / 遮罩 .5 / 头部与底栏分隔线 / .opt 圆点卡片 / .btn 三态。
+		 * 颜色全部走 dsw alias 令牌（跟随 dsh 明暗主题），不写死近灰不透明表面色。
+		 */
+		const D = {
+			mask: { position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 120 },
+			dlg: { width: 440, maxWidth: "92vw", maxHeight: "86vh", display: "flex", flexDirection: "column",
+				background: "var(--dsw-alias-bg-layer-2, #252526)", border: "1px solid var(--dsw-alias-border-l2, #4a4a4a)",
+				borderRadius: 10, boxShadow: "0 16px 48px rgba(0,0,0,.55)", color: "var(--dsw-alias-label-primary, #cccccc)", fontSize: 13 },
+			head: { padding: "12px 14px", fontSize: 13, borderBottom: "1px solid var(--dsw-alias-border-l1, #3c3c3c)", display: "flex", alignItems: "center", gap: 8, flex: "none" },
+			body: { padding: "12px 14px", overflow: "auto", flex: "1 1 auto", minHeight: 0 },
+			foot: { padding: "10px 14px", borderTop: "1px solid var(--dsw-alias-border-l1, #3c3c3c)", display: "flex", gap: 8, alignItems: "center", flex: "none" },
+			field: { marginBottom: 10 },
+			label: { display: "block", fontSize: 11.5, color: "var(--dsw-alias-label-tertiary, #9d9d9d)", marginBottom: 4 },
+			input: { width: "100%", boxSizing: "border-box", background: "var(--dsw-alias-bg-layer-1, #1e1e1e)",
+				border: "1px solid var(--dsw-alias-border-l1, #3c3c3c)", borderRadius: 6, padding: "6px 8px", color: "inherit", outline: "none", fontSize: 12 },
+			btn: { padding: "5px 12px", borderRadius: 6, border: "1px solid var(--dsw-alias-border-l2, #4a4a4a)", background: "transparent", color: "inherit", fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" },
+			primary: { background: "var(--dsw-alias-brand-primary, #0e639c)", borderColor: "transparent", color: "#fff" },
+			danger: { background: "#a1262a", borderColor: "transparent", color: "#fff" },
+			opt: { display: "flex", gap: 8, alignItems: "flex-start", padding: "7px 8px", border: "1px solid var(--dsw-alias-border-l1, #3c3c3c)", borderRadius: 7, marginBottom: 6, cursor: "pointer", width: "100%", textAlign: "left", background: "transparent", color: "inherit" },
+			optOn: { borderColor: "var(--dsw-alias-brand-primary, #0e639c)", background: "rgba(14,99,156,.12)" },
+			rd: { width: 14, height: 14, borderRadius: "50%", border: "1px solid var(--dsw-alias-border-l2, #4a4a4a)", flex: "none", marginTop: 2, position: "relative" },
+			rdDot: { position: "absolute", inset: 3, borderRadius: "50%", background: "var(--dsw-alias-brand-primary, #0e639c)" },
+			optTitle: { fontSize: 12, fontWeight: 600 },
+			optDesc: { fontSize: 11, color: "var(--dsw-alias-label-dimmed, #6f6f6f)" },
+			note: { fontSize: 11, color: "var(--dsw-alias-label-dimmed, #6f6f6f)", marginTop: 6 },
+			avatar: { width: 36, height: 36, borderRadius: 9, flex: "none", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", fontSize: 12, fontWeight: 600, color: "#fff" },
+			spacer: { flex: "1 1 auto" },
+			badge: { fontSize: 11, padding: "1px 6px", borderRadius: 5, border: "1px solid var(--dsw-alias-border-l2, #4a4a4a)" },
+		};
 
-		/** 「设置」页签里的群设置卡。 */
+		/**
+		 * ★ 2026-11-10 群设置弹层（复刻 `poc/dsh-p0/mockups/group-chat.html` L321-373 + L146-174）。
+		 * `dialog:true`（中栏独立页 / 右栏）⇒ 全屏遮罩 + 440px 居中对话框；会话内「设置」页签 ⇒ 同款卡片。
+		 * 新增：四档唤醒策略、群头像、加入需确认 / 待确认区、清空记录、解散群聊。
+		 * ⚠ 保留历史 data 锚点（room-settings / room-notice / room-member / room-save）供守卫断言。
+		 */
 		function RoomSettingsCard(props) {
 			const roomId = props.roomId || "";
 			const say = props.say;
+			const dialog = props.dialog === true;
+			/**
+			 * ★ 2026-11-10：右栏页签（dialog=false / embedded）里必须**内联铺满**，
+			 *   不能再用 440px 固定宽 + 阴影（会溢出 380px 右栏，还盖住整个窗口）。
+			 *   中栏独立页仍用 D.dlg + 遮罩（DS Bot 弹层基线）。
+			 */
+			const dlgStyle = dialog ? D.dlg : Object.assign({}, D.dlg, {
+				width: "100%", maxWidth: "100%", maxHeight: "none", height: "100%",
+				border: 0, borderRadius: 0, boxShadow: "none", background: "transparent",
+			});
 			const [state, reload] = useLoader(() => getJson(ROOMS_API + "?id=" + encodeURIComponent(roomId)), [roomId]);
 			const [roster] = useLoader(() => getJson("/x/agents/api/home").then((j) => (Array.isArray(j && j.agents) ? j.agents : [])), []);
 			const room = state.data && state.data.room ? state.data.room : null;
@@ -1510,16 +1574,42 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 			const [err, setErr] = react.useState("");
 			const [confirmDel, setConfirmDel] = react.useState(false);
 			const [adding, setAdding] = react.useState("");
+			const closedRef = react.useRef(false);
+			const fileRef = react.useRef(null);
+			const close = () => {
+				if (props && typeof props.onClose === "function") { try { props.onClose(); return; } catch { /* 回落 */ } }
+				try {
+					const fn = typeof window !== "undefined" ? window.__vssarosClosePageTab : null;
+					if (typeof fn === "function") { fn("room-settings:" + roomId); return; }
+				} catch { /* noop */ }
+				closedRef.current = true;
+				setDraft(null);
+			};
+			react.useEffect(() => {
+				if (!dialog || typeof document === "undefined") { return undefined; }
+				const onKey = (e) => { if (e.key === "Escape") { close(); } };
+				document.addEventListener("keydown", onKey, true);
+				return () => { try { document.removeEventListener("keydown", onKey, true); } catch { /* noop */ } };
+			}, [dialog, roomId]);
 			react.useEffect(() => {
 				if (!room) { return; }
-				setDraft({ name: room.named === false ? "" : room.name, notice: room.notice || "", mode: room.mode, admin: room.admin,
-					members: (room.members || []).map((m) => m.id) });
+				closedRef.current = false;
+				setDraft({
+					name: room.named === false ? "" : room.name, notice: room.notice || "", mode: room.mode, admin: room.admin,
+					members: (room.members || []).map((m) => m.id),
+					wakeMode: normWakeMode(room.wakeMode || room.mode),
+					wake: { count: Number(room.wake && room.wake.count) || 5, intervalSeconds: Number(room.wake && room.wake.intervalSeconds) || 30 },
+					avatar: String(room.avatar || ""),
+					requireApproval: room.requireApproval === true,
+					memberMax: Number(room.memberMax) || 0,
+				});
 			}, [room && JSON.stringify(room)]);
 			if (!room || !draft) {
-				return react.createElement("div", { style: C.card, "data-vssaros-room-settings": "loading" }, kids([
-					react.createElement("div", { key: "t", style: C.title }, "群设置"),
-					react.createElement("div", { key: "s", style: Object.assign({}, C.sub, { marginTop: 6 }) }, state.error ? "读取失败：" + state.error : "读取中…"),
+				const loading = react.createElement("div", { style: dlgStyle, "data-vssaros-room-settings": "loading" }, kids([
+					react.createElement("div", { key: "t", style: D.head }, "群设置"),
+					react.createElement("div", { key: "s", style: Object.assign({}, D.body, D.note) }, state.error ? "读取失败：" + state.error : "读取中…"),
 				]));
+				return dialog ? react.createElement("div", { style: D.mask, "data-vssaros-room-dialog": roomId }, loading) : loading;
 			}
 			const nameOf = (id) => {
 				const hit = (room.members || []).filter((m) => m.id === id)[0] || ((roster.data || []).filter((a) => a && a.id === id)[0]);
@@ -1535,82 +1625,197 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 				);
 			};
 			const save = () => post(Object.assign({ action: "update" }, patch), () => { if (say) { say("群设置已保存"); } });
+			const reset = () => {
+				setDraft({
+					name: room.named === false ? "" : room.name, notice: room.notice || "", mode: room.mode, admin: room.admin,
+					members: (room.members || []).map((m) => m.id),
+					wakeMode: normWakeMode(room.wakeMode || room.mode),
+					wake: { count: Number(room.wake && room.wake.count) || 5, intervalSeconds: Number(room.wake && room.wake.intervalSeconds) || 30 },
+					avatar: String(room.avatar || ""), requireApproval: room.requireApproval === true,
+					memberMax: Number(room.memberMax) || 0,
+				});
+				setErr("");
+			};
+			const set = (key, value) => setDraft(Object.assign({}, draft, { [key]: value }));
+			const field = (label, el, key) => react.createElement("div", { key: "f:" + (key || label), style: D.field }, kids([
+				react.createElement("div", { key: "l", style: D.label }, label), el]));
+			/** 群头像：居中裁方 128×128，data URI；只收 png/jpeg/webp，≤96KB（超了降质量）。 */
+			const onAvatar = (e) => {
+				const file = e.target.files && e.target.files[0];
+				try { e.target.value = ""; } catch { /* 允许重复选同一文件 */ }
+				if (!file) { return; }
+				if (!/^image\/(png|jpeg|webp)$/.test(String(file.type || ""))) { setErr("群头像只收 png / jpeg / webp"); return; }
+				try {
+					const reader = new FileReader();
+					reader.onerror = () => setErr("读不出这张图");
+					reader.onload = () => {
+						const img = new Image();
+						img.onerror = () => setErr("读不出这张图（格式不支持？）");
+						img.onload = () => {
+							const s = Math.min(img.width, img.height);
+							const cv = document.createElement("canvas");
+							cv.width = 128; cv.height = 128;
+							const g = cv.getContext("2d");
+							if (g) { g.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, 128, 128); }
+							let uri = cv.toDataURL("image/png");
+							if (uri.length > 131072 + 64) { uri = cv.toDataURL("image/jpeg", 0.7); }
+							if (uri.length > 131072 + 64) { setErr("群头像超过 96KB，请换一张更小的图"); return; }
+							set("avatar", uri); setErr("");
+						};
+						img.src = String(reader.result || "");
+					};
+					reader.readAsDataURL(file);
+				} catch (e2) { setErr("头像处理失败：" + String((e2 && e2.message) || e2)); }
+			};
 			const candidates = (roster.data || []).filter((a) => a && a.registered !== false && !a.external && draft.members.indexOf(a.id) < 0);
-			const field = (label, el) => react.createElement("div", { key: "f:" + label, style: { marginTop: 8 } }, kids([
-				react.createElement("div", { key: "l", style: Object.assign({}, C.tiny, { marginBottom: 3 }) }, label), el]));
-			return react.createElement("div", { style: C.card, "data-vssaros-room-settings": roomId }, kids([
-				react.createElement("div", { key: "t", style: C.row }, kids([
-					react.createElement("span", { key: "a", style: C.title }, "群设置"),
-					react.createElement("span", { key: "b", style: C.badge }, draft.members.length + " 位成员"),
-					room.admin ? react.createElement("span", { key: "c", style: C.badge }, "管理员 " + nameOf(room.admin)) : null,
-				])),
+			const pending = Array.isArray(room.pending) ? room.pending : [];
+			const body = react.createElement("div", { key: "b", style: D.body }, kids([
 				field("群名", react.createElement("input", {
-					key: "n", style: Object.assign({}, C.input, { width: "100%", boxSizing: "border-box" }), value: draft.name, maxLength: 60,
-					placeholder: "留空 = 按成员命名", "data-vssaros-room-name": "1", disabled: busy,
-					onChange: (e) => setDraft(Object.assign({}, draft, { name: e.target.value })),
-				})),
+					key: "n", style: D.input, value: draft.name, maxLength: 60, placeholder: "留空 = 按成员命名",
+					"data-vssaros-room-name": "1", disabled: busy,
+					onChange: (e) => set("name", e.target.value),
+				}), "name"),
+				react.createElement("div", { key: "approval", style: D.field }, kids([
+					react.createElement("label", { key: "l", style: Object.assign({}, D.label, { display: "flex", alignItems: "center", gap: 7, cursor: "pointer" }) }, kids([
+						react.createElement("input", { key: "c", type: "checkbox", checked: draft.requireApproval, disabled: busy,
+							style: { width: "auto", margin: 0 }, "data-vssaros-room-approval": "1",
+							onChange: (e) => set("requireApproval", e.target.checked) }),
+						react.createElement("span", { key: "t" }, "加入需确认"),
+					])),
+					react.createElement("div", { key: "n", style: D.note }, "打开后：被邀请的成员先进「待确认」区，你点 ✓ 才真正进群（防误拉）。"),
+				])),
+				field("群头像（方形）", react.createElement("div", { key: "a", style: { display: "flex", gap: 10, alignItems: "center" } }, kids([
+					react.createElement("span", { key: "v", style: Object.assign({}, D.avatar, { background: "var(--dsw-alias-brand-primary, #4d7cfe)" }),
+						"data-vssaros-room-avatar": "1" }, draft.avatar
+						? react.createElement("img", { src: draft.avatar, alt: "群头像", style: { width: "100%", height: "100%", objectFit: "cover", display: "block" } })
+						: String(room.name || "群").slice(0, 1)),
+					react.createElement("input", { key: "f", type: "file", accept: "image/png,image/jpeg,image/webp", ref: fileRef,
+						style: { display: "none" }, "data-vssaros-room-avatar-file": "1", onChange: onAvatar }),
+					react.createElement("button", { key: "p", type: "button", style: D.btn, disabled: busy, "data-act": "room-avatar-pick",
+						onClick: () => { if (fileRef.current && typeof fileRef.current.click === "function") { fileRef.current.click(); } } }, "选择图片…"),
+					react.createElement("button", { key: "x", type: "button", style: D.btn, disabled: busy || !draft.avatar, "data-act": "room-avatar-clear",
+						onClick: () => set("avatar", "") }, "移除"),
+				])), "avatar"),
+				react.createElement("div", { key: "an", style: D.note }, "居中裁成方形并缩到 128×128；只收 png/jpeg/webp 且 ≤96KB（超了自动降质量重压）。"),
 				field("群公告（每位成员发言前都会读到的共同说明）", react.createElement("textarea", {
-					key: "o", style: Object.assign({}, C.input, { width: "100%", boxSizing: "border-box", minHeight: 64, resize: "vertical" }), value: draft.notice,
+					key: "o", style: Object.assign({}, D.input, { minHeight: 56, resize: "vertical" }), value: draft.notice,
 					maxLength: 2000, "data-vssaros-room-notice": "1", disabled: busy,
-					onChange: (e) => setDraft(Object.assign({}, draft, { notice: e.target.value })),
+					onChange: (e) => set("notice", e.target.value),
+				}), "notice"),
+				react.createElement("div", { key: "wakeLabel", style: Object.assign({}, D.label, { marginTop: 10, marginBottom: 6 }) }, "唤醒策略"),
+				react.createElement("div", { key: "wake", style: { marginBottom: 6 } }, WAKE_MODE_OPTIONS.map((m) => {
+					const on = draft.wakeMode === m.id;
+					return react.createElement("button", {
+						key: m.id, type: "button", style: Object.assign({}, D.opt, on ? D.optOn : null),
+						"data-vssaros-room-wake": m.id, "aria-pressed": on ? "true" : "false",
+						onClick: () => set("wakeMode", m.id),
+					}, kids([
+						react.createElement("span", { key: "r", style: Object.assign({}, D.rd, on ? { borderColor: "var(--dsw-alias-brand-primary, #0e639c)" } : null) },
+							on ? react.createElement("span", { style: D.rdDot }) : null),
+						react.createElement("span", { key: "t" }, kids([
+							react.createElement("div", { key: "b", style: D.optTitle }, m.label),
+							react.createElement("div", { key: "d", style: D.optDesc }, m.hint),
+						])),
+					]));
 				})),
-				field("谁来回答", react.createElement("div", { key: "m", style: C.col }, ROOM_MODE_LABELS.map((m) => react.createElement("label", {
-					key: m.id, style: Object.assign({}, C.row, { cursor: "pointer" }), "data-vssaros-room-mode": m.id,
-				}, kids([
-					react.createElement("input", { key: "r", type: "radio", name: "room-mode-" + roomId, checked: draft.mode === m.id, disabled: busy,
-						onChange: () => setDraft(Object.assign({}, draft, { mode: m.id })) }),
-					react.createElement("span", { key: "l" }, m.label),
-					react.createElement("span", { key: "h", style: C.tiny }, m.hint),
-				]))))),
-				field("成员", react.createElement("ul", { key: "ms", style: C.list }, draft.members.map((id) => react.createElement("li", {
-					key: id, style: Object.assign({}, C.item, C.row), "data-vssaros-room-member": id,
-				}, kids([
-					react.createElement("span", { key: "n", style: C.grow }, nameOf(id)),
-					draft.admin === id ? react.createElement("span", { key: "a", style: C.badgeOn }, "管理员")
-						: react.createElement("button", { key: "s", type: "button", style: C.btn, disabled: busy,
-							onClick: () => setDraft(Object.assign({}, draft, { admin: id })) }, "设为管理员"),
-					draft.members.length > 2 ? react.createElement("button", { key: "x", type: "button", style: C.btn, disabled: busy, "data-act": "room-member-remove",
-						onClick: () => {
-							const members = draft.members.filter((m) => m !== id);
-							setDraft(Object.assign({}, draft, { members, admin: draft.admin === id ? members[0] : draft.admin }));
-						} }, "移出") : null,
-				]))))),
-				candidates.length ? react.createElement("div", { key: "add", style: Object.assign({}, C.row, { marginTop: 6 }) }, kids([
-					react.createElement("select", { key: "s", style: C.input, value: adding, "data-vssaros-room-add": "1", disabled: busy,
+				draft.wakeMode === "digest" ? react.createElement("div", { key: "wakeBox", style: { display: "flex", gap: 8, marginTop: 8 },
+					"data-vssaros-room-wake-box": "1" }, kids([
+					react.createElement("div", { key: "c", style: { flex: 1 } }, kids([
+						react.createElement("div", { key: "l", style: D.label }, "条数（1–100）"),
+						react.createElement("input", { key: "i", type: "number", min: 1, max: 100, style: D.input, value: draft.wake.count,
+							"data-vssaros-room-wake-count": "1", disabled: busy,
+							onChange: (e) => set("wake", Object.assign({}, draft.wake, { count: e.target.value })) }),
+					])),
+					react.createElement("div", { key: "s", style: { flex: 1 } }, kids([
+						react.createElement("div", { key: "l", style: D.label }, "最长等待（秒）"),
+						react.createElement("input", { key: "i", type: "number", min: 1, max: 3600, style: D.input, value: draft.wake.intervalSeconds,
+							"data-vssaros-room-wake-interval": "1", disabled: busy,
+							onChange: (e) => set("wake", Object.assign({}, draft.wake, { intervalSeconds: e.target.value })) }),
+					])),
+				])) : null,
+				react.createElement("div", { key: "wakeNote", style: D.note }, "四档名与 DeepSeekBot 的 all / mentions / digest / silent 一一对应；旧值 admin → mentions、everyone → all 自动归一化。"),
+				field("成员（" + draft.members.length + " 位）", react.createElement("ul", { key: "ms", style: { listStyle: "none", margin: 0, padding: 0 } },
+					draft.members.map((id) => react.createElement("li", {
+						key: id, style: Object.assign({}, D.opt, { alignItems: "center", marginBottom: 4, cursor: "default" }),
+						"data-vssaros-room-member": id,
+					}, kids([
+						react.createElement("span", { key: "n", style: { flex: "1 1 auto" } }, nameOf(id)),
+						draft.admin === id ? react.createElement("span", { key: "a", style: D.badge }, "管理员")
+							: react.createElement("button", { key: "s", type: "button", style: D.btn, disabled: busy,
+								onClick: () => set("admin", id) }, "设为管理员"),
+						draft.members.length > 2 ? react.createElement("button", { key: "x", type: "button", style: D.btn, disabled: busy, "data-act": "room-member-remove",
+							onClick: () => {
+								const members = draft.members.filter((m) => m !== id);
+								setDraft(Object.assign({}, draft, { members, admin: draft.admin === id ? members[0] : draft.admin }));
+							} }, "移出") : null,
+					])))), "members"),
+				pending.length ? field("待确认", react.createElement("ul", { key: "pd", style: { listStyle: "none", margin: 0, padding: 0 } },
+					pending.map((id) => react.createElement("li", { key: id, style: Object.assign({}, D.opt, { alignItems: "center", marginBottom: 4, cursor: "default" }),
+						"data-vssaros-room-pending": id }, kids([
+						react.createElement("span", { key: "n", style: { flex: "1 1 auto" } }, nameOf(id)),
+						react.createElement("button", { key: "y", type: "button", style: D.btn, disabled: busy, "data-act": "room-join-confirm",
+							onClick: () => post({ action: "confirm-join", botId: id, allow: true }) }, "✓ 同意"),
+						react.createElement("button", { key: "n2", type: "button", style: D.btn, disabled: busy, "data-act": "room-join-reject",
+							onClick: () => post({ action: "confirm-join", botId: id, allow: false }) }, "✕"),
+					])))), "pending") : null,
+				candidates.length ? react.createElement("div", { key: "add", style: Object.assign({}, D.field, { display: "flex", gap: 8, alignItems: "center" }) }, kids([
+					react.createElement("select", { key: "s", style: D.input, value: adding, "data-vssaros-room-add": "1", disabled: busy,
 						onChange: (e) => setAdding(e.target.value) }, [react.createElement("option", { key: "", value: "" }, "添加成员…")]
 						.concat(candidates.map((a) => react.createElement("option", { key: a.id, value: a.id }, String(a.name || a.id))))),
-					react.createElement("button", { key: "b", type: "button", style: C.btn, disabled: busy || !adding,
-						onClick: () => { setDraft(Object.assign({}, draft, { members: draft.members.concat([adding]) })); setAdding(""); } }, "添加"),
+					react.createElement("button", { key: "b", type: "button", style: D.btn, disabled: busy || !adding, "data-act": "room-invite",
+						onClick: () => { post({ action: "invite", botId: adding }); setAdding(""); } }, "邀请"),
 				])) : null,
-				react.createElement("div", { key: "save", style: Object.assign({}, C.row, { marginTop: 10 }) }, kids([
-					react.createElement("button", { key: "s", type: "button", style: C.btnPrimary, disabled: busy || !dirty, "data-act": "room-save", onClick: save }, busy ? "保存中…" : "保存"),
-					dirty ? react.createElement("button", { key: "r", type: "button", style: C.btn, disabled: busy,
-						onClick: () => setDraft({ name: room.named === false ? "" : room.name, notice: room.notice || "", mode: room.mode, admin: room.admin,
-							members: (room.members || []).map((m) => m.id) }) }, "撤销改动") : null,
-					err ? react.createElement("span", { key: "e", style: C.err }, err) : null,
-				])),
-				field("侧栏", react.createElement("div", { key: "f", style: C.row }, kids([
-					react.createElement("label", { key: "p", style: C.row }, kids([
+				field("侧栏", react.createElement("div", { key: "f", style: { display: "flex", gap: 12 } }, kids([
+					react.createElement("label", { key: "p", style: { display: "flex", gap: 6, alignItems: "center" } }, kids([
 						react.createElement("input", { key: "c", type: "checkbox", checked: room.pinned === true, disabled: busy, "data-vssaros-room-pin": "1",
 							onChange: (e) => post({ action: "flags", pinned: e.target.checked }) }),
 						react.createElement("span", { key: "l" }, "置顶"),
 					])),
-					react.createElement("label", { key: "h", style: C.row }, kids([
+					react.createElement("label", { key: "h", style: { display: "flex", gap: 6, alignItems: "center" } }, kids([
 						react.createElement("input", { key: "c", type: "checkbox", checked: room.hidden === true, disabled: busy, "data-vssaros-room-hide": "1",
 							onChange: (e) => post({ action: "flags", hidden: e.target.checked }) }),
 						react.createElement("span", { key: "l" }, "从侧栏隐藏"),
 					])),
-				]))),
-				field("管理", confirmDel
-					? react.createElement("div", { key: "d", style: C.row }, kids([
-						react.createElement("span", { key: "q", style: C.sub }, "删除后群会话与成员的群内会话会被归档，确定？"),
-						react.createElement("button", { key: "y", type: "button", style: Object.assign({}, C.btn, { color: "var(--dsw-alias-state-error-primary, #e5534b)" }), disabled: busy,
-							"data-act": "room-delete-confirm", onClick: () => post({ action: "delete" }, () => { if (say) { say("群聊已删除"); } }) }, "删除"),
-						react.createElement("button", { key: "n", type: "button", style: C.btn, onClick: () => setConfirmDel(false) }, "取消"),
-					]))
-					: react.createElement("button", { key: "d", type: "button", style: Object.assign({}, C.btn, { color: "var(--dsw-alias-state-error-primary, #e5534b)" }),
-						"data-act": "room-delete", onClick: () => setConfirmDel(true) }, "删除群聊…")),
+				])), "sidebar"),
+				/* ★ 2026-11-10：群设置里增加 Channel 绑定 —— IM 会话的消息转投到这个群，
+				   群答复回传该 IM 会话。绑定走自己的接口，不塞进「保存」按钮的 roomPatch。 */
+				react.createElement(BotChannelBindingsCard, {
+					key: "channel-bindings", targetKind: "group", targetId: roomId,
+				}),
+				err ? react.createElement("div", { key: "e", style: Object.assign({}, D.note, { color: "var(--dsw-alias-state-error-primary, #e5534b)" }) }, err) : null,
 			]));
+			const head = react.createElement("div", { key: "h", style: D.head }, kids([
+				react.createElement("span", { key: "t", style: { fontWeight: 600 } }, "群设置"),
+				react.createElement("span", { key: "b", style: D.badge }, draft.members.length + " 位成员"),
+				react.createElement("span", { key: "s", style: D.spacer }),
+				react.createElement("button", { key: "x", type: "button", title: "关闭群设置", "aria-label": "关闭群设置",
+					"data-vssaros-room-settings-close": roomId, onClick: close,
+					style: { width: 26, height: 26, borderRadius: 6, border: 0, background: "transparent", cursor: "pointer", color: "inherit", fontSize: 13 } }, "✕"),
+			]));
+			const foot = react.createElement("div", { key: "f", style: D.foot }, kids([
+				react.createElement("button", { key: "c", type: "button", style: D.btn, disabled: busy, "data-act": "room-clear",
+					onClick: () => post({ action: "clear" }, () => { if (say) { say("群内记录已清空"); } }) }, "清空记录"),
+				confirmDel
+					? react.createElement("div", { key: "d", style: { display: "flex", gap: 6, alignItems: "center" } }, kids([
+						react.createElement("span", { key: "q", style: D.note }, "解散后群会话与成员的群内会话会归档，确定？"),
+						react.createElement("button", { key: "y", type: "button", style: Object.assign({}, D.btn, D.danger), disabled: busy,
+							"data-act": "room-delete-confirm", onClick: () => post({ action: "dissolve" }, () => { if (say) { say("群聊已解散"); } }) }, "确定解散"),
+						react.createElement("button", { key: "n", type: "button", style: D.btn, onClick: () => setConfirmDel(false) }, "取消"),
+					]))
+					: react.createElement("button", { key: "d", type: "button", style: Object.assign({}, D.btn, D.danger), disabled: busy,
+						"data-act": "room-delete", onClick: () => setConfirmDel(true) }, "解散群聊"),
+				react.createElement("span", { key: "sp", style: D.spacer }),
+				react.createElement("button", { key: "x", type: "button", style: D.btn, onClick: close }, "取消"),
+				react.createElement("button", { key: "s", type: "button", style: Object.assign({}, D.btn, D.primary), disabled: busy || !dirty,
+					"data-act": "room-save", onClick: save }, busy ? "保存中…" : "保存"),
+			]));
+			// ⚠ 锚点必须挂在**整个对话框**上：头部 / 内容 / 底栏都是它的子节点，
+			//   守卫按 [data-vssaros-room-settings] 查卡片后会再找底栏的 room-save。
+			const content = react.createElement("div", { key: "dlg", style: dlgStyle, "data-vssaros-room-settings": roomId }, [head, body, foot]);
+			return dialog
+				? react.createElement("div", { key: "mask", style: D.mask, "data-vssaros-room-dialog": roomId,
+					onClick: (e) => { if (e.target === e.currentTarget) { close(); } } }, content)
+				: content;
 		}
 
 		/** 连续多少次拿不到进度（`progress:null`）就判定状态已丢失并停止轮询（重启前的旧调用 / 超过保留期）。 */
@@ -1826,7 +2031,21 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 					react.createElement("span", { key: "t", style: { flex: "1 1 auto", minWidth: 0 } },
 						asks.map((a) => String(a.name || "成员") + " 在等你选择").join("；") + "（" + String(current.roomName || "群聊") + "）"),
 					react.createElement("button", { key: "b", type: "button", style: C.btnPrimary, "data-act": "group-ask-open", onClick: () => {
-						try { ctx.uiWorkspace.openSession(String(current.roomId)); } catch { /* 打开失败：提示还在 */ }
+						try {
+							const id = String(current.roomId);
+							// ★ 2026-11-10：跨 chunk 旁路打开群也要更新「记住的群」，否则 Host 仍按旧群放宽转投。
+							//   优先走 client.workspaces.js 注册的桥；没装时回落写盘 + 广播（键/事件与该 chunk 同源）。
+							const win = typeof window !== "undefined" ? window : null;
+							if (win && typeof win.__vssarosSelectRoom === "function") { win.__vssarosSelectRoom(id); }
+							else {
+								try { if (typeof localStorage !== "undefined") { localStorage.setItem("vssaros.chatSurface.selectedRoom.v1", id); } } catch { /* 隐私模式 */ }
+								try {
+									const Ctor = win && (win.Event || (typeof Event !== "undefined" ? Event : null));
+									if (Ctor) { win.dispatchEvent(new Ctor("vssaros-ws-selected-room")); }
+								} catch { /* 事件不可用 ⇒ 下次渲染才看到 */ }
+							}
+							ctx.uiWorkspace.openSession(id);
+						} catch { /* 打开失败：提示还在 */ }
 					} }, "去选择"),
 				])) : null,
 			]));
@@ -1879,17 +2098,152 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 		 * 并提供人可操作的新建 / 启停 / 删除。后端 assertHuman 与 fail-closed 白名单语义不变，
 		 * 平台清单只从 `channelDefs`（imPlatforms 单一真源）渲染，客户端不写死平台 key。
 		 */
+
+		/* ★ 2026-11-10 用户选方案 A（`design/channel-binding-mockups/a-compact.html`）：
+		 * ① 标题下约 150 字说明收进 ⓘ 富卡；② 绑定 item 拆成「身份 / 状态 / 操作」+
+		 *    「chat_id / 标签」两行；③ 新建表单默认折叠，字段说明也走短 ⓘ，
+		 *    超长 placeholder 不再承载文档。
+		 * ⚠ tip 用 React state 显隐（dsh chunk 不注入全局 <style>），bubble 常驻 DOM
+		 *   ⇒ 读屏可读、键盘可聚焦；且不叠原生 title（避免两个浮层）。
+		 */
+		const BOTBIND_HELP = [
+			"把 IM 会话绑定到这个 Bot；一条绑定 = 一个应用 + 一个 chat_id。",
+			"只有人能创建 / 修改 / 删除，模型不能代劳。",
+			"入站白名单留空 = 拒绝所有入站（fail-closed）。",
+			"飞书可在此选应用或添加新应用。",
+			"群策略 groupPolicy 默认 open：群里仍需 @ 机器人。",
+		];
+		const B = {
+			list: { display: "flex", flexDirection: "column", gap: 6, marginTop: 10 },
+			row: { border: "1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.24))", borderRadius: 7,
+				background: "var(--dsw-alias-bg-layer-1, transparent)", padding: "7px 9px" },
+			top: { display: "flex", alignItems: "center", gap: 7 },
+			ico: { width: 24, height: 24, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", flex: "none",
+				background: "var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12))",
+				color: "var(--dsw-alias-brand-primary, #3794ff)" },
+			icoOff: { color: "var(--dsw-alias-label-tertiary, rgba(128,128,128,.8))", background: "transparent",
+				border: "1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.24))" },
+			name: { fontSize: 12.5, fontWeight: 600 },
+			meta: { display: "flex", alignItems: "center", gap: 6, marginTop: 5, paddingLeft: 31, flexWrap: "wrap" },
+			cid: { maxWidth: 168, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+				fontFamily: "ui-monospace, Consolas, monospace", fontSize: 11,
+				color: "var(--dsw-alias-label-secondary, currentColor)" },
+			chip: { display: "inline-flex", alignItems: "center", gap: 4, padding: "1px 6px", borderRadius: 5,
+				border: "1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.24))", fontSize: 10.5,
+				color: "var(--dsw-alias-label-secondary, currentColor)", whiteSpace: "nowrap" },
+			chipOn: { color: "var(--dsw-alias-state-success-primary, #3fb27f)", borderColor: "var(--dsw-alias-state-success-primary, #3fb27f)" },
+			chipOff: { color: "var(--dsw-alias-label-tertiary, rgba(128,128,128,.8))" },
+			chipBrand: { color: "var(--dsw-alias-brand-primary, #3794ff)", borderColor: "var(--dsw-alias-brand-primary, #3794ff)" },
+			dot: { width: 7, height: 7, borderRadius: "50%", background: "var(--dsw-alias-label-tertiary, rgba(128,128,128,.8))", flex: "none" },
+			dotOn: { background: "var(--dsw-alias-state-success-primary, #3fb27f)" },
+			iconBtn: { width: 24, height: 24, display: "inline-flex", alignItems: "center", justifyContent: "center",
+				border: "1px solid transparent", borderRadius: 6, background: "transparent",
+				color: "var(--dsw-alias-label-secondary, currentColor)", cursor: "pointer", padding: 0, flex: "none" },
+			iconBtnDanger: { color: "var(--dsw-alias-state-error-primary, #e5534b)" },
+			tipWrap: { position: "relative", display: "inline-flex", alignItems: "center", justifyContent: "center",
+				width: 18, height: 18, borderRadius: "50%", cursor: "help", flex: "none",
+				color: "var(--dsw-alias-label-secondary, currentColor)" },
+			tipBubble: { position: "absolute", top: 22, right: -8, width: 288, maxWidth: "78vw", zIndex: 50,
+				padding: "9px 11px", borderRadius: 8,
+				background: "var(--dsw-alias-bg-layer-2, #252526)",
+				border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.35))",
+				boxShadow: "0 12px 28px rgba(0,0,0,.4)",
+				color: "var(--dsw-alias-label-primary, currentColor)", fontSize: 11.5, lineHeight: "1.65",
+				fontWeight: 400, textAlign: "left", whiteSpace: "normal", cursor: "auto" },
+			tipBubbleLeft: { right: "auto", left: -8 },
+			tipTitle: { display: "block", fontSize: 12, fontWeight: 600, marginBottom: 4 },
+			tipList: { margin: 0, paddingLeft: 15 },
+			newToggle: { marginTop: 10, width: "100%", boxSizing: "border-box",
+				border: "1px dashed var(--dsw-alias-border-l2, rgba(128,128,128,.35))", borderRadius: 7,
+				background: "transparent", color: "var(--dsw-alias-label-secondary, currentColor)",
+				font: "inherit", fontSize: 11.5, padding: "6px", cursor: "pointer" },
+			form: { marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.24))",
+				display: "flex", flexDirection: "column", gap: 7 },
+			field: { display: "flex", alignItems: "center", gap: 6, fontSize: 11,
+				color: "var(--dsw-alias-label-secondary, currentColor)" },
+			fieldLabel: { flex: "0 0 74px" },
+			input: { flex: "1 1 auto", minWidth: 0, width: "100%", boxSizing: "border-box",
+				font: "inherit", fontSize: 11.5, padding: "4px 7px", borderRadius: 6,
+				border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.35))",
+				background: "var(--dsw-alias-bg-layer-1, transparent)", color: "inherit", outline: "none" },
+		};
+		const BIND_ICON = {
+			msg: "M4 5h16v11H9l-5 4V5z",
+			pause: "M9 6v12M15 6v12",
+			play: "M8 5l10 7-10 7V5z",
+			trash: "M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13",
+			refresh: "M19 8a7 7 0 1 0 1 6M19 4v4h-4",
+			chevronDown: "M6 9l6 6 6-6",
+			chevronUp: "M6 15l6-6 6 6",
+		};
+		/** 线性 SVG 图标（不用 emoji 当图标）。 */
+		function bindIcon(kind, size) {
+			return react.createElement("svg", {
+				width: size || 14, height: size || 14, viewBox: "0 0 24 24", "aria-hidden": "true",
+				fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round", strokeLinejoin: "round",
+				style: { display: "block" },
+			}, react.createElement("path", { d: BIND_ICON[kind] || BIND_ICON.msg }));
+		}
+		/** ⓘ tip：hover / 键盘 focus 都展开；富卡常驻 DOM（读屏可读），不叠原生 title。 */
+		function BotbindTip(props) {
+			const [open, setOpen] = react.useState(false);
+			const anchor = props.anchor || "data-vssaros-botbind-tip";
+			return react.createElement("span", {
+				[anchor]: props.name || "1",
+				tabIndex: 0, role: "button", "aria-label": props.label || "说明",
+				style: B.tipWrap,
+				onMouseEnter: () => setOpen(true), onMouseLeave: () => setOpen(false),
+				onFocus: () => setOpen(true), onBlur: () => setOpen(false),
+				// ★ 已绑定行整行可点展开 ⇒ tip / 面板内点击不许冒泡，避免点 ⓘ 却把编辑收起
+				onClick: (e) => { try { e.stopPropagation(); } catch { /* 合成事件 */ } },
+			}, kids([
+				react.createElement("svg", { key: "i", width: 14, height: 14, viewBox: "0 0 24 24", "aria-hidden": "true",
+					fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round", style: { display: "block" } }, kids([
+					react.createElement("circle", { key: "c", cx: 12, cy: 12, r: 9 }),
+					react.createElement("path", { key: "p", d: "M12 10.5v6M12 7.4v.2", strokeWidth: 1.9 }),
+				])),
+				react.createElement("span", { key: "b", role: "tooltip",
+					style: Object.assign({}, B.tipBubble, props.left ? B.tipBubbleLeft : null, {
+						opacity: open ? 1 : 0, visibility: open ? "visible" : "hidden",
+						pointerEvents: open ? "auto" : "none",
+					}) }, props.children),
+			]));
+		}
+		function directionLabelOf(d) { return d === "in" ? "仅入站" : d === "out" ? "仅出站" : "双向"; }
+
 		function BotChannelBindingsCard(props) {
-			const agentId = props.agentId || "";
+			/* ★ 2026-11-10：同一张卡复用于 Bot 设置（agent）与群设置（group）。
+			   `agentId` 仍是所有锚点/守卫依赖的变量名，群模式下取 targetId（= roomId）。 */
+			const targetKind = String(props.targetKind || "agent");
+			const agentId = props.agentId || props.targetId || "";
 			const [state, reload] = useLoader(() => getJson("/x/agents/api/bindings"), []);
 			const [busy, setBusy] = react.useState("");
 			const [err, setErr] = react.useState("");
-			const [form, setForm] = react.useState({ platform: "", chatId: "", chatType: "group", direction: "both", allowFrom: "" });
+			/* ★ 2026-11-10：保存/创建的成功反馈要看得见（原来只有错误，成功也像「没反应」）。 */
+			const [notice, setNotice] = react.useState("");
+			const [form, setForm] = react.useState({ platform: "", chatId: "", chatType: "group", direction: "both", allowFrom: "", groupPolicy: "", appId: "", newAppId: "", newAppSecret: "", newAppName: "" });
+			// ★ 方案 A：新建表单默认折叠（右栏 380px 里不再一上来就铺 8 个字段）
+			const [showNew, setShowNew] = react.useState(false);
+			// ★ 2026-11-10：已绑定 item 展开编辑；同一时刻只展开一条。
+			const [expandedId, setExpandedId] = react.useState("");
+			const [editDraft, setEditDraft] = react.useState(null);
 			const data = state.data || {};
 			const defs = Array.isArray(data.channelDefs) ? data.channelDefs : [];
 			const all = Array.isArray(data.bindings) ? data.bindings : [];
-			const mine = all.filter((b) => String(b.targetKind || "agent") === "agent" && String(b.targetId || "") === agentId);
+			const mine = all.filter((b) => String(b.targetKind || "agent") === targetKind && String(b.targetId || "") === agentId);
 			const defOf = (key) => defs.find((d) => String(d.key) === String(key));
+			/* ★ 2026-11-10（用户报「新增飞书应用里缺少 groupPolicy」）：
+			   groupPolicy 的真源是 imPlatforms.js 的 feishu.fields（select + options + default），
+			   而真正生效的判定在 channelPolicy.js / bindings.js 的 **binding 级**。
+			   ⚠ 别把它塞进 action:'feishu-app'：saveFeishuApp 只存 appSecret/name，存了不生效
+			     = 假入口。⇒ 放在新建绑定表单，随 action:'create' 一起落盘（normalizeBinding 已支持）。 */
+			const groupPolicyDef = (() => {
+				const d = defOf("feishu");
+				return d && Array.isArray(d.fields) ? d.fields.find((f) => String(f.key) === "groupPolicy") : null;
+			})();
+			const groupPolicyOptions = ((groupPolicyDef && groupPolicyDef.options) || [])
+				.map((o) => ({ value: String(o.value), label: String(o.label || o.value) }));
+			const groupPolicyValue = String(form.groupPolicy || (groupPolicyDef && groupPolicyDef.default) || "open");
 			const labelOf = (key) => { const d = defOf(key); return d ? String(d.label || d.key) : String(key); };
 			const hintOf = (key) => { const d = defOf(key); return d ? String(d.chatIdHint || "") : ""; };
 			const set = (key, value) => setForm((f) => Object.assign({}, f || {}, { [key]: value }));
@@ -1901,204 +2255,322 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 			}, [defs.length, form.platform]);
 			const run = (body, tag) => {
 				setBusy(tag);
-				setErr("");
+				setErr(""); setNotice("");
 				postJson("/x/agents/api/bindings", Object.assign({ actor: { kind: "human" } }, body)).then(
 					() => {
 						setBusy("");
-						if (body.action === "create") { set("chatId", ""); set("allowFrom", ""); }
+						if (body.action === "create") {
+							set("chatId", ""); set("allowFrom", "");
+							setNotice("✓ 已创建绑定");
+						}
 						reload();
 					},
 					(e) => { setBusy(""); setErr(String((e && e.message) || e)); },
 				);
 			};
-			const input = (key, value, placeholder) => react.createElement("input", {
-				style: Object.assign({}, C.input, { width: "100%", boxSizing: "border-box", marginTop: 4 }),
-				value: value, placeholder: placeholder || "", disabled: !!busy,
+			// `onChange` 可注入：新建表单默认写 form，已绑定 item 的编辑面板写 editDraft。
+			const input = (key, value, placeholder, type, onChange) => react.createElement("input", {
+				style: B.input,
+				type: type || "text", value: value, placeholder: placeholder || "", disabled: !!busy,
 				["data-vssaros-botbind-" + key]: "1",
-				onChange: (e) => set(key, e && e.target ? e.target.value : ""),
+				onChange: onChange || ((e) => set(key, e && e.target ? e.target.value : "")),
 			});
-			const select = (key, value, options) => react.createElement("select", {
-				style: Object.assign({}, C.input, { width: "100%", boxSizing: "border-box", marginTop: 4 }),
+			const select = (key, value, options, onChange) => react.createElement("select", {
+				style: B.input,
 				value: value, disabled: !!busy, ["data-vssaros-botbind-" + key]: "1",
-				onChange: (e) => set(key, e && e.target ? e.target.value : ""),
-			}, options.map((o) => react.createElement("option", { key: o.value, value: o.value }, o.label)));
+				onChange: onChange || ((e) => set(key, e && e.target ? e.target.value : "")),
+			}, options.map((o) => react.createElement("option", { key: o.value, value: o.value, disabled: !!o.disabled }, o.label)));
 			const platformOptions = defs.map((d) => ({
 				value: String(d.key), label: String(d.label || d.key) + (d.implemented === false ? "（暂未接入）" : ""),
 			}));
-			const rows = mine.map((b) => react.createElement("div", {
-				key: String(b.id), style: Object.assign({}, C.tiny, { marginTop: 6, padding: "6px 8px", border: "1px solid rgba(127,127,127,.3)", borderRadius: 4 }),
-				"data-vssaros-botbind-row": String(b.id),
-			}, kids([
-				react.createElement("span", { key: "p", style: C.badge }, labelOf(b.platform)),
-				react.createElement("span", { key: "c", style: C.tiny }, " " + String(b.chatId || "") + " · " + (b.chatType === "group" ? "群" : "私") + " · " + String(b.direction || "both") + " · " + (b.enabled === false ? "停用" : "启用")),
-				react.createElement("span", { key: "sp", style: C.grow }),
-				react.createElement("button", {
-					key: "t", type: "button", style: C.btn, disabled: !!busy,
-					"data-vssaros-botbind-toggle": String(b.id),
-					onClick: () => run({ action: "update", id: String(b.id), enabled: b.enabled === false }, "toggle:" + String(b.id)),
-				}, busy === "toggle:" + String(b.id) ? "处理中…" : (b.enabled === false ? "启用" : "停用")),
-				react.createElement("button", {
-					key: "d", type: "button", style: C.btn, disabled: !!busy,
-					"data-vssaros-botbind-delete": String(b.id),
-					onClick: () => {
-						if (window.confirm("删除这条 Channel 绑定？该会话将不再路由到这个 Bot。")) {
-							run({ action: "delete", id: String(b.id) }, "delete:" + String(b.id));
-						}
-					},
-				}, "删除"),
-			])));
+			/* ★ 2026-11-10（用户要求：飞书应用选择并入 Channel 绑定，移除独立「飞书配置」卡）：
+			   数据源 = GET /x/agents/api/bindings 的 feishuApps（describeFeishuApps 掩码视图，
+			   只有 hasSecret / name，绝不含 secret 明文）。空 = 默认应用；__new__ = 就地新增。 */
+			const feishuApps = Array.isArray(data.feishuApps) ? data.feishuApps : [];
+			const appLabel = (id) => {
+				if (!id) { return "VsSaros助手"; }
+				const a = feishuApps.find((x) => String(x.appId) === String(id));
+				return a && a.name ? String(a.name) : String(id);
+			};
+			/* ★ 2026-11-10（用户要求）：内置默认应用对外统一使用产品名「VsSaros助手」。 */
+			const appOptions = [{ value: "", label: "VsSaros助手" }].concat(
+				feishuApps.filter((a) => !a.isDefault).map((a) => ({
+					value: String(a.appId || ""), disabled: !a.hasSecret,
+					label: (a.name ? String(a.name) + " · " : "") + String(a.appId || "") + (a.hasSecret ? "" : "（缺 App Secret）"),
+				}))
+			);
+			appOptions.push({ value: "__new__", label: "+ 添加新应用（App ID / App Secret）" });
+			/**
+			 * 保存新应用并选用，返回 appId（失败返回 null）。
+			 *
+			 * ★ 2026-11-10（真机「点了创建绑定没反应」）：原来选了「+ 添加新应用」时创建按钮被
+			 *   静默 disabled，界面上没有任何说明；用户填完 App ID / Secret 后点创建完全无响应。
+			 *   ⇒ 现在做成可被创建流程复用的异步函数：创建绑定时自动先跑这一步。
+			 */
+			const addApp = async () => {
+				const id = String(form.newAppId || "").trim();
+				const secret = String(form.newAppSecret || "").trim();
+				if (!/^cli_[A-Za-z0-9]{4,64}$/.test(id) || !secret) {
+					setErr("请填合法 App ID（cli_…）与 App Secret"); return null;
+				}
+				/* 内置默认应用不能再新增一份（后端 saveFeishuApp 会 409）：先说清出处，别让用户白填。 */
+				const def = feishuApps.find((a) => a.isDefault);
+				if (def && id === String(def.appId || "").trim()) {
+					setErr("这是 VsSaros助手（内置默认应用）：请在上面的「应用」下拉里直接选「VsSaros助手」，不用新增。");
+					return null;
+				}
+				setBusy("app"); setErr(""); setNotice("");
+				try {
+					await postJson("/x/agents/api/bindings", {
+						actor: { kind: "human" }, action: "feishu-app", appId: id,
+						appSecret: secret, name: String(form.newAppName || "").trim(),
+					});
+					set("newAppId", ""); set("newAppSecret", ""); set("newAppName", "");
+					set("appId", id); reload();
+					setNotice("✓ 已保存应用 " + id + " 并选用");
+					return id;
+				} catch (e) {
+					setErr(String((e && e.message) || e));
+					return null;
+				} finally {
+					setBusy("");
+				}
+			};
+			/* ★ 只允许「没选平台 / 没填 chat_id / 正在忙」禁用创建按钮；
+			   选了「+ 添加新应用」不再禁用（改为点击时自动先保存应用）。 */
+			const createDisabled = !!busy || !String(form.chatId || "").trim() || !form.platform;
+			/* 显式传 appId：set("appId", id) 是异步的，不能在这一轮闭包里读还没刷新的 form。 */
+			const createBody = (appIdOverride) => ({
+				action: "create", targetKind: targetKind, targetId: agentId, platform: form.platform,
+				...(form.platform === "feishu" && String(appIdOverride ?? form.appId)
+					&& String(appIdOverride ?? form.appId) !== "__new__"
+					? { appId: String(appIdOverride ?? form.appId) } : {}),
+				...(form.platform === "feishu" && groupPolicyOptions.length ? { groupPolicy: groupPolicyValue } : {}),
+				chatId: String(form.chatId || "").trim(), chatType: form.chatType, direction: form.direction,
+				allowFrom: String(form.allowFrom || "").split(/[,，\n]/).map((s) => s.trim()).filter(Boolean),
+			});
+			/** 表单行：短标签 + 控件 + 可选 ⓘ（字段说明不再塞进 placeholder）。 */
+			const fieldRow = (label, control, tip) => react.createElement("div", { key: "f:" + label, style: B.field }, kids([
+				react.createElement("span", { key: "l", style: B.fieldLabel }, label),
+				tip || null,
+				react.createElement("span", { key: "c", style: { flex: "1 1 auto", minWidth: 0, display: "flex" } }, control),
+			]));
+			/** ★ 2026-11-10：展开 / 收起某条绑定的就地编辑；draft 从该条绑定回填（没有 GET ?id= 单条接口）。 */
+			const toggleEdit = (b) => {
+				const id = String(b.id);
+				if (expandedId === id) { setExpandedId(""); setEditDraft(null); return; }
+				const gp = String(b.groupPolicy || "");
+				const d = String(b.direction || "");
+				setExpandedId(id);
+				setEditDraft({
+					chatId: String(b.chatId || ""),
+					chatType: b.chatType === "group" ? "group" : "p2p",
+					direction: ["both", "in", "out"].indexOf(d) >= 0 ? d : "both",
+					groupPolicy: groupPolicyOptions.some((o) => o.value === gp) ? gp
+						: String((groupPolicyDef && groupPolicyDef.default) || (groupPolicyOptions[0] && groupPolicyOptions[0].value) || ""),
+					appId: String(b.appId || ""),
+					allowFrom: Array.isArray(b.allowFrom) ? b.allowFrom.join(", ") : String(b.allowFrom || ""),
+				});
+			};
+			const editSet = (key, value) => setEditDraft((d) => Object.assign({}, d || {}, { [key]: value }));
+			/** 保存：bindings 的 update 是**局部更新**，只发允许改的字段；成功后 run() 会 reload() 走 GET。 */
+			const saveEdit = (b) => {
+				if (!editDraft) { return; }
+				const id = String(b.id);
+				const chatId = String(editDraft.chatId || "").trim();
+				if (!chatId) { setErr("chat_id 不能为空"); return; }
+				// ⚠ 绝不回传 targetId / platform / enabled / 派生视图字段；
+				//   POST 返回值里的 bindings 未掩码（含明文密钥），一律靠 reload() 重新 GET。
+				const editPatch = {
+					action: "update", id,
+					chatId, chatType: editDraft.chatType, direction: editDraft.direction,
+					allowFrom: String(editDraft.allowFrom || "").split(/[,，\n]/).map((s) => s.trim()).filter(Boolean),
+				};
+				if (String(b.platform) === "feishu") {
+					editPatch.appId = String(editDraft.appId || "");
+					if (groupPolicyOptions.length && editDraft.groupPolicy) { editPatch.groupPolicy = String(editDraft.groupPolicy); }
+				}
+				run(editPatch, "edit:" + id);
+				setExpandedId(""); setEditDraft(null);
+			};
+			/** 方案 A：行 1 = 平台 / 状态 / 操作；行 2 = chat_id 摘要 + 标签；点行展开就地编辑。 */
+			const rows = mine.map((b) => {
+				const id = String(b.id);
+				const on = b.enabled !== false;
+				const cid = String(b.chatId || "");
+				const short = cid.length > 24 ? cid.slice(0, 12) + "…" + cid.slice(-8) : cid;
+				const expanded = expandedId === id && !!editDraft;
+				const stop = (e) => { try { e.stopPropagation(); } catch { /* 合成事件 */ } };
+				const onEdit = (key) => (e) => editSet(key, e && e.target ? e.target.value : "");
+				const row = react.createElement("div", {
+					key: id, style: B.row, "data-vssaros-botbind-row": id,
+					"data-vssaros-botbind-expanded": expanded ? "1" : "0",
+					tabIndex: 0, role: "button", "aria-expanded": expanded ? "true" : "false",
+					"aria-label": "编辑绑定 " + labelOf(b.platform) + " " + cid,
+					onClick: () => toggleEdit(b),
+					onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleEdit(b); } },
+				}, [
+					react.createElement("div", { key: "top", style: B.top, "data-vssaros-botbind-row-top": id }, kids([
+						react.createElement("span", { key: "i", style: Object.assign({}, B.ico, on ? null : B.icoOff) }, bindIcon("msg", 14)),
+						react.createElement("span", { key: "n", style: B.name }, labelOf(b.platform)),
+						// 状态：颜色 + 文字双编码（色盲 / 浅色主题下也能分辨）
+						react.createElement("span", { key: "s", style: Object.assign({}, B.chip, on ? B.chipOn : B.chipOff) }, kids([
+							react.createElement("span", { key: "d", style: Object.assign({}, B.dot, on ? B.dotOn : null) }),
+							on ? "启用" : "停用",
+						])),
+						react.createElement("span", { key: "sp", style: C.grow }),
+						react.createElement("button", {
+							key: "t", type: "button", style: B.iconBtn, disabled: !!busy,
+							"aria-label": on ? "停用" : "启用", title: on ? "停用" : "启用",
+							"data-vssaros-botbind-toggle": id,
+							onClick: (e) => { stop(e); run({ action: "update", id, enabled: !on }, "toggle:" + id); },
+						}, busy === "toggle:" + id ? bindIcon("refresh", 14) : bindIcon(on ? "pause" : "play", 14)),
+						react.createElement("button", {
+							key: "d", type: "button", style: Object.assign({}, B.iconBtn, B.iconBtnDanger), disabled: !!busy,
+							"aria-label": "删除", title: "删除", "data-vssaros-botbind-delete": id,
+							onClick: (e) => {
+								stop(e);
+								if (window.confirm(targetKind === "group"
+								? "删除这条 Channel 绑定？该 IM 会话将不再转投到这个群。"
+								: "删除这条 Channel 绑定？该会话将不再路由到这个 Bot。")) {
+									run({ action: "delete", id }, "delete:" + id);
+								}
+							},
+						}, bindIcon("trash", 14)),
+						// ★ 2026-11-10：明确的展开 / 收起控件（整行也可点）
+						react.createElement("button", {
+							key: "e", type: "button", style: B.iconBtn, disabled: !!busy,
+							"aria-label": expanded ? "收起编辑" : "展开编辑", title: expanded ? "收起编辑" : "展开编辑",
+							"data-vssaros-botbind-edit-toggle": id,
+							onClick: (e) => { stop(e); toggleEdit(b); },
+						}, bindIcon(expanded ? "chevronUp" : "chevronDown", 14)),
+					])),
+					react.createElement("div", { key: "meta", style: B.meta, "data-vssaros-botbind-row-meta": id }, kids([
+						react.createElement("span", { key: "cid", style: B.cid, "data-vssaros-botbind-row-cid": id }, short),
+						react.createElement(BotbindTip, { key: "tip", name: "chatid-" + id, label: "完整 chat_id", left: true },
+							react.createElement("span", null, cid)),
+						react.createElement("span", { key: "t", style: B.chip }, b.chatType === "group" ? "群聊" : "私聊"),
+						react.createElement("span", { key: "dir", style: B.chip }, directionLabelOf(b.direction)),
+						b.platform === "feishu"
+							? react.createElement("span", { key: "app", style: Object.assign({}, B.chip, B.chipBrand) }, appLabel(b.appId || ""))
+							: null,
+					])),
+				]);
+				if (!expanded) { return row; }
+				const ed = editDraft;
+				const editOptions = appOptions.filter((o) => o.value !== "__new__");
+				const panel = react.createElement("div", {
+					key: "edit:" + id, style: Object.assign({}, B.form, { marginTop: -2, marginBottom: 6,
+						padding: "8px 10px", border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.35))",
+						borderRadius: 7, background: "var(--dsw-alias-bg-layer-1, transparent)", whiteSpace: "normal" }),
+					"data-vssaros-botbind-edit": id, onClick: stop,
+				}, kids([
+					fieldRow("chat_id", input("edit-chatId", ed.chatId, "oc_… / ou_…", undefined, onEdit("chatId")),
+						react.createElement(BotbindTip, { key: "t", name: "editChatId", label: "chat_id 说明", left: true },
+							hintOf(b.platform) || "飞书群填 oc_…、私聊填 ou_…。")),
+					b.platform === "feishu" ? fieldRow("应用", select("edit-appId", ed.appId, editOptions, onEdit("appId"))) : null,
+					fieldRow("类型", select("edit-chatType", ed.chatType, [{ value: "group", label: "群聊（需 @ 机器人）" }, { value: "p2p", label: "私聊" }], onEdit("chatType"))),
+					b.platform === "feishu" && groupPolicyOptions.length
+						? fieldRow("群策略", select("edit-group-policy", ed.groupPolicy, groupPolicyOptions, onEdit("groupPolicy")),
+							react.createElement(BotbindTip, { key: "t", name: "editGroupPolicy", label: "群策略说明", left: true },
+								"groupPolicy 默认 open：群里仍需 @ 机器人；其余档位按渠道定义。"))
+						: null,
+					fieldRow("方向", select("edit-direction", ed.direction, [{ value: "both", label: "双向" }, { value: "in", label: "仅入站" }, { value: "out", label: "仅出站" }], onEdit("direction"))),
+					fieldRow("白名单", input("edit-allow-from", ed.allowFrom, "userId, userId …", undefined, onEdit("allowFrom")),
+						react.createElement(BotbindTip, { key: "t", name: "editAllowFrom", label: "白名单说明", left: true },
+							"逗号分隔 userId；留空 = 拒绝所有入站（fail-closed）。")),
+					react.createElement("div", { key: "ops", style: { display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 2 } }, kids([
+						react.createElement("button", { key: "c", type: "button", style: C.btn, disabled: !!busy,
+							"data-vssaros-botbind-edit-cancel": id,
+							onClick: (e) => { stop(e); setExpandedId(""); setEditDraft(null); } }, "取消"),
+						react.createElement("button", { key: "s", type: "button", style: C.btnPrimary, disabled: !!busy,
+							"data-vssaros-botbind-edit-save": id,
+							onClick: (e) => { stop(e); saveEdit(b); } }, busy === "edit:" + id ? "保存中…" : "保存"),
+					])),
+				]));
+				return react.createElement(react.Fragment, { key: id }, [row, panel]);
+			});
 			return react.createElement("div", {
 				style: Object.assign({}, C.card, { marginTop: 10 }), "data-vssaros-botbind": agentId,
+				"data-vssaros-bind-kind": targetKind,
 			}, kids([
 				react.createElement("div", { key: "r", style: C.row }, kids([
 					react.createElement("span", { key: "t", style: C.title }, "Channel 绑定"),
 					react.createElement("span", { key: "b", style: C.badge }, String(mine.length) + " 条"),
+					react.createElement(BotbindTip, { key: "help", anchor: "data-vssaros-botbind-help", name: "channel", label: "Channel 绑定说明" }, kids([
+						react.createElement("b", { key: "h", style: B.tipTitle }, "Channel 绑定说明"),
+						react.createElement("ul", { key: "u", style: B.tipList },
+							BOTBIND_HELP.map((s, i) => react.createElement("li", { key: i }, s))),
+					])),
 					react.createElement("span", { key: "sp", style: C.grow }),
-					react.createElement("button", { key: "reload", type: "button", style: C.btn, disabled: !!busy, onClick: () => reload() }, "刷新"),
+					react.createElement("button", { key: "reload", type: "button", style: B.iconBtn, disabled: !!busy,
+						"aria-label": "刷新", title: "刷新", onClick: () => reload() }, bindIcon("refresh", 14)),
 				])),
-				react.createElement("div", { key: "d", style: Object.assign({}, C.sub, { marginTop: 4 }) },
-					"把 IM 会话绑定到这个 Bot。只有人能创建/修改/删除绑定；入站白名单留空 = 拒绝所有入站消息（fail-closed），群里仍需 @ 机器人。飞书应用凭据在本页「飞书配置」里配。"),
 				state.error ? react.createElement("div", { key: "le", style: Object.assign({}, C.err, { marginTop: 6 }) }, "读取失败：" + String(state.error)) : null,
-				rows.length ? react.createElement("div", { key: "rows" }, ...rows) : react.createElement("div", {
+				// ★ 卡片级错误：编辑保存失败时表单已收起，错误仍要看得见（不能只挂在展开的表单里）
+				err ? react.createElement("div", { key: "e", style: Object.assign({}, C.err, { marginTop: 6 }) }, err) : null,
+				notice ? react.createElement("div", { key: "n", style: Object.assign({}, C.tiny, { marginTop: 6 }),
+					"data-vssaros-botbind-notice": "1" }, notice) : null,
+				rows.length ? react.createElement("div", { key: "rows", style: B.list }, ...rows) : react.createElement("div", {
 					key: "empty", style: Object.assign({}, C.tiny, { marginTop: 6 }),
-				}, "这个 Bot 还没有绑定任何会话。"),
-				react.createElement("div", { key: "new", style: Object.assign({}, C.tiny, { marginTop: 10 }) }, kids([
-					react.createElement("div", { key: "h", style: Object.assign({}, C.sub, { marginBottom: 2 }) }, "新建绑定"),
-					select("platform", form.platform, platformOptions),
-					input("chatId", form.chatId, hintOf(form.platform) || "会话 ID（chat_id）"),
-					select("chatType", form.chatType, [{ value: "group", label: "群聊（需 @ 机器人）" }, { value: "p2p", label: "私聊" }]),
-					select("direction", form.direction, [{ value: "both", label: "双向" }, { value: "in", label: "仅入站" }, { value: "out", label: "仅出站" }]),
-					input("allowFrom", form.allowFrom, "入站白名单（逗号分隔 userId；留空 = 拒绝所有入站）"),
+				}, targetKind === "group" ? "这个群还没有绑定任何会话。" : "这个 Bot 还没有绑定任何会话。"),
+				react.createElement("button", {
+					key: "new", type: "button", style: B.newToggle,
+					"data-vssaros-botbind-new-toggle": "1", onClick: () => setShowNew((v) => !v),
+				}, showNew ? "− 收起" : "+ 新建绑定"),
+				showNew ? react.createElement("div", { key: "form", style: B.form }, kids([
+					fieldRow("平台", select("platform", form.platform, platformOptions)),
+					form.platform === "feishu" ? fieldRow("应用", select("appId", form.appId, appOptions)) : null,
+					form.platform === "feishu" && form.appId === "__new__"
+						? react.createElement("div", { key: "newapp", style: B.form }, kids([
+							input("newAppId", form.newAppId, "cli_…（开放平台 → 凭证与基础信息）"),
+							input("newAppSecret", form.newAppSecret, "App Secret（只写不读）", "password"),
+							input("newAppName", form.newAppName, "名称（可选）"),
+							react.createElement("button", {
+								key: "addapp", type: "button", style: C.btn,
+								"data-vssaros-botbind-add-app": "1", disabled: !!busy, onClick: addApp,
+							}, busy === "app" ? "添加中…" : "保存应用并选用"),
+							react.createElement("div", { key: "newhint", style: C.tiny },
+								"也可以直接点最下面的创建按钮：会先保存这个应用，再创建绑定。内置默认应用请直接在「应用」下拉里选 VsSaros助手。"),
+						])) : null,
+					fieldRow("chat_id", input("chatId", form.chatId, "oc_… / ou_…"),
+						react.createElement(BotbindTip, { key: "t", name: "chatId", label: "chat_id 说明", left: true },
+							hintOf(form.platform) || "飞书群填 oc_…、私聊填 ou_…；在「设置 — 渠道」展开飞书管理可复制。")),
+					fieldRow("类型", select("chatType", form.chatType, [{ value: "group", label: "群聊（需 @ 机器人）" }, { value: "p2p", label: "私聊" }])),
+					form.platform === "feishu" && groupPolicyOptions.length
+						? fieldRow("群策略", select("groupPolicy", groupPolicyValue, groupPolicyOptions),
+							react.createElement(BotbindTip, { key: "t", name: "groupPolicy", label: "群策略说明", left: true },
+								"groupPolicy 默认 open：群里仍需 @ 机器人；其余档位按渠道定义。"))
+						: null,
+					fieldRow("方向", select("direction", form.direction, [{ value: "both", label: "双向" }, { value: "in", label: "仅入站" }, { value: "out", label: "仅出站" }])),
+					fieldRow("白名单", input("allowFrom", form.allowFrom, "userId, userId …"),
+						react.createElement(BotbindTip, { key: "t", name: "allowFrom", label: "白名单说明", left: true },
+							"逗号分隔 userId；留空 = 拒绝所有入站（fail-closed）。")),
 					react.createElement("button", {
-						key: "go", type: "button", style: Object.assign({}, C.btnPrimary, { marginTop: 6 }),
+						key: "go", type: "button",
+						style: Object.assign({}, C.btnPrimary, { marginTop: 6, alignSelf: "flex-end" },
+							createDisabled ? { opacity: 0.45, cursor: "not-allowed" } : {}),
 						"data-vssaros-botbind-create": "1",
-						disabled: !!busy || !String(form.chatId || "").trim() || !form.platform,
-						onClick: () => run({
-							action: "create", targetId: agentId, platform: form.platform,
-							/* ★ 2026-11-09：飞书绑定默认跟着本 Bot 在「飞书配置」里选的应用走。 */
-							...(form.platform === "feishu" && String((data.botFeishuApps || {})[agentId] || "").trim()
-								? { appId: String(data.botFeishuApps[agentId]).trim() } : {}),
-							chatId: String(form.chatId || "").trim(), chatType: form.chatType, direction: form.direction,
-							allowFrom: String(form.allowFrom || "").split(/[,，\n]/).map((s) => s.trim()).filter(Boolean),
-						}, "create"),
-					}, busy === "create" ? "创建中…" : "创建绑定"),
-					err ? react.createElement("div", { key: "e", style: Object.assign({}, C.err, { marginTop: 6 }) }, err) : null,
-				])),
+						disabled: createDisabled,
+						title: createDisabled ? "先选平台并填 chat_id"
+							: (form.platform === "feishu" && form.appId === "__new__" ? "会先保存上面的新应用，再创建绑定" : ""),
+						onClick: () => { void (async () => {
+							let appId = form.appId;
+							/* ★ 选了「+ 添加新应用」⇒ 一步到位：先存应用，再用它的 id 建绑定。
+							   addApp 失败已就地写明原因（含内置默认应用不能重复添加），这里直接停。 */
+							if (form.platform === "feishu" && appId === "__new__") {
+								const saved = await addApp();
+								if (!saved) { return; }
+								appId = saved;
+							}
+							run(createBody(appId), "create");
+						})(); },
+					}, busy === "create" ? "创建中…"
+						: (form.platform === "feishu" && form.appId === "__new__" ? "保存应用并创建绑定" : "创建绑定")),
+				])) : null,
 			]));
 		}
 
-		/**
-		 * Bot 飞书配置卡（2026-11-09）：设置弹窗「渠道」页签下线后，这里是飞书应用凭据的入口。
-		 *
-		 * 凭据池是**全局**的（GET /x/agents/api/bindings 的 feishuApps = describeFeishuApps）：
-		 * 任一个 Bot 在这里新增/配置过的 App ID，会出现在其它 Bot 的下拉框里，
-		 * 不必重复填 App Secret（明文永不回传，只显示「已配置 / 缺 Secret」）。
-		 * 本 Bot 选哪个应用存 botFeishuApps[agentId]（空 = 默认应用），由 set-bot-app 写入；
-		 * 后端入站路由与出站身份都会回落到这份映射。
-		 */
-		function FeishuConfigCard(props) {
-			const agentId = props.agentId || "";
-			const [state, reload] = useLoader(() => getJson("/x/agents/api/bindings"), []);
-			const [busy, setBusy] = react.useState("");
-			const [msg, setMsg] = react.useState("");
-			const [pick, setPick] = react.useState(null);
-			const [showNew, setShowNew] = react.useState(false);
-			const [form, setForm] = react.useState({ appId: "", appSecret: "", name: "" });
-			const data = state.data || {};
-			const apps = Array.isArray(data.feishuApps) ? data.feishuApps : [];
-			const botApps = data.botFeishuApps && typeof data.botFeishuApps === "object" ? data.botFeishuApps : {};
-			const saved = String(botApps[agentId] || "").trim();
-			const value = pick === null ? saved : pick;
-			const set = (k, v) => setForm((f) => Object.assign({}, f || {}, { [k]: v }));
-			const input = (key, val, placeholder, type) => react.createElement("input", {
-				style: Object.assign({}, C.input, { width: "100%", boxSizing: "border-box", marginTop: 4 }),
-				type: type || "text", value: val, placeholder: placeholder || "", disabled: !!busy,
-				["data-vssaros-feishucfg-" + key]: "1",
-				onChange: (e) => set(key, e && e.target ? e.target.value : ""),
-			});
-			const options = [{ value: "", label: "默认飞书应用（跟随全局凭据）" }].concat(
-				apps.filter((a) => !a.isDefault).map((a) => ({
-					value: String(a.appId || ""),
-					label: (a.name ? String(a.name) + " · " : "") + String(a.appId || "") + (a.hasSecret ? "" : "（缺 App Secret）"),
-				}))
-			);
-			if (value && !options.some((o) => o.value === value)) {
-				options.push({ value: value, label: value + "（已失效，请重新选择）" });
-			}
-			const run = (body, tag, okText) => {
-				setBusy(tag); setMsg("");
-				postJson("/x/agents/api/bindings", Object.assign({ actor: { kind: "human" } }, body)).then(
-					() => { setBusy(""); setMsg(okText); setPick(null); reload(); },
-					(e) => { setBusy(""); setMsg("✗ " + String((e && e.message) || e)); },
-				);
-			};
-			const addApp = () => {
-				const appId = String(form.appId || "").trim();
-				const secret = String(form.appSecret || "").trim();
-				if (!/^cli_[A-Za-z0-9]+$/.test(appId) || !secret) { setMsg("✗ 请填 App ID 与 App Secret"); return; }
-				setBusy("add"); setMsg("");
-				postJson("/x/agents/api/bindings", {
-					actor: { kind: "human" }, action: "feishu-app", appId: appId,
-					appSecret: secret, name: String(form.name || "").trim(),
-				}).then(() => postJson("/x/agents/api/bindings", {
-					actor: { kind: "human" }, action: "set-bot-app", botId: agentId, appId: appId,
-				})).then(() => {
-					setBusy(""); setForm({ appId: "", appSecret: "", name: "" });
-					setShowNew(false); setPick(null);
-					setMsg("✓ 已添加 " + appId + " 并设为当前 Bot 的飞书应用");
-					reload();
-				}, (e) => { setBusy(""); setMsg("✗ " + String((e && e.message) || e)); });
-			};
-			const defApp = apps.find((a) => a.isDefault);
-			return react.createElement("div", {
-				style: Object.assign({}, C.card, { marginTop: 10 }), "data-vssaros-feishucfg": agentId,
-			}, kids([
-				react.createElement("div", { key: "r", style: C.row }, kids([
-					react.createElement("span", { key: "t", style: C.title }, "飞书配置"),
-					react.createElement("span", { key: "b", style: C.badge }, String(apps.length) + " 个应用"),
-					react.createElement("span", { key: "sp", style: C.grow }),
-					react.createElement("button", { key: "reload", type: "button", style: C.btn, disabled: !!busy, onClick: () => reload() }, "刷新"),
-				])),
-				react.createElement("div", { key: "d", style: Object.assign({}, C.sub, { marginTop: 4 }) },
-					"App ID / App Secret 存在本机 dsh，所有 Bot 共享同一份应用池；这里只决定当前 Bot 用哪个应用。Secret 明文不回显。"),
-				state.error ? react.createElement("div", { key: "le", style: Object.assign({}, C.err, { marginTop: 6 }) }, "读取失败：" + String(state.error)) : null,
-				react.createElement("div", { key: "cur", style: Object.assign({}, C.tiny, { marginTop: 8 }) },
-					"当前选用：" + (value ? value : "默认应用") + (defApp ? " · 默认应用 " + String(defApp.appId) + (defApp.hasSecret ? "（已配置）" : "（缺 Secret）") : " · 默认应用尚未配置")),
-				react.createElement("select", {
-					key: "pick", style: Object.assign({}, C.input, { width: "100%", boxSizing: "border-box", marginTop: 4 }),
-					value: value, disabled: !!busy, "data-vssaros-feishucfg-pick": "1",
-					onChange: (e) => setPick(e && e.target ? e.target.value : ""),
-				}, options.map((o) => react.createElement("option", { key: o.value, value: o.value }, o.label))),
-				react.createElement("button", {
-					key: "save", type: "button", style: Object.assign({}, C.btnPrimary, { marginTop: 6 }),
-					"data-vssaros-feishucfg-save": "1", disabled: !!busy || pick === null,
-					onClick: () => run({ action: "set-bot-app", botId: agentId, appId: value }, "pick",
-						"✓ 已保存：" + (value ? "当前 Bot 使用 " + value : "回到默认飞书应用")),
-				}, busy === "pick" ? "保存中…" : "保存选择"),
-				react.createElement("div", { key: "newtoggle", style: Object.assign({}, C.tiny, { marginTop: 10 }) },
-					react.createElement("button", {
-						type: "button", style: C.btn, disabled: !!busy,
-						"data-vssaros-feishucfg-new-toggle": "1",
-						onClick: () => setShowNew(!showNew),
-					}, showNew ? "收起「新增飞书应用」" : "新增飞书应用（App ID / App Secret）")),
-				showNew ? react.createElement("div", { key: "newform", style: Object.assign({}, C.tiny, { marginTop: 6 }) }, kids([
-					input("appId", form.appId, "cli_xxxxxxxx（开放平台 → 凭证与基础信息）"),
-					input("appSecret", form.appSecret, "App Secret（只写不读）", "password"),
-					input("name", form.name, "名称（可选，便于其它 Bot 认出）"),
-					react.createElement("button", {
-						key: "go", type: "button", style: Object.assign({}, C.btnPrimary, { marginTop: 6 }),
-						"data-vssaros-feishucfg-new-submit": "1", disabled: !!busy,
-						onClick: addApp,
-					}, busy === "add" ? "添加中…" : "添加并选用"),
-				])) : null,
-				apps.length ? react.createElement("div", { key: "list", style: Object.assign({}, C.tiny, { marginTop: 8 }) },
-					"全局应用池：" + apps.map((a) => String(a.appId) + (a.isDefault ? "（默认）" : "") + (a.hasSecret ? "" : "（缺 Secret）")).join(" · ")) : null,
-				msg ? react.createElement("div", {
-					key: "m", style: Object.assign({}, String(msg).indexOf("✗") === 0 ? C.err : C.tiny, { marginTop: 6 }),
-					"data-vssaros-feishucfg-result": String(msg).indexOf("✗") === 0 ? "err" : "ok",
-				}, msg) : null,
-			]));
-		}
 
 		function BotConfigCard(props) {
 			const agentId = props.agentId || "";
@@ -2218,7 +2690,7 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 				field("persona", "人设正文（Markdown）", "你就是……", true, 160),
 				err ? react.createElement("div", { key: "e", style: Object.assign({}, C.err, { marginTop: 6 }) }, err) : null,
 				note ? react.createElement("div", { key: "n", style: Object.assign({}, C.tiny, { marginTop: 6 }) }, note) : null,
-				react.createElement(FeishuConfigCard, { key: "feishu-config", agentId: agentId }),
+				/* ★ 2026-11-10：飞书应用选择并入下面的 Channel 绑定卡，独立的「飞书配置」卡已移除。 */
 				react.createElement(BotChannelBindingsCard, { key: "channel-bindings", agentId: agentId }),
 			]));
 		}
@@ -2485,6 +2957,8 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 			// ★ 2026-11-09：官方右栏「群设置」独立页签（用户要求）；失败只影响这一个 tab，
 			//   菜单侧有中栏自绘页签兜底。放在最前面 ⇒ 用户点菜单时 open/close API 一定已挂上。
 			try { installRightRoomSettings(ctx); } catch { /* 注册失败不拖垮会话视图 */ }
+			// ★ 2026-11-10：hero 下的「Bot 设置」右侧栏页签（root overlay，不依赖 session）
+			try { installRightBotSettings(ctx); } catch { /* 注册失败只影响这一个页签 */ }
 			// 2026-11-03（用户要求：两套页签合并）：「记忆 / 技能 / 待办」由内置
 			// @vssaros/dsh-memory 插件提供（分层记忆 KEY.md / 项目日志 / 技能库 / 结构化待办），
 			// 本外壳不再重复注册同名页签；只保留唯一的「设置」，并把 evolve 的
@@ -2559,9 +3033,14 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 		const ROOM_SETTINGS_RIGHT_SLOT = "sidebar.right.pane.tab";
 		const ROOM_SETTINGS_TARGET_EVENT = "vssaros-room-settings-target";
 		let rightRoomTarget = { roomId: "", name: "" };
-		/** 群设置独立页：页头（标题 + 关闭按钮）+ 现成的群设置卡。 */
+		/**
+		 * 群设置独立页 / 右栏页签体共用。
+		 * ★ 2026-11-10：`embedded=true`（官方右栏页签）⇒ 内联铺满、不铺遮罩、不重复页头，
+		 *   与「编辑 Bot」的 RightBotSettingsPane 同形态；中栏独立页仍用 440px 遮罩弹层。
+		 */
 		function RoomSettingsPage(props) {
 			const roomId = String((props && props.roomId) || "");
+			const embedded = !!(props && props.embedded);
 			const tabId = String((props && props.tabId) || "room-settings:" + roomId);
 			const close = () => {
 				// 右栏形态：交给宿主 `sidebarRight.close(tab.id)`；中栏形态：关自绘页签。
@@ -2575,10 +3054,10 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 				// 兜底：没有关闭 API 时，至少把整列收起（不假装关掉了）
 				try { if (typeof window !== "undefined") { window.dispatchEvent(new CustomEvent("vssaros-wb-tabs-change")); } } catch { /* noop */ }
 			};
-			const bar = react.createElement("div", {
+			// embedded 时不再自绘页头：RoomSettingsCard 自带头部 + ✕（避免两个标题 / 两个 ✕）
+			const bar = embedded ? null : react.createElement("div", {
 				style: { display: "flex", alignItems: "center", gap: 8, padding: "10px 14px",
 					borderBottom: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.25))", flex: "none" },
-				"data-vssaros-room-settings-page": roomId,
 			}, [
 				react.createElement("span", { key: "i", style: { fontSize: 15 } }, "⚙"),
 				react.createElement("span", { key: "t", style: { fontSize: 14, fontWeight: 600, flex: "1 1 auto" } }, "群设置"),
@@ -2590,10 +3069,16 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 				}, "✕"),
 			]);
 			return react.createElement("div", {
+				// ⚠ 锚点挂外层：embedded 时不渲染 bar，守卫仍按它判断「切群后重画了」
+				"data-vssaros-room-settings-page": roomId,
 				style: { display: "flex", flexDirection: "column", height: "100%", minHeight: 0,
 					overflow: "auto", background: "var(--dsw-alias-bg-module-platform, transparent)" },
-			}, [bar, react.createElement("div", { key: "b", style: { flex: "1 1 auto", minHeight: 0, overflow: "auto", padding: "12px 14px" } },
-				react.createElement(RoomSettingsCard, { key: roomId, roomId, say: props && props.say }))]);
+			}, [bar, react.createElement("div", {
+				key: "b", style: embedded
+					? { flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column" }
+					: { flex: "1 1 auto", minHeight: 0, overflow: "auto", padding: "12px 14px" },
+			}, react.createElement(RoomSettingsCard, { key: roomId, roomId, say: props && props.say,
+				dialog: !embedded, embedded, onClose: close }))]);
 		}
 
 		/**
@@ -2674,9 +3159,10 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 				style: { padding: "14px", opacity: .7, fontSize: 13 },
 				"data-vssaros-right-room-settings-empty": "1",
 			}, "从左侧 Bots 页签的群菜单里点「群设置」");
+			// ★ 2026-11-10：右栏页签走 embedded 内联（同「编辑 Bot」），不再铺居中遮罩弹层
 			return target.roomId
 				? react.createElement(RoomSettingsPage, { key: target.roomId, roomId: target.roomId,
-					tabId: "right:" + target.roomId, onClose: close })
+					tabId: "right:" + target.roomId, embedded: true, onClose: close })
 				: empty;
 		}
 		/** 注册官方右栏页签（类型 + keyed body），并暴露跨 chunk 的 open / close API。 */
@@ -2710,14 +3196,16 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 					catch (e) { return noteFail("body", e); }
 				});
 			} catch (e) { noteFail("inject", e); }
-			// ③ 打开：无会话在屏时 openTab 会 throws ⇒ 先同步判据，返回 false 让调用方回落中栏页签
+			// ③ 打开：★ 2026-11-10 纠偏 —— **不再用 `mounted.getSnapshot()` 预判**。
+			//   那是本仓测试桩自造的口径，误杀了 hero 的 blank session；真机 hero 下官方「开始」
+			//   guide 就渲染在 `sidebar.right.pane.tab`，右栏 seat 是挂载着的。
+			//   官方 `require()` 只会在「全局工作台面板占住 main / store 尚未 minted」时抛
+			//   ⇒ 同步 try `openTab`，抛了才返回 false 让菜单回落；绝不异步吞异常（会「点了没反应」）。
 			const openRight = (sid, name) => {
 				const sr = ctx && ctx.sidebarRight;
 				if (!sr || typeof sr.openTab !== "function") { return false; }
-				try {
-					const mounted = sr.mounted && typeof sr.mounted.getSnapshot === "function" ? sr.mounted.getSnapshot() : null;
-					if (!mounted) { return false; }
-				} catch { return false; }
+				// 先设 target + 派事件：即便下面 openTab 失败，title / body 也已是这次点的群，
+				// 回落中栏后不会串到上一次的目标。
 				rightRoomTarget = { roomId: String(sid || ""), name: String(name || "") };
 				// 用 `w.CustomEvent || globalThis.CustomEvent`：老宿主 / jsdom 里裸 `new CustomEvent`
 				// 可能抛 ReferenceError ⇒ 事件发不出去 ⇒ 已挂载的页签体不重画（一直显示上一次的群）。
@@ -2726,12 +3214,11 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 					const Ctor = w && (w.CustomEvent || (typeof CustomEvent !== "undefined" ? CustomEvent : null));
 					if (Ctor) { w.dispatchEvent(new Ctor(ROOM_SETTINGS_TARGET_EVENT)); }
 				} catch { /* noop */ }
-				const open = () => { try { sr.openTab(ROOM_SETTINGS_RIGHT_KIND); } catch { /* 无会话在屏 ⇒ 中栏兜底已准备好 */ } };
+				try { sr.openTab(ROOM_SETTINGS_RIGHT_KIND); } catch { return false; }
+				// `openTab` 官方自带展开（service.d.ts）；用户点击后再点一次展开按钮只作可见性兜底，
+				// 绝不在入口启动时自动展开（会播种多余「开始」页并按 session 持久化）。
 				const expand = typeof document !== "undefined" ? document.querySelector("[data-sidebar-right-expand]") : null;
-				if (expand && typeof expand.click === "function") {
-					expand.click();
-					try { window.setTimeout(open, 180); } catch { open(); }
-				} else { open(); }
+				if (expand && typeof expand.click === "function") { try { expand.click(); } catch { /* noop */ } }
 				return true;
 			};
 			const closeRight = () => {
@@ -2749,6 +3236,130 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 			return { openRight, closeRight };
 		}
 
+		// ── ★ 2026-11-10：「Bot 设置」**官方右栏页签**（可关闭，与「开始」并列）──────────
+		// 用户要求：hero 下右侧栏里单独一个带 ✕ 的**页签**，不是覆盖式浮层。
+		// ⚠ 纠偏：上一轮把「conversation.view 设置页签在 hero 不渲染」误推成「右栏 session
+		//   槽在 hero 不渲染」，自绘了 shell.overlay + position:fixed 浮层（盖住官方 strip）。
+		//   真机 hero 下官方「开始」guide 就渲染在 `sidebar.right.pane.tab` ⇒ 该槽可用。
+		// ⇒ 走官方两段式：`sidebarRightTabs.register`（类型）+ keyed body（内容）+
+		//   `sidebarRight.openTab(kind)`；官方 DockLayout strip 自带 ✕，
+		//   「开始」是 sole docked guide 永不关 ⇒ 天然与设置页签并列。
+		const BOT_SETTINGS_RIGHT_KIND = "vssaros-bot-settings-right";
+		const BOT_SETTINGS_RIGHT_SLOT = "sidebar.right.pane.tab";
+		const BOT_SETTINGS_TARGET_EVENT = "vssaros-bot-settings-target";
+		let rightBotTarget = { botId: "", name: "" };
+		/** 设目标 + 派事件：已挂载的 body 跟着重画（切 Bot 时不停在第一次点的那个）。 */
+		function setRightBotTarget(next) {
+			rightBotTarget = next;
+			try {
+				const w = typeof window !== "undefined" ? window : null;
+				const Ctor = w && (w.CustomEvent || (typeof CustomEvent !== "undefined" ? CustomEvent : null));
+				if (Ctor) { w.dispatchEvent(new Ctor(BOT_SETTINGS_TARGET_EVENT)); }
+			} catch { /* 老宿主 / jsdom 裸 CustomEvent 可能抛 */ }
+		}
+		/** 官方右栏页签体：工厂级 target 驱动；页头 ✕ 是官方 strip 之外的页内入口。 */
+		function RightBotSettingsPane() {
+			const [target, setTarget] = react.useState(rightBotTarget);
+			react.useEffect(() => {
+				if (typeof window === "undefined" || typeof window.addEventListener !== "function") { return undefined; }
+				const onChange = () => setTarget(Object.assign({}, rightBotTarget));
+				window.addEventListener(BOT_SETTINGS_TARGET_EVENT, onChange);
+				return () => { try { window.removeEventListener(BOT_SETTINGS_TARGET_EVENT, onChange); } catch { /* noop */ } };
+			}, []);
+			const close = () => {
+				// 先让官方 strip 关掉这个页签（guide 不会被关），再清本地目标
+				try {
+					const fn = typeof window !== "undefined" ? window.__vssarosCloseRightBotSettings : null;
+					if (typeof fn === "function") { fn(); }
+				} catch { /* 还有官方 strip 自带的 ✕ */ }
+				setRightBotTarget({ botId: "", name: "" });
+				setTarget({ botId: "", name: "" });
+			};
+			const empty = react.createElement("div", {
+				style: { padding: 14, opacity: .7, fontSize: 13 },
+				"data-vssaros-right-bot-settings-empty": "1",
+			}, "从左侧 Bots 页签的菜单里点「编辑 Bot」");
+			if (!target.botId) { return empty; }
+			const bar = react.createElement("div", {
+				key: "h", "data-vssaros-right-bot-settings-tab": target.botId,
+				style: { display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", flex: "none",
+					borderBottom: "1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.25))",
+					background: "var(--dsw-alias-bg-layer-1, rgba(128,128,128,.08))" },
+			}, [
+				react.createElement("span", { key: "i", style: { fontSize: 14 } }, "⚙"),
+				react.createElement("span", { key: "t", style: { flex: "1 1 auto", fontWeight: 600, fontSize: 12.5,
+					overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+					"Bot 设置 · " + String(target.name || target.botId).slice(0, 24)),
+				react.createElement("button", {
+					key: "x", type: "button", title: "关闭 Bot 设置", "aria-label": "关闭 Bot 设置",
+					"data-vssaros-right-bot-settings-close": target.botId, onClick: close,
+					style: { border: 0, background: "transparent", cursor: "pointer", fontSize: 15,
+						lineHeight: "22px", padding: "0 6px", color: "inherit", opacity: .8 },
+				}, "✕"),
+			]);
+			return react.createElement("div", {
+				key: "pane", "data-vssaros-right-bot-settings": target.botId,
+				style: { display: "flex", flexDirection: "column", height: "100%", minHeight: 0,
+					overflow: "auto", background: "var(--dsw-alias-bg-module-platform, transparent)" },
+			}, [bar, react.createElement("div", {
+				key: "b", style: { flex: "1 1 auto", minHeight: 0, overflow: "auto", padding: "12px 14px" },
+			}, react.createElement(BotConfigCard, { key: target.botId, agentId: target.botId }))]);
+		}
+		/** 注册官方右栏页签（类型 + keyed body）并暴露跨 chunk 的 open / close API。 */
+		function installRightBotSettings(ctx) {
+			// ① 类型：id === kind ⇒ keyed body 的 key 直接用它（tab-registry.d.ts）
+			try {
+				const registerType = () => {
+					const tabs = ctx && ctx.sidebarRightTabs;
+					if (tabs && typeof tabs.register === "function") {
+						return tabs.register({
+							id: BOT_SETTINGS_RIGHT_KIND, kind: BOT_SETTINGS_RIGHT_KIND, priority: "extension",
+							// thunk：切 Bot 后页签标题跟着变
+							title: () => rightBotTarget.name ? "Bot 设置 · " + String(rightBotTarget.name).slice(0, 24) : "Bot 设置",
+						});
+					}
+					return undefined;
+				};
+				if (ctx && typeof ctx.effect === "function") {
+					ctx.effect(() => { const d = registerType(); return typeof d === "function" ? d : undefined; },
+						"vssaros-bot-settings-right:type");
+				} else { registerType(); }
+			} catch { /* 注册失败不拖垮会话视图 */ }
+			// ② keyed body：与群设置不同 kind ⇒ 两个页签互不覆盖
+			try {
+				ctx.slots.inject(BOT_SETTINGS_RIGHT_SLOT, () => {
+					try { return ctx.slots.register({ name: BOT_SETTINGS_RIGHT_SLOT, key: BOT_SETTINGS_RIGHT_KIND }, RightBotSettingsPane); }
+					catch { return null; }
+				});
+			} catch { /* 撞 key 不外抛 */ }
+			// ③ 打开：同步 try openTab，官方 require() 抛了才返回 false 让菜单回落（不用 mounted 预判）
+			const openRight = (botId, name) => {
+				const id = String(botId || "").trim();
+				if (!id) { return false; }
+				const sr = ctx && ctx.sidebarRight;
+				if (!sr || typeof sr.openTab !== "function") { return false; }
+				setRightBotTarget({ botId: id, name: String(name || id) });
+				try { sr.openTab(BOT_SETTINGS_RIGHT_KIND); } catch { return false; }
+				const expand = typeof document !== "undefined" ? document.querySelector("[data-sidebar-right-expand]") : null;
+				if (expand && typeof expand.click === "function") { try { expand.click(); } catch { /* noop */ } }
+				return true;
+			};
+			const closeRight = () => {
+				setRightBotTarget({ botId: "", name: "" });
+				const sr = ctx && ctx.sidebarRight;
+				if (!sr || typeof sr.close !== "function") { return false; }
+				let tabId = "";
+				try { const active = typeof sr.active === "function" ? sr.active() : null; tabId = active && active.id ? String(active.id) : ""; } catch { /* noop */ }
+				if (!tabId) { return false; }
+				try { sr.close(tabId); return true; } catch { return false; }
+			};
+			try {
+				const w = typeof window !== "undefined" ? window : null;
+				if (w) { w.__vssarosOpenRightBotSettings = openRight; w.__vssarosCloseRightBotSettings = closeRight; }
+			} catch { /* window 不可写 ⇒ 菜单侧回落中栏独立页 */ }
+			return { openRight, closeRight };
+		}
+
 		exports.__test = {
 			ROOM_SETTINGS_RIGHT_KIND, ROOM_SETTINGS_RIGHT_SLOT, ROOM_SETTINGS_TARGET_EVENT,
 			RightRoomSettingsPane, installRightRoomSettings,
@@ -2758,8 +3369,14 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 			MemoryModuleCard, MEM_GROUPS, SettingsView,
 			// ★ 2026-11-05 多 bot 群聊：群标记 / 工具结果解析 / 设置改动 / 两个组件
 			ROOM_SETTINGS_PAGE_COMP, RoomSettingsPage,
-			// ★ 2026-11-09：Bot 配置独立页（hero 下「编辑 Bot」的承载面）
+			// ★ 2026-11-10 方案 A：Channel 绑定卡导出供真实渲染桩单测
+			BotChannelBindingsCard, BOTBIND_HELP,
+			// ★ 2026-11-09：Bot 配置独立页（中栏回落）
 			BOT_CONFIG_PAGE_COMP, BotConfigPage,
+			// ★ 2026-11-10：hero 下「编辑 Bot」的官方右栏设置页签（strip 自带 ✕，可关闭）
+			BOT_SETTINGS_RIGHT_KIND, BOT_SETTINGS_RIGHT_SLOT, BOT_SETTINGS_TARGET_EVENT,
+			RightBotSettingsPane, installRightBotSettings,
+			rightBotTargetOf: () => Object.assign({}, rightBotTarget),
 			ROOM_PROJECTION_KEY, ROOM_RELAY_TOOL, ROOMS_API, roomMarkOfSession, parseRelayResult, roomPatch, RoomSettingsCard, GroupRelayView,
 			// ★ 2026-11-05 第一批：状态节点 + 只读 MemberDock
 			GROUP_PROGRESS_EVENT, GROUP_DOCK_VISIBILITY_EVENT, MEMBER_DOCK_SLOT, MEMBER_DOCK_ID, MEMBER_DOCK_ORDER, statusNodeText, groupComposerFlowOf, GroupMemberDock,

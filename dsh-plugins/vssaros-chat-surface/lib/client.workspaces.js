@@ -1,4 +1,4 @@
-// @vssaros/dsh-chat-surface — 侧栏 Workspaces 区：多根工作区「单条目 + hover 详情卡」
+// @vssaros/dsh-chat-surface — 侧栏 Workspaces 区：多根工作区「单条目 + chip 下拉」
 //（稿 1，2026-10-17 用户拍板；mockup doc/dsh-multiroot-single-item-mockup.html，
 // 效果图 doc/mockup-images/single-item-1.png；4 稿对比 doc/dsh-sidebar-multiroot-variants-mockup.html）
 // package-local chunk（契约同 client.sessions.js）：主包用 require.async 取回 install()。
@@ -8,8 +8,10 @@
 // ⇒ 官方 WorkspaceBrowser 里同一工作区出现 N 次（真机截图实证：UE5EA×2 / S1Game×2）✗。
 // 修法 = 用 `priority: -10` 遮蔽官方占用者（升序取最低者渲染，同 hero.workspace 先例 ✓），
 // 换成本组件：
-//   · 多根工作区只显示**一行**（名字 + 「N 个根」徽标），会话直接挂在条目下、按时间排序；
-//   · hover 条目弹**详情卡**：每个根的完整路径 / 是否主根 / 会话数，当前会话 cwd 所在根标绿框；
+//   · 多根工作区只显示**一行**（名字 + 可点「N 个根」chip），会话直接挂在条目下、按时间排序；
+//   · ★ 2026-11-10 用户裁决：工作区 item **hover 不弹 tip** ⇒ 详情卡整条链路已移除。
+//     点 chip 才内联下拉列出各根（路径 / 主根 / ● 当前会话），不遮挡、不自动弹；
+//   · 会话行仍保留官方 `SessionNodeItem` 同款 hover 卡（800ms，与本条无关）；
 //   · 会话行的根标注按稿 1：**只有非主根**的会话才带根名小标签（VS Code「仅多根才加前缀」的
 //     降噪口径 ✓）；
 //   · 没被任何 IDE 记录认领的 dsh 条目保持**平铺**（回落契约，与 client.workspace.js 的
@@ -58,16 +60,35 @@ window.__ModuleLoader__.load({
 
 		const SLOT = "sidebar.workspaces";
 		const WORKSPACE_EVENT = "vssaros-dsh-workspaces";
-		const HOVER_DELAY_MS = 350;
 		/**
-		 * 会话行 hover 卡片的延迟（2026-11-02，对齐官方 `SessionNodeItem` 的
-		 * `HoverCard openDelayMs={800}`）。
-		 * ⚠ 与工作区的 350ms 刻意不同：会话行是**高频划过**的列表，350ms 会一路弹卡；
-		 *   官方取 800ms 就是"停一下才给详情"的意思。
+		 * ★ 2026-11-10（用户裁决）：工作区 item hover **不弹 tip** ⇒ 350ms 的工作区延迟与
+		 *   HoverCard 的底色/描边一起退役（不再留无调用点的死配置）。
+		 * 现在只剩**会话行**一处 hover 卡，800ms = 官方 `SessionNodeItem` 的
+		 * `HoverCard openDelayMs=800`（会话列表高频划过，太快会一路弹卡 ✗）。
+		 * 仍走 `hoverDelayOf()` 这个唯一取用口 ⇒ 配置来源单一、守卫可断言 ✓。
 		 */
 		const SESS_HOVER_DELAY_MS = 800;
+		const HOVER_DELAYS = Object.freeze({ session: SESS_HOVER_DELAY_MS });
+		function hoverDelayOf(kind) {
+			return HOVER_DELAYS[kind] ?? HOVER_DELAYS.session;
+		}
+		/** ● 当前会话 的字色（chip 下拉里用；P2-F 收敛到主题令牌 + 兜底 ✓）。 */
+		const CUR_ROOT_STYLE = Object.freeze({
+			color: "var(--dsw-alias-state-success-primary, #43b860)",
+		});
 
 		// ── 纯逻辑（__test 可直接断言）────────────────────────────────────────
+		/**
+		 * ★ P1-E（2026-11-10）：用户可见的「N 个根」标签，与 `client.workspace.js` 的
+		 * `rootCountLabel` **逐字同形**（跨 chunk 不能 import ⇒ 按本仓惯例同形各存一份，
+		 * 由守卫 ⑤-n 逐字对账 ✓）。三层术语口径见 `client.workspace.js` 的同名函数注释：
+		 * 用户可见中文 / 模型提示词英文 primary·additional / 协议字段 isPrimary，不许互相污染。
+		 */
+		function rootCountLabel(n) {
+			const v = Number.isFinite(Number(n)) ? Math.max(0, Math.trunc(Number(n))) : 0;
+			return String(v) + " 个根";
+		}
+
 		function samePath(a, b) {
 			if (!a || !b) { return false; }
 			const n = (p) => String(p).replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
@@ -147,6 +168,16 @@ window.__ModuleLoader__.load({
 		//   · 没有会话时：`POST /api/session { agentPreset }` 新建，再 `openSession`
 		// ⚠ 任何失败都**就地渲染**（窗口模式没有宿主桥 ⇒ notify 是空转，与 ＋ 菜单同一口径）。
 		const SIDEBAR_VIEW_KEY = "vssaros.chatSurface.sidebarView.v1";
+		/**
+		 * ★ 2026-11-09（用户报「选群 → 切工作区 → 选中态消失、发消息后群会话看不到内容」）：
+		 *   群行原来完全没有自己的选中态，只靠 `id === currentId` 从官方 current 派生；而群是**全局**的
+		 *   （agent-rooms.json 不按工作区隔离），宿主 switchWorktree 却会 rebind 到新工作区的空会话
+		 *   ⇒ 派生值立刻变 false，composer 也跟着绑到那条空会话，消息进不了 `rooms.isRoom` 的收件箱。
+		 *   ⇒ 显式记住选中的群（localStorage + 事件广播），rebind 后把会话绑回群（见 Browser 的 onRebind）。
+		 */
+		const SELECTED_ROOM_KEY = "vssaros.chatSurface.selectedRoom.v1";
+		const SELECTED_ROOM_EVENT = "vssaros-ws-selected-room";
+		const REBIND_EVENT = "vssaros-dsh-rebind";
 		const AGENTS_API_HOME = "/x/agents/api/home";
 		const AGENTS_API_SESSION = "/x/agents/api/session";
 		/** ★ 2026-11-05 多 bot 群聊（vssaros-agents lib/rooms.js）：列表 / 置顶 / 隐藏 / 改名 / 删群。 */
@@ -212,6 +243,54 @@ window.__ModuleLoader__.load({
 					localStorage.setItem(SIDEBAR_VIEW_KEY, v === "bots" ? "bots" : "sessions");
 				}
 			} catch { /* 存不了只影响下次启动的默认页签 */ }
+		}
+		/** 跨工作区记住的「选中的群」。空串 = 没有选群（点普通会话/新建会话后回落）。纯函数。 */
+		function readSelectedRoom() {
+			try {
+				const v = typeof localStorage !== "undefined" ? localStorage.getItem(SELECTED_ROOM_KEY) : null;
+				return typeof v === "string" && v ? v : "";
+			} catch { return ""; }
+		}
+		function writeSelectedRoom(id) {
+			try {
+				if (typeof localStorage === "undefined") { return; }
+				const v = String(id || "");
+				if (v) { localStorage.setItem(SELECTED_ROOM_KEY, v); }
+				else { localStorage.removeItem(SELECTED_ROOM_KEY); }
+			} catch { /* 隐私模式/配额满 ⇒ 本次会话内仍靠模块级变量 */ }
+		}
+		/**
+		 * 群行高亮判据：**官方 current 或显式记住的群**。
+		 * 切工作区时官方 current 变成新工作区的空会话，但用户选中的群不该因此消失。
+		 */
+		function isRoomSelected(roomId, currentId, selectedId) {
+			const id = String(roomId || "");
+			return !!id && (id === String(currentId || "") || id === String(selectedId || ""));
+		}
+		/**
+		 * ★ 2026-11-10（用户报「Bots 页签选中态不明显」）：bot 行原来完全没有选中态。
+		 * 与群同款：localStorage 记住选中的 bot + 事件广播；两者互斥（点群清 bot、点 bot 清群）。
+		 * ⚠ 群那套判据（readSelectedRoom / isRoomSelected / setSelectedRoom 签名）一字不动。
+		 */
+		const SELECTED_BOT_KEY = "vssaros.chatSurface.selectedBot.v1";
+		const SELECTED_BOT_EVENT = "vssaros-ws-selected-bot";
+		function readSelectedBot() {
+			try {
+				const v = typeof localStorage !== "undefined" ? localStorage.getItem(SELECTED_BOT_KEY) : null;
+				return typeof v === "string" && v ? v : "";
+			} catch { return ""; }
+		}
+		function writeSelectedBot(id) {
+			try {
+				if (typeof localStorage === "undefined") { return; }
+				const v = String(id || "");
+				if (v) { localStorage.setItem(SELECTED_BOT_KEY, v); }
+				else { localStorage.removeItem(SELECTED_BOT_KEY); }
+			} catch { /* 隐私模式 / 配额满 ⇒ 本次会话内仍靠闭包变量 */ }
+		}
+		function isBotSelected(botId, selectedId) {
+			const id = String(botId || "");
+			return !!id && id === String(selectedId || "");
 		}
 		/**
 		 * bot 行的「最近一条会话 id」（没有 ⇒ 空串 ⇒ 点击时新建）。
@@ -298,6 +377,7 @@ window.__ModuleLoader__.load({
 					agents: o.agents,
 					home: (o.home && typeof o.home === "object") ? o.home : {},
 					rooms: Array.isArray(o.rooms) ? o.rooms : [],
+					imBadges: (o.imBadges && typeof o.imBadges === "object") ? o.imBadges : {},
 					at: typeof o.at === "number" ? o.at : 0,
 				};
 			} catch { return null; }
@@ -309,13 +389,34 @@ window.__ModuleLoader__.load({
 					agents: (d && d.agents) || [],
 					home: (d && d.home) || {},
 					rooms: (d && d.rooms) || [],
+					imBadges: (d && d.imBadges) || {},
 					at: Date.now(),
 				}));
 			} catch { /* 存不下只影响下次启动的首屏速度 */ }
 		}
+		/* ★ 2026-11-10：Bots 行要标出「有 IM 连接」的 Bot。
+		   判据用 binding 级真源（`/x/agents/api/bindings`）：`targetKind='agent'`、
+		   `targetId === bot.id`、`enabled !== false` 的绑定条数；停用的不算已接入。
+		   纯函数，暴露给 __test 直接断言（不靠真机点）。 */
+		const AGENTS_API_BINDINGS = "/x/agents/api/bindings";
+		const IM_PLATFORM_LABELS = { feishu: "飞书", telegram: "Telegram", discord: "Discord", wecom: "企业微信" };
+		function imBadgeOf(bindings) {
+			const out = {};
+			for (const b of (Array.isArray(bindings) ? bindings : [])) {
+				if (!b || String(b.targetKind || "agent") !== "agent" || b.enabled === false) { continue; }
+				const id = String(b.targetId || "").trim();
+				if (!id) { continue; }
+				const cur = out[id] || (out[id] = { count: 0, platforms: [] });
+				cur.count += 1;
+				const p = String(b.platform || "").trim();
+				if (p && cur.platforms.indexOf(p) < 0) { cur.platforms.push(p); }
+			}
+			return out;
+		}
 		/**
 		 * 拉名册 + 群聊（★ 2026-11-05 群聊回归：`/api/rooms`，读不到不影响名册）。**纯取数**，供 `__test` 注入 fetch。
 		 * （2026-11-03 下线的是旧群聊 `/api/groups`；新群聊是另一套，见 vssaros-agents lib/rooms.js。）
+		 * ★ 2026-11-10：再加一路 bindings；读不到时按空表降级（名册/群聊照常显示，只是没有 IM 图标）。
 		 */
 		function fetchBotsData(fetchImpl) {
 			const f = fetchImpl || (typeof fetch === "function" ? fetch : null);
@@ -325,13 +426,17 @@ window.__ModuleLoader__.load({
 			const rooms = getJson(AGENTS_API_ROOMS).then(
 				(j) => ({ rooms: Array.isArray(j && j.rooms) ? j.rooms : [], roomsError: "" }),
 				(e) => ({ rooms: [], roomsError: String((e && e.message) || e) }));
-			return Promise.all([getJson(AGENTS_API_HOME), rooms]).then(([home, r]) => ({
+			const im = getJson(AGENTS_API_BINDINGS).then(
+				(j) => imBadgeOf(j && j.bindings),
+				() => ({}));
+			return Promise.all([getJson(AGENTS_API_HOME), rooms, im]).then(([home, r, imBadges]) => ({
 				ok: true,
 				agents: Array.isArray(home && home.agents) ? home.agents : [],
 				home: (home && home.home) || {},
 				root: (home && home.root) || "",
 				rooms: r.rooms,
 				roomsError: r.roomsError,
+				imBadges: imBadges,
 				// ★ 2026-11-03：lazy 补齐还没结束 ⇒ 这份快照里"未注册"会虚高（启动时只注册了首批）。
 				//   页签据此自动重拉一次，而不是把早期快照当成最终事实（用户报「为什么这么多未注册」）。
 				presetsPending: home && home.presetsPending === true,
@@ -683,11 +788,14 @@ window.__ModuleLoader__.load({
 		 * Bots 页签要显示的群：隐藏的不显示（**当前打开的那个除外**，与 DS Bot `hidden && !active` 同口径）；
 		 * 搜索按群名与成员名；置顶在前，其余按最近活动倒序。纯函数。
 		 */
-		function visibleRooms(rooms, currentId, query) {
+		function visibleRooms(rooms, currentId, query, selectedId) {
 			const q = String(query || "").trim().toLowerCase();
 			const hit = (v) => !q || String(v || "").toLowerCase().indexOf(q) >= 0;
+			// ★ 2026-11-09：搜索时能找到 hidden 的群（否则没有入口取消隐藏）。
+			//   ⚠ 不能因为「曾选中过」就一直显示 hidden 群：用户主动隐藏是明确动作，必须生效（守卫 ④）。
+			const keep = (r) => r.hidden !== true || r.id === currentId || (!!q && !!selectedId && r.id === selectedId);
 			return (Array.isArray(rooms) ? rooms : [])
-				.filter((r) => r && r.id && (r.hidden !== true || r.id === currentId))
+				.filter((r) => r && r.id && keep(r))
 				.filter((r) => hit(r.name) || (Array.isArray(r.members) ? r.members : []).some((m) => hit(m && m.name)))
 				.sort((a, b) => (Number(b.pinned === true) - Number(a.pinned === true)) || ((b.updatedAt || 0) - (a.updatedAt || 0)));
 		}
@@ -873,6 +981,38 @@ window.__ModuleLoader__.load({
 				const p2 = (n) => (n < 10 ? "0" : "") + n;
 				return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()) + " " + p2(d.getHours()) + ":" + p2(d.getMinutes());
 			} catch { return ""; }
+		}
+
+		/**
+		 * ★ 2026-11-10（用户裁决）：工作区 item 行上「N 个根」chip 的**下拉数据模型**。
+		 *
+		 * 演进：P1-C 初版是「组展开后常驻 <details>」→ 用户要求改成行上可点 chip + 下拉 →
+		 *   本轮再按用户裁决取消工作区 hover tip ⇒ 这份模型现在是 chip 下拉**唯一**的数据源。
+		 * 输入仍是 `record.roots` + `currentRootPath`（会话 cwd 第一权威），不新增第二份根集真源 ✓。
+		 * 单根 ⇒ `multi:false` ⇒ chip 与下拉都不渲染（回落契约逐字不变 ✓）。
+		 * 纯函数 ⇒ `__test` / 守卫可直接断言 ✓。
+		 */
+		/**
+		 * ★ 2026-11-10：工作区 item chip 的**下拉状态机**（纯函数 ⇒ 守卫 ⑤-m 行为断言）。
+		 * 同时只展开一条；再点同一条收起 ⇒ 侧栏不会被多条根列表撑爆 ✓。
+		 */
+		function nextRootsOpenKey(current, key) {
+			return current === key ? null : key;
+		}
+
+		function workspaceRootListOf(record, currentRootPath) {
+			const roots = record && Array.isArray(record.roots) ? record.roots : [];
+			if (roots.length < 2) { return { multi: false, count: roots.length, items: [] }; }
+			return {
+				multi: true,
+				count: roots.length,
+				items: roots.map((r) => ({
+					name: r && r.name ? String(r.name) : (baseName(r && r.path) || String((r && r.path) || "")),
+					path: r && typeof r.path === "string" ? r.path : "",
+					isPrimary: !!(r && r.isPrimary),
+					isCurrent: !!(r && typeof r.path === "string" && currentRootPath && samePath(r.path, currentRootPath)),
+				})),
+			};
 		}
 
 		/**
@@ -1385,6 +1525,7 @@ window.__ModuleLoader__.load({
 				//   先把点的那条点亮（用户点哪条哪条立刻有反应）⇒ 官方 selection 落地后由它接管 ✓。
 				try { if (typeof setCurrent === "function") { setCurrent(sid); } } catch { /* 渲染失败不影响打开 */ }
 				let attempt = 0;
+				let retainOk = false;
 				const transient = (msg) => /unknown session|is released|not found|no such/i.test(msg);
 				const attemptOpen = () => {
 					attempt++;
@@ -1393,17 +1534,31 @@ window.__ModuleLoader__.load({
 						state.lastOpenError = msg;
 						state.openSessionTries = attempt;
 						if (transient(msg) && attempt <= RETRY_DELAYS.length) {
-							// 会话不在 roster / 引用被释放 ⇒ 先 retain 拿回引用，再退避重试（同主包口径）
+							// 会话不在 roster / 引用被释放 ⇒ 先 retain 拿回引用，再退避重试（同主包口径）。
+							// ★ 2026-11-10：接住 retain 的**结果**，作为「还能不能靠重试救回来」的判据。
 							try {
 								const svc = ctx.sessions;
-								if (svc && typeof svc.retain === "function") { void Promise.resolve(svc.retain(sid)).catch(() => undefined); }
+								if (svc && typeof svc.retain === "function") {
+									void Promise.resolve(svc.retain(sid)).then(
+										(v) => { if (v !== false) { retainOk = true; state.retainOk = true; } },
+										() => { state.retainOk = false; });
+								}
 							} catch { /* 下一跳还会再试 */ }
 							say("正在打开会话…（第 " + (attempt + 1) + " 次，会话还没就绪）", "note");
 							try { window.setTimeout(attemptOpen, RETRY_DELAYS[attempt - 1]); } catch { /* 没有 setTimeout */ }
 							return;
 						}
-						say("打开会话失败：" + msg, "error");
-						notify("warn", "打开会话失败：" + msg);
+						// ★ 2026-11-10：终态失败必须**可见**（notify 在窗口模式是空转，setMsg 也可能没传）。
+						//   `is released` 且 retain 一次都没成功 ⇒ 引用真的没了，光重试永远打不开 ⇒
+						//   给一次「重新绑定群会话」的可恢复动作（Host 侧 retain 自愈 / 重建 + 账本迁移）。
+						if (/is released/i.test(msg) && !retainOk && rebindRoomOnce(sid, say)) {
+							reportOpenError(sid, "群会话引用已失效，正在重新绑定…");
+							return;
+						}
+						const finalMsg = "打开会话失败：" + msg;
+						reportOpenError(sid, finalMsg);
+						say(finalMsg, "error");
+						notify("warn", finalMsg);
 						// ★ 2026-10-28：真的打不开 ⇒ 撤回乐观高亮（否则会一直亮着一条**没打开**的会话 ✗）
 						try { if (typeof setCurrent === "function") { setCurrent(null); } } catch { /* 忽略 */ }
 					};
@@ -1429,8 +1584,10 @@ window.__ModuleLoader__.load({
 					attemptOpen();
 				} catch (e) {
 					const msg = String((e && e.message) || e);
-					say("打开会话失败：" + msg, "error");
-					notify("warn", "打开会话失败：" + msg);
+					const finalMsg = "打开会话失败：" + msg;
+					reportOpenError(sid, finalMsg);
+					say(finalMsg, "error");
+					notify("warn", finalMsg);
 				}
 			};
 			// ── 会话行操作（2026-10-29 用户要求：右键菜单 置顶/重命名/复制 id/归档 + 组内拖拽）──
@@ -1668,6 +1825,91 @@ window.__ModuleLoader__.load({
 			/** 标记已读（打开会话时调；与 dsh-desktop 的 `view.markSessionRead` 同一时机）。 */
 			const markSessionRead = (sid) => setSessionUnread(sid, false);
 
+			/** ★ 2026-11-10：SSE/轮询刷出来的群 id 集合。rebind 时判断「宿主是不是切到了另一个群」。 */
+			let knownRoomIds = new Set();
+			const rememberRooms = (list) => {
+				knownRoomIds = new Set((Array.isArray(list) ? list : []).map((r) => String((r && r.id) || "")).filter(Boolean));
+				// 暴露给跨 chunk 的 superagent client：它打开群时用这个集合判断 id 是不是群。
+				try { if (typeof window !== "undefined") { window.__vssarosKnownRoomIds = knownRoomIds; } } catch { /* 无 window */ }
+			};
+			/** 打开会话失败不能只靠 notify（窗口模式空转）⇒ 全局事件由 Bots 页签就地显示。 */
+			const reportOpenError = (sid, message) => {
+				state.openSessionError = message;
+				try {
+					const win = typeof window !== "undefined" ? window : null;
+					const Ctor = win && (win.CustomEvent || (typeof CustomEvent !== "undefined" ? CustomEvent : null));
+					if (Ctor) { win.dispatchEvent(new Ctor("vssaros-open-session-error", { detail: { sid, message } })); }
+				} catch { /* 事件不可用 ⇒ state 里仍留着 */ }
+			};
+			/** 每个 sid 只自动重建一次，避免引用真的救不回来时无限重开。 */
+			const rebindTried = new Set();
+			const rebindRoomOnce = (sid, say) => {
+				if (!sid || rebindTried.has(sid) || !knownRoomIds.has(sid) || typeof fetch !== "function") { return false; }
+				rebindTried.add(sid);
+				say("群会话引用已失效，正在重新绑定群会话…", "note");
+				void Promise.resolve(fetch(AGENTS_API_ROOMS, {
+					method: "POST", headers: { "content-type": "application/json", accept: "application/json" },
+					body: JSON.stringify({ action: "rebind", id: sid }),
+				})).then((r) => (r && typeof r.json === "function" ? r.json() : null)).then((res) => {
+					if (!res || !res.ok || !res.roomId) { throw new Error(String((res && res.error) || "Host 没返回新群会话 id")); }
+					const nextId = String(res.roomId);
+					setSelectedRoom(nextId);
+					say("群会话已重新绑定，正在打开…", "note");
+					openSession(nextId, say);
+				}).catch((e) => {
+					const msg = "群会话重建失败：" + String((e && e.message) || e);
+					say(msg, "error");
+					reportOpenError(sid, msg);
+				});
+				return true;
+			};
+
+			/** ★ 2026-11-10：bot 行选中态（与群互斥；同款写盘 + 广播，跨窗口 / 刷新不丢）。 */
+			let selectedBotId = readSelectedBot();
+			const setSelectedBot = (id) => {
+				const next = String(id || "");
+				if (next === selectedBotId && readSelectedBot() === next) { return; }
+				selectedBotId = next;
+				writeSelectedBot(next);
+				try {
+					const Ctor = typeof window !== "undefined" ? (window.Event || Event) : Event;
+					window.dispatchEvent(new Ctor(SELECTED_BOT_EVENT));
+				} catch { /* 无 window ⇒ 下次渲染才看到 */ }
+			};
+			/** ★ 2026-11-09：显式记住选中的群；变更广播 ⇒ 挂载中的 Browser 重画（与未读同款）。 */
+			let selectedRoomId = readSelectedRoom();
+			const setSelectedRoom = (id) => {
+				const next = String(id || "");
+				// ★ 2026-11-10：群与 bot 互斥 ⇒ 任何「选中群 / 离开群」都清掉 bot 选中态。
+				//   ⚠ 必须放在早退之前；点 bot 会先走这里再 setSelectedBot(id) 写回，顺序不能反。
+				if (readSelectedBot()) { setSelectedBot(""); }
+				// ★ 2026-11-10：闭包与 localStorage 都一致才早退；否则补写盘 + 广播，
+				//   避免「记住的群」停在旧群导致 @群 转投投错（真机 A→B→A 切不回）。
+				if (next === selectedRoomId && readSelectedRoom() === next) { return; }
+				selectedRoomId = next;
+				writeSelectedRoom(next);
+				// 上报 Host：只有显式选中群时才放宽跨会话 @群 转投；离开群时发空 id。
+				// ⚠ fire-and-forget：HTTP 失败不能阻塞选中态本身。
+				try {
+					void fetch(AGENTS_API_ROOMS, {
+						method: "POST", headers: { "content-type": "application/json", accept: "application/json" },
+						body: JSON.stringify({ action: "select", id: next }),
+					}).catch(() => undefined);
+				} catch { /* 无 fetch ⇒ 页面选中态仍生效 */ }
+				// ⚠ 用 window.Event：jsdom 下全局 Event 是 Node 的实现，派给 window 会被拒且被 catch 吞掉
+				//   ⇒ 组件收不到广播 ⇒ 高亮不刷新（真机守卫抓到过）。
+				try {
+					const Ctor = typeof window !== "undefined" ? (window.Event || Event) : Event;
+					window.dispatchEvent(new Ctor(SELECTED_ROOM_EVENT));
+				} catch { /* 无 window ⇒ 下次渲染才看到 */ }
+			};
+			/** ★ 2026-11-10：跨 chunk 旁路（conversationViews 群-ask、superagent 的 @群/流程卡）
+			 *   打开群会话时统一走这里，避免「记住的群」停在旧群。其它 chunk 调
+			 *   `window.__vssarosSelectRoom(roomId)`；没装本 chunk 时它们各自回落到写盘 + 广播。 */
+			try {
+				if (typeof window !== "undefined") { window.__vssarosSelectRoom = (id) => setSelectedRoom(id); }
+			} catch { /* 无 window ⇒ 只影响跨 chunk 旁路 */ }
+
 			/** 读手动顺序（localStorage）。坏数据 / 无 localStorage ⇒ 空表（侧栏照常工作）。 */
 			const readOrderMap = () => {
 				try {
@@ -1838,11 +2080,9 @@ window.__ModuleLoader__.load({
 				meta: { fontSize: 10, color: "var(--dsw-alias-label-tertiary, #737373)", flex: "0 0 auto", opacity: .9 },
 				badge: { fontSize: 10, lineHeight: "15px", padding: "0 6px", borderRadius: 8, border: "1px solid var(--dsw-alias-border-l2, #383838)", color: "var(--dsw-alias-label-tertiary, #737373)", flex: "0 0 auto" },
 				rtag: { fontSize: 10, lineHeight: "15px", padding: "0 6px", borderRadius: 4, border: "1px solid var(--dsw-alias-border-l2, #383838)", color: "var(--dsw-alias-label-tertiary, #737373)", flex: "0 0 auto", maxWidth: 74, overflow: "hidden", textOverflow: "ellipsis" },
-				card: {
-					position: "fixed", zIndex: 60, width: 380, padding: "12px 12px 10px", borderRadius: 12,
-					background: "var(--dsw-alias-bg-layer-2, #262626)", border: "1px solid var(--dsw-alias-border-l2, #3e3e3e)",
-					boxShadow: "0 16px 40px rgba(0,0,0,.6)", color: "var(--dsw-alias-label-primary, #e6e6e6)",
-				},
+				// ★ 2026-11-10（用户裁决）：工作区 item hover **不弹 tip** ⇒ `S.card` / HoverCard 整条链路已移除。
+				//   多根信息由行上「N 个根」chip 的点击下拉承载（与 hover 卡同源，但不遮挡、不自动弹）。
+				//   会话行的 hover 卡（官方 `SessionNodeItem` 同款）保留，见 `S.sessHoverCard` ✓。
 				search: { width: "100%", margin: "2px 0 6px", padding: "4px 8px", borderRadius: 6, border: "1px solid var(--dsw-alias-border-l2, #383838)", background: "var(--dsw-alias-bg-layer-1, #262626)", color: "inherit", fontSize: 12, outline: "none" },
 				// ＋ 菜单里的条目（两个动作：加单目录 / 导入多根）
 				menuItem: {
@@ -2092,7 +2332,18 @@ window.__ModuleLoader__.load({
 				/** DS Bot 对标的 bot item 状态：静态彩点 + 第二行 shimmer；头像姿态动画由样式表给。 */
 				botStateDot: { width: 7, height: 7, borderRadius: 999, flex: "0 0 7px", marginLeft: 4, boxShadow: "0 0 0 1px var(--dsw-alias-border-l2, transparent)" },
 				botStateText: { fontSize: 10.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-			};
+				/** ★ 2026-11-10：有 IM 绑定的 Bot 在名称后显示一枚气泡 icon（颜色走主题令牌）。 */
+				botImIcon: { width: 13, height: 13, flex: "0 0 auto", display: "inline-flex", alignItems: "center",
+					justifyContent: "center", color: "var(--dsw-alias-brand-primary, #4d7cfe)" },
+				};
+				/* chunk realm 只允许 require("react") ⇒ 跨 chunk 不能 import，
+				这里内联一份与 Channel 绑定卡同形的消息气泡 path（BIND_ICON.msg）。 */
+				const BOT_IM_ICON_PATH = "M4 5h16v11H9l-5 4V5z";
+				const botImIcon = () => react.createElement("svg", {
+				width: 13, height: 13, viewBox: "0 0 24 24", "aria-hidden": "true",
+				fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round",
+				style: { display: "block" },
+				}, react.createElement("path", { d: BOT_IM_ICON_PATH }));
 
 			/**
 			 * 状态灯的**脉动**动效只能靠样式表给（React 内联 style 没有 @keyframes）。
@@ -2175,6 +2426,16 @@ window.__ModuleLoader__.load({
 						+ "color:var(--dsw-alias-label-primary,#e6e6e6)}"
 						+ ".vssaros-ws-row:hover,.vssaros-ws-row[data-current=\"1\"],.vssaros-ws-row[data-menu-open=\"1\"]"
 						+ "{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}"
+						// ── ★ 2026-11-10 Bots 页签选中态（bot 行 / 群行共用）──────────────────
+						//   双重编码：亮底 + 2px 品牌色左竖条 + 1px 亮边 + 600 字重；
+						//   hover 只用弱底 ⇒ 选中与悬停一眼可分（页签选中态同款教训：bg-layer-2/3 太弱）。
+						//   ⚠ 属性选择器用单引号，避免 JS 字符串里的 \" 转义把 CSS 选择器写坏。
+						+ ".vssaros-ws-bots-row{position:relative;transition:background-color .12s,box-shadow .12s,color .12s}"
+						+ ".vssaros-ws-bots-row:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}"
+						+ ".vssaros-ws-bots-row[data-selected='1']{background:var(--dsw-alias-interactive-bg-active,#414346);"
+						+ "color:var(--dsw-alias-label-primary,#ffffff);font-weight:600;"
+						+ "box-shadow:inset 2px 0 0 var(--dsw-alias-brand-primary,#4d7cfe),inset 0 0 0 1px rgba(255,255,255,.12)}"
+						+ ".vssaros-ws-bots-row[data-selected='1']:hover{background:var(--dsw-alias-interactive-bg-active,#414346)}"
 						+ ".vssaros-ws-slot{width:16px;height:20px;flex:none;display:inline-flex;align-items:center;"
 						+ "justify-content:center;color:var(--dsw-alias-label-tertiary,#737373)}"
 						+ ".vssaros-ws-title{flex:1;min-width:0;font-size:14px;line-height:20px;margin:0 6px 0 4px;"
@@ -2244,37 +2505,11 @@ window.__ModuleLoader__.load({
 				} catch { /* 无 head（__test / 非 DOM）⇒ 静默跳过，行仍可用（只是没有悬停效果） */ }
 			};
 
-			/** hover 详情卡（fixed 定位到条目右侧；夹进视口——WebContentsView 外会被裁 ✗）。 */
-			function HoverCard(props) {
-				const rec = props.record;
-				const sessionsPerRoot = rec.roots.map((rt, i) => props.sessions.filter((s) => (s.rootName || rt.name) === rt.name && (rt.isPrimary ? !s.rootName || s.rootName === rt.name : true)).length);
-				return react.createElement("div", { style: Object.assign({}, S.card, { left: props.x, top: props.y }) },
-					react.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
-						react.createElement("b", { style: { fontSize: 14 } }, rec.name),
-						react.createElement("span", { style: { fontSize: 11, color: "var(--dsw-alias-label-tertiary, #737373)" } }, "多根工作区 · " + rec.roots.length + " 个根"),
-					),
-					rec.codeWorkspacePath ? react.createElement("div", { style: { fontFamily: "Consolas, monospace", fontSize: 11, color: "var(--dsw-alias-label-tertiary, #737373)", margin: "3px 0 8px" } }, rec.codeWorkspacePath) : null,
-					rec.roots.map((rt, i) => {
-						const cur = rt.path && props.currentRootPath && samePath(rt.path, props.currentRootPath);
-						return react.createElement("div", {
-							key: rt.path, style: {
-								display: "grid", gridTemplateColumns: "1fr auto", gap: "2px 8px", padding: "7px 8px", borderRadius: 8, marginTop: 2,
-								background: cur ? "rgba(67,184,96,.08)" : "transparent", outline: cur ? "1px solid rgba(67,184,96,.35)" : "none",
-							},
-						},
-							react.createElement("span", { style: { fontWeight: 600, display: "flex", alignItems: "center", gap: 6, minWidth: 0 } },
-								rt.name,
-								rt.isPrimary ? react.createElement("span", { style: { fontSize: 10, fontWeight: 400, color: "var(--dsw-alias-label-tertiary, #737373)", border: "1px solid var(--dsw-alias-border-l2, #383838)", borderRadius: 4, padding: "0 4px", lineHeight: "14px" } }, "主根") : null,
-								cur ? react.createElement("span", { style: { fontSize: 10.5, fontWeight: 400, color: "#43b860" } }, "● 当前会话") : null,
-							),
-							react.createElement("span", { style: { fontSize: 11, color: "var(--dsw-alias-label-tertiary, #737373)" } }, sessionsPerRoot[i] + " 个会话"),
-							react.createElement("span", { style: { gridColumn: "1 / 3", fontFamily: "Consolas, monospace", fontSize: 11, color: "var(--dsw-alias-label-secondary, #a3a3a3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, rt.path),
-						);
-					}),
-					react.createElement("div", { style: { borderTop: "1px solid var(--dsw-alias-border-l1, #353535)", marginTop: 8, paddingTop: 8, fontSize: 11, color: "var(--dsw-alias-label-tertiary, #737373)" } },
-						"新建会话默认在主根；切根用聊天输入框下方的工作区入口"),
-				);
-			}
+			// ★ 2026-11-10（用户裁决）：工作区 item 的 HoverCard 组件已删除。
+			//   原因：hover 自动弹出的详情卡会遮挡侧栏、且与新加的「N 个根」chip 下拉重复。
+			//   信息没有丢 —— chip 下拉列出各根（根名 / 主根 / ● 当前会话 / 路径），
+			//   「当前会话」栏（client.workspace.js）给出作用域条与受限清单。
+			//   ⚠ 会话行的 hover 卡是官方 `SessionNodeItem` 同款，**保留**（守卫 ⑤ 钉住 800ms）。
 
 			/**
 			 * ★ 2026-11-05：群执行中的全局浮层（对标 DS Bot 的 GroupEvent / MemberDock / roomProgress）。
@@ -2386,6 +2621,9 @@ window.__ModuleLoader__.load({
 				const shown = active.filter((item) => !dockedRooms.includes(String((item && item.roomId) || "")));
 				if (!shown.length || tipOff) { return null; }
 				const open = (id) => {
+					if (!id) { return; }
+					// ★ 2026-11-10：旁路打开群也要更新记住的群，否则 Host 仍按旧群放宽转投。
+					setSelectedRoom(String(id));
 					try {
 						const uw = ctx.uiWorkspace;
 						if (uw && typeof uw.openSession === "function") { uw.openSession(String(id)); }
@@ -2459,7 +2697,8 @@ window.__ModuleLoader__.load({
 				const [query, setQuery] = react.useState("");
 				const [searchOn, setSearchOn] = react.useState(false);
 				const [collapsed, setCollapsed] = react.useState({});
-				const [hover, setHover] = react.useState(null); // {key, x, y}
+				// ★ 2026-11-10（用户裁决）：工作区 item hover 不弹 tip ⇒ `hover` state 已删除。
+				// ⚠ 不要再加回来：多根信息由 chip 下拉承载；会话行 hover 卡用下面的 `sessHover`（独立 ✓）。
 				// ★ 2026-10-26：＋按钮的成败**必须看得见**（窗口模式没有宿主桥 ⇒ notify 是空转）
 				const [wsMsg, setWsMsg] = react.useState(null); // {kind:'error'|'note', text}
 				// ＋ 菜单（两个动作：加单目录 / 从 .code-workspace 导入多根）；null = 关闭
@@ -2477,9 +2716,64 @@ window.__ModuleLoader__.load({
 					window.addEventListener(UNREAD_EVENT, onUnread);
 					return () => window.removeEventListener(UNREAD_EVENT, onUnread);
 				}, []);
-				const hoverTimer = react.useRef(null);
+				// ★ 2026-11-09（跨工作区群聊）：显式选中态变化 / 宿主 rebind 都要让群行重画。
+				const [, forceRoomSel] = react.useState(0);
+				react.useEffect(() => {
+					if (typeof document === "undefined") { return undefined; }
+					const onSelected = () => forceRoomSel((n) => n + 1);
+					/**
+					 * 切工作区 ⇒ 宿主把会话 rebind 到新目录的空会话。群是全局的，用户既已选中它，
+					 * 就把中栏/composer 重新绑回群会话；否则 `rooms.isRoom(sid)` 判否，
+					 * 人发的消息只进 lastUser，群 log / 群会话里永远看不到。
+					 * ⚠ 延迟一拍：让 client.js 的 rebind（connectFor/navigate）先落地，避免抢在它前面被覆盖。
+					 */
+					/** 打开会话失败的全局兜底（含 setMsg 为 null 的旁路/rebind 恢复）⇒ 就地可见。 */
+					const onOpenError = (ev) => {
+						const d = ev && ev.detail;
+						if (d && d.message) { setBotsMsg({ kind: "error", text: String(d.message) }); }
+					};
+					const onRebind = (e) => {
+						const sid = e && e.detail && typeof e.detail.sessionId === "string" ? e.detail.sessionId : "";
+						const roomId = readSelectedRoom();
+						if (!roomId || sid === roomId) { return; }
+						// ★ 2026-11-10：宿主 rebind 到了**另一个群** ⇒ 用户主动切群，跟着更新记住的群，
+						//   绝不把会话抢回旧群（真机 A→B 后切不回 A 的回归）。
+						if (sid && knownRoomIds.has(sid) && sid !== roomId) {
+							setSelectedRoom(sid);
+							setBotsMsg(null);
+							return;
+						}
+						// 恢复要**带可见反馈**：成功清提示，失败清掉记住的群，避免下次 rebind 又抢回。
+						const report = (v) => {
+							if (!v) { setBotsMsg(null); return; }
+							if (v.kind === "error") {
+								setSelectedRoom("");
+								setBotsMsg({ kind: "error", text: v.text });
+							} else { setBotsMsg(v); }
+						};
+						setBotsMsg({ kind: "note", text: "切换工作区后正在重新打开群聊…" });
+						try {
+							window.setTimeout(() => {
+								if (readSelectedRoom() !== roomId) { return; }
+								openSession(roomId, report);
+							}, 0);
+						} catch { setBotsMsg(null); /* 无 setTimeout ⇒ 放弃这次恢复 */ }
+					};
+					window.addEventListener(SELECTED_ROOM_EVENT, onSelected);
+					// ★ 2026-11-10：bot 选中态变化也走同一个纯重画（onSelected 只是 forceRoomSel bump）
+					window.addEventListener(SELECTED_BOT_EVENT, onSelected);
+					window.addEventListener("vssaros-open-session-error", onOpenError);
+					document.addEventListener(REBIND_EVENT, onRebind);
+					return () => {
+						window.removeEventListener(SELECTED_ROOM_EVENT, onSelected);
+						window.removeEventListener(SELECTED_BOT_EVENT, onSelected);
+						window.removeEventListener("vssaros-open-session-error", onOpenError);
+						document.removeEventListener(REBIND_EVENT, onRebind);
+					};
+				}, []);
+				// 工作区 `hoverTimer` 已随 HoverCard 一并删除（2026-11-10 用户裁决：不弹 tip）。
 				// ── 会话行 hover 卡片（2026-11-02，对齐官方 `SessionNodeItem` 的 HoverCard）──
-				/** `{sid, x, y}`；null = 不显示。与工作区的 `hover` 分开：两者语义/延迟/内容都不同。 */
+				/** `{sid, x, y}`；null = 不显示。**只服务会话行**（工作区行不再有 hover 卡）。 */
 				const [sessHover, setSessHover] = react.useState(null);
 				const sessHoverTimer = react.useRef(null);
 				// ── 会话行操作（2026-10-29，用户要求：右键菜单 + 拖拽排序）──
@@ -2489,11 +2783,19 @@ window.__ModuleLoader__.load({
 				const [sessMenu, setSessMenu] = react.useState(null);
 				/**
 				 * 工作区行尾 ⋯ 菜单：`{key, x, y}`；null = 关闭。
-				 * ★ 2026-11-02（对齐官方 `.projectRow` 的 `rowActions`）：官方工作区行 hover 时右侧出现 ⋯，
-				 *   点开是工作区级动作（官方含「删除工作区」danger）。我们这里只做**不破坏数据**的三项
-				 *   （折叠/展开、全部折叠、全部展开）—— 删除工作区要走宿主改 IDE 记录，另议。
+				 * ★ 2026-11-02（对齐官方 `.projectRow` 的 `rowActions`）：官方工作区行 hover 时右侧出现 ⋯。
+				 * ★ 2026-11-10 更正：下面「另议」的旧注释已 stale —— 菜单从 11-02 起就有「移除工作区」
+				 *   （`removeWorkspace` → 官方 `workspaces.delete(workspaceId)`：**只摘 dsh 登记**、保留
+				 *   会话与磁盘文件，可逆）。它**不删 IDE 工作区记录**（页面桥是单向只读，见
+				 *   `client.workspace.js` 的 `workspaceActionNotes()`），需要删记录请在 IDE 侧栏操作。
 				 */
 				const [wsMenu, setWsMenu] = react.useState(null);
+				/**
+				 * ★ 2026-11-10（用户裁决）：工作区行「N 个根」chip 的下拉展开态。
+				 * 只记一个 key（同时只展开一条，与菜单互斥同款）⇒ 不会把侧栏撑出一屏根列表。
+				 * ⚠ 必须在 `railOnly` 提前 return **之前**声明（否则 hook 数量变化 ⇒ React #310 ✗）。
+				 */
+				const [rootsOpenKey, setRootsOpenKey] = react.useState(null);
 				/** 就地重命名：{sid, draft}；null = 不在重命名。 */
 				const [renaming, setRenaming] = react.useState(null);
 				/** 会话操作的**就地反馈**（窗口模式没有宿主桥 ⇒ 这是唯一可见通道）。 */
@@ -2596,6 +2898,17 @@ window.__ModuleLoader__.load({
 						document.removeEventListener("keydown", onKey, true);
 					};
 				}, [menu, sessMenu, confirmDel, wsMenu, botsMenu, roomMenu, roomDel, botMenu, botDel, botRename]);
+				/**
+				 * ★ 2026-11-10：chip 下拉的 Esc 关闭（独立 effect，刻意**不改**上面那套点外面关菜单
+				 * —— 那是真机反复调过的菜单逻辑，混入下拉状态风险大）。下拉是内联展开不是浮层，
+				 * 点外面不强制收起；点 chip 自身或另开一条即收起（rootsOpenKey 单值）✓。
+				 */
+				react.useEffect(() => {
+					if (!rootsOpenKey) { return undefined; }
+					const onKey = (ev) => { if (ev.key === "Escape") { setRootsOpenKey(null); } };
+					document.addEventListener("keydown", onKey, true);
+					return () => document.removeEventListener("keydown", onKey, true);
+				}, [rootsOpenKey]);
 				// ★ 2026-10-28：订阅官方 selection（当前会话）—— 官方导航一变就重渲染 ⇒ 高亮跟着动 ✓。
 				//   官方那个字段是私有的 ⇒ 读不到就退化成"乐观高亮 + 宿主绑定"（不会崩 ✓）。
 				react.useEffect(() => {
@@ -2690,30 +3003,14 @@ window.__ModuleLoader__.load({
 				//   ⇒ 现在这里只落一个标记，真正的提前 return 放在**所有 hooks 之后**（见末尾 `railOnly` 分支）。
 				const railOnly = !wide;
 
-				const openHover = (key, e) => {
-					const rect = e.currentTarget.getBoundingClientRect();
-					if (hoverTimer.current) { clearTimeout(hoverTimer.current); }
-					hoverTimer.current = setTimeout(() => {
-						const w = typeof window !== "undefined" ? window.innerWidth : 0;
-						const h = typeof window !== "undefined" ? window.innerHeight : 0;
-						let x = rect.right + 10;
-						let y = rect.top - 6;
-						if (w > 0) { x = Math.max(8, Math.min(x, w - 396)); }
-						if (h > 0) { y = Math.max(8, Math.min(y, h - 320)); }
-						setHover({ key, x, y });
-					}, HOVER_DELAY_MS);
-				};
-				const closeHover = () => {
-					if (hoverTimer.current) { clearTimeout(hoverTimer.current); hoverTimer.current = null; }
-					setHover(null);
-				};
+				// ★ 2026-11-10（用户裁决）：工作区 `openHover` / `closeHover` 已删除 ——
+				//   行上不再有任何 hover 触发，鼠标悬停只保留 CSS 的悬停高亮（不弹卡片/tip）。
 				/**
 				 * 工作区行尾 ⋯（官方 `.rowActions`）：定位并打开工作区级菜单。
 				 * ⚠ 必须 `stopPropagation`：工作区行的 onClick 是**折叠/展开**，不拦就会顺手把组折起来 ✗。
 				 */
 				const openWsMenu = (key, e, label) => {
 					try { e.preventDefault(); e.stopPropagation(); } catch { /* 合成事件 */ }
-					closeHover();
 					const w = typeof window !== "undefined" ? window.innerWidth : 0;
 					const h = typeof window !== "undefined" ? window.innerHeight : 0;
 					let x = (e && e.clientX ? e.clientX : 16) + 2;
@@ -2810,7 +3107,7 @@ window.__ModuleLoader__.load({
 						if (w > 0) { x = Math.max(8, Math.min(x, w - 328)); }
 						if (h > 0) { y = Math.max(8, Math.min(y, h - 220)); }
 						setSessHover({ sid: s.id, x, y });
-					}, SESS_HOVER_DELAY_MS);
+						}, hoverDelayOf("session"));
 				};
 				const closeSessHover = () => {
 					if (sessHoverTimer.current) { clearTimeout(sessHoverTimer.current); sessHoverTimer.current = null; }
@@ -3073,6 +3370,7 @@ window.__ModuleLoader__.load({
 						}
 						say(null);
 						try { markSessionRead(String(got)); } catch { /* 本地未读表，失败不影响打开 */ }
+						setSelectedRoom("");
 						openSession(String(got), say, (sid) => setLocalCurrent(sid));
 						// 打开是异步的（官方导航要几百毫秒）⇒ focus 自己会重试到 composer 出现
 						focusComposer();
@@ -3479,7 +3777,7 @@ window.__ModuleLoader__.load({
 						//   会话 id 改在 hover 卡片里给（信息不丢，且不占标题位）。
 						// ★ 2026-11-02：**打开即已读**（与 dsh-desktop 的 `view.markSessionRead` 同一时机，
 						//   也是官方 `openSession` 里的第一步）—— 不放在打开成功的回调里：那时用户已经看到了。
-						onClick: () => { if (!isRenaming) { markSessionRead(s.id); openSession(s.id, setMsg, setLocal); } },
+						onClick: () => { if (!isRenaming) { markSessionRead(s.id); setSelectedRoom(""); openSession(s.id, setMsg, setLocal); } },
 						onContextMenu: (e) => openSessMenu(s, e),
 						// ★ 2026-11-02：hover 卡片（官方 `HoverCard openDelayMs=800`；菜单开着/拖拽中不弹）
 						onMouseEnter: (e) => openSessHover(s, e),
@@ -3605,7 +3903,8 @@ window.__ModuleLoader__.load({
 						// 已有内容（上次已拉到 / 刚读的缓存）⇒ 只切 loading，绝不清空列表
 						if (hasRows) { return Object.assign({}, b, { status: "loading" }); }
 						if (cached && cached.agents.length) {
-							return { status: "loading", agents: cached.agents, home: cached.home, groups: cached.groups, rooms: cached.rooms, error: "", stale: true, cachedAt: cached.at };
+							return { status: "loading", agents: cached.agents, home: cached.home, groups: cached.groups, rooms: cached.rooms,
+								imBadges: cached.imBadges || {}, error: "", stale: true, cachedAt: cached.at };
 						}
 						return Object.assign({}, b, { status: "loading" });
 					});
@@ -3619,6 +3918,7 @@ window.__ModuleLoader__.load({
 							saveBotsCache(d);
 							setBots({
 								status: "ready", agents: d.agents, home: d.home, groups: d.groups, error: "",
+								imBadges: d.imBadges || {},
 								// ★ 2026-11-05 群聊（读不到群只影响群行，名册照常；原因放在 roomsError 里如实说）
 								rooms: d.rooms || [], roomsError: d.roomsError || "",
 								// ★ 2026-11-03：preset 还在分批注册 ⇒ 这份快照的「未注册」会虚高（下面自动重拉）
@@ -3684,6 +3984,8 @@ window.__ModuleLoader__.load({
 					let alive = true;
 					const applyRooms = (rooms) => {
 						if (!alive) { return; }
+						// ★ 2026-11-10：rebind 判断「宿主是不是切到了另一个群」要用这份最新群名册。
+						rememberRooms(rooms);
 						setBots((b) => (b.status === "ready" ? Object.assign({}, b, { rooms: Array.isArray(rooms) ? rooms : [], roomsError: "" }) : b));
 					};
 					const applyRoomsError = (d) => {
@@ -3720,11 +4022,42 @@ window.__ModuleLoader__.load({
 									for (let at = buffer.indexOf("\n\n"); at >= 0; at = buffer.indexOf("\n\n")) {
 										const frame = buffer.slice(0, at);
 										buffer = buffer.slice(at + 2);
+										// ★ 2026-11-10：解析 data（Host 帧本来就带 kind / room.id / error），
+										//   原来只看 event 名、把 data 整个丢掉 ⇒ 建群后无法自动绑定群会话。
+										let data = null;
+										try {
+											const line = (frame.split("\n").find((l) => /^data:\s*/.test(l)) || "").replace(/^data:\s*/, "");
+											data = line ? JSON.parse(line) : null;
+										} catch { /* 坏帧 ⇒ 退回原来的「只重取列表」 */ }
+										// (1c) 运行时错误（群会话不可用 / 转投失败）⇒ 就地可见，不再只写 console。
+										if (/event:\s*rooms-error/.test(frame)) {
+											const message = String((data && data.error) || "群聊出了点问题");
+											if (!alive || stopped) { continue; }
+											try { setBotsMsg({ kind: "error", text: message }); } catch { /* 组件已卸载 */ }
+											try {
+												const Ctor = win && (win.CustomEvent || (typeof CustomEvent !== "undefined" ? CustomEvent : null));
+												if (Ctor) { win.dispatchEvent(new Ctor(ROOMS_ERROR_EVENT, { detail: { status: 0, error: message, url: AGENTS_API_ROOMS } })); }
+											} catch { /* 事件不可用 ⇒ 上面那行提示已生效 */ }
+											continue;
+										}
 										if (!/event:\s*rooms-changed/.test(frame)) { continue; }
 										void fetchRoomsOnly().then((d) => {
 											if (!alive || stopped) { return; }
 											if (!d || !d.ok) { applyRoomsError(d); return; }
 											applyRooms(d.rooms);
+											// (1a) 建群后把群设为当前会话、绑定 composer：用户在群里打字才会
+											//      命中 rooms.isRoom(sid) → group_relay → 成员分工。
+											//      ⚠ 只在「还没选群 / 记住的群已不在列表」时接管，不抢用户正在聊的群。
+											const created = data && data.kind === "created" ? String(data.room?.id || "") : "";
+											if (created && (d.rooms || []).some((r) => String(r && r.id) === created)) {
+												const remembered = readSelectedRoom();
+												const stillThere = !remembered || (d.rooms || []).some((r) => String(r && r.id) === remembered);
+												if (!remembered || !stillThere) {
+													setSelectedRoom(created);
+													try { markSessionRead(created); } catch { /* 未读表失败不影响 */ }
+													openSession(created, null);
+												}
+											}
 											try {
 												const Ctor = win && (win.CustomEvent || (typeof CustomEvent !== "undefined" ? CustomEvent : null));
 												if (Ctor) { win.dispatchEvent(new Ctor(ROOMS_CHANGED_EVENT, { detail: { schema: GROUP_ACTIVITY_SCHEMA, rooms: d.rooms || [], pushed: true } })); }
@@ -3785,6 +4118,10 @@ window.__ModuleLoader__.load({
 				const openBot = (a) => {
 					const id = String((a && a.id) || "");
 					if (!id) { return; }
+					// ★ 2026-11-10：点 bot ⇒ 先清群、再记住这个 bot（两者互斥，只允许一行高亮）。
+					//   ⚠ 顺序不能反：setSelectedRoom 内部会顺手清 bot 选中态。
+					setSelectedRoom("");
+					setSelectedBot(id);
 					setBotsMsg(null);
 					// ★ 2026-11-06：正在群里干活的 bot ⇒ 打开它在那个群里的会话（没有就打开群会话），见 botOpenTargetOf。
 					const busySid = botOpenTargetOf(botStateOf(groupActivity, a, bots.rooms || []), a, bots.rooms || []);
@@ -3917,6 +4254,11 @@ window.__ModuleLoader__.load({
 				const openRoom = (room) => {
 					if (!room || !room.id) { return; }
 					markSessionRead(room.id);
+					// ★ 2026-11-09：显式记住选中的群（跨工作区保持）。
+					//   ⚠ 不要顺手传 setCurrent：那会把 localCurrent 改成群 id ⇒ currentId 变成群
+					//   ⇒ `visibleRooms` 的「当前会话即使 hidden 也显示」生效，用户主动隐藏群会失效。
+					//   高亮已由 selectedRoomId + isRoomSelected 独立负责，不必碰官方 current 派生链。
+					setSelectedRoom(String(room.id));
 					openSession(String(room.id), setBotsMsg);
 				};
 				/** 群设置用的独立页签 id（同一个群重复点只激活、不开第二份）。 */
@@ -3928,8 +4270,10 @@ window.__ModuleLoader__.load({
 				 * ★ 2026-11-09（用户要求）：群设置改为**独立页**，不再复用会话内的「设置」子页签。
 				 *   ① 首选官方**右侧栏**页签（`sidebar.right.pane.tab`，由 conversationViews 注册）：
 				 *      strip 自带「关闭」、页内另有一枚 ✕（调 `sidebarRight.close`）。
-				 *   ② 右栏不可用（无会话在屏 / 旧宿主 / 服务缺失 ⇒ openRight 返回 false）
+				 *   ② 右栏不可用（官方 openTab 抛错 / 旧宿主 / 服务缺失 ⇒ openRight 返回 false）
 				 *      ⇒ 回落中栏自绘独立页签（`__vssarosOpenPageTab`，页签条 + 页内都有 ✕）。
+				 *      ⚠ 判据是「同步 try openTab 抛没抛」，不是 `mounted.getSnapshot()` 预判
+				 *        （后者会误杀 hero 的 blank session，2026-11-10 已纠偏）。
 				 *   ③ 宿主是旧版（两个 API 都没有）⇒ 回落原来的「打开群会话 + 设置页签」，功能不丢。
 				 *   ⚠ 三级回落都不静默：右栏失败不弹提示（中栏页签照样是独立页），最后一级才开会话。
 				 */
@@ -3948,6 +4292,8 @@ window.__ModuleLoader__.load({
 					} catch { /* 打开独立页失败 ⇒ 回落旧行为 */ }
 					try { presetConversationView(typeof localStorage !== "undefined" ? localStorage : null, sid, SETTINGS_VIEW_ID); } catch { /* 选不中就停在对话页 */ }
 					markSessionRead(sid);
+					// ★ 2026-11-10：群设置第三级回落真的会把中栏切到群会话 ⇒ 同步记住的群。
+					setSelectedRoom(String(sid));
 					openSession(String(sid), setBotsMsg);
 					try {
 						window.setTimeout(() => {
@@ -4000,7 +4346,8 @@ window.__ModuleLoader__.load({
 					const name = String(room.name || id);
 					const members = Array.isArray(room.members) ? room.members : [];
 					const unread = unreadIds.indexOf(id) >= 0;
-					const isCur = id === currentId;
+					// localStorage 真源优先：rebind / 跨 chunk / A→B→A 场景下闭包变量可能陈旧。
+					const isCur = isRoomSelected(id, currentId, readSelectedRoom() || selectedRoomId);
 					const renamingThis = !!(roomRename && roomRename.id === id);
 					const rs = roomStateOf(groupActivity, room);
 					const roomActive = rs.state !== "idle";
@@ -4011,11 +4358,16 @@ window.__ModuleLoader__.load({
 						+ (room.notice ? "\n公告：" + String(room.notice).slice(0, 120) : "")
 						+ (roomActive ? "\n" + rs.label : "") + "\n点击 ⇒ 在中栏打开群聊；右键 ⇒ 更多";
 					return react.createElement("div", {
-						key: "room:" + id, "data-vssaros-room": id, "data-vssaros-room-pinned": room.pinned ? "1" : "0",
+						key: "room:" + id, "data-vssaros-room": id, "data-vssaros-room-selected": isCur ? "1" : "0",
+					"data-vssaros-room-pinned": room.pinned ? "1" : "0",
 						// 复用成员行的姿态 / shimmer / 彩点样式（选择器只看这几个属性）
 						"data-vssaros-bot-state": rs.state, "data-vssaros-room-round-status": rs.status,
 						"aria-label": name + (roomActive ? " · " + rs.label : ""),
-						style: Object.assign({}, S.botRow, isCur ? { background: "var(--dsw-alias-bg-layer-2, rgba(128,128,128,.16))" } : null), title: tip,
+						// ★ 2026-11-10：选中态交给注入 CSS（亮底 + 2px 左竖条 + 亮边 + 600 字重）。
+						//   旧的 bg-layer-2 浅底在本主题只差十几个灰阶，真机几乎看不出 ⇒ 移除。
+						"aria-selected": isCur ? "true" : "false",
+						className: "vssaros-ws-bots-row", "data-selected": isCur ? "1" : "0",
+						style: S.botRow, title: tip,
 						onClick: () => { if (!renamingThis) { openRoom(room); } },
 						onContextMenu: (e) => {
 							try { e.preventDefault(); e.stopPropagation(); } catch { /* 合成事件 */ }
@@ -4028,7 +4380,12 @@ window.__ModuleLoader__.load({
 							setRoomMenu({ id, x, y, unread });
 						},
 					},
-						react.createElement("span", { "data-vssaros-bot-avatar": rs.state, style: Object.assign({}, S.botAv, { background: "var(--dsw-alias-brand-primary, #4d7cfe)", fontSize: 10 }) }, roomInitials(room)),
+						react.createElement("span", { "data-vssaros-bot-avatar": rs.state, style: Object.assign({}, S.botAv, { background: "var(--dsw-alias-brand-primary, #4d7cfe)", fontSize: 10, overflow: "hidden" }) },
+							// ★ 2026-11-10：群设置弹层上传的方形头像优先；没有才回落成员名首字
+							room && room.avatar
+								? react.createElement("img", { src: String(room.avatar), alt: "", "data-vssaros-room-avatar-img": id,
+									style: { width: "100%", height: "100%", objectFit: "cover", display: "block" } })
+								: roomInitials(room)),
 						react.createElement("span", { style: S.botMain },
 							renamingThis ? react.createElement("input", {
 								style: S.rename, value: roomRename.draft, autoFocus: true, placeholder: "留空 = 按成员命名",
@@ -4073,20 +4430,26 @@ window.__ModuleLoader__.load({
 					return s && s.id ? String(s.id) : "";
 				};
 				/**
-				 * 「编辑 Bot」三级回落（★ 2026-11-09 修 hero 下点了没反应）。
-				 *   ① 中栏独立页签（root/面板级，hero 下也能开）：按 agentId 直接渲染 BotConfigCard；
-				 *   ② 老宿主没有中栏页签 API ⇒ 回落「打开会话 + 会话内设置页签 + 落到 Bot 分段」；
-				 *   ③ 两者都不可用 ⇒ 明确报错，绝不假装已打开。
-				 * ⚠ 不能把 ② 当主路径：`conversation.view` 是 session 作用域的 slot，
-				 *   hero（空会话屏）下**结构上不渲染** ⇒ SettingsView 不挂载、
-				 *   `vssaros:open-bot-config` 事件无人接住、`binding(sid).activate` 静默失败
-				 *   ⇒ 旧实现只弹「请手动点分段」（真机截图即此症状）。
+				 * 「编辑 Bot」四级回落（★ 2026-11-10 用户：hero 下要在**右侧栏**单独弹出可关闭的设置页签）。
+				 *   ① 官方右栏「Bot 设置」页签（sidebarRightTabs + sidebar.right.pane.tab + openTab；
+				 *      官方 strip 自带 ✕，与「开始」guide 并列）；
+				 *   ② 官方 openTab 抛错 / 老宿主没挂这个 API ⇒ 回落中栏独立页（按 agentId 渲染配置卡）；
+				 *   ③ 再回落「打开会话 + 会话内设置页签 + 落到 Bot 分段」；
+				 *   ④ 都不可用 ⇒ 明确报错，绝不假装已打开。
+				 * ⚠ 纠偏：上一轮把「conversation.view 设置页签在 hero 不渲染」误推成「右栏 session
+				 *   槽在 hero 不渲染」，改用了覆盖式浮层。真机 hero 下「开始」页签就在该槽里，
+				 *   `sidebarRight.openTab` 只在「全局面板占 main / store 未 minted」时抛 ⇒ 官方路可用。
 				 */
 				const openBotConfig = (bot) => {
 					const id = String((bot && bot.id) || "");
 					const name = String((bot && bot.name) || id);
 					const tabId = "bot-config:" + id;
-					// ① 首选：中栏独立页（与群设置同款；不需要 dsh 会话，也不需要 preset 派生）
+					// ① 首选：官方右栏「Bot 设置」页签（strip 自带 ✕，与「开始」并列；按 agentId 渲染）
+					try {
+						const openRight = typeof window !== "undefined" ? window.__vssarosOpenRightBotSettings : null;
+						if (typeof openRight === "function" && openRight(id, name) !== false) { return; }
+					} catch { /* 老宿主无右侧页签 API ⇒ 回落中栏独立页 */ }
+					// ② 回落：中栏独立页（与群设置同款；不需要 dsh 会话，也不需要 preset 派生）
 					try {
 						const open = typeof window !== "undefined" ? window.__vssarosOpenPageTab : null;
 						if (typeof open === "function" && open({
@@ -4193,6 +4556,11 @@ window.__ModuleLoader__.load({
 					const id = String((a && a.id) || "");
 					const name = String((a && a.name) || id);
 					const reg = a && a.registered !== false;
+					/* ★ 2026-11-10：有 IM 绑定 ⇒ 名称后显示气泡 icon；title 说清平台与绑定条数。 */
+					const im = (bots.imBadges || {})[id] || null;
+					const imTitle = im
+						? "已接入 IM（" + (im.platforms || []).map((p) => IM_PLATFORM_LABELS[p] || p).join("、")
+							+ "）：" + im.count + " 条 Channel 绑定" : "";
 					const flags = botFlags[id] || {};
 					const renamingThis = !!(botRename && botRename.id === id);
 					const total = (bots.home && bots.home[id] && typeof bots.home[id].sessionsTotal === "number")
@@ -4206,17 +4574,23 @@ window.__ModuleLoader__.load({
 					const tip = name + (a && a.role ? " · " + a.role : "") + "\n" + String((a && a.description) || "")
 						+ "\n点击 ⇒ 在中栏打开" + (activeState ? "它在「" + (bs.roomName || "群") + "」里的会话" : total ? "它最近一条会话" : "一条新会话")
 						+ (activeState ? "\n" + bs.state + "：" + bs.label : "")
+						+ (imTitle ? "\n" + imTitle : "")
 						+ "\n右键 ⇒ 更多（置顶 / 重命名 / 编辑 / 复制一份 / 隐藏 / 删除…）";
+					// ★ 2026-11-10：bot 行补选中态（原来完全没有）；localStorage 真源优先。
+					const isCur = isBotSelected(id, readSelectedBot() || selectedBotId);
 					return react.createElement("div", {
-						key: "bot:" + id, "data-vssaros-bot": id, "data-vssaros-bot-state": bs.state,
+						key: "bot:" + id, "data-vssaros-bot": id, "data-vssaros-bot-selected": isCur ? "1" : "0",
+						"data-vssaros-bot-state": bs.state,
 						"data-vssaros-bot-room": bs.roomId, "data-vssaros-bot-event": bs.eventKind,
 						"data-vssaros-bot-label": bs.label,
 						// ★ 2026-11-09：右键菜单的 flags 也暴露成 data-* ⇒ jsdom/守卫能读状态
 						"data-vssaros-bot-pinned": flags.pinned ? "1" : "0",
 						"data-vssaros-bot-hidden": flags.hidden ? "1" : "0",
 						"data-vssaros-bot-unread": flags.unread ? "1" : "0",
+						className: "vssaros-ws-bots-row", "data-selected": isCur ? "1" : "0",
 						style: S.botRow, title: tip,
 						"aria-label": name + (activeState ? " · " + bs.label : ""),
+						"aria-selected": isCur ? "true" : "false",
 						onClick: () => {
 							if (renamingThis) { return; }
 							// 打开即清除「标为未读」（与会话行 / 群行同语义）
@@ -4249,6 +4623,10 @@ window.__ModuleLoader__.load({
 								onBlur: () => setBotRename(null),
 							}) : react.createElement("span", { style: S.botL1 },
 								react.createElement("span", { style: Object.assign({}, S.botName, flags.unread ? { fontWeight: 600 } : null) }, name),
+								im ? react.createElement("span", {
+									"data-vssaros-bot-im": "1", "data-vssaros-bot-im-count": String(im.count),
+									title: imTitle, "aria-label": imTitle, style: S.botImIcon,
+								}, botImIcon()) : null,
 								a && a.role ? react.createElement("span", { style: S.botPill }, String(a.role)) : null,
 								flags.pinned ? react.createElement("span", { style: S.botPill, title: "已置顶" }, "置顶") : null,
 								flags.hidden ? react.createElement("span", { style: S.botPill, title: "已隐藏（搜索时仍可找到）" }, "隐藏") : null,
@@ -4280,7 +4658,7 @@ window.__ModuleLoader__.load({
 						(hit(a && a.name) || hit(a && a.id) || hit(a && a.role) || hit(a && a.description))
 						&& (q.length > 0 || !(botFlags[String(a && a.id)] || {}).hidden)), botFlags);
 					// ★ 2026-11-05 群聊：置顶在前、隐藏的不显示（当前打开的除外）；搜索按群名与成员名
-					const roomsShown = visibleRooms(bots.rooms, currentId, botsQuery);
+					const roomsShown = visibleRooms(bots.rooms, currentId, botsQuery, selectedRoomId);
 					const searching = q.length > 0;
 					const shownCount = reg.length + roomsShown.length;
 					// ★ 诊断（2026-11-02）：点「新建 Bot」后表单没出现 —— 先分清是 **state 没变**
@@ -4714,10 +5092,15 @@ window.__ModuleLoader__.load({
 								// ⚠ 折叠键仍是 **record.id**（历史持久化键，改了用户折叠态全丢 ✗）；React key 用 row.key
 								const key = row.record.id;
 								const isOpen = collapsed[key] !== true;
+								// ★ 2026-11-10（用户裁决）：根数 chip + 点击下拉看多根内容。
+								//   ⚠ 与 hover 卡共用**同一份** `workspaceRootListOf()` 结果（不新增真源 ✓）；
+								//   单根 ⇒ multi=false ⇒ chip 与下拉都不渲染（旧界面逐字不变 ✓）。
+								const rootsView = workspaceRootListOf(row.record, currentRootPath);
+								const rootsDropped = rootsOpenKey === key;
 								return react.createElement("div", { key: row.key || ("rec:" + key) },
-									// ★ 2026-11-02（对齐官方 `.projectRow`）：默认 **folder 图标**、hover 换**三角箭头**
-									//   （官方 CSS：`.projectRow .chevron{display:none}` + `:hover .chevron{inline-flex}` +
-									//   `:hover .folder{display:none}`）；「N 个根」徽标移到 hover 卡片里（官方行没有徽标 ✗）。
+									// ★ 2026-11-02 的「行上不加徽标、只放 hover 卡」已按用户 11-10 裁决调整：
+									//   行上恢复一枚**可点** chip（不是纯展示徽标），点击内联下拉列出各根。
+									//   folder 图标 / hover 换三角箭头仍对齐官方 `.projectRow` ✓。
 									react.createElement("div", {
 										className: "vssaros-ws-project",
 										role: "treeitem",
@@ -4725,12 +5108,35 @@ window.__ModuleLoader__.load({
 										// 官方锚点（`data-row-key="workspace:<key>"`）
 										"data-row-key": "workspace:" + key,
 										onClick: () => setCollapsed(nextCollapsed(collapsed, key)),
-										onMouseEnter: (e) => openHover(key, e),
-										onMouseLeave: closeHover,
+										// ★ 2026-11-10（用户裁决）：**不挂 onMouseEnter/onMouseLeave** ⇒
+										//   悬停工作区 item 只保留 CSS 高亮，不弹任何 tip / 详情卡 ✓。
 									},
 										react.createElement("span", { className: "vssaros-ws-slot2 vssaros-ws-folder", "aria-hidden": "true" }, folderIcon()),
 										react.createElement("span", { className: "vssaros-ws-slot2 vssaros-ws-chevron", "aria-hidden": "true" }, chevronIcon(isOpen)),
 										react.createElement("span", { className: "vssaros-ws-projtitle" }, row.record.name),
+										// ★ 2026-11-10（用户裁决）：工作区 item 用 **chip** 展示多根，点击内联下拉看各根。
+										//   · `flex:none` + 标题 `min-width:0` ⇒ 窄侧栏先截标题、chip 完整可见 ✓；
+										//   · `stopPropagation` 必需：行本身的 onClick 是折叠/展开，不拦会顺手把组折起来 ✗；
+										//   · 原生 <button> ⇒ Tab 可达、Enter/Space 可开（键盘等价 ✓）；
+										//   · 术语走 P1-E 的 rootCountLabel()（「N 个根」，不写死 ✗）。
+										rootsView.multi ? react.createElement("button", {
+											type: "button",
+											"data-vssaros-ws-roots-chip": key,
+											"aria-expanded": rootsDropped ? "true" : "false",
+											"aria-controls": "vssaros-ws-roots-" + key,
+											title: "展开 / 收起这个工作区的各根",
+											style: {
+												flex: "none", whiteSpace: "nowrap", fontSize: 10, lineHeight: "16px",
+												padding: "0 6px", marginLeft: 4, borderRadius: 8, cursor: "pointer",
+												border: "1px solid var(--dsw-alias-border-l2, #383838)",
+												background: rootsDropped ? "var(--dsw-alias-interactive-bg-active, rgba(255,255,255,.10))" : "transparent",
+												color: rootsDropped ? "var(--dsw-alias-label-primary, currentColor)" : "var(--dsw-alias-label-tertiary, #737373)",
+											},
+											onClick: (e) => {
+												try { e.preventDefault(); e.stopPropagation(); } catch { /* 合成事件 */ }
+												setRootsOpenKey(nextRootsOpenKey(rootsOpenKey, key));
+											},
+										}, rootCountLabel(rootsView.count) + (rootsDropped ? " ▴" : " ▾")) : null,
 										// 官方 `.rowActions`：默认隐藏，hover 才出现（CSS 控制）
 										react.createElement("span", { className: "vssaros-ws-actions" },
 											// ★ 2026-11-02（用户要求）：hover 时在 ⋯ 左边给一个 **+** —— 在此工作区新建会话
@@ -4740,7 +5146,6 @@ window.__ModuleLoader__.load({
 												"data-vssaros-ws-row-new-session": key,
 												onClick: (e) => {
 													try { e.preventDefault(); e.stopPropagation(); } catch { /* 合成事件 */ }
-													closeHover();
 													newSessionInWorkspace(row.record, row.record.name);
 													},
 													}, plusIcon()),
@@ -4749,12 +5154,34 @@ window.__ModuleLoader__.load({
 												"aria-label": "工作区操作（" + row.record.name + "）", "aria-haspopup": "true",
 												"data-vssaros-ws-row-actions": key,
 												onClick: (e) => openWsMenu(key, e, row.record.name),
-											}, "⋯")),
-									),
-									isOpen ? renderSessions(row) : null,
-								);
-							}
-							// 回落：未被 IDE 记录认领的 dsh 条目，平铺（与官方形态一致 ✓）
+												}, "⋯")),
+												),
+												// ★ 2026-11-10（用户裁决）：chip 的**下拉内容**，与行上 chip 共用同一个
+												//   `rootsView`（hover 卡也是这一份 ⇒ 全侧栏只有一份根集真源 ✓）。
+												//   ⚠ 内联下拉（不是 fixed 浮层）⇒ 不会被滚动容器 / overflow 裁掉 ✓；
+												//   ⚠ 只在 chip 展开时出现，与组折叠态 `isOpen` 独立（折叠的组也能看根）。
+												rootsView.multi && rootsDropped ? react.createElement("div", {
+												id: "vssaros-ws-roots-" + key,
+												"data-vssaros-ws-roots": "1",
+												style: {
+													margin: "2px 8px 4px 26px", padding: "2px 0 2px 8px",
+													borderLeft: "1px solid var(--dsw-alias-border-l1, transparent)",
+													fontSize: 10.5, color: "var(--dsw-alias-label-secondary, currentColor)",
+												},
+												},
+												rootsView.items.map((r, i) => react.createElement("div", {
+													key: "ws-root-" + i,
+													"data-vssaros-ws-root": r.path,
+													style: { padding: "3px 0", lineHeight: 1.5, wordBreak: "break-all" },
+												},
+													react.createElement("span", { style: { fontWeight: r.isPrimary ? 600 : 400 } }, r.name),
+													r.isPrimary ? react.createElement("span", { style: { marginLeft: 5, fontSize: 9.5, color: "var(--dsw-alias-label-tertiary, currentColor)" } }, "主根") : null,
+													r.isCurrent ? react.createElement("span", { style: { marginLeft: 5, fontSize: 9.5, color: CUR_ROOT_STYLE.color } }, "● 当前会话") : null,
+													react.createElement("div", { style: { fontFamily: "Consolas, monospace", fontSize: 10, color: "var(--dsw-alias-label-tertiary, currentColor)", wordBreak: "break-all" } }, r.path)))) : null,
+												isOpen ? renderSessions(row) : null,
+												);
+												}
+												// 回落：未被 IDE 记录认领的 dsh 条目，平铺（与官方形态一致 ✓）
 							const key = "flat:" + row.label;
 							const isOpen = collapsed[key] !== true;
 							return react.createElement("div", { key: row.key || key },
@@ -4777,7 +5204,6 @@ window.__ModuleLoader__.load({
 											"data-vssaros-ws-row-new-session": key,
 											onClick: (e) => {
 												try { e.preventDefault(); e.stopPropagation(); } catch { /* 合成事件 */ }
-												closeHover();
 												newSessionInWorkspace(row, row.label);
 											},
 										}, plusIcon()),
@@ -4949,10 +5375,7 @@ window.__ModuleLoader__.load({
 							}, "删除"),
 						),
 					) : null,
-					hover && (() => {
-						const row = rows.filter((r2) => r2.kind === "group" && r2.record.id === hover.key)[0];
-						return row ? react.createElement(HoverCard, { record: row.record, sessions: row.sessions, currentRootPath, x: hover.x, y: hover.y }) : null;
-					})(),
+					// ★ 2026-11-10（用户裁决）：工作区 HoverCard 的渲染已删除 ⇒ 悬停不再弹 tip。
 					// ★ 2026-11-02（补上官方 `SessionNodeItem` 的最后一块交互）：**会话行 hover 卡片**。
 					//   官方内容 = 完整标题（14/20 可换行）+ 相对时间（12/16）+ 每条状态（12/20 + 点），
 					//   并支持"复制标题"（`copyText/copyLabel/copiedLabel`）。这里额外给了根名与绝对时间。
@@ -5222,6 +5645,14 @@ window.__ModuleLoader__.load({
 		// 仅测试用：分组收敛 / 路径比较 / 时间文案的纯逻辑（插件装载只读 install）。
 		exports.__test = {
 			samePath, baseName, parseRecords, timeLabel, buildSidebar, rootOfSession, nextCollapsed, pickCurrentSessionId,
+			// 2026-11-10 P1-C：组展开后常驻的多根列表（与 hover 卡同源，守卫 ⑤-m 直接断言）✓
+			workspaceRootListOf,
+			// 2026-11-10 P1-E：与 client.workspace.js 逐字同形的术语真源（守卫 ⑤-n 对账）✓
+			rootCountLabel,
+			// 2026-11-10 P2-F：hover 延迟配置真源 / 主题色常量（守卫 ⑤-o 直接断言）✓
+			hoverDelayOf, HOVER_DELAYS, CUR_ROOT_STYLE,
+			// 2026-11-10：工作区 item chip 下拉状态机（守卫 ⑤-m 行为断言）✓
+			nextRootsOpenKey,
 			// ★ 2026-10-30 对齐官方空会话口径：当前会话 = mainView retain 的那条（守卫 ⑤-k 直接断言）
 			mainViewSessionId,
 			// ★ 2026-10-30 会话行状态灯：四态判据 / 待回答条数（守卫真机断言，两处口径不许漂）
@@ -5236,6 +5667,12 @@ window.__ModuleLoader__.load({
 			validateBotDraft, validateGroupDraft, BOT_ICON_PRESETS, GROUP_MODE_OPTIONS,
 			// ★ 2026-11-02 侧栏「会话 / Bots」页签：默认页签 / 最近会话选取 / 取数（守卫直接断言）
 			SIDEBAR_VIEW_KEY, readSidebarView, latestSessionIdOf, fetchBotsData, pickBotWorkspaceId, isRegisteredSession,
+			// ★ 2026-11-10：Bots 行 IM 连接图标的判据（纯函数，守卫直接断言）
+			AGENTS_API_BINDINGS, imBadgeOf,
+			// ★ 2026-11-09：跨工作区群聊选中态（守卫真跑 rebind 事件后断言）
+			SELECTED_ROOM_KEY, SELECTED_ROOM_EVENT, REBIND_EVENT, readSelectedRoom, writeSelectedRoom, isRoomSelected,
+			// ★ 2026-11-10：Bots 页签 bot 行选中态（与群互斥）
+			SELECTED_BOT_KEY, SELECTED_BOT_EVENT, readSelectedBot, writeSelectedBot, isBotSelected,
 			// ★ 2026-11-05 多 bot 群聊：群行识别 / 可见与排序 / 右键菜单 7 项 / 菜单动作调度 / 「群设置」直达设置页签
 				AGENTS_API_ROOMS, ROOM_PROJECTION_KEY, SETTINGS_VIEW_ID, roomMarkOf, visibleRooms, roomMenuItems, roomMenuAction, roomInitials, presetConversationView,
 				// 独立页签的组件键 / 前缀与 conversationViews 侧同源（守卫按 DOM + 菜单行为断言，不导出安装期函数）

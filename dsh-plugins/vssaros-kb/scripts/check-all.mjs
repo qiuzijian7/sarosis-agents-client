@@ -14,6 +14,14 @@ import { fileURLToPath } from 'node:url';
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 
 const STEPS = [
+	// ★ 2026-11-10：知识库根配置以 dsh 侧为唯一真源 +「选中的根直接当唯一库根」
+	{ file: 'check-kb-root-config.mjs', desc: '根配置：绝对路径校验 / 单根模式 / 页面快照 / 存量兼容' },
+	// ★ 2026-11-10 三条用户要求：隐藏点目录 / 一级库默认关联飞书云端 / 设置页顶头
+	{ file: 'check-kb-list-feishu-ui.mjs', desc: '知识库列表 + 飞书映射 + 设置页布局（静态接线 + 纯函数行为 + 产物级断言）' },
+	// ★ 2026-11-10 真机：飞书 99991672（bot 缺 wiki scope）⇒ 错误可读 + 工具不伪装成功
+	{ file: 'check-kb-feishu-scopes.mjs', desc: '飞书缺权限：99991672 解析 / 申请入口 / 退出码判据 / 两端设置页接线' },
+	// ★ 2026-11-10：设置页可指定飞书应用（profile 路线）；端到端验 secret 不落盘
+	{ file: 'check-kb-feishu-app.mjs', desc: '飞书 appId/appSecret：凭据库 / stdin profile / --profile 全链路 / 明文红线' },
 	// ★ 2026-11-02：目录改名（库→数据源 / 笔记→知识库列表）——常量、旧名字面量、迁移脚本幂等
 	// ★ 2026-11-02：元数据收进 .kb/（索引/飞书/缓存/日志一个目录）
 	{ file: 'check-kb-meta.mjs', desc: '元数据目录：.kb/ 唯一真源 + 业务代码不写旧散件' },

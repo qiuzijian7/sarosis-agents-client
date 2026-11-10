@@ -421,7 +421,7 @@ suite('下游兼容性 —— turn 观察捕获按会话去重', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	// 镜像 agentContextRetrieval.storeTurnObservations 的核心逻辑
+	// 会话级内容哈希去重（IDE 侧记忆外置已下线，此段仅测并行会话隔离）
 	const hashOf = (text: string) => {
 		let hash = 0;
 		for (let i = 0; i < text.length; i++) { hash = (hash * 31 + text.charCodeAt(i)) | 0; }

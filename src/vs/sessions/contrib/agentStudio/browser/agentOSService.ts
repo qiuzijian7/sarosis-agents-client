@@ -7,7 +7,7 @@ import { INotificationService, Severity, type INotificationActions } from '../..
 import { IAgentOSService, IAgentOSDashboardStats, IDashboardMetricsSnapshot, IDailyBucket, ISubAgentTraceSnapshot } from '../common/agentOS.js';
 import {
 	IModelProvider, IModelSelection, ModelAuthStatus,
-	IMemoryProvider, IToolProvider, IPlanningProvider,
+	IToolProvider, IPlanningProvider,
 	IExecutionProvider, IRetrievalProvider, IKanbanProvider,
 	IAgentTurnRequest, IChatStreamDelta, ISlotRegistry,
 	IToolDefinition, IToolCallInfo, IToolResult,
@@ -39,7 +39,6 @@ import {
 import { planModeHardPermission, isToolHardDenied, type IHardPermissionPolicy } from '../common/toolPermission.js';
 import { resolveRequestWorkMode } from '../common/workMode.js';
 import type { IAskRoutingContext } from '../common/askRouting.js';
-import { unwrapUserQuery } from '../common/userQuery.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
@@ -125,7 +124,6 @@ import {
 	type IToolAllowFile,
 } from '../common/toolAllowStore.js';
 import {
-	AGENT_STUDIO_MEMORY_INJECT_CONTEXT_SETTING,
 	AGENT_STUDIO_TOOL_SEARCH_ENABLED_SETTING,
 	AGENT_STUDIO_TOOL_SEARCH_THRESHOLD_PCT_SETTING,
 } from '../common/constants.js';
@@ -197,11 +195,7 @@ import {
 	shouldEnableUpdatePlan,
 	type AgentConfigDeps,
 } from './agentConfigReader.js';
-import {
-	estimateMessagesTokens, retrieveContextOnly, retrieveCompactionContext,
-	storeTurnObservations, injectRetrievalSystemMessage,
-	type ContextRetrievalDeps,
-} from './agentContextRetrieval.js';
+import { estimateMessagesTokens } from './agentContextRetrieval.js';
 import {
 	getActiveModelProvider, resolveContextWindow, formatUserFacingError, adaptModelDelta,
 	type ModelAccessDeps,
@@ -211,9 +205,8 @@ import { SandboxGuard } from './agentSandboxGuard.js';
 import { getEnabledTools, type ToolAssemblyDeps } from './agentToolAssembly.js';
 import { executeAgentTurnDirect } from './agentTurnExecutor.js';
 import type { ITurnHost } from './turnHost.js';
-import { isMemoryInjectionEnabled } from './agentMemoryInjection.js';
 import { UserMessageEnricher } from './messageEnrichment/userMessageEnricher.js';
-import { createBuiltinTagProviders, WorkingMemoryTagProvider, KbOverviewTagProvider } from './messageEnrichment/builtinTagProviders.js';
+import { createBuiltinTagProviders, KbOverviewTagProvider } from './messageEnrichment/builtinTagProviders.js';
 import { IKbNativeKernelService } from './kbNativeKernelService.js';
 import { DEFAULT_AUTO_APPROVE, ToolAutoApproveMode, ToolCategory, isMcpSourcedTool } from '../common/toolApprovalPolicy.js';
 
@@ -404,12 +397,7 @@ export class AgentOSService extends Disposable implements IAgentOSService {
 	 *  才允许再次删头，防止逐轮头部滑动反复打断 prompt cache 前缀
 	 *  （日志 1787021037798 断崖1/3）。 */
 	public _lastHardPruneBaselineTokens: number = 0;
-	/** 检索式压缩：已外置到记忆的 middle 消息内容哈希集合（按 sessionId），
-	 *  避免每次压缩重复写入同一批对话导致记忆无限膨胀。 */
-	private _storedMiddleHashes = new Map<string, Set<string>>();
-
 	private readonly _configReaderDeps: AgentConfigDeps;
-	private readonly _contextDeps: ContextRetrievalDeps;
 
 	private get _modelAccessDeps(): ModelAccessDeps {
 		return {
@@ -602,17 +590,9 @@ private readonly _sandboxGuard: SandboxGuard;
 		this._configReaderDeps = {
 			getAgentsSync: () => this._studioService?.getAgentsSync?.(),
 		};
-		this._contextDeps = {
-			getStoredHashes: (sessionId) => {
-				let s = this._storedMiddleHashes.get(sessionId);
-				if (!s) { s = new Set(); this._storedMiddleHashes.set(sessionId, s); }
-				return s;
-			},
-			logService,
-		};
 		this._slotRegistry = this._register(new SlotRegistry(logService));
 
-		// 获取当前工作区 ID 用于记忆元数据
+		// 获取当前工作区 ID（工具权限配置等按工作区作用域使用）
 		const ws = this._workspaceContextService.getWorkspace();
 		this._currentWorkspaceId = ws.folders.length > 0 ? ws.folders[0].name : '';
 
@@ -1090,23 +1070,6 @@ private readonly _sandboxGuard: SandboxGuard;
 		}
 	}
 
-	/**
-	 * 用户是否显式开启了 AgentMemory 检索库的上下文注入
-	 * （设置 `agentStudio.memory.injectContext`，2026-10-20；默认 false）。
-	 *
-	 * 由 `agentTurnExecutor` 传给 `injectMemoryContext`，与 `AGENTMEMORY_INJECT_CONTEXT`
-	 * 环境变量是"或"关系（见 `agentMemoryInjection.isMemoryInjectionEnabled`）。
-	 * 拿不到配置服务 ⇒ false（保守：不注入；环境变量那条路仍然能开）。
-	 */
-	_isMemoryInjectContextConfigured(): boolean {
-		try {
-			return this._instantiationService.invokeFunction(accessor =>
-				accessor.get(IConfigurationService).getValue<boolean>(AGENT_STUDIO_MEMORY_INJECT_CONTEXT_SETTING) === true,
-			);
-		} catch {
-			return false;
-		}
-	}
 
 	/** WebAudio 合成双音提示（无需音频资源文件，离线可用）。 */
 	private _playApprovalChime(): void {
@@ -1271,119 +1234,12 @@ private readonly _sandboxGuard: SandboxGuard;
 	private _initUserMessageEnricher(): void {
 		const providers = createBuiltinTagProviders();
 		this._userMessageEnricher = new UserMessageEnricher(providers);
-		this._workingMemoryTagProvider = providers.find(p => p instanceof WorkingMemoryTagProvider) as WorkingMemoryTagProvider | undefined;
 		this._kbOverviewTagProvider = providers.find(p => p instanceof KbOverviewTagProvider) as KbOverviewTagProvider | undefined;
 		this._logService.info('[AgentOS] User message XML enricher initialized');
 	}
 
-	/** 只读工作记忆注入：working_memory_content 标签的数据源（存 provider 实例引用）。 */
-	private _workingMemoryTagProvider: WorkingMemoryTagProvider | undefined;
 	/** 知识库目录摘要注入：kb_overview 标签的数据源（L1 常驻，OpenViking/Aider 式渐进加载）。 */
 	private _kbOverviewTagProvider: KbOverviewTagProvider | undefined;
-
-	/**
-	 * 2026-08-06 修正：working_memory_content 标签的数据源**从 agentmemory
-	 * 记忆系统**读取（经 loadContext 策展），不再读取/依赖 `.codebuddy/memory/`
-	 * 文件——该目录是错误路径，产品代码不读写它，模型也不得创建。
-	 *
-	 * 设计要点：
-	 *   - P0 会话级 TTL 缓存：同 agent+session 30s 内复用 loadContext 结果，
-	 *     避免每轮白付一次策展（对齐 agentMemoryInjection 的 _injectedSessions 幂等）。
-	 *   - P0 与 MemoryInjection 互斥：AGENTMEMORY_INJECT_CONTEXT=true 时由
-	 *     <agentmemory-context> 承担注入，working_memory_content 不重复注入。
-	 *   - P1 includeEntries=false：保持「召回走工具」姿态——只注入策展块
-	 *     （pinned slots / project profile / lessons / summaries），不直接
-	 *     喂记忆条目数组（模型应调 memory_search 按需检索）。
-	 *   - P2 agentId 为空时不注入，避免空 agentId 导致意外全局召回。
-	 */
-	private _workingMemoryCache: { key: string; content: string | null; at: number } | undefined;
-	private static readonly WORKING_MEMORY_TTL_MS = 30_000;
-	/** 新 session 跟踪：已注入过工作记忆的 agent::session 组合（LRU 500）。 */
-	private _injectedWorkingMemorySessions = new Set<string>();
-	private static readonly WORKING_MEMORY_SESSION_CACHE_MAX = 500;
-
-	public async _refreshWorkingMemoryContent(agentId?: string, sessionId?: string): Promise<void> {
-		if (!this._workingMemoryTagProvider) { return; }
-
-		// P0：与 agentMemoryInjection 互斥——MemoryInjection 开启时 <agentmemory-context>
-		// 已注入完整策展上下文，working_memory_content 不再重复注入。
-		if (isMemoryInjectionEnabled()) {
-			this._workingMemoryTagProvider.workingMemoryContent = null;
-			return;
-		}
-
-		// P2：agentId 为空不注入（避免空 agentId 触发全局召回）
-		const aid = agentId ?? '';
-		if (!aid) {
-			this._workingMemoryTagProvider.workingMemoryContent = null;
-			return;
-		}
-
-		// P0：TTL 缓存——同 agent+session 30s 内复用，不重复调 loadContext
-		const cacheKey = `${aid}::${sessionId ?? ''}`;
-		const cached = this._workingMemoryCache;
-		if (cached && cached.key === cacheKey && Date.now() - cached.at < AgentOSService.WORKING_MEMORY_TTL_MS) {
-			this._workingMemoryTagProvider.workingMemoryContent = cached.content;
-			return;
-		}
-
-		const memProvider = this.getActiveMemoryProvider();
-		if (!memProvider?.loadContext) {
-			this._workingMemoryTagProvider.workingMemoryContent = null;
-			this._workingMemoryCache = { key: cacheKey, content: null, at: Date.now() };
-			return;
-		}
-		try {
-			const ctx: any = await Promise.race([
-				// P1：includeEntries=false——只注入策展块，不喂条目数组（召回走工具）
-				memProvider.loadContext(aid, sessionId ?? '', '', { includeEntries: false }),
-				new Promise<null>(resolve => setTimeout(() => resolve(null), 2000)),
-			]);
-			if (!ctx || typeof ctx.systemPrompt !== 'string' || !ctx.systemPrompt.trim()) {
-				this._workingMemoryTagProvider.workingMemoryContent = null;
-				this._workingMemoryCache = { key: cacheKey, content: null, at: Date.now() };
-				return;
-			}
-			let joined = ctx.systemPrompt.trim();
-
-			// 2026-08-07：新 session 元信息模式——首条消息不注入具体记忆内容，
-			// 只注入「存在记忆 + 可用工具检索」的元信息标记，防止旧结论锚定新任务。
-			// 后续轮次恢复正常完整注入。
-			const isNewSession = !this._injectedWorkingMemorySessions.has(cacheKey);
-			if (isNewSession) {
-				// LRU 清理
-				if (this._injectedWorkingMemorySessions.size >= AgentOSService.WORKING_MEMORY_SESSION_CACHE_MAX) {
-					const first = this._injectedWorkingMemorySessions.values().next().value;
-					if (first !== undefined) { this._injectedWorkingMemorySessions.delete(first); }
-				}
-				this._injectedWorkingMemorySessions.add(cacheKey);
-				const blockCount = ctx?.contextBlocks ?? 0;
-				const tokens = ctx?.contextTokens ?? Math.ceil(joined.length / 3);
-				joined = [
-					'<!-- NEW SESSION: Historical memory context exists but is intentionally NOT shown',
-					'to avoid anchoring. The current task is NEW — do NOT assume previous conclusions apply.',
-					'Use memory_search / memory_recall tools to retrieve relevant memories if needed. -->',
-					'',
-					`存在历史记忆上下文（约 ${blockCount} 个策展块，~${tokens} tokens）。为避免旧结论锚定新任务，`,
-					'未直接展示内容。请使用 memory_search / memory_recall 工具按需检索相关记忆。',
-				].join('\n');
-				this._logService.info(`[AgentOS] New session — injected working-memory META-INFO only (agent=${aid}, ${blockCount} blocks, ~${tokens} tokens)`);
-			} else {
-				this._logService.info(`[AgentOS] Working memory injected from agentmemory (${joined.length} chars, agent=${aid}, cacheKey=${cacheKey})`);
-			}
-
-			const MAX_WORKING_MEMORY_CHARS = 6000;
-			if (joined.length > MAX_WORKING_MEMORY_CHARS) {
-				joined = joined.slice(0, MAX_WORKING_MEMORY_CHARS) + '\n…(truncated)';
-			}
-			this._workingMemoryTagProvider.workingMemoryContent = joined;
-			this._workingMemoryCache = { key: cacheKey, content: joined, at: Date.now() };
-		} catch (err) {
-			this._workingMemoryTagProvider.workingMemoryContent = null;
-			this._workingMemoryCache = { key: cacheKey, content: null, at: Date.now() };
-			this._logService.warn(`[AgentOS] Failed to load working memory from agentmemory: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
 
 	// ─── KB 目录摘要注入（kb_overview 标签，L1 常驻）─────────────────────
 
@@ -1782,34 +1638,9 @@ private readonly _sandboxGuard: SandboxGuard;
 	}
 
 	// ─── R1: per-tool-call observe ─────────────────────────────────────────
-
-	/**
-	 * R1: 每次工具调用完成后 fire-and-forget 写入观察记录。
-	 * 对齐 agentmemory PostToolUse Hook → mem::observe 机制：
-	 * 写入 mem:obs:<agent>:<session> 会话暂存层（便宜 KV set + 滑动窗口），
-	 * 不再直落 mem:memories 长期层（2026-07-25 存储频率优化 P0）。
-	 * 结构化压缩：提取工具名/文件路径/有界输出预览（替代裸 200 字符截断）。
-	 */ public _observeToolResult(agentId: string, toolResult: { toolCallId: string; content: any; success: boolean; toolName?: string }, sessionId?: string): void {
-		const memProvider = this.getActiveMemoryProvider();
-		if (!memProvider) return;
-		const text = typeof toolResult.content === 'string'
-			? toolResult.content
-			: (() => { try { return JSON.stringify(toolResult.content); } catch { return String(toolResult.content); } })();
-		// 结构化提取：文件路径（正斜杠/反斜杠路径，限前 10 个）
-		const fileMatches = text.match(/[A-Za-z]:[\\/][\w\-./\\]+|(?:^|[\s"'`(])([\w\-]+\/)+[\w\-]+\.\w{1,10}/g);
-		const files = fileMatches ? [...new Set(fileMatches.map(f => f.trim()))].slice(0, 10) : undefined;
-		void memProvider.observe?.(agentId, {
-			sessionId: sessionId ?? '',
-			hookType: toolResult.success ? 'post_tool_use' : 'post_tool_failure',
-			timestamp: new Date().toISOString(),
-			data: {
-				tool_name: toolResult.toolName ?? toolResult.toolCallId,
-				tool_output: text.slice(0, 2000),
-				...(files?.length ? { files } : {}),
-				success: toolResult.success,
-			},
-		})?.catch(() => { });
-	}
+	// IDE 侧记忆观察已退役（记忆只在 dsh 侧）；保留空扩展点以维持 pi 路径与
+	// 工具收尾的结果观测契约（见 turnToolExecution / piTurnKernel）。
+	public _observeToolResult(_agentId: string, _toolResult: { toolCallId: string; content: any; success: boolean; toolName?: string }, _sessionId?: string): void { }
 
 	// ─── P8: 文件路径暂存 helpers ──────────────────────────────────────────
 
@@ -2003,9 +1834,6 @@ private readonly _sandboxGuard: SandboxGuard;
 		};
 	}
 
-	registerMemoryProvider(provider: IMemoryProvider, priority: number = 0): IDisposable {
-		return this._slotRegistry.registerMemoryProvider(provider, priority);
-	}
 
 	registerToolProvider(provider: IToolProvider, priority: number = 0): IDisposable {
 		return this._slotRegistry.registerToolProvider(provider, priority);
@@ -2081,9 +1909,6 @@ private readonly _sandboxGuard: SandboxGuard;
 
 	// ─── 其他能力查询 ─────────────────────────────────────────────
 
-	getActiveMemoryProvider(): IMemoryProvider | undefined {
-		return this._slotRegistry.getActiveMemoryProvider();
-	}
 
 	// ─── Delegation Ledger + Durable Context accessors（借鉴 deer-flow）──
 
@@ -2149,25 +1974,6 @@ private readonly _sandboxGuard: SandboxGuard;
 		);
 	}
 
-	/**
-	 * Capture a git commit into memory. Called by git post-commit hook integration.
-	 * The commit info is stored as an episodic memory for future recall.
-	 */
-	captureGitCommit(commit: {
-		sha: string; message: string; author: string; authorEmail?: string;
-		filesChanged: string[]; insertions: number; deletions: number;
-		timestamp: number; branch?: string; repoPath?: string;
-	}): void {
-		const provider = this.getActiveMemoryProvider();
-		if (provider?.onGitCommit) {
-			try {
-				provider.onGitCommit(commit as any);
-				this._logService.info(`[AgentOS] Git commit captured: ${commit.sha.slice(0, 8)} (${commit.filesChanged.length} files, +${commit.insertions}/-${commit.deletions})`);
-			} catch (err) {
-				this._logService.warn(`[AgentOS] Git commit capture failed: ${err instanceof Error ? err.message : String(err)}`);
-			}
-		}
-	}
 
 	getActiveToolProvider(): IToolProvider | undefined {
 		return this._slotRegistry.getActiveToolProvider();
@@ -2487,18 +2293,6 @@ private readonly _sandboxGuard: SandboxGuard;
 				);
 			}
 
-			// Fire onTaskCompleted lifecycle callback (if provider supports it)
-			const memProvider = this.getActiveMemoryProvider();
-
-			// ── Hook: stop + session_end ────────────────────────────────
-			if (memProvider?.triggerHook) {
-				memProvider.triggerHook('stop', {
-					agentId: request.agentId, sessionId: request.sessionId || '', timestamp: Date.now(),
-				}).catch(() => { });
-				memProvider.triggerHook('session_end', {
-					agentId: request.agentId, sessionId: request.sessionId || '', timestamp: Date.now(),
-				}).catch(() => { });
-			}
 
 			// ── 2026-08-30：完成通知 UI 已全面禁用（IDE 内通知 + OS Toast）──
 			// agent/subagent 执行完毕不再弹出任何通知 UI，仅留 trace 便于排查。
@@ -2508,15 +2302,6 @@ private readonly _sandboxGuard: SandboxGuard;
 				`incompleteExhausted=${turnOutcome.incompleteExhausted})`,
 			);
 
-		if (memProvider?.onTaskCompleted) {
-			try {
-				const userMsg = unwrapUserQuery(
-					[...(request.messages as Array<{ role?: string; content?: string }>)]
-						.reverse().find(m => m?.role === 'user')?.content ?? '',
-				).slice(0, 200) || 'Agent turn completed';
-				memProvider.onTaskCompleted(request.agentId, request.sessionId || '', userMsg);
-			} catch { /* best effort */ }
-		}
 	}
 	// P7/P8（2026-07-25 修正，doc §12 F2/F3）：注入幂等标记与文件暂存
 	// 不再每轮末清理——此前每轮 delete 导致「每 session 注入一次」名存实亡
@@ -4232,50 +4017,6 @@ private readonly _sandboxGuard: SandboxGuard;
 		return estimateMessagesTokens(messages);
 	}
 
-	/**
-	 * 仅检索：从记忆系统取回相关上下文，替代同步 LLM 摘要。
-	 * 优先 getCompactContext（Zero-LLM 合成的 SessionSummary），否则回退
-	 * recallFormatted（按当前任务 query 检索 episodic/semantic 记忆）。
-	 */ public async _retrieveContextOnly(
-		provider: any,
-		agentId: string,
-		sessionId: string,
-		middle: ReadonlyArray<any>,
-		budget: number,
-	): Promise<{ context: string; tokens: number; source: string } | null> {
-		return retrieveContextOnly(provider, agentId, sessionId, middle, budget);
-	}
-
-	/**
-	 * 压缩期检索式上下文（对齐 agentmemory mem::context）：先增量外置 middle 到记忆，
-	 * 再检索相关上下文替代同步 LLM 摘要。供 compressContext 的 retrieveContext 回调使用。
-	 */ public async _retrieveCompactionContext(
-		provider: any,
-		req: { agentId: string; sessionId: string; middle: ReadonlyArray<any>; contextWindow: number; budget: number },
-	): Promise<{ context: string; tokens: number; source: string } | null> {
-		return retrieveCompactionContext(provider, this._contextDeps, req);
-	}
-
-	/**
-	 * 将对话增量外置为 episodic 记忆，供后续检索取回（对齐 agentmemory 把 observation
-	 * 外置到 KV）。按内容哈希去重，避免重复写入与记忆膨胀；跳过 system 消息，
-	 * 只外置 user/assistant/tool 的真实对话内容。
-	 */ public async _storeTurnObservations(
-		provider: any,
-		agentId: string,
-		sessionId: string,
-		messages: ReadonlyArray<any>,
-	): Promise<void> {
-		return storeTurnObservations(this._contextDeps, provider, agentId, sessionId, messages);
-	}
-
-	/**
-	 * 把检索到的上下文作为独立 system 消息注入（放在固定 system 之后、user 之前）。
-	 * 使用 RETRIEVED_CTX_PREFIX，使压缩时 contextManager 会剥离它、由摘要接管，
-	 * 避免与压缩摘要重复累积。已注入则跳过（去重）。
-	 */ public _injectRetrievalSystemMessage(messages: any[], context: string, _source: string): any[] {
-		return injectRetrievalSystemMessage(messages, context, _source);
-	}
 
 }
 

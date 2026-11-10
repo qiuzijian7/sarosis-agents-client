@@ -128,6 +128,23 @@ suite('架构边界（P0-3）', () => {
 			`顶层 require 会在渲染进程（无 nodeIntegration 时）导致模块加载即崩 ✗：\n${violations.join('\n')}`);
 	});
 
+	/**
+	 * ★★ 2026-11-10（真机：F5 启动「没有反应」）：`common/providers.ts` 的 `ModelCapability`
+	 * **必须是普通 enum**。它被 7 个模块在运行时 `import`（含主进程启动链上的
+	 * `node/llmBridgeNode.ts`）；写成 `const enum` 时只有 `src/tsconfig.json` 的
+	 * `preserveConstEnums: true` 才留得下运行时对象，而并行的另一路 watch 增量编译器
+	 * 不带该选项 ⇒ 重编译一次本文件就把导出擦掉 ⇒ 旧产物 `import { ModelCapability }`
+	 * 在 ESM 链接期抛 `SyntaxError: … does not provide an export named 'ModelCapability'`
+	 * ⇒ `out/main.js:139 startup()` 挂掉 ⇒ Electron 主进程无窗口、无日志批次（用户看到「F5 没反应」）。
+	 */
+	test('★ ModelCapability 不许退回 const enum（增量编译会擦除运行时导出 ⇒ 主进程链接失败）', () => {
+		const src = stripComments(readSource(`${DOMAIN_REL}/common/providers.ts`));
+		assert.ok(!/export\s+const\s+enum\s+ModelCapability\b/.test(src),
+			'ModelCapability 是 const enum ✗ —— 两路 watch 编译器配置不一致会擦掉运行时导出');
+		assert.match(src, /export\s+enum\s+ModelCapability\s*\{/,
+			'必须是普通 export enum（全量 / 增量 / 单文件 transpile 都会生成运行时对象 ✓）');
+	});
+
 	test('★ 域内不存在被 git 跟踪的 .js 实现文件（构建产物不得提交进 src ✗）', () => {
 		let tracked;
 		try {

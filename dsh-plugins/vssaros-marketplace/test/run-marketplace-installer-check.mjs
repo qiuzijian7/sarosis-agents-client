@@ -21,7 +21,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LIB = path.resolve(HERE, '..', 'lib');
 
 const { packTarGzFromMap } = await import(pathToFileURL(path.join(LIB, 'tar.js')).href);
-const { installBundle, uninstallBundle, injectSkillFrontmatter, sha256Of, targetRootOf, BUNDLE_KINDS } =
+const { installBundle, uninstallBundle, injectSkillFrontmatter, installedVersionOf, sha256Of, targetRootOf, BUNDLE_KINDS } =
 	await import(pathToFileURL(path.join(LIB, 'installers.js')).href);
 const { readInstalled, upsertInstalled } = await import(pathToFileURL(path.join(LIB, 'installedLedger.js')).href);
 const { resolveInstalledVersions } = await import(pathToFileURL(path.join(LIB, 'installedState.js')).href);
@@ -51,28 +51,32 @@ const WF_PKG = packTarGzFromMap({
 });
 
 // ── ① 落点 ───────────────────────────────────────────────────
-check('① skill 落 <数据根>/skills，workflow 落 <数据根>/workflows',
-	targetRootOf(dataRoot, 'skill') === path.join(dataRoot, 'skills')
-	&& targetRootOf(dataRoot, 'workflow') === path.join(dataRoot, 'workflows'));
+check('① skill 落 <数据根>/skills',
+	targetRootOf(dataRoot, 'skill') === path.join(dataRoot, 'skills'));
 // ★ 2026-10-22 晚：agent **已搬过来** ⇒ 这条断言从"agent 还不行"改成"这三类都行、其它类明说不行"
 // ★ 2026-10-23（用户「都转移到 dsh 侧实现」）：mcp 也搬过来了 ⇒ 四类都支持；
 // ★ 2026-10-31：**knowledge 也搬过来了**（商城知识库包落到 <数据根>/knowledge/<id>/）
 //   ⇒ 这条断言从"四类"改成"五类"；"明说不支持"改用 workbench 验证 ✓
-check('① 支持 skill / workflow / agent / mcp / knowledge 五类；未知 kind 仍明说不支持',
+check('① 支持 skill / agent / mcp / knowledge 四类；未知 kind 仍明说不支持',
 	targetRootOf(dataRoot, 'agent') === path.join(dataRoot, 'agents')
 	&& targetRootOf(dataRoot, 'mcp') === path.join(dataRoot, 'mcp')
 	&& targetRootOf(dataRoot, 'knowledge') === path.join(dataRoot, 'knowledge')
 	&& (() => { try { targetRootOf(dataRoot, 'workbench'); return false; } catch (e) { return /还不支持/.test(String(e.message ?? e)); } })());
 
-// ── ② skill 安装 + frontmatter 回写 ──────────────────────────
+// ── ② skill 安装 + 正文净化（★ 2026-11-10 P1）────────────────
 {
 	const res = await installBundle({ dataRoot, kind: 'skill', storeId: 'demo-skill', version: '1.2.0', gzBuffer: SKILL_PKG });
 	const md = fs.readFileSync(path.join(res.targetDir, 'SKILL.md'), 'utf8');
+	const side = JSON.parse(fs.readFileSync(path.join(res.targetDir, '.market.json'), 'utf8'));
 	check('② 文件落盘（含子目录）', fs.existsSync(path.join(res.targetDir, 'scripts', 'run.sh')));
-	check('② frontmatter 回写了 storeId', /^storeId: demo-skill$/m.test(md), md.split('\n').slice(0, 8).join(' | '));
-	check('② frontmatter 回写了 version', /^version: 1\.2\.0$/m.test(md));
+	// ★ 契约反转：元数据不再污染正文（此前断言的是「必须回写」，那是跨生态不可移植的根因）
+	check('② SKILL.md 正文逐字保留（无 storeId / version 注入）',
+		!/^storeId:/m.test(md) && !/^version:/m.test(md) && md.includes('正文一'), md.split('\n').slice(0, 8).join(' | '));
+	check('② 侧车 .market.json 记下 storeId 与 installedVersion',
+		side.storeId === 'demo-skill' && side.installedVersion === '1.2.0', JSON.stringify(side));
 	check('② frontmatter 其余行逐字保留（name/description 未被改）', /^name: demo-skill$/m.test(md) && /^description: 演示技能$/m.test(md));
-	check('② 正文没被动过', md.includes('正文一'));
+	check('② installedVersionOf 优先读侧车（升级判断仍准）',
+		(await installedVersionOf({ dataRoot, kind: 'skill', storeId: 'demo-skill' })) === '1.2.0');
 }
 
 // ── ③ 已存在 ⇒ install 拒绝 / upgrade 覆盖且备份 ─────────────
@@ -84,17 +88,20 @@ check('① 支持 skill / workflow / agent / mcp / knowledge 五类；未知 kin
 
 	const up = await installBundle({ dataRoot, kind: 'skill', storeId: 'demo-skill', version: '1.3.0', gzBuffer: SKILL_PKG_V2, upgrade: true });
 	const md = fs.readFileSync(path.join(up.targetDir, 'SKILL.md'), 'utf8');
-	check('③ upgrade 覆盖成功（新正文 + 新版本）', md.includes('正文二') && /^version: 1\.3\.0$/m.test(md));
+	const upSide = JSON.parse(fs.readFileSync(path.join(up.targetDir, '.market.json'), 'utf8'));
+	check('③ upgrade 覆盖成功（新正文 + 侧车新版本）', md.includes('正文二') && upSide.installedVersion === '1.3.0');
 	check('③ upgrade 前**备份了旧目录**', Boolean(up.backup) && fs.existsSync(up.backup), up.backup);
 	const backedMd = up.backup ? fs.readFileSync(path.join(up.backup, 'SKILL.md'), 'utf8') : '';
-	check('③ 备份里是**旧版**内容（失手可恢复）', backedMd.includes('正文一') && /^version: 1\.2\.0$/m.test(backedMd));
+	const backedSide = up.backup ? JSON.parse(fs.readFileSync(path.join(up.backup, '.market.json'), 'utf8')) : {};
+	check('③ 备份里是**旧版**内容（失手可恢复）', backedMd.includes('正文一') && backedSide.installedVersion === '1.2.0');
 }
 
-// ── ④ workflow 安装 ─────────────────────────────────────────
+// ── ④ workflow 已不是商品类型 ⇒ 安装链明确拒绝 ────────────────
 {
-	const res = await installBundle({ dataRoot, kind: 'workflow', storeId: 'demo-wf', version: '2.0.0', gzBuffer: WF_PKG });
-	const raw = JSON.parse(fs.readFileSync(path.join(res.targetDir, 'workflow.json'), 'utf8'));
-	check('④ workflow 落到 <数据根>/workflows/<id>/workflow.json', res.targetDir === path.join(dataRoot, 'workflows', 'demo-wf') && raw.name === '演示流程');
+	let threw = '';
+	try { await installBundle({ dataRoot, kind: 'workflow', storeId: 'demo-wf', version: '2.0.0', gzBuffer: WF_PKG }); }
+	catch (e) { threw = String(e.message ?? e); }
+	check('④ workflow 不再被商城安装链接受（如实报不支持）', /还不支持安装这一类/.test(threw), threw);
 }
 
 // ── ⑤ 缺关键文件 ⇒ 如实报错（不装半个）──────────────────────
@@ -104,12 +111,6 @@ check('① 支持 skill / workflow / agent / mcp / knowledge 五类；未知 kin
 	try { await installBundle({ dataRoot, kind: 'skill', storeId: 'bad-skill', version: '1.0.0', gzBuffer: noSkillMd }); }
 	catch (e) { threw = String(e.message ?? e); }
 	check('⑤ skill 缺 SKILL.md ⇒ 报错且**没有落目录**', threw.includes('SKILL.md') && !fs.existsSync(path.join(dataRoot, 'skills', 'bad-skill')), threw);
-
-	const noWf = packTarGzFromMap({ 'manifest.json': '{}', 'README.md': 'x' });
-	let threw2 = '';
-	try { await installBundle({ dataRoot, kind: 'workflow', storeId: 'bad-wf', version: '1.0.0', gzBuffer: noWf }); }
-	catch (e) { threw2 = String(e.message ?? e); }
-	check('⑤ workflow 缺 workflow.json ⇒ 报错且没落目录', threw2.includes('workflow.json') && !fs.existsSync(path.join(dataRoot, 'workflows', 'bad-wf')), threw2);
 
 	const empty = packTarGzFromMap({});
 	let threw3 = '';
@@ -128,15 +129,15 @@ check('① 支持 skill / workflow / agent / mcp / knowledge 五类；未知 kin
 
 // ── ⑦ 卸载 ─────────────────────────────────────────────────
 {
-	const res = await uninstallBundle({ dataRoot, kind: 'workflow', storeId: 'demo-wf' });
+	const res = await uninstallBundle({ dataRoot, kind: 'skill', storeId: 'demo-skill' });
 	check('⑦ 卸载删掉了目录', !fs.existsSync(res.targetDir));
 	let threw = '';
-	try { await uninstallBundle({ dataRoot, kind: 'workflow', storeId: 'demo-wf' }); }
+	try { await uninstallBundle({ dataRoot, kind: 'skill', storeId: 'demo-skill' }); }
 	catch (e) { threw = String(e.message ?? e); }
 	check('⑦ 卸一个没装的 ⇒ 如实报错（不静默成功）', threw.includes('没有装过'), threw);
 }
 
-// ── ⑧ frontmatter 边界 ─────────────────────────────────────
+// ── ⑧ frontmatter 边界（纯函数保留只为兼容旧工具，安装链已不再调用）──
 {
 	check('⑧ 没有 frontmatter ⇒ 补一个最小合法的', (() => {
 		const out = injectSkillFrontmatter('纯正文\n', { storeId: 's', version: '1.0.0' });

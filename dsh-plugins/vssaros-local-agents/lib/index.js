@@ -8,6 +8,11 @@
 // ★ llm 用**动态 inject**：静态写进 inject 会让 headless / tui profile 永久 pending
 //   （与 vssaros-agents 的既有结论一致）。
 import { createLocalAgentAdapter } from './core/adapter.js';
+import { createAcpSessionMap } from './core/sessionMap.js';
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { engineTable, isLocalAgentRoute } from './core/engines.js';
 import { findExecutable, searchDirs } from './core/discover.js';
 import { createApprovalRequester, createApproveToolDefinition } from './core/approval.js';
@@ -115,10 +120,45 @@ export function apply(ctx, config = {}) {
 		const readImage = typeof attachments?.readImage === 'function'
 			? (ref) => attachments.readImage(ref)
 			: undefined;
+		// P1-5（2026-11-10）：ACP 会话的 cwd 与附加根来自 foundation 的**运行期**根集，不再落到
+		// Host 进程目录（`process.cwd()` 会把 CLI 会话开在 dsh 的安装目录 ✗）。
+		// 懒取：假 ctx / 老 Host 没有该服务 ⇒ 回落旧行为，不抛、不谎报 ✓。
+		const foundationOf = () => {
+			try { return ctx.reflect?.get?.('vssarosFoundation', false) ?? ctx.get?.('vssarosFoundation'); }
+			catch { return undefined; }
+		};
+		const rootsOf = () => {
+			try { return foundationOf()?.workspaceRoots?.() ?? []; } catch { return []; }
+		};
+		const cwdFor = () => rootsOf()[0]?.path ?? process.cwd();
+		const rootsFor = () => rootsOf().map(root => root?.path).filter(path => typeof path === 'string' && path.trim());
+		// P1-9：dsh sessionId ↔ cliSessionId 的持久映射（Host 重启后 resume）。
+		// ★ 懒 IO：第一次 ensureLive 才读盘；写用 tmp + rename 原子替换，失败不拖垮会话 ✓。
+		// ★ 只存 id：根集 / cwd / mcpServers 仍由 resume 请求显式重传，不隐式复活旧作用域 ✓。
+		const dataRoot = (() => {
+			try {
+				const foundation = foundationOf();
+				return typeof foundation?.dataRootOf === 'function'
+					? foundation.dataRootOf({}) : join(homedir(), '.vssaros');
+			} catch { return join(homedir(), '.vssaros'); }
+		})();
+		const mapPath = join(dataRoot, 'acp-sessions.json');
+		const sessionMap = createAcpSessionMap({
+			readText: () => readFile(mapPath, 'utf8'),
+			writeText: async (text) => {
+				await mkdir(dirname(mapPath), { recursive: true });
+				const tmp = `${mapPath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+				await writeFile(tmp, text, 'utf8');
+				await rename(tmp, mapPath);
+			},
+		});
 		const adapter = createLocalAgentAdapter({
 			engineTable: table,
 			findExecutable: (command) => findExecutable(command, dirs),
 			readImage,
+			cwdFor,
+			rootsFor,
+			sessionMap,
 		});
 		registration = llm.registerAdapter(routes, adapter);
 		// 同进程消费者仍可 ctx.get；HTTP 页面走 apply 闭包里的同一份 settings 实例。

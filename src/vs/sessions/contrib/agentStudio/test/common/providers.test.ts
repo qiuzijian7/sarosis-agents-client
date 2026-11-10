@@ -30,7 +30,6 @@ suite('Agent Studio - Provider Interface Definitions (Phase 1/5)', () => {
 	test('IExecutionProvider.runAgentLoop receives ISlotRegistry', async () => {
 		const mockSlots = {
 			getActiveModelProvider: () => undefined,
-			getActiveMemoryProvider: () => undefined,
 			getActiveToolProvider: () => undefined,
 			getActivePlanningProvider: () => undefined,
 			getActiveRetrievalProvider: () => undefined,
@@ -289,7 +288,6 @@ suite('Agent Studio - Provider Interface Definitions (Phase 1/5)', () => {
 	test('ISlotRegistry interface has all getter methods', () => {
 		const registry = {
 			getActiveModelProvider: () => undefined,
-			getActiveMemoryProvider: () => undefined,
 			getActiveToolProvider: () => undefined,
 			getActivePlanningProvider: () => undefined,
 			getActiveRetrievalProvider: () => undefined,
@@ -297,7 +295,6 @@ suite('Agent Studio - Provider Interface Definitions (Phase 1/5)', () => {
 		};
 
 		assert.ok(typeof registry.getActiveModelProvider === 'function');
-		assert.ok(typeof registry.getActiveMemoryProvider === 'function');
 		assert.ok(typeof registry.getActiveToolProvider === 'function');
 		assert.ok(typeof registry.getActivePlanningProvider === 'function');
 		assert.ok(typeof registry.getActiveRetrievalProvider === 'function');

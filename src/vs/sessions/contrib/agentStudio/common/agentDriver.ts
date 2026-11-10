@@ -5,7 +5,7 @@
 
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { Event } from '../../../../base/common/event.js';
-import type { IAgentTurnRequest, IChatMessage, IChatStreamDelta, IMemoryProvider } from './providers.js';
+import type { IAgentTurnRequest, IChatMessage, IChatStreamDelta } from './providers.js';
 import type { IChatSendOptions } from './agentStudio.js';
 
 // ─── Agent Driver Service ─────────────────────────────────────────
@@ -67,7 +67,6 @@ export interface IAgentDriverService {
 	/**
 	 * 获取当前活跃的 Memory Provider（供 chatService 订阅其 lifecycle 事件）
 	 */
-	getActiveMemoryProvider(): IMemoryProvider | undefined;
 
 	/**
 	 * 入队一条运行中 steering 消息（用户在 turn 执行期间补充的输入）。

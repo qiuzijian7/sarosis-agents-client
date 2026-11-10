@@ -118,24 +118,10 @@ export interface IDshHostConfig {
 	readonly mcpServers?: readonly IDshMcpServerSpec[];
 	/** MCP 配置**路径**（`renderDataRootOverlay` 会把它写进对应行的 `config.path`）。 */
 	readonly mcpConfigPath?: string;
-	/** 记忆网关地址（模块的口径是 `config.gatewayUrl`；拿不到就不渲染 —— 尊重它"不猜端口"的纪律）。 */
-	readonly gatewayUrl?: string;
-	/**
-	 * **知识库存储根**（用户在 IDE 里改过 `agentStudio.knowledge.storage.path` 才有值 ✓）：
-	 * 不注入时 kb 只认 `<数据根>/knowledge-base` ⇒ 用户改过存储根的话，dsh 侧**空着且不报错** ✗
-	 * （2026-10-12 评估发现的缺口 ✓）。canvas 跟着它走（同根 ✓）。
-	 */
-	readonly kbRoot?: string;
-	/**
-	 * **库记录**（2026-10-15）：IDE storage 里 `agentStudio.kb.vaults` 的展示字段，**已序列化成 JSON 字符串**
-	 * （渲染器只写 YAML scalar ✓）。给 kb 插件的**页面**用它显示"名字 / 图标"，而不是把 uid 目录名当库名 ✗
-	 * —— 名字/图标只存在 IDE storage 里（盘上没有 ✗，真机核过 ✓）。
-	 *
-	 * ⚠ 与 `kbRoot` 同一份覆盖层（整体替换 ⇒ 拆开会互相擦掉 ✗）。
-	 */
-	readonly kbVaults?: string;
-	/** 同上：**当前激活的库 id**（`agentStudio.kb.active` ✓）—— 页面据此只显示一个库 ✓。 */
-	readonly kbActiveVaultId?: string;
+	// ★ 2026-11-10（用户裁决「以 dsh 侧配置为准、移除 IDE 侧配置和逻辑」）：
+	//   `kbRoot` / `kbVaults` / `kbActiveVaultId` 三个字段已删除。知识库根改由 dsh 插件自持
+	//   （`<数据根>/.kb-root.json`），本文件不再把它写进 `roots-<id>.yml` 覆盖层，
+	//   也不再从 `vssaros.config.json` 读取 —— 独立启动器同样用那份 dsh 侧配置。
 	/**
 	 * **Unreal bridge 基址**（用户在 IDE 里改过 `sessions.agentStudio.unreal.bridgeUrl` 才有值 ✓）：
 	 * 此前 dsh 侧**没有等价配置键** ✗（只能靠环境变量 ✓）⇒ 设置改了、Host 仍连默认 8765 ✓。
@@ -172,12 +158,12 @@ export interface IDshHostConfig {
 }
 
 /** 覆盖层种类（也是落盘文件名的前缀，见 {@link hostOverlayFileName}）。 */
-export type DshHostOverlayKind = 'bridge' | 'kanban' | 'codebase' | 'mcp' | 'skills' | 'agents' | 'dataRoot' | 'memory' | 'sandbox' | 'office';
+export type DshHostOverlayKind = 'bridge' | 'kanban' | 'codebase' | 'mcp' | 'skills' | 'agents' | 'dataRoot' | 'sandbox' | 'office';
 
 /** 覆盖层文件名的前缀：与主进程 `bridge-<id>.yml` / `roots-<id>.yml` 等**逐字一致**。 */
 export const DSH_HOST_OVERLAY_PREFIX: Readonly<Record<DshHostOverlayKind, string>> = {
 	bridge: 'bridge', kanban: 'kanban', codebase: 'codebase', mcp: 'mcp',
-	skills: 'skills', agents: 'agents', dataRoot: 'roots', memory: 'memory', sandbox: 'sandbox', office: 'office',
+	skills: 'skills', agents: 'agents', dataRoot: 'roots', sandbox: 'sandbox', office: 'office',
 };
 
 /** 覆盖层的文件名（主进程与独立启动器共用同一套命名，便于人工比对 run 目录）。 */
@@ -264,17 +250,13 @@ export function renderHostOverlays(config: IDshHostConfig): readonly IDshHostOve
 		out.push({
 			kind: 'dataRoot',
 			text: renderDataRootOverlay(dataRoot, trimmed(config.mcpConfigPath), {
-				kbRoot: trimmed(config.kbRoot),
-				// ★ 库记录（2026-10-15）：与 kbRoot 写**同一行**（`vssaros-kb` ✓ 整体替换 ⇒ 不能拆 ✗）
-				kbVaults: trimmed(config.kbVaults),
-				kbActiveVaultId: trimmed(config.kbActiveVaultId),
+				// ★ 2026-11-10：知识库三键不再注入（dsh 侧自持配置为准）。
 				unrealBridgeUrl: trimmed(config.unrealBridgeUrl),
 				browser: config.browser,
 			}),
 		});
 	}
-	// 2026-11-03：记忆网关整套下线 ⇒ 不再生成 `vssaros-memory` 覆盖层（插件已从 bundles 移除，
-	// 打这一行只会静默打空）。`config.gatewayUrl` 字段保留以兼容独立启动器的旧配置对象。
+	// 2026-11-10：IDE 侧记忆网关链与 `vssaros-memory` 覆盖层已整体删除（生产方/消费方/兼容字段/渲染器）。
 	// 沙箱降级**放最后**：它打的是 `sandbox-policy` 这一行（`@deepseek-ai/dsh-base` 自带的行），
 	// 与上面任何一条都不撞（所以不存在"同写一份"的替换风险 ✓）；顺序上放末尾只为让 run 目录里的
 	// 文件与日志读起来是"先常规、后补救"✓。
@@ -377,10 +359,9 @@ export function parseDshHostConfig(text: unknown): IDshHostConfig | undefined {
 		...optional('bundledSkillDir', trimmed(src.bundledSkillDir)),
 		...(mcpServers && mcpServers.length ? { mcpServers } : {}),
 		...optional('mcpConfigPath', trimmed(src.mcpConfigPath)),
-		...optional('gatewayUrl', trimmed(src.gatewayUrl)),
-		// 2026-10-12（A 组缺口）：这两个也放进中立配置 —— 否则**独立启动器**（没有 VsSaros 的入口）读
-		// 同名的 `vssaros.config.json` 时会把它们**丢掉** ✗（`parse` 只认这里列出的字段 ✓）。
-		...optional('kbRoot', trimmed(src.kbRoot)),
+		// 2026-10-12（A 组缺口）：unreal 也放进中立配置 —— 否则**独立启动器**（没有 VsSaros 的入口）读
+		// 同名的 `vssaros.config.json` 时会把它**丢掉** ✗（`parse` 只认这里列出的字段 ✓）。
+		// ★ 2026-11-10：`kbRoot` 已删除（知识库根以 dsh 侧 `.kb-root.json` 为准）。
 		...optional('unrealBridgeUrl', trimmed(src.unrealBridgeUrl)),
 		// 沙箱降级（2026-10-13）：同样必须过中立配置 —— 独立启动器读同一份 `vssaros.config.json` 时
 		// 不能把它丢掉（丢了就回到"本机每个工具都 grant 失败"✗）。
@@ -405,7 +386,7 @@ function optional<K extends keyof IDshHostConfig>(key: K, value: IDshHostConfig[
 export function serializeDshHostConfig(config: IDshHostConfig): string {
 	const ordered: Record<string, unknown> = {};
 	if (config.bridge) { ordered.bridge = config.bridge; }
-	for (const key of ['dataRoot', 'workspaceId', 'workspaceRoot', 'relatedRoots', 'agentsRoot', 'agentsBuiltinRoot', 'skillDirs', 'bundledSkillDir', 'mcpServers', 'mcpConfigPath', 'gatewayUrl', 'kbRoot', 'unrealBridgeUrl', 'browser', 'sandboxMode', 'sandboxWorkspaceRoot', 'office'] as const) {
+	for (const key of ['dataRoot', 'workspaceId', 'workspaceRoot', 'relatedRoots', 'agentsRoot', 'agentsBuiltinRoot', 'skillDirs', 'bundledSkillDir', 'mcpServers', 'mcpConfigPath', 'unrealBridgeUrl', 'browser', 'sandboxMode', 'sandboxWorkspaceRoot', 'office'] as const) {
 		const value = config[key];
 		if (value === undefined) { continue; }
 		if (Array.isArray(value) && value.length === 0) { continue; }

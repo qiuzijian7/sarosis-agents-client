@@ -383,8 +383,8 @@ export class WorkspacesHistoryMainService extends Disposable implements IWorkspa
 				description: localize('newWindowDesc', "Opens a new window"),
 				// [Saros] 逃生门：启动一个【独立】的 VsSaros 实例（多开），而不是转发给已运行的主实例。
 				// 经 PowerShell 隐藏窗口脚本每次生成唯一 --instance <id>：新进程 IPC 单实例锁/可变状态
-				// 按实例拆分，agents/skills/settings/extensions 共享；agentmemory 网关自动复用 3111
-				// （见 app.ts startAgentMemoryGateway 探活逻辑）。
+				// 按实例拆分，agents/skills/settings/extensions 共享；记忆数据由 dsh 侧按实例自持
+				// （IDE 侧 agentmemory 网关已于 2026-11-10 整体删除）。
 				program: join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
 				args: this.getNewWindowScriptArgs(),
 				iconPath: process.execPath,

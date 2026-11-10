@@ -6,7 +6,7 @@
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import {
-	IModelProvider, IModelSelection, IMemoryProvider, IToolProvider,
+	IModelProvider, IModelSelection, IToolProvider,
 	IPlanningProvider, IExecutionProvider, IRetrievalProvider, IKanbanProvider,
 	ISlotRegistry,
 } from '../common/providers.js';
@@ -30,7 +30,6 @@ export class SlotRegistry extends Disposable implements ISlotRegistry {
 	private readonly _logService: ILogService;
 
 	private readonly _modelProviders: IModelProvider[] = [];
-	private readonly _memoryProviders: { provider: IMemoryProvider; priority: number }[] = [];
 	private readonly _toolProviders: { provider: IToolProvider; priority: number }[] = [];
 	private readonly _planningProviders: { provider: IPlanningProvider; priority: number }[] = [];
 	private readonly _executionProviders: { provider: IExecutionProvider; priority: number }[] = [];
@@ -91,27 +90,6 @@ export class SlotRegistry extends Disposable implements ISlotRegistry {
 		return [...this._modelProviders];
 	}
 
-	// ── Memory Providers ─────────────────────────────────────────
-
-	registerMemoryProvider(provider: IMemoryProvider, priority: number = 0): IDisposable {
-		this._memoryProviders.push({ provider, priority });
-		this._memoryProviders.sort((a, b) => b.priority - a.priority);
-		this._logService.info(`[SlotRegistry] Registered MemoryProvider: ${provider.id} (priority=${priority})`);
-
-		return {
-			dispose: () => {
-				const idx = this._memoryProviders.findIndex(p => p.provider.id === provider.id);
-				if (idx !== -1) {
-					this._memoryProviders.splice(idx, 1);
-					this._logService.info(`[SlotRegistry] Unregistered MemoryProvider: ${provider.id}`);
-				}
-			},
-		};
-	}
-
-	getActiveMemoryProvider(): IMemoryProvider | undefined {
-		return this._memoryProviders.length > 0 ? this._memoryProviders[0].provider : undefined;
-	}
 
 	// ── Tool Providers ───────────────────────────────────────────
 
@@ -258,7 +236,6 @@ export class SlotRegistry extends Disposable implements ISlotRegistry {
 
 	override dispose(): void {
 		this._modelProviders.length = 0;
-		this._memoryProviders.length = 0;
 		this._toolProviders.length = 0;
 		this._planningProviders.length = 0;
 		this._executionProviders.length = 0;
