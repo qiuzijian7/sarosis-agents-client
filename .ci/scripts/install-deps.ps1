@@ -16,6 +16,20 @@ node --version
 # ===== 2. Cleanup =====
 cmd /c "rd /s /q node_modules 2>nul"
 cmd /c "rd /s /q build\node_modules 2>nul"
+# ★ 2026-11-09（Log 11）：`rd /s /q ... 2>nul` 把 EPERM 一起吞了。工作区跨次构建复用时，
+#   杀软/索引器偶尔占着 node_modules 里的文件 ⇒ 目录没删干净却无人知晓 ⇒ npm install 走
+#   "增量更新"路径，失败回滚时又报 cleanup EPERM（日志里那 4 组 rmdir 错误）。
+#   ⇒ 显式校验 + Remove-Item 重试一次 + 仍有残留就大声告警（运维能据此清构建机）。
+foreach ($nm in @('node_modules', 'build\node_modules')) {
+  if (Test-Path $nm) {
+    Write-Host ('[clean] WARN: ' + $nm + ' 没被 rd 删干净（文件被占用）⇒ Remove-Item 重试')
+    Start-Sleep -Seconds 3
+    Remove-Item -Recurse -Force -LiteralPath $nm -ErrorAction SilentlyContinue
+    if (Test-Path $nm) {
+      Write-Host ('[clean] WARN: ' + $nm + ' 仍有残留 ⇒ 本次 npm install 会走增量更新；若报 cleanup EPERM 请清理构建机工作区')
+    }
+  }
+}
 
 # extensions/*/node_modules 此前【从不清理】，而蓝盾工作区跨次构建复用（E:\data\landun\workspace），
 # 于是历次失败/中断的 npm install 残骸永久累积。2026-09-07 事故实证：
@@ -61,8 +75,23 @@ $env:npm_config_registry   = "https://registry.npmmirror.com/"
 $env:ELECTRON_MIRROR       = "https://npmmirror.com/mirrors/electron/"
 
 # ===== 5. Install root dependencies =====
-npm install --ignore-scripts
-if ($LASTEXITCODE -ne 0) { Write-Error "FATAL: npm install --ignore-scripts failed"; exit 1 }
+# ★ 2026-11-09（Log 11）：npm 镜像偶发 500（[ER_NO_SUCH_TABLE] Table 'npmmirrordb...'）
+#   ⇒ 47 分钟的 npm install 在最后一个包上失败 ⇒ 根 node_modules 半残 ⇒ 后续
+#   transpile-plugins(缺 esbuild) / compile-extensions(缺 tsc) / package-vscode(缺 gulp) /
+#   verify-staging(缺 tree-sitter-wasm) 连锁失败，而流水线不中断 ⇒ 白跑 20 分钟出 0 个 exe。
+#   ⇒ 最多 3 次；第 2 次起 --prefer-offline（复用 npm cache，避免重复拉同一个坏包且更快）；
+#     并让 npm 自己按拉长的超时做 fetch 级重试（5xx 属可重试错误）。
+$rootInstallOk = $false
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+  Write-Host "=== npm install --ignore-scripts (attempt $attempt/3) ==="
+  $npmArgs = @('--ignore-scripts', '--fetch-retries=5', '--fetch-retry-mintimeout=2000', '--fetch-retry-maxtimeout=60000')
+  if ($attempt -gt 1) { $npmArgs += '--prefer-offline' }
+  & npm install @npmArgs
+  if ($LASTEXITCODE -eq 0) { $rootInstallOk = $true; break }
+  Write-Host ('[WARN] npm install attempt ' + $attempt + ' failed (exit ' + $LASTEXITCODE + '), retrying...')
+  Start-Sleep -Seconds (15 * $attempt)
+}
+if (-not $rootInstallOk) { Write-Error "FATAL: npm install --ignore-scripts failed after 3 attempts"; exit 1 }
 
 # node-gyp 的 VS 探测（powershell + Add-Type 编译 Find-VisualStudio.cs）在构建机上偶发失败：
 # 同一次 rebuild 里前两个包刚 "find VS using VS2022" 成功，下一个包就报
