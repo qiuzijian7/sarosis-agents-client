@@ -26,7 +26,7 @@ window.__ModuleLoader__.load({
 		const ENTRY_ID = "vssaros-workflow-run";
 		/**
 		 * 官方在这一槽的占位：`todo`=0 / `goal`=10 / `queue`=20
-		 * 我们的三枚：`vssaros-bot-welcome`=-5 / `vssaros-todo`=5 / `vssaros-delegate`=15
+		 * 我们的三枚：`vssaros-bot-welcome`=-5 / `vssaros-todo`=-1 / `vssaros-delegate`=15
 		 * ⇒ 取 **25**：排在最后，不与任何一条 tie，也不打断官方那三枚的语义顺序 ✓
 		 * （tie 的后果是"谁先谁后看注册时机"，用户会看到两条 dock 时而换位 —— 本仓踩过 ✗）
 		 */

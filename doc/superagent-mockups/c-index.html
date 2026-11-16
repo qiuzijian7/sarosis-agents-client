@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>方案 C · 页签 × 状态矩阵 — SuperAgent 工作台</title>
+<style>
+:root,[data-theme="light"]{--bg:#F4F6FA;--panel:#FFFFFF;--soft:#F8FAFC;--line:#E2E8F0;--line2:#CBD5E1;--fg:#0F172A;--muted:#475569;--dim:#94A3B8;--brand:#2563EB;--brand-soft:#DBEAFE;--ok:#15803D;--warn:#B45309;--err:#B91C1C;--cyan:#0891B2;--violet:#7C3AED;--r:11px;--mono:ui-monospace,Consolas,monospace}
+[data-theme="dark"]{--bg:#0B1220;--panel:#131E31;--soft:#18263D;--line:#26364F;--line2:#38506F;--fg:#E2E8F0;--muted:#A6B6CF;--dim:#7C8EAA;--brand:#60A5FA;--brand-soft:#1E3A5F;--ok:#34D399;--warn:#FBBF24;--err:#F87171;--cyan:#22D3EE;--violet:#A78BFA}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.6}
+a{color:inherit;text-decoration:none}button{font:inherit;color:inherit;cursor:pointer}
+:focus-visible{outline:2px solid var(--brand);outline-offset:3px}
+.wrap{max-width:1400px;margin:0 auto;padding:0 22px 60px}
+header{padding:34px 0 20px;border-bottom:1px solid var(--line)}
+.eyebrow{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--cyan)}
+h1{font-size:28px;font-weight:650;margin:9px 0 7px}
+header p{margin:0;color:var(--muted);max-width:900px}
+.meta{margin-top:13px;display:flex;gap:15px;flex-wrap:wrap;font-size:12px;color:var(--dim)}
+.meta a{color:var(--brand);border-bottom:1px solid var(--line2)}
+.previewbar{display:flex;align-items:center;gap:9px;margin:22px 0 10px;flex-wrap:wrap}
+.pill{min-height:38px;padding:7px 13px;border:1px solid var(--line);background:var(--panel);border-radius:999px;font-size:11px;color:var(--muted)}
+.pill:hover{border-color:var(--brand)}
+.pill.on{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:600}
+.open{margin-left:auto;font-size:12px;color:var(--brand);border-bottom:1px solid var(--line2);padding-bottom:2px}
+.frame{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:7px;box-shadow:0 14px 46px rgba(15,23,42,.12)}
+iframe{width:100%;height:720px;border:0;border-radius:8px;background:var(--panel);display:block}
+.hint{font-size:11px;color:var(--dim);margin-top:9px}
+h2{font-size:16px;font-weight:650;margin:32px 0 6px;display:flex;align-items:baseline;gap:10px}
+h2 .n{font-family:var(--mono);font-size:11px;color:var(--dim);font-weight:400}
+.groupdesc{font-size:12px;color:var(--muted);margin:0 0 12px}
+.states{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:10px}
+.state{display:block;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:13px 14px;transition:border-color .2s,transform .2s;cursor:pointer}
+.state:hover{border-color:var(--brand);transform:translateY(-2px)}
+.state.on{border-color:var(--brand);box-shadow:0 0 0 2px var(--brand-soft)}
+.state .top{display:flex;align-items:center;gap:8px;margin-bottom:5px}
+.state .code{font-family:var(--mono);font-size:10px;color:var(--brand);background:var(--brand-soft);border-radius:5px;padding:2px 6px}
+.state b{font-size:13px}
+.state p{margin:0;font-size:11px;color:var(--muted);line-height:1.65}
+.state .tone{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);flex:none}
+.state .tone.w{background:var(--warn)}.state .tone.r{background:var(--err)}.state .tone.b{background:var(--brand)}.state .tone.v{background:var(--violet)}
+table{width:100%;border-collapse:collapse;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;margin-top:12px}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);background:var(--soft)}
+tbody tr:last-child td{border-bottom:0}
+td:first-child{font-weight:600}
+.constraints{display:grid;grid-template-columns:repeat(2,1fr);gap:9px;margin-top:12px}
+.rule{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:11px 13px;font-size:11px;color:var(--muted)}
+.rule b{display:block;color:var(--warn);font-size:10px;letter-spacing:.06em;margin-bottom:3px}
+.foot{margin-top:28px;border-top:1px solid var(--line);padding-top:15px;font-size:11px;color:var(--dim);line-height:1.9}
+@media(max-width:800px){.constraints{grid-template-columns:1fr}iframe{height:560px}.wrap{padding:0 14px 40px}h1{font-size:23px}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">SuperAgent Workbench · Option C · Full Coverage</div>
+    <h1>方案 C · 页签 × 状态矩阵</h1>
+    <p>6 个页签、33 个状态，全部在一份数据驱动的完整工作台里实现。点下方任意状态卡片即可在预览区直达；也可以用 URL 参数 <code>?tab=&amp;state=&amp;theme=</code> 单独打开。</p>
+    <div class="meta"><span>版本基线 0.1.118</span><span>示例数据，未接入运行时</span><a href="c-workbench.html">打开完整工作台 ↗</a><a href="c-split-workspace.html">C 初稿（单页概念）</a><a href="index.html">返回方案对比</a></div>
+  </header>
+
+  <div class="previewbar">
+    <button class="pill on" data-theme="light" aria-pressed="true">浅色预览</button><button class="pill" data-theme="dark" aria-pressed="false">深色预览</button>
+    <span style="font-size:11px;color:var(--dim);margin-left:6px" id="current">当前：概况 / 正常</span>
+    <a class="open" id="open" href="c-workbench.html?tab=overview&amp;state=normal&amp;theme=light" target="_blank" rel="noopener">在新窗口打开当前状态 ↗</a>
+  </div>
+  <div class="frame"><iframe id="frame" src="c-workbench.html?tab=overview&amp;state=normal&amp;theme=light" title="方案 C 工作台预览" loading="lazy"></iframe></div>
+  <p class="hint">预览里的状态切换、明暗切换、点击卡片联动右侧上下文、搜索过滤都是演示交互，不写任何数据。右侧是主区内常驻信息列，不是可弹出的概况面板。</p>
+
+  <div id="matrix"></div>
+
+  <h2>覆盖统计</h2>
+  <table>
+    <thead><tr><th>页签</th><th>状态数</th><th>状态清单</th><th>重点覆盖</th></tr></thead>
+    <tbody id="stats"></tbody>
+  </table>
+
+  <h2>所有状态共同遵守的既有约束</h2>
+  <div class="constraints">
+    <div class="rule"><b>不出现右侧概况侧栏</b>右侧是主区内常驻「上下文」列，没有打开/收起/拖宽按钮。</div>
+    <div class="rule"><b>不出现头部两个按钮</b>「打开概况面板」与「展开/收起侧边栏」已移除；只保留搜索、术语表、主题。</div>
+    <div class="rule"><b>不出现 @SuperAgent 与隐藏来源卡</b>无 @ 提及入口；来源示例仅飞书 / TAPD / GitHub，无「SuperAgent 主管」「P4」来源卡（P4 只在设置→执行里叫 P4）。</div>
+    <div class="rule"><b>页签固定 6 个</b>概况 / 来源 / 触发 / 评估 / 执行 / 设置；无「工作台」「对话」页签；无「团队工作流」区块。</div>
+    <div class="rule"><b>只显示已消耗 tokens</b>没有「N / M tokens」「预算用完」「追加一半预算」等上限 / 进度 / 追加预算 UI。</div>
+    <div class="rule"><b>真实中文标签</b>待确认组队、同意并开工、需要你处理、团队步骤进度、待你审核的提交、过去 24 小时、模型用量（24 小时）等均取自现有面板。</div>
+  </div>
+
+  <div class="foot">主文件：<a href="c-workbench.html" style="color:var(--brand)">c-workbench.html</a> · 本索引：<a href="c-index.html" style="color:var(--brand)">c-index.html</a> · 初稿：<a href="c-split-workspace.html" style="color:var(--brand)">c-split-workspace.html</a><br>选定后我可以直接落到 <code>dev/src/client/</code> 的对应组件与 <code>client.css</code>，同步测试契约、build、版本与真机产物。</div>
+</div>
+<script>
+const DATA={
+ overview:{label:'概况',desc:'默认首页。决策队列、团队步骤进度、待处理工单与常驻上下文。',focus:'正常 / 密集 / 空 / 加载 / 异常 / 暂停',states:[['normal','正常','有待确认组队、越权审批、CL 审核；右侧展示方案与步骤。',''],['dense','信息密集','7 项待处理，含技能建议、bot 草案、等待新触发的工单。','b'],['empty','空态','没有待你处理的事；上下文显示 24 小时统计与执行器空闲。',''],['loading','加载中','骨架屏：决策队列与上下文同时占位，无内容跳动。','b'],['error','异常','GitHub 连续 3 次 ETIMEDOUT + 飞书补收暂停横幅。','r'],['paused','已暂停','处理已暂停：入站仍记录，评估与建单停止。','w']]},
+ source:{label:'来源',desc:'每个来源是否在运行、到达 / 被过滤 / 最近、健康错误与被过滤的触发。',focus:'就绪 / 异常 / 关闭 / 空 / 被过滤',states:[['ready','全部就绪','飞书与 TAPD 就绪、GitHub 未启用，逐行显示计数。',''],['error','异常','GitHub 健康检查 error，横幅给出重新检查入口。','r'],['off','已关闭','所有来源关闭，不接收入站消息。','w'],['empty','空态','没有配置来源，引导去「设置 → 来源」。',''],['filtered','被过滤','24 条触发被过滤，附被过滤触发表格与原因。','b']]},
+ trigger:{label:'触发',desc:'触发记录、处置结果、线程详情、被过滤的触发与按处置分组统计。',focus:'列表 / 详情 / 空 / 过滤 / 加载',states:[['list','列表','5 条触发表格 + 处置分组，含 explicitFastTrack 与 timeout。',''],['detail','线程详情','飞书私聊线程 4 条消息，逐条展示处置与原因。','b'],['empty','空态','还没有触发，显示空态引导。',''],['filtered','被过滤','只看被过滤的触发，横幅说明过滤原因。','w'],['loading','加载中','触发列表骨架屏。','b']]},
+ eval:{label:'评估',desc:'未完成的评估、准入与规则、模型 / 超时设置、明确任务快通道。',focus:'候选 / 快通道 / 空 / 超时 / 关闭',states:[['candidates','候选在途','2 个候选在途，含候选卡与 orchestrator_eval_decide 入口。',''],['fasttrack','快速通道','5/5 判据命中，规则直建单；明确列出「未走模型评估」。','b'],['empty','空态','没有未完成的评估，显示当前设置与 24 小时统计。',''],['overdue','超时','unavailable / timeout，6 分钟后记为超时，可重新入队。','r'],['paused','已关闭','mode=off：推断候选不评估，准入矩阵与规则只读。','w']]},
+ execution:{label:'执行',desc:'执行器状态、筛选 pills、工单、流程图 / 看板 / 列表与步骤详情。',focus:'执行中 / 等待 / 待人回答 / 暂停 / 完成 / 空',states:[['running','执行中','2/5 步骤完成、已消耗 48,320 tokens、看板四列。',''],['waiting','等待新触发','执行器运行但没有在跑的步骤。','b'],['attention','待人回答','领队提问的横幅 + 回答入口 + 停止工单。','w'],['paused','已暂停','执行器不启动新步骤，已运行的继续到报告。','w'],['completed','已结束','已完成与已停止的工单归档视图。','b'],['empty','空态','没有工单；执行器空闲与 24 小时用量。','']]},
+ settings:{label:'设置',desc:'五个设置分组（来源 / 评估 / 执行 / 提示词 / 部署）与保存冲突。',focus:'五个分组 + 保存冲突',states:[['source','来源','飞书 / TAPD / GitHub 卡片，Open API 地址与项目 ID。',''],['eval','评估','准入、规则、模型与超时、fastExplicitTasks 开关。','b'],['execution','执行','执行目录（空）、最大并发、环境变量、P4 未配置。','w'],['prompts','提示词','revision 7、编辑、历史与版本变更影响。','v'],['deployment','部署','4/5 检查通过，列出 SetupProblem。','b'],['conflict','保存冲突','revision 4 → 5 的 409 冲突，重新载入或放弃改动。','r']]}
+};
+const labels={};
+Object.entries(DATA).forEach(([tab,g])=>g.states.forEach(([s,n])=>labels[tab+'/'+s]=n));
+let theme='light',current='overview/normal';
+const frame=document.getElementById('frame'),open=document.getElementById('open'),cur=document.getElementById('current');
+function pick(tab,state){
+  current=tab+'/'+state;
+  const url=`c-workbench.html?tab=${tab}&state=${state}&theme=${theme}`;
+  frame.src=url;open.href=url;
+  cur.textContent=`当前：${DATA[tab].label} / ${labels[current]}`;
+  document.querySelectorAll('.state').forEach(c=>c.classList.toggle('on',c.dataset.key===current));
+}
+function themeTo(t){theme=t;document.querySelectorAll('.pill').forEach(b=>{const on=b.dataset.theme===t;b.classList.toggle('on',on);b.setAttribute('aria-pressed',String(on))});const [tab,state]=current.split('/');pick(tab,state)}
+let html='',stats='';
+Object.entries(DATA).forEach(([tab,g])=>{
+  html+=`<h2>${g.label}<span class="n">${g.states.length} 个状态</span></h2><p class="groupdesc">${g.desc}</p><div class="states">`;
+  g.states.forEach(([s,n,d,tone])=>{html+=`<a class="state ${current===tab+'/'+s?'on':''}" data-key="${tab}/${s}" href="c-workbench.html?tab=${tab}&amp;state=${s}&amp;theme=light"><div class="top"><i class="tone ${tone}"></i><b>${n}</b><span class="code">${s}</span></div><p>${d}</p></a>`});
+  html+='</div>';
+  stats+=`<tr><td>${g.label}</td><td class="mono">${g.states.length}</td><td>${g.states.map(x=>x[1]).join(' · ')}</td><td>${g.focus}</td></tr>`;
+});
+document.getElementById('matrix').innerHTML=html;
+document.getElementById('stats').innerHTML=stats+`<tr><td>合计</td><td class="mono">33</td><td>6 个页签全覆盖</td><td>每个状态都可独立打开与截图</td></tr>`;
+document.querySelectorAll('.state').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();const [tab,state]=a.dataset.key.split('/');pick(tab,state)}));
+document.querySelectorAll('.pill').forEach(b=>b.addEventListener('click',()=>themeTo(b.dataset.theme)));
+</script>
+</body>
+</html>

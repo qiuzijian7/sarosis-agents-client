@@ -1,23 +1,9 @@
-// @vssaros/dsh-scheduler — 定时任务模块（重构 2.1 试点）。
+// @vssaros/dsh-scheduler — 自建定时任务引擎与工作台。
 //
-// ── 这个插件是什么 ──────────────────────────────────────────────────────────
-// 官方 `@deepseek-ai/dsh-schedule`（经 experimental-schedule-bundle 进组合）的**薄壳**：
-//   · ActivityBar 图标「定时任务」（清单驱动 ⇒ 壳侧零代码，1.1 已铺好）；
-//   · `/x/scheduler/` 页面：跨会话任务清单（`schedule.catalog()`）+ 删除；
-//   · legacy 迁移入口（`POST /x/scheduler/api/migrate`，见 lib/migrate.js）。
-//
-// ── 不做什么 ────────────────────────────────────────────────────────────────
-// · 不注册工具：官方 `schedule_create` 已在模型工具表里（bundle 自带）；
-// · ★ 2026-10-31 起**做**创建表单（用户：「点击新建自动化任务错误」——点了只开一个空白会话）：
-//   官方 ui-schedule 页面确实没有创建表单，且 `ScheduleService.create` **没有 @Remote**
-//   ⇒ 客户端调不到 ⇒ 由 `POST /x/scheduler/api/create` 中转，程序化 `ctx.schedule.create`
-//   （与迁移同口径：不必经模型 ✓）；
-// · 不管触发 / 投递 / 持久化：全是官方件的事。
-//
-// ── 服务的拿法 ──────────────────────────────────────────────────────────────
-// `schedule` 服务**可选注入**：官方 bundle 没装上的组合里，页面如实显示"不可用"而不是
-// 让插件永久 pending（与 sessions/dashboard 同口径：webServer/connection 也走可选注入 ⇒
-// 静态 inject 留空，headless 组合也能加载）。
+// 服务 vssarosScheduler / 工具 vssaros_schedule_* 与官方 schedule / schedule_* 独立。
+// 任务库沿用 <dataRoot>/scheduler/tasks.json，支持 prompt 投递与 Dream action 订阅。
+// 工作台与 legacy 迁移走 /x/scheduler/api/*，不调用官方 schedule 服务。
+// foundation / webServer / connection 可选注入，tools 为工具注册的静态依赖。
 
 import { randomUUID } from 'node:crypto';
 
@@ -32,7 +18,7 @@ import { bindingOf } from './sessionBinding.js';
 export const name = 'vssaros-scheduler';
 /**
  * ★ **`tools` 必须写进静态 inject**（2026-10-31 真机事故）：
- *   自建引擎在 apply 里注册 `schedule_create / list / update / delete / history`，
+ *   自建引擎在 apply 里注册 `vssaros_schedule_create / list / update / delete / history`，
  *   而 `ctx.tools` 是 cordis 服务 —— **没声明就直读会抛
  *   `cannot get property "tools" without inject`** ⇒ 整个 apply 失败 ⇒ 插件激活不了
  *   （页面路由也没注册，工作台打不开）。与 `vssaros-loop` 同款（`inject = ['tools']`）。
@@ -126,9 +112,9 @@ function renderPage(entries, scheduleAvailable, migrateNote) {
 	<td><button data-delete="${escapeHtml(e.id)}" data-session="${escapeHtml(e.sessionId)}">删除</button></td>
 </tr>`).join('');
 	const body = !scheduleAvailable
-		? `<p class="empty">调度服务不可用：官方 <code>@deepseek-ai/dsh-experimental-schedule-bundle</code> 没装上（宿主安装链负责；装不上不影响启动，只是没有定时任务能力）。</p>`
+		? `<p class="empty">自建调度服务 vssarosScheduler 未就绪，请检查 foundation 是否可用。</p>`
 		: entries.length === 0
-			? '<p class="empty">还没有定时任务。在聊天框里让 Agent 帮你建一个（官方 <code>schedule_create</code> 工具），或跑一次 legacy 迁移。</p>'
+			? '<p class="empty">还没有定时任务。在聊天框里让 Agent 帮你建一个（自建 <code>vssaros_schedule_create</code> 工具），或跑一次 legacy 迁移。</p>'
 			: `<table><thead><tr><th>名称</th><th>规则</th><th>状态</th><th>下次运行（UTC）</th><th>最近投递</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
 	// renderShell 的件区是 headerHtml / bodyHtml / script（不是 body ✗ —— 参数名写错会被静默丢掉，
 	// p3-98 的"迁移按钮在场"断言就是抓这个的 ✓）。
@@ -179,6 +165,7 @@ export function apply(ctx, config = {}) {
 	//   `function` 声明会提升，但 `let` 不会 ⇒ 声明一律提到 apply 顶部。
 	// `engine` 是**模块级**（见上方声明）—— 这里只留幂等开关。
 	let engineInstalled = false;
+	let ownsEngine = false;
 	// ══ 到点投递的状态（★ 2026-11-03）══════════════════════════════════════════════
 	// ⚠ 这三个声明**必须**在任何 `ctx.inject` 之前：回调在服务已就绪时是**同步**执行的，
 	//   写到 inject 之后就命中 TDZ（0.5.6 那次 `engineInstalled` 事故同源）。
@@ -199,7 +186,7 @@ export function apply(ctx, config = {}) {
 	 *   · 后台回合没人审批 ⇒ `approval.allow` 只放 `config.allowTools` 白名单（默认全拒，与 loop 一致）。
 	 */
 	function attachDelivery() {
-		if (deliveryOff || !engine || !runsSvc || typeof runsSvc.run !== 'function') { return; }
+		if (!ownsEngine || deliveryOff || !engine || !runsSvc || typeof runsSvc.run !== 'function') { return; }
 		const allow = Array.isArray(config?.allowTools) ? config.allowTools.map(String).filter(Boolean) : [];
 		// 捕获当前引擎实例：回调里只用 `svc`，避免"引擎被重建后写到新实例"这种幽灵问题。
 		const svc = engine;
@@ -293,22 +280,14 @@ export function apply(ctx, config = {}) {
 	});
 
 	/**
-	 * ★ 2026-10-31：自建调度引擎，**占用 `schedule` 服务键**。
-	 *
-	 * ⚠ 真机事实（纠正先前的误判）：官方 `@deepseek-ai/dsh-schedule` **确实在组合里**并会尝试
-	 *   注册同名服务 —— 启动日志里就有
-	 *   `schedule (@deepseek-ai/dsh-schedule): Error: service "schedule" has been registered at <vssaros-scheduler>`
-	 *   + `dsh: warning: 1 entry did not activate`。
-	 *   ⇒ 我们**抢先**注册 ⇒ 官方那一个激活失败（这正是"停用官方"的落地形态，代价是启动日志里
-	 *     多一条 warning）。若哪天官方改回先注册，我们的 `shouldProvideSchedule` 会让步（不抢）。
-	 *
-	 * ⚠ 必须等 foundation 就绪：`start()` 会读任务库，而数据根来自 foundation。
+	 * 自建调度只提供 vssarosScheduler，与官方 schedule 服务及其工具互不接管。
+	 * 双 plane 已有自建服务则复用；必须等 foundation 就绪再读原任务库。
 	 */
 	function installScheduleEngine() {
 		if (engineInstalled) { return; }
 		const verdict = shouldProvideSchedule(ctx);
 		if (!verdict.ok) {
-			console.warn('[vssaros-scheduler] 组合里已存在 schedule 服务 ⇒ 自建引擎不注册（避免撞键）。');
+			engine = verdict.service;
 			engineInstalled = true;
 			return;
 		}
@@ -333,9 +312,11 @@ export function apply(ctx, config = {}) {
 			// ★ 2026-10-31：企微推送 webhook（插件 config.notifyWebhook；没配 ⇒ 推送只记日志）。
 			notifyWebhook: typeof config?.notifyWebhook === 'string' ? config.notifyWebhook.trim() : '',
 		});
-		ctx.provide('schedule', engine);
-		engine.start();
-		ctx.effect?.(() => () => engine.stop());
+		ctx.provide('vssarosScheduler', engine);
+		ownsEngine = true;
+		const installedEngine = engine;
+		installedEngine.start();
+		ctx.effect?.(() => () => installedEngine.stop());
 		// ── 写类工具的审批闸（2026-11-02）─────────────────────────────────────
 		//   与 kb / kanban / workflow / marketplace / loop 同一把：`tools/pre-execute`（waterfall），
 		//   返回 `{ kind: 'ask' }` ⇒ 只有审批回 `allowed-once` 才执行；无审批能力的部署 degrade 成 deny。
@@ -343,24 +324,24 @@ export function apply(ctx, config = {}) {
 		//   list / history 纯只读 ⇒ 放行。
 		ctx.effect?.(() => ctx.on('tools/pre-execute', (exec, next) => {
 			const toolName = exec && typeof exec.name === 'string' ? exec.name : '';
-			if (toolName !== 'schedule_create' && toolName !== 'schedule_update' && toolName !== 'schedule_delete') {
+			if (toolName !== 'vssaros_schedule_create' && toolName !== 'vssaros_schedule_update' && toolName !== 'vssaros_schedule_delete') {
 				return next();
 			}
 			const args = exec.arguments && typeof exec.arguments === 'object' ? exec.arguments : {};
 			const target = String(args.name ?? args.id ?? args.taskId ?? '').trim() || '(未命名)';
-			const verb = toolName === 'schedule_create' ? '新建' : (toolName === 'schedule_update' ? '修改' : '删除');
+			const verb = toolName === 'vssaros_schedule_create' ? '新建' : (toolName === 'vssaros_schedule_update' ? '修改' : '删除');
 			return {
 				kind: 'ask',
 				reason: `${toolName} 会${verb}自动化任务「${target}」（写 <数据根>/scheduler/tasks.json）`,
 				displayReason: { zh: `允许${verb}自动化任务「${target}」？`, en: `Allow ${toolName} on "${target}"?` },
 			};
 		}));
-		// 模型侧工具（schedule_create / list / update / delete / history）—— 官方同名工具的接管。
-		registerScheduleTools(ctx, { getEngine: () => engine });
+		// 自建模型工具使用独立名称，不接管官方 schedule_*。
+		registerScheduleTools(ctx, { getEngine: () => installedEngine });
 		logFn = log;
 		// ★ 2026-11-03：引擎一建好就把「到点 ⇒ 真的投递」接上（runs 可能还没就绪 ⇒ attachDelivery 幂等，晚到再补）。
 		attachDelivery();
-		log('自建调度引擎已就绪：占用 schedule 服务键，配 5 个工具，到点投递已接线');
+		log('自建调度引擎已就绪：vssarosScheduler 服务，配 5 个独立工具，到点投递已接线');
 	}
 
 	// 委托层绑定（foundation 服务；页面壳的真源）。可选注入：缺了页面如实报错而不是 pending。
@@ -416,7 +397,7 @@ export function apply(ctx, config = {}) {
 			// ★ 2026-10-31（用户：「点击新建自动化任务错误」——点了只开一个空白会话）：
 			//   官方 `schedule` 服务只把 list/catalog/history/delete/update 标了 `@Remote`，
 			//   **create 没标** ⇒ 客户端 `remote.schedule.create` 根本不存在，工作台表单创建不了。
-			//   ⇒ 由 Host 侧这条接口中转：`ctx.schedule.create(sessionId, request)`。
+			//   ⇒ 工作台由 Host 接口中转到自建 `engine.create(task)`，不调用官方服务。
 			if (url.pathname === `${ROUTE_PREFIX}/api/create` && req.method === 'POST') {
 				try {
 					const body = JSON.parse(await readBody(req));
@@ -498,7 +479,7 @@ export function apply(ctx, config = {}) {
  */
 async function listSchedules(ctx) {
 	if (!engine) {
-		return { ok: true, available: false, entries: [], error: '调度引擎未就绪（foundation 未注入，或组合里已有别的 schedule 服务）' };
+		return { ok: true, available: false, entries: [], error: '自建调度引擎未就绪（foundation 未注入）' };
 	}
 	try {
 		// ★ 2026-11-03「根治」：把会话归属状态一并带给工作台（卡片徽标 / 编辑弹窗红字用）。
@@ -546,17 +527,8 @@ async function updateSchedule(body) {
 
 // `officialToSelfRule` 已移到 `core/task.js`（index.js 与 migrate.js 共用，避免两处各写一份）。
 
-/**
- * 新建一条定时任务（工作台「新建自动化任务」表单的唯一落点）。
- *
- * 为什么必须走 Host：官方 `ScheduleService.create` **没有** `@Remote` 装饰（只有
- * list/catalog/history/delete/update 有）⇒ 客户端 `remote.schedule.create` 不存在，
- * 浏览器侧拿不到创建能力（官方语义是"开会话让模型用 schedule_create 建"）。
- * 这里用程序化 `ctx.schedule.create` 中转，跳过模型也能建（与 migrate 同口径）。
- * @returns `{ ok, id, title }` 或 `{ ok:false, code?, error }`（错误一律不抛，交给表单显示）。
- */
-// ⚠ 旧的 `createSchedule`（调官方 `ScheduleService.create(sessionId, request)`）已删除：
-//   官方 bundle 不再安装，那条路根本走不通；新实现在上面（走自建引擎，见 `createSchedule`）。
+// 创建任务统一走本模块的 createSchedule → engine.create(task)。
+// 工作台通过同源 Host API 操作原任务库，不读取官方 schedule 服务。
 
 /**
  * 表单的规则部分 → 官方 `ScheduleCreateRequest` 的规则字段（六种择一）。
@@ -632,7 +604,7 @@ async function deleteSchedule(ctx, body) {
  *   过渡期两套并存；UI 换成自建之后 ② 可删（连同 `buildCreateRule` 一起）。
  */
 async function createSchedule(ctx, body) {
-	if (!engine) { return { ok: false, error: '调度引擎未就绪（foundation 未注入，或组合里已有别的 schedule 服务）' }; }
+	if (!engine) { return { ok: false, error: '自建调度引擎未就绪（foundation 未注入）' }; }
 	try {
 		const request = body?.rule
 			? { rule: body.rule }
@@ -649,6 +621,7 @@ async function createSchedule(ctx, body) {
 			...(request.rule ? { rule: request.rule } : {}),
 			...(body?.prompt ? { prompt: String(body.prompt).trim() } : {}),
 			...(body?.sessionId ? { sessionId: String(body.sessionId).trim() } : {}),
+			...(body?.action ? { action: body.action } : {}),
 			...(body?.workItem ? { workItem: body.workItem } : {}),
 			// ★ 2026-10-31（编辑弹窗）：有效期与消息推送。
 			...(typeof body?.expiresAt === 'string' && body.expiresAt.trim() ? { expiresAt: body.expiresAt.trim() } : {}),

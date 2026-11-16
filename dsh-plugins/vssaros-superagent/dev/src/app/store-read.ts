@@ -1,6 +1,6 @@
 /** Read-only Store queries for views, tools, and Source polling. */
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
-import type { Decision, Thread, Trigger } from '../core/index.ts'
+import type { Decision, Thread, Ticket, Trigger } from '../core/index.ts'
 import type { Dropped, Receipt, TimelinePlace } from './store.ts'
 
 export function storeReads(db: DatabaseSync) {
@@ -8,6 +8,12 @@ export function storeReads(db: DatabaseSync) {
   return {
   /** Newest first by arrival (`rowid`) order rather than trigger timestamp. */
   recentTriggers: (offset = 0, limit = 50): Trigger[] => db.prepare('SELECT value FROM trigger ORDER BY rowid DESC LIMIT ? OFFSET ?').all(limit, offset).map(row => JSON.parse(String(row.value)) as Trigger),
+  /** Bounded candidates from the same human actor; callers still authorize receiving scope and exact item identity. */
+  priorActorTickets: (source: string, actorSource: string, actorId: string, before: string): Ticket[] => values<Ticket>(`SELECT t.value FROM ticket t
+    JOIN trigger r ON r.id = json_extract(t.value, '$.origin.triggerId')
+    WHERE json_extract(r.value, '$.source') = ? AND json_extract(r.value, '$.actor.source') = ?
+      AND json_extract(r.value, '$.actor.id') = ? AND json_extract(r.value, '$.human') = 1
+      AND json_extract(t.value, '$.createdAt') < ? ORDER BY t.rowid DESC LIMIT 100`, source, actorSource, actorId, before),
   /** Per-source trigger counts since `since`, plus the latest arrival timestamp across all time. */
   triggerStats: (since: string): Record<string, { received: number; filtered: number; lastAt: string }> => {
     const result: Record<string, { received: number; filtered: number; lastAt: string }> = {}

@@ -119,10 +119,13 @@ export const LARK_CLI_MISSING_HINT =
  *   `ok:true, count:0` +「确认已用用户身份登录」，把**权限错误伪装成"没登录/没知识库"** ✗。
  *
  * 纯函数：不 import child_process；输出字段递归找（不同 lark-cli 版本嵌套不同 ✓）。
+ * ★ 2026-11-11：`context` 让 `profile add` 复用同一份解析（措辞不同）；`other` 分支改为
+ *   **剥掉 `_notice` + 取前部** —— 真机上尾部全是升级通知，真正的错误被挤得看不见 ✗。
  * @param {string} raw CLI 的 stdout+stderr
  * @param {number} [exitCode] 进程退出码
+ * @param {string} [context] 失败动作，用于提示文案
  */
-export function describeLarkCliFailure(raw, exitCode) {
+export function describeLarkCliFailure(raw, exitCode, context = '拉取飞书知识库') {
 	const text = stripAnsi(String(raw ?? '')).trim();
 	const root = parseLoose(text);
 	let code = '', msg = '', identity = '', consoleUrl = '', troubleshooter = '', logId = '';
@@ -169,9 +172,17 @@ export function describeLarkCliFailure(raw, exitCode) {
 			message += `\n另：lark-cli ${notice.latest} 可用（当前 ${notice.current}，可运行 \`${notice.command || 'lark-cli update'}\`）；但本次失败是权限问题，升级不会补上 scope。`;
 		}
 	} else {
-		message = `lark-cli 拉取飞书知识库失败（退出码 ${exitCode ?? -1}${code ? '，飞书错误码 ' + code : ''}）`;
+		// ★ `_notice.update`（升级提示）在输出尾部，会把真正的错误整段挤走 ⇒ 先剥。
+		let clean = text;
+		if (root && typeof root === 'object' && !Array.isArray(root) && root._notice) {
+			const copy = { ...root };
+			delete copy._notice;
+			clean = JSON.stringify(copy);
+		}
+		message = `lark-cli ${context}失败（退出码 ${exitCode ?? -1}${code ? '，飞书错误码 ' + code : ''}）`;
 		if (msg) { message += `：${msg.slice(0, 300)}`; }
-		else if (text) { message += `：${text.slice(-300)}`; }
+		// ⚠ 取**前部**（与 superagent 的 `runLark` 同款），不是 slice(-300) 的尾部 ✗
+		else if (clean) { message += `：${clean.slice(0, 400)}`; }
 		message += `\n${LARK_CLI_MISSING_HINT}`;
 	}
 	return {

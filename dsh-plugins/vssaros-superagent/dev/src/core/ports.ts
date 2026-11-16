@@ -28,6 +28,8 @@ export interface Policy {
   admitsInferred(rules: readonly string[]): boolean
   /** How long an assessor may take before an eval is recorded as unavailable. */
   evalTimeoutMs: number
+  /** ★ 2026-11-12：明确任务是否走规则直建单（可选，缺省视为关闭）。 */
+  fastExplicitTasks?: boolean
 }
 
 /** What the assessor receives: bounded facts, never authority. */
@@ -101,6 +103,7 @@ export interface DomainEvents {
   'ticket.created': { ticketId: string; decisionId: string; strength: Strength }
   'ticket.resumed': { ticketId: string; triggerId: string }
   'ticket.ended': { ticketId: string; by: TicketEndBy; outcome: TicketOutcome; reason?: string }
+  'assignment.reported': { ticketId: string; assignmentId: string }
   'assignment.started': { ticketId: string; assignmentId: string }
   'assignment.ended': { ticketId: string; assignmentId: string; reason: string }
   'thread.subscribed': { threadKey: string; ticketId: string }

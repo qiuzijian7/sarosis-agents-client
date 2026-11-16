@@ -14,7 +14,11 @@ import { STANDARD_BASE_ROWS } from '../lib/core/presetBase.generated.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
+const REPO_ROOT = path.resolve(ROOT, '../..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+const readRepo = (rel) => fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
+const repoJson = (rel) => JSON.parse(readRepo(rel));
+const repoText = (rel) => fs.existsSync(path.join(REPO_ROOT, rel)) ? readRepo(rel) : '';
 const listLib = (dir = path.join(ROOT, 'lib'), out = []) => {
 	for (const name of fs.readdirSync(dir)) {
 		const p = path.join(dir, name);
@@ -32,6 +36,14 @@ const check = (name, ok, detail) => {
 };
 
 const pkg = JSON.parse(read('package.json'));
+const chatPkg = repoJson('dsh-plugins/vssaros-chat-surface/package.json');
+const rootPkg = repoJson('package.json');
+const frameworkHtml = repoText('doc/agent-team-frameworks.html');
+const usageHtml = repoText('doc/superagent-mockups/agent-team-usage.html');
+// ⚠ 文件名不能带 mockup：.gitignore 的 *mockup*.html 会把它挡在干净检出之外 ⇒ CI 上门禁假红。
+const mockupHtml = repoText('doc/superagent-mockups/group-three-pane.html');
+const spikeSrc = repoText('dsh-plugins/vssaros-agents/test/official-team-spike.test.mjs');
+const releaseGuard = repoText('dsh-plugins/check-rooms-release.mjs');
 
 console.log('── 清单与激活 ──');
 check('包名', pkg.name === '@vssaros/dsh-agents', pkg.name);
@@ -40,6 +52,26 @@ check('包名', pkg.name === '@vssaros/dsh-agents', pkg.name);
 check('description 只是摘要（≤ 1000 字，版本说明写 CHANGELOG.md）', String(pkg.description || '').length <= 1000,
 	`现在 ${String(pkg.description || '').length} 字`);
 check('CHANGELOG.md 存在且随包发出', fs.existsSync(path.join(ROOT, 'CHANGELOG.md')) && (pkg.files || []).includes('CHANGELOG.md'));
+// ★ 2026-11-16：发布收口静态门禁。HTML 快照、spike、发布命令与状态模型一起钉住，避免代码前进后文档/门禁变陈旧。
+const versionSnapshot = (text) => text.includes(`data-agents-version="${pkg.version}"`)
+	&& text.includes(`data-chat-surface-version="${chatPkg.version}"`)
+	&& text.includes('data-runtime-version="0.2.2-rc.2"')
+	&& text.includes('P1 gate=BLOCKED');
+check('Team 框架/使用说明 HTML 版本快照与当前插件版本一致',
+	versionSnapshot(frameworkHtml) && versionSnapshot(usageHtml));
+check('P2 三栏状态分离 mockup 存在且声明只做方案',
+	mockupHtml.includes('data-mockup="group-three-pane"') && mockupHtml.includes('对话') && mockupHtml.includes('任务')
+	&& mockupHtml.includes('验收') && mockupHtml.includes('P1 gate=BLOCKED'));
+check('P1 官方执行树 spike 默认关闭、动态取 preset、零写入',
+	/VSSAROS_OFFICIAL_TEAM_SPIKE/.test(spikeSrc) && /allowedAgentPresets/.test(spikeSrc)
+	&& /agentPresets\.list/.test(spikeSrc) && /P1 gate=BLOCKED/.test(spikeSrc)
+	&& !/createTask\(|updateTask\(|send_message\(|group_goal/.test(spikeSrc));
+check('发布前 rooms-release 命令固定 9 项目标回归与 CDP smoke 清单',
+	(rootPkg.scripts?.['check:rooms-release'] ?? '').includes('check-rooms-release.mjs')
+	&& (rootPkg.scripts?.['check:dsh-plugins'] ?? '').includes('check-rooms-release.mjs')
+	&& /rooms\.test\.mjs/.test(releaseGuard) && /rooms-restart\.test\.mjs/.test(releaseGuard)
+	&& /official-team-compat\.test\.mjs/.test(releaseGuard) && /official-team-spike\.test\.mjs/.test(releaseGuard)
+	&& /check-bots-rooms\.mjs/.test(releaseGuard) && /CDP/.test(releaseGuard));
 // ★ 2026-11-03：Bots 工作台下线 ⇒ 清单里只剩最小 vssaros（module + view.kind=none），
 //   不再有活动栏 / 原生视图 / 工作台。⚠ `vssaros.module` **必须留**：IDE 侧 `listBundledPlugins`
 //   只认「有 vssaros.module 的包」为随包模块插件（supervisor 自动安装/升级的输入）。
@@ -271,6 +303,17 @@ console.log('── 工具 allowlist ──');
 	const throwing = allowlistDenyOf([], ['browser'], () => { throw new Error('x'); });
 	check('shadowed 抛错 ⇒ 当作未遮蔽（照常 deny）', JSON.stringify(throwing) === JSON.stringify(['browser']), JSON.stringify(throwing));
 	check('空输入安全', JSON.stringify(allowlistDenyOf(undefined, undefined)) === '[]');
+
+	// ★ 2026-11-14：官方 Agent Teams 工具（dsh-base host 层注册，when: agentTeams.isEnabled(agent)）。
+	// 写了 tools: 的 Bot 会被 allowlistDenyOf 把没声明的 host 层全局工具 deny 掉
+	// ⇒ 「启用智能体团队协作」开关打开了，模型仍拿不到 team_task_*（表现为开关没反应）。
+	const teamGlobals = ['skill', 'kb_search', 'team_task_create', 'team_task_list', 'team_task_get', 'team_task_update'];
+	const teamDeny = allowlistDenyOf(['read', 'skill'], teamGlobals);
+	check('Agent Teams 工具默认不进 deny（开关打开后模型才拿得到 team_task_*）',
+		!teamDeny.some(n => n.startsWith('team_task_')), JSON.stringify(teamDeny));
+	const teamOptOut = allowlistDenyOf(['!team_task_*'], teamGlobals);
+	check('写 !team_task_* 的 Bot 仍能主动排除整组 Team 工具',
+		teamOptOut.filter(n => n.startsWith('team_task_')).length === 4, JSON.stringify(teamOptOut));
 
 	// 静态：applyPersona 不许再在 preset 作用域上挂 allow 掩码；必须走 agent/created + deny
 	const idx = strip(read('lib/index.js'));
@@ -508,7 +551,8 @@ check('侧栏 SSR 版（lib/sideview.js）已随工作台删除', !fs.existsSync
 		'feishu-multi-app.test.mjs',
 		// ★ 2026-11-10：IM 回复回收（真机「Bot 答了但飞书没收到」）必须进 CI。
 		'im-reply-collector.test.mjs',
-		'host-self-watch.test.mjs', 'rooms.test.mjs', 'rooms-restart.test.mjs',
+		'host-self-watch.test.mjs', 'rooms.test.mjs', 'rooms-restart.test.mjs', 'room-budget.test.mjs',
+		'official-team-compat.test.mjs', 'official-team-spike.test.mjs',
 		// ★ 2026-11-06：团队总线（含契约修订 2）、团队步骤记忆（模型提炼）、DS Bot 团队离线导入
 		'team-bus.test.mjs', 'step-memory.test.mjs', 'ds-bot-import.test.mjs',
 		// ★ 2026-11-09：创建链的纯函数回归 + HTTP 级集成测试（假 ctx 真跑 apply）
@@ -549,9 +593,9 @@ check('侧栏 SSR 版（lib/sideview.js）已随工作台删除', !fs.existsSync
 		!/botApps: async \(\) => readBotFeishuApps\(config\)/.test(indexSrc)
 		&& /botApps = null/.test(bindingsSrc)
 		&& /botApps\[String\(binding\.targetId/.test(bindingsSrc));
-	/* ★ 2026-11-10：内置默认应用对外统一叫「VsSaros助手」；409 报错不许回到旧称或已下线的死指引。 */
-	check('默认飞书应用统一命名为 VsSaros助手',
-		/这是 VsSaros助手/.test(credSrc) && !/这是默认飞书应用/.test(credSrc)
+	/* ★ 2026-11-11：不再有内置默认应用；重复登记默认应用仍要 409，且不许回到旧称或已下线的死指引。 */
+	check('默认应用重复登记给 409，且不再宣传内置 VsSaros助手',
+		/这是当前默认应用/.test(credSrc) && !/这是 VsSaros助手/.test(credSrc)
 		&& /Bot 设置 → Channel 绑定/.test(credSrc));
 	/* ★ 2026-11-10 真机「飞书发 test 静默无返回」：派发失败的诊断与可见性不许被回退。 */
 	check('派发失败三态分类 + 已注册 preset 兜底（名单扫描失败不许误报 bot 不存在）',
@@ -560,27 +604,23 @@ check('侧栏 SSR 版（lib/sideview.js）已随工作台删除', !fs.existsSync
 	check('派发失败必须给 IM 回限流错误提示（不许静默无返回）',
 		/errorNoticeGuard = createLoopGuard/.test(bindingsSrc) && /消息未送达/.test(bindingsSrc)
 		&& /r\.reason === 'dispatch-error'/.test(bindingsSrc));
-	/* ★ 2026-11-10：随包内置飞书应用（VsSaros助手）。
-	   ① 两侧常量逐字一致（SuperAgent 的 feishu-share.ts 与本包 imCredentials.js）——轮换密钥必须同时改；
-	   ② Bots 侧必须有回落链路，否则干净安装连不上、两个下拉也选不到内置应用。 */
-	const builtinBlock = (text) => (/BUNDLED_FEISHU_APP = Object\.freeze\(\{([\s\S]{0,400}?)\}\)/.exec(text) || [, ''])[1];
-	const grabBuiltin = (text) => ({
-		appId: (/appId:\s*'([^']+)'/.exec(text) || [, ''])[1],
-		appSecret: (/appSecret:\s*'([^']+)'/.exec(text) || [, ''])[1],
-	});
+	/* ★ 2026-11-11：产品不再随包内置任何飞书应用凭据 —— 所有用户共用一个 app 时，
+	   飞书长连接是集群随机投递，消息会串到别人的客户端。改成反向守卫：不许回来。 */
+	/* ⚠ 不写死废弃应用的 ID：语义上禁止「硬编码 appId/appSecret 常量」即可，全仓也不留那个 ID。 */
 	const sharePath = path.join(ROOT, '..', 'vssaros-superagent', 'dev', 'src', 'sources', 'feishu-share.ts');
-	const here = grabBuiltin(builtinBlock(credSrc));
-	const there = fs.existsSync(sharePath) ? grabBuiltin(builtinBlock(fs.readFileSync(sharePath, 'utf8'))) : null;
-	check('内置飞书应用：agents 与 superagent 两侧常量逐字一致',
-		!!there && !!here.appId && !!here.appSecret
-		&& here.appId === there.appId && here.appSecret === there.appSecret);
-	check('Bots 侧内置回落：补缺字段 + 非默认选中可解析 + GET 下拉列出',
-		/def\.key === 'feishu'/.test(credSrc)
-		&& /String\(merged\.appId\)\.trim\(\) === BUNDLED_FEISHU_APP\.appId/.test(credSrc)
-		&& /merged\.appSecret = BUNDLED_FEISHU_APP\.appSecret/.test(credSrc)
-		&& /want === BUNDLED_FEISHU_APP\.appId/.test(credSrc)
-		&& /function feishuAppsForPicker\(list\)/.test(indexSrc)
-		&& /feishuApps: feishuAppsForPicker\(await describeFeishuApps\(config\)\)/.test(indexSrc));
+	const shareSrc = fs.existsSync(sharePath) ? fs.readFileSync(sharePath, 'utf8') : '';
+	const superLib = path.join(ROOT, '..', 'vssaros-superagent', 'lib');
+	const superLibSrc = fs.existsSync(superLib)
+		? fs.readdirSync(superLib).filter((f) => f.endsWith('.js'))
+			.map((f) => fs.readFileSync(path.join(superLib, f), 'utf8')).join('\n') : '';
+	check('不再随包内置飞书 appId/Secret（agents + superagent 源码与随包产物）',
+		![credSrc, indexSrc, shareSrc, superLibSrc].some((s) => /BUNDLED_FEISHU_APP/.test(s))
+		&& !/Object\.freeze\(\{\s*appId:\s*'cli_/.test(credSrc)
+		&& !/appSecret:\s*'[^']{8,}'/.test(credSrc));
+	check('不再有内置回落 / 下拉注入；无凭据即 source=none',
+		!/source:\s*'bundled'/.test(credSrc)
+		&& !/feishuAppsForPicker/.test(indexSrc)
+		&& /source: 'none'/.test(credSrc));
 	/* ★ 2026-11-10 真机「Bot 答了，飞书没收到」：IM 回复回收分支曾随群聊下线一起被删，
 	   只剩 outbox 写入 / deliverForEntry API / 注释 ⇒ pending 永久堆积、零出站。
 	   ⚠ 钉**调用形态**：只搜标识符会被注释/测试里的名字假绿。 */
@@ -667,7 +707,37 @@ check('侧栏 SSR 版（lib/sideview.js）已随工作台删除', !fs.existsSync
 	check('群执行跨插件契约：工具结果 / progress / active 共用 roundOutput（schema + 统一 status + 关联 id）',
 		/function roundOutput\(round\)/.test(roomsSrc) && /schema: ROUND_SCHEMA/.test(roomsSrc) && /roundStatusOf\(round\)/.test(roomsSrc)
 		&& /\.\.\.roundOutput\(round\)/.test(roomsSrc) && /map\(roundView\)/.test(roomsSrc) && /originTriggerId: room\.originTriggerId/.test(roomsSrc));
-	const pkg = JSON.parse(read('package.json'));
+	const coreRoomsSrc = read('lib/core/rooms.js');
+	check('发布收口：运行/任务状态机、diagnostics schema、durable dispatch intent 与版本 CHANGELOG',
+		/RUN_STATES/.test(coreRoomsSrc) && /TASK_STATES/.test(coreRoomsSrc)
+		&& /runStateOf/.test(coreRoomsSrc) && /taskStatesOf/.test(coreRoomsSrc)
+		&& /ROOM_DIAGNOSTICS_SCHEMA/.test(coreRoomsSrc) && /DISPATCH_INTENT_STATES/.test(coreRoomsSrc)
+		&& /runId/.test(roomsSrc) && /attempt/.test(roomsSrc) && /cancelReason/.test(roomsSrc)
+		&& /dispatchIntents/.test(roomsSrc) && /diagnostics\(\)/.test(roomsSrc)
+		&& /get\?\.\('diagnostics'\)/.test(roomsSrc)
+		&& /action === 'cancel'/.test(roomsSrc)
+		&& new RegExp(`## ${pkg.version.replace(/\./g, '\\.')}（`).test(read('CHANGELOG.md')));
+	check('P3 群派发并发闸：默认上限、逐群配置、pump 限流、HTTP 可更新',
+		/maxConcurrentTurnsDefault/.test(coreRoomsSrc) && /input\.maxConcurrentTurns !== undefined/.test(coreRoomsSrc)
+		&& /maxConcurrentTurns/.test(roomsSrc) && /running\.size < maxConcurrentTurns/.test(roomsSrc)
+		&& /'maxConcurrentTurns'/.test(roomsSrc));
+	/* ★ 2026-11-16 P3：成本 / 写范围闸必须真的接进运行时，而不只是导出几个纯函数。
+	   ⚠ 用 strip() 后的源码断言（注释里的同名标识符会假绿）；行为回归在 rooms / room-budget 两个测试里。 */
+	const goalsSrc = read('lib/core/goals.js');
+	const relaySrc2 = read('lib/core/relay.js');
+	check('P3 成本/写范围：纯函数、pump 判定、指标记账、HTTP 白名单与只读诊断都接上',
+		['ROOM_BUDGET_LIMITS', 'ROOM_BUDGET_DEFAULTS', 'estimateTokens', 'roomBudgetOf', 'budgetStopOf',
+			'normalizeWriteScopes', 'writeScopesOverlap'].every(name => coreRoomsSrc.includes(`export ${name.startsWith('ROOM_') ? 'const' : 'function'} ${name}`))
+		&& /input\.maxTurns === undefined|budgetClamp\('maxTurns'/.test(coreRoomsSrc)
+		&& /contextLines, newLines/.test(coreRoomsSrc)
+		&& /GOAL_LIMITS\.writeScopes/.test(goalsSrc) && /taskWriteScopes/.test(goalsSrc)
+		&& /writeScopes: \{ type: 'array'/.test(goalsSrc)
+		&& /export function countToolCalls/.test(relaySrc2)
+		&& /budgetStopOf\(/.test(roomsSrc) && /noteMetrics\(/.test(roomsSrc)
+		&& /taskWriteScopes\(/.test(roomsSrc) && /writeScopesOverlap\(/.test(roomsSrc)
+		&& /ROOM_BUDGET_PICK/.test(roomsSrc) && /contextLines: budget\.contextLines/.test(roomsSrc)
+		&& /metrics: round\.metrics/.test(roomsSrc) && /budgetStop: round\.budgetStop/.test(roomsSrc)
+		&& /round\.budgetStop = stop/.test(roomsSrc));
 	check('群聊模块进了 files 白名单', ['lib/rooms.js', 'lib/core/rooms.js'].every(f => pkg.files.includes(f)));
 }
 
@@ -741,6 +811,51 @@ check('侧栏 SSR 版（lib/sideview.js）已随工作台删除', !fs.existsSync
 	check('归属声明：host 把 skipAppIds 注入 hub',
 		/import \{[^}]*readSkipAppIds[^}]*\} from '\.\/imInboundState\.js'/.test(hostSrc)
 		&& /skipAppIds: async \(\) => readSkipAppIds\(config\)/.test(hostSrc));
+}
+
+/* ── ★ 2026-11-14：飞书 IM 入站会话必须有工作区归属 ──────────────────────────
+ * 真机：飞书发消息给「知识库专家」⇒ 会话卡在 running、侧栏角标 +1 却找不到行。
+ * 根因之一：ensureAgentSession 旧版 sc.create({ agentPreset }) 不进 workspace.sessionIds。
+ * 守卫：① placeOf 优先已登记工作区 / 无工作区 ensure / 再退 cwd；
+ *       ② attach 幂等 + 失败不抛；③ 复用旧会话也补挂；④ workspaceId 与 cwd 互斥。
+ */
+{
+	const { imSessionPlaceOf, attachImSessionToWorkspace } = await import('../lib/agentSession.js');
+	const cfg = { dataRoot: 'C:/tmp/kb-test-root' };
+	const ws = { id: 'w1', path: 'C:/ws', sessionIds: ['s-old'], attachSession: async (sid) => { ws.sessionIds.push(sid); } };
+	const reg = { list: () => [ws], get: (id) => (id === 'w1' ? ws : null), create: async () => ws };
+
+	const place = await imSessionPlaceOf(cfg, reg);
+	check('IM 会话归属：优先挂到第一个已登记工作区', place.workspaceId === 'w1' && !place.cwd, JSON.stringify(place));
+	const emptyReg = { list: () => [], create: async (cwd) => ({ id: 'w-new', path: cwd, sessionIds: [] }) };
+	const place2 = await imSessionPlaceOf(cfg, emptyReg);
+	check('IM 会话归属：无工作区时按数据根 ensure 一个', place2.workspaceId === 'w-new' && !place2.cwd, JSON.stringify(place2));
+	const place3 = await imSessionPlaceOf(cfg, null);
+	check('IM 会话归属：无 registry 时退 cwd 且不阻断派发', !place3.workspaceId && place3.cwd === 'C:/tmp/kb-test-root', JSON.stringify(place3));
+	check('IM 会话归属：workspaceId 与 cwd 互斥（官方同时给会 400）',
+		!(place.workspaceId && place.cwd) && !(place3.workspaceId && place3.cwd));
+
+	const before = ws.sessionIds.length;
+	const okNew = await attachImSessionToWorkspace(reg, 'w1', 's-im');
+	check('IM 会话归属：新会话被 attach 进账本', okNew && ws.sessionIds.includes('s-im'));
+	const okAgain = await attachImSessionToWorkspace(reg, 'w1', 's-im');
+	check('IM 会话归属：重复 attach 幂等（不重复登记）', okAgain && ws.sessionIds.length === before + 1, ws.sessionIds.join(','));
+	const okOld = await attachImSessionToWorkspace(reg, 'w1', 's-old');
+	check('IM 会话归属：复用旧会话不重复挂', okOld && ws.sessionIds.length === before + 1);
+	const okNoReg = await attachImSessionToWorkspace(null, 'w1', 's-x');
+	check('IM 会话归属：registry 缺失时静默跳过（不抛错）', okNoReg === false);
+	const okThrow = await attachImSessionToWorkspace({ get: () => ({ attachSession: async () => { throw new Error('boom'); } }) }, 'w', 's');
+	check('IM 会话归属：attach 抛错也不阻断派发', okThrow === false);
+
+	const src = strip(read('lib/agentSession.js'));
+	check('IM 会话归属：新建与复用两条路径都调 attach',
+		/await attachImSessionToWorkspace\(reg, place\.workspaceId, sessionId\)/.test(src)
+		&& /await attachImSessionToWorkspace\(reg, first\.id, candidate\.id\)/.test(src));
+	check('IM 会话归属：sc.create 带 place（workspaceId / cwd 二选一）',
+		/sc\.create\(\{ \.\.\.place, agentPreset:/.test(src));
+	// 反向突变自证：把 place 从 create 里拿掉会被上一条抓到
+	const broken = src.replace('sc.create({ ...place, agentPreset:', 'sc.create({ agentPreset:');
+	check('IM 会话归属：反向突变自证', broken !== src && !/sc\.create\(\{ \.\.\.place, agentPreset:/.test(broken));
 }
 
 console.log(`\n[agents] ${pass} passing / ${fail} failing`);

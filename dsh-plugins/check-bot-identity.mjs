@@ -36,7 +36,7 @@ check('真源含 vssaros-full / vssaros-ptc / vssaros-standard', ['vssaros-full'
 // 2026-11-03：vssaros-memory 整套下线并归档 ⇒ 上面三条「副本 == 真源」的对账断言随插件一起移除。
 
 // ★ 2026-11-03：client.botSettingsBtn.js（右上角 ⚙）与 client.agents.js（Bots 工作台）已随功能下线删除
-const CHUNKS = ['client.capsule.js', 'client.welcome.js', 'client.conversationViews.js', 'client.botEntry.js'];
+const CHUNKS = ['client.capsule.js', 'client.welcome.js', 'client.conversationViews.js', 'client.botEntry.js', 'client.botHistory.js', 'client.sessions.js'];
 const START = '/* vssaros:bot-identity v1';
 const END = '/* /vssaros:bot-identity */';
 const blockOf = (text) => {
@@ -58,7 +58,7 @@ for (const file of CHUNKS) {
 		!/const MODE_PRESETS = \[/.test(text) && !/MODE_PRESETS\.indexOf\(id\.slice\(VSSAROS_PREFIX\.length\)\)/.test(text));
 }
 const first = blocks.get(CHUNKS[0]);
-check('6 个 chunk 的副本块逐字一致（忽略缩进）', CHUNKS.every(f => blocks.get(f) === first), CHUNKS.filter(f => blocks.get(f) !== first).join(','));
+check(CHUNKS.length + ' 个 chunk 的副本块逐字一致（忽略缩进）', CHUNKS.every(f => blocks.get(f) === first), CHUNKS.filter(f => blocks.get(f) !== first).join(','));
 // ★ 2026-11-05「记忆收敛成一套」：@vssaros/dsh-memory 的 bot 轨靠同一份判据认 Bot（lib/vssaros-bot.js）。
 {
 	const vmBlock = blockOf(read('vssaros-memory/lib/vssaros-bot.js'));

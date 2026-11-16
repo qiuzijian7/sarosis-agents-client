@@ -38,13 +38,33 @@ const ARCHIFY_VERSION = '1.0.0';
 
 suite('策展清单 · 两类条目的版本来源（官方跟 dsh / 第三方钉死）', () => {
 
-	test('★ 拿到 profile 的 dsh 版本时：官方包全部套上它', () => {
+	test('★ 拿到 profile 的 dsh 版本时：官方包全部套上它，且 spec 必须存在于随包 runtime 的 lockfile', () => {
 		const items = dshPluginRecommendations('0.2.0-rc.2');
 		const official = items.filter(i => isOfficial(i.spec));
-		assert.ok(official.length >= 1, '官方可选组合包不该为空（清单里那四条）');
+		assert.ok(official.length >= 1, '官方可选组合包不该为空（rc.2 实测后保留的两条）');
 		for (const item of official) {
 			assert.ok(item.spec.endsWith('@0.2.0-rc.2'),
 				`官方包必须钉到 profile 的 dsh 版本（否则 dsh 的 peer 预检会拦下）：${item.spec}`);
+		}
+		// ★ 2026-11-12：每条推荐 spec 的包名必须真的存在于当前随包 runtime 的 lockfile ——
+		//   "点了也装不上"正是本文件建立的初衷（2026-10-13）。版本取 `dsh-compat.json` 的 `bundled`，
+		//   不写死（与 `dshPluginPackages.test.ts` 同一纪律，防版本漂移）。
+		const compat = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'dsh-plugins', 'dsh-compat.json'), 'utf8')) as { bundled?: string };
+		assert.ok(compat.bundled, 'dsh-compat.json 缺 bundled 版本，无法定位随包 runtime');
+		const lockPath = path.join(process.cwd(), 'dsh-runtime', compat.bundled!, 'package-lock.json');
+		// `/dsh-runtime/` 在 .gitignore 里（由 build/prepack-dsh-runtime.mjs 现生成）⇒ CI 干净检出没有它。
+		// 动态校验只在本地生成过 runtime 时跑；下面的退役名单断言不依赖它，CI 也能拦住回归。
+		if (fs.existsSync(lockPath)) {
+			const packages = (JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { packages?: Record<string, unknown> }).packages ?? {};
+			for (const item of dshPluginRecommendations(compat.bundled).filter(i => isOfficial(i.spec))) {
+				const pkg = item.spec.slice(0, item.spec.lastIndexOf('@'));
+				assert.ok(packages[`node_modules/${pkg}`],
+					`策展清单里的 ${pkg} 不在 ${compat.bundled} 依赖树里（用户点了也装不上）：${item.spec}`);
+			}
+		}
+		for (const retired of ['@deepseek-ai/dsh-experimental-schedule-bundle', '@deepseek-ai/dsh-experimental-agent-team-profile']) {
+			assert.ok(!items.some(i => i.spec === retired || i.spec.startsWith(`${retired}@`)),
+				`${retired} 在 ${compat.bundled} 里已不存在或已由 dsh-base 默认加载，别再列成可安装组合包`);
 		}
 	});
 

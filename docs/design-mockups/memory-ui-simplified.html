@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>记忆 UI · 简化版 Mockup</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════════════════
+   简化版设计稿。沿用运行时 --dsw-alias-* 令牌（稿内自带 dark/light 两套值，
+   落地时删掉即可继承宿主主题）。密度基线：卡片 12px / 条目 10px / 按钮 6px，
+   字号 11–13px，无外阴影，分类色用 inset 色条。前缀 sm- = simplified memory。
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root {
+  color-scheme:dark;
+  --dsw-alias-bg-base:#0f1116; --dsw-alias-bg-layer-1:#161a22; --dsw-alias-bg-layer-2:#1c212b;
+  --dsw-alias-bg-layer-3:#232935; --dsw-alias-border-l1:#2a3140; --dsw-alias-border-l2:#333c4d;
+  --dsw-alias-border-l3:#3e485c; --dsw-alias-border-l4:#4b566c;
+  --dsw-alias-label-primary:#eef1f8; --dsw-alias-label-secondary:#aeb8cb; --dsw-alias-label-tertiary:#8893a8;
+  --dsw-alias-state-business-primary:#6aa2f0; --dsw-alias-state-business-secondary:#31558c;
+  --dsw-alias-state-success-primary:#4ec4ae; --dsw-alias-state-warn-primary:#d9a95f;
+  --dsw-alias-state-error-primary:#f07178; --dsw-alias-interactive-bg-hover:rgba(255,255,255,.055);
+  --dsw-alias-interactive-bg-active:rgba(106,162,240,.14);
+  --sans:"PingFang SC","HarmonyOS Sans SC","Microsoft YaHei","Segoe UI",system-ui,sans-serif;
+  --mono:"Cascadia Mono","JetBrains Mono","Consolas",ui-monospace,monospace;
+  --r-card:12px; --r-item:10px; --r-btn:6px; --r-chip:10px;
+}
+:root[data-theme="light"] {
+  color-scheme:light;
+  --dsw-alias-bg-base:#f5f7fb; --dsw-alias-bg-layer-1:#ffffff; --dsw-alias-bg-layer-2:#f1f4f9;
+  --dsw-alias-bg-layer-3:#e7ecf5; --dsw-alias-border-l1:#e2e7f0; --dsw-alias-border-l2:#d3dae7;
+  --dsw-alias-border-l3:#bcc6d8; --dsw-alias-border-l4:#9eabc1;
+  --dsw-alias-label-primary:#0f172a; --dsw-alias-label-secondary:#475569; --dsw-alias-label-tertiary:#5b6577;
+  --dsw-alias-state-business-primary:#2563eb; --dsw-alias-state-business-secondary:#bfd3fb;
+  --dsw-alias-state-success-primary:#0b7f68; --dsw-alias-state-warn-primary:#96600f;
+  --dsw-alias-state-error-primary:#c8323c; --dsw-alias-interactive-bg-hover:rgba(15,23,42,.045);
+  --dsw-alias-interactive-bg-active:rgba(37,99,235,.10);
+}
+*,*::before,*::after { box-sizing:border-box; }
+[hidden] { display:none !important; }
+body { margin:0; background:var(--dsw-alias-bg-base); color:var(--dsw-alias-label-primary);
+  font:13px/1.6 var(--sans); -webkit-font-smoothing:antialiased; }
+button,input,select,textarea { font:inherit; color:inherit; }
+button { cursor:pointer; } button:disabled { cursor:not-allowed; opacity:.55; }
+:focus-visible { outline:2px solid var(--dsw-alias-state-business-primary); outline-offset:2px; border-radius:3px; }
+svg.i { width:16px; height:16px; flex:none; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+svg.i-sm { width:13px; height:13px; }
+.mono { font:11px var(--mono); }
+.sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+
+/* ── 稿子外壳 ── */
+.doc { max-width:1080px; margin:0 auto; padding:20px 20px 54px; }
+.doc-head { display:flex; gap:14px; align-items:flex-start; flex-wrap:wrap; margin-bottom:14px; }
+.doc-head h1 { font-size:19px; margin:0 0 5px; font-weight:650; }
+.doc-head p { margin:0; color:var(--dsw-alias-label-tertiary); font-size:11.5px; max-width:760px; }
+.doc-tools { margin-left:auto; display:flex; gap:7px; }
+.btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:29px; padding:5px 11px;
+  border:1px solid var(--dsw-alias-border-l2); border-radius:var(--r-btn); background:var(--dsw-alias-bg-layer-2);
+  color:var(--dsw-alias-label-primary); font-size:11.5px; font-weight:520; transition:background .18s ease,border-color .18s ease; }
+.btn:hover:not(:disabled) { background:var(--dsw-alias-interactive-bg-hover); border-color:var(--dsw-alias-border-l3); }
+.btn-primary { background:var(--dsw-alias-state-business-primary); border-color:var(--dsw-alias-state-business-primary); color:#fff; }
+.btn-primary:hover:not(:disabled) { filter:brightness(1.08); }
+.btn-quiet { background:transparent; border-color:transparent; color:var(--dsw-alias-label-secondary); }
+.btn-quiet:hover:not(:disabled) { background:var(--dsw-alias-interactive-bg-hover); color:var(--dsw-alias-label-primary); }
+.btn-danger { color:var(--dsw-alias-state-error-primary); }
+.btn-sm { min-height:24px; padding:3px 8px; font-size:10.5px; }
+.badge { display:inline-flex; align-items:center; gap:4px; padding:1px 7px; border:1px solid var(--dsw-alias-border-l2);
+  border-radius:var(--r-chip); font-size:9.5px; line-height:18px; white-space:nowrap; color:var(--dsw-alias-label-secondary); }
+.badge-business { color:var(--dsw-alias-state-business-primary); border-color:var(--dsw-alias-state-business-secondary);
+  background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 10%,transparent); }
+.badge-success { color:var(--dsw-alias-state-success-primary); border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 45%,transparent);
+  background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 10%,transparent); }
+.badge-warn { color:var(--dsw-alias-state-warn-primary); border-color:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 45%,transparent);
+  background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 10%,transparent); }
+.badge-static { color:var(--dsw-alias-label-tertiary); border-style:dashed; }
+
+/* 视图切换 */
+.views { display:flex; gap:4px; padding:4px; border:1px solid var(--dsw-alias-border-l1); border-radius:var(--r-card);
+  background:var(--dsw-alias-bg-layer-1); margin-bottom:14px; flex-wrap:wrap; }
+.viewtab { display:inline-flex; align-items:center; gap:7px; padding:8px 14px; border:0; border-radius:var(--r-btn);
+  background:transparent; color:var(--dsw-alias-label-secondary); font-weight:550; transition:background .18s ease,color .18s ease; }
+.viewtab:hover { background:var(--dsw-alias-interactive-bg-hover); color:var(--dsw-alias-label-primary); }
+.viewtab[aria-selected="true"] { background:var(--dsw-alias-interactive-bg-active); color:var(--dsw-alias-state-business-primary); }
+.viewtab .n { font:10px var(--mono); opacity:.7; }
+.view { display:none; } .view.is-active { display:block; }
+
+/* ── 插件面板（模拟 conversation.view 内的 Tab，非独立网页）── */
+.panel { border:1px solid var(--dsw-alias-border-l1); border-radius:var(--r-card); background:var(--dsw-alias-bg-layer-1); overflow:hidden; }
+.ptabs { display:flex; align-items:center; gap:15px; padding:0 14px; border-bottom:1px solid var(--dsw-alias-border-l1); overflow-x:auto; }
+.ptab { display:inline-flex; align-items:center; gap:5px; padding:9px 1px; font-size:11.5px; white-space:nowrap;
+  color:var(--dsw-alias-label-secondary); border-bottom:2px solid transparent; }
+.ptab.on { color:var(--dsw-alias-label-primary); border-bottom-color:var(--dsw-alias-state-business-primary); font-weight:600; }
+.dot { width:6px; height:6px; border-radius:50%; background:var(--dsw-alias-state-error-primary); }
+.pcount { padding:0 5px; border-radius:8px; font:9px var(--mono); background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 15%,transparent);
+  color:var(--dsw-alias-state-error-primary); }
+
+/* ① 作用域条：一行，可切换的单一上下文 */
+.scopebar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:10px 14px; border-bottom:1px solid var(--dsw-alias-border-l1); }
+.scopebar .lbl { font-size:10.5px; color:var(--dsw-alias-label-tertiary); }
+.rootpick { display:inline-flex; align-items:center; gap:6px; padding:4px 9px; border:1px solid var(--dsw-alias-border-l2);
+  border-radius:var(--r-chip); background:var(--dsw-alias-bg-layer-2); font-size:11px; }
+.rootpick .pri { font-size:9px; color:var(--dsw-alias-label-tertiary); }
+.chip { padding:4px 10px; border:1px solid var(--dsw-alias-border-l2); border-radius:var(--r-chip); background:transparent;
+  color:var(--dsw-alias-label-secondary); font-size:11px; transition:background .18s ease,border-color .18s ease,color .18s ease; }
+.chip:hover { background:var(--dsw-alias-interactive-bg-hover); }
+.chip[aria-pressed="true"] { background:var(--dsw-alias-interactive-bg-active); border-color:var(--dsw-alias-state-business-primary);
+  color:var(--dsw-alias-state-business-primary); font-weight:600; }
+.scopemeta { display:flex; align-items:center; gap:6px; font-size:10px; color:var(--dsw-alias-label-tertiary); margin-left:auto; flex-wrap:wrap; }
+.search { display:flex; align-items:center; gap:6px; padding:4px 9px; border:1px solid var(--dsw-alias-border-l2);
+  border-radius:var(--r-btn); background:var(--dsw-alias-bg-layer-2); min-width:150px; margin-left:auto; }
+.search input { border:0; outline:none; background:transparent; width:100%; font-size:11px; }
+.search input::placeholder { color:var(--dsw-alias-label-tertiary); }
+
+/* ② 待确认横幅（不是独立功能 Tab） */
+.inbox { display:flex; align-items:center; gap:9px; flex-wrap:wrap; padding:9px 14px;
+  background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 8%,var(--dsw-alias-bg-layer-1));
+  border-bottom:1px solid var(--dsw-alias-border-l1); font-size:11px; }
+.inbox .spacer { flex:1; }
+.inbox .undo { display:inline-flex; align-items:center; gap:5px; }
+
+/* ③ 预算条：一条进度，不是两个数字输入 */
+.budget { display:flex; align-items:center; gap:9px; padding:8px 14px; border-bottom:1px solid var(--dsw-alias-border-l1); font-size:10.5px; }
+.budget .k { color:var(--dsw-alias-label-tertiary); }
+.budget .track { flex:1; max-width:230px; height:5px; border-radius:3px; background:var(--dsw-alias-bg-layer-3); overflow:hidden; }
+.budget .track i { display:block; height:100%; border-radius:3px; background:var(--dsw-alias-state-business-primary); transition:width .25s ease; }
+.budget .v { font:10px var(--mono); color:var(--dsw-alias-label-secondary); }
+.budget .tip { margin-left:auto; font-size:10px; color:var(--dsw-alias-label-tertiary); }
+
+/* ④ 三个作用域组 + 归档折叠区 */
+.groups { padding:10px 14px 16px; }
+.grp { border:1px solid var(--dsw-alias-border-l1); border-radius:var(--r-item); background:var(--dsw-alias-bg-layer-1); margin-bottom:8px; overflow:hidden; }
+.grp-head { display:flex; align-items:center; gap:9px; width:100%; padding:10px 12px; border:0; background:transparent; text-align:left;
+  transition:background .18s ease; }
+.grp-head:hover { background:var(--dsw-alias-interactive-bg-hover); }
+.grp-head .caret { transition:transform .18s ease; color:var(--dsw-alias-label-tertiary); }
+.grp.open .caret { transform:rotate(90deg); }
+.grp-head .name { font-size:12px; font-weight:620; }
+.grp-head .cnt { font:10px var(--mono); color:var(--dsw-alias-label-tertiary); }
+.grp-head .spacer { flex:1; }
+.grp-body { display:none; padding:0 12px 11px; }
+.grp.open .grp-body { display:block; }
+.grp.edge { box-shadow:inset 3px 0 0 0 var(--dsw-alias-state-business-primary); }
+
+/* 统一记忆条目卡 */
+.entry { padding:9px 11px; border:1px solid var(--dsw-alias-border-l1); border-radius:var(--r-item);
+  background:var(--dsw-alias-bg-layer-2); margin-bottom:7px; }
+.entry:last-child { margin-bottom:0; }
+.entry-top { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:5px; }
+.entry-time { font:9.5px var(--mono); color:var(--dsw-alias-label-tertiary); margin-left:auto; }
+.entry-text { font-size:11.5px; line-height:1.7; margin:0; }
+.entry-foot { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:7px; }
+.entry-foot .ops { margin-left:auto; display:flex; gap:3px; }
+.entry.is-new { border-color:var(--dsw-alias-state-success-primary); }
+.empty { padding:14px; text-align:center; font-size:10.5px; color:var(--dsw-alias-label-tertiary); }
+
+/* 添加记忆：一行输入 + 一次显式目标选择 */
+.compose { display:flex; gap:7px; flex-wrap:wrap; margin-bottom:9px; padding:9px 10px; border:1px dashed var(--dsw-alias-border-l3);
+  border-radius:var(--r-item); background:var(--dsw-alias-bg-layer-2); }
+.compose input[type="text"] { flex:1; min-width:180px; padding:5px 9px; border:1px solid var(--dsw-alias-border-l2);
+  border-radius:var(--r-btn); background:var(--dsw-alias-bg-layer-1); font-size:11px; outline:none; }
+.compose input[type="text"]:focus { border-color:var(--dsw-alias-state-business-primary); }
+.sel { padding:4px 22px 4px 8px; border:1px solid var(--dsw-alias-border-l2); border-radius:var(--r-btn);
+  background:var(--dsw-alias-bg-layer-1); font-size:10.5px; }
+
+/* ── 设置页：3 组卡 + 高级折叠 ── */
+.set-panel { border:1px solid var(--dsw-alias-border-l1); border-radius:var(--r-card); background:var(--dsw-alias-bg-layer-1); overflow:hidden; }
+.set-head { padding:12px 15px; border-bottom:1px solid var(--dsw-alias-border-l1); }
+.set-head h2 { margin:0 0 3px; font-size:14px; font-weight:650; }
+.set-head p { margin:0; font-size:10.5px; color:var(--dsw-alias-label-tertiary); }
+.set-body { padding:13px 15px 0; }
+.set-sec { margin-bottom:13px; }
+.set-sec-h { display:flex; align-items:center; gap:8px; margin:0 0 7px; font-size:11px; font-weight:650; }
+.set-sec-h .line { flex:1; height:1px; background:var(--dsw-alias-border-l1); }
+.set-card { border:1px solid var(--dsw-alias-border-l1); border-radius:var(--r-item); overflow:hidden; }
+.set-row { display:flex; align-items:center; gap:10px; padding:9px 12px; border-bottom:1px solid var(--dsw-alias-border-l1); }
+.set-row:last-child { border-bottom:0; }
+.set-main { flex:1; min-width:0; }
+.set-lbl { display:block; font-size:11.5px; font-weight:520; }
+.set-key { display:block; font:9.5px var(--mono); color:var(--dsw-alias-label-tertiary); margin-top:1px; }
+.set-hint { display:block; font-size:10px; color:var(--dsw-alias-label-tertiary); margin-top:2px; }
+/* switch */
+.sw { position:relative; width:32px; height:18px; flex:none; }
+.sw input { position:absolute; opacity:0; width:100%; height:100%; margin:0; cursor:pointer; }
+.sw span { position:absolute; inset:0; border-radius:9px; background:var(--dsw-alias-bg-layer-3);
+  border:1px solid var(--dsw-alias-border-l3); transition:background .18s ease,border-color .18s ease; pointer-events:none; }
+.sw span::after { content:""; position:absolute; top:2px; left:2px; width:12px; height:12px; border-radius:50%;
+  background:var(--dsw-alias-label-secondary); transition:transform .18s ease,background .18s ease; }
+.sw input:checked + span { background:var(--dsw-alias-state-business-primary); border-color:var(--dsw-alias-state-business-primary); }
+.sw input:checked + span::after { transform:translateX(14px); background:#fff; }
+.sw input:focus-visible + span { outline:2px solid var(--dsw-alias-state-business-primary); outline-offset:2px; }
+/* segmented */
+.seg { display:inline-flex; border:1px solid var(--dsw-alias-border-l2); border-radius:var(--r-btn); overflow:hidden; flex:none; }
+.seg label { position:relative; }
+.seg input { position:absolute; opacity:0; }
+.seg span { display:block; padding:4px 9px; font-size:10px; color:var(--dsw-alias-label-secondary);
+  background:var(--dsw-alias-bg-layer-2); cursor:pointer; transition:background .18s ease,color .18s ease; }
+.seg input:checked + span { background:var(--dsw-alias-interactive-bg-active); color:var(--dsw-alias-state-business-primary); font-weight:600; }
+.seg input:focus-visible + span { outline:2px solid var(--dsw-alias-state-business-primary); outline-offset:-2px; }
+/* 预算滑块 */
+.slider { width:120px; accent-color:var(--dsw-alias-state-business-primary); flex:none; }
+.set-budget { display:flex; align-items:center; gap:9px; flex:none; }
+.set-budget .v { font:10px var(--mono); color:var(--dsw-alias-label-secondary); white-space:nowrap; }
+/* 高级折叠 */
+.adv { border:1px solid var(--dsw-alias-border-l1); border-radius:var(--r-item); margin-bottom:13px; }
+.adv > summary { display:flex; align-items:center; gap:8px; padding:10px 12px; cursor:pointer; font-size:11px; font-weight:600; list-style:none; }
+.adv > summary::-webkit-details-marker { display:none; }
+.adv > summary:hover { background:var(--dsw-alias-interactive-bg-hover); }
+.adv > summary .n { margin-left:auto; font:10px var(--mono); color:var(--dsw-alias-label-tertiary); }
+.adv-body { border-top:1px solid var(--dsw-alias-border-l1); padding:6px 12px 10px; }
+.adv-row { display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px dashed var(--dsw-alias-border-l1); font-size:10.5px; }
+.adv-row:last-child { border-bottom:0; }
+.adv-row .k { font:9.5px var(--mono); color:var(--dsw-alias-label-tertiary); margin-left:auto; }
+.legend-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:9px 15px; border-top:1px solid var(--dsw-alias-border-l1);
+  font-size:10px; color:var(--dsw-alias-label-tertiary); }
+.savebar { display:flex; align-items:center; gap:9px; padding:10px 15px; border-top:1px solid var(--dsw-alias-border-l2); background:var(--dsw-alias-bg-layer-2); }
+.savebar .txt { font-size:10.5px; color:var(--dsw-alias-label-secondary); }
+.savebar .spacer { flex:1; }
+.dirty-dot { width:7px; height:7px; border-radius:50%; background:var(--dsw-alias-state-warn-primary); }
+
+/* ── 对比说明 ── */
+.cmp { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:11px; margin-bottom:12px; }
+.cmp-card { border:1px solid var(--dsw-alias-border-l1); border-radius:var(--r-card); background:var(--dsw-alias-bg-layer-1); padding:12px 14px; }
+.cmp-card h3 { margin:0 0 8px; font-size:12px; font-weight:650; }
+.cmp-card p, .cmp-card li { font-size:10.5px; color:var(--dsw-alias-label-secondary); line-height:1.8; }
+.cmp-card ul, .cmp-card ol { margin:5px 0 0; padding-left:17px; }
+.cmp-card code { font:9.5px var(--mono); color:var(--dsw-alias-state-business-primary); }
+.before-after { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:9px; margin-bottom:12px; }
+.ba { border:1px solid var(--dsw-alias-border-l1); border-radius:var(--r-item); background:var(--dsw-alias-bg-layer-1); padding:10px 12px; }
+.ba .k { font-size:10px; color:var(--dsw-alias-label-tertiary); }
+.ba .nums { display:flex; align-items:baseline; gap:7px; margin-top:4px; font:600 17px var(--mono); }
+.ba .nums .old { color:var(--dsw-alias-state-error-primary); text-decoration:line-through; opacity:.75; font-size:14px; }
+.ba .nums .arrow { color:var(--dsw-alias-label-tertiary); font-size:12px; }
+.ba .nums .new { color:var(--dsw-alias-state-success-primary); }
+/* 3 次点击验收 */
+.verify { border:1px solid var(--dsw-alias-border-l1); border-radius:var(--r-card); background:var(--dsw-alias-bg-layer-1); padding:12px 14px; }
+.verify h3 { margin:0 0 4px; font-size:12px; font-weight:650; }
+.verify > p { margin:0 0 10px; font-size:10.5px; color:var(--dsw-alias-label-tertiary); }
+.steps { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.step { display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border:1px solid var(--dsw-alias-border-l2);
+  border-radius:var(--r-btn); background:var(--dsw-alias-bg-layer-2); font-size:10.5px; transition:border-color .18s ease,background .18s ease; }
+.step.done { border-color:var(--dsw-alias-state-success-primary); color:var(--dsw-alias-state-success-primary);
+  background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 9%,transparent); }
+.step:not(.next):not(.done) { opacity:.55; }
+.step.next { border-color:var(--dsw-alias-state-business-primary); color:var(--dsw-alias-state-business-primary); }
+.verify-out { margin-top:9px; font-size:10.5px; color:var(--dsw-alias-label-secondary); }
+.note { margin-top:12px; padding:10px 13px; border-left:3px solid var(--dsw-alias-state-business-primary);
+  background:var(--dsw-alias-bg-layer-1); border-radius:0 var(--r-btn) var(--r-btn) 0; font-size:10.5px;
+  color:var(--dsw-alias-label-secondary); line-height:1.8; }
+.note code { font:9.5px var(--mono); color:var(--dsw-alias-state-business-primary); }
+
+@media (max-width:700px) {
+  .doc { padding:14px; } .scopemeta, .budget .tip { display:none; }
+  .set-row { flex-wrap:wrap; } .search { min-width:110px; }
+}
+@media (prefers-reduced-motion:reduce) { *,*::before,*::after { transition-duration:.01ms !important; animation-duration:.01ms !important; } }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="ic-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16 16l4 4"/></symbol>
+  <symbol id="ic-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></symbol>
+  <symbol id="ic-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></symbol>
+  <symbol id="ic-bot" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 4v3"/><circle cx="9" cy="13" r="1"/><circle cx="15" cy="13" r="1"/></symbol>
+  <symbol id="ic-archive" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 001 1h12a1 1 0 001-1V8"/><path d="M10 12h4"/></symbol>
+  <symbol id="ic-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+  <symbol id="ic-branch" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="9" r="2"/><path d="M6 7v10M18 11a6 6 0 01-6 6H8"/></symbol>
+  <symbol id="ic-check" viewBox="0 0 24 24"><path d="M5 12l4 4L19 6"/></symbol>
+  <symbol id="ic-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="ic-undo" viewBox="0 0 24 24"><path d="M9 7L4 12l5 5"/><path d="M4 12h10a6 6 0 010 12"/></symbol>
+  <symbol id="ic-moon" viewBox="0 0 24 24"><path d="M20 14A8 8 0 0110 4a8 8 0 1010 10z"/></symbol>
+  <symbol id="ic-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/></symbol>
+  <symbol id="ic-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+  <symbol id="ic-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+</svg>
+
+<div class="doc">
+  <header class="doc-head">
+    <div>
+      <h1>记忆 UI · 简化版</h1>
+      <p>单列、3 个作用域组、5 个常用设置。<strong>物理分区不变、零数据迁移</strong>——删掉的是界面层级，不是记忆轨。沿用 <span class="mono">--dsw-alias-*</span> 令牌，明暗双模式。</p>
+    </div>
+    <div class="doc-tools"><button class="btn btn-sm" id="themeBtn" type="button" aria-label="切换明暗主题"><svg class="i i-sm"><use href="#ic-moon"/></svg>切换主题</button></div>
+  </header>
+
+  <nav class="views" role="tablist" aria-label="视图切换">
+    <button class="viewtab" role="tab" aria-selected="true" aria-controls="v-memory" id="vt-memory" data-view="memory"><svg class="i i-sm"><use href="#ic-folder"/></svg>记忆<span class="n">01</span></button>
+    <button class="viewtab" role="tab" aria-selected="false" aria-controls="v-settings" id="vt-settings" data-view="settings"><svg class="i i-sm"><use href="#ic-info"/></svg>设置<span class="n">02</span></button>
+    <button class="viewtab" role="tab" aria-selected="false" aria-controls="v-notes" id="vt-notes" data-view="notes">对比 · 验收<span class="n">03</span></button>
+  </nav>
+
+  <!-- ═══════════ 视图 1：记忆页 ═══════════ -->
+  <section class="view is-active" id="v-memory" role="tabpanel" aria-labelledby="vt-memory">
+    <div class="panel">
+      <!-- 会话 Tab 条：12 → 6 -->
+      <div class="ptabs" role="tablist" aria-label="会话页 Tab">
+        <span class="ptab">对话</span><span class="ptab">轨迹</span>
+        <span class="ptab on">记忆<span class="pcount" id="tabCount">4</span></span>
+        <span class="ptab">技能</span><span class="ptab">待办</span><span class="ptab">设置</span>
+      </div>
+
+      <!-- ① 作用域条：一个根 + 全局/Bot 切换，切换只影响查看 -->
+      <div class="scopebar">
+        <span class="lbl">作用域</span>
+        <label class="rootpick"><svg class="i i-sm"><use href="#ic-folder"/></svg><span class="sr-only">选择工作区根</span>
+          <select class="sel" id="rootSel" aria-label="选择工作区根">
+            <option value="repo-a">repo-a（主根）</option><option value="repo-b" selected>repo-b</option><option value="repo-c">repo-c</option>
+          </select>
+        </label>
+        <button class="chip" type="button" data-scope="global" aria-pressed="false"><svg class="i i-sm"><use href="#ic-globe"/></svg>全局</button>
+        <button class="chip" type="button" data-scope="bot" aria-pressed="false"><svg class="i i-sm"><use href="#ic-bot"/></svg>Bot · writer</button>
+        <div class="scopemeta"><span class="mono">3f9a1c2b4e5d</span><span>·</span><span><svg class="i i-sm" style="vertical-align:-2px"><use href="#ic-branch"/></svg> main</span></div>
+        <label class="search"><svg class="i i-sm"><use href="#ic-search"/></svg><span class="sr-only">搜索记忆</span><input id="searchInput" type="search" placeholder="搜索记忆…" aria-label="搜索记忆" /></label>
+      </div>
+
+      <!-- ② 待确认横幅：一条，不是独立功能 Tab -->
+      <div class="inbox" id="inboxBar">
+        <svg class="i i-sm" style="color:var(--dsw-alias-state-warn-primary)"><use href="#ic-info"/></svg>
+        <span id="inboxText"><strong>4 条待确认建议</strong> — 采纳前不会进入模型上下文。</span>
+        <span class="spacer"></span>
+        <button class="btn btn-sm" type="button" id="rejectAll"><svg class="i i-sm"><use href="#ic-x"/></svg>全部拒绝</button>
+        <button class="btn btn-primary btn-sm" type="button" id="approveAll"><svg class="i i-sm"><use href="#ic-check"/></svg>全部采纳</button>
+        <span class="badge badge-success undo" id="undoWrap" hidden>已处理 · <button class="btn btn-quiet btn-sm" type="button" id="undoBtn" style="min-height:18px;padding:0 4px"><svg class="i i-sm"><use href="#ic-undo"/></svg>撤销</button></span>
+      </div>
+
+      <!-- ③ 预算条 -->
+      <div class="budget">
+        <span class="k">KEY 注入占用</span>
+        <span class="track"><i id="budgetBar" style="width:54%"></i></span>
+        <span class="v">1,106 / 2,048</span>
+        <span class="tip">预算信息只在这里出现一次</span>
+      </div>
+
+      <!-- ④ 三个作用域组 + 归档折叠 -->
+      <div class="groups" id="groups">
+        <section class="grp open edge" data-group="project">
+          <button class="grp-head" type="button" aria-expanded="true">
+            <svg class="i i-sm caret"><use href="#ic-chev"/></svg>
+            <svg class="i i-sm" style="color:var(--dsw-alias-state-business-primary)"><use href="#ic-folder"/></svg>
+            <span class="name">本项目 · <span class="rootlabel">repo-b</span></span>
+            <span class="cnt" id="cntProject">12 条</span><span class="spacer"></span>
+            <span class="badge badge-business">KEY.md · 项目日志 · KEY-archive</span>
+          </button>
+          <div class="grp-body">
+            <div class="compose">
+              <input type="text" id="composeText" placeholder="记一条长期事实或约定…" aria-label="新记忆内容" />
+              <select class="sel" id="composeTarget" aria-label="写入目标轨"><option>项目 KEY.md</option><option>项目日志</option><option>全局 MEMORY.md</option><option>USER.md</option><option>Bot 记忆</option></select>
+              <span class="badge" id="composeRoot">写入到 repo-b</span>
+              <button class="btn btn-primary btn-sm" type="button" id="addBtn"><svg class="i i-sm"><use href="#ic-plus"/></svg>添加</button>
+            </div>
+            <div class="entry-list" id="listProject">
+              <article class="entry" data-text="发布前必须跑 bun typecheck 与 bun test；CI 的 node 版本固定为 22.19。">
+                <div class="entry-top"><span class="badge badge-business">KEY.md</span><span class="badge badge-success">已注入</span><span class="badge">全部分支</span><span class="entry-time">11-11 09:42</span></div>
+                <p class="entry-text">发布前必须跑 <span class="mono">bun typecheck</span> 与 <span class="mono">bun test</span>；CI 的 node 版本固定为 22.19。</p>
+                <div class="entry-foot"><span class="badge">命中 3 次</span><span class="ops"><button class="btn btn-quiet btn-sm" type="button" data-act="edit">编辑</button><button class="btn btn-quiet btn-sm btn-danger" type="button" data-act="archive">归档</button></span></div>
+              </article>
+              <article class="entry" data-text="记忆插件的 Web API 统一挂 /memory-evolve 前缀；新增端点必须在 api.js 头注释的路由表里登记。">
+                <div class="entry-top"><span class="badge badge-business">KEY.md</span><span class="badge badge-warn">仅 main,dev</span><span class="entry-time">11-10 18:07</span></div>
+                <p class="entry-text">记忆插件的 Web API 统一挂 <span class="mono">/memory-evolve</span> 前缀；新增端点必须在 api.js 头注释的路由表里登记。</p>
+                <div class="entry-foot"><span class="badge badge-static">dsh-only</span><span class="ops"><button class="btn btn-quiet btn-sm" type="button" data-act="edit">编辑</button><button class="btn btn-quiet btn-sm btn-danger" type="button" data-act="archive">归档</button></span></div>
+              </article>
+              <article class="entry" data-text="Qoder CN 通过调度器恢复会话验证成功，上下文恢复生效。">
+                <div class="entry-top"><span class="badge">项目日志</span><span class="entry-time">11-11 11:08</span></div>
+                <p class="entry-text">Qoder CN 通过调度器恢复会话验证成功，模型复述出上一轮问题原文，上下文恢复生效。</p>
+                <div class="entry-foot"><span class="badge">不注入上下文</span><span class="ops"><button class="btn btn-quiet btn-sm" type="button" data-act="edit">编辑</button><button class="btn btn-quiet btn-sm btn-danger" type="button" data-act="archive">归档</button></span></div>
+              </article>
+            </div>
+            <p class="empty" id="emptyProject" hidden>没有匹配的记忆。</p>
+          </div>
+        </section>
+
+        <section class="grp" data-group="global">
+          <button class="grp-head" type="button" aria-expanded="false">
+            <svg class="i i-sm caret"><use href="#ic-chev"/></svg>
+            <svg class="i i-sm"><use href="#ic-globe"/></svg>
+            <span class="name">全局</span><span class="cnt">64 条</span><span class="spacer"></span>
+            <span class="badge">MEMORY.md · USER.md · daily · AGENTS.md · 归档</span>
+          </button>
+          <div class="grp-body">
+            <div class="entry-list" id="listGlobal">
+              <article class="entry" data-text="用户偏好：改动前先给结论与验证结果，不贴大段源码。">
+                <div class="entry-top"><span class="badge">USER.md</span><span class="badge badge-success">已注入</span><span class="entry-time">11-08 11:03</span></div>
+                <p class="entry-text">用户偏好：改动前先给结论与验证结果，不贴大段源码；涉及他人并发改动时只做精确锚点替换。</p>
+                <div class="entry-foot"><span class="badge">跨项目共享</span><span class="ops"><button class="btn btn-quiet btn-sm" type="button" data-act="edit">编辑</button><button class="btn btn-quiet btn-sm btn-danger" type="button" data-act="archive">归档</button></span></div>
+              </article>
+              <article class="entry" data-text="今日日志：按天记录流水，不注入上下文，模型按需读取。">
+                <div class="entry-top"><span class="badge">今日日志</span><span class="entry-time">11-11 11:08</span></div>
+                <p class="entry-text">今日日志：按天记录流水，程序自动标注项目标签；不注入上下文，模型按需读取。</p>
+                <div class="entry-foot"><span class="badge">74 条</span><span class="ops"><button class="btn btn-quiet btn-sm" type="button" data-act="edit">编辑</button><button class="btn btn-quiet btn-sm btn-danger" type="button" data-act="archive">归档</button></span></div>
+              </article>
+            </div>
+            <p class="empty" id="emptyGlobal" hidden>没有匹配的记忆。</p>
+          </div>
+        </section>
+
+        <section class="grp" data-group="bot">
+          <button class="grp-head" type="button" aria-expanded="false">
+            <svg class="i i-sm caret"><use href="#ic-chev"/></svg>
+            <svg class="i i-sm"><use href="#ic-bot"/></svg>
+            <span class="name">Bot · writer</span><span class="cnt">17 条</span><span class="spacer"></span>
+            <span class="badge">跨工作区共享 · Git 版本</span>
+          </button>
+          <div class="grp-body">
+            <div class="entry-list" id="listBot">
+              <article class="entry" data-text="写技术文档时默认用简体中文、结论先行，不主动添加 emoji。">
+                <div class="entry-top"><span class="badge">Bot MEMORY.md</span><span class="badge badge-success">Git 已提交</span><span class="entry-time">11-09 14:21</span></div>
+                <p class="entry-text">写技术文档时默认用简体中文、结论先行，代码块标注语言；不主动添加 emoji。</p>
+                <div class="entry-foot"><span class="badge">跨工作区共享</span><span class="ops"><button class="btn btn-quiet btn-sm" type="button" data-act="edit">编辑</button><button class="btn btn-quiet btn-sm btn-danger" type="button" data-act="archive">归档</button></span></div>
+              </article>
+            </div>
+            <p class="empty" id="emptyBot" hidden>没有匹配的记忆。</p>
+          </div>
+        </section>
+
+        <section class="grp" data-group="archived">
+          <button class="grp-head" type="button" aria-expanded="false">
+            <svg class="i i-sm caret"><use href="#ic-chev"/></svg>
+            <svg class="i i-sm"><use href="#ic-archive"/></svg>
+            <span class="name">已归档</span><span class="cnt" id="cntArchived">18 条</span><span class="spacer"></span>
+            <span class="badge badge-static">不注入 · 可随时移回</span>
+          </button>
+          <div class="grp-body">
+            <div class="entry-list" id="listArchived">
+              <article class="entry" data-text="旧构建脚本路径 tools/build.py 已废弃（迁移到 scripts/build.mjs）。">
+                <div class="entry-top"><span class="badge">MEMORY-archive.md</span><span class="entry-time">10-22 16:30</span></div>
+                <p class="entry-text">旧构建脚本路径 <span class="mono">tools/build.py</span> 已废弃（迁移到 scripts/build.mjs）。</p>
+                <div class="entry-foot"><span class="ops"><button class="btn btn-quiet btn-sm" type="button" data-act="promote"><svg class="i i-sm"><use href="#ic-undo"/></svg>移回主记忆</button></span></div>
+              </article>
+            </div>
+            <p class="empty" id="emptyArchived" hidden>没有匹配的记忆。</p>
+          </div>
+        </section>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ 视图 2：设置 ═══════════ -->
+  <section class="view" id="v-settings" role="tabpanel" aria-labelledby="vt-settings">
+    <div class="set-panel">
+      <div class="set-head"><h2>记忆设置</h2><p>默认只露 5 个常用项，其余 20 项收进「高级」。三类徽标说明每项能不能改、改完何时生效。</p></div>
+      <div class="set-body">
+        <section class="set-sec">
+          <h3 class="set-sec-h">写入<span class="line"></span></h3>
+          <div class="set-card">
+            <div class="set-row"><div class="set-main"><span class="set-lbl">后台审查</span><span class="set-key">reviewEnabled</span><span class="set-hint">自动回顾会话并沉淀经验；关闭后建议队列不再产生新条目</span></div><span class="badge badge-business">运行时</span><label class="sw"><input type="checkbox" checked data-dirty /><span></span><span class="sr-only">后台审查</span></label></div>
+            <div class="set-row"><div class="set-main"><span class="set-lbl">KEY 写入去向</span><span class="set-key">keyWriteMode</span><span class="set-hint">queue = 一律进待确认队列；direct = 主会话直写 KEY.md</span></div><span class="badge badge-business">运行时</span>
+              <div class="seg" role="radiogroup" aria-label="KEY 写入去向"><label><input type="radio" name="kwm" value="queue" data-dirty /><span>待确认</span></label><label><input type="radio" name="kwm" value="direct" checked data-dirty /><span>直写</span></label></div></div>
+            <div class="set-row"><div class="set-main"><span class="set-lbl">记忆同步</span><span class="set-key">syncEnabled</span></div><span class="badge badge-business">运行时</span><label class="sw"><input type="checkbox" data-dirty /><span></span><span class="sr-only">记忆同步</span></label></div>
+            <div class="set-row"><div class="set-main"><span class="set-lbl">写入看门狗</span><span class="set-key">perTurnWriteGuard</span><span class="set-hint">连续 N 轮未写记忆时在快照顶部提醒</span></div><span class="badge badge-business">运行时</span><label class="sw"><input type="checkbox" data-dirty /><span></span><span class="sr-only">写入看门狗</span></label></div>
+          </div>
+        </section>
+
+        <section class="set-sec">
+          <h3 class="set-sec-h">注入<span class="line"></span></h3>
+          <div class="set-card">
+            <div class="set-row"><div class="set-main"><span class="set-lbl">Bot 记忆预算</span><span class="set-key">botMemoryCharLimit</span><span class="set-hint">0 = 不注入（仍可读写）；会话中改动会击穿 prefix cache</span></div>
+              <div class="set-budget"><input class="slider" id="budgetSlider" type="range" min="0" max="4096" step="256" value="2048" data-dirty aria-label="Bot 记忆预算" /><span class="v" id="budgetValue">2,048</span></div>
+              <span class="badge badge-business">运行时</span></div>
+            <div class="set-row"><div class="set-main"><span class="set-lbl">KEY 渐进式披露</span><span class="set-key">keyProgressiveDisclosure</span></div><select class="sel" data-dirty aria-label="KEY 渐进式披露"><option>off · 始终全量</option><option selected>auto · 按数据量</option><option>on · 始终摘要</option></select><span class="badge badge-business">运行时</span></div>
+            <div class="set-row"><div class="set-main"><span class="set-lbl">多根作用域可见性</span><span class="set-key">multiRootScopeEnabled</span><span class="set-hint">关闭后退回单根视图；当前值只能在 config.yaml 改</span></div><span class="badge badge-static">仅 config.yaml</span></div>
+            <div class="set-row"><div class="set-main"><span class="set-lbl">当前快照占用</span><span class="set-key">只读指标</span></div><span class="badge">1,106 / 2,048</span><span class="badge badge-static">只读</span></div>
+          </div>
+        </section>
+
+        <details class="adv" id="advBox">
+          <summary><svg class="i i-sm"><use href="#ic-chev"/></svg>高级（20 项）<span class="n">默认折叠</span></summary>
+          <div class="adv-body" id="advBody">
+            <div class="adv-row">审查间隔（回合）<span class="k">reviewInterval</span></div>
+            <div class="adv-row">技能自动沉淀<span class="k">skillReviewEnabled</span></div>
+            <div class="adv-row">每回合写入项目记忆 / 每日日志 / 项目关键记忆<span class="k">perTurn*Writes</span></div>
+            <div class="adv-row">全量注入条目数 / 字符数阈值<span class="k">keyFullInject*</span></div>
+            <div class="adv-row">KEY 分支范围过滤（静态）<span class="k">keyBranchFilter</span></div>
+            <div class="adv-row">COI 调度 · 本地文件搜索 · 会话评审 · 会话广播 · 通知 · 会话搜索 · 无限画板 · 会话编排 · 提示词管理器 · 模型设置 · Web UI 设置 · 会话书签 · 待办功能 …<span class="k">+ 12 项</span></div>
+          </div>
+        </details>
+      </div>
+      <div class="legend-row"><span class="badge badge-business">运行时</span> 保存立即生效并持久化　<span class="badge badge-static">仅 config.yaml</span> 此页改不到　<span class="badge">只读指标</span> 仅展示</div>
+      <div class="savebar" role="status">
+        <span class="dirty-dot" id="dirtyDot" hidden></span><span class="txt" id="saveText">所有更改已保存</span><span class="spacer"></span>
+        <span class="badge" id="dirtyCount" hidden>0 项待保存</span>
+        <button class="btn btn-quiet btn-sm" type="button" id="resetBtn">放弃更改</button>
+        <button class="btn btn-primary btn-sm" type="button" id="saveBtn"><svg class="i i-sm"><use href="#ic-check"/></svg>保存配置</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ 视图 3：对比与验收 ═══════════ -->
+  <section class="view" id="v-notes" role="tabpanel" aria-labelledby="vt-notes">
+    <div class="before-after">
+      <div class="ba"><div class="k">文件页签</div><div class="nums"><span class="old">10</span><span class="arrow">→</span><span class="new">3 组</span></div></div>
+      <div class="ba"><div class="k">会话 Tab</div><div class="nums"><span class="old">12</span><span class="arrow">→</span><span class="new">6</span></div></div>
+      <div class="ba"><div class="k">默认可见设置项</div><div class="nums"><span class="old">25</span><span class="arrow">→</span><span class="new">5 + 高级</span></div></div>
+      <div class="ba"><div class="k">首屏控件数</div><div class="nums"><span class="old">≈60</span><span class="arrow">→</span><span class="new">≈14</span></div></div>
+    </div>
+
+    <div class="cmp">
+      <div class="cmp-card"><h3>改了什么</h3><ul>
+        <li><strong>10 个文件页签 → 3 个作用域组</strong>（本项目 / 全局 / Bot）+ 一个「已归档」折叠区。9+1 条物理轨和目录名 <code>projects/&lt;hash&gt;/</code> 完全不动，零迁移。</li>
+        <li><strong>25 个平铺开关 → 5 个常用 + 高级折叠</strong>。每项带「运行时 / 仅 config.yaml / 只读」徽标，消除「改了没生效」。</li>
+        <li><strong>两个数字输入 → 一条预算进度条</strong>：<code>1,106 / 2,048</code>，抄 Hermes 的 <code>[67% — 1,474/2,200 chars]</code> 与 ds-bot 的 <code>1,240 of 4,000 characters</code>。</li>
+        <li><strong>独立功能 Tab → 一条待确认横幅</strong>：全部采纳 / 全部拒绝 / 10 秒撤销。</li>
+        <li><strong>作用域条只有一行</strong>：一个根选择器 + 全局 / Bot 切换。切换只影响查看；写入目标在输入前显式选一次。没有统计卡、三栏检查器、冲突面板。</li>
+      </ul></div>
+      <div class="cmp-card"><h3>刻意不做</h3><ul>
+        <li>不做跨根自动注入（污染上下文）；聚合视图只读。</li>
+        <li>不新建 <code>/x/memory/</code> 工作台整页——会触发 <code>dshModuleContainers</code> 清单守卫，且真实入口就是会话页 Tab。</li>
+        <li>不把 <code>bot × root</code> 做成物理组合键（N×M 目录爆炸）；作用域是标签 + 读取时过滤。</li>
+        <li>不删数据、不改分区键、不动 <code>keyWriteMode</code> 之外的写入语义；<code>multiRootScopeEnabled:false</code> 可一键退回旧 UI。</li>
+      </ul></div>
+    </div>
+
+    <div class="verify">
+      <h3>验收：3 次点击找到，1 次点击改掉</h3>
+      <p>点「开始」，然后按高亮顺序点击。这是新用户不看指南完成「找到上次记住的那条并修改」的完整路径。</p>
+      <div class="steps" id="steps">
+        <button class="step" type="button" data-step="1">① 打开「记忆」Tab</button>
+        <button class="step" type="button" data-step="2">② 展开「本项目」组</button>
+        <button class="step" type="button" data-step="3">③ 定位那条记忆</button>
+        <button class="step" type="button" data-step="4">④ 点「编辑」</button>
+        <button class="btn btn-sm" type="button" id="verifyStart">开始</button>
+        <button class="btn btn-quiet btn-sm" type="button" id="verifyReset">重置</button>
+      </div>
+      <div class="verify-out" id="verifyOut">点击次数：0 · 待开始</div>
+    </div>
+
+    <div class="note">
+      <strong>落地映射</strong>：组标题与文案取自 <code>lib/memory-tab.js:30-41</code> 的 9+1 轨与 <code>src/client/index.ts</code> 双字典；设置字段取自 <code>panel.config.*</code>（<code>reviewEnabled</code> / <code>keyWriteMode</code> / <code>perTurnWriteGuard</code> / <code>syncEnabled</code> / <code>botMemoryCharLimit</code> / <code>keyProgressiveDisclosure</code>），其中 <code>multiRootScopeEnabled</code> 与 <code>keyBranchFilter</code> 当前不在 <code>RUNTIME_KEYS</code>，故标为「仅 config.yaml」；<code>keyWriteMode</code> / <code>botMemoryCharLimit</code> 在 <code>RUNTIME_KEYS</code> 里却没渲染控件，此稿补上。作用域数据来自 P0 的 <code>deriveMemoryScope()</code> 与 <code>GET /api/workspace-scope</code>。本文件是设计稿，未修改任何产品代码。
+    </div>
+  </section>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  /* 视图切换 */
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('.viewtab'));
+  tabs.forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      tabs.forEach(function (t) { t.setAttribute('aria-selected', String(t === tab)); });
+      document.querySelectorAll('.view').forEach(function (v) { v.classList.toggle('is-active', v.id === 'v-' + tab.dataset.view); });
+    });
+    tab.addEventListener('keydown', function (e) {
+      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+      e.preventDefault();
+      var i = tabs.indexOf(tab);
+      var next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+      next.focus(); next.click();
+    });
+  });
+
+  /* 明暗主题 */
+  var themeBtn = document.getElementById('themeBtn');
+  themeBtn.addEventListener('click', function () {
+    var light = document.documentElement.getAttribute('data-theme') === 'light';
+    document.documentElement.setAttribute('data-theme', light ? 'dark' : 'light');
+    themeBtn.querySelector('use').setAttribute('href', light ? '#ic-moon' : '#ic-sun');
+  });
+
+  /* 组折叠 */
+  document.querySelectorAll('.grp-head').forEach(function (head) {
+    head.addEventListener('click', function () {
+      var grp = head.closest('.grp');
+      grp.classList.toggle('open');
+      head.setAttribute('aria-expanded', String(grp.classList.contains('open')));
+      if (grp.dataset.group === 'project' && grp.classList.contains('open')) { verifyStep(2); }
+    });
+  });
+
+  /* 作用域：根选择 + 全局/Bot 切换（只影响查看） */
+  var rootSel = document.getElementById('rootSel');
+  var composeRoot = document.getElementById('composeRoot');
+  var chips = Array.prototype.slice.call(document.querySelectorAll('.chip[data-scope]'));
+  function setRoot(v) {
+    document.querySelectorAll('.rootlabel').forEach(function (x) { x.textContent = v; });
+    composeRoot.textContent = '写入到 ' + v;
+  }
+  rootSel.addEventListener('change', function () { setRoot(rootSel.value); });
+  chips.forEach(function (chip) {
+    chip.addEventListener('click', function () {
+      var on = chip.getAttribute('aria-pressed') === 'true';
+      chips.forEach(function (c) { c.setAttribute('aria-pressed', 'false'); });
+      chip.setAttribute('aria-pressed', String(!on));
+      if (!on) {
+        var target = chip.dataset.scope === 'global' ? 'global' : 'bot';
+        var grp = document.querySelector('.grp[data-group="' + target + '"]');
+        if (grp && !grp.classList.contains('open')) grp.querySelector('.grp-head').click();
+      }
+    });
+  });
+
+  /* 搜索：跨所有组过滤，自动展开有命中的组 */
+  var search = document.getElementById('searchInput');
+  search.addEventListener('input', function () {
+    var q = search.value.trim().toLowerCase();
+    document.querySelectorAll('.entry-list').forEach(function (list) {
+      var shown = 0;
+      list.querySelectorAll('.entry').forEach(function (e) {
+        var hit = !q || (e.dataset.text || e.textContent).toLowerCase().indexOf(q) >= 0;
+        e.hidden = !hit; if (hit) shown++;
+      });
+      var grp = list.closest('.grp');
+      var empty = document.getElementById('empty' + grp.dataset.group.charAt(0).toUpperCase() + grp.dataset.group.slice(1));
+      if (empty) empty.hidden = shown > 0;
+      if (q && shown > 0 && !grp.classList.contains('open')) grp.querySelector('.grp-head').click();
+    });
+  });
+
+  /* 待确认横幅：批量 + 撤销 */
+  var inboxText = document.getElementById('inboxText');
+  var undoWrap = document.getElementById('undoWrap');
+  var tabCount = document.getElementById('tabCount');
+  function done(msg) {
+    inboxText.innerHTML = '<strong>' + msg + '</strong> — 10 秒内可撤销。';
+    undoWrap.hidden = false; tabCount.textContent = '0';
+  }
+  document.getElementById('approveAll').addEventListener('click', function () { done('4 条建议已采纳并写入 repo-b / KEY.md'); });
+  document.getElementById('rejectAll').addEventListener('click', function () { done('4 条建议已丢弃'); });
+  document.getElementById('undoBtn').addEventListener('click', function () {
+    inboxText.innerHTML = '<strong>4 条待确认建议</strong> — 已撤销，建议回到待审状态。';
+    undoWrap.hidden = true; tabCount.textContent = '4';
+  });
+
+  /* 添加记忆：目标在输入前显式可见 */
+  var composeText = document.getElementById('composeText');
+  document.getElementById('addBtn').addEventListener('click', function () {
+    var v = composeText.value.trim();
+    if (!v) { composeText.focus(); return; }
+    var target = document.getElementById('composeTarget').value;
+    var list = document.getElementById('listProject');
+    var art = document.createElement('article');
+    art.className = 'entry is-new';
+    art.dataset.text = v;
+    var esc = v.replace(/[&<>"]/g, function (c) { return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]; });
+    art.innerHTML = '<div class="entry-top"><span class="badge badge-success">待确认</span><span class="badge">' + target + '</span><span class="entry-time">刚刚</span></div>'
+      + '<p class="entry-text">' + esc + '</p>'
+      + '<div class="entry-foot"><span class="badge">写入到 ' + rootSel.value + '</span><span class="ops">'
+      + '<button class="btn btn-quiet btn-sm" type="button" data-act="edit">编辑</button>'
+      + '<button class="btn btn-quiet btn-sm btn-danger" type="button" data-act="archive">归档</button></span></div>';
+    list.insertBefore(art, list.firstChild);
+    composeText.value = '';
+    inboxText.innerHTML = '<strong>已加入待确认队列</strong> — 目标 <span class="mono">' + target + ' / ' + rootSel.value + '</span>，采纳后才会进入模型上下文。';
+  });
+
+  /* 条目操作：编辑（1 次点击）/ 归档 / 移回 */
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    var entry = btn.closest('.entry');
+    var act = btn.dataset.act;
+    if (act === 'edit') {
+      verifyStep(4);
+      var p = entry.querySelector('.entry-text');
+      var old = p.textContent.trim();
+      var input = document.createElement('input');
+      input.type = 'text'; input.value = old; input.className = 'sel';
+      input.style.cssText = 'width:100%;padding:5px 8px;font-size:11px';
+      input.setAttribute('aria-label', '编辑记忆内容');
+      p.replaceWith(input); input.focus(); input.select();
+      var save = function () {
+        var np = document.createElement('p'); np.className = 'entry-text'; np.textContent = input.value || old;
+        entry.dataset.text = np.textContent; input.replaceWith(np);
+      };
+      input.addEventListener('blur', save, { once:true });
+      input.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); } if (ev.key === 'Escape') { input.value = old; input.blur(); } });
+      return;
+    }
+    if (act === 'archive') {
+      var archived = document.getElementById('listArchived');
+      entry.querySelector('.entry-foot').innerHTML = '<span class="ops"><button class="btn btn-quiet btn-sm" type="button" data-act="promote">移回主记忆</button></span>';
+      archived.insertBefore(entry, archived.firstChild);
+      bumpArchive(1); return;
+    }
+    if (act === 'promote') {
+      var back = document.getElementById('listProject');
+      entry.querySelector('.entry-foot').innerHTML = '<span class="badge badge-success">刚移回</span><span class="ops"><button class="btn btn-quiet btn-sm" type="button" data-act="edit">编辑</button><button class="btn btn-quiet btn-sm btn-danger" type="button" data-act="archive">归档</button></span>';
+      entry.classList.remove('is-new');
+      back.insertBefore(entry, back.firstChild);
+      bumpArchive(-1);
+      var pg = document.querySelector('.grp[data-group="project"]');
+      if (!pg.classList.contains('open')) pg.querySelector('.grp-head').click();
+      return;
+    }
+  });
+  function bumpArchive(n) {
+    var el = document.getElementById('cntArchived');
+    el.textContent = (parseInt(el.textContent, 10) + n) + ' 条';
+  }
+
+  /* 设置：脏状态 / 预算滑块 / 保存 */
+  var dirty = 0, dirtyDot = document.getElementById('dirtyDot'), dirtyCount = document.getElementById('dirtyCount'), saveText = document.getElementById('saveText');
+  function refreshDirty() {
+    dirtyDot.hidden = dirty === 0; dirtyCount.hidden = dirty === 0;
+    dirtyCount.textContent = dirty + ' 项待保存';
+    if (dirty > 0) saveText.textContent = '有未保存的更改 · 运行时键保存后立即生效';
+  }
+  document.querySelectorAll('[data-dirty]').forEach(function (el) {
+    el.addEventListener('change', function () { dirty++; refreshDirty(); });
+  });
+  var slider = document.getElementById('budgetSlider'), budgetValue = document.getElementById('budgetValue'), budgetBar = document.getElementById('budgetBar');
+  slider.addEventListener('input', function () {
+    budgetValue.textContent = Number(slider.value).toLocaleString('en-US');
+    budgetBar.style.width = Math.min(100, Math.round(slider.value / 2048 * 54)) + '%';
+  });
+  function settle(msg) { dirty = 0; dirtyDot.hidden = true; dirtyCount.hidden = true; saveText.textContent = msg; }
+  document.getElementById('saveBtn').addEventListener('click', function () { settle(dirty === 0 ? '没有待保存的更改' : '已保存 · 影响 1 个会话快照（下次请求生效）'); });
+  document.getElementById('resetBtn').addEventListener('click', function () { if (dirty > 0) settle('已放弃未保存的更改'); });
+
+  /* 3 次点击验收 */
+  var verifyOut = document.getElementById('verifyOut'), clicked = 0, started = false;
+  var steps = Array.prototype.slice.call(document.querySelectorAll('.step'));
+  function renderSteps() {
+    steps.forEach(function (s) {
+      var n = Number(s.dataset.step);
+      s.classList.toggle('done', started && n <= clicked);
+      s.classList.toggle('next', started && n === clicked + 1);
+    });
+  }
+  function verifyStep(n) {
+    if (!started || n !== clicked + 1) return;
+    clicked = n; renderSteps();
+    verifyOut.textContent = '点击次数：' + clicked + ' · ' + (clicked < 3 ? '继续' : '已找到目标记忆，第 4 次点击为「编辑」');
+  }
+  steps.forEach(function (s) { s.addEventListener('click', function () { verifyStep(Number(s.dataset.step)); }); });
+  document.getElementById('verifyStart').addEventListener('click', function () {
+    started = true; clicked = 0; renderSteps();
+    verifyOut.textContent = '点击次数：0 · 已开始，按顺序点击 ① → ④';
+    document.getElementById('vt-memory').click();
+    verifyStep(1);
+  });
+  document.getElementById('verifyReset').addEventListener('click', function () {
+    started = false; clicked = 0; renderSteps(); verifyOut.textContent = '点击次数：0 · 待开始';
+  });
+  document.querySelectorAll('.ptab').forEach(function (t) { t.addEventListener('click', function () { verifyStep(1); }); });
+  renderSteps();
+})();
+</script>
+</body>
+</html>

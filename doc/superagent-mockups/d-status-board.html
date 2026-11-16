@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>方案 D · 状态看板 — SuperAgent 工作台</title>
+<style>
+:root{--bg:#F1F5F9;--panel:#FFFFFF;--soft:#F8FAFC;--line:#E2E8F0;--line2:#CBD5E1;--fg:#0F172A;--muted:#475569;--dim:#94A3B8;--brand:#2563EB;--brand-soft:#DBEAFE;--ok:#15803D;--warn:#B45309;--err:#B91C1C;--violet:#7C3AED;--cyan:#0891B2;--r:12px;--mono:ui-monospace,Consolas,monospace}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.55}
+button,input{font:inherit;color:inherit}button{cursor:pointer}a{color:inherit;text-decoration:none}
+:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.wrap{max-width:1560px;margin:0 auto;padding:0 20px 32px}
+header.top{display:flex;align-items:center;gap:16px;padding:16px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:16px;white-space:nowrap}
+.brand svg{width:21px;height:21px;color:var(--brand)}
+.search{flex:1;max-width:440px;min-width:170px;display:flex;align-items:center;gap:9px;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:9px 12px}
+.search svg{width:17px;height:17px;color:var(--dim);flex:none}
+.search input{border:0;background:transparent;outline:0;width:100%;min-width:0;font-size:13px}
+.ghost{border:1px solid var(--line2);background:var(--panel);border-radius:9px;padding:9px 13px;min-height:44px;color:var(--muted)}
+.ghost:hover{border-color:var(--brand);color:var(--brand)}
+.back{margin-left:auto;font-size:12px;color:var(--dim)}.back:hover{color:var(--brand)}
+nav.tabs{display:flex;gap:5px;padding:12px 0;flex-wrap:wrap}
+.tab{border:0;background:transparent;color:var(--muted);padding:9px 15px;border-radius:9px;min-height:44px}
+.tab:hover{background:#E9EEF6;color:var(--fg)}
+.tab[aria-selected="true"]{background:var(--panel);color:var(--brand);font-weight:650;box-shadow:0 1px 3px rgba(15,23,42,.1)}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:4px 0 16px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:13px 16px;display:flex;align-items:center;gap:14px}
+.kpi .ic{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;flex:none;background:var(--c-bg);color:var(--c)}
+.kpi .ic svg{width:19px;height:19px}
+.kpi .k{font-size:11px;color:var(--muted)}
+.kpi .v{font-family:var(--mono);font-size:22px;font-weight:650;line-height:1.2}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+.pill{border:1px solid var(--line2);background:var(--panel);border-radius:999px;padding:8px 15px;min-height:40px;font-size:12px;color:var(--muted)}
+.pill:hover{border-color:var(--brand)}
+.pill[aria-pressed="true"]{background:var(--fg);color:#fff;border-color:var(--fg)}
+.toolbar .spacer{flex:1}
+.legend{font-size:11px;color:var(--dim);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px}
+.board{display:grid;grid-template-columns:repeat(5,minmax(220px,1fr));gap:12px;align-items:start;overflow-x:auto;padding-bottom:8px}
+.column{background:#E9EEF5;border:1px solid var(--line);border-radius:var(--r);padding:10px;min-height:220px}
+.colhead{display:flex;align-items:center;gap:8px;padding:4px 4px 12px;font-size:12px;font-weight:650;color:var(--muted)}
+.colhead .dot{width:8px;height:8px;border-radius:50%;background:var(--c)}
+.colhead .n{margin-left:auto;font-family:var(--mono);background:var(--panel);border-radius:999px;padding:1px 7px;font-size:11px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 13px;margin-bottom:9px;box-shadow:0 1px 2px rgba(15,23,42,.05);border-left:3px solid var(--src);cursor:pointer;transition:transform .18s,box-shadow .18s,border-color .18s}
+.card:hover{transform:translateY(-2px);box-shadow:0 8px 22px rgba(15,23,42,.12);border-color:var(--line2)}
+.card h3{font-size:13.5px;font-weight:620;margin:0 0 7px;line-height:1.45}
+.card .m{font-size:11px;color:var(--muted);display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.tag{font-size:10px;border:1px solid var(--line);border-radius:999px;padding:2px 7px;background:var(--soft);color:var(--muted);white-space:nowrap}
+.tag.b{color:var(--brand);border-color:var(--brand);background:var(--brand-soft)}
+.tag.w{color:var(--warn);border-color:#FCD34D;background:#FEF3C7}
+.tag.g{color:var(--ok);border-color:#86EFAC;background:#DCFCE7}
+.tag.r{color:var(--err);border-color:#FCA5A5;background:#FEE2E2}
+.tag.v{color:var(--violet);border-color:#C4B5FD;background:#EDE9FE}
+.progress{height:5px;background:var(--line);border-radius:99px;margin-top:10px;overflow:hidden}
+.progress span{display:block;height:100%;background:var(--brand);border-radius:99px}
+.chain{font-family:var(--mono);font-size:10px;color:var(--cyan);margin-top:8px;line-height:1.6}
+.card .actions{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
+.mini{min-height:38px;padding:7px 11px;border-radius:7px;border:1px solid transparent;font-size:11px;font-weight:600}
+.mini.p{background:var(--brand);color:#fff}.mini.p:hover{background:#1D4ED8}
+.mini.o{background:var(--panel);border-color:var(--line2);color:var(--fg)}.mini.o:hover{background:var(--soft)}
+.mini.t{background:transparent;color:var(--muted);padding:7px 4px}
+.footer{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:12px;margin-top:16px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:14px 16px}
+.panel h4{margin:0 0 10px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+.stat{background:var(--soft);border:1px solid var(--line);border-radius:8px;padding:9px;text-align:center}
+.stat b{display:block;font-family:var(--mono);font-size:17px}
+.stat span{font-size:10px;color:var(--dim)}
+.note{font-size:11px;color:var(--dim);line-height:1.8;margin-top:9px}
+.kv{display:flex;justify-content:space-between;font-size:12px;padding:5px 0;border-bottom:1px solid var(--line)}
+.kv:last-child{border:0}.kv b{font-family:var(--mono)}
+.toast{position:fixed;right:22px;bottom:22px;background:var(--fg);color:#fff;padding:12px 16px;border-radius:9px;font-size:13px;opacity:0;transform:translateY(10px);pointer-events:none;transition:opacity .2s,transform .2s;z-index:50}
+.toast.on{opacity:1;transform:none}
+@media(max-width:1200px){.board{grid-template-columns:repeat(5,240px)}.kpis{grid-template-columns:repeat(2,1fr)}.footer{grid-template-columns:1fr}}
+@media(max-width:640px){.wrap{padding:0 12px 24px}.search{order:5;flex-basis:100%;max-width:none}.back{margin-left:0}.board{grid-template-columns:repeat(5,230px)}.stats{grid-template-columns:repeat(3,1fr)}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 3v4M9 12h.01M15 12h.01M9 16h6"/></svg>SuperAgent</div>
+    <label class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="q" type="search" placeholder="搜索工单、线程、触发或链接" aria-label="搜索工单、线程、触发或链接"></label>
+    <button class="ghost" data-toast="术语表：这里解释工单、触发、评估、组队方案等概念">术语表</button>
+    <a class="back" href="index.html">返回方案对比</a>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="工作台页签">
+    <button class="tab" role="tab" aria-selected="true">概况</button><button class="tab" role="tab" aria-selected="false">来源</button><button class="tab" role="tab" aria-selected="false">触发</button><button class="tab" role="tab" aria-selected="false">评估</button><button class="tab" role="tab" aria-selected="false">执行</button><button class="tab" role="tab" aria-selected="false">设置</button>
+  </nav>
+
+  <section class="kpis" aria-label="关键指标">
+    <div class="kpi" style="--c:var(--warn);--c-bg:#FEF3C7"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20h15.4a2 2 0 0 0 1.7-2.8L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg></span><div><div class="k">待确认组队</div><div class="v">1</div></div></div>
+    <div class="kpi" style="--c:var(--brand);--c-bg:var(--brand-soft)"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v18M3 12h18"/></svg></span><div><div class="k">执行中 / 并发</div><div class="v">2 / 3</div></div></div>
+    <div class="kpi" style="--c:var(--cyan);--c-bg:#CFFAFE"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></span><div><div class="k">已消耗 tokens</div><div class="v">48,320</div></div></div>
+    <div class="kpi" style="--c:var(--ok);--c-bg:#DCFCE7"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><div><div class="k">24 小时调用</div><div class="v">342</div></div></div>
+  </section>
+
+  <div class="toolbar">
+    <button class="pill" aria-pressed="true">全部</button><button class="pill" aria-pressed="false">进行中</button><button class="pill" aria-pressed="false">待处理</button><button class="pill" aria-pressed="false">执行中</button><button class="pill" aria-pressed="false">等待新触发</button><button class="pill" aria-pressed="false">已结束</button>
+    <span class="spacer"></span>
+    <span class="legend"><span><i style="background:var(--brand)"></i>飞书</span><span><i style="background:var(--warn)"></i>TAPD</span><span><i style="background:var(--violet)"></i>GitHub</span></span>
+  </div>
+
+  <div class="board" role="list" aria-label="状态看板">
+    <section class="column" style="--c:var(--warn)" aria-label="待确认">
+      <div class="colhead"><span class="dot"></span>待确认<span class="n">1</span></div>
+      <article class="card" data-card style="--src:var(--warn)" id="proposal">
+        <h3>修复 TAPD 缺陷：导出报表为空</h3>
+        <div class="m"><span class="tag w">组队方案 v3</span><span>TAPD</span><span>12 分钟前</span></div>
+        <div class="chain">梳理需求 → 编码实现 → 回归验证</div>
+        <div class="m" style="margin-top:8px"><span class="tag b">明确任务 · 规则直建单</span><span class="tag r">1 个新建 bot</span></div>
+        <div class="actions"><button class="mini p" id="agree">同意并开工</button><button class="mini o" data-toast="已写入取消原因，工单待你确认后结束">取消工单</button></div>
+      </article>
+    </section>
+
+    <section class="column" style="--c:var(--err)" aria-label="需要你处理">
+      <div class="colhead"><span class="dot"></span>需要你处理<span class="n">3</span></div>
+      <article class="card" data-card style="--src:var(--brand)">
+        <h3>代码审查 bot 想越出工作目录（自测）</h3><div class="m"><span>修复登录页点击无响应</span><span class="mono" style="font-size:10px">src/report.ts</span></div>
+        <div class="actions"><button class="mini o" data-toast="已允许一次，越权仅对本次生效">允许一次</button><button class="mini o" data-toast="已记住规则：该 bot 可写 src/ 目录">允许并记住</button><button class="mini t" data-toast="已拒绝，步骤重新排队">拒绝</button></div>
+      </article>
+      <article class="card" data-card style="--src:var(--violet)"><h3>待你审核的提交 · CL 284193</h3><div class="m"><span class="tag v">审核</span><span>6 个文件 · 12 分钟前</span></div></article>
+      <article class="card" data-card style="--src:var(--brand)"><h3>待确认的技能建议 · 报表回归检查 v2</h3><div class="m"><span class="tag g">低风险</span><span>审核通过 / 驳回</span></div></article>
+      <article class="card" data-card style="--src:var(--brand)"><h3>待你批准建 bot · 回归测试助手</h3><div class="m"><span class="tag b">新建 bot</span></div></article>
+    </section>
+
+    <section class="column" style="--c:var(--brand)" aria-label="进行中">
+      <div class="colhead"><span class="dot"></span>进行中<span class="n">2</span></div>
+      <article class="card" data-card style="--src:var(--brand)">
+        <h3>修复登录页点击无响应</h3><div class="m"><span class="tag b">团队执行中</span><span>飞书</span></div>
+        <div class="progress"><span style="width:40%"></span></div>
+        <div class="m" style="margin-top:8px"><span>2 / 5 完成</span><span class="mono" style="font-size:10px">已消耗 48,320 tokens</span></div>
+        <div class="chain">定位复现 完成 → 根因分析 完成 → 编码实现 …</div>
+      </article>
+      <article class="card" data-card style="--src:var(--warn)"><h3>编码实现：导出报表空指针</h3><div class="m"><span class="tag b">进行中</span><span>开发 bot · 写</span></div><div class="progress"><span style="width:62%"></span></div></article>
+    </section>
+
+    <section class="column" style="--c:var(--violet)" aria-label="待人回答 / 等待">
+      <div class="colhead"><span class="dot"></span>待人回答 / 等待<span class="n">2</span></div>
+      <article class="card" data-card style="--src:var(--violet)"><h3>补充导出接口单元测试</h3><div class="m"><span class="tag">等待新触发</span><span>GitHub</span></div></article>
+      <article class="card" data-card style="--src:var(--brand)"><h3>历史补收已暂停</h3><div class="m"><span class="tag w">系统问题</span><span>飞书机器人不在会话</span></div><div class="chain">实时消息不受影响</div></article>
+    </section>
+
+    <section class="column" style="--c:var(--ok)" aria-label="已完成">
+      <div class="colhead"><span class="dot"></span>已完成<span class="n">2</span></div>
+      <article class="card" data-card style="--src:var(--brand)"><h3>飞书「同意」已生效</h3><div class="m"><span class="tag g">7 秒</span><span>组队方案 v1 直接批准</span></div></article>
+      <article class="card" data-card style="--src:var(--warn)"><h3>建单：修复 TAPD 缺陷</h3><div class="m"><span class="tag g">规则直建单</span><span>未走模型评估</span></div></article>
+    </section>
+  </div>
+
+  <div class="footer">
+    <section class="panel"><h4>过去 24 小时</h4><div class="stats"><div class="stat"><b>128</b><span>到达</span></div><div class="stat"><b>24</b><span>被过滤</span></div><div class="stat"><b>96</b><span>已评估</span></div><div class="stat"><b>12</b><span>接单或续做</span></div><div class="stat"><b>2</b><span>放弃发送</span></div></div></section>
+    <section class="panel"><h4>模型用量（24 小时）与执行器</h4><div class="kv"><span>24 小时</span><b>128k · 342 次</b></div><div class="kv"><span>缓存读 / 7 天</span><b>41k / 890k</b></div><div class="kv"><span>执行中 / 排队</span><b>2/3 · 1</b></div></section>
+    <section class="panel"><h4>来源与系统问题</h4><div class="kv"><span>飞书</span><b style="color:var(--ok)">已就绪</b></div><div class="kv"><span>TAPD</span><b style="color:var(--ok)">已就绪</b></div><div class="kv"><span>GitHub</span><b style="color:var(--err)">ETIMEDOUT ×3</b></div><div class="note">决策原因：明确任务（任务动词 + 链接）按规则直接接单，未走模型评估。</div></section>
+  </div>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script>
+const toast=document.getElementById('toast');let timer;
+function say(t){toast.textContent=t;toast.classList.add('on');clearTimeout(timer);timer=setTimeout(()=>toast.classList.remove('on'),2500)}
+document.querySelectorAll('[data-toast]').forEach(el=>el.addEventListener('click',e=>{e.stopPropagation();say(el.dataset.toast)}));
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.setAttribute('aria-selected',String(x===t)));say('切换到「'+t.textContent+'」页（本 mockup 仅演示概况页）')}));
+document.querySelectorAll('.pill').forEach(p=>p.addEventListener('click',()=>{document.querySelectorAll('.pill').forEach(x=>x.setAttribute('aria-pressed',String(x===p)));say('筛选：'+p.textContent)}));
+document.getElementById('agree').addEventListener('click',e=>{e.stopPropagation();const c=document.getElementById('proposal');c.style.borderLeftColor='var(--ok)';c.querySelector('.actions').innerHTML='<span class="tag g">已批准 · 团队启动中</span>';c.closest('.column').querySelector('.n').textContent='0';say('已同意并开工：飞书「同意」快路径，7 秒内生效')});
+document.getElementById('q').addEventListener('input',e=>{const q=e.target.value.trim().toLowerCase();document.querySelectorAll('[data-card]').forEach(c=>c.style.display=!q||c.textContent.toLowerCase().includes(q)?'':'none')});
+</script>
+</body>
+</html>

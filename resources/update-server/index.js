@@ -4,7 +4,7 @@
  * 接收 VS Code 客户端的更新请求，查询工蜂最新 Release，
  * 返回 VS Code 更新 JSON 格式。
  *
- * 部署：DevCloud 实例 zijianqiu-any1.devcloud.woa.com:3030
+ * 部署：DevCloud 实例 21.139.192.124:3030
  *
  * 客户端请求：
  *   GET /api/update/win32-x64/saros/{commit-hash}

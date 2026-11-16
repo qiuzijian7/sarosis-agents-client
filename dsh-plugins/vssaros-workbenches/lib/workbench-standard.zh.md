@@ -66,7 +66,7 @@
 |---|---|---|---|
 | **整页工作台** | 业务为主（看板、画布、报表、编辑器） | `customFrame: true`，宿主注入 `props.conversation` 到页面里 | `vssaros-agents`、`vssaros-kanban`、`vssaros-kb` |
 | **标准分栏** | 对话为主、业务是伴随面板 | 不声明 `customFrame`（默认），宿主给「左对话 / 右业务」 | 新建工作台默认 |
-| **SSR 页面型** | 已有成熟页面 / 终端类 | `vssaros.view = { kind: 'page', route: '/x/<module>/' }` + `?surface=` | `vssaros-dashboard`、`vssaros-studio` |
+| **SSR 页面型** | 已有成熟页面 / 终端类 | `vssaros.view = { kind: 'page', route: '/x/<module>/' }` + `?surface=` | `vssaros-dashboard`、`vssaros-marketplace`（`vssaros-studio` 已于 2026-11-11 下线） |
 
 判据：**没有常驻对话也能完成主要工作 ⇒ 整页**；**工作过程本身是对话 ⇒ 标准分栏**。
 `splitConversation: false` 可让标准分栏退回"点会话即切到会话页"的旧行为（逃生门）。
@@ -101,6 +101,33 @@ dsh-plugins/vssaros-<module>/
    `dsh.bundle.patch` 指向 `cordis.patch.yml`，且 `files` 逐项列全（否则装出来的包缺文件）。
 3. **改了客户端子块 ⇒ 升补丁版本 + touch 入口**（`?rev` 由入口元数据派生，缓存是 immutable）。
 4. `cordis.patch.yml` 的 `config.root` 用 `!!js dshHomePath('<module>')`，不要写死 `~/.dsh`。
+
+### 3.1 商城可分享插件包（协议 v1）
+
+工作台页面必需；Bot、技能、工具、MCP 四类资源全部可选。新增包根文件 `workbench.plugin.json`，加入 `package.json.files`：
+
+```json
+{
+  "schemaVersion": 1,
+  "workbench": { "title": "我的工作台" },
+  "resources": {}
+}
+```
+
+`resources` 可含 `bots` / `skills` / `tools` / `mcp` 数组，每项为 `{ "id": "helper", "path": "包内相对路径" }`。未声明时视为空数组；声明后文件必须存在。
+
+- Bot：`bots/<id>/.agent.md`；`workbench.defaultBot` 可指向其中一个 id。不提供 Bot 时沿用宿主默认，不生成虚构 Bot。
+- 技能：`skills/<id>/SKILL.md`，配套脚本也必须进入包体；资源基目录始终指向插件实际安装目录。
+- 工具：`lib/tools/<name>.js`，导出 `definition`（可通过资源项的 `export` 改名），必须含 `parameters`、`output.schema`、`output.render`、`execute`。
+- MCP：JSON 配置的 `type` 为 `http` 或 `stdio`；HTTP 仅 HTTPS；敏感字段使用 `${env:VAR}` 引用。stdio 默认未批准，不允许作者携带 `approved:true`。当前浏览器 OAuth 未实现，需要使用者自行配置凭据。
+- 资源按插件包名命名空间化，Bot 的包内技能、工具与 MCP 引用同步映射。资源仅在已安装且启用的插件中注册；缺少资源服务不阻止工作台页面打开。
+- 包不能带 `.env`、凭据仓库、会话数据、作者本地 `file:` / `link:` / `workspace:` 依赖，不能依赖安装生命周期脚本，必须交付构建产物。
+
+发布：`npm pack` / `pnpm pack` 生成标准 `.tgz` → 商城「发布到商城」→「上传工作台插件包」→ 选择文件、填写商城 slug 与包内同一版本。最大 8 MiB；商城 slug 与 npm 包名分开。
+
+传输采用商城外层 `manifest.json` + 内层原样 `plugin.tgz`；两层分别校验 SHA-256。消费者从商城下载后安装到 profile，不解包到用户技能/Bot 目录。版本化 tgz 保存在数据根的 `plugin-archives`，不能当临时文件清除。
+
+Host 接口 `GET /api/vssaros-workbenches/plugin-resources` 提供每包资源状态。`registered` 仅表示资源接入成功，不等于页面挂载或 MCP 工具调用成功。安装回执为 `restart-required` 时请用户重启，不擅自重启；真实页面、Bot 会话和真实服务验收不可用静态预检代替。
 
 ## 4. 注册与身份
 

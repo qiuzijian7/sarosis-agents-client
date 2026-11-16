@@ -1,5 +1,6 @@
 // VsSaros addition (superagent v2, P3): an agreed team's steps, each done by its Bot in a Session of its own.
-import { afterEach, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { afterEach, expect, it, vi } from 'vitest'
 import { botPreset, stepOfSession, stepSessionId, stepUsageStream } from '../src/app/steps.ts'
 import { COORDINATOR_REFUSED, stepToolAllowed } from '../src/app/sessions.ts'
 import { assignmentRole } from '../src/core/index.ts'
@@ -75,7 +76,7 @@ it('allows a step Session WORK_TOOLS ∪ its Bot\'s own tools (patterns too), an
   } finally { off() }
 })
 
-it('meters step tokens, tells the lead at 90%, stops new steps at the cap, lets running ones only report, and a person raises it', async () => {
+it('★ meters step tokens but never caps them: only consumed count, and steps keep starting', async () => {
   // The stream listener counts only step Sessions' usage chunks and passes every chunk on.
   const metered: [string, unknown][] = []
   const listen = stepUsageStream((id, usage) => { metered.push([id, usage]) })
@@ -91,28 +92,35 @@ it('meters step tokens, tells the lead at 90%, stops new steps at the cap, lets 
   const t1 = stepSessionId(ticketId, 'T1')
   expect(h!.runtime.steps.budget(ticketId)).toMatchObject({ tokens: 0, tokensCap: 300_000, stopped: false })
   h!.runtime.steps.meter(t1, { inputTokens: 200_000, cacheReadTokens: 60_000, outputTokens: 10_000 })
-  expect(notes(ticketId)).toContainEqual(expect.stringContaining('The team used 90% of its token budget (270000 of 300000)'))
   h!.runtime.steps.meter(t1, { inputTokens: 10_000 })
-  expect(notes(ticketId).filter(text => text.includes('90% of its token budget'))).toHaveLength(1)
   h!.runtime.steps.meter(t1, { inputTokens: 25_000, cacheWriteTokens: 1_000 })
-  expect(h!.runtime.steps.budget(ticketId)).toMatchObject({ tokens: 306_000, stopped: true })
-  expect(notes(ticketId)).toContainEqual(expect.stringContaining('The team used its token budget (306000 of 300000): no new step starts'))
-  // Running: it may only report. The lead may not report ready either.
-  expect(guarded(t1, 'read')).toMatch(/used its token budget: report now/)
+  // ★ 越过旧的 300k 上限：消耗照常累计，但不再停、不再告警、不再拒绝工具。
+  expect(h!.runtime.steps.budget(ticketId)).toMatchObject({ tokens: 306_000, stopped: false })
+  expect(h!.runtime.steps.overBudget(ticketId)).toBe(false)
+  expect(notes(ticketId).filter(text => /token budget/.test(text))).toHaveLength(0)
+  expect(guarded(t1, 'read')).toBeUndefined()
   expect(guarded(t1, 'orchestrator_step_report')).toBeUndefined()
   await report(ticketId, 'T1', 'ready', '5 屏')
   await h!.runtime.steps.kick(ticketId)
-  expect(step(ticketId, 'T2').state).toBe('pending')
-  await expect(h!.runTool(lead, 'orchestrator_report', { state: 'ready', summary: '好了' })).rejects.toThrow(/Team steps still unfinished/)
-  // A person raises it: the steps that waited start.
-  expect((await h!.api('POST', `tickets/${ticketId}/steps/budget`, { tokens: 100 })).status).toBeGreaterThanOrEqual(400)
-  expect((await h!.api('POST', `tickets/${ticketId}/steps/budget`, {})).status).toBeGreaterThanOrEqual(400)
-  expect((await h!.api('POST', `tickets/${ticketId}/steps/budget`, { tokens: 450_000 })).body).toMatchObject({ tokensCap: 450_000, stopped: false })
   await waitUntil(() => step(ticketId, 'T2').state === 'running')
-  expect(h!.runtime.steps.view(ticketId)!.budget).toMatchObject({ tokens: 306_000, tokensCap: 450_000 })
+  await expect(h!.runTool(lead, 'orchestrator_report', { state: 'ready', summary: '好了' })).rejects.toThrow(/Team steps still unfinished/)
+  // 追加预算端点保留兼容，但已不再是恢复执行的前提。
+  expect((await h!.api('POST', `tickets/${ticketId}/steps/budget`, { tokens: 450_000 })).body).toMatchObject({ tokensCap: 450_000, stopped: false })
   expect(step(ticketId, 'T1')).not.toHaveProperty('budgetStoppedAt')
 })
 
+it('★ pins the no-cap contract in steps.ts and the panel', () => {
+  const source = readFileSync(new URL('../src/app/steps.ts', import.meta.url), 'utf8')
+  const panel = readFileSync(new URL('../src/client/team-plans.tsx', import.meta.url), 'utf8')
+  expect(source).toContain('stopped: false }')
+  expect(source).toContain('overBudget(_ticketId: string): boolean { return false }')
+  expect(source).not.toContain('no new step starts')
+  expect(source).not.toContain('overBudget(ticketId)) return')
+  const sessions = readFileSync(new URL('../src/app/sessions.ts', import.meta.url), 'utf8')
+  expect(sessions).not.toContain('this.host.overBudget?.(')
+  expect(panel).toContain("t('team.tokensUsed'")
+  expect(panel).not.toContain('team.budgetLine')
+})
 // VsSaros fix (2026-11-06, real-machine run): a lead's message steered in after a step reported ready woke it to run its
 // tools and report again (3 more model calls, ~160k tokens).
 it('ends a step that reported ready: it is told to stop, and calls no tool until it is sent back', async () => {
@@ -299,4 +307,54 @@ it('skips the steps that wait for a failed one, lets the lead answer a blocked s
   expect(step(second.ticketId, 'T2').state).toBe('stopped')
   expect((h!.agents.get(stepSessionId(second.ticketId, 'T1')) as unknown as { cancel: { mock: { calls: unknown[] } } }).cancel.mock.calls.length).toBeGreaterThan(0)
   await expect(report(second.ticketId, 'T3', 'ready', 'x')).rejects.toThrow(/stopped/)
+})
+
+// ★ 2026-11-12（方案 1）：规则直接建单没有模型回合，必须用 steer 把主会话叫起来只做组队。
+it('wakes the main Session to propose the team a rule-based fast track created', async () => {
+  const trigger = feishu('1', '修复bug单：https://www.tapd.cn/tapd_fe/68880148/bug/detail/1168880148001272696')
+  h = await startRuntime(store => {
+    const settings = store.settings()
+    // The fixture's Source allows nobody by default; this case needs the sender on the list to be explicit.
+    store.saveSettings({ ...settings, eval: { ...settings.eval, fastExplicitTasks: true },
+      policy: { ...settings.policy, sources: { ...settings.policy.sources,
+        feishu: { ...(settings.policy.sources.feishu ?? { allowed: [], admission: {} }), allowed: [{ id: trigger.actor.id, name: 'Alice' }] } } } })
+  }, { staffing: true })
+  const relay = vi.spyOn(h.runtime.sessions, 'relay')
+  h.runtime.receive(trigger)
+  await h.runtime.idle()
+  const wake = relay.mock.calls.filter(([id]) => String(id).startsWith('team-request:'))
+  expect(wake).toHaveLength(1)
+  expect(String(wake[0]![1])).toContain('orchestrator_team_propose')
+})
+
+// 模型自己 accept 的工单本来就在回合里，再加一次 steer 会让它重复出方案。
+it('does not wake the main Session for a ticket the main Session routed itself', async () => {
+  h = await startRuntime(undefined, { staffing: true })
+  const relay = vi.spyOn(h.runtime.sessions, 'relay')
+  await h.acceptedTicket(feishu('1', '@bot 首页新手引导要上线'))
+  expect(relay.mock.calls.some(([id]) => String(id).startsWith('team-request:'))).toBe(false)
+})
+
+// ★ 2026-11-12（用户）：团队开关默认关闭 ⇒ 走原型流程（建单即启动单个 worker）。
+it('teamEnabled defaults off: a ticket starts with no team proposal', async () => {
+  h = await startRuntime()
+  expect(h.runtime.store.settings().executor.teamEnabled).toBe(false)
+  const { ticket } = await h.acceptedTicket(feishu('1', '@bot 修复回归'))
+  expect(h.runtime.store.tickets.get(ticket.id)?.team).toBeUndefined()
+})
+
+it('turning team mode on restores the proposing stage', async () => {
+  h = await startRuntime(undefined, { staffing: true })
+  expect(h.runtime.store.settings().executor.teamEnabled).toBe(true)
+  const { ticket } = await h.acceptedTicket(feishu('1', '@bot 修复回归'))
+  expect(h.runtime.store.tickets.get(ticket.id)?.team?.state).toBe('proposing')
+})
+
+// 真机历史上显式存过 staffing:true；新开关必须独立于它生效。
+it('reads the new team switch even when the legacy staffing field is still true', async () => {
+  h = await startRuntime()
+  const settings = h.runtime.store.settings()
+  h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, staffing: true, teamEnabled: false } })
+  const { ticket } = await h.acceptedTicket(feishu('1', '@bot 修复回归'))
+  expect(h.runtime.store.tickets.get(ticket.id)?.team).toBeUndefined()
 })

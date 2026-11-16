@@ -22,6 +22,7 @@ import assert from 'assert';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { DSH_PLUGIN_RESOURCES_PLUGIN_NAME } from '../../common/dshHarness.js';
 import { DSH_BUILTIN_MODULES, DSH_MODULE_CONTAINERS, DSH_MODULE_PAGES, defaultPageRoute, moduleContainerOf, moduleIdForPluginName } from '../../common/dshModuleContainers.js';
 import { hasWorkbenchClient, IVssarosPluginManifest, tryParseVssarosManifest } from '../../common/vssarosPluginManifest.js';
 import { compareSemver, parseSemver, renderAgentsOverlay, renderBridgeOverlay, renderCodebaseOverlay, renderDataRootOverlay, renderKanbanOverlay } from '../../common/dshCli.js';
@@ -130,12 +131,34 @@ function readPluginPackages(root: string): readonly IPluginPackage[] {
 	return out;
 }
 
-/**
- * 从入口出发走静态相对 import 图（BFS）。用途：`files` 必须覆盖**所有会被加载的文件**——
- * 漏写一个（如新增 `lib/store.js` 却没加进 files）就装出"能装不能跑"的包，而这类错误在本地开发时
- * 完全看不出来（源码目录里文件都在）。只跟相对说明符，裸包名与 `node:` 不跟。
- */
-function collectRelativeImports(entryFiles: readonly string[], dir: string): readonly string[] {
+function validateBundledImportBoundary(source: string, target: string, dir: string, packages: readonly IPluginPackage[], companionNames: readonly string[]): boolean {
+	const relative = path.relative(dir, target);
+	if (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) {
+		return true;
+	}
+	const sourceRelative = path.relative(dir, source).split(path.sep).join('/');
+	const fallbacks: Record<string, { readonly file: string; readonly export: string }> = {
+		'lib/pluginPackage.js': { file: 'lib/pluginPackage.js', export: './plugin-package' },
+		'lib/pluginResources.js': { file: 'lib/index.js', export: '.' },
+	};
+	const fallback = fallbacks[sourceRelative];
+	const targetDir = path.resolve(dir, '..', 'vssaros-plugin-resources');
+	const owner = packages.find(p => p.dir === dir);
+	assert.ok(owner?.json['name'] === '@vssaros/dsh-workbenches' && fallback
+		&& target === path.resolve(targetDir, fallback.file), `未登记的跨包相对 import：${source} → ${target}`);
+	const targetPackage = packages.find(p => p.dir === targetDir);
+	assert.ok(targetPackage?.json['name'] === DSH_PLUGIN_RESOURCES_PLUGIN_NAME, '跨包目标必须是已登记的插件资源 Host 包');
+	assert.ok(companionNames.includes(DSH_PLUGIN_RESOURCES_PLUGIN_NAME), '跨包目标必须登记在伴生安装清单');
+	assert.ok(fs.existsSync(target) && fs.statSync(target).isFile(), `跨包目标文件不存在：${target}`);
+	const exported = asRecord(targetPackage.json['exports'])[fallback.export];
+	assert.ok(typeof exported === 'string' && path.resolve(targetDir, exported) === target,
+		`目标包 ${targetPackage.dirName} 的 exports 不一致：${fallback.export}`);
+	assert.ok(filesCovers(targetPackage.filesField, targetDir, target), `目标包 ${targetPackage.dirName} 的 files 未覆盖 ${fallback.file}`);
+	return false;
+}
+
+/** 本包相对 import 图；仅明确登记且由目标包真实交付的跨包源码 fallback 不归入本包 files。 */
+function collectRelativeImports(entryFiles: readonly string[], dir: string, packages: readonly IPluginPackage[]): readonly string[] {
 	const seen = new Map<string, string>();
 	const queue = entryFiles.filter(f => fs.existsSync(f));
 	while (queue.length && seen.size < 200) {
@@ -143,11 +166,12 @@ function collectRelativeImports(entryFiles: readonly string[], dir: string): rea
 		if (seen.has(file)) {
 			continue;
 		}
-		const source = fs.readFileSync(file, 'utf8');
+		const source = fs.readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 		seen.set(file, source);
 		for (const match of source.matchAll(/(?:from|import)\s*\(?\s*['"](\.[^'"]+)['"]/g)) {
 			const resolved = path.resolve(path.dirname(file), match[1]);
-			if (fs.existsSync(resolved) && !seen.has(resolved)) {
+			if (validateBundledImportBoundary(file, resolved, dir, packages, [DSH_PLUGIN_RESOURCES_PLUGIN_NAME])
+				&& fs.existsSync(resolved) && !seen.has(resolved)) {
 				queue.push(resolved);
 			}
 		}
@@ -204,6 +228,42 @@ function normalizeRoute(route: string): string {
 
 suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）', () => {
 
+	test('相对 import 图只收本包文件，跨包源码 fallback 单独验证归属', function () {
+		const root = repoRoot();
+		if (!root) {
+			this.skip();
+		}
+		const plugins = readPluginPackages(root!);
+		const workbenches = plugins.find(p => p.dirName === 'vssaros-workbenches')!;
+		const reachable = collectRelativeImports(workbenches.entryFiles, workbenches.dir, plugins);
+		assert.ok(reachable.includes(path.join(workbenches.dir, 'lib', 'pluginPackage.js')), '本包协议 shim 必须进入 import 图');
+		assert.ok(reachable.every(file => !path.relative(workbenches.dir, file).startsWith(`..${path.sep}`)),
+			'目标资源包文件不得被当作 workbenches 包内文件');
+	});
+
+	test('跨包 fallback 仅接受明确 shim 边，且校验目标文件、exports、files 和伴生登记', function () {
+		const root = repoRoot();
+		if (!root) {
+			this.skip();
+		}
+		const plugins = readPluginPackages(root!);
+		const workbenches = plugins.find(p => p.dirName === 'vssaros-workbenches')!;
+		const resources = plugins.find(p => p.dirName === 'vssaros-plugin-resources')!;
+		const source = path.join(workbenches.dir, 'lib', 'pluginPackage.js');
+		const target = path.join(resources.dir, 'lib', 'pluginPackage.js');
+		const companions = ['@vssaros/dsh-plugin-resources'];
+		assert.strictEqual(validateBundledImportBoundary(source, target, workbenches.dir, plugins, companions), false,
+			'合法跨包边应校验后从本包图中排除');
+		assert.strictEqual(validateBundledImportBoundary(source, path.join(workbenches.dir, 'lib', 'state.js'), workbenches.dir, plugins, companions), true);
+		assert.throws(() => validateBundledImportBoundary(path.join(workbenches.dir, 'lib', 'index.js'), target, workbenches.dir, plugins, companions), /未登记的跨包相对 import/);
+		assert.throws(() => validateBundledImportBoundary(source, path.join(resources.dir, 'lib', 'missing.js'), workbenches.dir, plugins, companions), /未登记的跨包相对 import/);
+		assert.throws(() => validateBundledImportBoundary(source, target, workbenches.dir, plugins, []), /伴生安装/);
+		const withoutFiles = plugins.map(p => p === resources ? { ...p, filesField: [] } : p);
+		assert.throws(() => validateBundledImportBoundary(source, target, workbenches.dir, withoutFiles, companions), /目标包.*files 未覆盖/);
+		const wrongExport = plugins.map(p => p === resources ? { ...p, json: { ...p.json, exports: { './plugin-package': './lib/archive.js' } } } : p);
+		assert.throws(() => validateBundledImportBoundary(source, target, workbenches.dir, wrongExport, companions), /目标包.*exports 不一致/);
+	});
+
 	test('每个插件包的 patch、入口与 files 都真实存在，且 patch 插入了自己', function () {
 		const root = repoRoot();
 		if (!root) {
@@ -235,7 +295,7 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			}
 
 			assert.ok(plugin.filesField.length > 0, `${plugin.dirName} 必须声明 files（打包按它过滤）`);
-			const reachable = collectRelativeImports(plugin.entryFiles, plugin.dir);
+			const reachable = collectRelativeImports(plugin.entryFiles, plugin.dir, plugins);
 			for (const file of [...plugin.patchFiles, ...reachable]) {
 				assert.ok(filesCovers(plugin.filesField, plugin.dir, file),
 					`${plugin.dirName} 的 files 未覆盖 ${path.relative(plugin.dir, file)}——装出来会缺文件`);
@@ -824,6 +884,12 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			// office-template（2026-11-02，新插件）：过闸的是 `office_template_write`（按模板出稿并落盘）；
 			// `office_template` 只读（拿段落/run ID）⇒ 放行。
 			{ dir: 'vssaros-office-template', gate: 'hook' },
+			// computer（2026-11-16，新插件）：走**自己发起**审批（gate=self）——
+			//   `lib/gates.js` 的 requestConsent 调 `approval.request`，只认 `allowed-once`（否则 deny，
+			//   fail-closed），服务用 `ctx.get?.('approval')` 惰性取；`lib/index.js` 的 `tools/pre-execute`
+			//   只做默认只读 + 控制类 op 放行 + preGate 拦截，避免同一动作弹两次窗。
+			//   ⚠ 不能标 hook：那条判据要求钩子里返回 `kind: 'ask'`，而这里刻意把审批放在 execute 的官方缝。
+			{ dir: 'vssaros-computer', gate: 'self' },
 			// scheduler（2026-11-02，自研调度引擎重写后重新登记）：过闸的是 create / update / delete
 			// （都写 `<数据根>/scheduler/tasks.json`）；list / history 只读 ⇒ 放行。
 			{ dir: 'vssaros-scheduler', gate: 'hook' },
@@ -1428,6 +1494,61 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 		const modules = supervisor.indexOf('this._opts.modulePluginDirs', host);
 		assert.ok(host > 0, 'supervisor 的伴生安装清单必须含工作台宿主');
 		assert.ok(modules > host, '工作台宿主必须排在模块插件之前（消费者注册进它）');
+	});
+
+	test('插件资源宿主使用共享包名，且只作为非模块伴生插件安装', function () {
+		const root = repoRoot();
+		if (!root) {
+			this.skip();
+		}
+		const harnessDir = path.join(root!, 'src', 'vs', 'sessions', 'contrib', 'dshHarness');
+		const common = fs.readFileSync(path.join(harnessDir, 'common', 'dshHarness.ts'), 'utf8')
+			.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+		assert.match(common, /export const DSH_PLUGIN_RESOURCES_PLUGIN_NAME\s*=\s*'@vssaros\/dsh-plugin-resources';/,
+			'插件资源宿主必须声明共享包名常量');
+		const plugin = readPluginPackages(root!).find(p => p.dirName === 'vssaros-plugin-resources');
+		assert.ok(plugin, '随包目录必须包含 vssaros-plugin-resources');
+		assert.strictEqual(plugin.json['name'], '@vssaros/dsh-plugin-resources');
+		assert.strictEqual(asRecord(plugin.json['vssaros'])['module'], undefined, '基础 Host 包不得声明 vssaros.module');
+		assert.ok(!DSH_BUILTIN_MODULES.some(m => m.pluginName === plugin.json['name']), '基础 Host 包不得进入 DSH_BUILTIN_MODULES');
+		assert.ok(!listBundledPlugins(path.join(root!, PLUGINS_REL)).packages.some(p => p.name === plugin.json['name']),
+			'基础 Host 包不得被当作模块插件自发现');
+	});
+
+	test('插件资源宿主目录按 package.json 存在性透传，且 supervisor 字段可选', function () {
+		const root = repoRoot();
+		if (!root) {
+			this.skip();
+		}
+		const dir = path.join(root!, 'src', 'vs', 'sessions', 'contrib', 'dshHarness', 'electron-main');
+		const channel = fs.readFileSync(path.join(dir, 'dshHarnessChannel.ts'), 'utf8')
+			.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+		const supervisor = fs.readFileSync(path.join(dir, 'dshHostSupervisor.ts'), 'utf8')
+			.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+		const bundled = /const\s+(\w+)\s*=\s*join\(this\._bundledPluginsRoot, 'vssaros-plugin-resources'\);/.exec(channel);
+		assert.ok(bundled, 'channel 必须解析随包 vssaros-plugin-resources 目录');
+		assert.match(channel, new RegExp(`pluginResourcesPluginDir:\\s*existsSync\\(join\\(${bundled[1]}, 'package\\.json'\\)\\)\\s*\\?\\s*${bundled[1]}\\s*:\\s*undefined`),
+			'仅 package.json 存在时传目录，旧构建缺包时必须传 undefined');
+		assert.match(supervisor, /readonly pluginResourcesPluginDir\?: string;/, 'supervisor 目录字段必须可选以兼容旧构建');
+	});
+
+	test('插件资源宿主伴生安装顺序为 foundation、resources、workbenches、模块插件', function () {
+		const root = repoRoot();
+		if (!root) {
+			this.skip();
+		}
+		const supervisor = fs.readFileSync(path.join(root!, 'src', 'vs', 'sessions', 'contrib', 'dshHarness', 'electron-main', 'dshHostSupervisor.ts'), 'utf8')
+			.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+		assert.match(supervisor, /import\s*\{[^}]*\bDSH_PLUGIN_RESOURCES_PLUGIN_NAME\b[^}]*\}\s*from '\.\.\/common\/dshHarness\.js';/,
+			'supervisor 必须使用共享包名常量');
+		const plugins = /const plugins:[^=]*=\s*\[([\s\S]*?)\n\s*\];/.exec(supervisor)?.[1];
+		assert.ok(plugins, 'supervisor 必须包含伴生安装清单');
+		const foundation = plugins.indexOf('[DSH_FOUNDATION_PLUGIN_NAME, this._opts.foundationPluginDir');
+		const resources = plugins.indexOf('[DSH_PLUGIN_RESOURCES_PLUGIN_NAME, this._opts.pluginResourcesPluginDir');
+		const workbenches = plugins.indexOf('[DSH_WORKBENCHES_PLUGIN_NAME, this._opts.workbenchesPluginDir');
+		const modules = plugins.indexOf('...this._opts.modulePluginDirs.map(');
+		assert.ok(foundation >= 0 && resources > foundation && workbenches > resources && modules > workbenches,
+			'插件资源宿主必须在 foundation 之后、工作台宿主与模块消费者之前安装');
 	});
 
 	// ★ 2026-10-22（§5 步骤 4）：编辑区开 'workbench' 视图的判据 `hasWorkbenchClient` 必须与

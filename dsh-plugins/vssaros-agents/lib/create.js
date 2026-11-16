@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, rm, rmdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import { AGENT_FILE, agentFromFile, isHiddenAgent, presetIdOf, toPresetDefinition } from './core/agents.js';
-import { AGENT_ID_RE, draftFromAgentMd, normalizeDraft, serializeAgentMd, setMemoryFrontmatter, setSubagentFlag, stripModelFromAgentMd, validateDraft } from './core/create.js';
+import { AGENT_ID_RE, PLUGIN_OVERRIDE_FIELDS, draftFromAgentMd, draftFromAgentRow, normalizeDraft, pluginOverridesFromAgentMd, serializeAgentMd, setMemoryFrontmatter, setSubagentFlag, stripModelFromAgentMd, validateDraft } from './core/create.js';
 import { MEMORY_CHARS_MAX, MEMORY_CHARS_MIN, normalizeMemoryMode } from './core/memoryLimits.js';
 import { agentsBuiltinRootOf, agentsRootOf, scanAgents, scanAgentsFromConfig } from './store.js';
 
@@ -42,7 +42,8 @@ export async function previewAgentDraft(config, raw) {
 	// ★ 2026-11-09：内置根也占 id（见 validateDraft 的说明）。没注入内置根 ⇒ 空集，
 	//   行为与之前一致 ✓；读目录失败仍按「不知道有哪些」降级，写入时再查一次。
 	const builtinIds = builtinRoot ? await existingIdsOf(builtinRoot).catch(() => []) : [];
-	const result = validateDraft(draft, { existingIds, builtinIds, provider: config?.defaultProvider, isAbsolute });
+	const { sourceAgentIds = [] } = await scanAgentsFromConfig(config);
+	const result = validateDraft(draft, { existingIds: [...existingIds, ...sourceAgentIds], builtinIds, provider: config?.defaultProvider, isAbsolute });
 	return {
 		draft,
 		...result,
@@ -95,16 +96,26 @@ export async function createAgentFromDraft(config, raw) {
 export async function resolveAgentFile(config, id) {
 	const agentId = String(id || '').trim();
 	if (!agentId) { return null; }
+	if (!AGENT_ID_RE.test(agentId) || agentId.endsWith('.')) { throw httpError(400, 'id 不合法：' + agentId); }
+	const scan = await scanAgentsFromConfig(config);
+	const agent = scan.agents.find(row => row.id === agentId);
+	const base = scan.sourceAgents?.find(row => row.id === agentId);
 	const tryStat = async (p) => {
-		try { await stat(p); return true; } catch { return false; }
+		try { return (await stat(p)).isFile(); } catch { return false; }
 	};
 	const customRoot = agentsRootOf(config);
 	const customFile = join(customRoot, agentId, AGENT_FILE);
-	if (await tryStat(customFile)) { return { file: customFile, root: customRoot, isBuiltin: false }; }
+	if (await tryStat(customFile)) {
+		const record = pluginOverridesFromAgentMd(await readFile(customFile, 'utf8'));
+		if (record?.error) { throw httpError(400, record.error); }
+		if (record && base && record.owner !== base.sourceOwner) { throw httpError(409, '插件覆写 owner 不匹配：' + agentId); }
+		return { file: customFile, root: customRoot, isBuiltin: false, isPlugin: false, agent, base, record };
+	}
+	if (agent?.source === 'plugin') { return { file: agent.file, root: agent.file ? dirname(dirname(agent.file)) : undefined, isBuiltin: false, isPlugin: true, agent, base: base ?? agent }; }
 	const builtinRoot = agentsBuiltinRootOf(config);
 	if (builtinRoot) {
 		const builtinFile = join(builtinRoot, agentId, AGENT_FILE);
-		if (await tryStat(builtinFile)) { return { file: builtinFile, root: builtinRoot, isBuiltin: true }; }
+		if (await tryStat(builtinFile)) { return { file: builtinFile, root: builtinRoot, isBuiltin: true, isPlugin: false, agent }; }
 	}
 	return null;
 }
@@ -128,6 +139,10 @@ export async function readAgentDraft(config, id) {
 	const hit = await resolveAgentFile(config, agentId);
 	if (!hit) { throw httpError(404, '这个 Agent 不存在：' + agentId); }
 	const file = hit.file;
+	if (hit.isPlugin || hit.agent?.pluginOverrides) {
+		const draft = draftFromAgentRow(hit.agent);
+		return { id: agentId, file, draft, bytes: draft.persona.length, source: hit.agent.source, sourceOwner: hit.agent.sourceOwner, hasOverrides: !!hit.agent.pluginOverrides };
+	}
 	let text = '';
 	try {
 		text = await readFile(file, 'utf8');
@@ -166,6 +181,7 @@ export async function updateAgentFromDraft(config, editingId, raw) {
 	if (!id) { throw httpError(400, '缺 id'); }
 	const hit = await resolveAgentFile(config, id);
 	if (!hit) { throw httpError(404, '这个 Agent 不存在：' + id); }
+	if (hit.isPlugin || hit.record) { return updatePluginAgentDraft(config, id, raw, hit); }
 
 	/* ⚠⚠ 目标是**内置 agent** 时，不能改内置那份 —— 它是 Host 启动期由代码真源生成的副本，
 	   改了会被下次启动覆盖（用户改了看不到效果，还以为没保存）。
@@ -193,6 +209,65 @@ export async function updateAgentFromDraft(config, editingId, raw) {
 	};
 }
 
+async function updatePluginAgentDraft(config, id, raw, hit) {
+	const current = draftFromAgentRow(hit.agent);
+	const draft = normalizeDraft({ ...current, ...(raw || {}), id });
+	const root = agentsRootOf(config);
+	const file = join(root, id, AGENT_FILE);
+	const existingIds = (await existingIdsOf(root)).filter(existing => existing !== id);
+	const result = validateDraft(draft, { existingIds, provider: config?.defaultProvider, isAbsolute });
+	if (result.errors.length) { throw httpError(400, result.errors.join('；'), { errors: result.errors }); }
+	const previous = hit.record ?? hit.agent.pluginOverrides;
+	const owner = previous?.owner ?? hit.base?.sourceOwner ?? hit.agent.sourceOwner;
+	if (!owner || (hit.base && owner !== hit.base.sourceOwner)) { throw httpError(409, '插件覆写 owner 不匹配：' + id); }
+	const base = hit.base ? draftFromAgentRow(hit.base) : undefined;
+	const delta = { ...(previous?.delta ?? {}) };
+	for (const field of PLUGIN_OVERRIDE_FIELDS) {
+		const value = draft[field] ?? null;
+		if (JSON.stringify(value) === JSON.stringify(current[field] ?? null)) { continue; }
+		if (base && JSON.stringify(value) === JSON.stringify(base[field] ?? null)) {
+			delete delta[field];
+		} else {
+			delta[field] = value;
+		}
+	}
+	const record = { version: 1, owner, delta };
+	const extras = [];
+	for (const field of ['capabilities', 'suggestions']) {
+		if (hit.agent[field]?.length) { extras.push(field + ': ' + hit.agent[field].join(', ')); }
+	}
+	if (hit.agent.subagents === false) { extras.push('subagents: false'); }
+	if (hit.agent.userFacing === true) { extras.push('userFacing: true'); }
+	const text = serializeAgentMd(draft).replace(/^---\n/, '---\n' + extras.map(line => line + '\n').join('') + 'plugin-overrides: ' + JSON.stringify(record) + '\n');
+	await mkdir(dirname(file), { recursive: true });
+	if (hit.isPlugin) {
+		try { await writeFile(file, text, { encoding: 'utf8', flag: 'wx' }); }
+		catch (error) {
+			if (error?.code === 'EEXIST') { throw httpError(409, '用户覆写已存在，不会覆盖：' + id); }
+			throw error;
+		}
+	} else {
+		const tmp = file + '.tmp-' + randomUUID();
+		try {
+			await writeFile(tmp, text, { encoding: 'utf8', flag: 'wx' });
+			await renameWithRetry(tmp, file);
+		} finally { await unlink(tmp).catch(() => undefined); }
+	}
+	return { id, name: draft.name, presetId: result.presetId, file, overrodeBuiltin: false, overrodePlugin: true, warnings: result.warnings };
+}
+
+/** 重置插件字段覆写，只删定义文件；保留 Bot 目录中的记忆与插件安装包。 */
+export async function resetAgentOverrides(config, agentId) {
+	const id = String(agentId ?? '').trim();
+	if (!id) { throw httpError(400, '缺 id'); }
+	const hit = await resolveAgentFile(config, id);
+	if (!hit) { throw httpError(404, '这个 Agent 不存在：' + id); }
+	if (!hit.record) { throw httpError(409, '没有可重置的插件字段覆写：' + id); }
+	const file = join(agentsRootOf(config), id, AGENT_FILE);
+	await unlink(file);
+	return { id, file, removed: true, presetId: presetIdOf(id) };
+}
+
 /**
  * 改一个已有 Agent 的记忆注入口径（`memory-chars` / `memory-mode`，2026-10-19，「记忆」页签用）。
  *
@@ -215,9 +290,9 @@ export async function setAgentSubagent(config, agentId, enabled) {
 	if (!id) {
 		throw httpError(400, 'set-subagent 需要 id');
 	}
-	const scan = await scanAgentsFromConfig(config);
-	const agent = (scan.agents ?? []).find(a => a.id === id);
-	if (!agent?.file) {
+	const hit = await resolveAgentFile(config, id);
+	const agent = hit?.agent;
+	if (!agent || (!agent.file && !hit.isPlugin)) {
 		throw httpError(404, `没有这个 agent：${id}`);
 	}
 	if (agent.source === 'builtin') {
@@ -225,6 +300,10 @@ export async function setAgentSubagent(config, agentId, enabled) {
 	}
 	if (isHiddenAgent(id)) {
 		throw httpError(400, `${id} 是隐藏的 agent（助理），不能作为委派目标`);
+	}
+	if (hit.isPlugin || hit.record) {
+		const updated = await updatePluginAgentDraft(config, id, { delegatable: enabled === true }, hit);
+		return { id, delegatable: enabled === true, presetId: updated.presetId };
 	}
 	const text = await readFile(agent.file, 'utf8');
 	const edited = setSubagentFlag(text, enabled === true);
@@ -243,9 +322,9 @@ export async function setAgentSubagent(config, agentId, enabled) {
 
 export async function setAgentMemoryLimits(config, agentId, input = {}) {
 	const id = String(agentId ?? '').trim();
-	const scan = await scanAgents(agentsRootOf(config), undefined);
-	const agent = scan.agents.find(a => a.id === id);
-	if (!agent?.file) {
+	const hit = await resolveAgentFile(config, id);
+	const agent = hit?.isBuiltin ? undefined : hit?.agent;
+	if (!agent || (!agent.file && !hit.isPlugin)) {
 		// 目录在、但没进扫描结果 ⇒ 定义本身坏了（frontmatter 解析失败）。别报成"没有这个 agent"
 		// ——那会让人以为文件不存在，实际是文件存在但解析不了（两种修法完全不同）。
 		const broken = await stat(join(agentsRootOf(config), id, AGENT_FILE)).then(() => true, () => false);
@@ -271,6 +350,12 @@ export async function setAgentMemoryLimits(config, agentId, input = {}) {
 	const mode = modeRaw === undefined || modeRaw === null || String(modeRaw).trim() === ''
 		? undefined
 		: normalizeMemoryMode(modeRaw);
+	if (hit.isPlugin || hit.record) {
+		const patch = { ...(chars !== undefined ? { memoryChars: chars } : {}), ...(mode !== undefined ? { memoryMode: mode } : {}) };
+		const updated = await updatePluginAgentDraft(config, id, patch, hit);
+		const next = (await scanAgentsFromConfig(config)).agents.find(row => row.id === id);
+		return { id, chars: next.memoryChars, mode: next.memoryMode, file: updated.file };
+	}
 
 	const text = await readFile(agent.file, 'utf8');
 	const edited = setMemoryFrontmatter(text, { chars, mode });
@@ -341,8 +426,8 @@ export async function deleteAgent(config, agentId) {
  */
 export async function resetAgentModel(config, rawId) {
 	const id = String(rawId ?? '').trim();
-	const scan = await scanAgents(agentsRootOf(config), undefined);
-	const agent = scan.agents.find(a => a.id === id);
+	const hit = await resolveAgentFile(config, id);
+	const agent = hit?.isBuiltin ? undefined : hit?.agent;
 	if (!agent) {
 		throw httpError(404, '没有这个 Agent：' + (id || '(空)'));
 	}
@@ -353,6 +438,10 @@ export async function resetAgentModel(config, rawId) {
 	}
 	if (!notes.some(n => n.startsWith('模型未映射'))) {
 		throw httpError(409, agent.name + ' 的模型 ' + agent.model + ' 可以路由，不需要改');
+	}
+	if (hit.isPlugin || hit.record) {
+		const updated = await updatePluginAgentDraft(config, id, { model: '' }, hit);
+		return { ...updated, oldModel: agent.model, removed: ['model: ' + agent.model] };
 	}
 	const before = await readFile(agent.file, 'utf8');
 	const stripped = stripModelFromAgentMd(before);

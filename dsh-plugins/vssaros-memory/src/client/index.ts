@@ -1775,6 +1775,29 @@ export const inject = ['slots', 'locale', 'conversation', 'sessions']
 export function apply(ctx: Context): void {
   const t = ctx.locale.bind(NS) as unknown as Translate
 
+  // ★ 2026-11-11（用户：「主页中，工作台中缺少 记忆 item」）：与 lib/client.js 的**精确增量
+  //   patch** 保持同源 —— 把会话页「记忆」Tab 的同一份 MemoryTabView 登记成 chat-surface 的
+  //   组件页签（主页工作台卡片 route=/x/memory/ 命中 DEFAULT_ITEMS 的 comp:"memory"）。
+  //   ⚠ lib/client.js 是提交进仓库的 esbuild 产物，改这里后**不要整体重建**（会带出大量无关 hunk）。
+  ctx.effect(() => {
+    const w = window as Window & {
+      __vssarosPageComponents?: Record<string, (props: any) => unknown>
+      vssarosDsh?: { sessionId?: string }
+    }
+    try {
+      if (!w.__vssarosPageComponents) { w.__vssarosPageComponents = {} }
+      w.__vssarosPageComponents.memory = (props: any) => MemoryTabView({
+        ...props,
+        sessionId: w.vssarosDsh?.sessionId ?? '',
+        t,
+      })
+      w.dispatchEvent(new CustomEvent('vssaros-wb-tabs-change'))
+    } catch { /* 登记失败不影响会话页「记忆」Tab 本身 */ }
+    return () => {
+      try { if (w.__vssarosPageComponents?.memory) { delete w.__vssarosPageComponents.memory } } catch { /* noop */ }
+    }
+  }, 'memory-evolve: workbench page component')
+
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'memory-evolve: dictionaries')
 
   ctx.effect(() => {

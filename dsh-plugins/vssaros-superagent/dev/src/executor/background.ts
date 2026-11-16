@@ -15,9 +15,13 @@ interface Jobs {
 }
 /** What the Executor uses of DSH's subagents: joining a worker's subagents that work, its subagents, and releasing them. */
 interface Subagents {
-  waitForChildren(parent: Agent): Promise<boolean>
-  listChildren(parentSessionId: string): Promise<readonly { id: string }[]>
-  drainChildren(parent: Agent, childIds: readonly string[]): Promise<void>
+  waitForChildren?(parent: Agent): Promise<boolean>
+  listChildren?(parentSessionId: string): Promise<readonly { id: string }[]>
+  drainChildren?(parent: Agent, childIds: readonly string[]): Promise<void>
+  waitForTreeWork?(root: Agent): Promise<boolean>
+  listDescendants?(rootSessionId: string, signal?: AbortSignal): Promise<readonly { id: string; kind: 'child' | 'diagnostic' }[]>
+  drainDescendants?(roots: readonly Agent[]): Promise<void>
+  interrupt?(childId: string, authority: { kind: 'ancestor'; agent: Agent }): void
 }
 /** How long a stop waits for a killed job to end, collecting its end so the worker is not woken to hear of it. */
 const KILL_WAIT_MS = 10_000
@@ -49,7 +53,9 @@ const joins = new WeakMap<Agent, Promise<boolean>>()
 function childrenEnd(subagents: Subagents, agent: Agent): Promise<boolean> {
   let join = joins.get(agent)
   if (!join) {
-    join = subagents.waitForChildren(agent).finally(() => { joins.delete(agent) })
+    const wait = subagents.waitForTreeWork ?? subagents.waitForChildren
+    if (!wait) return Promise.reject(new Error('Subagent runtime has no supported wait capability'))
+    join = wait.call(subagents, agent).finally(() => { joins.delete(agent) })
     joins.set(agent, join)
   }
   return join
@@ -136,12 +142,41 @@ export async function collectJob(ctx: Context, sessionId: string, job: { id: str
 /**
  * Release the worker's live subagents, for a bounded time. DSH delivers each one's end to the worker before the release
  * returns, which wakes it, so the worker's turn is cancelled after, keeping its inbox when `keepInbox`, and the stop ends
- * with that turn. Its Session still admits subagents.
+ * with that turn. rc.2 closes admission only on terminal teardown; retries keep the root reusable.
  */
-export async function stopSubagents(ctx: Context, agent: Agent, keepInbox = false): Promise<void> {
+export async function stopSubagents(ctx: Context, agent: Agent, keepInbox = false, closeAdmission = false): Promise<void> {
   const subagents = subagentsOf(ctx)
   if (!subagents) return
-  // The catalog lists every subagent the Session had; one that ended has no agent.
+  if (subagents.waitForTreeWork) {
+    let work: Promise<void>
+    if (closeAdmission) {
+      if (!subagents.drainDescendants) throw new Error('Subagent runtime lacks terminal drain capability')
+      work = subagents.drainDescendants([agent])
+    }
+    else {
+      if (!subagents.listDescendants || !subagents.interrupt || !subagents.waitForTreeWork) throw new Error('Subagent runtime lacks non-terminal stop capabilities')
+      const signal = AbortSignal.timeout(DRAIN_LIMIT_MS)
+      const children = await subagents.listDescendants(agent.id, signal)
+      if (children.some(child => child.kind === 'diagnostic')) throw new Error('Subagent catalog unavailable; stop could not be verified')
+      if (!children.length) return
+      const failures: unknown[] = []
+      for (const child of children) {
+        try { subagents.interrupt(child.id, { kind: 'ancestor', agent }) } catch (error) { failures.push(error) }
+      }
+      work = subagents.waitForTreeWork(agent).then(() => {
+        if (failures.length) throw new AggregateError(failures, 'Interrupting worker descendants failed')
+      })
+    }
+    try {
+      if (await until(work.then(() => true), undefined, DRAIN_LIMIT_MS) === false) throw new Error('Stopping worker descendants exceeded 10000 ms; cleanup is unverified')
+    } finally {
+      if (agent.status !== 'idle') cancelled.add(agent)
+      agent.cancel({ kind: 'user' }, { keepInbox })
+      await until(agent.whenIdle(), undefined, DRAIN_LIMIT_MS)
+    }
+    return
+  }
+  if (!subagents.listChildren || !subagents.drainChildren) throw new Error('Subagent runtime has no supported stop capability')
   const live = (await subagents.listChildren(agent.id)).map(child => child.id).filter(id => ctx.agents.get(id as SessionId))
   if (!live.length) return
   try { await until(subagents.drainChildren(agent, live), undefined, DRAIN_LIMIT_MS) }
@@ -156,10 +191,24 @@ export async function stopSubagents(ctx: Context, agent: Agent, keepInbox = fals
  * Stop what a worker runs in the background once its Assignment ends: kill its shell jobs and release its subagents (see
  * `stopSubagents`). A Session not loaded has no subagent at work. One failure stops nothing else.
  */
-export async function stopBackground(ctx: Context, sessionId: string, reason: string, keepInbox = false): Promise<void> {
+export async function stopBackground(ctx: Context, sessionId: string, reason: string, keepInbox = false, closeAdmission = false): Promise<void> {
   const failures: unknown[] = []
   await killJobs(ctx, sessionId, reason).catch((error: unknown) => { failures.push(error) })
   const agent = ctx.agents.get(sessionId as SessionId)
-  if (agent) await stopSubagents(ctx, agent, keepInbox).catch((error: unknown) => { failures.push(error) })
+  if (agent) await stopSubagents(ctx, agent, keepInbox, closeAdmission).catch((error: unknown) => { failures.push(error) })
   if (failures.length) throw new AggregateError(failures, `Stopping the background work of ${sessionId} failed`)
+}
+
+/** Bounded cleanup diagnostics preserve nested failure reasons, without stacks or credential assignments. */
+export function workerErrorDetail(error: unknown): string {
+  const seen = new Set<unknown>(), messages: string[] = []
+  const visit = (value: unknown, depth: number) => {
+    if (seen.has(value) || depth > 4 || messages.length >= 8) return
+    seen.add(value)
+    messages.push(String(value).slice(0, 300))
+    if (value instanceof AggregateError) for (const child of value.errors) visit(child, depth + 1)
+    if (value instanceof Error && value.cause !== undefined) visit(value.cause, depth + 1)
+  }
+  visit(error, 0)
+  return messages.join(' | ').replace(/((?:token|password|secret|authorization|api[_-]?key)\s*[:=]\s*)[^\s|,;]+/gi, '$1[redacted]').slice(0, 1200)
 }

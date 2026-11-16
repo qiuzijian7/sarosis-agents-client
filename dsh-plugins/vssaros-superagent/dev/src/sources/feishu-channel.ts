@@ -1,4 +1,5 @@
 /** Feishu outbound channel: posts threaded bot replies and constructs chat deep links. */
+import { createHash } from 'node:crypto'
 import type { OutboundMessage } from '../core/index.ts'
 import { CliError } from '../infra/commands.ts'
 import { checkedImText } from '../infra/text.ts'
@@ -15,12 +16,14 @@ export const feishuChatLink = (brand: 'feishu' | 'lark', chatId: string): string
  */
 const gone = (error: unknown): boolean => error instanceof CliError && error.code !== undefined && (error.code === 230011
   || /withdrawn/i.test(error.message) || (Math.floor(error.code / 100) === 2300 && /not found/i.test(error.message)))
-/** Replies in the topic of the target message; Feishu keeps at most one reply per idempotency key (the outgoing message's `message.id`). */
+/** Feishu rejects idempotency keys longer than 50 characters, while ticket-result message ids are ~114 characters. */
+const idempotencyKey = (id: string): string => `sa-${createHash('sha256').update(id).digest('hex').slice(0, 30)}`
+/** Replies in the topic of the target message; Feishu keeps at most one reply per stable key derived from the message id. */
 export async function sendFeishu(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
   const messageId = message.channel.address.messageId
   if (!messageId) throw new Error('Missing Feishu reply target')
   const text = checkedImText(message.text)
-  const reply = ['im', '+messages-reply', '--message-id', messageId, '--markdown', text, '--reply-in-thread', '--idempotency-key', message.id]
+  const reply = ['im', '+messages-reply', '--message-id', messageId, '--markdown', text, '--reply-in-thread', '--idempotency-key', idempotencyKey(message.id)]
   try { await host.commands.lark(reply) }
   catch (error) {
     if (gone(error)) return 'gone'

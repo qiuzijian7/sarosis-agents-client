@@ -105,14 +105,17 @@ export function toOfficialRequest(schedule, timeZone) {
 /** 迁移一段 agent.yaml 文本里声明的全部任务。返回 { created, skipped, failed, entries }。 */
 export async function migrateYamlText(ctx, agentId, yamlText, { timeZone } = {}) {
 	const tz = timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? 'UTC';
-	const schedule = ctx.get?.('schedule') ?? ctx.schedule;
-	const sessionController = ctx.get?.('sessionController') ?? ctx.sessionController;
-	const workspaceRegistry = ctx.get?.('workspaceRegistry') ?? ctx.workspaceRegistry;
+	let schedule = null;
+	try { schedule = ctx.reflect?.get?.('vssarosScheduler', false) ?? ctx.get?.('vssarosScheduler') ?? ctx.vssarosScheduler; } catch { /* 自建服务未就绪 */ }
 	const result = { created: 0, skipped: 0, failed: [], entries: [] };
 	if (!schedule) {
-		result.failed.push('调度服务不可用（官方 schedule bundle 未安装）');
+		result.failed.push('自建调度服务 vssarosScheduler 不可用');
 		return result;
 	}
+	let sessionController = null;
+	let workspaceRegistry = null;
+	try { sessionController = ctx.get?.('sessionController') ?? ctx.sessionController; } catch { /* 可选会话服务 */ }
+	try { workspaceRegistry = ctx.get?.('workspaceRegistry') ?? ctx.workspaceRegistry; } catch { /* 可选工作区服务 */ }
 	const declarations = parseYamlSchedules(yamlText).filter(s => s && Object.keys(s).length);
 	for (const decl of declarations) {
 		const name = String(decl.name ?? '').trim() || '未命名任务';
@@ -131,7 +134,7 @@ export async function migrateYamlText(ctx, agentId, yamlText, { timeZone } = {})
 			const sessionId = `sched-${agentId}-${name}`.replace(/[^\w-]+/g, '-').slice(0, 80);
 			// 查重：同会话下已有同名任务就跳过（迁移幂等 ✓ 重跑不重复建）。
 			// ⚠ 自建引擎的 `list()` 返回**全部**任务（任务不寄生会话）⇒ 这里自己按 sessionId+title 过滤。
-			const existing = await schedule.list().catch(() => []);
+			const existing = await schedule.list();
 			if (existing.some(r => r?.title === mapped.request.title && r?.sessionId === sessionId)) {
 				result.skipped++;
 				result.entries.push({ name, outcome: 'skipped（已存在）' });

@@ -1,5 +1,6 @@
 /** Ticket detail page: stage and actions, Mandate details, undelivered/delivered Inputs, subscribed Threads, and Assignments. */
 import { useState, type ReactNode } from 'react'
+import type { ApiResponse } from '../app/api.ts'
 import { ApiError, usePoll, type TicketPageView } from './api.ts'
 import { DisclosureRow, Dot, Icon, Tag, type IconName } from './controls.tsx'
 import { decisionMark, reportDot, ticketMark } from './marks.ts'
@@ -106,6 +107,32 @@ function MandateDetails({ ticket, actor }: { ticket: TicketPageView; actor: stri
   </Section>
 }
 
+function ReportArtifact({ id }: { id: string }) {
+  const { t, call } = usePanel()
+  const [report, setReport] = useState<ApiResponse<'GET tickets/:id/report'>>()
+  const [busy, setBusy] = useState(false), [error, setError] = useState('')
+  const refresh = async () => { setBusy(true); setError(''); try { setReport(await call('GET tickets/:id/report', { id })) } catch (error) { setError(String(error)) } finally { setBusy(false) } }
+  const download = async () => {
+    setBusy(true); setError('')
+    try {
+      const content = await call('GET tickets/:id/report/content', { id })
+      const url = URL.createObjectURL(new Blob([content.html], { type: 'text/html;charset=utf-8' }))
+      const link = document.createElement('a'); link.href = url; link.download = content.file; link.click()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (error) { setError(String(error)) } finally { setBusy(false) }
+  }
+  return <Section title={t('ticketArtifact')}>
+    <button type="button" className="dt-textlink" disabled={busy} onClick={() => { void refresh() }}>{t('ticketArtifactInspect')}</button>
+    {error && <p className="dt-error" role="status">{error}</p>}
+    {report && <>
+      <Hint>{report.path ? t('ticketArtifactGenerated') : report.generationQueued ? t('ticketArtifactGenerating') : t('ticketArtifactMissing')}</Hint>
+      {report.path && <><span className="dt-mono">{report.path}</span><button type="button" className="dt-textlink" disabled={busy} onClick={() => { void download() }}>{t('ticketArtifactDownload')}</button></>}
+      <Hint>{t('ticketArtifactDelivery', { state: report.deliveryState ?? (report.queued ? 'queued' : 'unknown') })}</Hint>
+      {report.docUrl && <ExternalLink href={report.docUrl}>{t('ticketArtifactDocument')}</ExternalLink>}
+    </>}
+  </Section>
+}
+
 export function TicketPage({ id }: { id: string }) {
   const { t, call, navigate } = usePanel()
   const { data, error, reload } = usePoll(() => call('GET tickets/:id', { id }), [id])
@@ -153,7 +180,7 @@ export function TicketPage({ id }: { id: string }) {
       text={data.attention.question} />
       {channel && <div className="dt-banner-actions">
         {/* ★ 2026-11-09：同 rows.tsx，无外链的主管对话改成应用内按钮切到「对话」页。 */}
-        <ActionLink href={channel.url} icon="message" onActivate={() => navigate({ page: 'chat' })}>{t('answerIn',
+        <ActionLink href={channel.url} icon="message" onActivate={() => navigate({ page: 'overview' })}>{t('answerIn',
           { source: valueLabel(t, 'source', channel.source) })}</ActionLink>
       </div>}</div>}
     {/* Ordinary progress stays in the Session/Channels; only a report that halted work (blocked/failed) is shown here. */}
@@ -174,6 +201,7 @@ export function TicketPage({ id }: { id: string }) {
       <ul className="dt-list">{data.threads.map(thread => <ThreadLine key={thread.key} thread={thread} ticketId={data.id}
         context={thread.context} />)}</ul>
     </Section>}
+    <ReportArtifact key={data.id} id={data.id} />
     <div className="dt-details">
       {/* A single Assignment adds nothing beyond the status line; list Assignments only once work has been resumed or handed over. */}
       {data.assignments.length > 1 && <Details icon="queue" title={`${t('term.assignment')} · ${data.assignments.length}`} open><Assignments

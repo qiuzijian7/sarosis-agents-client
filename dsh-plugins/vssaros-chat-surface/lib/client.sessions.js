@@ -25,6 +25,27 @@ window.__ModuleLoader__.load({
 
 		const HISTORY_LIMIT = 20;
 
+		/* vssaros:bot-identity v1 —— 逐字副本，真源 vssaros-agents/lib/core/botIdentity.js（守卫 dsh-plugins/check-bot-identity.mjs） */
+		const BOT_MODE_PRESET_IDS = ["standard", "ptc", "minimal", "cordis", "vssaros-standard", "vssaros-ptc", "vssaros-full", "vssaros-minimal", "vssaros-cordis"];
+		/** 是不是"可能属于某个 bot"的 preset（vssaros- 前缀且不是模式 preset）。 */
+		function isBotPresetId(presetId) {
+			const id = String(presetId || "").trim();
+			return id.indexOf("vssaros-") === 0 && id.length > 8 && BOT_MODE_PRESET_IDS.indexOf(id) < 0;
+		}
+		/** 会话属于哪个 bot：身份记录（presetId 与当前一致才采信）> 按 preset 推断（botId=null，调用方用花名册反查）。 */
+		function sessionBotOf(projectionValues) {
+			const pv = projectionValues || {};
+			const presetId = String(pv.agentPreset || "").trim();
+			if (!isBotPresetId(presetId)) { return { isBot: false, botId: null, presetId: presetId, source: "none" }; }
+			const rec = pv["vssaros-bot"];
+			const recBot = rec && typeof rec.botId === "string" ? rec.botId.trim() : "";
+			if (recBot && String(rec.presetId || "").trim() === presetId) {
+				return { isBot: true, botId: recBot, presetId: presetId, source: "record" };
+			}
+			return { isBot: true, botId: null, presetId: presetId, source: "preset" };
+		}
+		/* /vssaros:bot-identity */
+
 		/**
 		 * 会话列表 → 菜单行（最多 `limit` 条）。
 		 *
@@ -84,8 +105,22 @@ window.__ModuleLoader__.load({
 					return null;
 				}
 			};
+			/** 当前会话的投影（Bot 判据的唯一输入）。 */
+			const readSummary = (sid) => {
+				const snap = readSessions();
+				return sid && snap && snap.byId ? snap.byId[sid] : undefined;
+			};
+			/** 快照会变（换绑 / 会话就位）⇒ 订阅后重渲染，别把 Bot 判定停在首帧。 */
+			const subscribeSessions = (fn) => {
+				try {
+					const list = ctx.sessions && ctx.sessions.list;
+					return list && typeof list.subscribe === "function" ? list.subscribe(fn) : undefined;
+				} catch { return undefined; }
+			};
 			function SessionsChip(props) {
 				const sid = (props && props.sessionId) || state.sessionId;
+				const [, force] = react.useState(0);
+				react.useEffect(() => subscribeSessions(() => force((n) => n + 1)), []);
 				const [open, setOpen] = react.useState(false);
 				const [note, setNote] = react.useState(null);
 				const [rows, setRows] = react.useState([]);
@@ -209,6 +244,12 @@ window.__ModuleLoader__.load({
 						}, shell.fitMenu ? shell.fitMenu(rootRef.current ? rootRef.current.getBoundingClientRect() : null) : {}),
 					}, ...menuRows));
 				}
+				// ★ 2026-11-11（用户：一个 Bot 可能对应多个会话 ⇒ Bot 聊天框要「聊天历史」）：
+				//   Bot 会话的历史入口统一交给 `client.botHistory.js`（ALWAYS 装载、按 Bot 过滤、跨 surface）；
+				//   本全局菜单在 Bot 会话渲染 null ⇒ 右上角永远只有一枚历史按钮 ✓。
+				//   非 Bot 会话仍由本菜单负责（全局最近 20 条）⇒ 已有能力不减 ✓。
+				const botSession = sessionBotOf((readSummary(sid) || {}).projectionValues).isBot;
+				if (botSession) { return null; }
 				return react.createElement("span", { ref: rootRef, style: { position: "relative", display: "inline-flex", gap: 6 } }, ...children);
 			}
 			/**

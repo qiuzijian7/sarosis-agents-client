@@ -1,7 +1,7 @@
 {
   "name": "@vssaros/dsh-scheduler",
-  "version": "0.9.2",
-  "description": "VsSaros Scheduler module for DeepSeek Harness. Host side: self-built schedule engine (occupies the `schedule` service key; tasks live in <dataRoot>/scheduler/tasks.json) served over /x/scheduler/api/*, and **onFire is now wired to delivery** (bridge vssarosRuns.run, same primitive as vssaros-loop) so a due task actually posts its prompt into the bound session instead of only writing history. Client side: ONE workbench with two tabs — 任务 (scheduled tasks + runtime loops mixed) and 运行记录. Loops come from @vssaros/dsh-loop same-origin routes; when absent the tab degrades to scheduled-task-only. Model side: schedule_create auto-binds the calling session (exec.agent.session.id) and accepts time:\"HH:MM\" instead of minute numbers.",
+  "version": "0.9.3",
+  "description": "VsSaros Scheduler: independent vssarosScheduler service and vssaros_schedule_* tools, compatible with the official schedule service. Existing tasks and Dream actions remain in <dataRoot>/scheduler/tasks.json; workbench APIs remain /x/scheduler/api/*.",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
@@ -70,6 +70,6 @@
   },
   "license": "MIT",
   "scripts": {
-    "check": "node ./test/run-scheduler-check.mjs && node ./test/run-scheduler-host-check.mjs && node ./test/run-cron-check.mjs && node ./test/run-engine-check.mjs"
+    "check": "node --test ./test/service-isolation.test.js && node ./test/run-scheduler-check.mjs && node ./test/run-scheduler-host-check.mjs && node ./test/run-cron-check.mjs && node ./test/run-engine-check.mjs"
   }
 }

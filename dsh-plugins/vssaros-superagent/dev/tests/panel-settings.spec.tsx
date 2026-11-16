@@ -2,13 +2,112 @@
 // The Settings groups, drafts, save bars and history.
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { Fields } from '../src/client/settings-kit.tsx'
+import { Field, Fields, SourceField } from '../src/client/settings-kit.tsx'
+import { p4Kind } from '../src/sources/p4.ts'
+import { DEFAULT_RECONCILE_IGNORE } from '../src/sources/p4-change.ts'
+import { CardProvider } from '../src/client/provider.tsx'
 import { expect, it, onTestFinished } from 'vitest'
 import { zh } from '../src/client/locales.ts'
-import { usePanel, mount, remount, settle, all, find, tab, click, type, text, field } from './fixtures/panel.tsx'
+import { usePanel, mount, remount, settle, all, find, tab, click, type, text, field, translator } from './fixtures/panel.tsx'
 import { server } from './fixtures/panel-server.ts'
 
 usePanel()
+it('shows P4CLIENT name guidance without changing the input and associates it for screen readers', async () => {
+  const spec = p4Kind.fields.find(field => field.key === 'executionClient')!
+  expect(spec.hint?.zh).toContain('磁盘路径')
+  expect(spec.note?.en).toContain('not a disk path')
+  const container = document.createElement('div'); document.body.append(container)
+  const root = createRoot(container)
+  onTestFinished(async () => { await act(async () => root.unmount()); container.remove() })
+  await act(async () => root.render(<Field label={spec.label.zh} hint={spec.hint!.zh} note={spec.note!.zh}>
+    <input defaultValue="GR_qiuzijian_main" />
+  </Field>))
+  const input = container.querySelector('input')!
+  expect(input.value).toBe('GR_qiuzijian_main')
+  expect(container.querySelector('small')?.textContent).toContain('不是磁盘路径')
+  expect(container.querySelector('small')?.id).toBe(input.getAttribute('aria-describedby'))
+  expect(container.querySelector('label')?.htmlFor).toBe(input.id)
+})
+
+it('shows the built-in reconcile ignore list when the field is unset, and keeps an explicit empty list empty', async () => {
+  const spec = p4Kind.fields.find(item => item.key === 'reconcileIgnore')!
+  expect(spec.type === 'rows' && spec.defaults).toEqual(DEFAULT_RECONCILE_IGNORE)
+  const show = async (value: unknown) => {
+    const container = document.createElement('div'); document.body.append(container)
+    const root = createRoot(container)
+    await act(async () => root.render(<CardProvider t={translator(zh)}>
+      <SourceField field={spec} value={value} saved={value} fact={undefined} labels={{}} onChange={() => {}} />
+    </CardProvider>))
+    // More than six rows are collapsed behind a summary button until a person expands them.
+    const expand = container.querySelector('.dt-rows-summary')
+    if (expand) await act(async () => { (expand as HTMLElement).click() })
+    const result = [...container.querySelectorAll<HTMLElement>('.dt-rows-title')].map(el => el.getAttribute('title') || el.textContent || '')
+    await act(async () => root.unmount()); container.remove()
+    return result
+  }
+  expect(await show(undefined)).toEqual(DEFAULT_RECONCILE_IGNORE.map(item => item.path))
+  expect(await show([])).toEqual([])
+  expect(await show([{ path: 'OnlyMine' }])).toEqual(['OnlyMine'])
+})
+
+it('offers opt-in worker PTC and trace with a manual-only metadata query', async () => {
+  await mount()
+  await click(zh['tab.execution'])
+  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  expect(find(zh.workerPtc, '[role="switch"]').getAttribute('aria-checked')).toBe('false')
+  expect(find(zh.toolTraceSwitch, '[role="switch"]').getAttribute('aria-checked')).toBe('false')
+  expect(server.requests.some(request => request.path.startsWith('tools/trace'))).toBe(false)
+  await click(zh.toolTraceRefresh)
+  expect(server.requests.filter(request => request.path.startsWith('tools/trace'))).toHaveLength(1)
+  expect(text()).toContain(zh.toolTraceOff)
+  await click(find(zh.workerPtc, '[role="switch"]'))
+  await click(find(zh.toolTraceSwitch, '[role="switch"]'))
+  await click(zh.save)
+  expect(server.settings.executor).toMatchObject({ workerPtc: true, toolTrace: true })
+})
+it('edits trusted Git project mappings in Execution settings and preserves their values on save', async () => {
+  await mount()
+  await click(zh['tab.execution'])
+  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  await click(zh.addRow)
+  const cell = (name: string) => {
+    const label = all('.dt-rows-cell').find(el => el.querySelector('span')?.textContent === name)!
+    return label.querySelector<HTMLInputElement | HTMLSelectElement>('input, select')!
+  }
+  await type(cell(zh.projectMappingId), 'gr')
+  await type(cell(zh['term.source']), 'tapd')
+  await type(cell(zh.projectMappingKey), '68880148')
+  await type(cell(zh.projectMappingRepository), 'F:\\GitProject')
+  await type(cell(zh.projectMappingRef), 'main')
+  await click(zh.save)
+  expect(server.settings.executor.projects).toEqual([{ id: 'gr', source: 'tapd', projectId: '68880148', repository: 'F:\\GitProject', ref: 'main' }])
+})
+it('says 模型未配置 explicitly when the Executor model is left empty', async () => {
+  server.settings = { ...server.settings, executor: { ...server.settings.executor, model: null } }
+  await mount()
+  await click(zh['tab.execution'])
+  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  await settle()
+  const hints = [...document.querySelectorAll('.dt-model .dt-hint')].map(el => el.textContent ?? '')
+  expect(hints.join(' ')).toContain('模型未配置')
+  expect(hints.join(' ')).toContain('host / default')
+})
+
+it('builds model choices from the live catalog and keeps an inherit-default option', async () => {
+  await mount()
+  await click(zh['tab.execution'])
+  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  await settle()
+  const selects = () => all('.dt-model select') as HTMLSelectElement[]
+  const provider = selects()[0]!
+  expect([...provider.options].map(option => option.value)).toEqual(['', 'worker-provider'])
+  await type(provider, 'worker-provider')
+  expect([...selects()[1]!.options].map(option => option.value)).toEqual(['', 'worker-model'])
+  expect([...selects()[2]!.options].map(option => option.value)).toEqual(['', 'high'])
+  await type(selects()[0]!, '')
+  expect([...all('.dt-model .dt-hint')].map(el => el.textContent).join(' ')).toContain('模型未配置')
+})
+
 it('keeps a person\'s own value where another save changed the same setting, and says so', async () => {
   await mount()
   await click(zh['tab.execution'])
@@ -29,10 +128,10 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
   await click(find(zh['tab.settings'], '.dt-status-head button'))
   await click(zh['mode.auto'])
   await type(field<HTMLInputElement>(zh.evalTimeout), '180')
-  const [provider, model] = all('.dt-model input')
-  await type(provider as HTMLInputElement, 'worker-provider'); await type(model as HTMLInputElement, 'worker-model')
+  const [provider, model] = all('.dt-model select')
+  await type(provider as HTMLSelectElement, 'worker-provider'); await type(model as HTMLSelectElement, 'worker-model')
   await click(zh.save)
-  expect(server.settings.eval).toEqual({ mode: 'auto', timeoutSeconds: 180, model: { provider: 'worker-provider', model: 'worker-model' } })
+  expect(server.settings.eval).toEqual({ mode: 'auto', timeoutSeconds: 180, model: { provider: 'worker-provider', model: 'worker-model' }, fastExplicitTasks: false })
   await click(find(zh['promptPart.runtime/work'], '.dt-settings-link'))
   await type(field<HTMLInputElement>(zh.maxWorkers), '5')
   // An empty root uses the default directory, which the field names instead of looking set.
@@ -48,17 +147,20 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
   await click('DSH_SUPERAGENT_DIR')
   expect(field<HTMLTextAreaElement>(zh.prepareCommand).value).toBe('git worktree add "$DSH_SUPERAGENT_DIR"')
   await type(field<HTMLInputElement>(zh.blockedCommands), 'gh-personal  gh.other')
-  const [workerProvider, workerModel, effort] = all('.dt-model input')
-  await type(workerProvider as HTMLInputElement, 'worker-provider'); await type(workerModel as HTMLInputElement,
-    'worker-model'); await type(effort as HTMLInputElement, 'high')
-  expect([...document.querySelectorAll('#dt-worker-model-efforts option')].map(option => option.getAttribute('value'))).toEqual(['high'])
+  const [workerProvider, workerModel, effort] = all('.dt-model select')
+  await type(workerProvider as HTMLSelectElement, 'worker-provider'); await type(workerModel as HTMLSelectElement,
+    'worker-model'); await type(effort as HTMLSelectElement, 'high')
+  expect([...(all('.dt-model select')[2] as HTMLSelectElement).options].map(option => option.value)).toEqual(['', 'high'])
   // VsSaros addition (2026-11-07): another plugin's side calls (DS Bot's OCR) are allowed until a person turns them off here.
   const sideCalls = find(zh.sideCalls, '[role="switch"]')
   expect(sideCalls.getAttribute('aria-checked')).toBe('true')
   await click(sideCalls)
+  // ★ 2026-11-13：HTML 报告外发默认关闭，人要显式打开。
+  expect(find(zh.feishuReport, '[role="switch"]').getAttribute('aria-checked')).toBe('false')
   await click(zh.save)
-  expect(server.settings.executor).toEqual({ maxWorkers: 5, directory: '/srv/work', staffing: true, autoApprove: false, sideCalls: false,
-    prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"', blockedCommands: ['gh-personal', 'gh.other'], model: { provider: 'worker-provider',
+  expect(server.settings.executor).toEqual({ maxWorkers: 5, directory: '/srv/work', teamEnabled: false, staffing: true, autoApprove: false, sideCalls: false,
+    feishuReport: false,
+    prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"', projects: [], workerPtc: false, toolTrace: false, blockedCommands: ['gh-personal', 'gh.other'], model: { provider: 'worker-provider',
       model: 'worker-model', reasoningEffort: 'high' } })
   expect(server.requests.filter(request => request.method === 'PUT').map(request => request.path)).toEqual(['settings/eval',
     'settings/executor'])

@@ -50,7 +50,12 @@ for (const plugin of readdirSync(PLUGINS, { withFileTypes: true }).filter((entry
 	if (untracked.length) { missing.set(plugin, untracked); }
 }
 const chain = String(JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')).scripts?.['check:dsh-plugins'] ?? '');
-const scripts = [...chain.matchAll(/\bnode\s+([\w./-]+\.m?js)/g)].map((match) => match[1]).filter((path) => path.startsWith('dsh-plugins/'));
+const scripts = chain.split('&&').flatMap(command => {
+	const tokens = command.trim().match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+	if (tokens[0] !== 'node') { return []; }
+	const args = tokens.slice(1).map(token => token.replace(/^["']|["']$/g, ''));
+	return args[0] === '--test' ? args.slice(1).filter(arg => !arg.startsWith('-')) : args.slice(0, 1);
+}).filter(path => path.startsWith('dsh-plugins/'));
 const untrackedScripts = scripts.filter((path) => existsSync(join(REPO, path)) && !tracked.has(path));
 
 if (missing.size || untrackedScripts.length) {

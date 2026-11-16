@@ -375,7 +375,10 @@ export function apply(ctx, config = {}) {
 		? config.grantsPath.trim() : join(dataRoot, 'browser-grants.json'));
 	const handoffs = createHandoffs();
 	// 右栏「浏览器」页签读交接卡 / 授权、人点按钮写回来（core/routes.js；同源 + Host 登录 cookie 才进得来）
-	registerRoutes(ctx, { grants, handoffs, log, currentUrl: () => host.rightbarPageUrl() });
+	// ★ 2026-11-11（用户要求）：会话操作右栏浏览器时，页面要能在右侧栏收起时自动展开 ⇒ /state 顺带回报
+	//   "最后一次右栏操作时刻"。只在连着右栏时给（用专属 Chrome / 只读 status 都不弹界面）✓
+	registerRoutes(ctx, { grants, handoffs, log, currentUrl: () => host.rightbarPageUrl(),
+		rightbarActivity: () => (host.usingRightbar ? host.lastUsedAt : 0) });
 	/**
 	 * ★ 2026-11-07（P0 · 单一实例）：右栏浏览器开着 ⇒ 工具操作的就是右栏那一页（主进程中转，见 `core/rightbar.js`）。
 	 * 关掉：`config.rightbar = false` 或 `VSSAROS_BROWSER_RIGHTBAR=0`（回到只用 Chrome 的旧行为）。
@@ -402,20 +405,48 @@ export function apply(ctx, config = {}) {
 	 */
 	const baseClient = new BrowserCdpClient(invoke, logger);
 	/**
+	 * ★ 2026-11-11（用户要求）：**登录会话用独立的浏览器窗口**，不许用右侧栏「浏览器」。
+	 *
+	 * 为什么不能复用上面那个 `host`：`host` 配了 `rightbarFile` ⇒ `_connection()` / `ensurePage()`
+	 * 会优先接管右栏那一页（P0 单一实例，工具与人共看一页 ✓）。登录页若开在那里，会盖掉人
+	 * 正在看的网页，而且右栏不是一个能单独关掉的窗口 ✗。
+	 * ⇒ 另起一套 CdpHost：
+	 *   · **不传 rightbarFile** ⇒ 它根本不知道右栏，永不接管 ✓；
+	 *   · `dedicatedOnly: true` ⇒ 只连自己拉起的专属实例，不连用户自己的 Chrome ✓；
+	 *   · 独立端口 + 独立 profile ⇒ 与主 host（含另一套 dev/prod 环境）不抢 profile / 端口 ✓；
+	 *   · 懒连接 ⇒ 只有真的开始登录才拉起 Chrome；`ensureHeaded()` 切成有头 ⇒ 弹出独立窗口 ✓；
+	 *   · 登录结束 `shutdown()` ⇒ 窗口与进程一起收，不留后台 Chrome ✓。
+	 * ⚠ 端口刻意错开：主 host 用 port / port+1，dev 与 prod 又各差一位 ⇒ 这里 `port+20`（dev）
+	 *   与 `port+40`（prod），两套环境的登录窗口彼此也不撞。
+	 */
+	const loginPort = port + (isDevEnv ? 20 : 40);
+	const loginHost = new CdpHost({
+		port: loginPort, launchDedicated, headless, homeDir,
+		profileDir: join(dataRoot, 'browser-profile-login'),
+		logger, dedicatedOnly: true,
+		// ⚠ 故意不给 rightbarFile —— 给了登录页就会被右栏抢回去 ✗
+	});
+	const loginInvoke = createHostInvoker(loginHost);
+	const loginBaseClient = new BrowserCdpClient(loginInvoke, logger);
+	/**
 	 * 登录会话（2026-10-22）：给**同 Host 的其他插件**用（LightAI 在 dsh 侧登录 = 开登录页 + 读会话 cookie）。
 	 * 只认登记过的站点与 cookie 名、不经模型可达的工具面 ⇒ 不受 `allowCookieIO` / 审批约束（见 `core/loginSession.js`）。
 	 */
 	const loginSession = createLoginSessions({
-		baseClient,
+		// ★ 独立窗口：登录用的每一条 CDP 调用都走 loginHost，绝不落到工具那条（会接管右栏）连接上 ✓
+		baseClient: loginBaseClient,
 		browserCommand: async (method, params) => {
-			const res = await invoke({ op: 'command', method, params });
+			const res = await loginInvoke({ op: 'command', method, params });
 			if (!res?.ok) { throw new Error(res?.error ?? 'browser CDP call failed'); }
 			return res.result;
 		},
 		headless,
 		// ★ 2026-10-28：平时无头（用户无感）；要人登录时切有头；登录完切回无头 ✓
-		ensureHeaded: () => host.ensureHeaded(),
-		ensureHeadless: () => host.ensureHeadless(),
+		//   2026-11-11：切的是**登录专用**那个 CdpHost，不影响工具那条（右栏）连接 ✓
+		ensureHeaded: () => loginHost.ensureHeaded(),
+		ensureHeadless: () => loginHost.ensureHeadless(),
+		// ★ 登录结束（成功 / 失败 / 取消 / 复用已有会话）⇒ 关掉独立窗口与进程
+		release: () => loginHost.shutdown(),
 		log,
 	});
 
@@ -1271,5 +1302,9 @@ export function apply(ctx, config = {}) {
 		}
 	});
 
-	ctx.effect(() => () => host.dispose());
+	ctx.effect(() => () => {
+		host.dispose();
+		// 登录专用实例要连 Chrome 一起收（dispose 只断 WS ⇒ 会留一个窗口在后台）
+		void loginHost.shutdown().catch(() => undefined);
+	});
 }

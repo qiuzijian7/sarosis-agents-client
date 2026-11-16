@@ -10,10 +10,14 @@ import { usePanel } from './provider.tsx'
 import { TicketLine } from './rows.tsx'
 import { ApprovalRulesPanel, UsagePanel } from './usage.tsx'
 import { settingsRoute } from './route.ts'
-import { ConfigHistory, Field, Fields, ModelField, numberOf, SwitchRow, useBlockDraft, useSettings } from './settings-kit.tsx'
+import { ConfigHistory, Field, Fields, ModelField, numberOf, SourceField, SwitchRow, useBlockDraft, useSettings } from './settings-kit.tsx'
+import type { FieldSpec } from '../sources/kind.ts'
+import type { Settings } from '../policy.ts'
 import { SourceCard } from './source.tsx'
 import { localized } from './text.ts'
 import { WorkPage } from './work.tsx'
+import { WorkspaceInventoryPanel } from './workspace-inventory.tsx'
+import { ToolTracePanel } from './tool-trace.tsx'
 import { ConfirmButton, Hint, LabelValue, LoadMore, LoadState, Section, StatusHead } from './widgets.tsx'
 
 /** ★ 2026-11-09（用户要求）：流程图 / 看板 / 列表是「执行」页的一部分，不再是独立的 work 页面。
@@ -100,6 +104,14 @@ export function ExecutionSettings() {
     value => ({ ...value, maxWorkers: numberOf(value.maxWorkers), blockedCommands: value.blockedCommands.split(/[\s,]+/).filter(Boolean) }))
   const value = draft.value
   const edit = (next: Partial<typeof value>) => draft.edit({ ...value, ...next })
+  const label = (text: string) => ({ zh: text, en: text })
+  const projectsField: FieldSpec = { key: 'projects', type: 'rows', label: label(t('projectMappings')), hint: label(t('projectMappingsHint')), columns: [
+    { key: 'id', type: 'text', label: label(t('projectMappingId')), pattern: '[a-zA-Z0-9_-]{1,80}' },
+    { key: 'source', type: 'select', label: label(t('term.source')), options: ['github', 'gongfeng', 'tapd', 'superagent', 'feishu'].map(value => ({ value, label: label(value) })) },
+    { key: 'projectId', type: 'text', label: label(t('projectMappingKey')) },
+    { key: 'repository', type: 'text', label: label(t('projectMappingRepository')) },
+    { key: 'ref', type: 'text', label: label(t('projectMappingRef')), optional: true },
+  ] }
   const prepare = useRef<HTMLTextAreaElement>(null)
   const insert = (key: string) => {
     const field = prepare.current
@@ -114,6 +126,8 @@ export function ExecutionSettings() {
           <h2 className="dt-block-title">{t('term.executor')}<InfoTip text={t('executorIntro')} /></h2>
           <Section title={t('executorModel')} hint={t('executorModelHint')}><ModelField id="dt-worker-model" value={value.model}
             onChange={model => edit({ model })} /></Section>
+          <SwitchRow label={t('workerPtc')} hint={t('workerPtcHint')} checked={value.workerPtc} onChange={workerPtc => edit({ workerPtc })} />
+          <SwitchRow label={t('toolTraceSwitch')} hint={t('toolTraceSwitchHint')} checked={value.toolTrace} onChange={toolTrace => edit({ toolTrace })} />
           <Field label={t('maxWorkers')} hint={t('maxWorkersHint')}>
             <Input type="number" min={LIMITS.maxWorkers.min} max={LIMITS.maxWorkers.max} required value={value.maxWorkers}
               onChange={event => edit({ maxWorkers: event.target.value })} />
@@ -123,7 +137,7 @@ export function ExecutionSettings() {
           <h2 className="dt-block-title">{t('term.environment')}<InfoTip text={t('environmentIntro')} /></h2>
           <Field label={t('executionDirectory')} hint={t('executionDirectoryHint')} note={value.directory ? undefined
             : t('executionDirectoryDefault', { root: environment.root })}>
-            <Input className="dt-mono" value={value.directory} placeholder={t('executionDirectoryEmpty')} spellCheck={false} pattern="/.*"
+            <Input className="dt-mono" value={value.directory} placeholder={t('executionDirectoryEmpty')} spellCheck={false}
               onChange={event => edit({ directory: event.target.value })} />
           </Field>
           <Field label={t('prepareCommand')} hint={t('prepareCommandHint')}>
@@ -131,17 +145,27 @@ export function ExecutionSettings() {
               placeholder={t('prepareCommandEmpty')} value={value.prepare}
               onChange={event => edit({ prepare: event.target.value })} />
           </Field>
+          <SourceField field={projectsField} value={value.projects} saved={executor.projects} fact={undefined} labels={{}}
+            onChange={projects => edit({ projects: projects as Settings['executor']['projects'] })} />
           <EnvironmentVariables groups={environment.variables} sources={sources} onPick={insert} />
           <Field label={t('blockedCommands')} hint={t('blockedCommandsHint')}>
             <Input className="dt-mono" value={value.blockedCommands} placeholder={t('blockedCommandsNone')} spellCheck={false}
               onChange={event => edit({ blockedCommands: event.target.value })} />
           </Field>
           {/* VsSaros addition (2026-11-07, co-install): another plugin (DS Bot's OCR) may read SuperAgent's Sessions with another model. */}
+          {/* ★ 2026-11-12（用户）：团队开关，默认关闭；关闭时走「建单即起单个 worker」的原型流程。 */}
+          <SwitchRow label={t('teamSwitch')} hint={t('teamSwitchHint')} checked={value.teamEnabled}
+            onChange={teamEnabled => edit({ teamEnabled })} />
           <SwitchRow label={t('sideCalls')} hint={t('sideCallsHint')} checked={value.sideCalls} onChange={sideCalls => edit({ sideCalls })} />
+          {/* ★ 2026-11-13（用户）：工单 HTML 报告外发到飞书，默认关闭；开启即表示人同意外发。 */}
+          <SwitchRow label={t('feishuReport')} hint={t('feishuReportHint')} checked={value.feishuReport}
+            onChange={feishuReport => edit({ feishuReport })} />
         </div>
       </Fields>
       <SaveBar {...draft} onDiscard={draft.discard} />
     </form>
+    <ToolTracePanel />
+    <WorkspaceInventoryPanel />
     <ConfigHistory blocks={['executor', 'pause']} />
     {/* VsSaros addition: P4 settings, shown here because P4 manages projects rather than feeding work in. */}
     {p4 && <SourceCard source={p4} title={t('p4Block')} />}

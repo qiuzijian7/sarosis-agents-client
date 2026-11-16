@@ -23,7 +23,7 @@
  *   node tools/fetch-covers.mjs --limit 5       # 只处理 5 个（先小范围验）
  *
  * 环境变量（与其它脚本同口径）：
- *   MARKET_ENDPOINT  默认 http://21.6.92.5:3040
+ *   MARKET_ENDPOINT  默认 http://21.91.158.20:3040
  * 凭据：读 dsh 的 credentials 文件里的 TOF 票据（与页面同一身份）
  */
 
@@ -52,7 +52,7 @@ const LIMIT = (() => {
 	return Number.isFinite(n) && n > 0 ? n : 0;
 })();
 
-const ENDPOINT = process.env.MARKET_ENDPOINT || 'http://21.6.92.5:3040';
+const ENDPOINT = process.env.MARKET_ENDPOINT || 'http://21.91.158.20:3040';
 const PAGE_SIZE = 60;
 /** 抓取并发（对 Cola Skill 温柔一点：3 个足够，别把人家当压测） */
 const CONCURRENCY = 3;

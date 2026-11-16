@@ -472,7 +472,7 @@ export class WorkflowViewPane extends ViewPane {
 
 	/**
 	 * Open the chat view with the default workflow agent selected, but do NOT send any message.
-	 * 2026-11-09：通用主助理已删除，改选编排 agent。
+	 * 2026-11-12：workflow-agent 已下线，改选规划 agent。
 	 */
 	private async _selectWorkflowAgentInChat(_wf: IStoredWorkflow): Promise<void> {
 		try {

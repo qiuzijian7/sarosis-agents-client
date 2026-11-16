@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>方案 D · 保留封面 + 叠加图标徽章 — 知识库卡片图标 mockup · 非实现代码</title>
+<style>
+	:root[data-theme="dark"]{--bg:#15161a;--panel:#1c1d22;--panel2:#22232a;--line:rgba(255,255,255,.1);--line2:rgba(255,255,255,.18);--fg:#e8e9ec;--fg2:#a9abb3;--fg3:#71737c;--accent:#5b8cff;--ok:#3fb950}
+	:root[data-theme="light"]{--bg:#f5f6f8;--panel:#fff;--panel2:#f0f2f5;--line:rgba(0,0,0,.09);--line2:rgba(0,0,0,.17);--fg:#1b1d22;--fg2:#5a5e68;--fg3:#8b8f99;--accent:#2f6bff;--ok:#1a7f37}
+	*{box-sizing:border-box}
+	body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+	.kbd-wrap{max-width:620px;margin:0 auto /* ★ 默认宽度对齐真机「知识库主页」右栏（约 3 列），方便与截图逐项对照 */;padding:22px 24px 60px}
+	.kbd-hd{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+	.kbd-hd h1{margin:0;font-size:19px;font-weight:650}.kbd-hd .sub{font-size:12px;color:var(--fg3)}
+	.kbd-acts{margin-left:auto;display:flex;gap:8px}
+	.kbd-btn{height:28px;padding:0 12px;border-radius:7px;border:1px solid var(--line2);background:var(--panel2);color:var(--fg2);font-size:12.5px;cursor:pointer}
+	.kbd-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+	.kbd-note{border:1px solid var(--line);border-left:3px solid var(--accent);background:var(--panel);border-radius:9px;padding:10px 13px;margin-bottom:16px;font-size:12px;color:var(--fg2)}
+	.kbd-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:20px}
+	.kbd-st{position:relative;padding:10px 12px;border-radius:10px;background:var(--panel);border:1px solid var(--line);overflow:hidden}
+	.kbd-st .bar{position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent)}.kbd-st:nth-child(2) .bar{background:var(--ok)}
+	.kbd-st .lb{font-size:11px;color:var(--fg3)}.kbd-st .v{font-size:20px;font-weight:650}
+	.kbd-sec{display:flex;align-items:center;gap:8px;margin:0 0 10px;font-size:13.5px;font-weight:600}.kbd-sec .c{font-size:11.5px;color:var(--fg3);font-weight:400}
+	/* 以下卡片结构与 lib/homePage.js:86-96 逐字对齐：cv 78px 封面 + bd 正文 */
+	.kbd-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(180px,100%),1fr));gap:12px}
+	.kbd-card{text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:11px;overflow:hidden;cursor:pointer;padding:0;color:inherit;font:inherit;transition:.15s}
+	.kbd-card:hover{transform:translateY(-2px);border-color:var(--line2);box-shadow:0 8px 22px rgba(0,0,0,.25)}
+	.kbd-cv{height:78px;position:relative}
+	/* ★ 方案 D 唯一新增：压在封面左下角的 Page Icon 徽章（照 Notion Cover + Page Icon） */
+	.kbd-badge{position:absolute;left:10px;bottom:-18px;width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:19px;line-height:1;background:var(--panel);border:1px solid var(--line2);box-shadow:0 3px 10px rgba(0,0,0,.35)}
+	.kbd-bd{padding:26px 10px 11px}
+	.kbd-nm{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+	.kbd-mt{font-size:11px;color:var(--fg3);margin-top:2px;display:flex;gap:6px;flex-wrap:wrap}.kbd-mt .wk{color:var(--accent)}.kbd-mt .fb{color:var(--ok)}
+	.kbd-tm{font-size:10.5px;color:var(--fg3);margin-top:2px}
+	.kbd-new{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:146px;border:1.5px dashed var(--line2);background:transparent;color:var(--fg2);border-radius:11px;cursor:pointer;font:inherit}
+	.kbd-new .p{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(91,140,255,.14);color:var(--accent);font-size:16px}
+	.kbd-cmp{margin-top:18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:12px}
+	.kbd-cmp>div{border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:11px 13px;font-size:11.5px;color:var(--fg2);line-height:1.7}
+	.kbd-cmp b{color:var(--fg)}
+	.kbd-toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line2);padding:7px 13px;border-radius:9px;font-size:12.5px;opacity:0;pointer-events:none;transition:.2s}.kbd-toast.on{opacity:1}
+	.kbd-check{margin-top:20px;font:11.5px/1.7 ui-monospace,Consolas,monospace;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 13px;white-space:pre-wrap;color:var(--fg2)}
+	@media(max-width:620px){.kbd-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+</style>
+</head>
+<body><div class="kbd-wrap">
+	<div class="kbd-hd"><div><h1>知识库主页</h1><div class="sub">VsSarosVault · 5 个知识库 · 76 篇笔记　|　方案 D：保留封面 + 叠加图标徽章</div></div>
+		<div class="kbd-acts"><button class="kbd-btn" id="themeBtn">☀ 明暗</button><button class="kbd-btn" id="badgeBtn">徽章：开</button><button class="kbd-btn primary">＋ 新建知识库</button></div></div>
+	<div class="kbd-note"><b>这是 mockup，不是实现代码。</b>　参考 <b>Notion 的 Cover Image + Page Icon</b>：封面照旧，图标以徽章形式压在封面下沿。<b>现有 <code>homePage.js</code> 的 <code>coverOf()</code>、78px 封面、卡片尺寸、正文排版全部不动</b>，只在 <code>.cv</code> 里加一枚绝对定位的徽章 ⇒ 改动面最小、视觉惯性保留，可与「现状」直接并排比。点「徽章：开」可切回现状对照。</div>
+	<div class="kbd-stats">
+		<div class="kbd-st"><span class="bar"></span><div class="lb">知识库</div><div class="v">5<small>个</small></div></div>
+		<div class="kbd-st"><span class="bar"></span><div class="lb">笔记</div><div class="v">76<small>篇</small></div></div>
+		<div class="kbd-st"><span class="bar"></span><div class="lb">近 7 天改动</div><div class="v">1<small>篇</small></div></div>
+		<div class="kbd-st"><span class="bar"></span><div class="lb">已绑飞书</div><div class="v">0<small>个</small></div></div>
+	</div>
+	<div class="kbd-sec">全部知识库 <span class="c">5 个 · 点「徽章」可切现状对照</span></div>
+	<div class="kbd-grid" id="grid"></div>
+	<div class="kbd-cmp">
+		<div><b>改动量</b><br>新增 1 个 <code>&lt;span class="kbd-badge"&gt;</code> + 1 段 CSS；<code>coverOf()</code> 不动，<code>.bd</code> 只把 padding-top 从 9px 调到 26px 给徽章让位。</div>
+		<div><b>取舍</b><br>优点：零迁移风险、封面色彩保留、用户不用重新适应。缺点：仍是「色块为主」，图标只占 38px；一屏能放的库数量不变。</div>
+	</div>
+	<div class="kbd-check" id="checkOut">自检运行中…</div>
+</div><div class="kbd-toast" id="toast"></div>
+<script>
+(function(){
+	function coverOf(name){var h=0;for(var i=0;i<String(name).length;i++){h=(h*31+String(name).charCodeAt(i))>>>0;}var hue=h%360;return 'linear-gradient(135deg, hsl('+hue+' 45% 34%), hsl('+((hue+26)%360)+' 38% 18%))';}
+	var KBS=[
+		{name:'财经',docs:1,week:1,time:'9 天前',emoji:'💰'},
+		{name:'AIAgent',docs:21,week:1,time:'9 天前',emoji:'🤖'},
+		{name:'游戏设计',docs:8,week:0,time:'48 天前',emoji:'🎮'},
+		{name:'ComfyUI技术',docs:1,week:0,time:'48 天前',emoji:'🎨'},
+		{name:'UnrealEngine',docs:45,week:0,time:'49 天前',emoji:'🧊'}
+	];
+	var show=true,grid=document.getElementById('grid');
+	function render(){
+		grid.innerHTML='';
+		var n=document.createElement('button');n.className='kbd-new';n.innerHTML='<span class="p">＋</span><span>新建知识库</span><span style="font-size:11px;color:var(--fg3)">建文件夹 · 关联飞书</span>';grid.appendChild(n);
+		KBS.forEach(function(k){
+			var b=document.createElement('button');b.className='kbd-card';
+			b.innerHTML='<div class="kbd-cv" style="background:'+coverOf(k.name)+'">'+(show?'<span class="kbd-badge" data-role="badge">'+k.emoji+'</span>':'')+'</div>'
+				+'<div class="kbd-bd" style="padding-top:'+(show?'26px':'9px')+'"><div class="kbd-nm">'+k.name+'</div>'
+				+'<div class="kbd-mt"><span>'+k.docs+' 篇</span>'+(k.week?'<span class="wk">7 天 +'+k.week+'</span>':'')+'</div>'
+				+'<div class="kbd-tm">'+k.time+'</div></div>';
+			b.onclick=function(){toast('（示意）打开知识库：'+k.name);};grid.appendChild(b);
+		});
+	}
+	var t;function toast(s){var el=document.getElementById('toast');el.textContent=s;el.classList.add('on');clearTimeout(t);t=setTimeout(function(){el.classList.remove('on');},1600);}
+	document.getElementById('themeBtn').onclick=function(){var r=document.documentElement;r.dataset.theme=r.dataset.theme==='dark'?'light':'dark';};
+	document.getElementById('badgeBtn').onclick=function(){show=!show;this.textContent='徽章：'+(show?'开':'关（=现状）');render();};
+	render();
+	var pass=0,fail=0,lines=[];function check(n,f){try{if(f()===false)throw new Error('断言为 false');pass++;lines.push('PASS  '+n);}catch(e){fail++;lines.push('FAIL  '+n+' — '+e.message);}}
+	check('5 张知识库卡 + 1 张新建卡',function(){return grid.querySelectorAll('.kbd-card').length===5&&grid.querySelectorAll('.kbd-new').length===1;});
+	check('封面高度仍是 78px（对齐现状 .cv）',function(){return Math.round(grid.querySelector('.kbd-cv').getBoundingClientRect().height)===78;});
+	check('每卡 38px 徽章且压在封面下沿（bottom=-18px）',function(){var css=document.querySelector('style').textContent;return grid.querySelectorAll('.kbd-badge').length===5&&/bottom:-18px/.test(css)&&Math.round(grid.querySelector('.kbd-badge').getBoundingClientRect().width)===38;});
+	check('封面渐变与 coverOf 同口径（hsl 135deg）',function(){return /linear-gradient\(135deg/.test(grid.querySelector('.kbd-cv').style.background);});
+	check('关徽章即回到现状（.bd padding 9px）',function(){document.getElementById('badgeBtn').click();var ok=grid.querySelectorAll('.kbd-badge').length===0&&grid.querySelector('.kbd-bd').style.paddingTop==='9px';document.getElementById('badgeBtn').click();return ok;});
+	check('卡片宽度正常 + 库名不逐字换行',function(){return grid.querySelector('.kbd-card').getBoundingClientRect().width>150&&Array.prototype.every.call(grid.querySelectorAll('.kbd-nm'),function(el){return el.getBoundingClientRect().height<=26;});});
+	check('窄视口 380px 无横向溢出',function(){document.querySelector('.kbd-wrap').style.maxWidth='380px';var ok=document.documentElement.scrollWidth<=document.documentElement.clientWidth+1;document.querySelector('.kbd-wrap').style.maxWidth='';return ok;});
+	check('明暗两态都能渲染',function(){document.documentElement.dataset.theme='light';var ok=grid.querySelectorAll('.kbd-cv').length===5;document.documentElement.dataset.theme='dark';return ok;});
+	document.getElementById('checkOut').textContent=lines.join('\n')+'\n\n'+pass+'/'+(pass+fail)+' passed';window.__KBD_RESULT__={pass:pass,fail:fail};
+})();
+</script>
+</body></html>

@@ -8,7 +8,8 @@
  */
 import { createHash } from 'node:crypto'
 import { liveTicket, reached, staffing, type Engine, type OutboundMessage, type Ticket, type Trigger } from '../core/index.ts'
-import { allowedSender, type Settings } from '../policy.ts'
+import { mayConsent, type Settings } from '../policy.ts'
+import { approvalReply } from './step-approvals.ts'
 import type { Store } from './store.ts'
 import { HIGH_RISK_TOOLS, TEAM_BOTS_PER_PLAN, TEAM_STEPS_MAX, TeamError, type BotCard, type BotDraft, type Team } from './team.ts'
 
@@ -36,6 +37,15 @@ export interface ProposalInput {
   workflow?: { id: string; name: string; version: number }
 }
 export const DEFAULT_BUDGET: StaffingBudget = { tokens: 300_000, turns: 90, parallel: 3 }
+/**
+ * ★ 2026-11-12（性能）：同一个 TAPD bug 被重复建单时，主会话要为「评估 + 组队」重跑 5~6 轮大模型
+ *   （真机 09:36 那次 7 分 11 秒）。人已经批准过内容完全相同的方案时，不再让人再批一次。
+ */
+export const REUSE_WINDOW_MS = 7 * 24 * 3600_000
+export function reusableApproved(rows: readonly StaffingProposal[], fingerprint: string, at: number): StaffingProposal | undefined {
+  return rows.find(item => item.state === 'approved' && item.fingerprint === fingerprint
+    && at - Date.parse(item.at) <= REUSE_WINDOW_MS && !item.risk?.newBots)
+}
 
 const now = () => new Date().toISOString()
 const KEY = /^[A-Za-z0-9_-]{1,24}$/
@@ -109,12 +119,16 @@ export class Staffing {
       this.tables.save(proposal)
       this.host.engine.staffingProposed(ticket.id, proposal.version, proposal.fingerprint)
     })
+    const history = this.host.store.db.prepare("SELECT value FROM team_proposal WHERE state='approved' ORDER BY at DESC LIMIT 60").all()
+      .map(row => JSON.parse(String(row.value)) as StaffingProposal)
+    const reuse = reusableApproved(history, proposal.fingerprint, Date.now())
     const settings = this.host.store.settings()
-    const automatic = settings.executor.autoApprove && ticket.mandate.strength === 'explicit'
+    const automatic = !!reuse || settings.executor.autoApprove && ticket.mandate.strength === 'explicit'
       && !risk.newBots && !risk.writeSteps && !risk.highRiskTools.length
       && budget.tokens <= DEFAULT_BUDGET.tokens && budget.turns <= DEFAULT_BUDGET.turns && budget.parallel <= DEFAULT_BUDGET.parallel
-    this.send(ticket, proposal, automatic)
-    return automatic ? await this.agree(ticket.id, proposal, 'auto') : proposal
+    this.send(ticket, proposal, automatic, reuse)
+    return automatic ? await this.agree(ticket.id, proposal,
+      reuse ? `reuse:${reuse.ticketId}:v${reuse.version}` : 'auto') : proposal
   }
 
   /**
@@ -128,6 +142,45 @@ export class Staffing {
     const trigger = this.consent(ticket, proposal, triggerId)
     return this.agree(ticket.id, proposal, trigger.actor.id, trigger.id)
   }
+  /** ★ 2026-11-11：同一 trigger 只处理一次（emit 可能重放），proposal 状态变化也构成二次幂等。 */
+  private readonly handled = new Set<string>()
+
+  /**
+   * ★ 2026-11-11（真机事故）：飞书/会话里回复「同意 / 拒绝 / 取消」直接批准组队方案，
+   * 不必等主会话模型调 `orchestrator_team_confirm`（模型会超时，工单就永远卡在待确认组队）。
+   * 与 StepApprovals.fromMessage 并列，由 Runtime 在 trigger.received 事务里调用；
+   * 真正落库放到 queueMicrotask，避免在同一事务里递归 emit。
+   */
+  fromMessage(trigger: Trigger): void {
+    const plain = trigger.text.replace(/@\S+/g, ' ').replace(/\s+/g, ' ').trim()
+    const reply = approvalReply(plain)
+    const cancel = /^取消(?:工单)?\s*[。.!！]?$/.test(plain)
+    if ((!reply && !cancel) || !trigger.human || this.handled.has(trigger.id)) return
+    const received = Date.parse(this.host.store.triggers.disposition(trigger.id)?.at ?? trigger.at)
+    const candidates = this.waiting().filter(({ ticket, proposal }) => {
+      if (!proposal || proposal.state !== 'proposed' || received < Date.parse(proposal.at)) return false
+      const full = this.host.store.tickets.get(ticket.id)
+      return !!full && reached(full, trigger, key => this.host.store.threads.get(key), false)
+    })
+    if (candidates.length !== 1) return
+    const { ticket, proposal } = candidates[0]!
+    if (!proposal) return
+    const full = this.host.store.tickets.get(ticket.id)!
+    const origin = this.host.store.triggers.get(full.origin.triggerId)
+    if (!mayConsent(this.host.store.settings() as Settings, trigger, origin)) return
+    this.handled.add(trigger.id)
+    queueMicrotask(() => {
+      if (reply?.choice === 'reject' || cancel) {
+        try { this.refuse(ticket.id, { triggerId: trigger.id }, cancel ? 'a person cancelled the team' : 'a person refused the team') }
+        catch { /* decided meanwhile */ }
+      } else {
+        void this.confirm(ticket.id, trigger.id, proposal.version).catch(error => {
+          this.host.engine.note(ticket.id, `Team agreement from the conversation failed: ${String(error)}`)
+        })
+      }
+    })
+  }
+
   /** A person in the panel (the person at this machine) agreed to version `version`. */
   async approveFromPanel(ticketId: string, version: number): Promise<StaffingProposal> {
     const ticket = this.ticket(ticketId)
@@ -175,7 +228,8 @@ export class Staffing {
     const refuse = (why: string): never => { throw new TeamError(`Only a listed person's own message, sent on one of the ticket's threads after the proposal, can agree to or refuse a team; ${why}`) }
     if (!trigger) return refuse(`no message ${triggerId}`)
     if (!trigger.human) return refuse('this message is a bot\'s')
-    if (!allowedSender(store.settings() as Settings, trigger.actor)) return refuse(`${trigger.actor.id} is not on the ${trigger.source} list`)
+    if (!mayConsent(store.settings() as Settings, trigger, store.triggers.get(ticket.origin.triggerId)))
+      return refuse(`${trigger.actor.id} is neither on the ${trigger.source} list nor this ticket's originator`)
     if (!reached(ticket, trigger, key => store.threads.get(key), false)) return refuse('this message is not on the ticket\'s threads')
     // Compare on the host's clock: when the host received the message, not the time its Source stamped on it.
     const received = store.triggers.disposition(trigger.id)?.at ?? trigger.at
@@ -224,31 +278,31 @@ export class Staffing {
     return steps
   }
   /** Sends a proposal to the conversation the ticket started in, once per version. */
-  private send(ticket: Ticket, proposal: StaffingProposal, automatic: boolean): void {
+  private send(ticket: Ticket, proposal: StaffingProposal, automatic: boolean, reuse?: StaffingProposal): void {
     const channel = this.host.store.triggers.get(ticket.origin.triggerId)?.channel ?? ticket.channels[0]
     if (!channel) return
     this.host.outbox.send({ id: `team-proposal:${ticket.id}:v${proposal.version}`, channel, kind: 'notice', ticketId: ticket.id,
-      text: proposalText(proposal, automatic) })
+      text: proposalText(proposal, automatic, !!reuse) })
   }
 }
 
 const roleLabel = (role: StaffingRole) => role.draft
   ? `${role.draft.name}（新建${role.draft.tools?.some(tool => HIGH_RISK_TOOLS.test(tool)) ? ` · 申请 ${role.draft.tools.filter(tool => HIGH_RISK_TOOLS.test(tool)).join('、')}` : ''}）`
   : `${role.bot?.name ?? role.key}（现有）`
-const budgetLabel = (budget: StaffingBudget) => `${Math.round(budget.tokens / 10_000)} 万 tokens · ${budget.turns} 回合 · 并行 ${budget.parallel}`
 
 /** The proposal as a person reads it in the conversation: one line for a one-step team, a short block otherwise. */
-export function proposalText(proposal: StaffingProposal, automatic = false): string {
-  const answer = automatic ? '已按设置自动同意（低风险）；要停止就回复「取消」。'
-    : '回复「同意」开始执行；直接写修改意见会出新版本；回复「取消」放弃这张工单。'
+export function proposalText(proposal: StaffingProposal, automatic = false, reused = false): string {
+  const answer = reused ? '复用了你之前批准的相同组队方案，已直接开工；要停止就回复「取消」。'
+    : automatic ? '已按设置自动同意（低风险）；要停止就回复「取消」。'
+      : '回复「同意」开始执行；直接写修改意见会出新版本；回复「取消」放弃这张工单。'
   const from = proposal.workflow ? `按已保存的团队工作流「${proposal.workflow.name}」v${proposal.workflow.version} 预填。\n` : ''
   if (proposal.steps.length === 1 && proposal.roles.length === 1) {
     const [step] = proposal.steps, [role] = proposal.roles
-    return `【组队方案 v${proposal.version}】由 ${roleLabel(role!)}处理：${proposal.goal} · ${step!.access === 'write' ? '写' : '只读'} · 预算 ${budgetLabel(proposal.budget)}。\n${from}${answer}`
+    return `【组队方案 v${proposal.version}】由 ${roleLabel(role!)}处理：${proposal.goal} · ${step!.access === 'write' ? '写' : '只读'}。\n${from}${answer}`
   }
   const steps = proposal.steps.map(step => `${step.key} ${step.title}${step.access === 'write' ? '（写）' : ''}${step.after.length ? `（等 ${step.after.join('、')}）` : ''}`)
   return [`【组队方案 v${proposal.version}】${proposal.goal}`, ...from ? [from.trim()] : [], `成员：${proposal.roles.map(roleLabel).join('、')}`,
-    `步骤：${steps.join(' → ')}`, `预算：${budgetLabel(proposal.budget)}`, answer].join('\n')
+    `步骤：${steps.join(' → ')}`, answer].join('\n')
 }
 
 /** The agreed team as the lead's first note: the Bots do the steps in Sessions of their own; the lead integrates and reports. */

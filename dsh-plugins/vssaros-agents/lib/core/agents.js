@@ -75,7 +75,7 @@ export function parseFrontmatter(text) {
 	let pendingKey;
 	for (const line of head.split(/\r?\n/)) {
 		// ★ 2026-10-20 修：块列表**中间夹注释**时不能清 pendingKey。
-		//   真机案例：`docs/agents-draft/crawler.agent.md` 的
+		//   真机案例：早期 agent 草稿 frontmatter 里的
 		//     tools:
 		//       # ⚠ 这里只能写真实存在的工具名
 		//       - pwsh
@@ -407,6 +407,16 @@ export const ALWAYS_KEEP_TOOL_NAMES = Object.freeze(['skill',
 export const MCP_TOOL_PREFIX = 'mcp__';
 
 /**
+ * 官方 Agent Teams 共享任务工具前缀（`team_task_create/list/get/update`）。
+ * ★ 2026-11-14：与 MCP 同口径**默认保留**，别去 `ALWAYS_KEEP_TOOL_NAMES` 里逐个加精确名。
+ *   它们由 `dsh-base` 注册在 host 层、带 `when: agentTeams.isEnabled(agent)`（开关关闭时本就不可见），
+ *   而写了 `tools:` 的 Bot 会被 `allowlistDenyOf` 把没声明的 host 层全局工具 deny 掉
+ *   ⇒ 「启用智能体团队协作」打开后模型依然拿不到工具（表现为开关没反应）。
+ *   逐个给 18 个内置 Bot 补前缀既易漏、也覆盖不到用户自建 Bot；Bot 真不要时写 `!team_task_*` 排除。
+ */
+export const TEAM_TASK_TOOL_PREFIX = 'team_task_';
+
+/**
  * `tools` 里一项的写法（2026-11-06）：
  *   · `name`        精确名；
  *   · `prefix*`     通配（只支持末尾一个 `*`），如 `workflow_*`、`browser_*`、`mcp__gongfeng__*`；
@@ -425,6 +435,7 @@ export function isToolPattern(entry) {
  *   内置 bot 不可能事先写全 ⇒ 写了 `tools:` 的 20 个内置 bot 一个 MCP 工具都看不到（真机：三个群成员会话
  *   MCP 工具数都是 0）。用户自己接的 MCP 本意就是给 bot 用的 ⇒ 改成默认放行，bot 真不要时写 `!mcp__*`
  *   （或 `!mcp__某服务__*`）排除。白名单的其余口径不变：只收窄 host 层全局工具。
+ * ★ 2026-11-14：官方 Team 工具同理默认放行，见 `TEAM_TASK_TOOL_PREFIX`（`!team_task_*` 可排除）。
  */
 export function toolRulesOf(wanted) {
 	const exact = new Set(ALWAYS_KEEP_TOOL_NAMES);
@@ -447,7 +458,7 @@ export function toolRulesOf(wanted) {
 		keeps(name) {
 			if (denied(name)) { return false; }
 			if (exact.has(name) || prefixes.some((prefix) => name.startsWith(prefix))) { return true; }
-			return name.startsWith(MCP_TOOL_PREFIX);
+			return name.startsWith(MCP_TOOL_PREFIX) || name.startsWith(TEAM_TASK_TOOL_PREFIX);
 		},
 	};
 }

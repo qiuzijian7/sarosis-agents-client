@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { registerHttp } from '../src/app/http.ts'
 import { PromptConflict } from '../src/app/prompts.ts'
@@ -24,6 +24,31 @@ function serve(runtime: Partial<Record<keyof HttpHost, unknown>>, host = '127.0.
     return { status, body: JSON.parse(text) as Record<string, unknown> }
   }
 }
+
+it('provides bounded tool metadata queries behind the local API protection', async () => {
+  const response = { enabled: false, retentionDays: 7, maxRows: 10000, items: [], nextCursor: null,
+    summary: { sampled: 0, rootCalls: 0, nestedCalls: 0, errors: 0, sameInputRepeats: 0 } }
+  const view = vi.fn(() => response), call = serve({ store: {}, toolTrace: { view } })
+  expect(await call('GET', 'tools/trace?ticketId=t&limit=10')).toMatchObject({ status: 200, body: response })
+  expect(view).toHaveBeenCalledWith({ ticketId: 't', limit: 10 })
+  expect(await call('GET', 'tools/trace?limit=101')).toMatchObject({ status: 400 })
+  expect(await call('GET', 'tools/trace', undefined, { 'x-orchestrator-request': undefined })).toMatchObject({ status: 403 })
+  expect(view).toHaveBeenCalledOnce()
+})
+
+it('exposes only a bounded read-only workspace preview under the existing local API protections', async () => {
+  const response = { readOnly: true, checkedAt: '', retentionDays: 14, total: 0, offset: 0, nextOffset: null, items: [] }
+  const inventory = vi.fn(async () => response)
+  const call = serve({ store: {}, executor: { inventory } })
+  expect(await call('GET', 'executor/workspaces?offset=0&limit=5')).toEqual({ status: 200, body: response })
+  expect(inventory).toHaveBeenCalledWith(0, 5)
+  for (const query of ['limit=100', 'offset=-1', 'limit=0', 'offset=bad']) {
+    expect(await call('GET', `executor/workspaces?${query}`)).toMatchObject({ status: 400 })
+  }
+  expect(inventory).toHaveBeenCalledOnce()
+  expect(await call('GET', 'executor/workspaces', undefined, { 'x-orchestrator-request': undefined })).toMatchObject({ status: 403 })
+  expect(await call('POST', 'executor/workspaces')).toMatchObject({ status: 404 })
+})
 
 it('answers each kind of failure with its own status', async () => {
   const saves: unknown[] = []

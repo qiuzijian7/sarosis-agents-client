@@ -42,3 +42,17 @@ export async function initializeRoleModel(ctx: Context, agent: Agent, model: Rol
   })
   await ctx.sessionPersistence.flush()
 }
+
+/**
+ * ★ 2026-11-13：把模型/凭据类失败翻成可执行的中文报告，而不是把裸 `LlmError` 写进工单。
+ * 真机曾出现 `LlmError: No API key for provider: vssaros-ollama`：执行器未配置模型、
+ * 继承的 DSH 默认 route 又是 keyless，报错发生在真实请求时，事前校验拦不住。
+ * 只匹配明确的「模型/凭据缺失」形态，其它错误（工具 schema、网络、prepare 命令）原样保留。
+ */
+export function modelReportText(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error)
+  if (/No API key for provider|MISSING_CREDENTIAL|INVALID_CREDENTIAL|unknown provider|No usable model|model not configured/i.test(text)) {
+    return `模型未配置：执行器没有设置模型，且 DSH 默认模型不可用（${text}）。请在「设置 → 执行」填写服务商与模型，或修正 DSH 默认模型的凭据。`
+  }
+  return text
+}

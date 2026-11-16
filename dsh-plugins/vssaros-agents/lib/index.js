@@ -28,11 +28,12 @@ import { randomUUID } from 'node:crypto';
 //   但这个 import 从来没写过 —— 只在「bot 有记忆内容」时才走到那行，所以一直潜伏到本轮真机才炸。
 import { join } from 'node:path';
 import { askAssignment, cancelAssignment, createAssignment, installAssignmentTracker, listAssignments } from './assignments.js';
+import { installOfficialTeamAdapter } from './officialTeamAdapter.js';
 import { allowlistDenyOf, pickLazyEagerKeys, avatarColorOf, isDelegatableAgent, isShownAgent, presetIdOf, summarizeAgents, toPresetDefinition } from './core/agents.js';
 import { agentModelRouteOf, applyModelSelection, prevalidateRoutes, setAgentModelRoutes } from './modelSelection.js';
 import { botIdentityProjection } from './core/botIdentity.js';
 import { writeBotIdentity } from './botIdentityWriter.js';
-import { createAgentFromDraft, deleteAgent, previewAgentDraft, readAgentDraft, resetAgentModel, setAgentMemoryLimits, setAgentSubagent, updateAgentFromDraft } from './create.js';
+import { createAgentFromDraft, deleteAgent, previewAgentDraft, readAgentDraft, resetAgentModel, resetAgentOverrides, setAgentMemoryLimits, setAgentSubagent, updateAgentFromDraft } from './create.js';
 import { draftFromAgentMd, modelCandidatesOf } from './core/create.js';
 import { lineDiff } from './core/diff.js';
 import { aggregateByPreset, liveForAgents, usageByAgent } from './core/live.js';
@@ -69,7 +70,7 @@ import { createDiscordAdapter, createDiscordGateway } from './adapters/discord.j
 import { createWecomAdapter, handleWecomCallback } from './adapters/wecom.js';
 /* IM 应用凭据（**dsh 侧真源**，2026-10-27）：设置弹窗「渠道」页读写 `<dataRoot>/agent-im-accounts.json`；
    `config.feishu`（IDE 覆盖层）降级为兼容回落 —— 优先级 dsh 文件 → config → 环境变量。 */
-import { BUNDLED_FEISHU_APP, describeFeishu, describeFeishuApps, describePlatforms, migrateLegacyFeishu, readBotFeishuApps, resolveFeishu, resolveFeishuApp, resolvePlatform, saveBotFeishuApp, saveFeishuApp, savePlatform } from './imCredentials.js';
+import { describeFeishu, describeFeishuApps, describePlatforms, migrateLegacyFeishu, readBotFeishuApps, resolveFeishu, resolveFeishuApp, resolvePlatform, saveBotFeishuApp, saveFeishuApp, savePlatform } from './imCredentials.js';
 /* 入站「上次是否在跑」的开关（2026-10-29）：重启 Host 后据此恢复，别让用户以为坏了。 */
 import { readFeishuAppsEnabled, readInboundEnabled, readSkipAppIds, setFeishuAppEnabled, setInboundEnabled } from './imInboundState.js';
 /* ★ 2026-10-29：**跨 dataRoot 的入站长连接互斥锁**（见 imInboundLock.js 文件头）。
@@ -114,7 +115,7 @@ import { installRelay } from './relay.js';
 // 只导入 `scanAgentsFromConfig` 会让每个 `/x/agents/*` 请求抛 `ReferenceError` ⇒ `dsh-host-webserver`
 // 的 catch 回**裸 400**（无 body）⇒ 侧栏整页白屏（用户报「agents 的 sideview 不可见」）。
 // 教训：这类"搬模块漏 import"只有真跑一次请求才会暴露 ⇒ 由 p3-96（页面交互探针）看守。
-import { agentsBuiltinRootOf, agentsRootOf, dataRootOf, scanAgents, scanAgentsFromConfig } from './store.js';
+import { agentsBuiltinRootOf, agentsRootOf, dataRootOf, parseAgentSource, registerAgentSource, scanAgentsFromConfig } from './store.js';
 import { addApprovalTemplate, listApprovalTemplates, removeApprovalTemplate, templateGate } from './templates.js';
 import { registerAgentTools } from './tools.js';
 
@@ -269,22 +270,10 @@ export const inject = ['tools'];
 const ROUTE_PREFIX = '/x/agents';
 
 /**
- * ★ 2026-11-10：下拉用的飞书应用列表 = 凭据池 + 随包内置的 VsSaros助手（若尚未列出）。
- * 内置应用不写进 `agent-im-accounts.json`，但 `resolveFeishuApp` 对它有 Secret 回落 ⇒ 选中即可用。
- * ⚠ 只在 GET 合并：`describeFeishuApps()` 的既有契约（条数 / 顺序）被多处测试与 UI 消费，不动。
- */
-function feishuAppsForPicker(list) {
-	const apps = Array.isArray(list) ? list : [];
-	if (apps.some((a) => a.appId === BUNDLED_FEISHU_APP.appId)) { return apps; }
-	return apps.concat([{ appId: BUNDLED_FEISHU_APP.appId, name: 'VsSaros助手（内置）', isDefault: false,
-		configured: true, hasSecret: true, source: 'bundled' }]);
-}
-
-/**
  * 展示用名册（只做黑名单过滤）。
  * ⚠ 只影响「侧栏名册 / 编辑区页面 / `/api/agents`（聊天欢迎卡与选择器读它）」。
  *   2026-11-09：主助理已删除，且按用户决策不做存量会话兼容层；
- *   画布 Run 默认改为 `workflow-agent`。
+ *   画布 Run 默认改为 `planner`。
  */
 /** 展示面名册：内置按 `.agent.md` 的 `userFacing: true` 白名单（与 IDE 同一份），自定义全显。 */
 const shownAgentsOf = (agents) => (agents || []).filter(a => isShownAgent(a));
@@ -771,6 +760,8 @@ async function syncPresets(state, presets, config) {
 	const eagerKeys = lazyMode
 		? pickLazyEagerKeys(wantedKeys, { delegatable: delegatablePresetIds, recent: recentPresets, max: LAZY_EAGER_MAX })
 		: undefined;
+	const sourceKeys = new Set(scan.sourceAgentIds ?? []);
+	for (const key of sourceKeys) { eagerKeys?.add(key); }
 	const gate = (keys) => (eagerKeys ? keys.filter((key) => eagerKeys.has(key)) : keys);
 	const isDelegatableKey = (key) => delegatablePresetIds.has(presetIdOf(key));
 	const needFirstPass = missingKeys.some(isDelegatableKey);
@@ -791,6 +782,7 @@ async function syncPresets(state, presets, config) {
 	//   代价：这 5 个 agent 在补齐（15s）之前不能派生子代理；其余 agent 不受影响（它们的清单引用的是
 	//   这 5 个，引用已就位 ⇒ 仍可立即派生子代理）✓。
 	const phase2Only = lazyMode ? new Set([...eagerKeys].filter((key) => !isDelegatableKey(key))) : eagerKeys;
+	for (const key of sourceKeys) { phase2Only?.add(key); }
 	await applyDesired(okPresetIds, true, phase2Only, lazyMode ? 'phase2/lazy' : (state.lazyFilled ? 'phase2/fill' : 'phase2'));
 	state.subagentListSig = okPresetIds.join('|');
 	mark('两阶段注册完成');
@@ -1318,6 +1310,9 @@ function applyTopLevel(ctx, config) {
 		if (!key) { return undefined; }
 		return (await teamService.listBots()).find(bot => bot.id.toLowerCase() === key || bot.name.toLowerCase() === key);
 	}));
+	// ★ 2026-11-12（Stage 1）：官方 Agent Teams 成员 → 本机 Bot 名册的只读投影。
+	//   ctx.inject 是可选注入：组合里没挂 dsh-agent-team 时回调不执行，不会像静态 inject 那样永久 pending。
+	installOfficialTeamAdapter(ctx);
 	// ★ 2026-11-05 多 bot 群聊（用户要求恢复；设计移植 DeepSeek-Bot 的 room，见 lib/rooms.js 文件头）：
 	//   群 = 一条专属会话 + 成员名单；群会话不调模型（llm/stream 合成 group_relay），成员在各自的影子会话里回答。
 	//   与 2026-11-03 下线的旧群聊（groups.js / agent-groups.json）互不相干。
@@ -1428,7 +1423,50 @@ function applyTopLevel(ctx, config) {
 	 * `rescan()` = 重扫目录 + **增量**注册（`syncPresets` 本来就是增量的：
 	 * 新 agent 注册、消失的撤销、没变的跳过）⇒ **可重复调用、幂等** ✓
 	 */
-	ctx.provide('vssarosAgents', {
+	// ⚠⚠ **必须幂等**（2026-11-11 与 vssaros-mcp 同批收口）：本包同时挂在 host plane 与
+	//   preset plane（`preset-vssaros.rows.yml`）⇒ 会话选中 preset 时会再 apply 一次；第二次
+	//   `ctx.provide('vssarosAgents')` 让 cordis 抛 `has been registered` ⇒ 整个 preset 判
+	//   invalid ⇒ 新建会话失败（同型先例：workflow / media / mcp）。
+	//   `dshPresetPlane.test.ts` 的「双 plane provide 必须幂等」守卫会盯这里 ✓。
+	const existingAgentsSvc = ctx.reflect && typeof ctx.reflect.get === 'function'
+		? ctx.reflect.get('vssarosAgents', false)
+		: undefined;
+	const sourceWithdrawals = new Set();
+	if (!existingAgentsSvc) ctx.effect(() => () => {
+		for (const withdraw of sourceWithdrawals) { withdraw(); }
+		sourceWithdrawals.clear();
+	});
+	// 单语句 if：已有就复用 host 层那一份（不重复注册），无需包住整个服务对象。
+	if (!existingAgentsSvc) ctx.provide('vssarosAgents', {
+		presetIdOf,
+		registerSource: async (source) => {
+			if (!state.presets) { throw new Error('agentPresets 服务还没就绪（Host 还在启动）'); }
+			const parsed = await parseAgentSource(source);
+			if (!state.presets) { throw new Error('agentPresets 服务已卸载'); }
+			const withdraw = registerAgentSource(config, parsed);
+			const ids = parsed.agents.map(agent => agent.id);
+			sourceWithdrawals.add(withdraw);
+			try {
+				await syncSerial(state, state.presets, config);
+				if (!state.presets || !sourceWithdrawals.has(withdraw)) { throw new Error('agentPresets 服务已卸载'); }
+				const missing = ids.filter(id => !state.registered.has(id));
+				if (missing.length) { throw new Error(`插件 Bot 注册 preset 失败：${missing.join(', ')}；${state.errors.join('；')}`); }
+			} catch (error) {
+				withdraw();
+				sourceWithdrawals.delete(withdraw);
+				await syncSerial(state, state.presets, config).catch(() => undefined);
+				throw error;
+			}
+			let disposal;
+			return async () => {
+				if (!disposal) {
+					withdraw();
+					sourceWithdrawals.delete(withdraw);
+					disposal = syncSerial(state, state.presets, config);
+				}
+				await disposal;
+			};
+		},
 		/**
 		 * 重扫 agent 目录并增量注册 preset。
 		 * @returns {Promise<{ ok: boolean, agentsRoot: string, registered: number }>}
@@ -1782,8 +1820,8 @@ function applyTopLevel(ctx, config) {
 							},
 							feishu: await describeFeishu(config),
 							/* 2026-11-04：全部飞书应用（默认在前），绑定按 appId 选；secret 只以 hasSecret 出现。
-							   ★ 2026-11-10：再补上随包内置的 VsSaros助手，两个下拉都能选到它。 */
-							feishuApps: feishuAppsForPicker(await describeFeishuApps(config)),
+							   ★ 2026-11-11：只列凭据池里的应用，不再注入随包内置应用。 */
+							feishuApps: await describeFeishuApps(config),
 							/* ★ 2026-11-09：每个 Bot 选用的飞书应用（botId → appId；空 = 默认应用）。
 							   Bot 设置页的「飞书配置」下拉消费这份映射，secret 不在这里。 */
 							botFeishuApps: await readBotFeishuApps(config),
@@ -2102,7 +2140,7 @@ function applyTopLevel(ctx, config) {
 						await markSeen(config, id);
 						const live = await readLiveSessions(config).catch(() => null);
 						// ⚠ 这个 POST 分支在 GET 页面段的 `scan` 之前 ⇒ 自己扫（p3-115 C2 抓到过 ✗「scan is not defined」）
-						const scanNow = live ? await scanAgents(agentsRootOf(config), undefined) : null;
+						const scanNow = live ? await scanAgentsFromConfig(config, undefined) : null;
 						result = { ok: true, counts: live && scanNow ? await unreadSnapshot(config, scanNow.agents, live.rows) : {} };
 					} else if (action === 'delete') {
 						// 删除 Agent（2026-10-20，侧栏右键）。口径见 lib/create.js 的 deleteAgent：
@@ -2134,6 +2172,10 @@ function applyTopLevel(ctx, config) {
 							});
 						}
 						result = { ...toggled, registered: state.roster.includes(toggled.presetId) };
+					} else if (action === 'resetOverrides') {
+						const reset = await resetAgentOverrides(config, body?.id);
+						if (state.presets) { await syncOnce(state, state.presets, config); }
+						result = { ok: true, ...reset, registered: state.roster.includes(reset.presetId) };
 					} else if (action === 'resetModel') {
 						// 「映射说明」里的「改为跟随默认」：只删未映射的 model 行（lib/create.js 头注释）⇒ 立刻重注册 preset
 						const reset = await resetAgentModel(config, body?.id);
@@ -2275,9 +2317,9 @@ function applyTopLevel(ctx, config) {
 				const scan = state.presets
 					? await syncOnce(state, state.presets, config).catch(e => {
 						state.errors = [...state.errors, `同步 preset 失败：${String(e?.message ?? e)}`];
-						return scanAgents(root, undefined);
+						return scanAgentsFromConfig(config, undefined);
 					})
-					: await scanAgents(root, undefined);
+					: await scanAgentsFromConfig(config, undefined);
 				const summary = summarizeAgents(scan.agents);
 				// 展示面名册（内置按 userFacing 白名单 + 去掉 HIDDEN_AGENT_IDS）—— preset 注册仍用全量 scan ✓
 				const shownAgents = shownAgentsOf(scan.agents);

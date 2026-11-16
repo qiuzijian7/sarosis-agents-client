@@ -153,6 +153,9 @@ window.__ModuleLoader__.load({
 		}
 
 		// ── 样式（一次注入；色用 dsh 的主题变量，深浅色都对）──────────────────────────
+		// ★ 2026-11-11（用户报「白色主题下图片/视频/音频模型看不清」）：本下拉里的次要文字
+		//   统一用 label-secondary（不用最淡的 label-tertiary）——浅色下对比度不足 ✗。
+		//   下面那层"与官方菜单统一"只准调尺寸，颜色一律留在这里跟随主题 ✓
 		const CSS = `
 [${MARK}-wrap]{display:block}
 [${MARK}-row]{display:flex;align-items:center;gap:9px;width:100%;height:34px;padding:0 9px;border:0;background:transparent;border-radius:8px;font:inherit;font-size:13px;color:var(--dsw-alias-label-primary,#0f1115);cursor:pointer;text-align:left}
@@ -161,19 +164,20 @@ window.__ModuleLoader__.load({
 [${MARK}-row] .vc-ico svg{width:15px;height:15px}
 [${MARK}-row] .vc-lb{flex:none}
 [${MARK}-row] .vc-val{margin-left:auto;display:inline-flex;align-items:center;gap:5px;max-width:168px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary,#61666b);font-size:13px}
-[${MARK}-row] .vc-chev{width:14px;height:14px;flex:none;display:inline-flex;color:var(--dsw-alias-label-tertiary,#81858c)}
+[${MARK}-row] .vc-chev{width:14px;height:14px;flex:none;display:inline-flex;color:var(--dsw-alias-label-secondary,#61666b)}
 [${MARK}-row] .vc-chev svg{width:14px;height:14px}
-[${MARK}-row] .vc-none{color:var(--dsw-alias-label-tertiary,#81858c)}
+[${MARK}-row] .vc-none{color:var(--dsw-alias-label-secondary,#61666b)}
 [${MARK}-row] .vc-warn{width:6px;height:6px;border-radius:50%;background:#e8890c;flex:none}
 [${MARK}-sep]{height:1px;background:var(--dsw-alias-border-l3,rgba(0,0,0,.08));margin:4px 6px}
-[${MARK}-cap]{font-size:11px;color:var(--dsw-alias-label-tertiary,#81858c);padding:6px 9px 3px}
-[${MARK}-badge]{font-size:9.5px;line-height:14px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.12));border-radius:4px;padding:0 4px;color:var(--dsw-alias-label-tertiary,#81858c);white-space:nowrap;flex:none}
+[${MARK}-cap]{font-size:11px;color:var(--dsw-alias-label-secondary,#61666b);padding:6px 9px 3px}
+[${MARK}-badge]{font-size:9.5px;line-height:14px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.12));border-radius:4px;padding:0 4px;color:var(--dsw-alias-label-secondary,#61666b);white-space:nowrap;flex:none}
 [${MARK}-pop]{position:fixed;z-index:2147483000;width:326px;max-height:344px;display:none;flex-direction:column;background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.12));border-radius:12px;box-shadow:rgba(0,0,0,.16) 0 8px 28px;padding:5px;color:var(--dsw-alias-label-primary,#0f1115)}
 [${MARK}-pop][data-open]{display:flex}
 [${MARK}-pop] .vc-sr{padding:3px 4px 6px}
 [${MARK}-pop] input{width:100%;height:28px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.12));border-radius:8px;background:var(--dsw-alias-bg-layer-2,transparent);color:inherit;font:inherit;font-size:12px;padding:0 9px;outline:none}
+[${MARK}-pop] input::placeholder{color:var(--dsw-alias-label-secondary,#61666b);opacity:1}
 [${MARK}-pop] .vc-list{overflow:auto;overflow-x:hidden;flex:1}
-[${MARK}-pop] .vc-grp{display:flex;align-items:center;gap:6px;padding:7px 9px 3px;font-size:10.5px;color:var(--dsw-alias-label-tertiary,#81858c)}
+[${MARK}-pop] .vc-grp{display:flex;align-items:center;gap:6px;padding:7px 9px 3px;font-size:10.5px;color:var(--dsw-alias-label-secondary,#61666b)}
 [${MARK}-pop] .vc-grp .vc-nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px}
 [${MARK}-pop] .vc-grp .vc-route{border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.12));border-radius:4px;padding:0 4px;font-size:9.5px;white-space:nowrap;flex:none}
 [${MARK}-pop] .vc-grp .vc-st{margin-left:auto;display:inline-flex;align-items:center;gap:4px;font-size:10px;white-space:nowrap;flex:none}
@@ -184,16 +188,16 @@ window.__ModuleLoader__.load({
 [${MARK}-pop] .vc-item:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12))}
 [${MARK}-pop] .vc-item[data-on]{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12))}
 [${MARK}-pop] .vc-item[data-off]{opacity:.5;cursor:not-allowed}
-[${MARK}-pop] .vc-thumb{width:26px;height:26px;border-radius:7px;flex:none;display:flex;align-items:center;justify-content:center;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.12));color:var(--dsw-alias-label-tertiary,#81858c)}
+[${MARK}-pop] .vc-thumb{width:26px;height:26px;border-radius:7px;flex:none;display:flex;align-items:center;justify-content:center;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.12));color:var(--dsw-alias-label-secondary,#61666b)}
 [${MARK}-pop] .vc-thumb svg{width:14px;height:14px}
 [${MARK}-pop] .vc-two{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}
 [${MARK}-pop] .vc-l1{display:flex;align-items:center;gap:6px;font-size:13px;min-width:0}
 [${MARK}-pop] .vc-l1 .vc-nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-[${MARK}-pop] .vc-l2{font-size:10.5px;color:var(--dsw-alias-label-tertiary,#81858c);font-family:ui-monospace,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-[${MARK}-pop] .vc-meta{margin-left:auto;flex:none;font-size:11px;color:var(--dsw-alias-label-tertiary,#81858c);text-align:right}
+[${MARK}-pop] .vc-l2{font-size:10.5px;color:var(--dsw-alias-label-secondary,#61666b);font-family:ui-monospace,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+[${MARK}-pop] .vc-meta{margin-left:auto;flex:none;font-size:11px;color:var(--dsw-alias-label-secondary,#61666b);text-align:right}
 [${MARK}-pop] .vc-why{color:#e8890c;font-size:10.5px}
 [${MARK}-pop] .vc-price{color:var(--dsw-alias-label-secondary,#61666b)}
-[${MARK}-pop] .vc-foot{display:flex;align-items:center;gap:8px;padding:6px 9px 4px;border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.08));margin-top:4px;font-size:11px;color:var(--dsw-alias-label-tertiary,#81858c)}
+[${MARK}-pop] .vc-foot{display:flex;align-items:center;gap:8px;padding:6px 9px 4px;border-top:1px solid var(--dsw-alias-border-l3,rgba(0,0,0,.08));margin-top:4px;font-size:11px;color:var(--dsw-alias-label-secondary,#61666b)}
 [${MARK}-pop] .vc-link{color:#2f6bff;cursor:pointer}
 [${MARK}-toast]{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:#222;color:#fff;font-size:12.5px;padding:9px 16px;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.3);opacity:0;pointer-events:none;transition:opacity .18s;z-index:2147483001}
 [${MARK}-toast][data-on]{opacity:1}
@@ -814,46 +818,37 @@ window.__ModuleLoader__.load({
 			/**
 			 * ★ 与**官方模型菜单统一**（2026-10-23 用户要求"统一二级页面的 UI 样式"）。
 			 *
-			 * 为什么单独一层而不是改上面的 CSS 常量：这些值是**照官方菜单量出来的**，
-			 * 单独放一段便于"官方换皮时只调这一处"，也不会把原有布局规则搅乱。
-			 * 实测对照（官方 一级菜单）：背景 #2b2b2b、边框 ≈ rgba(255,255,255,.09)、
-			 * 圆角 ≈10px、行高 ≈32px、正文 12.5px、选中 = 淡蓝底（不是白底）。
+			 * 这一层只调**尺寸**（行高 / 字号 / 圆角 / padding / gap），让主行的字重/字号/行高
+			 * 与官方一致 ⇒ 视觉上仍像官方那种"一行一项"。
 			 *
-			 * ⚠ 模型行比官方多一行副标题（id · tags）：不删信息，只把副标题压小压暗，
-			 *   让主行的字重/字号/行高与官方一致 ⇒ 视觉上仍像官方那种"一行一项"。
+			 * ★★ 2026-11-11（用户报「白色主题下图片/视频/音频模型看不清」）：
+			 *   这里原来还用 `!important` 无条件把背景 / 文字写成**深色主题**的硬编码
+			 *   （#2b2b2b 底 / #e8e8e8 正文 / #8b8b8b、#a8a8a8 次要文字），
+			 *   把上面那层 `var(--dsw-alias-*)` 全盖掉 ⇒ 浅色主题下白底白字 ✗。
+			 *   ⇒ 颜色一律交回上层 CSS 的主题令牌；本层**不许再出现写死颜色**（守卫 ④ 钉住）。
 			 */
 			try {
 				const uni = doc.createElement("style");
 				uni.setAttribute(MARK + "-style", "2");
 				uni.textContent = [
-					"[" + MARK + "-pop]{background:#2b2b2b !important;border:1px solid rgba(255,255,255,.09) !important;border-radius:10px !important;padding:4px !important;box-shadow:0 12px 34px rgba(0,0,0,.5) !important}",
+					"[" + MARK + "-pop]{border-radius:10px !important;padding:4px !important}",
 					"[" + MARK + "-pop] .vc-sr{padding:3px 3px 6px !important}",
-					"[" + MARK + "-pop] .vc-sr input{background:#242424 !important;border:1px solid rgba(255,255,255,.10) !important;border-radius:7px !important;padding:5px 8px !important;font-size:12px !important;color:#e8e8e8 !important}",
-					"[" + MARK + "-pop] .vc-sr input::placeholder{color:#8b8b8b !important}",
+					"[" + MARK + "-pop] .vc-sr input{border-radius:7px !important;padding:5px 8px !important;font-size:12px !important}",
 					"[" + MARK + "-pop] .vc-grp{padding:6px 8px 2px !important;font-size:11px !important;gap:6px !important}",
-					"[" + MARK + "-pop] .vc-grp .vc-nm{color:#b8b8b8 !important;font-weight:600 !important}",
-					"[" + MARK + "-pop] .vc-grp .vc-route{color:#7f7f7f !important}",
-					"[" + MARK + "-pop] .vc-grp .vc-st{color:#8b8b8b !important}",
+					"[" + MARK + "-pop] .vc-grp .vc-nm{font-weight:600 !important}",
 					"[" + MARK + "-pop] .vc-item{min-height:34px !important;border-radius:7px !important;padding:4px 8px !important;gap:8px !important}",
-					"[" + MARK + "-pop] .vc-item .vc-l1{font-size:12.5px !important;line-height:1.35 !important;color:#e8e8e8 !important}",
-					"[" + MARK + "-pop] .vc-item .vc-l2{font-size:10.5px !important;line-height:1.3 !important;color:#8b8b8b !important;margin-top:1px !important}",
-					"[" + MARK + "-pop] .vc-item:hover{background:rgba(255,255,255,.07) !important}",
-					"[" + MARK + "-pop] .vc-item[data-on]{background:rgba(77,170,252,.16) !important}",
+					"[" + MARK + "-pop] .vc-item .vc-l1{font-size:12.5px !important;line-height:1.35 !important}",
+					"[" + MARK + "-pop] .vc-item .vc-l2{font-size:10.5px !important;line-height:1.3 !important;margin-top:1px !important}",
 					"[" + MARK + "-pop] .vc-item[data-off]{opacity:.55 !important}",
 					"[" + MARK + "-pop] .vc-thumb{width:16px !important;height:16px !important;opacity:.85 !important}",
 					"[" + MARK + "-pop] .vc-meta{gap:6px !important}",
-					"[" + MARK + "-pop] .vc-why{color:#c9a227 !important;font-size:10.5px !important}",
-					"[" + MARK + "-pop] .vc-price{color:#8b8b8b !important;font-size:10.5px !important}",
-					"[" + MARK + "-pop] .vc-foot{padding:5px 8px 3px !important;font-size:11px !important;color:#8b8b8b !important;border-top:1px solid rgba(255,255,255,.07) !important}",
-					"[" + MARK + "-pop] .vc-link{color:#4daafc !important}",
-					// 我们注入的那三行也统一：行高 32px、正文 12.5px、右侧值用官方那种暗色
-					"[" + MARK + "-cap]{color:#8b8b8b !important;font-size:11px !important;padding:8px 8px 3px !important}",
+					"[" + MARK + "-pop] .vc-why{font-size:10.5px !important}",
+					"[" + MARK + "-pop] .vc-price{font-size:10.5px !important}",
+					"[" + MARK + "-pop] .vc-foot{padding:5px 8px 3px !important;font-size:11px !important}",
+					// 我们注入的那三行也统一：行高 32px / 正文 12.5px；颜色全交给上层主题令牌
+					"[" + MARK + "-cap]{font-size:11px !important;padding:8px 8px 3px !important}",
 					"[" + MARK + "-row]{min-height:32px !important;border-radius:7px !important;font-size:12.5px !important;padding:0 8px !important;gap:8px !important}",
-					"[" + MARK + "-row] .vc-lb{color:#e8e8e8 !important}",
-					"[" + MARK + "-row] .vc-val{color:#8b8b8b !important;font-size:12px !important}",
-					"[" + MARK + "-row]:hover{background:rgba(255,255,255,.07) !important}",
-					"[" + MARK + "-row] .vc-chev{color:#8b8b8b !important}",
-					"[" + MARK + "-badge]{font-size:9.5px !important;padding:0 4px !important;border-radius:3px !important;background:rgba(255,255,255,.08) !important;color:#a8a8a8 !important}",
+					"[" + MARK + "-badge]{font-size:9.5px !important;padding:0 4px !important;border-radius:3px !important}",
 					/**
 					 * ★★ "三行只在**一级菜单**里出现"（2026-10-23 用户明确要求"希望分开"）。
 					 *

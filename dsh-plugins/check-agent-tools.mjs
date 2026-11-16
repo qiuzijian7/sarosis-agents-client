@@ -228,6 +228,43 @@ if (badTools.length === 0) {
 	}
 }
 
+// ── 4c. 判据 D：官方 Agent Teams 工具必须穿过 Bot 的 tools allowlist ─────
+// dsh-base 把 team_task_* 注册在 host 层，带 when: agentTeams.isEnabled(agent)（开关关闭时本就不可见）。
+// 我们的 tools[] 是声明式 allowlist：allowlistDenyOf 会把没写进去的 host 层全局工具 deny 掉
+// ⇒ 内置 Bot 即使打开「启用智能体团队协作」也拿不到团队工具（表现为「开关没反应」）。
+// 与 mcp__* 同口径默认放行（也覆盖用户自建 Bot），想排除的 Bot 写 !team_task_*。
+// 同时钉住「官方工具名仍随包存在」与「deny 路径真的放行」：官方改名 / 误删默认放行都会判红。
+{
+	const TEAM_PREFIX = 'team_task_';
+	const TEAM_CONTRACT_TOOLS = ['team_task_create', 'team_task_list', 'team_task_get', 'team_task_update'];
+	const scanned = officialTools.size > 0;
+	const drift = scanned ? TEAM_CONTRACT_TOOLS.filter((n) => !officialTools.has(n)) : [];
+	const teamTools = [...new Set([...TEAM_CONTRACT_TOOLS, ...[...knownTools].filter((n) => n.startsWith(TEAM_PREFIX))])].sort();
+	const { toolRulesOf, allowlistDenyOf } = await import('./vssaros-agents/lib/core/agents.js');
+	const rules = toolRulesOf(['read', 'skill']);
+	const notKept = teamTools.filter((n) => !rules.keeps(n));
+	const deniedTeam = allowlistDenyOf(['read', 'skill'], [...teamTools, 'kb_search']).filter((n) => n.startsWith(TEAM_PREFIX));
+	const optOut = allowlistDenyOf(['!team_task_*'], teamTools);
+	// 逐个拿内置 Bot 的**真实 tools[]** 走一遍 deny 路径：抽象 wanted 放行不等于 18 份名单都放行。
+	// 显式写 !team_task_* 的 Bot 是有意排除，跳过。
+	const listDenied = [];
+	for (const list of toolLists) {
+		if (list.items.some((n) => n.startsWith('!') && n.includes(TEAM_PREFIX))) { continue; }
+		listDenied.push(...allowlistDenyOf(list.items, teamTools).filter((n) => n.startsWith(TEAM_PREFIX)));
+	}
+	const problemsD = [];
+	if (drift.length) { problemsD.push(`随包 runtime 缺官方工具：${drift.join(', ')}`); }
+	if (notKept.length) { problemsD.push(`toolRulesOf 没默认保留：${notKept.join(', ')}`); }
+	if (deniedTeam.length) { problemsD.push(`allowlistDenyOf 仍 deny：${deniedTeam.join(', ')}`); }
+	if (optOut.length !== teamTools.length) { problemsD.push('!team_task_* 无法整组排除'); }
+	if (listDenied.length) { problemsD.push(`内置 Bot 的 tools[] 仍 deny：${[...new Set(listDenied)].join(', ')}`); }
+	if (problemsD.length === 0) {
+		ok(`Agent Teams 工具 ${teamTools.length} 个默认放行（${scanned ? '随包名已核对' : '离线契约名'}；!team_task_* 可排除）`);
+	} else {
+		fail(`Agent Teams 工具放行守卫：${problemsD.join('；')}`);
+	}
+}
+
 // ── 5. 判据 B：skills 必须在 dsh 可见技能目录里 ────────────────────
 const badSkills = [];
 for (const list of skillLists) {

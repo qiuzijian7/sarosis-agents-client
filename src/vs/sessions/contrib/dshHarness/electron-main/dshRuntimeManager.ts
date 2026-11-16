@@ -153,7 +153,7 @@ function hasPnpmOnPath(pathValue: string): boolean {
  * 实现要点（2026-11-07 起）：产物自带的是**仓库 pin 的 pnpm@11.28.5 整包**（约 21MB，
  * 入口 `bin/pnpm.mjs` → `dist/pnpm.mjs`），版本与构建期 prepack 用的那份同源。
  * shim 用 **Host 自己的 `node.path`** 跑它 ⇒ 用户机器**不需要装 node**（dshNodeInstaller 会托管
- * 一个 ≥22.19 的 Node，满足 pnpm 11 的 ≥22.13 门槛）✓。
+ * 一个 ≥24.9.0 的 Node，满足 pnpm 11 的 ≥22.13 门槛）✓。
  *
  * ⚠ 与本文件顶部"不能用 Electron 跑 dsh"那条结论**不矛盾**：那条限制是 dsh 需要
  *   `node-addon-require-builtin`（Electron 39 不支持）；pnpm 是**纯 JS**，不碰那个能力 ✓。
@@ -178,7 +178,7 @@ export function injectBundledPnpm(env: NodeJS.ProcessEnv, nodeExe: string | unde
 		//   `added 513` 时**直接崩掉**（并发安装阶段不够用）✗✗。
 		//   而"别人机器没有 node"这件事由 `dshNodeInstaller` 兜着：没 node 就跑不了 dsh，
 		//   所以 Host 起来时 `node.path` **一定**是可用解释器（托管安装的或系统的）✓。
-		//   pnpm 11.28.5 还要求 Node ≥22.13，托管 Node 的门槛是 22.19+ ⇒ 满足 ✓。
+		//   pnpm 11.28.5 还要求 Node ≥22.13，托管 Node 的门槛是 >=24.9.0 ⇒ 满足 ✓。
 		if (isWindows) {
 			writeFileSync(
 				join(dir, 'pnpm.cmd'),
@@ -307,12 +307,12 @@ export class DshRuntimeManager {
 				continue;
 			}
 			if (!isSupportedNodeVersion(version)) {
-				rejected.push(`${c.path}: ${version} 低于 dsh 要求（22.19+ 或 24+）`);
+				rejected.push(`${c.path}: ${version} 低于 dsh 要求（>=24.9.0）`);
 				continue;
 			}
 			return { path: execPath?.trim() || c.path, version, source: c.source };
 		}
-		throw new DshRuntimeError('node-missing', `找不到可用的 Node：${rejected.join('；')}。可执行「DSH: 安装托管 Node」，或在设置 sessions.dshHarness.nodePath 中指定 Node 22.19+ / 24+。`);
+		throw new DshRuntimeError('node-missing', `找不到可用的 Node：${rejected.join('；')}。可执行「DSH: 安装托管 Node」，或在设置 sessions.dshHarness.nodePath 中指定 Node >=24.9.0。`);
 	}
 
 	/** 下载并安装托管便携 Node（`<managedRoot>/node/`）。 */

@@ -23,11 +23,12 @@ import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { createMarketClient, dataRootOf } from './marketClient.js';
+import { createMarketClient, dataRootOf, marketEndpointOf } from './marketClient.js';
 import { readInstalled, removeInstalled, upsertInstalled } from './installedLedger.js';
 // ⚠ 不再直接 import `sha256Of`：校验已下沉到 `installBundle`（可单测）
 import { installBundle, trashBundle, uninstallBundle } from './installers.js';
-import { PUBLISHABLE_KINDS, deletePackage, deleteVersion, publishDistribution, publishExternal, publishVersion } from './publisher.js';
+import { PUBLISHABLE_KINDS, deletePackage, deleteVersion, publishDistribution, publishExternal, publishVersion, publishPluginVersion } from './publisher.js';
+import { installPluginEnvelope, unpackPluginEnvelope, isPluginEnvelope } from './pluginArchive.js';
 // ★ 2026-10-22：外部源（GitHub 地址作本体）—— 归一化 / 安全边界 / 定位安装根 / 下载
 import { downloadGitHubTarball, locateInstallRoot, parseGitHubSource, resolveDownloadUrl } from './githubSource.js';
 // ★ 2026-11-06（P1）：4 类非商城技能来源（内容 / 文件夹 / URL / GitHub）的解析与规范化
@@ -38,6 +39,8 @@ import { distributionWarnings, finishPreview, scanPackageFiles, summarizeDistrib
 // ★ 2026-11-10 P2：离线便携包（导出 / 预览 / 原子导入）
 import { exportPortable, importPortable, previewPortable } from './portable.js';
 import { listPublishables, deriveVersion } from './localResources.js';
+import { bindFoundation } from './foundationRef.js';
+import { readPreferences, updatePreferences } from './preferences.js';
 // ★ 2026-10-23（用户「都转移到 dsh 侧实现」）：mcp 装完要注册进 `<数据根>/mcp.json`
 import { checkMcpConfigOsv, readMcpJson, readMcpPackageConfig, registerMcpServer, removeMcpCompletely, setMcpEnabled, mcpJsonPath, writeMcpJson } from './mcpInstall.js';
 // ★ 2026-10-27（用户：贴 GitHub 链接自动填写并发布）
@@ -48,7 +51,7 @@ import { preflightPublish } from './publishPreflight.js';
 import { marketToolDefinitions } from './agentTools.js';
 // ★ 2026-10-26：商城专用 agent（写 .agent.md，让新建会话默认选中）
 import { ensureMarketAgent, MARKET_PRESET } from './marketAgent.js';
-import { ALL_OPS, LOCAL_WRITE_KINDS, WRITE_OPS, isKnownOp, resolveOp } from './dispatch.js';
+import { ALL_OPS, LOCAL_WRITE_KINDS, LOCAL_PLUGIN_KINDS, WRITE_OPS, isKnownOp, resolveOp } from './dispatch.js';
 // ★ 服务端 pkg → 前端形状的**唯一映射**（list/detail/reviewList/installed 共用）
 import { toInstalledItem, toPackageDetail, toPackageSummary } from './shape.js';
 // ★ 2026-10-29：台账只增不减 ⇒ "算不算已安装"必须以**磁盘落地物**为准（见该文件头注释）
@@ -154,6 +157,10 @@ export async function apply(ctx, config) {
 		state.pluginManager = scope.pluginManager ?? null;
 		return () => { state.pluginManager = null; };
 	});
+	ctx.inject(['vssarosPluginResources'], scope => {
+		state.pluginResources = scope.vssarosPluginResources;
+		return () => { state.pluginResources = null; };
+	});
 
 	ctx.inject(['vssarosAgents'], scope => {
 		state.agentsRescan = typeof scope.vssarosAgents?.rescan === 'function'
@@ -206,6 +213,7 @@ export async function apply(ctx, config) {
 	}, 'vssaros-marketplace: market agent');
 
 	ctx.inject(['vssarosFoundation'], scope => {
+		bindFoundation(scope.vssarosFoundation);
 		try {
 			state.dataRoot = dataRootOf(config);
 			state.dataRootError = null;
@@ -233,6 +241,19 @@ export async function apply(ctx, config) {
 			});
 		}
 		return state.market;
+	}
+	async function installedOptions() {
+		if (typeof state.pluginManager?.listBundles !== 'function') { return {}; }
+		try { return { bundles: await state.pluginManager.listBundles() }; }
+		catch { return {}; }
+	}
+	let installedSnapshot;
+	function readInstalledSnapshot() {
+		if (!installedSnapshot) {
+			installedSnapshot = installedOptions().then(options => resolveInstalledVersions(state.dataRoot, options))
+				.finally(() => { installedSnapshot = undefined; });
+		}
+		return installedSnapshot;
 	}
 
 	/**
@@ -364,6 +385,17 @@ export async function apply(ctx, config) {
 				warnings: distributionWarnings(dist, kind),
 				files: [],
 			};
+			if (isPluginEnvelope(row.manifest)) {
+				const info = await unpackPluginEnvelope({ gzBuffer: await downloadVersion(slug, String(row.version)),
+					slug, kind, version: String(row.version), expectedSha256: row.sha256, inspect: state.pluginResources?.inspectArchive });
+				const files = info.entries.map(entry => ({ path: entry.name, data: entry.data }));
+				base.files = files.slice(0, 200).map(file => ({ path: file.path, size: file.data.length }));
+				base.filesNote = info.plan.profile === 'bot'
+					? '标准 Bot 插件；至少一个 Bot，无需页面；技能 / 工具 / MCP 可选。运行可用性需安装后验证。'
+					: '标准工作台插件；已检查内层包。页面必需，Bot / 技能 / 工具 / MCP 均可选；运行可用性需安装后验证。';
+				base.resources = info.manifest.plugin.resources;
+				return finishPreview(base, scanPackageFiles(files));
+			}
 			if (dist && dist.type) {
 				// 外部发布源：预览不拉包体（可能几百 MB），只把来源 / commit / 校验值摊开
 				base.filesNote = '本体在外部发布源，安装时才下载；预览不拉取包体';
@@ -443,7 +475,7 @@ export async function apply(ctx, config) {
 			// 台账 + **落地物核对**（★ 2026-10-29）⇒ 让页面把已装的商品标成"已安装"
 			//   ⚠ 以前直接把台账版本塞给前端 ⇒ 台账里 100+ 条"文件早被删了"的历史条目
 			//     全被渲染成"已安装"（用户看到的是假的已装状态）✗
-			const installedByKey = await resolveInstalledVersions(state.dataRoot);
+			const installedByKey = await readInstalledSnapshot();
 			return {
 				ok: true,
 				total: res.total,
@@ -458,7 +490,7 @@ export async function apply(ctx, config) {
 			try {
 				const pkg = await market().detail(slug);
 				// ★ 详情抽屉与卡片必须显示同一个已装状态（同一份判据）✓
-				const installedByKey = await resolveInstalledVersions(state.dataRoot);
+				const installedByKey = await readInstalledSnapshot();
 				const installedVersion = installedByKey.get(installedKey(pkg.kind, pkg.slug)) ?? '';
 				// ★ 详情 = 列表的公共字段 + visibility/featured/versions（同一份 `baseOf`）
 				return { ok: true, ...toPackageDetail(pkg, { installedVersion }) };
@@ -478,8 +510,9 @@ export async function apply(ctx, config) {
 		//   版本也换成磁盘上那份（与升级判断的口径对齐）。
 		const entries = state.dataRoot ? await readInstalled(state.dataRoot) : [];
 		const alive = [];
+		const options = await installedOptions();
 		for (const entry of entries) {
-			const version = await resolveEntryVersion(state.dataRoot, entry);
+			const version = await resolveEntryVersion(state.dataRoot, entry, options);
 			if (version) { alive.push({ ...entry, version }); }
 		}
 		// ★ 2026-11-10：本地新建的资源不在台账里 ⇒ 以前「已安装」页根本看不到它们，
@@ -643,6 +676,15 @@ export async function apply(ctx, config) {
 		// （`syncPresets` 没有文件监听）⇒ 装完必须重启才注册成 preset。
 		// 如实返回，不让用户以为"装完就能用"✗（重启后自然生效，代码里不需要额外动作）
 		if (!slug) { throw new Error(`marketplace.${op} 需要 slug`); }
+		if (kind === 'agent' && ['uninstall', 'trash'].includes(op)) {
+			const existing = (await readInstalled(dataRoot)).find(row => row.kind === kind && row.storeId === slug);
+			if (existing?.packageName && existing?.format) {
+				if (op === 'trash') { throw new Error('Bot 插件请使用卸载，不能按资源目录移入回收站'); }
+				const result = await runLocalPlugin(op, params);
+				if (!result) { throw new Error('插件管理服务未就绪，未卸载'); }
+				return result;
+			}
+		}
 
 		// ★ 2026-10-26（用户：「连接器每个 item 增加开关」）：开关 = mcp.json 里那条的 `disabled`。
 		//   运行时挂载缺省启用 ⇒ 改完即时生效；`=0` 回退到启动期覆盖层时才需要重启 Host。
@@ -692,6 +734,14 @@ export async function apply(ctx, config) {
 		if (!versionRow) {
 			throw new Error(`「${slug}」没有可用版本${wanted ? `（找不到 ${wanted}）` : ''}`);
 		}
+		if (isPluginEnvelope(versionRow.manifest)) {
+			if (kind !== 'agent') { throw new Error('插件包与资源商品类型不一致'); }
+			const result = await runLocalPlugin(op, { ...params, version: versionRow.version });
+			if (!result) { throw new Error('插件管理服务未就绪，未安装'); }
+			return result;
+		}
+		const installedPlugin = (await readInstalled(dataRoot)).find(row => row.kind === kind && row.storeId === slug && row.format);
+		if (installedPlugin) { throw new Error('不能将已安装插件直接升级为旧资源包，请先卸载插件'); }
 		// ★ 2026-10-22（用户需求）：商品本体可能是**外部源（GitHub 地址）**而不是自带包 ⇒
 		//   按 `manifest.distribution` 分流：外部源走 GitHub 下载 + 定位安装根，否则走商城下载 ✓
 		const dist = versionRow.manifest?.distribution;
@@ -926,6 +976,7 @@ export async function apply(ctx, config) {
 			const pkgName = String(params.packageName || '')
 				|| (entry && entry.packageName ? String(entry.packageName) : '');
 			if (!pkgName) { return null; }   // 包名不知道 ⇒ 交 IDE（它按 storeId 反查）
+			if (kind === 'agent' && (!entry?.format || entry.packageName !== pkgName)) { throw new Error('Bot 插件卸载包名与已安装商品归属不一致'); }
 			// ⚠ 内置插件（@vssaros/* / @deepseek-ai/*）**不许卸**：那是随产品/官方发布的，
 			//   删掉会把产品自己的插件（含本页所在的插件）一起带走，而且用户没法从商城装回来。
 			if (/^@(vssaros|deepseek-ai)\//.test(pkgName)) {
@@ -933,7 +984,9 @@ export async function apply(ctx, config) {
 			}
 			if (typeof pm.removeBundle !== 'function') { return null; }
 			const r = await pm.removeBundle(pkgName);
-			if (r && r.error) { return { ok: false, error: mgmtErrorText(r.error) }; }
+			if (!r || r.error || r.ok === false || !['applied', 'restart-required'].includes(r.application)) {
+				return { ok: false, error: r?.error ? mgmtErrorText(r.error) : '插件管理器未确认卸载', application: r?.application ?? 'failed' };
+			}
 			await removeInstalled(root, kind, slug);
 			return {
 				ok: true,
@@ -946,13 +999,36 @@ export async function apply(ctx, config) {
 
 		// install / upgrade
 		const detail = await market().detail(slug);
+		if (kind !== detail.kind) { throw new Error('请求商品类型与服务端不一致'); }
 		const version = String(params.version || detail.latest_version || detail.latestVersion || '');
 		if (!version) { throw new Error('这个商品没有可用版本'); }
+		const versionRow = (detail.versions ?? []).find(row => row.version === version);
+		if (params.version && !versionRow) { throw new Error('请求版本不存在，不能回退到其他版本'); }
+		if (isPluginEnvelope(versionRow?.manifest)) {
+			if (kind !== detail.kind || !['agent', 'workbench'].includes(kind)) { throw new Error('插件包与商品类型不一致'); }
+			const entries = await readInstalled(root, { strict: true });
+			const name = versionRow.manifest.plugin?.name;
+			const conflict = entries.find(row => row.packageName === name && (row.kind !== kind || row.storeId !== slug));
+			if (conflict) { throw new Error('插件包名已被另一商品占用，不能覆盖'); }
+			const current = entries.find(row => row.kind === kind && row.storeId === slug);
+			if (current && !current.format) { throw new Error('旧资源包迁移为插件前，请先卸载旧资源包'); }
+			if (current?.packageName && current.packageName !== name) { throw new Error('更新不能更换已安装插件包名'); }
+			if (op === 'install' && current) { throw new Error('插件已经安装，请使用升级'); }
+			const result = await installPluginEnvelope({ dataRoot: root, slug, version, kind,
+				gzBuffer: await downloadVersion(slug, version), expectedSha256: versionRow.sha256,
+				inspect: state.pluginResources?.inspectArchive, pluginManager: pm, ownedPackageName: current?.packageName });
+			if (!result.ok) { return result; }
+			await upsertInstalled(root, { kind, storeId: slug, version, packageName: result.packageName, format: result.format });
+			await state.pluginResources.refresh();
+			return { ...result, via: 'dsh', resourceStatus: state.pluginResources.status(result.packageName) };
+		}
 		const dist = distributionOf(detail, version);
 		const built = await specForDistribution(dist, slug, version);
 		if (built.error) { return { ok: false, error: built.error }; }
 		const r = await pm.installBundle(built.spec, { enabled: true });
-		if (r && r.error) { return { ok: false, error: mgmtErrorText(r.error) }; }
+		if (!r || r.error || r.ok === false || !['applied', 'restart-required'].includes(r.application)) {
+			return { ok: false, error: r?.error ? mgmtErrorText(r.error) : '插件管理器未确认安装', application: r?.application ?? 'failed' };
+		}
 		await upsertInstalled(root, { kind, storeId: slug, version, packageName: built.name || '' });
 		return {
 			ok: true,
@@ -974,8 +1050,18 @@ export async function apply(ctx, config) {
 	 * @param {object} params
 	 */
 	async function runLocalByTarget(target, op, params) {
+		if (target === 'local-preferences') {
+			if (!state.dataRoot) { throw new Error('拿不到数据根，无法保存商城偏好'); }
+			const args = { dataRoot: state.dataRoot, endpoint: marketEndpointOf(config) };
+			const preferences = op === 'preferencesRead' ? await readPreferences(args)
+				: await updatePreferences({ ...args, expectedRevision: params.expectedRevision, change: params.change });
+			return { ok: true, preferences };
+		}
 		if (target === 'local-read') { return runLocal(op, params); }
-		if (target === 'local-write') { return runLocalWrite(op, params); }
+		if (target === 'local-write') {
+			installedSnapshot = undefined;
+			try { return await runLocalWrite(op, params); } finally { installedSnapshot = undefined; }
+		}
 		// 插件 / 工作台：先试 dsh 侧（pluginManager）；它说做不了（null）再退回 IDE
 		if (target === 'local-plugin') {
 			const local = await runLocalPlugin(op, params);
@@ -1048,7 +1134,13 @@ export async function apply(ctx, config) {
 			...(typeof params.icon === 'string' && params.icon.trim() ? { icon: params.icon.trim() } : {}),
 			...(typeof params.cover === 'string' && params.cover.trim() ? { cover: params.cover.trim() } : {}),
 		};
-
+		if (typeof params.pluginBase64 === 'string' && params.pluginBase64) {
+			if (!['agent', 'workbench'].includes(kind)) { throw new Error('仅 Bot / 工作台支持标准插件包上传'); }
+			if (params.pluginBase64.length > 12 * 1024 * 1024) { throw new Error('上传插件包超过大小限制'); }
+			return publishPluginVersion({ market: m, localId, version, kind, gzBuffer: Buffer.from(params.pluginBase64, 'base64'),
+				inspect: state.pluginResources?.inspectArchive, changelog: String(params.changelog ?? ''),
+				meta: { ...mediaMeta, name: params.name, description: params.description } });
+		}
 
 		// ★ 2026-10-22（用户需求）：本体是一个 **GitHub 地址** ⇒ 只登记来源，不打包上传。
 		//   这条对**所有 kind** 都成立（服务端 external 接口不限类型）；
@@ -1242,12 +1334,15 @@ export async function apply(ctx, config) {
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>商城工作台</title>
+<link rel="icon" href="data:," />
 <link rel="stylesheet" href="${ROUTE_PREFIX}/page.css" />
 </head>
 <body>
 <div id="vs-mp-root"><div class="vs-mp-empty">正在装载商城工作台…</div></div>
 <script src="${ROUTE_PREFIX}/vendor/react.js"></script>
 <script src="${ROUTE_PREFIX}/vendor/react-dom.js"></script>
+<script src="${ROUTE_PREFIX}/client.state.js"></script>
+<script src="${ROUTE_PREFIX}/client.ui.js"></script>
 <script src="${ROUTE_PREFIX}/client.js"></script>
 </body>
 </html>`;
@@ -1322,7 +1417,9 @@ export async function apply(ctx, config) {
 				if (!kind) { throw new Error(`商城里查不到「${s}」的类型（可能 slug 写错）`); }
 				const v = String(version ?? '').trim() || undefined;
 				if (LOCAL_PLUGIN_KINDS.has(kind)) {
-					return { kind, ...(await runLocalPlugin('install', { kind, slug: s, version: v })) };
+					const result = await runLocalPlugin('install', { kind, slug: s, version: v });
+					if (!result) { throw new Error('插件管理服务未就绪，未安装'); }
+					return { kind, ...result };
 				}
 				if (LOCAL_WRITE_KINDS.has(kind)) {
 					return { kind, ...(await runLocalWrite('install', { kind, slug: s, version: v })) };
@@ -1375,6 +1472,13 @@ export async function apply(ctx, config) {
 				// ── 客户端 chunk（页面自己加载）────────────────────
 				// ⚠ 必须 `no-store`：没有缓存头时浏览器会按启发式缓存 ⇒ 改了 client.js
 				//   页面却还是旧的（"我改的没生效"的头号伪故障，与 vendor 的 immutable 相反）✗
+				if (req.method === 'GET' && ['client.state.js', 'client.ui.js'].some(file => url.pathname === `${ROUTE_PREFIX}/${file}`)) {
+					const { readFile } = await import('node:fs/promises');
+					const file = url.pathname.endsWith('/client.state.js') ? 'client.state.js' : 'client.ui.js';
+					res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(await readFile(new URL(file, import.meta.url), 'utf8'));
+					return;
+				}
 				if (req.method === 'GET' && url.pathname === `${ROUTE_PREFIX}/client.js`) {
 					const { readFile } = await import('node:fs/promises');
 					const here = path.dirname(fileURLToPath(import.meta.url));
@@ -1396,7 +1500,7 @@ export async function apply(ctx, config) {
 
 				// ── 商城动作：**只读面在 dsh 侧自持**，写面（装/卸）仍转 IDE ────────
 				if (req.method === 'POST' && url.pathname === `${ROUTE_PREFIX}/api/action`) {
-					const raw = await readBody(req);
+					const raw = await readBody(req, 12 * 1024 * 1024);
 					let parsed = {};
 					try { parsed = JSON.parse(raw || '{}'); } catch { parsed = {}; }
 					const op = String(parsed.op ?? '');
@@ -1415,7 +1519,7 @@ export async function apply(ctx, config) {
 						try {
 							json(200, await runLocalByTarget(target, op, params));
 						} catch (e) {
-							json(200, { ok: false, error: String(e?.message ?? e) });
+							json(200, { ok: false, error: String(e?.message ?? e), ...(e?.code === 'revision-conflict' ? { code: e.code, current: e.current } : {}) });
 						}
 						return;
 					}

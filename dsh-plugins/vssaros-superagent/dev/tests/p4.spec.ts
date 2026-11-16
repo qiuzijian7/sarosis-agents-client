@@ -67,7 +67,7 @@ describe('changelists', () => {
 })
 
 describe('binding a changelist to a ticket', () => {
-  interface FakeTicket { id: string; execution: { name: string }; follows: { thread: string; own?: boolean; closed?: { at: string } }[]; ended?: { outcome: string } }
+  interface FakeTicket { id: string; execution: { name: string; p4Workspace?: { client: string; root: string; port: string; user: string } }; follows: { thread: string; own?: boolean; closed?: { at: string } }[]; ended?: { outcome: string } }
   function host(tickets: FakeTicket[]) {
     const closed: unknown[] = []
     const ctx = {
@@ -84,6 +84,16 @@ describe('binding a changelist to a ticket', () => {
   }
   const change = (overrides: Partial<Change> = {}): Change => ({ number: 501, current: 501, status: 'pending', client: 'superagent-fix-dpi', user: 'saros-bot', description: 'fix', time: '1793678561',
     files: [], shelved: [{ depotFile: '//GR/main/Source/A.cpp', action: 'edit', rev: '3', type: 'text', digest: 'AB' }], ...overrides })
+  it('uses exact current-client identity plus ticket marker rather than taking over an existing CL', () => {
+    const ticket: FakeTicket = { id: 't1', execution: { name: 'fix', p4Workspace: { client: 'main', root: '/project', port: config.port, user: config.user } }, follows: [] }
+    const other: FakeTicket = { ...ticket, id: 't2', follows: [{ thread: 'p4:777', own: true }] }
+    const { ctx } = host([ticket, other])
+    expect(claimChangelist(ctx, config, 't1', change({ client: 'main' }))).toContain('ticket marker')
+    const owned = change({ client: 'main', description: '[dsh-superagent:t1] fix' })
+    expect(claimChangelist(ctx, config, 't1', owned)).toBeUndefined()
+    expect(claimChangelist(ctx, config, 't1', { ...owned, number: 777 })).toContain('another active ticket')
+    expect(claimChangelist(ctx, config, 't1', { ...owned, client: 'other' })).toContain('use main')
+  })
   it('binds the execution account\'s pending CL from the ticket\'s workspace as the ticket\'s own Thread', () => {
     const ticket: FakeTicket = { id: 't1', execution: { name: 'fix-dpi' }, follows: [] }
     const { ctx } = host([ticket])

@@ -90,6 +90,51 @@ export interface IStoreMetadataRepair {
 }
 
 /**
+ * ★★ 2026-11-12（真机：升到 dsh 0.2.2-rc.2 后 `startSession: 控制桥不可用`）：
+ *   `.modules.yaml` **不止 YAML 一种写法**。pnpm 11 写的是 **JSON**：
+ *
+ *       "storeDir": "G:\\.pnpm-store\\v11",
+ *       "virtualStoreDir": "G:\\...\\profile-seed\\...\\node_modules\\.pnpm",
+ *
+ *   旧代码的 `/^storeDir:.*$/m` 只认 `storeDir: ...`，在 JSON 上**一条都匹配不到** ⇒
+ *   `changed=false` 直接 return ⇒ 种子里的 G 盘 storeDir 原样留着 ⇒ 每次 `pnpm add` 都
+ *   `ERR_PNPM_UNEXPECTED_STORE`（36 次）⇒ 37 个伴生插件装不上，其中 `vssaros-dsh-bridge`
+ *   缺失 ⇒ Host `bridge: fallback` ⇒ 桌面窗口建会话三次全失败。
+ *
+ * ⇒ 读写都走下面这两个「格式无关」的函数，保持原有格式（YAML 仍是 YAML、JSON 仍是 JSON）。
+ */
+
+/** 读 `.modules.yaml` 里某个键的值；JSON（`"key": "value"`）与 YAML（`key: value`）都认。 */
+export function readStoreMetadataValue(content: string, key: string): string | undefined {
+	const json = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`).exec(content);
+	if (json) {
+		try { return JSON.parse(`"${json[1]}"`) as string; } catch { return json[1]; }
+	}
+	const yaml = new RegExp(`^\\s*${key}:[ \\t]*(.+)$`, 'm').exec(content);
+	return yaml?.[1]?.trim();
+}
+
+/** 替换某个键的值并保留文件格式/缩进/尾逗号；键不存在时原样返回。 */
+function replaceMetadataValue(content: string, key: string, value: string): string {
+	// JSON：值里的反斜杠必须按 JSON 字符串转义，否则整个文件不再是合法 JSON ✗
+	// ⚠ 分组里只能用 `[ \t]*`，不能用 `\s*`：后者会跨行吃掉 CRLF 与下一行缩进 ⇒ 两行被合并 ✗。
+	// ⚠ 末尾的 `\r` 必须捕获并回写：CRLF 文件里 `$` 落在 `\r` 之后，不回写就会把该行变成 LF ⇒
+	//   每修一个键少一个 `\r`（实测 8 行按 \r\n 切只剩 6 行）。
+	const json = new RegExp(`^([ \\t]*)"${key}"([ \\t]*:[ \\t]*)"(?:[^"\\\\]|\\\\.)*"([ \\t]*,?[ \\t]*\\r?)$`, 'm');
+	const jm = json.exec(content);
+	if (jm) {
+		const escaped = JSON.stringify(value).slice(1, -1);
+		return content.replace(json, `${jm[1]}"${key}"${jm[2]}"${escaped}"${jm[3]}`);
+	}
+	const yaml = new RegExp(`^([ \\t]*)${key}:[^\\r\\n]*(\\r?)$`, 'm');
+	const ym = yaml.exec(content);
+	if (ym) {
+		return content.replace(yaml, `${ym[1]}${key}: ${value}${ym[2]}`);
+	}
+	return content;
+}
+
+/**
  * 纯字符串改写：把 `.modules.yaml` 里的 `virtualStoreDir`（以及给了就一起改的 `storeDir`）换成期望值。
  *
  * 用法（调用方负责读/写文件与日志）：
@@ -100,9 +145,9 @@ export interface IStoreMetadataRepair {
  * ```
  */
 export function repairStoreMetadataContent(before: string, virtualStoreDir: string, storeDir?: string): IStoreMetadataRepair {
-	let content = before.replace(/^virtualStoreDir:.*$/m, `virtualStoreDir: ${virtualStoreDir}`);
+	let content = replaceMetadataValue(before, 'virtualStoreDir', virtualStoreDir);
 	if (storeDir) {
-		content = content.replace(/^storeDir:.*$/m, `storeDir: ${storeDir}`);
+		content = replaceMetadataValue(content, 'storeDir', storeDir);
 	}
 	return {
 		content,

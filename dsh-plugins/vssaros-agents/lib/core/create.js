@@ -70,6 +70,7 @@ export function stripModelFromAgentMd(text) {
 	return { text: keep.join(eol), removed, model };
 }
 const LIST_ITEM_RE = /^[A-Za-z0-9._:@/-]{1,80}$/;
+const TOOL_ITEM_RE = /^!?[A-Za-z0-9._:@/-]{1,80}\*?$/;
 // icon 上限放宽到 40：既存 emoji（1~2 字符），也存 `lucide:<name>`（最长如 `lucide:sliders-horizontal`）
 const LIMITS = { name: 80, description: 200, role: 40, icon: 40, model: 120, persona: 20000 };
 
@@ -178,7 +179,7 @@ export function validateDraft(draft, ctx = {}) {
 		}
 	}
 	for (const item of draft.tools) {
-		if (!LIST_ITEM_RE.test(item)) {
+		if (!TOOL_ITEM_RE.test(item)) {
 			errors.push('工具名不合法：' + item);
 		}
 	}
@@ -327,6 +328,42 @@ export function setSubagentFlag(text, enabled) {
 		head.splice(idx, 1);
 	}
 	return { text: '---\n' + head.join('\n') + '\n---\n' + body };
+}
+
+/** 注册扫描的 Bot 定义 → 设置草稿；使用映射后的技能/工具，而不是包内局部名称。 */
+export function draftFromAgentRow(agent) {
+	return normalizeDraft({
+		...agent,
+		workspacesRead: agent?.workspaces?.read ?? [],
+		workspacesWrite: agent?.workspaces?.write ?? [],
+	});
+}
+
+export const PLUGIN_OVERRIDE_FIELDS = Object.freeze([
+	'name', 'description', 'icon', 'role', 'model', 'modelAssignment', 'memoryChars', 'memoryMode',
+	'delegatable', 'skills', 'tools', 'workspacesRead', 'workspacesWrite', 'persona',
+]);
+
+/** 用户文件中的字段覆写标记；缺省是普通完整定义，坏标记不能静默当作完整定义。 */
+export function pluginOverridesFromAgentMd(text) {
+	const value = parseFrontmatter(text).meta['plugin-overrides'];
+	if (value === undefined) { return undefined; }
+	let record;
+	try { record = JSON.parse(value); } catch { return { error: 'plugin-overrides JSON 解析失败' }; }
+	if (!record || record.version !== 1 || typeof record.owner !== 'string' || !record.owner.trim()
+		|| !record.delta || typeof record.delta !== 'object' || Array.isArray(record.delta)) {
+		return { error: 'plugin-overrides 格式不合法' };
+	}
+	for (const [field, input] of Object.entries(record.delta)) {
+		if (!PLUGIN_OVERRIDE_FIELDS.includes(field)) { return { error: 'plugin-overrides 字段不允许：' + field }; }
+		const valid = ['skills', 'tools', 'workspacesRead', 'workspacesWrite'].includes(field)
+			? Array.isArray(input) && input.every(item => typeof item === 'string')
+			: field === 'delegatable' ? typeof input === 'boolean'
+				: field === 'memoryChars' ? input === null || (typeof input === 'number' && Number.isFinite(input))
+					: typeof input === 'string';
+		if (!valid) { return { error: 'plugin-overrides 字段类型不合法：' + field }; }
+	}
+	return { version: 1, owner: record.owner, delta: structuredClone(record.delta) };
 }
 
 /** 草稿 → .agent.md 原文（字段顺序固定；空字段不写）。 */

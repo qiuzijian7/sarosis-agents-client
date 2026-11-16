@@ -13,7 +13,7 @@ const raw = { name: 'raw',
 const OUT = '../lib'
 const PACKAGE = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { name: string }).name
 export default defineConfig([
-  { entry: { index: 'src/index.ts', 'github-watch': 'src/sources/github.ts', 'feishu-watch': 'src/sources/feishu.ts', 'p4-watch': 'src/sources/p4.ts', 'tapd-watch': 'src/sources/tapd.ts' }, outDir: OUT, format: 'esm', fixedExtension: false, platform: 'node', target: 'es2024', dts: false, clean: false, deps: { neverBundle: [/^@deepseek-ai\/(?!schemastery|cosmokit)/], alwaysBundle: [/^zod(\/|$)/, /^proper-lockfile(\/|$)/, /^@deepseek-ai\/(schemastery|cosmokit)(\/|$)/] } },
+  { entry: { index: 'src/index.ts', 'github-watch': 'src/sources/github.ts', 'feishu-watch': 'src/sources/feishu.ts', 'p4-watch': 'src/sources/p4.ts', 'tapd-watch': 'src/sources/tapd.ts', 'gongfeng-watch': 'src/sources/gongfeng.ts' }, outDir: OUT, format: 'esm', fixedExtension: false, platform: 'node', target: 'es2024', dts: false, clean: false, deps: { neverBundle: [/^@deepseek-ai\/(?!schemastery|cosmokit)/], alwaysBundle: [/^zod(\/|$)/, /^proper-lockfile(\/|$)/, /^@deepseek-ai\/(schemastery|cosmokit)(\/|$)/] } },
   { entry: { client: 'src/client/index.tsx' }, outDir: OUT, format: 'cjs', platform: 'browser', dts: false, clean: false, plugins: [raw],
     deps: { neverBundle: ['react', 'react/jsx-runtime', 'react-dom'] },
     outputOptions: { entryFileNames: 'client.js', banner: `window.__ModuleLoader__.load({ id: ${JSON.stringify(PACKAGE)}, factory: (require) => {`, footer: 'return module.exports; } });', intro: 'var module = { exports: {} }; var exports = module.exports;' } },

@@ -5609,13 +5609,13 @@ private _handleStreamDelta(delta: any): void {
 					}))
 				);
 
-				// 默认选中 agent（2026-11-09：通用主助理 saros-claw 已删除）：
+				// 默认选中 agent（2026-11-12：workflow-agent 已下线）：
 				//   1. 窗口重载恢复的 input.agentId（优先）
-				//   2. 默认编排 agent（工作流画布 Run 同款）
+				//   2. 默认规划 agent（工作流画布 Run 同款）
 				//   3. 上面都没匹配到 → 列表第一个 agent
 				// ⚠ 不再做 `claw` 模糊匹配：删掉主助理后它会误命中 `mediaclawer` ✗
 				if (!this._defaultAgentSelected && agents.length > 0) {
-					const matchDefault = (a: any) => a.id === 'workflow-agent' || (a as any).presetId === 'workflow-agent';
+					const matchDefault = (a: any) => a.id === 'planner' || (a as any).presetId === 'planner';
 
 					// 1. 窗口重载恢复的 agentId 优先
 					const restoredAgentId = (this.input instanceof NativeChatEditorInput) ? this.input.agentId : undefined;
@@ -5627,7 +5627,7 @@ private _handleStreamDelta(delta: any): void {
 						}
 					}
 
-					// 2-3. 默认编排 agent / 列表第一个
+					// 2-3. 默认规划 agent / 列表第一个
 					if (!target) {
 						target = agents.find(matchDefault) ?? agents[0];
 					}

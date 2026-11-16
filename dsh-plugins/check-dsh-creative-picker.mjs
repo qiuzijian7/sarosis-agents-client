@@ -308,9 +308,32 @@ async function boot({ catalog = CATALOG, catalogStatus = 200, catalogType = 'app
 		/setAttribute\("role", "group"\)/.test(src) && /setAttribute\("role", "menu"\)/.test(src) && /aria-disabled/.test(src));
 }
 
+// ── ⑤ 颜色统一（2026-11-11，用户报「白色主题下图片/视频/音频模型看不清」）──────────
+// 根因：后注入的"与官方菜单统一"层用 !important 无条件写死**深色主题**色，把上层 var(--dsw-alias-*)
+// 全盖掉 ⇒ 浅色主题下白底白字。⇒ 上层颜色全走主题令牌、次要文字提升一级；后注入层只准调尺寸。
+{
+	const cssFrom = src.indexOf('const CSS = `');
+	const cssTo = src.indexOf('`;', cssFrom);
+	const upper = cssFrom < 0 ? '' : src.slice(cssFrom, cssTo);
+	const uniFrom = src.indexOf('uni.textContent = [');
+	const uniTo = src.indexOf('].join("\\n");', uniFrom);
+	const lower = uniFrom < 0 ? '' : src.slice(uniFrom, uniTo)
+		.replace(/\/\*[\s\S]*?\*\//g, ' ')
+		.replace(/(^|[^:"'`\\])\/\/[^\n]*/g, '$1');
+	truthy('⑤ 采集面：两层 CSS 都取到了（守卫不能空跑）', !!upper && !!lower);
+	truthy('⑤ 上层主文字用 label-primary（浅色近黑 / 深色近白）', /color:var\(--dsw-alias-label-primary/.test(upper));
+	truthy('⑤ 上层次要文字统一 label-secondary（不用最淡的 tertiary）',
+		/label-secondary/.test(upper) && !/label-tertiary/.test(upper));
+	truthy('⑤ 搜索框 placeholder 也走主题令牌', /input::placeholder\{color:var\(--dsw-alias-label-/.test(upper));
+	eq('⑤ 后注入层没有写死颜色（白底白字的根因）',
+		(lower.match(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)/g) || []), []);
+	truthy('⑤ 后注入层不覆盖 color / background（只调尺寸）',
+		!/\b(color|background|backgroundColor|borderColor)\s*:/.test(lower));
+}
+
 console.log('');
 if (problems.length === 0) {
-	console.log('[check-dsh-creative-picker] ✓ 创作模型三行（S2）：注册 / 纯函数 / 注入不碰官方两行 / 分组列表 / 选中落盘 / 置灰说明 / 未登录 / 老桥零痕迹 全部通过');
+	console.log('[check-dsh-creative-picker] ✓ 创作模型三行（S2）：注册 / 纯函数 / 注入不碰官方两行 / 分组列表 / 选中落盘 / 置灰说明 / 未登录 / 老桥零痕迹 / 明暗主题色统一 全部通过');
 	process.exit(0);
 }
 console.log('[check-dsh-creative-picker] ✗ ' + problems.length + ' 处问题：');

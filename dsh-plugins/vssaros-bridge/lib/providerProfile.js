@@ -89,6 +89,7 @@ export function buildRouteProfile(p) {
 		baseURL: p.baseURL,
 		displayName: p.displayName,
 		models,
+		...(p.retryPolicy ? { retryPolicy: structuredClone(p.retryPolicy) } : {}),
 		...(routeReasoning ? { reasoning: routeReasoning } : {}),
 		...(p.credentialRef ? { apiKeyEnv: p.credentialRef } : {}),
 		...(p.headers && typeof p.headers === 'object' && Object.keys(p.headers).length ? { headers: p.headers } : {}),
@@ -139,6 +140,19 @@ const sameInputModalities = (want, got) => {
 	return a.length === b.length && a.every((v, i) => v === b[i]);
 };
 
+const normalizedRetryPolicy = policy => policy ? {
+	mode: policy.mode,
+	...(policy.mode === 'normal' ? {
+		maxRetries: policy.maxRetries ?? 5,
+		retryableCodes: [...(policy.retryableCodes ?? ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'])].sort(),
+	} : {}),
+	backoff: {
+		initialDelayMs: policy.backoff?.initialDelayMs ?? 500,
+		maxDelayMs: policy.backoff?.maxDelayMs ?? 10_000,
+		jitterRatio: policy.backoff?.jitterRatio ?? 0.1,
+	},
+} : undefined;
+
 /** baseURL 漂移时把**值**带出来（代理 secret 段打码）。 */
 export const redactUrl = u => String(u ?? '').replace(/(\/r\/)[^/]+/, '$1***');
 
@@ -160,6 +174,7 @@ export function sameProfile(want, got, why) {
 	if ((got.reasoning ?? undefined) !== (want.reasoning ?? undefined)) { return no('reasoning'); }
 	if ((got.apiKeyEnv ?? undefined) !== (want.apiKeyEnv ?? undefined)) { return no('apiKeyEnv'); }
 	if (!sameHeaders(want.headers, got.headers)) { return no('headers'); }
+	if (want.retryPolicy && JSON.stringify(normalizedRetryPolicy(want.retryPolicy)) !== JSON.stringify(normalizedRetryPolicy(got.retryPolicy))) { return no('retryPolicy'); }
 	if (!Array.isArray(got.models) || got.models.length !== want.models.length) { return no('models.length'); }
 	for (let i = 0; i < want.models.length; i++) {
 		const wm = want.models[i];

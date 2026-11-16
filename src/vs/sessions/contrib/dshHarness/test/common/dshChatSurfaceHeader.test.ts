@@ -494,33 +494,46 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 		 * 根与主命令。为什么值得单独钉一条：真机截图上根平铺把 4 个工作区撑成 12+ 行，用户找不到
 		 * "我在哪、点哪个会去哪" ✗ —— 这条用例就是那个结论的可执行版 ✓。
 		 */
-		test('稿 A：左栏 = 目录清单（根不在这里）、右栏 = 选中那条的根 + 主命令', () => {
+		test('A′：添加置顶 + 点工作区行内嵌展开多根 tip（根行与主命令在 tip 里）', () => {
 			withDom({ workspaces: RECORDS }, () => {
 				const h = loadChunk(`${LIB}/client.workspace.js`, makeCtx([], FLATTENED, '/repo/main'), {});
 				findByAttr(h.render(0, { sessionId: 's-a' }), 'data-vssaros-context-chip').props.onClick();
-				const menu = h.render(0, { sessionId: 's-a' });
+				let menu = h.render(0, { sessionId: 's-a' });
+				// ① 「＋ 添加工作区」置顶在顶部工具行
+				const top = findByAttr(menu, 'data-vssaros-context-top');
+				assert.ok(top, 'A′ 必须有顶部工具行');
+				assert.ok(findByAttr(top, 'data-vssaros-context-add-top'), '添加按钮必须在顶部（不再钉底）');
 				const panes = findAll(menu, 'data-vssaros-context-pane');
 				const paneOf = (kind: string) => panes.filter((n: any) => n.props['data-vssaros-context-pane'] === kind)[0];
 				const list = paneOf('list');
 				const detail = paneOf('detail');
-				assert.ok(list && detail, '两栏都要在（稿 A：左列表 + 右详情 ✓）');
+				assert.ok(list && detail, '两个 pane 锚点都要保留（IDE 侧行为网按它取节点 ✓）');
 				const attrsIn = (pane: any, prefix: string) => findAll(pane, 'data-vssaros-context-item')
 					.map((n: any) => String(n.props['data-vssaros-context-item']))
 					.filter((a: string) => a.indexOf(prefix) === 0);
+				// ② 首屏：只有工作区行，根与 tip 都不常驻
 				assert.deepStrictEqual(attrsIn(list, 'workspace:'), ['workspace:ws-a'],
-					'左栏一行 = 一个工作区（摊平的 3 条合成一行 ✓）');
-				assert.deepStrictEqual(attrsIn(list, 'root:'), [],
-					'★ 根**不许**再平铺在左栏 —— 那正是"4 个工作区撑成 12+ 行"的来源 ✗');
-				assert.deepStrictEqual(attrsIn(detail, 'root:'), ['root:/repo/main', 'root:/repo/pkg-b', 'root:/repo/pkg-c'],
-					'右栏 = 选中那条的各根（顺序 = 主根在前 ✓）');
-				const action = findByAttr(detail, 'data-vssaros-context-detail-action');
-				assert.ok(action, '右栏要给主命令（"这条到底能不能切"不许靠猜 ✗）');
-				assert.strictEqual(action!.props.disabled, true, '当前那条 ⇒ 主命令禁用（文案 = ✓ 已在这里）');
+					'列表一行 = 一个工作区（摊平的 3 条合成一行 ✓）');
+				assert.deepStrictEqual(attrsIn(list, 'root:'), [], '未展开时根不许平铺在列表里 ✗');
+				assert.strictEqual(findAll(menu, 'data-vssaros-wt-tip').length, 0, 'tip 默认全收起 ✓');
+				// ③ 点工作区行 ⇒ 展开 tip（手风琴，只展开一个）
+				findAll(list, 'data-vssaros-context-item')
+					.find((n: any) => n.props['data-vssaros-context-item'] === 'workspace:ws-a')!.props.onClick();
+				menu = h.render(0, { sessionId: 's-a' });
+				const tips = findAll(menu, 'data-vssaros-wt-tip');
+				assert.strictEqual(tips.length, 1, '手风琴：只展开一个 tip ✓');
+				const rootAttrs = findAll(tips[0], 'data-vssaros-context-item')
+					.map((n: any) => String(n.props['data-vssaros-context-item']))
+					.filter((a: string) => a.indexOf('root:') === 0);
+				assert.deepStrictEqual(rootAttrs, ['root:/repo/main', 'root:/repo/pkg-b', 'root:/repo/pkg-c'],
+					'tip = 选中那条的各根（顺序 = 主根在前 ✓）');
+				assert.ok(findByAttr(tips[0], 'data-vssaros-context-detail-action'),
+					'tip 里要有主命令（"这条到底能不能切"不许靠猜 ✗）');
 			});
 		});
 
-		test('点根行 ⇒ `bridge.switchWorktree(该根)`；点组行 ⇒ **主根**（多根时想换根就点根行 ✓）', async () => {
-			// 当前会话挂在**另一个**工作区上 ⇒ 该组既不是"当前"（组行可点）、该组也没有根是当前 cwd（根行可点）✓
+		test('A′：点 tip 里的「切换」⇒ 直接 `bridge.switchWorktree(该根)`（不许假入口）', async () => {
+			// 当前会话挂在**另一个**工作区上 ⇒ 选 /repo/pkg-c 不是当前根，「切换」可切 ✓
 			const snapshot = {
 				items: [
 					{ workspaceId: 'ws-a', path: '/repo/main', title: 'main', sessionIds: [] },
@@ -532,10 +545,7 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 			const switches: string[] = [];
 			withDom({ workspaces: RECORDS }, () => {
 				const h = loadChunk(`${LIB}/client.workspace.js`, makeCtx(switches, snapshot, '/elsewhere'), {});
-				/**
-				 * 拿一个"面板开着"的树：已开就复用（**不要**再点 chip —— 那会 toggle 成关闭 ✗，
-				 * 本用例第二版就踩过这个坑 ✓）。
-				 */
+				/** 拿一个"面板开着"的树（已开就复用，别再点 chip ⇒ 那会 toggle 成关闭 ✗）。 */
 				const withMenu = (fn: (menu: any) => void) => {
 					let menu = h.render(0, { sessionId: 's-a' });
 					if (findAll(menu, 'data-vssaros-context-item').length === 0) {
@@ -544,29 +554,23 @@ suite('chat-surface header（①工作区 ②历史/新建 ③preset 去重）',
 					}
 					fn(menu);
 				};
-				const click = (attr: string) => withMenu((menu) => {
-					findAll(menu, 'data-vssaros-context-item')
-						.find((n: any) => n.props['data-vssaros-context-item'] === attr).props.onClick();
-				});
-				// ★ 稿 A（2026-10-17 主从两栏）后，根行只出现在**右栏**、且只属于"当前指向的那一条"
-				//   ⇒ 想点某个组的根，先让右栏指向它（悬停预览：**只换详情、不换会话** ⇒ 安全 ✓）。
-				const hover = (attr: string) => {
-					withMenu((menu) => {
-						findAll(menu, 'data-vssaros-context-item')
-							.find((n: any) => n.props['data-vssaros-context-item'] === attr).props.onMouseEnter();
-					});
-					return h.render(0, { sessionId: 's-a' });   // 假 react 不自动重渲 ⇒ 手动再来一把 ✓
-				};
-				const afterHover = hover('workspace:ws-a');
-				assert.ok(findAll(afterHover, 'data-vssaros-context-item')
-					.some((n: any) => n.props['data-vssaros-context-item'] === 'root:/repo/pkg-c'),
-					'★ 悬停 = 右栏换详情（不换会话）⇒ 该组的根才点得到（稿 A 的交互契约 ✓）');
-				click('root:/repo/pkg-c');
-				click('workspace:ws-a');
+				const rowBy = (menu: any, attr: string) => findAll(menu, 'data-vssaros-context-item')
+					.find((n: any) => n.props['data-vssaros-context-item'] === attr);
+				// ① 展开 ws-a 的 tip
+				withMenu((menu) => { rowBy(menu, 'workspace:ws-a').props.onClick(); });
+				const opened = h.render(0, { sessionId: 's-a' });
+				const tip = findAll(opened, 'data-vssaros-wt-tip')[0];
+				assert.ok(tip, '点工作区行必须展开 tip ✓');
+				// ② ★ 真机「『切换』点不动」回归：根行不许被 hero 只读策略禁用
+				const switchRow = rowBy(tip, 'root:/repo/pkg-c');
+				assert.notStrictEqual(switchRow.props.disabled, true,
+					'★「切换」根行不许被禁用（hero 的 policy.disabled 曾让整个 tip 点不动 ✗）');
+				// ③ 点「切换」⇒ 直接切到该根（hero 根行闸对 userInitiated 放行）
+				switchRow.props.onClick();
 			});
 			await new Promise<void>(resolve => setTimeout(resolve, 0));
-			assert.deepStrictEqual(switches, ['/repo/pkg-c', '/repo/main'],
-				'根行 ⇒ 就以那个根开会话；组行 ⇒ 主根（行尾文案"以主根开会话 →"必须与它一致 ✓）');
+			assert.deepStrictEqual(switches, ['/repo/pkg-c'],
+				'点「切换」⇒ 就以那一个根开会话（不再依赖 hero 下会隐藏的主命令 ✓）');
 		});
 
 		/**

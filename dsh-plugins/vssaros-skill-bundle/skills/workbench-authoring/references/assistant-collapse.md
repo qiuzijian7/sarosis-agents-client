@@ -31,7 +31,7 @@ vssaros-workbenches（外壳）
        ├─ .wbDivider                       跟随「«」一起显隐
        └─ [data-vssaros-wb-open-external]  外开（服务端现签 token 的深链）
 
-vssaros-studio / vssaros-marketplace（工作台）
+vssaros-marketplace（工作台；vssaros-studio 已于 2026-11-11 下线）
   ① 面板根写 data-vssaros-assist-collapsed="1|0"
   ② 监听 vssaros:assist-expand → setCollapsed(false)
     监听 vssaros:assist-collapse → setCollapsed(true)
@@ -44,7 +44,7 @@ vssaros-studio / vssaros-marketplace（工作台）
 ```js
 // 1) 面板根上报状态
 react.createElement('div', {
-	'data-vssaros-studio-panel': '',
+	'data-vssaros-marketplace-panel': '',
 	'data-vssaros-assist-collapsed': collapsed ? '1' : '0',
 	ref: (el) => { if (el && el !== panelElState[0]) { panelElState[1](el); } },
 	/* style: display: flex, position: relative … */
@@ -92,8 +92,8 @@ function attachActionsDrag(el, frameEl) {
 | 工作台 | 助手栏形态 | 一体条 |
 |---|---|---|
 | 商城 `vssaros-marketplace` | 右侧栏（可收起） | 有「«」+「↗」 |
-| 萨罗斯平台 `vssaros-studio` | 右侧栏（可收起） | 有「«」+「↗」 |
 | Bots `vssaros-agents` | 对话在**中栏** | 只有「↗」 |
+| 萨罗斯平台 `vssaros-studio` | 已于 2026-11-11 下线 | 不再是覆盖对象 |
 | 小红书笔记 / codebase / kanban / kb / scheduler / workflow | 无右侧助手栏 | 只有「↗」 |
 
 「«」的显隐完全由 `data-vssaros-assist-collapsed` 决定，所以没有助手栏的工作台天然只剩「↗」，不需要写特例。

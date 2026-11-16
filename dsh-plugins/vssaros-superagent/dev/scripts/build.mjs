@@ -123,6 +123,10 @@ try {
   const bare = [...new Set([...entries.matchAll(/(?:^|[\s;])(?:import\s[^'"]*?from\s*|import\s*)['"]([^'"./][^'"]*)['"]/gm)].map(match => match[1]))]
     .filter(name => !name.startsWith('node:'))
   if (bare.length) { restore = true; throw new Error(`the bundled entry imports packages: ${bare.join(', ')}`) }
+  const browser = readFileSync(join(LIB, 'client.js'), 'utf8')
+  const browserDependencies = [...new Set([...browser.matchAll(/\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g)].map(match => match[1]))]
+  const unsupported = browserDependencies.filter(name => !['react', 'react-dom', 'react/jsx-runtime'].includes(name))
+  if (unsupported.length) { restore = true; throw new Error(`the browser entry requires unsupported modules: ${unsupported.join(', ')}`) }
   // Version linkage: lib/ changed under the same version would not reach an installed copy.
   const version = versionOf(), hash = hashOf(LIB), previous = manifestOf(kept)
   if (!check && previous && previous.version === version && previous.hash !== hash) {

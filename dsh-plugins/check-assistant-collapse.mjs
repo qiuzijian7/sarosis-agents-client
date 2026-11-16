@@ -16,7 +16,7 @@ import path from 'node:path';
 const ROOT = path.resolve(import.meta.dirname, '..');
 const SHELL = 'dsh-plugins/vssaros-workbenches/lib/client.js';
 const MARKETS = { name: '商城工作台', file: 'dsh-plugins/vssaros-marketplace/lib/workbench.js' };
-const STUDIO = { name: '萨罗斯平台', file: 'dsh-plugins/vssaros-studio/lib/client.js' };
+// ★ 2026-11-11：萨罗斯管理平台工作台已下线 ⇒ 不再作为工作台侧样板纳入本守卫。
 
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
 /** 去注释后再断言 —— 注释里写着"以前怎么做过"不该算实现。 */
@@ -86,7 +86,7 @@ ck('外开链接来自服务端现签 token', /ctx\.connection\.authenticatedUrl
 ck('没有遗留的旧外开类名（.vssWbOpenExternal）', !/vssWbOpenExternal/.test(shellSrc));
 
 // ── 2. 工作台侧：只留属性 + 事件，不许自造按钮 ────────────────────────
-for (const wb of [MARKETS, STUDIO]) {
+for (const wb of [MARKETS]) {
 	const src = read(wb.file);
 	const code = strip(src);
 	console.log(`\n${wb.name}  (${wb.file})`);
@@ -258,7 +258,8 @@ for (const wb of [MARKETS, STUDIO]) {
 	ck('页面型兜底开助手会话也只用真实存在的 preset（readyPreset）',
 		/Promise\.resolve\(service\.readyPreset\(entry\.id\)\)/.test(shell) && !/assistantPresetOf\(/.test(shell));
 	// 工作台 → agent 的对应表（内置，全仓唯一）
-	const PRESETS = [['vssaros/marketplace', 'vssaros-marketplace-bot'], ['vssaros/media', 'vssaros-media-librarian'], ['vssaros/studio', 'vssaros-saroasis-studio']];
+	// ★ 2026-11-11：萨罗斯管理工作台与其 TAPD 数据专员 bot 一起下线 ⇒ 这条映射删除。
+	const PRESETS = [['vssaros/marketplace', 'vssaros-marketplace-bot'], ['vssaros/media', 'vssaros-media-librarian']];
 	for (const [wb, preset] of PRESETS) {
 		ck(`${wb} 默认 agent = ${preset}`, new RegExp(`'${wb}':\\s*'${preset}'`).test(shellSrc));
 	}

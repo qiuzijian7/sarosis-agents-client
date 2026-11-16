@@ -33,10 +33,11 @@ function send(res, status, value) {
 
 /**
  * @param {{ grants: ReturnType<import('./grants.js').createGrantStore>, handoffs: ReturnType<import('./handoff.js').createHandoffs>,
- *   reject?: (req: unknown) => number | undefined, log?: (line: string) => void, currentUrl?: () => Promise<string | undefined> }} deps
+ *   reject?: (req: unknown) => number | undefined, log?: (line: string) => void, currentUrl?: () => Promise<string | undefined>,
+ *   rightbarActivity?: () => number }} deps
  * @returns {(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => Promise<void>}
  */
-export function createRouteHandler({ grants, handoffs, reject = () => undefined, log = () => {}, currentUrl = async () => undefined }) {
+export function createRouteHandler({ grants, handoffs, reject = () => undefined, log = () => {}, currentUrl = async () => undefined, rightbarActivity = () => 0 }) {
 	return async (req, res) => {
 		const rejected = reject(req);
 		if (rejected) { res.writeHead(rejected, { 'content-type': 'text/plain; charset=utf-8' }); res.end(String(rejected)); return; }
@@ -46,7 +47,12 @@ export function createRouteHandler({ grants, handoffs, reject = () => undefined,
 			if (req.method === 'GET' && path === `${API}/state`) {
 				let page;
 				try { page = await currentUrl(); } catch { page = undefined; }
-				send(res, 200, { grants: grants.list(), handoffs: handoffs.list(), grantable: GRANTABLE_OPS, durations: GRANT_DURATIONS, ...(page ? { page } : {}) });
+				// ★ 2026-11-11（用户要求）：会话开始操作右栏浏览器 ⇒ 页面据此在右栏收起时自动展开。
+				//   只在**真的连着右栏**时给时间戳；用 Chrome / 只读探测都不给 ⇒ 不误弹界面 ✓
+				let activeAt = 0;
+				try { activeAt = Number(rightbarActivity()) || 0; } catch { activeAt = 0; }
+				send(res, 200, { grants: grants.list(), handoffs: handoffs.list(), grantable: GRANTABLE_OPS, durations: GRANT_DURATIONS,
+					...(page ? { page } : {}), ...(activeAt ? { rightbarActiveAt: activeAt } : {}) });
 				return;
 			}
 			if (req.method !== 'POST' || !path.startsWith(`${API}/`)) { send(res, 404, { error: 'not found' }); return; }

@@ -7,11 +7,13 @@ import type { SearchView } from './api.ts'
 import { Button, Dot, Icon, Input, Modal, SegmentedTabs } from './controls.tsx'
 import type { DeploymentForm } from './deployment.tsx'
 import { EvalStatus } from './eval.tsx'
+import { OverviewPage } from './overview.tsx'
 import { ExecutionStatus } from './execution.tsx'
 import { ticketMark } from './marks.ts'
 import { GLOSSARY, GLOSSARY_VALUES, en, zh, type DshSuperagentKey } from './locales.ts'
 import { ChatTab, NativeContext, type NativeConversation } from './chat.tsx'
-import { SidePanel, SideProvider, useSide } from './side.tsx'
+import { SidePanel, SideProvider } from './side.tsx'
+import { ContextColumn, Rail } from './shell.tsx'
 import { WorkProvider } from './work.tsx'
 import { PanelProvider, usePanel, usePanelData } from './provider.tsx'
 import { HOME, NAV_TABS, initialLocation, lastSettingsGroup, remember, routeLabel, settingsRoute, type Location, type Route,
@@ -107,7 +109,6 @@ function SearchResults({ result, query, onClose }: { result: SearchView; query: 
 
 function Header() {
   const { t, call, notify } = usePanel()
-  const side = useSide()
   const [glossary, setGlossary] = useState(false)
   const [query, setQuery] = useState('')
   const [result, setResult] = useState<{ query: string; value: SearchView }>()
@@ -139,10 +140,8 @@ function Header() {
       </form>
       <Button variant="ghost" size="sm" icon={<Icon name="question" />} aria-label={t('glossary')} title={t('glossary')} aria-haspopup="dialog"
         onClick={() => setGlossary(true)} />
-      {/* VsSaros change: the Overview lives in the side panel; the main Session opens from the panel's strip. */}
-      <Button variant="outline" size="sm" icon={<Icon name="panel" size={14} />} onClick={() => side.setOpen(true)}>{t('openOverview')}</Button>
-      <Button variant="ghost" size="sm" icon={<Icon name="panel" />} aria-pressed={side.open} aria-label={t(side.open ? 'side.close' : 'side.open')}
-        title={t(side.open ? 'side.close' : 'side.open')} onClick={() => side.setOpen(!side.open)} />
+      {/* ★ 2026-11-11（用户）：移除右上角「打开概况面板」与展开/收起按钮。
+          侧栏仍由 SideProvider 在新工作/待批准时自动打开，并保留自身的关闭按钮与宽度持久化。 */}
     </div>
     <Glossary open={glossary} onClose={() => setGlossary(false)} />
   </header>
@@ -156,6 +155,8 @@ function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab
   const waiting = error ? <p className="dt-error" role="alert">{error.message}</p> : <p className="dt-hint">{t('loading')}</p>
   const page = (() => {
     switch (route.page) {
+      case 'overview': return <OverviewPage />
+      // chat 已从 NAV_TABS 移除；保留渲染只为了让旧深链/外部调用仍能打开 desk 会话。
       case 'chat': return <ChatTab />
       // ★ 2026-11-09（用户要求）：流程图 / 看板 / 列表归到「执行」页签内。
       //   `work` 已由 parseRoute 归一到 execution；这个 case 只为兼容尚未归一的历史 Route 值，
@@ -174,14 +175,21 @@ function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab
         deploymentForm={deploymentForm} /> : waiting
     }
   })()
+  // ★ 2026-11-12（方案 C）：左导轨放页签，主区拆成「内容 + 常驻上下文」两列。
+  //   .dt-page / .dt-column / #dt-page / .dt-main 与 6 个页签的顺序都保持不变（既有测试与守卫依赖它们）。
   return <div className="dt-shell">
+    <Rail title={t('title')} hint={t('contextHint')}>
+      <SegmentedTabs className="dt-tabs dt-rail-tabs" label={t('pagesLabel')} value={route.page} onChange={openTab}
+        items={NAV_TABS.map(value => ({ value, label: t(`tab.${value}`), id: `dt-tab-${value}`, panelId: 'dt-page' }))} />
+    </Rail>
     <div className="dt-page">
       <div className="dt-column">
         <Header />
         {error && state && <p className="dt-error" role="status">{error.message}</p>}
-        <SegmentedTabs className="dt-tabs" label={t('pagesLabel')} value={route.page} onChange={openTab}
-          items={NAV_TABS.map(value => ({ value, label: t(`tab.${value}`), id: `dt-tab-${value}`, panelId: 'dt-page' }))} />
-        <main id="dt-page" role="tabpanel" aria-labelledby={`dt-tab-${route.page}`} className="dt-main">{page}</main>
+        <div className="dt-main-split">
+          <main id="dt-page" role="tabpanel" aria-labelledby={`dt-tab-${route.page}`} className="dt-main">{page}</main>
+          {route.page === 'chat' ? null : <ContextColumn />}
+        </div>
       </div>
     </div>
     <SidePanel masterId={state?.masterId} />

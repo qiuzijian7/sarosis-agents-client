@@ -36,7 +36,7 @@ const REAL_FAILURE = JSON.stringify({
 		troubleshooter: '排查建议查看(Troubleshooting suggestions): https://open.feishu.cn/search?from=openapi&log_id=202611102127148C8545FB89C9BC5E6F41&code=99991672&method_id=6976461983962218497',
 		missing_scopes: ['wiki:wiki', 'wiki:wiki:readonly', 'wiki:space:retrieve'],
 		identity: 'bot',
-		console_url: 'https://open.feishu.cn/page/scope-apply?clientID=cli_a860911d2e7f5013&scopes=wiki%3Awiki%2Cwiki%3Awiki%3Areadonly%2Cwiki%3Aspace%3Aretrieve',
+		console_url: 'https://open.feishu.cn/page/scope-apply?clientID=cli_example&scopes=wiki%3Awiki%2Cwiki%3Awiki%3Areadonly%2Cwiki%3Aspace%3Aretrieve',
 	},
 	_notice: {
 		update: {
@@ -59,7 +59,7 @@ check('① 识别为 missing-scopes / 错误码 99991672 / bot 身份', () => {
 check('② 三个缺失 scope 一个不少', () =>
 	assert.deepEqual(f.missingScopes, ['wiki:wiki', 'wiki:wiki:readonly', 'wiki:space:retrieve']));
 check('③ 申请入口 console_url 与 log_id 都留着', () => {
-	assert.ok(f.consoleUrl.includes('scope-apply') && f.consoleUrl.includes('cli_a860911d2e7f5013'));
+	assert.ok(f.consoleUrl.includes('scope-apply') && f.consoleUrl.includes('cli_example'));
 	assert.equal(f.logId, '202611102127148C8545FB89C9BC5E6F41');
 });
 check('④ 附带 lark-cli 升级提示（1.0.98 → 1.0.99）', () => {
@@ -104,6 +104,25 @@ check('⑩ 空输出也不抛，且给得出提示', () => {
 	const empty = core.describeLarkCliFailure('', -1);
 	assert.equal(empty.kind, 'other');
 	assert.ok(empty.message.includes('退出码 -1'));
+});
+check('⑩b ★ profile add 复用解析器：context 生效 + other 分支剥 _notice / 取前部', () => {
+	// 2026-11-11 真机：用户贴回来的失败提示只剩 `"update": {...}`，真正错误被尾部截断挤掉 ✗
+	const raw = JSON.stringify({
+		ok: false,
+		error: { code: 99991001, msg: 'profile already exists' },
+		_notice: { update: { command: 'lark-cli update', current: '1.0.98', latest: '1.0.100',
+			message: 'lark-cli 1.0.100 available, current 1.0.98' } },
+	});
+	const f2 = core.describeLarkCliFailure(raw, 1, '建立应用 profile');
+	assert.equal(f2.kind, 'other');
+	assert.ok(f2.message.includes('建立应用 profile'), 'context 没生效');
+	assert.ok(f2.message.includes('profile already exists'), '没取到前部真实错误 ✗');
+	assert.ok(!f2.message.includes('_notice') && !f2.message.includes('1.0.100'),
+		'升级通知没从 message 里剥掉 ✗');
+	assert.equal(f2.notice?.latest, '1.0.100', '通知仍留在结构化字段里（不丢信息）');
+	assert.ok(/clean\.slice\(0, 400\)/.test(CORE), '没改成取前部');
+	assert.ok(/delete copy\._notice/.test(CORE), '没剥 _notice');
+	assert.ok(!/text\.slice\(-300\)/.test(CORE), '还在截输出尾部');
 });
 
 // ── 接线断言（防止"解析器写好了但没人用"） ──────────────────────────────────

@@ -134,5 +134,48 @@ if (normalize) {
 	});
 }
 
+/* ── D 映射行的「选飞书库」下拉（2026-11-12 真机）─────────────────────────────
+ * 用户：选完「选飞书库」后 UI 不更新、且前面的裸 spaceId 输入框不该有。
+ * 旧版 <select value=""> 写死空值 ⇒ 选完 React 立刻回弹到占位项，看起来没反应；
+ * 唯一能体现变化的只有那个裸 spaceId 输入框，而它正是用户不要的。
+ */
+const MAP_SEG = (() => {
+	const i = TSX.indexOf('data-vssaros-kb-space-select');
+	return i < 0 ? '' : TSX.slice(Math.max(0, i - 900), i + 1500);
+})();
+/** 排除「选飞书库…」占位 option 后，select 自身不该再写死空值 */
+const noPlaceholder = (s) => s.replace(/<option value="">选飞书库…<\/option>/g, '');
+check('D① ★ 映射行用受控下拉显示当前绑定，不再写死 value=""', () => {
+	assert.ok(MAP_SEG.length > 0, '找不到映射下拉');
+	assert.ok(/value=\{curId\}/.test(MAP_SEG), 'select 的 value 没绑当前 spaceId ⇒ 选完会回弹');
+	assert.ok(!/value=""/.test(noPlaceholder(MAP_SEG)), 'select 仍写死空值 ✗');
+	assert.ok(/const curId = String\(m\?\.spaceId \|\| ''\)/.test(MAP_SEG));
+	assert.ok(/onChange=\{e => \{/.test(MAP_SEG) && /setMapping\(i, \{ spaceId: id, spaceName:/.test(MAP_SEG),
+		'选中后没同时更新 spaceId 与库名');
+});
+check('D② ★ 前面的裸 spaceId 输入框已移除', () => {
+	assert.ok(!/placeholder="飞书 spaceId"/.test(TSX), '仍渲染裸 spaceId 输入框 ✗');
+	assert.ok(!/onChange=\{e => setMapping\(i, \{ spaceId: e\.target\.value \}\)\}/.test(TSX));
+});
+check('D③ ★ 当前绑定不在 spaces 列表里时补 option，避免受控 select 显示错乱', () => {
+	assert.ok(/const inList = spaces\.some\(/.test(MAP_SEG));
+	assert.ok(/curId && !inList \? <option value=\{curId\}>/.test(MAP_SEG), '缺兜底 option');
+	assert.ok(/spaceName/.test(MAP_SEG), '没保留库名回显');
+});
+check('D④ 下拉仍覆盖 /api/feishu-spaces 的 { id, name } 形态', () => {
+	assert.ok(/sp\.id \?\? sp\.spaceId/.test(MAP_SEG));
+	assert.ok(/sp\.name \|\| sp\.id \|\| sp\.spaceId/.test(MAP_SEG));
+});
+check('D⑤ 产物 bundle 已同步（改 TSX 不跑 build+sync 会红）', () => {
+	assert.ok(BUNDLE.includes('data-vssaros-kb-space-select'), 'kbSideview.js 还是旧版');
+	assert.ok(!BUNDLE.includes('\\u98DE\\u4E66 spaceId') && !BUNDLE.includes('placeholder:"飞书 spaceId"'),
+		'bundle 里仍含裸 spaceId 输入框');
+});
+check('D⑥ 反向突变自证：写死 value="" 会被 D① 抓到', () => {
+	const broken = MAP_SEG.replace('value={curId}', 'value=""');
+	assert.ok(/value=""/.test(noPlaceholder(broken)), '突变后没出现写死空值 ⇒ 判据无鉴别力');
+	assert.ok(!/value=""/.test(noPlaceholder(MAP_SEG)), '真源码仍写死空值 ✗');
+});
+
 console.log(`\n${pass}/${pass + fail} passed`);
 if (fail) { process.exit(1); }

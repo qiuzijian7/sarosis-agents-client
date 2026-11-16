@@ -24,6 +24,8 @@
  *   GET  /api/config                      → { config }
  *   GET  /api/workspace-scope             → { scope, cwd }  (P0 multi-root, read-only)
  *   POST /api/config                      { patch }      → { config }
+ *   GET  /api/dream/runs                  → { runs }        (P0 只读)
+ *   POST /api/dream/run                   → { ok, manifest } (P0 report-only)
  *
  * Zero runtime dependencies (node:http only).
  *
@@ -31,7 +33,9 @@
  */
 
 import { URL } from 'node:url'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { createDreamController } from './dream/index.js'
+import { dreamTaskSpec } from './dream/task-spec.js'
 import { translate, getLocale, MISC2_DICT } from './i18n.js'
 
 /** Translate through MISC2_DICT in the active host locale. */
@@ -143,6 +147,17 @@ export function installApi(ctx, deps) {
   // 优先用主插件共享实例（de_session rename 也写同一文件/内存缓存），
   // 未提供时自建（兼容测试等直接调用场景）
   const aliases = deps.aliases ?? new AliasStore(deps.config.memoryDir)
+  // Dreaming P0：控制器在**同一插件内**（零新增插件、不改 apply() 的 inject 数组）。
+  // apply() 把 memoryDir 解析成 <dshHome>/memories ⇒ 父目录就是会话日志根。
+  // memoryDir 缺失时降级为 null，绝不让一个可选能力把整个插件 apply() 拖崩。
+  const memoryDir = deps.config.memoryDir ?? ''
+  const dream = memoryDir
+    ? createDreamController({
+        memoryDir, dshHome: dirname(memoryDir),
+        store: deps.store, archive: deps.archive, resolveAgent: deps.resolveAgent,
+        getRuntime: deps.getRuntime, getLlm: deps.getLlm,
+      })
+    : null
 
   const handler = async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
@@ -164,6 +179,55 @@ export function installApi(ctx, deps) {
       if (req.method === 'DELETE' && segments.length === 4 && segments[0] === 'memory-evolve' && segments[1] === 'api' && segments[2] === 'aliases') {
         const sessionId = decodeURIComponent(segments[3])
         sendJson(res, 200, aliases.remove(sessionId))
+        return
+      }
+      // P2-c：只返回 scheduler action 任务规格，绝不替用户创建任务
+      //（任务是运行时数据，归用户自己的 profile）。任务存在 ≠ 自动运行，
+      // 仍受 dreamEnabled / dreamApprovalMode 两道运行时闸控制。
+      if (req.method === 'GET' && path === '/memory-evolve/api/dream/task-spec') {
+        sendJson(res, 200, {
+          task: dreamTaskSpec(),
+          hint: '在 scheduler 里创建一条 kind=action 的任务；本端点只返回规格，不创建任务。',
+        })
+        return
+      }
+      // Dreaming P0：只读运行历史 + 手动预览一轮（report-only）。
+      // 手动预览不受 dreamEnabled 限制：它只写 <memoryDir>/dream/runs/**，
+      // 不接 cron、不写记忆六轨、不 apply 任何提案。
+      if (req.method === 'GET' && path === '/memory-evolve/api/dream/runs') {
+        if (!dream) throw new Error('Dream 控制器未装配（memoryDir 不可用）')
+        sendJson(res, 200, { runs: await dream.listRuns() })
+        return
+      }
+      if (req.method === 'POST' && path === '/memory-evolve/api/dream/run') {
+        if (!dream) throw new Error('Dream 控制器未装配（memoryDir 不可用）')
+        const body = await readBody(req)
+        // 分组大小 / 导出上限 / 审批模式一律读运行时配置（设置页四个键），
+        // 不再让请求体随意覆盖：否则面板显示的值与实际行为会不一致。
+        const result = await dream.run({
+          since: Number(body?.since ?? 0) || 0,
+          until: Number(body?.until ?? Date.now()) || Date.now(),
+        })
+        sendJson(res, result.ok ? 200 : 422, result)
+        return
+      }
+      // P1：读取某一轮已复核提案（审批页数据源）。
+      if (req.method === 'GET' && path === '/memory-evolve/api/dream/proposals') {
+        if (!dream) throw new Error('Dream 控制器未装配（memoryDir 不可用）')
+        const runId = String(url.searchParams.get('runId') ?? '')
+        sendJson(res, 200, { runId, proposals: await dream.readProposals(runId) })
+        return
+      }
+      // P1：受控写入。apply 必须显式为 true；默认只返回 dry-run 预览。
+      if (req.method === 'POST' && path === '/memory-evolve/api/dream/apply') {
+        if (!dream) throw new Error('Dream 控制器未装配（memoryDir 不可用）')
+        const body = await readBody(req)
+        const result = await dream.applyRun({
+          runId: String(body?.runId ?? ''),
+          apply: body?.apply === true,
+          indices: Array.isArray(body?.indices) ? body.indices : null,
+        })
+        sendJson(res, result.ok ? 200 : 422, result)
         return
       }
       if (req.method === 'GET' && path === '/memory-evolve/api/badge') {

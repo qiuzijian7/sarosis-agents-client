@@ -16,10 +16,10 @@
  */
 
 import assert from 'assert';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
-import { longFormRealpath, normalizeExistingPath, repairStoreMetadataContent } from '../../electron-main/dshStoreMetadata.js';
+import { longFormRealpath, normalizeExistingPath, readStoreMetadataValue, repairStoreMetadataContent } from '../../electron-main/dshStoreMetadata.js';
 
 suite('dshStoreMetadata（pnpm 虚拟店元数据修复）', () => {
 
@@ -100,6 +100,51 @@ suite('dshStoreMetadata（pnpm 虚拟店元数据修复）', () => {
 		assert.ok(r.content.includes('storeDir: G:\\.pnpm-store\\v10'), 'storeDir 应保持原样');
 		assert.ok(r.content.includes('virtualStoreDir: C:\\new\\.pnpm'));
 		assert.strictEqual(r.storeDir, undefined);
+	});
+
+	test('★★ 2026-11-12 真机：pnpm 11 的 `.modules.yaml` 是 **JSON**，必须照样能修 storeDir', () => {
+		// 真机原样（升级到 dsh 0.2.2-rc.2 后，37 个伴生插件 pnpm add 全部
+		// ERR_PNPM_UNEXPECTED_STORE，其中 vssaros-dsh-bridge 缺失 ⇒ 控制桥不可用）。
+		const before = [
+			'{',
+			'  "hoistedDependencies": {},',
+			'  "packageManager": "pnpm@11.28.5",',
+			'  "storeDir": "G:\\\\.pnpm-store\\\\v11",',
+			'  "virtualStoreDir": "G:\\\\repo\\\\dsh-runtime\\\\0.2.1-rc.2\\\\profile-seed\\\\profiles\\\\vssaros\\\\node_modules\\\\.pnpm",',
+			'  "virtualStoreDirMaxLength": 60',
+			'}',
+			'',
+		].join('\r\n');
+		assert.strictEqual(readStoreMetadataValue(before, 'storeDir'), 'G:\\.pnpm-store\\v11',
+			'★ 必须能从 JSON 读出 storeDir（旧 YAML 正则读不到 ⇒ 修复全程空转）');
+		assert.strictEqual(readStoreMetadataValue(before, 'virtualStoreDir'),
+			'G:\\repo\\dsh-runtime\\0.2.1-rc.2\\profile-seed\\profiles\\vssaros\\node_modules\\.pnpm');
+		// YAML 形态仍要认（老种子 / 老 pnpm）
+		assert.strictEqual(readStoreMetadataValue('storeDir: G:\\.pnpm-store\\v10\n', 'storeDir'), 'G:\\.pnpm-store\\v10');
+
+		const virtual = 'C:\\Users\\qiuzijian\\.vssaros-dev\\dsh-home\\profiles\\vssaros\\node_modules\\.pnpm';
+		const store = 'C:\\Users\\qiuzijian\\AppData\\Local\\pnpm\\store\\v11';
+		const r = repairStoreMetadataContent(before, virtual, store);
+		assert.strictEqual(r.changed, true, 'JSON 形态也必须判定为需要修');
+		assert.ok(r.content.includes(`"storeDir": "${store.replace(/\\/g, '\\\\')}"`), r.content);
+		assert.ok(r.content.includes(`"virtualStoreDir": "${virtual.replace(/\\/g, '\\\\')}"`), r.content);
+		assert.ok(r.content.includes('"packageManager": "pnpm@11.28.5"'), '别动无关行');
+		assert.ok(r.content.includes('"virtualStoreDirMaxLength": 60'), '相邻行与缩进要原样保留');
+		assert.strictEqual(r.content.split('\r\n').length, before.split('\r\n').length, '行数不变');
+		assert.doesNotThrow(() => JSON.parse(r.content), '★ 改完必须仍是合法 JSON（反斜杠要按 JSON 转义）');
+		assert.strictEqual(JSON.parse(r.content).storeDir, store);
+		// 幂等：再修一次不应再改
+		assert.strictEqual(repairStoreMetadataContent(r.content, virtual, store).changed, false);
+	});
+
+	test('★ supervisor 读 storeDir 必须走格式无关的函数（不许退回 YAML-only 正则 ⇒ 修复全程空转）', () => {
+		const src = readFileSync('src/vs/sessions/contrib/dshHarness/electron-main/dshHostSupervisor.ts', 'utf8');
+		const at = src.indexOf('const recordedStore =');
+		assert.ok(at > 0, '找不到 recordedStore');
+		const line = src.slice(at, src.indexOf('\n', at));
+		assert.match(line, /readStoreMetadataValue\(before, 'storeDir'\)/,
+			'必须复用格式无关的读取函数（JSON 种子才读得到 v11 ⇒ 才能算出期望 store）');
+		assert.ok(!/\/\^storeDir:/.test(line), '旧 YAML-only 正则不许回来');
 	});
 
 	test('短名场景端到端：写进文件的 `virtualStoreDir` 必须是长名（否则 pnpm 字符串比较仍不等）', () => {

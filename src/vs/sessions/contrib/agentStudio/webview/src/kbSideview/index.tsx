@@ -131,8 +131,24 @@ export interface KbSearchHit {
 	readonly snippet?: string;
 }
 
+/**
+ * ★ 2026-11-11（用户）：跨 app 重启记住「上次关闭时打开的文档」。
+ * 非机密，落 `<kbRoot>/.kb-settings.json` 的 `lastDoc`（由 `/x/kb/api/last-doc` 单独维护）。
+ */
+export interface KbLastDoc {
+	readonly path: string;
+	readonly title: string;
+	readonly vaultId?: string;
+}
+
 export interface KbSideviewActions {
 	openNode?(path: string): void;
+	/**
+	 * 能力位：宿主能持久化上次文档时提供。缺省 ⇒ 视图保持默认总览、不恢复
+	 * （宁可不给，也不放一个点了没反应 / 会白屏的入口 ✓）。
+	 */
+	getLastDoc?(): Promise<KbLastDoc | null>;
+	setLastDoc?(doc: KbLastDoc | null): void;
 	refresh?(): void;
 	openGraph?(): void;
 
@@ -686,6 +702,27 @@ function refine(nodes: readonly KbTreeNode[], q: string): KbTreeNode[] {
 	return out;
 }
 
+/**
+ * ★ 2026-11-12（用户：点总览卡片，左侧树没跳到对应知识库目录）：
+ *   按显示名在树里找节点，并带回从根到它的**所有祖先路径**。
+ *   祖先用于「幂等展开」：把每一级都加进 openSet，而不是调 onToggleOpen 切换
+ *   （切换被两条通道各调一次会互相抵消 ✗）。
+ */
+function findKbNode(nodes: readonly KbTreeNode[] | undefined, name: string): { path: string; ancestors: string[] } | null {
+	const walk = (list: readonly KbTreeNode[], trail: string[]): { path: string; ancestors: string[] } | null => {
+		for (const n of list ?? []) {
+			if (!n) { continue; }
+			if (String(n.name ?? '') === name) { return { path: String(n.path ?? ''), ancestors: trail }; }
+			if (n.children?.length) {
+				const hit = walk(n.children, [...trail, String(n.path ?? '')]);
+				if (hit) { return hit; }
+			}
+		}
+		return null;
+	};
+	return walk(nodes ?? [], []);
+}
+
 /** 收集树里所有目录的 path（Shift 范围/搜索时用"全展开"视图） */
 function allFolders(nodes: readonly KbTreeNode[], into: Set<string>): Set<string> {
 	for (const n of nodes) {
@@ -922,9 +959,46 @@ function normalizeFeishuMappings(mappings: any[], kbs: any[], spaces: any[]): { 
 	return { list: deduped, changed };
 }
 
+/**
+ * ★ 2026-11-12（真机：设置页点「保存并新增应用」显示 `TypeError: Failed to fetch`）：
+ *   Host 没起来 / 登录失效时 `/x/kb/api/*` 全部请求失败，裸 TypeError 让用户以为「点了没反应」。
+ *   ⇒ 统一翻译成可行动提示；两份前端（本文件与 client.js）用同款文案，守卫钉住一致。
+ */
+export function describeFetchError(e: unknown): string {
+	const raw = String((e as any)?.message ?? e ?? '');
+	return /failed to fetch|networkerror|load failed|net::/i.test(raw)
+		? '无法连接知识库 Host（/x/kb/api 请求失败）。请确认 VsSaros Host 正在运行；若提示「登录已失效」，先重新登录再重试。'
+		: raw;
+}
+
+export async function requestKbSettings(init: RequestInit = {}, timeoutMs = 60_000): Promise<any> {
+	const controller = new AbortController();
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const pending = (async () => {
+		const response = await fetch('/x/kb/api/kb-settings', { ...init, credentials: 'same-origin', signal: controller.signal });
+		const body = await response.json().catch(() => { throw new Error('Host 返回的设置响应不是 JSON（HTTP ' + response.status + '），请检查登录状态后重试'); });
+		if (!response.ok || body?.ok !== true) { throw new Error(String(body?.error?.message || body?.error || ('设置请求失败（HTTP ' + response.status + '）'))); }
+		if (!body.settings || typeof body.settings !== 'object' || Array.isArray(body.settings)) { throw new Error('Host 未返回有效设置，未确认保存成功，请重新读取设置'); }
+		return body;
+	})();
+	try {
+		return await Promise.race([pending, new Promise<never>((_, reject) => {
+			timer = setTimeout(() => {
+				reject(new Error('设置请求超时，无法确认是否已保存；请重新读取设置核对后再重试'));
+				controller.abort();
+			}, timeoutMs);
+		})]);
+	} finally { clearTimeout(timer); }
+}
+
 function KbFeishuSettings() {
 	const [open, setOpen] = useState(true);
 	const [settings, setSettings] = useState<any>(null);
+	/** ★ GET 失败必须可见：否则页面显示的是默认值伪装，保存时会用空配置全量覆盖真设置 ✗ */
+	const [loadError, setLoadError] = useState('');
+	const [settingsLoading, setSettingsLoading] = useState(true);
+	const [appSaving, setAppSaving] = useState(false);
+	const appSavingRef = useRef(false);
 	const [cliPath, setCliPath] = useState('');
 	const [cli, setCli] = useState<any>(null);
 	const [busy, setBusy] = useState('');
@@ -934,10 +1008,20 @@ function KbFeishuSettings() {
 	/** 「知识库列表」下的一级知识库（/api/kb-list）；每个就是一个独立知识库 */
 	const [kbs, setKbs] = useState<any[]>([]);
 	const [autoNote, setAutoNote] = useState('');
-	/** ★ 2026-11-10：可指定飞书应用。secret 只在输入框里，绝不进 settings state、不回显 */
+	/**
+	 * ★ 2026-11-11（用户裁决）：**默认不出现 App Secret 输入框**（选已有应用时密钥由
+	 *   Host 从应用凭据池内部镜像）；只有选中下拉里的「+ 添加新应用」才就地展开
+	 *   App ID / App Secret / 名称表单 —— 与 bot 设置页同款（不是弹窗）。
+	 *   hasAppSecret 只是只读状态，GET 永不回明文。
+	 */
 	const [appIdDraft, setAppIdDraft] = useState('');
-	const [appSecretDraft, setAppSecretDraft] = useState('');
 	const [hasAppSecret, setHasAppSecret] = useState(false);
+	/** ★ 下拉与 bot 设置页同源（/x/kb/api/feishu-apps 的掩码列表） */
+	const [apps, setApps] = useState<any[]>([]);
+	/** 「+ 添加新应用」的就地表单草稿；保存成功后立即清空，不驻留 */
+	const [newAppId, setNewAppId] = useState('');
+	const [newAppSecret, setNewAppSecret] = useState('');
+	const [newAppName, setNewAppName] = useState('');
 
 	/*
 	 * 面板侧点「同步飞书」的结果（2026-10-29）：面板用 DOM 事件抛过来，
@@ -956,55 +1040,89 @@ function KbFeishuSettings() {
 
 	const api = (p: string, init?: RequestInit) => fetch('/x/kb/api/' + p, Object.assign({ credentials: 'same-origin' as const }, init));
 	const feishuOf = (s: any) => (s && s.feishu) || {};
+	/** ★ 与 bot 设置页同源的飞书应用掩码列表；失败就保持空数组（下拉仍有默认项，不空白） */
+	const loadApps = () => api('feishu-apps').then(r => r.json()).then((b) => {
+		if (b && b.ok && Array.isArray(b.apps)) { setApps(b.apps); }
+	}).catch(() => undefined);
+
+	const loadSettings = (isAlive = () => true) => {
+		setSettingsLoading(true);
+		return requestKbSettings({}, 15_000).then((b) => {
+			if (!isAlive()) { return; }
+			setSettings(b.settings);
+			setLoadError('');
+			setCliPath(String(feishuOf(b.settings).cliPath || ''));
+			setAppIdDraft(String(feishuOf(b.settings).appId || ''));
+			setHasAppSecret(Boolean(feishuOf(b.settings).hasAppSecret));
+		}).catch(e => {
+			if (isAlive()) { setSettings(null); setLoadError(describeFetchError(e)); }
+		}).finally(() => { if (isAlive()) { setSettingsLoading(false); } });
+	};
 
 	useEffect(() => {
 		let alive = true;
-		api('kb-settings').then(r => r.json()).then((b) => {
-			if (!alive || !b || !b.ok) { return; }
-			setSettings(b.settings || {});
-			setCliPath(String(feishuOf(b.settings).cliPath || ''));
-			// ★ 只回 appId 与 hasAppSecret；后端永不回 appSecret 明文
-			setAppIdDraft(String(feishuOf(b.settings).appId || ''));
-			setHasAppSecret(Boolean(feishuOf(b.settings).hasAppSecret));
-		}).catch(() => undefined);
+		void loadSettings(() => alive);
 		api('feishu-schedule').then(r => r.json()).then((b) => { if (alive && b && b.ok) { setSchedule(b); } }).catch(() => undefined);
 		// ★ 一级知识库清单（`知识库列表/<文件夹>`）⇒ 映射表以它为单位自动带出
 		api('kb-list').then(r => r.json()).then((b) => {
 			if (alive && b && b.ok && Array.isArray(b.kbs)) { setKbs(b.kbs); }
 		}).catch(() => undefined);
+		void loadApps();
 		return () => { alive = false; };
 	}, []);
 
 	/** 保存：只合并 feishu 这一段，避免把别的设置覆盖掉 */
 	const save = (patch: any) => {
-		const next = Object.assign({}, settings || {}, { feishu: Object.assign({}, feishuOf(settings), patch) });
+		// ★ GET 失败时 settings 是 null ⇒ POST 全量覆盖会清空 mappings / clipPoll 等真配置 ✗
+		if (loadError) { setOut('设置未读取成功，已阻止保存（避免覆盖现有配置）：' + loadError); return; }
+		if (!settings || settingsLoading || appSavingRef.current) { return; }
+		const next = Object.assign({}, settings, { feishu: Object.assign({}, feishuOf(settings), patch) });
 		setSettings(next);
-		api('kb-settings', {
+		requestKbSettings({
 			method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(next),
-		}).then(r => r.json()).then((b) => { if (!b || b.ok === false) { setOut('保存失败：' + String((b && b.error) || '未知')); } }).catch(e => setOut('保存失败：' + String(e)));
+		}).catch(e => setOut('保存失败：' + describeFetchError(e)));
 	};
 
 	/**
-	 * ★ 2026-11-10：保存飞书应用。secret 留空 = 不改（后端沿用凭据库里的那份）；
-	 *   ⚠ 不把含 secret 的 payload 放进 settings state ⇒ 明文只在本次请求体里，不驻留内存。
-	 *   后端只回 `hasAppSecret`，永不回明文；保存成功后建/更新 lark-cli profile。
+	 * ★ 2026-11-11：选已有应用 ⇒ **只提交 appId**（密钥由 Host 内部镜像，前端不接触）；
+	 *   选「+ 添加新应用」⇒ 就地表单的 App ID / App Secret / 名称一并提交，后端写凭据库、
+	 *   建 lark-cli profile、并把应用登记进下拉清单（customApps，非机密）。
 	 */
 	const saveApp = () => {
-		setBusy('app');
-		const patch: any = { appId: appIdDraft.trim() };
-		if (appSecretDraft) { patch.appSecret = appSecretDraft; }
+		const isNew = appIdDraft === '__new__';
+		const chosen = isNew ? String(newAppId || '').trim() : appIdDraft.trim();
+		// ★ 同 save：Host 不可达时不能拿默认值去全量 POST（会清空真配置）
+		if (loadError) { setOut('设置未读取成功，已阻止保存应用（避免覆盖现有配置）：' + loadError); return; }
+		if (!settings || settingsLoading || appSavingRef.current) { return; }
+		if (chosen && !/^cli_[A-Za-z0-9]+$/.test(chosen)) { setOut('App ID 形态不对：应为 cli_ 开头的字母数字'); return; }
+		if (isNew && (!chosen || !String(newAppSecret || '').trim())) {
+			setOut('新增应用需要填 App ID 和 App Secret（App Secret 只进凭据库，不回显）');
+			return;
+		}
+		appSavingRef.current = true;
+		setAppSaving(true);
+		setOut('正在保存飞书应用并检查 lark-cli profile…');
+		const patch: any = { appId: chosen };
+		if (isNew) {
+			patch.appSecret = String(newAppSecret || '').trim();
+			patch.newApp = { appId: chosen, name: String(newAppName || '').trim() };
+		}
 		const payload = Object.assign({}, settings || {}, { feishu: Object.assign({}, feishuOf(settings), patch) });
-		api('kb-settings', {
+		requestKbSettings({
 			method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
-		}).then(r => r.json()).then((b) => {
-			if (!b || b.ok === false) { setOut('保存飞书应用失败：' + String((b && b.error) || '未知')); return; }
-			setSettings(b.settings || payload);
+		}).then((b) => {
+			setSettings(b.settings);
 			setHasAppSecret(Boolean(b.settings?.feishu?.hasAppSecret));
-			setAppSecretDraft('');
+			setAppIdDraft(chosen);
+			if (isNew) { setNewAppId(''); setNewAppSecret(''); setNewAppName(''); }
+			void loadApps();   // 与 bot 页 reload() 同款：新应用登记后刷新即出现在下拉里
 			setOut((b.note ? String(b.note) + '\n' : '')
-				+ '当前 App ID：' + String(b.settings?.feishu?.appId || '（未配置，用 lark-cli 默认应用）')
-				+ ' · App Secret：' + (b.settings?.feishu?.hasAppSecret ? '已配置（明文不回显）' : '未配置'));
-		}).catch(e => setOut('保存飞书应用失败：' + String(e))).then(() => setBusy(''));
+				+ '当前 App ID：' + String(b.settings?.feishu?.appId || '默认应用（内置默认）')
+				+ ' · App Secret：' + (b.settings?.feishu?.hasAppSecret ? '已配置' : '未配置'));
+		}).catch(e => setOut('保存飞书应用失败：' + describeFetchError(e))).finally(() => {
+			appSavingRef.current = false;
+			setAppSaving(false);
+		});
 	};
 
 	/**
@@ -1075,6 +1193,26 @@ function KbFeishuSettings() {
 	const row = { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' } as const;
 	const inp = { height: 24, padding: '0 8px', fontSize: 11.5, background: 'transparent', color: 'inherit', border: `1px solid ${c.line}`, borderRadius: 4, minWidth: 0 } as const;
 	const btn = { height: 24, padding: '0 10px', fontSize: 11.5, cursor: 'pointer', borderRadius: 4, background: 'transparent', color: 'inherit', border: `1px solid ${c.line}` } as const;
+	/**
+	 * ★ 2026-11-11：飞书应用下拉与 bot 设置页（`BotChannelBindingsCard` 的 `B.input`）
+	 *   **同款令牌化样式**：fontSize 11.5 / padding 4px 7px / radius 6 / --dsw-alias 边框与背景。
+	 *   原来的 height:24 + radius:4 + rgba 边框与 bot 页不一致，已按用户要求换掉。
+	 */
+	const appSelectStyle = {
+		flex: '1 1 200px', minWidth: 170, font: 'inherit', fontSize: 11.5, padding: '4px 7px', borderRadius: 6,
+		border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.35))',
+		background: 'var(--dsw-alias-bg-layer-1, transparent)', color: 'inherit', outline: 'none',
+		boxSizing: 'border-box',
+	} as const;
+	// 与 bot 设置页同源的选项口径：默认项 / 缺 secret 的项禁用并标注 / 末尾「+ 添加新应用」。
+	// ★ 2026-11-11（用户截图）：下拉里**必须有**「+ 添加新应用」入口；选中后才就地展开
+	//   App ID / App Secret 表单 ⇒ 常态无密钥输入框，两条要求同时满足 ✓。
+	const appOptions = [{ value: '', label: '默认应用', disabled: false }].concat(
+		apps.filter((a: any) => !a.isDefault).map((a: any) => ({
+			value: String(a.appId || ''), disabled: !a.hasSecret,
+			label: (a.name ? String(a.name) + ' · ' : '') + String(a.appId || '') + (a.hasSecret ? '' : '（缺 App Secret）'),
+		}))
+	).concat([{ value: '__new__', label: '+ 添加新应用（App ID / App Secret）', disabled: false }]);
 
 	return (
 		<div style={{ marginBottom: 12 }}>
@@ -1087,20 +1225,63 @@ function KbFeishuSettings() {
 
 			{!open ? null : (
 				<div style={{ paddingLeft: 14 }}>
-					{/* ★ 2026-11-10：飞书应用（App ID / App Secret）—— 不指定的话 lark-cli 用内置/默认应用 */}
+					{/* ★ 2026-11-12：Host 不可达时明确告知，并禁止保存（避免空配置覆盖真设置）。
+					    真机现象：设置显示「默认应用 / user」等默认值伪装，点保存只报 TypeError。 */}
+					{loadError ? (
+						<div data-kb-settings-offline="1" role="alert" style={{
+							fontSize: 11, lineHeight: 1.5, marginBottom: 8, padding: '6px 8px', borderRadius: 4,
+							color: 'var(--dsw-alias-label-primary, inherit)',
+							background: 'rgba(220,80,70,.12)', border: '1px solid rgba(220,80,70,.55)',
+						}}>
+							{loadError}<br />设置未加载，已暂时禁止保存。
+							<button type="button" style={btn} disabled={settingsLoading || appSaving} onClick={() => void loadSettings()}>重新读取设置</button>
+						</div>
+					) : null}
+					{settingsLoading ? <div role="status">正在读取设置…</div> : null}
+					{/* ★ 2026-11-11：飞书应用下拉（与 bot 设置页同款选项/样式）+「+ 添加新应用」就地表单 */}
 					<div style={row}>
 						<span style={{ fontSize: 11, color: c.fgFaint, width: 64, flex: '0 0 auto' }}>飞书应用</span>
-						<input value={appIdDraft} placeholder="App ID，如 cli_a1b2c3（留空 = 默认应用）"
-							onChange={e => setAppIdDraft(e.target.value)} style={{ ...inp, flex: '1 1 200px', minWidth: 170 }} />
-						<input type="password" value={appSecretDraft} autoComplete="off"
-							placeholder={hasAppSecret ? '已配置（明文不回显）· 留空 = 不改' : 'App Secret（只存凭据库）'}
-							onChange={e => setAppSecretDraft(e.target.value)} style={{ ...inp, flex: '0 1 190px', minWidth: 150 }} />
-						<button type="button" style={btn} onClick={saveApp}>{busy === 'app' ? '保存中…' : '保存应用'}</button>
+						<select data-vssaros-kb-app-select="1" value={appIdDraft} disabled={settingsLoading || !settings || appSaving}
+							onChange={e => setAppIdDraft(e.target.value)} style={appSelectStyle}>
+							{appOptions.map((o) => (
+								<option key={o.value} value={o.value} disabled={o.disabled}>{o.label}</option>
+							))}
+						</select>
+						<button type="button" style={btn} disabled={settingsLoading || !settings || appSaving} onClick={saveApp}>
+							{appSaving ? '保存中…' : (appIdDraft === '__new__' ? '保存并新增应用' : '保存应用')}
+						</button>
+						<button type="button" style={btn} disabled={settingsLoading || appSaving} onClick={() => { void loadApps(); void loadSettings(); }}>刷新</button>
+					</div>
+					{/* 只有选「+ 添加新应用」才展开密钥表单 ⇒ 常态看不到 App Secret 输入框 */}
+					{appIdDraft === '__new__' ? (
+						<div style={{ ...row, marginTop: 4, paddingLeft: 64 }}>
+							<input value={newAppId} placeholder="App ID，如 cli_a1b2c3"
+								onChange={e => setNewAppId(e.target.value)} style={{ ...inp, flex: '0 1 190px', minWidth: 150 }} />
+							<input type="password" value={newAppSecret} autoComplete="off" placeholder="App Secret（只进凭据库）"
+								onChange={e => setNewAppSecret(e.target.value)} style={{ ...inp, flex: '0 1 190px', minWidth: 150 }} />
+							<input value={newAppName} placeholder="名称（可选）"
+								onChange={e => setNewAppName(e.target.value)} style={{ ...inp, flex: '0 1 140px', minWidth: 110 }} />
+							<span style={{ fontSize: 10.5, color: c.fgDim }}>保存后写入凭据库并建 lark-cli profile，刷新后即可在下拉里选中</span>
+						</div>
+					) : null}
+					<div style={{ fontSize: 10.5, color: c.fgDim, marginBottom: 8 }}>
+						当前：{String(feishuOf(settings).appId || '默认应用（内置默认）')}
+						{' · '}App Secret：{hasAppSecret ? '已配置（由应用凭据统一管理）' : '未配置'}
+						{' · '}列表与 bot 设置页同源；选已有应用不用填密钥，新增应用请用下拉里的「+ 添加新应用」。
+					</div>
+					{/* ★ 2026-11-12：飞书调用身份。profile 若设了 strict-mode 安全策略，身份必须与之匹配，
+					    否则每条命令都被拒（真机 20 篇全失败）。插件不会替用户改策略，只在这里提供选择。 */}
+					<div style={row}>
+						<span style={{ fontSize: 11, color: c.fgFaint, width: 64, flex: '0 0 auto' }}>飞书身份</span>
+						<select data-vssaros-kb-identity-select="1" value={String(feishuOf(settings).identity || 'user')}
+							onChange={e => save({ identity: e.target.value === 'bot' ? 'bot' : 'user' })} style={appSelectStyle}>
+							<option value="user">user（个人身份，支持 my_library）</option>
+							<option value="bot">bot（应用身份，需 wiki 权限与具体 spaceId）</option>
+						</select>
 					</div>
 					<div style={{ fontSize: 10.5, color: c.fgDim, marginBottom: 8 }}>
-						当前：{String(feishuOf(settings).appId || '未配置（lark-cli 内置/默认应用）')}
-						{' · '}App Secret：{hasAppSecret ? '已配置' : '未配置'}
-						{' · '}保存后会为这个 App ID 建 lark-cli profile，后续所有飞书命令都带 --profile 走它。
+						需与 lark-cli profile 的 strict-mode 一致；查看：lark-cli config strict-mode。
+						切换安全策略属于你的决定，插件不会擅自修改。
 					</div>
 
 					{/* CLI */}
@@ -1142,22 +1323,45 @@ function KbFeishuSettings() {
 					{autoNote ? (
 						<div style={{ fontSize: 10.5, color: c.fgDim, marginBottom: 6 }}>{autoNote}</div>
 					) : null}
-					{mappings.map((m, i) => (
+					{/*
+				 * ★ 2026-11-12（用户：选「选飞书库」后 UI 不更新、且前面的 spaceId 输入框不该有）：
+				 *   ① 旧 select 写死 value="" ⇒ 选完 React 立刻回弹到「选飞书库…」，看起来没反应 ✗
+				 *      ⇒ 改成受控：value 绑当前 spaceId，选完直接显示库名；
+				 *   ② 去掉裸 spaceId 输入框（用户明确不需要），spaceId 仍存进 mappings 供同步用，
+				 *      只在下拉的 title 里留作核对；
+				 *   ③ 当前绑定的 ID 不在 spaces 列表里（未拉取 / 无权限）也要补一个 option，
+				 *      否则受控 select 找不到匹配项会显示成第一项，看起来像「未关联」。
+				 *   /api/feishu-spaces 回的是 { id, name }，不是 { spaceId }。
+				 */}
+				{mappings.map((m, i) => {
+					const curId = String(m?.spaceId || '');
+					const inList = spaces.some((s: any) => String(s?.id ?? s?.spaceId ?? '') === curId);
+					const curName = String(m?.spaceName || (spaces.find((s: any) => String(s?.id ?? s?.spaceId ?? '') === curId) as any)?.name || '');
+					return (
 						<div key={i} style={row}>
 							<input value={String(m.dir || '')} readOnly placeholder="知识库列表/&lt;库名&gt;"
 								title="目录由「知识库列表」里的一级文件夹自动带出（每个文件夹 = 一个独立知识库）"
 								style={{ ...inp, flex: '1 1 auto', opacity: .85 }} />
-							<input value={String(m.spaceId || '')} placeholder="飞书 spaceId" onChange={e => setMapping(i, { spaceId: e.target.value })} style={{ ...inp, flex: '0 1 180px', minWidth: 120 }} />
-							{spaces.length ? (
-								<select onChange={e => e.target.value && setMapping(i, { spaceId: e.target.value, spaceName: (spaces.find((s: any) => String(s?.id ?? s?.spaceId) === e.target.value) || {}).name })} style={{ ...inp, maxWidth: 160 }} value="">
-									<option value="">选飞书库…</option>
-									{/* ★ /api/feishu-spaces 回的是 { id, name }（原先用 sp.spaceId ⇒ 选了不生效 ✗） */}
-									{spaces.map((sp: any) => <option key={sp.id ?? sp.spaceId ?? sp.name} value={sp.id ?? sp.spaceId}>{sp.name || sp.id || sp.spaceId}</option>)}
-								</select>
-							) : null}
+							<select data-vssaros-kb-space-select="1"
+								value={curId}
+								title={curId ? (curName ? curName + ' · ' : '') + curId : '未关联飞书知识库'}
+								onChange={e => {
+									const id = e.target.value;
+									if (!id) { return; }
+									const sp: any = spaces.find((s: any) => String(s?.id ?? s?.spaceId ?? '') === id) || {};
+									setMapping(i, { spaceId: id, spaceName: String(sp.name ?? '') });
+								}}
+								style={{ ...inp, flex: '1 1 200px', minWidth: 150 }}>
+								<option value="">选飞书库…</option>
+								{curId && !inList ? <option value={curId}>{curName ? curName + '（当前）' : curId + '（当前）'}</option> : null}
+								{spaces.map((sp: any) => (
+									<option key={sp.id ?? sp.spaceId ?? sp.name} value={sp.id ?? sp.spaceId}>{sp.name || sp.id || sp.spaceId}</option>
+								))}
+							</select>
 							<button type="button" style={btn} onClick={() => removeMapping(i)}>删除</button>
 						</div>
-					))}
+					);
+				})}
 
 					{/* 动作 */}
 					<div style={{ ...row, marginTop: 8 }}>
@@ -1528,6 +1732,12 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 			return next;
 		});
 	}, []);
+	/**
+	 * ★ 2026-11-12（用户：点总览卡片弹出两个 tip、左侧树没跳）：
+	 *   一次点击会经 postMessage + localStorage 两条通道到达父页 ⇒ 用同一个 id 去重，
+	 *   否则「切换展开」被调两次 = 展开又收起，净效果为零。
+	 */
+	const focusSeenRef = useRef<{ key: string; at: number }>({ key: '', at: 0 });
 	// 右键菜单（2026-10-23）：只表达"用户想改名/删除哪个"，具体弹框与落盘由宿主决定
 	// `paths` = 这次右键实际作用的对象：点在选中集里 ⇒ 整批；否则只作用于被点的那一项
 	const [menu, setMenu] = useState<{ x: number; y: number; path: string; paths: readonly string[] } | null>(null);
@@ -1629,19 +1839,52 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 	}, []);
 
 	useEffect(() => {
-		/** 统一落点：把左侧树展开到该库（消息与广播两条路都走它） */
-		const applyFocus = (name: string) => {
-			const node = (noteTree as any[]).find((n) => String(n?.name ?? '') === name);
-			if (!node) { showToast('左侧没找到「' + name + '」（刷新后重试）'); return; }
-			setTab('doc'); setOpenViews(o => ({ ...o, home: false }));   // 定位到库 ⇒ 收起总览页签
-			if (!expanded.notes) { toggle('notes'); }
-			onToggleOpen?.(node.path);
+		/**
+		 * ★ 2026-11-12（用户：点卡片弹出**两个**定位 tip、左侧目录树却没跳）：
+		 *   ① 一次点击会经 postMessage 与 localStorage 广播**两条**通道到达父页 ⇒ 带同一个
+		 *      id 去重，否则下面每件事都做两遍（toast 也因此出现过两次）；
+		 *   ② 旧版用 `onToggleOpen`「切换」展开，被两条通道各调一次 = 展开又收起，净效果为零 ✗
+		 *      ⇒ 改成**幂等 add**，并把从根到该节点的所有祖先一起展开；
+		 *   ③ 旧版只展开、不选中、不滚动 ⇒ 现在选中该行（高亮）并滚进可见区；
+		 *   ④ toast 由这里统一给**一次**（iframe 已不再自己弹）。
+		 *   ⑤ 不切视图、不关总览页签：点卡片**没有打开任何文档**，切到 doc 只会是一块白底 ✗。
+		 */
+		const applyFocus = (name: string, id?: string) => {
+			const key = String(id || ('name:' + name));
+			const seen = focusSeenRef.current;
+			if (seen.key === key && Date.now() - seen.at < 3000) { return; }
+			focusSeenRef.current = { key, at: Date.now() };
+
+			const hit = findKbNode(noteTree, name) || findKbNode(libTree, name);
+			if (!hit || !hit.path) { showToast('左侧没找到「' + name + '」（刷新后重试）'); return; }
+			// 搜索 / 标签筛选会把目标节点从树里滤掉 ⇒ 清掉，保证它真的渲染出来
+			setQuery('');
+			setTagFilter(null);
+			setExpanded(v => ({ ...v, library: true, notes: true }));
+			// ★ 幂等展开：只 add 不 delete，祖先 + 自身一起开
+			setOpenSet(prev => {
+				const next = new Set(prev);
+				for (const p of [...hit.ancestors, hit.path]) { if (p) { next.add(p); } }
+				return next;
+			});
+			// 选中 = 那一行高亮，用户一眼能看到定位结果
+			setSelected([hit.path]);
+			// React 提交后再滚（节点可能刚因展开 / 清过滤才出现）
+			window.setTimeout(() => {
+				const rows = Array.from(document.querySelectorAll('[data-kb-path]'));
+				for (const el of rows) {
+					if (el.getAttribute('data-kb-path') === hit.path) {
+						(el as HTMLElement).scrollIntoView({ block: 'center' });
+						break;
+					}
+				}
+			}, 0);
 			showToast('已定位到「' + name + '」');
 		};
 		const onHomeMsg = (ev: MessageEvent) => {
 			const d: any = ev?.data;
 			if (!d || d.source !== 'kb-home' || d.type !== 'open-kb' || !d.kb) { return; }
-			applyFocus(String(d.kb));
+			applyFocus(String(d.kb), d.id);
 		};
 		/*
 		 * ★ 2026-11-02：主页开成**独立页签**后，它在另一个文档里 ⇒ `postMessage` 到的是壳、
@@ -1651,7 +1894,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 			if (ev.key !== 'vssaros.kb.focus' || !ev.newValue) { return; }
 			try {
 				const j = JSON.parse(ev.newValue);
-				if (j && j.kb) { applyFocus(String(j.kb)); }
+				if (j && j.kb) { applyFocus(String(j.kb), j.id); }
 			} catch { /* 坏数据忽略 */ }
 		};
 		window.addEventListener('message', onHomeMsg);
@@ -1667,7 +1910,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 		 *   ⇒ **整个面板渲染崩溃、页面白屏**（2026-11-02 真机踩到，报错是压缩后的 `'ct'`，极难定位）。
 		 *   回调是在消息到达时才执行，那时 `showToast` 早已初始化 ✓
 		 */
-	}, [noteTree, expanded, toggle, onToggleOpen]);
+	}, [noteTree, libTree]);
 
 	// 搜索时强制"全展开"：命中项基本都在子目录里，保持折叠会让用户只看到一串文件夹 ✗
 	const openSetView = useMemo<ReadonlySet<string>>(
@@ -2046,7 +2289,12 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 	 * ★ 2026-10-29（用户：「点设置 / 关系图谱要显示成**带页签**的页面，与打开文档的页签并列」）：
 	 *   一个状态管三块内容：文档 / 设置 / 关系图谱。页签条上永远有这两个页签，可点击来回切。
 	 */
-	const [activeView, setTab] = useState<'doc' | 'settings' | 'graph' | 'canvas' | 'home'>('doc');
+	/*
+	 * ★ 2026-11-11（用户）：初次打开知识库**默认显示总览**（知识库主页）。
+	 *   改初值而不是用挂载 effect ⇒ 不会覆盖用户在首帧内的点击 ✓。
+	 *   有 lastDoc 时由下面的恢复 effect 切回 'doc'。
+	 */
+	const [activeView, setTab] = useState<'doc' | 'settings' | 'graph' | 'canvas' | 'home'>('home');
 	/**
 	 * ★ 2026-11-02（用户：总览加载很慢）：iframe 首帧前先给**骨架屏**，
 	 *   否则那 0.5–0.8 秒就是一片黑（看着像挂了）。`onLoad` 后淡入真内容。
@@ -2061,7 +2309,8 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 	 * ★ 2026-11-02（用户截图要求）：`home` 也是**页签条上的一个页签**（与文档/设置/图谱/导图并列），
 	 *   点左侧「🏠 总览」⇒ 在这里多一个「总览」页签，切页签即可，不需要"返回"、也不另开宿主页签。
 	 */
-	const [openViews, setOpenViews] = useState<{ settings: boolean; graph: boolean; canvas: boolean; home: boolean }>({ settings: false, graph: false, canvas: false, home: false });
+	// ★ 2026-11-11：总览页签初次就在页签条上（否则默认 home 却没有对应页签条 ✗）
+	const [openViews, setOpenViews] = useState<{ settings: boolean; graph: boolean; canvas: boolean; home: boolean }>({ settings: false, graph: false, canvas: false, home: true });
 	/*
 	 * ★ 2026-10-28：**宿主富设置**（飞书同步/目录映射/CLI）也要在「中栏页签」里显示。
 	 *   它属于面板层（另一个 React 树）⇒ 这里只给一个空容器，由宿主往里渲染
@@ -2201,6 +2450,9 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 		 */
 		setTab('doc');
 		ensureTab(path, name);      // 每次打开正文都确保有对应 Tab
+		// ★ 2026-11-11：记录「最后打开的文档」⇒ 下次启动 app 恢复。
+		//   只记文档，不记总览/设置/图谱（切到那些视图不会走这里）✓
+		try { actions?.setLastDoc?.({ path, title: name }); } catch { /* 持久化失败不影响阅读 */ }
 		const kind = assetKindOf(path);
 		if (kind && actions?.assetUrl) {
 			setDoc({ title: name, text: "", path, asset: { kind, url: actions.assetUrl(path) } });
@@ -2243,6 +2495,35 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 	}, [doc?.html, doc?.path]);
 	// 每次渲染都刷新一次引用：Tab 切换时用的永远是最新闭包（含最新的 docCache / actions）
 	loadIntoViewRef.current = loadIntoView;
+
+	/**
+	 * ★ 2026-11-11（用户）：下次启动 app 打开知识库时，自动恢复上次关闭时打开的文档。
+	 *   · 首帧按默认「总览」渲染 ⇒ 不闪白；
+	 *   · 异步读 lastDoc，校验 path 仍在当前库的树里 ⇒ `loadIntoView` 打开（自动切到 doc 视图）；
+	 *   · 文档被删 / 改名 / 换库 ⇒ 保持总览并清掉失效记录，不把非法 path 写回 ✓。
+	 *   ⚠ `restoredRef` 只跑一次：`__KB_SIDEVIEW_UPDATE__` 换数据不重建视图，不能重复恢复。
+	 *   ⚠ 依赖数组是 []：不引用后面才声明的 showToast 等（TDZ 白屏，2026-11-02 真机踩过）。
+	 */
+	const restoredRef = useRef(false);
+	useEffect(() => {
+		if (restoredRef.current || !actions?.getLastDoc || !actions?.loadDoc) { return; }
+		restoredRef.current = true;
+		void (async () => {
+			let last: KbLastDoc | null = null;
+			try { last = await actions.getLastDoc!(); } catch { last = null; }
+			const p = String(last?.path ?? '').trim();
+			if (!p) { return; }
+			const norm = (s: string) => String(s ?? '').replace(/\\/g, '/').toLowerCase();
+			const exists = (nodes: readonly KbTreeNode[] | undefined): boolean =>
+				(nodes ?? []).some(n => n && (norm(n.path) === norm(p)
+					|| (Array.isArray(n.children) && exists(n.children as readonly KbTreeNode[]))));
+			if (!exists(data.tree) && !exists(data.library)) {
+				try { actions.setLastDoc?.(null); } catch { /* 清理失败不影响 */ }
+				return;
+			}
+			loadIntoViewRef.current?.(p, String(last?.title || p.split('/').pop() || p));
+		})();
+	}, []);
 
 	/*
 	 * ★★ 2026-10-27（真机反复报「点链接没反应」）—— 兜底监听：
@@ -2331,6 +2612,8 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 		setTabs(rest);
 		if (path !== activePath) { return; }
 		const next = rest[Math.min(idx, rest.length - 1)];
+		// ★ 2026-11-11：关掉的是当前文档 ⇒ 邻居成为当前（或全关回总览）⇒ 同步更新「上次文档」
+		try { actions?.setLastDoc?.(next ? { path: next.path, title: next.title } : null); } catch { /* 同上 */ }
 		if (!next) {
 			setActivePath("");
 			setDoc(null);
@@ -2346,7 +2629,7 @@ export const KbSideview = ({ data, actions, debug }: { data: KbSideviewData; act
 		} else {
 			loadIntoViewRef.current?.(next.path, next.title);
 		}
-	}, [activePath, tabs]);
+	}, [activePath, tabs, actions]);
 
 	/** 细条上的滚动处理：按帧节流，只更新进度与是否显示「回到顶部」 */
 	const onDocScroll = useCallback(() => {

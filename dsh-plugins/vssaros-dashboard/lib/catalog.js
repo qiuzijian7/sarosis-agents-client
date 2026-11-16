@@ -319,6 +319,14 @@ export const WORKBENCH_MODULES = [
 	{ route: '/x/dashboard/', name: '主页', desc: '会话遥测 / 用量与编排', icon: '🏠', alwaysPinned: true },
 	{ route: '/x/kanban/', name: '看板', desc: '看板存储与卡片工具', icon: '🗂', offline: true },
 	{ route: '/x/kb/', name: '知识库', desc: '知识库索引与检索', icon: '📚' },
+	// ★ 2026-11-11（用户：「主页中，工作台中缺少 记忆 item」）：补回「记忆」。
+	//   ⚠ 11-03 起记忆**没有独立整页**（`vssaros.view.kind='none'`，记忆管理 UI 在会话页
+	//     「记忆」Tab）⇒ 这张卡片不能按别的模块那样开 iframe `/x/memory/?surface=editor`（404 ✗）。
+	//   改走 chat-surface 的**组件页签**：`DEFAULT_ITEMS` 里同 route 的条目带 `comp: "memory"`，
+	//   由 vssaros-memory 把会话页那份 `MemoryTabView` 登记到 `window.__vssarosPageComponents`
+	//   ⇒ 点「打开」在中栏页签里直接渲染完整记忆管理界面（同源、零新通道）✓。
+	//   ⚠ 三处必须同时登记（守卫 check-workbench-catalog.mjs ⑤-D 盯着）：只加卡片 = 假入口。
+	{ route: '/x/memory/', name: '记忆', desc: '分层记忆 / 待确认建议 / 工作区作用域（会话页记忆 Tab 同源）', icon: '🧠' },
 	{ route: '/x/codebase/', name: '代码库', desc: '代码图谱与符号检索', icon: '🕸' },
 	{ route: '/x/media/', name: '媒体库', desc: '只读 media.db 页面', icon: '🎬' },
 	{ route: '/x/imagegen/', name: '生图', desc: '生图工作台 / 最近出图画廊', icon: '🎨', offline: true },
@@ -337,11 +345,8 @@ export const WORKBENCH_MODULES = [
 	//   `DEFAULT_ITEMS` 里的 route ⇒ 卡片就算加进来，点「打开」也会被 route 白名单静默拒掉
 	//   （表现为"点了没反应"）✗ ⇒ **两处必须同时登记**（守卫 `check-workbench-catalog.mjs` 盯着 ✓）。
 	{ route: '/x/marketplace/', name: '商城', desc: 'Agent / Skill / 工作台 / 工作流的安装与发布', icon: '🛒' },
-	// ★ 2026-10-23（用户：「saros 工作台显示站点前端 + 右上角 AI 助手 → 右侧 chat-surface」）：
-	//   萨罗斯管理平台工作台（`@vssaros/dsh-studio`，页面 `/x/studio/` = 站点 iframe + 站点栏）。
-	//   ⚠ 与 `client.workbenchNav.js` 的 `DEFAULT_ITEMS` **必须两处同时登记**，否则「打开」被
-	//   route 白名单静默拒掉（"点了没反应"）；守卫 `check-workbench-catalog.mjs` 盯着。
-	{ route: '/x/studio/', name: '萨罗斯管理平台', desc: '承载 Saroasis Studio System 前端；右上角「AI 助手」开右侧 chat-surface', icon: '◱' },
+	// ★ 2026-11-11（用户要求「移除萨罗斯管理工作台」）：`@vssaros/dsh-studio` 已下线 ⇒ 主页卡片删除
+	//   （与 `client.workbenchNav.js` 的 `DEFAULT_ITEMS` 同批；守卫 `check-workbench-catalog.mjs` 盯着三处一致）。
 	// ★ 2026-10-24：小红书笔记（创作型工作台样板 `@vssaros/dsh-xhs-note`）。
 	//   ⚠ 与 `client.workbenchNav.js` 的 `DEFAULT_ITEMS` 必须两处同时登记（那边同时是 route 白名单）。
 	// ★ 2026-10-30（用户要求「删除小红书工作台」）：`@vssaros/dsh-xhs-note` 已卸载 ⇒ 它的卡片一并删除。

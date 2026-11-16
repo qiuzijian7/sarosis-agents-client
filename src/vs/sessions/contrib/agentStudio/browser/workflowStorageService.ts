@@ -56,7 +56,7 @@ import * as path from '../../../../base/common/path.js';
 import { parseWorkflowImportFile, resolveImportSlug } from './workflow/workflowFileImport.js';
 
 const WORKFLOW_FILE = 'workflow.json';
-const DEFAULT_WORKFLOW_PRESET_ID = 'workflow-agent';
+const DEFAULT_WORKFLOW_PRESET_ID = 'planner';
 
 /**
  * 校验资源子目录内的相对路径，防目录穿越。

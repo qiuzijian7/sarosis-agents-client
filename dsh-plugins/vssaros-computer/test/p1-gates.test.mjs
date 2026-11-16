@@ -172,7 +172,7 @@ await checkAsync('★ 两 Bot 抢同一应用被拒；受保护应用不问审�
 	assert.equal(relay.calls.length, 1, '只有第一次真正执行');
 });
 
-await checkAsync('默认配置（allowBackground=false）仍是纯 P0 行为：op enum 只有 9 个只读', async () => {
+await checkAsync('默认配置（allowBackground=false）仍是纯 P0 行为：op enum 只有只读全集', async () => {
 	const def = createToolDefinition({ relay: fakeRelay(), state: state0(), level: 'view' });
 	assert.deepEqual(def.parameters.properties.op.enum, OBSERVE_OPS);
 	assert.equal(def.isConcurrencySafe({ op: 'screenshot' }), true);

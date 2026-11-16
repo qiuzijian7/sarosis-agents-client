@@ -181,11 +181,11 @@ suite('dshHarness / CLI contract', () => {
 		assert.ok(!isSameOrigin('not a url', 'http://127.0.0.1:1'));
 	});
 
-	test('Node version gate: 22.19+ or 24+', () => {
-		for (const ok of ['v22.19.0', 'v22.22.1', '24.0.0', 'v25.1.0']) {
+	test('Node version gate: >=24.9.0', () => {
+		for (const ok of ['v24.9.0', 'v24.11.1', '24.22.3', 'v25.1.0', '26.0.0']) {
 			assert.ok(isSupportedNodeVersion(ok), ok);
 		}
-		for (const bad of ['v22.18.9', 'v23.5.0', 'v20.11.0', 'garbage']) {
+		for (const bad of ['v24.8.9', 'v24.0.0', 'v22.19.0', 'v22.22.1', 'v23.5.0', 'v20.11.0', 'garbage']) {
 			assert.ok(!isSupportedNodeVersion(bad), bad);
 		}
 	});

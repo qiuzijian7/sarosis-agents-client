@@ -3,7 +3,6 @@ import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import { FeishuBotSchema } from '../deployment.ts'
 import { feishuLink, sendFeishu } from './feishu-channel.ts'
-import { BUNDLED_FEISHU_APP } from './feishu-share.ts'
 import { feishuThreadContext } from './feishu-read.ts'
 import { refreshChatNames, runFeishu } from './feishu-loops.ts'
 import { SOURCE, feishuTriggerId } from './feishu-trigger.ts'
@@ -23,10 +22,11 @@ const MembersSchema = z.looseObject({
 const RECEIPT = '已收到，正在处理…'
 
 const FeishuConfigSchema = FeishuBotSchema.extend({
-  // VsSaros addition: the CLI command and the app are built in and no longer exposed as panel settings.
+  // VsSaros addition: the CLI command is built in and no longer exposed as a panel setting.
   // Overriding (instead of changing FeishuBotSchema) keeps the deployment contract's empty defaults intact.
   cli: z.string().trim().default('lark-cli'),
-  appId: z.string().trim().regex(/^(cli_[A-Za-z0-9]+)?$/, 'cli_…').default(BUNDLED_FEISHU_APP.appId),
+  // No built-in app: an empty appId means "not configured yet"; the user picks an app configured in Bots.
+  appId: z.string().trim().regex(/^(cli_[A-Za-z0-9]+)?$/, 'cli_…').default(''),
   readPageSize: z.number().int().min(1).max(50).default(20),
   linkTimeoutMs: z.number().int().min(1).max(90000).default(5000),
   chats: z.array(z.object({ chatId: z.string().regex(/^oc_[a-zA-Z0-9]+$/), name: z.string().trim().max(60).optional(), listen: z.enum(['mentions', 'all']) }).strict())
@@ -47,20 +47,20 @@ export const feishuKind: SourceKind<FeishuConfig> = {
   description: { zh: '接收下列群和私聊中发给机器人的消息，补收群历史并轮询订阅的线程。', en: 'Receives messages to the bot in these chats and direct messages, recovers chat history and polls subscribed Threads.' },
   schema: FeishuConfigSchema,
   fields: [
-    // VsSaros addition: the lark-cli command and its App Secret are built in; the CLI option and its local
-    // diagnostics were removed from the card. Only the app ID remains, so an own app can still be selected.
+    // VsSaros addition: the lark-cli command is built in; the CLI option and its local diagnostics were removed
+    // from the card. Only the app ID remains, so an own app can still be selected.
     { key: 'appId', type: 'text', label: { zh: '飞书应用 App ID', en: 'Feishu app ID' }, pattern: '(cli_[A-Za-z0-9]+)?',
-      /* ★ 2026-11-10：改成下拉，与 Bot 设置的 Channel 绑定共用 Bots 的应用列表。
+      /* 改成下拉，与 Bot 设置的 Channel 绑定共用 Bots 的应用列表。
          chooseFrom 让 SourceField 走 <select className="dt-select"> 分支；选项标签由
          SourceCard 从 GET /x/agents/api/bindings 的 feishuApps 注入到 labels。 */
       chooseFrom: 'feishuApps',
-      /* ★ 2026-11-10（用户）：不再提供「留空 = lark-cli 当前 profile（旧行为）」选项；
-         defaultValue 让历史空配置也显示随包内置应用。⚠ 不动 Source schema：
-         在那里归一化空值会改变运行时 profile 解析（runtime.spec.ts 当场回归）。
-         Host 侧空 appId 链路保留，兼容旧配置与直接写 API 的场景。 */
-      noEmptyOption: true, defaultValue: BUNDLED_FEISHU_APP.appId,
-      hint: { zh: '从 Bots 已配置的飞书应用中选择（与 Bot 设置里 Channel 绑定的应用下拉同源，显示「缺 App Secret」的项需要先在 Bot 绑定里补 Secret）。VsSaros助手（cli_a860911d2e7f5013）随包内置、装完即可连，也是默认选中项；Bots 里给同一应用配的 Secret 会优先使用。Secret 只经 stdin 交给 lark-cli，不进设置、不进日志；随包密钥轮换需改代码并升级版本。',
-        en: 'Pick a Feishu app configured in Bots (same list as the Bot settings channel dropdown; items marked "missing App Secret" need one there first). VsSaros Assistant (cli_a860911d2e7f5013) is shipped, works on a fresh install and is selected by default; a Secret configured for the same app in Bots wins. The secret only reaches lark-cli through stdin, never settings or logs; rotating the shipped secret needs a code change and a version bump.' } },
+      /* ★ 2026-11-11：与 Bot 设置页 Channel 绑定同款 —— 下拉末尾可就地新增应用（App ID / Secret）。 */
+      addNew: { zh: '+ 添加新应用（App ID / App Secret）', en: '+ Add a new app (App ID / App Secret)' },
+      /* ★ 2026-11-11（用户）：下拉只列凭据池里的真实应用与末尾的「+ 添加新应用」，
+         不再提供「未配置 / 请先配置」空占位项；空配置由 schema 的空默认值兜底。 */
+      noEmptyOption: true,
+      hint: { zh: '从 Bots 已配置的飞书应用中选择（与 Bot 设置里 Channel 绑定的应用下拉同源，显示「缺 App Secret」的项需要先在 Bot 绑定里补 Secret）。产品不再随包内置飞书应用：每人用自己的应用，避免共用同一个 app 时消息随机投递到别人的客户端。Secret 只经 stdin 交给 lark-cli，不进设置、不进日志。',
+        en: 'Pick a Feishu app configured in Bots (same list as the Bot settings channel dropdown; items marked "missing App Secret" need one there first). No Feishu app is shipped with the product: each user uses their own app so messages cannot be delivered to another client. The secret only reaches lark-cli through stdin, never settings or logs.' } },
     { key: 'chats', type: 'rows', label: { zh: '接收的群', en: 'Chats' },
       hint: { zh: '“仅 @”只接收 @ 机器人的消息和已有工单的线程；“全部消息”也接收其余消息，评估可以按规则从中推断工作，需要机器人有读取全部消息的权限。', en: '"@ only" receives messages that mention the bot and Threads that have Tickets; "All" also receives the rest, from which Eval may infer work under the rules; the bot needs permission to read all messages.' },
       columns: [

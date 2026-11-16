@@ -4,7 +4,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { agentEvents, installModelSelection, type Agent, type ModelSelection, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
-import { initializeRoleModel } from '../src/app/role-models.ts'
+import { initializeRoleModel, modelReportText } from '../src/app/role-models.ts'
 const contexts: Context[] = []
 afterEach(async () => { await Promise.all(contexts.splice(0).map(ctx => ctx.fiber.dispose())); vi.restoreAllMocks() })
 async function fixture() {
@@ -53,6 +53,14 @@ it.each(['header', 'selection'])('preserves a resumed Session with existing %s',
   else agent.session.append('model/selection', existing)
   await initializeRoleModel(ctx, agent, { provider: 'worker', model: 'new' })
   expect(resolve).not.toHaveBeenCalled()
+})
+it('reports a model/credential failure as an actionable Chinese error, leaving other failures intact', () => {
+  for (const raw of ['LlmError: No API key for provider: vssaros-ollama', 'MISSING_CREDENTIAL', 'unknown provider nowhere']) {
+    expect(modelReportText(new Error(raw))).toContain('模型未配置')
+    expect(modelReportText(new Error(raw))).toContain('设置 → 执行')
+  }
+  expect(modelReportText(new Error('Invalid tool schema'))).toBe('Invalid tool schema')
+  expect(modelReportText('The prepare command failed: fatal: no such clone')).toBe('The prepare command failed: fatal: no such clone')
 })
 it('inherits the host when unset and fails unavailable routes before recording a selection', async () => {
   const { ctx, agent, resolve, request } = await fixture()

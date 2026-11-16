@@ -25,8 +25,9 @@ export class Outbox implements OutboxPort {
   }
   /** Record a message receipt and enqueue its delivery effect atomically; duplicate message IDs are ignored. */
   send(message: OutboundMessage): void {
-    // Validate IM reply length here; acknowledgements are already validated when decided.
-    if (message.kind === 'reply' && message.channel.source === 'feishu') checkedImText(message.text)
+    // Validate EVERY Feishu message (replies and notices) before recording a receipt;
+    // otherwise an over-long notice only fails inside sendFeishu and the effect replays it forever.
+    if (message.channel.source === 'feishu') checkedImText(message.text)
     const { store, effects } = this.host
     store.atomic(() => { if (store.receipts.add(message)) effects.enqueue('reply', message.id, {}) })
   }

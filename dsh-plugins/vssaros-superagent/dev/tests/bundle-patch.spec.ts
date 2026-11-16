@@ -2,8 +2,33 @@
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
+import { runInNewContext } from 'node:vm'
 import { expect, it } from 'vitest'
 import { ROUTER_PRESET, WORKER_PRESET } from '../src/app/sessions.ts'
+
+it('loads the shipped browser bundle using only browser dependencies and registers SuperAgent before mounting a Session', () => {
+  const require = createRequire(import.meta.url)
+  const allowed = new Set(['react', 'react-dom', 'react/jsx-runtime'])
+  let registered: Record<string, unknown> | undefined
+  const slots = { inject: (_name: string, register: () => void) => register(), register: () => () => {} }
+  const ctx = { slots, locale: { register: () => () => {}, bind: () => (key: string) => key },
+    effect: (effect: () => unknown) => effect(),
+    inject: (names: string[], apply: (child: unknown) => void) => {
+      if (names.includes('desktopWorkbenches')) apply({ effect: (effect: () => unknown) => effect(),
+        desktopWorkbenches: { register: (descriptor: Record<string, unknown>) => { registered = descriptor; return () => {} } } })
+    } }
+  const loader = { load: (entry: { id: string; factory: (require: (name: string) => unknown) => { apply(ctx: unknown): void } }) => {
+    expect(entry.id).toBe('@vssaros/dsh-superagent')
+    const exports = entry.factory(name => {
+      if (!allowed.has(name)) throw new Error(`Browser cannot load module ${name}`)
+      return require(name)
+    })
+    exports.apply(ctx)
+  } }
+  runInNewContext(readFileSync(join(import.meta.dirname, '..', '..', 'lib', 'client.js'), 'utf8'),
+    { window: { __ModuleLoader__: loader }, TextEncoder, TextDecoder, URL, URLSearchParams, AbortController, console }, { timeout: 5000 })
+  expect(registered).toMatchObject({ repository: 'vssaros:superagent' })
+})
 
 interface Row { id?: string; name: string; disabled?: unknown; config?: Record<string, unknown> & { plugins?: Row[] } | Row[] }
 /** The patch as DSH reads it: Cordis's include plugin parses `!!js` scalars, and applies the inserts to an entry list. */
@@ -30,7 +55,7 @@ const presetOf = (rows: readonly Row[], id: string) => rows.map(row => row.confi
 it('defines the worker preset Executor Sessions run under, with a shell that moves long commands to the background', async () => {
   const rows = await patched()
   // VsSaros addition: the p4 and TAPD Source rows follow the Feishu one.
-  expect(rows.map(row => row.id)).toEqual(['dsh-superagent', 'dsh-superagent-github', 'dsh-superagent-feishu', 'dsh-superagent-p4', 'dsh-superagent-tapd', 'dsh-superagent-worker-preset',
+  expect(rows.map(row => row.id)).toEqual(['dsh-superagent', 'dsh-superagent-github', 'dsh-superagent-feishu', 'dsh-superagent-p4', 'dsh-superagent-tapd', 'dsh-superagent-gongfeng', 'dsh-superagent-worker-preset',
     'dsh-superagent-router-preset'])
   const preset = presetOf(rows, WORKER_PRESET)
   expect(preset.id).toBe(WORKER_PRESET)
@@ -45,7 +70,8 @@ it('defines the worker preset Executor Sessions run under, with a shell that mov
   expect(named('@deepseek-ai/dsh-tool-subagent')).toEqual([expect.objectContaining({ provider: 'spawn', agentPreset: 'standard' })])
   // What a worker needs, and none of what asks a person, presents, plans, changes the profile, schedules, sets goals or runs workflows.
   for (const name of ['@deepseek-ai/dsh-tool-fs', '@deepseek-ai/dsh-tool-fs-search', '@deepseek-ai/dsh-tool-bash', '@deepseek-ai/dsh-tool-skill',
-    '@deepseek-ai/dsh-tool-todo', '@deepseek-ai/dsh-tool-subagent', '@deepseek-ai/dsh-tool-subagent-control', '@deepseek-ai/dsh-compaction-basic',
+    '@deepseek-ai/dsh-tool-todo', '@deepseek-ai/dsh-tool-subagent', '@deepseek-ai/dsh-tool-subagent-control',
+    '@deepseek-ai/dsh-compaction-basic',
     '@deepseek-ai/dsh-compaction-tool-result-pruner', '@deepseek-ai/dsh-agent-instructions']) expect(named(name).length).toBeGreaterThan(0)
   const names = plugins.map(row => row.name)
   for (const name of ['@deepseek-ai/dsh-tool-ask-user', '@deepseek-ai/dsh-tool-present', '@deepseek-ai/dsh-plan-mode', '@deepseek-ai/dsh-plugin-manager/tools',

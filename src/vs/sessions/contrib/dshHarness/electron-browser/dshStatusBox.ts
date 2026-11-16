@@ -57,7 +57,7 @@ export class DshStatusBox {
 					// 缺运行环境：给出一键准备（只补缺的部分），而不是让用户自己去装。
 					title.textContent = localize('dshHarness.status.needSetup', "需要准备 DeepSeek Harness 运行环境");
 					detail.textContent = status.errorCode === 'node-missing'
-						? localize('dshHarness.status.needNode', "没有找到 Node 22.19+ / 24+。VsSaros 可以下载一份便携 Node（约 30 MB，校验 SHA-256），只供 dsh 使用，不改系统环境；如果也没有安装 dsh，会接着从 npm 安装最新版本。")
+						? localize('dshHarness.status.needNode', "没有找到 Node >=24.9.0。VsSaros 可以下载一份便携 Node（约 30 MB，校验 SHA-256），只供 dsh 使用，不改系统环境；如果也没有安装 dsh，会接着从 npm 安装最新版本。")
 						: localize('dshHarness.status.needDsh', "没有找到 dsh。VsSaros 会从 npm 安装 @deepseek-ai/dsh 的最新版本到自己的托管目录（首次约 1–2 分钟），不安装到全局。");
 					this._button(box, localize('dshHarness.action.bootstrap', "自动准备并启动"), () => this._runBootstrap(box, detail));
 					this._button(box, localize('dshHarness.action.settings', "打开设置"), () => this._commands.executeCommand(DSH_COMMAND_OPEN_SETTINGS));

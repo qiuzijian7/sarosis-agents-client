@@ -11,6 +11,7 @@
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
+import type { OfficialPtcModule } from '../app/worker-ptc.ts'
 import type { Message, MessageId as MessageIdType, ReasoningEffortId as ReasoningEffortIdType } from '@deepseek-ai/dsh-llm'
 
 const symbols = { filter: Symbol.for('cordis.filter'), isolate: Symbol.for('cordis.isolate'), extend: Symbol.for('cordis.extend'),
@@ -76,3 +77,15 @@ export async function loadHostModules(): Promise<string[]> {
 }
 /** `@deepseek-ai/dsh-scope`'s `scopeParentOf`; none when the Host's module could not be loaded. */
 export const scopeParentOf = (key: object): object | undefined => scope?.scopeParentOf(key)
+
+/** PTC must resolve from the Host entry, never from the dev toolchain or a bundled copy. */
+export async function loadHostPtc(): Promise<OfficialPtcModule | undefined> {
+  const entry = process.argv[1]
+  if (!entry) return undefined
+  try {
+    const require = createRequire(entry)
+    const resolved = require.resolve('@deepseek-ai/dsh-tool-executor-ptc')
+    const module = await import(pathToFileURL(resolved).href) as Partial<OfficialPtcModule>
+    return typeof module.PtcExecutor === 'function' ? module as OfficialPtcModule : undefined
+  } catch { return undefined }
+}

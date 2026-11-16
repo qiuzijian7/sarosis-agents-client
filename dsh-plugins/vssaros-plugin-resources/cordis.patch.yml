@@ -1,0 +1,4 @@
+- insert:
+    - id: vssaros-plugin-resources
+      name: '@vssaros/dsh-plugin-resources'
+      config: {}

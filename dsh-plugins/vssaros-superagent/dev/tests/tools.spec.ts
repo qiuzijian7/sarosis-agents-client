@@ -1,5 +1,5 @@
 /** Session tool registration, role-scoped resource reads, and routing/settings tool contracts. */
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TICKET_STATES } from '../src/app/cards.ts'
 import { builtInBase, builtInParts, defaultPrompts } from '../src/app/prompts.ts'
 import { UserError } from '../src/core/index.ts'
@@ -15,6 +15,74 @@ afterEach(async () => { await h.stop() })
 const words = (count: number) => Array.from({ length: count }, () => 'word').join(' ')
 const read = (resource: string, page: { offset?: number; limit?: number } = {}) =>
   h.runTool(h.runtime.masterId, 'orchestrator_read', { resource, ...page })
+
+it('rejects omitted P4 delivery and dropped shortcuts before recording any completion', async () => {
+  const { ticket, sessionId } = await h.acceptedTicket(feishu('p4-gate', '@bot fix'))
+  h.runtime.store.tickets.save({ ...ticket, execution: { ...ticket.execution!, delivery: 'p4' } })
+  const before = h.runtime.store.tickets.get(ticket.id)
+  for (const state of ['ready', 'dropped']) {
+    await expect(h.runTool(sessionId, 'orchestrator_report', { state, summary: 'old CL is enough' })).rejects.toThrow('P4 delivery required')
+    expect(h.runtime.store.tickets.get(ticket.id)).toEqual(before)
+  }
+  expect(await h.runTool(sessionId, 'orchestrator_report', { state: 'blocked', summary: 'own client missing', human_action: 'prepare checkout' })).toMatchObject({ reported: true })
+  expect(h.runtime.store.tickets.get(ticket.id)?.ended).toBeUndefined()
+})
+
+it('delivers a named pending CL without any review or submit, and completes the ticket', async () => {
+  const { ticket, sessionId } = await h.acceptedTicket(feishu('pending', '@bot fix'))
+  const client = 'main', marker = `[dsh-superagent:${ticket.id}]`
+  h.runtime.store.tickets.save({ ...ticket, execution: { ...ticket.execution!, delivery: 'p4', p4Delivery: 'pending',
+    p4Workspace: { client, root: h.directory, port: 'ssl:p4.test:1666', user: 'bot' } } })
+  const { p4Kind } = await import('../src/sources/p4.ts')
+  h.runtime.sources.register(p4Kind)
+  const settings = h.runtime.store.settings()
+  h.runtime.store.saveSettings({ ...settings, sources: { ...settings.sources, p4: { enabled: true,
+    config: { port: 'ssl:p4.test:1666', user: 'bot', paths: [{ path: '//GR/main/Source/...' }], submit: 'pending' } } } })
+  let description = marker + ' draft'
+  let shelved = [{ depotFile: '//GR/main/Source/A.cpp', action: 'edit', rev: '3', type: 'text', digest: 'AB' }]
+  const calls: string[][] = []
+  const line = (record: object) => `${JSON.stringify(record)}\n`
+  vi.mocked(Commands.prototype.run).mockImplementation(async (program, args) => {
+    if (program !== 'p4') return '{"ok":true,"data":{}}'
+    const globals = ['-p', '-u', '-c', '-Mj', '-ztag']
+    const rest: string[] = []
+    for (let i = 0; i < args.length; i++) {
+      if (globals.includes(args[i]!) && ['-p', '-u', '-c'].includes(args[i]!)) i++
+      else if (globals.includes(args[i]!)) continue
+      else rest.push(args[i]!)
+    }
+    calls.push(rest)
+    const [command, ...argv] = rest
+    const files = Object.fromEntries(shelved.flatMap((file, i) => [[`depotFile${i}`, file.depotFile], [`action${i}`, file.action],
+      [`rev${i}`, file.rev], [`type${i}`, file.type], [`digest${i}`, file.digest]]))
+    if (command === 'describe') return line({ change: '501', status: 'pending', client, user: 'bot', desc: description, time: '1',
+      ...argv.includes('-S') ? files : {} })
+    if (command === 'dirs') return line({ dir: '//GR/main/Source' })
+    if (command === 'reconcile' && argv.includes('-n')) return line({ depotFile: '//GR/main/Source/Binaries/x.dll' })
+    if (command === 'opened') return line({ depotFile: '//GR/main/Source/B.cpp', change: 'default' })
+    if (command === 'reconcile' || command === 'reopen' || command === 'shelve') return line({ depotFile: '//GR/main/Source/B.cpp', action: 'edit' })
+    if (command === 'change' && argv[0] === '-o') return `Change:\t501\n\nClient:\t${client}\n\nUser:\tbot\n\nStatus:\tpending\n\nDescription:\n\t${description}\n`
+    if (command === 'change' && argv[0] === '-i') { description = marker + ' fix A.cpp'; return line({ data: 'Change 501 updated.', severity: 0 }) }
+    return line({ data: `unexpected p4 ${rest.join(' ')}`, severity: 3 })
+  })
+  const requested = vi.spyOn(h.runtime.reviews, 'request')
+  const result = await h.runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'fixed', changelist: 501 })
+  expect(result).toMatchObject({ reported: true, pending: { change: 501 } })
+  expect(requested).not.toHaveBeenCalled()
+  const ended = h.runtime.store.tickets.get(ticket.id)!
+  expect(ended.ended).toMatchObject({ outcome: 'completed' })
+  expect(ended.assignments.at(-1)?.report?.summary).toContain('P4 pending CL 501')
+  expect(h.runtime.reviews.get(ticket.id)).toBeUndefined()
+  expect(calls.some(args => args[0] === 'submit')).toBe(false)
+  expect(calls.some(args => args[0] === 'unshelve')).toBe(false)
+  // A UE tree makes wildcard reconcile time out; delivery must be a metadata-only opened/reopen path.
+  expect(calls.some(args => args[0] === 'reconcile' || args[0] === 'dirs')).toBe(false)
+  expect(calls.every(args => !args.some(arg => arg.includes('...') || arg === '*'))).toBe(true)
+  expect(calls.some(args => args[0] === 'opened')).toBe(true)
+  expect(calls.some(args => args[0] === 'reopen')).toBe(true)
+  expect(description).toContain(marker)
+  expect(shelved).toHaveLength(1)
+})
 
 it('reads the lists, a ticket, a decision, the settings, the prompts and the models as resources', async () => {
   const { ticket, trigger } = await h.acceptedTicket(feishu('1', '@bot 修一下回归'))
@@ -488,4 +556,101 @@ it('gives a worker the other messages of the request its ticket was accepted fro
   const page = await h.runTool(`worker-${ticket.id}`, 'orchestrator_read', { resource: `ticket/${ticket.id}` })
   expect(page).toMatchObject({ batch: [{ trigger_id: other, read: `trigger/${other}` }] })
   expect(await h.runTool(`worker-${ticket.id}`, 'orchestrator_read', { resource: `trigger/${other}` })).toMatchObject({ trigger_id: other })
+})
+
+describe('★ 2026-11-11 orchestrator_tapd_item', () => {
+  it('reads through the configured API and returns no credentials', async () => {
+    const { tapdItemTool } = await import('../src/app/tools/executor.ts')
+    const { TapdConfigSchema } = await import('../src/sources/tapd-api.ts')
+    const config = TapdConfigSchema.parse({ api: 'https://api.example.test', workspace: '68880148' })
+    const item = { type: 'bug', workspace: '68880148', id: '1168880148001272696', title: '登录失败',
+      description: '复现：点登录', status: 'new', owners: ['alice'], creator: 'bob',
+      created: '2026-11-11T00:00:00Z', modified: '2026-11-11T00:00:00Z', iteration: '' }
+    const api = { items: async () => [item], comments: async () => [{ id: 'c1', author: 'alice', text: '已复现', created: '', modified: '' }],
+      comment: async () => {} }
+    const tool = tapdItemTool(() => config, () => api as never)
+    expect(tool.name).toBe('orchestrator_tapd_item')
+    const got = await tool.execute({ url: 'https://www.tapd.cn/tapd_fe/68880148/bug/detail/1168880148001272696', comments: 5 },
+      new AbortController().signal) as { api: string; workspace: string; item: { id: string }; comments: unknown[] }
+    expect(got).toMatchObject({ api: 'https://api.example.test', workspace: '68880148' })
+    expect(got.item.id).toBe('1168880148001272696')
+    expect(got.comments).toHaveLength(1)
+    expect(got).toMatchObject({ readTiming: { detailMs: expect.any(Number), commentsMs: expect.any(Number), totalMs: expect.any(Number) },
+      progressNote: expect.stringContaining('update todo_write') })
+    expect(JSON.stringify(got)).not.toMatch(/authorization|client_secret|password|token/i)
+  })
+  it('limits latest comments, skips them when zero, and verifies the returned item identity', async () => {
+    const { tapdItemTool } = await import('../src/app/tools/executor.ts')
+    const { TapdConfigSchema } = await import('../src/sources/tapd-api.ts')
+    const config = TapdConfigSchema.parse({ workspace: '68880148' })
+    const item = { type: 'bug' as const, workspace: '68880148', id: '5001', title: 't', description: 'detail', status: 'new',
+      owners: [], creator: '', created: '', modified: '', iteration: '' }
+    const comment = (id: string) => ({ id, author: 'person', text: id, created: '', modified: '' })
+    const api = { items: vi.fn(async () => [item]), comments: vi.fn(async () => [comment('old'), comment('middle'), comment('latest')]),
+      recentComments: vi.fn(async () => [comment('latest')]), comment: vi.fn() }
+    const tool = tapdItemTool(() => config, () => api)
+    const args = { url: 'https://www.tapd.cn/68880148/bugtrace/bugs/view/5001', comments: 1 }
+    const signal = new AbortController().signal
+    expect(await tool.execute(args, signal)).toMatchObject({ comments: [{ id: 'latest' }] })
+    expect(api.recentComments).toHaveBeenCalledWith('bug', '68880148', '5001', 1, signal)
+    expect(api.comments).not.toHaveBeenCalled()
+    api.recentComments.mockClear()
+    expect(await tool.execute({ ...args, comments: 0 }, signal)).toMatchObject({ comments: [] })
+    expect(api.recentComments).not.toHaveBeenCalled()
+    api.items.mockResolvedValue([{ ...item, id: 'different' }])
+    await expect(tool.execute(args, signal)).rejects.toThrow('not found')
+    expect(api.recentComments).not.toHaveBeenCalled()
+    api.items.mockResolvedValue([item])
+    const fallback = tapdItemTool(() => config, () => ({ ...api, recentComments: undefined }))
+    expect(await fallback.execute(args, signal)).toMatchObject({ comments: [{ id: 'latest' }] })
+  })
+  it('returns only same-human/conversation/item CL hints, never another ticket directory or transcript', async () => {
+    const { tapdIntakeContext, tapdItemTool } = await import('../src/app/tools/executor.ts')
+    const { TapdConfigSchema } = await import('../src/sources/tapd-api.ts')
+    const { ticket, trigger } = await h.acceptedTicket(feishu('1', '@bot 修复 https://www.tapd.cn/68880148/bugtrace/bugs/view/5001'))
+    const store = h.runtime.store
+    const seed = (id: string, change: number, overrides: Partial<typeof trigger> = {}) => {
+      const origin = { ...trigger, id: `origin-${id}`, ...overrides }
+      store.triggers.save(origin)
+      store.tickets.save({ ...ticket, id, origin: { triggerId: origin.id, triggerIds: [] }, createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-02T00:00:00Z', title: 'private prior title', execution: { name: 'old', directory: '/private-other-ticket', assignment: 'private transcript' },
+        follows: [{ own: true, thread: `p4:${change}` }] })
+      store.set(KV.reviews.required(id), change)
+    }
+    seed('same', 123)
+    seed('duplicate', 123)
+    seed('other-human', 201, { actor: { source: 'feishu', id: 'not-current-person' } })
+    seed('other-conversation', 202, { channel: { ...trigger.channel!, thread: 'feishu:other-chat' } })
+    seed('other-project', 203, { text: 'https://www.tapd.cn/999/bugtrace/bugs/view/5001' })
+    seed('other-item', 204, { text: 'https://www.tapd.cn/68880148/bugtrace/bugs/view/5002' })
+    seed('other-type', 205, { text: 'https://www.tapd.cn/68880148/prong/stories/view/5001' })
+    seed('invalid-id', 206, { text: 'https://www.tapd.cn/68880148/bugtrace/bugs/view/5001abc' })
+    seed('failed-intent', 207)
+    const failed = store.tickets.get('failed-intent')!
+    store.tickets.save({ ...failed, follows: [] })
+    const host = { store, ticketId: ticket.id, settings: () => store.settings() }
+    const address = { workspace: '68880148', type: 'bug' as const, id: '5001' }
+    const got = tapdIntakeContext(host, address)
+    expect(got.priorDelivery).toEqual([{ changelist: 123, recordedState: 'reported-unverified', at: '2026-01-02T00:00:00Z' }])
+    expect(got.p4Readiness).toMatchObject({ configured: false, missing: expect.arrayContaining(['port', 'user', 'paths']), serverChecked: false })
+    expect(JSON.stringify(got)).not.toMatch(/private|transcript|other-ticket|origin-same/)
+    expect(tapdIntakeContext(host, { ...address, id: 'other' }).priorDelivery).toEqual([])
+    for (let i = 0; i < 5; i++) seed(`new-${i}`, 300 + i)
+    expect(tapdIntakeContext(host, address).priorDelivery).toHaveLength(3)
+    const api = { items: async () => { throw new Error('network failure') }, comments: vi.fn(), comment: vi.fn() }
+    const tool = tapdItemTool(() => TapdConfigSchema.parse({}), () => api, host)
+    const current = store.tickets.get(ticket.id), requirement = store.get(KV.reviews.required(ticket.id))
+    await expect(tool.execute({ url: 'https://www.tapd.cn/68880148/bugtrace/bugs/view/5001', comments: 20 }, new AbortController().signal)).rejects.toThrow('network failure')
+    expect(store.tickets.get(ticket.id)).toEqual(current)
+    expect(store.get(KV.reviews.required(ticket.id))).toBe(requirement)
+    expect(api.comments).not.toHaveBeenCalled()
+  })
+  it('rejects a non-TAPD URL before making any request', async () => {
+    const { tapdItemTool } = await import('../src/app/tools/executor.ts')
+    const { TapdConfigSchema } = await import('../src/sources/tapd-api.ts')
+    let called = false
+    const tool = tapdItemTool(() => TapdConfigSchema.parse({}), () => { called = true; return {} as never })
+    await expect(tool.execute({ url: 'https://example.com/x', comments: 0 }, new AbortController().signal)).rejects.toThrow(/Not a TAPD item URL/)
+    expect(called).toBe(false)
+  })
 })

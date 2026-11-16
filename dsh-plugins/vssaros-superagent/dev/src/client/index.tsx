@@ -19,9 +19,16 @@ import { BotMark } from './mark.tsx'
 import { CardProvider } from './provider.tsx'
 import { PluginConfig, usePageForm } from './deployment.tsx'
 import { en, zh } from './locales.ts'
+import { registerSuperagentMention } from './mention.ts'
 import type { T } from './text.ts'
 
 type ClientContext = Context & { sessions: ISessions }
+/**
+ * ★ 2026-11-11（用户）：停用「@SuperAgent」候选注册（只停客户端注册这一层）。
+ *   mention.ts 的实现、runtime 的普通会话入站、superagent 来源的 sessions/workspace
+ *   配置、结果回原会话链路全部原样保留。把下面改回 true 即可完整恢复，无需改其它代码。
+ */
+const REGISTER_SUPERAGENT_MENTION = false
 const NS = 'dshSuperagent'
 const PANEL_ID = 'dsh-superagent' as MainPanelId
 /** The plugin row's id in the bundle patch (kept from upstream, so saved settings carry over). */
@@ -124,6 +131,8 @@ interface Workbenches { register(descriptor: typeof WORKBENCH, panel: (props: Re
 /** Registers the panel, sidebar icon, and Plugin Manager config view; `configForms` is optional (without it, machine settings are read-only). */
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-superagent: dictionaries')
+  // ★ 2026-11-11：@ 候选项已按用户要求停用；实现仍在，改上面的开关即可恢复。
+  if (REGISTER_SUPERAGENT_MENTION) registerSuperagentMention(ctx)
   // VsSaros addition (2026-11-07): the change stream's module state ends with this plugin (`disposeFeed`).
   ctx.effect(() => () => { disposeFeed() }, 'dsh-superagent: change stream')
   const t = ctx.locale.bind(NS)

@@ -84,9 +84,18 @@ check('★ 输入分派前必过 refusal（_handle 中 refusal 早于 _dispatch�
 	&& relay.indexOf('desktopControlRefusal(request.method') < relay.indexOf('await this._dispatch'));
 check('★ P1 后台输入默认关闭（插件挂载行 + DEFAULTS 两处）',
 	/allowBackground:\s*false/.test(text(join(PLUGIN, 'cordis.patch.yml'))) && indexJs.DEFAULTS.allowBackground === false);
-check('★ 默认工具面仍只有 9 个只读 op',
+check(`★ 默认工具面仍只有 ${levels.OBSERVE_OPS.length} 个只读 op`,
 	JSON.stringify(indexJs.createToolDefinition({ relay: {}, state: levels.defaultState(), level: 'view' })
 		.parameters.properties.op.enum) === JSON.stringify(levels.OBSERVE_OPS));
+
+// ③a ★ 能力面 = 实现面：登记的动作 op 必须在中继 _dispatch 里真的有 case。
+//      曾经 BACKGROUND_OPS 里挂着 4 个「中继直接抛未实现」的方法，放开开关后模型一调就失败。
+const actionOps = [...levels.BACKGROUND_OPS, ...levels.FOREGROUND_OPS];
+const missingCases = actionOps.filter((op) => !relay.includes(`case '${op}':`));
+check('★ 每个动作 op 在主进程 _dispatch 里都有 case', missingCases.length === 0, `缺：${missingCases.join(', ')}`);
+check('★ 中继没有「在 P1 未实现」的残留 case',
+	!/在 P1 未实现/.test(relay)
+	&& !['setValue', 'clipboardRead', 'showWindow', 'launchApp'].some((op) => levels.BACKGROUND_OPS.includes(op)));
 check('中继确实提供只读能力（截图 / 屏幕 / 窗口）',
 	relay.includes('desktopCapturer.getSources') && relay.includes('screen.getPrimaryDisplay') && relay.includes('BrowserWindow.getAllWindows'));
 
@@ -107,6 +116,14 @@ check('★ 主进程没有打开 foreground 档（app.ts 仍显式 view）',
 check('★ P2 三个开关默认全关（挂载行 + DEFAULTS）',
 	/allowForeground:\s*false/.test(pluginYml) && /allowHandoff:\s*false/.test(pluginYml)
 	&& indexJs.DEFAULTS.allowForeground === false && indexJs.DEFAULTS.allowHandoff === false);
+
+// ③b-2 ★ 补三处此前无人对账的盲区（改这些面时守卫必须给出信号）
+check('★ 挂载行默认档位与 DEFAULTS 一致（level 不再是盲区）',
+	/level:\s*view/.test(pluginYml) && indexJs.DEFAULTS.level === 'view');
+check('★ 中继显式声明 osWindowEnumeration: false（不做 OS 全量窗口枚举）',
+	/osWindowEnumeration:\s*false/.test(relay));
+check('★ 窗口/应用/AX 树都标 self-only（改成 OS-wide 必须同步改守卫与 e2e）',
+	(relay.match(/scope:\s*'self-only'/g) ?? []).length >= 3);
 check('★ 控制 op 在闸之前分派（用户接管中仍能交还）',
 	pluginIndex.indexOf('if (isControlOp(args?.op))') > 0
 	&& pluginIndex.indexOf('if (isControlOp(args?.op))') < pluginIndex.indexOf('const gate = preGate(context)'));
@@ -156,6 +173,30 @@ const runtime = [
 const listed = new Set(pkg.files);
 const missing = runtime.filter((f) => !listed.has(f));
 check(`files 白名单覆盖全部运行时文件（${runtime.length} 个）`, missing.length === 0, `没列：${missing.join(', ')}`);
+
+// ⑤b ★ 结果未知 / 幂等 / 校验早于授权（2026-11-11 收口）
+const outcomeSrc = text(join(PLUGIN, 'lib/core/outcome.js'));
+check('★ 账本模块随包登记且被入口静态 import',
+	listed.has('lib/core/outcome.js') && pluginIndex.includes("from './core/outcome.js'"));
+check('★ 重放也要过 preGate（不得绕过接管 / 受保护 / 租约闸）',
+	pluginIndex.indexOf('const gate = preGate(context)') > 0
+	&& pluginIndex.indexOf('const gate = preGate(context)') < pluginIndex.indexOf('outcomes.begin(key)'));
+check('★ 账本早于审批与中继（不会重复问人 / 重复注入）',
+	pluginIndex.indexOf('outcomes.begin(key)') > 0
+	&& pluginIndex.indexOf('outcomes.begin(key)') < pluginIndex.indexOf('applyGrant(state')
+	&& pluginIndex.indexOf('outcomes.begin(key)') < pluginIndex.indexOf('await relay.command'));
+check('★ 幂等指纹包含 appKey（换目标应用不算重放）', /args\?\.appKey/.test(outcomeSrc));
+check('★ 二次校验早于授权落盘（拒绝时不留下 once/always）',
+	pluginIndex.indexOf('const again = gateCall') > 0
+	&& pluginIndex.indexOf('const again = gateCall') < pluginIndex.indexOf('applyGrant(state'));
+check('★ 中继异常会记 unknown 并禁止重放',
+	/settle\(key, 'unknown'/.test(pluginIndex) && /UNKNOWN_NOTICE/.test(pluginIndex));
+check('★ 只有截图成功才解除结果未知闸',
+	pluginIndex.indexOf('const shot = await screenshotResult') > 0
+	&& pluginIndex.indexOf('const shot = await screenshotResult') < pluginIndex.indexOf('outcomes.observe()'));
+check('★ 账本含全局 unknown 闸、callId 幂等与缓存复用',
+	/unknownPending/.test(outcomeSrc) && /callId/.test(outcomeSrc) && /DUPLICATE_NOTICE/.test(outcomeSrc));
+
 check('插件默认关闭（fail-closed）', /enabled:\s*false/.test(text(join(PLUGIN, 'cordis.patch.yml'))) && indexJs.DEFAULTS.enabled === false);
 
 if (problems.length) {

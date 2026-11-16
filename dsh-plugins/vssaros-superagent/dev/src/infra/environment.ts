@@ -115,7 +115,7 @@ export function shimFile(name: string, dir: string, action: ShimAction, windows 
  * VsSaros addition: what the workers' `p4` may do. `program` is the argv prefix of the real p4 (`[p4.exe]`); every command
  * runs with `-p port -u user`, and a workspace in `deniedClients` (the submit workspace) is never used.
  */
-export interface P4Guard { program: string[]; port: string; user: string; deniedClients: string[] }
+export interface P4Guard { program: string[]; port: string; user: string; deniedClients: string[]; paths: string[]; executionClient?: string }
 export const p4GuardFile = (stateDir: string): string => join(stateDir, 'p4-guard.mjs')
 /**
  * Commands a worker may run with p4: reading, opening and shelving files in its own workspace. Left out on purpose: submit,
@@ -157,6 +157,7 @@ if ('P' in globals || 'H' in globals) refuse('-P and -H are not allowed')
 if ('u' in globals && globals.u !== guard.user) refuse(\`workers act only as \${guard.user}\`)
 if ('p' in globals && globals.p !== guard.port) refuse(\`workers use only \${guard.port}\`)
 if ('c' in globals && guard.deniedClients.includes(globals.c)) refuse(\`the workspace \${globals.c} is not a worker's\`)
+if (guard.executionClient !== undefined && (!guard.executionClient || ('c' in globals && globals.c !== guard.executionClient))) refuse('use only the configured execution client')
 const command = args[index]
 const rest = args.slice(index + 1)
 if (command === undefined) refuse('name a command')
@@ -167,8 +168,13 @@ const has = (...options) => rest.some(arg => options.includes(arg) || (/^-[a-zA-
 if (['client', 'workspace'].includes(command) && has('-d', '-f')) refuse(\`\${command} -d and -f are not allowed for workers\`)
 if (['change', 'changelist'].includes(command) && has('-f', '-u', '-U', '-t')) refuse(\`\${command} -f, -u, -U and -t are not allowed for workers\`)
 if (command === 'login' && (rest.length !== 1 || rest[0] !== '-s')) refuse('login only as login -s')
+const reads = new Set(['annotate', 'changes', 'changelists', 'clients', 'describe', 'diff', 'diff2', 'dirs', 'filelog', 'files', 'fstat', 'grep', 'have', 'help', 'info', 'integrated', 'login', 'opened', 'print', 'resolved', 'status', 'where', 'workspaces'])
+const specRead = ['client', 'workspace', 'change', 'changelist'].includes(command) && has('-o') && !has('-i', '-d')
+const preview = ['sync', 'reconcile', 'resolve', 'unshelve'].includes(command) && has('-n')
+if (!guard.paths?.length && !reads.has(command) && !specRead && !preview) refuse('configure allowed P4 paths before writing; report blocked and ask a person to configure them')
+if (guard.executionClient && (['sync', 'revert', 'unshelve'].includes(command) || (['client', 'workspace'].includes(command) && !specRead))) refuse('current workspace must not be resynced, reverted, unshelved or reconfigured by workers')
 const [program, ...prefix] = guard.program
-const result = spawnSync(program, [...prefix, '-p', guard.port, '-u', guard.user, ...args], { stdio: 'inherit', windowsHide: true })
+const result = spawnSync(program, [...prefix, '-p', guard.port, '-u', guard.user, ...(guard.executionClient ? ['-c', guard.executionClient] : []), ...args], { stdio: 'inherit', windowsHide: true })
 if (result.error) refuse(String(result.error))
 process.exit(result.status ?? 1)
 `

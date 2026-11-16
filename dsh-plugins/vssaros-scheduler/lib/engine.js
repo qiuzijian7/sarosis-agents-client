@@ -269,19 +269,15 @@ export function createScheduleEngine(options = {}) {
 	return service;
 }
 
-/**
- * 决定要不要占用 `schedule` 服务键。
- *
- * ★ 撞键保护：若组合里**已经有人**提供了 `schedule`（例如将来又把官方
- *   `dsh-experimental-schedule-bundle` 装上了）⇒ 我们**不注册**，只记日志。
- *   宁可没有自建调度，也不能让两个 provider 抢同一个键（那会让调用方随机拿到其中一个）。
- */
+/** 双 plane 只检测自建服务键；官方 schedule 的存在不影响自建任务库。 */
 export function shouldProvideSchedule(ctx) {
-	try {
-		const existing = ctx.get?.('schedule') ?? ctx.schedule ?? null;
-		return { ok: !existing, existing: !!existing };
-	} catch {
-		// 探针的假 ctx 对未声明服务抛错 ⇒ 视为"没人提供"
-		return { ok: true, existing: false };
+	let service = null;
+	try { service = ctx.reflect?.get?.('vssarosScheduler', false) ?? null; } catch { /* 服务未就绪 */ }
+	if (!service) {
+		try { service = ctx.get?.('vssarosScheduler') ?? null; } catch { /* 未声明的服务 */ }
 	}
+	if (!service) {
+		try { service = ctx.vssarosScheduler ?? null; } catch { /* 未声明的服务 */ }
+	}
+	return { ok: !service, existing: !!service, service };
 }

@@ -17,9 +17,10 @@ import { join } from 'node:path';
 
 import {
 	ROOM_IDLE_RELAY_LIMIT, ROOM_LIMITS, ROOM_RECORD_TYPE, ROOM_RELAY_TOOL, ROOM_TURN_KIND, ROOM_REFERENCE_KIND, ROUND_SCHEMA, ROUND_STATUSES, ROUND_STATUS_LABELS,
-	RoomError, addressedRoomReference,
-	autoRoomName, callsFrom, decodeDshSessionToken, isPass, mentionsIn, normalizeRoomInput, normalizeWakeMode, normalizeWakeSettings, openingCall,
-	roomOfEvent, roomProjection, roomPrompt, roomReferenceOf, roundStatusOf, sessionReferencesOf, sortRooms, stripOwnName, stripRoomMention,
+	RUN_STATES, TASK_STATES, RUN_STATE_LABELS, TASK_STATE_LABELS, DISPATCH_INTENT_STATES, ROOM_DIAGNOSTICS_SCHEMA,
+	ROOM_BUDGET_LIMITS, ROOM_BUDGET_DEFAULTS, RoomError, addressedRoomReference,
+	autoRoomName, budgetStopOf, callsFrom, decodeDshSessionToken, estimateTokens, isPass, mentionsIn, normalizeRoomInput, normalizeWakeMode, normalizeWakeSettings, normalizeWriteScopes, openingCall,
+	roomBudgetOf, roomOfEvent, roomProjection, roomPrompt, roomReferenceOf, roundStatusOf, runStateOf, sessionReferencesOf, sortRooms, stripOwnName, stripRoomMention, taskStateOf, taskStatesOf, writeScopesOverlap,
 } from '../lib/core/rooms.js';
 import { GOAL_IDLE_NUDGES, applyGoal, goalPromptBlock, markTask } from '../lib/core/goals.js';
 import { askAnswerText, normalizeAsk, normalizeAskAnswers, supersedeAsks } from '../lib/core/asks.js';
@@ -97,6 +98,40 @@ await check('统一轮次状态机：中断优先于失败；未结束有人在�
 	assert.equal(roundStatusOf(null), 'sent');
 	assert.equal(ROUND_SCHEMA, 1);
 });
+await check('发布收口：运行/任务生命周期状态机分离，不覆盖 ROUND_SCHEMA 五词状态', () => {
+	assert.equal(ROUND_SCHEMA, 1);
+	assert.equal(ROOM_DIAGNOSTICS_SCHEMA, 1);
+	assert.deepEqual(ROUND_STATUSES, ['sent', 'replying', 'done', 'cut', 'failed']);
+	assert.deepEqual(DISPATCH_INTENT_STATES, ['prepared', 'sent', 'settled', 'cut', 'cancelled']);
+	assert.deepEqual(RUN_STATES, ['queued', 'running', 'waiting_user', 'waiting_approval', 'background', 'cancelling', 'cancelled', 'cut', 'failed', 'done', 'accepted']);
+	assert.deepEqual(TASK_STATES, ['pending', 'working', 'reported', 'rework', 'accepted', 'rejected']);
+	for (const state of RUN_STATES) { assert.ok(RUN_STATE_LABELS[state], `运行态缺文案：${state}`); }
+	for (const state of TASK_STATES) { assert.ok(TASK_STATE_LABELS[state], `任务态缺文案：${state}`); }
+	assert.equal(runStateOf(null), 'queued');
+	assert.equal(runStateOf({ done: false, speaking: ['Coder'] }), 'running');
+	assert.equal(runStateOf({ done: false }, { approvals: 1 }), 'waiting_approval');
+	assert.equal(runStateOf({ done: false }, { asks: 1 }), 'waiting_user');
+	assert.equal(runStateOf({ done: false }, { busy: ['Coder'] }), 'background');
+	assert.equal(runStateOf({ done: false }, { cancelling: true }), 'cancelling');
+	assert.equal(runStateOf({ done: true, interrupted: true, cancelReason: { kind: 'user' } }), 'cancelled');
+	assert.equal(runStateOf({ done: true, interrupted: true }), 'cut');
+	assert.equal(runStateOf({ done: true, error: 'x' }), 'failed');
+	assert.equal(runStateOf({ done: true }, { goal: { status: 'complete' } }), 'accepted');
+	assert.equal(runStateOf({ done: true }), 'done');
+	assert.equal(taskStateOf({ status: 'working' }, { status: 'active' }, {}), 'working');
+	assert.equal(taskStateOf({ status: 'reported' }, { status: 'active' }, {}), 'reported');
+	assert.equal(taskStateOf({ status: 'done' }, { status: 'active' }, {}), 'accepted');
+	assert.equal(taskStateOf({ status: 'pending' }, { status: 'active' }, { reworks: 1 }), 'rework');
+	assert.equal(taskStateOf({ status: 'pending' }, { status: 'stopped' }, {}), 'rejected');
+	const tasks = taskStatesOf({ id: 'r1', lastRunId: 'run:1', goal: { status: 'active', revision: 2, stages: [
+		{ title: '设计', status: 'active', reworks: 1, tasks: [{ botId: 'designer', task: '出稿', status: 'pending' }] },
+	] } });
+	assert.equal(tasks.length, 1);
+	assert.equal(tasks[0].taskId, 'r1:goal:2:0:0');
+	assert.equal(tasks[0].runId, 'run:1');
+	assert.equal(tasks[0].lifecycle, 'rework');
+});
+
 await check('建群校验：两个同名 Bot 不能同群（群里靠名字认人，会互相错配）', () => {
 	const twins = [...ROSTER, { id: 'coder-2', name: 'coder' }];
 	assert.throws(() => normalizeRoomInput({ members: ['designer', 'coder', 'coder-2'] }, twins), /同名/);
@@ -154,6 +189,7 @@ function fakeHost(reply) {
 		id: s.id,
 		session: { id: s.id, get seq() { return s.seq; }, snapshotEvents: (from, to) => s.events.filter(e => e.seq > from && e.seq <= to) },
 		inbox: { get nextTurn() { return s.inbox; }, nextStep: [] },
+		cancel(cause) { s.cancelled = (s.cancelled ?? 0) + 1; s.cancelCause = cause; },
 		ctx: { tools: {
 			register: (def) => { s.tools.push(def.name); return () => undefined; },
 			// 2026-11-07：成员会话隐藏 / 拦截 ask_user_question（对齐 DS Bot）
@@ -973,7 +1009,7 @@ const host = fakeHost((botId, prompt) => {
 	if (botId === 'reviewer') { return '我来审查'; }
 	return '[PASS]';
 });
-const rooms = makeRooms(host, file);
+let rooms = makeRooms(host, file);
 host.rooms = rooms;
 installRooms(host.ctx, rooms);
 let room;
@@ -1167,7 +1203,7 @@ await check('@ 两人 ⇒ 并行（两人都开始后才有人结束）', async 
 });
 await check('超时：成员一直不回 ⇒ 记 failed 并给出原因，本轮照常结束', async () => {
 	const slow = fakeHost(() => 'hang');
-	const quick = makeRooms(slow, join(dir, 'slow.json'), { timeoutMs: 30 });
+	const quick = makeRooms(slow, join(dir, 'no-progress.json'), { timeoutMs: 30 });
 	installRooms(slow.ctx, quick);
 	const r = await quick.create({ members: ['designer', 'coder'] });
 	quick.noteUserMessage(r.id, '在吗');
@@ -1252,6 +1288,9 @@ await check('落盘后重读：群、成员、标志、日志、执行轮次都�
 	const out = await roomsApi(again, { method: 'GET', query: new URLSearchParams({ progress: firstRound.callId }), body: undefined });
 	assert.equal(out.body.progress?.callId, firstRound.callId);
 	assert.ok(again.active().some(item => item.callId === firstRound.callId), '重启后 active 仍带出持久化的执行过程');
+	await rooms.close();
+	rooms = again;
+	host.rooms = again;
 });
 
 await check('执行中重启：快照写穿、旧轮次收口为 cut、已有状态节点不丢', async () => {
@@ -1347,7 +1386,8 @@ await check('持久化加固：并发改动合并写且 flush 后盘上是最终
 	const warnings = [];
 	const old = makeRooms(h, futureFile, { warn: (m) => warnings.push(m) });
 	assert.equal((await old.list()).length, 1, '未来版本仍可读');
-	await old.setFlags('fx', { pinned: true });
+	await assert.rejects(old.setFlags('fx', { pinned: true }), /只读/);
+	assert.equal((await old.get('fx')).pinned, false, '只读拒绝发生在内存修改之前');
 	await old.flush();
 	assert.deepEqual(JSON.parse(readFileSync(futureFile, 'utf8')), future, '未来版本文件一字不改');
 	assert.ok(warnings.some(m => /只读/.test(m)));
@@ -1370,7 +1410,8 @@ await check('单写者租约：后载入的实例接管；旧实例写前发现�
 	await second.setFlags(r.id, { pinned: true });
 	await second.flush();
 	// 旧实例的内存里 pinned 仍是 false：若它还能写，就会把新实例的改动整文件盖掉
-	await first.setFlags(r.id, { hidden: true });
+	await assert.rejects(first.setFlags(r.id, { hidden: true }), /只读/);
+	assert.equal((await first.get(r.id)).hidden, false);
 	await first.flush();
 	const disk = JSON.parse(readFileSync(leaseRoomsFile, 'utf8')).rooms.find(item => item.id === r.id);
 	assert.deepEqual([disk.pinned, !!disk.hidden], [true, false], '旧实例没有覆盖新实例的数据');
@@ -1576,6 +1617,9 @@ await check('群设置：roomsApi 落盘新字段 + 加入需确认 / 清空记�
 	assert.equal(up.body.room.requireApproval, true);
 	assert.equal(up.body.room.memberMax, 8);
 	assert.equal(up.body.room.avatar, 'data:image/png;base64,AAAA');
+	const capUp = await api({ action: 'update', id: made.id, maxConcurrentTurns: 3 });
+	assert.equal(capUp.status, 200);
+	assert.equal(capUp.body.room.maxConcurrentTurns, 3, 'roomsApi 必须能落盘最大并发数');
 	const inv = await api({ action: 'invite', id: made.id, botId: 'reviewer' });
 	assert.equal(inv.status, 200);
 	assert.ok(inv.body.room.pending.includes('reviewer'), '开启加入需确认 ⇒ 邀请进 pending');
@@ -1685,6 +1729,305 @@ await check('FIX 5 rebindRoom 迁移 late/routed：纯逻辑 + 真转投链路�
 	await tick();
 	assert.equal(posted.length, 0, 'rebind 后同一条消息不应重复转投（routed 去重键已迁移）');
 	off();
+});
+
+await check('P0 保存失败给HTTP失败，重试能恢复写队列，后台保存不产生未处理拒绝', async () => {
+	const h = fakeHost(() => '[PASS]');
+	let failWrites = false;
+	const warnings = [];
+	const r = makeRooms(h, join(dir, 'p0-save.json'), {
+		writeFile: async (...args) => {
+			if (failWrites) { throw new Error('disk-full-test'); }
+			return (await import('node:fs/promises')).writeFile(...args);
+		}, warn: m => warnings.push(m),
+	});
+	const room = await r.create({ members: ['designer', 'coder'], name: '存储失败' });
+	failWrites = true;
+	const out = await roomsApi(r, { method: 'POST', body: { action: 'flags', id: room.id, pinned: true } });
+	assert.equal(out.status, 503);
+	assert.equal(out.body.ok, false);
+	assert.match(out.body.error, /持久化未确认.*disk-full-test/);
+	await assert.rejects(r.flush(), /持久化未确认/);
+	failWrites = false;
+	assert.equal((await r.setFlags(room.id, { pinned: true })).pinned, true);
+	await r.flush();
+	assert.equal(JSON.parse(readFileSync(join(dir, 'p0-save.json'), 'utf8')).rooms[0].pinned, true);
+	await r.close();
+});
+
+await check('P0 同名群只在同工作区复用；并发建群只开一个根会话', async () => {
+	const h = fakeHost(() => '[PASS]');
+	const r = makeRooms(h, join(dir, 'p0-scope.json'));
+	const input = { name: '项目团队', members: ['designer', 'coder'], wakeMode: 'mentions' };
+	const [a, same] = await Promise.all([r.create(input, { workspaceId: 'ws1' }), r.create(input, { workspaceId: 'ws1' })]);
+	assert.equal(same.id, a.id);
+	const b = await r.create(input, { workspaceId: 'ws2' });
+	assert.notEqual(a.id, b.id);
+	assert.equal(h.sessions.get(b.id).place, 'ws2');
+	assert.equal(h.sessions.size, 2, '并发同项目创建没有孤儿群会话');
+	await r.update(b.id, { name: '项目团队' });
+	await r.close();
+});
+
+await check('P0 relay并发/已完成/重启同callId不再次派发，也不吃掉下一条消息', async () => {
+	const h = fakeHost(() => '收到');
+	const f = join(dir, 'p0-relay.json');
+	const r = makeRooms(h, f); installRooms(h.ctx, r);
+	const room = await r.create({ members: ['designer', 'coder'], name: '重复派发' });
+	r.noteUserMessage(room.id, '@Designer 开始');
+	const exec = { agent: { id: room.id }, callId: 'p0-once' };
+	const [a, b] = await Promise.all([r.relayTool().execute({}, exec), r.relayTool().execute({}, exec)]);
+	assert.deepEqual(JSON.parse(a), JSON.parse(b));
+	assert.equal(h.order.filter(x => x.at === 'start').length, 1);
+	r.noteUserMessage(room.id, '@Designer 下一条');
+	await r.relayTool().execute({}, exec);
+	assert.equal(r.state(room.id).queued, 1);
+	await r.flush();
+	const restored = makeRooms(h, f); await restored.load();
+	await restored.relayTool().execute({}, exec);
+	assert.equal(h.order.filter(x => x.at === 'start').length, 1, '重启后的已存结果也不重跑');
+	await restored.close(); await r.close();
+});
+
+await check('P0 待派发用户消息重启后继续且只记一次群日志', async () => {
+	const h = fakeHost(() => '[PASS]');
+	const f = join(dir, 'p0-inbox.json');
+	const r = makeRooms(h, f);
+	const room = await r.create({ members: ['designer', 'coder'], name: '收件箱恢复' });
+	r.noteUserMessage(room.id, '重启前消息');
+	await r.flush();
+	await r.close();
+	const restored = makeRooms(h, f);
+	await restored.relay(room.id, 'p0-inbox');
+	const log = restored.state(room.id).log.filter(line => line.who === '用户');
+	assert.equal(log.filter(line => /重启前消息/.test(String(line.text))).length, 1);
+	await restored.flush();
+	const disk = JSON.parse(readFileSync(f, 'utf8')).rooms[0];
+	assert.deepEqual(disk.pendingMessages, []);
+	assert.equal(disk.log.filter(line => /重启前消息/.test(String(line.text))).length, 1);
+	await restored.close();
+});
+
+await check('P0 同一成员并发轮次串行、不重复建影子会话/不重复followup', async () => {
+	let starts = 0;
+	const h = fakeHost(() => { starts += 1; return 'hang'; });
+	const r = makeRooms(h, join(dir, 'p0-member-serial.json'), { timeoutMs: 2000, maxWaitMs: 2000, releaseMs: 0 });
+	const room = await r.create({ members: ['designer', 'coder'], name: '成员串行' });
+	r.noteUserMessage(room.id, '第一条');
+	const first = r.relay(room.id, 'p0-first');
+	await waitUntilTrue(() => starts === 1);
+	r.noteUserMessage(room.id, '第二条');
+	const second = r.relay(room.id, 'p0-second');
+	await sleep(30);
+	assert.equal(starts, 1, '同一成员上一回合未结束前不重复followup');
+	assert.equal([...h.sessions.values()].filter(s => s.preset === 'vssaros-designer').length, 1);
+	finishHungTurn(h, memberSessionOf(h, 'designer'), '第一条完成');
+	await waitUntilTrue(() => starts === 2);
+	finishHungTurn(h, memberSessionOf(h, 'designer'), '第二条完成');
+	await Promise.all([first, second]);
+	await r.close();
+});
+
+await check('P0 cancel停止本轮与后台成员、清理回叫/审批/迟到项且不吞用户消息', async () => {
+	const h = fakeHost(() => 'hang');
+	const r = makeRooms(h, join(dir, 'p0-cancel.json'), { timeoutMs: 2000, maxWaitMs: 2000, releaseMs: 0 });
+	const room = await r.create({ members: ['designer', 'coder'], name: '可取消群' });
+	r.noteUserMessage(room.id, '开始长任务');
+	const running = r.relayTool().execute({}, { agent: { id: room.id }, callId: 'p0-cancel-round' });
+	await waitUntilTrue(() => h.order.some(x => x.at === 'start' && h.sessions.get(x.session).preset));
+	const out = await roomsApi(r, { method: 'POST', query: new URLSearchParams(), body: { action: 'cancel', id: room.id } });
+	assert.equal(out.status, 200);
+	assert.equal(out.body.ok, true);
+	assert.equal(out.body.cancelled.relays, 1);
+	assert.equal(out.body.cancelled.members, 1);
+	const result = JSON.parse(await running);
+	assert.equal(result.interrupted, true);
+	assert.equal(result.phase, 'cut');
+	assert.equal(h.sessions.get(memberSessionOf(h, 'designer')).cancelled, 1);
+	assert.deepEqual(h.sessions.get(memberSessionOf(h, 'designer')).cancelCause, { kind: 'user' });
+	assert.equal(r.state(room.id).busy.length, 0);
+	assert.equal(r.state(room.id).queued, 0);
+	await r.close();
+});
+
+await check('P0 digest按实际消息数累计、重启恢复计时、到期只唤醒一次', async () => {
+	const h = fakeHost(() => '[PASS]');
+	const timers = [];
+	const file = join(dir, 'p0-digest.json');
+	const digestDeps = {
+		setDigestTimer: (fn, ms) => { const token = { fn, ms, unref() {} }; timers.push(token); return token; },
+		clearDigestTimer: timer => { timer.cancelled = true; },
+	};
+	const r = makeRooms(h, file, digestDeps);
+	const off = installRooms(h.ctx, r);
+	const room = await r.create({ members: ['designer', 'coder'], name: '汇总', wakeMode: 'digest', wake: { count: 3, intervalSeconds: 2 } });
+	r.noteUserMessage(room.id, '消息一'); r.noteUserMessage(room.id, '消息二');
+	await r.relay(room.id, 'p0-held');
+	assert.equal(h.order.length, 0);
+	assert.equal(timers.filter(t => !t.cancelled).length, 1);
+	off();
+	await r.close();
+	const restored = makeRooms(h, file, digestDeps);
+	await restored.load();
+	const dueTimer = timers.at(-1);
+	assert.equal(timers.filter(t => !t.cancelled).length, 1, '重启后旧计时注销、只恢复一个活动计时');
+	assert.ok(dueTimer.ms <= 2000);
+	await dueTimer.fn();
+	await restored.relay(room.id, 'p0-due');
+	assert.equal(h.order.filter(x => x.at === 'start' && h.sessions.get(x.session).preset).length, 2);
+	await restored.relay(room.id, 'p0-due-again');
+	assert.equal(h.order.filter(x => x.at === 'start' && h.sessions.get(x.session).preset).length, 2, '到期只唤醒一次');
+	await restored.close();
+	const saved = JSON.parse(readFileSync(file, 'utf8'));
+	assert.equal(saved.rooms[0].digestPending, 0);
+	assert.equal(saved.rooms[0].digestStartedAt, undefined);
+});
+
+await check('P3 最大并发：归一化钳制默认值、拒绝非法输入', () => {
+	assert.equal(ROOM_LIMITS.maxConcurrentTurnsDefault, 4);
+	assert.equal(normalizeWakeSettings({ maxConcurrentTurns: 99 }).maxConcurrentTurns, ROOM_LIMITS.membersMax);
+	assert.equal(normalizeWakeSettings({ maxConcurrentTurns: 0 }).maxConcurrentTurns, 1);
+	assert.throws(() => normalizeWakeSettings({ maxConcurrentTurns: 'x' }), RoomError);
+	assert.equal(normalizeWakeSettings({}).maxConcurrentTurns, undefined, '没给字段不输出，老房间保持默认');
+});
+
+await check('P3 最大并发：@所有人 按 maxConcurrentTurns 限流，排队成员不丢', async () => {
+	const h = fakeHost(() => 'hang');
+	const r = makeRooms(h, join(dir, 'p3-concurrency.json'), { timeoutMs: 2000, maxWaitMs: 2000, releaseMs: 0 });
+	const off = installRooms(h.ctx, r);
+	const room = await r.create({ members: ['designer', 'coder', 'reviewer', 'code'], name: '并发限流群',
+		wakeMode: 'all', maxConcurrentTurns: 2 });
+	assert.equal(room.maxConcurrentTurns, 2, '群视图带出并发上限');
+	r.noteUserMessage(room.id, '@所有人 并发开工');
+	const running = r.relayTool().execute({}, { agent: { id: room.id }, callId: 'p3-cap' });
+	const started = () => h.order.filter(x => x.at === 'start').map(x => x.session);
+	await waitUntilTrue(() => started().length >= 2, 2000);
+	await sleep(20);
+	assert.equal(started().length, 2, '最多 2 位成员同时开始');
+	let active = 2;
+	let maxActive = 2;
+	for (let i = 0; i < 4; i += 1) {
+		await waitUntilTrue(() => started().length > i, 2000);
+		const sid = started()[i];
+		finishHungTurn(h, sid, `第 ${i + 1} 位完成`);
+		active -= 1;
+		if (i < 2) {
+			await waitUntilTrue(() => started().length >= i + 3, 2000);
+			active += 1;
+			maxActive = Math.max(maxActive, active);
+		}
+	}
+	assert.equal(maxActive, 2, '释放一个名额才补一个成员，不超过并发上限');
+	assert.equal(started().length, 4, '四位成员最终都被叫到');
+	const out = JSON.parse(await running);
+	assert.equal(out.replies.length, 4);
+	assert.deepEqual(out.failed, []);
+	off();
+	await r.close();
+});
+
+await check('P3 预算停止：maxTurns 触顶给可解释状态，剩余成员不派发也不重放', async () => {
+	const h = fakeHost(() => '[PASS]');
+	const r = makeRooms(h, join(dir, 'p3-budget.json'));
+	const off = installRooms(h.ctx, r);
+	const room = await r.create({ members: ['designer', 'coder', 'reviewer', 'code'], name: '预算群',
+		wakeMode: 'all', maxTurns: 1 });
+	assert.equal(room.maxTurns, 1, '群视图带出逐群预算');
+	r.noteUserMessage(room.id, '@所有人 开工');
+	const out = JSON.parse(await r.relayTool().execute({}, { agent: { id: room.id }, callId: 'p3-budget-cap' }));
+	const paused = out.events.filter(e => e.kind === 'paused');
+	assert.equal(paused.length, 1, '只报一次预算停止');
+	assert.equal(paused[0].reason, 'maxTurns');
+	assert.match(paused[0].text, /本轮成员回合数已达上限/);
+	const run = r.diagnostics().runs.find(item => item.callId === 'p3-budget-cap');
+	assert.equal(run.budgetStop.reason, 'maxTurns');
+	assert.equal(run.metrics.turns, 1, '触顶后不再派发新成员');
+	assert.ok(run.metrics.promptChars > 0 && run.metrics.estimatedTokens > 0, 'prompt 指标有真实计数');
+	off();
+	await r.close();
+});
+
+await check('P3 写范围串行：同范围成员不同时跑，未声明时仍按并发上限并行', async () => {
+	const maxActiveOf = (host) => {
+		let active = 0;
+		let max = 0;
+		for (const item of host.order) {
+			if (item.at === 'start') { active += 1; max = Math.max(max, active); }
+			else if (item.at === 'end') { active -= 1; }
+		}
+		return max;
+	};
+	const runRoom = async (writeScopes, tag) => {
+		const h = fakeHost(() => '[PASS]');
+		const r = makeRooms(h, join(dir, `p3-scopes-${tag}.json`));
+		const off = installRooms(h.ctx, r);
+		const room = await r.create({ members: ['designer', 'coder', 'reviewer', 'code'], name: `写范围群-${tag}`,
+			wakeMode: 'all', maxConcurrentTurns: 4, ...(writeScopes ? { writeScopes } : {}) });
+		r.noteUserMessage(room.id, '@所有人 开工');
+		const out = JSON.parse(await r.relayTool().execute({}, { agent: { id: room.id }, callId: `p3-scopes-${tag}` }));
+		off();
+		await r.close();
+		return { max: maxActiveOf(h), starts: h.order.filter(x => x.at === 'start').length, out };
+	};
+	const scoped = await runRoom(['src/**'], 'scoped');
+	assert.equal(scoped.max, 1, '同一写范围严格串行');
+	assert.equal(scoped.starts, 4, '排队成员一个不丢');
+	assert.deepEqual(scoped.out.failed, []);
+	const free = await runRoom(null, 'free');
+	assert.equal(free.max, 4, '没声明写范围时仍按 maxConcurrentTurns 并行');
+});
+
+await check('发布收口：runId/attempt/cancelReason 与 durable dispatch intent 写穿，diagnostics 分离运行/任务/派发', async () => {
+	const h = fakeHost(() => '[PASS]');
+	const f = join(dir, 'p05-diag.json');
+	const r = makeRooms(h, f);
+	const off = installRooms(h.ctx, r);
+	const room = await r.create({ members: ['designer', 'coder'], name: '诊断群' });
+	r.noteUserMessage(room.id, '@Designer 开始');
+	await r.relayTool().execute({}, { agent: { id: room.id }, callId: 'diag-1' });
+	await r.flush();
+	const saved = JSON.parse(readFileSync(f, 'utf8'));
+	const snap = saved.rounds.find(item => item.callId === 'diag-1');
+	assert.ok(snap.runId && snap.attempt === 1, JSON.stringify(snap));
+	assert.equal(snap.cancelReason, null);
+	const intents = saved.rooms[0].dispatchIntents ?? [];
+	assert.ok(intents.some(item => item.runId === snap.runId && item.botId === 'designer' && item.status === 'settled'), JSON.stringify(intents));
+	const out = await roomsApi(r, { method: 'GET', query: new URLSearchParams('diagnostics=1'), body: undefined });
+	assert.equal(out.status, 200);
+	assert.equal(out.body.ok, true);
+	const diag = out.body.diagnostics;
+	assert.equal(diag.schema, ROOM_DIAGNOSTICS_SCHEMA);
+	assert.equal(diag.roundSchema, ROUND_SCHEMA);
+	assert.equal(diag.fileVersion, ROOMS_FILE_VERSION);
+	assert.ok(Array.isArray(diag.runs) && Array.isArray(diag.tasks) && Array.isArray(diag.intents));
+	assert.ok(diag.runs.some(run => run.callId === 'diag-1' && run.runId === snap.runId && run.attempt === 1 && run.state === 'done'));
+	assert.ok(diag.intents.some(item => item.status === 'settled'));
+	off();
+	await r.close();
+});
+
+await check('发布收口：取消写 cancelReason，把未确认派发意图标 cancelled，diagnostics 显示 cancelled', async () => {
+	const h = fakeHost(() => 'hang');
+	const f = join(dir, 'p05-cancel.json');
+	const r = makeRooms(h, f, { timeoutMs: 2000, maxWaitMs: 2000, releaseMs: 0 });
+	const off = installRooms(h.ctx, r);
+	const room = await r.create({ members: ['designer', 'coder'], name: '取消诊断' });
+	r.noteUserMessage(room.id, '开始长任务');
+	const running = r.relayTool().execute({}, { agent: { id: room.id }, callId: 'diag-cancel' });
+	await waitUntilTrue(() => h.order.some(x => x.at === 'start' && h.sessions.get(x.session).preset));
+	const out = await roomsApi(r, { method: 'POST', query: new URLSearchParams(), body: { action: 'cancel', id: room.id } });
+	assert.equal(out.status, 200);
+	assert.equal(out.body.cancelled.intents >= 1, true, JSON.stringify(out.body.cancelled));
+	await running;
+	await r.flush();
+	const saved = JSON.parse(readFileSync(f, 'utf8'));
+	const snap = saved.rounds.find(item => item.callId === 'diag-cancel');
+	assert.equal(snap.cancelReason?.kind, 'user');
+	assert.ok(saved.rooms[0].dispatchIntents.some(item => item.status === 'cancelled' && item.runId === snap.runId));
+	const diag = (await roomsApi(r, { method: 'GET', query: new URLSearchParams('diagnostics=1'), body: undefined })).body.diagnostics;
+	assert.equal(diag.runs.find(run => run.callId === 'diag-cancel')?.state, 'cancelled');
+	off();
+	await r.close();
 });
 
 rmSync(dir, { recursive: true, force: true });

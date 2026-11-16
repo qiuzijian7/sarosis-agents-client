@@ -829,39 +829,37 @@ for (const file of [clientFile, indexFile]) {
 	const ui = fs.readFileSync(clientFile, 'utf8');
 	const host = fs.readFileSync(indexFile, 'utf8');
 	const css = fs.readFileSync(path.join(pluginDir, 'lib', 'page.css'), 'utf8');
-	const toolsPage = fs.readFileSync(path.join(root, 'vssaros-skills', 'lib', 'index.js'), 'utf8');
-
-	if (/function foldHtml\(key, count, innerHtml, emptyHtml\)/.test(toolsPage)
-		&& /class="sk-fold"/.test(toolsPage) && /sk-fold-n/.test(toolsPage)
-		&& /vssaros\.tools\.fold\./.test(toolsPage)) {
-		ok('蓝本仍在：工具工作台的 details 折叠组 / 计数徽章 / localStorage 记忆');
-	} else { fail('工具工作台蓝本变了，「同款」不再有依据，请重新核对'); }
-
-	if (/function InstalledFold\(props\)/.test(ui)
-		&& /className: 'vs-mp-fold'/.test(ui)
-		&& /className: 'vs-mp-fold-n'/.test(ui)
-		&& /onToggle: function \(e\)/.test(ui)) {
-		ok('lib/client.js：已安装折叠组用原生 details + 计数徽章 + toggle 回调');
-	} else { fail('lib/client.js：折叠组渲染缺失（不是原生 details 形态）'); }
-	if (/FOLD_KEY_PREFIX = 'vs-mp-fold\.'/.test(ui)
-		&& /function loadFold\(key\)/.test(ui) && /function saveFold\(key, open\)/.test(ui)
-		&& /key: 'fold-' \+ foldKey/.test(ui)) {
-		ok('lib/client.js：开合状态按分类 key 存 localStorage（切页签各自独立）');
-	} else { fail('lib/client.js：折叠状态没按分类隔离或不持久'); }
-	if (/tab === 'market'[\s\S]{0,320}action\('installed', \{\}\)/.test(ui)) {
+	const manager = fs.readFileSync(path.join(pluginDir, 'lib', 'client.ui.js'), 'utf8');
+	if (!ui.includes('InstalledFold') && !ui.includes('FOLD_KEY_PREFIX') && /MarketplaceUI\.InstalledManager/.test(ui)) {
+		ok('发现页不再有已安装折叠区，维护集中在独立已安装页');
+	} else { fail('发现页仍残留已安装折叠区或新管理入口缺失'); }
+	if (manager.includes('data-installed-select') && manager.includes('data-installed-panel') && manager.includes('data-installed-filter')) {
+		ok('已安装管理具备列表选择、概要/版本/配置与状态筛选');
+	} else { fail('已安装管理缺少选择或详情分区'); }
+	const mainTabs = ui.match(/var MAIN_TABS\s*=\s*\[([\s\S]*?)\];/);
+	const mainIds = mainTabs ? Array.from(mainTabs[1].matchAll(/id:\s*'([^']*)'/g), x => x[1]) : [];
+	if (mainIds[0] === 'installed' && mainIds[1] === 'market' && /useState\('market'\)/.test(ui)) {
+		ok('顶层页签：已安装排在发现前，默认打开仍为发现');
+	} else { fail('顶层页签顺序或默认打开页不符合要求'); }
+	const mockupFile = path.join(root, '..', 'doc', 'marketplace-open-market-ui-mockup.html');
+	const mockup = fs.existsSync(mockupFile) ? fs.readFileSync(mockupFile, 'utf8') : '';
+	const navMatch = mockup.match(/function renderNav\(\)\{const tabs=\[([\s\S]*?)\];/);
+	const nav = navMatch ? navMatch[1] : '';
+	if (nav.indexOf("['installed'") === 0 && nav.indexOf("['discover'") > nav.indexOf("['installed'")) {
+		ok('原型导航与生产一致：已安装排在发现前');
+	} else { fail('原型页签顺序未同步'); }
+	if (/async function refreshInstalled\(\)/.test(ui) && /action\('installed', \{\}, \{ signal: token\.signal \}\)/.test(ui) && /setInstalledItems\(results\[0\]\.items/.test(ui)) {
 		ok('lib/client.js：商城页签额外取 installed（磁盘核对过的真实已装清单）');
 	} else { fail('lib/client.js：折叠组没有独立数据源 ⇒ 会显示幽灵/漏项'); }
-	if (/installedItems\.filter\(function \(it\) \{ return !kind \|\| it\.kind === kind; \}\)/.test(ui)) {
-		ok('lib/client.js：折叠组按当前分类过滤（MCP 页签只显示已装 MCP）');
-	} else { fail('lib/client.js：折叠组没按 kind 过滤'); }
-	if (/items\.filter\(function \(it\) \{ return !it\.installedVersion; \}\)/.test(ui)
-		&& /'vs-mp-grid'[\s\S]{0,200}shownItems\.map/.test(ui)) {
-		ok('lib/client.js：可安装网格剔除已装项（同一商品不会在两处重复出现）');
-	} else { fail('lib/client.js：网格没剔已装项 ⇒ 折叠组会变成重复列表'); }
-	if (/function InstalledRow\(props\)/.test(ui) && /className: 'sk-row'/.test(ui)
-		&& /tab === 'market' \? h\(InstalledFold/.test(ui)) {
-		ok('lib/client.js：折叠组用复刻「工具」工作台的 InstalledRow（不再是商品 Card）');
-	} else { fail('lib/client.js：折叠组没换成行样式（仍然是商品卡片网格）'); }
+	if (/tab === 'installed' \? installedItems\.filter/.test(ui) && ui.includes('!kind || it.kind === kind')) {
+		ok('已安装页按真实清单分类与搜索，不额外扫描每一行');
+	} else { fail('已安装页缺真实分类过滤'); }
+	if (!ui.includes('!it.installedVersion') && /shownItems\.map\(renderCard\)/.test(ui)) {
+		ok('发现网格保留已安装命中，状态与独立清单同步');
+	} else { fail('发现网格仍隐藏已安装命中'); }
+	if (manager.includes('vs-mp-inventory-list') && manager.includes('vs-mp-inventory-inspector') && manager.includes('props.onUpgrade(p)')) {
+		ok('已安装列表与详情操作独立，升级仍接原有预览链');
+	} else { fail('已安装布局或升级接线缺失'); }
 
 	const tabsMatch = ui.match(/var KIND_TABS\s*=\s*\[([\s\S]*?)\];/);
 	const tabIds = tabsMatch ? Array.from(tabsMatch[1].matchAll(/id:\s*'([^']*)'/g), x => x[1]) : [];
@@ -873,16 +871,19 @@ for (const file of [clientFile, indexFile]) {
 		ok('lib/index.js：Host 的 KINDS 含 plugin（插件页签筛选有后端支持）');
 	} else { fail('lib/index.js：KINDS 缺 plugin ⇒ 插件页签点开拿不到商品'); }
 
-	if (/\.vs-mp-fold > summary::before/.test(css)
-		&& /\.vs-mp-fold\[open\] > summary::before \{ transform: rotate\(90deg\);? \}/.test(css)
-		&& /\.vs-mp-fold \.vs-mp-fold-n/.test(css)) {
-		ok('lib/page.css：折叠箭头 / 展开旋转 / 计数徽章三件套齐全');
-	} else { fail('lib/page.css：折叠头样式不全（不像工具工作台）'); }
-	const foldCss = css.slice(css.indexOf('.vs-mp-fold'), css.indexOf('/* ── 离线便携包'));
-	if (foldCss && !/--vscode-/.test(foldCss) && !/#[0-9a-fA-F]{3,8}\b/.test(foldCss)
-		&& /var\(--vs-mp-/.test(foldCss)) {
-		ok('lib/page.css：折叠样式只用商城主题变量（深浅外观自动跟随）');
-	} else { fail('lib/page.css：折叠样式写死了颜色或用了页内不存在的令牌'); }
+	const managerCss = css.slice(css.indexOf('.vs-mp-inventory {'), css.indexOf('.sk-act {', css.indexOf('.vs-mp-inventory {')));
+	if (managerCss.includes('@container (max-width: 760px)') && managerCss.includes('.vs-mp-inventory-back') && !/#[0-9a-fA-F]{3,8}\b|--vscode-/.test(managerCss)) {
+		ok('新资源列表按容器响应，颜色走商城令牌，窄屏支持返回详情');
+	} else { fail('资源列表响应式/主题令牌缺失'); }
+	const fillCss = css.slice(css.indexOf('.vs-mp-wrap[data-view=installed]'), css.indexOf('.sk-act {', css.indexOf('.vs-mp-inventory {')));
+	if (ui.includes("'data-view': tab") && fillCss.includes('height: 100dvh') && fillCss.includes('min-height: 100dvh')
+		&& fillCss.includes('grid-template-rows: minmax(0,1fr)') && fillCss.includes('align-items: stretch')
+		&& /\.vs-mp-inventory-list\s*\{[^}]*flex:\s*1 1 0/.test(fillCss)
+		&& /\.vs-mp-inspector-section\s*\{[^}]*flex:\s*1 1 0/.test(fillCss)
+		&& /\.vs-mp-inspector-actions\s*\{[^}]*margin-top:\s*auto/.test(fillCss)
+		&& /\.vs-mp-inventory-list-foot\s*\{[^}]*flex:\s*0 0 auto/.test(fillCss)) {
+		ok('已安装资源面板与详情面板等高铺满，列表滚动区和操作区固定到底部');
+	} else { fail('已安装两列未铺满业务区域或底部区域未固定'); }
 }
 
 // ── 15. MCP 配置弹层 + 已安装 item 状态自动同步（★ 2026-11-10）────────
@@ -907,22 +908,23 @@ for (const file of [clientFile, indexFile]) {
 		ok('lib/index.js：mcpConfig 只读、支持 digestOnly 轻量轮询、返回每台服务器状态');
 	} else { fail('lib/index.js：mcpConfig 分支缺失、有写副作用，或没有 digestOnly'); }
 
+	const manager = fs.readFileSync(path.join(pluginDir, 'lib', 'client.ui.js'), 'utf8');
 	if (/function McpConfigModal\(props\)/.test(ui) && /'MCP 配置'/.test(ui)
-		&& /data-vs-mp-mcp-text/.test(ui) && /sk-act-cfg/.test(ui)) {
+		&& /data-vs-mp-mcp-text/.test(ui) && manager.includes('props.onMcpConfig')) {
 		ok('lib/client.js：页头「MCP 配置」+ 行内「配置」+ 独立弹层展示整份 mcp.json');
 	} else { fail('lib/client.js：配置按钮或独立弹层缺失'); }
 	if (/run\('saveMcpConfig', \{ text: text \}, ''\)/.test(ui) && /JSON\.parse\(text\)/.test(ui)) {
 		ok('lib/client.js：弹层先本地校验 JSON，再走 saveMcpConfig（Host 备份+落盘）');
 	} else { fail('lib/client.js：保存链没接上或跳过 JSON 校验'); }
-	if (/action\('mcpConfig', \{\}\)/.test(ui) && /setMcpState\(mc\)/.test(ui)
-		&& /mcpServers: mcpServerMap/.test(ui)) {
+	if (/action\('mcpConfig', \{\}, \{ signal: token\.signal \}\)/.test(ui) && /setMcpState\(results\[1\]\)/.test(ui)
+		&& /servers: mcpServerMap/.test(ui)) {
 		ok('lib/client.js：mcp.json 的 servers 是折叠组 MCP 行开关/描述的实时真源');
 	} else { fail('lib/client.js：折叠组没接 mcp 实时状态 ⇒ 配置改了 item 不会变'); }
 	if (/mcpConfig', \{ digestOnly: true \}/.test(ui) && /setInterval\(function \(\)/.test(ui)
 		&& /mcpDigestRef\.current/.test(ui) && /void fetchPage\(1, false\)/.test(ui)) {
 		ok('lib/client.js：2s digest 轮询检测外部改动 ⇒ item 状态自动更新（非仅保存时手动刷）');
 	} else { fail('lib/client.js：缺自动同步的轮询链'); }
-	if (/setMcpEnabled', \{ kind: 'mcp', slug: id, enabled/.test(ui) && /data-vs-mp-mcp-sw/.test(ui)) {
+	if (/setMcpEnabled', \{ kind: 'mcp', slug: id, enabled/.test(ui) && manager.includes('props.onToggleMcp(p.slug, server.disabled === true)')) {
 		ok('lib/client.js：行内开关写 disabled；弹层 draft 与轮询状态互不覆盖');
 	} else { fail('lib/client.js：MCP 行开关没接 setMcpEnabled'); }
 	if (/s\.draft/.test(ui) && /onDraft: function \(v\) \{ patchMcpModal/.test(ui)) {
@@ -997,9 +999,14 @@ for (const file of [clientFile, indexFile]) {
 		ok('lib/client.js：✨ 自动填写会用 inspectGithub 的 logo 回填图标（不覆盖手填）');
 	} else { fail('lib/client.js：自动填写没回填图标'); }
 
-	if (/const mediaMeta = \{/.test(host) && (host.match(/\.\.\.mediaMeta/g) || []).length === 3
-		&& !/meta: \{\}/.test(host)) {
-		ok('lib/index.js：npm / external / bundle 三条发布路径的 meta 都带 mediaMeta');
+	const mediaPaths = ['publishDistribution', 'publishExternal', 'publishVersion', 'publishPluginVersion'];
+	const everyPathHasMedia = mediaPaths.every(name => {
+		const start = host.indexOf('return ' + name + '({');
+		const end = host.indexOf('});', start);
+		return start >= 0 && end > start && host.slice(start, end).includes('...mediaMeta');
+	});
+	if (/const mediaMeta = \{/.test(host) && everyPathHasMedia && !/meta: \{\}/.test(host)) {
+		ok('lib/index.js：所有发布路径的 meta 都带 mediaMeta（含工作台插件包上传）');
 	} else { fail('lib/index.js：Host 有发布路径没透传 icon / cover ⇒ 页面填了也无效'); }
 	if (/icon: meta\.icon\.trim\(\)/.test(pub) && /cover: meta\.cover\.trim\(\)/.test(pub)) {
 		ok('lib/publisher.js：ensurePackage 仍把 icon / cover 透传给服务端建包');
@@ -1077,14 +1084,14 @@ for (const file of [clientFile, indexFile]) {
 		&& /pick: hit \?/.test(ui) && /version: hit \?/.test(ui)) {
 		ok('lib/client.js：openPublish 支持 preset，预填 pick 与版本（不出现空选却已提交）');
 	} else { fail('lib/client.js：从详情直达发布没预填资源/版本'); }
-	if (/onPublishLocal: props\.onPublishLocal/.test(ui) && /onPublishLocal: function \(it\)/.test(ui)) {
+	if (/onPublishLocal: function \(it\)/.test(ui) && fs.readFileSync(path.join(pluginDir, 'lib', 'client.ui.js'), 'utf8').includes('props.onPublishLocal(p)')) {
 		ok('lib/client.js：折叠组行的发布按钮已接到 openPublish（不是死按钮）');
 	} else { fail('lib/client.js：折叠组本地发布回调没接上'); }
 	if (/async function submitPublish\(force\)/.test(ui) && /force === true/.test(ui)
 		&& /onForcePublish/.test(ui) && /确认公开并发布/.test(ui)) {
 		ok('lib/client.js：隐私体检被拦后有「确认公开并发布」出口，放行标志真传给 Host');
 	} else { fail('lib/client.js：隐私拦截仍无出口（用户被卡死）'); }
-	if (/showUninstall: tab === 'installed' && !pkg\.isLocal/.test(ui) && /if \(!it\.isLocal\) \{/.test(ui)) {
+	if (/MarketplaceUI\.InstalledManager/.test(ui) && fs.readFileSync(path.join(pluginDir, 'lib', 'client.ui.js'), 'utf8').includes('if (!p.isLocal) { buttons.push')) {
 		ok('lib/client.js：本地条目不显示必然失败的「卸载」按钮');
 	} else { fail('lib/client.js：本地条目仍会给出卸载按钮 ⇒ 点了报错'); }
 
@@ -1131,6 +1138,32 @@ for (const file of [clientFile, indexFile]) {
 	} finally {
 		await fsp.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
 	}
+}
+
+{
+	const files = ['client.state.js', 'client.ui.js', 'preferences.js'];
+	const manifest = JSON.parse(fs.readFileSync(path.join(pluginDir, 'package.json'), 'utf8'));
+	const host = fs.readFileSync(indexFile, 'utf8');
+	for (const file of files) {
+		if (!manifest.files.includes('lib/' + file) || !fs.existsSync(path.join(pluginDir, 'lib', file))) { fail('新增商城模块未完整进发布包：' + file); continue; }
+		try { execFileSync(process.execPath, ['--check', path.join(pluginDir, 'lib', file)], { stdio: 'pipe', windowsHide: true }); ok(file + '：模块存在、已进包且语法通过'); }
+		catch { fail(file + '：语法错误'); }
+	}
+	if (host.indexOf('/client.state.js') < host.indexOf('/client.ui.js') && host.indexOf('/client.ui.js') < host.indexOf('/client.js')) { ok('状态 → UI → 页面编排的加载顺序正确'); }
+	else { fail('新商城脚本加载顺序错误'); }
+	const state = fs.readFileSync(path.join(pluginDir, 'lib', 'client.state.js'), 'utf8');
+	const ui = fs.readFileSync(path.join(pluginDir, 'lib', 'client.ui.js'), 'utf8');
+	if (state.includes('scope') && state.includes('maxCache') && state.includes('record.revision === revision')) { ok('缓存有界、私有列表不缓存、写后旧快照不回填'); }
+	else { fail('商城缓存/私有数据保护缺失'); }
+	if (ui.includes("'aria-modal': true") && ui.includes('parent.inert = true') && ui.includes("event.key === 'Escape'")) { ok('弹层焦点与背景交互闭环存在'); }
+	else { fail('商城弹层缺少键盘/背景隔离'); }
+	const prefs = fs.readFileSync(path.join(pluginDir, 'lib', 'preferences.js'), 'utf8');
+	if (prefs.includes('expectedRevision') && prefs.includes('acquireFileLock') && prefs.includes('atomicWriteFile')) { ok('收藏保存具备 revision 冲突、文件锁与原子写'); }
+	else { fail('商城收藏并发保护缺失'); }
+	try {
+		execFileSync(process.execPath, ['--test', path.join(pluginDir, 'test', 'run-marketplace-ui-state-check.mjs'), path.join(pluginDir, 'test', 'run-marketplace-preferences-check.mjs')], { stdio: 'pipe', windowsHide: true, timeout: 30000 });
+		ok('商城状态 / 偏好行为回归通过（已接既有检查链）');
+	} catch (e) { fail('商城新增行为回归失败：' + String(e.stdout || e.message).slice(-1800)); }
 }
 
 console.log(problems === 0

@@ -64,7 +64,7 @@ export const FeishuBotSchema = z.object({
 /** Source configuration keys that affect deployment setup and trigger a restart when changed. */
 export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape),
   // VsSaros addition: the p4 Source's server, accounts and workspaces, which the workers' p4 guard is written from.
-  p4: ['cli', 'port', 'user', 'submitUser', 'submitClient'] }
+  p4: ['cli', 'port', 'user', 'submitUser', 'submitClient', 'workspaceMode', 'executionClient', 'workspaceRoot'] }
 
 export interface GithubAccount { cli: string; login: string; noreply: string }
 /**

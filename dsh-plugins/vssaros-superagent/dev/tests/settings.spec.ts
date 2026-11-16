@@ -15,6 +15,72 @@ function deferred<T>() {
 }
 const model = { provider: 'worker-provider', model: 'worker-model' }
 
+it('reserves disabling the P4 delivery policy to the operator panel', async () => {
+  h = await startRuntime()
+  const { store, settings } = h.runtime
+  const { p4Kind } = await import('../src/sources/p4.ts')
+  h.runtime.sources.register(p4Kind)
+  await expect(settings.save('source:p4', { enabled: false, config: { requireDelivery: false } }, store.blockRevision('source:p4'), 'tool')).rejects.toThrow('management panel')
+})
+
+it('keeps explicit-file reconcile fallback off by default, panel-only, and records who enabled it', async () => {
+  h = await startRuntime()
+  const { store, settings } = h.runtime
+  const { p4Kind } = await import('../src/sources/p4.ts')
+  h.runtime.sources.register(p4Kind)
+  const base = store.settings().sources.p4?.config ?? {}
+  expect((await import('../src/sources/p4-change.ts')).P4ConfigSchema.parse(base).reconcileFallback).toBe(false)
+  await expect(settings.save('source:p4', { enabled: true, config: { ...base, reconcileFallback: true } },
+    store.blockRevision('source:p4'), 'tool')).rejects.toThrow('management panel')
+  expect(store.settings().sources.p4?.config.reconcileFallback).toBeFalsy()
+  await settings.save('source:p4', { enabled: true, config: { ...base, reconcileFallback: true } },
+    store.blockRevision('source:p4'), 'panel')
+  expect(store.settings().sources.p4?.config.reconcileFallback).toBe(true)
+  const history = await h.api('GET', 'policy/history')
+  expect(JSON.stringify(history.body)).toContain('reconcileFallback')
+  expect((history.body as { items: { source: string }[] }).items[0]?.source).toBe('panel')
+})
+
+it('keeps strict unopened-diff scanning off by default, panel-only, and records who enabled it', async () => {
+  h = await startRuntime()
+  const { store, settings } = h.runtime
+  const { p4Kind } = await import('../src/sources/p4.ts')
+  h.runtime.sources.register(p4Kind)
+  const base = store.settings().sources.p4?.config ?? {}
+  expect((await import('../src/sources/p4-change.ts')).P4ConfigSchema.parse(base).checkUnopenedDiffs).toBe(false)
+  await expect(settings.save('source:p4', { enabled: true, config: { ...base, checkUnopenedDiffs: true } },
+    store.blockRevision('source:p4'), 'tool')).rejects.toThrow('management panel')
+  expect(store.settings().sources.p4?.config.checkUnopenedDiffs).toBeFalsy()
+  const revision = store.blockRevision('source:p4')
+  await settings.save('source:p4', { enabled: true, config: { ...base, checkUnopenedDiffs: true } }, revision, 'panel')
+  expect(store.settings().sources.p4?.config.checkUnopenedDiffs).toBe(true)
+  const history = await h.api('GET', 'policy/history')
+  expect(JSON.stringify(history.body)).toContain('checkUnopenedDiffs')
+  expect((history.body as { items: { source: string }[] }).items[0]?.source).toBe('panel')
+})
+
+it('keeps PTC and tool metadata tracing opt-in and panel-only', async () => {
+  h = await startRuntime()
+  const { store, settings } = h.runtime
+  expect(store.settings().executor).toMatchObject({ workerPtc: false, toolTrace: false })
+  for (const field of ['workerPtc', 'toolTrace']) {
+    await expect(settings.save('executor', { ...store.settings().executor, [field]: true }, store.blockRevision('executor'), 'tool')).rejects.toThrow('management panel')
+  }
+  await settings.save('executor', { ...store.settings().executor, workerPtc: true, toolTrace: true }, store.blockRevision('executor'), 'panel')
+  expect(store.settings().executor).toMatchObject({ workerPtc: true, toolTrace: true })
+})
+
+it('allows only the panel to change trusted project mappings', async () => {
+  h = await startRuntime()
+  const { store, settings } = h.runtime
+  const projects = [{ id: 'github', source: 'github', projectId: 'acme/widgets', repository: h.directory, ref: 'HEAD' }]
+  const executor = { ...store.settings().executor, projects }
+  await expect(settings.save('executor', executor, store.blockRevision('executor'), 'tool')).rejects.toThrow('management panel')
+  expect(store.settings().executor.projects).toEqual([])
+  await settings.save('executor', executor, store.blockRevision('executor'), 'panel')
+  expect(store.settings().executor.projects).toEqual(projects)
+})
+
 it('refuses a save of a block that another save changed during its model or account check, and saves nothing of it', async () => {
   h = await startRuntime()
   const { settings, store } = h.runtime

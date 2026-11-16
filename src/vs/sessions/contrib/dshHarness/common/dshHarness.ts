@@ -38,6 +38,9 @@ export const DSH_BRIDGE_PLUGIN_NAME = '@vssaros/dsh-bridge';
  */
 export const DSH_FOUNDATION_PLUGIN_NAME = '@vssaros/dsh-foundation';
 
+/** 插件资源基础 Host 包（无 `vssaros.module`）；伴生安装顺序在 foundation 之后、工作台宿主之前。 */
+export const DSH_PLUGIN_RESOURCES_PLUGIN_NAME = '@vssaros/dsh-plugin-resources';
+
 /**
  * 工作台宿主插件包名（源码位于仓库根 `dsh-plugins/vssaros-workbenches/`；doc/workbench-refactor-plan.md P1）。
  * 提供客户端服务 `desktopWorkbenches` 与只读服务 `desktopWorkbenchOwnership`。它没有 `vssaros.module`

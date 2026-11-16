@@ -101,11 +101,14 @@ export const MACHINE = { stateDir: '/srv/dsh-superagent', promptMaxChars: 100000
 
 type Settings = ReturnType<typeof SettingsSchema.parse>
 export interface PanelServer {
+  /** VsSaros addition: masked Feishu app list backing the SuperAgent app ID dropdown; POST feishu-app appends to it. */
+  feishuApps: { appId: string; name: string; isDefault: boolean; configured: boolean; hasSecret: boolean }[]
   joined?: Record<string, string>; joining?: Record<string, string>
   joinError?: string
   settings: Settings; revisions: Record<string, number>
   prompts: PromptsView
   tickets: { open: TicketRow[]; ended: TicketRow[] }; ticketDetails: Record<string, TicketPageView>
+  workspaceInventory: ApiResponse<'GET executor/workspaces'>
   threads: ThreadRow[]
   threadPages: (key: string, query: { before?: string; around?: string }) => ThreadPageView | undefined
   person: TicketRow[]; search: Pick<ApiResponse<'GET search'>, 'items' | 'threads'>; history: HistoryView
@@ -114,6 +117,7 @@ export interface PanelServer {
   misuse: string[]
   /** VsSaros addition: opt-in TAPD settings card, so the setup checklist can be rendered without changing the default two cards. */
   tapdCard?: boolean
+  superagentCard?: boolean
   /** Real TAPD field specs + namespaced labels, for the dropdown rendering test. */
   tapdFields?: boolean; tapdLabels?: Record<string, string>
   queued: Set<string>
@@ -155,6 +159,7 @@ export interface PanelServer {
   coexist: ApiResponse<'GET overview'>['coexist']
   approvalRules: ApiResponse<'GET steps/rules'>['rules']
   usage: ApiResponse<'GET usage'>
+  toolTrace: ApiResponse<'GET tools/trace'>
   /** VsSaros addition (plan C): where desk messages stand, by trigger; and the change stream, which answers 404 unless on. */
   deskFlows: Record<string, DeskFlow>
   streaming: boolean
@@ -215,8 +220,14 @@ function sourceSettings(): SourceView[] {
       ...policy ? { policy } : {} }
   })
   // The default kinds are Feishu and GitHub; many tests index cards 0/1, so the TAPD card is opt-in.
-  if (!server.tapdCard) return cards
-  return [...cards, { id: 'tapd', kind: 'tapd', title: { zh: 'TAPD', en: 'TAPD' }, description: { zh: '', en: '' },
+  // ★ 2026-11-11：opt-in 注入一张「SuperAgent 主管」卡，用于断言设置页把它过滤掉。
+  const withSuperagent = server.superagentCard
+    ? [...cards, { id: 'superagent', kind: 'superagent', title: { zh: 'SuperAgent 主管', en: 'SuperAgent supervisor' },
+      description: { zh: '', en: '' }, installed: true, value: { enabled: true, config: {} }, revision: 0,
+      restarts: [], fields: [], facts: {}, labels: {} } as SourceView]
+    : cards
+  if (!server.tapdCard) return withSuperagent
+  return [...withSuperagent, { id: 'tapd', kind: 'tapd', title: { zh: 'TAPD', en: 'TAPD' }, description: { zh: '', en: '' },
     installed: true, value: { enabled: true, config: { watches: server.tapdFields ? [{ name: 'bugs', workspace: '', type: 'bug',
       item: '', status: '', owner: '', iteration: '', mode: 'all' }] : [], agent: '', workspace: '68880148' } },
     revision: 0, restarts: [], fields: server.tapdFields ? makeTapdKind({ context: () => undefined }).fields : [],
@@ -333,7 +344,13 @@ function initial(): PanelServer {
     en: 'Feishu message' } }
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
+    feishuApps: [
+      { appId: 'cli_broken', name: '损坏的应用', isDefault: false, configured: false, hasSecret: false },
+      { appId: 'cli_configured', name: '已配置的应用', isDefault: true, configured: true, hasSecret: true },
+    ],
     health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], uncertain: [], redelivered: [], failing: [], reviews: {},
+    workspaceInventory: { readOnly: true, checkedAt: '', retentionDays: 14, total: 0, offset: 0, nextOffset: null, items: [] },
+    toolTrace: { enabled: false, retentionDays: 7, maxRows: 10000, nextCursor: null, items: [], summary: { sampled: 0, rootCalls: 0, nestedCalls: 0, errors: 0, sameInputRepeats: 0 } },
     plans: [], teamAvailable: true, teamBots: [], proposals: [], distills: [], teamSteps: [], stepApprovals: [], stepAnswers: [], stoppedSteps: [], unsandboxedSteps: [], coexist: {}, approvalRules: [], usage: emptyUsage(), deskFlows: {}, streaming: false, streams: [], deskMessages: [], deskSent: [], deskSendHold: undefined, deskFiles: [], deskSchedules: [], approvals: [], createdBots: [], retroSkills: [], retroWorkflows: [],
     setup: { machine: MACHINE, problem: null, feishuProblem: null,
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
@@ -437,6 +454,12 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     watches: 0, workspace: '68880148', agent: '', agentResolved: '', agentMapped: false, healthCode: null }) },
   'POST sources/tapd/test': { body: true, answer: () => ({ ok: true, method: 'Basic TAPD_CLIENT_ID/SECRET (API account)',
     at: '2026-11-09T00:00:00.000Z' }) },
+  'POST sources/tapd/filters/import': { body: true, answer: ({ body }) => ({ schedule: { name: 'filter-bug-1',
+    enabled: false, at: '09:00', maxPerRun: 20, windowDays: 2, query: {}, local: [], report: [], page: '', exportedAt: '' },
+  watch: { name: 'filter-bug-1', workspace: '', type: 'bug', item: '', status: '', owner: '', iteration: '', mode: 'assigned', sweepOnly: true },
+  report: [{ field: body.text ? '优先级' : '', op: '属于 (In)', enabled: true, target: 'api', detail: 'priority_label=紧急|高' }],
+  warnings: [], maps: 'fallback' as const }) },
+  'POST sources/tapd/filters/preview': { body: true, answer: () => ({ total: 18573, recent: 42 }) },
   'GET threads': { query: ['filter', 'offset', 'limit'], answer: () => page(server.threads) },
   'GET threads/:key': { query: ['limit', 'before', 'around'], answer: ({ params, query }) => {
     const found = server.threadPages(params.key, query)
@@ -469,6 +492,9 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     server.tickets.open = []; server.person = server.person.filter(ticket => ticket.id !== params.id)
     return { stopped: true }
   } },
+  'GET tickets/:id/report': { answer: ({ params }) => ({ file: `report-${params.id}.html`, queued: false, generated: false, generationQueued: false, deliveryState: 'not-requested' }) },
+  'GET tickets/:id/report/content': { answer: ({ params }) => ({ file: `report-${params.id}.html`, html: '<!DOCTYPE html><html><body>report</body></html>' }) },
+  'POST tickets/:id/report': { answer: ({ params }) => ticketOf(params.id) ? { queued: true } : refuse(404, 'Ticket not found') },
   'POST executor/pause': { body: true, answer: ({ body }) => {
     server.settings = { ...server.settings, paused: body.paused }
     server.revisions.pause = (server.revisions.pause ?? 0) + 1
@@ -613,6 +639,8 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     return { added: rules.length }
   } },
   'GET usage': { answer: () => server.usage },
+  'GET tools/trace': { query: ['ticketId', 'beforeId', 'limit'], answer: () => server.toolTrace },
+  'GET executor/workspaces': { query: ['offset', 'limit'], answer: () => server.workspaceInventory },
   'POST tickets/:id/steps/:key/stop': { answer: ({ params }) => {
     server.stoppedSteps.push(`${params.id}/${params.key}`)
     server.teamSteps = server.teamSteps.map(team => team.ticket.id !== params.id ? team
@@ -717,10 +745,17 @@ export function usePanelServer(cleanup: () => void) {
       // Answer before request bookkeeping, so tests asserting the orchestrator request list are unaffected.
       if (address.pathname === '/x/agents/api/bindings') {
         // Plain Response, not Reply: the component reads .json(), which would never decrement Reply's pending counter.
-        return new Response(JSON.stringify({ feishuApps: [
-          { appId: 'cli_broken', name: '损坏的应用', isDefault: false, configured: false, hasSecret: false },
-          { appId: 'cli_a860911d2e7f5013', name: '随包应用', isDefault: true, configured: true, hasSecret: true },
-        ] }), { status: 200, headers: { 'content-type': 'application/json' } })
+        // ★ 2026-11-11: the inline "add new app" form POSTs here; keep the list so the next GET can select it.
+        if (init?.method === 'POST') {
+          const body = JSON.parse(String(init.body ?? '{}')) as { action?: string; appId?: string; name?: string }
+          if (body.action === 'feishu-app' && body.appId) {
+            const id = String(body.appId)
+            server.feishuApps = [...server.feishuApps.filter(app => app.appId !== id),
+              { appId: id, name: String(body.name ?? ''), isDefault: false, configured: true, hasSecret: true }]
+          }
+        }
+        return new Response(JSON.stringify({ feishuApps: server.feishuApps }),
+          { status: 200, headers: { 'content-type': 'application/json' } })
       }
       const path = address.pathname.replace('/orchestrator/api/', '')
       // VsSaros addition (plan C): the change stream stays open until the page closes it; `pushChange` writes to it.

@@ -21,6 +21,8 @@ const TABLES = [
   'health_entry', 'eval_reads',
   // The usage ledger of SuperAgent's Sessions (2026-11-06, P2), its rows kept 30 days
   'usage_call',
+  // Opt-in metadata-only tool diagnostics, retained 7 days / 10000 rows.
+  'tool_trace',
 ]
 
 it('holds exactly the listed tables after a start, none of the retired team track', async () => {
@@ -30,7 +32,7 @@ it('holds exactly the listed tables after a start, none of the retired team trac
   })
   const tables = h.runtime.store.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all().map(row => String(row.name)).sort()
   expect(tables).toEqual([...TABLES].sort())
-  expect(tables.length).toBe(26)
+  expect(tables.length).toBe(27)
   expect(tables.filter(name => (RETIRED_TEAM_TABLES as readonly string[]).includes(name))).toEqual([])
   expect(h.runtime.archive.plans()).toMatchObject([{ id: 'plan-x', status: 'cancelled', archivedRunning: true }])
   expect((await h.api('GET', 'team/plans')).body).toMatchObject({ archived: true, plans: [{ id: 'plan-x' }] })

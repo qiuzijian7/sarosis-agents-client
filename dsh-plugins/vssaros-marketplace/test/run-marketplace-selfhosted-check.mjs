@@ -189,8 +189,9 @@ function fakeFetch(handler) {
 	// 坏文件不覆盖
 	fs.writeFileSync(path.join(dataRoot, 'installed-packages.json'), '{not json');
 	check('台账是坏 JSON 时读取返回空数组（不抛）', (await readInstalled(dataRoot)).length === 0);
-	await upsertInstalled(dataRoot, { kind: 'skill', storeId: 's9', version: '1.0.0' });
-	check('坏文件被一次成功写入修复（而不是继续坏着）', (await readInstalled(dataRoot)).length === 1);
+	let rejected = false;
+	try { await upsertInstalled(dataRoot, { kind: 'skill', storeId: 's9', version: '1.0.0' }); } catch { rejected = true; }
+	check('写坏台账明确拒绝且保留原文件，不用新条目覆盖用户历史', rejected && fs.readFileSync(path.join(dataRoot, 'installed-packages.json'), 'utf8') === '{not json');
 	fs.rmSync(dataRoot, { recursive: true, force: true });
 }
 
@@ -460,6 +461,17 @@ function fakeFetch(handler) {
 	check('形状：没有新版本时 upgradable = false', instNo.upgradable === false && instNo.latestVersion === '');
 }
 
+
+{
+	const source = fs.readFileSync(path.join(LIB, 'index.js'), 'utf8');
+	const stateScript = source.indexOf('<script src="${ROUTE_PREFIX}/client.state.js">');
+	const uiScript = source.indexOf('<script src="${ROUTE_PREFIX}/client.ui.js">');
+	const appScript = source.indexOf('<script src="${ROUTE_PREFIX}/client.js">');
+	check('页面共享模块顺序：React 后 state/ui/app', stateScript >= 0 && uiScript > stateScript && appScript > uiScript);
+	check('共享资源只允许两个明确脚本，不开放任意文件', source.includes("['client.state.js', 'client.ui.js'].some") && source.includes("'cache-control': 'no-store'"));
+	const handler = source.slice(source.indexOf('async function runLocalByTarget'));
+	check('偏好操作在 HTTP 市场认证之前独立处理', handler.indexOf("target === 'local-preferences'") >= 0 && handler.indexOf("target === 'local-preferences'") < handler.indexOf('const m = market();'));
+}
 
 console.log(`\n[marketplace self-hosted] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }

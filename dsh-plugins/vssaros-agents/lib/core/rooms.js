@@ -54,6 +54,87 @@ export function roundStatusOf(round) {
 	}
 	return r.error ? 'failed' : 'done';
 }
+
+/* ── 发布收口（2026-11-16）：诊断用的「运行生命周期 / 任务生命周期」───────────
+   注意：这一组是**只读诊断词表**，不替换 ROUND_STATUSES / roundStatusOf 的
+   schema=1 五词对外契约；progress / active / group_relay 工具结果仍用旧状态机。
+   rounds[] 只描述「这一轮消息怎样执行」，goal.stages[].tasks[] 描述「任务与验收」。 */
+export const ROOM_DIAGNOSTICS_SCHEMA = 1;
+export const DISPATCH_INTENT_STATES = Object.freeze(['prepared', 'sent', 'settled', 'cut', 'cancelled']);
+export const DISPATCH_INTENT_LABELS = Object.freeze({
+	prepared: '已记录派发意图', sent: '已派发待确认', settled: '派发已收口', cut: '中断未重放', cancelled: '已取消',
+});
+export const RUN_STATES = Object.freeze([
+	'queued', 'running', 'waiting_user', 'waiting_approval', 'background',
+	'cancelling', 'cancelled', 'cut', 'failed', 'done', 'accepted',
+]);
+export const RUN_STATE_LABELS = Object.freeze({
+	queued: '排队中', running: '执行中', waiting_user: '等待用户选择', waiting_approval: '等待审批',
+	background: '后台执行', cancelling: '正在取消', cancelled: '已取消', cut: '已中断',
+	failed: '执行失败', done: '本轮已结束', accepted: '验收通过',
+});
+export const TASK_STATES = Object.freeze(['pending', 'working', 'reported', 'rework', 'accepted', 'rejected']);
+export const TASK_STATE_LABELS = Object.freeze({
+	pending: '待开始', working: '进行中', reported: '待验收', rework: '返工中', accepted: '已验收', rejected: '已否决',
+});
+const signalCount = (value) => Array.isArray(value) ? value.length : Number(value) || 0;
+const hasCutEvent = (events) => Array.isArray(events) && events.some(event => event && event.kind === 'cut');
+/**
+ * 诊断用运行态：优先认显式 cancelReason，再认中断；未结束时按等待 / 后台 / 说话判断。
+ * 与 roundStatusOf 分开，避免把「本轮结束」误说成「项目验收通过」。
+ */
+export function runStateOf(round, signals = {}) {
+	const r = round && typeof round === 'object' ? round : {};
+	if (!round) { return 'queued'; }
+	if (r.cancelReason) { return 'cancelled'; }
+	if (signals.cancelling) { return 'cancelling'; }
+	if (r.interrupted || r.phase === 'cut' || hasCutEvent(r.events)) { return 'cut'; }
+	const approvals = signalCount(signals.approvals);
+	const asks = signalCount(signals.asks);
+	const busy = signalCount(signals.busy) + (Array.isArray(r.background) ? r.background.length : 0)
+		+ (Array.isArray(r.working) ? r.working.length : 0);
+	if (!r.done) {
+		if (approvals > 0) { return 'waiting_approval'; }
+		if (asks > 0) { return 'waiting_user'; }
+		if (busy > 0) { return 'background'; }
+		const speaking = r.speaking instanceof Set ? r.speaking.size : Array.isArray(r.speaking) ? r.speaking.length : 0;
+		return speaking > 0 ? 'running' : 'queued';
+	}
+	if (r.error) { return 'failed'; }
+	if (signals.goal?.status === 'complete') { return 'accepted'; }
+	return 'done';
+}
+/** 单个 group_goal 任务 → 诊断任务态；不写回 room.goal，只做投影。 */
+export function taskStateOf(task, goal = {}, stage = {}) {
+	const status = String(task?.status ?? 'pending');
+	if (goal?.status === 'stopped') { return 'rejected'; }
+	if (goal?.status === 'complete' || status === 'done' || status === 'accepted') { return 'accepted'; }
+	if (status === 'rejected') { return 'rejected'; }
+	if (status === 'reported') { return 'reported'; }
+	if (status === 'working') { return 'working'; }
+	if (status === 'rework' || (status === 'pending' && Number(stage?.reworks ?? 0) > 0)) { return 'rework'; }
+	return 'pending';
+}
+/** room.goal 的只读任务视图：稳定 taskId = roomId:goal:revision:stageIndex:taskIndex。 */
+export function taskStatesOf(room) {
+	const goal = room?.goal;
+	if (!goal || !Array.isArray(goal.stages)) { return []; }
+	const revision = Number(goal.revision ?? 0);
+	const runId = room?.lastRunId ?? null;
+	return goal.stages.flatMap((stage, stageIndex) => (Array.isArray(stage?.tasks) ? stage.tasks : [])
+		.map((task, taskIndex) => {
+			const lifecycle = taskStateOf(task, goal, stage);
+			return {
+				taskId: `${room.id}:goal:${revision}:${stageIndex}:${taskIndex}`,
+				roomId: room.id, runId,
+				goalStatus: String(goal.status ?? ''), goalRevision: revision,
+				stage: stageIndex + 1, stageIndex, stageTitle: String(stage?.title ?? ''), stageStatus: String(stage?.status ?? ''),
+				stageReworks: Number(stage?.reworks ?? 0), current: goal.current === stageIndex,
+				taskIndex, botId: String(task?.botId ?? ''), task: String(task?.task ?? ''),
+				status: String(task?.status ?? 'pending'), lifecycle, lifecycleLabel: TASK_STATE_LABELS[lifecycle],
+			};
+		}));
+}
 /** 「谁来回答」模式（旧两档，保持运行时/SuperAgent 兼容；新四档走 wakeMode）。 */
 export const ROOM_MODES = Object.freeze(['admin', 'everyone']);
 /**
@@ -66,6 +147,28 @@ export const WAKE_LIMITS = Object.freeze({
 	countMin: 1, countMax: 100, intervalMin: 1, intervalMax: 3600,
 	/** 群头像（data URI）上限：png/jpeg/webp，≤96KB。 */
 	avatarBytes: 96 * 1024,
+});
+/**
+ * ★ 2026-11-16 P3：单轮成本 / 写范围的归一化边界（纯常量，零 I/O）。
+ * 所有字段都是**可选增量**：老房间一个字段都没有 ⇒ roomBudgetOf 全部回落 ROOM_BUDGET_DEFAULTS，
+ * 既有轮次行为不变；ROUND_SCHEMA=1 的五词对外契约也不动。
+ */
+export const ROOM_BUDGET_LIMITS = Object.freeze({
+	maxTurnsMin: 1, maxTurnsMax: 200,
+	maxEstimatedTokensMin: 100, maxEstimatedTokensMax: 2_000_000,
+	maxWallMsMin: 1_000, maxWallMsMax: 6 * 60 * 60 * 1000,
+	idleRelayLimitMin: 1, idleRelayLimitMax: 20,
+	contextLinesMin: 0, contextLinesMax: 60,
+	newLinesMin: 1, newLinesMax: 80,
+	/** 单个任务 / 单个房间最多几个写范围；单条范围的最大字符数。 */
+	writeScopesMax: 8, scopeLengthMax: 200,
+});
+/** 预算超限的可解释状态文案（diagnostics / 状态节点用，不进 ROUND_STATUSES）。 */
+export const ROOM_BUDGET_STOP_LABELS = Object.freeze({
+	maxTurns: '本轮成员回合数已达上限',
+	maxEstimatedTokens: '本轮估算 token 已达上限',
+	maxWallMs: '本轮执行时长已达上限',
+	idleRelayLimit: '连续空转接力已达上限',
 });
 /** 旧两档 → 新四档（mockup 的 normMode 同口径）。 */
 export function normalizeWakeMode(mode) {
@@ -119,6 +222,31 @@ export function normalizeWakeSettings(input) {
 		}
 		out.memberMax = Math.round(n);
 	}
+	// ★ 2026-11-14 P3：默认按 ROOM_LIMITS.maxConcurrentTurnsDefault 并发；允许逐群收紧，但不超过成员上限。
+	if (input.maxConcurrentTurns !== undefined) {
+		const n = Number(input.maxConcurrentTurns);
+		if (!Number.isFinite(n)) { throw new RoomError('最大并发数必须是数字'); }
+		out.maxConcurrentTurns = Math.min(ROOM_LIMITS.membersMax, Math.max(1, Math.round(n)));
+	}
+	// ★ 2026-11-16 P3：逐群成本 / 上下文预算；非法值直接拒（不能静默写进房间），越界值钳制到边界。
+	const budgetClamp = (key, lo, hi) => {
+		if (input[key] === undefined) { return; }
+		const n = Number(input[key]);
+		if (!Number.isFinite(n)) { throw new RoomError(`预算字段 ${key} 必须是数字`); }
+		out[key] = Math.min(hi, Math.max(lo, Math.round(n)));
+	};
+	budgetClamp('maxTurns', ROOM_BUDGET_LIMITS.maxTurnsMin, ROOM_BUDGET_LIMITS.maxTurnsMax);
+	budgetClamp('maxEstimatedTokens', ROOM_BUDGET_LIMITS.maxEstimatedTokensMin, ROOM_BUDGET_LIMITS.maxEstimatedTokensMax);
+	budgetClamp('maxWallMs', ROOM_BUDGET_LIMITS.maxWallMsMin, ROOM_BUDGET_LIMITS.maxWallMsMax);
+	budgetClamp('idleRelayLimit', ROOM_BUDGET_LIMITS.idleRelayLimitMin, ROOM_BUDGET_LIMITS.idleRelayLimitMax);
+	budgetClamp('contextLines', ROOM_BUDGET_LIMITS.contextLinesMin, ROOM_BUDGET_LIMITS.contextLinesMax);
+	budgetClamp('newLines', ROOM_BUDGET_LIMITS.newLinesMin, ROOM_BUDGET_LIMITS.newLinesMax);
+	if (input.writeScopes !== undefined) {
+		if (!Array.isArray(input.writeScopes) && typeof input.writeScopes !== 'string') {
+			throw new RoomError('房间写范围必须是字符串数组');
+		}
+		out.writeScopes = normalizeWriteScopes(input.writeScopes);
+	}
 	if (Array.isArray(input.pending)) { out.pending = input.pending.map(String).filter(Boolean).slice(0, 64); }
 	return out;
 }
@@ -139,6 +267,8 @@ export const ROOM_LIMITS = Object.freeze({
 	callsPerMember: 12,
 	/** 一轮里 bot 叫 bot（含「做完了叫回派活的人」）最多几次（原来是 6）。 */
 	botCalls: 40,
+	/** ★ 2026-11-14 P3：一轮同时唤醒成员的成本闸；逐群用 maxConcurrentTurns 收紧，上限不超过 membersMax。 */
+	maxConcurrentTurnsDefault: 4,
 	/** 单条群消息文本上限（再长截断并注明）。 */
 	line: 4000,
 });
@@ -147,6 +277,106 @@ export const ROOM_LIMITS = Object.freeze({
  * 有人真干活（调用过工具）就清零 ⇒ 只拦互相附和、复读，不拦有效的多轮返工。
  */
 export const ROOM_IDLE_RELAY_LIMIT = 6;
+
+/**
+ * ★ 2026-11-16 P3：单轮预算默认值。老房间没有任何预算字段时全部走这里；
+ * 逐群字段（normalizeWakeSettings 产出）与部署注入（createRooms deps）按优先级覆盖。
+ * contextLines / newLines 与 ROOM_LIMITS 同源，不另写一份魔法数。
+ */
+export const ROOM_BUDGET_DEFAULTS = Object.freeze({
+	maxTurns: 80,
+	maxEstimatedTokens: 400_000,
+	maxWallMs: 60 * 60 * 1000,
+	idleRelayLimit: ROOM_IDLE_RELAY_LIMIT,
+	contextLines: ROOM_LIMITS.contextLines,
+	newLines: ROOM_LIMITS.newLines,
+});
+const BUDGET_CLAMPS = Object.freeze({
+	maxTurns: [ROOM_BUDGET_LIMITS.maxTurnsMin, ROOM_BUDGET_LIMITS.maxTurnsMax],
+	maxEstimatedTokens: [ROOM_BUDGET_LIMITS.maxEstimatedTokensMin, ROOM_BUDGET_LIMITS.maxEstimatedTokensMax],
+	maxWallMs: [ROOM_BUDGET_LIMITS.maxWallMsMin, ROOM_BUDGET_LIMITS.maxWallMsMax],
+	idleRelayLimit: [ROOM_BUDGET_LIMITS.idleRelayLimitMin, ROOM_BUDGET_LIMITS.idleRelayLimitMax],
+	contextLines: [ROOM_BUDGET_LIMITS.contextLinesMin, ROOM_BUDGET_LIMITS.contextLinesMax],
+	newLines: [ROOM_BUDGET_LIMITS.newLinesMin, ROOM_BUDGET_LIMITS.newLinesMax],
+});
+/** 粗略 token 估算：4 字符 ≈ 1 token。只做预算闸，不当作计费口径。 */
+export function estimateTokens(text) {
+	const s = String(text ?? '');
+	return s.length ? Math.ceil(s.length / 4) : 0;
+}
+/**
+ * 合并出这一轮实际生效的预算：房间字段 > 部署注入 > 默认值。
+ * ⚠ 职责分离：**校验与钳制只在写入路径 normalizeWakeSettings**；这里只做合并，
+ *   非数字才回落默认。否则部署/测试故意设的极紧预算会被悄悄抬高、闸门永远不触发。
+ */
+export function roomBudgetOf(room = {}, injected = {}) {
+	const src = {
+		...ROOM_BUDGET_DEFAULTS,
+		...(injected && typeof injected === 'object' ? injected : {}),
+		...(room && typeof room === 'object' ? room : {}),
+	};
+	const out = {};
+	for (const key of Object.keys(BUDGET_CLAMPS)) {
+		const n = Number(src[key]);
+		out[key] = Number.isFinite(n) ? Math.round(n) : ROOM_BUDGET_DEFAULTS[key];
+	}
+	return out;
+}
+/**
+ * 这一轮该不该因成本 / 空转停下。优先级：回合数 > token > 时长 > 连续空转接力。
+ * @param elapsedMs 已用墙钟时间；@param idleRelays 连续「没干活只叫人」的次数
+ * @returns `{ reason, actual, limit, label } | null`；reason 就是触顶的预算字段名。
+ */
+export function budgetStopOf(round, budget = ROOM_BUDGET_DEFAULTS, elapsedMs = 0, idleRelays = 0) {
+	const m = round?.metrics && typeof round.metrics === 'object' ? round.metrics : {};
+	const b = budget && typeof budget === 'object' ? budget : ROOM_BUDGET_DEFAULTS;
+	const hit = (reason, actual) => ({ reason, actual, limit: Number(b[reason]), label: ROOM_BUDGET_STOP_LABELS[reason] });
+	const turns = Number(m.turns) || 0;
+	if (turns >= Number(b.maxTurns)) { return hit('maxTurns', turns); }
+	const tokens = Number(m.estimatedTokens) || 0;
+	if (tokens >= Number(b.maxEstimatedTokens)) { return hit('maxEstimatedTokens', tokens); }
+	const wall = Number(elapsedMs) || 0;
+	if (wall >= Number(b.maxWallMs)) { return hit('maxWallMs', wall); }
+	const idle = Number(idleRelays) || 0;
+	if (idle >= Number(b.idleRelayLimit)) { return hit('idleRelayLimit', idle); }
+	return null;
+}
+/**
+ * 写范围归一化：去空白、丢空串 / 超长串、按字面去重、封顶条数。
+ * ⚠ 不做 `./` 或大小写折叠：不同写法视为不同范围（保守），重叠判断交给 writeScopesOverlap 的 glob。
+ */
+export function normalizeWriteScopes(input) {
+	const raw = Array.isArray(input) ? input : typeof input === 'string' ? [input] : [];
+	const out = [];
+	for (const item of raw) {
+		const scope = String(item ?? '').trim();
+		if (!scope || scope.length > ROOM_BUDGET_LIMITS.scopeLengthMax || out.includes(scope)) { continue; }
+		out.push(scope);
+		if (out.length >= ROOM_BUDGET_LIMITS.writeScopesMax) { break; }
+	}
+	return out;
+}
+/** glob → 正则（`*` 与 `**` 都按「任意路径片段」处理；其余字符逐字转义）。 */
+function scopePattern(scope) {
+	const escaped = String(scope).replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+	const body = escaped.replace(/\*\*/g, '\u0000').replace(/\*/g, '.*').replace(/\u0000/g, '.*');
+	return new RegExp(`^${body}$`);
+}
+/**
+ * 两组写范围有没有交集（任一侧是另一侧的 glob 也算）。任一侧为空 ⇒ 不重叠，
+ * 这样「没声明写范围」的任务不会被误判成和所有人冲突。
+ */
+export function writeScopesOverlap(a, b) {
+	const left = normalizeWriteScopes(a);
+	const right = normalizeWriteScopes(b);
+	for (const x of left) {
+		const px = scopePattern(x);
+		for (const y of right) {
+			if (x === y || px.test(y) || scopePattern(y).test(x)) { return true; }
+		}
+	}
+	return false;
+}
 
 /** 群标记记录的数据体。 */
 export function roomRecordData({ roomId, role, botId }) {
@@ -315,7 +545,7 @@ export function openingCall(room, mention) {
 		if (wake === 'digest') {
 			const need = Math.max(1, Number(room?.wake?.count) || 5);
 			const held = Number(room?.digestPending) || 0;
-			if (held < need) { return { ids: [], ordered: false }; }
+			if (held < need && !room.digestDue) { return { ids: [], ordered: false }; }
 			return { ids: members.slice(), ordered: false };
 		}
 		const wakeAdmin = room?.admin && members.includes(room.admin) ? room.admin : null;
@@ -391,11 +621,21 @@ export function clipLine(text) {
  * @param input.place `{ ordered, index, total, with: string[] }` 本轮位次
  * @param input.calledBy 叫他的人（人 / 成员名）
  */
-export function roomPrompt({ room, member, members, log, seen, place, calledBy, note, workDir }) {
+export function roomPrompt({ room, member, members, log, seen, place, calledBy, note, workDir, contextLines, newLines }) {
 	const lines = Array.isArray(log) ? log : [];
 	const first = typeof seen !== 'number';
-	const fresh = first ? lines.slice(-12) : lines.filter(line => line.seq > seen).slice(-ROOM_LIMITS.newLines);
-	const before = first ? [] : lines.filter(line => line.seq <= seen).slice(-ROOM_LIMITS.contextLines);
+	// ★ 2026-11-16 P3：长群记录不再每次整份复制。逐群可收紧行数；不传时完全回落旧口径
+	//   （首次进群最多 12 行、之后 8 行上下文 + 24 行新消息）。
+	const limitOf = (value, key) => {
+		if (value === undefined) { return ROOM_BUDGET_DEFAULTS[key]; }
+		const n = Number(value);
+		if (!Number.isFinite(n)) { return ROOM_BUDGET_DEFAULTS[key]; }
+		return Math.min(BUDGET_CLAMPS[key][1], Math.max(BUDGET_CLAMPS[key][0], Math.round(n)));
+	};
+	const freshLimit = limitOf(newLines, 'newLines');
+	const contextLimit = limitOf(contextLines, 'contextLines');
+	const fresh = first ? lines.slice(-Math.min(12, freshLimit)) : lines.filter(line => line.seq > seen).slice(-freshLimit);
+	const before = first ? [] : lines.filter(line => line.seq <= seen).slice(-contextLimit);
 	const others = (members ?? []).filter(m => m.id !== member.id)
 		.map(m => `${m.name}${m.id === room.admin ? '（管理员）' : ''}`);
 	const parts = [
@@ -456,6 +696,15 @@ export function roomView(room, names) {
 		...(room.requireApproval !== undefined ? { requireApproval: room.requireApproval === true } : {}),
 		...(Array.isArray(room.pending) ? { pending: room.pending.slice() } : {}),
 		...(room.memberMax ? { memberMax: room.memberMax } : {}),
+		...(room.maxConcurrentTurns ? { maxConcurrentTurns: room.maxConcurrentTurns } : {}),
+		// ★ 2026-11-16 P3：逐群预算 / 上下文 / 写范围只在设置过时才下发 ⇒ 老房间视图形状不变。
+		...(room.maxTurns !== undefined ? { maxTurns: room.maxTurns } : {}),
+		...(room.maxEstimatedTokens !== undefined ? { maxEstimatedTokens: room.maxEstimatedTokens } : {}),
+		...(room.maxWallMs !== undefined ? { maxWallMs: room.maxWallMs } : {}),
+		...(room.idleRelayLimit !== undefined ? { idleRelayLimit: room.idleRelayLimit } : {}),
+		...(room.contextLines !== undefined ? { contextLines: room.contextLines } : {}),
+		...(room.newLines !== undefined ? { newLines: room.newLines } : {}),
+		...(Array.isArray(room.writeScopes) ? { writeScopes: room.writeScopes.slice() } : {}),
 	};
 }
 

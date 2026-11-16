@@ -37,9 +37,10 @@ it('opens the side panel for a step\'s request, puts it first, and answers it th
   // The next poll (every 5 seconds while no step runs) finds the request.
   await new Promise(resolve => setTimeout(resolve, 5200))
   await settle()
-  expect(document.querySelector('.dt-side')).not.toBeNull()
-  expect(text()).toContain(zh['side.autoOpenedApproval'])
-  const titles = all('.dt-side .dt-section-title').map(title => title.textContent)
+  // ★ 2026-11-11：右侧栏禁用，待批准内容在概况首页主区域，且不再弹 toast。
+  expect(document.querySelector('.dt-side')).toBeNull()
+  expect(text()).not.toContain(zh['side.autoOpenedApproval'])
+  const titles = all('#dt-page .dt-section-title').map(title => title.textContent)
   expect(titles[0]).toBe(`${zh['work.needsYou']}1`)
   const card = document.querySelector('[data-testid="step-approvals"]')!.textContent
   expect(card).toContain('前端 想越出工作目录（T2）')

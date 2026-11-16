@@ -131,7 +131,7 @@ await checkAsync('★ 端到端：takeover 后全拒（控制 op 仍可交还）
 	assert.equal(relay.calls.length, 2);
 });
 
-await checkAsync('工具 op 面按三个开关逐级展开；默认仍只有 9 个只读 op', async () => {
+await checkAsync('工具 op 面按三个开关逐级展开；默认仍只有只读全集', async () => {
 	const base = { relay: fakeRelay(), state: defaultState() };
 	assert.deepEqual(createToolDefinition({ ...base, level: 'view' }).parameters.properties.op.enum, OBSERVE_OPS);
 	const bg = createToolDefinition({ ...base, level: 'background', allowBackground: true })

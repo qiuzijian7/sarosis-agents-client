@@ -3,6 +3,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import { UserError, key, latestReport, reached, runningAssignment, threadKey, type Ticket, type Trigger } from '../core/index.ts'
 import { batchOf, inputMessage, triggerMessage, workerSessionId } from '../executor/dsh.ts'
 import { readGithub } from '../sources/github-read.ts'
+import { GongfengConfigSchema, GongfengOpenApi } from '../sources/gongfeng-api.ts'
 import { feishuReferences, feishuRead } from '../sources/feishu-read.ts'
 import { feishuRef } from '../sources/feishu.ts'
 import { feishuTriggerId } from '../sources/feishu-trigger.ts'
@@ -52,6 +53,7 @@ export const RESOURCES: readonly { name: string; holds: string; executor?: true 
   { name: 'models/<provider>', holds: 'one provider\'s models' },
   { name: 'feishu/<trigger-id>/…', holds: 'a Feishu original, as the dsh-superagent-feishu skill describes', executor: true },
   { name: 'github/…', holds: 'a GitHub original, as the dsh-superagent-github skill describes', executor: true },
+  { name: 'gongfeng/…', holds: 'reachable MR detail/notes', executor: true },
 ]
 export const resourceGrammar = (executor: boolean): string => RESOURCES.filter(resource => !executor || resource.executor)
   .map(resource => `${resource.name}: ${resource.holds}`).join('; ')
@@ -104,7 +106,7 @@ const trigger = (host: ResourceHost, id: string, ticketId?: string): Trigger => 
 async function sourcePage(read: Read, source: string, fetch: () => Promise<unknown>) {
   const { host, resource, offset, sessionId } = read
   const body = offset === 0 ? JSON.stringify(await fetch()) : host.pages.get(`${sessionId}:${resource}`)
-  if (body === undefined) throw new Error(`Read this ${source === 'feishu' ? 'Feishu' : 'GitHub'} resource from offset 0 first`)
+  if (body === undefined) throw new Error(`Read this ${source === 'feishu' ? 'Feishu' : source === 'github' ? 'GitHub' : 'Gongfeng'} resource from offset 0 first`)
   if (offset === 0) host.pages.set(`${sessionId}:${resource}`, body)
   return text(read, body)
 }
@@ -207,6 +209,26 @@ const ROUTES: readonly Route[] = [
     return sourcePage(read, 'feishu', () => feishuRead(commands, ref, read.resource, read.host.feishuPageSize()))
   }],
   ['github/', read => sourcePage(read, 'github', () => readGithub(read.host.commands.withSignal(read.signal), read.resource))],
+  ['gongfeng/', async read => {
+    const match = /^(\d+)\/(\d+)\/(detail|notes\/([1-9]|10))$/.exec(read.rest)
+    const source = read.host.store.settings().sources.gongfeng
+    const config = GongfengConfigSchema.parse(source?.config ?? {})
+    if (!source?.enabled || !match || match[1] !== config.project) throw new Error('Unknown or inaccessible Gongfeng resource')
+    const iid = Number(match[2]), ticket = read.ticketId ? read.host.store.tickets.get(read.ticketId) : undefined
+    if (read.ticketId) {
+      const origin = ticket && read.host.store.triggers.get(ticket.origin.triggerId)
+      const from = origin?.source === 'gongfeng' && origin.meta.project === config.project && origin.meta.iid === iid
+      if (!ticket || (!from && !ticket.follows?.some(follow => follow.thread === `gongfeng:${config.project}:${iid}`))) throw new Error('MR not reached by this ticket')
+    }
+    return sourcePage(read, 'gongfeng', async () => {
+      const api = new GongfengOpenApi(config), mr = await api.mr(iid, read.signal)
+      if (match[3] === 'detail') return { iid: mr.iid, title: mr.title, description: mr.description, state: mr.state,
+        author: mr.author.username, source_branch: mr.source_branch, target_branch: mr.target_branch,
+        next_resource: `gongfeng/${config.project}/${iid}/notes/1` }
+      const page = await api.notes(mr.id, Number(match[4]), read.signal)
+      return { items: page.items, next_resource: page.next ? `gongfeng/${config.project}/${iid}/notes/${page.next}` : null }
+    })
+  }],
   ['trigger/', async read => {
     const { host, rest, ticketId, offset, signal } = read
     if (!rest || rest.includes('/')) throw new Error('Unknown context resource')

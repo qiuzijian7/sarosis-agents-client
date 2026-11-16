@@ -58,7 +58,10 @@ describe('account-isolated operations', () => {
   it('uses Feishu bot identity and one idempotency key on retries', async () => {
     const commands = new Commands(() => deployment, {}, new AbortController().signal); const run = vi.spyOn(commands,'run').mockResolvedValue('{"ok":true,"data":{}}')
     await send(commands, { ...reply, channel: feishuChannel('oc_1', 'om_1') })
-    expect(run.mock.calls[0]![1]).toEqual(expect.arrayContaining(['--as','bot','--idempotency-key','stable-operation','--message-id','om_1']))
+    expect(run.mock.calls[0]![1]).toEqual(expect.arrayContaining(['--as','bot','--message-id','om_1']))
+    // ★ 2026-11-12：幂等键改为 message.id 的稳定短哈希（飞书 50 字符上限），不再是原 id。
+    const argv = run.mock.calls[0]![1]
+    expect(argv[argv.indexOf('--idempotency-key') + 1]).toMatch(/^sa-[0-9a-f]{30}$/)
   })
 })
 
@@ -214,4 +217,18 @@ it.runIf(posix)('stops a running command when the signal of its work aborts, or 
   lifetime.abort()
   await expect(other).rejects.toThrow()
   expect(Date.now() - started).toBeLessThan(4000)
+})
+
+it('★ keeps 230002/238002 codes with a bot-not-in-chat hint for history backfill', async () => {
+  const value = new Commands(() => deployment, {}, new AbortController().signal)
+  const run = vi.spyOn(value, 'run')
+  for (const code of [230002, 238002]) {
+    run.mockResolvedValueOnce(JSON.stringify({ ok: false, error: { code, message: 'Bot/User can NOT be out of the chat' } }))
+    await expect(value.lark(['api', 'GET', '/open-apis/im/v1/messages'])).rejects.toMatchObject({ code })
+    run.mockResolvedValueOnce(JSON.stringify({ ok: false, error: { code, message: 'Bot/User can NOT be out of the chat' } }))
+    await expect(value.lark(['api', 'GET', '/open-apis/im/v1/messages'])).rejects.toThrow('cannot read its history')
+  }
+  run.mockResolvedValueOnce(JSON.stringify({ ok: false, error: { code: 232011, message: 'operator is not in the chat' } }))
+  await expect(value.lark(['api', 'GET', '/open-apis/im/v1/messages'])).rejects.toThrow('Add the bot in the chat settings')
+  run.mockRestore()
 })

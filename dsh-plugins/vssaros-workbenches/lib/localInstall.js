@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, posix } from 'node:path';
 import { gunzip } from 'node:zlib';
 import { promisify } from 'node:util';
+import { PLUGIN_SEMVER_RE, validatePluginResources } from './pluginPackage.js';
 
 // ★ 2026-11-02：**不许用 `gunzipSync`** —— 工作台包最大 8MiB，同步解压会把 Host 主线程
 // 卡住（`dshPluginPackages` 守卫专门查这条："大文件会把 Host 主线程卡住"）。
@@ -31,7 +32,7 @@ export const MAX_FILE_BYTES = 8 * 1024 * 1024;
 /** npm 包名（与 IDE 侧 `WORKBENCH_PACKAGE_NAME_RE` 同口径）。 */
 export const PACKAGE_NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 /** 完整 SemVer（预发布/构建元数据都允许）。 */
-export const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+export const SEMVER_RE = PLUGIN_SEMVER_RE;
 
 /**
  * 比较两个版本（2026-11-02，降级保护用）。返回 -1 / 0 / 1。
@@ -92,7 +93,7 @@ const cstr = (buf) => {
  * 极简 tar（ustar / POSIX）解析：只取**普通文件**，跳过目录、符号链接与扩展头。
  * 返回 `[{ name, data }]`。不追求覆盖全部历史格式 —— npm pack 产物与 `tar -czf` 都是 ustar。
  */
-export function untar(buffer) {
+export function untar(buffer, { rejectSpecial = false } = {}) {
 	const entries = [];
 	let offset = 0;
 	while (offset + 512 <= buffer.length) {
@@ -103,6 +104,9 @@ export function untar(buffer) {
 		const size = Number.parseInt(sizeField || '0', 8);
 		if (!Number.isFinite(size) || size < 0) { throw new Error('tar 头里的 size 不合法'); }
 		const type = String.fromCharCode(header[156] || 48);
+		if (rejectSpecial && !['0', '\0', '', '5', 'L'].includes(type)) {
+			throw new Error('插件包不允许链接、特殊文件或未解析的扩展头');
+		}
 		const prefix = cstr(header.subarray(345, 500));
 		const full = prefix ? `${prefix}/${name}` : name;
 		const dataStart = offset + 512;
@@ -155,15 +159,15 @@ function stripCommonRoot(entries) {
  * 否则干跑通过、安装却因包本身被拒，Agent 会被误导（"我明明校验过了"）。
  * 校验在这里；落盘在 `extractWorkbenchPackage`；审计在 `auditWorkbenchEntries`。
  */
-export async function inspectWorkbenchArchive(gzBuffer) {
+export async function inspectPluginArchive(gzBuffer) {
 	if (!Buffer.isBuffer(gzBuffer) || gzBuffer.length === 0) { throw new Error('包内容为空'); }
 	if (gzBuffer.length > MAX_ARCHIVE_BYTES) {
 		throw new Error(`包太大：${gzBuffer.length} 字节（上限 ${MAX_ARCHIVE_BYTES}）`);
 	}
 	let tar;
-	try { tar = await gunzipAsync(gzBuffer); }
+	try { tar = await gunzipAsync(gzBuffer, { maxOutputLength: MAX_EXTRACTED_BYTES + 8 * 1024 * 1024 }); }
 	catch (error) { throw new Error(`不是合法的 .tgz：${String(error && error.message || error)}`); }
-	const rawEntries = untar(tar);
+	const rawEntries = untar(tar, { rejectSpecial: true });
 	const entries = stripCommonRoot(rawEntries.map(entry => ({ name: safeEntryName(entry.name), data: entry.data })));
 
 	let total = 0;
@@ -187,9 +191,12 @@ export async function inspectWorkbenchArchive(gzBuffer) {
 	if (patch === undefined) {
 		throw new Error('package.json 缺少 dsh.bundle.patch：这不是一个 dsh 插件包（装上去不会被加载，且宿主不报错）');
 	}
-	const patchPath = typeof patch === 'string' ? patch : (Array.isArray(patch) ? patch[0] : undefined);
-	if (typeof patchPath !== 'string' || !entries.some(entry => entry.name === safeEntryName(patchPath))) {
-		throw new Error(`声明的 cordis patch 不在包里：${String(patchPath)}`);
+	const patches = Array.isArray(patch) ? patch : [patch];
+	if (!patches.length) { throw new Error('声明的 cordis patch 不在包里：空 patch 数组'); }
+	for (const patchPath of patches) {
+		if (typeof patchPath !== 'string' || !entries.some(entry => entry.name === safeEntryName(patchPath))) {
+			throw new Error(`声明的 cordis patch 不在包里：${String(patchPath)}`);
+		}
 	}
 	// 入口必须真的在包里（否则 install 成功、加载失败 —— 用户只看到空白）
 	const mainEntry = typeof manifest.main === 'string' ? manifest.main : (typeof manifest?.exports?.['.'] === 'string' ? manifest.exports['.'] : undefined);
@@ -204,7 +211,15 @@ export async function inspectWorkbenchArchive(gzBuffer) {
 		totalBytes: total,
 		archiveBytes: gzBuffer.length,
 		hasClient: hasClientEntry(manifest, entries),
+		plan: validatePluginResources(manifest, entries),
 	};
+}
+
+/** 工作台旧检查/解包路径只收页面 profile，不能把 Bot 包当作工作台安装。 */
+export async function inspectWorkbenchArchive(gzBuffer) {
+	const info = await inspectPluginArchive(gzBuffer);
+	if (info.plan?.profile === 'bot') { throw new Error('Bot 插件包不是页面工作台，请使用通用插件安装路径'); }
+	return info;
 }
 
 /**
@@ -315,13 +330,13 @@ export const SERVER_CAPABILITY_RULES = [
 /**
  * 认工作台注册调用（2026-11-02 修）。
  *
- * 为什么不能只认 `desktopWorkbenches.register(`：仓库里真实存在别的写法 ——
- * `vssaros-studio/lib/client.js` 是 `const dw = scope.desktopWorkbenches; … dw.register(DESCRIPTOR, Panel)`。
- * 只认全名会把这种包判成「没注册」（干跑多报一条假 warning，身份也推不出来）。
+ * 为什么不能只认 `desktopWorkbenches.register(`：真实历史工作台（如 2026-11-11 已下线的
+ * iframe 型工作台）用的是 `const dw = scope.desktopWorkbenches; … dw.register(DESCRIPTOR, Panel)`。
+ * 只认全名会把这种包判成「没注册」（干跑多报一条假 warning，身份也推不出来）；第三方工作台仍可能这么写。
  *
  * 判据放宽到「某个对象的 `.register(`，第一个参数是**对象字面量**或**一个变量**」。覆盖三种真实写法：
  *   `desktopWorkbenches.register({ title, … })`   直接给描述符字面量
- *   `dw.register(DESCRIPTOR, Panel)`              先把服务取到变量（studio）
+ *   `dw.register(DESCRIPTOR, Panel)`              先把服务取到变量（历史 iframe 型工作台）
  *   `c.desktopWorkbenches.register(DESCRIPTOR, P)` 脚手架生成的样子
  * ⚠ 仍排除 `loader.register('./x.js')` 这类**字符串参数**（那是模块装载，不是工作台注册）。
  * ⚠ 宁可放宽（漏判只是少一条提示），也不要误判成「没注册」（会让作者以为包坏了）。

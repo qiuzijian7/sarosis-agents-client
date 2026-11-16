@@ -197,6 +197,21 @@ async function boot() {
 		return out;
 	};
 	window.__KB_SIDEVIEW_ACTIONS__ = {
+		// ★ 2026-11-11：跨 app 重启恢复上次文档（独立端点，只改 lastDoc 一个字段）
+		getLastDoc: async () => {
+			try {
+				const r = await fetch('/x/kb/api/last-doc', { credentials: 'same-origin', cache: 'no-store' });
+				const b = await r.json();
+				return b && b.ok ? (b.lastDoc || null) : null;
+			} catch { return null; }
+		},
+		setLastDoc: doc => {
+			void fetch('/x/kb/api/last-doc', {
+				method: 'POST', credentials: 'same-origin',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ lastDoc: doc || null }),
+			}).catch(() => undefined);
+		},
 		openNode: p => { window.location.href = '/x/kb/doc?uri=' + encodeURIComponent(p); },
 		openLink: p => { window.location.href = '/x/kb/doc?uri=' + encodeURIComponent(p); },
 		/*

@@ -12,14 +12,13 @@
 //
 // ⚠ 跨插件 import 只在单测里允许（生产运行期必须走 cordis 服务，见 lib/workItemRef.js）。
 
-import { mkdtempSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
-const tmp = mkdtempSync(join(tmpdir(), 'sched-host-'));
+const tmp = mkdtempSync(join(HERE, '.sched-host-'));
 
 let pass = 0;
 const failures = [];
@@ -38,12 +37,13 @@ const ctx = {
 	tools: { register: (def) => { tools.push(def.name); return () => { }; }, get: () => undefined },
 	webServer: { register: (r) => { routes.push(r); return () => { }; }, port: 7000, host: '127.0.0.1' },
 	connection: { requestRejection: () => 0, authenticatedUrl: u => u },
+	on: () => () => {},
 	effect: (fn) => { try { return fn(); } catch (e) { thrown.push('effect: ' + e.message); return undefined; } },
 	// ★ 同步执行回调：正是"服务已就绪"的形态 —— TDZ 那类 bug 只有这样才能复现。
 	inject: (deps, cb) => {
 		for (const d of deps) {
 			if (d === 'vssarosFoundation') { continue; }
-			if (!ctx[d]) { thrown.push(`inject 缺服务: ${d}`); return; }
+			if (!ctx[d]) { return { dispose() {} }; }
 		}
 		try { cb(ctx); } catch (e) { thrown.push(`inject(${deps.join(',')}) 抛错: ${e.message}`); }
 	},
@@ -64,8 +64,9 @@ try {
 }
 
 ok('apply() 不抛（含同步 inject 回调）', thrown.length === 0, thrown.join(' | '));
-ok('提供 schedule 服务', !!provided.schedule);
-for (const name of ['schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete', 'schedule_history']) {
+ok('提供自建 vssarosScheduler 服务', !!provided.vssarosScheduler);
+ok('不抢占官方 schedule 服务', !provided.schedule);
+for (const name of ['vssaros_schedule_create', 'vssaros_schedule_list', 'vssaros_schedule_update', 'vssaros_schedule_delete', 'vssaros_schedule_history']) {
 	ok(`注册工具 ${name}`, tools.includes(name));
 }
 const route = routes.find(r => r.path === '/x/scheduler');
@@ -91,8 +92,8 @@ if (route) {
 	// 建一条任务 ⇒ 落盘（端到端：路由 → 引擎 → tasks.json）
 	const createBody = JSON.stringify({
 		title: '端到端任务',
-		kind: 'loop',
-		loopName: 'demo',
+		kind: 'action',
+		action: { service: 'memory-evolve', method: 'dream.run', args: {} },
 		rule: { kind: 'every', everySeconds: 3600, timeZone: 'UTC' },
 	});
 	const res = { code: 0, body: '', writeHead(c) { this.code = c; }, end(b) { this.body = b ?? ''; } };
@@ -112,7 +113,11 @@ if (route) {
 	ok('任务真的落到 <数据根>/scheduler/tasks.json', !!onDisk && (onDisk.tasks?.length ?? 0) === 1,
 		onDisk ? JSON.stringify(onDisk.tasks?.map(t => t.id)) : '文件不存在');
 	ok('落盘的任务带自建 rule 形状', onDisk?.tasks?.[0]?.rule?.kind === 'every', JSON.stringify(onDisk?.tasks?.[0]?.rule));
+	ok('创建 API 保留 Dream action 规格', onDisk?.tasks?.[0]?.action?.method === 'dream.run' && onDisk?.tasks?.[0]?.action?.service === 'memory-evolve');
 }
+
+provided.vssarosScheduler?.stop();
+rmSync(tmp, { recursive: true, force: true });
 
 const total = pass + failures.length;
 if (failures.length) {

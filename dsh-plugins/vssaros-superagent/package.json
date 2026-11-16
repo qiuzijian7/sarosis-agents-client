@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-superagent",
-  "version": "0.1.101",
+  "version": "0.1.149",
   "description": "VsSaros built-in: SuperAgent, the supervisor of the VsSaros Bots. It takes requests from Feishu, GitHub, TAPD and its own desk, evaluates them under a Policy, staffs a team of Bots that a person agrees to, runs each step in its Bot's Session, and leaves skills and team workflows behind. Source, tests and build tools are in dev/ (not shipped).",
   "private": true,
   "type": "module",
@@ -12,6 +12,7 @@
     "./feishu-watch": "./lib/feishu-watch.js",
     "./p4-watch": "./lib/p4-watch.js",
     "./tapd-watch": "./lib/tapd-watch.js",
+    "./gongfeng-watch": "./lib/gongfeng-watch.js",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
   },

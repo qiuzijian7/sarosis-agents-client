@@ -48,7 +48,7 @@ variables:
       description: 目标架构（arm64 / x64；universal 需先出两个单架构包再合并）
       required: true
   SAROS_UPDATE_SERVER:
-    value: http://zijianqiu-any1.devcloud.woa.com:3030
+    value: http://21.139.192.124:3030
     readonly: true
     props:
       type: vuex-input

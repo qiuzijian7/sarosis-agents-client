@@ -5,9 +5,7 @@
 //   ① 契约探针   ② 本地 Agent P0/P1/P2   ③ 电脑操控 P0/P1/P2
 //   ④ 策略单测   ⑤ 浏览器兼容层          ⑥ 两份静态对账守卫
 //
-// ★ 尚未挂进 `package.json` 的 `check:dsh-plugins` 链：那条链在本轮仍被并发会话改动
-//   （新增 verify:skill-catalog 并调整链内容），硬挂会冲突。收敛后只需在链尾追加一行：
-//     && node dsh-plugins/scripts/run-dsb-compat-checks.mjs
+// ★ 已挂在 `package.json` 的 `check:dsh-plugins` 链尾（2026-11-09 收敛后追加）。
 //   本脚本会逐个跑完再汇总，任一失败则退出 1（不会因为 `&&` 短路漏跑后面的检查）。
 //
 //   node dsh-plugins/scripts/run-dsb-compat-checks.mjs

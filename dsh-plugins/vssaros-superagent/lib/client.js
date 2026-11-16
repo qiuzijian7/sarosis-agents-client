@@ -668,7 +668,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region src/client/client.css?raw
-		var client_default = "/* Panel layout and local UI controls styled with DSH `--dsw-alias-*` design tokens; one rule per line. */\r\n/* VsSaros change: the page and the side panel with the Overview sit side by side (the side panel's look follows DSH's right sidebar). */\r\n.dt-shell { box-sizing: border-box; height: 100%; display: flex; position: relative; overflow: hidden; container-type: inline-size; container-name: dt-shell; }\r\n.dt-shell > .dt-page { flex: 1 1 auto; min-width: 0; }\r\n.dt-page { box-sizing: border-box; height: 100%; overflow: auto; scrollbar-gutter: stable; scroll-padding: 48px 0 72px; container-type: inline-size; padding: 28px clamp(24px, 4vw, 48px) 0; color: var(--dsw-alias-label-primary); }\r\n/* Deployment page rendered inside DSH Plugin Manager, which owns scrolling and padding. */\r\n.dt-embedded { container-type: inline-size; color: var(--dsw-alias-label-primary); }\r\n/* Disable sticky positioning inside DSH Plugin Manager, where the host container owns scrolling and bottom padding. */\r\n.dt-embedded .dt-savebar { position: static; }\r\n.dt-page > .dt-column { max-width: 960px; margin: 0 auto; padding-bottom: 48px; display: flex; flex-direction: column; gap: 24px; }\r\n.dt-head { position: relative; z-index: 3; display: flex; align-items: flex-start; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; }\r\n.dt-search { position: relative; width: 240px; max-width: 100%; }\r\n.dt-search-results { position: absolute; top: calc(100% + 6px); right: 0; width: min(560px, 90cqw); max-height: 60vh; overflow: auto; padding: 8px 16px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: 12px; background: var(--dsw-alias-bg-layer-2); box-shadow: var(--dsw-elevation-prominent); z-index: 5; display: flex; flex-direction: column; gap: 8px; }\r\n.dt-mark { background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 25%, transparent); color: inherit; border-radius: 2px; }\r\n[data-platform='darwin'] .dt-page .dt-head { padding-top: var(--dsh-frame-top-clearance, 0px); }\r\n.dt-title { margin: 0; font-size: 15px; line-height: 22px; font-weight: 600; color: var(--dsw-alias-label-secondary); }\r\n.dt-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }\r\n.dt-page .dt-tabs { display: flex; flex-wrap: wrap; gap: 4px 20px; overflow: visible; max-width: none; padding: 0 0 6px; border-radius: 0; background: none; border-bottom: 0.5px solid var(--dsw-alias-border-l3); }\r\n.dt-segmented { width: 100%; max-width: 420px; box-sizing: border-box; display: inline-grid; height: auto; align-items: stretch; gap: 2px; padding: 3px; border-radius: 9px; background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-form.dt-block { padding: 16px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: 16px; gap: 16px; }\r\n.dt-block-title { display: flex; align-items: center; gap: 4px; margin: 0; font-size: 16px; line-height: 24px; font-weight: 500; }\r\n.dt-section { display: flex; flex-direction: column; gap: 8px; min-width: 0; }\r\n.dt-section-title { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: 13px; line-height: 20px; font-weight: 600; color: var(--dsw-alias-label-secondary); }\r\n.dt-section-name { white-space: nowrap; }\r\n.dt-count { font-size: 14px; color: var(--dsw-alias-label-caption); font-variant-numeric: tabular-nums; font-weight: 400; }\r\n.dt-hint { margin: 0; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-tertiary); }\r\n.dt-error { margin: 0; font-size: 13px; line-height: 20px; color: var(--dsw-alias-state-error-primary); }\r\n.dt-banner { margin: 0; padding: 8px 12px; border-radius: 10px; font-size: 13px; line-height: 20px; background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 10%, transparent); overflow-wrap: anywhere; }\r\n.dt-banner.dt-danger { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent); }\r\n.dt-list { list-style: none; margin: 0 -8px; padding: 0; display: flex; flex-direction: column; gap: 2px; }\r\n.dt-row { position: relative; min-width: 0; border-radius: 12px; padding: 10px 8px; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: flex-start; }\r\n.dt-row.dt-link:hover { background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-row-main { flex: 1 1 200px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }\r\n.dt-disclosure-body .dt-row-main { flex-basis: 0; }\r\n.dt-row-title { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 14px; line-height: 20px; font-weight: 500; }\r\n.dt-open { max-width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; font-size: 14px; line-height: 20px; font-weight: 500; text-align: left; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\r\n.dt-open::after { content: ''; position: absolute; inset: 0; border-radius: 12px; }\r\n.dt-open:focus-visible { outline: none; }\r\n.dt-open-wrap { white-space: normal; }\r\n.dt-open:focus-visible::after { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }\r\n.dt-row-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-caption); overflow-wrap: anywhere; }\r\n.dt-row-quote { font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\r\n.dt-clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }\r\n/* Transparent block borders preserve vertical spacing when line clamping clips padding. */\r\n.dt-banner:is(.dt-clamp, .dt-clamp-8) { padding-block: 0; border-block: 8px solid transparent; }\r\n.dt-banner-label { font-weight: 500; }\r\n.dt-banner .dt-md { display: inline; }\r\n.dt-banner .dt-md > p:first-child { display: inline; }\r\n.dt-row-buttons { position: relative; z-index: 1; gap: 8px; margin-top: 4px; }\r\n.dt-row-actions { position: relative; z-index: 1; display: flex; align-items: center; gap: 4px; flex: none; margin-left: auto; font-size: 13px; line-height: 20px; }\r\n.dt-dot { flex: none; margin-top: 5px; }\r\n.dt-inline-link { position: relative; z-index: 1; color: var(--dsw-alias-link); text-decoration: none; }\r\n.dt-inline-link:hover { text-decoration: underline; }\r\n.dt-textlink { padding: 0; border: 0; background: none; font: inherit; color: var(--dsw-alias-link); cursor: pointer; text-align: left; }\r\n.dt-textlink:hover { text-decoration: underline; }\r\n.dt-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; line-height: 20px; }\r\n.dt-kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; font-size: 13px; line-height: 20px; }\r\n.dt-kv dt { color: var(--dsw-alias-label-tertiary); }\r\n.dt-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }\r\n.dt-timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }\r\n.dt-event { padding: 12px 0; border-bottom: 0.5px solid var(--dsw-alias-border-l2); display: flex; flex-direction: column; gap: 6px; min-width: 0; }\r\n.dt-event:last-child { border-bottom: 0; }\r\n.dt-event.dt-highlight { background: var(--dsw-alias-interactive-bg-hover); border-radius: 8px; padding-inline: 8px; margin-inline: -8px; }\r\n.dt-event-text { margin: 0; font-size: 13px; line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }\r\n.dt-event-actor { font-weight: 500; color: var(--dsw-alias-label-secondary); }\r\n.dt-event-quiet .dt-event-text { color: var(--dsw-alias-label-tertiary); }\r\n.dt-flow { margin: 0; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary); }\r\n.dt-clamp-8 { display: -webkit-box; -webkit-line-clamp: 8; -webkit-box-orient: vertical; overflow: hidden; }\r\n.dt-more { align-self: flex-start; font-size: 12px; }\r\n.dt-reveal { opacity: 0; }\r\n.dt-event:hover .dt-reveal, .dt-reveal:focus-visible { opacity: 1; }\r\n@media (hover: none) {\r\n  .dt-reveal { opacity: 1; }\r\n}\r\n.dt-event-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }\r\n.dt-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }\r\n.dt-filters .dt-search { margin-left: auto; }\r\n.dt-form { display: flex; flex-direction: column; gap: 24px; }\r\n.dt-fieldset { display: flex; flex-direction: column; gap: inherit; min-width: 0; margin: 0; padding: 0; border: 0; }\r\n.dt-field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; line-height: 20px; min-width: 0; }\r\n.dt-field small { color: var(--dsw-alias-label-caption); font-size: 12px; }\r\n.dt-textarea { box-sizing: border-box; width: 100%; min-width: 0; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: 10px; padding: 8px 12px; font: inherit; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-1, transparent); resize: vertical; }\r\n.dt-select { box-sizing: border-box; width: 100%; min-width: 0; height: 32px; border: 0.5px solid var(--dsw-alias-border-l4); border-radius: 8px; padding: 0 28px 0 8px; text-overflow: ellipsis; font: inherit; font-size: 14px; line-height: 22px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-1, transparent); }\r\n.dt-textarea:focus-visible, .dt-select:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }\r\n.dt-mono { font-family: var(--ds-font-family-code, Menlo, monospace); font-size: 12px; overflow-wrap: anywhere; }\r\n.dt-detail { margin-top: 2px; color: var(--dsw-alias-label-secondary); }\r\n.dt-savebar .dt-error { white-space: pre-line; }\r\n.dt-switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 36px; font-size: 13px; }\r\n.dt-subhead-actions { display: inline-flex; align-items: center; gap: 4px; }\r\n.dt-btn-busy .dt-btn-icon svg { animation: dt-spin 1s linear infinite; }\r\n.dt-subhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary); }\r\n.dt-rules, .dt-changes { list-style: none; margin: 0; padding: 0; }\r\n.dt-field-head { display: inline-flex; align-items: center; gap: 4px; color: var(--dsw-alias-label-secondary); }\r\n.dt-info { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; padding: 0; border: 0; background: none; color: var(--dsw-alias-label-caption); cursor: help; }\r\n.dt-info:hover, .dt-info:focus-visible { color: var(--dsw-alias-label-secondary); }\r\n.dt-info:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; border-radius: 50%; }\r\n.dt-tooltip { position: fixed; z-index: 1100; width: max-content; max-width: min(320px, calc(100vw - 24px)); padding: 3px 7px; border-radius: 8px; background: var(--dsw-alias-tooltip-bg); color: var(--dsw-static-neutral-bluish-00); font-size: 13px; line-height: 20px; overflow-wrap: break-word; pointer-events: none; animation: dt-tooltip-in 150ms ease-in-out; }\r\n@keyframes dt-tooltip-in { from { opacity: 0; } }\r\n.dt-rules { border-top: 0.5px solid var(--dsw-alias-border-l2); }\r\n.dt-rule { display: flex; align-items: flex-start; gap: 12px; padding: 6px 0; border-bottom: 0.5px solid var(--dsw-alias-border-l2); }\r\n.dt-rule > :first-child { flex: 1; min-width: 0; }\r\n.dt-rule-preview { flex: 1; min-width: 0; margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--dsw-alias-label-caption); }\r\n.dt-rule-switch { margin-top: 2px; flex: none; }\r\n.dt-rule-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--dsw-alias-label-caption); }\r\n.dt-rule-dot[data-enabled] { background: var(--dsw-alias-brand-primary); }\r\n.dt-rule-body { display: flex; flex-direction: column; gap: 12px; padding: 8px 0 8px 28px; }\r\n.dt-model { display: flex; flex-direction: column; gap: 6px; }\r\n.dt-grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }\r\n.dt-changes { display: flex; flex-direction: column; gap: 2px; font-size: 13px; line-height: 20px; }\r\n.dt-changes li::before { content: '· '; color: var(--dsw-alias-label-caption); }\r\n.dt-main { display: flex; flex-direction: column; gap: 24px; min-width: 0; }\r\n.dt-modal.dt-glossary-modal { width: min(680px, 100%); }\r\n.dt-nav-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-height: 32px; padding: 6px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 13px; line-height: 20px; text-align: left; cursor: pointer; }\r\n.dt-nav-item:hover { background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-nav-item[aria-current='true'] { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); font-weight: 500; }\r\n.dt-nav-item:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }\r\n.dt-changed-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--dsw-alias-brand-primary); flex: none; }\r\n.dt-add-skill { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 0.5px solid var(--dsw-alias-border-l2); }\r\n.dt-prompt-main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }\r\n.dt-editor { min-height: 360px; }\r\n.dt-inline-select { width: auto; }\r\n.dt-preview-part { display: flex; flex-direction: column; gap: 6px; padding: 2px 0 2px 12px; border-left: 2px solid var(--dsw-alias-border-l3); }\r\n.dt-preview-head { font-size: 13px; line-height: 20px; display: flex; align-items: baseline; gap: 8px; }\r\ndiv.dt-preview-head { color: var(--dsw-alias-label-secondary); }\r\n.dt-card { display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: 16px; min-width: 0; }\r\n.dt-card-head { display: flex; align-items: center; gap: 12px; min-height: 28px; }\r\n.dt-card-head .dt-row-main { flex: 1 1 0; min-width: 64px; }\r\n.dt-card-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\r\n.dt-row-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; }\r\n.dt-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }\r\n.dt-rows-item { display: flex; flex-direction: column; min-width: 0; gap: 10px; padding: 10px 12px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: 12px; background: var(--dsw-alias-bg-layer-2); }\r\n.dt-rows-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }\r\n.dt-rows-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 20px; font-weight: 600; color: var(--dsw-alias-label-primary); }\r\n.dt-rows-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 8px 12px; min-width: 0; }\r\n.dt-rows-cell { display: flex; flex-direction: column; min-width: 0; gap: 4px; }\r\n.dt-rows-cell-label { font-size: 12px; line-height: 16px; color: var(--dsw-alias-label-tertiary); }\r\n.dt-rows-cell .dt-row-label { white-space: normal; overflow-wrap: anywhere; }\r\n.dt-filter-gap { flex: 1; }\r\n.dt-page-head { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }\r\n.dt-page-head > .dt-btn { margin-left: -10px; }\r\n.dt-page-title { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; width: 100%; }\r\n.dt-page-title h2 { margin: 0; flex: 1 1 auto; min-width: 0; font-size: 20px; line-height: 28px; font-weight: 500; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }\r\n.dt-status-line { margin-top: -16px; }\r\n.dt-plain-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; line-height: 20px; }\r\n.dt-details { display: flex; flex-direction: column; gap: 2px; border-top: 0.5px solid var(--dsw-alias-border-l2); padding-top: 8px; }\r\n.dt-danger-zone { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-top: 16px; border-top: 0.5px solid var(--dsw-alias-border-l2); }\r\n.dt-danger-zone .dt-btn { color: var(--dsw-alias-state-error-primary); }\r\n.dt-md { display: flex; flex-direction: column; gap: 6px; font-size: 13px; line-height: 20px; overflow-wrap: anywhere; }\r\n.dt-md p, .dt-md ul, .dt-md ol { margin: 0; }\r\n.dt-md ul, .dt-md ol { padding-left: 20px; display: flex; flex-direction: column; gap: 2px; }\r\n.dt-md-heading { font-weight: 500; }\r\n.dt-code { font-family: var(--ds-font-family-code, Menlo, monospace); font-size: 12px; padding: 0 4px; border-radius: 4px; background: var(--dsw-alias-bg-module-platform); }\r\n.dt-dot-wrap { display: inline-flex; flex: none; }\r\n.dt-search-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }\r\n.dt-ellipsis { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 280px; }\r\n.dt-legend-title { margin: 16px 0 6px; font-size: 13px; color: var(--dsw-alias-label-tertiary); }\r\n.dt-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; }\r\n.dt-legend li { display: flex; align-items: center; gap: 6px; }\r\n.dt-legend .dt-dot { margin-top: 0; }\r\n.dt-savebar { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; padding: 12px 0; background: var(--dsw-alias-bg-base, var(--dsw-alias-bg-layer-1)); border-top: 0.5px solid var(--dsw-alias-border-l2); }\r\n.dt-savebar .dt-hint { margin-right: auto; }\r\n.dt-card > .dt-savebar, .dt-block > .dt-savebar { margin: 0 -16px -16px; padding: 12px 16px; border-radius: 0 0 16px 16px; }\r\n.dt-glossary { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 20px; }\r\n.dt-glossary th, .dt-glossary td { text-align: left; padding: 6px 8px; border-bottom: 0.5px solid var(--dsw-alias-border-l2); vertical-align: top; }\r\n.dt-glossary th { color: var(--dsw-alias-label-tertiary); font-weight: 400; }\r\n.dt-glossary th.dt-glossary-group { color: var(--dsw-alias-label-secondary); font-weight: 600; padding-top: 14px; }\r\n.dt-glossary th:nth-child(-n+2), .dt-glossary td:nth-child(-n+2) { white-space: nowrap; }\r\n.dt-values { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 16px 0 0; font-size: 13px; }\r\n.dt-values dt { color: var(--dsw-alias-label-tertiary); }\r\n.dt-values dd { margin: 0; }\r\n.dt-pre { margin: 0; padding: 12px; border-radius: 10px; background: var(--dsw-alias-bg-module-platform); font-family: var(--ds-font-family-code, Menlo, monospace); font-size: 12px; line-height: 18px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 480px; overflow: auto; }\r\n.dt-pre ins { background: color-mix(in srgb, var(--dsw-alias-state-success-primary, green) 18%, transparent); text-decoration: none; }\r\n.dt-pre del { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 18%, transparent); text-decoration: none; }\r\n.dt-prompt { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 20px; align-items: start; }\r\n.dt-prompt-nav { display: flex; flex-direction: column; gap: 2px; }\r\n.dt-prompt-nav button { justify-content: flex-start; }\r\n.dt-disclosure-body { padding: 8px 0 8px 28px; display: flex; flex-direction: column; gap: 8px; }\r\n@container (max-width: 640px) {\r\n  .dt-tab { padding: 0 8px; font-size: 13px; }\r\n  .dt-segment { padding: 4px 10px; }\r\n  .dt-head { align-items: center; }\r\n  .dt-search-results { right: auto; left: 0; width: 100%; }\r\n  .dt-page-title h2 { font-size: 17px; line-height: 24px; }\r\n  .dt-status-line { margin-top: -12px; }\r\n  .dt-page .dt-tabs { display: flex; flex-wrap: wrap; gap: 4px 10px; overflow: visible; scrollbar-width: auto; mask-image: none; }\r\n  .dt-page .dt-tabs .dt-tab { flex: none; height: 32px; padding: 0 6px; font-size: 13px; }\r\n  .dt-kv { grid-template-columns: 1fr; gap: 2px; }\r\n  .dt-grid3, .dt-prompt { grid-template-columns: 1fr; }\r\n  .dt-search { width: 100%; }\r\n  .dt-filters .dt-search { margin-left: 0; }\r\n}\r\n/* Local UI primitive styles (see controls.tsx). */\r\n.dt-btn { display: inline-flex; align-items: center; justify-content: center; gap: 4px; border: none; border-radius: 18px; cursor: pointer; font: inherit; font-size: 14px; line-height: 22px; color: var(--dsw-alias-label-primary); background: transparent; padding: 0 14px; white-space: nowrap; }\r\n.dt-btn:disabled { cursor: not-allowed; opacity: 0.4; }\r\n.dt-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }\r\n.dt-btn-md { height: 36px; }\r\n.dt-btn-sm { height: 28px; font-size: 12px; line-height: 18px; padding: 0 10px; border-radius: 14px; }\r\n.dt-btn-primary { background: var(--dsw-alias-button-primary-fill); color: var(--dsw-alias-label-primary-foreground); }\r\n.dt-btn-primary:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover); }\r\n.dt-btn-ghost:hover:not(:disabled), .dt-btn-outline:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-btn-ghost:active:not(:disabled) { background: var(--dsw-alias-interactive-bg-active); }\r\n.dt-btn-outline { border: 0.5px solid var(--dsw-alias-border-l3); }\r\n.dt-btn-icon { display: inline-flex; width: 16px; height: 16px; align-items: center; justify-content: center; }\r\n.dt-tag { display: inline-flex; align-items: center; border-radius: 999px; padding: 1px 8px; font-size: 11px; line-height: 17px; font-weight: 500; white-space: nowrap; }\r\n.dt-tag[data-tone='outline'] { border: 0.5px solid var(--dsw-alias-border-l4); color: var(--dsw-alias-label-tertiary); }\r\n.dt-tag[data-tone='neutral'] { background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-secondary); }\r\n.dt-tag[data-tone='quiet'] { color: var(--dsw-alias-label-tertiary); }\r\n.dt-tag[data-tone='success'] { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent); color: var(--dsw-alias-state-success-primary); }\r\n.dt-tag[data-tone='info'] { background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent); color: var(--dsw-alias-state-business-primary); }\r\n.dt-tag[data-tone='warning'] { background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 12%, transparent); color: var(--dsw-alias-state-warn-primary); }\r\n.dt-tag[data-tone='danger'] { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent); color: var(--dsw-alias-state-error-primary); }\r\n.dt-pill { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border: none; border-radius: 12px; font: inherit; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-2); cursor: pointer; }\r\n.dt-pill:hover { background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-pill-active, .dt-pill-active:hover { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-button-ghost-active-fill); box-shadow: inset 0 0 0 1px var(--dsw-alias-button-ghost-active-border); }\r\n.dt-tabs { display: grid; padding: 4px; border-radius: 12px; background: var(--dsw-alias-bg-module-platform); }\r\n.dt-tab { box-sizing: border-box; height: 34px; padding: 0 12px; border: 0.5px solid transparent; border-radius: 8px; background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 14px; line-height: 20px; white-space: nowrap; cursor: pointer; transition: color 180ms ease, background 180ms ease; }\r\n.dt-tab:hover { color: var(--dsw-alias-label-primary); }\r\n.dt-tab[aria-selected='true'] { color: var(--dsw-alias-label-primary); font-weight: 600; background: var(--dsw-alias-bg-layer-3); border-color: var(--dsw-alias-border-l3); }\r\n.dt-tab:focus-visible { outline: none; text-decoration: underline; text-underline-offset: 4px; }\r\n.dt-segment { height: auto; min-height: 28px; display: flex; align-items: center; justify-content: center; text-align: center; white-space: normal; overflow-wrap: anywhere; padding: 4px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 13px; line-height: 20px; font-weight: 500; cursor: pointer; transition: color 120ms ease, background 160ms ease; }\r\n.dt-segment:hover:not(:disabled), .dt-segment[aria-selected='true'] { color: var(--dsw-alias-label-primary); }\r\n.dt-segment[aria-selected='true'] { background: var(--dsw-alias-bg-layer-1); box-shadow: var(--dsw-elevation-soft); }\r\n.dt-segment:disabled { cursor: default; opacity: 0.4; }\r\n.dt-segment:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }\r\n.dt-input { box-sizing: border-box; display: inline-flex; align-items: center; gap: 6px; height: 32px; min-width: 0; padding: 0 8px; border: 0.5px solid var(--dsw-alias-border-l4); border-radius: 8px; background: var(--dsw-alias-bg-layer-1); }\r\n.dt-input:focus-within { border-color: var(--dsw-alias-brand-primary); }\r\n.dt-input-icon { display: inline-flex; width: 16px; height: 16px; align-items: center; justify-content: center; color: var(--dsw-alias-label-tertiary); }\r\n.dt-input input { flex: 1; min-width: 0; border: none; outline: none; background: transparent; font: inherit; font-size: 14px; line-height: 22px; color: var(--dsw-alias-label-primary); }\r\n.dt-input input::placeholder { color: var(--dsw-alias-label-dimmed); }\r\n.dt-input input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }\r\n.dt-field .dt-input, .dt-search .dt-input, .dt-add-skill .dt-input { display: flex; width: 100%; }\r\n.dt-cli-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }\r\n.dt-field .dt-cli-row .dt-input { flex: 1 1 auto; width: auto; }\r\n.dt-cli-actions { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; }\r\n.dt-switch { box-sizing: border-box; flex: 0 0 auto; width: 36px; height: 20px; padding: 2px; border: 0; border-radius: 10px; background: var(--dsw-alias-border-l3); cursor: pointer; }\r\n.dt-switch[aria-checked='true'] { background: var(--dsw-alias-brand-primary); }\r\n.dt-switch:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }\r\n.dt-switch-thumb { display: block; width: 16px; height: 16px; border-radius: 50%; background: var(--dsw-alias-label-primary-foreground); transition: transform 120ms ease; }\r\n.dt-switch[aria-checked='true'] .dt-switch-thumb { transform: translateX(16px); }\r\n.dt-state-dot { position: relative; display: inline-block; flex: none; width: 10px; height: 10px; color: var(--dsw-alias-state-idle-primary); }\r\n.dt-state-dot::after { content: ''; position: absolute; inset: 20%; border-radius: 50%; background: currentColor; }\r\n.dt-state-dot[data-state='done'] { color: var(--dsw-alias-state-success-primary); }\r\n.dt-state-dot[data-state='warning'] { color: var(--dsw-alias-state-warn-primary); }\r\n.dt-state-dot[data-state='error'] { color: var(--dsw-alias-state-error-primary); }\r\n.dt-spinner { flex: none; color: var(--dsw-alias-label-tertiary); }\r\n.dt-spinner g { transform-origin: center; animation: dt-spin 1.5s linear infinite; }\r\n.dt-spinner circle { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }\r\n.dt-spinner circle:first-child { opacity: 0.25; }\r\n.dt-spinner circle:last-child { stroke-dasharray: 18 150; }\r\n@keyframes dt-spin { to { transform: rotate(360deg); } }\r\n.dt-disclosure-row { display: flex; align-items: center; gap: 4px; min-height: 28px; min-width: 0; border-radius: 8px; cursor: pointer; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary); }\r\n.dt-disclosure-row:hover { color: var(--dsw-alias-label-primary); }\r\n.dt-disclosure-row:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }\r\n.dt-disclosure-lead { position: relative; display: inline-flex; flex: none; width: 24px; height: 24px; align-items: center; justify-content: center; }\r\n.dt-disclosure-icon { display: inline-flex; align-items: center; justify-content: center; }\r\n.dt-disclosure-chevron { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; }\r\n.dt-disclosure-row:hover .dt-disclosure-icon, .dt-disclosure[data-open] .dt-disclosure-icon { visibility: hidden; }\r\n.dt-disclosure-row:hover .dt-disclosure-chevron, .dt-disclosure[data-open] .dt-disclosure-chevron { display: inline-flex; }\r\n.dt-disclosure-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\r\n.dt-modal-root { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; padding: max(24px, var(--dsh-frame-top-clearance, 24px)) 24px; }\r\n.dt-modal-mask { position: absolute; inset: 0; background: var(--dsw-alias-bg-mask-1); backdrop-filter: var(--dsw-mask-blur); }\r\n.dt-modal { position: relative; z-index: 1; display: flex; flex-direction: column; gap: 20px; width: min(380px, 100%); max-height: 100%; padding: 0 0 24px; overflow: hidden; border-radius: 24px; background: var(--dsw-alias-bg-layer-2); box-shadow: var(--dsw-elevation-prominent); color: var(--dsw-alias-label-primary); outline: none; }\r\n.dt-modal-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 22px 14px 0 24px; }\r\n.dt-modal-header h2 { margin: 0; font-size: 16px; line-height: 24px; font-weight: 500; }\r\n.dt-modal-close { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: none; border-radius: 8px; background: transparent; cursor: pointer; color: var(--dsw-alias-label-secondary); }\r\n.dt-modal-close:hover { background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-modal-description { margin: -8px 0 0; padding: 0 24px; font-size: 14px; line-height: 22px; }\r\n.dt-modal-body { min-width: 0; min-height: 0; overflow: auto; padding: 0 24px; }\r\n.dt-modal-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 0 24px; }\r\n.dt-toast { position: fixed; top: 40px; left: 50%; z-index: 1100; pointer-events: none; width: max-content; max-width: min(640px, calc(100vw - 48px)); padding: 12px 16px; border-radius: 14px; background: var(--dsw-alias-toast-bg); color: var(--dsw-static-neutral-bluish-00); font-size: 14px; line-height: 22px; box-shadow: var(--dsw-shadow-lv3); transform: translateX(-50%); animation: dt-toast-in 160ms ease-out, dt-toast-fade 1000ms ease var(--dt-toast-hold, 3000ms) forwards; }\r\n@keyframes dt-toast-in { from { opacity: 0; transform: translate(-50%, -6px); } to { opacity: 1; transform: translate(-50%, 0); } }\r\n@keyframes dt-toast-fade { to { opacity: 0; visibility: hidden; } }\r\n@media (prefers-reduced-motion: reduce) {\r\n  .dt-tab, .dt-segment, .dt-switch-thumb, .dt-spinner g, .dt-btn-busy .dt-btn-icon svg, .dt-tooltip { transition: none; animation: none; }\r\n  .dt-toast { animation: dt-toast-fade 1000ms ease var(--dt-toast-hold, 3000ms) forwards; }\r\n}\r\n.dt-page .dt-tab { height: 34px; padding: 0 2px; border: 0; border-radius: 0; color: var(--dsw-alias-label-tertiary); font-size: 14px; }\r\n.dt-page .dt-tab[aria-selected='true'] { background: none; color: var(--dsw-alias-label-primary); font-weight: 500; box-shadow: inset 0 -1.5px 0 var(--dsw-alias-label-primary); }\r\n.dt-status-head { display: flex; align-items: center; gap: 8px; }\r\n.dt-status-title { margin: 0; flex: 1; display: flex; align-items: center; gap: 4px; font-size: 15px; line-height: 22px; font-weight: 600; }\r\n.dt-status-text { margin-left: auto; flex: none; font-size: 12px; font-weight: 400; color: var(--dsw-alias-label-secondary); }\r\n.dt-status-line .dt-status-text { margin-left: 0; }\r\n.dt-status-text[data-state='warning'] { color: var(--dsw-alias-state-warn-primary); }\r\n.dt-status-text[data-state='error'] { color: var(--dsw-alias-state-error-primary); }\r\n.dt-row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }\r\n.dt-lv { white-space: nowrap; }\r\n.dt-lv-label { color: var(--dsw-alias-label-caption); }\r\n.dt-lv-value { color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }\r\n.dt-chip { display: inline-flex; flex-wrap: wrap; max-width: 100%; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: 6px; overflow: hidden; font-size: 11px; line-height: 18px; color: var(--dsw-alias-label-secondary); }\r\n.dt-chip-source { padding: 0 6px; color: var(--dsw-alias-label-tertiary); background: var(--dsw-alias-bg-module-platform); }\r\n.dt-chip-fact { padding: 0 6px; border-left: 0.5px solid var(--dsw-alias-border-l3); white-space: nowrap; }\r\n.dt-chip-label { margin-right: 4px; color: var(--dsw-alias-label-caption); }\r\n.dt-chip-link { position: relative; z-index: 1; text-decoration: none; cursor: pointer; transition: border-color 120ms ease; }\r\n.dt-chip-link:hover { border-color: var(--dsw-alias-brand-primary); }\r\n.dt-chip-link:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }\r\n.dt-chip-open { display: inline-flex; align-items: center; padding: 0 5px; border-left: 0.5px solid var(--dsw-alias-border-l3); color: var(--dsw-alias-brand-primary); }\r\n.dt-chip-problem, .dt-chip-problem .dt-chip-label { color: var(--dsw-alias-state-error-primary); }\r\n.dt-cards { gap: 8px; }\r\n.dt-att .dt-inline-link { font-size: 13px; font-weight: 500; }\r\n.dt-list > .dt-att { margin: 2px 8px; }\r\n.dt-att { padding: 10px 12px 10px 16px; border: 0; border-radius: 0; border-bottom: 0.5px solid var(--dsw-alias-border-l3); }\r\n.dt-att::before { content: ''; position: absolute; left: 6px; top: 10px; bottom: 10px; width: 2px; border-radius: 1px; background: var(--dsw-alias-state-warn-primary); opacity: 0.7; }\r\n.dt-att-error::before { background: var(--dsw-alias-state-error-primary); }\r\n.dt-att-what { font-size: 12px; line-height: 18px; font-weight: 500; color: var(--dsw-alias-state-warn-primary); }\r\n.dt-att-error .dt-att-what, .dt-att-error .dt-att-what .dt-open { color: var(--dsw-alias-state-error-primary); }\r\n.dt-stats { display: flex; flex-wrap: wrap; gap: 6px 20px; }\r\n.dt-stat { display: inline-flex; align-items: baseline; gap: 6px; font-size: 12px; color: var(--dsw-alias-label-caption); }\r\n.dt-stat-value { font-size: 14px; font-weight: 500; color: var(--dsw-alias-label-primary); font-variant-numeric: tabular-nums; }\r\n.dt-more-link { font-size: 12px; font-weight: 400; }\r\n.dt-settings { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 24px; align-items: start; }\r\n.dt-settings-nav { position: sticky; top: 0; display: flex; flex-direction: column; gap: 2px; }\r\n.dt-settings-link { padding: 6px 10px; border: 0; border-radius: 8px; background: none; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 14px; text-align: left; cursor: pointer; }\r\n.dt-settings-link:hover { color: var(--dsw-alias-label-primary); }\r\n.dt-settings-link[aria-current='page'] { background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-primary); font-weight: 500; }\r\n.dt-settings-link[data-stage] + .dt-settings-link:not([data-stage]) { margin-top: 10px; }\r\n.dt-settings-body { display: flex; flex-direction: column; gap: 16px; min-width: 0; }\r\n.dt-settings-title { margin: 0; font-size: 15px; line-height: 22px; font-weight: 600; }\r\n.dt-subtabs { display: flex; gap: 16px; border-bottom: 0.5px solid var(--dsw-alias-border-l3); }\r\n.dt-subtab { padding: 0 0 6px; border: 0; background: none; color: var(--dsw-alias-label-tertiary); font: inherit; font-size: 13px; cursor: pointer; }\r\n.dt-subtab[aria-selected='true'] { color: var(--dsw-alias-label-primary); font-weight: 500; box-shadow: inset 0 -1.5px 0 var(--dsw-alias-label-primary); }\r\n.dt-part { display: flex; flex-direction: column; gap: 12px; }\r\n.dt-rows-summary { text-align: left; color: var(--dsw-alias-label-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }\r\n.dt-table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 18px; }\r\n.dt-table th { text-align: left; font-weight: 400; color: var(--dsw-alias-label-caption); padding: 2px 8px 2px 0; }\r\n.dt-table td { padding: 4px 8px 4px 0; border-top: 0.5px solid var(--dsw-alias-border-l3); vertical-align: top; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }\r\n@container (max-width: 640px) {\r\n  .dt-settings { grid-template-columns: 1fr; gap: 12px; }\r\n  .dt-settings-nav { position: static; flex-direction: row; flex-wrap: wrap; }\r\n  .dt-settings-link[data-stage] + .dt-settings-link:not([data-stage]) { margin-top: 0; }\r\n  .dt-page .dt-tabs { gap: 14px; }\r\n}\r\n.dt-list > .dt-ticket { display: grid; grid-template-columns: 112px minmax(0, 1fr); column-gap: 12px; align-items: start; margin: 0; padding: 12px 8px 12px 18px; border-radius: 0; border-bottom: 0.5px solid var(--dsw-alias-border-l3); }\r\n.dt-list > .dt-ticket[data-state]::before { content: ''; position: absolute; left: 6px; top: 12px; bottom: 12px; width: 2px; border-radius: 1px; background: var(--dsw-alias-state-warn-primary); opacity: 0.7; }\r\n.dt-list > .dt-ticket[data-state='error']::before { background: var(--dsw-alias-state-error-primary); }\r\n.dt-ticket-stage { align-self: stretch; padding-top: 1px; border-right: 0.5px solid var(--dsw-alias-border-l3); }\r\n.dt-ticket-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }\r\n.dt-ticket-body .dt-row-title .dt-open { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\r\n.dt-ticket-meta { flex-wrap: nowrap; overflow: hidden; white-space: nowrap; }\r\n.dt-ticket-meta .dt-chip { flex: none; }\r\n.dt-ticket-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--dsw-alias-label-primary); }\r\n.dt-ticket-note-error { color: var(--dsw-alias-state-error-primary); }\r\n.dt-ticket-actions { position: relative; z-index: 1; display: flex; flex-wrap: wrap; gap: 8px; min-height: 30px; margin-top: 2px; }\r\n/* Pass pointer events through action containers to the row link, keeping only child controls interactive. */\r\n.dt-ticket-actions, .dt-row-buttons, .dt-row-actions { pointer-events: none; }\r\n.dt-ticket-actions > *, .dt-row-buttons > *, .dt-row-actions > * { pointer-events: auto; }\r\n.dt-line { min-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\r\n.dt-row-meta.dt-line { flex-wrap: nowrap; }\r\n.dt-line-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\r\n.dt-error-text { color: var(--dsw-alias-state-error-primary); }\r\n.dt-stage { display: inline-flex; align-items: flex-start; gap: 5px; font-size: 12px; line-height: 18px; font-weight: 500; color: var(--dsw-alias-label-secondary); }\r\n.dt-stage svg { flex: none; margin-top: 2px; }\r\n.dt-stage[data-state='warning'] { color: var(--dsw-alias-state-warn-primary); }\r\n.dt-stage[data-state='error'] { color: var(--dsw-alias-state-error-primary); }\r\n.dt-stage[data-state='ongoing'] { color: var(--dsw-alias-state-business-primary); }\r\n.dt-icon-link { display: inline-flex; align-items: center; gap: 4px; }\r\na.dt-btn, a.dt-btn:hover { text-decoration: none; }\r\n.dt-section-icon { display: inline-flex; align-self: center; color: var(--dsw-alias-label-tertiary); }\r\n.dt-trigger-link { display: flex; flex-direction: column; gap: 2px; width: 100%; margin: -4px 0 -4px -8px; padding: 4px 8px; border: 0; border-radius: 8px; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }\r\n.dt-trigger-link:hover { background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-trigger-link:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }\r\n.dt-trigger-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }\r\n.dt-kv-stack { display: flex; flex-direction: column; gap: 2px; min-width: 0; }\r\n.dt-banner-actions { margin-top: 6px; }\r\n@container (max-width: 640px) {\r\n  .dt-list > .dt-ticket { grid-template-columns: 1fr; row-gap: 4px; }\r\n  .dt-ticket-stage { border-right: 0; }\r\n}\r\n.dt-nav-group { margin: 10px 10px 2px; font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-secondary); }\r\n.dt-nav-group:first-child { margin-top: 0; }\r\n.dt-prompt-nav .dt-nav-item { flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; }\r\n.dt-nav-item > span { display: inline-flex; align-items: center; gap: 6px; }\r\n.dt-nav-item small { font-size: 12px; line-height: 18px; font-weight: 400; color: var(--dsw-alias-label-caption); }\r\n.dt-preview-part[data-editable] { border-left-color: var(--dsw-alias-brand-primary); }\r\n.dt-preview-head b { font-weight: 500; }\r\n.dt-preview-head > span { font-size: 12px; color: var(--dsw-alias-label-caption); }\r\n.dt-changed-tag { margin-left: 6px; padding: 0 5px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: 4px; font-size: 11px; line-height: 16px; font-weight: 400; color: var(--dsw-alias-label-secondary); }\r\n.dt-updated-tag { border-color: var(--dsw-alias-state-warn-primary); color: var(--dsw-alias-state-warn-primary); }\r\n.dt-default-updated { display: flex; flex-direction: column; gap: 6px; padding: 2px 0 2px 12px; border-left: 2px solid var(--dsw-alias-state-warn-primary); }\r\n.dt-diff-fold { color: var(--dsw-alias-label-caption); font-style: italic; }\r\n.dt-compare { margin-left: auto; }\r\n.dt-admission th { white-space: nowrap; }\r\n.dt-admission thead tr:first-child th:not(:first-child) { color: var(--dsw-alias-label-secondary); font-weight: 500; }\r\n.dt-admission td { vertical-align: middle; }\r\n.dt-admission-scope { color: var(--dsw-alias-label-primary); font-size: 13px; }\r\n.dt-admission-scope small { display: block; font-size: 11px; color: var(--dsw-alias-label-caption); }\r\n.dt-admission-na { color: var(--dsw-alias-label-caption); }\r\n.dt-admission-cell { display: flex; align-items: center; gap: 4px; }\r\n.dt-admission-cell .dt-select { flex: 1; min-width: 0; }\r\n.dt-admission-slot { display: inline-flex; flex: none; width: 16px; }\r\n.dt-info-warn { color: var(--dsw-alias-state-warn-primary); }\r\n.dt-field-segmented { max-width: 240px; }\r\n/* VsSaros addition: changelist reviews. */\r\n.dt-review-desc { margin: 0; white-space: pre-wrap; font-family: var(--ds-font-family-code, Menlo, monospace); font-size: 12px; }\r\n.dt-review-files { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }\r\n.dt-review-ack { display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 13px; }\r\n.dt-diff { margin: 0; max-height: 480px; overflow: auto; padding: 8px; border-radius: 8px; background: var(--dsw-alias-bg-module-platform); font-family: var(--ds-font-family-code, Menlo, monospace); font-size: 12px; line-height: 18px; }\r\n.dt-diff-add { color: var(--dsw-alias-state-success-primary, #2da44e); }\r\n.dt-diff-del { color: var(--dsw-alias-state-error-primary, #cf222e); }\r\n.dt-diff-hunk { color: var(--dsw-alias-label-caption); }\r\n/* VsSaros addition: the panel as a whole-page workbench in the middle column. */\r\n.dt-workbench { box-sizing: border-box; height: 100%; min-height: 0; display: flex; flex-direction: column; }\r\n.dt-workbench > .dt-page { flex: 1 1 auto; min-height: 0; }\r\n.dt-workbench > .dt-shell { flex: 1 1 auto; min-height: 0; height: auto; }\r\n/* VsSaros addition: the side panel with the Overview, resized from its left edge. */\r\n.dt-side { box-sizing: border-box; position: relative; flex: none; width: var(--dt-side-width, 400px); height: 100%; display: flex; flex-direction: column; background: var(--dsw-alias-bg-base); border-left: 0.5px solid var(--dsw-alias-border-l4); color: var(--dsw-alias-label-primary); }\r\n.dt-side-grip { position: absolute; top: 0; bottom: 0; left: -4px; width: 8px; z-index: 2; cursor: col-resize; touch-action: none; }\r\n.dt-side-grip::after { content: ''; position: absolute; top: 0; bottom: 0; left: 3.5px; width: 1px; opacity: 0; background: linear-gradient(transparent, var(--dsw-alias-label-caption), transparent); transition: opacity 160ms ease; }\r\n.dt-side-grip:hover::after, .dt-side-grip:focus-visible::after, .dt-side[data-dragging] .dt-side-grip::after { opacity: 1; }\r\n.dt-side-grip:focus-visible { outline: none; }\r\n.dt-side-strip { flex: none; display: flex; align-items: center; gap: 4px; padding: 10px 6px 0 10px; }\r\n.dt-side-tab { height: 28px; min-width: 80px; max-width: 170px; box-sizing: border-box; padding: 0 10px; border-radius: 8px; display: inline-flex; align-items: center; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-markdown-tag, var(--dsw-alias-bg-module-platform)); }\r\n.dt-side-tools { margin-left: auto; display: flex; align-items: center; gap: 4px; }\r\n.dt-side-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 16px 18px 40px; display: flex; flex-direction: column; gap: 20px; }\r\n.dt-side-body .dt-row-actions { margin-left: 0; }\r\n/* Below this width the page keeps its room and the side panel floats over it. */\r\n@container dt-shell (max-width: 900px) {\r\n  .dt-side { position: absolute; top: 0; right: 0; bottom: 0; z-index: 6; max-width: calc(100% - 48px); border-left: 0; border-radius: 16px 0 0 16px; box-shadow: var(--dsw-elevation-prominent); }\r\n}\r\n/* VsSaros addition: the Chat tab, the supervisor desk; bubbles and composer follow DSH's chat. */\r\n.dt-chat { flex: 1 1 auto; display: flex; flex-direction: column; }\r\n/* The Chat tab fills the page's height, so its composer sits at the bottom also while the conversation is short. */\r\n.dt-page:has(.dt-chat) > .dt-column { box-sizing: border-box; min-height: 100%; padding-bottom: 0; }\r\n.dt-page:has(.dt-chat) .dt-main { flex: 1 1 auto; }\r\n.dt-chat-log { flex: 1 1 auto; display: flex; flex-direction: column; gap: 6px; padding: 4px 0 16px; }\r\n.dt-msg { display: flex; min-width: 0; }\r\n.dt-msg-person { flex-direction: column; align-items: flex-end; gap: 4px; margin: 6px 0; }\r\n.dt-msg-bubble { max-width: min(620px, 82%); box-sizing: border-box; padding: 10px 16px; border-radius: 20px; background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent); font-size: 14px; line-height: 22px; white-space: pre-wrap; overflow-wrap: anywhere; }\r\n.dt-msg-meta { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 10px; padding: 0 6px; font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-caption); }\r\n.dt-msg-filtered { color: var(--dsw-alias-state-warn-primary); }\r\n/* ★ 2026-11-05: optimistic user bubbles / submissions still on their way, after DS Bot's chat flow. */\r\n.dt-msg-local { opacity: 0.88; }\r\n.dt-msg-local[data-placement='queued'] .dt-msg-bubble { border: 1px dashed var(--dsw-alias-border-l2); }\r\n.dt-msg-local[data-state='failed'] .dt-msg-bubble { border: 1px solid var(--dsw-alias-state-error-primary); }\r\n.dt-msg-placement { color: var(--dsw-alias-label-tertiary); }\r\n.dt-chat-activity { align-self: center; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 2px 0; font-size: 11px; color: var(--dsw-alias-label-tertiary); }\r\n.dt-composer-note[data-testid='composer-queue-note'] { pointer-events: none; }\r\n.dt-msg-agent { gap: 12px; align-items: flex-start; margin: 12px 0; }\r\n.dt-msg-avatar { flex: none; width: 28px; height: 28px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; color: #fff; background: linear-gradient(135deg, #4176e6, #7c5cf0); }\r\n.dt-msg-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }\r\n.dt-msg-who { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }\r\n.dt-msg-text { font-size: 14px; line-height: 24px; white-space: pre-wrap; overflow-wrap: anywhere; }\r\n.dt-msg-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 8px; }\r\n/* The composer follows DeepSeek-Bot's: one rounded row of \"+\", the draft, the microphone and the voice (or send) button. */\r\n.dt-composer-dock { position: sticky; bottom: 0; z-index: 2; padding: 8px 0 20px; background: linear-gradient(transparent, var(--dsw-alias-bg-base) 36px); }\r\n.dt-composer { position: relative; box-sizing: border-box; display: flex; flex-wrap: wrap; align-items: flex-end; min-height: 44px; padding: 7.5px; border-radius: 22px; background: var(--dsw-alias-bg-layer-2); border: 0.5px solid var(--dsw-alias-border-l3); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.03), 0 0 24px rgba(0, 0, 0, 0.03); transition: border-color 150ms ease, border-radius 200ms ease; }\r\n.dt-composer:hover, .dt-composer:focus-within { border-color: color-mix(in srgb, var(--dsw-alias-label-primary) 30%, transparent); }\r\n.dt-composer[data-tall] { border-radius: 18px; }\r\n.dt-composer-input { order: 2; flex: 1 1 0; box-sizing: border-box; min-width: 0; min-height: 28px; max-height: 200px; resize: none; field-sizing: content; border: 0; outline: none; background: transparent; color: var(--dsw-alias-label-primary); font: inherit; font-size: 14px; line-height: 24px; padding: 2px 8px; caret-color: var(--dsw-alias-state-business-primary); }\r\n.dt-composer-input::placeholder { color: color-mix(in srgb, var(--dsw-alias-label-primary) 36%, transparent); }\r\n.dt-composer-plus, .dt-composer-mic, .dt-composer-voice, .dt-composer-send { flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; display: inline-grid; place-items: center; cursor: pointer; transition: background-color 150ms ease, color 150ms ease, scale 150ms ease; }\r\n.dt-composer-plus { order: 1; background: color-mix(in srgb, var(--dsw-alias-label-primary) 5%, transparent); box-shadow: inset 0 0 0 0.5px var(--dsw-alias-border-l3); color: var(--dsw-alias-label-secondary); }\r\n.dt-composer-plus:hover, .dt-composer-plus[aria-expanded='true'], .dt-composer-mic:hover { background: color-mix(in srgb, var(--dsw-alias-label-primary) 10%, transparent); color: var(--dsw-alias-label-primary); }\r\n.dt-composer-plus svg { transition: rotate 200ms cubic-bezier(0.34, 1.56, 0.64, 1); }\r\n.dt-composer-plus[aria-expanded='true'] svg { rotate: 45deg; }\r\n.dt-composer-plus:active, .dt-composer-mic:active, .dt-composer-voice:active, .dt-composer-send:active:not(:disabled) { scale: 0.9; }\r\n.dt-composer-trailing { order: 3; flex: none; display: flex; align-items: center; gap: 8px; }\r\n.dt-composer-mic { background: color-mix(in srgb, var(--dsw-alias-label-primary) 5%, transparent); box-shadow: inset 0 0 0 0.5px var(--dsw-alias-border-l3); color: var(--dsw-alias-label-secondary); }\r\n.dt-composer-mic[aria-pressed='true'] { background: #ff3e51; color: #fff; animation: dt-mic-pulse 1.4s ease-in-out infinite; }\r\n@keyframes dt-mic-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255, 62, 81, 0.4) } 50% { box-shadow: 0 0 0 6px rgba(255, 62, 81, 0) } }\r\n.dt-composer-voice, .dt-composer-send { background: var(--dsw-alias-state-business-primary); color: #fff; animation: dt-icon-swap 220ms cubic-bezier(0.34, 1.56, 0.64, 1); }\r\n@keyframes dt-icon-swap { from { opacity: 0; transform: scale(0.5) rotate(-30deg) } }\r\n.dt-composer-voice:hover, .dt-composer-send:hover:not(:disabled) { opacity: 0.9; }\r\n.dt-composer-send:disabled { opacity: 0.4; cursor: not-allowed; }\r\n.dt-composer-plus:focus-visible, .dt-composer-mic:focus-visible, .dt-composer-voice:focus-visible, .dt-composer-send:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }\r\n.dt-composer-note { position: absolute; right: 12px; bottom: calc(100% + 8px); padding: 5px 10px; border-radius: 8px; background: var(--dsw-alias-tooltip-bg, #2c2c2e); color: #fff; font-size: 12px; line-height: 16px; white-space: nowrap; pointer-events: none; }\r\n.dt-composer-files { order: 0; flex: 0 0 100%; display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 2px 8px; }\r\n.dt-composer-file { display: inline-flex; align-items: center; gap: 6px; max-width: 260px; height: 28px; padding: 0 4px 0 8px; border-radius: 8px; background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }\r\n.dt-composer-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-primary); }\r\n.dt-composer-file-size { flex: none; color: var(--dsw-alias-label-caption); }\r\n.dt-composer-file button { flex: none; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 6px; display: inline-grid; place-items: center; background: none; color: var(--dsw-alias-label-tertiary); cursor: pointer; }\r\n.dt-composer-file button:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }\r\n/* The \"+\" menu opens above it, as DeepSeek-Bot's does. */\r\n.dt-menu { position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 4; box-sizing: border-box; min-width: 180px; max-width: min(360px, 100%); padding: 6px; border-radius: 12px; display: flex; flex-direction: column; gap: 2px; background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-base)); border: 0.5px solid var(--dsw-alias-border-l2); box-shadow: var(--dsw-elevation-prominent, 0 3px 8px rgba(0, 0, 0, 0.08)); transform-origin: bottom left; animation: dt-menu-lift 160ms cubic-bezier(0.34, 1.56, 0.64, 1); }\r\n@keyframes dt-menu-lift { from { opacity: 0; transform: translateY(4px) scale(0.96) } }\r\n.dt-menu button { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 30px; box-sizing: border-box; padding: 6px 8px; border: 0; border-radius: 6px; background: none; text-align: left; font: inherit; font-size: 13px; line-height: 18px; color: var(--dsw-alias-label-primary); cursor: pointer; }\r\n.dt-menu button:hover { background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-menu button svg { flex: none; }\r\n.dt-menu-head { font-weight: 500; }\r\n.dt-menu-list { display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow: auto; }\r\n.dt-menu-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\r\n.dt-menu-hint { flex: none; color: var(--dsw-alias-label-tertiary); font-size: 12px; }\r\n.dt-menu-note { margin: 0; padding: 6px 8px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }\r\n.dt-schedule { gap: 16px; }\r\n.dt-schedule-when { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }\r\n/* Voice chat takes the conversation's place: an orb that breathes while it thinks and pulses while it speaks. */\r\n.dt-voice { flex: 1 1 auto; min-height: 420px; display: flex; flex-direction: column; align-items: center; justify-content: center; }\r\n.dt-voice-stage { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; max-width: 560px; text-align: center; }\r\n.dt-voice-orb { position: relative; width: 200px; height: 200px; display: grid; place-items: center; margin-bottom: 8px; }\r\n.dt-voice-ring { position: absolute; inset: 34px; border-radius: 50%; background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-voice-stage[data-phase='listening'] .dt-voice-ring { animation: dt-voice-listen 1.8s ease-in-out infinite; }\r\n.dt-voice-stage[data-phase='thinking'] .dt-voice-ring { animation: dt-voice-breathe 1.6s ease-in-out infinite; }\r\n.dt-voice-stage[data-phase='speaking'] .dt-voice-ring { animation: dt-voice-speak 0.9s ease-in-out infinite; }\r\n@keyframes dt-voice-listen { 0%, 100% { transform: scale(1) } 50% { transform: scale(1.04) } }\r\n@keyframes dt-voice-breathe { 0%, 100% { transform: scale(1) } 50% { transform: scale(1.08) } }\r\n@keyframes dt-voice-speak { 0%, 100% { transform: scale(1.04) } 30% { transform: scale(1.2) } 60% { transform: scale(1.1) } }\r\n.dt-voice-mark { position: relative; width: 88px; height: 88px; border-radius: 50%; display: grid; place-items: center; color: #fff; background: linear-gradient(135deg, #4176e6, #7c5cf0); }\r\n.dt-voice-name { font-size: 16px; line-height: 22px; font-weight: 500; }\r\n.dt-voice-status { min-height: 18px; font-size: 13px; line-height: 18px; color: var(--dsw-alias-label-secondary); }\r\n.dt-voice-caption { min-height: 44px; font-size: 15px; line-height: 22px; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }\r\n.dt-voice-note { font-size: 12px; color: var(--dsw-alias-state-error-primary); }\r\n.dt-voice-bar { display: flex; gap: 16px; padding: 0 0 32px; }\r\n.dt-voice-btn { width: 52px; height: 52px; border-radius: 50%; border: 0; display: grid; place-items: center; background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); cursor: pointer; transition: background-color 150ms ease, transform 120ms ease; }\r\n.dt-voice-btn:hover { background: var(--dsw-alias-interactive-bg-active); }\r\n.dt-voice-btn:active { transform: scale(0.94); }\r\n.dt-voice-end { background: #ff3e51; color: #fff; }\r\n.dt-voice-end:hover { background: #e02135; }\r\n@media (prefers-reduced-motion: reduce) {\r\n  .dt-menu, .dt-voice-ring, .dt-composer-mic, .dt-composer-voice, .dt-composer-send { animation: none !important; }\r\n}\r\n/* VsSaros addition: the Chat tab in a VsSaros workbench is DSH's own chat of the desk, docked by the host; it fills the page. */\r\n.dt-page:has(.dt-native-chat) > .dt-column { height: 100%; min-height: 0; }\r\n.dt-page:has(.dt-native-chat) .dt-main { min-height: 0; }\r\n.dt-native-chat { min-height: 0; position: relative; }\r\n.dt-chat-dock { flex: none; max-height: 40%; overflow: auto; margin: 0 0 8px; padding: 10px 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; background: var(--dsw-alias-bg-module-platform); display: flex; flex-direction: column; gap: 8px; }\r\n.dt-chat-dock-title { margin: 0; font-size: 12px; font-weight: 600; color: var(--dsw-alias-state-warn-primary); }\r\n.dt-chat-dock .dt-list { margin: 0; }\r\n.dt-native-chat .vssWbNewSession, .dt-native-chat .vssWbConversation { display: none; }\r\n.dt-native-chat [data-slot=\"conversation.input.permission\"], .dt-native-chat [data-slot=\"conversation.input.model\"], .dt-native-chat [data-slot=\"conversation.input.plan\"] { display: none; }\r\n.dt-native-wait { margin: 24px 0; font-size: 13px; color: var(--dsw-alias-label-tertiary); }\r\n.dt-native-chat:has(.vssWbDock:not([hidden])) .dt-native-wait { display: none; }\r\n/* VsSaros addition (plan C): what waits for the person, the teams' members, and the Workbench tab. States share one colour each. */\r\n:is(.dt-flow-node, .dt-flow-edge, .dt-mini-node, .dt-board-card, .dt-flow-line)[data-state='pending'] { --dt-state: var(--dsw-alias-label-caption); }\r\n:is(.dt-flow-node, .dt-flow-edge, .dt-mini-node, .dt-board-card, .dt-flow-line)[data-state='running'] { --dt-state: var(--dsw-alias-state-business-primary); }\r\n:is(.dt-flow-node, .dt-flow-edge, .dt-mini-node, .dt-board-card, .dt-flow-line)[data-state='ready'] { --dt-state: var(--dsw-alias-state-success-primary); }\r\n:is(.dt-flow-node, .dt-flow-edge, .dt-mini-node, .dt-board-card, .dt-flow-line):is([data-state='blocked'], [data-state='alert']) { --dt-state: var(--dsw-alias-state-warn-primary); }\r\n:is(.dt-flow-node, .dt-flow-edge, .dt-mini-node, .dt-board-card, .dt-flow-line)[data-state='failed'] { --dt-state: var(--dsw-alias-state-error-primary); }\r\n:is(.dt-flow-node, .dt-flow-edge, .dt-mini-node, .dt-board-card, .dt-flow-line):is([data-state='skipped'], [data-state='stopped']) { --dt-state: var(--dsw-alias-label-tertiary); }\r\n.dt-shimmer { background: linear-gradient(90deg, color-mix(in srgb, var(--dsw-alias-label-secondary) 45%, transparent), var(--dsw-alias-label-primary), color-mix(in srgb, var(--dsw-alias-label-secondary) 45%, transparent)); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: dt-shimmer 2.2s steps(60) infinite; }\r\n@keyframes dt-shimmer { from { background-position: 200% 0 } to { background-position: -200% 0 } }\r\n.dt-elapsed { font-variant-numeric: tabular-nums; }\r\n.dt-approvals { display: flex; flex-direction: column; gap: 8px; }\r\n.dt-approval { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 12px; background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 8%, transparent); box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--dsw-alias-state-warn-primary) 40%, transparent); font-size: 12.5px; line-height: 18px; animation: dt-rise 0.42s cubic-bezier(0.34, 1.32, 0.64, 1) both; }\r\n@keyframes dt-rise { from { opacity: 0; transform: translateY(8px) scale(0.98) } }\r\n.dt-approval-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; font-size: 13px; }\r\n.dt-approval-ticket { color: var(--dsw-alias-label-tertiary); font-size: 12px; }\r\n.dt-approval-code { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px/16px ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--dsw-alias-label-secondary); }\r\n.dt-approval-why { color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }\r\n.dt-approval .dt-row-actions { margin-left: 0; flex-wrap: wrap; }\r\n.dt-team-run .dt-row-main { gap: 8px; }\r\n.dt-mini-flow { display: block; max-width: 100%; overflow-x: auto; padding: 6px; border: 0; border-radius: 10px; background: var(--dsw-alias-bg-module-platform); cursor: pointer; text-align: left; }\r\n.dt-mini-flow:hover { box-shadow: inset 0 0 0 0.5px var(--dsw-alias-border-l3); }\r\n.dt-mini-flow:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }\r\n.dt-mini-node rect { fill: color-mix(in srgb, var(--dt-state) 14%, var(--dsw-alias-bg-base)); stroke: var(--dt-state); stroke-width: 1; }\r\n.dt-mini-node text { font-size: 11px; fill: var(--dsw-alias-label-primary); }\r\n.dt-flow-line { fill: none; stroke: var(--dt-state, var(--dsw-alias-label-caption)); stroke-width: 1.5; opacity: 0.6; }\r\n.dt-members { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }\r\n.dt-member { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 4px 2px; }\r\n.dt-member-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }\r\n.dt-member-name { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; font-size: 13px; line-height: 20px; }\r\n.dt-member-step { color: var(--dsw-alias-label-tertiary); font-size: 12px; }\r\n.dt-member-line { font-size: 12px; line-height: 17px; color: var(--dsw-alias-label-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\r\n.dt-member-alert { color: var(--dsw-alias-state-warn-primary); }\r\n.dt-work { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding-bottom: 20px; }\r\n.dt-work-teams { display: flex; flex-wrap: wrap; gap: 6px; }\r\n.dt-work-team { height: 28px; padding: 0 12px; border: 0; border-radius: 14px; font: inherit; font-size: 12.5px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-module-platform); cursor: pointer; }\r\n.dt-work-team[aria-pressed='true'] { color: var(--dsw-alias-label-primary); box-shadow: inset 0 0 0 1px var(--dsw-alias-label-primary); }\r\n.dt-work-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; font-size: 13px; }\r\n.dt-work-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dsw-alias-label-caption); }\r\n.dt-work-dot[data-live] { background: var(--dsw-alias-state-success-primary); animation: dt-pulse 1.6s ease-in-out infinite; }\r\n@keyframes dt-pulse { 50% { opacity: 0.45; transform: scale(0.8) } }\r\n.dt-work-views { margin-left: auto; }\r\n.dt-work-body { position: relative; flex: 1 1 auto; min-height: 360px; display: flex; flex-direction: column; }\r\n.dt-graph { position: relative; flex: 1 1 auto; min-height: 360px; overflow: hidden; border-radius: 12px; background-color: var(--dsw-alias-bg-module-platform); background-image: radial-gradient(color-mix(in srgb, var(--dsw-alias-label-primary) 12%, transparent) 1px, transparent 1px); background-size: 24px 24px; cursor: grab; touch-action: none; }\r\n.dt-flow-zoom { position: absolute; z-index: 2; top: 10px; right: 10px; display: flex; align-items: center; gap: 2px; padding: 2px; border-radius: 8px; background: color-mix(in srgb, var(--dsw-alias-bg-base) 82%, transparent); backdrop-filter: blur(8px); box-shadow: 0 0 0 0.5px var(--dsw-alias-border-l3); font-size: 12px; color: var(--dsw-alias-label-secondary); }\r\n.dt-flow-zoom button { width: 26px; height: 24px; border: 0; border-radius: 6px; background: none; color: var(--dsw-alias-label-primary); font: inherit; cursor: pointer; }\r\n.dt-flow-zoom button:hover { background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-flow-zoom span { min-width: 38px; text-align: center; font-variant-numeric: tabular-nums; }\r\n.dt-flow-canvas { position: absolute; left: 0; top: 0; transform-origin: 0 0; }\r\n.dt-flow-lines { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }\r\n.dt-flow-edge .dt-flow-line { stroke-width: 2.5; opacity: 0.5; }\r\n.dt-flow-glow { fill: none; stroke: var(--dt-state); stroke-width: 7; opacity: 0.12; }\r\n.dt-flow-moving { fill: none; stroke: var(--dt-state); stroke-width: 2; stroke-dasharray: 5 9; animation: dt-flow-move 0.75s linear infinite; }\r\n@keyframes dt-flow-move { to { stroke-dashoffset: -28 } }\r\n.dt-flow-node { position: absolute; box-sizing: border-box; display: flex; flex-direction: column; gap: 4px; padding: 9px 12px 9px 15px; overflow: hidden; border: 0; border-radius: 12px; text-align: left; font: inherit; color: var(--dsw-alias-label-primary); background: linear-gradient(135deg, color-mix(in srgb, var(--dt-state) 9%, var(--dsw-alias-bg-base)), var(--dsw-alias-bg-base)); box-shadow: 0 0 0 0.5px var(--dsw-alias-border-l3); cursor: pointer; transition: box-shadow 0.2s ease; }\r\n.dt-flow-node::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--dt-state); }\r\n.dt-flow-node:is([data-state='running'], [data-state='alert'], [data-state='blocked']) { box-shadow: 0 0 0 1px color-mix(in srgb, var(--dt-state) 34%, transparent), 0 6px 18px color-mix(in srgb, var(--dt-state) 16%, transparent); }\r\n.dt-flow-node[data-state='pending'] { opacity: 0.62; }\r\n.dt-flow-node[aria-pressed='true'] { box-shadow: 0 0 0 2px var(--dt-state); }\r\n.dt-flow-node:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }\r\n.dt-flow-node-title { display: flex; align-items: center; gap: 6px; font-size: 13px; line-height: 18px; font-weight: 500; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }\r\n.dt-flow-key { font: 600 11px/16px ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--dsw-alias-label-tertiary); }\r\n.dt-flow-node-who { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dsw-alias-label-secondary); }\r\n.dt-flow-node-meta { font-size: 11.5px; color: var(--dsw-alias-label-caption); }\r\n.dt-flow-retry { position: absolute; top: 8px; right: 10px; font-size: 11px; font-weight: 600; color: var(--dsw-alias-state-warn-primary); }\r\n.dt-flow-bar { position: absolute; left: 3px; right: 0; bottom: 0; height: 2px; overflow: hidden; background: color-mix(in srgb, var(--dt-state) 14%, transparent); }\r\n.dt-flow-bar i { display: block; width: 42%; height: 100%; background: var(--dt-state); animation: dt-flow-bar 1.1s linear infinite; }\r\n@keyframes dt-flow-bar { from { transform: translateX(-100%) } to { transform: translateX(350%) } }\r\n.dt-board { flex: 1 1 auto; display: flex; gap: 10px; overflow-x: auto; }\r\n.dt-board-col { flex: 1 1 0; min-width: 168px; display: flex; flex-direction: column; gap: 6px; padding: 6px; border: 1px dashed var(--dsw-alias-border-l3); border-radius: 10px; }\r\n.dt-board-col h3 { margin: 0; padding: 2px 4px; display: flex; justify-content: space-between; font-size: 12px; font-weight: 500; color: var(--dsw-alias-label-secondary); }\r\n.dt-board-card { position: relative; display: flex; flex-direction: column; gap: 2px; padding: 7px 9px 7px 12px; overflow: hidden; border: 0; border-radius: 8px; text-align: left; font: inherit; font-size: 12.5px; line-height: 18px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base); box-shadow: 0 0 0 0.5px var(--dsw-alias-border-l2); cursor: pointer; }\r\n.dt-board-card::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--dt-state); }\r\n.dt-board-card b { font-weight: 500; }\r\n.dt-board-who { display: flex; align-items: center; gap: 4px; color: var(--dsw-alias-label-tertiary); font-size: 11.5px; }\r\n.dt-step-table { width: 100%; border-collapse: collapse; font-size: 13px; }\r\n.dt-step-table th { padding: 6px 8px; text-align: left; font-size: 12px; font-weight: 500; color: var(--dsw-alias-label-tertiary); border-bottom: 0.5px solid var(--dsw-alias-border-l3); }\r\n.dt-step-table td { padding: 8px; border-bottom: 0.5px solid var(--dsw-alias-border-l1); }\r\n.dt-step-table tbody tr { cursor: pointer; }\r\n.dt-step-table tbody tr:hover { background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-step-detail { position: absolute; z-index: 3; top: 12px; right: 12px; bottom: 12px; box-sizing: border-box; width: min(384px, calc(100% - 24px)); display: flex; flex-direction: column; gap: 10px; overflow: auto; padding: 14px 16px; border-radius: 14px; font-size: 13px; line-height: 20px; background: color-mix(in srgb, var(--dsw-alias-bg-base) 92%, transparent); backdrop-filter: blur(14px); box-shadow: var(--dsw-elevation-prominent, 0 14px 48px rgba(0, 0, 0, 0.18)); animation: dt-rise 0.28s cubic-bezier(0.2, 0, 0, 1) both; }\r\n.dt-step-detail-head { display: flex; align-items: center; gap: 8px; font-size: 14px; }\r\n.dt-step-detail-head .dt-btn { margin-left: auto; }\r\n.dt-step-facts { margin: 0; display: grid; grid-template-columns: 64px 1fr; gap: 3px 8px; font-size: 12.5px; }\r\n.dt-step-facts dt { color: var(--dsw-alias-label-tertiary); }\r\n.dt-step-facts dd { margin: 0; }\r\n.dt-step-attempts { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }\r\n.dt-step-report { margin: 0; white-space: pre-wrap; color: var(--dsw-alias-label-secondary); }\r\n@media (prefers-reduced-motion: reduce) {\r\n  .dt-shimmer, .dt-approval, .dt-work-dot, .dt-flow-moving, .dt-flow-bar i, .dt-step-detail { animation: none !important; }\r\n}\r\n\r\n/* VsSaros addition (plan C): a Bot's mark, after DS Bot's (mark.js and styles.js, Apache-2.0; see NOTICE). Its character moves for what it does. */\r\n.dt-bm { display: inline-block; flex: none; position: relative; line-height: 0; }\r\n.dt-bm svg { width: 100%; height: 100%; overflow: visible; }\r\n.dt-bm .dt-bm-b, .dt-bm .dt-bm-eye, .dt-bm .dt-bm-eyes { transform-box: fill-box; }\r\n.dt-bm .dt-bm-b { transform-origin: 50% 100%; }\r\n.dt-bm .dt-bm-eye, .dt-bm .dt-bm-eyes { transform-origin: center; }\r\n.dt-bm[data-faded] { filter: grayscale(1); opacity: 0.55; }\r\n.dt-bm[data-live]:is([data-state='idle'], [data-state='alert']) .dt-bm-eye { animation: dt-bm-blink-idle 5s linear infinite; animation-delay: var(--dt-bm-delay, 0s); }\r\n.dt-bm[data-live][data-state='idle']:is([data-fidget='hop'], [data-fidget='sway'], [data-fidget='stretch']) .dt-bm-b { animation: var(--dt-bm-fidget) 9s ease-in-out var(--dt-bm-fidget-delay, 0s) infinite; }\r\n.dt-bm[data-live][data-state='idle'][data-fidget='hop'] { --dt-bm-fidget: dt-bm-fidget-hop; }\r\n.dt-bm[data-live][data-state='idle'][data-fidget='sway'] { --dt-bm-fidget: dt-bm-fidget-sway; }\r\n.dt-bm[data-live][data-state='idle'][data-fidget='stretch'] { --dt-bm-fidget: dt-bm-fidget-stretch; }\r\n.dt-bm[data-live][data-state='idle'][data-fidget='look'] .dt-bm-eyes { animation: dt-bm-fidget-look 9s ease-in-out var(--dt-bm-fidget-delay, 0s) infinite; }\r\n.dt-bm[data-state='thinking'] .dt-bm-b { animation: dt-bm-ponder 2.2s ease-in-out infinite; }\r\n.dt-bm[data-state='thinking'] .dt-bm-eyes { animation: dt-bm-squint 2.2s ease-in-out infinite; }\r\n.dt-bm[data-state='searching'] .dt-bm-b { animation: dt-bm-seek 1s ease-in-out infinite; }\r\n.dt-bm[data-state='searching'] .dt-bm-eyes { animation: dt-bm-scan 1.6s ease-in-out infinite; }\r\n.dt-bm[data-state='working'] .dt-bm-b { animation: dt-bm-bob 1.6s ease-in-out infinite; }\r\n.dt-bm[data-state='working']:is([data-shape='star'], [data-shape='hex'], [data-shape='plus'], [data-shape='gem'], [data-shape='magnet'], [data-shape='ring']) .dt-bm-b { animation: dt-bm-wiggle 1.4s ease-in-out infinite; transform-origin: 50% 50%; }\r\n.dt-bm[data-state='working']:is([data-shape='gumdrop'], [data-shape='peanut'], [data-shape='cushion'], [data-shape='squircle'], [data-shape='moon'], [data-shape='wave']) .dt-bm-b { animation: dt-bm-squash 1.2s ease-in-out infinite; }\r\n.dt-bm[data-state='working'] .dt-bm-eye { animation: dt-bm-blink 2.4s ease-in-out infinite; }\r\n.dt-bm[data-state='sending'] .dt-bm-b { animation: dt-bm-dash 1.1s cubic-bezier(0.4, 0, 0.2, 1) infinite; }\r\n.dt-bm[data-state='waiting'] .dt-bm-b { animation: dt-bm-sway 2.6s ease-in-out infinite; transform-origin: 50% 50%; }\r\n.dt-bm[data-state='waiting'] .dt-bm-eyes { animation: dt-bm-roll 2.6s linear infinite; }\r\n.dt-bm[data-state='alert'] .dt-bm-b { animation: dt-bm-hop 1.3s cubic-bezier(0.3, 0.7, 0.4, 1) 2; }\r\n.dt-bm[data-live][data-state='alert'] .dt-bm-b { animation-iteration-count: infinite; }\r\n.dt-bm[data-state='done'] .dt-bm-b { animation: dt-bm-done 1.8s linear 1; }\r\n@keyframes dt-bm-fidget-hop { 0%, 8%, 100% { transform: none } 3% { transform: translateY(-10%) scale(0.97, 1.04) } 5.5% { transform: translateY(0) scale(1.05, 0.95) } }\r\n@keyframes dt-bm-fidget-sway { 0%, 10%, 100% { transform: none } 2.5% { transform: rotate(-8deg) } 5% { transform: rotate(7deg) } 7.5% { transform: rotate(-3deg) } }\r\n@keyframes dt-bm-fidget-stretch { 0%, 9%, 100% { transform: none } 4% { transform: scale(0.94, 1.08) } 7% { transform: scale(1.03, 0.97) } }\r\n@keyframes dt-bm-fidget-look { 0%, 22%, 100% { transform: none } 3%, 9% { transform: translateX(-14%) } 12%, 19% { transform: translateX(14%) } }\r\n@keyframes dt-bm-done { 0% { transform: none } 13.3% { transform: scale(1.12, 0.88) } 25.6% { transform: scale(0.93, 1.09) } 37.8% { transform: scale(1.04, 0.97) } 51.1%, 100% { transform: none } }\r\n@keyframes dt-bm-bob { 0%, 100% { transform: translateY(0) rotate(0) } 30% { transform: translateY(-4%) rotate(-5deg) } 65% { transform: translateY(0) rotate(4deg) } }\r\n@keyframes dt-bm-wiggle { 0%, 100% { transform: rotate(0) scale(1) } 25% { transform: rotate(-12deg) scale(1.04) } 75% { transform: rotate(12deg) scale(1.04) } }\r\n@keyframes dt-bm-squash { 0%, 100% { transform: scale(1, 1) } 30% { transform: scale(1.08, 0.9) } 55% { transform: translateY(-4%) scale(0.94, 1.08) } 80% { transform: scale(1.02, 0.98) } }\r\n@keyframes dt-bm-ponder { 0%, 100% { transform: translateY(0) rotate(4deg) } 50% { transform: translateY(-3%) rotate(7deg) } }\r\n@keyframes dt-bm-squint { 0%, 100% { transform: translate(0, -4%) scaleY(0.7) } 50% { transform: translate(5%, -5%) scaleY(0.78) } }\r\n@keyframes dt-bm-seek { 0%, 100% { transform: translateY(0) rotate(-4deg) } 50% { transform: translateY(-5%) rotate(-1deg) } }\r\n@keyframes dt-bm-scan { 0%, 100% { transform: translateX(-12%) } 50% { transform: translateX(12%) } }\r\n@keyframes dt-bm-dash { 0%, 100% { transform: translateX(0) rotate(0) } 35% { transform: translateX(9%) rotate(7deg) } 55% { transform: translateX(-2%) rotate(-3deg) } }\r\n@keyframes dt-bm-sway { 0%, 100% { transform: rotate(-10deg) } 50% { transform: rotate(10deg) } }\r\n@keyframes dt-bm-roll { 0%, 100% { transform: translate(12%, 0) } 25% { transform: translate(0, 9%) } 50% { transform: translate(-12%, 0) } 75% { transform: translate(0, -9%) } }\r\n@keyframes dt-bm-hop { 0%, 55%, 100% { transform: translateY(0) scale(1, 1) } 20% { transform: translateY(-14%) scale(0.96, 1.05) } 40% { transform: translateY(0) scale(1.06, 0.94) } }\r\n@keyframes dt-bm-blink-idle { 0%, 29.6%, 35%, 69.2%, 74.6%, 100% { transform: scaleY(1) } 32.2%, 71.8% { transform: scaleY(0.03) } 33.8%, 73.4% { transform: scaleY(1.06) } }\r\n@keyframes dt-bm-blink { 0%, 42%, 50%, 100% { transform: scaleY(1) } 46% { transform: scaleY(0.03) } 48% { transform: scaleY(1.06) } }\r\n.dt-bm-badge { position: absolute; right: 0; bottom: 0; box-sizing: border-box; display: flex; align-items: center; justify-content: center; border-radius: 50%; box-shadow: 0 0 0 1.5px var(--dsw-alias-bg-base); }\r\n.dt-bm-badge[data-kind='working'] { width: 8px; height: 8px; right: 1px; bottom: 1px; background: var(--dsw-alias-state-success-primary); }\r\n.dt-bm-badge[data-kind='alert'] { width: 12px; height: 12px; right: auto; bottom: auto; left: 50%; top: calc(var(--dt-bm-size, 28px) * -0.14); translate: -50% 0; background: var(--dsw-alias-state-warn-primary); color: #fff; font-size: 8.5px; line-height: 12px; font-weight: 600; animation: dt-bm-q-ride 1.3s cubic-bezier(0.3, 0.7, 0.4, 1) infinite; }\r\n@keyframes dt-bm-q-ride { 0%, 55%, 100% { transform: translateY(0) } 20% { transform: translateY(calc(var(--dt-bm-size, 28px) * -0.14)) } 40% { transform: translateY(0) } }\r\n/* VsSaros addition (plan C): a message's key-node card in the supervisor desk's DSH conversation. */\r\n.dt-fc { box-sizing: border-box; max-width: 640px; margin: 4px 0; padding: 12px 14px; border-radius: 14px; display: flex; flex-direction: column; gap: 10px; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base); box-shadow: 0 0 0 0.5px var(--dsw-alias-border-l3), 0 2px 8px rgba(0, 0, 0, 0.03); animation: dt-rise 0.32s cubic-bezier(0.2, 0, 0, 1) both; }\r\n.dt-fc[data-state='declined'] { color: var(--dsw-alias-label-secondary); }\r\n.dt-fc-line { flex-direction: row; align-items: center; gap: 8px; padding: 4px 0; margin: 0; background: none; box-shadow: none; color: var(--dsw-alias-label-tertiary); font-size: 12.5px; }\r\n.dt-fc-head { display: flex; align-items: center; gap: 10px; }\r\n.dt-fc-head-main { flex: 1; min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }\r\n.dt-fc-head-main b { font-weight: 500; overflow-wrap: anywhere; }\r\n.dt-fc-nodes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }\r\n.dt-fc-node { position: relative; display: flex; gap: 10px; padding: 0 0 12px; }\r\n.dt-fc-node:last-child { padding-bottom: 0; }\r\n.dt-fc-node::before { content: ''; position: absolute; left: 4.5px; top: 14px; bottom: 0; width: 1px; background: var(--dsw-alias-border-l3); }\r\n.dt-fc-node:last-child::before { display: none; }\r\n.dt-fc-dot { flex: none; position: relative; z-index: 1; width: 10px; height: 10px; margin-top: 5px; border-radius: 50%; box-sizing: border-box; border: 1.5px solid var(--dsw-alias-label-caption); background: var(--dsw-alias-bg-base); }\r\n.dt-fc-node[data-state='done'] .dt-fc-dot { border-color: var(--dsw-alias-state-success-primary); background: var(--dsw-alias-state-success-primary); }\r\n.dt-fc-node[data-state='active'] .dt-fc-dot { border-color: var(--dsw-alias-state-business-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-business-primary) 18%, transparent); animation: dt-pulse 1.6s ease-in-out infinite; }\r\n.dt-fc-node[data-state='fail'] .dt-fc-dot { border-color: var(--dsw-alias-state-error-primary); background: var(--dsw-alias-state-error-primary); }\r\n.dt-fc-node[data-state='wait'] .dt-fc-node-title { color: var(--dsw-alias-label-tertiary); }\r\n.dt-fc-node-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }\r\n.dt-fc-node-title { font-weight: 500; }\r\n.dt-fc-proposal { display: flex; flex-direction: column; gap: 6px; }\r\n.dt-fc-roles { display: flex; flex-wrap: wrap; gap: 6px; }\r\n.dt-fc-role { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px 0 4px; border-radius: 13px; background: var(--dsw-alias-bg-module-platform); font-size: 12.5px; }\r\n.dt-fc-role em { font-style: normal; color: var(--dsw-alias-label-tertiary); }\r\n.dt-fc-note { margin: 0; font-size: 12.5px; line-height: 19px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; white-space: pre-wrap; }\r\n.dt-fc .dt-row-actions { margin-left: 0; }\r\n@media (prefers-reduced-motion: reduce) {\r\n  .dt-bm *, .dt-bm-badge, .dt-fc, .dt-fc-dot { animation: none !important; transition: none !important; }\r\n}\r\n/* ★ 2026-11-05: live group-chat runs in the Workbench / Execution tabs; independent of Ticket/Step selectors. */\r\n.dt-group-runs { box-sizing: border-box; margin: 0 0 12px; display: flex; flex-direction: column; gap: 8px; }\r\n.dt-group-runs-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--dsw-alias-label-secondary); }\r\n.dt-group-runs-head b { font-weight: 600; color: var(--dsw-alias-label-primary); }\r\n.dt-group-runs-list { display: flex; flex-direction: column; gap: 8px; }\r\n.dt-group-runs-card { box-sizing: border-box; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; border-radius: 9px; border: 1px solid var(--dsw-alias-border-l3); background: var(--dsw-alias-bg-base); }\r\n.dt-group-runs-card[data-state='done'] { border-color: var(--dsw-alias-state-success-primary); }\r\n.dt-group-runs-card[data-state='error'] { border-color: var(--dsw-alias-state-error-primary); }\r\n.dt-group-runs-card[data-state='cut'] { border-color: var(--dsw-alias-state-warn-primary); border-style: dashed; }\r\n.dt-group-runs-note { margin: 0; font-size: 11px; color: var(--dsw-alias-label-tertiary); }\r\n.dt-group-runs-open { margin-left: auto; flex: none; font-size: 11px; }\r\n.dt-group-runs-source { color: var(--dsw-alias-label-secondary); }\r\n.dt-group-runs-title { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; }\r\n.dt-group-runs-title b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\r\n.dt-group-runs-status { color: var(--dsw-alias-label-tertiary); flex: none; }\r\n.dt-group-runs-dot { width: 7px; height: 7px; border-radius: 999px; flex: none; background: var(--dsw-alias-state-success-primary); }\r\n.dt-group-runs-dot[data-state='running'] { animation: dt-group-runs-live 1.6s ease-in-out infinite; }\r\n.dt-group-runs-dot[data-state='done'] { background: var(--dsw-alias-state-success-primary); }\r\n.dt-group-runs-dot[data-state='error'] { background: var(--dsw-alias-state-error-primary); }\r\n.dt-group-runs-dot[data-state='cut'] { background: var(--dsw-alias-state-warn-primary); }\r\n.dt-group-runs-meta { display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; color: var(--dsw-alias-label-tertiary); }\r\n.dt-group-runs-members { display: flex; flex-wrap: wrap; gap: 4px; }\r\n.dt-group-runs-member { border-radius: 999px; padding: 2px 7px; font-size: 10.5px; border: 1px solid var(--dsw-alias-border-l3); white-space: nowrap; }\r\n.dt-group-runs-member[data-state='failed'] { color: var(--dsw-alias-state-error-primary); border-color: var(--dsw-alias-state-error-primary); }\r\n.dt-group-runs-latest { font-size: 11px; color: var(--dsw-alias-label-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\r\n@keyframes dt-group-runs-live { 0%, 100% { opacity: 1 } 50% { opacity: 0.4 } }\r\n@media (prefers-reduced-motion: reduce) {\r\n  .dt-group-runs-dot { animation: none !important; }\r\n}\r\n";
+		var client_default = "/* Panel layout and local UI controls styled with DSH `--dsw-alias-*` design tokens; one rule per line. */\r\n/* VsSaros change: the page and the side panel with the Overview sit side by side (the side panel's look follows DSH's right sidebar). */\r\n.dt-shell { box-sizing: border-box; height: 100%; display: flex; position: relative; overflow: hidden; container-type: inline-size; container-name: dt-shell; }\r\n.dt-shell > .dt-page { flex: 1 1 auto; min-width: 0; }\r\n.dt-page { box-sizing: border-box; height: 100%; overflow: auto; scrollbar-gutter: stable; scroll-padding: 48px 0 72px; container-type: inline-size; padding: 28px clamp(24px, 4vw, 48px) 0; color: var(--dsw-alias-label-primary); }\r\n/* Deployment page rendered inside DSH Plugin Manager, which owns scrolling and padding. */\r\n.dt-embedded { container-type: inline-size; color: var(--dsw-alias-label-primary); }\r\n/* Disable sticky positioning inside DSH Plugin Manager, where the host container owns scrolling and bottom padding. */\r\n.dt-embedded .dt-savebar { position: static; }\r\n.dt-page > .dt-column { max-width: 1200px; margin: 0 auto; padding-bottom: 48px; display: flex; flex-direction: column; gap: 24px; }\r\n.dt-head { position: relative; z-index: 3; display: flex; align-items: flex-start; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; }\r\n.dt-search { position: relative; width: 240px; max-width: 100%; }\r\n.dt-search-results { position: absolute; top: calc(100% + 6px); right: 0; width: min(560px, 90cqw); max-height: 60vh; overflow: auto; padding: 8px 16px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: 12px; background: var(--dsw-alias-bg-layer-2); box-shadow: var(--dsw-elevation-prominent); z-index: 5; display: flex; flex-direction: column; gap: 8px; }\r\n.dt-mark { background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 25%, transparent); color: inherit; border-radius: 2px; }\r\n[data-platform='darwin'] .dt-page .dt-head { padding-top: var(--dsh-frame-top-clearance, 0px); }\r\n.dt-title { margin: 0; font-size: 15px; line-height: 22px; font-weight: 600; color: var(--dsw-alias-label-secondary); }\r\n.dt-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }\r\n.dt-page .dt-tabs { display: flex; flex-wrap: wrap; gap: 4px 20px; overflow: visible; max-width: none; padding: 0 0 6px; border-radius: 0; background: none; border-bottom: 0.5px solid var(--dsw-alias-border-l3); }\r\n.dt-segmented { width: 100%; max-width: 420px; box-sizing: border-box; display: inline-grid; height: auto; align-items: stretch; gap: 2px; padding: 3px; border-radius: 9px; background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-form.dt-block { padding: 16px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: 16px; gap: 16px; }\r\n.dt-block-title { display: flex; align-items: center; gap: 4px; margin: 0; font-size: 16px; line-height: 24px; font-weight: 500; }\r\n.dt-section { display: flex; flex-direction: column; gap: 8px; min-width: 0; }\r\n.dt-section-title { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: 13px; line-height: 20px; font-weight: 600; color: var(--dsw-alias-label-secondary); }\r\n.dt-section-name { white-space: nowrap; }\r\n.dt-count { font-size: 14px; color: var(--dsw-alias-label-caption); font-variant-numeric: tabular-nums; font-weight: 400; }\r\n.dt-hint { margin: 0; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-tertiary); }\r\n.dt-error { margin: 0; font-size: 13px; line-height: 20px; color: var(--dsw-alias-state-error-primary); }\r\n.dt-banner { margin: 0; padding: 8px 12px; border-radius: 10px; font-size: 13px; line-height: 20px; background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 10%, transparent); overflow-wrap: anywhere; }\r\n.dt-banner.dt-danger { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent); }\r\n.dt-list { list-style: none; margin: 0 -8px; padding: 0; display: flex; flex-direction: column; gap: 2px; }\r\n.dt-row { position: relative; min-width: 0; border-radius: 12px; padding: 10px 8px; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: flex-start; }\r\n.dt-row.dt-link:hover { background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-row-main { flex: 1 1 200px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }\r\n.dt-disclosure-body .dt-row-main { flex-basis: 0; }\r\n.dt-row-title { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 14px; line-height: 20px; font-weight: 500; }\r\n.dt-open { max-width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; font-size: 14px; line-height: 20px; font-weight: 500; text-align: left; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\r\n.dt-open::after { content: ''; position: absolute; inset: 0; border-radius: 12px; }\r\n.dt-open:focus-visible { outline: none; }\r\n.dt-open-wrap { white-space: normal; }\r\n.dt-open:focus-visible::after { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }\r\n.dt-row-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-caption); overflow-wrap: anywhere; }\r\n.dt-row-quote { font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\r\n.dt-clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }\r\n/* Transparent block borders preserve vertical spacing when line clamping clips padding. */\r\n.dt-banner:is(.dt-clamp, .dt-clamp-8) { padding-block: 0; border-block: 8px solid transparent; }\r\n.dt-banner-label { font-weight: 500; }\r\n.dt-banner .dt-md { display: inline; }\r\n.dt-banner .dt-md > p:first-child { display: inline; }\r\n.dt-row-buttons { position: relative; z-index: 1; gap: 8px; margin-top: 4px; }\r\n.dt-row-actions { position: relative; z-index: 1; display: flex; align-items: center; gap: 4px; flex: none; margin-left: auto; font-size: 13px; line-height: 20px; }\r\n.dt-dot { flex: none; margin-top: 5px; }\r\n.dt-inline-link { position: relative; z-index: 1; color: var(--dsw-alias-link); text-decoration: none; }\r\n.dt-inline-link:hover { text-decoration: underline; }\r\n.dt-textlink { padding: 0; border: 0; background: none; font: inherit; color: var(--dsw-alias-link); cursor: pointer; text-align: left; }\r\n.dt-textlink:hover { text-decoration: underline; }\r\n.dt-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; line-height: 20px; }\r\n.dt-kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; font-size: 13px; line-height: 20px; }\r\n.dt-kv dt { color: var(--dsw-alias-label-tertiary); }\r\n.dt-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }\r\n.dt-timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }\r\n.dt-event { padding: 12px 0; border-bottom: 0.5px solid var(--dsw-alias-border-l2); display: flex; flex-direction: column; gap: 6px; min-width: 0; }\r\n.dt-event:last-child { border-bottom: 0; }\r\n.dt-event.dt-highlight { background: var(--dsw-alias-interactive-bg-hover); border-radius: 8px; padding-inline: 8px; margin-inline: -8px; }\r\n.dt-event-text { margin: 0; font-size: 13px; line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }\r\n.dt-event-actor { font-weight: 500; color: var(--dsw-alias-label-secondary); }\r\n.dt-event-quiet .dt-event-text { color: var(--dsw-alias-label-tertiary); }\r\n.dt-flow { margin: 0; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary); }\r\n.dt-clamp-8 { display: -webkit-box; -webkit-line-clamp: 8; -webkit-box-orient: vertical; overflow: hidden; }\r\n.dt-more { align-self: flex-start; font-size: 12px; }\r\n.dt-reveal { opacity: 0; }\r\n.dt-event:hover .dt-reveal, .dt-reveal:focus-visible { opacity: 1; }\r\n@media (hover: none) {\r\n  .dt-reveal { opacity: 1; }\r\n}\r\n.dt-event-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }\r\n.dt-filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }\r\n.dt-filters .dt-search { margin-left: auto; }\r\n.dt-form { display: flex; flex-direction: column; gap: 24px; }\r\n.dt-fieldset { display: flex; flex-direction: column; gap: inherit; min-width: 0; margin: 0; padding: 0; border: 0; }\r\n.dt-field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; line-height: 20px; min-width: 0; }\r\n.dt-field small { color: var(--dsw-alias-label-caption); font-size: 12px; }\r\n.dt-textarea { box-sizing: border-box; width: 100%; min-width: 0; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: 10px; padding: 8px 12px; font: inherit; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-1, transparent); resize: vertical; }\r\n.dt-select { box-sizing: border-box; width: 100%; min-width: 0; height: 32px; border: 0.5px solid var(--dsw-alias-border-l4); border-radius: 8px; padding: 0 28px 0 8px; text-overflow: ellipsis; font: inherit; font-size: 14px; line-height: 22px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-1, transparent); }\r\n.dt-textarea:focus-visible, .dt-select:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }\r\n.dt-mono { font-family: var(--ds-font-family-code, Menlo, monospace); font-size: 12px; overflow-wrap: anywhere; }\r\n.dt-detail { margin-top: 2px; color: var(--dsw-alias-label-secondary); }\r\n.dt-savebar .dt-error { white-space: pre-line; }\r\n.dt-switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 36px; font-size: 13px; }\r\n.dt-subhead-actions { display: inline-flex; align-items: center; gap: 4px; }\r\n.dt-btn-busy .dt-btn-icon svg { animation: dt-spin 1s linear infinite; }\r\n.dt-subhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary); }\r\n.dt-rules, .dt-changes { list-style: none; margin: 0; padding: 0; }\r\n.dt-field-head { display: inline-flex; align-items: center; gap: 4px; color: var(--dsw-alias-label-secondary); }\r\n.dt-info { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; padding: 0; border: 0; background: none; color: var(--dsw-alias-label-caption); cursor: help; }\r\n.dt-info:hover, .dt-info:focus-visible { color: var(--dsw-alias-label-secondary); }\r\n.dt-info:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; border-radius: 50%; }\r\n.dt-tooltip { position: fixed; z-index: 1100; width: max-content; max-width: min(320px, calc(100vw - 24px)); padding: 3px 7px; border-radius: 8px; background: var(--dsw-alias-tooltip-bg); color: var(--dsw-static-neutral-bluish-00); font-size: 13px; line-height: 20px; overflow-wrap: break-word; pointer-events: none; animation: dt-tooltip-in 150ms ease-in-out; }\r\n@keyframes dt-tooltip-in { from { opacity: 0; } }\r\n.dt-rules { border-top: 0.5px solid var(--dsw-alias-border-l2); }\r\n.dt-rule { display: flex; align-items: flex-start; gap: 12px; padding: 6px 0; border-bottom: 0.5px solid var(--dsw-alias-border-l2); }\r\n.dt-rule > :first-child { flex: 1; min-width: 0; }\r\n.dt-rule-preview { flex: 1; min-width: 0; margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--dsw-alias-label-caption); }\r\n.dt-rule-switch { margin-top: 2px; flex: none; }\r\n.dt-rule-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--dsw-alias-label-caption); }\r\n.dt-rule-dot[data-enabled] { background: var(--dsw-alias-brand-primary); }\r\n.dt-rule-body { display: flex; flex-direction: column; gap: 12px; padding: 8px 0 8px 28px; }\r\n.dt-model { display: flex; flex-direction: column; gap: 6px; }\r\n.dt-grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }\r\n.dt-changes { display: flex; flex-direction: column; gap: 2px; font-size: 13px; line-height: 20px; }\r\n.dt-changes li::before { content: '· '; color: var(--dsw-alias-label-caption); }\r\n.dt-main { display: flex; flex-direction: column; gap: 24px; min-width: 0; }\r\n.dt-modal.dt-glossary-modal { width: min(680px, 100%); }\r\n.dt-nav-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-height: 32px; padding: 6px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 13px; line-height: 20px; text-align: left; cursor: pointer; }\r\n.dt-nav-item:hover { background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-nav-item[aria-current='true'] { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); font-weight: 500; }\r\n.dt-nav-item:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }\r\n.dt-changed-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--dsw-alias-brand-primary); flex: none; }\r\n.dt-add-skill { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 0.5px solid var(--dsw-alias-border-l2); }\r\n.dt-prompt-main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }\r\n.dt-editor { min-height: 360px; }\r\n.dt-inline-select { width: auto; }\r\n.dt-preview-part { display: flex; flex-direction: column; gap: 6px; padding: 2px 0 2px 12px; border-left: 2px solid var(--dsw-alias-border-l3); }\r\n.dt-preview-head { font-size: 13px; line-height: 20px; display: flex; align-items: baseline; gap: 8px; }\r\ndiv.dt-preview-head { color: var(--dsw-alias-label-secondary); }\r\n.dt-card { display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: 16px; min-width: 0; }\r\n.dt-card-head { display: flex; align-items: center; gap: 12px; min-height: 28px; }\r\n.dt-card-head .dt-row-main { flex: 1 1 0; min-width: 64px; }\r\n.dt-card-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\r\n.dt-row-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; }\r\n.dt-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }\r\n.dt-rows-item { display: flex; flex-direction: column; min-width: 0; gap: 10px; padding: 10px 12px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: 12px; background: var(--dsw-alias-bg-layer-2); }\r\n.dt-rows-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }\r\n.dt-rows-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 20px; font-weight: 600; color: var(--dsw-alias-label-primary); }\r\n.dt-rows-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 8px 12px; min-width: 0; }\r\n.dt-rows-cell { display: flex; flex-direction: column; min-width: 0; gap: 4px; }\r\n.dt-rows-cell-label { font-size: 12px; line-height: 16px; color: var(--dsw-alias-label-tertiary); }\r\n.dt-rows-cell .dt-row-label { white-space: normal; overflow-wrap: anywhere; }\r\n.dt-filter-gap { flex: 1; }\r\n.dt-page-head { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }\r\n.dt-page-head > .dt-btn { margin-left: -10px; }\r\n.dt-page-title { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; width: 100%; }\r\n.dt-page-title h2 { margin: 0; flex: 1 1 auto; min-width: 0; font-size: 20px; line-height: 28px; font-weight: 500; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }\r\n.dt-status-line { margin-top: -16px; }\r\n.dt-plain-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; line-height: 20px; }\r\n.dt-details { display: flex; flex-direction: column; gap: 2px; border-top: 0.5px solid var(--dsw-alias-border-l2); padding-top: 8px; }\r\n.dt-danger-zone { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-top: 16px; border-top: 0.5px solid var(--dsw-alias-border-l2); }\r\n.dt-danger-zone .dt-btn { color: var(--dsw-alias-state-error-primary); }\r\n.dt-md { display: flex; flex-direction: column; gap: 6px; font-size: 13px; line-height: 20px; overflow-wrap: anywhere; }\r\n.dt-md p, .dt-md ul, .dt-md ol { margin: 0; }\r\n.dt-md ul, .dt-md ol { padding-left: 20px; display: flex; flex-direction: column; gap: 2px; }\r\n.dt-md-heading { font-weight: 500; }\r\n.dt-code { font-family: var(--ds-font-family-code, Menlo, monospace); font-size: 12px; padding: 0 4px; border-radius: 4px; background: var(--dsw-alias-bg-module-platform); }\r\n.dt-dot-wrap { display: inline-flex; flex: none; }\r\n.dt-search-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }\r\n.dt-ellipsis { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 280px; }\r\n.dt-legend-title { margin: 16px 0 6px; font-size: 13px; color: var(--dsw-alias-label-tertiary); }\r\n.dt-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; }\r\n.dt-legend li { display: flex; align-items: center; gap: 6px; }\r\n.dt-legend .dt-dot { margin-top: 0; }\r\n.dt-savebar { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; padding: 12px 0; background: var(--dsw-alias-bg-base, var(--dsw-alias-bg-layer-1)); border-top: 0.5px solid var(--dsw-alias-border-l2); }\r\n.dt-savebar .dt-hint { margin-right: auto; }\r\n.dt-card > .dt-savebar, .dt-block > .dt-savebar { margin: 0 -16px -16px; padding: 12px 16px; border-radius: 0 0 16px 16px; }\r\n.dt-glossary { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 20px; }\r\n.dt-glossary th, .dt-glossary td { text-align: left; padding: 6px 8px; border-bottom: 0.5px solid var(--dsw-alias-border-l2); vertical-align: top; }\r\n.dt-glossary th { color: var(--dsw-alias-label-tertiary); font-weight: 400; }\r\n.dt-glossary th.dt-glossary-group { color: var(--dsw-alias-label-secondary); font-weight: 600; padding-top: 14px; }\r\n.dt-glossary th:nth-child(-n+2), .dt-glossary td:nth-child(-n+2) { white-space: nowrap; }\r\n.dt-values { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 16px 0 0; font-size: 13px; }\r\n.dt-values dt { color: var(--dsw-alias-label-tertiary); }\r\n.dt-values dd { margin: 0; }\r\n.dt-pre { margin: 0; padding: 12px; border-radius: 10px; background: var(--dsw-alias-bg-module-platform); font-family: var(--ds-font-family-code, Menlo, monospace); font-size: 12px; line-height: 18px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 480px; overflow: auto; }\r\n.dt-pre ins { background: color-mix(in srgb, var(--dsw-alias-state-success-primary, green) 18%, transparent); text-decoration: none; }\r\n.dt-pre del { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 18%, transparent); text-decoration: none; }\r\n.dt-prompt { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 20px; align-items: start; }\r\n.dt-prompt-nav { display: flex; flex-direction: column; gap: 2px; }\r\n.dt-prompt-nav button { justify-content: flex-start; }\r\n.dt-disclosure-body { padding: 8px 0 8px 28px; display: flex; flex-direction: column; gap: 8px; }\r\n@container (max-width: 640px) {\r\n  .dt-tab { padding: 0 8px; font-size: 13px; }\r\n  .dt-segment { padding: 4px 10px; }\r\n  .dt-head { align-items: center; }\r\n  .dt-search-results { right: auto; left: 0; width: 100%; }\r\n  .dt-page-title h2 { font-size: 17px; line-height: 24px; }\r\n  .dt-status-line { margin-top: -12px; }\r\n  .dt-page .dt-tabs { display: flex; flex-wrap: wrap; gap: 4px 10px; overflow: visible; scrollbar-width: auto; mask-image: none; }\r\n  .dt-page .dt-tabs .dt-tab { flex: none; height: 32px; padding: 0 6px; font-size: 13px; }\r\n  .dt-kv { grid-template-columns: 1fr; gap: 2px; }\r\n  .dt-grid3, .dt-prompt { grid-template-columns: 1fr; }\r\n  .dt-search { width: 100%; }\r\n  .dt-filters .dt-search { margin-left: 0; }\r\n}\r\n/* Local UI primitive styles (see controls.tsx). */\r\n.dt-btn { display: inline-flex; align-items: center; justify-content: center; gap: 4px; border: none; border-radius: 18px; cursor: pointer; font: inherit; font-size: 14px; line-height: 22px; color: var(--dsw-alias-label-primary); background: transparent; padding: 0 14px; white-space: nowrap; }\r\n.dt-btn:disabled { cursor: not-allowed; opacity: 0.4; }\r\n.dt-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }\r\n.dt-btn-md { height: 36px; }\r\n.dt-btn-sm { height: 28px; font-size: 12px; line-height: 18px; padding: 0 10px; border-radius: 14px; }\r\n.dt-btn-primary { background: var(--dsw-alias-button-primary-fill); color: var(--dsw-alias-label-primary-foreground); }\r\n.dt-btn-primary:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover); }\r\n.dt-btn-ghost:hover:not(:disabled), .dt-btn-outline:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-btn-ghost:active:not(:disabled) { background: var(--dsw-alias-interactive-bg-active); }\r\n.dt-btn-outline { border: 0.5px solid var(--dsw-alias-border-l3); }\r\n.dt-btn-icon { display: inline-flex; width: 16px; height: 16px; align-items: center; justify-content: center; }\r\n.dt-tag { display: inline-flex; align-items: center; border-radius: 999px; padding: 1px 8px; font-size: 11px; line-height: 17px; font-weight: 500; white-space: nowrap; }\r\n.dt-tag[data-tone='outline'] { border: 0.5px solid var(--dsw-alias-border-l4); color: var(--dsw-alias-label-tertiary); }\r\n.dt-tag[data-tone='neutral'] { background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-secondary); }\r\n.dt-tag[data-tone='quiet'] { color: var(--dsw-alias-label-tertiary); }\r\n.dt-tag[data-tone='success'] { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent); color: var(--dsw-alias-state-success-primary); }\r\n.dt-tag[data-tone='info'] { background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent); color: var(--dsw-alias-state-business-primary); }\r\n.dt-tag[data-tone='warning'] { background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 12%, transparent); color: var(--dsw-alias-state-warn-primary); }\r\n.dt-tag[data-tone='danger'] { background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent); color: var(--dsw-alias-state-error-primary); }\r\n.dt-pill { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border: none; border-radius: 12px; font: inherit; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-2); cursor: pointer; }\r\n.dt-pill:hover { background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-pill-active, .dt-pill-active:hover { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-button-ghost-active-fill); box-shadow: inset 0 0 0 1px var(--dsw-alias-button-ghost-active-border); }\r\n.dt-tabs { display: grid; padding: 4px; border-radius: 12px; background: var(--dsw-alias-bg-module-platform); }\r\n.dt-tab { box-sizing: border-box; height: 34px; padding: 0 12px; border: 0.5px solid transparent; border-radius: 8px; background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 14px; line-height: 20px; white-space: nowrap; cursor: pointer; transition: color 180ms ease, background 180ms ease; }\r\n.dt-tab:hover { color: var(--dsw-alias-label-primary); }\r\n.dt-tab[aria-selected='true'] { color: var(--dsw-alias-label-primary); font-weight: 600; background: var(--dsw-alias-bg-layer-3); border-color: var(--dsw-alias-border-l3); }\r\n.dt-tab:focus-visible { outline: none; text-decoration: underline; text-underline-offset: 4px; }\r\n.dt-segment { height: auto; min-height: 28px; display: flex; align-items: center; justify-content: center; text-align: center; white-space: normal; overflow-wrap: anywhere; padding: 4px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 13px; line-height: 20px; font-weight: 500; cursor: pointer; transition: color 120ms ease, background 160ms ease; }\r\n.dt-segment:hover:not(:disabled), .dt-segment[aria-selected='true'] { color: var(--dsw-alias-label-primary); }\r\n.dt-segment[aria-selected='true'] { background: var(--dsw-alias-bg-layer-1); box-shadow: var(--dsw-elevation-soft); }\r\n.dt-segment:disabled { cursor: default; opacity: 0.4; }\r\n.dt-segment:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }\r\n.dt-input { box-sizing: border-box; display: inline-flex; align-items: center; gap: 6px; height: 32px; min-width: 0; padding: 0 8px; border: 0.5px solid var(--dsw-alias-border-l4); border-radius: 8px; background: var(--dsw-alias-bg-layer-1); }\r\n.dt-input:focus-within { border-color: var(--dsw-alias-brand-primary); }\r\n.dt-input-icon { display: inline-flex; width: 16px; height: 16px; align-items: center; justify-content: center; color: var(--dsw-alias-label-tertiary); }\r\n.dt-input input { flex: 1; min-width: 0; border: none; outline: none; background: transparent; font: inherit; font-size: 14px; line-height: 22px; color: var(--dsw-alias-label-primary); }\r\n.dt-input input::placeholder { color: var(--dsw-alias-label-dimmed); }\r\n.dt-input input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }\r\n.dt-field .dt-input, .dt-search .dt-input, .dt-add-skill .dt-input { display: flex; width: 100%; }\r\n.dt-cli-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }\r\n.dt-field .dt-cli-row .dt-input { flex: 1 1 auto; width: auto; }\r\n.dt-cli-actions { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; }\r\n.dt-switch { box-sizing: border-box; flex: 0 0 auto; width: 36px; height: 20px; padding: 2px; border: 0; border-radius: 10px; background: var(--dsw-alias-border-l3); cursor: pointer; }\r\n.dt-switch[aria-checked='true'] { background: var(--dsw-alias-brand-primary); }\r\n.dt-switch:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }\r\n.dt-switch-thumb { display: block; width: 16px; height: 16px; border-radius: 50%; background: var(--dsw-alias-label-primary-foreground); transition: transform 120ms ease; }\r\n.dt-switch[aria-checked='true'] .dt-switch-thumb { transform: translateX(16px); }\r\n.dt-state-dot { position: relative; display: inline-block; flex: none; width: 10px; height: 10px; color: var(--dsw-alias-state-idle-primary); }\r\n.dt-state-dot::after { content: ''; position: absolute; inset: 20%; border-radius: 50%; background: currentColor; }\r\n.dt-state-dot[data-state='done'] { color: var(--dsw-alias-state-success-primary); }\r\n.dt-state-dot[data-state='warning'] { color: var(--dsw-alias-state-warn-primary); }\r\n.dt-state-dot[data-state='error'] { color: var(--dsw-alias-state-error-primary); }\r\n.dt-spinner { flex: none; color: var(--dsw-alias-label-tertiary); }\r\n.dt-spinner g { transform-origin: center; animation: dt-spin 1.5s linear infinite; }\r\n.dt-spinner circle { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }\r\n.dt-spinner circle:first-child { opacity: 0.25; }\r\n.dt-spinner circle:last-child { stroke-dasharray: 18 150; }\r\n@keyframes dt-spin { to { transform: rotate(360deg); } }\r\n.dt-disclosure-row { display: flex; align-items: center; gap: 4px; min-height: 28px; min-width: 0; border-radius: 8px; cursor: pointer; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary); }\r\n.dt-disclosure-row:hover { color: var(--dsw-alias-label-primary); }\r\n.dt-disclosure-row:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }\r\n.dt-disclosure-lead { position: relative; display: inline-flex; flex: none; width: 24px; height: 24px; align-items: center; justify-content: center; }\r\n.dt-disclosure-icon { display: inline-flex; align-items: center; justify-content: center; }\r\n.dt-disclosure-chevron { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; }\r\n.dt-disclosure-row:hover .dt-disclosure-icon, .dt-disclosure[data-open] .dt-disclosure-icon { visibility: hidden; }\r\n.dt-disclosure-row:hover .dt-disclosure-chevron, .dt-disclosure[data-open] .dt-disclosure-chevron { display: inline-flex; }\r\n.dt-disclosure-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\r\n.dt-modal-root { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; padding: max(24px, var(--dsh-frame-top-clearance, 24px)) 24px; }\r\n.dt-modal-mask { position: absolute; inset: 0; background: var(--dsw-alias-bg-mask-1); backdrop-filter: var(--dsw-mask-blur); }\r\n.dt-modal { position: relative; z-index: 1; display: flex; flex-direction: column; gap: 20px; width: min(380px, 100%); max-height: 100%; padding: 0 0 24px; overflow: hidden; border-radius: 24px; background: var(--dsw-alias-bg-layer-2); box-shadow: var(--dsw-elevation-prominent); color: var(--dsw-alias-label-primary); outline: none; }\r\n.dt-modal-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 22px 14px 0 24px; }\r\n.dt-modal-header h2 { margin: 0; font-size: 16px; line-height: 24px; font-weight: 500; }\r\n.dt-modal-close { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: none; border-radius: 8px; background: transparent; cursor: pointer; color: var(--dsw-alias-label-secondary); }\r\n.dt-modal-close:hover { background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-modal-description { margin: -8px 0 0; padding: 0 24px; font-size: 14px; line-height: 22px; }\r\n.dt-modal-body { min-width: 0; min-height: 0; overflow: auto; padding: 0 24px; }\r\n.dt-modal-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 0 24px; }\r\n.dt-toast { position: fixed; top: 40px; left: 50%; z-index: 1100; pointer-events: none; width: max-content; max-width: min(640px, calc(100vw - 48px)); padding: 12px 16px; border-radius: 14px; background: var(--dsw-alias-toast-bg); color: var(--dsw-static-neutral-bluish-00); font-size: 14px; line-height: 22px; box-shadow: var(--dsw-shadow-lv3); transform: translateX(-50%); animation: dt-toast-in 160ms ease-out, dt-toast-fade 1000ms ease var(--dt-toast-hold, 3000ms) forwards; }\r\n@keyframes dt-toast-in { from { opacity: 0; transform: translate(-50%, -6px); } to { opacity: 1; transform: translate(-50%, 0); } }\r\n@keyframes dt-toast-fade { to { opacity: 0; visibility: hidden; } }\r\n@media (prefers-reduced-motion: reduce) {\r\n  .dt-tab, .dt-segment, .dt-switch-thumb, .dt-spinner g, .dt-btn-busy .dt-btn-icon svg, .dt-tooltip { transition: none; animation: none; }\r\n  .dt-toast { animation: dt-toast-fade 1000ms ease var(--dt-toast-hold, 3000ms) forwards; }\r\n}\r\n.dt-page .dt-tab { height: 34px; padding: 0 2px; border: 0; border-radius: 0; color: var(--dsw-alias-label-tertiary); font-size: 14px; }\r\n.dt-page .dt-tab[aria-selected='true'] { background: none; color: var(--dsw-alias-label-primary); font-weight: 500; box-shadow: inset 0 -1.5px 0 var(--dsw-alias-label-primary); }\r\n.dt-status-head { display: flex; align-items: center; gap: 8px; }\r\n.dt-status-title { margin: 0; flex: 1; display: flex; align-items: center; gap: 4px; font-size: 15px; line-height: 22px; font-weight: 600; }\r\n.dt-status-text { margin-left: auto; flex: none; font-size: 12px; font-weight: 400; color: var(--dsw-alias-label-secondary); }\r\n.dt-status-line .dt-status-text { margin-left: 0; }\r\n.dt-status-text[data-state='warning'] { color: var(--dsw-alias-state-warn-primary); }\r\n.dt-status-text[data-state='error'] { color: var(--dsw-alias-state-error-primary); }\r\n.dt-row-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }\r\n.dt-lv { white-space: nowrap; }\r\n.dt-lv-label { color: var(--dsw-alias-label-caption); }\r\n.dt-lv-value { color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }\r\n.dt-chip { display: inline-flex; flex-wrap: wrap; max-width: 100%; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: 6px; overflow: hidden; font-size: 11px; line-height: 18px; color: var(--dsw-alias-label-secondary); }\r\n.dt-chip-source { padding: 0 6px; color: var(--dsw-alias-label-tertiary); background: var(--dsw-alias-bg-module-platform); }\r\n.dt-chip-fact { padding: 0 6px; border-left: 0.5px solid var(--dsw-alias-border-l3); white-space: nowrap; }\r\n.dt-chip-label { margin-right: 4px; color: var(--dsw-alias-label-caption); }\r\n.dt-chip-link { position: relative; z-index: 1; text-decoration: none; cursor: pointer; transition: border-color 120ms ease; }\r\n.dt-chip-link:hover { border-color: var(--dsw-alias-brand-primary); }\r\n.dt-chip-link:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }\r\n.dt-chip-open { display: inline-flex; align-items: center; padding: 0 5px; border-left: 0.5px solid var(--dsw-alias-border-l3); color: var(--dsw-alias-brand-primary); }\r\n.dt-chip-problem, .dt-chip-problem .dt-chip-label { color: var(--dsw-alias-state-error-primary); }\r\n.dt-cards { gap: 8px; }\r\n.dt-att .dt-inline-link { font-size: 13px; font-weight: 500; }\r\n.dt-list > .dt-att { margin: 2px 8px; }\r\n.dt-att { padding: 10px 12px 10px 16px; border: 0; border-radius: 0; border-bottom: 0.5px solid var(--dsw-alias-border-l3); }\r\n.dt-att::before { content: ''; position: absolute; left: 6px; top: 10px; bottom: 10px; width: 2px; border-radius: 1px; background: var(--dsw-alias-state-warn-primary); opacity: 0.7; }\r\n.dt-att-error::before { background: var(--dsw-alias-state-error-primary); }\r\n.dt-att-what { font-size: 12px; line-height: 18px; font-weight: 500; color: var(--dsw-alias-state-warn-primary); }\r\n.dt-att-error .dt-att-what, .dt-att-error .dt-att-what .dt-open { color: var(--dsw-alias-state-error-primary); }\r\n.dt-stats { display: flex; flex-wrap: wrap; gap: 6px 20px; }\r\n.dt-stat { display: inline-flex; align-items: baseline; gap: 6px; font-size: 12px; color: var(--dsw-alias-label-caption); }\r\n.dt-stat-value { font-size: 14px; font-weight: 500; color: var(--dsw-alias-label-primary); font-variant-numeric: tabular-nums; }\r\n.dt-more-link { font-size: 12px; font-weight: 400; }\r\n.dt-settings { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }\r\n.dt-settings-nav { position: sticky; top: 0; z-index: 1; display: flex; flex-direction: row; flex-wrap: wrap; gap: 2px; padding: 4px 0; background: var(--dsw-alias-bg-base, var(--dsw-alias-bg-layer-1)); }\r\n.dt-settings-link { padding: 6px 10px; border: 0; border-radius: 8px; background: none; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 14px; text-align: left; cursor: pointer; }\r\n.dt-settings-link:hover { color: var(--dsw-alias-label-primary); }\r\n.dt-settings-link[aria-current='page'] { background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-primary); font-weight: 500; }\r\n.dt-settings-link[data-stage] + .dt-settings-link:not([data-stage]) { margin-left: 10px; }\r\n.dt-settings-body { display: flex; flex-direction: column; gap: 16px; min-width: 0; }\r\n.dt-settings-title { margin: 0; font-size: 15px; line-height: 22px; font-weight: 600; }\r\n.dt-subtabs { display: flex; gap: 16px; border-bottom: 0.5px solid var(--dsw-alias-border-l3); }\r\n.dt-subtab { padding: 0 0 6px; border: 0; background: none; color: var(--dsw-alias-label-tertiary); font: inherit; font-size: 13px; cursor: pointer; }\r\n.dt-subtab[aria-selected='true'] { color: var(--dsw-alias-label-primary); font-weight: 500; box-shadow: inset 0 -1.5px 0 var(--dsw-alias-label-primary); }\r\n.dt-part { display: flex; flex-direction: column; gap: 12px; }\r\n.dt-rows-summary { text-align: left; color: var(--dsw-alias-label-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }\r\n.dt-table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 18px; }\r\n.dt-table th { text-align: left; font-weight: 400; color: var(--dsw-alias-label-caption); padding: 2px 8px 2px 0; }\r\n.dt-table td { padding: 4px 8px 4px 0; border-top: 0.5px solid var(--dsw-alias-border-l3); vertical-align: top; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }\r\n@container (max-width: 640px) {\r\n  .dt-settings { grid-template-columns: 1fr; gap: 12px; }\r\n  .dt-settings-nav { position: static; flex-direction: row; flex-wrap: wrap; }\r\n  .dt-settings-link[data-stage] + .dt-settings-link:not([data-stage]) { margin-left: 0; }\r\n  .dt-page .dt-tabs { gap: 14px; }\r\n}\r\n.dt-list > .dt-ticket { display: grid; grid-template-columns: 112px minmax(0, 1fr); column-gap: 12px; align-items: start; margin: 0; padding: 12px 8px 12px 18px; border-radius: 0; border-bottom: 0.5px solid var(--dsw-alias-border-l3); }\r\n.dt-list > .dt-ticket[data-state]::before { content: ''; position: absolute; left: 6px; top: 12px; bottom: 12px; width: 2px; border-radius: 1px; background: var(--dsw-alias-state-warn-primary); opacity: 0.7; }\r\n.dt-list > .dt-ticket[data-state='error']::before { background: var(--dsw-alias-state-error-primary); }\r\n.dt-ticket-stage { align-self: stretch; padding-top: 1px; border-right: 0.5px solid var(--dsw-alias-border-l3); }\r\n.dt-ticket-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }\r\n.dt-ticket-body .dt-row-title .dt-open { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\r\n.dt-ticket-meta { flex-wrap: nowrap; overflow: hidden; white-space: nowrap; }\r\n.dt-ticket-meta .dt-chip { flex: none; }\r\n.dt-ticket-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--dsw-alias-label-primary); }\r\n.dt-ticket-note-error { color: var(--dsw-alias-state-error-primary); }\r\n.dt-ticket-actions { position: relative; z-index: 1; display: flex; flex-wrap: wrap; gap: 8px; min-height: 30px; margin-top: 2px; }\r\n/* Pass pointer events through action containers to the row link, keeping only child controls interactive. */\r\n.dt-ticket-actions, .dt-row-buttons, .dt-row-actions { pointer-events: none; }\r\n.dt-ticket-actions > *, .dt-row-buttons > *, .dt-row-actions > * { pointer-events: auto; }\r\n.dt-line { min-height: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\r\n.dt-row-meta.dt-line { flex-wrap: nowrap; }\r\n.dt-line-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\r\n.dt-error-text { color: var(--dsw-alias-state-error-primary); }\r\n.dt-stage { display: inline-flex; align-items: flex-start; gap: 5px; font-size: 12px; line-height: 18px; font-weight: 500; color: var(--dsw-alias-label-secondary); }\r\n.dt-stage svg { flex: none; margin-top: 2px; }\r\n.dt-stage[data-state='warning'] { color: var(--dsw-alias-state-warn-primary); }\r\n.dt-stage[data-state='error'] { color: var(--dsw-alias-state-error-primary); }\r\n.dt-stage[data-state='ongoing'] { color: var(--dsw-alias-state-business-primary); }\r\n.dt-icon-link { display: inline-flex; align-items: center; gap: 4px; }\r\na.dt-btn, a.dt-btn:hover { text-decoration: none; }\r\n.dt-section-icon { display: inline-flex; align-self: center; color: var(--dsw-alias-label-tertiary); }\r\n.dt-trigger-link { display: flex; flex-direction: column; gap: 2px; width: 100%; margin: -4px 0 -4px -8px; padding: 4px 8px; border: 0; border-radius: 8px; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }\r\n.dt-trigger-link:hover { background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-trigger-link:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }\r\n.dt-trigger-text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }\r\n.dt-kv-stack { display: flex; flex-direction: column; gap: 2px; min-width: 0; }\r\n.dt-banner-actions { margin-top: 6px; }\r\n@container (max-width: 640px) {\r\n  .dt-list > .dt-ticket { grid-template-columns: 1fr; row-gap: 4px; }\r\n  .dt-ticket-stage { border-right: 0; }\r\n}\r\n.dt-nav-group { margin: 10px 10px 2px; font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-secondary); }\r\n.dt-nav-group:first-child { margin-top: 0; }\r\n.dt-prompt-nav .dt-nav-item { flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; }\r\n.dt-nav-item > span { display: inline-flex; align-items: center; gap: 6px; }\r\n.dt-nav-item small { font-size: 12px; line-height: 18px; font-weight: 400; color: var(--dsw-alias-label-caption); }\r\n.dt-preview-part[data-editable] { border-left-color: var(--dsw-alias-brand-primary); }\r\n.dt-preview-head b { font-weight: 500; }\r\n.dt-preview-head > span { font-size: 12px; color: var(--dsw-alias-label-caption); }\r\n.dt-changed-tag { margin-left: 6px; padding: 0 5px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: 4px; font-size: 11px; line-height: 16px; font-weight: 400; color: var(--dsw-alias-label-secondary); }\r\n.dt-updated-tag { border-color: var(--dsw-alias-state-warn-primary); color: var(--dsw-alias-state-warn-primary); }\r\n.dt-default-updated { display: flex; flex-direction: column; gap: 6px; padding: 2px 0 2px 12px; border-left: 2px solid var(--dsw-alias-state-warn-primary); }\r\n.dt-diff-fold { color: var(--dsw-alias-label-caption); font-style: italic; }\r\n.dt-compare { margin-left: auto; }\r\n.dt-admission th { white-space: nowrap; }\r\n.dt-admission thead tr:first-child th:not(:first-child) { color: var(--dsw-alias-label-secondary); font-weight: 500; }\r\n.dt-admission td { vertical-align: middle; }\r\n.dt-admission-scope { color: var(--dsw-alias-label-primary); font-size: 13px; }\r\n.dt-admission-scope small { display: block; font-size: 11px; color: var(--dsw-alias-label-caption); }\r\n.dt-admission-na { color: var(--dsw-alias-label-caption); }\r\n.dt-admission-cell { display: flex; align-items: center; gap: 4px; }\r\n.dt-admission-cell .dt-select { flex: 1; min-width: 0; }\r\n.dt-admission-slot { display: inline-flex; flex: none; width: 16px; }\r\n.dt-info-warn { color: var(--dsw-alias-state-warn-primary); }\r\n.dt-field-segmented { max-width: 240px; }\r\n/* VsSaros addition: changelist reviews. */\r\n.dt-review-desc { margin: 0; white-space: pre-wrap; font-family: var(--ds-font-family-code, Menlo, monospace); font-size: 12px; }\r\n.dt-review-files { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }\r\n.dt-review-ack { display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 13px; }\r\n.dt-diff { margin: 0; max-height: 480px; overflow: auto; padding: 8px; border-radius: 8px; background: var(--dsw-alias-bg-module-platform); font-family: var(--ds-font-family-code, Menlo, monospace); font-size: 12px; line-height: 18px; }\r\n.dt-diff-add { color: var(--dsw-alias-state-success-primary, #2da44e); }\r\n.dt-diff-del { color: var(--dsw-alias-state-error-primary, #cf222e); }\r\n.dt-diff-hunk { color: var(--dsw-alias-label-caption); }\r\n/* VsSaros addition: the panel as a whole-page workbench in the middle column. */\r\n.dt-workbench { box-sizing: border-box; height: 100%; min-height: 0; display: flex; flex-direction: column; }\r\n.dt-workbench > .dt-page { flex: 1 1 auto; min-height: 0; }\r\n.dt-workbench > .dt-shell { flex: 1 1 auto; min-height: 0; height: auto; }\r\n/* VsSaros addition: the side panel with the Overview, resized from its left edge. */\r\n.dt-side { box-sizing: border-box; position: relative; flex: none; width: var(--dt-side-width, 400px); height: 100%; display: flex; flex-direction: column; background: var(--dsw-alias-bg-base); border-left: 0.5px solid var(--dsw-alias-border-l4); color: var(--dsw-alias-label-primary); }\r\n.dt-side-grip { position: absolute; top: 0; bottom: 0; left: -4px; width: 8px; z-index: 2; cursor: col-resize; touch-action: none; }\r\n.dt-side-grip::after { content: ''; position: absolute; top: 0; bottom: 0; left: 3.5px; width: 1px; opacity: 0; background: linear-gradient(transparent, var(--dsw-alias-label-caption), transparent); transition: opacity 160ms ease; }\r\n.dt-side-grip:hover::after, .dt-side-grip:focus-visible::after, .dt-side[data-dragging] .dt-side-grip::after { opacity: 1; }\r\n.dt-side-grip:focus-visible { outline: none; }\r\n.dt-side-strip { flex: none; display: flex; align-items: center; gap: 4px; padding: 10px 6px 0 10px; }\r\n.dt-side-tab { height: 28px; min-width: 80px; max-width: 170px; box-sizing: border-box; padding: 0 10px; border-radius: 8px; display: inline-flex; align-items: center; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-markdown-tag, var(--dsw-alias-bg-module-platform)); }\r\n.dt-side-tools { margin-left: auto; display: flex; align-items: center; gap: 4px; }\r\n.dt-side-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 16px 18px 40px; display: flex; flex-direction: column; gap: 20px; }\r\n.dt-side-body .dt-row-actions { margin-left: 0; }\r\n/* Below this width the page keeps its room and the side panel floats over it. */\r\n@container dt-shell (max-width: 900px) {\r\n  .dt-side { position: absolute; top: 0; right: 0; bottom: 0; z-index: 6; max-width: calc(100% - 48px); border-left: 0; border-radius: 16px 0 0 16px; box-shadow: var(--dsw-elevation-prominent); }\r\n}\r\n/* VsSaros addition: the Chat tab, the supervisor desk; bubbles and composer follow DSH's chat. */\r\n.dt-chat { flex: 1 1 auto; display: flex; flex-direction: column; }\r\n/* The Chat tab fills the page's height, so its composer sits at the bottom also while the conversation is short. */\r\n.dt-page:has(.dt-chat) > .dt-column { box-sizing: border-box; min-height: 100%; padding-bottom: 0; }\r\n.dt-page:has(.dt-chat) .dt-main { flex: 1 1 auto; }\r\n.dt-chat-log { flex: 1 1 auto; display: flex; flex-direction: column; gap: 6px; padding: 4px 0 16px; }\r\n.dt-msg { display: flex; min-width: 0; }\r\n.dt-msg-person { flex-direction: column; align-items: flex-end; gap: 4px; margin: 6px 0; }\r\n.dt-msg-bubble { max-width: min(620px, 82%); box-sizing: border-box; padding: 10px 16px; border-radius: 20px; background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent); font-size: 14px; line-height: 22px; white-space: pre-wrap; overflow-wrap: anywhere; }\r\n.dt-msg-meta { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 10px; padding: 0 6px; font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-caption); }\r\n.dt-msg-filtered { color: var(--dsw-alias-state-warn-primary); }\r\n/* ★ 2026-11-05: optimistic user bubbles / submissions still on their way, after DS Bot's chat flow. */\r\n.dt-msg-local { opacity: 0.88; }\r\n.dt-msg-local[data-placement='queued'] .dt-msg-bubble { border: 1px dashed var(--dsw-alias-border-l2); }\r\n.dt-msg-local[data-state='failed'] .dt-msg-bubble { border: 1px solid var(--dsw-alias-state-error-primary); }\r\n.dt-msg-placement { color: var(--dsw-alias-label-tertiary); }\r\n.dt-chat-activity { align-self: center; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 2px 0; font-size: 11px; color: var(--dsw-alias-label-tertiary); }\r\n.dt-composer-note[data-testid='composer-queue-note'] { pointer-events: none; }\r\n.dt-msg-agent { gap: 12px; align-items: flex-start; margin: 12px 0; }\r\n.dt-msg-avatar { flex: none; width: 28px; height: 28px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; color: #fff; background: linear-gradient(135deg, #4176e6, #7c5cf0); }\r\n.dt-msg-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }\r\n.dt-msg-who { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }\r\n.dt-msg-text { font-size: 14px; line-height: 24px; white-space: pre-wrap; overflow-wrap: anywhere; }\r\n.dt-msg-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 8px; }\r\n/* The composer follows DeepSeek-Bot's: one rounded row of \"+\", the draft, the microphone and the voice (or send) button. */\r\n.dt-composer-dock { position: sticky; bottom: 0; z-index: 2; padding: 8px 0 20px; background: linear-gradient(transparent, var(--dsw-alias-bg-base) 36px); }\r\n.dt-composer { position: relative; box-sizing: border-box; display: flex; flex-wrap: wrap; align-items: flex-end; min-height: 44px; padding: 7.5px; border-radius: 22px; background: var(--dsw-alias-bg-layer-2); border: 0.5px solid var(--dsw-alias-border-l3); box-shadow: 0 4px 16px rgba(0, 0, 0, 0.03), 0 0 24px rgba(0, 0, 0, 0.03); transition: border-color 150ms ease, border-radius 200ms ease; }\r\n.dt-composer:hover, .dt-composer:focus-within { border-color: color-mix(in srgb, var(--dsw-alias-label-primary) 30%, transparent); }\r\n.dt-composer[data-tall] { border-radius: 18px; }\r\n.dt-composer-input { order: 2; flex: 1 1 0; box-sizing: border-box; min-width: 0; min-height: 28px; max-height: 200px; resize: none; field-sizing: content; border: 0; outline: none; background: transparent; color: var(--dsw-alias-label-primary); font: inherit; font-size: 14px; line-height: 24px; padding: 2px 8px; caret-color: var(--dsw-alias-state-business-primary); }\r\n.dt-composer-input::placeholder { color: color-mix(in srgb, var(--dsw-alias-label-primary) 36%, transparent); }\r\n.dt-composer-plus, .dt-composer-mic, .dt-composer-voice, .dt-composer-send { flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; display: inline-grid; place-items: center; cursor: pointer; transition: background-color 150ms ease, color 150ms ease, scale 150ms ease; }\r\n.dt-composer-plus { order: 1; background: color-mix(in srgb, var(--dsw-alias-label-primary) 5%, transparent); box-shadow: inset 0 0 0 0.5px var(--dsw-alias-border-l3); color: var(--dsw-alias-label-secondary); }\r\n.dt-composer-plus:hover, .dt-composer-plus[aria-expanded='true'], .dt-composer-mic:hover { background: color-mix(in srgb, var(--dsw-alias-label-primary) 10%, transparent); color: var(--dsw-alias-label-primary); }\r\n.dt-composer-plus svg { transition: rotate 200ms cubic-bezier(0.34, 1.56, 0.64, 1); }\r\n.dt-composer-plus[aria-expanded='true'] svg { rotate: 45deg; }\r\n.dt-composer-plus:active, .dt-composer-mic:active, .dt-composer-voice:active, .dt-composer-send:active:not(:disabled) { scale: 0.9; }\r\n.dt-composer-trailing { order: 3; flex: none; display: flex; align-items: center; gap: 8px; }\r\n.dt-composer-mic { background: color-mix(in srgb, var(--dsw-alias-label-primary) 5%, transparent); box-shadow: inset 0 0 0 0.5px var(--dsw-alias-border-l3); color: var(--dsw-alias-label-secondary); }\r\n.dt-composer-mic[aria-pressed='true'] { background: #ff3e51; color: #fff; animation: dt-mic-pulse 1.4s ease-in-out infinite; }\r\n@keyframes dt-mic-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255, 62, 81, 0.4) } 50% { box-shadow: 0 0 0 6px rgba(255, 62, 81, 0) } }\r\n.dt-composer-voice, .dt-composer-send { background: var(--dsw-alias-state-business-primary); color: #fff; animation: dt-icon-swap 220ms cubic-bezier(0.34, 1.56, 0.64, 1); }\r\n@keyframes dt-icon-swap { from { opacity: 0; transform: scale(0.5) rotate(-30deg) } }\r\n.dt-composer-voice:hover, .dt-composer-send:hover:not(:disabled) { opacity: 0.9; }\r\n.dt-composer-send:disabled { opacity: 0.4; cursor: not-allowed; }\r\n.dt-composer-plus:focus-visible, .dt-composer-mic:focus-visible, .dt-composer-voice:focus-visible, .dt-composer-send:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }\r\n.dt-composer-note { position: absolute; right: 12px; bottom: calc(100% + 8px); padding: 5px 10px; border-radius: 8px; background: var(--dsw-alias-tooltip-bg, #2c2c2e); color: #fff; font-size: 12px; line-height: 16px; white-space: nowrap; pointer-events: none; }\r\n.dt-composer-files { order: 0; flex: 0 0 100%; display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 2px 8px; }\r\n.dt-composer-file { display: inline-flex; align-items: center; gap: 6px; max-width: 260px; height: 28px; padding: 0 4px 0 8px; border-radius: 8px; background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }\r\n.dt-composer-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-primary); }\r\n.dt-composer-file-size { flex: none; color: var(--dsw-alias-label-caption); }\r\n.dt-composer-file button { flex: none; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 6px; display: inline-grid; place-items: center; background: none; color: var(--dsw-alias-label-tertiary); cursor: pointer; }\r\n.dt-composer-file button:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }\r\n/* The \"+\" menu opens above it, as DeepSeek-Bot's does. */\r\n.dt-menu { position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 4; box-sizing: border-box; min-width: 180px; max-width: min(360px, 100%); padding: 6px; border-radius: 12px; display: flex; flex-direction: column; gap: 2px; background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-base)); border: 0.5px solid var(--dsw-alias-border-l2); box-shadow: var(--dsw-elevation-prominent, 0 3px 8px rgba(0, 0, 0, 0.08)); transform-origin: bottom left; animation: dt-menu-lift 160ms cubic-bezier(0.34, 1.56, 0.64, 1); }\r\n@keyframes dt-menu-lift { from { opacity: 0; transform: translateY(4px) scale(0.96) } }\r\n.dt-menu button { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 30px; box-sizing: border-box; padding: 6px 8px; border: 0; border-radius: 6px; background: none; text-align: left; font: inherit; font-size: 13px; line-height: 18px; color: var(--dsw-alias-label-primary); cursor: pointer; }\r\n.dt-menu button:hover { background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-menu button svg { flex: none; }\r\n.dt-menu-head { font-weight: 500; }\r\n.dt-menu-list { display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow: auto; }\r\n.dt-menu-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\r\n.dt-menu-hint { flex: none; color: var(--dsw-alias-label-tertiary); font-size: 12px; }\r\n.dt-menu-note { margin: 0; padding: 6px 8px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }\r\n.dt-schedule { gap: 16px; }\r\n.dt-schedule-when { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }\r\n/* Voice chat takes the conversation's place: an orb that breathes while it thinks and pulses while it speaks. */\r\n.dt-voice { flex: 1 1 auto; min-height: 420px; display: flex; flex-direction: column; align-items: center; justify-content: center; }\r\n.dt-voice-stage { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; max-width: 560px; text-align: center; }\r\n.dt-voice-orb { position: relative; width: 200px; height: 200px; display: grid; place-items: center; margin-bottom: 8px; }\r\n.dt-voice-ring { position: absolute; inset: 34px; border-radius: 50%; background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-voice-stage[data-phase='listening'] .dt-voice-ring { animation: dt-voice-listen 1.8s ease-in-out infinite; }\r\n.dt-voice-stage[data-phase='thinking'] .dt-voice-ring { animation: dt-voice-breathe 1.6s ease-in-out infinite; }\r\n.dt-voice-stage[data-phase='speaking'] .dt-voice-ring { animation: dt-voice-speak 0.9s ease-in-out infinite; }\r\n@keyframes dt-voice-listen { 0%, 100% { transform: scale(1) } 50% { transform: scale(1.04) } }\r\n@keyframes dt-voice-breathe { 0%, 100% { transform: scale(1) } 50% { transform: scale(1.08) } }\r\n@keyframes dt-voice-speak { 0%, 100% { transform: scale(1.04) } 30% { transform: scale(1.2) } 60% { transform: scale(1.1) } }\r\n.dt-voice-mark { position: relative; width: 88px; height: 88px; border-radius: 50%; display: grid; place-items: center; color: #fff; background: linear-gradient(135deg, #4176e6, #7c5cf0); }\r\n.dt-voice-name { font-size: 16px; line-height: 22px; font-weight: 500; }\r\n.dt-voice-status { min-height: 18px; font-size: 13px; line-height: 18px; color: var(--dsw-alias-label-secondary); }\r\n.dt-voice-caption { min-height: 44px; font-size: 15px; line-height: 22px; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }\r\n.dt-voice-note { font-size: 12px; color: var(--dsw-alias-state-error-primary); }\r\n.dt-voice-bar { display: flex; gap: 16px; padding: 0 0 32px; }\r\n.dt-voice-btn { width: 52px; height: 52px; border-radius: 50%; border: 0; display: grid; place-items: center; background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); cursor: pointer; transition: background-color 150ms ease, transform 120ms ease; }\r\n.dt-voice-btn:hover { background: var(--dsw-alias-interactive-bg-active); }\r\n.dt-voice-btn:active { transform: scale(0.94); }\r\n.dt-voice-end { background: #ff3e51; color: #fff; }\r\n.dt-voice-end:hover { background: #e02135; }\r\n@media (prefers-reduced-motion: reduce) {\r\n  .dt-menu, .dt-voice-ring, .dt-composer-mic, .dt-composer-voice, .dt-composer-send { animation: none !important; }\r\n}\r\n/* VsSaros addition: the Chat tab in a VsSaros workbench is DSH's own chat of the desk, docked by the host; it fills the page. */\r\n.dt-page:has(.dt-native-chat) > .dt-column { height: 100%; min-height: 0; }\r\n.dt-page:has(.dt-native-chat) .dt-main { min-height: 0; }\r\n.dt-native-chat { min-height: 0; position: relative; }\r\n.dt-chat-dock { flex: none; max-height: 40%; overflow: auto; margin: 0 0 8px; padding: 10px 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; background: var(--dsw-alias-bg-module-platform); display: flex; flex-direction: column; gap: 8px; }\r\n.dt-chat-dock-title { margin: 0; font-size: 12px; font-weight: 600; color: var(--dsw-alias-state-warn-primary); }\r\n.dt-chat-dock .dt-list { margin: 0; }\r\n.dt-native-chat .vssWbNewSession, .dt-native-chat .vssWbConversation { display: none; }\r\n.dt-native-chat [data-slot=\"conversation.input.permission\"], .dt-native-chat [data-slot=\"conversation.input.model\"], .dt-native-chat [data-slot=\"conversation.input.plan\"] { display: none; }\r\n.dt-native-wait { margin: 24px 0; font-size: 13px; color: var(--dsw-alias-label-tertiary); }\r\n.dt-native-chat:has(.vssWbDock:not([hidden])) .dt-native-wait { display: none; }\r\n/* VsSaros addition (plan C): what waits for the person, the teams' members, and the Workbench tab. States share one colour each. */\r\n:is(.dt-flow-node, .dt-flow-edge, .dt-mini-node, .dt-board-card, .dt-flow-line)[data-state='pending'] { --dt-state: var(--dsw-alias-label-caption); }\r\n:is(.dt-flow-node, .dt-flow-edge, .dt-mini-node, .dt-board-card, .dt-flow-line)[data-state='running'] { --dt-state: var(--dsw-alias-state-business-primary); }\r\n:is(.dt-flow-node, .dt-flow-edge, .dt-mini-node, .dt-board-card, .dt-flow-line)[data-state='ready'] { --dt-state: var(--dsw-alias-state-success-primary); }\r\n:is(.dt-flow-node, .dt-flow-edge, .dt-mini-node, .dt-board-card, .dt-flow-line):is([data-state='blocked'], [data-state='alert']) { --dt-state: var(--dsw-alias-state-warn-primary); }\r\n:is(.dt-flow-node, .dt-flow-edge, .dt-mini-node, .dt-board-card, .dt-flow-line)[data-state='failed'] { --dt-state: var(--dsw-alias-state-error-primary); }\r\n:is(.dt-flow-node, .dt-flow-edge, .dt-mini-node, .dt-board-card, .dt-flow-line):is([data-state='skipped'], [data-state='stopped']) { --dt-state: var(--dsw-alias-label-tertiary); }\r\n.dt-shimmer { background: linear-gradient(90deg, color-mix(in srgb, var(--dsw-alias-label-secondary) 45%, transparent), var(--dsw-alias-label-primary), color-mix(in srgb, var(--dsw-alias-label-secondary) 45%, transparent)); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: dt-shimmer 2.2s steps(60) infinite; }\r\n@keyframes dt-shimmer { from { background-position: 200% 0 } to { background-position: -200% 0 } }\r\n.dt-elapsed { font-variant-numeric: tabular-nums; }\r\n.dt-approvals { display: flex; flex-direction: column; gap: 8px; }\r\n.dt-approval { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 12px; background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 8%, transparent); box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--dsw-alias-state-warn-primary) 40%, transparent); font-size: 12.5px; line-height: 18px; animation: dt-rise 0.42s cubic-bezier(0.34, 1.32, 0.64, 1) both; }\r\n@keyframes dt-rise { from { opacity: 0; transform: translateY(8px) scale(0.98) } }\r\n.dt-approval-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; font-size: 13px; }\r\n.dt-approval-ticket { color: var(--dsw-alias-label-tertiary); font-size: 12px; }\r\n.dt-approval-code { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px/16px ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--dsw-alias-label-secondary); }\r\n.dt-approval-why { color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }\r\n.dt-approval .dt-row-actions { margin-left: 0; flex-wrap: wrap; }\r\n.dt-team-run .dt-row-main { gap: 8px; }\r\n.dt-mini-flow { display: block; max-width: 100%; overflow-x: auto; padding: 6px; border: 0; border-radius: 10px; background: var(--dsw-alias-bg-module-platform); cursor: pointer; text-align: left; }\r\n.dt-mini-flow:hover { box-shadow: inset 0 0 0 0.5px var(--dsw-alias-border-l3); }\r\n.dt-mini-flow:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }\r\n.dt-mini-node rect { fill: color-mix(in srgb, var(--dt-state) 14%, var(--dsw-alias-bg-base)); stroke: var(--dt-state); stroke-width: 1; }\r\n.dt-mini-node text { font-size: 11px; fill: var(--dsw-alias-label-primary); }\r\n.dt-flow-line { fill: none; stroke: var(--dt-state, var(--dsw-alias-label-caption)); stroke-width: 1.5; opacity: 0.6; }\r\n.dt-members { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }\r\n.dt-member { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 4px 2px; }\r\n.dt-member-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }\r\n.dt-member-name { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; font-size: 13px; line-height: 20px; }\r\n.dt-member-step { color: var(--dsw-alias-label-tertiary); font-size: 12px; }\r\n.dt-member-line { font-size: 12px; line-height: 17px; color: var(--dsw-alias-label-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\r\n.dt-member-alert { color: var(--dsw-alias-state-warn-primary); }\r\n.dt-work { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding-bottom: 20px; }\r\n.dt-work-teams { display: flex; flex-wrap: wrap; gap: 6px; }\r\n.dt-work-team { height: 28px; padding: 0 12px; border: 0; border-radius: 14px; font: inherit; font-size: 12.5px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-module-platform); cursor: pointer; }\r\n.dt-work-team[aria-pressed='true'] { color: var(--dsw-alias-label-primary); box-shadow: inset 0 0 0 1px var(--dsw-alias-label-primary); }\r\n.dt-work-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; font-size: 13px; }\r\n.dt-work-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dsw-alias-label-caption); }\r\n.dt-work-dot[data-live] { background: var(--dsw-alias-state-success-primary); animation: dt-pulse 1.6s ease-in-out infinite; }\r\n@keyframes dt-pulse { 50% { opacity: 0.45; transform: scale(0.8) } }\r\n.dt-work-views { margin-left: auto; }\r\n.dt-work-body { position: relative; flex: 1 1 auto; min-height: 360px; display: flex; flex-direction: column; }\r\n.dt-graph { position: relative; flex: 1 1 auto; min-height: 360px; overflow: hidden; border-radius: 12px; background-color: var(--dsw-alias-bg-module-platform); background-image: radial-gradient(color-mix(in srgb, var(--dsw-alias-label-primary) 12%, transparent) 1px, transparent 1px); background-size: 24px 24px; cursor: grab; touch-action: none; }\r\n.dt-flow-zoom { position: absolute; z-index: 2; top: 10px; right: 10px; display: flex; align-items: center; gap: 2px; padding: 2px; border-radius: 8px; background: color-mix(in srgb, var(--dsw-alias-bg-base) 82%, transparent); backdrop-filter: blur(8px); box-shadow: 0 0 0 0.5px var(--dsw-alias-border-l3); font-size: 12px; color: var(--dsw-alias-label-secondary); }\r\n.dt-flow-zoom button { width: 26px; height: 24px; border: 0; border-radius: 6px; background: none; color: var(--dsw-alias-label-primary); font: inherit; cursor: pointer; }\r\n.dt-flow-zoom button:hover { background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-flow-zoom span { min-width: 38px; text-align: center; font-variant-numeric: tabular-nums; }\r\n.dt-flow-canvas { position: absolute; left: 0; top: 0; transform-origin: 0 0; }\r\n.dt-flow-lines { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }\r\n.dt-flow-edge .dt-flow-line { stroke-width: 2.5; opacity: 0.5; }\r\n.dt-flow-glow { fill: none; stroke: var(--dt-state); stroke-width: 7; opacity: 0.12; }\r\n.dt-flow-moving { fill: none; stroke: var(--dt-state); stroke-width: 2; stroke-dasharray: 5 9; animation: dt-flow-move 0.75s linear infinite; }\r\n@keyframes dt-flow-move { to { stroke-dashoffset: -28 } }\r\n.dt-flow-node { position: absolute; box-sizing: border-box; display: flex; flex-direction: column; gap: 4px; padding: 9px 12px 9px 15px; overflow: hidden; border: 0; border-radius: 12px; text-align: left; font: inherit; color: var(--dsw-alias-label-primary); background: linear-gradient(135deg, color-mix(in srgb, var(--dt-state) 9%, var(--dsw-alias-bg-base)), var(--dsw-alias-bg-base)); box-shadow: 0 0 0 0.5px var(--dsw-alias-border-l3); cursor: pointer; transition: box-shadow 0.2s ease; }\r\n.dt-flow-node::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--dt-state); }\r\n.dt-flow-node:is([data-state='running'], [data-state='alert'], [data-state='blocked']) { box-shadow: 0 0 0 1px color-mix(in srgb, var(--dt-state) 34%, transparent), 0 6px 18px color-mix(in srgb, var(--dt-state) 16%, transparent); }\r\n.dt-flow-node[data-state='pending'] { opacity: 0.62; }\r\n.dt-flow-node[aria-pressed='true'] { box-shadow: 0 0 0 2px var(--dt-state); }\r\n.dt-flow-node:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; }\r\n.dt-flow-node-title { display: flex; align-items: center; gap: 6px; font-size: 13px; line-height: 18px; font-weight: 500; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }\r\n.dt-flow-key { font: 600 11px/16px ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--dsw-alias-label-tertiary); }\r\n.dt-flow-node-who { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dsw-alias-label-secondary); }\r\n.dt-flow-node-meta { font-size: 11.5px; color: var(--dsw-alias-label-caption); }\r\n.dt-flow-retry { position: absolute; top: 8px; right: 10px; font-size: 11px; font-weight: 600; color: var(--dsw-alias-state-warn-primary); }\r\n.dt-flow-bar { position: absolute; left: 3px; right: 0; bottom: 0; height: 2px; overflow: hidden; background: color-mix(in srgb, var(--dt-state) 14%, transparent); }\r\n.dt-flow-bar i { display: block; width: 42%; height: 100%; background: var(--dt-state); animation: dt-flow-bar 1.1s linear infinite; }\r\n@keyframes dt-flow-bar { from { transform: translateX(-100%) } to { transform: translateX(350%) } }\r\n.dt-board { flex: 1 1 auto; display: flex; gap: 10px; overflow-x: auto; }\r\n.dt-board-col { flex: 1 1 0; min-width: 168px; display: flex; flex-direction: column; gap: 6px; padding: 6px; border: 1px dashed var(--dsw-alias-border-l3); border-radius: 10px; }\r\n.dt-board-col h3 { margin: 0; padding: 2px 4px; display: flex; justify-content: space-between; font-size: 12px; font-weight: 500; color: var(--dsw-alias-label-secondary); }\r\n.dt-board-card { position: relative; display: flex; flex-direction: column; gap: 2px; padding: 7px 9px 7px 12px; overflow: hidden; border: 0; border-radius: 8px; text-align: left; font: inherit; font-size: 12.5px; line-height: 18px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base); box-shadow: 0 0 0 0.5px var(--dsw-alias-border-l2); cursor: pointer; }\r\n.dt-board-card::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--dt-state); }\r\n.dt-board-card b { font-weight: 500; }\r\n.dt-board-who { display: flex; align-items: center; gap: 4px; color: var(--dsw-alias-label-tertiary); font-size: 11.5px; }\r\n.dt-step-table { width: 100%; border-collapse: collapse; font-size: 13px; }\r\n.dt-step-table th { padding: 6px 8px; text-align: left; font-size: 12px; font-weight: 500; color: var(--dsw-alias-label-tertiary); border-bottom: 0.5px solid var(--dsw-alias-border-l3); }\r\n.dt-step-table td { padding: 8px; border-bottom: 0.5px solid var(--dsw-alias-border-l1); }\r\n.dt-step-table tbody tr { cursor: pointer; }\r\n.dt-step-table tbody tr:hover { background: var(--dsw-alias-interactive-bg-hover); }\r\n.dt-step-detail { position: absolute; z-index: 3; top: 12px; right: 12px; bottom: 12px; box-sizing: border-box; width: min(384px, calc(100% - 24px)); display: flex; flex-direction: column; gap: 10px; overflow: auto; padding: 14px 16px; border-radius: 14px; font-size: 13px; line-height: 20px; background: color-mix(in srgb, var(--dsw-alias-bg-base) 92%, transparent); backdrop-filter: blur(14px); box-shadow: var(--dsw-elevation-prominent, 0 14px 48px rgba(0, 0, 0, 0.18)); animation: dt-rise 0.28s cubic-bezier(0.2, 0, 0, 1) both; }\r\n.dt-step-detail-head { display: flex; align-items: center; gap: 8px; font-size: 14px; }\r\n.dt-step-detail-head .dt-btn { margin-left: auto; }\r\n.dt-step-facts { margin: 0; display: grid; grid-template-columns: 64px 1fr; gap: 3px 8px; font-size: 12.5px; }\r\n.dt-step-facts dt { color: var(--dsw-alias-label-tertiary); }\r\n.dt-step-facts dd { margin: 0; }\r\n.dt-step-attempts { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }\r\n.dt-step-report { margin: 0; white-space: pre-wrap; color: var(--dsw-alias-label-secondary); }\r\n@media (prefers-reduced-motion: reduce) {\r\n  .dt-shimmer, .dt-approval, .dt-work-dot, .dt-flow-moving, .dt-flow-bar i, .dt-step-detail { animation: none !important; }\r\n}\r\n\r\n/* VsSaros addition (plan C): a Bot's mark, after DS Bot's (mark.js and styles.js, Apache-2.0; see NOTICE). Its character moves for what it does. */\r\n.dt-bm { display: inline-block; flex: none; position: relative; line-height: 0; }\r\n.dt-bm svg { width: 100%; height: 100%; overflow: visible; }\r\n.dt-bm .dt-bm-b, .dt-bm .dt-bm-eye, .dt-bm .dt-bm-eyes { transform-box: fill-box; }\r\n.dt-bm .dt-bm-b { transform-origin: 50% 100%; }\r\n.dt-bm .dt-bm-eye, .dt-bm .dt-bm-eyes { transform-origin: center; }\r\n.dt-bm[data-faded] { filter: grayscale(1); opacity: 0.55; }\r\n.dt-bm[data-live]:is([data-state='idle'], [data-state='alert']) .dt-bm-eye { animation: dt-bm-blink-idle 5s linear infinite; animation-delay: var(--dt-bm-delay, 0s); }\r\n.dt-bm[data-live][data-state='idle']:is([data-fidget='hop'], [data-fidget='sway'], [data-fidget='stretch']) .dt-bm-b { animation: var(--dt-bm-fidget) 9s ease-in-out var(--dt-bm-fidget-delay, 0s) infinite; }\r\n.dt-bm[data-live][data-state='idle'][data-fidget='hop'] { --dt-bm-fidget: dt-bm-fidget-hop; }\r\n.dt-bm[data-live][data-state='idle'][data-fidget='sway'] { --dt-bm-fidget: dt-bm-fidget-sway; }\r\n.dt-bm[data-live][data-state='idle'][data-fidget='stretch'] { --dt-bm-fidget: dt-bm-fidget-stretch; }\r\n.dt-bm[data-live][data-state='idle'][data-fidget='look'] .dt-bm-eyes { animation: dt-bm-fidget-look 9s ease-in-out var(--dt-bm-fidget-delay, 0s) infinite; }\r\n.dt-bm[data-state='thinking'] .dt-bm-b { animation: dt-bm-ponder 2.2s ease-in-out infinite; }\r\n.dt-bm[data-state='thinking'] .dt-bm-eyes { animation: dt-bm-squint 2.2s ease-in-out infinite; }\r\n.dt-bm[data-state='searching'] .dt-bm-b { animation: dt-bm-seek 1s ease-in-out infinite; }\r\n.dt-bm[data-state='searching'] .dt-bm-eyes { animation: dt-bm-scan 1.6s ease-in-out infinite; }\r\n.dt-bm[data-state='working'] .dt-bm-b { animation: dt-bm-bob 1.6s ease-in-out infinite; }\r\n.dt-bm[data-state='working']:is([data-shape='star'], [data-shape='hex'], [data-shape='plus'], [data-shape='gem'], [data-shape='magnet'], [data-shape='ring']) .dt-bm-b { animation: dt-bm-wiggle 1.4s ease-in-out infinite; transform-origin: 50% 50%; }\r\n.dt-bm[data-state='working']:is([data-shape='gumdrop'], [data-shape='peanut'], [data-shape='cushion'], [data-shape='squircle'], [data-shape='moon'], [data-shape='wave']) .dt-bm-b { animation: dt-bm-squash 1.2s ease-in-out infinite; }\r\n.dt-bm[data-state='working'] .dt-bm-eye { animation: dt-bm-blink 2.4s ease-in-out infinite; }\r\n.dt-bm[data-state='sending'] .dt-bm-b { animation: dt-bm-dash 1.1s cubic-bezier(0.4, 0, 0.2, 1) infinite; }\r\n.dt-bm[data-state='waiting'] .dt-bm-b { animation: dt-bm-sway 2.6s ease-in-out infinite; transform-origin: 50% 50%; }\r\n.dt-bm[data-state='waiting'] .dt-bm-eyes { animation: dt-bm-roll 2.6s linear infinite; }\r\n.dt-bm[data-state='alert'] .dt-bm-b { animation: dt-bm-hop 1.3s cubic-bezier(0.3, 0.7, 0.4, 1) 2; }\r\n.dt-bm[data-live][data-state='alert'] .dt-bm-b { animation-iteration-count: infinite; }\r\n.dt-bm[data-state='done'] .dt-bm-b { animation: dt-bm-done 1.8s linear 1; }\r\n@keyframes dt-bm-fidget-hop { 0%, 8%, 100% { transform: none } 3% { transform: translateY(-10%) scale(0.97, 1.04) } 5.5% { transform: translateY(0) scale(1.05, 0.95) } }\r\n@keyframes dt-bm-fidget-sway { 0%, 10%, 100% { transform: none } 2.5% { transform: rotate(-8deg) } 5% { transform: rotate(7deg) } 7.5% { transform: rotate(-3deg) } }\r\n@keyframes dt-bm-fidget-stretch { 0%, 9%, 100% { transform: none } 4% { transform: scale(0.94, 1.08) } 7% { transform: scale(1.03, 0.97) } }\r\n@keyframes dt-bm-fidget-look { 0%, 22%, 100% { transform: none } 3%, 9% { transform: translateX(-14%) } 12%, 19% { transform: translateX(14%) } }\r\n@keyframes dt-bm-done { 0% { transform: none } 13.3% { transform: scale(1.12, 0.88) } 25.6% { transform: scale(0.93, 1.09) } 37.8% { transform: scale(1.04, 0.97) } 51.1%, 100% { transform: none } }\r\n@keyframes dt-bm-bob { 0%, 100% { transform: translateY(0) rotate(0) } 30% { transform: translateY(-4%) rotate(-5deg) } 65% { transform: translateY(0) rotate(4deg) } }\r\n@keyframes dt-bm-wiggle { 0%, 100% { transform: rotate(0) scale(1) } 25% { transform: rotate(-12deg) scale(1.04) } 75% { transform: rotate(12deg) scale(1.04) } }\r\n@keyframes dt-bm-squash { 0%, 100% { transform: scale(1, 1) } 30% { transform: scale(1.08, 0.9) } 55% { transform: translateY(-4%) scale(0.94, 1.08) } 80% { transform: scale(1.02, 0.98) } }\r\n@keyframes dt-bm-ponder { 0%, 100% { transform: translateY(0) rotate(4deg) } 50% { transform: translateY(-3%) rotate(7deg) } }\r\n@keyframes dt-bm-squint { 0%, 100% { transform: translate(0, -4%) scaleY(0.7) } 50% { transform: translate(5%, -5%) scaleY(0.78) } }\r\n@keyframes dt-bm-seek { 0%, 100% { transform: translateY(0) rotate(-4deg) } 50% { transform: translateY(-5%) rotate(-1deg) } }\r\n@keyframes dt-bm-scan { 0%, 100% { transform: translateX(-12%) } 50% { transform: translateX(12%) } }\r\n@keyframes dt-bm-dash { 0%, 100% { transform: translateX(0) rotate(0) } 35% { transform: translateX(9%) rotate(7deg) } 55% { transform: translateX(-2%) rotate(-3deg) } }\r\n@keyframes dt-bm-sway { 0%, 100% { transform: rotate(-10deg) } 50% { transform: rotate(10deg) } }\r\n@keyframes dt-bm-roll { 0%, 100% { transform: translate(12%, 0) } 25% { transform: translate(0, 9%) } 50% { transform: translate(-12%, 0) } 75% { transform: translate(0, -9%) } }\r\n@keyframes dt-bm-hop { 0%, 55%, 100% { transform: translateY(0) scale(1, 1) } 20% { transform: translateY(-14%) scale(0.96, 1.05) } 40% { transform: translateY(0) scale(1.06, 0.94) } }\r\n@keyframes dt-bm-blink-idle { 0%, 29.6%, 35%, 69.2%, 74.6%, 100% { transform: scaleY(1) } 32.2%, 71.8% { transform: scaleY(0.03) } 33.8%, 73.4% { transform: scaleY(1.06) } }\r\n@keyframes dt-bm-blink { 0%, 42%, 50%, 100% { transform: scaleY(1) } 46% { transform: scaleY(0.03) } 48% { transform: scaleY(1.06) } }\r\n.dt-bm-badge { position: absolute; right: 0; bottom: 0; box-sizing: border-box; display: flex; align-items: center; justify-content: center; border-radius: 50%; box-shadow: 0 0 0 1.5px var(--dsw-alias-bg-base); }\r\n.dt-bm-badge[data-kind='working'] { width: 8px; height: 8px; right: 1px; bottom: 1px; background: var(--dsw-alias-state-success-primary); }\r\n.dt-bm-badge[data-kind='alert'] { width: 12px; height: 12px; right: auto; bottom: auto; left: 50%; top: calc(var(--dt-bm-size, 28px) * -0.14); translate: -50% 0; background: var(--dsw-alias-state-warn-primary); color: #fff; font-size: 8.5px; line-height: 12px; font-weight: 600; animation: dt-bm-q-ride 1.3s cubic-bezier(0.3, 0.7, 0.4, 1) infinite; }\r\n@keyframes dt-bm-q-ride { 0%, 55%, 100% { transform: translateY(0) } 20% { transform: translateY(calc(var(--dt-bm-size, 28px) * -0.14)) } 40% { transform: translateY(0) } }\r\n/* VsSaros addition (plan C): a message's key-node card in the supervisor desk's DSH conversation. */\r\n.dt-fc { box-sizing: border-box; max-width: 640px; margin: 4px 0; padding: 12px 14px; border-radius: 14px; display: flex; flex-direction: column; gap: 10px; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base); box-shadow: 0 0 0 0.5px var(--dsw-alias-border-l3), 0 2px 8px rgba(0, 0, 0, 0.03); animation: dt-rise 0.32s cubic-bezier(0.2, 0, 0, 1) both; }\r\n.dt-fc[data-state='declined'] { color: var(--dsw-alias-label-secondary); }\r\n.dt-fc-line { flex-direction: row; align-items: center; gap: 8px; padding: 4px 0; margin: 0; background: none; box-shadow: none; color: var(--dsw-alias-label-tertiary); font-size: 12.5px; }\r\n.dt-fc-head { display: flex; align-items: center; gap: 10px; }\r\n.dt-fc-head-main { flex: 1; min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }\r\n.dt-fc-head-main b { font-weight: 500; overflow-wrap: anywhere; }\r\n.dt-fc-nodes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }\r\n.dt-fc-node { position: relative; display: flex; gap: 10px; padding: 0 0 12px; }\r\n.dt-fc-node:last-child { padding-bottom: 0; }\r\n.dt-fc-node::before { content: ''; position: absolute; left: 4.5px; top: 14px; bottom: 0; width: 1px; background: var(--dsw-alias-border-l3); }\r\n.dt-fc-node:last-child::before { display: none; }\r\n.dt-fc-dot { flex: none; position: relative; z-index: 1; width: 10px; height: 10px; margin-top: 5px; border-radius: 50%; box-sizing: border-box; border: 1.5px solid var(--dsw-alias-label-caption); background: var(--dsw-alias-bg-base); }\r\n.dt-fc-node[data-state='done'] .dt-fc-dot { border-color: var(--dsw-alias-state-success-primary); background: var(--dsw-alias-state-success-primary); }\r\n.dt-fc-node[data-state='active'] .dt-fc-dot { border-color: var(--dsw-alias-state-business-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-business-primary) 18%, transparent); animation: dt-pulse 1.6s ease-in-out infinite; }\r\n.dt-fc-node[data-state='fail'] .dt-fc-dot { border-color: var(--dsw-alias-state-error-primary); background: var(--dsw-alias-state-error-primary); }\r\n.dt-fc-node[data-state='wait'] .dt-fc-node-title { color: var(--dsw-alias-label-tertiary); }\r\n.dt-fc-node-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }\r\n.dt-fc-node-title { font-weight: 500; }\r\n.dt-fc-proposal { display: flex; flex-direction: column; gap: 6px; }\r\n.dt-fc-roles { display: flex; flex-wrap: wrap; gap: 6px; }\r\n.dt-fc-role { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px 0 4px; border-radius: 13px; background: var(--dsw-alias-bg-module-platform); font-size: 12.5px; }\r\n.dt-fc-role em { font-style: normal; color: var(--dsw-alias-label-tertiary); }\r\n.dt-fc-note { margin: 0; font-size: 12.5px; line-height: 19px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; white-space: pre-wrap; }\r\n.dt-fc .dt-row-actions { margin-left: 0; }\r\n@media (prefers-reduced-motion: reduce) {\r\n  .dt-bm *, .dt-bm-badge, .dt-fc, .dt-fc-dot { animation: none !important; transition: none !important; }\r\n}\r\n/* ★ 2026-11-05: live group-chat runs in the Workbench / Execution tabs; independent of Ticket/Step selectors. */\r\n.dt-group-runs { box-sizing: border-box; margin: 0 0 12px; display: flex; flex-direction: column; gap: 8px; }\r\n.dt-group-runs-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--dsw-alias-label-secondary); }\r\n.dt-group-runs-head b { font-weight: 600; color: var(--dsw-alias-label-primary); }\r\n.dt-group-runs-list { display: flex; flex-direction: column; gap: 8px; }\r\n.dt-group-runs-card { box-sizing: border-box; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; border-radius: 9px; border: 1px solid var(--dsw-alias-border-l3); background: var(--dsw-alias-bg-base); }\r\n.dt-group-runs-card[data-state='done'] { border-color: var(--dsw-alias-state-success-primary); }\r\n.dt-group-runs-card[data-state='error'] { border-color: var(--dsw-alias-state-error-primary); }\r\n.dt-group-runs-card[data-state='cut'] { border-color: var(--dsw-alias-state-warn-primary); border-style: dashed; }\r\n.dt-group-runs-note { margin: 0; font-size: 11px; color: var(--dsw-alias-label-tertiary); }\r\n.dt-group-runs-open { margin-left: auto; flex: none; font-size: 11px; }\r\n.dt-group-runs-source { color: var(--dsw-alias-label-secondary); }\r\n.dt-group-runs-title { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; }\r\n.dt-group-runs-title b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\r\n.dt-group-runs-status { color: var(--dsw-alias-label-tertiary); flex: none; }\r\n.dt-group-runs-dot { width: 7px; height: 7px; border-radius: 999px; flex: none; background: var(--dsw-alias-state-success-primary); }\r\n.dt-group-runs-dot[data-state='running'] { animation: dt-group-runs-live 1.6s ease-in-out infinite; }\r\n.dt-group-runs-dot[data-state='done'] { background: var(--dsw-alias-state-success-primary); }\r\n.dt-group-runs-dot[data-state='error'] { background: var(--dsw-alias-state-error-primary); }\r\n.dt-group-runs-dot[data-state='cut'] { background: var(--dsw-alias-state-warn-primary); }\r\n.dt-group-runs-meta { display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; color: var(--dsw-alias-label-tertiary); }\r\n.dt-group-runs-members { display: flex; flex-wrap: wrap; gap: 4px; }\r\n.dt-group-runs-member { border-radius: 999px; padding: 2px 7px; font-size: 10.5px; border: 1px solid var(--dsw-alias-border-l3); white-space: nowrap; }\r\n.dt-group-runs-member[data-state='failed'] { color: var(--dsw-alias-state-error-primary); border-color: var(--dsw-alias-state-error-primary); }\r\n.dt-group-runs-latest { font-size: 11px; color: var(--dsw-alias-label-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\r\n@keyframes dt-group-runs-live { 0%, 100% { opacity: 1 } 50% { opacity: 0.4 } }\r\n@media (prefers-reduced-motion: reduce) {\r\n  .dt-group-runs-dot { animation: none !important; }\r\n}\r\n\r\n.dt-rail { box-sizing: border-box; flex: none; width: 196px; height: 100%; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding: 16px 10px; background: var(--dsw-alias-bg-layer-2); border-right: 0.5px solid var(--dsw-alias-border-l3); }\r\n.dt-rail-brand { display: flex; align-items: center; gap: 8px; padding: 4px 8px 14px; font-size: 14px; line-height: 20px; font-weight: 600; color: var(--dsw-alias-label-primary); }\r\n.dt-rail-tabs { display: flex; flex-direction: column; gap: 2px; overflow: visible; }\r\n.dt-rail-tabs .dt-tab { justify-content: flex-start; width: 100%; height: 36px; padding: 0 10px; border-radius: 8px; text-align: left; }\r\n.dt-rail-hint { margin: 12px 8px 0; font-size: 11px; line-height: 16px; color: var(--dsw-alias-label-caption); }\r\n.dt-main-split { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 24px; align-items: start; min-width: 0; }\r\n.dt-context { box-sizing: border-box; position: sticky; top: 16px; display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: 12px; background: var(--dsw-alias-bg-layer-1); }\r\n.dt-context-title { margin: 0; font-size: 12px; line-height: 18px; font-weight: 600; color: var(--dsw-alias-label-secondary); }\r\n.dt-context-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }\r\n.dt-context-stats span { display: flex; flex-direction: column; gap: 2px; font-size: 11px; line-height: 15px; color: var(--dsw-alias-label-caption); }\r\n.dt-context-stats b { font-size: 16px; line-height: 22px; font-weight: 600; color: var(--dsw-alias-label-primary); }\r\n.dt-context-problem { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 11px; line-height: 16px; color: var(--dsw-alias-state-warn-primary); }\r\n@container dt-shell (max-width: 1100px) {\r\n.dt-main-split { grid-template-columns: minmax(0, 1fr); }\r\n.dt-context { position: static; }\r\n}\r\n";
 		//#endregion
 		//#region src/core/reasons.ts
 		/**
@@ -684,6 +684,7 @@ window.__ModuleLoader__.load({
 			acceptedBefore: "Trigger {trigger} was accepted before",
 			routed: "Routed to ticket {ticket}",
 			explicitRouted: "Explicit request from an allowed sender routed by the orchestrator",
+			explicitFastTrack: "Explicit task with a URL accepted by rule, without a model assessment",
 			humanStop: "Human asked to stop",
 			legacyImport: "Imported from the pre-domain-model task record",
 			forwarded: "Forwarded to the worker of the Ticket already on this Thread",
@@ -1520,7 +1521,9 @@ window.__ModuleLoader__.load({
 		* ★ 2026-11-09: its three views (flow / board / list) now live INSIDE the `execution` tab; `work` remains only as a
 		*   legacy route alias that `parseRoute` normalizes to `execution` (see below), so old links and stored routes still work.
 		*/
+		/** ★ 2026-11-11（用户）：工作台不再有「对话」页签；概况提为首页，chat 只作历史深链别名。 */
 		const NAV_TABS = [
+			"overview",
 			"chat",
 			"work",
 			"source",
@@ -1528,7 +1531,7 @@ window.__ModuleLoader__.load({
 			"eval",
 			"execution",
 			"settings"
-		].filter((tab) => tab !== "work");
+		].filter((tab) => tab !== "work" && tab !== "chat");
 		const SETTINGS_GROUPS = [
 			"source",
 			"eval",
@@ -1536,7 +1539,7 @@ window.__ModuleLoader__.load({
 			"prompts",
 			"deployment"
 		];
-		const HOME = { page: "chat" };
+		const HOME = { page: "overview" };
 		const settingsRoute = (group, query = {}) => ({
 			page: "settings",
 			query: {
@@ -1557,13 +1560,14 @@ window.__ModuleLoader__.load({
 			const text = (name) => typeof query?.[name] === "string" ? query[name] : void 0;
 			const record = typeof id === "string" && id ? id : void 0;
 			switch (page) {
+				case "overview": return { page: "overview" };
 				case "chat":
 				case "source": return { page };
 				case "work": return {
 					page: "execution",
 					query: compact({ ticket: text("ticket") })
 				};
-				case "overview": return { page: "chat" };
+				case "overview": return { page: "overview" };
 				case "trigger": return record ? {
 					page,
 					id: record,
@@ -2016,7 +2020,7 @@ window.__ModuleLoader__.load({
 								answer && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ActionLink, {
 									href: answer.url,
 									icon: "message",
-									onActivate: () => navigate({ page: "chat" }),
+									onActivate: () => navigate({ page: "overview" }),
 									children: t("answerIn", { source: valueLabel(t, "source", answer.source) })
 								}),
 								ticket.actions.retry && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmButton, {
@@ -2236,6 +2240,8 @@ window.__ModuleLoader__.load({
 		/** Shared settings context, block draft hook, form controls, Source schema field renderer, and configuration history. */
 		/** Parse a numeric input string, returning `null` when empty so the server rejects blank required numbers instead of coercing to 0. */
 		const numberOf = (text) => text.trim() ? Number(text) : null;
+		/** ★ 2026-11-11: sentinel for a `chooseFrom` dropdown's "add new" option. Never written into the Source config. */
+		const ADD_NEW_VALUE = "__new__";
 		const SettingsContext = (0, react.createContext)(void 0);
 		function useSettings() {
 			const value = (0, react.useContext)(SettingsContext);
@@ -2304,6 +2310,10 @@ window.__ModuleLoader__.load({
 		}
 		function Field({ label, hint, note, action, children }) {
 			const id = (0, react.useId)();
+			const control = (0, react.cloneElement)(children, {
+				id,
+				...note ? { "aria-describedby": [children.props["aria-describedby"], `${id}-note`].filter(Boolean).join(" ") } : {}
+			});
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: "dt-field",
 				children: [
@@ -2316,9 +2326,12 @@ window.__ModuleLoader__.load({
 					}),
 					action ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: "dt-cli-row",
-						children: [(0, react.cloneElement)(children, { id }), action]
-					}) : (0, react.cloneElement)(children, { id }),
-					note && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("small", { children: note })
+						children: [control, action]
+					}) : control,
+					note && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("small", {
+						id: `${id}-note`,
+						children: note
+					})
 				]
 			});
 		}
@@ -2335,6 +2348,15 @@ window.__ModuleLoader__.load({
 				})]
 			});
 		}
+		/**
+		* ★ 2026-11-13：与 dsh 聊天框的模型选择器用同一份数据源与同一套选择逻辑。
+		* 聊天框（`dsh-client-ui-model-selection` 的 `ModelSelect`）从 `sessionController.modelCatalog()`
+		* 取 `groups / default / failures / routableProviders`，按 provider → model → effort 逐级挑选；
+		* 本设置页的 `GET models` 返回的就是同一份 `ModelCatalog`（`app/http.ts`、`app/api.ts`）。
+		* 官方组件挂在 composer 的 slot 上、写入会话与全局 DSH 默认，不能跨构建边界复用，
+		* 因此这里只复刻「目录驱动、可继承默认、不写死任何 provider/model」的部分：
+		* 值全部来自 `catalog`，空项写回 `null`（= 继承 DSH 默认），绝不调用 selectModel/saveSelection。
+		*/
 		function ModelField({ id, value, onChange }) {
 			const { t, call } = usePanel();
 			const [catalog, setCatalog] = (0, react.useState)();
@@ -2352,60 +2374,85 @@ window.__ModuleLoader__.load({
 					...current,
 					...next
 				};
-				onChange(provider.trim() || model.trim() || effort.trim() ? {
+				onChange(provider.trim() && model.trim() ? {
 					provider,
 					model,
-					...effort ? { reasoningEffort: effort } : {}
+					...effort.trim() ? { reasoningEffort: effort } : {}
 				} : null);
 			};
-			const models = catalog?.groups.find((group) => group.id === current.provider.trim())?.models ?? [];
+			const groups = catalog?.groups ?? [];
+			const models = groups.find((group) => group.id === current.provider.trim())?.models ?? [];
+			const efforts = models.find((model) => model.id === current.model.trim())?.reasoning?.efforts ?? [];
 			const fallback = catalog?.default;
+			const inherit = !current.provider.trim() && !current.model.trim();
+			const unusable = !!catalog && (catalog.failures?.some((f) => f.id === catalog.default.provider) || Array.isArray(catalog.routableProviders) && catalog.routableProviders.length > 0 && !catalog.routableProviders.includes(catalog.default.provider));
+			/** Options come from the live catalog; a stored value outside it is kept so a save cannot silently erase it. */
+			const options = (values, selected, empty) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+				/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+					value: "",
+					children: empty
+				}),
+				selected && !values.some((entry) => entry.id === selected) ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+					value: selected,
+					children: selected
+				}) : null,
+				values.map((entry) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+					value: entry.id,
+					children: entry.name
+				}, entry.id))
+			] });
+			const pick = (name, label, empty, values, choose) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
+				label,
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("select", {
+					className: "dt-select",
+					value: current[name],
+					onChange: (event) => choose(event.target.value),
+					children: options(values, current[name], empty)
+				})
+			});
+			/** Catalog unavailable (GET failed): fall back to manual text entry rather than locking the field. */
 			const input = (name, label, placeholder) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
 				label,
 				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
-					list: `${id}-${name}s`,
 					spellCheck: false,
 					placeholder,
 					value: current[name],
 					onChange: (event) => set({ [name]: event.target.value })
 				})
 			});
+			const chooseProvider = (next) => set({
+				provider: next,
+				model: groups.find((group) => group.id === next)?.models[0]?.id ?? "",
+				effort: ""
+			});
+			const chooseModel = (next) => set({
+				model: next,
+				effort: ""
+			});
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: "dt-model",
 				children: [
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: fallback ? t("defaultModel", { model: `${fallback.provider} / ${fallback.model}${fallback.reasoningEffort ? ` · ${fallback.reasoningEffort}` : ""}` }) : t("defaultModelUnavailable") }),
+					inherit ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("modelNotConfigured", { model: fallback ? `${fallback.provider} / ${fallback.model}` : "—" }) }) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: fallback ? t("defaultModel", { model: `${fallback.provider} / ${fallback.model}${fallback.reasoningEffort ? ` · ${fallback.reasoningEffort}` : ""}` }) : t("defaultModelUnavailable") }),
+					unusable && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+						className: "dt-error",
+						role: "alert",
+						children: t("defaultModelUnusable")
+					}),
 					error && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
 						className: "dt-error",
 						children: t("modelCatalogError", { error })
 					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 						className: "dt-grid3",
-						children: [
+						children: groups.length ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+							pick("provider", t("modelProvider"), t("modelInherit"), groups, chooseProvider),
+							pick("model", t("modelName"), t("modelInherit"), models, chooseModel),
+							pick("effort", t("modelEffort"), t("modelEffortDefault"), efforts, (next) => set({ effort: next }))
+						] }) : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
 							input("provider", t("modelProvider"), t("modelInherit")),
 							input("model", t("modelName"), t("modelInherit")),
 							input("effort", t("modelEffort"), t("modelEffortDefault"))
-						]
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("datalist", {
-						id: `${id}-providers`,
-						children: catalog?.groups.map((group) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-							value: group.id,
-							children: group.name
-						}, group.id))
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("datalist", {
-						id: `${id}-models`,
-						children: models.map((model) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-							value: model.id,
-							children: model.name
-						}, model.id))
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("datalist", {
-						id: `${id}-efforts`,
-						children: (models.find((model) => model.id === current.model.trim())?.reasoning?.efforts ?? []).map((effort) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-							value: effort.id,
-							children: effort.name
-						}, effort.id))
+						] })
 					})
 				]
 			});
@@ -2511,7 +2558,7 @@ window.__ModuleLoader__.load({
 				}
 			});
 			const label = localized(t, field.label), hint = localized(t, field.hint);
-			const rows = Array.isArray(value) ? value : [];
+			const rows = Array.isArray(value) ? value : field.defaults ?? [];
 			const set = (index, row) => onChange(rows.map((item, position) => position === index ? row : item));
 			const key = field.columns[0];
 			const savedKeys = new Set((Array.isArray(saved) ? saved : []).map((row) => row[key.key]));
@@ -2669,7 +2716,7 @@ window.__ModuleLoader__.load({
 				]
 			});
 		}
-		function SourceField({ field, value, saved, fact, onChange, labels, refreshLabels, action, detail }) {
+		function SourceField({ field, value, saved, fact, onChange, labels, refreshLabels, action, detail, onAddNew, addNewOpen }) {
 			const { t, navigate } = usePanel();
 			const label = localized(t, field.label), hint = localized(t, field.hint);
 			switch (field.type) {
@@ -2706,29 +2753,33 @@ window.__ModuleLoader__.load({
 					})
 				});
 				case "text": {
-					const selected = String(value ?? "") || String(field.defaultValue ?? "");
+					const selected = addNewOpen ? ADD_NEW_VALUE : String(value ?? "") || String(field.defaultValue ?? "");
 					return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
 						label,
 						hint,
-						note: localized(t, fact),
+						note: localized(t, field.note) || localized(t, fact),
 						action,
 						children: field.chooseFrom ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
 							className: "dt-select",
 							value: selected,
-							onChange: (event) => onChange(event.target.value),
+							onChange: (event) => event.target.value === "__new__" ? onAddNew?.() : onChange(event.target.value),
 							children: [
 								!field.noEmptyOption && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
 									value: "",
 									children: field.choose ? localized(t, field.choose) : localized(t, field.label)
 								}),
-								selected && !labels[`${field.chooseFrom}:${selected}`] ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+								selected && selected !== "__new__" && !labels[`${field.chooseFrom}:${selected}`] ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
 									value: selected,
 									children: selected
 								}) : null,
 								Object.entries(labels).filter(([option]) => option.startsWith(field.chooseFrom + ":")).sort(byName).map(([option, name]) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
 									value: option.slice(field.chooseFrom.length + 1),
 									children: name
-								}, option))
+								}, option)),
+								field.addNew && onAddNew ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+									value: ADD_NEW_VALUE,
+									children: localized(t, field.addNew)
+								}) : null
 							]
 						}) : field.choose && Object.keys(labels).length ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
 							className: "dt-select",
@@ -3272,6 +3323,457 @@ window.__ModuleLoader__.load({
 			});
 		}
 		//#endregion
+		//#region src/client/review.tsx
+		/**
+		* VsSaros addition: the review of a ticket's shelved changelist, the only way to submit to P4. A person opens every file's
+		* difference, confirms, and approves the fingerprint of what they read; or sends the CL back with a comment, or discards it.
+		*/
+		function DiffLines({ diff }) {
+			const { t } = usePanel();
+			if (!diff.lines.length) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.binary") });
+			const tone = (line) => line.startsWith("@@") ? "hunk" : line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : "ctx";
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("pre", {
+				className: "dt-diff",
+				children: diff.lines.map((line, index) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+					className: `dt-diff-${tone(line)}`,
+					children: [line || " ", "\n"]
+				}, index))
+			}), diff.truncated && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.truncated") })] });
+		}
+		/** A finished review's one line, or the error of a failed submit on a waiting one. */
+		function Outcome({ review }) {
+			const { t } = usePanel();
+			const by = review.by ?? "";
+			switch (review.state) {
+				case "handed": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.handed", { by }) });
+				case "submitted": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.submitted", {
+					by,
+					submitted: String(review.submittedAs ?? "")
+				}) });
+				case "rejected": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.rejected", {
+					by,
+					comment: review.comment ?? ""
+				}) });
+				case "discarded": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.discarded", { by }) });
+				case "submitting": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.submitting") });
+				default: return null;
+			}
+		}
+		/** The review section of a ticket's page; renders nothing for a ticket without a changelist review. */
+		function ReviewSection({ id, onChanged }) {
+			const { t, call } = usePanel();
+			const { data, reload } = usePoll(() => call("GET tickets/:id/review", { id }), [id], 1e4);
+			if (!data || data.review === null) return null;
+			const { review } = data;
+			const title = t("review.section", { change: String(review.change) });
+			if (review.state !== "waiting") return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
+				title,
+				icon: "review",
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Outcome, { review })
+			});
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(WaitingReview, {
+				id,
+				view: data,
+				title,
+				after: async () => {
+					await reload();
+					await onChanged();
+				}
+			}, review.fingerprint);
+		}
+		function WaitingReview({ id, view, title, after }) {
+			const { t, call } = usePanel();
+			const { review, diffs, submit } = view;
+			const [seen, setSeen] = (0, react.useState)({});
+			const [open, setOpen] = (0, react.useState)();
+			const [ack, setAck] = (0, react.useState)(false);
+			const [confirming, setConfirming] = (0, react.useState)(false);
+			const [rejecting, setRejecting] = (0, react.useState)(false);
+			const [comment, setComment] = (0, react.useState)("");
+			const [changed, setChanged] = (0, react.useState)([]);
+			const ackId = (0, react.useId)();
+			const approve = useAction(async () => {
+				try {
+					await call("POST tickets/:id/review/approve", {
+						id,
+						body: { fingerprint: review.fingerprint }
+					});
+				} catch (failure) {
+					if (failure instanceof ApiError && failure.status === 409) setChanged(failure.details.changed ?? []);
+					setConfirming(false);
+					throw failure;
+				}
+				setConfirming(false);
+			}, { reload: after });
+			const reject = useAction(async () => {
+				await call("POST tickets/:id/review/reject", {
+					id,
+					body: { comment: comment.trim() }
+				});
+				setRejecting(false);
+				setComment("");
+			}, { reload: after });
+			const all = diffs.length > 0 && diffs.every((diff) => seen[diff.depotFile]);
+			const toggle = (file) => {
+				setOpen(open === file ? void 0 : file);
+				setSeen((current) => ({
+					...current,
+					[file]: true
+				}));
+			};
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Section, {
+				title,
+				icon: "review",
+				badge: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+					tone: "info",
+					children: t("review.seen", {
+						seen: String(Object.keys(seen).length),
+						total: String(diffs.length)
+					})
+				}),
+				children: [
+					review.error && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+						className: "dt-banner dt-danger",
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "dt-banner-label",
+							children: t("review.lastError", { error: review.error })
+						})
+					}),
+					changed.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "dt-banner dt-danger",
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "dt-banner-label",
+							children: t("review.changed")
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+							className: "dt-plain-list dt-mono",
+							children: changed.map((file) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", { children: file }, file))
+						})]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(KeyValues, { rows: [
+						[t("review.description"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("pre", {
+							className: "dt-review-desc",
+							children: review.description.trim()
+						})],
+						[t("review.workspace"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "dt-mono",
+							children: review.client
+						})],
+						[t("review.fingerprint"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "dt-mono",
+							children: review.fingerprint
+						})]
+					] }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.filesHint") }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: "dt-review-files",
+						children: diffs.map((diff) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
+							open: open === diff.depotFile,
+							onToggle: () => toggle(diff.depotFile),
+							icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: seen[diff.depotFile] ? "decision" : "hash" }),
+							title: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+								className: "dt-mono",
+								children: [
+									diff.depotFile,
+									"#",
+									diff.rev,
+									" ",
+									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+										className: "dt-hint",
+										children: [
+											"(",
+											diff.type,
+											")"
+										]
+									})
+								]
+							}),
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								className: "dt-disclosure-body",
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DiffLines, { diff })
+							})
+						}, diff.depotFile))
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "dt-review-ack",
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
+							id: ackId,
+							type: "checkbox",
+							checked: ack,
+							disabled: !all,
+							onChange: (event) => setAck(event.target.checked)
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("label", {
+							htmlFor: ackId,
+							children: t("review.ack")
+						})]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "dt-row-buttons",
+						children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+								variant: "primary",
+								size: "sm",
+								disabled: !all || !ack || approve.busy,
+								onClick: () => setConfirming(true),
+								children: t("review.approve")
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+								variant: "outline",
+								size: "sm",
+								onClick: () => setRejecting(true),
+								children: t("review.reject")
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmButton, {
+								variant: "outline",
+								label: t("review.discard"),
+								title: t("review.discardTitle", { change: String(review.change) }),
+								message: t("review.discardConfirm"),
+								onConfirm: async () => {
+									await call("POST tickets/:id/review/discard", { id });
+									await after();
+								}
+							})
+						]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Modal, {
+						open: confirming,
+						onClose: () => setConfirming(false),
+						closeLabel: t("close"),
+						title: t("review.approveTitle", { change: String(review.change) }),
+						description: submit.mode === "pipeline" ? t("review.approvePipeline", { tags: submit.tags }) : t("review.approveHost"),
+						footer: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+							variant: "ghost",
+							onClick: () => setConfirming(false),
+							children: t("cancel")
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+							variant: "primary",
+							disabled: approve.busy,
+							onClick: () => {
+								approve.run();
+							},
+							children: t("confirm")
+						})] })
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Modal, {
+						open: rejecting,
+						onClose: () => setRejecting(false),
+						closeLabel: t("close"),
+						title: t("review.rejectTitle", { change: String(review.change) }),
+						description: t("review.rejectHint"),
+						footer: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+							variant: "ghost",
+							onClick: () => setRejecting(false),
+							children: t("cancel")
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+							variant: "primary",
+							disabled: !comment.trim() || reject.busy,
+							onClick: () => {
+								reject.run();
+							},
+							children: t("review.reject")
+						})] }),
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
+							className: "dt-textarea",
+							rows: 4,
+							value: comment,
+							placeholder: t("review.rejectPlaceholder"),
+							"aria-label": t("review.rejectTitle", { change: String(review.change) }),
+							onChange: (event) => setComment(event.target.value)
+						})
+					})
+				]
+			});
+		}
+		/** The reviews waiting for a person, for the Overview; renders nothing when none waits. */
+		function PendingReviews() {
+			const { t, call, navigate } = usePanel();
+			const { data } = usePoll(() => call("GET reviews"), [], 1e4);
+			if (!data?.waiting.length) return null;
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
+				title: t("review.pending"),
+				count: data.waiting.length,
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+					className: "dt-list dt-cards",
+					children: data.waiting.map((review) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
+						className: "dt-row dt-link",
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "dt-row-main",
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								className: "dt-row-title",
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+									type: "button",
+									className: "dt-open",
+									onClick: () => navigate({
+										page: "execution",
+										id: review.ticketId
+									}),
+									children: review.description.split("\n")[0]?.trim() || `CL ${review.change}`
+								})
+							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								className: "dt-row-meta",
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("review.waitingLine", {
+									change: String(review.change),
+									files: String(review.files.length),
+									time: when(review.requestedAt, t("lang"))
+								}) })
+							})]
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							className: "dt-row-actions",
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+								variant: "outline",
+								size: "sm",
+								icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, {
+									name: "review",
+									size: 14
+								}),
+								onClick: () => navigate({
+									page: "execution",
+									id: review.ticketId
+								}),
+								children: t("review.open")
+							})
+						})]
+					}, review.ticketId))
+				})
+			});
+		}
+		//#endregion
+		//#region src/client/feed.ts
+		/**
+		* VsSaros addition (plan C): the change stream from dsh-superagent (`/orchestrator/api/stream`), shared by every view on
+		* the page: one connection while anything listens, none after. Views read their data again when a topic they show changes,
+		* and fall back to polling while the stream is down; after a reconnect every view reads again, since changes may have been
+		* missed. The stream is read with `fetch`, as `EventSource` cannot send the same-origin header the API requires.
+		*/
+		const listeners = /* @__PURE__ */ new Set();
+		const watchers = /* @__PURE__ */ new Set();
+		let live = false;
+		let connected = false;
+		let current;
+		let retry;
+		let failures = 0;
+		const emit = (topics) => {
+			for (const listener of [...listeners]) listener(topics);
+		};
+		function setLive(next) {
+			if (live === next) return;
+			live = next;
+			for (const watch of [...watchers]) watch(next);
+		}
+		/** One SSE frame: its `change` event names the topics that changed. */
+		function parseFrame(frame) {
+			let event = "message", data = "";
+			for (const line of frame.split("\n")) if (line.startsWith("event:")) event = line.slice(6).trim();
+			else if (line.startsWith("data:")) data += line.slice(5).trim();
+			if (event !== "change" || !data) return void 0;
+			try {
+				const topics = JSON.parse(data).topics;
+				return Array.isArray(topics) ? topics.filter((topic) => topic === "steps" || topic === "tickets" || topic === "desk") : void 0;
+			} catch {
+				return;
+			}
+		}
+		async function connect() {
+			const run = current = new AbortController();
+			try {
+				const response = await fetch("/orchestrator/api/stream", {
+					headers: {
+						"x-orchestrator-request": "1",
+						accept: "text/event-stream"
+					},
+					signal: run.signal
+				});
+				if (!response.ok || !response.body) throw new Error(`stream ${response.status}`);
+				const reader = response.body.getReader();
+				const decoder = new TextDecoder();
+				failures = 0;
+				setLive(true);
+				if (connected) emit("all");
+				connected = true;
+				let buffer = "";
+				for (;;) {
+					const { value, done } = await reader.read();
+					if (done) break;
+					buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+					for (let at = buffer.indexOf("\n\n"); at >= 0; at = buffer.indexOf("\n\n")) {
+						const topics = parseFrame(buffer.slice(0, at));
+						buffer = buffer.slice(at + 2);
+						if (topics?.length) emit(topics);
+					}
+				}
+			} catch {}
+			if (run !== current) return;
+			current = void 0;
+			setLive(false);
+			failures += 1;
+			retry = setTimeout(() => {
+				if (listeners.size) connect();
+			}, Math.min(3e4, 1e3 * 2 ** Math.min(failures, 5)));
+		}
+		/** Listens to the stream's changes; the stream opens with the first listener and closes with the last. */
+		function subscribe(listener) {
+			listeners.add(listener);
+			if (!current && !retry) connect();
+			return () => {
+				listeners.delete(listener);
+				if (listeners.size) return;
+				clearTimeout(retry);
+				retry = void 0;
+				const run = current;
+				current = void 0;
+				run?.abort();
+				setLive(false);
+			};
+		}
+		/**
+		* VsSaros addition (2026-11-07, the module's "hot dispose"): ends the stream and its reconnect timer and forgets every
+		* listener, whatever views are still mounted. The client plugin calls it when DSH disposes it (`apply` → `ctx.effect`): a
+		* plugin reload loads a new copy of this module, and DSH's client has no `import.meta.hot`, so without this the old copy's
+		* connection and backoff timer lived on until its last view unmounted (or forever, after a view that never did). A listener
+		* that subscribes afterwards opens a new stream; a view of the old plugin that unsubscribes later closes nothing of it, since
+		* a stream is closed only once no listener is left.
+		*/
+		function disposeFeed() {
+			clearTimeout(retry);
+			retry = void 0;
+			const run = current;
+			current = void 0;
+			run?.abort();
+			listeners.clear();
+			setLive(false);
+			connected = false;
+			failures = 0;
+		}
+		/** Whether the stream is open now. */
+		function useFeedLive() {
+			const [value, setValue] = (0, react.useState)(live);
+			(0, react.useEffect)(() => {
+				watchers.add(setValue);
+				setValue(live);
+				return () => {
+					watchers.delete(setValue);
+				};
+			}, []);
+			return value;
+		}
+		/**
+		* Loads data and keeps it current: read again whenever one of `topics` changes, and polled every `intervalMs` while the
+		* stream is down (every `liveMs` while it is up, a safety net).
+		*/
+		function useLive(load, deps, topics, intervalMs = 5e3, liveMs = 6e4) {
+			const isLive = useFeedLive();
+			const poll = usePoll(load, deps, isLive ? liveMs : intervalMs);
+			const reload = (0, react.useRef)(poll.reload);
+			reload.current = poll.reload;
+			const wanted = topics.join(",");
+			(0, react.useEffect)(() => subscribe((changed) => {
+				if (changed === "all" || changed.some((topic) => wanted.split(",").includes(topic))) reload.current();
+			}), [wanted]);
+			return {
+				...poll,
+				live: isLive
+			};
+		}
+		//#endregion
 		//#region src/client/group-runs.tsx
 		/**
 		* VsSaros addition (2026-11-05): live group-chat runs in the Workbench and Execution tabs.
@@ -3522,1103 +4024,6 @@ window.__ModuleLoader__.load({
 					})
 				]
 			});
-		}
-		//#endregion
-		//#region src/client/usage.tsx
-		/**
-		* VsSaros addition (2026-11-06, P2): on the execution page, what SuperAgent's Sessions used (the usage ledger, with the
-		* context steward's last work), and the approval rules a person gave team Bots, with the templates to give more at once.
-		*/
-		const ROLES = [
-			"master",
-			"desk",
-			"worker",
-			"step"
-		];
-		const tokens = (value) => value >= 1e4 ? `${(value / 1e3).toFixed(value >= 1e5 ? 0 : 1)}k` : String(value);
-		function UsagePanel() {
-			const { t, call } = usePanel();
-			const [open, setOpen] = (0, react.useState)(false);
-			const { data } = usePoll(() => call("GET usage"), []);
-			const usage = data;
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
-				icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "clock" }),
-				title: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
-					t("usageTitle"),
-					" ",
-					usage && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-						className: "dt-count",
-						children: tokens(usage.day.total.total)
-					})
-				] }),
-				open,
-				onToggle: () => setOpen(!open),
-				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-					className: "dt-disclosure-body",
-					"data-testid": "usage-panel",
-					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("usageHint") }), usage && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
-						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: "dt-row-meta",
-							children: [
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("usageDay", {
-									total: tokens(usage.day.total.total),
-									calls: String(usage.day.total.calls)
-								}) }),
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("usageWeek", { total: tokens(usage.week.total) }) }),
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("usageCache", { read: tokens(usage.day.total.cacheRead) }) })
-							]
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-							className: "dt-list",
-							children: ROLES.map((role) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", {
-								className: "dt-row",
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-									className: "dt-row-main",
-									children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-										className: "dt-row-meta",
-										children: [
-											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t(`usageRole.${role}`) }),
-											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: tokens(usage.day.byRole[role]?.total ?? 0) }),
-											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("usageCalls", { calls: String(usage.day.byRole[role]?.calls ?? 0) }) })
-										]
-									})
-								})
-							}, role))
-						}),
-						usage.day.byModel.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-							className: "dt-row-meta",
-							children: usage.day.byModel.slice(0, 5).map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-								className: "dt-mono",
-								children: [
-									item.model || item.provider,
-									": ",
-									tokens(item.total)
-								]
-							}, `${item.provider}/${item.model}`))
-						}),
-						usage.day.byBot.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-							className: "dt-row-meta",
-							children: usage.day.byBot.slice(0, 5).map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [
-								item.bot,
-								": ",
-								tokens(item.total)
-							] }, item.bot))
-						}),
-						usage.steward.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-							className: "dt-row-meta",
-							"data-testid": "steward",
-							children: usage.steward.map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [
-								t(`usageRole.${item.role}`),
-								t("listSeparator"),
-								t(`steward.${item.outcome}`, {
-									context: tokens(item.context ?? 0),
-									line: tokens(item.line ?? 0)
-								})
-							] }, item.session))
-						}),
-						usage.day.relays.resent + usage.day.relays.side > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: "dt-hint",
-							"data-testid": "usage-relays",
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", { children: [t(usage.coexist.dsBot ? "usageRelaysDsBot" : "usageRelaysOther", {
-								resent: String(usage.day.relays.resent),
-								side: String(usage.day.relays.side)
-							}), !usage.sideCalls && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [" ", t("sideCallsOff")] })] }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-								className: "dt-list",
-								children: usage.day.relays.sessions.slice(0, 5).map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
-									className: "dt-row-meta",
-									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [t(`usageRole.${item.role}`), item.step ? ` · ${item.step}` : ""] }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("usageRelaySession", {
-										resent: String(item.resent),
-										side: String(item.side)
-									}) })]
-								}, item.session))
-							})]
-						})
-					] })]
-				})
-			});
-		}
-		function ApprovalRulesPanel() {
-			const { t, call } = usePanel();
-			const [open, setOpen] = (0, react.useState)(false);
-			const [bot, setBot] = (0, react.useState)("");
-			const { data, reload } = usePoll(() => call("GET steps/rules"), []);
-			const { data: bots } = usePoll(() => call("GET team/bots"), []);
-			const apply = useAction((template) => {
-				const card = bots?.bots.find((item) => item.id === bot);
-				return card ? call("POST steps/rules/templates/:id/apply", {
-					id: template,
-					body: {
-						botId: card.id,
-						botName: card.name
-					}
-				}) : Promise.resolve();
-			}, { reload });
-			const forget = useAction((id) => call("POST steps/rules/:id/delete", { id }), { reload });
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
-				icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "shield" }),
-				title: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
-					t("rulesTitle"),
-					" ",
-					data && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-						className: "dt-count",
-						children: data.rules.length
-					})
-				] }),
-				open,
-				onToggle: () => setOpen(!open),
-				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-					className: "dt-disclosure-body",
-					"data-testid": "approval-rules",
-					children: [
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("rulesTemplateHint") }),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: "dt-row-meta",
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
-								"aria-label": t("rulesBot"),
-								value: bot,
-								onChange: (event) => {
-									setBot(event.target.value);
-								},
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-									value: "",
-									children: t("rulesBot")
-								}), bots?.bots.map((card) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
-									value: card.id,
-									children: card.name
-								}, card.id))]
-							}), data?.templates.map((template) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Button, {
-								variant: "outline",
-								size: "sm",
-								disabled: !bot || apply.busy,
-								title: template.heads.join(", "),
-								onClick: () => {
-									apply.run(template.id);
-								},
-								children: [t(`rulesTemplate.${template.id}`), template.risk !== "low" ? ` · ${t("rulesRiskMedium")}` : ""]
-							}, template.id))]
-						}),
-						data && (data.rules.length ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-							className: "dt-list",
-							children: data.rules.map((rule) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", {
-								className: "dt-row",
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-									className: "dt-row-main",
-									children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-										className: "dt-row-meta",
-										children: [
-											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: rule.bot.name }),
-											/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-												className: "dt-mono",
-												children: [
-													rule.tool,
-													": ",
-													rule.head
-												]
-											}),
-											rule.template && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t(`rulesTemplate.${rule.template}`) }),
-											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-												type: "button",
-												className: "dt-textlink",
-												disabled: forget.busy,
-												onClick: () => {
-													forget.run(rule.id);
-												},
-												children: t("rulesForget")
-											})
-										]
-									})
-								})
-							}, rule.id))
-						}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("rulesNone") }))
-					]
-				})
-			});
-		}
-		//#endregion
-		//#region src/client/tapd-credentials.tsx
-		/**
-		* VsSaros addition: the TAPD setup checklist and Open API credentials on the TAPD Source card.
-		*
-		* The checklist is data-driven: the Host reports the credential source, saved watch count, resolved identity
-		* and the live health code instead of the panel guessing from static hints. The secret itself is written by the
-		* Host into its credentials file (`<DSH_HOME>/tapd.env`, or DSH_SUPERAGENT_TAPD_ENV_FILE), never into the
-		* settings store; the panel only ever gets a masked account name. The product also ships a TAPD API account.
-		*/
-		const KINDS = [
-			"client",
-			"user",
-			"token"
-		];
-		/** Enter in these inputs must not submit the Source card's form, which would save the Source draft instead. */
-		const keepEnter = (event) => {
-			if (event.key === "Enter") event.preventDefault();
-		};
-		/** Health codes the panel has a localized sentence for; anything else is shown verbatim. */
-		const HEALTH_MESSAGES = [
-			"sourceOff",
-			"tapdUnset",
-			"tapdWebhookUnset"
-		];
-		/** Two starter watches for the saved project: an empty workspace inherits the card's project ID. */
-		function recommendedWatches(agent) {
-			const owner = agent.trim();
-			return ["bug", "story"].map((type) => ({
-				name: type === "bug" ? "bugs" : "stories",
-				workspace: "",
-				type,
-				item: "",
-				status: "",
-				owner,
-				iteration: "",
-				mode: owner ? "assigned" : "all"
-			}));
-		}
-		function TapdCredentials({ config, onAddWatch }) {
-			const { t, call, notify } = usePanel();
-			const [status, setStatus] = (0, react.useState)();
-			const [setup, setSetup] = (0, react.useState)();
-			const [test, setTest] = (0, react.useState)();
-			const [testing, setTesting] = (0, react.useState)(false);
-			const [detailsOpen, setDetailsOpen] = (0, react.useState)(false);
-			const [customOpen, setCustomOpen] = (0, react.useState)(false);
-			const [kind, setKind] = (0, react.useState)("client");
-			const [id, setId] = (0, react.useState)("");
-			const [secret, setSecret] = (0, react.useState)("");
-			const refresh = async () => {
-				const [credential, next] = await Promise.all([call("GET sources/tapd/credentials"), call("GET sources/tapd/setup")]);
-				setStatus(credential);
-				setSetup(next);
-				return credential;
-			};
-			(0, react.useEffect)(() => {
-				refresh().then((credential) => {
-					if (credential.kind) setKind(credential.kind);
-				}).catch(() => {});
-			}, []);
-			const same = status?.kind === kind && !!status.saved;
-			const save = useAction(async () => {
-				setStatus(await call("POST sources/tapd/credentials", { body: {
-					kind,
-					id: id.trim(),
-					secret: secret.trim()
-				} }));
-				setSetup(await call("GET sources/tapd/setup"));
-				setId("");
-				setSecret("");
-				notify(t("tapdCred.saved"));
-			});
-			const clear = async () => {
-				setStatus(await call("POST sources/tapd/credentials", { body: { clear: true } }));
-				setSetup(await call("GET sources/tapd/setup"));
-				notify(t("tapdCred.cleared"));
-			};
-			const switchBundled = async (bundled) => {
-				setStatus(await call("POST sources/tapd/credentials", { body: { bundled } }));
-				setSetup(await call("GET sources/tapd/setup"));
-				notify(t("tapdCred.bundledSwitched"));
-			};
-			const runTest = async () => {
-				setTesting(true);
-				try {
-					setTest(await call("POST sources/tapd/test", { body: {} }));
-				} finally {
-					setTesting(false);
-				}
-			};
-			const idLabel = kind === "client" ? t("tapdCred.clientId") : t("tapdCred.user");
-			const secretLabel = kind === "client" ? t("tapdCred.clientSecret") : kind === "user" ? t("tapdCred.password") : t("tapdCred.token");
-			const ready = (kind === "token" || !!id.trim() || same && !!status?.account) && (!!secret.trim() || same) && (!!id.trim() || !!secret.trim());
-			const sourceTag = !status ? t("empty") : status.source === "environment" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-				tone: "success",
-				children: t("tapdCred.fromEnv")
-			}) : status.source === "file" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-				tone: "success",
-				children: t("tapdCred.fromFile")
-			}) : status.source === "bundled" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-				tone: "success",
-				children: t("tapdCred.fromBundled")
-			}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-				tone: "danger",
-				children: t("tapdCred.none")
-			});
-			const watchTag = !setup ? t("empty") : setup.watches > 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-				tone: "success",
-				children: t("tapdCheck.watchesSome", { count: String(setup.watches) })
-			}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-				tone: "danger",
-				children: t("tapdCheck.watchesNone")
-			});
-			const identityTag = !setup ? t("empty") : !setup.agent ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-				tone: "warning",
-				children: t("tapdCheck.identityEmpty")
-			}) : setup.agentMapped ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-				tone: "success",
-				children: t("tapdCheck.identityMapped", { name: setup.agentResolved })
-			}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-				tone: "warning",
-				children: t("tapdCheck.identityUnmapped", { name: setup.agent })
-			});
-			const healthLabel = (code) => !code ? t("tapdCheck.healthUnknown") : HEALTH_MESSAGES.includes(code) ? t(`healthCode.${code}`) : code;
-			const draft = config.watches;
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-				className: "dt-field",
-				"data-tapd-credentials": "",
-				children: [
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-						className: "dt-field-head",
-						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("label", { children: t("tapdCheck.title") })
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(KeyValues, { rows: [
-						[t("tapdCheck.credentials"), sourceTag],
-						[t("tapdCheck.watches"), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [watchTag, setup && draft !== setup.watches ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-							className: "dt-mono",
-							children: [" · ", t("tapdCheck.draftSaved", { count: String(draft) })]
-						}) : null] })],
-						[t("tapdCheck.identity"), identityTag],
-						[t("tapdCheck.health"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: "dt-mono",
-							children: healthLabel(setup?.healthCode)
-						})],
-						[t("tapdCheck.connectivity"), !test ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-							tone: "neutral",
-							children: t("tapdCheck.notTested")
-						}) : test.ok ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-							tone: "success",
-							children: t("tapdCheck.testOk", { method: test.method ?? "" })
-						}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-							tone: "danger",
-							children: t("tapdCheck.testFail", { error: test.error ?? "" })
-						})]
-					] }),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "dt-row-buttons",
-						children: [setup && setup.watches === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-							variant: "outline",
-							size: "sm",
-							onClick: () => {
-								onAddWatch(recommendedWatches(setup.agent));
-								notify(t("tapdCheck.watchesAdded"));
-							},
-							children: t("tapdCheck.watchesAdd")
-						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-							variant: "outline",
-							size: "sm",
-							disabled: testing,
-							onClick: () => {
-								runTest();
-							},
-							children: testing ? t("tapdCheck.testing") : t("tapdCheck.test")
-						})]
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-						className: "dt-field-head",
-						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("label", { children: t("tapdCred.title") })
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(KeyValues, { rows: [
-						[t("tapdCred.status"), sourceTag],
-						...status?.method ? [[t("tapdCred.method"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: "dt-mono",
-							children: status.source === "bundled" ? `${t("tapdCred.methodBundled")}${status.account ? ` · ${status.account}` : ""}` : status.method
-						})]] : [],
-						...status?.account ? [[t("tapdCred.account"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: "dt-mono",
-							children: status.account
-						})]] : [],
-						[t("tapdCred.writeTo"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: "dt-mono",
-							children: status?.file ?? t("empty")
-						})]
-					] }),
-					status?.overridden && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("tapdCred.overridden") }),
-					status?.source === "bundled" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("tapdCred.bundledHint") }),
-					status?.bundled && !status.saved && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("tapdCred.overrideHint") }),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(DisclosureRow, {
-						icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "settings" }),
-						title: t("tapdCred.custom"),
-						open: customOpen,
-						onToggle: () => setCustomOpen(!customOpen),
-						children: [
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("tapdCred.customHint") }),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SegmentedControl, {
-								className: "dt-segmented dt-field-segmented",
-								label: t("tapdCred.kind"),
-								value: kind,
-								onChange: setKind,
-								options: KINDS.map((value) => ({
-									value,
-									label: t(`tapdCred.kind.${value}`)
-								}))
-							}),
-							kind !== "token" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
-								label: idLabel,
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
-									value: id,
-									autoComplete: "off",
-									spellCheck: false,
-									onKeyDown: keepEnter,
-									onChange: (event) => setId(event.target.value),
-									placeholder: same && status?.account ? t("tapdCred.keep", { value: status.account }) : ""
-								})
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
-								label: secretLabel,
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
-									type: "password",
-									value: secret,
-									autoComplete: "new-password",
-									onKeyDown: keepEnter,
-									onChange: (event) => setSecret(event.target.value),
-									placeholder: same ? t("tapdCred.keepSecret") : ""
-								})
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("tapdCred.hint") }),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
-								icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "settings" }),
-								title: t("tapdCred.details"),
-								open: detailsOpen,
-								onToggle: () => setDetailsOpen(!detailsOpen),
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("tapdCred.detailsHint") })
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-								className: "dt-row-buttons",
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-									variant: "outline",
-									size: "sm",
-									disabled: save.busy || !ready,
-									onClick: () => {
-										save.run();
-									},
-									children: save.busy ? t("tapdCred.saving") : t("tapdCred.save")
-								})
-							})
-						]
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "dt-row-buttons",
-						children: [
-							status?.saved && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmButton, {
-								label: t("tapdCred.clear"),
-								title: t("tapdCred.clearTitle"),
-								message: t("tapdCred.clearConfirm", { file: status.file }),
-								onConfirm: clear
-							}),
-							status?.bundled && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmButton, {
-								label: t("tapdCred.bundledOff"),
-								title: t("tapdCred.bundledOffTitle"),
-								message: t("tapdCred.bundledOffConfirm"),
-								onConfirm: () => switchBundled("off")
-							}),
-							status && !status.bundled && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-								variant: "outline",
-								size: "sm",
-								onClick: () => {
-									switchBundled("on");
-								},
-								children: t("tapdCred.bundledOn")
-							})
-						]
-					})
-				]
-			});
-		}
-		//#endregion
-		//#region src/client/source.tsx
-		/** Source status view (health, filtered Triggers, dropped replies) and Source settings cards. */
-		/**
-		* VsSaros addition: a Source kind's settings card. `title` overrides its heading, for a kind the panel shows somewhere
-		* other than the Sources page (P4, which is a way to manage projects rather than a place work arrives from).
-		*/
-		function SourceCard({ source, title }) {
-			const { t, call } = usePanel();
-			const { running } = usePanelData();
-			const { reload } = useSettings();
-			const [advancedOpen, setAdvancedOpen] = (0, react.useState)(false);
-			const [feishuAppLabels, setFeishuAppLabels] = (0, react.useState)({});
-			(0, react.useEffect)(() => {
-				if (source.id !== "feishu" || !source.installed) return;
-				let alive = true;
-				fetch("/x/agents/api/bindings", {
-					credentials: "same-origin",
-					headers: { accept: "application/json" }
-				}).then((response) => response.ok ? response.json() : { feishuApps: [] }).then((data) => {
-					if (!alive) return;
-					const options = {};
-					for (const app of data.feishuApps ?? []) {
-						const id = String(app.appId ?? "").trim();
-						if (!id) continue;
-						const name = String(app.name ?? "").trim();
-						const label = app.isDefault ? "VsSaros助手 · " + id : (name ? name + " · " : "") + id;
-						options["feishuApps:" + id] = label + (app.hasSecret ? "" : "（缺 App Secret）");
-					}
-					setFeishuAppLabels(options);
-				}).catch(() => {});
-				return () => {
-					alive = false;
-				};
-			}, [source.id, source.installed]);
-			const appLabels = {
-				...source.labels,
-				...feishuAppLabels
-			};
-			const refreshLabels = async () => {
-				const { added } = await call("POST sources/:id/labels", { id: source.id });
-				await reload();
-				return added;
-			};
-			(0, react.useEffect)(() => {
-				if (source.installed && source.id === "tapd" && !Object.keys(source.labels ?? {}).some((name) => name.includes(":"))) refreshLabels().catch(() => {});
-			}, [source.id, source.installed]);
-			const draft = useBlockDraft(`source:${source.id}`, source.value, source.revision);
-			const value = draft.value;
-			const { problem, value: saved } = source;
-			const changed = (key) => String(value.config[key] ?? "") !== String(saved.config[key] ?? "");
-			const restarts = draft.dirty && source.restarts.some(changed);
-			const description = localized(t, source.description);
-			const field = (spec) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SourceField, {
-				field: spec,
-				value: value.config[spec.key],
-				saved: saved.config[spec.key],
-				labels: source.id === "feishu" && spec.key === "appId" ? appLabels : source.labels,
-				refreshLabels,
-				fact: spec.type === "fact" || !changed(spec.key) ? source.facts[spec.key] : void 0,
-				onChange: (next) => draft.edit({
-					...value,
-					config: {
-						...value.config,
-						[spec.key]: next
-					}
-				})
-			}, spec.key);
-			const advanced = source.fields.filter((spec) => spec.advanced);
-			const advancedGroups = (() => {
-				const groups = /* @__PURE__ */ new Map();
-				for (const spec of advanced) {
-					const title = spec.group ? localized(t, spec.group) : "";
-					if (!groups.has(title)) groups.set(title, {
-						title,
-						specs: []
-					});
-					groups.get(title).specs.push(spec);
-				}
-				return [...groups.values()];
-			})();
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("form", {
-				id: `dt-source-${source.id}`,
-				className: "dt-card",
-				onSubmit: (event) => {
-					draft.submit(event);
-				},
-				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Fields, {
-					disabled: draft.busy,
-					children: [
-						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: "dt-card-head",
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-								className: "dt-row-main",
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-									className: "dt-row-title",
-									children: [
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-											className: "dt-card-title",
-											children: title ?? localized(t, source.title)
-										}),
-										description && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(InfoTip, { text: description }),
-										!source.installed && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-											tone: "warning",
-											children: t("sourceNotInstalled")
-										})
-									]
-								})
-							}), source.installed && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Switch, {
-								checked: value.enabled,
-								onChange: (enabled) => draft.edit({
-									...value,
-									enabled
-								}),
-								label: t("sourceEnable", { name: localized(t, source.title) })
-							})]
-						}),
-						problem && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: "dt-row-buttons",
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-								className: "dt-error",
-								role: "status",
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SetupMessage, {
-									problem,
-									lead: true
-								})
-							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(CheckSetupButton, {})]
-						}),
-						!source.installed && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("sourceNotInstalledHint") }),
-						source.installed && source.fields.filter((spec) => !spec.advanced).map(field),
-						source.installed && source.id === "tapd" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(TapdCredentials, {
-							config: {
-								watches: Array.isArray(value.config.watches) ? value.config.watches.length : 0,
-								agent: String(value.config.agent ?? ""),
-								workspace: String(value.config.workspace ?? "")
-							},
-							onAddWatch: (watches) => draft.edit({
-								...value,
-								config: {
-									...value.config,
-									watches
-								}
-							})
-						}),
-						source.installed && advanced.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
-							icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "settings" }),
-							title: t("advanced"),
-							open: advancedOpen,
-							onToggle: () => setAdvancedOpen(!advancedOpen),
-							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-								className: "dt-disclosure-body",
-								children: advancedGroups.map((group) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", { children: [group.title && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-									className: "dt-hint",
-									children: group.title
-								}), group.specs.map(field)] }, group.title || "default"))
-							})
-						})
-					]
-				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SaveBar, {
-					...draft,
-					status: restarts && running > 0 ? t("restartInterrupts", { count: running }) : void 0,
-					onDiscard: draft.discard
-				})]
-			});
-		}
-		function SourceSettings({ focus }) {
-			const { sources } = useSettings().settings;
-			(0, react.useEffect)(() => {
-				if (focus) document.getElementById(`dt-source-${focus}`)?.scrollIntoView?.({ block: "start" });
-			}, [focus]);
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-				className: "dt-form",
-				children: [sources.filter((source) => source.id !== "p4").map((source) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SourceCard, { source }, source.id)), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfigHistory, {
-					blocks: ["source:"],
-					except: ["source:p4"]
-				})]
-			});
-		}
-		function DroppedReplies({ items }) {
-			const { t, navigate } = usePanel();
-			const [open, setOpen] = (0, react.useState)(false);
-			const target = (item) => item.ticket ? {
-				route: {
-					page: "execution",
-					id: item.ticket.id
-				},
-				name: item.ticket.title
-			} : item.thread ? {
-				route: {
-					page: "trigger",
-					id: item.thread
-				},
-				name: t("term.thread")
-			} : void 0;
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
-				icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "dismiss" }),
-				title: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
-					t("sourceDroppedTitle"),
-					" ",
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-						className: "dt-count",
-						children: items.length
-					})
-				] }),
-				open,
-				onToggle: () => setOpen(!open),
-				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-					className: "dt-disclosure-body",
-					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("sourceDroppedHint") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-						className: "dt-list",
-						children: items.map((item) => {
-							const link = target(item);
-							return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
-								className: "dt-row",
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Dot, { state: "idle" }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-									className: "dt-row-main",
-									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-										className: "dt-row-title dt-line",
-										children: readableMarkers(t, item.preview) || t("empty")
-									}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-										className: "dt-row-meta",
-										children: [
-											/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-												tone: "neutral",
-												children: reasonLabel(t, item.dropped.reason)
-											}),
-											/* @__PURE__ */ (0, react_jsx_runtime.jsx)(When, { at: item.dropped.at }),
-											link && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-												type: "button",
-												className: "dt-textlink",
-												onClick: () => navigate(link.route),
-												children: link.name
-											})
-										]
-									})]
-								})]
-							}, item.id);
-						})
-					})]
-				})
-			});
-		}
-		/**
-		* VsSaros fix (2026-11-06): replies whose send's result is not known. SuperAgent never sends them again by itself; a person
-		* checks the conversation and redelivers one when it did not arrive.
-		*/
-		function UncertainReplies({ items }) {
-			const { t, call, navigate } = usePanel();
-			const [open, setOpen] = (0, react.useState)(true);
-			const [done, setDone] = (0, react.useState)([]);
-			const redeliver = useAction(async (id) => {
-				await call("POST replies/:id/redeliver", { id });
-				setDone((ids) => [...ids, id]);
-			});
-			items = items.filter((item) => !done.includes(item.id));
-			if (!items.length) return null;
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
-				icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "alert" }),
-				title: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
-					t("sourceUncertainTitle"),
-					" ",
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-						className: "dt-count",
-						children: items.length
-					})
-				] }),
-				open,
-				onToggle: () => setOpen(!open),
-				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-					className: "dt-disclosure-body",
-					"data-testid": "uncertain-replies",
-					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("sourceUncertainHint") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-						className: "dt-list",
-						children: items.map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
-							className: "dt-row",
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Dot, { state: "warning" }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-								className: "dt-row-main",
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-									className: "dt-row-title dt-line",
-									children: readableMarkers(t, item.preview) || t("empty")
-								}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-									className: "dt-row-meta",
-									children: [
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-											className: "dt-mono dt-clamp",
-											children: item.unknown.reason
-										}),
-										item.unknown.at && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(When, { at: item.unknown.at }),
-										item.ticket && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-											type: "button",
-											className: "dt-textlink",
-											onClick: () => navigate({
-												page: "execution",
-												id: item.ticket.id
-											}),
-											children: item.ticket.title
-										}),
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-											type: "button",
-											className: "dt-textlink",
-											disabled: redeliver.busy,
-											onClick: () => {
-												redeliver.run(item.id);
-											},
-											children: t("sourceRedeliver")
-										})
-									]
-								})]
-							})]
-						}, item.id))
-					})]
-				})
-			});
-		}
-		function SourceRow({ source }) {
-			const { t, navigate } = usePanel();
-			const { setup } = usePanelData();
-			const [filteredOpen, setFilteredOpen] = (0, react.useState)(false);
-			const { problem, dropped, uncertain } = source;
-			const { dot, label: state } = sourceMark(t, source.state);
-			const { received, filtered, lastAt } = source.stats;
-			const notes = source.enabled && !problem && !setup?.problem ? source.health.filter((item) => item.state === "error" || item.state === "paused") : [];
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
-				className: "dt-row",
-				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Dot, {
-					state: dot,
-					label: state
-				}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-					className: "dt-row-main",
-					children: [
-						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: "dt-row-title",
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-								className: "dt-row-name",
-								children: localized(t, source.title)
-							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-								className: "dt-status-text",
-								"data-state": dot,
-								children: state
-							})]
-						}),
-						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: "dt-row-meta",
-							children: [
-								received > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(LabelValue, {
-									label: t("sourceReceivedLabel"),
-									value: received
-								}),
-								filtered > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(LabelValue, {
-									label: t("sourceFilteredLabel"),
-									value: filtered
-								}),
-								lastAt && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(LabelValue, {
-									label: t("sourceLatestLabel"),
-									value: when(lastAt, t("lang"))
-								})
-							]
-						}),
-						problem && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
-							className: "dt-error",
-							children: [
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SetupMessage, {
-									problem,
-									lead: true
-								}),
-								" ",
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-									type: "button",
-									className: "dt-textlink",
-									onClick: () => navigate(settingsRoute("source", { source: source.id })),
-									children: t("sourceOpenSettings")
-								})
-							]
-						}),
-						notes.map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
-							className: item.state === "error" ? "dt-error dt-clamp" : "dt-hint dt-clamp",
-							children: [
-								valueLabel(t, "health", item.name),
-								t("labelSeparator"),
-								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-									className: item.code ? void 0 : "dt-mono",
-									children: healthText(t, item)
-								})
-							]
-						}, item.name)),
-						source.filtered.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
-							icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "filter" }),
-							title: t("sourceFilteredTitle"),
-							open: filteredOpen,
-							onToggle: () => setFilteredOpen(!filteredOpen),
-							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-								className: "dt-disclosure-body",
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-									className: "dt-list",
-									children: source.filtered.map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
-										className: "dt-row",
-										children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Dot, { state: "idle" }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-											className: "dt-row-main",
-											children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-												className: "dt-row-title",
-												children: [
-													actorName(t, item.actor),
-													t("labelSeparator"),
-													readableMarkers(t, item.preview) || t("empty")
-												]
-											}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-												className: "dt-row-meta",
-												children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-													tone: "neutral",
-													children: reasonLabel(t, item.reason)
-												}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(When, { at: item.at })]
-											})]
-										})]
-									}, item.id))
-								})
-							})
-						}),
-						uncertain.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(UncertainReplies, { items: uncertain }),
-						dropped.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DroppedReplies, { items: dropped })
-					]
-				})]
-			});
-		}
-		function SourceStatus() {
-			const { t, call, navigate } = usePanel();
-			const { setup } = usePanelData();
-			const { data, error } = usePoll(() => call("GET sources"), []);
-			const elsewhere = setup?.problem?.place === "deployment" ? setup.problem : void 0;
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-				className: "dt-form",
-				children: [
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(StatusHead, {
-						hint: t("sourceStatusIntro"),
-						settings: "source"
-					}),
-					elsewhere && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
-						className: "dt-error",
-						children: [
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SetupMessage, {
-								problem: elsewhere,
-								lead: true
-							}),
-							" ",
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-								type: "button",
-								className: "dt-textlink",
-								onClick: () => navigate(setupPage(elsewhere.place)),
-								children: t("setupFixLink")
-							})
-						]
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(LoadState, {
-						error,
-						loading: !data
-					}),
-					data && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-						className: "dt-list",
-						children: data.filter((source) => source.id !== "p4").map((source) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SourceRow, { source }, source.id))
-					})
-				]
-			});
-		}
-		//#endregion
-		//#region src/client/feed.ts
-		/**
-		* VsSaros addition (plan C): the change stream from dsh-superagent (`/orchestrator/api/stream`), shared by every view on
-		* the page: one connection while anything listens, none after. Views read their data again when a topic they show changes,
-		* and fall back to polling while the stream is down; after a reconnect every view reads again, since changes may have been
-		* missed. The stream is read with `fetch`, as `EventSource` cannot send the same-origin header the API requires.
-		*/
-		const listeners = /* @__PURE__ */ new Set();
-		const watchers = /* @__PURE__ */ new Set();
-		let live = false;
-		let connected = false;
-		let current;
-		let retry;
-		let failures = 0;
-		const emit = (topics) => {
-			for (const listener of [...listeners]) listener(topics);
-		};
-		function setLive(next) {
-			if (live === next) return;
-			live = next;
-			for (const watch of [...watchers]) watch(next);
-		}
-		/** One SSE frame: its `change` event names the topics that changed. */
-		function parseFrame(frame) {
-			let event = "message", data = "";
-			for (const line of frame.split("\n")) if (line.startsWith("event:")) event = line.slice(6).trim();
-			else if (line.startsWith("data:")) data += line.slice(5).trim();
-			if (event !== "change" || !data) return void 0;
-			try {
-				const topics = JSON.parse(data).topics;
-				return Array.isArray(topics) ? topics.filter((topic) => topic === "steps" || topic === "tickets" || topic === "desk") : void 0;
-			} catch {
-				return;
-			}
-		}
-		async function connect() {
-			const run = current = new AbortController();
-			try {
-				const response = await fetch("/orchestrator/api/stream", {
-					headers: {
-						"x-orchestrator-request": "1",
-						accept: "text/event-stream"
-					},
-					signal: run.signal
-				});
-				if (!response.ok || !response.body) throw new Error(`stream ${response.status}`);
-				const reader = response.body.getReader();
-				const decoder = new TextDecoder();
-				failures = 0;
-				setLive(true);
-				if (connected) emit("all");
-				connected = true;
-				let buffer = "";
-				for (;;) {
-					const { value, done } = await reader.read();
-					if (done) break;
-					buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
-					for (let at = buffer.indexOf("\n\n"); at >= 0; at = buffer.indexOf("\n\n")) {
-						const topics = parseFrame(buffer.slice(0, at));
-						buffer = buffer.slice(at + 2);
-						if (topics?.length) emit(topics);
-					}
-				}
-			} catch {}
-			if (run !== current) return;
-			current = void 0;
-			setLive(false);
-			failures += 1;
-			retry = setTimeout(() => {
-				if (listeners.size) connect();
-			}, Math.min(3e4, 1e3 * 2 ** Math.min(failures, 5)));
-		}
-		/** Listens to the stream's changes; the stream opens with the first listener and closes with the last. */
-		function subscribe(listener) {
-			listeners.add(listener);
-			if (!current && !retry) connect();
-			return () => {
-				listeners.delete(listener);
-				if (listeners.size) return;
-				clearTimeout(retry);
-				retry = void 0;
-				const run = current;
-				current = void 0;
-				run?.abort();
-				setLive(false);
-			};
-		}
-		/**
-		* VsSaros addition (2026-11-07, the module's "hot dispose"): ends the stream and its reconnect timer and forgets every
-		* listener, whatever views are still mounted. The client plugin calls it when DSH disposes it (`apply` → `ctx.effect`): a
-		* plugin reload loads a new copy of this module, and DSH's client has no `import.meta.hot`, so without this the old copy's
-		* connection and backoff timer lived on until its last view unmounted (or forever, after a view that never did). A listener
-		* that subscribes afterwards opens a new stream; a view of the old plugin that unsubscribes later closes nothing of it, since
-		* a stream is closed only once no listener is left.
-		*/
-		function disposeFeed() {
-			clearTimeout(retry);
-			retry = void 0;
-			const run = current;
-			current = void 0;
-			run?.abort();
-			listeners.clear();
-			setLive(false);
-			connected = false;
-			failures = 0;
-		}
-		/** Whether the stream is open now. */
-		function useFeedLive() {
-			const [value, setValue] = (0, react.useState)(live);
-			(0, react.useEffect)(() => {
-				watchers.add(setValue);
-				setValue(live);
-				return () => {
-					watchers.delete(setValue);
-				};
-			}, []);
-			return value;
-		}
-		/**
-		* Loads data and keeps it current: read again whenever one of `topics` changes, and polled every `intervalMs` while the
-		* stream is down (every `liveMs` while it is up, a safety net).
-		*/
-		function useLive(load, deps, topics, intervalMs = 5e3, liveMs = 6e4) {
-			const isLive = useFeedLive();
-			const poll = usePoll(load, deps, isLive ? liveMs : intervalMs);
-			const reload = (0, react.useRef)(poll.reload);
-			reload.current = poll.reload;
-			const wanted = topics.join(",");
-			(0, react.useEffect)(() => subscribe((changed) => {
-				if (changed === "all" || changed.some((topic) => wanted.split(",").includes(topic))) reload.current();
-			}), [wanted]);
-			return {
-				...poll,
-				live: isLive
-			};
 		}
 		//#endregion
 		//#region src/client/characters.ts
@@ -6100,6 +5505,2063 @@ window.__ModuleLoader__.load({
 			});
 		}
 		//#endregion
+		//#region src/client/team-plans.tsx
+		/**
+		* VsSaros addition: the Overview's team work — requests and teams waiting for a person, team steps, skill drafts from the
+		* memory system, Bot drafts — and, read-only, the retired team plans (2026-11-06).
+		* ★ 2026-11-09: the reusable-workflows / TeamFlow section was removed from this panel (user request); the Host-side
+		*   workflow data and adapter remain, so team staffing can still reuse saved workflows.
+		*/
+		/** ★ 2026-11-12（用户）：默认不限制预算，这里只显示已消耗 token 数。 */
+		function TeamBudget({ budget }) {
+			const { t } = usePanel();
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+				className: "dt-row-meta",
+				"data-testid": "team-budget",
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("team.tokensUsed", { tokens: String(budget.tokens) }) })
+			});
+		}
+		/** Renders nothing when no plan, no draft and no retrospective output exists. */
+		function TeamPlans() {
+			const { t, call, navigate } = usePanel();
+			const plans = usePoll(() => call("GET team/plans"), [], 5e3);
+			const drafts = usePoll(() => call("GET team/approvals"), [], 1e4);
+			const retro = usePoll(() => call("GET team/retrospective"), [], 1e4);
+			const approveBot = useAction((id) => call("POST team/approvals/:id/approve", { id }), { reload: drafts.reload });
+			const rejectBot = useAction((id) => call("POST team/approvals/:id/reject", { id }), { reload: drafts.reload });
+			const waiting = drafts.data?.waiting ?? [];
+			const archivedSkills = retro.data?.skills ?? [];
+			const work = useWork();
+			const teams = work.proposals ?? [];
+			const teamTickets = work.teams;
+			const distills = usePoll(() => call("GET team/distills"), [], 15e3);
+			const approveDraft = useAction((id) => call("POST team/distills/:id/approve", { id }), { reload: distills.reload });
+			const rejectDraft = useAction((id) => call("POST team/distills/:id/reject", { id }), { reload: distills.reload });
+			const drafts2 = (distills.data?.distills ?? []).filter((item) => item.result?.skill?.state === "draft" && item.result.skill.created);
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+				work.approvals.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
+					title: t("work.needsYou"),
+					count: work.approvals.length,
+					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: "dt-approvals",
+						"data-testid": "step-approvals",
+						children: work.approvals.map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ApprovalCard, { approval: item }, item.id))
+					})
+				}),
+				teams.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
+					title: t("team.staffing"),
+					count: teams.length,
+					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(StaffingList, { teams })
+				}),
+				teamTickets.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
+					title: t("team.steps"),
+					count: teamTickets.length,
+					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+						className: "dt-list dt-cards",
+						"data-testid": "team-steps",
+						children: teamTickets.map((team) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", {
+							className: "dt-row dt-team-run",
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: "dt-row-main",
+								children: [
+									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+										className: "dt-row-title",
+										children: [
+											team.ticket.title,
+											" ",
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+												className: "dt-tag",
+												"data-tone": "neutral",
+												children: t("team.stepsDone", {
+													done: String(team.steps.filter((step) => step.state === "ready").length),
+													total: String(team.steps.length)
+												})
+											})
+										]
+									}),
+									team.budget && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(TeamBudget, { budget: team.budget }),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(MiniFlow, {
+										team,
+										onOpen: () => navigate({
+											page: "execution",
+											query: { ticket: team.ticket.id }
+										})
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(StepMembers, { team })
+								]
+							})
+						}, team.ticket.id))
+					})
+				}),
+				drafts2.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
+					title: t("team.distillPending"),
+					count: drafts2.length,
+					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+						className: "dt-list dt-cards",
+						"data-testid": "team-distills",
+						children: drafts2.map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
+							className: "dt-row dt-link",
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: "dt-row-main",
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+									className: "dt-row-title",
+									children: [
+										item.stepTitle,
+										" ",
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											className: "dt-tag",
+											"data-tone": "neutral",
+											children: item.botName
+										}),
+										item.result.skill.version && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+											className: "dt-tag",
+											"data-tone": "outline",
+											children: [
+												"v",
+												item.result.skill.version,
+												item.result.skill.updates === "active" ? ` · ${t("team.distillNewVersion")}` : ""
+											]
+										}),
+										item.result.skill.risk && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											className: "dt-tag",
+											"data-tone": item.result.skill.risk === "low" ? "neutral" : "warning",
+											title: item.result.skill.riskReasons?.join("；"),
+											children: t(`team.distillRisk.${item.result.skill.risk}`)
+										}),
+										item.result.skill.distilled === false && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											className: "dt-tag",
+											"data-tone": "warning",
+											title: item.result.skill.distillError,
+											children: t("team.distillTemplate")
+										})
+									]
+								}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+									className: "dt-row-meta",
+									children: [
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: item.result.skill.name }),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: item.reasons.join(" · ") }),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: item.evidence.report.slice(0, 100) })
+									]
+								})]
+							}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: "dt-row-actions",
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+									variant: "primary",
+									size: "sm",
+									disabled: approveDraft.busy,
+									onClick: () => {
+										approveDraft.run(item.id);
+									},
+									children: t("team.skillApprove")
+								}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+									variant: "outline",
+									size: "sm",
+									disabled: rejectDraft.busy,
+									onClick: () => {
+										rejectDraft.run(item.id);
+									},
+									children: t("team.skillReject")
+								})]
+							})]
+						}, item.id))
+					})
+				}),
+				archivedSkills.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("team.skillsArchived", { count: String(archivedSkills.length) }) }),
+				waiting.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
+					title: t("team.approval"),
+					count: waiting.length,
+					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+						className: "dt-list dt-cards",
+						children: waiting.map((draft) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
+							className: "dt-row dt-link",
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: "dt-row-main",
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+									className: "dt-row-title",
+									children: [
+										draft.draft.name,
+										" ",
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											className: "dt-tag",
+											"data-tone": "warning",
+											children: draft.draft.id
+										})
+									]
+								}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+									className: "dt-row-meta",
+									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("team.approvalLine", { risk: draft.risk.join(", ") }) }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: draft.draft.description })]
+								})]
+							}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: "dt-row-actions",
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+									variant: "primary",
+									size: "sm",
+									disabled: approveBot.busy,
+									onClick: () => {
+										approveBot.run(draft.id);
+									},
+									children: t("team.approve")
+								}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+									variant: "outline",
+									size: "sm",
+									disabled: rejectBot.busy,
+									onClick: () => {
+										rejectBot.run(draft.id);
+									},
+									children: t("team.reject")
+								})]
+							})]
+						}, draft.id))
+					})
+				}),
+				drafts.data && drafts.data.created.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("team.created", {
+					count: String(drafts.data.created.length),
+					global: String(drafts.data.global),
+					perPlan: String(drafts.data.perPlan)
+				}) }),
+				!plans.data?.plans.length ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Section, {
+					title: t("team.archivedPlans"),
+					count: plans.data.plans.length,
+					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("team.archivedPlansHint") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+						className: "dt-list dt-cards",
+						"data-testid": "team-archived-plans",
+						children: plans.data.plans.slice(0, 3).map((plan) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", {
+							className: "dt-row dt-link",
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: "dt-row-main",
+								children: [
+									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+										className: "dt-row-title",
+										children: [
+											plan.goal,
+											" ",
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+												className: "dt-tag",
+												"data-tone": "neutral",
+												children: t(`team.state.${plan.status}`)
+											})
+										]
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+										className: "dt-row-meta",
+										children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("team.running", { running: String(plan.running) }) }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: plan.bots.join(" · ") })]
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+										className: "dt-list",
+										children: plan.steps.map((step) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", {
+											className: "dt-row",
+											children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+												className: "dt-row-main",
+												children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+													className: "dt-row-title",
+													children: t("team.step", {
+														step: step.id,
+														title: step.title,
+														bot: step.botName ?? step.bot
+													})
+												}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+													className: "dt-row-meta",
+													children: [
+														/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t(`team.state.${step.state}`) }),
+														step.after.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("team.after", { after: step.after.join(", ") }) }),
+														step.report && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: step.report.length > 120 ? `${step.report.slice(0, 120)}…` : step.report }),
+														step.error && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: step.error })
+													]
+												})]
+											})
+										}, step.id))
+									})
+								]
+							})
+						}, plan.id))
+					})]
+				})
+			] });
+		}
+		//#endregion
+		//#region src/client/overview.tsx
+		function ProblemLine({ problem, onChanged }) {
+			const { t, call, navigate } = usePanel();
+			const post = useAction((request) => request(), { reload: onChanged });
+			const row = (title, detail, route, hint, actions) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", {
+				className: "dt-row dt-link dt-att dt-att-error",
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					className: "dt-row-main",
+					children: [
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							className: "dt-att-what",
+							children: route ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								className: "dt-open dt-open-wrap",
+								onClick: () => navigate(route),
+								children: title
+							}) : title
+						}),
+						detail,
+						hint && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: hint }),
+						actions && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							className: "dt-row-meta dt-row-buttons",
+							children: actions
+						})
+					]
+				})
+			});
+			const go = (label, route) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+				variant: "outline",
+				size: "sm",
+				icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, {
+					name: "settings",
+					size: 14
+				}),
+				onClick: () => navigate(route),
+				children: label
+			});
+			const raw = (text) => text && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+				className: "dt-error dt-clamp dt-mono",
+				children: text
+			});
+			const worded = (text) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+				className: "dt-error",
+				children: text
+			});
+			switch (problem.kind) {
+				case "setup": return row(t(problem.place === "feishu" ? "problemSetupFeishu" : "problemSetup"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+					className: "dt-error",
+					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SetupMessage, { problem })
+				}), setupPage(problem.place), t(`problemSetupFix.${problem.place}`), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(CheckSetupButton, {}));
+				case "no-source": return row(t("problemNoSource"), void 0, settingsRoute("source"), void 0, go(t("actionOpenSources"), settingsRoute("source")));
+				case "no-allowed": return row(t("problemNoAllowed"), void 0, settingsRoute("eval"), void 0, go(t("actionAddAllowed"), settingsRoute("eval")));
+				case "executor-paused": return row(t("problemPaused"), void 0, { page: "execution" }, void 0, /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmButton, {
+					variant: "outline",
+					icon: "play",
+					label: t("resumeProcessing"),
+					title: t("resumeProcessing"),
+					message: t("resumeProcessingConfirm"),
+					onConfirm: async () => {
+						await call("POST executor/pause", { body: { paused: false } });
+						await onChanged();
+					}
+				}));
+				case "runtime-error": return row(t("problemRuntime", { name: valueLabel(t, "health", problem.name) }), raw(problem.detail), void 0);
+				case "source-error": {
+					const health = problem.source.health;
+					return row(t("sourceError", { source: localized(t, problem.source.title) }), health.code ? worded(healthText(t, health)) : raw(health.detail), { page: "source" }, t("sourceErrorHint"));
+				}
+				case "eval-overdue": return row(t("problemEvalOverdue", { thread: readableMarkers(t, problem.thread.title) }), void 0, {
+					page: "trigger",
+					id: problem.thread.key
+				});
+				case "eval-unavailable": return row(t("problemEvalUnavailable", { thread: readableMarkers(t, problem.thread.title) }), raw(reasonLabel(t, problem.reason)), {
+					page: "trigger",
+					id: problem.thread.key,
+					query: { trigger: problem.triggerId }
+				}, void 0, /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+					variant: "outline",
+					size: "sm",
+					icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, {
+						name: "refresh",
+						size: 14
+					}),
+					disabled: post.busy,
+					onClick: () => {
+						post.run(() => call("POST triggers/:id/requeue", { id: problem.triggerId }));
+					},
+					children: t("requeue")
+				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+					variant: "outline",
+					size: "sm",
+					icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, {
+						name: "dismiss",
+						size: 14
+					}),
+					disabled: post.busy,
+					onClick: () => {
+						post.run(() => call("POST decisions/:id/dismiss", { id: problem.decisionId }));
+					},
+					children: t("dismiss")
+				})] }));
+				case "outgoing": return row(t("problemReply", {
+					source: valueLabel(t, "source", problem.outgoing.channel.source),
+					attempts: problem.outgoing.attempts
+				}), raw(problem.outgoing.error), void 0);
+			}
+		}
+		function OverviewPage() {
+			const { t, call, navigate } = usePanel();
+			const { setup } = usePanelData();
+			const { data, error, reload } = usePoll(() => call("GET overview"), []);
+			if (!data) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(LoadState, {
+				error,
+				loading: true
+			});
+			const stat = (label, value, route) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+				className: "dt-stat",
+				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+					className: "dt-stat-label",
+					children: label
+				}), route ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+					type: "button",
+					className: "dt-textlink dt-stat-value",
+					onClick: () => navigate(route),
+					children: value
+				}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+					className: "dt-stat-value",
+					children: value
+				})]
+			});
+			const more = (route) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+				type: "button",
+				className: "dt-textlink dt-more-link",
+				onClick: () => navigate(route),
+				children: t("details")
+			});
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+				error && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(LoadState, {
+					error,
+					loading: false
+				}),
+				data.coexist?.dsBot && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					className: "dt-hint",
+					"data-testid": "coexist-ds-bot",
+					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", { children: t("coexistDsBot") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+						className: "dt-list",
+						children: data.coexist.dsBot.effects.map((effect) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", { children: t(`coexistEffect.${effect}`) }, effect))
+					})]
+				}),
+				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(PendingReviews, {}),
+				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(TeamPlans, {}),
+				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
+					title: t("pendingTickets"),
+					count: data.person.length,
+					children: data.person.length ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+						className: "dt-list dt-cards",
+						children: data.person.map((ticket) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(TicketLine, {
+							ticket,
+							question: true,
+							onChanged: reload
+						}, ticket.id))
+					}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("needsYouNone") })
+				}),
+				data.problems.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
+					title: t("problems"),
+					count: data.problems.length,
+					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+						className: "dt-list dt-cards",
+						children: data.problems.map((problem, index) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ProblemLine, {
+							problem,
+							onChanged: reload
+						}, index))
+					})
+				}),
+				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
+					title: t("lastDay"),
+					action: more({
+						page: "trigger",
+						query: { filter: "recent" }
+					}),
+					children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "dt-stats",
+						children: [
+							stat(t("flowReceivedLabel"), data.flow.received),
+							stat(t("flowFilteredLabel"), data.flow.filtered, data.flow.filtered ? { page: "source" } : void 0),
+							stat(t("flowJudgedLabel"), data.flow.judged),
+							stat(t("flowAcceptedLabel"), data.flow.accepted, {
+								page: "eval",
+								query: { window: "24h" }
+							}),
+							data.flow.dropped > 0 && stat(t("flowDroppedLabel"), data.flow.dropped, { page: "source" })
+						]
+					})
+				}),
+				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
+					title: t("term.executor"),
+					action: more({ page: "execution" }),
+					children: setup?.problem ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("executorWaitingSetup") }) : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "dt-stats",
+						children: [
+							stat(t("executingLabel"), `${data.executor.running} / ${data.executor.maxWorkers}`),
+							stat(t("queuedLabel"), data.executor.queued),
+							stat(t("idleLabel"), data.executor.idle)
+						]
+					})
+				})
+			] });
+		}
+		//#endregion
+		//#region src/client/usage.tsx
+		/**
+		* VsSaros addition (2026-11-06, P2): on the execution page, what SuperAgent's Sessions used (the usage ledger, with the
+		* context steward's last work), and the approval rules a person gave team Bots, with the templates to give more at once.
+		*/
+		const ROLES = [
+			"master",
+			"desk",
+			"worker",
+			"step"
+		];
+		const tokens = (value) => value >= 1e4 ? `${(value / 1e3).toFixed(value >= 1e5 ? 0 : 1)}k` : String(value);
+		function UsagePanel() {
+			const { t, call } = usePanel();
+			const [open, setOpen] = (0, react.useState)(false);
+			const { data } = usePoll(() => call("GET usage"), []);
+			const usage = data;
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
+				icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "clock" }),
+				title: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+					t("usageTitle"),
+					" ",
+					usage && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						className: "dt-count",
+						children: tokens(usage.day.total.total)
+					})
+				] }),
+				open,
+				onToggle: () => setOpen(!open),
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					className: "dt-disclosure-body",
+					"data-testid": "usage-panel",
+					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("usageHint") }), usage && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "dt-row-meta",
+							children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("usageDay", {
+									total: tokens(usage.day.total.total),
+									calls: String(usage.day.total.calls)
+								}) }),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("usageWeek", { total: tokens(usage.week.total) }) }),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("usageCache", { read: tokens(usage.day.total.cacheRead) }) })
+							]
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+							className: "dt-list",
+							children: ROLES.map((role) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", {
+								className: "dt-row",
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+									className: "dt-row-main",
+									children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+										className: "dt-row-meta",
+										children: [
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t(`usageRole.${role}`) }),
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: tokens(usage.day.byRole[role]?.total ?? 0) }),
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("usageCalls", { calls: String(usage.day.byRole[role]?.calls ?? 0) }) })
+										]
+									})
+								})
+							}, role))
+						}),
+						usage.day.byModel.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							className: "dt-row-meta",
+							children: usage.day.byModel.slice(0, 5).map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+								className: "dt-mono",
+								children: [
+									item.model || item.provider,
+									": ",
+									tokens(item.total)
+								]
+							}, `${item.provider}/${item.model}`))
+						}),
+						usage.day.byBot.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							className: "dt-row-meta",
+							children: usage.day.byBot.slice(0, 5).map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [
+								item.bot,
+								": ",
+								tokens(item.total)
+							] }, item.bot))
+						}),
+						usage.steward.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+							className: "dt-row-meta",
+							"data-testid": "steward",
+							children: usage.steward.map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [
+								t(`usageRole.${item.role}`),
+								t("listSeparator"),
+								t(`steward.${item.outcome}`, {
+									context: tokens(item.context ?? 0),
+									line: tokens(item.line ?? 0)
+								})
+							] }, item.session))
+						}),
+						usage.day.relays.resent + usage.day.relays.side > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "dt-hint",
+							"data-testid": "usage-relays",
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", { children: [t(usage.coexist.dsBot ? "usageRelaysDsBot" : "usageRelaysOther", {
+								resent: String(usage.day.relays.resent),
+								side: String(usage.day.relays.side)
+							}), !usage.sideCalls && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [" ", t("sideCallsOff")] })] }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+								className: "dt-list",
+								children: usage.day.relays.sessions.slice(0, 5).map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
+									className: "dt-row-meta",
+									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [t(`usageRole.${item.role}`), item.step ? ` · ${item.step}` : ""] }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("usageRelaySession", {
+										resent: String(item.resent),
+										side: String(item.side)
+									}) })]
+								}, item.session))
+							})]
+						})
+					] })]
+				})
+			});
+		}
+		function ApprovalRulesPanel() {
+			const { t, call } = usePanel();
+			const [open, setOpen] = (0, react.useState)(false);
+			const [bot, setBot] = (0, react.useState)("");
+			const { data, reload } = usePoll(() => call("GET steps/rules"), []);
+			const { data: bots } = usePoll(() => call("GET team/bots"), []);
+			const apply = useAction((template) => {
+				const card = bots?.bots.find((item) => item.id === bot);
+				return card ? call("POST steps/rules/templates/:id/apply", {
+					id: template,
+					body: {
+						botId: card.id,
+						botName: card.name
+					}
+				}) : Promise.resolve();
+			}, { reload });
+			const forget = useAction((id) => call("POST steps/rules/:id/delete", { id }), { reload });
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
+				icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "shield" }),
+				title: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+					t("rulesTitle"),
+					" ",
+					data && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						className: "dt-count",
+						children: data.rules.length
+					})
+				] }),
+				open,
+				onToggle: () => setOpen(!open),
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					className: "dt-disclosure-body",
+					"data-testid": "approval-rules",
+					children: [
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("rulesTemplateHint") }),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "dt-row-meta",
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("select", {
+								"aria-label": t("rulesBot"),
+								value: bot,
+								onChange: (event) => {
+									setBot(event.target.value);
+								},
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+									value: "",
+									children: t("rulesBot")
+								}), bots?.bots.map((card) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("option", {
+									value: card.id,
+									children: card.name
+								}, card.id))]
+							}), data?.templates.map((template) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Button, {
+								variant: "outline",
+								size: "sm",
+								disabled: !bot || apply.busy,
+								title: template.heads.join(", "),
+								onClick: () => {
+									apply.run(template.id);
+								},
+								children: [t(`rulesTemplate.${template.id}`), template.risk !== "low" ? ` · ${t("rulesRiskMedium")}` : ""]
+							}, template.id))]
+						}),
+						data && (data.rules.length ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+							className: "dt-list",
+							children: data.rules.map((rule) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", {
+								className: "dt-row",
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+									className: "dt-row-main",
+									children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+										className: "dt-row-meta",
+										children: [
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: rule.bot.name }),
+											/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+												className: "dt-mono",
+												children: [
+													rule.tool,
+													": ",
+													rule.head
+												]
+											}),
+											rule.template && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t(`rulesTemplate.${rule.template}`) }),
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+												type: "button",
+												className: "dt-textlink",
+												disabled: forget.busy,
+												onClick: () => {
+													forget.run(rule.id);
+												},
+												children: t("rulesForget")
+											})
+										]
+									})
+								})
+							}, rule.id))
+						}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("rulesNone") }))
+					]
+				})
+			});
+		}
+		//#endregion
+		//#region src/client/feishu-app-form.tsx
+		/**
+		* VsSaros addition (2026-11-11): inline "add a new Feishu app" form on the Feishu Source card.
+		*
+		* Same closed loop as the Bots' Channel binding dropdown: the secret goes straight to
+		* POST /x/agents/api/bindings (`action: 'feishu-app'`), which writes it to
+		* `<dataRoot>/agent-im-accounts.json` (0600) and returns a masked app list. It never enters the
+		* Source draft, the settings store, a URL or a log — only this component's state until the POST resolves.
+		*/
+		const L = {
+			title: {
+				zh: "添加飞书应用",
+				en: "Add a Feishu app"
+			},
+			appId: {
+				zh: "新应用 App ID",
+				en: "New app ID"
+			},
+			secret: {
+				zh: "App Secret（只写不读）",
+				en: "App secret (write only)"
+			},
+			name: {
+				zh: "名称（可选）",
+				en: "Name (optional)"
+			},
+			save: {
+				zh: "保存应用并选用",
+				en: "Save app and select"
+			},
+			saving: {
+				zh: "保存中…",
+				en: "Saving…"
+			},
+			cancel: {
+				zh: "取消",
+				en: "Cancel"
+			},
+			invalid: {
+				zh: "请填合法 App ID（cli_…）与 App Secret",
+				en: "Enter a valid app ID (cli_…) and app secret"
+			},
+			secretHint: {
+				zh: "密钥只提交给本机 Host 保存，不写入 SuperAgent 设置、不回显。",
+				en: "The secret is sent only to the local Host; it is never stored in SuperAgent settings or shown back."
+			}
+		};
+		/** Enter in these inputs must not submit the Source card's form, which would save the Source draft instead. */
+		const keepEnter$1 = (event) => {
+			if (event.key === "Enter") event.preventDefault();
+		};
+		function FeishuAppForm({ onSaved, onCancel }) {
+			const { t } = usePanel();
+			const [appId, setAppId] = (0, react.useState)("");
+			const [secret, setSecret] = (0, react.useState)("");
+			const [name, setName] = (0, react.useState)("");
+			const [busy, setBusy] = (0, react.useState)(false);
+			const [error, setError] = (0, react.useState)("");
+			const save = async () => {
+				const id = appId.trim(), value = secret.trim();
+				if (!/^cli_[A-Za-z0-9]{4,64}$/.test(id) || !value) {
+					setError(localized(t, L.invalid));
+					return;
+				}
+				setBusy(true);
+				setError("");
+				try {
+					const response = await fetch("/x/agents/api/bindings", {
+						method: "POST",
+						credentials: "same-origin",
+						headers: {
+							"content-type": "application/json",
+							accept: "application/json"
+						},
+						body: JSON.stringify({
+							actor: { kind: "human" },
+							action: "feishu-app",
+							appId: id,
+							appSecret: value,
+							name: name.trim()
+						})
+					});
+					const data = await response.json().catch(() => void 0);
+					if (!response.ok || data?.error) throw new Error(data?.error || `HTTP ${response.status}`);
+					setSecret("");
+					onSaved(id);
+				} catch (e) {
+					setError(errorText(e));
+				} finally {
+					setBusy(false);
+				}
+			};
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: "dt-field",
+				"data-feishu-app-form": "",
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						className: "dt-field-head",
+						children: localized(t, L.title)
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
+						label: localized(t, L.appId),
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
+							value: appId,
+							placeholder: "cli_…",
+							spellCheck: false,
+							"data-feishu-app-id": "",
+							onKeyDown: keepEnter$1,
+							onChange: (event) => setAppId(event.target.value)
+						})
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
+						label: localized(t, L.secret),
+						hint: localized(t, L.secretHint),
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
+							type: "password",
+							value: secret,
+							autoComplete: "off",
+							"data-feishu-app-secret": "",
+							onKeyDown: keepEnter$1,
+							onChange: (event) => setSecret(event.target.value)
+						})
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
+						label: localized(t, L.name),
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
+							value: name,
+							"data-feishu-app-name": "",
+							onKeyDown: keepEnter$1,
+							onChange: (event) => setName(event.target.value)
+						})
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "dt-row-buttons",
+						children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+								variant: "primary",
+								disabled: busy,
+								"data-feishu-app-save": "",
+								onClick: () => void save(),
+								children: localized(t, busy ? L.saving : L.save)
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+								disabled: busy,
+								"data-feishu-app-cancel": "",
+								onClick: onCancel,
+								children: localized(t, L.cancel)
+							}),
+							error && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+								className: "dt-error",
+								role: "alert",
+								children: error
+							})
+						]
+					})
+				]
+			});
+		}
+		//#endregion
+		//#region src/client/tapd-credentials.tsx
+		/**
+		* VsSaros addition: the TAPD setup checklist and Open API credentials on the TAPD Source card.
+		*
+		* The checklist is data-driven: the Host reports the credential source, saved watch count, resolved identity
+		* and the live health code instead of the panel guessing from static hints. The secret itself is written by the
+		* Host into its credentials file (`<DSH_HOME>/tapd.env`, or DSH_SUPERAGENT_TAPD_ENV_FILE), never into the
+		* settings store; the panel only ever gets a masked account name. The product also ships a TAPD API account.
+		*/
+		const KINDS = [
+			"client",
+			"user",
+			"token"
+		];
+		/** Enter in these inputs must not submit the Source card's form, which would save the Source draft instead. */
+		const keepEnter = (event) => {
+			if (event.key === "Enter") event.preventDefault();
+		};
+		/** Health codes the panel has a localized sentence for; anything else is shown verbatim. */
+		const HEALTH_MESSAGES = [
+			"sourceOff",
+			"tapdUnset",
+			"tapdWebhookUnset"
+		];
+		/** Two starter watches for the saved project: an empty workspace inherits the card's project ID. */
+		function recommendedWatches(agent) {
+			const owner = agent.trim();
+			return ["bug", "story"].map((type) => ({
+				name: type === "bug" ? "bugs" : "stories",
+				workspace: "",
+				type,
+				item: "",
+				status: "",
+				owner,
+				iteration: "",
+				mode: owner ? "assigned" : "all"
+			}));
+		}
+		function TapdCredentials({ config, onAddWatch }) {
+			const { t, call, notify } = usePanel();
+			const [status, setStatus] = (0, react.useState)();
+			const [setup, setSetup] = (0, react.useState)();
+			const [test, setTest] = (0, react.useState)();
+			const [testing, setTesting] = (0, react.useState)(false);
+			const [detailsOpen, setDetailsOpen] = (0, react.useState)(false);
+			const [customOpen, setCustomOpen] = (0, react.useState)(false);
+			const [kind, setKind] = (0, react.useState)("client");
+			const [id, setId] = (0, react.useState)("");
+			const [secret, setSecret] = (0, react.useState)("");
+			const refresh = async () => {
+				const [credential, next] = await Promise.all([call("GET sources/tapd/credentials"), call("GET sources/tapd/setup")]);
+				setStatus(credential);
+				setSetup(next);
+				return credential;
+			};
+			(0, react.useEffect)(() => {
+				refresh().then((credential) => {
+					if (credential.kind) setKind(credential.kind);
+				}).catch(() => {});
+			}, []);
+			const same = status?.kind === kind && !!status.saved;
+			const save = useAction(async () => {
+				setStatus(await call("POST sources/tapd/credentials", { body: {
+					kind,
+					id: id.trim(),
+					secret: secret.trim()
+				} }));
+				setSetup(await call("GET sources/tapd/setup"));
+				setId("");
+				setSecret("");
+				notify(t("tapdCred.saved"));
+			});
+			const clear = async () => {
+				setStatus(await call("POST sources/tapd/credentials", { body: { clear: true } }));
+				setSetup(await call("GET sources/tapd/setup"));
+				notify(t("tapdCred.cleared"));
+			};
+			const switchBundled = async (bundled) => {
+				setStatus(await call("POST sources/tapd/credentials", { body: { bundled } }));
+				setSetup(await call("GET sources/tapd/setup"));
+				notify(t("tapdCred.bundledSwitched"));
+			};
+			const runTest = async () => {
+				setTesting(true);
+				try {
+					setTest(await call("POST sources/tapd/test", { body: {} }));
+				} finally {
+					setTesting(false);
+				}
+			};
+			const idLabel = kind === "client" ? t("tapdCred.clientId") : t("tapdCred.user");
+			const secretLabel = kind === "client" ? t("tapdCred.clientSecret") : kind === "user" ? t("tapdCred.password") : t("tapdCred.token");
+			const ready = (kind === "token" || !!id.trim() || same && !!status?.account) && (!!secret.trim() || same) && (!!id.trim() || !!secret.trim());
+			const sourceTag = !status ? t("empty") : status.source === "environment" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+				tone: "success",
+				children: t("tapdCred.fromEnv")
+			}) : status.source === "file" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+				tone: "success",
+				children: t("tapdCred.fromFile")
+			}) : status.source === "bundled" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+				tone: "success",
+				children: t("tapdCred.fromBundled")
+			}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+				tone: "danger",
+				children: t("tapdCred.none")
+			});
+			const watchTag = !setup ? t("empty") : setup.watches > 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+				tone: "success",
+				children: t("tapdCheck.watchesSome", { count: String(setup.watches) })
+			}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+				tone: "danger",
+				children: t("tapdCheck.watchesNone")
+			});
+			const identityTag = !setup ? t("empty") : !setup.agent ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+				tone: "warning",
+				children: t("tapdCheck.identityEmpty")
+			}) : setup.agentMapped ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+				tone: "success",
+				children: t("tapdCheck.identityMapped", { name: setup.agentResolved })
+			}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+				tone: "warning",
+				children: t("tapdCheck.identityUnmapped", { name: setup.agent })
+			});
+			const healthLabel = (code) => !code ? t("tapdCheck.healthUnknown") : HEALTH_MESSAGES.includes(code) ? t(`healthCode.${code}`) : code;
+			const draft = config.watches;
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: "dt-field",
+				"data-tapd-credentials": "",
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						className: "dt-field-head",
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("label", { children: t("tapdCheck.title") })
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(KeyValues, { rows: [
+						[t("tapdCheck.credentials"), sourceTag],
+						[t("tapdCheck.watches"), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [watchTag, setup && draft !== setup.watches ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+							className: "dt-mono",
+							children: [" · ", t("tapdCheck.draftSaved", { count: String(draft) })]
+						}) : null] })],
+						[t("tapdCheck.identity"), identityTag],
+						[t("tapdCheck.health"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "dt-mono",
+							children: healthLabel(setup?.healthCode)
+						})],
+						[t("tapdCheck.connectivity"), !test ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+							tone: "neutral",
+							children: t("tapdCheck.notTested")
+						}) : test.ok ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+							tone: "success",
+							children: t("tapdCheck.testOk", { method: test.method ?? "" })
+						}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+							tone: "danger",
+							children: t("tapdCheck.testFail", { error: test.error ?? "" })
+						})]
+					] }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "dt-row-buttons",
+						children: [setup && setup.watches === 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+							variant: "outline",
+							size: "sm",
+							onClick: () => {
+								onAddWatch(recommendedWatches(setup.agent));
+								notify(t("tapdCheck.watchesAdded"));
+							},
+							children: t("tapdCheck.watchesAdd")
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+							variant: "outline",
+							size: "sm",
+							disabled: testing,
+							onClick: () => {
+								runTest();
+							},
+							children: testing ? t("tapdCheck.testing") : t("tapdCheck.test")
+						})]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						className: "dt-field-head",
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("label", { children: t("tapdCred.title") })
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(KeyValues, { rows: [
+						[t("tapdCred.status"), sourceTag],
+						...status?.method ? [[t("tapdCred.method"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "dt-mono",
+							children: status.source === "bundled" ? `${t("tapdCred.methodBundled")}${status.account ? ` · ${status.account}` : ""}` : status.method
+						})]] : [],
+						...status?.account ? [[t("tapdCred.account"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "dt-mono",
+							children: status.account
+						})]] : [],
+						[t("tapdCred.writeTo"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "dt-mono",
+							children: status?.file ?? t("empty")
+						})]
+					] }),
+					status?.overridden && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("tapdCred.overridden") }),
+					status?.source === "bundled" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("tapdCred.bundledHint") }),
+					status?.bundled && !status.saved && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("tapdCred.overrideHint") }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(DisclosureRow, {
+						icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "settings" }),
+						title: t("tapdCred.custom"),
+						open: customOpen,
+						onToggle: () => setCustomOpen(!customOpen),
+						children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("tapdCred.customHint") }),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SegmentedControl, {
+								className: "dt-segmented dt-field-segmented",
+								label: t("tapdCred.kind"),
+								value: kind,
+								onChange: setKind,
+								options: KINDS.map((value) => ({
+									value,
+									label: t(`tapdCred.kind.${value}`)
+								}))
+							}),
+							kind !== "token" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
+								label: idLabel,
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
+									value: id,
+									autoComplete: "off",
+									spellCheck: false,
+									onKeyDown: keepEnter,
+									onChange: (event) => setId(event.target.value),
+									placeholder: same && status?.account ? t("tapdCred.keep", { value: status.account }) : ""
+								})
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
+								label: secretLabel,
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
+									type: "password",
+									value: secret,
+									autoComplete: "new-password",
+									onKeyDown: keepEnter,
+									onChange: (event) => setSecret(event.target.value),
+									placeholder: same ? t("tapdCred.keepSecret") : ""
+								})
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("tapdCred.hint") }),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
+								icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "settings" }),
+								title: t("tapdCred.details"),
+								open: detailsOpen,
+								onToggle: () => setDetailsOpen(!detailsOpen),
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("tapdCred.detailsHint") })
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								className: "dt-row-buttons",
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+									variant: "outline",
+									size: "sm",
+									disabled: save.busy || !ready,
+									onClick: () => {
+										save.run();
+									},
+									children: save.busy ? t("tapdCred.saving") : t("tapdCred.save")
+								})
+							})
+						]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "dt-row-buttons",
+						children: [
+							status?.saved && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmButton, {
+								label: t("tapdCred.clear"),
+								title: t("tapdCred.clearTitle"),
+								message: t("tapdCred.clearConfirm", { file: status.file }),
+								onConfirm: clear
+							}),
+							status?.bundled && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmButton, {
+								label: t("tapdCred.bundledOff"),
+								title: t("tapdCred.bundledOffTitle"),
+								message: t("tapdCred.bundledOffConfirm"),
+								onConfirm: () => switchBundled("off")
+							}),
+							status && !status.bundled && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+								variant: "outline",
+								size: "sm",
+								onClick: () => {
+									switchBundled("on");
+								},
+								children: t("tapdCred.bundledOn")
+							})
+						]
+					})
+				]
+			});
+		}
+		//#endregion
+		//#region src/client/tapd-filter-import.tsx
+		/**
+		* Imports the Saroasis platform's bug-filter JSON into the TAPD Source draft. The Host compiles the
+		* Chinese display conditions into TAPD query fields; this component shows every condition's fate and
+		* lets a person enable, tune, preview or remove the resulting daily sweeps. Nothing is saved until
+		* the Source card's own Save button is pressed.
+		*/
+		const TARGET = {
+			api: {
+				zh: "下推 API",
+				en: "TAPD query",
+				tone: "success"
+			},
+			local: {
+				zh: "本地过滤",
+				en: "Local filter",
+				tone: "info"
+			},
+			skipped: {
+				zh: "已禁用",
+				en: "Disabled",
+				tone: "quiet"
+			},
+			manual: {
+				zh: "未生效",
+				en: "Not applied",
+				tone: "warning"
+			}
+		};
+		function TapdFilterImport({ schedules, watches, onChange }) {
+			const { t, call, notify } = usePanel();
+			const lang = t("lang") === "en" ? "en" : "zh";
+			const say = (zh, en) => lang === "en" ? en : zh;
+			const [text, setText] = (0, react.useState)("");
+			const [open, setOpen] = (0, react.useState)(false);
+			const [result, setResult] = (0, react.useState)();
+			const [preview, setPreview] = (0, react.useState)();
+			const importRun = useAction(async () => {
+				if (!text.trim()) return;
+				const existing = schedules.map((item) => item.name);
+				let index = 1, name = "";
+				do
+					name = `filter-bug-${index++}`;
+				while (existing.includes(name) || watches.some((w) => w.name === name));
+				const response = await call("POST sources/tapd/filters/import", { body: {
+					text,
+					name
+				} });
+				setResult(response);
+				setPreview(void 0);
+				return response;
+			});
+			const previewRun = useAction(async () => {
+				if (!result) return;
+				const response = await call("POST sources/tapd/filters/preview", { body: {
+					query: result.schedule.query,
+					windowDays: result.schedule.windowDays
+				} });
+				setPreview(response);
+				return response;
+			});
+			const apply = () => {
+				if (!result) return;
+				if (schedules.some((item) => item.name === result.schedule.name) || watches.some((w) => w.name === result.watch.name)) {
+					notify(say("同名接收项已存在，请先删除", "A watch with this name already exists; remove it first"));
+					return;
+				}
+				onChange({
+					schedules: [...schedules, result.schedule],
+					watches: [...watches, result.watch]
+				});
+				notify(say("已生成接收项；默认关闭定时，确认后请保存", "Watch added; the daily sweep is off by default. Save the card when ready."));
+				setResult(void 0);
+				setText("");
+				setPreview(void 0);
+			};
+			const patch = (name, change) => onChange({
+				schedules: schedules.map((item) => item.name === name ? {
+					...item,
+					...change
+				} : item),
+				watches
+			});
+			const remove = (name) => {
+				onChange({
+					schedules: schedules.filter((item) => item.name !== name),
+					watches: watches.filter((item) => item.name !== name)
+				});
+				if (result?.schedule.name === name) setResult(void 0);
+			};
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
+				icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "filter" }),
+				title: say("从 JSON 导入 TAPD 筛选条件", "Import a TAPD filter from JSON"),
+				open,
+				onToggle: () => setOpen(!open),
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					className: "dt-disclosure-body",
+					children: [
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
+							label: say("粘贴平台导出的筛选条件 JSON", "Paste the platform filter JSON"),
+							hint: say("从「萨罗斯管理平台 · 缺陷」页面导出的 conditions/state。导入只修改本卡片草稿，保存后才生效。", "The conditions/state export of the platform bug page. Import only edits this card draft; save to apply."),
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
+								className: "dt-textarea dt-mono",
+								rows: 5,
+								spellCheck: false,
+								value: text,
+								placeholder: "{\"source\":\"TAPD筛选条件\",\"conditions\":[...],\"state\":{...}}",
+								onChange: (event) => setText(event.target.value)
+							})
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "dt-row-buttons",
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+								variant: "outline",
+								size: "sm",
+								icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "copy" }),
+								disabled: !text.trim() || importRun.busy,
+								"aria-busy": importRun.busy,
+								onClick: () => {
+									importRun.run().catch((error) => notify(String(error)));
+								},
+								children: say("解析并预览映射", "Parse and preview mapping")
+							}), result && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+								variant: "ghost",
+								size: "sm",
+								icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "search" }),
+								disabled: previewRun.busy,
+								onClick: () => {
+									previewRun.run().catch((error) => notify(String(error)));
+								},
+								children: say("试算命中数", "Preview match count")
+							})]
+						}),
+						result && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+								className: "dt-hint",
+								children: say(`字段映射：${result.maps === "live" ? "来自本项目 TAPD 实时配置" : "内置映射（TAPD 暂不可达）"}`, `Field map: ${result.maps === "live" ? "live workspace configuration" : "built-in fallback (TAPD unreachable)"}`)
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+								className: "dt-rows",
+								children: result.report.map((row, index) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
+									className: "dt-rows-item",
+									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+										className: "dt-rows-head",
+										children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
+											className: "dt-rows-title",
+											children: [
+												row.field,
+												" · ",
+												row.op
+											]
+										}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+											tone: TARGET[row.target].tone,
+											children: TARGET[row.target][lang]
+										})]
+									}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+										className: "dt-hint",
+										children: row.detail
+									})]
+								}, index))
+							}),
+							result.warnings.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								role: "status",
+								className: "dt-error",
+								children: result.warnings.map((warning, index) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", { children: warning }, index))
+							}),
+							preview && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+								className: "dt-hint",
+								children: say(`当前查询命中 ${preview.total} 条；其中最近 ${result.schedule.windowDays} 天有变动 ${preview.recent} 条。单次上限 ${result.schedule.maxPerRun}。`, `${preview.total} bugs match in total; ${preview.recent} changed within ${result.schedule.windowDays} days. Per-run cap: ${result.schedule.maxPerRun}.`)
+							}),
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								className: "dt-row-buttons",
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+									variant: "primary",
+									size: "sm",
+									icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "plus" }),
+									onClick: apply,
+									children: say("新增一个 bug 接收项", "Add one bug watch")
+								})
+							})
+						] }),
+						schedules.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "dt-part",
+							children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+									className: "dt-subhead",
+									children: say("已导入的每日筛选", "Imported daily sweeps")
+								}),
+								schedules.map((schedule) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+									className: "dt-card dt-filter-schedule",
+									children: [
+										/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+											className: "dt-row-main",
+											children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+												className: "dt-field-head",
+												children: schedule.name
+											}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Switch, {
+												checked: schedule.enabled,
+												label: say("每天自动执行", "Run daily"),
+												onChange: (enabled) => patch(schedule.name, { enabled })
+											})]
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
+											className: "dt-hint",
+											children: [
+												schedule.page,
+												" · ",
+												schedule.exportedAt,
+												" · ",
+												say("上次扫描", "Last sweep"),
+												": ",
+												schedule.report.length,
+												" ",
+												say("条条件", "conditions")
+											]
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Fields, {
+											disabled: false,
+											children: [
+												/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
+													label: say("执行时间（本机 HH:MM）", "Local time (HH:MM)"),
+													children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
+														value: schedule.at,
+														pattern: "[0-2][0-9]:[0-5][0-9]",
+														spellCheck: false,
+														onChange: (event) => patch(schedule.name, { at: event.target.value })
+													})
+												}),
+												/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
+													label: say("单次最多接单", "Max tickets per run"),
+													children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
+														type: "number",
+														min: 1,
+														max: 200,
+														value: String(schedule.maxPerRun),
+														onChange: (event) => patch(schedule.name, { maxPerRun: Number(event.target.value) || 1 })
+													})
+												}),
+												/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
+													label: say("只看最近 N 天有变动的单子", "Only items changed within N days"),
+													children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
+														type: "number",
+														min: 1,
+														max: 30,
+														value: String(schedule.windowDays),
+														onChange: (event) => patch(schedule.name, { windowDays: Number(event.target.value) || 1 })
+													})
+												})
+											]
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+											className: "dt-row-buttons",
+											children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+												variant: "ghost",
+												size: "sm",
+												icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "trash" }),
+												onClick: () => remove(schedule.name),
+												children: say("删除", "Remove")
+											})
+										})
+									]
+								}, schedule.name)),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: say("启用后，每天到点把符合筛选且此前未派发的缺陷自动交给 SuperAgent。默认关闭；请先试算命中数并确认单次上限。", "Once enabled, each day the sweep hands newly matching bugs to SuperAgent. Off by default; preview the match count and confirm the cap first.") })
+							]
+						})
+					]
+				})
+			});
+		}
+		//#endregion
+		//#region src/client/source.tsx
+		/** Source status view (health, filtered Triggers, dropped replies) and Source settings cards. */
+		/**
+		* VsSaros addition: a Source kind's settings card. `title` overrides its heading, for a kind the panel shows somewhere
+		* other than the Sources page (P4, which is a way to manage projects rather than a place work arrives from).
+		*/
+		function SourceCard({ source, title }) {
+			const { t, call } = usePanel();
+			const { running } = usePanelData();
+			const { reload } = useSettings();
+			const [advancedOpen, setAdvancedOpen] = (0, react.useState)(false);
+			const [feishuAppLabels, setFeishuAppLabels] = (0, react.useState)({});
+			const [newAppOpen, setNewAppOpen] = (0, react.useState)(false);
+			const loadFeishuApps = async (isAlive = () => true) => {
+				const response = await fetch("/x/agents/api/bindings", {
+					credentials: "same-origin",
+					headers: { accept: "application/json" }
+				});
+				const data = await (response.ok ? response.json() : Promise.resolve({ feishuApps: [] }));
+				if (!isAlive()) return;
+				const options = {};
+				for (const app of data.feishuApps ?? []) {
+					const id = String(app.appId ?? "").trim();
+					if (!id) continue;
+					const name = String(app.name ?? "").trim();
+					const label = (name ? name + " · " : "") + id;
+					options["feishuApps:" + id] = label + (app.hasSecret ? "" : "（缺 App Secret）");
+				}
+				setFeishuAppLabels(options);
+			};
+			(0, react.useEffect)(() => {
+				if (source.id !== "feishu" || !source.installed) return;
+				let alive = true;
+				loadFeishuApps(() => alive).catch(() => {});
+				return () => {
+					alive = false;
+				};
+			}, [source.id, source.installed]);
+			const appLabels = {
+				...source.labels,
+				...feishuAppLabels
+			};
+			const refreshLabels = async () => {
+				const { added } = await call("POST sources/:id/labels", { id: source.id });
+				await reload();
+				return added;
+			};
+			(0, react.useEffect)(() => {
+				if (source.installed && source.id === "tapd" && !Object.keys(source.labels ?? {}).some((name) => name.includes(":"))) refreshLabels().catch(() => {});
+			}, [source.id, source.installed]);
+			const draft = useBlockDraft(`source:${source.id}`, source.value, source.revision);
+			const value = draft.value;
+			const { problem, value: saved } = source;
+			const changed = (key) => String(value.config[key] ?? "") !== String(saved.config[key] ?? "");
+			const restarts = draft.dirty && source.restarts.some(changed);
+			const description = localized(t, source.description);
+			const field = (spec) => {
+				const isAppId = source.id === "feishu" && spec.key === "appId";
+				return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SourceField, {
+					field: spec,
+					value: value.config[spec.key],
+					saved: saved.config[spec.key],
+					labels: isAppId ? appLabels : source.labels,
+					refreshLabels,
+					fact: spec.type === "fact" || !changed(spec.key) ? source.facts[spec.key] : void 0,
+					onAddNew: isAppId ? () => setNewAppOpen(true) : void 0,
+					addNewOpen: isAppId && newAppOpen,
+					detail: isAppId && newAppOpen ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(FeishuAppForm, {
+						onCancel: () => setNewAppOpen(false),
+						onSaved: (id) => {
+							loadFeishuApps().catch(() => {});
+							setNewAppOpen(false);
+							draft.edit({
+								...value,
+								config: {
+									...value.config,
+									appId: id
+								}
+							});
+						}
+					}) : void 0,
+					onChange: (next) => {
+						if (isAppId && newAppOpen) setNewAppOpen(false);
+						draft.edit({
+							...value,
+							config: {
+								...value.config,
+								[spec.key]: next
+							}
+						});
+					}
+				}, spec.key);
+			};
+			const advanced = source.fields.filter((spec) => spec.advanced);
+			const advancedGroups = (() => {
+				const groups = /* @__PURE__ */ new Map();
+				for (const spec of advanced) {
+					const title = spec.group ? localized(t, spec.group) : "";
+					if (!groups.has(title)) groups.set(title, {
+						title,
+						specs: []
+					});
+					groups.get(title).specs.push(spec);
+				}
+				return [...groups.values()];
+			})();
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("form", {
+				id: `dt-source-${source.id}`,
+				className: "dt-card",
+				onSubmit: (event) => {
+					draft.submit(event);
+				},
+				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Fields, {
+					disabled: draft.busy,
+					children: [
+						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "dt-card-head",
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								className: "dt-row-main",
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+									className: "dt-row-title",
+									children: [
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											className: "dt-card-title",
+											children: title ?? localized(t, source.title)
+										}),
+										description && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(InfoTip, { text: description }),
+										!source.installed && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+											tone: "warning",
+											children: t("sourceNotInstalled")
+										})
+									]
+								})
+							}), source.installed && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Switch, {
+								checked: value.enabled,
+								onChange: (enabled) => draft.edit({
+									...value,
+									enabled
+								}),
+								label: t("sourceEnable", { name: localized(t, source.title) })
+							})]
+						}),
+						problem && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "dt-row-buttons",
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+								className: "dt-error",
+								role: "status",
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SetupMessage, {
+									problem,
+									lead: true
+								})
+							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(CheckSetupButton, {})]
+						}),
+						!source.installed && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("sourceNotInstalledHint") }),
+						source.installed && source.fields.filter((spec) => !spec.advanced).map(field),
+						source.installed && source.id === "tapd" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(TapdCredentials, {
+							config: {
+								watches: Array.isArray(value.config.watches) ? value.config.watches.length : 0,
+								agent: String(value.config.agent ?? ""),
+								workspace: String(value.config.workspace ?? "")
+							},
+							onAddWatch: (watches) => draft.edit({
+								...value,
+								config: {
+									...value.config,
+									watches
+								}
+							})
+						}),
+						source.installed && source.id === "tapd" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(TapdFilterImport, {
+							schedules: value.config.filterSchedules ?? [],
+							watches: value.config.watches ?? [],
+							onChange: ({ schedules, watches }) => draft.edit({
+								...value,
+								config: {
+									...value.config,
+									filterSchedules: schedules,
+									watches
+								}
+							})
+						}),
+						source.installed && advanced.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
+							icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "settings" }),
+							title: t("advanced"),
+							open: advancedOpen,
+							onToggle: () => setAdvancedOpen(!advancedOpen),
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								className: "dt-disclosure-body",
+								children: advancedGroups.map((group) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", { children: [group.title && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+									className: "dt-hint",
+									children: group.title
+								}), group.specs.map(field)] }, group.title || "default"))
+							})
+						})
+					]
+				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SaveBar, {
+					...draft,
+					status: restarts && running > 0 ? t("restartInterrupts", { count: running }) : void 0,
+					onDiscard: draft.discard
+				})]
+			});
+		}
+		/** ★ 2026-11-11（用户）：设置页不再展示这两张来源卡。
+		*  P4 的配置在「执行」分组；「SuperAgent 主管」由运行时固定注册，用户无需（也不该）在面板里配置。
+		*  ⚠ 只是隐藏 UI：runtime.ts 仍注册 superagent 来源，已保存的 config 继续生效。 */
+		const HIDDEN_SOURCE_IDS = ["p4", "superagent"];
+		const shownSources = (sources) => sources.filter((source) => !HIDDEN_SOURCE_IDS.includes(source.id));
+		function SourceSettings({ focus }) {
+			const { sources } = useSettings().settings;
+			(0, react.useEffect)(() => {
+				if (focus) document.getElementById(`dt-source-${focus}`)?.scrollIntoView?.({ block: "start" });
+			}, [focus]);
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: "dt-form",
+				children: [shownSources(sources).map((source) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SourceCard, { source }, source.id)), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfigHistory, {
+					blocks: ["source:"],
+					except: HIDDEN_SOURCE_IDS.map((id) => `source:${id}`)
+				})]
+			});
+		}
+		function DroppedReplies({ items }) {
+			const { t, navigate } = usePanel();
+			const [open, setOpen] = (0, react.useState)(false);
+			const target = (item) => item.ticket ? {
+				route: {
+					page: "execution",
+					id: item.ticket.id
+				},
+				name: item.ticket.title
+			} : item.thread ? {
+				route: {
+					page: "trigger",
+					id: item.thread
+				},
+				name: t("term.thread")
+			} : void 0;
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
+				icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "dismiss" }),
+				title: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+					t("sourceDroppedTitle"),
+					" ",
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						className: "dt-count",
+						children: items.length
+					})
+				] }),
+				open,
+				onToggle: () => setOpen(!open),
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					className: "dt-disclosure-body",
+					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("sourceDroppedHint") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+						className: "dt-list",
+						children: items.map((item) => {
+							const link = target(item);
+							return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
+								className: "dt-row",
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Dot, { state: "idle" }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+									className: "dt-row-main",
+									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+										className: "dt-row-title dt-line",
+										children: readableMarkers(t, item.preview) || t("empty")
+									}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+										className: "dt-row-meta",
+										children: [
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+												tone: "neutral",
+												children: reasonLabel(t, item.dropped.reason)
+											}),
+											/* @__PURE__ */ (0, react_jsx_runtime.jsx)(When, { at: item.dropped.at }),
+											link && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+												type: "button",
+												className: "dt-textlink",
+												onClick: () => navigate(link.route),
+												children: link.name
+											})
+										]
+									})]
+								})]
+							}, item.id);
+						})
+					})]
+				})
+			});
+		}
+		/**
+		* VsSaros fix (2026-11-06): replies whose send's result is not known. SuperAgent never sends them again by itself; a person
+		* checks the conversation and redelivers one when it did not arrive.
+		*/
+		function UncertainReplies({ items }) {
+			const { t, call, navigate } = usePanel();
+			const [open, setOpen] = (0, react.useState)(true);
+			const [done, setDone] = (0, react.useState)([]);
+			const redeliver = useAction(async (id) => {
+				await call("POST replies/:id/redeliver", { id });
+				setDone((ids) => [...ids, id]);
+			});
+			items = items.filter((item) => !done.includes(item.id));
+			if (!items.length) return null;
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
+				icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "alert" }),
+				title: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+					t("sourceUncertainTitle"),
+					" ",
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+						className: "dt-count",
+						children: items.length
+					})
+				] }),
+				open,
+				onToggle: () => setOpen(!open),
+				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					className: "dt-disclosure-body",
+					"data-testid": "uncertain-replies",
+					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("sourceUncertainHint") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+						className: "dt-list",
+						children: items.map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
+							className: "dt-row",
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Dot, { state: "warning" }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+								className: "dt-row-main",
+								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+									className: "dt-row-title dt-line",
+									children: readableMarkers(t, item.preview) || t("empty")
+								}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+									className: "dt-row-meta",
+									children: [
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+											className: "dt-mono dt-clamp",
+											children: item.unknown.reason
+										}),
+										item.unknown.at && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(When, { at: item.unknown.at }),
+										item.ticket && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+											type: "button",
+											className: "dt-textlink",
+											onClick: () => navigate({
+												page: "execution",
+												id: item.ticket.id
+											}),
+											children: item.ticket.title
+										}),
+										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+											type: "button",
+											className: "dt-textlink",
+											disabled: redeliver.busy,
+											onClick: () => {
+												redeliver.run(item.id);
+											},
+											children: t("sourceRedeliver")
+										})
+									]
+								})]
+							})]
+						}, item.id))
+					})]
+				})
+			});
+		}
+		function SourceRow({ source }) {
+			const { t, navigate } = usePanel();
+			const { setup } = usePanelData();
+			const [filteredOpen, setFilteredOpen] = (0, react.useState)(false);
+			const { problem, dropped, uncertain } = source;
+			const { dot, label: state } = sourceMark(t, source.state);
+			const { received, filtered, lastAt } = source.stats;
+			const notes = source.enabled && !problem && !setup?.problem ? source.health.filter((item) => item.state === "error" || item.state === "paused") : [];
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
+				className: "dt-row",
+				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Dot, {
+					state: dot,
+					label: state
+				}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					className: "dt-row-main",
+					children: [
+						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "dt-row-title",
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: "dt-row-name",
+								children: localized(t, source.title)
+							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+								className: "dt-status-text",
+								"data-state": dot,
+								children: state
+							})]
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "dt-row-meta",
+							children: [
+								received > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(LabelValue, {
+									label: t("sourceReceivedLabel"),
+									value: received
+								}),
+								filtered > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(LabelValue, {
+									label: t("sourceFilteredLabel"),
+									value: filtered
+								}),
+								lastAt && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(LabelValue, {
+									label: t("sourceLatestLabel"),
+									value: when(lastAt, t("lang"))
+								})
+							]
+						}),
+						problem && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
+							className: "dt-error",
+							children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SetupMessage, {
+									problem,
+									lead: true
+								}),
+								" ",
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+									type: "button",
+									className: "dt-textlink",
+									onClick: () => navigate(settingsRoute("source", { source: source.id })),
+									children: t("sourceOpenSettings")
+								})
+							]
+						}),
+						notes.map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
+							className: item.state === "error" ? "dt-error dt-clamp" : "dt-hint dt-clamp",
+							children: [
+								valueLabel(t, "health", item.name),
+								t("labelSeparator"),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+									className: item.code ? void 0 : "dt-mono",
+									children: healthText(t, item)
+								})
+							]
+						}, item.name)),
+						source.filtered.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
+							icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "filter" }),
+							title: t("sourceFilteredTitle"),
+							open: filteredOpen,
+							onToggle: () => setFilteredOpen(!filteredOpen),
+							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								className: "dt-disclosure-body",
+								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+									className: "dt-list",
+									children: source.filtered.map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
+										className: "dt-row",
+										children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Dot, { state: "idle" }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+											className: "dt-row-main",
+											children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+												className: "dt-row-title",
+												children: [
+													actorName(t, item.actor),
+													t("labelSeparator"),
+													readableMarkers(t, item.preview) || t("empty")
+												]
+											}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+												className: "dt-row-meta",
+												children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
+													tone: "neutral",
+													children: reasonLabel(t, item.reason)
+												}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(When, { at: item.at })]
+											})]
+										})]
+									}, item.id))
+								})
+							})
+						}),
+						uncertain.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(UncertainReplies, { items: uncertain }),
+						dropped.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DroppedReplies, { items: dropped })
+					]
+				})]
+			});
+		}
+		function SourceStatus() {
+			const { t, call, navigate } = usePanel();
+			const { setup } = usePanelData();
+			const { data, error } = usePoll(() => call("GET sources"), []);
+			const elsewhere = setup?.problem?.place === "deployment" ? setup.problem : void 0;
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+				className: "dt-form",
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(StatusHead, {
+						hint: t("sourceStatusIntro"),
+						settings: "source"
+					}),
+					elsewhere && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
+						className: "dt-error",
+						children: [
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SetupMessage, {
+								problem: elsewhere,
+								lead: true
+							}),
+							" ",
+							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+								type: "button",
+								className: "dt-textlink",
+								onClick: () => navigate(setupPage(elsewhere.place)),
+								children: t("setupFixLink")
+							})
+						]
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(LoadState, {
+						error,
+						loading: !data
+					}),
+					data && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+						className: "dt-list",
+						children: shownSources(data).map((source) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SourceRow, { source }, source.id))
+					})
+				]
+			});
+		}
+		//#endregion
+		//#region src/client/workspace-inventory.tsx
+		/** Manual workspace inventory and cleanup preview; no polling and no mutation action. */
+		function WorkspaceInventoryPanel() {
+			const { t, call } = usePanel();
+			const [data, setData] = (0, react.useState)();
+			const query = useAction(async (offset = 0) => {
+				const next = await call("GET executor/workspaces", { query: {
+					offset,
+					limit: 10
+				} });
+				setData((current) => offset && current ? {
+					...next,
+					items: [...current.items, ...next.items]
+				} : next);
+			});
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Section, {
+				title: t("workspaceInventoryTitle"),
+				hint: t("workspaceInventoryHint"),
+				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+					variant: "outline",
+					disabled: query.busy,
+					"aria-busy": query.busy,
+					onClick: () => {
+						query.run(0);
+					},
+					children: t("workspaceInventoryCheck")
+				}), data && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("workspaceInventoryChecked", {
+						at: data.checkedAt,
+						days: data.retentionDays,
+						count: data.total
+					}) }),
+					!data.items.length && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("workspaceInventoryEmpty") }),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+						className: "dt-rows",
+						children: data.items.map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
+							className: "dt-rows-item",
+							children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("strong", { children: item.title }),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+									className: "dt-mono",
+									children: item.directory
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: item.checkedAt }),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("workspaceInventoryState", {
+									state: t(`workspacePreparation.${item.preparation}`),
+									exists: t(item.exists === null ? "workspaceUnknown" : item.exists ? "workspaceExists" : "workspaceMissing"),
+									bytes: item.bytes === null ? t("workspaceUnknown") : `${item.bytes.toLocaleString()} B`
+								}) }),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: item.blockers.length ? item.blockers.map((reason) => t(`workspaceBlocker.${reason}`)).join(t("listSeparator")) : t("workspaceManualReview") })
+							]
+						}, item.ticketId))
+					}),
+					data.nextOffset !== null && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+						variant: "outline",
+						disabled: query.busy,
+						onClick: () => {
+							query.run(data.nextOffset);
+						},
+						children: t("workspaceInventoryMore")
+					})
+				] })]
+			});
+		}
+		//#endregion
+		//#region src/client/tool-trace.tsx
+		/** On-demand metadata diagnostics; never displays tool arguments, output or HMAC keys. */
+		function ToolTracePanel() {
+			const { t, call } = usePanel();
+			const [ticketId, setTicketId] = (0, react.useState)("");
+			const [data, setData] = (0, react.useState)();
+			const query = useAction(async (beforeId) => {
+				setData(await call("GET tools/trace", { query: {
+					...ticketId.trim() ? { ticketId: ticketId.trim() } : {},
+					...beforeId ? { beforeId } : {},
+					limit: 50
+				} }));
+			});
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Section, {
+				title: t("toolTraceTitle"),
+				hint: t("toolTraceHint"),
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
+						label: t("toolTraceTicket"),
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
+							value: ticketId,
+							onChange: (event) => {
+								setTicketId(event.target.value);
+								setData(void 0);
+							}
+						})
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+						variant: "outline",
+						disabled: query.busy,
+						onClick: () => {
+							query.run();
+						},
+						children: t("toolTraceRefresh")
+					}),
+					data && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t(data.enabled ? "toolTraceOn" : "toolTraceOff") }),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("toolTraceSummary", data.summary) }),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
+							className: "dt-rows",
+							children: data.items.map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
+								className: "dt-rows-item",
+								children: [
+									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("strong", { children: [
+										item.name,
+										" · ",
+										item.role
+									] }),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Hint, { children: [
+										item.at,
+										" · ",
+										item.session,
+										item.step ? ` / ${item.step}` : ""
+									] }),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Hint, { children: [item.callId, item.parentCallId ? ` ← ${item.parentCallId}` : ""] }),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("toolTraceMetrics", {
+										duration: item.durationMs ?? "—",
+										input: item.inputBytes ?? "—",
+										output: item.outputBytes ?? "—",
+										state: t(item.cancelled ? "toolTraceCancelled" : item.isError ? "toolTraceError" : "toolTraceSuccess")
+									}) })
+								]
+							}, item.id))
+						}),
+						data.nextCursor !== null && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+							variant: "outline",
+							disabled: query.busy,
+							onClick: () => {
+								query.run(data.nextCursor);
+							},
+							children: t("toolTraceOlder")
+						})
+					] })
+				]
+			});
+		}
+		//#endregion
 		//#region src/client/execution.tsx
 		/** Execution status view (active Tickets and pause control) and Execution settings group (Executor capacity and workspace environment). */
 		/** ★ 2026-11-09（用户要求）：流程图 / 看板 / 列表是「执行」页的一部分，不再是独立的 work 页面。
@@ -6272,6 +7734,55 @@ window.__ModuleLoader__.load({
 				...value,
 				...next
 			});
+			const label = (text) => ({
+				zh: text,
+				en: text
+			});
+			const projectsField = {
+				key: "projects",
+				type: "rows",
+				label: label(t("projectMappings")),
+				hint: label(t("projectMappingsHint")),
+				columns: [
+					{
+						key: "id",
+						type: "text",
+						label: label(t("projectMappingId")),
+						pattern: "[a-zA-Z0-9_-]{1,80}"
+					},
+					{
+						key: "source",
+						type: "select",
+						label: label(t("term.source")),
+						options: [
+							"github",
+							"gongfeng",
+							"tapd",
+							"superagent",
+							"feishu"
+						].map((value) => ({
+							value,
+							label: label(value)
+						}))
+					},
+					{
+						key: "projectId",
+						type: "text",
+						label: label(t("projectMappingKey"))
+					},
+					{
+						key: "repository",
+						type: "text",
+						label: label(t("projectMappingRepository"))
+					},
+					{
+						key: "ref",
+						type: "text",
+						label: label(t("projectMappingRef")),
+						optional: true
+					}
+				]
+			};
 			const prepare = (0, react.useRef)(null);
 			const insert = (key) => {
 				const field = prepare.current;
@@ -6309,6 +7820,18 @@ window.__ModuleLoader__.load({
 											onChange: (model) => edit({ model })
 										})
 									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SwitchRow, {
+										label: t("workerPtc"),
+										hint: t("workerPtcHint"),
+										checked: value.workerPtc,
+										onChange: (workerPtc) => edit({ workerPtc })
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SwitchRow, {
+										label: t("toolTraceSwitch"),
+										hint: t("toolTraceSwitchHint"),
+										checked: value.toolTrace,
+										onChange: (toolTrace) => edit({ toolTrace })
+									}),
 									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Field, {
 										label: t("maxWorkers"),
 										hint: t("maxWorkersHint"),
@@ -6338,7 +7861,6 @@ window.__ModuleLoader__.load({
 											value: value.directory,
 											placeholder: t("executionDirectoryEmpty"),
 											spellCheck: false,
-											pattern: "/.*",
 											onChange: (event) => edit({ directory: event.target.value })
 										})
 									}),
@@ -6355,6 +7877,14 @@ window.__ModuleLoader__.load({
 											value: value.prepare,
 											onChange: (event) => edit({ prepare: event.target.value })
 										})
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SourceField, {
+										field: projectsField,
+										value: value.projects,
+										saved: executor.projects,
+										fact: void 0,
+										labels: {},
+										onChange: (projects) => edit({ projects })
 									}),
 									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(EnvironmentVariables, {
 										groups: environment.variables,
@@ -6373,10 +7903,22 @@ window.__ModuleLoader__.load({
 										})
 									}),
 									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SwitchRow, {
+										label: t("teamSwitch"),
+										hint: t("teamSwitchHint"),
+										checked: value.teamEnabled,
+										onChange: (teamEnabled) => edit({ teamEnabled })
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SwitchRow, {
 										label: t("sideCalls"),
 										hint: t("sideCallsHint"),
 										checked: value.sideCalls,
 										onChange: (sideCalls) => edit({ sideCalls })
+									}),
+									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SwitchRow, {
+										label: t("feishuReport"),
+										hint: t("feishuReportHint"),
+										checked: value.feishuReport,
+										onChange: (feishuReport) => edit({ feishuReport })
 									})
 								]
 							})]
@@ -6385,6 +7927,8 @@ window.__ModuleLoader__.load({
 							onDiscard: draft.discard
 						})]
 					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ToolTracePanel, {}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(WorkspaceInventoryPanel, {}),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfigHistory, { blocks: ["executor", "pause"] }),
 					p4 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SourceCard, {
 						source: p4,
@@ -6433,6 +7977,7 @@ window.__ModuleLoader__.load({
 			tapdUnset: "The Source is on, and no watch is set",
 			tapdWebhookUnset: "The TAPD Webhook is on, and its shared secret is not set",
 			feishuBotMissing: "Waiting for the Feishu bot",
+			feishuNotInChat: "Feishu bot is not in chat {chats}; history recovery for those chats is paused",
 			pollFailures: "{count} consecutive failed polls; last: {error}"
 		};
 		//#endregion
@@ -6480,6 +8025,16 @@ window.__ModuleLoader__.load({
 			"health.reply": ["发往渠道的消息", "Messages to Channels"],
 			"health.worker": ["执行器事件处理", "Executor event handling"],
 			"health.evals": ["未完成的评估", "Unavailable Evals"],
+			"health.ticketReport": ["工单 HTML 报告发送", "Ticket HTML report delivery"],
+			"health.reportLocal": ["本地工单报告生成", "Local ticket report generation"],
+			ticketArtifact: ["工单报告", "Ticket report"],
+			ticketArtifactInspect: ["查看报告状态", "Inspect report status"],
+			ticketArtifactGenerated: ["本地已生成（不代表已外发或修复生效）", "Generated locally (not proof of delivery or deployment)"],
+			ticketArtifactGenerating: ["本地生成排队中", "Local generation queued"],
+			ticketArtifactMissing: ["尚无本地报告", "No local report yet"],
+			ticketArtifactDownload: ["下载本地报告", "Download local report"],
+			ticketArtifactDocument: ["打开云文档（不代表已送达）", "Open cloud document (not proof of delivery)"],
+			ticketArtifactDelivery: ["外发状态：{state}（sent=已送达，queued=排队/重试，not-requested=未请求，target-gone=目标失效，partial=部分送达）", "Delivery: {state} (sent, queued/retrying, not-requested, target-gone or partial)"],
 			none: ["暂无。", "None."],
 			openSession: ["打开 Session", "Open Session"],
 			stop: ["停止", "Stop"],
@@ -6974,6 +8529,66 @@ window.__ModuleLoader__.load({
 			prepareCommand: ["准备命令", "Prepare command"],
 			prepareCommandHint: ["新工单的目录建好前，在根目录下用 sh 运行一次，执行环境的变量是它的环境变量，例如用 git worktree 把仓库检出到 $DSH_SUPERAGENT_DIR。留空就是空目录。失败时工单显示失败，并附上命令的输出。", "Runs once with sh in the root before a new Ticket's directory exists, with the execution environment's variables as its environment, for example to check a repository out to $DSH_SUPERAGENT_DIR with git worktree. Leave it empty for an empty directory. A failure fails the Ticket with the command's output."],
 			prepareCommandEmpty: ["留空：空目录", "Empty: an empty directory"],
+			projectMappings: ["Git 项目映射", "Git project mappings"],
+			projectMappingsHint: ["匹配的工单从本地仓库创建独立 worktree，跳过准备命令。GitHub 项目键为 owner/repo；工蜂为数字项目 ID；TAPD 为项目 ID（含飞书中的 TAPD 链接）；普通本机会话和飞书任务为 local。无匹配仍走通用目录。只使用本地基线，不自动 fetch、push 或清理。P4/UE 非 Git 工程暂不支持此映射。", "Matched tickets use an isolated Git worktree instead of the prepare command. GitHub keys are owner/repo; Gongfeng keys are numeric project IDs; TAPD keys are project IDs (including TAPD links in Feishu); normal local/Feishu tasks use local. Unmatched tickets keep generic directories. Local revisions only; no fetch, push or cleanup. Non-Git P4/UE projects are not supported here."],
+			projectMappingId: ["映射名称", "Mapping ID"],
+			projectMappingKey: ["来源项目键", "Source project key"],
+			projectMappingRepository: ["本地 Git 仓库绝对路径", "Absolute local Git repository path"],
+			projectMappingRef: ["本地基线（留空用 HEAD）", "Local revision (empty uses HEAD)"],
+			workspaceInventoryTitle: ["工作区盘点与清理预览", "Workspace inventory and cleanup preview"],
+			workspaceInventoryHint: ["仅点击后读取工单记录、目录和本地 Git 状态，不执行删除、归档或准备。不扫描孤立目录；大小为逻辑文件字节，不含共享 Git 对象库。结果不是清理授权，未知状态一律保留。", "On-demand reads of ticket records, directories and local Git only; no deletion, archiving or preparation. Orphan directories are not scanned. Sizes are logical file bytes, excluding shared Git objects. This is not cleanup authorization; unknown states are retained."],
+			workspaceInventoryCheck: ["盘点工作区", "Inspect workspaces"],
+			workspaceInventoryChecked: ["检查时间 {at} · 工单目录 {count} 个 · 预览保留期 {days} 天（仅预览）", "Checked {at} · {count} ticket directories · preview retention {days} days (preview only)"],
+			workspaceInventoryState: ["准备：{state} · 目录：{exists} · 文件大小：{bytes}", "Preparation: {state} · Directory: {exists} · File size: {bytes}"],
+			workspaceInventoryEmpty: ["没有带执行目录的工单", "No tickets with execution directories"],
+			workspaceInventoryMore: ["盘点下一页", "Inspect next page"],
+			workspaceUnknown: ["未知", "Unknown"],
+			workspaceExists: ["存在", "Exists"],
+			workspaceMissing: ["不存在", "Missing"],
+			workspaceManualReview: ["可人工复核归档；未执行清理，删除前仍须重新检查", "May be manually reviewed for archiving; no cleanup performed, recheck before removal"],
+			workerPtc: ["新工单 worker 使用 PTC（试点）", "PTC for new ticket workers (pilot)"],
+			workerPtcHint: ["默认关闭，仅接单时选择，已有工单不切换；主管、团队步骤不启用。需宿主官方 Node PTC 进程运行时与文件沙箱，缺失会阻止执行而非回退。每段程序须显式 timeoutMs≤30000，30秒内最多32次 SDK 调用，并行4；禁止提权和已配置P4。文件沙箱不隔离网络/进程，程序应只通过SDK调用工具。", "Off by default, selected at acceptance; existing tickets do not switch. Router and team steps stay native. Requires official Node PTC process runtime and file policy; missing services block execution, never silently fall back. Explicit timeoutMs≤30000; up to 32 SDK attempts in 30 seconds, parallelism 4. No escalation or configured P4. File policy does not isolate network/process visibility; programs should use SDK tools."],
+			toolTraceSwitch: ["记录脱敏工具调用", "Record tool-call metadata"],
+			toolTraceSwitchHint: ["默认关闭。只记录调用关系、耗时、字节数和本机HMAC参数指纹，7天/最多10000行；不保存参数、代码、返回正文或错误正文。DSH原有会话历史不受此开关影响。", "Off by default. Relations, timing, sizes and local HMAC parameter fingerprints only, retained 7 days/up to 10000 rows. No arguments, code, outputs or error text. Existing DSH session logs are unaffected."],
+			toolTraceTitle: ["工具调用诊断", "Tool-call diagnostics"],
+			toolTraceHint: ["点击读取近期元数据样本。相同输入重复只代表参数相同，不代表资源未变化或调用一定冗余。PTC统计包含外层与内部调用，不会把内部数量隐藏。", "Load a recent metadata sample on request. Repeated identical inputs do not prove unchanged resources or redundant work. PTC counts include outer and inner calls."],
+			toolTraceTicket: ["筛选工单 ID（留空全部）", "Ticket ID filter (empty for all)"],
+			toolTraceRefresh: ["读取调用账本", "Load tool trace"],
+			toolTraceOlder: ["读取更早样本", "Load earlier sample"],
+			toolTraceOn: ["记录已开启", "Recording enabled"],
+			toolTraceOff: ["记录已关闭；旧样本仍按保留期提供", "Recording disabled; retained samples remain available"],
+			toolTraceSummary: ["样本 {sampled} · 外层 {rootCalls} · 子调用 {nestedCalls} · 错误 {errors} · 同输入重复 {sameInputRepeats}", "Sample {sampled} · root {rootCalls} · nested {nestedCalls} · errors {errors} · repeated inputs {sameInputRepeats}"],
+			toolTraceMetrics: ["耗时 {duration} ms · 输入 {input} B · 输出 {output} B · {state}", "Duration {duration} ms · input {input} B · output {output} B · {state}"],
+			toolTraceCancelled: ["已取消", "Cancelled"],
+			toolTraceError: ["失败或被拒", "Failed or denied"],
+			toolTraceSuccess: ["成功", "Succeeded"],
+			"workspacePreparation.unknown": ["无准备记录", "No preparation record"],
+			"workspacePreparation.preparing": ["准备中或中断", "Preparing or interrupted"],
+			"workspacePreparation.ready": ["已就绪", "Ready"],
+			"workspacePreparation.failed": ["准备或验证失败", "Preparation or verification failed"],
+			"workspaceBlocker.live": ["工单未结束", "Ticket is still open"],
+			"workspaceBlocker.recent": ["未超过预览保留期", "Within preview retention period"],
+			"workspaceBlocker.end-unknown": ["结束时间未知", "End time unknown"],
+			"workspaceBlocker.pending-input": ["仍有待投递输入", "Undelivered inputs remain"],
+			"workspaceBlocker.awaiting-person": ["仍等待人工回答", "Awaiting a person"],
+			"workspaceBlocker.open-follow": ["仍有未关闭交付或跟踪", "Open delivery or followed thread"],
+			"workspaceBlocker.team-history": ["团队现场需人工核对", "Team workspace needs manual review"],
+			"workspaceBlocker.p4-history": ["P4 交付或审核记录需人工核对", "P4 delivery or review needs manual review"],
+			"workspaceBlocker.preparation-unknown": ["准备来源未知", "Preparation provenance unknown"],
+			"workspaceBlocker.preparation-failed": ["准备未就绪", "Preparation not ready"],
+			"workspaceBlocker.external-directory": ["非托管 Git worktree，禁止自动回收", "Not a managed Git worktree; no automatic reclamation"],
+			"workspaceBlocker.missing": ["目录已丢失，不会重建", "Directory missing; will not recreate"],
+			"workspaceBlocker.filesystem-unknown": ["文件系统状态未知或不可访问", "Filesystem state unknown or inaccessible"],
+			"workspaceBlocker.incomplete-size": ["目录扫描达到限制，大小未知", "Scan limit reached; size unknown"],
+			"workspaceBlocker.symbolic-links": ["含链接，未跟随扫描", "Links detected; not followed"],
+			"workspaceBlocker.git-unknown": ["Git 状态或 checkout 身份无法确认", "Git state or checkout identity unconfirmed"],
+			"workspaceBlocker.git-dirty": ["有未提交、未跟踪或忽略文件", "Uncommitted, untracked or ignored files"],
+			"workspaceBlocker.git-ahead": ["有未推送提交", "Unpushed commits"],
+			"workspaceBlocker.no-upstream": ["无可验证 upstream，提交备份未知", "No verifiable upstream; commit backup unknown"],
+			"workspaceBlocker.runtime-active": ["worker 或后台工作仍活动", "Worker or background work active"],
+			"workspaceBlocker.activity-unknown": ["后台活动状态无法确认", "Background activity unconfirmed"],
+			"workspaceBlocker.shared-directory": ["多个工单指向同一目录", "Directory shared by multiple tickets"],
+			"workspaceBlocker.path-mismatch": ["路径与准备记录不符或非绝对路径", "Path differs from preparation record or is not absolute"],
 			blockedCommands: ["禁止调用的命令", "Blocked commands"],
 			blockedCommandsHint: ["执行器 Session 调用这些命令名时直接失败，例如用你个人账号登录的 CLI。只拦按名字的调用，用绝对路径仍能运行，所以不是安全边界。gh、git、lark-cli 不能禁止。", "Command names that fail when an Executor Session calls them, such as a CLI signed in to your own account. Only calls by name fail; an absolute path still runs, so this is not a security boundary. gh, git and lark-cli cannot be blocked."],
 			blockedCommandsNone: ["以空格分隔；没有", "Separated by spaces; none"],
@@ -6995,6 +8610,8 @@ window.__ModuleLoader__.load({
 			policyVersionUnrecorded: ["最近的保存记录里没有策略版本 {version}：它来自更早的保存、首次启动时的设置或更早的数据。", "The recent saves do not include Policy version {version}: an older save, the settings at the first start, or older data made it."],
 			defaultModel: ["DSH 当前默认：{model}", "DSH default: {model}"],
 			defaultModelUnavailable: ["DSH 默认模型暂不可用", "DSH default model unavailable"],
+			modelNotConfigured: ["模型未配置：当前留空，将继承 DSH 默认值（{model}）。请在上方填写服务商与模型；否则默认模型不可用时执行会失败。", "Model not configured: this is empty, so the DSH default ({model}) is inherited. Fill in Provider and Model above, or execution will fail when the default is unusable."],
+			defaultModelUnusable: ["DSH 默认模型当前不可用，请在此显式配置服务商与模型。", "The DSH default model is currently unusable; configure a Provider and Model explicitly here."],
 			modelProvider: ["服务商", "Provider"],
 			modelName: ["模型", "Model"],
 			modelEffort: ["推理强度（可选）", "Reasoning effort (optional)"],
@@ -7186,6 +8803,7 @@ window.__ModuleLoader__.load({
 			"reason.noRuleMatched": ["没有启用的准入规则匹配", "No enabled admission rule matched"],
 			"reason.ignoredFromCard": ["仅凭候选卡片忽略，未经规则研判", "Ignored from its card, without a rule assessment"],
 			"reason.observed": ["观察模式：本会接单（{text}）", "Observe mode: would accept ({text})"],
+			"reason.explicitFastTrack": ["明确任务（任务动词 + 链接）按规则直接接单，未走模型评估", "Explicit task with a URL accepted by rule, without a model assessment"],
 			"reason.explicitRouted": ["名单里的人明确请求，由主 Session 接单", "Explicit request from someone on the list, accepted by the main Session"],
 			"reason.legacyImport": ["从旧版工单记录导入", "Imported from a legacy Ticket record"],
 			"reason.channelGone": ["对话已无法接收消息", "The conversation can no longer receive messages"],
@@ -7358,6 +8976,7 @@ window.__ModuleLoader__.load({
 			p4UnsetHint: ["P4 未配置：签出、改动和提交暂时都用不了，在下面的执行设置里填服务器和执行账号。", "P4 is not set up: no checkouts, changes or submits until its server and execution account are set below."],
 			p4BlockHint: ["执行器用这个账号在 P4 里签出、改动并 shelve 改动；提交只在你审核同意之后进行。", "Workers check out, change and shelve in P4 with this account; a submit happens only after you approve it."],
 			"healthCode.feishuBotMissing": ["等待飞书机器人", HEALTH_TEXT.feishuBotMissing],
+			"healthCode.feishuNotInChat": ["飞书机器人不在会话 {chats}，已暂停这些会话的历史补收", HEALTH_TEXT.feishuNotInChat],
 			"healthCode.pollFailures": ["连续 {count} 次轮询失败，最近一次：{error}", HEALTH_TEXT.pollFailures],
 			"team.archivedPlans": ["旧团队计划（只读归档）", "Old team plans (archived, read-only)"],
 			"team.archivedPlansHint": ["旧的「主管直接派活」双轨已下线：这些计划不会再推进；团队工作只走「工单 → 组队 → 你同意」。", "The old track where the supervisor gave work out on its own is retired: these plans do not advance; team work runs only as a ticket whose team you agree to."],
@@ -7382,9 +9001,13 @@ window.__ModuleLoader__.load({
 			"usageRelaySession": ["改写 {resent} 次 · 看图 {side} 次", "{resent} rewritten · {side} read on the side"],
 			"ticketRelaysDsBot": ["被 DS Bot 改写", "Rewritten by DS Bot"],
 			"ticketRelaysOther": ["被其它插件改写", "Rewritten by another plugin"],
+			"teamSwitch": ["启用团队模式", "Team mode"],
+			"teamSwitchHint": ["默认关闭：收到任务后直接建单并启动单个 worker，像原型一样不生成组队方案、不等人同意。开启后才恢复组队方案、人工批准与多 Bot 步骤。", "Off by default: a ticket starts one worker at once, like the prototype — no team proposal, no approval, no multi-Bot steps. Turn it on to restore proposals, human agreement and team steps."],
 			"sideCalls": ["允许其它插件用别的模型读 SuperAgent 会话", "Let other plugins read SuperAgent's Sessions with another model"],
 			"sideCallsHint": ["DS Bot 的看图：会话模型不能看图时，它用自己的 OCR 模型读图片。关掉后 SuperAgent 的会话拒绝这类调用，DS Bot 会告诉模型「图片现在读不了」；密钥脱敏的改写重发不受影响。", "DS Bot's images: when a Session's model cannot read images, it reads them with its OCR model. Off, SuperAgent's Sessions refuse such calls and DS Bot tells the model the image could not be read; its secrets rewrite still goes."],
 			"sideCallsOff": ["（执行设置里已关闭「别的模型读会话」，这类调用会被拒绝。）", "(Reading with another model is off in the execution settings; such calls are refused.)"],
+			"feishuReport": ["工单结束时把 HTML 报告发到飞书", "Send an HTML report to Feishu when a ticket ends"],
+			"feishuReportHint": ["默认关闭：报告会生成一份飞书云文档（HTML 以页面预览形式呈现），发回原话题的消息里只放文档地址，不再附 .html 文件；原有的短结果通知照常发送。开启即表示同意把工单内容外发到那个会话。", "Off by default: the report becomes a Lark cloud document with the HTML rendered as a page preview, and the message to the original thread carries only its address instead of an .html attachment. The existing short result notice still goes out. Turning this on agrees to sending ticket content to that conversation."],
 			"usageCalls": ["{calls} 次", "{calls} calls"],
 			"usageRole.master": ["主会话", "Main Session"],
 			"usageRole.desk": ["主管台", "Supervisor desk"],
@@ -7413,6 +9036,9 @@ window.__ModuleLoader__.load({
 			"coexistEffect.secrets": ["密钥脱敏：在 DS Bot 里存过的密钥值，会从所有工具结果和模型请求里替换掉（改写过的请求会重新发一次，用量只计一次；次数见执行页「用量」与工单详情）", "Secrets: a value saved in DS Bot is replaced in every tool result and model request (a rewritten request is sent again and counted once; how often shows under Usage and on the ticket)"],
 			"coexistEffect.images": ["看图：会话的模型不能看图时，DS Bot 用它的 OCR 模型读图片，再把文字发给原模型——步骤里的图片会发给那个模型；可在执行设置里关闭", "Images: when a Session's model cannot read images, DS Bot reads them with its OCR model and sends the text instead, so step images reach that model; you can turn this off in the execution settings"],
 			"coexistEffect.skills": ["技能：goal-grill、office、office-tools 进 DSH 的技能目录，主会话与步骤看得到，主管台看不到；不占主会话的 prompt 预算", "Skills: goal-grill, office and office-tools join DSH's skill catalog, seen by the main Session and steps but not the desk; they take nothing from the main Session's prompt budget"],
+			"contextTitle": ["上下文", "Context"],
+			"contextHint": ["左栏是导航；这一列是常驻上下文，不遮挡主区", "The rail is navigation; this column stays beside the page"],
+			"team.tokensUsed": ["已消耗 {tokens} tokens", "Used {tokens} tokens"],
 			"team.budgetLine": ["预算：{tokens} / {tokensCap} tokens · {turns} / {turnsCap} 回合", "Budget: {tokens} / {tokensCap} tokens · {turns} / {turnsCap} turns"],
 			"team.budgetReached": ["预算用完：不再开新步骤", "Budget used: no new step starts"],
 			"team.budgetRaise": ["追加一半预算", "Raise by half"],
@@ -8436,838 +10062,6 @@ window.__ModuleLoader__.load({
 			});
 		}
 		//#endregion
-		//#region src/client/review.tsx
-		/**
-		* VsSaros addition: the review of a ticket's shelved changelist, the only way to submit to P4. A person opens every file's
-		* difference, confirms, and approves the fingerprint of what they read; or sends the CL back with a comment, or discards it.
-		*/
-		function DiffLines({ diff }) {
-			const { t } = usePanel();
-			if (!diff.lines.length) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.binary") });
-			const tone = (line) => line.startsWith("@@") ? "hunk" : line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : "ctx";
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("pre", {
-				className: "dt-diff",
-				children: diff.lines.map((line, index) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-					className: `dt-diff-${tone(line)}`,
-					children: [line || " ", "\n"]
-				}, index))
-			}), diff.truncated && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.truncated") })] });
-		}
-		/** A finished review's one line, or the error of a failed submit on a waiting one. */
-		function Outcome({ review }) {
-			const { t } = usePanel();
-			const by = review.by ?? "";
-			switch (review.state) {
-				case "handed": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.handed", { by }) });
-				case "submitted": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.submitted", {
-					by,
-					submitted: String(review.submittedAs ?? "")
-				}) });
-				case "rejected": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.rejected", {
-					by,
-					comment: review.comment ?? ""
-				}) });
-				case "discarded": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.discarded", { by }) });
-				case "submitting": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.submitting") });
-				default: return null;
-			}
-		}
-		/** The review section of a ticket's page; renders nothing for a ticket without a changelist review. */
-		function ReviewSection({ id, onChanged }) {
-			const { t, call } = usePanel();
-			const { data, reload } = usePoll(() => call("GET tickets/:id/review", { id }), [id], 1e4);
-			if (!data || data.review === null) return null;
-			const { review } = data;
-			const title = t("review.section", { change: String(review.change) });
-			if (review.state !== "waiting") return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
-				title,
-				icon: "review",
-				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Outcome, { review })
-			});
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(WaitingReview, {
-				id,
-				view: data,
-				title,
-				after: async () => {
-					await reload();
-					await onChanged();
-				}
-			}, review.fingerprint);
-		}
-		function WaitingReview({ id, view, title, after }) {
-			const { t, call } = usePanel();
-			const { review, diffs, submit } = view;
-			const [seen, setSeen] = (0, react.useState)({});
-			const [open, setOpen] = (0, react.useState)();
-			const [ack, setAck] = (0, react.useState)(false);
-			const [confirming, setConfirming] = (0, react.useState)(false);
-			const [rejecting, setRejecting] = (0, react.useState)(false);
-			const [comment, setComment] = (0, react.useState)("");
-			const [changed, setChanged] = (0, react.useState)([]);
-			const ackId = (0, react.useId)();
-			const approve = useAction(async () => {
-				try {
-					await call("POST tickets/:id/review/approve", {
-						id,
-						body: { fingerprint: review.fingerprint }
-					});
-				} catch (failure) {
-					if (failure instanceof ApiError && failure.status === 409) setChanged(failure.details.changed ?? []);
-					setConfirming(false);
-					throw failure;
-				}
-				setConfirming(false);
-			}, { reload: after });
-			const reject = useAction(async () => {
-				await call("POST tickets/:id/review/reject", {
-					id,
-					body: { comment: comment.trim() }
-				});
-				setRejecting(false);
-				setComment("");
-			}, { reload: after });
-			const all = diffs.length > 0 && diffs.every((diff) => seen[diff.depotFile]);
-			const toggle = (file) => {
-				setOpen(open === file ? void 0 : file);
-				setSeen((current) => ({
-					...current,
-					[file]: true
-				}));
-			};
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Section, {
-				title,
-				icon: "review",
-				badge: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Tag, {
-					tone: "info",
-					children: t("review.seen", {
-						seen: String(Object.keys(seen).length),
-						total: String(diffs.length)
-					})
-				}),
-				children: [
-					review.error && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-						className: "dt-banner dt-danger",
-						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: "dt-banner-label",
-							children: t("review.lastError", { error: review.error })
-						})
-					}),
-					changed.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "dt-banner dt-danger",
-						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: "dt-banner-label",
-							children: t("review.changed")
-						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-							className: "dt-plain-list dt-mono",
-							children: changed.map((file) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", { children: file }, file))
-						})]
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(KeyValues, { rows: [
-						[t("review.description"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("pre", {
-							className: "dt-review-desc",
-							children: review.description.trim()
-						})],
-						[t("review.workspace"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: "dt-mono",
-							children: review.client
-						})],
-						[t("review.fingerprint"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: "dt-mono",
-							children: review.fingerprint
-						})]
-					] }),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.filesHint") }),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-						className: "dt-review-files",
-						children: diffs.map((diff) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DisclosureRow, {
-							open: open === diff.depotFile,
-							onToggle: () => toggle(diff.depotFile),
-							icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: seen[diff.depotFile] ? "decision" : "hash" }),
-							title: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-								className: "dt-mono",
-								children: [
-									diff.depotFile,
-									"#",
-									diff.rev,
-									" ",
-									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-										className: "dt-hint",
-										children: [
-											"(",
-											diff.type,
-											")"
-										]
-									})
-								]
-							}),
-							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-								className: "dt-disclosure-body",
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(DiffLines, { diff })
-							})
-						}, diff.depotFile))
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "dt-review-ack",
-						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
-							id: ackId,
-							type: "checkbox",
-							checked: ack,
-							disabled: !all,
-							onChange: (event) => setAck(event.target.checked)
-						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("label", {
-							htmlFor: ackId,
-							children: t("review.ack")
-						})]
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "dt-row-buttons",
-						children: [
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-								variant: "primary",
-								size: "sm",
-								disabled: !all || !ack || approve.busy,
-								onClick: () => setConfirming(true),
-								children: t("review.approve")
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-								variant: "outline",
-								size: "sm",
-								onClick: () => setRejecting(true),
-								children: t("review.reject")
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmButton, {
-								variant: "outline",
-								label: t("review.discard"),
-								title: t("review.discardTitle", { change: String(review.change) }),
-								message: t("review.discardConfirm"),
-								onConfirm: async () => {
-									await call("POST tickets/:id/review/discard", { id });
-									await after();
-								}
-							})
-						]
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Modal, {
-						open: confirming,
-						onClose: () => setConfirming(false),
-						closeLabel: t("close"),
-						title: t("review.approveTitle", { change: String(review.change) }),
-						description: submit.mode === "pipeline" ? t("review.approvePipeline", { tags: submit.tags }) : t("review.approveHost"),
-						footer: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-							variant: "ghost",
-							onClick: () => setConfirming(false),
-							children: t("cancel")
-						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-							variant: "primary",
-							disabled: approve.busy,
-							onClick: () => {
-								approve.run();
-							},
-							children: t("confirm")
-						})] })
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Modal, {
-						open: rejecting,
-						onClose: () => setRejecting(false),
-						closeLabel: t("close"),
-						title: t("review.rejectTitle", { change: String(review.change) }),
-						description: t("review.rejectHint"),
-						footer: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-							variant: "ghost",
-							onClick: () => setRejecting(false),
-							children: t("cancel")
-						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-							variant: "primary",
-							disabled: !comment.trim() || reject.busy,
-							onClick: () => {
-								reject.run();
-							},
-							children: t("review.reject")
-						})] }),
-						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("textarea", {
-							className: "dt-textarea",
-							rows: 4,
-							value: comment,
-							placeholder: t("review.rejectPlaceholder"),
-							"aria-label": t("review.rejectTitle", { change: String(review.change) }),
-							onChange: (event) => setComment(event.target.value)
-						})
-					})
-				]
-			});
-		}
-		/** The reviews waiting for a person, for the Overview; renders nothing when none waits. */
-		function PendingReviews() {
-			const { t, call, navigate } = usePanel();
-			const { data } = usePoll(() => call("GET reviews"), [], 1e4);
-			if (!data?.waiting.length) return null;
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
-				title: t("review.pending"),
-				count: data.waiting.length,
-				children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-					className: "dt-list dt-cards",
-					children: data.waiting.map((review) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
-						className: "dt-row dt-link",
-						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: "dt-row-main",
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-								className: "dt-row-title",
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-									type: "button",
-									className: "dt-open",
-									onClick: () => navigate({
-										page: "execution",
-										id: review.ticketId
-									}),
-									children: review.description.split("\n")[0]?.trim() || `CL ${review.change}`
-								})
-							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-								className: "dt-row-meta",
-								children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("review.waitingLine", {
-									change: String(review.change),
-									files: String(review.files.length),
-									time: when(review.requestedAt, t("lang"))
-								}) })
-							})]
-						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-							className: "dt-row-actions",
-							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-								variant: "outline",
-								size: "sm",
-								icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, {
-									name: "review",
-									size: 14
-								}),
-								onClick: () => navigate({
-									page: "execution",
-									id: review.ticketId
-								}),
-								children: t("review.open")
-							})
-						})]
-					}, review.ticketId))
-				})
-			});
-		}
-		//#endregion
-		//#region src/client/team-plans.tsx
-		/**
-		* VsSaros addition: the Overview's team work — requests and teams waiting for a person, team steps, skill drafts from the
-		* memory system, Bot drafts — and, read-only, the retired team plans (2026-11-06).
-		* ★ 2026-11-09: the reusable-workflows / TeamFlow section was removed from this panel (user request); the Host-side
-		*   workflow data and adapter remain, so team staffing can still reuse saved workflows.
-		*/
-		/**
-		* VsSaros addition (2026-11-06): what a team used of its budget. Its token and turn caps are hard gates; at either one, no
-		* new step starts until a person raises it here (by half again).
-		*/
-		function TeamBudget({ ticketId, budget }) {
-			const { t, call } = usePanel();
-			const reached = budget.stopped || budget.turns >= budget.turnsCap;
-			const raise = useAction(() => call("POST tickets/:id/steps/budget", {
-				id: ticketId,
-				body: {
-					tokens: Math.max(budget.tokensCap, budget.tokens) + Math.ceil(Math.max(budget.tokensCap, 1e4) / 2),
-					turns: Math.max(budget.turnsCap, budget.turns) + Math.ceil(Math.max(budget.turnsCap, 2) / 2)
-				}
-			}));
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-				className: "dt-row-meta",
-				"data-testid": "team-budget",
-				children: [
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("team.budgetLine", {
-						tokens: String(budget.tokens),
-						tokensCap: String(budget.tokensCap),
-						turns: String(budget.turns),
-						turnsCap: String(budget.turnsCap)
-					}) }),
-					reached && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-						className: "dt-tag",
-						"data-tone": "warning",
-						children: t("team.budgetReached")
-					}),
-					reached && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-						variant: "outline",
-						size: "sm",
-						disabled: raise.busy,
-						onClick: () => {
-							raise.run();
-						},
-						children: t("team.budgetRaise")
-					})
-				]
-			});
-		}
-		/** Renders nothing when no plan, no draft and no retrospective output exists. */
-		function TeamPlans() {
-			const { t, call, navigate } = usePanel();
-			const plans = usePoll(() => call("GET team/plans"), [], 5e3);
-			const drafts = usePoll(() => call("GET team/approvals"), [], 1e4);
-			const retro = usePoll(() => call("GET team/retrospective"), [], 1e4);
-			const approveBot = useAction((id) => call("POST team/approvals/:id/approve", { id }), { reload: drafts.reload });
-			const rejectBot = useAction((id) => call("POST team/approvals/:id/reject", { id }), { reload: drafts.reload });
-			const waiting = drafts.data?.waiting ?? [];
-			const archivedSkills = retro.data?.skills ?? [];
-			const work = useWork();
-			const teams = work.proposals ?? [];
-			const teamTickets = work.teams;
-			const distills = usePoll(() => call("GET team/distills"), [], 15e3);
-			const approveDraft = useAction((id) => call("POST team/distills/:id/approve", { id }), { reload: distills.reload });
-			const rejectDraft = useAction((id) => call("POST team/distills/:id/reject", { id }), { reload: distills.reload });
-			const drafts2 = (distills.data?.distills ?? []).filter((item) => item.result?.skill?.state === "draft" && item.result.skill.created);
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
-				work.approvals.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
-					title: t("work.needsYou"),
-					count: work.approvals.length,
-					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-						className: "dt-approvals",
-						"data-testid": "step-approvals",
-						children: work.approvals.map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ApprovalCard, { approval: item }, item.id))
-					})
-				}),
-				teams.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
-					title: t("team.staffing"),
-					count: teams.length,
-					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(StaffingList, { teams })
-				}),
-				teamTickets.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
-					title: t("team.steps"),
-					count: teamTickets.length,
-					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-						className: "dt-list dt-cards",
-						"data-testid": "team-steps",
-						children: teamTickets.map((team) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", {
-							className: "dt-row dt-team-run",
-							children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-								className: "dt-row-main",
-								children: [
-									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-										className: "dt-row-title",
-										children: [
-											team.ticket.title,
-											" ",
-											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-												className: "dt-tag",
-												"data-tone": "neutral",
-												children: t("team.stepsDone", {
-													done: String(team.steps.filter((step) => step.state === "ready").length),
-													total: String(team.steps.length)
-												})
-											})
-										]
-									}),
-									team.budget && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(TeamBudget, {
-										ticketId: team.ticket.id,
-										budget: team.budget
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(MiniFlow, {
-										team,
-										onOpen: () => navigate({
-											page: "execution",
-											query: { ticket: team.ticket.id }
-										})
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)(StepMembers, { team })
-								]
-							})
-						}, team.ticket.id))
-					})
-				}),
-				drafts2.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
-					title: t("team.distillPending"),
-					count: drafts2.length,
-					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-						className: "dt-list dt-cards",
-						"data-testid": "team-distills",
-						children: drafts2.map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
-							className: "dt-row dt-link",
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-								className: "dt-row-main",
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-									className: "dt-row-title",
-									children: [
-										item.stepTitle,
-										" ",
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-											className: "dt-tag",
-											"data-tone": "neutral",
-											children: item.botName
-										}),
-										item.result.skill.version && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-											className: "dt-tag",
-											"data-tone": "outline",
-											children: [
-												"v",
-												item.result.skill.version,
-												item.result.skill.updates === "active" ? ` · ${t("team.distillNewVersion")}` : ""
-											]
-										}),
-										item.result.skill.risk && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-											className: "dt-tag",
-											"data-tone": item.result.skill.risk === "low" ? "neutral" : "warning",
-											title: item.result.skill.riskReasons?.join("；"),
-											children: t(`team.distillRisk.${item.result.skill.risk}`)
-										}),
-										item.result.skill.distilled === false && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-											className: "dt-tag",
-											"data-tone": "warning",
-											title: item.result.skill.distillError,
-											children: t("team.distillTemplate")
-										})
-									]
-								}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-									className: "dt-row-meta",
-									children: [
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: item.result.skill.name }),
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: item.reasons.join(" · ") }),
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: item.evidence.report.slice(0, 100) })
-									]
-								})]
-							}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-								className: "dt-row-actions",
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-									variant: "primary",
-									size: "sm",
-									disabled: approveDraft.busy,
-									onClick: () => {
-										approveDraft.run(item.id);
-									},
-									children: t("team.skillApprove")
-								}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-									variant: "outline",
-									size: "sm",
-									disabled: rejectDraft.busy,
-									onClick: () => {
-										rejectDraft.run(item.id);
-									},
-									children: t("team.skillReject")
-								})]
-							})]
-						}, item.id))
-					})
-				}),
-				archivedSkills.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("team.skillsArchived", { count: String(archivedSkills.length) }) }),
-				waiting.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
-					title: t("team.approval"),
-					count: waiting.length,
-					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-						className: "dt-list dt-cards",
-						children: waiting.map((draft) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("li", {
-							className: "dt-row dt-link",
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-								className: "dt-row-main",
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-									className: "dt-row-title",
-									children: [
-										draft.draft.name,
-										" ",
-										/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-											className: "dt-tag",
-											"data-tone": "warning",
-											children: draft.draft.id
-										})
-									]
-								}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-									className: "dt-row-meta",
-									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("team.approvalLine", { risk: draft.risk.join(", ") }) }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: draft.draft.description })]
-								})]
-							}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-								className: "dt-row-actions",
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-									variant: "primary",
-									size: "sm",
-									disabled: approveBot.busy,
-									onClick: () => {
-										approveBot.run(draft.id);
-									},
-									children: t("team.approve")
-								}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-									variant: "outline",
-									size: "sm",
-									disabled: rejectBot.busy,
-									onClick: () => {
-										rejectBot.run(draft.id);
-									},
-									children: t("team.reject")
-								})]
-							})]
-						}, draft.id))
-					})
-				}),
-				drafts.data && drafts.data.created.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("team.created", {
-					count: String(drafts.data.created.length),
-					global: String(drafts.data.global),
-					perPlan: String(drafts.data.perPlan)
-				}) }),
-				!plans.data?.plans.length ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Section, {
-					title: t("team.archivedPlans"),
-					count: plans.data.plans.length,
-					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("team.archivedPlansHint") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-						className: "dt-list dt-cards",
-						"data-testid": "team-archived-plans",
-						children: plans.data.plans.slice(0, 3).map((plan) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", {
-							className: "dt-row dt-link",
-							children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-								className: "dt-row-main",
-								children: [
-									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-										className: "dt-row-title",
-										children: [
-											plan.goal,
-											" ",
-											/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-												className: "dt-tag",
-												"data-tone": "neutral",
-												children: t(`team.state.${plan.status}`)
-											})
-										]
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-										className: "dt-row-meta",
-										children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("team.running", { running: String(plan.running) }) }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: plan.bots.join(" · ") })]
-									}),
-									/* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-										className: "dt-list",
-										children: plan.steps.map((step) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", {
-											className: "dt-row",
-											children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-												className: "dt-row-main",
-												children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-													className: "dt-row-title",
-													children: t("team.step", {
-														step: step.id,
-														title: step.title,
-														bot: step.botName ?? step.bot
-													})
-												}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-													className: "dt-row-meta",
-													children: [
-														/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t(`team.state.${step.state}`) }),
-														step.after.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t("team.after", { after: step.after.join(", ") }) }),
-														step.report && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: step.report.length > 120 ? `${step.report.slice(0, 120)}…` : step.report }),
-														step.error && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: step.error })
-													]
-												})]
-											})
-										}, step.id))
-									})
-								]
-							})
-						}, plan.id))
-					})]
-				})
-			] });
-		}
-		//#endregion
-		//#region src/client/overview.tsx
-		function ProblemLine({ problem, onChanged }) {
-			const { t, call, navigate } = usePanel();
-			const post = useAction((request) => request(), { reload: onChanged });
-			const row = (title, detail, route, hint, actions) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", {
-				className: "dt-row dt-link dt-att dt-att-error",
-				children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-					className: "dt-row-main",
-					children: [
-						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-							className: "dt-att-what",
-							children: route ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-								type: "button",
-								className: "dt-open dt-open-wrap",
-								onClick: () => navigate(route),
-								children: title
-							}) : title
-						}),
-						detail,
-						hint && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: hint }),
-						actions && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-							className: "dt-row-meta dt-row-buttons",
-							children: actions
-						})
-					]
-				})
-			});
-			const go = (label, route) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-				variant: "outline",
-				size: "sm",
-				icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, {
-					name: "settings",
-					size: 14
-				}),
-				onClick: () => navigate(route),
-				children: label
-			});
-			const raw = (text) => text && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-				className: "dt-error dt-clamp dt-mono",
-				children: text
-			});
-			const worded = (text) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-				className: "dt-error",
-				children: text
-			});
-			switch (problem.kind) {
-				case "setup": return row(t(problem.place === "feishu" ? "problemSetupFeishu" : "problemSetup"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-					className: "dt-error",
-					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SetupMessage, { problem })
-				}), setupPage(problem.place), t(`problemSetupFix.${problem.place}`), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(CheckSetupButton, {}));
-				case "no-source": return row(t("problemNoSource"), void 0, settingsRoute("source"), void 0, go(t("actionOpenSources"), settingsRoute("source")));
-				case "no-allowed": return row(t("problemNoAllowed"), void 0, settingsRoute("eval"), void 0, go(t("actionAddAllowed"), settingsRoute("eval")));
-				case "executor-paused": return row(t("problemPaused"), void 0, { page: "execution" }, void 0, /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmButton, {
-					variant: "outline",
-					icon: "play",
-					label: t("resumeProcessing"),
-					title: t("resumeProcessing"),
-					message: t("resumeProcessingConfirm"),
-					onConfirm: async () => {
-						await call("POST executor/pause", { body: { paused: false } });
-						await onChanged();
-					}
-				}));
-				case "runtime-error": return row(t("problemRuntime", { name: valueLabel(t, "health", problem.name) }), raw(problem.detail), void 0);
-				case "source-error": {
-					const health = problem.source.health;
-					return row(t("sourceError", { source: localized(t, problem.source.title) }), health.code ? worded(healthText(t, health)) : raw(health.detail), { page: "source" }, t("sourceErrorHint"));
-				}
-				case "eval-overdue": return row(t("problemEvalOverdue", { thread: readableMarkers(t, problem.thread.title) }), void 0, {
-					page: "trigger",
-					id: problem.thread.key
-				});
-				case "eval-unavailable": return row(t("problemEvalUnavailable", { thread: readableMarkers(t, problem.thread.title) }), raw(reasonLabel(t, problem.reason)), {
-					page: "trigger",
-					id: problem.thread.key,
-					query: { trigger: problem.triggerId }
-				}, void 0, /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-					variant: "outline",
-					size: "sm",
-					icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, {
-						name: "refresh",
-						size: 14
-					}),
-					disabled: post.busy,
-					onClick: () => {
-						post.run(() => call("POST triggers/:id/requeue", { id: problem.triggerId }));
-					},
-					children: t("requeue")
-				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-					variant: "outline",
-					size: "sm",
-					icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, {
-						name: "dismiss",
-						size: 14
-					}),
-					disabled: post.busy,
-					onClick: () => {
-						post.run(() => call("POST decisions/:id/dismiss", { id: problem.decisionId }));
-					},
-					children: t("dismiss")
-				})] }));
-				case "outgoing": return row(t("problemReply", {
-					source: valueLabel(t, "source", problem.outgoing.channel.source),
-					attempts: problem.outgoing.attempts
-				}), raw(problem.outgoing.error), void 0);
-			}
-		}
-		function OverviewPage() {
-			const { t, call, navigate } = usePanel();
-			const { setup } = usePanelData();
-			const { data, error, reload } = usePoll(() => call("GET overview"), []);
-			if (!data) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(LoadState, {
-				error,
-				loading: true
-			});
-			const stat = (label, value, route) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", {
-				className: "dt-stat",
-				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-					className: "dt-stat-label",
-					children: label
-				}), route ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-					type: "button",
-					className: "dt-textlink dt-stat-value",
-					onClick: () => navigate(route),
-					children: value
-				}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-					className: "dt-stat-value",
-					children: value
-				})]
-			});
-			const more = (route) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
-				type: "button",
-				className: "dt-textlink dt-more-link",
-				onClick: () => navigate(route),
-				children: t("details")
-			});
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
-				error && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(LoadState, {
-					error,
-					loading: false
-				}),
-				data.coexist?.dsBot && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-					className: "dt-hint",
-					"data-testid": "coexist-ds-bot",
-					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", { children: t("coexistDsBot") }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-						className: "dt-list",
-						children: data.coexist.dsBot.effects.map((effect) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)("li", { children: t(`coexistEffect.${effect}`) }, effect))
-					})]
-				}),
-				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(PendingReviews, {}),
-				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(TeamPlans, {}),
-				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
-					title: t("pendingTickets"),
-					count: data.person.length,
-					children: data.person.length ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-						className: "dt-list dt-cards",
-						children: data.person.map((ticket) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(TicketLine, {
-							ticket,
-							question: true,
-							onChanged: reload
-						}, ticket.id))
-					}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("needsYouNone") })
-				}),
-				data.problems.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
-					title: t("problems"),
-					count: data.problems.length,
-					children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("ul", {
-						className: "dt-list dt-cards",
-						children: data.problems.map((problem, index) => /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ProblemLine, {
-							problem,
-							onChanged: reload
-						}, index))
-					})
-				}),
-				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
-					title: t("lastDay"),
-					action: more({
-						page: "trigger",
-						query: { filter: "recent" }
-					}),
-					children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "dt-stats",
-						children: [
-							stat(t("flowReceivedLabel"), data.flow.received),
-							stat(t("flowFilteredLabel"), data.flow.filtered, data.flow.filtered ? { page: "source" } : void 0),
-							stat(t("flowJudgedLabel"), data.flow.judged),
-							stat(t("flowAcceptedLabel"), data.flow.accepted, {
-								page: "eval",
-								query: { window: "24h" }
-							}),
-							data.flow.dropped > 0 && stat(t("flowDroppedLabel"), data.flow.dropped, { page: "source" })
-						]
-					})
-				}),
-				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Section, {
-					title: t("term.executor"),
-					action: more({ page: "execution" }),
-					children: setup?.problem ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("executorWaitingSetup") }) : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "dt-stats",
-						children: [
-							stat(t("executingLabel"), `${data.executor.running} / ${data.executor.maxWorkers}`),
-							stat(t("queuedLabel"), data.executor.queued),
-							stat(t("idleLabel"), data.executor.idle)
-						]
-					})
-				})
-			] });
-		}
-		//#endregion
 		//#region src/client/side.tsx
 		/**
 		* VsSaros addition: the side panel beside the page, with the Overview in it. It opens and closes from the header, keeps its
@@ -9277,7 +10071,6 @@ window.__ModuleLoader__.load({
 		* work does.
 		*/
 		const SIDE_KEY = "dsh-superagent/side";
-		const SEEN_KEY = "dsh-superagent/side-seen";
 		const SIDE_WIDTH = {
 			min: 320,
 			max: 560,
@@ -9302,20 +10095,12 @@ window.__ModuleLoader__.load({
 			if (!value) throw new Error("dsh-superagent side panel used outside its provider");
 			return value;
 		}
-		/** What the supervisor is working on, one signature per piece of new work; a step's request for the person counts as new work. */
-		function workSignatures(proposals, teams, approvals = []) {
-			return [
-				...proposals.flatMap((item) => item.proposal ? [`proposal:${item.ticket.id}:v${item.proposal.version}`] : []),
-				...teams.map((item) => `steps:${item.ticket.id}`),
-				...approvals.map((item) => `approval:${item.id}`)
-			];
-		}
 		/** Holds the side panel's state and opens it when the supervisor starts new work or a step asks the person. */
 		function SideProvider({ children }) {
 			const { t, notify } = usePanel();
 			const work = useWork();
 			const stored = (0, react.useMemo)(() => readStored(SIDE_KEY) ?? {}, []);
-			const [open, setOpenState] = (0, react.useState)(stored.open ?? true);
+			const [open, setOpenState] = (0, react.useState)(false);
 			const [width, setWidthState] = (0, react.useState)(clampWidth(stored.width ?? SIDE_WIDTH.initial));
 			const latest = (0, react.useRef)({
 				open,
@@ -9325,13 +10110,7 @@ window.__ModuleLoader__.load({
 				open,
 				width
 			};
-			const setOpen = (0, react.useCallback)((next) => {
-				setOpenState(next);
-				writeStored(SIDE_KEY, {
-					...latest.current,
-					open: next
-				});
-			}, []);
+			const setOpen = (0, react.useCallback)((next) => {}, []);
 			const setWidth = (0, react.useCallback)((next) => {
 				const value = clampWidth(next);
 				setWidthState(value);
@@ -9340,27 +10119,8 @@ window.__ModuleLoader__.load({
 					width: value
 				});
 			}, []);
-			const seen = (0, react.useRef)(void 0);
-			(0, react.useEffect)(() => {
-				if (!work.loaded || !work.proposals) return;
-				const now = workSignatures(work.proposals, work.teams, work.approvals);
-				if (!seen.current) {
-					const remembered = readStored(SEEN_KEY);
-					seen.current = new Set(remembered ?? now);
-					if (!remembered) {
-						writeStored(SEEN_KEY, now);
-						return;
-					}
-				}
-				const fresh = now.filter((signature) => !seen.current.has(signature));
-				if (!fresh.length) return;
-				for (const signature of fresh) seen.current.add(signature);
-				writeStored(SEEN_KEY, [...seen.current].slice(-200));
-				if (!latest.current.open) {
-					setOpen(true);
-					notify(t(fresh.some((signature) => signature.startsWith("approval:")) ? "side.autoOpenedApproval" : "side.autoOpened"));
-				}
-			}, [
+			(0, react.useRef)(void 0);
+			(0, react.useEffect)(() => {}, [
 				work.loaded,
 				work.proposals,
 				work.teams,
@@ -9390,79 +10150,7 @@ window.__ModuleLoader__.load({
 			const { t, openSession, notify } = usePanel();
 			const { open, width, setOpen, setWidth } = useSide();
 			const [dragging, setDragging] = (0, react.useState)(false);
-			if (!open) return null;
-			const drag = (event) => {
-				const grip = event.currentTarget, start = event.clientX, from = width;
-				grip.setPointerCapture?.(event.pointerId);
-				setDragging(true);
-				const move = (next) => setWidth(from + start - next.clientX);
-				const up = () => {
-					grip.removeEventListener("pointermove", move);
-					setDragging(false);
-				};
-				grip.addEventListener("pointermove", move);
-				grip.addEventListener("pointerup", up, { once: true });
-			};
-			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("aside", {
-				className: "dt-side",
-				"data-dragging": dragging || void 0,
-				"aria-label": t("tab.overview"),
-				style: { ["--dt-side-width"]: `${width}px` },
-				children: [
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-						className: "dt-side-grip",
-						role: "separator",
-						"aria-orientation": "vertical",
-						"aria-label": t("side.resize"),
-						"aria-valuemin": SIDE_WIDTH.min,
-						"aria-valuemax": SIDE_WIDTH.max,
-						"aria-valuenow": width,
-						tabIndex: 0,
-						onPointerDown: drag,
-						onKeyDown: (event) => {
-							if (event.key === "ArrowLeft") setWidth(width + 16);
-							if (event.key === "ArrowRight") setWidth(width - 16);
-						}
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "dt-side-strip",
-						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
-							className: "dt-side-tab",
-							children: t("tab.overview")
-						}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-							className: "dt-side-tools",
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-								variant: "ghost",
-								size: "sm",
-								icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, {
-									name: "session",
-									size: 15
-								}),
-								"aria-label": t("openMaster"),
-								title: t("openMaster"),
-								disabled: !masterId,
-								onClick: () => {
-									if (masterId) openSession(masterId).catch((failure) => notify(errorText(failure)));
-								}
-							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-								variant: "ghost",
-								size: "sm",
-								icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, {
-									name: "panel",
-									size: 15
-								}),
-								"aria-label": t("side.close"),
-								title: t("side.close"),
-								onClick: () => setOpen(false)
-							})]
-						})]
-					}),
-					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-						className: "dt-side-body",
-						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(OverviewPage, {})
-					})
-				]
-			});
+			return null;
 		}
 		//#endregion
 		//#region src/client/chat.tsx
@@ -9744,6 +10432,60 @@ window.__ModuleLoader__.load({
 						onVoice: () => setVoice(true)
 					})
 				]
+			});
+		}
+		//#endregion
+		//#region src/client/shell.tsx
+		/** The vertical rail of the workbench: the brand, the tabs a caller renders, and a one-line hint. */
+		function Rail({ title, hint, children }) {
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("nav", {
+				className: "dt-rail",
+				"aria-label": title,
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						className: "dt-rail-brand",
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, {
+							name: "session",
+							size: 17
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: title })]
+					}),
+					children,
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+						className: "dt-rail-hint",
+						children: hint
+					})
+				]
+			});
+		}
+		/** The always-on column beside the page: how much waits for a person, the Executor, and today's flow. */
+		function ContextColumn() {
+			const { t, call } = usePanel();
+			const { data } = usePoll(() => call("GET overview"), [], 15e3);
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("aside", {
+				className: "dt-context",
+				"aria-label": t("contextTitle"),
+				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("h2", {
+					className: "dt-context-title",
+					children: t("contextTitle")
+				}), !data ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("loading") }) : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+					className: "dt-context-stats",
+					children: [
+						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("b", { children: data.person.length }), t("pendingTickets")] }),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("b", { children: `${data.executor.running} / ${data.executor.maxWorkers}` }), t("executingLabel")] }),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("b", { children: data.executor.queued }), t("queuedLabel")] }),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("b", { children: data.flow.received }), t("flowReceivedLabel")] })
+					]
+				}), data.problems.length > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("p", {
+					className: "dt-context-problem",
+					children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, {
+						name: "alert",
+						size: 14
+					}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("span", { children: [
+						t("problems"),
+						" · ",
+						data.problems.length
+					] })]
+				})] })]
 			});
 		}
 		//#endregion
@@ -11141,6 +11883,78 @@ window.__ModuleLoader__.load({
 				] })
 			});
 		}
+		function ReportArtifact({ id }) {
+			const { t, call } = usePanel();
+			const [report, setReport] = (0, react.useState)();
+			const [busy, setBusy] = (0, react.useState)(false), [error, setError] = (0, react.useState)("");
+			const refresh = async () => {
+				setBusy(true);
+				setError("");
+				try {
+					setReport(await call("GET tickets/:id/report", { id }));
+				} catch (error) {
+					setError(String(error));
+				} finally {
+					setBusy(false);
+				}
+			};
+			const download = async () => {
+				setBusy(true);
+				setError("");
+				try {
+					const content = await call("GET tickets/:id/report/content", { id });
+					const url = URL.createObjectURL(new Blob([content.html], { type: "text/html;charset=utf-8" }));
+					const link = document.createElement("a");
+					link.href = url;
+					link.download = content.file;
+					link.click();
+					setTimeout(() => URL.revokeObjectURL(url), 1e3);
+				} catch (error) {
+					setError(String(error));
+				} finally {
+					setBusy(false);
+				}
+			};
+			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(Section, {
+				title: t("ticketArtifact"),
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+						type: "button",
+						className: "dt-textlink",
+						disabled: busy,
+						onClick: () => {
+							refresh();
+						},
+						children: t("ticketArtifactInspect")
+					}),
+					error && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+						className: "dt-error",
+						role: "status",
+						children: error
+					}),
+					report && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: report.path ? t("ticketArtifactGenerated") : report.generationQueued ? t("ticketArtifactGenerating") : t("ticketArtifactMissing") }),
+						report.path && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "dt-mono",
+							children: report.path
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							className: "dt-textlink",
+							disabled: busy,
+							onClick: () => {
+								download();
+							},
+							children: t("ticketArtifactDownload")
+						})] }),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("ticketArtifactDelivery", { state: report.deliveryState ?? (report.queued ? "queued" : "unknown") }) }),
+						report.docUrl && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ExternalLink, {
+							href: report.docUrl,
+							children: t("ticketArtifactDocument")
+						})
+					] })
+				]
+			});
+		}
 		function TicketPage({ id }) {
 			const { t, call, navigate } = usePanel();
 			const { data, error, reload } = usePoll(() => call("GET tickets/:id", { id }), [id]);
@@ -11254,7 +12068,7 @@ window.__ModuleLoader__.load({
 							children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ActionLink, {
 								href: channel.url,
 								icon: "message",
-								onActivate: () => navigate({ page: "chat" }),
+								onActivate: () => navigate({ page: "overview" }),
 								children: t("answerIn", { source: valueLabel(t, "source", channel.source) })
 							})
 						})
@@ -11299,6 +12113,7 @@ window.__ModuleLoader__.load({
 						}, thread.key))
 					})
 				}),
+				/* @__PURE__ */ (0, react_jsx_runtime.jsx)(ReportArtifact, { id: data.id }, data.id),
 				/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 					className: "dt-details",
 					children: [
@@ -11599,7 +12414,6 @@ window.__ModuleLoader__.load({
 		}
 		function Header() {
 			const { t, call, notify } = usePanel();
-			const side = useSide();
 			const [glossary, setGlossary] = (0, react.useState)(false);
 			const [query, setQuery] = (0, react.useState)("");
 			const [result, setResult] = (0, react.useState)();
@@ -11648,62 +12462,40 @@ window.__ModuleLoader__.load({
 					}),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 						className: "dt-toolbar",
-						children: [
-							/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("form", {
-								ref: search,
-								className: "dt-search",
-								role: "search",
-								onSubmit: submit,
-								onKeyDown: (event) => {
-									if (event.key === "Escape") show();
-								},
-								children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
-									type: "search",
-									icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "search" }),
-									value: query,
-									placeholder: t("searchPlaceholder"),
-									"aria-label": t("searchLabel"),
-									onChange: (event) => {
-										setQuery(event.target.value);
-										if (!event.target.value) show();
-									}
-								}), result && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SearchResults, {
-									result: result.value,
-									query: result.query,
-									onClose: () => {
-										show();
-									}
-								})]
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-								variant: "ghost",
-								size: "sm",
-								icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "question" }),
-								"aria-label": t("glossary"),
-								title: t("glossary"),
-								"aria-haspopup": "dialog",
-								onClick: () => setGlossary(true)
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-								variant: "outline",
-								size: "sm",
-								icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, {
-									name: "panel",
-									size: 14
-								}),
-								onClick: () => side.setOpen(true),
-								children: t("openOverview")
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
-								variant: "ghost",
-								size: "sm",
-								icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "panel" }),
-								"aria-pressed": side.open,
-								"aria-label": t(side.open ? "side.close" : "side.open"),
-								title: t(side.open ? "side.close" : "side.open"),
-								onClick: () => side.setOpen(!side.open)
-							})
-						]
+						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("form", {
+							ref: search,
+							className: "dt-search",
+							role: "search",
+							onSubmit: submit,
+							onKeyDown: (event) => {
+								if (event.key === "Escape") show();
+							},
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Input, {
+								type: "search",
+								icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "search" }),
+								value: query,
+								placeholder: t("searchPlaceholder"),
+								"aria-label": t("searchLabel"),
+								onChange: (event) => {
+									setQuery(event.target.value);
+									if (!event.target.value) show();
+								}
+							}), result && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SearchResults, {
+								result: result.value,
+								query: result.query,
+								onClose: () => {
+									show();
+								}
+							})]
+						}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Button, {
+							variant: "ghost",
+							size: "sm",
+							icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Icon, { name: "question" }),
+							"aria-label": t("glossary"),
+							title: t("glossary"),
+							"aria-haspopup": "dialog",
+							onClick: () => setGlossary(true)
+						})]
 					}),
 					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Glossary, {
 						open: glossary,
@@ -11731,6 +12523,7 @@ window.__ModuleLoader__.load({
 			});
 			const page = (() => {
 				switch (route.page) {
+					case "overview": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(OverviewPage, {});
 					case "chat": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ChatTab, {});
 					case "work": return state ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ExecutionStatus, {
 						filter: "open",
@@ -11764,39 +12557,49 @@ window.__ModuleLoader__.load({
 			})();
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: "dt-shell",
-				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-					className: "dt-page",
-					children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "dt-column",
-						children: [
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Header, {}),
-							error && state && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
-								className: "dt-error",
-								role: "status",
-								children: error.message
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SegmentedTabs, {
-								className: "dt-tabs",
-								label: t("pagesLabel"),
-								value: route.page,
-								onChange: openTab,
-								items: NAV_TABS.map((value) => ({
-									value,
-									label: t(`tab.${value}`),
-									id: `dt-tab-${value}`,
-									panelId: "dt-page"
-								}))
-							}),
-							/* @__PURE__ */ (0, react_jsx_runtime.jsx)("main", {
-								id: "dt-page",
-								role: "tabpanel",
-								"aria-labelledby": `dt-tab-${route.page}`,
-								className: "dt-main",
-								children: page
-							})
-						]
-					})
-				}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SidePanel, { masterId: state?.masterId })]
+				children: [
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Rail, {
+						title: t("title"),
+						hint: t("contextHint"),
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(SegmentedTabs, {
+							className: "dt-tabs dt-rail-tabs",
+							label: t("pagesLabel"),
+							value: route.page,
+							onChange: openTab,
+							items: NAV_TABS.map((value) => ({
+								value,
+								label: t(`tab.${value}`),
+								id: `dt-tab-${value}`,
+								panelId: "dt-page"
+							}))
+						})
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+						className: "dt-page",
+						children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: "dt-column",
+							children: [
+								/* @__PURE__ */ (0, react_jsx_runtime.jsx)(Header, {}),
+								error && state && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+									className: "dt-error",
+									role: "status",
+									children: error.message
+								}),
+								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+									className: "dt-main-split",
+									children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("main", {
+										id: "dt-page",
+										role: "tabpanel",
+										"aria-labelledby": `dt-tab-${route.page}`,
+										className: "dt-main",
+										children: page
+									}), route.page === "chat" ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ContextColumn, {})]
+								})
+							]
+						})
+					}),
+					/* @__PURE__ */ (0, react_jsx_runtime.jsx)(SidePanel, { masterId: state?.masterId })
+				]
 			});
 		}
 		/** Root panel component managing route history and shared panel state. */

@@ -25,17 +25,16 @@ const COPY = join(ROOT, 'resources', 'office-skills');
 /**
  * 有意差异登记：相对 assets 的路径 → 理由。
  * ⚠ 只登记"我们主动做的改动"；上游新增的改动**不该**出现在这里（那说明我们漏同步）。
+ *
+ * ★ 2026-11-12（dsh 0.2.2-rc.2）：上游 assets 从 8 个文件缩到 4 个 ——
+ *   `office-render` / `office-recalculate` / `office-export-pdf` 三个技能被改成
+ *   `office_render` / `office_recalculate` / `office_convert` 三个工具，`office/references/sidecar.md`
+ *   一并删除。本仓副本已跟随（删掉那 3 个技能、4 个保留文件同步为上游原文），
+ *   原先对应它们的 4 条登记同时作废 —— 留着会把"真的漂移"掩盖掉（守卫会点名过期登记）。
+ *   现在唯一的有意差异是 `office/SKILL.md` 追加的本部署运行时一节；路由段随上游原文。
  */
 const ALLOWED = new Map([
-	['office/SKILL.md', '追加「本部署的运行时」一节：Python 只认 load_workspace_dependencies、Kit 随包附带、交付用 present 并附绝对路径（预览侧栏禁用）、禁止 Compress-Archive 拼 OOXML、Word 模板走 office-template 技能'],
-	['office-render/SKILL.md', 'sidecar 下载指引 → 「Kit 随包附带，失败如实报告」（present 交付句保持上游原文）'],
-	['office-recalculate/SKILL.md', '同上'],
-	['office-export-pdf/SKILL.md', '同上'],
-	['office/references/sidecar.md', '本仓删除：Kit 随包附带，且 payload 无 node/pnpm —— 保留它会诱导模型联网安装 182MB 引擎'],
-	// ⚠ 2026-11-02 更正：office-docx / office-pptx / office-xlsx **不再登记** —— 它们已恢复为上游原文。
-	//   当初把它们的 `present` 交付改成"存工作区 + 回路径"，依据是"本仓没有 present 工具"，那是查错了包
-	//   （看的是 dsh-agent-tool-presentation）；真正提供 `present` 的是 `@deepseek-ai/dsh-tool-present`，
-	//   rc.2 / alpha.3 都在，真机工具面里也在。⇒ 若再有人改它们，这里会红（这正是我们要的）。
+	['office/SKILL.md', '保留「本部署的运行时」一节：Python 只认 load_workspace_dependencies、Kit 随包附带、交付用 present 并附绝对路径（预览侧栏禁用）、禁止 Compress-Archive 拼 OOXML、Word 模板走 office-template 技能'],
 ]);
 
 function bundledVersion() {

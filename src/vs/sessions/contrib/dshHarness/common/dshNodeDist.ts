@@ -8,7 +8,7 @@
  * 计算归档文件名、解析 `SHASUMS256.txt`。不含 I/O。
  *
  * P0-2：VsSaros 自带的 Electron 39 不能以 RunAsNode 运行 dsh，所以 Node 必须独立；
- * dsh 官方要求 22.19+（22 线）或 24+。
+ * dsh 0.2.2-rc.2 起要求 Node >=24.9.0（与上游 engines.node 对齐）。
  */
 
 import { compareSemver, isSupportedNodeVersion } from './dshCli.js';
@@ -61,7 +61,7 @@ export function nodeIndexFileKey(platform: string, arch: string): string | undef
 
 /**
  * 选版本：只考虑 LTS 且满足 dsh 门槛、并且有当前平台归档的版本，取最新。
- * 传入 `pinned`（如 `22.23.3` / `v24.1.0`）时只接受该版本。
+ * 传入 `pinned`（如 `24.22.3` / `v24.9.0`）时只接受该版本。
  */
 export function selectNodeVersion(index: readonly INodeDistEntry[], platform: string, arch: string, pinned?: string): string | undefined {
 	const key = nodeIndexFileKey(platform, arch);

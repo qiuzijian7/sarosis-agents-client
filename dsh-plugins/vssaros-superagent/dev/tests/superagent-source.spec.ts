@@ -1,4 +1,5 @@
 // VsSaros addition: the superagent Source (the supervisor desk and Bots asking for help) and the desk's one tool.
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { OutboundMessage, Thread } from '../src/core/index.ts'
 import { deliverReply, deskSessionId, deskTools, latestPersonMessage, DESK_PROMPT } from '../src/app/desk.ts'
@@ -118,5 +119,24 @@ describe('the supervisor desk', () => {
     // The supervisor's news is told to the person, a proposal with how to agree to it.
     expect(DESK_PROMPT).toMatch(/\[SuperAgent\] are the supervisor's news for the person: never submit them\. Tell the person/)
     expect(DESK_PROMPT).toContain('同意')
+  })
+})
+
+describe('★ 2026-11-11 bot blocker reports', () => {
+  it('marks the blocker and admits it instead of dropping it as not_human', () => {
+    const { gate } = gateWith({ allowed: [{ ...DESK_PERSON }], bots: [] })
+    const blocker = botTrigger({ id: 'u2', session: 'bot-s1', bot: 'stranger', name: 'worker',
+      text: 'TAPD 未登录，硬阻塞', hop: 1, at, blocker: true })
+    expect(blocker.meta).toMatchObject({ blocker: true })
+    expect(gate.gate(blocker, thread, [])).toMatchObject({ admissible: true, strength: 'inferred' })
+    // 未标记的陌生 bot 仍按原规则拒绝，窄分支不影响其它来源。
+    expect(gate.gate(help('stranger'), thread, [])).toEqual({ admissible: false, reason: 'not_human' })
+    expect(botTrigger({ id: 'u3', session: 'bot-s1', bot: 'stranger', text: 'hi', hop: 1, at }).meta).not.toHaveProperty('blocker')
+  })
+  it('runtime sends the blocker to the person and marks the Trigger', () => {
+    const runtime = readFileSync(new URL('../src/app/runtime.ts', import.meta.url), 'utf8')
+    expect(runtime).toMatch(/key\('blocker', messageId\)/)
+    expect(runtime).toContain('/未登录|登录页|拿不到|硬阻塞|阻塞|无法读取|需要用户|请先|登录一次|落不到/')
+    expect(runtime).toContain('blocker })')
   })
 })

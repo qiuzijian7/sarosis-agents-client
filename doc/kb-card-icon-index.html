@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>知识库总览 · 知识库卡片图标方案对照（mockup 索引 · 非实现代码）</title>
+<style>
+	/* 变量照 dsh-plugins/vssaros-kb/lib/homePage.js:65-66（真源），不自创调色板 */
+	:root[data-theme="dark"]{--bg:#15161a;--panel:#1c1d22;--panel2:#22232a;--line:rgba(255,255,255,.1);--line2:rgba(255,255,255,.18);--fg:#e8e9ec;--fg2:#a9abb3;--fg3:#71737c;--accent:#5b8cff;--ok:#3fb950}
+	:root[data-theme="light"]{--bg:#f5f6f8;--panel:#fff;--panel2:#f0f2f5;--line:rgba(0,0,0,.09);--line2:rgba(0,0,0,.17);--fg:#1b1d22;--fg2:#5a5e68;--fg3:#8b8f99;--accent:#2f6bff;--ok:#1a7f37}
+	*{box-sizing:border-box}
+	body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+	.kbix-wrap{max-width:1080px;margin:0 auto;padding:22px 24px 64px}
+	.kbix-hd{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+	.kbix-hd h1{margin:0;font-size:19px;font-weight:650}
+	.kbix-hd .sub{font-size:12px;color:var(--fg3)}
+	.kbix-note{border:1px solid var(--line);border-left:3px solid var(--accent);background:var(--panel);border-radius:9px;padding:11px 14px;margin-bottom:18px;font-size:12.5px;color:var(--fg2)}
+	.kbix-note b{color:var(--fg)}
+	.kbix-note a{color:var(--accent);text-decoration:none}
+	.kbix-note a:hover{text-decoration:underline}
+	.kbix-sec{margin:22px 0 10px;font-size:13.5px;font-weight:600}
+	.kbix-sec span{font-size:11.5px;color:var(--fg3);font-weight:400;margin-left:6px}
+	.kbix-tbl{width:100%;border-collapse:collapse;border:1px solid var(--line);border-radius:9px;overflow:hidden;font-size:12px;background:var(--panel)}
+	.kbix-tbl th,.kbix-tbl td{padding:8px 11px;text-align:left;border-top:1px solid var(--line);vertical-align:top}
+	.kbix-tbl th:first-child,.kbix-tbl td:first-child{border-top:0}
+	.kbix-tbl thead th{background:var(--panel2);font-weight:600;color:var(--fg2);border-top:0}
+	.kbix-tbl td:first-child{white-space:nowrap;font-weight:600}
+	.kbix-tbl a{color:var(--accent);text-decoration:none}
+	.kbix-tbl a:hover{text-decoration:underline}
+	.kbix-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr));gap:12px}
+	.kbix-card{display:block;text-decoration:none;color:inherit;background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:13px 14px;transition:.15s}
+	.kbix-card:hover{transform:translateY(-2px);border-color:var(--accent);box-shadow:0 8px 22px rgba(0,0,0,.25)}
+	.kbix-card .tag{font-size:10.5px;color:var(--accent);letter-spacing:.06em;font-weight:700}
+	.kbix-card h3{margin:3px 0 6px;font-size:13.5px}
+	.kbix-card p{margin:0 0 8px;font-size:11.5px;color:var(--fg2);line-height:1.6}
+	.kbix-card .foot{font-size:10.5px;color:var(--fg3);border-top:1px solid var(--line);padding-top:7px}
+	.kbix-q{border:1px dashed var(--line2);border-radius:9px;padding:10px 14px;margin-bottom:8px;font-size:12px;color:var(--fg2)}
+	.kbix-q b{color:var(--fg)}
+	.kbix-check{margin-top:20px;font:11.5px/1.7 ui-monospace,Consolas,monospace;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 13px;white-space:pre-wrap;color:var(--fg2)}
+	.kbix-btn{height:27px;padding:0 11px;border-radius:7px;border:1px solid var(--line2);background:var(--panel2);color:var(--fg2);font-size:12px;cursor:pointer;margin-left:auto}
+</style>
+</head>
+<body><div class="kbix-wrap">
+	<div class="kbix-hd">
+		<div><h1>知识库总览 · 卡片图标方案对照</h1>
+		<div class="sub">VsSaros 知识库主页 · 5 套 mockup · 数据与布局照当前真源</div></div>
+		<button class="kbix-btn" id="themeBtn">☀ 明暗</button>
+	</div>
+
+	<div class="kbix-note">
+		<b>这是 mockup 索引，不是实现代码；没有改动任何生产文件。</b><br>
+		现状（<code>lib/homePage.js:14-18,44-57,89</code>）：每张卡顶部是一块 <b>78px 纯渐变色块</b>，
+		色相由库名 hash 得出，<b>没有任何图标 / 字形 / 识别物</b> ⇒ 截图里一排近似全绿的矩形，
+		库与库之间只能靠文字区分。本组方案只改「卡片图标」这一层，统计条、最近更新、新建卡片、主题变量、卡片尺寸全部沿用真源。
+	</div>
+	<div class="kbix-note" style="border-left-color:var(--ok);color:var(--fg)">
+		<b>✅ 用户已选：方案 E + 方案 B 的语义 SVG 图标</b>（不用 emoji）—— 见 <a href="kb-card-icon-e-mixed.html">E 定型稿</a>。
+		E 页已把原来的 emoji 换成 B 的内联线性 SVG，并保留 E 的状态角标与篇数 chip。
+		<b>2026-11-11 已落地到 <code>homePage.js</code></b>（②③④⑤ 按下面给的默认值实现：图标按库名语义自动推断 / 角标优先级 / 去掉渐变封面 / 两档主题）。
+	</div>
+
+	<div class="kbix-sec">一、开源项目怎么展示「知识库 / 空间」的图标 <span>查证来源，非凭印象</span></div>
+	<table class="kbix-tbl">
+		<thead><tr><th style="width:130px">项目</th><th style="width:150px">范式</th><th>具体做法与可引用依据</th></tr></thead>
+		<tbody>
+			<tr><td>Notion</td><td>Emoji / 自定义图 + 封面</td><td>每个 Page 有独立 <b>Page Icon</b>（emoji 库或上传 PNG）与可选 <b>Cover Image</b>；图标显示在页面标题旁与侧栏条目上，是"视觉书签"。参考：<a href="https://www.notion.com/en-gb/help/customize-and-style-your-content">Notion Help · Style &amp; customise your page</a></td></tr>
+			<tr><td>AppFlowy</td><td>Emoji + 自定义图片</td><td>开源 Notion 替代品，<code>ChangeIconPopover</code> 支持 emoji 与 <code>UploadImage</code>（jpg/png/svg/webp），<code>ViewIcon</code> 统一渲染。参考：<a href="https://deepwiki.com/AppFlowy-IO/AppFlowy-Web/4.3-icon-system">AppFlowy-Web · Icon System</a></td></tr>
+			<tr><td>Outline</td><td>语义线性图标库 + 配色</td><td>Collection 用 <code>IconPicker</code> 选一组语义图标（BookmarkedIcon / CollectionIcon / AcademicCapIcon / BeakerIcon / CodeIcon / GlobeIcon / LeafIcon / MathIcon / PaletteIcon…），单色线性、可换色。参考：<a href="https://github.com/outline/outline/blob/main/app/components/IconPicker.tsx">outline/outline · IconPicker.tsx</a></td></tr>
+			<tr><td>BookStack</td><td>书籍语义图标 + 封面</td><td>以 Book/Shelf/Chapter 为信息架构，自带 <code>book.svg / books.svg / bookshelf.svg / chapter.svg</code> 图标集，书籍条目可带封面图。参考：<a href="https://source.bookstackapp.com/bookstack/plain/resources/icons/">BookStack · resources/icons</a></td></tr>
+			<tr><td>AFFiNE / Docmost 等</td><td>首字母 Letter Avatar</td><td>工作区/空间无自定义图标时，取名称首字（中文取首字、英文取缩写）配确定性渐变作头像，零配置、跨平台字形一致；常见于自托管 SaaS 的空间切换器。</td></tr>
+			<tr><td>Anytype / 思源 SiYuan</td><td>Emoji + 彩色圆角底</td><td>对象/笔记本图标 = 一个 emoji 落在低饱和圆角方块上，色块用于分组而非承载信息；与 Notion 同族，但不强制封面。</td></tr>
+		</tbody>
+	</table>
+	<div class="kbix-note" style="margin-top:12px">
+		归纳出 <b>4 类范式</b>：① Emoji/自定义图（辨识度最高，要处理字形差异）；② 语义线性图标（最"文档工具"，克制、可主题化）；
+		③ 首字/缩写头像（零配置、稳定）；④ 封面 + 叠加图标徽章（保留现有渐变的过渡做法）。下面 5 套分别对应或组合它们。
+	</div>
+
+	<div class="kbix-sec">二、5 套方案 <span>点开看可交互 mockup；每页自带明暗切换、点击反馈与页内自检</span></div>
+	<div class="kbix-cards">
+		<a class="kbix-card" href="kb-card-icon-a-emoji.html"><div class="tag">方案 A</div><h3>Emoji + 彩色圆角底</h3>
+			<p>照 Notion / AppFlowy / Anytype。去掉纯色封面，换成 40px 低饱和圆角底 + 大 emoji；按库名关键词给默认 emoji，点图标可换。</p>
+			<div class="foot">辨识度 ★★★★★ · 改动 中 · 依赖系统 emoji 字形</div></a>
+		<a class="kbix-card" href="kb-card-icon-b-line.html"><div class="tag">方案 B</div><h3>语义线性图标 + 主题色</h3>
+			<p>照 Outline IconPicker / BookStack。内联 SVG 线性图标（coins/code/game/palette/cube/book），stroke 用 currentColor，按库语义分色。</p>
+			<div class="foot">克制 ★★★★★ · 改动 中 · 需维护图标映射表</div></a>
+		<a class="kbix-card" href="kb-card-icon-c-letter.html"><div class="tag">方案 C</div><h3>首字 Letter Avatar + 确定性渐变</h3>
+			<p>照 AFFiNE / Docmost。中文取首字、英文取前两字母，复用现有 <code>coverOf()</code> 的 hash 色相 ⇒ 零配置、跨机型一致。</p>
+			<div class="foot">稳定 ★★★★★ · 改动 最小 · 语义弱于 emoji</div></a>
+		<a class="kbix-card" href="kb-card-icon-d-cover.html"><div class="tag">方案 D</div><h3>保留封面 + 叠加图标徽章</h3>
+			<p>照 Notion 的 Cover + Page Icon。现有 78px 渐变不动，在左下压一枚 36px 徽章（emoji/首字），带描边与阴影。</p>
+			<div class="foot">改动 最小 ★★★★★ · 保留视觉惯性 · 仍是色块为主</div></a>
+		<a class="kbix-card" href="kb-card-icon-e-mixed.html"><div class="tag">方案 E ✅ 已选</div><h3>状态化图标组 + B 的语义 SVG 图标</h3>
+			<p><b>定型稿</b>：图标换成方案 B 的内联 SVG 线性图标（不用 emoji），保留状态角标（右上「已绑飞书 / 空库虚线 / 7 天更新点」）与右下篇数 chip；卡片只剩「图标 + 名字 + 一句摘要」。</p>
+			<div class="foot">信息密度 ★★★★★ · 改动 中 · 需定义状态优先级</div></a>
+	</div>
+
+	<div class="kbix-sec">三、待你拍板 <span>定了再动 <code>homePage.js</code></span></div>
+	<div class="kbix-q"><b>① 选哪套</b> ✅ <b>已定：方案 E + 方案 B 的语义 SVG 图标</b>（E 的状态化卡片、B 的内联线性图标，不用 emoji）。</div>
+	<div class="kbix-q"><b>② 图标由谁定</b>：按库名/分类关键词自动推断（本组 mockup 的做法：数据 / 技术 / 设计 / 创作），还是允许用户在「新建/编辑知识库」时手动选语义图标 / 上传图片？后者要把 icon 存进 <code>知识库列表/&lt;库&gt;/.kb-feishu.json</code> 同级的新元数据文件。</div>
+	<div class="kbix-q"><b>③ 状态角标范围</b>：只显示飞书绑定，还是连同「空库 / 近 7 天更新 / 篇数」一起；状态冲突时谁优先。</div>
+	<div class="kbix-q"><b>④ 是否保留渐变</b>：D 保留，A/B/C/E 都把 78px 封面降为图标底或直接去掉（卡片会变矮，一屏能放更多库）。</div>
+	<div class="kbix-q"><b>⑤ 明暗两态</b>：本组每页都带 <code>☀ 明暗</code>，请分别看一遍——低饱和底色在浅色主题下容易发灰。</div>
+
+	<div class="kbix-check" id="checkOut">自检运行中…</div>
+</div>
+<script>
+(function () {
+	var pass = 0, fail = 0, lines = [];
+	function check(name, fn) { try { var r = fn(); if (r === false) { throw new Error('断言为 false'); } pass++; lines.push('PASS  ' + name); } catch (e) { fail++; lines.push('FAIL  ' + name + ' — ' + e.message); } }
+	check('索引页列全 5 套方案链接', function () { return document.querySelectorAll('.kbix-cards .kbix-card').length === 5; });
+	check('每个方案链接都有对应标题与说明', function () {
+		return Array.prototype.every.call(document.querySelectorAll('.kbix-cards .kbix-card'), function (a) { return a.querySelector('h3') && a.querySelector('p'); });
+	});
+	check('开源对照表 6 个项目都给了可查来源或说明', function () { return document.querySelectorAll('.kbix-tbl tbody tr').length === 6; });
+	check('待确认问题清单 5 条', function () { return document.querySelectorAll('.kbix-q').length === 5; });
+	check('无横向溢出（窄视口也验）', function () { return document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1; });
+	check('卡片未被压成几十像素（grid 子项写法）', function () {
+		var w = document.querySelector('.kbix-card').getBoundingClientRect().width; return w > 180;
+	});
+	document.getElementById('checkOut').textContent = lines.join('\n') + '\n\n' + pass + '/' + (pass + fail) + ' passed';
+	document.getElementById('themeBtn').onclick = function () {
+		var r = document.documentElement; r.dataset.theme = r.dataset.theme === 'dark' ? 'light' : 'dark';
+	};
+	window.__KBIX_RESULT__ = { pass: pass, fail: fail };
+})();
+</script>
+</body></html>

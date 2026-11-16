@@ -94,7 +94,7 @@ try {
 }
 
 // ── ② client ─────────────────────────────────────────────────────────────
-function loadClient() {
+function loadClient(fetchImpl) {
 	let mod = null;
 	// ⚠ 2026-11-02：`client.js` 的深链 effect 会读 `window.location`（`?wb=` / `#wb=`），
 	// 假 window 少了 location ⇒ apply() 直接抛，后面 12 条断言全部连锁失败（基线 18/30）。
@@ -112,7 +112,8 @@ function loadClient() {
 	};
 	const src = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8');
 	const fakeDocument = { getElementById: () => ({}), createElement: () => ({}), head: { appendChild() { } } };
-	new Function('window', 'globalThis', 'document', src)(sandboxWindow, {}, fakeDocument);
+	if (fetchImpl) { new Function('window', 'globalThis', 'document', 'fetch', src)(sandboxWindow, {}, fakeDocument, fetchImpl); }
+	else { new Function('window', 'globalThis', 'document', src)(sandboxWindow, {}, fakeDocument); }
 	return mod;
 }
 const client = loadClient();
@@ -156,7 +157,7 @@ await t('缺省值同官方：businessSide=right / businessWidth=0.36 / headerLa
 });
 
 // 拿到 Workbenches 类：apply 用假 ctx 跑一遍，从 reflect.provide 截获 service
-function serviceOf() {
+function serviceOf(module = client) {
 	const ctx = fakeCtx();
 	let service = null;
 	ctx.effect = fn => fn();
@@ -164,9 +165,25 @@ function serviceOf() {
 	const g = globalThis;
 	const savedFetch = g.fetch;
 	g.fetch = async () => ({ ok: true, json: async () => ({ revision: 0, state: emptyState() }) });
-	try { client.apply(ctx); } finally { g.fetch = savedFetch; }
+	try { module.apply(ctx); } finally { g.fetch = savedFetch; }
 	return { service, ctx };
 }
+await t('外部插件默认Bot：local与公开仓库身份都按包名绑定，未注册preset不猜', async () => {
+	let rows = [{ packageName: '@demo/desk', defaultPreset: 'vssaros-wb-helper' }];
+	const module = loadClient(async url => ({ ok: true, json: async () => String(url).endsWith('/plugin-resources') ? { packages: rows } : { revision: 0, state: emptyState() } }));
+	for (const repository of [undefined, 'https://github.com/demo/desk']) {
+		const { service } = serviceOf(module);
+		service.agentPresets = { list: async () => ({ ok: true, value: { presets: [{ id: 'vssaros-wb-helper' }] } }) };
+		const dispose = service.register({ title: 'Demo', package: '@demo/desk', ...(repository ? { repository } : {}) }, Comp);
+		assert.equal(await service.readyPreset(repository ? 'demo/desk' : 'local:@demo/desk'), 'vssaros-wb-helper');
+		dispose();
+	}
+	rows = [];
+	const { service } = serviceOf(module);
+	service.agentPresets = { list: async () => ({ ok: true, value: { presets: [] } }) };
+	service.register({ title: 'No Bot', package: '@demo/empty' }, Comp);
+	assert.equal(await service.readyPreset('local:@demo/empty'), '');
+});
 await t('register → 注册 main keyed 面板；重复注册抛；注销函数撤面板', () => {
 	const { service, ctx } = serviceOf();
 	assert.ok(service, 'apply 必须 provide desktopWorkbenches');
@@ -394,7 +411,11 @@ await t('服务端：provide desktopWorkbenchOwnership + 注册 state / state/wr
 		const tools = [];
 		ctx.tools = { register: (definition) => { tools.push(definition); return () => { }; } };
 		ctx.inject = (names, cb) => {
-			if (names.includes('connection')) { assert.deepEqual(names, ['connection', 'webServer']); cb(ctx); return; }
+			if (names.includes('connection')) {
+				assert.ok(JSON.stringify(names) === '["connection"]' || JSON.stringify(names) === '["connection","webServer"]');
+				cb(ctx); return;
+			}
+			if (names.length === 1 && ['skills', 'vssarosAgents', 'vssarosMcpSources', 'pluginManager'].includes(names[0])) { return; }
 			if (names.includes('tools')) { cb(ctx); return; }
 			// 2026-11-02：还会 inject(['vssarosBridge']) 显式声明"控制桥可选"（dshPluginPackages 守卫要求）。
 			// 这里**不回调**（= 组合里没装桥）⇒ 工具应如实报"没有可用的控制桥"。
@@ -413,6 +434,7 @@ await t('服务端：provide desktopWorkbenchOwnership + 注册 state / state/wr
 			'GET /api/vssaros-workbenches/development-guide',
 			'GET /api/vssaros-workbenches/install-status',
 			'GET /api/vssaros-workbenches/link',
+			'GET /api/vssaros-workbenches/plugin-resources',
 			'GET /api/vssaros-workbenches/state',
 			'POST /api/vssaros-workbenches/state/write',
 		]);

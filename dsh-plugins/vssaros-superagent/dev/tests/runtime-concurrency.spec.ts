@@ -1,5 +1,7 @@
 /** Concurrent runtime behavior across overlapping triggers, deliveries, and worker launches. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { join } from 'node:path'
+import { rm, stat } from 'node:fs/promises'
 import { latestAssignment, waitsForPerson, type Ticket, type Trigger } from '../src/core/index.ts'
 import { Later } from '../src/app/effects.ts'
 import { reportRelay } from '../src/app/notices.ts'
@@ -12,6 +14,87 @@ import { CHAT, MEMBER, feishu, startRuntime, type Host } from './fixtures/host.t
 let h: Host
 beforeEach(async () => { h = await startRuntime() })
 afterEach(async () => { await h.stop() })
+it('blocks a new P4 TAPD bug with no checkout before delivering to a worker, while preserving generic tasks', async () => {
+  const saved = h.runtime.store.settings()
+  h.runtime.store.saveSettings({ ...saved, sources: { ...saved.sources, p4: { enabled: true,
+    config: { port: 'ssl:p4.test:1666', user: 'bot', paths: [{ path: '//GR/main/...' }] } } } })
+  const { ticket, sessionId } = await h.acceptedTicket(feishu('p4-required', '@bot 修复 https://www.tapd.cn/68880148/bugtrace/bugs/view/5001'))
+  const current = h.runtime.store.tickets.get(ticket.id)!
+  expect(current.execution?.delivery).toBe('p4')
+  expect(current.assignments.at(-1)?.report).toMatchObject({ state: 'blocked', summary: expect.stringContaining('准备命令') })
+  expect(current.ended).toBeUndefined()
+  expect(h.deliveries.mock.calls.some(([call]) => call.sessionId === sessionId)).toBe(false)
+  expect(() => h.runtime.engine.report(ticket.id, { state: 'ready', summary: 'old CL is enough' })).toThrow('P4 delivery')
+  expect(() => h.runtime.engine.report(ticket.id, { state: 'dropped', summary: 'duplicate' })).toThrow('P4 delivery')
+  const ordinary = await h.acceptedTicket(feishu('ordinary', '@bot summarize'))
+  expect(ordinary.ticket.execution?.delivery).toBeUndefined()
+})
+
+it('starts a current-workspace ticket without running a prepare command', async () => {
+  const { verifyP4Workspace } = await import('../src/executor/p4-workspace.ts')
+  const preflight = vi.spyOn(await import('../src/executor/p4-workspace.ts'), 'verifyP4Workspace').mockResolvedValue('main')
+  const saved = h.runtime.store.settings()
+  h.runtime.store.saveSettings({ ...saved, sources: { ...saved.sources, p4: { enabled: true, config: {
+    port: 'ssl:test:1666', user: 'bot', paths: [{ path: '//GR/main/...' }], workspaceMode: 'current', executionClient: 'main', workspaceRoot: h.directory,
+  } } } })
+  const { ticket, sessionId } = await h.acceptedTicket(feishu('shared', '@bot fix https://www.tapd.cn/68880148/bugtrace/bugs/view/5001'))
+  expect(ticket.execution?.directory).toBe(h.directory)
+  expect(preflight).toHaveBeenCalled()
+  expect(h.deliveries.mock.calls.some(([call]) => call.sessionId === sessionId)).toBe(true)
+  expect(h.subprocess.spawn.mock.calls.some(([spec]) => spec.argv.includes('sh') && spec.argv.includes('-c'))).toBe(false)
+  expect(verifyP4Workspace).toBeDefined()
+})
+
+it('stops the ticket on a P4 sync conflict, without launching its worker or overwriting files', async () => {
+  const p4workspace = await import('../src/executor/p4-workspace.ts')
+  vi.spyOn(p4workspace, 'verifyP4Workspace').mockResolvedValue('main')
+  const saved = h.runtime.store.settings()
+  h.runtime.store.saveSettings({ ...saved, sources: { ...saved.sources, p4: { enabled: true, config: {
+    port: 'ssl:test:1666', user: 'bot', paths: [{ path: '//GR/main/...' }], workspaceMode: 'current', executionClient: 'main', workspaceRoot: h.directory,
+    syncBeforeWork: true,
+  } } } })
+  const calls: string[][] = []
+  vi.spyOn(Commands.prototype, 'run').mockImplementation(async (_program, args) => {
+    calls.push([...args])
+    if (args.includes('sync') && args.includes('-n')) return JSON.stringify({ depotFile: '//GR/main/A.cpp', action: 'updated' })
+    if (args.includes('diff')) return JSON.stringify({ depotFile: '//GR/main/A.cpp' })
+    return ''
+  })
+  const { ticket, sessionId } = await h.acceptedTicket(feishu('conflict', '@bot fix https://www.tapd.cn/68880148/bugtrace/bugs/view/5001'))
+  await waitUntil(() => !!h.runtime.store.tickets.get(ticket.id)?.ended)
+  const ended = h.runtime.store.tickets.get(ticket.id)!
+  expect(ended.ended).toMatchObject({ by: 'human', outcome: 'stopped' })
+  expect(ended.ended?.reason).toContain('同步冲突')
+  expect(ended.ended?.reason).toContain('A.cpp')
+  expect(h.deliveries.mock.calls.some(([call]) => call.sessionId === sessionId)).toBe(false)
+  expect(calls.some(args => args.includes('sync') && args.includes('-q'))).toBe(false)
+  expect(calls.some(args => args.includes('resolve'))).toBe(false)
+})
+
+it('reserves current-workspace starts across launches, person wakes and outstanding reviews', () => {
+  let active = ['t1']
+  const slots = new WorkerSlots(() => [], () => 3, id => id === 'other' ? '/other' : '/main', () => active)
+  for (const by of ['launch', 'wake', 'person'] as const) expect(() => slots.reserve('t2', by)).toThrow('workspace is held')
+  slots.reserve('other', 'launch'); slots.free('other')
+  active = []
+  slots.reserve('t1', 'launch')
+  expect(() => slots.reserve('t2', 'person')).toThrow('workspace is held')
+  slots.free('t1'); slots.reserve('t2', 'launch')
+})
+
+it('freezes the operator-selected current P4 root without appending ticket directories or trusting trigger paths', () => {
+  const settings = SettingsSchema.parse({ sources: { p4: { enabled: true, config: { port: 'ssl:test:1666', user: 'bot',
+    workspaceMode: 'current', executionClient: 'main', workspaceRoot: h.directory } } } })
+  const origin = feishu('p4', '@bot fix https://www.tapd.cn/68880148/bugtrace/bugs/view/5001')
+  const ticket = { id: 'abc0123456789012345', origin: { triggerId: origin.id }, mandate: { strength: 'explicit', basis: {} } } as Ticket
+  const execution = ticketExecution(ticket, { name: 'fix', kind: 'accept' } as never, settings, '/state', origin)
+  expect(execution.directory).toBe(h.directory)
+  expect(execution.p4Workspace).toMatchObject({ client: 'main', root: h.directory })
+  expect(execution.delivery).toBe('p4')
+  settings.sources.p4!.config.workspaceRoot = '/untrusted-new'
+  expect(execution.directory).toBe(h.directory)
+})
+
 const lark = { users: [{ member_id: MEMBER, name: 'Alice' }], has_more: false }
 const linkLookedUp = (messageId: string) =>
   vi.mocked(Commands.prototype.lark).mock.calls.some(([args]) => args.includes('+messages-mget') && args.includes(messageId))
@@ -105,6 +188,23 @@ it('runs prepare commands in the background, side by side, while accepts, intake
   expect(h.runtime.store.tickets.list().map(ticket => ticket.assignments.at(-1)!.state)).toEqual(['running', 'running'])
 })
 
+it('cancels directory preparation when a person stops the ticket before the command completes', async () => {
+  const settings = h.runtime.store.settings()
+  h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, prepare: 'prepare-held' } })
+  const held = deferred()
+  h.hooks.prepare = held.promise
+  const trigger = feishu('1', '@bot 修回归')
+  h.runtime.receive(trigger); await h.runtime.idle()
+  await h.route({ kind: 'accept', trigger_id: trigger.id, title: 'Fix', worktree_name: 'fix-cancel', acknowledgement: '收到。' })
+  await waitUntil(() => h.subprocess.spawn.mock.calls.some(([spec]) => spec.argv[2] === 'prepare-held'))
+  const ticket = h.runtime.store.tickets.list()[0]!
+  h.runtime.engine.stopTicket(ticket.id)
+  held.resolve()
+  await h.runtime.idle()
+  await expect(stat(ticket.execution!.directory)).rejects.toMatchObject({ code: 'ENOENT' })
+  expect(h.agents.has(`worker-${ticket.id}`)).toBe(false)
+})
+
 it('keeps a launch that a pause cut short queued, and finishes it once processing resumes', async () => {
   const settings = h.runtime.store.settings()
   h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, prepare: 'make worktree' } })
@@ -125,6 +225,18 @@ it('keeps a launch that a pause cut short queued, and finishes it once processin
 })
 
 const botMessage = () => feishu('2', 'CI 失败', { mentions: [], root_id: 'om_1', sender_id: 'cli_ci', sender_type: 'bot' })
+it('does not recreate a deleted worker when its execution workspace has been lost', async () => {
+  const { ticket, sessionId } = await h.acceptedTicket(feishu('1', '@bot 修回归'))
+  h.agents.delete(sessionId)
+  await rm(ticket.execution!.directory, { recursive: true })
+  h.controller.create.mockClear()
+  h.runtime.receive(botMessage())
+  await h.runtime.idle()
+  expect(h.runtime.store.tickets.get(ticket.id)!.delivery?.error).toContain('原工作区已丢失')
+  expect(h.runtime.store.tickets.get(ticket.id)!.undelivered).toHaveLength(1)
+  expect(h.agents.has(sessionId)).toBe(false)
+  expect(h.controller.create).not.toHaveBeenCalled()
+})
 it('wakes an idle worker for a bot\'s Input only when a worker slot is free, and creates a worker Session someone deleted again', async () => {
   const settings = h.runtime.store.settings()
   h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, maxWorkers: 1 } })
@@ -939,5 +1051,54 @@ describe('the Executor\'s parts', () => {
       answers: 'tr9' })!
     expect(ready.id).toMatch(/^report:/)
     expect(JSON.parse(ready.text)).toMatchObject({ kind: 'worker_report', ticket: { ticket_id: 't1' }, trigger_id: 'tr1', state: 'ready', answer_to: 'tr9', summary: 'Done' })
+  })
+})
+
+describe('★ 2026-11-11 execution root and external-URL precondition', () => {
+  const settings = SettingsSchema.parse({})
+  const ticket = { id: 'ticket-0123456789abcdef', origin: { triggerId: 'tr1', triggerIds: [] },
+    mandate: { strength: 'explicit', policyVersion: 'v1', basis: {}, actor: { source: 'superagent', id: 'local' }, scope: '' } } as unknown as Ticket
+  const outcome = { kind: 'accept', title: 'Fix', scope: 'Fix', reason: 'r', name: 'fix-bug' } as never
+  it('freezes PTC selection only for new single-worker tickets and leaves team/native history unchanged', () => {
+    const enabled = SettingsSchema.parse({ executor: { workerPtc: true } })
+    const native = ticketExecution(ticket, outcome, settings, '/state')
+    expect(native.toolMode).toBeUndefined()
+    expect(ticketExecution(ticket, outcome, enabled, '/state').toolMode).toBe('ptc')
+    enabled.executor.teamEnabled = true
+    expect(ticketExecution(ticket, outcome, enabled, '/state').toolMode).toBeUndefined()
+    expect(native.toolMode).toBeUndefined()
+  })
+  it('uses the operator-configured local Source root, never incoming workspace metadata', () => {
+    const local = SettingsSchema.parse({ sources: { superagent: { config: { workspace: 'F:\\S1Game' } } } })
+    const origin = { source: 'superagent', text: 'x', meta: { workspace: '../untrusted' } } as unknown as Trigger
+    expect(ticketExecution(ticket, outcome, local, '/state', origin).directory).toContain('S1Game')
+    const tapd = { source: 'tapd', text: 'x', meta: { workspace: '68880148' } } as unknown as Trigger
+    expect(ticketExecution(ticket, outcome, settings, '/state', tapd).directory).toBe(join('/state', 'work', 'fix-bug-ticket-01234'))
+    expect(tapd.meta.workspace).toBe('68880148')
+  })
+  it('adds a precondition for tasks that reference an external URL', () => {
+    const origin = { text: '修复 https://www.tapd.cn/bug/detail/1', meta: {} } as unknown as Trigger
+    expect(ticketExecution(ticket, outcome, settings, '/state', origin).assignment).toContain('Precondition')
+    expect(ticketExecution(ticket, outcome, settings, '/state').assignment).not.toContain('Precondition')
+  })
+})
+
+describe('★ 2026-11-11 TAPD tasks must use the configured API', () => {
+  const settings = SettingsSchema.parse({})
+  const ticket = { id: 'ticket-0123456789abcdef', origin: { triggerId: 'tr1', triggerIds: [] },
+    mandate: { strength: 'explicit', policyVersion: 'v1', basis: {}, actor: { source: 'superagent', id: 'local' }, scope: '' } } as unknown as Ticket
+  const outcome = { kind: 'accept', title: 'Fix', scope: 'Fix', reason: 'r', name: 'fix-bug' } as never
+  it('names orchestrator_tapd_item and forbids the browser for TAPD links', () => {
+    const origin = { text: '修复 https://www.tapd.cn/tapd_fe/68880148/bug/detail/1168880148001272696', meta: {} } as unknown as Trigger
+    const assignment = ticketExecution(ticket, outcome, settings, '/state', origin).assignment
+    expect(assignment).toContain('orchestrator_tapd_item')
+    expect(assignment).toContain('Do NOT use a browser')
+    expect(assignment).toContain('Open API configured in SuperAgent settings')
+  })
+  it('keeps the generic precondition for other external links', () => {
+    const origin = { text: 'see https://example.com/doc', meta: {} } as unknown as Trigger
+    const assignment = ticketExecution(ticket, outcome, settings, '/state', origin).assignment
+    expect(assignment).toContain('external URL')
+    expect(assignment).not.toContain('orchestrator_tapd_item')
   })
 })

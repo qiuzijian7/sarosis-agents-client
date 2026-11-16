@@ -57,6 +57,35 @@ check('默认 dry-run 且显式写 --dry-run', () => {
 	assert.ok(buildFeishuSyncArgs({ vault: 'V', apply: true }).includes('--apply'));
 });
 
+/*
+ * ★ 2026-11-12：设置页「本地覆盖」旧值写 'local'，而 Host 判据是
+ *   `conflict === 'skip' ? 'skip' : 'overwrite'`、CLI 只认 '--on-conflict overwrite'。
+ *   值名分叉 ⇒ 设置改成 overwrite 后下拉找不到匹配项，回显成「跳过」，用户以为没生效。
+ */
+const CLIENT = readFileSync(HERE + '../lib/client.js', 'utf8');
+check('★ 冲突口径统一：设置页选项值 = Host/CLI 的 skip | overwrite', () => {
+	const at = CLIENT.indexOf('远端手改时');
+	const seg = at < 0 ? '' : CLIENT.slice(at, at + 700);
+	assert.ok(seg.includes('远端手改时'), '找不到冲突设置控件');
+	assert.ok(/value:\s*'overwrite'/.test(seg), '「本地覆盖」选项值必须是 overwrite');
+	assert.ok(!/value:\s*'local'/.test(seg), '仍残留 local 值（Host/CLI 不认）');
+	// 旧存量 'local' 归一到 overwrite：只有显式 skip 才是 skip
+	assert.ok(/===\s*'skip'\s*\?\s*'skip'\s*:\s*'overwrite'/.test(seg), '下拉回显没归一旧值');
+	assert.ok(/onConflict:\s*feishuCfg\.conflict === 'skip' \? 'skip' : 'overwrite'/.test(INDEX),
+		'Host 判据与选项值不一致');
+});
+check('★ 参数组装只下发 skip / overwrite 两种值', () => {
+	const args = buildFeishuSyncArgs({ vault: 'V', onConflict: 'overwrite' });
+	assert.equal(args[args.indexOf('--on-conflict') + 1], 'overwrite');
+	const a2 = buildFeishuSyncArgs({ vault: 'V', onConflict: 'skip' });
+	assert.equal(a2[a2.indexOf('--on-conflict') + 1], 'skip');
+});
+check('反向突变自证：选项值写回 local 会被上一条抓到', () => {
+	const broken = CLIENT.replace(/value: 'overwrite'/, "value: 'local'");
+	const at = broken.indexOf('远端手改时');
+	assert.ok(/value:\s*'local'/.test(broken.slice(at, at + 700)));
+});
+
 console.log('\n' + '='.repeat(60));
 if (failed.length) {
 	console.log(`✗ ${failed.length} 项失败 / 共 ${pass + failed.length} 项`);

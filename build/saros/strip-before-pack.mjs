@@ -963,7 +963,7 @@ if (criticalMissing > 0) {
 //   ⚠ 2026-11-07：随包的是**仓库 pin 的 pnpm@11.28.5 整包**（`bin/pnpm.mjs` → `dist/pnpm.mjs`，
 //     约 21MB / 450 文件）——pnpm 11 不再是 pnpm 10 那种单文件 bundle，只拷入口会
 //     ERR_MODULE_NOT_FOUND。IDE 侧用 **Host 自己的 `node.path`** 跑它（不能用 Electron 顶替，
-//     实测并发安装阶段会崩）；托管 Node 门槛 22.19+ 满足 pnpm 11 的 ≥22.13 ⇒ 用户机器不需装 node ✓。
+//     实测并发安装阶段会崩）；托管 Node 门槛 >=24.9.0 满足 pnpm 11 的 ≥22.13 ⇒ 用户机器不需装 node ✓。
 //     版本真源：根 package.json 的 devDependencies.pnpm（与构建期 prepack 同一份）。
 //   ⚠ 失败**不阻断**打包（启动路径已被直装覆盖，这只影响"运行时能不能用 pnpm"）。
 {

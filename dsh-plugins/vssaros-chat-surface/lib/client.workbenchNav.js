@@ -111,6 +111,12 @@ window.__ModuleLoader__.load({
 					{ id: "vssaros-wb-kanban", name: "看板", ico: "🗂️", route: "/x/kanban/", hidden: true, offline: true },
 			{ id: "vssaros-wb-workflow", name: "工作流", ico: "🔀", route: "/x/workflow/", hidden: true, offline: true },
 			{ id: "vssaros-wb-kb", name: "知识库", ico: "📚", route: "/x/kb/" },
+			// ★ 2026-11-11（用户：「主页中，工作台中缺少 记忆 item」）：与主页卡片同 route 登记。
+			//   `comp` = 组件页签键 ⇒ `makeTabPanel` 从 window.__vssarosPageComponents 取回
+			//   vssaros-memory 登记的 MemoryTabView，**不**加载并不存在的 /x/memory/ 整页（404 ✗）。
+			//   ⚠ id 刻意不复用旧的 `vssaros-wb-memory`：那个 id 在下面 retired 里仍要负责清掉
+			//     11-03 下线前残留的旧页签（旧存档没有 comp，复活就是一张 404 iframe）✓。
+			{ id: "vssaros-wb-memory-tab", name: "记忆", ico: "🧠", route: "/x/memory/", comp: "memory" },
 			{ id: "vssaros-wb-codebase", name: "代码库", ico: "🕸️", route: "/x/codebase/" },
 			{ id: "vssaros-wb-media", name: "媒体库", ico: "🖼️", route: "/x/media/" },
 			{ id: "vssaros-wb-imagegen", name: "生图", ico: "🎨", route: "/x/imagegen/", hidden: true, offline: true },
@@ -130,10 +136,8 @@ window.__ModuleLoader__.load({
 			//   这份 DEFAULT_ITEMS 同时是 **route 白名单**（`itemByRoute()` 只认这里的 route）⇒
 			//   不登记 ⇒ 从主页/侧栏点「打开」会被静默拒掉（"点了没反应"）✗ ⇒ 必须登记 ✓。
 			{ id: "vssaros-wb-marketplace", name: "商城", ico: "🛒", route: "/x/marketplace/" },
-			// ★ 2026-10-23：萨罗斯管理平台工作台（`@vssaros/dsh-studio`）。
-			//   这份表同时是 **route 白名单** ⇒ 不登记 ⇒ 从主页/侧栏点「打开」被静默拒掉。
-			//   ⚠ 与 `vssaros-dashboard/lib/catalog.js` 的 `WORKBENCH_MODULES` 必须两处同时登记。
-			{ id: "vssaros-wb-studio", name: "萨罗斯平台", ico: "◱", route: "/x/studio/" },
+			// ★ 2026-11-11（用户要求「移除萨罗斯管理工作台」）：`@vssaros/dsh-studio` 已下线 ⇒
+			//   这条 DEFAULT_ITEMS（同时是 route 白名单）与主页卡片同批删除。
 			// ★ 2026-10-24：小红书笔记（创作型工作台样板，`@vssaros/dsh-xhs-note`）。
 			//   这份表同时是 **route 白名单** ⇒ 不登记 ⇒ 从主页/侧栏点「打开」会被静默拒掉（"点了没反应"）。
 			//   ⚠ 与 `vssaros-dashboard/lib/catalog.js` 的 `WORKBENCH_MODULES` 必须两处同时登记。
@@ -1665,9 +1669,49 @@ window.__ModuleLoader__.load({
 			}
 
 
-			// 侧栏「主页」那一行 ⇒ 页签面板（挂载即激活「主页」页签 ✓）
+			// 侧栏「主页」那一行 ⇒ 页签面板（首次挂载会激活「主页」页签；**不是唯一入口**，见下 ✓）
 			safeInject("main:主页", SLOT_MAIN, () => safeRegister(
 				"main:主页", { name: SLOT_MAIN, key: ENTRY_ID }, makeTabPanel(dashboardItem)));
+
+			// ── 侧栏「🏠 主页」行：**显式**激活主页页签（2026-11-11 用户报障）─────────────────
+			// 原话：「点击 左侧栏的主页按钮，无法切换到 对应 主页页签 页面」。
+			// CDP 真机复现：中栏工作台面板**已在屏**（例如正停在「知识库」页签）时点那一行，
+			//   活动页签纹丝不动（localStorage['vssaros.wb.tabs.active'] 仍是 vssaros-wb-kb）。
+			// 真因：这一行的点击归官方 `selectPanel(ENTRY_ID)`，而「激活主页页签」原先**只**挂在
+			//   main 面板 `useEffect(..., [])` 的**首次挂载**副作用上 ⇒ 面板已在屏时 selectPanel
+			//   幂等、effect 不重跑 ⇒ 什么都不会发生（静默、无报错、无日志）✗。
+			// 修法：给这一行补自己的点击处理（document 捕获阶段，覆盖整行而不只是图标）⇒
+			//   无论面板是否首次挂载，都强制把「主页」设为活动页签。
+			//   ⚠ 不 stopPropagation：官方那次 selectPanel 照旧跑，负责把中栏切回工作台面板 ✓；
+			//   ⚠ ensureTab 会顺手把 pendingTabOpen 写成主页 id ⇒ 万一这次真的触发首次挂载，
+			//     挂载 effect 命中意图后提前 return，不会再覆盖我们刚设好的状态 ✓。
+			function activateDashboardTab() {
+				let it = null;
+				try { it = dashboardItem(); } catch (e) { noteFail("nav:主页行点击", e); return; }
+				if (!it || !it.id) { return; }
+				try {
+					ensureTab(it);   // 补页签 + activeTabId + 落盘 + 覆盖陈旧意图 + bumpTabs 重画
+					if (ctx.layout && typeof ctx.layout.selectPanel === "function") {
+						ctx.layout.selectPanel(ENTRY_ID);   // 已在屏时幂等；中栏在会话时切过去 ✓
+					}
+					state.homeEntryClicks = (state.homeEntryClicks || 0) + 1;
+				} catch (e) { noteFail("nav:主页行点击", e); }
+			}
+			try { window.__vssarosActivateHomeTab = activateDashboardTab; } catch { /* window 不可写 */ }
+			if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+				document.addEventListener("click", (e) => {
+					try {
+						if (e && typeof e.button === "number" && e.button !== 0) { return; }
+						const target = e && e.target;
+						const btn = target && typeof target.closest === "function"
+							? target.closest('button[aria-label="主页"]') : null;
+						// 只认**我们那一行**：官方侧栏按钮里带着上面那个稳定锚点（别处同名按钮不误触发 ✓）
+						if (!btn || typeof btn.querySelector !== "function"
+							|| !btn.querySelector("[data-vssaros-home-entry]")) { return; }
+						activateDashboardTab();
+					} catch (err) { noteFail("nav:主页行点击(捕获)", err); }
+				}, true);
+			}
 			// 每个条目一个入口（主页「打开」/ 固定行 / 启动器 都走它）⇒ 打开即一个独立页签 ✓
 			for (const it of DEFAULT_ITEMS) {
 				const key = "vssaros-wb-" + it.id;
@@ -1692,6 +1736,8 @@ window.__ModuleLoader__.load({
 			function EntryIcon(props) {
 				const size = props && typeof props.size === "number" ? props.size : 16;
 				return react.createElement("span", {
+					// 稳定锚点：下面那条 document 捕获监听靠它认出「这是我们那一行」，而不是别处同名的按钮 ✓
+					"data-vssaros-home-entry": "1",
 					title: "主页（左键：打开主页 · 右键：切换/排序）",
 					onContextMenu: openLauncherFromMenu,
 					style: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: size, height: size, fontSize: Math.round(size * 0.8), lineHeight: 1 },

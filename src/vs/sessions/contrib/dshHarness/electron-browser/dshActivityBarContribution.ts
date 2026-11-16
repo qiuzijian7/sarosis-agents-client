@@ -39,7 +39,7 @@ import { DshHarnessSettings, IDshPluginInfo } from '../common/dshHarness.js';
 import { containersFromPlugins, DSH_MODULE_CONTAINERS, IDshModuleContainer, planModuleContainers } from '../common/dshModuleContainers.js';
 import { IDshHarnessService } from './dshHarnessService.js';
 // ★ 2026-11-03：`AGENT_STUDIO_PRESET_AGENT_VIEW_ID`（Bots 工作台容器）已下线，不再从这里引用
-import { AGENT_STUDIO_CODEBASE_VIEW_ID, AGENT_STUDIO_DASHBOARD_VIEW_ID, AGENT_STUDIO_DSH_IMAGEGEN_VIEW_ID, AGENT_STUDIO_DSH_MARKETPLACE_VIEW_ID, AGENT_STUDIO_DSH_SESSIONS_VIEW_ID, AGENT_STUDIO_DSH_STUDIO_VIEW_ID, AGENT_STUDIO_INTEGRATION_VIEW_ID, AGENT_STUDIO_KB_VIEW_ID, AGENT_STUDIO_MEDIA_VIEW_ID, AGENT_STUDIO_SCHEDULER_VIEW_ID, AGENT_STUDIO_TASKS_VIEW_ID, AGENT_STUDIO_WORKFLOW_VIEW_ID } from '../../../common/agentStudioConstants.js';
+import { AGENT_STUDIO_CODEBASE_VIEW_ID, AGENT_STUDIO_DASHBOARD_VIEW_ID, AGENT_STUDIO_DSH_IMAGEGEN_VIEW_ID, AGENT_STUDIO_DSH_MARKETPLACE_VIEW_ID, AGENT_STUDIO_DSH_SESSIONS_VIEW_ID, AGENT_STUDIO_INTEGRATION_VIEW_ID, AGENT_STUDIO_KB_VIEW_ID, AGENT_STUDIO_MEDIA_VIEW_ID, AGENT_STUDIO_SCHEDULER_VIEW_ID, AGENT_STUDIO_TASKS_VIEW_ID, AGENT_STUDIO_WORKFLOW_VIEW_ID } from '../../../common/agentStudioConstants.js';
 import { DynamicActivityBarContainers } from '../../agentStudio/browser/dynamicActivityBarContainers.js';
 import { DshPluginViewPane } from './dshPluginViewPane.js';
 import { DshNativeTreeViewPane } from './dshNativeTreeViewPane.js';
@@ -92,11 +92,9 @@ const MODULE_VIEW_HOSTS: Readonly<Record<string, IModuleViewHost>> = {
 	//   ⇒ 活动栏里原先的「中转站」条目（`vssaros.dsh.relay`）一并删除。
 	// ★ 2026-10-31（用户要求「移除并行工作台」）：`vssaros.dsh.parallel` 的活动栏条目已删除
 	//   （容器表 / 页面表 / 模块描述也同步删了，见 `dshModuleContainers.ts`）。
-	// ★ 2026-10-30（守卫「每个可注册容器都备了 page 宿主」抓出来的几个缺口）：studio / …
-	//   此前一直走 `moduleViewHostOf` 的**派生兜底**（`vssaros.dsh.pv.<containerId>`）—— 能用，但 id 没被显式钉住，
-	//   守卫也就看不见。这里把兜底值**原样**登记成显式条目：语义零变化（同一串 id ⇒ 已持久化的布局状态不丢），
-	//   但 id 从此是"写下来的"，派生规则将来改字也不会把它们带走。
-	'vssaros.dsh.studio': pageHost(AGENT_STUDIO_DSH_STUDIO_VIEW_ID, 'vssaros.dsh.studio'),
+	// ★ 2026-11-11（用户要求「移除萨罗斯管理工作台」）：`@vssaros/dsh-studio` 已下线 ⇒
+	//   `vssaros.dsh.studio` 的 page 宿主条目与视图 id 常量一并删除。
+
 	// ★ 2026-10-30（用户要求「删除小红书工作台」）：`vssaros.dsh.xhs-note` 活动栏条目已删除。
 	};
 

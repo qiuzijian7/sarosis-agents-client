@@ -27,7 +27,7 @@ export type FetchLike = (url: string) => Promise<{ ok: boolean; status: number; 
 export interface INodeInstallOptions {
 	readonly managedRoot: string;
 	readonly mirror?: string;
-	/** 精确版本（如 `22.23.3`）；省略时取满足 dsh 门槛的最新 LTS。 */
+	/** 精确版本（如 `24.22.3`）；省略时取满足 dsh 门槛的最新 LTS。 */
 	readonly version?: string;
 	readonly fetch: FetchLike;
 	readonly log: (line: string) => void;
@@ -124,7 +124,7 @@ export async function installManagedNode(opts: INodeInstallOptions): Promise<INo
 	const version = selectNodeVersion(index, platform, arch, opts.version);
 	if (!version) {
 		throw new Error(opts.version
-			? `镜像中没有 Node ${opts.version} 的 ${platform}-${arch} 便携包，或该版本低于 dsh 要求（22.19+ / 24+）`
+			? `镜像中没有 Node ${opts.version} 的 ${platform}-${arch} 便携包，或该版本低于 dsh 要求（>=24.9.0）`
 			: `镜像中找不到满足 dsh 要求的 ${platform}-${arch} LTS 便携包`);
 	}
 	const archive = nodeArchiveFor(version, platform, arch);

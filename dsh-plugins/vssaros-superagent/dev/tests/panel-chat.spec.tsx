@@ -1,17 +1,20 @@
 // @vitest-environment jsdom
 // VsSaros addition: the Chat tab (the supervisor desk) and the side panel with the Overview.
+import { readFileSync } from 'node:fs'
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { expect, it, vi } from 'vitest'
+import { beforeEach, expect, it, vi } from 'vitest'
 import { zh } from '../src/client/locales.ts'
 import { ChatDock, waitingProposal } from '../src/client/chat.tsx'
 import { CardProvider } from '../src/client/provider.tsx'
 import { WorkProvider } from '../src/client/work.tsx'
 import { workSignatures } from '../src/client/side.tsx'
-import { all, click, find, mount, remount, settle, tab, text, translator, type, usePanel } from './fixtures/panel.tsx'
+import { all, at, click, find, mount, remount, settle, tab, text, translator, type, usePanel } from './fixtures/panel.tsx'
 import { server } from './fixtures/panel-server.ts'
 
 usePanel()
+// ★ 2026-11-11：首页是概况；这些用例测 desk 会话，显式走 chat 深链。
+beforeEach(() => at({ page: 'chat' }))
 const proposalText = '【组队方案 v1】首页新手引导上线\n成员：设计 bot（现有）、测试 bot（现有）\n回复「同意」开始执行'
 const proposal = { ticket: { id: 'tk-1', title: '首页新手引导上线', state: 'proposed' }, proposal: { ticketId: 'tk-1', version: 1,
   fingerprint: 'sha256:x', goal: '首页新手引导上线', roles: [{ key: 'design', need: '交互稿', bot: { id: 'designer', name: '设计 bot' } }],
@@ -24,28 +27,24 @@ it('opens on the Chat tab with the Overview in the side panel, and the header op
   // A first visit: nothing remembered, so the side panel is open.
   localStorage.clear()
   await mount()
-  expect(tab(zh['tab.chat']).getAttribute('aria-selected')).toBe('true')
-  expect(all('[role="tab"]').map(item => item.textContent)).toEqual(['对话', '来源', '触发', '评估', '执行', '设置'])
+  expect(tab(zh['tab.overview'])).toBeTruthy()
+  expect(all('[role="tab"]').map(item => item.textContent)).toEqual(['概况', '来源', '触发', '评估', '执行', '设置'])
   expect(text()).toContain(zh['chat.empty'])
   const side = () => document.querySelector('.dt-side')
-  expect(side()?.textContent).toContain(zh.pendingTickets)
+  // ★ 2026-11-11（用户）：右侧栏禁用，概况只在概况首页（本用例走 chat 深链）。
+  expect(side()).toBeNull()
   // The header button that opened the main Session now opens the overview panel; the main Session opens from the panel's strip.
   expect(all('.dt-head button').some(button => button.textContent === zh.openMaster)).toBe(false)
-  await click(find(zh.openMaster, '.dt-side button'))
-  expect(server.opened).toEqual(['master'])
-  await click(find(zh['side.close'], '.dt-side button'))
-  expect(side()).toBeNull()
-  await click(zh.openOverview)
-  expect(side()).not.toBeNull()
-  await click(find(zh['side.close'], '.dt-head button'))
-  expect(side()).toBeNull()
-  expect(find(zh['side.open'], '.dt-head button').getAttribute('aria-pressed')).toBe('false')
-  // The panel stays closed across loads, and keeps its width.
-  await remount()
-  expect(side()).toBeNull()
+  // 主 Session 按钮原本在侧栏 strip 里，侧栏禁用后面板不再提供该入口。
+  expect(all('.dt-main button').some(button => button.getAttribute('aria-label') === zh.openMaster)).toBe(false)
+  // ★ 2026-11-11（用户）：头部不再有「打开概况面板」与展开/收起按钮。
+  expect(all('.dt-head button').some(button => button.textContent === zh.openOverview)).toBe(false)
+  expect(all('.dt-head button').some(button => button.getAttribute('aria-label') === zh['side.open']
+    || button.getAttribute('aria-label') === zh['side.close'])).toBe(false)
+  // 即使 localStorage 里存过 open:true，也不再渲染右侧栏。
   localStorage.setItem('dsh-superagent/side', JSON.stringify({ open: true, width: 999 }))
   await remount()
-  expect(side()?.getAttribute('style')).toContain('--dt-side-width: 560px')
+  expect(side()).toBeNull()
 })
 
 it('shows the desk conversation and sends a message to the supervisor, with quick replies on the proposal that waits', async () => {
@@ -147,24 +146,16 @@ it('opens the side panel by itself when the supervisor starts new work, but not 
   try {
     await mount()
     expect(document.querySelector('.dt-side')).toBeNull()
-    // A new team proposal: the panel opens and says why.
+    // ★ 2026-11-11（用户）：禁止右侧栏弹出概况，新工作不再触发打开与 toast。
     server.proposals = [proposal]
     await act(async () => { await vi.advanceTimersByTimeAsync(5_100) })
     await settle()
-    expect(document.querySelector('.dt-side')).not.toBeNull()
-    expect(document.querySelector('.dt-toast')?.textContent).toBe(zh['side.autoOpened'])
-    // Closed by hand, the same work does not open it again.
-    await click(find(zh['side.close'], '.dt-side button'))
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_100) })
-    await settle()
     expect(document.querySelector('.dt-side')).toBeNull()
-    // A team ticket whose steps begin is new work.
+    expect(document.querySelector('.dt-toast')?.textContent ?? '').not.toContain(zh['side.autoOpened'])
     server.teamSteps = [{ ticket: { id: 'tk-1', title: '首页新手引导上线', updatedAt: '2026-11-05T10:05:00.000Z' }, steps: [] }]
     await act(async () => { await vi.advanceTimersByTimeAsync(5_100) })
     await settle()
-    expect(document.querySelector('.dt-side')).not.toBeNull()
-    // Reloading the panel is not news: the work it already showed does not open it.
-    await click(find(zh['side.close'], '.dt-side button'))
+    expect(document.querySelector('.dt-side')).toBeNull()
     await remount()
     expect(document.querySelector('.dt-side')).toBeNull()
   } finally { vi.useRealTimers() }
@@ -189,4 +180,12 @@ it('shows a team waiting for the person above the desk\'s conversation, and agre
   expect(server.approvedTeam).toEqual({ ticketId: proposal.ticket.id, version: proposal.proposal!.version })
   act(() => { root.unmount() })
   host.remove()
+})
+
+it('★ 2026-11-11 pins the side panel off', () => {
+  // jsdom 下 import.meta.url 不是 file: scheme，用测试进程工作目录定位源码。
+  const source = readFileSync('src/client/side.tsx', 'utf8')
+  expect(source).toMatch(/SIDE_PANEL_ENABLED = false/)
+  expect(source).toContain('if (!SIDE_PANEL_ENABLED || !open) return null')
+  expect(source).toContain('if (!SIDE_PANEL_ENABLED) return')
 })

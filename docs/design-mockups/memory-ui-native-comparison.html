@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>记忆 UI 原生复刻对比 · Hermes / OpenClaw / dsh / ds-bot</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════════════════
+   外层对比框架（中性色，仅用于承载四块「原生复刻」视窗）
+   ⚠ 每个 .native-* 容器自带一套 CSS 变量，刻意互不统一 —— 复刻的是各自原生配色，
+     不是把四家塞进同一套设计系统。变量值全部取自各家源码 / 构建产物，见每块角标。
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root {
+  --doc-bg:#0c0e13; --doc-surface:#151922; --doc-line:#29303d;
+  --doc-ink:#e8ecf5; --doc-dim:#98a3b6; --doc-faint:#6d788d;
+  --doc-accent:#6aa2f0; --doc-ok:#4ec4ae; --doc-warn:#d9a95f; --doc-err:#f07178;
+  --sans:"PingFang SC","HarmonyOS Sans SC","Microsoft YaHei","Segoe UI",system-ui,sans-serif;
+  --mono:"Cascadia Mono","JetBrains Mono","Consolas",ui-monospace,monospace;
+}
+*,*::before,*::after { box-sizing:border-box; }
+body { margin:0; background:var(--doc-bg); color:var(--doc-ink); font:13px/1.65 var(--sans); }
+button,input,select,textarea { font:inherit; }
+button { cursor:pointer; }
+:focus-visible { outline:2px solid var(--doc-accent); outline-offset:2px; border-radius:3px; }
+.doc { max-width:1500px; margin:0 auto; padding:22px 22px 60px; }
+.doc-head h1 { font-size:21px; margin:0 0 6px; font-weight:650; }
+.doc-head p { margin:0; color:var(--doc-dim); font-size:12px; max-width:980px; }
+.doc-head .verdict { margin-top:12px; padding:11px 14px; border-left:3px solid var(--doc-warn);
+  background:color-mix(in srgb,var(--doc-warn) 9%,var(--doc-surface)); border-radius:0 6px 6px 0; font-size:12px; color:var(--doc-ink); }
+.doc-head .verdict strong { color:var(--doc-warn); }
+
+/* 证据等级图例 */
+.legend { display:flex; gap:8px; flex-wrap:wrap; margin:14px 0 16px; }
+.lg { display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border:1px solid var(--doc-line);
+  border-radius:10px; font-size:10px; color:var(--doc-dim); }
+.lg i { width:7px; height:7px; border-radius:50%; background:var(--doc-faint); }
+.lg.a i { background:var(--doc-ok); } .lg.b i { background:var(--doc-accent); } .lg.c i { background:var(--doc-warn); }
+
+/* 产品切换 */
+.prod-tabs { display:flex; gap:4px; padding:4px; border:1px solid var(--doc-line); border-radius:10px;
+  background:var(--doc-surface); margin-bottom:14px; flex-wrap:wrap; }
+.prod-tab { display:inline-flex; align-items:center; gap:8px; padding:9px 15px; border:0; border-radius:6px;
+  background:transparent; color:var(--doc-dim); font-weight:550; transition:background .18s ease,color .18s ease; }
+.prod-tab:hover { background:color-mix(in srgb,var(--doc-ink) 7%,transparent); color:var(--doc-ink); }
+.prod-tab[aria-selected="true"] { background:color-mix(in srgb,var(--doc-accent) 15%,transparent); color:var(--doc-accent); }
+.prod-tab .n { font:10px var(--mono); opacity:.7; }
+.prod-view { display:none; } .prod-view.is-active { display:block; }
+
+/* 每家两块：记忆页面 / 设置中的记忆 */
+.pair { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+.pane { border:1px solid var(--doc-line); border-radius:10px; overflow:hidden; background:var(--doc-surface); }
+.pane-head { display:flex; align-items:center; gap:9px; padding:10px 13px; border-bottom:1px solid var(--doc-line); flex-wrap:wrap; }
+.pane-head h2 { font-size:12.5px; margin:0; font-weight:650; }
+.pane-head .sub { font-size:10.5px; color:var(--doc-faint); }
+.pane-head .spacer { flex:1; }
+.src { display:inline-flex; align-items:center; gap:4px; padding:1px 7px; border-radius:9px;
+  font-size:9.5px; border:1px solid var(--doc-line); color:var(--doc-dim); white-space:nowrap; }
+.src.a { color:var(--doc-ok); border-color:color-mix(in srgb,var(--doc-ok) 40%,transparent); }
+.src.b { color:var(--doc-accent); border-color:color-mix(in srgb,var(--doc-accent) 40%,transparent); }
+.src.c { color:var(--doc-warn); border-color:color-mix(in srgb,var(--doc-warn) 40%,transparent); }
+.pane-body { padding:12px; }
+.pane-note { padding:0 13px 11px; font-size:10.5px; color:var(--doc-faint); line-height:1.6; }
+.pane-note code { font:10px var(--mono); color:var(--doc-dim); }
+
+/* 视窗通用外框 */
+.screen { border-radius:8px; overflow:hidden; border:1px solid rgba(128,128,128,.22); }
+.screen-bar { display:flex; align-items:center; gap:6px; padding:6px 10px; font:10px var(--mono); opacity:.75; }
+.screen-bar .dots { display:inline-flex; gap:4px; margin-right:5px; }
+.screen-bar .dots i { width:7px; height:7px; border-radius:50%; background:currentColor; opacity:.45; }
+
+/* ═══════════ ① Hermes 原生：墨绿 + 奶油（LENS_0 / Hermes Teal）═══════════ */
+.nv-hermes {
+  --h-bg:#041c1c; --h-mid:#ffe6cb; --h-fg:#f4ede2; --h-dim:#9fb8b4;
+  --h-line:#17403d; --h-card:#082726; --h-teal:#4ec4ae; --h-gold:#ffbd38;
+  background:var(--h-bg); color:var(--h-fg); font:13px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+.nv-hermes .screen-bar { background:#062322; color:var(--h-dim); border-bottom:1px solid var(--h-line); }
+.nv-hermes .h-term { font:12px/1.7 "JetBrains Mono","Cascadia Mono",ui-monospace,monospace;
+  padding:14px 16px; background:#031717; color:#d8ece7; white-space:pre-wrap; }
+.nv-hermes .h-term .pr { color:var(--h-teal); } .nv-hermes .h-term .cm { color:#7a9c97; }
+.nv-hermes .h-term .gd { color:var(--h-gold); } .nv-hermes .h-term .cr { color:var(--h-mid); }
+.nv-hermes .h-files { display:grid; grid-template-columns:1fr 1fr; gap:9px; padding:12px; }
+.nv-hermes .h-file { border:1px solid var(--h-line); border-radius:6px; background:var(--h-card); padding:10px 11px; }
+.nv-hermes .h-file h4 { margin:0 0 5px; font:600 11px var(--mono); color:var(--h-mid); }
+.nv-hermes .h-file .meta { font:9.5px var(--mono); color:var(--h-dim); margin-bottom:7px; }
+.nv-hermes .h-file .bar { height:4px; border-radius:2px; background:#123c39; overflow:hidden; margin-bottom:7px; }
+.nv-hermes .h-file .bar i { display:block; height:100%; background:var(--h-teal); }
+.nv-hermes .h-file p { margin:0; font:10.5px/1.75 var(--mono); color:#c8ded9; }
+.nv-hermes .h-file p .sep { color:var(--h-gold); }
+/* Hermes ConfigPage 原生：Nous DS Card + 分类 Tab + AutoField */
+.nv-hermes .h-cfg { padding:12px; }
+.nv-hermes .h-cfg-top { display:flex; align-items:center; gap:9px; margin-bottom:11px; flex-wrap:wrap; }
+.nv-hermes .h-cfg-top .ttl { font-size:15px; font-weight:600; }
+.nv-hermes .h-search { display:flex; align-items:center; gap:6px; padding:5px 9px; border:1px solid var(--h-line);
+  border-radius:6px; background:var(--h-card); font-size:11px; color:var(--h-dim); min-width:170px; }
+.nv-hermes .h-cats { display:flex; gap:5px; flex-wrap:wrap; margin-bottom:11px; }
+.nv-hermes .h-cat { display:inline-flex; align-items:center; gap:5px; padding:5px 10px; border:1px solid var(--h-line);
+  border-radius:6px; background:transparent; font-size:11px; color:var(--h-dim); }
+.nv-hermes .h-cat[aria-selected="true"] { background:color-mix(in srgb,var(--h-teal) 16%,transparent);
+  border-color:var(--h-teal); color:var(--h-teal); font-weight:600; }
+.nv-hermes .h-cat .cnt { font:9px var(--mono); opacity:.75; }
+.nv-hermes .h-card { border:1px solid var(--h-line); border-radius:8px; background:var(--h-card); overflow:hidden; }
+.nv-hermes .h-card-hd { display:flex; align-items:center; gap:7px; padding:9px 12px; border-bottom:1px solid var(--h-line); font-size:12px; font-weight:600; }
+.nv-hermes .h-card-hd .cnt { margin-left:auto; font:10px var(--mono); color:var(--h-dim); }
+.nv-hermes .h-fields { padding:6px 12px 11px; display:grid; gap:1px; }
+.nv-hermes .h-field { display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--h-line); }
+.nv-hermes .h-field:last-child { border-bottom:0; }
+.nv-hermes .h-field .fmain { min-width:0; flex:1; }
+.nv-hermes .h-field .fl { display:block; font-size:11.5px; font-weight:520; }
+.nv-hermes .h-field .fk { display:block; font:9.5px var(--mono); color:var(--h-dim); }
+.nv-hermes .h-field .fh { display:block; font-size:10px; color:var(--h-dim); margin-top:2px; }
+.nv-hermes .h-sw { width:32px; height:18px; border-radius:9px; background:#17403d; border:1px solid var(--h-line);
+  position:relative; flex:none; }
+.nv-hermes .h-sw::after { content:""; position:absolute; top:2px; left:2px; width:12px; height:12px; border-radius:50%;
+  background:var(--h-dim); transition:transform .18s ease; }
+.nv-hermes .h-sw.on { background:var(--h-teal); border-color:var(--h-teal); }
+.nv-hermes .h-sw.on::after { transform:translateX(14px); background:#041c1c; }
+.nv-hermes .h-inp { width:78px; padding:4px 8px; border:1px solid var(--h-line); border-radius:6px;
+  background:#031717; font:11px var(--mono); text-align:right; color:var(--h-fg); }
+.nv-hermes .h-sel { padding:4px 22px 4px 8px; border:1px solid var(--h-line); border-radius:6px;
+  background:#031717; font-size:11px; color:var(--h-fg); }
+.nv-hermes .h-cfg-foot { display:flex; align-items:center; gap:7px; padding:9px 12px; border-top:1px solid var(--h-line); flex-wrap:wrap; }
+.nv-hermes .h-btn { padding:5px 10px; border:1px solid var(--h-line); border-radius:6px; background:transparent;
+  color:var(--h-dim); font-size:10.5px; }
+.nv-hermes .h-btn.pri { background:var(--h-teal); border-color:var(--h-teal); color:#041c1c; font-weight:600; }
+.nv-hermes .h-path { margin-left:auto; font:9.5px var(--mono); color:var(--h-dim); }
+
+/* ═══════════ ② OpenClaw 原生：深灰 + 龙虾红 ═══════════ */
+.nv-openclaw {
+  --o-bg:#12141a; --o-elev:#1a1d25; --o-hover:#262a35; --o-text:#e4e4e7;
+  --o-strong:#fafafa; --o-muted:#71717a; --o-border:#27272a; --o-border2:#3f3f46;
+  --o-accent:#ff5c5c; --o-teal:#14b8a6; --o-ok:rgba(34,197,94,.75);
+  background:var(--o-bg); color:var(--o-text); font:13px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+.nv-openclaw .screen-bar { background:var(--o-elev); color:var(--o-muted); border-bottom:1px solid var(--o-border); }
+.nv-openclaw .o-shell { display:grid; grid-template-columns:150px minmax(0,1fr); min-height:370px; }
+.nv-openclaw .o-nav { border-right:1px solid var(--o-border); padding:10px 8px; background:var(--o-elev); }
+.nv-openclaw .o-brand { display:flex; align-items:center; gap:7px; padding:4px 6px 12px; font-size:12px; font-weight:700; color:var(--o-strong); }
+.nv-openclaw .o-brand i { width:14px; height:14px; border-radius:4px; background:var(--o-accent); display:inline-block; }
+.nv-openclaw .o-navgrp { margin-bottom:12px; }
+.nv-openclaw .o-navlabel { padding:3px 7px; font-size:9px; letter-spacing:.08em; text-transform:uppercase; color:var(--o-muted); }
+.nv-openclaw .o-navitem { display:block; width:100%; text-align:left; padding:5px 8px; border:0; border-radius:5px;
+  background:transparent; color:var(--o-text); font-size:11px; }
+.nv-openclaw .o-navitem:hover { background:var(--o-hover); }
+.nv-openclaw .o-navitem.on { background:color-mix(in srgb,var(--o-accent) 14%,transparent); color:var(--o-accent); font-weight:600; }
+.nv-openclaw .o-main { padding:14px 15px; min-width:0; }
+.nv-openclaw .o-h { font-size:15px; font-weight:650; color:var(--o-strong); margin:0 0 3px; }
+.nv-openclaw .o-sub { font-size:10.5px; color:var(--o-muted); margin:0 0 12px; }
+.nv-openclaw .o-toolgrp { border:1px solid var(--o-border); border-radius:7px; background:var(--o-elev); margin-bottom:10px; overflow:hidden; }
+.nv-openclaw .o-toolgrp > .hd { padding:7px 11px; font-size:11px; font-weight:600; border-bottom:1px solid var(--o-border); color:var(--o-strong); }
+.nv-openclaw .o-tool { display:flex; align-items:center; gap:9px; padding:7px 11px; border-bottom:1px solid var(--o-border); }
+.nv-openclaw .o-tool:last-child { border-bottom:0; }
+.nv-openclaw .o-tool code { font:10.5px var(--mono); color:var(--o-teal); }
+.nv-openclaw .o-tool span { font-size:10.5px; color:var(--o-muted); }
+.nv-openclaw .o-files { display:grid; gap:5px; }
+.nv-openclaw .o-file { display:flex; align-items:center; gap:8px; padding:6px 9px; border:1px solid var(--o-border);
+  border-radius:6px; background:var(--o-elev); font:10.5px var(--mono); }
+.nv-openclaw .o-file .d { width:6px; height:6px; border-radius:50%; background:var(--o-teal); flex:none; }
+.nv-openclaw .o-file .n { color:var(--o-text); } .nv-openclaw .o-file .u { color:var(--o-muted); margin-left:auto; font-size:9.5px; }
+.nv-openclaw .o-cmd { margin-top:10px; padding:9px 11px; border-radius:7px; background:#0c0e12;
+  border:1px solid var(--o-border); font:10.5px/1.8 var(--mono); color:#b9c0cc; white-space:pre-wrap; }
+.nv-openclaw .o-cmd .p { color:var(--o-accent); } .nv-openclaw .o-cmd .g { color:var(--o-teal); }
+/* OpenClaw Settings → Config（原生 JSON5 编辑器 / 表单） */
+.nv-openclaw .o-cfg { display:grid; grid-template-columns:126px minmax(0,1fr); min-height:370px; }
+.nv-openclaw .o-cfgmain { padding:14px 15px; min-width:0; }
+.nv-openclaw .o-formrow { display:flex; align-items:center; gap:9px; padding:7px 0; border-bottom:1px solid var(--o-border); }
+.nv-openclaw .o-formrow .k { font:10.5px var(--mono); color:var(--o-text); flex:1; min-width:0; }
+.nv-openclaw .o-formrow .d { font-size:10px; color:var(--o-muted); }
+.nv-openclaw .o-formrow .v { font:10px var(--mono); color:var(--o-teal); }
+.nv-openclaw .o-json { margin-top:11px; padding:10px 12px; border-radius:7px; background:#0c0e12;
+  border:1px solid var(--o-border); font:10px/1.75 var(--mono); color:#c7cedb; white-space:pre-wrap; }
+.nv-openclaw .o-json .k { color:var(--o-teal); } .nv-openclaw .o-json .s { color:var(--o-gold,#ffbd38); }
+.nv-openclaw .o-import { margin-top:11px; border:1px solid var(--o-border); border-radius:7px; background:var(--o-elev); overflow:hidden; }
+.nv-openclaw .o-import .hd { padding:8px 11px; border-bottom:1px solid var(--o-border); font-size:11px; font-weight:600; color:var(--o-strong); }
+.nv-openclaw .o-import .row { display:flex; align-items:center; gap:8px; padding:7px 11px; font-size:10.5px; border-bottom:1px solid var(--o-border); }
+.nv-openclaw .o-import .row:last-child { border-bottom:0; }
+.nv-openclaw .o-import .row .box { width:12px; height:12px; border:1px solid var(--o-border2); border-radius:3px; }
+.nv-openclaw .o-import .row .box.on { background:var(--o-accent); border-color:var(--o-accent); }
+.nv-openclaw .o-import .row .p { font:9.5px var(--mono); color:var(--o-muted); margin-left:auto; }
+.nv-openclaw .o-btn { margin-top:10px; padding:6px 12px; border-radius:6px; border:1px solid var(--o-accent);
+  background:var(--o-accent); color:#fff; font-size:11px; font-weight:600; }
+
+/* ═══════════ ③ dsh / @vssaros/dsh-memory 原生（真实截图 1:1）═══════════ */
+.nv-dsh {
+  --d-bg:#181818; --d-panel:#1f1f1f; --d-line:#333; --d-ink:#cccccc;
+  --d-dim:#8a8a8a; --d-faint:#6f6f6f; --d-blue:#569cd6; --d-amber:#d7ba7d;
+  --d-green:#4ec9b0; --d-red:#f14c4c; --d-active:#0e639c;
+  background:var(--d-bg); color:var(--d-ink); font:12px/1.5 "Segoe UI",var(--sans);
+}
+.nv-dsh .screen-bar { background:#252526; color:#9a9a9a; border-bottom:1px solid var(--d-line); }
+.nv-dsh .d-window { padding:9px 11px 0; }
+.nv-dsh .d-wtitle { display:flex; align-items:center; gap:8px; font-size:12px; color:#ddd; margin-bottom:9px; }
+.nv-dsh .d-wtitle .tag { font-size:10px; color:var(--d-dim); }
+.nv-dsh .d-tabs { display:flex; gap:16px; border-bottom:1px solid var(--d-line); overflow-x:auto; }
+.nv-dsh .d-tab { padding:5px 1px 7px; font-size:11.5px; color:var(--d-dim); white-space:nowrap; border-bottom:2px solid transparent; }
+.nv-dsh .d-tab.on { color:#fff; border-bottom-color:var(--d-active); }
+.nv-dsh .d-subtabs { display:flex; gap:0; flex-wrap:wrap; padding:8px 0 6px; overflow-x:auto; }
+.nv-dsh .d-sub { padding:3px 8px; font-size:10.5px; color:var(--d-dim); white-space:nowrap; border:1px solid transparent; border-radius:3px; }
+.nv-dsh .d-sub.on { color:#fff; background:#2a2d2e; border-color:#3a3d3e; font-weight:600; }
+.nv-dsh .d-sep { width:1px; background:#444; margin:4px 6px; }
+.nv-dsh .d-warn { margin:2px 0 8px; padding:5px 8px; font-size:10px; color:var(--d-amber);
+  background:color-mix(in srgb,var(--d-amber) 7%,transparent); border-radius:3px; }
+.nv-dsh .d-cwd { font-size:9.5px; color:var(--d-faint); margin-bottom:7px; font-family:var(--mono); }
+.nv-dsh .d-toolbar { display:flex; align-items:center; gap:7px; padding:6px 8px; border:1px solid var(--d-line);
+  border-radius:4px; background:#202020; margin-bottom:8px; flex-wrap:wrap; }
+.nv-dsh .d-vbtn { padding:3px 8px; font-size:10px; border:1px solid #3a3a3a; border-radius:3px; background:#2a2a2a; color:var(--d-dim); }
+.nv-dsh .d-vbtn.on { background:#333; color:#fff; }
+.nv-dsh .d-search { flex:1; min-width:90px; padding:3px 7px; border:1px solid #3a3a3a; border-radius:3px;
+  background:#181818; font-size:10px; color:var(--d-dim); }
+.nv-dsh .d-card { border:1px solid var(--d-line); border-radius:4px; background:#1e1e1e; margin-bottom:7px; }
+.nv-dsh .d-card-hd { display:flex; align-items:center; gap:7px; padding:6px 9px; border-bottom:1px solid #2a2a2a; flex-wrap:wrap; }
+.nv-dsh .d-card-hd .t { font-size:11px; color:#ddd; font-weight:600; }
+.nv-dsh .d-badge { padding:1px 6px; border-radius:8px; font-size:9px; background:#2b3a4a; color:#9cdcfe; }
+.nv-dsh .d-card-desc { padding:6px 9px; font-size:10px; color:var(--d-dim); border-bottom:1px solid #2a2a2a; }
+.nv-dsh .d-entry { padding:9px 10px; border:1px solid #303030; border-radius:4px; background:#202020; margin:7px 9px; }
+.nv-dsh .d-entry-hd { display:flex; align-items:center; gap:6px; margin-bottom:6px; }
+.nv-dsh .d-time { font:9px var(--mono); color:#858585; }
+.nv-dsh .d-tag { padding:0 5px; border-radius:7px; font-size:9px; background:#2d3b4d; color:#9cdcfe; }
+.nv-dsh .d-entry p { margin:0; font-size:10.5px; line-height:1.7; color:#c9c9c9; }
+.nv-dsh .d-entry .ops { margin-left:auto; font-size:9.5px; color:var(--d-blue); }
+.nv-dsh .d-entry .del { color:var(--d-red); }
+/* dsh 设置 Tab（配置一长串开关） */
+.nv-dsh .d-cfg { padding:10px 12px 14px; }
+.nv-dsh .d-cfg-help { font-size:10px; color:var(--d-dim); margin:0 0 9px; }
+.nv-dsh .d-guide { border:1px solid var(--d-line); border-radius:4px; background:#1e1e1e; padding:9px 11px; margin-bottom:8px; }
+.nv-dsh .d-guide h4 { margin:0 0 4px; font-size:11px; color:#ddd; }
+.nv-dsh .d-guide p { margin:0; font-size:10px; color:var(--d-dim); line-height:1.6; }
+.nv-dsh .d-swrow { display:flex; align-items:center; gap:9px; padding:5px 0; border-bottom:1px solid #282828; }
+.nv-dsh .d-swrow:last-child { border-bottom:0; }
+.nv-dsh .d-swrow .lbl { flex:1; font-size:10.5px; color:var(--d-ink); min-width:0; }
+.nv-dsh .d-sw { width:28px; height:15px; border-radius:8px; background:#3a3a3a; position:relative; flex:none; }
+.nv-dsh .d-sw::after { content:""; position:absolute; top:2px; left:2px; width:11px; height:11px; border-radius:50%; background:#aaa; }
+.nv-dsh .d-sw.on { background:var(--d-active); }
+.nv-dsh .d-sw.on::after { transform:translateX(13px); background:#fff; }
+.nv-dsh .d-num { width:52px; padding:2px 6px; border:1px solid #3a3a3a; border-radius:3px;
+  background:#181818; font:10px var(--mono); color:#ddd; text-align:right; }
+.nv-dsh .d-save { margin-top:10px; padding:5px 12px; border:1px solid var(--d-active); border-radius:3px;
+  background:var(--d-active); color:#fff; font-size:10.5px; }
+
+/* ═══════════ ④ ds-bot 原生：浅色 + #4d6bfe ═══════════ */
+.nv-dsbot {
+  --b-main:#fcfcfc; --b-card:#ffffff; --b-sidebar:#f7f7f7; --b-ink:#141414;
+  --b-ink2:rgba(20,20,20,.6); --b-ink3:rgba(20,20,20,.36);
+  --b-line:rgba(20,20,20,.08); --b-line2:rgba(20,20,20,.15);
+  --b-hover:rgba(119,119,119,.09); --b-accent:#4d6bfe; --b-green:#00c972;
+  background:#e9e9ec; color:var(--b-ink); font:13px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+.nv-dsbot .screen-bar { background:var(--b-sidebar); color:var(--b-ink3); border-bottom:1px solid var(--b-line); }
+.nv-dsbot .b-layer { display:flex; align-items:center; justify-content:center; padding:16px; min-height:390px;
+  background:linear-gradient(135deg,#dfe3ee,#f3f3f5); }
+.nv-dsbot .b-mem { width:min(100%,520px); height:340px; background:var(--b-main); border:1px solid var(--b-line2);
+  border-radius:20px; box-shadow:0 24px 80px rgba(0,0,0,.18); display:flex; flex-direction:column; overflow:hidden; }
+.nv-dsbot .b-mem-head { display:flex; align-items:center; gap:8px; height:52px; flex:none; padding:0 12px 0 20px;
+  border-bottom:1px solid var(--b-line); }
+.nv-dsbot .b-mem-head h2 { margin:0; font-size:16px; font-weight:600; white-space:nowrap; }
+.nv-dsbot .b-mem-head .status { font-size:11.5px; color:var(--b-ink3); }
+.nv-dsbot .b-mem-head .gap { flex:1; }
+.nv-dsbot .b-iconbtn { width:28px; height:28px; border:0; border-radius:7px; background:transparent;
+  color:var(--b-ink2); font-size:15px; line-height:1; }
+.nv-dsbot .b-iconbtn:hover { background:var(--b-hover); }
+.nv-dsbot .b-mem-body { flex:1; overflow-y:auto; padding:16px 22px; }
+.nv-dsbot .b-summary h3 { margin:14px 0 5px; font-size:15px; font-weight:600; }
+.nv-dsbot .b-summary h3:first-child { margin-top:0; }
+.nv-dsbot .b-summary p { margin:0; font-size:13px; line-height:1.75; color:var(--b-ink2); }
+.nv-dsbot .b-mem-foot { padding:10px 16px 13px; border-top:1px solid var(--b-line); flex:none; }
+.nv-dsbot .b-ask { display:flex; align-items:center; gap:7px; border:1px solid var(--b-line2);
+  border-radius:12px; background:var(--b-card); padding:5px 6px 5px 12px; }
+.nv-dsbot .b-ask input { flex:1; border:0; outline:none; font-size:12.5px; background:transparent; color:var(--b-ink); }
+.nv-dsbot .b-ask input::placeholder { color:var(--b-ink3); }
+.nv-dsbot .b-send { width:27px; height:27px; border:0; border-radius:8px; background:var(--b-accent);
+  color:#fff; font-size:14px; line-height:1; }
+.nv-dsbot .b-menu { position:absolute; top:44px; right:36px; width:190px; border:1px solid var(--b-line2);
+  border-radius:12px; background:var(--b-card); box-shadow:0 10px 30px rgba(0,0,0,.14); padding:5px; z-index:2; }
+.nv-dsbot .b-menu[hidden] { display:none; }
+.nv-dsbot .b-menu div { display:flex; justify-content:space-between; padding:7px 9px; font-size:12px; border-radius:7px; }
+.nv-dsbot .b-menu div:hover { background:var(--b-hover); }
+.nv-dsbot .b-menu .hint { color:var(--b-ink3); font:11px var(--mono); }
+/* ds-bot Bot Settings 的 Memory 卡片 */
+.nv-dsbot .b-set { padding:18px 20px; background:var(--b-main); min-height:390px; }
+.nv-dsbot .b-set-h { font-size:17px; font-weight:600; margin:0 0 14px; }
+.nv-dsbot .b-card { border:1px solid var(--b-line2); border-radius:14px; background:var(--b-card);
+  padding:13px 15px; margin-bottom:12px; }
+.nv-dsbot .b-card > .ttl { font-size:12px; font-weight:600; color:var(--b-ink2); margin-bottom:9px; }
+.nv-dsbot .b-row { display:flex; align-items:center; gap:9px; width:100%; padding:9px 10px;
+  border:1px solid var(--b-line2); border-radius:10px; background:var(--b-card); text-align:left; }
+.nv-dsbot .b-row:hover { background:var(--b-hover); }
+.nv-dsbot .b-row .ico { color:var(--b-ink2); }
+.nv-dsbot .b-row .copy { flex:1; font-size:13px; }
+.nv-dsbot .b-row .go { display:inline-flex; align-items:center; gap:3px; color:var(--b-ink3); font-size:12px; }
+.nv-dsbot .b-setrow { display:flex; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid var(--b-line); }
+.nv-dsbot .b-setrow:last-child { border-bottom:0; }
+.nv-dsbot .b-setrow .k { flex:1; font-size:12.5px; }
+.nv-dsbot .b-setrow .v { font-size:11.5px; color:var(--b-ink3); }
+
+/* ═══════════ 对比区 ═══════════ */
+.cmp { margin-top:22px; }
+.cmp h2 { font-size:15px; margin:0 0 10px; font-weight:650; }
+.cmp-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(330px,1fr)); gap:12px; }
+.cmp-card { border:1px solid var(--doc-line); border-radius:10px; background:var(--doc-surface); padding:13px 15px; }
+.cmp-card h3 { margin:0 0 8px; font-size:12.5px; font-weight:650; display:flex; align-items:center; gap:8px; }
+.cmp-card ul { margin:5px 0 0; padding-left:17px; }
+.cmp-card li { font-size:11px; color:var(--doc-dim); line-height:1.8; }
+.cmp-card li strong { color:var(--doc-ink); font-weight:600; }
+.cmp-card code { font:10px var(--mono); color:var(--doc-accent); }
+.tbl-wrap { border:1px solid var(--doc-line); border-radius:10px; overflow-x:auto; background:var(--doc-surface); margin-bottom:12px; }
+table.cmp-tbl { width:100%; border-collapse:collapse; font-size:11px; min-width:820px; }
+.cmp-tbl th, .cmp-tbl td { padding:9px 11px; text-align:left; border-bottom:1px solid var(--doc-line); vertical-align:top; }
+.cmp-tbl th { color:var(--doc-faint); font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.05em; background:var(--doc-surface); }
+.cmp-tbl td:first-child { color:var(--doc-ink); font-weight:550; white-space:nowrap; }
+.cmp-tbl tr:last-child td { border-bottom:0; }
+.cmp-tbl .num { font:11px var(--mono); }
+.cmp-tbl .hi { color:var(--doc-err); } .cmp-tbl .lo { color:var(--doc-ok); }
+.bar-cell { display:flex; align-items:center; gap:7px; }
+.bar-cell i { display:block; height:6px; border-radius:3px; background:var(--doc-accent); }
+.bar-cell .over { background:var(--doc-err); }
+.pros { color:var(--doc-ok); } .cons { color:var(--doc-warn); }
+.fix { border-left:3px solid var(--doc-accent); background:color-mix(in srgb,var(--doc-accent) 8%,var(--doc-surface));
+  padding:12px 15px; border-radius:0 8px 8px 0; }
+.fix h3 { margin:0 0 8px; font-size:12.5px; }
+.fix ol { margin:0; padding-left:19px; } .fix li { font-size:11px; color:var(--doc-dim); line-height:1.85; }
+.fix li strong { color:var(--doc-ink); }
+.foot { margin-top:20px; font-size:10.5px; color:var(--doc-faint); line-height:1.8; border-top:1px solid var(--doc-line); padding-top:12px; }
+.foot code { font:10px var(--mono); color:var(--doc-dim); }
+
+@media (max-width:1080px) { .pair { grid-template-columns:1fr; } }
+@media (max-width:640px) {
+  .doc { padding:14px; } .nv-openclaw .o-shell, .nv-openclaw .o-cfg { grid-template-columns:1fr; }
+  .nv-openclaw .o-nav, .nv-openclaw .o-cfg .o-nav { display:none; }
+  .nv-hermes .h-files { grid-template-columns:1fr; }
+}
+@media (prefers-reduced-motion:reduce) { *,*::before,*::after { transition-duration:.01ms !important; animation-duration:.01ms !important; } }
+</style>
+</head>
+<body>
+<div class="doc">
+
+<header class="doc-head">
+  <h1>记忆 UI 原生复刻对比 · Hermes / OpenClaw / dsh / ds-bot</h1>
+  <p>四块视窗各自使用<strong>该产品的真实配色、文案与控件结构</strong>，刻意不统一成一套设计系统。每块右上角标注证据等级与来源，凡无法 1:1 复刻的部分都在下方注明复原依据。</p>
+  <div class="verdict"><strong>为什么「太复杂」：</strong>把原生界面按控件数摊开后，Hermes 是 <strong>2 个文件 + 6 个配置项</strong>、OpenClaw 是 <strong>4 个文件 + 1 段 JSON</strong>、ds-bot 是 <strong>1 行入口 + 3 页下钻</strong>；而 dsh `@vssaros/dsh-memory` 是 <strong>12 个会话 Tab + 10 个文件页签 + 25 个配置开关</strong>。复杂度是数量级的差异，不是视觉风格问题。</div>
+</header>
+
+<div class="legend" aria-label="证据等级图例">
+  <span class="lg a"><i></i>A · 一手源码 / 官方截图（1:1 复刻）</span>
+  <span class="lg b"><i></i>B · 官方文档字段 + 原生壳（结构复原）</span>
+  <span class="lg c"><i></i>C · CLI / 终端形态（该产品原生就没有 GUI 页）</span>
+</div>
+
+<nav class="prod-tabs" role="tablist" aria-label="产品切换">
+  <button class="prod-tab" role="tab" aria-selected="true" aria-controls="p-hermes" id="t-hermes" data-prod="hermes">Hermes Agent<span class="n">01</span></button>
+  <button class="prod-tab" role="tab" aria-selected="false" aria-controls="p-openclaw" id="t-openclaw" data-prod="openclaw">OpenClaw<span class="n">02</span></button>
+  <button class="prod-tab" role="tab" aria-selected="false" aria-controls="p-dsh" id="t-dsh" data-prod="dsh">dsh · vssaros-memory<span class="n">03</span></button>
+  <button class="prod-tab" role="tab" aria-selected="false" aria-controls="p-dsbot" id="t-dsbot" data-prod="dsbot">ds-bot · Apache-2.0<span class="n">04</span></button>
+  <button class="prod-tab" role="tab" aria-selected="false" aria-controls="p-compare" id="t-compare" data-prod="compare">差异 · 优缺点 · 简化<span class="n">05</span></button>
+</nav>
+
+<!-- ═══════════ ① Hermes ═══════════ -->
+<section class="prod-view is-active" id="p-hermes" role="tabpanel" aria-labelledby="t-hermes">
+  <div class="pair">
+    <div class="pane">
+      <div class="pane-head"><h2>记忆页面 · 原生形态</h2><span class="sub">CLI / TUI + 双文件</span><span class="spacer"></span><span class="src c">C · 终端形态</span><span class="src a">A · 官方文档</span></div>
+      <div class="pane-body">
+        <div class="nv-hermes">
+          <div class="screen">
+            <div class="screen-bar"><span class="dots"><i></i><i></i><i></i></span>hermes — ~/.hermes — profile: default</div>
+            <div class="h-term"><span class="pr">$</span> ls ~/.hermes/memories/
+  <span class="cr">MEMORY.md</span>   <span class="cm"># agent notes, 2,200 chars</span>
+  <span class="cr">USER.md</span>     <span class="cm"># user profile, 1,375 chars</span>
+
+<span class="pr">$</span> cat ~/.hermes/memories/MEMORY.md
+  User's project is a Rust web service at ~/code/myapi using Axum + SQLx<span class="sep">§</span>This machine runs Ubuntu 22.04, has Docker and Podman installed<span class="sep">§</span>User prefers concise responses, dislikes verbose explanations
+
+<span class="cm"># System prompt, frozen at session start:</span>
+<span class="gd">══════ MEMORY (your personal notes) [67% — 1,474/2,200 chars] ══════</span>
+
+<span class="pr">$</span> /memory pending
+  <span class="cm">[auto]</span> add  "Prefers metric units"      → <span class="gd">user</span>
+<span class="pr">$</span> /memory approve all
+  <span class="cm">1 staged write applied.</span>
+
+<span class="pr">$</span> /journey   <span class="cm"># TUI overlay / Desktop Star Map</span></div>
+            <div class="h-files">
+              <div class="h-file"><h4>MEMORY.md</h4><div class="meta">2,200 chars · 8–15 entries</div><div class="bar"><i style="width:67%"></i></div><p>1,474 / 2,200 · <span class="sep">§</span> 分隔条目</p></div>
+              <div class="h-file"><h4>USER.md</h4><div class="meta">1,375 chars · 5–10 entries</div><div class="bar"><i style="width:41%"></i></div><p>用户画像 · <span class="sep">§</span> 分隔条目</p></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="pane-note">原生<strong>没有记忆 GUI 页面</strong>：记忆由 <code>memory</code> 工具（add / patch / remove）与斜杠命令 <code>/memory pending|approve|reject</code>、<code>/journey</code>（TUI overlay / Desktop Star Map）管理；<code>§</code> 分隔，冻结快照注入时带 <code>[67% — 1,474/2,200 chars]</code> 头。配色取自本机 <code>web/src/index.css</code> 的 LENS_0（<code>--background:#041c1c</code> / <code>--midground:#ffe6cb</code> / JetBrains Mono 终端）。文案与数字取自 Hermes 官方 Persistent Memory 文档。</p>
+    </div>
+
+    <div class="pane">
+      <div class="pane-head"><h2>会话 / 设置中的记忆设置</h2><span class="sub">WebUI ConfigPage → Memory 分类</span><span class="spacer"></span><span class="src a">A · 一手 TSX 源码</span></div>
+      <div class="pane-body">
+        <div class="nv-hermes">
+          <div class="screen">
+            <div class="screen-bar"><span class="dots"><i></i><i></i><i></i></span>Hermes WebUI — Config</div>
+            <div class="h-cfg">
+              <div class="h-cfg-top"><span class="ttl">Config</span><label class="h-search">⌕ Search fields…</label></div>
+              <div class="h-cats" role="tablist" aria-label="配置分类">
+                <button class="h-cat" role="tab" aria-selected="false">Agent <span class="cnt">18</span></button>
+                <button class="h-cat" role="tab" aria-selected="false">Display <span class="cnt">7</span></button>
+                <button class="h-cat" role="tab" aria-selected="true">◉ Memory <span class="cnt">6</span></button>
+                <button class="h-cat" role="tab" aria-selected="false">Skills <span class="cnt">9</span></button>
+                <button class="h-cat" role="tab" aria-selected="false">Auxiliary <span class="cnt">12</span></button>
+              </div>
+              <div class="h-card">
+                <div class="h-card-hd">◉ Memory <span class="cnt">6 fields</span></div>
+                <div class="h-fields">
+                  <div class="h-field"><div class="fmain"><span class="fl">Memory enabled</span><span class="fk">memory.memory_enabled</span><span class="fh">关闭后 MEMORY.md 写入被拒</span></div><span class="h-sw on"></span></div>
+                  <div class="h-field"><div class="fmain"><span class="fl">User profile enabled</span><span class="fk">memory.user_profile_enabled</span></div><span class="h-sw on"></span></div>
+                  <div class="h-field"><div class="fmain"><span class="fl">Memory char limit</span><span class="fk">memory.memory_char_limit</span></div><input class="h-inp" value="2200" aria-label="memory_char_limit" /></div>
+                  <div class="h-field"><div class="fmain"><span class="fl">User char limit</span><span class="fk">memory.user_char_limit</span></div><input class="h-inp" value="1375" aria-label="user_char_limit" /></div>
+                  <div class="h-field"><div class="fmain"><span class="fl">Write approval</span><span class="fk">memory.write_approval</span><span class="fh">true = 写入先入 /memory pending</span></div><span class="h-sw"></span></div>
+                  <div class="h-field"><div class="fmain"><span class="fl">记忆提供方 / Memory provider</span><span class="fk">memory.provider</span><span class="fh">写入 config.yaml，下次会话生效</span></div><select class="h-sel" aria-label="memory provider"><option>(built-in)</option><option>Honcho</option><option>Mem0</option><option>Hindsight</option></select></div>
+                </div>
+                <div class="h-cfg-foot"><button class="h-btn pri">Save</button><button class="h-btn">Reset Memory</button><button class="h-btn">Export</button><button class="h-btn">Import</button><span class="h-path">~/.hermes/config.yaml</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="pane-note">复刻自本机 <code>web/src/pages/ConfigPage.tsx</code>：<code>CATEGORY_ICONS.memory = Brain</code>、分类 Tab + <code>categoryCounts</code>、<code>AutoField</code>（boolean→Switch / number→input / select→Select）、<code>Card / CardHeader / CardTitle</code>、搜索框、Reset scope、Export/Import、<code>configPath: "~/.hermes/config.yaml"</code>。字段名与取值取自官方 Configuration 段与本机 <code>i18n/{en,zh}.ts</code>（<code>memoryProviderLabel: 记忆提供方</code>）。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ ② OpenClaw ═══════════ -->
+<section class="prod-view" id="p-openclaw" role="tabpanel" aria-labelledby="t-openclaw">
+  <div class="pair">
+    <div class="pane">
+      <div class="pane-head"><h2>记忆页面 · 原生形态</h2><span class="sub">Control UI + workspace 文件</span><span class="spacer"></span><span class="src a">A · 本机构建产物</span></div>
+      <div class="pane-body">
+        <div class="nv-openclaw">
+          <div class="screen">
+            <div class="screen-bar"><span class="dots"><i></i><i></i><i></i></span>OpenClaw Control UI — 2026.2.9</div>
+            <div class="o-shell">
+              <div class="o-nav">
+                <div class="o-brand"><i></i> OpenClaw</div>
+                <div class="o-navgrp"><div class="o-navlabel">Chat</div><button class="o-navitem">Chat</button></div>
+                <div class="o-navgrp"><div class="o-navlabel">Control</div><button class="o-navitem">Overview</button><button class="o-navitem">Channels</button><button class="o-navitem">Instances</button><button class="o-navitem">Sessions</button><button class="o-navitem">Usage</button><button class="o-navitem">Cron Jobs</button></div>
+                <div class="o-navgrp"><div class="o-navlabel">Agent</div><button class="o-navitem on">Agents</button><button class="o-navitem">Skills</button><button class="o-navitem">Nodes</button></div>
+                <div class="o-navgrp"><div class="o-navlabel">Settings</div><button class="o-navitem">Config</button><button class="o-navitem">Debug</button><button class="o-navitem">Logs</button></div>
+              </div>
+              <div class="o-main">
+                <h3 class="o-h">Agent · main</h3><p class="o-sub">Tools &amp; workspace files · <span style="font-family:var(--mono)">~/.openclaw/workspace</span></p>
+                <div class="o-toolgrp"><div class="hd">Memory</div>
+                  <div class="o-tool"><code>memory_search</code><span>Semantic search</span></div>
+                  <div class="o-tool"><code>memory_get</code><span>Read memory files</span></div>
+                  <div class="o-tool"><code>intent</code><span>Event-conditioned standing intents</span></div>
+                </div>
+                <div class="o-files">
+                  <div class="o-file"><span class="d"></span><span class="n">USER.md</span><span class="u">stable preferences · 477 B</span></div>
+                  <div class="o-file"><span class="d"></span><span class="n">MEMORY.md</span><span class="u">durable facts</span></div>
+                  <div class="o-file"><span class="d"></span><span class="n">memory/YYYY-MM-DD.md</span><span class="u">daily notes</span></div>
+                  <div class="o-file"><span class="d"></span><span class="n">DREAMS.md</span><span class="u">Dream Diary（新版）</span></div>
+                  <div class="o-file"><span class="d" style="background:var(--o-muted)"></span><span class="n">AGENTS.md / SOUL.md / IDENTITY.md / TOOLS.md</span><span class="u">context files</span></div>
+                </div>
+                <div class="o-cmd"><span class="p">$</span> openclaw memory status      <span class="g"># Check index status and provider</span>
+<span class="p">$</span> /context list              <span class="g"># raw vs injected sizes, truncation</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="pane-note">配色与导航逐字取自本机 <code>openclaw/dist/control-ui/assets/index-DWhx-9JL.css</code>（<code>--bg:#12141a</code>、<code>--accent:#ff5c5c</code>、<code>--accent-2:#14b8a6</code>）与 <code>index-BeKTXH1m.js</code>（<code>Chat / Control / Agent / Settings</code> 四组、<code>Memory</code> 工具组含 <code>memory_search · Semantic search</code>、<code>memory_get · Read memory files</code>）。workspace 文件清单与大小取自本机真实 <code>~/.openclaw/workspace</code>。<strong>本机版本 2026.2.9 尚无独立 Memory 设置页</strong>（PR #114037 才新增），故记忆页以「工具组 + 文件」的原生呈现为准。</p>
+    </div>
+
+    <div class="pane">
+      <div class="pane-head"><h2>会话 / 设置中的记忆设置</h2><span class="sub">Settings → Config / Import Memory</span><span class="spacer"></span><span class="src b">B · 官方文档 + 原生壳</span></div>
+      <div class="pane-body">
+        <div class="nv-openclaw">
+          <div class="screen">
+            <div class="screen-bar"><span class="dots"><i></i><i></i><i></i></span>OpenClaw Control UI — Settings → Config</div>
+            <div class="o-cfg">
+              <div class="o-nav">
+                <div class="o-brand"><i></i> OpenClaw</div>
+                <div class="o-navgrp"><div class="o-navlabel">Settings</div><button class="o-navitem on">Config</button><button class="o-navitem">Debug</button><button class="o-navitem">Logs</button></div>
+              </div>
+              <div class="o-cfgmain">
+                <h3 class="o-h">Config</h3><p class="o-sub">openclaw.json · form / raw</p>
+                <div class="o-formrow"><span class="k">memory.search.provider</span><span class="v">openai</span></div>
+                <div class="o-formrow"><span class="k">plugins.entries.memory-core.config.dreaming.enabled</span><span class="v">true</span></div>
+                <div class="o-formrow"><span class="k">agents.defaults.compaction.memoryFlush.enabled</span><span class="v">true</span></div>
+                <div class="o-formrow"><span class="k">agents.defaults.workspace</span><span class="v">~/.openclaw/workspace</span></div>
+                <div class="o-json">{
+  <span class="k">"memory"</span>: {
+    <span class="k">"search"</span>: { <span class="k">"provider"</span>: <span class="s">"openai"</span> }
+  },
+  <span class="k">"hooks"</span>: { <span class="k">"internal"</span>: {
+    <span class="k">"entries"</span>: { <span class="k">"session-memory"</span>: { <span class="k">"enabled"</span>: true } }
+  } }
+}</div>
+                <div class="o-import"><div class="hd">Settings → Import Memory</div>
+                  <div class="row"><span class="box on"></span>Codex<span class="p">~/.codex/memories</span></div>
+                  <div class="row"><span class="box on"></span>Claude Code<span class="p">~/.claude/projects/*/memory</span></div>
+                  <div class="row"><span class="box"></span>Hermes<span class="p">MEMORY.md · USER.md</span></div>
+                </div>
+                <button class="o-btn">Save &amp; Publish</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="pane-note">外壳沿用同一套 Control UI 原生配色与侧栏。字段取自本机真实 <code>~/.openclaw/openclaw.json</code>（<code>hooks.internal.entries["session-memory"].enabled</code>）与官方 Memory overview（<code>memory.search.provider</code>、<code>dreaming.enabled</code>、<code>compaction.memoryFlush.enabled</code>）。<strong>Import Memory 面板为新版能力</strong>（官方文档 Settings → Import Memory / PR #114037 Memory settings page with Dreaming as a tab），本机 2026.2.9 构建产物中 <code>"Import Memory"</code> / <code>"Dreaming"</code> 命中数为 0，此块按文档复原并标注 B 级。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ ③ dsh / vssaros-memory ═══════════ -->
+<section class="prod-view" id="p-dsh" role="tabpanel" aria-labelledby="t-dsh">
+  <div class="pair">
+    <div class="pane">
+      <div class="pane-head"><h2>记忆页面 · 原生形态</h2><span class="sub">会话页「记忆」Tab</span><span class="spacer"></span><span class="src a">A · 官方截图 1:1</span></div>
+      <div class="pane-body">
+        <div class="nv-dsh">
+          <div class="screen">
+            <div class="screen-bar"><span class="dots"><i></i><i></i><i></i></span>生成 Qoder CLI 天气卡片 — 会话视图</div>
+            <div class="d-window">
+              <div class="d-wtitle">生成Qoder CLI天气卡片 <span class="tag">⊙ 复制会话 ID</span></div>
+              <div class="d-tabs"><span class="d-tab">对话</span><span class="d-tab">Trajectory</span><span class="d-tab on">记忆</span><span class="d-tab">技能</span><span class="d-tab">待办</span><span class="d-tab">COI调度</span><span class="d-tab">提示词注入</span><span class="d-tab">临时信息</span><span class="d-tab">Memory Evolve 设置</span></div>
+              <div class="d-subtabs"><span class="d-sub">指南</span><span class="d-sub">待确认记忆建议</span><span class="d-sub">项目日志</span><span class="d-sub">项目关键记忆 KEY.md</span><span class="d-sub">项目关键记忆归档 KEY-archive.md</span><span class="d-sub on">今日日志</span><span class="d-sub">用户档案 USER.md</span><span class="d-sub">长期记忆 MEMORY.md</span><span class="d-sub">归档用户 USER-archive.md</span><span class="d-sub">归档记忆 MEMORY-archive.md</span><span class="d-sub">全局规则 AGENTS.md</span></div>
+              <div class="d-warn">⚠️ 以下文件为 § 分隔的结构化记忆，用系统工具打开后请谨慎编辑，随意修改可能破坏格式、导致记忆读取错乱。</div>
+              <div class="d-cwd">当前会话工作目录：C:/Users/qiuzijian/.dsh/…/workspace</div>
+              <div class="d-card">
+                <div class="d-card-hd"><span class="t">今日日志</span><span class="d-badge">只读</span><span class="d-badge">共 74 条</span><span style="margin-left:auto;font-size:9.5px;color:var(--d-blue)">打开文件</span></div>
+                <div class="d-card-desc">今日日志：按天分文件记录流水，程序自动标注项目标签；不注入上下文，模型按需读取。</div>
+                <div class="d-toolbar"><span class="d-vbtn on">美观视图</span><span class="d-vbtn">纯文本视图</span><span class="d-search">搜索内容 · 时间或标签</span></div>
+                <div class="d-entry"><div class="d-entry-hd"><span class="d-time">11:08</span><span class="d-tag">2026-11-11</span><span class="d-tag">qwen</span><span class="ops">编辑 <span class="del">删除</span></span></div><p>Qoder CN 通过调度器恢复会话验证成功 <span style="font-family:var(--mono);font-size:10px">de_coi_dispatch</span> 传 sessionid（4085f1ed…）恢复成功；模型复述出上一轮问题原文，上下文恢复生效。</p></div>
+                <div class="d-entry"><div class="d-entry-hd"><span class="d-time">11:08</span><span class="d-tag">qwen</span><span class="ops">编辑 <span class="del">删除</span></span></div><p>[COI] Qoder CN 任务 <span style="font-family:var(--mono);font-size:10px">col-msjnsirk3u-c2</span> completed（会话 4085f1c3-d3c6-446b-a9c5-8d821d51bd51d）：我问刚才你的问题是什么？请只回答问题的本身内容，不要任何其他文字。</p></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="pane-note">按 <code>dsh-plugins/vssaros-memory/docs/images/记忆tab.png</code> 官方截图 1:1 复刻：会话 Tab 条、10 个功能+文件页签、⚠️ 警告行、cwd 行、<code>mt-toolbar</code> 视图切换、<code>mt-card</code> 头部只读/计数徽标、条目时间戳+标签+编辑/删除。页签标题与文案取自 <code>lib/memory-tab.js:30-41</code> 与 <code>src/client/index.ts</code> 双字典。截图为深色主题；<code>styles.css</code> 实际用 <code>--dsw-alias-*</code> 令牌自动明暗。</p>
+    </div>
+
+    <div class="pane">
+      <div class="pane-head"><h2>会话 / 设置中的记忆设置</h2><span class="sub">Memory Evolve 设置 → 配置</span><span class="spacer"></span><span class="src a">A · 官方截图 + 源码</span></div>
+      <div class="pane-body">
+        <div class="nv-dsh">
+          <div class="screen">
+            <div class="screen-bar"><span class="dots"><i></i><i></i><i></i></span>生成 Qoder CLI 天气卡片 — Memory Evolve 设置</div>
+            <div class="d-window">
+              <div class="d-tabs"><span class="d-tab">对话</span><span class="d-tab">Trajectory</span><span class="d-tab">记忆</span><span class="d-tab">技能</span><span class="d-tab">待办</span><span class="d-tab">提示词注入</span><span class="d-tab">临时信息</span><span class="d-tab on">Memory Evolve 设置</span></div>
+              <div class="d-subtabs"><span class="d-sub on">指南</span><span class="d-sub">配置</span></div>
+              <div class="d-cfg">
+                <div class="d-guide"><h4>✦ 指南</h4><p>每轮 AI 自动提炼值得记住的信息，被交到「待确认记忆建议」由你确认后生效——AI 不会擅自往记忆里写东西。</p></div>
+                <div class="d-guide"><h4>✓ 待办管理（dtodo）</h4><p>对 AI 说"记住要做 X"即落成结构化待办（自动分生活/工作/项目/每日，可设置重要紧急与截止）。到期 AI 会提醒你；AI 自建的待办先进入「待确认待办建议」，等你确认。</p></div>
+                <div class="d-guide"><h4>🔧 技能沉淀（skill_manage）</h4><p>把重复踩坑的方法论沉淀为可复用技能；同类任务下次直接按技能执行，不用重新摸索。</p></div>
+                <p class="d-cfg-help" style="margin-top:10px">▼ 配置子页（原「运行时配置」）：修改立即生效并持久化（覆盖 config.yaml 的对应项）。</p>
+                <div class="d-swrow"><span class="lbl">后台审查 <span style="color:var(--d-faint);font-family:var(--mono);font-size:9px">reviewEnabled</span></span><span class="d-sw on"></span></div>
+                <div class="d-swrow"><span class="lbl">审查间隔（回合） <span style="color:var(--d-faint);font-family:var(--mono);font-size:9px">reviewInterval</span></span><input class="d-num" value="10" aria-label="reviewInterval" /></div>
+                <div class="d-swrow"><span class="lbl">技能自动沉淀 <span style="color:var(--d-faint);font-family:var(--mono);font-size:9px">skillReviewEnabled</span></span><span class="d-sw"></span></div>
+                <div class="d-swrow"><span class="lbl">记忆写入看门狗 <span style="color:var(--d-faint);font-family:var(--mono);font-size:9px">perTurnWriteGuard</span></span><span class="d-sw"></span></div>
+                <div class="d-swrow"><span class="lbl">每回合写入项目记忆 <span style="color:var(--d-faint);font-family:var(--mono);font-size:9px">perTurnProjectWrites</span></span><span class="d-sw on"></span></div>
+                <div class="d-swrow"><span class="lbl">每回合写入每日日志 <span style="color:var(--d-faint);font-family:var(--mono);font-size:9px">perTurnDailyWrites</span></span><span class="d-sw on"></span></div>
+                <div class="d-swrow"><span class="lbl">每回合检查项目关键记忆 <span style="color:var(--d-faint);font-family:var(--mono);font-size:9px">perTurnKeyWrites</span></span><span class="d-sw on"></span></div>
+                <div class="d-swrow"><span class="lbl">key 轨渐进式披露 <span style="color:var(--d-faint);font-family:var(--mono);font-size:9px">keyProgressiveDisclosure</span></span><span class="d-sw"></span></div>
+                <div class="d-swrow"><span class="lbl">COI 调度 / 本地文件搜索工具 / 会话评审 / 会话广播 / 通知模块 / 记忆同步 / 会话搜索 / 无限画板 / 会话编排 / 提示词管理器 / 模型设置 / Web UI 设置 / 会话书签 / 待办功能 …</span><span class="d-sw"></span></div>
+                <button class="d-save">保存配置</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="pane-note">按 <code>docs/images/设置tab.png</code> 复刻「指南」子页（原生即为说明卡片流）；「配置」子页按 <code>src/client/index.ts:813-893</code> 的 <code>panel.config.*</code> 真实字段顺序与标签重建——它<strong>是单个 <code>me-block</code> 里的约 25 行开关，没有分组标题、没有卡片</strong>。最后一行是折叠示意，实际有 25 项。此处正是「太复杂」的主因。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ ④ ds-bot ═══════════ -->
+<section class="prod-view" id="p-dsbot" role="tabpanel" aria-labelledby="t-dsbot">
+  <div class="pair">
+    <div class="pane">
+      <div class="pane-head"><h2>记忆页面 · 原生形态</h2><span class="sub">bt-mem dialog</span><span class="spacer"></span><span class="src a">A · 一手打包源码 + CSS</span></div>
+      <div class="pane-body">
+        <div class="nv-dsbot">
+          <div class="screen">
+            <div class="screen-bar"><span class="dots"><i></i><i></i><i></i></span>DS Bot — writer · Memory</div>
+            <div class="b-layer">
+              <div class="b-mem" role="dialog" aria-label="writer's memory" style="position:relative">
+                <div class="b-mem-head"><h2>Memory summary</h2><span class="status">writer · Updated just now</span><span class="gap"></span><button class="b-iconbtn" id="dsbotDots" aria-label="Memory options" aria-haspopup="menu" aria-expanded="false">···</button><button class="b-iconbtn" aria-label="Close memory">✕</button></div>
+                <div class="b-mem-body"><div class="b-summary"><h3>Working style</h3><p>Prefers concise Chinese answers, conclusion first. Writes technical docs with code blocks language-tagged and never adds emoji unasked.</p><h3>Project</h3><p>The release checklist requires <code style="font-family:var(--mono);font-size:12px">bun typecheck</code> and <code style="font-family:var(--mono);font-size:12px">bun test</code> before publishing. CI pins Node 22.19.</p><h3>Tools</h3><p>Uses pnpm, not npm. The memory panel is the only place the user edits entries directly.</p></div></div>
+                <div class="b-mem-foot"><div class="b-ask"><input placeholder="Ask or update" aria-label="Ask about or update writer's memory" /><button class="b-send" aria-label="Send">↑</button></div></div>
+                <div class="b-menu" id="dsbotMenu" role="menu" aria-label="Memory options" hidden><div role="menuitem">All entries <span class="hint">12</span></div><div role="menuitem">Change history</div><div role="menuitem">Regenerate summary</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="pane-note">按本机 <code>~/.dsh/bot/workspace/.tmp-dsh-ui/old/package/client.js</code>（ds-bot 0.2.7，Apache-2.0）1:1 复刻：<code>bt-mem</code> 弹层（<code>width:min(680px,100vw-48px)</code>、<code>height:min(760px,…)</code>、圆角 20px）、<code>bt-mem-head</code> 的 <code>Memory summary</code> / <code>Updated just now</code> / Dots / Close、<code>bt-mem-summary</code> 的 h3+p、底部 <code>bt-mem-ask</code> 的 <code>placeholder="Ask or update"</code>、<code>bt-mem-menu</code> 三菜单项。配色 <code>--bt-main:#fcfcfc</code> / <code>--bt-accent:#4d6bfe</code> / <code>--bt-ink:#141414</code>。<strong>原生浅色</strong>。</p>
+    </div>
+
+    <div class="pane">
+      <div class="pane-head"><h2>会话 / Bot 设置中的记忆设置</h2><span class="sub">Bot Settings → Memory 卡片</span><span class="spacer"></span><span class="src a">A · 一手打包源码 + CSS</span></div>
+      <div class="pane-body">
+        <div class="nv-dsbot">
+          <div class="screen">
+            <div class="screen-bar"><span class="dots"><i></i><i></i><i></i></span>DS Bot — Bot settings · writer</div>
+            <div class="b-set">
+              <h3 class="b-set-h">Bot settings</h3>
+              <div class="b-card"><div class="ttl">Identity</div>
+                <div class="b-setrow"><span class="k">Name</span><span class="v">writer</span></div>
+                <div class="b-setrow"><span class="k">Role</span><span class="v">Technical writer</span></div>
+                <div class="b-setrow"><span class="k">Model</span><span class="v">deepseek-chat</span></div>
+              </div>
+              <div class="b-card"><div class="ttl">Memory</div>
+                <button class="b-row" aria-label="Manage writer's memory"><span class="ico">▣</span><span class="copy">12 entries</span><span class="go">Manage ›</span></button>
+              </div>
+              <div class="b-card"><div class="ttl">Other</div>
+                <div class="b-setrow"><span class="k">Duplicate</span><span class="v">A copy with the same job and model, and fresh memory.</span></div>
+                <div class="b-setrow"><span class="k">Private</span><span class="v">Off</span></div>
+              </div>
+              <p style="font-size:11px;color:var(--b-ink3);line-height:1.7;margin:2px 0 0">记忆没有开关、没有预算输入、没有轨迹列表。唯一的设置入口就是这一行「12 entries → Manage」。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="pane-note">按 <code>client.js</code> 的 <code>MemoryCard</code>（<code>bt-set-row bt-bs-row</code> → <code>openMemory(bot.id)</code>）、<code>MemoryRow</code>（<code>bt-section-title</code>「Memory」+ <code>Nothing saved yet / 1 entry / {count} entries</code> + <code>Manage</code>）与 <code>Duplicate</code> 原生文案复刻。固定大小由 <code>src/host/memory.js</code> <code>MEMORY_LIMITS = { entry:300, main:4000, topic:16000, topics:40 }</code> 硬编码，<strong>不暴露给用户</strong>；分区（own / team / group）在打开的面板里以 section 呈现，不在设置里配置。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ ⑤ 对比 ═══════════ -->
+<section class="prod-view" id="p-compare" role="tabpanel" aria-labelledby="t-compare">
+  <div class="cmp">
+    <h2>差异矩阵</h2>
+    <div class="tbl-wrap">
+      <table class="cmp-tbl">
+        <thead><tr><th>维度</th><th>Hermes Agent</th><th>OpenClaw</th><th>dsh · vssaros-memory</th><th>ds-bot</th></tr></thead>
+        <tbody>
+          <tr><td>记忆载体</td><td>2 文件 <span class="mono num">MEMORY/USER.md</span></td><td>4 文件 <span class="mono num">USER/MEMORY/daily/DREAMS</span></td><td class="hi">9+1 文件轨 + 3 归档轨</td><td>1 <span class="mono num">MEMORY.md</span> + topics / team / group</td></tr>
+          <tr><td>独立记忆页面</td><td class="lo">无（CLI / TUI / Star Map）</td><td>无独立页（工具组 + 文件 / 新版 Dreams）</td><td class="hi">有，且嵌在会话 Tab 里</td><td class="lo">有，一个模态 dialog</td></tr>
+          <tr><td>可见文件页签</td><td class="num lo">0</td><td class="num lo">0</td><td class="num hi">10</td><td class="num">3 页（summary / entries / history）</td></tr>
+          <tr><td>会话 Tab 总数</td><td class="num">Config 分类 ~5</td><td class="num">4 组 / 14 项</td><td class="num hi">12</td><td class="num">Bot 设置内 3 张卡</td></tr>
+          <tr><td>记忆设置项</td><td class="num lo">6</td><td class="num">4（JSON 配置）</td><td class="num hi">25 开关 + hint</td><td class="num lo">0（限额硬编码）</td></tr>
+          <tr><td>字符预算可见性</td><td class="lo">注入头 <span class="mono num">[67% — 1,474/2,200]</span></td><td><span class="mono num">/context list</span> 查截断</td><td>KEY 阈值 2 个数字输入</td><td class="lo">面板 <span class="mono num">1,240 of 4,000 characters</span></td></tr>
+          <tr><td>写入确认</td><td><span class="mono num">write_approval</span> + <span class="mono num">/memory pending</span></td><td>Dreaming 阈值 + DREAMS.md 人工复核</td><td class="hi">建议队列：采纳 / 归档 / 拒绝 + 批量</td><td>每轮后自动审查，面板可直接改</td></tr>
+          <tr><td>作用域模型</td><td>Profile 隔离（<span class="mono num">--profile work</span>）</td><td>workspace / agent / imports</td><td class="hi">全局 / 项目 cwd-hash / Bot 三轨 × 分支范围</td><td>own / team / group 三 section</td></tr>
+          <tr><td>复杂度（控件数）</td><td class="num lo">≈ 8</td><td class="num lo">≈ 10</td><td class="num hi">≈ 60+</td><td class="num lo">≈ 6</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="cmp-grid">
+      <div class="cmp-card"><h3><span class="pros">✓</span> Hermes：极简到近乎没有 UI</h3><ul>
+        <li><strong>优点</strong>：两个文件、一个 6 字段分类页；2,200/1,375 硬上限逼迫精选；冻结快照保护 prefix cache；字符占用直接写进 system prompt，模型自己知道预算。</li>
+        <li><strong>优点</strong>：<code>write_approval</code> 一键把自动学习改成人工审批，<code>--profile</code> 做隔离，概念少。</li>
+        <li><strong>缺点</strong>：无可视化编辑，排错只能 <code>cat</code> 文件 / <code>/memory pending</code>；条目一多只能靠模型自己合并，用户看不到合并过程。</li>
+        <li><strong>缺点</strong>：上限是「写失败再让模型腾空间」，对非技术用户不友好。</li>
+      </ul></div>
+      <div class="cmp-card"><h3><span class="pros">✓</span> OpenClaw：文件即真相</h3><ul>
+        <li><strong>优点</strong>：「The model only remembers what gets saved to disk; there is no hidden state」，所有记忆是可读 Markdown，workspace 本身就是 UI。</li>
+        <li><strong>优点</strong>：分层清楚（USER 稳定画像 / MEMORY 精炼事实 / daily 工作层 / DREAMS 人工复核），<code>/context list</code> 把注入截断显式化。</li>
+        <li><strong>缺点</strong>：本机 2026.2.9 里 Memory 只是工具组，没有记忆浏览页；配置散在 JSON、CLI、插件设置三处。</li>
+        <li><strong>缺点</strong>：新版补了 Memory settings / Import Memory / Dreams / Wiki 后，概念量在快速增长，有重蹈 dsh 覆辙的风险。</li>
+      </ul></div>
+      <div class="cmp-card"><h3><span class="cons">!</span> dsh：能力最全，界面最重</h3><ul>
+        <li><strong>优点</strong>：唯一把「待确认 / 归档 / 移回 / 分支范围 / 项目徽标 / Bot 归属 / 注入预算」都做成可见控件的方案，可审计性最强；9+1 轨覆盖最细。</li>
+        <li><strong>缺点</strong>：<strong>10 个文件页签 + 25 个开关 + 12 个会话 Tab</strong>，用户要先理解「轨」的概念才能找到一条记忆；作用域信息散在 11px 徽标里。</li>
+        <li><strong>缺点</strong>：设置是单列开关流、无分组；<code>multiRootScopeEnabled</code> / <code>keyBranchFilter</code> 不在 RUNTIME_KEYS 里（改不到），<code>keyWriteMode</code> / <code>botMemoryCharLimit</code> 在 RUNTIME_KEYS 却没渲染控件——用户可见性和可操作性不一致。</li>
+        <li><strong>缺点</strong>：新增的 ScopeBar 只在多根时出现，单根退回裸 cwd 文本，根 chip 不可点，作用域层级反而更深了。</li>
+      </ul></div>
+      <div class="cmp-card"><h3><span class="pros">✓</span> ds-bot：一行入口 + 三层下钻</h3><ul>
+        <li><strong>优点</strong>：Bot 设置里只有「<code>12 entries → Manage</code>」一行；点开是 summary / All entries / Change history 三页，底部一个 <code>Ask or update</code> 输入框同时承担读写。</li>
+        <li><strong>优点</strong>：限额（entry 300 / main 4,000 / topic 16,000 / topics 40）硬编码不暴露；own / team / group 在面板内用 section 表达，配置负担为零。</li>
+        <li><strong>缺点</strong>：几乎没有可调项，无法按项目/分支调预算；无多工作区作用域概念（Bot 就是唯一分区键）。</li>
+        <li><strong>缺点</strong>：Change history 靠 journal.jsonl，不是 Git；跨设备同步要靠自己拷目录。</li>
+      </ul></div>
+    </div>
+
+    <div class="fix" style="margin-top:12px">
+      <h3>针对「记忆页面太复杂了」的简化建议（按投入从小到大）</h3>
+      <ol>
+        <li><strong>先减页签，不减数据。</strong>把 10 个文件页签收成 3 组（全局 / 本项目 / Bot），归档轨收进组内「已归档」折叠区；保留 9+1 轨的物理分区不变，零数据迁移。对标 ds-bot 的「一行入口 + 三层下钻」。</li>
+        <li><strong>设置页按「写入 / 注入 / 高级」三组卡片化。</strong>25 个开关默认只露 5 个常用的（后台审查、keyWriteMode、写入看门狗、Bot 预算、同步），其余折进「高级」；把「运行时可改 / 仅 config.yaml / 只读指标」做成徽标，消除「改了没生效」。</li>
+        <li><strong>把预算做成一条进度条，而不是两个数字输入。</strong>抄 Hermes 的 <code>[67% — 1,474/2,200 chars]</code> 与 ds-bot 的 <code>1,240 of 4,000 characters</code>：用户只需知道「快满了」，不必理解阈值算法。</li>
+        <li><strong>把确认队列收成一个横幅。</strong>待确认建议不用单独功能 Tab，用「4 条待确认 · 全部采纳 / 全部拒绝 / 10 秒撤销」；采纳按钮直接写明目标轨与根。</li>
+        <li><strong>作用域从「徽标」升级为「可切换的单一上下文」。</strong>单根时保持现在的极简；多根时只有一个根选择器 + 一个「全局 / Bot」切换，切换只影响查看，写入目标在输入前显式选一次。不要再做统计卡、三栏检查器、冲突面板。</li>
+        <li><strong>一句话验收：</strong>新用户不看指南，能在 3 次点击内找到「我上次让 AI 记住的那条」，并在 1 次点击内改掉它。</li>
+      </ol>
+    </div>
+
+    <p class="foot">
+      <strong>证据与版本说明</strong>：Hermes 取自本机 <code>~/AppData/Local/hermes/hermes-agent/web/src/{pages/ConfigPage.tsx,index.css}</code>、<code>~/.hermes/{config.yaml,webui/settings.json}</code> 与官方文档 Persistent Memory；OpenClaw 取自本机 <code>~/AppData/Roaming/npm/node_modules/openclaw@2026.2.9/dist/control-ui/</code>、<code>~/.openclaw/{openclaw.json,workspace/}</code> 与官方 Memory overview；dsh 取自本仓 <code>dsh-plugins/vssaros-memory/docs/images/{记忆tab,设置tab}.png</code>、<code>lib/memory-tab.js</code>、<code>src/client/index.ts</code>；ds-bot 取自本机 <code>~/.dsh/bot/workspace/.tmp-dsh-ui/old/package/{client.js,README.md}</code>（ds-bot 0.2.7 / Apache-2.0）。<br />
+      仓库 <code>doc/Claw-Products-Competitive-Analysis.md:124/321/433</code> 断言「OpenClaw / Hermes 无 GUI 管理」——对 CLI 记忆管理成立，但两家现已各有 WebUI / Control UI，本稿以本机安装与官方文档为准。凡标注 B / C 的区块均为结构复原或终端形态，<strong>不是原生截图</strong>；A 级区块的配色、类名、文案逐字取自源码或截图。本文件只做对比稿，未修改任何产品代码。
+    </p>
+  </div>
+</section>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('.prod-tab'));
+  tabs.forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      tabs.forEach(function (t) { t.setAttribute('aria-selected', String(t === tab)); });
+      document.querySelectorAll('.prod-view').forEach(function (v) {
+        v.classList.toggle('is-active', v.id === 'p-' + tab.dataset.prod);
+      });
+    });
+    tab.addEventListener('keydown', function (e) {
+      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+      e.preventDefault();
+      var i = tabs.indexOf(tab);
+      var next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+      next.focus(); next.click();
+    });
+  });
+  // ds-bot 原生：Memory options 菜单由 Dots 按钮展开，默认收起
+  var dots = document.getElementById('dsbotDots');
+  var menu = document.getElementById('dsbotMenu');
+  if (dots && menu) {
+    dots.addEventListener('click', function () {
+      menu.hidden = !menu.hidden;
+      dots.setAttribute('aria-expanded', String(!menu.hidden));
+    });
+  }
+  // 每块内的分类 Tab / 视图切换只做视觉反馈，不改变复刻内容
+  document.querySelectorAll('.h-cat, .d-vbtn, .d-sub, .o-navitem').forEach(function (el) {
+    el.addEventListener('click', function () {
+      var group = el.parentElement;
+      group.querySelectorAll('[aria-selected], .on, .d-vbtn').forEach(function (x) {
+        x.classList.remove('on');
+        if (x.hasAttribute('aria-selected')) x.setAttribute('aria-selected', 'false');
+      });
+      el.classList.add('on');
+      if (el.hasAttribute('aria-selected')) el.setAttribute('aria-selected', 'true');
+    });
+  });
+})();
+</script>
+</body>
+</html>

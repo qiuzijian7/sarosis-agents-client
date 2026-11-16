@@ -27,11 +27,12 @@ function fakeContext(foundationSvc) {
 	const tools = [];
 	const events = [];
 	const provided = {};
+	const disposers = [];
 	// 重构 1.3：消费插件的委托层经 cordis 服务 `vssarosFoundation` 拿真源 ⇒ fake ctx 要带上**真服务**
 	// （否则 memory 这类在 apply 同步段就建 store 的插件会抛"服务未绑定" ✗）。
 	const availability = { tools: true, webServer: true, connection: true, vssarosFoundation: true };
 	const ctx = {
-		effect: fn => { fn(); return () => { }; },
+		effect: fn => { const dispose = fn(); if (typeof dispose === 'function') disposers.push(dispose); return () => { }; },
 		// Cordis 4 的可选注入：依赖不齐就**不调** cb（真 ctx 同语义）——否则 fake 会造出真环境不存在的路径 ✗
 		inject: (deps, cb) => {
 			const wanted = Array.isArray(deps) ? deps : [deps];
@@ -59,7 +60,7 @@ function fakeContext(foundationSvc) {
 			on: (event, handler) => { events.push({ event, handler }); return () => { }; },
 		},
 	};
-	return { ctx, tools };
+	return { ctx, tools, dispose: () => { for (const off of disposers.splice(0).reverse()) off(); } };
 }
 
 /** 工具定义 → 快照条目（只留"改了就说明接口变了"的字段）。 */
@@ -88,6 +89,11 @@ function entryOf(definition) {
  */
 const CONFIG_OVERRIDES = {
 	'vssaros-workbenches': () => ({ root: path.join(os.tmpdir(), 'vssaros-snapshot-wb-root') }),
+	// 2026-11-11：`vssaros-computer` 默认 enabled:false（fail-closed），空 config 跑 apply 会在
+	//   lib/index.js 直接 return ⇒ `computer` 工具成了快照盲区（改名 / 改参数 / 被 agent 引用
+	//   都没有守卫知道）。这里只为抽取工具定义临时打开，不写真目录、不连中继；真机是否启用
+	//   仍由 profile 的 cordis.patch.yml 决定（默认关）。与 workbenches 的临时 root 同一口径。
+	'vssaros-computer': () => ({ enabled: true, level: 'view' }),
 };
 
 /**
@@ -121,11 +127,14 @@ export async function extractToolSnapshot(only = null) {
 	for (const dir of dirs) {
 		const entry = path.join(HERE, dir, 'lib', 'index.js');
 		if (!fs.existsSync(entry)) { continue; }
+		let cleanup, temporaryRoot;
 		try {
 			const mod = await import(pathToFileURL(entry).href);
 			if (typeof mod.apply !== 'function') { continue; }
-			// 每个插件用自己的默认 config 跑（与真机"没写覆盖层"时的形态一致 ✓）
-			const { ctx, tools } = fakeContext(foundationSvc);
+			if (dir === 'vssaros-scheduler') temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vssaros-snapshot-scheduler-'));
+			const foundation = temporaryRoot ? { ...foundationSvc, dataRootOf: () => temporaryRoot } : foundationSvc;
+			const { ctx, tools, dispose } = fakeContext(foundation);
+			cleanup = dispose;
 			mod.apply(ctx, CONFIG_OVERRIDES[dir] ? CONFIG_OVERRIDES[dir]() : {});
 			const entries = tools.map(entryOf).sort((a, b) => String(a.name).localeCompare(String(b.name)));
 			if (entries.length === 0) { continue; }
@@ -133,6 +142,9 @@ export async function extractToolSnapshot(only = null) {
 			total += entries.length;
 		} catch (e) {
 			failures.push(`${dir}: ${String(e?.message ?? e)}`);
+		} finally {
+			try { cleanup?.(); } catch (e) { failures.push(`${dir}: cleanup failed: ${String(e?.message ?? e)}`); }
+			if (temporaryRoot) fs.rmSync(temporaryRoot, { recursive: true, force: true });
 		}
 	}
 	return { plugins, total, failures };

@@ -1,7 +1,7 @@
 {
   "name": "@vssaros/dsh-computer",
-  "version": "0.1.0",
-  "description": "VsSaros desktop-control Host tool for DeepSeek Harness (P0 read-only): observes the desktop through the main process loopback relay - screenshots, screen size, and this app's windows. No input injection, no OS-wide enumeration, no app grants yet. Default disabled (fail-closed).",
+  "version": "0.1.1",
+  "description": "VsSaros desktop-control Host tool for DeepSeek Harness (P0 read-only): observes the desktop through the main process loopback relay - screenshots, screen size, and this app's windows. No input injection, no OS-wide enumeration. Action ops carry an outcome ledger (no replay after an unknown result). Default disabled (fail-closed).",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
@@ -17,6 +17,7 @@
     "lib/core/gates.js",
     "lib/core/handoff.js",
     "lib/core/relay.js",
+    "lib/core/outcome.js",
     "cordis.patch.yml"
   ],
   "peerDependencies": {

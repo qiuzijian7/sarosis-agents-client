@@ -241,10 +241,10 @@ const launcherUsesCoverage = /function coveredByFixedEntry\(/.test(navSrc)
 const launcherOldBlanket = /registeredExtras[\s\S]{0,400}!String\(w\.id\)\.startsWith\("vssaros\/"\)/.test(navSrc);
 if (regWb.length > 0 && (!launcherUsesCoverage || launcherOldBlanket)) {
 	bProblems.push('client.workbenchNav.js 的 registeredExtras 必须按 coveredByFixedEntry 过滤；'
-		+ '退回「vssaros/ 开头一律排除」会让所有注册式内置工作台（如 loop）没有任何入口');
+		+ '退回「vssaros/ 开头一律排除」会让所有注册式内置工作台（如 superagent）没有任何入口');
 }
 if (bProblems.length === 0) {
-	ok(`⑤-B 注册式工作台（${regWb.length} 个：${regWb.map(p => p.module || p.dirName).join('、')}）：都会进宿主快照，启动器按「无固定入口」兜底 ✓`);
+	ok(`⑤-B 注册式工作台（${regWb.length} 个：${regWb.map(p => p.module || p.dirName).join('、')}）：客户端都真的注册了工作台，启动器按「无固定入口」兜底 ✓（列表显隐由 ⑧ 的下线名单决定）`);
 } else {
 	for (const m of bProblems) { fail(`⑤-B ${m}`); }
 }
@@ -265,6 +265,31 @@ if (ghosts.length === 0) {
 	ok('⑤-C 侧栏白名单里没有幽灵入口（每个 /x/<m>/ 都有对应的包）✓');
 } else {
 	fail(`⑤-C 侧栏白名单里有入口但没有对应的包（⇒ 「入口在、点不开」；删了模块忘了删这里）：${ghosts.join('、')}`);
+}
+
+// ── ⑤-D 「记忆」工作台卡片必须是**可用**入口（2026-11-11 用户报「工作台中缺少 记忆 item」）──
+// ⚠ 11-03 起记忆**没有独立整页**（vssaros.view.kind='none'，管理 UI 在会话页「记忆」Tab）
+//   ⇒ 只在 catalog.js 加一张卡片 = 得到一个点了 404 的假入口 ✗。
+//   真入口是三件套：主页卡片 + DEFAULT_ITEMS 带 comp 的条目 + vssaros-memory 登记的组件页签。
+//   缺任何一件都是历史反复踩的「卡片在、点不开」，且不会有任何报错 ⇒ 必须钉死。
+{
+	const memoryCard = /route:\s*'\/x\/memory\/',\s*name:\s*'记忆'/.test(catalogSrc);
+	const memoryNav = /route:\s*"\/x\/memory\/",\s*comp:\s*"memory"/.test(navSrc);
+	let memoryComp = '';
+	try { memoryComp = read(path.join(HERE, 'vssaros-memory', 'lib', 'client.js')); } catch { /* 下面会报 */ }
+	const memoryRegistered = /__vssarosPageComponents\.memory\s*=/.test(memoryComp)
+		&& /MemoryTabView\(\{ \.\.\.props, sessionId: sid, t: t2 \}\)/.test(memoryComp);
+	if (!memoryCard) { fail('⑤-D 主页工作台清单缺「记忆」卡片（/x/memory/）⇒ 用户看不到这个工作台'); }
+	if (!memoryNav) { fail('⑤-D DEFAULT_ITEMS 缺 /x/memory/ 的 comp:"memory" 条目 ⇒ 卡片会去开不存在的整页（404）'); }
+	if (!memoryRegistered) { fail('⑤-D vssaros-memory/lib/client.js 没登记 __vssarosPageComponents.memory ⇒ 组件页签回落成 404 iframe'); }
+	// 旧 id `vssaros-wb-memory` 仍在 retired 集合里（负责清 11-03 下线的旧存档）⇒ 复用它的
+	// 新条目会在每次 loadTabs() 时被清掉，表现为「记忆页签开一下就没了」✗。
+	if (/id:\s*"vssaros-wb-memory",[^\n]*route:\s*"\/x\/memory\/"/.test(navSrc)) {
+		fail('⑤-D 记忆条目复用了 retired 里的旧 id vssaros-wb-memory ⇒ 页签每次加载都会被清掉');
+	}
+	if (memoryCard && memoryNav && memoryRegistered) {
+		ok('⑤-D 「记忆」工作台：主页卡片 + 组件页签条目 + MemoryTabView 登记三件齐全 ✓');
+	}
 }
 
 // ── ⑥ 临时下线清单一致性（2026-11-04：看板 / 流程 / 生图暂时下线）──────────────────
@@ -371,6 +396,76 @@ if (ghosts.length === 0) {
 		if (!re.test(dashboardApp)) { fail(`⑦ ${why}`); }
 	}
 	if (problems === before) { ok('⑦ 主页卡片：内置注册式工作台按「无固定入口」补卡片，且不重复 / 不误标第三方 ✓'); }
+}
+
+// ── ⑧ 工作台列表下线名单（2026-11-13：移除「循环任务」item）──────────────────
+// 为什么单列一段、不复用 ⑥：「循环任务」是**注册式**工作台（`vssaros/loop`，`view.kind='none'`），
+//   没有 `/x/loop/` 页面路由 ⇒ 套不上 ⑥ 那份 route 驱动的 `OFFLINE_WORKBENCH_ROUTES`；
+//   硬造一条 `/x/loop/` 白名单只会得到一个点了 404 的假入口。
+// 真源 = 宿主快照出口 `vssaros-workbenches/lib/client.js::RETIRED_WORKBENCH_IDS`（按**身份 id**）。
+//   主页卡片的 registeredCardItems() 与启动器的 registeredExtras() 都读 getSnapshot().workbenches
+//   ⇒ 一处过滤、两处生效，不会「主页没了、启动器还在」。
+// ⚠ 只摘列表：providers 仍在 ⇒ open() / has() / 深链 / 5 个工具 / Host 路由都不受影响；
+//   恢复上线 = 清空名单即可，不必重新接插件 ⇒ 下面同步钉住「插件本体一件没少」。
+{
+	const before = problems;
+	const hostSrc = read(path.join(HERE, 'vssaros-workbenches', 'lib', 'client.js'));
+	const retiredDecl = /const RETIRED_WORKBENCH_IDS = \[([^\]]*)\];/.exec(hostSrc);
+	if (!retiredDecl) {
+		fail('⑧ 宿主快照缺 RETIRED_WORKBENCH_IDS（下线真源丢失 ⇒ 本段会空跑）');
+	} else {
+		const retired = [...retiredDecl[1].matchAll(/'([^']+)'/g)].map(m => m[1]);
+		ok(`⑧ 注册式工作台下线名单：${retired.length} 个（${retired.join('、') || '空 = 全部上线'}）`);
+		if (!retired.includes('vssaros/loop')) {
+			fail('⑧ 用户要求移除工作台中的「循环任务」item：vssaros/loop 必须在下线真源里');
+		}
+		// ① 名单必须真的用于快照出口（只定义不过滤 = 假下线，item 仍在）
+		if (!/workbenches: \[\.\.\.this\.providers\.values\(\)\][\s\S]{0,220}\.filter\(e => !RETIRED_WORKBENCH_IDS\.includes\(e\.id\)\)/.test(hostSrc)) {
+			fail('⑧ buildSnapshot 的 workbenches 出口没按名单过滤 ⇒ 两处 item 仍会渲染');
+		}
+		// ② 名单里的 id 必须真对应一个声明了工作台的包（写错 id / 插件已删 ⇒ 静默失效）
+		const idOfRepository = (repo) => {
+			if (typeof repo !== 'string') { return ''; }
+			if (repo.startsWith('vssaros:')) { return 'vssaros/' + repo.slice('vssaros:'.length); }
+			const m = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)\/?$/.exec(repo);
+			return m ? (m[1] + '/' + m[2]).toLowerCase() : '';
+		};
+		const declaredIds = new Set(wbPackages.map(p => idOfRepository(p.repository)).filter(Boolean));
+		const orphan = retired.filter(id => !declaredIds.has(id));
+		if (orphan.length) { fail(`⑧ 下线名单里有找不到对应包的 id（⇒ 静默失效）：${orphan.join('、')}`); }
+		// ③ 两处消费点都必须读**同一份**宿主快照的 workbenches 字段：
+		//   只查「有没有 getSnapshot()」不够 —— 换成别的字段（如 snap.all）照样绕过过滤 ⇒ 必须钉住字段本身。
+		//   ⚠ 用「函数名往后的定长切片」取函数体，别用带缩进的正则：缩进层级一变（或制表符被
+		//     转义吞掉）就会空跑 ⇒ 守卫假绿。切片只要覆盖函数体即可（这两个函数都很短）。
+		const bodyFrom = (src, marker) => { const at = src.indexOf(marker); return at < 0 ? '' : src.slice(at, at + 420); };
+		const dashboardApp = read(path.join(HERE, 'vssaros-dashboard', 'lib', 'app', 'src', 'app.jsx'));
+		const dashSnap = bodyFrom(dashboardApp, 'function parentWorkbenches(');
+		if (!/__vssarosWorkbenchesSnapshot/.test(dashSnap) || !/snap\.workbenches/.test(dashSnap)) {
+			fail('⑧ 主页工作台卡片不读宿主快照的 workbenches ⇒ 下线名单管不到它');
+		}
+		const navSnap = bodyFrom(navSrc, 'function registeredExtras(');
+		if (!/getSnapshot\(\)/.test(navSnap) || !/snap\.workbenches/.test(navSnap)) {
+			fail('⑧ 启动器的 registeredExtras 不读宿主快照的 workbenches ⇒ 下线名单管不到它');
+		}
+		// ④ 可逆性：loop 插件本体 / 工作台注册 / 工具 / 路由一件都没少
+		//   （读文件失败要**报红**，不能让守卫自己抛异常 ⇒ 用 try/catch 收口）
+		const readSafe = (rel) => { try { return read(path.join(HERE, rel)); } catch { return ''; } };
+		const loopPkgSrc = readSafe('vssaros-loop/package.json');
+		const loopClient = readSafe('vssaros-loop/lib/client.js');
+		const loopHost = readSafe('vssaros-loop/lib/index.js');
+		let loopRepository = '';
+		try { loopRepository = JSON.parse(loopPkgSrc)?.vssaros?.workbench?.repository ?? ''; } catch { /* 下面报红 */ }
+		const loopIntact = loopRepository === 'vssaros:loop'
+			&& /desktopWorkbenches\.register\(/.test(loopClient)
+			&& /loop_list/.test(loopHost)
+			&& /\/x\/loop\/api\//.test(loopHost);
+		if (!loopIntact) {
+			fail('⑧ loop 插件本体被删了 ⇒ 这不是可逆下线（恢复得重接插件），且 ⑤-B 会静默跳过');
+		} else {
+			ok('⑧ 可逆性：工作台声明 / 客户端注册 / 工具 / Host 路由都还在 ✓');
+		}
+		if (problems === before) { ok('⑧ 「循环任务」item：快照出口下线 + 两处入口同源 + 插件本体保留 ✓'); }
+	}
 }
 
 console.log(problems === 0

@@ -5,6 +5,7 @@ import { liveTicket, threadKey } from './model.ts'
 import type { Decision, DecisionKind, Evaluation, Mandate, MandateBasis, Strength, Thread, Trigger } from './model.ts'
 import type { AssessmentOutcome, Candidate, Policy } from './ports.ts'
 import { said, type Reason } from './reasons.ts'
+import { explicitTask } from './group-request.ts'
 import { EnginePart, type EngineOptions } from './part.ts'
 import type { Tickets } from './tickets.ts'
 
@@ -115,6 +116,17 @@ export class Evals extends EnginePart {
       this.repo.triggers.saveDisposition(trigger.id, { ...(this.repo.triggers.disposition(trigger.id) ?? { fanout: [], at }), evalId })
     }
     this.emit('eval.started', { evalId, threadKey: thread.key, triggerIds: thread.evaluating.triggerIds, strength: strongest.strength })
+    // ★ 2026-11-12（用户授权改准入规则）：明确的「任务动词 + URL」请求直接建单，
+    //   跳过整轮主会话模型评估（真机单轮 30~180s）。默认关闭；闲聊/含糊链接仍交模型判 ignore。
+    //   只在单条批次、gate 无拒绝理由、explicit 且开关打开时命中，其余路径完全不变。
+    if (policy.fastExplicitTasks && strongest.strength === 'explicit' && !reasons.length
+      && thread.evaluating!.triggerIds.length === 1 && explicitTask(strongest.trigger)) {
+      const text = strongest.trigger.text.trim()
+      this.accept(thread, thread.evaluating!, { kind: 'accept', title: text.slice(0, 160), scope: text.slice(0, 1500),
+        reason: { code: 'explicitFastTrack' }, name: 'task-from-url', acknowledgement: '收到，已建单。',
+        audit: { fastTrack: true } })
+      return
+    }
     this.options.assessor.request(this.candidateOf(thread))
   }
   /** The candidate of the Eval that holds `triggerId`, or undefined while no Eval holds it. */

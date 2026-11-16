@@ -21,6 +21,7 @@
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { packTarGz } from './tar.js';
+import { createPluginEnvelope } from './pluginArchive.js';
 // ★ 2026-10-22：`localId` 也要挡越界（`../` 会让 `join(root, ...)` 读到数据根外）
 import { assertSafeStoreId } from './installers.js';
 // ★ 2026-11-10 P1-B：发布端与安装端共用同一份组合包判据（不会「发出去但装不上」）
@@ -550,6 +551,27 @@ export async function publishVersion({ market, dataRoot, kind, localId, version,
 		fileCount: prepared.files.length,
 		bytes: prepared.gzBuffer.length,
 	};
+}
+
+export async function publishPluginVersion({ market, localId, version, kind = 'workbench', gzBuffer, inspect, meta = {}, changelog = '' }) {
+	const prepared = await createPluginEnvelope({ gzBuffer, localId, version, kind, inspect, meta });
+	const created = await ensurePackage({ market, kind, localId, meta: { ...meta, name: prepared.manifest.name } });
+	try {
+		if (!created) {
+			const existing = await market.detail(localId);
+			if (existing.kind !== kind) { throw new Error('商品类型与插件类型不一致'); }
+			if ((existing.versions ?? []).some(row => row.version === version)) { throw new Error('同版本插件包不可替换，请发布新版本'); }
+			if ((existing.versions ?? []).some(row => row.manifest?.plugin?.name && row.manifest.plugin.name !== prepared.manifest.plugin.name)) {
+				throw new Error('同一商品不能更换插件包名');
+			}
+		}
+		await market.upload(`/packages/${encodeURIComponent(localId)}/versions/raw`, prepared.gzBuffer, { changelog });
+	} catch (error) {
+		const rb = await rollbackEmptyPackage(market, localId, created);
+		throw new Error(`${String(error?.message ?? error)}${rollbackNote(created, rb)}`);
+	}
+	return { ok: true, version, created, bytes: prepared.gzBuffer.length, packageName: prepared.manifest.plugin.name,
+		resources: prepared.manifest.plugin.resources, sha256: prepared.sha256, format: prepared.manifest.format };
 }
 
 /** 下架整个包（软删，服务端判权）。 */

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 // The Source status and settings.
+import { readFileSync } from 'node:fs'
 import { act } from 'react'
 import { expect, it, onTestFinished, vi } from 'vitest'
 import { zh } from '../src/client/locales.ts'
@@ -8,6 +9,34 @@ import { server, problemOf, droppedReply } from './fixtures/panel-server.ts'
 import { feishuKind } from '../src/sources/feishu.ts'
 
 usePanel()
+it('imports a TAPD filter JSON, shows the mapping report and adds a disabled daily bug watch', async () => {
+  server.tapdCard = true
+  await mount()
+  await click(tab(zh['tab.settings']))
+  const card = all('.dt-card').find(el => el.querySelector('[data-tapd-credentials]'))!
+  const row = [...card.querySelectorAll<HTMLElement>('[data-disclosure-row]')]
+    .find(el => el.textContent?.includes('从 JSON 导入 TAPD 筛选条件'))!
+  await click(row)
+  const panel = row.closest('.dt-disclosure')!
+  const area = panel.querySelector('textarea')!
+  await type(area, JSON.stringify({ source: 'TAPD筛选条件', conditions: [
+    { field: '优先级', op: '属于 (In)', enabled: true, value: ['紧急', '高'] }], state: {} }))
+  const parse = [...panel.querySelectorAll('button')].find(button => button.textContent?.includes('解析并预览映射'))!
+  await click(parse)
+  await settle()
+  expect(panel.textContent).toContain('下推 API')
+  expect(panel.textContent).toContain('priority_label=紧急|高')
+  const add = [...panel.querySelectorAll('button')].find(button => button.textContent?.includes('新增一个 bug 接收项'))!
+  await click(add)
+  await settle()
+  expect(panel.textContent).toContain('已导入的每日筛选')
+  expect(panel.textContent).toContain('filter-bug-1')
+  const toggle = panel.querySelector('[role="switch"]')!
+  expect(toggle.getAttribute('aria-label')).toContain('每天自动执行')
+  expect(toggle.getAttribute('aria-checked')).toBe('false')
+  expect(server.requests.some(request => request.path === 'sources/tapd/filters/import')).toBe(true)
+})
+
 it('shows the TAPD setup checklist and a working read-only connectivity probe', async () => {
   server.tapdCard = true
   await mount()
@@ -211,7 +240,7 @@ it('points a setup problem at the settings that fix it', async () => {
   server.setup = { ...server.setup, problem: problemOf('gitTooOld') }
   openSide()
   await remount()
-  await click(zh['tab.chat'])
+  await click(zh['tab.overview'])
   await click(find(zh.problemSetup, 'button, a, [role="button"]'))
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.deployment'])
   expect(text()).toContain('部署检查未通过：git 没有读取 dsh-superagent 为 github.com 写的凭据配置')
@@ -283,35 +312,66 @@ it('shows a refused Source save with the output of the tool that failed on its o
   expect(feishu.querySelector('.dt-savebar [role="alert"]')?.textContent).toBe('机器人的 lark-cli 不可用。\nlark-cli: app secret missing')
 })
 
-// ★ 2026-11-10（用户）：移除「留空 = 用 lark-cli 当前 profile（旧行为）」，
-// 且空配置默认选中随包内置的 VsSaros助手。
-it('defaults the Feishu app picker to the bundled VsSaros助手 and offers no empty legacy option', async () => {
+// ★ 2026-11-11（用户）：下拉只列真实应用 + 「+ 添加新应用」，不要「未配置 / 请先配置」空占位项。
+it('offers no empty placeholder and no built-in app', async () => {
   await mount()
   await click(tab(zh['tab.settings']))
   await settle()
   const select = field<HTMLSelectElement>('飞书应用 App ID')
   const options = [...select.options]
   expect(options.some(option => option.value === '')).toBe(false)
-  expect(options.some(option => /留空|当前 profile|active lark-cli profile/i.test(option.textContent ?? ''))).toBe(false)
-  expect(select.value).toBe('cli_a860911d2e7f5013')
-  expect(options.some(option => /VsSaros助手/.test(option.textContent ?? ''))).toBe(true)
-  // 提示文案也不能再宣传「留空 = 旧行为」（hint 在 InfoTip 里，不进 textContent ⇒ 查字段定义）
+  expect(options.some(option => /请先|配置飞书应用/.test(option.textContent ?? ''))).toBe(false)
+  // 下拉里不许再出现废弃的内置共享应用（不论产品名还是随包文案）。
+  expect(options.some(option => /随包内置|内置应用|VsSaros助手/.test(option.textContent ?? ''))).toBe(false)
+  expect(options.some(option => /当前 profile|active lark-cli profile/i.test(option.textContent ?? ''))).toBe(false)
+  // 提示文案也不能再宣传内置应用或「留空 = 旧行为」（hint 在 InfoTip 里，不进 textContent ⇒ 查字段定义）
   const appIdField = feishuKind.fields.find(spec => spec.key === 'appId')!
-  expect(JSON.stringify(appIdField)).not.toContain('留空')
+  expect(JSON.stringify(appIdField)).not.toContain('VsSaros助手')
   expect(JSON.stringify(appIdField)).not.toContain('当前 profile')
   expect(JSON.stringify(appIdField)).not.toContain('active lark-cli profile')
 })
 
-// 历史空配置也必须显示内置应用（UI 层 defaultValue 回退）。Source schema 刻意不改：
+// 历史空配置也不许再冒出空占位项。Source schema 刻意不改：
 // 在那里归一化空值会改变运行时的 lark-cli profile 解析（runtime.spec.ts 有回归用例）。
-it('shows the bundled app for a stored empty Feishu app ID', async () => {
+it('keeps no empty option for a stored empty Feishu app ID', async () => {
   (server.settings.sources.feishu!.config as Record<string, unknown>).appId = ''
   await mount()
   await click(tab(zh['tab.settings']))
   await settle()
   const select = field<HTMLSelectElement>('飞书应用 App ID')
-  expect(select.value).toBe('cli_a860911d2e7f5013')
   expect([...select.options].some(option => option.value === '')).toBe(false)
+  expect(select.options.length).toBeGreaterThan(0)
+  expect([...select.options].some(option => option.value === '__new__')).toBe(true)
+})
+
+// ★ 2026-11-11：下拉末尾「+ 添加新应用」必须闭环（填 App ID/Secret → 存进 Bots → 选用），
+// 哨兵值与密钥都不许进 Source 配置，也不许回显到页面。
+it('offers an add-new-app item that saves the app and then selects it', async () => {
+  await mount()
+  await click(tab(zh['tab.settings']))
+  await settle()
+  const select = field<HTMLSelectElement>('飞书应用 App ID')
+  expect([...select.options].find(option => option.value === '__new__')?.textContent)
+    .toContain('+ 添加新应用（App ID / App Secret）')
+  await type(select, '__new__')
+  const form = document.querySelector<HTMLElement>('[data-feishu-app-form]')!
+  expect(form).not.toBeNull()
+  expect(field<HTMLSelectElement>('飞书应用 App ID').value).toBe('__new__')
+  // 缺 Secret ⇒ 就地报错，不发请求
+  await type(form.querySelector<HTMLInputElement>('[data-feishu-app-id]')!, 'cli_brandnew')
+  await click(form.querySelector<HTMLButtonElement>('[data-feishu-app-save]')!)
+  expect(form.querySelector('[role="alert"]')?.textContent).toContain('App Secret')
+  expect(server.feishuApps.some(app => app.appId === 'cli_brandnew')).toBe(false)
+  // 补齐 ⇒ 保存、刷新清单并选用新应用
+  await type(form.querySelector<HTMLInputElement>('[data-feishu-app-secret]')!, 'SHOULD_NOT_LEAK')
+  await type(form.querySelector<HTMLInputElement>('[data-feishu-app-name]')!, '我的新应用')
+  await click(form.querySelector<HTMLButtonElement>('[data-feishu-app-save]')!)
+  await settle()
+  expect(server.feishuApps.some(app => app.appId === 'cli_brandnew')).toBe(true)
+  expect(document.querySelector('[data-feishu-app-form]')).toBeNull()
+  expect(field<HTMLSelectElement>('飞书应用 App ID').value).toBe('cli_brandnew')
+  expect([...field<HTMLSelectElement>('飞书应用 App ID').options].some(o => o.value === 'cli_brandnew')).toBe(true)
+  expect(text()).not.toContain('SHOULD_NOT_LEAK')
 })
 
 it('shows a setup problem on its Source card within one read of the settings, which the settings groups share', async () => {
@@ -405,4 +465,23 @@ it('no longer exposes the lark-cli option or its local diagnostics on the Feishu
   expect(feishu.textContent).not.toContain('检查版本/更新')
   expect(feishu.querySelector('.dt-cli-row')).toBeNull()
   expect(server.requests.filter(request => request.path === 'sources/feishu/cli-check')).toHaveLength(0)
+})
+
+it('★ 2026-11-11 hides the built-in SuperAgent 主管 card even when the API lists it', async () => {
+  server.superagentCard = true
+  await mount()
+  await click(zh['tab.source'])
+  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  expect(document.getElementById('dt-source-superagent')).toBeNull()
+  expect(all('.dt-card-title').map(card => card.textContent)).not.toContain('SuperAgent 主管')
+  expect(all('.dt-card')).toHaveLength(2)
+})
+
+it('★ 2026-11-11 pins the hidden-source contract (settings, history, status page)', () => {
+  // jsdom 下 import.meta.url 不是 file: scheme，用测试进程的工作目录定位源码。
+  const source = readFileSync('src/client/source.tsx', 'utf8')
+  expect(source).toContain("['p4', 'superagent']")
+  expect(source).toContain('shownSources(sources)')
+  expect(source).toContain('shownSources(data)')
+  expect(source).toContain('HIDDEN_SOURCE_IDS.map(id => `source:${id}`)')
 })

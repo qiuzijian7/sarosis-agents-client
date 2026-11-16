@@ -192,8 +192,17 @@ export const FEISHU_SYNC_SCRIPT = 'scripts/feishu-sync.mjs';
  *  2. `--plan-file` **必带**：脚本会写一份**本次**报告（dry-run 也写），工具读它回报。不带就只能读日志尾部，
  *     而 dry-run **从不写日志**（脚本注释里记着这个坑：预览时只能拿到旧日志）。
  */
-export function buildFeishuSyncArgs({ vault, src = [], apply = false, limit = 0, onConflict = '', planFile = '', cliPath = '', parent = '' } = {}) {
+export function buildFeishuSyncArgs({ vault, src = [], apply = false, limit = 0, onConflict = '', planFile = '', cliPath = '', parent = '', identity = '' } = {}) {
 	const args = ['--vault', String(vault ?? '')];
+	/*
+	 * ★ 2026-11-12（真机：profile strict-mode=bot，脚本却固定用 user 身份 ⇒ 20 篇全被拒）：
+	 *   身份由设置透传，只认 bot / user；空值不下发（脚本默认 user，保持旧行为）。
+	 *   ⚠ 不在这里改 lark-cli 的 strict-mode —— 那是用户的安全策略。
+	 */
+	const who = String(identity ?? '').trim().toLowerCase();
+	if (who === 'bot' || who === 'user') {
+		args.push('--identity', who);
+	}
 	// ★ 2026-10-20：**落点可配**。此前 dsh 从不传 `--parent` ⇒ 脚本用写死的默认值
 	//   （`my_library` = 飞书「个人知识库」）⇒ 用户想把库同步到**某个文件夹/wiki 节点**
 	//   必须改脚本 ✗。现在透传：`my_library` 走 `--parent-position`，

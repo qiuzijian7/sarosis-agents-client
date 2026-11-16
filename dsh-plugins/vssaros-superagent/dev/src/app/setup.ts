@@ -84,7 +84,10 @@ export class Setup {
     const config = source?.enabled === false ? undefined : P4ConfigSchema.safeParse(source?.config ?? {}).data
     if (!config || !config.port || !config.user) return undefined
     const program = executable(config.cli || 'p4', this.path, workerBin(this.host.machine.stateDir))
-    return { program: [program], port: config.port, user: config.user, deniedClients: config.submitClient ? [config.submitClient] : [] }
+    return { program: [program], port: config.port, user: config.user,
+      ...(config.workspaceMode === 'current' ? { executionClient: config.executionClient } : {}),
+      deniedClients: config.submitClient && !(config.workspaceMode === 'current' && config.executionClient === config.submitClient) ? [config.submitClient] : [],
+      paths: config.paths.map(item => item.path) }
   }
   restore(): void { this.restoreEnvironment?.(); this.restoreEnvironment = undefined }
   /** Probes CLIs the way worker shells run them, using `stateDir` as `cwd` since it exists even before the repository clone is valid. */

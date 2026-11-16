@@ -33,7 +33,7 @@
  * node tools/sync-cline-mcp.mjs --state all --limit 100 --covers
  * ```
  * 环境变量：
- * - `MARKET_ENDPOINT`（默认 http://21.6.92.5:3040）
+ * - `MARKET_ENDPOINT`（默认 http://21.91.158.20:3040）
  * - `GITHUB_TOKEN` —— **强烈建议**：未认证只有 60 请求/小时（每页 100 条 ⇒ 3121 条要 32 页）
  *
  * ## 幂等
@@ -47,7 +47,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LIB = path.resolve(HERE, '..', 'lib');
-const ENDPOINT = (process.env.MARKET_ENDPOINT || 'http://21.6.92.5:3040').replace(/\/+$/, '');
+const ENDPOINT = (process.env.MARKET_ENDPOINT || 'http://21.91.158.20:3040').replace(/\/+$/, '');
 const CONCURRENCY = 3;
 
 const argv = process.argv.slice(2);

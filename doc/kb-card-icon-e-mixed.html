@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>方案 E（已选）· 状态化图标组 + B 的语义 SVG 图标 — 知识库卡片图标 mockup · 非实现代码</title>
+<style>
+	/* 变量照 dsh-plugins/vssaros-kb/lib/homePage.js:65-66（真源），不自创调色板 */
+	:root[data-theme="dark"]{--bg:#15161a;--panel:#1c1d22;--panel2:#22232a;--line:rgba(255,255,255,.1);--line2:rgba(255,255,255,.18);--fg:#e8e9ec;--fg2:#a9abb3;--fg3:#71737c;--accent:#5b8cff;--ok:#3fb950;--warn:#e2a03f}
+	:root[data-theme="light"]{--bg:#f5f6f8;--panel:#fff;--panel2:#f0f2f5;--line:rgba(0,0,0,.09);--line2:rgba(0,0,0,.17);--fg:#1b1d22;--fg2:#5a5e68;--fg3:#8b8f99;--accent:#2f6bff;--ok:#1a7f37;--warn:#a56a10}
+	*{box-sizing:border-box}
+	body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+	.kbe-wrap{max-width:620px;margin:0 auto /* ★ 宽度对齐真机「知识库主页」右栏（约 3 列） */;padding:22px 24px 60px}
+	.kbe-hd{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+	.kbe-hd h1{margin:0;font-size:19px;font-weight:650}.kbe-hd .sub{font-size:12px;color:var(--fg3)}
+	.kbe-acts{margin-left:auto;display:flex;gap:8px}
+	.kbe-btn{height:28px;padding:0 12px;border-radius:7px;border:1px solid var(--line2);background:var(--panel2);color:var(--fg2);font-size:12.5px;cursor:pointer}
+	.kbe-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+	.kbe-note{border:1px solid var(--line);border-left:3px solid var(--accent);background:var(--panel);border-radius:9px;padding:10px 13px;margin-bottom:16px;font-size:12px;color:var(--fg2)}
+	.kbe-note.picked{border-left-color:var(--ok);color:var(--fg)}
+	.kbe-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:20px}
+	.kbe-st{position:relative;padding:10px 12px;border-radius:10px;background:var(--panel);border:1px solid var(--line);overflow:hidden}
+	.kbe-st .bar{position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent)}.kbe-st:nth-child(2) .bar{background:var(--ok)}
+	.kbe-st .lb{font-size:11px;color:var(--fg3)}.kbe-st .v{font-size:20px;font-weight:650}
+	.kbe-sec{display:flex;align-items:center;gap:8px;margin:0 0 10px;font-size:13.5px;font-weight:600}.kbe-sec .c{font-size:11.5px;color:var(--fg3);font-weight:400}
+	.kbe-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(180px,100%),1fr));gap:12px}
+	/* ★ 方案 E：卡片相对定位，角标浮在图标/卡片角落 */
+	.kbe-card{position:relative;display:flex;flex-direction:column;gap:7px;text-align:left;min-height:124px;padding:11px;background:var(--panel);border:1px solid var(--line);border-radius:11px;color:inherit;font:inherit;cursor:pointer;transition:.15s}
+	.kbe-card:hover{transform:translateY(-2px);border-color:var(--line2);box-shadow:0 8px 22px rgba(0,0,0,.25)}
+	.kbe-top{display:flex;align-items:center;gap:10px;min-width:0;padding-right:26px}
+	/* ★ 用方案 B 的语义 SVG 图标，替换原 E 的 emoji：40px 圆角底 + 20px 线性图标 */
+	.kbe-ico{flex:0 0 auto;position:relative;width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;border:1px solid var(--line)}
+	.kbe-ico svg{width:21px;height:21px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+	/* ① 近 7 天更新：图标右上角小圆点 */
+	.kbe-dot{position:absolute;right:-3px;top:-3px;width:9px;height:9px;border-radius:50%;background:var(--accent);border:2px solid var(--panel)}
+	/* ② 飞书已绑：右上角链接角标，同样用线性 SVG（与 B 同族，不再用 🔗 emoji） */
+	.kbe-corner{position:absolute;right:9px;top:9px;color:var(--ok);line-height:1;display:flex}
+	.kbe-corner svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+	.kbe-name{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+	.kbe-ex{font-size:11px;color:var(--fg3);line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+	.kbe-foot{margin-top:auto;display:flex;align-items:center;justify-content:space-between;gap:6px}
+	/* ③ 篇数 chip：把原来散在正文的元信息收敛成一枚 */
+	.kbe-chip{font-size:10.5px;color:var(--fg2);background:var(--panel2);border:1px solid var(--line);border-radius:20px;padding:1px 8px;font-variant-numeric:tabular-nums}
+	.kbe-time{font-size:10.5px;color:var(--fg3)}
+	/* ④ 空库：整卡虚线 + 「空」角标 */
+	.kbe-card.empty{border-style:dashed;border-color:var(--warn)}
+	/* ⚠ 角标必须绝对定位：否则会作为 flex 子项排进卡片顶部、把空库卡撑高（截图验出来的） */
+	.kbe-card.empty .kbe-empty{position:absolute;right:9px;top:9px;font-size:10px;line-height:1.2;color:var(--warn);border:1px solid var(--warn);border-radius:5px;padding:0 4px}
+	.kbe-new{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:124px;border:1.5px dashed var(--line2);background:transparent;color:var(--fg2);border-radius:11px;cursor:pointer;font:inherit}
+	.kbe-new .p{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(91,140,255,.14);color:var(--accent);font-size:16px}
+	.kbe-legend{margin-top:18px;border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:11px 13px;font-size:11.5px;color:var(--fg2)}
+	.kbe-legend .row{display:flex;flex-wrap:wrap;gap:14px;margin-top:8px}
+	.kbe-legend .row span{display:flex;align-items:center;gap:5px}
+	.kbe-legend svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+	.kbe-legend i{width:10px;height:10px;border-radius:3px;display:inline-block}
+	.kbe-toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line2);padding:7px 13px;border-radius:9px;font-size:12.5px;opacity:0;pointer-events:none;transition:.2s}.kbe-toast.on{opacity:1}
+	.kbe-check{margin-top:20px;font:11.5px/1.7 ui-monospace,Consolas,monospace;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 13px;white-space:pre-wrap;color:var(--fg2)}
+	@media(max-width:620px){.kbe-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+</style>
+</head>
+<body><div class="kbe-wrap">
+	<div class="kbe-hd"><div><h1>知识库主页</h1><div class="sub">VsSarosVault · 5 个知识库 · 76 篇笔记　|　方案 E（已选）＋ B 的语义 SVG 图标</div></div>
+		<div class="kbe-acts"><button class="kbe-btn" id="themeBtn">☀ 明暗</button><button class="kbe-btn" id="stateBtn">状态：示意</button><button class="kbe-btn primary">＋ 新建知识库</button></div></div>
+	<div class="kbe-note picked"><b>已选方案：E 的状态化卡片 + 方案 B 的语义 SVG 图标。</b>　<b>2026-11-11 已落地到生产代码</b> <code>dsh-plugins/vssaros-kb/lib/homePage.js</code>（语义映射在 <code>lib/core/kbCardIcons.js</code>）。本页保留为设计对照稿，不再作为实现依据。</div>
+	<div class="kbe-note">图标沿用 <b>方案 B</b>（参考 <a href="kb-card-icon-b-line.html" style="color:var(--accent)">Outline IconPicker / BookStack</a>）：内联 SVG 线性图标、<code>stroke=currentColor</code>、按库的语义分类上色，不依赖 emoji 字形。状态层保留 <b>E</b> 的做法：把「篇数 / 7 天 +N / 飞书 / 更新时间」收敛成 <b>角标 + chip</b>，卡片只剩「图标 + 名字 + 一句摘要」。<b>状态是示意值</b>（真机里「已绑飞书 0 个」），点「状态」可切真机数据对照。</div>
+	<div class="kbe-stats">
+		<div class="kbe-st"><span class="bar"></span><div class="lb">知识库</div><div class="v">5<small>个</small></div></div>
+		<div class="kbe-st"><span class="bar"></span><div class="lb">笔记</div><div class="v">76<small>篇</small></div></div>
+		<div class="kbe-st"><span class="bar"></span><div class="lb">近 7 天改动</div><div class="v">1<small>篇</small></div></div>
+		<div class="kbe-st"><span class="bar"></span><div class="lb">已绑飞书</div><div class="v"><span id="boundNum">0</span><small>个</small></div></div>
+	</div>
+	<div class="kbe-sec">全部知识库 <span class="c">5 个</span></div>
+	<div class="kbe-grid" id="grid"></div>
+	<div class="kbe-legend"><b>角标优先级（建议，待确认）</b>：空库 &gt; 飞书已绑 &gt; 近 7 天更新 &gt; 无。右上只放最高优先级一枚，避免堆图标。
+		<div class="row"><span><i style="background:var(--accent);border-radius:50%"></i>7 天有更新</span><span id="legendLink"></span><span style="color:var(--warn)">空 库（虚线边框）</span><span class="kbe-chip">21 篇</span></div></div>
+	<div class="kbe-legend"><b>图标 → 语义分类</b>（照方案 B，可换成用户手选）
+		<div class="row" id="legendIcons"></div></div>
+	<div class="kbe-check" id="checkOut">自检运行中…</div>
+</div><div class="kbe-toast" id="toast"></div>
+<script>
+(function(){
+	/* ★ 与 kb-card-icon-b-line.html 的 ICONS 逐字一致 + link 一枚用于状态角标 */
+	var ICONS={
+		coins:'<circle cx="8" cy="8" r="4.2"/><path d="M15.6 5.4a4.2 4.2 0 1 1 0 7.2M12 16v3M8 20h8"/>',
+		code:'<path d="m8.5 8-4 4 4 4M15.5 8l4 4-4 4M13.5 5l-3 14"/>',
+		game:'<path d="M7.5 8h9a4 4 0 0 1 3.8 3l.9 5a2.4 2.4 0 0 1-4.2 2l-1.6-2h-6.8L7 18a2.4 2.4 0 0 1-4.2-2l.9-5A4 4 0 0 1 7.5 8Z"/><path d="M7 12h4M9 10v4M16.5 11.5h.01M18.5 14h.01"/>',
+		palette:'<path d="M12 3a9 9 0 1 0 0 18c1.2 0 1.8-.9 1.8-1.8 0-1.2-1-1.6-1-2.7 0-.9.7-1.5 1.7-1.5H16a5 5 0 0 0 5-5c0-3.9-4-7-9-7Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7.5" r="1"/><circle cx="15" cy="7.5" r="1"/>',
+		cube:'<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/>',
+		book:'<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5v-15Z"/><path d="M4 20.5A2.5 2.5 0 0 1 6.5 18H20v3H6.5A2.5 2.5 0 0 1 4 20.5Z"/>',
+		link:'<path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.2 1.2"/><path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.2-1.2"/>'
+	};
+	var KBS=[
+		{name:'财经',docs:1,week:1,time:'9 天前',icon:'coins',cat:'数据',color:'#e0a33e',ex:'估值模型、财报摘要与行业数据',feishu:true},
+		{name:'AIAgent',docs:21,week:1,time:'9 天前',icon:'code',cat:'技术',color:'#5b8cff',ex:'Agent 框架、工具调用与记忆机制',feishu:false},
+		{name:'游戏设计',docs:8,week:0,time:'48 天前',icon:'game',cat:'设计',color:'#b57bea',ex:'玩法拆解、关卡设计与数值',feishu:false},
+		{name:'ComfyUI技术',docs:1,week:0,time:'48 天前',icon:'palette',cat:'创作',color:'#e4758a',ex:'工作流节点、模型与出图参数',feishu:false},
+		{name:'UnrealEngine',docs:45,week:0,time:'49 天前',icon:'cube',cat:'技术',color:'#3fb9b0',ex:'渲染管线、材质与性能优化',feishu:false},
+		{name:'未命名知识库',docs:0,week:0,time:'—',icon:'book',cat:'默认',color:'#8b8f99',ex:'还没有内容，点开可导入素材',feishu:false}
+	];
+	var demo=true,grid=document.getElementById('grid');
+	/* 与方案 B 的 tint 同口径：语义色给字/线，底色只做低饱和衬底 */
+	function tint(hex){var light=document.documentElement.dataset.theme==='light';return 'color:'+hex+';background:'+(light?'rgba(0,0,0,.045)':'rgba(255,255,255,.055)')+';';}
+	function list(){return demo?KBS:KBS.slice(0,5).map(function(k){return Object.assign({},k,{feishu:false});});}
+	function svg(path){return '<svg viewBox="0 0 24 24">'+path+'</svg>';}
+	function render(){
+		var data=list();grid.innerHTML='';
+		var n=document.createElement('button');n.className='kbe-new';n.innerHTML='<span class="p">＋</span><span>新建知识库</span><span style="font-size:11px;color:var(--fg3)">建文件夹 · 关联飞书</span>';grid.appendChild(n);
+		data.forEach(function(k){
+			var empty=!k.docs,b=document.createElement('button');b.className='kbe-card'+(empty?' empty':'');
+			var corner=empty?'<span class="kbe-empty">空</span>'
+				:(k.feishu?'<span class="kbe-corner" data-role="corner" title="已关联飞书知识库">'+svg(ICONS.link)+'</span>':'');
+			b.innerHTML=corner+'<span class="kbe-top"><span class="kbe-ico" data-role="ico" style="'+tint(k.color)+'">'+svg(ICONS[k.icon])+(k.week?'<span class="kbe-dot" title="近 7 天有更新"></span>':'')+'</span><span class="kbe-name">'+k.name+'</span></span>'
+				+'<span class="kbe-ex">'+k.ex+'</span>'
+				+'<span class="kbe-foot"><span class="kbe-chip">'+k.docs+' 篇</span><span class="kbe-time">'+k.time+'</span></span>';
+			b.onclick=function(){toast('（示意）打开知识库：'+k.name+' · '+k.cat);};grid.appendChild(b);
+		});
+		document.getElementById('boundNum').textContent=data.filter(function(k){return k.feishu;}).length;
+		document.getElementById('legendLink').innerHTML='<span style="color:var(--ok);display:flex;align-items:center;gap:5px">'+svg(ICONS.link)+' 已绑飞书</span>';
+		document.getElementById('legendIcons').innerHTML=Object.keys(ICONS).filter(function(key){return key!=='link';}).map(function(key){
+			var k=KBS.find(function(x){return x.icon===key;});if(!k)return '';
+			return '<span><i style="background:'+k.color+'"></i>'+k.cat+' · '+key+'</span>';
+		}).join('');
+	}
+	var t;function toast(s){var el=document.getElementById('toast');el.textContent=s;el.classList.add('on');clearTimeout(t);t=setTimeout(function(){el.classList.remove('on');},1600);}
+	document.getElementById('themeBtn').onclick=function(){var r=document.documentElement;r.dataset.theme=r.dataset.theme==='dark'?'light':'dark';render();};
+	document.getElementById('stateBtn').onclick=function(){demo=!demo;this.textContent='状态：'+(demo?'示意':'真机');render();};
+	render();
+
+	var pass=0,fail=0,lines=[];function check(n,f){try{if(f()===false)throw new Error('断言为 false');pass++;lines.push('PASS  '+n);}catch(e){fail++;lines.push('FAIL  '+n+' — '+e.message);}}
+	check('渲染 6 个知识库（含 1 个空库）+ 1 个新建卡',function(){return grid.querySelectorAll('.kbe-card').length===6&&grid.querySelectorAll('.kbe-new').length===1;});
+	check('★ 每卡 40px 图标底 + 1 个内联 SVG（用的是方案 B 的图标）',function(){
+		return Array.prototype.every.call(grid.querySelectorAll('.kbe-ico'),function(el){
+			return Math.round(el.getBoundingClientRect().width)===40&&el.querySelectorAll('svg').length===1;});
+	});
+	check('★ 全页无 emoji（图标与飞书角标都改成了 SVG）',function(){
+		return !/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(grid.textContent+document.querySelector('.kbe-legend').textContent);
+	});
+	check('★ SVG 全部 stroke=currentColor、无外链图片',function(){
+		return /stroke:currentColor/.test(document.querySelector('style').textContent)
+			&&document.querySelectorAll('img,link[rel=stylesheet]').length===0;
+	});
+	check('★ 图标颜色按语义分类（非名字 hash），且各不相同',function(){
+		var colors=Array.prototype.map.call(grid.querySelectorAll('.kbe-ico'),function(el){return el.style.color;});
+		return colors.every(Boolean)&&new Set(colors).size>=5;
+	});
+	check('语义图例列出 6 类图标',function(){return document.querySelectorAll('#legendIcons span').length===6;});
+	check('近 7 天更新用图标右上圆点',function(){return grid.querySelectorAll('.kbe-dot').length===2;});
+	check('★ 飞书已绑用线性 SVG 角标，且统计条联动',function(){
+		return grid.querySelectorAll('.kbe-corner svg').length===1&&document.getElementById('boundNum').textContent==='1';
+	});
+	check('空库用虚线边框 + 「空」角标',function(){return grid.querySelectorAll('.kbe-card.empty').length===1&&grid.querySelectorAll('.kbe-empty').length===1;});
+	check('★ 角标绝对定位，空库卡不被 flex 撑高（截图抓到的坑）',function(){
+		var el=grid.querySelector('.kbe-empty'),cards=grid.querySelectorAll('.kbe-card');
+		var hEmpty=cards[cards.length-1].getBoundingClientRect().height,hNormal=cards[0].getBoundingClientRect().height;
+		return getComputedStyle(el).position==='absolute'&&Math.abs(hEmpty-hNormal)<8;
+	});
+	check('篇数收成 chip，正文不再堆元信息',function(){return grid.querySelectorAll('.kbe-chip').length===6&&grid.querySelectorAll('.kbe-meta').length===0;});
+	check('切到真机数据：无飞书角标、统计条归 0',function(){document.getElementById('stateBtn').click();var ok=grid.querySelectorAll('.kbe-corner').length===0&&document.getElementById('boundNum').textContent==='0';document.getElementById('stateBtn').click();return ok;});
+	check('卡片宽度正常 + 库名不逐字换行',function(){return grid.querySelector('.kbe-card').getBoundingClientRect().width>150&&Array.prototype.every.call(grid.querySelectorAll('.kbe-name'),function(el){return el.getBoundingClientRect().height<=26;});});
+	check('窄视口 380px 无横向溢出',function(){document.querySelector('.kbe-wrap').style.maxWidth='380px';var ok=document.documentElement.scrollWidth<=document.documentElement.clientWidth+1;document.querySelector('.kbe-wrap').style.maxWidth='';return ok;});
+	check('明暗两态都能渲染 SVG 图标与状态角标',function(){document.documentElement.dataset.theme='light';render();var ok=grid.querySelectorAll('.kbe-ico svg').length===6&&grid.querySelectorAll('.kbe-corner svg').length===1;document.documentElement.dataset.theme='dark';render();return ok;});
+	document.getElementById('checkOut').textContent=lines.join('\n')+'\n\n'+pass+'/'+(pass+fail)+' passed';window.__KBE_RESULT__={pass:pass,fail:fail};
+})();
+</script>
+</body></html>

@@ -39,16 +39,24 @@ export function workSignatures(proposals: readonly { ticket: { id: string }; pro
     ...teams.map(item => `steps:${item.ticket.id}`), ...approvals.map(item => `approval:${item.id}`)]
 }
 
+/**
+ * ★ 2026-11-11（用户）：禁止右侧栏弹出「概况」页。
+ *   概况已经是工作台首页（overview 路由），侧栏是历史遗留的重复视图。
+ *   Provider / SidePanel 实现与宽度持久化代码全部保留，把这里改回 true 即可完整恢复。
+ */
+export const SIDE_PANEL_ENABLED = false
+
 /** Holds the side panel's state and opens it when the supervisor starts new work or a step asks the person. */
 export function SideProvider({ children }: { children: ReactNode }) {
   const { t, notify } = usePanel()
   const work = useWork()
   const stored = useMemo(() => readStored<{ open?: boolean; width?: number }>(SIDE_KEY) ?? {}, [])
-  const [open, setOpenState] = useState(stored.open ?? true)
+  const [open, setOpenState] = useState(SIDE_PANEL_ENABLED ? (stored.open ?? true) : false)
   const [width, setWidthState] = useState(clampWidth(stored.width ?? SIDE_WIDTH.initial))
   const latest = useRef({ open, width })
   latest.current = { open, width }
   const setOpen = useCallback((next: boolean) => {
+    if (!SIDE_PANEL_ENABLED) return
     setOpenState(next)
     writeStored(SIDE_KEY, { ...latest.current, open: next })
   }, [])
@@ -60,6 +68,7 @@ export function SideProvider({ children }: { children: ReactNode }) {
 
   const seen = useRef<Set<string> | undefined>(undefined)
   useEffect(() => {
+    if (!SIDE_PANEL_ENABLED) return
     if (!work.loaded || !work.proposals) return
     const now = workSignatures(work.proposals, work.teams, work.approvals)
     // The first look only records what is there: opening the panel is not news.
@@ -87,7 +96,7 @@ export function SidePanel({ masterId }: { masterId: string | undefined }) {
   const { t, openSession, notify } = usePanel()
   const { open, width, setOpen, setWidth } = useSide()
   const [dragging, setDragging] = useState(false)
-  if (!open) return null
+  if (!SIDE_PANEL_ENABLED || !open) return null
   const drag = (event: PointerEvent<HTMLDivElement>) => {
     const grip = event.currentTarget, start = event.clientX, from = width
     grip.setPointerCapture?.(event.pointerId)

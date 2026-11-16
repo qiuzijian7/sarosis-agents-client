@@ -1,9 +1,9 @@
-// @vssaros/dsh-plugins — 21 个内置 agent 的能力包配置守卫（2026-11-08）
+// @vssaros/dsh-plugins — 18 个内置 agent 的能力包配置守卫（2026-11-08）
 //
 // 跑法：node dsh-plugins/check-agent-capabilities.mjs
 //
 // 钉住：
-//   ① 21 个 agent 全覆盖，且真源映射表与产物 .agent.md 逐字段一致
+//   ① 18 个 agent 全覆盖，且真源映射表与产物 .agent.md 逐字段一致
 //   ② 两套包（工具 packs.js / 技能 capabilityLibrary.js）键集合完全相等
 //   ③ 每个技能包引用的技能名真实存在（防止再配出 DS Bot 名字的空包）
 //   ④ 每个 agent 的包名在两侧都不报 unknown、可见集不缩水（≥40 core）
@@ -34,7 +34,7 @@ const ids = readdirSync(agentRoot, { withFileTypes: true }).filter(d => d.isDire
 const tsSrc = read('src/vs/sessions/contrib/agentStudio/common/builtinAgents.ts');
 const skillScopeSrc = read('dsh-plugins/check-skill-scope.mjs');
 
-console.log('check-agent-capabilities：21 个内置 agent 的能力包配置');
+console.log('check-agent-capabilities：18 个内置 agent 的能力包配置');
 
 // ── ① 真源映射表与产物一致 ───────────────────────────────────────────────
 {
@@ -46,8 +46,8 @@ console.log('check-agent-capabilities：21 个内置 agent 的能力包配置');
 	const entries = [...table.matchAll(/^\s*'?([a-z0-9-]+)'?:\s*\[([^\]]*)\],/gm)]
 		.map(m => [m[1], [...m[2].matchAll(/'([^']+)'/g)].map(x => x[1])]);
 	const map = new Map(entries);
-	ok('① 映射表恰好覆盖 20 个 agent，无遗漏无多余',
-		entries.length === 20 && ids.length === 20 && ids.every(id => map.has(id)) && [...map.keys()].every(id => ids.includes(id)),
+	ok('① 映射表恰好覆盖 18 个 agent，无遗漏无多余',
+		entries.length === 18 && ids.length === 18 && ids.every(id => map.has(id)) && [...map.keys()].every(id => ids.includes(id)),
 		`table=${entries.length} dirs=${ids.length}`);
 	let mismatched = [];
 	for (const id of ids) {
@@ -59,7 +59,7 @@ console.log('check-agent-capabilities：21 个内置 agent 的能力包配置');
 			mismatched.push(`${id}: md=[${parsed.capabilities}] ts=[${want}]`);
 		}
 	}
-	ok('① 20 份产物 .agent.md 的 capabilities 与真源逐字段一致', mismatched.length === 0,
+	ok('① 18 份产物 .agent.md 的 capabilities 与真源逐字段一致', mismatched.length === 0,
 		mismatched.slice(0, 3).join(' | '));
 }
 
@@ -109,9 +109,9 @@ console.log('check-agent-capabilities：21 个内置 agent 的能力包配置');
 			bad.push(`${id}: visible=${visible} skillProblems=${exp.problems.length} toolUnknown=${tool.unknown.length}`);
 		}
 	}
-	ok('④ 20 个 agent 的包名两侧都合法、可见集均 ≥40 core', bad.length === 0, bad.slice(0, 3).join(' | '));
+	ok('④ 18 个 agent 的包名两侧都合法、可见集均 ≥40 core', bad.length === 0, bad.slice(0, 3).join(' | '));
 	ok('④ 主助理删除后全部收窄到 <120 条（避免目录又回到 173）',
-		sizes.length === 20 && sizes.every(n => n < 120), `sizes=${Math.min(...sizes)}..${Math.max(...sizes)}`);
+		sizes.length === 18 && sizes.every(n => n < 120), `sizes=${Math.min(...sizes)}..${Math.max(...sizes)}`);
 	// ★ 2026-11-09：主助理已删除 ⇒ 反向钉住「确实删干净了」，防止有人改回 all 或复活目录
 	ok('④ 主助理 saros-claw 已从真源 / 白名单 / 产物目录删除', (() => {
 		// 白名单是独立的 Set 字面量，不能靠「带注释的那一行」判据（换个注释就漏）
@@ -149,8 +149,8 @@ console.log('check-agent-capabilities：21 个内置 agent 的能力包配置');
 		&& !idx.includes('legacyAliasDefinition')
 		&& !idx.includes('resolveLegacyPresetId')
 		&& !idx.includes('legacyClawAlias'));
-	ok('⑥ 画布 Run 默认已改指 workflow-agent，不再引用旧常量名',
-		constants.includes("DEFAULT_WORKFLOW_AGENT_ID = 'workflow-agent'")
+	ok('⑥ 画布 Run 默认已改指 planner，不再引用旧常量名',
+		constants.includes("DEFAULT_WORKFLOW_AGENT_ID = 'planner'")
 		&& !constants.includes('SAROS_CLAW_AGENT_ID')
 		&& read('src/vs/sessions/contrib/agentStudio/browser/agentStudioWebviewController.ts').includes('DEFAULT_WORKFLOW_AGENT_ID'));
 }

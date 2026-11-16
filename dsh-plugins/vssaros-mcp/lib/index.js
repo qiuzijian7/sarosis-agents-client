@@ -203,10 +203,24 @@ export function planMcpInstall(raw, params = {}) {
 
 export function apply(ctx, config = {}) {
 	// 对外提供 OSV 供应链预检服务：商城装 MCP 时可选消费，避免复制第二份实现。
-	// 可选调用是给离线探针的精简 ctx 留路（没有 provide 不影响本插件其余能力）。
-	ctx.provide?.('vssarosMcpOsv', {
-		isOsvEnabled, checkStdioEntriesAgainstOsv, buildOsvBlockedMessage,
-	});
+	// ⚠⚠ **必须幂等**（2026-11-11 真机「新建会话失败：agent-preset/invalid: vssaros-mcp …
+	//   service "vssarosMcpOsv" has been registered at <vssaros-mcp>」）：
+	//   本包同时挂在两个 plane —— host plane（`cordis.patch.yml` 的 `vssaros-dsh-mcp` 行，启动即装）
+	//   与 preset plane（`vssaros-agents/preset-vssaros.rows.yml` 的 `vssaros-mcp` 行 ⇒ 生成物
+	//   `cordis.presets.yml`）；会话选中 preset 时会**再 apply 一次**，第二次 provide 让 cordis 抛
+	//   `has been registered` ⇒ 整个 preset 判 invalid ⇒ `session.start` 直接失败，用户连会话都建不了 ✗✗。
+	//   同型先例：`vssaros-workflow` 的 vssarosWorkflowEngine、`vssaros-media` 的 vssarosMediaStore。
+	// ⇒ 先"不经 inject 要求地读"探一次（`ctx.reflect.get(name, false)` 在服务不存在时返回
+	//   undefined 而**不抛** ✓）；已存在就复用 host 层那一份，不重复注册 ✓。
+	const existingOsv = ctx.reflect && typeof ctx.reflect.get === 'function'
+		? ctx.reflect.get('vssarosMcpOsv', false)
+		: undefined;
+	if (!existingOsv) {
+		// 可选调用保留：离线探针的精简 ctx 没有 provide（不影响本插件其余能力）。
+		ctx.provide?.('vssarosMcpOsv', {
+			isOsvEnabled, checkStdioEntriesAgainstOsv, buildOsvBlockedMessage,
+		});
+	}
 	// 运行时挂载缺省启用（P3-110 boot 9/9 + P3-111 真 Host 7/7 已验证）；
 	// VSSAROS_MCP_RUNTIME_MOUNT=0 回退到 IDE 启动期 --patch 覆盖层（旧行为逐字不变）。
 	installRuntimeMount(ctx, config);
@@ -655,93 +669,231 @@ async function precheckOsv(entries) {
 let activeMcpRuntime = null;
 
 function installRuntimeMount(ctx, config) {
-	if (!isMcpRuntimeMountEnabled()) { return; }
+	const existing = ctx.reflect && typeof ctx.reflect.get === 'function'
+		? ctx.reflect.get('vssarosMcpSources', false)
+		: undefined;
+	if (existing) { return existing; }
+	const enabled = isMcpRuntimeMountEnabled();
 	const path = mcpPathOf(config);
-	// loader 是可选服务：**不写进静态 `export const inject`**（会让 headless profile 永久 pending）。
-	// `ctx.get('loader')` 在 P3-110 的官方 boot 组合树里实测可用；拿不到就由 loadMcpClient 的 ②/③ 兜底。
 	let loader = null;
 	try { loader = typeof ctx.get === 'function' ? ctx.get('loader') : null; } catch { /* 可选服务 */ }
 	const warn = message => { try { ctx.logger?.()?.warn?.(message); } catch { /* 日志不致命 */ } };
+	const warnFailure = () => warn('mcp runtime: connection or reconciliation failed (details withheld)');
+	const unavailable = () => new Error('MCP source service unavailable: runtime is disabled, not ready or stopped');
 	let runtime = null;
 	let gateway = null;
+	let sources = new Map();
+	let skipped = new Map();
+	const gatewayEnv = {};
 	let stopped = false;
+	let initialized = false;
 	let lastSignature = null;
 	let timer = null;
-	const tick = async () => {
-		try {
-			if (stopped) { return; }
-			const mtime = await mtimeOf(path);
-			if (mtime === null) { return; }
-			// secrets 变化同样要触发 reconcile（token 轮换 ⇒ 引用解析 / 重挂）。
-			const signature = `${mtime}|${await mtimeOf(secretsPathForMcpConfig(path))}`;
-			if (signature === lastSignature) { return; }
-			lastSignature = signature;
-			// 凭据真值只在这里进内存：合成 env 让 mcp.json 的 ${env:MCP_*} 引用能解析，
-			// 而 mcp.json 本身与 mcp-client config 里永远只有占位符 / nonce。
-			const secrets = await readSecretsForMcpConfig(path);
-			const mergedEnv = secretsAsEnv(secrets, process.env);
-			const parsed = await readMountPlan(path, mergedEnv);
-			for (const entry of parsed.skipped) { warn(`mcp runtime: skipped ${entry.name}: ${entry.reason}`); }
-			let servers = parsed.servers;
-			// 凭据隔离：只对「带 headers 的 http 条目」挂本地网关，
-			// mcp-client 拿到的是回环 URL + 一次性 nonce，真凭据留在网关进程内；
-			// 免登录目录服务（无 headers）仍直连，不额外占端口、行为零变化。
-			const rawServers = parsed.rawConfig?.servers ?? {};
-			const secured = isMcpGatewayEnabled()
-				? servers.filter(s => s.transport === 'streamable-http' && (
-					(s.headers && Object.keys(s.headers).length > 0)
-					// query-only 凭据（如 Amap 的 ?key=...）也必须走网关，否则会直连上游、不带 key。
-					|| (rawServers[s.serverName]?.query && Object.keys(rawServers[s.serverName].query).length > 0)
-				))
-				: [];
-			if (secured.length) {
-				if (!gateway) {
-					gateway = createMcpGateway({ env: mergedEnv, warn });
-					await gateway.listen();
-					// 竞态：首次 tick 是 void 启动的，插件可能已在这期间被 dispose。
-					// 此时必须自己关掉刚起的 server，否则会留下有引用的句柄。
-					if (stopped) { await gateway.close(); gateway = null; return; }
-				}
-				for (const s of secured) {
-					gateway.register(s.serverName, {
-						url: s.url,
-						// 优先原始 `${env:VAR}` 占位符 ⇒ 每次转发才解析，token 轮换无需重启。
-						headers: rawServers[s.serverName]?.headers ?? s.headers,
-						// query 型凭据（如 Amap ?key=...）同样只在转发时解析。
-						query: rawServers[s.serverName]?.query,
-					});
-				}
-				gateway.prune(servers.map(s => s.serverName));
-				const byName = new Set(secured.map(s => s.serverName));
-				servers = servers.map(s => byName.has(s.serverName)
-					? { ...s, url: gateway.urlFor(s.serverName), headers: gateway.headers() }
-					: s);
-			} else if (gateway) {
-				await gateway.close();
-				gateway = null;
-			}
-			if (!runtime) {
-				const client = await loadMcpClient({ loader, mcpClientUrl: config.mcpClientUrl });
-				runtime = new McpRuntime({ ctx, client, warn });
-				activeMcpRuntime = runtime;
-			}
-			await runtime.sync(servers);
-		} catch (e) {
-			warn(`mcp runtime: ${String(e?.message ?? e)}`);
-		}
+	let queue = Promise.resolve();
+	let stopPromise = null;
+	const available = () => enabled && initialized && !stopped && runtime && !runtime.stopped;
+	const enqueue = operation => {
+		const pending = queue.then(operation);
+		queue = pending.catch(() => {});
+		return pending;
 	};
-	ctx.effect(() => {
-		void tick();
-		timer = setInterval(() => void tick(), 2000);
-		timer?.unref?.();
-		return () => {
+	const ensureAvailable = () => { if (!available()) { throw unavailable(); } };
+	const snapshot = owner => {
+		const source = sources.get(owner);
+		const actual = runtime?.statusView({ includeReady: true }) ?? {};
+		return {
+			owner, available: !!available(), registered: !!source,
+			servers: Object.keys(source?.servers ?? {}).map(name => {
+				if (!available()) { return { name, state: 'unavailable' }; }
+				if (skipped.has(name)) { return { name, ...skipped.get(name) }; }
+				if (Object.hasOwn(actual, name)) { return { name, ...actual[name] }; }
+				return { name, state: runtime.mounts.get(name)?.fiber ? 'connecting' : 'unavailable' };
+			}),
+		};
+	};
+	const sourceOf = request => {
+		const owner = request?.owner;
+		if (typeof owner !== 'string' || !owner.trim()) { throw new Error('MCP source owner must be a nonempty string'); }
+		const raw = request?.servers;
+		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { throw new Error('MCP source servers must be an object'); }
+		const servers = Object.create(null);
+		for (const [name, entry] of Object.entries(raw)) {
+			if (!MCP_SERVER_NAME_RE.test(name)) { throw new Error('MCP source server name is invalid'); }
+			if (!entry || typeof entry !== 'object' || Array.isArray(entry)) { throw new Error('MCP source server config must be an object'); }
+			try { servers[name] = JSON.parse(JSON.stringify(entry)); }
+			catch { throw new Error('MCP source server config must be JSON serializable'); }
+			servers[name].approved = entry.approved === true;
+		}
+		return { owner, servers };
+	};
+	const reconcileSources = async next => {
+		if (!enabled || stopped) { throw unavailable(); }
+		const overlay = Object.create(null);
+		for (const source of next.values()) {
+			for (const [name, entry] of Object.entries(source.servers)) {
+				if (Object.hasOwn(overlay, name)) { throw new Error(`MCP server name conflict: ${name}`); }
+				overlay[name] = entry;
+			}
+		}
+		const signature = `${await mtimeOf(path)}|${await mtimeOf(secretsPathForMcpConfig(path))}`;
+		const secrets = await readSecretsForMcpConfig(path);
+		const mergedEnv = secretsAsEnv(secrets, process.env);
+		const parsed = await readMountPlan(path, mergedEnv, overlay);
+		if (stopped) { throw unavailable(); }
+		if (!runtime) {
+			let client;
+			try { client = await loadMcpClient({ loader, mcpClientUrl: config.mcpClientUrl }); }
+			catch { throw unavailable(); }
+			if (stopped) { throw unavailable(); }
+			runtime = new McpRuntime({ ctx, client, warn: warnFailure });
+			activeMcpRuntime = runtime;
+		}
+		const nextSkipped = new Map(parsed.skipped.map(entry => [entry.name, {
+			state: entry.state ?? 'error',
+			reason: entry.state === 'needs-approval' ? 'stdio requires explicit approved:true' : 'MCP configuration was skipped',
+		}]));
+		let servers = parsed.servers;
+		const rawServers = parsed.rawConfig?.servers ?? {};
+		servers = servers.filter(server => {
+			const query = rawServers[server.serverName]?.query;
+			if (!Object.hasOwn(overlay, server.serverName) || query === undefined) { return true; }
+			const valid = query && typeof query === 'object' && !Array.isArray(query)
+				&& Object.values(query).every(value => {
+					if (typeof value !== 'string') { return false; }
+					const resolved = resolveSecretRefs(value, mergedEnv);
+					return !resolved.error && !resolved.value.includes('${');
+				});
+			if (!valid) { nextSkipped.set(server.serverName, { state: 'error', reason: 'MCP query credential is invalid or unavailable' }); }
+			return !!valid;
+		});
+		const requiresGateway = server => server.transport === 'streamable-http' && (
+			(server.headers && Object.keys(server.headers).length > 0)
+			|| (rawServers[server.serverName]?.query && Object.keys(rawServers[server.serverName].query).length > 0)
+			|| (Object.hasOwn(overlay, server.serverName) && (
+				rawServers[server.serverName]?.url?.includes('${') || server.url.includes('?')
+			))
+		);
+		// 工作台资源不因关闭网关而把凭据交给 mcp-client；用户既有全局回退开关不变。
+		if (!isMcpGatewayEnabled()) {
+			servers = servers.filter(server => {
+				if (!Object.hasOwn(overlay, server.serverName) || !requiresGateway(server)) { return true; }
+				nextSkipped.set(server.serverName, { state: 'unavailable', reason: 'MCP credential gateway unavailable' });
+				return false;
+			});
+		}
+		const secured = isMcpGatewayEnabled() ? servers.filter(requiresGateway) : [];
+		if (secured.length) {
+			for (const key of Object.keys(gatewayEnv)) { delete gatewayEnv[key]; }
+			Object.assign(gatewayEnv, mergedEnv);
+			if (!gateway) {
+				gateway = createMcpGateway({ env: gatewayEnv, warn: warnFailure });
+				await gateway.listen();
+				if (stopped) { await gateway.close(); gateway = null; throw unavailable(); }
+			}
+			for (const server of secured) {
+				gateway.register(server.serverName, {
+					url: server.url,
+					headers: rawServers[server.serverName]?.headers ?? server.headers,
+					query: rawServers[server.serverName]?.query,
+				});
+			}
+			gateway.prune(secured.map(server => server.serverName));
+			const byName = new Set(secured.map(server => server.serverName));
+			servers = servers.map(server => byName.has(server.serverName)
+				? { ...server, url: gateway.urlFor(server.serverName), headers: gateway.headers() }
+				: server);
+		} else if (gateway) {
+			gateway.prune([]);
+		}
+		if (stopped) { throw unavailable(); }
+		sources = next;
+		skipped = nextSkipped;
+		await runtime.sync(servers);
+		if (stopped) { throw unavailable(); }
+		if (!secured.length && gateway) { await gateway.close(); gateway = null; }
+		initialized = true;
+		service.ready = Promise.resolve();
+		lastSignature = signature;
+		if (nextSkipped.size) { warn(`mcp runtime: ${nextSkipped.size} configuration entries skipped`); }
+	};
+	const remove = (owner, token) => enqueue(async () => {
+		ensureAvailable();
+		const source = sources.get(owner);
+		if (!source || (token && source.token !== token)) { return false; }
+		const next = new Map(sources);
+		next.delete(owner);
+		await reconcileSources(next);
+		return true;
+	});
+	const service = {
+		ready: null,
+		status: snapshot,
+		async registerSource(request) {
+			ensureAvailable();
+			const source = sourceOf(request);
+			const token = Symbol();
+			await enqueue(async () => {
+				ensureAvailable();
+				if (sources.has(source.owner)) { throw new Error('MCP source owner already registered'); }
+				const next = new Map(sources);
+				next.set(source.owner, { servers: source.servers, token });
+				await reconcileSources(next);
+			});
+			return () => remove(source.owner, token);
+		},
+		async reloadSource(request) {
+			ensureAvailable();
+			const source = sourceOf(request);
+			return enqueue(async () => {
+				ensureAvailable();
+				const current = sources.get(source.owner);
+				if (!current) { throw new Error('MCP source owner is not registered'); }
+				const next = new Map(sources);
+				next.set(source.owner, { servers: source.servers, token: current.token });
+				await reconcileSources(next);
+				return snapshot(source.owner);
+			});
+		},
+		unregisterSource: owner => remove(owner),
+		reconcile: () => enqueue(() => reconcileSources(new Map(sources))),
+		stop() {
+			if (stopPromise) { return stopPromise; }
 			stopped = true;
 			if (timer) { clearInterval(timer); }
 			if (activeMcpRuntime === runtime) { activeMcpRuntime = null; }
-			void runtime?.stop();
-			void gateway?.close();
-		};
-	});
+			const stopping = runtime?.stop();
+			stopPromise = enqueue(async () => {
+				await stopping;
+				await runtime?.stop();
+				await gateway?.close();
+				gateway = null;
+				sources.clear();
+				skipped.clear();
+				for (const key of Object.keys(gatewayEnv)) { delete gatewayEnv[key]; }
+			});
+			return stopPromise;
+		},
+	};
+	service.ready = service.reconcile();
+	service.ready.catch(warnFailure);
+	ctx.provide?.('vssarosMcpSources', service);
+	if (enabled) {
+		ctx.effect(() => {
+			let polling = false;
+			timer = setInterval(() => {
+				if (polling || stopped) { return; }
+				polling = true;
+				void enqueue(async () => {
+					if (stopped) { return; }
+					const signature = `${await mtimeOf(path)}|${await mtimeOf(secretsPathForMcpConfig(path))}`;
+					if (signature !== lastSignature || !initialized) { await reconcileSources(new Map(sources)); }
+				}).catch(warnFailure).finally(() => { polling = false; });
+			}, 2000);
+			timer?.unref?.();
+			return () => service.stop();
+		});
+	}
+	return service;
 }
 
 // 探针/测试用：把纯逻辑再导出一次（浏览器侧没人读这些）。

@@ -2,8 +2,12 @@
  * 「登录会话」—— 给**同一 Host 进程里的其他插件**用的窄口子（2026-10-22）。
  *
  * 需求（用户选的方案 ①）：LightAI 在 dsh 侧登录 = "用本仓的浏览器插件打开登录页、登录后自动读取 Cookie"。
- * 所以 bridge 插件要能：① 在**用户看得见**的浏览器里打开登录页（并切到前台）；② 登录后读那个站点的
- * 会话 Cookie（含 HttpOnly）；③ 完事关掉那个 tab。
+ * ★ 2026-11-11（用户要求）：登录必须在**独立的浏览器窗口**里，不许用右侧栏「浏览器」页签 ——
+ *   右栏是人与工具共用的那一页，登录页会盖掉人正在看的内容，也不是一个能单独关掉的窗口 ✗。
+ *   ⇒ 本口子的 baseClient / browserCommand 由 index.js 注入的是**另一套 CdpHost**（独立端口 +
+ *   独立 profile + 不接 rightbarFile），与工具那条连接互不相干 ✓。
+ * 所以 bridge 插件要能：① 在**用户看得见**的独立窗口里打开登录页（并切到前台）；② 登录后读那个站点的
+ * 会话 Cookie（含 HttpOnly）；③ 完事关掉那个 tab 与独立窗口。
  *
  * ── 为什么是"窄口子"而不是把 CDP 客户端整个交出去 ──────────────────────────────────────
  *   `browser` 工具对模型有两道闸（`allowCookieIO` 开关 + 逐次审批）——那是因为**模型**能调它。
@@ -84,7 +88,7 @@ function siteFor(profile, url) {
  * @param {boolean} deps.headless 浏览器插件是否无头
  * @param {(line: string) => void} [deps.log]
  */
-export function createLoginSessions({ baseClient, browserCommand, headless, ensureHeaded, ensureHeadless, log = () => { } }) {
+export function createLoginSessions({ baseClient, browserCommand, headless, ensureHeaded, ensureHeadless, release, log = () => { } }) {
 	/** profile → 绑定 tab 的视图（同一站点重复登录 ⇒ 复用同一个 tab ✓）。 */
 	const views = new Map();
 	const viewOf = name => {
@@ -115,7 +119,7 @@ export function createLoginSessions({ baseClient, browserCommand, headless, ensu
 	};
 
 	return {
-		/** 诊断用：无头时 `open` 必然失败。 */
+		/** 诊断用：**启动时**的无头配置（不是"此刻没有可见窗口"；`open` 会先切有头）。 */
 		headless: !!headless,
 		profiles: Object.keys(LOGIN_PROFILES),
 
@@ -206,13 +210,20 @@ export function createLoginSessions({ baseClient, browserCommand, headless, ensu
 				.map(c => ({ name: c.name, value: c.value, domain: String(c.domain ?? ''), expires: typeof c.expires === 'number' ? c.expires : -1 }));
 		},
 
-		/** 关掉本站点登录用的那个 tab（只关自己开的；用户自己的 tab 不碰）。 */
+		/**
+		 * 关掉本站点登录用的那个 tab（只关自己开的；用户自己的 tab 不碰），并**释放独立窗口**。
+		 * ★ 2026-11-11：登录会话走的是独立的专属 Chrome（不是右栏浏览器）⇒ 交互结束连实例一起收，
+		 *   不留可见窗口 / 无头进程在后台；`views` 也要清（下次登录重建视图，不拿旧 targetId）✓
+		 */
 		async close(name) {
 			profileOf(name);
 			const v = views.get(name);
-			if (!v) { return { closed: false }; }
-			try { await v.closeOwnedPage(); } catch { /* 用户已经手动关了 */ }
-			return { closed: true };
+			if (v) {
+				try { await v.closeOwnedPage(); } catch { /* 用户已经手动关了 */ }
+				views.delete(name);
+			}
+			try { await release?.(); } catch { /* 关不掉也不该让登录流程报错 */ }
+			return { closed: !!v };
 		},
 	};
 }

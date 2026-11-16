@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>方案 C · 首字 Letter Avatar + 确定性渐变 — 知识库卡片图标 mockup · 非实现代码</title>
+<style>
+	:root[data-theme="dark"]{--bg:#15161a;--panel:#1c1d22;--panel2:#22232a;--line:rgba(255,255,255,.1);--line2:rgba(255,255,255,.18);--fg:#e8e9ec;--fg2:#a9abb3;--fg3:#71737c;--accent:#5b8cff;--ok:#3fb950}
+	:root[data-theme="light"]{--bg:#f5f6f8;--panel:#fff;--panel2:#f0f2f5;--line:rgba(0,0,0,.09);--line2:rgba(0,0,0,.17);--fg:#1b1d22;--fg2:#5a5e68;--fg3:#8b8f99;--accent:#2f6bff;--ok:#1a7f37}
+	*{box-sizing:border-box}
+	body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+	.kbc-wrap{max-width:620px;margin:0 auto /* ★ 默认宽度对齐真机「知识库主页」右栏（约 3 列），方便与截图逐项对照 */;padding:22px 24px 60px}
+	.kbc-hd{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+	.kbc-hd h1{margin:0;font-size:19px;font-weight:650}.kbc-hd .sub{font-size:12px;color:var(--fg3)}
+	.kbc-acts{margin-left:auto;display:flex;gap:8px}
+	.kbc-btn{height:28px;padding:0 12px;border-radius:7px;border:1px solid var(--line2);background:var(--panel2);color:var(--fg2);font-size:12.5px;cursor:pointer}
+	.kbc-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+	.kbc-note{border:1px solid var(--line);border-left:3px solid var(--accent);background:var(--panel);border-radius:9px;padding:10px 13px;margin-bottom:16px;font-size:12px;color:var(--fg2)}
+	.kbc-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:20px}
+	.kbc-st{position:relative;padding:10px 12px;border-radius:10px;background:var(--panel);border:1px solid var(--line);overflow:hidden}
+	.kbc-st .bar{position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent)}.kbc-st:nth-child(2) .bar{background:var(--ok)}
+	.kbc-st .lb{font-size:11px;color:var(--fg3)}.kbc-st .v{font-size:20px;font-weight:650}
+	.kbc-sec{display:flex;align-items:center;gap:8px;margin:0 0 10px;font-size:13.5px;font-weight:600}.kbc-sec .c{font-size:11.5px;color:var(--fg3);font-weight:400}
+	.kbc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(180px,100%),1fr));gap:12px}
+	.kbc-card{display:flex;flex-direction:column;gap:8px;text-align:left;min-height:118px;padding:11px;background:var(--panel);border:1px solid var(--line);border-radius:11px;color:inherit;font:inherit;cursor:pointer;transition:.15s}
+	.kbc-card:hover{transform:translateY(-2px);border-color:var(--line2);box-shadow:0 8px 22px rgba(0,0,0,.25)}
+	.kbc-top{display:flex;align-items:center;gap:10px;min-width:0}
+	/* ★ 方案 C：42px 圆角/圆形渐变 + 首字，色相直接复用 homePage.js:14-18 的 coverOf() */
+	.kbc-ico{flex:0 0 auto;width:42px;height:42px;border-radius:12px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:16px;font-weight:700;letter-spacing:.02em;box-shadow:inset 0 0 0 1px rgba(255,255,255,.14)}
+	.kbc-name{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+	.kbc-rule{font-size:10.5px;color:var(--fg3)}
+	.kbc-ex{font-size:11px;color:var(--fg3);line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+	.kbc-meta{margin-top:auto;display:flex;flex-wrap:wrap;gap:6px;font-size:11px;color:var(--fg3)}.kbc-meta .wk{color:var(--accent)}.kbc-time{font-size:10.5px;color:var(--fg3)}
+	.kbc-new{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:118px;border:1.5px dashed var(--line2);background:transparent;color:var(--fg2);border-radius:11px;cursor:pointer;font:inherit}
+	.kbc-new .p{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(91,140,255,.14);color:var(--accent);font-size:16px}
+	.kbc-strip{margin-top:18px;border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:11px 13px;font-size:11.5px;color:var(--fg2)}
+	.kbc-strip .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px}
+	.kbc-toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line2);padding:7px 13px;border-radius:9px;font-size:12.5px;opacity:0;pointer-events:none;transition:.2s}.kbc-toast.on{opacity:1}
+	.kbc-check{margin-top:20px;font:11.5px/1.7 ui-monospace,Consolas,monospace;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 13px;white-space:pre-wrap;color:var(--fg2)}
+	@media(max-width:620px){.kbc-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+</style>
+</head>
+<body><div class="kbc-wrap">
+	<div class="kbc-hd"><div><h1>知识库主页</h1><div class="sub">VsSarosVault · 5 个知识库 · 76 篇笔记　|　方案 C：首字 Letter Avatar</div></div>
+		<div class="kbc-acts"><button class="kbc-btn" id="themeBtn">☀ 明暗</button><button class="kbc-btn" id="shapeBtn">◯ 圆/方</button><button class="kbc-btn primary">＋ 新建知识库</button></div></div>
+	<div class="kbc-note"><b>这是 mockup，不是实现代码。</b>　参考 <b>AFFiNE / Docmost 等自托管工作区的空间头像</b>：无自定义图标时取名称首字配确定性渐变，<b>零配置、跨平台字形一致</b>。这里直接复用现状 <code>homePage.js:14-18 coverOf(name)</code> 的 hash 色相 —— 也就是说<b>现有渐变不用删，只把它从 78px 大色块收成 42px 头像</b>，是改动最小的一套。中文取首字，英文取前两字母。</div>
+	<div class="kbc-stats">
+		<div class="kbc-st"><span class="bar"></span><div class="lb">知识库</div><div class="v">5<small>个</small></div></div>
+		<div class="kbc-st"><span class="bar"></span><div class="lb">笔记</div><div class="v">76<small>篇</small></div></div>
+		<div class="kbc-st"><span class="bar"></span><div class="lb">近 7 天改动</div><div class="v">1<small>篇</small></div></div>
+		<div class="kbc-st"><span class="bar"></span><div class="lb">已绑飞书</div><div class="v">0<small>个</small></div></div>
+	</div>
+	<div class="kbc-sec">全部知识库 <span class="c">5 个</span></div>
+	<div class="kbc-grid" id="grid"></div>
+	<div class="kbc-strip"><b>取字规则</b>：中文取第 1 个汉字；英文/数字取前 2 个字母并大写；同名库按 hash 后缀区分（不重复）。
+		<div class="row" id="rule"></div></div>
+	<div class="kbc-check" id="checkOut">自检运行中…</div>
+</div><div class="kbc-toast" id="toast"></div>
+<script>
+(function(){
+	/* 与 lib/homePage.js:14-18 逐字同口径 */
+	function hueOf(name){var h=0;for(var i=0;i<String(name).length;i++){h=(h*31+String(name).charCodeAt(i))>>>0;}return h%360;}
+	function gradientOf(name){var h=hueOf(name);var light=document.documentElement.dataset.theme==='light';return 'linear-gradient(135deg, hsl('+h+' '+(light?'52% 62%':'45% 34%')+'), hsl('+((h+26)%360)+' '+(light?'46% 50%':'38% 18%')+'))';}
+	/* 中文首字 / 英文前两字母 */
+	function initialOf(name){var s=String(name||'').trim();if(!s)return '?';var m=s.match(/[\u4e00-\u9fa5]/);if(m)return m[0];var letters=s.replace(/[^A-Za-z0-9]/g,'');return (letters.slice(0,2)||s.slice(0,1)).toUpperCase();}
+	var KBS=[
+		{name:'财经',docs:1,week:1,time:'9 天前',ex:'估值模型、财报摘要与行业数据'},
+		{name:'AIAgent',docs:21,week:1,time:'9 天前',ex:'Agent 框架、工具调用与记忆机制'},
+		{name:'游戏设计',docs:8,week:0,time:'48 天前',ex:'玩法拆解、关卡设计与数值'},
+		{name:'ComfyUI技术',docs:1,week:0,time:'48 天前',ex:'工作流节点、模型与出图参数'},
+		{name:'UnrealEngine',docs:45,week:0,time:'49 天前',ex:'渲染管线、材质与性能优化'}
+	];
+	var round=false,grid=document.getElementById('grid');
+	function render(){
+		grid.innerHTML='';
+		var n=document.createElement('button');n.className='kbc-new';n.innerHTML='<span class="p">＋</span><span>新建知识库</span><span style="font-size:11px;color:var(--fg3)">建文件夹 · 关联飞书</span>';grid.appendChild(n);
+		KBS.forEach(function(k){
+			var b=document.createElement('button');b.className='kbc-card';
+			b.innerHTML='<span class="kbc-top"><span class="kbc-ico" data-role="ico" style="background:'+gradientOf(k.name)+';border-radius:'+(round?'50%':'12px')+'">'+initialOf(k.name)+'</span>'
+				+'<span style="min-width:0"><span class="kbc-name" style="display:block">'+k.name+'</span><span class="kbc-rule">hue '+hueOf(k.name)+'°</span></span></span>'
+				+'<span class="kbc-ex">'+k.ex+'</span>'
+				+'<span class="kbc-meta"><span>'+k.docs+' 篇</span>'+(k.week?'<span class="wk">7 天 +'+k.week+'</span>':'')+'<span class="kbc-time">'+k.time+'</span></span>';
+			b.onclick=function(){toast('（示意）打开知识库：'+k.name);};grid.appendChild(b);
+		});
+		document.getElementById('rule').innerHTML=KBS.map(function(k){return '<span style="border:1px solid var(--line);border-radius:6px;padding:2px 7px">'+k.name+' → '+initialOf(k.name)+'</span>';}).join('');
+	}
+	var t;function toast(s){var el=document.getElementById('toast');el.textContent=s;el.classList.add('on');clearTimeout(t);t=setTimeout(function(){el.classList.remove('on');},1600);}
+	document.getElementById('themeBtn').onclick=function(){var r=document.documentElement;r.dataset.theme=r.dataset.theme==='dark'?'light':'dark';render();};
+	document.getElementById('shapeBtn').onclick=function(){round=!round;this.textContent=round?'▢ 圆/方':'◯ 圆/方';render();};
+	render();
+	var pass=0,fail=0,lines=[];function check(n,f){try{if(f()===false)throw new Error('断言为 false');pass++;lines.push('PASS  '+n);}catch(e){fail++;lines.push('FAIL  '+n+' — '+e.message);}}
+	check('5 张知识库卡 + 1 张新建卡',function(){return grid.querySelectorAll('.kbc-card').length===5&&grid.querySelectorAll('.kbc-new').length===1;});
+	check('每卡 42px 头像且首字非空',function(){return Array.prototype.every.call(grid.querySelectorAll('.kbc-ico'),function(el){return el.textContent.trim().length>=1&&Math.round(el.getBoundingClientRect().width)===42;});});
+	check('首字规则：中文取首字 / 英文取前两字母',function(){return initialOf('财经')==='财'&&initialOf('AIAgent')==='AI'&&initialOf('UnrealEngine')==='UN';});
+	check('同名库色相稳定（coverOf 确定性）',function(){return hueOf('AIAgent')===hueOf('AIAgent')&&hueOf('财经')!==hueOf('游戏设计');});
+	check('每个头像都有渐变背景（无纯色块）',function(){return Array.prototype.every.call(grid.querySelectorAll('.kbc-ico'),function(el){return /linear-gradient/.test(el.style.background);});});
+	check('明暗两态渐变亮度不同（浅色不发灰）',function(){var a=gradientOf('财经');document.documentElement.dataset.theme='light';var b=gradientOf('财经');document.documentElement.dataset.theme='dark';return a!==b;});
+	check('卡片宽度正常 + 库名不逐字换行',function(){return grid.querySelector('.kbc-card').getBoundingClientRect().width>150&&Array.prototype.every.call(grid.querySelectorAll('.kbc-name'),function(el){return el.getBoundingClientRect().height<=26;});});
+	check('窄视口 380px 无横向溢出',function(){document.querySelector('.kbc-wrap').style.maxWidth='380px';var ok=document.documentElement.scrollWidth<=document.documentElement.clientWidth+1;document.querySelector('.kbc-wrap').style.maxWidth='';return ok;});
+	document.getElementById('checkOut').textContent=lines.join('\n')+'\n\n'+pass+'/'+(pass+fail)+' passed';window.__KBC_RESULT__={pass:pass,fail:fail};
+})();
+</script>
+</body></html>

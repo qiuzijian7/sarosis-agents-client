@@ -1,7 +1,6 @@
 // @vssaros/dsh-scheduler — 模型侧工具（自建调度）。
 //
-// ★ 为什么接管官方的工具名（`schedule_create / list / update / delete`）：官方 bundle 已不再安装，
-//   这些工具本来就不存在；保持同名 ⇒ 模型的既有习惯/提示词不用改，将来若恢复官方也不会有两套同名工具。
+// 自建工具统一使用 vssaros_schedule_*，与官方 schedule_* 分开注册、分开读库。
 //
 // ⚠ 引擎是**惰性**取的（`getEngine()`）：工具在 apply 阶段就注册，而引擎要等 foundation 就绪才建。
 //   执行时还没好 ⇒ 明确报错"调度引擎未就绪"，绝不静默假装成功。
@@ -42,13 +41,13 @@ export function registerScheduleTools(ctx, { getEngine }) {
 	const needEngine = () => {
 		const engine = getEngine();
 		if (!engine) {
-			throw new Error('调度引擎未就绪（foundation 服务还没注入，或组合里已有别的 schedule 服务）⇒ 任务操作暂不可用');
+			throw new Error('自建调度引擎未就绪（foundation 服务还没注入）⇒ 任务操作暂不可用');
 		}
 		return engine;
 	};
 
 	ctx.effect(() => ctx.tools.register({
-		name: 'schedule_create',
+		name: 'vssaros_schedule_create',
 		/**
 		 * 工具卡片（对齐官方 dsh-tool-schedule）：聊天里这条调用显示为
 		 * 「创建自动化任务」+ 摘要，而不是一坨 JSON。
@@ -176,7 +175,7 @@ export function registerScheduleTools(ctx, { getEngine }) {
 	}));
 
 	ctx.effect(() => ctx.tools.register({
-		name: 'schedule_list',
+		name: 'vssaros_schedule_list',
 		/**
 		 * 工具卡片（对齐官方 dsh-tool-schedule）：聊天里这条调用显示为
 		 * 「查看自动化任务」+ 摘要，而不是一坨 JSON。
@@ -219,7 +218,7 @@ export function registerScheduleTools(ctx, { getEngine }) {
 	}));
 
 	ctx.effect(() => ctx.tools.register({
-		name: 'schedule_update',
+		name: 'vssaros_schedule_update',
 		/**
 		 * 工具卡片（对齐官方 dsh-tool-schedule）：聊天里这条调用显示为
 		 * 「修改自动化任务」+ 摘要，而不是一坨 JSON。
@@ -260,7 +259,7 @@ export function registerScheduleTools(ctx, { getEngine }) {
 	}));
 
 	ctx.effect(() => ctx.tools.register({
-		name: 'schedule_delete',
+		name: 'vssaros_schedule_delete',
 		/**
 		 * 工具卡片（对齐官方 dsh-tool-schedule）：聊天里这条调用显示为
 		 * 「删除自动化任务」+ 摘要，而不是一坨 JSON。
@@ -287,7 +286,7 @@ export function registerScheduleTools(ctx, { getEngine }) {
 	}));
 
 	ctx.effect(() => ctx.tools.register({
-		name: 'schedule_history',
+		name: 'vssaros_schedule_history',
 		/**
 		 * 工具卡片（对齐官方 dsh-tool-schedule）：聊天里这条调用显示为
 		 * 「查看运行记录」+ 摘要，而不是一坨 JSON。

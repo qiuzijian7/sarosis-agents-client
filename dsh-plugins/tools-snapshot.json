@@ -1,6 +1,6 @@
 {
   "note": "由 dsh-plugins/tools-snapshot.mjs 生成；被 dshHarness/test/common/dshToolSnapshot.test.ts 钉住。不要手改，跑 --write。",
-  "total": 153,
+  "total": 154,
   "plugins": {
     "vssaros-agents": [
       {
@@ -347,6 +347,20 @@
           "targetName"
         ],
         "descriptionHash": "0a363f0b081f"
+      }
+    ],
+    "vssaros-computer": [
+      {
+        "name": "computer",
+        "required": [
+          "op"
+        ],
+        "params": [
+          "appKey",
+          "op",
+          "params"
+        ],
+        "descriptionHash": "5165c7b2d834"
       }
     ],
     "vssaros-dashboard": [
@@ -1449,7 +1463,7 @@
     ],
     "vssaros-scheduler": [
       {
-        "name": "schedule_create",
+        "name": "vssaros_schedule_create",
         "required": [
           "rule",
           "title"
@@ -1466,7 +1480,7 @@
         "descriptionHash": "156a2eaadbb2"
       },
       {
-        "name": "schedule_delete",
+        "name": "vssaros_schedule_delete",
         "required": [
           "id"
         ],
@@ -1476,7 +1490,7 @@
         "descriptionHash": "fabc466221fe"
       },
       {
-        "name": "schedule_history",
+        "name": "vssaros_schedule_history",
         "required": [
           "id"
         ],
@@ -1487,7 +1501,7 @@
         "descriptionHash": "a2311c5eef37"
       },
       {
-        "name": "schedule_list",
+        "name": "vssaros_schedule_list",
         "required": [],
         "params": [
           "limit"
@@ -1495,7 +1509,7 @@
         "descriptionHash": "7a0ceef52eb9"
       },
       {
-        "name": "schedule_update",
+        "name": "vssaros_schedule_update",
         "required": [
           "id"
         ],

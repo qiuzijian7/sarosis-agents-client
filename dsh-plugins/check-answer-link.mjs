@@ -10,7 +10,7 @@
 //
 // 契约：
 //   ① `ActionLink` 与 `ExternalLink` 对空 href 都必须渲染非 <a>（应用内按钮 / 纯文本）。
-//   ② 回答按钮传 onActivate 切到「对话」页（应用内导航），飞书/GitHub 有真实外链仍是 <a>。
+//   ② 回答按钮传 onActivate 切到「概况」页（应用内导航），飞书/GitHub 有真实外链仍是 <a>。
 //   ③ Host 侧 superagent 的 url 保持空（不要试图填一个 127.0.0.1 URL，那仍会被外抛）。
 //   ④ 运行 bundle 与 dev 源码同形（build --check 兜底）。
 //   ⑤ 两处 UI 回归测试存在（列表行 + 工单详情页）。
@@ -54,10 +54,10 @@ console.log('check-answer-link：「去 XX 回答」空 href 不外抛')
 
 // ② 两个调用点都传 onActivate 切到对话页
 {
-	ok('② 列表行 TicketLine 传 onActivate 切到 chat',
-		/<ActionLink href=\{answer\.url\} icon="message" onActivate=\{\(\) => navigate\(\{ page: 'chat' \}\)\}/.test(rows))
-	ok('② 工单详情 TicketPage 传 onActivate 切到 chat',
-		/<ActionLink href=\{channel\.url\} icon="message" onActivate=\{\(\) => navigate\(\{ page: 'chat' \}\)\}/.test(ticket)
+	ok('② 列表行 TicketLine 传 onActivate 切到 overview',
+		/<ActionLink href=\{answer\.url\} icon="message" onActivate=\{\(\) => navigate\(\{ page: 'overview' \}\)\}/.test(rows))
+	ok('② 工单详情 TicketPage 传 onActivate 切到 overview',
+		/<ActionLink href=\{channel\.url\} icon="message" onActivate=\{\(\) => navigate\(\{ page: 'overview' \}\)\}/.test(ticket)
 		&& /const \{ t, call, navigate \} = usePanel\(\)/.test(ticket))
 	ok('② 主管对话文案已本地化（不再回退成裸 superagent）',
 		/'source\.superagent': \['主管对话', 'Supervisor desk'\]/.test(locales))
@@ -97,9 +97,9 @@ console.log('check-answer-link：「去 XX 回答」空 href 不外抛')
 	ok('⑥ 反向突变基线全绿', guarded(widgets))
 	const noGuard = widgets.replace('if (!href) {\n    return <button type="button" className="dt-btn dt-btn-outline dt-btn-sm" data-vssaros-in-app-action="1"', 'if (false) {\n    return <button')
 	ok('⑥ 去掉 ActionLink 空 href 兜底 ⇒ 判据变红', noGuard !== widgets && !guarded(noGuard))
-	const broken = rows.replace('onActivate={() => navigate({ page: \'chat\' })}', '')
+	const broken = rows.replace('onActivate={() => navigate({ page: \'overview\' })}', '')
 	ok('⑥ 列表行不传 onActivate ⇒ 判据变红', broken !== rows
-		&& !/onActivate=\{\(\) => navigate\(\{ page: 'chat' \}\)\}/.test(broken))
+		&& !/onActivate=\{\(\) => navigate\(\{ page: 'overview' \}\)\}/.test(broken))
 }
 
 console.log(problems.length ? `\n✗ check-answer-link：${problems.length} 项失败` : '\n✓ check-answer-link：全部通过')

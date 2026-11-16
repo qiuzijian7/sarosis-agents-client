@@ -1,6 +1,6 @@
 import { Context } from '@deepseek-ai/cordis'
 import { bindScopeParent } from '@deepseek-ai/dsh-scope'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
 import { delimiter, join } from 'node:path'
@@ -27,12 +27,13 @@ import { UserError, key, runningAssignment, said, threadKey, waitsForPerson, typ
 import { feishuTrigger } from '../src/sources/feishu.ts'
 import { feishuChannel } from '../src/sources/feishu-trigger.ts'
 import { commentTrigger, githubChannel } from '../src/sources/github-trigger.ts'
-import { IM_WORDS } from '../src/infra/text.ts'
+import { IM_WORDS, wordCount } from '../src/infra/text.ts'
 import { observePull, pullOf } from '../src/sources/github-pull.ts'
 import { P4ConfigSchema } from '../src/sources/p4-change.ts'
 import { p4Kind, pollChanges } from '../src/sources/p4.ts'
 import { credentialHelper, workerGitConfig } from '../src/infra/environment.ts'
 import { policyHistory } from '../src/app/settings-history.ts'
+import { ticketStatusNotices } from '../src/app/ticket-notices.ts'
 import { overview } from '../src/app/views/overview.ts'
 import { preview, readable } from '../src/app/views/text.ts'
 import { decisionList, search, threadDetail, threadList } from '../src/app/views/threads.ts'
@@ -798,6 +799,64 @@ it('sends the ticket result back to its Feishu conversation when a Feishu task e
   expect(vi.mocked(Commands.prototype.lark).mock.calls.map(([args]) => args.join(' ')).filter(line => line.includes('【工单结束】'))).toHaveLength(1)
 })
 
+it('notifies Feishu of a completed fix even when the ticket stays open waiting for a CL review', async () => {
+  const { ticket } = await acceptedTicket()
+  // Reproduce the 2026-11-16 incident: report ready with an own pending p4 thread and submit-mode delivery,
+  // so followsDone() is undefined, ticket.ended never fires and the conversation previously heard nothing.
+  runtime.store.tickets.save({ ...runtime.store.tickets.get(ticket.id)!,
+    execution: { ...ticket.execution!, delivery: 'p4', p4Delivery: 'submit' },
+    follows: [{ thread: 'p4:1292248', own: true }] })
+  runtime.engine.report(ticket.id, { state: 'ready', summary: '修复完成并已 shelve 到 CL 1292248。' })
+  await runtime.outbox.sent()
+  const calls = vi.mocked(Commands.prototype.lark).mock.calls.map(([args]) => args.join(' '))
+  const status = calls.filter(line => line.includes('【修复完成】'))
+  expect(status).toHaveLength(1)
+  expect(status[0]).toContain('修复回归')
+  expect(status[0]).toContain('CL 1292248')
+  expect(calls.filter(line => line.includes('【工单结束】'))).toHaveLength(0)
+  expect(runtime.store.tickets.get(ticket.id)!.ended).toBeUndefined()
+  // The notice id is stable for the same report, so duplicates are swallowed by Outbox receipts.
+  expect(ticketStatusNotices(runtime.store.tickets.get(ticket.id)!)).toHaveLength(1)
+  expect(ticketStatusNotices(runtime.store.tickets.get(ticket.id)!)![0]!.id)
+    .toContain(`ticket-status:${ticket.id}:`)
+})
+
+it('clips a long status notice to the IM word budget instead of retrying forever', async () => {
+  const { ticket } = await acceptedTicket()
+  const current = runtime.store.tickets.get(ticket.id)!
+  runtime.store.tickets.save({ ...current, execution: { ...current.execution!, delivery: 'p4', p4Delivery: 'submit' },
+    follows: [{ thread: 'p4:1292248', own: true }] })
+  runtime.engine.report(ticket.id, { state: 'ready', summary: Array.from({ length: IM_WORDS + 60 }, () => '证据').join(' ') })
+  await runtime.outbox.sent()
+  const argv = vi.mocked(Commands.prototype.lark).mock.calls.find(([args]) => args.join(' ').includes('【修复完成】'))?.[0] ?? []
+  const text = String(argv[argv.indexOf('--markdown') + 1] ?? '')
+  expect(text).toContain('【修复完成】')
+  expect(wordCount(text)).toBeLessThanOrEqual(IM_WORDS)
+})
+
+it('does not double a status notice with the ended-ticket result or an attention question', async () => {
+  const { ticket } = await acceptedTicket()
+  runtime.engine.report(ticket.id, { state: 'ready', summary: '回归已修复。' })
+  runtime.engine.stopTicket(ticket.id)
+  await runtime.outbox.sent()
+  expect(ticketStatusNotices(runtime.store.tickets.get(ticket.id)!)).toEqual([])
+  const { ticket: asking } = await acceptedTicket(feishu('2', '@bot 另一个任务'))
+  runtime.store.tickets.save({ ...asking, attention: { id: 'a1', question: '请确认范围' } })
+  expect(ticketStatusNotices(runtime.store.tickets.get(asking.id)!)).toEqual([])
+})
+
+it('clips a long ticket-result notice to the IM word budget instead of retrying forever', async () => {
+  const { ticket } = await acceptedTicket()
+  runtime.engine.report(ticket.id, { state: 'ready', summary: Array.from({ length: IM_WORDS + 60 }, () => '证据').join(' ') })
+  runtime.engine.stopTicket(ticket.id)
+  await runtime.outbox.sent()
+  const argv = vi.mocked(Commands.prototype.lark).mock.calls.find(([args]) => args.join(' ').includes('【工单结束】'))?.[0] ?? []
+  const text = String(argv[argv.indexOf('--markdown') + 1] ?? '')
+  expect(text).toContain('【工单结束】')
+  expect(wordCount(text)).toBeLessThanOrEqual(IM_WORDS)
+  expect(text).toMatch(/…$/)
+})
+
 it('counts every step of the day\'s flow over the same arriving messages and lists the same accepted Decisions', async () => {
   const now = String(Date.now())
   await acceptedTicket(feishu('1', '@bot 修一下回归', { create_time: now }))
@@ -1172,11 +1231,14 @@ it('runs the prepare command once for a new ticket, under the execution root wit
   const { ticket } = await acceptedTicket()
   expect(runs()).toEqual([expect.objectContaining({ argv: ['sh', '-c', 'git -C /srv/widgets worktree add "$DSH_SUPERAGENT_DIR" -b "agent/$DSH_SUPERAGENT_NAME"'], cwd: join(directory, 'work'),
     env: expect.objectContaining({ DSH_SUPERAGENT_DIR: ticket.execution!.directory, DSH_SUPERAGENT_NAME: ticket.execution!.name, DSH_SUPERAGENT_GITHUB_REPOSITORY: 'acme/widgets', DSH_SUPERAGENT_FEISHU_CHAT: CHAT }) })])
-  // A retry reuses the prepared directory.
+  const changed = join(ticket.execution!.directory, 'user-change.txt')
+  writeFileSync(changed, 'keep')
   await runTool(`worker-${ticket.id}`, 'orchestrator_report', { state: 'failed', summary: 'offline' })
   await runtime.engine.retryTicket(ticket.id)
   await runtime.idle()
   expect(runs()).toHaveLength(1)
+  expect(readFileSync(changed, 'utf8')).toBe('keep')
+  expect(runtime.store.get(KV.executor.workspace(ticket.id))?.state).toBe('ready')
   answers['sh -c exit 3'] = new Error('fatal: no such clone')
   prepare('exit 3')
   const failed = await acceptedTicket(feishu('9', '@bot 修一下标题'))
@@ -1185,18 +1247,56 @@ it('runs the prepare command once for a new ticket, under the execution root wit
   expect(waitsForPerson(runtime.store.tickets.get(failed.ticket.id)!)).toBe(true)
 })
 
+it('keeps failed partial preparation blocked on retry instead of starting a worker from its residue', async () => {
+  runtime.store.saveSettings({ ...runtime.store.settings(), executor: { ...runtime.store.settings().executor, prepare: 'partial-prepare' } })
+  answers['sh -c partial-prepare'] = new Error('prepare failed: 503')
+  const original = subprocess.spawn.getMockImplementation()!
+  subprocess.spawn.mockImplementation(spec => {
+    if (spec.argv[0] === 'sh' && spec.argv[2] === 'partial-prepare') {
+      const target = spec.env?.DSH_SUPERAGENT_DIR
+      if (target) { mkdirSync(target, { recursive: true }); writeFileSync(join(target, 'partial.txt'), 'keep') }
+    }
+    return original(spec)
+  })
+  try {
+    const { ticket, sessionId } = await acceptedTicket()
+    expect(runtime.store.get(KV.executor.workspace(ticket.id))).toMatchObject({ state: 'failed', failurePhase: 'prepare' })
+    runtime.engine.retryTicket(ticket.id)
+    await runtime.idle()
+    expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('工作区未就绪') })
+    expect(agents.has(sessionId)).toBe(false)
+    expect(subprocess.spawn.mock.calls.filter(([spec]) => spec.argv[0] === 'sh' && spec.argv[2] === 'partial-prepare')).toHaveLength(1)
+    expect(readFileSync(join(ticket.execution!.directory, 'partial.txt'), 'utf8')).toBe('keep')
+  } finally { subprocess.spawn.mockImplementation(original) }
+})
+
 it('counts a ticket whose directory the host prepared before prepare commands existed as prepared', async () => {
   const { ticket, sessionId } = await acceptedTicket()
   await runTool(sessionId, 'orchestrator_report', { state: 'failed', summary: 'offline' })
   // A ticket from before prepare commands has its worktree.
   const stored = runtime.store.tickets.get(ticket.id)!
   runtime.store.tickets.save({ ...stored, execution: { ...stored.execution!, directory } })
+  runtime.store.delete(KV.executor.workspace(ticket.id))
+  agents.delete(sessionId)
   runtime.store.saveSettings({ ...runtime.store.settings(), executor: { ...runtime.store.settings().executor, prepare: 'exit 1' } })
   subprocess.spawn.mockClear()
   await runtime.engine.retryTicket(ticket.id)
   await runtime.idle()
   expect(subprocess.spawn.mock.calls.some(([spec]) => spec.argv[0] === 'sh')).toBe(false)
   expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.state).toBe('running')
+})
+
+it('refuses to recreate a missing legacy workspace after the ticket already started', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  await runTool(sessionId, 'orchestrator_report', { state: 'failed', summary: 'offline' })
+  runtime.store.delete(KV.executor.workspace(ticket.id))
+  rmSync(ticket.execution!.directory, { recursive: true })
+  agents.delete(sessionId)
+  controller.create.mockClear()
+  runtime.engine.retryTicket(ticket.id)
+  await runtime.idle()
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('执行目录不存在') })
+  expect(controller.create).not.toHaveBeenCalled()
 })
 
 it('runs a GitHub-only deployment: the GitHub part of the Policy decides alone, and the Feishu part has nothing to sync', async () => {
@@ -1219,6 +1319,27 @@ it('runs a GitHub-only deployment: the GitHub part of the Policy decides alone, 
   expect(next.health).not.toHaveProperty('github')
 })
 
+
+it('serves a read-only workspace inventory with actual runtime activity, keeping user files and readiness unchanged', async () => {
+  const { ticket } = await acceptedTicket()
+  const file = join(ticket.execution!.directory, 'inventory-test.txt')
+  writeFileSync(file, 'keep')
+  const before = runtime.store.get(KV.executor.workspace(ticket.id))
+  const result = await api('GET', 'executor/workspaces?offset=0&limit=10')
+  expect(result.status).toBe(200)
+  expect(result.body).toMatchObject({ readOnly: true, items: [expect.objectContaining({ ticketId: ticket.id, exists: true,
+    bytes: 4, blockers: expect.arrayContaining(['live', 'runtime-active', 'external-directory']) })] })
+  expect(runtime.store.get(KV.executor.workspace(ticket.id))).toEqual(before)
+  expect(readFileSync(file, 'utf8')).toBe('keep')
+})
+
+it('fails a new PTC worker visibly when the Host lacks its runtime without silently delivering a native assignment', async () => {
+  runtime.store.saveSettings({ ...runtime.store.settings(), executor: { ...runtime.store.settings().executor, workerPtc: true } })
+  const { ticket, sessionId } = await acceptedTicket()
+  expect(ticket.execution?.toolMode).toBe('ptc')
+  expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('PTC runtime unavailable') })
+  expect(deliveries.mock.calls.some(([call]) => call.sessionId === sessionId)).toBe(false)
+})
 
 it('credits each human reviewer once in the default delivery requirements on every commit of the PR, never with an empty commit', async () => {
   const delivery = runtime.prompts.current().config.delivery
@@ -1623,6 +1744,18 @@ it('fails a ticket at once on a worker error that is not passing, and relays it'
   ;(runtime as unknown as { ctx: Context }).ctx.emit('agent/error', { agent: agents.get(sessionId), turn: 1, step: 1, error: new Error('Invalid tool schema') } as never)
   await vi.waitFor(() => expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('Invalid tool schema') }))
   expect(relays(runtime.masterId).at(-1)).toMatchObject({ kind: 'worker_report', ticket: { ticket_id: ticket.id }, state: 'failed' })
+})
+
+it('reports a missing/unusable model as 模型未配置 instead of leaking the raw LlmError', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  ;(runtime as unknown as { ctx: Context }).ctx.emit('agent/error', { agent: agents.get(sessionId), turn: 1, step: 1,
+    error: new Error('LlmError: No API key for provider: vssaros-ollama') } as never)
+  await vi.waitFor(() => expect(runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.report).toMatchObject({
+    state: 'failed', summary: expect.stringContaining('模型未配置'),
+  }))
+  const summary = runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.report!.summary
+  expect(summary).toContain('设置 → 执行')
+  expect(summary).toContain('vssaros-ollama')
 })
 
 it('refuses the main Session a bash command that runs sleep and a long job wait, as reports arrive by themselves, and no worker', async () => {

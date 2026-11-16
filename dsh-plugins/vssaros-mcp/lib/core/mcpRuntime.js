@@ -111,32 +111,36 @@ export class McpRuntime {
 	}
 
 	async mountOne(server) {
+		if (this.stopped) { return; }
 		const name = server.serverName;
 		let config;
 		try { config = configFor(server); }
-		catch (e) { this.statuses.set(name, { state: 'error', error: String(e?.message ?? e) }); return; }
+		catch { this.statuses.set(name, { state: 'error', error: 'MCP server config is invalid' }); return; }
 		const fp = fingerprintOf(config);
 		if (this.mounts.get(name)?.fp === fp) { return; }
 		await this.unmount(name);
+		if (this.stopped) { return; }
 		this.statuses.set(name, { state: 'connecting' });
 		try {
-			if (this.stopped) { return; }
 			const fiber = this.ctx.plugin(this.client, config);
-			this.mounts.set(name, { fp, fiber });
+			this.mounts.set(name, { fp, fiber, ready: false });
 			await fiber.await();
 			if (this.stopped || this.mounts.get(name)?.fiber !== fiber) { return; }
+			this.mounts.get(name).ready = true;
 			this.statuses.delete(name);
-		} catch (e) {
+		} catch {
 			await this.unmount(name);
+			if (this.stopped) { return; }
 			// 保留失败指纹（无 fiber）⇒ 后续 sync 不会反复重试同一坏配置，只有 config 变化或显式重试才重挂。
 			this.mounts.set(name, { fp });
-			const message = String(e?.message ?? e).slice(0, 300);
+			const message = 'MCP server connection failed';
 			this.statuses.set(name, { state: 'error', error: message });
 			this.warn(`mcp runtime: ${name} failed: ${message}`);
 		}
 	}
 
 	async reconcile(servers) {
+		if (this.stopped) { return; }
 		const desired = new Set((servers ?? []).map(s => s.serverName));
 		for (const name of [...this.mounts.keys()]) {
 			if (!desired.has(name)) { await this.unmount(name); this.statuses.delete(name); }
@@ -147,11 +151,21 @@ export class McpRuntime {
 	/** 串行化：同一时刻只有一轮 reconcile 在跑，避免并发挂/卸交错。 */
 	sync(servers) {
 		this.queue = this.queue.then(() => this.reconcile(servers))
-			.catch(e => this.warn(`mcp runtime: reconcile failed: ${String(e?.message ?? e)}`));
+			.catch(() => this.warn('mcp runtime: reconcile failed (details withheld)'));
 		return this.queue;
 	}
 
-	statusView() { return Object.fromEntries(this.statuses); }
+	statusView({ includeReady = false } = {}) {
+		const states = new Map(this.statuses);
+		if (includeReady && !this.stopped) {
+			for (const [name, mount] of this.mounts) {
+				if (mount.fiber && !states.has(name)) {
+					states.set(name, { state: mount.ready === true ? 'ready' : 'connecting' });
+				}
+			}
+		}
+		return Object.fromEntries(states);
+	}
 
 	async stop() {
 		this.stopped = true;
@@ -162,17 +176,36 @@ export class McpRuntime {
 }
 
 /** 读 `mcp.json` 并按既有归一化规则解析（跳过原因在 parsed.skipped 里，交给调用方记日志）。 */
-export async function readMountPlan(path, env = process.env) {
-	const text = await readFile(path, 'utf8');
-	const parsed = parseMcpServers(text, env);
+export async function readMountPlan(path, env = process.env, sourceServers) {
+	let text;
+	try { text = await readFile(path, 'utf8'); }
+	catch (error) {
+		if (error?.code !== 'ENOENT' || sourceServers === undefined) { throw error; }
+		text = '{"servers":{}}';
+	}
 	// 保留**未经 `${env:VAR}` 替换**的原始配置：凭据网关要在每次转发时才解析，
 	// 这样 token 轮换无需重启 Host（parseMcpServers 的替换只用于配置校验）。
 	let rawConfig = {};
 	try {
 		const json = JSON.parse(text);
 		if (json && typeof json === 'object' && !Array.isArray(json)) { rawConfig = json; }
-	} catch { /* 坏 JSON 时 parsed.skipped 已有说明 */ }
-	return { ...parsed, rawConfig };
+	} catch {
+		if (sourceServers !== undefined) { throw new Error('MCP configuration is unavailable: invalid JSON'); }
+	}
+	if (sourceServers !== undefined) {
+		const current = rawConfig.servers;
+		if (current !== undefined && (!current || typeof current !== 'object' || Array.isArray(current))) {
+			throw new Error('MCP configuration is unavailable: servers must be an object');
+		}
+		const servers = Object.assign(Object.create(null), current ?? {});
+		for (const [name, entry] of Object.entries(sourceServers)) {
+			if (Object.hasOwn(servers, name)) { throw new Error(`MCP server name conflict: ${name}`); }
+			servers[name] = entry;
+		}
+		rawConfig = { ...rawConfig, servers };
+		text = JSON.stringify(rawConfig);
+	}
+	return { ...parseMcpServers(text, env), rawConfig };
 }
 
 /** mtime 轮询用的轻量签名：文件消失/不可读返回 null，调用方据此跳过本轮。 */

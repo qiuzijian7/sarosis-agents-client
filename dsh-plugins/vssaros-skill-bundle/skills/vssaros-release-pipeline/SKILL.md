@@ -23,9 +23,9 @@ VsSaros（`saros-agents-client`，路径：`G:\CustomWorkspaces\AIProjects\saros
 1. **项目根**：`G:\CustomWorkspaces\AIProjects\saros-agents-client`
 2. **安装包**：仅发布用户级 `VsSarosUserSetup.exe`（无需管理员权限）
 3. **Release 仓库**：`https://git.woa.com/zijianqiu/vssaros_issue`（项目 ID: 1790708），不是 saros-agents-client
-4. **更新代理**：DevCloud `http://zijianqiu-any1.devcloud.woa.com:3030`，自动从工蜂 Release 描述提取下载 URL + SHA256
+4. **更新代理**：DevCloud `http://21.139.192.124:3030`，自动从工蜂 Release 描述提取下载 URL + SHA256
 5. **Git 远程**：`origin`=工蜂 saros-agents-client / `backup`=GitHub / `upstream`=microsoft/vscode（禁止 push）
-6. **product.json**：`quality: "saros"`，`updateUrl: "http://zijianqiu-any1.devcloud.woa.com:3030"`
+6. **product.json**：`quality: "saros"`，`updateUrl: "http://21.139.192.124:3030"`
 7. **isEmbeddedApp 修复**：已提交到 `src/vs/code/electron-main/main.ts:108`，确保打包 EXE 启动即 Agent Studio
 
 ---
@@ -93,7 +93,7 @@ curl -sS -X POST \
   -H "X-Upload-Token: $UPLOAD_TOKEN" \
   -H "Content-Type: application/octet-stream" \
   --data-binary @.build/win32-x64/user-setup/VsSarosUserSetup.exe \
-  "http://zijianqiu-any1.devcloud.woa.com:3030/admin/upload?platform=win32-x64-user&commit=$GIT_COMMIT&productVersion=1.120.0"
+  "http://21.139.192.124:3030/admin/upload?platform=win32-x64-user&commit=$GIT_COMMIT&productVersion=1.120.0"
 ```
 
 响应：`{"ok":true,"platform":"win32-x64-user","version":"...","url":"http://.../downloads/VsSarosUserSetup.exe","sha256hash":"...","size":...}`
@@ -143,7 +143,7 @@ curl -s --header "PRIVATE-TOKEN: $GONGFENG_TOKEN" \
   -d '{
     "tag": "v0.1.X",
     "name": "VsSaros v0.1.X",
-    "description": "## VsSaros v0.1.X\n\n### 修复内容\n- xxx\n\n### 下载\n\n| 平台 | 类型 | 下载 |\n|------|------|------|\n| Windows x64 | 用户级安装（无需管理员） | [VsSarosUserSetup.exe](http://zijianqiu-any1.devcloud.woa.com:3030/downloads/VsSarosUserSetup.exe) |\n\n### 校验\n```\nSHA256: <64位hash>\n大小: 96 MB\n```\n\n### 提交信息\n- 基于 saros-agents-client commit: `<short-sha>`"
+    "description": "## VsSaros v0.1.X\n\n### 修复内容\n- xxx\n\n### 下载\n\n| 平台 | 类型 | 下载 |\n|------|------|------|\n| Windows x64 | 用户级安装（无需管理员） | [VsSarosUserSetup.exe](http://21.139.192.124:3030/downloads/VsSarosUserSetup.exe) |\n\n### 校验\n```\nSHA256: <64位hash>\n大小: 96 MB\n```\n\n### 提交信息\n- 基于 saros-agents-client commit: `<short-sha>`"
   }'
 ```
 
@@ -158,7 +158,7 @@ curl -s --header "PRIVATE-TOKEN: $GONGFENG_TOKEN" \
 
 ```bash
 # 测试更新 API（用旧 commit）
-curl -s http://zijianqiu-any1.devcloud.woa.com:3030/api/update/win32-x64/saros/old-commit
+curl -s http://21.139.192.124:3030/api/update/win32-x64/saros/old-commit
 
 # 预期返回：{ "version":"v0.1.X", "url":"http://.../downloads/VsSarosUserSetup.exe", "sha256hash":"<hash>" }
 ```

@@ -5319,7 +5319,7 @@ export class AgentStudioWebviewController extends Disposable {
 		try {
 			this.logService.info(`[AgentStudioWebviewController] workflow.execute: workflowId=${payload.workflowId}, agentId=${payload.agentId}`);
 
-			// 2026-11-09：通用主助理 saros-claw 已删除 ⇒ 画布 Run 默认由编排 agent 接管。
+			// 2026-11-12：workflow-agent 已下线 ⇒ 画布 Run 默认由规划 agent 接管。
 			// 若 webview 显式传了 agentId（用户指定）则优先使用。
 			const agentId = payload.agentId || DEFAULT_WORKFLOW_AGENT_ID;
 

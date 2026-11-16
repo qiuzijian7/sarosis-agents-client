@@ -17,11 +17,13 @@
  * 安装后要裁掉的**运行时本体**负载。每项是从 runtime 根开始的相对路径段
  * （`prune()` 用 `join(targetDir, ...rel)` 定位）。
  *
- * ★ 2026-11-02：当前为**空**。LibreOffice Kit（182 MB）不再裁剪 —— Office 全量路线上线后，
- *   它是 `office-render` / `office-export-pdf` / `office-recalculate` 三个技能的执行引擎
- *   （`dsh-skill-office` 把它的 CLI 绝对路径写进技能正文，缺件即这三个能力不可用）。
- *   引擎随 **dsh-runtime 本体**分发，见 `build/prepare-office-runtime.mjs:276`：
- *   "LibreOffice 引擎不在这里 —— 它随 dsh-runtime 分发（@deepseek-ai/libreoffice-kit-win32-x64/…）"。
+ * ★ 2026-11-02：当前为**空**。LibreOffice Kit 不再裁剪 —— Office 全量路线上线后，
+ *   它是渲染 / 转换 / 重算能力的执行引擎，随 **dsh-runtime 本体**分发，见
+ *   `build/prepare-office-runtime.mjs:276`："LibreOffice 引擎不在这里 —— 它随 dsh-runtime 分发"。
+ *   ★ 2026-11-12（dsh 0.2.2-rc.2）：上游把 `office-render` / `office-export-pdf` /
+ *   `office-recalculate` 三个技能改成了 `office_render` / `office_convert` / `office_recalculate`
+ *   三个工具（由 `@deepseek-ai/dsh-skill-office` 提供）。内核仍是它们的引擎，保留理由不变，
+ *   只是调用方从技能变成了工具。
  *   体积代价见 `build/prepare-office-runtime.mjs` 头注释与发版说明。
  *
  * 注意：sherpa-onnx-*（本地语音识别，22 MB）**不裁** —— 语音输入是聊天框特性。
@@ -34,7 +36,7 @@ export const PRUNE_LIST = [
  * pnpm 虚拟店（`node_modules/.pnpm/<entry>/`）里要裁掉的重型内核。
  *
  * **独立于 PRUNE_LIST**：种子 profile 里的这份是 pnpm 平铺装出来的**依赖副本**，
- * Office 技能的 CLI 绝对路径指向 dsh-runtime 本体、不指向种子里的副本 ⇒ 裁掉是安全的，
+ * Office 工具用的是 dsh-runtime 本体那份内核、不指向种子里的副本 ⇒ 裁掉是安全的，
  * 实测省 ~182MB（2026-11-07 种子 755MB → 573MB / 648MB）。
  * 这条只作用于**种子**，不碰运行时本体。
  *

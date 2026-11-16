@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>方案 A · Emoji + 彩色圆角底 — 知识库卡片图标 mockup · 非实现代码</title>
+<style>
+	/* 变量与统计条照 dsh-plugins/vssaros-kb/lib/homePage.js:65-66,77-83（真源） */
+	:root[data-theme="dark"]{--bg:#15161a;--panel:#1c1d22;--panel2:#22232a;--line:rgba(255,255,255,.1);--line2:rgba(255,255,255,.18);--fg:#e8e9ec;--fg2:#a9abb3;--fg3:#71737c;--accent:#5b8cff;--ok:#3fb950}
+	:root[data-theme="light"]{--bg:#f5f6f8;--panel:#fff;--panel2:#f0f2f5;--line:rgba(0,0,0,.09);--line2:rgba(0,0,0,.17);--fg:#1b1d22;--fg2:#5a5e68;--fg3:#8b8f99;--accent:#2f6bff;--ok:#1a7f37}
+	*{box-sizing:border-box}
+	body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+	.kba-wrap{max-width:620px;margin:0 auto /* ★ 默认宽度对齐真机「知识库主页」右栏（约 3 列），方便与截图逐项对照 */;padding:22px 24px 60px}
+	.kba-hd{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+	.kba-hd h1{margin:0;font-size:19px;font-weight:650}
+	.kba-hd .sub{font-size:12px;color:var(--fg3)}
+	.kba-acts{margin-left:auto;display:flex;gap:8px}
+	.kba-btn{height:28px;padding:0 12px;border-radius:7px;border:1px solid var(--line2);background:var(--panel2);color:var(--fg2);font-size:12.5px;cursor:pointer}
+	.kba-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+	.kba-note{border:1px solid var(--line);border-left:3px solid var(--accent);background:var(--panel);border-radius:9px;padding:10px 13px;margin-bottom:16px;font-size:12px;color:var(--fg2)}
+	.kba-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:20px}
+	.kba-st{position:relative;padding:10px 12px;border-radius:10px;background:var(--panel);border:1px solid var(--line);overflow:hidden}
+	.kba-st .bar{position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent)}
+	.kba-st:nth-child(2) .bar{background:var(--ok)}
+	.kba-st .lb{font-size:11px;color:var(--fg3)}
+	.kba-st .v{font-size:20px;font-weight:650;font-variant-numeric:tabular-nums}
+	.kba-st .v small{font-size:11px;color:var(--fg3);font-weight:500;margin-left:2px}
+	.kba-sec{display:flex;align-items:center;gap:8px;margin:0 0 10px;font-size:13.5px;font-weight:600}
+	.kba-sec .c{font-size:11.5px;color:var(--fg3);font-weight:400}
+	/* ★ 关键：下界用 min(180px,100%) 防止窄容器横向溢出 */
+	.kba-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(180px,100%),1fr));gap:12px}
+	.kba-card{display:flex;flex-direction:column;gap:8px;text-align:left;min-height:118px;padding:11px;background:var(--panel);border:1px solid var(--line);border-radius:11px;color:inherit;font:inherit;cursor:pointer;transition:.15s}
+	.kba-card:hover{transform:translateY(-2px);border-color:var(--line2);box-shadow:0 8px 22px rgba(0,0,0,.25)}
+	.kba-top{display:flex;align-items:center;gap:10px;min-width:0}
+	/* ★ 方案 A 的核心：低饱和圆角底 + 大 emoji，替代 78px 纯渐变封面 */
+	.kba-ico{flex:0 0 auto;width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:21px;line-height:1;border:1px solid var(--line);user-select:none}
+	.kba-name{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+	.kba-ex{font-size:11px;color:var(--fg3);line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:0}
+	.kba-meta{margin-top:auto;display:flex;flex-wrap:wrap;gap:6px;font-size:11px;color:var(--fg3)}
+	.kba-meta .wk{color:var(--accent)} .kba-meta .fb{color:var(--ok)}
+	.kba-time{font-size:10.5px;color:var(--fg3)}
+	.kba-new{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:118px;border:1.5px dashed var(--line2);background:transparent;color:var(--fg2);border-radius:11px;cursor:pointer;font:inherit}
+	.kba-new .p{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(91,140,255,.14);color:var(--accent);font-size:16px}
+	.kba-recent{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--panel);margin-top:22px}
+	.kba-r{display:flex;gap:9px;padding:8px 11px;border-top:1px solid var(--line);font-size:12.5px}
+	.kba-r:first-child{border-top:0}
+	.kba-r .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+	.kba-r .k,.kba-r .tm{color:var(--fg3);font-size:11px}
+	.kba-picker{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;z-index:40;padding:20px}
+	.kba-picker.on{display:flex}
+	.kba-panel{width:280px;max-width:100%;background:var(--panel);border:1px solid var(--line2);border-radius:12px;padding:13px}
+	.kba-panel h3{margin:0 0 9px;font-size:13px}
+	.kba-emojis{display:grid;grid-template-columns:repeat(6,1fr);gap:6px}
+	.kba-emojis button{height:34px;border-radius:7px;border:1px solid var(--line);background:var(--panel2);color:var(--fg);font-size:18px;cursor:pointer}
+	.kba-emojis button:hover{border-color:var(--accent)}
+	.kba-toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line2);padding:7px 13px;border-radius:9px;font-size:12.5px;opacity:0;pointer-events:none;transition:.2s}
+	.kba-toast.on{opacity:1}
+	.kba-check{margin-top:20px;font:11.5px/1.7 ui-monospace,Consolas,monospace;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 13px;white-space:pre-wrap;color:var(--fg2)}
+	@media(max-width:620px){.kba-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+</style>
+</head>
+<body><div class="kba-wrap">
+	<div class="kba-hd"><div><h1>知识库主页</h1><div class="sub">VsSarosVault · 5 个知识库 · 76 篇笔记　|　方案 A：Emoji + 彩色圆角底</div></div>
+		<div class="kba-acts"><button class="kba-btn" id="themeBtn">☀ 明暗</button><button class="kba-btn primary">＋ 新建知识库</button></div></div>
+	<div class="kba-note"><b>这是 mockup，不是实现代码。</b>　参考 <b>Notion Page Icon / AppFlowy Web Icon System / Anytype / 思源</b>：一个 emoji 落在低饱和圆角底上，色块只做分组、不承载信息。点任意卡片的图标可换 emoji（示意）。<code>homePage.js</code> 的 78px 纯渐变封面在方案中去掉，卡片变矮。</div>
+	<div class="kba-stats">
+		<div class="kba-st"><span class="bar"></span><div class="lb">知识库</div><div class="v">5<small>个</small></div></div>
+		<div class="kba-st"><span class="bar"></span><div class="lb">笔记</div><div class="v">76<small>篇</small></div></div>
+		<div class="kba-st"><span class="bar"></span><div class="lb">近 7 天改动</div><div class="v">1<small>篇</small></div></div>
+		<div class="kba-st"><span class="bar"></span><div class="lb">已绑飞书</div><div class="v">0<small>个</small></div></div>
+	</div>
+	<div class="kba-sec">全部知识库 <span class="c">5 个</span></div>
+	<div class="kba-grid" id="grid"></div>
+	<div class="kba-sec" style="margin-top:22px">最近更新 <span class="c">按库</span></div>
+	<div class="kba-recent" id="recent"></div>
+	<div class="kba-check" id="checkOut">自检运行中…</div>
+</div>
+<div class="kba-picker" id="picker"><div class="kba-panel"><h3>选一个图标（示意）</h3><div class="kba-emojis" id="emojis"></div></div></div>
+<div class="kba-toast" id="toast"></div>
+<script>
+(function(){
+	var KBS=[
+		{name:'财经',docs:1,week:1,time:'9 天前',emoji:'💰',hue:142,ex:'估值模型、财报摘要与行业数据'},
+		{name:'AIAgent',docs:21,week:1,time:'9 天前',emoji:'🤖',hue:210,ex:'Agent 框架、工具调用与记忆机制'},
+		{name:'游戏设计',docs:8,week:0,time:'48 天前',emoji:'🎮',hue:272,ex:'玩法拆解、关卡设计与数值'},
+		{name:'ComfyUI技术',docs:1,week:0,time:'48 天前',emoji:'🎨',hue:22,ex:'工作流节点、模型与出图参数'},
+		{name:'UnrealEngine',docs:45,week:0,time:'49 天前',emoji:'🧊',hue:190,ex:'渲染管线、材质与性能优化'}
+	];
+	var EMOJIS=['📚','💰','🤖','🎮','🎨','🧊','🧠','🔬','🧩','📐','🌐','⚙️'];
+	var grid=document.getElementById('grid');
+	function bg(hue){var l=document.documentElement.dataset.theme==='light'?88:22;return 'hsl('+hue+' 38% '+l+'%)';}
+	function render(){
+		grid.innerHTML='';
+		var n=document.createElement('button');n.className='kba-new';n.innerHTML='<span class="p">＋</span><span>新建知识库</span><span style="font-size:11px;color:var(--fg3)">建文件夹 · 关联飞书</span>';n.onclick=function(){toast('（示意）在 知识库列表/ 下新建一个文件夹');};grid.appendChild(n);
+		KBS.forEach(function(k,i){
+			var b=document.createElement('button');b.className='kba-card';b.setAttribute('data-kb',k.name);
+			b.innerHTML='<span class="kba-top"><span class="kba-ico" data-role="icon" data-i="'+i+'" style="background:'+bg(k.hue)+'">'+k.emoji+'</span><span class="kba-name">'+k.name+'</span></span>'
+				+'<span class="kba-ex">'+k.ex+'</span>'
+				+'<span class="kba-meta"><span>'+k.docs+' 篇</span>'+(k.week?'<span class="wk">7 天 +'+k.week+'</span>':'')+'<span class="kba-time">'+k.time+'</span></span>';
+			b.onclick=function(){toast('（示意）打开知识库：'+k.name);};grid.appendChild(b);
+		});
+		grid.querySelectorAll('[data-role="icon"]').forEach(function(el){el.onclick=function(ev){ev.stopPropagation();openPicker(Number(el.dataset.i));};});
+		document.getElementById('recent').innerHTML=KBS.slice(0,4).map(function(k){return '<div class="kba-r"><span class="nm">'+k.name+'</span><span class="k">'+k.docs+' 篇</span><span class="tm">'+k.time+'</span></div>';}).join('');
+	}
+	var toastTimer;function toast(t){var el=document.getElementById('toast');el.textContent=t;el.classList.add('on');clearTimeout(toastTimer);toastTimer=setTimeout(function(){el.classList.remove('on');},1600);}
+	var current=-1;
+	document.getElementById('emojis').innerHTML=EMOJIS.map(function(e){return '<button type="button" data-e="'+e+'">'+e+'</button>';}).join('');
+	document.getElementById('emojis').onclick=function(ev){var b=ev.target.closest('button[data-e]');if(!b||current<0)return;KBS[current].emoji=b.dataset.e;document.getElementById('picker').classList.remove('on');render();toast('已换图标：'+b.dataset.e);};
+	function openPicker(i){current=i;document.getElementById('picker').classList.add('on');}
+	document.getElementById('picker').onclick=function(ev){if(ev.target===this)this.classList.remove('on');};
+	document.getElementById('themeBtn').onclick=function(){var r=document.documentElement;r.dataset.theme=r.dataset.theme==='dark'?'light':'dark';render();};
+	render();
+
+	var pass=0,fail=0,lines=[];
+	function check(name,fn){try{var r=fn();if(r===false)throw new Error('断言为 false');pass++;lines.push('PASS  '+name);}catch(e){fail++;lines.push('FAIL  '+name+' — '+e.message);}}
+	check('渲染 5 个知识库 + 1 个新建卡',function(){return grid.querySelectorAll('.kba-card').length===5&&grid.querySelectorAll('.kba-new').length===1;});
+	check('每张卡都有 40px 图标底且内含 emoji',function(){return Array.prototype.every.call(grid.querySelectorAll('.kba-ico'),function(el){return el.textContent.trim().length>0&&Math.round(el.getBoundingClientRect().width)===40;});});
+	check('图标底色随主题切换（明暗两套）',function(){var before=grid.querySelector('.kba-ico').style.background;document.documentElement.dataset.theme='light';render();var after=grid.querySelector('.kba-ico').style.background;document.documentElement.dataset.theme='dark';render();return before!==after;});
+	check('卡片宽度正常（没被 grid 压成几十像素）',function(){return grid.querySelector('.kba-card').getBoundingClientRect().width>150;});
+	check('库名不逐字换行',function(){return Array.prototype.every.call(grid.querySelectorAll('.kba-name'),function(el){return el.getBoundingClientRect().height<=26;});});
+	check('窄视口 380px 下无横向溢出',function(){var w=document.documentElement.clientWidth;document.querySelector('.kba-wrap').style.maxWidth='380px';var ok=document.documentElement.scrollWidth<=document.documentElement.clientWidth+1;document.querySelector('.kba-wrap').style.maxWidth='';return ok;});
+	check('无裸色值：卡片配色只走 --var 或 hsl 变量',function(){return /--fg|--panel|--line/.test(document.querySelector('style').textContent);});
+	document.getElementById('checkOut').textContent=lines.join('\n')+'\n\n'+pass+'/'+(pass+fail)+' passed';
+	window.__KBA_RESULT__={pass:pass,fail:fail};
+})();
+</script>
+</body></html>

@@ -126,6 +126,11 @@ describe('TAPD data', () => {
     expect(itemAddress('https://www.tapd.cn/68880148/bugtrace/bugs/view/1168880148001005905?jump_count=1')).toEqual(bug)
     expect(itemAddress('https://tapd.woa.com/tapd_fe/123/prong/stories/view/456')).toEqual({ type: 'story', workspace: '123', id: '456' })
     expect(itemAddress('https://www.tapd.cn/68880148/s/5905586')).toBeUndefined()
+    for (const prefix of ['https://www.tapd.cn/68880148/bugtrace/bugs/view/', 'https://www.tapd.cn/tapd_fe/68880148/bug/detail/']) {
+      expect(itemAddress(`${prefix}123abc`)).toBeUndefined()
+      expect(itemAddress(`${prefix}123/other`)).toBeUndefined()
+      expect(itemAddress(`${prefix}123/?x=1#note`)).toEqual({ workspace: '68880148', type: 'bug', id: '123' })
+    }
     expect(threadItem('68880148:bug:5')).toEqual({ workspace: '68880148', type: 'bug', id: '5' })
     expect(threadItem('68880148:wiki:5')).toBeUndefined()
   })
@@ -194,6 +199,20 @@ describe('the Open API', () => {
     const post = calls.at(-1)!
     expect(post.url).toBe('https://api.tapd.cn/comments')
     expect(Object.fromEntries(new URLSearchParams(String(post.init.body)))).toEqual({ workspace_id: '68880148', entry_type: 'stories', entry_id: '7', author: 'saros-bot', description: '<p>好</p>' })
+  })
+  it('requests only one bounded latest-comment page for intake, without changing incremental polling', async () => {
+    const comments = Array.from({ length: 200 }, (_, index) => ({ Comment: { id: String(index), description: 'comment' } }))
+    const { api, calls } = stand([comments, comments])
+    expect(await api.recentComments('bug', '68880148', '5001', 20)).toHaveLength(20)
+    expect(calls).toHaveLength(1)
+    expect(Object.fromEntries(new URL(calls[0]!.url).searchParams)).toEqual({ workspace_id: '68880148', entry_type: 'bug',
+      entry_id: '5001', limit: '20', page: '1', order: 'modified desc' })
+    expect(await api.recentComments('bug', '68880148', '5001', 0)).toEqual([])
+    expect(calls).toHaveLength(1)
+    await expect(api.recentComments('bug', '68880148', '5001', 51)).rejects.toThrow('0–50')
+    const cancel = new AbortController(); cancel.abort()
+    await expect(api.recentComments('bug', '68880148', '5001', 20, cancel.signal)).rejects.toThrow()
+    expect(calls).toHaveLength(1)
   })
   it('names a refused account, a missing item and a missing configuration', async () => {
     const answer = (status: number) => (async () => new Response('{"status":0}', { status })) as unknown as typeof globalThis.fetch
@@ -329,5 +348,15 @@ describe('replies and notices', () => {
       follows: [{ thread: 'p4:501', own: true, closed: { at: '2026-11-03T03:00:00.000Z' } }] } as unknown as Ticket
     expect(changeEndNotices(ticket, () => ({ submittedAs: 507 }))).toEqual([expect.objectContaining({ channel, kind: 'notice', text: '已提交为 CL 507（审核的是 CL 501 的 shelve）。' })])
     expect(changeEndNotices({ ...ticket, ended: { outcome: 'closed', at: '' } } as unknown as Ticket, () => undefined)).toEqual([])
+  })
+})
+
+describe('★ 2026-11-11 TAPD web URLs from a bug link', () => {
+  it('parses /tapd_fe/<workspace>/bug/detail/<id> as well as the legacy view path', () => {
+    expect(itemAddress('https://www.tapd.cn/tapd_fe/68880148/bug/detail/1168880148001272696'))
+      .toEqual({ type: 'bug', workspace: '68880148', id: '1168880148001272696' })
+    expect(itemAddress('https://www.tapd.cn/68880148/prong/stories/view/123'))
+      .toEqual({ type: 'story', workspace: '68880148', id: '123' })
+    expect(itemAddress('https://example.com/nope')).toBeUndefined()
   })
 })

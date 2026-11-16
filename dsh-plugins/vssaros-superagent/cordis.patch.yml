@@ -21,6 +21,8 @@
     # VsSaros addition: the TAPD Source; it polls nothing until a watch is set (the TAPD identity name is optional).
     - id: dsh-superagent-tapd
       name: '@vssaros/dsh-superagent/tapd-watch'
+    - id: dsh-superagent-gongfeng
+      name: '@vssaros/dsh-superagent/gongfeng-watch'
     # The agent preset of every Executor Session (WORKER_PRESET in src/app/sessions.ts); the main Session has its own, below.
     # It is DSH's `standard` preset with only what a worker needs, and a shell whose foreground command moves to a background job
     # after 5 seconds, so a long command does not hold back a person's message, which the Session takes at its next step. Left
@@ -87,6 +89,22 @@
             name: '@deepseek-ai/dsh-skill-filesystem'
           - id: tool-skill
             name: '@deepseek-ai/dsh-tool-skill'
+          - id: worker-ptc-runtime
+            name: cordis:group
+            group: true
+            isolate:
+              ptcRuntime: true
+            config:
+              - id: ptc-runtime-node
+                name: '@deepseek-ai/dsh-ptc-runtime-node'
+                config:
+                  executionMode: per-call
+                  timeoutMs: 30000
+                  maxTimeoutMs: 30000
+                  maxOutputBytes: 262144
+                  maxOldGenerationSizeMb: 128
+                  maxMessageBytes: 1048576
+                  maxPendingCalls: 4
           - id: compaction
             name: cordis:group
             group: true

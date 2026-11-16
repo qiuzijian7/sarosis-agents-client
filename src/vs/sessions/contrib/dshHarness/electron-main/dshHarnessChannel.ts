@@ -277,6 +277,7 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		// 共享运行时服务插件（重构 1.3）：所有模块插件的底座（dataRoot/dshHome/pageShell/lock 的唯一真源），
 		// 同一条"存在才装"路径；安装顺序上它排在模块插件之前（见 supervisor 的插件清单）。
 		const bundledFoundation = join(this._bundledPluginsRoot, 'vssaros-foundation');
+		const bundledPluginResources = join(this._bundledPluginsRoot, 'vssaros-plugin-resources');
 		// 工作台宿主（2026-10-22）：同一条"存在才装"路径；没有 `vssaros.module` ⇒ 模块自发现不会装它。
 		const bundledWorkbenches = join(this._bundledPluginsRoot, 'vssaros-workbenches');
 		// 模块插件（agents / skills / mcp / kb / memory / codebase / kanban / workflow / dashboard / ide）：
@@ -295,6 +296,7 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 			runDir: join(options.userDataPath, 'dsh-run'),
 			bridgePluginDir: existsSync(join(bundledBridge, 'package.json')) ? bundledBridge : undefined,
 			foundationPluginDir: existsSync(join(bundledFoundation, 'package.json')) ? bundledFoundation : undefined,
+			pluginResourcesPluginDir: existsSync(join(bundledPluginResources, 'package.json')) ? bundledPluginResources : undefined,
 			workbenchesPluginDir: existsSync(join(bundledWorkbenches, 'package.json')) ? bundledWorkbenches : undefined,
 			chatSurfacePluginDir: existsSync(join(bundledChatSurface, 'package.json')) ? bundledChatSurface : undefined,
 			kbRefsPluginDir: existsSync(join(bundledKbRefs, 'package.json')) ? bundledKbRefs : undefined,

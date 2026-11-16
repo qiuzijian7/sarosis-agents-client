@@ -1,8 +1,32 @@
 {
   "schema": 1,
-  "generatedAt": "2026-10-22T00:00:00Z",
-  "bundled": "0.2.1-rc.2",
+  "generatedAt": "2026-11-12T00:00:00Z",
+  "bundled": "0.2.2-rc.2",
   "versions": [
+    {
+      "version": "0.2.2-rc.2",
+      "verifiedAt": "2026-11-12",
+      "checks": [
+        "runtime-smoke",
+        "runtime-version-selfreport",
+        "profile-seed-build",
+        "profile-seed-host-boot"
+      ],
+      "bridgePlugin": ">=0.1.2",
+      "notes": "npm next（2026-11-12 发布），用户指定接续切换。依赖树与 0.2.2-rc.1 同构（新增 `@deepseek-ai/dsh-cua-bundle`，其余官方包版本串整体抬到 rc.2），engines.node 同为 >=24.9.0。完整链路已过：prepack 版本自报=0.2.2-rc.2、profile 种子 847MB 覆盖全部 38 个随包插件、种子 Host 冒烟起了 webServer（历史 0.2.1-rc.4 正是崩在这步）。★ A/B 基线取 0.2.2-rc.1：LlmAdapter 契约 15/15（本版未再变）、dsw 主题 token 114→138 仍覆盖本仓 56 个 alias（4/0）、官方工具 46→54（check-agent-tools 207 个全绿）、check-tool-definitions 146/0、174 个随包技能仍能被新 yaml 加载。★★ 唯一的破坏性变化：上游 `@deepseek-ai/dsh-skill-office` 把 `office-render` / `office-recalculate` / `office-export-pdf` 三个技能改成 `office_render` / `office_recalculate` / `office_convert` 三个工具，assets 8→4 个文件（连 `office/references/sidecar.md` 一并删）。已收口：resources/office-skills 删除那 3 个旧技能、4 个保留文件同步为上游原文、`office/SKILL.md` 路由段换成新工具并保留本仓「本部署的运行时」一节（其中「技能追加 Kit 路径」的说法已失效，改为「工具由 dsh-skill-office 提供、用随包内核」）、check-office-skills.mjs 的 4 条过期 ALLOWED 登记清掉、prune-list.mjs 注释同步。⚠ 新工具是否走随包 LibreOffice 内核仍待「实际调用」验证（本轮只验到插件层与 bridge 全恢复）。runtime 本体 1132MB（rc.1 是 748MB，新版带两份内核 0.1.5/0.2.3，种子侧已裁 372MB）。★ 2026-11-12 已把 Node 门槛对齐上游：`isSupportedNodeVersion` 收紧为 >=24.9.0，同步了预检文案 / 托管 Node 选择 / 相关单测与两个随包插件的 engines；并把 dev 托管 Node 装成 v24.22.3（nodejs.org 官方 zip + SHA-256 校验，落在 <userData>/dsh-runtime/node/）。构建期 `prepack-dsh-runtime.mjs` 的 pnpm >=22.13 判据、.nvmrc 与 CI 构建机 Node 保持不变 —— 那是 IDE 自身构建链，不是 dsh 运行时门槛。★★ 2026-11-12 真机 F5 复验通过：dev profile 插件层用同版本种子重建（35 个真实 @vssaros 包、清掉 35 个 .ignored_* 残壳、cordis.patch.yml 伴生行写回 16384B），Host 日志 skipping profile bundle=0 / StartupError=0，ready in 31355 ms (bridge: connected)，[vssaros-bridge] module loaded + apply，页面标题回到 VsSaros；Host 进程的可执行文件确认为 <userData>/dsh-runtime/node/node.exe v24.22.3 ⇒ 新门槛真的生效。dsh-compat-e2e --all 24 通过（2 项既有 enabled:false 开关、1 跳过），check-dsh-release --require-runtime 通过，tsgo 0 错误。"
+    },
+    {
+      "version": "0.2.2-rc.1",
+      "verifiedAt": "2026-11-12",
+      "checks": [
+        "runtime-smoke",
+        "runtime-version-selfreport",
+        "profile-seed-build",
+        "profile-seed-host-boot"
+      ],
+      "bridgePlugin": ">=0.1.2",
+      "notes": "npm latest（2026-11-04 发布）。⚠ 上游本版新增 engines.node >=24.9.0，而本项目构建链/本机是 Node 22.22.1；隔离冒烟实测 CLI `--version` / `--help` 在 22 下正常 ⇒ 引擎声明不是启动期硬门槛（Node 门槛已于 2026-11-12 对齐到 >=24.9.0，见 0.2.2-rc.2 条目）。完整链路已过：prepack 版本自报=0.2.2-rc.1、profile 种子 595MB 覆盖全部 38 个随包插件、种子 Host 冒烟起了 webServer。★ A/B 基线对照（旧 rc.2 全绿 / 新版两处差异）已收口：① `GenerateOptions` 泛型化（purpose 由字面量联合改为 `purpose?: Purpose`）⇒ dsh-plugins/test/llm-adapter-contract.test.mjs 断言已兼容，15/15；运行期注册/流式/替换契约全绿 ⇒ 本地 Agent 方案不受影响。② 上游 `office-docx/SKILL.md` 文本改动 ⇒ resources/office-skills 副本已同步为新版原文（不登记 ALLOWED）。另把 dsh-compat-e2e 预检里写死的 rc.2 路径改为读 bundled。★ 2026-11-12 已按用户指定接续切到 next 通道 0.2.2-rc.2（见上方条目）；本版保留为已验证的回退基线。历史回归版 0.2.1-rc.4（host 组启动即崩）仍未做基线对照 ⇒ 不切。"
+    },
     {
       "version": "0.2.1-rc.2",
       "verifiedAt": "2026-10-28",

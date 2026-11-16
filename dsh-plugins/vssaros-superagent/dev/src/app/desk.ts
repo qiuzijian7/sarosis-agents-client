@@ -106,8 +106,10 @@ export const deskRequestId = (messageId: string): string => `superagent-reply:${
  * The Runtime delivers to the desk only through its outbox (desk-outbox.ts), and only what needs the person's answer.
  */
 export async function deliverReply(host: ReplyHost, address: SuperagentAddress, message: OutboundMessage): Promise<'sent' | 'gone'> {
-  const text = address.kind === 'desk' ? `[SuperAgent] ${message.text}`
-    : `[SuperAgent 主管回复]\n${message.text}\n\n要继续找主管，用 agent_message 发给 SuperAgent。`
+  // ★ 2026-11-11：普通会话 @SuperAgent 的回复回到原会话，文案与 desk 一致、不带 bot 提示。
+  const text = address.kind === 'session' ? `[SuperAgent] ${message.text}`
+    : address.kind === 'desk' ? `[SuperAgent] ${message.text}`
+      : `[SuperAgent 主管回复]\n${message.text}\n\n要继续找主管，用 agent_message 发给 SuperAgent。`
   try {
     await host.prompt(address.session, deskRequestId(message.id), text, address.kind === 'desk' ? 'queue' : 'steer')
     return 'sent'

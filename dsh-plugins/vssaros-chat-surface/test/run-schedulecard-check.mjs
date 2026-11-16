@@ -85,6 +85,13 @@ if (t) {
 	ok('没有 start 时间 ⇒ 不渲染（不猜轮次）', t.tasksOfTurn(snapOk, {}) === null);
 	ok('没有节点 ⇒ null', t.tasksOfTurn({}, turn) === null);
 	ok('没有创建任务 ⇒ null（不占位）', t.tasksOfTurn({ nodes: mkNodes([node(result('bash', 1500, 'x'))]) }, turn) === null);
+	const isolated = t.tasksOfTurn({ nodes: mkNodes([
+		node(result('vssaros_schedule_create', 1500, '{"id":"t-new123","title":"自建"}')),
+		node(result('schedule_create', 1600, '{"id":"official-id","title":"官方"}')),
+		node({ ...result('vssaros_schedule_create', 1700, '{"id":"t-fail123"}'), isError: true }),
+	]) }, turn);
+	ok('独立工具正常显示；官方任务和失败结果不误投影到自家库',
+		isolated && isolated.length === 1 && isolated[0].id === 't-new123', JSON.stringify(isolated));
 }
 
 // ── 注册契约（与官方 ScheduleTurnCard 同槽）──────────────────────────────

@@ -2,7 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { expect, it, vi } from 'vitest'
-import { stopSubagents, untilQuiet } from '../src/executor/background.ts'
+import { stopBackground, stopSubagents, untilQuiet, workerErrorDetail } from '../src/executor/background.ts'
 import { jobRegistry } from './fixtures/host.ts'
 
 /** A context with DSH's job registry and subagents, and an idle worker agent with one live subagent, `child-1`. */
@@ -15,6 +15,82 @@ function setup(waitForChildren: (agent: Agent) => Promise<boolean>, drainChildre
   const ctx = { get: (name: string) => services[name], agents: { get: () => agent } } as unknown as Context
   return { ctx, agent, jobs, subagents }
 }
+
+function rc2Setup() {
+  const { ctx, agent, jobs } = setup(async () => false)
+  const subagents = {
+    waitForTreeWork: vi.fn(async () => false), drainDescendants: vi.fn(async (_roots: readonly Agent[]) => {}),
+    listDescendants: vi.fn(async (_root: string, _signal?: AbortSignal): Promise<{ id: string; kind: 'child' | 'diagnostic' }[]> => []),
+    interrupt: vi.fn((_id: string, _authority: { kind: 'ancestor'; agent: Agent }) => {}),
+  }
+  const context = { ...ctx, get: (name: string) => name === 'subagents' ? subagents : ctx.get(name) } as unknown as Context
+  return { ctx: context, agent, jobs, subagents }
+}
+
+it('reproduces the removed-method failure against the shipped rc.2 service and stops an empty tree with its real methods', async () => {
+  const url = new URL('../../../../dsh-runtime/0.2.2-rc.2/node_modules/@deepseek-ai/dsh-subagent/lib/index.js', import.meta.url)
+  const { SubagentRuntime } = await import(url.href)
+  const service = Object.create(SubagentRuntime.prototype)
+  expect(service.listChildren).toBeUndefined()
+  expect(() => service.listChildren('worker-t1')).toThrow(TypeError)
+  const { ctx, agent } = setup(async () => false)
+  const context = { ...ctx, get: (name: string) => name === 'subagents' ? service : ctx.get(name) } as unknown as Context
+  expect(await untilQuiet(context, agent, new AbortController().signal)).toBe(true)
+  await expect(stopBackground(context, agent.id, 'completed', false, true)).resolves.toBeUndefined()
+})
+
+it('uses rc.2 tree wait and terminal drain with no legacy listChildren method or live child', async () => {
+  const { ctx, agent, subagents } = rc2Setup()
+  expect(await untilQuiet(ctx, agent, new AbortController().signal)).toBe(true)
+  await stopBackground(ctx, agent.id, 'ticket completed', false, true)
+  expect(subagents.waitForTreeWork).toHaveBeenCalledWith(agent)
+  expect(subagents.drainDescendants).toHaveBeenCalledWith([agent])
+  expect(subagents.listDescendants).not.toHaveBeenCalled()
+})
+
+it('interrupts descendants under the exact ancestor authority on retries without closing admission', async () => {
+  const { ctx, agent, subagents } = rc2Setup()
+  subagents.listDescendants.mockResolvedValue([{ id: 'child', kind: 'child' }, { id: 'grandchild', kind: 'child' }])
+  await stopBackground(ctx, agent.id, 'retry', true)
+  expect(subagents.drainDescendants).not.toHaveBeenCalled()
+  expect(subagents.interrupt.mock.calls).toEqual([['child', { kind: 'ancestor', agent }], ['grandchild', { kind: 'ancestor', agent }]])
+  expect(agent.cancel).toHaveBeenCalledWith({ kind: 'user' }, { keepInbox: true })
+  expect(subagents.waitForTreeWork).toHaveBeenCalledWith(agent)
+})
+
+it('keeps true cleanup errors nested and still attempts subagent cleanup when jobs failed', async () => {
+  const { ctx, agent, jobs, subagents } = rc2Setup()
+  jobs.service.list.mockImplementation(() => { throw new Error('job registry unavailable') })
+  subagents.drainDescendants.mockRejectedValue(new TypeError('descendant stop failed'))
+  try { await stopBackground(ctx, agent.id, 'completed', false, true); expect.unreachable() }
+  catch (error) {
+    expect(error).toBeInstanceOf(AggregateError)
+    expect(workerErrorDetail(error)).toContain('job registry unavailable')
+    expect(workerErrorDetail(error)).toContain('descendant stop failed')
+  }
+  expect(subagents.drainDescendants).toHaveBeenCalledOnce()
+})
+
+it('reports bounded rc.2 cleanup timeout instead of claiming successful stop', async () => {
+  const { ctx, agent, subagents } = rc2Setup()
+  subagents.drainDescendants.mockImplementation(() => new Promise(() => {}))
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  try {
+    const stopped = expect(stopSubagents(ctx, agent, false, true)).rejects.toThrow('cleanup is unverified')
+    await vi.advanceTimersByTimeAsync(10000)
+    await stopped
+  } finally { vi.useRealTimers() }
+  expect(agent.cancel).toHaveBeenCalled()
+})
+
+it('bounds cyclic aggregate diagnostics and redacts credential assignments', () => {
+  const error = new AggregateError([new Error('token=private password:secret')], 'stop failed')
+  error.errors.push(error)
+  const detail = workerErrorDetail(error)
+  expect(detail).toContain('[redacted]')
+  expect(detail).not.toMatch(/private|:secret/)
+  expect(detail.length).toBeLessThanOrEqual(1200)
+})
 
 it('is not quiet when an end during the subagent check woke the worker, whose own idle looks again', async () => {
   const { ctx, agent, jobs } = setup(async () => {

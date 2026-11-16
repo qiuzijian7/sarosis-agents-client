@@ -214,7 +214,7 @@ export function discoverUpdates(input: IDshUpdateInput): IDshUpdateDiscovery {
 			}
 		}
 		if (input.nodeVersion && !isSupportedNodeVersion(input.nodeVersion)) {
-			problems.push(`Node ${input.nodeVersion} 低于 dsh 要求（22.19+ / 24+）`);
+			problems.push(`Node ${input.nodeVersion} 低于 dsh 要求（>=24.9.0）`);
 		}
 		return {
 			version,

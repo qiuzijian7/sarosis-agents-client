@@ -27,9 +27,9 @@
 	var root = document.getElementById('vs-mp-root');
 
 	/** React 缺失就如实报（**不要静默白屏**：白屏是最难查的形态）✗ */
-	if (!React || !ReactDOM) {
+	if (!React || !ReactDOM || !window.MarketplaceState || !window.MarketplaceUI) {
 		if (root) {
-			root.innerHTML = '<div class="vs-mp-empty">React 没有装载成功（vendor/react.js 或 react-dom.js 取不到）—— 请刷新；仍然不行就把这个提示发给我</div>';
+			root.innerHTML = '<div class="vs-mp-empty">商城模块没有装载成功（React / 状态 / UI 资源缺失）—— 请刷新；仍然不行请检查插件更新是否完整。</div>';
 		}
 		return;
 	}
@@ -131,30 +131,17 @@
 	 * @param {{ pkg: object, large?: boolean }} props
 	 */
 	function PkgIcon(props) {
-		var pkg = props.pkg || {};
-		var raw = String(pkg.icon || '').trim();
-		var hue = hueOf(pkg.slug || pkg.name || '');
-		var fallbackEmoji = KIND_EMOJI[pkg.kind] || '📦';
-		var emojiState = useState(null);   // 图片失败后要显示的 emoji（null = 还没失败）
-		var emoji = emojiState[0];
-		var setEmoji = emojiState[1];
+		var pkg = props.pkg || {}, raw = String(pkg.icon || '').trim(), failed = useState(false);
+		useEffect(function () { failed[1](false); }, [raw]);
 		var cls = 'vs-mp-icon' + (props.large ? ' vs-mp-icon-lg' : '');
-
-		if (isImageIcon(raw) && !emoji) {
-			return h('div', { className: cls, style: { background: iconBg(hue) }, title: raw },
-				h('img', {
-					src: raw,
-					alt: '',
-					// ★ 懒加载：原生 loading=lazy（视口外不请求）+ async 解码（不阻塞渲染）
-					loading: 'lazy',
-					decoding: 'async',
-					referrerPolicy: 'no-referrer',
-					onError: function () { setEmoji(fallbackEmoji); }
-				})
-			);
+		if (isImageIcon(raw) && !failed[0]) {
+			return h('div', { className: cls + ' image', title: raw }, h('img', {
+				src: raw, alt: textOf(pkg.name) + ' Logo', loading: 'lazy', decoding: 'async', referrerPolicy: 'no-referrer',
+				onError: function () { failed[1](true); }
+			}));
 		}
-		return h('div', { className: cls, style: { background: iconBg(hue) } },
-			h('span', { className: 'vs-mp-icon-emoji' }, emoji || raw || fallbackEmoji));
+		return h('div', { className: cls, title: failed[0] ? '原始图标加载失败' : raw || '商城未提供图标' },
+			h('span', { className: raw && !failed[0] ? 'vs-mp-icon-emoji' : 'vs-mp-asset-missing' }, failed[0] ? '图标失败' : raw || '无图标'));
 	}
 
 	/**
@@ -258,14 +245,6 @@
 		try { localStorage.setItem(SIZE_KEY, id); } catch { /* 存不了也不影响本次 */ }
 	}
 
-	/** ★ 2026-11-10：「已安装」折叠组的开合状态（按分类隔离，与「工具」工作台同款）。 */
-	var FOLD_KEY_PREFIX = 'vs-mp-fold.';
-	function loadFold(key) {
-		try { return localStorage.getItem(FOLD_KEY_PREFIX + key) !== '0'; } catch { return true; }
-	}
-	function saveFold(key, open) {
-		try { localStorage.setItem(FOLD_KEY_PREFIX + key, open ? '1' : '0'); } catch { /* 存不了不影响本次 */ }
-	}
 
 
 	/**
@@ -289,14 +268,18 @@
 
 	/** 顶层页签。 */
 	var MAIN_TABS = [
-		{ id: 'market', label: '商城' },
-		{ id: 'mine', label: '我的发布' },
 		{ id: 'installed', label: '已安装' },
+		{ id: 'market', label: '发现' },
+		{ id: 'favorites', label: '收藏' },
+		{ id: 'mine', label: '我的发布' },
 		{ id: 'admin', label: '管理' }
 	];
 
 	/** 商城动作统一入口（Host 侧自持认证/落盘/打包）。 */
-	async function action(op, params) {
+	var readClient = window.MarketplaceState.createReadClient();
+	async function action(op, params, options) {
+		if (['list', 'detail', 'installed', 'mcpConfig', 'preferencesRead', 'reviewList'].indexOf(op) >= 0) { return readClient.read(op, params, options); }
+		readClient.invalidate();
 		var res;
 		try {
 			res = await fetch('/x/marketplace/api/action', {
@@ -356,7 +339,8 @@
 	/** 一张商品卡片。 */
 	function Card(props) {
 		var pkg = props.pkg;
-		var upgradable = pkg.upgradable === true;
+		var opState = props.operations ? props.operations.get(window.MarketplaceState.itemKey(pkg)) : { pending: false, error: '' };
+		var upgradable = pkg.upgradable === true || Boolean(pkg.installedVersion && pkg.version && pkg.installedVersion !== pkg.version && props.upgrades && props.upgrades[pkg.kind + ':' + pkg.slug]);
 		// ★ 2026-10-29（用户：「已经安装的 item，状态要更新 安装→已安装」）：
 		//   Host 早就在 list/detail 里带了 `installedVersion`（按**磁盘落地物**核对过），
 		//   但这里一直没用 ⇒ 装完的卡片仍然显示「安装」按钮（点了会覆盖重装）✗
@@ -411,7 +395,7 @@
 			//   原先拿服务端的"发布权限"做门控 ⇒ 普通用户浏览别人的包一律被判无权
 			//   ⇒ 所有类别的卡片都看不到「安装」按钮 ✗
 			//   安装面向所有登录用户；能否安装由 Host/服务端裁决，失败在消息条如实显示。
-			actions.push(h('button', { key: 'i', className: 'vs-mp-btn primary', onClick: function () { props.onInstall(pkg); } }, '安装'));
+			actions.push(h('button', { key: 'i', className: 'vs-mp-btn primary', disabled: pkg.installable === false, title: pkg.installable === false ? '商城未提供可安装包体或分发来源' : '安装前检查', onClick: function () { props.onInstall(pkg); } }, '安装'));
 		}
 		if (props.showUninstall) {
 			actions.push(h('button', { key: 'x', className: 'vs-mp-btn danger', onClick: function () { props.onUninstall(pkg); } }, '卸载'));
@@ -433,16 +417,18 @@
 		//     （否则大图没了、小图标又被 `hasCover ? null` 跳过 ⇒ 顶部空白 ✗）
 		var coverState = useCoverFallback(pkg.cover);
 		var hasCover = coverState[0];
+		if (props.onFavorite && !pkg.isLocal) { actions.unshift(h('button', { key: 'fav', className: 'vs-mp-btn vs-mp-favorite', disabled: props.savingPreferences, 'aria-pressed': props.favorite, 'aria-label': props.favorite ? '取消收藏 ' + pkg.name : '收藏 ' + pkg.name, onClick: function () { props.onFavorite(pkg); }, title: props.favorite ? '取消收藏' : '收藏到当前分组' }, h(window.MarketplaceUI.Icon, { name: 'star' }))); }
+		actions = actions.map(function (element) { return React.cloneElement(element, { disabled: Boolean(element.props.disabled || opState.pending), 'aria-busy': opState.pending || undefined }); });
 		return h('div', { className: 'vs-mp-card' + (hasCover ? ' has-cover' : ''), 'data-slug': pkg.slug },
 			h(PkgCover, { key: 'cover', pkg: pkg, onFail: coverState[1] }),
 			h('div', { className: 'vs-mp-card-top' },
-				hasCover ? null : h(PkgIcon, { key: 'icon', pkg: pkg }),
+				h(PkgIcon, { key: 'icon', pkg: pkg }),
 				h('div', { className: 'vs-mp-card-topbody' },
 					h('div', { className: 'vs-mp-card-head' },
 						h('span', { className: 'vs-mp-kindtag' }, KIND_LABEL[pkg.kind] || String(pkg.kind)),
 						statusTag, distTag, instTag, upTag
 					),
-					h('div', { className: 'vs-mp-card-title' }, textOf(pkg.name) || textOf(pkg.slug))
+					h('button', { className: 'vs-mp-card-title vs-mp-title-btn', onClick: function () { props.onDetail(pkg.slug, pkg.kind); }, title: textOf(pkg.name) || pkg.slug }, textOf(pkg.name) || textOf(pkg.slug))
 				)
 			),
 			h('div', { className: 'vs-mp-card-meta' },
@@ -455,28 +441,14 @@
 				textOf(pkg.description) || '这个商品暂时还没有填写介绍。'
 			),
 			botLine ? h('div', { className: 'vs-mp-card-bot', 'data-mp-bot-summary': '1' }, botLine) : null,
+			h('small', { className: 'vs-mp-preferences-status' }, Number.isFinite(pkg.downloads) ? pkg.downloads.toLocaleString() + ' 次下载' : '下载数未提供'),
+			opState.pending ? h('p', { role: 'status' }, '操作进行中…') : null,
+			opState.error ? h('p', { role: 'alert', className: 'vs-mp-error' }, opState.error) : null,
 			h('div', { className: 'vs-mp-card-actions' }, actions)
 		);
 	}
 
-	/** 右滑抽屉（详情 / 发布 / 编辑共用外壳）。 */
-	function Drawer(props) {
-		return h(React.Fragment, null,
-			h('div', { className: 'vs-mp-mask', onClick: props.onClose }),
-			h('div', { className: 'vs-mp-drawer', role: 'dialog', 'aria-label': props.title },
-				h('div', { className: 'vs-mp-drawer-head' },
-					// ★ 2026-10-23：可选图标（详情抽屉用大号，与卡片上的视觉块呼应）
-					props.icon || null,
-					h('div', null,
-						h('div', { className: 'vs-mp-drawer-title' }, props.title),
-						props.subtitle ? h('div', { className: 'vs-mp-drawer-meta' }, props.subtitle) : null
-					),
-					h('button', { className: 'vs-mp-x', onClick: props.onClose, title: '关闭' }, '×')
-				),
-				props.children
-			)
-		);
-	}
+	function Drawer(props) { return h(window.MarketplaceUI.Drawer, props, props.children); }
 
 	var SAFE_MODE_KEY = 'vs-mp-safe-mode-backup';
 
@@ -633,129 +605,6 @@
 		);
 	}
 
-	/**
-	 * ★ 2026-11-10：「已安装」折叠组 —— 样式与开合行为复刻「工具」工作台的 `.sk-fold`。
-	 *   · 原生 <details>（不另引状态机）+ 三角箭头 + 计数徽章；
-	 *   · 开合状态按分类 key 存 localStorage（刷新后保持用户上次选择）；
-	 *   · 空组不渲染（与工具工作台一致，不白占一行）；
-	 *   · 组内复用 Card ⇒ 升级 / 卸载 / 详情都在，且不破坏卡片契约守卫。
-	 *   ⚠ 只用商城自己的 --vs-mp-* 变量：本页是独立 document，没有 --vscode-* 令牌。
-	 */
-	/**
-	 * ★ 2026-11-10：「已安装」行 —— 逐条复刻「工具」工作台 renderItemRow 的 DOM 与数值。
-	 *   · 左色条 / 28px 图标 / 等宽 12px 名称 / 单行 11.5px 描述 / 标签行 / 右侧控件组；
-	 *   · MCP 行额外有「配置」按钮与 30x16 开关，状态来自 mcpConfig.servers（实时）。
-	 *   · 停用态 .is-off（半透明 + 名称删除线），与蓝本一致。
-	 *   ⚠ 类名沿用蓝本 sk-*，但 CSS 只用商城 --vs-mp-* 变量（独立 document 没有 --vscode-*）。
-	 */
-	function InstalledRow(props) {
-		var it = props.item;
-		var kind = String(it.kind || '');
-		var id = String(it.slug || it.storeId || it.id || '');
-		var srv = props.mcpServer || null;
-		var isMcp = kind === 'mcp';
-		var disabled = isMcp && srv && srv.disabled === true;
-		var hue = 0;
-		for (var i = 0; i < id.length; i++) { hue = (hue * 31 + id.charCodeAt(i)) % 360; }
-		var iconStyle = { background: 'linear-gradient(135deg,hsl(' + hue + ',68%,58%,.34),hsl('
-			+ ((hue + 46) % 360) + ',72%,46%,.16))' };
-		var desc = textOf(it.description) || (isMcp
-			? (srv ? (srv.type || 'MCP') + (srv.command ? ' · ' + srv.command : (srv.url ? ' · ' + srv.url : ''))
-				: '未在 mcp.json 注册（可能已被手工删掉）')
-			: '这个资源暂时还没有填写介绍。');
-		var tags = [h('span', { key: 'v', className: 'sk-tag ver' },
-			'v' + String(it.installedVersion || it.version || '?'))];
-		if (it.upgradable) {
-			tags.push(h('span', { key: 'u', className: 'sk-tag up' }, '可升级 v' + String(it.latestVersion || '')));
-		}
-		tags.push(h('span', { key: 'k', className: 'sk-tag kind' }, KIND_LABEL[kind] || kind));
-		if (isMcp && !srv) { tags.push(h('span', { key: 'x', className: 'sk-tag up' }, '未注册')); }
-		else if (isMcp && srv && srv.type === 'stdio' && !srv.approved) {
-			tags.push(h('span', { key: 'a', className: 'sk-tag up' }, '待批准'));
-		}
-		var ops = [h('button', { key: 'd', className: 'sk-act', title: '查看详情',
-			onClick: function () { props.onDetail(id, kind); } }, '详情')];
-		if (isMcp) {
-			ops.push(h('button', { key: 'cfg', className: 'sk-act sk-act-cfg', title: '编辑整份 mcp.json（所有 MCP）',
-				onClick: function () { props.onMcpConfig(); } }, '配置'));
-		}
-		if (it.upgradable) {
-			ops.push(h('button', { key: 'up', className: 'sk-act sk-act-up',
-				onClick: function () { props.onUpgrade(it); } }, '升级'));
-		}
-		// 本地新建资源没有台账条目 ⇒ 卸载必然失败，改为不给这个按钮（详情里给发布）
-		if (!it.isLocal) {
-			ops.push(h('button', { key: 'x', className: 'sk-act tk-del', title: '卸载',
-				onClick: function () { props.onUninstall(it); } }, '卸载'));
-		}
-		if (it.isLocal) {
-			ops.push(h('button', { key: 'pub', className: 'sk-act sk-act-up', title: '发布这个本机资源',
-				onClick: function () { props.onPublishLocal(it); } }, '发布'));
-		}
-		if (isMcp && srv) {
-			// disabled=true ⇒ 点一下要启用，所以 wantEnabled 直接取 disabled
-			ops.push(h('button', {
-				key: 'sw', className: 'sk-sw', role: 'switch', 'aria-checked': disabled ? 'false' : 'true',
-				'data-vs-mp-mcp-sw': id,
-				title: disabled ? '已停用（点一下启用）' : '已启用（点一下停用）',
-				onClick: function (e) { e.stopPropagation(); props.onToggleMcp(id, !!disabled); }
-			}, h('i')));
-		}
-		return h('li', {
-			className: 'sk-row' + (disabled ? ' is-off' : ''),
-			'data-vs-mp-item': kind + ':' + id,
-			'data-vs-mp-mcp': isMcp ? (disabled ? 'off' : 'on') : undefined
-		},
-			h('i', { className: 'sk-bar' }),
-			h('span', { className: 'sk-ico', style: iconStyle, 'aria-hidden': 'true' }, KIND_EMOJI[kind] || '📦'),
-			h('div', { className: 'sk-main' },
-				h('div', { className: 'sk-l1' }, h('span', { className: 'sk-nm' }, textOf(it.name) || id)),
-				h('div', { className: 'sk-ds' }, desc),
-				h('div', { className: 'sk-rowmeta' }, tags)
-			),
-			h('div', { className: 'sk-ops' }, ops)
-		);
-	}
-
-	function InstalledFold(props) {
-		var list = Array.isArray(props.items) ? props.items : [];
-		if (list.length === 0) { return null; }
-		var foldKey = String(props.foldKey || 'all');
-		var servers = props.mcpServers || {};
-		var _open = useState(function () { return loadFold(foldKey); });
-		var open = _open[0]; var setOpen = _open[1];
-		return h('details', {
-			className: 'vs-mp-fold',
-			'data-vs-mp-fold': foldKey,
-			open: open,
-			onToggle: function (e) {
-				var v = !!e.currentTarget.open;
-				setOpen(v);
-				saveFold(foldKey, v);
-			}
-		},
-			h('summary', { className: 'vs-mp-fold-sum' },
-				'已安装 ', h('span', { className: 'vs-mp-fold-n' }, String(list.length))
-			),
-			h('ul', { className: 'sk-list' },
-				list.map(function (pkg) {
-					var id = String(pkg.slug || pkg.id || '');
-					return h(InstalledRow, {
-						key: 'inst-' + (pkg.kind || '') + ':' + id,
-						item: pkg,
-						mcpServer: String(pkg.kind) === 'mcp' ? servers[id] : null,
-						onDetail: props.onDetail,
-						onUpgrade: props.onUpgrade,
-						onUninstall: props.onUninstall,
-						onMcpConfig: props.onMcpConfig,
-						onToggleMcp: props.onToggleMcp,
-						onPublishLocal: props.onPublishLocal
-					});
-				})
-			)
-		);
-	}
-
 	/** ★ 2026-11-10：MCP 配置弹层 —— 单独一页展示/编辑整份 mcp.json（所有服务器）。 */
 	function McpConfigModal(props) {
 		var s = props.state;
@@ -815,6 +664,8 @@
 			// ★ 2026-11-10：本地新建资源在商城里没有商品 ⇒ 安装/卸载/下架都无意义，
 			//   只给一个直达发布的入口。不按发布权限判权，失败由消息条如实显示。
 			actions.push(h('button', { key: 'pub', className: 'vs-mp-btn primary', onClick: props.onPublish }, '发布到商城'));
+		} else if (installed && d.upgradable) {
+			actions.push(h('button', { key: 'up', className: 'vs-mp-btn primary', onClick: props.onUpgrade }, '升级'));
 		} else if (installed) {
 			actions.push(h('button', {
 				key: 'i',
@@ -825,19 +676,21 @@
 		} else {
 			// ★ 2026-11-10：与卡片同一口径 —— 详情里的「安装」也不受发布权限门控。
 			//   编辑 / 卸载 / 下架仍按服务端 permissions 判权（下面三行不动）。
-			actions.push(h('button', { key: 'i', className: 'vs-mp-btn primary', onClick: props.onInstall }, '安装'));
+			actions.push(h('button', { key: 'i', className: 'vs-mp-btn primary', disabled: d.installable === false, onClick: props.onInstall }, '安装'));
 		}
-		if (!d.isLocal && perm.canEdit !== false) {
+		if (!d.isLocal && props.onFavorite) { actions.push(h('button', { key: 'fav', className: 'vs-mp-btn', disabled: props.savingPreferences, onClick: function () { props.onFavorite(d); }, 'aria-pressed': props.favorite }, props.favorite ? '取消收藏' : '收藏')); }
+		if (!d.isLocal && perm.canEdit === true) {
 			actions.push(h('button', { key: 'e', className: 'vs-mp-btn', onClick: props.onEdit }, '编辑信息'));
 		}
-		if (!d.isLocal && perm.canDelete !== false) {
-			actions.push(h('button', { key: 'u', className: 'vs-mp-btn danger', onClick: props.onUninstall }, '卸载'));
+		if (!d.isLocal && installed) { actions.push(h('button', { key: 'u', className: 'vs-mp-btn danger', onClick: props.onUninstall }, '卸载')); }
+		if (!d.isLocal && perm.canDelete === true) {
 			actions.push(h('button', { key: 'd', className: 'vs-mp-btn danger', onClick: props.onDeletePackage }, '下架整个包'));
 		}
-
+		var opState = props.operations.get(window.MarketplaceState.itemKey(d));
+		actions = actions.map(function (element) { return React.cloneElement(element, { disabled: Boolean(element.props.disabled || opState.pending) }); });
 		return h(Drawer, {
-			// 有缩略图就显示大图（与卡片一致）；没有才用 emoji 图标
-			icon: isImageIcon(d.cover) ? null : h(PkgIcon, { key: 'icon', pkg: d, large: true }),
+			wide: true,
+			icon: h(PkgIcon, { key: 'icon', pkg: d, large: true }),
 			title: textOf(d.name) || textOf(d.slug),
 			subtitle: [KIND_LABEL[d.kind] || String(d.kind || ''), textOf(d.author) || '暂无', d.version ? 'v' + String(d.version) : '']
 				.filter(Boolean).join(' · '),
@@ -867,7 +720,7 @@
 								v.size ? h('span', { className: 'vs-mp-ver-size' }, Math.round(Number(v.size) / 1024) + ' KB') : null
 							),
 							v.changelog ? h('div', { className: 'vs-mp-ver-note' }, String(v.changelog)) : null,
-							perm.canDelete !== false
+							perm.canDelete === true
 								? h('button', { className: 'vs-mp-link', onClick: function () { props.onDeleteVersion(v.version); } }, '下架此版本')
 								: null
 						);
@@ -881,6 +734,7 @@
 	function PublishDrawer(props) {
 		var st = props.state;
 		var github = st.mode === 'github';
+		var pluginPackage = st.mode === 'package';
 		var pickOptions = st.items.length === 0
 			? [h('option', { key: 'none', value: '' }, '（本机没有可发布的资源）')]
 			: st.items.map(function (it) {
@@ -903,15 +757,39 @@
 				// ★ 2026-10-22（用户需求）：来源二选一 —— 打包上传 / GitHub 地址
 				h('div', { className: 'vs-mp-srcseg' },
 					h('button', {
-						className: 'vs-mp-btn' + (github ? '' : ' primary'),
+						className: 'vs-mp-btn' + (!github && !pluginPackage ? ' primary' : ''),
 						onClick: function () { props.onChange({ mode: 'local', error: '' }); }
 					}, '从本机打包'),
 					h('button', {
 						className: 'vs-mp-btn' + (github ? ' primary' : ''),
 						onClick: function () { props.onChange({ mode: 'github', error: '' }); }
-					}, 'GitHub 地址')
+					}, 'GitHub 地址'),
+					h('button', { className: 'vs-mp-btn' + (pluginPackage ? ' primary' : ''),
+						onClick: function () { props.onChange({ mode: 'package', kind: 'workbench', error: '' }); }
+					}, '上传插件包')
 				),
-				github ? [
+				pluginPackage ? [
+					h(Field, { key: 'package-kind', label: '插件类型' },
+						h('select', { className: 'vs-mp-input', value: st.kind || 'workbench', disabled: st.busy,
+							onChange: function (e) { props.onChange({ kind: e.target.value, error: '' }); } },
+							h('option', { value: 'workbench' }, '工作台插件（页面必需）'),
+							h('option', { value: 'agent' }, 'Bot 插件（无需页面）'))),
+					h(Field, { key: 'package-file', label: '标准插件 .tgz（最大 8 MiB；技能、工具、MCP 可选）' },
+						h('input', { className: 'vs-mp-input', type: 'file', accept: '.tgz,.tar.gz', disabled: st.busy,
+							onChange: function (e) {
+								var file = e.target.files && e.target.files[0];
+								if (!file) { props.onChange({ pluginBase64: '' }); return; }
+								if (file.size > 8 * 1024 * 1024) { props.onChange({ pluginBase64: '', error: '插件包超过 8 MiB' }); return; }
+								var reader = new FileReader();
+								reader.onload = function () { props.onChange({ pluginBase64: String(reader.result).split(',')[1], packageFile: file.name }); };
+								reader.onerror = function () { props.onChange({ pluginBase64: '', error: '读取插件包失败' }); };
+								reader.readAsDataURL(file);
+							}
+						})),
+					h(Field, { key: 'package-slug', label: '商城标识（与插件包名分开，小写字母/数字/-/_）' },
+						h('input', { className: 'vs-mp-input', value: st.slug || '', onChange: function (e) { props.onChange({ slug: e.target.value }); } })),
+					h('div', { key: 'package-hint', className: 'vs-mp-msg' }, '上传前会校验包内入口与资源清单；不上传个人凭据。其他用户安装后使用自己的配置。')
+				] : github ? [
 					h(Field, { key: 'k', label: '类型' },
 						h('select', {
 							className: 'vs-mp-input',
@@ -1111,9 +989,75 @@
 		var mcpDigestRef = useRef('');
 
 		var pageRef = useRef(1);
+		var currentFetch = useRef(null), currentRankingFetch = useRef(null);
+		var gates = useRef(window.MarketplaceState.createGate()).current;
+		var operations = useRef(window.MarketplaceState.createOperations()).current;
+		var operationTick = useState(0);
+		var _prefs = useState({ revision: 0, skin: 'native', groups: [{ id: 'default', name: '默认收藏', items: [] }] });
+		var preferences = _prefs[0], setPreferences = _prefs[1], prefsRef = useRef(preferences);
+		var _prefStatus = useState('正在读取收藏与设置…'), preferenceStatus = _prefStatus[0], setPreferenceStatus = _prefStatus[1];
+		var _saving = useState(false), savingPreferences = _saving[0];
+		var preferenceQueue = useRef(Promise.resolve());
+		var _group = useState('all'), favoriteGroup = _group[0];
+		var _records = useState({}), favoriteRecords = _records[0];
+		var _ranking = useState({ items: [], busy: true, error: '' }), ranking = _ranking[0];
+		var catalogMetadata = useRef({});
+		var _installedBusy = useState(true), installedBusy = _installedBusy[0];
+		var _installedKnown = useState(false), installedKnown = _installedKnown[0];
+		var _restartReceipts = useState({}), restartReceipts = _restartReceipts[0];
+		var loadInstalledMetadata = useCallback(function (pkg, signal) { return action('detail', { kind: pkg.kind, slug: pkg.slug }, { signal: signal }); }, []);
+		var discovery = tab === 'market' && !q && !category && sort === 'recent' && pageRef.current === 1;
+		useEffect(function () { return operations.subscribe(function () { operationTick[1](function (n) { return n + 1; }); }); }, [operations]);
+		useEffect(function () {
+			var active = true;
+			void action('preferencesRead', {}).then(function (r) {
+				if (!active) { return; }
+				if (r.ok && r.preferences) { if (r.preferences.revision >= prefsRef.current.revision) { prefsRef.current = r.preferences; setPreferences(r.preferences); setPreferenceStatus('收藏与设置已读取'); } }
+				else { setPreferenceStatus('收藏与设置读取失败：' + String(r.error || '无回执')); }
+			});
+			return function () { active = false; gates.dispose(); };
+		}, []);
+		function changePreferences(change) {
+			var promise = preferenceQueue.current.then(async function () {
+				_saving[1](true); setPreferenceStatus('正在保存…');
+				var res = await action('preferencesUpdate', { expectedRevision: prefsRef.current.revision, change: change });
+				_saving[1](false);
+				if (!res || !res.ok) {
+					if (res && res.code === 'revision-conflict' && res.current) { prefsRef.current = res.current; setPreferences(res.current); }
+					setPreferenceStatus('暂未保存：' + String(res && res.error || '无回执') + '；请重试'); return false;
+				}
+				prefsRef.current = res.preferences; setPreferences(res.preferences); setPreferenceStatus('已保存'); return true;
+			});
+			preferenceQueue.current = promise.catch(function () { _saving[1](false); setPreferenceStatus('暂未保存，连接已中断'); return false; });
+			return preferenceQueue.current;
+		}
+		function isFavorite(pkg) { return preferences.groups.some(function (g) { return g.items.indexOf(window.MarketplaceState.itemKey(pkg)) >= 0; }); }
+		function removeFavorite(id) {
+			preferences.groups.filter(function (g) { return g.items.indexOf(id) >= 0; }).forEach(function (g) { void changePreferences({ type: 'favorite', groupId: g.id, item: id, saved: false }); });
+		}
+		function toggleFavorite(pkg) {
+			var id = window.MarketplaceState.itemKey(pkg);
+			if (isFavorite(pkg)) { removeFavorite(id); return; }
+			void changePreferences({ type: 'favorite', groupId: favoriteGroup === 'all' ? 'default' : favoriteGroup, item: id, saved: true });
+		}
+		async function refreshInstalled() {
+			var token = gates.begin('installed');
+			_installedBusy[1](true);
+			var results = await Promise.all([action('installed', {}, { signal: token.signal }), action('mcpConfig', {}, { signal: token.signal })]);
+			if (!token.current()) { return; }
+			_installedBusy[1](false);
+			if (results[0].ok) { setInstalledItems(results[0].items || []); _installedKnown[1](true); }
+			else { setMsg({ kind: 'error', text: '本机清单读取失败，保留上次记录：' + String(results[0].error || '') }); }
+			if (results[1].ok) { setMcpState(results[1]); mcpDigestRef.current = String(results[1].digest || ''); }
+			else { setMcpState(null); setMsg({ kind: 'error', text: 'MCP 状态未读取：' + String(results[1].error || '') }); }
+		}
+		useEffect(function () { void refreshInstalled(); }, []);
+		useEffect(function () { if (tab === 'installed') { void refreshInstalled(); } }, [tab]);
 
 		/** 拉一页（append=true 时追加，不打断已看到的内容）。 */
 		var fetchPage = useCallback(async function (pageToLoad, append) {
+			var token = gates.begin('page');
+			if (tab === 'favorites' || tab === 'installed') { setBusy(false); return; }
 			setBusy(true);
 			var op = 'list';
 			if (tab === 'installed') { op = 'installed'; }
@@ -1125,21 +1069,8 @@
 			if (sort) { params.sort = sort; }
 			if (tab === 'mine') { params.scope = 'mine'; }
 
-			var res = await action(op, params);
-			// ★ 2026-11-10：商城页签同时取「已安装」清单，供折叠组按分类过滤。
-			//   installed 不分页、自带磁盘落地物核对 + 升级检查 ⇒ 折叠组不会显示幽灵条目。
-			if (tab === 'market') {
-				var inst = await action('installed', {});
-				setInstalledItems(inst && Array.isArray(inst.items) ? inst.items : []);
-				// mcp.json 的 servers 是「已安装」MCP 行开关/描述的实时真源
-				var mc = await action('mcpConfig', {});
-				if (mc && mc.ok !== false) {
-					setMcpState(mc);
-					mcpDigestRef.current = String(mc.digest || '');
-				}
-			} else {
-				setInstalledItems([]);
-			}
+			var res = await action(op, params, { signal: token.signal });
+			if (!token.current()) { return; }
 			setBusy(false);
 			if (!res || res.ok === false) {
 				if (!append) { setItems([]); setTotal(0); }
@@ -1148,8 +1079,12 @@
 			}
 			var got = Array.isArray(res.items) ? res.items : [];
 			var paginated = op === 'list';
-			setItems(function (prev) { return append && paginated ? prev.concat(got) : got; });
-			setTotal(Number(res.total) || got.length);
+			if (paginated && tab === 'market') {
+				got.forEach(function (p) { catalogMetadata.current[window.MarketplaceState.itemKey(p)] = { name: p.name, description: p.description, icon: p.icon, cover: p.cover }; });
+				Object.keys(catalogMetadata.current).slice(0, Math.max(0, Object.keys(catalogMetadata.current).length - 180)).forEach(function (key) { delete catalogMetadata.current[key]; });
+			}
+			setItems(function (prev) { return append && paginated ? window.MarketplaceState.mergePage(prev, got).slice(-180) : got; });
+			setTotal(typeof res.total === 'number' ? res.total : got.length);
 			pageRef.current = pageToLoad;
 			// 分类清单：从已加载列表**累积**提取（加载更多后下拉项不跳变）
 			if (paginated) {
@@ -1165,32 +1100,64 @@
 				});
 			}
 		}, [tab, kind, category, sort, q]);
+		currentFetch.current = fetchPage;
 
 		// 换页签 / 类型 / 分类 / 排序 / 搜索词 ⇒ 从第一页重来
 		useEffect(function () {
+			setItems([]); setTotal(0); setCats([]);
 			void fetchPage(1, false);
+			return function () { gates.cancel('page'); };
 		}, [fetchPage]);
+		var fetchRanking = useCallback(async function () {
+			var token = gates.begin('ranking');
+			if (!discovery) { return; }
+			_ranking[1]({ items: [], busy: true, error: '' });
+			var res = await action('list', { kind: kind, sort: 'popular', limit: 5, page: 1 }, { signal: token.signal });
+			if (!token.current()) { return; }
+			_ranking[1]({ items: res.ok ? res.items || [] : [], busy: false, error: res.ok ? '' : String(res.error || '下载榜读取失败') });
+		}, [kind, discovery]);
+		currentRankingFetch.current = fetchRanking;
+		useEffect(function () { void fetchRanking(); return function () { gates.cancel('ranking'); }; }, [fetchRanking]);
+		useEffect(function () {
+			var token = gates.begin('favorites');
+			if (tab !== 'favorites') { return; }
+			var ids = Array.from(new Set(preferences.groups.flatMap(function (g) { return g.items; })));
+			void (async function () {
+				var records = {};
+				for (var offset = 0; offset < ids.length; offset += 6) {
+					await Promise.all(ids.slice(offset, offset + 6).map(async function (id) {
+						var parts = id.split(':'), res = await action('detail', { kind: parts[0], slug: parts[1] }, { signal: token.signal });
+						if (res.ok && res.kind === parts[0] && res.slug === parts[1]) { records[id] = { pkg: res }; }
+						else { records[id] = { error: String(res.error || '商品不可访问或已下架') }; }
+					}));
+					if (!token.current()) { return; }
+					_records[1](Object.assign({}, records));
+				}
+				if (!ids.length && token.current()) { _records[1]({}); }
+			})();
+			return function () { gates.cancel('favorites'); };
+		}, [tab, preferences.groups]);
 
 		// ★ 2026-11-10：2s 轮询 mcp.json 的 mtime —— 弹层保存、行内开关、甚至用户在别处
 		//   手改配置，都会让「已安装」折叠组里对应的 item 状态自动更新（不用手动刷新）。
 		//   ⚠ 弹层打开时只更新 mcpState，不动 draft ⇒ 不会覆盖用户正在编辑的内容。
 		useEffect(function () {
-			if (tab !== 'market') { return undefined; }
+			if (tab !== 'market' && tab !== 'installed') { return undefined; }
+			var inFlight = false, active = true;
 			var timer = setInterval(function () {
-				if (document.visibilityState !== 'visible') { return; }
+				if (document.visibilityState !== 'visible' || inFlight) { return; }
+				inFlight = true;
 				void (async function () {
-					var d = await action('mcpConfig', { digestOnly: true });
-					if (!d || d.ok === false) { return; }
-					var now = String(d.digest || '');
-					if (now === mcpDigestRef.current) { return; }
-					mcpDigestRef.current = now;
-					var full = await action('mcpConfig', {});
-					if (full && full.ok !== false) { setMcpState(full); }
-					void fetchPage(1, false);
+					try {
+						var d = await action('mcpConfig', { digestOnly: true });
+						if (!active || !d || d.ok === false || String(d.digest || '') === mcpDigestRef.current) { return; }
+						mcpDigestRef.current = String(d.digest || '');
+						await refreshInstalled();
+					} finally { inFlight = false; }
 				})();
 			}, 2000);
-			return function () { clearInterval(timer); };
-		}, [tab, fetchPage]);
+			return function () { active = false; clearInterval(timer); };
+		}, [tab]);
 
 		// ★ 2026-11-10：MCP 配置弹层 + 「已安装」状态的实时数据源
 		async function openMcpConfig() {
@@ -1230,13 +1197,16 @@
 		/** 统一的动作执行（失败如实显示）。 */
 
 		async function run(op, params, okText) {
-			setBusy(true);
+			var operationKey = String(params.kind || '') + ':' + String(params.slug || params.localId || op);
+			var finish = operations.begin(operationKey, op);
+			if (!finish) { return null; }
 			var res = await action(op, params);
-			setBusy(false);
+			finish(res && res.ok ? '' : String(res && res.error || '操作失败'));
 			if (!res || res.ok === false) {
 				setMsg({ kind: 'error', text: String((res && res.error) || '操作失败') });
 				return null;
 			}
+			if (res.restartRequired === true || op === 'uninstall') { _restartReceipts[1](function (old) { var next = Object.assign({}, old); if (op === 'uninstall') { delete next[operationKey]; } else { next[operationKey] = true; } return next; }); }
 			if (okText) {
 			var text = okText;
 			// ★ 2026-11-09：Bot 组合包按 Host 的**分项回执**如实说明生效状态，
@@ -1254,14 +1224,24 @@
 			}
 			// ★ P3：登记失败等警告如实拼在成功文案后，不吞
 			if (res.vaultWarning) { text += ' ⚠ ' + String(res.vaultWarning); }
+			if (res.packageName && res.resources) {
+				var botPlugin = res.profile === 'bot';
+				text = (botPlugin ? 'Bot 插件已安装：' : '工作台插件已安装：') + res.packageName
+					+ (res.restartRequired ? (botPlugin ? '；请重启应用后从 Bots 侧栏选择' : '；请重启应用后从工作台启动器打开')
+						: (botPlugin ? '；请从 Bots 侧栏选择并验证会话' : '；请打开工作台验证页面'));
+				text += '。技能 / 工具 / MCP 为可选能力；需要凭据的服务仍需使用者配置，安装不代表全部能力已就绪。';
+			}
 			setMsg({ kind: 'ok', text: text });
 		}
-			void fetchPage(1, false);
+			readClient.invalidate();
+			void refreshInstalled(); void currentRankingFetch.current(); void currentFetch.current(1, false);
 			return res;
 		}
 
 		async function openDetail(slug, kind) {
-			var res = await action('detail', { slug: slug, kind: kind || '' });
+			var token = gates.begin('detail');
+			var res = await action('detail', { slug: slug, kind: kind || '' }, { signal: token.signal });
+			if (!token.current()) { return; }
 			if (!res || res.ok === false) {
 				setMsg({ kind: 'error', text: String((res && res.error) || '详情取不到') });
 				return;
@@ -1343,9 +1323,14 @@
 		async function submitPublish(force) {
 			if (!pub) { return; }
 			var github = pub.mode === 'github';
+			var pluginPackage = pub.mode === 'package';
 			var k;
 			var localId;
-			if (github) {
+			if (pluginPackage) {
+				k = String(pub.kind || 'workbench'); localId = String(pub.slug || '').trim();
+				if (k !== 'workbench' && k !== 'agent') { setPub(Object.assign({}, pub, { error: '插件类型必须为 Bot 或工作台' })); return; }
+				if (!localId || !pub.pluginBase64) { setPub(Object.assign({}, pub, { error: '请选择插件 .tgz 并填写商城标识' })); return; }
+			} else if (github) {
 				k = String(pub.kind || '').trim();
 				localId = String(pub.slug || '').trim();
 				if (!localId) {
@@ -1380,6 +1365,7 @@
 			}
 			setPub(Object.assign({}, pub, { busy: true, error: '' }));
 			var params = { kind: k, localId: localId, slug: localId, version: version, changelog: pub.changelog || '' };
+			if (pluginPackage) { params.pluginBase64 = pub.pluginBase64; }
 			if (icon) { params.icon = icon; }
 			if (cover) { params.cover = cover; }
 			// ★ 2026-10-31：知识库的本体在**用户选的那个库目录**里（不在数据根下）⇒ 必须带上
@@ -1447,9 +1433,11 @@
 
 		// ★ 2026-11-10 P0：安装 / 升级改为两步（预览 → 确认）。
 		async function openPreview(pkg, upgrade) {
-			if (!pkg || !pkg.slug) { return; }
-			setMsg(null);
+			if (!pkg || !pkg.slug || pkg.installable === false) { return; }
+			var token = gates.begin('preview');
+			gates.cancel('detail'); setDetail(null); setMsg(null);
 			var res = await action('previewInstall', { slug: pkg.slug });
+			if (!token.current()) { return; }
 			if (!res || res.ok === false) {
 				setMsg({ kind: 'error', text: '预览取不到：' + String((res && res.error) || '未知错误') });
 				return;
@@ -1462,7 +1450,7 @@
 			var p = preview;
 			setPreview(null);
 			var res = await run(p.upgrade ? 'upgrade' : 'install',
-				{ kind: p.kind, slug: p.slug },
+				{ kind: p.kind, slug: p.slug, version: p.version },
 				p.upgrade ? '已升级（部分资源需要重启后才生效）' : '已安装（部分资源需要重启后才生效）');
 			if (res && detail && detail.slug === p.slug) { await openDetail(p.slug); }
 		}
@@ -1619,21 +1607,25 @@
 			return [{ id: '', label: '全部分类' }].concat(cats.map(function (c) { return { id: c, label: c }; }));
 		}, [cats, category, tab]);
 
-		// ★ 2026-11-10：商城页签把「已安装」抽进折叠组；网格只留可安装项（与工具工作台同款）
-		var foldKey = kind || 'all';
-		var folded = tab === 'market'
-			? installedItems.filter(function (it) { return !kind || it.kind === kind; })
-			: [];
-		var shownItems = tab === 'market'
-			? items.filter(function (it) { return !it.installedVersion; })
-			: items;
+		var shownItems = tab === 'installed' ? installedItems.filter(function (it) {
+			return (!kind || it.kind === kind) && (!q || [it.name, it.slug, it.description].join(' ').toLowerCase().includes(q.toLowerCase()));
+		}).map(function (p) { return restartReceipts[window.MarketplaceState.itemKey(p)] ? Object.assign({}, p, { restartRequired: true }) : p; }) : items;
+		var upgradeMap = {}, installationMap = {};
+		installedItems.forEach(function (p) { var id = window.MarketplaceState.itemKey(p); installationMap[id] = p.installedVersion || p.version; if (p.upgradable) { upgradeMap[id] = p; } });
+		function renderCard(pkg) {
+			if (installedKnown && !pkg.isLocal) { pkg = Object.assign({}, pkg, { installedVersion: installationMap[window.MarketplaceState.itemKey(pkg)] || '' }); }
+			return h(Card, { key: window.MarketplaceState.itemKey(pkg), pkg: pkg, operations: operations, upgrades: upgradeMap,
+				favorite: isFavorite(pkg), onFavorite: toggleFavorite, savingPreferences: savingPreferences,
+				adminActions: tab === 'admin' && pkg.permissions && pkg.permissions.canReview === true,
+				onDetail: openDetail, onInstall: onInstall, onUpgrade: onUpgrade, onUninstall: onUninstall, onReview: onReview, onFeature: onFeature });
+		}
 		var mcpServerMap = {};
 		if (mcpState && Array.isArray(mcpState.servers)) {
-			mcpState.servers.forEach(function (x) { mcpServerMap[String(x.id)] = x; });
+			mcpState.servers.forEach(function (x) { mcpServerMap[String(x.id)] = { disabled: x.disabled, approved: x.approved, type: x.type }; });
 		}
-		var more = items.length < total && tab !== 'admin' && tab !== 'installed';
-
-		return h('div', { className: 'vs-mp-wrap' },
+		var more = pageRef.current * PAGE_SIZE < total && tab !== 'admin' && tab !== 'installed' && tab !== 'favorites';
+		return h('div', { className: 'vs-mp-wrap', 'data-skin': preferences.skin, 'data-view': tab, 'data-vssaros-surface': 'workbench' },
+			h('div', { id: 'vs-mp-main' },
 			// ── 页头 ──────────────────────────────────────────────
 			h('header', { className: 'vs-mp-head' },
 				h('div', null,
@@ -1643,12 +1635,13 @@
 				h('div', { className: 'vs-mp-tools' },
 					h('input', {
 						className: 'vs-mp-input',
-						placeholder: '搜索名称 / 介绍 / 标识',
+						placeholder: tab === 'installed' ? '搜索已安装资源名称 / 标识 / 介绍' : '搜索名称 / 介绍 / 标识', type: 'search', 'aria-label': tab === 'installed' ? '搜索已安装资源' : '搜索商城商品',
+						onSearch: function (e) { if (!e.target.value) { setQ(''); } },
 						value: qInput,
 						onChange: function (e) { setQInput(e.target.value); },
 						onKeyDown: function (e) { if (e.key === 'Enter') { setQ(String(qInput).trim()); } }
 					}),
-					h('select', {
+					tab === 'installed' ? null : h('select', {
 						className: 'vs-mp-input vs-mp-select',
 						value: sort,
 						title: '排序',
@@ -1659,7 +1652,7 @@
 						h('option', { value: 'name' }, '按名称')
 					),
 					// ★ 2026-10-23：卡片大小调整（小 / 中 / 大，选择会被记住）
-					h('div', { className: 'vs-mp-size', title: '卡片大小', role: 'group', 'aria-label': '卡片大小' },
+					tab === 'installed' ? null : h('div', { className: 'vs-mp-size', title: '卡片大小', role: 'group', 'aria-label': '卡片大小' },
 						SIZES.map(function (s) {
 							return h('button', {
 								key: s.id,
@@ -1670,10 +1663,12 @@
 							}, s.label);
 						})
 					),
-					h('button', { className: 'vs-mp-btn', title: '查看并编辑整份 mcp.json（所有 MCP 服务器）', onClick: function () { void openMcpConfig(); } }, 'MCP 配置'),
-					h('button', { className: 'vs-mp-btn', title: '停用第三方插件以排查故障', onClick: function () { void openSafeMode(); } }, '安全模式'),
-					h('button', { className: 'vs-mp-btn', title: '导出/导入离线便携包', onClick: function () { void openPortable(); } }, '便携包'),
-					h('button', { className: 'vs-mp-btn', onClick: function () { setMsg(null); void fetchPage(1, false); } }, '刷新'),
+					h('select', { className: 'vs-mp-input vs-mp-select', 'aria-label': '商城皮肤', value: preferences.skin, disabled: savingPreferences, onChange: function (e) { void changePreferences({ type: 'setSkin', skin: e.target.value }); } }, h('option', { value: 'native' }, '原生'), h('option', { value: 'decorative' }, '装饰')),
+					h('details', { className: 'vs-mp-more' }, h('summary', { className: 'vs-mp-btn' }, '更多'), h('div', { className: 'vs-mp-more-menu' },
+						h('button', { className: 'vs-mp-btn', onClick: function () { void openMcpConfig(); } }, 'MCP 配置'),
+						h('button', { className: 'vs-mp-btn', onClick: function () { void openSafeMode(); } }, '安全模式'),
+						h('button', { className: 'vs-mp-btn', onClick: function () { void openPortable(); } }, '便携包'),
+						h('button', { className: 'vs-mp-btn', onClick: function () { readClient.invalidate(); setMsg(null); void refreshInstalled(); void fetchRanking(); void fetchPage(1, false); } }, '刷新'))),
 					h('button', { className: 'vs-mp-btn primary', onClick: function () { void openPublish(); } }, '发布')
 				)
 			),
@@ -1688,57 +1683,41 @@
 			tab === 'admin' ? null : h(Chips, { items: kindChips, active: kind, onPick: function (id) { setKind(id); setCategory(''); setCats([]); } }),
 			h(Chips, { items: catChips, active: category, onPick: function (id) { setCategory(id); }, small: true }),
 
-			h('div', { className: 'vs-mp-count' },
-				'已显示 ' + shownItems.length + ' / 共 ' + total + ' 个商品'
-					+ (folded.length ? ' · 已安装 ' + folded.length + ' 个已单列' : ''),
+			tab !== 'favorites' && tab !== 'installed' ? h('div', { className: 'vs-mp-count' },
+				'匹配 ' + total + ' 个 · 当前保留 ' + items.length + ' 个 · 展示 ' + shownItems.length + ' 个（最多保留最近 180 项）',
 				more ? h('button', { className: 'vs-mp-link', disabled: busy, onClick: function () { void fetchPage(pageRef.current + 1, true); } }, busy ? '加载中…' : '加载更多') : null
+			) : null,
+			discovery ? h(window.MarketplaceUI.Discovery, { items: items, ranking: ranking.items, busy: ranking.busy, error: ranking.error,
+				onRetry: function () { readClient.invalidate(); void fetchRanking(); }, renderCard: renderCard, PkgIcon: PkgIcon, onDetail: openDetail }) : null,
+
+			tab === 'favorites' ? h(window.MarketplaceUI.Favorites, { preferences: preferences, group: favoriteGroup,
+				onGroup: _group[1], records: favoriteRecords, kind: kind, query: q, renderCard: renderCard, onChange: changePreferences, onRemove: removeFavorite,
+				saving: savingPreferences, status: preferenceStatus }) : tab === 'installed'
+				? h(window.MarketplaceUI.InstalledManager, { items: shownItems, metadata: catalogMetadata.current, busy: installedBusy,
+					servers: mcpServerMap, serversKnown: Boolean(mcpState), operations: operations, PkgIcon: PkgIcon, PkgCover: PkgCover,
+					loadMetadata: loadInstalledMetadata, onDetail: openDetail, onUpgrade: onUpgrade, onUninstall: onUninstall,
+					onMcpConfig: openMcpConfig, onToggleMcp: toggleMcpEnabled, onRefresh: refreshInstalled,
+					onPublishLocal: function (it) { void openPublish({ kind: it.kind, localId: it.localId || it.slug, name: textOf(it.name) }); } })
+				: h(React.Fragment, null, discovery ? h('div', { className: 'vs-mp-section-head' }, h('h2', null, '浏览全部资源')) : null,
+					shownItems.length === 0 ? h('div', { className: 'vs-mp-empty', role: 'status' }, busy ? '正在加载…' : '没有匹配的商品，可调整筛选或刷新。')
+					: h('div', { className: 'vs-mp-grid', style: { '--vs-mp-card-min': sizeMin + 'px' } }, shownItems.map(renderCard))),
+			h('p', { className: 'vs-mp-preferences-status', role: 'status' }, preferenceStatus)
 			),
-
-			tab === 'market' ? h(InstalledFold, {
-				key: 'fold-' + foldKey,
-				foldKey: foldKey,
-				items: folded,
-				mcpServers: mcpServerMap,
-				onDetail: openDetail,
-				onUpgrade: onUpgrade,
-				onUninstall: onUninstall,
-				onMcpConfig: function () { void openMcpConfig(); },
-				onToggleMcp: function (id, wantEnabled) { void toggleMcpEnabled(id, wantEnabled); },
-				onPublishLocal: function (it) {
-					void openPublish({ kind: it.kind, localId: String(it.localId || it.slug || it.id || ''), name: textOf(it.name) });
-				}
-			}) : null,
-
-			shownItems.length === 0
-				? h('div', { className: 'vs-mp-empty' }, busy ? '正在加载…'
-					: (folded.length ? '这一类已装的商品都在上方「已安装」折叠组里。' : '没有找到匹配的商品。'))
-				// ★ 2026-10-23：列数由 `--vs-mp-card-min` 决定（auto-fill ⇒ 档位一变自动重排）
-				: h('div', { className: 'vs-mp-grid', style: { '--vs-mp-card-min': sizeMin + 'px' } }, shownItems.map(function (pkg) {
-					return h(Card, {
-						key: (pkg.kind || '') + ':' + String(pkg.slug || pkg.id || ''),
-						pkg: pkg,
-						showUninstall: tab === 'installed' && !pkg.isLocal,
-						adminActions: tab === 'admin',
-						onDetail: openDetail,
-						onInstall: onInstall,
-						onUpgrade: onUpgrade,
-						onUninstall: onUninstall,
-						onReview: onReview,
-						onFeature: onFeature
-					});
-				})),
+			h('div', { id: 'vs-mp-overlays' }),
 
 			// ── 抽屉 ──────────────────────────────────────────────
 			detail ? h(DetailDrawer, {
-				detail: detail,
-				onClose: function () { setDetail(null); },
+				detail: Object.assign({}, detail, { upgradable: Boolean(upgradeMap[window.MarketplaceState.itemKey(detail)]) }), operations: operations, favorite: isFavorite(detail), onFavorite: toggleFavorite, savingPreferences: savingPreferences,
+				onClose: function () { gates.cancel('detail'); setDetail(null); },
 				onPublish: function () {
 					setDetail(null);
 					void openPublish({ kind: detail.kind, localId: detail.localId || detail.slug, name: textOf(detail.name) });
 				},
 				onInstall: function () { void installFromDetail(); },
-				onUninstall: function () { onUninstall(detail); },
+				onUpgrade: function () { void openPreview(detail, true); },
+				onUninstall: function () { void onUninstall(detail).then(function (r) { if (r) { void openDetail(detail.slug, detail.kind); } }); },
 				onEdit: function () {
+					setDetail(null);
 					setEdit({
 						slug: detail.slug,
 						name: textOf(detail.name),
@@ -1751,8 +1730,7 @@
 					});
 				},
 				onDeletePackage: function () {
-					void run('deletePackage', { kind: detail.kind, slug: detail.slug }, '已下架');
-					setDetail(null);
+					void run('deletePackage', { kind: detail.kind, slug: detail.slug }, '已下架').then(function (r) { if (r) { setDetail(null); } });
 				},
 				onDeleteVersion: function (version) {
 					void run('deleteVersion', { kind: detail.kind, slug: detail.slug, version: version }, '已下架该版本');

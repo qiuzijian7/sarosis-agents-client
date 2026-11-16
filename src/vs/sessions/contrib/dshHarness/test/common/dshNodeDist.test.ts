@@ -10,6 +10,8 @@ import { blockingSessions, snapshotName, snapshotsToPrune, summarizeHealth } fro
 const INDEX: INodeDistEntry[] = [
 	{ version: 'v25.1.0', lts: false, files: ['win-x64-zip', 'linux-x64', 'osx-arm64-tar'] },
 	{ version: 'v24.11.1', lts: 'Krypton', files: ['win-x64-zip', 'linux-x64', 'osx-arm64-tar'] },
+	{ version: 'v24.9.0', lts: 'Krypton', files: ['win-x64-zip', 'win-arm64-zip', 'linux-x64', 'osx-arm64-tar'] },
+	{ version: 'v24.8.0', lts: 'Krypton', files: ['win-x64-zip', 'linux-x64'] },
 	{ version: 'v22.23.3', lts: 'Jod', files: ['win-x64-zip', 'win-arm64-zip', 'linux-x64', 'osx-arm64-tar'] },
 	{ version: 'v22.18.0', lts: 'Jod', files: ['win-x64-zip', 'linux-x64'] },
 	{ version: 'v20.19.0', lts: 'Iron', files: ['win-x64-zip', 'linux-x64'] },
@@ -19,14 +21,15 @@ suite('dshHarness / managed Node distribution', () => {
 
 	test('picks the newest supported LTS that has an archive for the platform', () => {
 		assert.strictEqual(selectNodeVersion(INDEX, 'win32', 'x64'), 'v24.11.1', 'current releases (non-LTS) are skipped');
-		assert.strictEqual(selectNodeVersion(INDEX, 'win32', 'arm64'), 'v22.23.3', 'only versions with a win-arm64 zip qualify');
+		assert.strictEqual(selectNodeVersion(INDEX, 'win32', 'arm64'), 'v24.9.0', '22 LTS is below the 24.9.0 floor; only a qualifying win-arm64 zip is picked');
 		assert.strictEqual(selectNodeVersion(INDEX, 'freebsd', 'x64'), undefined);
 	});
 
 	test('pinned version must exist and meet the dsh floor', () => {
-		assert.strictEqual(selectNodeVersion(INDEX, 'linux', 'x64', '22.23.3'), 'v22.23.3');
+		assert.strictEqual(selectNodeVersion(INDEX, 'linux', 'x64', '24.9.0'), 'v24.9.0');
 		assert.strictEqual(selectNodeVersion(INDEX, 'linux', 'x64', 'v25.1.0'), 'v25.1.0', 'pinning may pick a non-LTS release');
-		assert.strictEqual(selectNodeVersion(INDEX, 'linux', 'x64', '22.18.0'), undefined, 'below 22.19');
+		assert.strictEqual(selectNodeVersion(INDEX, 'linux', 'x64', '24.8.0'), undefined, 'below 24.9.0');
+		assert.strictEqual(selectNodeVersion(INDEX, 'linux', 'x64', '22.23.3'), undefined, '22 LTS is below 24.9.0');
 		assert.strictEqual(selectNodeVersion(INDEX, 'linux', 'x64', '20.19.0'), undefined);
 		assert.strictEqual(selectNodeVersion(INDEX, 'linux', 'x64', '23.0.0'), undefined, 'not in index');
 	});

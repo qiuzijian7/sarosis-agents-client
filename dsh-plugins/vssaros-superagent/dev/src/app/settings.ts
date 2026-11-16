@@ -21,7 +21,7 @@ import { KV } from '../kv.ts'
 export class SettingsConflict extends Error {}
 const now = (): string => new Date().toISOString()
 /** Executor settings that control shell execution paths, prepare commands, and command shims. */
-const environment = ({ executor }: SettingsValue) => JSON.stringify([executor.directory, executor.prepare, executor.blockedCommands])
+const environment = ({ executor }: SettingsValue) => JSON.stringify([executor.directory, executor.prepare, executor.blockedCommands, executor.projects, executor.workerPtc, executor.toolTrace])
 
 /** Schema parser, settings merger, and non-panel origin guard for one settings block kind. */
 interface Block {
@@ -48,7 +48,18 @@ const BLOCKS: Record<'policy' | 'eval' | 'executor' | 'source', Block> = {
     parse: (value, sources, id) => sources.validate(id, z.object({ enabled: z.boolean(), config: z.unknown() }).parse(value)),
     merge: (settings, value, id) => ({ ...settings, sources: { ...settings.sources, [id]: value as SettingsValue['sources'][string] } }),
     // Only the management panel may switch source accounts.
-    guard: (current, candidate, origin) => { if (origin !== 'panel' && setupChanged(current, candidate)) throw new UserError('panelOnlyAccounts') },
+    guard: (current, candidate, origin) => {
+      if (origin !== 'panel' && (setupChanged(current, candidate)
+        || (current.sources.p4?.config.requireDelivery ?? true) !== (candidate.sources.p4?.config.requireDelivery ?? true)
+        || (current.sources.p4?.config.checkUnopenedDiffs ?? false) !== (candidate.sources.p4?.config.checkUnopenedDiffs ?? false)
+        || (current.sources.p4?.config.syncBeforeWork ?? false) !== (candidate.sources.p4?.config.syncBeforeWork ?? false)
+        || (current.sources.p4?.config.reconcileFallback ?? false) !== (candidate.sources.p4?.config.reconcileFallback ?? false)
+        || (current.sources.p4?.config.pendingName ?? '[dsh-superagent:{ticket}] {title}') !== (candidate.sources.p4?.config.pendingName ?? '[dsh-superagent:{ticket}] {title}')
+        || JSON.stringify(current.sources.p4?.config.reconcileIgnore) !== JSON.stringify(candidate.sources.p4?.config.reconcileIgnore)
+        || JSON.stringify(current.sources.tapd?.config.filterSchedules) !== JSON.stringify(candidate.sources.tapd?.config.filterSchedules)
+        || JSON.stringify(current.sources.tapd?.config.ownerGroups) !== JSON.stringify(candidate.sources.tapd?.config.ownerGroups)
+        || JSON.stringify(current.sources.gongfeng) !== JSON.stringify(candidate.sources.gongfeng))) throw new UserError('panelOnlyAccounts')
+    },
   },
 }
 

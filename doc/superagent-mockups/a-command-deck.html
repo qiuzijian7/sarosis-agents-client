@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>方案 A · 指挥台 — SuperAgent 工作台</title>
+<style>
+:root{
+  --bg:#0F172A; --layer:#16223A; --card:#1B2942; --line:rgba(255,255,255,.11); --line-strong:rgba(255,255,255,.2);
+  --fg:#F1F5F9; --muted:#A6B6CF; --dim:#7C8EAA;
+  --blue:#3B82F6; --cyan:#22D3EE; --green:#34D399; --amber:#FBBF24; --red:#F87171; --violet:#A78BFA;
+  --r:12px; --mono:ui-monospace,SFMono-Regular,"Cascadia Code","Fira Code",Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:14px;line-height:1.55}
+body{background-image:radial-gradient(900px 420px at 82% -10%,rgba(59,130,246,.13),transparent 70%)}
+a{color:inherit;text-decoration:none}
+button,input{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+.wrap{max-width:1480px;margin:0 auto;padding:0 20px 40px}
+.top{display:flex;align-items:center;gap:18px;padding:18px 0 14px;border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px;letter-spacing:.2px;white-space:nowrap}
+.brand svg{width:22px;height:22px;color:var(--cyan)}
+.search{flex:1;max-width:520px;display:flex;align-items:center;gap:9px;background:var(--layer);border:1px solid var(--line);border-radius:10px;padding:9px 12px;color:var(--muted)}
+.search svg{width:17px;height:17px;flex:none}
+.search input{border:0;background:transparent;outline:0;width:100%;min-width:0}
+.search input::placeholder{color:var(--dim)}
+.ghost{display:inline-flex;align-items:center;gap:7px;background:transparent;border:1px solid var(--line);border-radius:9px;padding:9px 12px;color:var(--muted);min-height:44px}
+.ghost:hover{border-color:var(--line-strong);color:var(--fg);background:rgba(255,255,255,.04)}
+.ghost svg{width:17px;height:17px}
+.back{margin-left:auto;font-size:12px;color:var(--dim);border:1px solid var(--line);border-radius:999px;padding:7px 13px}
+.back:hover{color:var(--fg);border-color:var(--line-strong)}
+.tabs{display:flex;gap:4px;padding:12px 0 18px;flex-wrap:wrap}
+.tab{border:0;background:transparent;color:var(--muted);padding:9px 15px;border-radius:9px;min-height:44px}
+.tab:hover{background:rgba(255,255,255,.05);color:var(--fg)}
+.tab[aria-selected="true"]{background:rgba(59,130,246,.17);color:#BFDBFE;box-shadow:inset 0 0 0 1px rgba(59,130,246,.35)}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px 16px;position:relative;overflow:hidden}
+.kpi::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent,var(--blue))}
+.kpi .k{font-size:11px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}
+.kpi .v{font-family:var(--mono);font-size:26px;font-weight:600;line-height:1.25;margin-top:4px}
+.kpi .s{font-size:11px;color:var(--dim)}
+.grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(310px,1fr);gap:16px;align-items:start}
+.col{display:grid;gap:16px;min-width:0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px}
+.card.alert{border-color:rgba(251,191,36,.42);background:linear-gradient(180deg,rgba(251,191,36,.07),transparent 60%),var(--card)}
+.card h2{margin:0 0 12px;font-size:13px;font-weight:650;letter-spacing:.06em;color:var(--muted);display:flex;align-items:center;gap:8px;text-transform:uppercase}
+.card h2 svg{width:16px;height:16px;color:var(--blue)}
+.count{margin-left:auto;font-family:var(--mono);font-size:11px;background:rgba(255,255,255,.08);border-radius:999px;padding:2px 8px;color:var(--fg)}
+.row{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}
+.title{font-size:16px;font-weight:620;margin:0 0 4px}
+.meta{font-size:12px;color:var(--dim);display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.tag{font-size:11px;border:1px solid var(--line-strong);border-radius:999px;padding:2px 9px;color:var(--muted);white-space:nowrap}
+.tag.b{color:#BFDBFE;border-color:rgba(59,130,246,.45);background:rgba(59,130,246,.12)}
+.tag.g{color:#A7F3D0;border-color:rgba(52,211,153,.4);background:rgba(52,211,153,.1)}
+.tag.a{color:#FDE68A;border-color:rgba(251,191,36,.42);background:rgba(251,191,36,.1)}
+.tag.r{color:#FECACA;border-color:rgba(248,113,113,.42);background:rgba(248,113,113,.1)}
+.chain{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:14px 0}
+.node{background:var(--layer);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12px}
+.node.done{color:#A7F3D0;border-color:rgba(52,211,153,.35)}
+.node.run{color:#BFDBFE;border-color:rgba(59,130,246,.5);box-shadow:0 0 0 2px rgba(59,130,246,.12)}
+.arrow{color:var(--dim);font-family:var(--mono)}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.btn{min-height:44px;border-radius:9px;padding:10px 16px;border:1px solid transparent;font-weight:600;font-size:13px}
+.primary{background:var(--blue);color:#fff}
+.primary:hover{background:#2563EB}
+.outline{background:transparent;border-color:var(--line-strong);color:var(--fg)}
+.outline:hover{background:rgba(255,255,255,.06)}
+.subtle{background:transparent;border-color:transparent;color:var(--muted);padding:10px 8px}
+.subtle:hover{color:var(--fg)}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;color:var(--dim);font-weight:500;padding:8px 8px;border-bottom:1px solid var(--line)}
+td{padding:9px 8px;border-bottom:1px solid rgba(255,255,255,.055);vertical-align:middle}
+tr:hover td{background:rgba(255,255,255,.025)}
+.mono{font-family:var(--mono)}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;background:var(--dim)}
+.dot.ok{background:var(--green)}.dot.run{background:var(--blue)}.dot.warn{background:var(--amber)}.dot.err{background:var(--red)}
+.feed{list-style:none;margin:0;padding:0}
+.feed li{display:grid;grid-template-columns:62px 1fr;gap:10px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,.055);font-size:12px}
+.feed li:last-child{border:0}
+.feed time{font-family:var(--mono);color:var(--dim)}
+.feed b{font-weight:600;color:var(--fg)}
+.feed p{margin:2px 0 0;color:var(--muted)}
+.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:4px}
+.stat{background:var(--layer);border:1px solid var(--line);border-radius:9px;padding:10px;text-align:center}
+.stat b{display:block;font-family:var(--mono);font-size:18px;color:var(--fg)}
+.stat span{font-size:10px;color:var(--dim)}
+.note{font-size:11px;color:var(--dim);margin-top:10px;line-height:1.5}
+.toast{position:fixed;right:22px;bottom:22px;background:#0B1220;border:1px solid rgba(52,211,153,.45);color:#A7F3D0;border-radius:10px;padding:12px 16px;box-shadow:0 12px 40px rgba(0,0,0,.5);opacity:0;transform:translateY(10px);pointer-events:none;transition:opacity .2s,transform .2s;z-index:50;font-size:13px}
+.toast.on{opacity:1;transform:none}
+@media(max-width:1024px){.grid{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:600px){.kpis,.stats{grid-template-columns:repeat(2,1fr)}.top{flex-wrap:wrap}.search{order:3;max-width:none;flex-basis:100%}.back{margin-left:0}.tab{padding:8px 11px}.wrap{padding:0 12px 32px}.feed li{grid-template-columns:52px 1fr}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 3v4M9 12h.01M15 12h.01M9 16h6"/></svg>SuperAgent</div>
+    <label class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="q" type="search" placeholder="搜索工单、线程、触发或链接" aria-label="搜索工单、线程、触发或链接"></label>
+    <button class="ghost" data-toast="术语表：这里解释工单、触发、评估、组队方案等概念"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M9.6 9a2.5 2.5 0 1 1 3.4 2.3c-.7.3-1 .9-1 1.7v.3M12 17h.01"/></svg>术语表</button>
+    <a class="back" href="index.html">返回方案对比</a>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="工作台页签">
+    <button class="tab" role="tab" aria-selected="true">概况</button>
+    <button class="tab" role="tab" aria-selected="false">来源</button>
+    <button class="tab" role="tab" aria-selected="false">触发</button>
+    <button class="tab" role="tab" aria-selected="false">评估</button>
+    <button class="tab" role="tab" aria-selected="false">执行</button>
+    <button class="tab" role="tab" aria-selected="false">设置</button>
+  </nav>
+
+  <section class="kpis" aria-label="关键指标">
+    <div class="kpi" style="--accent:var(--amber)"><div class="k">待确认组队</div><div class="v">1</div><div class="s">需要你点「同意并开工」</div></div>
+    <div class="kpi" style="--accent:var(--blue)"><div class="k">执行中</div><div class="v">2 / 3</div><div class="s">另有 1 个排队</div></div>
+    <div class="kpi" style="--accent:var(--cyan)"><div class="k">已消耗</div><div class="v">48,320</div><div class="s">tokens · 本工单团队</div></div>
+    <div class="kpi" style="--accent:var(--green)"><div class="k">24 小时调用</div><div class="v">342</div><div class="s">128k tokens · 缓存读 41k</div></div>
+  </section>
+
+  <div class="grid">
+    <div class="col">
+      <section class="card alert" data-card id="proposal">
+        <h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v18M3 12h18"/></svg>待确认组队<span class="count">1</span></h2>
+        <div class="row">
+          <div><p class="title">修复 TAPD 缺陷：导出报表为空</p><div class="meta"><span class="tag a">v3</span><span>来自 TAPD</span><span>12 分钟前</span><span class="tag b">明确任务 · 规则直建单</span></div></div>
+          <span class="tag a">含写入步骤</span>
+        </div>
+        <div class="chain"><span class="node">梳理需求</span><span class="arrow">→</span><span class="node">编码实现</span><span class="arrow">→</span><span class="node">回归验证</span></div>
+        <div class="meta"><span>角色：</span><span class="tag">开发 bot（现有）</span><span class="tag">测试 bot（新建）</span><span class="tag r">1 个新建 bot</span></div>
+        <div class="actions">
+          <button class="btn primary" id="agree">同意并开工</button>
+          <button class="btn outline" data-toast="已写入取消原因，工单待你确认后结束">取消工单</button>
+          <button class="btn subtle" data-toast="展开 v3 完整方案：角色 / 步骤 / 权限 / 风险">查看完整方案</button>
+        </div>
+        <div class="note">决策原因：明确任务（任务动词 + 链接）按规则直接接单，未走模型评估。</div>
+      </section>
+
+      <section class="card" data-card>
+        <h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19V5M4 12h6l3-5 3 10 2-5h2"/></svg>团队步骤进度<span class="count">2 / 5 完成</span></h2>
+        <div class="row" style="margin-bottom:10px"><div><p class="title">修复登录页点击无响应</p><div class="meta"><span>来自 飞书</span><span class="mono">已消耗 48,320 tokens</span></div></div><span class="tag g">团队执行中</span></div>
+        <table>
+          <thead><tr><th>步骤</th><th>负责 bot</th><th>权限</th><th>状态</th><th>回合</th></tr></thead>
+          <tbody>
+            <tr><td>定位复现</td><td>排查 bot</td><td>只读</td><td><i class="dot ok"></i>完成</td><td class="mono">4</td></tr>
+            <tr><td>根因分析</td><td>排查 bot</td><td>只读</td><td><i class="dot ok"></i>完成</td><td class="mono">7</td></tr>
+            <tr><td>编码实现</td><td>开发 bot</td><td>写</td><td><i class="dot run"></i>进行中 · 查找 src/report.ts</td><td class="mono">3</td></tr>
+            <tr><td>回归验证</td><td>测试 bot</td><td>只读</td><td><i class="dot"></i>等待</td><td class="mono">—</td></tr>
+            <tr><td>结果汇报</td><td>领队</td><td>—</td><td><i class="dot"></i>等待</td><td class="mono">—</td></tr>
+          </tbody>
+        </table>
+        <div class="actions"><button class="btn outline" data-toast="已切到「执行」页的流程图 / 看板 / 列表视图">打开流程图</button><button class="btn subtle" data-toast="已打开该 bot 的会话">打开 bot 会话</button></div>
+      </section>
+
+      <section class="card" data-card>
+        <h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M8 4v16"/></svg>待处理工单<span class="count">3</span></h2>
+        <table><tbody>
+          <tr><td>修复 TAPD 缺陷：导出报表为空</td><td class="mono">TAPD</td><td><span class="tag a">待确认组队</span></td></tr>
+          <tr><td>修复登录页点击无响应</td><td class="mono">飞书</td><td><span class="tag g">执行中</span></td></tr>
+          <tr><td>补充导出接口单元测试</td><td class="mono">GitHub</td><td><span class="tag">等待新触发</span></td></tr>
+        </tbody></table>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="card alert" data-card>
+        <h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20h15.4a2 2 0 0 0 1.7-2.8L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>需要你处理<span class="count">3</span></h2>
+        <p class="title" style="font-size:14px">代码审查 bot 想越出工作目录（自测）</p>
+        <div class="meta"><span>工单：修复登录页点击无响应</span><span class="mono">src/report.ts</span></div>
+        <div class="actions"><button class="btn primary" data-toast="已允许一次，越权仅对本次生效">允许一次</button><button class="btn outline" data-toast="已记住规则：该 bot 可写 src/ 目录">允许并记住</button><button class="btn subtle" data-toast="已拒绝，步骤重新排队">拒绝</button></div>
+        <p class="note" style="margin-top:14px">另有：待确认的技能建议「报表回归检查 v2」、待你批准建 bot「回归测试助手」。</p>
+      </section>
+
+      <section class="card" data-card>
+        <h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>实时事件</h2>
+        <ul class="feed">
+          <li><time>09:44</time><div><b>飞书「同意」已生效</b><p>组队方案 v1 直接批准，未等模型评估。</p></div></li>
+          <li><time>09:41</time><div><b>建单：修复 TAPD 缺陷</b><p>明确任务（任务动词 + 链接）按规则直建单。</p></div></li>
+          <li><time>09:36</time><div><b>来源：飞书 已就绪</b><p>历史补收已暂停：飞书机器人不在会话。</p></div></li>
+          <li><time>09:02</time><div><b>待你审核的提交</b><p>CL 284193 · 修复导出空指针 · 6 个文件。</p></div></li>
+        </ul>
+      </section>
+
+      <section class="card" data-card>
+        <h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>来源与系统问题</h2>
+        <table><tbody>
+          <tr><td><i class="dot ok"></i>飞书</td><td>已就绪</td><td class="mono">到达 86</td></tr>
+          <tr><td><i class="dot ok"></i>TAPD</td><td>已就绪</td><td class="mono">到达 12</td></tr>
+          <tr><td><i class="dot err"></i>GitHub</td><td style="color:#FECACA">连续 3 次拉取失败</td><td class="mono">ETIMEDOUT</td></tr>
+        </tbody></table>
+        <div class="note">历史补收已暂停：飞书机器人不在会话（不影响实时消息）。</div>
+      </section>
+
+      <section class="card" data-card>
+        <h2><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>过去 24 小时 / 执行器</h2>
+        <div class="stats"><div class="stat"><b>128</b><span>到达</span></div><div class="stat"><b>24</b><span>被过滤</span></div><div class="stat"><b>96</b><span>已评估</span></div><div class="stat"><b>12</b><span>接单或续做</span></div><div class="stat"><b>2</b><span>放弃发送</span></div></div>
+        <p class="note">执行器：执行中 2 / 3 · 排队 1 · 等待新触发。模型用量（24 小时）：128k tokens · 342 次调用 · 缓存读 41k。</p>
+      </section>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script>
+const toast=document.getElementById('toast');let timer;
+function say(text){toast.textContent=text;toast.classList.add('on');clearTimeout(timer);timer=setTimeout(()=>toast.classList.remove('on'),2600)}
+document.querySelectorAll('[data-toast]').forEach(el=>el.addEventListener('click',()=>say(el.dataset.toast)));
+document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(t=>t.setAttribute('aria-selected',String(t===tab)));say('切换到「'+tab.textContent+'」页（本 mockup 仅演示概况页）')}));
+document.getElementById('agree').addEventListener('click',()=>{const card=document.getElementById('proposal');card.classList.remove('alert');card.querySelector('.actions').innerHTML='<span class="tag g">已批准 · 团队启动中</span><span class="note">decidedBy：飞书「同意」快路径 · 7 秒内生效</span>';card.querySelector('.count').textContent='0';say('已同意并开工：团队步骤正在启动')});
+document.getElementById('q').addEventListener('input',e=>{const q=e.target.value.trim().toLowerCase();document.querySelectorAll('[data-card]').forEach(c=>c.style.display=!q||c.textContent.toLowerCase().includes(q)?'':'none')});
+</script>
+</body>
+</html>

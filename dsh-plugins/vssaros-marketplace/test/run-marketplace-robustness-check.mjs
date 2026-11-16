@@ -210,10 +210,10 @@ console.log('★ 商城健壮性 / 危险路径\n');
 	check('④ 读坏台账**不覆盖原文件**（留证据可人工修）',
 		fs.readFileSync(file, 'utf8').includes('this is not json'));
 
-	// 一次成功写入应修复它
-	await upsertInstalled(dataRoot, { kind: 'skill', storeId: 'c', version: '3.0.0' });
-	const repaired = await readInstalled(dataRoot);
-	check('④ 写一次即修复（坏文件被合法内容替换）', repaired.some(e => e.storeId === 'c'), JSON.stringify(repaired));
+	await assert.rejects(upsertInstalled(dataRoot, { kind: 'skill', storeId: 'c', version: '3.0.0' }), /台账/);
+	await assert.rejects(removeInstalled(dataRoot, 'skill', 'a'), /台账/);
+	check('④ 写坏台账明确拒绝且保留证据', fs.readFileSync(file, 'utf8') === '{ this is not json');
+	fs.writeFileSync(file, JSON.stringify(both), 'utf8');
 
 	// 并发 upsert：10 个不同 id 同时写 ⇒ 全都在（读-改-写串行化）
 	await Promise.all(Array.from({ length: 10 }, (_, i) =>

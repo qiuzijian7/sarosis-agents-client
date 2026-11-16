@@ -32,7 +32,9 @@ const OFFICIAL_ENTRIES = [
 	{ slot: 'conversation.input.dock', id: 'queue', order: 20, owner: '官方 QueueDock' },
 	// ⚠ 2026-10-14 补登：官方 **goal** 也在这一槽，order 正是 **10**（`dsh-client-ui-goal/lib/client.js:557-561`）。
 	//   我们原先的 `vssaros-todo` 也取 10 ⇒ **真 tie** ✗，而本表漏了 goal ⇒ 守卫当时**报不出来** ✓。
-	//   已把 ours 挪到空档 **5**（官方 todo=0 / goal=10 / queue=20 ⇒ 5 是唯一与三者都不撞的靠前空档 ✓）。
+	//   先挪到空档 **5**（不与三者 tie）；★ 2026-11-13 用户选方案 C 又挪到 **-1**（欢迎卡 -5 与
+//   官方 todo=0 之间）⇒ 定位按钮排到任务卡之前，官方 TodoPanel 成为最后一个可见 dock 条目、贴输入框。
+//   契约由下方 client.todos.js 的 ENTRY_ORDER 断言钉住（不许退回 >= 0）。
 	//   ★ 教训：这份表是**守卫唯一的官方面**，漏一条就等于给那条留了个静默 tie 的口子 ✗ ⇒ 官方新增/改动
 	//     槽位后要拿权威清单（`dsh-cordis-client-runner/lib/client.js:2363+` 的 `CLIENT_SLOT_API`）复核。
 	{ slot: 'conversation.input.dock', id: 'goal', order: 10, owner: '官方 GoalDock' },
@@ -314,6 +316,43 @@ for (const file of fs.readdirSync(LIB).filter(f => /^client\..+\.js$/.test(f)).s
 		ourEntries.push({ file, slot: name, id, key, order });
 	}
 	const t = loaded.exports.__test;
+	if (file === 'client.todos.js') {
+		try {
+			const check = (ok, reason) => { if (!ok) { problems.push(`${file}: ${reason}`); } };
+			// ★ 2026-11-13（用户选方案 C）：定位入口必须排在官方 TodoPanel(order 0) **之前**，
+			//   否则又会独占一行插在任务卡与输入框之间、撑出截图里那条空白带。
+			check(t.ENTRY_ORDER > -5 && t.ENTRY_ORDER < 0,
+				'order 必须落在欢迎卡(-5) 与官方 TodoPanel(0) 之间（方案 C：任务卡贴输入框）');
+			check(t.ENTRY_ID === 'vssaros-todo' && t.SLOT === 'conversation.input.dock',
+				'任务定位入口的槽 / id 不许变');
+			const pending = { content: 'pending task', status: 'pending' };
+			const active = { content: 'active task', status: 'in_progress' };
+			const done = { content: 'done task', status: 'completed' };
+			check(t.currentTodo([pending, active, done]) === active, '当前任务必须优先进行中');
+			check(t.currentTodo([done, pending]) === pending, '无进行中时定位待处理任务');
+			for (const list of [null, undefined, [], [done], [{ content: '', status: 'in_progress' }]]) {
+				check(t.TodosDock({ useProjection: () => list }) === null, '未知/空/全完成任务不得显示重复入口');
+			}
+			const list = [pending, active, done];
+			const before = JSON.stringify(list);
+			const tree = t.TodosDock({ useProjection: () => list });
+			const nodes = [];
+			const walk = node => { if (!node || typeof node !== 'object') { return; } nodes.push(node); for (const child of node.children || []) { walk(child); } };
+			walk(tree);
+			const buttons = nodes.filter(node => node.type === 'button');
+			check(buttons.length === 1 && buttons[0].props.type === 'button' && buttons[0].children[0] === '定位当前任务', '应仅显示原生定位按钮');
+			check(!nodes.some(node => ['ul', 'li', 'i'].includes(node.type)), '不可再次渲染清单或进度条');
+			check(JSON.stringify(list) === before, 'UI 不可修改任务投影');
+			const history = { childElementCount: 0, textContent: active.content, closest: () => null };
+			const dock = { childElementCount: 0, textContent: active.content, closest: () => ({}) };
+			const root = { querySelectorAll: () => [history, dock] };
+			check(t.locateByText(root, active.content) === history, '历史定位不得命中 composer/当前任务dock');
+			check(t.locateByText({ querySelectorAll: () => [dock] }, active.content) === null, '只有dock命中时必须报定位失败');
+			check(t.locateByText(null, active.content) === null, '不能回退全页面定位');
+			const anchor = { closest: selector => selector === '[data-conversation-scroll]' ? root : null };
+			check(t.historyScope(anchor) === root && t.historyScope(null) === null, '定位范围须来自按钮所属会话');
+		} catch (error) { problems.push(`${file}: 任务去重回归失败 — ${error.message}`); }
+	}
 	if (t && typeof t.progressLabel === 'function') {
 		const got = t.progressLabel(2, 5);
 		if (!/2/.test(got) || !/5/.test(got)) { problems.push(`${file}: progressLabel 坏了（"${got}"）`); }
@@ -612,7 +651,8 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 			if (/JSON\.stringify\(\{ agentPreset: presetId, cwd/.test(wsSrcForBots)) {
 				problems.push('client.workspaces.js: 点 bot 新建会话又退回传 cwd（那是错方向：不登记账本）✗');
 			}
-			if (!/const usable = \(s0\) => isRegisteredSession\(s0, wsSnap\)/.test(wsSrcForBots)) {
+			if (!wsSrcForBots.includes('const usable = (s0) => isRegisteredSession(s0, wsSnap)')
+				|| !wsSrcForBots.includes('const freshSid = freshBotSessions.get(id) || ""')) {
 				problems.push('client.workspaces.js: 复用「最近会话」前没查是否已登记进工作区（老的未登记会话会让输入框灰掉）✗');
 			}
 			// 新建成功后必须重拉名册：否则再点同一个 bot 又建一条（名册里还没有它）⇒ 会话越点越多
@@ -629,7 +669,7 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 			}
 			notes.push('client.workspaces.js + agents/index.js: Bots 页签点 bot ⇒ 复用须已登记工作区 / 新建传 workspaceId（互斥 cwd）断言通过');
 		}
-		// ── ⑤-a1 Bot 行右键菜单（2026-11-09：复刻 DS Bot，9 项 / 3 分隔线 / flags / 动作调度）──
+		// ── ⑤-a1 Bot 行右键菜单（2026-11-12：复刻 DS Bot + 显式 New part，10 项 / 3 分隔线 / flags / 动作调度）──
 		{
 			const need = ['botMenuItems', 'botMenuAction', 'toggleBotFlag', 'sortBotsWithFlags', 'readBotFlags', 'BOT_FLAGS_KEY'];
 			const missing = need.filter((k) => typeof t[k] === 'undefined');
@@ -639,14 +679,14 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 				const bot = { id: 'b1', name: 'Bot 一' };
 				const items = t.botMenuItems(bot, {}, false);
 				const acts = items.filter((x) => !x.sep).map((x) => x.act);
-				const want = ['pin', 'unread', 'rename', 'edit', 'duplicate', 'copySession', 'hide', 'delete'];
+				const want = ['pin', 'unread', 'rename', 'edit', 'duplicate', 'copySession', 'newSession', 'hide', 'delete'];
 				if (acts.join(',') !== want.join(',')) {
 					problems.push('botMenuItems: 动作顺序与 DS Bot 不一致（应 ' + want.join(' / ') + '，实得 ' + acts.join(' / ') + '）✗');
 				}
 				const seps = items.filter((x) => x.sep).length;
 				if (seps !== 3) { problems.push('botMenuItems: 必须有 3 条分组分隔线（实得 ' + seps + '）✗'); }
 				const labels = items.filter((x) => !x.sep).map((x) => x.label);
-				for (const label of ['置顶', '标为未读', '重命名 Bot', '编辑 Bot', '复制一份', '复制对话 ID', '从侧栏隐藏', '删除']) {
+				for (const label of ['置顶', '标为未读', '重命名 Bot', '编辑 Bot', '复制一份', '复制对话 ID', '新建会话', '从侧栏隐藏', '删除']) {
 					if (labels.indexOf(label) < 0) { problems.push('botMenuItems: 缺菜单项「' + label + '」✗'); }
 				}
 				// ★ 2026-11-09 用户要求移除「设为主 Bot」：反向断言，防复活
@@ -681,6 +721,7 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 					confirmDelete: () => calls.push('delete'),
 					setFlag: (id, k, on, ex) => calls.push('flag:' + k + ':' + !!on + ':' + !!ex),
 					setUnread: (id, on) => calls.push('unread:' + !!on), sessionIdOf: () => 's1',
+					newSession: (b) => calls.push('newSession:' + b.id),
 				};
 				t.botMenuAction('pin', bot, {}, false, deps);
 				t.botMenuAction('unread', bot, {}, false, deps);
@@ -690,11 +731,12 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 				t.botMenuAction('hide', bot, {}, false, deps);
 				t.botMenuAction('delete', bot, {}, false, deps);
 				t.botMenuAction('duplicate', bot, {}, false, deps);
+				t.botMenuAction('newSession', bot, {}, false, deps);
 				for (const hit of ['flag:pinned:true:false', 'unread:true', 'rename', 'edit',
-					'copy:s1', 'flag:hidden:true:false', 'delete', 'getDraft:b1']) {
+					'copy:s1', 'flag:hidden:true:false', 'delete', 'getDraft:b1', 'newSession:b1']) {
 					if (calls.indexOf(hit) < 0) { problems.push('botMenuAction: 「' + hit + '」没有被调度（点了没反应）✗'); }
 				}
-				notes.push('client.workspaces.js: Bot 行右键菜单 9 项 / 3 分隔 / flags / 排序 / 动作调度断言通过');
+				notes.push('client.workspaces.js: Bot 行右键菜单 10 项 / 3 分隔 / flags / 排序 / 动作调度断言通过');
 			}
 		}
 		// ── ⑤-a2 「当前工作区 / 当前根」统一按**会话 cwd** 判（2026-10-28 用户报障）──────────
@@ -772,8 +814,93 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 			if (ids.indexOf('b1') < 0) { problems.push('buildSidebar: 当前会话即使是空壳也必须显示 ✗'); }
 			if (!bg || bg.hiddenBlanks !== 1) { problems.push(`buildSidebar: 隐藏的空会话数应被计数为 1，实际 ${bg ? bg.hiddenBlanks : '(无)'} ✗（不计数=装作没有）`); }
 			notes.push('client.workspaces.js: 空会话过滤（blank 位 + 当前会话例外 + 计数）断言通过');
-		}
-		// ── ⑤-c ＋ 按钮（2026-10-26 用户报障「窗口模式点了没反应」）────────────────────
+			}
+			// ── ⑤-b2 删除会话后本地摘行（★★ 2026-11-13 真机「删掉列表里另一条会话，行没消失」）──
+			// 病根：行来自 `workspaces.list` 的 `items[].sessionIds`；Host 的 delete-session 只删磁盘
+			//   （日志目录 + 投影缓存），**不碰 `storages/workspace.json` 账本** ⇒ 快照里 sid 还在。
+			//   前端 `detach()` 依赖 `ctx.get("workspaces").get(wid).detachSession`，但该方法只存在于
+			//   **Host 侧** `dsh-workspace` 实体（页面侧 client 包里 0 命中）⇒ 恒 false；归档兜底也常失败
+			//   ⇒ 旧代码落到「但这条仍留在列表里（宿主既无 detachSession 也无法归档）」✗。
+			// 修法：删盘成功后把 sid 记进 localStorage，`buildSidebar` 两条分支都过滤 ⇒ 不依赖宿主 API ✓
+			{
+			const delSrc = fs.readFileSync(path.join(LIB, 'client.workspaces.js'), 'utf8');
+			const need = [
+				['SESSION_DELETED_KEY', '缺已删除会话的本地持久化键（重启后行会"复活" ✗）'],
+				['markSessionDeleted', '缺 markSessionDeleted（删盘成功后没记下 sid ✗）'],
+				['setDeletedIds((prev) => markSessionDeleted(prev, cur.sid))', '确认删除的 done 回调没接本地摘行 ✗'],
+			];
+			// ★ 必须与 `buildSidebar({...})` 同一块：只查 "deletedIds," 会被 state 声明骗过（实测假绿）。
+			//   依赖数组漏掉 deletedIds ⇒ 首帧之后 setState 也不重算 ⇒ 行仍不消失（实测假绿）。
+			const useMemoAt = delSrc.indexOf('const rows = react.useMemo(() => {');
+			if (useMemoAt < 0) { problems.push('⑤-b2 找不到会话行的 useMemo ✗'); }
+			else {
+				const memo = delSrc.slice(useMemoAt, useMemoAt + 2200);
+				if (!/\bdeletedIds,/.test(memo)) { problems.push('⑤-b2 buildSidebar 没收到 deletedIds（过滤不生效 ✗）'); }
+				if (!/\[[^\]]*\bdeletedIds\b[^\]]*\]/.test(memo)) {
+					problems.push('⑤-b2 useMemo 依赖漏掉 deletedIds（setState 后不重算 ⇒ 行仍不消失 ✗）');
+				}
+			}
+			// state 初始化必须读盘（否则每次重载都从头开始、已删行复活）
+			if (!/react\.useState\(\(\) => readDeletedSessions\(\)\)/.test(delSrc)) {
+				problems.push('⑤-b2 deletedIds 的 useState 没从 localStorage 初始化 ✗');
+			}
+			for (const [needle, why] of need) {
+				if (!delSrc.includes(needle)) { problems.push('⑤-b2 ' + why); }
+			}
+			// ⚠ 必须剥注释：本次修复的注释里**引用了旧文案**，直接查字符串会被骗成假红。
+			const delCode = delSrc.replace(/\/\*[\s\S]*?\*\//g, '').split(/\r?\n/).filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+			if (/但这条仍留在列表里/.test(delCode)) {
+				problems.push('⑤-b2 兜底文案还在说「仍留在列表里」（本地摘行已保证行消失）✗');
+			}
+			// ① 纯函数：幂等 / 白名单 / 落盘（chunk 用的是裸 `localStorage` ⇒ 注入内存 stub）
+			if (typeof t.markSessionDeleted !== 'function' || typeof t.readDeletedSessions !== 'function') {
+				problems.push('⑤-b2 __test 缺 markSessionDeleted / readDeletedSessions（纯逻辑不可单测）✗');
+			} else {
+				const store = new Map();
+				const prevLs = globalThis.localStorage;
+				globalThis.localStorage = {
+					getItem: (k) => (store.has(k) ? store.get(k) : null),
+					setItem: (k, v) => { store.set(k, String(v)); },
+					removeItem: (k) => { store.delete(k); },
+				};
+				try {
+					const sid = 'session-11111111-1111-4111-8111-111111111111';
+					const a = t.markSessionDeleted([], sid);
+					if (a.length !== 1 || a[0] !== sid) { problems.push('⑤-b2 markSessionDeleted 没追加 sid ✗'); }
+					const b = t.markSessionDeleted(a, sid);
+					if (b !== a) { problems.push('⑤-b2 markSessionDeleted 必须幂等（重复删同一条不该产生新数组）✗'); }
+					const bad = t.markSessionDeleted(a, '../etc/passwd');
+					if (bad !== a) { problems.push('⑤-b2 markSessionDeleted 必须拒绝畸形 sid（与 Host 侧 SESSION_ID_RE 同形）✗'); }
+					const persisted = t.readDeletedSessions();
+					if (persisted.indexOf(sid) < 0) { problems.push('⑤-b2 markSessionDeleted 没落 localStorage（重载后行会复活）✗'); }
+					t.saveDeletedSessions([]);
+				} finally {
+					if (prevLs === undefined) { delete globalThis.localStorage; } else { globalThis.localStorage = prevLs; }
+				}
+			}
+			// ② 行为：group 与 flat 两条分支都必须过滤
+			const delRows = t.buildSidebar({
+				workspaces: [
+					{ workspaceId: 'w1', path: 'G:/WS/client', sessionIds: ['z1', 'z2'] },
+					{ workspaceId: 'w2', path: 'G:/WS/other', sessionIds: ['z3', 'z4'] },
+				],
+				records: [{ id: 'ide-1', name: 'Saros', roots: [{ path: 'G:/WS/client', name: 'client', isPrimary: true }] }],
+				sessionsById: { z1: { title: 'A', updatedAt: 4 }, z2: { title: 'B', updatedAt: 3 }, z3: { title: 'C', updatedAt: 2 }, z4: { title: 'D', updatedAt: 1 } },
+				archivedIds: [], currentSessionId: null,
+				deletedIds: ['z1', 'z4'],
+			});
+			const delIds = delRows.flatMap((r) => (r.sessions || []).map((s) => s.id));
+			if (delIds.indexOf('z1') >= 0) { problems.push('⑤-b2 buildSidebar group 分支没过滤已删除会话 z1 ✗'); }
+			if (delIds.indexOf('z4') >= 0) { problems.push('⑤-b2 buildSidebar flat 分支没过滤已删除会话 z4 ✗'); }
+			if (delIds.indexOf('z2') < 0 || delIds.indexOf('z3') < 0) { problems.push('⑤-b2 过滤已删除会话时把正常会话也弄丢了 ✗'); }
+			// ③ 删除失败不许隐藏（磁盘数据还在，行仍应可见）
+			const noDel = delSrc.indexOf('deleteSessionForever(cur.sid, say, (ok) =>');
+			if (noDel < 0 || !/if \(!ok \|\| !cur\) \{ return; \}/.test(delSrc.slice(noDel, noDel + 260))) {
+				problems.push('⑤-b2 done 回调必须在 ok=false 时不隐藏（删盘失败却把行藏起来 ✗）');
+			}
+			notes.push('⑤-b2 删除会话本地摘行：纯逻辑幂等/白名单/落盘 + group&flat 两分支过滤 + 失败不隐藏，断言通过');
+			}
+			// ── ⑤-c ＋ 按钮（2026-10-26 用户报障「窗口模式点了没反应」）────────────────────
 		// 三处**各自都能静默失败**的坑（任一回归 ⇒ 用户只看到"点了没反应"）：
 		//   ① 读未声明的 `ctx.remote.directoryPicker`（官方声明了它，我们没声明 ⇒ 读不到）
 		//      ⇒ 必须走**已声明**的 `ctx.uiWorkspace` 的 pickDirectory。
@@ -1272,7 +1399,25 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 			if (!hostTs.includes('已在该目录的会话上（幂等，无动作')) {
 				problems.push('dshChatInstanceHost.ts: 幂等早退必须保留 return（不能被当成失败弹通知 ✗）');
 			}
-			notes.push('方案 A：宿主可见失败出口 / 幂等早退保留 / 旧文案清理 断言通过');
+			// ★ 2026-11-14 真机第 6 轮「点切换显示已请求、界面零变化」：页面侧链路已通，
+			//   剩下的是宿主三条静默路径 + 已知 preset 真因。逐条钉住，防止被回退。
+			for (const [needle, why] of [
+				['private _switchStartedAt = 0;', '必须记录切换开始时刻（否则 single-flight 卡死检测不了）'],
+				['Date.now() - this._switchStartedAt > 6_000', 'single-flight 卡死阈值必须 ≤6s（20s 会让用户白等，与 preset 切换共用会互相顶掉）'],
+				['force unlock', '强制解锁必须留日志'],
+				['已在 ${worktreePath} 的会话上，无需切换', '幂等早退必须给用户可见说明（页面桥单向，页面看不到）'],
+				['agentPreset: undefined', 'startSession 因 preset 无效失败时必须用 base preset 重试一次'],
+				['已切换到 ${worktreePath}', '切换成功必须有可见回执（宿主跑没跑到这一步要能自证）'],
+			['switchWorktree 分段耗时 startSession=', '必须有分段计时日志（否则「切换很慢」无从定位）'],
+			['(tTotal / 1000).toFixed(1)', '成功通知必须带总耗时（用户能直接报出秒数）'],
+			['private _pendingSwitch: string | undefined;', 'single-flight 忙时必须排队保留最后一次点击（不许丢弃）'],
+			['this._pendingSwitch = worktreePath;', '忙时必须把本次点击的目录写进排队位（否则排队是空的、补跑永不触发）'],
+			['补跑排队请求', '当前切换结束后必须自动补跑排队请求，不并发覆盖'],
+			['this._pendingSwitch = undefined;', '卡死解锁/补跑后必须清掉排队态，避免重复切换'],
+			]) {
+				if (!hostTs.includes(needle)) { problems.push('dshChatInstanceHost.ts: ' + why + ' ✗'); }
+			}
+			notes.push('方案 A：宿主可见失败出口 / 幂等早退保留 / single-flight 解锁 / preset 重试 / 成功回执 / 旧文案清理 断言通过');
 		}
 		// ── ⑤-n P1-E 术语统一（2026-11-10）────────────────────────────────────────
 			//  ★ 三层术语各管一件事，不许互相污染：
@@ -1829,6 +1974,12 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		//   ⇒ hero 认为没有工作区 ⇒ 输入框灰。必须优先走官方
 		//   `uiWorkspace.openWorkspaceSession(workspaceId)`（connectBlank + replaceMain，且会复用 blank）。
 		['uiWorkspace.openWorkspaceSession', '新建会话必须优先走官方 openWorkspaceSession（cwd 版不建立工作区归属，输入框会是灰的）'],
+		// ★★ 2026-11-14 真机（工作区 item 的「+」报 `Cannot read properties of undefined (reading 'agentPreset')`）：
+		//   0.2.2-rc.2 的 `openWorkspaceSession(workspaceId, beforeOpen, reuse)` **没有默认值**，
+		//   `connectBlank(workspaceId, reuse)` 里直接读 `reuse.agentPreset` ⇒ 只传一个参数必炸。
+		//   ⚠ 钉**完整调用形态**：上面那条 `uiWorkspace.openWorkspaceSession` 只靠注释就满足（假绿）。
+		['const openWsSession = (id) => uw.openWorkspaceSession(id, undefined, {});',
+			'⑤-l openWorkspaceSession 必须显式传第三参数 `{}`（否则 reuse.agentPreset 读 undefined ⇒ 点「+」报错）'],
 		['const workspaceIdOf = (rec) => {', '必须能取到 workspaceId（官方入口的入参）'],
 		// ★ 真机报错 `unknown workspace sarosis-agents-client-hcshv`：多根工作区行的 `record` 是
 		//   **IDE 记录**（`rec.id`），不是 dsh 的 workspaceId ⇒ 必须按主根路径反查 items。
@@ -1963,12 +2114,12 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		['.vssaros-ws-tab[data-on=', '选中页签必须有 data-on 样式规则'],
 		['background:var(--dsw-alias-interactive-bg-active,#414346)', '选中页签必须有明显亮底（bg-layer-3 只差 16/255，真机看不清）'],
 		['inset 0 -2px 0 var(--dsw-alias-brand-primary', '选中页签必须有品牌色下划线（不依赖色觉的第二重编码）'],
-		// ★ 2026-11-02 用户要求「点会话页签 = 开新会话（同新会话按钮）」
-		//   必须复用官方 `uiWorkspace.startSession()`（自造 blank 会漏掉"挂进工作区账本"⇒ 输入框灰 ✗）
-		// ★ 2026-11-02 三次：`startSession()` 内部 `if (navigation.aborted) return;` 会静默空转
-		//   （真机日志：entering 有、main 不变 ⇒ 用户只看到"还是原来那个聊天框"）⇒ 改走自建链
-		['create({ workspaceId: wsId })', '「会话」页签必须走 create({workspaceId})（必须带 workspaceId 才会进工作区账本）'],
-		['const startNewSessionFromTab = () => {', '「会话」页签必须有独立的新建实现（不能依赖 startSession 的竞态）'],
+		// ★ 2026-11-12：切页签 = 纯视图切换，**不许隐式新建会话**（用户报「切换 bot 会莫名新建工作区」）。
+		//   显式「+ 新建会话」按钮仍走 startNewSessionFromTab 自建链（官方 startSession 有导航竞态）。
+		['create({ workspaceId: wsId })', '显式新建会话必须走 create({workspaceId})（必须带 workspaceId 才会进工作区账本）'],
+		['const startNewSessionFromTab = () => {', '必须有独立的显式新建实现（不能依赖 startSession 的竞态）'],
+		// ★ 2026-11-13：页签条那枚常驻「+ 新建会话」已按用户要求移除 ⇒ 改由下面循环后的
+		//   **负断言**钉死「不许再加回来」（原来这里是正向断言，删按钮后会误报）。
 		// ★ 2026-11-02：整页工作台在前台时，workbenches 守卫只认「用户导航」信号才放行；
 		//   跨插件方法包装拦不到我们的调用 ⇒ 必须写页面级时间戳
 		['window.__vssarosUserNavAt = Date.now()', '主动打开/新建会话前必须写页面级导航信号（否则被整页工作台停靠 ⇒ 中栏空白）'],
@@ -1999,6 +2150,62 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		['window.location.reload()', '「重载界面」必须真的 reload（不是只关菜单）'],
 		['界面版本：', '「工作区」标题必须暴露界面版本（排查"旧 chunk"时的第一手证据）'],
 	];
+	// ★ 2026-11-12 切 bot 不重复建会话（页签零副作用 + 并发合并 + 本地兜底，含反向突变）
+	{
+		// ⚠ 先剥注释：注释里会提到旧实现的函数名，裸 includes 会假红（本次踩过）
+		const switchBodyOf = (src) => {
+			const i = src.indexOf('const switchView = (v) => {');
+			if (i < 0) { return ''; }
+			return src.slice(i, i + 500).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+		};
+		const noSideEffect = (src) => !switchBodyOf(src).includes('startNewSessionFromTab()');
+		const hasDedupe = (src) => src.includes('const freshBotSessions = new Map()')
+			&& src.includes('const pendingBotOpens = new Map()')
+			&& src.includes('const freshSid = freshBotSessions.get(id) || ""')
+			&& src.includes('pendingBotOpens.set(id, settled)');
+		if (!noSideEffect(ws)) { problems.push('switchView 切到「会话」页签仍在隐式新建会话 ✗'); }
+		if (!hasDedupe(ws)) { problems.push('openBot 缺并发合并 / 本地会话兜底 ⇒ 快速切换会重复新建 ✗'); }
+		const reverted = ws.replace('const switchView = (v) => {', 'const switchView = (v) => { if (next === "sessions") { startNewSessionFromTab(); }');
+		if (noSideEffect(reverted)) { problems.push('反向突变失效：切页签隐式新建的判据抓不到 ✗'); }
+		const noDedupe = ws.replace('const freshSid = freshBotSessions.get(id) || ""', 'const freshSid = ""');
+		if (hasDedupe(noDedupe)) { problems.push('反向突变失效：本地会话兜底判据抓不到 ✗'); }
+		// ★ 2026-11-12：两个 Map 必须在 install 作用域。放在 Browser（组件函数）里会每次渲染重建
+		//   ⇒ 真组件交互实测「连点 8 次建 8 条」；静态断言抓不到，这里按位置关系钉死。
+		const mapsInInstall = (src) => {
+			const i = src.indexOf('function install(ctx, shell) {');
+			const m = src.indexOf('const freshBotSessions = new Map()');
+			const p = src.indexOf('const pendingBotOpens = new Map()');
+			const b = src.indexOf('function Browser(props) {');
+			return i >= 0 && m > i && p > i && (b < 0 || (m < b && p < b));
+		};
+		if (!mapsInInstall(ws)) { problems.push('freshBotSessions / pendingBotOpens 必须定义在 install 作用域（放进 Browser 会随渲染重建 ⇒ 重复建会话）✗'); }
+		const movedToBrowser = ws
+			// ⚠ 用正则删定义：仓库可能是 CRLF，写死 '\n' 的 replace 匹配不到 ⇒ 反向突变假绿
+			.replace(/const freshBotSessions = new Map\(\);/, '')
+			.replace(/const pendingBotOpens = new Map\(\);/, '')
+			.replace('function Browser(props) {', 'function Browser(props) {\n\t\t\t\tconst freshBotSessions = new Map();\n\t\t\t\tconst pendingBotOpens = new Map();');
+		if (mapsInInstall(movedToBrowser)) { problems.push('反向突变失效：Map 作用域判据抓不到 ✗'); }
+		// ★ 2026-11-12 P2：切换 bot 零创建 / 新建只能是显式动作
+		const hasForceNew = (src) => src.includes('const openBot = (a, opts) => {')
+			&& src.includes('const forceNew = !!(opts && opts.forceNew)')
+			&& src.includes('const sid = forceNew ? "" : (freshSid || latestSessionIdOf(bots.home, id, usable))')
+			&& src.includes('newSession: (bot) => { openBot(bot, { forceNew: true }); return undefined; }');
+		if (!hasForceNew(ws)) { problems.push('P2 缺显式 New part：切换 bot 必须零创建，只有右键「新建会话」能走 create ✗'); }
+		if (/sessionBindings/.test(ws)) { problems.push('不许引入 sessionBindings 双写（官方 Workspace.sessionIds[] 是唯一归属真源）✗'); }
+		const noForce = ws.replace('const forceNew = !!(opts && opts.forceNew)', 'const forceNew = false');
+		if (hasForceNew(noForce)) { problems.push('反向突变失效：显式 New part 判据抓不到 ✗'); }
+		// ★ 版本线登记：这两个能力来自 dsh 0.2.2-alpha.x 的 ui-workspace 补丁，
+		//   官方 0.1.3-alpha.2 的 UiWorkspace 只有 connectWorkspace/startSession/...。
+		//   升级宿主版本时必须逐一核对，别把 patch API 当官方契约。
+		const HOST_PATCH_APIS = ['uiWorkspace.openSession', 'openWorkspaceSession'];
+		if (!HOST_PATCH_APIS.every((a) => ws.includes(a))) {
+			problems.push('client.workspaces.js: 依赖的宿主补丁能力清单变了 ⇒ 升级前核对 ui-workspace patch ✗');
+		}
+		const noPatch = ws.split('uiWorkspace.openSession').join('uiWorkspace.startSession');
+		if (HOST_PATCH_APIS.every((a) => noPatch.includes(a))) {
+			problems.push('反向突变失效：宿主补丁能力判据抓不到 ✗');
+		}
+	}
 	// 负对照：旧的手画 folder path 不许回来（它在 14px 下就是一团/方块 ✗）
 	if (ws.includes('M1.6 3.6A1.6 1.6 0 0 1 3.2 2h2.9')) {
 		problems.push('client.workspaces.js: 文件夹图标又变回手画 `fill` path 了 ⇒ 会渲染成方块 ✗（2026-11-02）');
@@ -2098,8 +2305,243 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 			problems.push('client.js: openInAppMenu 必须接进 ALWAYS_CHUNKS（放 PART_CHUNKS 在 desktop 主栏不装载）✗（2026-11-03）');
 		}
 	}
+	// ★ 2026-11-11（右上角「VsSaros」按钮反复出现）永久守卫 ─────────────────────────────
+	//   真源 = vssaros-bridge/lib/client.js 的 P0 自检按钮；兜底 = client.hideBridgePing.js 同 id 遮蔽。
+	//   历史失效点：兜底挂在 PART_CHUNKS ⇒ desktop 主栏（surface=full，client.js 早退）不装载 ⇒ 按钮露出。
+	//   判据全部走**行为**（真装载 + 真调 apply/install），注释里写什么也骗不过去 ✓。
+	{
+		let bridgeSrc = '';
+		try { bridgeSrc = fs.readFileSync(path.join(HERE, 'vssaros-bridge', 'lib', 'client.js'), 'utf8'); } catch { bridgeSrc = ''; }
+		if (!bridgeSrc) {
+			problems.push('右上角 VsSaros 按钮守卫：读不到 vssaros-bridge/lib/client.js ⇒ 守卫会空跑 ✗（2026-11-11）');
+		}
+		// ① 真源：apply(ctx) 一次都不许碰 slots.inject（碰了就会在会话头部画按钮）
+		let injectCalls = 0;
+		let probe = null;
+		try {
+			let captured = null;
+			const stubWindow = {
+				__ModuleLoader__: { load: (mod) => { captured = mod; } },
+				vssarosDsh: { surface: 'full', ping: () => 'pong' },
+			};
+			const requireFn = (spec) => {
+				if (spec !== 'react') { throw new Error('bridge client half 只许 require react，实际 ' + spec); }
+				return fakeReact;
+			};
+			new Function('window', 'require', bridgeSrc)(stubWindow, requireFn);
+			if (!captured || typeof captured.factory !== 'function') { throw new Error('没有调用 __ModuleLoader__.load'); }
+			const mod = captured.factory(requireFn);
+			if (typeof mod.apply !== 'function') { throw new Error('没有导出 apply'); }
+			mod.apply({
+				slots: {
+					inject: () => { injectCalls++; return { dispose() { } }; },
+					register: () => ({ dispose() { } }),
+				},
+			});
+			probe = stubWindow.__vssarosBridgeClient;
+		} catch (e) {
+			problems.push(`右上角 VsSaros 按钮守卫：真装载 bridge client half 失败（${String((e && e.message) || e)}）✗（2026-11-11）`);
+		}
+		if (injectCalls > 0) {
+			problems.push(`vssaros-bridge/lib/client.js: 又注册了 ${injectCalls} 个 slot 条目 ⇒ 右上角 P0 自检按钮会回来 ✗（2026-11-11）`);
+		}
+		// 探针自证：channelProbe.ts 依赖这个对象，删了就是另一类回归
+		if (!probe || probe.loaded !== true || probe.surface !== 'full') {
+			problems.push('vssaros-bridge/lib/client.js: 页面桥探针 window.__vssarosBridgeClient 被删/形状变了 ✗（2026-11-11）');
+		}
+		// ② 兜底：真装载遮蔽 chunk，断言同 id / 负 priority / 渲染 null / 幂等
+		const cells = [];
+		try {
+			const doc = makeDocumentStub();
+			const win = makeWindowStub(doc);
+			const { exports: hideExports } = loadChunk('client.hideBridgePing.js', doc, win);
+			const ctx = {
+				slots: {
+					inject: (slot, fn) => { cells.push({ slot, reg: fn() }); return { dispose() { } }; },
+					register: (opts, comp) => ({ entry: opts, render: comp, dispose() { } }),
+				},
+			};
+			const shell = { state: {}, bridge: {} };
+			hideExports.install(ctx, shell);
+			hideExports.install(ctx, shell);   // 无条件装载 ⇒ 第二次必须 no-op
+		} catch (e) {
+			problems.push(`右上角 VsSaros 按钮守卫：真装载 client.hideBridgePing.js 失败（${String((e && e.message) || e)}）✗（2026-11-11）`);
+		}
+		if (cells.length !== 1) {
+			problems.push(`client.hideBridgePing.js: 遮蔽必须只注册 1 次（幂等），实际 ${cells.length} 次 ✗（2026-11-11）`);
+		}
+		const ping = cells.find((c) => c.slot === 'conversation.session.header.utilities'
+			&& c.reg && c.reg.entry && c.reg.entry.id === 'vssaros-ping');
+		if (!ping) {
+			problems.push('client.hideBridgePing.js: 没有在 header.utilities 遮蔽 vssaros-ping ⇒ 旧版 bridge 会露出按钮 ✗（2026-11-11）');
+		} else {
+			if (!(ping.reg.entry.priority < 0)) {
+				problems.push('client.hideBridgePing.js: 遮蔽 priority 必须 < 0（旧版按钮默认 0 ⇒ 才胜出）✗（2026-11-11）');
+			}
+			if (typeof ping.reg.render !== 'function' || ping.reg.render() !== null) {
+				problems.push('client.hideBridgePing.js: 遮蔽组件必须渲染 null（不能只换文案）✗（2026-11-11）');
+			}
+		}
+		// ③ 接线：兜底只在 ALWAYS_CHUNKS（跨 surface），不许再挪回 PART_CHUNKS
+		let entry = '';
+		try { entry = fs.readFileSync(path.join(LIB, 'client.js'), 'utf8'); } catch { entry = ''; }
+		const partArr = (/const PART_CHUNKS = \[([\s\S]*?)\];/.exec(entry) || [])[1] || '';
+		const alwaysArr = (/const ALWAYS_CHUNKS = \[([\s\S]*?)\];/.exec(entry) || [])[1] || '';
+		if (!alwaysArr.includes('"./client.hideBridgePing.js"')) {
+			problems.push('client.js: 遮蔽 chunk 必须接进 ALWAYS_CHUNKS（放 PART_CHUNKS 在 desktop 主栏不装载 ⇒ 按钮露出）✗（2026-11-11）');
+		}
+		if (partArr.includes('"./client.hideBridgePing.js"')) {
+			problems.push('client.js: 遮蔽 chunk 不许留在 PART_CHUNKS（两份清单都装 ⇒ 同 id 重复注册抛错）✗（2026-11-11）');
+		}
+		if (!problems.some((p) => p.includes('2026-11-11'))) {
+			notes.push('右上角 VsSaros 按钮：真源 0 个 slot 注册 + 兜底 null 遮蔽（负 priority / 幂等）+ 只走 ALWAYS_CHUNKS，行为断言通过');
+		}
+	}
+	// ★ 用户：一个 Bot 可能对应多个会话 ⇒ Bot 聊天框右上角要「聊天历史」（下拉可切该 Bot 的历史会话）
+	//   判据：① 按 Bot 过滤的纯逻辑（多个 Bot 共用一个 preset 时靠身份记录分开）；
+	//         ② 新旧两枚历史按钮互斥（Bot 会话只显示新按钮，非 Bot 会话仍显示全局旧按钮）；
+	//         ③ 新 chunk 只走 ALWAYS_CHUNKS（PART 在 full 形态不装载 ⇒ desktop 主栏会没有历史入口）；
+	//         ④ 切换必须带 cwd 经宿主桥（页面不许自己切，否则与宿主 slot.sessionId 分叉）。
+	{
+		const BOT_FILE = 'client.botHistory.js';
+		const BOT_ENTRY_ID = 'vssaros-bot-history';
+		const bad = (msg) => problems.push('Bot 聊天历史：' + msg + ' ✗');
+		let botSrc = '';
+		let sessSrc2 = '';
+		let entrySrc3 = '';
+		try { botSrc = fs.readFileSync(path.join(LIB, BOT_FILE), 'utf8'); } catch { botSrc = ''; }
+		try { sessSrc2 = fs.readFileSync(path.join(LIB, 'client.sessions.js'), 'utf8'); } catch { sessSrc2 = ''; }
+		try { entrySrc3 = fs.readFileSync(path.join(LIB, 'client.js'), 'utf8'); } catch { entrySrc3 = ''; }
+		if (!botSrc || !sessSrc2 || !entrySrc3) { bad('源码读不齐 ⇒ 守卫会空跑'); }
+
+		/** 假 react 树里找属性锚点（createElement 的 children 可能是嵌套数组）。 */
+		const hasAttr = (node, attr) => {
+			if (!node || typeof node !== 'object') { return false; }
+			if (node.props && Object.prototype.hasOwnProperty.call(node.props, attr)) { return true; }
+			const kids = node.children;
+			if (Array.isArray(kids)) {
+				for (const k of kids) { if (hasAttr(k, attr)) { return true; } }
+			} else if (kids) { return hasAttr(kids, attr); }
+			return false;
+		};
+		/** 真装载 chunk → 真调 install → 拿到指定 id 的组件并渲染一次。 */
+		const renderChip = (file, id, snapshot, sid) => {
+			const doc = makeDocumentStub();
+			const win = makeWindowStub(doc);
+			const ex = loadChunk(file, doc, win).exports;
+			const cells = [];
+			const ctx = {
+				slots: {
+					inject: (slot, fn) => { cells.push({ slot: slot, cell: fn() }); return { dispose() { } }; },
+					register: (opts, comp) => ({ entry: opts, comp: comp, dispose() { } }),
+				},
+				sessions: { list: { getSnapshot: () => snapshot, subscribe: () => () => undefined } },
+				get: () => undefined,
+			};
+			ex.install(ctx, { bridge: { surface: 'full', openSession: () => Promise.resolve() }, state: {} });
+			const hit = cells.find((c) => c.cell && c.cell.entry && c.cell.entry.id === id);
+			if (!hit) { throw new Error(file + ' 没注册 ' + id); }
+			return { ex: ex, tree: hit.cell.comp({ sessionId: sid }), opts: hit.cell.entry };
+		};
+
+		// 同一份快照：s1/s2 属于 Coder，s3 共用 preset 但属于 Writer，s4 无身份记录，s5 别的 preset，s6 标准模式
+		const SNAP = {
+			byId: {
+				s1: { title: '当前', cwd: '/repo', projectionValues: { agentPreset: 'vssaros-coder', 'vssaros-bot': { botId: 'Coder', presetId: 'vssaros-coder' } }, updatedAt: 500 },
+				s2: { title: 'Coder 的旧会话', projectionValues: { agentPreset: 'vssaros-coder', 'vssaros-bot': { botId: 'Coder', presetId: 'vssaros-coder' } }, updatedAt: 400 },
+				s3: { title: 'Writer 的会话', projectionValues: { agentPreset: 'vssaros-coder', 'vssaros-bot': { botId: 'Writer', presetId: 'vssaros-coder' } }, updatedAt: 300 },
+				s4: { title: '无记录同 preset', projectionValues: { agentPreset: 'vssaros-coder' }, updatedAt: 200 },
+				s5: { title: '别的 Bot', projectionValues: { agentPreset: 'vssaros-writer' }, updatedAt: 100 },
+				s6: { title: '标准模式', projectionValues: { agentPreset: 'standard' }, updatedAt: 90 },
+			},
+			archivedSessionIds: [],
+		};
+		try {
+			const r = renderChip(BOT_FILE, BOT_ENTRY_ID, SNAP, 's1');
+			if (r.opts.name !== 'conversation.session.header.utilities' || r.opts.order !== -1 || r.opts.id !== BOT_ENTRY_ID) {
+				bad('新按钮的 slot/id/order 不对（order 必须 -1：官方 -10/-5/0、我们 -4/-3/-2 都占用）');
+			}
+			if (!hasAttr(r.tree, 'data-vssaros-bot-history')) { bad('Bot 会话没有渲染出「聊天历史」按钮'); }
+			const t = r.ex.__test || {};
+			if (typeof t.historyRows !== 'function' || typeof t.botKeyOf !== 'function' || typeof t.fitMenuBox !== 'function') {
+				bad('缺少可断言的纯逻辑导出（守卫会空跑）');
+			} else {
+				const one = t.historyRows(SNAP, 's1', 50);
+				if (one.scopedKey !== 'id:Coder' || one.rows.map((x) => x.id).join(',') !== 's1,s2') {
+					bad('Bot 会话必须只列同 Bot 的历史会话（身份记录优先，且按时间倒序）');
+				}
+				const two = t.historyRows(SNAP, 's4', 50);
+				if (two.rows.map((x) => x.id).join(',') !== 's4') { bad('无身份记录时按 preset 归属，不能把有记录的 Bot 会话混进来'); }
+				const three = t.historyRows(SNAP, 's6', 50);
+				if (three.scopedKey !== null || three.rows.length !== 6) { bad('非 Bot 会话必须回退成全局历史（已有能力不许减）'); }
+				if (one.rows[0].cwd !== '/repo') { bad('菜单行必须保留 cwd（切历史会话时宿主靠它把会话拉活）'); }
+				const clamp = t.fitMenuBox({ left: 10, right: 30, bottom: 280 }, { w: 320, h: 160 }, { vw: 200, vh: 300 });
+				if (clamp.left !== 8 || clamp.top !== 132) { bad('菜单必须夹进视口（下方不够要上收）'); }
+			}
+			// ② 互斥：Bot 会话只有新按钮 / 非 Bot 会话只有旧按钮
+			const oldOnBot = renderChip('client.sessions.js', 'vssaros-sessions', SNAP, 's1');
+			if (oldOnBot.tree !== null) { bad('Bot 会话里旧的全局「历史会话」按钮必须让位（否则右上角两枚重复）'); }
+			const newOnOther = renderChip(BOT_FILE, BOT_ENTRY_ID, SNAP, 's6');
+			if (newOnOther.tree !== null) { bad('非 Bot 会话不该显示 Bot 聊天历史按钮'); }
+			const oldOnOther = renderChip('client.sessions.js', 'vssaros-sessions', SNAP, 's6');
+			if (!hasAttr(oldOnOther.tree, 'data-vssaros-history-chip')) { bad('非 Bot 会话的全局历史按钮被误删'); }
+		} catch (e) {
+			bad('真装载 / 真渲染失败（' + String((e && e.message) || e) + '）');
+		}
+		// ③ 接线：只走 ALWAYS_CHUNKS（并集守卫已覆盖"文件在包里但没接线"）
+		const partArr2 = (/const PART_CHUNKS = \[([\s\S]*?)\];/.exec(entrySrc3) || [])[1] || '';
+		const alwaysArr2 = (/const ALWAYS_CHUNKS = \[([\s\S]*?)\];/.exec(entrySrc3) || [])[1] || '';
+		if (!alwaysArr2.includes('"./' + BOT_FILE + '"')) { bad('必须接进 ALWAYS_CHUNKS（PART_CHUNKS 在 full 形态不装载）'); }
+		if (partArr2.includes('"./' + BOT_FILE + '"')) { bad('不许同时留在 PART_CHUNKS（同 id 重复注册会抛错）'); }
+		if (!sessSrc2.includes('if (botSession) { return null; }')) { bad('client.sessions.js 缺少 Bot 会话让位判据'); }
+		if (sessSrc2.indexOf('bridge.openSession(row.id, row.preset || undefined)') < 0) {
+			bad('非 Bot 会话的全局历史菜单切换通路被删（已有能力不许减）');
+		}
+		// ④ 切换通路：带 cwd 的宿主桥调用（注释里写的是省略形态，不会让断言假绿）
+		if (botSrc.indexOf('bridge.openSession(row.id, row.preset || undefined, row.cwd || undefined)') < 0) {
+			bad('切换必须走 bridge.openSession(id, preset, cwd)，不许页面自己切');
+		}
+		// 随包清单：漏 files = 装上去没有这个文件 ⇒ 按钮永远不出现
+		try {
+			const pkg = JSON.parse(fs.readFileSync(path.join(PLUGIN_DIR, 'package.json'), 'utf8'));
+			if (!Array.isArray(pkg.files) || pkg.files.indexOf('lib/' + BOT_FILE) < 0) { bad('package.json 的 files 漏了 lib/' + BOT_FILE); }
+		} catch (e) { bad('package.json 读不到 / 不是合法 JSON'); }
+		if (!problems.some((p) => p.startsWith('Bot 聊天历史：'))) {
+			notes.push('Bot 聊天历史：按 Bot 过滤（含共用 preset）/ 新旧按钮互斥 / 只走 ALWAYS_CHUNKS / 带 cwd 走宿主桥，行为断言通过');
+		}
+	}
 	for (const [needle, why] of need) {
 		if (ws.indexOf(needle) < 0) { problems.push(`client.workspaces.js: 缺「${needle}」—— ${why} ✗（2026-11-02）`); }
+	}
+	// ★★ 2026-11-14：两处新建会话调用都必须走 `openWsSession` 封装，不许再裸调官方入口
+	//   （裸调 = 第三参数 undefined = `reuse.agentPreset` 抛错）。⚠ 剥注释：注释里会引用旧调用形态。
+	{
+		const code = ws.replace(/\/\*[\s\S]*?\*\//g, '').split(/\r?\n/)
+			.filter((l) => !/^\s*(\/\/|\*)/.test(l)).join('\n');
+		const bare = [...code.matchAll(/uw\.openWorkspaceSession\(([^)]*)\)/g)]
+			.map((m) => m[1].trim()).filter((args) => !/^id, undefined, \{\}$/.test(args));
+		if (bare.length) {
+			problems.push('⑤-l 还有裸调 uw.openWorkspaceSession(' + bare.join(' / ') + ') ⇒ 缺第三参数 `{}` ⇒ 点「+」报 agentPreset ✗');
+		}
+		const wrapped = (code.match(/openWsSession\(/g) || []).length;
+		if (wrapped < 2) { // 2 处调用：登记后新建 / 已有 workspaceId（定义是 `openWsSession =`，不含括号）
+			problems.push('⑤-l 新建会话的两条路径没有都走 openWsSession 封装（登记后新建 / 已有 workspaceId）✗');
+		}
+	}
+	// ★ 2026-11-13（用户要求「移除 dsh 侧 bots 页签右侧的 + 按钮」）：
+	//   tabBar 原先 `.concat([...])` 无条件追加 `data-vssaros-sidebar-new-session` 的
+	//   「+ 新建会话」按钮（不受 view 门控 ⇒ 选中「会话」时也在，还用 marginLeft:auto 挤窄两个页签）。
+	//   ⇒ 负断言钉死「不许再加回来」。只扫 tabBar 的**代码行**（说明注释里提到旧锚点不算数）。
+	{
+		const at = ws.indexOf('const tabBar = react.createElement("div"');
+		const end = ws.indexOf('// 「会话」页签', at);
+		const tabBarCode = at >= 0 && end > at
+			? ws.slice(at, end).split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+			: '';
+		if (!tabBarCode) { problems.push('页签条「+」移除守卫：定位不到 tabBar 源码 ⇒ 守卫会空跑 ✗（2026-11-13）'); }
+		if (/data-vssaros-sidebar-new-session|\.concat\(/.test(tabBarCode)) {
+			problems.push('client.workspaces.js: tabBar 不许再渲染/追加「+ 新建会话」按钮（2026-11-13 用户要求移除）✗');
+		}
 	}
 	// 负对照：旧链路（归档 → 删盘）不许回来
 	if (/archiveSession\(sid\)\)\s*\.then\(wipe/.test(ws)) {
@@ -2135,8 +2577,9 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		problems.push('client.workspaces.js: 缺 __test.validateGroupDraft ✗');
 	} else {
 		if (!tw.validateGroupDraft({ name: 'g', members: [] }).length) { problems.push('validateGroupDraft: 没勾成员必须报错 ✗'); }
-		if (!tw.validateGroupDraft({ name: '', members: ['a'] }).length) { problems.push('validateGroupDraft: 空群名必须报错 ✗'); }
-		if (tw.validateGroupDraft({ name: 'g', members: ['a'] }).length) { problems.push('validateGroupDraft: 合法输入不该报错 ✗'); }
+		if (!tw.validateGroupDraft({ name: '', members: ['a', 'b'] }).length) { problems.push('validateGroupDraft: 空群名必须报错 ✗'); }
+		if (!tw.validateGroupDraft({ name: 'g', members: ['a'] }).length) { problems.push('validateGroupDraft: 少于2个不同成员必须报错 ✗'); }
+		if (tw.validateGroupDraft({ name: 'g', members: ['a', 'b'] }).length) { problems.push('validateGroupDraft: 合法输入不该报错 ✗'); }
 	}
 	if (!problems.length) { notes.push('client.workspaces.js: 会话行 UI 复刻（圆点 / 双击改名 / 绝对时间）+ 未读 + 删除走 detachSession 断言通过'); }
 }
@@ -2262,6 +2705,71 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 			if (!t.pickDashboardItem([])) { problems.push('pickDashboardItem: 空列表也要给一个条目（不能 undefined）✗'); }
 		}
 		notes.push('client.workbenchNav.js: 侧栏单行「主页」（order -10）+ 中转面板 + 页签条落 shell.overlay 断言通过');
+	}
+}
+
+// ── ⑥-c 侧栏「主页」行必须**每次点击**都激活主页页签（2026-11-11 真机报障）─────────────
+// 用户原话：「点击 左侧栏的主页按钮，无法切换到 对应 主页页签 页面」。
+// 真因：那行的点击归官方 selectPanel，而「激活主页页签」原先**只**挂在 main 面板
+//       useEffect([]) 的**首次挂载**副作用上 ⇒ 中栏面板已在屏（用户正停在别的工作台页签）时
+//       selectPanel 幂等、effect 不重跑 ⇒ 静默无反应（CDP 复现：在「知识库」页签里点主页行，
+//       localStorage 的活动页签仍是 vssaros-wb-kb）。
+// ⇒ 必须做**行为**断言：真装载 chunk → 真跑 install → 派发假 click → 断言活动页签真的变了。
+//   ⚠ ⑥-b 只钉「有 main 面板 / pickDashboardItem 纯函数」，对这类运行时幂等缺陷全程绿 ✗
+//     （又是「markup 存在 ≠ 交互可达」那一族 ⇒ 这一条不能省）。
+{
+	const before6c = problems.length;
+	const doc = makeDocumentStub();
+	// 起始状态刻意停在**别的工作台页签**：正是真机复现的那个前置条件
+	const store = new Map([['vssaros.wb.tabs.active', 'vssaros-wb-kb']]);
+	const clickCapture = [];
+	doc.addEventListener = (type, fn, capture) => {
+		if (type === 'click' && capture === true) { clickCapture.push(fn); }
+	};
+	const win = makeWindowStub(doc);
+	win.localStorage = {
+		getItem: (k) => (store.has(k) ? store.get(k) : null),
+		setItem: (k, v) => store.set(k, String(v)),
+		removeItem: (k) => store.delete(k),
+	};
+	let loaded = null;
+	try { loaded = loadChunk('client.workbenchNav.js', doc, win); }
+	catch (e) {
+		problems.push(`⑥-c client.workbenchNav.js: 装载失败 — ${String((e && e.message) || e)} ✗`);
+	}
+	if (loaded) {
+		const { shell, state } = makeShell();
+		try { captureRegistration(loaded.exports, shell); }
+		catch (e) {
+			problems.push(`⑥-c client.workbenchNav.js: install() 抛错 — ${String((e && e.message) || e)} ✗`);
+		}
+		if (!clickCapture.length) {
+			problems.push('⑥-c client.workbenchNav.js: 侧栏「主页」行缺 document 捕获阶段的 click 监听 ⇒ 中栏面板已在屏时点击不会切到主页页签（2026-11-11 报障）✗');
+		} else {
+			// 负对照：点别处（含别处同名按钮）不许改活动页签
+			clickCapture.forEach((fn) => fn({ button: 0, target: { closest: () => null } }));
+			if (store.get('vssaros.wb.tabs.active') !== 'vssaros-wb-kb') {
+				problems.push('⑥-c client.workbenchNav.js: 点别处也改了活动页签（捕获监听判据过宽）✗');
+			}
+			// 正对照：点我们那一行（带稳定锚点的官方侧栏按钮）
+			const fakeBtn = { querySelector: (s) => (s === '[data-vssaros-home-entry]' ? {} : null) };
+			const fakeTarget = { closest: (s) => (s === 'button[aria-label="主页"]' ? fakeBtn : null) };
+			clickCapture.forEach((fn) => fn({ button: 0, target: fakeTarget }));
+			if (store.get('vssaros.wb.tabs.active') !== 'vssaros-wb-dashboard') {
+				problems.push(`⑥-c client.workbenchNav.js: 点了侧栏「主页」行，活动页签仍是 ${JSON.stringify(store.get('vssaros.wb.tabs.active'))}（应为 vssaros-wb-dashboard）⇒ "点了没反应" 回归 ✗`);
+			}
+			if (!state.homeEntryClicks) {
+				problems.push('⑥-c client.workbenchNav.js: 激活函数没有真正跑到（守卫判据或接线失效）✗');
+			}
+		}
+		// 稳定锚点是捕获监听**认行**的唯一依据 ⇒ 只在 stub 里造按钮会绕过它，必须另钉源码形状
+		const srcHome = fs.readFileSync(path.join(LIB, 'client.workbenchNav.js'), 'utf8');
+		if (!srcHome.includes('"data-vssaros-home-entry": "1"')) {
+			problems.push('⑥-c client.workbenchNav.js: 「主页」行图标缺稳定锚点 data-vssaros-home-entry ⇒ 真机捕获监听永远认不出这一行（守卫假绿）✗');
+		}
+		if (problems.length === before6c) {
+			notes.push('⑥-c 侧栏「主页」行：每次点击都显式激活主页页签（行为断言 + 稳定锚点）');
+		}
 	}
 }
 
@@ -3336,12 +3844,12 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 			|| !/disabled: createDisabled/.test(cv) || !/title: createDisabled \?/.test(cv)) {
 			problems.push('client.conversationViews.js: 「创建绑定」在选了添加新应用时不能静默禁用，禁用态也要有可见原因 ✗');
 		}
-		if (!/这是 VsSaros助手（内置默认应用）/.test(cv)) {
-			problems.push('client.conversationViews.js: 新增应用要预检内置默认应用（否则用户填完才吃到 409）✗');
+		if (!/这是当前默认应用/.test(cv)) {
+			problems.push('client.conversationViews.js: 新增应用要预检默认应用（否则用户填完才吃到 409）✗');
 		}
-		/* ★ 2026-11-10（用户要求）：内置默认飞书应用对外统一叫「VsSaros助手」。 */
-		if (!/label: "VsSaros助手"/.test(cv) || /默认飞书应用（跟随全局凭据）/.test(cv)) {
-			problems.push('client.conversationViews.js: 默认飞书应用应显示为「VsSaros助手」，旧文案不许复活 ✗');
+		/* ★ 2026-11-11（用户要求）：下拉首项统一叫「默认应用」，不再使用废弃的内置应用名。 */
+		if (!/label: "默认应用"/.test(cv) || /默认飞书应用（跟随全局凭据）/.test(cv)) {
+			problems.push('client.conversationViews.js: 默认飞书应用应显示为「默认应用」，旧文案不许复活 ✗');
 		}
 		/* ★ 2026-11-10 用户报「Bots 页签 bot / 群行选中态不明显」：
 		   bot 行原来完全没有选中态；群行只有被主题吞掉的一层 bg-layer-2 浅底。
@@ -3580,6 +4088,446 @@ console.log('[chat-surface chunks] 我们注册的条目：');
 for (const o of ourEntries) {
 	console.log(`  · ${o.slot}  id=${o.id}  order=${o.order}   (${o.file})${isBaseline(o) ? '  [既有]' : ''}`);
 }
+// ★ 2026-11-14：notes 的打印**移到文件末尾**（下面还有很多断言块会 push notes，
+//   原先在这里就打印完 ⇒ 后半段的「断言通过」提示永远看不到，守卫自证失效）。
+// ★ 2026-11-11 用户选方案 B：「会话 / Bots」页签右上角悬浮角标
+//   判据：① 计数纯函数行为（执行态 / 群影子会话排除 / 群轮次按 room 去重 / 未读分区）；
+//         ② 角标 DOM + 注入 CSS（含窄轨降级 / reduced-motion）；
+//         ③ 数据刷新链路（全局进度监听 + 快照订阅，不新增轮询）；
+//         ④ 页签 overflow 必须 visible（hidden 会裁掉角标）＋ 入口 STAMP 已更新。
+{
+	const wsSrc = fs.readFileSync(path.join(LIB, 'client.workspaces.js'), 'utf8');
+	const entrySrc4 = fs.readFileSync(path.join(LIB, 'client.js'), 'utf8');
+	const wsDoc4 = makeDocumentStub();
+	const wsTest = loadChunk('client.workspaces.js', wsDoc4, makeWindowStub(wsDoc4)).exports.__test || {};
+	const bad = (m) => problems.push('方案B页签角标：' + m + ' ✗');
+	if (typeof wsTest.tabBadgeCounts !== 'function' || typeof wsTest.badgeNumOf !== 'function') {
+		bad('缺 __test.tabBadgeCounts / badgeNumOf（守卫会空跑）');
+	} else {
+		const f = wsTest.tabBadgeCounts, num = wsTest.badgeNumOf;
+		if (num(0) !== '' || num(3) !== '3' || num(10) !== '9+' || num(108) !== '9+') {
+			bad('badgeNumOf 零值隐藏 / 9+ 溢出不对');
+		}
+		const snap = { byId: {
+			's-a': { turnRunning: true },
+			's-b': { turnBoundary: { running: true } },
+			's-c': { pendingQuestions: 1 },
+			's-d': { turnRunning: false },
+			's-room': { turnRunning: true, projectionValues: { 'vssaros-room': { roomId: 'r1' } } },
+		} };
+		const active = [
+			{ roomId: 'r1', status: 'replying', done: false },
+			{ roomId: 'r1', status: 'sent', done: false },
+			{ roomId: 'r2', status: 'done', done: true, busy: ['Coder'] },
+			{ roomId: 'r3', status: 'done', done: true, busy: [] },
+		];
+		const c = f(snap, ['s-a', 's-c', 'r1', 'r9'], active);
+		if (c.sessions.run !== 3) { bad('会话执行数必须数 running/awaiting 且排除群影子会话'); }
+		if (c.bots.run !== 2) { bad('群执行数必须按 roomId 去重，后台 busy 也算执行中'); }
+		if (c.sessions.unread !== 2 || c.bots.unread !== 2) { bad('未读集合必须按会话/群分区'); }
+		const empty = f(null, [], []);
+		if (empty.sessions.run || empty.sessions.unread || empty.bots.run || empty.bots.unread) { bad('空数据必须全 0'); }
+	}
+	for (const [needle, why] of [
+		['"data-vssaros-tab-badge": kind', '角标必须有稳定 DOM 锚点'],
+		['"data-vssaros-tab-badges": k', '两枚角标必须共用一个容器'],
+		['.vssaros-ws-tab{position:relative', '角标必须相对页签按钮定位'],
+		['.vssaros-ws-tab-badges{position:absolute', '角标容器必须越出页签上沿'],
+		['overflow: "visible"', 'S.tabBtn 的 overflow 必须放开（hidden 会裁掉角标）'],
+		['window.addEventListener(GROUP_PROGRESS_EVENT, onProgress)', '必须监听全局进度广播（不受 view 门控）'],
+		['list.subscribe(() => forceBadgeTick', '必须订阅会话快照变化（running 数实时）'],
+		['"data-vssaros-tab-narrow": state.workspacesWide', '窄轨态要有降级标记'],
+		['@media(prefers-reduced-motion:reduce)', '角标扩散环必须尊重 reduced-motion'],
+		['vssaros-ws-tab-badge-run', '执行中与未查看必须是不同形态（不只靠颜色）'],
+	]) {
+		if (!wsSrc.includes(needle)) { bad('缺「' + needle + '」—— ' + why); }
+	}
+	// ★ 2026-11-11 真机「tip UI 全黑」：`--dsw-alias-brand-primary` 在 dsh 调色板里是
+	//   **主前景色**（浅色 = neutral-bluish-1000 = rgb(15,17,21) 近黑），不是品牌蓝；
+	//   `--dsw-alias-label-primary` 同色 ⇒ 拿它当底色+数字色 = 黑底黑字；
+	//   `--dsw-alias-warning-primary` 调色板里根本不存在 ⇒ var 无效时背景透明。
+	//   ⇒ 只扫注入的 CSS 声明行（`+ "..."`），注释里提到这些名字不算数。
+	const badgeCss = wsSrc.split('\n')
+		.filter(l => l.trim().startsWith('+ "') && l.includes('vssaros-ws-tab-badge'))
+		.join('\n');
+	if (!badgeCss) { bad('找不到注入的角标 CSS 声明行 ⇒ 色值守卫会空跑'); }
+	for (const [needle, why] of [
+		['--dsw-alias-brand-primary-new-colorprimary-new-color', '执行中角标必须用调色板里的真品牌蓝'],
+		['--dsw-alias-state-warn-primary', '未查看角标必须用调色板里存在的警示色'],
+		['color:#ffffff', '彩色实底上的数字必须固定白字（跟 label-primary 会黑底黑字）'],
+		['background-color:#4176e6;background-color:var(', '品牌底色必须先写固定色再写 var（变量无效时不退化成透明/黑）'],
+		['background-color:#e2a03f;background-color:var(', '警示底色同样要双层降级'],
+	]) {
+		if (!badgeCss.includes(needle)) { bad('CSS ' + why); }
+	}
+	if (/--dsw-alias-warning-primary|--dsw-alias-label-primary|var\(--dsw-alias-brand-primary[,)]/.test(badgeCss)) {
+		bad('角标 CSS 里还有会导致「全黑」的错误变量（brand-primary 是主前景色 / warning-primary 不存在）');
+	}
+	if (/font-size:0/.test(badgeCss)) { bad('窄轨态不许 font-size:0（数字藏掉就只剩一个黑点）'); }
+	if (!entrySrc4.includes('方案B页签角标')) { bad('入口 CLIENT_BUILD_STAMP 未更新（chunk rev 不会变）'); }
+	if (!problems.some((p) => p.startsWith('方案B页签角标：'))) {
+		notes.push('方案 B 页签角标：计数纯函数 / 角标 DOM + CSS（真品牌蓝+警示色/固定白字/双层降级/数字常显）/ 全局进度监听 + 快照订阅，行为断言通过');
+	}
+}
+
+// ★ 2026-11-14（真机：飞书入站会话不在工作区账本 ⇒ 角标「1 个正在执行」但列表找不到）
+//   角标与列表必须共用同一份可见会话集合：tabBadgeCounts 的第 4 参来自 visibleSessionIdsOf(rows)，
+//   rows 由 buildSidebar 产出。这里用真 buildSidebar 做端到端断言，不只测纯函数。
+{
+	const bad = (m) => problems.push('角标/列表一致性：' + m + ' ✗');
+	const srcC = fs.readFileSync(path.join(LIB, 'client.workspaces.js'), 'utf8');
+	const docC = makeDocumentStub();
+	const t = loadChunk('client.workspaces.js', docC, makeWindowStub(docC)).exports.__test || {};
+	if (typeof t.visibleSessionIdsOf !== 'function') {
+		bad('缺 __test.visibleSessionIdsOf（守卫会空跑）');
+	} else {
+		const r = t.visibleSessionIdsOf([
+			{ key: 'ws:a', sessions: [{ id: 's1' }, { id: 's2' }] },
+			{ key: 'ws:b', sessions: [{ id: 's3' }] },
+			{ key: 'ws:c', sessions: [] },
+			null,
+		]);
+		if (!(r instanceof Set) || r.size !== 3 || !r.has('s1') || !r.has('s2') || !r.has('s3')) {
+			bad('visibleSessionIdsOf 没把各行会话收敛成 id 集合（含空行容错）');
+		}
+		if (t.visibleSessionIdsOf(null).size !== 0) { bad('空 rows 必须得到空集合'); }
+	}
+	if (typeof t.tabBadgeCounts !== 'function' || typeof t.buildSidebar !== 'function') {
+		bad('缺 __test.tabBadgeCounts / buildSidebar');
+	} else {
+		// ① 向后兼容：不传第 4 参 ⇒ 仍是全量口径（旧断言不回归）
+		const snap = { byId: { s1: { turnRunning: true }, s2: { turnRunning: false }, orphan: { turnRunning: true } } };
+		if (t.tabBadgeCounts(snap, [], []).sessions.run !== 2) { bad('不传 visibleIds 时必须保持全量口径'); }
+		// ② 传了集合 ⇒ 只数集合内的
+		const vis = t.visibleSessionIdsOf([{ sessions: [{ id: 's1' }, { id: 's2' }] }]);
+		const c = t.tabBadgeCounts(snap, ['s1', 'orphan'], [], vis);
+		if (c.sessions.run !== 1) { bad('visibleIds 外的 running 会话仍被计入 ⇒ 角标/列表不一致'); }
+		if (c.sessions.unread !== 1) { bad('visibleIds 外的未读会话仍被计入会话角标'); }
+		// ③ 真 buildSidebar：orphan 没挂任何 workspace.sessionIds ⇒ 列表无此行，角标必须 0
+		const rowsC = t.buildSidebar({
+			workspaces: [{ workspaceId: 'w1', path: 'C:/ws', sessionIds: ['s1', 's2'] }],
+			records: [], sessionsById: snap.byId, currentSessionId: 's1', archivedIds: [],
+			pinnedIds: [], orderMap: {}, deletedIds: [],
+		});
+		const idsC = t.visibleSessionIdsOf(rowsC);
+		if (idsC.has('orphan')) { bad('buildSidebar 居然把未挂账本的会话列出来了（前提变了）'); }
+		const c2 = t.tabBadgeCounts(snap, [], [], idsC);
+		if (c2.sessions.run !== 1) { bad('★ 真链路：孤儿 running 会话仍让角标 +1'); }
+	}
+	// ④ 调用点必须把同一份 rows 传下去（不能改成读快照全量）
+	if (!/tabBadgeCounts\(readSessSnapshot\(\), unreadIds, badgeActivity, visibleSessionIdsOf\(rows\)\)/.test(srcC)) {
+		bad('调用点没把 visibleSessionIdsOf(rows) 传给 tabBadgeCounts');
+	}
+	// ⑤ 反向突变自证
+	const brokenC = srcC.replace(
+		'tabBadgeCounts(readSessSnapshot(), unreadIds, badgeActivity, visibleSessionIdsOf(rows))',
+		'tabBadgeCounts(readSessSnapshot(), unreadIds, badgeActivity)');
+	if (brokenC === srcC || /visibleSessionIdsOf\(rows\)\)/.test(brokenC)) {
+		bad('反向突变脚本失效（判据无鉴别力）');
+	}
+	if (!problems.some((p) => p.startsWith('角标/列表一致性：'))) {
+		notes.push('角标/列表一致性：真 buildSidebar 端到端 + 可见集合纯函数 + 向后兼容 + 调用点 + 反向突变');
+	}
+}
+
+// ★ 2026-11-13（用户要求）：工作区右键 + 三类行键盘导航 + 删除确认层 Enter
+//   判据：① nextKeyIndex 纯函数边界行为；② 结构件逐字 + 数量（右键 2 处 / Bots 行 2 处 / 确认层 3 处）；
+//         ③ 真行为由 check-bots-rooms.mjs 的真 React 渲染覆盖（这里是静态防回归）。
+{
+	const bad = (m) => problems.push('侧栏键盘/右键：' + m + ' ✗');
+	const srcK = fs.readFileSync(path.join(LIB, 'client.workspaces.js'), 'utf8');
+	const docK = makeDocumentStub();
+	const tK = loadChunk('client.workspaces.js', docK, makeWindowStub(docK)).exports.__test || {};
+	if (typeof tK.nextKeyIndex !== 'function') { bad('缺 __test.nextKeyIndex（守卫会空跑）'); }
+	else {
+		const ids = ['a', 'b', 'c'];
+		if (tK.nextKeyIndex(ids, 'a', 'ArrowDown') !== 1) { bad('↓ 必须到下一条'); }
+		if (tK.nextKeyIndex(ids, 'c', 'ArrowDown') !== 2) { bad('↓ 到底不越界'); }
+		if (tK.nextKeyIndex(ids, 'a', 'ArrowUp') !== 0) { bad('↑ 到顶不越界'); }
+		if (tK.nextKeyIndex(ids, 'x', 'ArrowDown') !== 0) { bad('当前不在列表 ⇒ 从第一条开始'); }
+		if (tK.nextKeyIndex([], 'a', 'ArrowDown') !== -1) { bad('空列表 ⇒ -1'); }
+	}
+	for (const [n, why] of [
+		['const keyRowProps = (scope, id, open, del) => {', '必须有三类行共用的键盘 helper'],
+		['const confirmKeyProps = (onConfirm) => {', '必须有三个确认层共用的 Enter helper'],
+		['...keyRowProps("sessions", s.id,', '会话行必须接键盘导航'],
+		['...confirmKeyProps(confirmSessionDelete)', '会话删除确认必须支持 Enter'],
+		['...confirmKeyProps(deleteRoom)', '群删除确认必须支持 Enter'],
+		['...confirmKeyProps(deleteBot)', 'Bot 删除确认必须支持 Enter'],
+		['tabIndex: -1, autoFocus: true', '确认层必须自动聚焦（Enter 才落得上）'],
+		['window.addEventListener("keydown", onKeyNav, true)', '键盘必须挂 window capture（焦点被抢/宿主吞键仍生效）'],
+		['keyActionsRef.current[scope + ":" + String(id)] = { open, del };', '行必须把 open/del 注册进 ref 供全局监听调用'],
+		['confirmActionRef.current = onConfirm;', '确认层必须把确认动作注册进 ref'],
+		['[contenteditable="true"]', '必须排除 composer / 输入框，不抢用户打字'],
+		['k === "ArrowUp" || k === "ArrowDown"', '必须有 ↑↓ 判据'],
+		['k === "Delete" || k === "Backspace"', '必须有 Delete 判据'],
+		['if (k === "Enter")', '必须有 Enter 判据'],
+		['tabIndex: 0', '行必须可聚焦（点击即选中）'],
+		['"data-key-focus":', '行必须有高亮锚点'],
+		['.vssaros-ws-row[data-key-focus=', '高亮必须有注入 CSS'],
+		['onContextMenu: (e) => openWsMenu(key, e,', '工作区行必须绑右键菜单'],
+	]) { if (!srcK.includes(n)) { bad('缺「' + n + '」—— ' + why); } }
+	// ★ 2026-11-13 真机回归：旧实现把 onKeyDown 绑在行上，官方 replaceMain 重渲染把焦点
+	//   抢回 body 就彻底失效。钉死「不许退回到行级 onKeyDown」。
+	const kbAt = srcK.indexOf('const keyRowProps = (scope, id, open, del) => {');
+	const kbEnd = srcK.indexOf('// 点外面 ⇒ 关菜单', kbAt);
+	const kbBody = kbAt >= 0 && kbEnd > kbAt ? srcK.slice(kbAt, kbEnd) : '';
+	if (!kbBody) { bad('定位不到键盘 helper 源码窗口 ⇒ 负断言会空跑'); }
+	if (/onKeyDown:/.test(kbBody)) { bad('键盘处理不许再绑回行级 / 确认层 onKeyDown（真机焦点会被重渲染抢走）'); }
+	const ctxN = (srcK.match(/onContextMenu: \(e\) => openWsMenu\(key, e,/g) || []).length;
+	if (ctxN !== 2) { bad('工作区行右键必须恰好 2 处（group + flat），实际 ' + ctxN); }
+	const botN = (srcK.match(/\.\.\.keyRowProps\("bots", id,/g) || []).length;
+	if (botN !== 2) { bad('Bot/群行键盘必须恰好 2 处，实际 ' + botN); }
+	const confN = (srcK.match(/\.\.\.confirmKeyProps\(/g) || []).length;
+	if (confN !== 3) { bad('删除确认层 Enter 必须恰好 3 处（会话/群/Bot），实际 ' + confN); }
+	if (!problems.some((p) => p.startsWith('侧栏键盘/右键：'))) {
+		notes.push('侧栏键盘/右键：工作区两处右键 + 会话/Bot/群行 ↑↓/Enter/Delete + 三个删除确认层 Enter，断言通过');
+	}
+}
+
+// ★ 2026-11-14（用户确认「执行」）：hero worktree checkbox / 输入框信息 chip / 会话行标志
+//   判据：① 命名与 enable 纯函数行为；② 跨 chunk 状态契约 + 三处 DOM 锚点；
+//         ③ 真跑 install ⇒ 槽注册参数 + checkbox 插到 preset chip **之前**；
+//         ④ 显式桥能力探测（不许假装新建成功）；⑤ hero 态接线（BLANK_SESSION_PARTS）。
+{
+	const bad = (m) => problems.push('worktreeChip：' + m + ' ✗');
+	const wtSrc = fs.readFileSync(path.join(LIB, 'client.worktreeChip.js'), 'utf8');
+	const wsSrc5 = fs.readFileSync(path.join(LIB, 'client.workspaces.js'), 'utf8');
+	const entrySrc5 = fs.readFileSync(path.join(LIB, 'client.js'), 'utf8');
+	const docW = makeDocumentStub();
+	const winW = makeWindowStub(docW);
+	const wtTest = loadChunk('client.worktreeChip.js', docW, winW).exports.__test || {};
+
+	if (typeof wtTest.makeWorktreeName !== 'function' || typeof wtTest.buildOptions !== 'function') {
+		bad('缺 __test.makeWorktreeName / buildOptions（守卫会空跑）');
+	} else {
+		const NAME_RE = /^(feat|fix|refactor|chore)\/[a-z0-9-]+-[0-9a-f]{4}$/;
+		for (let i = 0; i < 12; i++) {
+			if (!NAME_RE.test(wtTest.makeWorktreeName())) { bad('临时分支名必须符合 <type>/<kebab-slug>-<4hex> 行业惯例'); break; }
+		}
+		const opts = wtTest.buildOptions([{ path: '/repo/wt', name: 'wt', branch: 'fix/a' }], 'feat/temp-1234');
+		if (opts.length !== 2 || !opts[0].isNew || !opts[0].ephemeral || opts[0].name !== 'feat/temp-1234') {
+			bad('下拉第一项必须是默认「新增 worktree」且为临时项');
+		}
+		if (opts[1].isNew || opts[1].name !== 'fix/a') { bad('常驻项必须来自宿主推送且用分支名'); }
+		if (wtTest.isGitEnabled([]) !== false || wtTest.isGitEnabled([{ path: '/x' }]) !== true) {
+			bad('enable 判据必须按宿主推送列表是否为空');
+		}
+		if (wtTest.parseWorktreeOptions('{bad').length !== 0 || wtTest.parseWorktreeOptions('[{"path":"/a"},{"x":1}]').length !== 1) {
+			bad('坏数据要退化成空数组、无 path 的条目要过滤');
+		}
+		if (wtTest.optionLabel({ isMain: true, path: '/repo' }) !== '主工作区') { bad('主工作区文案'); }
+		if (wtTest.parseChip('{bad') !== null) { bad('跨 chunk 状态坏数据要退化成 null'); }
+	}
+	// 静态契约
+	for (const [needle, why] of [
+		['[data-vssaros-mode-seat="1"]', 'checkbox 必须锚在 preset chip（ModeSeat）上，才能落在工作区 chip 右侧'],
+		['[data-vssaros-context-chip="1"]', '有会话页没有 ModeSeat ⇒ 必须另有工作区 chip 锚点，否则会话页永不出 checkbox'],
+		['anchor.nextSibling', 'header 态 checkbox 必须插在工作区 chip 之后'],
+		['insertBefore(el, anchor)', 'checkbox 必须插到 preset chip 之前'],
+		['activeWorktreeOf(cwd, pushedOptions(), readChip())', '信息 chip 必须按当前会话 cwd 核对 worktree 名称'],
+		['data-vssaros-wt-readonly', '信息 chip 必须是只读状态，不是开关入口'],
+		['if (!active) { return null; }', '未进入 worktree 时不许显示开关占位'],
+		['sessions.list.subscribe(on)', '发送后会话快照到达必须刷新实际名称'],
+		['vssaros-dsh-rebind', '换绑会话后必须读取新的会话目录'],
+		['const isHeroView = () => {', 'hero 判据必须有独立纯函数（用官方 ModeSeat 锚点）'],
+		['if (hero) { return null; }', 'hero 空白会话屏的输入框必须不渲染 worktree chip'],
+		['window.MutationObserver', '视图切换（hero → 会话页）必须响应式重判，不能只在挂载时读一次'],
+		['setHero((prev) => (prev === v ? prev : v))', '视图判据不变时要 bail out，避免 observer 频繁重渲染'],
+		['vssaros-wt-chip', '跨 chunk 必须有状态事件'],
+		['vssarosWorktreeChip', '跨 chunk 必须有 dataset 状态键'],
+		['data-vssaros-wt-checkbox', 'checkbox 必须有稳定 DOM 锚点'],
+		['data-vssaros-wt-info', '输入框信息 chip 必须有稳定 DOM 锚点'],
+		['data-vssaros-wt-chip-style', '样式必须幂等注入'],
+		['bridge.createWorktree', '新建必须显式探测宿主能力'],
+		['bridge.removeWorktree', '临时 worktree 删除必须显式探测宿主能力'],
+		['不支持新建 worktree', '宿主缺 createWorktree 时必须明确提示，不许假装成功'],
+		['--dsw-alias-brand-primary-new-colorprimary-new-color', '色值必须用真品牌蓝（brand-primary 是主前景色会全黑）'],
+		['vssaros-dsh-worktrees', 'enable 态必须跟随宿主 worktree 推送刷新'],
+		// ★ 2026-11-14 真机「hero 两枚重复 checkbox」：apply 重跑会再 install 一次
+		['__vssarosWtChipSingleton', '必须有全局单例标记（apply 重跑 ⇒ loadParts 无条件再 install）'],
+		['window[singletonKey]', '单例标记必须落在 window 上（跨 factory 重执行才有效）'],
+		['inst.reinstalls = (inst.reinstalls || 0) + 1;', '重复 install 必须只刷新引用并计数，不重复初始化'],
+		['state.vssarosWtChipReinstalls = inst.reinstalls;', '重复 install 次数必须可诊断'],
+		['infoComp: InfoChip', '单例必须保存 InfoChip 供 apply 重建后重新注册槽'],
+		['const b = (inst && inst.bridge) || bridge;', 'notify 必须走单例里刷新的 bridge，不发到旧桥'],
+	]) {
+		if (!wtSrc.includes(needle)) { bad('缺「' + needle + '」—— ' + why); }
+	}
+	const infoAt = wtSrc.indexOf('function InfoChip(props)');
+	const infoEnd = wtSrc.indexOf('ctx.slots.inject', infoAt);
+	const infoBody = infoAt >= 0 && infoEnd > infoAt ? wtSrc.slice(infoAt, infoEnd) : '';
+	if (!infoBody || /role: "button"|tabIndex:|onClick:|onKeyDown:|"slides"/.test(infoBody)
+		|| wtSrc.includes('vssaros-wt-chip-open')) {
+		bad('输入框信息 chip 必须只读，不许回退成 worktree 开关或显示硬编码工作区名');
+	}
+	// 负断言：单例分支必须在**任何 DOM 注入 / 监听注册之前**提前 return，
+	// 否则「只靠闭包级 hostEl 判重」的老问题会回来。
+	const instAt = wtSrc.indexOf('if (typeof window !== "undefined" && window[singletonKey]) {');
+	const hostAt = wtSrc.indexOf('let hostEl = null;');
+	if (instAt < 0 || hostAt < 0 || instAt > hostAt) {
+		bad('全局单例去重必须早于 hostEl 等闭包状态声明（否则第二个实例仍会注入第二枚 checkbox）');
+	}
+	if (/var\(--dsw-alias-brand-primary[,)]|--dsw-alias-warning-primary/.test(wtSrc)) {
+		bad('不许用会致全黑的主前景色变量或不存在的 warning-primary');
+	}
+	if (!entrySrc5.includes('"./client.worktreeChip.js"')) { bad('新 chunk 没接进 PART_CHUNKS'); }
+	const blank5 = (entrySrc5.match(/const BLANK_SESSION_PARTS = \[([\s\S]*?)\];/) || [])[1] || '';
+	if (!blank5.includes('"./client.worktreeChip.js"')) { bad('新 chunk 没进 BLANK_SESSION_PARTS ⇒ hero 空白屏不会装载'); }
+	if (!wsSrc5.includes('readWtChipBadge')) { bad('client.workspaces.js 没消费跨 chunk 状态（会话行标志会不出现）'); }
+	if (!wsSrc5.includes('data-vssaros-wt-row-badge') || !wsSrc5.includes('vssaros-ws-wt-badge')) {
+		bad('client.workspaces.js 必须渲染带稳定锚点的会话行 worktree 标志');
+	}
+	if (!wsSrc5.includes('vssaros-wt-chip')) { bad('client.workspaces.js 必须订阅跨 chunk 状态事件才能重画会话行'); }
+
+	// 真跑 install：槽注册 + DOM 注入位置
+	try {
+		const regs = [];
+		const anchor = makeElementStub();
+		const parent = makeElementStub();
+		const inserted = [];
+		anchor.parentElement = parent;
+		parent.insertBefore = (el, ref) => { inserted.push({ el: el, ref: ref }); };
+		const docI = makeDocumentStub();
+		docI.querySelector = (sel) => sel === '[data-vssaros-mode-seat="1"]' ? anchor : null;
+		docI.documentElement.dataset.vssarosWorktrees = JSON.stringify([{ path: '/repo/wt', name: 'wt' }]);
+		const winI = makeWindowStub(docI);
+		const mod = loadChunk('client.worktreeChip.js', docI, winI).exports;
+		const ctx = { slots: {
+			inject: (_slot, fn) => fn(),
+			register: (opts, comp) => { regs.push({ opts: opts, comp: comp }); return opts; },
+		} };
+		mod.install(ctx, { state: {}, bridge: { notify: () => {} } });
+		const reg = regs.find(r => r.opts && r.opts.id === 'vssaros-wt-info-chip');
+		if (!reg || reg.opts.name !== 'conversation.input.left' || reg.opts.order !== 1 || typeof reg.comp !== 'function') {
+			bad('信息 chip 必须注册到 conversation.input.left、order 1（AgentChip 是 0，不许 tie）');
+		}
+		if (inserted.length !== 1 || inserted[0].ref !== anchor) {
+			bad('hero checkbox 必须恰好注入一次、且插在 preset chip 之前');
+		}
+	} catch (e) { bad('真跑 install 抛异常：' + String((e && e.message) || e)); }
+
+	// ★ 2026-11-14 真机回归：「有会话页两处缺 worktree chip」——会话页没有 ModeSeat，
+	//   只有工作区 chip 锚点 ⇒ 必须照样注入 checkbox，且插在它**之后**（nextSibling）。
+	try {
+		const hAnchor = makeElementStub();
+		const hParent = makeElementStub();
+		const hInserted = [];
+		hAnchor.parentElement = hParent;
+		hAnchor.nextSibling = null;
+		hParent.insertBefore = (el, ref) => { hInserted.push({ el: el, ref: ref }); };
+		const docH = makeDocumentStub();
+		docH.querySelector = (sel) => sel === '[data-vssaros-context-chip="1"]' ? hAnchor : null;
+		docH.documentElement.dataset.vssarosWorktrees = JSON.stringify([{ path: '/repo/wt', name: 'wt' }]);
+		const modH = loadChunk('client.worktreeChip.js', docH, makeWindowStub(docH)).exports;
+		modH.install({ slots: { inject: (_s, fn) => fn(), register: (o) => o } },
+			{ state: {}, bridge: { notify: () => {} } });
+		if (hInserted.length !== 1 || hInserted[0].ref !== null) {
+			bad('会话页 checkbox 必须恰好注入一次、且插在工作区 chip 之后（nextSibling）');
+		}
+	} catch (e) { bad('会话页 install 行为断言异常：' + String((e && e.message) || e)); }
+
+	// 跨 chunk 状态读取（client.workspaces.js）
+	try {
+		const docR = makeDocumentStub();
+		docR.documentElement.dataset.vssarosWorktreeChip = JSON.stringify({ name: 'feat/temp-1234', path: '/w', ephemeral: true });
+		const t5 = loadChunk('client.workspaces.js', docR, makeWindowStub(docR)).exports.__test || {};
+		const got = typeof t5.readWtChipBadge === 'function' ? t5.readWtChipBadge() : null;
+		if (!got || got.name !== 'feat/temp-1234' || got.ephemeral !== true) { bad('会话行标志读不到跨 chunk 的临时 worktree 状态'); }
+	} catch (e) { bad('readWtChipBadge 行为断言异常：' + String((e && e.message) || e)); }
+
+	if (!problems.some((p) => p.startsWith('worktreeChip：'))) {
+		notes.push('worktreeChip：命名/enable 纯函数 + 跨 chunk 状态 + 三处 DOM 锚点 + 真 install 注入位置 + 显式桥探测 + hero 接线，断言通过');
+	}
+}
+
+// ★ 2026-11-14：工作区下拉框 **A′**（用户确认「执行」）
+//   顶部「搜索 + ＋ 添加工作区」；点工作区行内嵌展开多根 tip；tip 内选当前根，主命令才真切会话。
+//   判据：① 结构件逐字；② 负断言禁止退回常驻当前会话栏 / 底部添加 / 长语义行 / worktree UI。
+{
+	const bad = (m) => problems.push('工作区下拉A′：' + m + ' ✗');
+	const s = fs.readFileSync(path.join(LIB, 'client.workspace.js'), 'utf8');
+	// 只扫 ContextPanel + ContextEntry 的**代码行**（注释里提到 worktree 不算数）
+	const at = s.indexOf('function ContextPanel(props)');
+	const end = s.indexOf('function HeroContextPanel(props)', at);
+	const body = at >= 0 && end > at
+		? s.slice(at, end).split('\n')
+			.filter(l => !l.trim().startsWith('//') && !l.trim().startsWith('*') && !l.trim().startsWith('/*'))
+			.join('\n')
+		: '';
+	if (!body) { bad('定位不到 ContextPanel 源码窗口 ⇒ 守卫会空跑'); }
+	for (const [n, why] of [
+		['placeholder: "搜索工作区或根"', '搜索框措辞不许带回 worktree'],
+		['"data-vssaros-context-top": "1"', '必须有顶部工具行'],
+		['"data-vssaros-context-add-top": "1"', '「＋ 添加工作区」必须置顶'],
+		['"＋ 添加工作区"', '顶部按钮必须有可见文案'],
+		['const [expandedKey, setExpandedKey]', '必须有 tip 展开状态'],
+		['const [chosenRoot, setChosenRoot]', '必须有 tip 内选中根状态'],
+		['onClick: spec.onToggle ? spec.onToggle', '行必须区分「展开/选根」与「切换会话」'],
+		['setExpandedKey((prev) => (prev === g.key ? null : g.key))', '点工作区行必须手风琴展开 tip'],
+		['"data-vssaros-wt-tip": g.key', 'tip 必须有稳定 DOM 锚点'],
+		['"多根 · 点「切换」在该根新建会话"', 'tip 头必须准确说明「切换」的真实行为（不许假入口）'],
+		['"单根 · 无需切换"', '单根工作区要有对应 tip 文案'],
+		['setChosenRoot((prev) => Object.assign', 'tip 内点根行必须记住选中的根'],
+		['bridge.switchWorktree(r.path)', '「切换」按钮必须直接调桥（不许走会先关面板的 switchTo）'],
+		['setNote("已请求在 " + r.name + " 新建会话…")', '点击必须在面板内即时反馈，不许静默'],
+		['event: "tip-switch-request"', '每次点击都要留诊断，区分"点了但宿主没回"'],
+		['width: "calc(100% - 14px)"', '根行不许 100%+marginLeft 把按钮顶出命中区'],
+		['canSwitchSession ? "切换" : "桥不支持"', '桥缺失时按钮文案必须如实，不许显示假「切换」'],
+		['const [switchingPath, setSwitchingPath]', '必须有按钮级反馈状态（不能只藏在面板末尾的 note）'],
+		['setSwitchingPath(r.path);', '点击后必须把状态写到按钮自身'],
+		['data-vssaros-wt-tip-state', '按钮必须暴露可断言的请求状态'],
+		['"已请求…"', '按钮点击后必须立即显示已请求'],
+		['const [switchStatus, setSwitchStatus]', '切换必须有状态机（只有单一 requested 态 ⇒ 失败/超时会永远卡住）'],
+		['tip-switch-timeout', '宿主未响应必须留诊断事件'],
+		['"未响应 · 重试"', '超时后按钮必须复位成可点重试入口，不许永远卡在「已请求…」'],
+		['"失败 · 重试"', '桥调用失败后按钮必须复位成可点重试入口'],
+		['clearTimeout(switchTimerRef.current)', '面板卸载 / 重发时必须清掉未响应定时器'],
+		['maxHeight: "min(70vh, 620px)", overflowY: "auto"', '面板必须可滚动，末尾反馈不许被视口截断'],
+		['onClick: () => switchTo({ kind: "root", path: chosen, userInitiated: true })', '主命令必须拿选中的根去切'],
+		['row.userInitiated !== true', 'hero 根行只读闸必须对用户主动切换放行'],
+		['const doSwitch = () => {', 'tip 根行必须有统一的切换动作'],
+		['data-vssaros-wt-tip-switch', '「切换」必须是独立可点的 button（不能只是 hint 文本）'],
+		['type: "button", "data-vssaros-wt-tip-switch": "1",', '「切换」按钮必须是真正的 button 元素'],
+		['disabled: !canSwitchSession,', '「切换」按钮只在桥不支持时禁用'],
+		['[data-vssaros-wt-tip-switch], [data-vssaros-context-panel]', 'hero 的 capture mousedown 必须放行切换按钮，不许在 click 前抑制面板'],
+		['const realCwd = isCurrentGroup(g) && dir ? dir : null;', '「当前根」必须以真实 cwd 为准，不许被本地选中态覆盖'],
+		['row.userInitiated === true ? false : samePath(path, dir)', '主动点「切换」必须跳过当前项幂等短路'],
+		['"data-vssaros-context-detail-action": "1"', '主命令锚点必须在 tip 里保留'],
+		['title: action.label', '主命令「当前会话保持不变」的完整语义必须放 tooltip'],
+		['"在此根新建会话" : action.label', '主命令按钮必须显示短文案'],
+		['"data-vssaros-scope-info": "1"', '说明必须收进默认折叠的 ⓘ'],
+		['"ⓘ 说明"', 'ⓘ 必须有可见文案'],
+		['"data-vssaros-scope-line"', 'scope 锚点必须保留（守卫与真机自证靠它）'],
+		['"data-vssaros-scope-limits"', '受限清单锚点必须保留'],
+		['"data-vssaros-scope-actions"', '动作边界锚点必须保留'],
+		['"data-vssaros-context-panes-layout": "single"', '列表必须单列'],
+		['flexDirection: "column"', '单列布局必须是纵向 flex'],
+		['"data-vssaros-context-pane": "list"', 'list 锚点必须保留（IDE 侧用例按它取行）'],
+		['"data-vssaros-context-pane": "detail"', 'detail 锚点必须保留（IDE 侧用例按它取节点）'],
+		['"↑↓ 选择 · ↵ 展开 / 切换当前根 · Esc 关闭"', '底部只留一行键位提示'],
+	]) { if (!s.includes(n)) { bad('缺「' + n + '」—— ' + why); } }
+	// 负断言：旧结构不许回来
+	if (/kind: "worktree"|"worktree:" \+ t\.key|没有匹配的 worktree|本仓没有额外的 worktree|tree\.worktrees\.length|shownWorktrees/.test(body)) {
+		bad('下拉面板不许再渲染 worktree 分组 / 行 / 空态，也不许把 worktree 算进搜索阈值');
+	}
+	if (body.includes('"当前会话"')) { bad('常驻「当前会话」栏不许回来（A′ 首屏只有工具行 + 列表）'); }
+	if (body.includes('detailPane.push')) { bad('常驻右栏详情不许回来（根区/主命令已搬进 tip）'); }
+	// ★ 真机「tip 里『切换』点不动」：hero 的 policy.disabled 会把整行禁用 ⇒ 假入口，不许回来
+	if (/disabled:\s*[^\n]*\|\|\s*policy\.disabled/.test(body)) {
+		bad('tip 根行不许再用 hero 只读的 policy.disabled 禁用（主命令在 hero 隐藏 ⇒ 两步式断链）');
+	}
+	if (s.includes('"添加工作区…"') || s.includes('"切换 = 在该目录新建会话（历史独立；当前会话保持不变）"')) {
+		bad('底部添加按钮 / 长语义行不许回来（添加已置顶、语义已收进 tip）');
+	}
+	if (/placeholder: "搜索工作区 \/ 根 \/ worktree|"选工作区 \/ worktree|不支持切换工作区 \/ worktree/.test(s)) {
+		bad('面板 / chip 的旧 worktree 措辞未清干净');
+	}
+	if (!problems.some((p) => p.startsWith('工作区下拉A′：'))) {
+		notes.push('工作区下拉A′：添加置顶 / 点行展开 tip / tip 内选当前根 / 主命令切会话 / 说明折叠 / 双 pane 锚点，断言通过');
+	}
+}
+
 for (const n of notes) { console.log('  · ' + n); }
 if (problems.length) {
 	console.error('\n✗ 发现 ' + problems.length + ' 处问题：');

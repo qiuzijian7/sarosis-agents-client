@@ -16,16 +16,7 @@ import { join } from 'node:path'
 /** Mirrors `IM_LOCK_STALE_MS` in vssaros-agents' `imInboundLock.js`. */
 export const BOTS_LOCK_STALE_MS = 90_000
 
-/**
- * VsSaros addition: the Feishu app shipped with the product, so a fresh install can connect without setting up
- * credentials in the Bots channel. It is the **lowest-priority** source: a secret in the Bots' `agent-im-accounts.json`
- * wins. The app ID is also the default of the Feishu Source's `appId` field (see `feishu.ts`).
- * The secret is plain text compiled into `lib/`; rotating it needs a code change and a version bump.
- */
-export const BUNDLED_FEISHU_APP = Object.freeze({
-  appId: 'cli_a860911d2e7f5013',
-  appSecret: 'ieEN6Jp4m4l0RTUDBPPROfpo1n3sc7Iz',
-})
+/** No Feishu app is shipped with the product: each user brings their own app ID and secret (2026-11-11). */
 export interface FeishuHolder { pid: number; dataRoot: string; appId: string }
 
 const json = (file: string): Record<string, unknown> | undefined => {
@@ -60,8 +51,7 @@ export function botsAppSecret(appId: string, env: Record<string, string | undefi
   const found = accounts && accounts.feishu?.appId === appId ? secretOf(accounts.feishu)
     : accounts && accounts.feishuApps && typeof accounts.feishuApps === 'object'
       ? secretOf(accounts.feishuApps[appId]) : undefined
-  // Lowest priority: the app shipped with VsSaros, so no Bots credentials are needed for the default app.
-  return found ?? (appId === BUNDLED_FEISHU_APP.appId ? BUNDLED_FEISHU_APP.appSecret : undefined)
+  return found
 }
 
 /**

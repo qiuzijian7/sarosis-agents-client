@@ -56,6 +56,12 @@ function baseOf(pkg) {
 		icon: p.icon ?? '',
 		// ★ 2026-10-24：缩略图（16:9）与 icon（小图标）分开；老服务端没有该字段 ⇒ 空串
 		cover: p.cover ?? '',
+		downloads: Number.isFinite(Number(p.downloads)) && p.downloads !== null && p.downloads !== undefined ? Number(p.downloads) : null,
+		installable: typeof p.installable === 'boolean' ? p.installable : null,
+		featured: p.featured === true,
+		visibility: p.visibility ?? 'public',
+		created_at: p.created_at ?? null,
+		updated_at: p.updated_at ?? null,
 		tags: Array.isArray(p.tags) ? p.tags.map(textOf).filter(Boolean) : [],
 		status: p.status ?? 'active',
 		distributionType: p.distribution_type ?? 'bundle',

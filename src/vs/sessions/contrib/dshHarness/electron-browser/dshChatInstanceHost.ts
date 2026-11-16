@@ -117,6 +117,19 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 	/** 进行中的切换（并发点选去重）。 */
 	private _switching: Promise<void> | undefined;
 	/**
+	 * ★ 2026-11-14（真机「点切换显示已请求、界面零变化」）：切换开始时刻。
+	 * `_switching` 与 preset 切换共用；若上一次 startSession/rebind 挂起而永不 settle，
+	 * `_switchWorktree()` 里的 `if (!this._switching)` 会把**后续所有点击静默吞掉**（连
+	 * `_notifySwitchFailure` 都不会走）⇒ 页面桥单向、页面只能显示「已请求…」✗✗。
+	 */
+	private _switchStartedAt = 0;
+	/**
+	 * ★ 2026-11-16「点击切换后还是慢」：`_switching` 忙时排队保留**最后一次**点击的目录。
+	 * 旧实现在忙时直接 `return this._switching` ⇒ 本次点的目录根本不执行，用户只能再点
+	 * 一次（体感是「很慢 / 白点」）✗。等当前切换结束由 finally 自动补跑，不并发覆盖。
+	 */
+	private _pendingSwitch: string | undefined;
+	/**
 	 * 进行中的 **IDE 工作区切换**（桥 `10 → 11`；2026-10-16）。
 	 * 与 `_switching`（换会话绑定）**分开去重**：两者是不同的动作，混在一起会让"先切窗口、再起会话"
 	 * 这条序列互相顶掉 ✗（页面是**先后发两条命令**的 ✓）。
@@ -759,11 +772,38 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 	 * 与 preset 切换**共用 single-flight**（`_switching`）：两者都是"换一次会话绑定"，并发跑会互相覆盖 ✗。
 	 */
 	private _switchWorktree(worktreePath: string): Promise<void> {
-		if (!this._switching) {
-			this._switching = this._doSwitchWorktree(worktreePath)
-				.catch(e => this._notifySwitchFailure(`切换会话到 ${worktreePath}`, e))
-				.finally(() => this._switching = undefined);
+		// ★ 2026-11-14 真机第 6 轮「点了「切换」显示已请求但界面零变化」：
+		//   超过阈值仍 settle 不了 ⇒ 视为卡死，留痕 + 可见提示 + **强制解锁**，让本次点击真跑起来。
+		// ★ 第 7 轮「切换很慢」：阈值 20s → 6s —— `_switching` 与 `_switchPreset` 共用，
+		//   上一次挂起时用户要白等 20s 才能恢复，这是主要的可感延迟。解锁后下面的
+		//   `if (!this._switching)` 会**自动执行本次**，不需要用户再点一次 ✓。
+		if (this._switching && this._switchStartedAt && Date.now() - this._switchStartedAt > 6_000) {
+			this._log.warn(`[dshHarness] chat ${this._chatId} switchWorktree: previous switch stuck >6s, force unlock`);
+			try {
+				this._notifications.notify({ severity: Severity.Warning, message: 'VsSaros：上一次会话切换超时，已自动重试' });
+			} catch { /* 通知失败不影响解锁 */ }
+			this._switching = undefined;
+			// 解锁后下面会直接执行**本次**目录 ⇒ 旧的排队请求作废，避免补跑时多切一次。
+			this._pendingSwitch = undefined;
 		}
+		if (this._switching) {
+			// ★ 2026-11-16：忙时**不丢弃**本次点击。只保留最后一次目录，
+			//   由下面 finally 在当前切换结束后自动补跑（连点同一目录不重复切 ✓）。
+			this._pendingSwitch = worktreePath;
+			return this._switching;
+		}
+		this._switchStartedAt = Date.now();
+		this._switching = this._doSwitchWorktree(worktreePath)
+			.catch(e => this._notifySwitchFailure(`切换会话到 ${worktreePath}`, e))
+			.finally(() => {
+				this._switching = undefined;
+				const next = this._pendingSwitch;
+				this._pendingSwitch = undefined;
+				if (next && next !== worktreePath) {
+					this._log.info(`[dshHarness] chat ${this._chatId} switchWorktree 补跑排队请求 ${next}（点击未被丢弃）`);
+					void this._switchWorktree(next);
+				}
+			});
 		return this._switching;
 	}
 
@@ -803,6 +843,10 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 	 * 工具/模型/skills 重新锁定 —— UI 必须在菜单里如实说明"会新建会话"）。
 	 */
 	private async _doSwitchWorktree(worktreePath: string): Promise<void> {
+		// ★ 2026-11-14 第 7 轮「切换很慢」：分段计时，让耗时可量化、不再靠猜。
+		//   慢可能在 dsh 的 startSession（装配 preset / 锁工具模型）、rebindSession（页面重绑重载），
+		//   也可能在两者之间的同步记账。每段都打点，成功通知带上总耗时 ⇒ 用户能直接报数字。
+		const t0 = Date.now();
 		const viewId = this._viewId;
 		const preset = this._preset;
 		if (!viewId || this._dsh.status.state !== 'running') {
@@ -835,6 +879,11 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 			// ⚠ 2026-10-16 补这一行日志：这个早退 + 上面那条 "not ready" 早退从前都是**静默**的，
 			//   于是"点了没反应"完全没有痕迹（用户报障时只能靠猜 ✗）。
 			this._log.info(`[dshHarness] chat ${this._chatId} switchWorktree ${worktreePath} 已在该目录的会话上（幂等，无动作；session=${target}）`);
+			// ★ 2026-11-14：页面桥是**单向**的，页面只能停在「已请求…」、看不到这个早退 ✗。
+			//   不是失败（不该用 Warning），但必须给一条可见说明，否则用户只觉得「点了没反应」。
+			try {
+				this._notifications.notify({ severity: Severity.Info, message: `VsSaros：已在 ${worktreePath} 的会话上，无需切换` });
+			} catch { /* 通知失败不影响幂等语义 */ }
 			return;
 		}
 		if (target === this._placeholder.dataset.sessionId) {
@@ -842,7 +891,21 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 			this._log.warn(`[dshHarness] chat ${this._chatId} switchWorktree ${worktreePath}：派生 id 与当前会话相同（${target}）但目录不同（当前=${currentDir ?? '(未知)'}）⇒ 仍执行切换（幂等判据不能只看 id ✗）`);
 		}
 		this._bindSeq++;
-		const res = await this._dsh.startSession({ cwd: worktreePath, sessionId: target, agentPreset: preset });
+		// ★ 2026-11-14（2026-10-16 真因复发）：hero 态 `_preset` 可能是还没落地的占位值，
+		//   dsh 会抛 `agent-preset/invalid` ⇒ 整个切换失败，页面是单向桥只看到 Warning 通知 ✗。
+		//   ⇒ **仅** preset 类错误用 base preset 重试一次；其它错误照抛，不掩盖真因 ✓。
+		const res = await (async () => {
+			try {
+				return await this._dsh.startSession({ cwd: worktreePath, sessionId: target, agentPreset: preset });
+			} catch (e) {
+				const detail = String((e as Error)?.message ?? e);
+				if (!/agent-preset|preset/i.test(detail) || preset === undefined) { throw e; }
+				this._log.warn(`[dshHarness] chat ${this._chatId} startSession preset 失败(${detail}) ⇒ 用 base preset 重试`);
+				return await this._dsh.startSession({ cwd: worktreePath, sessionId: target, agentPreset: undefined });
+			}
+		})();
+		const tStart = Date.now() - t0;
+		this._log.info(`[dshHarness] chat ${this._chatId} switchWorktree 分段耗时 startSession=${tStart}ms (${worktreePath})`);
 		this._recordSession(preset, res.sessionId, res.agentPreset ?? undefined);
 		this._preset = res.agentPreset ?? preset;
 		// 记账口径：**id 是怎么来的，目录就怎么记**（★ 2026-10-17 起 `_sessionIdFor` 也可能对
@@ -852,7 +915,11 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 		this._worktree = String(target).includes('--wt-') ? worktreePath : undefined;
 		this._input.setDshPreset?.(this._preset === this._basePreset ? undefined : this._preset);
 		this._savePresetState();
+		const tRebind = Date.now();
 		await this._dsh.rebindSession(viewId, res.sessionId);
+		const tRebindMs = Date.now() - tRebind;
+		const tTotal = Date.now() - t0;
+		this._log.info(`[dshHarness] chat ${this._chatId} switchWorktree 分段耗时 startSession=${tStart}ms 记账=${tRebind - t0 - tStart}ms rebind=${tRebindMs}ms 总计=${tTotal}ms`);
 		this._placeholder.dataset.sessionId = res.sessionId;
 		if (this._worktree) {
 			this._placeholder.dataset.dshWorktree = this._worktree;
@@ -860,6 +927,11 @@ class DshChatBinding extends Disposable implements IDshChatBinding {
 			delete this._placeholder.dataset.dshWorktree;
 		}
 		this._log.info(`[dshHarness] chat ${this._chatId} switched to ${isWorktree ? 'worktree' : 'main dir'} ${worktreePath} (session ${res.sessionId}, preset ${this._preset ?? '(base)'})`);
+		// ★ 2026-11-14：成功也要有可见回执 —— 页面是单向桥，rebind 若被页面侧吞掉，
+		//   用户仍只看到「已请求…」✗。这条通知同时也是「宿主到底跑没跑到这一步」的自证。
+		try {
+			this._notifications.notify({ severity: Severity.Info, message: `VsSaros：已切换到 ${worktreePath}（${(tTotal / 1000).toFixed(1)}s）` });
+		} catch { /* 通知失败不影响已完成的切换 */ }
 		// 记住"这个目录上的会话"：重启后 `_worktree` 会恢复，再配合这条记录就能回到同一会话。
 		this._rememberSession(res.sessionId, this._preset, this._worktree ?? worktreePath);
 	}

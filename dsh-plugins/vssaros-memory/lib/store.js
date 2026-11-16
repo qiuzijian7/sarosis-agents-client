@@ -1467,18 +1467,37 @@ export class SuggestionQueue {
     this.file = file
   }
 
-  /** Read all suggestions; a missing file reads as empty. */
+  /**
+   * Read all suggestions; a missing file reads as empty.
+   * One corrupt line must NOT make the whole queue unreadable — that would
+   * break approve / reject / archive and the review tab at once. Skip the bad
+   * rows, keep the good ones, and leave a `.bad.<ts>` copy for diagnosis
+   * (same discipline as the drift guard's `.bak.<ts>` backup).
+   */
   read() {
+    let text
     try {
-      const text = readFileSync(this.file, 'utf8')
-      return text
-        .split('\n')
-        .filter((line) => line.length > 0)
-        .map((line) => JSON.parse(line))
+      text = readFileSync(this.file, 'utf8')
     } catch (error) {
       if (error.code === 'ENOENT') return []
       throw error
     }
+    const entries = []
+    const bad = []
+    for (const line of text.split('\n')) {
+      if (line.trim() === '') continue
+      try {
+        const value = JSON.parse(line)
+        if (value && typeof value === 'object' && !Array.isArray(value)) entries.push(value)
+        else bad.push(line)
+      } catch {
+        bad.push(line)
+      }
+    }
+    if (bad.length > 0) {
+      try { writeFileSync(`${this.file}.bad.${Date.now()}`, `${bad.join('\n')}\n`) } catch { /* 留证失败不阻塞读取 */ }
+    }
+    return entries
   }
 
   /** Atomically write the full suggestion list. */

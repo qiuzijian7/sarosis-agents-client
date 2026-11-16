@@ -363,7 +363,12 @@ export const assignmentRole = (ticket: Pick<Ticket, 'team'>): AssignmentRole => 
  * Thread closed; the ticket then ends unless its work has not finished (see `Tickets.unfinished`).
  */
 export interface Follow { thread: string; own: boolean; closed?: { at: string; outcome: 'merged' | 'closed' } }
-export interface Execution { name: string; directory: string; assignment: string }
+export interface Execution { name: string; directory: string; assignment: string; project?: GitWorkspaceProject; toolMode?: 'ptc'; delivery?: 'p4';
+  p4Workspace?: { client: string; root: string; port: string; user: string };
+  /** Frozen at acceptance: `pending` delivers a named pending CL and never submits; `submit` keeps the review/submit flow. */
+  p4Delivery?: 'pending' | 'submit' }
+/** Operator-selected repository snapshot frozen at acceptance; retries never reselect a different project. */
+export interface GitWorkspaceProject { id: string; source: string; projectId: string; repository: string; ref: string; strategy: 'git-worktree' }
 
 /** Whether a ticket is open: it has not ended. */
 export const liveTicket = (ticket: Pick<Ticket, 'ended'>): boolean => !ticket.ended

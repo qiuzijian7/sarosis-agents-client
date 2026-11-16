@@ -7,8 +7,10 @@
 //   · 2026-11-07：页签顶上的「浏览器助手」区 —— bot 的交接卡（接管 / 我完成了 / 停止）与本站时限授权
 //     （1 小时 / 今天 / 7 天）。数据来自 vssaros-browser 插件的同源路由 `/x/vssaros-browser/api/*`
 //     （Host 登录 cookie；没装那个插件 ⇒ 路由 404 ⇒ 这一区不显示）。这里只读写交接卡与授权，仍不碰网页 DOM / cookie。
-//   · 2026-11-07（组合方案，参考 DS Bot）：bot 用的浏览器视图在右栏没开时由主进程**隐藏地**建好（同一个视图），页面
-//     **不会**被自动弹出；有交接（登录 / 验证码 / 扫码）时，常驻 🌐 入口旁出一条提示，人点「接管」才展开右栏浏览器。
+//   · 2026-11-07（组合方案，参考 DS Bot）：bot 用的浏览器视图在右栏没开时由主进程**隐藏地**建好（同一个视图）；
+//     有交接（登录 / 验证码 / 扫码）时，常驻 🌐 入口旁出一条提示，人点「接管」才展开右栏浏览器。
+//   · 2026-11-11（用户要求）：**会话开始操作右栏浏览器**且右侧栏收起 ⇒ 自动展开右栏并切到浏览器页签
+//     （信号来自 /state 的 rightbarActiveAt；一轮连续操作只展开一次；右栏已展开 / 交接提示都不抢界面）。
 //
 // 为什么不是 iframe：X-Frame-Options / CSP frame-ancestors 会让大多数站点空白，OAuth 登录页也进不来；
 // 为什么不是 simple-browser：它只能占编辑器列，进不了 dsh 页面自己画的 `[data-slot="rightbar"]`。
@@ -62,6 +64,25 @@ window.__ModuleLoader__.load({
 		}
 
 		const API = "/x/vssaros-browser/api";
+		/**
+		 * ★ 2026-11-11（用户要求）：会话操作右栏浏览器 ⇒ 右侧栏收起时自动展开。
+		 * 判据（纯函数，守卫真调）：
+		 *   · 只在**新的一轮**活跃时考虑（activeAt 比上次看到的新）；
+		 *   · 只认"刚刚"的操作（历史时间戳不该把界面弹出来）；
+		 *   · 距上次自动展开够久 ⇒ 一轮连续操作只展开一次，不和人抢右栏；
+		 *   · 右侧栏确实收起 ⇒ 已展开就什么都不做（也不抢人正在看的页签）。
+		 */
+		const AUTO_OPEN_FRESH_MS = 12000;
+		const AUTO_OPEN_SUPPRESS_MS = 20000;
+		function shouldAutoOpenRightbar(opts) {
+			const o = opts || {};
+			if (o.firstSeen || !o.collapsed) { return false; }
+			const at = Number(o.activeAt) || 0;
+			const now = Number(o.now) || Date.now();
+			if (!(at > (Number(o.seenAt) || 0))) { return false; }
+			if (now - at > AUTO_OPEN_FRESH_MS || at - now > AUTO_OPEN_FRESH_MS) { return false; }
+			return now - (Number(o.lastOpenAt) || 0) > AUTO_OPEN_SUPPRESS_MS;
+		}
 		const POLL_MS = 3000;
 		/** 常驻入口查交接卡的间隔；插件路由不在（404 / 断网）时退到 1 分钟一次。 */
 		const ENTRY_POLL_MS = 4000;
@@ -249,13 +270,32 @@ window.__ModuleLoader__.load({
 			function BrowserEntry() {
 				const [cards, setCards] = react.useState([]);
 				const [busy, setBusy] = react.useState(false);
+				/** null = 还没建立基线：页面刚挂载时不该因为历史活跃把右栏弹出来 ✗ */
+				const seenRef = react.useRef(null);
+				const lastAutoOpenRef = react.useRef(0);
+				/** ★ 2026-11-11：会话操作右栏 ⇒ 右栏收起时自动展开并切到浏览器页签（复用 🌐 入口那条通路）。 */
+				const autoOpenForTool = (d) => {
+					const activeAt = Number(d && d.rightbarActiveAt) || 0;
+					const seen = seenRef.current;
+					if (seen === null) { seenRef.current = activeAt; return; }
+					const collapsed = typeof document !== "undefined" && !!document.querySelector("[data-sidebar-right-expand]");
+					if (shouldAutoOpenRightbar({ activeAt, seenAt: seen, now: Date.now(),
+						lastOpenAt: lastAutoOpenRef.current, collapsed, firstSeen: false })) {
+						lastAutoOpenRef.current = Date.now();
+						openBrowserTab();
+					}
+					seenRef.current = activeAt;
+				};
 				react.useEffect(() => {
 					let alive = true;
 					let timer = 0;
 					const tick = () => {
 						let delay = ENTRY_POLL_MS;
 						void api("/state").then((d) => {
-							if (alive) { setCards(((d && d.handoffs) || []).filter((c) => c.open && c.state !== "stopped")); }
+							if (alive) {
+								setCards(((d && d.handoffs) || []).filter((c) => c.open && c.state !== "stopped"));
+								autoOpenForTool(d);
+							}
 						}, () => {
 							delay = ENTRY_IDLE_MS;
 							if (alive) { setCards([]); }
@@ -282,7 +322,7 @@ window.__ModuleLoader__.load({
 						color: "var(--dsw-alias-label-primary, inherit)", cursor: "pointer",
 					},
 				}, "🌐");
-				if (!card) { return button; }
+				if (!card) { return null; } // ★ 2026-11-12（用户选定 A）：无交接卡时不常驻浮钮；右栏「开始」页 guide 与 /state 自动展开仍是入口。
 				const bubble = react.createElement("div", {
 					role: "status", "data-vssaros-rightbar-browser-handoff-hint": card.state,
 					style: {
@@ -353,7 +393,7 @@ window.__ModuleLoader__.load({
 			color: "var(--dsw-alias-label-primary, inherit)", cursor: "pointer" };
 
 		exports.install = install;
-		exports.__test = { TAB_KIND, SLOT_RIGHT_TAB, SLOT_OVERLAY, OVERLAY_ID, OVERLAY_ORDER, BRIDGE_VERSION, GUIDE_TITLE, GUIDE_DESCRIPTION, normalizeUrl, rectOf, hostOf, grantCovers, untilText, API, BrowserPane: null, BrowserEntry: null, BrowserAssistant: null };
+		exports.__test = { TAB_KIND, SLOT_RIGHT_TAB, SLOT_OVERLAY, OVERLAY_ID, OVERLAY_ORDER, BRIDGE_VERSION, GUIDE_TITLE, GUIDE_DESCRIPTION, normalizeUrl, rectOf, hostOf, grantCovers, untilText, API, shouldAutoOpenRightbar, AUTO_OPEN_FRESH_MS, AUTO_OPEN_SUPPRESS_MS, BrowserPane: null, BrowserEntry: null, BrowserAssistant: null };
 		return module.exports;
 	},
 });

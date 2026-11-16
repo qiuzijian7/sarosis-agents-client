@@ -16,6 +16,7 @@ import { ensureOutboxLoaded, outboxPendingFor, resetOutbox } from '../lib/outbox
 import { scanAgentsFromConfig } from '../lib/store.js';
 import { createTeamService } from '../lib/team.js';
 import { externalBotRow, teamBus } from '../lib/teamBus.js';
+import { isProjectableMember, projectOfficialMembers, syncOfficialTeamMembers, taskBoardSummary } from '../lib/officialTeamAdapter.js';
 import { createTeamBot, supervisorBotCount } from '../lib/teamCreate.js';
 
 let pass = 0;
@@ -219,6 +220,105 @@ await checkAsync('groupState：实现没就绪 ⇒ undefined（不抛）；就�
 		[Symbol.for('vssaros.team.groups.idempotent')]: true };
 	const upgraded = teamBus({ [Symbol.for('vssaros.team')]: old });
 	assert.equal(typeof upgraded.groupState, 'function');
+});
+
+
+// ★ 2026-11-12（Stage 1）：official-team × external-bot 共存。
+await checkAsync('官方 Team × 外部 bot 共存：前缀隔开、external 标记、只读 onMessage、撤销不误撤 superagent', async () => {
+	const bus = teamBus({});
+	const offSuper = bus.registerExternalBot({ id: 'superagent', name: 'SuperAgent', role: '主管', session: 'desk-1', onMessage: () => undefined });
+	const rows = [
+		{ id: 's-coder', path: 'coder', label: '实现', mode: 'continuable' },
+		{ id: 's-reviewer', path: 'reviewer', label: '评审', mode: 'continuable' },
+	];
+	const offTeam = projectOfficialMembers(bus, 'root-1', rows);
+	assert.deepEqual(bus.externalBots().map(b => b.id),
+		['superagent', 'dsh-team:root-1:s-coder', 'dsh-team:root-1:s-reviewer'], '官方成员必须带命名空间前缀，不能顶替 superagent');
+	assert.equal(JSON.stringify(bus.externalBots()).includes('onMessage'), false, '回调不能进公开视图');
+	const row = externalBotRow(bus.externalBots()[1]);
+	assert.equal(row.external, true, '投影出来的必须是 external bot');
+	assert.equal(row.sessionId, 's-coder', '名册行要带上官方成员的会话 id');
+	assert.deepEqual(bus.externalBotOf('dsh-team:root-1:s-coder').onMessage({ text: 'x' }),
+		{ received: 'filtered' }, '只读投影不得转发消息（转发会唤醒真实回合）');
+	assert.equal(bus.externalBotOf('superagent')?.id, 'superagent', '原有外部 bot 仍可按 id 找到');
+	offTeam();
+	assert.deepEqual(bus.externalBots().map(b => b.id), ['superagent'], '撤销适配器不能撤掉 superagent');
+	offSuper();
+	assert.equal(bus.externalBots().length, 0);
+});
+
+await checkAsync('官方 Team 适配器：只投影 Team 模式已开启的根；服务缺失/抛错不抛异常', async () => {
+	const bus = teamBus({});
+	const services = {
+		agents: { list: () => [{ id: 'a1' }, { id: 'a2' }] },
+		subagents: {
+			rootOf: a => ({ id: a.id === 'a1' ? 'root-1' : 'root-2' }),
+			listDescendants: async rid => (rid === 'root-1'
+				? [{ id: 'm1', path: 'coder', mode: 'continuable' }]
+				: [{ id: 'm2', path: 'reviewer', mode: 'continuable' }]),
+		},
+		agentTeams: {
+			isEnabled: r => r.id === 'root-1',
+			listTasks: () => [
+				{ status: 'pending' }, { status: 'pending' }, { status: 'in_progress' }, { status: 'completed' },
+			],
+		},
+	};
+	const off = await syncOfficialTeamMembers({ ...services, bus });
+	assert.deepEqual(bus.externalBots().map(b => b.id), ['dsh-team:root-1:m1'], '未开启 Team 模式的根不投影');
+	assert.match(bus.externalBots()[0].description, /任务板 4 项（待办 2 \/ 进行中 1 \/ 完成 1）/,
+		'官方任务板状态要只读投影进本机 Bot 名册');
+	assert.equal(taskBoardSummary([]), '任务板 0 项（待办 0 / 进行中 0 / 完成 0）');
+	off();
+	assert.equal(bus.externalBots().length, 0);
+	const offNone = await syncOfficialTeamMembers({ agents: {}, subagents: {}, agentTeams: {}, bus });
+	assert.equal(bus.externalBots().length, 0, '服务缺失时静默跳过');
+	offNone();
+	const offThrow = await syncOfficialTeamMembers({
+		agents: { list: () => { throw new Error('boom'); } }, subagents: {}, agentTeams: {}, bus,
+	});
+	assert.equal(bus.externalBots().length, 0, '服务抛错不能影响宿主');
+	offThrow();
+});
+
+
+// ★ 2026-11-12 加固：与官方 list_agents 同口径，只投影 continuable 后代。
+await checkAsync('官方 Team 适配器：one-shot / external 不进名册，continuable 与缺省 mode 保留', async () => {
+	const bus = teamBus({});
+	assert.equal(isProjectableMember({ mode: 'continuable' }), true);
+	assert.equal(isProjectableMember({}), true, '早期 catalog 行没有 mode 时仍按成员处理');
+	assert.equal(isProjectableMember({ mode: 'one-shot' }), false);
+	assert.equal(isProjectableMember({ mode: 'external' }), false);
+	const rows = [
+		{ id: 'm1', path: 'coder', mode: 'continuable' },
+		{ id: 'm2', path: 'temp', mode: 'one-shot' },
+		{ id: 'm3', path: 'outside', mode: 'external' },
+		{ id: 'm4', path: 'legacy' },
+	];
+	const off = projectOfficialMembers(bus, 'root-1', rows);
+	assert.deepEqual(bus.externalBots().map(b => b.id),
+		['dsh-team:root-1:m1', 'dsh-team:root-1:m4'], '非 continuable 成员不该占本机 Bot 名册名额');
+	off();
+	assert.equal(bus.externalBots().length, 0);
+});
+
+
+// ★ 2026-11-12（Stage 2 修正版）：任务板摘要只读、缺服务/抛错降级，不改成员投影。
+await checkAsync('官方 Team 任务板只读摘要：listTasks 抛错时仍投影成员，摘要为空', async () => {
+	const bus = teamBus({});
+	const services = {
+		agents: { list: () => [{ id: 'a1' }] },
+		subagents: {
+			rootOf: () => ({ id: 'root-1' }),
+			listDescendants: async () => [{ id: 'm1', path: 'coder', mode: 'continuable' }],
+		},
+		agentTeams: { isEnabled: () => true, listTasks: () => { throw new Error('board unavailable'); } },
+	};
+	const off = await syncOfficialTeamMembers({ ...services, bus });
+	assert.deepEqual(bus.externalBots().map(b => b.id), ['dsh-team:root-1:m1'], '任务板读失败不该挡住成员投影');
+	assert.equal(bus.externalBots()[0].description.includes('任务板'), false, '读失败时不该编造摘要');
+	off();
+	assert.equal(bus.externalBots().length, 0);
 });
 
 offBus();

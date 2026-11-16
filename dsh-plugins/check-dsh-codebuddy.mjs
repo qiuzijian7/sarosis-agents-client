@@ -27,6 +27,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gzipSync } from 'node:zlib';
+import { spawnSync } from 'node:child_process';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..');
@@ -577,6 +578,15 @@ try {
 	}
 } finally {
 	rmSync(emptyDir, { recursive: true, force: true });
+}
+
+const retryTests = spawnSync(process.execPath, ['--test', join(here, 'vssaros-bridge', 'test', 'codebuddyRetry.test.mjs')],
+	{ cwd: repo, encoding: 'utf8', windowsHide: true, timeout: 30_000, env: { ...process.env, NODE_OPTIONS: '' } });
+if (retryTests.status !== 0) {
+	fail(`⑫ CodeBuddy 重试契约失败（exit=${retryTests.status}）：${String(retryTests.stderr || retryTests.stdout).slice(-4000)}`);
+} else {
+	console.log(retryTests.stdout.trim());
+	ok('⑫ 重试提示 / 路由策略升级 / 流取消 / 随包重试器契约通过（无运行时时明确跳过集成项）');
 }
 
 if (problems.length) {

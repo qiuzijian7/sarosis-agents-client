@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>方案 B · 语义线性图标 + 主题色 — 知识库卡片图标 mockup · 非实现代码</title>
+<style>
+	:root[data-theme="dark"]{--bg:#15161a;--panel:#1c1d22;--panel2:#22232a;--line:rgba(255,255,255,.1);--line2:rgba(255,255,255,.18);--fg:#e8e9ec;--fg2:#a9abb3;--fg3:#71737c;--accent:#5b8cff;--ok:#3fb950}
+	:root[data-theme="light"]{--bg:#f5f6f8;--panel:#fff;--panel2:#f0f2f5;--line:rgba(0,0,0,.09);--line2:rgba(0,0,0,.17);--fg:#1b1d22;--fg2:#5a5e68;--fg3:#8b8f99;--accent:#2f6bff;--ok:#1a7f37}
+	*{box-sizing:border-box}
+	body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+	.kbb-wrap{max-width:620px;margin:0 auto /* ★ 默认宽度对齐真机「知识库主页」右栏（约 3 列），方便与截图逐项对照 */;padding:22px 24px 60px}
+	.kbb-hd{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+	.kbb-hd h1{margin:0;font-size:19px;font-weight:650}.kbb-hd .sub{font-size:12px;color:var(--fg3)}
+	.kbb-acts{margin-left:auto;display:flex;gap:8px}
+	.kbb-btn{height:28px;padding:0 12px;border-radius:7px;border:1px solid var(--line2);background:var(--panel2);color:var(--fg2);font-size:12.5px;cursor:pointer}
+	.kbb-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+	.kbb-note{border:1px solid var(--line);border-left:3px solid var(--accent);background:var(--panel);border-radius:9px;padding:10px 13px;margin-bottom:16px;font-size:12px;color:var(--fg2)}
+	.kbb-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:20px}
+	.kbb-st{position:relative;padding:10px 12px;border-radius:10px;background:var(--panel);border:1px solid var(--line);overflow:hidden}
+	.kbb-st .bar{position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent)}.kbb-st:nth-child(2) .bar{background:var(--ok)}
+	.kbb-st .lb{font-size:11px;color:var(--fg3)}.kbb-st .v{font-size:20px;font-weight:650}
+	.kbb-sec{display:flex;align-items:center;gap:8px;margin:0 0 10px;font-size:13.5px;font-weight:600}.kbb-sec .c{font-size:11.5px;color:var(--fg3);font-weight:400}
+	.kbb-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(180px,100%),1fr));gap:12px}
+	.kbb-card{display:flex;flex-direction:column;gap:8px;text-align:left;min-height:118px;padding:11px;background:var(--panel);border:1px solid var(--line);border-radius:11px;color:inherit;font:inherit;cursor:pointer;transition:.15s}
+	.kbb-card:hover{transform:translateY(-2px);border-color:var(--line2);box-shadow:0 8px 22px rgba(0,0,0,.25)}
+	.kbb-top{display:flex;align-items:center;gap:10px;min-width:0}
+	/* ★ 方案 B：36px 圆角底 + 内联 SVG 线性图标，stroke=currentColor，语义分色 */
+	.kbb-ico{flex:0 0 auto;width:36px;height:36px;border-radius:9px;display:flex;align-items:center;justify-content:center;border:1px solid var(--line)}
+	.kbb-ico svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+	.kbb-name{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+	.kbb-tag{font-size:10.5px;color:var(--fg3);border:1px solid var(--line);border-radius:5px;padding:0 5px;line-height:16px}
+	.kbb-ex{font-size:11px;color:var(--fg3);line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+	.kbb-meta{margin-top:auto;display:flex;flex-wrap:wrap;gap:6px;font-size:11px;color:var(--fg3)}
+	.kbb-meta .wk{color:var(--accent)}.kbb-time{font-size:10.5px;color:var(--fg3)}
+	.kbb-new{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:118px;border:1.5px dashed var(--line2);background:transparent;color:var(--fg2);border-radius:11px;cursor:pointer;font:inherit}
+	.kbb-new .p{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(91,140,255,.14);color:var(--accent);font-size:16px}
+	.kbb-legend{margin-top:18px;border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:11px 13px;font-size:11.5px;color:var(--fg2)}
+	.kbb-legend .row{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px}
+	.kbb-legend .row span{display:flex;align-items:center;gap:5px}
+	.kbb-legend .row i{width:12px;height:12px;border-radius:3px;display:inline-block}
+	.kbb-toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line2);padding:7px 13px;border-radius:9px;font-size:12.5px;opacity:0;pointer-events:none;transition:.2s}.kbb-toast.on{opacity:1}
+	.kbb-check{margin-top:20px;font:11.5px/1.7 ui-monospace,Consolas,monospace;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px 13px;white-space:pre-wrap;color:var(--fg2)}
+	@media(max-width:620px){.kbb-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+</style>
+</head>
+<body><div class="kbb-wrap">
+	<div class="kbb-hd"><div><h1>知识库主页</h1><div class="sub">VsSarosVault · 5 个知识库 · 76 篇笔记　|　方案 B：语义线性图标 + 主题色</div></div>
+		<div class="kbb-acts"><button class="kbb-btn" id="themeBtn">☀ 明暗</button><button class="kbb-btn primary">＋ 新建知识库</button></div></div>
+	<div class="kbb-note"><b>这是 mockup，不是实现代码。</b>　参考 <b>Outline <code>app/components/IconPicker.tsx</code></b>（BookmarkedIcon / CollectionIcon / AcademicCapIcon / BeakerIcon / CodeIcon / PaletteIcon… 一组语义图标）与 <b>BookStack <code>resources/icons/book.svg · books.svg · bookshelf.svg</code></b>。全部内联 SVG、<code>stroke="currentColor"</code>，不引外链、不依赖 emoji 字形；颜色按库的语义分类而非名字 hash。</div>
+	<div class="kbb-stats">
+		<div class="kbb-st"><span class="bar"></span><div class="lb">知识库</div><div class="v">5<small>个</small></div></div>
+		<div class="kbb-st"><span class="bar"></span><div class="lb">笔记</div><div class="v">76<small>篇</small></div></div>
+		<div class="kbb-st"><span class="bar"></span><div class="lb">近 7 天改动</div><div class="v">1<small>篇</small></div></div>
+		<div class="kbb-st"><span class="bar"></span><div class="lb">已绑飞书</div><div class="v">0<small>个</small></div></div>
+	</div>
+	<div class="kbb-sec">全部知识库 <span class="c">5 个</span></div>
+	<div class="kbb-grid" id="grid"></div>
+	<div class="kbb-legend"><b>图标 → 语义分类</b>（可换成用户手选，照 Outline 的 IconPicker）
+		<div class="row" id="legend"></div></div>
+	<div class="kbb-check" id="checkOut">自检运行中…</div>
+</div><div class="kbb-toast" id="toast"></div>
+<script>
+(function(){
+	/* 内联线性图标：照 Outline / BookStack 的语义图标库，全部 currentColor */
+	var ICONS={
+		coins:'<circle cx="8" cy="8" r="4.2"/><path d="M15.6 5.4a4.2 4.2 0 1 1 0 7.2M12 16v3M8 20h8"/>',
+		code:'<path d="m8.5 8-4 4 4 4M15.5 8l4 4-4 4M13.5 5l-3 14"/>',
+		game:'<path d="M7.5 8h9a4 4 0 0 1 3.8 3l.9 5a2.4 2.4 0 0 1-4.2 2l-1.6-2h-6.8L7 18a2.4 2.4 0 0 1-4.2-2l.9-5A4 4 0 0 1 7.5 8Z"/><path d="M7 12h4M9 10v4M16.5 11.5h.01M18.5 14h.01"/>',
+		palette:'<path d="M12 3a9 9 0 1 0 0 18c1.2 0 1.8-.9 1.8-1.8 0-1.2-1-1.6-1-2.7 0-.9.7-1.5 1.7-1.5H16a5 5 0 0 0 5-5c0-3.9-4-7-9-7Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7.5" r="1"/><circle cx="15" cy="7.5" r="1"/>',
+		cube:'<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/>',
+		book:'<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5v-15Z"/><path d="M4 20.5A2.5 2.5 0 0 1 6.5 18H20v3H6.5A2.5 2.5 0 0 1 4 20.5Z"/>'
+	};
+	var KBS=[
+		{name:'财经',docs:1,week:1,time:'9 天前',icon:'coins',cat:'数据',color:'#e0a33e',ex:'估值模型、财报摘要与行业数据'},
+		{name:'AIAgent',docs:21,week:1,time:'9 天前',icon:'code',cat:'技术',color:'#5b8cff',ex:'Agent 框架、工具调用与记忆机制'},
+		{name:'游戏设计',docs:8,week:0,time:'48 天前',icon:'game',cat:'设计',color:'#b57bea',ex:'玩法拆解、关卡设计与数值'},
+		{name:'ComfyUI技术',docs:1,week:0,time:'48 天前',icon:'palette',cat:'创作',color:'#e4758a',ex:'工作流节点、模型与出图参数'},
+		{name:'UnrealEngine',docs:45,week:0,time:'49 天前',icon:'cube',cat:'技术',color:'#3fb9b0',ex:'渲染管线、材质与性能优化'}
+	];
+	var grid=document.getElementById('grid');
+	function tint(hex){var light=document.documentElement.dataset.theme==='light';return 'color:'+hex+';background:'+(light?'rgba(0,0,0,.045)':'rgba(255,255,255,.055)')+';';}
+	function render(){
+		grid.innerHTML='';
+		var n=document.createElement('button');n.className='kbb-new';n.innerHTML='<span class="p">＋</span><span>新建知识库</span><span style="font-size:11px;color:var(--fg3)">建文件夹 · 关联飞书</span>';grid.appendChild(n);
+		KBS.forEach(function(k){
+			var b=document.createElement('button');b.className='kbb-card';
+			b.innerHTML='<span class="kbb-top"><span class="kbb-ico" data-role="icon" style="'+tint(k.color)+'"><svg viewBox="0 0 24 24">'+ICONS[k.icon]+'</svg></span><span class="kbb-name">'+k.name+'</span></span>'
+				+'<span class="kbb-meta" style="margin:0"><span class="kbb-tag">'+k.cat+'</span></span>'
+				+'<span class="kbb-ex">'+k.ex+'</span>'
+				+'<span class="kbb-meta"><span>'+k.docs+' 篇</span>'+(k.week?'<span class="wk" style="color:var(--accent)">7 天 +'+k.week+'</span>':'')+'<span class="kbb-time">'+k.time+'</span></span>';
+			b.onclick=function(){toast('（示意）打开知识库：'+k.name);};grid.appendChild(b);
+		});
+		document.getElementById('legend').innerHTML=Object.keys(ICONS).map(function(key){var k=KBS.find(function(x){return x.icon===key;});var c=k?k.color:'var(--fg3)';return '<span><i style="background:'+c+'"></i>'+(k?k.cat:'默认')+' · '+key+'</span>';}).join('');
+	}
+	var t;function toast(s){var el=document.getElementById('toast');el.textContent=s;el.classList.add('on');clearTimeout(t);t=setTimeout(function(){el.classList.remove('on');},1600);}
+	document.getElementById('themeBtn').onclick=function(){var r=document.documentElement;r.dataset.theme=r.dataset.theme==='dark'?'light':'dark';render();};
+	render();
+	var pass=0,fail=0,lines=[];function check(n,f){try{if(f()===false)throw new Error('断言为 false');pass++;lines.push('PASS  '+n);}catch(e){fail++;lines.push('FAIL  '+n+' — '+e.message);}}
+	check('5 张知识库卡 + 1 张新建卡',function(){return grid.querySelectorAll('.kbb-card').length===5&&grid.querySelectorAll('.kbb-new').length===1;});
+	check('每卡 1 个内联 SVG，且无外链图片',function(){return grid.querySelectorAll('.kbb-ico svg').length===5&&document.querySelectorAll('img,link[rel=stylesheet]').length===0;});
+	check('SVG 全部 stroke=currentColor（CSS 层），无写死 fill',function(){return /stroke:currentColor/.test(document.querySelector('style').textContent)&&!/fill:[^n]/.test(document.querySelector('style').textContent);});
+	check('图标底 36px 且颜色按语义分类',function(){return Array.prototype.every.call(grid.querySelectorAll('.kbb-ico'),function(el){return Math.round(el.getBoundingClientRect().width)===36&&el.style.color;});});
+	check('卡片宽度正常 + 库名不逐字换行',function(){return grid.querySelector('.kbb-card').getBoundingClientRect().width>150&&Array.prototype.every.call(grid.querySelectorAll('.kbb-name'),function(el){return el.getBoundingClientRect().height<=26;});});
+	check('窄视口 380px 无横向溢出',function(){document.querySelector('.kbb-wrap').style.maxWidth='380px';var ok=document.documentElement.scrollWidth<=document.documentElement.clientWidth+1;document.querySelector('.kbb-wrap').style.maxWidth='';return ok;});
+	check('明暗两态都能渲染图标',function(){document.documentElement.dataset.theme='light';render();var ok=grid.querySelectorAll('.kbb-ico svg').length===5;document.documentElement.dataset.theme='dark';render();return ok;});
+	document.getElementById('checkOut').textContent=lines.join('\n')+'\n\n'+pass+'/'+(pass+fail)+' passed';window.__KBB_RESULT__={pass:pass,fail:fail};
+})();
+</script>
+</body></html>

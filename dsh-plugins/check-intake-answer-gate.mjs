@@ -167,4 +167,102 @@ console.log(problems.length ? `\n✗ check-intake-answer-gate：${problems.lengt
 		/for \(const message of ticketResultNotices\(ended\)\) outbox\.send\(message\)/.test(runtimeSource))
 }
 
+// ⑨ ★ 2026-11-11：TAPD 单子必须走设置里配置的 Open API，不能退回浏览器登录页。
+{
+	const base = join(ROOT, 'dsh-plugins/vssaros-superagent/dev/src')
+	const tapdApi = readFileSync(join(base, 'sources/tapd-api.ts'), 'utf8')
+	const executor = readFileSync(join(base, 'app/tools/executor.ts'), 'utf8')
+	const dsh = readFileSync(join(base, 'executor/dsh.ts'), 'utf8')
+	const runtime = readFileSync(join(base, 'app/runtime.ts'), 'utf8')
+	ok('⑨ TAPD ① 真机 bug/detail URL 能被 itemAddress 解析',
+		/bug\|bugs\|story\|stories\|task\|tasks/.test(tapdApi)
+		&& /detail\|view/.test(tapdApi) && /tapd_fe/.test(tapdApi))
+	ok('⑨ TAPD ② worker 有 orchestrator_tapd_item，且 api 由设置里的 config 构造',
+		/name: 'orchestrator_tapd_item'/.test(executor)
+		&& /apiOf\(config\)/.test(executor)
+		&& /tapdItemTool\(\(\) => TapdConfigSchema\.parse/.test(runtime))
+	ok('⑨ TAPD ③ 前置约束按 itemAddress(url) 分流，点名工具并禁用浏览器',
+		/const tapd = itemAddress\(url\)/.test(dsh)
+		&& /orchestrator_tapd_item/.test(dsh) && /Do NOT use a /.test(dsh) && /browser/.test(dsh))
+	ok('⑨ TAPD ④ 凭据没有进入执行环境变量',
+		!/DSH_SUPERAGENT_TAPD_(BEARER|PASSWORD)|TAPD_CLIENT_SECRET/.test(
+			readFileSync(join(base, 'app/execution-environment.ts'), 'utf8')
+			+ readFileSync(join(base, 'sources/tapd.ts'), 'utf8')));
+}
+
+// ⑩ ★ 2026-11-11：飞书「同意」组队方案断链修复（快路径 + 发起人可同意 + 模型不再是必经）。
+{
+	const base = join(ROOT, 'dsh-plugins/vssaros-superagent/dev/src')
+	const policy = readFileSync(join(base, 'policy.ts'), 'utf8')
+	const staffing = readFileSync(join(base, 'app/staffing.ts'), 'utf8')
+	const approvals = readFileSync(join(base, 'app/step-approvals.ts'), 'utf8')
+	const runtime = readFileSync(join(base, 'app/runtime.ts'), 'utf8')
+	ok('⑩ 共享判定 mayConsent 允许白名单或工单发起人',
+		/export function mayConsent\(settings: Settings, trigger: Trigger, origin\?: Trigger\)/.test(policy)
+		&& /origin\.actor\.source === trigger\.actor\.source && sameName\(origin\.actor\.id, trigger\.actor\.id\)/.test(policy))
+	ok('⑩ Staffing 有 fromMessage 快路径，且 consent 用 mayConsent',
+		/fromMessage\(trigger: Trigger\): void/.test(staffing)
+		&& /approvalReply\(plain\)/.test(staffing)
+		&& /mayConsent\(store\.settings\(\) as Settings, trigger, store\.triggers\.get\(ticket\.origin\.triggerId\)\)/.test(staffing)
+		&& /private readonly handled = new Set<string>\(\)/.test(staffing))
+	ok('⑩ StepApprovals 也用 mayConsent（带工单发起人）',
+		/mayConsent\(settings, trigger, origin\)/.test(approvals) && !/!allowedSender/.test(approvals))
+	ok('⑩ Runtime 在 trigger.received 里并列调用两条快路径',
+		/runtime\.stepApprovals\?\.fromMessage\(received\)/.test(runtime)
+		&& /runtime\.staffing\?\.fromMessage\(received\)/.test(runtime))
+}
+
+// ⑪ ★ 2026-11-12（用户授权改准入规则）：明确任务快通道必须默认关、单一真源、且不绕开模型判闲聊。
+{
+	const base = join(ROOT, 'dsh-plugins/vssaros-superagent/dev/src')
+	const rule = readFileSync(join(base, 'core/group-request.ts'), 'utf8')
+	const policy = readFileSync(join(base, 'policy.ts'), 'utf8')
+	const evals = readFileSync(join(base, 'core/evals.ts'), 'utf8')
+	const reasons = readFileSync(join(base, 'core/reasons.ts'), 'utf8')
+	const locales = readFileSync(join(base, 'client/locales.ts'), 'utf8')
+	ok('⑪ 判据单一真源且只放行「任务动词 + URL」',
+		/export function explicitTask\(/.test(rule) && /TASK_URL/.test(rule) && /TASK_VERB/.test(rule)
+		&& /NEGATIVE/.test(rule) && /GROUP_REQUEST\.test\(text\)/.test(rule))
+	ok('⑪ 开关默认关闭且计入 policyVersion',
+		/fastExplicitTasks: z\.boolean\(\)\.default\(false\)/.test(policy)
+		&& /fastExplicitTasks: settings\.eval\.fastExplicitTasks, sources/.test(policy))
+	ok('⑪ evals 只在 explicit 单条批次命中，且仍保留模型路径',
+		/policy\.fastExplicitTasks && strongest\.strength === 'explicit'/.test(evals)
+		&& /thread\.evaluating!\.triggerIds\.length === 1/.test(evals)
+		&& /explicitTask\(strongest\.trigger\)/.test(evals)
+		&& /this\.options\.assessor\.request\(this\.candidateOf\(thread\)\)/.test(evals))
+	ok('⑪ 新 reason 码有中英文案',
+		/explicitFastTrack:/.test(reasons) && /'reason\.explicitFastTrack'/.test(locales))
+}
+
+// ⑫ ★ 2026-11-12（方案 1）：规则直接建单没有模型回合，必须用 steer 唤醒主会话出组队方案。
+{
+	const base = join(ROOT, 'dsh-plugins/vssaros-superagent/dev/src')
+	const notices = readFileSync(join(base, 'app/notices.ts'), 'utf8')
+	const runtime = readFileSync(join(base, 'app/runtime.ts'), 'utf8')
+	const evals = readFileSync(join(base, 'core/evals.ts'), 'utf8')
+	ok('⑫ 待组队工单有专门的 steer 文案',
+		/export const teamRequestNotice/.test(notices) && /team-request:/.test(notices)
+		&& /orchestrator_team_propose/.test(notices))
+	ok('⑫ runtime 只在 explicitFastTrack 建单时唤醒一次',
+		/teamRequestNotice\(created\)/.test(runtime) && /sessions\.relay\(request\.id, request\.text\)/.test(runtime)
+		&& /item\.code === 'explicitFastTrack'/.test(runtime) && /created\.team\?\.state === 'proposing'/.test(runtime))
+	ok('⑫ 快通道仍由 evals 产生 explicitFastTrack',
+		/explicitFastTrack/.test(evals) && /policy\.fastExplicitTasks/.test(evals))
+}
+
+// ⑬ ★ 2026-11-12（用户）：团队开关默认关闭，EngineOptions.staffing 必须读新字段。
+{
+	const base = join(ROOT, 'dsh-plugins/vssaros-superagent/dev/src')
+	const policy = readFileSync(join(base, 'policy.ts'), 'utf8')
+	const runtime = readFileSync(join(base, 'app/runtime.ts'), 'utf8')
+	const ui = readFileSync(join(base, 'client/execution.tsx'), 'utf8')
+	ok('⑬ 团队开关默认关闭', /teamEnabled:\s*z\.boolean\(\)\.default\(false\)/.test(policy)
+		&& /staffing:\s*z\.boolean\(\)\.default\(true\)/.test(policy))
+	ok('⑬ EngineOptions.staffing 读新开关（旧字段仅兼容历史快照）',
+		/staffing:\s*\(\)\s*=>\s*store\.settings\(\)\.executor\.teamEnabled/.test(runtime)
+		&& !/staffing:\s*\(\)\s*=>\s*store\.settings\(\)\.executor\.staffing/.test(runtime))
+	ok('⑬ 设置页有团队开关', /t\('teamSwitch'\)/.test(ui) && /edit\(\{ teamEnabled \}\)/.test(ui))
+}
+
 process.exitCode = problems.length ? 1 : 0

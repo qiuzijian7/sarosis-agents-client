@@ -12,10 +12,12 @@
  *   ④ 登录·开页面：旧会话被拒 ⇒ 开登录页 ⇒ 等 cookie **变了**才校验（不被旧票卡住）⇒ 落盘 + 关 tab；
  *   ⑤ 取消 / 没有浏览器插件：立刻结束、不落盘、错误说清楚；
  *   ⑥ 状态投影绝不含 cookie 值；会话失效 ⇒ expired；网络失败 ⇒ stale（仍算已登录）；校验结果有缓存；
+ *      **不投影 `browserHeadless`**（启动时的无头配置 ≠ 此刻没有可见窗口，2026-11-11 真机事故）；
  *   ⑦ 模型发现：bundle 解析 + 名字；`seed_audio_1` 这类发现不到的默认模型保住；routable 标记；
  *   ⑧ 测试连接：get_voucher 请求头逐字对齐扩展（app_id 169 / biz_id / user-data / cookie）；
  *   ⑨ 自定义设置：只收 https + aigclsp.com；迁移：格式 / 已登录 / 主动登出过 都不导；登出：模型清单保留、记标记；
  *   ⑩ 浏览器插件登录会话：只认登记站点 / 只回登记 cookie 名 / 只认 https / 无头明说；
+ *      **登录走独立的浏览器窗口**（另一套 CdpHost，不接右栏）+ 结束释放（2026-11-11 用户要求）；
  *   ⑪ 真跑 apply()：HTTP 面（status 200 / 写仅 POST / 未知 404 / config 校验 400 / 无 cookie 值）；
  *   ⑫ 接线（源码级）：桥方法、协议、主进程校验、IDE 一次性迁移、包清单；
  *   ⑬ 页面卡片（真装载 chunk）：状态映射 + 各状态的按钮 + 没有浏览器插件时登录按钮禁用 + 无 cookie 值。
@@ -184,6 +186,8 @@ const fastSleep = () => new Promise(r => setTimeout(r, 1));
 	const svc = la.createLightAIService({ credentials, browser: () => br, fetchImpl: fakeLightAI(), sleep: fastSleep, onChange: w => changes.push(w) });
 	await svc.signIn();
 	if (br.opens.length !== 0) { fail('③ 浏览器里已有有效会话时不该再开登录页 ✗'); }
+	// ★ 2026-11-11：登录用的是独立浏览器窗口 ⇒ 连"复用已有会话、根本没开页面"这条路径也要释放它
+	if (br.closes !== 1) { fail('③ 复用已有会话也必须释放独立登录窗口（signIn 的 finally 要包住整条路径）✗'); }
 	if (credentials.store.get(la.LIGHTAI_COOKIE_REF) !== COOKIE) { fail('③ 复用的会话没落盘 ✗'); }
 	if (credentials.store.has(la.LIGHTAI_SIGNED_OUT_REF)) { fail('③ 用户主动登录后"主动登出"标记没撤 ✗'); }
 	const st = await svc.status();
@@ -245,7 +249,14 @@ const fastSleep = () => new Promise(r => setTimeout(r, 1));
 	const down = la.createLightAIService({ credentials: fakeCredentials({ [la.LIGHTAI_COOKIE_REF]: COOKIE, [la.LIGHTAI_SESSION_REF]: session }), fetchImpl: fakeLightAI({ mode: 'down' }) });
 	const s3 = await down.status();
 	if (s3.signedIn !== true || s3.stale !== true || !s3.error) { fail(`⑥ 网络失败应为 stale（仍算已登录，不让用户白白重登）：${JSON.stringify(s3).slice(0, 200)}`); }
-	if (!failed('⑥')) { ok('⑥ 状态投影无 cookie 值；失效 ⇒ expired；网络失败 ⇒ stale；校验结果有缓存'); }
+	// ★ 2026-11-11（真机）：默认配置 `headless=on` 下，旧代码把启动时的无头配置投影成
+	//   "无法登录" ⇒ 会话过期后「重新登录」按钮恒灰。登录时 `open()` 会 `ensureHeaded()` 自动切有头
+	//   ⇒ status 不该拿静态配置预判；真失败由 `signIn()` 的 `lastError` 走 `error` 如实显示 ✓
+	const headlessCfg = fakeBrowser({ headless: true });
+	const s4 = await la.createLightAIService({ credentials: fakeCredentials(), browser: () => headlessCfg, fetchImpl: f }).status();
+	if ('browserHeadless' in s4) { fail('⑥ 启动时的 headless 配置不该投影成 browserHeadless（登录时会自动切有头）✗'); }
+	if (s4.browserAvailable !== true) { fail('⑥ 浏览器插件在无头配置下也该报 browserAvailable=true ✗'); }
+	if (!failed('⑥')) { ok('⑥ 状态投影无 cookie 值 / 不误报 browserHeadless；失效 ⇒ expired；网络失败 ⇒ stale；校验结果有缓存'); }
 }
 
 // ── ⑦ 模型发现 ──────────────────────────────────────────────────────────────
@@ -341,10 +352,30 @@ const fastSleep = () => new Promise(r => setTimeout(r, 1));
 	if (!/无头/.test(msg)) { fail('⑩ 无头模式下开登录页应明说（不能假装在等用户登录）✗'); }
 	await svc.close('lightai');
 	if (closed !== 1) { fail('⑩ close 没关自己开的那个 tab ✗'); }
+	// ★ 2026-11-11（用户要求）：登录必须用**独立浏览器窗口**，不许用右侧栏「浏览器」。
+	//   ⇒ 登录会话接另一套 CdpHost：独立端口 / 独立 profile / 不给 rightbarFile /
+	//     dedicatedOnly（只认自己拉起的实例）；工具那条连接照旧 P0 单一实例（右栏）✓
+	const lhFrom = browserIdx.indexOf('const loginHost = new CdpHost(');
+	const lhBlock = lhFrom < 0 ? '' : browserIdx.slice(lhFrom, browserIdx.indexOf('});', lhFrom) + 3);
+	if (!lhBlock) { fail('⑩ 没有登录专用的独立 CdpHost ⇒ 登录页会开进右侧栏浏览器 ✗'); }
+	else {
+		if (/rightbarFile/.test(lhBlock)) { fail('⑩ 登录专用 CdpHost 不许接 rightbarFile（会被右栏抢回去）✗'); }
+		if (!/dedicatedOnly:\s*true/.test(lhBlock)) { fail('⑩ 登录专用 CdpHost 只该认自己拉起的实例 ✗'); }
+		if (!/browser-profile-login/.test(lhBlock)) { fail('⑩ 登录窗口必须用独立 profile（不能与主 host 抢 Chrome 实例）✗'); }
+	}
+	if (!/baseClient:\s*loginBaseClient/.test(browserIdx) || !/loginInvoke\(\{ op: 'command'/.test(browserIdx)) { fail('⑩ 登录会话的页面 / cookie 调用没走独立宿主 ✗'); }
+	if (!/ensureHeaded:\s*\(\)\s*=>\s*loginHost\.ensureHeaded\(\)/.test(browserIdx)) { fail('⑩ 切有头要切在独立宿主上（别把工具那条连接切走）✗'); }
+	if (!/release:\s*\(\)\s*=>\s*loginHost\.shutdown\(\)/.test(browserIdx)) { fail('⑩ 登录结束没释放独立窗口 ✗'); }
+	if (!/await release\?\.\(\)/.test(code(read(lsRel)))) { fail('⑩ 登录会话 close() 没调 release（独立窗口关不掉）✗'); }
+	if (!/async shutdown\(\)/.test(code(read('dsh-plugins/vssaros-browser/lib/core/host.js')))) { fail('⑩ CdpHost 缺 shutdown()（关不掉整个独立实例）✗'); }
+	let released = 0;
+	const rel = ls.createLoginSessions({ baseClient, browserCommand, headless: false, release: async () => { released++; } });
+	await rel.close('lightai');
+	if (released !== 1) { fail('⑩ close() 没真正触发释放独立窗口 ✗'); }
 	if (!/loginSession,/.test(browserIdx) || !/createLoginSessions\(\{/.test(browserIdx)) { fail('⑩ 浏览器插件没把 loginSession 放进 vssarosBrowser 服务 ✗'); }
 	const bpkg = JSON.parse(read('dsh-plugins/vssaros-browser/package.json'));
 	if (!bpkg.files.includes('lib/core/loginSession.js')) { fail('⑩ 浏览器插件 files 没列 loginSession.js ⇒ 装出来的插件缺文件 ✗'); }
-	if (!failed('⑩')) { ok('⑩ 浏览器插件登录会话：登记站点 / 登记 cookie 名 / https / 专属 tab / 切前台 / 无头明说 / 已接进服务'); }
+	if (!failed('⑩')) { ok('⑩ 浏览器插件登录会话：登记站点 / 登记 cookie 名 / https / 专属 tab / 切前台 / 无头明说 / 独立窗口不占右栏 / 结束释放 / 已接进服务'); }
 }
 
 // ── ⑪ 真跑 apply()：HTTP 面 ─────────────────────────────────────────────────
@@ -448,9 +479,14 @@ const fastSleep = () => new Promise(r => setTimeout(r, 1));
 	if (!/zijianqiu@tencent\.com/.test(signedIn.text) || !/萨罗斯GR项目/.test(signedIn.text)) { fail('⑬ 已登录时没显示账号 / 项目 ✗'); }
 	if (!labels.some(l => /^图片 4$/.test(l)) || !labels.some(l => /^音频 2$/.test(l))) { fail(`⑬ 已登录时应有按类别的模型数：${JSON.stringify(labels)}`); }
 	const expired = render({ ...base, signedIn: false, expired: true, error: 'LightAI 登录已失效，请重新登录' });
-	if (!expired.buttons.some(b => b.label === '重新登录')) { fail('⑬ 登录失效时应有「重新登录」✗'); }
+	const retry = expired.buttons.find(b => b.label === '重新登录');
+	if (!retry || retry.disabled) { fail(`⑬ 登录失效时应有**可点的**「重新登录」：${JSON.stringify(expired.buttons)}`); }
+	// ★ 2026-11-11（真机）：老版桥插件仍可能推 `browserHeadless: true` ⇒ 页面也不许据此变灰 / 报"无法登录"
+	const legacyFlag = render({ ...base, signedIn: false, expired: true, error: '失效', browserHeadless: true });
+	const legacyRetry = legacyFlag.buttons.find(b => b.label === '重新登录');
+	if (!legacyRetry || legacyRetry.disabled || /无头模式/.test(legacyFlag.text)) { fail('⑬ 旧桥插件残留的 browserHeadless 不该让「重新登录」变灰或报"无头模式无法登录" ✗'); }
 	if (t.laState(null) === 'unknown' && render(null).out !== null) { fail('⑬ 没拿到状态时不该出卡片 ✗'); }
-	if (!failed('⑬')) { ok('⑬ 页面卡片：状态映射 / 未登录·登录中·已登录·失效 各自的按钮 / 无浏览器插件禁用登录并说明'); }
+	if (!failed('⑬')) { ok('⑬ 页面卡片：状态映射 / 各状态按钮 / 无浏览器插件禁用 / 无头配置不禁用登录'); }
 }
 
 if (problems.length) {

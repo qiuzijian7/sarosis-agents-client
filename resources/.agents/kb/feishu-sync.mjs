@@ -45,12 +45,25 @@ export const REPORT_MAX_ITEMS = 300;
 /** 索引结构版本：v2 起含 `spaces`（类别→知识库映射）与 `files` 明细；读取时兼容 v1 扁平结构。 */
 const INDEX_VERSION = 2;
 
+/**
+ * ★ 2026-11-12（真机：20 篇全报 `strict mode is "bot", only bot-identity commands are available`）：
+ *   lark-cli 的 profile 带 strict-mode 安全策略（bot / user / off）。旧脚本把 18 条命令的身份
+ *   写死成 user ⇒ 策略是 bot 时每条都被拒，刷一屏错误却还报「完成 20 篇」。
+ *   ⇒ 身份改由 `--identity` 统一注入（默认 user，保持向后兼容）；开跑前预检一次策略，
+ *     冲突就**一次性**说清并退出，不逐篇刷屏。
+ *   ⚠ 绝不擅自执行 `lark-cli config strict-mode`：CLI help 明示这是安全策略，
+ *     「AI agents: DO NOT switch without explicit user confirmation」。策略只能由用户本人决定。
+ */
+let IDENTITY = 'user';
+
 // ─── 参数解析 ────────────────────────────────────────────────────────────────
 
 function parseArgs(argv) {
 	const out = {
 		src: [], parent: 'my_library', dryRun: false, apply: false, limit: 0, interval: 800,
 		vault: '', help: false, onConflict: 'overwrite', cli: '',
+		/** ★ 2026-11-12：飞书调用身份（bot / user）。默认 user 保持旧行为。 */
+		identity: 'user',
 		/**
 		 * ★ 2026-09-24：**本次运行报告的输出文件**（UTF-8）。
 		 *
@@ -80,6 +93,10 @@ function parseArgs(argv) {
 		else if (a === '--interval') { out.interval = Number(next()) || 800; }
 		else if (a === '--on-conflict') { out.onConflict = (next() === 'skip' ? 'skip' : 'overwrite'); }
 		else if (a === '--cli') { out.cli = next(); }
+		else if (a === '--identity') {
+			const v = String(next() || '').trim().toLowerCase();
+			out.identity = (v === 'bot' || v === 'user') ? v : 'user';
+		}
 		else if (a === '--category-depth') { out.categoryDepth = Math.max(0, Number(next()) || 0); }
 		else if (a === '--auto-create-spaces') { out.autoCreateSpaces = true; }
 		else if (a === '--no-auto-create-spaces') { out.autoCreateSpaces = false; }
@@ -105,7 +122,7 @@ const USAGE = `kb-feishu-sync — 知识库 → 飞书同步（规则见 doc/kb-
 
   node .codebuddy/kb-feishu-sync.mjs --vault <vault根> [--src <相对目录>]... [--dry-run | --apply]
                                      [--parent my_library | <folderToken>] [--limit N] [--interval ms]
-                                     [--on-conflict overwrite | skip]
+                                     [--on-conflict overwrite | skip] [--identity bot | user]
                                      [--category-depth N] [--no-auto-create-spaces] [--prune]
                                      [--plan-file <path>（写本次报告：计划/结果逐篇；UTF-8，dry-run 也写）]
                                     [--refresh-remote（配 --apply；重建远端指纹基线）]
@@ -231,7 +248,7 @@ function insertImages(docToken, images, noteDir, interval) {
 	if (!images.length) { return ok; }
 
 	// 取带块 id 的文档结构（定位占位块）
-	const f = lark(['docs', '+fetch', '--doc', docToken, '--detail', 'with-ids', '--as', 'user'], noteDir);
+	const f = lark(['docs', '+fetch', '--doc', docToken, '--detail', 'with-ids', '--as', IDENTITY], noteDir);
 	const xml = extractJson(f.stdout)?.data?.document?.content ?? '';
 	if (!xml) {
 		console.warn('        ↳ ⚠ 无法获取文档结构（with-ids）⇒ 图片未插入');
@@ -254,7 +271,7 @@ function insertImages(docToken, images, noteDir, interval) {
 			fs.writeFileSync(replPath, `<img path="@./${img.ref}"/>`, 'utf8');
 			try {
 				const r = lark(['docs', '+update', '--doc', docToken, '--command', 'block_replace',
-					'--block-id', blockId, '--content', `@./${replFile}`, '--doc-format', 'xml', '--as', 'user'], noteDir);
+					'--block-id', blockId, '--content', `@./${replFile}`, '--doc-format', 'xml', '--as', IDENTITY], noteDir);
 				const payload = extractJson(r.stdout);
 				if (!payload || payload.ok === false) {
 					throw new Error(String(payload?.error?.message ?? (r.stderr || r.stdout).slice(0, 200)));
@@ -327,7 +344,7 @@ function insertAttachments(docToken, attachments, noteDir, interval) {
 	let ok = 0;
 	if (!attachments.length) { return ok; }
 
-	const f = lark(['docs', '+fetch', '--doc', docToken, '--detail', 'with-ids', '--as', 'user'], noteDir);
+	const f = lark(['docs', '+fetch', '--doc', docToken, '--detail', 'with-ids', '--as', IDENTITY], noteDir);
 	const xml = extractJson(f.stdout)?.data?.document?.content ?? '';
 	if (!xml) {
 		console.warn('        ↳ ⚠ 无法获取文档结构（with-ids）⇒ 附件未插入');
@@ -352,7 +369,7 @@ function insertAttachments(docToken, attachments, noteDir, interval) {
 			fs.writeFileSync(replPath, `<figure view-type="Preview"><source path="@./${att.ref}" name="${safeName}"/></figure>`, 'utf8');
 			try {
 				const r = lark(['docs', '+update', '--doc', docToken, '--command', 'block_replace',
-					'--block-id', blockId, '--content', `@./${replFile}`, '--doc-format', 'xml', '--as', 'user'], noteDir);
+					'--block-id', blockId, '--content', `@./${replFile}`, '--doc-format', 'xml', '--as', IDENTITY], noteDir);
 				const payload = extractJson(r.stdout);
 				if (!payload || payload.ok === false) {
 					throw new Error(String(payload?.error?.message ?? (r.stderr || r.stdout).slice(0, 200)));
@@ -458,7 +475,7 @@ function writeMindmapTree(mindnoteId, nodes, tmpDir) {
 		};
 		fs.writeFileSync(path.join(tmpDir, dataFile), JSON.stringify(payload), 'utf8');
 		const r = lark(['mindnotes', 'nodes', 'create', '--mindnote-id', mindnoteId,
-			'--data', `@./${dataFile}`, '--as', 'user'], tmpDir);
+			'--data', `@./${dataFile}`, '--as', IDENTITY], tmpDir);
 		const p = extractJson(r.stdout);
 		if (!p || p.ok === false) {
 			console.warn(`        ↳ 节点写入失败（第 ${round + 1} 层）：${p?.error?.message ?? (r.stderr || r.stdout).slice(0, 200)}`);
@@ -498,6 +515,9 @@ function writeMindmapTree(mindnoteId, nodes, tmpDir) {
  */
 function updateMindmaps(args, idx, plan, spaces, logLines) {
 	idx.mindmaps = idx.mindmaps ?? {};
+	// ★ 2026-11-12：导图失败原先只 warn、不进汇总也不影响退出码 ⇒ 正文全成功时
+	//   Host 仍判 ok:true，用户看不到「导图没更新」。返回失败数交给 main 如实汇总。
+	let mindmapFailed = 0;
 	/*
 	 * ★ 2026-10-29（真机：每次同步都重复报同一条 131012）：
 	 *   清理**已不在当前映射里**的导图记录（历史遗留，例如旧的 AI_Agent 空间）。
@@ -525,7 +545,7 @@ function updateMindmaps(args, idx, plan, spaces, logLines) {
 		if (!groups.has(spaceId)) { groups.set(spaceId, []); }
 		groups.get(spaceId).push({ rel: inner, title: p.title });
 	}
-	if (!groups.size) { return; }
+	if (!groups.size) { return 0; }
 
 	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kbmind-'));
 	try {
@@ -545,7 +565,7 @@ function updateMindmaps(args, idx, plan, spaces, logLines) {
 				// ⚠ `wiki +node-delete` **必须带 `--obj-type`**（2026-09-22 实测：缺了会被拒绝，
 				//   报 `--obj-type is required (one of: wiki, doc, docx, sheet, bitable, mindnote, slides, file)`）
 				const del = lark(['wiki', '+node-delete', '--node-token', rec.nodeToken,
-					'--obj-type', 'mindnote', '--yes', '--as', 'user'], tmpDir);
+					'--obj-type', 'mindnote', '--yes', '--as', IDENTITY], tmpDir);
 				// ★ 2026-10-29（真机）：CLI 把**失败 JSON 打在 stderr** 上 ⇒ 只认 stdout 会漏判（于是"节点已删除"被当成普通失败 ⇒ 永远跳过）。⇒ 两个通道都解析。
 				const dp = extractJson(del.stdout) || extractJson(del.stderr);
 				if (!dp || dp.ok === false) {
@@ -560,6 +580,7 @@ function updateMindmaps(args, idx, plan, spaces, logLines) {
 						console.warn(`[mindmap] ℹ 旧导图节点已不存在（${errMsg || errCode}）⇒ 清理记录并重建`);
 						delete idx.mindmaps[spaceId];
 					} else {
+						mindmapFailed++;
 						console.warn(`[mindmap] ⚠ 旧导图节点删除失败 ⇒ 跳过本次更新（避免累积重复）：${dp?.error?.message ?? (del.stderr || del.stdout).slice(0, 160)}`);
 						continue;
 					}
@@ -567,20 +588,22 @@ function updateMindmaps(args, idx, plan, spaces, logLines) {
 			}
 
 			const nc = lark(['wiki', '+node-create', '--space-id', spaceId, '--title', MINDMAP_TITLE,
-				'--obj-type', 'mindnote', '--as', 'user'], tmpDir);
+				'--obj-type', 'mindnote', '--as', IDENTITY], tmpDir);
 			const np = extractJson(nc.stdout);
 			if (!np || np.ok === false) {
+				mindmapFailed++;
 				console.warn(`[mindmap] ⚠ 无法在知识库「${rootText}」创建思维导图节点：${np?.error?.message ?? (nc.stderr || nc.stdout).slice(0, 160)}`);
 				continue;
 			}
 			const ni = pickNodeInfo(np);
 			const mindnoteId = ni.objToken;
 			const nodeTokenForRecord = ni.nodeToken;
-			if (!mindnoteId) { console.warn(`[mindmap] ⚠ 响应无 obj_token：${nc.stdout.slice(0, 160)}`); continue; }
+			if (!mindnoteId) { mindmapFailed++; console.warn(`[mindmap] ⚠ 响应无 obj_token：${nc.stdout.slice(0, 160)}`); continue; }
 
 			// 逐层写入（节点只能挂到已存在的服务端 id 上，见 writeMindmapTree 说明）
 			const written = writeMindmapTree(mindnoteId, nodes, tmpDir);
 			if (written < 0) {
+				mindmapFailed++;
 				console.warn(`[mindmap] ⚠ 节点写入失败（${rootText}）⇒ 本次跳过（下次同步会重建）`);
 				/*
 				 * ★ 2026-10-29：写节点失败时**刚建的那个空导图文档**会成为孤儿（索引里没记它，
@@ -590,10 +613,9 @@ function updateMindmaps(args, idx, plan, spaces, logLines) {
 				try {
 					if (ni.nodeToken) {
 						lark(['wiki', '+node-delete', '--node-token', ni.nodeToken,
-							'--obj-type', 'mindnote', '--yes', '--as', 'user'], tmpDir);
+							'--obj-type', 'mindnote', '--yes', '--as', IDENTITY], tmpDir);
 					}
 				} catch { /* 尽力而为 */ }
-				continue;
 				continue;
 			}
 			idx.mindmaps[spaceId] = {
@@ -606,6 +628,7 @@ function updateMindmaps(args, idx, plan, spaces, logLines) {
 			console.log(`[mindmap] ✓ 已重建「${rootText}」的目录思维导图（${written} 个节点）`);
 			logLines.push(`${new Date().toISOString()} MINDMAP ${spaceId} ${written} ${hash}`);
 		}
+		return mindmapFailed;
 	} finally {
 		fs.rmSync(tmpDir, { recursive: true, force: true });
 	}
@@ -872,7 +895,7 @@ export function computeTargets(plan, spaces, parentSpace = 'my_library') {
 
 /** 创建飞书知识库（wiki space），返回 `{ spaceId, name, createdAt }` 或 null。 */
 function createSpace(name) {
-	const r = lark(['wiki', '+space-create', '--name', name, '--as', 'user']);
+	const r = lark(['wiki', '+space-create', '--name', name, '--as', IDENTITY]);
 	const payload = extractJson(r.stdout);
 	if (!payload || payload.ok === false) {
 		console.warn(`[space] ✗ 创建知识库「${name}」失败：${payload?.error?.message ?? (r.stderr || r.stdout).slice(0, 200)}`);
@@ -892,7 +915,7 @@ function createSpace(name) {
 function resolveNodeToken(docToken) {
 	if (!docToken) { return ''; }
 	// ⚠ CLI 1.0.9x：node-get 统一入参 --node-token（可传 node_token / obj_token / URL）
-	const r = lark(['wiki', '+node-get', '--node-token', docToken, '--as', 'user']);
+	const r = lark(['wiki', '+node-get', '--node-token', docToken, '--as', IDENTITY]);
 	return pickNodeInfo(extractJson(r.stdout)).nodeToken;
 }
 
@@ -1051,6 +1074,46 @@ function lark(args, cwd) {
 }
 
 /**
+ * ★ 2026-11-12：开跑前一次性核对「本次身份」与 lark-cli profile 的 strict-mode 策略。
+ *
+ * 真机事故：策略是 bot、脚本 18 条命令全带 user 身份 ⇒ 每条都回
+ *   `strict mode is "bot", only bot-identity commands are available`，
+ * 刷了 20 篇 ✗ + 5 条导图警告，结尾却报「完成 20 篇」，用户完全看不出根因。
+ *
+ * ⚠ 只**读取**策略（config strict-mode 无参数），绝不写：CLI help 明示这是安全策略，
+ *   「DO NOT switch without explicit user confirmation — never run on your own initiative」。
+ *   冲突时如实给出两条需用户本人决定的路线并退出，不自动改身份、不改策略。
+ *
+ * @returns {{ conflict: boolean, mode: string, detail: string }}
+ */
+export function checkIdentityPolicy(identity) {
+	const r = lark(['config', 'strict-mode']);
+	const raw = `${r.stdout || ''}\n${r.stderr || ''}`.trim();
+	const m = /\bstrict-mode\s*[:=]\s*(bot|user|off)\b/i.exec(raw);
+	const mode = m ? m[1].toLowerCase() : '';
+	// 解析不到（CLI 未装 / 版本不同 / off）⇒ 不拦截，交给命令自身报错，避免误挡正常环境
+	if (!mode || mode === 'off' || mode === identity) {
+		return { conflict: false, mode, detail: raw };
+	}
+	return { conflict: true, mode, detail: raw };
+}
+
+/** 冲突时的一次性可读指引（纯函数，便于守卫直测文案）。 */
+export function identityPolicyHint(identity, mode) {
+	return [
+		`✗ 飞书身份冲突：本次 --identity ${identity}，但当前 lark-cli profile 是 strict-mode=${mode}。`,
+		`  lark-cli 会拒绝每一条 --as ${identity} 命令（strict mode is "${mode}", only ${mode}-identity commands are available）。`,
+		'  本次同步未产生任何有效写入，已提前中止；下面两条路线都需要你本人决定，插件不会擅自修改安全策略：',
+		`  ① 跟随当前策略：把飞书身份设为 ${mode}（设置里「飞书身份」或 --identity ${mode}）。`,
+		'     若选 bot，还需给应用开通 wiki:wiki / wiki:wiki:readonly / wiki:space:retrieve 并发布版本；',
+		'     且 my_library（个人知识库）只在 user 身份下可用，请改用具体 spaceId。',
+		`  ② 保持 ${identity} 身份：由你执行 lark-cli config strict-mode off（或 ${identity}）放开策略；`,
+		`     若用户身份 token 已过期，再执行 lark-cli auth login --as ${identity} 刷新登录态。`,
+		'',
+	].join('\n');
+}
+
+/**
  * 检测笔记里「飞书不会渲染」的图表源码（纯函数，便于单测）。
  *
  * ★★ 2026-09-24 实测更新（结论收敛）：
@@ -1091,6 +1154,49 @@ function extractJson(text) {
 }
 
 /**
+ * ★ 2026-11-12（评估真机日志发现）：统一判定 lark-cli 的**降阶响应**并给出可读原因。
+ *
+ * 真机 `docs +update` 在 bot 无文档编辑权时返回：
+ *   { ok:false, data:{ document:{revision_id:4,...}, result:"failed",
+ *     warnings:["degrade_code=4030004,msg=Document operation failed: No permission ..."] } }
+ * 旧判据只看 `payload.ok === false`：
+ *   · `ok:false` ⇒ 抛错（正确），但错误消息取 `payload.error.message`，而降阶响应把原因
+ *     放在 `data.result` / `data.warnings` ⇒ 退化成整段 stdout 前 300 字符，日志里被截断成半句；
+ *   · **同形态若被 `ok:true` 包装**（降阶语义本就常见）⇒ 直接放行 → 写 frontmatter 标记
+ *     已同步 → 远端其实没变 → 下次本地 hash 相同被 skip ⇒ **静默丢数据** ✗。
+ *
+ * @returns {string} 失败原因（空串表示成功）；纯函数，便于守卫直测。
+ */
+export function larkFailure(payload, raw = '') {
+	if (!payload || typeof payload !== 'object') { return 'CLI 无有效 JSON 响应' + (raw ? `：${String(raw).slice(0, 160)}` : ''); }
+	const d = payload.data && typeof payload.data === 'object' ? payload.data : {};
+	const warnings = [];
+	if (Array.isArray(d.warnings)) { for (const w of d.warnings) { if (w != null && String(w).trim()) { warnings.push(String(w).trim()); } } }
+	const parts = [];
+	if (payload.ok === false) { parts.push('CLI 返回 ok:false'); }
+	if (d.result && String(d.result).toLowerCase() === 'failed') { parts.push('data.result=failed'); }
+	if (warnings.length) { parts.push(`warnings: ${warnings.slice(0, 2).join(' | ').slice(0, 320)}`); }
+	const err = payload.error;
+	if (err && typeof err === 'object') {
+		const m = String(err.message ?? err.msg ?? '').trim();
+		if (m) { parts.push(m.slice(0, 240)); }
+		if (err.code != null && !m) { parts.push('code=' + String(err.code)); }
+	}
+	if (parts.length) { return parts.join(' · '); }
+	// 没有结构化原因，但明显不是成功响应 ⇒ 不静默放行
+	if (raw && !payload.ok) { return String(raw).slice(0, 240); }
+	return '';
+}
+
+/** 取降阶响应里的短码（4030004 / 131006 等），用于日志聚合与守卫断言。 */
+export function larkDegradeCode(payload) {
+	const w = payload?.data?.warnings;
+	const text = Array.isArray(w) ? w.join(' ') : String(w ?? '');
+	const m = /degrade_code=(\d+)/.exec(text) || /\bcode[=:]\s*(\d{5,})/.exec(text);
+	return m ? m[1] : '';
+}
+
+/**
  * fetch 远端文档并算「远端态指纹」（读操作；失败返回 '' 表示无法判定，不阻塞同步）。
  * 远端 markdown 是飞书转换后的形态（表格变 lark-table 等），故必须与同样是
  * 「远形态」的 remoteHash 比对，不能拿本地原文 hash 比。
@@ -1099,7 +1205,7 @@ function fetchRemoteHash(token) {
 	try {
 		// ⚠ CLI 1.0.9x：fetch 需显式 --doc-format markdown；返回结构为 data.document.content
 		// （旧形态是 data.markdown ⇒ 兼容两者，否则 remoteHash 永远为空、冲突检测静默失效）
-		const r = lark(['docs', '+fetch', '--doc', token, '--doc-format', 'markdown', '--as', 'user']);
+		const r = lark(['docs', '+fetch', '--doc', token, '--doc-format', 'markdown', '--as', IDENTITY]);
 		const payload = extractJson(r.stdout);
 		const md = payload?.data?.document?.content ?? payload?.data?.markdown;
 		if (typeof md !== 'string' || !md.trim()) { return ''; }
@@ -1166,6 +1272,23 @@ function main() {
 	if (args.cli) { CLI = args.cli; }
 	if (args.help || !args.vault) { console.log(USAGE); process.exit(args.help ? 0 : 2); }
 	if (!fs.existsSync(args.vault)) { console.error(`vault 不存在: ${args.vault}`); process.exit(2); }
+
+	// ★ 2026-11-12：身份写进模块变量（lark() 之外的 18 条命令统一读它），并预检策略。
+	//   ⚠ dry-run 只做本地扫描 + 打印计划，不调任何 --as 命令 ⇒ 不该被身份策略挡住，
+	//     否则用户连「将要同步什么」都看不到（真机 04:03 的 dry-run code=2 就是这个问题）。
+	//     ⇒ dry-run 时只提示不退出；apply 时才强制提前中止，避免逐篇刷屏。
+	IDENTITY = args.identity;
+	const policy = checkIdentityPolicy(IDENTITY);
+	if (policy.conflict) {
+		if (args.dryRun) {
+			console.warn(`[identity] ⚠ ${identityPolicyHint(IDENTITY, policy.mode).split('\n')[0]}`);
+			console.warn('[identity]   本次为 dry-run（只预览、不写远端），仍继续输出计划；执行 --apply 前请先解决。\n');
+		} else {
+			console.error(identityPolicyHint(IDENTITY, policy.mode));
+			if (policy.detail) { console.error(`  （依据：${policy.detail.replace(/\s+/g, ' ').slice(0, 200)}）\n`); }
+			process.exit(2);
+		}
+	}
 
 	const idx = loadIndex(args.vault);
 	const plan = collectPlan(args.vault, args.src, { categoryDepth: args.categoryDepth, index: idx });
@@ -1285,6 +1408,12 @@ function main() {
 	say(`计划: create=${counts.create} update=${counts.update} skip=${counts.skip} (共 ${plan.length})\n`);
 
 	let done = 0;
+	// ★ 2026-11-12：真机 20 篇全失败却报「完成 20 篇」⇒ 单列失败数，结尾如实汇总 + 非零退出码。
+	//   done 本来就包含失败（--limit 语义依赖它，不能改），所以不另记成功数。
+	let failed = 0;
+	// ★ 2026-11-12：`--on-conflict skip` 的冲突跳过原先走 continue，既不算 done 也不算 failed、
+	//   更没进报告 ⇒ 汇总里凭空少几篇。单独计数，让「跳过」可见。
+	let conflictSkipped = 0;
 	const logLines = [];
 	for (const p of plan) {
 		if (args.limit && done >= args.limit) { break; }
@@ -1324,7 +1453,7 @@ function main() {
 			const moveNode = p.prevNode || resolveNodeToken(p.feishu?.token);
 			let moved = false;
 			if (moveNode) {
-				const mv = lark(['wiki', '+move', '--node-token', moveNode, '--target-space-id', p.targetSpace, '--as', 'user']);
+				const mv = lark(['wiki', '+move', '--node-token', moveNode, '--target-space-id', p.targetSpace, '--as', IDENTITY]);
 				const mp = extractJson(mv.stdout);
 				if (mp && mp.ok !== false) {
 					moved = true;
@@ -1378,8 +1507,10 @@ function main() {
 				if (remoteNow && remoteNow !== p.feishu.remoteHash) {
 					conflict = `远端已被手工修改（远端 ${remoteNow} ≠ 记录 ${p.feishu.remoteHash}）`;
 					if (args.onConflict === 'skip') {
+						conflictSkipped++;
 						console.warn(`[update] ⊘ ${p.rel}: ${conflict} ⇒ 按 --on-conflict skip 跳过`);
 						logLines.push(`${new Date().toISOString()} CONFLICT-SKIP ${p.rel} ${conflict}`);
+						if (reportItems.length < REPORT_MAX_ITEMS) { reportItems.push(`跳过 ${p.rel} — ${conflict}`); }
 						continue;
 					}
 					console.warn(`[update] ⚠ ${p.rel}: ${conflict} ⇒ 本地覆盖（--on-conflict ${args.onConflict}）`);
@@ -1392,7 +1523,7 @@ function main() {
 			if (p.needsMove) {
 				const nodeToken = p.prevNode || resolveNodeToken(p.feishu?.token);
 				if (nodeToken) {
-					const mv = lark(['wiki', '+move', '--node-token', nodeToken, '--target-space-id', p.targetSpace, '--as', 'user']);
+					const mv = lark(['wiki', '+move', '--node-token', nodeToken, '--target-space-id', p.targetSpace, '--as', IDENTITY]);
 					const mp = extractJson(mv.stdout);
 					if (mp && mp.ok !== false) {
 						console.log(`      ⤳ 已移动到知识库「${p.targetSpaceName}」`);
@@ -1444,7 +1575,7 @@ function main() {
 			let token = '';
 			let newNodeToken = '';
 			if (p.action === 'create' && p.targetSpace) {
-				const nc = lark(['wiki', '+node-create', '--space-id', p.targetSpace, '--title', title, '--as', 'user'], tmpDir);
+				const nc = lark(['wiki', '+node-create', '--space-id', p.targetSpace, '--title', title, '--as', IDENTITY], tmpDir);
 				const np = extractJson(nc.stdout);
 				if (!np || np.ok === false) {
 					throw new Error(String(np?.error?.message ?? (nc.stderr || nc.stdout).slice(0, 300)));
@@ -1456,15 +1587,21 @@ function main() {
 			}
 
 			const cmdArgs = token
-				? ['docs', '+update', '--doc', token, '--command', 'overwrite', '--doc-format', 'markdown', '--content', '@./note.md', '--as', 'user']
+				? ['docs', '+update', '--doc', token, '--command', 'overwrite', '--doc-format', 'markdown', '--content', '@./note.md', '--as', IDENTITY]
 				: (p.action === 'create'
-					? ['docs', '+create', '--title', title, '--doc-format', 'markdown', '--content', '@./note.md', '--as', 'user', ...parentArgs(args.parent)]
-					: ['docs', '+update', '--doc', p.feishu.token, '--command', 'overwrite', '--doc-format', 'markdown', '--content', '@./note.md', '--as', 'user']);
+					? ['docs', '+create', '--title', title, '--doc-format', 'markdown', '--content', '@./note.md', '--as', IDENTITY, ...parentArgs(args.parent)]
+					: ['docs', '+update', '--doc', p.feishu.token, '--command', 'overwrite', '--doc-format', 'markdown', '--content', '@./note.md', '--as', IDENTITY]);
 			const r = lark(cmdArgs, tmpDir);
 			const payload = extractJson(r.stdout);
-			if (!payload || payload.ok === false) {
-				const detail = payload?.error?.message ?? (r.stderr || r.stdout).slice(0, 300);
-				throw new Error(String(detail));
+			/*
+			 * ★ 2026-11-12：用统一的降阶判定，不能只看 ok:false。
+			 *   飞书在「无文档编辑权」时返回 data.result=failed + warnings(degrade_code=4030004)，
+			 *   且可能包在 ok:true 里 ⇒ 旧判据会把它当成功、写入 frontmatter ⇒ 静默丢数据。
+			 */
+			const why = larkFailure(payload, r.stderr || r.stdout);
+			if (why) {
+				const code = larkDegradeCode(payload);
+				throw new Error(code ? `[${code}] ${why}` : why);
 			}
 			const info = pickDocInfo(payload);
 			token = token || info.token || p.feishu?.token;
@@ -1485,7 +1622,7 @@ function main() {
 			// 标题同步：文件名变动 ⇒ `drive +update-title`（新 CLI 无 --new-title 的替代方案）。
 			// ⚠ 必须在「记录 remoteHash」之前 —— 标题会进入远端 markdown 的 <title> 行。
 			if (token && p.prevTitle !== p.title) {
-				const tr = lark(['drive', '+update-title', '--token', token, '--type', 'docx', '--title', p.title, '--as', 'user'], tmpDir);
+				const tr = lark(['drive', '+update-title', '--token', token, '--type', 'docx', '--title', p.title, '--as', IDENTITY], tmpDir);
 				const tp = extractJson(tr.stdout);
 				if (tp && tp.ok !== false && tp.data?.updated !== false) {
 					console.log(`        ↳ 标题已更新: ${p.prevTitle || '(未记录)'} → ${p.title}`);
@@ -1519,6 +1656,7 @@ function main() {
 				Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, args.interval); // 同步限速
 			}
 		} catch (e) {
+			failed++;
 			console.error(`[${p.action}] ✗ ${p.rel}: ${e.message}`);
 			logLines.push(`${new Date().toISOString()} FAILED ${p.rel} ${e.message}`);
 			if (reportItems.length < REPORT_MAX_ITEMS) { reportItems.push(`失败 ${p.action} ${p.rel} — ${e.message}`); }
@@ -1573,30 +1711,52 @@ function main() {
 		}
 	}
 
+	// ★ 2026-11-12：导图失败也要如实计入结果（真机日志里 5 条「删除失败」却报「完成 18 篇」）
+	let mindmapFailed = 0;
 	if (!args.dryRun && !args.noMindmap) {
 		// 知识库根目录的「🗺 目录思维导图」（mindnote）：新增/改名/移动后自动重建（结构未变则零调用）
 		try {
-			updateMindmaps(args, idx, plan, spaces, logLines);
+			mindmapFailed = updateMindmaps(args, idx, plan, spaces, logLines) || 0;
 		} catch (e) {
-			console.warn(`[mindmap] ⚠ 思维导图更新失败（不影响同步结果）：${e.message}`);
+			mindmapFailed++;
+			console.warn(`[mindmap] ⚠ 思维导图更新失败：${e.message}`);
+		}
+		if (mindmapFailed) {
+			console.warn(`✗ 另有 ${mindmapFailed} 个知识库的目录思维导图未更新（多半是 bot 缺该空间的节点管理权限）。`);
 		}
 	}
 
 	if (!args.dryRun) {
 		if (logLines.length) {
-			fs.appendFileSync(path.join(args.vault, LOG_FILE), logLines.join('\n') + '\n', 'utf8');
+			// ★ 2026-11-12：vault 里可能还没有 .kb/ 目录（全新库 / 单独跑脚本）⇒
+			//   appendFileSync 直接抛 ENOENT 把整轮同步崩掉。先建目录再写。
+			const logPath = path.join(args.vault, LOG_FILE);
+			try { fs.mkdirSync(path.dirname(logPath), { recursive: true }); } catch { /* 尽力而为 */ }
+			fs.appendFileSync(logPath, logLines.join('\n') + '\n', 'utf8');
 		}
 		// 索引写回（v2：类别→知识库映射 + 每篇 token/hash/space/node + 每库思维导图）
 		saveIndex(args.vault, idx);
 	}
-	console.log(`\n完成 ${done} 篇（skip ${counts.skip} 篇无需处理）。`);
+	// ★ 2026-11-12：如实汇总。失败数 > 0 ⇒ 非零退出码，让 Host 的 `ok: code === 0` 判为失败。
+	//   ⚠ dry-run 一篇远端都没写，不能说「完成 / 未出现失败」⇒ 用户会误以为已同步（真机踩到）。
+	if (args.dryRun) {
+		console.log(`\n预览 ${done} 篇（skip ${counts.skip} 篇无需处理）—— DRY-RUN，未写入任何远端。`);
+	} else {
+		console.log(`\n完成 ${done} 篇（skip ${counts.skip} 篇无需处理${conflictSkipped ? `，另有 ${conflictSkipped} 篇因远端手改跳过` : ''}）${failed ? `，其中失败 ${failed} 篇 ✗` : '，未出现失败 ✓'}${mindmapFailed ? `；另有 ${mindmapFailed} 个导图未更新 ✗` : ''}。`);
+		if (failed) {
+			console.error(`✗ 本次有 ${failed} 篇同步失败，详见上方 [update]/[create] ✗ 行与 ${LOG_FILE}。`);
+		}
+		if (failed || mindmapFailed) {
+			process.exitCode = 1;
+		}
+	}
 
 	// ── 落盘「本次报告」：宿主工具/agent 据此回报预览计划与实际结果（不依赖 stdout 编码）──
 	if (args.planFile) {
 		try {
 			fs.writeFileSync(args.planFile, formatSyncReport({
 				dryRun: args.dryRun, vault: args.vault, src: args.src,
-				done, skip: counts.skip, total: plan.length,
+				done, skip: counts.skip, total: plan.length, failed, conflictSkipped, mindmapFailed,
 				summary: report, items: reportItems,
 			}), 'utf8');
 		} catch (e) {
@@ -1622,6 +1782,11 @@ export function formatSyncReport(o) {
 		`# vault: ${o.vault ?? ''}`,
 		`# src: ${(o.src ?? []).join(', ')}`,
 		`# 完成 ${o.done ?? 0} 篇（skip ${o.skip ?? 0} 篇无需处理，计划共 ${o.total ?? 0} 篇）`,
+		// ★ 2026-11-12：报告也要如实带失败数（宿主只读这份 UTF-8 报告来回报结果）
+		`# 失败 ${o.failed ?? 0} 篇${(o.failed ?? 0) > 0 ? '  ✗ 本次同步未全部成功' : ''}`,
+		...(o.conflictSkipped ? [`# 另有 ${o.conflictSkipped} 篇因远端手工修改按 skip 跳过（本地未覆盖）`] : []),
+		...(o.mindmapFailed ? [`# 另有 ${o.mindmapFailed} 个知识库导图未更新  ✗`] : []),
+		...(o.dryRun ? ['# ⚠ 以上为预览计划，未写入任何远端；需 --apply 才会真正同步。'] : []),
 		'',
 	];
 	const items = o.items ?? [];

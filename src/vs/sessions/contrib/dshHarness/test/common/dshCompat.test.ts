@@ -18,7 +18,7 @@ const MANIFEST: IDshCompatManifest = {
 	blocked: [{ version: '0.2.0-rc.1', reason: 'session migration bug' }],
 };
 const TAGS = { latest: '0.2.0-rc.2', next: '0.2.0-rc.2', alpha: '0.2.1-alpha.1' };
-const base: IDshUpdateInput = { channel: 'stable', installed: ['0.1.7-rc.2'], current: '0.1.7-rc.2', distTags: TAGS, manifest: MANIFEST, bridgePeerRange: '>=0.1.7-0 <0.3.0-0', bridgeVersion: '0.1.1', nodeVersion: 'v24.11.1' };
+const base: IDshUpdateInput = { channel: 'stable', installed: ['0.1.7-rc.2'], current: '0.1.7-rc.2', distTags: TAGS, manifest: MANIFEST, bridgePeerRange: '>=0.1.7-0 <0.3.0-0', bridgeVersion: '0.1.1', nodeVersion: 'v24.9.0' };
 
 suite('dshHarness / update discovery', () => {
 
@@ -121,8 +121,11 @@ suite('dshHarness / update discovery', () => {
 		assert.strictEqual(oldBridge.recommended, undefined);
 		assert.match(oldBridge.candidates[0].problems.join(), /需要伴生插件 >=0.1.1/);
 
-		const oldNode = discoverUpdates({ ...base, nodeVersion: 'v22.18.0' });
+		const oldNode = discoverUpdates({ ...base, nodeVersion: 'v24.8.0' });
 		assert.strictEqual(oldNode.recommended, undefined);
+
+		const boundaryNode = discoverUpdates({ ...base, nodeVersion: 'v24.9.0' });
+		assert.strictEqual(boundaryNode.recommended, '0.2.0-rc.2', '24.9.0 is the supported floor');
 	});
 
 	test('current version flagged as blocked produces a note', () => {

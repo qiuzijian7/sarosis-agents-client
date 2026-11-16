@@ -4,7 +4,8 @@
 //   ① 页签类型 / keyed 页签体 / 常驻入口三处注册；
 //   ② 页签体 mount 上报占位矩形，ResizeObserver 跟 bounds，navigate 只发 http(s) URL，卸载发 unmount；
 //   ③ URL 归一化拒绝非 http(s) 协议；
-//   ④ 点常驻入口 ⇒ 展开右栏并打开浏览器页签。
+//   ④ 点常驻入口 ⇒ 展开右栏并打开浏览器页签；
+//   ⑧ 会话操作右栏浏览器且右栏收起 ⇒ 自动展开（/state 的 rightbarActiveAt；一轮操作只展开一次，已展开 / 交接提示都不抢）。
 //
 // 跑法：node dsh-plugins/check-rightbar-browser.mjs
 import { readFileSync } from 'node:fs';
@@ -137,10 +138,10 @@ const overlayHost = window.document.createElement('div');
 window.document.body.appendChild(overlayHost);
 const root2 = createRoot(overlayHost);
 await act(async () => { root2.render(React.createElement(overlay.component)); await tick(10); });
+// ★ 2026-11-12（用户选定 A）：没有交接卡时不渲染浮钮；打开通路在 ⑦ 的「接管」与 /state 自动展开里验证。
 const button = window.document.querySelector('[data-vssaros-rightbar-browser-open]');
-truthy('常驻入口按钮渲染出来', !!button);
-await act(async () => { button.click(); await tick(220); });
-eq('点入口 ⇒ 展开右栏 + 打开浏览器页签', [expandClicks, opened], [1, [test.TAB_KIND]]);
+truthy('没有交接 ⇒ 不渲染右下角浮钮', !button);
+eq('没有交接 ⇒ 也不自动打开右栏', [expandClicks, opened], [0, []]);
 await act(async () => { root2.unmount(); });
 
 // ── ⑤ 单一实例（2026-11-07，P0）：右栏显示的那一页 = browser 工具操作的那一页 ──────────────────────
@@ -246,7 +247,7 @@ await act(async () => { root2.unmount(); });
 		window.document.body.appendChild(host7);
 		const root7 = createRoot(host7);
 		await act(async () => { root7.render(React.createElement(overlay.component)); await tick(30); });
-		truthy('⑦ 没有交接 ⇒ 只有 🌐 按钮，不弹提示、不自动打开', !host7.querySelector('[data-vssaros-rightbar-browser-handoff-hint]') && !!host7.querySelector('[data-vssaros-rightbar-browser-open]') && opened.length === 0);
+		truthy('⑦ 没有交接 ⇒ 不弹提示、不渲染浮钮、不自动打开', !host7.querySelector('[data-vssaros-rightbar-browser-handoff-hint]') && !host7.querySelector('[data-vssaros-rightbar-browser-open]') && opened.length === 0);
 		await act(async () => { root7.unmount(); });
 		state = { handoffs: [{ id: 'H9', reason: '扫码登录', kind: 'login', state: 'pending', open: true }, { id: 'H8', reason: '旧', state: 'done', open: false }] };
 		const host8 = window.document.createElement('div');
@@ -265,11 +266,60 @@ await act(async () => { root2.unmount(); });
 	}
 }
 
+// ── ⑧ 2026-11-11（用户要求）：会话操作右栏浏览器 ⇒ 右侧栏收起时自动展开 ──────────────────
+{
+	const now = Date.now();
+	const fn = test.shouldAutoOpenRightbar;
+	truthy('⑧ 自动展开判据已暴露', typeof fn === 'function');
+	eq('⑧ 首次基线 / 已展开不抢 / 旧时间戳不弹 / 抑制窗口内不重复 / 新活跃应展开', [
+		fn({ activeAt: now, seenAt: 0, now, lastOpenAt: 0, collapsed: true, firstSeen: true }),
+		fn({ activeAt: now, seenAt: now - 1000, now, lastOpenAt: 0, collapsed: false, firstSeen: false }),
+		fn({ activeAt: now - 60000, seenAt: now - 61000, now, lastOpenAt: 0, collapsed: true, firstSeen: false }),
+		fn({ activeAt: now, seenAt: now - 1000, now, lastOpenAt: now, collapsed: true, firstSeen: false }),
+		fn({ activeAt: now, seenAt: now - 1000, now, lastOpenAt: 0, collapsed: true, firstSeen: false }),
+	], [false, false, false, false, true]);
+
+	// /state 真跑：右栏操作时间要真的出现在回执里
+	const { pathToFileURL } = await import('node:url');
+	const { createRouteHandler } = await import(pathToFileURL(path.join(repo, 'dsh-plugins', 'vssaros-browser', 'lib', 'core', 'routes.js')).href);
+	const handler = createRouteHandler({ grants: { list: () => [] }, handoffs: { list: () => [] }, rightbarActivity: () => 4242 });
+	let stateBody = '';
+	await handler({ url: '/x/vssaros-browser/api/state', method: 'GET', headers: {} }, { writeHead() { }, end(s) { stateBody = s; } });
+	truthy('⑧ /state 回报 rightbarActiveAt', JSON.parse(stateBody).rightbarActiveAt === 4242, stateBody.slice(0, 160));
+	const browserIdx = readFileSync(path.join(repo, 'dsh-plugins', 'vssaros-browser', 'lib', 'index.js'), 'utf8');
+	truthy('⑧ 插件只在连着右栏时回报活跃（用 Chrome / 只读探测不误弹）',
+		/rightbarActivity:\s*\(\)\s*=>\s*\(host\.usingRightbar\s*\?\s*host\.lastUsedAt\s*:\s*0\)/.test(browserIdx));
+
+	// 真渲染常驻入口：建立基线 → 会话开始在右栏操作 ⇒ 自动展开并切到浏览器页签
+	const savedFetch = globalThis.fetch;
+	const realTimeout = window.setTimeout;
+	let round = 0;
+	const fake = async () => ({ ok: true, status: 200, json: async () => ({ handoffs: [], rightbarActiveAt: round }) });
+	globalThis.fetch = fake; window.fetch = fake;
+	// 常态轮询 4s ⇒ 守卫里把 window.setTimeout 压到 10ms，几轮轮询几十毫秒内跑完
+	window.setTimeout = (f, ms) => realTimeout.call(window, f, Math.min(Number(ms) || 0, 10));
+	try {
+		expandClicks = 0; opened.length = 0;
+		const host9 = window.document.createElement('div');
+		window.document.body.appendChild(host9);
+		const root9 = createRoot(host9);
+		await act(async () => { root9.render(React.createElement(overlay.component)); await tick(40); });
+		truthy('⑧ 刚挂载只记基线，不因历史活跃弹右栏', expandClicks === 0 && opened.length === 0, JSON.stringify({ expandClicks, opened }));
+		round = Date.now();
+		await act(async () => { await tick(80); });
+		eq('⑧ 右栏收起 + 新一轮操作 ⇒ 自动展开并打开浏览器页签', [expandClicks, opened], [1, [test.TAB_KIND]]);
+		await act(async () => { root9.unmount(); });
+	} finally {
+		window.setTimeout = realTimeout;
+		globalThis.fetch = savedFetch; window.fetch = savedFetch;
+	}
+}
+
 if (problems.length) {
 	console.log(`\n✗ check-rightbar-browser：${problems.length} 项失败`);
 	process.exit(1);
 }
-console.log('\n✓ check-rightbar-browser：右侧栏浏览器页签（注册 / 矩形 / 导航 / 卸载 / 入口）+ 单一实例（中转白名单 / 不建页 / 不分区）+ 助手区（交接卡 / 时限授权）+ 按需建视图 / 入口接管 全部通过');
+console.log('\n✓ check-rightbar-browser：右侧栏浏览器页签（注册 / 矩形 / 导航 / 卸载 / 入口）+ 单一实例（中转白名单 / 不建页 / 不分区）+ 助手区（交接卡 / 时限授权）+ 按需建视图 / 入口接管 + 收起时自动展开 全部通过');
 process.exit(0);
 
 function join(...parts) { return parts.join('/'); }

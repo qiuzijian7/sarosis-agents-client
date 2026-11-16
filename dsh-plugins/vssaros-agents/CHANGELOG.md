@@ -2,6 +2,35 @@
 
 2026-11-06 起，版本说明写在这里，不再追加到 package.json 的 description：插件管理器的 `list_bundles` 会把 description 原样交给模型，之前这段累计到 2 万多字。
 
+## 0.2.391（2026-11-16）
+
+- **发布收口 / 状态模型 / 可观测性**：新增只读 `GET /x/agents/api/rooms?diagnostics=1`，把运行生命周期、任务/验收生命周期、durable dispatch intent、存储租约与写错误分开投影；`schema=1` 独立于对外 `ROUND_SCHEMA=1`，不污染 progress / active / 工具结果。每个运行写穿稳定 `runId / attempt / cancelReason / trigger`；`followup` 前先落盘 `prepared` 派发意图，发送后转 `sent`，回合结束转 `settled`，取消转 `cancelled`，强杀重启把未确认意图收口为 `cut` 并明确「不自动重放」。`rebindRoom` 同步迁移 `runId` 与意图的 `roomId`。
+- **P1 官方执行树 gate**：新增默认关闭、只读的 `official-team-spike.test.mjs` 与静态契约；必须从 `remote.agentPresets.list()` 动态生成 `allowedAgentPresets` 候选，不得手抄 18 个 Bot preset；门禁仍维持 `P1 gate=BLOCKED`，不写存量群、不双写 `group_goal`、不伪造 owner/caller、不替换独立影子会话。
+- **P3 成本/写范围闸**：新增 `maxTurns / maxEstimatedTokens / maxWallMs / idleRelayLimit` 逐群设置与 `round.metrics`（prompt/output/token/工具调用/接力估算）；引入 `writeScopes` 的纯函数重叠判定和同文件写范围串行派发。预算超限输出可解释状态，不静默截断；CAS 语义仍只保护任务状态，不当作文件锁。
+- **P2 三栏方案效果图**：新增 `doc/superagent-mockups/group-three-pane.html`，只做「对话 / 任务 / 验收」状态分离与只读官方任务板的效果稿，未落生产界面代码；浏览器按 1440 / 900 / 500 宽度验收。★ 文件名刻意不带 `mockup`：`.gitignore` 的 `*mockup*.html` 会把它挡在 CI 干净检出之外，静态门禁会假红。
+- **发布门禁**：新增 `check-rooms-release.mjs` 并插入根 `check:dsh-plugins` 链；对两份 Team HTML 做版本快照校验，固定 9 项目标回归与 CDP smoke 清单；`check-plugins-tracked.mjs` 仍按并发改动约定只 `git add` 本轮自己的新增文件。
+
+## 0.2.390（2026-11-14）
+
+- **飞书 IM 会话归属**（并发工作区版本）：`ensureAgentSession` 新建会话带 `workspaceId`（取 `workspaceRegistry.list()` 首个工作区；无则 `ensure(dataRoot)`；再无退 `cwd`，与 `cwd` 互斥），并对新建/复用两条路径做幂等 `attachSession` 兜底 ⇒ 会话进入 `workspace.sessionIds`，不再成为侧栏孤儿。`run-agents-check` 增加 12 项归属/幂等/失败不阻断/反向突变行为断言。此条为发布收口补记，避免 `package.json` 版本已推进但 CHANGELOG 缺版本记录。
+
+## 0.2.389（2026-11-14）
+
+- **P3 群派发成本闸**：新增 `maxConcurrentTurns`（默认 4，可逐群 1–12 收紧，也可由 `createRooms({ maxConcurrentTurns })` 注入部署默认值）。`relay` 派发泵在 `running.size < maxConcurrentTurns` 时才启动下一位成员，释放一个名额才补一个；`@所有人` 不再一次把整组成员全部推给模型，排队成员不丢。建群/更新接口与 `roomView` 同步该字段；老房间回落默认 4。`rooms.test.mjs` 补归一化/HTTP/真成员限流行为，`run-agents-check.mjs` 补静态钉，去掉 `running.size < maxConcurrentTurns` 的反向突变已判红并恢复。
+- **P1 官方 Team 运行时核验**（只读 CDP 探针，未改运行时）：当前 dev Host 已装载 `@deepseek-ai/dsh-client-ui-agent-team`，`remote.agentTeams` 仅暴露 `setEnabled`；`remote.subagents` 仅暴露 `prompt` / `interruptByUser`；`remote.agentPresets.list()` 返回 37 个 preset（含 `vssaros-coder` 等 Bot preset），但客户端没有「按 Bot preset 创建 continuable 后代」的公开方法。结合 `dsh-base` 默认未开放 `agent_preset` allowlist，`official-team-compat.test.mjs` 的 `P1 gate=BLOCKED` 继续成立：不迁移存量群、不双写任务板、不伪造调用方身份。后续若要迁移，需先做 Host 侧动态 `allowedAgentPresets` 配置与真实 subagent 生成/权限回归。
+
+## 0.2.388（2026-11-14）
+
+- **队伍群聊 P0 正确性**：① 群记录冻结、租约失效、落盘失败不再吞掉错误或返回成功；写口返回 409/503，后台保存统一捕获并允许恢复写队列。② 所有写动作先校验存储可写；`create` 串行化、`relay` 按 `callId` 并发/完成/重启重放幂等，不重复派发。③ 用户待派发消息、汇总计数与到期时间随 `agent-rooms.json` 持久化；`digest` 按实际消息条数累计并按「最长等待」定时派发，重启恢复计时、只唤醒一次。④ 同名群只在同一 workspace/cwd 内复用或判重。⑤ 同一成员影子会话创建 single-flight、回合串行，避免并发 relay 重复建会话/重复 `followup`。⑥ 新增 `POST /api/rooms { action:'cancel', id, callId? }`：中止在途轮次并调用官方 `Agent.cancel({kind:'user'})` 停成员活动回合，清理回叫、审批、等待与后台项；用户待派发消息保留。回归 `rooms.test.mjs` 74 项、`rooms-restart.test.mjs` 5 项、`run-agents-check.mjs` 227 项全绿，含保存失败与取消动作的反向突变。
+
+## 0.2.387（2026-11-14）
+
+- **「启用智能体团队协作」打开后 Bot 仍拿不到团队工具**：官方 `team_task_create/list/get/update` 由 `dsh-base` 注册在 host 层（带 `when: agentTeams.isEnabled(agent)`），而写了 `tools:` 的 Bot 会被 `allowlistDenyOf` 把没声明的 host 层全局工具 deny 掉 ⇒ 开关打开了模型也看不到工具。与 `mcp__*` 同口径改为默认放行 `team_task_*`（覆盖内置 Bot 与用户自建 Bot，不必逐个改 18 份 `tools[]`）；真不要的 Bot 写 `!team_task_*` 排除，官方 `when` 仍保证开关关闭时工具不可见，不扩大默认工具面。守卫 `check-agent-tools.mjs` 判据 D + `test/run-agents-check.mjs` 钉住放行行为与官方工具名漂移（去掉放行即红）。
+
+## 0.2.384（2026-11-12）
+
+- 删除 agent preset 里遗留的 `tool-subagent-list-agents` 行：rc.2 的 `@deepseek-ai/dsh-tool-subagent-control` 已无 `./list-agents` 子路径导出，该行在 preset plane 判 `never started` ⇒ `agent-preset/invalid`，新建会话被拒。`list_agents` 由主包 `apply()` 自己注册，无需单独一行。
+
 ## 0.2.350（2026-11-06）
 
 - `/api/rooms` 群视图的 `members[]` 加 `sessionId`（该成员在这个群里的会话，开过才有）：侧栏点「正在群里干活」的 bot 时，chat-surface 据此直接打开它在群里的那条会话（用户报「正在执行任务的 bot，点 item 没有打开对应的对话窗口」）。只增字段。

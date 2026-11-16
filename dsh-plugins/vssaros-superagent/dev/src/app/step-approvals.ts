@@ -22,7 +22,7 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import { liveTicket, reached, type ChannelRef, type Engine, type OutboundMessage, type Ticket, type Trigger } from '../core/index.ts'
-import { allowedSender, type Settings } from '../policy.ts'
+import { mayConsent, type Settings } from '../policy.ts'
 import { stepOfSession, type TeamStep } from './steps.ts'
 import type { Store } from './store.ts'
 
@@ -312,11 +312,14 @@ export class StepApprovals {
    */
   fromMessage(trigger: Trigger): void {
     const reply = approvalReply(trigger.text)
-    if (!reply || !trigger.human || !allowedSender(this.host.store.settings() as Settings, trigger.actor)) return
+    if (!reply || !trigger.human) return
     const received = Date.parse(this.host.store.triggers.disposition(trigger.id)?.at ?? trigger.at)
+    const settings = this.host.store.settings() as Settings
     const candidates = [...this.pending.values()].filter(item => {
       const ticket = this.host.store.tickets.get(item.ticketId)
-      return item.posted && ticket && reached(ticket, trigger, key => this.host.store.threads.get(key), false) && received >= Date.parse(item.at)
+      const origin = ticket ? this.host.store.triggers.get(ticket.origin.triggerId) : undefined
+      return item.posted && ticket && mayConsent(settings, trigger, origin)
+        && reached(ticket, trigger, key => this.host.store.threads.get(key), false) && received >= Date.parse(item.at)
     })
     const chosen = reply.code ? candidates.filter(item => item.code === reply.code) : candidates
     if (chosen.length === 1) {

@@ -870,6 +870,15 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 					{ key: "searchDocsMode", dep: "searchDocsEnabled", label: "本地文件搜索范围", type: "enum", nullable: true, options: [["", "默认（跟随开关）"], ["all", "文件名 + 内容"], ["filename", "仅文件名"], ["content", "仅内容"], ["off", "关闭"]] },
 				]
 			},
+			{
+				id: "dreaming", title: "Dreaming · 带外整理", hint: "默认关闭；仅报告模式下不写入记忆。改动即时生效并持久化。", fields: [
+					{ key: "dreamEnabled", label: "启用 Dream", hint: "关闭时定时任务不触发；手动预览仍可用（只出报告，不写记忆）" },
+					{ key: "dreamApprovalMode", dep: "dreamEnabled", label: "审批模式", hint: "仅报告 = 禁止 apply；审批后 apply = 允许显式批准某一轮提案", type: "enum", options: [["report", "仅报告（默认）"], ["approved", "审批后 apply"]] },
+					{ key: "dreamGroupSize", dep: "dreamEnabled", label: "分组大小", hint: "约 20 份转录一组；组内 analyzer 并发上限 8", unit: "份", type: "int", min: 1 },
+					{ key: "dreamMaxFiles", dep: "dreamEnabled", label: "单轮导出上限", hint: "防止一次性灌爆预算", unit: "份", type: "int", min: 1 },
+					{ key: "dreamRefuterModel", dep: "dreamEnabled", label: "复核模型", hint: "留空 = 继承会话模型；填模型名则 refuter 独立用小模型复核", type: "str", nullable: true, placeholder: "跟随会话" },
+				]
+			},
 		];
 		const MEM_KNOWN = new Set(MEM_GROUPS.flatMap((g) => g.fields.map((f) => f.key)).concat(["memoryTabEnabled"]));
 		// 控件统一 26px 高；边框用 border-l3（border-l1 只有 4% 透明度，输入框几乎看不出能编辑）
@@ -2288,12 +2297,12 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 			   只有 hasSecret / name，绝不含 secret 明文）。空 = 默认应用；__new__ = 就地新增。 */
 			const feishuApps = Array.isArray(data.feishuApps) ? data.feishuApps : [];
 			const appLabel = (id) => {
-				if (!id) { return "VsSaros助手"; }
+				if (!id) { return "默认应用"; }
 				const a = feishuApps.find((x) => String(x.appId) === String(id));
 				return a && a.name ? String(a.name) : String(id);
 			};
-			/* ★ 2026-11-10（用户要求）：内置默认应用对外统一使用产品名「VsSaros助手」。 */
-			const appOptions = [{ value: "", label: "VsSaros助手" }].concat(
+			/* ★ 2026-11-11（用户要求）：下拉首项统一叫「默认应用」，不再使用废弃的内置应用名。 */
+			const appOptions = [{ value: "", label: "默认应用" }].concat(
 				feishuApps.filter((a) => !a.isDefault).map((a) => ({
 					value: String(a.appId || ""), disabled: !a.hasSecret,
 					label: (a.name ? String(a.name) + " · " : "") + String(a.appId || "") + (a.hasSecret ? "" : "（缺 App Secret）"),
@@ -2316,7 +2325,7 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 				/* 内置默认应用不能再新增一份（后端 saveFeishuApp 会 409）：先说清出处，别让用户白填。 */
 				const def = feishuApps.find((a) => a.isDefault);
 				if (def && id === String(def.appId || "").trim()) {
-					setErr("这是 VsSaros助手（内置默认应用）：请在上面的「应用」下拉里直接选「VsSaros助手」，不用新增。");
+					setErr("这是当前默认应用：请在上面的「应用」下拉里直接选「默认应用」，不用新增。");
 					return null;
 				}
 				setBusy("app"); setErr(""); setNotice("");
@@ -2531,7 +2540,7 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 								"data-vssaros-botbind-add-app": "1", disabled: !!busy, onClick: addApp,
 							}, busy === "app" ? "添加中…" : "保存应用并选用"),
 							react.createElement("div", { key: "newhint", style: C.tiny },
-								"也可以直接点最下面的创建按钮：会先保存这个应用，再创建绑定。内置默认应用请直接在「应用」下拉里选 VsSaros助手。"),
+								"也可以直接点最下面的创建按钮：会先保存这个应用，再创建绑定。默认应用请直接在「应用」下拉里选「默认应用」。"),
 						])) : null,
 					fieldRow("chat_id", input("chatId", form.chatId, "oc_… / ou_…"),
 						react.createElement(BotbindTip, { key: "t", name: "chatId", label: "chat_id 说明", left: true },
@@ -2593,6 +2602,7 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 					role: String(loaded.role || ""),
 					model: String(loaded.model || ""),
 					skills: String(loaded.skills || ""),
+					tools: String(loaded.tools || ""),
 					persona: String(loaded.persona || ""),
 				});
 				setErr("");
@@ -2639,6 +2649,7 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 						role: String(draft.role || "").trim(),
 						model: String(draft.model || "").trim(),
 						skills: String(draft.skills || "").trim(),
+						tools: String(draft.tools || "").trim(),
 						persona: String(draft.persona || ""),
 					},
 				};
@@ -2655,17 +2666,28 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 					(e) => setErr("保存失败：" + String((e && e.message) || e)),
 				).then(() => setSaving(false));
 			};
+			const resetOverrides = async () => {
+				if (!window.confirm("恢复插件默认配置？仅清除本人的字段覆写，不删除会话、记忆或插件。")) { return; }
+				setSaving(true); setErr("");
+				try {
+					await postJson("/x/agents/api/agents", { action: "resetOverrides", id: agentId });
+					initializedFor.current = "";
+					reload();
+				} catch (error) { setErr("恢复失败：" + String(error.message || error)); }
+				finally { setSaving(false); }
+			};
 
 			return react.createElement("div", { style: C.card, "data-vssaros-botcfg": agentId }, kids([
 				react.createElement("div", { key: "r", style: C.row }, kids([
 					react.createElement("span", { key: "t", style: C.title }, "Bot 配置"),
 					react.createElement("span", { key: "b", style: C.badge }, agentId),
 					react.createElement("span", { key: "sp", style: C.grow }),
-					react.createElement("button", { key: "r2", type: "button", style: C.btn, disabled: saving, onClick: () => { reload(); } }, "刷新"),
+					data.hasOverrides === true ? react.createElement("button", { key: "reset", type: "button", style: C.btn, disabled: saving, onClick: resetOverrides, "data-vssaros-botcfg-reset": "1" }, "恢复插件默认") : null,
+					react.createElement("button", { key: "r2", type: "button", style: C.btn, disabled: saving, onClick: () => { initializedFor.current = ""; reload(); } }, "刷新"),
 					react.createElement("button", { key: "s", type: "button", style: C.btnPrimary, disabled: saving, onClick: save }, saving ? "保存中…" : "保存"),
 				])),
 				react.createElement("div", { key: "d", style: Object.assign({}, C.sub, { marginTop: 4 }) },
-					"写回该 Bot 的 .agent.md（名称 / 描述 / 角色 / 模型 / 技能 / 人设）。id 不可改，它就是目录名。"),
+					data.sourceOwner ? "插件默认只读；修改保存为本人的字段覆写，未修改字段跟随插件更新。工具绑定不等于授权，MCP 凭据另行配置。" : "写回该 Bot 的 .agent.md（名称 / 描述 / 角色 / 模型 / 技能 / 工具 / 人设）。id 不可改，它就是目录名。"),
 				field("name", "名称", "例如 代码审阅员"),
 				field("description", "描述（一行）", "在名册 / 欢迎卡里显示"),
 				field("role", "角色标签", "例如 检索 / 审阅"),
@@ -2687,6 +2709,7 @@ err ? react.createElement("div", { key: "err", style: C.err }, err) : null,
 					}, "本地 Agent 引擎：" + badge + "（CLI 自带登录与套餐）") : null;
 				})(),
 				field("skills", "技能（逗号分隔）", "anysearch, analysis"),
+				field("tools", "工具 / MCP 工具绑定（逗号分隔）", "read, mcp__服务器名__*"),
 				field("persona", "人设正文（Markdown）", "你就是……", true, 160),
 				err ? react.createElement("div", { key: "e", style: Object.assign({}, C.err, { marginTop: 6 }) }, err) : null,
 				note ? react.createElement("div", { key: "n", style: Object.assign({}, C.tiny, { marginTop: 6 }) }, note) : null,

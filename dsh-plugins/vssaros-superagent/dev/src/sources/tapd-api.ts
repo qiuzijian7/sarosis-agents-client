@@ -5,6 +5,7 @@
  * so settings saved by older versions still parse. Records come back as plain objects of strings.
  */
 import { z } from 'zod'
+import { TapdFilterScheduleSchema } from './tapd-filters.ts'
 import { tapdCredential, tapdCredentialsHint, tapdEnvironment, tapdTimeoutMs, type TapdEnv } from './tapd-auth.ts'
 
 export const TAPD_SOURCE = 'tapd'
@@ -46,7 +47,13 @@ export const TapdConfigSchema = z.object({
     iteration: z.string().trim().regex(/^\d*$/).default(''),
     /** `assigned`: only what is assigned to `agent`, or @s it; `all`: every change, which the Policy's admission table decides. */
     mode: z.enum(['assigned', 'all']).default('assigned'),
+    /** An imported daily-sweep watch is a filter container, not a change listener: `pollRound` skips it. */
+    sweepOnly: z.boolean().optional(),
   }).strict()).default([]),
+  /** Daily sweeps imported from the Saroasis platform's bug filter JSON. Off until a person enables one. */
+  filterSchedules: z.array(TapdFilterScheduleSchema).default([]),
+  /** Owner group name -> TAPD person names, so an exported group can become `current_owner=USER_OR<...>`. */
+  ownerGroups: z.array(z.object({ group: z.string().trim().min(1), members: z.string().trim().min(1) }).strict()).default([]),
   /** Optional TAPD Webhook ingress: a fast lane on top of polling, off by default. TAPD POSTs to
    * `/orchestrator/webhook/tapd`; the event carries IDs only, so the item is reread before it is received. */
   webhook: z.boolean().default(false),
@@ -65,7 +72,8 @@ export const watchWorkspace = (config: Pick<TapdConfig, 'workspace'>, watch: Tap
 /** A TAPD record with its fields as strings, as TAPD returns them. */
 export type TapdRecord = Record<string, string>
 export interface TapdItem { type: TapdType; workspace: string; id: string; title: string; description: string; status: string
-  owners: string[]; creator: string; created: string; modified: string; iteration: string }
+  owners: string[]; creator: string; created: string; modified: string; iteration: string
+  /** Raw `label` for imported filters' local rules; absent on older records. */ label?: string }
 export interface TapdComment { id: string; author: string; text: string; created: string; modified: string }
 
 /** TAPD writes times as `YYYY-MM-DD HH:mm:ss` in China time; this is the same instant in ISO form. */
@@ -83,17 +91,29 @@ export function itemOf(type: TapdType, record: TapdRecord): TapdItem {
   return { type, workspace: record.workspace_id ?? '', id: record.id ?? '', title: record.name ?? record.title ?? '',
     description: plainText(record.description ?? ''), status: record.status ?? '',
     owners: names(type === 'bug' ? record.current_owner : record.owner), creator: record.creator ?? record.reporter ?? '',
-    created: tapdInstant(record.created ?? ''), modified: tapdInstant(record.modified ?? record.created ?? ''), iteration: record.iteration_id ?? '' }
+    created: tapdInstant(record.created ?? ''), modified: tapdInstant(record.modified ?? record.created ?? ''), iteration: record.iteration_id ?? '',
+    label: record.label ?? '' }
 }
 export const commentOf = (record: TapdRecord): TapdComment => ({ id: record.id ?? '', author: record.author ?? '', text: plainText(record.description ?? ''),
   created: tapdInstant(record.created ?? ''), modified: tapdInstant(record.modified ?? record.created ?? '') })
 export const itemPage = (site: string, item: Pick<TapdItem, 'type' | 'workspace' | 'id'>): string => `${site}/${item.workspace}/${COLLECTION[item.type].page}/${item.id}`
 /** Parses the page of a story, bug or task on any TAPD site. */
 export function itemAddress(url: string): Pick<TapdItem, 'type' | 'workspace' | 'id'> | undefined {
-  const match = /^https?:\/\/[^/]*tapd[^/]*\/(?:tapd_fe\/)?(\d+)\/(prong\/stories|bugtrace\/bugs|prong\/tasks)\/view\/(\d+)/i.exec(url.trim())
-  if (!match) return undefined
-  const type = match[2]!.endsWith('stories') ? 'story' : match[2]!.endsWith('bugs') ? 'bug' : 'task'
-  return { type, workspace: match[1]!, id: match[3]! }
+  const text = url.trim()
+  // ★ 2026-11-11：真机 URL 是 /tapd_fe/<workspace>/bug/detail/<id>（不是老式的 bugtrace/bugs/view），
+  //   原正则解析不出来 ⇒ 取单只能退回浏览器，撞登录页。两种形态都认。
+  const patterns = [
+    /^https?:\/\/[^/]*tapd[^/]*\/(?:tapd_fe\/)?(\d+)\/(prong\/stories|bugtrace\/bugs|prong\/tasks)\/view\/(\d+)(?=\/?(?:[?#]|$))/i,
+    /^https?:\/\/[^/]*tapd[^/]*\/(?:tapd_fe\/)?(\d+)\/(bug|bugs|story|stories|task|tasks)\/(?:detail|view)\/(\d+)(?=\/?(?:[?#]|$))/i,
+  ]
+  for (const pattern of patterns) {
+    const match = pattern.exec(text)
+    if (!match) continue
+    const path = match[2]!.toLowerCase()
+    const type = path.includes('stor') ? 'story' : path.includes('bug') ? 'bug' : 'task'
+    return { type, workspace: match[1]!, id: match[3]! }
+  }
+  return undefined
 }
 
 /** TAPD failed to answer; `gone` when the item no longer exists, which a reply should not retry. */
@@ -149,10 +169,16 @@ export interface TapdApi {
   /** Items of `type` in `workspace` matching `filter` (TAPD query fields, such as `modified: '>2026-11-03 10:00:00'`), oldest change first. */
   items(type: TapdType, workspace: string, filter: Record<string, string>, signal?: AbortSignal): Promise<TapdItem[]>
   comments(type: TapdType, workspace: string, id: string, since?: string, signal?: AbortSignal): Promise<TapdComment[]>
+  /** A bounded latest-comment page for worker intake; does not change Source incremental polling. */
+  recentComments?(type: TapdType, workspace: string, id: string, limit: number, signal?: AbortSignal): Promise<TapdComment[]>
   comment(type: TapdType, workspace: string, id: string, author: string, html: string, signal?: AbortSignal): Promise<void>
   /** Optional lookup lists for the settings dropdowns (projects / workflow statuses / iterations).
    * Stand-in APIs used by tests may omit it, so the settings refresh degrades to labels it can build locally. */
   choices?(kind: 'workspace' | 'status' | 'iteration', workspace: string, signal?: AbortSignal): Promise<TapdChoice[]>
+  /** Live Chinese-name -> API-field / status-code maps for importing a platform filter export. */
+  filterMaps?(workspace: string, signal?: AbortSignal): Promise<{ fieldNames: Record<string, string>; statusCodes: Record<string, string> }>
+  /** Read-only count used to preview how many bugs an imported filter matches. */
+  count?(type: TapdType, workspace: string, filter: Record<string, string>, signal?: AbortSignal): Promise<number>
 }
 const PAGE = 200
 const MAX_PAGES = 10
@@ -212,6 +238,13 @@ export class TapdOpenApi implements TapdApi {
   async comments(type: TapdType, workspace: string, id: string, since?: string, signal?: AbortSignal): Promise<TapdComment[]> {
     return (await paged(page => this.request('GET', 'comments', listArgs(commentFilter(type, workspace, id, since), page), signal))).map(commentOf)
   }
+  async recentComments(type: TapdType, workspace: string, id: string, limit: number, signal?: AbortSignal): Promise<TapdComment[]> {
+    if (!Number.isInteger(limit) || limit < 0 || limit > 50) throw new TapdError('Recent comment limit must be 0–50')
+    signal?.throwIfAborted()
+    if (!limit) return []
+    const got = await this.request('GET', 'comments', { ...commentFilter(type, workspace, id), limit: String(limit), page: '1', order: 'modified desc' }, signal)
+    return got.slice(0, limit).map(commentOf)
+  }
   async comment(type: TapdType, workspace: string, id: string, author: string, html: string, signal?: AbortSignal): Promise<void> {
     await this.request('POST', 'comments', { workspace_id: workspace, entry_type: COLLECTION[type].entry, entry_id: id, author, description: html }, signal)
   }
@@ -237,6 +270,25 @@ export class TapdOpenApi implements TapdApi {
       }
     }
     return out
+  }
+  /** Chinese custom-field names and workflow status names, taken from this workspace's own configuration. */
+  async filterMaps(workspace: string, signal?: AbortSignal) {
+    const fieldNames: Record<string, string> = {}, statusCodes: Record<string, string> = {}
+    const rows = await this.request('GET', 'bugs/custom_fields_settings', { workspace_id: workspace }, signal)
+    for (const row of rows) {
+      const name = String(row.name ?? '').trim(), field = String(row.custom_field ?? '').trim()
+      if (name && field && /^custom_field_/.test(field)) fieldNames[name] = field
+    }
+    const statuses = await this.request('GET', 'workflows/status_map', { workspace_id: workspace, system: 'bug' }, signal)
+    for (const row of statuses) for (const [code, name] of Object.entries(row))
+      if (name && /^[A-Za-z0-9_-]+$/.test(code)) statusCodes[String(name)] = code
+    return { fieldNames, statusCodes }
+  }
+  async count(type: TapdType, workspace: string, filter: Record<string, string>, signal?: AbortSignal): Promise<number> {
+    const path = `${COLLECTION[type].path}/count`
+    const rows = await this.request('GET', path, { workspace_id: workspace, ...filter }, signal)
+    const value = Number(rows[0]?.count ?? 0)
+    return Number.isFinite(value) ? value : 0
   }
 }
 

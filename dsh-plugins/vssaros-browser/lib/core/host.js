@@ -407,6 +407,12 @@ export class CdpHost {
 	get usingRightbar() { return this._kind === 'rightbar' && !!this._conn; }
 
 	/**
+	 * 最后一次"真的在用浏览器"的时刻（2026-11-11：右栏 /state 据此告诉页面"会话正在操作右栏浏览器"）。
+	 * `command()` / `ensurePage()` 每次都会刷新；`status` / `probe` 不会 ⇒ 只读探测不会把右栏弹出来 ✓
+	 */
+	get lastUsedAt() { return this._lastUsedAt; }
+
+	/**
 	 * 右栏里正显示的那一页的地址（2026-11-07，右栏页签的授权条用：页签自己只知道人敲过的地址，模型导航过去它不知道）。
 	 * 只在已经连着右栏时回答；否则 undefined（不为它去建连接）。
 	 */
@@ -741,6 +747,23 @@ export class CdpHost {
 			}
 		}
 		return { closed, skipped: '' };
+	}
+
+	/**
+	 * 关掉**本 Host 拉起的整个专属实例**（2026-11-11：登录会话的独立窗口用完就收）。
+	 *
+	 * 与 `dispose()` 的区别：`dispose()` 只断 WS（Chrome 还开着，工具下次能重连）；
+	 * 这里要连 Chrome 一起关 ⇒ 登录结束不该留一个可见窗口/无头进程在后台 ✗。
+	 */
+	async shutdown() {
+		try {
+			if (this._conn) {
+				try { await this._conn.send('Browser.close', {}, undefined, 5_000); } catch { /* 已经关了 */ }
+			}
+		} finally {
+			this._dropConnection();
+			this._killDedicated();
+		}
 	}
 
 	dispose() {

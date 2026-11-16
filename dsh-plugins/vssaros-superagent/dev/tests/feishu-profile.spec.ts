@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cliArgv, Config, FeishuBotSchema, larkArgv, machineOf, resolveFeishuBot, SETUP_FIELDS, type Probe } from '../src/deployment.ts'
 import { shimFile } from '../src/infra/environment.ts'
 import { runLark, type LarkProfiles } from '../src/sources/feishu-profile.ts'
-import { BUNDLED_FEISHU_APP, botsAppSecret } from '../src/sources/feishu-share.ts'
+import { botsAppSecret } from '../src/sources/feishu-share.ts'
 import { feishuKind } from '../src/sources/feishu.ts'
 
 const windows = process.platform === 'win32'
@@ -63,8 +63,8 @@ describe('the Feishu app of the Source', () => {
     expect(FeishuBotSchema.parse({ cli: 'lark-cli' }).appId).toBe('')
     expect(() => FeishuBotSchema.parse({ cli: 'lark-cli', appId: 'not-an-app' })).toThrow()
   })
-  it('ships the CLI command and app ID as Source defaults, without changing the deployment contract', () => {
-    expect(feishuKind.schema.parse({})).toMatchObject({ cli: 'lark-cli', appId: BUNDLED_FEISHU_APP.appId })
+  it('ships the CLI command as a Source default but no built-in app ID', () => {
+    expect(feishuKind.schema.parse({})).toMatchObject({ cli: 'lark-cli', appId: '' })
     expect(feishuKind.fields.some(spec => spec.key === 'cli')).toBe(false)
     expect(feishuKind.fields.some(spec => spec.key === 'appId')).toBe(true)
     expect(FeishuBotSchema.parse({})).toMatchObject({ cli: '', appId: '' })
@@ -161,15 +161,15 @@ describe('the secret the Bots keep', () => {
     writeFileSync(join(dir, '.vssaros', 'agent-im-accounts.json'), JSON.stringify({ accounts: { feishu: { appId: 'cli_rel', appSecret: 'rel' } } }))
     expect(botsAppSecret('cli_rel', {}, dir)).toBe('rel')
   })
-  it('falls back to the app shipped with the product, and a configured secret still wins', () => {
+  it('has no built-in fallback: only a secret configured in Bots is usable', () => {
     const root = join(dir, 'empty-data')
     mkdirSync(root, { recursive: true })
     const env = { VSSAROS_DATA_ROOT: root }
-    expect(botsAppSecret(BUNDLED_FEISHU_APP.appId, env, dir)).toBe(BUNDLED_FEISHU_APP.appSecret)
+    expect(botsAppSecret('cli_any', env, dir)).toBeUndefined()
     expect(botsAppSecret('cli_other', env, dir)).toBeUndefined()
     writeFileSync(join(root, 'agent-im-accounts.json'), JSON.stringify({ version: 1,
-      accounts: { feishu: { appId: BUNDLED_FEISHU_APP.appId, appSecret: 'mine' } } }))
-    expect(botsAppSecret(BUNDLED_FEISHU_APP.appId, env, dir)).toBe('mine')
+      accounts: { feishu: { appId: 'cli_any', appSecret: 'mine' } } }))
+    expect(botsAppSecret('cli_any', env, dir)).toBe('mine')
   })
 })
 

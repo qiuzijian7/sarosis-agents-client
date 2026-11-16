@@ -114,10 +114,15 @@ export const DESKTOP_IDLE_STATUS: IDesktopControlStatus = {
 	active: false, botId: '', appKey: '', handoffState: 'idle', stopped: false,
 };
 
-/** Declared for classification and explicit refusal; P0 never executes them. */
+/**
+ * Declared for classification and explicit refusal; P0 never executes them.
+ * ★ Keep this in lockstep with `desktopInputService.ts`'s IMPLEMENTED_INPUT_METHODS:
+ *   a method registered here but missing from the relay's `_dispatch` is an op the
+ *   model can call that can only fail. `check-computer-control.mjs` asserts the pairing.
+ */
 export const DESKTOP_BACKGROUND_METHODS: ReadonlySet<string> = new Set([
 	'click', 'doubleClick', 'rightClick', 'typeText', 'pressKey', 'hotkey',
-	'setValue', 'scroll', 'drag', 'clipboardRead', 'showWindow', 'launchApp',
+	'scroll', 'drag',
 ]);
 export const DESKTOP_FOREGROUND_METHODS: ReadonlySet<string> = new Set([
 	'activateApp', 'movePointer',

@@ -288,6 +288,11 @@ const mouse = async (el, type, init = {}) => { await act(async () => { el.dispat
 const botsTab = qa('[data-vssaros-sidebar-tabs] button, .vssaros-ws-tab').find(b => /Bots/.test(b.textContent || ''));
 if (botsTab && botsTab.getAttribute('data-on') !== '1') { await mouse(botsTab, 'click'); }
 await settle(60);
+// ★ 2026-11-13（用户要求「移除 dsh 侧 bots 页签右侧的 + 按钮」）：
+//   `data-vssaros-sidebar-new-session` 原先不受 view 门控、常驻在页签条最右 ⇒ 真 React 渲染
+//   一次确认它已经没了；同时两个页签仍在（别把 tab 一起删了）。
+eq('③-a 页签条不再有常驻「+ 新建会话」按钮', qa('[data-vssaros-sidebar-new-session]').length, 0);
+eq('③-a 页签条仍是两个页签', qa('[data-vssaros-sidebar-tabs] .vssaros-ws-tab').length, 2);
 const row = () => q(`[data-vssaros-room="${made.id}"]`);
 
 // ── ③ Bots 页签：群行 ───────────────────────────────────────────────────────────────
@@ -393,7 +398,9 @@ eq('③ 点群行 ⇒ 中栏打开群会话（群 id 就是会话 id）', calls.
 		/const lateCount = migrateLateRoomId\(late, oldId, newId\)/.test(r)
 		&& /export function migrateRoutedRoomId\(/.test(r)
 		&& /rooms\.onRebindRoom\?\.\(/.test(r)
-		&& /migrated: \{ late: lateCount, routed: routedCount \}/.test(r));
+		// ⚠ 只钉前两个计数：`migrated` 会随发布收口增加 dispatchIntents 等增量字段，
+		//   把对象闭括号写死会在扩展返回形状时假红（2026-11-16）。
+		&& /migrated: \{ late: lateCount, routed: routedCount\b/.test(r));
 	truthy('③-d 日志补点：relayStream / openingCall ids / postToRoom 成功与失败各带 roomId',
 		/\[relayStream\] group_relay roomId=/.test(r) && /openingCall ids=/.test(r)
 		&& /\[postToRoom\] ok roomId=/.test(r) && /\[postToRoom\] FAILED roomId=/.test(r));
@@ -1465,7 +1472,7 @@ truthy('⑤-c 群会话 composer dock 注入 DS Bot 式活动行、shimmer 与�
 		['member-coder-sid', made.id, '', 'gone-room']);
 	const wsSrc = readFileSync(join(repo, 'dsh-plugins', 'vssaros-chat-surface', 'lib', 'client.workspaces.js'), 'utf8');
 	eq('⑤-d 点 bot 行先按 botOpenTargetOf 打开群内会话（openBot 接线）',
-		/const openBot = \(a\) => \{[\s\S]{0,400}botOpenTargetOf\(botStateOf\(groupActivity, a,[\s\S]{0,200}openSession\(busySid/.test(wsSrc), true);
+		/const openBot = \(a(?:, opts)?\) => \{[\s\S]{0,400}botOpenTargetOf\(botStateOf\(groupActivity, a,[\s\S]{0,200}openSession\(busySid/.test(wsSrc), true);
 	const listedMembers = (listed.body.rooms.find(r => r.id === made.id) || {}).members || [];
 	eq('⑤-d /api/rooms 的成员带它在群里的会话 id（开过才有）',
 		[listedMembers.some(m => typeof m.sessionId === 'string' && m.sessionId.length > 0),
@@ -1965,9 +1972,362 @@ truthy('⑥ 确认 ⇒ 群从侧栏消失、服务端删除、群会话与成员
 
 await act(async () => { root.unmount(); relayRoot.unmount(); dockRoot.unmount(); memberRoot.unmount(); });
 rmSync(dir, { recursive: true, force: true });
+// ── ⑥ 2026-11-12（用户报「切换 bot 会莫名新建工作区」）：切换零创建的行为级对账 ──────
+// 用 chunk 的**真函数**跑，不读源码字符串：
+//   a) latestSessionIdOf + isRegisteredSession 共同决定 openBot 走 openSession 还是 POST create；
+//   b) client.botHistory.js 的 sessionBotOf / historyRows 证明「一个 Bot 可对应多条会话」是产品事实
+//      ⇒ 显式 New part 建出的新会话自动进同一份历史，不需要（也不应该）强制单会话 / 归档历史。
+{
+	const snap = { items: [
+		{ workspaceId: 'ws-1', path: 'G:/work/proj', sessionIds: ['hist-1', 'hist-3'] },
+		{ workspaceId: 'ws-2', path: 'G:/work/other', sessionIds: ['hist-2'] },
+	] };
+	const usable = (sid) => ws.__test.isRegisteredSession(sid, snap);
+	const rows = (list) => ({ designer: { sessions: list } });
+	eq('⑥ 复用判据：命中最近一条已入账会话 ⇒ openBot 走 openSession（零 create）',
+		ws.__test.latestSessionIdOf(rows([{ id: 'hist-1' }, { id: 'hist-2' }]), 'designer', usable), 'hist-1');
+	eq('⑥ 复用判据：头一条没登记进工作区账本就跳过（不复用灰输入框会话）',
+		ws.__test.latestSessionIdOf(rows([{ id: 'orphan' }, { id: 'hist-2' }]), 'designer', usable), 'hist-2');
+	eq('⑥ 只有名册为空 / 该 bot 无会话时才允许走首次建会话分支', [
+		ws.__test.latestSessionIdOf({}, 'designer', usable),
+		ws.__test.latestSessionIdOf(rows([]), 'designer', usable),
+	], ['', '']);
+	// 反向对照：旧实现没有 usable 判据 ⇒ 会复用未入账会话 ⇒ 官方 hero 输入框灰（真机事故）
+	eq('⑥ 反向对照：去掉 usable 会错误复用未入账会话（判据必须保留）',
+		ws.__test.latestSessionIdOf(rows([{ id: 'orphan' }]), 'designer'), 'orphan');
+
+	const bh = loadChunk('dsh-plugins/vssaros-chat-surface/lib/client.botHistory.js');
+	const pv = (preset) => ({ agentPreset: preset });
+	const sessSnap = { byId: {
+		'hist-1': { id: 'hist-1', title: '旧对话', updatedAt: 2, projectionValues: pv('vssaros-designer') },
+		'new-part': { id: 'new-part', title: '新会话', updatedAt: 3, projectionValues: pv('vssaros-designer') },
+		'other-bot': { id: 'other-bot', title: '别的 bot', updatedAt: 4, projectionValues: pv('vssaros-coder') },
+		'plain-1': { id: 'plain-1', title: '普通会话', updatedAt: 5, projectionValues: {} },
+	}, archivedSessionIds: [] };
+	const hist = bh.__test.historyRows(sessSnap, 'new-part', 50);
+	eq('⑥ 多会话模型：显式 New part 与旧会话同属一个 bot，历史菜单只列这两条',
+		[hist.scopedKey, hist.rows.map(r => r.id)], ['preset:vssaros-designer', ['new-part', 'hist-1']]);
+	eq('⑥ 身份记录优先于 preset（多个 bot 共用 preset 时按 botId 分开）', [
+		bh.__test.sessionBotOf({ agentPreset: 'vssaros-designer', 'vssaros-bot': { botId: 'gr-programmer', presetId: 'vssaros-designer' } }).botId,
+		bh.__test.sessionBotOf({ agentPreset: 'vssaros-designer', 'vssaros-bot': { botId: 'x', presetId: 'vssaros-coder' } }).botId,
+	], ['gr-programmer', null]);
+}
+
+// ── ⑦ 2026-11-12：真组件交互 —— 连点 bot / 切页签 / 显式 New part 的 create 次数 ──────
+// 不改组件代码，只在末尾局部包装 fetch 计数；桩的 /api/home 返回空名册 ⇒ 首次点击必走 create，
+// 之后 freshBotSessions 本地兜底必须让它复用，否则「切 bot 冒出工作区」的 bug 就回来了。
+{
+	const realFetch = globalThis.fetch;
+	let creates = 0;
+	globalThis.fetch = async (url, init = {}) => {
+		const u = new URL(String(url), 'http://localhost');
+		if (u.pathname === '/x/agents/api/session' && (init.method || 'GET').toUpperCase() === 'POST') {
+			creates += 1;
+			return { ok: true, status: 200, json: async () => ({ ok: true, sessionId: `new-part-${creates}` }) };
+		}
+		return realFetch(url, init);
+	};
+	// ⚠ L1966 已把主 root 卸载 ⇒ 这里独立挂载一份新 Sidebar，别依赖已空的 #root。
+	const host7 = document.body.appendChild(document.createElement('div'));
+	const root7 = createRoot(host7);
+	const q7 = (sel) => host7.querySelector(sel);
+	const qa7 = (sel) => [...host7.querySelectorAll(sel)];
+	localStorage.setItem(ws.__test.SIDEBAR_VIEW_KEY, 'bots');
+	try {
+		await act(async () => { root7.render(React.createElement(Sidebar, { wide: true })); await tick(60); });
+		const tabs = () => qa7('[data-vssaros-sidebar-tabs] button, .vssaros-ws-tab');
+		const botsTab = () => tabs().find(b => /Bots/.test(b.textContent || ''));
+		const sessTab = () => tabs().find(b => /会话/.test(b.textContent || ''));
+		if (botsTab() && botsTab().getAttribute('data-on') !== '1') { await mouse(botsTab(), 'click'); }
+		await settle(60);
+		const before = creates;
+		for (let i = 0; i < 8; i += 1) {
+			const el = q7('[data-vssaros-bot="designer"]');
+			if (!el) { fail('⑦ 第 ' + (i + 1) + ' 次点击前 Bots 行消失：' + (host7.textContent || '').slice(0, 200)); break; }
+			await mouse(el, 'click');
+			await settle(20);
+		}
+		truthy('⑦ 连续切同一个 bot 8 次：至多建 1 条会话（本地兜底 + 并发合并）',
+			creates - before <= 1, 'create=' + (creates - before));
+		const beforeTabs = creates;
+		if (sessTab()) { await mouse(sessTab(), 'click'); await settle(30); }
+		if (botsTab()) { await mouse(botsTab(), 'click'); await settle(30); }
+		eq('⑦ 切「会话」页签再切回 Bots：零新建', creates - beforeTabs, 0);
+		// 显式 New part（右键菜单）是唯一允许再建一条的用户动作
+		const rowEl = q7('[data-vssaros-bot="designer"]');
+		if (rowEl) {
+			await act(async () => {
+				rowEl.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 40, clientY: 60 }));
+				await tick(30);
+			});
+			const item = q7('[data-act="bot-newSession"]');
+			truthy('⑦ 右键菜单有显式「新建会话」(New part)', !!item, (host7.textContent || '').slice(0, 200));
+			if (item) {
+				const atMenu = creates;
+				await mouse(item, 'mousedown');
+				await settle(40);
+				eq('⑦ 显式 New part：只多建 1 条会话', creates - atMenu, 1);
+			}
+		}
+	} finally {
+		globalThis.fetch = realFetch;
+		await act(async () => { root7.unmount(); await tick(10); });
+		host7.remove();
+	}
+}
+
+// ★ 2026-11-13（用户要求）：Bots 页签 bot/群行 + 会话页签工作区右键 / 会话行键盘
+//   ⚠ 主 root 在 ⑥ 末尾已 unmount ⇒ 这里像 ⑦ 一样**独立挂载**一份干净 Sidebar，别依赖已空的 #root。
+{
+	const hostK = document.body.appendChild(document.createElement('div'));
+	const rootK = createRoot(hostK);
+	const qK = (sel) => hostK.querySelector(sel);
+	const qaK = (sel) => [...hostK.querySelectorAll(sel)];
+	localStorage.setItem(ws.__test.SIDEBAR_VIEW_KEY, 'bots');
+	try {
+		await act(async () => { rootK.render(React.createElement(Sidebar, { wide: true })); await tick(60); });
+		const rowsK = qaK('[data-vssaros-key-row="bots"]');
+		truthy('键盘：Bot/群行都带可聚焦锚点', rowsK.length >= 2, 'rows=' + rowsK.length);
+		if (rowsK.length >= 2) {
+			await act(async () => { rowsK[0].focus(); await tick(20); });
+			// ★ 2026-11-13 真机回归：打开/切换会话后官方 replaceMain 会把焦点抢回 body
+			//   ⇒ 按键派发到 body（不是行），验证键盘不再依赖焦点落在行上。
+			await act(async () => {
+				document.body.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+				await tick(20);
+			});
+			eq('键盘：焦点被抢到 body 后 ↓ 仍能移动高亮', rowsK[1].getAttribute('data-key-focus'), '1');
+			await act(async () => {
+				document.body.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }));
+				await tick(20);
+			});
+			const confirmK = qK('[data-vssaros-room-confirm]') || qK('[data-vssaros-bot-confirm]');
+			truthy('键盘：Delete 弹出删除确认层', !!confirmK, (hostK.textContent || '').slice(0, 160));
+			if (confirmK) {
+				await act(async () => {
+					confirmK.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+					await tick(30);
+				});
+				eq('键盘：确认层 Enter = 确认删除（层已卸载）',
+					!!(qK('[data-vssaros-room-confirm]') || qK('[data-vssaros-bot-confirm]')), false);
+			}
+		}
+		// 切回「会话」页签：工作区 item 右键 + 会话行 ↑↓
+		const sessTabK = qaK('[data-vssaros-sidebar-tabs] button, .vssaros-ws-tab').find((b) => /会话/.test(b.textContent || ''));
+		if (sessTabK) { await mouse(sessTabK, 'click'); await settle(30); }
+		const projK = qK('.vssaros-ws-project');
+		truthy('右键：会话页签有工作区行', !!projK, (hostK.textContent || '').slice(0, 160));
+		if (projK) {
+			await mouse(projK, 'contextmenu');
+			truthy('右键：工作区 item 右键弹出 menu', !!qK('[data-vssaros-ws-row-menu]'), (hostK.textContent || '').slice(0, 160));
+		}
+		await act(async () => {
+			document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+			await tick(20);
+		});
+		const sessRowsK = qaK('[data-vssaros-key-row="sessions"]');
+		truthy('键盘：会话行带可聚焦锚点', sessRowsK.length >= 1, 'rows=' + sessRowsK.length);
+		if (sessRowsK.length >= 1) {
+			await act(async () => { sessRowsK[0].focus(); await tick(20); });
+			eq('键盘：聚焦会话行 ⇒ 该行高亮', sessRowsK[0].getAttribute('data-key-focus'), '1');
+			if (sessRowsK.length >= 2) {
+				await act(async () => {
+					document.body.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+					await tick(20);
+				});
+				eq('键盘：会话行焦点被抢到 body 后 ↓ 仍能移动高亮', sessRowsK[1].getAttribute('data-key-focus'), '1');
+			}
+		}
+	} finally {
+		await act(async () => { rootK.unmount(); await tick(10); });
+		hostK.remove();
+	}
+}
+
+// ── ⑧ ＋ 新建群聊：真实表单 → roomsApi，宿主与失败网络打桩 ──────────────────────────
+{
+	const createDir = mkdtempSync(join(tmpdir(), 'bots-rooms-create-'));
+	const host = document.body.appendChild(document.createElement('div'));
+	const createRootUI = createRoot(host);
+	const savedFetch = globalThis.fetch;
+	const savedSelected = localStorage.getItem(ws.__test.SELECTED_ROOM_KEY);
+	const createRequests = [];
+	const cancelRequests = [];
+	const opened = [];
+	const workspaceListeners = new Set();
+	let gate = null;
+	let responseKind = 'ok';
+	let workspaces = { items: [
+		{ workspaceId: 'ws-first', path: 'G:/work/first', name: 'first', sessionIds: [] },
+		{ workspaceId: 'ws-current', path: 'G:/work/current', name: 'current', sessionIds: ['plain-create'] },
+	] };
+	const roster = [
+		...ROSTER.map(a => ({ ...a, registered: true, presetId: `vssaros-${a.id}` })),
+		{ id: 'not-registered', name: '未注册', registered: false },
+		{ id: 'external-chief', name: '外部主管', registered: true, external: true, source: 'external' },
+	];
+	const runtime = createRooms({
+		file: join(createDir, 'agent-rooms.json'), fallbackCwd: createDir,
+		roster: async () => ROSTER, presetOf: id => `vssaros-${id}`,
+		sessions: () => dsh.sc, agents: () => dsh.agents,
+		workspaces: () => ({ ...dsh.workspaces, list: () => workspaces.items.map(w => ({ id: w.workspaceId, path: w.path })) }),
+		append: async () => dsh.append, warn: () => undefined,
+	});
+	const cq = sel => host.querySelector(sel);
+	const cqa = sel => [...host.querySelectorAll(sel)];
+	const click = async (sel, type = 'click') => {
+		const el = cq(sel);
+		truthy('⑧ 操作目标存在：' + sel, !!el);
+		if (el) { await mouse(el, type); }
+	};
+	const typeName = async value => {
+		const input = cq('[data-vssaros-bots-new-name]');
+		if (!input) { fail('⑧ 群名输入框不存在'); return; }
+		await act(async () => {
+			Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, value);
+			input.dispatchEvent(new window.Event('input', { bubbles: true }));
+			await tick(10);
+		});
+	};
+	const openForm = async () => {
+		await click('[data-vssaros-bots-add]');
+		await click('[data-act="new-group"]', 'mousedown');
+		await settle(30);
+		return !!cq('[data-vssaros-bots-new="group"]');
+	};
+	try {
+		globalThis.fetch = async (url, init = {}) => {
+			const u = new URL(String(url), 'http://localhost');
+			const method = String(init.method || 'GET').toUpperCase();
+			const json = (status, body) => ({ ok: status < 400, status, json: async () => body });
+			if (u.pathname === '/x/agents/api/home') { return json(200, { agents: roster, home: {}, root: '' }); }
+			if (u.pathname === '/x/agents/api/rooms') {
+				const body = init.body ? JSON.parse(init.body) : undefined;
+				if (method === 'POST' && body?.action === 'cancel') { cancelRequests.push(body); }
+				if (method === 'POST' && body?.action === 'create') {
+					createRequests.push(body);
+					if (gate) { await gate.promise; }
+					if (responseKind === 'failure') { return json(503, { ok: false, error: '测试宿主拒绝建群' }); }
+					if (responseKind === 'empty') { return json(200, { ok: true }); }
+				}
+				const out = await roomsApi(runtime, { method, query: u.searchParams, body });
+				return json(out.status, out.body);
+			}
+			return savedFetch(url, init);
+		};
+		let CreateSidebar;
+		ws.install({ ...ctx,
+			get: name => name === 'workspaces' ? { list: { getSnapshot: () => workspaces, subscribe: fn => { workspaceListeners.add(fn); return () => workspaceListeners.delete(fn); } } } : undefined,
+			sessions: { ...ctx.sessions, list: { getSnapshot: () => ({ byId: { 'plain-create': { id: 'plain-create', title: '当前会话', retainedBy: { mainView: 1 } } } }), subscribe: () => () => undefined } },
+			uiWorkspace: { openSession: sid => { opened.push(sid); return Promise.resolve(); } },
+			slots: { inject: (_name, cb) => cb(), register: (opts, comp) => { if (opts.name === 'sidebar.workspaces') { CreateSidebar = comp; } return () => undefined; } },
+		}, { state: {}, bridge: { sessionId: 'plain-create' } });
+		localStorage.setItem(ws.__test.SIDEBAR_VIEW_KEY, 'bots');
+		await act(async () => { createRootUI.render(React.createElement(CreateSidebar, { wide: true })); await tick(60); });
+		await settle(60);
+		truthy('⑧ 群草稿至少2个不同成员（重复不凑数）',
+			ws.__test.validateGroupDraft({ name: '群', members: ['designer'] }).length > 0
+			&& ws.__test.validateGroupDraft({ name: '群', members: ['designer', 'designer'] }).length > 0);
+		truthy('⑧ 群草稿拒绝名册外成员', ws.__test.validateGroupDraft({ name: '群', members: ['designer', 'missing'] }, ['designer', 'coder']).length > 0);
+		const openedForm = await openForm();
+		truthy('⑧ ＋ → 新建群聊挂载既有表单', openedForm, (host.textContent || '').slice(-1200));
+		if (openedForm) {
+			eq('⑧ 成员池只含可入群的已注册内置/自定义 Bot，不含 external', cqa('[data-vssaros-bots-new-member]').map(el => el.getAttribute('data-vssaros-bots-new-member')), ROSTER.map(a => a.id));
+			eq('⑧ 既有唤醒策略四档完整显示', cqa('[data-vssaros-bots-modes] button').map(el => el.getAttribute('data-act')), ['mode:all', 'mode:mentions', 'mode:digest', 'mode:silent']);
+			await click('[data-act="new-submit"]');
+			truthy('⑧ 空群名与空成员就地显示错误，不发创建请求', !!cq('[data-vssaros-bots-new-error]') && createRequests.length === 0);
+			await typeName('  手动建群  ');
+			await click('[data-vssaros-bots-new-member="designer"]');
+			await click('[data-act="new-submit"]');
+			truthy('⑧ 仅1个成员不能提交', /至少.*2/.test(cq('[data-vssaros-bots-new-error]')?.textContent || '') && createRequests.length === 0);
+			await click('[data-vssaros-bots-new-member="coder"]');
+			gate = {};
+			gate.promise = new Promise(resolve => { gate.resolve = resolve; });
+			responseKind = 'failure';
+			await click('[data-act="new-submit"]');
+			truthy('⑧ 创建在途提交按钮禁用并显示创建中', cq('[data-act="new-submit"]')?.disabled === true && /创建中/.test(cq('[data-act="new-submit"]')?.textContent || ''));
+			await click('[data-act="new-submit"]');
+			eq('⑧ busy 重复提交不新增请求', createRequests.length, 1);
+			await act(async () => { gate.resolve(); await tick(60); });
+			gate = null;
+			truthy('⑧ 503失败保留群名/选择、恢复按钮、显示宿主原文且不开会话', cq('[data-vssaros-bots-new-name]')?.value === '  手动建群  '
+				&& cqa('[data-vssaros-bots-new-member]:checked').length === 2 && cq('[data-act="new-submit"]')?.disabled === false
+				&& /测试宿主拒绝建群/.test(cq('[data-vssaros-bots-new-error]')?.textContent || '') && opened.length === 0);
+			responseKind = 'empty';
+			await click('[data-act="new-submit"]');
+			truthy('⑧ HTTP200无room不假成功', !!cq('[data-vssaros-bots-new-error]') && opened.length === 0);
+			responseKind = 'ok';
+			for (const mode of ['mentions', 'all', 'digest', 'silent']) {
+				if (mode !== 'mentions') {
+					if (!await openForm()) { fail('⑧ 重开群表单失败：' + mode); break; }
+					await typeName('手动建群-' + mode);
+					await click('[data-act="members-all"]');
+					await click('[data-act="mode:' + mode + '"]');
+				}
+				await click('[data-act="new-submit"]');
+				await settle(100);
+				const room = (await runtime.list()).find(r => r.name === (mode === 'mentions' ? '手动建群' : '手动建群-' + mode));
+				const request = createRequests.at(-1);
+				eq('⑧ 创建请求绑定当前工作区且四档使用wakeMode，不提交旧mode：' + mode, [request?.workspaceId, request?.wakeMode, Object.hasOwn(request || {}, 'mode'), Object.hasOwn(request || {}, 'cwd')], ['ws-current', mode, false, false]);
+				truthy('⑧ 真实room API创建成功、刷新群行、打开并选中新群：' + mode, !!room && room.wakeMode === mode
+					&& dsh.sessions.get(room.id)?.place === 'ws-current' && opened.at(-1) === room.id
+					&& localStorage.getItem(ws.__test.SELECTED_ROOM_KEY) === room.id && !!cq('[data-vssaros-room="' + room.id + '"]') && !cq('[data-vssaros-bots-new]'));
+			}
+			const stopRoom = (await runtime.list()).find(r => r.name === '手动建群');
+			if (stopRoom) {
+				const activeRound = { roomId: stopRoom.id, callId: 'ui-stop-round', status: 'replying', done: false, startedAt: Date.now(), speaking: ['Coder'], busy: [], replies: [], approvals: [], asks: [], events: [] };
+				const stopItems = activity => ws.__test.roomMenuItems(stopRoom, false, activity).filter(it => it.act === 'cancel');
+				eq('⑨ 未运行群没有停止本轮菜单', stopItems([]).length, 0);
+				eq('⑨ 正在回答/后台成员仍运行时都有停止本轮菜单', [stopItems([activeRound]).length, stopItems([{ ...activeRound, status: 'done', done: true, speaking: [], busy: ['Coder'] }]).length], [1, 1]);
+				eq('⑨ 已完成且无后台成员群没有停止本轮菜单', stopItems([{ ...activeRound, status: 'done', done: true, speaking: [], busy: [] }]).length, 0);
+				const errors = [];
+				await ws.__test.roomMenuAction('cancel', stopRoom, false, { post: async () => { throw new Error('测试停止被拒绝'); }, say: (text, kind) => errors.push([text, kind]), reload: () => fail('⑨ 停止失败不该刷新为成功') });
+				truthy('⑨ 停止失败原文就地可见，不假报成功', errors.length === 1 && errors[0][1] === 'error' && /测试停止被拒绝/.test(errors[0][0]));
+				await act(async () => { window.dispatchEvent(new window.CustomEvent(ws.__test.GROUP_PROGRESS_EVENT, { detail: { schema: 1, active: [activeRound] } })); await tick(30); });
+				await mouse(cq('[data-vssaros-room="' + stopRoom.id + '"]'), 'contextmenu');
+				const stopButton = cq('[data-vssaros-room-menu] [data-act="room-cancel"]');
+				truthy('⑨ 真React活动群右键出现停止本轮入口', !!stopButton && /停止本轮/.test(stopButton.textContent || ''));
+				if (stopButton) {
+					await mouse(stopButton, 'mousedown');
+					await settle(60);
+					eq('⑨ 停止入口打真实roomsApi，以群id停止本轮及后台（不限制callId）', cancelRequests.at(-1), { action: 'cancel', id: stopRoom.id });
+					truthy('⑨ 停止成功关闭菜单并显示反馈', !cq('[data-vssaros-room-menu]') && /已停止本轮/.test(host.textContent || ''));
+				}
+				await act(async () => { window.dispatchEvent(new window.CustomEvent(ws.__test.GROUP_PROGRESS_EVENT, { detail: { schema: 1, active: [] } })); await tick(20); });
+			}
+			workspaces = { items: [] };
+			if (await openForm()) {
+				await typeName('工作区订阅尚未回调');
+				await click('[data-act="members-all"]');
+				const before = createRequests.length;
+				await click('[data-act="new-submit"]');
+				truthy('⑧ 提交时重读实时工作区，订阅未回调也禁止盲建', createRequests.length === before && /工作区/.test(cq('[data-vssaros-bots-new-error]')?.textContent || ''));
+				await click('[data-act="new-cancel"]');
+			}
+			await act(async () => { for (const listener of workspaceListeners) { listener(); } await tick(30); });
+			if (await openForm()) {
+				await typeName('没有工作区');
+				await click('[data-act="members-all"]');
+				const before = createRequests.length;
+				await click('[data-act="new-submit"]');
+				truthy('⑧ 没有工作区就地报错，禁止盲建', createRequests.length === before && /工作区/.test(cq('[data-vssaros-bots-new-error]')?.textContent || ''));
+			}
+		}
+	} finally {
+		if (gate) { gate.resolve(); }
+		await act(async () => { createRootUI.unmount(); await tick(10); });
+		host.remove();
+		globalThis.fetch = savedFetch;
+		await runtime.close?.();
+		rmSync(createDir, { recursive: true, force: true });
+		if (savedSelected === null) { localStorage.removeItem(ws.__test.SELECTED_ROOM_KEY); }
+		else { localStorage.setItem(ws.__test.SELECTED_ROOM_KEY, savedSelected); }
+	}
+}
+
 if (problems.length) {
 	console.log(`\n✗ check-bots-rooms：${problems.length} 项失败`);
 	process.exit(1);
 }
-console.log('\n✓ check-bots-rooms：主管建群 ⇒ Bots 页签群行（打开 / 7 项菜单 / 改名 / 设置 / 隐藏 / 删除）全部通过');
+console.log('\n✓ check-bots-rooms：主管建群 ⇒ Bots 页签群行（打开 / 7 项菜单 / 改名 / 设置 / 隐藏 / 删除）+ 切 bot 零创建 / 多会话模型 / 真组件交互全部通过');
 process.exit(0);

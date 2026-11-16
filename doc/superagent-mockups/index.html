@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SuperAgent 工作台重构 · Mockup 方案对比</title>
+<style>
+:root{--bg:#0E1524;--panel:#16213A;--card:#1B2942;--line:rgba(255,255,255,.12);--fg:#F1F5F9;--muted:#A6B6CF;--dim:#7C8EAA;--blue:#3B82F6;--cyan:#22D3EE;--green:#34D399;--amber:#FBBF24;--violet:#A78BFA;--r:12px;--mono:ui-monospace,Consolas,monospace}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.6}
+body{background-image:radial-gradient(1000px 420px at 20% -12%,rgba(34,211,238,.1),transparent 70%),radial-gradient(800px 380px at 88% 0%,rgba(59,130,246,.12),transparent 70%)}
+a{color:inherit;text-decoration:none}button{cursor:pointer;font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--cyan);outline-offset:3px}
+.wrap{max-width:1440px;margin:0 auto;padding:0 22px 60px}
+header{padding:38px 0 24px;border-bottom:1px solid var(--line)}
+.eyebrow{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--cyan)}
+h1{font-size:30px;font-weight:650;margin:10px 0 8px;letter-spacing:-.01em}
+header p{margin:0;color:var(--muted);max-width:820px}
+header .meta{margin-top:14px;font-size:12px;color:var(--dim);display:flex;gap:16px;flex-wrap:wrap}
+h2{font-size:16px;font-weight:650;margin:34px 0 14px}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px 17px;cursor:pointer;transition:border-color .2s,transform .2s,background .2s}
+.card:hover{border-color:rgba(255,255,255,.28);transform:translateY(-2px)}
+.card.on{border-color:var(--c);background:linear-gradient(180deg,rgba(255,255,255,.05),transparent 65%),var(--card);box-shadow:0 0 0 2px color-mix(in srgb,var(--c) 25%,transparent)}
+.card .letter{font-family:var(--mono);font-size:11px;color:var(--c);letter-spacing:.1em}
+.card h3{margin:8px 0 4px;font-size:17px;font-weight:650}
+.card .tagline{color:var(--muted);font-size:12px;min-height:38px}
+.card ul{margin:12px 0 0;padding:0;list-style:none;font-size:11px;color:var(--dim);line-height:1.9}
+.card ul li::before{content:"—";margin-right:6px;color:var(--c)}
+.card .pick{display:inline-block;margin-top:12px;font-size:11px;border:1px solid var(--line);border-radius:999px;padding:3px 10px;color:var(--muted)}
+.card.on .pick{border-color:var(--c);color:var(--c)}
+.previewbar{display:flex;align-items:center;gap:10px;margin:26px 0 10px;flex-wrap:wrap}
+.previewbar .label{font-size:12px;color:var(--muted);margin-right:6px}
+.switch{border:1px solid var(--line);background:var(--panel);border-radius:9px;min-height:40px;padding:8px 14px;font-size:12px;color:var(--muted)}
+.switch:hover{border-color:rgba(255,255,255,.3);color:var(--fg)}
+.switch.on{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:600}
+.open{margin-left:auto;font-size:12px;color:var(--cyan);border-bottom:1px solid rgba(34,211,238,.5);padding-bottom:2px}
+.open:hover{color:#fff}
+.frame{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:8px;box-shadow:0 20px 60px rgba(0,0,0,.35)}
+.frame iframe{width:100%;height:760px;border:0;border-radius:8px;background:#fff;display:block}
+.hint{font-size:11px;color:var(--dim);margin-top:10px}
+table{width:100%;border-collapse:collapse;font-size:12px;background:var(--card);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+th,td{text-align:left;padding:11px 13px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:500;font-size:11px;letter-spacing:.05em;text-transform:uppercase;background:rgba(255,255,255,.03)}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover td{background:rgba(255,255,255,.025)}
+td:first-child{color:var(--muted);font-weight:600;white-space:nowrap}
+.yes{color:var(--green)}.no{color:var(--dim)}
+.constraints{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:12px}
+.rule{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:12px 14px;font-size:12px;color:var(--muted)}
+.rule b{color:var(--amber);display:block;margin-bottom:3px;font-size:11px;letter-spacing:.06em}
+.foot{margin-top:30px;border-top:1px solid var(--line);padding-top:16px;font-size:11px;color:var(--dim);line-height:1.9}
+@media(max-width:1100px){.cards{grid-template-columns:repeat(2,1fr)}.constraints{grid-template-columns:1fr}.frame iframe{height:620px}}
+@media(max-width:640px){.cards{grid-template-columns:1fr}.wrap{padding:0 14px 40px}h1{font-size:24px}.frame iframe{height:560px}table{display:block;overflow-x:auto}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">SuperAgent Workbench · UI Refactor</div>
+    <h1>工作台重构 · 4 套 Mockup 方案</h1>
+    <p>同一份真实信息架构与示例数据，四种截然不同的布局与视觉语言。点上方卡片或下方切换按钮即可预览；每套都是独立、自包含的静态 HTML，可直接单独打开。</p>
+    <div class="meta"><span>基线版本 0.1.118</span><span>数据为示例，未接入运行时</span><span>无外部依赖 · 可离线打开</span><span>均已适配 375 / 768 / 1024 / 1440px</span></div>
+  </header>
+
+  <h2>选择方案</h2>
+  <div class="cards" id="cards">
+    <article class="card on" data-key="a" style="--c:var(--blue)"><span class="letter">A / COMMAND DECK</span><h3>指挥台</h3><div class="tagline">深色、数据密集、KPI + 双列。信息一眼看全，适合长时间挂着监控。</div><ul><li>深色 #0F172A · 蓝色主强调</li><li>4 个 KPI + 步骤表格 + 实时事件流</li><li>等宽字体数字，运维/IDE 氛围</li></ul><span class="pick">当前预览</span></article>
+    <article class="card" data-key="b" style="--c:var(--amber)"><span class="letter">B / CALM FLOW</span><h3>静流</h3><div class="tagline">纸感浅色、单列阅读流。按「需要你决定 → 正在发生 → 今日概览」组织。</div><ul><li>米白 #FDFBF7 · 衬线标题</li><li>大量留白、无阴影无渐变</li><li>最克制，适合只看待办的人</li></ul><span class="pick">点此预览</span></article>
+    <article class="card" data-key="c" style="--c:var(--cyan)"><span class="letter">C / SPLIT WORKSPACE</span><h3>分栏工作区</h3><div class="tagline">已完善：6 个页签 × 33 个状态。左侧竖导航 + 决策队列 + 常驻上下文列，桌面端 IDE 式操作。</div><ul><li>全页签全状态：正常/空/加载/异常/暂停</li><li>明暗主题可切换，卡片联动右侧上下文</li><li><a href="c-index.html" style="color:var(--cyan);border-bottom:1px solid">打开状态矩阵 ↗</a></li></ul><span class="pick">点此预览（完整版）</span></article>
+    <article class="card" data-key="d" style="--c:var(--violet)"><span class="letter">D / STATUS BOARD</span><h3>状态看板</h3><div class="tagline">五列看板 + 筛选 pills。按状态推进，来源用色条区分。</div><ul><li>浅灰底 · 白卡 · 状态色</li><li>待确认 / 需处理 / 进行中 / 等待 / 完成</li><li>最贴近项目管理的 mental model</li></ul><span class="pick">点此预览</span></article>
+  </div>
+
+  <div class="previewbar">
+    <span class="label">预览：</span>
+    <button class="switch on" data-key="a">A 指挥台</button><button class="switch" data-key="b">B 静流</button><button class="switch" data-key="c">C 分栏工作区</button><button class="switch" data-key="d">D 状态看板</button>
+    <a class="open" id="open" href="a-command-deck.html" target="_blank" rel="noopener">在新窗口打开当前方案 ↗</a>
+  </div>
+  <div class="frame"><iframe id="frame" src="a-command-deck.html" title="工作台 mockup 预览" loading="lazy"></iframe></div>
+  <p class="hint">预览里的「同意并开工」、搜索过滤、页签切换、明暗切换都是演示交互，不写任何数据。方案 C 的右侧列是主区内常驻信息列，没有打开/收起按钮。</p>
+
+  <h2>横向对比</h2>
+  <table>
+    <thead><tr><th>维度</th><th>A 指挥台</th><th>B 静流</th><th>C 分栏工作区</th><th>D 状态看板</th></tr></thead>
+    <tbody>
+      <tr><td>信息密度</td><td>最高（表格 + KPI + 事件流）</td><td>最低（单列阅读）</td><td>中高（队列 + 上下文联动）</td><td>中（卡片分列）</td></tr>
+      <tr><td>视觉语言</td><td>深色数据仪表盘</td><td>纸感 / 编辑式排版</td><td>IDE 式分栏</td><td>轻量看板</td></tr>
+      <tr><td>明暗</td><td>固定深色</td><td>固定浅色</td><td class="yes">可切换</td><td>固定浅色</td></tr>
+      <tr><td>主导航</td><td>顶部横向页签</td><td>顶部文字下划线</td><td>左侧竖导航</td><td>顶部横向页签</td></tr>
+      <tr><td>找「要我做的事」</td><td>右上「需要你处理」+ KPI</td><td class="yes">第 01 组直接置顶</td><td>左列决策队列</td><td>第 2 列「需要你处理」</td></tr>
+      <tr><td>看执行细节</td><td class="yes">步骤表格最完整</td><td>紧凑表格</td><td>右侧上下文常驻</td><td>卡片内进度条</td></tr>
+      <tr><td>适合谁</td><td>盯着多个工单的运维/负责人</td><td>只想快速清空待办</td><td>在 IDE 里长时间办公</td><td>按状态推进的团队协作</td></tr>
+      <tr><td>相对现状改动量</td><td>中（重排概况页）</td><td>大（换版式语言）</td><td>最大（换整体骨架）</td><td>中（概况改列式）</td></tr>
+      <tr><td>主题令牌沿用</td><td>需新增深色覆盖层</td><td>沿用浅色令牌 + 墨色</td><td class="yes">沿用 --dsw-alias-* 变量</td><td class="yes">沿用浅色令牌</td></tr>
+    </tbody>
+  </table>
+
+  <h2>所有方案共同遵守的既有约束</h2>
+  <div class="constraints">
+    <div class="rule"><b>不出现右侧概况侧栏</b>已禁用 `SIDE_PANEL_ENABLED`。C 的右侧是主区内常驻「上下文」列，不是可弹出的概况面板，也没有打开/收起/拖宽按钮。</div>
+    <div class="rule"><b>不出现头部两个按钮</b>「打开概况面板」与「展开/收起侧边栏」已移除；头部只保留搜索与术语表。</div>
+    <div class="rule"><b>不出现 @SuperAgent 候选</b>客户端注册已停用；mockup 里不含任何 @ 提及入口。</div>
+    <div class="rule"><b>不出现隐藏页签与来源卡</b>页签仅「概况 / 来源 / 触发 / 评估 / 执行 / 设置」；来源示例仅飞书 / TAPD / GitHub，无「SuperAgent 主管」「P4」。</div>
+    <div class="rule"><b>不出现预算上限 UI</b>只显示「已消耗 N tokens」；没有「N / M tokens」「预算用完」「追加一半预算」。</div>
+    <div class="rule"><b>不出现团队工作流区块</b>该区块已从面板移除；技能建议、bot 草案、CL 审核等真实卡片保留。</div>
+  </div>
+
+  <div class="foot">
+    文件：<a href="c-workbench.html" style="color:var(--cyan)">c-workbench.html</a> · <a href="c-index.html" style="color:var(--cyan)">c-index.html</a> · <a href="a-command-deck.html" style="color:var(--cyan)">a-command-deck.html</a> · <a href="b-calm-flow.html" style="color:var(--cyan)">b-calm-flow.html</a> · <a href="c-split-workspace.html" style="color:var(--cyan)">c-split-workspace.html</a> · <a href="d-status-board.html" style="color:var(--cyan)">d-status-board.html</a><br>
+    方案 C 另有 <a href="c-index.html" style="color:var(--cyan)">页签 × 状态矩阵</a> 与 <a href="c-split-workspace.html" style="color:var(--cyan)">C 初稿（单页概念）</a>；完整版为 <a href="c-workbench.html" style="color:var(--cyan)">c-workbench.html</a>，支持 <code>?tab=&amp;state=&amp;theme=</code> 直达任意状态。<br>示例数据取自当前工作台的真实字段：待确认组队 v3 / 同意并开工 / 团队步骤进度 2-of-5 / 已消耗 tokens / 需要你处理（允许一次、允许并记住、拒绝）/ 待你审核的提交 / 待确认的技能建议 / 待你批准建 bot / 过去 24 小时 / 执行器 / 模型用量（24 小时）/ 来源与系统问题 / 决策原因 explicitFastTrack。<br>
+    选定方案后我可以直接落到 `dev/src/client/` 的对应组件与 `client.css`，并同步测试契约、build、版本与真机产物。
+  </div>
+</div>
+<script>
+const files={a:'a-command-deck.html',b:'b-calm-flow.html',c:'c-workbench.html',d:'d-status-board.html'};
+const frame=document.getElementById('frame'),open=document.getElementById('open');
+function pick(key){
+  if(!files[key])return;
+  frame.src=files[key];open.href=files[key];
+  document.querySelectorAll('.card').forEach(c=>{const on=c.dataset.key===key;c.classList.toggle('on',on);c.querySelector('.pick').textContent=on?'当前预览':'点此预览'});
+  document.querySelectorAll('.switch').forEach(b=>b.classList.toggle('on',b.dataset.key===key));
+}
+document.querySelectorAll('.card').forEach(c=>c.addEventListener('click',()=>pick(c.dataset.key)));
+document.querySelectorAll('.switch').forEach(b=>b.addEventListener('click',()=>pick(b.dataset.key)));
+</script>
+</body>
+</html>

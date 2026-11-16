@@ -25,7 +25,7 @@
  * 为什么 shim 必须用 `node.path`（Host 自己的解释器）而**不能**用 Electron：
  *   实测 Electron 39 的 node 跑 pnpm `--version` 没问题，但真实 `pnpm install` 会崩。
  *   而"别人机器没有 node"这件事由 `dshNodeInstaller` 兜着：没 node 就跑不了 dsh ⇒
- *   Host 起来时 `node.path` **一定**是可用解释器（门槛 22.19+，满足 pnpm 11 的 ≥22.13）✓。
+ *   Host 起来时 `node.path` **一定**是可用解释器（门槛 >=24.9.0，满足 pnpm 11 的 ≥22.13）✓。
  *
  * 运行：node src/vs/sessions/contrib/dshHarness/test/common/run-all-common-tests.mjs dshBundledPnpm
  */

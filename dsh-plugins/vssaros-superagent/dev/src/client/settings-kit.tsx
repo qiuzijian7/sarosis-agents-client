@@ -13,6 +13,8 @@ import { Hint, LoadState } from './widgets.tsx'
 
 /** Parse a numeric input string, returning `null` when empty so the server rejects blank required numbers instead of coercing to 0. */
 export const numberOf = (text: string): number | null => text.trim() ? Number(text) : null
+/** ★ 2026-11-11: sentinel for a `chooseFrom` dropdown's "add new" option. Never written into the Source config. */
+export const ADD_NEW_VALUE = '__new__'
 interface SettingsData { settings: SettingsView; reload: () => Promise<void> }
 const SettingsContext = createContext<SettingsData | undefined>(undefined)
 export function useSettings(): SettingsData {
@@ -54,13 +56,13 @@ export function Fields({ disabled, children }: { disabled: boolean; children: Re
   return <fieldset ref={set} className="dt-fieldset" disabled={disabled}>{children}</fieldset>
 }
 export function Field({ label, hint, note, action,
-  children }: { label: string; hint?: string | undefined; note?: ReactNode; action?: ReactNode; children: ReactElement<{ id?: string }> }) {
+  children }: { label: string; hint?: string | undefined; note?: ReactNode; action?: ReactNode; children: ReactElement<{ id?: string; 'aria-describedby'?: string }> }) {
   const id = useId()
-  // The action is a sibling of the control, so `cloneElement` still gives the input the label's id.
+  const control = cloneElement(children, { id, ...(note ? { 'aria-describedby': [children.props['aria-describedby'], `${id}-note`].filter(Boolean).join(' ') } : {}) })
   return <div className="dt-field">
     <span className="dt-field-head"><label htmlFor={id}>{label}</label>{hint && <InfoTip text={hint} />}</span>
-    {action ? <div className="dt-cli-row">{cloneElement(children, { id })}{action}</div> : cloneElement(children, { id })}
-    {note && <small>{note}</small>}
+    {action ? <div className="dt-cli-row">{control}{action}</div> : control}
+    {note && <small id={`${id}-note`}>{note}</small>}
   </div>
 }
 export function SwitchRow({ label, hint, checked,
@@ -71,6 +73,15 @@ export function SwitchRow({ label, hint, checked,
   </div>
 }
 type RoleModel = Settings['eval']['model']
+/**
+ * ★ 2026-11-13：与 dsh 聊天框的模型选择器用同一份数据源与同一套选择逻辑。
+ * 聊天框（`dsh-client-ui-model-selection` 的 `ModelSelect`）从 `sessionController.modelCatalog()`
+ * 取 `groups / default / failures / routableProviders`，按 provider → model → effort 逐级挑选；
+ * 本设置页的 `GET models` 返回的就是同一份 `ModelCatalog`（`app/http.ts`、`app/api.ts`）。
+ * 官方组件挂在 composer 的 slot 上、写入会话与全局 DSH 默认，不能跨构建边界复用，
+ * 因此这里只复刻「目录驱动、可继承默认、不写死任何 provider/model」的部分：
+ * 值全部来自 `catalog`，空项写回 `null`（= 继承 DSH 默认），绝不调用 selectModel/saveSelection。
+ */
 export function ModelField({ id, value, onChange }: { id: string; value: RoleModel; onChange: (next: RoleModel) => void }) {
   const { t, call } = usePanel()
   const [catalog, setCatalog] = useState<ApiResponse<'GET models'>>()
@@ -79,29 +90,50 @@ export function ModelField({ id, value, onChange }: { id: string; value: RoleMod
   const current = { provider: value?.provider ?? '', model: value?.model ?? '', effort: value?.reasoningEffort ?? '' }
   const set = (next: Partial<typeof current>) => {
     const { provider, model, effort } = { ...current, ...next }
-    onChange(provider.trim() || model.trim() || effort.trim() ? { provider, model, ...effort ? { reasoningEffort: effort } : {} } : null)
+    // A role model needs BOTH a provider and a model; a partial pair would fail RoleModelSchema.
+    onChange(provider.trim() && model.trim() ? { provider, model, ...effort.trim() ? { reasoningEffort: effort } : {} } : null)
   }
-  const models = catalog?.groups.find(group => group.id === current.provider.trim())?.models ?? []
+  const groups = catalog?.groups ?? []
+  const models = groups.find(group => group.id === current.provider.trim())?.models ?? []
+  const efforts = models.find(model => model.id === current.model.trim())?.reasoning?.efforts ?? []
   const fallback = catalog?.default
+  // ★ 2026-11-13：留空不是「已配置」，把继承状态说清楚；默认 route 明确不可用时再给一条告警。
+  const inherit = !current.provider.trim() && !current.model.trim()
+  const unusable = !!catalog && (catalog.failures?.some(f => f.id === catalog.default.provider) ||
+    (Array.isArray(catalog.routableProviders) && catalog.routableProviders.length > 0 &&
+      !catalog.routableProviders.includes(catalog.default.provider)))
+  /** Options come from the live catalog; a stored value outside it is kept so a save cannot silently erase it. */
+  const options = (values: readonly { id: string; name: string }[], selected: string, empty: string) => <>
+    <option value="">{empty}</option>
+    {selected && !values.some(entry => entry.id === selected) ? <option value={selected}>{selected}</option> : null}
+    {values.map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+  </>
+  const pick = (name: keyof typeof current, label: string, empty: string,
+    values: readonly { id: string; name: string }[], choose: (next: string) => void) => <Field label={label}>
+    <select className="dt-select" value={current[name]} onChange={event => choose(event.target.value)}>
+      {options(values, current[name], empty)}
+    </select>
+  </Field>
+  /** Catalog unavailable (GET failed): fall back to manual text entry rather than locking the field. */
   const input = (name: keyof typeof current, label: string, placeholder: string) => <Field label={label}>
-    <Input list={`${id}-${name}s`} spellCheck={false} placeholder={placeholder} value={current[name]}
+    <Input spellCheck={false} placeholder={placeholder} value={current[name]}
       onChange={event => set({ [name]: event.target.value })} />
   </Field>
+  const chooseProvider = (next: string) => set({ provider: next, model: groups.find(group => group.id === next)?.models[0]?.id ?? '', effort: '' })
+  const chooseModel = (next: string) => set({ model: next, effort: '' })
   return <div className="dt-model">
-    <Hint>{fallback ? t('defaultModel', { model: `${fallback.provider} / ${fallback.model}${fallback.reasoningEffort
-      ? ` · ${fallback.reasoningEffort}` : ''}` }) : t('defaultModelUnavailable')}</Hint>
+    {inherit ? <Hint>{t('modelNotConfigured', { model: fallback ? `${fallback.provider} / ${fallback.model}` : '—' })}</Hint>
+      : <Hint>{fallback ? t('defaultModel', { model: `${fallback.provider} / ${fallback.model}${fallback.reasoningEffort ? ` · ${fallback.reasoningEffort}` : ''}` }) : t('defaultModelUnavailable')}</Hint>}
+    {unusable && <p className="dt-error" role="alert">{t('defaultModelUnusable')}</p>}
     {error && <p className="dt-error">{t('modelCatalogError', { error })}</p>}
     <div className="dt-grid3">
-      {input('provider', t('modelProvider'), t('modelInherit'))}{input('model', t('modelName'), t('modelInherit'))}{input('effort',
-        t('modelEffort'), t('modelEffortDefault'))}
+      {groups.length
+        ? <>{pick('provider', t('modelProvider'), t('modelInherit'), groups, chooseProvider)}
+          {pick('model', t('modelName'), t('modelInherit'), models, chooseModel)}
+          {pick('effort', t('modelEffort'), t('modelEffortDefault'), efforts, next => set({ effort: next }))}</>
+        : <>{input('provider', t('modelProvider'), t('modelInherit'))}{input('model', t('modelName'), t('modelInherit'))}{input('effort',
+          t('modelEffort'), t('modelEffortDefault'))}</>}
     </div>
-    <datalist id={`${id}-providers`}>{catalog?.groups.map(group => <option key={group.id}
-      value={group.id}>{group.name}</option>)}</datalist>
-    <datalist id={`${id}-models`}>{models.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}</datalist>
-    <datalist id={`${id}-efforts`}>
-      {(models.find(model => model.id === current.model.trim())?.reasoning?.efforts ?? []).map(effort => <option key={effort.id}
-        value={effort.id}>{effort.name}</option>)}
-    </datalist>
   </div>
 }
 
@@ -183,7 +215,8 @@ function RowsField({ field, value, saved, onChange, labels, refreshLabels }: {
     } catch (failure) { notify(t('labelsFailed', { error: errorText(failure) })) }
   })
   const label = localized(t, field.label), hint = localized(t, field.hint)
-  const rows = Array.isArray(value) ? value as Row[] : []
+  // An unset rows field shows its declared defaults (the schema's runtime defaults); an explicit [] stays empty.
+  const rows = Array.isArray(value) ? value as Row[] : (field.defaults ?? []) as Row[]
   const set = (index: number, row: Row) => onChange(rows.map((item, position) => position === index ? row : item))
   const key = field.columns[0]!
   const savedKeys = new Set((Array.isArray(saved) ? saved as Row[] : []).map(row => row[key.key]))
@@ -261,13 +294,17 @@ function RowsField({ field, value, saved, onChange, labels, refreshLabels }: {
     </li>)}</ul>}
   </div>
 }
-export function SourceField({ field, value, saved, fact, onChange, labels, refreshLabels, action, detail }: {
+export function SourceField({ field, value, saved, fact, onChange, labels, refreshLabels, action, detail,
+  onAddNew, addNewOpen }: {
   field: FieldSpec; value: unknown; saved: unknown; fact: Localized | string | undefined; onChange: (next: unknown) => void
   labels: Record<string, string>
   refreshLabels?: () => Promise<string[]>
   /** VsSaros addition: controls rendered to the right of a text input, and a result area below the field. */
   action?: ReactNode
   detail?: ReactNode
+  /** ★ 2026-11-11: the card opens an "add new app" form instead of storing the sentinel value. */
+  onAddNew?: () => void
+  addNewOpen?: boolean
 }) {
   const { t, navigate } = usePanel()
   const label = localized(t, field.label), hint = localized(t, field.hint)
@@ -282,19 +319,23 @@ export function SourceField({ field, value, saved, fact, onChange, labels, refre
         onChange={event => onChange(event.target.value === '' ? '' : Number(event.target.value))} />
     </Field>
     case 'text': {
-      // ★ 2026-11-10：字段可声明「不要空占位项」与「空配置时的默认选中值」。
-      //   飞书 App ID 用它们移除「留空 = lark-cli 当前 profile」并默认选中随包内置应用；
+      // ★ 2026-11-11：字段可声明 noEmptyOption（不要空占位项）。
+      //   飞书 App ID 用它去掉「未配置 / 请先配置」占位项，只列真实应用与末尾的「+ 添加新应用」；
       //   TAPD 等其它 chooseFrom 字段不声明 ⇒ 行为完全不变。
-      const selected = String(value ?? '') || String(field.defaultValue ?? '')
+      /* ★ 2026-11-11: while the "add new app" form is open the select stays on that option,
+         but the sentinel never reaches the draft config. */
+      const selected = addNewOpen ? ADD_NEW_VALUE : (String(value ?? '') || String(field.defaultValue ?? ''))
       return <>
-        <Field label={label} hint={hint} note={localized(t, fact)} action={action}>
+        <Field label={label} hint={hint} note={localized(t, field.note) || localized(t, fact)} action={action}>
           {field.chooseFrom
-            ? <select className="dt-select" value={selected} onChange={event => onChange(event.target.value)}>
+            ? <select className="dt-select" value={selected}
+              onChange={event => event.target.value === ADD_NEW_VALUE ? onAddNew?.() : onChange(event.target.value)}>
               {!field.noEmptyOption && <option value="">{field.choose ? localized(t, field.choose) : localized(t, field.label)}</option>}
-              {selected && !labels[`${field.chooseFrom}:${selected}`]
+              {selected && selected !== ADD_NEW_VALUE && !labels[`${field.chooseFrom}:${selected}`]
                 ? <option value={selected}>{selected}</option> : null}
               {Object.entries(labels).filter(([option]) => option.startsWith(field.chooseFrom + ':')).sort(byName)
                 .map(([option, name]) => <option key={option} value={option.slice(field.chooseFrom!.length + 1)}>{name}</option>)}
+              {field.addNew && onAddNew ? <option value={ADD_NEW_VALUE}>{localized(t, field.addNew)}</option> : null}
             </select>
             : field.choose && Object.keys(labels).length
               ? <select className="dt-select" value={String(value ?? '')} onChange={event => onChange(event.target.value)}>

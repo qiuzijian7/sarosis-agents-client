@@ -26,6 +26,7 @@ import { readAliases } from './aliases.js'
 import { reviewCommand, reviewStatusTool, reviewTurnCounter, writeGapCounter, enqueueSuggestion, suggestToolDefinition } from './review.js'
 import { skillManageTool } from './skills.js'
 import { installApi } from './api.js'
+import { attachDreamSchedule, createDreamController } from './dream/index.js'
 import { deriveMemoryScope } from './workspace-scope.js'
 import { workspaceKeyOf } from './store.js'
 import { installSkillsManager } from './skills-manager.js'
@@ -297,6 +298,14 @@ export const DEFAULTS = {
   // 节点）。存储 <memoryDir>/canvas/boards.json（整板原子写 + rev 乐观锁
   // 防多会话并发覆盖）。默认关（与其他独立模块一致）。
   canvasEnabled: false,
+  // Dreaming（带外整理）：默认关 + 仅报告。四个键全部可在会话「设置」页改，
+  // 且都由 lib/dream/index.js 的 dreamOptionsOf() 消费（不谎报可写范围）。
+  // 不动 MemoryQueueView.tsx / lib/client.js：那是另一套「待确认建议」面板。
+  dreamEnabled: false,
+  dreamApprovalMode: 'report', // report = 禁止 apply；approved = 允许显式 apply
+  dreamGroupSize: 20,          // 官方经验值：约 20 份转录一组
+  dreamMaxFiles: 500,          // 单轮导出上限，防一次性灌爆预算
+  dreamRefuterModel: null,     // null = 继承会话模型；填模型名则 refuter 独立用小模型复核
 }
 
 /** Keys the Web UI may change at runtime (persisted to stateFile). */
@@ -316,7 +325,7 @@ export const RUNTIME_KEYS = [
   'advisorPanelEnabled', 'advisorImmuneTurns', 'advisorSteerSeverities',
   'advisorInfoInject',
   'advisorMaxMessages', 'advisorMaxQueued', 'advisorCallTimeoutMs',
-  'canvasEnabled',
+  'canvasEnabled', 'dreamEnabled', 'dreamApprovalMode', 'dreamGroupSize', 'dreamMaxFiles', 'dreamRefuterModel',
 ]
 
 /** Validate one runtime-config patch value against its key. */
@@ -359,6 +368,7 @@ export function validateRuntimePatch(key, value) {
     case 'sessionImageQueryEnabled':
     case 'syncEnabled':
     case 'canvasEnabled':
+    case 'dreamEnabled':
       if (typeof value !== 'boolean') throw new Error(`vssaros-memory: ${key} 必须是布尔值`)
       return
     case 'reviewInterval':
@@ -425,6 +435,26 @@ export function validateRuntimePatch(key, value) {
         throw new Error('vssaros-memory: botMemoryCharLimit 必须是 >= 0 的整数（0 = 不注入）')
       }
       return
+    case 'dreamApprovalMode':
+      if (value !== 'report' && value !== 'approved') {
+        throw new Error('vssaros-memory: dreamApprovalMode 必须是 "report" 或 "approved"')
+      }
+      return
+    case 'dreamGroupSize':
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 50) {
+        throw new Error('vssaros-memory: dreamGroupSize 必须是 1..50 的整数')
+      }
+      return
+    case 'dreamMaxFiles':
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 500) {
+        throw new Error('vssaros-memory: dreamMaxFiles 必须是 1..500 的整数')
+      }
+      return
+    case 'dreamRefuterModel':
+      if (value !== null && (typeof value !== 'string' || value.trim() === '' || value.length > 128)) {
+        throw new Error('vssaros-memory: dreamRefuterModel 必须是 null（继承会话模型）或非空字符串（超长上限 128 字符）')
+      }
+      return
     default:
       throw new Error(`vssaros-memory: 不可运行的配置项 "${key}"`)
   }
@@ -452,7 +482,7 @@ const POSITIVE_NUMBER_KEYS = [
   'snapshotOrder', 'reviewInterval', 'writeGuardThreshold', 'skillMaxBytes',
   'searchDocsCacheTtlMs', 'searchDocsTimeoutMs',
   'coiRetentionDays', 'coiTaskTimeoutMs', 'coiMaxLogBytes',
-  'advisorCallTimeoutMs',
+  'advisorCallTimeoutMs', 'dreamGroupSize', 'dreamMaxFiles',
 ]
 const BOOLEAN_KEYS = [
   'injectMemory', 'injectionScan', 'reviewEnabled', 'skillReviewEnabled', 'skillManageEnabled',
@@ -465,7 +495,7 @@ const BOOLEAN_KEYS = [
   'notifyEnabled', 'channelSendEnabled', 'broadcastImageEnabled',
   'sessionImageQueryEnabled', 'syncEnabled',
   'advisorEnabled', 'advisorPanelEnabled',
-  'canvasEnabled',
+  'canvasEnabled', 'dreamEnabled',
 ]
 const STRING_KEYS = [
   'toolName', 'suggestToolName', 'commandName', 'reviewMode', 'keyWriteMode',
@@ -529,6 +559,21 @@ export function resolveConfig(raw) {
   }
   if (config.keyWriteMode !== 'queue' && config.keyWriteMode !== 'direct') {
     throw new Error('vssaros-memory: keyWriteMode 必须是 "queue" 或 "direct"')
+  }
+  // Dream 静态配置校验（与 validateRuntimePatch 同规则，防损坏 state 绕过运行时校验）。
+  if (config.dreamApprovalMode !== 'report' && config.dreamApprovalMode !== 'approved') {
+    throw new Error('vssaros-memory: dreamApprovalMode 必须是 "report" 或 "approved"')
+  }
+  if (!Number.isInteger(config.dreamGroupSize) || config.dreamGroupSize < 1 || config.dreamGroupSize > 50) {
+    throw new Error('vssaros-memory: dreamGroupSize 必须是 1..50 的整数')
+  }
+  if (!Number.isInteger(config.dreamMaxFiles) || config.dreamMaxFiles < 1 || config.dreamMaxFiles > 500) {
+    throw new Error('vssaros-memory: dreamMaxFiles 必须是 1..500 的整数')
+  }
+  if (config.dreamRefuterModel !== null
+    && (typeof config.dreamRefuterModel !== 'string' || config.dreamRefuterModel.trim() === ''
+      || config.dreamRefuterModel.length > 128)) {
+    throw new Error('vssaros-memory: dreamRefuterModel 必须是 null 或非空字符串')
   }
   // MAJOR-4（复审）：Advisor 静态配置校验（与 validateRuntimePatch 同规则，
   // 防非法静态值/损坏 state 绕过运行时校验）
@@ -1957,6 +2002,25 @@ export function apply(ctx, rawConfig = {}) {
   }
   modelsCtrl.sync()
 
+  // P2-a：llm 适配器可能注册在应用根，隔离作用域的 ctx.llm 可能缺适配器
+  // （advisor/index.js:319-323 的 NO_ADAPTER 教训）⇒ root 优先 + 惰性读取。
+  // 只在使用时才取值，且 roles.js 会判 stream 是否存在，服务缺席即回落保守实现。
+  const getLlm = () => (ctx.llm ?? ctx.get?.('llm') ?? null)
+  // P1：Dream 定时任务可选订阅自建 vssarosScheduler，不读官方 schedule。
+  // 自建服务缺席 / 无 onFire 时安全降级为「仅手动预览」；开关每次触发时
+  // 读运行时值，所以不需要 applyRuntimePatch 里的 sync 联动。
+  if (config.memoryDir) {
+    attachDreamSchedule({
+      ctx,
+      getRuntime,
+      run: () => createDreamController({
+        memoryDir: config.memoryDir,
+        dshHome: dirname(config.memoryDir),
+        getRuntime, getLlm,
+      }).run({}),
+    })
+  }
+
   // 4. Web API: the settings panel's data surface (web-only service; the
   //    plugin still loads on surfaces without httpServer).
   ctx.inject(['webServer'], (webCtx) => {
@@ -1998,6 +2062,8 @@ export function apply(ctx, rawConfig = {}) {
     })
     webCtx.effect(() => installApi(webCtx, {
       store, archive, queue, todoStore, getRuntime, updateRuntime: applyRuntimePatch, resolveRevealTarget: resolveReveal, revealPath,
+      // P2-a：惰性 llm getter（服务缺席时 roles.js 自动回落保守实现）。
+      getLlm,
       config,
       getWorkspaceScope,
       // 共享别名存储实例（aliases.json 单实例：api 路由与 de_session rename

@@ -75,6 +75,7 @@ if (external) {
 }
 
 const files = {};
+files['workbench.plugin.json'] = JSON.stringify({ schemaVersion: 1, workbench: { title }, resources: {} }, null, 2) + '\n';
 
 files['package.json'] = JSON.stringify({
 	name: pkgName,
@@ -85,7 +86,7 @@ files['package.json'] = JSON.stringify({
 	main: './lib/index.js',
 	exports: { '.': './lib/index.js', './client': './lib/client.js' },
 	// `test/` 也进 files：包内自检要能跟着包发出去（否则装出去的人没得跑）
-	files: ['cordis.patch.yml', 'lib/', 'test/'],
+	files: ['cordis.patch.yml', 'lib/', 'test/', 'workbench.plugin.json'],
 	scripts: { check: `node ./test/run-${moduleName}-check.mjs` },
 	// ⚠ `dsh.bundle.patch` 是**激活入口**：没有它插件不会进运行时（且宿主不报错，纯静默）
 	dsh: { bundle: { patch: './cordis.patch.yml' }, client: { platform: 'web', inject: ['@vssaros/dsh-workbenches'] } },

@@ -21,10 +21,21 @@ it('says on the overview when DS Bot shares the Host, and how it reaches SuperAg
   for (const effect of ['secrets', 'images', 'skills'] as const) expect(hint.textContent).toContain(zh[`coexistEffect.${effect}`])
 })
 
+// ★ 2026-11-12（方案 C）：左导轨 + 主区「内容 + 常驻上下文」两列；不再有可弹出的概况侧栏。
+it('lays the workbench out as a rail of six pages beside a content column and a permanent context column', async () => {
+  await mount()
+  expect(all('.dt-rail [role="tab"]')).toHaveLength(6)
+  expect(document.querySelector('.dt-main-split')).not.toBeNull()
+  expect(document.querySelector('.dt-context')).not.toBeNull()
+  expect(document.querySelector('.dt-side')).toBeNull()
+  // 上下文列不得混进页面的 section 列表（overview 的 section 顺序契约仍按页内计算）。
+  expect(all('.dt-context .dt-section-title')).toHaveLength(0)
+})
+
 it('leads the overview with the pending Tickets, then problems, the last day and the Executor, each linking to its stage', async () => {
   await mount()
-  expect(tab(zh['tab.chat']).getAttribute('aria-selected')).toBe('true')
-  expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['对话', '来源', '触发', '评估', '执行', '设置'])
+  expect(tab(zh['tab.overview'])).toBeTruthy()
+  expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['概况', '来源', '触发', '评估', '执行', '设置'])
   expect(all('.dt-section-title').map(title => title.textContent)).toEqual(['待处理工单2', '系统问题2', '过去 24 小时详情 ›', '执行器详情 ›'])
   expect(all('.dt-cards .dt-ticket-stage').map(item => item.textContent)).toEqual(['待回答', '待处理失败'])
   expect(all('.dt-cards .dt-att-what').map(item => item.textContent)).toEqual(['飞书 来源异常', '评估未完成：这个文案好奇怪'])
@@ -221,7 +232,7 @@ it('answers a SuperAgent desk question in the app instead of opening a blank ext
   expect(button.tagName).toBe('BUTTON')
   expect(button.hasAttribute('disabled')).toBe(false)
   await click(button)
-  expect(tab(zh['tab.chat']).getAttribute('aria-selected')).toBe('true')
+  expect(tab(zh['tab.overview'])).toBeTruthy()
 })
 
 it('shows paused processing as a system problem with its resume action, and says so on the Policy records', async () => {
@@ -232,7 +243,7 @@ it('shows paused processing as a system problem with its resume action, and says
   expect(text()).toContain(zh.evalRecordsPaused)
   await click(zh.resumeWhere)
   expect(tab(zh['tab.execution']).getAttribute('aria-selected')).toBe('true')
-  await click(zh['tab.chat'])
+  await click(zh['tab.overview'])
   await click(find(zh.resumeProcessing, '.dt-att button'))
   await click(zh.confirm)
   expect(server.requests.find(request => request.path === 'executor/pause')).toMatchObject({ method: 'POST', body: { paused: false } })
@@ -307,7 +318,7 @@ it('says when no Source is on, an Eval is past its deadline or a message keeps f
   expect(text()).toContain('HTTP 502 from GitHub')
   await click(zh.actionOpenSources)
   expect(document.querySelector('.dt-settings-link[aria-current="page"]')?.textContent).toBe(zh['settingsGroup.source'])
-  await click(tab(zh['tab.chat']))
+  await click(tab(zh['tab.overview']))
   await click('评估超时未决定：#9 迟迟未决')
   expect(server.requests.some(request => request.path.startsWith('threads/github:9'))).toBe(true)
 })

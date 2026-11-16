@@ -28,6 +28,8 @@ const INDEX_SRC = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf
 const BUNDLE = readFileSync(HERE + '../lib/web/kbSideview.js', 'utf8');
 const INDEX = readFileSync(HERE + '../lib/index.js', 'utf8');
 const KB_CORE = readFileSync(HERE + '../lib/core/kb.js', 'utf8');
+// ★ 2026-11-12：总览主页（iframe）的点击发送端，用于钉住跨通道去重 id
+const HOME_PAGE = readFileSync(HERE + '../lib/homePage.js', 'utf8');
 // 组件源码：**中文在构建产物里是 \u 转义**的 ⇒ 文案类断言只能读源码（读不到就跳过，不误报）
 let KB_TSX = '';
 try { KB_TSX = readFileSync(HERE + '../../../src/vs/sessions/contrib/agentStudio/webview/src/kbSideview/index.tsx', 'utf8'); } catch { /* 独立包里没有源码 */ }
@@ -537,6 +539,50 @@ check('总览页签可关闭（✕），且切页签不会自动消失',
 	// 切文档页签时只收 设置/图谱/导图，必须保留 home
 	&& /setOpenViews\(o => \(\{ \.\.\.o, settings: false, graph: false, canvas: false \}\)\)/.test(KB_TSX)
 	&& !/setOpenViews\(\{ settings: false, graph: false, canvas: false, home: false \}\)/.test(KB_TSX));
+/*
+ * ★ 2026-11-12（真机连续两轮）：
+ *   ① 点卡片后白屏：applyFocus 旧版切到文档视图 + 关总览页签，但没有文档可显示。
+ *   ② 点卡片弹出两个 tip、左侧树没跳：一次点击经 postMessage + localStorage 两条通道
+ *      各调一次 applyFocus；而它用 onToggleOpen「切换」展开 ⇒ 两次 = 展开又收起，净零。
+ *   ⇒ 契约：去重 + 幂等展开 + 选中 + 滚动 + 单条 toast + 不切视图。
+ */
+const FOCUS_SEG = (() => {
+	const i = KB_TSX.indexOf('const applyFocus =');
+	return i < 0 ? '' : KB_TSX.slice(i, i + 1800);
+})();
+check('★ 点总览卡片：按 id 跨通道去重（否则两次处理互相抵消 / 双 toast）',
+	FOCUS_SEG.includes('focusSeenRef.current')
+	&& /seen\.key === key && Date\.now\(\) - seen\.at < 3000/.test(FOCUS_SEG)
+	&& /focusSeenRef\.current = \{ key, at: Date\.now\(\) \}/.test(FOCUS_SEG)
+	&& KB_TSX.includes('const focusSeenRef = useRef'));
+check('★ 点总览卡片：幂等展开（只 add 不 delete）+ 展开祖先 + 选中 + 滚动',
+	FOCUS_SEG.includes('findKbNode(noteTree, name) || findKbNode(libTree, name)')
+	&& /setOpenSet\(prev => \{/.test(FOCUS_SEG)
+	&& FOCUS_SEG.includes('for (const p of [...hit.ancestors, hit.path])')
+	&& !/onToggleOpen\?\.\(node\.path\)/.test(FOCUS_SEG)   // 旧「切换」写法必须消失
+	&& !/next\.delete\(/.test(FOCUS_SEG)                    // 幂等：绝不删
+	&& FOCUS_SEG.includes('setSelected([hit.path])')
+	&& FOCUS_SEG.includes('scrollIntoView')
+	&& KB_TSX.includes('function findKbNode('));
+check('★ 点总览卡片：只给一条 toast、不切空文档视图 / 不关总览页签',
+	(FOCUS_SEG.match(/showToast\(/g) || []).length === 2   // 成功一条 + 找不到一条（互斥分支）
+	&& !/setTab\('doc'\)/.test(FOCUS_SEG)
+	&& !/home:\s*false/.test(FOCUS_SEG)
+	&& FOCUS_SEG.includes('setTagFilter(null)'));
+check('★ 两条通道带同一个 id，且 iframe 不再自己弹定位 toast', (() => {
+	const i = HOME_PAGE.indexOf('el.onclick');
+	const seg = i < 0 ? '' : HOME_PAGE.slice(i, i + 1400);
+	return seg.includes("'kb-' + Date.now()")
+		&& /postMessage\(\{ source: 'kb-home', type: 'open-kb', kb: kb, id: id \}/.test(seg)
+		&& /JSON\.stringify\(\{ kb: kb, id: id, at: Date\.now\(\) \}\)/.test(seg)
+		&& /if \(!embedded\) \{ toast\(/.test(seg)
+		&& !/^\s*toast\('已在左侧定位/m.test(seg.replace(/if \(!embedded\) \{ toast\([^}]*\}/, ''));
+})());
+check('反向突变自证：旧版切视图 / 旧版双 toast 会被判据抓到', (() => {
+	const broken = FOCUS_SEG + "\nsetTab('doc'); setOpenViews(o => ({ ...o, home: false }));\nonToggleOpen?.(node.path);";
+	return /setTab\('doc'\)/.test(broken) && /onToggleOpen\?\.\(node\.path\)/.test(broken)
+		&& !/setTab\('doc'\)/.test(FOCUS_SEG) && !/onToggleOpen\?\.\(node\.path\)/.test(FOCUS_SEG);
+})());
 check('导图不再用整页覆盖层（旧的 canvasOpen 状态已移除）',
 	!KB_TSX.includes('data-kb-canvas-overlay') && !KB_TSX.includes('canvasOpen'));
 
@@ -564,8 +610,13 @@ check('编辑态收起大标题（把高度让给编辑器）',
 	/\{draft === null \? \(/.test(KB_TSX));
 check('完整设置（飞书）在 bundle 内实现并挂进设置页',
 	KB_TSX.includes('function KbFeishuSettings(') && KB_TSX.includes('<KbFeishuSettings />'));
-check('完整设置走插件端点（kb-settings / feishu-cli / feishu-sync / feishu-spaces）',
-	['kb-settings', 'feishu-cli', 'feishu-sync', 'feishu-spaces', 'feishu-log'].every((p) => KB_TSX.includes(p)));
+check('完整设置走插件端点（kb-settings / feishu-cli / feishu-sync / feishu-spaces / feishu-apps）',
+	['kb-settings', 'feishu-cli', 'feishu-sync', 'feishu-spaces', 'feishu-log', 'feishu-apps'].every((p) => KB_TSX.includes(p)));
+check('★ 飞书应用下拉在 bundle 内实现（同款选项 + 添加新应用入口；密钥框不常驻）',
+	KB_TSX.includes('data-vssaros-kb-app-select') && KB_TSX.includes('默认应用')
+	&& KB_TSX.includes('appOptions') && KB_TSX.includes('__new__')
+	&& KB_TSX.includes('newApp') && !KB_TSX.includes('appSecretDraft')
+	&& !KB_TSX.includes('showAppSecret'));
 
 check('设置与图谱在右侧栏渲染（aside 内两个分支）',
 	CLIENT.includes("'data-kb-graph-aside'") && CLIENT.includes("'data-kb-settings-aside'"));

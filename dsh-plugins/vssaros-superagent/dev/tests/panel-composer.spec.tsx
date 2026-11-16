@@ -2,13 +2,15 @@
 // VsSaros addition: the Chat tab's composer, after DeepSeek-Bot's: the "+" menu (files, a chat reference, a scheduled
 // message), dictation, the voice-chat button that the send button replaces, and voice chat itself.
 import { act } from 'react'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { zh } from '../src/client/locales.ts'
 import { nextHourLocal, plainSpeech, speechNote } from '../src/client/composer.tsx'
-import { all, click, find, mount, settle, text, type, usePanel } from './fixtures/panel.tsx'
+import { all, at, click, find, mount, settle, text, type, usePanel } from './fixtures/panel.tsx'
 import { server } from './fixtures/panel-server.ts'
 
 usePanel()
+// ★ 2026-11-11：首页是概况，composer 只在 chat 深链里渲染。
+beforeEach(() => at({ page: 'chat' }))
 const composer = () => document.querySelector<HTMLTextAreaElement>('.dt-composer-input')!
 const note = () => document.querySelector('.dt-composer-note')?.textContent
 

@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang='zh-CN'>
+<head>
+<meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<meta name='color-scheme' content='light dark'>
+<title>群聊团队 · 对话 / 任务 / 验收 三栏状态分离（方案效果图）</title>
+<!--
+  静态效果稿：无 JavaScript、无外部 CSS/字体/图片、无浮层、无交互控件。
+  data-mockup="group-three-pane" 是发布门禁识别标记。
+  ★ 只做方案，不是生产界面代码：P1 gate=BLOCKED，官方任务板只读观察，不双写、不迁移存量群。
+-->
+<style>
+:root {
+  --gtp-blue: #3B82F6;
+  --gtp-blue-soft: #60A5FA;
+  --gtp-orange: #F97316;
+  --gtp-bg: #F8FAFC;
+  --gtp-fg: #1E293B;
+  --gtp-panel: #FFFFFF;
+  --gtp-line: rgba(30, 41, 59, .14);
+  --gtp-muted: rgba(30, 41, 59, .62);
+  --gtp-soft: rgba(59, 130, 246, .09);
+  --gtp-warn-soft: rgba(249, 115, 22, .11);
+  --gtp-ok-soft: rgba(22, 122, 74, .11);
+  --gtp-radius: 14px;
+  --gtp-shadow: 0 8px 28px rgba(30, 41, 59, .07);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --gtp-bg: #0F172A; --gtp-fg: #E2E8F0; --gtp-panel: #172033;
+    --gtp-line: rgba(226, 232, 240, .16); --gtp-muted: rgba(226, 232, 240, .66);
+    --gtp-soft: rgba(96, 165, 250, .14); --gtp-shadow: 0 8px 28px rgba(0, 0, 0, .28);
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 28px clamp(14px, 3vw, 40px) 40px;
+  background: var(--gtp-bg); color: var(--gtp-fg);
+  font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+.gtp-wrap { max-width: 1440px; margin: 0 auto; }
+.gtp-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding-bottom: 18px; border-bottom: 1px solid var(--gtp-line); }
+.gtp-title { font-size: 1.3rem; font-weight: 700; margin: 0; }
+.gtp-sub { color: var(--gtp-muted); font-size: .86rem; margin: 2px 0 0; }
+.gtp-spacer { flex: 1 1 auto; }
+.gtp-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border-radius: 999px;
+  border: 1px solid var(--gtp-line); background: var(--gtp-panel); font-size: .78rem; white-space: nowrap;
+}
+.gtp-chip-blue { background: var(--gtp-soft); border-color: var(--gtp-blue-soft); }
+.gtp-chip-warn { background: var(--gtp-warn-soft); border-color: var(--gtp-orange); }
+.gtp-note {
+  margin: 16px 0 18px; padding: 12px 15px; border: 1px solid var(--gtp-line);
+  border-left: 3px solid var(--gtp-orange); border-radius: var(--gtp-radius);
+  background: var(--gtp-panel); color: var(--gtp-muted); font-size: .86rem;
+}
+.gtp-note strong { color: var(--gtp-fg); }
+.gtp-grid {
+  display: grid; gap: 14px;
+  grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr) minmax(0, .92fr);
+  align-items: start;
+}
+.gtp-pane {
+  min-width: 0; background: var(--gtp-panel); border: 1px solid var(--gtp-line);
+  border-radius: var(--gtp-radius); box-shadow: var(--gtp-shadow); overflow: hidden;
+}
+.gtp-pane-head {
+  display: flex; align-items: baseline; gap: 9px; padding: 13px 16px;
+  border-bottom: 1px solid var(--gtp-line); background: var(--gtp-soft);
+}
+.gtp-pane-title { font-weight: 700; font-size: 1rem; }
+.gtp-pane-hint { color: var(--gtp-muted); font-size: .75rem; }
+.gtp-pane-body { padding: 14px 16px 18px; }
+.gtp-section-label {
+  display: block; margin: 14px 0 8px; color: var(--gtp-muted);
+  font-size: .72rem; letter-spacing: .08em; text-transform: uppercase;
+}
+.gtp-section-label:first-child { margin-top: 0; }
+.gtp-msg { display: flex; gap: 9px; margin-bottom: 11px; min-width: 0; }
+.gtp-avatar {
+  flex: 0 0 28px; width: 28px; height: 28px; border-radius: 9px;
+  display: grid; place-items: center; font-size: .72rem; font-weight: 700;
+  background: var(--gtp-soft); color: var(--gtp-blue); border: 1px solid var(--gtp-line);
+}
+.gtp-avatar-user { background: var(--gtp-warn-soft); color: var(--gtp-orange); }
+.gtp-bubble {
+  min-width: 0; padding: 8px 11px; border: 1px solid var(--gtp-line);
+  border-radius: 4px 11px 11px 11px; background: var(--gtp-bg);
+}
+.gtp-bubble-name { font-size: .74rem; color: var(--gtp-muted); margin-bottom: 2px; }
+.gtp-bubble-text { overflow-wrap: anywhere; }
+.gtp-node {
+  margin: 9px 0; padding: 7px 10px; border-left: 2px solid var(--gtp-blue-soft);
+  background: var(--gtp-soft); border-radius: 0 8px 8px 0;
+  font-size: .8rem; color: var(--gtp-muted);
+}
+.gtp-node-warn { border-left-color: var(--gtp-orange); background: var(--gtp-warn-soft); }
+.gtp-card {
+  margin-bottom: 9px; padding: 10px 12px; border: 1px solid var(--gtp-line);
+  border-radius: 10px; background: var(--gtp-bg); min-width: 0;
+}
+.gtp-card-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.gtp-card-title { font-weight: 600; overflow-wrap: anywhere; }
+.gtp-card-meta { display: block; margin-top: 4px; color: var(--gtp-muted); font-size: .75rem; overflow-wrap: anywhere; }
+.gtp-state {
+  display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: .7rem;
+  border: 1px solid var(--gtp-line); background: var(--gtp-panel); white-space: nowrap;
+}
+.gtp-state-pending { border-color: var(--gtp-muted); }
+.gtp-state-working { background: var(--gtp-soft); border-color: var(--gtp-blue-soft); }
+.gtp-state-reported { background: var(--gtp-soft); border-color: var(--gtp-blue); }
+.gtp-state-rework { background: var(--gtp-warn-soft); border-color: var(--gtp-orange); }
+.gtp-state-accepted { background: var(--gtp-ok-soft); border-color: rgba(22, 122, 74, .5); }
+.gtp-state-rejected { background: var(--gtp-warn-soft); border-color: var(--gtp-orange); }
+.gtp-code {
+  display: block; margin-top: 6px; padding: 6px 8px; border-radius: 7px;
+  background: var(--gtp-panel); border: 1px solid var(--gtp-line);
+  font: .74rem/1.5 ui-monospace, Consolas, Menlo, monospace; overflow-wrap: anywhere;
+}
+.gtp-kv { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: .78rem; color: var(--gtp-muted); }
+.gtp-kv b { color: var(--gtp-fg); font-weight: 600; }
+.gtp-steps { margin: 0; padding-left: 18px; color: var(--gtp-muted); font-size: .82rem; }
+.gtp-steps li { margin-bottom: 5px; }
+.gtp-foot {
+  margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--gtp-line);
+  color: var(--gtp-muted); font-size: .8rem;
+}
+.gtp-foot strong { color: var(--gtp-fg); }
+@media (max-width: 1000px) {
+  .gtp-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .gtp-pane-accept { grid-column: 1 / -1; }
+}
+@media (max-width: 620px) {
+  .gtp-grid { grid-template-columns: minmax(0, 1fr); }
+  .gtp-pane-accept { grid-column: auto; }
+  .gtp-head { align-items: flex-start; }
+  .gtp-spacer { flex-basis: 100%; }
+}
+</style>
+</head>
+<body data-mockup='group-three-pane'
+      data-agents-version='0.2.391'
+      data-chat-surface-version='0.2.441'
+      data-runtime-version='0.2.2-rc.2'>
+<div class='gtp-wrap'>
+
+  <header class='gtp-head'>
+    <div>
+      <h1 class='gtp-title'>番茄钟团队 · 三栏状态分离</h1>
+      <p class='gtp-sub'>方案效果图：对话 / 任务 / 验收 各看各的状态，互不推断</p>
+    </div>
+    <span class='gtp-spacer'></span>
+    <span class='gtp-chip gtp-chip-blue'>运行态：执行中</span>
+    <span class='gtp-chip'>预算 12 / 80 回合 · 38k / 400k tokens</span>
+    <span class='gtp-chip gtp-chip-warn'>P1 gate=BLOCKED</span>
+  </header>
+
+  <p class='gtp-note'>
+    <strong>只做方案，不是生产界面。</strong>三栏的数据来源彼此独立：左栏是 <code>rounds[]</code> 的
+    <code>schema=1</code> 五词执行态；中栏是 <code>group_goal</code> 的任务生命周期（只读投影）；右栏是阶段验收与证据。
+    <strong>官方任务板仅做只读观察</strong>，不写回、不双写、不把群成员伪装成官方 <code>continuable</code> 后代。
+    本页不含交互控件，也不代表产品最终视觉。
+  </p>
+
+  <main class='gtp-grid'>
+
+    <!-- ① 对话 -->
+    <section class='gtp-pane gtp-pane-chat'>
+      <div class='gtp-pane-head'>
+        <span class='gtp-pane-title'>对话</span>
+        <span class='gtp-pane-hint'>rounds[] · schema=1 · 五词执行态</span>
+      </div>
+      <div class='gtp-pane-body'>
+        <span class='gtp-section-label'>本轮消息</span>
+        <div class='gtp-msg'>
+          <span class='gtp-avatar gtp-avatar-user'>人</span>
+          <div class='gtp-bubble'>
+            <div class='gtp-bubble-name'>用户 · 10:21</div>
+            <div class='gtp-bubble-text'>@所有人 做一个番茄钟，先出设计稿再写代码，最后点测验收。</div>
+          </div>
+        </div>
+        <div class='gtp-msg'>
+          <span class='gtp-avatar'>D</span>
+          <div class='gtp-bubble'>
+            <div class='gtp-bubble-name'>Designer · 10:22</div>
+            <div class='gtp-bubble-text'>出了像素版视觉 spec，三个按钮的尺寸和状态都写好了。@Coder 可以按这个实现。</div>
+          </div>
+        </div>
+        <div class='gtp-msg'>
+          <span class='gtp-avatar'>C</span>
+          <div class='gtp-bubble'>
+            <div class='gtp-bubble-name'>Coder · 10:24</div>
+            <div class='gtp-bubble-text'>已实现 src/timer.js，跑了 npm test 通过。@Code Reviewer 请在浏览器里点测。</div>
+          </div>
+        </div>
+        <div class='gtp-node'>状态节点 · working：Coder 开始做了，还在工作…</div>
+        <div class='gtp-node gtp-node-warn'>状态节点 · paused：本轮估算 token 已达上限（maxEstimatedTokens=400000），本轮先停下；2 位成员本轮未派发，你发一条消息就继续</div>
+
+        <span class='gtp-section-label'>执行态词表（左栏只认这五个）</span>
+        <div class='gtp-kv'>
+          <span><b>sent</b> 已发到群</span><span><b>replying</b> 正在回答</span>
+          <span><b>done</b> 已完成</span><span><b>cut</b> 已中断</span><span><b>failed</b> 执行失败</span>
+        </div>
+        <div class='gtp-node'>停止本轮 ⇒ cut；重启收口 ⇒ cut；二者都不自动重放派发意图。</div>
+      </div>
+    </section>
+
+    <!-- ② 任务 -->
+    <section class='gtp-pane gtp-pane-task'>
+      <div class='gtp-pane-head'>
+        <span class='gtp-pane-title'>任务</span>
+        <span class='gtp-pane-hint'>group_goal 只读投影 · 六种任务态</span>
+      </div>
+      <div class='gtp-pane-body'>
+        <span class='gtp-section-label'>第 1 阶段 · 设计与实现</span>
+        <div class='gtp-card'>
+          <div class='gtp-card-top'><span class='gtp-card-title'>出像素版视觉 spec</span><span class='gtp-state gtp-state-accepted'>已验收</span></div>
+          <span class='gtp-card-meta'>Designer · 写范围 design/** · 证据：spec.md</span>
+        </div>
+        <div class='gtp-card'>
+          <div class='gtp-card-top'><span class='gtp-card-title'>实现计时器与三个按钮</span><span class='gtp-state gtp-state-reported'>待验收</span></div>
+          <span class='gtp-card-meta'>Coder · 写范围 src/** · 证据：npm test 通过</span>
+          <code class='gtp-code'>taskId = roomId:goal:revision:stageIndex:taskIndex</code>
+        </div>
+        <div class='gtp-card'>
+          <div class='gtp-card-top'><span class='gtp-card-title'>浏览器点测开始/暂停/重置</span><span class='gtp-state gtp-state-working'>进行中</span></div>
+          <span class='gtp-card-meta'>Code Reviewer · 写范围 tests/** · 与 src/** 不重叠，可并行</span>
+        </div>
+        <div class='gtp-card'>
+          <div class='gtp-card-top'><span class='gtp-card-title'>写使用说明</span><span class='gtp-state gtp-state-pending'>待开始</span></div>
+          <span class='gtp-card-meta'>Code · 写范围 docs/** · 未派发（预算停止，下一条消息继续）</span>
+        </div>
+        <div class='gtp-card'>
+          <div class='gtp-card-top'><span class='gtp-card-title'>补自动化回归</span><span class='gtp-state gtp-state-rework'>返工中</span></div>
+          <span class='gtp-card-meta'>Coder · 已打回 1 次：缺边界用例</span>
+        </div>
+        <div class='gtp-card'>
+          <div class='gtp-card-top'><span class='gtp-card-title'>旧版草稿（已否决）</span><span class='gtp-state gtp-state-rejected'>已否决</span></div>
+          <span class='gtp-card-meta'>目标 stopped ⇒ 只读投影，不回写</span>
+        </div>
+
+        <span class='gtp-section-label'>稳定关联（诊断用，不给用户推断）</span>
+        <code class='gtp-code'>runId = roomId:callId:attempt · attempt=3 · trigger=user</code>
+        <div class='gtp-node'>任务状态用 CAS 保护；CAS 不是文件锁，同文件写范围靠 writeScopes 串行派发。</div>
+      </div>
+    </section>
+
+    <!-- ③ 验收 -->
+    <section class='gtp-pane gtp-pane-accept'>
+      <div class='gtp-pane-head'>
+        <span class='gtp-pane-title'>验收</span>
+        <span class='gtp-pane-hint'>阶段标准 · 证据 · 返工</span>
+      </div>
+      <div class='gtp-pane-body'>
+        <span class='gtp-section-label'>当前阶段</span>
+        <div class='gtp-card'>
+          <div class='gtp-card-top'><span class='gtp-card-title'>第 1 / 2 阶段 · 设计与实现</span><span class='gtp-state gtp-state-working'>进行中</span></div>
+          <span class='gtp-card-meta'>完成标准：三个按钮可点、计时准确、npm test 全绿</span>
+        </div>
+        <span class='gtp-section-label'>已收证据</span>
+        <div class='gtp-card'>
+          <span class='gtp-card-meta'>spec.md（Designer）· src/timer.js + 测试输出（Coder）</span>
+        </div>
+        <div class='gtp-node gtp-node-warn'>缺：浏览器点测录屏 / 点测结论 ⇒ 先 rework，再 @Code Reviewer 复测。</div>
+
+        <span class='gtp-section-label'>官方任务板（只读观察面）</span>
+        <div class='gtp-card'>
+          <span class='gtp-card-meta'>仅投影官方成员与任务摘要，不提供写入按钮；不把群任务写进官方任务板。</span>
+          <code class='gtp-code'>officialTeamAdapter.taskBoardSummary(tasks)</code>
+        </div>
+
+        <span class='gtp-section-label'>本稿明确不做</span>
+        <ol class='gtp-steps'>
+          <li>不迁移存量群到官方执行树</li>
+          <li>不双写 group_goal 与官方任务板</li>
+          <li>不伪造 owner / caller 身份</li>
+          <li>mockup 未确认前不落生产界面代码</li>
+        </ol>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class='gtp-foot'>
+    <strong>状态分离口径：</strong><code>ROOM_DIAGNOSTICS_SCHEMA=1</code> 只读诊断与 <code>ROUND_SCHEMA=1</code> 对外执行态分开；
+    运行生命周期 / 任务生命周期 / 派发意图各自独立，不把「本轮结束」说成「验收通过」。
+    <strong>P1 gate=BLOCKED</strong>：官方 Team 与群聊身份模型未打通，当前不做统一任务板。
+    版本快照：<code>@vssaros/dsh-agents 0.2.391</code> · <code>@vssaros/dsh-chat-surface 0.2.441</code> · dsh runtime <code>0.2.2-rc.2</code>。
+  </footer>
+
+</div>
+</body>
+</html>

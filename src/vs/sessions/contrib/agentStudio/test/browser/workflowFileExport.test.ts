@@ -35,7 +35,7 @@ suite('WorkflowFileExport', () => {
 			id: 'wf-emoji-pack',
 			name: '表情包工作流',
 			description: '一键生成静态表情包',
-			presetId: 'workflow-agent',
+			presetId: 'planner',
 			agentId: 'saros-claw',
 			// ↓ 以下不应随文件迁移
 			workspaceId: 'ws-1',
@@ -164,7 +164,7 @@ suite('WorkflowFileExport', () => {
 			nodes: [{ id: 'n1' }],
 			connections: [{ from: 'n1', to: 'n1' }],
 			breakpoints: ['n1'],
-			presetId: 'workflow-agent',
+			presetId: 'planner',
 			agentId: 'saros-claw',
 			version: '1.0.3',
 			category: 'emoji',

@@ -22,7 +22,7 @@ dsh-plugins/vssaros-<module>/
 
 - 最小注册式：`dsh-plugins/vssaros-kanban/lib/client.kanban.js`
 - 带 AI 助手右栏：`dsh-plugins/vssaros-marketplace/lib/workbench.js`（右栏 + 伸缩，**样例**）
-- iframe 托管页 + 助手：`dsh-plugins/vssaros-studio/lib/client.js`
+- iframe 托管页 + 助手：原 `vssaros-studio` 已于 2026-11-11 下线，不再作为可读样板；形态说明见 `references/assistant-collapse.md`
 
 ## 共享层在哪
 

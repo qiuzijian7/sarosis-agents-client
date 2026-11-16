@@ -287,7 +287,7 @@ L2 页面级历史（后做）
 
 | 事实 | 证据 |
 |---|---|
-| 商城**有后端** | `marketplace/lib/marketClient.js` 硬编码 `http://21.6.92.5` |
+| 商城**有后端** | `marketplace/lib/marketClient.js` 硬编码 `http://21.91.158.20:3040` |
 | 后端提供 | `/api/v1/**`、`/auth/tof`（TOF 登录换 JWT）、`/admin/review`（审核）、`/upgrade/check`（更新检查） |
 | 后端**不托管内容** | 内容本体走三种分发：npm / github-release / github-source ⇒ **服务器只做"目录 + 认证 + 审核 + 元数据"** |
 | 目录读取 | `market/lib/remoteCatalog.js`：拉一份 catalog（≤2MB，15 分钟缓存，磁盘快照）⇒ **静态目录文件**，不是内容服务 |

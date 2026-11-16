@@ -107,6 +107,7 @@ export const PLUGIN_STATE_OPS = new Set(['pluginState', 'setPluginEnabled']);
  * 它不带 kind（操作对象是文件，不是某个资源）⇒ 与插件开关一样按 op 名分派到本地写。
  */
 export const MCP_CONFIG_OPS = new Set(['saveMcpConfig']);
+export const PREFERENCES_OPS = new Set(['preferencesRead', 'preferencesUpdate']);
 
 /** 全部**能被处理**的 op（本地 + IDE）。对外声明（`/api/meta`）与白名单都用它 ✓ */
 export const ALL_OPS = [
@@ -118,6 +119,7 @@ export const ALL_OPS = [
 	'self-check',
 	...PLUGIN_STATE_OPS,
 	...MCP_CONFIG_OPS,
+	...PREFERENCES_OPS,
 	...PORTABLE_READ_OPS,
 	...PORTABLE_WRITE_OPS,
 ];
@@ -136,6 +138,7 @@ export function resolveOp(op, params = {}) {
 	const name = String(op ?? '');
 	const kind = String(params?.kind ?? '');
 
+	if (PREFERENCES_OPS.has(name)) { return 'local-preferences'; }
 	if (LOCAL_READ_OPS.has(name)) { return 'local-read'; }
 	if (PORTABLE_READ_OPS.has(name)) { return 'local-read'; }
 	if (PORTABLE_WRITE_OPS.has(name)) { return 'local-write'; }
@@ -155,6 +158,7 @@ export function resolveOp(op, params = {}) {
 	if (LOCAL_HTTP_OPS.has(name)) { return 'local-http'; }
 	if (LOCAL_PUBLISH_OPS.has(name)) { return 'local-publish'; }
 	if (name === 'publish') {
+		if (['agent', 'workbench'].includes(kind) && typeof params.pluginBase64 === 'string' && params.pluginBase64) { return 'local-publish'; }
 		if (PUBLISH_LOCAL_KINDS.includes(kind)) { return 'local-publish'; }
 		// ★ 2026-10-26（分析工作台 GitHub 发布流程时发现）：**带 source（GitHub 地址）的登记**
 		//   必须留在 dsh 侧。原来这里只看 kind ⇒ workbench / plugin 一律转 IDE，

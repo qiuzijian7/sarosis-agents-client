@@ -63,9 +63,10 @@ const installedVersion = (name) => {
 console.log(`\n== L0 预检（${DEV_ROOT}） ==`);
 const nodeMajor = Number(process.versions.node.split('.')[0]);
 const nodeMinor = Number(process.versions.node.split('.')[1]);
-check('Node ≥ 22.13', nodeMajor > 22 || (nodeMajor === 22 && nodeMinor >= 13), `v${process.versions.node}`);
-check('runtime 契约探针依赖的 rc.2 存在',
-	existsSync(join(REPO, 'dsh-runtime', '0.2.1-rc.2', 'node_modules', '@deepseek-ai', 'dsh-llm', 'package.json')));
+check('Node ≥ 24.9', nodeMajor > 24 || (nodeMajor === 24 && nodeMinor >= 9), `v${process.versions.node}`);
+const bundledRuntime = readJson(join(REPO, 'dsh-plugins', 'dsh-compat.json'))?.bundled;
+check(`runtime 契约探针依赖的 bundled=${bundledRuntime} 存在`,
+	!!bundledRuntime && existsSync(join(REPO, 'dsh-runtime', bundledRuntime, 'node_modules', '@deepseek-ai', 'dsh-llm', 'package.json')));
 
 for (const name of PLUGINS) {
 	const repo = repoVersion(name);
@@ -79,6 +80,13 @@ for (const name of ['vssaros-local-agents', 'vssaros-computer']) {
 	const enabled = /enabled:\s*true/.test(row ?? '') || new RegExp(`id:\\s*${name}[\\s\\S]{0,300}?enabled:\\s*true`).test(patch);
 	check(`profile 启用 · ${name}`, enabled, enabled ? 'enabled:true' : 'enabled:false（功能不会加载）');
 }
+
+// ★ 工具面：`computer` 默认 fail-closed，但工具定义必须进快照，否则改名 / 改参数 / 被 agent
+//   引用都没有守卫知道。L2 全部直连主进程中继，绕过了 Host ⇒ 这里补静态证据。
+const toolSnapshot = readJson(join(REPO, 'dsh-plugins', 'tools-snapshot.json'));
+const computerTool = toolSnapshot?.plugins?.['vssaros-computer']?.find((tool) => tool?.name === 'computer');
+check('工具快照已登记 computer（工具面可见且被守卫覆盖）', !!computerTool,
+	computerTool ? '' : '跑 node dsh-plugins/tools-snapshot.mjs --write --only vssaros-computer');
 
 // mtime 会被 transpile / touch / 行尾转换干扰（本仓已出现过假阴性）⇒ 直接查编译产物内容。
 const outMain = join(REPO, 'out', 'main.js');

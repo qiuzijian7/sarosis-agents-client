@@ -2,8 +2,8 @@
 // llm-adapter-contract.test.mjs — dsh `LlmAdapter` 契约探针（doc/dsb-capability-compat-design.md §6.6）
 //
 // 目的：本地 Agent CLI 方案要把 CLI 伪装成一个 dsh 模型路由（LlmAdapter）。
-// 外部实现按 dsh 0.2.2-rc.1 写，本产品随包是 0.2.1-rc.2 —— 本探针在**真实随包 runtime**
-// 上钉住 seam，防止「照着新版本 API 写完才发现跑不起来」或日后 runtime 升级悄悄破坏契约。
+// 外部实现按 dsh 0.2.2-rc.1 写，本产品随包 runtime 于 2026-11-12 升到同一版 —— 本探针在
+// **真实随包 runtime** 上钉住 seam，防止日后 runtime 升级悄悄破坏契约。
 //
 // 断言三层：
 //   ① 静态契约：GenerateOptions / StreamChunk / registerAdapter / replace 的字段与本方案假设一致；
@@ -93,13 +93,16 @@ check('types/index.d.ts 声明 registerAdapter 与 replace 的原子换路由', 
 	assert.match(indexTypes, /export declare abstract class LlmAdapter/);
 });
 check('GenerateOptions 带齐本地 Agent 依赖的字段', () => {
-	const body = typesText.match(/export interface GenerateOptions \{([\s\S]*?)\n\}/)?.[1] ?? '';
+	// 0.2.2-rc.1 把 GenerateOptions 泛型化（<Purpose extends string = LlmRequestPurpose>），
+	// purpose 从字面量联合改成 `purpose?: Purpose`（由声明合并扩展）⇒ 两种形态都接受，
+	// 但字段集合仍要逐项钉住，防止 runtime 升级悄悄改掉本地 Agent 依赖的入参。
+	const body = typesText.match(/export interface GenerateOptions(?:<[^{]*>)? \{([\s\S]*?)\n\}/)?.[1] ?? '';
 	for (const field of [
 		'provider: string', 'model: string', 'messages: RequestMessage[]',
 		'system?: string', 'tools?: ToolSchema[]', 'signal?: AbortSignal',
 		'sessionId?', 'purpose?',
 	]) assert.ok(body.includes(field), `GenerateOptions 缺 ${field}`);
-	assert.match(body, /purpose\?: 'compaction' \| 'session-title'/);
+	assert.ok(/purpose\?:\s*(?:'compaction' \| 'session-title'|Purpose)/.test(body), 'GenerateOptions.purpose 形态变化');
 });
 check('StreamChunk 覆盖 7 种 chunk（block-start → finish）', () => {
 	const body = typesText.match(/export type StreamChunk = \{([\s\S]*?)\n\};/)?.[1] ?? '';

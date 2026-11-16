@@ -71,7 +71,14 @@ import { clearFeishuBinding, createKnowledgeBase, listKnowledgeBases, readFeishu
 import { renderHomePage } from './homePage.js';
 import { DEFAULT_LARK_CLI, LARK_CLI_MISSING_HINT, SPACE_LIST_ARGS, describeLarkCliFailure, findSameNameSpace, parseCreatedSpaceId, parseSpaceList, sanitizeSpaceName, spaceCreateArgs } from './core/feishuSpaces.js';
 // ★ 2026-11-10：知识库设置页可指定飞书应用（appId / appSecret）⇒ 用 lark-cli profile 切换
-import { credentialRefForApp, isValidAppId, profileAddArgs, profileArgsOf, sanitizeAppId, secretIntentOf } from './core/kbFeishuApp.js';
+import { PROFILE_LIST_ARGS, credentialRefForApp, hasLarkProfile, isValidAppId, profileAddArgs, profileArgsOf, sanitizeAppId, secretIntentOf } from './core/kbFeishuApp.js';
+// ★ 2026-11-11：设置页飞书应用下拉（与 bot 设置页同源掩码列表）
+import { agentsSecretOf, buildFeishuAppList } from './core/kbFeishuApps.js';
+// ★ 2026-11-11：飞书剪存轮询（方案 A：轮询 + 游标，第 2~6 步最小闭环）
+import { CLIP_DEFAULTS, clipConfigOf } from './core/feishuClip.js';
+import { runClipPipeline } from './core/feishuClipPipeline.js';
+// ★ 2026-11-11：跨 app 重启恢复「上次打开的文档」
+import { sanitizeLastDoc } from './core/kbLastDoc.js';
 
 // ★ 页面那唯一一条写路由（§15.33）**复用工具同款围栏** ✓：`resolveOrganizePath` 早就把
 //   "只能在「笔记」区内"判死了（真源 `kbOrganizeTools.ts` 的口径 ✓）⇒ 不另写一套判断 ✓。
@@ -178,6 +185,43 @@ const FEISHU_WRITE_TIMEOUT_MS = 60_000;
  *   ⚠ 这里**只放 appId（非机密）**；appSecret 只在保存时从凭据库取出、经 stdin 交给 CLI。
  */
 let KB_FEISHU_APP_ID = '';
+
+/** 凭据库里的 KB appSecret（只给 Host 内部用，不回前端、不进日志）。 */
+async function resolveKbAppSecret(appId) {
+	const ref = credentialRefForApp(appId);
+	if (!ref || !KB_CREDENTIALS || typeof KB_CREDENTIALS.resolve !== 'function') { return ''; }
+	try {
+		const r = await KB_CREDENTIALS.resolve(ref);
+		return String((r && typeof r === 'object' ? r.value : r) ?? '').trim();
+	} catch { return ''; }
+}
+
+/** ★ 2026-11-11：读 agents 凭据池（只读）。明文只在 Host 内部流转，绝不回前端。 */
+function agentsAccountsOf(config) {
+	try {
+		const obj = JSON.parse(readFileSync(join(dataRootOf(config), 'agent-im-accounts.json'), 'utf8'));
+		return obj?.accounts && typeof obj.accounts === 'object' ? obj.accounts : {};
+	} catch { return {}; }
+}
+function agentsAppSecretOf(config, appId) {
+	return agentsSecretOf(agentsAccountsOf(config), appId);
+}
+/** 下拉里 `hasSecret` 的 KB 侧判据：枚举 .kb-settings.json 里出现过的 appId 再逐个问凭据库。 */
+async function kbSecretIdsOf(config) {
+	const ids = new Set();
+	try {
+		const obj = JSON.parse(readFileSync(join(kbRootOf(config), '.kb-settings.json'), 'utf8'));
+		const f = obj?.feishu || {};
+		const candidates = [f.appId]
+			.concat(Array.isArray(f.customApps) ? f.customApps.map(a => a?.appId) : [])
+			.filter(Boolean);
+		for (const appId of candidates) {
+			if (await resolveKbAppSecret(appId)) { ids.add(String(appId).trim()); }
+		}
+	} catch { /* 没设置文件 ⇒ 空集合 */ }
+	return ids;
+}
+
 function loadFeishuAppId(config) {
 	try {
 		const obj = JSON.parse(readFileSync(join(kbRootOf(config), '.kb-settings.json'), 'utf8'));
@@ -232,15 +276,26 @@ function runLarkCli(exe, args, timeout, opts = {}) {
 		//   ⚠ 建 profile 那次要 skipProfile：目标 profile 还不存在，前置它反而会报「profile not found」✗。
 		const allArgs = [...(opts.skipProfile ? [] : profileArgsOf(KB_FEISHU_APP_ID)), ...args];
 		const spawnArgs = useShell ? allArgs.map(a => (/\s/.test(String(a)) ? '"' + String(a) + '"' : String(a))) : allArgs;
-		const child = spawn(resolved, spawnArgs, useShell ? { windowsHide: true, shell: true } : { windowsHide: true });
+		// ★ 2026-11-11：关掉升级 / 技能通知（superagent 的 `runLark` 同款两个 env）。
+		//   真机上 `_notice.update` 出现在输出尾部，把真正的错误信息整段挤走 ⇒ 设置页只看到
+		//   「lark-cli 1.0.100 available」却不知道 profile 为什么没建成功 ✗。
+		const env = {
+			...process.env,
+			LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1',
+			LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1',
+		};
+		const child = spawn(resolved, spawnArgs, useShell
+			? { windowsHide: true, shell: true, env }
+			: { windowsHide: true, env });
 		// ★ stdin 只在 `profile add --app-secret-stdin` 时带 secret（不进 argv / 不进日志）；
 		//   其它命令也主动 end，避免 CLI 等输入挂住 ✓。
 		try { child.stdin?.end(typeof opts.stdin === 'string' ? opts.stdin : ''); } catch { /* 子进程没开 stdin */ }
 		const timer = setTimeout(() => {
-			stderr += `\n[超时] 超过 ${Math.round(timeout / 1000)}s 仍未结束，已终止。\n`;
+			stderr += `\n[超时] 超过 ${Math.round(timeout / 1000)}s 仍未结束，已请求终止。\n`;
 			try {
 				child.kill();
 			} catch { /* 已经退出 */ }
+			finish({ code: -1, stdout, stderr, timedOut: true });
 		}, timeout);
 		child.stdout?.on('data', chunk => { stdout += String(chunk); });
 		child.stderr?.on('data', chunk => { stderr += String(chunk); });
@@ -6394,7 +6449,7 @@ async function vaultSigOf(dir) {
  * 为什么抽出来：之前这段逻辑只存在于 HTTP 路由里，定时器要复用就得复制 40 行
  * （映射文件、冲突策略、间隔、prune、日志落盘），复制必然漂移。
  */
-async function performFeishuSync(config, { dry = false } = {}) {
+async function performFeishuSync(config, { dry = false, srcDir = '', extraMappings = [] } = {}) {
 	const feishuCfg = await readFeishuSettings(config);
 	if (!feishuCfg.enabled) {
 		return { ok: false, code: null, error: '飞书同步未启用：请到「设置 → 📤 飞书同步」打开开关后重试。' };
@@ -6406,7 +6461,10 @@ async function performFeishuSync(config, { dry = false } = {}) {
 
 	// 目录映射 → 脚本认的文件（`{ mappings: { 相对目录: spaceId } }`）
 	try {
-		const maps = (feishuCfg.mappings ?? []).filter(m => m && m.dir && m.spaceId);
+		// ★ 2026-11-11：剪存闭环可临时追加一条「目标库目录 → spaceId」映射（不写设置文件）
+		const maps = (feishuCfg.mappings ?? [])
+			.concat(Array.isArray(extraMappings) ? extraMappings : [])
+			.filter(m => m && m.dir && m.spaceId);
 		if (maps.length) {
 			const obj = { mappings: {} };
 			for (const m of maps) { obj.mappings[String(m.dir).replace(/\\/g, '/')] = String(m.spaceId); }
@@ -6415,7 +6473,7 @@ async function performFeishuSync(config, { dry = false } = {}) {
 		}
 	} catch { /* 写不进去不阻断（脚本会退回"未映射类别自动建库"） */ }
 
-	const args = buildFeishuSyncArgs({
+	const syncOpts = {
 		vault: vault.dir,
 		/*
 		 * ★★ 2026-10-28（真机：`[map] 已配置 6 条映射，但本次没有文档命中`）：
@@ -6429,7 +6487,14 @@ async function performFeishuSync(config, { dry = false } = {}) {
 		apply: !dry,
 		onConflict: feishuCfg.conflict === 'skip' ? 'skip' : 'overwrite',
 		cliPath: String(feishuCfg.cliPath ?? '').trim(),
-	});
+		// ★ 2026-11-12：飞书身份（bot / user）。空 ⇒ 脚本默认 user。
+		//   用户的 profile 若是 strict-mode=bot，需把这项设为 bot（或由用户放开策略）。
+		identity: String(feishuCfg.identity ?? '').trim(),
+	};
+	// ★ 2026-11-11：剪存闭环只同步刚写笔记的那个库目录；默认仍是整份「知识库列表」。
+	//   ⚠ `src: [NOTES_DIR]` 字面量必须保留（check-kb-feishu-args.mjs:50-53 钉住，且字符串会被按字符拆 ✗）。
+	if (srcDir) { syncOpts.src = [srcDir]; }
+	const args = buildFeishuSyncArgs(syncOpts);
 	const interval = Number(feishuCfg.intervalMs) || 0;
 	if (interval > 0) { args.push('--interval', String(Math.floor(interval))); }
 	if (feishuCfg.deleteRemote === true) { args.push('--prune'); }
@@ -6473,6 +6538,91 @@ function startFeishuScheduler(config) {
 			} finally {
 				SYNC_STATE.lastAt = Date.now();
 				SYNC_STATE.running = false;
+			}
+		} catch { /* 单次失败不影响下一次 */ }
+	};
+	const timer = setInterval(() => { void tick(); }, TICK_MS);
+	try { timer.unref?.(); } catch { /* 老内核无 unref */ }
+	return () => { try { clearInterval(timer); } catch { /* 已清 */ } };
+}
+
+// ─── 飞书剪存轮询（方案 A：轮询 + 游标，第 2~6 步最小闭环） ───────────────────
+/** 进程内状态（重启即重置；持久化游标在 `<vault>/.kb/clip-cursor.json`）。 */
+const CLIP_STATE = { running: false, lastAt: 0, lastResult: null, lastError: '' };
+
+async function readClipSettings(config) {
+	try {
+		const obj = JSON.parse(await readFile(join(kbRootOf(config), '.kb-settings.json'), 'utf8'));
+		return clipConfigOf(obj?.clipPoll);
+	} catch { return clipConfigOf({}); }
+}
+
+/**
+ * 生产依赖：lark / summarize / sync 三个外部能力，全部可注入（守卫用 fake 做端到端验证）。
+ *
+ * ⚠ summarize 走 `vssarosRuns.run()` 起一次性后台回合，`approval:{allow:[]}` ⇒ 只输出文本、
+ *   不调工具、不过审批闸；不可用就返回 null ⇒ pipeline 挂起该篇并**不推进游标**，
+ *   服务恢复后自动重试（raw 同名覆盖，幂等）。绝不写"假总结"冒充笔记。
+ */
+async function clipDeps(config, ctx) {
+	const cfg = await readFeishuSettings(config);
+	const cli = String(cfg.cliPath ?? '').trim() || DEFAULT_LARK_CLI;
+	const lark = async (args, opts = {}) => {
+		const r = await runLarkCli(cli, args, 60_000, opts);
+		return { code: r.code, stdout: String(r.stdout ?? ''), stderr: String(r.stderr ?? '') };
+	};
+	const summarize = async ({ title, markdown, rawRel }) => {
+		const clip = await readClipSettings(config);
+		let runs = null;
+		try { runs = typeof ctx?.get === 'function' ? ctx.get('vssarosRuns') : null; } catch { runs = null; }
+		if (!runs || typeof runs.run !== 'function') { return null; }
+		try {
+			const r = await runs.run({
+				...(clip.sessionId ? { sessionId: clip.sessionId } : {}),
+				cwd: kbRootOf(config),
+				approval: { allow: [] },
+				timeoutMs: 120_000,
+				prompt: [
+					'【知识总结任务】把下面这篇飞书剪存素材整理成一篇结构化中文笔记。',
+					'要求：给出「概述」「关键要点」「关联」三节；不要编造原文没有的事实；',
+					'不要写 YAML frontmatter（宿主会补）；不要输出与笔记无关的解释。',
+					`素材文件：${rawRel}`,
+					`标题：${title}`,
+					'', '--- 原文开始 ---',
+					String(markdown ?? '').slice(0, 20000),
+					'--- 原文结束 ---',
+				].join('\n'),
+			});
+			return String(r?.finalText ?? '').trim() || null;
+		} catch { return null; }
+	};
+	const sync = ({ srcDir, extraMappings, dry }) => performFeishuSync(config, { dry, srcDir, extraMappings });
+	return { lark, summarize, sync };
+}
+
+/** 每 60s 醒一次，按 `clipPoll.scheduleMinutes` 判断是否到期；与飞书同步定时器同款三条保护。 */
+function startClipPollScheduler(config, ctx) {
+	const TICK_MS = 60 * 1000;
+	const tick = async () => {
+		try {
+			const cfg = await readClipSettings(config);
+			if (!cfg.enabled || CLIP_STATE.running) { return; }
+			if (Date.now() - CLIP_STATE.lastAt < cfg.scheduleMinutes * 60 * 1000) { return; }
+			CLIP_STATE.running = true;
+			try {
+				const r = await runClipPipeline({
+					cfg, vaultRoot: kbRootOf(config), apply: true, deps: await clipDeps(config, ctx),
+				});
+				CLIP_STATE.lastResult = {
+					phase: r.phase, listed: r.listed, imported: r.imported.length,
+					pendingSummary: r.pendingSummary.length, skipped: r.skipped.length,
+				};
+				CLIP_STATE.lastError = r.ok ? '' : String(r.error || '');
+			} catch (e) {
+				CLIP_STATE.lastError = String(e?.message ?? e);
+			} finally {
+				CLIP_STATE.lastAt = Date.now();
+				CLIP_STATE.running = false;
 			}
 		} catch { /* 单次失败不影响下一次 */ }
 	};
@@ -6617,6 +6767,10 @@ export function apply(ctx, config = {}) {
 	try {
 		ctx.effect(() => startFeishuScheduler(config));
 	} catch { /* 无 effect 能力 ⇒ 只是没有定时同步 */ }
+	// ★ 2026-11-11：剪存轮询定时器（默认关闭，须在 clipPoll.enabled 打开后才跑）
+	try {
+		ctx.effect(() => startClipPollScheduler(config, ctx));
+	} catch { /* 无 effect 能力 ⇒ 仍可走 POST /api/clip-run 手动跑 */ }
 
 	// 页面路由（**可选**依赖）：`webServer` / `connection` 只在 web 模板里存在（见静态 `inject` 的注释）。
 	// 不在 web 模板 ⇒ 只是**没有页面** ✓，工具照常可用 ✓。
@@ -7274,6 +7428,101 @@ export function apply(ctx, config = {}) {
 					} catch (e) { send(500, { ok: false, error: String(e?.message ?? e) }); }
 					return;
 				}
+				// ★ 2026-11-11：设置页「飞书应用」下拉的数据源，与 bot 设置页同源、同形状（掩码）。
+				//   走 KB 自己的前缀 ⇒ IDE 侧栏 bundle 不必跨插件直连 /x/agents/api/（那边 CSP 不放心）。
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/feishu-apps` && req.method === 'GET') {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					try {
+						let customApps = [];
+						try {
+							const obj = JSON.parse(readFileSync(join(kbRootOf(config), '.kb-settings.json'), 'utf8'));
+							customApps = Array.isArray(obj?.feishu?.customApps) ? obj.feishu.customApps : [];
+						} catch { customApps = []; }
+						const apps = buildFeishuAppList({
+							accounts: agentsAccountsOf(config), customApps,
+							kbSecretIds: await kbSecretIdsOf(config),
+						});
+						send(200, { ok: true, apps });
+					} catch (e) {
+						send(500, { ok: false, error: String(e?.message ?? e) });
+					}
+					return;
+				}
+				// ★ 2026-11-11：飞书剪存轮询（方案 A）的手动入口 / 状态。
+				//   POST 不带 `apply:true` ⇒ dry-run：只读计划，不写盘、不推进游标、不同步 ⇒ 安全可反复点。
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/clip-run` && req.method === 'POST') {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					let raw = '';
+					for await (const chunk of req) {
+						raw += chunk;
+						if (raw.length > 65536) { send(413, { ok: false, error: '请求体太大' }); return; }
+					}
+					let body = {};
+					try { body = JSON.parse(raw || '{}'); } catch { send(400, { ok: false, error: '请求体不是合法 JSON' }); return; }
+					const base = await readClipSettings(config);
+					const cfg = clipConfigOf({ ...base, ...(body && typeof body === 'object' ? body : {}) });
+					const apply = body?.apply === true;
+					try {
+						const r = await runClipPipeline({
+							cfg, vaultRoot: kbRootOf(config), apply,
+							deps: await clipDeps(config, ctx),
+						});
+						CLIP_STATE.lastResult = {
+							phase: r.phase, listed: r.listed, imported: r.imported.length,
+							pendingSummary: r.pendingSummary.length, skipped: r.skipped.length,
+						};
+						CLIP_STATE.lastError = r.ok ? '' : String(r.error || '');
+						send(200, r);
+					} catch (e) { send(500, { ok: false, error: String(e?.message ?? e) }); }
+					return;
+				}
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/clip-status` && req.method === 'GET') {
+					res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+					res.end(JSON.stringify({ ok: true, state: { ...CLIP_STATE }, config: await readClipSettings(config) }));
+					return;
+				}
+				// ★ 2026-11-11：跨 app 重启「上次打开的文档」。独立轻量端点，只读写
+				//   `.kb-settings.json` 的 `lastDoc` 一个字段 ⇒ 避免前端为了写它而全量 POST
+				//   `/api/kb-settings`（那份是全量覆盖，会与用户保存设置互相冲掉 ✗）。
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/last-doc`) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					const file = () => join(kbRootOf(config), '.kb-settings.json');
+					const readAll = () => {
+						try {
+							const obj = JSON.parse(readFileSync(file(), 'utf8'));
+							return obj && typeof obj === 'object' ? obj : {};
+						} catch { return {}; }
+					};
+					if (req.method === 'GET') {
+						send(200, { ok: true, lastDoc: sanitizeLastDoc(readAll().lastDoc) });
+						return;
+					}
+					if (req.method !== 'POST') { send(405, { ok: false, error: '请用 GET 或 POST' }); return; }
+					let raw = '';
+					for await (const chunk of req) {
+						raw += chunk;
+						if (raw.length > 8192) { send(413, { ok: false, error: '请求体太大' }); return; }
+					}
+					let body = {};
+					try { body = JSON.parse(raw || '{}'); } catch { send(400, { ok: false, error: '请求体不是合法 JSON' }); return; }
+					const cur = readAll();
+					cur.lastDoc = sanitizeLastDoc(body?.lastDoc);
+					try {
+						await mkdir(kbRootOf(config), { recursive: true });
+						await writeFile(file(), JSON.stringify(cur, null, 2), 'utf8');
+						send(200, { ok: true, lastDoc: cur.lastDoc });
+					} catch (e) { send(500, { ok: false, error: String(e?.message ?? e) }); }
+					return;
+				}
 				if (url && url.pathname === `${ROUTE_PREFIX}/api/kb-settings`) {
 					const send = (code, payload) => {
 						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -7284,8 +7533,13 @@ export function apply(ctx, config = {}) {
 						agenticBuild: true,
 						// `scheduleMinutes`：定时同步的间隔（分钟）；`cliPath`：lark-cli 的非标准路径；
 						// ★ `appId`：设置页指定的飞书应用（非机密）。`appSecret` **绝不**写进这份文件。
-						feishu: { enabled: false, schedule: false, scheduleMinutes: 60, intervalMs: 800, conflict: 'skip', deleteRemote: false, mappings: [], cliPath: '', appId: '' },
-					};
+						feishu: { enabled: false, schedule: false, scheduleMinutes: 60, intervalMs: 800, conflict: 'skip', deleteRemote: false, mappings: [], cliPath: '', appId: '', customApps: [], identity: 'user' },
+						// ★ 2026-11-11：飞书剪存轮询（方案 A）。游标单独放 <vault>/.kb/clip-cursor.json，
+						//   不放这里 —— POST 是全量覆盖，游标会被下一次设置保存冲掉 ✗。
+						clipPoll: { ...CLIP_DEFAULTS },
+						// ★ 2026-11-11：跨重启「上次打开的文档」（由 /api/last-doc 单独维护）
+						lastDoc: null,
+						};
 					const readSettings = () => {
 						try {
 							const obj = JSON.parse(readFileSync(file(), 'utf8'));
@@ -7298,21 +7552,12 @@ export function apply(ctx, config = {}) {
 							return defaults;
 						}
 					};
-					/** 凭据库里的 appSecret（只给 Host 内部用，不回前端、不进日志）。 */
-					const resolveAppSecret = async (appId) => {
-						const ref = credentialRefForApp(appId);
-						if (!ref || !KB_CREDENTIALS || typeof KB_CREDENTIALS.resolve !== 'function') { return ''; }
-						try {
-							const r = await KB_CREDENTIALS.resolve(ref);
-							return String((r && typeof r === 'object' ? r.value : r) ?? '').trim();
-						} catch { return ''; }
-					};
 					try {
 						if (req.method === 'GET') {
 							const settings = readSettings();
 							const appId = sanitizeAppId(settings.feishu.appId);
 							settings.feishu = Object.assign({}, settings.feishu, {
-								appId, hasAppSecret: Boolean(appId && await resolveAppSecret(appId)),
+								appId, hasAppSecret: Boolean(appId && await resolveKbAppSecret(appId)),
 							});
 							send(200, { ok: true, settings });
 							return;
@@ -7327,12 +7572,30 @@ export function apply(ctx, config = {}) {
 						const next = Object.assign({}, defaults, body, {
 							feishu: Object.assign({}, defaults.feishu, body && body.feishu),
 						});
+						// ★ 2026-11-11：POST 是**全量覆盖**，设置页保存时 body 不带 lastDoc ⇒ 沿用旧值，
+						//   否则用户每保存一次飞书设置就把「上次文档」清空，恢复功能形同虚设 ✗。
+						next.lastDoc = body && Object.prototype.hasOwnProperty.call(body, 'lastDoc')
+							? sanitizeLastDoc(body.lastDoc)
+							: sanitizeLastDoc(readSettings().lastDoc);
 						// ★ 2026-11-10：appSecret 的三种语义（缺/空 = 不改、null = 清除、非空 = 写凭据库并建 profile）
 						const intent = secretIntentOf(next.feishu.appSecret);
 						const appId = sanitizeAppId(next.feishu.appId);
 						const typedSecret = typeof next.feishu.appSecret === 'string' ? next.feishu.appSecret.trim() : '';
 						delete next.feishu.appSecret;      // 永不落盘
 						delete next.feishu.hasAppSecret;   // 回显字段也不写盘
+						// ★ 2026-11-11：下拉选「+ 添加新应用」时登记进 customApps（只存 appId/name，
+						//   非机密）⇒ 刷新后下拉能选到它；secret 仍只进凭据库。
+						const newApp = next.feishu.newApp;
+						delete next.feishu.newApp;
+						if (newApp && typeof newApp === 'object' && String(newApp.appId ?? '').trim()
+							&& isValidAppId(newApp.appId)) {
+							const list = Array.isArray(next.feishu.customApps) ? next.feishu.customApps.slice() : [];
+							const id = String(newApp.appId).trim();
+							if (!list.some(x => String(x?.appId ?? '') === id)) {
+								list.push({ appId: id, name: String(newApp.name ?? '').trim() });
+							}
+							next.feishu.customApps = list;
+						}
 						if (appId && !isValidAppId(appId)) {
 							send(400, { ok: false, error: 'App ID 形态不对：应为 cli_ 开头的字母数字（例如 cli_a1b2c3）' });
 							return;
@@ -7350,22 +7613,42 @@ export function apply(ctx, config = {}) {
 							try { await KB_CREDENTIALS.set(ref, typedSecret); secret = typedSecret; }
 							catch (e) { send(500, { ok: false, error: '保存 App Secret 失败：' + String(e?.message ?? e) }); return; }
 						} else if (appId) {
-							secret = await resolveAppSecret(appId);   // 没填新 secret ⇒ 用已存的重建 profile
+							secret = await resolveKbAppSecret(appId);   // 没填新 secret ⇒ 用已存的重建 profile
+							if (!secret) {
+								/* ★ 2026-11-11：下拉直接选 bot 设置页里的应用时，KB 凭据库还没有它的 secret
+								   ⇒ 从 agents 凭据池读一次并镜像进 KB 凭据库（Host 内部，前端永不见明文）。
+								   不做这步：KB_FEISHU_APP_ID 变成该 appId 却建不出 lark-cli profile，
+								   之后每条命令都带一个不存在的 --profile ⇒ 全挂 ✗。 */
+								const fromAgents = agentsAppSecretOf(config, appId);
+								if (fromAgents && ref && KB_CREDENTIALS && typeof KB_CREDENTIALS.set === 'function') {
+									try { await KB_CREDENTIALS.set(ref, fromAgents); secret = fromAgents; } catch { /* 同步失败不阻断保存 */ }
+								}
+							}
 						}
 						const prevAppId = KB_FEISHU_APP_ID;
 						await writeFile(file(), JSON.stringify(next, null, 2), 'utf8');
 						KB_FEISHU_APP_ID = appId;   // 立即生效，无需重启 Host
-						// ★ 用凭据建/更新 lark-cli profile：secret 只经 stdin，不进 argv / 不进日志。
-						//   ⚠ 只在「填了新 secret」或「换了 appId」时重建 ⇒ 常规改 mappings/开关不会
-						//     每次保存都跑一遍 CLI（profile add 是幂等的，但会拖慢设置页并刷日志）✗。
+						// ★ 2026-11-11：只在「填了新 secret」或「换了 appId」时检查/建 profile ⇒
+						//   常规改 mappings/开关不会每次保存都跑 CLI。secret 只经 stdin，不进 argv / 日志。
+						//   ⚠ 必须先 `profile list`：对**已存在**的 profile 再跑 `profile add` 必然失败
+						//     （真机：profile 已 active/effective，却被误报「命令可能仍用旧应用」）✗。
 						let note = '';
 						if (appId && secret && (intent === 'set' || appId !== prevAppId)) {
 							const cli = String(next.feishu.cliPath || '').trim() || DEFAULT_LARK_CLI;
-							const r = await runLarkCli(cli, profileAddArgs(appId), 30000,
-								{ skipProfile: true, stdin: secret + '\n' });
-							note = r.code === 0
-								? `已为 ${appId} 建好 lark-cli profile，后续飞书命令会带 --profile ${appId}。`
-								: `lark-cli profile 建立失败（${String(r.stderr || r.stdout || '').slice(-200)}）；设置已保存，但命令可能仍用旧应用。`;
+							const listed = await runLarkCli(cli, PROFILE_LIST_ARGS, 15000, { skipProfile: true });
+							if (listed.code === 0 && hasLarkProfile(`${listed.stdout}\n${listed.stderr}`, appId)) {
+								note = `飞书应用 ${appId} 的 lark-cli profile 已存在，直接沿用；后续命令带 --profile ${appId}。`;
+							} else {
+								const r = await runLarkCli(cli, profileAddArgs(appId), 30000,
+									{ skipProfile: true, stdin: secret + '\n' });
+								if (r.code === 0) {
+									note = `已为 ${appId} 建好 lark-cli profile，后续飞书命令会带 --profile ${appId}。`;
+								} else {
+									// ★ 同一份解析器：剥掉 _notice、取前部真实错误，不再截输出尾部只拿到升级提示 ✗
+									const f = describeLarkCliFailure(`${r.stderr || ''}\n${r.stdout || ''}`, r.code, '建立应用 profile');
+									note = `${f.message}\n设置已保存，但该应用的 profile 未就绪，飞书命令可能仍走默认应用。`;
+								}
+							}
 						}
 						const out = Object.assign({}, next, {
 							feishu: Object.assign({}, next.feishu, { hasAppSecret: Boolean(appId && secret) }),

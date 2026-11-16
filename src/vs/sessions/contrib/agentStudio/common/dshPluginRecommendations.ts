@@ -66,25 +66,27 @@ interface ICuratedThirdPartyBundle {
 /**
  * 官方可选组合包。
  *
- * 来源：运行时 `node_modules/@deepseek-ai/*` 里声明了 `dsh.bundle.patch` 的包（共 10 个；其中
+ * 来源：运行时 `node_modules/@deepseek-ai/*` 里声明了 `dsh.bundle.patch` 的包（其中
  * `dsh-base` / `dsh-web-app` / `dsh-headless` / `dsh-sdk-app` / `dsh-sdk-minimal` / `dsh-acp-app`
- * 是**应用外壳**，不适合往已有 profile 里装）⇒ 剩下这四个才是"可选插件组合包"。
+ * 是**应用外壳**，不适合往已有 profile 里装）⇒ 只有声明了 patch 的组合包才该列在这里。
+ *
+ * ★ 2026-11-12（dsh 0.2.2-rc.2 实测收口，见 `dsh-runtime/<bundled>/package-lock.json`）：
+ *   - `dsh-experimental-schedule-bundle`：**已移除**。rc.2 依赖树里不存在；且宿主
+ *     `dshHostSupervisor.ts:1106` 明确「不再安装」——自建 `vssaros-scheduler` 提供 schedule 服务，
+ *     两个 provider 会抢同一个服务键。列着只会让用户点一个装不上（且不该装）的包。
+ *   - `dsh-experimental-agent-team-profile`：**已移除**。rc.2 里没有这个名字；官方 Team 已改名为
+ *     `dsh-agent-team` / `dsh-tool-agent-team` / `dsh-client-ui-agent-team`，且由 `dsh-base/cordis.patch.yml`
+ *     默认加载（前两个包），**不是可 `dsh plugin add` 的组合包**（三者都没声明 `dsh.bundle.patch`）。
+ *     新 Session 默认关闭 Team 模式，在「模型与推理等级」菜单里打开「使用智能体团队」即可，
+ *     不需要也不应该再给一条安装入口。
+ *   - 保留的两条在 rc.2 lockfile 与 node_modules 里都真实存在且声明了 `dsh.bundle.patch`。
+ *   - 存在性由 `agentStudio/test/common/dshPluginRecommendations.test.ts` 动态守卫，别再把失效名加回来。
  */
 const OFFICIAL_OPTIONAL_BUNDLES: readonly IOfficialOptionalBundle[] = [
 	{
 		pkg: '@deepseek-ai/dsh-experimental-voice-input-bundle',
 		label: '语音输入',
 		note: '把语音转成输入（SenseVoice 本地模型，首次安装需联网拉依赖）。',
-	},
-	{
-		pkg: '@deepseek-ai/dsh-experimental-schedule-bundle',
-		label: '定时任务',
-		note: '按时间触发的任务/提醒（配合 schedule 工具使用）。',
-	},
-	{
-		pkg: '@deepseek-ai/dsh-experimental-agent-team-profile',
-		label: 'Agent 团队',
-		note: '多 Agent 分工协作的组合（团队模式）。',
 	},
 	{
 		pkg: '@deepseek-ai/dsh-experimental-auto-review',

@@ -3,14 +3,16 @@
  * a simulated P4 server. No test here talks to a real server.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Commands } from '../src/infra/commands.ts'
+import { commandError, Commands } from '../src/infra/commands.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { fingerprint, parseDiffs, P4ConfigSchema, type ChangeFile } from '../src/sources/p4-change.ts'
 import { p4Kind, pollChanges } from '../src/sources/p4.ts'
-import { newChange, withDescription } from '../src/app/review.ts'
+import { newChange, Reviews, withDescription } from '../src/app/review.ts'
+import { Store } from '../src/app/store.ts'
+import { join } from 'node:path'
 import { feishu, startRuntime, type Host } from './fixtures/host.ts'
 
-interface FakeChange { status: 'pending' | 'submitted'; client: string; user: string; desc: string; shelved: ChangeFile[]; submittedAs?: number }
+interface FakeChange { status: 'pending' | 'submitted'; client: string; user: string; desc: string; shelved: ChangeFile[]; files?: ChangeFile[]; submittedAs?: number }
 /** A P4 server holding changelists, answering the commands dsh-superagent runs and recording each with its account and workspace. */
 class FakeP4 {
   changes = new Map<number, FakeChange>()
@@ -42,7 +44,7 @@ class FakeP4 {
     if (command === 'describe') {
       if (!change) return line({ data: `Change ${number} unknown.\n`, generic: 2, severity: 3 })
       const head = { change: String(change.submittedAs ?? number), status: change.status, client: change.client, user: change.user, desc: change.desc, time: '1793678561' }
-      return line(rest.includes('-S') ? { ...head, ...files(change.shelved) } : head)
+      return line({ ...head, ...files(rest.includes('-S') ? change.shelved : change.files ?? []) })
     }
     if (command === 'change' && rest[0] === '-o') return `Change:\t${number}\n\nClient:\t${change!.client}\n\nUser:\t${change!.user}\n\nStatus:\tpending\n\nDescription:\n${change!.desc.split('\n').map(text => `\t${text}`).join('\n')}\n`
     if (command === 'change' && rest[0] === '-i') {
@@ -70,7 +72,8 @@ class FakeP4 {
 }
 
 const EXEC = 'saros-bot'
-const base = { port: 'ssl:p4.example.com:1666', user: EXEC, paths: [{ path: '//GR/main/Source/...' }] }
+// These tests exercise the legacy submit flow; pending-only is the default now.
+const base = { port: 'ssl:p4.example.com:1666', user: EXEC, paths: [{ path: '//GR/main/Source/...' }], submit: 'pipeline' }
 const SHELF: ChangeFile[] = [{ depotFile: '//GR/main/Source/A.cpp', action: 'edit', rev: '3', type: 'text', digest: 'AB' },
   { depotFile: '//GR/main/Source/B.h', action: 'add', rev: '1', type: 'text', digest: 'CD' }]
 let h: Host
@@ -89,7 +92,7 @@ beforeEach(async () => {
   run.mockImplementation(async (program, args, cwd, input) => {
     if (program !== 'p4') return other ? other.call(Commands.prototype, program, args, cwd, input) : '{"ok":true,"data":{}}'
     const output = server.run(args, input)
-    if (output.includes('"severity":3')) throw Object.assign(new Error('p4 exited with code 1'), { code: 1, stdout: output, stderr: '' })
+    if (output.includes('"severity":3')) throw commandError(Object.assign(new Error('p4 exited with code 1'), { code: 1, stdout: output, stderr: '' }), 'p4')
     return output
   })
 })
@@ -106,6 +109,46 @@ const report = (sessionId: string) => h.runTool(sessionId, 'orchestrator_report'
 const writes = () => server.calls.filter(call => !['describe'].includes(call.args[0]!) && !(call.args[0] === 'change' && call.args[1] === '-o'))
 
 describe('requesting a review', () => {
+  it.each([undefined, null])('keeps the P4 delivery gate after a refused CL, even when the next ready omits it (%s)', async changelist => {
+    const { ticket, sessionId } = await shelvedTicket()
+    configure({ paths: [] })
+    await expect(report(sessionId)).rejects.toThrow(/allowed paths/)
+    expect(h.runtime.store.get<number>(`p4-required:${ticket.id}`)).toBe(501)
+    await expect(h.runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'done without binding', changelist }))
+      .rejects.toThrow(/requires a P4 changelist/)
+    expect(h.runtime.store.tickets.get(ticket.id)!.ended).toBeUndefined()
+    expect(h.runtime.reviews.get(ticket.id)).toBeUndefined()
+    await h.runTool(sessionId, 'orchestrator_report', { state: 'blocked', summary: 'P4 paths are not configured', human_action: 'Configure allowed P4 paths' })
+    configure()
+    expect(await report(sessionId)).toMatchObject({ review: { changelist: 501, state: 'waiting' } })
+    expect(writes()).toEqual([])
+  })
+  it('keeps the gate when P4 is disabled or the reported CL is unknown', async () => {
+    const { ticket, sessionId } = await shelvedTicket()
+    server.changes.delete(501)
+    await expect(report(sessionId)).rejects.toThrow(/does not exist/)
+    const settings = h.runtime.store.settings()
+    h.runtime.store.saveSettings({ ...settings, sources: { ...settings.sources, p4: { enabled: false, config: base } } })
+    await expect(report(sessionId)).rejects.toThrow(/P4 Source is off/)
+    await expect(h.runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'no CL' })).rejects.toThrow(/requires a P4 changelist/)
+    expect(h.runtime.store.tickets.get(ticket.id)!.ended).toBeUndefined()
+  })
+  it('does not require a CL for a local-only report merely because P4 is enabled with empty paths', async () => {
+    configure({ paths: [] })
+    const { ticket, sessionId } = await h.acceptedTicket(feishu('local', '@bot 只分析问题，不修改代码'))
+    await h.runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'analysis only' })
+    expect(h.runtime.store.tickets.get(ticket.id)!.ended).toMatchObject({ outcome: 'completed' })
+    expect(server.calls).toEqual([])
+  })
+  it('refuses ready when an opened file is missing from the shelf, but permits a shelf after revert', async () => {
+    const { ticket, sessionId } = await shelvedTicket()
+    const change = server.changes.get(501)!
+    change.files = [...SHELF, { ...SHELF[0]!, depotFile: '//GR/main/Source/Unshelved.cpp' }]
+    await expect(report(sessionId)).rejects.toThrow(/not shelved/)
+    expect(h.runtime.store.tickets.get(ticket.id)!.follows ?? []).toEqual([])
+    change.files = []
+    expect(await report(sessionId)).toMatchObject({ review: { changelist: 501, files: SHELF, client: change.client } })
+  })
   it('refuses a ready CL without a shelf, and records one with a shelf as waiting, which the review route shows with its differences', async () => {
     const { ticket, sessionId } = await shelvedTicket([])
     // A CL with nothing shelved (here not even opened files) cannot be reviewed.
@@ -121,6 +164,30 @@ describe('requesting a review', () => {
     await report(sessionId)
     expect(((await h.api('GET', 'reviews')).body.audit as unknown[])).toHaveLength(1)
     expect(writes()).toEqual([])
+  })
+  it('restores a failed CL delivery requirement from SQLite in a new review service', async () => {
+    const { ticket, sessionId } = await shelvedTicket()
+    configure({ paths: [] })
+    await expect(report(sessionId)).rejects.toThrow(/allowed paths/)
+    const reopened = new Store(join(h.directory, 'orchestrator.sqlite'))
+    try {
+      const restored = new Reviews({ store: reopened, engine: h.runtime.engine, p4: h.runtime.context(p4Kind) })
+      expect(restored.requiredChangelist(ticket.id)).toBe(501)
+      expect(restored.get(ticket.id)).toBeUndefined()
+    } finally { reopened.close() }
+  })
+  it('returns line statistics from the actual shelf differences, including truncation', async () => {
+    const { ticket, sessionId } = await shelvedTicket()
+    await report(sessionId)
+    const view = await h.api('GET', `tickets/${ticket.id}/review`)
+    expect(view.body).toMatchObject({ diffSummary: { files: 2, added: 2, removed: 2, hunks: 2, complete: true } })
+    const run = vi.mocked(Commands.prototype.run)
+    const other = run.getMockImplementation()!
+    run.mockImplementation(async (program, args, cwd, input) => args.includes('-du')
+      ? `==== ${SHELF[0]!.depotFile}#3 (text) ====\n--- old\n+++ new\n@@ -1 +1 @@\n${'+new\n'.repeat(2100)}`
+      : other.call(Commands.prototype, program, args, cwd, input))
+    const truncated = await h.api('GET', `tickets/${ticket.id}/review`)
+    expect(truncated.body).toMatchObject({ diffSummary: { files: 2, added: 1997, removed: 0, hunks: 1, complete: false } })
   })
   it('gives no agent a tool that approves, rejects, discards or submits', async () => {
     const { sessionId } = await shelvedTicket()

@@ -59,33 +59,30 @@ for (const rel of referenced) {
 
 // ── 3. 关键代码事实（文档承诺 ↔ 代码现状）──────────────────────────────
 const MARKET = 'dsh-plugins/vssaros-marketplace/lib/workbench.js';
-const STUDIO = 'dsh-plugins/vssaros-studio/lib/client.js';
 const UI_LAYER = 'dsh-plugins/vssaros-workbenches/lib/client.ui.js';
 const FRAME = 'dsh-plugins/vssaros-workbenches/lib/client.js';
+// ★ 2026-11-11：萨罗斯管理平台工作台（vssaros-studio）已下线 ⇒ 不再作为 iframe 型样板，
+//   本节的「两个工作台」对账收敛为「样例商城」一份（外壳契约仍逐条钉住）。
 
 /** 去掉注释再断言 —— 注释里写的「» 收起」不能算实现（第一次写守卫就栽在这） */
 const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
 
 const market = read(MARKET);
-const studio = read(STUDIO);
 const uiLayer = read(UI_LAYER);
 const frame = read(FRAME);
 const marketCode = stripComments(market);
-const studioCode = stripComments(studio);
 
 check('样例商城：收起是 display:none',
 	/display:\s*collapsed\s*\?\s*'none'\s*:\s*'flex'/.test(marketCode));
-check('萨罗斯平台：与样例同一表达式',
-	/display:\s*collapsed\s*\?\s*'none'\s*:\s*'flex'/.test(studioCode));
 // 断言到具体值，避免「CONV_MIN_X 也含 CONV_MIN」这类假绿
-check('两个工作台都有 CONV_MIN = 320',
-	/CONV_MIN\s*=\s*320/.test(marketCode) && /CONV_MIN\s*=\s*320/.test(studioCode));
-// ★ 2026-11-02（用户：「AI 助手侧边栏左上角不要有收起按钮」）：此前这里**要求**两个工作台各自有「» 收起」，
+check('样例商城有 CONV_MIN = 320',
+	/CONV_MIN\s*=\s*320/.test(marketCode));
+// ★ 2026-11-02（用户：「AI 助手侧边栏左上角不要有收起按钮」）：此前这里**要求**工作台各自有「» 收起」，
 //   现在反过来 —— 对话栏顶部的「＋ 新会话」由宿主统一提供，收起 / 展开统一走右侧浮动工具栏，工作台不许自画。
-check('两个工作台都**没有**自画的「» 收起」（左上角不放收起按钮）',
-	!/'»\s*收起'/.test(marketCode) && !/'»\s*收起'/.test(studioCode));
-check('两个工作台都**没有**自画的「＋ 新会话」（宿主对话栏统一提供）',
-	!/＋\s*新会话/.test(marketCode) && !/＋\s*新会话/.test(studioCode));
+check('样例商城**没有**自画的「» 收起」（左上角不放收起按钮）',
+	!/'»\s*收起'/.test(marketCode));
+check('样例商城**没有**自画的「＋ 新会话」（宿主对话栏统一提供）',
+	!/＋\s*新会话/.test(marketCode));
 // ★ 2026-10-26 定稿：展开入口 + 外开 合成 **S2 一体条**，只在外壳渲染一次。
 //   工作台侧只写属性 + 监听事件（不再自造按钮 / 拖拽实现）。
 const SHELL = 'dsh-plugins/vssaros-workbenches/lib/client.js';
@@ -97,14 +94,14 @@ check('一体条含「« AI 助手」与「↗ 外开」两段',
 	/data-vssaros-wb-assist/.test(shellCode) && /data-vssaros-wb-open-external/.test(shellCode));
 check('展开按钮可拖拽（attachActionsDrag，外壳唯一实现）',
 	/function attachActionsDrag\(el, frameEl\)/.test(shellCode)
-	&& !/function attachExpandDrag/.test(marketCode) && !/function attachExpandDrag/.test(studioCode));
+	&& !/function attachExpandDrag/.test(marketCode));
 check('拖拽落点持久化（ACTIONS_POS_KEY）', /ACTIONS_POS_KEY/.test(shellCode));
 check('不落 header 安全区（ACTIONS_SAFE_TOP）', /ACTIONS_SAFE_TOP = 30/.test(shellCode));
 check('右键复位', /contextmenu[\s\S]{0,200}applyActionsPos\(el, null\)/.test(shellCode));
-check('两个工作台都上报助手收起态',
-	/'data-vssaros-assist-collapsed'/.test(marketCode) && /'data-vssaros-assist-collapsed'/.test(studioCode));
-check('两个工作台都监听 vssaros:assist-expand',
-	/vssaros:assist-expand/.test(marketCode) && /vssaros:assist-expand/.test(studioCode));
+check('样例商城上报助手收起态',
+	/'data-vssaros-assist-collapsed'/.test(marketCode));
+check('样例商城监听 vssaros:assist-expand',
+	/vssaros:assist-expand/.test(marketCode));
 check('宿主帧里有 ConversationMount', /function ConversationMount/.test(frame));
 check('宿主帧提供 data-vssaros-wb-dock 停靠点', /data-vssaros-wb-dock/.test(frame));
 check('props.conversation 由 Frame 注入 customFrame 工作台', /customFrame[\s\S]{0,80}props\.conversation/.test(frame));
@@ -130,7 +127,8 @@ check('npm run check:dsh-plugins 含 assistant-collapse 守卫', chain.includes(
 // ── 4. 伸缩守卫的 TARGETS 覆盖了所有带右栏的工作台 ─────────────────────
 const collapseGuard = read('dsh-plugins/check-assistant-collapse.mjs');
 check('伸缩守卫已纳入商城', /vssaros-marketplace\/lib\/workbench\.js/.test(collapseGuard));
-check('伸缩守卫已纳入萨罗斯平台', /vssaros-studio\/lib\/client\.js/.test(collapseGuard));
+// ★ 2026-11-11：萨罗斯管理平台工作台已下线 ⇒ 反向钉住守卫不再读取它的客户端文件（否则删目录后 ENOENT）。
+check('伸缩守卫不再引用已下线的萨罗斯平台', !/vssaros-studio\/lib\/client\.js/.test(collapseGuard));
 
 // ── 5. 脚手架端到端（2026-11-02）：external 模式 = 「0 处宿主改动就能装上」的证据 ──────
 // 链路：生成 → 包内自检 → `npm pack` → 宿主 Host 侧预检（prepareLocalWorkbench，与 install_local_workbench 同一段）。

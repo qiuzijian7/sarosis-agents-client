@@ -10,10 +10,11 @@
 //   （与 skills 的 `bundledSkillDir` 同一类道理：产品侧的东西用绝对路径交付给读不到源码的进程 ⇒
 //   内置技能/内置 agent 都活在同一层设计里）。没注入 ⇒ 退回"只列自定义"（不报错 ✓）。
 
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import { AGENT_FILE, agentFromFile } from './core/agents.js';
+import { pluginOverridesFromAgentMd } from './core/create.js';
 
 /** 数据根。优先级：`config.dataRoot` → 环境变量 → `~/.vssaros`。 */
 export function dataRootOf(config) {
@@ -29,6 +30,104 @@ export function dataRootOf(config) {
 export function agentsRootOf(config) {
 	const configured = typeof config?.agentsRoot === 'string' ? config.agentsRoot.trim() : '';
 	return configured || join(dataRootOf(config), 'agents');
+}
+
+const agentSources = new Map();
+const sourceRootOf = (config) => {
+	const root = resolve(agentsRootOf(config));
+	return process.platform === 'win32' ? root.toLowerCase() : root;
+};
+
+/** 注册已解析的插件 Bot 数组；同根 owner/id 互斥，返回只撤销本次注册的幂等函数。 */
+export function registerAgentSource(config, source) {
+	const owner = typeof source?.owner === 'string' ? source.owner.trim() : '';
+	if (!owner) { throw new Error('agent source owner 不能为空'); }
+	if (!Array.isArray(source?.agents)) { throw new Error('agent source agents 必须是数组'); }
+	const root = sourceRootOf(config);
+	const sources = agentSources.get(root) ?? new Map();
+	if (sources.has(owner)) { throw new Error(`agent source owner 已注册：${owner}`); }
+	const ids = new Set();
+	const agents = source.agents.map((agent) => {
+		if (!agent || typeof agent.id !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(agent.id)) {
+			throw new Error('插件 Bot id 必须是已命名空间化的小写安全 id');
+		}
+		if (typeof agent.name !== 'string' || !agent.name.trim()) { throw new Error(`插件 Bot 缺 name：${agent.id}`); }
+		if (ids.has(agent.id)) { throw new Error(`agent source 内 id 冲突：${agent.id}`); }
+		for (const [otherOwner, rows] of sources) {
+			if (rows.some(row => row.id === agent.id)) { throw new Error(`插件 Bot id 已注册：${agent.id}（owner：${otherOwner}）`); }
+		}
+		ids.add(agent.id);
+		const row = structuredClone(agent);
+		return { ...row, tools: Array.isArray(row.tools) ? row.tools : [], persona: typeof row.persona === 'string' ? row.persona : (typeof row.systemPrompt === 'string' ? row.systemPrompt : ''), source: 'plugin', sourceOwner: owner };
+	});
+	sources.set(owner, agents);
+	agentSources.set(root, sources);
+	return () => {
+		if (sources.get(owner) !== agents) { return; }
+		sources.delete(owner);
+		if (!sources.size && agentSources.get(root) === sources) { agentSources.delete(root); }
+	};
+}
+
+function sourceMapping(value, label) {
+	if (value === undefined) { return new Map(); }
+	if (!(value instanceof Map) && (!value || typeof value !== 'object' || (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null))) {
+		throw new Error(`agent source ${label} 必须是 Map 或对象`);
+	}
+	const entries = value instanceof Map ? [...value] : Object.entries(value);
+	if (entries.some(([key, target]) => typeof key !== 'string' || !key.trim() || typeof target !== 'string' || !target.trim())) {
+		throw new Error(`agent source ${label} 映射必须是非空字符串`);
+	}
+	return new Map(entries);
+}
+
+export async function parseAgentSource(source) {
+	if (source?.agents !== undefined) {
+		if (!Array.isArray(source.agents)) { throw new Error('agent source agents 必须是数组'); }
+		if (source.root !== undefined || source.ids !== undefined) { throw new Error('agent source 数组与 root 声明不能混用'); }
+		return source;
+	}
+	if (typeof source?.root !== 'string' || !isAbsolute(source.root) || basename(source.root) !== 'bots') {
+		throw new Error('agent source root 必须是包内 bots 的绝对目录');
+	}
+	if (source.ids === undefined) { throw new Error('agent source root 必须声明 ids 映射'); }
+	const ids = sourceMapping(source.ids, 'ids');
+	for (const [id, target] of ids) {
+		if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id) || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(target)) { throw new Error('插件 Bot id 声明或命名空间 id 非法'); }
+	}
+	const skills = sourceMapping(source.skills, 'skills');
+	const tools = sourceMapping(source.tools, 'tools');
+	const mcp = [...sourceMapping(source.mcp, 'mcp')].sort(([a], [b]) => b.length - a.length);
+	const root = resolve(source.root);
+	const base = await realpath(root);
+	await Promise.all([...ids.keys()].map(async id => {
+		const file = await realpath(join(root, id, AGENT_FILE));
+		const rel = relative(base, file);
+		if (rel === '..' || rel.startsWith('../') || rel.startsWith('..\\') || isAbsolute(rel)) { throw new Error(`插件 Bot 文件逃逸 bots 目录：${id}`); }
+	}));
+	const scan = await scanAgents(root, undefined, { ids: new Set(ids.keys()) });
+	if (scan.errors.length) { throw new Error(`插件 Bot 解析失败：${scan.errors.join('；')}`); }
+	const mappedTools = (entries) => [...new Set(entries.flatMap(entry => {
+		const deny = entry.startsWith('!') ? '!' : '';
+		const name = deny ? entry.slice(1) : entry;
+		for (const [id, target] of mcp) {
+			const prefix = `mcp__${id}__`;
+			if (name.startsWith(prefix)) { return [`${deny}mcp__${target}__${name.slice(prefix.length)}`]; }
+		}
+		if (tools.has(name)) { return [deny + tools.get(name)]; }
+		if (name.endsWith('*')) {
+			const matches = [...tools].filter(([id]) => id.startsWith(name.slice(0, -1)));
+			if (matches.length) { return matches.map(([, target]) => deny + target); }
+		}
+		return [entry];
+	}))];
+	const agents = [...ids].map(([id, target]) => {
+		const file = join(root, id, AGENT_FILE);
+		const row = scan.agents.find(agent => agent.file === file);
+		if (!row || row.id !== id) { throw new Error(`插件 Bot id 与目录声明不一致：${id}`); }
+		return { ...row, id: target, skills: (row.skills ?? []).map(name => skills.get(name) ?? name), tools: mappedTools(row.tools) };
+	});
+	return { ...source, agents };
 }
 
 /**
@@ -74,13 +173,39 @@ export async function scanAgentsFromConfig(config, signal) {
 	//   `userFacing: true` 才展示（与 IDE 的 `USER_FACING_BUILTIN_AGENT_IDS` 由守卫 ⑤ 强绑定）；
 	//   自定义永远可见。这里只负责把 `source` 标对，过滤别在本函数里各写一份 ✗。
 	for (const a of builtin.agents) { byId.set(a.id, { ...a, source: 'builtin' }); }
-	for (const a of custom.agents) { byId.set(a.id, { ...a, source: 'custom' }); }
+	const sources = [...(agentSources.get(sourceRootOf(config))?.entries() ?? [])];
+	const pluginAgents = sources.flatMap(([, agents]) => structuredClone(agents));
+	for (const a of pluginAgents) { byId.set(a.id, a); }
+	const overlayErrors = [];
+	for (const a of custom.agents) {
+		const record = a.pluginOverrides;
+		if (!record) { byId.set(a.id, { ...a, source: 'custom' }); continue; }
+		const plugin = pluginAgents.find(row => row.id === a.id);
+		if (plugin && record.owner !== plugin.sourceOwner) {
+			overlayErrors.push(`插件覆写 owner 不匹配：${a.id}`);
+			byId.set(a.id, { ...a, source: 'custom', sourceOwner: record.owner });
+			continue;
+		}
+		const row = { ...(plugin ?? a), file: a.file, source: 'custom', sourceOwner: record.owner, pluginOverrides: structuredClone(record) };
+		for (const [field, value] of Object.entries(record.delta)) {
+			if (field === 'workspacesRead' || field === 'workspacesWrite') {
+				row.workspaces = { ...(row.workspaces ?? {}), [field === 'workspacesRead' ? 'read' : 'write']: structuredClone(value) };
+			} else if (field === 'memoryChars' && value === null) {
+				delete row.memoryChars;
+			} else {
+				row[field] = structuredClone(value);
+			}
+		}
+		byId.set(a.id, row);
+	}
 	return {
 		agents: [...byId.values()],
-		errors: [...(builtin.errors ?? []), ...(custom.errors ?? [])],
+		sourceAgentIds: pluginAgents.map(a => a.id),
+		sourceAgents: structuredClone(pluginAgents),
+		errors: [...(builtin.errors ?? []), ...(custom.errors ?? []), ...overlayErrors],
 		root: custom.root,
 		missing: custom.missing,
-		fingerprint: `${builtin.fingerprint ?? 'absent'}|${custom.fingerprint ?? 'absent'}`,
+		fingerprint: `${builtin.fingerprint ?? 'absent'}|${custom.fingerprint ?? 'absent'}${sources.length ? `|${JSON.stringify(sources)}` : ''}`,
 	};
 }
 
@@ -98,7 +223,7 @@ async function fingerprintOf(root) {
  * 返回 `{ agents, errors, root, missing }`——坏文件带原因进 errors，**不丢其它 agent**。
  * （目录里没有 `.agent.md` 属正常，跳过；不把它当错误刷屏。）
  */
-export async function scanAgents(root, signal) {
+export async function scanAgents(root, signal, { ids } = {}) {
 	let entries;
 	try {
 		entries = await readdir(root, { withFileTypes: true });
@@ -108,7 +233,7 @@ export async function scanAgents(root, signal) {
 		}
 		throw new Error(`agent 目录读取失败（${root}）：${e?.message ?? e}`);
 	}
-	const dirs = entries.filter(e => e.isDirectory()).map(e => e.name).sort();
+	const dirs = entries.filter(e => e.isDirectory() && (!ids || ids.has(e.name))).map(e => e.name).sort();
 	const agents = [];
 	const errors = [];
 	// ★★ 2026-10-29（真机：加了 agents 覆盖层后 Host ready 从 **7s 变 21s**）：
@@ -139,7 +264,9 @@ export async function scanAgents(root, signal) {
 		if (parsed.error) {
 			return { error: parsed.error };
 		}
-		return { agent: parsed.agent };
+		const record = pluginOverridesFromAgentMd(text);
+		if (record?.error) { return { error: `${record.error}：${file}` }; }
+		return { agent: { ...parsed.agent, ...(record ? { pluginOverrides: record } : {}) } };
 	}));
 	// 还原成"按目录名排序"的稳定顺序（并发完成顺序是乱的 ⇒ 不能直接 push）。
 	for (const r of results) {

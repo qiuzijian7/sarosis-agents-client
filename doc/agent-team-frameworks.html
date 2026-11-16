@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang='zh-CN'>
+<head>
+<meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<meta name='color-scheme' content='light dark'>
+<title>官方智能团队与 Bots 群聊团队 · 框架梳理</title>
+<!-- 静态框架说明页：无 JavaScript、无外部 CSS/字体/图片、无浮层、无交互控件；不是界面 mockup，也不是生产实现代码。 -->
+<style>
+:root {
+  --atf-bg: var(--dsw-alias-bg-base, Canvas);
+  --atf-fg: var(--dsw-alias-label-primary, CanvasText);
+  --atf-muted: var(--dsw-alias-label-tertiary, GrayText);
+  --atf-surface: var(--dsw-alias-bg-layer-1, ButtonFace);
+  --atf-surface2: var(--dsw-alias-bg-layer-2, Canvas);
+  --atf-border: var(--dsw-alias-border-l1, rgba(127, 127, 127, .35));
+  --atf-accent: var(--dsw-alias-brand-primary-new, Highlight);
+  --atf-warn: var(--dsw-alias-status-warning-primary, Mark);
+  --atf-danger: var(--dsw-alias-status-error-primary, Mark);
+  --atf-ok: var(--dsw-alias-status-success-primary, Highlight);
+}
+* { box-sizing: border-box; }
+html { color-scheme: light dark; }
+body {
+  margin: 0;
+  background: var(--atf-bg);
+  color: var(--atf-fg);
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+a { color: var(--atf-accent); }
+a:focus-visible { outline: 2px solid var(--atf-accent); outline-offset: 2px; }
+h1, h2, h3 { line-height: 1.25; margin: 0 0 .6rem; }
+p { margin: .5rem 0; }
+ul, ol { padding-left: 1.25rem; margin: .5rem 0; }
+code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: .92em;
+  background: var(--atf-surface2);
+  border: 1px solid var(--atf-border);
+  border-radius: .3rem;
+  padding: .05rem .3rem;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.atf-main {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: clamp(1rem, 3vw, 2.5rem);
+}
+.atf-header {
+  border-bottom: 1px solid var(--atf-border);
+  padding-bottom: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+.atf-kicker {
+  color: var(--atf-muted);
+  font-size: .82rem;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.atf-title {
+  font-size: clamp(1.7rem, 4vw, 2.6rem);
+  margin: .25rem 0 .5rem;
+}
+.atf-subtitle {
+  font-size: 1.05rem;
+  color: var(--atf-muted);
+  max-width: 72ch;
+}
+.atf-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  gap: .6rem;
+  margin-top: 1rem;
+}
+.atf-meta-item {
+  border: 1px solid var(--atf-border);
+  border-radius: .55rem;
+  padding: .6rem .75rem;
+  background: var(--atf-surface);
+}
+.atf-meta-label { display: block; color: var(--atf-muted); font-size: .78rem; }
+.atf-meta-value { display: block; font-weight: 600; }
+.atf-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+  margin: 1rem 0 0;
+}
+.atf-navlink {
+  text-decoration: none;
+  border: 1px solid var(--atf-border);
+  border-radius: 999px;
+  padding: .3rem .7rem;
+  font-size: .88rem;
+  background: var(--atf-surface);
+}
+.atf-section { margin-top: 2.2rem; }
+.atf-h2 { font-size: clamp(1.35rem, 3vw, 1.8rem); }
+.atf-h3 { font-size: 1.05rem; }
+.atf-lede { max-width: 80ch; }
+.atf-note { color: var(--atf-muted); font-size: .9rem; }
+.atf-muted { color: var(--atf-muted); }
+.atf-strong { font-weight: 700; }
+.atf-ok { color: var(--atf-ok); font-weight: 700; }
+.atf-warn { color: var(--atf-fg); font-weight: 700; border-bottom: 2px solid var(--atf-warn); }
+.atf-blocked { color: var(--atf-fg); font-weight: 700; border-bottom: 2px solid var(--atf-danger); }
+.atf-callout {
+  border: 1px solid var(--atf-border);
+  border-left: 4px solid var(--atf-accent);
+  border-radius: .6rem;
+  background: var(--atf-surface);
+  padding: 1rem 1.1rem;
+  margin: 1rem 0;
+}
+.atf-callout-title { font-weight: 700; margin-bottom: .25rem; }
+.atf-callout-body { margin: 0; }
+.atf-tag {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--atf-border);
+  border-radius: 999px;
+  padding: .1rem .5rem;
+  font-size: .76rem;
+  margin-right: .35rem;
+  vertical-align: middle;
+}
+.atf-tag-source { color: var(--atf-accent); }
+.atf-tag-runtime { color: var(--atf-ok); }
+.atf-tag-blocked { color: var(--atf-fg); border-color: var(--atf-danger); font-weight: 700; }
+.atf-tag-warn { color: var(--atf-fg); border-color: var(--atf-warn); font-weight: 700; }
+.atf-evidence {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+  gap: .8rem;
+  margin: 1rem 0;
+}
+.atf-evidence-item {
+  border: 1px solid var(--atf-border);
+  border-left: 3px solid var(--atf-border);
+  border-radius: .55rem;
+  padding: .8rem .9rem;
+  background: var(--atf-surface);
+}
+.atf-evidence-label { font-weight: 700; font-size: .9rem; }
+.atf-evidence-body { font-size: .9rem; color: var(--atf-muted); }
+.atf-arch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+.atf-arch-col {
+  border: 1px solid var(--atf-border);
+  border-radius: .7rem;
+  background: var(--atf-surface);
+  padding: 1rem;
+  min-width: 0;
+}
+.atf-arch-official { border-top: 3px solid var(--atf-accent); }
+.atf-arch-group { border-top: 3px solid var(--atf-ok); }
+.atf-arch-title { font-size: 1.1rem; margin-bottom: .2rem; }
+.atf-arch-sub { color: var(--atf-muted); font-size: .9rem; margin-bottom: 1rem; }
+.atf-layer {
+  border-left: 3px solid var(--atf-border);
+  padding: .1rem 0 .1rem .9rem;
+  margin: .9rem 0;
+  min-width: 0;
+}
+.atf-layer-head { font-weight: 700; font-size: .92rem; }
+.atf-layer-body { font-size: .9rem; min-width: 0; }
+.atf-layer-body ul { margin: .35rem 0; }
+.atf-figure {
+  border: 1px solid var(--atf-border);
+  border-radius: .7rem;
+  background: var(--atf-surface);
+  padding: 1rem;
+  margin: 1rem 0;
+}
+.atf-figure-caption { color: var(--atf-muted); font-size: .85rem; margin-bottom: .8rem; }
+.atf-flowline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: .5rem;
+}
+.atf-flownode {
+  flex: 1 1 160px;
+  min-width: 0;
+  border: 1px solid var(--atf-border);
+  border-radius: .5rem;
+  padding: .65rem .7rem;
+  background: var(--atf-surface2);
+}
+.atf-flowtitle { font-weight: 700; font-size: .88rem; }
+.atf-flowbody { font-size: .84rem; color: var(--atf-muted); }
+.atf-flowarrow {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  color: var(--atf-muted);
+  font-size: 1.1rem;
+}
+.atf-boundary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+  gap: .8rem;
+}
+.atf-boundary-card {
+  border: 1px solid var(--atf-border);
+  border-left: 3px solid var(--atf-accent);
+  border-radius: .55rem;
+  padding: .8rem .9rem;
+  background: var(--atf-surface);
+}
+.atf-boundary-title { font-weight: 700; font-size: .92rem; }
+.atf-boundary-body { font-size: .9rem; }
+.atf-table-wrap { width: 100%; }
+.atf-table-caption { font-size: .85rem; color: var(--atf-muted); margin-bottom: .4rem; }
+.atf-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  border: 1px solid var(--atf-border);
+  border-radius: .6rem;
+}
+.atf-table th, .atf-table td {
+  border-bottom: 1px solid var(--atf-border);
+  padding: .65rem .7rem;
+  text-align: left;
+  vertical-align: top;
+  font-size: .9rem;
+  overflow-wrap: anywhere;
+}
+.atf-table th { background: var(--atf-surface2); font-weight: 700; }
+.atf-table tr:last-child td { border-bottom: 0; }
+.atf-table code { display: inline-block; max-width: 100%; }
+.atf-status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+  gap: .8rem;
+}
+.atf-status-card {
+  border: 1px solid var(--atf-border);
+  border-radius: .55rem;
+  padding: .8rem .9rem;
+  background: var(--atf-surface);
+}
+.atf-status-title { font-weight: 700; font-size: .92rem; }
+.atf-status-body { font-size: .9rem; }
+.atf-source-list { list-style: none; padding: 0; margin: 0; }
+.atf-source-item {
+  border-bottom: 1px solid var(--atf-border);
+  padding: .55rem 0;
+  font-size: .9rem;
+}
+.atf-source-item:last-child { border-bottom: 0; }
+.atf-source-path { font-weight: 700; }
+.atf-footer {
+  margin-top: 3rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--atf-border);
+  color: var(--atf-muted);
+  font-size: .85rem;
+}
+.atf-divider { border: 0; border-top: 1px solid var(--atf-border); margin: 1.5rem 0; }
+@media (max-width: 760px) {
+  .atf-table, .atf-table tbody, .atf-table tr, .atf-table td { display: block; width: 100%; }
+  .atf-table thead { display: none; }
+  .atf-table tr {
+    border: 1px solid var(--atf-border);
+    border-radius: .55rem;
+    margin: 0 0 .8rem;
+    padding: .35rem .5rem;
+  }
+  .atf-table td { border-bottom: 0; padding: .35rem .45rem; }
+  .atf-table td::before {
+    content: attr(data-label);
+    display: block;
+    color: var(--atf-muted);
+    font-size: .74rem;
+    font-weight: 700;
+    margin-bottom: .1rem;
+  }
+}
+@media print {
+  .atf-nav { display: none; }
+  body { background: Canvas; color: CanvasText; }
+  .atf-arch-col, .atf-figure, .atf-callout, .atf-boundary-card, .atf-status-card, .atf-evidence-item { background: Canvas; }
+}
+</style>
+</head>
+<body data-agents-version="0.2.391" data-chat-surface-version="0.2.441" data-runtime-version="0.2.2-rc.2">
+<main class='atf-main'>
+
+<header class='atf-header'>
+  <div class='atf-kicker'>静态框架说明 · 正常 HTML · 非 mockup · 非实现代码</div>
+  <h1 class='atf-title'>官方智能团队 与 Bots 群聊团队：框架梳理</h1>
+  <p class='atf-subtitle'>把两套并列框架的分层、数据流、任务语义、持久化、表现层与集成边界放在同一张图里。本文不提供交互演示，不修改产品代码，不引用 IDE 侧已退役的工具/技能残留。</p>
+  <div class='atf-meta'>
+    <div class='atf-meta-item'><span class='atf-meta-label'>快照日期</span><span class='atf-meta-value'>2026-11-16</span></div>
+    <div class='atf-meta-item'><span class='atf-meta-label'>dsh runtime</span><span class='atf-meta-value'>0.2.2-rc.2</span></div>
+    <div class='atf-meta-item'><span class='atf-meta-label'>@vssaros/dsh-agents</span><span class='atf-meta-value'>0.2.391</span></div>
+    <div class='atf-meta-item'><span class='atf-meta-label'>@vssaros/dsh-chat-surface</span><span class='atf-meta-value'>0.2.441</span></div>
+  </div>
+  <nav class='atf-nav' aria-label='章节导航'>
+    <a class='atf-navlink' href='#atf-summary'>结论</a>
+    <a class='atf-navlink' href='#atf-evidence'>证据口径</a>
+    <a class='atf-navlink' href='#atf-arch'>框架图</a>
+    <a class='atf-navlink' href='#atf-flow'>数据流</a>
+    <a class='atf-navlink' href='#atf-compare'>能力对比</a>
+    <a class='atf-navlink' href='#atf-boundary'>集成边界</a>
+    <a class='atf-navlink' href='#atf-status'>当前状态</a>
+    <a class='atf-navlink' href='#atf-sources'>源码索引</a>
+  </nav>
+</header>
+
+<section class='atf-section' id='atf-summary'>
+  <h2 class='atf-h2'>一句话结论</h2>
+  <div class='atf-callout'>
+    <div class='atf-callout-title'>两套框架不是同一层，不能直接互相替换。</div>
+    <p class='atf-callout-body'>官方 Agent Teams 是 <span class='atf-strong'>根会话 + subagent 树 + 共享任务板</span> 的任务协作层；Bots 群聊团队是 <span class='atf-strong'>持久 Bot 名册 + 群会话 + 成员独立影子会话 + @ 接力</span> 的会话编排层。当前 <code>officialTeamAdapter.js</code> 只把官方成员只读投影到本机 Bot 名册；官方 Team 不读 <code>vssaros.team</code> 总线，群聊也不写官方任务板。</p>
+  </div>
+  <p class='atf-lede'><span class='atf-tag atf-tag-blocked'>P1 gate=BLOCKED</span> 当前群成员是 <code>sessionController.create()</code> 创建的独立会话，不是官方 <code>continuable</code> 后代；官方任务 owner/assignee 只认 root 或这类后代。加上随包 <code>dsh-base</code> 默认未开放 <code>allowedAgentPresets</code>，以及 2026-11-14 CDP 只读探针确认客户端没有「按 Bot preset 建后代」的公开方法，所以结论仍是：不迁移存量群、不双写任务板、不伪造调用方身份。</p>
+</section>
+
+<section class='atf-section' id='atf-evidence'>
+  <h2 class='atf-h2'>证据口径</h2>
+  <div class='atf-evidence'>
+    <div class='atf-evidence-item'>
+      <div class='atf-evidence-label'><span class='atf-tag atf-tag-source'>A 源码</span> 当前工作区可直接复核</div>
+      <div class='atf-evidence-body'><code>dsh-runtime/0.2.2-rc.2/node_modules/@deepseek-ai/</code> 下官方包源码，以及 <code>dsh-plugins/vssaros-agents/</code>、<code>dsh-plugins/vssaros-chat-surface/</code>、<code>dsh-plugins/contracts/</code>、相关 guard/test/CHANGELOG。本文优先采用这一级。</div>
+    </div>
+    <div class='atf-evidence-item'>
+      <div class='atf-evidence-label'><span class='atf-tag atf-tag-runtime'>B 运行时</span> 只读 CDP 探针</div>
+      <div class='atf-evidence-body'>2026-11-14 dev Host <code>9799 / 9282</code>：确认 <code>dsh-client-ui-agent-team</code> 已加载，<code>remote.agentTeams</code> 仅 <code>setEnabled</code>，<code>remote.subagents</code> 仅 <code>prompt</code> / <code>interruptByUser</code>，<code>agentPresets.list()</code> 返回 37 个 preset（含 <code>vssaros-coder</code> 等 Bot preset）。</div>
+    </div>
+    <div class='atf-evidence-item'>
+      <div class='atf-evidence-label'><span class='atf-tag atf-tag-warn'>C 不采用</span> 旧资料不作为当前事实</div>
+      <div class='atf-evidence-body'><code>agent-team-rc2-report.html</code>（2026-11-12，B/C 级、旧工具名）、<code>superagent-team-framework.html</code>（SuperAgent 主管组团旧版）、<code>superagent-framework-v2.html</code>（SuperAgent v2，主题不同）均不作为本页框架事实。</div>
+    </div>
+  </div>
+  <p class='atf-note'>能力链只认 dsh 侧：工具名、技能名、preset 均以 <code>dsh-plugins/</code> 与随包 runtime 为准；不引用 <code>toolsetConfig.ts</code> / <code>bundledTools.ts</code> 等 IDE 侧退役残留。</p>
+</section>
+
+<section class='atf-section' id='atf-arch'>
+  <h2 class='atf-h2'>框架图</h2>
+  <p class='atf-lede'>两套框架并列装在同一个 dsh Host 中。左边是官方 rc.2 的 Team 服务与 UI；右边是 VsSaros 的群聊运行时与表现层；中间只有只读投影和工具放行，没有共享成员/消息/任务。</p>
+  <div class='atf-arch-grid'>
+    <div class='atf-arch-col atf-arch-official'>
+      <div class='atf-arch-title'>官方智能团队 · Agent Teams</div>
+      <div class='atf-arch-sub'>root + continuable subagents + shared task board</div>
+
+      <div class='atf-layer'>
+        <div class='atf-layer-head'>L0 宿主与开关</div>
+        <div class='atf-layer-body'>
+          <ul>
+            <li><code>dsh-base</code> 默认加载 Team 服务，<code>defaultEnabled:false</code>。</li>
+            <li><code>dsh-agent-team</code>：<code>isEnabled</code> / <code>setEnabled</code> / <code>createTask</code> / <code>getTask</code> / <code>listTasks</code> / <code>updateTask</code>；没有 roster/member 方法。</li>
+            <li>开关写 <code>team/mode</code> 到 root session，再 <code>sessions.flush()</code>，由 <code>projection.ts</code> 推 <code>agentTeam</code> 投影。</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class='atf-layer'>
+        <div class='atf-layer-head'>L1 工具面</div>
+        <div class='atf-layer-body'>
+          <ul>
+            <li>共享任务：<code>team_task_create</code> / <code>team_task_list</code> / <code>team_task_get</code> / <code>team_task_update</code>，带 <code>when: agentTeams.isEnabled(agent)</code>。</li>
+            <li>成员发现与通信：<code>subagent</code> / <code>subagent_fork</code>；<code>list_agents</code> / <code>send_message</code> / <code>wait_agent</code> / <code>interrupt_agent</code>。</li>
+            <li><code>agent_preset</code> 仅在 <code>allowedAgentPresets</code> 配置后对模型可见；当前默认继承父 preset。</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class='atf-layer'>
+        <div class='atf-layer-head'>L2 任务语义</div>
+        <div class='atf-layer-body'>
+          <ul>
+            <li>状态：<code>pending</code> / <code>in_progress</code> / <code>completed</code> / <code>deleted</code> tombstone。</li>
+            <li>字段：<code>blocked_by</code>、<code>write_scopes</code>、<code>expected_revision</code>、<code>ownerId</code>。</li>
+            <li>动作：<code>claim</code> / <code>release</code> / <code>edit</code> / <code>set_dependencies</code> / <code>complete</code> / <code>reopen</code> / <code>reassign</code> / <code>delete</code>。</li>
+            <li>CAS 按单任务 revision；依赖未满足不可认领；<code>write_scopes</code> 只警告重叠，不是文件锁。</li>
+            <li>owner/assignee 只认 exact live caller 或 <code>mode === 'continuable'</code> 的 <code>listDescendants()</code> 后代。</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class='atf-layer'>
+        <div class='atf-layer-head'>L3 官方 UI 与投影</div>
+        <div class='atf-layer-body'>
+          <ul>
+            <li><code>mount.ts</code>：<code>conversation.input.model.options</code> → <code>TeamModeToggle</code>。</li>
+            <li><code>conversation.session.header.actions.subagent.footer</code> → <code>TeamBoard</code>（只读任务板）。</li>
+            <li><code>conversation.chat.commandview</code> → <code>TeamCommandRow</code>；<code>shell.overlay</code> → <code>TeamDisableConfirmation</code>。</li>
+            <li>任务事件写 root session 日志并回放；任务板通过投影帧更新，改任务只能让模型调工具。</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class='atf-arch-col atf-arch-group'>
+      <div class='atf-arch-title'>Bots 群聊团队</div>
+      <div class='atf-arch-sub'>持久群定义 + 群会话 + 成员影子会话 + 接力编排</div>
+
+      <div class='atf-layer'>
+        <div class='atf-layer-head'>L0 数据与契约</div>
+        <div class='atf-layer-body'>
+          <ul>
+            <li><code>agent-rooms.json</code>：<code>ROOMS_FILE_VERSION=2</code>，含 <code>rooms[]</code>、<code>rounds[]</code> 快照、<code>pendingMessages</code>、<code>digestPending</code> / <code>digestStartedAt</code>。</li>
+            <li><code>&lt;file&gt;.owner</code> 单写者租约；未来版本只读冻结；写失败返回 409/503，不假成功。</li>
+            <li><code>contracts/group-activity.schema.json</code>：<code>vssaros-group-progress</code>、房间变更、dock 可见性等 window 事件契约。</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class='atf-layer'>
+        <div class='atf-layer-head'>L1 群运行时</div>
+        <div class='atf-layer-body'>
+          <ul>
+            <li><code>lib/core/rooms.js</code>：纯逻辑，<code>openingCall</code>、<code>callsFrom</code>、四档 <code>wakeMode</code>、<code>roundStatusOf</code>、<code>ROUND_SCHEMA=1</code>。</li>
+            <li><code>lib/rooms.js</code>：群会话不调模型，<code>relayStream</code> 合成 <code>group_relay</code>；<code>relay()</code> 取 inbox/callbacks，按 <code>maxConcurrentTurns</code> 限流派发。</li>
+            <li>成员由 <code>sessionController.create(..., agentPreset)</code> 建独立影子会话；同成员 single-flight + 回合串行。</li>
+            <li>轮次写穿：replies / events / speaking / approvals / asks / late / background；重启未完成轮次收口为 <code>cut</code>。</li>
+            <li><code>POST /x/agents/api/rooms { action:'cancel', id, callId? }</code> 中止在途轮次并调用 <code>Agent.cancel({kind:'user'})</code>。</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class='atf-layer'>
+        <div class='atf-layer-head'>L2 人机协作与目标</div>
+        <div class='atf-layer-body'>
+          <ul>
+            <li><code>core/goals.js</code>：<code>group_goal</code> 阶段账本，<code>start / status / pass / rework / revise / complete / stop</code>；证据验收与返工。</li>
+            <li><code>core/asks.js</code>：<code>group_ask</code> 选择卡，最多 6 题、推荐项、打字顶替卡片。</li>
+            <li>群成员工具审批由群接住：<code>approve</code> allow/reject；<code>ask-answer</code> / skip 回叫成员。</li>
+            <li>阶段任务只是 <code>{ botId, task, status }</code>，没有 taskId、依赖 DAG 或 CAS。</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class='atf-layer'>
+        <div class='atf-layer-head'>L3 表现层与跨插件消费</div>
+        <div class='atf-layer-body'>
+          <ul>
+            <li><code>client.workspaces.js</code>：Bots 页签、群行、新建群聊、右键菜单、活动群「停止本轮」、全局执行浮层。</li>
+            <li><code>client.conversationViews.js</code>：群设置卡、<code>GroupRelayView</code>、<code>GroupMemberDock</code>、审批与选择卡。</li>
+            <li><code>client.subagents.js</code> 与官方子代理目录共用 <code>conversation.session.header.actions</code> 槽位。</li>
+            <li>SuperAgent <code>group_route</code> 表 / <code>group-runs.tsx</code> / <code>flow-card.tsx</code> 只读消费群进度，不改 Ticket/Step/SSE。</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class='atf-figure'>
+    <div class='atf-figure-caption'>并列关系：同一 Host 内两套框架，中间只有窄边界。</div>
+    <div class='atf-flowline'>
+      <div class='atf-flownode'><div class='atf-flowtitle'>官方 Agent Teams</div><div class='atf-flowbody'>root 会话、subagent 树、team_task_*、TeamBoard</div></div>
+      <div class='atf-flowarrow' aria-hidden='true'>→</div>
+      <div class='atf-flownode'><div class='atf-flowtitle'>只读投影</div><div class='atf-flowbody'><code>officialTeamAdapter.js</code> → <code>dsh-team:&lt;root&gt;:&lt;id&gt;</code> 外部 Bot</div></div>
+      <div class='atf-flowarrow' aria-hidden='true'>→</div>
+      <div class='atf-flownode'><div class='atf-flowtitle'>teamBus / Bots 名册</div><div class='atf-flowbody'><code>Symbol.for('vssaros.team')</code>，version 1 / revision 2</div></div>
+      <div class='atf-flowarrow' aria-hidden='true'>→</div>
+      <div class='atf-flownode'><div class='atf-flowtitle'>Bots 群聊团队</div><div class='atf-flowbody'>群会话、影子会话、group_relay、group_goal</div></div>
+    </div>
+    <p class='atf-note'>边界不是桥接执行：适配器只 <code>registerExternalBot</code> + 附 <code>taskBoardSummary()</code>，<code>onMessage</code> 恒返回 <code>received:'filtered'</code>，不转发 <code>send_message</code>、不写任务。</p>
+  </div>
+</section>
+
+<section class='atf-section' id='atf-flow'>
+  <h2 class='atf-h2'>两条主数据流</h2>
+
+  <div class='atf-figure'>
+    <div class='atf-figure-caption'>官方 Team：开关 → 投影 → 下一回合工具可见 → 任务板。</div>
+    <div class='atf-flowline'>
+      <div class='atf-flownode'><div class='atf-flowtitle'>1 用户打开开关</div><div class='atf-flowbody'>模型菜单 <code>TeamModeToggle</code>，仅 root 会话</div></div>
+      <div class='atf-flowarrow' aria-hidden='true'>→</div>
+      <div class='atf-flownode'><div class='atf-flowtitle'>2 Host 持久化</div><div class='atf-flowbody'><code>setEnabled(root,true)</code> → <code>team/mode</code> → <code>flush()</code></div></div>
+      <div class='atf-flowarrow' aria-hidden='true'>→</div>
+      <div class='atf-flownode'><div class='atf-flowtitle'>3 投影回写</div><div class='atf-flowbody'><code>agentTeam.enabled=true</code>，约 1–2s 后 UI 更新</div></div>
+      <div class='atf-flowarrow' aria-hidden='true'>→</div>
+      <div class='atf-flownode'><div class='atf-flowtitle'>4 下一模型回合</div><div class='atf-flowbody'>注入 <code>team:policy</code> 与 4 个 <code>team_task_*</code></div></div>
+      <div class='atf-flowarrow' aria-hidden='true'>→</div>
+      <div class='atf-flownode'><div class='atf-flowtitle'>5 建成员与任务</div><div class='atf-flowbody'><code>subagent</code> / <code>list_agents</code> / <code>send_message</code> / <code>team_task_create</code></div></div>
+      <div class='atf-flowarrow' aria-hidden='true'>→</div>
+      <div class='atf-flownode'><div class='atf-flowtitle'>6 CAS 流转</div><div class='atf-flowbody'><code>get</code> → <code>update(claim, expected_revision)</code> → <code>complete</code></div></div>
+      <div class='atf-flowarrow' aria-hidden='true'>→</div>
+      <div class='atf-flownode'><div class='atf-flowtitle'>7 只读任务板</div><div class='atf-flowbody'><code>TeamBoard</code> 显示共享任务；无任务时 return null</div></div>
+    </div>
+    <p class='atf-note'>官方不会自动唤醒成员；依赖满足、任务变更、模式切换都不主动起回合。owner 失活也不会自动释放。</p>
+  </div>
+
+  <div class='atf-figure'>
+    <div class='atf-figure-caption'>Bots 群聊：用户消息 → 合成工具 → 成员影子会话 → 群记录/进度/目标。</div>
+    <div class='atf-flowline'>
+      <div class='atf-flownode'><div class='atf-flowtitle'>1 用户发消息</div><div class='atf-flowbody'><code>source.kind==='user'</code> 进 inbox；或 <code>postToRoom</code> 转投</div></div>
+      <div class='atf-flowarrow' aria-hidden='true'>→</div>
+      <div class='atf-flownode'><div class='atf-flowtitle'>2 群会话不调模型</div><div class='atf-flowbody'><code>relayStream</code> 合成一次 <code>group_relay</code></div></div>
+      <div class='atf-flowarrow' aria-hidden='true'>→</div>
+      <div class='atf-flownode'><div class='atf-flowtitle'>3 选人与限流</div><div class='atf-flowbody'><code>openingCall</code> 四档唤醒；<code>running.size &lt; maxConcurrentTurns</code></div></div>
+      <div class='atf-flowarrow' aria-hidden='true'>→</div>
+      <div class='atf-flownode'><div class='atf-flowtitle'>4 成员影子会话</div><div class='atf-flowbody'><code>followup</code> / <code>steer</code> → <code>waitFor</code> → <code>noteTurnEnd</code></div></div>
+      <div class='atf-flowarrow' aria-hidden='true'>→</div>
+      <div class='atf-flownode'><div class='atf-flowtitle'>5 结果回写</div><div class='atf-flowbody'><code>room.log</code> + <code>rounds[]</code> + tool result + <code>relayAnswerText()</code></div></div>
+      <div class='atf-flowarrow' aria-hidden='true'>→</div>
+      <div class='atf-flownode'><div class='atf-flowtitle'>6 UI 与跨插件</div><div class='atf-flowbody'>GroupRelayView / MemberDock / Bots 行 / <code>vssaros-group-progress</code></div></div>
+      <div class='atf-flowarrow' aria-hidden='true'>→</div>
+      <div class='atf-flownode'><div class='atf-flowtitle'>7 人机闭环</div><div class='atf-flowbody'><code>group_goal</code> / <code>group_ask</code> / 审批 / 后台迟到 / <code>cancel</code> / 重启 cut</div></div>
+    </div>
+    <p class='atf-note'>群聊没有官方任务板的 CAS/DAG；<code>group_goal</code> 是按阶段、按 Bot 推进的验收账本，适合讨论与返工，不适合多成员抢占同一任务。</p>
+  </div>
+</section>
+
+<section class='atf-section' id='atf-compare'>
+  <h2 class='atf-h2'>能力对比</h2>
+  <div class='atf-table-wrap'>
+    <div class='atf-table-caption'>同一行左右对照；窄视口下自动改为卡片式逐字段展示。</div>
+    <table class='atf-table'>
+      <thead>
+        <tr><th scope='col'>维度</th><th scope='col'>官方智能团队</th><th scope='col'>Bots 群聊团队</th><th scope='col'>框架含义</th></tr>
+      </thead>
+      <tbody>
+        <tr><td data-label='维度'>组织单位</td><td data-label='官方智能团队'>root 会话 + <code>continuable</code> subagent 后代</td><td data-label='Bots 群聊团队'>群定义 + 群会话 + 每成员一条独立影子会话</td><td data-label='框架含义'>群成员不是官方任务板的合法 owner/assignee</td></tr>
+        <tr><td data-label='维度'>成员来源</td><td data-label='官方智能团队'><code>subagent</code> / <code>subagent_fork</code>，durable catalog</td><td data-label='Bots 群聊团队'>持久 <code>.agent.md</code> Bot preset，手动建群或快路径建群</td><td data-label='框架含义'>群聊可复用长期人格/模型/技能/MCP；官方默认继承父 preset</td></tr>
+        <tr><td data-label='维度'>任务模型</td><td data-label='官方智能团队'>taskId + <code>blocked_by</code> + owner + <code>expected_revision</code> CAS</td><td data-label='Bots 群聊团队'><code>group_goal</code> 阶段账本，按 Bot 标 pending/working/reported/done</td><td data-label='框架含义'>官方防重复认领；群聊强调验收证据与返工</td></tr>
+        <tr><td data-label='维度'>通信</td><td data-label='官方智能团队'><code>list_agents</code> / <code>send_message</code> / <code>wait_agent</code> / <code>interrupt_agent</code></td><td data-label='Bots 群聊团队'>@ 点名、批次接力、做完叫回、后台迟到回复、选择卡</td><td data-label='框架含义'>群聊是会话时间线；官方是 agent 间消息与任务状态</td></tr>
+        <tr><td data-label='维度'>持久化</td><td data-label='官方智能团队'><code>team/mode</code> + <code>team/task</code> 事件，root session 日志回放</td><td data-label='Bots 群聊团队'><code>agent-rooms.json</code> v2：rooms + rounds + owner 租约 + pendingMessages</td><td data-label='框架含义'>群聊重启保留执行过程，未完成轮次标 cut；官方保留任务板选择</td></tr>
+        <tr><td data-label='维度'>表现层</td><td data-label='官方智能团队'>开关、只读任务板、命令提示行、停用确认弹窗</td><td data-label='Bots 群聊团队'>Bots 页签、群设置、成员 dock、回复卡、审批/选择卡、执行浮层</td><td data-label='框架含义'>两者挂载在不同 slot；群聊额外提供人机交互面</td></tr>
+        <tr><td data-label='维度'>工作目录</td><td data-label='官方智能团队'>共享目录；<code>write_scopes</code> 只提示，无 worktree/文件锁</td><td data-label='Bots 群聊团队'>群与成员同 workspace/cwd，无群专属文件隔离</td><td data-label='框架含义'>两者都需要写范围治理；CAS 只保护任务状态，不保护文件内容</td></tr>
+        <tr><td data-label='维度'>成本/限制</td><td data-label='官方智能团队'>Lead 协调 + 成员请求；不自动唤醒、owner 不自动释放</td><td data-label='Bots 群聊团队'>广播/接力 token 成本；已有 <code>maxConcurrentTurns</code> 默认 4、空转熔断、<code>cancel</code></td><td data-label='框架含义'>群聊可限流与停止；官方需模型自行调度</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class='atf-section' id='atf-boundary'>
+  <h2 class='atf-h2'>集成边界与门禁</h2>
+  <div class='atf-boundary-grid'>
+    <div class='atf-boundary-card'>
+      <div class='atf-boundary-title'>工具放行</div>
+      <div class='atf-boundary-body'><code>TEAM_TASK_TOOL_PREFIX='team_task_'</code> 与 <code>mcp__*</code> 同口径，避免写了 <code>tools:</code> 的 Bot 把官方 host plane 全局工具 deny 掉。显式写 <code>!team_task_*</code> 可排除；官方 <code>when: agentTeams.isEnabled(agent)</code> 仍保证关闭时不可见。</div>
+    </div>
+    <div class='atf-boundary-card'>
+      <div class='atf-boundary-title'>只读适配器</div>
+      <div class='atf-boundary-body'><code>officialTeamAdapter.js</code> 监听成员事件，按 root → <code>listDescendants()</code> → <code>continuable</code> 过滤 → <code>registerExternalBot('dsh-team:*')</code>，附 <code>taskBoardSummary()</code>。不 <code>createTask</code>、不 <code>updateTask</code>、不 <code>send_message</code>。</div>
+    </div>
+    <div class='atf-boundary-card'>
+      <div class='atf-boundary-title'><span class='atf-blocked'>P1 gate=BLOCKED</span></div>
+      <div class='atf-boundary-body'>四个缺口：① 群成员是独立会话；② 官方 owner 只认 root/continuable 后代；③ <code>allowedAgentPresets</code> 默认未开放；④ 运行时 remote 没有按 Bot preset 建后代的公开方法。结论是不迁移、不双写、不伪造身份。</div>
+    </div>
+  </div>
+  <div class='atf-callout'>
+    <div class='atf-callout-title'>若要继续迁移，先补两件事</div>
+    <p class='atf-callout-body'>Host 侧动态 <code>allowedAgentPresets</code> 配置（覆盖动态 Bot 名册），以及真实 subagent 生成回归：验证模型、技能、MCP、审批、Workspace Grant、工作区权限不丢失。验证不通过就维持群聊作为人物/对话/审批层，官方 Team 只作为独立能力存在。</p>
+  </div>
+</section>
+
+<section class='atf-section' id='atf-status'>
+  <h2 class='atf-h2'>当前状态与后续</h2>
+  <div class='atf-status-grid'>
+    <div class='atf-status-card'>
+      <div class='atf-status-title'><span class='atf-ok'>P0 已完成</span></div>
+      <div class='atf-status-body'>写失败不假成功、租约/冻结、<code>create</code> 串行、<code>relay</code> 按 callId 幂等、待派发消息与 digest 持久化、同工作区同名复用、成员 single-flight、<code>cancel</code> 停止本轮与后台。</div>
+    </div>
+    <div class='atf-status-card'>
+      <div class='atf-status-title'><span class='atf-ok'>P3 并发闸已完成</span></div>
+      <div class='atf-status-body'><code>maxConcurrentTurns</code> 默认 4，逐群 1–12，可注入部署默认值；派发泵按 <code>running.size &lt; maxConcurrentTurns</code> 放行，释放一个名额才补一个；行为测试与静态守卫均有反向突变。</div>
+    </div>
+    <div class='atf-status-card'>
+      <div class='atf-status-title'><span class='atf-blocked'>P1 仍阻断</span></div>
+      <div class='atf-status-body'>官方 Team 与群聊身份模型未打通；<code>official-team-compat.test.mjs</code> 明确 <code>P1 gate=BLOCKED</code>。当前不做统一任务板、不做双写。</div>
+    </div>
+    <div class='atf-status-card'>
+      <div class='atf-status-title'><span class='atf-warn'>P2 待确认</span></div>
+      <div class='atf-status-body'>群聊「对话 / 任务 / 验收」三栏 UI 拆分按流程需先出 mockup 并确认；本页不落生产 UI。P3 剩余：token/运行预算硬闸、同文件写范围串行化与 worktree 合并验收。</div>
+    </div>
+  </div>
+</section>
+
+<section class='atf-section' id='atf-sources'>
+  <h2 class='atf-h2'>源码索引</h2>
+  <div class='atf-table-wrap'>
+    <div class='atf-table-caption'>路径均相对于 <code>g:/SarosWorkspace/sarosis-agents-client/</code>。</div>
+    <table class='atf-table'>
+      <thead>
+        <tr><th scope='col'>区域</th><th scope='col'>路径</th><th scope='col'>本页引用点</th></tr>
+      </thead>
+      <tbody>
+        <tr><td data-label='区域'>官方服务</td><td data-label='路径'><code>dsh-runtime/0.2.2-rc.2/node_modules/@deepseek-ai/dsh-agent-team/src/</code></td><td data-label='本页引用点'><code>index.ts</code> / <code>task-board.ts</code> / <code>projection.ts</code> / <code>task-graph.ts</code> / <code>journal.ts</code></td></tr>
+        <tr><td data-label='区域'>官方工具</td><td data-label='路径'><code>dsh-runtime/0.2.2-rc.2/node_modules/@deepseek-ai/dsh-tool-agent-team/src/index.ts</code></td><td data-label='本页引用点'>4 个 <code>team_task_*</code> 工具与 CAS 参数</td></tr>
+        <tr><td data-label='区域'>subagent</td><td data-label='路径'><code>dsh-runtime/0.2.2-rc.2/node_modules/@deepseek-ai/dsh-tool-subagent/</code> 与 <code>dsh-tool-subagent-control/</code></td><td data-label='本页引用点'><code>subagent</code> / <code>subagent_fork</code>；<code>list_agents</code> / <code>send_message</code> / <code>wait_agent</code> / <code>interrupt_agent</code>；<code>agent_preset</code> allowlist</td></tr>
+        <tr><td data-label='区域'>官方 UI</td><td data-label='路径'><code>dsh-runtime/0.2.2-rc.2/node_modules/@deepseek-ai/dsh-client-ui-agent-team/src/client/mount.ts</code></td><td data-label='本页引用点'>四个官方 slot 与 TeamModeToggle / TeamBoard / TeamCommandRow / TeamDisableConfirmation</td></tr>
+        <tr><td data-label='区域'>群聊纯逻辑</td><td data-label='路径'><code>dsh-plugins/vssaros-agents/lib/core/rooms.js</code> / <code>core/goals.js</code> / <code>core/asks.js</code></td><td data-label='本页引用点'>唤醒策略、轮次状态机、阶段目标、选择卡</td></tr>
+        <tr><td data-label='区域'>群聊运行时</td><td data-label='路径'><code>dsh-plugins/vssaros-agents/lib/rooms.js</code></td><td data-label='本页引用点'><code>group_relay</code>、影子会话、rounds 落盘、digest、<code>cancel</code>、<code>maxConcurrentTurns</code></td></tr>
+        <tr><td data-label='区域'>总线与投影</td><td data-label='路径'><code>dsh-plugins/vssaros-agents/lib/teamBus.js</code> / <code>officialTeamAdapter.js</code></td><td data-label='本页引用点'><code>Symbol.for('vssaros.team')</code>、外部 Bot 只读投影、<code>dsh-team:*</code> 命名空间</td></tr>
+        <tr><td data-label='区域'>工具放行</td><td data-label='路径'><code>dsh-plugins/vssaros-agents/lib/core/agents.js</code> / <code>dsh-plugins/check-agent-tools.mjs</code></td><td data-label='本页引用点'><code>TEAM_TASK_TOOL_PREFIX</code>、18 份内置 Bot 名单验证、<code>!team_task_*</code> opt-out</td></tr>
+        <tr><td data-label='区域'>表现层</td><td data-label='路径'><code>dsh-plugins/vssaros-chat-surface/lib/client.workspaces.js</code> / <code>client.conversationViews.js</code> / <code>client.subagents.js</code></td><td data-label='本页引用点'>Bots 页签、群设置、GroupRelayView、GroupMemberDock、停止本轮、官方子代理目录同槽</td></tr>
+        <tr><td data-label='区域'>跨插件契约</td><td data-label='路径'><code>dsh-plugins/contracts/group-activity.schema.json</code> / <code>dsh-plugins/check-bots-rooms.mjs</code></td><td data-label='本页引用点'><code>vssaros-group-progress</code> schema 1、真实 roomsApi 输出与广播校验</td></tr>
+        <tr><td data-label='区域'>SuperAgent 只读消费</td><td data-label='路径'><code>dsh-plugins/vssaros-superagent/dev/src/app/group-routes.ts</code> / <code>dev/src/client/group-runs.tsx</code> / <code>dev/src/client/flow-card.tsx</code></td><td data-label='本页引用点'><code>group_route</code> 表、执行页群运行卡、desk flow 卡片</td></tr>
+        <tr><td data-label='区域'>门禁与记录</td><td data-label='路径'><code>dsh-plugins/vssaros-agents/test/official-team-compat.test.mjs</code> / <code>test/run-agents-check.mjs</code> / <code>CHANGELOG.md</code></td><td data-label='本页引用点'><code>P1 gate=BLOCKED</code>、P0/P3 回归、0.2.387 / 0.2.388 / 0.2.389 / 0.2.390 / 0.2.391 记录</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <hr class='atf-divider'>
+  <p class='atf-note'>相关已有页面：<code>doc/superagent-mockups/agent-team-usage.html</code> 是官方 Team 的「使用说明 + 界面表现 + 流程图」；本页补齐两套框架的并列结构、边界与当前集成结论。</p>
+</section>
+
+<footer class='atf-footer'>
+  本页为 2026-11-14 当前工作区源码快照的静态框架梳理。未改产品代码；部署生效仍需 F5 / 插件中心升级装载 <code>agents 0.2.389</code> 与当前 chat-surface 版本。
+</footer>
+
+</main>
+</body>
+</html>

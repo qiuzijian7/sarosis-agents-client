@@ -148,7 +148,7 @@ suite('WorkflowFileExport ↔ Import round-trip', () => {
 		id: 'wf-emoji-pack',
 		name: '表情包工作流',
 		description: '一键生成静态表情包',
-		presetId: 'workflow-agent',
+		presetId: 'planner',
 		agentId: 'saros-claw',
 		workspaceId: 'ws-1',
 		steps: [{ id: 's1', type: 'task' }],

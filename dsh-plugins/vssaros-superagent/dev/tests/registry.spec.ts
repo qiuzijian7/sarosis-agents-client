@@ -187,5 +187,10 @@ describe('Source registry', () => {
     const reply: OutboundMessage = { id: 'reply-1', channel, text: 'Done', kind: 'reply' }
     expect(await sources.send(reply, commands)).toBe('sent')
     expect(run.mock.calls[0]![1]).toEqual(expect.arrayContaining(['+messages-reply', '--message-id', 'om_dm']))
+    // ★ 2026-11-12：ticket-result 的 message.id 有 114 字符，飞书 --idempotency-key 上限 50 ⇒ 用稳定短哈希。
+    const argv = run.mock.calls[0]![1] as string[]
+    const key = argv[argv.indexOf('--idempotency-key') + 1] ?? ''
+    expect(key).toMatch(/^sa-[0-9a-f]{30}$/)
+    expect(key.length).toBeLessThanOrEqual(50)
   })
 })

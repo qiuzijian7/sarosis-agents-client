@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>智能体团队协作（Agent Teams）· 使用说明与界面表现</title>
+<style>
+:root,[data-theme="light"]{
+  --tu-bg:#F4F7FC; --tu-panel:#FFFFFF; --tu-soft:#F8FAFD; --tu-line:#E1E8F2; --tu-line2:#C9D5E6;
+  --tu-fg:#16223A; --tu-muted:#53657F; --tu-dim:#8A99AF;
+  --tu-brand:#2F5BD7; --tu-brand-soft:#E9F0FF; --tu-green:#16794A; --tu-green-soft:#E5F6EC;
+  --tu-orange:#B25E09; --tu-orange-soft:#FDF0DE; --tu-red:#B02A37; --tu-red-soft:#FCEBEE;
+  --tu-shadow:0 8px 28px rgba(22,34,58,.07); --tu-radius:14px;
+  --tu-mono:ui-monospace,Consolas,"SF Mono",Menlo,monospace;
+}
+[data-theme="dark"]{
+  --tu-bg:#0C1424; --tu-panel:#141F33; --tu-soft:#1A273E; --tu-line:#273751; --tu-line2:#3A5070;
+  --tu-fg:#E6EDF8; --tu-muted:#A9BAD3; --tu-dim:#7C8EAA;
+  --tu-brand:#8AA8FF; --tu-brand-soft:#1B2B55; --tu-green:#4CD09A; --tu-green-soft:#123B2B;
+  --tu-orange:#F0B26A; --tu-orange-soft:#3B2A15; --tu-red:#F58A96; --tu-red-soft:#3C1B24;
+  --tu-shadow:0 8px 28px rgba(0,0,0,.28);
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--tu-bg);color:var(--tu-fg);font:14px/1.65 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+[hidden]{display:none!important}
+a{color:var(--tu-brand);text-decoration:none}
+a:hover{text-decoration:underline}
+code{font-family:var(--tu-mono);font-size:.9em;background:var(--tu-soft);border:1px solid var(--tu-line);border-radius:5px;padding:1px 5px;overflow-wrap:anywhere}
+.tu-wrap{max-width:1180px;margin:0 auto;padding:26px 20px 76px}
+.tu-top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.tu-eyebrow{font:600 11px/1.4 var(--tu-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--tu-brand)}
+.tu-title{font-size:29px;line-height:1.25;margin:10px 0 8px;letter-spacing:-.4px}
+.tu-sub{color:var(--tu-muted);max-width:760px;margin:0}
+.tu-badges{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.tu-badge{font-size:12px;padding:4px 10px;border-radius:999px;border:1px solid var(--tu-line2);background:var(--tu-panel);color:var(--tu-muted)}
+.tu-badge.is-brand{background:var(--tu-brand-soft);border-color:transparent;color:var(--tu-brand);font-weight:600}
+.tu-badge.is-warn{background:var(--tu-orange-soft);border-color:transparent;color:var(--tu-orange);font-weight:600}
+.tu-theme{cursor:pointer;border:1px solid var(--tu-line2);background:var(--tu-panel);color:var(--tu-muted);border-radius:9px;padding:8px 12px;font:inherit;font-size:12px}
+.tu-theme:hover{border-color:var(--tu-brand);color:var(--tu-brand)}
+.tu-section{margin-top:34px}
+.tu-h2{font-size:19px;margin:0 0 4px;letter-spacing:-.2px}
+.tu-h2 .tu-num{font:600 12px/1 var(--tu-mono);color:var(--tu-brand);margin-right:10px;letter-spacing:.08em}
+.tu-lead{color:var(--tu-muted);margin:0 0 16px;font-size:13px}
+.tu-card{background:var(--tu-panel);border:1px solid var(--tu-line);border-radius:var(--tu-radius);padding:20px;box-shadow:var(--tu-shadow)}
+.tu-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));gap:14px}
+.tu-kpi .tu-kpi-label{font-size:12px;color:var(--tu-dim);letter-spacing:.04em}
+.tu-kpi .tu-kpi-value{font-size:20px;font-weight:700;margin:6px 0 4px;letter-spacing:-.3px}
+.tu-kpi .tu-kpi-note{font-size:12px;color:var(--tu-muted);line-height:1.55}
+.tu-steps{display:grid;gap:12px}
+.tu-step{display:grid;grid-template-columns:34px 1fr;gap:14px;padding:14px 16px;border:1px solid var(--tu-line);border-radius:12px;background:var(--tu-soft)}
+.tu-step-no{width:30px;height:30px;border-radius:9px;background:var(--tu-brand-soft);color:var(--tu-brand);display:grid;place-items:center;font:700 13px var(--tu-mono)}
+.tu-step-title{font-weight:650;margin:0 0 3px}
+.tu-step-body{color:var(--tu-muted);font-size:13px;margin:0}
+.tu-step-body strong{color:var(--tu-fg)}
+.tu-callout{margin-top:14px;border-left:3px solid var(--tu-brand);background:var(--tu-brand-soft);border-radius:0 10px 10px 0;padding:12px 16px;font-size:13px;color:var(--tu-muted)}
+.tu-callout strong{color:var(--tu-fg)}
+.tu-prompt{margin-top:10px;background:var(--tu-panel);border:1px dashed var(--tu-line2);border-radius:10px;padding:12px 14px;font:12.5px/1.7 var(--tu-mono);color:var(--tu-fg);overflow-wrap:anywhere}
+.tu-flow-scroll{overflow-x:auto;border:1px solid var(--tu-line);border-radius:var(--tu-radius);background:var(--tu-panel);box-shadow:var(--tu-shadow)}
+.tu-flow{display:block;width:100%;min-width:840px;height:auto}
+.tu-flow text{font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+.tu-flow-node{fill:var(--tu-soft);stroke:var(--tu-line2);stroke-width:1.2}
+.tu-flow-node.is-brand{fill:var(--tu-brand-soft);stroke:var(--tu-brand)}
+.tu-flow-node.is-green{fill:var(--tu-green-soft);stroke:var(--tu-green)}
+.tu-flow-title{font-size:15px;font-weight:650;fill:var(--tu-fg)}
+.tu-flow-desc{font-size:11.5px;fill:var(--tu-muted)}
+.tu-flow-role{font-size:11px;font-weight:600;fill:var(--tu-dim);letter-spacing:.06em}
+.tu-flow-view{font-size:11.5px;fill:var(--tu-brand)}
+.tu-flow-line{stroke:var(--tu-line2);stroke-width:1.6;fill:none;marker-end:url(#tu-arrow)}
+.tu-legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:12px;font-size:12px;color:var(--tu-muted)}
+.tu-legend i{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:6px;vertical-align:middle}
+.tu-branches{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(260px,100%),1fr));gap:12px;margin-top:14px}
+.tu-branch{border:1px solid var(--tu-line);border-radius:11px;padding:12px 14px;background:var(--tu-soft);font-size:12.5px;color:var(--tu-muted)}
+.tu-branch b{display:block;color:var(--tu-fg);margin-bottom:3px;font-size:13px}
+.tu-demo{display:grid;grid-template-columns:206px minmax(0,1fr);gap:16px}
+@media (max-width:780px){.tu-demo{grid-template-columns:1fr}}
+.tu-tabs{display:flex;flex-direction:column;gap:8px}
+.tu-tab{text-align:left;cursor:pointer;border:1px solid var(--tu-line);background:var(--tu-panel);color:var(--tu-muted);border-radius:11px;padding:11px 13px;font:inherit;font-size:13px;transition:border-color .15s,background .15s}
+.tu-tab:hover{border-color:var(--tu-brand)}
+.tu-tab[aria-selected="true"]{background:var(--tu-brand-soft);border-color:var(--tu-brand);color:var(--tu-brand);font-weight:650}
+.tu-tab span{display:block;font:600 10px/1.6 var(--tu-mono);letter-spacing:.1em;opacity:.75}
+.tu-stage{border:1px solid var(--tu-line);border-radius:var(--tu-radius);background:var(--tu-panel);box-shadow:var(--tu-shadow);overflow:hidden}
+.tu-stage-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 16px;border-bottom:1px solid var(--tu-line);background:var(--tu-soft);font-size:12px;color:var(--tu-muted)}
+.tu-stage-bar b{color:var(--tu-fg);font-size:13px}
+.tu-stage-body{padding:20px;min-height:330px;background:linear-gradient(180deg,var(--tu-panel),var(--tu-soft))}
+.tu-note{margin:0 0 14px;padding:10px 13px;border-radius:9px;background:var(--tu-brand-soft);color:var(--tu-brand);font-size:12.5px;line-height:1.6}
+.tu-note.is-warn{background:var(--tu-orange-soft);color:var(--tu-orange)}
+.tu-win{border:1px solid var(--tu-line2);border-radius:12px;background:var(--tu-panel);box-shadow:0 10px 30px rgba(22,34,58,.09);overflow:hidden;max-width:640px}
+.tu-win-head{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--tu-line);font-size:12px;color:var(--tu-muted)}
+.tu-win-dot{width:8px;height:8px;border-radius:50%;background:var(--tu-line2)}
+.tu-win-body{padding:16px}
+.tu-composer{border:1px solid var(--tu-line2);border-radius:12px;padding:14px 14px 10px;min-height:88px;color:var(--tu-dim);font-size:13px}
+.tu-composer.is-filled{color:var(--tu-fg)}
+.tu-composer-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:16px;font-size:12px;color:var(--tu-muted)}
+.tu-composer-foot .tu-plus{width:22px;height:22px;border:1px solid var(--tu-line2);border-radius:6px;display:grid;place-items:center}
+.tu-model-trigger{margin-left:auto;border:1px solid var(--tu-line);border-radius:8px;padding:4px 9px;background:var(--tu-soft);color:var(--tu-fg);font-size:12px}
+.tu-menu{width:288px;margin-left:auto;border:1px solid var(--tu-line2);border-radius:12px;background:var(--tu-panel);box-shadow:0 14px 36px rgba(22,34,58,.16);padding:8px 6px}
+.tu-menu-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border-radius:8px;font-size:12.5px;color:var(--tu-fg)}
+.tu-menu-row.is-dim{color:var(--tu-muted)}
+.tu-menu-row.is-team{border:1px solid var(--tu-red);outline:2px solid var(--tu-red-soft)}
+.tu-menu-sep{height:1px;background:var(--tu-line);margin:6px 4px}
+.tu-menu-cap{font-size:11px;color:var(--tu-dim);padding:5px 10px 2px}
+.tu-switch{width:34px;height:19px;border-radius:999px;border:none;background:rgba(150,160,175,.35);cursor:pointer;padding:2px;display:inline-flex;align-items:center;flex:none}
+.tu-switch i{display:block;width:15px;height:15px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.2);transition:transform .18s}
+.tu-switch[aria-checked="true"]{background:var(--tu-brand)}
+.tu-switch[aria-checked="true"] i{transform:translateX(15px)}
+.tu-info{width:14px;height:14px;border-radius:50%;border:1px solid var(--tu-line2);color:var(--tu-dim);font:10px/12px var(--tu-mono);text-align:center;display:inline-block;margin-left:5px}
+.tu-toolcall{border:1px solid var(--tu-line2);border-radius:11px;background:var(--tu-soft);padding:12px 14px;margin-bottom:10px}
+.tu-toolcall b{font:650 12px var(--tu-mono);color:var(--tu-brand)}
+.tu-toolcall pre{margin:8px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;font:11.5px/1.6 var(--tu-mono);color:var(--tu-muted)}
+.tu-panel-head{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:650;margin:0 0 10px}
+.tu-members{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.tu-member{border:1px solid var(--tu-line);border-radius:999px;padding:4px 11px;font-size:12px;color:var(--tu-muted);background:var(--tu-panel)}
+.tu-member.is-lead{border-color:var(--tu-brand);color:var(--tu-brand);background:var(--tu-brand-soft)}
+.tu-board{border:1px solid var(--tu-line2);border-radius:11px;background:var(--tu-panel);padding:12px}
+.tu-board-head{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:650;padding-bottom:9px;border-bottom:1px solid var(--tu-line)}
+.tu-board-progress{margin-left:auto;font-size:11px;color:var(--tu-muted);font-weight:400}
+.tu-task{list-style:none;margin:0;padding:0}
+.tu-task-row{width:100%;display:flex;align-items:center;gap:9px;padding:8px 6px;border:none;border-bottom:1px solid var(--tu-line);background:transparent;color:var(--tu-fg);font:inherit;font-size:12.5px;text-align:left;cursor:pointer}
+.tu-task-row:last-child{border-bottom:none}
+.tu-task-row:hover{background:var(--tu-soft)}
+.tu-task-dot{width:8px;height:8px;border-radius:50%;background:var(--tu-dim);flex:none}
+.tu-task-dot.is-active{background:var(--tu-brand)}
+.tu-task-dot.is-done{background:var(--tu-green)}
+.tu-task-dot.is-blocked{background:var(--tu-orange)}
+.tu-task-chevron{margin-left:auto;color:var(--tu-dim);font-size:11px}
+.tu-task-detail{padding:2px 8px 11px 23px;font-size:11.5px;color:var(--tu-muted);line-height:1.7}
+.tu-task-detail em{font-style:normal;color:var(--tu-fg)}
+.tu-dialog{max-width:430px;margin:0 auto;border:1px solid var(--tu-orange);border-radius:12px;background:var(--tu-panel);box-shadow:0 16px 40px rgba(22,34,58,.16);overflow:hidden}
+.tu-dialog-head{padding:13px 16px;background:var(--tu-orange-soft);color:var(--tu-orange);font-weight:650;font-size:13.5px}
+.tu-dialog-body{padding:14px 16px;font-size:12.5px;color:var(--tu-muted);line-height:1.75}
+.tu-dialog-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--tu-line)}
+.tu-btn{border:1px solid var(--tu-line2);border-radius:8px;padding:6px 13px;background:var(--tu-panel);color:var(--tu-fg);font:inherit;font-size:12px;cursor:pointer}
+.tu-btn.is-primary{background:var(--tu-brand);border-color:var(--tu-brand);color:#fff}
+.tu-table{width:100%;border-collapse:collapse;font-size:12.5px}
+.tu-table th,.tu-table td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--tu-line);vertical-align:top}
+.tu-table th{color:var(--tu-dim);font-weight:600;font-size:11.5px;letter-spacing:.03em}
+.tu-table td{color:var(--tu-muted)}
+.tu-table td:first-child{color:var(--tu-fg);font-weight:600;white-space:nowrap}
+.tu-table tr:last-child td{border-bottom:none}
+.tu-table-wrap{overflow-x:auto}
+.tu-src{display:grid;gap:7px;font:11.5px/1.6 var(--tu-mono);color:var(--tu-muted);overflow-wrap:anywhere}
+.tu-foot{margin-top:36px;padding-top:16px;border-top:1px solid var(--tu-line);color:var(--tu-dim);font-size:11.5px;line-height:1.8}
+</style>
+</head>
+<body data-agents-version="0.2.391" data-chat-surface-version="0.2.441" data-runtime-version="0.2.2-rc.2">
+<div class="tu-wrap">
+
+  <header class="tu-top">
+    <div>
+      <div class="tu-eyebrow">VsSaros · Agent Teams · usage &amp; UI walkthrough</div>
+      <h1 class="tu-title">智能体团队协作：使用说明与界面表现</h1>
+      <p class="tu-sub">依据随包 dsh runtime <code>0.2.2-rc.2</code> 的官方 Team 三包源码、中文包说明，以及本机 <code>@vssaros/dsh-agents 0.2.387</code> 的工具放行改动整理。页面为静态演示，界面为示意复原，不是产品截图。</p>
+      <div class="tu-badges">
+        <span class="tu-badge is-warn">新会话默认关闭</span>
+        <span class="tu-badge is-brand">会话级开关 · 仅根会话</span>
+        <span class="tu-badge">4 个 team_task_* 工具</span>
+        <span class="tu-badge">共享任务板 · 重启后保留</span>
+        <span class="tu-badge">2026-11-14</span>
+      </div>
+    </div>
+    <button class="tu-theme" id="tu-theme" type="button">切换深色</button>
+  </header>
+
+  <section class="tu-section">
+    <h2 class="tu-h2"><span class="tu-num">01</span>先看三件事</h2>
+    <p class="tu-lead">这三个事实决定了「打开开关之后会看到什么」。</p>
+    <div class="tu-grid">
+      <div class="tu-card tu-kpi">
+        <div class="tu-kpi-label">开关做了什么</div>
+        <div class="tu-kpi-value">只写会话选择</div>
+        <div class="tu-kpi-note">调用 <code>remote.agentTeams.setEnabled(root, true)</code>，往根会话日志追加 <code>team/mode</code> 并 <code>sessions.flush()</code>；<strong>不会</strong>立刻创建成员、任务或面板。</div>
+      </div>
+      <div class="tu-card tu-kpi">
+        <div class="tu-kpi-label">什么时候才「有反应」</div>
+        <div class="tu-kpi-value">下一次模型回合</div>
+        <div class="tu-kpi-note">开启后，后续步骤才有 <code>team:policy</code> 提示词与 <code>team_task_*</code> 工具；要发一条明确分工的指令，模型才会建任务板和队友。</div>
+      </div>
+      <div class="tu-card tu-kpi">
+        <div class="tu-kpi-label">在哪里看结果</div>
+        <div class="tu-kpi-value">会话标题栏 Subagent 入口</div>
+        <div class="tu-kpi-note">成员树下方出现「共享任务」只读列表（待处理 / 进行中 / 已完成）；没有独立工作台，任务为空时该区域不显示。</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="tu-section">
+    <h2 class="tu-h2"><span class="tu-num">02</span>使用说明</h2>
+    <p class="tu-lead">按这一步步来；括号内是对应的代码依据，见文末「源码依据」。</p>
+    <div class="tu-card">
+      <div class="tu-steps">
+        <div class="tu-step">
+          <div class="tu-step-no">1</div>
+          <div>
+            <p class="tu-step-title">在根会话里打开开关</p>
+            <p class="tu-step-body">输入框右下角点 <strong>「Hy4 · Default ⌃」</strong> → 弹出「模型与推理等级」菜单 → 打开 <strong>「启用智能体团队协作」</strong>。子会话不显示这行开关。若会话被锁定、正在保存，或模型请求历史尚未加载，开关暂时不可点；保存失败时由菜单宿主给出提示。</p>
+          </div>
+        </div>
+        <div class="tu-step">
+          <div class="tu-step-no">2</div>
+          <div>
+            <p class="tu-step-title">等状态回写（约 1–2 秒）</p>
+            <p class="tu-step-body">官方开关<strong>不做乐观更新</strong>：要等 Host 落盘并把 <code>agentTeam</code> 投影推回浏览器，开关才变色（本机实测约 1–2 秒，取决于落盘与投影推送）。期间开关被置为 pending 且没有 loading，这是「点了像没反应」的主要来源。开启成功后界面仍不会出现新面板，属正常。</p>
+          </div>
+        </div>
+        <div class="tu-step">
+          <div class="tu-step-no">3</div>
+          <div>
+            <p class="tu-step-title">发一条明确要求分工的消息</p>
+            <p class="tu-step-body">模型在这一回合才拿到 <code>team:policy</code> 策略段与四个任务工具；它会用 <code>subagent</code> / <code>subagent_fork</code> 建可继续执行的队友，用 <code>list_agents</code> / <code>send_message</code> 发现与联系，用 <code>team_task_create</code> 建任务。示例（示意，可按实际任务改写）：</p>
+            <div class="tu-prompt">把这个需求拆成 3 个互不重叠的任务：分别派 reviewer / coder / tester 并行处理；用共享任务板记录标题、依赖和负责人，认领后完成后汇总给我。</div>
+          </div>
+        </div>
+        <div class="tu-step">
+          <div class="tu-step-no">4</div>
+          <div>
+            <p class="tu-step-title">在 Subagent 入口看任务板</p>
+            <p class="tu-step-body">会话标题栏的 Subagent 入口里，成员树下方出现「共享任务」：<strong>灰点</strong>=待处理、<strong>橙点</strong>=被依赖阻塞、<strong>蓝点</strong>=进行中、<strong>绿点</strong>=已完成；标题右侧显示数量。点任务行展开完整描述与负责人（打开一项会收起上一项）。面板<strong>只读</strong>，改任务只能让模型用工具做。</p>
+          </div>
+        </div>
+        <div class="tu-step">
+          <div class="tu-step-no">5</div>
+          <div>
+            <p class="tu-step-title">用完可关闭</p>
+            <p class="tu-step-body">同一菜单关掉开关；<strong>会话已经发过模型请求时会弹「确认停用智能体团队协作？」</strong>，说明停用会停止共享任务工具与协作指令，并可能影响缓存复用。取消 / Esc 不改状态；确认后任务与子代理<strong>都保留</strong>，选择本身重启后仍有效，重新打开可继续。</p>
+          </div>
+        </div>
+      </div>
+      <div class="tu-callout"><strong>VsSaros 专属前置：</strong>写了 <code>tools:</code> 白名单的 Bot 会话，过去会把 host 层 <code>team_task_*</code> 一并 deny 掉 —— 开关打开也拿不到工具。<code>@vssaros/dsh-agents 0.2.387</code> 起按 <code>mcp__*</code> 同口径默认放行（可用 <code>!team_task_*</code> 主动排除）。改动需重启 Host 装载新版本；标准 preset 会话不受该限制。官方 <code>when: agentTeams.isEnabled(agent)</code> 仍保证开关关闭时工具不可见。</div>
+    </div>
+  </section>
+
+  <section class="tu-section">
+    <h2 class="tu-h2"><span class="tu-num">03</span>流程图</h2>
+    <p class="tu-lead">从点开关到任务板出现，以及关闭时的分支。窄屏可横向滑动查看。</p>
+    <div class="tu-flow-scroll">
+      <svg class="tu-flow" viewBox="0 0 1080 790" role="img" aria-label="智能体团队协作流程图：打开开关、Host 落盘、下一次模型回合、建成员与任务、认领完成、任务板出现、关闭">
+        <defs>
+          <marker id="tu-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--tu-line2)"></path>
+          </marker>
+        </defs>
+        <rect x="0" y="0" width="1080" height="790" fill="transparent"></rect>
+        <text x="24" y="26" class="tu-flow-role">角色 / 阶段</text>
+        <text x="286" y="26" class="tu-flow-role">主流程</text>
+        <text x="782" y="26" class="tu-flow-role">界面上能看到什么</text>
+        <line x1="270" y1="12" x2="270" y2="770" stroke="var(--tu-line)" stroke-dasharray="4 6"></line>
+        <line x1="766" y1="12" x2="766" y2="770" stroke="var(--tu-line)" stroke-dasharray="4 6"></line>
+
+        <text x="24" y="62" class="tu-flow-role">浏览器 · 起点</text>
+        <rect x="286" y="40" width="466" height="62" rx="11" class="tu-flow-node"></rect>
+        <text x="306" y="67" class="tu-flow-title">根会话（Team 默认关闭）</text>
+        <text x="306" y="88" class="tu-flow-desc">子会话不显示开关与任务板；普通分叉会成为一棵新树的根</text>
+        <text x="782" y="67" class="tu-flow-view">菜单里开关为关</text>
+        <text x="782" y="87" class="tu-flow-desc">无任务板 / 无成员</text>
+        <path d="M519 102 L519 128" class="tu-flow-line"></path>
+
+        <text x="24" y="150" class="tu-flow-role">你 · 手动开启</text>
+        <rect x="286" y="128" width="466" height="62" rx="11" class="tu-flow-node is-brand"></rect>
+        <text x="306" y="155" class="tu-flow-title">模型与推理等级菜单 → 打开开关</text>
+        <text x="306" y="176" class="tu-flow-desc">locked / pending / 请求历史未加载 ⇒ 暂不可点；失败 ⇒ 菜单宿主提示</text>
+        <text x="782" y="155" class="tu-flow-view">pending 期间开关不动</text>
+        <text x="782" y="175" class="tu-flow-desc">约 1–2 秒后才回写</text>
+        <path d="M519 190 L519 216" class="tu-flow-line"></path>
+
+        <text x="24" y="238" class="tu-flow-role">Host · 持久化</text>
+        <rect x="286" y="216" width="466" height="62" rx="11" class="tu-flow-node"></rect>
+        <text x="306" y="243" class="tu-flow-title">setEnabled(root, true) → team/mode → flush</text>
+        <text x="306" y="264" class="tu-flow-desc">选择先生效再等落盘；agentTeam 投影 enabled=true 推回浏览器</text>
+        <text x="782" y="243" class="tu-flow-view">开关变为「已开启」</text>
+        <text x="782" y="263" class="tu-flow-desc">此刻仍没有面板 / 成员</text>
+        <path d="M519 278 L519 304" class="tu-flow-line"></path>
+
+        <text x="24" y="326" class="tu-flow-role">Host · 步骤准备</text>
+        <rect x="286" y="304" width="466" height="62" rx="11" class="tu-flow-node is-brand"></rect>
+        <text x="306" y="331" class="tu-flow-title">下一次模型回合：策略 + 四个工具可用</text>
+        <text x="306" y="352" class="tu-flow-desc">team:policy 提示词；team_task_create / list / get / update（when: enabled）</text>
+        <text x="782" y="331" class="tu-flow-view">通信量上升</text>
+        <text x="782" y="351" class="tu-flow-desc">每段 system prompt 都带策略文本</text>
+        <path d="M519 366 L519 392" class="tu-flow-line"></path>
+
+        <text x="24" y="414" class="tu-flow-role">模型 · 组队</text>
+        <rect x="286" y="392" width="466" height="62" rx="11" class="tu-flow-node"></rect>
+        <text x="306" y="419" class="tu-flow-title">subagent / subagent_fork 建队友 + team_task_create</text>
+        <text x="306" y="440" class="tu-flow-desc">list_agents 发现、send_message 联系；任务含 blockedBy / writeScopes</text>
+        <text x="782" y="419" class="tu-flow-view">成员树出现</text>
+        <text x="782" y="439" class="tu-flow-desc">「共享任务」区域开始有内容</text>
+        <path d="M519 454 L519 480" class="tu-flow-line"></path>
+
+        <text x="24" y="502" class="tu-flow-role">模型 · 执行</text>
+        <rect x="286" y="480" width="466" height="62" rx="11" class="tu-flow-node"></rect>
+        <text x="306" y="507" class="tu-flow-title">list / get → update(claim, expected_revision) → complete</text>
+        <text x="306" y="528" class="tu-flow-desc">CAS 防覆盖；仅全部依赖完成才可认领；只有根可 reassign</text>
+        <text x="782" y="507" class="tu-flow-view">状态点变化</text>
+        <text x="782" y="527" class="tu-flow-desc">待处理 → 进行中 → 已完成</text>
+        <path d="M519 542 L519 568" class="tu-flow-line"></path>
+
+        <text x="24" y="590" class="tu-flow-role">浏览器 · 投影</text>
+        <rect x="286" y="568" width="466" height="62" rx="11" class="tu-flow-node is-green"></rect>
+        <text x="306" y="595" class="tu-flow-title">任务板可见（Subagent 入口的成员树下）</text>
+        <text x="306" y="616" class="tu-flow-desc">只读：标题 / 状态 / 数量；点行展开描述与负责人；无修改控件</text>
+        <text x="782" y="595" class="tu-flow-view">1 已完成 · 1 进行中 · 1 待处理</text>
+        <text x="782" y="615" class="tu-flow-desc">Host 投影推送，无需刷新</text>
+        <path d="M519 630 L519 656" class="tu-flow-line"></path>
+
+        <text x="24" y="678" class="tu-flow-role">你 · 可选关闭</text>
+        <rect x="286" y="656" width="466" height="62" rx="11" class="tu-flow-node"></rect>
+        <text x="306" y="683" class="tu-flow-title">关闭开关（发过模型请求 ⇒ 确认停用弹窗）</text>
+        <text x="306" y="704" class="tu-flow-desc">enabled=false：后续步骤不再有 Team 工具与提示词；任务 / 队友 / 选择都保留</text>
+        <text x="782" y="683" class="tu-flow-view">弹窗：确认停用 / 取消</text>
+        <text x="782" y="703" class="tu-flow-desc">重新打开可继续原任务板</text>
+
+        <rect x="24" y="740" width="1024" height="34" rx="8" fill="var(--tu-soft)" stroke="var(--tu-line)"></rect>
+        <text x="40" y="762" class="tu-flow-desc">分支：开关关闭时四个工具本就不可见 · 任务为空时任务板区域不显示 · 任务变更不唤醒空闲成员，需要 send_message · 投影失败会独立显示警告</text>
+      </svg>
+    </div>
+    <div class="tu-legend">
+      <span><i style="background:var(--tu-brand-soft);border:1px solid var(--tu-brand)"></i>用户操作 / 步骤准备</span>
+      <span><i style="background:var(--tu-green-soft);border:1px solid var(--tu-green)"></i>可见结果</span>
+      <span><i style="background:var(--tu-soft);border:1px solid var(--tu-line2)"></i>Host / 模型内部</span>
+    </div>
+    <div class="tu-branches">
+      <div class="tu-branch"><b>失败分支</b><code>setEnabled</code> 保存未确认时，菜单宿主提示「无法确认智能体团队协作设置已保存，请重试」；选择本身可能已生效，重试同一选择不会重复写记录。</div>
+      <div class="tu-branch"><b>子会话分支</b>子会话（origin=subagent）不渲染开关、不显示任务板；Team 模式由<strong>存活的根</strong>决定，根不可用时 Team 工具禁用。</div>
+      <div class="tu-branch"><b>关闭分支</b>已有模型请求 ⇒ 弹确认；仅选模型不弹。停用不删任务与子代理，重启后选择仍有效。</div>
+    </div>
+  </section>
+
+  <section class="tu-section">
+    <h2 class="tu-h2"><span class="tu-num">04</span>界面表现（可点击切换阶段）</h2>
+    <p class="tu-lead">按 5 个阶段复原真实交互与可见反馈；示意数据，非真实会话。</p>
+    <div class="tu-demo">
+      <div class="tu-tabs" role="tablist" aria-label="阶段">
+        <button class="tu-tab" type="button" role="tab" aria-selected="true" data-stage="1"><span>STAGE 01</span>打开开关</button>
+        <button class="tu-tab" type="button" role="tab" aria-selected="false" data-stage="2"><span>STAGE 02</span>发分工指令</button>
+        <button class="tu-tab" type="button" role="tab" aria-selected="false" data-stage="3"><span>STAGE 03</span>工具调用</button>
+        <button class="tu-tab" type="button" role="tab" aria-selected="false" data-stage="4"><span>STAGE 04</span>任务板出现</button>
+        <button class="tu-tab" type="button" role="tab" aria-selected="false" data-stage="5"><span>STAGE 05</span>关闭与确认</button>
+      </div>
+
+      <div>
+        <div class="tu-stage tu-panel" data-panel="1">
+          <div class="tu-stage-bar"><b>模型与推理等级菜单</b><span>红框 = 用户报「点了没反应」的那一行</span></div>
+          <div class="tu-stage-body">
+            <div class="tu-note">点下面的开关可切换演示状态。真实开关不做乐观更新：要等 Host 落盘 + 投影回写（本机实测约 1–2 秒）才变色，期间被置为 pending 且没有 loading。</div>
+            <div class="tu-win">
+              <div class="tu-win-head"><span class="tu-win-dot"></span><span class="tu-win-dot"></span><span class="tu-win-dot"></span><span style="margin-left:auto">Hy4 · Default ⌃</span></div>
+              <div class="tu-win-body">
+                <div class="tu-composer">发消息或创建任务，/ 调用指令，@ 文件或对话</div>
+                <div class="tu-composer-foot"><span class="tu-plus">＋</span><span>完全权限</span><span class="tu-model-trigger">Hy4　Default ⌃</span></div>
+              </div>
+            </div>
+            <div class="tu-menu" style="margin-top:14px">
+              <div class="tu-menu-row">模型 <span>Hy4 ›</span></div>
+              <div class="tu-menu-row">推理等级 <span>Default ›</span></div>
+              <div class="tu-menu-row is-team is-dim">
+                <span>启用智能体团队协作 <span class="tu-info">i</span></span>
+                <button class="tu-switch" id="tu-switch" type="button" role="switch" aria-checked="false" aria-label="启用智能体团队协作（演示）"><i></i></button>
+              </div>
+              <div class="tu-menu-cap">创作模型 · 图片 / 视频 / 音频</div>
+              <div class="tu-menu-row is-dim">图片模型 <span>即梦生图 5.0 ›</span></div>
+              <div class="tu-menu-row is-dim">视频模型 <span>混元AI视频 ›</span></div>
+            </div>
+            <p class="tu-note is-warn" id="tu-switch-note" style="margin-top:14px">当前演示：已关闭。开启后界面不会立刻出现面板 —— 这是官方设计，不是故障。</p>
+          </div>
+        </div>
+
+        <div class="tu-stage tu-panel" data-panel="2" hidden>
+          <div class="tu-stage-bar"><b>发一条明确分工的指令</b><span>下一回合才生效</span></div>
+          <div class="tu-stage-body">
+            <div class="tu-note">开关只写 <code>team/mode</code>；<code>team:policy</code> 提示词与四个 <code>team_task_*</code> 工具在<strong>步骤准备时</strong>按开关条件求值，所以要有一条新的模型请求。</div>
+            <div class="tu-win">
+              <div class="tu-win-head"><span class="tu-win-dot"></span><span>根会话 · 标准模式（VsSaros）</span></div>
+              <div class="tu-win-body">
+                <div class="tu-composer is-filled">把这个需求拆成 3 个互不重叠的任务：分别派 reviewer / coder / tester 并行处理；用共享任务板记录标题、依赖和负责人，认领后完成后汇总给我。</div>
+                <div class="tu-composer-foot"><span class="tu-plus">＋</span><span>完全权限</span><span class="tu-model-trigger">Hy4　Default ⌃</span></div>
+              </div>
+            </div>
+            <div class="tu-callout" style="margin-top:16px">示意文案。Team 没有斜杠命令；模型是否组队取决于它自己判断是否需要共享任务板。四个工具的固定 schema 与策略段是每个成员每次请求的固定 token 开销，因此复杂任务才划算。</div>
+          </div>
+        </div>
+
+        <div class="tu-stage tu-panel" data-panel="3" hidden>
+          <div class="tu-stage-bar"><b>模型侧：组队与任务板</b><span>工具调用（示意）</span></div>
+          <div class="tu-stage-body">
+            <div class="tu-note">成员来自标准 subagent 工具，不来自 Bot 名册；任务修改走 <code>expected_revision</code> 的 CAS，过期更新报错而不会覆盖。</div>
+            <div class="tu-toolcall"><b>subagent → reviewer / coder / tester</b><pre>continuable 后代；list_agents 发现，send_message 联系
+lead 必须等必需的队友完成后再给最终答复</pre></div>
+            <div class="tu-toolcall"><b>team_task_create</b><pre>{ "subject": "审查登录改动", "description": "…",
+  "blocked_by": [], "write_scopes": ["src/auth/**"] } → task-1  revision 1  pending</pre></div>
+            <div class="tu-toolcall"><b>team_task_get → team_task_update</b><pre>{ "task_id": "task-1", "expected_revision": 1, "action": "claim" }
+→ in_progress, owner=reviewer
+{ "action": "complete" } → completed</pre></div>
+            <p class="tu-lead" style="margin-top:12px">全部 8 种动作：<code>claim</code> / <code>release</code> / <code>edit</code> / <code>set_dependencies</code> / <code>complete</code> / <code>reopen</code> / <code>reassign</code> / <code>delete</code>。仅根可 <code>reassign</code>；writeScopes 重叠只警告、不阻止写入。</p>
+          </div>
+        </div>
+
+        <div class="tu-stage tu-panel" data-panel="4" hidden>
+          <div class="tu-stage-bar"><b>会话标题栏 → Subagent 入口</b><span>点任务行展开详情</span></div>
+          <div class="tu-stage-body">
+            <div class="tu-note">官方 UI 只在 <code>agentTeam.enabled=true</code> 且存在未删除任务时显示「共享任务」区；目录与任务都为空时入口隐藏。面板只读，改任务须让模型用工具。</div>
+            <div class="tu-board">
+              <div class="tu-panel-head">子智能体 <span style="font-weight:400;color:var(--tu-dim)">/ 成员树</span></div>
+              <div class="tu-members">
+                <span class="tu-member is-lead">lead</span>
+                <span class="tu-member">reviewer</span>
+                <span class="tu-member">coder</span>
+                <span class="tu-member">tester</span>
+              </div>
+              <div class="tu-board-head">☑ 共享任务 <span class="tu-board-progress">1 已完成 · 1 进行中 · 1 待处理</span></div>
+              <ul class="tu-task">
+                <li>
+                  <button class="tu-task-row" type="button" data-task="a"><span class="tu-task-dot is-done"></span><span>审查登录改动</span><span class="tu-task-chevron">⌄</span></button>
+                  <div class="tu-task-detail" data-detail="a" hidden>检查 src/auth/** 的回归风险，给出结论。<br>负责人：<em>reviewer</em></div>
+                </li>
+                <li>
+                  <button class="tu-task-row" type="button" data-task="b"><span class="tu-task-dot is-active"></span><span>实现令牌刷新</span><span class="tu-task-chevron">⌄</span></button>
+                  <div class="tu-task-detail" data-detail="b" hidden>按审查结论实现，写范围 src/auth/**。<br>负责人：<em>coder</em></div>
+                </li>
+                <li>
+                  <button class="tu-task-row" type="button" data-task="c"><span class="tu-task-dot is-blocked"></span><span>端到端验收</span><span class="tu-task-chevron">⌄</span></button>
+                  <div class="tu-task-detail" data-detail="c" hidden>依赖「实现令牌刷新」完成后才可认领（橙点 = 被依赖阻塞）。<br>负责人：<em>未分配</em></div>
+                </li>
+              </ul>
+            </div>
+            <p class="tu-lead" style="margin-top:12px">投影帧持续推送任务状态，无需刷新；任务行展开一项会收起上一项。</p>
+          </div>
+        </div>
+
+        <div class="tu-stage tu-panel" data-panel="5" hidden>
+          <div class="tu-stage-bar"><b>关闭：确认停用</b><span>仅会话已发过模型请求时弹</span></div>
+          <div class="tu-stage-body">
+            <div class="tu-note is-warn">弹窗由 <code>shell.overlay</code> 承载，独立于模型菜单；取消 / Esc / 关闭都保持原状态。确认失败会保留错误供重试。</div>
+            <div class="tu-dialog">
+              <div class="tu-dialog-head">确认停用智能体团队协作？</div>
+              <div class="tu-dialog-body">对话过程中停用智能体团队协作，将停止共享任务工具和团队协调指令。<br>停用后可能影响缓存复用、增加后续 token 用量与开销，并影响当前任务的协作效果。<br><span style="color:var(--tu-dim)">不会删除任务记录与子代理。</span></div>
+              <div class="tu-dialog-foot"><button class="tu-btn" type="button">取消</button><button class="tu-btn is-primary" type="button">确认停用</button></div>
+            </div>
+            <p class="tu-lead" style="margin-top:16px">停用后 <code>enabled=false</code>，后续步骤不再有 Team 工具与提示词；任务、子代理与这次选择都保留，重启后仍有效，重新打开可接着用同一张任务板。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="tu-section">
+    <h2 class="tu-h2"><span class="tu-num">05</span>规则与边界</h2>
+    <p class="tu-lead">这些限制决定了「哪些现象是正常的」。</p>
+    <div class="tu-card tu-table-wrap">
+      <table class="tu-table">
+        <thead><tr><th>条目</th><th>规则</th></tr></thead>
+        <tbody>
+          <tr><td>生效范围</td><td>选择属于<strong>根会话</strong>，整棵 subagent 树共用；后代模式取自存活的根。普通分叉是新树的根，默认关闭。</td></tr>
+          <tr><td>成员与通信</td><td>队友就是 continuable subagent：<code>subagent</code> / <code>subagent_fork</code> 创建，<code>list_agents</code> 发现，<code>send_message</code> 联系，<code>wait_agent</code> 等收件箱。Team 不注册自己的成员/消息工具。</td></tr>
+          <tr><td>任务</td><td>最多 256 个未删除任务；<code>team_task_list</code> 每页最多 100；删除保留墓碑。所有更新走 CAS，未就绪（依赖未完成）、过期修订、未授权修改都报类型化错误。</td></tr>
+          <tr><td>不会自动发生</td><td>任务变更不结束 <code>wait_agent</code>、不加收件箱、不唤醒空闲成员；owner 不会因成员不活跃 / 中断 / 退出而自动释放。需要人继续干活就 <code>send_message</code>。</td></tr>
+          <tr><td>文件系统</td><td>全员共享同一工作目录，没有 worktree / 合并 / 文件锁；<code>writeScopes</code> 只是提示性元数据，重叠只警告。Lead 需自己划分写范围并检查最终 diff。</td></tr>
+          <tr><td>开销</td><td>策略段 + 四个 schema 是每个成员每次请求的固定 token 成本；开关旁 ⓘ 也明确「复杂任务表现更佳，token 开销相应更高」。</td></tr>
+          <tr><td>与 VsSaros Bot / SuperAgent</td><td>两套系统互不感知：官方 Team 不读我们的 Bot 名册、群聊或 SuperAgent 组队；<code>officialTeamAdapter.js</code> 只把官方成员以 <code>dsh-team:*</code> 只读投影进外部 Bot 名册，无专用 UI。</td></tr>
+          <tr><td>Bot 会话工具放行</td><td><code>@vssaros/dsh-agents 0.2.387</code> 起 <code>team_task_*</code> 默认穿过 <code>tools[]</code> allowlist；<code>!team_task_*</code> 可主动排除；守卫 <code>check-agent-tools.mjs</code> 判据 D 逐个验证 18 份内置 Bot 名单。</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="tu-section">
+    <h2 class="tu-h2"><span class="tu-num">06</span>源码依据</h2>
+    <p class="tu-lead">以下路径均相对仓库根；官方包位于随包 runtime 目录内。</p>
+    <div class="tu-card tu-src">
+      <span>dsh-runtime/0.2.2-rc.2/node_modules/@deepseek-ai/dsh-agent-team/{README.zh.md, src/index.ts, src/projection.ts}</span>
+      <span>dsh-runtime/0.2.2-rc.2/node_modules/@deepseek-ai/dsh-tool-agent-team/{README.zh.md, src/index.ts}</span>
+      <span>dsh-runtime/0.2.2-rc.2/node_modules/@deepseek-ai/dsh-client-ui-agent-team/{README.zh.md, src/client/mount.ts, TeamModeToggle.tsx, TeamBoard.tsx, TeamDisableConfirmation.tsx, locales.ts}</span>
+      <span>dsh-runtime/0.2.2-rc.2/node_modules/@deepseek-ai/dsh-base/cordis.patch.yml（agent-team / tool-agent-team 行，maxTasks: 256）</span>
+      <span>dsh-plugins/vssaros-agents/lib/{core/agents.js, index.js, officialTeamAdapter.js} · dsh-plugins/check-agent-tools.mjs</span>
+      <span>doc/superagent-mockups/agent-team-rc2-report.html（官方 Team 与本机 Bot 的兼容性评估）</span>
+    </div>
+  </section>
+
+  <footer class="tu-foot">
+    静态演示页 · 生成于 2026-11-14 · 数据为示意，界面为按官方源码复原的 mockup，不代表真机截图。<br>
+    版本口径：dsh runtime 0.2.2-rc.2；VsSaros <code>@vssaros/dsh-agents 0.2.387</code> 起的工具放行改动（历史说明，不随版本改写）。官方包升级后请复核文案与工具名。<br>
+    当前快照（2026-11-16）：<code>@vssaros/dsh-agents 0.2.391</code> · <code>@vssaros/dsh-chat-surface 0.2.441</code> · <strong>P1 gate=BLOCKED</strong> —— 群成员仍是独立影子会话，官方任务板只读观察；不迁移存量群、不双写任务板、不伪造 owner/caller。
+  </footer>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var themeBtn = document.getElementById('tu-theme');
+  themeBtn.addEventListener('click', function () {
+    var dark = root.getAttribute('data-theme') === 'dark';
+    root.setAttribute('data-theme', dark ? 'light' : 'dark');
+    themeBtn.textContent = dark ? '切换深色' : '切换浅色';
+  });
+
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('.tu-tab'));
+  var panels = Array.prototype.slice.call(document.querySelectorAll('.tu-panel'));
+  tabs.forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      var stage = tab.getAttribute('data-stage');
+      tabs.forEach(function (t) { t.setAttribute('aria-selected', String(t === tab)); });
+      panels.forEach(function (p) { p.hidden = p.getAttribute('data-panel') !== stage; });
+    });
+  });
+
+  var sw = document.getElementById('tu-switch');
+  var swNote = document.getElementById('tu-switch-note');
+  sw.addEventListener('click', function () {
+    var on = sw.getAttribute('aria-checked') !== 'true';
+    sw.setAttribute('aria-checked', String(on));
+    swNote.textContent = on
+      ? '当前演示：已开启。真实开关约 1–2 秒后回写；此刻界面不会立刻出现成员或任务板，要发一条分工指令进入下一回合。'
+      : '当前演示：已关闭。开启后界面不会立刻出现面板 —— 这是官方设计，不是故障。';
+    swNote.className = on ? 'tu-note' : 'tu-note is-warn';
+  });
+
+  var rows = Array.prototype.slice.call(document.querySelectorAll('.tu-task-row'));
+  rows.forEach(function (row) {
+    row.addEventListener('click', function () {
+      var id = row.getAttribute('data-task');
+      var detail = document.querySelector('[data-detail="' + id + '"]');
+      var willOpen = detail.hidden;
+      rows.forEach(function (r) {
+        var d = document.querySelector('[data-detail="' + r.getAttribute('data-task') + '"]');
+        if (d) { d.hidden = true; }
+        r.querySelector('.tu-task-chevron').textContent = '⌄';
+      });
+      if (willOpen) {
+        detail.hidden = false;
+        row.querySelector('.tu-task-chevron').textContent = '⌃';
+      }
+    });
+  });
+})();
+</script>
+</body>
+</html>

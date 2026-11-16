@@ -118,17 +118,18 @@ console.log('check-grbug-expert：GRBug 修复专家（流程 + 可执行脚本�
 	ok('⑤ 文档有流程梳理小节', read('doc/skill-authoring-standard.md').includes('10.x GRBug 修复专家'))
 	ok('⑤ 守卫已接入根链', read('package.json').includes('node dsh-plugins/check-grbug-expert.mjs'))
 	// ★ 2026-11-09：技能是 tier: extended，只靠 capability_search 才能找到。
-	//   显式挂到 TAPD 专员 agent 的 skills ⇒ 绕过分级进它的常驻目录（partitionCatalog pinned）。
+	//   显式挂到 GR 程序员 agent 的 skills ⇒ 绕过分级进它的常驻目录（partitionCatalog pinned）。
 	//   TS 真源与 .agent.md 产物必须同时带这一项，否则 gen-builtin-agent-md --check / 单源测试会红。
+	// ★ 2026-11-11：原挂载对象 saroasis-studio（TAPD 数据专员）随萨罗斯管理工作台一起下线 ⇒ 改挂 gr-programmer。
 	const builtinAgents = read('src/vs/sessions/contrib/agentStudio/common/builtinAgents.ts')
-	const studioMd = read('resources/.agents/agents/saroasis-studio/.agent.md')
-	ok('⑤ 真源把 grbug-fix-expert 显式点名给 saroasis-studio（TAPD 专员）',
+	const grMd = read('resources/.agents/agents/gr-programmer/.agent.md')
+	ok('⑤ 真源把 grbug-fix-expert 显式点名给 gr-programmer（GR 程序员）',
 		/skills:\s*\[[^\]]*'grbug-fix-expert'[^\]]*\]/.test(builtinAgents)
-		&& /skills:[\s\S]{0,220}- grbug-fix-expert/.test(studioMd))
+		&& /skills:[\s\S]{0,220}- grbug-fix-expert/.test(grMd))
 	ok('⑤ 点名的技能目录真实存在（不是空挂载）',
 		existsSync(join(ROOT, SKILL + 'SKILL.md')))
-	ok('⑤ 文档明确写出「已显式挂到 saroasis-studio」（不是别处碰巧提到该 agent）',
-		read('doc/skill-authoring-standard.md').includes('**已显式挂到 `saroasis-studio`**'))
+	ok('⑤ 文档明确写出「已显式挂到 gr-programmer」（不是别处碰巧提到该 agent）',
+		read('doc/skill-authoring-standard.md').includes('**已显式挂到 `gr-programmer`**'))
 }
 
 // ⑥ 反向突变（内存副本）：删掉脚本或改回伪造工具名 ⇒ 判据变红

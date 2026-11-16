@@ -1,7 +1,7 @@
 // @vssaros/dsh-kb — 知识库「飞书应用（appId / appSecret）」配置的纯逻辑（2026-11-10）
 //
-// 用户诉求：知识库设置页能指定自己的飞书应用；当前 lark-cli 用的是随包内置的
-//   `cli_a860911d2e7f5013`（vssaros-superagent 的 BUNDLED_FEISHU_APP），不是他想要的那个。
+// 用户诉求：知识库设置页能指定自己的飞书应用；原先 lark-cli 用的是产品随包的共享应用，
+//   2026-11-11 起产品不再内置任何飞书应用凭据 ⇒ 必须由用户在「设置 → 渠道」配置自己的应用。
 //
 // 仓内已验证的 lark-cli 应用切换方式（照 vssaros-superagent/lib/environment-YhSAne6L.js:284-305）：
 //   lark-cli profile add --name <appId> --app-id <appId> --app-secret-stdin --brand feishu
@@ -41,10 +41,33 @@ export function profileArgsOf(appId) {
 	return isValidAppId(id) && id ? ['--profile', id] : [];
 }
 
-/** 建/更新 profile 的参数；**secret 不在 argv 里**，由调用方写 stdin。 */
+/** 建 profile 的参数；**secret 不在 argv 里**，由调用方写 stdin。 */
 export function profileAddArgs(appId) {
 	const id = sanitizeAppId(appId);
 	return ['profile', 'add', '--name', id, '--app-id', id, '--app-secret-stdin', '--brand', 'feishu'];
+}
+
+/**
+ * ★ 2026-11-11 真机事故：`profile add` 对**已存在**的 profile 会直接失败。
+ *   superagent 的 `larkProfiles.create` 注释早就写明「Profiles that already exist are
+ *   never changed; setup only checks them」—— KB 侧原来每次保存都无条件 add ⇒ 重复添加
+ *   必然失败，还误报「命令可能仍用旧应用」，而实际 profile 已 active/effective ✗。
+ *   ⇒ 建之前先 `profile list`，已存在就沿用。
+ */
+export const PROFILE_LIST_ARGS = ['profile', 'list'];
+
+/**
+ * 从 `profile list` 输出里判断某个 appId 的 profile 是否已存在。
+ * ⚠ 不依赖严格 JSON：CLI 可能在 JSON 前后混日志行 / 通知块，只抓 `"name"` / `"appId"` 字段值。
+ */
+export function hasLarkProfile(raw, appId) {
+	const id = sanitizeAppId(appId);
+	if (!id) { return false; }
+	const text = String(raw ?? '');
+	for (const m of text.matchAll(/"(?:name|appId)"\s*:\s*"([^"]+)"/g)) {
+		if (String(m[1]).trim() === id) { return true; }
+	}
+	return false;
 }
 
 /**

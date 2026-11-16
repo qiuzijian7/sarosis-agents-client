@@ -169,6 +169,11 @@ for (const kind of ['knowledge']) {
 		[...PORTABLE_READ_OPS, ...PORTABLE_WRITE_OPS].every(op => ALL_OPS.includes(op)));
 }
 
+for (const op of ['preferencesRead', 'preferencesUpdate']) {
+	check('商城偏好独立分派：' + op, resolveOp(op, {}) === 'local-preferences' && resolveOp(op, { kind: 'workbench' }) === 'local-preferences');
+	check('商城偏好已声明：' + op, ALL_OPS.includes(op) && isKnownOp(op));
+}
+
 console.log(`\n[marketplace dispatch] ${pass} passing / ${fails.length} failing`);
 if (fails.length) { console.log('失败：' + fails.join('、')); }
 process.exit(fails.length === 0 ? 0 : 1);

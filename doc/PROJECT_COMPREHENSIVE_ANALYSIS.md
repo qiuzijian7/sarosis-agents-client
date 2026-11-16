@@ -572,7 +572,7 @@ npm run test-browser-no-install
   "version": "2.1.156901",
   "applicationName": "vssaros",
   "quality": "saros",
-  "updateUrl": "http://zijianqiu-any1.devcloud.woa.com:3030",
+  "updateUrl": "http://21.139.192.124:3030",
   "builtInExtensions": [
     "ms-vscode.js-debug",
     "ms-vscode.vscode-js-profile-table",
@@ -648,7 +648,7 @@ npm run test-browser-no-install
 ### 8.2 更新机制
 
 #### 8.2.1 更新服务器
-- **URL**: `http://zijianqiu-any1.devcloud.woa.com:3030`
+- **URL**: `http://21.139.192.124:3030`
 - **服务器代码**: `resources/update-server/index.js`
 - **CLI 更新**: `cli/src/commands/update.rs`
 

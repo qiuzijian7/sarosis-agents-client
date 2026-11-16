@@ -84,24 +84,49 @@ export const EvalConfigSchema = z.object({
   mode: z.enum(['off', 'observe', 'auto']).default('observe'),
   timeoutSeconds: z.number().int().min(LIMITS.evalTimeoutSeconds.min).max(LIMITS.evalTimeoutSeconds.max).default(120),
   model: RoleModelSchema.nullable().default(null),
+  /** ★ 2026-11-12：明确任务（任务动词 + URL）跳过模型评估直接建单。默认关闭。 */
+  fastExplicitTasks: z.boolean().default(false),
 }).strict()
 const CommandNameSchema = z.string().regex(/^[A-Za-z0-9._-]+$/).refine(name => name !== '.' && name !== '..', 'Not a command name')
   .refine(name => !WORKER_COMMANDS.includes(name), `${WORKER_COMMANDS.join(', ')} cannot be blocked`)
+export const ProjectMappingSchema = z.object({
+  id: z.string().trim().regex(/^[a-zA-Z0-9_-]{1,80}$/),
+  source: z.enum(['github', 'gongfeng', 'tapd', 'superagent', 'feishu']),
+  projectId: z.string().trim().min(1).max(200),
+  repository: z.string().trim().refine(path => path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path), 'An absolute local Git repository path'),
+  ref: z.string().trim().max(200).refine(value => !value.startsWith('-') && !/[\r\n\0]/.test(value), 'A local Git revision').transform(value => value || 'HEAD').default('HEAD'),
+}).strict()
+export type ProjectMapping = z.infer<typeof ProjectMappingSchema>
 /** Executor settings: worker model, concurrency, ticket directory root (empty defaults to `<stateDir>/work`), `prepare` command, and blocked commands. */
 export const ExecutorConfigSchema = z.object({
   model: RoleModelSchema.nullable().default(null),
   maxWorkers: z.number().int().min(LIMITS.maxWorkers.min).max(LIMITS.maxWorkers.max).default(3),
-  directory: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'An absolute path, or empty for <stateDir>/work').default(''),
+  // ★ 2026-11-11：Windows 盘符路径（F:\project）也是绝对路径；原来只认 '/' 导致
+  //   真机上无法把执行根指向 UE5/P4 工程，只能落在 stateDir/work 的空目录里。
+  directory: z.string().trim().refine(path => path === '' || path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path),
+    'An absolute path, or empty for <stateDir>/work').default(''),
   prepare: z.string().max(LIMITS.prepareCommand).default(''),
+  projects: z.array(ProjectMappingSchema).max(50).refine(rows => new Set(rows.map(row => row.id)).size === rows.length
+    && new Set(rows.map(row => JSON.stringify([row.source, row.projectId.toLowerCase()]))).size === rows.length,
+  'Project mapping IDs and source/project pairs must be unique').default([]),
   blockedCommands: z.array(CommandNameSchema).default([]),
-  // VsSaros addition (superagent v2): every accepted ticket waits for a person to agree to its team before a worker starts;
-  // a low-risk proposal is agreed automatically only once a person switches `autoApprove` on.
+  workerPtc: z.boolean().default(false),
+  toolTrace: z.boolean().default(false),
+  // ★ 2026-11-12（用户）：团队开关，默认关闭。关闭时走原型流程 —— 建单即启动单个 worker，
+  //   不生成组队方案、不等「同意」、不跑多 Bot 步骤；开启时恢复组队审批。
+  //   这是一个新字段：真机历史 settings-version:* 里没有它，parse 会补 false，无需 DB 迁移即可生效。
+  teamEnabled: z.boolean().default(false),
+  // Deprecated: 旧开关，仅为兼容历史上显式存过 staffing:true 的配置快照而保留；
+  // EngineOptions.staffing 现在只读 teamEnabled（见 app/runtime.ts）。
   staffing: z.boolean().default(true),
   autoApprove: z.boolean().default(false),
   // VsSaros addition (2026-11-07, co-install): whether another plugin may read a SuperAgent Session's request with another
   // model on the side, as DS Bot's OCR reads its images (`usage.ts` UsageRelay `side`). Off, such a call is refused and DS Bot
   // tells the model the image could not be read; a request sent again to the same model (its secrets rewrite) still goes.
   sideCalls: z.boolean().default(true),
+  // ★ 2026-11-13（用户）：工单结束时把自包含 HTML 报告作为文件附件发回飞书话题。
+  //   默认关闭 —— 外发是高风险动作，要人显式打开；新字段 parse 补 false，无需 DB 迁移。
+  feishuReport: z.boolean().default(false),
 }).strict()
 export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
 export const SettingsSchema = z.object({
@@ -122,7 +147,8 @@ export const POLICY_REVISION = 'mandate-v3'
  * Changes to models, concurrency, pause state, or polling intervals do not invalidate existing decisions.
  */
 export function policyVersion(settings: Settings): string {
-  return key(POLICY_REVISION, JSON.stringify({ rules: settings.policy.rules, mode: settings.eval.mode, sources: settings.policy.sources }))
+  return key(POLICY_REVISION, JSON.stringify({ rules: settings.policy.rules, mode: settings.eval.mode,
+    fastExplicitTasks: settings.eval.fastExplicitTasks, sources: settings.policy.sources }))
 }
 export function allowedSender(settings: Settings, actor: ActorRef): z.infer<typeof AllowedSchema> | undefined {
   return settings.policy.sources[actor.source]?.allowed.find(entry => sameName(entry.id, actor.id))
@@ -133,6 +159,17 @@ export function listedBot(settings: Settings, actor: ActorRef): z.infer<typeof A
   return bots.find(entry => sameName(entry.id, actor.id))
 }
 export const anyoneAllowed = (settings: Settings): boolean => Object.values(settings.policy.sources).some(part => part.allowed.length > 0)
+/**
+ * ★ 2026-11-11（真机事故）：能发起工作的人，必须能同意/拒绝自己发起工单的组队方案与步骤请求。
+ * 原来只认 `allowed` 白名单；准入矩阵 `unlistedAddressed=explicit` 放行的发起人不在白名单，
+ * 飞书回复「同意」会被 Staffing.consent() / StepApprovals.fromMessage() 静默丢弃。
+ * 附加约束：与工单发起人同来源、同 actor，避免陌生人批准别人的工单。
+ */
+export function mayConsent(settings: Settings, trigger: Trigger, origin?: Trigger): boolean {
+  if (!trigger.human) return false
+  if (allowedSender(settings, trigger.actor)) return true
+  return !!origin && origin.actor.source === trigger.actor.source && sameName(origin.actor.id, trigger.actor.id)
+}
 const senderName = (entry: z.infer<typeof AllowedSchema>): string => entry.name || entry.id
 
 /** Check whether a thread has tickets of its own (excluding context-only subscriptions). */
@@ -177,6 +214,20 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
   const mode = settings.eval.mode
   /** Gate non-human triggers: only listed bots (as inferred candidates) and senderless system/CI events may pass; other bots are rejected. */
   const machineGate = (trigger: Trigger): GateResult => {
+    // ★ 2026-11-11：superagent 来源里被识别为「执行阻塞」的 bot 报告不该被 not_human 静默吞掉。
+    //   窄判据（仅该来源 + 显式标记），其它来源/普通 bot 消息行为完全不变。
+    if (trigger.source === 'superagent' && trigger.meta?.blocker === true) {
+      return { admissible: true, strength: 'inferred', basis: { source: trigger.source, scope: trigger.meta,
+        via: 'admission' as const, cell: 'unlistedAddressed' as const,
+        ...trigger.addressed ? { addressed: trigger.addressed } : {}, observation: { mode } } }
+    }
+    // An operator imported and enabled a TAPD filter in the management panel. That is an explicit,
+    // auditable standing instruction to work the matching bugs, not an unsolicited machine message.
+    // Only the Host's daily sweep sets this marker; it is never taken from a TAPD record.
+    if (typeof trigger.meta?.filterSweep === 'string' && trigger.addressed === 'direct') {
+      return { admissible: true, strength: 'explicit', basis: { source: trigger.source, scope: trigger.meta,
+        via: 'admission' as const, cell: 'unlistedAddressed' as const, addressed: trigger.addressed, observation: { mode } } }
+    }
     const bot = trigger.actor.id ? listedBot(settings, trigger.actor) : undefined
     if (trigger.actor.id && !bot) return { admissible: false, reason: 'not_human' }
     const scope = listened(sources, trigger.source, trigger.meta)
@@ -196,6 +247,7 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
   }
   return {
     version, paused: settings.paused, evalTimeoutMs: settings.eval.timeoutSeconds * 1000,
+    fastExplicitTasks: settings.eval.fastExplicitTasks,
     gate(trigger: Trigger, thread, tickets) {
       if (!trigger.human) return machineGate(trigger)
       const allowed = allowedSender(settings, trigger.actor)

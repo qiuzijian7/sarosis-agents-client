@@ -138,7 +138,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		[DshHarnessSettings.NodePath]: {
 			type: 'string',
 			default: '',
-			markdownDescription: localize('dshHarness.config.nodePath', "运行 dsh 的 Node 可执行文件（要求 22.19+ 或 24+）。留空时依次尝试托管 Node、PATH 中的 `node`。不能使用 VsSaros 自带的 Electron。"),
+			markdownDescription: localize('dshHarness.config.nodePath', "运行 dsh 的 Node 可执行文件（要求 >=24.9.0）。留空时依次尝试托管 Node、PATH 中的 `node`。不能使用 VsSaros 自带的 Electron。"),
 		},
 		[DshHarnessSettings.NodeMirror]: {
 			type: 'string',

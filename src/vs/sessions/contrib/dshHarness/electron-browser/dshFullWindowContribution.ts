@@ -520,6 +520,7 @@ export class DshFullWindowContribution extends Disposable {
 				const meta = entry.meta?.get(id);
 				if (!meta) { continue; }
 				await this._dsh.createView(id, windowId, 'chat', meta.sessionId, undefined, undefined, true, true);
+				this._wirePageCommands(id, undefined);
 				(entry.hidden ?? (entry.hidden = new Set())).add(id);
 			}
 			entry.paneViewIds = [...(entry.paneViewIds ?? [entry.viewId]), id];
@@ -801,6 +802,7 @@ export class DshFullWindowContribution extends Disposable {
 		// 第 7 参 `overrideChatOnlyUi = true` ⇒ 右栏**只要对话区**（官方侧栏/右栏被裁掉 ⇒ 不重复侧栏）；
 		// 末参 `isolatedPool = true` ⇒ 右栏独占一个网络分区（不与左栏抢那 6 条连接）✓
 		await this._dsh.createView(splitViewId, entry.windowId, 'chat', sessionId, undefined, undefined, true, true);
+		this._wirePageCommands(splitViewId, undefined);
 		(entry.meta ?? (entry.meta = new Map())).set(splitViewId, { title: `新会话 ${seq}`, sessionId });
 		entry.paneViewIds = [...(entry.paneViewIds ?? [entry.viewId]), splitViewId];
 		entry.splitViewId = splitViewId;
@@ -1466,6 +1468,7 @@ export class DshFullWindowContribution extends Disposable {
 		// 末一个参数 `isolatedPool = true`：弹窗用**独立网络分区**，不与主窗口争同一个 host:port 的 6 条并发连接
 		//（真机实测：共享池被占满后三页 fetch 全超时、create 永不返回；见 DSH_VIEW_PARTITION_DESKTOP 注释）。
 		await this._dsh.createView(chatViewId, windowId, 'chat', sessionId, undefined, undefined, false, true);
+		this._wirePageCommands(chatViewId, undefined);
 		// ★★ 2026-10-28（用户："第一次启动，dsh desktop 会**闪一下 dsh web profile 的默认样式**，然后才切到 vssaros"）：
 		//   **占位先别撤**。视图在 `createView` 里是 `setVisible(false)` 的，而官方 UI 会先 paint
 		//   一帧、我们的换皮 chunk（品牌头 / 多根侧栏 / 页签条）后到 ⇒ 视图一显示就露出"默认样式"，
@@ -2046,20 +2049,52 @@ export class DshFullWindowContribution extends Disposable {
 	 * 弹窗视图的「换会话」族桥命令：视图是自己的，直接换绑，不经过聊天宿主。
 	 * 其余命令不在这里接（聊天宿主同口径：留给全局贡献 / 记 trace，**不许静默** ✗）。
 	 */
+	private readonly _pageCommandWires = new Map<string, { dispose(): void }>();
+
 	private _wirePageCommands(viewId: string, chatId: string | undefined): void {
-		this._register(this._dsh.onDidPageEvent(e => {
-			if (e.viewId !== viewId || e.kind !== 'command') {
-				return;
-			}
-			if (e.command.method === 'openSession') {
-				void this._dsh.rebindSession(viewId, e.command.sessionId)
-					.catch(err => this._log.warn(`[dshHarness] full window openSession failed`, err));
-			} else if (e.command.method === 'newSession') {
-				void this._newSession(viewId, chatId);
+		if (this._pageCommandWires.has(viewId)) { return; }
+		let pending: Promise<void> = Promise.resolve();
+		const enqueue = (action: () => Promise<void>) => {
+			pending = pending.then(action).catch(err => {
+				const detail = String((err as Error)?.message ?? err);
+				this._log.warn(`[dshHarness] desktop session command failed (${viewId}): ${detail}`, err);
+				this._notifications.warn(`VsSaros：桌面会话切换失败 —— ${detail}`);
+			});
+		};
+		const subscription = this._dsh.onDidPageEvent(e => {
+			if (e.viewId !== viewId || e.kind !== 'command') { return; }
+			const command = e.command;
+			if (command.method === 'switchWorktree') {
+				this._log.info(`[dshHarness] desktop switchWorktree received (${viewId}): ${command.path}`);
+				enqueue(() => this._switchWorktreeInView(viewId, chatId, command.path));
+			} else if (command.method === 'openSession') {
+				enqueue(() => this._dsh.rebindSession(viewId, command.sessionId));
+			} else if (command.method === 'newSession') {
+				enqueue(() => this._newSession(viewId, chatId));
 			} else {
-				this._log.trace(`[dshHarness] full window page command not handled here (expected: page-command contribution): ${e.command.method}`);
+				this._log.trace(`[dshHarness] full window page command not handled here (expected: page-command contribution): ${command.method}`);
 			}
+		});
+		this._pageCommandWires.set(viewId, subscription);
+		this._register(toDisposable(() => {
+			subscription.dispose();
+			this._pageCommandWires.delete(viewId);
 		}));
+	}
+
+	private async _switchWorktreeInView(viewId: string, chatId: string | undefined, cwd: string): Promise<void> {
+		const startedAt = Date.now();
+		const views = await this._dsh.listViews();
+		const view = views.find(v => v.viewId === viewId);
+		if (!view || view.surface !== 'chat') { throw new Error('聊天视图已关闭或不可换绑'); }
+		const sessions = await this._dsh.listDshSessions();
+		const current = sessions.find(s => s.id === view.sessionId);
+		if (view.sessionId && !current) { throw new Error('读不到当前会话的 preset，请稍后重试'); }
+		const target = dshChatNewSessionId(chatId ?? `full-${viewId}`, Date.now().toString(36));
+		const res = await this._dsh.startSession({ cwd, sessionId: target, agentPreset: current?.agentPreset });
+		const startMs = Date.now() - startedAt;
+		await this._dsh.rebindSession(viewId, res.sessionId);
+		this._log.info(`[dshHarness] desktop switchWorktree completed (${viewId}): cwd=${cwd} session=${res.sessionId} start=${startMs}ms total=${Date.now() - startedAt}ms`);
 	}
 
 	/** 弹窗内「＋ 新建会话」：派生新 id + startSession + rebind（与聊天宿主 `_doNewSessionInPlace` 同构）。 */

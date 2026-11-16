@@ -17,7 +17,7 @@
 //    没人接住就 bridge.notify 明说去哪，绝不静默。模型行 = 桥 openAgentSettings。
 //    ⚠ 旧版的 localStorage 焦点键 + openModulePage('/x/agents/') 已废弃 —— 那个 SSR 工作台
 //    下线后是 404（且焦点键全仓无读端）⇒ 点了必定"没反应"，别再照抄。
-// ⑤ order 取 **-5**：官方 todo=0 / goal=10 / queue=20，我们 vssaros-todo=5 / vssaros-delegate=15 ⇒ -5 不 tie，
+// ⑤ order 取 **-5**：官方 todo=0 / goal=10 / queue=20，我们 vssaros-todo=-1 / vssaros-delegate=15 ⇒ -5 不 tie，
 //    且排在最前（欢迎卡应当在任务清单之上）✓。
 window.__ModuleLoader__.load({
 	id: "@vssaros/dsh-chat-surface",

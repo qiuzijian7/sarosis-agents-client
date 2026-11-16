@@ -1,19 +1,21 @@
-import { A as key, B as readUntil, C as templateLiteral, D as ZodError, F as isoTime, G as ticketExecutor, H as settled, I as latestAssignment, K as ticketOutcome, L as latestReport, M as awaitingAnswer, N as followupOwners, O as toJSONSchema, P as isGroupTicket, R as liveTicket, S as string$1, T as unknown, U as staffing, V as runningAssignment, W as threadKey, _ as literal, b as object, c as checkedImText, d as sameName, f as wordCount, g as boolean, h as array, j as assignmentRole, k as _coercedNumber, m as _enum, o as health, p as ZodNumber, q as waitsForPerson, w as union, x as record$1, y as number$1, z as reached } from "./poll-Btx7A8Qk.js";
-import { C as resolveFeishuBot, M as SetupError, N as LIMITS, S as resolveDeployment, _ as executable, a as verifyDirectory, c as workerBin, d as Commands, g as SETUP_FIELDS, i as runAsWorker, l as writeEnvironment, n as agentVariables, o as verifyEnvironment, p as Config, r as applyEnvironment, s as withoutDirectory, t as WORKER_COMMANDS, v as githubConfigured, w as workerProbe, x as machineOf } from "./environment-YhSAne6L.js";
-import { i as pullOf, m as readRepositoryPath, o as readPull, p as readGithub, r as pullEndNotices, t as claimPull } from "./github-pull-Bvr9qxGI.js";
-import { b as feishuTriggerId, d as feishuChatLink, f as feishuRead, g as feishuRef, m as readFeishuLink, p as feishuReferences, r as feishuSettings } from "./feishu-DdbTWkd2.js";
-import { t as KV } from "./kv-VTYpQIqw.js";
-import { a as fingerprint, c as p4, d as readChange, f as shelfDiffs, i as claimChangelist, n as changeEndNotices, o as inPath, r as changesOf$1, t as P4ConfigSchema, u as p4Messages } from "./p4-change-BdyYHiZ1.js";
-import { A as tapdCredentialStatus, C as TapdConfigSchema, D as TapdCredentialError, E as watchWorkspace, O as saveTapdCredential, S as TAPD_TYPES, T as tapdApi, a as itemTrigger, b as resolveTapdName, h as signatureOf, i as itemThread, j as tapdEnvironment, k as tapdCredential, p as resolvedConfig, w as TapdOpenApi, x as TAPD_SOURCE, y as cleanOwner } from "./tapd-C-suZKO-.js";
+import { A as key, B as readUntil, C as templateLiteral, D as ZodError, F as isoTime, G as ticketExecutor, H as settled, I as latestAssignment, K as ticketOutcome, L as latestReport, M as awaitingAnswer, N as followupOwners, O as toJSONSchema, P as isGroupTicket, R as liveTicket, S as string$1, T as unknown, U as staffing, V as runningAssignment, W as threadKey, _ as literal, b as object, c as checkedImText, d as sameName, f as wordCount, g as boolean, h as array, j as assignmentRole, k as _coercedNumber, m as _enum, o as health, p as ZodNumber, q as waitsForPerson, w as union, x as record$1, y as number$1, z as reached } from "./poll-DRgTfbJS.js";
+import { C as resolveFeishuBot, M as LIMITS, S as resolveDeployment, _ as executable, a as verifyDirectory, c as workerBin, d as Commands, g as SETUP_FIELDS, i as runAsWorker, j as SetupError, l as writeEnvironment, n as agentVariables, o as verifyEnvironment, p as Config, r as applyEnvironment, s as withoutDirectory, t as WORKER_COMMANDS, v as githubConfigured, w as workerProbe, x as machineOf } from "./environment-CNbpiSF4.js";
+import { t as KV } from "./kv-DEhBtrT7.js";
+import { A as saveTapdCredential, C as TapdConfigSchema, D as tapdTime, E as tapdApi, M as tapdCredentialStatus, N as tapdEnvironment, O as watchWorkspace, P as importTapdFilter, S as TAPD_TYPES, T as itemAddress, a as itemTrigger, b as resolveTapdName, h as signatureOf, i as itemThread, j as tapdCredential, k as TapdCredentialError, p as resolvedConfig, w as TapdOpenApi, x as TAPD_SOURCE, y as cleanOwner } from "./tapd-Bx8rVFpw.js";
+import { i as pullOf, m as readRepositoryPath, o as readPull, p as readGithub, r as pullEndNotices, t as claimPull } from "./github-pull-BIKVutil.js";
+import { f as GongfengConfigSchema, n as claimGongfengMr, p as GongfengOpenApi } from "./gongfeng-C_hgFLYU.js";
+import { b as feishuTriggerId, d as feishuChatLink, f as feishuRead, g as feishuRef, m as readFeishuLink, p as feishuReferences, r as feishuSettings } from "./feishu-BlttmBWt.js";
+import { a as claimChangelist, d as p4Messages, f as readChange, g as unshelvedFiles, h as ticketClient, i as changesOf$1, l as p4, m as summarizeShelfDiffs, n as P4ConfigSchema, o as fingerprint, p as shelfDiffs, r as changeEndNotices, s as inPath } from "./p4-change-C_Ia-tq9.js";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve, sep } from "node:path";
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { mkdir, mkdtemp, rm, rmdir, stat } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { lstat, mkdir, mkdtemp, opendir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { homedir, userInfo } from "node:os";
 import { DatabaseSync } from "node:sqlite";
+import { performance as performance$1 } from "node:perf_hooks";
 //#region \0rolldown/runtime.js
 var __commonJSMin = (cb, mod) => () => (mod || (cb((mod = { exports: {} }).exports, mod), cb = null), mod.exports);
 var __require = /* #__PURE__ */ (() => createRequire(import.meta.url))();
@@ -101,6 +103,18 @@ async function loadHostModules() {
 }
 /** `@deepseek-ai/dsh-scope`'s `scopeParentOf`; none when the Host's module could not be loaded. */
 const scopeParentOf = (key) => scope?.scopeParentOf(key);
+/** PTC must resolve from the Host entry, never from the dev toolchain or a bundled copy. */
+async function loadHostPtc() {
+	const entry = process.argv[1];
+	if (!entry) return void 0;
+	try {
+		const resolved = createRequire(entry).resolve("@deepseek-ai/dsh-tool-executor-ptc");
+		const module = await import(pathToFileURL(resolved).href);
+		return typeof module.PtcExecutor === "function" ? module : void 0;
+	} catch {
+		return;
+	}
+}
 //#endregion
 //#region node_modules/.pnpm/graceful-fs@4.2.11/node_modules/graceful-fs/polyfills.js
 var require_polyfills = /* @__PURE__ */ __commonJSMin(((exports, module) => {
@@ -1561,6 +1575,21 @@ function acquireStateLock(stateDir, onCompromised, options = {}) {
 /** 建群 / 组队请求的共享判据：Intake 回答闸门与群聊快路径必须同源（2026-11-10）。 */
 /** 动词到「群/团队」之间最多 48 字符（够放长标题，又不跨过整句话）；「群聊」单独命中。 */
 const GROUP_REQUEST = /(?:建|拉|创建|组建|成立)[^，,。！!？?]{0,48}(?:群|团队)|群聊/u;
+/** ★ 2026-11-12（用户授权改准入规则）：明确任务 = 任务动词 + 可访问 URL + 无否定词 + 非建群请求。 */
+const TASK_URL = /https?:\/\/[^\s，。！？?、）)]+/i;
+const POLITE = /^(?:(?:请|帮我|麻烦|顺便|再|又|另外|还有)\s*)*/u;
+const TASK_VERB = /^(?:修复|修一下|处理|跟进|建单|提单|排查|定位|复现|创建|新建|组建|成立|添加|新增|增加|生成|实现|开发|开始|启动|拉个|拉一?个|做(?:一)?个|写(?:一)?个)/u;
+const NEGATIVE = /(?:不要|别|无需|不用|不必|取消|先不|暂不)/u;
+/**
+* 只放行「修复bug单：https://…」「帮我实现 https://…」这类明确任务。
+* 「test1」「hello」「谢谢」「看看这个链接 https://…」都不命中 ⇒ 仍由模型判 ignore。
+*/
+function explicitTask(trigger) {
+	if (!trigger.human) return false;
+	const text = trigger.text.replace(/@\S+/g, " ").replace(/\s+/g, " ").trim();
+	if (!TASK_URL.test(text) || NEGATIVE.test(text) || GROUP_REQUEST.test(text)) return false;
+	return TASK_VERB.test(text.replace(POLITE, ""));
+}
 //#endregion
 //#region src/core/errors.ts
 /** User-facing error codes mapped to their category ('missing' or 'refused') and English message template. */
@@ -2442,6 +2471,7 @@ var Assignments = class extends EnginePart {
 	report(ticketId, report) {
 		const ticket = this.require(ticketId);
 		if (!liveTicket(ticket)) throw new UserError("ticketEnded");
+		if (ticket.execution?.delivery === "p4" && (report.state === "dropped" || report.state === "ready" && !ticket.follows?.some((follow) => follow.own && follow.thread.startsWith("p4:")))) throw new Error("P4 delivery has no verified ticket changelist; report blocked instead of completion");
 		if (report.question && (report.state === "ready" || report.answers)) throw new UserError("questionWithResult");
 		if (report.askedBy && !report.question) throw new UserError("askerWithoutQuestion");
 		const person = (id, channel) => {
@@ -2475,9 +2505,13 @@ var Assignments = class extends EnginePart {
 		if (report.answers) this.takeUp(ticketId, report.answers);
 		if (report.state === "blocked" || report.state === "failed") ticket.undelivered = ticket.undelivered.filter((id) => !automatic(ticket.inputs.find((input) => input.id === id)));
 		this.repo.tickets.save(ticket);
-		const ready = !ticket.follows?.length ? "completed" : this.tickets.followsDone(ticket)?.outcome;
+		const ready = !ticket.follows?.length || ticket.execution?.p4Delivery === "pending" ? "completed" : this.tickets.followsDone(ticket)?.outcome;
 		const outcome = report.state === "dropped" ? this.tickets.followsDone(ticket)?.outcome ?? "dropped" : report.state === "ready" ? ready : void 0;
 		if (outcome) this.tickets.end(ticketId, "executor", outcome, at);
+		this.emit("assignment.reported", {
+			ticketId,
+			assignmentId: assignment.id
+		});
 		return this.require(ticketId);
 	}
 	/** The ticket, while it is open and `assignmentId` runs it. */
@@ -2501,6 +2535,7 @@ const REASONS = {
 	acceptedBefore: "Trigger {trigger} was accepted before",
 	routed: "Routed to ticket {ticket}",
 	explicitRouted: "Explicit request from an allowed sender routed by the orchestrator",
+	explicitFastTrack: "Explicit task with a URL accepted by rule, without a model assessment",
 	humanStop: "Human asked to stop",
 	legacyImport: "Imported from the pre-domain-model task record",
 	forwarded: "Forwarded to the worker of the Ticket already on this Thread",
@@ -2674,6 +2709,19 @@ var Evals = class extends EnginePart {
 			triggerIds: thread.evaluating.triggerIds,
 			strength: strongest.strength
 		});
+		if (policy.fastExplicitTasks && strongest.strength === "explicit" && !reasons.length && thread.evaluating.triggerIds.length === 1 && explicitTask(strongest.trigger)) {
+			const text = strongest.trigger.text.trim();
+			this.accept(thread, thread.evaluating, {
+				kind: "accept",
+				title: text.slice(0, 160),
+				scope: text.slice(0, 1500),
+				reason: { code: "explicitFastTrack" },
+				name: "task-from-url",
+				acknowledgement: "收到，已建单。",
+				audit: { fastTrack: true }
+			});
+			return;
+		}
 		this.options.assessor.request(this.candidateOf(thread));
 	}
 	/** The candidate of the Eval that holds `triggerId`, or undefined while no Eval holds it. */
@@ -3744,19 +3792,39 @@ const EvalConfigSchema = object({
 		"auto"
 	]).default("observe"),
 	timeoutSeconds: number$1().int().min(LIMITS.evalTimeoutSeconds.min).max(LIMITS.evalTimeoutSeconds.max).default(120),
-	model: RoleModelSchema.nullable().default(null)
+	model: RoleModelSchema.nullable().default(null),
+	/** ★ 2026-11-12：明确任务（任务动词 + URL）跳过模型评估直接建单。默认关闭。 */
+	fastExplicitTasks: boolean().default(false)
 }).strict();
 const CommandNameSchema = string$1().regex(/^[A-Za-z0-9._-]+$/).refine((name) => name !== "." && name !== "..", "Not a command name").refine((name) => !WORKER_COMMANDS.includes(name), `${WORKER_COMMANDS.join(", ")} cannot be blocked`);
+const ProjectMappingSchema = object({
+	id: string$1().trim().regex(/^[a-zA-Z0-9_-]{1,80}$/),
+	source: _enum([
+		"github",
+		"gongfeng",
+		"tapd",
+		"superagent",
+		"feishu"
+	]),
+	projectId: string$1().trim().min(1).max(200),
+	repository: string$1().trim().refine((path) => path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path), "An absolute local Git repository path"),
+	ref: string$1().trim().max(200).refine((value) => !value.startsWith("-") && !/[\r\n\0]/.test(value), "A local Git revision").transform((value) => value || "HEAD").default("HEAD")
+}).strict();
 /** Executor settings: worker model, concurrency, ticket directory root (empty defaults to `<stateDir>/work`), `prepare` command, and blocked commands. */
 const ExecutorConfigSchema = object({
 	model: RoleModelSchema.nullable().default(null),
 	maxWorkers: number$1().int().min(LIMITS.maxWorkers.min).max(LIMITS.maxWorkers.max).default(3),
-	directory: string$1().trim().refine((path) => path === "" || path.startsWith("/"), "An absolute path, or empty for <stateDir>/work").default(""),
+	directory: string$1().trim().refine((path) => path === "" || path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path), "An absolute path, or empty for <stateDir>/work").default(""),
 	prepare: string$1().max(LIMITS.prepareCommand).default(""),
+	projects: array(ProjectMappingSchema).max(50).refine((rows) => new Set(rows.map((row) => row.id)).size === rows.length && new Set(rows.map((row) => JSON.stringify([row.source, row.projectId.toLowerCase()]))).size === rows.length, "Project mapping IDs and source/project pairs must be unique").default([]),
 	blockedCommands: array(CommandNameSchema).default([]),
+	workerPtc: boolean().default(false),
+	toolTrace: boolean().default(false),
+	teamEnabled: boolean().default(false),
 	staffing: boolean().default(true),
 	autoApprove: boolean().default(false),
-	sideCalls: boolean().default(true)
+	sideCalls: boolean().default(true),
+	feishuReport: boolean().default(false)
 }).strict();
 const SourceInstanceSchema = object({
 	enabled: boolean().default(true),
@@ -3778,6 +3846,7 @@ function policyVersion(settings) {
 	return key(POLICY_REVISION, JSON.stringify({
 		rules: settings.policy.rules,
 		mode: settings.eval.mode,
+		fastExplicitTasks: settings.eval.fastExplicitTasks,
 		sources: settings.policy.sources
 	}));
 }
@@ -3789,6 +3858,17 @@ function listedBot(settings, actor) {
 	return array(AllowedSchema).catch([]).parse(settings.policy.sources[actor.source]?.bots ?? []).find((entry) => sameName(entry.id, actor.id));
 }
 const anyoneAllowed = (settings) => Object.values(settings.policy.sources).some((part) => part.allowed.length > 0);
+/**
+* ★ 2026-11-11（真机事故）：能发起工作的人，必须能同意/拒绝自己发起工单的组队方案与步骤请求。
+* 原来只认 `allowed` 白名单；准入矩阵 `unlistedAddressed=explicit` 放行的发起人不在白名单，
+* 飞书回复「同意」会被 Staffing.consent() / StepApprovals.fromMessage() 静默丢弃。
+* 附加约束：与工单发起人同来源、同 actor，避免陌生人批准别人的工单。
+*/
+function mayConsent(settings, trigger, origin) {
+	if (!trigger.human) return false;
+	if (allowedSender(settings, trigger.actor)) return true;
+	return !!origin && origin.actor.source === trigger.actor.source && sameName(origin.actor.id, trigger.actor.id);
+}
 const senderName = (entry) => entry.name || entry.id;
 /** Check whether a thread has tickets of its own (excluding context-only subscriptions). */
 const participating = (thread, tickets) => [...thread.subscriptions, ...tickets.map((ticket) => ticket.id)].some((id) => !thread.context?.includes(id));
@@ -3851,6 +3931,30 @@ function settingsPolicy(settings, sources) {
 	const mode = settings.eval.mode;
 	/** Gate non-human triggers: only listed bots (as inferred candidates) and senderless system/CI events may pass; other bots are rejected. */
 	const machineGate = (trigger) => {
+		if (trigger.source === "superagent" && trigger.meta?.blocker === true) return {
+			admissible: true,
+			strength: "inferred",
+			basis: {
+				source: trigger.source,
+				scope: trigger.meta,
+				via: "admission",
+				cell: "unlistedAddressed",
+				...trigger.addressed ? { addressed: trigger.addressed } : {},
+				observation: { mode }
+			}
+		};
+		if (typeof trigger.meta?.filterSweep === "string" && trigger.addressed === "direct") return {
+			admissible: true,
+			strength: "explicit",
+			basis: {
+				source: trigger.source,
+				scope: trigger.meta,
+				via: "admission",
+				cell: "unlistedAddressed",
+				addressed: trigger.addressed,
+				observation: { mode }
+			}
+		};
 		const bot = trigger.actor.id ? listedBot(settings, trigger.actor) : void 0;
 		if (trigger.actor.id && !bot) return {
 			admissible: false,
@@ -3904,6 +4008,7 @@ function settingsPolicy(settings, sources) {
 		version,
 		paused: settings.paused,
 		evalTimeoutMs: settings.eval.timeoutSeconds * 1e3,
+		fastExplicitTasks: settings.eval.fastExplicitTasks,
 		gate(trigger, thread, tickets) {
 			if (!trigger.human) return machineGate(trigger);
 			const allowed = allowedSender(settings, trigger.actor);
@@ -4523,6 +4628,408 @@ var Effects = class {
 		});
 	}
 };
+//#endregion
+//#region src/executor/workspace.ts
+/** Durable preparation and non-destructive validation of each ticket's execution directory. */
+/** Only the operator's local Source config may override the execution root; incoming meta.workspace is not a path. */
+function ticketDirectory(settings, stateDir, name, origin) {
+	const configured = origin?.source === "superagent" ? settings.sources.superagent?.config.workspace : void 0;
+	const root = typeof configured === "string" && configured.trim() ? configured.trim() : executionRoot(settings, stateDir);
+	if (!isAbsolute(root) && !win32.isAbsolute(root)) throw new Error("工作区未配置：执行根必须是绝对路径，请在「设置 → 执行」或本地来源设置中配置。");
+	return win32.isAbsolute(root) && !isAbsolute(root) ? win32.join(root, name) : join(root, name);
+}
+/** A directory failure must wait for operator repair, rather than retrying a destructive prepare command blindly. */
+var WorkspaceError = class extends Error {
+	constructor(message, cause) {
+		super(`工作区未就绪：${message}`, { cause });
+		this.name = "WorkspaceError";
+	}
+};
+async function directoryExists(directory, inspect) {
+	try {
+		if (!(await inspect(directory)).isDirectory()) throw new WorkspaceError(`目标不是目录：${directory}`);
+		return true;
+	} catch (error) {
+		if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return false;
+		if (error instanceof WorkspaceError) throw error;
+		throw new WorkspaceError(`无法访问 ${directory}：${error instanceof Error ? error.message : String(error)}`);
+	}
+}
+/** Serializes preparation for a ticket within the state-locked Runtime; it is not a lock for shared Git/P4 repositories. */
+var TicketWorkspaces = class {
+	store;
+	inspect;
+	pending = /* @__PURE__ */ new Map();
+	constructor(store, inspect = stat) {
+		this.store = store;
+		this.inspect = inspect;
+	}
+	ensure(ticketId, path, command, prepare, verify, allowPrepare = true) {
+		const active = this.pending.get(ticketId);
+		if (active) return active.then(() => this.ensure(ticketId, path, command, prepare, verify, allowPrepare));
+		const operation = this.check(ticketId, path, command, prepare, verify, allowPrepare);
+		this.pending.set(ticketId, operation);
+		return operation.finally(() => {
+			if (this.pending.get(ticketId) === operation) this.pending.delete(ticketId);
+		});
+	}
+	async check(ticketId, path, command, prepare, verify, allowPrepare) {
+		if (!path || !isAbsolute(path)) throw new WorkspaceError("执行目录必须是本机绝对路径；请检查项目映射，不会自动迁移已有工单。");
+		const directory = resolve(path);
+		const key = KV.executor.workspace(ticketId);
+		const previous = this.store.get(key);
+		if (previous && previous.directory !== directory) throw new WorkspaceError("工单目录与准备记录不一致；请核对现场，不会自动重绑定或覆盖。");
+		const exists = await directoryExists(directory, this.inspect);
+		if (!exists && (previous?.state === "ready" || previous?.failurePhase === "verify")) throw new WorkspaceError(`原工作区已丢失：${directory}。请恢复现场；不会创建空目录代替。`);
+		if (previous?.state === "preparing") throw new WorkspaceError(`上次准备失败或中断：${directory}。准备结果不确定，请人工核对现场和准备记录后恢复；不会自动重跑命令。`);
+		if (exists && previous?.state === "failed" && previous.failurePhase !== "verify") throw new WorkspaceError(`上次准备失败或中断，现场保留：${directory}。请检查并恢复现场，或在备份后移走残留再重试。${previous.error ? ` 原因：${previous.error}` : ""}`);
+		if (!exists && !allowPrepare) throw new WorkspaceError(`执行目录不存在：${directory}。请恢复现场；消息投递不会重新运行准备命令。`);
+		const configuration = exists && previous ? previous.configuration : createHash("sha256").update(command).digest("hex");
+		const origin = previous?.origin ?? (exists ? "existing" : "prepared");
+		let phase = exists ? "verify" : "prepare";
+		const save = (state, error) => this.store.set(key, {
+			directory,
+			configuration,
+			origin,
+			state,
+			at: (/* @__PURE__ */ new Date()).toISOString(),
+			...error ? {
+				error,
+				failurePhase: phase
+			} : {}
+		});
+		if (!exists) save("preparing");
+		try {
+			if (!exists) await prepare();
+			if (!await directoryExists(directory, this.inspect)) throw new WorkspaceError(`准备命令未生成目录：${directory}`);
+			phase = "verify";
+			await verify();
+			save("ready");
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			save("failed", message);
+			throw error instanceof WorkspaceError ? error : new WorkspaceError(message, error);
+		}
+	}
+};
+//#endregion
+//#region src/executor/git-workspace.ts
+/** Project selection and managed Git worktrees; no network fetch, reset, or automatic cleanup. */
+/** Source IDs only select an operator-owned mapping; they never supply filesystem paths or commands. */
+function mappedProject(settings, origin, canonicalRepository) {
+	if (!origin) return void 0;
+	let source = origin.source, projectId = "";
+	if (source === "github") projectId = canonicalRepository ?? String(settings.sources.github?.config.repository ?? "");
+	else if (source === "gongfeng") {
+		const configured = String(settings.sources.gongfeng?.config.project ?? "");
+		if (origin.meta.project === configured) projectId = configured;
+	} else if (source === "tapd") projectId = typeof origin.meta.workspace === "string" ? origin.meta.workspace : "";
+	else {
+		const address = itemAddress(origin.url ?? "") ?? itemAddress(/https?:\/\/\S+/i.exec(origin.text)?.[0] ?? "");
+		if (address && (source === "superagent" || source === "feishu")) {
+			source = "tapd";
+			projectId = address.workspace;
+		} else if (source === "superagent" || source === "feishu") projectId = "local";
+	}
+	const mapping = settings.executor.projects.find((row) => row.source === source && row.projectId.toLowerCase() === projectId.toLowerCase());
+	return mapping ? {
+		...mapping,
+		strategy: "git-worktree"
+	} : void 0;
+}
+async function commonDirectory(repository, run) {
+	if (!isAbsolute(repository)) throw new WorkspaceError("Git 项目必须配置本机绝对仓库路径。");
+	const path = (await run([
+		"git",
+		"rev-parse",
+		"--path-format=absolute",
+		"--git-common-dir"
+	], repository)).trim();
+	if (!isAbsolute(path)) throw new WorkspaceError("无法确定共享 Git 元数据目录；请检查本地仓库。");
+	return realpath(path);
+}
+/** Locks the canonical common-dir across processes so linked worktrees share the same preparation lock. */
+async function prepareGitWorktree(project, directory, name, run, signal) {
+	const common = await commonDirectory(project.repository, run);
+	let compromised;
+	const release = await (0, import_proper_lockfile.lock)(common, {
+		realpath: true,
+		stale: 12e4,
+		update: 1e4,
+		retries: {
+			retries: 20,
+			minTimeout: 100,
+			maxTimeout: 1e3
+		},
+		onCompromised: (error) => {
+			compromised = error;
+		}
+	});
+	try {
+		signal.throwIfAborted();
+		await run([
+			"git",
+			"check-ref-format",
+			"--branch",
+			`agent/${name}`
+		], project.repository);
+		const base = (await run([
+			"git",
+			"rev-parse",
+			"--verify",
+			"--end-of-options",
+			`${project.ref}^{commit}`
+		], project.repository)).trim();
+		if (!/^[a-f0-9]{40,64}$/i.test(base)) throw new WorkspaceError(`基线 ${project.ref} 未解析到本地 commit；请先同步仓库。`);
+		signal.throwIfAborted();
+		await mkdir(dirname(directory), { recursive: true });
+		signal.throwIfAborted();
+		if (compromised) throw compromised;
+		await run([
+			"git",
+			"worktree",
+			"add",
+			"-b",
+			`agent/${name}`,
+			directory,
+			base
+		], project.repository);
+		if (compromised) throw compromised;
+	} finally {
+		await release();
+	}
+}
+/** Verify the checkout itself, not an ancestor repository; do not reset a dirty worktree on retry. */
+async function verifyGitWorktree(project, directory, name, run) {
+	const top = (await run([
+		"git",
+		"rev-parse",
+		"--show-toplevel"
+	], directory)).trim();
+	const [wanted, actual] = await Promise.all([realpath(directory), realpath(top)]);
+	if (wanted !== actual) throw new WorkspaceError("工单目录不是 Git checkout 顶层；不会在父仓库中执行。");
+	const [sourceCommon, ticketCommon] = await Promise.all([commonDirectory(project.repository, run), commonDirectory(directory, run)]);
+	if (sourceCommon !== ticketCommon) throw new WorkspaceError("工单 checkout 不属于配置的共享 Git 仓库。");
+	if ((await run([
+		"git",
+		"branch",
+		"--show-current"
+	], directory)).trim() !== `agent/${name}`) throw new WorkspaceError("工单分支与准备记录不一致；请人工确认，不会自动 checkout/reset。");
+}
+/** Logical file bytes, not allocated disk space; limits and links produce unknown totals instead of a false zero. */
+async function linkedAncestor(directory, signal) {
+	for (let path = resolve(directory);; path = dirname(path)) {
+		signal?.throwIfAborted();
+		if ((await lstat(path)).isSymbolicLink()) return true;
+		if (dirname(path) === path) return false;
+	}
+}
+async function measure(directory, signal) {
+	let bytes = 0, files = 0, visited = 0;
+	const blockers = /* @__PURE__ */ new Set();
+	const deadline = Date.now() + 2e3;
+	try {
+		signal?.throwIfAborted();
+		const root = await lstat(directory);
+		if (root.isSymbolicLink() || await linkedAncestor(directory, signal)) return {
+			exists: true,
+			bytes: null,
+			files: 0,
+			blockers: ["symbolic-links"]
+		};
+		if (!root.isDirectory()) return {
+			exists: null,
+			bytes: null,
+			files: 0,
+			blockers: ["filesystem-unknown"]
+		};
+		const walk = async (path, depth) => {
+			signal?.throwIfAborted();
+			if (depth > 12 || Date.now() >= deadline || visited >= 2e3) {
+				blockers.add("incomplete-size");
+				return;
+			}
+			const before = await lstat(path);
+			if (before.isSymbolicLink()) {
+				blockers.add("symbolic-links");
+				return;
+			}
+			if (!before.isDirectory()) {
+				blockers.add("filesystem-unknown");
+				return;
+			}
+			const handle = await opendir(path);
+			try {
+				signal?.throwIfAborted();
+				const after = await lstat(path);
+				if (after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino) {
+					blockers.add("filesystem-unknown");
+					return;
+				}
+				for await (const entry of handle) {
+					signal?.throwIfAborted();
+					if (Date.now() >= deadline || visited++ >= 2e3) {
+						blockers.add("incomplete-size");
+						return;
+					}
+					const child = join(path, entry.name), info = await lstat(child);
+					if (info.isSymbolicLink()) blockers.add("symbolic-links");
+					else if (info.isDirectory()) await walk(child, depth + 1);
+					else if (info.isFile()) {
+						files++;
+						bytes += info.size;
+					} else blockers.add("filesystem-unknown");
+				}
+			} finally {
+				await handle.close().catch((error) => {
+					if (!(error && typeof error === "object" && "code" in error && error.code === "ERR_DIR_CLOSED")) throw error;
+				});
+			}
+		};
+		await walk(directory, 0);
+		return {
+			exists: true,
+			bytes: blockers.size ? null : bytes,
+			files,
+			blockers: [...blockers]
+		};
+	} catch {
+		signal?.throwIfAborted();
+		return {
+			exists: null,
+			bytes: null,
+			files,
+			blockers: ["filesystem-unknown"]
+		};
+	}
+}
+async function inspect(host, ticket, tickets, now) {
+	const directory = ticket.execution.directory;
+	const record = host.store.get(KV.executor.workspace(ticket.id));
+	const blockers = /* @__PURE__ */ new Set();
+	if (liveTicket(ticket)) blockers.add("live");
+	else {
+		const ended = Date.parse(ticket.ended.at);
+		if (!Number.isFinite(ended)) blockers.add("end-unknown");
+		else if (now - ended < 12096e5) blockers.add("recent");
+	}
+	if (ticket.undelivered.length) blockers.add("pending-input");
+	if (ticket.attention) blockers.add("awaiting-person");
+	if (ticket.follows?.some((follow) => !follow.closed)) blockers.add("open-follow");
+	if (ticket.team) blockers.add("team-history");
+	if (ticket.follows?.some((follow) => follow.thread.startsWith("p4:")) || host.store.get(KV.reviews.review(ticket.id)) || host.store.get(KV.reviews.required(ticket.id))) blockers.add("p4-history");
+	if (!record) blockers.add("preparation-unknown");
+	else {
+		if (record.state !== "ready") blockers.add("preparation-failed");
+		if (record.origin !== "prepared") blockers.add("external-directory");
+		if (isAbsolute(directory) && resolve(directory) !== record.directory) blockers.add("path-mismatch");
+	}
+	if (!ticket.execution.project) blockers.add("external-directory");
+	const normalize = (path) => process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
+	if (tickets.some((other) => other.id !== ticket.id && other.execution?.directory && normalize(other.execution.directory) === normalize(directory))) blockers.add("shared-directory");
+	host.signal?.throwIfAborted();
+	try {
+		for (const reason of await host.activity(ticket.id)) blockers.add(reason);
+	} catch {
+		host.signal?.throwIfAborted();
+		blockers.add("activity-unknown");
+	}
+	let size;
+	if (!isAbsolute(directory)) size = {
+		exists: null,
+		bytes: null,
+		files: 0,
+		blockers: ["path-mismatch"]
+	};
+	else try {
+		await lstat(directory);
+		size = await measure(directory, host.signal);
+	} catch (error) {
+		host.signal?.throwIfAborted();
+		const missing = error && typeof error === "object" && "code" in error && error.code === "ENOENT";
+		size = {
+			exists: missing ? false : null,
+			bytes: null,
+			files: 0,
+			blockers: [missing ? "missing" : "filesystem-unknown"]
+		};
+	}
+	for (const reason of size.blockers) blockers.add(reason);
+	if (size.exists && ticket.execution.project && !size.blockers.includes("symbolic-links")) try {
+		await verifyGitWorktree(ticket.execution.project, directory, ticket.execution.name, host.git);
+		if ((await host.git([
+			"git",
+			"--no-optional-locks",
+			"-c",
+			"core.fsmonitor=false",
+			"status",
+			"--porcelain=v1",
+			"--untracked-files=all",
+			"--ignored=matching",
+			"--ignore-submodules=none"
+		], directory)).trim()) blockers.add("git-dirty");
+		try {
+			if (!(await host.git([
+				"git",
+				"rev-parse",
+				"--symbolic-full-name",
+				"@{upstream}"
+			], directory)).trim().startsWith("refs/remotes/")) blockers.add("no-upstream");
+			else {
+				const ahead = (await host.git([
+					"git",
+					"rev-list",
+					"--count",
+					"@{upstream}..HEAD"
+				], directory)).trim();
+				if (!/^\d+$/.test(ahead)) blockers.add("git-unknown");
+				else if (Number(ahead) > 0) blockers.add("git-ahead");
+			}
+		} catch {
+			host.signal?.throwIfAborted();
+			blockers.add("no-upstream");
+		}
+	} catch {
+		host.signal?.throwIfAborted();
+		blockers.add("git-unknown");
+	}
+	host.signal?.throwIfAborted();
+	return {
+		ticketId: ticket.id,
+		title: ticket.title,
+		directory,
+		checkedAt: new Date(now).toISOString(),
+		endedAt: ticket.ended?.at ?? null,
+		preparation: record?.state ?? "unknown",
+		exists: size.exists,
+		bytes: size.bytes,
+		files: size.files,
+		blockers: [...blockers],
+		disposition: blockers.size ? "retain" : "manual-review"
+	};
+}
+/** Page limits bound one explicit request; this is not a deletion authorization or a scan of orphan directories. */
+async function workspaceInventory(host, offset = 0, limit = 10) {
+	if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 10) throw new Error("Invalid workspace inventory page");
+	host.signal?.throwIfAborted();
+	const now = Date.now();
+	const tickets = host.store.tickets.list().filter((ticket) => ticket.execution?.directory);
+	const page = tickets.slice(offset, offset + limit);
+	const items = [];
+	for (const ticket of page) {
+		host.signal?.throwIfAborted();
+		items.push(await inspect(host, ticket, tickets, Date.now()));
+	}
+	return {
+		readOnly: true,
+		checkedAt: new Date(now).toISOString(),
+		retentionDays: 14,
+		total: tickets.length,
+		offset,
+		nextOffset: offset + limit < tickets.length ? offset + limit : null,
+		items
+	};
+}
 //#endregion
 //#region src/sources/admission-context.ts
 /** Selects the first five thread messages plus five messages on either side of `sourceId`, recording omitted gap counts. */
@@ -5398,6 +5905,20 @@ const threadFollowedNotice = (ticketId, thread, reason) => receiptNotice({
 	},
 	note: "For context only: its messages reach this ticket and grant nothing."
 }, `Ticket ${ticketId} follows thread ${thread} for context: ${reason}`);
+/**
+* ★ 2026-11-12（用户选定方案 1）: the ticket a rule-based fast track created waits for its team, and no model turn
+* followed that accept, so the main Session is woken by a steer to propose one — a notice alone would not wake it.
+*/
+const teamRequestNotice = (ticket) => ({
+	id: `team-request:${ticket.id}`,
+	text: JSON.stringify({
+		kind: "team_request",
+		ticket: brief(ticket),
+		trigger_id: ticket.origin.triggerId,
+		read: `ticket/${ticket.id}`,
+		note: "This ticket was accepted by a rule (explicit task, no assessment) and waits for its team. Call orchestrator_team_propose now with this ticket_id, then tell the person to agree."
+	})
+});
 /** What a follow-up asks of the main Session: nothing but a stop the person asks for, since its ticket's worker decides it. */
 const FOLLOWUP_NOTE = "Its ticket's worker has it and decides; act only if the person asks to stop the work (orchestrator_route kind stop with this trigger_id).";
 /**
@@ -6022,6 +6543,11 @@ const RESOURCES = [
 		name: "github/…",
 		holds: "a GitHub original, as the dsh-superagent-github skill describes",
 		executor: true
+	},
+	{
+		name: "gongfeng/…",
+		holds: "reachable MR detail/notes",
+		executor: true
 	}
 ];
 const resourceGrammar = (executor) => RESOURCES.filter((resource) => !executor || resource.executor).map((resource) => `${resource.name}: ${resource.holds}`).join("; ");
@@ -6052,7 +6578,7 @@ const trigger = (host, id, ticketId) => {
 async function sourcePage(read, source, fetch) {
 	const { host, resource, offset, sessionId } = read;
 	const body = offset === 0 ? JSON.stringify(await fetch()) : host.pages.get(`${sessionId}:${resource}`);
-	if (body === void 0) throw new Error(`Read this ${source === "feishu" ? "Feishu" : "GitHub"} resource from offset 0 first`);
+	if (body === void 0) throw new Error(`Read this ${source === "feishu" ? "Feishu" : source === "github" ? "GitHub" : "Gongfeng"} resource from offset 0 first`);
 	if (offset === 0) host.pages.set(`${sessionId}:${resource}`, body);
 	return text$2(read, body);
 }
@@ -6198,6 +6724,36 @@ const ROUTES = [
 		return sourcePage(read, "feishu", () => feishuRead(commands, ref, read.resource, read.host.feishuPageSize()));
 	}],
 	["github/", (read) => sourcePage(read, "github", () => readGithub(read.host.commands.withSignal(read.signal), read.resource))],
+	["gongfeng/", async (read) => {
+		const match = /^(\d+)\/(\d+)\/(detail|notes\/([1-9]|10))$/.exec(read.rest);
+		const source = read.host.store.settings().sources.gongfeng;
+		const config = GongfengConfigSchema.parse(source?.config ?? {});
+		if (!source?.enabled || !match || match[1] !== config.project) throw new Error("Unknown or inaccessible Gongfeng resource");
+		const iid = Number(match[2]), ticket = read.ticketId ? read.host.store.tickets.get(read.ticketId) : void 0;
+		if (read.ticketId) {
+			const origin = ticket && read.host.store.triggers.get(ticket.origin.triggerId);
+			const from = origin?.source === "gongfeng" && origin.meta.project === config.project && origin.meta.iid === iid;
+			if (!ticket || !from && !ticket.follows?.some((follow) => follow.thread === `gongfeng:${config.project}:${iid}`)) throw new Error("MR not reached by this ticket");
+		}
+		return sourcePage(read, "gongfeng", async () => {
+			const api = new GongfengOpenApi(config), mr = await api.mr(iid, read.signal);
+			if (match[3] === "detail") return {
+				iid: mr.iid,
+				title: mr.title,
+				description: mr.description,
+				state: mr.state,
+				author: mr.author.username,
+				source_branch: mr.source_branch,
+				target_branch: mr.target_branch,
+				next_resource: `gongfeng/${config.project}/${iid}/notes/1`
+			};
+			const page = await api.notes(mr.id, Number(match[4]), read.signal);
+			return {
+				items: page.items,
+				next_resource: page.next ? `gongfeng/${config.project}/${iid}/notes/${page.next}` : null
+			};
+		});
+	}],
 	["trigger/", async (read) => {
 		const { host, rest, ticketId, offset, signal } = read;
 		if (!rest || rest.includes("/")) throw new Error("Unknown context resource");
@@ -6749,6 +7305,370 @@ var MasterAssessor = class {
 	}
 };
 //#endregion
+//#region src/app/role-models.ts
+/** Resolve a configured route through the live provider; catalog membership is not a restriction. */
+async function resolveRoleModel(ctx, model) {
+	const value = await ctx.llm.resolveCallConfig({
+		provider: model.provider,
+		model: model.model,
+		...model.reasoningEffort ? { reasoningEffort: ReasoningEffortId(model.reasoningEffort) } : {}
+	});
+	return {
+		provider: value.provider,
+		model: value.model,
+		...value.reasoningEffort ? { reasoningEffort: value.reasoningEffort } : {}
+	};
+}
+/** Seed a role's configured model onto a brand-new session before its first request, leaving later manual or durable selections intact. */
+async function initializeRoleModel(ctx, agent, model) {
+	if (!model) return;
+	if (agent.session.requestHeader() || agent.session.snapshotEvents().some((event) => event.type === "model/selection")) return;
+	const selected = await resolveRoleModel(ctx, model);
+	agent.session.append("model/selection", selected);
+	let initial = true;
+	let assembled;
+	agent.ctx.effect(() => {
+		const disposers = [
+			agent.ctx.on("system-prompt/assemble", async (_assembly, _context, next) => {
+				const selection = initial ? selected : void 0;
+				const result = await next();
+				assembled = selection;
+				return selection ? {
+					...result,
+					variables: {
+						...result.variables,
+						provider: selection.provider,
+						model: selection.model
+					}
+				} : result;
+			}, { prepend: true }),
+			agent.ctx.on("agent/request", async (_payload, next) => {
+				const result = await next();
+				if (!assembled) return result;
+				const { reasoningEffort: _inherited, ...rest } = result;
+				return {
+					...rest,
+					...assembled
+				};
+			}, { prepend: true }),
+			ctx.on("session/event", (session, event) => {
+				if (session === agent.session && (event.type === "request/header" || event.type === "model/selection")) initial = false;
+			})
+		];
+		return () => disposers.forEach((dispose) => dispose());
+	});
+	await ctx.sessionPersistence.flush();
+}
+/**
+* ★ 2026-11-13：把模型/凭据类失败翻成可执行的中文报告，而不是把裸 `LlmError` 写进工单。
+* 真机曾出现 `LlmError: No API key for provider: vssaros-ollama`：执行器未配置模型、
+* 继承的 DSH 默认 route 又是 keyless，报错发生在真实请求时，事前校验拦不住。
+* 只匹配明确的「模型/凭据缺失」形态，其它错误（工具 schema、网络、prepare 命令）原样保留。
+*/
+function modelReportText(error) {
+	const text = error instanceof Error ? error.message : String(error);
+	if (/No API key for provider|MISSING_CREDENTIAL|INVALID_CREDENTIAL|unknown provider|No usable model|model not configured/i.test(text)) return `模型未配置：执行器没有设置模型，且 DSH 默认模型不可用（${text}）。请在「设置 → 执行」填写服务商与模型，或修正 DSH 默认模型的凭据。`;
+	return text;
+}
+//#endregion
+//#region src/executor/p4-workspace.ts
+/** Read-only preflight for operator-prepared P4 ticket workspaces; never syncs, edits or changes a client. */
+async function verifyP4Workspace(ticket, config, run) {
+	const directory = ticket.execution?.directory;
+	if (!directory || !config.port || !config.user || !config.paths.length) throw new WorkspaceError("请配置 P4 服务器、执行账号和允许路径。");
+	const base = [
+		config.cli || "p4",
+		"-p",
+		config.port,
+		"-u",
+		config.user,
+		"-Mj",
+		"-ztag"
+	];
+	const records = async (args, cwd = directory) => {
+		return (await run([...base, ...args], cwd).catch((error) => {
+			throw new WorkspaceError("P4 登录、映射或只读查询失败；请核对执行账号和本单 client。", error);
+		})).split(/\r?\n/).filter((line) => line.trim()).flatMap((line) => {
+			const record = JSON.parse(line);
+			if (record.severity !== void 0) {
+				if (Number(record.severity) >= 3) throw new WorkspaceError(`P4 预检失败：${String(record.data ?? "").slice(0, 250)}`);
+				return [];
+			}
+			return [record];
+		});
+	};
+	const shared = ticket.execution?.p4Workspace;
+	if (shared && (shared.port !== config.port || shared.user !== config.user || shared.client !== config.executionClient || shared.root !== config.workspaceRoot || config.workspaceMode !== "current")) throw new WorkspaceError("当前 P4 配置已改变；请人工确认，不能迁移已有工单。");
+	if (shared && ticket.team) throw new WorkspaceError("当前 P4 工作区只支持单 worker 串行执行；请使用单工单流程。");
+	const clients = shared ? [{ client: shared.client }] : (await records([
+		"clients",
+		"-u",
+		config.user
+	])).filter((client) => ticketClient(ticket, client.client ?? ""));
+	if (clients.length !== 1 || !clients[0]?.client) throw new WorkspaceError("未找到唯一的本工单 P4 client；请配置执行工作区或准备独立 client。");
+	const name = clients[0].client;
+	const spec = (await records([
+		"client",
+		"-o",
+		name
+	]))[0];
+	if (!spec || spec.Owner !== config.user || spec.Client !== name || !isAbsolute(spec.Root ?? "")) throw new WorkspaceError("P4 client 账号或根目录不符，请人工核对。");
+	const root = await realpath(spec.Root), parent = await realpath(directory);
+	if (relative(parent, root) !== "") throw new WorkspaceError("本工单 P4 Root 必须等于执行目录，worker 才能在正确源码目录工作；不会使用共享主目录。");
+	if (!(await records([
+		"-c",
+		name,
+		"login",
+		"-s"
+	], root)).length) throw new WorkspaceError("P4 执行账号登录状态无法确认，请在 Host 用户环境登录。");
+	if (shared) {
+		const own = new Set(changesOf$1(ticket, true).map(String));
+		if ((await records([
+			"-c",
+			name,
+			"opened"
+		], root)).some((file) => !own.has(file.change ?? ""))) throw new WorkspaceError("当前工作区已有未归属本单的 opened 文件；请先保存并人工处理，不会自动 revert 或接管。");
+		if (config.checkUnopenedDiffs) {
+			const dirty = [];
+			for (const allowed of config.paths) for (const file of await records([
+				"-c",
+				name,
+				"diff",
+				"-se",
+				allowed.path
+			], root)) if (file.depotFile && !dirty.includes(file.depotFile)) dirty.push(file.depotFile);
+			if (dirty.length) {
+				const generated = dirty.filter((file) => /(?:\/__pycache__\/|\/Binaries\/|\/Intermediate\/|\/Saved\/|\.(?:pyc|dll|pdb|lib|exe|obj|o)(?:$|\s))/i.test(file));
+				const source = dirty.filter((file) => !generated.includes(file));
+				throw new WorkspaceError(`严格预检：${dirty.length} 个未签出差异（生成物 ${generated.length}、源码/资源 ${source.length}），例如 ${dirty.slice(0, 8).join("、")}；请先人工处理，不会覆盖。`);
+			}
+		}
+	}
+	let have;
+	for (const allowed of config.paths) {
+		have = (await records([
+			"-c",
+			name,
+			"fstat",
+			"-Rh",
+			"-m",
+			"1",
+			"-T",
+			"depotFile,clientFile,haveRev",
+			allowed.path
+		], root))[0];
+		if (have?.clientFile && Number(have.haveRev) > 0) break;
+	}
+	if (!have?.clientFile || Number(have.haveRev) <= 0 || !have.depotFile || !config.paths.some((item) => inPath(have.depotFile, item.path))) throw new WorkspaceError("P4 工作区没有允许范围内的已同步文件，请准备并同步本单源码后重试。");
+	const file = await realpath(have.clientFile), fileRel = relative(root, file);
+	if (fileRel === ".." || fileRel.startsWith(`..${sep}`) || isAbsolute(fileRel) || !(await stat(file)).isFile()) throw new WorkspaceError("P4 have 记录对应源码文件不存在或位于工作区外。");
+	return name;
+}
+//#endregion
+//#region src/executor/p4-pending.ts
+/**
+* Host-owned delivery of a P4 ticket as ONE named pending changelist. No submit, no unshelve.
+* A person decides in P4V if and when the CL is submitted.
+*/
+/** Explicit file arguments are batched so a long file list cannot exceed the OS command-line limit. */
+const BATCH = 100;
+/**
+* Whether a depot or local path is excluded. A bare name matches any path segment (a directory name or file name);
+* `*.ext` matches a file suffix; a `//depot/...` pattern matches depot paths only.
+*/
+function ignoredDepotFile(path, ignores) {
+	const normalized = path.replace(/\\/g, "/");
+	const segments = normalized.split("/").filter(Boolean);
+	const leaf = segments.at(-1) ?? "";
+	return ignores.some(({ path: rule }) => {
+		if (!rule) return false;
+		if (rule.startsWith("//")) return normalized.startsWith("//") && inPath(normalized, rule, false);
+		if (rule.startsWith("*.")) return leaf.toLowerCase().endsWith(rule.slice(1).toLowerCase());
+		return segments.some((segment) => segment.toLowerCase() === rule.toLowerCase());
+	});
+}
+/** Renders the pending CL name, always keeping the ticket marker the delivery gate requires. */
+function pendingName(config, ticketId, title) {
+	const marker = `[dsh-superagent:${ticketId}]`;
+	const rendered = config.pendingName.replaceAll("{ticket}", ticketId).replaceAll("{title}", title).trim().slice(0, 200);
+	return rendered.includes(marker) ? rendered : `${rendered} ${marker}`.trim();
+}
+/** A plain depot file path, never a wildcard; only such paths may reach `p4 reconcile`. */
+const explicit = (path) => path.startsWith("//") && !path.includes("...") && !path.includes("*");
+/**
+* Puts every opened file of this client into `target`, leaving a single named pending CL.
+* The default path is a single `p4 opened` metadata read plus `p4 reopen`: no tree walk, no wildcard,
+* no `reconcile -n` preview. A worker must `p4 edit` before editing, so opened files are the delivery.
+* Only when `reconcileFallback` is explicitly enabled does it run `reconcile -e -a -d -c` on the exact
+* (non-ignored, in-scope) files `p4 opened` reported, in batches; it never passes a wildcard path.
+*/
+async function consolidatePending(config, target, records) {
+	const ignores = config.reconcileIgnore;
+	const opened = await records(["opened"]);
+	const pathOf = (record) => record.depotFile ?? record.clientFile ?? "";
+	const candidates = opened.map(pathOf).filter(Boolean);
+	const inScope = (record) => !record.depotFile || config.paths.some((allowed) => inPath(record.depotFile, allowed.path));
+	const allowed = opened.filter((record) => inScope(record) && !ignoredDepotFile(pathOf(record), ignores));
+	const kept = [...new Set(allowed.map(pathOf).filter(Boolean))];
+	const ignored = candidates.length - kept.length;
+	let reconciled = [];
+	if (config.reconcileFallback) {
+		const exact = kept.filter(explicit);
+		for (let at = 0; at < exact.length; at += BATCH) await records([
+			"reconcile",
+			"-e",
+			"-a",
+			"-d",
+			"-c",
+			String(target),
+			...exact.slice(at, at + BATCH)
+		]);
+		reconciled = exact;
+	}
+	const move = [...new Set(allowed.filter((record) => record.change !== String(target)).map(pathOf).filter(Boolean))];
+	for (let at = 0; at < move.length; at += BATCH) await records([
+		"reopen",
+		"-c",
+		String(target),
+		...move.slice(at, at + BATCH)
+	]);
+	return {
+		reconciled,
+		reopened: move,
+		ignored,
+		files: kept.length
+	};
+}
+/** A `p4 change -o` form with its Description replaced, tab-indented as p4 writes it. */
+function withPendingName(form, name) {
+	const lines = form.split(/\r?\n/);
+	const start = lines.findIndex((line) => /^Description:/.test(line));
+	const text = name.split(/\r?\n/).map((line) => `\t${line}`);
+	if (start < 0) return `${form.trimEnd()}\n\nDescription:\n${text.join("\n")}\n`;
+	let end = start + 1;
+	while (end < lines.length && (lines[end].startsWith("	") || lines[end] === "" && lines[end + 1]?.startsWith("	"))) end++;
+	return [
+		...lines.slice(0, start),
+		"Description:",
+		...text,
+		...lines.slice(end)
+	].join("\n");
+}
+/** Consolidates, names, and re-shelves the ticket's pending CL. Never submits or unshelves. */
+async function finalizePending(config, target, ticketId, title, host) {
+	const consolidated = await consolidatePending(config, target, host.records);
+	const name = pendingName(config, ticketId, title);
+	const form = await host.form([
+		"change",
+		"-o",
+		String(target)
+	]);
+	await host.form(["change", "-i"], withPendingName(form, name));
+	await host.records([
+		"shelve",
+		"-c",
+		String(target)
+	]);
+	return {
+		...consolidated,
+		name
+	};
+}
+//#endregion
+//#region src/executor/p4-sync.ts
+/** A sync/merge conflict that must stop the ticket without reverting or overwriting the operator's workspace. */
+var P4ConflictError = class extends WorkspaceError {
+	files;
+	constructor(message, files) {
+		super(message);
+		this.files = files;
+	}
+};
+/**
+* Brings the allowed depot paths to head for the ticket's frozen client, automatically merges files that need resolve,
+* and refuses to proceed when a local unopened edit would be clobbered or a merge conflict remains.
+*
+* The preview is deliberate: this client commonly has `allwrite clobber`, so a plain `p4 sync` could silently overwrite
+* generated artifacts or a person's edits. Only files the preview says will actually change are compared with `diff -se`;
+* an up-to-date workspace therefore triggers no full-tree difference scan.
+*
+* Off by default. A UE client whose `sync -n` previews thousands of updates makes that `diff -se` walk the whole tree,
+* which exceeded the Host's 10-minute timeout and prevented any worker session from being created. Enable it only after
+* narrowing `paths`; the operator then owns keeping the workspace at head.
+*/
+async function syncP4Workspace(config, client, root, run) {
+	if (!config.syncBeforeWork) return;
+	const paths = config.paths.map((item) => item.path);
+	if (!paths.length || !client) return;
+	const base = [
+		config.cli || "p4",
+		"-p",
+		config.port,
+		"-u",
+		config.user,
+		"-c",
+		client,
+		"-Mj",
+		"-ztag"
+	];
+	const records = async (args) => {
+		let output;
+		try {
+			output = await run([...base, ...args], root);
+		} catch (error) {
+			const message = String(error);
+			if (/No file\(s\) to resolve|file\(s\) not opened on this client|up-to-date/i.test(message)) return [];
+			if (/conflict|resolve|clobber/i.test(message)) throw new P4ConflictError(`P4 合并冲突或覆盖风险：${message.slice(0, 300)}；工单已停止，请人工处理。`, []);
+			throw new WorkspaceError(`P4 同步/合并失败：${message.slice(0, 300)}`, error);
+		}
+		const result = [];
+		for (const line of output.split(/\r?\n/)) {
+			if (!line.trim()) continue;
+			const record = JSON.parse(line);
+			if (record.severity !== void 0) {
+				if (Number(record.severity) >= 3) throw new WorkspaceError(`P4 同步/合并失败：${String(record.data ?? "").slice(0, 250)}`);
+				continue;
+			}
+			result.push(record);
+		}
+		return result;
+	};
+	const ignores = config.reconcileIgnore;
+	const usable = (file) => !!file && !ignoredDepotFile(file, ignores);
+	const planned = new Set((await records([
+		"sync",
+		"-n",
+		...paths
+	])).map((file) => file.depotFile).filter(usable));
+	if (planned.size) {
+		const dirty = (await records([
+			"diff",
+			"-se",
+			...paths
+		])).map((file) => file.depotFile).filter(usable);
+		const overlap = [...planned].filter((file) => dirty.includes(file));
+		if (overlap.length) throw new P4ConflictError(`P4 同步冲突：${overlap.length} 个将更新的文件存在未签出的本地修改，例如 ${overlap.slice(0, 8).join("、")}；工单已停止，不会覆盖。`, overlap);
+	}
+	await records([
+		"sync",
+		"-q",
+		...paths
+	]);
+	await records([
+		"resolve",
+		"-am",
+		...paths
+	]);
+	const unresolved = (await records([
+		"fstat",
+		"-Ru",
+		"-T",
+		"depotFile,clientFile",
+		...paths
+	])).map((file) => file.depotFile).filter(Boolean);
+	if (unresolved.length) throw new P4ConflictError(`P4 合并冲突：${unresolved.length} 个文件未能自动 resolve，例如 ${unresolved.slice(0, 8).join("、")}；工单已停止，请人工 resolve。`, unresolved);
+}
+//#endregion
 //#region src/executor/background.ts
 /** How long a stop waits for a killed job to end, collecting its end so the worker is not woken to hear of it. */
 const KILL_WAIT_MS = 1e4;
@@ -6785,7 +7705,9 @@ const joins = /* @__PURE__ */ new WeakMap();
 function childrenEnd(subagents, agent) {
 	let join = joins.get(agent);
 	if (!join) {
-		join = subagents.waitForChildren(agent).finally(() => {
+		const wait = subagents.waitForTreeWork ?? subagents.waitForChildren;
+		if (!wait) return Promise.reject(/* @__PURE__ */ new Error("Subagent runtime has no supported wait capability"));
+		join = wait.call(subagents, agent).finally(() => {
 			joins.delete(agent);
 		});
 		joins.set(agent, join);
@@ -6882,11 +7804,45 @@ async function collectJob(ctx, sessionId, job, signal) {
 /**
 * Release the worker's live subagents, for a bounded time. DSH delivers each one's end to the worker before the release
 * returns, which wakes it, so the worker's turn is cancelled after, keeping its inbox when `keepInbox`, and the stop ends
-* with that turn. Its Session still admits subagents.
+* with that turn. rc.2 closes admission only on terminal teardown; retries keep the root reusable.
 */
-async function stopSubagents(ctx, agent, keepInbox = false) {
+async function stopSubagents(ctx, agent, keepInbox = false, closeAdmission = false) {
 	const subagents = subagentsOf(ctx);
 	if (!subagents) return;
+	if (subagents.waitForTreeWork) {
+		let work;
+		if (closeAdmission) {
+			if (!subagents.drainDescendants) throw new Error("Subagent runtime lacks terminal drain capability");
+			work = subagents.drainDescendants([agent]);
+		} else {
+			if (!subagents.listDescendants || !subagents.interrupt || !subagents.waitForTreeWork) throw new Error("Subagent runtime lacks non-terminal stop capabilities");
+			const signal = AbortSignal.timeout(DRAIN_LIMIT_MS);
+			const children = await subagents.listDescendants(agent.id, signal);
+			if (children.some((child) => child.kind === "diagnostic")) throw new Error("Subagent catalog unavailable; stop could not be verified");
+			if (!children.length) return;
+			const failures = [];
+			for (const child of children) try {
+				subagents.interrupt(child.id, {
+					kind: "ancestor",
+					agent
+				});
+			} catch (error) {
+				failures.push(error);
+			}
+			work = subagents.waitForTreeWork(agent).then(() => {
+				if (failures.length) throw new AggregateError(failures, "Interrupting worker descendants failed");
+			});
+		}
+		try {
+			if (await until(work.then(() => true), void 0, DRAIN_LIMIT_MS) === false) throw new Error("Stopping worker descendants exceeded 10000 ms; cleanup is unverified");
+		} finally {
+			if (agent.status !== "idle") cancelled.add(agent);
+			agent.cancel({ kind: "user" }, { keepInbox });
+			await until(agent.whenIdle(), void 0, DRAIN_LIMIT_MS);
+		}
+		return;
+	}
+	if (!subagents.listChildren || !subagents.drainChildren) throw new Error("Subagent runtime has no supported stop capability");
 	const live = (await subagents.listChildren(agent.id)).map((child) => child.id).filter((id) => ctx.agents.get(id));
 	if (!live.length) return;
 	try {
@@ -6901,16 +7857,29 @@ async function stopSubagents(ctx, agent, keepInbox = false) {
 * Stop what a worker runs in the background once its Assignment ends: kill its shell jobs and release its subagents (see
 * `stopSubagents`). A Session not loaded has no subagent at work. One failure stops nothing else.
 */
-async function stopBackground(ctx, sessionId, reason, keepInbox = false) {
+async function stopBackground(ctx, sessionId, reason, keepInbox = false, closeAdmission = false) {
 	const failures = [];
 	await killJobs(ctx, sessionId, reason).catch((error) => {
 		failures.push(error);
 	});
 	const agent = ctx.agents.get(sessionId);
-	if (agent) await stopSubagents(ctx, agent, keepInbox).catch((error) => {
+	if (agent) await stopSubagents(ctx, agent, keepInbox, closeAdmission).catch((error) => {
 		failures.push(error);
 	});
 	if (failures.length) throw new AggregateError(failures, `Stopping the background work of ${sessionId} failed`);
+}
+/** Bounded cleanup diagnostics preserve nested failure reasons, without stacks or credential assignments. */
+function workerErrorDetail(error) {
+	const seen = /* @__PURE__ */ new Set(), messages = [];
+	const visit = (value, depth) => {
+		if (seen.has(value) || depth > 4 || messages.length >= 8) return;
+		seen.add(value);
+		messages.push(String(value).slice(0, 300));
+		if (value instanceof AggregateError) for (const child of value.errors) visit(child, depth + 1);
+		if (value instanceof Error && value.cause !== void 0) visit(value.cause, depth + 1);
+	};
+	visit(error, 0);
+	return messages.join(" | ").replace(/((?:token|password|secret|authorization|api[_-]?key)\s*[:=]\s*)[^\s|,;]+/gi, "$1[redacted]").slice(0, 1200);
 }
 //#endregion
 //#region src/executor/dsh.ts
@@ -6974,7 +7943,7 @@ function mandateInstructions(mandate) {
 	return mandate.strength === "inferred" ? "This ticket has limited proactive authorization. Independently verify that it is a small change internal to one module within the accepted rule scope. If it requires public-interface or behavior changes, new interaction, product decisions or clarification, stop and report dropped; do not expand scope." : "";
 }
 /** Builds a newly accepted ticket's Execution metadata: its worktree name, workspace directory, and assignment text. */
-function ticketExecution(ticket, outcome, settings, stateDir) {
+function ticketExecution(ticket, outcome, settings, stateDir, origin, canonicalRepository) {
 	const name = ticketWorktreeName(outcome.name ?? "", ticket.id);
 	ticket.origin.triggerId;
 	const note = outcome.note ? `\nRouting note (not the source request): ${outcome.note}` : "";
@@ -6982,10 +7951,36 @@ function ticketExecution(ticket, outcome, settings, stateDir) {
 	const rules = settings.policy.rules.filter((rule) => ruleIds?.includes(rule.id)).map((rule) => `\n- ${rule.name} (${rule.id}): ${rule.instruction}`).join("");
 	const precedence = rules ? `\nMatched rules; their procedure and communication instructions take precedence over the default acknowledgement and messaging policy for this ticket:${rules}` : "";
 	const assignment = ticket.mandate.strength === "inferred" && ruleIds ? `Proactively accepted under ${ruleIds.join(", ")}. Scope: ${outcome.scope}.${precedence}${note}` : note.trim();
+	const directory = ticketDirectory(settings, stateDir, name, origin);
+	const text = typeof origin?.text === "string" ? origin.text : "";
+	const url = /https?:\/\/\S+/i.exec(text)?.[0] ?? "";
+	const tapd = itemAddress(url);
+	const precondition = tapd ? "\nPrecondition: this task references a TAPD item. Call orchestrator_tapd_item with the URL to read its detail and comments through the TAPD Open API configured in SuperAgent settings (the Host keeps the credentials). Do NOT use a browser, the TAPD web page or a login page. If the tool cannot read the item, stop and report the blocker to the person — do not guess, and do not start a multi-step team flow." : /https?:\/\//i.test(text) ? "\nPrecondition: this task references an external URL. Before any root-cause or implementation step, verify you have actually read that page's content (login, permissions, attachments). If it is unreadable, stop and ask the person for the content or for a login — do not guess, and do not start a multi-step team flow." : "";
+	const project = mappedProject(settings, origin, canonicalRepository);
+	const p4 = settings.sources.p4;
+	const bug = origin?.source === "tapd" ? origin.meta.type === "bug" : (tapd ?? itemAddress(origin?.url ?? ""))?.type === "bug";
+	const p4Config = p4?.enabled ? P4ConfigSchema.parse(p4.config) : void 0;
+	const requiresP4 = !project && !!p4Config?.requireDelivery && bug;
+	const shared = requiresP4 && p4Config?.workspaceMode === "current" ? {
+		client: p4Config.executionClient,
+		root: p4Config.workspaceRoot,
+		port: p4Config.port,
+		user: p4Config.user
+	} : void 0;
+	const pending = requiresP4 && p4Config?.submit === "pending";
+	const delivery = requiresP4 ? `\nP4 delivery required: use the authorized workspace, test and shelve a ticket-owned CL. ${pending ? "The Host will consolidate, name and re-shelve that CL; never submit, unshelve or revert it." : "Missing checkout or a CL owned elsewhere requires blocked, not ready/dropped."}` : "";
+	const sharedInstructions = shared ? `\nUse -c ${shared.client} on every P4 call. Create a new numbered CL with [dsh-superagent:${ticket.id}] in its description; never adopt existing/default CLs or alter unrelated edits. Do not sync, revert or submit the shared workspace.` : "";
 	return {
 		name,
-		directory: join(executionRoot(settings, stateDir), name),
-		assignment
+		directory: shared?.root || directory,
+		assignment: assignment + precondition + delivery + sharedInstructions,
+		...shared ? { p4Workspace: shared } : {},
+		...requiresP4 ? {
+			delivery: "p4",
+			p4Delivery: pending ? "pending" : "submit"
+		} : {},
+		...project ? { project } : {},
+		...settings.executor.workerPtc && !settings.executor.teamEnabled ? { toolMode: "ptc" } : {}
 	};
 }
 /** Character limits for inline assignment and trigger text in worker messages; longer text is read via its resource. */
@@ -7067,15 +8062,19 @@ function inputMessage(input, trigger) {
 var WorkerSlots = class {
 	running;
 	max;
+	resource;
+	occupied;
 	/** Tickets currently holding a startup slot, mapped to whether the start is a launch, a wake, or a wake for a person's message. */
 	starting = /* @__PURE__ */ new Map();
 	/**
 	* @param running - Returns the ticket IDs whose worker holds a slot (see `DshExecutor.running`).
 	* @param max - Returns the configured maximum number of concurrent worker slots.
 	*/
-	constructor(running, max) {
+	constructor(running, max, resource = () => void 0, occupied = running) {
 		this.running = running;
 		this.max = max;
+		this.resource = resource;
+		this.occupied = occupied;
 	}
 	/** Number of slots currently in use across running workers and starting reservations. */
 	used() {
@@ -7094,6 +8093,8 @@ var WorkerSlots = class {
 	*/
 	reserve(ticketId, by) {
 		if (this.starting.has(ticketId)) return;
+		const key = this.resource(ticketId);
+		if (key && [...this.occupied(), ...this.starting.keys()].some((id) => id !== ticketId && this.resource(id) === key)) throw new Later("Current P4 workspace is held by another ticket or its review");
 		if (this.used() >= this.max() + (by === "person" ? 1 : 0)) throw new Later("No worker slot is free");
 		this.starting.set(ticketId, by);
 	}
@@ -7112,6 +8113,9 @@ var DshExecutor = class {
 	host;
 	disposers = [];
 	slots;
+	workspaces;
+	inventoryBusy = false;
+	preparing = /* @__PURE__ */ new Map();
 	/** Transient failure counts tried so far: keyed by `assignment.id` for worker turns and `launch:<assignment.id>` for launches. */
 	transient = /* @__PURE__ */ new Map();
 	/** Assignment IDs currently waiting on a transient-failure backoff timer before resuming their worker turn. */
@@ -7132,7 +8136,11 @@ var DshExecutor = class {
 	/** Registers the `launch` and `delivery` effect handlers; both are held (concurrency limit 0) while processing is paused. */
 	constructor(host) {
 		this.host = host;
-		this.slots = new WorkerSlots(() => host.store.tickets.open().filter((ticket) => this.running(ticket)).map((ticket) => ticket.id), () => host.store.settings().executor.maxWorkers);
+		this.workspaces = new TicketWorkspaces(host.store);
+		this.slots = new WorkerSlots(() => host.store.tickets.open().filter((ticket) => this.running(ticket)).map((ticket) => ticket.id), () => host.store.settings().executor.maxWorkers, (id) => {
+			const workspace = host.store.tickets.get(id)?.execution?.p4Workspace;
+			return workspace ? workspace.root.toLowerCase().replace(/\\/g, "/").replace(/\/$/, "") : void 0;
+		}, () => host.store.tickets.open().filter((ticket) => this.running(ticket) || this.preparing.has(ticket.id) || this.stopping.has(ticket.id) || this.resuming.has(latestAssignment(ticket)?.id ?? "") || ticket.follows?.some((follow) => follow.own && !follow.closed && follow.thread.startsWith("p4:"))).map((ticket) => ticket.id));
 		host.effects.handle("launch", (payload) => this.launchQueued(payload), {
 			limit: () => host.paused() ? 0 : this.slots.launches(),
 			retry: [5e3, 3e5]
@@ -7146,7 +8154,7 @@ var DshExecutor = class {
 	prepare(ticket, outcome) {
 		return {
 			...ticket,
-			execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir)
+			execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir, sourceTrigger(this.host, ticket), this.host.repository?.())
 		};
 	}
 	/**
@@ -7155,12 +8163,13 @@ var DshExecutor = class {
 	* A failed prepare command throws `PrepareFailed`, which is not retried automatically; an empty directory it left is removed, a non-empty one kept.
 	* @throws PrepareFailed with the command's output when the prepare command fails.
 	*/
-	async prepareDirectory(ticket) {
+	async prepareDirectory(ticket, signal) {
 		const directory = ticket.execution?.directory ?? "";
+		signal.throwIfAborted();
 		await mkdir(dirname(directory), { recursive: true });
 		const command = this.host.store.settings().executor.prepare.trim();
 		const env = Object.fromEntries(this.host.environment(ticket).map((variable) => [variable.key, variable.value]));
-		const signal = AbortSignal.any([this.host.lifetime, AbortSignal.timeout(PREPARE_TIMEOUT_MS)]);
+		signal.throwIfAborted();
 		if (command) await runAsWorker(this.host.context.subprocess, [
 			"sh",
 			"-c",
@@ -7169,8 +8178,59 @@ var DshExecutor = class {
 			await rmdir(directory).catch(() => {});
 			throw new PrepareFailed(`The prepare command failed: ${error instanceof Error ? error.message : String(error)}`);
 		});
+		signal.throwIfAborted();
 		await mkdir(directory, { recursive: true });
-		await verifyDirectory(directory, this.host.context.subprocess, this.host.lifetime);
+	}
+	ensureWorkspace(ticket, allowPrepare = true) {
+		const directory = ticket.execution?.directory ?? "";
+		const project = ticket.execution?.project;
+		const entry = {
+			assignmentId: latestAssignment(ticket)?.id ?? "",
+			cancel: new AbortController()
+		};
+		this.preparing.set(ticket.id, entry);
+		const signal = AbortSignal.any([
+			this.host.lifetime,
+			entry.cancel.signal,
+			AbortSignal.timeout(PREPARE_TIMEOUT_MS)
+		]);
+		const check = () => {
+			signal.throwIfAborted();
+			const stored = this.host.store.tickets.get(ticket.id);
+			if (!stored || !liveTicket(stored) || latestAssignment(stored)?.id !== entry.assignmentId) throw new WorkspaceError("工单已停止或执行批次已替换。");
+		};
+		const run = (argv, cwd) => {
+			check();
+			return runAsWorker(this.host.context.subprocess, argv, cwd, signal);
+		};
+		const name = ticket.execution?.name ?? "";
+		const prepare = async () => {
+			check();
+			if (ticket.execution?.p4Workspace) throw new WorkspaceError("配置的当前 P4 Root 不存在；请恢复已同步工作区，不会创建空目录或运行准备命令。");
+			if (ticket.execution?.delivery === "p4" && !this.host.store.settings().executor.prepare.trim()) throw new WorkspaceError("P4 缺陷任务未配置准备命令；请准备本单独立 client 和已同步源码，空目录不代表 checkout 完成。");
+			if (!project) return this.prepareDirectory(ticket, signal);
+			await verifyDirectory(project.repository, this.host.context.subprocess, signal);
+			await prepareGitWorktree(project, directory, name, run, signal);
+		};
+		const verify = async () => {
+			check();
+			await verifyDirectory(directory, this.host.context.subprocess, signal);
+			if (project) await verifyGitWorktree(project, directory, name, run);
+			if (ticket.execution?.delivery === "p4") {
+				const source = this.host.store.settings().sources.p4;
+				if (!source?.enabled) throw new WorkspaceError("P4 来源已关闭；请启用并核对本单工作区。");
+				const config = P4ConfigSchema.parse(source.config);
+				const client = await verifyP4Workspace(ticket, config, run);
+				if (config.syncBeforeWork) {
+					if (!this.host.p4Host) throw new WorkspaceError("Host 的 P4 同步通道不可用；不会在未更新的工作区启动任务。");
+					await syncP4Workspace(config, client, directory, (argv, cwd) => this.host.p4Host(argv, cwd, signal));
+				}
+			}
+			check();
+		};
+		return this.workspaces.ensure(ticket.id, directory, ticket.execution?.p4Workspace ? JSON.stringify(ticket.execution.p4Workspace) : project ? JSON.stringify(project) : this.host.store.settings().executor.prepare.trim(), prepare, verify, allowPrepare && !ticket.assignments.some((assignment) => assignment.startedAt !== void 0)).finally(() => {
+			if (this.preparing.get(ticket.id) === entry) this.preparing.delete(ticket.id);
+		});
 	}
 	/** Enqueues a `launch` effect for an accepted or resumed assignment; launches start in queue order as worker slots free up. */
 	start(ticket, assignment) {
@@ -7201,7 +8261,7 @@ var DshExecutor = class {
 			this.transient.delete(`launch:${assignmentId}`);
 		} catch (error) {
 			if (this.host.closing() || error instanceof Later) throw error;
-			if (!(error instanceof PrepareFailed) && this.retries(`launch:${assignmentId}`, error)) throw error;
+			if (!(error instanceof PrepareFailed) && !(error instanceof WorkspaceError) && this.retries(`launch:${assignmentId}`, error)) throw error;
 			this.launchFailed(ticketId, assignmentId, error);
 		} finally {
 			this.slots.free(ticketId);
@@ -7232,7 +8292,10 @@ var DshExecutor = class {
 				}
 				const input = ticket.inputs.find((item) => item.id === inputId);
 				try {
-					if (!this.host.context.agents.get(sessionId)) await this.host.sessions.ensure(sessionId, ticket.execution?.directory ?? "", ticket.title, "worker");
+					if (!this.host.context.agents.get(sessionId)) {
+						await this.ensureWorkspace(ticket, false);
+						await this.host.sessions.ensure(sessionId, ticket.execution?.directory ?? "", ticket.title, "worker");
+					}
 					if (input) await this.deliverInput(ticket, assignment, input);
 				} catch (error) {
 					if (this.host.closing() || error instanceof Later) throw error;
@@ -7280,6 +8343,8 @@ var DshExecutor = class {
 		const ownTurn = (report?.state === "ready" || report?.state === "dropped") && !busy;
 		const sessionId = workerSessionId(ticket.id);
 		this.host.store.afterCommit(() => {
+			const preparing = this.preparing.get(ticket.id);
+			if (preparing?.assignmentId === assignment.id) preparing.cancel.abort();
 			this.settling.get(ticket.id)?.abort();
 			if (!ownTurn) this.host.context.agents.get(sessionId)?.cancel({ kind: "user" }, { keepInbox: false });
 			this.stopWork(ticket.id, reason);
@@ -7324,6 +8389,45 @@ var DshExecutor = class {
 	activeCount() {
 		return this.host.store.tickets.open().filter((ticket) => this.running(ticket)).length;
 	}
+	/** Explicit read-only preview; serializes requests and caps Git probes without reserving worker slots. */
+	async inventory(offset = 0, limit = 10) {
+		if (this.inventoryBusy) throw new WorkspaceError("工作区盘点正在进行，请完成后再刷新。");
+		this.inventoryBusy = true;
+		const signal = AbortSignal.any([this.host.lifetime, AbortSignal.timeout(2e4)]);
+		const verified = /* @__PURE__ */ new Set();
+		const git = async (argv, directory) => {
+			signal.throwIfAborted();
+			if (!verified.has(directory)) {
+				await verifyDirectory(directory, this.host.context.subprocess, signal);
+				verified.add(directory);
+			}
+			signal.throwIfAborted();
+			return runAsWorker(this.host.context.subprocess, argv, directory, AbortSignal.any([signal, AbortSignal.timeout(5e3)]));
+		};
+		const activity = async (ticketId) => {
+			const sessionId = workerSessionId(ticketId);
+			const agent = this.host.context.agents.get(sessionId);
+			if (agent && agent.status !== "idle" || this.preparing.has(ticketId) || this.stopping.has(ticketId) || this.settling.has(ticketId) || this.left.has(ticketId) || runningJobs(this.host.context, sessionId).length) return ["runtime-active"];
+			const children = this.host.context.get("subagents");
+			if (children) {
+				if (!children.listChildren) return ["activity-unknown"];
+				const listed = await until(children.listChildren(sessionId), signal, 1e3);
+				if (listed === false) return ["activity-unknown"];
+				if (listed.length) return ["runtime-active"];
+			}
+			return [];
+		};
+		try {
+			return await workspaceInventory({
+				store: this.host.store,
+				activity,
+				git,
+				signal
+			}, offset, limit);
+		} finally {
+			this.inventoryBusy = false;
+		}
+	}
 	/** Whether a ticket's worker holds a worker slot: its turn runs, or its shell jobs or subagents do after its turn ended. */
 	running(ticket) {
 		if (!runningAssignment(ticket)) return false;
@@ -7333,10 +8437,25 @@ var DshExecutor = class {
 	launchFailed(ticketId, assignmentId, error) {
 		const ticket = this.host.store.tickets.get(ticketId);
 		if (!ticket || !liveTicket(ticket) || latestAssignment(ticket)?.id !== assignmentId) return;
-		this.failed(ticketId, String(error));
+		if (error instanceof P4ConflictError) {
+			this.host.store.atomic(() => this.host.engine.stopTicket(ticketId, error.message));
+			return;
+		}
+		if (ticket.execution?.delivery === "p4" && error instanceof WorkspaceError) {
+			const summary = error.message;
+			this.host.store.atomic(() => {
+				const updated = this.host.engine.report(ticketId, {
+					state: "blocked",
+					summary,
+					question: ticket.execution?.p4Workspace ? "请核对当前配置的 P4 client、Root、登录与已有修改；不需要准备命令，不会自动清理现场。" : "请在执行设置选择当前工作区，或配置独立 client 的准备命令；核对登录与同步源码，不要接管旧 CL。"
+				});
+				this.relay(resultRelay(updated, "blocked", summary));
+			});
+		} else this.failed(ticketId, error);
 	}
 	/** Records a `failed` report on the ticket and relays the failure to the main Session in one transaction. */
-	failed(ticketId, summary) {
+	failed(ticketId, error) {
+		const summary = modelReportText(error);
 		this.host.store.atomic(() => {
 			const updated = this.host.engine.report(ticketId, {
 				state: "failed",
@@ -7358,15 +8477,12 @@ var DshExecutor = class {
 		const source = sourceTrigger(this.host, ticket);
 		const workspace = ticket.execution?.directory ?? "";
 		if (!current()) return;
-		if (!await stat(workspace).then(() => true, () => false)) {
-			await this.prepareDirectory(ticket);
-			if (!current()) return;
-		}
+		await this.stopped(ticket.id);
+		if (!current()) return;
+		await this.ensureWorkspace(ticket);
 		if (!current()) return;
 		const sessionId = workerSessionId(ticket.id);
 		const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, "worker");
-		if (!current()) return;
-		await this.stopped(ticket.id);
 		if (!current()) return;
 		for (const id of this.host.store.tickets.get(ticket.id)?.undelivered ?? []) agent.inbox.remove(this.host.sessions.promptedId(id));
 		const first = `assignment:${ticket.id}`;
@@ -7444,7 +8560,7 @@ var DshExecutor = class {
 				return;
 			}
 			this.background(Promise.resolve().then(() => {
-				this.failed(ticket.id, String(error));
+				this.failed(ticket.id, error);
 			}));
 		}));
 	}
@@ -7481,7 +8597,7 @@ var DshExecutor = class {
 		}, (error) => {
 			health.set({
 				state: "error",
-				detail: String(error),
+				detail: workerErrorDetail(error),
 				at: now$7()
 			});
 		});
@@ -7529,7 +8645,7 @@ var DshExecutor = class {
 				if (waking) this.slots.free(ticketId);
 				this.resuming.delete(assignmentId);
 			}).catch((failure) => {
-				this.failed(ticketId, String(failure));
+				this.failed(ticketId, failure);
 			}));
 		};
 		this.after(TRANSIENT_BACKOFF_MS * 2 ** (tries - 1), go);
@@ -8556,6 +9672,12 @@ function storeReads(db) {
 	return {
 		/** Newest first by arrival (`rowid`) order rather than trigger timestamp. */
 		recentTriggers: (offset = 0, limit = 50) => db.prepare("SELECT value FROM trigger ORDER BY rowid DESC LIMIT ? OFFSET ?").all(limit, offset).map((row) => JSON.parse(String(row.value))),
+		/** Bounded candidates from the same human actor; callers still authorize receiving scope and exact item identity. */
+		priorActorTickets: (source, actorSource, actorId, before) => values(`SELECT t.value FROM ticket t
+    JOIN trigger r ON r.id = json_extract(t.value, '$.origin.triggerId')
+    WHERE json_extract(r.value, '$.source') = ? AND json_extract(r.value, '$.actor.source') = ?
+      AND json_extract(r.value, '$.actor.id') = ? AND json_extract(r.value, '$.human') = 1
+      AND json_extract(t.value, '$.createdAt') < ? ORDER BY t.rowid DESC LIMIT 100`, source, actorSource, actorId, before),
 		/** Per-source trigger counts since `since`, plus the latest arrival timestamp across all time. */
 		triggerStats: (since) => {
 			const result = {};
@@ -9403,6 +10525,371 @@ var TextCache = class {
 	}
 };
 //#endregion
+//#region src/app/ticket-report.ts
+/**
+* Self-contained HTML ticket reports, delivered to Feishu as a cloud-document address.
+*
+* Feishu IM does not render HTML inline. A report therefore becomes a Lark cloud document:
+* `docs +create --doc-format xml` with a `<figure view-type="Preview">` block makes lark-cli upload
+* the local `.html` artifact as a `text/html` file block that Feishu renders as a page preview.
+* The message sent back to the ticket's Feishu thread carries only that document's address, not
+* the file. In bot mode the CLI also grants the current CLI user `full_access` on the new document.
+*
+* `orchestrator_reply` stays capped at 100 words and the replies prompt still forbids forwarding a
+* worker's report; this is a separate delivery path. The existing short result notice
+* (`ticket-notices.ts`) remains the human-readable summary.
+*
+* Delivery is a durable `ticketReport` effect, not work inside the synchronous `ticket.ended`
+* emit callback: writing a file and calling lark-cli are I/O and must not run inside the Engine's
+* transaction. The effect key includes `ended.at`; the created document's URL is cached on disk so
+* a retry or a repeated manual request reuses it instead of creating a second cloud document, and
+* the lark idempotency key derives from the same key so the notice cannot appear twice.
+*
+* The automatic switch is off by default: sending content out to an IM conversation is a
+* high-risk external action, so a person turns it on (or calls `sendNow` from the panel) first.
+*/
+/** Directory under the state directory that holds generated report files and the document cache. */
+const REPORT_DIR = "reports";
+/** The effect kind that writes and sends one report. */
+const REPORT_EFFECT = "ticketReport";
+/** Feishu rejects idempotency keys longer than 50 characters. */
+const idempotencyKey = (value) => `sa-${createHash("sha256").update(value).digest("hex").slice(0, 30)}`;
+/** Keeps the short IM notice well inside the 100-word transport limit. */
+const NOTICE_TITLE_CHARS = 60;
+/** Escapes every untrusted value before it is placed in a document. */
+function escapeHtml(value) {
+	return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+		"&": "&amp;",
+		"<": "&lt;",
+		">": "&gt;",
+		"\"": "&quot;",
+		"'": "&#39;"
+	})[character]);
+}
+const OUTCOME_TEXT$1 = {
+	completed: "已完成",
+	merged: "PR 已合并",
+	closed: "PR 已关闭（未合并）",
+	dropped: "无需处理",
+	stopped: "已停止",
+	blocked: "受阻，等待人工",
+	failed: "执行失败",
+	ready: "等待交付审核"
+};
+/** The facts of an ended ticket, or undefined while it is open; untrusted text is escaped only when rendered. */
+function ticketReportView(ticket, request) {
+	const ended = ticket.ended;
+	const report = latestAssignment(ticket)?.report;
+	if (!ended && (!report || ![
+		"blocked",
+		"failed",
+		"ready"
+	].includes(report.state))) return void 0;
+	const result = ended ?? {
+		outcome: report.state,
+		reason: ticket.attention?.question ?? "",
+		at: report.at,
+		by: "executor"
+	};
+	return {
+		id: ticket.id,
+		title: ticket.title,
+		outcome: OUTCOME_TEXT$1[result.outcome] ?? result.outcome,
+		summary: (report?.summary ?? "").trim() || (result.reason ?? "").trim(),
+		request: request.trim(),
+		reason: (result.reason ?? "").trim(),
+		createdAt: ticket.createdAt,
+		endedAt: result.at,
+		endedBy: result.by,
+		channels: (ticket.channels ?? []).map((channel) => ({
+			source: channel.source,
+			thread: channel.thread
+		})),
+		assignments: ticket.assignments.map((assignment) => ({
+			id: assignment.id,
+			state: assignment.state,
+			at: assignment.report?.at ?? assignment.endedAt ?? assignment.createdAt,
+			summary: (assignment.report?.summary ?? "").trim() || (assignment.endedReason ?? "").trim()
+		})),
+		execution: ticket.execution ? `${ticket.execution.name} · ${ticket.execution.directory}` : ""
+	};
+}
+/** Renders a standalone HTML document with inline styling and no external resources. */
+function renderTicketReport(view) {
+	const rows = view.assignments.map((assignment, index) => `<tr>
+      <td>${index + 1}</td><td class="mono">${escapeHtml(assignment.state)}</td>
+      <td class="mono">${escapeHtml(assignment.at)}</td><td>${escapeHtml(assignment.summary) || "<span class=\"muted\">—</span>"}</td>
+    </tr>`).join("");
+	const channels = view.channels.map((channel) => `<li><span class="mono">${escapeHtml(channel.source)}</span> · ${escapeHtml(channel.thread)}</li>`).join("");
+	const block = (label, value) => `<section><h2>${escapeHtml(label)}</h2><div class="body">${value}</div></section>`;
+	return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(view.title)} · SuperAgent 工单报告</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; padding: 32px 20px 64px; font: 15px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: #1f2329; background: #f7f8fa; }
+  main { max-width: 880px; margin: 0 auto; background: #fff; border: 1px solid #e5e6eb; border-radius: 12px; padding: 32px 36px 40px; }
+  h1 { font-size: 24px; line-height: 1.4; margin: 12px 0 20px; }
+  h2 { font-size: 14px; font-weight: 600; letter-spacing: .04em; color: #646a73; margin: 0 0 10px; }
+  section { border-top: 1px solid #eff0f1; padding: 22px 0 0; margin-top: 22px; }
+  .eyebrow { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: #8f959e; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; background: #e8f3ff; color: #1456b8; font-size: 13px; font-weight: 600; }
+  .meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px 24px; margin: 0; }
+  .meta div { min-width: 0; }
+  .meta dt { font-size: 12px; color: #8f959e; }
+  .meta dd { margin: 2px 0 0; font-size: 14px; overflow-wrap: anywhere; }
+  .body { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .muted { color: #8f959e; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px; overflow-wrap: anywhere; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid #eff0f1; vertical-align: top; }
+  th { color: #8f959e; font-weight: 600; font-size: 12px; }
+  ul { margin: 0; padding-left: 20px; }
+  footer { max-width: 880px; margin: 16px auto 0; color: #8f959e; font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">SuperAgent · 工单报告</div>
+  <h1>${escapeHtml(view.title)}</h1>
+  <span class="badge">${escapeHtml(view.outcome)}</span>
+  <dl class="meta" style="margin-top:24px">
+    <div><dt>工单 ID</dt><dd class="mono">${escapeHtml(view.id)}</dd></div>
+    <div><dt>结束时间</dt><dd class="mono">${escapeHtml(view.endedAt)}</dd></div>
+    <div><dt>创建时间</dt><dd class="mono">${escapeHtml(view.createdAt)}</dd></div>
+    <div><dt>结束者</dt><dd>${escapeHtml(view.endedBy)}</dd></div>
+  </dl>
+  ${block("原始需求", escapeHtml(view.request) || "<span class=\"muted\">—</span>")}
+  ${block("结果摘要", escapeHtml(view.summary) || "<span class=\"muted\">—</span>")}
+  ${view.reason ? block("结束原因", escapeHtml(view.reason)) : ""}
+  ${view.execution ? block("执行环境", `<span class="mono">${escapeHtml(view.execution)}</span>`) : ""}
+  ${rows ? `<section><h2>执行轨迹</h2><table><thead><tr><th>#</th><th>状态</th><th>时间</th><th>报告</th></tr></thead><tbody>${rows}</tbody></table></section>` : ""}
+  ${channels ? block("关联会话", `<ul>${channels}</ul>`) : ""}
+</main>
+<footer>本文件由 SuperAgent 自动生成，内容来自本机工单记录；请勿在外部转发包含内部信息的报告。</footer>
+</body>
+</html>
+`;
+}
+/** A safe ASCII file name; lark-cli only accepts cwd-relative paths without `..` for local resources. */
+const reportFileName = (ticketId) => `report-${ticketId.replace(/[^A-Za-z0-9_-]/g, "") || "ticket"}.html`;
+/** DocxXML whose file block makes Feishu render the local `.html` artifact as a page preview. */
+const reportDocXml = (file) => `<figure view-type="Preview"><source path="@./${file}" name="${file}"/></figure>\n`;
+/** The cloud document's address from `docs +create` (`data.document.url` in lark-cli 1.0.98). */
+function documentUrl(data) {
+	const document = data?.document;
+	if (typeof document?.url === "string" && /^https?:\/\//.test(document.url)) return document.url;
+	const id = typeof document?.document_id === "string" ? document.document_id : "";
+	return id ? `https://feishu.cn/docx/${id}` : "";
+}
+/** The short IM notice: a person clicks through to the cloud document; no HTML file is attached. */
+function reportNoticeText(view, url) {
+	return `【工单报告】「${view.title.length > NOTICE_TITLE_CHARS ? `${view.title.slice(0, NOTICE_TITLE_CHARS)}…` : view.title}」${view.outcome}\n${url}`;
+}
+/** Feishu channels that carry the message id needed to reply in the original topic. */
+function feishuTargets(ticket) {
+	return (ticket.channels ?? []).filter((channel) => channel.source === "feishu" && typeof channel.address.messageId === "string" && channel.address.messageId.length > 0);
+}
+/** Generates, stores and sends ticket reports; one durable effect per ticket ending. */
+var TicketReports = class {
+	host;
+	constructor(host) {
+		this.host = host;
+		host.effects.handle(REPORT_EFFECT, (payload, key) => this.deliver(payload, key), { retry: [5e3, 3e5] });
+		host.effects.handle("reportLocal", (payload) => this.generate(payload), { retry: [5e3, 3e5] });
+	}
+	get directory() {
+		return join(this.host.stateDir, REPORT_DIR);
+	}
+	version(ticket) {
+		return ticket.ended?.at ?? latestAssignment(ticket)?.report?.at ?? "";
+	}
+	key(ticket) {
+		return `${ticket.id}:${this.version(ticket)}`;
+	}
+	/** Local generation is unconditional for a recorded outcome; external sending remains opt-in. */
+	queue(ticket) {
+		if (ticketReportView(ticket, "")) this.host.effects.enqueue("reportLocal", ticket.id, {
+			ticketId: ticket.id,
+			at: this.version(ticket)
+		});
+		return this.host.enabled() ? this.enqueue(ticket) : false;
+	}
+	/** A person's explicit request: queue the report even while the automatic switch is off. */
+	sendNow(ticket) {
+		return this.enqueue(ticket);
+	}
+	enqueue(ticket) {
+		if (!ticketReportView(ticket, "") || !feishuTargets(ticket).length) return false;
+		this.host.effects.enqueue(REPORT_EFFECT, this.key(ticket), {
+			ticketId: ticket.id,
+			at: this.version(ticket)
+		});
+		return true;
+	}
+	/** The artifact, the cached cloud-document address, and whether a delivery is still waiting. */
+	status(ticket) {
+		const file = reportFileName(ticket.id);
+		const path = join(this.directory, this.snapshotFile(ticket.id, this.version(ticket)));
+		const cache = path.replace(/\.html$/, ".doc.json");
+		let docUrl;
+		if (existsSync(cache)) try {
+			const saved = JSON.parse(readFileSync(cache, "utf8"));
+			if (saved.ticketId === ticket.id && saved.at === this.version(ticket) && typeof saved.url === "string") docUrl = saved.url;
+		} catch (error) {
+			this.host.warn(`report ${file}: unreadable document cache: ${String(error)}`);
+		}
+		const queued = this.host.effects.pending(REPORT_EFFECT, this.key(ticket));
+		let deliveryState;
+		const receipt = path.replace(/\.html$/, ".delivery.json");
+		try {
+			const saved = JSON.parse(readFileSync(receipt, "utf8"));
+			if (saved.at === this.version(ticket) && [
+				"sent",
+				"target-gone",
+				"partial"
+			].includes(saved.state ?? "")) deliveryState = saved.state;
+		} catch {}
+		return {
+			file,
+			...existsSync(path) ? { path } : {},
+			...docUrl ? { docUrl } : {},
+			generated: existsSync(path),
+			generationQueued: this.host.effects.pending("reportLocal", ticket.id),
+			queued,
+			deliveryState: queued ? "queued" : deliveryState ?? "not-requested"
+		};
+	}
+	/** Reads only the generated artifact for this ticket; never generates or sends on GET. */
+	async content(ticket) {
+		const file = reportFileName(ticket.id);
+		const html = await readFile(join(this.directory, this.snapshotFile(ticket.id, this.version(ticket))), "utf8");
+		if (Buffer.byteLength(html, "utf8") > 2e6) throw new Error("Report exceeds download limit; use the local artifact");
+		return {
+			file,
+			html
+		};
+	}
+	async writeAtomically(directory, name, content) {
+		const temporary = join(directory, `.${name}.${process.pid}.${randomUUID()}.tmp`);
+		await writeFile(temporary, content, {
+			encoding: "utf8",
+			mode: 384
+		});
+		await rename(temporary, join(directory, name));
+	}
+	async cachedDoc(cacheFile) {
+		const path = join(this.directory, cacheFile);
+		if (!existsSync(path)) return void 0;
+		const doc = await readFile(path, "utf8").then((text) => JSON.parse(text), () => void 0);
+		return doc && typeof doc.url === "string" && /^https?:\/\//.test(doc.url) ? doc : void 0;
+	}
+	snapshotFile(id, at) {
+		return reportFileName(id).replace(/\.html$/, `-${createHash("sha256").update(at).digest("hex").slice(0, 12)}.html`);
+	}
+	current(payload) {
+		const ticket = this.host.store.tickets.get(payload.ticketId);
+		return !!ticket && this.version(ticket) === payload.at;
+	}
+	async generate(payload) {
+		const ticket = this.host.store.tickets.get(payload.ticketId);
+		if (!ticket || this.version(ticket) !== payload.at) return;
+		const view = ticketReportView(ticket, this.host.store.triggers.get(ticket.origin.triggerId)?.text ?? "");
+		if (!view) return;
+		await mkdir(this.directory, {
+			recursive: true,
+			mode: 448
+		});
+		const html = renderTicketReport(view);
+		await this.writeAtomically(this.directory, this.snapshotFile(ticket.id, payload.at), html);
+		if (this.current(payload)) await this.writeAtomically(this.directory, reportFileName(ticket.id), html);
+	}
+	async deliver(payload, key) {
+		const { store, commands, warn } = this.host;
+		const ticket = store.tickets.get(payload.ticketId);
+		if (!ticket || this.version(ticket) !== payload.at) return;
+		const targets = feishuTargets(ticket);
+		if (!targets.length) return;
+		const view = ticketReportView(ticket, store.triggers.get(ticket.origin.triggerId)?.text ?? "");
+		if (!view) return;
+		const directory = this.directory;
+		const file = this.snapshotFile(ticket.id, payload.at);
+		const xmlFile = file.replace(/\.html$/, ".doc.xml");
+		const cacheFile = file.replace(/\.html$/, ".doc.json");
+		await mkdir(directory, {
+			recursive: true,
+			mode: 448
+		});
+		const html = renderTicketReport(view);
+		await this.writeAtomically(directory, file, html);
+		if (!this.current(payload)) return;
+		await this.writeAtomically(directory, reportFileName(ticket.id), html);
+		let doc = await this.cachedDoc(cacheFile);
+		if (doc?.at !== payload.at) doc = void 0;
+		if (!doc) {
+			await this.writeAtomically(directory, xmlFile, reportDocXml(file));
+			const title = view.title.replace(/[\r\n\t]/g, " ").slice(0, 200);
+			if (!this.current(payload)) return;
+			const created = await commands.lark([
+				"docs",
+				"+create",
+				"--title",
+				title,
+				"--doc-format",
+				"xml",
+				"--content",
+				`@./${xmlFile}`
+			], directory);
+			const url = documentUrl(created);
+			if (!url) throw new Error("Feishu cloud document was created without an address");
+			const documentId = typeof created?.document?.document_id === "string" ? created.document.document_id : "";
+			doc = {
+				ticketId: ticket.id,
+				at: payload.at,
+				url,
+				documentId
+			};
+			await this.writeAtomically(directory, cacheFile, JSON.stringify(doc));
+		}
+		const text = reportNoticeText(view, doc.url);
+		let sent = 0, gone = 0;
+		for (const channel of targets) {
+			if (!this.current(payload)) return;
+			const messageId = channel.address.messageId;
+			if (!messageId) continue;
+			try {
+				await commands.lark([
+					"im",
+					"+messages-reply",
+					"--message-id",
+					messageId,
+					"--markdown",
+					text,
+					"--reply-in-thread",
+					"--idempotency-key",
+					idempotencyKey(`${key}:${channel.thread}`)
+				]);
+				sent++;
+			} catch (error) {
+				if (/230011|withdrawn|not found/i.test(String(error))) {
+					gone++;
+					warn(`report ${file}: Feishu message ${messageId} is gone`);
+					continue;
+				}
+				throw error;
+			}
+		}
+		await this.writeAtomically(directory, file.replace(/\.html$/, ".delivery.json"), JSON.stringify({
+			at: payload.at,
+			state: gone ? sent ? "partial" : "target-gone" : "sent"
+		}));
+	}
+};
+//#endregion
 //#region src/app/api.ts
 const TICKET_FILTERS = [
 	"open",
@@ -9417,61 +10904,6 @@ const THREAD_FILTERS = [
 	"recent",
 	"all"
 ];
-//#endregion
-//#region src/app/role-models.ts
-/** Resolve a configured route through the live provider; catalog membership is not a restriction. */
-async function resolveRoleModel(ctx, model) {
-	const value = await ctx.llm.resolveCallConfig({
-		provider: model.provider,
-		model: model.model,
-		...model.reasoningEffort ? { reasoningEffort: ReasoningEffortId(model.reasoningEffort) } : {}
-	});
-	return {
-		provider: value.provider,
-		model: value.model,
-		...value.reasoningEffort ? { reasoningEffort: value.reasoningEffort } : {}
-	};
-}
-/** Seed a role's configured model onto a brand-new session before its first request, leaving later manual or durable selections intact. */
-async function initializeRoleModel(ctx, agent, model) {
-	if (!model) return;
-	if (agent.session.requestHeader() || agent.session.snapshotEvents().some((event) => event.type === "model/selection")) return;
-	const selected = await resolveRoleModel(ctx, model);
-	agent.session.append("model/selection", selected);
-	let initial = true;
-	let assembled;
-	agent.ctx.effect(() => {
-		const disposers = [
-			agent.ctx.on("system-prompt/assemble", async (_assembly, _context, next) => {
-				const selection = initial ? selected : void 0;
-				const result = await next();
-				assembled = selection;
-				return selection ? {
-					...result,
-					variables: {
-						...result.variables,
-						provider: selection.provider,
-						model: selection.model
-					}
-				} : result;
-			}, { prepend: true }),
-			agent.ctx.on("agent/request", async (_payload, next) => {
-				const result = await next();
-				if (!assembled) return result;
-				const { reasoningEffort: _inherited, ...rest } = result;
-				return {
-					...rest,
-					...assembled
-				};
-			}, { prepend: true }),
-			ctx.on("session/event", (session, event) => {
-				if (session === agent.session && (event.type === "request/header" || event.type === "model/selection")) initial = false;
-			})
-		];
-		return () => disposers.forEach((dispose) => dispose());
-	});
-	await ctx.sessionPersistence.flush();
-}
 //#endregion
 //#region src/app/cli-check.ts
 /**
@@ -9665,7 +11097,9 @@ var Setup = class {
 			program: [executable(config.cli || "p4", this.path, workerBin(this.host.machine.stateDir))],
 			port: config.port,
 			user: config.user,
-			deniedClients: config.submitClient ? [config.submitClient] : []
+			...config.workspaceMode === "current" ? { executionClient: config.executionClient } : {},
+			deniedClients: config.submitClient && !(config.workspaceMode === "current" && config.executionClient === config.submitClient) ? [config.submitClient] : [],
+			paths: config.paths.map((item) => item.path)
 		};
 	}
 	restore() {
@@ -9721,7 +11155,10 @@ const now$6 = () => (/* @__PURE__ */ new Date()).toISOString();
 const environment = ({ executor }) => JSON.stringify([
 	executor.directory,
 	executor.prepare,
-	executor.blockedCommands
+	executor.blockedCommands,
+	executor.projects,
+	executor.workerPtc,
+	executor.toolTrace
 ]);
 const BLOCKS = {
 	policy: {
@@ -9767,7 +11204,7 @@ const BLOCKS = {
 			}
 		}),
 		guard: (current, candidate, origin) => {
-			if (origin !== "panel" && setupChanged(current, candidate)) throw new UserError("panelOnlyAccounts");
+			if (origin !== "panel" && (setupChanged(current, candidate) || (current.sources.p4?.config.requireDelivery ?? true) !== (candidate.sources.p4?.config.requireDelivery ?? true) || (current.sources.p4?.config.checkUnopenedDiffs ?? false) !== (candidate.sources.p4?.config.checkUnopenedDiffs ?? false) || (current.sources.p4?.config.syncBeforeWork ?? false) !== (candidate.sources.p4?.config.syncBeforeWork ?? false) || (current.sources.p4?.config.reconcileFallback ?? false) !== (candidate.sources.p4?.config.reconcileFallback ?? false) || (current.sources.p4?.config.pendingName ?? "[dsh-superagent:{ticket}] {title}") !== (candidate.sources.p4?.config.pendingName ?? "[dsh-superagent:{ticket}] {title}") || JSON.stringify(current.sources.p4?.config.reconcileIgnore) !== JSON.stringify(candidate.sources.p4?.config.reconcileIgnore) || JSON.stringify(current.sources.tapd?.config.filterSchedules) !== JSON.stringify(candidate.sources.tapd?.config.filterSchedules) || JSON.stringify(current.sources.tapd?.config.ownerGroups) !== JSON.stringify(candidate.sources.tapd?.config.ownerGroups) || JSON.stringify(current.sources.gongfeng) !== JSON.stringify(candidate.sources.gongfeng))) throw new UserError("panelOnlyAccounts");
 		}
 	}
 };
@@ -10425,6 +11862,15 @@ var Reviews = class {
 	get(ticketId) {
 		return this.host.store.get(KV.reviews.review(ticketId));
 	}
+	/** A reported CL keeps its delivery requirement even if reading or claiming it fails, including after a restart. */
+	requireChangelist(ticketId, change) {
+		this.host.store.set(KV.reviews.required(ticketId), change);
+	}
+	/** Existing own P4 threads and reviews also keep the gate for tickets created before this requirement was recorded. */
+	requiredChangelist(ticketId) {
+		const own = this.host.store.tickets.get(ticketId)?.follows?.find((follow) => follow.own && !follow.closed && follow.thread.startsWith(`p4:`));
+		return this.host.store.get(KV.reviews.required(ticketId)) ?? this.get(ticketId)?.change ?? (own ? Number(own.thread.slice(3)) : void 0);
+	}
 	/**
 	* Whether the ticket's inputs wait undelivered: while its CL waits for a person or is being submitted, its worker must
 	* not change the shelf. A message that arrives meanwhile reaches the worker once the review ends.
@@ -10461,6 +11907,8 @@ var Reviews = class {
 	*/
 	request(ticketId, change) {
 		if (!change.shelved.length) throw new Error(`Changelist ${change.number} has no shelved files; shelve it before reporting it ready`);
+		const missing = unshelvedFiles(change);
+		if (missing.length) throw new Error(`Changelist ${change.number} has opened files not shelved with their current metadata: ${missing.slice(0, 5).join(", ")}`);
 		const review = {
 			ticketId,
 			change: change.number,
@@ -10482,9 +11930,11 @@ var Reviews = class {
 		const review = this.get(ticketId);
 		if (!review) return void 0;
 		const config = this.host.p4.config("p4");
+		const diffs = review.state === "waiting" && config ? await shelfDiffs(this.commands, config, review.change) : [];
 		return {
 			review,
-			diffs: review.state === "waiting" && config ? await shelfDiffs(this.commands, config, review.change) : [],
+			diffs,
+			diffSummary: summarizeShelfDiffs(review.files, diffs),
 			submit: {
 				mode: config?.submit ?? "pipeline",
 				tags: config?.pipelineTags ?? ""
@@ -10508,9 +11958,15 @@ var Reviews = class {
 		const review = this.waitingReview(ticketId);
 		const config = this.config;
 		const by = this.person();
+		if (this.host.store.tickets.get(ticketId)?.execution?.p4Delivery === "pending") throw this.refuse(review, "Pending-only delivery: this CL is never submitted by dsh-superagent. Review it in P4V and submit there.", by);
 		if (read !== review.fingerprint) throw new ReviewRefused("The review changed after you opened it; open it again");
 		const now = await readChange(this.commands, config, review.change);
 		if (!now || now.status !== "pending") throw this.refuse(review, `Changelist ${review.change} is ${now?.status ?? "gone"}`, by);
+		if (this.host.store.tickets.get(ticketId).execution?.p4Workspace) {
+			const refused = claimChangelist(this.host.p4, config, ticketId, now);
+			if (refused) throw this.refuse(review, refused, by);
+			if (config.submit === "host" && config.submitClient === now.client) throw this.refuse(review, "Execution and submit client are the same. Inspect and submit the approved CL manually; automatic unshelve into this occupied client is disabled.", by);
+		}
 		const current = fingerprint(now.shelved);
 		if (current !== review.fingerprint) {
 			const before = new Map(review.files.map((file) => [file.depotFile, `${file.action}\t${file.digest ?? ""}`]));
@@ -11139,7 +12595,11 @@ const DESK_PERSON = {
 };
 const SuperagentConfigSchema = object({
 	desk: boolean().default(true),
-	bots: boolean().default(true)
+	bots: boolean().default(true),
+	/** 普通会话里 @SuperAgent 的消息是否交给主管。 */
+	sessions: boolean().default(true),
+	/** ★ 2026-11-11：普通会话 @SuperAgent 任务的默认工作目录（空 = 用执行设置的全局根）。 */
+	workspace: string$1().trim().max(500).refine((path) => path === "" || isAbsolute(path) || win32.isAbsolute(path), "An absolute execution root, or empty to use the global Execution directory").default("")
 }).strict();
 const Sender = object({
 	id: string$1().trim().min(1).max(200),
@@ -11158,29 +12618,56 @@ function makeSuperagentKind(deliver) {
 			en: "What a person says to the supervisor in DSH (the supervisor desk), and other VsSaros Bots asking the supervisor for help with agent_message. Replies go back into the Session they came from."
 		},
 		schema: SuperagentConfigSchema,
-		fields: [{
-			key: "desk",
-			type: "switch",
-			label: {
-				zh: "接收主管对话",
-				en: "Receive the supervisor desk"
+		fields: [
+			{
+				key: "desk",
+				type: "switch",
+				label: {
+					zh: "接收主管对话",
+					en: "Receive the supervisor desk"
+				},
+				hint: {
+					zh: "在主管对话里发的每条消息交给主管评估；名单里的人发的是明确的请求。",
+					en: "Each message sent in the supervisor desk goes to the supervisor; a listed person's is an explicit request."
+				}
 			},
-			hint: {
-				zh: "在主管对话里发的每条消息交给主管评估；名单里的人发的是明确的请求。",
-				en: "Each message sent in the supervisor desk goes to the supervisor; a listed person's is an explicit request."
-			}
-		}, {
-			key: "bots",
-			type: "switch",
-			label: {
-				zh: "接收 bot 求助",
-				en: "Receive Bots asking for help"
+			{
+				key: "workspace",
+				type: "text",
+				label: {
+					zh: "普通会话任务的执行根",
+					en: "Execution root for normal-session tasks"
+				},
+				hint: {
+					zh: "填绝对路径；每个工单在此创建自己的子目录，并非直接使用现有工程。留空则继承「执行」设置的全局根；源码需由准备命令提供。",
+					en: "Absolute root for per-ticket subdirectories, not an existing project checkout. Empty inherits the global Execution root; the prepare command must provide source code."
+				}
 			},
-			hint: {
-				zh: "名单里的 bot 用 agent_message 发给 SuperAgent 的消息成为推断的候选；其它 bot 的不接收。",
-				en: "What a listed Bot sends SuperAgent with agent_message becomes an inferred candidate; other Bots' messages are not admitted."
+			{
+				key: "sessions",
+				type: "switch",
+				label: {
+					zh: "接收普通会话的 @SuperAgent",
+					en: "Receive @SuperAgent in normal sessions"
+				},
+				hint: {
+					zh: "在普通会话里 @SuperAgent 发的消息交给主管评估；回复回到原会话。",
+					en: "Messages mentioning @SuperAgent in a normal session go to the supervisor; replies return to that session."
+				}
+			},
+			{
+				key: "bots",
+				type: "switch",
+				label: {
+					zh: "接收 bot 求助",
+					en: "Receive Bots asking for help"
+				},
+				hint: {
+					zh: "名单里的 bot 用 agent_message 发给 SuperAgent 的消息成为推断的候选；其它 bot 的不接收。",
+					en: "What a listed Bot sends SuperAgent with agent_message becomes an inferred candidate; other Bots' messages are not admitted."
+				}
 			}
-		}],
+		],
 		health: [SUPERAGENT_SOURCE],
 		scope: ({ meta }, config) => {
 			if (meta.from === "desk") return config.desk ? {
@@ -11199,6 +12686,14 @@ function makeSuperagentKind(deliver) {
 				listened: false,
 				reason: "superagent_bots_off"
 			};
+			if (meta.from === "session") return config.sessions ? {
+				listened: true,
+				observed: false,
+				row: "session"
+			} : {
+				listened: false,
+				reason: "superagent_sessions_off"
+			};
 			return {
 				listened: false,
 				reason: "superagent_unknown"
@@ -11211,7 +12706,10 @@ function makeSuperagentKind(deliver) {
 			},
 			link: (address) => ({
 				url: "",
-				label: address.kind === "bot" ? {
+				label: address.kind === "session" ? {
+					zh: `普通会话 ${address.session ?? ""}`.trim(),
+					en: `Session ${address.session ?? ""}`.trim()
+				} : address.kind === "bot" ? {
 					zh: `bot 会话 ${address.session ?? ""}`.trim(),
 					en: `Bot Session ${address.session ?? ""}`.trim()
 				} : {
@@ -11351,7 +12849,7 @@ function makeSuperagentKind(deliver) {
 }
 function addressOf(address) {
 	const session = address.session?.trim();
-	return session && (address.kind === "desk" || address.kind === "bot") ? {
+	return session && (address.kind === "desk" || address.kind === "bot" || address.kind === "session") ? {
 		kind: address.kind,
 		session
 	} : void 0;
@@ -11391,6 +12889,40 @@ function deskTrigger(input) {
 	};
 }
 /**
+* ★ 2026-11-11：普通会话里 @SuperAgent 点名主管。与 deskTrigger 的区别只在
+*   channel.address.kind='session' ⇒ 回复经 deliverReply 回到原会话而不是 desk outbox。
+*   actor 仍是本机用户（在 superagent 来源的 allowed 名单里）⇒ gate 判 explicit。
+*/
+function sessionTrigger(input) {
+	const ref = thread("session", input.session);
+	return {
+		id: `${SUPERAGENT_SOURCE}:session:${input.messageId}`,
+		source: SUPERAGENT_SOURCE,
+		threads: [ref],
+		actor: {
+			source: SUPERAGENT_SOURCE,
+			id: DESK_PERSON.id
+		},
+		human: true,
+		addressed: "mention",
+		at: input.at,
+		text: clip$2(input.text),
+		channel: {
+			source: SUPERAGENT_SOURCE,
+			thread: threadKey(ref),
+			address: {
+				kind: "session",
+				session: input.session
+			}
+		},
+		meta: {
+			from: "session",
+			session: input.session,
+			...input.workspace ? { workspace: input.workspace } : {}
+		}
+	};
+}
+/**
 * A Bot's request for help; the actor is the Bot's ID (its Session's when the Bots could not tell), which the gate admits
 * only from the Source's `bots` list.
 */
@@ -11420,6 +12952,7 @@ function botTrigger(input) {
 			from: "bot",
 			session: input.session,
 			hop: input.hop,
+			...input.blocker ? { blocker: true } : {},
 			...input.bot ? { bot: input.bot } : {},
 			...input.name ? { name: input.name } : {}
 		}
@@ -11528,7 +13061,7 @@ const deskRequestId = (messageId) => `superagent-reply:${messageId}`;
 * The Runtime delivers to the desk only through its outbox (desk-outbox.ts), and only what needs the person's answer.
 */
 async function deliverReply(host, address, message) {
-	const text = address.kind === "desk" ? `[SuperAgent] ${message.text}` : `[SuperAgent 主管回复]\n${message.text}\n\n要继续找主管，用 agent_message 发给 SuperAgent。`;
+	const text = address.kind === "session" ? `[SuperAgent] ${message.text}` : address.kind === "desk" ? `[SuperAgent] ${message.text}` : `[SuperAgent 主管回复]\n${message.text}\n\n要继续找主管，用 agent_message 发给 SuperAgent。`;
 	try {
 		await host.prompt(address.session, deskRequestId(message.id), text, address.kind === "desk" ? "queue" : "steer");
 		return "sent";
@@ -11897,6 +13430,79 @@ var RetryHealth = class {
 	}
 };
 //#endregion
+//#region src/app/worker-ptc.ts
+const WORKER_PTC_TIMEOUT_MS = 3e4;
+/** Join only this worker to its preset's isolated runtime; preserve the executor's Agent scope. */
+function bindPresetPtcRuntime(agent) {
+	const ctx = agent.ctx;
+	const runtime = ctx.get("agentPresets")?.serviceFor?.(agent, "ptcRuntime");
+	if (!runtime) throw new Error("Worker preset PTC runtime unavailable; no native fallback was applied.");
+	const key = Symbol.for("cordis.isolate");
+	const target = ctx;
+	const label = runtime.ctx[key]?.ptcRuntime;
+	if (!label) throw new Error("Worker PTC runtime must be isolated in its preset.");
+	const previous = target[key];
+	const joined = ctx.isolate("ptcRuntime", label)[key];
+	target[key] = joined;
+	return () => {
+		if (target[key] === joined) target[key] = previous;
+	};
+}
+/** Checks every outer program; SDK subcalls are still independently guarded by the official pipeline. */
+function ptcDenial(name, args, mode, p4Configured) {
+	if (name !== "run_code") return void 0;
+	if (p4Configured) return "PTC pilot does not run with configured P4 execution; use a native worker so changelist policy cannot be bypassed by direct program I/O.";
+	if (mode !== "workspace-write" && mode !== "read-only") return "PTC requires a confined file policy; danger-full-access is not supported by this pilot.";
+	const value = args && typeof args === "object" ? args : {};
+	if (value.sandbox_permissions !== void 0 || value.justification !== void 0) return "PTC pilot does not permit program permission escalation.";
+	if (typeof value.timeoutMs !== "number" || !Number.isFinite(value.timeoutMs) || value.timeoutMs <= 0 || value.timeoutMs > 3e4) return "Set timeoutMs explicitly to a positive value no greater than 30000 in each run_code call.";
+}
+async function installWorkerPtc(agent, settings, load = loadHostPtc, active = () => true) {
+	const ctx = agent.ctx;
+	const runtime = ctx.get("ptcRuntime");
+	if (!runtime || runtime.language !== "typescript" || runtime.isolation !== "process" || !runtime.timeout || runtime.sandboxMode === void 0) throw new Error("Worker PTC unavailable: the Host must provide the official confined Node PTC process runtime. No native fallback was applied.");
+	const policy = ctx.get("sandboxPolicy");
+	if (!policy || !ctx.get("workingDirectory")) throw new Error("Worker PTC requires sandboxPolicy and workingDirectory services.");
+	const p4 = () => {
+		const source = settings().sources.p4;
+		return !!source?.enabled && typeof source.config.port === "string" && !!source.config.port.trim();
+	};
+	const denied = ptcDenial("run_code", { timeoutMs: WORKER_PTC_TIMEOUT_MS }, policy.resolve({ session: agent.session }).mode, p4());
+	if (denied) throw new Error(denied);
+	const module = await load();
+	if (!active()) throw new Error("Worker PTC setup cancelled: agent binding was released.");
+	if (!module) throw new Error("Worker PTC unavailable: official dsh-tool-executor-ptc was not resolved from the Host. No bundled substitute was applied.");
+	const executor = new module.PtcExecutor(ctx, {
+		maxSubCallsPerMinute: 64,
+		maxParallelSubCalls: 4
+	}, () => 1);
+	const tools = ctx.tools;
+	if (typeof tools.setExecutor !== "function") throw new Error("Worker PTC requires the rc.2 scoped tool executor API.");
+	const releases = [];
+	try {
+		releases.push(ctx.tools.guard(({ name, arguments: args }) => ptcDenial(name, args, policy.resolve({ session: agent.session }).mode, p4())));
+		releases.push(tools.setExecutor({
+			sections: [...executor.sections ?? [], {
+				name: "superagent-worker-ptc",
+				order: 9997,
+				interpolate: false,
+				text: "PTC pilot: use run_code with explicit timeoutMs <= 30000; at most 32 SDK calls per 30-second run and 4 concurrency-safe subcalls overlap. Batch independent reads, filter intermediate results, return only a summary. Do not poll without a state change or blindly retry writes. Use SDK tools rather than raw file/network/process I/O. File policy does not isolate network or process visibility. This pilot does not support P4 or permission escalation. Completed side effects are not rolled back on script failure."
+			}],
+			describe: (tools) => executor.describe(tools),
+			execute: (input) => executor.execute({
+				...input,
+				maxParallelToolCalls: 1
+			})
+		}));
+	} catch (error) {
+		for (const release of releases.reverse()) release();
+		throw error;
+	}
+	return () => {
+		for (const release of releases.reverse()) release();
+	};
+}
+//#endregion
 //#region src/app/sessions.ts
 /** VsSaros fix (2026-11-06): DSH refused the permission preset a team step should run under. */
 var StepPermissionError = class extends Error {
@@ -12058,12 +13664,36 @@ var Sessions = class {
 		const settings = this.host.store.settings();
 		if (role !== "step") await initializeRoleModel(ctx, result.agent, role === "worker" ? settings.executor.model : settings.eval.model);
 		await this.decorate(result.agent);
-		const wanted = role === "step" && permission ? permission : "danger-full-access";
+		const ptc = role === "worker" && this.ticketOf(result.agent)?.execution?.toolMode === "ptc";
+		const wanted = ptc ? "workspace-write" : role === "step" && permission ? permission : "danger-full-access";
 		try {
 			ctx.permissionPresets.set(result.agent.session, wanted);
 		} catch (error) {
 			if (role === "step") throw new StepPermissionError(wanted, String(error));
 			throw error;
+		}
+		if (ptc) {
+			const binding = this.bindings.get(result.agent);
+			const active = () => !this.host.closing() && this.bindings.get(result.agent) === binding;
+			binding.ptc ??= Promise.resolve().then(async () => {
+				const restore = bindPresetPtcRuntime(result.agent);
+				try {
+					const release = await installWorkerPtc(result.agent, () => this.host.store.settings(), void 0, active);
+					if (!active()) {
+						release();
+						restore();
+						throw new Error("Worker PTC binding released during setup");
+					}
+					binding.disposers.push(restore, release);
+				} catch (error) {
+					restore();
+					throw error;
+				}
+			}).catch((error) => {
+				binding.ptc = void 0;
+				throw error;
+			});
+			await binding.ptc;
 		}
 		await ctx.sessionController.rename({
 			sessionId: id,
@@ -12080,6 +13710,12 @@ var Sessions = class {
 	async prompt(sessionId, requestId, text, mode, authorize, accepted) {
 		const result = await this.ctx.sessionController.resolveAgent(sessionId);
 		if ("error" in result) throw result.error;
+		const ticket = this.ticketOf(result.agent);
+		if (ticket?.execution?.toolMode === "ptc") {
+			const installing = this.bindings.get(result.agent)?.ptc;
+			if (installing) await installing;
+			else await this.ensure(sessionId, ticket.execution.directory, ticket.title, "worker");
+		}
 		await this.agentDelivery.send(result.agent, key(requestId), text, mode, this.host.lifetime, authorize, accepted);
 	}
 	/** The id of the message `prompt` delivers under `requestId`, which DSH's inbox events name it by. */
@@ -12219,7 +13855,9 @@ var Sessions = class {
 				const version = this.promptFor(agent, context.signal !== void 0);
 				const current = ticket && host.store.tickets.get(ticket.id);
 				const composed = host.prompts.compose(version.config, master ? "orchestrator" : "worker", current ? host.environment(current) : void 0);
-				return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate) : ""}`;
+				const gongfeng = current && host.store.settings().sources.gongfeng;
+				const guidance = gongfeng?.enabled && gongfeng.config.project ? "\nGongfeng uses orchestrator_gongfeng_mr and report mr_iid, not gh or pr_number. Use operator-configured Git credentials for push. Verify MR ownership and relevant tests; CI pipelines are not automatically verified here. Never merge an MR; human review owns merging. Missing credentials or permissions are blockers, not a reason to switch servers." : "";
+				return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate) : ""}${guidance}`;
 			},
 			...master ? { complete: true } : {}
 		}));
@@ -12304,7 +13942,6 @@ var Sessions = class {
 			].includes(now.state)) return `This step is ${now.state}`;
 			if (now?.state === "ready") return "This step already reported ready: end your turn now, calling no tools";
 			if (!stepToolAllowed(name, step.tools, own)) return `${name} is neither a work tool nor one of this Bot's tools`;
-			if (!own.includes(name) && this.host.overBudget?.(step.ticketId)) return "The team used its token budget: report now with orchestrator_step_report (blocked if unfinished)";
 			if (step.access === "read" && (name === "write" || name === "edit")) return "This step is read-only: change no file";
 			const directory = current.execution?.directory, path = args;
 			const target = typeof path?.file_path === "string" ? path.file_path : typeof path?.path === "string" ? path.path : void 0;
@@ -12352,9 +13989,18 @@ var Sessions = class {
 		const store = this.host.store;
 		const parent = scopeParentOf(agent);
 		const allow = WORK_TOOLS.filter((name) => agent.ctx.tools.get(name, parent));
-		return [agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard(() => {
+		return [agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard((execution) => {
 			const current = store.tickets.get(ticketId);
-			return !current || !liveTicket(current) ? "Ticket ended; new work needs a new authorized ticket" : void 0;
+			if (!current || !liveTicket(current)) return "Ticket ended; new work needs a new authorized ticket";
+			const shared = current.execution?.p4Workspace;
+			if (shared) {
+				const config = store.settings().sources.p4;
+				if (!config?.enabled || config.config.workspaceMode !== "current" || config.config.executionClient !== shared.client || config.config.workspaceRoot !== shared.root || config.config.port !== shared.port || config.config.user !== shared.user) return "Current P4 authorization changed; wait for operator repair";
+				const assignment = runningAssignment(current), review = store.get(KV.reviews.review(current.id));
+				if (!assignment || assignment.report?.state === "blocked" || assignment.report?.state === "failed" || review?.state === "waiting" || review?.state === "submitting") return "Current P4 workspace is queued, blocked or under review; use the ticket controls";
+				if (store.tickets.open().some((other) => other.id !== ticketId && other.execution?.p4Workspace?.root === shared.root && (this.ctx.agents.get(`worker-${other.id}`)?.status === "running" || other.follows?.some((follow) => follow.own && !follow.closed && follow.thread.startsWith("p4:"))))) return "Current P4 workspace is occupied by another ticket";
+			}
+			if (agent.id === `worker-${ticketId}` && current.execution?.toolMode === "ptc" && execution.name !== "run_code" && !execution.parent) return "This worker is PTC-only; native fallback is refused. Use SDK tools inside run_code after the Host runtime is available.";
 		})];
 	}
 	/**
@@ -12789,26 +14435,25 @@ var TeamSteps = class {
 	steps(ticketId) {
 		return this.tables.of(ticketId);
 	}
-	/** What the team used of its budget: tokens and turns over all steps, the caps, and whether the token cap is reached. */
+	/** What the team actually consumed. Caps are kept for stored records / fingerprint compatibility but never gate. */
 	budget(ticketId) {
 		const steps = this.tables.of(ticketId);
 		if (!steps.length) return void 0;
-		const tokens = steps.reduce((sum, step) => sum + (step.tokens ?? 0), 0), tokensCap = steps[0].tokensCap ?? 0;
 		return {
-			tokens,
-			tokensCap,
+			tokens: steps.reduce((sum, step) => sum + (step.tokens ?? 0), 0),
+			tokensCap: steps[0].tokensCap ?? 0,
 			turns: steps.reduce((sum, step) => sum + step.turns, 0),
 			turnsCap: steps[0].turnsCap,
-			stopped: tokensCap > 0 && tokens >= tokensCap
+			stopped: false
 		};
 	}
-	/** Whether the team of `ticketId` used its token budget up: no new step starts and running steps may only report. */
-	overBudget(ticketId) {
-		return !!this.budget(ticketId)?.stopped;
+	/** ★ 默认不限制预算：永不拦新步骤，也永不拒绝运行中步骤的工具。 */
+	overBudget(_ticketId) {
+		return false;
 	}
 	/**
 	* A step Session's model call used tokens (DSH's `usage` chunk; billable input is input + cache reads + cache writes).
-	* Counted on the step; the lead is told once at 90% of the cap, and once when the cap is reached.
+	* ★ 2026-11-12：只累加消耗量，不再发 80%/100% 预算告警，也不再停新步骤。
 	*/
 	meter(sessionId, usage) {
 		const ref = stepOfSession(sessionId);
@@ -12825,22 +14470,6 @@ var TeamSteps = class {
 			...step,
 			tokens: (step.tokens ?? 0) + used
 		}, this.seq(step));
-		const budget = this.budget(step.ticketId), first = this.tables.of(step.ticketId)[0];
-		if (!budget.tokensCap) return;
-		if (budget.stopped && !first.budgetStoppedAt) {
-			this.tables.save({
-				...first,
-				budgetStoppedAt: now$4(),
-				budgetWarnedAt: first.budgetWarnedAt ?? now$4()
-			}, 0);
-			this.note(step.ticketId, `The team used its token budget (${budget.tokens} of ${budget.tokensCap}): no new step starts, and running steps may only report. Ask the person whether to go on; they raise the budget in the panel.`);
-		} else if (!budget.stopped && budget.tokens >= budget.tokensCap * .9 && !first.budgetWarnedAt) {
-			this.tables.save({
-				...first,
-				budgetWarnedAt: now$4()
-			}, 0);
-			this.note(step.ticketId, `The team used 90% of its token budget (${budget.tokens} of ${budget.tokensCap}). Tell the person; at the cap no new step starts.`);
-		}
 	}
 	/**
 	* A person raises the team's budget (new caps, each above what is used); the steps that waited may start.
@@ -13196,14 +14825,8 @@ var TeamSteps = class {
 			this.note(ticketId, `Step ${step.key} (${step.bot.name}) skipped: a step it waits for did not finish.`);
 		}
 		steps = this.tables.of(ticketId);
-		const turns = steps.reduce((sum, step) => sum + step.turns, 0), cap = steps[0].turnsCap;
 		const running = steps.filter((step) => step.state === "running");
 		const ready = steps.filter((step) => step.state === "pending" && step.after.every((key) => steps.find((item) => item.key === key)?.state === "ready"));
-		if (turns >= cap && ready.length) {
-			this.note(ticketId, `The team used ${turns} of its ${cap} turns; steps ${ready.map((step) => step.key).join(", ")} wait. Ask the person whether to go on; they raise the budget in the panel.`);
-			return;
-		}
-		if (ready.length && this.overBudget(ticketId)) return;
 		let writing = running.some((step) => step.access === "write");
 		let slots = steps[0].parallel - running.length;
 		for (const step of ready) {
@@ -13717,11 +15340,13 @@ var StepApprovals = class {
 	*/
 	fromMessage(trigger) {
 		const reply = approvalReply(trigger.text);
-		if (!reply || !trigger.human || !allowedSender(this.host.store.settings(), trigger.actor)) return;
+		if (!reply || !trigger.human) return;
 		const received = Date.parse(this.host.store.triggers.disposition(trigger.id)?.at ?? trigger.at);
+		const settings = this.host.store.settings();
 		const candidates = [...this.pending.values()].filter((item) => {
 			const ticket = this.host.store.tickets.get(item.ticketId);
-			return item.posted && ticket && reached(ticket, trigger, (key) => this.host.store.threads.get(key), false) && received >= Date.parse(item.at);
+			const origin = ticket ? this.host.store.triggers.get(ticket.origin.triggerId) : void 0;
+			return item.posted && ticket && mayConsent(settings, trigger, origin) && reached(ticket, trigger, (key) => this.host.store.threads.get(key), false) && received >= Date.parse(item.at);
 		});
 		const chosen = reply.code ? candidates.filter((item) => item.code === reply.code) : candidates;
 		if (chosen.length === 1) {
@@ -14369,6 +15994,12 @@ function routes(runtime) {
 		if (!store.tickets.get(id)) throw new RouteError(404, "Ticket not found");
 		return id;
 	};
+	/** VsSaros addition (2026-11-13): the report routes need the record itself, not just its id. */
+	const ticketRecord = (id) => {
+		const found = store.tickets.get(ticket(id));
+		if (!found) throw new RouteError(404, "Ticket not found");
+		return found;
+	};
 	const promptBody = (input) => input.body(4 * runtime.machine.promptMaxChars.get() + 4096);
 	return {
 		"GET state": () => stateView(runtime),
@@ -14423,7 +16054,17 @@ function routes(runtime) {
 			runtime.engine.stopTicket(id);
 			return { stopped: true };
 		},
+		"GET tickets/:id/report": ({ params }) => runtime.reports.status(ticketRecord(params.id)),
+		"GET tickets/:id/report/content": ({ params }) => runtime.reports.content(ticketRecord(params.id)),
+		"POST tickets/:id/report": ({ params }) => ({ queued: runtime.reports.sendNow(ticketRecord(params.id)) }),
 		"POST executor/pause": async ({ body }) => runtime.settings.pause(object({ paused: boolean() }).parse(await body()).paused, "panel"),
+		"GET executor/workspaces": ({ query }) => {
+			const { offset, limit } = object({
+				offset: number().int().min(0).default(0),
+				limit: number().int().min(1).max(10).default(10)
+			}).strict().parse(query);
+			return runtime.executor.inventory(offset, limit);
+		},
 		"PUT settings/:block": async ({ params, body }) => {
 			const block = SettingsBlockSchema.parse(params.block);
 			if (!(!block.startsWith("source:") || runtime.sources.instances().some((instance) => `source:${instance.id}` === block))) throw new RouteError(404, "Source not found");
@@ -14491,6 +16132,59 @@ function routes(runtime) {
 					at
 				};
 			}
+		},
+		"POST sources/tapd/filters/import": async ({ body }) => {
+			const request = object({
+				text: string$1().trim().min(1).max(2e5),
+				name: string$1().trim().max(40).optional(),
+				at: string$1().trim().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+				maxPerRun: number$1().int().min(1).max(200).optional(),
+				windowDays: number$1().int().min(1).max(30).optional()
+			}).strict().parse(await body(21e4));
+			let exported;
+			try {
+				exported = JSON.parse(request.text);
+			} catch {
+				throw new RouteError(400, "The pasted text is not valid JSON");
+			}
+			const config = tapdConfigOf(runtime);
+			let maps;
+			try {
+				maps = await new TapdOpenApi({ api: config.api }).filterMaps(config.workspace);
+			} catch {}
+			const ownerGroups = Object.fromEntries(config.ownerGroups.map((row) => [row.group, row.members.split(/[;,；|]/).map((name) => name.trim()).filter(Boolean)]));
+			const result = importTapdFilter(exported, {
+				...maps,
+				ownerGroups,
+				name: request.name,
+				at: request.at,
+				maxPerRun: request.maxPerRun,
+				windowDays: request.windowDays
+			});
+			return {
+				schedule: result.schedule,
+				watch: result.watch,
+				report: result.report,
+				warnings: result.warnings,
+				maps: maps ? "live" : "fallback"
+			};
+		},
+		"POST sources/tapd/filters/preview": async ({ body }) => {
+			const request = object({
+				query: record$1(string$1(), string$1()),
+				windowDays: number$1().int().min(1).max(30)
+			}).strict().parse(await body(2e4));
+			const config = tapdConfigOf(runtime);
+			const api = new TapdOpenApi({ api: config.api });
+			const since = /* @__PURE__ */ new Date(Date.now() - request.windowDays * 864e5);
+			const [total, recent] = await Promise.all([api.count("bug", config.workspace, request.query), api.count("bug", config.workspace, {
+				...request.query,
+				modified: `>${tapdTime(since.toISOString())}`
+			})]);
+			return {
+				total,
+				recent
+			};
 		},
 		"GET models": () => runtime.models(),
 		"GET prompts": ({ query }) => {
@@ -14565,6 +16259,11 @@ function routes(runtime) {
 				sideCalls: runtime.store.settings().executor.sideCalls
 			};
 		},
+		"GET tools/trace": ({ query }) => runtime.toolTrace.view(object({
+			ticketId: string$1().min(1).max(200).optional(),
+			beforeId: number().int().positive().optional(),
+			limit: number().int().min(1).max(100).default(50)
+		}).strict().parse(query)),
 		"POST steps/rules/:id/delete": ({ params }) => {
 			runtime.stepApprovals.forget(params.id);
 			return { deleted: true };
@@ -14760,7 +16459,7 @@ var Outbox = class {
 	}
 	/** Record a message receipt and enqueue its delivery effect atomically; duplicate message IDs are ignored. */
 	send(message) {
-		if (message.kind === "reply" && message.channel.source === "feishu") checkedImText(message.text);
+		if (message.channel.source === "feishu") checkedImText(message.text);
 		const { store, effects } = this.host;
 		store.atomic(() => {
 			if (store.receipts.add(message)) effects.enqueue("reply", message.id, {});
@@ -15460,6 +17159,9 @@ const DEFAULT_BUDGET = {
 	turns: 90,
 	parallel: 3
 };
+function reusableApproved(rows, fingerprint, at) {
+	return rows.find((item) => item.state === "approved" && item.fingerprint === fingerprint && at - Date.parse(item.at) <= 6048e5 && !item.risk?.newBots);
+}
 const now$1 = () => (/* @__PURE__ */ new Date()).toISOString();
 const KEY$1 = /^[A-Za-z0-9_-]{1,24}$/;
 const fingerprintOf = (proposal) => `sha256:${createHash("sha256").update(JSON.stringify([
@@ -15555,9 +17257,11 @@ var Staffing = class {
 			this.tables.save(proposal);
 			this.host.engine.staffingProposed(ticket.id, proposal.version, proposal.fingerprint);
 		});
-		const automatic = this.host.store.settings().executor.autoApprove && ticket.mandate.strength === "explicit" && !risk.newBots && !risk.writeSteps && !risk.highRiskTools.length && budget.tokens <= DEFAULT_BUDGET.tokens && budget.turns <= DEFAULT_BUDGET.turns && budget.parallel <= DEFAULT_BUDGET.parallel;
-		this.send(ticket, proposal, automatic);
-		return automatic ? await this.agree(ticket.id, proposal, "auto") : proposal;
+		const reuse = reusableApproved(this.host.store.db.prepare("SELECT value FROM team_proposal WHERE state='approved' ORDER BY at DESC LIMIT 60").all().map((row) => JSON.parse(String(row.value))), proposal.fingerprint, Date.now());
+		const settings = this.host.store.settings();
+		const automatic = !!reuse || settings.executor.autoApprove && ticket.mandate.strength === "explicit" && !risk.newBots && !risk.writeSteps && !risk.highRiskTools.length && budget.tokens <= DEFAULT_BUDGET.tokens && budget.turns <= DEFAULT_BUDGET.turns && budget.parallel <= DEFAULT_BUDGET.parallel;
+		this.send(ticket, proposal, automatic, reuse);
+		return automatic ? await this.agree(ticket.id, proposal, reuse ? `reuse:${reuse.ticketId}:v${reuse.version}` : "auto") : proposal;
 	}
 	/**
 	* A listed person agreed in `triggerId` to version `version`: creates the drafted Bots, gives the worker the agreed team
@@ -15569,6 +17273,41 @@ var Staffing = class {
 		const proposal = this.current(ticket, version);
 		const trigger = this.consent(ticket, proposal, triggerId);
 		return this.agree(ticket.id, proposal, trigger.actor.id, trigger.id);
+	}
+	/** ★ 2026-11-11：同一 trigger 只处理一次（emit 可能重放），proposal 状态变化也构成二次幂等。 */
+	handled = /* @__PURE__ */ new Set();
+	/**
+	* ★ 2026-11-11（真机事故）：飞书/会话里回复「同意 / 拒绝 / 取消」直接批准组队方案，
+	* 不必等主会话模型调 `orchestrator_team_confirm`（模型会超时，工单就永远卡在待确认组队）。
+	* 与 StepApprovals.fromMessage 并列，由 Runtime 在 trigger.received 事务里调用；
+	* 真正落库放到 queueMicrotask，避免在同一事务里递归 emit。
+	*/
+	fromMessage(trigger) {
+		const plain = trigger.text.replace(/@\S+/g, " ").replace(/\s+/g, " ").trim();
+		const reply = approvalReply(plain);
+		const cancel = /^取消(?:工单)?\s*[。.!！]?$/.test(plain);
+		if (!reply && !cancel || !trigger.human || this.handled.has(trigger.id)) return;
+		const received = Date.parse(this.host.store.triggers.disposition(trigger.id)?.at ?? trigger.at);
+		const candidates = this.waiting().filter(({ ticket, proposal }) => {
+			if (!proposal || proposal.state !== "proposed" || received < Date.parse(proposal.at)) return false;
+			const full = this.host.store.tickets.get(ticket.id);
+			return !!full && reached(full, trigger, (key) => this.host.store.threads.get(key), false);
+		});
+		if (candidates.length !== 1) return;
+		const { ticket, proposal } = candidates[0];
+		if (!proposal) return;
+		const full = this.host.store.tickets.get(ticket.id);
+		const origin = this.host.store.triggers.get(full.origin.triggerId);
+		if (!mayConsent(this.host.store.settings(), trigger, origin)) return;
+		this.handled.add(trigger.id);
+		queueMicrotask(() => {
+			if (reply?.choice === "reject" || cancel) try {
+				this.refuse(ticket.id, { triggerId: trigger.id }, cancel ? "a person cancelled the team" : "a person refused the team");
+			} catch {}
+			else this.confirm(ticket.id, trigger.id, proposal.version).catch((error) => {
+				this.host.engine.note(ticket.id, `Team agreement from the conversation failed: ${String(error)}`);
+			});
+		});
 	}
 	/** A person in the panel (the person at this machine) agreed to version `version`. */
 	async approveFromPanel(ticketId, version) {
@@ -15638,7 +17377,7 @@ var Staffing = class {
 		};
 		if (!trigger) return refuse(`no message ${triggerId}`);
 		if (!trigger.human) return refuse("this message is a bot's");
-		if (!allowedSender(store.settings(), trigger.actor)) return refuse(`${trigger.actor.id} is not on the ${trigger.source} list`);
+		if (!mayConsent(store.settings(), trigger, store.triggers.get(ticket.origin.triggerId))) return refuse(`${trigger.actor.id} is neither on the ${trigger.source} list nor this ticket's originator`);
 		if (!reached(ticket, trigger, (key) => store.threads.get(key), false)) return refuse("this message is not on the ticket's threads");
 		const received = store.triggers.disposition(trigger.id)?.at ?? trigger.at;
 		if (proposal && Date.parse(received) < Date.parse(proposal.at)) return refuse(`it was received before version ${proposal.version} was sent`);
@@ -15705,7 +17444,7 @@ var Staffing = class {
 		return steps;
 	}
 	/** Sends a proposal to the conversation the ticket started in, once per version. */
-	send(ticket, proposal, automatic) {
+	send(ticket, proposal, automatic, reuse) {
 		const channel = this.host.store.triggers.get(ticket.origin.triggerId)?.channel ?? ticket.channels[0];
 		if (!channel) return;
 		this.host.outbox.send({
@@ -15713,19 +17452,18 @@ var Staffing = class {
 			channel,
 			kind: "notice",
 			ticketId: ticket.id,
-			text: proposalText(proposal, automatic)
+			text: proposalText(proposal, automatic, !!reuse)
 		});
 	}
 };
 const roleLabel = (role) => role.draft ? `${role.draft.name}（新建${role.draft.tools?.some((tool) => HIGH_RISK_TOOLS.test(tool)) ? ` · 申请 ${role.draft.tools.filter((tool) => HIGH_RISK_TOOLS.test(tool)).join("、")}` : ""}）` : `${role.bot?.name ?? role.key}（现有）`;
-const budgetLabel = (budget) => `${Math.round(budget.tokens / 1e4)} 万 tokens · ${budget.turns} 回合 · 并行 ${budget.parallel}`;
 /** The proposal as a person reads it in the conversation: one line for a one-step team, a short block otherwise. */
-function proposalText(proposal, automatic = false) {
-	const answer = automatic ? "已按设置自动同意（低风险）；要停止就回复「取消」。" : "回复「同意」开始执行；直接写修改意见会出新版本；回复「取消」放弃这张工单。";
+function proposalText(proposal, automatic = false, reused = false) {
+	const answer = reused ? "复用了你之前批准的相同组队方案，已直接开工；要停止就回复「取消」。" : automatic ? "已按设置自动同意（低风险）；要停止就回复「取消」。" : "回复「同意」开始执行；直接写修改意见会出新版本；回复「取消」放弃这张工单。";
 	const from = proposal.workflow ? `按已保存的团队工作流「${proposal.workflow.name}」v${proposal.workflow.version} 预填。\n` : "";
 	if (proposal.steps.length === 1 && proposal.roles.length === 1) {
 		const [step] = proposal.steps, [role] = proposal.roles;
-		return `【组队方案 v${proposal.version}】由 ${roleLabel(role)}处理：${proposal.goal} · ${step.access === "write" ? "写" : "只读"} · 预算 ${budgetLabel(proposal.budget)}。\n${from}${answer}`;
+		return `【组队方案 v${proposal.version}】由 ${roleLabel(role)}处理：${proposal.goal} · ${step.access === "write" ? "写" : "只读"}。\n${from}${answer}`;
 	}
 	const steps = proposal.steps.map((step) => `${step.key} ${step.title}${step.access === "write" ? "（写）" : ""}${step.after.length ? `（等 ${step.after.join("、")}）` : ""}`);
 	return [
@@ -15733,7 +17471,6 @@ function proposalText(proposal, automatic = false) {
 		...from ? [from.trim()] : [],
 		`成员：${proposal.roles.map(roleLabel).join("、")}`,
 		`步骤：${steps.join(" → ")}`,
-		`预算：${budgetLabel(proposal.budget)}`,
 		answer
 	].join("\n");
 }
@@ -15750,6 +17487,175 @@ function teamNote(proposal) {
 		"Once every step finished, check the results and report the ticket with orchestrator_report; until then end your turns without doing the steps yourself."
 	].join("\n");
 }
+//#endregion
+//#region src/app/tool-trace.ts
+/** Bounded opt-in metadata ledger for native and PTC tool calls. No raw parameters, results, scripts or error messages. */
+const TOOL_TRACE_ROWS = 1e4;
+/** Sort JSON keys for equality diagnostics; cap work and fail to unknown, never truncate-and-hash distinct inputs together. */
+function encode(value) {
+	let visited = 0, chars = 0;
+	const walk = (current, depth) => {
+		if (++visited > 2e4 || depth > 30) throw new Error("too large");
+		if (typeof current === "string") {
+			chars += current.length;
+			if (chars > 1e6) throw new Error("too large");
+			return current;
+		}
+		if (current === null || typeof current === "boolean") return current;
+		if (typeof current === "number" && Number.isFinite(current)) return current;
+		if (Array.isArray(current)) return current.map((item) => walk(item, depth + 1));
+		if (current && typeof current === "object") return Object.fromEntries(Object.keys(current).sort().map((key) => {
+			chars += key.length;
+			if (chars > 1e6) throw new Error("too large");
+			return [key, walk(current[key], depth + 1)];
+		}));
+		throw new Error("not JSON");
+	};
+	try {
+		return JSON.stringify(walk(value, 0));
+	} catch {
+		return;
+	}
+}
+/** Observes shared dispatch outcomes and persists bounded metadata without affecting tool decisions. */
+var ToolTrace = class {
+	store;
+	enabled;
+	owner;
+	clock;
+	pending = /* @__PURE__ */ new Map();
+	tokens = /* @__PURE__ */ new WeakMap();
+	completed = /* @__PURE__ */ new WeakSet();
+	secret;
+	constructor(store, enabled, owner, clock = Date.now) {
+		this.store = store;
+		this.enabled = enabled;
+		this.owner = owner;
+		this.clock = clock;
+		this.secret = store.get(KV.trace.key) ?? randomBytes(32).toString("hex");
+		store.atomic(() => {
+			store.set(KV.trace.key, this.secret);
+			store.db.exec("CREATE TABLE IF NOT EXISTS tool_trace (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, session TEXT NOT NULL, ticket TEXT, value TEXT NOT NULL)");
+			store.db.exec("CREATE INDEX IF NOT EXISTS tool_trace_ticket ON tool_trace(ticket, id)");
+			store.db.exec("CREATE INDEX IF NOT EXISTS tool_trace_at ON tool_trace(at)");
+			this.prune();
+		});
+	}
+	capture(execution) {
+		const session = execution.agent?.session.id;
+		if (!session) return void 0;
+		const owner = this.owner(session, execution);
+		if (!owner) return void 0;
+		const input = encode(execution.arguments);
+		return {
+			started: performance$1.now(),
+			owner,
+			session,
+			callId: String(execution.callId),
+			rootCallId: String(execution.rootCallId ?? execution.callId),
+			name: execution.name,
+			parentCallId: execution.parent ? this.tokens.get(execution.parent) ?? null : null,
+			inputBytes: input === void 0 ? null : Buffer.byteLength(input),
+			parameterDigest: input === void 0 ? null : createHmac("sha256", this.secret).update(input).digest("hex")
+		};
+	}
+	start(execution) {
+		if (!this.enabled() || this.pending.has(execution.token) || this.completed.has(execution.token)) return;
+		const start = this.capture(execution);
+		if (!start) return;
+		this.tokens.set(execution.token, start.callId);
+		if (this.pending.size >= 2048) this.pending.delete(this.pending.keys().next().value);
+		this.pending.set(execution.token, start);
+	}
+	finish(execution, result) {
+		const started = this.pending.get(execution.token);
+		this.pending.delete(execution.token);
+		if (!this.enabled() || this.completed.has(execution.token)) return;
+		const entry = started ?? this.capture(execution);
+		if (!entry) return;
+		this.completed.add(execution.token);
+		const content = encode(result.content);
+		const value = {
+			at: new Date(this.clock()).toISOString(),
+			session: entry.session,
+			...entry.owner,
+			name: entry.name,
+			callId: entry.callId,
+			rootCallId: entry.rootCallId,
+			parentCallId: entry.parentCallId,
+			durationMs: started ? Math.max(0, Math.round(performance$1.now() - entry.started)) : null,
+			inputBytes: entry.inputBytes,
+			outputBytes: content === void 0 ? null : Buffer.byteLength(content),
+			parameterDigest: entry.parameterDigest,
+			isError: result.isError,
+			cancelled: execution.signal.aborted
+		};
+		this.store.atomic(() => {
+			this.store.db.prepare("INSERT INTO tool_trace(at, session, ticket, value) VALUES (?,?,?,?)").run(value.at, value.session, value.ticketId ?? null, JSON.stringify(value));
+			this.prune();
+		});
+	}
+	install(ctx) {
+		const events = ctx;
+		const pre = events.on("tools/pre-execute", async (execution, next) => {
+			try {
+				this.start(execution);
+			} catch {}
+			return next();
+		}, {
+			global: true,
+			prepend: true
+		});
+		const post = events.on("tools/result", (execution, result) => {
+			try {
+				this.finish(execution, result);
+			} catch {}
+		}, { global: true });
+		return () => {
+			pre();
+			post();
+			this.pending.clear();
+		};
+	}
+	prune() {
+		this.store.db.prepare("DELETE FROM tool_trace WHERE at < ?").run((/* @__PURE__ */ new Date(this.clock() - 6048e5)).toISOString());
+		this.store.db.prepare("DELETE FROM tool_trace WHERE id <= (SELECT MAX(id) - ? FROM tool_trace)").run(TOOL_TRACE_ROWS);
+	}
+	view(query = {}) {
+		const limit = Math.max(1, Math.min(100, query.limit ?? 50));
+		const rows = this.store.db.prepare("SELECT id,value FROM tool_trace WHERE (? IS NULL OR ticket=?) AND id < ? AND at >= ? ORDER BY id DESC LIMIT ?").all(query.ticketId ?? null, query.ticketId ?? null, query.beforeId ?? Number.MAX_SAFE_INTEGER, (/* @__PURE__ */ new Date(this.clock() - 6048e5)).toISOString(), limit + 1);
+		const items = rows.slice(0, limit).map((row) => ({
+			...JSON.parse(String(row.value)),
+			id: Number(row.id)
+		}));
+		const groups = /* @__PURE__ */ new Set();
+		let sameInputRepeats = 0;
+		for (const item of items) {
+			if (!item.parameterDigest || item.name === "run_code") continue;
+			const key = JSON.stringify([
+				item.session,
+				item.name,
+				item.parameterDigest
+			]);
+			if (groups.has(key)) sameInputRepeats++;
+			else groups.add(key);
+		}
+		return {
+			enabled: this.enabled(),
+			retentionDays: 7,
+			maxRows: TOOL_TRACE_ROWS,
+			nextCursor: rows.length > limit ? items.at(-1).id : null,
+			items,
+			summary: {
+				sampled: items.length,
+				rootCalls: items.filter((row) => row.rootCallId === row.callId).length,
+				nestedCalls: items.filter((row) => row.rootCallId !== row.callId).length,
+				errors: items.filter((row) => row.isError).length,
+				sameInputRepeats
+			}
+		};
+	}
+};
 //#endregion
 //#region src/app/steward.ts
 const STEWARD_CHECK_RATIO = .6;
@@ -16019,14 +17925,41 @@ var Distiller = class {
 };
 //#endregion
 //#region src/app/ticket-notices.ts
+/**
+* ★ 2026-11-10（用户）：飞书发来的任务结束后，把结果发回飞书。
+*
+* 为什么放在 app 层而不是 core 的 Tickets.end()：core 不该知道 IM 文案与渠道白名单；
+* desk 的结束通知（desk.ts ticketEndedNotice）与 GitHub/P4 的终态通知也都在 runtime 的
+* `ticket.ended` 分支里发。这里只补 `feishu` 渠道 —— github / p4 各有更精确的终态通知
+* （pullEndNotices / changeEndNotices），重复发会刷两条。
+*
+* id 里带 `ended.at`，所以同一工单被复活后再次结束会再通知一次；同一 id 重复 send 由
+* Outbox 的 receipts 幂等吞掉。
+*
+* ★ 2026-11-16（日志）：终态报告本身也要通知。工单可能因等待人工审核/提交而不结束
+* （真实事故：report ready 后停在 `stage=person/review`，`ticket.ended` 永不触发，飞书
+* 一条状态都没有）。ticketStatusNotices 由 Host 在 `assignment.reported` 直接发，不依赖
+* 主会话模型是否决定外发，也不与 ticketResultNotices 重复（已结束工单跳过）。
+*/
 /** The notice id prefix of a ticket's result sent back to its IM conversation. */
 const TICKET_RESULT_NOTICE = "ticket-result";
 const FEISHU = "feishu";
+/** Clip to the IM word budget; never split a notice into multiple messages (infra/text.ts). */
+const withinImWords = (text) => {
+	if (wordCount(text) <= 100) return text;
+	let lo = 0, hi = text.length;
+	while (lo < hi) {
+		const mid = Math.ceil((lo + hi) / 2);
+		if (wordCount(`${text.slice(0, mid)}…`) <= 100) lo = mid;
+		else hi = mid - 1;
+	}
+	return `${text.slice(0, lo)}…`;
+};
 /** The result line for one ended ticket: title, outcome and the worker's report summary (else the reason). */
 function ticketResultText(ticket) {
 	const view = receiptView(ticket);
 	if (!view) return;
-	return `【工单结束】「${view.title}」${view.outcomeText}${view.summary ? `：${view.summary}` : "。"}`;
+	return withinImWords(`【工单结束】「${view.title}」${view.outcomeText}${view.summary ? `：${view.summary}` : "。"}`);
 }
 /** One notice per Feishu conversation the ticket reached; empty for tickets that never touched Feishu. */
 function ticketResultNotices(ticket) {
@@ -16035,6 +17968,41 @@ function ticketResultNotices(ticket) {
 	if (!view || !text) return [];
 	return (ticket.channels ?? []).filter((channel) => channel.source === FEISHU).map((channel) => ({
 		id: `${TICKET_RESULT_NOTICE}:${ticket.id}:${view.at}:${channel.thread}`,
+		channel,
+		kind: "notice",
+		ticketId: ticket.id,
+		text
+	}));
+}
+/** Notice id prefix of a terminal worker report sent back to the IM conversation while the ticket is still open. */
+const TICKET_STATUS_NOTICE = "ticket-status";
+/** Reports that mean the worker has stopped with a result; `progress`/`waiting` are not terminal. */
+const TERMINAL_STATES = {
+	ready: "修复完成",
+	blocked: "处理受阻",
+	failed: "执行失败",
+	dropped: "无需处理"
+};
+/**
+* A deterministic status notice for a terminal worker report on a ticket that has not ended. This is the
+* missing half of `ticketResultNotices`: a `ready` report may leave a ticket waiting for a person's CL
+* review or submit, so `ticket.ended` never fires and the Feishu conversation hears nothing. Only the
+* Host sends this — the main Session's relay is a steering notice, not a guaranteed IM delivery.
+*/
+function ticketStatusText(ticket) {
+	if (ticket.ended || ticket.attention) return void 0;
+	const report = latestReport(ticket);
+	const label = report && TERMINAL_STATES[report.state];
+	if (!label) return void 0;
+	return withinImWords(`【${label}】「${ticket.title}」${report.summary ? `：${report.summary}` : "。"}`);
+}
+/** One notice per Feishu conversation; the report's `at` makes the id stable across repeated events. */
+function ticketStatusNotices(ticket) {
+	const report = latestReport(ticket);
+	const text = ticketStatusText(ticket);
+	if (!report || !text) return [];
+	return (ticket.channels ?? []).filter((channel) => channel.source === FEISHU).map((channel) => ({
+		id: `${TICKET_STATUS_NOTICE}:${ticket.id}:${report.at}:${channel.thread}`,
 		channel,
 		kind: "notice",
 		ticketId: ticket.id,
@@ -17531,6 +19499,91 @@ function mainTools(host, agent) {
 //#endregion
 //#region src/app/tools/executor.ts
 /** Executor Session tools for reading ticket context, acknowledging requests, managing threads, handing back out-of-scope triggers, and reporting status. */
+/** Exact same-item references for the same human and receiving conversation; never exports another ticket's content. */
+function tapdIntakeContext(host, address) {
+	const source = host.settings().sources.p4;
+	const parsed = P4ConfigSchema.safeParse(source?.config ?? {});
+	const config = parsed.success ? parsed.data : void 0;
+	const missing = [
+		...!source?.enabled ? ["enabled"] : [],
+		...!config?.port ? ["port"] : [],
+		...!config?.user ? ["user"] : [],
+		...!config?.paths.length ? ["paths"] : [],
+		...!parsed.success ? ["invalid-config"] : []
+	];
+	const current = host.store.tickets.get(host.ticketId);
+	const trigger = current && host.store.triggers.get(current.origin.triggerId);
+	const identity = (value) => value.source === "tapd" ? {
+		workspace: value.meta.workspace,
+		type: value.meta.type,
+		id: value.meta.id
+	} : itemAddress(/https?:\/\/\S+/i.exec(value.text)?.[0] ?? value.url ?? "");
+	const same = (value) => value?.workspace === address.workspace && value?.type === address.type && value?.id === address.id;
+	const references = /* @__PURE__ */ new Map();
+	if (current && trigger?.human && trigger.actor.id && trigger.channel?.thread && same(identity(trigger))) for (const old of host.store.read.priorActorTickets(trigger.source, trigger.actor.source, trigger.actor.id, current.createdAt)) {
+		const origin = host.store.triggers.get(old.origin.triggerId);
+		if (!origin || origin.channel?.source !== trigger.channel.source || origin.channel?.thread !== trigger.channel.thread || !same(identity(origin))) continue;
+		const review = host.store.get(KV.reviews.review(old.id));
+		const changes = [review?.change, ...old.follows?.filter((follow) => follow.own && follow.thread.startsWith("p4:")).map((follow) => Number(follow.thread.slice(3))) ?? []];
+		for (const change of changes) if (change && Number.isSafeInteger(change) && change > 0 && !references.has(change)) references.set(change, {
+			changelist: change,
+			recordedState: review?.change === change ? review.state : "reported-unverified",
+			at: old.updatedAt
+		});
+		if (references.size >= 3) break;
+	}
+	return {
+		p4Readiness: {
+			configured: missing.length === 0,
+			missing,
+			serverChecked: false
+		},
+		priorDelivery: [...references.values()].slice(0, 3),
+		priorDeliveryScope: "Up to 3 review/owned-thread references matched to this conversation and exact TAPD item among the last 100 earlier tickets by this human/source. Not exhaustive or server-verified; does not transfer CL ownership or authorize reuse, unshelve, or reading another ticket directory."
+	};
+}
+function tapdItemTool(configOf, apiOf = tapdApi, intake) {
+	return tool$1({
+		name: "orchestrator_tapd_item",
+		description: "Read a TAPD bug/story/task (detail and comments) through the TAPD Open API configured in SuperAgent settings. Use this instead of a browser or the TAPD web page; the Host keeps the credentials.",
+		schema: object({
+			url: string$1().trim().min(1).describe("The TAPD item URL from the person's request."),
+			comments: number$1().int().min(0).max(50).default(20).describe("How many recent comments to include.")
+		}).strict(),
+		execute: async (args, signal) => {
+			const config = configOf();
+			const url = /https?:\/\/\S+/i.exec(args.url)?.[0] ?? args.url;
+			const address = itemAddress(url);
+			if (!address) throw new Error("Not a TAPD item URL; pass the link from the request.");
+			const workspace = address.workspace || config.workspace;
+			const api = apiOf(config);
+			signal.throwIfAborted();
+			const started = performance.now();
+			const item = (await api.items(address.type, workspace, { id: address.id }, signal)).find((value) => value.id === address.id && value.workspace === workspace && value.type === address.type);
+			if (!item) throw new Error("TAPD item not found, or the configured account cannot read it.");
+			const detailMs = Math.round(performance.now() - started);
+			const commentsStarted = performance.now();
+			const thread = args.comments ? api.recentComments ? await api.recentComments(address.type, workspace, address.id, args.comments, signal) : (await api.comments(address.type, workspace, address.id, void 0, signal)).slice(-args.comments).reverse() : [];
+			signal.throwIfAborted();
+			return {
+				api: config.api,
+				workspace,
+				item,
+				comments: thread.slice(0, args.comments),
+				readTiming: {
+					detailMs,
+					commentsMs: Math.round(performance.now() - commentsStarted),
+					totalMs: Math.round(performance.now() - started)
+				},
+				progressNote: "Requested detail/comments have returned. After extracting the symptom and keywords, update todo_write before source/evidence investigation. API timing is not the todo phase duration.",
+				...intake ? tapdIntakeContext(intake, {
+					...address,
+					workspace
+				}) : {}
+			};
+		}
+	});
+}
 function executorTools(host, ticket) {
 	const ticketId = ticket.id;
 	return [
@@ -17620,26 +19673,68 @@ function executorTools(host, ticket) {
 				human_action: string$1().trim().min(1).max(1e3).nullish().describe("One concrete question for a person, also with state=progress; omit to keep the pending one, null to clear it."),
 				question_for_trigger_id: string$1().optional().describe("With human_action: the human message that raised the question, which is asked where that person wrote."),
 				pr_number: number$1().int().positive().nullish().describe(`The ticket's PR: its source PR, or one by ${host.github.deployment.github?.login ?? "the agent's GitHub account"} from a branch named after this ticket (DSH_SUPERAGENT_NAME).`),
-				changelist: number$1().int().positive().nullish().describe("The ticket's pending P4 changelist, shelved by DSH_SUPERAGENT_P4_USER in a workspace whose name ends with -DSH_SUPERAGENT_NAME. Never submit it: a person reviews and approves the submit."),
-				reply_to_trigger_id: string$1().optional().describe("The explicit human question this report answers; never for ordinary progress.")
+				changelist: number$1().int().positive().nullish().describe("The ticket's pending P4 CL, shelved in its authorized workspace. Current-client CLs require this ticket marker in the description. Never submit; a person approves."),
+				reply_to_trigger_id: string$1().optional().describe("The explicit human question this report answers; never for ordinary progress."),
+				...host.gongfeng?.config("gongfeng")?.project ? { mr_iid: number$1().int().positive().optional().describe("Gongfeng MR IID (not global ID); source MR or this ticket branch only.") } : {}
 			}).strict(),
 			execute: async (args, signal) => {
 				const current = host.store.tickets.get(ticketId);
 				if (!current || !liveTicket(current)) throw new Error("Ticket ended (PR was closed or work finished); do not resume it");
+				if (current.execution?.delivery === "p4" && (args.state === "dropped" || args.state === "ready" && args.changelist == null)) throw new Error("P4 delivery required: report a verified shelved changelist, or blocked with a human action. Another ticket's CL or omitted changelist is not completion.");
+				if (args.changelist != null) host.reviews.requireChangelist(ticketId, args.changelist);
+				if (args.state === "ready" && args.changelist == null && host.reviews.requiredChangelist(ticketId) !== void 0) throw new Error("This ticket requires a P4 changelist: report ready with its shelved CL, or report blocked; omitting changelist cannot bypass review");
 				const open = args.state === "ready" ? host.steps?.unfinished(ticketId) ?? [] : [];
 				if (open.length) throw new Error(`Team steps still unfinished: ${open.map((step) => `${step.key} ${step.state}`).join(", ")}; wait for their reports`);
+				const gongfeng = host.gongfeng;
+				const iid = args.mr_iid === void 0 ? void 0 : number$1().int().positive().safe().parse(args.mr_iid);
+				const requiresMr = host.resources.store.triggers.get(current.origin.triggerId)?.source === "gongfeng" || current.execution?.project?.source === "gongfeng";
+				if (args.state === "ready" && requiresMr && iid === void 0) throw new Error("Gongfeng delivery requires mr_iid; report blocked when no verified MR is available");
+				const gfConfig = iid !== void 0 ? gongfeng?.config("gongfeng") : void 0;
+				if (iid !== void 0 && (!gongfeng || !gfConfig?.project || !gfConfig.agent)) throw new Error("Configure the Gongfeng project/account first");
+				const gfApi = gfConfig ? host.gongfengApi?.(gfConfig) ?? new GongfengOpenApi(gfConfig) : void 0;
+				const gfIdentity = gfApi && gfConfig ? await gfApi.verify(gfConfig.agent, signal) : void 0;
+				const mr = gfApi && iid !== void 0 ? await gfApi.mr(iid, signal) : void 0;
+				signal.throwIfAborted();
 				const pull = args.pr_number != null ? await readPull(host.github, args.pr_number, signal) : void 0;
-				const p4 = args.changelist != null ? host.p4.config("p4") : void 0;
-				if (args.changelist != null && !p4) throw new Error("The P4 Source is off; omit changelist");
-				const change = p4 && args.changelist != null ? await readChange(host.p4.commands.withSignal(signal), p4, args.changelist) : void 0;
+				const p4$1 = args.changelist != null ? host.p4.config("p4") : void 0;
+				if (args.changelist != null && !p4$1) throw new Error("The P4 Source is off; report blocked and ask a person to enable it");
+				if (p4$1 && !p4$1.paths.length) throw new Error("Configure allowed paths in P4 settings before reporting a changelist; report blocked, not ready without a CL");
+				let change = p4$1 && args.changelist != null ? await readChange(host.p4.commands.withSignal(signal), p4$1, args.changelist) : void 0;
 				if (args.changelist != null && !change) throw new Error(`Changelist ${args.changelist} does not exist on the P4 server`);
+				let pending;
+				if (args.state === "ready" && p4$1 && change && current.execution?.p4Delivery === "pending") {
+					const commands = host.p4.commands.withSignal(signal);
+					const { client, number } = change;
+					const globals = [
+						...p4$1.port ? ["-p", p4$1.port] : [],
+						"-u",
+						p4$1.user,
+						"-c",
+						client
+					];
+					const finalized = await finalizePending(p4$1, number, ticketId, current.title ?? "", {
+						records: async (argv) => p4(commands, p4$1, argv, { client }),
+						form: (argv, input) => commands.run(p4$1.cli || "p4", [...globals, ...argv], void 0, input)
+					});
+					pending = {
+						change: change.number,
+						name: finalized.name,
+						files: finalized.files,
+						ignored: finalized.ignored
+					};
+					change = await readChange(commands, p4$1, change.number);
+					if (!change) throw new Error(`Changelist ${pending.change} disappeared after finalizing`);
+				}
 				return host.store.atomic(() => {
-					const refused = pull && claimPull(host.github, ticketId, pull) || p4 && change && claimChangelist(host.p4, p4, ticketId, change);
+					signal.throwIfAborted();
+					if (gfConfig && JSON.stringify(gongfeng?.config("gongfeng")) !== JSON.stringify(gfConfig)) throw new Error("Gongfeng configuration changed before report");
+					const refused = pull && claimPull(host.github, ticketId, pull) || p4$1 && change && claimChangelist(host.p4, p4$1, ticketId, change) || gongfeng && gfConfig && mr && gfIdentity && claimGongfengMr(gongfeng, gfConfig, ticketId, mr, gfIdentity.path);
 					if (refused) throw new Error(refused);
-					const review = args.state === "ready" && change ? host.reviews.request(ticketId, change) : void 0;
+					const review = args.state === "ready" && change && !pending ? host.reviews.request(ticketId, change) : void 0;
+					const summary = pending ? `${args.summary}\n\nP4 pending CL ${pending.change}：${pending.name}（归集 ${pending.files} 个文件，忽略 ${pending.ignored} 个）；未提交，请在 P4V 审阅后自行提交。` : args.summary;
 					const report = {
 						state: args.state,
-						summary: args.summary,
+						summary,
 						...args.human_action !== void 0 ? { question: args.human_action } : {},
 						...args.question_for_trigger_id ? { askedBy: args.question_for_trigger_id } : {},
 						...args.reply_to_trigger_id ? { answers: args.reply_to_trigger_id } : {}
@@ -17651,15 +19746,93 @@ function executorTools(host, ticket) {
 						reported: true,
 						notification: relay ? "orchestrator" : "internal_only",
 						...updated.attention ? { attention: updated.attention } : {},
+						...pending ? { pending: {
+							...pending,
+							note: "A single named pending CL is the delivery. It is not submitted; a person decides in P4V."
+						} } : {},
 						...review ? { review: {
 							changelist: review.change,
 							state: review.state,
-							note: "A person reviews it in the panel; do not submit it, and keep its shelf as it is until the review ends."
+							client: review.client,
+							files: review.files,
+							note: "Shelved files are verified; build/test claims in the summary are not verified by the Host. A person reviews it in the panel; do not submit it, and keep its shelf as it is until the review ends."
 						} } : {}
 					};
 				});
 			}
 		}),
+		...host.gongfeng?.config("gongfeng")?.project ? [tool$1({
+			name: "orchestrator_gongfeng_mr",
+			description: "Read or create a Gongfeng MR in the configured project. Create only on this ticket branch; no merge or automatic retry.",
+			schema: object({
+				action: _enum(["read", "create"]),
+				iid: number$1().int().positive().optional(),
+				title: string$1().min(1).max(300).optional(),
+				description: string$1().max(2e4).optional(),
+				target_branch: string$1().min(1).max(200).optional()
+			}).strict(),
+			execute: async (args, signal) => {
+				const ctx = host.gongfeng, config = ctx.config("gongfeng");
+				const current = host.store.tickets.get(ticketId);
+				if (!config?.project || !config.agent || !current || !liveTicket(current)) throw new Error("Gongfeng is not configured or ticket ended");
+				const api = host.gongfengApi?.(config) ?? new GongfengOpenApi(config);
+				const identity = await api.verify(config.agent, signal);
+				signal.throwIfAborted();
+				if (args.action === "read") {
+					if (!args.iid) throw new Error("Read requires MR IID");
+					const origin = ctx.triggers.get(current.origin.triggerId);
+					if (!(origin?.source === "gongfeng" && origin.meta.project === config.project && origin.meta.iid === args.iid) && !current.follows?.some((follow) => follow.thread === `gongfeng:${config.project}:${args.iid}`)) throw new Error("MR is not reachable by this ticket");
+					const mr = await api.mr(args.iid, signal);
+					const notes = await api.notes(mr.id, 1, signal);
+					return {
+						iid: mr.iid,
+						state: mr.state,
+						title: mr.title,
+						description: mr.description,
+						source_branch: mr.source_branch,
+						target_branch: mr.target_branch,
+						notes: notes.items,
+						next: notes.next ? `gongfeng/${config.project}/${mr.iid}/notes/${notes.next}` : null
+					};
+				}
+				if (!identity.canPush || !args.title || !args.target_branch || !current.execution?.name) throw new Error("Create needs verified developer access, title, target branch and ticket branch");
+				if (current.follows?.some((follow) => !follow.closed && follow.thread.startsWith("gongfeng:"))) throw new Error("This ticket already follows an open MR; reuse it");
+				const branch = `agent/${current.execution.name}`;
+				for (let page = 1; page !== null;) {
+					const existing = await api.mrs(page, signal);
+					if (existing.items.some((mr) => mr.source_branch === branch && ["opened", "reopened"].includes(mr.state))) throw new Error("MR already exists on this branch; inspect before retrying");
+					page = existing.next;
+					if (page !== null && page > 10) throw new Error("Cannot finish duplicate-MR check; creation refused");
+				}
+				signal.throwIfAborted();
+				const stored = host.store.tickets.get(ticketId);
+				if (!stored || !liveTicket(stored) || stored.execution?.name !== current.execution.name) throw new Error("Ticket ended or changed before MR creation");
+				if (JSON.stringify(ctx.config("gongfeng")) !== JSON.stringify(config)) throw new Error("Gongfeng configuration changed before creation");
+				const record = KV.gongfeng.creation(config.project, ticketId);
+				if (ctx.state.get(record)) throw new Error("An MR creation was already attempted; inspect its result before retrying");
+				ctx.state.set(record, { branch });
+				const mr = await api.create({
+					title: args.title,
+					description: args.description ?? "",
+					source_branch: branch,
+					target_branch: args.target_branch
+				}, signal);
+				ctx.state.set(record, {
+					branch,
+					iid: mr.iid
+				});
+				signal.throwIfAborted();
+				if (JSON.stringify(ctx.config("gongfeng")) !== JSON.stringify(config)) throw new Error(`MR !${mr.iid} created but configuration changed; do not repeat creation`);
+				const refused = host.store.atomic(() => claimGongfengMr(ctx, config, ticketId, mr, identity.path));
+				if (refused) throw new Error(`MR created as !${mr.iid}, but binding refused: ${refused}; do not retry creation`);
+				return {
+					iid: mr.iid,
+					bound: true,
+					url: `${new URL(config.api).origin}/${identity.path}/merge_requests/${mr.iid}`,
+					merge: "human-only"
+				};
+			}
+		})] : [],
 		...ticket.team && host.steps ? leadTools(host.steps, ticketId) : []
 	];
 }
@@ -17691,6 +19864,8 @@ var Runtime = class extends Service {
 	assessor;
 	outbox;
 	engine;
+	/** VsSaros addition (2026-11-13): self-contained HTML reports sent to a ticket's Feishu threads. */
+	reports;
 	/** VsSaros addition: changelist reviews, which alone submit to P4. */
 	reviews;
 	/** VsSaros addition: the main Session's team plans, given to VsSaros Bots. */
@@ -17715,6 +19890,7 @@ var Runtime = class extends Service {
 	board = new HealthBoard();
 	/** VsSaros addition (2026-11-06): the usage ledger of SuperAgent's Sessions. */
 	usage;
+	toolTrace;
 	steward;
 	runtimeHealth = this.board.claim("runtime", {
 		state: "starting",
@@ -17884,7 +20060,11 @@ var Runtime = class extends Service {
 				lifetime: this.lifetime,
 				closing: () => this.closing(),
 				environment,
-				tools: (agent, ticket) => ticket ? executorTools(this.toolHost, ticket) : mainTools(this.toolHost, agent),
+				tools: (agent, ticket) => ticket ? [...executorTools(this.toolHost, ticket), tapdItemTool(() => TapdConfigSchema.parse(store.settings().sources.tapd?.config ?? {}), void 0, {
+					store,
+					ticketId: ticket.id,
+					settings: () => store.settings()
+				})] : mainTools(this.toolHost, agent),
 				deskId,
 				deskTools: (agent) => deskTools({
 					receive: (trigger) => this.passes.receive(trigger),
@@ -17978,6 +20158,36 @@ var Runtime = class extends Service {
 					cacheWriteTokens: call.cacheWrite
 				});
 			}, () => store.settings().executor.sideCalls ? void 0 : "SuperAgent does not let another plugin read its Sessions with another model (executor.sideCalls is off)"), { prepend: true }));
+			this.toolTrace = new ToolTrace(store, () => store.settings().executor.toolTrace, (sessionId, execution) => {
+				const direct = (id) => {
+					if (id === masterId) return { role: "master" };
+					if (id === deskId) return { role: "desk" };
+					const ticketId = ticketOfSession(id), ticket = ticketId && store.tickets.get(ticketId);
+					if (ticket) return {
+						role: ticket.team?.state === "approved" ? "coordinator" : "worker",
+						ticketId: ticket.id
+					};
+					const ref = stepOfSession(id);
+					return ref && store.tickets.get(ref.ticketId) ? {
+						role: "step",
+						ticketId: ref.ticketId,
+						step: ref.key
+					} : void 0;
+				};
+				const own = direct(sessionId);
+				if (own) return own;
+				const visited = /* @__PURE__ */ new Set();
+				for (let parent = execution.agent?.session.header?.parentSession; parent && visited.size < 32 && !visited.has(parent);) {
+					visited.add(parent);
+					const owner = direct(parent);
+					if (owner?.ticketId) return {
+						...owner,
+						role: "subagent"
+					};
+					parent = ctx.agents.get(parent)?.session.header.parentSession;
+				}
+			});
+			this.disposers.push(this.toolTrace.install(ctx));
 			const ledger = this.usage, windows = /* @__PURE__ */ new Map();
 			this.steward = new ContextSteward({
 				watched: (id) => id === masterId ? "master" : id === deskId ? "desk" : void 0,
@@ -18047,7 +20257,9 @@ var Runtime = class extends Service {
 					store,
 					sources
 				}, trigger),
+				repository: () => setup.deployment.repository,
 				held: (ticketId) => runtime.reviews.held(ticketId),
+				p4Host: (argv, cwd, signal) => commands.withSignal(signal).run(argv[0], argv.slice(1), cwd, void 0, 6e5),
 				launched: (ticketId) => {
 					runtime.steps?.kick(ticketId);
 				}
@@ -18075,6 +20287,16 @@ var Runtime = class extends Service {
 				commands,
 				paused: () => this.paused()
 			});
+			const reports = this.reports = new TicketReports({
+				store,
+				effects,
+				commands,
+				stateDir: machine.stateDir,
+				enabled: () => store.settings().executor.feishuReport,
+				warn: (message) => {
+					ctx.logger.warn("dsh-superagent: %s", message);
+				}
+			});
 			const { assessor, executor } = this;
 			const policy = () => settingsPolicy(store.settings(), sources);
 			const engine = this.engine = new Engine({
@@ -18085,16 +20307,26 @@ var Runtime = class extends Service {
 				executor,
 				outbox,
 				prepareTicket: (ticket, outcome) => executor.prepare(ticket, outcome),
-				staffing: () => store.settings().executor.staffing,
+				staffing: () => store.settings().executor.teamEnabled,
 				conversation: (key) => key === deskChat.thread,
 				emit: (event) => {
 					runtime.feed.changed("tickets");
 					const notice = this.quiet ? void 0 : eventNotice(event, (id) => store.tickets.get(id));
 					if (notice) sessions.notify(...notice);
+					const created = event.type === "ticket.created" ? store.tickets.get(event.data.ticketId) : void 0;
+					if (created && !created.ended && created.team?.state === "proposing") {
+						if ((created.decisionId ? store.decisions.get(created.decisionId) : void 0)?.reason.some((item) => item.code === "explicitFastTrack")) {
+							const request = teamRequestNotice(created);
+							sessions.relay(request.id, request.text);
+						}
+					}
 					const followup = !this.quiet && (event.type === "trigger.received" || event.type === "ticket.resumed" || event.type === "trigger.followup") ? followupNotice(store, sources, event.data.triggerId) : void 0;
 					if (followup) sessions.relay(followup.id, followup.text);
 					const received = event.type === "trigger.received" ? store.triggers.get(event.data.triggerId) : void 0;
-					if (received) runtime.stepApprovals?.fromMessage(received);
+					if (received) {
+						runtime.stepApprovals?.fromMessage(received);
+						runtime.staffing?.fromMessage(received);
+					}
 					const ended = event.type === "ticket.ended" ? store.tickets.get(event.data.ticketId) : void 0;
 					if (ended && setup.configured() && setup.deployment.repository) {
 						const request = store.triggers.get(ended.origin.triggerId)?.text ?? "";
@@ -18104,6 +20336,9 @@ var Runtime = class extends Service {
 					const receipt = ended ? ticketEndedNotice(ended, store.triggers.get(ended.origin.triggerId)?.channel) : void 0;
 					if (receipt) outbox.send(receipt);
 					if (ended) for (const message of ticketResultNotices(ended)) outbox.send(message);
+					const reported = event.type === "assignment.reported" ? store.tickets.get(event.data.ticketId) : void 0;
+					if (reported && !reported.ended) for (const message of ticketStatusNotices(reported)) outbox.send(message);
+					if (ended || reported && !reported.ended) reports.queue(ended ?? reported);
 					if (ended) runtime.steps?.stopAll(ended.id, ended.ended?.reason ?? ended.ended?.outcome ?? "the ticket ended");
 					if (ended?.team) {
 						const agreed = runtime.staffing?.tables.versions(ended.id).find((proposal) => proposal.state === "approved");
@@ -18264,6 +20499,12 @@ var Runtime = class extends Service {
 						kind: "p4",
 						health: ["p4"]
 					});
+				},
+				get gongfeng() {
+					return runtime.sources.kind("gongfeng") ? runtime.context({
+						kind: "gongfeng",
+						health: ["gongfeng"]
+					}) : void 0;
 				},
 				reviews,
 				requestPass: () => {
@@ -18473,7 +20714,20 @@ var Runtime = class extends Service {
 		};
 		this.disposers.push(() => clearPending());
 		this.disposers.push(this.ctx.on("session/event", (session, event) => {
-			if (session.id !== this.deskId || event.type !== "user/message" || this.closing()) return;
+			if (event.type !== "user/message" || this.closing()) return;
+			if (session.id !== this.deskId) {
+				const mentioned = latestPersonMessage([event]);
+				if (!mentioned || !mentioned.text.includes("@SuperAgent")) return;
+				const workspace = String(this.store.settings().sources?.superagent?.config?.workspace ?? "");
+				this.passes.receive(sessionTrigger({
+					session: session.id,
+					messageId: mentioned.id,
+					text: mentioned.text,
+					at: now(),
+					workspace
+				}));
+				return;
+			}
 			if (event?.data?.source?.kind === "session-reference") {
 				const item = pendingDeskMessage;
 				if (item) {
@@ -18539,14 +20793,28 @@ var Runtime = class extends Service {
 			onMessage: async ({ id, from, fromBot, fromName, text, hop }) => {
 				if (!from) throw new Error("SuperAgent answers a Bot in its own Session; this message has no sender Session");
 				if (hop > 6) throw new Error(`This relay already passed 6 hops; answer the person instead`);
+				const messageId = id ?? key("bot-help", from, String(hop), text);
+				const blocker = /未登录|登录页|拿不到|硬阻塞|阻塞|无法读取|需要用户|请先|登录一次|落不到/.test(text);
+				if (blocker) {
+					const ticketId = /step-([0-9a-f]{16,})-/i.exec(String(from))?.[1];
+					const channel = (ticketId ? this.store.tickets.get(ticketId) : void 0)?.channels?.[0];
+					if (channel) this.outbox.send({
+						id: key("blocker", messageId),
+						channel,
+						kind: "reply",
+						ticketId,
+						text: `【执行阻塞，需要人处理】${text}`.slice(0, 4e3)
+					});
+				}
 				return { received: await this.passes.receive(botTrigger({
-					id: id ?? key("bot-help", from, String(hop), text),
+					id: messageId,
 					session: from,
 					bot: fromBot ?? null,
 					name: fromName ?? null,
 					text,
 					hop,
-					at: now()
+					at: now(),
+					blocker
 				})) };
 			}
 		});
@@ -18615,7 +20883,7 @@ var Runtime = class extends Service {
 	}
 	httpHost() {
 		const runtime = this;
-		const { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, setup, passes, reviews, team, retro, staffing, distiller, steps, deskChat, deskId, stepApprovals, feed } = this;
+		const { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, setup, passes, reviews, team, retro, staffing, distiller, steps, deskChat, deskId, stepApprovals, feed, reports } = this;
 		return {
 			store,
 			sources,
@@ -18639,11 +20907,13 @@ var Runtime = class extends Service {
 			deskId,
 			stepApprovals,
 			feed,
+			reports,
 			outbox: this.outbox,
 			archive: this.archive,
 			coexist: () => this.coexistence(),
 			usage: this.usage,
 			steward: this.steward,
+			toolTrace: this.toolTrace,
 			deskFlow: (triggerId) => deskFlow({
 				store,
 				proposal: (ticketId) => staffing.tables.latest(ticketId),

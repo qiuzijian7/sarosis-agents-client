@@ -53,7 +53,7 @@
  *
  *  # Per-agent overrides (by agent name in the workspace)
  *  agent_overrides:
- *    workflow-agent:
+ *    planner:
  *      max_turns: 150
  *      timeout_seconds: 900
  *  ```

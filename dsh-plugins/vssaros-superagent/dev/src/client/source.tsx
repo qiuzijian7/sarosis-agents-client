@@ -6,7 +6,11 @@ import { DisclosureRow, Dot, Icon, InfoTip, Switch, Tag } from './controls.tsx'
 import { SaveBar } from './draft.tsx'
 import { sourceMark } from './marks.ts'
 import { useAction, usePanel, usePanelData } from './provider.tsx'
+import { FeishuAppForm } from './feishu-app-form.tsx'
 import { TapdCredentials } from './tapd-credentials.tsx'
+import { TapdFilterImport } from './tapd-filter-import.tsx'
+import type { TapdFilterSchedule } from '../sources/tapd-filters.ts'
+import type { TapdWatch } from '../sources/tapd-api.ts'
 import { setupPage, settingsRoute, type Route } from './route.ts'
 import { ConfigHistory, Fields, SourceField, useBlockDraft, useSettings } from './settings-kit.tsx'
 import { actorName, healthText, localized, readableMarkers, reasonLabel, valueLabel, when } from './text.ts'
@@ -23,27 +27,30 @@ export function SourceCard({ source, title }: { source: SourceView; title?: stri
   const [advancedOpen, setAdvancedOpen] = useState(false)
   /* ★ 2026-11-10：飞书 App ID 改下拉，选项与 Bot 设置里的 Channel 绑定同源
      （Bots 的 GET /x/agents/api/bindings → feishuApps 掩码视图，不含 Secret 明文）。
-     取不到时保持空 labels：SourceField 仍渲染下拉并保留当前已保存的值，不假装成功。 */
+     取不到时保持空 labels：SourceField 仍渲染下拉并保留当前已保存的值，不假装成功。
+     ★ 2026-11-11：抽成函数，新增应用保存成功后立刻重拉一次，让下拉能选到刚加的应用。 */
   const [feishuAppLabels, setFeishuAppLabels] = useState<Record<string, string>>({})
+  const [newAppOpen, setNewAppOpen] = useState(false)
+  type FeishuAppRow = { appId?: string; name?: string; isDefault?: boolean; hasSecret?: boolean }
+  const loadFeishuApps = async (isAlive: () => boolean = () => true) => {
+    const response = await fetch('/x/agents/api/bindings', { credentials: 'same-origin', headers: { accept: 'application/json' } })
+    const data = await (response.ok ? response.json() : Promise.resolve({ feishuApps: [] })) as { feishuApps?: FeishuAppRow[] }
+    if (!isAlive()) return
+    const options: Record<string, string> = {}
+    for (const app of data.feishuApps ?? []) {
+      const id = String(app.appId ?? '').trim()
+      if (!id) continue
+      const name = String(app.name ?? '').trim()
+      /* ★ 2026-11-11：下拉里不再出现废弃的内置应用名；所有应用统一显示「名称 · appId」。 */
+      const label = (name ? name + ' · ' : '') + id
+      options['feishuApps:' + id] = label + (app.hasSecret ? '' : '（缺 App Secret）')
+    }
+    setFeishuAppLabels(options)
+  }
   useEffect(() => {
     if (source.id !== 'feishu' || !source.installed) return
     let alive = true
-    fetch('/x/agents/api/bindings', { credentials: 'same-origin', headers: { accept: 'application/json' } })
-      .then(response => response.ok ? response.json() : { feishuApps: [] })
-      .then((data: { feishuApps?: { appId?: string; name?: string; isDefault?: boolean; hasSecret?: boolean }[] }) => {
-        if (!alive) return
-        const options: Record<string, string> = {}
-        for (const app of data.feishuApps ?? []) {
-          const id = String(app.appId ?? '').trim()
-          if (!id) continue
-          const name = String(app.name ?? '').trim()
-          /* ★ 2026-11-10：内置默认应用统一显示「VsSaros助手」（与 dsh 侧 Channel 绑定同口径）。 */
-          const label = app.isDefault ? 'VsSaros助手 · ' + id : (name ? name + ' · ' : '') + id
-          options['feishuApps:' + id] = label + (app.hasSecret ? '' : '（缺 App Secret）')
-        }
-        setFeishuAppLabels(options)
-      })
-      .catch(() => {})
+    void loadFeishuApps(() => alive).catch(() => {})
     return () => { alive = false }
   }, [source.id, source.installed])
   // Only the appId field gets these options: `chats` rows also read `labels` for their chat picker.
@@ -67,11 +74,28 @@ export function SourceCard({ source, title }: { source: SourceView; title?: stri
   const description = localized(t, source.description)
   // VsSaros addition: the Feishu card's lark-cli option and its local diagnostics were removed; the CLI
   // command is now a schema default. Hide derived facts until the new value is saved.
-  const field = (spec: FieldSpec) => <SourceField key={spec.key} field={spec} value={value.config[spec.key]}
-    saved={saved.config[spec.key]} labels={source.id === 'feishu' && spec.key === 'appId' ? appLabels : source.labels}
-    refreshLabels={refreshLabels}
-    fact={spec.type === 'fact' || !changed(spec.key) ? source.facts[spec.key] : undefined}
-    onChange={next => draft.edit({ ...value, config: { ...value.config, [spec.key]: next } })} />
+  const field = (spec: FieldSpec) => {
+    /* ★ 2026-11-11：飞书 App ID 下拉末尾的「+ 添加新应用」展开内联表单。
+       哨兵值由 SourceField 拦下，只有保存成功后的真实 appId 才进 draft。 */
+    const isAppId = source.id === 'feishu' && spec.key === 'appId'
+    return <SourceField key={spec.key} field={spec} value={value.config[spec.key]}
+      saved={saved.config[spec.key]} labels={isAppId ? appLabels : source.labels}
+      refreshLabels={refreshLabels}
+      fact={spec.type === 'fact' || !changed(spec.key) ? source.facts[spec.key] : undefined}
+      onAddNew={isAppId ? () => setNewAppOpen(true) : undefined}
+      addNewOpen={isAppId && newAppOpen}
+      detail={isAppId && newAppOpen
+        ? <FeishuAppForm onCancel={() => setNewAppOpen(false)} onSaved={id => {
+          void loadFeishuApps().catch(() => {})
+          setNewAppOpen(false)
+          draft.edit({ ...value, config: { ...value.config, appId: id } })
+        }} />
+        : undefined}
+      onChange={next => {
+        if (isAppId && newAppOpen) setNewAppOpen(false)
+        draft.edit({ ...value, config: { ...value.config, [spec.key]: next } })
+      }} />
+  }
   const advanced = source.fields.filter(spec => spec.advanced)
   // VsSaros addition: a kind with grouped Advanced fields gets labelled subsections; ungrouped ones keep the old flat list.
   const advancedGroups = (() => {
@@ -105,6 +129,11 @@ export function SourceCard({ source, title }: { source: SourceView; title?: stri
         <TapdCredentials config={{ watches: Array.isArray(value.config.watches) ? value.config.watches.length : 0,
           agent: String(value.config.agent ?? ''), workspace: String(value.config.workspace ?? '') }}
           onAddWatch={watches => draft.edit({ ...value, config: { ...value.config, watches } })} />}
+      {source.installed && source.id === 'tapd' &&
+        <TapdFilterImport schedules={(value.config.filterSchedules ?? []) as TapdFilterSchedule[]}
+          watches={(value.config.watches ?? []) as TapdWatch[]}
+          onChange={({ schedules, watches }) => draft.edit({ ...value,
+            config: { ...value.config, filterSchedules: schedules, watches } })} />}
       {source.installed && advanced.length > 0 && <DisclosureRow icon={<Icon name="settings" />} title={t('advanced')} open={advancedOpen}
         onToggle={() => setAdvancedOpen(!advancedOpen)}>
         <div className="dt-disclosure-body">{advancedGroups.map(group => <div key={group.title || 'default'}>
@@ -118,13 +147,20 @@ export function SourceCard({ source, title }: { source: SourceView; title?: stri
   </form>
 }
 
+/** ★ 2026-11-11（用户）：设置页不再展示这两张来源卡。
+ *  P4 的配置在「执行」分组；「SuperAgent 主管」由运行时固定注册，用户无需（也不该）在面板里配置。
+ *  ⚠ 只是隐藏 UI：runtime.ts 仍注册 superagent 来源，已保存的 config 继续生效。 */
+export const HIDDEN_SOURCE_IDS = ['p4', 'superagent'] as const
+const shownSources = <T extends { id: string }>(sources: readonly T[]): T[] =>
+  sources.filter(source => !(HIDDEN_SOURCE_IDS as readonly string[]).includes(source.id))
+
 export function SourceSettings({ focus }: { focus?: string }) {
   const { sources } = useSettings().settings
   useEffect(() => { if (focus) document.getElementById(`dt-source-${focus}`)?.scrollIntoView?.({ block: 'start' }) }, [focus])
   return <div className="dt-form">
-    {/* VsSaros addition: P4 is not a Source here; its settings live in the Execution group (see `ExecutionSettings`). */}
-    {sources.filter(source => source.id !== 'p4').map(source => <SourceCard key={source.id} source={source} />)}
-    <ConfigHistory blocks={['source:']} except={['source:p4']} />
+    {/* ★ 2026-11-11：P4 在「执行」分组配置；SuperAgent 主管是运行时内置，不在面板里出现。 */}
+    {shownSources(sources).map(source => <SourceCard key={source.id} source={source} />)}
+    <ConfigHistory blocks={['source:']} except={HIDDEN_SOURCE_IDS.map(id => `source:${id}`)} />
   </div>
 }
 
@@ -240,8 +276,8 @@ export function SourceStatus() {
         onClick={() => navigate(setupPage(elsewhere.place))}>{t('setupFixLink')}</button>
     </p>}
     <LoadState error={error} loading={!data} />
-    {/* VsSaros addition: P4 stays off this page; its state shows on the Execution page and in its settings. */}
-    {data && <ul className="dt-list">{data.filter(source => source.id !== 'p4').map(source =>
+    {/* ★ 2026-11-11：与设置页同一隐藏清单，来源状态页也不显示 SuperAgent 主管。 */}
+    {data && <ul className="dt-list">{shownSources(data).map(source =>
       <SourceRow key={source.id} source={source} />)}</ul>}
   </div>
 }

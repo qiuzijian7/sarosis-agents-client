@@ -2,7 +2,7 @@
 
   "name": "@vssaros/dsh-skill-bundle",
 
-  "version": "0.1.9",
+  "version": "0.1.10",
 
   "description": "Bundled skill library for VsSaros. Data-only plugin: ships the 174 built-in SKILL.md directories and mounts them as an official dsh-skill-filesystem bundled root (rank 600). No runtime tools, no pages, no IDE-side skill logic.",
 

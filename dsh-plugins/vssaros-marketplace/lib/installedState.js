@@ -71,6 +71,13 @@ export async function resolveEntryVersion(dataRoot, entry, opts = {}) {
 	const storeId = String(entry?.storeId ?? '');
 	if (!dataRoot || !kind || !storeId) { return ''; }
 	const ledgerVersion = typeof entry.version === 'string' ? entry.version : '';
+	if (entry.format && entry.packageName) {
+		if (Array.isArray(opts.bundles)) {
+			const bundle = opts.bundles.find(row => row.name === entry.packageName && row.installed === true);
+			return bundle ? String(bundle.version || ledgerVersion) : '';
+		}
+		return ledgerVersion;
+	}
 	const landing = landingFileOf(dataRoot, kind, storeId);
 	// 没有可查的落地物（plugin / workbench …）⇒ 只能信台账
 	if (!landing) { return ledgerVersion; }
@@ -97,7 +104,7 @@ export async function resolveEntryVersion(dataRoot, entry, opts = {}) {
  * @param {string} dataRoot
  * @returns {Promise<Map<string, string>>}
  */
-export async function resolveInstalledVersions(dataRoot) {
+export async function resolveInstalledVersions(dataRoot, opts = {}) {
 	const out = new Map();
 	if (!dataRoot) { return out; }
 	const entries = await readInstalled(dataRoot);
@@ -105,7 +112,7 @@ export async function resolveInstalledVersions(dataRoot) {
 	// mcp.json 只读一次（否则每个 mcp 条目都重读一遍文件）
 	const mcpJson = await readMcpJson(dataRoot).catch(() => null);
 	const resolved = await Promise.all(entries.map(async entry =>
-		[installedKey(entry.kind, entry.storeId), await resolveEntryVersion(dataRoot, entry, { mcpJson })]));
+		[installedKey(entry.kind, entry.storeId), await resolveEntryVersion(dataRoot, entry, { ...opts, mcpJson })]));
 	for (const [key, version] of resolved) {
 		if (version) { out.set(key, version); }
 	}

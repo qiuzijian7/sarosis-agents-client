@@ -26,7 +26,9 @@ import type { StewardView } from './steward.ts'
 import type { DeskFlow } from './desk-flow.ts'
 import type { DeskFile, DeskMessage, DeskSchedule } from './desk-chat.ts'
 import type { ReceiveResult } from '../core/index.ts'
-import type { FileDiff } from '../sources/p4-change.ts'
+import type { FileDiff, ShelfDiffSummary } from '../sources/p4-change.ts'
+import type { WorkspaceInventory } from '../executor/workspace-inventory.ts'
+import type { ToolTraceView, ToolTraceQuery } from './tool-trace.ts'
 
 export const TICKET_FILTERS = ['open', 'person', 'working', 'idle', 'ended'] as const
 export const THREAD_FILTERS = ['subscribed', 'evaluating', 'recent', 'all'] as const
@@ -43,6 +45,12 @@ export interface Api {
   'GET sources': { response: SourceStatusView[] }
   'GET settings': { response: SettingsView }
   'POST sources/:id/labels': { response: { added: string[] } }
+  /** Import a Saroasis platform bug-filter JSON into the TAPD Source draft; never saves settings itself. */
+  'POST sources/tapd/filters/import': { body: { text: string; name?: string; at?: string; maxPerRun?: number; windowDays?: number };
+    response: { schedule: unknown; watch: unknown; report: unknown[]; warnings: string[]; maps: 'live' | 'fallback' } }
+  /** Read-only preview: how many bugs the compiled query matches, and how many a recent window contains. */
+  'POST sources/tapd/filters/preview': { body: { query: Record<string, string>; windowDays: number };
+    response: { total: number; recent: number } }
   'GET threads': { query?: Paged & { filter?: ThreadFilter }; response: ThreadListView }
   'GET threads/:key': { query?: { limit?: number; before?: string; around?: string }; response: ThreadDetailView }
   'POST threads/:key/unsubscribe': { response: { removed: boolean; thread: string; context_delivery: Delivery } }
@@ -53,7 +61,12 @@ export interface Api {
   'GET tickets/:id': { response: TicketPageView }
   'POST tickets/:id/retry': { response: { retried: true } }
   'POST tickets/:id/stop': { response: { stopped: true } }
+  /** VsSaros addition (2026-11-13): the ticket's HTML report artifact, and a person's explicit (re)send to Feishu. */
+  'GET tickets/:id/report': { response: { file: string; path?: string; docUrl?: string; queued: boolean; generated?: boolean; generationQueued?: boolean; deliveryState?: 'not-requested' | 'queued' | 'sent' | 'target-gone' | 'partial' } }
+  'GET tickets/:id/report/content': { response: { file: string; html: string } }
+  'POST tickets/:id/report': { response: { queued: boolean } }
   'POST executor/pause': { body: { paused: boolean }; response: { paused: boolean } }
+  'GET executor/workspaces': { query?: Paged; response: WorkspaceInventory }
   'PUT settings/:block': { body: { value: unknown; revision: number }; response: { revision: number; restarting: boolean } }
   'GET policy/history': { response: HistoryView }
   'POST policy-sync/:id': { response: { policy: unknown } }
@@ -74,7 +87,8 @@ export interface Api {
   'POST prompts/preview': { body: PromptConfig; response: ReturnType<Prompts['preview']> }
   // VsSaros addition: changelist reviews. These routes are the only way to submit to P4; no agent tool reaches them.
   'GET reviews': { response: { waiting: Review[]; audit: AuditEntry[] } }
-  'GET tickets/:id/review': { response: { review: Review; diffs: FileDiff[]; submit: { mode: 'pipeline' | 'host'; tags: string } } | { review: null } }
+  'GET tickets/:id/review': { response: { review: Review; diffs: FileDiff[]; diffSummary?: ShelfDiffSummary;
+    submit: { mode: 'pending' | 'pipeline' | 'host'; tags: string } } | { review: null } }
   'POST tickets/:id/review/approve': { body: { fingerprint: string }; response: Review }
   'POST tickets/:id/review/reject': { body: { comment: string }; response: Review }
   'POST tickets/:id/review/discard': { response: Review }
@@ -96,6 +110,7 @@ export interface Api {
   'POST steps/rules/templates/:id/apply': { body: { botId: string; botName: string }; response: { added: number } }
   /** VsSaros addition (2026-11-06): the usage ledger of SuperAgent's Sessions (last day and week) and the steward's work. */
   'GET usage': { response: { day: UsageSummary; week: UsageSummary['total']; steward: StewardView[]; coexist: Coexistence; sideCalls: boolean } }
+  'GET tools/trace': { query?: ToolTraceQuery; response: ToolTraceView }
   'POST steps/rules/:id/delete': { response: { deleted: true } }
   'POST tickets/:id/steps/:key/stop': { response: { step: string; state: string } }
   /** VsSaros addition (2026-11-06): a person raises a team's budget (new caps above what is used). */

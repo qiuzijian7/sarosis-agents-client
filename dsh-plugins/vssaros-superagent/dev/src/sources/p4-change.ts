@@ -9,18 +9,47 @@ import type { Commands } from '../infra/commands.ts'
 import type { SourceContext } from './host.ts'
 
 export const P4_SOURCE = 'p4'
+/** Default generated-file exclusions, shared by the config schema and the settings panel. */
+export const DEFAULT_RECONCILE_IGNORE = [
+  { path: 'Binaries' }, { path: 'Intermediate' }, { path: 'DerivedDataCache' }, { path: 'Saved' },
+  { path: '__pycache__' }, { path: 'Logs' }, { path: '.vs' }, { path: 'obj' },
+  { path: '*.pyc' }, { path: '*.pdb' }, { path: '*.obj' }, { path: '*.ilk' }, { path: '*.exp' },
+]
 export const P4ConfigSchema = z.object({
   cli: z.string().trim().default('p4'),
   port: z.string().trim().default(''),
   user: z.string().trim().regex(/^[^\s@#%*]*$/).default(''),
   paths: z.array(z.object({ path: z.string().trim().regex(/^\/\/[^\s]+$/) }).strict()).default([]),
+  requireDelivery: z.boolean().default(true),
+  /** Opt-in strict preflight: refuse to start when `p4 diff -se` finds unopened local differences. */
+  checkUnopenedDiffs: z.boolean().default(false),
+  /**
+   * Host-owned pre-work sync to head. Off by default: on a large UE client the required `diff -se` over
+   * the two full allowed paths exceeded the Host's 10-minute timeout, so a ticket never reached its worker.
+   * Operators can opt in after narrowing the allowed paths; worker commands never gain `sync` permission.
+   */
+  syncBeforeWork: z.boolean().default(false),
+  /** Directory/file names excluded from reconcile (also accepts a full `//depot/...` pattern). */
+  reconcileIgnore: z.array(z.object({ path: z.string().trim().min(1) }).strict())
+    .default(() => DEFAULT_RECONCILE_IGNORE.map(item => ({ ...item }))),
+  /**
+   * Opt-in fallback: also run `p4 reconcile` on the exact files `p4 opened` reported, in batches.
+   * Off by default: a UE tree makes any wildcard reconcile exceed the command timeout, and a worker
+   * already opens its files with `p4 edit`, so `p4 opened` covers the delivery. Never passes `...`/`*`.
+   */
+  reconcileFallback: z.boolean().default(false),
+  workspaceMode: z.enum(['ticket', 'current']).default('ticket'),
+  executionClient: z.string().trim().regex(/^[^\s@#%*]*$/).default(''),
+  workspaceRoot: z.string().trim().default(''),
   pollSeconds: z.number().int().min(30).max(3600).default(60),
   failuresBeforeError: z.number().int().min(1).max(20).default(3),
   /**
-   * How an approved CL is submitted: `pipeline` adds `pipelineTags` to its description so the server's own
-   * shelve-for-submit automation submits it; `host` has dsh-superagent submit it as `submitUser` from `submitClient`.
+   * What happens after a person reviews a CL. `pending` (default) never submits: the named pending CL is the delivery,
+   * and a person decides if/when to submit it in P4V. `pipeline`/`host` are the legacy submit paths.
    */
-  submit: z.enum(['pipeline', 'host']).default('pipeline'),
+  submit: z.enum(['pending', 'pipeline', 'host']).default('pending'),
+  /** Name template for the pending CL. `{ticket}` is the short ticket id and `{title}` its title. */
+  pendingName: z.string().trim().min(1).max(200).default('[dsh-superagent:{ticket}] {title}'),
   pipelineTags: z.string().trim().default('#review #ShelveForSubmit'),
   submitUser: z.string().trim().regex(/^[^\s@#%*]*$/).default(''),
   submitClient: z.string().trim().regex(/^[^\s@#%*]*$/).default(''),
@@ -75,6 +104,21 @@ export function parseDiffs(text: string, maxLines = 2000): FileDiff[] {
   for (const diff of diffs) while (diff.lines.at(-1) === '') diff.lines.pop()
   return diffs
 }
+export interface ShelfDiffSummary { files: number; added: number; removed: number; hunks: number; complete: boolean }
+/** Counts only unified hunk lines; binary files count as files, and missing or truncated differences are explicitly incomplete. */
+export function summarizeShelfDiffs(files: readonly ChangeFile[], diffs: readonly FileDiff[]): ShelfDiffSummary {
+  const summary: ShelfDiffSummary = { files: files.length, added: 0, removed: 0, hunks: 0,
+    complete: diffs.length === files.length && files.every(file => diffs.some(diff => diff.depotFile === file.depotFile)) && !diffs.some(diff => diff.truncated) }
+  for (const diff of diffs) {
+    let inHunk = false
+    for (const line of diff.lines) {
+      if (/^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/.test(line)) { summary.hunks++; inHunk = true }
+      else if (inHunk && line.startsWith('+')) summary.added++
+      else if (inHunk && line.startsWith('-')) summary.removed++
+    }
+  }
+  return summary
+}
 /** Reads the unified differences of a CL's shelf. */
 export async function shelfDiffs(commands: Commands, config: P4Config, change: number): Promise<FileDiff[]> {
   const global = globals(config, {})
@@ -92,6 +136,15 @@ export interface Change {
   /** Files opened in the CL; for a pending CL, `shelved` holds the files of its shelf. */
   files: ChangeFile[]
   shelved: ChangeFile[]
+}
+/** Opened files absent from the shelf or with a different action, type or known content digest. An empty opened list is valid after revert. */
+export function unshelvedFiles(change: Change): string[] {
+  const shelf = new Map(change.shelved.map(file => [file.depotFile, file]))
+  return change.files.filter(file => {
+    const saved = shelf.get(file.depotFile)
+    return !saved || file.action !== saved.action || (file.type && saved.type && file.type !== saved.type)
+      || (file.digest && saved.digest && file.digest !== saved.digest)
+  }).map(file => file.depotFile)
 }
 /** Files of a `describe` record, which numbers them `depotFile0`, `action0`, … */
 export function filesOf(record: Record<string, string>): ChangeFile[] {
@@ -130,7 +183,8 @@ export function fingerprint(files: readonly ChangeFile[]): string {
 }
 /** The workspace a ticket's CL must belong to: its name ends with the ticket's short name, such as `superagent-<name>`. */
 export const ticketClient = (ticket: Pick<Ticket, 'execution'>, client: string): boolean =>
-  !!ticket.execution?.name && (client === ticket.execution.name || client.endsWith(`-${ticket.execution.name}`))
+  ticket.execution?.p4Workspace ? !!ticket.execution.p4Workspace.client && client === ticket.execution.p4Workspace.client
+    : !!ticket.execution?.name && (client === ticket.execution.name || client.endsWith(`-${ticket.execution.name}`))
 
 const changeNumber = (thread: string): number | undefined => thread.startsWith(`${P4_SOURCE}:`) ? Number(thread.slice(P4_SOURCE.length + 1)) : undefined
 export const changesOf = (ticket: Pick<Ticket, 'follows'>, open = false): number[] =>
@@ -147,8 +201,11 @@ export function claimChangelist(ctx: SourceContext, config: P4Config, ticketId: 
   if (change.status !== 'pending') return `Changelist ${change.number} is ${change.status}; report a pending changelist`
   if (config.user && change.user !== config.user) return `Changelist ${change.number} belongs to ${change.user}, not to the execution account ${config.user}`
   if (!ticketClient(ticket, change.client)) {
-    return `Changelist ${change.number} is in workspace ${change.client}; use a workspace whose name ends with -${ticket.execution?.name ?? 'DSH_SUPERAGENT_NAME'}`
+    return `Changelist ${change.number} is in workspace ${change.client}; use ${ticket.execution?.p4Workspace?.client ?? `a workspace whose name ends with -${ticket.execution?.name ?? 'DSH_SUPERAGENT_NAME'}`}`
   }
+  const shared = ticket.execution?.p4Workspace
+  if (shared && (shared.port !== config.port || shared.user !== config.user)) return 'Configured P4 account/server changed; do not rebind the ticket'
+  if (shared && !change.description.split(/\s+/).includes(`[dsh-superagent:${ticketId}]`)) return 'Current-workspace CL must carry this ticket marker; existing or default CLs are not this ticket delivery'
   const files = [...change.files, ...change.shelved]
   if (!files.length) return `Changelist ${change.number} has no files`
   const outside = [...new Set(files.map(file => file.depotFile).filter(file => !config.paths.some(item => inPath(file, item.path))))]

@@ -11,7 +11,11 @@
  * 本模块全是纯函数：只改传进来的 room.goal，不碰 I/O；调度与落盘在 rooms.js。
  */
 
-export const GOAL_LIMITS = Object.freeze({ stages: 20, tasks: 12, title: 80, text: 2000, feedback: 1200, events: 30 });
+import { ROOM_BUDGET_LIMITS, normalizeWriteScopes } from './rooms.js';
+
+/** writeScopes 与房间的预算边界同源，避免两处各写一份上限后漂移。 */
+export const GOAL_LIMITS = Object.freeze({ stages: 20, tasks: 12, title: 80, text: 2000, feedback: 1200, events: 30,
+	writeScopes: ROOM_BUDGET_LIMITS.writeScopesMax });
 /** 没有进展时最多自动催几次（DS Bot GOAL_IDLE_NUDGES 同值）。 */
 export const GOAL_IDLE_NUDGES = 2;
 export const GOAL_STATUSES = Object.freeze(['active', 'paused', 'complete', 'stopped']);
@@ -174,11 +178,34 @@ function parseStages(raw, memberOf) {
 			if (!botId) { throw new GoalError(`第 ${index + 1} 个阶段的任务指派给了「${str(task?.bot)}」，它不是这个群的成员。`); }
 			const text = clip(task?.task, 600);
 			if (!text) { throw new GoalError(`第 ${index + 1} 个阶段有一项任务没写内容。`); }
-			return { botId, task: text, status: 'pending' };
+			// ★ 2026-11-16 P3：任务可声明写范围（运行时据此把改同一处文件的成员串行）。
+			// 只有声明过才写进任务对象 ⇒ 老目标 / 老测试的任务形状完全不变。
+			const writeScopes = normalizeWriteScopes(task?.writeScopes).slice(0, GOAL_LIMITS.writeScopes);
+			return { botId, task: text, status: 'pending', ...(writeScopes.length ? { writeScopes } : {}) };
 		});
 		if (!tasks.length) { throw new GoalError(`第 ${index + 1} 个阶段「${title}」没有任务：至少给一位成员派一项。`); }
 		return { title, acceptance, tasks, status: 'pending', reworks: 0 };
 	});
+}
+
+/**
+ * ★ 2026-11-16 P3：某位成员在**当前阶段**的所有任务写范围（归一化、去重、封顶）。
+ * 运行时拿它和正在跑的成员做重叠判定；没目标 / 没阶段 / 没声明 ⇒ 空数组（不阻塞派发）。
+ */
+export function taskWriteScopes(goal, botId) {
+	if (!goal || !Array.isArray(goal.stages)) { return []; }
+	const stage = goal.stages[Number(goal.current) || 0];
+	if (!stage || !Array.isArray(stage.tasks)) { return []; }
+	const id = String(botId ?? '');
+	const out = [];
+	for (const task of stage.tasks) {
+		if (String(task?.botId ?? '') !== id) { continue; }
+		for (const scope of normalizeWriteScopes(task?.writeScopes)) {
+			if (out.length >= GOAL_LIMITS.writeScopes) { return out; }
+			if (!out.includes(scope)) { out.push(scope); }
+		}
+	}
+	return out;
 }
 
 /** 成员任务状态的推进（管理员 @ 它 ⇒ 进行中；它交回结果 ⇒ 已交付）。只动当前阶段。 @returns 有没有变化 */
@@ -256,7 +283,10 @@ export const GOAL_TOOL_PARAMETERS = Object.freeze({
 		rules: { type: 'array', items: { type: 'string' }, description: 'start / revise：要守的规则' },
 		stages: { type: 'array', description: 'start / revise：按顺序的阶段', items: { type: 'object', properties: {
 			title: { type: 'string' }, acceptance: { type: 'string', description: '本阶段怎样算完成' },
-			tasks: { type: 'array', items: { type: 'object', properties: { bot: { type: 'string', description: '成员名字' }, task: { type: 'string' } }, required: ['bot', 'task'] } },
+			tasks: { type: 'array', items: { type: 'object', properties: {
+				bot: { type: 'string', description: '成员名字' }, task: { type: 'string' },
+				writeScopes: { type: 'array', items: { type: 'string' }, description: '这项任务会改的文件/目录范围（glob，如 src/**）；声明后与重叠范围的任务不会同时跑' },
+			}, required: ['bot', 'task'] } },
 		}, required: ['title', 'acceptance', 'tasks'] } },
 		evidence: { type: 'string', description: 'pass / complete：对照完成标准的证据' },
 		reason: { type: 'string', description: 'rework：缺什么、错在哪、怎样复现' },

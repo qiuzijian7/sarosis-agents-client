@@ -7,6 +7,22 @@ import { usePanel, mount, remount, all, find, tab, click, type, text, field, at,
 import { MEMBER, emptyUsage, server, ticketSummary, threadSummary } from './fixtures/panel-server.ts'
 
 usePanel()
+it('loads workspace inventory only on explicit request and displays unknown sizes and retention reasons', async () => {
+  server.workspaceInventory = { readOnly: true, checkedAt: '2026-11-13T00:00:00Z', retentionDays: 14,
+    total: 1, offset: 0, nextOffset: null, items: [{ ticketId: 't', title: '保留现场', directory: 'F:\\project', checkedAt: '2026-11-13T00:00:00Z', endedAt: null,
+      preparation: 'ready', exists: true, bytes: null, files: 1, blockers: ['live', 'git-dirty'], disposition: 'retain' }] }
+  await mount()
+  await click(zh['tab.execution'])
+  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  expect(server.requests.some(request => request.path.startsWith('executor/workspaces'))).toBe(false)
+  await click(zh.workspaceInventoryCheck)
+  expect(server.requests.filter(request => request.path.startsWith('executor/workspaces'))).toHaveLength(1)
+  expect(text()).toContain('保留现场')
+  expect(text()).toContain(zh['workspaceBlocker.git-dirty'])
+  expect(text()).toContain(zh['workspaceBlocker.live'])
+  expect(text()).toContain(zh.workspaceUnknown)
+  expect(server.requests.some(request => request.method === 'DELETE' || request.path.startsWith('settings/executor'))).toBe(false)
+})
 // VsSaros addition (2026-11-06): the usage ledger and team Bots' approval rules, on the execution page.
 it('shows what SuperAgent\'s Sessions used and the steward\'s work, and gives a Bot an approval template at once', async () => {
   const totals = (total: number, calls = 1) => ({ calls, input: total, cacheRead: 0, cacheWrite: 0, output: 0, total })
@@ -85,8 +101,11 @@ it('shows a Ticket with its stage, its Mandate details with the Trigger and Deci
   await click(all('.dt-open').find(button => button.textContent === '修复回归')!)
   await closeSide()
   expect(document.querySelector('.dt-page-title h2')?.textContent).toBe('修复回归')
-  // Progress is in the Channels and the Session, so the page has no report section.
-  expect(all('.dt-section-title').map(title => title.querySelector('.dt-section-name')?.textContent)).toEqual(['授权详情', '未送达的输入', '订阅的线程'])
+  expect(all('.dt-section-title').map(title => title.querySelector('.dt-section-name')?.textContent)).toEqual(['授权详情', '未送达的输入', '订阅的线程', '工单报告'])
+  expect(server.requests.some(request => request.path.endsWith('/report'))).toBe(false)
+  await click(zh.ticketArtifactInspect)
+  expect(text()).toContain(zh.ticketArtifactMissing)
+  expect(server.requests.some(request => request.method === 'POST' && request.path.endsWith('/report'))).toBe(false)
   expect(document.querySelector('.dt-status-line .dt-stage')?.textContent).toBe(zh.executingLabel)
   expect(document.querySelector('.dt-status-line .dt-stage .dt-spinner')).not.toBeNull()
   // A Thread this Ticket follows reads as subscribed on its page, though no other Ticket follows it.
@@ -152,7 +171,7 @@ it('answers a SuperAgent desk question from the Ticket page without opening a bl
   const button = all('.dt-banner [data-vssaros-in-app-action="1"]').find(el => /主管对话/.test(el.textContent ?? ''))!
   expect(button).toBeTruthy()
   await click(button)
-  expect(tab(zh['tab.chat']).getAttribute('aria-selected')).toBe('true')
+  expect(tab(zh['tab.overview']).getAttribute('aria-selected')).toBe('true')
 })
 
 it('offers a Ticket awaiting review its review place and Session in the page head', async () => {

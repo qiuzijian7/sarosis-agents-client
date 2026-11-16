@@ -17,7 +17,7 @@
  *     外加 `dist/node_modules` / `dist/vendor` / `dist/templates` / `dist/worker.js`
  *     ⇒ 必须整包拷贝（约 21MB / 450 文件），只拷 bin 会 `ERR_MODULE_NOT_FOUND`。
  *   · pnpm 11.28.5 要求 **Node ≥22.13**（`bin/pnpm.mjs` 自己会检查）；Host 的托管 Node 门槛
- *     是 22.19+（`dshNodeInstaller.ts`），满足条件 ✓。
+ *     是 >=24.9.0（`dshNodeInstaller.ts`），满足条件 ✓。
  *   ⇒ IDE 侧的 shim 用 **Host 自己的 `node.path`** 跑 `bin/pnpm.mjs`，不用 Electron 顶替
  *     （实测 Electron 39 跑 `pnpm install` 会在并发安装阶段崩）；也不要求用户机器装 node ✓。
  *

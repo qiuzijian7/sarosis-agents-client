@@ -75,6 +75,18 @@ export const threadFollowedNotice = (ticketId: string, thread: string, reason: s
 
 /** Steering relay payload for the main Session: `id` is the request ID that makes delivery idempotent, and `text` is the message body. */
 export interface Relay { id: string; text: string }
+/**
+ * ★ 2026-11-12（用户选定方案 1）: the ticket a rule-based fast track created waits for its team, and no model turn
+ * followed that accept, so the main Session is woken by a steer to propose one — a notice alone would not wake it.
+ */
+export const teamRequestNotice = (ticket: Ticket): Relay => ({
+  id: `team-request:${ticket.id}`,
+  // A relay's text is the message payload, as every other relay here builds it; the main Session reads it as JSON.
+  text: JSON.stringify({ kind: 'team_request', ticket: brief(ticket), trigger_id: ticket.origin.triggerId,
+    read: `ticket/${ticket.id}`,
+    note: 'This ticket was accepted by a rule (explicit task, no assessment) and waits for its team. Call '
+      + 'orchestrator_team_propose now with this ticket_id, then tell the person to agree.' }),
+})
 /** What a follow-up asks of the main Session: nothing but a stop the person asks for, since its ticket's worker decides it. */
 const FOLLOWUP_NOTE = 'Its ticket\'s worker has it and decides; act only if the person asks to stop the work '
   + '(orchestrator_route kind stop with this trigger_id).'

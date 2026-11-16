@@ -1,4 +1,8 @@
-// @vssaros/dsh-chat-surface — **工作区 + worktree 合并入口**（header 左侧上下文位 slot=actions；hero 借官方触发器）
+// @vssaros/dsh-chat-surface — **工作区入口**（header 左侧上下文位 slot=actions；hero 借官方触发器）
+// ★ 2026-11-14（用户裁决）：下拉面板**只清 worktree UI 并精简**：
+//   ① worktree 分组/行/搜索措辞全移除（数据层与 client.worktreeChip.js 的 checkbox 保留）；
+//   ② 作用域/动作边界说明收进默认折叠的 ⓘ；③ 主命令「当前会话保持不变」挪进 tooltip；
+//   ④ 主从两栏收成单列（两个 data-vssaros-context-pane 锚点保留供 IDE 侧用例）。
 // package-local chunk（dsh client-modules 契约）：主包 lib/client.js 用 require.async("./client.workspace.js") 取回本模块的 install()。
 // 一个文件一个换皮点：并行改动各改各的文件，不再撞同一个 client.js。
 //
@@ -759,6 +763,19 @@ window.__ModuleLoader__.load({
 				 * ⚠ 默认值必须是 null（不能初始化成"当前那条"）：`currentGroupKey` 在 hook 之后才算得出来 ✓。
 				 */
 				const [detailKey, setDetailKey] = react.useState(null);
+				// ★★ A′（2026-11-14 用户确认「执行」）：点工作区行 ⇒ 内嵌展开「多根 tip」；
+				//   tip 内点根行只改选中态，底部按钮才真的切会话（避免误点就离开当前会话）。
+				const [expandedKey, setExpandedKey] = react.useState(null);
+				const [chosenRoot, setChosenRoot] = react.useState({}); // groupKey -> root path
+				// ★ 2026-11-14 第五轮「点了没反应」：反馈原先只写在面板末尾的 note 里，
+				//   而 hero 面板超出屏幕底部、又没有滚动条 ⇒ 用户根本看不到那行字 ✗。
+				//   ⇒ 把「已请求」状态也画在**按钮自身**，并让面板可滚动（见根部 style）。
+				const [switchingPath, setSwitchingPath] = react.useState(null);
+				// ★ 2026-11-16 真机「卡在已请求」：原先只有单一 requested 态，.catch 只改 note、
+				//   又没有超时 ⇒ 宿主没响应时按钮永远停在「已请求…」✗，用户无法判断也无法重试。
+				//   ⇒ 加 status（requested / timeout / failed）+ 超时定时器：任何结局都复位成可点入口。
+				const [switchStatus, setSwitchStatus] = react.useState(null);
+				const switchTimerRef = react.useRef(null);
 				const panelRef = react.useRef(null);
 				react.useEffect(() => {
 					if (!open) { return undefined; }
@@ -778,6 +795,8 @@ window.__ModuleLoader__.load({
 					return () => {
 						document.removeEventListener("mousedown", close, true);
 						document.removeEventListener("keydown", esc, true);
+						// rebind / 面板卸载时清掉未响应定时器，避免给已卸载组件 setState
+						if (switchTimerRef.current) { clearTimeout(switchTimerRef.current); switchTimerRef.current = null; }
 					};
 				}, [open, onRequestClose]);
 				// 菜单互斥：打开本菜单前关掉别的（多个菜单叠着时，被视图裁掉的部分同样像"被遮挡"）。
@@ -809,7 +828,8 @@ window.__ModuleLoader__.load({
 				const canSwitchSession = !!(bridge && typeof bridge.switchWorktree === "function");
 				const tree = buildTree({ workspaces: items, records: records, worktrees: worktrees, query: query });
 				const shownGroups = tree.groups.filter((r) => r.matched);
-				const shownWorktrees = tree.worktrees.filter((r) => r.matched);
+				// ★ 2026-11-14：面板已不渲染 worktree 行 ⇒ 不再派生 shownWorktrees；
+				//   数据层 data.worktrees / buildTree({worktrees}) 全保留（**只清 UI** ✓）。
 				/**
 				 * "当前工作区"**只允许一个组**（★ 2026-10-17 真机截图抓到的回归）：
 				 * 同一个主根常被**多条记录**认领（4 根那条 + `workspace.json` 那条 + 单根那条 ⇒ 主根都是同一目录），
@@ -856,7 +876,8 @@ window.__ModuleLoader__.load({
 				// 搜索框只在条目偏多时出现（少时它是噪声 ✗；mockup ③ 的口径 = >6 ✓）。
 				// ⚠ 多根之后**一行工作区会带出若干根行** ⇒ 计数必须把根算进去，
 				//   否则会出现"看着 8 行却没有搜索框"✗（阈值是给人看的，不是给组数看的 ✓）。
-				const totalRows = tree.groups.reduce((n, g) => n + 1 + (g.multi ? g.roots.length : 0), 0) + tree.worktrees.length;
+				// ★ 2026-11-14：面板已不渲染 worktree 行 ⇒ 阈值不再把它们算进去（否则条目数虚高 ✗）。
+				const totalRows = tree.groups.reduce((n, g) => n + 1 + (g.multi ? g.roots.length : 0), 0);
 				const withSearch = totalRows > 6;
 				/**
 				 * 切到某个目录。两类条目共用：宿主侧就是 `session.start({cwd})` 拿/建该目录的专属会话
@@ -867,7 +888,11 @@ window.__ModuleLoader__.load({
 					//   workspaceId、没有待发 cwd 通道）⇒ 即使有人绕过 `disabled` 直接调 onClick
 					//   （IDE 侧假 react 测试正是这样），也**不许**发 `switchWorktree` 造空会话 ✗。
 					//   左栏工作区行 / worktree 行不受影响（2026-10-17「点了真能切过去」的决策保留 ✓）。
-					if (mode === "hero" && row && row.kind === "root") {
+					// ★ 2026-11-14 真机「下拉 tip 里的『切换』点不动」：hero 的根行只读是给
+					//   **自动/绕过 disabled 的调用**兜底的；tip 里用户主动点「切换」是明确意图，
+					//   与 hero 点工作区行同款（2026-10-17 已放开）⇒ 带 userInitiated 放行，
+					//   不再让用户对着一个写着「切换」却什么也不做的入口。
+					if (mode === "hero" && row && row.kind === "root" && row.userInitiated !== true) {
 						noteWorkspaceUi({ event: "hero-root-readonly", lastSwitch: { kind: "root", path: row.path, at: Date.now(), result: "readonly" } });
 						setNote("空白会话屏里各根是只读的：选好工作区后按发送，会在标 ✓ 的主根开始会话；要指定其它根请在会话页的下拉里操作");
 						return;
@@ -904,7 +929,10 @@ window.__ModuleLoader__.load({
 					// 两边不一致会出现"面板标着当前、再点它却真切一次"（白跑一次 session.start ✗）。
 					const isCurrentRow = row.kind === "workspace"
 						? (!!currentGroupKey && row.key === currentGroupKey)
-						: samePath(path, dir);
+						// ★ 2026-11-14 真机「主根无法点击切换」：hero 常残留上一条会话的 cwd，
+						//   用户从 tip 主动点「切换」到主根是真要「在这个根开始会话」⇒ 放行，
+						//   不能按「已在当前项」静默跳过（其它入口的幂等保护不动 ✓）。
+						: (row.userInitiated === true ? false : samePath(path, dir));
 					if (isCurrentRow) {
 						// 记一笔：这一条最容易被误读成"点了没反应"（其实**已经**在当前项上 ⇒ 什么也不做才是对的 ✓）
 						noteWorkspaceUi({
@@ -940,7 +968,7 @@ window.__ModuleLoader__.load({
 					 * ⚠ **不切 IDE 窗口工作区**（2026-10-17 用户要求两侧独立，见文件头）：这里只有"换会话"一件事。
 					 */
 					if (!bridge || typeof bridge.switchWorktree !== "function") {
-						setNote("页面桥过旧：不支持切换工作区 / worktree（不会退化成只切页面选择 —— 那会让两边会话不一致）");
+						setNote("页面桥过旧：不支持切换工作区（不会退化成只切页面选择 —— 那会让两边会话不一致）");
 						return;
 					}
 					/**
@@ -1081,52 +1109,62 @@ window.__ModuleLoader__.load({
 				const BADGE = { marginLeft: 6, fontSize: 10, color: "var(--dsw-alias-label-secondary, currentColor)" };
 				const EMPTY = { fontSize: 11, color: "var(--dsw-alias-label-secondary, currentColor)", padding: "4px 8px 6px" };
 				const pane = [];
+				// ★ A′ 顶部工具行：搜索（条目多才出）+「＋ 添加工作区」**置顶**，两者同一行。
+				//   添加按钮不再钉底 ⇒ 任何条目数下都在首屏第一眼可见 ✓。
+				const topKids = [];
 				if (withSearch) {
-					pane.push(react.createElement("div", { key: "s", style: { padding: "3px 5px 5px" } },
-						react.createElement("input", {
-							type: "search", "data-vssaros-context-search": "1", "aria-label": "搜索工作区或 worktree",
-							value: query, placeholder: "搜索工作区 / 根 / worktree（名称、路径、分支）",
-							onChange: (ev) => setQuery(String((ev.target && ev.target.value) || "")),
-							style: {
-								width: "100%", boxSizing: "border-box", fontSize: 11.5, padding: "4px 7px", borderRadius: 6,
-								border: "1px solid var(--dsw-alias-border-l1, transparent)",
-								background: "var(--dsw-alias-bg-layer-2, transparent)",
-								color: "var(--dsw-alias-label-primary, currentColor)",
-							},
-						})));
+					topKids.push(react.createElement("input", {
+						key: "s", type: "search", "data-vssaros-context-search": "1", "aria-label": "搜索工作区或根",
+						value: query, placeholder: "搜索工作区或根",
+						onChange: (ev) => setQuery(String((ev.target && ev.target.value) || "")),
+						style: {
+							flex: "1 1 auto", minWidth: 0, boxSizing: "border-box", fontSize: 11.5, padding: "4px 7px", borderRadius: 6,
+							border: "1px solid var(--dsw-alias-border-l1, transparent)",
+							background: "var(--dsw-alias-bg-layer-2, transparent)",
+							color: "var(--dsw-alias-label-primary, currentColor)",
+						},
+					}));
 				}
-				// ── 「当前会话」栏（稿 C）──────────────────────────────────────────────
-				// 多根之后"这个会话实际跑在哪个根上"必须写在脸上：不给的话用户会以为在 A 根、
-				// 其实跑在 B 根（`session.start({cwd})` 一旦定了就定死 ✓）⇒ 表现为"改不动 / 写不进去" ✗。
-				// ★ P0-A/B（2026-11-10）：下面新增的两段由 `workspaceScopeOf()` **状态驱动** ——
-				//   单根 ⇒ 一行都不加（旧界面逐字不变 ✓）；多根 ⇒ 报根集事实 + 默认折叠的受限清单。
-				// ⚠ 不印"可写：全部 N 个根"：沙箱档位只在 Host 侧，页面读不到 ⇒ 任何"可写范围"
-				//   断言都会随档位变化变成假话 ✗（本仓纪律：文案必须描述真正会发生的事 ✓）。
+				topKids.push(react.createElement("button", {
+					key: "add", type: "button", role: "menuitem",
+					"data-vssaros-context-add": "1", "data-vssaros-context-add-top": "1",
+					disabled: busy,
+					onClick: () => addWorkspace(),
+					title: "打开系统的“选择文件夹”，把该目录加进工作区列表",
+					style: {
+						flex: "none", height: 26, padding: "0 9px", borderRadius: 6,
+						border: "1px solid var(--dsw-alias-border-l1, transparent)",
+						background: "var(--dsw-alias-bg-layer-2, transparent)",
+						color: "var(--dsw-alias-label-primary, currentColor)",
+						fontSize: 11, whiteSpace: "nowrap", cursor: busy ? "default" : "pointer",
+					},
+				}, "＋ 添加工作区"));
+				pane.push(react.createElement("div", {
+					key: "top", "data-vssaros-context-top": "1",
+					style: { display: "flex", alignItems: "center", gap: 6, padding: "3px 5px 6px" },
+				}, ...topKids));
+				// ★★ A′（2026-11-14 用户确认「执行」）：「当前会话 / cwd / 说明」不再常驻首屏 ——
+				//   收进列表行展开的 tip（见 tipFor），没展开时面板只有「顶部工具行 + 工作区列表」。
+				//   ⚠ 三个 data 钩子、workspaceScopeOf(currentGroup, dir) 调用、以及纯函数
+				//     workspaceScopeOf / workspaceActionNotes 一个都不删（守卫与真机自证靠它们 ✓）。
 				const currentGroup = tree.groups.filter((g) => isCurrentGroup(g))[0] || null;
 				const scope = workspaceScopeOf(currentGroup, dir);
+				const scopeInfo = [];
 				if (dir) {
-					pane.push(react.createElement("div", {
-						key: "cur-h",
-						style: Object.assign({ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }, HEADING),
-					},
-						react.createElement("span", null, "当前会话"),
-						currentGroup && currentGroup.multi ? react.createElement("span", {
-							style: { fontSize: 10, fontWeight: 400 },
-						}, currentGroup.label + " · " + rootCountLabel(currentGroup.roots.length)) : null));
-					pane.push(react.createElement("div", {
-						key: "cur-dir",
+					scopeInfo.push(react.createElement("div", {
+						key: "cur-dir", "data-vssaros-scope-cwd": "1",
 						style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, currentColor)", padding: "0 8px 6px", wordBreak: "break-all" },
 					}, "cwd = " + String(dir)));
 					for (const line of scope.lines) {
-						pane.push(react.createElement("div", {
+						scopeInfo.push(react.createElement("div", {
 							key: "cur-scope-" + line,
 							"data-vssaros-scope-line": "1",
-							style: { fontSize: 10.5, lineHeight: 1.5, color: "var(--dsw-alias-label-secondary, currentColor)", padding: "0 8px 3px" },
+							style: { fontSize: 10.5, lineHeight: 1.5, color: "var(--dsw-alias-label-secondary, currentColor)", padding: "2px 8px" },
 						}, line));
 					}
-					// 原生 <details> ⇒ 默认折叠、键盘可达、无需新增 hook（切主题/重渲染都不丢态 ✓）
+					// 原生 <details> ⇒ 默认折叠、键盘可达、无需新增 hook ✓
 					if (scope.limits.length) {
-						pane.push(react.createElement("details", {
+						scopeInfo.push(react.createElement("details", {
 							key: "cur-limits",
 							"data-vssaros-scope-limits": "1",
 							style: { margin: "0 8px 6px", fontSize: 10.5, color: "var(--dsw-alias-label-secondary, currentColor)" },
@@ -1138,9 +1176,8 @@ window.__ModuleLoader__.load({
 								style: { padding: "2px 0 0 10px", lineHeight: 1.5 },
 							}, "· " + t))));
 					}
-					// P2-F：动作边界说明 —— 单根时 actions 为空 ⇒ 不渲染（旧界面逐字不变 ✓）
 					if (scope.actions.length) {
-						pane.push(react.createElement("details", {
+						scopeInfo.push(react.createElement("details", {
 							key: "cur-actions",
 							"data-vssaros-scope-actions": "1",
 							style: { margin: "0 8px 6px", fontSize: 10.5, color: "var(--dsw-alias-label-secondary, currentColor)" },
@@ -1152,10 +1189,6 @@ window.__ModuleLoader__.load({
 								style: { padding: "2px 0 0 10px", lineHeight: 1.5 },
 							}, "· " + t))));
 					}
-					pane.push(react.createElement("div", {
-						key: "cur-div",
-						style: { height: 1, background: "var(--dsw-alias-border-l1, transparent)", margin: "2px 8px 4px" },
-					}));
 				}
 				/**
 				 * 渲染一行（工作区组 / 根 / worktree **共用**）—— 差别只有 data 钩子、缩进与行尾那句话 ✓。
@@ -1167,8 +1200,9 @@ window.__ModuleLoader__.load({
 					type: "button", role: "menuitem",
 					"data-vssaros-context-item": spec.attr,
 					disabled: busy || spec.disabled === true,
-					onClick: () => switchTo(spec.row),
-					// 悬停 = 右栏预览这条的详情（稿 A）。只有列表行会传；根行/主命令不传 ⇒ undefined ✓
+					// ★ A′：传了 onToggle 的行（工作区行 / tip 内根行）只改本地状态、不直接切会话；
+					//   真正的切换由 tip 底部那枚主命令按钮执行（避免误点就离开当前会话 ✓）。
+					onClick: spec.onToggle ? spec.onToggle : (() => switchTo(spec.row)),
 					onMouseEnter: spec.onHover,
 					style: {
 						display: "flex", alignItems: "flex-start", gap: 8, width: "100%",
@@ -1206,40 +1240,189 @@ window.__ModuleLoader__.load({
 				 *   —— 只把根行从"全平铺"改成"右栏、且属于选中的那条"（`data-vssaros-context-pane`
 				 *   是新增的结构标记，供版式用例断言 "左列表 / 右详情" ✓）。
 				 */
+				// ★ 2026-11-14（用户裁决 ①）：**只清下拉面板里的 worktree UI**。
+				//   数据层 parseWorktrees / readPushedWorktrees / WORKTREE_EVENT / buildTree().worktrees
+				//   全保留（samePath 还被根行判「当前」复用）；hero 的 worktree checkbox 是
+				//   client.worktreeChip.js 的独立入口，用户明确要求保留 ⇒ 本文件不动它 ✓。
 				const sections = [
 					{ kind: "workspace", title: "工作区", total: tree.groups.length },
-					{ kind: "worktree", title: "worktree", total: tree.worktrees.length },
 				];
 				const listPane = [];
 				const detailPane = [];
+				/**
+				 * ★★ A′ tip：点工作区行后**内嵌**展开（手风琴，只展开一个）。
+				 *   · 头部报「多根 / 单根」+ 当前根；
+				 *   · 根行点一下只改选中态（chosenRoot），不直接切会话 ⇒ 误点不会离开当前会话 ✓；
+				 *   · 底部主命令按钮拿选中的根去 switchTo（hero 不出按钮，无假动作 ✓）；
+				 *   · ⓘ 说明默认折叠，承载 scope 三个 data 钩子 ⇒ 首屏不被长文字淹没 ✓。
+				 */
+				const tipFor = (g) => {
+					const roots = g.roots || [];
+					const curRoot = currentRootOf(g);
+					// ★★ 2026-11-14 真机「主根无法点击切换」：旧实现拿 chosenRoot（本地 UI 状态）
+					//   当「当前根」，与宿主持有的会话 cwd 打架 —— 截图里 ✓ 挂在关联根、真实 cwd
+					//   却是主根 ⇒ 主根被判「当前 cwd」禁用、行尾又写「切换 →」，点了没反应 ✗。
+					//   ⇒「当前根」一律以真实 cwd 为准；chosenRoot 只作上次切换目标的兜底。
+					const realCwd = isCurrentGroup(g) && dir ? dir : null;
+					const chosen = realCwd || chosenRoot[g.key] || (curRoot && curRoot.path) || (roots[0] && roots[0].path) || "";
+					const chosenRow = roots.filter((r) => samePath(r.path, chosen))[0] || roots[0] || null;
+					const isCurrent = !!chosenRow && samePath(chosenRow.path, dir) && isCurrentGroup(g);
+					const kids = [];
+					kids.push(react.createElement("div", {
+						key: "tip-h",
+						style: { display: "flex", alignItems: "baseline", gap: 8, padding: "0 2px 5px", fontSize: 10, color: "var(--dsw-alias-label-tertiary, #737373)" },
+					},
+						react.createElement("span", null, g.multi ? "多根 · 点「切换」在该根新建会话" : "单根 · 无需切换"),
+						react.createElement("span", {
+							style: { marginLeft: "auto", color: "var(--dsw-alias-brand-primary-new-colorprimary-new-color, #4176e6)", fontWeight: 600 },
+						}, "当前根：" + (chosenRow ? (chosenRow.name || baseName(chosenRow.path) || chosenRow.path) : "—"))));
+					for (const r of roots) {
+						const isCurRoot = !!curRoot && samePath(r.path, curRoot.path);
+						// 策略纯函数仍调用（守卫 ⑤-p 逐字钉住）；仅用于桥缺失时的按钮 title。
+						const policy = rootRowPolicyOf(mode, { isPrimary: r.isPrimary, isCurrent: isCurRoot }, canSwitchSession);
+						const isChosen = !!chosenRow && samePath(r.path, chosenRow.path);
+						// ★★ 2026-11-14 第三轮真机「切换按钮无法点击」：
+						//   旧实现把「切换」画成 rowButton 里的 hint **文本** —— 它不是按钮、没有
+						//   cursor/hover/焦点，点击只能靠冒泡到外层 button；外层一旦被 disabled、
+						//   capture 监听或重渲打断，用户就完全点不动 ✗（连报三次的根因）。
+						//   ⇒ 根行改成 div + **独立 <button>**（不嵌套 button，HTML 合法 ✓）：
+						//     「切换」是真按钮，自带可点外观与键盘可达性；整行点击仍兼容 IDE 侧用例。
+						const doSwitch = () => {
+							setChosenRoot((prev) => Object.assign({}, prev, { [g.key]: r.path }));
+							// ★★ 2026-11-14 第四轮真机「点不中 / 点了没反应」：
+							//   `switchTo` 一开头就 onRequestClose() 关面板 + setNote(null) ⇒ 宿主是**单向桥**，
+							//   promise 在主进程就 resolve、渲染侧成不败传不回页面；宿主还有幂等早退
+							//   （dshChatInstanceHost.ts:833）⇒ 用户看到的就是「面板一闪、界面零变化」✗。
+							//   ⇒ 按钮不再走 switchTo：① 先在面板内写出可见反馈（不关面板）；
+							//     ② 直接调桥；③ 成败都在面板内/通知里如实说清，绝不静默。
+							noteWorkspaceUi({ event: "tip-switch-request", path: r.path, at: Date.now() });
+							const stopTimer = () => {
+								if (switchTimerRef.current) { clearTimeout(switchTimerRef.current); switchTimerRef.current = null; }
+							};
+							const fail = (msg) => {
+								stopTimer();
+								setSwitchStatus("failed");
+								setNote(msg);
+								noteWorkspaceUi({ event: "tip-switch-failed", path: r.path, at: Date.now() });
+								if (bridge.notify) { try { bridge.notify("attention", msg); } catch { /* ignore */ } }
+							};
+							if (!bridge || typeof bridge.switchWorktree !== "function") {
+								setSwitchingPath(r.path);
+								fail("页面桥过旧：不支持切换（switchWorktree 缺失）");
+								return;
+							}
+							setNote("已请求在 " + r.name + " 新建会话…");
+							setSwitchingPath(r.path);   // ★ 按钮自身也要显示，别只藏在面板末尾的 note 里
+							setSwitchStatus("requested");
+							stopTimer();
+							// ★ 2026-11-16「卡在已请求」：10s 内页面仍在（没 rebind、没有任何回包）
+							//   ⇒ 判定宿主未响应，按钮复位成「未响应 · 重试」，用户能再点而不是永远卡住 ✓
+							switchTimerRef.current = setTimeout(() => {
+								switchTimerRef.current = null;
+								setSwitchStatus((s) => (s === "requested" ? "timeout" : s));
+								setNote("宿主 10 秒内未响应：未切换到 " + r.name + "，可点「重试」再发一次");
+								noteWorkspaceUi({ event: "tip-switch-timeout", path: r.path, at: Date.now() });
+							}, 10000);
+							// ⚠ 成功回调不许覆盖即时反馈（单向桥，resolve 不代表宿主跑完）；
+							//   只有明确 reject / throw 才复位成失败态。
+							try {
+								Promise.resolve(bridge.switchWorktree(r.path)).catch((e) => fail("切换失败：" + String((e && e.message) || e)));
+							} catch (e) {
+								fail("切换失败：" + String((e && e.message) || e));
+							}
+						};
+						kids.push(react.createElement("div", {
+							key: "root:" + g.key + ":" + r.path,
+							"data-vssaros-context-item": "root:" + r.path,
+							role: "menuitem",
+							onClick: doSwitch,
+							style: {
+								display: "flex", alignItems: "center", gap: 8,
+								// ★ 100% + marginLeft 会把右侧按钮顶出容器 ⇒ 点击命中区被裁（"无法点中"）
+								width: "calc(100% - 14px)",
+								boxSizing: "border-box", padding: "5px 8px", marginLeft: 14,
+								borderRadius: 7, cursor: canSwitchSession ? "pointer" : "default",
+								background: isChosen ? "var(--dsw-alias-bg-layer-2, transparent)" : "transparent",
+								fontSize: 11.5, color: "var(--dsw-alias-label-primary, currentColor)",
+							},
+						},
+							react.createElement("span", {
+								style: { flex: "0 0 14px", width: 14, color: isChosen ? "var(--dsw-alias-brand-primary-new-colorprimary-new-color, #4176e6)" : "transparent" },
+							}, "✓"),
+							react.createElement("span", { style: { display: "flex", flexDirection: "column", gap: 2, minWidth: 0, flex: 1 } },
+								react.createElement("span", { style: { fontWeight: isChosen ? 600 : 400 } },
+									String(r.name),
+									react.createElement("span", { style: BADGE }, r.isPrimary ? "主根 " : "关联根 ")),
+								react.createElement("span", { style: SUB }, String(r.path))),
+							react.createElement("button", {
+								type: "button", "data-vssaros-wt-tip-switch": "1",
+								"data-vssaros-wt-tip-state": switchingPath === r.path ? (switchStatus || "requested") : "idle",
+								disabled: !canSwitchSession,
+								title: canSwitchSession ? ("在 " + r.name + " 新建会话（当前会话保持不变）") : policy.hint,
+								onClick: (e) => {
+									if (e && typeof e.stopPropagation === "function") { e.stopPropagation(); }
+									doSwitch();
+								},
+								style: {
+									flex: "none", minWidth: 56, minHeight: 26, padding: "4px 12px", borderRadius: 6,
+									border: "1px solid var(--dsw-alias-border-l2, transparent)",
+									background: isChosen ? "transparent" : "var(--dsw-alias-brand-primary-new-colorprimary-new-color, #4176e6)",
+									color: isChosen ? "var(--dsw-alias-label-secondary, currentColor)" : "#fff",
+									fontSize: 10.5, cursor: canSwitchSession ? "pointer" : "default",
+								},
+							}, switchingPath === r.path && switchStatus === "timeout" ? "未响应 · 重试"
+							: switchingPath === r.path && switchStatus === "failed" ? "失败 · 重试"
+							: switchingPath === r.path ? "已请求…"
+							: isChosen ? "当前 · 新建" : (canSwitchSession ? "切换" : "桥不支持"))));
+					}
+					if (scopeInfo.length) {
+						kids.push(react.createElement("details", {
+							key: "tip-info",
+							"data-vssaros-scope-info": "1",
+							style: { margin: "4px 8px 0", fontSize: 10.5, color: "var(--dsw-alias-label-tertiary, #737373)" },
+						},
+							react.createElement("summary", {
+								style: { cursor: "pointer", padding: "2px 0" },
+								title: "根集作用域 / 多根限制 / 动作边界 / 当前 cwd",
+							}, "ⓘ 说明"),
+							...scopeInfo));
+					}
+					// 主命令：只有它真的切会话；纯函数 detailActionPolicyOf 不改（守卫逐字钉住 ✓）
+					const action = detailActionPolicyOf(mode, isCurrent, canSwitchSession);
+					if (!action.hidden) {
+						kids.push(react.createElement("button", {
+							key: "tip-go", type: "button",
+							"data-vssaros-context-detail-action": "1",
+							disabled: busy || action.disabled,
+							title: action.label,
+							onClick: () => switchTo({ kind: "root", path: chosen, userInitiated: true }),
+							style: {
+								marginTop: 8, width: "100%", padding: "5px 8px", borderRadius: 7,
+								border: "1px solid var(--dsw-alias-border-l1, transparent)",
+								background: isCurrent ? "transparent" : "var(--dsw-alias-brand-primary-new-colorprimary-new-color, #4176e6)",
+								color: isCurrent ? "var(--dsw-alias-label-secondary, currentColor)" : "#fff",
+								fontSize: 11.5, fontWeight: 500, cursor: isCurrent ? "default" : "pointer",
+							},
+						}, action.label.includes("当前会话保持不变") ? "在此根新建会话" : action.label));
+					}
+					kids.push(react.createElement("div", {
+						key: "tip-f",
+						style: { fontSize: 9.5, color: "var(--dsw-alias-label-tertiary, #737373)", padding: "5px 8px 0", marginTop: 4, borderTop: "1px solid var(--dsw-alias-border-l1, transparent)" },
+					}, "会话 cwd 由开会话时定死 · 换根 = 新建会话（历史独立，当前会话保持不变）"));
+					return react.createElement("div", {
+						key: "tip:" + g.key, "data-vssaros-wt-tip": g.key,
+						style: {
+							margin: "2px 8px 6px 22px", padding: "6px 8px", borderRadius: 8,
+							border: "1px solid var(--dsw-alias-border-l1, transparent)",
+							background: "var(--dsw-alias-bg-layer-2, transparent)",
+							boxShadow: "0 4px 12px rgba(0,0,0,.08)",
+						},
+					}, ...kids);
+				};
 				for (const section of sections) {
 					if (section.total === 0) { continue; }   // 这一组本来就没数据 ⇒ 连标题都不出 ✓
 					listPane.push(react.createElement("div", { key: "h-" + section.kind, style: HEADING },
 						section.title + "（" + section.total + "）"));
-					if (section.kind === "worktree") {
-						if (shownWorktrees.length === 0) {
-							// ⚠ 与"本仓没有额外的 worktree"分开说：前者是**搜索没命中**、后者是**本来就没有** ✗
-							listPane.push(react.createElement("div", { key: "e-worktree", style: EMPTY },
-								query ? "没有匹配的 worktree" : "本仓没有额外的 worktree"));
-							continue;
-						}
-						for (const t of shownWorktrees) {
-							const isCurrent = samePath(t.path, dir);
-							listPane.push(rowButton({
-								key: "worktree:" + t.key,
-								attr: "worktree:" + t.key,
-								row: t,
-								current: isCurrent,
-								disabled: isCurrent,   // 当前项点了也是幂等 ⇒ 直接禁用（旧行为 ✓）
-								label: t.label,
-								// 分支 + **归属根名**：多根之后"feat/x 属于哪个仓"会歧义 ⇒ 一律带上 ✓
-								badges: (t.branch && t.label !== t.branch ? t.branch + " " : "") + (t.owner ? "[" + t.owner + "] " : ""),
-								sub: t.path,
-								hint: isCurrent ? "当前" : "切换 →",
-							}));
-						}
-						continue;
-					}
 					if (shownGroups.length === 0) {
 						listPane.push(react.createElement("div", { key: "e-workspace", style: EMPTY }, "没有匹配的工作区"));
 						continue;
@@ -1252,132 +1435,46 @@ window.__ModuleLoader__.load({
 							row: g,
 							current: isCurrent,
 							label: g.label,
-							// 「N 根」= 多根的**可见徽标**（稿 A 的底线能力 ✓）；
-							// `.code-workspace` 身份**只读展示**（拍板 ④-i：这一轮不许拿它去切工作区 ✓）。
-							// P1-E：统一「N 个根」（原来这里是「N 根」，与 hover 卡 / IDE 侧栏 / sessions 页不一致 ✗）
-						badges: (g.multi ? rootCountLabel(g.roots.length) + " " : "") + (g.codeWorkspacePath ? ".code-workspace " : ""),
+							badges: (g.multi ? rootCountLabel(g.roots.length) + " " : "") + (g.codeWorkspacePath ? ".code-workspace " : ""),
 							sub: g.path,
-							// ⚠ 行尾文案**按能力**写（不许含糊承诺）：本面板只换会话、不动 IDE 工作区
-							//   ⇒ 一律写"开会话"（写"切换工作区"就是假话 ✗）。
-							hint: isCurrent
-								? "当前"
-								: (!canSwitchSession
-									? "桥不支持"
-									: (g.multi ? "以主根新建会话 →" : "在此根新建会话 →")),
-							// 悬停即"预览这条的详情"（不点也不换会话 ⇒ 安全 ✓）；键盘/鼠标都走它
-							onHover: () => setDetailKey(g.key),
-						}));
-					}
-				}
-				// ── 右栏：选中工作区的详情（根 + 主命令）──────────────────────────────────
-				const detailGroup = (() => {
-					const byKey = detailKey ? shownGroups.filter((g) => g.key === detailKey)[0] : null;
-					if (byKey) { return byKey; }
-					// 默认跟**当前**那条（打开面板第一眼就该是"我在哪" ✓），其次第一条 ✓
-					return tree.groups.filter((g) => isCurrentGroup(g))[0] || shownGroups[0] || null;
-				})();
-				if (detailGroup) {
-					const g = detailGroup;
-					const curRoot = currentRootOf(g);
-					const isCurrent = isCurrentGroup(g);
-					detailPane.push(react.createElement("div", { key: "d-t", style: { padding: "2px 6px 0" } },
-						react.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, wordBreak: "break-all" } }, String(g.label)),
-						react.createElement("div", { style: Object.assign({}, SUB, { whiteSpace: "normal", wordBreak: "break-all", maxWidth: "none", marginTop: 2 }) },
-							(g.multi ? rootCountLabel(g.roots.length) + " · " : "") + (g.codeWorkspacePath ? ".code-workspace · " : "") + String(g.path))));
-					// ★ 方案 A：标题按 mode 说话（hero 只读 ⇒ 不许承诺"点一行就开会话" ✗）
-					detailPane.push(react.createElement("div", {
-						key: "d-k1",
-						"data-vssaros-context-roots-heading": mode,
-						style: { fontSize: 10, letterSpacing: ".04em", color: "var(--dsw-alias-label-secondary, currentColor)", padding: "8px 6px 2px" },
-					}, mode === "hero"
-						? "根（只读；选好工作区后按发送，在标 ✓ 的主根开始会话）"
-						: (isCurrent ? "根（当前会话跑在标 ✓ 的那个上；点其它根 = 新建会话）"
-							: "根（点一行 = 在那个目录新建会话）")));
-					// 各根都作为行渲染（`root:<path>` 锚点不变 ✓）；顺序 = `g.roots`（主根在前 ✓）
-					for (const r of g.roots) {
-						const isCurRoot = !!curRoot && samePath(r.path, curRoot.path);
-						// ★ 方案 A：策略统一走纯函数（hero 只读 / header 当前根禁用且只有非当前根可点）
-						const policy = rootRowPolicyOf(mode, { isPrimary: r.isPrimary, isCurrent: isCurRoot }, canSwitchSession);
-						detailPane.push(rowButton({
-							key: "root:" + g.key + ":" + r.path,
-							attr: "root:" + r.path,
-							row: { kind: "root", path: r.path },
-							current: mode === "hero" ? !!r.isPrimary : isCurRoot,
-							disabled: policy.disabled,
-							label: r.name,
-							badges: r.isPrimary ? "主根 " : "关联根 ",
-							sub: r.path,
-							hint: policy.hint,
-						}));
-					}
-					// 主命令：hero 不出按钮（无动作可落地）；header 仍是唯一显式 CTA ✓
-					const action = detailActionPolicyOf(mode, isCurrent, canSwitchSession);
-					if (!action.hidden) {
-						detailPane.push(react.createElement("button", {
-							key: "d-go", type: "button",
-							"data-vssaros-context-detail-action": "1",
-							disabled: busy || action.disabled,
-							onClick: () => switchTo(g),
-							style: {
-								marginTop: 10, width: "100%", padding: "6px 8px", borderRadius: 7,
-								border: "1px solid var(--dsw-alias-border-l1, transparent)",
-								background: isCurrent ? "transparent" : "var(--dsw-alias-brand-primary, transparent)",
-								color: isCurrent ? "var(--dsw-alias-label-secondary, currentColor)" : "#fff",
-								fontSize: 11.5, fontWeight: 500, cursor: isCurrent ? "default" : "pointer",
+							hint: isCurrent ? "当前 ▾" : "展开 ▾",
+							// ★ A′：点工作区行只展开/收起 tip，不直接切会话 ✓
+							onToggle: () => {
+								setExpandedKey((prev) => (prev === g.key ? null : g.key));
+								setDetailKey(g.key);
 							},
-						}, action.label));
+						}));
+						if (expandedKey === g.key) { listPane.push(tipFor(g)); }
 					}
-				} else {
-					detailPane.push(react.createElement("div", { key: "d-e", style: EMPTY },
-						query ? "没有匹配的工作区" : "还没有工作区"));
 				}
+				// ★★ A′：右栏详情 / 常驻根区 / 主命令全部搬进 tip；两个 pane 容器锚点保留
+				//   （IDE 侧 dshChatSurfaceHeader.test.ts 按 list/detail 取节点 ⇒ 版式变、锚点不变 ✓），
+				//   detail 此时为空 ⇒ 零高度，不再有分隔线或说明常驻首屏。
 				pane.push(react.createElement("div", {
 					key: "panes",
-					style: { display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: 6, padding: "2px 2px 0" },
+					"data-vssaros-context-panes-layout": "single",
+					style: { display: "flex", flexDirection: "column", gap: 6, padding: "2px 2px 0" },
 				},
 					react.createElement("div", {
 						key: "list", "data-vssaros-context-pane": "list",
-						style: { flex: "1 1 196px", minWidth: 172, maxWidth: 236, paddingRight: 5, borderRight: "1px solid var(--dsw-alias-border-l1, transparent)" },
+						style: { width: "100%", padding: 0 },
 					}, ...listPane),
 					react.createElement("div", {
 						key: "detail", "data-vssaros-context-pane": "detail",
-						style: { flex: "1 1 236px", minWidth: 204, paddingLeft: 5 },
+						style: { width: "100%", padding: 0 },
 					}, ...detailPane)));
-				// ── 「＋ 添加工作区…」（2026-10-16 新增；hero 与 header 共用这一行）─────────────
-				// 钉在列表底部（与官方 `menu.addWorkspace` 同位置感 ✓）；两组都空时它是**唯一**能做的事 ⇒ 照样出 ✓。
-				if (tree.groups.length === 0 && tree.worktrees.length === 0) {
+				// 空态：顶部「＋ 添加工作区」始终在 ⇒ 一组都没有时它仍是唯一能做的事 ✓
+				if (tree.groups.length === 0) {
 					pane.push(react.createElement("div", {
 						key: "empty",
 						style: { fontSize: 11.5, color: "var(--dsw-alias-label-secondary, currentColor)", padding: "6px 8px" },
 					}, "还没有工作区"));
 				}
-				pane.push(react.createElement("button", {
-					key: "add", type: "button", role: "menuitem",
-					"data-vssaros-context-add": "1",
-					disabled: busy,
-					onClick: () => addWorkspace(),
-					title: "打开系统的“选择文件夹”，把该目录加进工作区列表",
-					style: {
-						display: "flex", alignItems: "flex-start", gap: 8, width: "100%", padding: "6px 8px",
-						marginTop: 4, border: "none", borderTop: "1px solid var(--dsw-alias-border-l1, transparent)",
-						borderRadius: 7, textAlign: "left", cursor: busy ? "default" : "pointer",
-						opacity: busy ? 0.6 : 1, background: "transparent",
-						color: "var(--dsw-alias-label-primary, currentColor)", fontSize: 12,
-					},
-				},
-					react.createElement("span", {
-						style: { flex: "0 0 14px", width: 14, color: "var(--dsw-alias-brand-primary, currentColor)" },
-					}, "＋"),
-					react.createElement("span", { style: { display: "flex", flexDirection: "column", gap: 2, minWidth: 0 } },
-						react.createElement("span", { style: { fontWeight: 500 } }, busy ? "正在添加…" : "添加工作区…"),
-						react.createElement("span", { style: SUB }, "由 dsh 打开系统的“选择文件夹”对话框"))));
-				// ★ 语义必须写在脸上：dsh 的会话 cwd 在 session.start 时定死 ⇒ 换目录只能新开会话。
+				// A′ 底部只留一行键位提示（添加按钮已置顶、长语义行已收进 tip）
 				pane.push(react.createElement("div", {
-					key: "note-sem",
-					style: { fontSize: 10.5, lineHeight: 1.5, color: "var(--dsw-alias-label-secondary, currentColor)", padding: "5px 8px 6px", borderTop: "1px solid var(--dsw-alias-border-l1, transparent)", marginTop: 4 },
-				}, mode === "hero"
-					? "空白会话屏：右栏各根只读，选好工作区后按发送即在标 ✓ 的主根开始会话；要指定其它根请在会话页的下拉里操作（只换聊天框的会话，IDE 的窗口工作区不动）"
-					: "选工作区 / worktree / 其它根 = 在那目录新建或接管会话（当前会话保持不变；只换会话，IDE 的窗口工作区不动；历史独立；当前 preset 保留，但在新会话里重新装配）"));
+					key: "kbd",
+					style: { fontSize: 10.5, lineHeight: 1.5, color: "var(--dsw-alias-label-tertiary, #737373)", padding: "5px 8px 6px", borderTop: "1px solid var(--dsw-alias-border-l1, transparent)", marginTop: 4 },
+				}, "↑↓ 选择 · ↵ 展开 / 切换当前根 · Esc 关闭"));
 				if (note) {
 					pane.push(react.createElement("div", {
 						key: "err", style: { fontSize: 11, color: "var(--dsw-alias-label-secondary, currentColor)", padding: "2px 8px 6px" },
@@ -1387,7 +1484,11 @@ window.__ModuleLoader__.load({
 					ref: panelRef, role: "menu",
 					// 版式/交互锚点：hero 侧的"点外关闭"按它判"点在面板里还是外"（见 HeroContextPanel）。
 					"data-vssaros-context-panel": "1",
-					style: Object.assign({}, menuStyle),
+					// ★ 2026-11-14 第五轮「点了没反应」：hero 面板内容超出屏幕底部且不可滚动，
+					//   末尾的 note / 底部按钮全被截断，用户连反馈都看不到 ✗ ⇒ 夹高 + 可滚。
+					style: Object.assign({}, menuStyle, {
+						maxHeight: "min(70vh, 620px)", overflowY: "auto",
+					}),
 				}, ...pane);
 			}
 
@@ -1456,7 +1557,7 @@ window.__ModuleLoader__.load({
 						// 路径回落链同样要有**会话 cwd**（否则 dsh 未登记时 tooltip 里的路径是空的 —— 而
 						// "会话到底跑在哪个目录"正是用户最需要看到的那一条 ✓）。
 						title: [currentWt && currentWt.path ? currentWt.path : (currentWs && currentWs.path ? currentWs.path : (dir || "")),
-							"选工作区 / worktree（会新建或接管会话，历史独立；agent/preset 沿用；**不动 IDE 的窗口工作区**）"].filter(Boolean).join("\n"),
+							"选工作区或根（会新建或接管会话，历史独立；agent/preset 沿用；**不动 IDE 的窗口工作区**）"].filter(Boolean).join("\n"),
 						// ⚠ 只切开关：**不要**在这里清 `note` / `query` ✗ ——
 						//   失败提示只在菜单里渲染（与旧 worktree 下拉同口径 ✓），一并清掉会让
 						//   "重新点开菜单看原因"看不到原因 ✗（第一版就这么写，被守卫当场抓到 ✓）。
@@ -1547,10 +1648,15 @@ window.__ModuleLoader__.load({
 				react.useEffect(() => {
 					if (!open || typeof document === "undefined" || !document.addEventListener) { return undefined; }
 					const onDown = (e) => {
+						const t = e && e.target;
+						// ★ 2026-11-14「切换按钮无法点击」防御：capture 阶段的抑制不能再吞掉面板里的
+						//   真按钮（mousedown 先于 click ⇒ 面板若在 mousedown 被抑制，click 就丢了 ✗）。
+						//   用 closest 直接认面板/切换按钮，不依赖 document.querySelector 恰好拿到哪块面板。
+						if (t && typeof t.closest === "function"
+							&& t.closest('[data-vssaros-wt-tip-switch], [data-vssaros-context-panel]')) { return; }
 						// 面板根由 ContextPanel 打 `data-vssaros-context-panel`（ref 不跨普通函数组件 ✓）
 						const panel = document.querySelector("[data-vssaros-context-panel]");
 						const anchor = anchorRef && anchorRef.current;
-						const t = e && e.target;
 						if (panel && t && typeof panel.contains === "function" && panel.contains(t)) { return; }
 						if (anchor && t && (anchor === t || (typeof anchor.contains === "function" && anchor.contains(t)))) { return; }
 						setSuppressed(true);

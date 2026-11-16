@@ -9,17 +9,18 @@ import type { T } from './text.ts'
  * side panel (see `side.tsx`), so a stored `overview` route opens `chat`. Plan C adds the Workbench (`work`): the teams'
  * steps as a flow, a board or a list.
  */
-export const TABS = ['chat', 'work', 'source', 'trigger', 'eval', 'execution', 'settings'] as const
+export const TABS = ['overview', 'chat', 'work', 'source', 'trigger', 'eval', 'execution', 'settings'] as const
 export type Tab = typeof TABS[number]
 /**
  * VsSaros change (2026-11-07, user request): the tabs the header shows. The Workbench (`work`) is no longer a tab.
  * ★ 2026-11-09: its three views (flow / board / list) now live INSIDE the `execution` tab; `work` remains only as a
  *   legacy route alias that `parseRoute` normalizes to `execution` (see below), so old links and stored routes still work.
  */
-export const NAV_TABS: readonly Tab[] = TABS.filter(tab => tab !== 'work')
+/** ★ 2026-11-11（用户）：工作台不再有「对话」页签；概况提为首页，chat 只作历史深链别名。 */
+export const NAV_TABS: readonly Tab[] = TABS.filter(tab => tab !== 'work' && tab !== 'chat')
 export const SETTINGS_GROUPS = ['source', 'eval', 'execution', 'prompts', 'deployment'] as const
 export type SettingsGroup = typeof SETTINGS_GROUPS[number]
-export type Route = { page: 'chat' | 'source'; id?: undefined; query?: undefined }
+export type Route = { page: 'overview' | 'chat' | 'source'; id?: undefined; query?: undefined }
   | { page: 'work'; id?: undefined; query?: { ticket?: string } }
   | { page: 'trigger'; id?: undefined; query?: { filter?: ThreadFilter } }
   | { page: 'trigger'; id: string; query?: { trigger?: string } }
@@ -27,7 +28,7 @@ export type Route = { page: 'chat' | 'source'; id?: undefined; query?: undefined
   | { page: 'execution'; id?: undefined; query?: { filter?: TicketFilter; ticket?: string } }
   | { page: 'execution'; id: string; query?: undefined }
   | { page: 'settings'; id?: undefined; query: { group: SettingsGroup; source?: string; version?: string } }
-export const HOME: Route = { page: 'chat' }
+export const HOME: Route = { page: 'overview' }
 export const settingsRoute = (group: SettingsGroup, query: { source?: string; version?: string } = {}): Route =>
   ({ page: 'settings', query: { group, ...query } })
 export const setupPage = (place: SetupPlace): Route =>
@@ -46,12 +47,14 @@ export function parseRoute(value: unknown): Route | undefined {
   const text = (name: string) => typeof query?.[name] === 'string' ? query[name] as string : undefined
   const record = typeof id === 'string' && id ? id : undefined
   switch (page) {
+    // ★ 2026-11-11：概况是首页；旧 `chat` 深链仍可打开 desk 会话（页签已移除，但 HTTP/API 与后台 Session 全保留）。
+    case 'overview': return { page: 'overview' }
     case 'chat': case 'source': return { page }
     // ★ 2026-11-09（用户要求）：流程图 / 看板 / 列表归到「执行」页签内。
     //   `work` 不再有独立页面：旧深链（概况侧栏「查看流程」、sessionStorage 里记的 work 路由）
     //   一律归一到 execution，并把 ticket 带过去选中对应团队 ⇒ 不会白屏、不会落到 HOME。
     case 'work': return { page: 'execution', query: compact({ ticket: text('ticket') }) }
-    case 'overview': return { page: 'chat' }
+    case 'overview': return { page: 'overview' }
     case 'trigger': return record ? { page, id: record, query: compact({ trigger: text('trigger') }) }
       : { page, query: compact({ filter: pick(THREAD_FILTERS, query?.filter) }) }
     case 'eval': return { page, query: compact({ filter: pick(DECISION_FILTERS, query?.filter),

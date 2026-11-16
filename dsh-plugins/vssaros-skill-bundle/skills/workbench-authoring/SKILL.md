@@ -29,7 +29,7 @@ tier: extended
 | 形态 | 适用 | 成本 | 现状样例 |
 |---|---|---|---|
 | **注册式 · React 单页**（默认推荐） | 左侧业务区 + 右侧 AI 助手 | 中 | `vssaros-agents`、`vssaros-kanban`、`vssaros-kb` |
-| **内嵌成熟应用**（iframe 托管页 + 右侧助手） | 已有成熟前端（站点/后台） | 低 | `vssaros-studio`（`/x/studio/`）、`vssaros-marketplace` |
+| **内嵌成熟应用**（iframe 托管页 + 右侧助手） | 已有成熟前端（站点/后台） | 低 | `vssaros-marketplace`（原 `vssaros-studio` 已于 2026-11-11 下线） |
 | **多窗口可拼装** | 多信息源并看 | 高 | `vssaros-dashboard` 一类 |
 | **SSR 页面型** | 旧页面 / 终端类 | 低 | 不推荐改注册式 |
 

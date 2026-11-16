@@ -14,6 +14,7 @@ import { buildRouteProfile, routeReasoningDefault, sameProfile } from './provide
 import { CODEBUDDY_ROUTE, createCodeBuddyService } from './codebuddy.js';
 import { createLightAIService } from './lightai.js';
 import { createAgentLensListener, readConfig as readAgentLensConfig } from './agentlens.js';
+import { codebuddyRetryListener } from './codebuddyRetry.js';
 
 // 启动计时（2026-10-15，"首启慢"排查）：本行的打印时刻 ≈ node 引导 + dsh 核心 + cordis profile
 // 装载完成的时刻（cordis 在解析插件图时 import 本文件）；与 apply() 里那一条合起来，Host 冷启被拆成
@@ -617,6 +618,7 @@ export function apply(ctx, config = {}) {
 		},
 		log: line => console.log(`[vssaros-bridge] ${line}`),
 	});
+	ctx.on('llm/stream', codebuddyRetryListener);
 	// 记账：每次 LLM 调用的 (会话, provider, model, 起止)。只观察、不改请求与 chunk。
 	ctx.on('llm/stream', (options, next) => {
 		const handle = creditLedger.beginCall({

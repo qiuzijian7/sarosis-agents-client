@@ -22,7 +22,8 @@
 //   · 标准分栏（customFrame=false）P1 暂按整页渲染（右栏承载在 P2 做，方案 §4.3）。
 // 构建标记：在页面 console 里输入 __vssarosWorkbenchBuild 即可知道窗口加载的是哪个版本
 // ⚠ bump package.json 版本时必须同步本行 —— check-assistant-collapse.mjs 会判红（2026-11-10 收口）。
-globalThis.__vssarosWorkbenchBuild = '0.3.29';
+// 0.3.31（2026-11-13）：工作台列表下线名单（循环任务 item）⇒ 见下面 RETIRED_WORKBENCH_IDS。
+globalThis.__vssarosWorkbenchBuild = '0.3.33';
 window.__ModuleLoader__.load({
 	id: '@vssaros/dsh-workbenches',
 	factory: (require) => {
@@ -41,6 +42,25 @@ window.__ModuleLoader__.load({
 		const MODULE_RE = /^[a-z][a-z0-9-]{0,31}$/;
 		/** npm 包名（官方本地身份用 `local:<包名>`，scoped 包为 `local:@scope/name`）。 */
 		const PACKAGE_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+
+		/**
+		 * ★ 2026-11-13（用户：「移除 dsh 侧，工作台中的 循环任务 item」）：**工作台列表下线名单**（唯一真源）。
+		 *
+		 * 口径沿用 11-04「看板/流程/生图 暂时下线」与 11-10「移除 工具 item」：只收 **UI 入口**，
+		 * 插件本体 / 工作台页面 / Host 路由 / Agent 工具 / 伴生安装 **一律保留** ⇒ 恢复只需清空本数组。
+		 *
+		 * 为什么按**身份 id** 而不是 route：`vssaros/loop` 是**注册式**工作台（`view.kind='none'`），
+		 * 没有 `/x/loop/` 页面路由 ⇒ 套不上 dashboard/catalog.js 那份 route 驱动的
+		 * `OFFLINE_WORKBENCH_ROUTES`；硬造一个 `/x/loop/` 白名单项只会得到一个「点了 404」的假入口。
+		 *
+		 * 为什么放在**宿主快照出口**：主页工作台卡片的 `registeredCardItems()` 与启动器的
+		 * `registeredExtras()` 都只读 `getSnapshot().workbenches` ⇒ 一处过滤，两处 item 同时消失，
+		 * 不会「主页没了、启动器还在」。⚠ 只从**列表**里摘掉：`providers` 仍保留注册，
+		 * `open(id)` / `has(id)` / 深链 / 工具照旧可用 ⇒ 页面本体没有被删。
+		 *
+		 * 守卫 `dsh-plugins/check-workbench-catalog.mjs` ⑧ 盯着这条链路（含反向突变）。
+		 */
+		const RETIRED_WORKBENCH_IDS = ['vssaros/loop'];
 
 		/**
 		 * 与 `vssarosPluginManifest.ts` 的 `workbenchIdentityOf` 同口径（小写 owner/repo）。
@@ -92,6 +112,7 @@ window.__ModuleLoader__.load({
 			}
 			return Object.assign({}, descriptor, {
 				id,
+				resourcePackage: descriptor.package || packageName || '',
 				panel: PANEL_PREFIX + id,
 				customFrame: descriptor.customFrame === true,
 				headerLayout: descriptor.headerLayout || 'default',
@@ -167,12 +188,15 @@ window.__ModuleLoader__.load({
 					active: this.active,
 					stateError: this.stateError,
 					state: this.state,
-					workbenches: [...this.providers.values()].map(e => Object.freeze({
-						id: e.id, title: e.title, description: e.description || '', icon: e.icon || '',
-						customFrame: e.customFrame, headerLayout: e.headerLayout, layout: e.layout, panel: e.panel,
-						splitConversation: e.splitConversation === true,
-						added: !!(this.state && this.state.added.includes(e.id)),
-					})),
+					// ★ 2026-11-13：列表出口按下线名单过滤（只摘 UI item，不动 providers ⇒ 页面本体/深链仍在）。
+					workbenches: [...this.providers.values()]
+						.filter(e => !RETIRED_WORKBENCH_IDS.includes(e.id))
+						.map(e => Object.freeze({
+							id: e.id, title: e.title, description: e.description || '', icon: e.icon || '',
+							customFrame: e.customFrame, headerLayout: e.headerLayout, layout: e.layout, panel: e.panel,
+							splitConversation: e.splitConversation === true,
+							added: !!(this.state && this.state.added.includes(e.id)),
+						})),
 					// 注册失败（见 constructor 的注释）：界面据此告诉用户"为什么没出现"，而不是静默。
 					registrationFailures: this.registrationFailures.size
 						? [...this.registrationFailures.values()].map(f => Object.freeze({ ...f }))
@@ -639,6 +663,17 @@ window.__ModuleLoader__.load({
 			 * 只缓存**命中**（不缓存"没有"）：没有的那次可能只是还没注册好。
 			 */
 			async readyPreset(id, { waitMs = 0 } = {}) {
+				const entry = this.providers.get(id);
+				if (entry && !entry.assistantPreset && !String(id).startsWith('vssaros/') && (entry.resourcePackage || String(id).startsWith('local:'))) {
+					try {
+						const response = await fetch('/api/vssaros-workbenches/plugin-resources', { cache: 'no-store' });
+						if (response.ok) {
+							const body = await response.json();
+							const info = (body.packages || []).find(row => row.packageName === entry.resourcePackage || 'local:' + row.packageName === id);
+							if (info && info.defaultPreset) { entry.assistantPreset = info.defaultPreset; }
+						}
+					} catch { /* 资源服务未就绪时使用宿主默认，不猜 Bot id */ }
+				}
 				const candidates = this.presetCandidatesOf(id);
 				if (candidates.length === 0) { return ''; }
 				if (this.presetResolved.has(id)) { return this.presetResolved.get(id); }
@@ -686,7 +721,7 @@ window.__ModuleLoader__.load({
 			 *   · 只用 list() 里**真实存在**的 id（见 readyPreset），被拒必须看 `ok` 并告警。
 			 */
 			applyDefaultPreset(owner, sessionId) {
-				if (!owner || !sessionId || this.presetCandidatesOf(owner).length === 0) { return; }
+				if (!owner || !sessionId || (this.presetCandidatesOf(owner).length === 0 && !String(owner).startsWith('local:') && !this.providers.get(owner)?.resourcePackage)) { return; }
 				const key = owner + '|' + sessionId;
 				if (this.presetApplied.has(key)) { return; }
 				this.presetApplied.add(key);
@@ -1364,7 +1399,8 @@ window.__ModuleLoader__.load({
 		 *   第三方工作台在描述符里写 `assistantPreset` 即可（优先于本表）。
 		 */
 		const ASSIST_PRESET_BY_WB = {
-			'vssaros/studio': 'vssaros-saroasis-studio',
+			// ★ 2026-11-11（用户要求「移除萨罗斯管理工作台」）：`vssaros/studio` → `vssaros-saroasis-studio`
+			//   随工作台与配套 bot 一并下线；GR 程序员 bot 不绑工作台，在 Bots 里直接选。
 			'vssaros/marketplace': 'vssaros-marketplace-bot',
 			'vssaros/media': 'vssaros-media-librarian',
 			// ★ 2026-10-28（用户：「知识库的展开 AI 助手点不动，展开后应显示知识库专家」）：

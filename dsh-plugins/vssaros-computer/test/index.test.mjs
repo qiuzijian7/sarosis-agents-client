@@ -27,7 +27,7 @@ const toolFor = (overrides = {}) => createToolDefinition({
 	attachments: overrides.attachments,
 });
 
-await checkAsync('工具定义：op enum 就是 9 个只读 method；output 用 oneOf（rc.2 schemastery 不支持 anyOf）', async () => {
+await checkAsync('工具定义：op enum 与只读 method 全集一致；output 用 oneOf（rc.2 schemastery 不支持 anyOf）', async () => {
 	const def = toolFor();
 	assert.equal(def.name, 'computer');
 	assert.deepEqual(def.parameters.properties.op.enum, OBSERVE_OPS);
@@ -136,6 +136,57 @@ await checkAsync('apply disposer 撤工具、撤闸、释放 relay 连接', asyn
 	assert.equal(state.toolDisposed, true);
 	assert.equal(state.gateDisposed, true);
 	assert.equal(relay.disposed, true);
+});
+
+// ── 2026-11-11 收口：结果未知 / 幂等 / 校验早于授权 ─────────────────────────
+const grantedState = () => {
+	const state = defaultState();
+	// 预置「一直允许」免掉审批卡，聚焦账本行为。
+	state.grants.bot = { notepad: { name: 'notepad', grantedAt: '2026-11-11' } };
+	return state;
+};
+const actionArgs = { op: 'click', appKey: 'notepad', params: { x: 1 } };
+
+await checkAsync('相同 callId 复用结果，绝不二次注入', async () => {
+	const relay = fakeRelay({ ok: true });
+	const def = createToolDefinition({ relay, state: grantedState(), level: 'background', allowBackground: true });
+	const exec = { agent: { id: 'bot' }, callId: 'c1' };
+	assert.match(await def.execute(actionArgs, exec), /【电脑】/);
+	assert.equal(relay.calls.length, 1);
+	assert.match(await def.execute(actionArgs, exec), /复用上次结果/);
+	assert.equal(relay.calls.length, 1, '重放绝不能再打到中继');
+});
+
+await checkAsync('结果未知 ⇒ 换 callId 也禁止重放，直到一次成功观察', async () => {
+	let failures = 1;
+	const relay = {
+		calls: [],
+		async command(method, params) {
+			this.calls.push({ method, params });
+			if (failures-- > 0) throw new Error('主进程超时');
+			return { ok: true };
+		},
+		dispose() { this.disposed = true; },
+	};
+	const def = createToolDefinition({ relay, state: grantedState(), level: 'background', allowBackground: true });
+	assert.match(await def.execute(actionArgs, { agent: { id: 'bot' }, callId: 'u1' }), /结果未知/);
+	assert.match(await def.execute(actionArgs, { agent: { id: 'bot' }, callId: 'u2' }), /结果未知/);
+	assert.equal(relay.calls.length, 1, '结果未知期间换 callId 也不能重放');
+	await def.execute({ op: 'listWindows' }, { agent: { id: 'bot' } });
+	assert.match(await def.execute(actionArgs, { agent: { id: 'bot' }, callId: 'u3' }), /【电脑】/);
+	assert.equal(relay.calls.length, 3);
+});
+
+await checkAsync('被闸拒绝时不写授权（二次校验在授权落盘之前）', async () => {
+	const state = defaultState();
+	const writes = [];
+	const def = createToolDefinition({
+		relay: fakeRelay(), state, level: 'view', onStateChange: () => writes.push(1),
+	});
+	assert.match(await def.execute({ op: 'click', appKey: 'notepad' }, { agent: { id: 'bot' } }), /P0 只读层不开放/);
+	assert.deepEqual(state.once, {});
+	assert.deepEqual(state.grants, {});
+	assert.equal(writes.length, 0, '拒绝路径不能落盘');
 });
 
 console.log(`\n${fails.length ? `✗ ${fails.length} 项失败 / ${passed} 项通过` : `✓ 全部 ${passed} 项通过`}`);

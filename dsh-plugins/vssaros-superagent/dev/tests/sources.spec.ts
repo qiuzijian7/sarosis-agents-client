@@ -13,7 +13,7 @@ import { pollThreads as pollGithubThreads } from '../src/sources/github.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
 import { cursorAt, POLL_HORIZON_MS } from '../src/sources/poll.ts'
 import { Store } from '../src/app/store.ts'
-import { Commands, commandError } from '../src/infra/commands.ts'
+import { CliError, Commands, commandError } from '../src/infra/commands.ts'
 import { HealthBoard } from '../src/infra/health.ts'
 import { testDeployment } from './fixtures/deployment.ts'
 import { SettingsSchema, settingsPolicy } from '../src/policy.ts'
@@ -1173,7 +1173,7 @@ describe('feishu event consumer', () => {
       controller.abort(); await running; store.close()
     } finally { delete (globalThis as Record<symbol, unknown>)[key] }
   }, 25_000)
-  it('keeps a chat\'s history cursor when its read fails, and recovers known direct chats only while direct messages are on', async () => {
+  it('★ keeps a failed chat\'s cursor and never backfills p2p direct chats (230002)', async () => {
     const hour = new Date(Date.now() - 3_600_000).toISOString()
     const recovered = async (directMessages: boolean) => {
       const chat = (chatId: string) => ({ chatId, listen: 'mentions' })
@@ -1198,14 +1198,31 @@ describe('feishu event consumer', () => {
       return result
     }
     const on = await recovered(true)
-    expect(on.chats).toEqual(['oc_a', 'oc_b', 'oc_dm'])
+    expect(on.chats).toEqual(['oc_a', 'oc_b'])
     expect(on.history).toMatchObject({ state: 'error', detail: expect.stringContaining('oc_a: Error: rate limited') })
     expect(on.cursors.oc_a).toBe(hour)
     expect(Date.parse(on.cursors.oc_b!)).toBeGreaterThan(Date.parse(hour))
-    expect(Date.parse(on.cursors.oc_dm!)).toBeGreaterThan(Date.parse(hour))
+    expect(on.cursors.oc_dm).toBe(hour)
     const off = await recovered(false)
     expect(off.chats).toEqual(['oc_a', 'oc_b'])
     expect(off.cursors.oc_dm).toBe(hour)
+  }, 20_000)
+
+  it('★ 230002/238002 pause history for that chat and advance its cursor (no 60s spin)', async () => {
+    const hour = new Date(Date.now() - 3_600_000).toISOString()
+    const { ctx, health, store } = consumerSource(cli('ready'), { chats: [{ chatId: 'oc_a', listen: 'mentions' }] })
+    store.set(KV.feishu.history('oc_a'), hour)
+    const lark = vi.spyOn(Commands.prototype, 'lark')
+      .mockRejectedValue(new CliError('Bot/User can NOT be out of the chat. (230002)', 230002))
+    const stop = new AbortController()
+    const loops = runFeishu(ctx, AbortSignal.any([stop.signal, controller.signal]))
+    await vi.waitFor(() => expect(health.history?.state).toBe('paused'), until)
+    stop.abort(); await loops; lark.mockRestore()
+    expect(health.history).toMatchObject({ state: 'paused', code: 'feishuNotInChat' })
+    expect(Date.parse(store.get(KV.feishu.history('oc_a'))!)).toBeGreaterThan(Date.parse(hour))
+    store.close()
+    rmSync(join(dir, 'db.sqlite'), { force: true }); rmSync(join(dir, 'db.sqlite-wal'), { force: true })
+    rmSync(join(dir, 'db.sqlite-shm'), { force: true })
   }, 20_000)
 
   /* ★ 2026-11-10：仅展示模式不该再读历史（内置应用没有 im:message* scope ⇒ 每 60s 报 99991672）。

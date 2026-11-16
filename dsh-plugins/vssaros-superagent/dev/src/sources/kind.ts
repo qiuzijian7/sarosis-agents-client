@@ -9,7 +9,7 @@ import type { SourceContext, SourceHost } from './host.ts'
 export interface Localized { zh: string; en: string }
 /** `advanced` folds a rarely changed field behind the card's Advanced section; `group` names a subsection within it.
  * `chooseFrom` selects a namespaced slice of `source.labels` (`"<prefix>:<value>" -> display name`) for a dropdown. */
-interface FieldBase { key: string; label: Localized; hint?: Localized; advanced?: true; group?: Localized; chooseFrom?: string }
+interface FieldBase { key: string; label: Localized; hint?: Localized; note?: Localized; advanced?: true; group?: Localized; chooseFrom?: string }
 /**
  * Configuration field specification; `rows` edits a list of records keyed by its first column, `choose` picks from
  * resolved source labels, and `fact` displays a read-only value from `facts`.
@@ -18,10 +18,15 @@ export type FieldSpec =
   | FieldBase & { type: 'switch' }
   | FieldBase & { type: 'select'; options: { value: string; label: Localized }[] }
   | FieldBase & { type: 'number'; min: number; max: number }
-  /** ★ 2026-11-10：`noEmptyOption` 去掉 chooseFrom 下拉的占位空项；`defaultValue` 是空配置时显示的默认选中值。 */
-  | FieldBase & { type: 'text'; pattern?: string; readonly?: boolean; choose?: Localized; noEmptyOption?: true; defaultValue?: string }
+  /**
+   * ★ 2026-11-10：`noEmptyOption` 去掉 chooseFrom 下拉的占位空项；`defaultValue` 是空配置时显示的默认选中值。
+   * ★ 2026-11-11：`addNew` 在 chooseFrom 下拉末尾追加「+ 添加新应用」项。选中它只调 `onAddNew`，
+   *   哨兵值绝不写进 Source 配置（应用保存成功后才选用真正的 appId）。
+   */
+  | FieldBase & { type: 'text'; pattern?: string; readonly?: boolean; choose?: Localized; noEmptyOption?: true; defaultValue?: string; addNew?: Localized }
   | FieldBase & { type: 'fact'; settings?: 'deployment' }
-  | FieldBase & { type: 'rows'; columns: ({ key: string; label: Localized; type: 'text'; pattern?: string; optional?: boolean; choose?: Localized; refresh?: Localized; chooseFrom?: string } | { key: string; label: Localized; type: 'select'; options: { value: string; label: Localized }[] })[] }
+  /** `defaults` are shown for an unset rows field so a schema default is visible instead of an empty list. */
+  | FieldBase & { type: 'rows'; defaults?: Record<string, string>[]; columns: ({ key: string; label: Localized; type: 'text'; pattern?: string; optional?: boolean; choose?: Localized; refresh?: Localized; chooseFrom?: string } | { key: string; label: Localized; type: 'select'; options: { value: string; label: Localized }[] })[] }
 
 export interface VariableSpec { key: string; description: Localized }
 export interface EnvironmentInput<C> { deployment: Deployment; config: C; trigger?: Trigger }

@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>收到飞书消息之后 · 原型 vs 本项目 SuperAgent 执行流程对比</title>
+<style>
+:root,[data-theme="light"]{--bg:#F5F7FB;--panel:#FFFFFF;--soft:#F8FAFC;--line:#DFE6F0;--line2:#C7D3E4;--fg:#111C30;--muted:#4C5E78;--dim:#8A9AB2;--proto:#0E7C86;--proto-soft:#E0F2F3;--prod:#3159D8;--prod-soft:#E7EDFF;--code:#16794A;--code-soft:#E4F5EB;--model:#7A44C9;--model-soft:#F0E8FC;--human:#B25E09;--human-soft:#FCEEDC;--warn:#B02A37;--warn-soft:#FCE9EC;--r:12px;--mono:ui-monospace,Consolas,"SF Mono",monospace}
+[data-theme="dark"]{--bg:#0B1220;--panel:#141F33;--soft:#1A273E;--line:#273751;--line2:#3A5070;--fg:#E6EDF8;--muted:#A9BAD3;--dim:#7C8EAA;--proto:#46C7D0;--proto-soft:#123840;--prod:#8AA8FF;--prod-soft:#1B2B55;--code:#4CD09A;--code-soft:#123B2B;--model:#BE98F5;--model-soft:#2E2150;--human:#F0B26A;--human-soft:#3B2A15;--warn:#F58A96;--warn-soft:#3C1B24}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+a{color:inherit;text-decoration:none}button{font:inherit;color:inherit;cursor:pointer}
+:focus-visible{outline:2px solid var(--prod);outline-offset:3px}
+.wrap{max-width:1360px;margin:0 auto;padding:0 22px 70px}
+header{padding:34px 0 20px;border-bottom:1px solid var(--line)}
+.eyebrow{font:11px/1.4 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--proto)}
+h1{font-size:27px;font-weight:650;letter-spacing:-.01em;margin:9px 0 8px}
+header p{margin:0;color:var(--muted);max-width:980px;font-size:13px}
+.badges{display:flex;gap:9px;flex-wrap:wrap;margin-top:16px}
+.badge{display:inline-flex;align-items:center;gap:7px;padding:6px 11px;border:1px solid var(--line);border-radius:999px;background:var(--panel);font-size:11px;color:var(--muted)}
+.badge b{font-weight:650;color:var(--fg)}
+.badge.proto{border-color:var(--proto);color:var(--proto)}
+.badge.prod{border-color:var(--prod);color:var(--prod)}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:20px 0 10px}
+.pill{min-height:36px;padding:6px 13px;border:1px solid var(--line);background:var(--panel);border-radius:999px;font-size:12px;color:var(--muted)}
+.pill:hover{border-color:var(--prod)}
+.pill.on{background:var(--prod);border-color:var(--prod);color:#fff;font-weight:600}
+[data-theme="dark"] .pill.on{color:#0B1220}
+.legend{margin-left:auto;display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--dim)}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+.legend .c{background:var(--code)}.legend .m{background:var(--model)}.legend .h{background:var(--human)}.legend .n{border:1px dashed var(--line2);background:transparent}
+.hint{font-size:11px;color:var(--dim);margin:0 0 18px}
+h2{font-size:17px;font-weight:650;margin:36px 0 6px;display:flex;align-items:baseline;gap:10px}
+h2 .n{font:11px var(--mono);color:var(--dim);font-weight:400}
+.sub{font-size:12px;color:var(--muted);margin:0 0 16px}
+
+/* 流程图：三列网格（阶段轴 / 原型泳道 / 本项目泳道） */
+.flow{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.flow-head,.row{display:grid;grid-template-columns:104px minmax(0,1fr) minmax(0,1fr);gap:0}
+.flow-head{position:sticky;top:0;z-index:5;background:var(--soft);border-bottom:1px solid var(--line)}
+.flow-head>div{padding:12px 16px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);font-weight:600}
+.flow-head .p{color:var(--proto);border-left:1px solid var(--line)}
+.flow-head .q{color:var(--prod);border-left:1px solid var(--line)}
+.row{border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:0}
+.row.hide{display:none}
+.axis{padding:16px 12px 16px 16px;background:var(--soft);border-right:1px solid var(--line);display:flex;flex-direction:column;gap:5px}
+.axis .num{font:11px var(--mono);color:var(--dim)}
+.axis .name{font-size:12px;font-weight:650;line-height:1.45}
+.axis .split{font:10px var(--mono);color:var(--prod);margin-top:2px}
+.cell{padding:14px 16px;position:relative;min-width:0}
+.cell.p{border-left:1px solid var(--line)}
+.cell.q{border-left:1px solid var(--line)}
+.cell::before{content:"";position:absolute;left:26px;bottom:-15px;height:15px;border-left:1px dashed var(--line2);z-index:1}
+.row:last-child .cell::before{display:none}
+.cell::after{content:"";position:absolute;left:23px;bottom:-17px;width:6px;height:6px;border-right:1px solid var(--line2);border-bottom:1px solid var(--line2);transform:rotate(45deg);z-index:1}
+.row:last-child .cell::after{display:none}
+.card{background:var(--soft);border:1px solid var(--line);border-left:3px solid var(--line2);border-radius:9px;padding:11px 13px;margin-left:18px;position:relative}
+.card.proto{border-left-color:var(--proto);background:var(--proto-soft)}
+.card.prod{border-left-color:var(--prod);background:var(--prod-soft)}
+.card.code{border-left-color:var(--code)}
+.card.model{border-left-color:var(--model)}
+.card.human{border-left-color:var(--human)}
+.card.none{border:1px dashed var(--line2);background:transparent;border-left:1px dashed var(--line2);color:var(--dim)}
+.card.diff{border-left-color:var(--warn)}
+.card .top{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:5px}
+.card .t{font-size:12.5px;font-weight:650;line-height:1.4}
+.tag{font:9.5px/1.5 var(--mono);padding:2px 6px;border-radius:5px;white-space:nowrap}
+.tag.code{background:var(--code-soft);color:var(--code)}
+.tag.model{background:var(--model-soft);color:var(--model)}
+.tag.human{background:var(--human-soft);color:var(--human)}
+.tag.add{background:var(--warn-soft);color:var(--warn)}
+.tag.same{background:var(--panel);color:var(--dim);border:1px solid var(--line)}
+.card p{margin:0;font-size:11.5px;color:var(--muted);line-height:1.65}
+.card.none p{color:var(--dim)}
+.card code,.ref{font:10.5px/1.6 var(--mono);color:var(--dim);word-break:break-all}
+.card .ref{display:block;margin-top:7px}
+.card details{margin-top:7px}
+.card summary{cursor:pointer;font-size:11px;color:var(--prod);list-style:none}
+.card summary::-webkit-details-marker{display:none}
+.card summary::before{content:"▸ ";font-size:10px}
+.card details[open] summary::before{content:"▾ "}
+.card details p{margin-top:6px;padding-left:9px;border-left:2px solid var(--line2)}
+.fork{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-left:18px}
+.fork .card{margin-left:0}
+.fork .lane-label{font:10px var(--mono);color:var(--dim);margin-bottom:5px;display:block}
+@media(max-width:900px){.fork{grid-template-columns:1fr}}
+
+/* 耗时条 */
+.bars{display:grid;gap:12px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:18px 20px}
+.bar-row{display:grid;grid-template-columns:190px 1fr 84px;gap:12px;align-items:center;font-size:12px}
+.bar-row .lbl{color:var(--muted)}
+.track{height:22px;border-radius:6px;background:var(--soft);border:1px solid var(--line);overflow:hidden;display:flex}
+.seg{height:100%;display:flex;align-items:center;justify-content:center;font:10px var(--mono);color:#fff;white-space:nowrap}
+.seg.a{background:var(--model)}.seg.b{background:var(--prod)}.seg.c{background:var(--proto)}.seg.d{background:var(--code)}
+.bar-row .val{font:11px var(--mono);color:var(--fg);text-align:right}
+.bar-note{font-size:11px;color:var(--dim);margin-top:4px}
+
+table{width:100%;border-collapse:collapse;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+th,td{text-align:left;padding:11px 13px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:10px;letter-spacing:.07em;text-transform:uppercase;color:var(--dim);background:var(--soft)}
+tbody tr:last-child td{border-bottom:0}
+td:first-child{font-weight:650;width:19%}
+td code{font:10.5px var(--mono);color:var(--dim)}
+tr.key td{background:var(--prod-soft)}
+.foot{margin-top:30px;border-top:1px solid var(--line);padding-top:16px;font-size:11px;color:var(--dim);line-height:1.9}
+@media(max-width:820px){.wrap{padding:0 12px 48px}.flow-head,.row{grid-template-columns:76px minmax(0,1fr) minmax(0,1fr)}.axis{padding:12px 7px}.cell{padding:10px 8px}.card{margin-left:8px;padding:9px}.flow-head>div{padding:9px 8px}.legend{margin-left:0;width:100%}.bar-row{grid-template-columns:1fr}.bar-row .val{text-align:left}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
+@media print{.toolbar,.legend{display:none}.flow-head{position:static}.card details{display:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Feishu inbound → result · pipeline comparison</div>
+    <h1>收到飞书消息之后，两边各做了什么</h1>
+    <p>左泳道是参考原型 <code>dsh-superagent-prototype v0.1.0</code>，右泳道是本项目 <code>vssaros-superagent 0.1.121</code>。两张图按同一组阶段轴对齐，可直接看出「哪些阶段是本项目新增的」「哪一步需要模型回合」「哪一步卡住了人工」。</p>
+    <div class="badges">
+      <span class="badge proto"><b>原型</b> 参考实现 · 0.1.0 · tsdown · SQLite + effect + passes + 单主会话</span>
+      <span class="badge prod"><b>本项目</b> 生产插件 · 0.1.121 · 组队审批 + 团队步骤 + 用量账本</span>
+      <span class="badge">数据日期 2026-11-12</span>
+    </div>
+  </header>
+
+  <div class="toolbar">
+    <button class="pill on" data-filter="all" aria-pressed="true">全部阶段</button><button class="pill" data-filter="diff" aria-pressed="false">仅看差异</button><button class="pill" data-filter="model" aria-pressed="false">仅看模型回合</button>
+    <button class="pill" id="theme" aria-pressed="false">切换深色</button>
+    <div class="legend"><span><i class="c"></i>纯代码</span><span><i class="m"></i>模型回合</span><span><i class="h"></i>人工</span><span><i class="n"></i>无此阶段</span></div>
+  </div>
+  <p class="hint">点击卡片里的「展开」可看代码落点与判定条件；「仅看差异」会隐藏两侧行为一致的阶段。紫色徽标 = 需要主会话/ worker 模型回合，绿色 = 纯代码事务，橙色 = 需要人。</p>
+
+  <h2>01 · 双泳道流程<span class="n">13 个对齐阶段</span></h2>
+  <p class="sub">第 05 阶段是本项目独有的分叉：<b>快速通道</b>（规则直接建单，跳过评估模型）与 <b>常规路径</b>（候选卡交给主会话模型评估）。两种路径在第 08 阶段汇合到「组队方案」。</p>
+  <div class="flow" id="flow">
+    <div class="flow-head"><div>阶段轴</div><div class="p">原型 · 参考实现</div><div class="q">本项目 · 生产插件</div></div>
+    <div id="rows"></div>
+  </div>
+
+  <h2>02 · 耗时对比<span class="n">真机日志实测</span></h2>
+  <p class="sub">单位：秒。原型没有全流耗时日志（<code>SETUP.md:77</code> 只写「工单约 1 分钟内出现」），所以只列配置级时间；本项目两段来自 <code>trigger / decision / team_proposal / usage_call</code> 的时间戳。</p>
+  <div class="bars">
+    <div class="bar-row"><span class="lbl">本项目 · 常规路径（改造前）</span><div class="track"><div class="seg a" style="width:65.5%">评估 282.3s</div><div class="seg b" style="width:34.4%">组队 148.1s</div></div><span class="val">430.4s</span></div>
+    <div class="bar-row"><span class="lbl">本项目 · 快速通道（0.1.117+）</span><div class="track"><div class="seg a" style="width:78.5%">主会话首轮 79.2s</div><div class="seg b" style="width:21.4%">另 2 轮 21.5s</div></div><span class="val">100.8s</span></div>
+    <div class="bar-row"><span class="lbl">「同意」→ approved（快路径）</span><div class="track"><div class="seg d" style="width:7%">7s</div></div><span class="val">7.0s</span></div>
+    <div class="bar-row"><span class="lbl">原型 · 配置级时间</span><div class="track"><div class="seg c" style="width:2%">2s</div><div class="seg d" style="width:25%">eval 超时 120s</div></div><span class="val">无实测</span></div>
+    <div class="bar-note">快速通道把「评估 282s」整段删掉了；剩下 100.8s 里 79.2s 是 master 模型单轮（<code>hy3-ioa</code>，input 51,675、cacheRead=0）。2026-11-12 已清 projcache 的 <code>modelSelection</code>，重启后 master 改用 <code>hy4std</code>。</div>
+  </div>
+
+  <h2>03 · 关键差异<span class="n">12 条 · 含代码落点</span></h2>
+  <div style="overflow-x:auto"><table id="diff"></table></div>
+
+  <h2>04 · 一句话结论</h2>
+  <div class="bars" style="font-size:12.5px;line-height:1.8">
+    <p style="margin:0">两边<b>共享同一套骨架</b>：<code>lark-cli</code> 入站 → 确定性 Trigger → SQLite + effect 队列 → 2 秒 passes → 单一 master Session + 每工单 worker Session。原型不是简化版，它同样有 <code>store.ts / effects.ts / passes.ts / sessions.ts</code>。</p>
+    <p style="margin:0">真正的结构差异只有一条：<b>本项目在「建单」与「启动 worker」之间插入了组队方案与人工同意闸门</b>。原型 <code>tickets.ts:54</code> 建单即 <code>executor.start()</code>；本项目 <code>tickets.ts:59</code> 先写 <code>team={state:'proposing'}</code>，<code>:64</code> 的启动条件不成立，直到 <code>:96</code> 的 <code>approveStaffing()</code> 才启动。</p>
+    <p style="margin:0">由此派生出本项目全部新增复杂度：<code>team_request</code> 唤醒、<code>orchestrator_team_bots/propose</code>、7 天方案复用、飞书「同意」纯代码快路径、团队步骤、步骤审批、用量账本、结果回飞书；以及为了抵消模型延迟而加的 <code>fastExplicitTasks</code> 规则直建单。</p>
+  </div>
+
+  <div class="foot">
+    证据来源：原型 <code>G:/CustomWorkspaces/AIProjects/dsh-superagent-prototype/</code>（README / docs/002-007 / src/**，v0.1.0）；本项目 <code>dsh-plugins/vssaros-superagent/dev/src/**</code> 与 <code>doc/superagent-framework-v2.html</code>（0.1.121）；真机 <code>.vssaros-dev/dsh-home/dsh-superagent/orchestrator.sqlite</code> 的 <code>trigger / decision / team_proposal / usage_call / effect</code>。<br>
+    本页为静态对比图，不读取运行时数据；所有阶段与行号来自源码静态核对。生成日期 2026-11-12。
+  </div>
+</div>
+
+<script>
+const P = 'src/';
+const Q = 'dev/src/';
+const STAGES = [
+  { n:'01', name:'收到飞书消息', diff:false,
+    p:{ t:'lark-cli event consume', k:'code', tag:'纯代码', d:'子进程长连接消费 im.message.receive_v1，stdout 逐行 JSON；非自建 WebSocket。', f:'src/sources/feishu-loops.ts:71,89', more:'补收历史与线程轮询也走同一个 CLI：backfillLoop 调 api GET /open-apis/im/v1/messages。' },
+    q:{ t:'watch + 补收 + 线程轮询', k:'code', tag:'增强', d:'三个 loop 并行；p2p 私聊跳过补收、230002/238002 判为「不在会话」非重试并推进游标。', f:'dev/src/sources/feishu-loops.ts:20-21,224-241', more:'2026-11-12 修复：旧 bot 遗留的 p2p 会话曾被 bot 身份反复读历史，每 60s 失败一次并写持久化 error 红条。' } },
+  { n:'02', name:'入站归一化', diff:false,
+    p:{ t:'feishuTrigger()', k:'code', tag:'纯代码', d:'确定性 ID、channel/threads/actor/at/text/meta；过滤机器人自身消息。', f:'src/sources/feishu-trigger.ts:18,31-44' },
+    q:{ t:'feishuTrigger() + 历史/话题归一', k:'code', tag:'纯代码', d:'同样确定性 ID 与 bot 自滤；额外有 historyEvent / topicEvent 把补收与话题消息归一成 Trigger。', f:'dev/src/sources/feishu-trigger.ts:31-44,74-89' } },
+  { n:'03', name:'去重 / 准入 / 扇出', diff:false,
+    p:{ t:'ctx.receive → Engine.receive → Intake', k:'code', tag:'纯代码', d:'单事务：去重 → scope() → 存 trigger/disposition → 订阅工单 fan-out → 排队 Eval，emit trigger.received。', f:'src/core/intake.ts:19-60, src/core/engine.ts:48' },
+    q:{ t:'Intake.receive（同构）', k:'code', tag:'纯代码', d:'同构事务；多一条「待人回答工单只收回答」的扇出规则，以及 trigger.received 后对已收消息做步骤/组队批准快路径。', f:'dev/src/core/intake.ts:50-108, dev/src/app/runtime.ts:384-389' } },
+  { n:'04', name:'2 秒编排 pass', diff:false,
+    p:{ t:'Passes.request()', k:'code', tag:'纯代码', d:'setInterval 2s 请求一次 pass，pumpOnce 踢 effect 队列并调 engine.evaluateDue()。', f:'src/app/passes.ts:28,34-38,63-67' },
+    q:{ t:'Passes.request()（同构）', k:'code', tag:'纯代码', d:'同样 2 秒；调度本身不是瓶颈，真机入站到 disposition 只需 0.6 秒。', f:'dev/src/app/passes.ts:28,34-38,56-68' } },
+  { n:'05', name:'评估与决策', split:'分叉点', diff:true, fork:true,
+    p:{ t:'候选卡 steer 进唯一主会话', k:'model', tag:'模型回合', d:'Evals.start() 做 gate 后 assessor.request() 只入队；assessment effect 把 candidate card steer 进 master，由 orchestrator_route / orchestrator_eval_decide 写回决策。', f:'src/core/evals.ts:71-118, src/app/assessment.ts:104, src/app/tools/main.ts:127,215', more:'显式请求走 orchestrator_route（reason explicitRouted）；推断候选才走 orchestrator_eval_*。评估不是独立 LLM 调用，而是复用主会话的当前 turn。' },
+    q:{ t:'FAST：规则直接 accept() 并 return', k:'code', tag:'仅本项目', d:'开关开 + strength=explicit + 单条批次 + 任务动词与 URL 命中时，跳过 assessor.request，同步 accept（reason explicitFastTrack）。', f:'dev/src/core/evals.ts:119-130, dev/src/core/group-request.ts:7-22, dev/src/policy.ts:88', more:'开关 fastExplicitTasks 默认 false；真机已打开。闲聊 test1 / 看看这个链接 / 带否定词的文本仍交模型判 ignore。' },
+    q2:{ t:'NORMAL：候选卡 → 主会话模型', k:'model', tag:'模型回合', d:'否则走 assessor.request → assessment effect → 候选卡 → orchestrator_route / orchestrator_eval_decide → engine.decide()。', f:'dev/src/core/evals.ts:130, dev/src/app/assessment.ts:107-115, dev/src/app/links.ts:55-71', more:'真机改造前这一段耗时 282.3 秒（含 120s 超时重排与历史积压批量评估）。' } },
+  { n:'06', name:'建单', diff:true,
+    p:{ t:'tickets.create() → 立即启动', k:'code', tag:'纯代码', d:'写 Decision / Mandate / Ticket / 首个 Assignment / 订阅 / ack，并在同一处 executor.start()。无 team 字段、无等待。', f:'src/core/tickets.ts:37-55:54' },
+    q:{ t:'建单但 worker 不启动', k:'code', tag:'仅本项目', d:'team 被置为 {state:"proposing",version:0}；staffing(ticket) 为真使 executor.start 条件不成立。', f:'dev/src/core/tickets.ts:59,64, dev/src/core/model.ts:343', more:'这是本项目与原型最重要的结构差异：等待组队方案 → 需要模型回合 → 若快速通道没唤起模型就形成死锁（0.1.120 的 team_request relay 即为修它）。' } },
+  { n:'07', name:'回执', diff:false,
+    p:{ t:'acknowledgement outbox', k:'code', tag:'纯代码', d:'确定性 id 的 ack 写 receipt，enqueue reply effect。', f:'src/core/replies.ts:44, src/app/outbox.ts:26-31' },
+    q:{ t:'「收到，已建单。」', k:'code', tag:'纯代码', d:'同构 outbox；快速通道的 accept 自带 acknowledgement 文案。', f:'dev/src/core/replies.ts:36-44, dev/src/core/evals.ts:125-127' } },
+  { n:'08', name:'组队方案', diff:true,
+    p:{ t:'无此阶段', k:'none', tag:'—', d:'原型只有三段可编辑团队 prompt（communication / scope / delivery），没有提案、版本、指纹或审批。', f:'src/app/prompts.ts:14' },
+    q:{ t:'team_request steer → 主会话出方案', k:'model', tag:'模型回合', d:'ticket.created 且 team=proposing 且 decision 含 explicitFastTrack 时，用 sessions.relay（prompt steer，真正起回合）唤醒；主会话调 orchestrator_team_bots / team_propose，staffing.propose 解析 roster、算 fingerprint、写 team_proposal 并飞书发方案。', f:'dev/src/app/notices.ts:82-89, dev/src/app/runtime.ts:371-378, dev/src/app/staffing.ts:103-131,281-286', more:'刻意不受 this.quiet 门禁（accept 发生在后台 pass 内）；relay 载荷是 JSON.stringify({kind:"team_request",...})，不能用自然语言。7 天内同 fingerprint 且已批准的方案会被 reusableApproved() 直接复用。' } },
+  { n:'09', name:'人工同意', diff:true,
+    p:{ t:'无此阶段', k:'none', tag:'—', d:'没有开工前确认门：名单准入 + 发出 ack 就立即开工；worker 的 orchestrator_ack 只回话，不等回复。', f:'docs/003-execution.md:27, prompts/replies.md:13' },
+    q:{ t:'飞书「同意」→ 纯代码批准', k:'human', tag:'人工 + 纯代码', d:'staffing.fromMessage() 识别「同意 / 拒绝 / 取消」，mayConsent() 校验白名单或工单发起人，confirm → agree → steps.plan → engine.approveStaffing → executor.start。全程不需模型。', f:'dev/src/app/staffing.ts:154-219, dev/src/policy.ts:148-152, dev/src/core/tickets.ts:85-97', more:'0.1.114 引入：替代会因 unavailable/timeout 卡死的 orchestrator_team_confirm。真机「同意 → approved」实测 7 秒。' } },
+  { n:'10', name:'启动 worker', diff:false,
+    p:{ t:'launch effect → ensure + prompt(queue)', k:'model', tag:'模型回合', d:'准备独立目录、sessions.ensure(worker-<id>)，prompt(...,"queue") 起 worker turn。', f:'src/executor/dsh.ts:232,424-468' },
+    q:{ t:'approveStaffing 内才 launch', k:'model', tag:'模型回合', d:'同构 launch，但入口被推迟到第 09 阶段之后；每工单一个持久 worker Session。', f:'dev/src/core/tickets.ts:96, dev/src/executor/dsh.ts:291-320,462-509' } },
+  { n:'11', name:'执行', diff:true,
+    p:{ t:'单 worker + 工具循环', k:'model', tag:'模型回合', d:'orchestrator_ack → 调查/改动/PR → orchestrator_report；主会话不碰代码。', f:'src/app/tools/executor.ts:29,75,96-98, prompts/shared.md:4-5' },
+    q:{ t:'团队步骤（多 Bot Session）', k:'model', tag:'模型回合', d:'steps.plan(agreed) 按方案启动多个 step Session，有依赖/并行/写互斥调度；0.1.118 起不再有 token 或回合上限拦截，只累计已消耗量。', f:'dev/src/app/steps.ts:189-198,201-224,463-548, dev/src/app/usage.ts:138-161', more:'新增 team_step / usage_call / step_approval_* 等表；用量账本与空闲压缩（steward.ts:61-97）是原型没有的。' } },
+  { n:'12', name:'报告 / 答复', diff:false,
+    p:{ t:'report → relay → orchestrator_reply', k:'model', tag:'模型回合', d:'worker report 经 sessions.relay 回主会话；orchestrator_reply(answer|result|attention) 规则校验后写 outbox。', f:'src/app/tools/executor.ts:96-98, src/app/tools/main.ts:224-235, src/core/replies.ts:69-79' },
+    q:{ t:'reportRelay + 终态通知', k:'code', tag:'纯代码', d:'同构 report；ticket.ended 时另外生成 ticketResultNotices / pullEndNotices / changeEndNotices 三种终态通知。', f:'dev/src/app/tools/executor.ts:118-158, dev/src/app/runtime.ts:391-402, dev/src/app/ticket-notices.ts:27-37' } },
+  { n:'13', name:'结果回飞书', diff:true,
+    p:{ t:'im +messages-reply（原 id 作幂等键）', k:'code', tag:'纯代码', d:'reply effect 调 lark-cli；--idempotency-key 直接用 message.id，确定性且由 receipt 去重。', f:'src/sources/feishu-channel.ts:19-29, src/app/outbox.ts:24' },
+    q:{ t:'sha256 短幂等键 + 结果回飞书', k:'code', tag:'仅本项目', d:'ticket-result:<ticket>:<时间>:… 的 id 有 114 字符，超过飞书 50 上限会无限重试；0.1.121 改为 sa-<sha256 前 30 位>（33 字符，稳定）。', f:'dev/src/sources/feishu-channel.ts:19-33, dev/src/app/outbox.ts:27-32,51-73', more:'真机曾有 3 条结果通知卡在 effect 表（最多重试 244 次），health.reply 持续报 error；修复后队列可清空。' } }
+];
+
+const DIFFS = [
+  ['评估与决策','必经 assessor → 候选卡进主会话；explicit 由 orchestrator_route 接受','新增 fastExplicitTasks：任务动词 + URL 且 explicit 时规则直 accept 并 return，跳过模型','dev/src/core/evals.ts:119-130'],
+  ['准入判据','admission matrix + allowed 名单 + gate.strength','同上，另加 explicitTask() 正则与 fastExplicitTasks 开关（默认 false）','dev/src/core/group-request.ts:7-22'],
+  ['建单后的状态','Ticket 立即可执行，executor.start() 同处调用','team={state:"proposing"}；启动条件不成立，worker 挂起','dev/src/core/tickets.ts:59,64'],
+  ['组队方案','不存在','team_request steer 唤醒 → team_bots / team_propose → staffing.propose 写 team_proposal','dev/src/app/notices.ts:82-89'],
+  ['方案复用','不存在','7 天内同 fingerprint 且已批准 → reusableApproved() 自动批准','dev/src/app/staffing.ts:44-47,122-131'],
+  ['人工同意门','不存在；名单准入后即开工','飞书「同意/拒绝/取消」由 staffing.fromMessage 纯代码处理，mayConsent 校验发起人','dev/src/app/staffing.ts:154-219, dev/src/policy.ts:148-152'],
+  ['执行形态','单个 worker Session + 工具循环','多 Bot 团队步骤、依赖/并行调度、步骤审批','dev/src/app/steps.ts:189-198,463-548'],
+  ['预算','无 token / usage 记账','曾有 300k 上限，0.1.118 起删除拦截，只累计已消耗量并写 usage_call','dev/src/app/steps.ts:201-224'],
+  ['用量与压缩','无 usage_call；context.ts 明确省略 usage accounting','usage_call 账本 + steward.ts 空闲时 compactNow','dev/src/app/usage.ts:138-161, dev/src/app/steward.ts:61-97'],
+  ['健康状态','内存健康','health_entry 持久化（含 reply / history / evals / models）','dev/src/infra/health.ts:49'],
+  ['飞书补收','backfill + 线程轮询','同构，但 p2p 跳过补收；230002/238002 判非重试并推进游标','dev/src/sources/feishu-loops.ts:224-241'],
+  ['出站幂等键','--idempotency-key message.id','sa-<sha256 前 30 位>；另有 ticketResultNotices 把结果回飞书','dev/src/sources/feishu-channel.ts:19-33']
+];
+
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const KIND = { code:'纯代码', model:'模型回合', human:'人工 + 纯代码', none:'—' };
+function card(c, side, extra) {
+  if (!c) return '<div class="card none"><div class="top"><span class="t">无此阶段</span><span class="tag same">—</span></div><p>原型在此处没有对应环节</p></div>';
+  const kind = c.k === 'none' ? 'none' : (c.k === 'code' ? 'code' : c.k === 'model' ? 'model' : 'human');
+  const cls = ['card', side, kind, extra?.diff ? 'diff' : ''].filter(Boolean).join(' ');
+  const tagCls = c.k === 'code' ? 'code' : c.k === 'model' ? 'model' : c.k === 'human' ? 'human' : 'same';
+  const tagText = c.tag && c.tag !== KIND[c.k] ? c.tag : KIND[c.k];
+  const more = c.more ? '<details><summary>展开判定条件与背景</summary><p>' + esc(c.more) + '</p></details>' : '';
+  return '<div class="' + cls + '">' +
+    '<div class="top"><span class="t">' + esc(c.t) + '</span><span class="tag ' + tagCls + '">' + esc(tagText) + '</span></div>' +
+    '<p>' + esc(c.d) + '</p>' +
+    '<code class="ref">' + esc(c.f) + '</code>' + more + '</div>';
+}
+function render() {
+  let html = '';
+  for (const s of STAGES) {
+    const modelHit = [s.p,s.q,s.q2].some(c => c && c.k === 'model');
+    const cls = ['row', s.diff ? '' : 'same-row'].filter(Boolean).join(' ');
+    let right;
+    if (s.fork) {
+      right = '<div class="fork">' +
+        '<div><span class="lane-label">FAST · 快速通道</span>' + card(s.q,'prod',{diff:true}) + '</div>' +
+        '<div><span class="lane-label">NORMAL · 常规路径</span>' + card(s.q2,'prod') + '</div></div>';
+    } else right = card(s.q,'prod',{diff:s.diff});
+    html += '<div class="' + cls + '" data-diff="' + (s.diff ? '1' : '0') + '" data-model="' + (modelHit ? '1' : '0') + '">' +
+      '<div class="axis"><span class="num">' + s.n + '</span><span class="name">' + esc(s.name) + '</span>' +
+        (s.split ? '<span class="split">' + esc(s.split) + '</span>' : '') + '</div>' +
+      '<div class="cell p">' + card(s.p,'proto') + '</div>' +
+      '<div class="cell q">' + right + '</div></div>';
+  }
+  document.getElementById('rows').innerHTML = html;
+}
+let diffTable = '<thead><tr><th>主题</th><th>原型 · 参考实现</th><th>本项目 · 生产插件</th><th>证据落点</th></tr></thead><tbody>';
+DIFFS.forEach((d,i) => { diffTable += '<tr' + (i===2 ? ' class="key"' : '') + '><td>' + esc(d[0]) + '</td><td>' + esc(d[1]) + '</td><td>' + esc(d[2]) + '</td><td><code>' + esc(d[3]) + '</code></td></tr>' });
+document.getElementById('diff').innerHTML = diffTable + '</tbody>';
+render();
+
+let filter = 'all';
+function apply() {
+  document.querySelectorAll('.row').forEach(row => {
+    const show = filter === 'all' || (filter === 'diff' && row.dataset.diff === '1') || (filter === 'model' && row.dataset.model === '1');
+    row.classList.toggle('hide', !show);
+  });
+  document.querySelectorAll('.pill[data-filter]').forEach(b => {
+    const on = b.dataset.filter === filter; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on));
+  });
+}
+document.querySelectorAll('.pill[data-filter]').forEach(b => b.addEventListener('click', () => { filter = b.dataset.filter; apply() }));
+const theme = document.getElementById('theme');
+function setTheme(t){ document.documentElement.setAttribute('data-theme', t); theme.textContent = t === 'dark' ? '切换浅色' : '切换深色'; theme.setAttribute('aria-pressed', String(t === 'dark')); theme.classList.toggle('on', t === 'dark'); try { localStorage.setItem('sa-flow-theme', t) } catch {} }
+setTheme((() => { try { return localStorage.getItem('sa-flow-theme') || 'light' } catch { return 'light' } })());
+theme.addEventListener('click', () => setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'));
+apply();
+</script>
+</body>
+</html>

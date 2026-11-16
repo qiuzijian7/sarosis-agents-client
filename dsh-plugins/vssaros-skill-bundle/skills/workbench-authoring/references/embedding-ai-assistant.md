@@ -53,7 +53,7 @@ for (const key of ['agentPresets', 'remote.agentPresets']) {
 1. **服务到齐后再切**：inject 是异步的，面板可能已经在前台 ⇒ 在回调里补一次，别只在挂载时试。
 2. **等会话真的建出来再切**：`newSession()` 返回后会话可能还没 ready，用短轮询等 `currentSessionId`，别写死 `setTimeout(300)`。
 3. `.agent.md` **不要写 `tools` 白名单**（否则新建的会话工具面可能被收窄到空）。
-4. 预设 id 规则：`vssaros-` + slugify(agentId)，例如 `saroasis-studio` → `vssaros-saroasis-studio`。
+4. 预设 id 规则：`vssaros-` + slugify(agentId)，例如 `gr-programmer` → `vssaros-gr-programmer`。
 
 ## 千万不要这样做
 

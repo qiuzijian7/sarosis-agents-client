@@ -8,6 +8,9 @@ import type { SettingsSave } from './policy.ts'
 import type { Retry } from './sources/github.ts'
 import type { AuditEntry, Review } from './app/review.ts'
 import type { TapdWatchState } from './sources/tapd.ts'
+import type { TapdSweepState } from './sources/tapd-filters.ts'
+import type { WorkspacePreparation } from './executor/workspace.ts'
+import type { GongfengWatch } from './sources/gongfeng.ts'
 
 /** Key of a KV record whose value has type `V`; a plain string represents an untyped key. */
 export type Key<V> = string & { readonly __value?: V }
@@ -33,6 +36,10 @@ export const KV = {
     builtIn: family<string, [base: string]>('prompt-built-in:') },
   /** Runtime: the main Session's ID. */
   runtime: { masterId: record<string>('master-id') },
+  /** Tool trace: local HMAC key; never exported through management views. */
+  trace: { key: record<string>('tool-trace-hmac-key') },
+  /** Executor: durable readiness of each ticket directory, including failed or interrupted preparation. */
+  executor: { workspace: family<WorkspacePreparation, [ticket: string]>('executor-workspace:') },
   /** Sessions: prompt revisions each Session has worked under, ordered oldest first; the last entry (`.at(-1)`) is its active revision. */
   sessions: { prompts: family<number[], [session: string]>('session-prompts:') },
   /** Schema 11 migration: legacy main-Session queues imported into the effect table. */
@@ -63,7 +70,15 @@ export const KV = {
    */
   tapd: { watch: family<TapdWatchState, [watch: string]>('tapd-watch:'), comments: family<string, [thread: string]>('tapd-comments:'),
     /** Bounded list of the TAPD Webhook event/queue IDs already ingested, so a replay receives nothing twice. */
-    webhookSeen: record<string[]>('tapd-webhook-seen') },
+    webhookSeen: record<string[]>('tapd-webhook-seen'),
+    /** Per daily imported-filter sweep: last local day it ran and the bounded item IDs already dispatched. */
+    sweep: family<TapdSweepState, [schedule: string]>('tapd-sweep:') },
+  /** Gongfeng: per-project activation baseline and per-MR comment cursors, separate from GitHub. */
+  gongfeng: { watch: family<GongfengWatch, [project: string]>('gongfeng-watch:'),
+    notes: family<{ signature: string; at: string }, [project: string, iid: number]>('gongfeng-notes:'),
+    creation: family<{ branch: string; iid?: number }, [project: string, ticket: string]>('gongfeng-create:'),
+    reply: family<'pending' | 'sent', [project: string, message: string]>('gongfeng-reply:') },
   /** VsSaros addition, Reviews: each ticket's latest changelist review, and the audit of review decisions, oldest first. */
-  reviews: { review: family<Review, [ticket: string]>('p4-review:'), audit: record<AuditEntry[]>('p4-review-audit') },
+  reviews: { review: family<Review, [ticket: string]>('p4-review:'), audit: record<AuditEntry[]>('p4-review-audit'),
+    required: family<number, [ticket: string]>('p4-required:') },
 }

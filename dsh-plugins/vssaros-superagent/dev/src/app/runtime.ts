@@ -30,10 +30,11 @@ import { evalsHealth } from './views/overview.ts'
 import { TextCache } from './cache.ts'
 import { Effects } from './effects.ts'
 import { Prompts } from './prompts.ts'
+import { TicketReports } from './ticket-report.ts'
 import { registerHttp, type HttpHost } from './http.ts'
 import type { LinkTarget } from './views/records.ts'
 import { candidateCard, repliedTo, sourceLink, type LinkHost } from './links.ts'
-import { eventNotice, followupNotice } from './notices.ts'
+import { eventNotice, followupNotice, teamRequestNotice } from './notices.ts'
 import { pullEndNotices } from '../sources/github-pull.ts'
 import { changeEndNotices } from '../sources/p4-change.ts'
 import { HealthBoard } from '../infra/health.ts'
@@ -51,11 +52,12 @@ import { sharedTeamBus, Team } from './team.ts'
 import { Staffing } from './staffing.ts'
 import { stepOfSession, stepTools, TeamSteps } from './steps.ts'
 import { UsageLedger } from './usage.ts'
+import { ToolTrace, type TraceOwner } from './tool-trace.ts'
 import { ContextSteward } from './steward.ts'
 import { coexistenceOf, type Coexistence } from './coexist.ts'
 import { Distiller } from './distill.ts'
 import { deliverReply, deskReceiptStream, deskRequestId, deskSessionId, deskTools, deskWithoutCatalog, latestPersonMessage, submitText, TICKET_ENDED_NOTICE, ticketEndedNotice } from './desk.ts'
-import { ticketResultNotices } from './ticket-notices.ts'
+import { ticketResultNotices, ticketStatusNotices } from './ticket-notices.ts'
 import { DeskChat } from './desk-chat.ts'
 import { DeskOutbox, wakesDesk } from './desk-outbox.ts'
 import { GROUP_REFERENCE_KIND, GROUP_REFERENCE_LATE_MS, GROUP_REFERENCE_WAIT_MS, handleDeskGroupCommand, handleDeskMessage, isGroupCreationRequest,
@@ -65,11 +67,12 @@ import { GROUP_CHECK_MS, groupTicketReport } from './group-tickets.ts'
 import { sandboxWorks, StepActivity, StepApprovals, stepPermission } from './step-approvals.ts'
 import { Feed } from './feed.ts'
 import { deskFlow, type DeskFlow } from './desk-flow.ts'
-import { botTrigger, DESK_PERSON, deskTrigger, makeSuperagentKind, SUPERAGENT_HOPS_MAX, SUPERAGENT_SOURCE } from '../sources/superagent.ts'
+import { botTrigger, DESK_PERSON, deskTrigger, makeSuperagentKind, sessionTrigger, SUPERAGENT_HOPS_MAX, SUPERAGENT_MENTION, SUPERAGENT_SOURCE } from '../sources/superagent.ts'
+import { TapdConfigSchema } from '../sources/tapd-api.ts'
 import { sourceContextOf, type SourceContextDeps } from './source-context.ts'
 import type { ResourceHost } from './resources.ts'
 import { mainTools, type MainToolsHost } from './tools/main.ts'
-import { executorTools, type ExecutorToolsHost } from './tools/executor.ts'
+import { executorTools, tapdItemTool, type ExecutorToolsHost } from './tools/executor.ts'
 
 // Source plugins interact with dsh-superagent exclusively through the `SourceHost` service interface.
 declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
@@ -101,6 +104,8 @@ export class Runtime extends Service implements SourceHost {
   readonly assessor: MasterAssessor
   readonly outbox: Outbox
   readonly engine: Engine
+  /** VsSaros addition (2026-11-13): self-contained HTML reports sent to a ticket's Feishu threads. */
+  readonly reports: TicketReports
   /** VsSaros addition: changelist reviews, which alone submit to P4. */
   readonly reviews: Reviews
   /** VsSaros addition: the main Session's team plans, given to VsSaros Bots. */
@@ -125,6 +130,7 @@ export class Runtime extends Service implements SourceHost {
   private readonly board = new HealthBoard()
   /** VsSaros addition (2026-11-06): the usage ledger of SuperAgent's Sessions. */
   usage!: UsageLedger
+  toolTrace!: ToolTrace
   steward!: ContextSteward
   private readonly runtimeHealth = this.board.claim('runtime', { state: 'starting', detail: '' })
   readonly masterId: string
@@ -243,7 +249,11 @@ export class Runtime extends Service implements SourceHost {
       const sessions = this.sessions = new Sessions({ context: ctx, store, prompts, effects, health: board.claim('models'), masterId,
         lifetime: this.lifetime,
         closing: () => this.closing(), environment,
-        tools: (agent, ticket) => ticket ? executorTools(this.toolHost, ticket) : mainTools(this.toolHost, agent),
+        // ★ 2026-11-11（用户）：TAPD 取单走设置里配置的 Open API；凭据留在 Host，worker 只见工具结果。
+        tools: (agent, ticket) => ticket
+          ? [...executorTools(this.toolHost, ticket), tapdItemTool(() => TapdConfigSchema.parse(store.settings().sources.tapd?.config ?? {}),
+            undefined, { store, ticketId: ticket.id, settings: () => store.settings() })]
+          : mainTools(this.toolHost, agent),
         deskId, deskTools: agent => deskTools({ receive: trigger => this.passes.receive(trigger), ticket: id => store.tickets.get(id) }, agent),
         // VsSaros addition (superagent v2, P3): a team step's Session, under its Bot's preset.
         step: sessionId => {
@@ -306,6 +316,27 @@ export class Runtime extends Service implements SourceHost {
           if (call.role === 'step') runtime.steps?.meter(call.session, { inputTokens: call.input, outputTokens: call.output, cacheReadTokens: call.cacheRead, cacheWriteTokens: call.cacheWrite })
         }, () => store.settings().executor.sideCalls ? undefined
           : 'SuperAgent does not let another plugin read its Sessions with another model (executor.sideCalls is off)'), { prepend: true }))
+      this.toolTrace = new ToolTrace(store, () => store.settings().executor.toolTrace, (sessionId, execution): TraceOwner | undefined => {
+        const direct = (id: string): TraceOwner | undefined => {
+          if (id === masterId) return { role: 'master' }
+          if (id === deskId) return { role: 'desk' }
+          const ticketId = ticketOfSession(id), ticket = ticketId && store.tickets.get(ticketId)
+          if (ticket) return { role: ticket.team?.state === 'approved' ? 'coordinator' : 'worker', ticketId: ticket.id }
+          const ref = stepOfSession(id)
+          return ref && store.tickets.get(ref.ticketId) ? { role: 'step', ticketId: ref.ticketId, step: ref.key } : undefined
+        }
+        const own = direct(sessionId)
+        if (own) return own
+        const visited = new Set<string>()
+        for (let parent = execution.agent?.session.header?.parentSession; parent && visited.size < 32 && !visited.has(parent);) {
+          visited.add(parent)
+          const owner = direct(parent)
+          if (owner?.ticketId) return { ...owner, role: 'subagent' }
+          parent = ctx.agents.get(parent as SessionId)?.session.header.parentSession
+        }
+        return undefined
+      })
+      this.disposers.push(this.toolTrace.install(ctx))
       // VsSaros addition (2026-11-06): the main Session and the desk are compacted while idle, past their check line.
       const ledger = this.usage, windows = new Map<string, Promise<{ window: number; maxOutput?: number } | undefined>>()
       this.steward = new ContextSteward({ watched: id => id === masterId ? 'master' : id === deskId ? 'desk' : undefined, last: id => ledger.last(id),
@@ -334,21 +365,27 @@ export class Runtime extends Service implements SourceHost {
         sourceHost: this, setup, requestPass: () => { this.passes.request() } })
       this.executor = new DshExecutor({ context: ctx, get engine() { return runtime.engine }, store, effects, health: board.claim('worker'), machine,
         lifetime: this.lifetime, sessions, closing: () => this.closing(), paused: () => this.paused(), environment, sourceLink: link,
-        repliedTo: trigger => repliedTo({ store, sources }, trigger),
+        repliedTo: trigger => repliedTo({ store, sources }, trigger), repository: () => setup.deployment.repository,
         // VsSaros addition: a ticket whose CL a person reviews keeps its inputs until the review ends.
         held: ticketId => runtime.reviews.held(ticketId),
+        // Host-owned P4 pre-work sync uses the real CLI (PATH excludes worker shims), so workers never gain `sync`.
+        p4Host: (argv, cwd, signal) => commands.withSignal(signal).run(argv[0]!, argv.slice(1), cwd, undefined, 10 * 60_000),
         // VsSaros addition (superagent v2, P3): the lead of a team runs; its steps may start.
         launched: ticketId => { void runtime.steps?.kick(ticketId) } })
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
         settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),
         deliver: (id, text) => sessions.prompt(masterId, id, text, 'steer'), candidateCard: candidate => candidateCard(links, candidate), db: store.db })
       const outbox = this.outbox = new Outbox({ store, effects, sources, commands, paused: () => this.paused() })
+      // VsSaros addition (2026-11-13): reports are a separate durable effect, not part of the 100-word reply outbox.
+      const reports = this.reports = new TicketReports({ store, effects, commands, stateDir: machine.stateDir,
+        enabled: () => store.settings().executor.feishuReport,
+        warn: message => { ctx.logger.warn('dsh-superagent: %s', message) } })
       const { assessor, executor } = this
       const policy = () => settingsPolicy(store.settings(), sources)
       const engine = this.engine = new Engine({ repo: store, scope: sources, policy, assessor, executor,
         outbox, prepareTicket: (ticket, outcome) => executor.prepare(ticket, outcome),
-        // VsSaros addition (superagent v2): a new ticket waits for a person to agree to its team.
-        staffing: () => store.settings().executor.staffing,
+        // ★ 2026-11-12（用户）：团队开关默认关闭 ⇒ 建单立即启动 worker（原型流程）。
+        staffing: () => store.settings().executor.teamEnabled,
         // VsSaros fix (2026-11-06, real run): the desk is one conversation for every request, so a later message there must
         // not resume a ticket that ended; it reaches only live ones (agreeing to a team, steering, stopping).
         conversation: key => key === deskChat.thread, emit: event => {
@@ -359,12 +396,30 @@ export class Runtime extends Service implements SourceHost {
           if (notice) sessions.notify(...notice)
           // A person's message that reached an open ticket is the ticket's; the main Session hears of it in the same transaction,
           // and of one for an ended ticket once it resumes, unless it routed the message there itself.
+          // ★ 2026-11-12（方案 1）：规则直接建单没有模型回合，工单会停在 proposing；用 steer 让主会话只做组队。
+          //   relay 走 prompt(…,'steer') 会真正起回合；notify 只注入不唤醒，不能替代。只对 explicitFastTrack 生效，
+          //   模型自己 accept 的工单本来就在回合里，不需要也不该被重复唤醒。
+          //   The accept that creates such a ticket runs inside a background pass, so it is deliberately NOT gated on
+          //   \`this.quiet\`: quiet suppresses telling the main Session about work it started itself, and this is the opposite.
+          const created = event.type === 'ticket.created' ? store.tickets.get(event.data.ticketId) : undefined
+          if (created && !created.ended && created.team?.state === 'proposing') {
+            const decision = created.decisionId ? store.decisions.get(created.decisionId) : undefined
+            if (decision?.reason.some(item => item.code === 'explicitFastTrack')) {
+              const request = teamRequestNotice(created)
+              sessions.relay(request.id, request.text)
+            }
+          }
+          // A person's message that reached an open ticket is the ticket's; the main Session hears of it in the same transaction,
           const followed = !this.quiet && (event.type === 'trigger.received' || event.type === 'ticket.resumed' || event.type === 'trigger.followup')
           const followup = followed ? followupNotice(store, sources, event.data.triggerId) : undefined
           if (followup) sessions.relay(followup.id, followup.text)
           // VsSaros addition (plan C): a listed person's 同意 / 拒绝 on the ticket's Feishu thread answers a step's request.
           const received = event.type === 'trigger.received' ? store.triggers.get(event.data.triggerId) : undefined
-          if (received) runtime.stepApprovals?.fromMessage(received)
+          if (received) {
+            runtime.stepApprovals?.fromMessage(received)
+            // ★ 2026-11-11：飞书「同意」直达组队方案批准，不再依赖主会话模型（会超时/不唤起）。
+            runtime.staffing?.fromMessage(received)
+          }
           // Notify the ticket's conversations whenever it ends via a pull request.
           const ended = event.type === 'ticket.ended' ? store.tickets.get(event.data.ticketId) : undefined
           if (ended && setup.configured() && setup.deployment.repository) {
@@ -378,6 +433,15 @@ export class Runtime extends Service implements SourceHost {
           if (receipt) outbox.send(receipt)
           // ★ 2026-11-10（用户）：飞书发来的任务结束后，把结果发回飞书（desk 有自己的通知，github/p4 另有终态通知）。
           if (ended) for (const message of ticketResultNotices(ended)) outbox.send(message)
+          // VsSaros addition (2026-11-13): the full HTML report follows the short result notice when a person enabled it;
+          // queue() only enqueues, so no file or subprocess work runs inside this synchronous emit callback.
+          const reported = event.type === 'assignment.reported' ? store.tickets.get(event.data.ticketId) : undefined
+          // ★ 2026-11-16（日志）：终态报告由 Host 直接通知飞书，不依赖工单结束，也不依赖主会话模型决定是否外发。
+          // 已结束的工单只走上面的 ticketResultNotices，避免同一结果收到两条。
+          if (reported && !reported.ended) {
+            for (const message of ticketStatusNotices(reported)) outbox.send(message)
+          }
+          if (ended || (reported && !reported.ended)) reports.queue((ended ?? reported)!)
           // VsSaros addition (superagent v2, P3): its team's unfinished steps stop with it.
           if (ended) runtime.steps?.stopAll(ended.id, ended.ended?.reason ?? ended.ended?.outcome ?? 'the ticket ended')
           // VsSaros addition (superagent v2, P5): its agreed team leaves a workflow draft, or credits the workflow it reused.
@@ -430,7 +494,8 @@ export class Runtime extends Service implements SourceHost {
       this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources, team, retro, staffing, steps, workflows: retro,
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
         // VsSaros addition (p4 Source).
-        get p4() { return runtime.context({ kind: 'p4', health: ['p4'] }) }, reviews,
+        get p4() { return runtime.context({ kind: 'p4', health: ['p4'] }) },
+        get gongfeng() { return runtime.sources.kind('gongfeng') ? runtime.context({ kind: 'gongfeng', health: ['gongfeng'] }) : undefined }, reviews,
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
         // VsSaros addition (2026-11-05): the supervisor tells the conversation a request came from (a group chat it made).
         tellTrigger: (triggerId, id, text) => {
@@ -565,7 +630,17 @@ export class Runtime extends Service implements SourceHost {
     }
     this.disposers.push(() => clearPending())
     this.disposers.push(this.ctx.on('session/event', (session, event) => {
-      if (session.id !== this.deskId || event.type !== 'user/message' || this.closing()) return
+      if (event.type !== 'user/message' || this.closing()) return
+      if (session.id !== this.deskId) {
+        // ★ 2026-11-11（用户）：普通会话里 @SuperAgent 点名主管 ⇒ 变成 superagent 来源的 Trigger。
+        //   不拦 desk 之外的其它消息；desk 会话仍走下面的原有快速路径。
+        const mentioned = latestPersonMessage([event as never])
+        if (!mentioned || !mentioned.text.includes(SUPERAGENT_MENTION)) return
+        // ★ 2026-11-11：把来源配置的工作目录随 Trigger 带上，ticketExecution 会用它做执行根。
+        const workspace = String(this.store.settings().sources?.superagent?.config?.workspace ?? '')
+        this.passes.receive(sessionTrigger({ session: session.id, messageId: mentioned.id, text: mentioned.text, at: now(), workspace }))
+        return
+      }
       const sourceKind = (event as { data?: { source?: { kind?: unknown } } })?.data?.source?.kind
       if (sourceKind === GROUP_REFERENCE_KIND) {
         const item = pendingDeskMessage
@@ -614,8 +689,20 @@ export class Runtime extends Service implements SourceHost {
       onMessage: async ({ id, from, fromBot, fromName, text, hop }) => {
         if (!from) throw new Error('SuperAgent answers a Bot in its own Session; this message has no sender Session')
         if (hop > SUPERAGENT_HOPS_MAX) throw new Error(`This relay already passed ${SUPERAGENT_HOPS_MAX} hops; answer the person instead`)
-        const result = await this.passes.receive(botTrigger({ id: id ?? key('bot-help', from, String(hop), text),
-          session: from, bot: fromBot ?? null, name: fromName ?? null, text, hop, at: now() }))
+        const messageId = id ?? key('bot-help', from, String(hop), text)
+        // ★ 2026-11-11（真机事故）：worker 报告「TAPD 未登录 / 拿不到单子」是硬阻塞，
+        //   但 botTrigger 是 human:false，machineGate 直接判 not_human ⇒ 人永远看不到。
+        //   这里把阻塞文本直接送回原工单的会话，并打标记让 gate 放行进 Eval。
+        const blocker = /未登录|登录页|拿不到|硬阻塞|阻塞|无法读取|需要用户|请先|登录一次|落不到/.test(text)
+        if (blocker) {
+          const ticketId = /step-([0-9a-f]{16,})-/i.exec(String(from))?.[1]
+          const ticket = ticketId ? this.store.tickets.get(ticketId) : undefined
+          const channel = ticket?.channels?.[0]
+          if (channel) this.outbox.send({ id: key('blocker', messageId), channel, kind: 'reply',
+            ticketId, text: `【执行阻塞，需要人处理】${text}`.slice(0, 4000) })
+        }
+        const result = await this.passes.receive(botTrigger({ id: messageId,
+          session: from, bot: fromBot ?? null, name: fromName ?? null, text, hop, at: now(), blocker }))
         return { received: result }
       },
     })
@@ -661,10 +748,10 @@ export class Runtime extends Service implements SourceHost {
   }
   private httpHost(): HttpHost {
     const runtime = this
-    const { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, setup, passes, reviews, team, retro, staffing, distiller, steps, deskChat, deskId, stepApprovals, feed } = this
-    return { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, reviews, team, retro, staffing, distiller, steps, deskChat, deskId, stepApprovals, feed,
+    const { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, setup, passes, reviews, team, retro, staffing, distiller, steps, deskChat, deskId, stepApprovals, feed, reports } = this
+    return { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, reviews, team, retro, staffing, distiller, steps, deskChat, deskId, stepApprovals, feed, reports,
       outbox: this.outbox, archive: this.archive,
-      coexist: () => this.coexistence(), usage: this.usage, steward: this.steward,
+      coexist: () => this.coexistence(), usage: this.usage, steward: this.steward, toolTrace: this.toolTrace,
       deskFlow: (triggerId: string): DeskFlow => deskFlow({ store, proposal: ticketId => staffing.tables.latest(ticketId), team: ticketId => steps.view(ticketId),
         approvals: () => stepApprovals.list(), route: id => this.groupRoutes.get(id) }, triggerId),
       // VsSaros addition: local lark-cli diagnostics and confirmed maintenance for the Feishu Source.

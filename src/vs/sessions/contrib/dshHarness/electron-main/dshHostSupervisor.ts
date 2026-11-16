@@ -39,21 +39,21 @@ import { auditBundledPluginVersions, isVersionNewer, renderBundledVersionAudit }
 import { describeManualUpgrade, IThirdPartyPlugin, pickThirdPartyPlugins, upgradableSpecOf } from '../common/dshPluginUpgrade.js';
 import { DSH_HOST_IDLE_TTL_MS, DshHostOverlayKind, hostOverlayFileName, IDshHostConfig, renderHostOverlays } from '../common/dshHostConfig.js';
 import { HOST_RUN_OWNERSHIP_HEARTBEAT_MS, hostRunOwnershipFileName } from '../common/dshHostRunOwnership.js';
-import { DSH_ARCHIFY_PLUGIN_NAME, DSH_BRIDGE_PLUGIN_NAME, DSH_EGO_PLUGIN_NAME, DSH_BROWSER_PLUGIN_NAME, DSH_OFFICE_TEMPLATE_PLUGIN_NAME, DSH_CHAT_SURFACE_PLUGIN_NAME, DSH_DEFAULT_PROFILE, DSH_FOUNDATION_PLUGIN_NAME, DSH_KB_REFS_PLUGIN_NAME, DSH_LOOP_PLUGIN_NAME, DSH_UNREAL_PLUGIN_NAME, DSH_VOICE_BUNDLE_PLUGIN_NAME, DSH_WEB_APP_BUNDLE_NAME, DSH_WORKBENCHES_PLUGIN_NAME, DSH_WORKITEM_PLUGIN_NAME, IDshBundledInstallResult, IDshHostStartOptions, IDshHostStatus, IDshPluginInfo, sameStartOptions } from '../common/dshHarness.js';
+import { DSH_ARCHIFY_PLUGIN_NAME, DSH_BRIDGE_PLUGIN_NAME, DSH_EGO_PLUGIN_NAME, DSH_BROWSER_PLUGIN_NAME, DSH_OFFICE_TEMPLATE_PLUGIN_NAME, DSH_CHAT_SURFACE_PLUGIN_NAME, DSH_DEFAULT_PROFILE, DSH_FOUNDATION_PLUGIN_NAME, DSH_KB_REFS_PLUGIN_NAME, DSH_LOOP_PLUGIN_NAME, DSH_PLUGIN_RESOURCES_PLUGIN_NAME, DSH_UNREAL_PLUGIN_NAME, DSH_VOICE_BUNDLE_PLUGIN_NAME, DSH_WEB_APP_BUNDLE_NAME, DSH_WORKBENCHES_PLUGIN_NAME, DSH_WORKITEM_PLUGIN_NAME, IDshBundledInstallResult, IDshHostStartOptions, IDshHostStatus, IDshPluginInfo, sameStartOptions } from '../common/dshHarness.js';
 import { mergeMissingBundles, parseProfileBundles } from '../common/dshPluginActivation.js';
 import { hostLeaseBlocker, IDshHostLease, staleHostByPluginFiles } from '../common/dshHostLease.js';
 import { SANDBOX_FALLBACK_MODE, SANDBOX_FALLBACK_ROOT } from '../common/dshSandboxCompat.js';
 import { probeLabelWriteOnce } from './dshSandboxProbe.js';
 import { DshBridgeClient } from './dshBridgeClient.js';
 import { IStartupDeadline, createStartupDeadline, startupExpiryMessage } from './dshStartupDeadline.js';
-import { normalizeExistingPath, repairStoreMetadataContent } from './dshStoreMetadata.js';
+import { normalizeExistingPath, readStoreMetadataValue, repairStoreMetadataContent } from './dshStoreMetadata.js';
 import { DshHostLeaseStore, pidAlive } from './dshHostLeaseStore.js';
 import { stagePluginDir } from './dshPluginStaging.js';
 import { orphanLeaseCandidates } from '../common/dshHostRunOwnership.js';
 import { readPreferredHostPort, reclaimLoopbackPort, rememberHostPort, resolveHostPort } from './dshHostPortManager.js';
 import { reapOrphanHosts } from './dshHostReaper.js';
 import { repairBundledPluginFiles, repairProfileDeps } from './dshProfileDepsRepair.js';
-import { copyProfileSeed, profileSeedDirFor } from './dshProfileRuntimeSync.js';
+import { copyProfileSeed, planProfileRuntimeSync, profileSeedDirFor, readProfileRuntimeVersion, syncProfilePluginLayer, writeProfileRuntimeMarker } from './dshProfileRuntimeSync.js';
 import { DshRuntimeError, DshRuntimeManager, injectBundledPnpm, IResolvedDsh, IResolvedNode, sanitizedEnv } from './dshRuntimeManager.js';
 import { IDshHealthReport, IHostActivity, summarizeHealth } from '../common/dshUpgrade.js';
 // ★ 2026-10-19：内置 agent 的**代码真源**（`getBuiltinAgents`）与它到 md 的序列化（`buildAgentMd`）。
@@ -208,6 +208,8 @@ export interface IDshHostSupervisorOptions {
 	readonly bridgePluginDir: string | undefined;
 	/** 随产品分发的 foundation 插件目录（重构 1.3 共享服务）；不存在时跳过安装。 */
 	readonly foundationPluginDir: string | undefined;
+	/** 随包插件资源基础 Host 包目录；不存在时跳过安装。 */
+	readonly pluginResourcesPluginDir?: string;
 	/** 随产品分发的工作台宿主插件目录（`@vssaros/dsh-workbenches`）；不存在时跳过安装。 */
 	readonly workbenchesPluginDir?: string;
 	/** 随产品分发的 chat-surface 插件目录（聊天框绑定会话用）；不存在时跳过安装。 */
@@ -1061,6 +1063,7 @@ export class DshHostSupervisor extends Disposable {
 				// foundation（重构 1.3）：所有模块插件的共享服务（dataRoot/dshHome/pageShell/lock 真源），
 				// **必须在模块插件之前**装上——消费者 apply 时 inject 它，缺了它们会永远 pending。
 				[DSH_FOUNDATION_PLUGIN_NAME, this._opts.foundationPluginDir, 'foundation plugin'],
+				[DSH_PLUGIN_RESOURCES_PLUGIN_NAME, this._opts.pluginResourcesPluginDir, 'plugin resources host'],
 				// 工作台宿主（2026-10-22）：提供 `desktopWorkbenches`；**必须在模块插件之前**（迁成 React 的
 				// 工作台客户端注册进它）。它没有 `vssaros.module` ⇒ 模块自发现不会装它，只能列在这里。
 				[DSH_WORKBENCHES_PLUGIN_NAME, this._opts.workbenchesPluginDir, 'workbench host plugin'],
@@ -2115,38 +2118,73 @@ export class DshHostSupervisor extends Disposable {
 	}
 
 	/**
-	 * 确保 profile 存在（**仅首次创建**）。
+	 * 确保 profile 存在，且**随包插件层**与本次 bundled dsh 版本配套。
 	 *
-	 * ★★ 2026-11-09 单版本模型：**`userData/dsh-home` 永不覆盖**。
-	 *   profile 已存在 ⇒ 原样返回，一个字节都不改（不写 marker、不比对版本、不重建）。
-	 *   历史上这里有 marker / `planProfileRuntimeSync` / `profileRebuildPending` / 按版本重建，
-	 *   服务于「用户自由切 runtime」；产品已下线该能力 ⇒ 整段删除。
+	 * ★★ 2026-11-12 口径细化（真机 `2.2.26237` / dsh `0.2.2-rc.2` 的「控制桥不可用」）：
+	 *   11-09 定的「userData 永不覆盖」在这里被证明过头了 —— bundled 从 0.2.1-rc.2 升级后，
+	 *   dev 的旧 profile 无限复用，`cordis.patch.yml` / `package.json` 仍指向
+	 *   `@deepseek-ai/dsh-web-app@0.2.1-rc.2` ⇒ 被判 incompatible 而禁用 ⇒ `webStartup` 缺失
+	 *   ⇒ Host code 1。打包版新机器首启用同版本种子，不会踩；只有复用旧 profile 会踩。
 	 *
-	 *   版本升级 = 应用发版。兼容性靠两层，而不是运行时改写用户数据：
-	 *     · 构建期：`build/saros/check-dsh-release.mjs` 校验包内只有 compat pin 的唯一版本 + 完整种子；
-	 *     · 启动期：已有的 `repairProfileDeps` / `repairBundledPluginFiles` /
-	 *       `_ensureProfileBundles` / 伴生插件安装链做**有界一致性修复**。
-	 *   与开源 dsh-desktop 的口径一致：「Application upgrades do not replace profile, plugin,
-	 *   workspace, session, or model configuration data.」
+	 *   ⇒ **用户数据永不覆盖，随包插件层随版本同步**：只在 marker 版本 ≠ 当前 bundled 时，
+	 *     备份旧目录、从同版本种子替换插件层（种子顶层那几项），再把种子没有的条目拷回。
+	 *     会话 / 设置 / 工作区本就不在 profile 目录内，不受影响 ✓。
+	 *
+	 *   安全边界（见 `dshProfileRuntimeSync.ts`）：老 profile 无 marker ⇒ 只 stamp 不动文件；
+	 *   版本一致 ⇒ keep；没有同版本种子 ⇒ 只警告、绝不重建（那会清空 profile）。
+	 *   重建之后 `_repairSeededStoreMetadata` / `_ensureProfileBundles` / 伴生插件安装链
+	 *   会把 `cordis.patch.yml` 的伴生行写回来 —— 手工搬目录正是缺了这条链（11-09 教训）。
 	 */
 	private async _ensureProfile(node: IResolvedNode, dsh: IResolvedDsh, profile: string, env: NodeJS.ProcessEnv): Promise<void> {
+		const dir = this._profileDir(profile, env);
 		const manifest = this._profileManifest(profile, env);
-		if (existsSync(manifest)) {
+		const exists = existsSync(manifest);
+		const seedDir = this._profileSeedDir(profile, dsh);
+		const plan = planProfileRuntimeSync({
+			profileExists: exists,
+			...(exists ? { markerVersion: readProfileRuntimeVersion(dir) } : {}),
+			dshVersion: dsh.version,
+			...(seedDir ? { seedDir } : {}),
+		});
+
+		if (plan.kind === 'keep') {
 			return;
 		}
-		const dir = this._profileDir(profile, env);
-		const seedDir = this._profileSeedDir(profile, dsh);
-		// 构建期预置的种子：有就整目录本地复制（首启零下载、零 pnpm）；
-		// 种子缺失/损坏才退回 web 模板初始化。
-		if (seedDir) {
+		if (plan.kind === 'stamp') {
+			// 老 profile 首次登记出身：只写 marker，绝不动其它文件 ⇒ 升级代码本身不会触发重建。
+			await writeProfileRuntimeMarker(dir, dsh.version);
+			this._appendLog(`profile runtime marker: ${dsh.version}（既有 profile 首次登记，未改动任何文件）`);
+			return;
+		}
+		if (plan.kind === 'warn-no-seed') {
+			this._appendLog(`⚠ profile 由 dsh ${plan.from} 创建，当前 runtime ${dsh.version}，`
+				+ '但没有同版本 profile-seed ⇒ 保持原 profile 不重建（若 Host 起不来，请安装配套运行时版本）');
+			return;
+		}
+		if (plan.kind === 'rebuild') {
+			const backup = `${dir}.bak-runtime-${plan.from.replace(/[^0-9A-Za-z.-]/g, '_')}-${Date.now()}`;
+			this._progress('正在按新版本同步 profile 插件层（备份后从内置副本初始化）…');
+			this._appendLog(`profile runtime ${plan.from} → ${dsh.version}：备份到 ${basename(backup)} 并从 ${plan.seedDir} 同步插件层`);
+			const { restoredUserData } = await syncProfilePluginLayer(plan.seedDir, dir, backup);
+			if (!existsSync(manifest)) {
+				throw new Error(`profile 插件层同步后缺 package.json（备份：${backup}）`);
+			}
+			await writeProfileRuntimeMarker(dir, dsh.version);
+			this._appendLog(`profile plugin layer synced to ${dsh.version}；保留的用户数据条目：${restoredUserData.join(', ') || '(无)'}`);
+			return;
+		}
+
+		// plan.kind === 'init'：profile 不存在 —— 构建期预置的种子（有就整目录本地复制，零下载）
+		if (plan.seedDir) {
 			this._progress('正在从内置副本初始化 profile（本地拷贝，无需下载）…');
 			const t0 = Date.now();
 			try {
 				// ⚠ 必须用 copyProfileSeed（dereference: true）：仓库种子里 .pnpm 有 6097 个 symlink，
 				//   裸 fsp.cp 在 Windows 非管理员下会 EPERM ⇒ 首启崩溃（2026-11-09 真机）。
-				await copyProfileSeed(seedDir, dir);
+				await copyProfileSeed(plan.seedDir, dir);
 				if (existsSync(manifest)) {
-					this._appendLog(`profile seeded from bundled copy in ${Date.now() - t0} ms (${seedDir})`);
+					await writeProfileRuntimeMarker(dir, dsh.version);
+					this._appendLog(`profile seeded from bundled copy in ${Date.now() - t0} ms (${plan.seedDir})`);
 					return;
 				}
 				this._appendLog('profile seed copy incomplete; falling back to template init');
@@ -2160,6 +2198,7 @@ export class DshHostSupervisor extends Disposable {
 		if (!existsSync(manifest)) {
 			throw new Error(`profile 初始化失败：${r.trim().slice(-600)}`);
 		}
+		await writeProfileRuntimeMarker(dir, dsh.version);
 	}
 
 	/**
@@ -2190,7 +2229,9 @@ export class DshHostSupervisor extends Disposable {
 			// 而种子是在构建机的仓库盘（实测 G:）上 install 的 ⇒ profile 在别的盘（userData 在 C:）时
 			// pnpm 解析出 C:\…，与元数据里的 G:\… 不符，**只修 virtualStoreDir 仍会**报同一个错（实测）。
 			// 版本号沿用记录值（种子与运行时同一个 pnpm）；盘符取 profile 自身。
-			const recordedStore = /^storeDir:[ \t]*(.+)$/m.exec(before)?.[1]?.trim();
+			// ★ 2026-11-12：`.modules.yaml` 可能是 pnpm 11 的 **JSON** 写法（`"storeDir": "…"`），
+			//   旧 YAML 正则读不到 ⇒ storeVersion undefined ⇒ storeDir 永不校正 ⇒ ERR_PNPM_UNEXPECTED_STORE。
+			const recordedStore = readStoreMetadataValue(before, 'storeDir');
 			const storeVersion = recordedStore ? /[\\/]v(\d+)$/.exec(recordedStore)?.[1] : undefined;
 			const expectedStore = storeVersion ? resolveExpectedStoreDir(expectedDir, storeVersion) : undefined;
 			const repair = repairStoreMetadataContent(before, expectedVirtual, expectedStore);

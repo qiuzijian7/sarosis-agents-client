@@ -140,7 +140,13 @@ if (process.argv[2] === '--child') {
 			assert.equal(JSON.parse(readFileSync(file, 'utf8')).rooms.find(r => r.id === roomId).pinned, true);
 			const disk = JSON.parse(readFileSync(file, 'utf8')).rounds.find(r => r.callId === CALL_ID);
 			assert.equal(disk.phase, 'cut', '收口结果也写回了盘');
-		});
+			assert.ok(disk.runId && disk.attempt === 1, 'runId/attempt 也随强杀前快照写穿', JSON.stringify(disk));
+			const roomOnDisk = JSON.parse(readFileSync(file, 'utf8')).rooms.find(r => r.id === roomId);
+			assert.ok((roomOnDisk.dispatchIntents ?? []).some(item => item.status === 'cut' && /重启|未确认/.test(item.reason)),
+				'强杀后未确认派发意图必须收口为 cut，不许自动重放');
+			const diag = again.diagnostics();
+			assert.ok(diag.runs.some(run => run.callId === CALL_ID && run.runId === disk.runId && run.state === 'cut'));
+			});
 		await again.close();
 		await check('11 分钟后再重启：被打断那一轮仍可按 callId 查到（DSH 只补了英文错误结果，回复只在这里）', async () => {
 			const later = createRooms({

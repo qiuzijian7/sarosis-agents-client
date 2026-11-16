@@ -40,7 +40,7 @@ variables:
   # ASSET_NAME_BY_PLATFORM（2026-09-21）：android-arm64（APK）、saros-pocket-manifest（清单）。
   # 上传后托管在 {server}/downloads/<文件名>，都是匿名可读。
   POCKET_UPDATE_SERVER:
-    value: http://zijianqiu-any1.devcloud.woa.com:3030
+    value: http://21.139.192.124:3030
   POCKET_UPDATE_PLATFORM:
     value: android-arm64
   # 清单也传上去（伪平台）⇒ 跑完流水线**无需任何手工步骤**，App 读这里即可。
@@ -49,7 +49,7 @@ variables:
   # 构建期注入 App 的默认「升级源」：就是上面那份清单的地址（稳定地址，写死即可）。
   # App 里仍可在「升级源」里改（localStorage 覆盖）。
   POCKET_UPDATE_URL:
-    value: http://zijianqiu-any1.devcloud.woa.com:3030/downloads/pocket-update.json
+    value: http://21.139.192.124:3030/downloads/pocket-update.json
   # 若要出**已签名**的 release APK，把下面四个凭据变量取消注释（先在蓝盾「凭据管理」建 Password 类型的
   # ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD），
   # 四个齐全时 scripts/build-android.sh 才会签名，缺省只出 debug APK（不阻塞）。

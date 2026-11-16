@@ -426,23 +426,25 @@ export function createLightAIService({ credentials, browser = () => undefined, f
 			if (!loginSession || typeof loginSession.open !== 'function' || typeof loginSession.cookies !== 'function') {
 				throw new Error('LightAI 登录需要浏览器插件（@vssaros/dsh-browser ≥ 0.4.8）—— 请在「内置插件」里启用它');
 			}
-			const cfg = await effectiveConfig();
-			const url = entryUrl(cfg);
-			signInDeadline = now() + loginTimeoutSeconds * 1000;
-			fireChange('signin-started');
-			const read = async () => cookieHeaderFrom(await loginSession.cookies(LIGHTAI_LOGIN_PROFILE, url));
-			// ① 浏览器里已经有有效会话（以前登过）⇒ 不开页面，直接用 ✓
-			let rejectedCookie;
-			const existing = await read();
-			if (existing) {
-				const v = await validate(existing, { force: true });
-				if (v.ok) { await finish(existing, v.userId, 'browser-profile'); return; }
-				if (!v.rejected) { throw new Error(v.error); }   // 网络 / 办公网限制 ⇒ 开页面也没用，如实说
-				rejectedCookie = existing;                       // 旧会话被拒 ⇒ 等它被新登录替换
-			}
-			// ② 开登录页，等用户在浏览器里登录（轮询 cookie；值变了才校验 ⇒ 不会被旧票卡住）
-			await loginSession.open(LIGHTAI_LOGIN_PROFILE, url);
+			// ★ 2026-11-11：登录会话用的是**独立浏览器窗口** ⇒ 无论成功 / 失败 / 取消 / 复用已有会话，
+			//   都要在最后释放它（close 里会关掉那个独立实例），不能留一个 Chrome 在后台 ✗
 			try {
+				const cfg = await effectiveConfig();
+				const url = entryUrl(cfg);
+				signInDeadline = now() + loginTimeoutSeconds * 1000;
+				fireChange('signin-started');
+				const read = async () => cookieHeaderFrom(await loginSession.cookies(LIGHTAI_LOGIN_PROFILE, url));
+				// ① 独立窗口里已经有有效会话（以前登过）⇒ 不开页面，直接用 ✓
+				let rejectedCookie;
+				const existing = await read();
+				if (existing) {
+					const v = await validate(existing, { force: true });
+					if (v.ok) { await finish(existing, v.userId, 'browser-profile'); return; }
+					if (!v.rejected) { throw new Error(v.error); }   // 网络 / 办公网限制 ⇒ 开页面也没用，如实说
+					rejectedCookie = existing;                       // 旧会话被拒 ⇒ 等它被新登录替换
+				}
+				// ② 在独立窗口里开登录页，等用户完成登录（轮询 cookie；值变了才校验 ⇒ 不会被旧票卡住）
+				await loginSession.open(LIGHTAI_LOGIN_PROFILE, url);
 				while (now() < signInDeadline) {
 					if (cancelRequested) { throw new Error('已取消登录'); }
 					const c = await read().catch(() => undefined);
@@ -453,7 +455,7 @@ export function createLightAIService({ credentials, browser = () => undefined, f
 					}
 					await sleep(POLL_MS);
 				}
-				throw new Error(`登录超时（${loginTimeoutSeconds}s），没有在浏览器里检测到 LightAI 会话`);
+				throw new Error(`登录超时（${loginTimeoutSeconds}s），没有在独立浏览器窗口里检测到 LightAI 会话`);
 			} finally {
 				try { await loginSession.close(LIGHTAI_LOGIN_PROFILE); } catch { /* 用户已经关了 */ }
 			}
@@ -617,7 +619,11 @@ export function createLightAIService({ credentials, browser = () => undefined, f
 			refreshing: !!refreshing,
 			...(lastTest ? { lastTest } : {}),
 			browserAvailable: !!br?.loginSession,
-			...(br?.loginSession?.headless ? { browserHeadless: true } : {}),
+			// ★ 2026-11-11：**不要再投影 `browserHeadless`**。`loginSession.headless` 是浏览器插件
+			//   启动时的配置常量（默认 on），不是"此刻没有可见窗口"：2026-10-28 起 `open()` 会先
+			//   `ensureHeaded()` 自动切到有头（右栏浏览器本来就可见），登录完再切回无头 ✓。
+			//   旧判据默认恒真 ⇒ 页面报"无法登录"并禁用「重新登录」（真机：会话过期后再也登不进去）✗。
+			//   真失败时 `signIn()` 会把错误写进 `lastError` ⇒ 由上面的 `error` 如实显示，不拿静态配置预判 ✓。
 			rev: changeSeq,
 		};
 	};

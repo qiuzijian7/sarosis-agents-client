@@ -84,7 +84,12 @@ console.log('★ 插件打包白名单（files）+ 已装完整性守卫\n');
 		try { return JSON.parse(readFileSync(rootPkgPath, 'utf8'))?.scripts?.['check:dsh-plugins'] ?? ''; }
 		catch { return ''; }
 	})();
-	const scripts = [...chain.matchAll(/node\s+([^\s&|]+)/g)].map(m => m[1]);
+	const scripts = chain.split('&&').flatMap(command => {
+		const tokens = command.trim().match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+		if (tokens[0] !== 'node') { return []; }
+		const args = tokens.slice(1).map(token => token.replace(/^["']|["']$/g, ''));
+		return args[0] === '--test' ? args.slice(1).filter(arg => !arg.startsWith('-')) : args.slice(0, 1);
+	});
 	check('package.json 里 check:dsh-plugins 链存在', scripts.length > 0, '没读到链');
 	const missing = scripts.filter(s => !existsSync(join(ROOT, s)));
 	if (missing.length === 0) {

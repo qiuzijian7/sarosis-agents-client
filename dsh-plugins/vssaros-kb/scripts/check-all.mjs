@@ -22,6 +22,20 @@ const STEPS = [
 	{ file: 'check-kb-feishu-scopes.mjs', desc: '飞书缺权限：99991672 解析 / 申请入口 / 退出码判据 / 两端设置页接线' },
 	// ★ 2026-11-10：设置页可指定飞书应用（profile 路线）；端到端验 secret 不落盘
 	{ file: 'check-kb-feishu-app.mjs', desc: '飞书 appId/appSecret：凭据库 / stdin profile / --profile 全链路 / 明文红线' },
+	// ★ 2026-11-11：方案 A 剪存轮询，第 2~6 步端到端（真实临时目录 + 注入依赖）
+	{ file: 'check-kb-feishu-clip.mjs', desc: '飞书剪存轮询：列节点/读正文/Clip 判定/数据源 raw/总结/笔记/同步/幂等' },
+	// ★ 2026-11-12：strict-mode=bot 撞上写死 user 身份 ⇒ 20 篇全失败却报「完成 20 篇」
+	{ file: 'check-kb-feishu-identity.mjs', desc: '飞书同步身份策略：--identity 透传 / 只读预检 / 不擅改策略 / 失败如实汇总' },
+	// ★ 2026-11-12：评估真机 18 篇降阶失败日志 ⇒ 堵住 ok:true 降阶响应静默丢数据
+	{ file: 'check-kb-feishu-degraded.mjs', desc: '飞书同步响应判定：降阶 result/warnings / 冲突跳过计数 / 导图失败汇总' },
+	// ★ 2026-11-12：Host 不可达时设置页 GET 静默失败 + 裸 TypeError + 空配置覆盖风险
+	{ file: 'check-kb-settings-offline.mjs', desc: '设置页离线：GET 失败可见 / 禁止空配置覆盖 / 网络错误可读 / 产物同步' },
+	// ★ 2026-11-11：初次默认总览 + 跨 app 重启恢复上次文档（fake Host 端到端）
+	{ file: 'check-kb-last-doc.mjs', desc: '知识库默认总览 / lastDoc 恢复：纯函数 + 接线 + 设置保存不冲掉' },
+	// ★ 2026-11-11：总览页配色跟随 dsh 外观（两档兜底 + 反向突变自证）
+	{ file: 'check-kb-home-theme.mjs', desc: '总览页主题：dsh 外观令牌 / 深浅两档兜底 / 去掉独立明暗开关' },
+	// ★ 2026-11-11：方案 E + B 的 SVG 图标真正落到 homePage.js（用户报「改版未生效」）
+	{ file: 'check-kb-card-icons.mjs', desc: '总览卡片：语义 SVG 图标 / 状态角标 / 移除渐变封面 / 语义映射' },
 	// ★ 2026-11-02：目录改名（库→数据源 / 笔记→知识库列表）——常量、旧名字面量、迁移脚本幂等
 	// ★ 2026-11-02：元数据收进 .kb/（索引/飞书/缓存/日志一个目录）
 	{ file: 'check-kb-meta.mjs', desc: '元数据目录：.kb/ 唯一真源 + 业务代码不写旧散件' },

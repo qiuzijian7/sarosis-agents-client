@@ -238,10 +238,11 @@ const mkTask = (id, patch = {}) => ({
 
 // ── 撞键保护 ─────────────────────────────────────────────────────────────
 {
-	eq('组合里没有 schedule ⇒ 可以占用', shouldProvideSchedule({ get: () => null, schedule: undefined }).ok, true);
-	eq('组合里已有 schedule ⇒ 不占用', shouldProvideSchedule({ get: () => ({}), schedule: undefined }).ok, false);
-	eq('ctx.schedule 直接挂着也算占用', shouldProvideSchedule({ schedule: { create() {} } }).ok, false);
-	eq('ctx.get 抛错（探针假 ctx）⇒ 视为没人占', shouldProvideSchedule({ get: () => { throw new Error('no service'); } }).ok, true);
+	eq('没有自建服务 ⇒ 可以提供', shouldProvideSchedule({ get: () => null }).ok, true);
+	eq('已有自建服务 ⇒ 复用', shouldProvideSchedule({ get: key => key === 'vssarosScheduler' ? {} : null }).ok, false);
+	eq('ctx.vssarosScheduler 直接挂着也算已提供', shouldProvideSchedule({ vssarosScheduler: { create() {} } }).ok, false);
+	eq('官方 schedule 已在 ⇒ 自建仍可提供', shouldProvideSchedule({ schedule: { create() {} } }).ok, true);
+	eq('ctx.get 抛错（探针假 ctx）⇒ 视为未提供', shouldProvideSchedule({ get: () => { throw new Error('no service'); } }).ok, true);
 }
 
 rmSync(tmp, { recursive: true, force: true });

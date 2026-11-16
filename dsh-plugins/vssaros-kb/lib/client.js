@@ -9,6 +9,17 @@
 //   不可能再出现"改了却没生效"。
 //
 // ⚠ 以后**不要再拆子块**：要加代码就往这个文件里加。
+// CLIENT_BUILD_STAMP 2026-11-16：设置加载校验与重试、应用保存忙态与超时反馈。
+// CLIENT_BUILD_STAMP 2026-11-12：入口晚于 client.kbview.js 的改动（映射行改受控下拉、去掉裸 spaceId 输入框）。
+// CLIENT_BUILD_STAMP 2026-11-12：入口晚于 client.kbview.js 的改动（设置页 Host 不可达提示与保存拦截）。
+// CLIENT_BUILD_STAMP 2026-11-12：入口晚于 client.kbview.js 的改动（冲突下拉值统一为 overwrite）。
+// CLIENT_BUILD_STAMP 2026-11-12：入口晚于 client.kbview.js 的改动（设置页加飞书身份下拉）。
+// CLIENT_BUILD_STAMP 2026-11-12：入口晚于 client.kbview.js 的改动（卡片定位去重 + 幂等展开选中滚动）。
+// CLIENT_BUILD_STAMP 2026-11-12：入口晚于 client.kbview.js 的改动（点总览卡片不再切空文档视图）。
+// CLIENT_BUILD_STAMP 2026-11-11：入口晚于 client.kbview.js 的改动（默认总览 + 恢复上次文档）。
+// CLIENT_BUILD_STAMP 2026-11-11：入口晚于 client.kbview.js 的改动（下拉恢复「+ 添加新应用」就地表单）。
+// CLIENT_BUILD_STAMP 2026-11-11：入口晚于 client.kbview.js 的改动（移除 App Secret 输入框与就地新增应用入口）。
+// CLIENT_BUILD_STAMP 2026-11-11：入口晚于 client.kbview.js 的改动（飞书应用改下拉，与 bot 设置页同款）。
 // CLIENT_BUILD_STAMP 2026-11-02T19:20：入口晚于 client.kbview.js 的改动（主题守卫：胶囊/底栏/toast 的去写死色）。
 // BUILD_STAMP 2026-10-29：入口晚于 client.kbview.js / index.js 的改动（聊天消息「导入到知识库」那批）。
 // ⚠ 入口里必须先 `var module = { exports: {} };`（否则真机报 `exports is not defined`）。
@@ -24,7 +35,7 @@ window.__ModuleLoader__.load({
 		const moduleRequire = require;   // 装载器：用它 require.async 拉同包 client 子块
 		const react = require('react');
 		const h = react.createElement;
-		const { useState, useEffect, useCallback } = react;
+		const { useState, useEffect, useCallback, useRef } = react;
 /*
  * ★ 2026-10-28（真机：点设置整页黑屏）：
  *   `react-dom/client` 的 require **不能在模块顶层** —— 宿主没提供这个模块 id 时会**同步抛**，
@@ -544,6 +555,37 @@ function KbSettingsPage({ onClose, onSwitchVault, onAddVault, vaultRef, auto }) 
 				fgFaint: 'var(--dsw-alias-label-secondary, var(--vscode-descriptionForeground, #9d9d9d))',
 			};
 			const [settings, setSettings] = useState(null);
+			/** ★ 2026-11-12：GET 失败必须可见，且禁止拿空配置全量 POST（会清空真设置） */
+			const [loadError, setLoadError] = useState('');
+			const [settingsLoading, setSettingsLoading] = useState(true);
+			const [appSaving, setAppSaving] = useState(false);
+			const appSavingRef = useRef(false);
+			async function requestKbSettings(init = {}, timeoutMs = 60_000) {
+				const controller = new AbortController();
+				let timer;
+				const pending = (async () => {
+					const response = await fetch('/x/kb/api/kb-settings', { ...init, credentials: 'same-origin', signal: controller.signal });
+					const body = await response.json().catch(() => { throw new Error('Host 返回的设置响应不是 JSON（HTTP ' + response.status + '），请检查登录状态后重试'); });
+					if (!response.ok || body?.ok !== true) { throw new Error(String(body?.error?.message || body?.error || ('设置请求失败（HTTP ' + response.status + '）'))); }
+					if (!body.settings || typeof body.settings !== 'object' || Array.isArray(body.settings)) { throw new Error('Host 未返回有效设置，未确认保存成功，请重新读取设置'); }
+					return body;
+				})();
+				try {
+					return await Promise.race([pending, new Promise((_, reject) => {
+						timer = setTimeout(() => {
+							reject(new Error('设置请求超时，无法确认是否已保存；请重新读取设置核对后再重试'));
+							controller.abort();
+						}, timeoutMs);
+					})]);
+				} finally { clearTimeout(timer); }
+			}
+			/** 与 TSX 侧 describeFetchError 同款文案（守卫钉住一致） */
+			const describeFetchError = (e) => {
+				const raw = String((e && e.message) || e || '');
+				return /failed to fetch|networkerror|load failed|net::/i.test(raw)
+					? '无法连接知识库 Host（/x/kb/api 请求失败）。请确认 VsSaros Host 正在运行；若提示「登录已失效」，先重新登录再重试。'
+					: raw;
+			};
 			/**
 			 * ★ 2026-10-25：从**笔记区标题行**的「体检 / 审核 / 去重」按钮跳进来时，
 			 *   自动跑对应动作并滚到该区块。
@@ -578,10 +620,19 @@ function KbSettingsPage({ onClose, onSwitchVault, onAddVault, vaultRef, auto }) 
 			const [cliBusy, setCliBusy] = useState(false);
 			/** CLI 路径草稿（保存到设置里的 feishu.cliPath；留空 = 走 PATH） */
 			const [cliPathDraft, setCliPathDraft] = useState('');
-			/** ★ 2026-11-10：飞书应用 App ID / App Secret 草稿；secret 不回显、不落设置文件 */
+			/**
+			 * ★ 2026-11-11（用户裁决）：默认**不出现 App Secret 输入框**；只有选中下拉里的
+			 *   「+ 添加新应用」才就地展开 App ID / App Secret / 名称表单（与 bot 设置页同款）。
+			 *   选已有应用时密钥由 Host 内部从应用凭据池镜像，前端不接触明文。
+			 */
 			const [appIdDraft, setAppIdDraft] = useState('');
-			const [appSecretDraft, setAppSecretDraft] = useState('');
 			const [hasAppSecret, setHasAppSecret] = useState(false);
+			/** ★ 下拉与 bot 设置页同源（/x/kb/api/feishu-apps 掩码列表） */
+			const [apps, setApps] = useState([]);
+			/** 「+ 添加新应用」的就地表单草稿；保存成功后立即清空 */
+			const [newAppId, setNewAppId] = useState('');
+			const [newAppSecret, setNewAppSecret] = useState('');
+			const [newAppName, setNewAppName] = useState('');
 			/** 目录 / 知识库两个自定义下拉的开关（原生 datalist 在 Electron 里滚不动也选不了） */
 			const [dirMenu, setDirMenu] = useState(false);
 			const [spaceMenu, setSpaceMenu] = useState(false);
@@ -602,17 +653,29 @@ function KbSettingsPage({ onClose, onSwitchVault, onAddVault, vaultRef, auto }) 
 			const [dedupeBusy, setDedupeBusy] = useState(false);
 			const [reindexBusy, setReindexBusy] = useState(false);
 
+			/** ★ 与 bot 设置页同源的飞书应用掩码列表；失败保持空数组（下拉仍有默认项） */
+			const loadApps = () => fetch('/x/kb/api/feishu-apps', { credentials: 'same-origin' })
+				.then((r) => r.json())
+				.then((b) => { if (b && b.ok && Array.isArray(b.apps)) { setApps(b.apps); } })
+				.catch(() => { /* 读不到就保持空，页面照常可用 */ });
+
+			const loadSettings = (isAlive = () => true) => {
+				setSettingsLoading(true);
+				return requestKbSettings({}, 15_000).then((b) => {
+					if (!isAlive()) { return; }
+					setSettings(b.settings);
+					setLoadError('');
+					setAppIdDraft(String((b.settings && b.settings.feishu && b.settings.feishu.appId) || ''));
+					setHasAppSecret(Boolean(b.settings && b.settings.feishu && b.settings.feishu.hasAppSecret));
+				}).catch((e) => {
+					if (isAlive()) { setSettings(null); setLoadError(describeFetchError(e)); }
+				}).finally(() => { if (isAlive()) { setSettingsLoading(false); } });
+			};
+
 			useEffect(() => {
 				let alive = true;
-				fetch('/x/kb/api/kb-settings', { credentials: 'same-origin' })
-					.then((r) => r.json())
-					.then((b) => {
-						if (!alive || !b || !b.ok) { return; }
-						setSettings(b.settings);
-						setAppIdDraft(String((b.settings && b.settings.feishu && b.settings.feishu.appId) || ''));
-						setHasAppSecret(Boolean(b.settings && b.settings.feishu && b.settings.feishu.hasAppSecret));
-					})
-					.catch(() => { /* 读不到就保持空，页面照常可用 */ });
+				void loadSettings(() => alive);
+				void loadApps();
 				const want = vaultRef && vaultRef.current && vaultRef.current.id;
 				fetch('/x/kb/api/view-data' + (want ? '?vault=' + encodeURIComponent(want) : ''), { credentials: 'same-origin' })
 					.then((r) => r.json())
@@ -622,35 +685,72 @@ function KbSettingsPage({ onClose, onSwitchVault, onAddVault, vaultRef, auto }) 
 			}, []);
 
 			const save = (patch) => {
-				const next = Object.assign({}, settings || {}, patch);
+				if (loadError) { setSpacesMsg('设置未读取成功，已阻止保存（避免覆盖现有配置）：' + loadError); return; }
+				if (!settings || settingsLoading || appSavingRef.current) { return; }
+				const next = Object.assign({}, settings, patch);
 				setSettings(next);
-				fetch('/x/kb/api/kb-settings', {
-					method: 'POST', credentials: 'same-origin',
-					headers: { 'content-type': 'application/json' },
-					body: JSON.stringify(next),
-				}).then((r) => r.json()).then((b) => {
-					if (!b || b.ok === false) { window.alert('保存设置失败：' + ((b && b.error) || '未知错误')); }
-				}).catch((e) => window.alert('保存设置失败：' + String((e && e.message) || e)));
+				requestKbSettings({
+					method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(next),
+				}).catch((e) => setSpacesMsg('保存设置失败：' + describeFetchError(e)));
 			};
 			const patchFeishu = (k, v) => {
 				const f = Object.assign({}, (settings && settings.feishu) || {}, { [k]: v });
 				save({ feishu: f });
 			};
-			/** ★ 2026-11-10：保存飞书应用；secret 留空 = 不改，且不进 settings state（明文不驻留）。 */
+			/**
+			 * ★ 2026-11-11：选已有应用 ⇒ 只提交 appId（密钥由 Host 内部镜像）；
+			 *   选「+ 添加新应用」⇒ 就地表单的 App ID / App Secret / 名称一并提交，
+			 *   后端写凭据库 + 建 lark-cli profile + 登记进下拉清单。
+			 */
 			const saveApp = () => {
-				const f = Object.assign({}, (settings && settings.feishu) || {}, { appId: String(appIdDraft || '').trim() });
-				if (appSecretDraft) { f.appSecret = appSecretDraft; }
+				const isNew = appIdDraft === '__new__';
+				const chosen = isNew ? String(newAppId || '').trim() : String(appIdDraft || '').trim();
+				if (loadError) { setSpacesMsg('设置未读取成功，已阻止保存应用（避免覆盖现有配置）：' + loadError); return; }
+				if (!settings || settingsLoading || appSavingRef.current) { return; }
+				if (chosen && !/^cli_[A-Za-z0-9]+$/.test(chosen)) { setSpacesMsg('App ID 形态不对：应为 cli_ 开头的字母数字'); return; }
+				if (isNew && (!chosen || !String(newAppSecret || '').trim())) {
+					setSpacesMsg('新增应用需要填 App ID 和 App Secret（App Secret 只进凭据库，不回显）');
+					return;
+				}
+				appSavingRef.current = true;
+				setAppSaving(true);
+				setSpacesMsg('正在保存飞书应用并检查 lark-cli profile…');
+				const f = Object.assign({}, (settings && settings.feishu) || {}, { appId: chosen });
+				if (isNew) {
+					f.appSecret = String(newAppSecret || '').trim();
+					f.newApp = { appId: chosen, name: String(newAppName || '').trim() };
+				}
 				const payload = Object.assign({}, settings || {}, { feishu: f });
-				fetch('/x/kb/api/kb-settings', {
-					method: 'POST', credentials: 'same-origin',
-					headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
-				}).then((r) => r.json()).then((b) => {
-					if (!b || b.ok === false) { window.alert('保存飞书应用失败：' + ((b && b.error) || '未知错误')); return; }
-					setSettings(b.settings || payload);
+				requestKbSettings({
+					method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+				}).then((b) => {
+					setSettings(b.settings);
 					setHasAppSecret(Boolean(b.settings && b.settings.feishu && b.settings.feishu.hasAppSecret));
-					setAppSecretDraft('');
-					if (b.note) { setSpacesMsg(String(b.note)); }
-				}).catch((e) => window.alert('保存飞书应用失败：' + String((e && e.message) || e)));
+					setAppIdDraft(chosen);
+					if (isNew) { setNewAppId(''); setNewAppSecret(''); setNewAppName(''); }
+					void loadApps();   // 与 bot 页 reload() 同款：新应用登记后刷新即出现在下拉里
+					setSpacesMsg((b.note ? String(b.note) + '\n' : '') + '飞书应用已保存：' + (chosen || '默认应用'));
+				}).catch((e) => setSpacesMsg('保存飞书应用失败：' + describeFetchError(e))).finally(() => {
+					appSavingRef.current = false;
+					setAppSaving(false);
+				});
+			};
+			/**
+			 * ★ 2026-11-11（用户截图）：下拉里必须有「+ 添加新应用」入口（与 bot 设置页同款）。
+			 *   选中后才就地展开密钥表单 ⇒ 常态无 App Secret 输入框。
+			 */
+			const appOptions = [{ value: '', label: '默认应用', disabled: false }].concat(
+				apps.filter((a) => !a.isDefault).map((a) => ({
+					value: String(a.appId || ''), disabled: !a.hasSecret,
+					label: (a.name ? String(a.name) + ' · ' : '') + String(a.appId || '') + (a.hasSecret ? '' : '（缺 App Secret）'),
+				}))
+			).concat([{ value: '__new__', label: '+ 添加新应用（App ID / App Secret）', disabled: false }]);
+			/** 与 bot 页 `B.input` 同款令牌化样式（不再是 height:24 + radius:4 + rgba 边框） */
+			const appSelectStyle = {
+				flex: '1 1 200px', minWidth: 170, width: '100%', boxSizing: 'border-box',
+				font: 'inherit', fontSize: 11.5, padding: '4px 7px', borderRadius: 6,
+				border: '1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.35))',
+				background: 'var(--dsw-alias-bg-layer-1, transparent)', color: 'inherit', outline: 'none',
 			};
 
 			/** 检测 lark-cli（版本 or 缺失原因） */
@@ -1008,6 +1108,13 @@ function KbSettingsPage({ onClose, onSwitchVault, onAddVault, vaultRef, auto }) 
 					// 📤 飞书同步
 					h('div', { style: sec, 'data-kb-sec': 'feishu' },
 						h('div', { style: h2 }, '📤 飞书同步'),
+						// ★ 2026-11-12：Host 不可达时明确告知并禁止保存，避免默认值伪装 + 空配置覆盖
+						loadError ? h('div', { 'data-kb-settings-offline': '1', role: 'alert',
+							style: { fontSize: 11, lineHeight: 1.5, marginBottom: 8, padding: '6px 8px', borderRadius: 4,
+								background: 'rgba(220,80,70,.12)', border: '1px solid rgba(220,80,70,.55)' } },
+							loadError + '  设置未加载，已暂时禁止保存。',
+							h('button', { type: 'button', style: btn, disabled: settingsLoading || appSaving, onClick: () => void loadSettings() }, '重新读取设置')) : null,
+						settingsLoading ? h('div', { role: 'status' }, '正在读取设置…') : null,
 						h('label', { style: row },
 							h('input', { type: 'checkbox', checked: !!(settings && settings.feishu && settings.feishu.enabled), onChange: (e) => patchFeishu('enabled', e.target.checked) }),
 							h('span', null, '启用飞书同步'),
@@ -1024,22 +1131,51 @@ function KbSettingsPage({ onClose, onSwitchVault, onAddVault, vaultRef, auto }) 
 							}),
 							h('span', { style: { flex: 1, minWidth: 0, fontSize: 10.5, opacity: .75, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: scheduleText() }, scheduleText()),
 							h('button', { type: 'button', style: btn, onClick: () => { void loadSchedule(); } }, '刷新状态')),
-						// ★ 2026-11-10：飞书应用（App ID / App Secret）；不指定 ⇒ lark-cli 用内置/默认应用
+						// ★ 2026-11-11：飞书应用下拉（与 bot 设置页同款）+「+ 添加新应用」就地表单
 						h('div', { style: row },
 							h('span', null, '飞书应用'),
-							h('input', { value: appIdDraft, placeholder: 'App ID，如 cli_a1b2c3（留空 = 默认应用）',
+							h('select', {
+								'data-vssaros-kb-app-select': '1', value: appIdDraft, style: appSelectStyle,
+								disabled: settingsLoading || !settings || appSaving,
 								onChange: (e) => setAppIdDraft(e.target.value),
-								style: { flex: 1, height: 24, padding: '0 8px', background: 'transparent', color: 'inherit', border: '1px solid rgba(127,127,127,.35)', borderRadius: 4, fontSize: 12 } }),
-							h('input', { type: 'password', value: appSecretDraft, autoComplete: 'off',
-								placeholder: hasAppSecret ? '已配置（明文不回显）· 留空 = 不改' : 'App Secret（只存凭据库）',
-								onChange: (e) => setAppSecretDraft(e.target.value),
-								style: { width: 220, height: 24, padding: '0 8px', background: 'transparent', color: 'inherit', border: '1px solid rgba(127,127,127,.35)', borderRadius: 4, fontSize: 12 } }),
-							h('button', { type: 'button', style: btn, onClick: saveApp }, '保存应用')),
+							}, appOptions.map((o) => h('option', { key: o.value, value: o.value, disabled: o.disabled }, o.label))),
+							h('button', { type: 'button', style: btn, disabled: settingsLoading || !settings || appSaving, onClick: saveApp },
+								appSaving ? '保存中…' : (appIdDraft === '__new__' ? '保存并新增应用' : '保存应用')),
+							h('button', { type: 'button', style: btn, disabled: settingsLoading || appSaving,
+								onClick: () => { void loadApps(); void loadSettings(); } }, '刷新')),
+						// 只有选「+ 添加新应用」才展开密钥表单 ⇒ 常态看不到 App Secret 输入框
+						appIdDraft === '__new__' ? h('div', { style: Object.assign({}, row, { paddingLeft: 64, marginTop: 4 }) },
+							h('input', { value: newAppId, placeholder: 'App ID，如 cli_a1b2c3',
+								onChange: (e) => setNewAppId(e.target.value),
+								style: Object.assign({}, appSelectStyle, { flex: '0 1 190px', minWidth: 150, width: 'auto' }) }),
+							h('input', { type: 'password', value: newAppSecret, autoComplete: 'off',
+								placeholder: 'App Secret（只进凭据库）', onChange: (e) => setNewAppSecret(e.target.value),
+								style: Object.assign({}, appSelectStyle, { flex: '0 1 190px', minWidth: 150, width: 'auto' }) }),
+							h('input', { value: newAppName, placeholder: '名称（可选）',
+								onChange: (e) => setNewAppName(e.target.value),
+								style: Object.assign({}, appSelectStyle, { flex: '0 1 140px', minWidth: 110, width: 'auto' }) }),
+							h('span', { style: { fontSize: 10.5, opacity: .75 } },
+								'保存后写入凭据库并建 lark-cli profile，刷新后即可在下拉里选中')) : null,
 						h('div', { style: row },
 							h('span', { style: { flex: 1, minWidth: 0, fontSize: 10.5, opacity: .75 } },
-								'当前：' + String((settings && settings.feishu && settings.feishu.appId) || '未配置（lark-cli 内置/默认应用）')
-								+ ' · App Secret：' + (hasAppSecret ? '已配置' : '未配置')
-								+ ' · 保存后所有飞书命令会带 --profile 走这个应用')),
+								'当前：' + String((settings && settings.feishu && settings.feishu.appId) || '默认应用（内置默认）')
+								+ ' · App Secret：' + (hasAppSecret ? '已配置（由应用凭据统一管理）' : '未配置')
+								+ ' · 列表与 bot 设置页同源；选已有应用不用填密钥，新增应用请用下拉里的「+ 添加新应用」')),
+						// ★ 2026-11-12：飞书调用身份（与 lark-cli strict-mode 策略必须一致）
+						h('div', { style: row },
+							h('span', null, '飞书身份'),
+							h('select', {
+								'data-vssaros-kb-identity-select': '1',
+								value: String((settings && settings.feishu && settings.feishu.identity) || 'user'),
+								style: appSelectStyle,
+								onChange: (e) => patchFeishu('identity', e.target.value === 'bot' ? 'bot' : 'user'),
+							}, [
+								h('option', { key: 'user', value: 'user' }, 'user（个人身份，支持 my_library）'),
+								h('option', { key: 'bot', value: 'bot' }, 'bot（应用身份，需 wiki 权限与具体 spaceId）'),
+							])),
+						h('div', { style: row },
+							h('span', { style: { flex: 1, minWidth: 0, fontSize: 10.5, opacity: .75 } },
+								'需与 lark-cli profile 的 strict-mode 一致；查看：lark-cli config strict-mode。切换安全策略属于你的决定，插件不会擅自修改。')),
 						// 飞书 CLI：路径配置（IDE 的 `…kb.feishu.cliPath`）+ 状态 + 重新检测 + 升级
 						h('div', { style: row },
 							h('span', null, 'CLI 路径'),
@@ -1057,9 +1193,12 @@ function KbSettingsPage({ onClose, onSwitchVault, onAddVault, vaultRef, auto }) 
 							h('span', null, '每篇间隔(ms)'),
 							h('input', { type: 'number', value: (settings && settings.feishu && settings.feishu.intervalMs) || 800, onChange: (e) => patchFeishu('intervalMs', Number(e.target.value) || 0), style: { width: 90, height: 24, padding: '0 6px', background: 'transparent', color: 'inherit', border: '1px solid rgba(127,127,127,.35)', borderRadius: 4, fontSize: 12 } }),
 							h('span', null, '远端手改时'),
-							h('select', { value: (settings && settings.feishu && settings.feishu.conflict) || 'skip', onChange: (e) => patchFeishu('conflict', e.target.value), style: { height: 24, background: 'transparent', color: 'inherit', border: '1px solid rgba(127,127,127,.35)', borderRadius: 4, fontSize: 12 } },
+							// ★ 2026-11-12：选项值必须与 Host / CLI 口径一致（skip | overwrite）。
+							//   旧版写 'local'，而 Host 判据是「非 skip 即 overwrite」⇒ 设置改成 overwrite 后
+							//   下拉找不到匹配项会回显成「跳过」，用户以为没生效。旧存量 'local' 也归一到 overwrite。
+							h('select', { value: ((settings && settings.feishu && settings.feishu.conflict) === 'skip' ? 'skip' : 'overwrite'), onChange: (e) => patchFeishu('conflict', e.target.value), style: { height: 24, background: 'transparent', color: 'inherit', border: '1px solid rgba(127,127,127,.35)', borderRadius: 4, fontSize: 12 } },
 								h('option', { value: 'skip' }, '跳过并记录冲突'),
-								h('option', { value: 'local' }, '本地覆盖'))),
+								h('option', { value: 'overwrite' }, '本地覆盖'))),
 						h('label', { style: row },
 							h('input', { type: 'checkbox', checked: !!(settings && settings.feishu && settings.feishu.deleteRemote), onChange: (e) => patchFeishu('deleteRemote', e.target.checked) }),
 							h('span', null, '本地删除的文档同时移除远端节点（危险，默认关）')),
@@ -1361,6 +1500,22 @@ s.src = '/x/kb/web/kbSideview.js?v=' + Date.now();
 			const actions = {
 				// 视图自己弹对话框（Electron 不支持 window.prompt）
 				useInlineDialogs: true,
+				// ★ 2026-11-11：跨 app 重启恢复上次文档。走独立端点，只改 lastDoc 一个字段
+				//   ⇒ 不与设置页的全量 POST 互相覆盖；失败静默降级为「默认总览」✓
+				getLastDoc: async () => {
+					try {
+						const r = await fetch('/x/kb/api/last-doc', { credentials: 'same-origin', cache: 'no-store' });
+						const b = await r.json();
+						return b && b.ok ? (b.lastDoc || null) : null;
+					} catch { return null; }
+				},
+				setLastDoc: (doc) => {
+					void fetch('/x/kb/api/last-doc', {
+						method: 'POST', credentials: 'same-origin',
+						headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({ lastDoc: doc || null }),
+					}).catch(() => undefined);
+				},
 				// 内嵌阅读：面板没有 IDE 编辑区 ⇒ 提供 loadDoc，视图据此渲染右栏正文。
 				// ⚠ 2026-10-24 真机：`/api/page` 的**目录节点没有 abs**、部分叶子也可能只给 rel，
 				//   直接拿 rel 去 /api/doc 会被服务端按**数据根**解析 ⇒ ENOENT（用户看到的那条错误）。

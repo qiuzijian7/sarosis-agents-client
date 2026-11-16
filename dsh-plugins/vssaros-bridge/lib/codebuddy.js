@@ -24,6 +24,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { buildRouteProfile, sanitizeHeaders, writeOwnedRoute } from './providerProfile.js';
+import { CODEBUDDY_RETRY_POLICY } from './codebuddyRetry.js';
 
 /** dsh 里的路由名（与 IDE 侧 `providerRouteFor('codebuddy')` 一致 ⇒ 会话里已记录的引用不失效）。 */
 export const CODEBUDDY_ROUTE = 'vssaros-codebuddy';
@@ -237,6 +238,7 @@ export function codebuddyRouteEntry({ baseURL, accessToken, models }) {
 		api: 'openai-completions',
 		baseURL: String(baseURL).trim().replace(/\/+$/, ''),
 		credentialRef: CODEBUDDY_CREDENTIAL_REF,
+		retryPolicy: CODEBUDDY_RETRY_POLICY,
 		headers: sanitizeHeaders(identityHeaders(accessToken)),
 		// 与 IDE 侧同一上限（跨进程校验器 `models.length > 200` 拒绝）。
 		models: models.slice(0, 200).filter(m => m && typeof m.id === 'string' && m.id),

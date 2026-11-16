@@ -43,7 +43,9 @@ console.log('check-execution-views：三视图归属「执行」页签')
 		/query\?: \{ filter\?: TicketFilter; ticket\?: string \}/.test(route)
 		&& /case 'execution': return record \?[\s\S]{0,180}ticket: text\('ticket'\)/.test(route))
 	ok('① NAV_TABS 仍过滤掉 work（顶栏不出现独立工作台页签）',
-		/NAV_TABS: readonly Tab\[\] = TABS\.filter\(tab => tab !== 'work'\)/.test(route))
+		/NAV_TABS: readonly Tab\[\] = TABS\.filter\(tab => tab !== 'work' && tab !== 'chat'\)/.test(route)
+		&& /export const HOME: Route = \{ page: 'overview' \}/.test(route)
+		&& !/dt-tab-chat/.test(app))
 }
 
 // ② 执行页内嵌三视图，且原有内容保留

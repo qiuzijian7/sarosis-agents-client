@@ -35,6 +35,8 @@ function fixture(listed: string[], workbenches?: { register: ReturnType<typeof v
     // VsSaros addition: cordis runs an `inject` callback once its services exist.
     inject: (names: string[], callback: (child: unknown) => void) => { if (names.every(name => name === 'desktopWorkbenches' && workbenches)) callback({ ...ctx, desktopWorkbenches: workbenches }) },
   }
+  // ★ 2026-11-11：首页改为概况；这些用例验证的是 desk 会话的停靠与 composer，显式走 chat 深链。
+  sessionStorage.setItem('dsh-superagent/route', JSON.stringify({ route: { page: 'overview' }, stack: [] }))
   apply(ctx as never)
   const entry = (name: string) => entries.find(item => item.options.name === name)!
   return { ctx, entries, dictionaries, main: entry('main'), nav: entry('sidebar.panellist'),
@@ -47,6 +49,8 @@ async function render(entry: Entry, props: Record<string, unknown>) {
   for (let i = 0; i < 5; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
   return { container, dispose: () => { act(() => { root.unmount() }); container.remove() } }
 }
+/** ★ 2026-11-11：概况是首页；少数用例仍要验证 chat 深链下的 dock / composer。 */
+const chatRoute = () => sessionStorage.setItem('dsh-superagent/route', JSON.stringify({ route: { page: 'chat' }, stack: [] }))
 const openMaster = async (container: HTMLElement) => {
   const button = [...container.querySelectorAll('button')].find(item => item.textContent === zh.openMaster || item.getAttribute('aria-label') === zh.openMaster)!
   await act(async () => { button.click() })
@@ -81,6 +85,7 @@ it('registers a whole-page workbench in VsSaros instead of the sidebar entry, wh
   const unregister = vi.fn()
   const workbenches = { register: vi.fn(() => unregister) }
   const { entries } = fixture([], workbenches)
+  chatRoute()
   expect(entries.map(entry => entry.options.name)).toEqual(['main', 'tool.call.toolview', 'tool.call.toolview', 'plugins.row.config'])
   expect(workbenches.register).toHaveBeenCalledTimes(1)
   const [descriptor, Panel] = workbenches.register.mock.calls[0] as unknown as [Record<string, unknown>, ComponentType<Record<string, unknown>>]
@@ -92,7 +97,7 @@ it('registers a whole-page workbench in VsSaros instead of the sidebar entry, wh
   expect(container.querySelector('[data-vssaros-surface="workbench"] .dt-tabs')).not.toBeNull()
   // chat-surface's floating "sent to group" tip stays off over this workbench (it shows group runs itself).
   expect(container.querySelector('[data-vssaros-surface="workbench"]')?.getAttribute('data-vssaros-group-tip')).toBe('off')
-  expect([...container.querySelectorAll('[role="tab"]')].map(tab => tab.textContent)).toEqual([zh['tab.chat'], zh['tab.source'],
+  expect([...container.querySelectorAll('[role="tab"]')].map(tab => tab.textContent)).toEqual([zh['tab.overview'], zh['tab.source'],
     zh['tab.trigger'], zh['tab.eval'], zh['tab.execution'], zh['tab.settings']])
   // Without the host's conversation, the Chat tab is the panel's own.
   expect(container.querySelector('[data-testid="native-chat"]')).toBeNull()
@@ -103,6 +108,7 @@ it('registers a whole-page workbench in VsSaros instead of the sidebar entry, wh
 it('shows the supervisor desk in DSH\'s own chat that the workbench host docks in the Chat tab', async () => {
   const workbenches = { register: vi.fn(() => () => {}) }
   fixture([], workbenches)
+  chatRoute()
   const [, Panel] = workbenches.register.mock.calls[0] as unknown as [unknown, ComponentType<Record<string, unknown>>]
   serve()
   const ensureSession = vi.fn(async ({ sessionId }: { sessionId: string }) => sessionId)
@@ -121,22 +127,22 @@ it('shows the supervisor desk in DSH\'s own chat that the workbench host docks i
   again.dispose()
 })
 
-it('opens a listed Session through the workspace from the main panel', async () => {
+it('★ no longer offers the main Session from the panel (side panel disabled)', async () => {
   serve()
   const { ctx, main } = fixture(['master'])
   const view = await render(main, { t })
-  await openMaster(view.container)
-  expect(ctx.uiWorkspace.openSession).toHaveBeenCalledExactlyOnceWith('master')
+  expect([...view.container.querySelectorAll('button')].some(item => item.getAttribute('aria-label') === zh.openMaster)).toBe(false)
+  expect(ctx.uiWorkspace.openSession).not.toHaveBeenCalled()
   view.dispose()
 })
 
-it('reports a Session missing from the catalog in the interface language', async () => {
+it('shows no session-catalog warning when the side panel is disabled', async () => {
   serve()
   const { ctx, main } = fixture([])
   const view = await render(main, { t })
-  await openMaster(view.container)
+  expect([...view.container.querySelectorAll('button')].some(item => item.getAttribute('aria-label') === zh.openMaster)).toBe(false)
   expect(ctx.uiWorkspace.openSession).not.toHaveBeenCalled()
-  expect(document.body.textContent).toContain(zh.sessionNotListed)
+  expect(document.body.textContent).not.toContain(zh.sessionNotListed)
   view.dispose()
 })
 

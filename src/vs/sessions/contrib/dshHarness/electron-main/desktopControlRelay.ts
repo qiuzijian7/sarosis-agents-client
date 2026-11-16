@@ -12,7 +12,7 @@
  * handshake unless the peer is loopback AND holds the token. Policy lives in
  * `common/desktopControlProtocol.ts` and is checked on EVERY request.
  *
- * ★ P0 has no input-injection code whatsoever. All nine served methods are read-only Electron
+ * ★ P0 has no input-injection code whatsoever. The observe methods are read-only Electron
  * APIs. OS-wide window enumeration, a real control-level accessibility tree, leases, app grants,
  * handoff and user takeover are P1/P2 — see doc/dsb-capability-compat-design.md §5.
  */
@@ -326,11 +326,9 @@ export class DesktopControlRelay extends Disposable {
 			case 'activateApp':
 				// Reached only after the method allowlist AND (for foreground) the OS idle gate.
 				return { ...(await injectDesktopInput(method, params as IDesktopInputParams)) };
-			case 'setValue':
-			case 'showWindow':
-			case 'launchApp':
-			case 'clipboardRead':
-				throw new Error(`${method} 在 P1 未实现（窗口/OS 动作属 P2）`);
+			// ★ No `case` for setValue / showWindow / launchApp / clipboardRead:
+			//   they are deliberately absent from the method allowlists (P0/P1 scope), so
+			//   desktopControlRefusal() rejects them before _dispatch is ever reached.
 			default:
 				throw new Error(`unsupported method ${method}`);
 		}

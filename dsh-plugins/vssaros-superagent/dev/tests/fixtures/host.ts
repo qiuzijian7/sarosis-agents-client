@@ -264,7 +264,7 @@ export async function startRuntime(seed?: (store: Store) => void, options: { sta
   const settings = runtime.store.settings()
   // VsSaros addition (superagent v2): tickets start at once here unless a test asks for team staffing.
   runtime.store.saveSettings({ ...settings, eval: { ...settings.eval, mode: 'auto' },
-    executor: { ...settings.executor, staffing: options.staffing ?? false },
+    executor: { ...settings.executor, staffing: options.staffing ?? false, teamEnabled: options.staffing ?? false },
     policy: { ...settings.policy, sources: { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT }, github: { allowed: [{ id: 'alice' }] } } },
     sources: { ...sources, feishu: { enabled: true, config: { cli: BOT, chats: [{ chatId: CHAT, listen: 'all' }], directMessages: true } } } })
   deliveries.mockClear()

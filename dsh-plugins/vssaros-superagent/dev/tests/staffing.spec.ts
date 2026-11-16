@@ -1,7 +1,9 @@
 // VsSaros addition (superagent v2, P2): every accepted ticket waits in person/staffing until a person agrees to its team.
-import { afterEach, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { latestAssignment, ticketStage } from '../src/core/index.ts'
 import { ticketCard } from '../src/app/cards.ts'
+import { REUSE_WINDOW_MS, reusableApproved } from '../src/app/staffing.ts'
 import { feishu, startRuntime, type Host } from './fixtures/host.ts'
 
 let h: Host | undefined
@@ -54,13 +56,13 @@ it('sends the proposal to the conversation and starts the worker only on a liste
   await receive(fromBot)
   expect(await confirm(fromBot.id, 1)).toMatchObject({ refused: expect.stringContaining('bot') })
   const stranger = await receive(reply('4', '同意', { sender_id: 'ou_mallory' }))
-  expect(await confirm(stranger.id, 1)).toMatchObject({ refused: expect.stringContaining('not on the feishu list') })
+  expect(await confirm(stranger.id, 1)).toMatchObject({ refused: expect.stringContaining("nor this ticket's originator") })
   // A person asked for a change: version 2 supersedes version 1, whose agreement no longer counts.
   const v2 = { roles: [...ONE_ROLE.roles, { key: 'test', need: '回归测试', bot: '测试 bot' }],
     steps: [...ONE_ROLE.steps, { key: 'T2', role: 'test', title: '回归测试', spec: '跑首页回归', after: ['T1'] }] }
   expect(await propose(ticket.id, v2)).toMatchObject({ version: 2 })
   expect(h!.runtime.store.receipts.get(`team-proposal:${ticket.id}:v2`)?.text).toContain('步骤：T1 修复回归 → T2 回归测试（等 T1）')
-  const yes = await receive(reply('5', '同意'))
+  const yes = await receive(reply('5', '同意，开工吧'))
   expect(await confirm(yes.id, 1)).toMatchObject({ refused: expect.stringContaining('version 2') })
   expect(h!.agents.has(sessionId)).toBe(false)
   expect(await confirm(yes.id, 2)).toMatchObject({ version: 2, state: 'approved' })
@@ -76,7 +78,7 @@ it('sends the proposal to the conversation and starts the worker only on a liste
 it('a listed person\'s refusal ends the ticket as dropped by a person, and the panel can agree for the person at this machine', async () => {
   const { ticket } = await staffed()
   await propose(ticket.id)
-  const no = await receive(reply('2', '取消'))
+  const no = await receive(reply('2', '这个先不做了'))
   expect(await h!.runTool(h!.runtime.masterId, 'orchestrator_team_refuse', { ticket_id: ticket.id, trigger_id: no.id, reason: '不做了' }))
     .toMatchObject({ state: 'dropped' })
   expect(h!.runtime.store.tickets.get(ticket.id)?.ended).toMatchObject({ by: 'human', outcome: 'dropped', reason: '不做了' })
@@ -119,4 +121,89 @@ it('rejects a proposal whose steps wait in a cycle or name a missing role, and k
   expect(await propose(ticket.id, { roles: ONE_ROLE.roles, steps: [{ key: 'A', role: 'nobody', title: 'a', spec: 'a' }] }))
     .toMatchObject({ refused: expect.stringContaining('no role nobody') })
   expect(h!.runtime.store.tickets.get(ticket.id)?.team?.state).toBe('proposing')
+})
+
+it('★ a Feishu 「同意」 agrees to the team without the model calling a tool', async () => {
+  const { ticket, sessionId } = await staffed()
+  await propose(ticket.id)
+  expect(h!.runtime.staffing.tables.latest(ticket.id)).toMatchObject({ state: 'proposed', version: 1 })
+  // 发起人在工单线程上回复「同意」：快路径直接批准，不等主会话模型（真机上模型会 timeout）。
+  const yes = await receive(reply('2', '同意'))
+  await new Promise(resolve => setTimeout(resolve, 10))
+  const current = h!.runtime.store.tickets.get(ticket.id)!
+  expect(h!.runtime.staffing.tables.latest(ticket.id)).toMatchObject({ state: 'approved', decidedBy: yes.actor.id, triggerId: yes.id })
+  expect(current.team).toMatchObject({ state: 'approved', version: 1 })
+  await h!.runtime.idle()
+  expect(h!.agents.has(sessionId)).toBe(true)
+})
+
+it('★ an unrelated sender cannot agree, and a bot message is ignored', async () => {
+  const { ticket } = await staffed()
+  await propose(ticket.id)
+  await receive(reply('2', '同意', { sender_id: 'ou_mallory' }))
+  await receive({ ...reply('3', '同意'), id: 'bot-agrees', human: false })
+  await new Promise(resolve => setTimeout(resolve, 10))
+  expect(h!.runtime.staffing.tables.latest(ticket.id)).toMatchObject({ state: 'proposed' })
+})
+
+it('★ 「取消」 from the originator drops the ticket', async () => {
+  const { ticket } = await staffed()
+  await propose(ticket.id)
+  await receive(reply('2', '取消'))
+  await new Promise(resolve => setTimeout(resolve, 10))
+  expect(h!.runtime.store.tickets.get(ticket.id)?.ended).toMatchObject({ by: 'human', outcome: 'dropped' })
+})
+
+it('★ agrees even with an empty allow-list, as on the real machine (originator rule)', async () => {
+  const { ticket, sessionId } = await staffed()
+  const settings = h!.runtime.store.settings()
+  const feishu = settings.policy.sources.feishu ?? { allowed: [], admission: {} }
+  h!.runtime.store.saveSettings({ ...settings, policy: { ...settings.policy, sources: { ...settings.policy.sources,
+    feishu: { ...feishu, allowed: [], admission: { ...(feishu as { admission?: object }).admission,
+      direct: { unlistedAddressed: 'explicit' } } } } } } as typeof settings)
+  await propose(ticket.id)
+  await receive(reply('2', '同意'))
+  await new Promise(resolve => setTimeout(resolve, 10))
+  expect(h!.runtime.staffing.tables.latest(ticket.id)).toMatchObject({ state: 'approved' })
+  await h!.runtime.idle()
+  expect(h!.agents.has(sessionId)).toBe(true)
+})
+
+describe('★ 2026-11-12 reusableApproved（相同组队方案不再重跑主会话）', () => {
+  const at = Date.parse('2026-11-12T09:00:00Z')
+  const base = (over: Record<string, unknown> = {}) => ({ ticketId: 'older', version: 1, fingerprint: 'sha256:same',
+    goal: 'fix', roles: [], steps: [], budget: { tokens: 1, turns: 1, parallel: 1 }, risk: { newBots: 0, highRiskTools: [], writeSteps: 0 },
+    state: 'approved', at: new Date(at - 60_000).toISOString(), ...over }) as never
+  it('finds a recent approved plan with the same fingerprint', () => {
+    expect(reusableApproved([base()], 'sha256:same', at)).toMatchObject({ ticketId: 'older' })
+  })
+  it('never reuses a rejected proposal, a different plan, an expired one, or one that creates Bots', () => {
+    expect(reusableApproved([base({ state: 'rejected' })], 'sha256:same', at)).toBeUndefined()
+    expect(reusableApproved([base({ fingerprint: 'sha256:other' })], 'sha256:same', at)).toBeUndefined()
+    expect(reusableApproved([base({ at: new Date(at - REUSE_WINDOW_MS - 1).toISOString() })], 'sha256:same', at)).toBeUndefined()
+    expect(reusableApproved([base({ risk: { newBots: 1, highRiskTools: [], writeSteps: 0 } })], 'sha256:same', at)).toBeUndefined()
+  })
+})
+
+it('★ reuses a previously approved identical plan and starts the worker without another consent', async () => {
+  const { ticket, sessionId } = await staffed()
+  const first = await propose(ticket.id)
+  expect(first).toMatchObject({ state: 'proposed', version: 1 })
+  const saved = h!.runtime.staffing.tables.latest(ticket.id)!
+  h!.runtime.staffing.tables.save({ ...saved, ticketId: 'earlier-ticket', state: 'approved',
+    decidedBy: 'panel', decidedAt: new Date().toISOString(), at: new Date().toISOString() })
+  const second = await propose(ticket.id)
+  expect(second).toMatchObject({ state: 'approved', version: 2 })
+  expect(h!.runtime.staffing.tables.latest(ticket.id)).toMatchObject({ state: 'approved', decidedBy: 'reuse:earlier-ticket:v1' })
+  expect(h!.runtime.store.receipts.get(`team-proposal:${ticket.id}:v2`)?.text).toContain('复用了你之前批准的相同组队方案')
+  await h!.runtime.idle()
+  expect(h!.agents.has(sessionId)).toBe(true)
+})
+
+it('★ pins the reuse wiring in staffing.ts', () => {
+  const source = readFileSync(new URL('../src/app/staffing.ts', import.meta.url), 'utf8')
+  expect(source).toContain('const reuse = reusableApproved(history, proposal.fingerprint, Date.now())')
+  expect(source).toContain('const automatic = !!reuse || settings.executor.autoApprove')
+  expect(source).toContain('reuse:')
+  expect(source).toContain('!!reuse')
 })

@@ -257,16 +257,13 @@ export function compareSemver(a: string, b: string): number {
 	return 0;
 }
 
-/** dsh 官方要求 Node 22.19+（22 线）或 24+。 */
+/** dsh 0.2.2-rc.2 起要求 Node >=24.9.0（与上游 `engines.node` 对齐）。 */
 export function isSupportedNodeVersion(raw: string): boolean {
 	const v = parseSemver(raw);
 	if (!v) {
 		return false;
 	}
-	if (v.major === 22) {
-		return v.minor >= 19;
-	}
-	return v.major >= 24;
+	return v.major > 24 || (v.major === 24 && v.minor >= 9);
 }
 
 // ─── 运行时版本目录名 ─────────────────────────────────────────────────────────

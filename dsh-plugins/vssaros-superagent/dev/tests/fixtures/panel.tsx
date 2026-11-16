@@ -36,6 +36,11 @@ export async function settle() {
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
 }
 export async function mount(dictionary: Record<string, string> = zh) {
+  // ★ 2026-11-11：工作台首页改为概况；既有面板测试验证的是 desk composer / 对话，
+  //   默认显式走 `chat` 深链保留这些能力（概况首页由专门的用例覆盖）。
+  // ★ 2026-11-11：概况已是工作台首页且右侧栏禁用；fixture 也走 overview，
+  //   让概览测试从主区域拿内容，不再依赖侧栏。
+  if (!sessionStorage.getItem('dsh-superagent/route')) at({ page: 'overview' })
   container = document.createElement('div'); document.body.append(container)
   root = createRoot(container)
   await act(async () => { root!.render(<Panel t={translator(dictionary)} />) })
@@ -77,7 +82,12 @@ export function field<E extends HTMLElement>(label: string): E {
   return match as unknown as E
 }
 export const at = (route: object) => sessionStorage.setItem('dsh-superagent/route', JSON.stringify({ route, stack: [] }))
-/** VsSaros addition: the next mount shows the side panel with the Overview. */
+/** ★ 2026-11-11：右侧栏已禁用；保留此 helper 只为兼容旧用例，概览现在从首页主区域读取。 */
 export const openSide = () => localStorage.setItem('dsh-superagent/side', JSON.stringify({ open: true }))
 /** VsSaros addition: closes the side panel, as a person does after following a link in the Overview. */
-export const closeSide = () => click(find(zh['side.close'], '.dt-side button'))
+export const closeSide = () => {
+  // ★ 2026-11-11：右侧栏已禁用；没有侧栏时这是空操作，旧用例无需逐个删。
+  const button = document.querySelector('.dt-side button[aria-label="' + zh['side.close'] + '"]')
+    ?? [...document.querySelectorAll('.dt-side button')].find(item => item.getAttribute('aria-label') === zh['side.close'])
+  if (button) return click(button as HTMLElement)
+}

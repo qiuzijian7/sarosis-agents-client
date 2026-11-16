@@ -6,7 +6,7 @@ import { scopeParentOf } from '../infra/host.ts'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { dirname } from 'node:path'
 import { z } from 'zod'
-import { assignmentRole, key, liveTicket, type Ticket } from '../core/index.ts'
+import { assignmentRole, key, liveTicket, runningAssignment, type Ticket } from '../core/index.ts'
 import { mandateInstructions, ticketOfSession } from '../executor/dsh.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { AgentDelivery, messageId } from './delivery.ts'
@@ -15,6 +15,7 @@ import type { Effects } from './effects.ts'
 import type { Variable } from './execution-environment.ts'
 import { RetryHealth } from './retry-health.ts'
 import { initializeRoleModel } from './role-models.ts'
+import { bindPresetPtcRuntime, installWorkerPtc } from './worker-ptc.ts'
 import { bundledSkills } from './skill-files.ts'
 import { SKILL_PREFIX, type PromptVersion, type Prompts } from './prompts.ts'
 import { within } from './step-approvals.ts'
@@ -84,7 +85,7 @@ export const COORDINATOR_REFUSED = ['write', 'edit', 'bash', 'pwsh']
  * What Sessions registered for an agent it decorated: the releases of its prompt section, tools and skill scope, the scope
  * its skills are registered in, and the skills of one prompt revision; for a worker's subagent, only its tool limits.
  */
-interface SessionBinding { disposers: (() => void)[]; scope?: Context; skills?: { revision: number; dispose: () => void }; subagent?: true }
+interface SessionBinding { disposers: (() => void)[]; scope?: Context; skills?: { revision: number; dispose: () => void }; subagent?: true; ptc?: Promise<void> }
 
 /** The agent presets Executor Sessions and the main Session are created with, which the bundle's patch defines. */
 export const WORKER_PRESET = 'dsh-superagent-worker', ROUTER_PRESET = 'dsh-superagent-router'
@@ -197,12 +198,26 @@ export class Sessions {
     const settings = this.host.store.settings()
     if (role !== 'step') await initializeRoleModel(ctx, result.agent, role === 'worker' ? settings.executor.model : settings.eval.model)
     await this.decorate(result.agent)
-    const wanted = role === 'step' && permission ? permission : 'danger-full-access'
+    const ptc = role === 'worker' && this.ticketOf(result.agent)?.execution?.toolMode === 'ptc'
+    const wanted = ptc ? 'workspace-write' : role === 'step' && permission ? permission : 'danger-full-access'
     try { ctx.permissionPresets.set(result.agent.session, wanted) } catch (error) {
       // VsSaros fix (2026-11-06): a step whose permission cannot be set no longer runs with full access in silence; the
       // step is blocked for a person to decide (steps.ts). Other Sessions run with full access, so they fail as before.
       if (role === 'step') throw new StepPermissionError(wanted, String(error))
       throw error
+    }
+    if (ptc) {
+      const binding = this.bindings.get(result.agent)!
+      const active = () => !this.host.closing() && this.bindings.get(result.agent) === binding
+      binding.ptc ??= Promise.resolve().then(async () => {
+        const restore = bindPresetPtcRuntime(result.agent)
+        try {
+          const release = await installWorkerPtc(result.agent, () => this.host.store.settings(), undefined, active)
+          if (!active()) { release(); restore(); throw new Error('Worker PTC binding released during setup') }
+          binding.disposers.push(restore, release)
+        } catch (error) { restore(); throw error }
+      }).catch(error => { binding.ptc = undefined; throw error })
+      await binding.ptc
     }
     await ctx.sessionController.rename({ sessionId: id as SessionId, title })
     return result.agent
@@ -217,6 +232,12 @@ export class Sessions {
     accepted?: () => void): Promise<void> {
     const result = await this.ctx.sessionController.resolveAgent(sessionId as SessionId)
     if ('error' in result) throw result.error
+    const ticket = this.ticketOf(result.agent)
+    if (ticket?.execution?.toolMode === 'ptc') {
+      const installing = this.bindings.get(result.agent)?.ptc
+      if (installing) await installing
+      else await this.ensure(sessionId, ticket.execution.directory, ticket.title, 'worker')
+    }
     await this.agentDelivery.send(result.agent, key(requestId), text, mode, this.host.lifetime, authorize, accepted)
   }
   /** The id of the message `prompt` delivers under `requestId`, which DSH's inbox events name it by. */
@@ -308,7 +329,10 @@ export class Sessions {
       const version = this.promptFor(agent, context.signal !== undefined)
       const current = ticket && host.store.tickets.get(ticket.id)
       const composed = host.prompts.compose(version.config, master ? 'orchestrator' : 'worker', current ? host.environment(current) : undefined)
-      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate) : ''}`
+      const gongfeng = current && host.store.settings().sources.gongfeng
+      const guidance = gongfeng?.enabled && gongfeng.config.project
+        ? '\nGongfeng uses orchestrator_gongfeng_mr and report mr_iid, not gh or pr_number. Use operator-configured Git credentials for push. Verify MR ownership and relevant tests; CI pipelines are not automatically verified here. Never merge an MR; human review owns merging. Missing credentials or permissions are blockers, not a reason to switch servers.' : ''
+      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate) : ''}${guidance}`
     }, ...(master ? { complete: true } : {}) }))
     // A recreated skill scope (e.g. after the skills service restarts) starts empty, so reset `binding.skills` before rebinding.
     const skillScope = agent.ctx.inject(['skills'], scope => {
@@ -378,8 +402,7 @@ export class Sessions {
       // (rework makes it pending again); a message steered in after its report woke it to run its tools again.
       if (now?.state === 'ready') return 'This step already reported ready: end your turn now, calling no tools'
       if (!stepToolAllowed(name, step.tools, own)) return `${name} is neither a work tool nor one of this Bot's tools`
-      // The token budget is a hard gate: once used up, a step may only report.
-      if (!own.includes(name) && this.host.overBudget?.(step.ticketId)) return 'The team used its token budget: report now with orchestrator_step_report (blocked if unfinished)'
+      // ★ 2026-11-12：默认不限制预算，running 步骤不再因用量被拒绝工具。
       if (step.access === 'read' && (name === 'write' || name === 'edit')) return 'This step is read-only: change no file'
       // Plan C: a write step this machine could not sandbox keeps its file tools inside its directory.
       const directory = current.execution?.directory, path = (args as { file_path?: unknown; path?: unknown } | undefined)
@@ -426,9 +449,24 @@ export class Sessions {
     const store = this.host.store
     const parent = scopeParentOf(agent)
     const allow = WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent))
-    return [agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard(() => {
+    return [agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard(execution => {
       const current = store.tickets.get(ticketId)
-      return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
+      if (!current || !liveTicket(current)) return 'Ticket ended; new work needs a new authorized ticket'
+      const shared = current.execution?.p4Workspace
+      if (shared) {
+        const config = store.settings().sources.p4
+        if (!config?.enabled || config.config.workspaceMode !== 'current' || config.config.executionClient !== shared.client
+          || config.config.workspaceRoot !== shared.root || config.config.port !== shared.port || config.config.user !== shared.user) return 'Current P4 authorization changed; wait for operator repair'
+        const assignment = runningAssignment(current), review = store.get(KV.reviews.review(current.id))
+        if (!assignment || assignment.report?.state === 'blocked' || assignment.report?.state === 'failed' || review?.state === 'waiting' || review?.state === 'submitting') return 'Current P4 workspace is queued, blocked or under review; use the ticket controls'
+        const occupied = store.tickets.open().some(other => other.id !== ticketId && other.execution?.p4Workspace?.root === shared.root
+          && (this.ctx.agents.get(`worker-${other.id}` as SessionId)?.status === 'running' || other.follows?.some(follow => follow.own && !follow.closed && follow.thread.startsWith('p4:'))))
+        if (occupied) return 'Current P4 workspace is occupied by another ticket'
+      }
+      if (agent.id === `worker-${ticketId}` && current.execution?.toolMode === 'ptc' && execution.name !== 'run_code' && !execution.parent) {
+        return 'This worker is PTC-only; native fallback is refused. Use SDK tools inside run_code after the Host runtime is available.'
+      }
+      return undefined
     })]
   }
   /**

@@ -152,9 +152,10 @@ agent 在 `.agent.md` 的 `skills:[]` 里**显式点名**的技能绕过 tier（
 ## 10.x GRBug 修复专家（2026-11-09）
 
 新增第 174 个随包技能 `grbug-fix-expert`（`tier: extended`，不占常驻 40 条 core 预算；
-其它 agent 仍可经 `capability_search` / `read_skill` 取用）。**已显式挂到 `saroasis-studio`**
-（TAPD 数据专员，原本就挂 `tapd-skill`）：在 `builtinAgents.ts` 的 `skills:` 点名，
-并在 `resources/.agents/agents/saroasis-studio/.agent.md` 产物里同步 —— 点名会进
+其它 agent 仍可经 `capability_search` / `read_skill` 取用）。**已显式挂到 `gr-programmer`**
+（GR 程序员；2026-11-11 起替代已下线的 `saroasis-studio`，后者原挂 `tapd-skill`）：
+在 `builtinAgents.ts` 的 `skills:` 点名，并在
+`resources/.agents/agents/gr-programmer/.agent.md` 产物里同步 —— 点名会进
 `partitionCatalog` 的 `pinned` 桶，绕过 tier 进该 agent 的常驻目录。改任一侧都要
 跑 `node dsh-plugins/scripts/gen-builtin-agent-md.mjs --check`（单源测试逐字段比对）。
 它是一个**编排型技能**：把已有的

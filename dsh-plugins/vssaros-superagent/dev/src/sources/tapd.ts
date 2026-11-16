@@ -16,6 +16,8 @@ import { cursorAt, pause, pollThreads } from './poll.ts'
 import { itemAddress, itemPage, TAPD_SOURCE, TAPD_TYPES, TapdConfigSchema, tapdConfigured, TapdError, tapdApi, tapdTime, watchWorkspace,
   type TapdApi, type TapdComment, type TapdConfig, type TapdItem, type TapdType, type TapdWatch } from './tapd-api.ts'
 import { cleanOwner, resolveTapdName } from './tapd-members.ts'
+import { TapdFilterScheduleSchema } from './tapd-filters.ts'
+import { runFilterSweeps } from './tapd-sweep.ts'
 
 const TapdPolicySchema = z.object({ allowed: z.array(z.object({ id: z.string().trim().min(1) }).strict()).default([]) }).strict()
 
@@ -139,6 +141,8 @@ export async function pollRound(ctx: SourceContext, api: TapdApi, config: TapdCo
   const failures: string[] = []
   for (const watch of resolved.watches) {
     if (signal?.aborted) return received
+    // An imported filter watch is a schedule container, not a listener for every change.
+    if (watch.sweepOnly) continue
     try { received += await pollWatch(ctx, api, resolved, watch, signal) } catch (error) { failures.push(`${watch.name}: ${String(error)}`) }
   }
   await pollThreads(ctx, TAPD_SOURCE, () => !!signal?.aborted, async thread => { received += await pollComments(ctx, api, resolved, thread, signal) })
@@ -207,6 +211,12 @@ export function makeTapdKind(options: TapdKindOptions): SourceKind<TapdConfig> {
         label: { zh: 'Open API 地址', en: 'Open API address' },
         hint: { zh: '默认 https://api.tapd.cn，只有私有化部署才需要改。凭据在卡片下方的「接入检查」区管理；MCP 通道已下线。',
           en: 'Defaults to https://api.tapd.cn; change only for a private deployment. Credentials are managed in the setup checklist below; the MCP transport was retired.' } },
+      { key: 'ownerGroups', type: 'rows', advanced: true, group: { zh: '接收范围', en: 'Reception scope' },
+        label: { zh: '组成员映射', en: 'Owner group → members' },
+        hint: { zh: '导入的筛选条件里「处理人」常填组名（如「一组 1.1（玩法）」），TAPD 的 current_owner 存的是人名。这里把组名映射成逗号分隔的人名后，导入时会转成 current_owner=USER_OR<…>。未映射的组名条件会明确标为「未生效」，不会静默缩小范围。',
+          en: 'An imported filter may name an owner group, while TAPD stores person names in current_owner. Map a group to comma-separated names so the import becomes current_owner=USER_OR<…>. An unmapped group is reported as not applied instead of silently narrowing the result.' },
+        columns: [{ key: 'group', type: 'text', label: { zh: '组名', en: 'Group' } },
+          { key: 'members', type: 'text', label: { zh: '成员（逗号分隔）', en: 'Members (comma separated)' } }] },
       { key: 'members', type: 'rows', advanced: true, group: { zh: '接收范围', en: 'Reception scope' },
         label: { zh: '企微账号 → TAPD 中文名', en: 'WeCom alias → TAPD name' },
         hint: { zh: '唯一的身份映射表（静态）。身份名和接收项的「处理人」都可以填企微账号，按这里换成 TAPD 中文名后再比较或查询；没配映射的别名会按原文匹配，容易漏单。已下线的内网成员表接口不再读取。',
@@ -354,9 +364,14 @@ export async function watch(ctx: SourceContext, signal: AbortSignal, apiOf: (con
       else if (!tapdConfigured(config)) ctx.report(TAPD_SOURCE, health('paused', 'tapdUnset'))
       else {
         await pollRound(ctx, apiOf(config), config, signal)
-        // A Webhook with no shared secret refuses every delivery; do not report a misleading "ready".
+        const sweeps = await runFilterSweeps(ctx, apiOf(config), config, new Date(), signal)
+        // Surface a failed or capped sweep instead of hiding it behind a green "ready".
+        const trouble = sweeps.find(item => item.error || item.capped)
+        const note = trouble?.error ? `TAPD 筛选扫描 ${trouble.name} 失败：${trouble.error}`
+          : trouble ? `TAPD 筛选扫描 ${trouble.name} 达到单次上限（扫描 ${trouble.scanned}、命中 ${trouble.matched}、派发 ${trouble.dispatched}），可能漏单` : ''
         ctx.report(TAPD_SOURCE, config.webhook && !config.webhookSecret
-          ? health('error', 'tapdWebhookUnset') : { state: 'ready', detail: '' })
+          ? health('error', 'tapdWebhookUnset') : note ? health('error', 'pollFailures', { count: '1', error: note })
+            : { state: 'ready', detail: '' })
       }
       failures = 0
     } catch (error) {

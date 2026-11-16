@@ -52,9 +52,8 @@ export interface TeamStep {
   report?: string; implicit?: true
   parallel: number; turnsCap: number
   /**
-   * VsSaros addition (2026-11-06, token budget): the tokens this step's Session used (input, cache reads and writes, and
-   * output), and the team's cap (the agreed budget's `tokens`, the same on every step). At 90% of the cap the lead is told
-   * once (`budgetWarnedAt` on the first step); at the cap no new step starts and running steps may only report.
+   * The tokens this step's Session used (input, cache reads and writes, and output).
+   * ★ 2026-11-12（用户）：默认不限制预算，`tokensCap` 只为兼容已存方案保留，从不阻断步骤或工具。
    */
   tokens?: number
   tokensCap?: number
@@ -199,20 +198,20 @@ export class TeamSteps {
   }
   steps(ticketId: string): TeamStep[] { return this.tables.of(ticketId) }
 
-  // ── VsSaros addition (2026-11-06): the token budget, a hard gate ────────────────────────────────────────────────
-  /** What the team used of its budget: tokens and turns over all steps, the caps, and whether the token cap is reached. */
+  // ── ★ 2026-11-12（用户）：默认不限制预算，caps 仅为兼容已存方案保留，绝不阻断工作 ──────────────────────
+  /** What the team actually consumed. Caps are kept for stored records / fingerprint compatibility but never gate. */
   budget(ticketId: string): StepsView['budget'] | undefined {
     const steps = this.tables.of(ticketId)
     if (!steps.length) return undefined
     const tokens = steps.reduce((sum, step) => sum + (step.tokens ?? 0), 0), tokensCap = steps[0]!.tokensCap ?? 0
     return { tokens, tokensCap, turns: steps.reduce((sum, step) => sum + step.turns, 0), turnsCap: steps[0]!.turnsCap,
-      stopped: tokensCap > 0 && tokens >= tokensCap }
+      stopped: false }
   }
-  /** Whether the team of `ticketId` used its token budget up: no new step starts and running steps may only report. */
-  overBudget(ticketId: string): boolean { return !!this.budget(ticketId)?.stopped }
+  /** ★ 默认不限制预算：永不拦新步骤，也永不拒绝运行中步骤的工具。 */
+  overBudget(_ticketId: string): boolean { return false }
   /**
    * A step Session's model call used tokens (DSH's `usage` chunk; billable input is input + cache reads + cache writes).
-   * Counted on the step; the lead is told once at 90% of the cap, and once when the cap is reached.
+   * ★ 2026-11-12：只累加消耗量，不再发 80%/100% 预算告警，也不再停新步骤。
    */
   meter(sessionId: string, usage: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number }): void {
     const ref = stepOfSession(sessionId)
@@ -222,16 +221,6 @@ export class TeamSteps {
       .reduce<number>((sum, value) => sum + (Number.isFinite(value) && value! > 0 ? value! : 0), 0)
     if (!used) return
     this.tables.save({ ...step, tokens: (step.tokens ?? 0) + used }, this.seq(step))
-    const budget = this.budget(step.ticketId)!, first = this.tables.of(step.ticketId)[0]!
-    if (!budget.tokensCap) return
-    if (budget.stopped && !first.budgetStoppedAt) {
-      this.tables.save({ ...first, budgetStoppedAt: now(), budgetWarnedAt: first.budgetWarnedAt ?? now() }, 0)
-      this.note(step.ticketId, `The team used its token budget (${budget.tokens} of ${budget.tokensCap}): no new step starts, and running steps may only report. `
-        + 'Ask the person whether to go on; they raise the budget in the panel.')
-    } else if (!budget.stopped && budget.tokens >= budget.tokensCap * 0.9 && !first.budgetWarnedAt) {
-      this.tables.save({ ...first, budgetWarnedAt: now() }, 0)
-      this.note(step.ticketId, `The team used 90% of its token budget (${budget.tokens} of ${budget.tokensCap}). Tell the person; at the cap no new step starts.`)
-    }
   }
   /**
    * A person raises the team's budget (new caps, each above what is used); the steps that waited may start.
@@ -490,15 +479,9 @@ export class TeamSteps {
       }
     }
     steps = this.tables.of(ticketId)
-    const turns = steps.reduce((sum, step) => sum + step.turns, 0), cap = steps[0]!.turnsCap
     const running = steps.filter(step => step.state === 'running')
     const ready = steps.filter(step => step.state === 'pending' && step.after.every(key => steps.find(item => item.key === key)?.state === 'ready'))
-    if (turns >= cap && ready.length) {
-      this.note(ticketId, `The team used ${turns} of its ${cap} turns; steps ${ready.map(step => step.key).join(', ')} wait. Ask the person whether to go on; they raise the budget in the panel.`)
-      return
-    }
-    // VsSaros addition (2026-11-06): the token budget is a hard gate too (meter() told the lead when it was reached).
-    if (ready.length && this.overBudget(ticketId)) return
+    // ★ 2026-11-12：token / 回合预算都不再拦新步骤，只统计消耗。
     let writing = running.some(step => step.access === 'write')
     let slots = steps[0]!.parallel - running.length
     for (const step of ready) {

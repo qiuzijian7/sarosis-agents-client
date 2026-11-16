@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { threadKey, type Thread, type Trigger } from '../core/index.ts'
 import { feishuChatLink } from './feishu-channel.ts'
 import { larkArgv, type FeishuBot } from '../deployment.ts'
-import { validItems, type Tally } from '../infra/commands.ts'
+import { CliError, validItems, type Tally } from '../infra/commands.ts'
 import { readFeishu, type FeishuRef } from './feishu-read.ts'
 import { busTaken, feishuAppHolder, FeishuConsumerExit, listensShared, sharedEvent, sharedFeishuEvents, type SharedFeishuEvents }
   from './feishu-share.ts'
@@ -217,9 +217,14 @@ export async function backfillLoop(ctx: SourceContext, signal: AbortSignal): Pro
     const known = Object.entries(seen).filter(([, direct]) => direct && config.directMessages)
     const chats = { ...Object.fromEntries(config.chats.map(chat => [chat.chatId, false])), ...Object.fromEntries(known) }
     const errors: string[] = []
+    const outside: string[] = []
     const tally = { skipped: 0 }
     for (const [chatId, direct] of Object.entries(chats)) {
       if (signal.aborted) break
+      // ★ 2026-11-11（真机 230002）：p2p 私聊不补收。机器人不是该会话的成员，
+      //   GET /open-apis/im/v1/messages 必被拒；失败又不推进游标 ⇒ 每 60s 空转并写持久红条。
+      //   实时 WS 事件（watch / listenShared）完全独立，不受影响。
+      if (direct) continue
       const started = new Date().toISOString()
       const cursorKey = KV.feishu.history(chatId)
       const since = ctx.state.get(cursorKey)
@@ -227,13 +232,21 @@ export async function backfillLoop(ctx: SourceContext, signal: AbortSignal): Pro
       try {
         await backfillChat(ctx, chatId, direct, since, started, signal, tally)
         if (!signal.aborted) ctx.state.set(cursorKey, cursorAt(started))
-      } catch (error) { if (!signal.aborted) errors.push(`${chatId}: ${String(error)}`) }
+      } catch (error) {
+        if (signal.aborted) continue
+        if (error instanceof CliError && (error.code === 230002 || error.code === 238002)) {
+          // 非重试：推进游标以免同一窗口每 60s 重试，并记为 paused 而不是 error。
+          ctx.state.set(cursorKey, cursorAt(started))
+          outside.push(chatId)
+        } else errors.push(`${chatId}: ${String(error)}`)
+      }
     }
     await pollThreads(ctx, signal, tally)
     const skipped = tally.skipped ? `; ${tally.skipped} unreadable messages skipped` : ''
     if (!signal.aborted) ctx.report('history', errors.length
       ? { state: 'error', detail: errors.join('\n') }
-      : { state: 'ready', detail: `Configured groups and known direct chats recovered${skipped}`, at: new Date().toISOString() })
+      : outside.length ? health('paused', 'feishuNotInChat', { chats: outside.join(', ') })
+      : { state: 'ready', detail: `Configured groups recovered${skipped}`, at: new Date().toISOString() })
     await delay(60_000, undefined, { signal }).catch(() => {})
   }
 }

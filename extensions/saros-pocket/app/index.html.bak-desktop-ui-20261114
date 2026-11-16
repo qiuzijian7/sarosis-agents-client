@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
+<meta name="theme-color" content="#0f1115">
+<!-- connect-src 在浏览器内用 'self'（代理同源托管）；Capacitor 打包后页面源是
+     capacitor://localhost，必须放开到 http:/https: 才能连 http://<电脑IP>:3081。
+     由 mobile/sync-web.mjs 在同步时按目标平台改写这条 meta。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' http: https:; font-src 'self'">
+<title>Saros Pocket · VsSaros 随身助手</title>
+<!-- 品牌：与 VsSaros 同款 logo（wordmark 用 SVG；「添加到主屏幕」用方形 mark PNG） -->
+<link rel="icon" href="saros-logo.svg">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<!-- 侧边导航轨：横屏 / 平板下替代底部页签。
+     与底部 .tabs 使用完全相同的 .tab + data-view 契约，
+     因此 app.js 的 switchTab() 无需改动即可同时驱动两套导航（见 app.css）。 -->
+<nav class="sidenav" id="sidenav" aria-label="主导航">
+  <button class="tab" data-view="inbox" type="button">
+    <span class="tab-ico" aria-hidden="true">📥</span><span class="tab-text">会话列表</span>
+  </button>
+  <button class="tab" data-view="chat" type="button">
+    <span class="tab-ico" aria-hidden="true">💬</span><span class="tab-text">当前会话</span>
+  </button>
+  <button class="tab" data-view="screen" type="button">
+    <span class="tab-ico" aria-hidden="true">🖥️</span><span class="tab-text">屏幕</span>
+  </button>
+  <button class="tab" data-view="changes" type="button">
+    <span class="tab-ico" aria-hidden="true">🔀</span><span class="tab-text">变更</span>
+  </button>
+  <button class="tab" data-view="status" type="button">
+    <span class="tab-ico" aria-hidden="true">📶</span><span class="tab-text">连接</span>
+  </button>
+  <!-- 文件页是次级跳转（由会话卡片的「浏览文件」进入），与底部 .tabs 一样
+       默认隐藏，只有在 switchTab('files') 触发后才显形，避免主导航多一个常驻项。 -->
+  <button class="tab tab-hidden" data-view="files" type="button">
+    <span class="tab-ico" aria-hidden="true">📁</span><span class="tab-text">文件</span>
+  </button>
+</nav>
+
+<div class="shell">
+<header class="top">
+  <div class="brand">
+    <!-- 点 logo = 看「App 信息」（版本号 / 运行环境 / 升级源）。
+         刻意用 button 而不是给 img 加 onclick：键盘可聚焦、屏幕阅读器能读（旧写法做不到）。 -->
+    <button class="logo-btn" id="aboutOpen" type="button" title="App 信息（版本号）" aria-label="App 信息">
+      <img class="logo" src="saros-logo.svg" alt="">
+    </button>
+    <span class="dot" id="connDot"></span>
+    <div>
+      <div class="title">Saros Pocket</div>
+      <div class="subtitle" id="connText">连接中…</div>
+    </div>
+  </div>
+  <div class="host" id="hostInfo"></div>
+</header>
+
+<main id="views">
+  <!-- 会话列表（原「收件箱」）：VsSaros 的 Agent 会话 + 本地会话，状态徽标 + 筛选芯片 -->
+  <section class="view" id="view-inbox">
+    <!-- 列表头：会话数 + 样式切换「入口 A」（▤ 图标 → 弹出菜单三选一）。
+         不占竖向空间（与筛选芯片同层）；选择记在 localStorage（sarosPocket.sessionListView），
+         默认卡片式 = 现状，不改变老用户的第一印象。方案见 docs/session-list-styles-mockup.html。 -->
+    <div class="inbox-head">
+      <b>会话列表</b>
+      <span class="t" id="sessionCount"></span>
+      <button class="viewbtn" id="viewStyleBtn" type="button" title="列表样式" aria-label="会话列表样式"
+        aria-haspopup="menu" aria-expanded="false">▤</button>
+    </div>
+    <div class="view-menu hidden" id="viewStyleMenu" role="menu" aria-label="会话列表样式">
+      <button class="view-row" data-view="s1" type="button" role="menuitemradio" aria-checked="false">🗂 卡片式（默认）<span class="ck">✓</span></button>
+      <button class="view-row" data-view="s2" type="button" role="menuitemradio" aria-checked="false">☰ 列表式（最紧凑）<span class="ck">✓</span></button>
+      <button class="view-row" data-view="s3" type="button" role="menuitemradio" aria-checked="false">▦ 网格式（两列）<span class="ck">✓</span></button>
+    </div>
+    <div class="chips" id="sessionChips">
+      <button class="chip active" data-status="all" type="button">全部</button>
+      <button class="chip" data-status="running" type="button">运行中</button>
+      <button class="chip" data-status="waiting" type="button">待授权</button>
+      <button class="chip" data-status="done" type="button">已完成</button>
+      <button class="chip" data-status="failed" type="button">失败</button>
+      <!-- 归档 = Pocket 里的「结束」；只有真的存在归档会话时才显示（见 renderArchivedChip） -->
+      <button class="chip hidden" data-status="archived" type="button">已归档</button>
+    </div>
+    <!-- 会话桥不可用时的诊断提示（老版本 VsSaros / 命令失败）——避免"列表空"无从判断成因 -->
+    <div class="session-diag hidden" id="sessionDiag"></div>
+    <div class="sessions" id="sessionList"></div>
+    <div class="inbox-foot">
+      <button class="ghost small" id="reloadSessions" type="button">刷新</button>
+      <button class="ghost small" id="browseFiles" type="button">浏览文件</button>
+    </div>
+  </section>
+
+  <section class="view hidden" id="view-chat">
+    <!-- 聊天头（M2 · 手机紧凑，2026-09-22 重设计，对齐桌面「聊天板」）：
+         一行 = 头像 + 名称 · 状态 + 工作区/主仓库 chip，右侧 ⚙ 展开完整设置。
+         四个下拉（Agent/工作区/Worktree/模型）与模式芯片**一个都没少**，只是收进了 ⚙ 面板
+         （原来它们常驻 4 行、占掉 ~150px，把消息挤压得只剩几行）。
+         数据仍来自 sarosPocket.getChatContext，改选仍写回 VsSaros（行为未变）。 -->
+    <div class="chat-head" id="chatContextBar">
+      <div class="chat-head-line">
+        <span class="chat-ava" id="chatHeadAvatar" aria-hidden="true">🤖</span>
+        <div class="chat-head-name">
+          <b id="chatHeadName">Saros Pocket</b>
+          <span id="chatHeadStatus">未连接</span>
+        </div>
+        <span class="chat-head-ws" id="chatHeadWs" hidden></span>
+        <button class="icon-btn" id="chatPanelToggle" type="button" aria-expanded="false"
+                aria-controls="chatCtxPanel" title="模式 / 模型 / Agent / 工作区设置">⚙</button>
+      </div>
+      <div class="chat-ctx-panel hidden" id="chatCtxPanel">
+        <div class="chat-ctx-row">
+          <label class="chat-ctx-field">
+            <span class="chat-ctx-label">Agent</span>
+            <select id="chatAgent" aria-label="Agent"></select>
+          </label>
+        </div>
+        <div class="chat-ctx-row">
+          <label class="chat-ctx-field">
+            <span class="chat-ctx-label">工作区</span>
+            <select id="chatWorkspace" aria-label="工作区"></select>
+          </label>
+        </div>
+        <div class="chat-ctx-row">
+          <label class="chat-ctx-field">
+            <span class="chat-ctx-label">Worktree</span>
+            <select id="chatWorktree" aria-label="Worktree"></select>
+          </label>
+        </div>
+        <div class="chat-ctx-row">
+          <label class="chat-ctx-field">
+            <span class="chat-ctx-label">模型</span>
+            <select id="modelSelect" aria-label="模型"></select>
+          </label>
+        </div>
+        <div class="chat-ctx-row chat-ctx-row--modes">
+          <div class="chat-modes" id="chatModes" role="group" aria-label="聊天模式"></div>
+          <button class="ghost small" id="clearChat" type="button">清空</button>
+        </div>
+        <div class="chat-ctx-hint" id="chatCtxHint"></div>
+      </div>
+    </div>
+    <div class="messages" id="messages"></div>
+    <div class="composer">
+      <!-- M2 输入行 + V1 语音（长按说话）：
+           键盘态 = 输入框 + 🎙（点一下切语音）+ ➤；语音态 = 整条「按住说话」+ ⌨（点一下切回）。
+           🎙/⌨ 是**同一个按钮**（#voice），它只管"切模式"，不再管"开始/结束录音"（那是长按/松手的事）。
+           录音中浮层（波形 + 计时 + 上滑取消）由 app.js 的 renderRecBar 控制显隐。 -->
+      <div class="rec-bar hidden" id="recBar">
+        <span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+        <span class="rec-time" id="recTime">00:00</span>
+        <span class="rec-note" id="recNote">松开发送 · 上滑取消</span>
+        <button class="rec-x hidden" id="recCancel" type="button" aria-label="取消这条语音">✕</button>
+      </div>
+      <!-- 语音不可用时的**可见**说明：安全上下文之外（局域网 http）浏览器不给麦克风。
+           以前只写在按钮 title 里 ⇒ 手机上永远看不到，点了没反应也没解释。 -->
+      <div class="notice hidden" id="voiceNotice" role="status"></div>
+      <div class="composer-row" id="composerRow">
+        <textarea id="input" rows="1" placeholder="Message Saros Claw…" enterkeyhint="send"></textarea>
+        <button class="ptt hidden" id="ptt" type="button">🎙 按住说话</button>
+        <button class="icon-btn voice" id="voice" type="button" title="语音输入" aria-label="语音输入">🎙</button>
+        <button class="send-btn" id="send" type="button" title="发送" aria-label="发送">➤</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 屏幕：远程查看 VsSaros.exe 的 UI（MJPEG 画面流；键鼠转发需主机显式开启） -->
+  <section class="view hidden" id="view-screen">
+    <div class="screen-bar">
+      <select id="screenMode" aria-label="采集范围">
+        <option value="window">VsSaros 窗口</option>
+        <option value="screen">整个屏幕</option>
+      </select>
+      <select id="screenFps" aria-label="帧率">
+        <option value="1">1 fps</option>
+        <option value="2">2 fps</option>
+        <option value="4" selected>4 fps</option>
+        <option value="6">6 fps</option>
+        <option value="10">10 fps</option>
+      </select>
+      <!-- 「清晰度」只决定**传输分辨率**（省流量），画面始终铺满显示区；
+           放大倍数越大越糊，想更清楚就选右边的高分辨率档（更耗流量）。 -->
+      <select id="screenScale" aria-label="清晰度（传输分辨率）">
+        <option value="0.4">省流量</option>
+        <option value="0.5" selected>标准</option>
+        <option value="0.75">高清</option>
+        <option value="1">原尺寸（最清晰・最耗流量）</option>
+      </select>
+      <button class="ghost small" id="screenShot" type="button">截图</button>
+      <button class="ghost small" id="screenFull" type="button">全屏</button>
+      <button class="ghost small" id="screenReload" type="button">重连</button>
+    </div>
+    <div class="screen-wrap" id="screenWrap">
+      <!-- 尺寸由 app.js 的 fitScreenImage() 按可用区域算（保持比例铺满）；
+           别在这里写死 width/height，否则全屏后画面只占中间一小块。 -->
+      <img id="screenImg" alt="VsSaros 桌面画面">
+      <!-- 远程操作生效时的常显标识（默认开启 ⇒ 必须让人一眼看到自己的电脑正被操控） -->
+      <div class="screen-inputbadge hidden" id="screenInputBadge" role="status">⌨ 远程操作中</div>
+      <div class="screen-hint" id="screenStatus">…</div>
+      <button class="screen-exit hidden" id="screenExit" type="button">退出全屏</button>
+    </div>
+    <div class="screen-input hidden" id="screenInputBar">
+      <label class="switchline"><input type="checkbox" id="screenInputOn"> 允许远程操作（点击 / 滚轮 / 键盘）</label>
+      <div class="screen-inputnote" id="screenInputNote"></div>
+      <div class="screen-keys">
+        <button class="ghost small" data-key="enter" type="button">Enter</button>
+        <button class="ghost small" data-key="esc" type="button">Esc</button>
+        <button class="ghost small" data-key="ctrl+s" type="button">Ctrl+S</button>
+        <button class="ghost small" data-key="up" type="button">↑</button>
+        <button class="ghost small" data-key="down" type="button">↓</button>
+        <button class="ghost small" id="screenInputRecheck" type="button">重新检测</button>
+      </div>
+      <input id="screenText" type="text" placeholder="输入文字，回车发送到 VsSaros">
+    </div>
+  </section>
+
+  <section class="view hidden" id="view-files">
+    <div class="path-bar">
+      <button class="ghost small" id="upDir" type="button">返回</button>
+      <div class="path" id="pathText">/</div>
+      <button class="ghost small" id="reloadFiles" type="button">刷新</button>
+    </div>
+    <div class="entries" id="entries"></div>
+    <div class="file-view hidden" id="fileView">
+      <div class="file-head">
+        <div class="file-name" id="fileName"></div>
+        <div class="file-actions">
+          <button class="ghost small" id="openInEditor" type="button">在 VsSaros 打开</button>
+          <button class="ghost small" id="closeFile" type="button">关闭</button>
+        </div>
+      </div>
+      <pre class="file-body" id="fileBody"></pre>
+    </div>
+  </section>
+
+  <!-- 变更：按文件折叠的 diff（R2 实现；此处先给出空状态与文件浏览入口） -->
+  <section class="view hidden" id="view-changes">
+    <div class="changes-head">
+      <span id="changesTitle">变更</span>
+      <button class="ghost small" id="reloadChanges" type="button">刷新</button>
+    </div>
+    <div class="changes" id="changes"></div>
+  </section>
+
+  <section class="view hidden" id="view-status">
+    <div class="cards" id="statusCards"></div>
+    <!--
+      App 自升级：**只在原生壳里显示**（浏览器没有安装能力，app.js 会保持它隐藏）。
+      刻意不挤进 #statusCards —— 那块每 15s 整块重渲染，进度条会被刷掉；
+      这里给一块稳定 DOM，由 app.js 命令式更新。
+    -->
+    <div class="update-wrap hidden" id="updateWrap">
+      <div class="card update-card">
+        <div class="k">App 升级</div>
+        <div class="v" id="updateState">—</div>
+        <div class="update-actions">
+          <button class="ghost small" id="updateCheck" type="button">检查更新</button>
+          <button class="small hidden" id="updateInstall" type="button">下载并安装</button>
+          <button class="ghost small hidden" id="updateGrant" type="button">去授权</button>
+        </div>
+        <div class="update-bar hidden" id="updateBarWrap"><div class="update-bar-in" id="updateBar"></div></div>
+        <div class="update-cur" id="updateCur">—</div>
+        <div class="update-notes hidden" id="updateNotes"></div>
+        <label class="update-opt"><input type="checkbox" id="updateAuto" checked> 启动时自动检查</label>
+        <details class="update-src">
+          <summary>升级源</summary>
+          <input id="updateUrl" type="url" inputmode="url" placeholder="update.json 的地址（留空则不检查）">
+          <div class="update-hint" id="updateSrcHint">流水线产物里的 update.json；可填内网地址（http 也可以）。</div>
+        </details>
+      </div>
+    </div>
+    <div class="events-head">
+      <span>事件流</span>
+      <button class="ghost small" id="clearEvents" type="button">清空</button>
+    </div>
+    <div class="events" id="events"></div>
+  </section>
+</main>
+
+<nav class="tabs">
+  <button class="tab active" data-view="inbox" type="button">会话列表</button>
+  <button class="tab" data-view="chat" type="button">当前会话</button>
+  <button class="tab" data-view="screen" type="button">屏幕</button>
+  <button class="tab" data-view="changes" type="button">变更</button>
+  <button class="tab" data-view="status" type="button">连接</button>
+  <button class="tab tab-hidden" data-view="files" type="button">文件</button>
+</nav>
+</div>
+
+<!--
+  App 信息弹层（点顶部 logo 打开）：**只读**面板 —— 版本号、运行环境、连的哪台电脑、升级源与说明。
+  出问题时用户截这一屏就够了（避免"你装的是哪个版本？"来回问）。
+  内容由 app.js 的 renderAbout() 填；浏览器里也能看（版本号退化成「网页版」）。
+-->
+<div class="about-mask hidden" id="aboutMask">
+  <div class="about" role="dialog" aria-modal="true" aria-labelledby="aboutTitle">
+    <div class="about-head">
+      <img class="about-logo" src="saros-logo.svg" alt="">
+      <div>
+        <div class="about-title" id="aboutTitle">Saros Pocket</div>
+        <div class="about-sub" id="aboutVer">版本 …</div>
+      </div>
+      <button class="ghost small about-close" id="aboutClose" type="button" aria-label="关闭">✕</button>
+    </div>
+    <div class="about-rows" id="aboutRows"></div>
+    <p class="about-note" id="aboutNote"></p>
+    <div class="about-actions">
+      <button class="ghost small" id="aboutCheck" type="button">去检查更新</button>
+      <button class="small" id="aboutOk" type="button">知道了</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

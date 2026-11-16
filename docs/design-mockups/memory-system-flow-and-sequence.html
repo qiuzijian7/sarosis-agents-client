@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>本地记忆系统 · 流转路径图与核心入口时序图</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════════════════
+   自绘 inline SVG（不依赖 Mermaid CDN，离线可开）。配色沿用运行时
+   --dsw-alias-* 令牌，稿内自带 dark/light 两套，落地时删掉即继承宿主主题。
+   三条链路语义色：存储=蓝 / 检索=青 / 沉淀=金 / 只读旁路=灰。
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root {
+  color-scheme:dark;
+  --dsw-alias-bg-base:#0f1116; --dsw-alias-bg-layer-1:#161a22; --dsw-alias-bg-layer-2:#1c212b;
+  --dsw-alias-bg-layer-3:#232935; --dsw-alias-border-l1:#2a3140; --dsw-alias-border-l2:#333c4d;
+  --dsw-alias-label-primary:#eef1f8; --dsw-alias-label-secondary:#aeb8cb; --dsw-alias-label-tertiary:#8893a8;
+  --dsw-alias-state-business-primary:#6aa2f0; --dsw-alias-state-success-primary:#4ec4ae;
+  --dsw-alias-state-warn-primary:#d9a95f; --dsw-alias-state-error-primary:#f07178;
+  --c-store:var(--dsw-alias-state-business-primary);
+  --c-recall:var(--dsw-alias-state-success-primary);
+  --c-review:var(--dsw-alias-state-warn-primary);
+  --c-idle:var(--dsw-alias-label-tertiary);
+  --c-error:var(--dsw-alias-state-error-primary);
+  --hover:rgba(255,255,255,.055); --active:rgba(106,162,240,.14);
+  --sans:"PingFang SC","HarmonyOS Sans SC","Microsoft YaHei","Segoe UI",system-ui,sans-serif;
+  --mono:"Cascadia Mono","JetBrains Mono","Consolas",ui-monospace,monospace;
+}
+:root[data-theme="light"] {
+  color-scheme:light;
+  --dsw-alias-bg-base:#f5f7fb; --dsw-alias-bg-layer-1:#ffffff; --dsw-alias-bg-layer-2:#f1f4f9;
+  --dsw-alias-bg-layer-3:#e7ecf5; --dsw-alias-border-l1:#e2e7f0; --dsw-alias-border-l2:#d3dae7;
+  --dsw-alias-label-primary:#0f172a; --dsw-alias-label-secondary:#475569; --dsw-alias-label-tertiary:#5b6577;
+  --dsw-alias-state-business-primary:#2563eb; --dsw-alias-state-success-primary:#0b7f68; /* AA 4.94 */
+  --dsw-alias-state-warn-primary:#96600f; /* AA 5.28 */
+  --dsw-alias-state-error-primary:#c8323c;
+  --hover:rgba(15,23,42,.045); --active:rgba(37,99,235,.10);
+}
+*,*::before,*::after { box-sizing:border-box; }
+body { margin:0; background:var(--dsw-alias-bg-base); color:var(--dsw-alias-label-primary);
+  font:13px/1.6 var(--sans); -webkit-font-smoothing:antialiased; }
+button,input { font:inherit; color:inherit; } button { cursor:pointer; }
+:focus-visible { outline:2px solid var(--c-store); outline-offset:2px; border-radius:3px; }
+svg.i { width:15px; height:15px; flex:none; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+.mono { font:11px var(--mono); }
+.doc { max-width:1500px; margin:0 auto; padding:20px 22px 56px; }
+.doc-head { display:flex; gap:14px; align-items:flex-start; flex-wrap:wrap; margin-bottom:12px; }
+.doc-head h1 { font-size:19px; margin:0 0 5px; font-weight:650; }
+.doc-head p { margin:0; color:var(--dsw-alias-label-secondary); font-size:11.5px; max-width:900px; }
+.doc-tools { margin-left:auto; display:flex; gap:7px; }
+.btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:29px; padding:5px 11px;
+  border:1px solid var(--dsw-alias-border-l2); border-radius:6px; background:var(--dsw-alias-bg-layer-2);
+  font-size:11.5px; font-weight:520; transition:background .18s ease,border-color .18s ease; }
+.btn:hover { background:var(--hover); border-color:var(--dsw-alias-border-l2); }
+.btn-quiet { background:transparent; border-color:transparent; color:var(--dsw-alias-label-secondary); }
+.btn-quiet:hover { color:var(--dsw-alias-label-primary); }
+.btn-primary { background:var(--c-store); border-color:var(--c-store); color:#fff; }
+.btn-primary:hover { filter:brightness(1.08); }
+.btn-sm { min-height:24px; padding:3px 8px; font-size:10.5px; }
+
+/* 视图切换 */
+.views { display:flex; gap:4px; padding:4px; border:1px solid var(--dsw-alias-border-l1); border-radius:12px;
+  background:var(--dsw-alias-bg-layer-1); margin-bottom:12px; flex-wrap:wrap; }
+.viewtab { display:inline-flex; align-items:center; gap:7px; padding:8px 13px; border:0; border-radius:6px;
+  background:transparent; color:var(--dsw-alias-label-secondary); font-weight:550; transition:background .18s ease,color .18s ease; }
+.viewtab:hover { background:var(--hover); color:var(--dsw-alias-label-primary); }
+.viewtab[aria-selected="true"] { background:var(--active); color:var(--c-store); }
+.viewtab .n { font:10px var(--mono); opacity:.7; }
+.view { display:none; } .view.is-active { display:block; }
+
+/* 图容器 */
+.canvas { border:1px solid var(--dsw-alias-border-l1); border-radius:12px; background:var(--dsw-alias-bg-layer-1); overflow:hidden; }
+.canvas-hd { display:flex; align-items:center; gap:9px; flex-wrap:wrap; padding:10px 14px; border-bottom:1px solid var(--dsw-alias-border-l1); }
+.canvas-hd h2 { margin:0; font-size:13px; font-weight:650; }
+.canvas-hd .sub { font-size:10.5px; color:var(--dsw-alias-label-tertiary); }
+.canvas-hd .spacer { flex:1; }
+.legend { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+.lg { display:inline-flex; align-items:center; gap:5px; font-size:10px; color:var(--dsw-alias-label-secondary); }
+.lg i { width:16px; height:3px; border-radius:2px; display:inline-block; }
+.lg.store i { background:var(--c-store); } .lg.recall i { background:var(--c-recall); }
+.lg.review i { background:var(--c-review); } .lg.idle i { background:var(--c-idle); }
+.lg.dash i { background:linear-gradient(90deg,var(--c-idle) 55%,transparent 55%); background-size:6px 3px; }
+.focusbar { display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding:8px 14px;
+  border-bottom:1px solid var(--dsw-alias-border-l1); background:var(--dsw-alias-bg-layer-2); }
+.focusbar .lbl { font-size:10px; color:var(--dsw-alias-label-tertiary); margin-right:3px; }
+.chip { padding:3px 10px; border:1px solid var(--dsw-alias-border-l2); border-radius:10px; background:transparent;
+  color:var(--dsw-alias-label-secondary); font-size:10.5px; transition:background .18s ease,color .18s ease; }
+.chip:hover { background:var(--hover); }
+.chip[aria-pressed="true"] { background:var(--active); border-color:var(--c-store); color:var(--c-store); font-weight:600; }
+.svg-scroll { overflow-x:auto; padding:8px 10px 12px; }
+.svg-scroll svg { display:block; width:100%; min-width:940px; height:auto; }
+.hint { padding:0 14px 11px; font-size:10px; color:var(--dsw-alias-label-tertiary); }
+
+/* 详情面板 */
+.detail { display:grid; grid-template-columns:minmax(0,1fr) minmax(250px,340px); gap:12px; margin-top:12px; }
+@media (max-width:900px) { .detail { grid-template-columns:1fr; } }
+.card { border:1px solid var(--dsw-alias-border-l1); border-radius:12px; background:var(--dsw-alias-bg-layer-1); padding:12px 14px; }
+.card h3 { margin:0 0 8px; font-size:12px; font-weight:650; }
+.card p, .card li { font-size:10.5px; color:var(--dsw-alias-label-secondary); line-height:1.85; }
+.card ul { margin:4px 0 0; padding-left:17px; }
+.detail-box { border:1px solid var(--dsw-alias-border-l1); border-radius:12px; background:var(--dsw-alias-bg-layer-1); padding:12px 14px; }
+.detail-box .k { font-size:10px; color:var(--dsw-alias-label-tertiary); text-transform:uppercase; letter-spacing:.06em; }
+.detail-box h3 { margin:6px 0 8px; font-size:13px; font-weight:650; }
+.detail-box .ev { font:10.5px/1.8 var(--mono); color:var(--c-store); word-break:break-all; }
+.detail-box .txt { margin-top:8px; font-size:11px; color:var(--dsw-alias-label-secondary); line-height:1.8; }
+.detail-box .empty { font-size:10.5px; color:var(--dsw-alias-label-tertiary); }
+.tbl { width:100%; border-collapse:collapse; font-size:10.5px; }
+.tbl th, .tbl td { padding:6px 8px; text-align:left; border-bottom:1px solid var(--dsw-alias-border-l1); vertical-align:top; }
+.tbl th { color:var(--dsw-alias-label-tertiary); font-size:9.5px; text-transform:uppercase; letter-spacing:.04em; font-weight:600; }
+.tbl tr:last-child td { border-bottom:0; }
+.tbl code { font:10px var(--mono); color:var(--c-store); }
+.tag { display:inline-block; padding:0 6px; border-radius:8px; font-size:9px; border:1px solid var(--dsw-alias-border-l2); color:var(--dsw-alias-label-secondary); }
+.tag.a { color:var(--c-recall); border-color:var(--c-recall); }
+.tag.b { color:var(--c-review); border-color:var(--c-review); }
+.tag.c { color:var(--c-error); border-color:var(--c-error); }
+.callout { border-left:3px solid var(--c-review); background:var(--dsw-alias-bg-layer-2); padding:10px 13px;
+  border-radius:0 8px 8px 0; font-size:10.5px; color:var(--dsw-alias-label-secondary); line-height:1.85; margin-top:10px; }
+.callout strong { color:var(--dsw-alias-label-primary); }
+
+/* 演进路线 */
+.road { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:11px; }
+.phase { border:1px solid var(--dsw-alias-border-l1); border-radius:12px; background:var(--dsw-alias-bg-layer-1); padding:13px 15px; }
+.phase .p { font:10px var(--mono); color:var(--dsw-alias-label-tertiary); }
+.phase h3 { margin:5px 0 4px; font-size:12.5px; font-weight:650; }
+.phase .st { display:inline-block; padding:1px 7px; border-radius:9px; font-size:9.5px; margin-bottom:8px; }
+.phase .st.done { color:var(--c-recall); background:color-mix(in srgb,var(--c-recall) 12%,transparent); }
+.phase .st.todo { color:var(--c-review); background:color-mix(in srgb,var(--c-review) 12%,transparent); }
+.phase .st.opt { color:var(--c-idle); background:var(--dsw-alias-bg-layer-3); }
+.phase li { font-size:10.5px; color:var(--dsw-alias-label-secondary); line-height:1.8; }
+.phase ul { margin:0; padding-left:17px; }
+
+/* SVG 元素样式（用 CSS 类，避免硬编码色） */
+.sv-lane { fill:var(--dsw-alias-bg-layer-2); stroke:var(--dsw-alias-border-l1); stroke-width:1; }
+.sv-lane-txt { fill:var(--dsw-alias-label-tertiary); font:600 10px var(--sans); letter-spacing:.05em; }
+.sv-node { fill:var(--dsw-alias-bg-layer-3); stroke:var(--dsw-alias-border-l2); stroke-width:1; }
+.sv-node-accent { fill:var(--dsw-alias-bg-layer-3); }
+.sv-title { fill:var(--dsw-alias-label-primary); font:600 11px var(--sans); }
+.sv-sub { fill:var(--dsw-alias-label-tertiary); font:9px var(--mono); }
+.sv-edge { fill:none; stroke-width:1.6; }
+.sv-edge-label { font:9px var(--sans); fill:var(--dsw-alias-label-secondary); }
+.sv-lifeline { stroke:var(--dsw-alias-border-l2); stroke-width:1; stroke-dasharray:4 4; }
+.sv-actor { fill:var(--dsw-alias-bg-layer-3); stroke:var(--dsw-alias-border-l2); stroke-width:1; }
+.sv-actor-txt { fill:var(--dsw-alias-label-primary); font:600 10px var(--mono); }
+.sv-actor-sub { fill:var(--dsw-alias-label-tertiary); font:8.5px var(--sans); }
+.sv-msg { stroke-width:1.5; fill:none; }
+.sv-msg-txt { font:10px var(--sans); fill:var(--dsw-alias-label-primary); }
+.sv-seq { fill:var(--dsw-alias-bg-layer-3); stroke:var(--dsw-alias-border-l2); }
+.sv-seq-txt { font:600 9px var(--mono); fill:var(--dsw-alias-label-secondary); }
+.sv-group { fill:var(--dsw-alias-bg-layer-2); opacity:.8; }
+.sv-group-txt { font:600 9.5px var(--sans); letter-spacing:.03em; }
+.sv-note { fill:var(--dsw-alias-bg-layer-3); stroke:var(--dsw-alias-border-l2); stroke-dasharray:3 3; }
+.sv-note-txt { font:9.5px var(--sans); fill:var(--dsw-alias-label-secondary); }
+.sv-hit { cursor:pointer; }
+.sv-hit:hover .sv-node, .sv-hit:hover .sv-msg-txt { stroke-width:2; }
+.sv-dim { opacity:.16; }
+.sv-focus { filter:drop-shadow(0 0 5px var(--c-store)); }
+@media (prefers-reduced-motion:reduce) { *,*::before,*::after { transition-duration:.01ms !important; } }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="ic-moon" viewBox="0 0 24 24"><path d="M20 14A8 8 0 0110 4a8 8 0 1010 10z"/></symbol>
+  <symbol id="ic-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/></symbol>
+  <symbol id="ic-download" viewBox="0 0 24 24"><path d="M12 3v12M7 11l5 5 5-5M4 20h16"/></symbol>
+  <symbol id="ic-flow" viewBox="0 0 24 24"><rect x="2" y="3" width="7" height="5" rx="1"/><rect x="15" y="3" width="7" height="5" rx="1"/><rect x="8" y="16" width="8" height="5" rx="1"/><path d="M5.5 8v4h13V8M12 12v4"/></symbol>
+  <symbol id="ic-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+</svg>
+
+<div class="doc">
+  <header class="doc-head">
+    <div>
+      <h1>本地记忆系统 · 流转路径图与核心入口时序图</h1>
+      <p>对象：<span class="mono">dsh-plugins/vssaros-memory</span>（插件名 <span class="mono">@vssaros/dsh-memory</span>）。所有节点与消息均标注真实文件与行号；<strong>推断项与「未发现」边界单列</strong>，不画进主图。点节点可查看证据。</p>
+    </div>
+    <div class="doc-tools">
+      <button class="btn btn-sm" id="themeBtn" type="button" aria-label="切换明暗主题"><svg class="i"><use href="#ic-moon"/></svg>主题</button>
+      <button class="btn btn-sm" id="svgBtn" type="button"><svg class="i"><use href="#ic-download"/></svg>下载当前 SVG</button>
+    </div>
+  </header>
+
+  <nav class="views" role="tablist" aria-label="图视图切换">
+    <button class="viewtab" role="tab" aria-selected="true" aria-controls="v-flow" id="vt-flow" data-view="flow"><svg class="i"><use href="#ic-flow"/></svg>记忆流转路径图<span class="n">01</span></button>
+    <button class="viewtab" role="tab" aria-selected="false" aria-controls="v-store" id="vt-store" data-view="store">记忆存储 · 时序<span class="n">02</span></button>
+    <button class="viewtab" role="tab" aria-selected="false" aria-controls="v-recall" id="vt-recall" data-view="recall">记忆检索 · 时序<span class="n">03</span></button>
+    <button class="viewtab" role="tab" aria-selected="false" aria-controls="v-review" id="vt-review" data-view="review">记忆沉淀 · 时序<span class="n">04</span></button>
+    <button class="viewtab" role="tab" aria-selected="false" aria-controls="v-road" id="vt-road" data-view="road">演进路线<span class="n">05</span></button>
+    <button class="viewtab" role="tab" aria-selected="false" aria-controls="v-evidence" id="vt-evidence" data-view="evidence"><svg class="i"><use href="#ic-info"/></svg>图例 · 证据 · 边界<span class="n">06</span></button>
+  </nav>
+
+  <!-- 01 路径图 -->
+  <section class="view is-active" id="v-flow" role="tabpanel" aria-labelledby="vt-flow">
+    <div class="canvas">
+      <div class="canvas-hd">
+        <h2>记忆流转路径图</h2><span class="sub">四层：触发 → 装配 → 三条核心链路 → 物理存储；消费出口单列为说明带</span>
+        <span class="spacer"></span>
+        <div class="legend"><span class="lg store"><i></i>存储</span><span class="lg recall"><i></i>检索</span><span class="lg review"><i></i>沉淀</span><span class="lg idle"><i></i>只读/旁路</span><span class="lg dash"><i></i>条件/异步</span></div>
+      </div>
+      <div class="focusbar"><span class="lbl">聚焦链路</span>
+        <button class="chip" data-focus="all" aria-pressed="true" type="button">全部</button>
+        <button class="chip" data-focus="store" aria-pressed="false" type="button">记忆存储</button>
+        <button class="chip" data-focus="recall" aria-pressed="false" type="button">记忆检索</button>
+        <button class="chip" data-focus="review" aria-pressed="false" type="button">记忆沉淀</button>
+      </div>
+      <div class="svg-scroll" id="flowHost"></div>
+      <p class="hint">点击任一节点查看其代码落点；点击上方「聚焦链路」可淡化无关节点。虚线箭头表示条件分支或异步路径。</p>
+    </div>
+    <div class="detail">
+      <div class="card">
+        <h3>读图要点</h3>
+        <ul>
+          <li><strong>写入需人工确认是本系统的主轴</strong>：AI 的候选事实先落 <code>SUGGESTIONS.jsonl</code>，经用户 approve 才 <code>store.add</code> 进主轨；<code>keyWriteMode</code> 决定 KEY 轨走队列还是直写。</li>
+          <li><strong>注入是「变化才重发」的文本快照</strong>：<code>systemPrompt.context</code> 的 <code>memory:snapshot</code> 由 DSH 物化为 user-role 尾部消息，文本不变就不重发，保住 LLM prefix cache。<strong>没有落盘的冻结快照文件</strong>。</li>
+          <li><strong>物理分区按 cwd 上溯 git 根的 hash</strong>，不是 workspaceId；<code>deriveMemoryScope()</code> 只提供展示元数据，不改路径。</li>
+          <li>相邻检索工具 <code>de_session_search</code> / <code>memory_evolve_search_local_files</code> 读的是会话历史与本地文档，<strong>不读记忆轨</strong>，图上以灰色旁路表示。</li>
+        </ul>
+      </div>
+      <div class="detail-box" id="flowDetail" aria-live="polite"><div class="k">节点详情</div><div class="empty" style="margin-top:8px">点击图中的节点查看代码落点。</div></div>
+    </div>
+  </section>
+
+  <!-- 02/03/04 时序图 -->
+  <section class="view" id="v-store" role="tabpanel" aria-labelledby="vt-store"><div class="canvas" data-seq="store"></div><div class="detail"><div class="card" id="seqNoteStore"></div><div class="detail-box" id="seqDetailStore" aria-live="polite"><div class="k">消息详情</div><div class="empty" style="margin-top:8px">点击任一消息查看代码落点。</div></div></div></section>
+  <section class="view" id="v-recall" role="tabpanel" aria-labelledby="vt-recall"><div class="canvas" data-seq="recall"></div><div class="detail"><div class="card" id="seqNoteRecall"></div><div class="detail-box" id="seqDetailRecall" aria-live="polite"><div class="k">消息详情</div><div class="empty" style="margin-top:8px">点击任一消息查看代码落点。</div></div></div></section>
+  <section class="view" id="v-review" role="tabpanel" aria-labelledby="vt-review"><div class="canvas" data-seq="review"></div><div class="detail"><div class="card" id="seqNoteReview"></div><div class="detail-box" id="seqDetailReview" aria-live="polite"><div class="k">消息详情</div><div class="empty" style="margin-top:8px">点击任一消息查看代码落点。</div></div></div></section>
+
+  <!-- 05 演进路线 -->
+  <section class="view" id="v-road" role="tabpanel" aria-labelledby="vt-road">
+    <div class="canvas"><div class="canvas-hd"><h2>演进路线</h2><span class="sub">「路程图」若指 Roadmap：以下是本会话前序方案的 P0/P1/P2 分期</span></div>
+      <div style="padding:14px"><div class="road">
+        <div class="phase"><div class="p">P0 · 2026-11-10/11</div><h3>多根可见性（已落地）</h3><span class="st done">已随并发提交入库</span><ul>
+          <li><code>lib/workspace-scope.js</code> 纯函数 <code>deriveMemoryScope()</code></li>
+          <li><code>multiRootScopeEnabled</code> 配置开关（可一键关）</li>
+          <li><code>GET /api/workspace-scope</code>、<code>/api/memory-files</code> 增可选字段</li>
+          <li>会话页 ScopeBar + 归属徽标 + zh/en 双字典</li>
+          <li>修正 <code>dshBridgeProtocol.ts</code>「记忆按 workspaceId 分区」的错误注释</li>
+          <li>物理分区不变、零数据迁移</li>
+        </ul></div>
+        <div class="phase"><div class="p">P1 · 待执行</div><h3>写入路由与作用域标签</h3><span class="st todo">方案已确认，未实现</span><ul>
+          <li>条目级 <code>[root:…]</code> / <code>[bot:…]</code> 标签 + 读取时过滤</li>
+          <li>写入端点加 <code>root</code> 参数，显式 root 校验在根集内、fail-closed</li>
+          <li>建议队列带根归属，采纳按钮显示目标轨与根</li>
+          <li><code>&lt;memoryDir&gt;/workspace-index.json</code> 索引（纯索引可重建）</li>
+          <li>跨根只读聚合视图</li>
+        </ul></div>
+        <div class="phase"><div class="p">P2 · 可选</div><h3>不可变标识与冲突消解</h3><span class="st opt">单独评估，不与 P1 捆绑</span><ul>
+          <li>项目键改 git 根首个 commit hash，解决仓库移动/重命名后记忆「丢失」</li>
+          <li>配套一次性迁移脚本 + 双读兼容期</li>
+          <li>多根事实矛盾时「就近优先」，不静默合并</li>
+        </ul></div>
+      </div>
+      <div class="callout"><strong>来源说明</strong>：此分期来自本会话前序的设计方案，<strong>不是从代码里读出的既有结构</strong>。P0 已落地并经守卫/测试复核；P1/P2 属于提案，图中路径图与三张时序图均按<strong>当前代码现状</strong>绘制，不含 P1/P2 的未实现环节。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 06 图例与证据 -->
+  <section class="view" id="v-evidence" role="tabpanel" aria-labelledby="vt-evidence">
+    <div class="detail" style="margin-top:0">
+      <div class="card"><h3>关键文件索引</h3>
+        <table class="tbl"><thead><tr><th>文件</th><th>职责</th><th>等级</th></tr></thead><tbody>
+          <tr><td><code>lib/index.js</code></td><td>插件装配、工具注册、<code>renderSnapshot</code>、<code>memoryTool.addOne</code></td><td><span class="tag a">一手</span></td></tr>
+          <tr><td><code>lib/store.js</code></td><td><code>MemoryStore.locate/add/write</code>、<code>SuggestionQueue</code>、<code>ArchiveStore</code>、分区 hash</td><td><span class="tag a">一手</span></td></tr>
+          <tr><td><code>lib/review.js</code></td><td>回合计数、<code>memory_suggest</code>、四个审批函数、<code>memory_review</code> 命令</td><td><span class="tag a">一手</span></td></tr>
+          <tr><td><code>lib/api.js</code></td><td><code>/memory-evolve</code> 全部 HTTP 端点</td><td><span class="tag a">一手</span></td></tr>
+          <tr><td><code>lib/memory-tab.js</code></td><td><code>buildMemoryFiles</code> 的 9+1 只读文件页签</td><td><span class="tag a">一手</span></td></tr>
+          <tr><td><code>lib/workspace-scope.js</code></td><td>P0 多根展示元数据（不写入路径）</td><td><span class="tag a">一手</span></td></tr>
+          <tr><td><code>lib/bot-history.js</code></td><td>Bot 轨 Git 防抖提交 / 回滚 / bundle</td><td><span class="tag a">一手</span></td></tr>
+          <tr><td><code>src/client/MemoryTabView.tsx</code></td><td>会话页记忆 Tab 的请求与渲染</td><td><span class="tag a">一手</span></td></tr>
+          <tr><td><code>src/client/MemoryQueueView.tsx</code></td><td>待确认建议队列「采纳 / 归档 / 拒绝」</td><td><span class="tag a">一手</span></td></tr>
+        </tbody></table>
+      </div>
+      <div class="card"><h3>图例</h3><ul>
+        <li><strong>蓝</strong> 记忆存储链（write）；<strong>青</strong> 记忆检索链（recall/inject）；<strong>金</strong> 记忆沉淀链（review/consolidate）；<strong>灰</strong> 只读旁路。</li>
+        <li><strong>实线箭头</strong> 同步调用；<strong>虚线</strong> 返回 / 异步 / 条件分支；<strong>点线框</strong> 说明性 note。</li>
+        <li>时序图每条消息带序号，点击可查看「文件:行号 + 说明」。</li>
+      </ul></div>
+    </div>
+    <div class="card" style="margin-top:12px"><h3>推断与「未发现」边界（刻意不画进主图）</h3>
+      <table class="tbl"><thead><tr><th>项</th><th>结论</th><th>等级</th></tr></thead><tbody>
+        <tr><td><code>locate()</code> 的 target 数</td><td>实际是 <strong>6 个</strong>（memory/user/daily/bot/project/key）；「9+1」指 <code>memory-tab.js</code> 的 10 个文件页签行，不是 target 分支</td><td><span class="tag b">纠正</span></td></tr>
+        <tr><td>建议队列四态</td><td><strong>隐式状态</strong>：记录里没有 <code>status</code> 字段，由「在队列 / 已写主轨 / 已写归档」推导</td><td><span class="tag b">推断</span></td></tr>
+        <tr><td>后台自动审查进程</td><td><strong>不存在</strong>。审查是快照 due 文案驱动主 LLM 调 <code>memory_suggest</code> 的 prompt-driven 流程，真实事件是 <code>agent/turn-stopping</code></td><td><span class="tag b">纠正</span></td></tr>
+        <tr><td>冻结快照 / session 结束 flush / compaction 前 flush</td><td><strong>未发现</strong>专门函数。frozen-ish 是 change-detected 文本注入；<code>bot-history.flush</code> 是 Git 提交刷新</td><td><span class="tag c">未发现</span></td></tr>
+        <tr><td><code>journal.jsonl</code> / <code>snapshots/</code> / <code>summaries/</code> / <code>workspace-index.json</code></td><td><strong>未发现</strong>（那是 ds-bot / P1 提案的结构，不是本系统现状）</td><td><span class="tag c">未发现</span></td></tr>
+        <tr><td><code>SessionStart</code> / <code>PostToolUse</code> / <code>PreCompact</code> hook</td><td><strong>未发现</strong>这些名字；真实 <code>ctx.on</code> 事件见证据索引</td><td><span class="tag c">未发现</span></td></tr>
+        <tr><td><code>add()</code> 的字符上限校验</td><td><strong>未发现</strong>实际判断，只有 <code>store.js:5/978</code> 的历史注释声称有；<code>botMemoryCharLimit:2048</code> 只作用于注入侧截断</td><td><span class="tag c">未发现</span></td></tr>
+        <tr><td>COI / Advisor 参与沉淀</td><td><strong>否</strong>：COI 只读注入三轨给外部 CLI，Advisor 独立评审，均不写 <code>SUGGESTIONS.jsonl</code></td><td><span class="tag a">一手</span></td></tr>
+      </tbody></table>
+      <div class="callout"><strong>为什么不引 Mermaid CDN</strong>：仓库现有 <code>workflow-sequence-diagram.html</code> / <code>subagent-sequence-diagram.html</code> 用 Mermaid@10 CDN，离线打开会是空图。本稿改为数据驱动自绘 inline SVG，双击本地文件即可渲染，并可一键下载 SVG 嵌入文档。</div>
+    </div>
+  </section>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  const NS = 'http://www.w3.org/2000/svg';
+  const C = { store:'var(--c-store)', recall:'var(--c-recall)', review:'var(--c-review)', idle:'var(--c-idle)', error:'var(--c-error)' };
+  const el = (tag, attrs, parent) => {
+    const n = document.createElementNS(NS, tag);
+    for (const k in attrs) if (attrs[k] !== undefined && attrs[k] !== null) n.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(n);
+    return n;
+  };
+  const txt = (parent, s, attrs) => { const t = el('text', attrs, parent); t.textContent = s; return t; };
+  // HTML 容器必须用 HTML 命名空间；SVG 图形才用 el()。两者混用会让元素不参与布局。
+  const htmlEl = (tag, attrs, parent) => {
+    const n = document.createElement(tag);
+    for (const k in attrs) if (attrs[k] !== undefined && attrs[k] !== null) {
+      if (k === 'class') n.className = attrs[k];
+      else n.setAttribute(k, attrs[k]);
+    }
+    if (parent) parent.appendChild(n);
+    return n;
+  };
+  // 智能断行：优先在空格/标点处切，避免把英文标识符从中间劈开
+  const wrap = (s, max) => {
+    const out = []; let rest = String(s);
+    while (rest.length > max) {
+      let cut = max;
+      for (let i = max; i > Math.floor(max * 0.6); i--) {
+        if (/[\s/→,，、;:)\]}]/.test(rest[i])) { cut = i + 1; break; }
+      }
+      out.push(rest.slice(0, cut).trimEnd());
+      rest = rest.slice(cut).trimStart();
+    }
+    if (rest) out.push(rest);
+    return out;
+  };
+
+  /* ═════════════ 01 流转路径图 ═════════════ */
+  const LANES = [
+    { label:'01  输入 / 触发' }, { label:'02  装配 / 编排' },
+    { label:'03  三条核心链路' }, { label:'04  物理存储（<memoryDir>）' },
+  ];
+  // 消费出口不参与连线（跨 2~3 层长斜线会淹没主链），改为独立说明带。
+  const EXITS = [
+    { title:'LLM system prompt', sub:'变化才重发 · prefix cache', ev:'lib/index.js:13-15,1876-1877', note:'DSH 把快照物化为 user-role tail message，仅在渲染文本变化时重发，稳定前缀保住 cache。' },
+    { title:'会话页「记忆」Tab', sub:'只读预览 + ScopeBar', ev:'src/client/MemoryTabView.tsx:179-189,337-340', note:'P0 多根切换与归属徽标；GET /api/memory-files 的 9+1 只读页签。' },
+    { title:'COI injectTracks', sub:'只读三轨给外部 CLI', ev:'lib/coi/scheduler.js:284-290', note:'外部代理按 tracks 读记忆；COI 不参与沉淀，也不写建议队列。' },
+    { title:'相邻检索工具', sub:'session_search / local_files', ev:'lib/search/index.js:182-225 · lib/search-docs.js:1027-1058', note:'读会话历史与本地文档，不读记忆轨；总开关默认 false。' },
+    { title:'技能沉淀旁路', sub:'pending-skills/（默认关闭）', ev:'lib/skills.js:381-407 · cordis.patch.yml:13-15', note:'产品默认关闭本插件 skill_manage，统一走 @vssaros/dsh-skills 带审批闸版本。' },
+  ];
+  const FLOW_NODES = [
+    // lane 0
+    { id:'user', lane:0, col:0, kind:'idle', title:'用户会话 / 手动输入', sub:'MemoryTabView / QueueView', ev:'src/client/MemoryTabView.tsx:337 · src/client/MemoryQueueView.tsx:212', note:'三个写入入口：KEY 页签手动添加、建议队列采纳、以及模型调用 memory 工具。' },
+    { id:'tool', lane:0, col:1, kind:'store', title:'memory 工具调用', sub:'action: add|replace|remove|...', ev:'lib/index.js:1919 ctx.tools.register(memoryTool) · :1063-1077 工具 schema', note:'模型主动写入的入口；target 支持 memory/user/project/key/daily/bot。' },
+    { id:'turn', lane:0, col:2, kind:'review', title:'agent/turn-stopping', sub:'回合结束事件', ev:'lib/review.js:126 ctx.on("agent/turn-stopping")', note:'唯一的真实回合事件；DSH 核心不发 agent/settled。审查计数与写入看门狗都挂在这里。' },
+    { id:'cmd', lane:0, col:3, kind:'review', title:'memory_review 命令', sub:'list/approve/archive/reject', ev:'lib/index.js:2054 · lib/review.js:597', note:'命令行侧的审批入口，与 Web UI 走同一批 review.js 函数。' },
+    { id:'boot', lane:0, col:4, kind:'recall', title:'会话装配 / 每轮请求', sub:'DSH systemPrompt.context', ev:'lib/index.js:1881-1902', note:'宿主调用名为 memory:snapshot 的 text provider（order 默认 500）。' },
+    // lane 1
+    { id:'apply', lane:1, col:0, kind:'idle', title:'apply() 装配', sub:'Store / Queue / Archive / BotHistory', ev:'lib/index.js:1631-1676', note:'依次建 projectDirResolver、botHistory、MemoryStore、ArchiveStore、SuggestionQueue、TodoStore。' },
+    { id:'reg', lane:1, col:1, kind:'idle', title:'ctx.tools.register', sub:'memory / memory_suggest / review_status', ev:'lib/index.js:1919,1924,1935 · lib/review.js:292,219', note:'reviewCtrl.sync() 成对注册/注销 memory_suggest 与 memory_review_status。' },
+    { id:'snapshot', lane:1, col:2, kind:'recall', title:'memory:snapshot', sub:'change-detected text provider', ev:'lib/index.js:1879-1915 · :13-15', note:'文本变化才由 DSH 追加 user-role 尾部消息，稳定前缀保住 LLM prefix cache。' },
+    { id:'scope', lane:1, col:3, kind:'recall', title:'deriveMemoryScope()', sub:'roots / current / workspaceKey', ev:'lib/workspace-scope.js:42 · lib/index.js:1679-1684', note:'P0 只读展示元数据；明确「不写入路径、不改存储」。' },
+    { id:'api', lane:1, col:4, kind:'idle', title:'installApi 路由层', sub:'/memory-evolve 前缀', ev:'lib/api.js:901 · :153-883', note:'全部 HTTP 端点集中在此；前端统一 fetch(`/memory-evolve${path}`)。' },
+    // lane 2 — 三条核心链路
+    { id:'addone', lane:2, col:0, kind:'store', title:'addOne() 写入决策', sub:'keyWriteMode 分流', ev:'lib/index.js:1025-1059', note:'KEY 轨且非 direct 时进队列；否则直接 store.add。子代理的 origin=subagent 也进队列。' },
+    { id:'suggest', lane:2, col:1, kind:'review', title:'enqueueSuggestion()', sub:'去重 hits += 1', ev:'lib/review.js:342-392', note:'候选事实结构：{time,sessionId,cwd,target,content,reason,hits,firstSeen,lastSeen}。' },
+    { id:'approve', lane:2, col:2, kind:'review', title:'approve / archive / reject', sub:'用户拍板三态', ev:'lib/review.js:421,485,510 · MemoryQueueView.tsx:524-548', note:'采纳→store.add 主轨；归档→ArchiveStore.append；拒绝→仅从队列移除。' },
+    { id:'render', lane:2, col:3, kind:'recall', title:'renderSnapshot()', sub:'全局/Bot/KEY 三段', ev:'lib/index.js:601-823', note:'MEMORY/USER 全量；Bot 按 2048 字符截断；KEY 走分支过滤与渐进披露；project/daily 刻意不注入。' },
+    { id:'files', lane:2, col:4, kind:'recall', title:'buildMemoryFiles()', sub:'9+1 只读文件页签', ev:'lib/memory-tab.js:60-146', note:'10 行：bot(条件)/project/key/archive-key/daily/user/memory/archive-user/archive-memory/agents。' },
+    // lane 3 — 物理存储
+    // 存储节点按上游链路对齐，让跨层连线尽量垂直
+    { id:'diskQueue', lane:3, col:0, kind:'review', title:'SUGGESTIONS.jsonl', sub:'待确认队列', ev:'lib/index.js:494 · lib/store.js:1462-1516', note:'JSONL 逐行 JSON，withLock + 原子重写；没有 status 字段，状态是隐式的。' },
+    { id:'diskProject', lane:3, col:1, kind:'store', title:'projects/<hash>/KEY.md', sub:'cwd 上溯 git 根 · sha1 12', ev:'lib/store.js:707-711,512-546', note:'条目前缀可带 [branch:...] / [dsh-only] / [summary:...] / [id:xxxxxxxx]。' },
+    { id:'diskBot', lane:3, col:2, kind:'store', title:'bots/<botKey>/MEMORY.md', sub:'独立 .git 版本历史', ev:'lib/store.js:731-736 · lib/bot-history.js:85-159', note:'写入后 onWrite 触发 1500ms 防抖 git commit；可 restore 回滚、bundle 导出。' },
+    { id:'diskGlobal', lane:3, col:3, kind:'store', title:'MEMORY.md / USER.md', sub:'全局轨 · 全量注入', ev:'lib/store.js:725-728 locate()', note:'同目录还有 MEMORY-archive.md / USER-archive.md / TODO-archive.md。' },
+    { id:'diskArchive', lane:3, col:4, kind:'review', title:'*-archive.md / daily/', sub:'归档与日志', ev:'lib/store.js:1540-1556 · :729', note:'归档明确「不注入任何会话」；主轨↔归档可双向互转（promote / memory/archive）。' },
+  ];
+  // 只保留语义不可省的主链边；重复的「读三轨」用一条代表性边表达，细节见节点详情。
+  const FLOW_EDGES = [
+    { from:'user', to:'api', kind:'store', label:'POST' },
+    { from:'tool', to:'addone', kind:'store' },
+    { from:'cmd', to:'approve', kind:'review', label:'命令审批' },
+    { from:'turn', to:'suggest', kind:'review', dash:1, label:'due → LLM 提议' },
+    { from:'boot', to:'snapshot', kind:'recall' },
+    { from:'apply', to:'reg', kind:'idle' },
+    { from:'reg', to:'addone', kind:'store' },
+    { from:'scope', to:'files', kind:'recall', dash:1, label:'展示元数据' },
+    { from:'api', to:'addone', kind:'store', label:'/api/memory/*' },
+    { from:'api', to:'approve', kind:'review', label:'/api/suggestions/*' },
+    { from:'api', to:'files', kind:'recall', label:'GET /api/memory-files' },
+    { from:'addone', to:'diskProject', kind:'store', label:'store.add 落盘' },
+    { from:'addone', to:'diskBot', kind:'store', dash:1 },
+    { from:'addone', to:'diskQueue', kind:'review', dash:1, label:'keyWriteMode=queue' },
+    { from:'suggest', to:'diskQueue', kind:'review' },
+    { from:'diskQueue', to:'approve', kind:'review', dash:1 },
+    { from:'approve', to:'diskGlobal', kind:'review', label:'采纳' },
+    { from:'approve', to:'diskArchive', kind:'review', label:'归档' },
+    { from:'diskArchive', to:'diskGlobal', kind:'review', dash:1, label:'promote 移回' },
+    { from:'render', to:'diskProject', kind:'recall', dash:1, label:'entriesOf() 读各轨' },
+    { from:'snapshot', to:'render', kind:'recall' },
+    { from:'files', to:'diskArchive', kind:'recall', dash:1, label:'readFileSync 只读' },
+  ];
+  const NODE_W = 186, NODE_H = 60, COL_W = 210, LANE_H = 132, X0 = 96, Y0 = 66;
+  const nodeById = Object.fromEntries(FLOW_NODES.map(n => [n.id, n]));
+  const nx = n => X0 + n.col * COL_W, ny = n => Y0 + n.lane * LANE_H;
+  function drawFlow(host) {
+    const W = X0 + 5 * COL_W + NODE_W - COL_W + 40, H = Y0 + 4 * LANE_H + 100;
+    const svg = el('svg', { viewBox:`0 0 ${W} ${H}`, role:'img', 'aria-label':'本地记忆系统流转路径图', id:'svg-flow' }, host);
+    const defs = el('defs', {}, svg);
+    for (const k of ['store','recall','review','idle']) {
+      const m = el('marker', { id:'arw-'+k, viewBox:'0 0 8 8', refX:7, refY:4, markerWidth:7, markerHeight:7, orient:'auto-start-reverse' }, defs);
+      el('path', { d:'M0 0 L8 4 L0 8 z', style:`fill:${C[k]}` }, m);
+    }
+    // 泳道带
+    LANES.forEach((L, i) => {
+      el('rect', { x:16, y:Y0 + i*LANE_H - 16, width:W-32, height:LANE_H-10, rx:10, class:'sv-lane' }, svg);
+      txt(svg, L.label, { x:28, y:Y0 + i*LANE_H - 1, class:'sv-lane-txt' });
+    });
+    // 边（先画，节点盖在上面）
+    const edgeEls = [];
+    FLOW_EDGES.forEach((e, ei) => {
+      const a = nodeById[e.from], b = nodeById[e.to];
+      const x1 = nx(a) + NODE_W/2, x2 = nx(b) + NODE_W/2;
+      const col = C[e.kind] || C.idle;
+      let d, lx, ly;
+      if (a.lane === b.lane && Math.abs(x2-x1) > COL_W*1.5) {
+        // 同层长距离：沿泳道带顶部空白绕行，不横穿中间节点
+        const yy = ny(a) - 10;
+        d = `M${x1} ${ny(a)} L${x1} ${yy} L${x2} ${yy} L${x2} ${ny(b)}`;
+        lx = (x1+x2)/2; ly = yy - 5;
+      } else if (a.lane === b.lane) {
+        // 同层相邻：走节点侧边的水平短箭头
+        const right = x2 > x1;
+        const sx = right ? nx(a) + NODE_W : nx(a);
+        const ex = right ? nx(b) : nx(b) + NODE_W;
+        const yy = ny(a) + NODE_H/2;
+        d = `M${sx} ${yy} L${ex} ${yy}`;
+        lx = (sx+ex)/2; ly = yy - 6;
+      } else {
+        // 跨层：短距离用收紧的贝塞尔；长距离走带间空白的正交折线，避免斜扫全图
+        const down = b.lane > a.lane;
+        const sy = down ? ny(a)+NODE_H : ny(a);
+        const ey = down ? ny(b) : ny(b)+NODE_H;
+        const dy = ey - sy;
+        const far = Math.abs(x2-x1) > COL_W*1.2;
+        if (far) {
+          const midY = sy + dy*0.5 + (ei % 3 - 1) * 7;
+          d = `M${x1} ${sy} L${x1} ${midY} L${x2} ${midY} L${x2} ${ey}`;
+          lx = (x1+x2)/2; ly = midY - 5;
+        } else {
+          d = `M${x1} ${sy} C${x1} ${sy+dy*0.42}, ${x2} ${ey-dy*0.42}, ${x2} ${ey}`;
+          lx = (x1+x2)/2; ly = (sy+ey)/2 - 4 - (ei % 3) * 4;
+        }
+      }
+      const p = el('path', {
+        d, class:'sv-edge', style:`stroke:${col};opacity:.82`, 'marker-end':`url(#arw-${e.kind})`,
+        ...(e.dash ? { 'stroke-dasharray':'5 4' } : {}),
+      }, svg);
+      edgeEls.push({ el:p, kind:e.kind });
+      if (e.label) {
+        const bw = e.label.length * 5.4 + 10;
+        el('rect', { x:lx+1, y:ly-11, width:bw, height:15, rx:4,
+          style:'fill:var(--dsw-alias-bg-layer-1);opacity:.92' }, svg);
+        txt(svg, e.label, { x:lx+6, y:ly, class:'sv-edge-label', style:`fill:${col}` });
+      }
+    });
+    // 节点
+    FLOW_NODES.forEach(n => {
+      const g = el('g', { class:'sv-hit', tabindex:'0', role:'button', 'aria-label':n.title, 'data-kind':n.kind }, svg);
+      const c = C[n.kind];
+      el('rect', { x:nx(n), y:ny(n), width:NODE_W, height:NODE_H, rx:10, class:'sv-node' }, g);
+      el('rect', { x:nx(n), y:ny(n), width:3, height:NODE_H, rx:1.5, style:`fill:${c}` }, g);
+      txt(g, n.title, { x:nx(n)+12, y:ny(n)+24, class:'sv-title' });
+      const sub = wrap(n.sub, 27)[0];
+      txt(g, sub, { x:nx(n)+12, y:ny(n)+42, class:'sv-sub' });
+      const hit = () => showDetail('flowDetail', n.title, n.ev, n.note);
+      g.addEventListener('click', hit);
+      g.addEventListener('keydown', ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); hit(); } });
+      n._el = g;
+    });
+    // 05 消费出口：独立说明带，不参与连线（避免跨层长斜线淹没主链）
+    const ey = Y0 + 4 * LANE_H - 12;
+    el('rect', { x:16, y:ey, width:W-32, height:88, rx:10, class:'sv-lane' }, svg);
+    txt(svg, '05  消费 / 出口（不参与连线，点击查看代码落点）', { x:28, y:ey+18, class:'sv-lane-txt' });
+    EXITS.forEach((x, i) => {
+      const g = el('g', { class:'sv-hit', tabindex:'0', role:'button', 'aria-label':x.title }, svg);
+      const bx = X0 + i*COL_W, by = ey + 28;
+      el('rect', { x:bx, y:by, width:NODE_W, height:46, rx:8, class:'sv-node' }, g);
+      el('rect', { x:bx, y:by, width:3, height:46, rx:1.5, style:`fill:${C.idle}` }, g);
+      txt(g, x.title, { x:bx+12, y:by+19, class:'sv-title' });
+      txt(g, wrap(x.sub, 27)[0], { x:bx+12, y:by+35, class:'sv-sub' });
+      const hit = () => showDetail('flowDetail', x.title, x.ev, x.note);
+      g.addEventListener('click', hit);
+      g.addEventListener('keydown', ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); hit(); } });
+    });
+    svg._focus = mode => {
+      FLOW_NODES.forEach(n => n._el.classList.toggle('sv-dim', mode !== 'all' && n.kind !== mode && n.kind !== 'idle'));
+      edgeEls.forEach(e => e.el.classList.toggle('sv-dim', mode !== 'all' && e.kind !== mode));
+    };
+    return svg;
+  }
+
+  /* ═════════════ 02/03/04 时序图 ═════════════ */
+  // ev 事件 kind: msg(实线) / ret(虚线返回) / self(自调用) / note(跨列说明)
+  const SEQ = {
+    store: {
+      title:'记忆存储（write）', sub:'三条写入入口 → 分流 → 原子落盘 → Bot 轨 Git 提交',
+      actors:[
+        { n:'UI / 命令', s:'MemoryTabView · memory_review' },
+        { n:'api.js', s:'installApi handler' },
+        { n:'index.js', s:'memoryTool.addOne' },
+        { n:'review.js', s:'suggest / approve' },
+        { n:'store.js', s:'MemoryStore / Queue' },
+        { n:'bot-history.js', s:'防抖 Git 提交' },
+        { n:'磁盘', s:'<memoryDir>/.md' },
+      ],
+      groups:[
+        { label:'A · 手动写入与工具写入（并行入口）', color:'store', events:[
+          { from:0,to:1,kind:'msg',label:'POST /api/memory/key 或 /api/memory/{memory,user}',ev:'lib/api.js:604-645 · MemoryTabView.tsx:403,422',note:'KEY 手工添加会拼 [branch:...] 与 [dsh-only] 前缀后交给 store.add。' },
+          { from:1,to:4,kind:'msg',label:'store.add(target, content, agent)',ev:'lib/api.js:642 store.add("key", ...)',note:'全局轨不传 session cwd；项目轨需要 {session:{header:{cwd}}}。' },
+          { from:0,to:2,kind:'msg',label:'memory 工具 action:add（模型主动）',ev:'lib/index.js:1919,1025-1059 · :1063-1077 schema',note:'另一条独立写入入口，target 支持 6 个轨。' },
+        ]},
+        { label:'B · 分流：keyWriteMode 决定进队列还是直写', color:'review', events:[
+          { from:2,to:2,kind:'self',label:'keyDirect = target==="key" && mode==="direct" && origin!=="subagent"',ev:'lib/index.js:1041-1043',note:'默认 queue（index.js:95）；产品 cordis.patch.yml:22-24 反转为 direct，但子代理仍进队列。' },
+          { from:2,to:3,kind:'msg',label:'条件 queue：enqueueSuggestion(queue, "key", …)',ev:'lib/index.js:1044-1052 · lib/review.js:342-392',note:'同 target + 文本重叠时去重并 hits+=1；返回 msg.keySuggestionQueued，不落主轨。' },
+          { from:3,to:4,kind:'msg',label:'SuggestionQueue.append() → SUGGESTIONS.jsonl',ev:'lib/store.js:1462-1516 · lib/index.js:494',note:'JSONL 逐行、withLock、原子重写；记录里没有 status 字段。' },
+          { from:2,to:4,kind:'msg',label:'条件 direct：直接 store.add(...)',ev:'lib/index.js:1053',note:'写入成功后 writeGap.noteWrite() 清掉看门狗警告（:1057-1059）。' },
+        ]},
+        { label:'C · 定位与原子落盘', color:'store', events:[
+          { from:4,to:4,kind:'self',label:'locate(target, agent) → {dir, file}',ev:'lib/store.js:723-749',note:'6 个 target 分支；project/key 走 projectDirOf(cwd)，bot 走 botKeyOf(agent)。' },
+          { from:4,to:4,kind:'self',label:'projectDirOf = projects/<sha1(git 根)[:12]>',ev:'lib/store.js:707-711,512-546',note:'realpath → 最多上溯 48 层找 .git → Windows 统一小写/反斜杠 → sha1 前 12 位。' },
+          { from:4,to:6,kind:'msg',label:'serializeEntries → writeFileSync(tmp) → renameSync',ev:'lib/store.js:950-959,196 · :39 ENTRY_DELIMITER "\\n§\\n"',note:'条目以 \\n§\\n 分隔；原子 rename 保证不会写出半截文件。' },
+          { from:4,to:5,kind:'msg',label:'onWrite("bot", path) → scheduleCommit(dirname)',ev:'lib/index.js:1673 · lib/bot-history.js:150-159',note:'仅 Bot 轨触发；1500ms 防抖 + Promise 串行避免 index.lock 竞争。' },
+          { from:5,to:6,kind:'ret',label:'git add -A → git commit -q（防抖后）',ev:'lib/bot-history.js:124-141',note:'可 POST /api/bot-history {action:"restore",rev} 回滚（:191-207）。' },
+        ]},
+        { label:'D · 建议队列采纳（第四条入口）', color:'review', events:[
+          { from:0,to:1,kind:'msg',label:'POST /api/suggestions/approve（可带 edits / targets）',ev:'lib/api.js:269-303 · MemoryQueueView.tsx:212-232',note:'采纳前可改文本与目标轨（memory/user/key）。' },
+          { from:1,to:3,kind:'msg',label:'approveSuggestions(store, queue, indices, …)',ev:'lib/review.js:421-477',note:'失败或重复时 kept.push(entry) 保留在队列，不丢候选。' },
+          { from:3,to:4,kind:'msg',label:'store.add → 主轨落盘，随后从队列移除',ev:'lib/review.js:455,466-474',note:'归档走 archiveSuggestions(:510-536) 写 *-archive.md；拒绝只删队列(:485-497)。' },
+        ]},
+        { label:'说明 · 不存在的能力', color:'idle', events:[
+          { from:0,to:6,kind:'note',label:'未发现 add() 的字符上限校验；botMemoryCharLimit:2048 只作用于注入侧截断',ev:'lib/index.js:115,646 · lib/store.js:5,978（仅历史注释）',note:'store.js 头注释声称有 per-target limits，但 add() 实现 :983-1026 里没有判断。' },
+        ]},
+      ],
+      noteTitle:'存储链要点', noteBody:[
+        '<strong>四个写入入口</strong>：KEY 页签手动添加、MEMORY/USER 页签、memory 工具、建议队列采纳；全部汇到 <code>store.add()</code>。',
+        '<strong>KEY 轨默认需确认</strong>：<code>keyWriteMode</code> 为 queue 时只进 <code>SUGGESTIONS.jsonl</code>；产品配置反转成 direct，子代理例外。',
+        '<strong>落盘是原子的</strong>：先写 tmp 再 rename；Bot 轨额外触发防抖 Git 提交，可回滚、可 bundle 导出。',
+      ],
+    },
+    recall: {
+      title:'记忆检索（recall / inject）', sub:'宿主装配 → 分轨读取 → 变化才重发 → 只读预览',
+      actors:[
+        { n:'DSH 宿主', s:'systemPrompt.context' },
+        { n:'index.js', s:'renderSnapshot / addOne' },
+        { n:'store.js', s:'entriesOf / locate' },
+        { n:'workspace-scope.js', s:'+ foundation 根集' },
+        { n:'LLM', s:'prefix cache' },
+        { n:'api.js', s:'GET 端点' },
+        { n:'UI 记忆 Tab', s:'MemoryTabView' },
+      ],
+      groups:[
+        { label:'A · 会话装配与快照渲染', color:'recall', events:[
+          { from:0,to:1,kind:'msg',label:'调用 memory:snapshot 的 text(agent)（order 500）',ev:'lib/index.js:1881-1902 · :123 snapshotOrder',note:'snapshotRequireTools 守卫：工具表里没有 memory 工具时返回空串（:1891-1897）。' },
+          { from:1,to:2,kind:'msg',label:'entriesOf("memory" | "user") 全量读取',ev:'lib/index.js:633-641',note:'注入前剥掉 [id:] 与 [summary:] 程序元数据。' },
+          { from:1,to:2,kind:'msg',label:'entriesOf("bot") 按 botMemoryCharLimit 整条截断',ev:'lib/index.js:646-663 · :115 默认 2048',note:'按整条截断，不半截切字符。' },
+          { from:1,to:2,kind:'msg',label:'entriesOf("key") + gitBranch() + parseEntryBranches 过滤',ev:'lib/index.js:673-681',note:'[branch:main,dev] 标记决定条目是否对当前分支可见。' },
+          { from:1,to:1,kind:'self',label:'keyProgressiveDisclosure 判定（off / auto / on）',ev:'lib/index.js:684-707 · :110-112 默认值',note:'auto 且条目数 ≤3 且字符 ≤1500 → 全量；否则注入 - [shortId] summary 摘要列表。' },
+          { from:1,to:3,kind:'msg',label:'getWorkspaceScope(cwd) → deriveMemoryScope()',ev:'lib/index.js:1679-1684 · workspace-scope.js:42-69',note:'返回 {workspaceId, roots, current, ambiguous, workspaceKey}；头注释明确只作展示、不改存储路径。' },
+        ]},
+        { label:'B · 注入：变化才重发（保 prefix cache）', color:'recall', events:[
+          { from:1,to:0,kind:'ret',label:'返回渲染文本（会话/标题/各轨/审查警告/看门狗）',ev:'lib/index.js:601-823',note:'含 dueWarning(:725-730)、reviewStep(:798-800)、writeGap(:815-823)。' },
+          { from:0,to:4,kind:'msg',label:'物化为 user-role 尾部消息；文本不变则不重发',ev:'lib/index.js:13-15,1876-1877',note:'这就是「frozen-ish」的真实实现——没有落盘的冻结快照文件。' },
+          { from:1,to:4,kind:'note',label:'project / daily 刻意不注入：每轮变化会追加新尾消息，击穿 prefix cache',ev:'lib/index.js:709-723',note:'改为固定文案要求模型每回合自查并写入 daily/project。' },
+        ]},
+        { label:'C · 只读预览通道（UI）', color:'idle', events:[
+          { from:6,to:5,kind:'msg',label:'GET /api/memory-files?sessionId=',ev:'MemoryTabView.tsx:337-340 · lib/api.js:559',note:'前端统一 fetch(`/memory-evolve${path}`)。' },
+          { from:5,to:2,kind:'msg',label:'buildMemoryFiles(config, store, cwd, agent, scope)',ev:'lib/memory-tab.js:60-146 · lib/api.js:565',note:'10 行只读预览；split("\\n§\\n") 后剥 [id:] 与 [summary:]。' },
+          { from:5,to:6,kind:'ret',label:'{files[], cwd, branch, roots, workspaceKey, botKey, scope}',ev:'lib/api.js:562-576',note:'P0 新增字段全可选，单根客户端零改动。另有 GET /api/workspace-scope（:580），产品前端未调用。' },
+        ]},
+        { label:'D · 旁路消费者', color:'idle', events:[
+          { from:2,to:4,kind:'note',label:'COI injectTracks 只读三轨给外部 CLI；de_session_search / search_local_files 读会话与本地文档，不读记忆轨',ev:'lib/coi/scheduler.js:284-290 · lib/search/index.js:182-225 · lib/search-docs.js:1027-1058',note:'COI tools.js:112 明确 scope 只决定可见性；两个检索工具默认关闭。' },
+          { from:1,to:2,kind:'msg',label:'memory 工具 action:list / expand 按需查条目',ev:'lib/index.js:1071 · lib/store.js:854-864 query()',note:'支持 filter / since / until / limit / recent 的内存过滤。' },
+        ]},
+      ],
+      noteTitle:'检索链要点', noteBody:[
+        '<strong>注入是文本快照而非落盘快照</strong>：<code>systemPrompt.context</code> 变化才由宿主追加尾部消息，稳定前缀保 cache。',
+        '<strong>分轨策略不同</strong>：MEMORY/USER 全量、Bot 按 2048 字符截断、KEY 走分支过滤与渐进披露、project/daily 完全不注入。',
+        '<strong>只读预览与注入是两条独立通道</strong>：<code>buildMemoryFiles</code> 只给 UI 看，不参与 prompt 装配。',
+      ],
+    },
+    review: {
+      title:'记忆沉淀（review / consolidate）', sub:'回合计数 → prompt 驱动提议 → 队列 → 用户三态决策 → 归档可逆',
+      actors:[
+        { n:'agent/turn-stopping', s:'DSH 事件总线' },
+        { n:'review.js', s:'counter / suggestTool' },
+        { n:'index.js 快照', s:'dueWarning / reviewStep' },
+        { n:'主 LLM', s:'prompt-driven' },
+        { n:'SUGGESTIONS.jsonl', s:'待确认队列' },
+        { n:'UI / api.js', s:'QueueView + 端点' },
+        { n:'store / archive', s:'主轨与归档轨' },
+      ],
+      groups:[
+        { label:'A · 回合计数与审查触发', color:'review', events:[
+          { from:0,to:1,kind:'msg',label:'onSettled：turns += 1（reviewEnabled 才计）',ev:'lib/review.js:89-126',note:'头注释 :93-100 说明 DSH 核心不发 agent/settled，只发 agent/turn-stopping。' },
+          { from:0,to:1,kind:'msg',label:'writeGapCounter 记录连续未写入回合',ev:'lib/review.js:163-205',note:'noteWrite() 只打标记不清零；阈值 writeGuardThreshold 默认 2。' },
+          { from:1,to:2,kind:'msg',label:'turnsOf(agent) >= reviewInterval(5) → dueWarning',ev:'lib/index.js:725-730 · :152-155 默认值',note:'reviewEnabled 默认 false；审查开关在运行时配置里。' },
+          { from:2,to:3,kind:'msg',label:'快照注入 snap.reviewStep 指令',ev:'lib/index.js:798-800',note:'<strong>不是后台进程</strong>：由快照文案驱动主 LLM 主动调用提议工具。' },
+        ]},
+        { label:'B · 提议入队（AI 只能提议，不能直写）', color:'review', events:[
+          { from:3,to:1,kind:'msg',label:'调用 memory_suggest(target, content, reason)',ev:'lib/review.js:292-342 · lib/index.js:1808-1829 reviewCtrl.sync()',note:'reviewCtrl 成对注册/注销 memory_suggest 与 memory_review_status。' },
+          { from:1,to:1,kind:'self',label:'同 target + 文本重叠去重 → hits += 1',ev:'lib/review.js:368-392',note:'结构：{time,sessionId,cwd,target,content,reason,hits,firstSeen,lastSeen}。' },
+          { from:1,to:4,kind:'msg',label:'SuggestionQueue.append() 原子重写 JSONL',ev:'lib/review.js:364 · lib/store.js:1485-1508',note:'没有 status 字段；「在队列」即 pending。' },
+        ]},
+        { label:'C · 用户拍板：三态决策', color:'review', events:[
+          { from:5,to:4,kind:'msg',label:'GET /api/suggestions → queue.read()',ev:'lib/api.js:236 · MemoryQueueView.tsx:186-188',note:'面板同时拉 /api/pending-skills 与 /api/config。' },
+          { from:5,to:5,kind:'self',label:'「采纳 / 归档 / 拒绝」+ 全部采纳 / 全部拒绝',ev:'MemoryQueueView.tsx:212,524-579',note:'采纳前可改文本与目标轨（SUGGEST_TARGETS = memory/user/key）。' },
+          { from:5,to:6,kind:'msg',label:'approve → approveSuggestions → store.add 主轨',ev:'lib/api.js:269 · lib/review.js:421-477',note:'写入成功后 entries.length=0 再 push(kept)，从队列移除。' },
+          { from:5,to:6,kind:'msg',label:'archive → ArchiveStore.append → *-archive.md',ev:'lib/api.js:311 · lib/review.js:510-536',note:'归档条目带日期戳与「（归档理由：…）」，明确不注入任何会话。' },
+          { from:5,to:4,kind:'ret',label:'reject → rejectSuggestions 仅从队列移除',ev:'lib/api.js:305 · lib/review.js:485-497',note:'拒绝不产生任何落盘内容。' },
+        ]},
+        { label:'D · 可逆归档与技能旁路', color:'idle', events:[
+          { from:6,to:6,kind:'self',label:'promote：剥戳/理由 → store.add → archive.remove',ev:'lib/api.js:334 · lib/review.js:552-587',note:'文案「已移回主记忆（重新注入会话）」（src/client/index.ts:709）。' },
+          { from:6,to:6,kind:'self',label:'主轨→归档：先 archive.append 再 store.removeExact',ev:'lib/api.js:727-756',note:'顺序刻意设计为「宁可重复不丢数据」（:732-737）。' },
+          { from:1,to:6,kind:'note',label:'技能沉淀独立队列 pending-skills/；产品默认关闭本插件 skill_manage',ev:'lib/skills.js:381-407 · cordis.patch.yml:13-15',note:'skillReviewEnabled=false → 新技能进待确认队列；memory-consolidate SKILL 走 memory 工具的 replace/archive/add，归档优先禁用删除。' },
+          { from:0,to:6,kind:'note',label:'未发现「session 结束总结 / compaction 前 flush / 快照落盘」的专门沉淀时机',ev:'lib/advisor/observer.js:45（compact/* 只重置去重闸门）· lib/bot-history.js:162（flush 是 Git 提交刷新）',note:'COI 与 Advisor 均不写 SUGGESTIONS.jsonl：COI 只读注入，Advisor 独立评审。' },
+        ]},
+      ],
+      noteTitle:'沉淀链要点', noteBody:[
+        '<strong>没有后台审查进程</strong>：<code>agent/turn-stopping</code> 计数到阈值后，快照文案驱动主 LLM 调 <code>memory_suggest</code>。',
+        '<strong>隐式状态机</strong>：队列记录无 <code>status</code> 字段；在队列 = 待确认，采纳写主轨，归档写 <code>*-archive.md</code>，拒绝不落盘。',
+        '<strong>归档可逆</strong>：<code>promoteArchived</code> 能移回主记忆；主轨→归档刻意先写归档再删主轨，避免丢数据。',
+      ],
+    },
+  };
+  const ACTOR_W = 168, ACTOR_GAP = 8, AX0 = 96, TOP = 96, ROW = 46, GROUP_H = 30;
+  function drawSeq(key, canvas) {
+    const D = SEQ[key], A = D.actors, W = AX0 + A.length*(ACTOR_W+ACTOR_GAP) + 40;
+    const cx = i => AX0 + i*(ACTOR_W+ACTOR_GAP) + ACTOR_W/2;
+    let y = TOP;
+    const rows = [];
+    D.groups.forEach(g => { rows.push({ type:'group', label:g.label, color:g.color, y }); y += GROUP_H;
+      g.events.forEach(e => { rows.push({ ...e, color:g.color, y }); y += ROW; }); y += 8; });
+    const H = y + 20;
+    const hd = htmlEl('div', { class:'canvas-hd' }, canvas);
+    const h2 = htmlEl('h2', {}, hd); h2.textContent = D.title;
+    const sub = htmlEl('span', { class:'sub' }, hd); sub.textContent = D.sub;
+    const sp = htmlEl('span', { class:'spacer' }, hd);
+    const lg = htmlEl('div', { class:'legend' }, hd);
+    [['msg','同步调用',''],['ret','返回 / 异步','1'],['self','自调用',''],['note','说明性 note','1']].forEach(([k,n,d]) => {
+      const s = htmlEl('span', { class:'lg ' + (d?'dash':'idle') }, lg); const i = htmlEl('i', {}, s);
+      i.style.background = d ? 'repeating-linear-gradient(90deg,var(--c-idle) 0 5px,transparent 5px 9px)' : 'var(--c-idle)';
+      const t = htmlEl('span', {}, s); t.textContent = n;
+    });
+    const scroll = htmlEl('div', { class:'svg-scroll' }, canvas);
+    const svg = el('svg', { viewBox:`0 0 ${W} ${H}`, role:'img', 'aria-label':D.title+' 时序图', id:'svg-'+key }, scroll);
+    const defs = el('defs', {}, svg);
+    for (const k of ['store','recall','review','idle']) {
+      const m = el('marker', { id:`sq-${key}-${k}`, viewBox:'0 0 8 8', refX:7, refY:4, markerWidth:7, markerHeight:7, orient:'auto-start-reverse' }, defs);
+      el('path', { d:'M0 0 L8 4 L0 8 z', style:`fill:${C[k]}` }, m);
+    }
+    // lifelines
+    A.forEach((a, i) => {
+      el('line', { x1:cx(i), y1:TOP-18, x2:cx(i), y2:H-14, class:'sv-lifeline' }, svg);
+      el('rect', { x:cx(i)-ACTOR_W/2, y:22, width:ACTOR_W, height:46, rx:8, class:'sv-actor' }, svg);
+      txt(svg, a.n, { x:cx(i), y:42, 'text-anchor':'middle', class:'sv-actor-txt' });
+      txt(svg, a.s, { x:cx(i), y:58, 'text-anchor':'middle', class:'sv-actor-sub' });
+    });
+    let seq = 0;
+    rows.forEach(r => {
+      const col = C[r.color] || C.idle;
+      if (r.type === 'group') {
+        el('rect', { x:16, y:r.y-2, width:W-32, height:GROUP_H-4, rx:6, class:'sv-group' }, svg);
+        el('rect', { x:16, y:r.y-2, width:3, height:GROUP_H-4, rx:1.5, style:`fill:${col}` }, svg);
+        txt(svg, r.label, { x:26, y:r.y+13, class:'sv-group-txt', style:`fill:${col}` });
+        return;
+      }
+      seq++;
+      const g = el('g', { class:'sv-hit', tabindex:'0', role:'button', 'aria-label':r.label }, svg);
+      const cy = r.y + 12;
+      // 序号胶囊（最左）
+      el('rect', { x:22, y:cy-9, width:26, height:17, rx:8, class:'sv-seq' }, g);
+      txt(g, String(seq).padStart(2,'0'), { x:35, y:cy+3, 'text-anchor':'middle', class:'sv-seq-txt' });
+      if (r.kind === 'note') {
+        const x1 = cx(r.from)-ACTOR_W/2+6, x2 = cx(r.to)+ACTOR_W/2-6;
+        el('rect', { x:x1, y:cy-16, width:Math.max(60,x2-x1), height:32, rx:6, class:'sv-note' }, g);
+        const lines = wrap(r.label, Math.max(24, Math.floor((x2-x1)/8.5))).slice(0,2);
+        lines.forEach((s,k) => txt(g, s, { x:x1+9, y:cy-4-(lines.length-1-k)*11, class:'sv-note-txt' }));
+      } else if (r.kind === 'self') {
+        const x = cx(r.from);
+        el('path', { d:`M${x} ${cy-7} h26 a6 6 0 0 1 6 6 v2 a6 6 0 0 1 -6 6 h-26`, class:'sv-msg',
+          style:`stroke:${col}`, 'marker-end':`url(#sq-${key}-${r.color})` }, g);
+        const lines = wrap(r.label, 34).slice(0,2);
+        lines.forEach((s,k) => txt(g, s, { x:x+38, y:cy-7-(lines.length-1-k)*11, class:'sv-msg-txt' }));
+      } else {
+        const x1 = cx(r.from), x2 = cx(r.to);
+        el('line', { x1, y1:cy, x2, y2:cy, class:'sv-msg', style:`stroke:${col}`,
+          ...(r.kind === 'ret' ? { 'stroke-dasharray':'5 4' } : {}),
+          'marker-end':`url(#sq-${key}-${r.color})` }, g);
+        const mid = (x1+x2)/2, span = Math.abs(x2-x1);
+        const anchor = span < 130 ? (x2 > x1 ? 'start':'end') : 'middle';
+        const lx = span < 130 ? (x2 > x1 ? x1+6 : x1-6) : mid;
+        const lines = wrap(r.label, Math.max(18, Math.floor(span/8.5))).slice(0,2);
+        lines.forEach((s,k) => txt(g, s, { x:lx, y:cy-6-(lines.length-1-k)*11, 'text-anchor':anchor, class:'sv-msg-txt' }));
+      }
+      const hit = () => showDetail('seqDetail' + key.charAt(0).toUpperCase()+key.slice(1), r.label, r.ev, r.note);
+      g.addEventListener('click', hit);
+      g.addEventListener('keydown', ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); hit(); } });
+    });
+    const hint = htmlEl('p', { class:'hint' }, canvas);
+    hint.textContent = '点击任一消息查看代码落点；序号按执行顺序编号，虚线为返回/异步，点线框为说明性 note。';
+    // 说明卡
+    const note = document.getElementById('seqNote' + key.charAt(0).toUpperCase()+key.slice(1));
+    const h3 = htmlEl('h3', {}, note); h3.textContent = D.noteTitle;
+    const ul = htmlEl('ul', {}, note);
+    D.noteBody.forEach(s => { const li = htmlEl('li', {}, ul); li.innerHTML = s; });
+    return svg;
+  }
+
+  function showDetail(id, title, ev, note) {
+    const box = document.getElementById(id); if (!box) return;
+    box.replaceChildren();
+    const k = htmlEl('div', { class:'k' }, box); k.textContent = '证据';
+    const h = htmlEl('h3', {}, box); h.textContent = title;
+    const e = htmlEl('div', { class:'ev' }, box); e.textContent = ev || '（无代码落点）';
+    const t = htmlEl('div', { class:'txt' }, box); t.innerHTML = note || '';
+  }
+
+  /* ═════════════ 装配与交互 ═════════════ */
+  const svgFlow = drawFlow(document.getElementById('flowHost'));
+  ['store','recall','review'].forEach(k => drawSeq(k, document.querySelector(`.canvas[data-seq="${k}"]`)));
+
+  const tabs = Array.from(document.querySelectorAll('.viewtab'));
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      tabs.forEach(t => t.setAttribute('aria-selected', String(t === tab)));
+      document.querySelectorAll('.view').forEach(v => v.classList.toggle('is-active', v.id === 'v-' + tab.dataset.view));
+    });
+    tab.addEventListener('keydown', e => {
+      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+      e.preventDefault();
+      const i = tabs.indexOf(tab);
+      const next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length-1)) % tabs.length];
+      next.focus(); next.click();
+    });
+  });
+  document.querySelectorAll('.chip[data-focus]').forEach(chip => {
+    chip.addEventListener('click', () => {
+      document.querySelectorAll('.chip[data-focus]').forEach(c => c.setAttribute('aria-pressed', String(c === chip)));
+      svgFlow._focus(chip.dataset.focus);
+    });
+  });
+  document.getElementById('themeBtn').addEventListener('click', function () {
+    const light = document.documentElement.getAttribute('data-theme') === 'light';
+    document.documentElement.setAttribute('data-theme', light ? 'dark' : 'light');
+    this.querySelector('use').setAttribute('href', light ? '#ic-moon' : '#ic-sun');
+  });
+  document.getElementById('svgBtn').addEventListener('click', () => {
+    const active = document.querySelector('.view.is-active');
+    const svg = active && active.querySelector('svg[id^="svg-"]');
+    if (!svg) { alert('当前视图没有可导出的图，请切到路径图或时序图。'); return; }
+    const clone = svg.cloneNode(true);
+    // 内联当前主题的令牌值，保证导出的 SVG 脱离本页仍是同色
+    const cs = getComputedStyle(document.documentElement);
+    const vars = ['--dsw-alias-bg-base','--dsw-alias-bg-layer-1','--dsw-alias-bg-layer-2','--dsw-alias-bg-layer-3',
+      '--dsw-alias-border-l1','--dsw-alias-border-l2','--dsw-alias-label-primary','--dsw-alias-label-secondary',
+      '--dsw-alias-label-tertiary','--c-store','--c-recall','--c-review','--c-idle'];
+    const decl = vars.map(v => `${v}:${cs.getPropertyValue(v).trim()}`).join(';');
+    clone.setAttribute('style', decl + ';font-family:' + cs.getPropertyValue('--sans').trim());
+    clone.setAttribute('xmlns', NS);
+    const blob = new Blob(['<?xml version="1.0" encoding="UTF-8"?>\n' + clone.outerHTML], { type:'image/svg+xml;charset=utf-8' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = svg.id + '.svg'; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+})();
+</script>
+</body>
+</html>

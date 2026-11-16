@@ -2,7 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { mkdir, rmdir, stat } from 'node:fs/promises'
+import { mkdir, rmdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { isGroupTicket, key, latestAssignment, latestReport, liveTicket, runningAssignment, staffing, threadKey, waitsForPerson } from '../core/index.ts'
 import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, Trigger }
@@ -12,12 +12,20 @@ import { runAsWorker, verifyDirectory } from '../infra/environment.ts'
 import type { Settings } from '../policy.ts'
 import type { Store } from '../app/store.ts'
 import { Later, type Effects } from '../app/effects.ts'
-import { executionRoot, type Variable } from '../app/execution-environment.ts'
+import type { Variable } from '../app/execution-environment.ts'
+import { TicketWorkspaces, WorkspaceError, ticketDirectory } from './workspace.ts'
+import { mappedProject, prepareGitWorktree, verifyGitWorktree } from './git-workspace.ts'
+import { workspaceInventory, type WorkspaceInventory, type WorkspaceBlocker } from './workspace-inventory.ts'
 import type { Sessions } from '../app/sessions.ts'
 import { WorktreeNameSchema } from '../app/assessment.ts'
 import { resultRelay } from '../app/notices.ts'
+import { modelReportText } from '../app/role-models.ts'
+import { itemAddress } from '../sources/tapd-api.ts'
+import { P4ConfigSchema } from '../sources/p4-change.ts'
+import { verifyP4Workspace } from './p4-workspace.ts'
+import { P4ConflictError, syncP4Workspace } from './p4-sync.ts'
 import type { HealthEntry } from '../infra/health.ts'
-import { cancelled, collectJob, killJobs, runningJobs, stopBackground, stopSubagents, until, untilQuiet } from './background.ts'
+import { cancelled, collectJob, killJobs, runningJobs, stopBackground, stopSubagents, until, untilQuiet, workerErrorDetail } from './background.ts'
 
 const now = (): string => new Date().toISOString()
 /** Returns the worker session ID (`worker-<ticketId>`) for a ticket. */
@@ -61,8 +69,8 @@ export interface ExecutorHost {
   readonly context: Context
   /** Where the Executor reports what happened to Assignments and Inputs. */
   readonly engine: Pick<EngineForExecutor, 'assignmentStarted' | 'inputsDelivered' | 'inputsRead' | 'turnEnded' | 'deliveryFailed' | 'report'
-    | 'assignmentInterrupted'>
-  readonly store: Pick<Store, 'tickets' | 'triggers' | 'set' | 'settings' | 'atomic' | 'afterCommit'>
+    | 'assignmentInterrupted' | 'stopTicket'>
+  readonly store: Pick<Store, 'tickets' | 'triggers' | 'get' | 'set' | 'settings' | 'atomic' | 'afterCommit'>
   /** Durable effect queue through which launches and input deliveries run. */
   readonly effects: Pick<Effects, 'enqueue' | 'handle'>
   /** The `worker` health entry, which reports whether background worker event handling failed. */
@@ -74,8 +82,11 @@ export interface ExecutorHost {
   closing(): boolean
   /** Whether processing is paused, which holds launches and input deliveries. */
   paused(): boolean
+  repository?(): string | undefined
   /** Execution environment variables for `ticket`, passed to its workspace prepare command. */
   environment(ticket: Ticket): Variable[]
+  /** Host-owned P4 command channel, using the real CLI without worker shims; workers never receive `sync` permission. */
+  p4Host?(argv: string[], cwd: string, signal: AbortSignal): Promise<string>
   sourceLink(trigger: Trigger, signal?: AbortSignal): Promise<{ source_url?: string; source_url_read?: string }>
   /** Stored Trigger of the message `trigger` replies to, when it replies to one. */
   repliedTo(trigger: Trigger): Trigger | undefined
@@ -102,7 +113,7 @@ export function mandateInstructions(mandate: Pick<Mandate, 'strength'>): string 
 }
 /** Builds a newly accepted ticket's Execution metadata: its worktree name, workspace directory, and assignment text. */
 export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>, settings: Settings,
-  stateDir: string): Execution {
+  stateDir: string, origin?: Trigger, canonicalRepository?: string): Execution {
   const name = ticketWorktreeName(outcome.name ?? '', ticket.id)
   const source = ticket.origin.triggerId
   const note = outcome.note ? `\nRouting note (not the source request): ${outcome.note}` : ''
@@ -114,7 +125,37 @@ export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutco
   const assignment = ticket.mandate.strength === 'inferred' && ruleIds
     ? `Proactively accepted under ${ruleIds.join(', ')}. Scope: ${outcome.scope}.${precedence}${note}`
     : note.trim()
-  return { name, directory: join(executionRoot(settings, stateDir), name), assignment }
+  const directory = ticketDirectory(settings, stateDir, name, origin)
+  // ★ 2026-11-11（真机事故）：@SuperAgent 修复某 TAPD bug，浏览器未登录、单子正文一条没拿到，
+  //   却仍启动了 5 步团队流程并烧爆预算。给带外链的工单一条硬前置约束。
+  const text = typeof origin?.text === 'string' ? origin.text : ''
+  const url = /https?:\/\/\S+/i.exec(text)?.[0] ?? ''
+  const tapd = itemAddress(url)
+  // ★ 2026-11-11（用户）：TAPD 单子必须用设置里配置的 Open API 读，不再走浏览器网页登录。
+  const precondition = tapd
+    ? '\nPrecondition: this task references a TAPD item. Call orchestrator_tapd_item with the URL to read its detail and '
+      + 'comments through the TAPD Open API configured in SuperAgent settings (the Host keeps the credentials). Do NOT use a '
+      + 'browser, the TAPD web page or a login page. If the tool cannot read the item, stop and report the blocker to the '
+      + 'person — do not guess, and do not start a multi-step team flow.'
+    : /https?:\/\//i.test(text)
+      ? '\nPrecondition: this task references an external URL. Before any root-cause or implementation '
+        + 'step, verify you have actually read that page\'s content (login, permissions, attachments). If it is unreadable, '
+        + 'stop and ask the person for the content or for a login — do not guess, and do not start a multi-step team flow.'
+      : ''
+  const project = mappedProject(settings, origin, canonicalRepository)
+  const p4 = settings.sources.p4
+  const bug = origin?.source === 'tapd' ? origin.meta.type === 'bug' : (tapd ?? itemAddress(origin?.url ?? ''))?.type === 'bug'
+  const p4Config = p4?.enabled ? P4ConfigSchema.parse(p4.config) : undefined
+  const requiresP4 = !project && !!p4Config?.requireDelivery && bug
+  const shared = requiresP4 && p4Config?.workspaceMode === 'current' ? {
+    client: p4Config.executionClient, root: p4Config.workspaceRoot, port: p4Config.port, user: p4Config.user,
+  } : undefined
+  const pending = requiresP4 && p4Config?.submit === 'pending'
+  const delivery = requiresP4 ? `\nP4 delivery required: use the authorized workspace, test and shelve a ticket-owned CL. ${pending ? 'The Host will consolidate, name and re-shelve that CL; never submit, unshelve or revert it.' : 'Missing checkout or a CL owned elsewhere requires blocked, not ready/dropped.'}` : ''
+  const sharedInstructions = shared ? `\nUse -c ${shared.client} on every P4 call. Create a new numbered CL with [dsh-superagent:${ticket.id}] in its description; never adopt existing/default CLs or alter unrelated edits. Do not sync, revert or submit the shared workspace.` : ''
+  return { name, directory: shared?.root || directory, assignment: assignment + precondition + delivery + sharedInstructions,
+    ...(shared ? { p4Workspace: shared } : {}), ...(requiresP4 ? { delivery: 'p4' as const, p4Delivery: pending ? 'pending' as const : 'submit' as const } : {}), ...(project ? { project } : {}),
+    ...(settings.executor.workerPtc && !settings.executor.teamEnabled ? { toolMode: 'ptc' as const } : {}) }
 }
 /** Character limits for inline assignment and trigger text in worker messages; longer text is read via its resource. */
 const ASSIGNMENT_CHARS = 1500, TRIGGER_CHARS = 600
@@ -182,7 +223,8 @@ export class WorkerSlots {
    * @param running - Returns the ticket IDs whose worker holds a slot (see `DshExecutor.running`).
    * @param max - Returns the configured maximum number of concurrent worker slots.
    */
-  constructor(private readonly running: () => string[], private readonly max: () => number) {}
+  constructor(private readonly running: () => string[], private readonly max: () => number,
+    private readonly resource: (id: string) => string | undefined = () => undefined, private readonly occupied: () => string[] = running) {}
   /** Number of slots currently in use across running workers and starting reservations. */
   used(): number { return new Set([...this.running(), ...this.starting.keys()]).size }
   /** How many launches may run concurrently: the slots not held by a running worker or a wake reservation. */
@@ -198,6 +240,8 @@ export class WorkerSlots {
    */
   reserve(ticketId: string, by: 'launch' | 'wake' | 'person'): void {
     if (this.starting.has(ticketId)) return
+    const key = this.resource(ticketId)
+    if (key && [...this.occupied(), ...this.starting.keys()].some(id => id !== ticketId && this.resource(id) === key)) throw new Later('Current P4 workspace is held by another ticket or its review')
     if (this.used() >= this.max() + (by === 'person' ? 1 : 0)) throw new Later('No worker slot is free')
     this.starting.set(ticketId, by)
   }
@@ -214,6 +258,9 @@ export class WorkerSlots {
 export class DshExecutor implements Executor {
   private readonly disposers: (() => void)[] = []
   private readonly slots: WorkerSlots
+  private readonly workspaces: TicketWorkspaces
+  private inventoryBusy = false
+  private readonly preparing = new Map<string, { assignmentId: string; cancel: AbortController }>()
   /** Transient failure counts tried so far: keyed by `assignment.id` for worker turns and `launch:<assignment.id>` for launches. */
   private readonly transient = new Map<string, number>()
   /** Assignment IDs currently waiting on a transient-failure backoff timer before resuming their worker turn. */
@@ -233,8 +280,15 @@ export class DshExecutor implements Executor {
   private readonly timers = new Set<ReturnType<typeof setTimeout>>()
   /** Registers the `launch` and `delivery` effect handlers; both are held (concurrency limit 0) while processing is paused. */
   constructor(private readonly host: ExecutorHost) {
+    this.workspaces = new TicketWorkspaces(host.store)
     this.slots = new WorkerSlots(() => host.store.tickets.open().filter(ticket => this.running(ticket)).map(ticket => ticket.id),
-      () => host.store.settings().executor.maxWorkers)
+      () => host.store.settings().executor.maxWorkers,
+      id => {
+        const workspace = host.store.tickets.get(id)?.execution?.p4Workspace
+        return workspace ? workspace.root.toLowerCase().replace(/\\/g, '/').replace(/\/$/, '') : undefined
+      },
+      () => host.store.tickets.open().filter(ticket => this.running(ticket) || this.preparing.has(ticket.id) || this.stopping.has(ticket.id)
+        || this.resuming.has(latestAssignment(ticket)?.id ?? '') || ticket.follows?.some(follow => follow.own && !follow.closed && follow.thread.startsWith('p4:'))).map(ticket => ticket.id))
     // Each launch reserves a worker slot so launches run concurrently while slots are free.
     host.effects.handle('launch', payload => this.launchQueued(payload), { limit: () => host.paused() ? 0 : this.slots.launches(),
       retry: [5000, 300_000] })
@@ -243,7 +297,8 @@ export class DshExecutor implements Executor {
   }
   /** Populates a newly accepted ticket's `execution` attributes (worktree name, workspace directory, and assignment text). */
   prepare(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>): Ticket {
-    return { ...ticket, execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir) }
+    return { ...ticket, execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir,
+      sourceTrigger(this.host, ticket), this.host.repository?.()) }
   }
   /**
    * Runs the configured `executor.prepare` command for a new ticket workspace in its parent directory with the ticket's
@@ -251,21 +306,62 @@ export class DshExecutor implements Executor {
    * A failed prepare command throws `PrepareFailed`, which is not retried automatically; an empty directory it left is removed, a non-empty one kept.
    * @throws PrepareFailed with the command's output when the prepare command fails.
    */
-  private async prepareDirectory(ticket: Ticket): Promise<void> {
+  private async prepareDirectory(ticket: Ticket, signal: AbortSignal): Promise<void> {
     const directory = ticket.execution?.directory ?? ''
+    signal.throwIfAborted()
     await mkdir(dirname(directory), { recursive: true })
     const command = this.host.store.settings().executor.prepare.trim()
     const env = Object.fromEntries(this.host.environment(ticket).map(variable => [variable.key, variable.value]))
-    // Enforce a timeout so a hung prepare command (such as on a credential prompt) fails the ticket instead of holding a worker slot indefinitely.
-    const signal = AbortSignal.any([this.host.lifetime, AbortSignal.timeout(PREPARE_TIMEOUT_MS)])
+    signal.throwIfAborted()
     if (command) await runAsWorker(this.host.context.subprocess, ['sh', '-c', command], dirname(directory), signal, env)
       .catch(async (error: unknown) => {
         // Remove an empty directory left by a failed prepare command so a later retry does not treat it as already prepared.
         await rmdir(directory).catch(() => { /* Absent, or holding what the command wrote, which the output explains. */ })
         throw new PrepareFailed(`The prepare command failed: ${error instanceof Error ? error.message : String(error)}`)
       })
+    signal.throwIfAborted()
     await mkdir(directory, { recursive: true })
-    await verifyDirectory(directory, this.host.context.subprocess, this.host.lifetime)
+  }
+  private ensureWorkspace(ticket: Ticket, allowPrepare = true): Promise<void> {
+    const directory = ticket.execution?.directory ?? ''
+    const project = ticket.execution?.project
+    const entry = { assignmentId: latestAssignment(ticket)?.id ?? '', cancel: new AbortController() }
+    this.preparing.set(ticket.id, entry)
+    const signal = AbortSignal.any([this.host.lifetime, entry.cancel.signal, AbortSignal.timeout(PREPARE_TIMEOUT_MS)])
+    const check = () => {
+      signal.throwIfAborted()
+      const stored = this.host.store.tickets.get(ticket.id)
+      if (!stored || !liveTicket(stored) || latestAssignment(stored)?.id !== entry.assignmentId) throw new WorkspaceError('工单已停止或执行批次已替换。')
+    }
+    const run = (argv: string[], cwd: string) => { check(); return runAsWorker(this.host.context.subprocess, argv, cwd, signal) }
+    const name = ticket.execution?.name ?? ''
+    const prepare = async () => {
+      check()
+      if (ticket.execution?.p4Workspace) throw new WorkspaceError('配置的当前 P4 Root 不存在；请恢复已同步工作区，不会创建空目录或运行准备命令。')
+      if (ticket.execution?.delivery === 'p4' && !this.host.store.settings().executor.prepare.trim()) throw new WorkspaceError('P4 缺陷任务未配置准备命令；请准备本单独立 client 和已同步源码，空目录不代表 checkout 完成。')
+      if (!project) return this.prepareDirectory(ticket, signal)
+      await verifyDirectory(project.repository, this.host.context.subprocess, signal)
+      await prepareGitWorktree(project, directory, name, run, signal)
+    }
+    const verify = async () => {
+      check()
+      await verifyDirectory(directory, this.host.context.subprocess, signal)
+      if (project) await verifyGitWorktree(project, directory, name, run)
+      if (ticket.execution?.delivery === 'p4') {
+        const source = this.host.store.settings().sources.p4
+        if (!source?.enabled) throw new WorkspaceError('P4 来源已关闭；请启用并核对本单工作区。')
+        const config = P4ConfigSchema.parse(source.config)
+        const client = await verifyP4Workspace(ticket, config, run)
+        if (config.syncBeforeWork) {
+          if (!this.host.p4Host) throw new WorkspaceError('Host 的 P4 同步通道不可用；不会在未更新的工作区启动任务。')
+          await syncP4Workspace(config, client, directory, (argv, cwd) => this.host.p4Host!(argv, cwd, signal))
+        }
+      }
+      check()
+    }
+    return this.workspaces.ensure(ticket.id, directory, ticket.execution?.p4Workspace ? JSON.stringify(ticket.execution.p4Workspace) : project ? JSON.stringify(project) : this.host.store.settings().executor.prepare.trim(),
+      prepare, verify, allowPrepare && !ticket.assignments.some(assignment => assignment.startedAt !== undefined))
+      .finally(() => { if (this.preparing.get(ticket.id) === entry) this.preparing.delete(ticket.id) })
   }
   /** Enqueues a `launch` effect for an accepted or resumed assignment; launches start in queue order as worker slots free up. */
   start(ticket: Ticket, assignment: Assignment): void {
@@ -291,11 +387,9 @@ export class DshExecutor implements Executor {
     try { await this.launch(ticket, assignment); this.transient.delete(`launch:${assignmentId}`) }
     catch (error) {
       // Shutdown or pause re-queues the launch for resume, and transient network/provider errors retry with backoff.
-      // A failed prepare command is not retried automatically because an existing directory counts as prepared, so retrying
-      // would treat whatever a failed prepare command left behind in the directory as a prepared workspace; instead the
-      // ticket is marked failed and waits until new human input or an explicit retry arrives.
+      // Preparation and workspace failures require operator repair; network failures still retry with backoff.
       if (this.host.closing() || error instanceof Later) throw error
-      if (!(error instanceof PrepareFailed) && this.retries(`launch:${assignmentId}`, error)) throw error
+      if (!(error instanceof PrepareFailed) && !(error instanceof WorkspaceError) && this.retries(`launch:${assignmentId}`, error)) throw error
       this.launchFailed(ticketId, assignmentId, error)
     } finally { this.slots.free(ticketId) }
   }
@@ -330,6 +424,7 @@ export class DshExecutor implements Executor {
         try {
           // Recreate the worker session if it was externally deleted.
           if (!this.host.context.agents.get(sessionId as SessionId)) {
+            await this.ensureWorkspace(ticket, false)
             await this.host.sessions.ensure(sessionId, ticket.execution?.directory ?? '', ticket.title, 'worker')
           }
           if (input) await this.deliverInput(ticket, assignment, input)
@@ -379,6 +474,8 @@ export class DshExecutor implements Executor {
     const ownTurn = (report?.state === 'ready' || report?.state === 'dropped') && !busy
     const sessionId = workerSessionId(ticket.id)
     this.host.store.afterCommit(() => {
+      const preparing = this.preparing.get(ticket.id)
+      if (preparing?.assignmentId === assignment.id) preparing.cancel.abort()
       this.settling.get(ticket.id)?.abort()
       if (!ownTurn) this.host.context.agents.get(sessionId as SessionId)?.cancel({ kind: 'user' }, { keepInbox: false })
       // Its shell jobs and subagents stop with it, also those of a worker that ends its own turn.
@@ -420,6 +517,38 @@ export class DshExecutor implements Executor {
   }
   /** Number of open tickets whose worker holds a worker slot: its turn runs, or its shell jobs or subagents still run after its turn ended. */
   activeCount(): number { return this.host.store.tickets.open().filter(ticket => this.running(ticket)).length }
+  /** Explicit read-only preview; serializes requests and caps Git probes without reserving worker slots. */
+  async inventory(offset = 0, limit = 10): Promise<WorkspaceInventory> {
+    if (this.inventoryBusy) throw new WorkspaceError('工作区盘点正在进行，请完成后再刷新。')
+    this.inventoryBusy = true
+    const signal = AbortSignal.any([this.host.lifetime, AbortSignal.timeout(20_000)])
+    const verified = new Set<string>()
+    const git = async (argv: string[], directory: string) => {
+      signal.throwIfAborted()
+      if (!verified.has(directory)) {
+        await verifyDirectory(directory, this.host.context.subprocess, signal)
+        verified.add(directory)
+      }
+      signal.throwIfAborted()
+      return runAsWorker(this.host.context.subprocess, argv, directory, AbortSignal.any([signal, AbortSignal.timeout(5000)]))
+    }
+    const activity = async (ticketId: string): Promise<WorkspaceBlocker[]> => {
+      const sessionId = workerSessionId(ticketId)
+      const agent = this.host.context.agents.get(sessionId as SessionId)
+      if ((agent && agent.status !== 'idle') || this.preparing.has(ticketId) || this.stopping.has(ticketId) || this.settling.has(ticketId)
+        || this.left.has(ticketId) || runningJobs(this.host.context, sessionId).length) return ['runtime-active']
+      const children = this.host.context.get('subagents') as { listChildren?: (id: string) => Promise<readonly { id: string }[]> } | undefined
+      if (children) {
+        if (!children.listChildren) return ['activity-unknown']
+        const listed = await until(children.listChildren(sessionId), signal, 1000)
+        if (listed === false) return ['activity-unknown']
+        if (listed.length) return ['runtime-active']
+      }
+      return []
+    }
+    try { return await workspaceInventory({ store: this.host.store, activity, git, signal }, offset, limit) }
+    finally { this.inventoryBusy = false }
+  }
   /** Whether a ticket's worker holds a worker slot: its turn runs, or its shell jobs or subagents do after its turn ended. */
   private running(ticket: Ticket): boolean {
     if (!runningAssignment(ticket)) return false
@@ -429,10 +558,25 @@ export class DshExecutor implements Executor {
   private launchFailed(ticketId: string, assignmentId: string, error: unknown): void {
     const ticket = this.host.store.tickets.get(ticketId)
     if (!ticket || !liveTicket(ticket) || latestAssignment(ticket)?.id !== assignmentId) return
-    this.failed(ticketId, String(error))
+    if (error instanceof P4ConflictError) {
+      // A real sync/merge conflict stops the ticket: do not launch the worker, retry, or overwrite the workspace.
+      // `ticket.ended` makes the Host send the result to Feishu and generate the local report.
+      this.host.store.atomic(() => this.host.engine.stopTicket(ticketId, error.message))
+      return
+    }
+    if (ticket.execution?.delivery === 'p4' && error instanceof WorkspaceError) {
+      const summary = error.message
+      this.host.store.atomic(() => {
+        const updated = this.host.engine.report(ticketId, { state: 'blocked', summary,
+          question: ticket.execution?.p4Workspace ? '请核对当前配置的 P4 client、Root、登录与已有修改；不需要准备命令，不会自动清理现场。'
+            : '请在执行设置选择当前工作区，或配置独立 client 的准备命令；核对登录与同步源码，不要接管旧 CL。' })
+        this.relay(resultRelay(updated, 'blocked', summary))
+      })
+    } else this.failed(ticketId, error)
   }
   /** Records a `failed` report on the ticket and relays the failure to the main Session in one transaction. */
-  private failed(ticketId: string, summary: string): void {
+  private failed(ticketId: string, error: unknown): void {
+    const summary = modelReportText(error)
     this.host.store.atomic(() => {
       const updated = this.host.engine.report(ticketId, { state: 'failed', summary })
       this.relay(resultRelay(updated, 'failed', summary))
@@ -449,17 +593,13 @@ export class DshExecutor implements Executor {
     const source = sourceTrigger(this.host, ticket)
     const workspace = ticket.execution?.directory ?? ''
     if (!current()) return
-    // Prepare the workspace directory once; an existing directory counts as already prepared, including worktrees created before `prepare` commands existed.
-    if (!await stat(workspace).then(() => true, () => false)) {
-      await this.prepareDirectory(ticket)
-      if (!current()) return
-    }
+    // Stop the previous assignment's background work before inspecting or preparing its directory.
+    await this.stopped(ticket.id)
+    if (!current()) return
+    await this.ensureWorkspace(ticket)
     if (!current()) return
     const sessionId = workerSessionId(ticket.id)
     const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker')
-    if (!current()) return
-    // The background work of the Assignment this one replaces stops first, so its end does not clear this one's message.
-    await this.stopped(ticket.id)
     if (!current()) return
     // A message put back for this Assignment may still wait in the Session, kept by a restart's cancel or persisted across a
     // crash, where this launch's message would take it into a step beside the copy delivered next: that copy is the only one.
@@ -526,7 +666,7 @@ export class DshExecutor implements Executor {
       const assignment = ticket && runningAssignment(ticket)
       if (!ticket || !assignment || !liveTicket(ticket) || this.host.closing()) return
       if (this.retries(assignment.id, error)) { this.resumeAfter(ticket.id, assignment.id, error); return }
-      void this.background(Promise.resolve().then(() => { this.failed(ticket.id, String(error)) }))
+      void this.background(Promise.resolve().then(() => { this.failed(ticket.id, error) }))
     }))
   }
   /** Unsubscribes from host agent events and clears any pending transient-retry timers. */
@@ -559,7 +699,7 @@ export class DshExecutor implements Executor {
   private background(work: Promise<void>): Promise<void> {
     const { health } = this.host
     return work.then(() => { if (health.get()?.state === 'error') health.set({ state: 'ready', detail: 'Worker events are handled', at: now() }) },
-      (error: unknown) => { health.set({ state: 'error', detail: String(error), at: now() }) })
+      (error: unknown) => { health.set({ state: 'error', detail: workerErrorDetail(error), at: now() }) })
   }
   /**
    * Checks whether `error` is a transient failure with retry attempts remaining under `key`, mutating `this.transient`:
@@ -590,7 +730,7 @@ export class DshExecutor implements Executor {
       }
       const sent = this.host.sessions.prompt(sessionId, `retry:${assignmentId}:${tries}`, text, 'queue')
       void this.background(sent.finally(() => { if (waking) this.slots.free(ticketId); this.resuming.delete(assignmentId) })
-        .catch(failure => { this.failed(ticketId, String(failure)) }))
+        .catch(failure => { this.failed(ticketId, failure) }))
     }
     this.after(TRANSIENT_BACKOFF_MS * 2 ** (tries - 1), go)
   }

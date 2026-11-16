@@ -25,6 +25,8 @@ export const HEALTH_TEXT = {
   tapdUnset: 'The Source is on, and no watch is set',
   tapdWebhookUnset: 'The TAPD Webhook is on, and its shared secret is not set',
   feishuBotMissing: 'Waiting for the Feishu bot',
+  // ★ 2026-11-11: 230002/238002 — bot cannot read a chat it is not a member of. Non-retryable; history paused.
+  feishuNotInChat: 'Feishu bot is not in chat {chats}; history recovery for those chats is paused',
   pollFailures: '{count} consecutive failed polls; last: {error}',
 } as const
 export type HealthCode = keyof typeof HEALTH_TEXT

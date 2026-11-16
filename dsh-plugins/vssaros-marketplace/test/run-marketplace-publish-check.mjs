@@ -308,12 +308,12 @@ function makeSkill(localId, version, extra = {}) {
 	check('⑪ 页面有「加载更多」且是**追加**（不清空已看到的）',
 		clientSrc.includes('加载更多') && /fetchPage\([^)]*,\s*true\)/.test(clientSrc));
 	check('⑪ 换页签/改搜索时从第一页重来', /fetchPage\(1,\s*false\)/.test(clientSrc));
-	check('⑪ 「加载更多」只在还有剩余时出现（items < total）',
-		/items\.length < total/.test(clientSrc));
+	check('⑪ 加载更多按真实页码判断，DOM 保留窗口有界',
+		/pageRef\.current \* PAGE_SIZE < total/.test(clientSrc) && /mergePage\(prev, got\)\.slice\(-180\)/.test(clientSrc));
 
 	// 编辑元数据（作者/管理员）—— "可维护"的另一半
 	check('⑪ 页面有「编辑信息」按钮且按 permissions.canEdit 渲染',
-		clientSrc.includes('编辑信息') && /perm\.canEdit !== false/.test(clientSrc));
+		clientSrc.includes('编辑信息') && /perm\.canEdit === true/.test(clientSrc));
 	check('⑪ Host 有 updatePackage op（纯 HTTP，服务端 assertAuthor 判权）',
 		idxSrc.includes("op === 'updatePackage'") && mcSrc.includes('async function updatePackage'));
 	// ⚠ 契约级：映射已收进 `shape.js` 的 `toPackageDetail`（不再写在 index.js 里）
@@ -387,19 +387,16 @@ function makeSkill(localId, version, extra = {}) {
 		`定义=${/function\s+PkgIcon\s*\(/.test(page)} 调用=${iconCallCount}`);
 	check('⑭ 图片走**原生懒加载**（loading=lazy + decoding=async）',
 		/loading:\s*'lazy'/.test(page) && /decoding:\s*'async'/.test(page));
-	check('⑭ 图片加载失败 ⇒ 退回 emoji（不留空格子、不显示破图）',
-		/onError:\s*function\s*\(\)\s*\{\s*setEmoji\(fallbackEmoji\)/.test(page));
+	const iconSrc = page.slice(page.indexOf('function PkgIcon(props)'), page.indexOf('function PkgCover(props)'));
+	check('⑭ 原始图标失败明确提示，不补造品牌图像',
+		/onError:\s*function\s*\(\)\s*\{\s*failed\[1\]\(true\)/.test(iconSrc) && iconSrc.includes('图标失败'));
 	check('⑭ 外链图片带 no-referrer（否则部分站点防盗链会 403）',
 		/referrerPolicy:\s*'no-referrer'/.test(page));
 	check('⑭ 只把 http(s)/data:image 当图片，其余（emoji/短文本）当文字',
 		/\^\(https\?:\\\/\\\/\|data:image\\\/\)/i.test(page));
-	check('⑭ 空 icon 按类型兜底（agent 🤖 / skill ⚡ …）',
-		page.includes("agent: '🤖'") && page.includes("skill: '⚡'") && !page.includes("workflow: '🔀'"));
-	check('⑭ 图标底色按 slug **稳定**（同一商品刷新不变色）',
-		/function hueOf\(/.test(page) && /hueOf\(pkg\.slug \|\| pkg\.name/.test(page));
-	check('⑭ 图标格**尺寸固定**（懒加载前后不跳版）',
-		/\.vs-mp-icon\s*\{[^}]*width:\s*44px[^}]*height:\s*44px/.test(css),
-		(css.match(/\.vs-mp-icon\s*\{[^}]*\}/) ?? [''])[0].slice(0, 100));
+	check('⑭ 空 icon 如实显示缺失，不生成品牌图形', iconSrc.includes("raw || '无图标'") && !iconSrc.includes('fallbackEmoji'));
+	check('⑭ Logo 保留原始地址，图片样式无滤镜', iconSrc.includes('src: raw') && /\.vs-mp-icon img, \.vs-mp-cover img\s*\{[^}]*filter:\s*none/.test(css));
+	check('⑭ 图标格尺寸固定，懒加载前后不跳版', /\.vs-mp-icon\s*\{[^}]*width:\s*38px[^}]*height:\s*38px/.test(css));
 	check('⑭ 卡片顶部是「图标 + 标签/标题」横向布局',
 		/\.vs-mp-card-top\s*\{[^}]*display:\s*flex/.test(css) && page.includes("'vs-mp-card-top'"));
 }
@@ -417,14 +414,12 @@ function makeSkill(localId, version, extra = {}) {
 		/function\s+PkgCover\s*\(/.test(page) && page.split('h(PkgCover').length - 1 >= 2);
 	check('⑮ 缩略图同样**懒加载**（一页几十张图，必须 lazy）',
 		/loading:\s*'lazy'/.test(page) && /decoding:\s*'async'/.test(page));
-	check('⑮ 有缩略图时**不再渲染小图标**（否则重复占位）',
-		/hasCover\s*\?\s*null\s*:\s*h\(PkgIcon/.test(page), '缺 hasCover 三元');
+	const card = page.slice(page.indexOf('function Card(props)'), page.indexOf('function Drawer(props)'));
+	check('⑮ 图标和缩略图各司其职，都展示原始资源', card.includes('h(PkgCover') && card.includes('h(PkgIcon') && !/hasCover\s*\?\s*null\s*:\s*h\(PkgIcon/.test(card));
 	check('⑮ 封面尺寸固定 16:9（懒加载前后不跳版）',
 		/\.vs-mp-cover\s*\{[^}]*aspect-ratio:\s*16\s*\/\s*9/.test(css));
-	check('⑮ 封面用 object-fit: cover（不同比例图都不变形）',
-		/\.vs-mp-cover img\s*\{[^}]*object-fit:\s*cover/.test(css));
-	check('⑮ 卡片里封面**贴边**（负 margin 抵消卡片 padding）',
-		/\.vs-mp-cover\s*\{[^}]*margin:\s*-14px\s+-16px/.test(css));
+	check('⑮ 封面完整展示原图，不裁切或染色', /\.vs-mp-icon img, \.vs-mp-cover img\s*\{[^}]*object-fit:\s*contain/.test(css));
+	check('⑮ 卡片里封面贴边，抵消新卡片内距', /\.vs-mp-cover\s*\{[^}]*margin:\s*-14px\s+-14px/.test(css));
 
 	// 抓取工具：必须从 Cola Skill 取 og:image，且幂等（只补没有真图的）
 	check('⑮ 有抓取工具 tools/fetch-covers.mjs', tool.length > 0, toolPath);
@@ -543,8 +538,7 @@ function makeSkill(localId, version, extra = {}) {
 		/useCoverFallback\(pkg\.cover\)/.test(page));
 	check('⑱ 抓取工具写 **cover** 而不是 icon',
 		/updatePackage\(pkg\.slug, \{ cover: icon \}\)/.test(tool));
-	check('⑱ 详情抽屉：有 cover 才隐藏小图标（用 d.cover 判）',
-		/isImageIcon\(d\.cover\)/.test(page));
+	check('⑱ 详情同时保留真实 Logo 与独立封面', /icon: h\(PkgIcon, \{ key: 'icon', pkg: d, large: true \}\)/.test(page) && /h\(PkgCover, \{ key: 'cover', pkg: d \}\)/.test(page));
 }
 
 // ── ⑲ 从 Cline MCP Marketplace 爬取（2026-10-24 用户需求）────────────

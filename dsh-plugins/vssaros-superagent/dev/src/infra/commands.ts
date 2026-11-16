@@ -59,10 +59,19 @@ export function validItems<T>(item: z.ZodType<T>, list: readonly unknown[], tall
   if (tally) tally.skipped += list.length - items.length
   return items
 }
-/** Rewrites Feishu error 232011 (bot not in chat) with remediation instructions. */
+/**
+ * Rewrites Feishu "bot not in chat" errors with remediation instructions.
+ * ★ 2026-11-11: 230002 / 238002 are the same condition on p2p/other chats; keep the code so the
+ *   history backfill can treat them as non-retryable instead of spinning every 60 seconds.
+ */
 function membership(error: unknown): unknown {
-  if (!(error instanceof CliError) || error.code !== 232011) return error
-  const hint = 'The Feishu bot is not a member of the chat. Add the bot in the chat settings, then retry.'
+  if (!(error instanceof CliError)) return error
+  if (error.code === 232011) {
+    const hint = 'The Feishu bot is not a member of the chat. Add the bot in the chat settings, then retry.'
+    return new CliError(hint, error.code, error.exitCode)
+  }
+  if (error.code !== 230002 && error.code !== 238002) return error
+  const hint = 'The Feishu bot is not a member of this chat; the application cannot read its history. Add the bot to the chat, or remove the stale chat from history recovery.'
   return new CliError(hint, error.code, error.exitCode)
 }
 /**
@@ -79,7 +88,7 @@ export class Commands {
   /** VsSaros patch (optional GitHub): throws a message naming what to configure when the GitHub Source is not set up. */
   get repository(): string { return githubOf(this.deployment).repository }
   withSignal(signal?: AbortSignal): Commands { return signal ? new Commands(this.resolved, this.environment, AbortSignal.any([this.signal, signal])) : this }
-  async run(program: string, args: string[], cwd?: string, input?: string): Promise<string> {
+  async run(program: string, args: string[], cwd?: string, input?: string, timeoutMs = TIMEOUT_MS): Promise<string> {
     // VsSaros patch (Windows): Node refuses to start a `.cmd`/`.bat` without a shell (CVE-2024-27980), and passing message
     // text through cmd.exe is not safe, so such a CLI has to be named by its `.exe` or as `node <script>`.
     if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(program)) {
@@ -87,7 +96,7 @@ export class Commands {
     }
     try {
       // VsSaros patch (Windows): windowsHide keeps each CLI call from flashing a console window.
-      const running = exec(program, args, { cwd, signal: this.signal, timeout: TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, windowsHide: true,
+      const running = exec(program, args, { cwd, signal: this.signal, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true,
         env: { ...process.env, ...this.environment, GH_PROMPT_DISABLED: '1', LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1', LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1' } })
       // VsSaros patch (p4): `input` is written to the command's stdin, as `p4 change -i` reads its form there.
       if (input !== undefined) running.child.stdin?.end(input)

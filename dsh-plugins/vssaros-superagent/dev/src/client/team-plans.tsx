@@ -11,20 +11,11 @@ import { useAction, usePanel } from './provider.tsx'
 import { Hint, Section } from './widgets.tsx'
 import { ApprovalCard, MiniFlow, StaffingList, StepMembers, useWork } from './work.tsx'
 
-/**
- * VsSaros addition (2026-11-06): what a team used of its budget. Its token and turn caps are hard gates; at either one, no
- * new step starts until a person raises it here (by half again).
- */
-function TeamBudget({ ticketId, budget }: { ticketId: string; budget: NonNullable<StepsView['budget']> }) {
-  const { t, call } = usePanel()
-  const reached = budget.stopped || budget.turns >= budget.turnsCap
-  const raise = useAction(() => call('POST tickets/:id/steps/budget', { id: ticketId, body: {
-    tokens: Math.max(budget.tokensCap, budget.tokens) + Math.ceil(Math.max(budget.tokensCap, 10_000) / 2),
-    turns: Math.max(budget.turnsCap, budget.turns) + Math.ceil(Math.max(budget.turnsCap, 2) / 2) } }))
+/** ★ 2026-11-12（用户）：默认不限制预算，这里只显示已消耗 token 数。 */
+function TeamBudget({ budget }: { budget: NonNullable<StepsView['budget']> }) {
+  const { t } = usePanel()
   return <div className="dt-row-meta" data-testid="team-budget">
-    <span>{t('team.budgetLine', { tokens: String(budget.tokens), tokensCap: String(budget.tokensCap), turns: String(budget.turns), turnsCap: String(budget.turnsCap) })}</span>
-    {reached && <span className="dt-tag" data-tone="warning">{t('team.budgetReached')}</span>}
-    {reached && <Button variant="outline" size="sm" disabled={raise.busy} onClick={() => { void raise.run() }}>{t('team.budgetRaise')}</Button>}
+    <span>{t('team.tokensUsed', { tokens: String(budget.tokens) })}</span>
   </div>
 }
 
@@ -59,7 +50,7 @@ export function TeamPlans() {
         <div className="dt-row-main">
           <div className="dt-row-title">{team.ticket.title} <span className="dt-tag" data-tone="neutral">
             {t('team.stepsDone', { done: String(team.steps.filter(step => step.state === 'ready').length), total: String(team.steps.length) })}</span></div>
-          {team.budget && <TeamBudget ticketId={team.ticket.id} budget={team.budget} />}
+          {team.budget && <TeamBudget budget={team.budget} />}
           {/* ★ 2026-11-09：三视图已并入「执行」页签，深链直接指 execution（work 只是兼容别名）。 */}
           <MiniFlow team={team} onOpen={() => navigate({ page: 'execution', query: { ticket: team.ticket.id } })} />
           <StepMembers team={team} />

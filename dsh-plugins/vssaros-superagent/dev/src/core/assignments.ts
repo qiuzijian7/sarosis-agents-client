@@ -99,6 +99,10 @@ export class Assignments extends EnginePart {
   report(ticketId: string, report: WorkerReport): Ticket {
     const ticket = this.require(ticketId)
     if (!liveTicket(ticket)) throw new UserError('ticketEnded')
+    if (ticket.execution?.delivery === 'p4' && (report.state === 'dropped' || (report.state === 'ready'
+      && !ticket.follows?.some(follow => follow.own && follow.thread.startsWith('p4:'))))) {
+      throw new Error('P4 delivery has no verified ticket changelist; report blocked instead of completion')
+    }
     if (report.question && (report.state === 'ready' || report.answers)) throw new UserError('questionWithResult')
     if (report.askedBy && !report.question) throw new UserError('askerWithoutQuestion')
     const person = (id: string, channel: boolean) => {
@@ -126,10 +130,12 @@ export class Assignments extends EnginePart {
     if (report.state === 'blocked' || report.state === 'failed') ticket.undelivered = ticket.undelivered.filter(id => !automatic(ticket.inputs.find(input => input.id === id)))
     this.repo.tickets.save(ticket)
     // A ticket that follows Threads ends with them: a ready report ends it only once followsDone holds, with that outcome.
-    const ready = !ticket.follows?.length ? 'completed' : this.tickets.followsDone(ticket)?.outcome
+    // A named pending CL is the delivery itself: it is never submitted here, so an open `p4:` thread must not keep the ticket open.
+    const ready = !ticket.follows?.length || ticket.execution?.p4Delivery === 'pending' ? 'completed' : this.tickets.followsDone(ticket)?.outcome
     // A dropped report after a close the ticket deferred ends it as the close did, which its final notice tells.
     const outcome = report.state === 'dropped' ? this.tickets.followsDone(ticket)?.outcome ?? 'dropped' : report.state === 'ready' ? ready : undefined
     if (outcome) this.tickets.end(ticketId, 'executor', outcome, at)
+    this.emit('assignment.reported', { ticketId, assignmentId: assignment.id })
     return this.require(ticketId)
   }
   /** The ticket, while it is open and `assignmentId` runs it. */

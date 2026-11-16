@@ -16,6 +16,31 @@
 > 最少方法集由探针 ④ 钉住（见 §6.2）。插件默认 `enabled: false`（fail-closed），
 > **尚未装进 profile、未重启 Host、未真机验证**。
 >
+> **2026-11-11 收口补充（代码层；仍未部署、未真机验证）**：
+> ① `vssaros-computer` 新增 `lib/core/outcome.js` —— 动作类按 `callId` 幂等、结果未知禁止重放
+> 直到一次成功观察；顺序定为 `preGate → 账本 → 二次校验 → 审批/记账 → 中继`
+> （**重放也必须过接管 / 受保护应用 / 租约闸**，账本则严格早于审批与中继）。
+> ② 二次校验移到授权落盘之前，修掉「竞态拒绝却留下 once/always」。
+> ③ 从 TS / JS 两份策略里移除 `setValue` / `clipboardRead` / `showWindow` / `launchApp`
+> 四个中继未实现的 op，守卫新增「每个动作 op 必须在 `_dispatch` 里有 case」。
+> ④ 守卫补 `level` / `osWindowEnumeration` / `self-only` 三处盲区，「9 个只读 op」改为动态口径。
+> ⑤ 插件 `0.1.0 → 0.1.1`；测试 50 → 60 项 / 6 → 7 文件；静态守卫 45 → 58 条。
+> 验证：插件测试 7/7 文件、`check-computer-control` 全绿、`run-dsb-compat-checks` 9/9、
+> `check-plugin-files` 113/113、`compile-check-ts-native` exit 0。
+> ★ 安全姿态不变：`enabled:false` / `maxLevel:'view'` / 三个 allow 全 false。
+> ★ 11-11 追加：`tools-snapshot.mjs` 的 `CONFIG_OVERRIDES` 让默认关闭的 `computer` 进入工具面快照
+>   （153 → 154 个插件工具），`dsh-compat-e2e.mjs --preflight` 补「工具快照已登记 computer」断言；
+>   `dshToolSnapshot` 契约 2/2、`check-agent-tools` 全绿。
+> ★ 仍**未做**：
+>   · B1 用户改档通道 —— 升档必须改 `app.ts` 的编译期 `maxLevel`（守卫 #21/#22/#30 硬钉），
+>     托盘入口又与「空闲零 UI」守卫 #35 冲突（托盘只在活跃时创建 ⇒ 默认 view 下点不到，死锁）；
+>     降档 / 紧急停止已由现有 `stop()` / `rearm()` 覆盖 ⇒ 这是**阶段 C 的分级开放决策**，不是代码缺口。
+>   · Host 侧 `computer` 真实工具调用自检（需真机 Host 已装插件）。
+>   · 阶段 A 装插件 / 改 profile / 重启 Host —— 本机 dev profile 的 `node_modules` 从随包
+>     `profile-seed` 链接，`dsh plugin add` 连报 `ERR_PNPM_UNEXPECTED_STORE` 与
+>     `ERR_PNPM_UNEXPECTED_VIRTUAL_STORE`；需在停机窗口按 §7.4 通道 A 或重建 profile 处理。
+>     为排查写过的局部 `.npmrc` 与全局 `store-dir` 已回滚，用户环境未留改动。
+>
 > **第二批（同日）· §5 P0 电脑操控只读层**：`common/desktopControlProtocol.ts`（纯策略 11 项单测）、
 > `electron-main/desktopControlRelay.ts`（loopback WS + token + 发现文件，只服务 9 个只读 method）、
 > `app.ts:194,2026` 接线、`dsh-plugins/vssaros-computer/`（`computer(op)` + 23 项单测）、

@@ -1,0 +1,633 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dsh-desktop · 聊天框上方 worktree / 工作目录显示逻辑源码分析报告</title>
+<style>
+:root{
+  --dsw-alias-bg-base:#151517;
+  --dsw-alias-bg-layer-1:#1b1b1c;
+  --dsw-alias-bg-layer-2:#262626;
+  --dsw-alias-bg-layer-3:#303031;
+  --dsw-alias-border-l1:#333333;
+  --dsw-alias-border-l2:#3e3e3e;
+  --dsw-alias-label-primary:#e6e6e6;
+  --dsw-alias-label-secondary:#a3a3a3;
+  --dsw-alias-label-tertiary:#737373;
+  --dsw-alias-label-primary-foreground:#151517;
+  --dsw-alias-interactive-bg-hover:rgba(255,255,255,.06);
+  --dsw-alias-interactive-bg-active:rgba(255,255,255,.10);
+  --dsw-alias-state-business-primary:#4176e6;
+  --dsw-alias-state-warn-primary:#e2a03f;
+  --dsw-alias-state-success-primary:#4ac26b;
+  --dsw-alias-state-error-primary:#f14c4c;
+  --dsw-radius-md:6px;
+  --dsw-focus-ring-width:2px;
+  --dsw-focus-ring-color:#4176e6;
+  --page:#101012;
+  --card:#19191b;
+  --line:#2c2c2f;
+  --fg:#dcdce0;
+  --dim:#8f8f98;
+  --accent:#7aa2ff;
+}
+body.light{
+  --dsw-alias-bg-base:#f8f8f6;
+  --dsw-alias-bg-layer-1:#ffffff;
+  --dsw-alias-bg-layer-2:#f1f1ef;
+  --dsw-alias-bg-layer-3:#e8e8e6;
+  --dsw-alias-border-l1:#dedede;
+  --dsw-alias-border-l2:#c9c9c9;
+  --dsw-alias-label-primary:#1b1b1c;
+  --dsw-alias-label-secondary:#55555c;
+  --dsw-alias-label-tertiary:#77777f;
+  --dsw-alias-label-primary-foreground:#ffffff;
+  --dsw-alias-interactive-bg-hover:rgba(0,0,0,.05);
+  --dsw-alias-interactive-bg-active:rgba(0,0,0,.09);
+  --page:#f3f3f1;
+  --card:#ffffff;
+  --line:#e2e2df;
+  --fg:#25252a;
+  --dim:#66666e;
+  --accent:#2f62d8;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--page);color:var(--fg);font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+a{color:var(--accent)}
+code,.mono{font:12.5px/1.6 ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace}
+.wrap{max-width:1240px;margin:0 auto;padding:32px 24px 72px}
+header.top{border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:28px}
+h1{font-size:25px;line-height:1.35;margin:0 0 10px;letter-spacing:-.2px}
+.sub{color:var(--dim);font-size:13px;margin:0}
+.badges{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.badge{font-size:11.5px;padding:3px 9px;border:1px solid var(--line);border-radius:999px;color:var(--dim);background:var(--card)}
+.badge.warn{color:var(--dsw-alias-state-warn-primary);border-color:var(--dsw-alias-state-warn-primary)}
+section{margin:0 0 34px}
+h2{font-size:18px;margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+h3{font-size:14.5px;margin:22px 0 8px}
+p{margin:0 0 12px}
+ul,ol{margin:0 0 12px;padding-left:22px}
+li{margin:4px 0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:0 0 14px}
+.note{border-left:3px solid var(--dsw-alias-state-warn-primary);background:var(--card);padding:12px 14px;border-radius:0 8px 8px 0;margin:12px 0;font-size:13px}
+.note.ok{border-left-color:var(--dsw-alias-state-success-primary)}
+.note.info{border-left-color:var(--dsw-alias-state-business-primary)}
+table{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0 16px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;white-space:nowrap}
+td code{color:var(--accent);word-break:break-all}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:900px){.grid2{grid-template-columns:1fr}}
+.kv{display:grid;grid-template-columns:150px 1fr;gap:6px 12px;font-size:13px;margin:8px 0}
+.kv dt{color:var(--dim)}
+.kv dd{margin:0;word-break:break-all}
+.tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:4px;background:var(--dsw-alias-interactive-bg-active);color:var(--dsw-alias-label-secondary);margin-right:6px}
+.tag.fact{background:rgba(74,194,107,.14);color:var(--dsw-alias-state-success-primary)}
+.tag.infer{background:rgba(226,160,63,.14);color:var(--dsw-alias-state-warn-primary)}
+.flow{list-style:none;padding:0;margin:14px 0;counter-reset:f}
+.flow li{counter-increment:f;position:relative;padding:10px 12px 10px 46px;background:var(--card);border:1px solid var(--line);border-radius:9px;margin:8px 0}
+.flow li::before{content:counter(f);position:absolute;left:12px;top:10px;width:22px;height:22px;border-radius:50%;background:var(--dsw-alias-state-business-primary);color:#fff;font-size:12px;line-height:22px;text-align:center;font-weight:700}
+.flow b{color:var(--fg)}
+.flow small{display:block;color:var(--dim);margin-top:3px}
+
+/* ── 原生 mockup（样式值逐项抄自 dsh-desktop 真实 CSS / patch hunk） ───────── */
+.mock-shell{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary)}
+.mock-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 12px;background:var(--card);border-bottom:1px solid var(--line);font-size:12px}
+.mock-tools button{font:inherit;font-size:12px;padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);cursor:pointer}
+.mock-tools button[aria-pressed="true"]{border-color:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-state-business-primary)}
+.mock-tools .spacer{flex:1}
+.mock-app{display:grid;grid-template-columns:186px minmax(0,1fr) 290px;min-height:430px}
+@media(max-width:1040px){.mock-app{grid-template-columns:160px minmax(0,1fr)}.mock-state{display:none}}
+.mock-sb{border-right:1px solid var(--dsw-alias-border-l1);padding:12px 10px;background:var(--dsw-alias-bg-base)}
+.mock-brand{display:flex;align-items:center;gap:7px;font-weight:700;font-size:13px;margin:2px 4px 14px}
+.mock-brand i{width:18px;height:18px;border-radius:5px;background:var(--dsw-alias-label-primary);display:inline-block}
+.mock-new{width:100%;height:30px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-size:12px;cursor:default;margin-bottom:16px}
+.mock-sb-label{font-size:10.5px;color:var(--dsw-alias-label-tertiary);margin:0 4px 6px;letter-spacing:.06em;text-transform:uppercase}
+.mock-ws{display:flex;align-items:center;gap:7px;height:25px;padding:0 6px;border-radius:5px;font-size:12px;color:var(--dsw-alias-label-secondary)}
+.mock-ws.on{background:var(--dsw-alias-interactive-bg-active);color:var(--dsw-alias-label-primary)}
+.mock-main{display:flex;flex-direction:column;min-width:0;background:var(--dsw-alias-bg-base);position:relative}
+.mock-head{height:38px;border-bottom:1px solid var(--dsw-alias-border-l1);display:flex;align-items:center;gap:14px;padding:0 16px;font-size:11.5px;color:var(--dsw-alias-label-tertiary)}
+.mock-head b{color:var(--dsw-alias-label-primary);font-size:12px}
+.mock-hero{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:18px}
+.mock-hero h4{margin:0;font-size:20px;font-weight:600;letter-spacing:-.3px}
+.mock-hero .prev{font-size:10px;border:1px solid var(--dsw-alias-border-l2);border-radius:4px;padding:1px 5px;color:var(--dsw-alias-label-tertiary)}
+.mock-hero p{margin:0;color:var(--dsw-alias-label-tertiary);font-size:12px}
+.mock-composer{padding:0 18px 18px;min-width:0}
+/* 输入框上方 chip 簇：dshWbModeSwitch / dshWbModeMenu 的真实数值 */
+.chipbar{display:flex;align-items:center;gap:7px;position:relative;margin:0 0 8px;min-width:0}
+.chip-anchor{position:relative;min-width:0}
+.dshWbModeSwitch{display:flex;align-items:center;gap:5px;height:28px;padding:4px 9px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap;max-width:230px}
+.dshWbModeSwitch svg{flex:0 0 auto;color:var(--dsw-alias-label-tertiary)}
+.dshWbModeSwitch:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dshWbModeSwitch:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color);outline-offset:-2px}
+.dshWbCurrentModeLabel{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.dshWbModeNameTooltip{display:none;position:absolute;top:calc(100% + 6px);right:0;z-index:33;width:max-content;max-width:100%;padding:6px 8px;border-radius:6px;background:var(--dsw-alias-label-primary);color:var(--dsw-alias-label-primary-foreground);font-size:12px;line-height:18px;white-space:normal;overflow-wrap:anywhere;pointer-events:none;box-shadow:0 6px 18px rgba(0,0,0,.18)}
+.dshWbModeSwitch:hover .dshWbModeNameTooltip,.dshWbModeSwitch:focus-visible .dshWbModeNameTooltip{display:block}
+.dshWbModeSwitch[aria-expanded="true"] .dshWbModeNameTooltip{display:none}
+.dshWbModeMenu{position:absolute;z-index:32;left:0;top:calc(100% + 5px);width:264px;display:grid;grid-auto-rows:max-content;gap:2px;box-sizing:border-box;max-height:270px;overflow-y:auto;scrollbar-width:thin;padding:5px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1);box-shadow:0 12px 28px rgba(0,0,0,.28)}
+.dshWbModeMenu[hidden]{display:none}
+.dshWbModeOption{display:grid;grid-template-columns:18px minmax(0,1fr) 16px;align-items:center;gap:8px;width:100%;min-height:34px;padding:6px 8px;border:0;border-radius:7px;background:transparent;color:var(--dsw-alias-label-primary);text-align:left;font:inherit;cursor:pointer}
+.dshWbModeOption:hover,.dshWbModeOption:focus-visible{background:var(--dsw-alias-bg-layer-2);outline:none}
+.dshWbModeOptionLabel{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.dshWbModeOptionLabel small{display:block;color:var(--dsw-alias-label-tertiary);font-size:10.5px;line-height:14px}
+.dshWbModeOptionCheck{font-size:12px;text-align:center;color:var(--dsw-alias-label-primary)}
+.dshWbMenuSep{height:1px;margin:4px 6px;background:var(--dsw-alias-border-l1)}
+.optchip{height:28px;padding:4px 9px;border:1px solid transparent;border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:default;white-space:nowrap}
+.optchip:hover{background:var(--dsw-alias-interactive-bg-hover)}
+/* InputBar：uV2eYG_* 的真实数值 */
+.uV2eYG_root{border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-1);padding:8px 0 6px;min-width:0}
+.uV2eYG_promptRow{width:100%;min-width:0;align-items:flex-start;display:flex}
+.uV2eYG_promptRow>.uV2eYG_accessory{flex:none;padding:4px 0 0 12px;color:var(--dsw-alias-label-tertiary);font-size:16px;line-height:20px}
+.uV2eYG_promptRow>.uV2eYG_scroll{flex:1;min-width:0}
+.uV2eYG_input{padding-left:12px;color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:22px;min-height:24px}
+.uV2eYG_dock{display:flex;align-items:center;gap:10px;padding:6px 12px 0;color:var(--dsw-alias-label-tertiary);font-size:11.5px}
+.uV2eYG_dock .spacer{flex:1}
+.uV2eYG_send{width:26px;height:26px;border:0;border-radius:50%;background:var(--dsw-alias-state-business-primary);color:#fff;font-size:14px;line-height:26px;text-align:center}
+.mock-state{border-left:1px solid var(--dsw-alias-border-l1);padding:14px;background:var(--dsw-alias-bg-base);min-width:0;overflow:auto}
+.mock-state h5{margin:0 0 4px;font-size:12.5px}
+.mock-state .hint{font-size:10.5px;color:var(--dsw-alias-label-tertiary);margin:0 0 12px;line-height:1.5}
+.state-row{border-top:1px solid var(--dsw-alias-border-l1);padding:9px 0}
+.state-row label{display:block;font-size:10.5px;color:var(--dsw-alias-label-tertiary);margin-bottom:3px;letter-spacing:.03em}
+.state-row .val{font:11.5px/1.5 ui-monospace,Consolas,monospace;word-break:break-all;color:var(--dsw-alias-label-primary)}
+.state-row .val.changed{color:var(--dsw-alias-state-business-primary)}
+.state-row .val.fixed{color:var(--dsw-alias-state-success-primary)}
+.state-row .val.bad{color:var(--dsw-alias-state-error-primary)}
+.legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--dim);margin-top:10px}
+.legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px}
+.mock-caption{font-size:11.5px;color:var(--dim);padding:9px 12px;background:var(--card);border-top:1px solid var(--line)}
+details{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:10px 14px;margin:10px 0}
+summary{cursor:pointer;font-size:13px;color:var(--accent)}
+pre{overflow:auto;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);border:1px solid var(--line);border-radius:8px;padding:12px;font:11.5px/1.65 ui-monospace,Consolas,monospace;margin:10px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <h1>dsh-desktop · 聊天框上方 worktree / 工作目录的显示逻辑与目录影响</h1>
+  <p class="sub">源码分析报告 · 分析对象 <code>G:\CustomWorkspaces\AIProjects\dsh-desktop\</code> · 2026-11-14</p>
+  <p class="sub">权威视觉参考：<code>G:\CustomWorkspaces\AIProjects\dsh-desktop\docs\images\dsh-desktop-hero-v021.png</code>（README 唯一引用的整界面图）；结构与尺寸参考 <code>packages/dsh-desktop-workbenches/client.js:2035,2049</code> 与 conversation patch <code>:46</code>。</p>
+  <div class="badges">
+    <span class="badge">Harness 0.2.2-rc.1</span>
+    <span class="badge">41 份 pnpm patch</span>
+    <span class="badge">官方截图 hero-v021</span>
+    <span class="badge warn">本 checkout 无 node_modules</span>
+    <span class="badge">纯分析 · 未改任何生产代码</span>
+  </div>
+</header>
+
+<div class="note warn">
+  <b>阅读前必读 · 证据边界</b>：这份仓库是 <b>Electron 壳 + patch 集</b>，客户端 UI 由上游 npm 包
+  <code>@deepseek-ai/dsh-client-ui-*</code> 提供，而本 checkout <b>没有安装 <code>node_modules</code></b>
+  （测试直接从 <code>node_modules/.../lib/client.js</code> 读 bundle，说明依赖未落地）。因此
+  「聊天框上方 chip」的<b>组件本体源码不在仓库内</b>。本报告把结论分成两类：
+  <span class="tag fact">仓库可复核</span>（patch hunk、Desktop 自有插件、文档、测试、CSS 原文）与
+  <span class="tag infer">上游推导</span>（由 patch 上下文 / 官方截图 / 发布说明推断）。
+  mockup 的结构与尺寸取自仓库内<b>真实存在</b>的 CSS 与 DOM，不是自创布局；但 chip 的文案计算逻辑属于上游，标注为推导。
+</div>
+
+<section>
+  <h2>1 · 结论速览</h2>
+  <div class="card">
+    <ul>
+      <li><b>「聊天框上方」不是独立组件</b>，而是上游 <code>ConversationPanel</code> 用槽拼出来的一条区域：
+        <code>heroWorkspaceRow</code> → <code>renderSlot("conversation.input.dock", zone)</code> →
+        <code>renderSlot("conversation.composer.bar", …)</code> → <code>InputBar</code>。
+        <span class="tag fact">仓库可复核</span></li>
+      <li>其中 <code>InputBar</code> 的 <code>promptRow</code> 把 <code>conversation.input.accessory</code> 放在<b>输入行左侧</b>；
+        「上方一行」是 <code>input.dock</code> / <code>composer.dock</code> / hero options 的 chip 簇。
+        官方截图里能看到 <code>slides ▾ · Standard mode ▾ · PPT</code> 这一排。
+        <span class="tag fact">仓库可复核</span><span class="tag infer">chip 文案推导</span></li>
+      <li><b>worktree 不是 UI 概念，是会话运行时概念</b>：<code>working_directory</code> 服务读会话事件投影
+        <code>workingDirectory</code>；可选 <code>create_worktree</code> 工具创建检出目录并切换调用 Session 的目录；
+        <b><code>header.cwd</code> 是创建元数据，保持不变</b>。本仓库 <code>src/</code> 里 0 处 git 调用。
+        <span class="tag fact">文档可复核</span></li>
+      <li>点击 chip / 选择目录后影响的是<b>当前操作目录</b>，不是授权根：
+        <code>sandboxPolicy.resolve()</code> 仍以创建目录为授权根（上游有意区分）；
+        会话 <code>cwd</code>、<code>header.cwd</code>、<code>workingDirectory</code> 三者会分叉。
+        <span class="tag fact">文档 + 测试可复核</span></li>
+      <li>本仓库为此打了一个<b>路径身份补丁</b>：把 <code>fileAddressFor()</code> 的「绝对路径按 renderer cwd 缩写」删掉，
+        改为保留绝对身份，避免 worktree 切换后绝对路径被二次拼接。
+        <span class="tag fact">patch + 回归测试可复核</span></li>
+      <li>选中态落在 <code>dsh.sessions.current</code> / <code>dsh.workspace.view.v5</code>，由 preload 把
+        <code>desktop-storage.json</code> 注入 localStorage 实现重启恢复；<b>只对 owner 窗口生效</b>。
+        <span class="tag fact">仓库可复核</span></li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <h2>2 · dsh 原生 mockup 效果（可交互）</h2>
+  <p>下面是按仓库内真实 CSS 数值复刻的「输入框上方 chip + 下拉」效果。点 <b>slides ▾</b> 展开目录列表，选一条 worktree，
+     右侧状态面板会实时显示三个「目录」字段与文件地址的变化。<b>这是分析用 mockup，不是实现代码</b>。</p>
+
+  <div class="mock-shell">
+    <div class="mock-tools">
+      <button type="button" id="themeBtn" aria-pressed="false">浅色主题</button>
+      <button type="button" id="patchBtn" aria-pressed="true">fileAddressFor 补丁：开</button>
+      <button type="button" id="resetBtn">复位</button>
+      <span class="spacer"></span>
+      <span id="probeLabel" class="mono" style="color:var(--dim)">自检：待运行</span>
+    </div>
+    <div class="mock-app">
+      <aside class="mock-sb">
+        <div class="mock-brand"><i></i>DSH Desktop</div>
+        <div class="mock-new">＋ New Session</div>
+        <div class="mock-sb-label">Workspaces</div>
+        <div class="mock-ws on">▣ slides</div>
+        <div class="mock-ws">▣ PPT</div>
+        <div class="mock-ws">▣ dsh-desktop.com</div>
+        <div class="mock-ws">▣ Palette</div>
+        <div class="mock-ws">▣ Untitled</div>
+      </aside>
+
+      <main class="mock-main">
+        <div class="mock-head"><b>会话</b><span>轨迹</span><span>记忆</span><span>技能</span><span>待办</span></div>
+        <div class="mock-hero">
+          <h4>Into the Unknown <span class="prev">PREVIEW</span></h4>
+          <p>Describe what you want to build…</p>
+        </div>
+        <div class="mock-composer">
+          <!-- 输入框上方 chip 簇 -->
+          <div class="chipbar">
+            <div class="chip-anchor">
+              <button type="button" class="dshWbModeSwitch" id="wsChip" aria-haspopup="menu" aria-expanded="false" aria-describedby="wsTip">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 4.5 8 2l6 2.5v7L8 14l-6-2.5v-7Z" stroke="currentColor" stroke-width="1.3"/><path d="M2 4.5 8 7l6-2.5M8 7v7" stroke="currentColor" stroke-width="1.3"/></svg>
+                <span class="dshWbCurrentModeLabel" id="wsLabel">slides</span>
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5"/></svg>
+                <span id="wsTip" class="dshWbModeNameTooltip" role="tooltip">当前工作目录 / worktree</span>
+              </button>
+              <div class="dshWbModeMenu" id="wsMenu" role="menu" hidden></div>
+            </div>
+            <button type="button" class="optchip">Standard mode ▾</button>
+            <button type="button" class="optchip">PPT</button>
+          </div>
+          <!-- InputBar -->
+          <div class="uV2eYG_root">
+            <div class="uV2eYG_promptRow">
+              <div class="uV2eYG_accessory">＋</div>
+              <div class="uV2eYG_scroll"><div class="uV2eYG_input">Describe what you want to build… @ 文件或对话</div></div>
+            </div>
+            <div class="uV2eYG_dock"><span>＋ Full access</span><span class="spacer"></span><span>MiniMax-M3</span><span class="uV2eYG_send">↑</span></div>
+          </div>
+        </div>
+      </main>
+
+      <aside class="mock-state">
+        <h5>目录状态（点击 chip 后变化）</h5>
+        <p class="hint">字段来自 dsh 的会话快照 / 事件投影 / 授权策略。绿色 = 不随切换变化，蓝色 = 变化，红色 = 补丁前的错误结果。</p>
+        <div class="state-row"><label>选中项</label><div class="val" id="stSel">slides（主工作区）</div></div>
+        <div class="state-row"><label>header.cwd · 创建元数据</label><div class="val fixed" id="stHeader">/repo/slides</div></div>
+        <div class="state-row"><label>sessions.byId[].cwd · renderer 快照</label><div class="val fixed" id="stSnap">/repo/slides</div></div>
+        <div class="state-row"><label>workingDirectory · 当前操作目录投影</label><div class="val" id="stWorking">/repo/slides</div></div>
+        <div class="state-row"><label>sandboxPolicy.resolve() · 授权根</label><div class="val fixed" id="stSandbox">/repo/slides（mismatch=false）</div></div>
+        <div class="state-row"><label>fileAddressFor(session, cwd, file) · 补丁前</label><div class="val bad" id="stAddrBefore">dsh-resource://file/session/session-a/artifacts/models.json</div></div>
+        <div class="state-row"><label>fileAddressFor(session, cwd, file) · 补丁后</label><div class="val changed" id="stAddrAfter">dsh-resource://file/session/session-a//repo/slides/artifacts/models.json</div></div>
+        <div class="state-row"><label>path.resolve(current, parsed.path)</label><div class="val" id="stResolve">/repo/slides/artifacts/models.json ✓</div></div>
+        <div class="legend">
+          <span><i style="background:var(--dsw-alias-state-success-primary)"></i>创建时固定</span>
+          <span><i style="background:var(--dsw-alias-state-business-primary)"></i>随切换变化</span>
+          <span><i style="background:var(--dsw-alias-state-error-primary)"></i>补丁前会二次拼接</span>
+        </div>
+      </aside>
+    </div>
+    <div class="mock-caption">
+      视觉依据：<code>patches/@deepseek-ai+dsh-client-ui-conversation+0.2.2-rc.1.patch:46</code>（<code>uV2eYG_*</code> CSS）、
+      <code>packages/dsh-desktop-workbenches/client.js:2035,2049</code>（<code>dshWbModeSwitch / dshWbModeMenu</code> 真实尺寸与间距）、
+      <code>docs/images/dsh-desktop-hero-v021.png</code>（官方截图：输入框上方 chip 簇、深色配色）。全部色值走 <code>--dsw-alias-*</code>。
+    </div>
+  </div>
+
+  <div class="note info">
+    <b>怎么读这个 mockup</b>：切到 worktree 后，只有 <code>workingDirectory</code> 投影变；
+    <code>header.cwd</code> 与会话快照 <code>cwd</code> 都还是建会话时的根 —— 这正是
+    <code>docs/file-preview-cwd.md</code> 说的「renderer cwd 可能滞后」。把「补丁」开关关掉，可以看到
+    文件地址被按旧 cwd 缩写成相对路径，再用新的 worktree 根去 <code>resolve</code>，产生重复目录段。
+  </div>
+</section>
+
+<section>
+  <h2>3 · 显示逻辑：聊天框上方那一排是怎么拼出来的</h2>
+  <div class="card">
+    <h3>3.1 槽与 DOM 顺序 <span class="tag fact">仓库可复核</span></h3>
+    <p><code>patches/@deepseek-ai+dsh-client-ui-conversation+0.2.2-rc.1.patch:13-29</code> 的 hunk 保留了上游
+      <code>ConversationPanel</code> 的真实结构：</p>
+<pre>const inert = sessionId === void 0 || hero &amp;&amp; chipTitle === void 0;
+const inputBar = renderSlot("conversation.composer.bar", {
+  variant: hero ? "hero" : "composer",
+  extensionZone: zone,
+  ...(inert ? { disabled: true, placeholder: t("placeholder.workspace") } : {})
+});
+// 渲染顺序（上方 → 下方）
+hero &amp;&amp; heroWorkspaceRow,
+zone !== void 0 &amp;&amp; renderSlot("conversation.input.dock", zone),
+inputBar,
+sessionId === void 0 ? renderSlot("conversation.hero.dock", zone ?? {}) : null
+renderSlotChain("conversation.composer", …)</pre>
+    <p>即「输入框上方」= <code>heroWorkspaceRow</code> + <code>conversation.input.dock</code>（全宽横条）；
+      <code>InputBar</code> 内部再把 <code>conversation.input.accessory</code> 放进 <code>promptRow</code> 的左侧。</p>
+
+    <h3>3.2 InputBar 的真实 CSS <span class="tag fact">仓库可复核</span></h3>
+    <p>同一 patch <code>:46</code> 追加的注入样式（<code>test/conversation-input-css.test.ts:26-28</code> 逐字钉住）：</p>
+<pre>.uV2eYG_promptRow{width:100%;min-width:0;align-items:flex-start;display:flex}
+.uV2eYG_promptRow&gt;.uV2eYG_accessory{flex:none;padding:4px 0 0 12px}
+.uV2eYG_promptRow&gt;.uV2eYG_accessory:empty,
+.uV2eYG_promptRow&gt;.uV2eYG_accessory:has(&gt;[data-slot]:only-child:empty){display:none}
+.uV2eYG_promptRow&gt;.uV2eYG_scroll{flex:1;min-width:0}
+.uV2eYG_input{padding-left:12px}
+.uV2eYG_placeholder{left:12px}
+.uV2eYG_input[data-composer-chip-selected]{caret-color:#0000}</pre>
+    <p><code>data-composer-chip-selected</code> 是 chip 被选中态（光标透明）；空 accessory 自动隐藏。</p>
+
+    <h3>3.3 原生 chip + 下拉的精确尺寸 <span class="tag fact">仓库可复核</span></h3>
+    <p>仓库里唯一完整的 chip/菜单实现是 <code>packages/dsh-desktop-workbenches/client.js:2262</code> 的
+      <code>WorkbenchSidebarSwitcher</code>（在侧栏顶部，但视觉语言同源），CSS 全在 <code>:2035</code> 与 <code>:2049</code>：</p>
+    <table>
+      <tr><th>元素</th><th>关键值</th></tr>
+      <tr><td><code>.dshWbModeSwitch</code></td><td><code>height:36px; padding:7px 8px; border:0; border-radius:var(--dsw-radius-md); color:var(--dsw-alias-label-secondary); font-size:12px; gap:5px; flex:1 1 0</code></td></tr>
+      <tr><td>图标</td><td><code>svg{color:var(--dsw-alias-label-tertiary)}</code>，<code>MarketIcon size:16</code></td></tr>
+      <tr><td>文本</td><td><code>.dshWbCurrentModeLabel{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right}</code></td></tr>
+      <tr><td>tooltip</td><td><code>top:calc(100% + 6px); padding:6px 8px; border-radius:6px; font-size:12px/18px; box-shadow:0 6px 18px rgba(0,0,0,.12)</code>；<code>[aria-expanded=true]</code> 时隐藏</td></tr>
+      <tr><td><code>.dshWbModeMenu</code></td><td><code>position:absolute; z-index:32; left:2px; right:2px; top:calc(100% + 5px); display:grid; gap:2px; padding:5px; border:1px solid var(--dsw-alias-border-l2); border-radius:10px; background:var(--dsw-alias-bg-layer-1); box-shadow:0 12px 28px rgba(0,0,0,.14)</code>（宽度 = 容器宽 − 4px）</td></tr>
+      <tr><td>最大高度</td><td>CSS <code>max-height:calc(100dvh - 16px)</code>；运行时 <code>:2277</code> 按 <code>innerHeight - rect.top - 8</code> 重算并监听 resize</td></tr>
+      <tr><td>菜单项</td><td><code>grid-template-columns:18px minmax(0,1fr) 16px; min-height:34px; padding:6px 8px; border-radius:7px</code>；<code>role="menuitemradio" aria-checked</code>，选中显示 ✓</td></tr>
+      <tr><td>关闭</td><td><code>onBlur</code> 判断 relatedTarget 不在 nav 内则关闭；<code>Escape</code> 关闭并回焦 chip</td></tr>
+    </table>
+
+    <h3>3.4 数据来源与降级 <span class="tag fact">仓库可复核</span><span class="tag infer">chip 文案推导</span></h3>
+    <dl class="kv">
+      <dt>会话 cwd</dt><dd><code>ctx.get('sessions').list.getSnapshot().byId[sessionId]?.cwd</code>（<code>packages/dsh-desktop-client-ui/client.js:439</code>；chat patch <code>:304</code>）</dd>
+      <dt>当前操作目录</dt><dd><code>session.projections.faceOf("workingDirectory").getSnapshot() ?? void 0</code>（chat patch <code>:305,309</code>）</dd>
+      <dt>工作区列表</dt><dd><code>ctx.workspaces.list.getSnapshot().items</code>（workbenches <code>:572,1542,…</code>）；workspace patch <code>:54</code> 用 <code>summary.cwd === workspace.path</code> 复用 blank 会话</dd>
+      <dt>授权根</dt><dd><code>ctx.sandboxPolicy.resolve({session}).workspaceRoot</code>（image-generation <code>lib/assets.js:16-19</code>，用 realpath 比对）</dd>
+      <dt>cwd 缺失</dt><dd><code>if (!cwd) throw new Error(actionText('directoryUnavailable'))</code>（<code>dsh-desktop-client-ui/client.js:440</code>）</dd>
+      <dt>投影为空</dt><dd><code>?? void 0</code> 传给 <code>resolveWorkspacePath</code>（chat patch <code>:305,309</code>）</dd>
+      <dt>无会话（hero）</dt><dd><code>inert = true</code>，输入框变「Workspace-picker trigger」，<code>placeholder.workspace</code>（conversation patch <code>:14-20,59-61</code>）</dd>
+    </dl>
+    <div class="note warn"><b>未找到</b>：把 cwd 格式化成「目录名 / 相对路径 / git 分支 / worktree 名」的源码，也没有
+      <code>previewWorktreePath()</code> 这个函数（<code>preview-worktree-path</code> 只是测试文件名与文档章节名）。
+      chip 上显示的文字计算在上游 bundle 里，本 checkout 无法复核 —— 报告里不臆造。</div>
+  </div>
+</section>
+
+<section>
+  <h2>4 · 点击后的调用链：如何影响项目目录</h2>
+  <ol class="flow">
+    <li><b>UI 层：chip / 下拉项 / inert 输入框</b><small><span class="tag infer">上游推导</span> 点击触发 <code>onRequestWorkspace</code> / <code>workspacePickerOpen</code>（conversation patch <code>:62-63,256-257</code>）或 <code>uiWorkspace</code> 的选择入口。</small></li>
+    <li><b><code>uiWorkspace</code> 导航入口</b><small><span class="tag fact">workspace patch 可复核</span> <code>startSession(workspaceId, options)</code>（同步，<code>:173-177</code>，可被 <code>registerSessionStarter</code> 短路）、<code>openSession(target, source)</code> → <code>replaceMain(target, "reveal")</code>（<code>:136-139</code>）、<code>async openWorkspaceSession(...)</code> → <code>connectBlank</code> → <code>replaceMain</code>（<code>:144-156</code>）。</small></li>
+    <li><b>会话创建 / 目录落地</b><small><code>sessions.create({workspaceId})</code> → <code>sessions.retain(id,{source:'mainView'})</code>；新会话 <code>cwd = workspace.path</code>（<code>test/workbench-navigation.test.mjs:422-426</code> 断言 <code>{blank:true,cwd:'/project'}</code>）。Host 侧 <code>createMinted(request.cwd, composition)</code> 会 <code>ensure project directory "${cwd}"</code>（session-controller patch <code>:220,235</code>）。</small></li>
+    <li><b>真正的「切目录」：working_directory / create_worktree</b><small><span class="tag fact">文档 + 锁文件可复核</span> <code>dsh-working-directory</code> 的 <code>get(session)</code> 读投影、<code>set()</code> 追加 <code>working-directory/change</code>（<code>harness-0.2.1-feature-review.md:81-83</code>）；可选 <code>create_worktree</code> 创建保留的检出目录/分支并切换调用 Session 的目录（<code>:36</code>），<b><code>header.cwd</code> 不变</b>。包见 <code>package-lock.json:1375,3527-3528</code>，默认关闭，权威清单是 <code>dsh-app-boot/lib/index.js</code> 的 <code>OPTIONAL_BUNDLES</code>。<b>本仓库 <code>src/</code> 0 处 git 调用</b>。</small></li>
+    <li><b>主进程 IPC（选目录 / 打开文件位置）</b><small><code>src/preload/app.ts:149-151</code> <code>__DSH_DIRECTORY_PICKER__.pick()</code> → <code>ipcRenderer.invoke(DESKTOP_IPC.directoryPick)</code> → <code>src/main/shell/app.ts:1024-1028</code> <code>dialog.showOpenDialog({properties:['openDirectory','createDirectory']})</code>，取消返回 <code>null</code>；<code>window.dshDesktop.openInFinder(cwd)</code> → <code>shell.showItemInFolder</code>（<code>:851</code>）。另有 <code>ctx.remote.session.openWorkspacePath({path})</code>（chat patch <code>:311</code>）。</small></li>
+    <li><b>主视图重建</b><small><code>replaceMain(..., "reveal")</code>；失败时 <code>if (!opened.ok) throw opened.error</code>（chat patch <code>:56,312</code>），UI 用 <code>role="alert"</code> 就地显示（<code>dsh-desktop-client-ui/client.js:55-60</code>）。<b>没有</b>「切换 worktree 的二次确认弹窗」证据。</small></li>
+  </ol>
+
+  <h3>三个「目录」必须分清 <span class="tag fact">文档 + 测试可复核</span></h3>
+  <table>
+    <tr><th>概念</th><th>来源</th><th>切换 worktree 后</th></tr>
+    <tr><td><code>header.cwd</code></td><td>会话创建元数据</td><td><b>不变</b>（上游有意设计）</td></tr>
+    <tr><td><code>sessions.byId[].cwd</code></td><td>renderer 会话快照</td><td><b>可能滞后</b>，仍是原根 —— 补丁注释原话 <em>"Renderer cwd may lag behind the Host after a worktree change"</em></td></tr>
+    <tr><td><code>workingDirectory</code> 投影</td><td>会话事件投影（当前操作目录）</td><td><b>变为新 worktree 路径</b></td></tr>
+    <tr><td><code>sandboxPolicy.resolve().workspaceRoot</code></td><td>创建时的授权根</td><td><b>不变</b>；注入新 current directory 后实测仍返回 original，<code>mismatch=true</code>（<code>harness-0.2.1-feature-review.md:91-93</code>）</td></tr>
+  </table>
+  <div class="note warn"><b>已知不一致（文档明确标注为待修）</b>：Office/PPT 的 <code>workspacePolicy</code>、<code>workspaceRoot</code>、
+    <code>automaticSkill</code> 仍读 <code>header.cwd</code>（<code>harness-0.2.1-feature-review.md:85-99</code>），
+    所以用户切换当前目录后，常规工具与 Office/PPT 可能用不同根目录，<b>产物落回原项目</b>。
+    文档的建议是「统一通过 workingDirectory 取当前目录，再独立验证其位于现有许可范围，不能简单把 current cwd 写成新的权限根」。</div>
+
+  <h3>路径身份补丁（本仓库为 worktree 专门打的）</h3>
+  <p><code>patches/@deepseek-ai+dsh-client-ui-chat+0.2.2-rc.1.patch:8-18</code> 把 <code>fileAddressFor()</code> 改了：</p>
+<pre>- const root = cwd.replace(/\\/g,"/").replace(/\/+$/,"");
+- if (root !== "" &amp;&amp; normalized.startsWith(`${root}/`))
+-   return sessionFileAddress(sessionId, normalized.slice(root.length + 1));  // 绝对 → 相对
++ // Renderer cwd may lag behind the Host after a worktree change.
++ // Keep absolute file identity; genuinely relative paths remain relative.
++ return sessionFileAddress(sessionId, path);                                  // 保留绝对身份</pre>
+  <p>原因见 <code>docs/file-preview-cwd.md:3-9</code>：补丁前，嵌套 worktree 的绝对文件名被缩成相对后缀，
+    后端再用「当前 Agent working directory」（已是新 worktree）去拼，<b>同一段 worktree 路径被拼两次</b>。
+    <code>test/preview-worktree-path.test.mjs:23-64</code> 用真实临时文件 + bundle 抽取的函数验证 9 组
+    <code>cwd/path</code>（中文空格 #、跨工作区、跨盘、UNC、反斜杠、cwd===path）补丁后都保留绝对身份。</p>
+</section>
+
+<section>
+  <h2>5 · 状态与持久化</h2>
+  <div class="grid2">
+    <div class="card">
+      <h3>落盘键与文件</h3>
+      <ul>
+        <li><code>dsh.sessions.current</code> — workspace patch <code>:34</code> <code>createSnapshotStore(..., {persist:{name:...}})</code></li>
+        <li><code>dsh.workspace.view.v5</code> — 同 patch <code>:20</code>（<code>test/workspace-unread-patch.test.ts:27</code> 钉住）</li>
+        <li><code>desktop-storage.json</code> — <code>src/main/profile/desktop-storage.ts:5,26</code>；200ms debounce + <code>.tmp.*</code> → rename 原子写</li>
+        <li><code>settings.yaml</code> / <code>cordis.patch.yml</code> / <code>storages/workspace.json</code> / 会话 JSONL 的 <code>cwd</code></li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>重启恢复与多窗口</h3>
+      <ul>
+        <li><code>src/preload/index.ts:29-30</code>：在页面脚本执行<b>之前</b>拦截并持久化 localStorage</li>
+        <li><code>src/preload/desktop-storage.ts:14-45</code> 覆盖 <code>Storage.prototype.{getItem,setItem,…}</code></li>
+        <li><code>src/main/shell/AGENTS.md:10</code>：官方界面据此打开已记住的会话，而不是在已有工作区新建空会话</li>
+        <li><b>多窗口不一致（按设计）</b>：<code>src/main/shell/desktop-storage-bridge.ts:36-41</code> 非 owner 窗口拿到空快照且写入被丢弃</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>6 · 证据索引（全部为绝对路径）</h2>
+  <div class="card">
+    <table>
+      <tr><th>结论</th><th>证据</th></tr>
+      <tr><td>槽与 DOM 顺序 / chipTitle / inert</td><td><code>patches/@deepseek-ai+dsh-client-ui-conversation+0.2.2-rc.1.patch:13-29,59-63,89-104,254-260</code></td></tr>
+      <tr><td>InputBar 注入 CSS</td><td>同上 <code>:46-57</code>；<code>test/conversation-input-css.test.ts:26-28</code></td></tr>
+      <tr><td>原生 chip/菜单 CSS 与运行时高度</td><td><code>packages/dsh-desktop-workbenches/client.js:2035,2049,2262-2282,2359-2374</code></td></tr>
+      <tr><td>workingDirectory 投影 / openFile</td><td><code>patches/@deepseek-ai+dsh-client-ui-chat+0.2.2-rc.1.patch:300-314</code></td></tr>
+      <tr><td>fileAddressFor 补丁</td><td>同上 <code>:8-18</code>；<code>docs/file-preview-cwd.md:3-9</code>；<code>test/preview-worktree-path.test.mjs:22-65</code></td></tr>
+      <tr><td>uiWorkspace 导航链</td><td><code>patches/@deepseek-ai+dsh-client-ui-workspace+0.2.2-rc.1.patch:54,63-201</code>；注册方 <code>packages/dsh-desktop-workbenches/client.js:3239-3251</code></td></tr>
+      <tr><td>工作目录服务 / worktree 工具 / 授权根</td><td><code>docs/history/harness-0.2.1-feature-review.md:35-36,79-100</code>；<code>package-lock.json:1375,3527-3528</code></td></tr>
+      <tr><td>目录选择 IPC / 在 Finder 打开</td><td><code>src/preload/app.ts:149-151</code>；<code>src/main/shell/app.ts:851,1024-1028</code>；<code>packages/dsh-desktop-client-ui/client.js:431-445</code></td></tr>
+      <tr><td>持久化 / owner 窗口</td><td><code>src/main/profile/desktop-storage.ts</code>；<code>src/preload/desktop-storage.ts</code>；<code>src/main/shell/desktop-storage-bridge.ts:35-44</code></td></tr>
+      <tr><td>官方视觉参考</td><td><code>docs/images/dsh-desktop-hero-v021.png</code>（README 唯一引用的整界面图）；<code>docs/history/harness-0.1.5-rc.1-verification-checklist.md:97-99,106</code></td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>7 · 待确认 / 报告边界</h2>
+  <div class="card">
+    <ol>
+      <li><b>chip 本体源码缺失</b>：本 checkout 无 <code>node_modules</code>。要 100% 复核「显示文字怎么算、onClick 具体调什么」，需装依赖后读 <code>dsh-client-ui-chat / -conversation / -workspace</code> 的 bundle（版本 0.2.2-rc.1）。</li>
+      <li><b>worktree 默认关闭</b>：<code>create_worktree</code> 是可选 Agent 工具，需确认目标环境是否启用；「切换目录」基础能力由 <code>working_directory</code> 提供，与 worktree 是两件事。</li>
+      <li><b>没有专门展示该 chip 的截图</b>：仓库里 <code>hero-v021.png</code> 是产品总览（能看到 chip 簇），没有 worktree 下拉的单独截图/GIF；mockup 的下拉结构按仓库内 <code>dshWbModeMenu</code> 复刻，非该 chip 的逐像素截图。</li>
+      <li><b>Office/PPT 根目录不跟随</b>是文档记录的已知问题，不是本次分析新发现；是否要在 VsSaros 侧规避需单独决策。</li>
+      <li><b>补丁生效前提</b>：<code>docs/file-preview-cwd.md:9</code> 明确「源码测试不能证明已安装应用加载了该补丁」，需 rebuild/reinstall 或受支持的客户端重载流程。</li>
+      <li>本报告只做分析，<b>未修改任何仓库文件</b>；VsSaros 侧也未改生产代码。</li>
+    </ol>
+  </div>
+</section>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var ROOT = '/repo/slides';
+  var FILE = '/artifacts/models.json';
+  var ENTRIES = [
+    { id: 'main', label: 'slides', hint: '主工作区', dir: '/repo/slides' },
+    { id: 'wt1', label: 'feature/design', hint: '.agents/worktrees/first', dir: '/repo/slides/.agents/worktrees/first' },
+    { id: 'wt2', label: 'fix/preview', hint: '.agents/worktrees/first/.agents/worktrees/second', dir: '/repo/slides/.agents/worktrees/first/.agents/worktrees/second' },
+    { id: 'pick', label: '选择目录…', hint: 'dialog.showOpenDialog(openDirectory)', dir: null }
+  ];
+  var state = { entry: ENTRIES[0], patched: true, theme: 'dark' };
+  var $ = function (id) { return document.getElementById(id); };
+
+  function absoluteFile() { return state.entry.dir + FILE; }
+  function beforeAddr() {
+    // 补丁前：按 renderer 的旧 cwd 缩写绝对路径 → 相对后缀
+    var abs = absoluteFile();
+    return 'dsh-resource://file/session/session-a' + (abs.indexOf(ROOT + '/') === 0 ? abs.slice(ROOT.length) : abs);
+  }
+  function afterAddr() {
+    // 补丁后：保留绝对身份（sessionFileAddress(sessionId, path)）
+    return 'dsh-resource://file/session/session-a' + absoluteFile();
+  }
+  function chosenAddr() { return state.patched ? afterAddr() : beforeAddr(); }
+  function resolveText() {
+    var parsed = chosenAddr().replace('dsh-resource://file/session/session-a', '');
+    var resolved = parsed.charAt(0) === '/' ? parsed : state.entry.dir + '/' + parsed;
+    var ok = resolved === absoluteFile();
+    return resolved + (ok ? '  ✓' : '  ✗ 路径被重复拼接');
+  }
+
+  function renderMenu() {
+    var menu = $('wsMenu');
+    menu.innerHTML = '';
+    ENTRIES.forEach(function (e, i) {
+      if (i === ENTRIES.length - 1) {
+        var sep = document.createElement('div');
+        sep.className = 'dshWbMenuSep';
+        menu.appendChild(sep);
+      }
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'dshWbModeOption';
+      b.setAttribute('role', 'menuitemradio');
+      b.setAttribute('aria-checked', e.id === state.entry.id ? 'true' : 'false');
+      b.setAttribute('data-entry', e.id);
+      var ic = document.createElement('span');
+      ic.textContent = e.dir === null ? '◫' : '⑂';
+      ic.style.cssText = 'color:var(--dsw-alias-label-tertiary);text-align:center';
+      var lb = document.createElement('span');
+      lb.className = 'dshWbModeOptionLabel';
+      lb.textContent = e.label;
+      var sm = document.createElement('small');
+      sm.textContent = e.hint;
+      lb.appendChild(sm);
+      var ck = document.createElement('span');
+      ck.className = 'dshWbModeOptionCheck';
+      ck.textContent = e.id === state.entry.id ? '✓' : '';
+      b.appendChild(ic); b.appendChild(lb); b.appendChild(ck);
+      b.addEventListener('click', function () {
+        if (e.dir === null) { closeMenu(); return; }
+        state.entry = e;
+        closeMenu();
+        render();
+      });
+      menu.appendChild(b);
+    });
+  }
+  function openMenu() {
+    $('wsMenu').hidden = false;
+    $('wsChip').setAttribute('aria-expanded', 'true');
+    renderMenu();
+  }
+  function closeMenu() {
+    $('wsMenu').hidden = true;
+    $('wsChip').setAttribute('aria-expanded', 'false');
+  }
+
+  function render() {
+    $('wsLabel').textContent = state.entry.label;
+    $('wsTip').textContent = state.entry.dir || '选择目录…';
+    $('stSel').textContent = state.entry.label + '（' + state.entry.hint + '）';
+    $('stHeader').textContent = ROOT;
+    $('stSnap').textContent = ROOT;
+    $('stWorking').textContent = state.entry.dir;
+    $('stWorking').className = 'val' + (state.entry.dir !== ROOT ? ' changed' : '');
+    $('stSandbox').textContent = ROOT + (state.entry.dir !== ROOT ? '（mismatch=true）' : '（mismatch=false）');
+    $('stAddrBefore').textContent = beforeAddr();
+    $('stAddrAfter').textContent = afterAddr();
+    $('stAddrAfter').className = 'val ' + (state.patched ? 'changed' : 'bad');
+    $('stResolve').textContent = resolveText();
+    $('stResolve').className = 'val' + (resolveText().indexOf('✗') >= 0 ? ' bad' : '');
+    $('patchBtn').textContent = 'fileAddressFor 补丁：' + (state.patched ? '开' : '关');
+    $('patchBtn').setAttribute('aria-pressed', state.patched ? 'true' : 'false');
+    $('themeBtn').textContent = state.theme === 'dark' ? '浅色主题' : '深色主题';
+    $('themeBtn').setAttribute('aria-pressed', state.theme === 'light' ? 'true' : 'false');
+    document.body.className = state.theme === 'light' ? 'light' : '';
+  }
+
+  $('wsChip').addEventListener('click', function (e) {
+    e.stopPropagation();
+    $('wsMenu').hidden ? openMenu() : closeMenu();
+  });
+  document.addEventListener('click', function (e) {
+    if (!$('wsMenu').hidden && !$('wsMenu').contains(e.target) && e.target !== $('wsChip') && !$('wsChip').contains(e.target)) { closeMenu(); }
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !$('wsMenu').hidden) { closeMenu(); $('wsChip').focus(); }
+  });
+  $('themeBtn').addEventListener('click', function () { state.theme = state.theme === 'dark' ? 'light' : 'dark'; render(); });
+  $('patchBtn').addEventListener('click', function () { state.patched = !state.patched; render(); });
+  $('resetBtn').addEventListener('click', function () { state = { entry: ENTRIES[0], patched: true, theme: state.theme }; closeMenu(); render(); });
+
+  // 浏览器自检：给自动化/人工核对用
+  window.__reportProbe = function () {
+    var chip = $('wsChip');
+    var menu = $('wsMenu');
+    var wasHidden = menu.hidden;
+    chip.click();
+    var opened = !menu.hidden && menu.querySelectorAll('.dshWbModeOption').length === ENTRIES.length;
+    var wt = menu.querySelector('[data-entry="wt2"]');
+    if (wt) { wt.click(); }
+    var switched = $('stWorking').textContent.indexOf('.agents/worktrees/second') >= 0
+      && $('stHeader').textContent === ROOT
+      && $('stSnap').textContent === ROOT;
+    var addrOk = $('stResolve').textContent.indexOf('✓') >= 0;
+    var patchOn = $('patchBtn').getAttribute('aria-pressed') === 'true';
+    $('patchBtn').click();
+    var regress = $('stResolve').textContent.indexOf('✗') >= 0;
+    $('patchBtn').click();
+    $('resetBtn').click();
+    if (wasHidden) { closeMenu(); }
+    return {
+      menuOpens: opened,
+      switched: switched,
+      headerCwdFixed: $('stHeader').textContent === ROOT,
+      snapshotCwdFixed: $('stSnap').textContent === ROOT,
+      patchedAddressOk: addrOk,
+      patchOffShowsRegression: regress && patchOn,
+      noHorizontalOverflow: document.documentElement.scrollWidth <= window.innerWidth + 1,
+      menuClipped: (function () {
+        chip.click();
+        var r = menu.getBoundingClientRect();
+        var clipped = r.right > window.innerWidth + 1 || r.left < -1;
+        closeMenu();
+        return clipped;
+      })()
+    };
+  };
+
+  renderMenu();
+  render();
+  var p = window.__reportProbe();
+  var pass = p.menuOpens && p.switched && p.headerCwdFixed && p.snapshotCwdFixed
+    && p.patchedAddressOk && p.patchOffShowsRegression && p.noHorizontalOverflow && !p.menuClipped;
+  $('probeLabel').textContent = '自检：' + (pass ? '全部通过' : JSON.stringify(p));
+  $('probeLabel').style.color = pass ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-state-error-primary)';
+})();
+</script>
+</body>
+</html>

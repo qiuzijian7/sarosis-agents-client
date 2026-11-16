@@ -1,7 +1,9 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { Engine, MemoryRepositories, UserError, followupOwners, key, runningAssignment, ticketOutcome, ticketStage,
   waitsForPerson } from '../src/core/index.ts'
 import { awaitingAnswer, looksLikeAnswer } from '../src/core/intake.ts'
+import { explicitTask } from '../src/core/group-request.ts'
 import type { Assessor, Assignment, Candidate, EngineOptions, Executor, OutboundMessage, Outcome, Policy, Ticket, Trigger } from '../src/core/index.ts'
 
 const member = { source: 'chat', id: 'alice' }
@@ -1744,5 +1746,47 @@ describe('intake answer gate (2026-11-09)', () => {
     h.engine.report(id, { state: 'blocked', summary: 'needs a decision' })
     h.engine.receive(trigger('2', { human: false, actor: guest, text: '添加一个测试专家' })); h.pump()
     expect(h.repo.triggers.disposition('2')).toMatchObject({ fanout: [id] })
+  })
+})
+
+describe('★ 2026-11-12 explicit task fast track（默认关闭，真机打开）', () => {
+  const BUG_URL = 'https://www.tapd.cn/tapd_fe/68880148/bug/detail/1168880148001272696'
+  const run = (text: string, fast = true) => {
+    const h = harness(fast ? { fastExplicitTasks: true } : {})
+    h.engine.receive(trigger('1', { text })); h.pump()
+    return h
+  }
+  it('classifies only explicit URL tasks, never chit-chat or vague links', () => {
+    expect(explicitTask({ text: `修复bug单：${BUG_URL}`, human: true })).toBe(true)
+    expect(explicitTask({ text: `@SuperAgent 帮我修复bug单：${BUG_URL}`, human: true })).toBe(true)
+    for (const text of ['test1', 'hello', '谢谢', `看看这个链接 ${BUG_URL}`, `不要修复 ${BUG_URL}`,
+      '帮我建个群', `@bot 创建团队 ${BUG_URL}`]) expect(explicitTask({ text, human: true }), text).toBe(false)
+    expect(explicitTask({ text: `修复bug单：${BUG_URL}`, human: false })).toBe(false)
+  })
+  it('accepts an explicit URL task without ever asking the assessor', () => {
+    const h = run(`修复bug单：${BUG_URL}`)
+    expect(h.assessor.request).not.toHaveBeenCalled()
+    expect(h.repo.decisions.byThread('chat:t1')).toEqual([expect.objectContaining({ kind: 'accept', triggerIds: ['1'] })])
+    expect(h.repo.tickets.open()).toHaveLength(1)
+    expect(h.repo.decisions.byThread('chat:t1')[0]?.reason).toEqual([{ code: 'explicitFastTrack' }])
+    expect(h.executor.start).toHaveBeenCalled()
+  })
+  it('leaves chit-chat and vague links to the model even with the switch on', () => {
+    for (const text of ['test1', 'hello', '谢谢', `看看这个链接 ${BUG_URL}`]) {
+      const h = run(text)
+      expect(h.assessor.request, text).toHaveBeenCalledOnce()
+      expect(h.repo.tickets.open(), text).toHaveLength(0)
+    }
+  })
+  it('does nothing when the switch is off', () => {
+    const h = run(`修复bug单：${BUG_URL}`, false)
+    expect(h.assessor.request).toHaveBeenCalledOnce()
+    expect(h.repo.tickets.open()).toHaveLength(0)
+  })
+  it('pins the wiring in evals.ts', () => {
+    const source = readFileSync(new URL('../src/core/evals.ts', import.meta.url), 'utf8')
+    expect(source).toContain('policy.fastExplicitTasks && strongest.strength')
+    expect(source).toContain("reason: { code: 'explicitFastTrack' }")
+    expect(source).toContain("name: 'task-from-url'")
   })
 })

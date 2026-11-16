@@ -20,7 +20,7 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 
 ## Prerequisites
 
-- Node.js 22.19+ or 24+, pnpm, git 2.32+, Python 3.8+ and tmux
+- Node.js >=24.9.0, pnpm, git 2.32+, Python 3.8+ and tmux
 - GitHub CLI (`gh`) 2.48 or later. Source CLI fields must point to `gh` or `lark-cli` wrappers; the host relies on their subcommands and output formats.
 - A repository on github.com; GitHub Enterprise Server is not supported. To create a checkout per Ticket, keep a local clone from which the prepare command can add worktrees. Install `git-lfs` if that repository uses Git LFS.
 - A model provider configured for DeepSeek Harness. dsh-superagent uses the profile's default model unless the Eval or Execution settings name another.
@@ -146,7 +146,11 @@ Setup must succeed before polling or work starts. Overview lists missing require
 
 1. **Sources.** Set the GitHub repository (`owner/name`) and agent CLI, for example `/home/me/.local/bin/gh-agent`. Requests normally arrive through the agent account's notifications. A new Issue or comment mentioning the account arrives on the next poll; adding a mention by editing an existing Issue body does not. Post a new comment instead. For Feishu, set the bot CLI, chats, each chat's receive-all or mentions-only mode, and whether to receive direct messages.
 2. **Policy.** The two example rules can be edited or removed. Under **On each Source**, add the GitHub accounts and Feishu users who may ask for work; until a list has someone, no request can become a Ticket. With Feishu, a chat can be chosen to sync the list from, at startup and on **Sync now**.
-3. **Execution.** The directory root and a prepare command. To give each Ticket a checkout of the repository:
+3. **Execution.** Configure **Git project mappings** to create each matched ticket's checkout automatically. Each mapping has an ID, Source (`github`, `gongfeng`, `tapd`, `superagent`, or `feishu`), project key, absolute local Git repository path, and local revision (empty uses `HEAD`). GitHub keys match the configured `owner/repo`; TAPD keys match its workspace ID, including TAPD links in local/Feishu requests. Other local and Feishu requests use the key `local`. Mappings are editable only in the management panel and are copied to the ticket at acceptance; changing settings never redirects existing tickets.
+
+   The built-in preparer creates `agent/<ticket-name>` in an independent worktree under the execution root, uses a cross-process lock on the canonical shared Git directory, and checks the checkout root, repository identity and branch. It does not fetch, push, reset, submit or clean up. Sync the local repository before creating tickets; UI changes inside a worktree and uncommitted files survive retries. Matched tickets skip the custom prepare command. Non-Git P4/UE projects are not supported by this mapping; do not point it at an arbitrary engine directory. Unmatched and historical tickets retain generic-directory preparation.
+
+   Alternatively configure the directory root and a custom prepare command. To give each generic Ticket a checkout of the repository:
 
    ```sh
    git -C /home/me/src/widgets fetch --no-tags "https://github.com/$DSH_SUPERAGENT_GITHUB_REPOSITORY.git" "${DSH_SUPERAGENT_GITHUB_PR_HEAD:-HEAD}:refs/dsh-superagent/$DSH_SUPERAGENT_TICKET" &&
@@ -155,6 +159,18 @@ Setup must succeed before polling or work starts. Overview lists missing require
 
    List personal CLIs, such as one signed in to your own account, as blocked commands.
 4. **Prompts.** Set the team sections: the GitHub disclosure line, review bots, the commit author and the auto-merge condition.
+
+### Gongfeng (independent from GitHub)
+
+The **Sources** settings include a **Gongfeng** card. Set the numeric project ID and execution username, add allowed human usernames in its receiving policy, and configure bot accounts explicitly so they cannot grant human authority. The supported endpoint is `https://git.woa.com/api/v3`; this is not a generic GitLab/GitHub Enterprise adapter. Only the management panel may change this Source's configuration.
+
+The Host reads `DSH_SUPERAGENT_GONGFENG_TOKEN` (or existing `WOA_GITLAB_TOKEN`) from its environment. Alternatively put the single `DSH_SUPERAGENT_GONGFENG_TOKEN=...` key in `<DSH_HOME>/gongfeng.env`, or point `DSH_SUPERAGENT_GONGFENG_ENV_FILE` at a private local file. Never put the token in Source settings, prompts or the repository; restrict the credential file to the Host's OS user. The configured username must match the token account. A new API instance fixes its token for that operation; later polling can pick up file rotation. Environment changes require relaunching the process that starts the Host. Git clone/push credentials are separately configured by the operator; REST access does not install Git credentials.
+
+The first successful poll baselines existing MRs/comments; it does not replay backlog. Later trustworthy comments mentioning the execution account can be explicit requests from allowed humans. MR edits with no editor identity are observation-only. Full list reads use pages of 50, at most 10 pages per list; incomplete paging fails without claiming complete history. A round may need multiple requests, each with a 15-second deadline; this is not a whole-round SLA. Enable unaddressed observations only after setting admission rules.
+
+For an independent checkout add a Git project mapping with Source `gongfeng`, the same numeric project ID, absolute local repository path and local baseline. Worker tools read/create an MR on `agent/<ticket-name>` or report a source MR using `mr_iid`; the API resolves this project-local IID to its global MR ID before detail/comment calls. Reports and binding are atomic and never take another active ticket's MR. Required MR delivery cannot be completed by omitting `mr_iid`. Related source resources use `gongfeng/<project>/<iid>/detail` and `gongfeng/<project>/<iid>/notes/<page>` and retain ticket reachability checks.
+
+There is **no automatic merge, CI/pipeline validation, Git credential setup or real-server compatibility claim**. MR/note POST results can be uncertain: creation intent and reply status remain in `KV.gongfeng`; inspect the server before manually recovering an uncertain attempt, never clear a record to blindly retry. Read errors omit server bodies and secrets. API schema tests use stand-ins; verify the deployed Gongfeng instance with read-only probes before enabling live intake or creating an MR.
 
 ### Management API
 

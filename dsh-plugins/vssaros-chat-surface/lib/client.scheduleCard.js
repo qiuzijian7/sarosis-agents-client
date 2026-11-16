@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
 		const react = require("react");
 
 const SLOT = "conversation.chat.turnTail";
-const TOOL_NAME = "schedule_create";
+const TOOL_NAME = "vssaros_schedule_create";
 const STYLE_ID = "vssaros-schedule-created-cards";
 
 const CSS = `
@@ -99,10 +99,10 @@ function tasksOfTurn(snapshot, turn) {
 	for (const node of nodes.values()) {
 		if (!node || node.kind !== "tool-call" || !node.data) { continue; }
 		const root = node.data.root;
-		if (!root || root.kind !== "tool-result" || root.name !== TOOL_NAME) { continue; }
+		if (!root || root.kind !== "tool-result" || root.isError || (root.name !== TOOL_NAME && root.name !== "schedule_create")) { continue; }
 		if (typeof root.callTime === "number" && (root.callTime < start || (end !== null && root.callTime > end))) { continue; }
 		const task = taskOfText(textOf(root));
-		if (!task || seen[task.id]) { continue; }
+		if (!task || seen[task.id] || (root.name === "schedule_create" && !task.id.startsWith("t-"))) { continue; }
 		seen[task.id] = true;
 		out.push(task);
 	}

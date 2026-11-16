@@ -274,8 +274,8 @@ export const AGENT_STUDIO_SIDEBAR_VIEW_CONTAINER_ID = 'agentStudio.sidebar';
 export const AGENT_STUDIO_AUXBAR_VIEW_CONTAINER_ID = 'agentStudio.auxiliaryBar';
 
 // View IDs
-/** 工作流画布 Run 的默认执行 agent（2026-11-09：通用主助理 saros-claw 已删除，改由编排 agent 接管）。 */
-export const DEFAULT_WORKFLOW_AGENT_ID = 'workflow-agent';
+/** 工作流画布 Run 的默认执行 agent（2026-11-12：workflow-agent 已下线，改由规划 agent 接管）。 */
+export const DEFAULT_WORKFLOW_AGENT_ID = 'planner';
 
 export const AGENT_STUDIO_MAIN_VIEW_ID = 'agentStudio.mainView';
 export const AGENT_STUDIO_CANVAS_VIEW_ID = 'agentStudio.canvasView';
@@ -376,7 +376,8 @@ export const AGENT_STUDIO_DSH_MARKETPLACE_VIEW_ID = 'vssaros.dsh.marketplaceView
  * （同一串 id ⇒ 已持久化的布局/视图状态不丢），但 id 从此是写下来的，派生规则改字也带不走它们。
  */
 export const AGENT_STUDIO_DSH_PARALLEL_VIEW_ID = 'vssaros.dsh.pv.vssaros.dsh.parallel';
-export const AGENT_STUDIO_DSH_STUDIO_VIEW_ID = 'vssaros.dsh.pv.vssaros.dsh.studio';
+// ★ 2026-11-11（用户要求「移除萨罗斯管理工作台」）：`@vssaros/dsh-studio` 已下线 ⇒
+//   `AGENT_STUDIO_DSH_STUDIO_VIEW_ID`（`vssaros.dsh.pv.vssaros.dsh.studio`）随之删除。
 // ★ 2026-10-30（用户要求「删除小红书工作台」）：`@vssaros/dsh-xhs-note` 已卸载 ⇒
 //   `AGENT_STUDIO_DSH_XHSNOTE_VIEW_ID`（`vssaros.dsh.pv.vssaros.dsh.xhs-note`）随之删除。
 

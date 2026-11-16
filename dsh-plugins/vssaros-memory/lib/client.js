@@ -17998,6 +17998,32 @@ var dshMobile = {
 var inject = ["slots", "locale", "conversation", "sessions"];
 function apply(ctx) {
   const t2 = ctx.locale.bind(NS);
+  // ★ 2026-11-11（用户：「主页中，工作台中缺少 记忆 item」）：把会话页「记忆」Tab 的同一份
+  //   MemoryTabView 登记成 chat-surface 的**组件页签**（window.__vssarosPageComponents.memory）。
+  //   主页工作台卡片 route=/x/memory/ ⇒ DEFAULT_ITEMS 里同 route 的条目带 comp:"memory" ⇒
+  //   中栏页签直接渲染这里，不会去加载并不存在的 /x/memory/ 整页（11-03 起 view.kind='none'）。
+  //   ⚠ 本文件是提交进仓库的 esbuild 产物 ⇒ 这段是**精确增量 patch**，不要整体重建。
+  ctx.effect(() => {
+    const w = window;
+    try {
+      if (!w.__vssarosPageComponents || typeof w.__vssarosPageComponents !== "object") {
+        w.__vssarosPageComponents = {};
+      }
+      w.__vssarosPageComponents.memory = function MemoryWorkbenchPage(props) {
+        const sid = w.vssarosDsh && typeof w.vssarosDsh.sessionId === "string" ? w.vssarosDsh.sessionId : "";
+        return MemoryTabView({ ...props, sessionId: sid, t: t2 });
+      };
+      // 组件可能晚于页签条渲染 ⇒ 通知 chat-surface 重画（否则首帧会回落成 iframe 404）
+      try { w.dispatchEvent(new CustomEvent("vssaros-wb-tabs-change")); } catch (e) { /* 老宿主 */ }
+    } catch (e) { /* 登记失败不影响会话页「记忆」Tab 本身 */ }
+    return () => {
+      try {
+        if (w.__vssarosPageComponents && w.__vssarosPageComponents.memory) {
+          delete w.__vssarosPageComponents.memory;
+        }
+      } catch (e) { /* noop */ }
+    };
+  }, "memory-evolve: workbench page component");
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "memory-evolve: dictionaries");
   ctx.effect(() => {
     if (typeof document === "undefined") return () => {

@@ -21,12 +21,17 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { renameWithRetry } from './atomicWrite.js';
-import { finalAssistantText, findOurSplices } from './core/relay.js';
-import { GOAL_IDLE_NUDGES, GOAL_NUDGE_TEXT, GOAL_TOOL_PARAMETERS, applyGoal, goalPromptBlock, goalView, markTask } from './core/goals.js';
+import { countToolCalls, finalAssistantText, findOurSplices } from './core/relay.js';
+import { GOAL_IDLE_NUDGES, GOAL_NUDGE_TEXT, GOAL_TOOL_PARAMETERS, applyGoal, goalPromptBlock, goalView, markTask, taskWriteScopes } from './core/goals.js';
 import { ASK_TOOL_DESCRIPTION, ASK_TOOL_PARAMETERS, ROOM_ASK_TOOL, askAnswerText, askHeadline, normalizeAsk, normalizeAskAnswers, supersedeAsks } from './core/asks.js';
 import {
 	RoomError, ROOM_IDLE_RELAY_LIMIT, ROOM_LIMITS, ROOM_POST_FORM, ROOM_RECORD_TYPE, ROOM_REFERENCE_KIND, ROOM_RELAY_TOOL, ROOM_TURN_KIND,
 	ROUND_SCHEMA, ROUND_STATUS_LABELS, normalizeWakeMode, normalizeWakeSettings,
+	ROOM_DIAGNOSTICS_SCHEMA, RUN_STATES, TASK_STATES, RUN_STATE_LABELS, TASK_STATE_LABELS,
+	DISPATCH_INTENT_STATES, DISPATCH_INTENT_LABELS, runStateOf, taskStatesOf,
+	// ★ 2026-11-16 P3：单轮成本 / 写范围预算（纯逻辑在 core/rooms.js，这里只做接线与计数）。
+	ROOM_BUDGET_DEFAULTS, budgetStopOf, estimateTokens,
+	normalizeWriteScopes, roomBudgetOf, writeScopesOverlap,
 	addressedRoomReference, autoRoomName, callsFrom, clipLine, isPass, mentionsIn, normalizeRoomInput, openingCall,
 	roomPrompt, roomRecordData, roomReferenceOf, roomView, roundStatusOf, sortRooms, stripOwnName, stripRoomMention,
 	ROOM_ASK_REFUSAL, ROOM_MEMBER_DENIED_TOOLS,
@@ -43,6 +48,8 @@ const PROGRESS_KEEP_MS = 10 * 60_000;
 export const ROOMS_FILE_VERSION = 2;
 /** 盘上最多留多少轮（运行中的永不裁）；超过 PROGRESS_KEEP_MS 的已结束轮次在载入时裁掉。 */
 export const ROUNDS_KEEP_MAX = 50;
+/** 每个群最多保留多少条 durable dispatch intent / outbox 记录（只做诊断与重启收口，不重放）。 */
+export const DISPATCH_INTENT_KEEP_MAX = 64;
 /** 每个群最多归档多少个被中断的轮次（它们不按时间删，见 pruneRounds）。 */
 export const ROUNDS_ARCHIVE_PER_ROOM = 20;
 /** 成员超过这个时间还没回 ⇒ 先上一条 `working` 状态节点，不让 UI 看起来像卡死。 */
@@ -57,6 +64,12 @@ export const ROOM_RELEASE_MS = 120_000;
 export const ROOM_CALLBACK_FORM = 'room-callback';
 /** 群目标工具名（挂在成员影子会话上，只有管理员能用）。 */
 export const ROOM_GOAL_TOOL = 'group_goal';
+/**
+ * ★ 2026-11-16 P3：HTTP create/update 允许的逐群预算 / 写范围字段。
+ * 单一清单供给两处 pick，避免新增字段时只改一处；归一化仍由 core/rooms.js 的 normalizeWakeSettings 负责。
+ */
+export const ROOM_BUDGET_PICK = Object.freeze(['maxTurns', 'maxEstimatedTokens', 'maxWallMs',
+	'idleRelayLimit', 'contextLines', 'newLines', 'writeScopes']);
 /** 群目标的一次操作写进群聊记录的那行字。 */
 function goalLogText(reply, goal) {
 	const title = goal?.title ? `「${goal.title}」` : '';
@@ -119,6 +132,7 @@ export function holdsMessage(agent, id) {
  * @param deps.append `async () => appendPluginRecord | null`
  * @param deps.fallbackCwd 没有任何工作区时群会话落在哪
  * @param deps.timeoutMs / deps.now / deps.uuid / deps.warn 测试可注入
+ * @param deps.maxConcurrentTurns 可选默认并发上限；逐群 `maxConcurrentTurns` 优先，测试/部署可注入
  * @param deps.onChanged `(kind, view) => void` 群变更后通知（2026-11-09：建群成功立刻推给侧栏，不等轮询）；可缺
  */
 /**
@@ -197,6 +211,11 @@ export function createRooms(deps) {
 	const postMeta = new Map();
 	/** ★ 2026-11-10：installRooms 用它注册自己闭包里账本（routed）的迁移钩子。 */
 	const rebindHooks = new Set();
+	/** 同一群同一成员：影子会话只创建一次、回合串行，避免并发 relay 重复开会话 / 重复 followup。 */
+	const memberSessionCreating = new Map();
+	const memberTurns = new Map();
+	/** 群 id → 在途 relay 的 AbortController（用户取消时联动中止本轮派发）。 */
+	const activeRelays = new Map();
 	let loaded = null;
 	let writing = Promise.resolve();
 	/** 已排队、还没开始的那次写（同一拍内的多次 save() 合并成一次整文件写）。 */
@@ -227,15 +246,19 @@ export function createRooms(deps) {
 	async function readLease() {
 		try {
 			const raw = JSON.parse(await readFile(leaseFile, 'utf8'));
-			return raw && typeof raw === 'object' ? raw : null;
-		} catch { return null; }
+			if (!raw || typeof raw.token !== 'string' || !raw.token) { throw new Error('租约内容无效'); }
+			return raw;
+		} catch (error) {
+			if (error?.code === 'ENOENT') { return null; }
+			throw new RoomError(`无法确认群记录租约：${String(error?.message ?? error)}`, 503);
+		}
 	}
 	async function claimLease() {
 		try {
 			await mkdir(dirname(leaseFile), { recursive: true });
 			await writeFile(leaseFile, JSON.stringify({ format: 1, token: leaseToken, pid: leasePid, at: now() }), 'utf8');
 		} catch (error) {
-			warn(`写群记录租约失败（照常读写，但无法阻止另一个 Host 覆盖）：${String(error?.message ?? error)}`);
+			throw new RoomError(`无法取得群记录写租约：${String(error?.message ?? error)}`, 503);
 		}
 	}
 	async function releaseLease() {
@@ -247,11 +270,107 @@ export function createRooms(deps) {
 	const correlationOf = (item) => Object.fromEntries(CORRELATION_KEYS
 		.filter(key => typeof item?.[key] === 'string' && item[key]).map(key => [key, item[key]]));
 
+	/**
+	 * ★ 2026-11-16：durable dispatch intent / outbox。
+	 * 在调用 DSH `followup()` 这个外部副作用**之前**先落盘「准备派发给谁、为何、基于哪条消息」。
+	 * 重启后 load() 把 prepared/sent 收口为 cut（结果未确认，不自动重放）；取消动作把在途 intent 标 cancelled。
+	 */
+	function dispatchIntentsOf(room) {
+		if (!Array.isArray(room.dispatchIntents)) { room.dispatchIntents = []; }
+		return room.dispatchIntents;
+	}
+	async function prepareDispatchIntent(room, input) {
+		const intent = {
+			id: String(uuid()), runId: String(input.runId ?? ''), callId: String(input.callId ?? ''),
+			attempt: Number(input.attempt ?? 1) || 1, roomId: room.id,
+			botId: String(input.botId ?? ''), sessionId: String(input.sessionId ?? ''),
+			messageId: String(input.messageId ?? ''), status: 'prepared',
+			reason: String(input.reason ?? '群轮次派发').slice(0, 300),
+			source: {
+				by: String(input.by ?? ''), note: String(input.note ?? '').slice(0, 300),
+				roomSeq: Number(input.roomSeq ?? room.seq ?? 0),
+				texts: Array.isArray(input.texts) ? input.texts.map(text => clipLine(String(text))).slice(-8) : [],
+				callbacks: Array.isArray(input.callbacks) ? input.callbacks.map(call => ({
+					id: String(call?.id ?? ''), event: String(call?.event ?? ''), note: String(call?.note ?? '').slice(0, 300),
+				})).slice(-8) : [],
+				...correlationOf(input),
+			},
+			createdAt: now(), updatedAt: now(),
+		};
+		const list = dispatchIntentsOf(room);
+		list.push(intent);
+		if (list.length > DISPATCH_INTENT_KEEP_MAX) { room.dispatchIntents = list.slice(-DISPATCH_INTENT_KEEP_MAX); }
+		await save();
+		return intent;
+	}
+	function settleDispatchIntent(room, id, patch) {
+		const intent = dispatchIntentsOf(room).find(item => item && item.id === id);
+		if (!intent) { return null; }
+		Object.assign(intent, patch, { updatedAt: now() });
+		if (!DISPATCH_INTENT_STATES.includes(intent.status)) { intent.status = 'cut'; }
+		saveSoon();
+		return intent;
+	}
+	function settleDispatchIntentByMessage(room, messageId, patch) {
+		const id = String(messageId ?? '');
+		const intent = dispatchIntentsOf(room).find(item => item && item.messageId === id
+			&& ['prepared', 'sent'].includes(item.status));
+		return intent ? settleDispatchIntent(room, intent.id, patch) : null;
+	}
+	function collectDanglingDispatchIntents(room, reason) {
+		let count = 0;
+		for (const intent of dispatchIntentsOf(room)) {
+			if (!intent || intent.status === 'prepared' || intent.status === 'sent') {
+				if (!intent) { continue; }
+				intent.status = 'cut';
+				intent.reason = String(reason).slice(0, 300);
+				intent.finishedAt = now();
+				intent.updatedAt = now();
+				count += 1;
+			}
+		}
+		return count;
+	}
+	function cancelDispatchIntents(room, callId = '') {
+		let count = 0;
+		for (const intent of dispatchIntentsOf(room)) {
+			if (!intent || !['prepared', 'sent'].includes(intent.status)) { continue; }
+			if (callId && intent.callId !== callId) { continue; }
+			intent.status = 'cancelled';
+			intent.reason = '用户取消本轮，派发意图不再自动回写';
+			intent.cancelReason = { kind: 'user', at: now(), source: 'roomsApi.cancel' };
+			intent.finishedAt = now();
+			intent.updatedAt = now();
+			count += 1;
+		}
+		return count;
+	}
+
+	/**
+	 * ★ 2026-11-16 P3：累加本轮成本指标。只记账、不判定；判定统一在 budgetStopOf。
+	 * 容错：盘上老轮次没有 metrics 时现建，避免重启恢复后写 undefined。
+	 */
+	function noteMetrics(round, patch) {
+		if (!round) { return; }
+		if (!round.metrics || typeof round.metrics !== 'object') {
+			round.metrics = { turns: 0, promptChars: 0, outputChars: 0, estimatedTokens: 0, toolCalls: 0, relays: 0 };
+		}
+		for (const [key, value] of Object.entries(patch)) {
+			round.metrics[key] = (Number(round.metrics[key]) || 0) + (Number(value) || 0);
+		}
+	}
+
 	/** 进度快照：Set 展平、数组复制；和 `progress()/active()` 的字段保持同口径。 */
 	function roundSnapshot(round) {
 		if (!round) { return null; }
 		return {
+			metrics: round.metrics && typeof round.metrics === 'object' ? { ...round.metrics } : null,
+			budgetStop: round.budgetStop && typeof round.budgetStop === 'object' ? { ...round.budgetStop } : null,
 			callId: String(round.callId ?? ''), roomId: String(round.roomId ?? ''),
+			runId: String(round.runId ?? `${round.roomId}:${round.callId}:1`),
+			attempt: Number(round.attempt ?? 1) || 1,
+			cancelReason: round.cancelReason && typeof round.cancelReason === 'object' ? { ...round.cancelReason } : null,
+			trigger: round.trigger && typeof round.trigger === 'object' ? { ...round.trigger } : null,
 			replies: Array.isArray(round.replies) ? round.replies : [],
 			passed: Array.isArray(round.passed) ? round.passed : [],
 			failed: Array.isArray(round.failed) ? round.failed : [],
@@ -267,7 +386,13 @@ export function createRooms(deps) {
 	function restoreRound(raw) {
 		const item = raw && typeof raw === 'object' ? raw : {};
 		return {
+			metrics: item.metrics && typeof item.metrics === 'object' ? { ...item.metrics } : null,
+			budgetStop: item.budgetStop && typeof item.budgetStop === 'object' ? { ...item.budgetStop } : null,
 			callId: String(item.callId ?? ''), roomId: String(item.roomId ?? ''),
+			runId: String(item.runId ?? `${item.roomId}:${item.callId}:1`),
+			attempt: Number(item.attempt ?? 1) || 1,
+			cancelReason: item.cancelReason && typeof item.cancelReason === 'object' ? { ...item.cancelReason } : null,
+			trigger: item.trigger && typeof item.trigger === 'object' ? { ...item.trigger } : null,
 			replies: Array.isArray(item.replies) ? item.replies : [],
 			passed: Array.isArray(item.passed) ? item.passed : [],
 			failed: Array.isArray(item.failed) ? item.failed : [],
@@ -327,7 +452,25 @@ export function createRooms(deps) {
 			try {
 				for (const room of Array.isArray(raw?.rooms) ? raw.rooms : []) {
 					if (room && typeof room.id === 'string' && Array.isArray(room.members)) {
-						rooms.set(room.id, { log: [], seq: 0, seen: {}, sessions: {}, ...room });
+						const stored = { log: [], seq: 0, seen: {}, sessions: {}, ...room };
+						rooms.set(room.id, stored);
+						if (Array.isArray(room.pendingMessages)) {
+							const pending = room.pendingMessages.map(item => typeof item === 'string'
+								? { text: item, logged: false }
+								: { text: String(item?.text ?? ''), logged: item?.logged === true }).filter(item => item.text);
+							inbox.set(room.id, pending);
+							stored.pendingMessages = pending;
+						}
+					}
+				}
+				// ★ 2026-11-16：强杀/重启后，prepared/sent 的派发结果没有 live Promise 能确认，
+				//   一律收口为 cut（结果未确认，不自动重放），让 diagnostics 能如实告诉用户。
+				for (const room of rooms.values()) {
+					if (!Array.isArray(room.dispatchIntents)) { room.dispatchIntents = []; dirty = true; }
+					if (collectDanglingDispatchIntents(room, '重启后派发结果未确认，未自动重放')) { dirty = true; }
+					if (room.dispatchIntents.length > DISPATCH_INTENT_KEEP_MAX) {
+						room.dispatchIntents = room.dispatchIntents.slice(-DISPATCH_INTENT_KEEP_MAX);
+						dirty = true;
 					}
 				}
 				for (const rawRound of Array.isArray(raw?.rounds) ? raw.rounds : []) {
@@ -356,7 +499,8 @@ export function createRooms(deps) {
 			} catch (error) {
 				warn(`解析群记录失败（按空处理）：${String(error?.message ?? error)}`);
 			}
-			if (dirty) { await save(); }
+			if (dirty && !frozen) { await save(); }
+			for (const room of rooms.values()) { scheduleDigest(room); }
 		})();
 		return loaded;
 	}
@@ -364,42 +508,81 @@ export function createRooms(deps) {
 	 * 写穿：同一拍内多次调用合并成一次；序列化发生在真正写的那一刻（拿到的是最新状态）。
 	 * 冻结（未来版本 / 被别的 Host 接管）时不写；每次真正落盘前先核对租约。返回这次写完成的 Promise。
 	 */
-	function save() {
-		if (frozen) {
-			if (!frozenWarned) { frozenWarned = true; warn(`群记录处于只读冻结（${frozenReason}），本次改动不落盘`); }
-			return writing;
+	let writeError = null;
+	async function assertWritable() {
+		if (!frozen) {
+			const owner = await readLease();
+			if (owner && owner.token !== leaseToken) {
+				freeze('superseded', `另一个实例（pid ${String(owner.pid ?? '?')}）已接管群记录 ⇒ 本实例转只读，改动不再落盘（重启这个 Host 即可恢复）`);
+			}
 		}
+		if (frozen) { throw new RoomError(`群记录处于只读冻结（${frozenReason}），本次操作已拒绝`, 409); }
+	}
+	function save() {
 		if (queuedWrite) { return queuedWrite; }
 		const job = writing.then(async () => {
 			queuedWrite = null;
-			if (frozen) { return; }
-			const owner = await readLease();
-			if (owner && owner.token && owner.token !== leaseToken) {
-				freeze('superseded', `另一个实例（pid ${String(owner.pid ?? '?')}）已接管群记录 ⇒ 本实例转只读，改动不再落盘（重启这个 Host 即可恢复）`);
-				return;
-			}
-			if (!owner) { await claimLease(); }
+			await assertWritable();
+			if (!await readLease()) { await claimLease(); }
 			pruneRounds();
 			const body = JSON.stringify({ version: ROOMS_FILE_VERSION, rooms: [...rooms.values()],
 				rounds: [...rounds.values()].map(roundSnapshot).filter(Boolean) }, null, '\t');
 			await mkdir(dirname(deps.file), { recursive: true });
 			const tmp = `${deps.file}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-			await writeFile(tmp, body, 'utf8');
-			try { await renameWithRetry(tmp, deps.file); } catch (error) { await rm(tmp, { force: true }); throw error; }
-		}).catch(error => { warn(`写群记录失败：${String(error?.message ?? error)}`); });
+			try {
+				await (deps.writeFile ?? writeFile)(tmp, body, 'utf8');
+				await assertWritable();
+				await renameWithRetry(tmp, deps.file);
+			} finally { await rm(tmp, { force: true }).catch(() => undefined); }
+		}).catch(error => {
+			throw error instanceof RoomError ? error : new RoomError(`群记录持久化未确认：${String(error?.message ?? error)}；请先检查记录，再重试保存`, 503);
+		});
 		queuedWrite = job;
-		writing = job;
+		writing = job.then(() => { writeError = null; }, error => {
+			writeError = error;
+			warn(String(error.message));
+			onChanged('error', { error: String(error.message) });
+		});
 		return job;
 	}
-	/** 等所有排队的写落盘（测试用来断言盘上状态）。 */
+	function saveSoon() { void save().catch(() => undefined); }
+	const digestTimers = new Map();
+	const setDigestTimer = deps.setDigestTimer ?? setTimeout;
+	const clearDigestTimer = deps.clearDigestTimer ?? clearTimeout;
+	let closed = false;
+	function cancelDigest(roomId) {
+		const timer = digestTimers.get(roomId);
+		if (timer) { clearDigestTimer(timer); digestTimers.delete(roomId); }
+	}
+	function scheduleDigest(room) {
+		cancelDigest(room.id);
+		if (closed || frozen || normalizeWakeMode(room.wakeMode) !== 'digest' || !room.digestPending) { return; }
+		const delay = Math.max(0, Number(room.digestStartedAt ?? now()) + (Number(room.wake?.intervalSeconds) || 60) * 1000 - now());
+		const timer = setDigestTimer(async () => {
+			digestTimers.delete(room.id);
+			if (closed || frozen || !rooms.has(room.id) || !room.digestPending || normalizeWakeMode(room.wakeMode) !== 'digest') { return; }
+			try {
+				await assertWritable();
+				room.digestDue = true;
+				await save();
+				const sent = await kickRoom(room, { id: '', digest: true, text: '【群消息汇总到期】' });
+				if (!sent) { api.reportError({ roomId: room.id, name: room.name, error: '汇总已到期，但群会话暂不可用，请打开群重试' }); }
+			} catch (error) { api.reportError({ roomId: room.id, name: room.name, error: String(error.message) }); }
+		}, delay);
+		timer.unref?.();
+		digestTimers.set(room.id, timer);
+	}
+	/** 等所有排队的写落盘，失败不会伪装成已保存。 */
 	async function flush() {
 		let last;
 		do { last = writing; await last; } while (last !== writing);
+		if (writeError) { throw writeError; }
 	}
 	/** 卸载：写完排队的改动，再交还租约（只删自己的；已被接管就不动）。 */
 	async function close() {
-		await flush();
-		await releaseLease();
+		closed = true;
+		for (const id of digestTimers.keys()) { cancelDigest(id); }
+		try { await flush(); } finally { await releaseLease(); }
 	}
 	/**
 	 * ★ 跨插件契约（schema=ROUND_SCHEMA）：一轮对外的全部字段。工具结果、`?progress=`、`?active=1` 共用，
@@ -458,6 +641,22 @@ export function createRooms(deps) {
 		const room = rooms.get(String(id ?? '').trim());
 		if (!room) { throw new RoomError(`没有这个群：${String(id ?? '')}`, 404); }
 		return room;
+	}
+	/** 把 DSH 的 tool signal 桥到群自己的 AbortController；取消动作可以按群、按 callId 找到它。 */
+	function trackRelay(roomId, callId, outerSignal) {
+		const controller = new AbortController();
+		const onAbort = () => controller.abort();
+		outerSignal?.addEventListener?.('abort', onAbort, { once: true });
+		if (outerSignal?.aborted) { controller.abort(); }
+		let set = activeRelays.get(roomId);
+		if (!set) { set = new Set(); activeRelays.set(roomId, set); }
+		const entry = { controller, callId };
+		set.add(entry);
+		return { signal: controller.signal, release() {
+			outerSignal?.removeEventListener?.('abort', onAbort);
+			set.delete(entry);
+			if (!set.size) { activeRelays.delete(roomId); }
+		} };
 	}
 	function appendLog(room, line) {
 		room.seq += 1;
@@ -556,7 +755,15 @@ export function createRooms(deps) {
 		return room.cwd || undefined;
 	}
 	/** 成员在这个群里的影子会话（没有就建；跑该 bot 的 preset，与群同一工作区）。 */
-	async function memberSession(room, botId, name) {
+	function memberSession(room, botId, name) {
+		const key = `${room.id}:${botId}`;
+		if (!memberSessionCreating.has(key)) {
+			const job = createMemberSession(room, botId, name).finally(() => memberSessionCreating.delete(key));
+			memberSessionCreating.set(key, job);
+		}
+		return memberSessionCreating.get(key);
+	}
+	async function createMemberSession(room, botId, name) {
 		const known = room.sessions[botId];
 		if (known) {
 			try {
@@ -571,7 +778,7 @@ export function createRooms(deps) {
 		await renameSession(sessionId, `${name} · ${room.name}`);
 		room.sessions[botId] = sessionId;
 		api.attachMember?.(agent, room.id, botId);
-		void save();
+		saveSoon();
 		return { sessionId, agent };
 	}
 	/**
@@ -673,7 +880,7 @@ export function createRooms(deps) {
 				clearTimeout(timer);
 				request.signal?.removeEventListener?.('abort', aborted);
 				if (round && text) { pushEvent(round, outcome === 'allowed-once' ? 'working' : 'failed', { name, text }); }
-				void save();
+				saveSoon();
 				resolve(outcome);
 				return true;
 			};
@@ -684,7 +891,7 @@ export function createRooms(deps) {
 			timer = setTimeout(() => { settle('rejected', `${name} 的「${detail || tool}」等了 ${Math.round(approvalMaxMs / 60_000)} 分钟没人批，已拒绝`); }, approvalMaxMs);
 			timer.unref?.();
 			if (round) { pushEvent(round, 'approval', { name, approvalId: id, code, text: `${name} 要运行「${detail || tool}」，等你批准` }); }
-			void save();
+			saveSoon();
 		});
 	}
 
@@ -693,24 +900,45 @@ export function createRooms(deps) {
 		const type = ROOM_STATUS_KINDS.includes(kind) ? kind : 'failed';
 		const event = { kind: type, at: now(), ...data };
 		(round.events ??= []).push(event);
-		void save(); // ★ 每条状态节点即时落盘，重启后不丢执行过程（DS Bot appendRoom + rt.save() 同口径）
+		saveSoon(); // ★ 每条状态节点即时落盘，重启后不丢执行过程（DS Bot appendRoom + rt.save() 同口径）
 		return event;
 	}
 
-	/** 一个成员说一次。返回它说的话（沉默 / 失败 ⇒ null）。 */
+	/** 一个成员说一次（受成员级串行闸保护）。返回它说的话（沉默 / 失败 ⇒ null）。 */
 	async function turn(room, slot, round, members, place, signal) {
+		const key = `${room.id}:${slot.id}`;
+		const previous = (memberTurns.get(key) ?? Promise.resolve()).catch(() => undefined);
+		let release;
+		const done = new Promise(resolve => { release = resolve; });
+		const tail = previous.then(() => done);
+		memberTurns.set(key, tail);
+		await previous;
+		try { return await turnNow(room, slot, round, members, place, signal); }
+		finally {
+			release();
+			if (memberTurns.get(key) === tail) { memberTurns.delete(key); }
+		}
+	}
+	async function turnNow(room, slot, round, members, place, signal) {
 		const member = members.find(m => m.id === slot.id) ?? { id: slot.id, name: slot.id };
 		round.speaking.add(member.name);
-		void save();
+		saveSoon();
 		const started = now();
 		let workTimer;
+		let intent = null;
 		try {
 			if (signal?.aborted) { return null; }
 			const { sessionId, agent } = await memberSession(room, member.id, member.name);
 			const nameOf = (id) => members.find(m => m.id === id)?.name ?? id;
 			const goal = goalPromptBlock(room.goal, member.id, member.id === room.admin, nameOf);
-			const text = roomPrompt({ room, member, members, log: room.log, seen: room.seen[member.id], place, calledBy: slot.by, note: slot.note, workDir: workDirOf(room) })
+			// ★ 2026-11-16 P3：逐群上下文行数（缺省回落 ROOM_LIMITS）；长群不再每轮整份复制历史。
+			const budget = roomBudgetOf(room, deps.roomBudget);
+			const text = roomPrompt({ room, member, members, log: room.log, seen: room.seen[member.id], place,
+				calledBy: slot.by, note: slot.note, workDir: workDirOf(room),
+				contextLines: budget.contextLines, newLines: budget.newLines })
 				+ (goal ? `\n\n${goal}` : '');
+			// turns 在 pump 派发时即时记账（预算闸要在同一轮补位里看得见），这里只记真实 prompt 成本。
+			noteMetrics(round, { promptChars: text.length, estimatedTokens: estimateTokens(text) });
 			room.seen[member.id] = room.seq;
 			// 管理员 @ 它 ⇒ 它在当前阶段的任务「进行中」
 			if (room.goal && slot.byId === room.admin && markTask(room.goal, member.id, ['pending'], 'working')) { touchGoal(room); }
@@ -720,17 +948,41 @@ export function createRooms(deps) {
 			const grace = Math.max(1, Math.min(workGraceMs, timeoutMs));
 			workTimer = setTimeout(() => pushEvent(round, 'working', { name: member.name, text: `${member.name} 开始做了，还在工作…` }), grace);
 			workTimer.unref?.();
+			// ★ 2026-11-16：先落盘派发意图，再调用 followup 这个外部副作用。
+			intent = await prepareDispatchIntent(room, {
+				runId: round.runId, callId: round.callId, attempt: round.attempt,
+				botId: member.id, sessionId, messageId,
+				by: slot.by, note: slot.note, roomSeq: room.seq,
+				texts: round.trigger?.texts, callbacks: round.trigger?.callbacks,
+				...correlationOf(round.trigger ?? {}),
+				reason: `准备把群轮次派发给 ${member.name}`,
+			});
+			if (signal?.aborted) {
+				settleDispatchIntent(room, intent.id, { status: 'cancelled', reason: '派发前已被取消', finishedAt: now() });
+				return null;
+			}
 			const message = { id: messageId, role: 'user', content: [{ type: 'text', text }], source: { kind: ROOM_TURN_KIND, room: room.id } };
 			if (typeof agent.followup === 'function') { agent.followup(message); } else if (typeof agent.steer === 'function') { agent.steer(message); } else {
 				throw new RoomError('成员会话不支持 followup（dsh 版本不匹配？）');
 			}
+			settleDispatchIntent(room, intent.id, { status: 'sent', reason: '已调用 followup/steer，等待成员回合', sentAt: now() });
 			const final = await done;
+			noteMetrics(round, {
+				outputChars: String(final?.text ?? '').length,
+				estimatedTokens: estimateTokens(final?.text ?? ''),
+				toolCalls: Number(final?.toolCalls) || 0,
+			});
+			if (signal?.aborted || final?.cancelled) {
+				settleDispatchIntent(room, intent.id, { status: 'cancelled', reason: '用户取消或成员回合被中止', finishedAt: now() });
+				return null;
+			}
 			if (final && typeof final === 'object' && final.timeout === 'working') {
-				// 放行到后台：不算失败，这一轮照常往下走
+				// 放行到后台：不算失败，这一轮照常往下走；结果由 noteTurnEnd 收口 intent
 				slot.worked = true;
 				slot.released = true;
 				round.working = [...(round.working ?? []), member.name];
 				pushEvent(round, 'working', { name: member.name, text: `${member.name} 还在干活，这一轮先不等它；干完后会把结果发到群里并接着往下走` });
+				settleDispatchIntent(room, intent.id, { status: 'sent', reason: '成员转入后台，等待结果回写', background: true });
 				return null;
 			}
 			if (final && typeof final === 'object' && final.timeout) {
@@ -739,16 +991,21 @@ export function createRooms(deps) {
 					: `${Math.round(timeoutMs / 1000)} 秒没有任何进展`;
 				round.failed.push({ botId: member.id, name: member.name, reason });
 				pushEvent(round, 'missed', { name: member.name, text: `${member.name} 没能按时回答（${reason}；它干完后的回复会记进群聊记录）` });
+				settleDispatchIntent(room, intent.id, { status: 'cut', reason, finishedAt: now() });
 				return null;
 			}
 			slot.worked = final?.worked === true;
 			// ★ 2026-11-07：这一回合调了 group_ask ⇒ 它在等用户，不是「没有补充」，派活的人也不该被叫回来看结果
 			slot.asked = (room.asks ?? []).some(item => item.botId === member.id && item.at >= started);
 			const said = stripOwnName(final?.text ?? '', member.name);
-			if (isPass(said) && slot.asked) { return null; }
+			if (isPass(said) && slot.asked) {
+				settleDispatchIntent(room, intent.id, { status: 'settled', reason: '成员等待用户选择卡', finishedAt: now() });
+				return null;
+			}
 			if (isPass(said)) {
 				round.passed.push(member.name);
 				pushEvent(round, 'passed', { name: member.name, text: `${member.name} 没有补充` });
+				settleDispatchIntent(room, intent.id, { status: 'settled', reason: '成员本轮无补充', finishedAt: now() });
 				return null;
 			}
 
@@ -758,17 +1015,22 @@ export function createRooms(deps) {
 			if (!slot.asked && room.goal && slot.byId === room.admin && member.id !== room.admin && markTask(room.goal, member.id, ['pending', 'working'], 'reported')) { touchGoal(room); }
 			round.replies.push({ botId: member.id, name: member.name, text: line.text, at: line.at, ms: line.at - started,
 				...(final?.interrupted ? { interrupted: true } : {}) });
-			void save();
+			settleDispatchIntent(room, intent.id, { status: 'settled', reason: '成员回合结果已回写', finishedAt: now(), reply: clipLine(said).slice(0, 300) });
+			saveSoon();
 			return said;
 		} catch (error) {
 			const reason = String(error?.message ?? error).slice(0, 300);
+			if (intent) { settleDispatchIntent(room, intent.id, { status: 'cut', reason, finishedAt: now() }); }
 			round.failed.push({ botId: member.id, name: member.name, reason });
 			pushEvent(round, 'failed', { name: member.name, text: `${member.name} 没能回答：${reason}` });
 			return null;
 		} finally {
 			if (workTimer) { clearTimeout(workTimer); }
+			if (intent && !['settled', 'cancelled', 'cut'].includes(intent.status)) {
+				settleDispatchIntent(room, intent.id, { status: 'cut', reason: '成员回合结果未确认', finishedAt: now() });
+			}
 			round.speaking.delete(member.name);
-			void save();
+			saveSoon();
 		}
 	}
 
@@ -777,7 +1039,7 @@ export function createRooms(deps) {
 		if (!room.goal) { return; }
 		room.goal.updatedAt = now();
 		room.goal.revision = (room.goal.revision ?? 0) + 1;
-		void save();
+		saveSoon();
 	}
 	/**
 	 * ★ 2026-11-06：系统要群「新开一轮」叫回某位成员（后台成员干完了 / 目标检查）。
@@ -849,10 +1111,16 @@ export function createRooms(deps) {
 	 * 叫这个名字的群（去首尾空白、不分大小写；已经有多个同名的取最近改过的那个）。空名 ⇒ undefined。
 	 * ★ 2026-11-06：建群时用它把「同名再建」变成「在已有的群里编辑」，改名时用它拒绝撞名。
 	 */
-	function sameNameRoom(name) {
+	function placeKey(place) {
+		if (place.workspaceId) { return `workspace:${place.workspaceId}`; }
+		let path = String(place.cwd ?? deps.fallbackCwd ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
+		if (process.platform === 'win32') { path = path.toLowerCase(); }
+		return `cwd:${path}`;
+	}
+	function sameNameRoom(name, place) {
 		const key = String(name ?? '').trim().toLowerCase();
 		if (!key) { return undefined; }
-		return [...rooms.values()].filter(room => String(room.name ?? '').trim().toLowerCase() === key)
+		return [...rooms.values()].filter(room => String(room.name ?? '').trim().toLowerCase() === key && placeKey(room) === placeKey(place))
 			.sort((a, b) => (b.updatedAt ?? b.createdAt ?? 0) - (a.updatedAt ?? a.createdAt ?? 0))[0];
 	}
 	/**
@@ -886,6 +1154,76 @@ export function createRooms(deps) {
 		close,
 		/** 存储状态诊断：是否可写、为什么只读。 */
 		storage: () => ({ writable: !frozen, reason: frozenReason || null, leaseFile }),
+		/**
+		 * ★ 2026-11-16：只读发布诊断。`?diagnostics=1` 与内部排障共用一份投影；
+		 *   schema=1 独立于 ROUND_SCHEMA，不污染 progress / active / tool result 契约。
+		 */
+		diagnostics() {
+			const countBy = (states, list, key) => Object.fromEntries(states.map(state => [state,
+				list.filter(item => item?.[key] === state).length]));
+			const roomViews = [...rooms.values()].map(room => ({
+				id: room.id, name: room.name,
+				pendingMessages: (inbox.get(room.id) ?? []).length,
+				callbacks: (callbacks.get(room.id) ?? []).length,
+				approvals: approvalsOf(room.id).length, asks: asksOf(room.id).length, busy: busyOf(room.id),
+				digest: { pending: Number(room.digestPending ?? 0), startedAt: Number(room.digestStartedAt ?? 0) || null,
+					due: !!room.digestDue, timer: digestTimers.has(room.id) },
+				goal: room.goal ? { status: String(room.goal.status ?? ''), revision: Number(room.goal.revision ?? 0),
+					current: Number(room.goal.current ?? 0), stages: Array.isArray(room.goal.stages) ? room.goal.stages.length : 0 } : null,
+				lastRunId: room.lastRunId ?? null, lastCallId: room.lastCallId ?? null,
+				lastCancelReason: room.lastCancelReason ?? null,
+				dispatchIntents: countBy(DISPATCH_INTENT_STATES, room.dispatchIntents ?? [], 'status'),
+			}));
+			const runs = [...rounds.values()].map(round => {
+				const room = rooms.get(round.roomId);
+				const approvals = approvalsOf(round.roomId).length;
+				const asks = asksOf(round.roomId).length;
+				const busy = busyOf(round.roomId);
+				const cancelling = [...(activeRelays.get(round.roomId) ?? [])]
+					.some(item => item.controller.signal.aborted && !round.done);
+				const state = runStateOf(round, { approvals, asks, busy, goal: room?.goal, cancelling });
+				const status = roundStatusOf(round);
+				return {
+					callId: String(round.callId ?? ''), roomId: String(round.roomId ?? ''),
+					runId: String(round.runId ?? `${round.roomId}:${round.callId}:1`),
+					attempt: Number(round.attempt ?? 1) || 1,
+					state, stateLabel: RUN_STATE_LABELS[state], status, statusLabel: ROUND_STATUS_LABELS[status],
+					phase: String(round.phase ?? ''), done: !!round.done, interrupted: !!round.interrupted,
+					cancelReason: round.cancelReason ?? null, trigger: round.trigger ?? null,
+					startedAt: Number(round.startedAt ?? 0), finishedAt: Number(round.finishedAt ?? 0),
+					speaking: round.speaking instanceof Set ? [...round.speaking] : Array.isArray(round.speaking) ? [...round.speaking] : [],
+					background: Array.isArray(round.working) ? [...round.working] : [], error: String(round.error ?? ''),
+					// ★ 2026-11-16 P3：只读诊断面带上成本指标与停止原因；不进 roundOutput ⇒ ROUND_SCHEMA=1 契约不变。
+					metrics: round.metrics && typeof round.metrics === 'object' ? { ...round.metrics } : null,
+					budgetStop: round.budgetStop && typeof round.budgetStop === 'object' ? { ...round.budgetStop } : null,
+					budget: roomBudgetOf(room ?? {}, {}),
+					approvals, asks, busy,
+				};
+			});
+			const tasks = [...rooms.values()].flatMap(room => taskStatesOf(room));
+			const intents = [...rooms.values()].flatMap(room => (Array.isArray(room.dispatchIntents) ? room.dispatchIntents : [])
+				.filter(item => item && typeof item === 'object')
+				.map(item => ({ ...item, stateLabel: DISPATCH_INTENT_LABELS[item.status] ?? '' })));
+			return {
+				schema: ROOM_DIAGNOSTICS_SCHEMA, roundSchema: ROUND_SCHEMA, fileVersion: ROOMS_FILE_VERSION,
+				generatedAt: now(), storage: api.storage(), frozen, frozenReason: frozenReason || null,
+				writeError: writeError ? String(writeError.message ?? writeError) : null,
+				counts: {
+					rooms: roomViews.length, runs: runs.length, tasks: tasks.length, intents: intents.length,
+					pendingMessages: [...inbox.values()].reduce((n, list) => n + (Array.isArray(list) ? list.length : 0), 0),
+					callbacks: [...callbacks.values()].reduce((n, list) => n + (Array.isArray(list) ? list.length : 0), 0),
+					approvals: approvals.size, asks: [...rooms.values()].reduce((n, room) => n + (room.asks?.length ?? 0), 0),
+					activeRelays: [...activeRelays.values()].reduce((n, set) => n + set.size, 0),
+					digestTimers: digestTimers.size,
+					runStates: countBy(RUN_STATES, runs, 'state'),
+					taskStates: countBy(TASK_STATES, tasks, 'lifecycle'),
+					intentStates: countBy(DISPATCH_INTENT_STATES, intents, 'status'),
+				},
+				states: { run: [...RUN_STATES], task: [...TASK_STATES], dispatchIntent: [...DISPATCH_INTENT_STATES] },
+				labels: { run: RUN_STATE_LABELS, task: TASK_STATE_LABELS, dispatchIntent: DISPATCH_INTENT_LABELS },
+				rooms: roomViews, runs, tasks, intents,
+			};
+		},
 		/** installRooms 设置：给群会话的 agent 挂 group_relay。 */
 		attach: deps.attach,
 		/** 群会话 / 成员影子会话的判定（同步；install 时已 load）。 */
@@ -956,9 +1294,9 @@ export function createRooms(deps) {
 			const norm = normalizeRoomInput(input, roster);
 			// ★ 2026-11-06（真机：两个「番茄钟 H5 开发团队」并排）：给了群名且已有同名群 ⇒ 在那个群里编辑（加 / 减成员、
 			//   公告、模式），不再另建。没给群名（自动起名）的照常新建。
-			const same = sameNameRoom(input?.name);
-			if (same) { return reuseRoom(same, input, norm, map); }
 			const place = await placeOf(options);
+			const same = sameNameRoom(input?.name, place);
+			if (same) { return reuseRoom(same, input, norm, map); }
 			const sessionId = await openSession(place);
 			const agent = await resolveAgent(sessionId);
 			const at = now();
@@ -969,6 +1307,8 @@ export function createRooms(deps) {
 				...(origin ? { originTriggerId: origin } : {}),
 				...(place.workspaceId ? { workspaceId: place.workspaceId } : { cwd: place.cwd }),
 				log: [], seq: 0, seen: {}, sessions: {},
+				// ★ 2026-11-16：发布收口的内部账本（roomView 不暴露，HTTP 只读诊断才投影）。
+				dispatchIntents: [], runSeq: 0, lastRunId: null, lastCallId: null,
 				// ★ 2026-11-10：目标槽位显式初始化。⚠ 不能直接塞 status:'active' 的 goal ——
 				//   `applyGoal('start')` 会因「已经有一个进行中的目标」拒绝管理员的第一次设定，
 				//   且 driveGoal 会在没人说话时空转催管理员。null = 尚未设定，由 group_goal 接管。
@@ -1013,9 +1353,26 @@ export function createRooms(deps) {
 			for (const ledger of [inbox, callbacks, postMeta]) {
 				if (ledger.has(oldId)) { ledger.set(newId, ledger.get(oldId)); ledger.delete(oldId); }
 			}
-			for (const round of rounds.values()) { if (round.roomId === oldId) { round.roomId = newId; } }
+			for (const round of rounds.values()) {
+				if (round.roomId === oldId) {
+					round.roomId = newId;
+					if (typeof round.runId === 'string' && round.runId.startsWith(`${oldId}:`)) {
+						round.runId = `${newId}:${round.runId.slice(oldId.length + 1)}`;
+					}
+				}
+			}
 			for (const item of approvals.values()) { if (item.roomId === oldId) { item.roomId = newId; } }
 			for (const ask of room.asks ?? []) { if (ask.roomId === oldId) { ask.roomId = newId; } }
+			let intentCount = 0;
+			for (const intent of dispatchIntentsOf(room)) {
+				if (intent.roomId === oldId) { intent.roomId = newId; intentCount += 1; }
+				if (typeof intent.runId === 'string' && intent.runId.startsWith(`${oldId}:`)) {
+					intent.runId = `${newId}:${intent.runId.slice(oldId.length + 1)}`;
+				}
+			}
+			if (typeof room.lastRunId === 'string' && room.lastRunId.startsWith(`${oldId}:`)) {
+				room.lastRunId = `${newId}:${room.lastRunId.slice(oldId.length + 1)}`;
+			}
 			// ★ 2026-11-10：补齐 0.1.88 漏掉的两个账本。late 在 createRooms 闭包里可直接改；
 			//   routed 在 installRooms 闭包里 ⇒ 通过 onRebindRoom 钩子迁移。
 			const lateCount = migrateLateRoomId(late, oldId, newId);
@@ -1033,15 +1390,15 @@ export function createRooms(deps) {
 			const { map } = await names();
 			const view = roomView(room, map);
 			onChanged('rebound', view);
-			warn(`[rebindRoom] rebound roomId=${newId} oldRoomId=${oldId} ledgers=inbox,callbacks,postMeta,rounds,approvals,asks,late,routed,selected late=${lateCount} routed=${routedCount}`);
-			return { ok: true, rebound: true, roomId: newId, oldRoomId: oldId, name: room.name, migrated: { late: lateCount, routed: routedCount } };
+			warn(`[rebindRoom] rebound roomId=${newId} oldRoomId=${oldId} ledgers=inbox,callbacks,postMeta,rounds,approvals,asks,dispatchIntents,late,routed,selected late=${lateCount} routed=${routedCount} intents=${intentCount}`);
+			return { ok: true, rebound: true, roomId: newId, oldRoomId: oldId, name: room.name, migrated: { late: lateCount, routed: routedCount, dispatchIntents: intentCount } };
 			},
 			/** 改群名 / 公告 / 模式 / 管理员 / 成员（只改给了的字段）。 */
 		async update(id, patch = {}) {
 			await load();
 			const room = need(id);
 			if (patch.name !== undefined) {
-				const clash = sameNameRoom(patch.name);
+				const clash = sameNameRoom(patch.name, room);
 				if (clash && clash.id !== room.id) { throw new RoomError(`已经有一个叫「${clash.name}」的群了，换个名字。`, 409); }
 			}
 			const { roster, map } = await names();
@@ -1062,7 +1419,10 @@ export function createRooms(deps) {
 			if (next.members.length > cap) { throw new RoomError(`这个群的成员上限是 ${cap} 个（现在 ${next.members.length} 个）。`); }
 			Object.assign(room, next, { updatedAt: now() });
 			Object.assign(room, wakePatch);
-			if (wakePatch.wakeMode && wakePatch.wakeMode !== 'digest') { room.digestPending = 0; }
+			if (wakePatch.wakeMode && wakePatch.wakeMode !== 'digest') {
+				room.digestPending = 0; delete room.digestStartedAt; delete room.digestDue;
+			}
+			scheduleDigest(room);
 			if (removed.length && room.asks?.length) { room.asks = room.asks.filter(ask => !removed.includes(ask.botId)); }
 			for (const mid of removed) {
 				const sid = room.sessions[mid];
@@ -1088,6 +1448,7 @@ export function createRooms(deps) {
 		async remove(id) {
 			await load();
 			const room = need(id);
+			cancelDigest(room.id);
 			rooms.delete(room.id);
 			inbox.delete(room.id);
 			for (const [callId, round] of rounds) { if (round.roomId === room.id && round.done) { rounds.delete(callId); } }
@@ -1109,6 +1470,8 @@ export function createRooms(deps) {
 			room.seq = 0;
 			room.seen = {};
 			room.digestPending = 0;
+			delete room.digestStartedAt; delete room.digestDue;
+			cancelDigest(room.id);
 			for (const [callId, round] of rounds) { if (round.roomId === room.id && round.done) { rounds.delete(callId); } }
 			room.updatedAt = now();
 			await save();
@@ -1148,9 +1511,14 @@ export function createRooms(deps) {
 			},
 			/** 群会话里人的新消息（`session/event` 的 user/message，source.kind==='user'）。 */
 		noteUserMessage(sessionId, text) {
-			if (!rooms.has(sessionId)) { return; }
+			if (!rooms.has(sessionId) || frozen || closed) { return; }
 			const body = String(text ?? '').trim();
-			if (body) { inbox.set(sessionId, [...(inbox.get(sessionId) ?? []), body]); }
+			if (body) {
+				const pending = [...(inbox.get(sessionId) ?? []), { text: body, logged: false }];
+				inbox.set(sessionId, pending);
+				rooms.get(sessionId).pendingMessages = pending;
+				saveSoon();
+			}
 		},
 		/**
 		 * ★ 2026-11-05（对齐 DS Bot `post_to_group`）：把别的会话 `@群 / 引用会话` 的指令**真正写进群会话**。
@@ -1171,9 +1539,14 @@ export function createRooms(deps) {
 				//   等下一轮 relay 自动消费并触发分工；同时如实报出可见错误，不静默 503。
 				warn(`[postToRoom] FAILED roomId=${room.id} reason=${String(error?.message ?? error)} ⇒ 暂存群收件箱`);
 				api.noteUserMessage(room.id, body);
+				const deferred = (inbox.get(room.id) ?? []).at(-1);
+				if (deferred && typeof deferred === 'object') {
+					deferred.logged = true;
+					room.pendingMessages = inbox.get(room.id);
+				}
 				appendLog(room, { who: '用户', text: clipLine(body) });
 				room.updatedAt = now();
-				void save();
+				await save();
 				api.reportError?.({ kind: 'room-session-unavailable', roomId: room.id, name: room.name,
 					error: `群「${room.name}」的会话暂时打不开，消息已存进群收件箱，稍后打开群即可继续。` });
 				return { ok: true, deferred: true, roomId: room.id, name: room.name, text: body };
@@ -1281,7 +1654,8 @@ export function createRooms(deps) {
 			for (const entry of list) {
 				if (findOurSplices(events, new Set([entry.messageId])).length) {
 					const final = finalAssistantText(events);
-					entry.resolve(final ? { ...final, worked: turnWorked(events) } : final);
+					// ★ 2026-11-16 P3：保守工具计数随回合结果带给 relay（预算指标，不改 finalAssistantText 的形状）。
+					entry.resolve(final ? { ...final, worked: turnWorked(events), toolCalls: countToolCalls(events) } : final);
 				} else { left.push(entry); }
 			}
 			waiters.set(session.id, left);
@@ -1292,6 +1666,10 @@ export function createRooms(deps) {
 				const room = rooms.get(item.roomId);
 				const said = stripOwnName(finalAssistantText(events)?.text ?? '', item.name);
 				if (!room) { continue; }
+				settleDispatchIntentByMessage(room, item.messageId, {
+					status: 'settled', reason: '后台成员结果已回写群聊记录',
+					finishedAt: now(), reply: clipLine(said).slice(0, 300),
+				});
 				if (said && !isPass(said)) {
 					appendLog(room, { who: item.name, botId: item.botId, text: clipLine(said), late: true });
 					room.seen[item.botId] = room.seq;
@@ -1300,7 +1678,7 @@ export function createRooms(deps) {
 					//   点到的人 / 派活的人由 kickRoom 合并进同一个回叫队列，只发一条消息、走一轮。
 					void kickRoom(room, { id: '', show: true, text: `【${item.name} 在后台干完了】` });
 					if (room.goal && item.askedBy === room.admin && markTask(room.goal, item.botId, ['pending', 'working'], 'reported')) { touchGoal(room); }
-					void save();
+					saveSoon();
 					// ★ 2026-11-06（真机：「@番茄钟 H5 开发团队 开发H5 番茄钟」管理员 Coder 干了 5 分钟、迟到回复里 @Designer @Tester
 					//   派活，两人从没被叫到，需求停在半路）：对齐 DS Bot lateRoomReply「派活的人**和它点到的人**接着答」——
 					//   迟到回复里 @ 到的成员新开一轮去做；他们做完再叫回这位成员看结果（relay 里按 `from` 成批）。
@@ -1329,9 +1707,14 @@ export function createRooms(deps) {
 		async relay(roomId, callId, signal) {
 			await load();
 			const room = need(roomId);
-			const texts = inbox.get(room.id) ?? [];
+			const pending = (inbox.get(room.id) ?? []).map(item => typeof item === 'string'
+				? { text: item, logged: false } : item);
+			const texts = pending.map(item => String(item?.text ?? '')).filter(Boolean);
 			inbox.delete(room.id);
-			for (const text of texts) { appendLog(room, { who: '用户', text: clipLine(text) }); }
+			room.pendingMessages = [];
+			for (const item of pending) {
+				if (!item?.logged && item?.text) { appendLog(room, { who: '用户', text: clipLine(String(item.text)) }); }
+			}
 			// ★ 2026-11-06：系统要「新开一轮」叫回的人（后台成员干完了 / 目标检查），与人的消息一起处理
 			const calls = [...(callbacks.get(room.id) ?? [])];
 			callbacks.delete(room.id);
@@ -1347,9 +1730,26 @@ export function createRooms(deps) {
 						note: '用户没有点选择卡，而是直接在群里回复了（见上面的新消息）。把它当作对你刚才问题的回答：能继续就接着做，在同一步就开始调用工具；答得不够明确时，缺的部分按你推荐的走并说明。' });
 				}
 			}
-			const round = { callId, roomId: room.id, replies: [], passed: [], failed: [], events: [], error: '',
+			const runMeta = postMeta.get(room.id) ?? {};
+			const attempt = (Number(room.runSeq) || 0) + 1;
+			room.runSeq = attempt;
+			const runId = `${room.id}:${callId}:${attempt}`;
+			room.lastRunId = runId;
+			room.lastCallId = String(callId ?? '');
+			const trigger = {
+				texts: texts.map(text => clipLine(String(text))).slice(-8),
+				callbacks: calls.map(call => ({ id: String(call?.id ?? ''), event: String(call?.event ?? ''), note: String(call?.note ?? '').slice(0, 300) })).slice(-8),
+				roomSeq: Number(room.seq ?? 0),
+				...correlationOf({ originTriggerId: room.originTriggerId }),
+				...correlationOf(runMeta),
+			};
+			const round = { callId, roomId: room.id, runId, attempt, cancelReason: null, trigger,
+				replies: [], passed: [], failed: [], events: [], error: '',
+				// ★ 2026-11-16 P3：本轮成本指标与预算停止原因（只读诊断 + 落盘恢复，不进 ROUND_SCHEMA 对外契约）。
+				metrics: { turns: 0, promptChars: 0, outputChars: 0, estimatedTokens: 0, toolCalls: 0, relays: 0 },
+				budgetStop: null,
 				speaking: new Set(), startedAt: now(), finishedAt: 0, done: false, phase: 'running', interrupted: false, persisted: false,
-				...correlationOf({ originTriggerId: room.originTriggerId }), ...(postMeta.get(room.id) ?? {}) };
+				...correlationOf({ originTriggerId: room.originTriggerId }), ...runMeta };
 			postMeta.delete(room.id);
 			const previous = [...rounds.values()].find(item => item.roomId === room.id && !item.done);
 			if (previous) { pushEvent(previous, 'paused', { text: '新的群消息到达，上一轮暂停' }); }
@@ -1360,20 +1760,25 @@ export function createRooms(deps) {
 			rounds.set(String(callId ?? ''), round);
 			if (previous) { pushEvent(round, 'resumed', { text: '接上新一轮群消息' }); }
 			pushEvent(round, 'working', { text: '正在把消息交给群成员…' });
-			void save();
+			saveSoon();
 			try {
 				if (texts.length || calls.length) {
 					// ★ 2026-11-10 汇总派发：每条人消息累加 digestPending；攒够 wake.count 由 openingCall 放行，
 					//   放行后清零。计数随房间持久化 ⇒ Host 重启也不会丢攒批进度。
 					if (texts.length && normalizeWakeMode(room.wakeMode) === 'digest') {
-						room.digestPending = (Number(room.digestPending) || 0) + 1;
+						if (!room.digestPending) { room.digestStartedAt = now(); }
+						room.digestPending = (Number(room.digestPending) || 0) + texts.length;
+						scheduleDigest(room);
 					}
-					const open = texts.length && !superseded.routed ? openingCall(room, mention) : { ids: [], ordered: false };
+					const open = (texts.length && !superseded.routed) || calls.some(call => call.digest)
+						? openingCall(room, mention) : { ids: [], ordered: false };
 					// ★ 2026-11-10 日志补点：一眼区分「进群但只叫了 admin」与「压根没进群」。
 					warn(`[relay] roomId=${room.id} callId=${callId} openingCall ids=[${open.ids.join(',')}] mode=${room.mode ?? '-'} admin=${room.admin ?? '-'} notice=${room.notice ? '有' : '无'} texts=${texts.length} calls=${calls.length}`);
 					if (normalizeWakeMode(room.wakeMode) === 'digest' && open.ids.length) {
 						room.digestPending = 0;
-						void save();
+						delete room.digestStartedAt; delete room.digestDue;
+						cancelDigest(room.id);
+						await save();
 					}
 					const counts = new Map();
 					const pending = open.ids.map((id, index) => ({ id, by: '用户', index }));
@@ -1404,6 +1809,16 @@ export function createRooms(deps) {
 					let botCalls = 0;
 					let idleRelays = 0;
 					const nameOf = id => map.get(id) ?? id;
+					// ★ 2026-11-14 P3：成本闸 —— 默认最多同时唤醒 4 位成员；逐群 maxConcurrentTurns 可收紧。
+					// 老房间没有字段 ⇒ 回落默认值；deps 注入供测试/部署压测，上限不超过成员上限。
+					const rawConcurrent = Number(room.maxConcurrentTurns ?? deps.maxConcurrentTurns ?? ROOM_LIMITS.maxConcurrentTurnsDefault);
+					const maxConcurrentTurns = Number.isFinite(rawConcurrent)
+						? Math.min(ROOM_LIMITS.membersMax, Math.max(1, Math.round(rawConcurrent)))
+						: ROOM_LIMITS.maxConcurrentTurnsDefault;
+					// ★ 2026-11-16 P3：本轮生效预算（房间 > 部署注入 > 默认）。空转闸保持默认时仍走下面原有的
+					//   ROOM_IDLE_RELAY_LIMIT 文案，只有逐群收紧过才交给预算闸先停，避免同一件事报两条状态。
+					const budget = roomBudgetOf(room, deps.roomBudget);
+					const configuredIdle = Number(budget.idleRelayLimit) !== ROOM_BUDGET_DEFAULTS.idleRelayLimit;
 					const settleBatch = (slot) => {
 						const batch = slot.batch;
 						if (!batch) { return; }
@@ -1424,17 +1839,43 @@ export function createRooms(deps) {
 					let paused = false;
 					await new Promise(resolveRound => {
 						const running = new Set();
+						/** 正在跑的成员声明了哪些写范围（改同一处文件的成员不同时跑）。 */
+						const runningScopes = new Map();
+						// ★ 2026-11-16 P3：每次补位（含同一次 pump 的连续派发）都先判成本 / 空转预算。
+						//   命中就记可解释状态、撤掉未派发队列，不强杀在跑的成员，也不自动重放。
+						const haltForBudget = () => {
+							if (paused) { return true; }
+							const stop = budgetStopOf(round, budget, now() - round.startedAt, configuredIdle ? idleRelays : 0);
+							if (!stop) { return false; }
+							paused = true;
+							round.budgetStop = stop;
+							const held = pending.splice(0, pending.length);
+							pushEvent(round, 'paused', { reason: stop.reason,
+								text: `${stop.label}（${stop.reason}=${stop.limit}），本轮先停下；${held.length} 位成员本轮未派发，你发一条消息就继续` });
+							return true;
+						};
 						const pump = () => {
-							while (pending.length && (!open.ordered || running.size === 0) && !signal?.aborted) {
+							haltForBudget();
+							while (!paused && pending.length && (!open.ordered || running.size === 0) && running.size < maxConcurrentTurns && !signal?.aborted) {
+								if (haltForBudget()) { break; }
 								const slot = pending.shift();
+								// ★ 2026-11-16 P3：房间级 + 当前阶段任务级写范围；和在跑成员重叠就顺延（不丢、不抢同一份文件）。
+								const scopes = [...normalizeWriteScopes(room.writeScopes), ...taskWriteScopes(room.goal, slot.id)];
+								if (scopes.length && [...runningScopes.values()].some(existing => writeScopesOverlap(existing, scopes))) {
+									pending.push(slot);
+									break;
+								}
+								noteMetrics(round, { turns: 1 });
 								const place = open.ordered && slot.by === '用户'
 									? { ordered: true, index: slot.index, total: open.ids.length }
 									: { ordered: false, with: open.ordered ? [] : open.ids.filter(id => id !== slot.id).map(nameOf) };
 								const job = turn(room, slot, round, members, place, signal).then(said => {
 									running.delete(job);
+									runningScopes.delete(job);
 									slot.posted = !!said;
 									if (slot.worked && slot.id !== room.admin) { round.memberWorked = true; }
 									const callees = said && !paused ? callsFrom(room, slot.id, said, members, counts) : [];
+									if (callees.length) { noteMetrics(round, { relays: callees.length }); }
 									if (callees.length && slot.by !== '用户' && !slot.worked) { idleRelays += 1; } else if (slot.worked) { idleRelays = 0; }
 									if (callees.length && idleRelays >= ROOM_IDLE_RELAY_LIMIT) {
 										paused = true;
@@ -1456,8 +1897,9 @@ export function createRooms(deps) {
 									pump();
 								});
 								running.add(job);
+								if (scopes.length) { runningScopes.set(job, scopes); }
 							}
-							if (!running.size && (!pending.length || signal?.aborted)) { resolveRound(); }
+							if (!running.size && (!pending.length || signal?.aborted || !!round.budgetStop)) { resolveRound(); }
 						};
 						pump();
 					});
@@ -1475,7 +1917,7 @@ export function createRooms(deps) {
 				round.finishedAt = now();
 				round.phase = round.interrupted ? 'cut' : 'done';
 				if (!round.interrupted) {
-					setTimeout(() => { if (rounds.get(String(callId ?? '')) === round) { rounds.delete(String(callId ?? '')); void save(); } }, PROGRESS_KEEP_MS).unref?.();
+					setTimeout(() => { if (rounds.get(String(callId ?? '')) === round) { rounds.delete(String(callId ?? '')); saveSoon(); } }, PROGRESS_KEEP_MS).unref?.();
 				}
 				await save();
 				if (round.adminName) { driveGoal(room, round); }
@@ -1584,6 +2026,61 @@ export function createRooms(deps) {
 			};
 		},
 		/**
+		 * 停止这个群的运行：中止在途 relay、调用官方 Agent.cancel({kind:'user'}) 停成员活动回合，
+		 * 并清理系统回叫、审批、等待用户的选择卡与后台迟到项。**用户待派发消息保留**。
+		 * @param callId 只取消指定轮次；空 = 这个群在途的全部轮次。
+		 */
+		async cancel(id, callId = '') {
+			await load();
+			const room = need(id);
+			const only = String(callId ?? '').trim();
+			const active = [...(activeRelays.get(room.id) ?? [])].filter(item => !only || item.callId === only);
+			const cancelReason = { kind: 'user', source: 'roomsApi.cancel', at: now(), ...(only ? { callId: only } : {}) };
+			let relays = 0;
+			for (const item of active) {
+				const round = rounds.get(item.callId);
+				if (round && round.roomId === room.id && !round.done) { round.cancelReason = cancelReason; }
+				if (!item.controller.signal.aborted) { item.controller.abort(); relays += 1; }
+			}
+			const intents = cancelDispatchIntents(room, only);
+			room.lastCancelReason = cancelReason;
+			let members = 0;
+			let background = 0;
+			let waitersCancelled = 0;
+			for (const sid of new Set(Object.values(room.sessions ?? {}))) {
+				try {
+					const agent = await resolveAgent(sid);
+					if (typeof agent?.cancel === 'function') { agent.cancel({ kind: 'user' }); members += 1; }
+				} catch (error) { warn(`取消群成员回合失败：${sid}：${String(error?.message ?? error)}`); }
+				const pending = waiters.get(sid) ?? [];
+				const left = [];
+				for (const entry of pending) {
+					if (entry.meta?.roomId === room.id) { entry.resolve({ cancelled: true }); waitersCancelled += 1; }
+					else { left.push(entry); }
+				}
+				if (left.length) { waiters.set(sid, left); } else { waiters.delete(sid); }
+				const overdue = late.get(sid) ?? [];
+				background += overdue.filter(item => item.roomId === room.id).length;
+				const still = overdue.filter(item => item.roomId !== room.id);
+				if (still.length) { late.set(sid, still); } else { late.delete(sid); }
+			}
+			let approvalsCancelled = 0;
+			for (const item of [...approvals.values()]) {
+				if (item.roomId === room.id && item.settle('cancelled')) { approvalsCancelled += 1; }
+			}
+			const callbacksCancelled = (callbacks.get(room.id) ?? []).length;
+			callbacks.delete(room.id);
+			const asksCancelled = (room.asks ?? []).length;
+			room.asks = [];
+			cancelDigest(room.id);
+			delete room.digestDue;
+			if (room.digestPending) { room.digestStartedAt = now(); scheduleDigest(room); }
+			room.updatedAt = now();
+			await save();
+			return { ok: true, roomId: room.id, cancelReason, cancelled: { relays, members, waiters: waitersCancelled,
+				background, callbacks: callbacksCancelled, approvals: approvalsCancelled, asks: asksCancelled, intents } };
+		},
+		/**
 		 * ★ 2026-11-07（用户要求「@群 时也同时建一张工单，群聊做完把结果回写到工单」）：群现在在做什么，
 		 *   给 SuperAgent 判断它的工单做完没有（vssaros-superagent `app/group-tickets.ts`）。
 		 *   `idle` = 没有进行中的一轮、没有成员在后台干活、没有排着的消息 / 回叫、没有等批准的；
@@ -1638,6 +2135,40 @@ export function createRooms(deps) {
 				},
 			};
 		},
+	};
+	for (const name of ['create', 'update', 'setFlags', 'remove', 'clear', 'invite', 'confirmJoin', 'rebindRoom', 'postToRoom', 'answerAsk']) {
+		const action = api[name];
+		api[name] = async (...args) => {
+			await load();
+			await assertWritable();
+			return action.apply(api, args);
+		};
+	}
+	const create = api.create;
+	let creating = Promise.resolve();
+	api.create = (...args) => {
+		const job = creating.then(() => create(...args));
+		creating = job.catch(() => undefined);
+		return job;
+	};
+	const relay = api.relay;
+	const relaying = new Map();
+	api.relay = async (roomId, callId, signal) => {
+		await load();
+		const key = String(callId ?? '');
+		if (!key) { throw new RoomError('群派发需要 callId', 400); }
+		const prior = rounds.get(key);
+		if (prior && prior.roomId !== roomId) { throw new RoomError('callId 已属于另一个群', 409); }
+		if (relaying.has(key)) { return relaying.get(key); }
+		if (prior) {
+			return { room: { id: roomId, name: need(roomId).name }, ...roundOutput(prior), ...(prior.error ? { error: prior.error } : {}) };
+		}
+		await assertWritable();
+		if (relaying.has(key)) { return relaying.get(key); }
+		const tracked = trackRelay(roomId, key, signal);
+		const job = relay(roomId, callId, tracked.signal);
+		relaying.set(key, job);
+		try { return await job; } finally { tracked.release(); relaying.delete(key); }
 	};
 	return api;
 }
@@ -1754,7 +2285,9 @@ export async function roomsApi(rooms, { method, query, body }) {
 		if (method === 'GET') {
 			const active = query?.get?.('active');
 			const progressId = query?.get?.('progress');
+			const diagnostics = query?.get?.('diagnostics');
 			const id = query?.get?.('id');
+			if (diagnostics) { await rooms.load(); return { status: 200, body: { ok: true, diagnostics: rooms.diagnostics() } }; }
 			if (active) { await rooms.load(); return { status: 200, body: { ok: true, active: rooms.active() } }; }
 			if (progressId) { await rooms.load(); return { status: 200, body: { ok: true, progress: rooms.progress(progressId) } }; }
 			if (id) { return { status: 200, body: { ok: true, room: await rooms.get(id) } }; }
@@ -1768,7 +2301,8 @@ export async function roomsApi(rooms, { method, query, body }) {
 			const originTriggerId = typeof body.originTriggerId === 'string' && body.originTriggerId ? body.originTriggerId
 				: typeof body.triggerId === 'string' && body.triggerId ? body.triggerId : undefined;
 			const room = await rooms.create(pick(['members', 'name', 'notice', 'admin', 'mode',
-				'wakeMode', 'wake', 'avatar', 'requireApproval', 'memberMax', 'pending']), {
+				'wakeMode', 'wake', 'avatar', 'requireApproval', 'memberMax', 'pending', 'maxConcurrentTurns',
+				...ROOM_BUDGET_PICK]), {
 				createdBy: typeof body.createdBy === 'string' && body.createdBy ? body.createdBy : 'user',
 				workspaceId: typeof body.workspaceId === 'string' && body.workspaceId ? body.workspaceId : undefined,
 				cwd: typeof body.cwd === 'string' && body.cwd ? body.cwd : undefined,
@@ -1778,9 +2312,12 @@ export async function roomsApi(rooms, { method, query, body }) {
 		}
 		if (action === 'update') {
 			return { status: 200, body: { ok: true, room: await rooms.update(id, pick(['name', 'notice', 'admin', 'mode', 'members',
-				'wakeMode', 'wake', 'avatar', 'requireApproval', 'memberMax', 'pending'])) } };
+				'wakeMode', 'wake', 'avatar', 'requireApproval', 'memberMax', 'pending', 'maxConcurrentTurns',
+				...ROOM_BUDGET_PICK])) } };
 		}
 		if (action === 'flags') { return { status: 200, body: { ok: true, room: await rooms.setFlags(id, pick(['pinned', 'hidden'])) } }; }
+		// ★ 2026-11-14 P0：停止本轮与后台成员；可带 callId 只取消一轮，id 必须是群 id
+		if (action === 'cancel') { return { status: 200, body: await rooms.cancel(id, String(body?.callId ?? '')) }; }
 		// ★ 2026-11-10 群设置弹层：解散（复用归档）/ 清空记录 / 邀请与确认加入
 		if (action === 'delete' || action === 'dissolve') { return { status: 200, body: await rooms.remove(id) }; }
 		if (action === 'clear') { return { status: 200, body: await rooms.clear(id) }; }
@@ -1810,7 +2347,7 @@ export async function roomsApi(rooms, { method, query, body }) {
 			if (!id) { return { status: 400, body: { ok: false, error: 'rebind 需要 id' } }; }
 			return { status: 200, body: await rooms.rebindRoom(id) };
 		}
-		return { status: 400, body: { ok: false, error: `未知 action：${action || '(空)'}（支持 create/update/flags/delete/dissolve/clear/invite/confirm-join/approve/ask-answer/select/rebind）` } };
+		return { status: 400, body: { ok: false, error: `未知 action：${action || '(空)'}（支持 create/update/flags/cancel/delete/dissolve/clear/invite/confirm-join/approve/ask-answer/select/rebind）` } };
 	} catch (error) {
 		return { status: error instanceof RoomError ? error.status : 500, body: { ok: false, error: String(error?.message ?? error) } };
 	}

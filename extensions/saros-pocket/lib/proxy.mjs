@@ -18,8 +18,20 @@ import { createServer } from 'node:http';
 import { request as httpRequest } from 'node:http';
 import { createGzip, createBrotliCompress, constants as zlibConstants } from 'node:zlib';
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 
 const DEFAULT_UPSTREAM = { host: '127.0.0.1', port: 8000 };
+
+/**
+ * DSH Web 上游会话。
+ * VsSaros Desktop 窗口里绘制的就是 dsh host 的 Web 应用（默认 :9282），它用
+ * `authUrl` 的 `?token=` 换一个约 3 分钟过期的 `dsh-auth-*` cookie。pocket 作为
+ * 反向代理要在每次转发（HTTP 与 WebSocket）时把该 cookie 注入到上游请求里，
+ * 浏览器侧无需持有 DSH 凭据。
+ */
+let dshSessionCookie = '';
 
 /**
  * 非安全上下文（http://<LAN-IP>:端口）里浏览器缺两个 API，由代理注入 polyfill
@@ -438,6 +450,9 @@ function loopbackAuthority(headers, upstream) {
     }
   }
   out['sec-fetch-site'] = 'same-origin';
+  if (dshSessionCookie) {
+    out.cookie = out.cookie ? `${out.cookie}; ${dshSessionCookie}` : dshSessionCookie;
+  }
   return out;
 }
 
@@ -614,6 +629,38 @@ export function createPocketProxy({
   appPrefix = '',
   onUpstreamError = null,
 } = {}) {
+  // ── DSH Web 会话续期 ────────────────────────────────────────────────
+  // lease 落盘在 $DSH_HOME/host.json；只接受 origin 端口与当前上游一致的租约，
+  // 避免把别的 VsSaros 实例的 token 注进来。cookie 约 3 分钟过期 ⇒ 每 2 分钟续。
+  const dshLeasePaths = [
+    process.env.SAROS_POCKET_DSH_LEASE,
+    join(homedir(), '.vssaros-dev', 'dsh-home', 'host.json'),
+    join(homedir(), '.dsh', 'host.json'),
+  ].filter(Boolean);
+  const refreshDshSession = async () => {
+    for (const p of dshLeasePaths) {
+      let lease;
+      try { lease = JSON.parse(readFileSync(p, 'utf8')); } catch { continue; }
+      if (!lease?.authUrl) continue;
+      try {
+        if (new URL(lease.origin).port !== String(upstream.port)) continue;
+      } catch { /* origin 缺失时仍尝试 */ }
+      try {
+        const res = await fetch(lease.authUrl, { redirect: 'manual', signal: AbortSignal.timeout(8000) });
+        const list = res.headers.getSetCookie ? res.headers.getSetCookie() : [res.headers.get('set-cookie') || ''];
+        const pair = list.filter(Boolean).map((s) => s.split(';')[0]).join('; ');
+        if (pair) {
+          dshSessionCookie = pair;
+          log?.(`saros-pocket: DSH Web session ready (:${upstream.port})`);
+          return;
+        }
+      } catch { /* 换下一个租约 */ }
+    }
+  };
+  void refreshDshSession();
+  const dshSessionTimer = setInterval(refreshDshSession, 120_000);
+  dshSessionTimer.unref?.();
+
   /**
    * 登录页渲染（注入品牌 + 记住原路径）。四个调用点都走这里，避免每处都传一遍。
    * 名字沿用 loginPageHtml，调用点只需多传一个 req。
@@ -947,6 +994,10 @@ export function createPocketProxy({
     clientSockets.add(sock);
     sock.on('close', () => clientSockets.delete(sock));
     sock.on('error', () => {});
+  });
+  server.on('close', () => {
+    clearInterval(dshSessionTimer);
+    dshSessionCookie = '';
   });
 
   return new Promise((resolve, reject) => {

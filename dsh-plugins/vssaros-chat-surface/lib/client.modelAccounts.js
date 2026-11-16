@@ -400,14 +400,18 @@ window.__ModuleLoader__.load({
 			const desc = (children, color) => h("div", { style: { fontSize: 12, color: color || C.fg3, lineHeight: 1.6 } }, children);
 			const busy = !!s.busy;
 			let dotColor = C.grey, dotLabel = "未登录", actions = [], body = [];
+			// ★ 2026-11-11：**只认「浏览器插件在不在」**。旧 status 里的 `browserHeadless` 是启动时的
+			//   无头配置，不是"此刻没有可见窗口"——登录时插件会自动切到有头（右栏浏览器 / 专属实例），
+			//   据此禁用「重新登录」会让会话过期后永远登不进去 ✗。真失败由 Host 把错误放进 `status.error`
+			//   ⇒ 上面的 error 分支如实显示 ✓（老版桥插件残留这个字段也必须忽略）。
 			const browserNote = !st.browserAvailable
 				? "LightAI 登录要用浏览器插件 @vssaros/dsh-browser —— 请先在「内置插件」里启用它。"
-				: (st.browserHeadless ? "浏览器插件当前是无头模式（没有可见窗口），无法登录 —— 先关掉它的无头模式。" : "");
+				: "";
 			if (state === "pending") {
 				dotColor = C.amber; dotLabel = "登录中";
 				actions = [btn(s.busy === "cancel" ? "取消中…" : "取消", () => la.act("cancel"), null, busy)];
 				const left = st.signInDeadline ? fmtCountdown(st.signInDeadline - Date.now()) : "";
-				body.push(desc("已用浏览器插件打开 LightAI 登录页，请在那个浏览器窗口里完成登录，完成后自动读取会话…" + (left ? "（最长等待 " + left + "）" : "")));
+				body.push(desc("已弹出独立的浏览器窗口打开 LightAI 登录页，请在那个窗口里完成登录，完成后自动读取会话…" + (left ? "（最长等待 " + left + "）" : "")));
 			} else if (state === "in") {
 				dotColor = st.stale ? C.amber : C.green; dotLabel = st.stale ? "已登录·连接异常" : "已登录";
 				actions = [
@@ -456,7 +460,7 @@ window.__ModuleLoader__.load({
 				actions = [btn(s.busy === "signin" ? "正在打开…" : (state === "expired" ? "重新登录" : (state === "error" ? "重试" : "登录")),
 					() => la.act("signin"), "primary", busy || !!browserNote)];
 				if (retry) { body.push(desc(st.error || "LightAI 登录已失效", C.red)); }
-				body.push(desc("腾讯光子 LightAI 的图片 / 视频 / 3D / 音频生成服务，供生图画布与工作流节点调用；不出现在对话模型选择器。点「登录」会用浏览器插件打开 LightAI 登录页，登录后自动读取会话（浏览器里已登录过时直接复用）。"));
+				body.push(desc("腾讯光子 LightAI 的图片 / 视频 / 3D / 音频生成服务，供生图画布与工作流节点调用；不出现在对话模型选择器。点「登录」会弹出独立的浏览器窗口打开 LightAI 登录页（不占用右侧栏「浏览器」），登录后自动读取会话并关闭该窗口（窗口里已登录过时直接复用）。"));
 				if (browserNote) { body.push(desc(browserNote, C.amber)); }
 			}
 			return h("li", {

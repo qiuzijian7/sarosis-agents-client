@@ -93,6 +93,22 @@ export function finalAssistantContent(events) {
 	return found;
 }
 
+/**
+ * ★ 2026-11-16 P3：一个回合里工具调用的**保守计数**（预算指标，不是审计日志）。
+ * 与 `turnWorked` 同源判据：`tool/call` 事件 + assistant 消息里的 `tool-call` part。
+ * 不推断工具成败、不统计工具结果，避免把预算做成一个会误判的复杂状态机。
+ */
+export function countToolCalls(events) {
+	let count = 0;
+	for (const event of Array.isArray(events) ? events : []) {
+		if (event?.type === 'tool/call') { count += 1; continue; }
+		if (event?.type !== 'assistant/message') { continue; }
+		const content = event.data?.message?.content;
+		if (Array.isArray(content)) { count += content.filter(part => part?.type === 'tool-call').length; }
+	}
+	return count;
+}
+
 /** 回传消息的正文（`[Reply from …]` 头协议，与触发消息的头同族）。 */
 export function replyText({ responderName, responderSessionId, final }) {
 	const body = final

@@ -287,7 +287,13 @@ check('主页：真实数据 —— 近 7 天改动（mtime 聚合）+ index.md 
 		if (!B || B.weekNew !== 0) { throw new Error('B（30 天前的文件）不该算近 7 天改动'); }
 
 		const page = home.renderHomePage({ vaultName: 'V', kbs: l });
-		if (!page.includes('近 7 天改动') || !page.includes('7 天 +')) { throw new Error('页面缺近 7 天口径'); }
+		// ★ 2026-11-11 卡片改版（方案 E）：「7 天 +N」文案换成图标右上圆点，
+		//   语义由「统计条 + 圆点 title」承载 ⇒ 判据跟着改，别写死旧文案。
+		if (!page.includes('近 7 天改动') || !page.includes('cb-dot') || !page.includes('近 7 天有更新')) {
+			throw new Error('页面缺近 7 天口径（统计条 / 卡片圆点）');
+		}
+		const dots = (page.match(/class="cb-dot"/g) || []).length;
+		if (dots !== 1) { throw new Error('只有 A 有近 7 天改动，圆点应为 1 个，实际 ' + dots); }
 		if (!page.includes('class="ex"')) { throw new Error('页面缺摘要渲染'); }
 		return 'weekNew / excerpt ✓';
 	} finally {

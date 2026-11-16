@@ -57,6 +57,17 @@ it('assembles every role from fixed sections around the team sections, whatever 
   expect(composePrompt(config, 'worker')).not.toContain(mainAdmissionPolicy)
 })
 
+it('keeps truthful phase updates, early P4 readiness and concise authorized evidence reuse in fixed worker rules', () => {
+  const prompt = composePrompt({ ...defaultPrompts(), scope: '', communication: '', delivery: '', skills: {} }, 'worker')
+  expect(prompt).toContain('update each phase before starting the next')
+  expect(prompt).toContain('Failed reads remain incomplete')
+  expect(prompt).toContain('elapsed time never proves completion')
+  expect(prompt).toContain('P4 writes/delivery, not authorized local analysis')
+  expect(prompt).toContain('stored hints do not transfer CL authority')
+  expect(prompt).toContain('Never scan sibling ticket directories')
+  expect(prompt).toContain('reuse already-read context')
+})
+
 it('reads a prompt file whatever its line ends and blank lines, and names a missing or empty one', () => {
   // VsSaros patch (Windows): a relative path cannot cross drives, so the directory sits in the package when the
   // temporary directory is on another drive.

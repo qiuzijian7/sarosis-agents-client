@@ -4,15 +4,17 @@
  *--------------------------------------------------------------------------------------------*/
 
 /**
- * 「单版本 bundled + userData/dsh-home 永不覆盖」守卫（2026-11-09）。
+ * 「单版本 bundled + 用户数据永不覆盖 / 插件层随版本同步」守卫（2026-11-09 / 11-12 修订）。
  *
- * 产品口径（对标开源 dsh-desktop）：dsh 版本由 `dsh-compat.json` 的 `bundled` 在构建期 pin 死，
- * 版本升级 = 应用发版；**应用升级不替换 profile / plugin / workspace / session / model 配置**。
- * 因此 `_ensureProfile` 只负责「profile 不存在时首次创建」，存在就必须原样返回。
+ * 产品口径：dsh 版本由 `dsh-compat.json` 的 `bundled` 在构建期 pin 死，版本升级 = 应用发版；
+ * **应用升级不替换 workspace / session / model 配置等用户数据**。
  *
- * 历史上这里守的是 marker / `planProfileRuntimeSync` / `profileRebuildPending` / 按版本重建 profile，
- * 那套机制随 managed 多版本一起下线（真机两次 F5 崩溃：11-07 老 profile 跑新 runtime、
- * 11-09 重建时 Windows symlink EPERM）。
+ * ★★ 2026-11-12 修订（真机 `2.2.26237` / dsh `0.2.2-rc.2` 的「控制桥不可用」）：
+ *   11-09 曾把口径收紧成「profile 已存在就原样返回、一个字节都不改」，但 bundled 从
+ *   `0.2.1-rc.2` 升级后，dev 的旧 profile 里 `cordis.patch.yml` / `package.json` 仍指向
+ *   `@deepseek-ai/dsh-web-app@0.2.1-rc.2` ⇒ 被判 incompatible 而禁用 ⇒ `webStartup` 缺失
+ *   ⇒ Host `code 1`。打包版新机器首启用同版本种子不会踩，只有复用旧 profile 会踩。
+ *   ⇒ 现在：**用户数据永不覆盖，但随包插件层（种子顶层条目）必须随 bundled 版本同步**。
  *
  * 运行：node src/vs/sessions/contrib/dshHarness/test/common/run-all-common-tests.mjs dshProfileRuntimeSync
  */
@@ -22,7 +24,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-import { copyProfileSeed, profileSeedDirFor } from '../../electron-main/dshProfileRuntimeSync.js';
+import {
+	copyProfileSeed, planProfileRuntimeSync, PROFILE_RUNTIME_MARKER_REL, profileSeedDirFor,
+	readProfileRuntimeVersion, syncProfilePluginLayer, writeProfileRuntimeMarker,
+} from '../../electron-main/dshProfileRuntimeSync.js';
 
 const SUPERVISOR = 'src/vs/sessions/contrib/dshHarness/electron-main/dshHostSupervisor.ts';
 const MANAGER = 'src/vs/sessions/contrib/dshHarness/electron-main/dshRuntimeManager.ts';
@@ -43,7 +48,7 @@ function code(rel: string): string {
 		.join('\n');
 }
 
-suite('dshHarness / 单版本 bundled + profile 永不覆盖', () => {
+suite('dshHarness / 单版本 bundled + 插件层版本同步', () => {
 
 	// ── ① 首启种子复制 ────────────────────────────────────────────────────────
 	test('1) ★ 种子复制必须解引用 symlink（Windows 非管理员下裸 fsp.cp 会 EPERM ⇒ 首启崩溃）', async () => {
@@ -84,29 +89,87 @@ suite('dshHarness / 单版本 bundled + profile 永不覆盖', () => {
 		}
 	});
 
-	// ── ② profile 永不覆盖 ───────────────────────────────────────────────────
-	test('3) ★ _ensureProfile：profile 已存在必须**立刻 return**，不许写/比/重建任何东西', () => {
+	// ── ② 用户数据永不覆盖 / 插件层随版本同步 ────────────────────────────────
+	test('3) ★ planProfileRuntimeSync 的五种判定（含「无种子绝不重建」「无 marker 只 stamp」）', () => {
+		const seed = '/seed/0.2.2-rc.2';
+		assert.deepStrictEqual(planProfileRuntimeSync({ profileExists: false, dshVersion: '0.2.2-rc.2', seedDir: seed }),
+			{ kind: 'init', seedDir: seed }, '首次创建走种子');
+		assert.deepStrictEqual(planProfileRuntimeSync({ profileExists: false, dshVersion: '0.2.2-rc.2' }),
+			{ kind: 'init' }, '没种子就退回模板初始化');
+		assert.deepStrictEqual(planProfileRuntimeSync({ profileExists: true, dshVersion: '0.2.2-rc.2' }),
+			{ kind: 'stamp' }, '★ 老 profile 无 marker：只登记，绝不动文件');
+		assert.deepStrictEqual(planProfileRuntimeSync({ profileExists: true, dshVersion: '0.2.2-rc.2', markerVersion: '0.2.2-rc.2' }),
+			{ kind: 'keep' }, '同版本直接返回');
+		assert.deepStrictEqual(planProfileRuntimeSync({ profileExists: true, dshVersion: '0.2.2-rc.2', markerVersion: '0.2.1-rc.2', seedDir: seed }),
+			{ kind: 'rebuild', seedDir: seed, from: '0.2.1-rc.2' }, '版本变了且有种子 ⇒ 同步插件层');
+		assert.deepStrictEqual(planProfileRuntimeSync({ profileExists: true, dshVersion: '0.2.2-rc.2', markerVersion: '0.2.1-rc.2' }),
+			{ kind: 'warn-no-seed', from: '0.2.1-rc.2' }, '★ 没同版本种子时绝不重建（清空 profile ✗）');
+	});
+
+	test('4) ★ marker 读写：老 profile / 坏标记都当成「没登记」', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-marker-'));
+		try {
+			assert.strictEqual(readProfileRuntimeVersion(root), undefined, '没有 marker ⇒ undefined');
+			await writeProfileRuntimeMarker(root, '0.2.2-rc.2');
+			assert.strictEqual(readProfileRuntimeVersion(root), '0.2.2-rc.2');
+			const f = path.join(root, PROFILE_RUNTIME_MARKER_REL);
+			assert.ok(fs.existsSync(f), 'marker 落在 .vssaros/ 下');
+			fs.writeFileSync(f, '{ broken json');
+			assert.strictEqual(readProfileRuntimeVersion(root), undefined, '坏标记不许抛，也不许误判成需要重建');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('5) ★ syncProfilePluginLayer：插件层换成种子版本，用户数据原样保留', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-layer-'));
+		try {
+			const seed = path.join(root, 'seed'), profile = path.join(root, 'profile'), backup = path.join(root, 'backup');
+			fs.mkdirSync(path.join(seed, 'node_modules'), { recursive: true });
+			fs.writeFileSync(path.join(seed, 'package.json'), '{"deps":"NEW"}');
+			fs.writeFileSync(path.join(seed, 'node_modules', 'new.txt'), 'NEW-LAYER');
+			fs.mkdirSync(profile, { recursive: true });
+			fs.writeFileSync(path.join(profile, 'package.json'), '{"deps":"OLD"}');
+			fs.writeFileSync(path.join(profile, 'my-session.json'), 'USER-DATA');
+			fs.mkdirSync(path.join(profile, 'user-custom'), { recursive: true });
+			fs.writeFileSync(path.join(profile, 'user-custom', 'a.txt'), 'KEEP-ME');
+
+			const r = await syncProfilePluginLayer(seed, profile, backup);
+			assert.deepStrictEqual(r.restoredUserData.sort(), ['my-session.json', 'user-custom']);
+			assert.strictEqual(fs.readFileSync(path.join(profile, 'package.json'), 'utf8'), '{"deps":"NEW"}', '插件层已换');
+			assert.strictEqual(fs.readFileSync(path.join(profile, 'node_modules', 'new.txt'), 'utf8'), 'NEW-LAYER');
+			assert.strictEqual(fs.readFileSync(path.join(profile, 'my-session.json'), 'utf8'), 'USER-DATA', '★ 用户数据不许丢');
+			assert.strictEqual(fs.readFileSync(path.join(profile, 'user-custom', 'a.txt'), 'utf8'), 'KEEP-ME');
+			assert.strictEqual(fs.readFileSync(path.join(backup, 'package.json'), 'utf8'), '{"deps":"OLD"}', '旧目录完整备份');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('6) ★ _ensureProfile 必须走 plan（不许退回「存在即 return」）', () => {
 		const src = code(SUPERVISOR);
 		const at = src.indexOf('private async _ensureProfile(');
 		assert.ok(at > 0, '找不到 _ensureProfile');
 		const next = src.indexOf('private async ', at + 30);
-		const body = src.slice(at, next > 0 ? next : at + 5000);
-		assert.match(body, /if \(existsSync\(manifest\)\) \{\n\s*return;/, '存在即返回（userData/dsh-home 永不覆盖）');
-		assert.match(body, /copyProfileSeed\(/, '不存在时才从种子复制');
-		for (const banned of ['readState(', 'clearProfileRebuildPending(', 'writeProfileRuntimeMarker(', 'planProfileRuntimeSync(', 'rebuild', 'marker']) {
-			assert.ok(!body.includes(banned), `_ensureProfile 不该再出现 ${banned}（多版本重建已下线）`);
-		}
+		const body = src.slice(at, next > 0 ? next : at + 7000);
+		assert.match(body, /planProfileRuntimeSync\(\{/, '必须按版本判定，而不是看目录在不在');
+		assert.match(body, /readProfileRuntimeVersion\(dir\)/, '必须读 marker');
+		assert.match(body, /syncProfilePluginLayer\(/, '版本变化必须同步插件层');
+		assert.match(body, /writeProfileRuntimeMarker\(/, 'init / stamp / rebuild 都要写 marker');
+		assert.match(body, /plan\.kind === 'warn-no-seed'/, '没种子必须只警告');
+		assert.ok(!/if \(existsSync\(manifest\)\) \{\s*\n\s*return;/.test(body),
+			'★ 旧「存在即 return」不许回来（那正是 11-12 控制桥不可用的根因）');
 	});
 
-	test('4) supervisor 不再引用 state.json 指针语义', () => {
+	test('7) supervisor 仍不引用 state.json 指针语义（多版本机制没有复活）', () => {
 		const src = code(SUPERVISOR);
-		for (const banned of ['readState(', 'clearProfileRebuildPending(', 'profileRebuildPending', 'runtime-version.json']) {
+		for (const banned of ['readState(', 'clearProfileRebuildPending(', 'profileRebuildPending', 'selectRuntimeVersion']) {
 			assert.ok(!src.includes(banned), `supervisor 不该再有 ${banned}`);
 		}
 	});
 
 	// ── ③ runtime 解析只认 bundled ───────────────────────────────────────────
-	test('5) ★ manager 不再读写 state.json；resolveDsh 只走 setting / bundled', () => {
+	test('8) ★ manager 不再读写 state.json；resolveDsh 只走 setting / bundled', () => {
 		const src = code(MANAGER);
 		for (const banned of ['STATE_FILE', 'readState(', 'restoreState(', 'setCurrent(', 'listInstalled(', 'install(version', "source: 'global'", '_globalBin', 'distTags', '_selectBundled']) {
 			assert.ok(!src.includes(banned), `manager 不该再有 ${banned}（managed 多版本已下线）`);
@@ -118,7 +181,7 @@ suite('dshHarness / 单版本 bundled + profile 永不覆盖', () => {
 		assert.match(src, /get bundledVersion\(\)/, 'bundledVersion 是唯一「当前版本」');
 	});
 
-	test('6) ★ 构建期硬门：dsh-compat.json 的 bundled + 单版本目录 + 种子同版本', () => {
+	test('9) ★ 构建期硬门：dsh-compat.json 的 bundled + 单版本目录 + 种子同版本', () => {
 		// 单版本模型下，构建期校验是**唯一的版本真源保障**：运行期只认 pin，
 		// 包里多带一个版本 / 种子错版本都只能在出包前拦住。
 		const src = code('build/saros/check-dsh-release.mjs');
@@ -129,7 +192,25 @@ suite('dshHarness / 单版本 bundled + profile 永不覆盖', () => {
 		assert.match(src, /blocked/, 'bundled 不许同时被拉黑');
 	});
 
-	test('7) channel 不再有升级闸门 / 切版本 IPC；bundledRoot 必须在 dev 下向上回退', () => {
+	test('10) ★ 同步失败必须删半成品 + 还原备份（绝不留一个空 profile）', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-layer-fail-'));
+		try {
+			const seed = path.join(root, 'seed'), profile = path.join(root, 'profile'), backup = path.join(root, 'backup');
+			// 种子目录必须**存在**（否则 readdir 在 rename 之前就抛，测不到回滚分支 ⇒ 假绿）
+			fs.mkdirSync(seed, { recursive: true });
+			fs.writeFileSync(path.join(seed, 'package.json'), '{}');
+			fs.mkdirSync(profile, { recursive: true });
+			fs.writeFileSync(path.join(profile, 'keep.txt'), 'OLD-PROFILE');
+			await assert.rejects(() => syncProfilePluginLayer(seed, profile, backup,
+				async () => { throw new Error('copy failed'); }));
+			assert.strictEqual(fs.readFileSync(path.join(profile, 'keep.txt'), 'utf8'), 'OLD-PROFILE', '★ 备份必须还原');
+			assert.ok(!fs.existsSync(backup), '备份目录应已改回原名');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('11) channel 不再有升级闸门 / 切版本 IPC；bundledRoot 必须在 dev 下向上回退', () => {
 		const src = code(CHANNEL);
 		for (const banned of ['DshUpgradeGate', 'SetCurrentRuntime', 'InstallRuntime', 'Command.Upgrade,', 'DiscoverUpdates', 'selectRuntimeVersion', 'listInstalled(', 'readState(', 'setCurrent(', '_upgrade(', '_discover(']) {
 			assert.ok(!src.includes(banned), `channel 不该再有 ${banned}`);

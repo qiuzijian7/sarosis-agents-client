@@ -604,18 +604,39 @@ console.log('check-capability-tools：L3 能力工具 / MCP 状态机');
 	await new Promise(resolve => upstream.close(resolve));
 	ok('⑫ 网关开关缺省启用、=0 回退',
 		gwMod.isMcpGatewayEnabled({}) === true && gwMod.isMcpGatewayEnabled({ VSSAROS_MCP_GATEWAY: '0' }) === false);
-	ok('⑫ 运行时挂载把带 headers 或 query 凭据的 http 条目都改挂网关，卸载时关闭',
-		idx6.includes('gateway.register(s.serverName') && idx6.includes('gateway.urlFor(s.serverName)')
-		&& idx6.includes('void gateway?.close()')
-		&& idx6.includes('rawServers[s.serverName]?.query')
-		&& idx6.includes('query: rawServers[s.serverName]?.query'));
-	// 真机事故：有引用的 http server + 「void tick() 与 fiber dispose 竞态」会让进程挂住不退出。
+	const gatewayMountWired = source => {
+		const selection = source.match(/const requiresGateway = server => server\.transport === 'streamable-http' && \(([\s\S]*?)\n\s*\);/)?.[1] ?? '';
+		return /^\s*\(server\.headers && Object\.keys\(server\.headers\)\.length > 0\)$/m.test(selection)
+			&& /^\s*\|\| \(rawServers\[server\.serverName\]\?\.query && Object\.keys\(rawServers\[server\.serverName\]\.query\)\.length > 0\)$/m.test(selection)
+			&& /^\s*for \(const server of secured\) \{\s*gateway\.register\(server\.serverName, \{\s*url: server\.url,\s*headers: rawServers\[server\.serverName\]\?\.headers \?\? server\.headers,\s*query: rawServers\[server\.serverName\]\?\.query,\s*\}\);/m.test(source)
+			&& /^\s*servers = servers\.map\(server => byName\.has\(server\.serverName\)\s*\? \{ \.\.\.server, url: gateway\.urlFor\(server\.serverName\), headers: gateway\.headers\(\) \}\s*: server\);/m.test(source)
+			&& /^\s*await runtime\?\.stop\(\);\s*await gateway\?\.close\(\);\s*gateway = null;/m.test(source);
+	};
+	ok('⑫ 运行时挂载把带 headers 或 query 凭据的 http 条目都改挂网关，卸载时关闭', gatewayMountWired(idx6));
+	// 真机事故：listen 尚未完成时卸载，以及正在握手时卸载，都必须释放网关与当前 fiber。
+	const gatewayDisposeSafe = source =>
+		/^\s*await gateway\.listen\(\);\s*if \(stopped\) \{ await gateway\.close\(\); gateway = null; throw unavailable\(\); \}/m.test(source)
+		&& /^\s*stop\(\) \{\s*if \(stopPromise\) \{ return stopPromise; \}\s*stopped = true;\s*if \(timer\) \{ clearInterval\(timer\); \}\s*if \(activeMcpRuntime === runtime\) \{ activeMcpRuntime = null; \}\s*const stopping = runtime\?\.stop\(\);\s*stopPromise = enqueue\(async \(\) => \{\s*await stopping;\s*await runtime\?\.stop\(\);\s*await gateway\?\.close\(\);/m.test(source)
+		&& /^\s*return \(\) => service\.stop\(\);$/m.test(source);
 	ok('⑫ 网关 server unref + 首次 tick 与卸载竞态保护（不挂住进程）',
-		read('dsh-plugins/vssaros-mcp/lib/core/mcpGateway.js').includes('server.unref?.()')
-		&& idx6.includes('if (stopped) { await gateway.close(); gateway = null; return; }'));
+		/^\s*server\.unref\?\.\(\);$/m.test(read('dsh-plugins/vssaros-mcp/lib/core/mcpGateway.js'))
+		&& gatewayDisposeSafe(idx6));
 	ok('⑫ 反向突变（去掉网关注册）⇒ 判据变红', (() => {
-		const verdict = s => s.includes('gateway.register(s.serverName');
-		return verdict(idx6) && !verdict(idx6.replace('gateway.register(s.serverName', 'void 0'));
+		const mutations = [
+			['gateway.register(server.serverName', 'disabledGateway.register(server.serverName'],
+			['query: rawServers[server.serverName]?.query,', 'query: {},'],
+			['url: gateway.urlFor(server.serverName)', 'url: server.url'],
+			['await gateway?.close();', 'void 0;'],
+		];
+		const races = [
+			['if (stopped) { await gateway.close(); gateway = null; throw unavailable(); }', 'if (stopped) { throw unavailable(); }'],
+			['return () => service.stop();', 'return () => {};'],
+		];
+		return gatewayMountWired(idx6) && gatewayDisposeSafe(idx6)
+			&& mutations.every(([needle, replacement]) => idx6.split(needle).length === 2
+				&& !gatewayMountWired(idx6.replace(needle, replacement)))
+			&& races.every(([needle, replacement]) => idx6.split(needle).length === 2
+				&& !gatewayDisposeSafe(idx6.replace(needle, replacement)));
 	})());
 }
 
@@ -699,9 +720,23 @@ console.log('check-capability-tools：L3 能力工具 / MCP 状态机');
 	ok('⑭ mcp_secret 已注册、审批闸覆盖、缺省 list 只读',
 		idx7.includes("name: 'mcp_secret'") && idx7.includes("exec.name === 'mcp_secret'")
 		&& idx7.includes("String(params?.action ?? 'list')"));
+	const secretsRuntimeWired = source => {
+		const reconcile = source.match(/^\s*const reconcileSources = async next => \{([\s\S]*?)^\t\};/m)?.[1] ?? '';
+		const polling = source.match(/^\s*timer = setInterval\(\(\) => \{([\s\S]*?)^\t\t\t\}, 2000\);/m)?.[1] ?? '';
+		const signature = /^\s*const signature = `\$\{await mtimeOf\(path\)\}\|\$\{await mtimeOf\(secretsPathForMcpConfig\(path\)\)\}`;$/m;
+		return signature.test(reconcile) && signature.test(polling)
+			&& /^\s*const secrets = await readSecretsForMcpConfig\(path\);\s*const mergedEnv = secretsAsEnv\(secrets, process\.env\);\s*const parsed = await readMountPlan\(path, mergedEnv, overlay\);/m.test(reconcile)
+			&& /^\s*for \(const key of Object\.keys\(gatewayEnv\)\) \{ delete gatewayEnv\[key\]; \}\s*Object\.assign\(gatewayEnv, mergedEnv\);\s*if \(!gateway\) \{\s*gateway = createMcpGateway\(\{ env: gatewayEnv, warn: warnFailure \}\);/m.test(reconcile)
+			&& /^\s*if \(signature !== lastSignature \|\| !initialized\) \{ await reconcileSources\(new Map\(sources\)\); \}$/m.test(polling);
+	};
 	ok('⑭ 运行时挂载把 secrets 纳入轮询签名并合成 env 给解析器/网关',
-		idx7.includes('secretsPathForMcpConfig(path)') && idx7.includes('secretsAsEnv(secrets, process.env)')
-		&& idx7.includes('readMountPlan(path, mergedEnv)') && idx7.includes('createMcpGateway({ env: mergedEnv, warn })'));
+		secretsRuntimeWired(idx7) && [
+			['${await mtimeOf(secretsPathForMcpConfig(path))}', '${0}'],
+			['readMountPlan(path, mergedEnv, overlay)', 'readMountPlan(path, process.env, overlay)'],
+			['Object.assign(gatewayEnv, mergedEnv);', 'void 0;'],
+			['env: gatewayEnv, warn: warnFailure', 'env: process.env, warn: warnFailure'],
+		].every(([needle, replacement]) => idx7.includes(needle)
+			&& !secretsRuntimeWired(idx7.replaceAll(needle, replacement))));
 	ok('⑭ 目录拒绝文案已更新为准确替代路径（不再谎称网关未落地）',
 		read('dsh-plugins/vssaros-mcp/lib/core/mcpCatalog.js').includes('mcp_secret 设置真值'));
 	ok('⑭ 反向突变（去掉凭据工具审批闸）⇒ 判据变红', (() => {
@@ -723,6 +758,15 @@ console.log('check-capability-tools：L3 能力工具 / MCP 状态机');
 
 	ok('⑮ vssaros-mcp 对外 provide OSV 服务（商城不复制第二份实现）',
 		mcpSrc7.includes("ctx.provide?.('vssarosMcpOsv'") && mcpSrc7.includes('checkStdioEntriesAgainstOsv'));
+	// ★ 2026-11-11 真机：本包 host plane（cordis.patch.yml）与 preset plane
+	//   （preset-vssaros.rows.yml ⇒ cordis.presets.yml）各 apply 一次 ⇒ 第二次 provide 让 cordis 抛
+	//   `service "vssarosMcpOsv" has been registered at <vssaros-mcp>` ⇒ 整个 preset 判
+	//   `agent-preset/invalid` ⇒ `session create failed` ⇒ 用户「新建会话失败」✗✗。
+	//   必须**探测后再提供**（与 vssaros-workflow / vssaros-media 同款幂等口径）。
+	const mcpProvideIdx = mcpSrc7.indexOf("ctx.provide?.('vssarosMcpOsv'");
+	const mcpGuardIdx = mcpSrc7.indexOf("ctx.reflect.get('vssarosMcpOsv', false)");
+	ok('⑯ OSV provide 必须先 reflect.get 探测（双 plane 重复注册会让整个 preset 失效）',
+		mcpProvideIdx > 0 && mcpGuardIdx > 0 && mcpGuardIdx < mcpProvideIdx);
 	ok('⑮ 商城可选注入，两条 installBundle 路径 + 普通商品路径都接了预检',
 		mktSrc.includes("ctx.inject(['vssarosMcpOsv']")
 		&& (mktSrc.match(/osvCheck: assertMcpConfigSafe/g) ?? []).length === 2

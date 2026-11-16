@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SettingsSchema, assessmentOutcome, policyEffects, settingsPolicy, policyVersion, allowedSender, anyoneAllowed, type Settings } from '../src/policy.ts'
+import { SettingsSchema, assessmentOutcome, policyEffects, settingsPolicy, policyVersion, allowedSender, anyoneAllowed, mayConsent, type Settings } from '../src/policy.ts'
 import type { MandateBasis } from '../src/core/index.ts'
 import { migrateSettings } from '../src/app/migration.ts'
 import { SourceRegistry } from '../src/sources/registry.ts'
@@ -253,10 +253,10 @@ describe('settings migration', () => {
       paused: true,
       sources: { feishu: feishuSource({ chats: [{ chatId: CHAT, listen: 'mentions' }, { chatId: OBSERVED, listen: 'all' }], directMessages: false }), github: { enabled: true, config: { pollSeconds: 120 } } },
       policy: { rules: [], sources: { feishu: { allowed: [{ id: MEMBER, name: 'A' }], admission: {} }, github: { allowed: [{ id: 'a' }], admission: {} } } },
-      eval: { mode: 'auto', timeoutSeconds: 90, model: { provider: 'p', model: 'm' } },
-      // VsSaros addition (superagent v2): an upgrade turns team staffing on and never turns auto-approval on.
+      eval: { mode: 'auto', timeoutSeconds: 90, model: { provider: 'p', model: 'm' }, fastExplicitTasks: false },
+      // ★ 2026-11-12：团队开关默认关闭；旧 staffing 仅为兼容历史快照保留。
       // VsSaros addition (2026-11-07): another plugin's side calls (DS Bot's OCR) stay as they were, allowed.
-      executor: { model: null, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [], staffing: true, autoApprove: false, sideCalls: true },
+      executor: { model: null, maxWorkers: 5, directory: '', prepare: '', projects: [], blockedCommands: [], workerPtc: false, toolTrace: false, teamEnabled: false, staffing: true, autoApprove: false, sideCalls: true, feishuReport: false },
     })
     expect(migrateSettings(migrated)).toEqual(migrated)
   })
@@ -485,4 +485,49 @@ describe('bots and events without a sender', () => {
       ['comments', { listedUnaddressed: false, unlistedAddressed: true, unlistedUnaddressed: false }],
       ['ci', { listedUnaddressed: false, unlistedAddressed: false, unlistedUnaddressed: false }]])
   })
+})
+
+describe('★ 2026-11-11 executor directory on Windows', () => {
+  it('accepts a Windows drive path and still rejects relative ones', () => {
+    expect(SettingsSchema.parse({ executor: { directory: 'F:\\GR_qiuzijian_main\\S1Game' } }).executor.directory)
+      .toBe('F:\\GR_qiuzijian_main\\S1Game')
+    expect(() => SettingsSchema.parse({ executor: { directory: 'relative/work' } })).toThrow()
+  })
+})
+
+describe('★ 2026-11-11 mayConsent（飞书同意组队方案断链）', () => {
+  const empty = SettingsSchema.parse({})
+  const trigger = (id: string, human = true) => ({ human, addressed: 'direct', actor: { source: 'feishu', id }, text: '同意',
+    id: 't1', source: 'feishu', threads: [], at: '', channel: { source: 'feishu', thread: 'x' }, meta: {} }) as never
+  it('allows the ticket originator even when the source allow-list is empty', () => {
+    expect(allowedSender(empty, { source: 'feishu', id: 'ou_origin' })).toBeUndefined()
+    expect(mayConsent(empty, trigger('ou_origin'), trigger('ou_origin'))).toBe(true)
+    expect(mayConsent(empty, trigger('ou_stranger'), trigger('ou_origin'))).toBe(false)
+    expect(mayConsent(empty, trigger('ou_origin'), undefined)).toBe(false)
+    expect(mayConsent(empty, trigger('ou_origin', false), trigger('ou_origin'))).toBe(false)
+  })
+  it('still honours an explicit allow-list entry', () => {
+    const listed = SettingsSchema.parse({ policy: { sources: { feishu: { allowed: [{ id: 'ou_boss' }] } } } })
+    expect(mayConsent(listed, trigger('ou_boss'), undefined)).toBe(true)
+  })
+})
+
+describe('★ 2026-11-12 explicit fast track switch', () => {
+  it('is off by default and part of the policy version', () => {
+    const base = SettingsSchema.parse({})
+    expect(base.eval.fastExplicitTasks).toBe(false)
+    const on = SettingsSchema.parse({ eval: { fastExplicitTasks: true } })
+    expect(on.eval.fastExplicitTasks).toBe(true)
+    expect(policyVersion(on)).not.toBe(policyVersion(base))
+  })
+  it('is exposed on the Policy built from settings', () => {
+    const sources = { scope: () => ({ listened: true, observed: true }) }
+    expect(settingsPolicy(SettingsSchema.parse({}), sources as never).fastExplicitTasks).toBe(false)
+    expect(settingsPolicy(SettingsSchema.parse({ eval: { fastExplicitTasks: true } }), sources as never).fastExplicitTasks).toBe(true)
+  })
+})
+
+// ★ 2026-11-12（用户）：团队开关默认关闭，走原型流程。
+it('a fresh install has team mode off', () => {
+  expect(SettingsSchema.parse({}).executor.teamEnabled).toBe(false)
 })

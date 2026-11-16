@@ -3,9 +3,10 @@
 // 链路：模型 → ctx.tools('computer') → tools/pre-execute 档位闸 → 发现文件找到主进程
 // DesktopControlRelay → loopback WS JSON-RPC → Electron 只读 API（截图 / 屏幕 / 本应用窗口）。
 //
-// ★ P0 没有任何输入注入：op 白名单只有 9 个 observe 方法，主进程中继也只实现这 9 个。
+// ★ P0 没有任何输入注入：默认档的 op 白名单就是 OBSERVE_OPS 全集（见 core/levels.js）。
 // ★ 默认关闭（fail-closed）：cordis.patch.yml 的 config.enabled 要显式打开才注册工具。
 // ★ 截图作为 DSH image attachment 交给模型，绝不内联 base64 到工具结果文本。
+// ★ 动作类走 core/outcome.js 账本：结果未知禁止重放、相同 callId 复用结果，绝不重复注入。
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import {
@@ -17,6 +18,7 @@ import { GRANT_DENY, applyGrant } from './core/grants.js';
 import { LeaseTable } from './core/leases.js';
 import { preGate, requestConsent } from './core/gates.js';
 import { CONTROL_OPS, DesktopHandoffs, isControlOp, validateHandoffReason } from './core/handoff.js';
+import { createOutcomeLedger, callKeyOf, UNKNOWN_NOTICE } from './core/outcome.js';
 
 export const name = 'vssaros-computer';
 /** 只静态注入 tools：attachments / approval 用 ctx.get 可选读取，避免 headless profile 永久 pending。 */
@@ -87,9 +89,10 @@ export function createToolDefinition({
 	relay, state, level, attachments,
 	leases, approval, allowBackground = false, onStateChange,
 	handoffs, allowForeground = false, allowHandoff = false,
-	presence,
+	presence, ledger,
 }) {
 	const settings = { state, level, allowBackground, leases, handoffs };
+	const outcomes = ledger ?? createOutcomeLedger();
 
 	/** P2 控制 op 在所有闸之前分派，否则「用户在操作」时连交还都做不了。 */
 	const handleControlOp = async (args, context) => {
@@ -136,8 +139,33 @@ export function createToolDefinition({
 			if (!allowHandoff) return '电脑操控被拒绝：人机接管/交接未启用（allowHandoff: false）';
 			return handleControlOp(args, context);
 		}
+
+		// ★ 顺序判据：preGate → 账本 → 二次校验 → 审批/记账 → 中继。
+		//   preGate 是纯校验（不注入、不问人），放最前可保证**重放也必须过**
+		//   接管 / 受保护应用 / 档位 / 租约这几道闸；账本仍严格早于审批与
+		//   relay.command，所以不会重复问人、更不会重复注入。
 		const gate = preGate(context);
 		if (!gate.ok) return `电脑操控被拒绝：${gate.message}`;
+
+		// 观察类不登记（可并发，且观察成功会解除结果未知闸）。
+		const isObserve = classifyOp(args?.op) === 'observe';
+		const key = isObserve ? null : callKeyOf(exec, args, context.botId, context.sessionId);
+		const begun = key ? outcomes.begin(key) : { ok: true };
+		if (!begun.ok) {
+			return Object.hasOwn(begun, 'cached')
+				? `${begun.notice}\n${describe(begun.cached, String(args?.op))}`
+				: `电脑操控被拒绝：${begun.notice}`;
+		}
+
+		// ★ 二次同步校验必须在授权写盘之前：否则竞态拒绝时 once/always 已经落盘，
+		//   下一次调用会被这条本不该存在的授权直接放行。
+		//   防有人绕过 tools/pre-execute 直接调 execute；异步审批期间的档位漂移
+		//   由主进程中继逐请求裁决兜底（它不接受 Host 传来的档位）。
+		const again = gateCall(args?.op, context.level, { p0ReadOnly: !allowBackground });
+		if (!again.ok) {
+			if (key) outcomes.abort(key);
+			return `电脑操控被拒绝：${again.message}`;
+		}
 
 		// 没有「一直允许 / 这一次」记录 ⇒ 走官方审批卡，只有 allowed-once 记成 once。
 		if (gate.needsApproval) {
@@ -146,30 +174,42 @@ export function createToolDefinition({
 			onStateChange?.();
 			if (decision === GRANT_DENY) {
 				leases?.release(`app:${gate.appKey}`, context.botId);
+				if (key) outcomes.abort(key);
 				return `电脑操控被拒绝：用户未授权使用 ${gate.appKey}`;
 			}
 		}
 
-		// 二次同步校验：防竞态，也防有人绕过 tools/pre-execute 直接调 execute。
-		const again = gateCall(args?.op, context.level, { p0ReadOnly: !allowBackground });
-		if (!again.ok) return `电脑操控被拒绝：${again.message}`;
 		const isAction = gate.kind !== 'observe';
 		const meta = () => ({ botId: context.botId, appKey: gate.appKey ?? '', handoffState: 'idle' });
 		// P2：Host 侧也拦一道紧急停止（主进程 relay 另有独立闸），并把动作开始/结束推给指示器。
 		if (isAction && presence) {
 			try {
-				if (await presence.stopped()) return '电脑操控被拒绝：用户已通过托盘 / 指示器停止了操控；需点「重新允许」。';
+				if (await presence.stopped()) {
+					if (key) outcomes.abort(key);
+					return '电脑操控被拒绝：用户已通过托盘 / 指示器停止了操控；需点「重新允许」。';
+				}
 				await presence.report({ active: true, ...meta() });
 			} catch { /* 上报失败不挡住动作；主进程闸仍在 */ }
 		}
 		try {
 			const result = await relay.command(args.op, args?.params ?? {});
-			if (args.op === 'screenshot') return await screenshotResult(result, attachments);
+			if (args.op === 'screenshot') {
+				const shot = await screenshotResult(result, attachments);
+				outcomes.observe();
+				return shot;
+			}
+			if (key) outcomes.settle(key, 'ok', result);
+			else outcomes.observe();
 			const activity = isAction
 				? `【活动】${context.botId || 'bot'} · ${args.op} · ${gate.appKey ?? ''}\n`
 				: '';
 			return activity + describe(result, args.op);
 		} catch (error) {
+			// ★ 动作已发出但结果未知：记账并禁止重放，直到下一次成功观察。
+			if (key) {
+				outcomes.settle(key, 'unknown', undefined);
+				return `电脑操控调用失败：${String(error?.message ?? error)}\n${UNKNOWN_NOTICE}`;
+			}
 			return `电脑操控调用失败：${String(error?.message ?? error)}`;
 		} finally {
 			if (isAction && presence) {
@@ -270,7 +310,7 @@ export function apply(ctx, config = {}, deps = {}) {
 		relay, state, level: cfg.level, attachments, leases, approval,
 		allowBackground: cfg.allowBackground, onStateChange,
 		handoffs, allowForeground: cfg.allowForeground, allowHandoff: cfg.allowHandoff,
-		presence,
+		presence, ledger: deps.ledger,
 	});
 
 	ctx.effect(() => {

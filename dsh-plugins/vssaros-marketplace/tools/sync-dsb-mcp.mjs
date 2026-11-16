@@ -28,7 +28,7 @@
  *
  * 前置：~/.vssaros-dev/dsh-home/.credentials.yaml 里有 VSSAROS_TOF_TICKET_DSH
  *       + VSSAROS_TOF_IDENTITY_DSH（票据单独用会被网关拒，必须带身份 fallback）；
- *       内网可达 MARKET_ENDPOINT（默认 http://21.6.92.5:3040）。
+ *       内网可达 MARKET_ENDPOINT（默认 http://21.91.158.20:3040）。
  * 幂等：先拉服务端已有 slug，存在的跳过（不覆盖别人的商品、不叠版本）。
  */
 
@@ -40,7 +40,7 @@ import { DSB_MARKS_SVG } from './dsb-marks.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LIB = path.resolve(HERE, '..', 'lib');
-const ENDPOINT = (process.env.MARKET_ENDPOINT || 'http://21.6.92.5:3040').replace(/\/+$/, '');
+const ENDPOINT = (process.env.MARKET_ENDPOINT || 'http://21.91.158.20:3040').replace(/\/+$/, '');
 /**
  * ★ 2026-11-10 修复「图标显示错误」：原先写 data:image/svg+xml base64，
  * 真机卡片上落成了 base64 中段乱码字母（长文本在 44px 图标块里居中截断）。

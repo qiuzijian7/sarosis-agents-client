@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import type { OutboundMessage } from '../src/core/index.ts'
 import { Commands } from '../src/infra/commands.ts'
+import { IM_WORDS } from '../src/infra/text.ts'
 import type { SourceKind } from '../src/sources/kind.ts'
 import { feishu, startRuntime, type Host } from './fixtures/host.ts'
 
@@ -25,6 +26,15 @@ it('holds every message while processing is paused, and sends it once processing
   await h.runtime.pump(); await h.runtime.sendReplies()
   expect(h.runtime.outbox.status('held')).toBe('sent')
   expect(JSON.stringify(lark.mock.calls)).toContain('已合并。')
+})
+
+it('rejects an over-long Feishu notice before recording a receipt (no stuck replay effect)', async () => {
+  const long = Array.from({ length: IM_WORDS + 20 }, () => '证据').join(' ')
+  expect(() => h.runtime.outbox.send({
+    id: 'overlong', channel: feishu('1', 'x').channel!, text: long, kind: 'notice',
+  })).toThrow(`maximum is ${IM_WORDS}`)
+  expect(h.runtime.outbox.status('overlong')).toBeUndefined()
+  expect(h.runtime.health.reply?.state).toBe('ready')
 })
 
 it('keeps a message for a Source that is not installed waiting, and sends it once the Source\'s kind registers', async () => {

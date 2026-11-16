@@ -14,10 +14,18 @@ export const OBSERVE_OPS = [
 	'screenshot', 'getScreenSize', 'getCursorPosition', 'checkPermissions', 'getStatus',
 ];
 
-/** P1/P2 的动作 op：登记只为分类与「明确拒」，P0 一个都不执行。 */
+/**
+ * P1/P2 的动作 op：登记只为分类与「明确拒」，P0 一个都不执行。
+ *
+ * ★ 只登记主进程中继**真正实现**的输入方法。setValue / clipboardRead /
+ *   showWindow / launchApp 曾登记在此，但 desktopControlRelay.ts 的 _dispatch
+ *   对它们直接抛「在 P1 未实现」⇒ 一放开 allowBackground，模型就会调到必然失败的 op。
+ *   移除后未登记的名字由 classifyOp 归入最危险的 foreground（fail-closed），
+ *   主进程侧 desktopControlRefusal 也会拒，不会比原来更松。
+ */
 export const BACKGROUND_OPS = [
 	'click', 'doubleClick', 'rightClick', 'typeText', 'pressKey', 'hotkey',
-	'setValue', 'scroll', 'drag', 'clipboardRead', 'showWindow', 'launchApp',
+	'scroll', 'drag',
 ];
 export const FOREGROUND_OPS = ['activateApp', 'movePointer'];
 export const REFUSED_OPS = [

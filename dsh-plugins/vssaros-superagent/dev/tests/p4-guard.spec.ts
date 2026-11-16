@@ -21,7 +21,7 @@ beforeEach(() => {
   const fake = join(dir, 'fake-p4.mjs')
   // It reads stdin only for a form (`-i`), as p4 does, so a shell's open stdin does not keep it waiting.
   writeFileSync(fake, 'const args = process.argv.slice(2); const print = input => process.stdout.write(JSON.stringify({ args, input })); if (!args.includes("-i")) print(""); else { let input = ""; process.stdin.setEncoding("utf8"); process.stdin.on("data", d => { input += d }); process.stdin.on("end", () => print(input)) }')
-  guard = { program: [process.execPath, fake], port: 'ssl:p4.example.com:1666', user: 'saros-bot', deniedClients: ['qiuzijian-submit'] }
+  guard = { program: [process.execPath, fake], port: 'ssl:p4.example.com:1666', user: 'saros-bot', deniedClients: ['qiuzijian-submit'], paths: ['//GR/main/Source/...'] }
   writeFileSync(join(dir, 'guard.mjs'), p4GuardScript(guard))
 })
 afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
@@ -41,6 +41,33 @@ describe('the p4 guard', () => {
     expect(await p4('change', '-i')).toMatchObject({ input: 'Change:\tnew\n' })
     expect((await p4('-Mj', '-ztag', 'describe', '-S', '501')).args).toContain('describe')
     expect((await p4('login', '-s')).args).toContain('login')
+  })
+  it('pins current-client calls and refuses shared-workspace destructive operations without allowing submit', async () => {
+    writeFileSync(join(dir, 'guard.mjs'), p4GuardScript({ ...guard, executionClient: 'main' }))
+    expect((await p4('edit', '//GR/main/Source/A.cpp')).args).toContain('main')
+    await expect(p4('-c', 'other', 'edit', '//GR/main/Source/A.cpp')).rejects.toEqual(refused(/configured execution client/))
+    for (const command of ['sync', 'revert', 'unshelve']) await expect(p4(command, '//GR/main/Source/A.cpp')).rejects.toEqual(refused(/current workspace/))
+    await expect(p4('client', '-i')).rejects.toEqual(refused(/current workspace/))
+    await expect(p4('submit', '-c', '501')).rejects.toEqual(refused(/never submit/))
+  })
+  it('refuses P4 writes before spawning p4 when the allowed path list is empty, while preserving reads', async () => {
+    writeFileSync(join(dir, 'guard.mjs'), p4GuardScript({ ...guard, paths: [] }))
+    for (const args of [['edit', 'A.cpp'], ['add', 'A.cpp'], ['sync', '//GR/main/...'], ['shelve', '-c', '501'],
+      ['unshelve', '-s', '501'], ['reconcile'], ['reopen', 'A.cpp'], ['resolve'], ['move', 'A.cpp', 'B.cpp'],
+      ['delete', 'A.cpp'], ['revert', 'A.cpp'], ['client', '-i'], ['workspace', '-i'], ['change', '-i'], ['changelist', '-d', '501']]) {
+      await expect(p4(...args)).rejects.toEqual(refused(/allowed P4 paths/))
+    }
+    for (const args of [['info'], ['opened'], ['describe', '-S', '501'], ['print', '//GR/main/Source/A.cpp'],
+      ['client', '-o', 'worker'], ['change', '-o'], ['login', '-s'], ['reconcile', '-n'], ['sync', '-n', '//GR/main/...']]) {
+      expect((await p4(...args)).args).toContain(args[0])
+    }
+  })
+  it('proves the empty-path refusal is the guard, not the fake P4 server, with an in-memory mutation', async () => {
+    const script = p4GuardScript({ ...guard, paths: [] })
+    const lines = script.split('\n').filter(line => line.startsWith('if (!guard.paths?.length'))
+    expect(lines).toHaveLength(1)
+    writeFileSync(join(dir, 'guard.mjs'), script.replace(lines[0]!, ''))
+    expect((await p4('edit', 'A.cpp')).args).toContain('edit')
   })
   it('refuses submit, and every command off the list', async () => {
     await expect(p4('submit', '-c', '501')).rejects.toEqual(refused('workers never submit'))

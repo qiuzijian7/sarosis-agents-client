@@ -236,10 +236,13 @@ suite('dsh preset plane（R13 ①：我们的 preset 生成物）', () => {
 			for (const file of walkJs(libDir)) {
 				// ⚠ 必须先剥注释（见 `stripComments` 的注释：本仓注释里就写着探测写法 ⇒ 不剥会假绿 ✗）
 				const text = stripComments(fs.readFileSync(file, 'utf8'));
-				for (const m of text.matchAll(/ctx\.provide\(/g)) {
+				// ★ 2026-11-11 收紧：`ctx.provide?.(` 也算注册（原来只认 `ctx.provide(` ⇒
+				//   `vssaros-mcp` 的 OSV 服务从守卫眼皮底下溜过去，真机报「新建会话失败」✗✗）。
+				for (const m of text.matchAll(/ctx\.provide(\?\.)?\(/g)) {
 					const before = text.slice(Math.max(0, (m.index ?? 0) - 400), m.index ?? 0);
-					if (!/reflect\.get\(|ctx\.has\(/.test(before)) {
-						offenders.push(`${dir}/${path.basename(file)}：\`ctx.provide(\` 之前没有探测（reflect.get / has）`);
+					// 合法幂等形态：探测后注册（reflect.get / has / get?.）或紧邻的 try{…}catch 兜住重复异常
+					if (!/reflect\.get\(|ctx\.has\(|ctx\.get\?\.\(|ctx\.get\(|try\s*\{\s*$/.test(before)) {
+						offenders.push(`${dir}/${path.basename(file)}：\`ctx.provide\` 之前没有探测（reflect.get / has / get）`);
 					}
 				}
 			}
@@ -247,6 +250,16 @@ suite('dsh preset plane（R13 ①：我们的 preset 生成物）', () => {
 		assert.deepStrictEqual(offenders, [],
 			'双 plane 挂载的插件里 `ctx.provide` 必须先探测再提供 —— 第二次 apply 会抛 `has been registered`，'
 			+ '整个 preset 被判 invalid、该 preset 的会话全部起不来 ✗：\n' + offenders.join('\n'));
+		// ★ 2026-11-11 真机专项：`agent-preset/invalid: vssaros-mcp (@vssaros/dsh-mcp): service
+		//   "vssarosMcpOsv" has been registered at <vssaros-mcp>` ⇒ 用户连「新建会话」都失败。
+		//   上面是通用判据，这里再钉住 OSV 这一个具体服务，防止有人把探测删掉。
+		const mcpSrc = stripComments(fs.readFileSync(
+			path.join(root!, PLUGINS_REL, 'vssaros-mcp', 'lib', 'index.js'), 'utf8'));
+		const mcpProvideAt = mcpSrc.indexOf("ctx.provide?.('vssarosMcpOsv'");
+		assert.ok(mcpProvideAt > 0, 'vssaros-mcp 必须提供 vssarosMcpOsv 服务（商城的 OSV 预检依赖它）✗');
+		assert.ok(/reflect\.get\('vssarosMcpOsv',\s*false\)/.test(mcpSrc.slice(0, mcpProvideAt)),
+			'vssaros-mcp 的 OSV provide 前必须先 reflect.get 探测：本包 host/preset 双 plane 各 apply 一次，'
+			+ '重复 provide 会让 cordis 抛错 ⇒ 整个 preset invalid ⇒ 新建会话失败 ✗');
 	});
 
 	test('★ 清单接线：bundle.patch 收录 preset 文件、files 覆盖生成物（否则装了也不加载 / 包里没有）', function () {

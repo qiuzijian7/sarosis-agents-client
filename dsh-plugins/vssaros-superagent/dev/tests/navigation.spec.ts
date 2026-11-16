@@ -44,14 +44,14 @@ it('reopens the page this tab showed last, and the chat for a route that no long
   expect(initialLocation()).toEqual({ route: { page: 'eval', query: { filter: 'stop' } }, stack: [{ page: 'chat' }] })
   // The Eval tab was previously named Policy; a route saved under the old name falls back to the chat.
   sessionStorage.setItem('dsh-superagent/route', JSON.stringify({ route: { page: 'policy' }, stack: [] }))
-  expect(initialLocation()).toEqual({ route: { page: 'chat' }, stack: [] })
-  // VsSaros change: the Overview moved into the side panel; a route saved as the Overview tab opens the chat.
+  expect(initialLocation()).toEqual({ route: { page: 'overview' }, stack: [] })
+  // ★ 2026-11-11：概况提为首页（替代对话页签），旧 overview 深链与栈项都归一到概况页。
   sessionStorage.setItem('dsh-superagent/route', JSON.stringify({ route: { page: 'overview' }, stack: [{ page: 'overview' }] }))
-  expect(initialLocation()).toEqual({ route: { page: 'chat' }, stack: [{ page: 'chat' }] })
+  expect(initialLocation()).toEqual({ route: { page: 'overview' }, stack: [{ page: 'overview' }] })
   sessionStorage.setItem('dsh-superagent/route', JSON.stringify({ route: { page: 'trigger', id: 'github:1' }, stack: [{ page: 'policy' }, { page: 'trigger' }] }))
   expect(initialLocation().stack).toEqual([{ page: 'trigger' }])
   sessionStorage.setItem('dsh-superagent/route', '{')
-  expect(initialLocation().route).toEqual({ page: 'chat' })
+  expect(initialLocation().route).toEqual({ page: 'overview' })
 })
 it('reads each page a tab remembered with the parameters it takes, and leaves out what it does not know', () => {
   expect(parseRoute({ page: 'trigger', query: { filter: 'nope', trigger: 'e1' } })).toEqual({ page: 'trigger' })

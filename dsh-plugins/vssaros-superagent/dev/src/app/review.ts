@@ -9,7 +9,8 @@ import { liveTicket, type EngineForPeople, type Ticket } from '../core/index.ts'
 import type { Commands } from '../infra/commands.ts'
 import { KV } from '../kv.ts'
 import type { SourceContext } from '../sources/host.ts'
-import { changesOf, fingerprint, inPath, P4_SOURCE, p4, p4Messages, readChange, shelfDiffs, type Change, type ChangeFile, type FileDiff, type P4Config }
+import { changesOf, claimChangelist, fingerprint, inPath, P4_SOURCE, p4, p4Messages, readChange, shelfDiffs, summarizeShelfDiffs, unshelvedFiles,
+  type Change, type ChangeFile, type FileDiff, type P4Config, type ShelfDiffSummary }
   from '../sources/p4-change.ts'
 import type { Store } from './store.ts'
 
@@ -63,6 +64,14 @@ export class Reviews {
   private get commands(): Commands { return this.host.p4.commands }
   private person(): string { return this.host.person?.() ?? userInfo().username }
   get(ticketId: string): Review | undefined { return this.host.store.get(KV.reviews.review(ticketId)) }
+  /** A reported CL keeps its delivery requirement even if reading or claiming it fails, including after a restart. */
+  requireChangelist(ticketId: string, change: number): void { this.host.store.set(KV.reviews.required(ticketId), change) }
+  /** Existing own P4 threads and reviews also keep the gate for tickets created before this requirement was recorded. */
+  requiredChangelist(ticketId: string): number | undefined {
+    const ticket = this.host.store.tickets.get(ticketId)
+    const own = ticket?.follows?.find(follow => follow.own && !follow.closed && follow.thread.startsWith(`${P4_SOURCE}:`))
+    return this.host.store.get(KV.reviews.required(ticketId)) ?? this.get(ticketId)?.change ?? (own ? Number(own.thread.slice(P4_SOURCE.length + 1)) : undefined)
+  }
   /**
    * Whether the ticket's inputs wait undelivered: while its CL waits for a person or is being submitted, its worker must
    * not change the shelf. A message that arrives meanwhile reaches the worker once the review ends.
@@ -89,6 +98,8 @@ export class Reviews {
    */
   request(ticketId: string, change: Change): Review {
     if (!change.shelved.length) throw new Error(`Changelist ${change.number} has no shelved files; shelve it before reporting it ready`)
+    const missing = unshelvedFiles(change)
+    if (missing.length) throw new Error(`Changelist ${change.number} has opened files not shelved with their current metadata: ${missing.slice(0, 5).join(', ')}`)
     const review: Review = { ticketId, change: change.number, fingerprint: fingerprint(change.shelved), files: change.shelved,
       description: change.description, client: change.client, state: 'waiting', requestedAt: new Date().toISOString() }
     const earlier = this.get(ticketId)
@@ -98,12 +109,12 @@ export class Reviews {
     return review
   }
   /** The review with each shelved file's difference, read from the server now, and how an approval submits. */
-  async view(ticketId: string): Promise<{ review: Review; diffs: FileDiff[]; submit: { mode: P4Config['submit']; tags: string } } | undefined> {
+  async view(ticketId: string): Promise<{ review: Review; diffs: FileDiff[]; diffSummary: ShelfDiffSummary; submit: { mode: P4Config['submit']; tags: string } } | undefined> {
     const review = this.get(ticketId)
     if (!review) return undefined
     const config = this.host.p4.config<P4Config>(P4_SOURCE)
     const diffs = review.state === 'waiting' && config ? await shelfDiffs(this.commands, config, review.change) : []
-    return { review, diffs, submit: { mode: config?.submit ?? 'pipeline', tags: config?.pipelineTags ?? '' } }
+    return { review, diffs, diffSummary: summarizeShelfDiffs(review.files, diffs), submit: { mode: config?.submit ?? 'pipeline', tags: config?.pipelineTags ?? '' } }
   }
   private waitingReview(ticketId: string): Review {
     const review = this.get(ticketId)
@@ -122,9 +133,19 @@ export class Reviews {
     const review = this.waitingReview(ticketId)
     const config = this.config
     const by = this.person()
+    if (this.host.store.tickets.get(ticketId)?.execution?.p4Delivery === 'pending') {
+      throw this.refuse(review, 'Pending-only delivery: this CL is never submitted by dsh-superagent. Review it in P4V and submit there.', by)
+    }
     if (read !== review.fingerprint) throw new ReviewRefused('The review changed after you opened it; open it again')
     const now = await readChange(this.commands, config, review.change)
     if (!now || now.status !== 'pending') throw this.refuse(review, `Changelist ${review.change} is ${now?.status ?? 'gone'}`, by)
+    const ticket = this.host.store.tickets.get(ticketId)!
+    if (ticket.execution?.p4Workspace) {
+      const refused = claimChangelist(this.host.p4, config, ticketId, now)
+      if (refused) throw this.refuse(review, refused, by)
+      if (config.submit === 'host' && config.submitClient === now.client) throw this.refuse(review,
+        'Execution and submit client are the same. Inspect and submit the approved CL manually; automatic unshelve into this occupied client is disabled.', by)
+    }
     const current = fingerprint(now.shelved)
     if (current !== review.fingerprint) {
       const before = new Map(review.files.map(file => [file.depotFile, `${file.action}\t${file.digest ?? ''}`]))

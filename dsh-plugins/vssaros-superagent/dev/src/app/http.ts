@@ -35,6 +35,8 @@ import { TAPD_SOURCE, TapdConfigSchema, TapdOpenApi, type TapdTestResult } from 
 import { saveTapdCredential, TapdCredentialError, tapdCredentialStatus, tapdCredential, tapdEnvironment,
   type TapdSetupStatus } from '../sources/tapd-auth.ts'
 import { cleanOwner, resolveTapdName } from '../sources/tapd-members.ts'
+import { importTapdFilter } from '../sources/tapd-filters.ts'
+import { tapdTime } from '../sources/tapd-api.ts'
 import { TEAM_BOTS_GLOBAL, TEAM_BOTS_PER_PLAN, TeamError, type Team } from './team.ts'
 import type { TeamArchive } from './team-archive.ts'
 import type { Retrospective } from './retrospective.ts'
@@ -43,8 +45,10 @@ import type { Distiller } from './distill.ts'
 import type { TeamSteps } from './steps.ts'
 import { APPROVAL_TEMPLATES, type StepApprovals } from './step-approvals.ts'
 import type { UsageLedger } from './usage.ts'
+import type { ToolTrace } from './tool-trace.ts'
 import type { ContextSteward } from './steward.ts'
 import type { Feed } from './feed.ts'
+import type { TicketReports } from './ticket-report.ts'
 import type { DeskFlow } from './desk-flow.ts'
 import type { DeskChat } from './desk-chat.ts'
 import { handleTapdWebhook, TAPD_WEBHOOK_PATH, type TapdWebhookResult } from './tapd-webhook.ts'
@@ -58,7 +62,7 @@ export interface HttpHost {
   readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery'>
   readonly settings: Pick<Settings, 'view' | 'save' | 'pause' | 'sync' | 'refreshLabels'>
   readonly engine: EngineForPeople
-  readonly executor: Pick<DshExecutor, 'activeCount'>
+  readonly executor: Pick<DshExecutor, 'activeCount' | 'inventory'>
   /** VsSaros addition. */
   readonly reviews: Pick<Reviews, 'waiting' | 'audit' | 'view' | 'approve' | 'reject' | 'discard'>
   readonly health: Record<string, Health>
@@ -96,6 +100,7 @@ export interface HttpHost {
   readonly stepApprovals: Pick<StepApprovals, 'list' | 'answer' | 'rules' | 'forget' | 'applyTemplate'>
   /** VsSaros addition (2026-11-06): the usage ledger and the context steward. */
   readonly usage: Pick<UsageLedger, 'summary' | 'relaysOf'>
+  readonly toolTrace: Pick<ToolTrace, 'view'>
   readonly steward: Pick<ContextSteward, 'list'>
   /** VsSaros addition (plan C): changes pushed to open pages, and where one desk message stands. */
   readonly feed: Pick<Feed, 'attach' | 'close'>
@@ -105,6 +110,8 @@ export interface HttpHost {
   readonly deskChat: Pick<DeskChat, 'messages' | 'send' | 'attach' | 'schedules' | 'schedule' | 'unschedule'>
   /** VsSaros fix (2026-11-06): replies whose result is not known, redelivered only by a person. */
   readonly outbox: Pick<Outbox, 'redeliver'>
+  /** VsSaros addition (2026-11-13): a ticket's HTML report artifact and its explicit send to Feishu. */
+  readonly reports: Pick<TicketReports, 'status' | 'sendNow' | 'content'>
 }
 /** VsSaros addition: the Feishu app the saved Feishu Source names, or '' for lark-cli's active profile. */
 function feishuAppOf(runtime: Pick<HttpHost, 'store'>): string {
@@ -220,6 +227,12 @@ const SaveRequest = z.object({ value: z.unknown(), revision: z.number().int().no
 function routes(runtime: HttpHost): Routes {
   const { store } = runtime
   const ticket = (id: string) => { if (!store.tickets.get(id)) throw new RouteError(404, 'Ticket not found'); return id }
+  /** VsSaros addition (2026-11-13): the report routes need the record itself, not just its id. */
+  const ticketRecord = (id: string): Ticket => {
+    const found = store.tickets.get(ticket(id))
+    if (!found) throw new RouteError(404, 'Ticket not found')
+    return found
+  }
   const promptBody = (input: { body: (maxBytes?: number) => Promise<unknown> }) => input.body(4 * runtime.machine.promptMaxChars.get() + 4096)
   return {
     'GET state': () => stateView(runtime),
@@ -261,7 +274,15 @@ function routes(runtime: HttpHost): Routes {
     'GET tickets/:id': ({ params }) => ticketPage(runtime, params.id),
     'POST tickets/:id/retry': ({ params }) => { const id = ticket(params.id); runtime.engine.retryTicket(id); return { retried: true } },
     'POST tickets/:id/stop': ({ params }) => { const id = ticket(params.id); runtime.engine.stopTicket(id); return { stopped: true } },
+    'GET tickets/:id/report': ({ params }) => runtime.reports.status(ticketRecord(params.id)),
+    'GET tickets/:id/report/content': ({ params }) => runtime.reports.content(ticketRecord(params.id)),
+    'POST tickets/:id/report': ({ params }) => ({ queued: runtime.reports.sendNow(ticketRecord(params.id)) }),
     'POST executor/pause': async ({ body }) => runtime.settings.pause(z.object({ paused: z.boolean() }).parse(await body()).paused, 'panel'),
+    'GET executor/workspaces': ({ query }) => {
+      const { offset, limit } = z.object({ offset: z.coerce.number().int().min(0).default(0),
+        limit: z.coerce.number().int().min(1).max(10).default(10) }).strict().parse(query)
+      return runtime.executor.inventory(offset, limit)
+    },
     'PUT settings/:block': async ({ params, body }) => {
       const block = SettingsBlockSchema.parse(params.block)
       const known = !block.startsWith('source:') || runtime.sources.instances().some(instance => `source:${instance.id}` === block)
@@ -310,6 +331,37 @@ function routes(runtime: HttpHost): Routes {
         return { ok: false, error: error instanceof Error ? error.message : String(error), at }
       }
     },
+    'POST sources/tapd/filters/import': async ({ body }) => {
+      const request = z.object({ text: z.string().trim().min(1).max(200_000), name: z.string().trim().max(40).optional(),
+        at: z.string().trim().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+        maxPerRun: z.number().int().min(1).max(200).optional(), windowDays: z.number().int().min(1).max(30).optional() })
+        .strict().parse(await body(210_000))
+      let exported: unknown
+      try { exported = JSON.parse(request.text) }
+      catch { throw new RouteError(400, 'The pasted text is not valid JSON') }
+      const config = tapdConfigOf(runtime)
+      let maps: { fieldNames: Record<string, string>; statusCodes: Record<string, string> } | undefined
+      try { maps = await new TapdOpenApi({ api: config.api }).filterMaps(config.workspace) }
+      catch { /* Fall back to the verified built-in maps when TAPD is offline. */ }
+      const ownerGroups = Object.fromEntries(config.ownerGroups.map(row => [row.group,
+        row.members.split(/[;,；|]/).map(name => name.trim()).filter(Boolean)]))
+      const result = importTapdFilter(exported, { ...maps, ownerGroups, name: request.name, at: request.at,
+        maxPerRun: request.maxPerRun, windowDays: request.windowDays })
+      return { schedule: result.schedule, watch: result.watch, report: result.report,
+        warnings: result.warnings, maps: maps ? 'live' as const : 'fallback' as const }
+    },
+    'POST sources/tapd/filters/preview': async ({ body }) => {
+      const request = z.object({ query: z.record(z.string(), z.string()), windowDays: z.number().int().min(1).max(30) })
+        .strict().parse(await body(20_000))
+      const config = tapdConfigOf(runtime)
+      const api = new TapdOpenApi({ api: config.api })
+      const since = new Date(Date.now() - request.windowDays * 86_400_000)
+      const [total, recent] = await Promise.all([
+        api.count('bug', config.workspace, request.query),
+        api.count('bug', config.workspace, { ...request.query, modified: `>${tapdTime(since.toISOString())}` }),
+      ])
+      return { total, recent }
+    },
     'GET models': () => runtime.models(),
     'GET prompts': ({ query }) => { const { revision, offset } = PromptsQuery.parse(query); return promptsView(runtime, revision, offset) },
     'PUT prompts': async input => {
@@ -347,6 +399,10 @@ function routes(runtime: HttpHost): Routes {
         // VsSaros addition (2026-11-07): who the relayed calls (`day.relays`) are from, and whether side calls are refused.
         coexist: runtime.coexist?.() ?? {}, sideCalls: runtime.store.settings().executor.sideCalls }
     },
+    'GET tools/trace': ({ query }) => runtime.toolTrace.view(z.object({
+      ticketId: z.string().min(1).max(200).optional(), beforeId: z.coerce.number().int().positive().optional(),
+      limit: z.coerce.number().int().min(1).max(100).default(50),
+    }).strict().parse(query)),
     'POST steps/rules/:id/delete': ({ params }) => { runtime.stepApprovals.forget(params.id); return { deleted: true as const } },
     'POST tickets/:id/steps/:key/stop': async ({ params }) => {
       const stopped = await runtime.steps.stop(ticket(params.id), params.key)
