@@ -48,6 +48,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { isBackupProfile } from './dev-storage-maintenance.mjs';
 
 const REPO = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PLUGINS = path.join(REPO, 'dsh-plugins');
@@ -193,7 +194,7 @@ for (const root of PROFILE_ROOTS) {
 	let ents = [];
 	try { ents = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; }
 	for (const d of ents) {
-		if (!d.isDirectory()) { continue; }
+		if (!d.isDirectory() || isBackupProfile(d.name)) { continue; }
 		profiles.push({ root, prof: d.name, dir: path.join(root, d.name) });
 	}
 }

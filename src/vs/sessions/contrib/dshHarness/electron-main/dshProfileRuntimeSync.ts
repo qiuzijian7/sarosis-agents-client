@@ -33,7 +33,7 @@
  */
 
 import { existsSync, readFileSync, promises as fsp } from 'fs';
-import { join } from '../../../../base/common/path.js';
+import { dirname, join } from '../../../../base/common/path.js';
 
 /** profile 里的版本标记（轻量，只记是哪个 dsh 版本建的插件层）。 */
 export const PROFILE_RUNTIME_MARKER_REL = join('.vssaros', 'runtime-version.json');
@@ -103,7 +103,22 @@ export function planProfileRuntimeSync(input: IProfileRuntimeSyncInput): Profile
  *   `_repairSeededStoreMetadata` 随后会校正 `.modules.yaml`（含 pnpm 11 的 JSON 写法）。
  */
 export async function copyProfileSeed(seedDir: string, destDir: string): Promise<void> {
-	await fsp.cp(seedDir, destDir, { recursive: true, dereference: true, force: true });
+	// 先校验种子 manifest：坏种子不许在目标位置留下一个会被 init/stamp 误认成"已完成"的目录。
+	const manifestPath = join(seedDir, 'package.json');
+	const manifest = JSON.parse(await fsp.readFile(manifestPath, 'utf8'));
+	if (Object.prototype.toString.call(manifest) !== '[object Object]') {
+		throw new Error(`profile seed manifest is invalid: ${manifestPath}`);
+	}
+	// mkdir(destDir) 是原子认领：目标已存在或并发复制的败者都会失败，绝不覆盖/清理别人的 profile。
+	await fsp.mkdir(dirname(destDir), { recursive: true });
+	await fsp.mkdir(destDir);
+	try {
+		await fsp.cp(seedDir, destDir, { recursive: true, dereference: true, force: true });
+	} catch (e) {
+		// 只有认领成功者会清理由它自己刚建的半成品目录。
+		await fsp.rm(destDir, { recursive: true, force: true }).catch(() => undefined);
+		throw e;
+	}
 }
 
 /**

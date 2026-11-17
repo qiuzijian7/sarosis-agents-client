@@ -20,6 +20,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { maintainStartupLogs } from './dev-storage-maintenance.mjs';
 
 const script = process.argv[2];
 if (!script || !fs.existsSync(script)) {
@@ -29,6 +30,10 @@ if (!script || !fs.existsSync(script)) {
 
 const logDir = path.join(os.homedir(), '.vssaros-dev', 'logs');
 fs.mkdirSync(logDir, { recursive: true });
+const maintenance = maintainStartupLogs(path.dirname(logDir));
+if (maintenance.removed || maintenance.rotated) {
+	console.log(`[dev-storage] removed ${maintenance.removed} expired diagnostic files, rotated ${maintenance.rotated} logs`);
+}
 const outFd = fs.openSync(path.join(logDir, 'launcher.log'), 'a');
 const errFd = fs.openSync(path.join(logDir, 'launcher.log'), 'a');
 

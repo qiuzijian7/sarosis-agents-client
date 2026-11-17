@@ -25,7 +25,7 @@ import assert from 'assert';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { decideSessionStartRetry, SESSION_START_MAX_ATTEMPTS, sessionStartRetryDelayMs } from '../../common/dshDesktopSessionStart.js';
+import { decideSessionStartRetry, ensureDesktopHostStarted, SESSION_START_MAX_ATTEMPTS, sessionStartRetryDelayMs } from '../../common/dshDesktopSessionStart.js';
 
 const CONTRIBUTION = 'src/vs/sessions/contrib/dshHarness/electron-browser/dshFullWindowContribution.ts';
 
@@ -41,6 +41,67 @@ function stripComments(s: string): string {
 }
 
 suite('desktop 窗口：会话启动失败 ⇒ 重试 + 把原因显示给用户', () => {
+
+	test('后台启动失败保留窗口，显式重试后继续原启动流程', async () => {
+		let attempts = 0;
+		let retry: (value: boolean) => void = () => assert.fail('错误页尚未就绪');
+		const messages: string[] = [];
+		const pending = ensureDesktopHostStarted(async () => {
+			if (++attempts === 1) {
+				throw new Error('ERR_MODULE_NOT_FOUND: @deepseek-ai/dsh-app-boot');
+			}
+		}, message => {
+			messages.push(message);
+			return new Promise<boolean>(resolve => { retry = resolve; });
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+		assert.deepStrictEqual({ attempts, messages }, { attempts: 1, messages: ['ERR_MODULE_NOT_FOUND: @deepseek-ai/dsh-app-boot'] });
+		retry(true);
+		assert.deepStrictEqual({ ready: await pending, attempts }, { ready: true, attempts: 2 });
+	});
+
+	test('后台持续失败必须逐次等待用户重试，关闭错误页可结束等待', async () => {
+		let attempts = 0;
+		const messages: string[] = [];
+		const ready = await ensureDesktopHostStarted(async () => {
+			attempts++;
+			throw new Error('未找到 dsh');
+		}, async message => {
+			messages.push(message);
+			return attempts < 2;
+		});
+		assert.deepStrictEqual({ ready, attempts, messages }, { ready: false, attempts: 2, messages: ['未找到 dsh', '未找到 dsh'] });
+	});
+
+	test('后台首次启动成功不显示错误页', async () => {
+		const ready = await ensureDesktopHostStarted(async () => undefined, async () => assert.fail('不应请求重试'));
+		assert.strictEqual(ready, true);
+	});
+
+	test('后台失败重试接在已有窗口上，取消后不得因贡献释放退出应用', () => {
+		const src = stripComments(read(CONTRIBUTION));
+		const startAt = src.indexOf('ensureDesktopHostStarted(');
+		const host = src.slice(startAt, src.indexOf('const muxReady =', startAt));
+		assert.match(host, /await this\._dsh\.ensureStarted\(\)/);
+		assert.match(host, /this\._waitForDesktopHostRetry\(booting, message, bootCancellation\.token\)/);
+		assert.doesNotMatch(host, /throw |this\._quit\(|_auxWindowService\.open\(/);
+		assert.match(src, /bootCancellation\.cancel\(\)/);
+		assert.match(src, /\.then\(opened => \{\s*if \(this\._store\.isDisposed\)/);
+	});
+
+	test('桌面壳打开后撤销看门狗，后续初始化异常不得退出应用', () => {
+		const src = stripComments(read(CONTRIBUTION));
+		const at = src.indexOf('const settle = () => {');
+		assert.ok(at > 0, '找不到启动开窗回调');
+		const settle = src.slice(at, src.indexOf('void this._open({}, settle)', at));
+		assert.match(settle, /settled = true;\s*this\._startupWatchdogCanceled = true;/);
+		assert.match(settle, /clearTimeout\(startupWatchdog\)/);
+		const open = src.slice(src.indexOf('void this._open({}, settle)', at), src.indexOf('}, 800);', at));
+		assert.match(open, /\.catch\(err => \{\s*if \(this\._store\.isDisposed\)/);
+		assert.match(open, /if \(!settled\) \{ return this\._quit\('桌面窗口开窗失败'\); \}/);
+		assert.doesNotMatch(open, /\n\s*return this\._quit\('桌面窗口开窗失败'\)/);
+	});
 
 	test('① 判据表：插件未挂载 / Host 还在热起来 ⇒ 重试', () => {
 		// ★ 本次真机的那条：`agent-preset/invalid: vssaros-agents (@vssaros/dsh-agents): never started`

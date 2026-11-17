@@ -16,6 +16,7 @@ const HERE = fileURLToPath(new URL('.', import.meta.url));
 const STEPS = [
 	// ★ 2026-11-10：知识库根配置以 dsh 侧为唯一真源 +「选中的根直接当唯一库根」
 	{ file: 'check-kb-root-config.mjs', desc: '根配置：绝对路径校验 / 单根模式 / 页面快照 / 存量兼容' },
+	{ file: 'check-kb-vault-selection.mjs', desc: '有效库选择：陈旧当前 ID / list-read-build-write 一致 / 多库拒绝歧义 / 当前库上报' },
 	// ★ 2026-11-10 三条用户要求：隐藏点目录 / 一级库默认关联飞书云端 / 设置页顶头
 	{ file: 'check-kb-list-feishu-ui.mjs', desc: '知识库列表 + 飞书映射 + 设置页布局（静态接线 + 纯函数行为 + 产物级断言）' },
 	// ★ 2026-11-10 真机：飞书 99991672（bot 缺 wiki scope）⇒ 错误可读 + 工具不伪装成功

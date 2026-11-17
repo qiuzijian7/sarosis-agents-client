@@ -9,6 +9,7 @@
 //   不可能再出现"改了却没生效"。
 //
 // ⚠ 以后**不要再拆子块**：要加代码就往这个文件里加。
+// CLIENT_BUILD_STAMP 2026-11-17：有效库校验与页面/面板当前库上报，防止陈旧 vault ID 覆盖真实库。
 // CLIENT_BUILD_STAMP 2026-11-16：设置加载校验与重试、应用保存忙态与超时反馈。
 // CLIENT_BUILD_STAMP 2026-11-12：入口晚于 client.kbview.js 的改动（映射行改受控下拉、去掉裸 spaceId 输入框）。
 // CLIENT_BUILD_STAMP 2026-11-12：入口晚于 client.kbview.js 的改动（设置页 Host 不可达提示与保存拦截）。
@@ -1355,6 +1356,7 @@ function KbSettingsPage({ onClose, onSwitchVault, onAddVault, vaultRef, auto }) 
 			const [error, setError] = useState('');
 			const [doc, setDoc] = useState(null);            // { title, text }
 			const vaultRef = react.useRef({ id: '', dir: '' });   // 写操作要 vaultId + 库根（绝对→相对折算）
+			const reportedVault = react.useRef({ id: '' }).current;
 			const remountRef = react.useRef(null);
 			/** 面板内视图：tree（默认） | graph（关系图谱，/x/kb/graph） */
 			const [pane, setPane] = useState('tree');
@@ -1415,7 +1417,10 @@ s.src = '/x/kb/web/kbSideview.js?v=' + Date.now();
 					if (b && b.ok && b.data) {
 						const list = b.data.vaults || [];
 						const cur = list.find((v) => v.id === b.data.activeVaultId) || list[0];
-						if (cur) { vaultRef.current = { id: String(cur.id || ''), dir: String(cur.dir || '') }; }
+						if (cur) {
+							await reportCurrentVault(cur.id);
+							vaultRef.current = { id: String(cur.id || ''), dir: String(cur.dir || '') };
+						}
 						return b.data;
 					}
 				} catch (e) {
@@ -1443,11 +1448,27 @@ s.src = '/x/kb/web/kbSideview.js?v=' + Date.now();
 				const root = norm(vaultRef.current.dir).replace(/\/+$/, '');
 				return root && a.indexOf(root) === 0 ? a.slice(root.length).replace(/^\/+/, '') : a;
 			};
-			const post = (path, body) => fetch('/x/kb/api' + path, {
+			const post = (path, body, init = {}) => fetch('/x/kb/api' + path, {
 				method: 'POST', credentials: 'same-origin',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify(body || {}),
+				body: JSON.stringify(body || {}), ...init,
 			});
+			async function reportCurrentVault(id) {
+				id = String(id || '');
+				if (!id || reportedVault.id === id) { return; }
+				const controller = new AbortController();
+				let timer;
+				try {
+					await Promise.race([
+						post('/active-dir', { vaultId: id, dir: '' }, { signal: controller.signal }).then(async response => {
+							const body = await response.json();
+							if (!response.ok || body?.ok !== true || body.vaultId !== id) { throw new Error(body?.error || '当前知识库未保存，请刷新后重新选择'); }
+						}),
+						new Promise((_, reject) => { timer = setTimeout(() => { reject(new Error('当前知识库上报超时，请刷新后重试')); controller.abort(); }, 15_000); }),
+					]);
+					reportedVault.id = id;
+				} finally { clearTimeout(timer); }
+			}
 			/** 写成功后**只重挂面板**（面板不像插件页那样整页 reload，否则会丢失滚动与选中）。 */
 			const writeOp = (path, body) => post(path, body).then((r) => r.json()).then(async (b) => {
 				if (b && b.ok === false) { window.alert('操作失败：' + (b.error || '未知错误')); return; }
@@ -1621,9 +1642,12 @@ s.src = '/x/kb/web/kbSideview.js?v=' + Date.now();
 				// ★ 2026-11-02：刷新只换数据，不重建视图（否则打开中的文档被清空）
 			refresh: () => { void refreshData(); },
 				// 设置面板里的「切换库」：记住目标库再重新取数（`/api/view-data?vault=`）
-				switchVault: (id) => {
-					vaultWantRef.current = String(id || '');
-					void remountRef.current?.();
+				switchVault: async (id) => {
+					try {
+						await reportCurrentVault(id);
+						vaultWantRef.current = String(id || '');
+						await remountRef.current?.();
+					} catch (e) { setError('切换知识库失败：' + String(e?.message || e)); }
 				},
 				// 新建 / 本地载入库（写入 `<数据根>/.extra-vaults.json`，成功后自动切到新库）
 				addVault: (mode, path, name) => {

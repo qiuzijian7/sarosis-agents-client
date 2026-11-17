@@ -58,6 +58,7 @@ suite('dshHarness / 单版本 bundled + 插件层版本同步', () => {
 		try {
 			fs.mkdirSync(path.join(src, 'real'), { recursive: true });
 			fs.writeFileSync(path.join(src, 'real', 'a.txt'), 'FROM-REAL');
+			fs.writeFileSync(path.join(src, 'package.json'), '{}');
 			fs.symlinkSync(path.join(src, 'real'), path.join(src, 'link'), 'junction');
 			await copyProfileSeed(src, dest);
 			const linked = fs.lstatSync(path.join(dest, 'link'));
@@ -68,6 +69,80 @@ suite('dshHarness / 单版本 bundled + 插件层版本同步', () => {
 		}
 		const mod = code('src/vs/sessions/contrib/dshHarness/electron-main/dshProfileRuntimeSync.ts');
 		assert.match(mod, /dereference: true/, 'copyProfileSeed 必须显式 dereference: true');
+	});
+
+	for (const manifest of [undefined, '{ broken json', 'null', '[]']) {
+		test(`种子缺失或无效 manifest 不得落位：${manifest ?? '(缺失)'}`, async () => {
+			const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-seed-invalid-'));
+			try {
+				const seed = path.join(root, 'seed'), dest = path.join(root, 'dest');
+				fs.mkdirSync(seed);
+				fs.writeFileSync(path.join(seed, 'copied.txt'), 'PARTIAL');
+				if (manifest !== undefined) {
+					fs.writeFileSync(path.join(seed, 'package.json'), manifest);
+				}
+				await assert.rejects(() => copyProfileSeed(seed, dest));
+				assert.deepStrictEqual(fs.readdirSync(root), ['seed'], '不得留下可被 init/stamp 误认的目标或临时目录');
+			} finally {
+				fs.rmSync(root, { recursive: true, force: true });
+			}
+		});
+	}
+
+	test('种子复制不得合并或覆盖已有目标（包括空目录）', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-seed-existing-'));
+		try {
+			const seed = path.join(root, 'seed');
+			fs.mkdirSync(seed);
+			fs.writeFileSync(path.join(seed, 'package.json'), '{}');
+			for (const name of ['empty', 'existing']) {
+				const dest = path.join(root, name);
+				fs.mkdirSync(dest);
+				if (name === 'existing') {
+					fs.writeFileSync(path.join(dest, 'package.json'), '{"user":true}');
+				}
+				await assert.rejects(() => copyProfileSeed(seed, dest));
+				assert.deepStrictEqual(fs.readdirSync(dest), name === 'empty' ? [] : ['package.json']);
+				if (name === 'existing') {
+					assert.strictEqual(fs.readFileSync(path.join(dest, 'package.json'), 'utf8'), '{"user":true}');
+				}
+			}
+			assert.deepStrictEqual(fs.readdirSync(root).sort(), ['empty', 'existing', 'seed']);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('并发复制只有一个原子落位，失败调用不得清理获胜者', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-seed-race-'));
+		try {
+			const seed = path.join(root, 'seed'), dest = path.join(root, 'dest');
+			fs.mkdirSync(seed);
+			fs.writeFileSync(path.join(seed, 'package.json'), '{}');
+			fs.writeFileSync(path.join(seed, 'ready.txt'), 'COMPLETE');
+			const results = await Promise.allSettled(Array.from({ length: 8 }, () => copyProfileSeed(seed, dest)));
+			assert.strictEqual(results.filter(r => r.status === 'fulfilled').length, 1);
+			assert.strictEqual(fs.readFileSync(path.join(dest, 'ready.txt'), 'utf8'), 'COMPLETE');
+			assert.deepStrictEqual(fs.readdirSync(root).sort(), ['dest', 'seed']);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test('种子校验失败也必须恢复版本变更前的 profile', async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-seed-rollback-'));
+		try {
+			const seed = path.join(root, 'seed'), profile = path.join(root, 'profile'), backup = path.join(root, 'backup');
+			fs.mkdirSync(seed);
+			fs.writeFileSync(path.join(seed, 'package.json'), '{ broken json');
+			fs.mkdirSync(profile);
+			fs.writeFileSync(path.join(profile, 'keep.txt'), 'USER-DATA');
+			await assert.rejects(() => syncProfilePluginLayer(seed, profile, backup));
+			assert.strictEqual(fs.readFileSync(path.join(profile, 'keep.txt'), 'utf8'), 'USER-DATA');
+			assert.deepStrictEqual(fs.readdirSync(root).sort(), ['profile', 'seed']);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	test('2) 种子按版本找：只有版本匹配且 package.json 存在才返回', () => {

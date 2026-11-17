@@ -31,7 +31,7 @@ async function boot() {
 			VAULT_ID = String(data.activeVaultId || '');
 			const list = data.vaults || [];
 			const cur = list.find(v => v.id === VAULT_ID) || list[0];
-			if (cur) { VAULT_DIR = String(cur.dir || ''); }
+			if (cur) { VAULT_ID = String(cur.id || ''); VAULT_DIR = String(cur.dir || ''); }
 		}
 	} catch (e) {
 		data.indexState = 'stale';
@@ -42,11 +42,30 @@ async function boot() {
 	window.__KB_BOOT_STAGE__ = 'data';
 
 	// ② 动作：插件页能做的先接上，做不了的如实记录（不假装成功）
-	const post = (path, body) => fetch('/x/kb/api' + path, {
+	const post = (path, body, init = {}) => fetch('/x/kb/api' + path, {
 		method: 'POST', credentials: 'same-origin',
 		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify(body || {}),
+		body: JSON.stringify(body || {}), ...init,
 	});
+	const reportedVault = { id: '' };
+	async function reportCurrentVault(id) {
+		id = String(id || '');
+		if (!id || reportedVault.id === id) { return; }
+		const controller = new AbortController();
+		let timer;
+		try {
+			await Promise.race([
+				post('/active-dir', { vaultId: id, dir: '' }, { signal: controller.signal }).then(async response => {
+					const body = await response.json();
+					if (!response.ok || body?.ok !== true || body.vaultId !== id) { throw new Error(body?.error || '当前知识库未保存，请刷新后重新选择'); }
+				}),
+				new Promise((_, reject) => { timer = setTimeout(() => { reject(new Error('当前知识库上报超时，请刷新后重试')); controller.abort(); }, 15_000); }),
+			]);
+			reportedVault.id = id;
+		} finally { clearTimeout(timer); }
+	}
+	try { await reportCurrentVault(VAULT_ID); }
+	catch (e) { data.indexState = 'stale'; console.error('[kb-sideview] 当前知识库上报失败', e); }
 	// 组件的 path 是**绝对路径**（插件侧约定的宿主语义），而 /api/rename|delete 要相对库根的 rel
 	const BS = String.fromCharCode(92);            // 反斜杠（避免在模板串里堆转义）
 	const norm = s => String(s || '').split(BS).join('/');
@@ -148,6 +167,9 @@ async function boot() {
 					const body = await res.json();
 					const upd = window.__KB_SIDEVIEW_UPDATE__;
 					if (body && body.ok && body.data && typeof upd === 'function') {
+						const cur = (body.data.vaults || []).find(v => v.id === body.data.activeVaultId) || (body.data.vaults || [])[0];
+						if (cur) { VAULT_ID = String(cur.id || ''); VAULT_DIR = String(cur.dir || ''); }
+						await reportCurrentVault(VAULT_ID);
 						window.__KB_SIDEVIEW_DATA__ = body.data;
 						upd(body.data);
 						return;
@@ -160,10 +182,13 @@ async function boot() {
 		//   视图的逻辑是「有 openSettings 就交给宿主；没有就打开自己的设置面板」。
 		//   之前这里只是 console.warn ⇒ 宿主算"有"，面板却永远打不开。
 		//   现在不提供 ⇒ 视图用自己的设置面板（库切换 / 排序 / 能力清单 / 诊断）。
-		switchVault: id => {
-			const u = new URL(window.location.href);
-			u.searchParams.set('vault', String(id || ''));
-			window.location.href = u.href;
+		switchVault: async id => {
+			try {
+				await reportCurrentVault(id);
+				const u = new URL(window.location.href);
+				u.searchParams.set('vault', String(id || ''));
+				window.location.href = u.href;
+			} catch (e) { window.alert('切换知识库失败：' + String(e?.message || e)); }
 		},
 		// 新建 / 本地载入库：POST /api/vault-add，成功后带新库 id 重开页面
 		addVault: (mode, path, name) => {

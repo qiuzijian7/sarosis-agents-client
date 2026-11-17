@@ -402,14 +402,27 @@ suite('desktop 模式：IDE 主窗口不许露面（点登录也不许）', () =
 		const body = wms.slice(at, wms.indexOf('\n\tprivate ', at + 1));
 		assert.match(body, /this\.environmentMainService\.isBuilt/,
 			'隐藏启动判据必须包含 `environmentMainService.isBuilt`（打包版直接判据；只认 isEmbeddedApp ⇒ 打包版会闪 IDE ✗）');
-		assert.match(body, /const hidden = !hasTarget && \(isBuilt \|\| isEmbedded\)/,
-			'判据必须是「无目标参数 && (打包版 || isEmbeddedApp)」（带目录/文件的启动仍要露 IDE ✗）');
+		assert.match(body, /const hidden = \(isBuilt \|\| isEmbedded\) && \(openDesktopOnStartup \|\| !hasTarget\);/,
+			'判据必须是「(打包版 || isEmbeddedApp) && (默认开 Desktop || 无目标参数)」（默认开 Desktop 时带目标也不露 IDE ✗）');
 		assert.match(body, /wantsHiddenStart=\$\{hidden\}/,
 			'必须有可诊断日志（再出"闪 IDE"时能直接看出是哪个判据没成立 ✗）');
 
 		const full = stripComments(read(FULL_WINDOW));
-		// 首启等待要分阶段：Host 就绪后换文案（否则用户看不出是卡住还是在干活）
-		assert.match(full, /后台服务已就绪，正在加载界面/, 'Host 就绪后必须更新占位文案（阶段感）✗');
+		assert.match(full, /后台服务已就绪，正在加载界面/, 'Host 就绪后必须更新占位文案');
+		const bootAt = full.indexOf("const booting = append(auxWindow.container, $('.dsh-desktop-booting'));");
+		assert.ok(bootAt > 0);
+		const boot = full.slice(bootAt, full.indexOf('const muxReady =', bootAt));
+		assert.doesNotMatch(boot, /十几秒/, '首启/版本变更不能承诺秒级完成');
+		assert.match(boot, /首次启动或版本变更[\s\S]{0,60}分钟[\s\S]{0,40}请勿关闭窗口/);
+		const subscribeAt = boot.indexOf('this._dsh.onDidProgress(');
+		assert.ok(subscribeAt >= 0 && subscribeAt < boot.indexOf('await this._dsh.ensureStarted()'), '必须先订阅再启动');
+		assert.match(boot, /onDidProgress\(line => \{\s*booting\.textContent = line;/, '真实阶段必须更新占位');
+		assert.match(boot, /auxWindow\.onUnload\(\(\) => \{\s*bootProgress\.dispose\(\)/, '关窗释放进度订阅');
+		assert.match(boot, /closedWhileBooting = true;/, '确认窗口真的关闭后才中断启动流程');
+		assert.match(boot, /finally \{\s*bootProgress\.dispose\(\)/, '成功或失败后都要释放，避免覆盖后续阶段或错误');
+		const supervisor = stripComments(read('src/vs/sessions/contrib/dshHarness/electron-main/dshHostSupervisor.ts'));
+		assert.match(supervisor, /_progress\('版本变更：[\s\S]{0,100}分钟[\s\S]{0,40}请勿关闭窗口/);
+		assert.match(supervisor, /_progress\('首次启动：[\s\S]{0,100}分钟[\s\S]{0,40}请勿关闭窗口/);
 		// 延时缩短之后必须等工作区，不能把"还没到"当成"没打开工作区"
 		assert.match(full, /await this\._waitForWorkspaceCwd\(3_000\)/,
 			'会话解析必须等工作区就绪（延时缩到 800ms 后工作区可能还没落定 ✗）');
@@ -427,7 +440,10 @@ suite('desktop 模式：IDE 主窗口不许露面（点登录也不许）', () =
 		const iLog = timerBody.indexOf("startup: open the dsh desktop window by default");
 		assert.ok(iClaim >= 0, '启动开窗前必须 claim（否则渲染进程重载会再开一扇 ✗）');
 		assert.ok(iLog > iClaim, 'claim 必须排在"开窗"之前（顺序反了 = 先开再问，白问 ✗）');
-		assert.match(timerBody, /if \(!first\) \{[\s\S]{0,200}return;/, 'claim 说"已做过"时必须 return（不许继续开 ✗）');
+		assert.match(timerBody, /if \(!first\) \{[\s\S]{0,200}this\._startupWatchdogCanceled = true;/,
+			'claim 说"已做过"时必须撤销本实例看门狗（否则 20s 后误退出整个应用 ✗）');
+		assert.match(timerBody, /if \(!first\) \{[\s\S]{0,500}return;/,
+			'claim 说"已做过"时必须 return（不许继续开 ✗）');
 		assert.match(timerBody, /async \(\) =>/, '这个回调必须是 async（要 await claim）✗');
 
 		// 状态必须在主进程（进程级）：放渲染侧会随重载丢失 = 本缺陷成因
@@ -437,7 +453,8 @@ suite('desktop 模式：IDE 主窗口不许露面（点登录也不许）', () =
 		const caseAt = channel.indexOf('case DshHarnessChannelCommand.ClaimDesktopAutoOpen:');
 		assert.ok(caseAt > 0, '主进程缺少 ClaimDesktopAutoOpen 的落点 ✗');
 		const caseBody = channel.slice(caseAt, channel.indexOf('case DshHarnessChannelCommand.', caseAt + 1));
-		assert.match(caseBody, /this\._desktopAutoOpened\.has\(windowId\)/, '必须按 windowId 判重 ✗');
+		assert.match(channel, /private _desktopAutoOpenClaimed = false;/, '应用级认领状态必须在主进程 ✗');
+		assert.match(caseBody, /this\._desktopAutoOpenClaimed/, '必须走应用级认领闸门（多个 IDE 窗口也只开一扇桌面窗口 ✗）');
 		assert.match(caseBody, /this\._desktopAutoOpened\.add\(windowId\)/, '判过之后必须占位（否则每次都说"第一次"✗）');
 		assert.match(caseBody, /Number\.isInteger\(a\.windowId\) && a\.windowId > 0/,
 			'windowId 必须校验（跨进程边界 ⇒ 脏值不许进 ✗）');

@@ -78,7 +78,9 @@ check('图谱层没有使用 fixed 定位（会被宿主 transform 限制）',
 check('图谱有画布锚点', CLIENT.includes("'data-kb-graph-canvas': '1'"));
 check('图谱有返回入口（onClose → 切回 tree）',
 	/setPane\('tree'\)/.test(CLIENT));
-check('面板提供 switchVault（设置里切库）', /switchVault:\s*\(id\)\s*=>/.test(CLIENT));
+check('面板提供 switchVault（设置里切库，先保存当前库再切换）',
+	/switchVault:\s*async\s*\(id\)\s*=>/.test(CLIENT)
+	&& /switchVault:[\s\S]*?await reportCurrentVault\(id\);\s*\n\s*vaultWantRef\.current/.test(CLIENT));
 // 设置：IDE 由宿主开 editor pane；面板必须开**二级页面**（整页 + 返回），不是弹窗
 check('面板提供 openSettings 并切到二级页面', /openSettings:\s*\(\)\s*=>\s*setPane\('settings'\)/.test(CLIENT));
 check('已实现设置二级页面（data-kb-settings-page）', CLIENT.includes("'data-kb-settings-page': '1'"));

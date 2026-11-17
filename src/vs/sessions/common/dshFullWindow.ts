@@ -16,6 +16,12 @@
  *     不再走旧的「自绘聊天框 aux 窗口」路径；未注册 / 返回 false / 抛错 ⇒ 旧路径兜底。
  */
 
+/** 按构建环境生成桌面窗口标题，第二扇窗口起保留序号。 */
+export function getDshDesktopWindowTitle(isBuilt: boolean, windowNumber = 1): string {
+	const title = isBuilt ? 'vssaros - desktop' : 'vssaros-dev-desktop';
+	return windowNumber > 1 ? `${title} ${windowNumber}` : title;
+}
+
 export interface IDshFullWindowOpenArgs {
 	/** 触发弹窗时活动聊天页签的 chatId（用于解析"跟随当前聊天会话"）；非聊天上下文为 undefined。 */
 	readonly chatId?: string;

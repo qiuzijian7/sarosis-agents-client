@@ -47,6 +47,9 @@ const OK = [
 	`${DIR}/node_modules/@deepseek-ai/dsh/package.json`,
 	`${DIR}/node_modules/@deepseek-ai/dsh/lib/bin.js`,
 	`${DIR}/node_modules/@deepseek-ai/dsh-app-boot/package.json`,
+	`${DIR}/node_modules/@deepseek-ai/dsh-tools/package.json`,
+	`${DIR}/node_modules/@deepseek-ai/dsh-tools/lib/index.js`,
+	`${DIR}/node_modules/@deepseek-ai/dsh-tools/lib/pipeline.js`,
 ];
 
 suite('运行时副本可用性判据', () => {
@@ -66,10 +69,27 @@ suite('运行时副本可用性判据', () => {
 	test('③ 缺 bin.js / dsh 本体也要报', () => {
 		assert.deepStrictEqual(
 			runtimeInstallMissing(fsWith([`${DIR}/node_modules/@deepseek-ai/dsh/package.json`]), DIR),
-			['node_modules/@deepseek-ai/dsh/lib/bin.js', 'node_modules/@deepseek-ai/dsh-app-boot/package.json']);
+			OK.slice(1).map(p => p.slice(DIR.length + 1)));
 		assert.ok(runtimeInstallMissing(fsWith(OK.filter(p => !p.includes('dsh/package.json'))), DIR)
 			.includes('node_modules/@deepseek-ai/dsh/package.json'));
 	});
+
+	test('dsh-tools 空目录必须被识别，即使 CLI 构件完整', () => {
+		const present = OK.filter(p => !p.includes('/dsh-tools/'));
+		present.push(`${DIR}/node_modules/@deepseek-ai/dsh-tools`);
+		assert.deepStrictEqual(runtimeInstallMissing(fsWith(present), DIR), [
+			'node_modules/@deepseek-ai/dsh-tools/package.json',
+			'node_modules/@deepseek-ai/dsh-tools/lib/index.js',
+			'node_modules/@deepseek-ai/dsh-tools/lib/pipeline.js',
+		]);
+	});
+
+	for (const entry of ['lib/index.js', 'lib/pipeline.js']) {
+		test(`dsh-tools 包声明存在但缺 ${entry} 仍不可用`, () => {
+			const missing = `node_modules/@deepseek-ai/dsh-tools/${entry}`;
+			assert.deepStrictEqual(runtimeInstallMissing(fsWith(OK.filter(p => p !== `${DIR}/${missing}`)), DIR), [missing]);
+		});
+	}
 
 	test('④ 路径分隔符与尾斜杠不许影响判据', () => {
 		// Windows 反斜杠 + 尾部分隔符都要归一化，否则真要体检时会"全部判缺"

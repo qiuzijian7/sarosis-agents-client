@@ -2163,7 +2163,7 @@ export class DshHostSupervisor extends Disposable {
 		}
 		if (plan.kind === 'rebuild') {
 			const backup = `${dir}.bak-runtime-${plan.from.replace(/[^0-9A-Za-z.-]/g, '_')}-${Date.now()}`;
-			this._progress('正在按新版本同步 profile 插件层（备份后从内置副本初始化）…');
+			this._progress('版本变更：正在同步内置运行时，可能需要几分钟，请勿关闭窗口');
 			this._appendLog(`profile runtime ${plan.from} → ${dsh.version}：备份到 ${basename(backup)} 并从 ${plan.seedDir} 同步插件层`);
 			const { restoredUserData } = await syncProfilePluginLayer(plan.seedDir, dir, backup);
 			if (!existsSync(manifest)) {
@@ -2175,6 +2175,7 @@ export class DshHostSupervisor extends Disposable {
 		}
 
 		// plan.kind === 'init'：profile 不存在 —— 构建期预置的种子（有就整目录本地复制，零下载）
+		this._progress('首次启动：正在准备后台服务，可能需要几分钟，请勿关闭窗口');
 		if (plan.seedDir) {
 			this._progress('正在从内置副本初始化 profile（本地拷贝，无需下载）…');
 			const t0 = Date.now();

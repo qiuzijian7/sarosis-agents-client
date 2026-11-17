@@ -30,6 +30,10 @@ function makeFakeRuntime(root: string, version: string): string {
 	writeFileSync(join(scope, 'dsh', 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version }));
 	mkdirSync(join(scope, 'dsh-app-boot'), { recursive: true });
 	writeFileSync(join(scope, 'dsh-app-boot', 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-app-boot', version }));
+	mkdirSync(join(scope, 'dsh-tools', 'lib'), { recursive: true });
+	writeFileSync(join(scope, 'dsh-tools', 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-tools', version, main: 'lib/index.js' }));
+	writeFileSync(join(scope, 'dsh-tools', 'lib', 'index.js'), '');
+	writeFileSync(join(scope, 'dsh-tools', 'lib', 'pipeline.js'), '');
 	return bin;
 }
 
@@ -91,6 +95,18 @@ suite('dshHarness / bundled runtime resolution (single version)', () => {
 		assert.strictEqual(r.source, 'bundled');
 		assert.deepStrictEqual(rt.getInfo().installed, ['0.2.1-rc.2'], 'UI 里也只有这一个版本');
 		assert.strictEqual(rt.getInfo().current, '0.2.1-rc.2');
+	});
+
+	test('工具核心包为空时必须在版本探测之前拒绝启动', async () => {
+		const bundled = join(dir, 'bundled');
+		const bin = makeFakeRuntime(bundled, '0.2.2-rc.2');
+		const tools = join(bundled, '0.2.2-rc.2', 'node_modules', '@deepseek-ai', 'dsh-tools');
+		rmSync(tools, { recursive: true });
+		mkdirSync(tools);
+		writeFileSync(bin, "throw new Error('version probe must not run');\n");
+		const rt = new DshRuntimeManager(join(dir, 'managed'), () => { }, bundled, '0.2.2-rc.2');
+		await assert.rejects(() => rt.resolveDsh(undefined, node),
+			(e: Error) => e instanceof DshRuntimeError && e.code === 'dsh-missing' && /dsh-tools\/package\.json/.test(e.message));
 	});
 
 	test('setting 覆盖仍可用（仅排障开关，不参与产品版本管理）', async () => {

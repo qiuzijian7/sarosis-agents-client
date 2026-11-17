@@ -16,12 +16,11 @@
  * 而**两个方案的日志里都看不出"是运行时副本坏了"** —— 这次是靠手工跑 `bin.js --version`
  * 才定位到的 ✗。
  *
- * ⇒ 选运行时之前先做一次**廉价**的文件级体检（不 spawn 子进程）：关键构件缺任何一项，
- *   就跳过这份、回落到下一个候选（bundled / global），并留一行日志说明缺什么。
+ * 解析唯一内置运行时之前做文件级体检：关键构件缺失就报告安装包不完整，
+ * 不切换版本，也不把损坏副本交给 Host。
  *
- * ⚠ 判据只查"必然存在的构件"，不查完整依赖树：
- *   `@deepseek-ai/dsh`（入口包）、它的 `lib/bin.js`、以及 `@deepseek-ai/dsh-app-boot`
- *   —— 后者是 `bin.js` 的第一个 import，缺它必崩（本次就是这个）。
+ * 检查 CLI 与工具核心的构件，不遍历完整依赖树。`dsh --version` 不加载工具插件，
+ * 因此版本探测成功并不能证明 `dsh-tools` 的包声明、注册表和执行管线完整。
  */
 export function runtimeInstallMissing(
 	exists: (absPath: string) => boolean,
@@ -31,6 +30,9 @@ export function runtimeInstallMissing(
 		'node_modules/@deepseek-ai/dsh/package.json',
 		'node_modules/@deepseek-ai/dsh/lib/bin.js',
 		'node_modules/@deepseek-ai/dsh-app-boot/package.json',
+		'node_modules/@deepseek-ai/dsh-tools/package.json',
+		'node_modules/@deepseek-ai/dsh-tools/lib/index.js',
+		'node_modules/@deepseek-ai/dsh-tools/lib/pipeline.js',
 	];
 	// 统一用 `/` 拼接：Windows 的 fs 也认正斜杠，这样判据在单测里可以完全不碰平台差异。
 	const base = installDir.replace(/[\\/]+$/, '').replace(/\\/g, '/');

@@ -4313,19 +4313,17 @@ function toolDefinitions(ctx, state, config) {
 			//   6 个写工具都跟着改了解构，**唯独这里漏了** ⇒ 对象被拿去和 `item.id` 比较，永远不相等
 			//   ⇒ `picked` 永远 undefined ⇒ `baseRoot` 停在数据根 ⇒ 相对路径全部解析到
 			//   `<数据根>/笔记/...`（不存在）✗。这是"读取根目录错误"的直接原因。
-			const readPick = await vaultWantedOf(params, config);
-			const wantedVault = readPick.vaultId;
 			const isFileUri = /^file:/i.test(uri);
 			const extraRoots = externalVaultRecords(config).map(item => item.dir);
 			let baseRoot = root();
+			let wantedVault = '';
 			if (!isFileUri) {
-				const { vaults } = await listAllVaults(root(), config, { withDocs: false });
-				const picked = wantedVault ? vaults.find(item => item.id === wantedVault) : undefined;
-				if (picked) {
-					baseRoot = picked.dir;
-					// 围栏放宽到**所有库根**（否则从 A 库解析出的路径会被 B 库的 extraRoots 漏掉 ✓）
-					for (const item of vaults) { if (item.dir) { extraRoots.push(item.dir); } }
-				}
+				const readPick = await vaultWantedOf(params, config, { preferExplicit: true });
+				wantedVault = readPick.vaultId;
+				const picked = readPick.vaults.find(item => item.id === wantedVault);
+				if (!picked) { throw new Error(`找不到 vault：${wantedVault}`); }
+				baseRoot = picked.dir;
+				for (const item of readPick.vaults) { if (item.dir) { extraRoots.push(item.dir); } }
 			}
 			// ★ 2026-10-19：**读失败也要留痕**。此前只有 `kb_write_note` 写日志 ⇒
 			//   `kb_read` 报 ENOENT 时完全查不到"它到底用了哪个 baseRoot"（真机就此反复卡住 ✗）。
@@ -4532,7 +4530,7 @@ function toolDefinitions(ctx, state, config) {
 		const vaultPick = await vaultWantedOf(params, config);
 		const wanted = vaultPick.vaultId;
 			if (wanted && !isVaultId(wanted)) { throw new Error(`vaultId 形态不合法：${wanted}`); }
-			const { vaults, missing } = await listAllVaults(root(), config, { withDocs: false });
+			const { vaults, missing } = vaultPick;
 			if (missing) { throw new Error(`资料库根目录还不存在：${missing}`); }
 			const targets = wanted ? vaults.filter(vault => vault.id === wanted) : vaults;
 			if (wanted && !targets.length) { throw new Error(`找不到 vault：${wanted}`); }
@@ -4666,7 +4664,7 @@ function toolDefinitions(ctx, state, config) {
 			if (mode !== 'preview' && mode !== 'build') {
 				throw new Error(`未知的 mode：${mode}（本侧支持 preview / build）`);
 			}
-			const { vaults, missing } = await listAllVaults(root(), config, { withDocs: false });
+			const { vaults, missing } = vaultPick;
 			if (missing) { throw new Error(`资料库根目录还不存在：${missing}`); }
 			const targets = wanted ? vaults.filter(vault => vault.id === wanted) : vaults;
 			if (wanted && !targets.length) { throw new Error(`找不到 vault：${wanted}`); }
@@ -4806,7 +4804,7 @@ function toolDefinitions(ctx, state, config) {
 		const vaultPick = await vaultWantedOf(params, config);
 		const wanted = vaultPick.vaultId;
 			if (wanted && !isVaultId(wanted)) { throw new Error(`vaultId 形态不合法：${wanted}`); }
-			const { vaults, missing } = await listAllVaults(root(), config, { withDocs: false });
+			const { vaults, missing } = vaultPick;
 			if (missing) { throw new Error(`资料库根目录还不存在：${missing}`); }
 			const targets = wanted ? vaults.filter(vault => vault.id === wanted) : vaults;
 			if (wanted && !targets.length) { throw new Error(`找不到 vault：${wanted}`); }
@@ -4895,7 +4893,7 @@ function toolDefinitions(ctx, state, config) {
 		const vaultPick = await vaultWantedOf(params, config);
 		const wanted = vaultPick.vaultId;
 			if (wanted && !isVaultId(wanted)) { throw new Error(`vaultId 形态不合法：${wanted}`); }
-			const { vaults, missing } = await listAllVaults(root(), config, { withDocs: false });
+			const { vaults, missing } = vaultPick;
 			if (missing) { throw new Error(`资料库根目录还不存在：${missing}`); }
 			const targets = wanted ? vaults.filter(vault => vault.id === wanted) : vaults;
 			if (wanted && !targets.length) { throw new Error(`找不到 vault：${wanted}`); }
@@ -4970,7 +4968,7 @@ function toolDefinitions(ctx, state, config) {
 			if (wanted && !isVaultId(wanted)) { throw new Error(`vaultId 形态不合法：${wanted}`); }
 			const mode = String(params?.mode ?? '').trim();
 			if (!['merge', 'generate', 'refine', 'rename'].includes(mode)) { throw new Error(`未知的 mode：${mode}（本侧支持 merge / generate / refine / rename）`); }
-			const { vaults, missing } = await listAllVaults(root(), config, { withDocs: false });
+			const { vaults, missing } = vaultPick;
 			if (missing) { throw new Error(`资料库根目录还不存在：${missing}`); }
 			const targets = wanted ? vaults.filter(vault => vault.id === wanted) : vaults;
 			if (targets.length !== 1) {
@@ -5549,7 +5547,7 @@ function toolDefinitions(ctx, state, config) {
 			if (wanted && !isVaultId(wanted)) {
 				throw new Error(`vaultId 形态不合法：${wanted}`);
 			}
-			const { vaults, missing } = await listAllVaults(root(), config, { withDocs: false });
+			const { vaults, missing } = vaultPick;
 			if (missing) {
 				throw new Error(`资料库根目录还不存在：${missing}`);
 			}
@@ -5815,31 +5813,26 @@ async function logKbWrite(config, line) {
 	} catch { /* 日志失败不影响写入 */ }
 }
 
-async function vaultWantedOf(params, config) {
+async function vaultWantedOf(params, config, { preferExplicit = false } = {}) {
 	const explicit = typeof params?.vaultId === 'string' ? params.vaultId.trim() : '';
-	// 页面最后上报的当前库 → IDE 注回值
-	let current = '';
-	try {
-		current = await readActiveVault({ readFile }, kbRootOf(config));
-	} catch { /* 读不到就退回注入值 */ }
-	if (!current) {
-		current = typeof config?.kbActiveVaultId === 'string' ? config.kbActiveVaultId.trim() : '';
+	if (explicit && !isVaultId(explicit)) { throw new Error(`vaultId 形态不合法：${explicit}`); }
+	const root = kbRootOf(config);
+	const { vaults, missing } = await listAllVaults(root, config, { withDocs: false });
+	if (missing) { throw new Error(`资料库根目录还不存在：${missing}`); }
+	const validIds = new Set(vaults.map(v => v.id));
+	if (explicit && !validIds.has(explicit)) {
+		throw new Error(`找不到 vault：${explicit}。有效知识库：${vaults.map(v => v.id).join(', ') || '(无)'}`);
 	}
-	// ★★ 2026-10-19（用户拍板方案 A）：**当前库优先于模型显式参数**。
-	//
-	// 真机事故：用户页面选的是 `20260922123131-827wo3k`（我的知识库 / E:/VsSarosVault），
-	//   而模型调 `kb_write_note` 时显式传了 `20260709063858-azbh1at` —— 它刚才 `kb_search`（**跨库** ✓）
-	//   在那个库的「库」区搜到了素材，于是判断"内容在那儿"，笔记就写进了那个库 ✗。
-	//   ⇒ 用户看不到笔记、另一个库却多了一篇（`知识库列表/00-入门与导读/...` 实测）。
-	//
-	// 现在的口径：**用户当前所在的位置就是默认落点**。模型想写别的库会被纠正，
-	//   并把被纠正的值放进返回值（调用方要写进工具结果 ⇒ 模型和用户都能看见"落点被改过" ✓，
-	//   静默改库是本仓明令禁止的那种"最难查" ✗）。
-	//   ⚠ 想往别的库写 ⇒ 先在页面上切库（切库会上报 ✓）。
-	if (current && explicit && explicit !== current) {
-		return { vaultId: current, overriddenFrom: explicit };
+	const active = (await readActiveVault({ readFile }, root)).trim();
+	const configured = typeof config?.kbActiveVaultId === 'string' ? config.kbActiveVaultId.trim() : '';
+	const current = [active, configured].find(id => validIds.has(id)) || '';
+	// 写入沿用有效当前库优先；读取遵守显式参数。陈旧记录只忽略，不修改用户配置。
+	const wanted = preferExplicit ? (explicit || current) : (current || explicit);
+	const vaultId = wanted || (vaults.length === 1 ? vaults[0].id : '');
+	if (!vaultId) {
+		throw new Error(`请明确选择知识库并传 vaultId（有效库 ${vaults.length} 个）：${vaults.map(v => v.id).join(', ') || '(无)'}`);
 	}
-	return { vaultId: explicit || current };
+	return { vaultId, vaults, ...(explicit && explicit !== vaultId ? { overriddenFrom: explicit } : {}) };
 }
 
 /**
@@ -6972,6 +6965,11 @@ export function apply(ctx, config = {}) {
 						const vaultId = String(payload?.vaultId ?? '');
 						const dirRel = String(payload?.dir ?? '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
 						if (!isVaultId(vaultId)) { send(400, { ok: false, error: `vaultId 形态不合法：${vaultId}` }); return; }
+						const { vaults } = await listAllVaults(kbRootOf(config), config, { withDocs: false });
+						if (!vaults.some(v => v.id === vaultId)) {
+							send(400, { ok: false, error: `找不到 vault：${vaultId}。请刷新知识库列表后重新选择。` });
+							return;
+						}
 						if (dirRel && dirRel !== NOTES_DIR && !dirRel.startsWith(NOTES_DIR + '/')) {
 							send(400, { ok: false, error: `当前目录只支持「笔记」区：${dirRel}` });
 							return;

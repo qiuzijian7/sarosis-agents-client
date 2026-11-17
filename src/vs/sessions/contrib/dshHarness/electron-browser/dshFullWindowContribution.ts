@@ -25,11 +25,13 @@
  * 那套全局处理（作用于主窗口），与聊天宿主"只处理自己负责的少数方法"同口径。
  */
 
-import { $, append } from '../../../../base/browser/dom.js';
+import { $, addDisposableListener, append } from '../../../../base/browser/dom.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { localize } from '../../../../nls.js';
 // ⚠ 2026-11-04 补：`getZoomFactor` 缺 import 会让整个项目编译不过（3 处使用），
 //   产物不更新 ⇒ 所有 dev 改动都"不生效"。定义在 base/browser/browser.js。
 import { getZoomFactor } from '../../../../base/browser/browser.js';
-import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 // ★ 2026-11-04：caption「应用 / 编辑」菜单用**原生菜单**（画在所有 WebContentsView 之上）。
 import { popup } from '../../../../base/parts/contextmenu/electron-browser/contextmenu.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -44,7 +46,8 @@ import { IProductService } from '../../../../platform/product/common/productServ
 import { FocusMode, INativeHostService } from '../../../../platform/native/common/native.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IAuxiliaryWindowService } from '../../../../workbench/services/auxiliaryWindow/browser/auxiliaryWindowService.js';
-import { setDshFullWindowOpener, setDshPaneActionOpener, setDshSplitPaneOpener, type DshPaneAction } from '../../../common/dshFullWindow.js';
+import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
+import { getDshDesktopWindowTitle, setDshFullWindowOpener, setDshPaneActionOpener, setDshSplitPaneOpener, type DshPaneAction } from '../../../common/dshFullWindow.js';
 import { dshChatNewSessionId } from '../common/dshChatSession.js';
 // ★ 2026-11-04：菜单模板 + 动作/命令封闭集（common 层纯函数，有守卫做行为级断言）。
 import { desktopMenuLabel, desktopMenuNames, dshDesktopMenuTemplate, type DshDesktopMenuAction, type DshDesktopMenuCommand, type DshDesktopMenuName } from '../common/dshDesktopMenu.js';
@@ -57,7 +60,7 @@ import { DESKTOP_PANE_HEAD_H, DshDesktopSplitChrome, type IDshChromePane, type I
 import type { IContextMenuItem } from '../../../../base/parts/contextmenu/common/contextmenu.js';
 // ★ 2026-10-30（运行时自测）：读环境变量 `VSSAROS_DSH_SPLIT_SELFTEST` ⇒ 开窗后自动跑一遍多格场景。
 import { process as sandboxProcess } from '../../../../base/parts/sandbox/electron-browser/globals.js';
-import { decideSessionStartRetry, SESSION_START_MAX_ATTEMPTS, sessionStartRetryDelayMs } from '../common/dshDesktopSessionStart.js';
+import { decideSessionStartRetry, ensureDesktopHostStarted, SESSION_START_MAX_ATTEMPTS, sessionStartRetryDelayMs } from '../common/dshDesktopSessionStart.js';
 import { IDshHarnessService } from './dshHarnessService.js';
 
 /**
@@ -171,6 +174,7 @@ export class DshFullWindowContribution extends Disposable {
 		@INotificationService private readonly _notifications: INotificationService,
 		// ★ 2026-10-29（分屏比例持久化）：比例存 IDE storage（各栏跨分区，页面 localStorage 不共享 ✗）。
 		@IStorageService private readonly _storageService: IStorageService,
+		@IWorkbenchEnvironmentService private readonly _environmentService: IWorkbenchEnvironmentService,
 	) {
 		super();
 		// 恢复上次的分屏比例（拖过分隔条就记住 ⇒ 下次开窗沿用）✓
@@ -251,6 +255,11 @@ export class DshFullWindowContribution extends Disposable {
 			const settle = () => {
 				if (!settled) {
 					settled = true;
+					this._startupWatchdogCanceled = true;
+					if (startupWatchdog) {
+						clearTimeout(startupWatchdog);
+						startupWatchdog = undefined;
+					}
 					void this._settleIdeWindowAfterStartup(true);
 				}
 			};
@@ -258,10 +267,18 @@ export class DshFullWindowContribution extends Disposable {
 			//   开窗失败也**不再**把 IDE 亮出来 —— 桌面模式就是这个 app 的全部界面，
 			//   露出 IDE 等于"启动失败反而切回 IDE"✗。改为打日志 + 退出（不留一个没有界面的进程 ✓）。
 			void this._open({}, settle)
-				.then(opened => opened ? settle() : this._quit('桌面窗口没有开出来'))
+				.then(opened => {
+					if (this._store.isDisposed) { return; }
+					if (opened) { settle(); }
+					else if (!settled) { return this._quit('桌面窗口没有开出来'); }
+					return;
+				})
 				.catch(err => {
+					if (this._store.isDisposed) { return; }
 					this._log.warn('[dshHarness] startup: opening the dsh desktop window failed', err);
-					return this._quit('桌面窗口开窗失败');
+					if (!settled) { return this._quit('桌面窗口开窗失败'); }
+					this._log.warn('[dshHarness] startup: 桌面窗口已打开，后续初始化失败 ⇒ 保留桌面窗口，不退出应用');
+					return;
 				});
 			// ★ 2026-10-28（用户：「首次打开加载时间太长」）：这个延时原本是 2.5s，纯粹是"等布局稳定"的空等
 			//   —— 用户在打包版首启要面对 30s+ 的等待，前面再加 2.5s 白屏毫无收益。
@@ -1451,7 +1468,7 @@ export class DshFullWindowContribution extends Disposable {
 	 *
 	 * 右侧工作台页签 = P2（先把"能进会话、能打字"这条主线立住）。
 	 */
-	private async _openComposed(auxWindow: Awaited<ReturnType<IAuxiliaryWindowService['open']>>, windowId: number, sessionId: string | undefined, booting?: HTMLElement, titleBarH = 0, windowTitle = 'VsSaros — Desktop'): Promise<boolean> {
+	private async _openComposed(auxWindow: Awaited<ReturnType<IAuxiliaryWindowService['open']>>, windowId: number, sessionId: string | undefined, booting?: HTMLElement, titleBarH = 0, windowTitle = getDshDesktopWindowTitle(this._environmentService.isBuilt)): Promise<boolean> {
 		const win = auxWindow.window;
 		const container = auxWindow.container;
 		container.style.background = 'var(--vscode-editor-background)';
@@ -1714,6 +1731,29 @@ export class DshFullWindowContribution extends Disposable {
 		this._log.info(`[dshHarness] probe: 结论 = 容器${content ? '在' : '缺'}、phase=${heroPhase ? 'hero（入口该显）' : '非 hero（入口该藏）'}`);
 	}
 
+	private readonly _desktopBootDisposables = this._register(new DisposableStore());
+
+	private _waitForDesktopHostRetry(booting: HTMLElement, message: string, token: CancellationToken): Promise<boolean> {
+		if (token.isCancellationRequested) { return Promise.resolve(false); }
+		booting.replaceChildren();
+		const content = append(booting, $('.dsh-desktop-startup-error'));
+		content.style.cssText = 'max-width:640px;padding:32px;text-align:center;white-space:pre-wrap;overflow-wrap:anywhere;';
+		append(content, $('p')).textContent = localize('dsh.desktop.hostStartFailed', "VsSaros 后台服务启动失败：{0}", message);
+		append(content, $('p')).textContent = localize('dsh.desktop.hostRetryHint', "请修复或重新安装运行时，然后重试。无需关闭此窗口。");
+		const retry = append(content, $('button'));
+		retry.textContent = localize('dsh.desktop.retryHost', "重试");
+		retry.style.cssText = 'padding:6px 20px;color:var(--vscode-button-foreground);background:var(--vscode-button-background);border:0;cursor:pointer;';
+		return new Promise<boolean>(resolve => {
+			const disposables = new DisposableStore();
+			const finish = (value: boolean) => {
+				disposables.dispose();
+				resolve(value);
+			};
+			disposables.add(addDisposableListener(retry, 'click', () => finish(true)));
+			disposables.add(token.onCancellationRequested(() => finish(false)));
+		});
+	}
+
 	/**
 	 * @param onShellOpened 桌面窗口**壳**一出现就回调（此刻 Host 可能还在冷启动）——启动流程用它藏 IDE。
 	 *   复用已开窗口时不回调（调用方按返回值兜底）。
@@ -1760,7 +1800,7 @@ export class DshFullWindowContribution extends Disposable {
 		const windowId = win.vscodeWindowId;
 		// ★ 2026-10-29（多开）：第 2 扇起标题带序号 ⇒ 用户分得清哪扇是哪扇 ✓
 		const windowNo = this._desktopWindows.size + 1;
-		const windowTitle = windowNo > 1 ? `VsSaros — Desktop ${windowNo}` : 'VsSaros — Desktop';
+		const windowTitle = getDshDesktopWindowTitle(this._environmentService.isBuilt, windowNo);
 		win.document.title = windowTitle;
 		auxWindow.container.style.background = 'var(--vscode-editor-background)';
 		// 自绘标题条（颜色取当前主题 ⇒ 与页面一致；拖拽也由它承担）
@@ -1770,7 +1810,7 @@ export class DshFullWindowContribution extends Disposable {
 		booting.style.cssText = `position:absolute;inset:${titleBarH}px 0 0 0;display:flex;align-items:center;justify-content:center;color:var(--vscode-descriptionForeground);font-size:13px;`;
 		// ★ 2026-10-28（用户：「首次打开加载时间太长」）：文案分阶段。原来一句话挂到底，
 		//   用户看不出是"卡住了"还是"在干活"⇒ 首启 30s 的体感比实际更糟。
-		booting.textContent = '正在启动后台服务…（首次启动或插件更新后需要十几秒，之后会快很多）';
+		booting.textContent = '首次启动或版本变更需要几分钟，请勿关闭窗口；后续启动会快很多';
 		// Host 就绪前用户就把窗口关了 ⇒ **退出应用**（2026-10-22 用户要求：桌面模式下不露 IDE）：
 		//   · 隐藏启动下 IDE 主窗口**从出生就是隐藏的**（`_ideHiddenByStartup` 可能还没置位）⇒
 		//     只走 `_quitAfterDesktopClosed` 会判"不是我们藏的"而跳过 ⇒ 进程活着却没有界面 ✗；
@@ -1779,29 +1819,49 @@ export class DshFullWindowContribution extends Disposable {
 		// 只有**启动流程**自动开的窗（带 `onShellOpened`）或"IDE 已被我们藏起来"时才退；
 		// 手动 popout（IDE 还露着、用户在用）关掉桌面窗口不该把整个 app 带走 ✓
 		const quitsOnClose = !!onShellOpened || this._ideHiddenByStartup;
-		const bootUnload = auxWindow.onUnload(() => {
-			closedWhileBooting = true;
-			this._ideHiddenByStartup = false;   // 同步清 ⇒ 拼装期那个 onUnload 若同时触发不会重复退出
-			// 同上（2026-10-24）：unload 也可能是导航/重载 ⇒ 延后确认窗口真的没了才退。
-			if (quitsOnClose) {
-				setTimeout(() => {
-					// 判活口径与 `_openComposed` 里一致：探 document，而不是只看 `closed` ✗
-					let alive = false;
-					try { alive = !win.closed && !!win.document && String(win.document.readyState) !== ''; } catch { alive = false; }
-					if (!alive) { void this._quit('桌面窗口在启动阶段被关闭'); }
-				}, 1200);
-			}
+		const bootDisposables = this._desktopBootDisposables.add(new DisposableStore());
+		const bootCancellation = new CancellationTokenSource();
+		bootDisposables.add(toDisposable(() => bootCancellation.dispose(true)));
+		const bootProgress = this._dsh.onDidProgress(line => {
+			booting.textContent = line;
 		});
+		bootDisposables.add(bootProgress);
+		bootDisposables.add(auxWindow.onUnload(() => {
+			bootProgress.dispose();
+			const timer = setTimeout(() => {
+				let alive = false;
+				try { alive = !win.closed && !!win.document && String(win.document.readyState) !== ''; } catch { alive = false; }
+				if (alive) { return; }
+				closedWhileBooting = true;
+				bootCancellation.cancel();
+				this._desktopBootDisposables.delete(bootDisposables);
+				if (quitsOnClose) {
+					this._ideHiddenByStartup = false;
+					void this._quit('桌面窗口在启动阶段被关闭');
+				}
+			}, 1200);
+			bootDisposables.add(toDisposable(() => clearTimeout(timer)));
+		}));
 		onShellOpened?.();
+		let hostReady = false;
 		try {
-			await this._dsh.ensureStarted();
-			// 第 2 阶段：后台进程已起 ⇒ 换文案（剩下的是等会话通道 + 建视图 + 页面首帧）
-			booting.textContent = '后台服务已启动，正在等待会话通道就绪…';
-		} catch (err) {
-			booting.textContent = `VsSaros 后台服务启动失败：${String((err as Error)?.message ?? err)}`;
-			bootUnload.dispose();
-			throw err;
+			hostReady = await ensureDesktopHostStarted(async () => {
+				if (!bootCancellation.token.isCancellationRequested) {
+					booting.textContent = localize('dsh.desktop.startingHost', "正在启动后台服务…");
+					await this._dsh.ensureStarted();
+				}
+			}, message => {
+				this._log.warn(`[dshHarness] desktop: 后台服务启动失败，保留窗口等待重试：${message}`);
+				return this._waitForDesktopHostRetry(booting, message, bootCancellation.token);
+			});
+		} finally {
+			bootProgress.dispose();
 		}
+		if (!hostReady || closedWhileBooting || bootCancellation.token.isCancellationRequested) {
+			this._desktopBootDisposables.delete(bootDisposables);
+			return false;
+		}
+		booting.textContent = '后台服务已启动，正在等待会话通道就绪…';
 		// ★★ 2026-10-29（真机 logs/20261029T101501）：Host 说 ready 时，mux 升级路由还没注册
 		//   （mux route available +4777 ms after Host ready，历史样本到 +11.4s）⇒ 这段时间里任何
 		//   session.start 都必然失败 ⇒ 桌面窗口原本只能退避重试（4s/12s）并弹一条假的"启动失败"黄条。
@@ -1815,7 +1875,7 @@ export class DshFullWindowContribution extends Disposable {
 			booting.textContent = '后台服务已启动，正在加载界面…';
 		}
 		if (closedWhileBooting) {
-			bootUnload.dispose();
+			this._desktopBootDisposables.delete(bootDisposables);
 			this._log.info('[dshHarness] desktop window closed while the Host was starting ⇒ 不再继续建视图');
 			return false;
 		}
@@ -1843,15 +1903,15 @@ export class DshFullWindowContribution extends Disposable {
 			try {
 				return await this._openComposed(auxWindow, windowId, sessionId, booting, titleBarH, windowTitle);
 			} finally {
-				bootUnload.dispose();
+				this._desktopBootDisposables.delete(bootDisposables);
 			}
 		}
-		bootUnload.dispose();
+		this._desktopBootDisposables.delete(bootDisposables);
 		// web 档有自己的占位（文案不同）⇒ 先撤掉启动占位，免得两层叠字
 		booting.remove();
 		const container = auxWindow.container;
 		container.style.background = 'var(--vscode-editor-background)';
-		win.document.title = 'VsSaros — DeepSeek Harness';
+		win.document.title = windowTitle;
 
 		// 加载提示占位（原生视图盖上来之前别让用户对着一块纯色猜）。
 		// ⚠ 元素必须用**主窗口** document 创建（aux 窗口的 createElement 被禁，见分层约定）。

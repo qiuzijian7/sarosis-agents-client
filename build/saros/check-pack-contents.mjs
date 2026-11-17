@@ -26,6 +26,7 @@
 import { closeSync, existsSync, openSync, readSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkDshRuntime } from './check-dsh-runtime.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '../..');
@@ -351,6 +352,20 @@ if (existsSync(appDir)) {
 		}
 		console.log(`  · 依赖闭包核对：扫到 ${required.size} 个 @vscode/* 引用`);
 	}
+}
+
+try {
+	const compat = JSON.parse(readFileSync(join(ROOT, 'dsh-plugins/dsh-compat.json'), 'utf8'));
+	if (!compat.bundled) {
+		problems.push('dsh-compat.json 缺 bundled，无法核对随包运行时');
+	} else {
+		const runtimeDir = join(appDir, 'dsh-runtime', compat.bundled);
+		const problem = checkDshRuntime(runtimeDir, compat.bundled);
+		if (problem) { problems.push(problem); }
+		else { console.log(`  · 随包运行时启动检查通过：${compat.bundled}`); }
+	}
+} catch (error) {
+	problems.push(`随包运行时检查失败：${error.message}`);
 }
 
 if (problems.length) {

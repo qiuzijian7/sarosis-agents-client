@@ -114,3 +114,17 @@ export function sessionStartRetryDelayMs(attempt: number): number {
 
 /** 默认最多试几次（含第一次）。 */
 export const SESSION_START_MAX_ATTEMPTS = 3;
+
+/** 保留已经打开的桌面壳，后台启动失败后仅在用户确认重试时重新启动。 */
+export async function ensureDesktopHostStarted(start: () => Promise<void>, waitForRetry: (message: string) => Promise<boolean>): Promise<boolean> {
+	for (;;) {
+		try {
+			await start();
+			return true;
+		} catch (error) {
+			if (!await waitForRetry(error instanceof Error ? error.message : String(error))) {
+				return false;
+			}
+		}
+	}
+}

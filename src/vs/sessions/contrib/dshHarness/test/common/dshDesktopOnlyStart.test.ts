@@ -63,4 +63,12 @@ suite('启动只露桌面窗口（不许 IDE 闪一下）', () => {
 		assert.ok(at > 0, '找不到 OpenDesktopOnStartup 的配置声明');
 		assert.match(src.slice(at, at + 300), /default: true/, '该设置默认必须是 true');
 	});
+
+	test('4) app 启动项必须在创建窗口之前显式开启隐藏启动', () => {
+		const src = read('scripts/start-dev-app.mjs');
+		const at = src.indexOf('const child = spawn(EXE, args, {');
+		assert.ok(at > 0, '找不到 app 启动入口');
+		const env = src.slice(at, src.indexOf('\n});', at));
+		assert.match(env, /VSSAROS_START_HIDDEN: '1'/);
+	});
 });

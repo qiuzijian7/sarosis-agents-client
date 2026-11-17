@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { dshChatNewSessionId } from '../../common/dshChatSession.js';
+import { getDshDesktopWindowTitle } from '../../../../common/dshFullWindow.js';
 
 const file = 'src/vs/sessions/contrib/dshHarness/electron-browser/dshFullWindowContribution.ts';
 const source = readFileSync(join(process.cwd(), file), 'utf8');
@@ -72,8 +73,9 @@ suite('desktop workspace switch: command consumer and session rebind', () => {
 		const startup = ts.transpileModule(`class StartupHost { ${prefix}\nreturn true; } }`, {
 			compilerOptions: { target: ts.ScriptTarget.ES2022 }
 		}).outputText;
-		const StartupHost = new Function(`${startup}; return StartupHost;`)();
+		const StartupHost = new Function('getDshDesktopWindowTitle', `${startup}; return StartupHost;`)(getDshDesktopWindowTitle);
 		const host = new StartupHost();
+		host._environmentService = { isBuilt: false };
 		const calls: any[] = [];
 		host._dsh = { createView: async (...args: any[]) => { calls.push(['create', ...args]); } };
 		host._wirePageCommands = (...args: any[]) => { calls.push(['wire', ...args]); };
@@ -147,7 +149,7 @@ suite('desktop workspace switch: command consumer and session rebind', () => {
 		f.host._wirePageCommands(f.viewId, undefined);
 		f.send('/repo/a');
 		await f.flush();
-		assert.deepStrictEqual(f.calls, []);
+		assert.strictEqual(f.calls.length, 0);
 		assert.match(f.failures[0], /agent-preset\/invalid/);
 		f.host._dsh.startSession = original;
 		f.send('/repo/b');
