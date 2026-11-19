@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-foundation",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "VsSaros dsh foundation plugin: shared runtime services for all @vssaros/dsh-* plugins (dataRoot / dshHome resolution, page shell, cross-process write lock, runtime workspace context). Single source of the formerly copied implementations.",
   "private": true,
   "type": "module",

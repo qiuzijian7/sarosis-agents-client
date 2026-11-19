@@ -145,10 +145,27 @@ Object.defineProperty(window.navigator, 'clipboard', { value: { writeText: async
 // Node 22 自带只读的全局 navigator ⇒ 换成 jsdom 的（chunk 里读的是全局 `navigator`）
 Object.defineProperty(globalThis, 'navigator', { value: window.navigator, configurable: true, writable: true });
 
+const sharedJsx = await import('react/jsx-runtime');
+globalThis.requestAnimationFrame = window.requestAnimationFrame.bind(window);
+globalThis.cancelAnimationFrame = window.cancelAnimationFrame.bind(window);
+window.matchMedia ||= () => ({ matches: true });
+const rowPrimitives = {
+	HoverCard: ({ anchor }) => anchor,
+	StateDot: ({ state }) => React.createElement('i', { 'data-state': state }),
+	Tooltip: ({ children }) => children,
+	IconPinFillRegular: () => React.createElement('i'),
+	useRowDragPreview: () => ({ start() {}, clear: () => true }),
+	relativeTime: () => ({ unit: 'now', n: 0 }),
+};
 const loadChunk = (rel) => {
 	let captured = null;
 	window.__ModuleLoader__ = { load: m => { captured = m; } };
-	const fakeRequire = (name) => { if (name === 'react') { return React; } throw new Error('unexpected require: ' + name); };
+	const fakeRequire = (name) => {
+		if (name === 'react') { return React; }
+		if (rel.endsWith('/client.sessionRow.js') && name === 'react/jsx-runtime') { return sharedJsx; }
+		if (rel.endsWith('/client.sessionRow.js') && name === '@deepseek-ai/dsh-client-ui-primitives') { return rowPrimitives; }
+		throw new Error('unexpected require: ' + name);
+	};
 	new Function('window', 'require', readFileSync(join(repo, rel), 'utf8'))(window, fakeRequire);
 	if (!captured) { throw new Error(rel + ' 没有调用 __ModuleLoader__.load'); }
 	return captured.factory(fakeRequire);
@@ -199,7 +216,9 @@ ctx.slots = {
 };
 localStorage.setItem(ws.__test.SIDEBAR_VIEW_KEY, JSON.stringify('bots'));
 localStorage.setItem(ws.__test.SIDEBAR_VIEW_KEY, 'bots');
-ws.install(ctx, { state: {} });
+const sidebarState = {};
+loadChunk('dsh-plugins/vssaros-chat-surface/lib/client.sessionRow.js').install(ctx, { state: sidebarState });
+ws.install(ctx, { state: sidebarState });
 cv.install(ctx, { state: {}, bridge: {} });
 truthy('② 侧栏组件注册进 sidebar.workspaces', typeof Sidebar === 'function', JSON.stringify(slotted));
 truthy('② 群执行浮层注册进 shell.overlay（order 104，不与 100/101/102/103 冲突）',
@@ -280,7 +299,14 @@ eq('② composer dock 可见性事件两端一致',
 const container = document.getElementById('root');
 const root = createRoot(container);
 const settle = async (ms = 30) => { await act(async () => { await tick(ms); }); };
-await act(async () => { root.render(React.createElement(Sidebar, { wide: true })); await tick(30); });
+const sidebarProps = {
+	wide: true, t: key => key,
+	useSessionStatus: () => new Map(), useContextMenuTarget: () => false, useSessionAccess: () => true,
+	useContextMenu: () => ({ getTriggerProps: (_target, handlers) => handlers }),
+	renderSlot: () => null,
+	renderFactorySlot: (_name, options) => React.createElement('button', { 'aria-label': options.label }, '⋯'),
+};
+await act(async () => { root.render(React.createElement(Sidebar, sidebarProps)); await tick(30); });
 const q = (sel) => container.querySelector(sel);
 const qa = (sel) => [...container.querySelectorAll(sel)];
 const mouse = async (el, type, init = {}) => { await act(async () => { el.dispatchEvent(new window.MouseEvent(type, { bubbles: true, cancelable: true, clientX: 40, clientY: 60, ...init })); await tick(30); }); };
@@ -346,7 +372,7 @@ eq('③ 点群行 ⇒ 中栏打开群会话（群 id 就是会话 id）', calls.
 		/window\.Event \|\| Event/.test(src));
 	truthy('③-b 静态契约：点普通会话/新建会话清掉记住的群',
 		// 两处都要在：会话行 onClick 与新建会话成功路径，只留一处会让另一路一直亮着旧群。
-		/onClick: \(\) => \{ if \(!isRenaming\) \{ markSessionRead\(s\.id\); setSelectedRoom\(""\); openSession\(s\.id, setMsg, setLocal\); \} \}/.test(src)
+		/const onOpen = \(\) => \{\s*(?:if \(s\.archived\) \{[^\n]+\}\s*)?markSessionRead\(s\.id\);\s*setSelectedRoom\(""\);\s*(?:if \(q\) \{ closeSearch\(\); \}\s*)?openSession\(s\.id, setMsg, setLocal\);/.test(src)
 		&& /setSelectedRoom\(""\);\s*\n\s*openSession\(String\(got\), say/.test(src)
 		&& (src.match(/setSelectedRoom\(""\)/g) ?? []).length >= 2);
 }
@@ -2034,7 +2060,7 @@ rmSync(dir, { recursive: true, force: true });
 	const qa7 = (sel) => [...host7.querySelectorAll(sel)];
 	localStorage.setItem(ws.__test.SIDEBAR_VIEW_KEY, 'bots');
 	try {
-		await act(async () => { root7.render(React.createElement(Sidebar, { wide: true })); await tick(60); });
+		await act(async () => { root7.render(React.createElement(Sidebar, sidebarProps)); await tick(60); });
 		const tabs = () => qa7('[data-vssaros-sidebar-tabs] button, .vssaros-ws-tab');
 		const botsTab = () => tabs().find(b => /Bots/.test(b.textContent || ''));
 		const sessTab = () => tabs().find(b => /会话/.test(b.textContent || ''));
@@ -2085,7 +2111,7 @@ rmSync(dir, { recursive: true, force: true });
 	const qaK = (sel) => [...hostK.querySelectorAll(sel)];
 	localStorage.setItem(ws.__test.SIDEBAR_VIEW_KEY, 'bots');
 	try {
-		await act(async () => { rootK.render(React.createElement(Sidebar, { wide: true })); await tick(60); });
+		await act(async () => { rootK.render(React.createElement(Sidebar, sidebarProps)); await tick(60); });
 		const rowsK = qaK('[data-vssaros-key-row="bots"]');
 		truthy('键盘：Bot/群行都带可聚焦锚点', rowsK.length >= 2, 'rows=' + rowsK.length);
 		if (rowsK.length >= 2) {

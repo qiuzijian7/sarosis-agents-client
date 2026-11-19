@@ -51,6 +51,18 @@ function asRecord(value: unknown): Record<string, unknown> {
 	return !!value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+/**
+ * `exports["./client"]` 的两种合法形态：字符串，或 `{ types, default }` 条件导出对象。
+ * 上游打包产物两种都有（`dsh-better-sidebar` 用后者）；守卫不能只认字符串，否则会把
+ * "有 client 却判定为没有" 当成错误，进而把 client 入口误当 Host 入口去离线 import。
+ */
+function clientEntryOf(json: Record<string, unknown>): string | undefined {
+	const value = asRecord(json['exports'])['./client'];
+	if (typeof value === 'string') { return value; }
+	const fallback = asRecord(value)['default'];
+	return typeof fallback === 'string' ? fallback : undefined;
+}
+
 function stringOrArray(value: unknown): string[] {
 	if (typeof value === 'string') {
 		return [value];
@@ -78,24 +90,61 @@ function filesCovers(files: readonly string[], dir: string, absFile: string): bo
 /**
  * **随包 vendored 的第三方包**（非 `@vssaros/*`）：逐条写明上游与理由。
  *
- * 为什么要有这份例外（2026-10-14）：`dsh-plugins/` 原本只放我们自己的 `@vssaros/*` 包 ⇒ 下面那几条断言
- * （包名前缀 / patch 必须插入"自己" / 必须声明 dsh peer）当时写成**无条件**是合理的。archify 是**产品要求
- * 随包预装**的第三方技能包（2026-10-14 用户拍板；理由与取舍见 `dsh-plugins/vssaros-archify/VENDOR.md`），
- * 它天然不满足那三条：
- *   · 包名是上游的 `@tt-a1i/archify-dsh`（**故意不改**：改成 `@vssaros/*` 就会与 npm 上那份变成"两个 provider
- *     各报一个 archify 技能" ✗ —— 那正是 2026-10-13 消灭掉的重复交付）；
- *   · patch 插的是 `@deepseek-ai/dsh-skill-filesystem`（配置**别人的** provider 去扫本包的 `skills/`），
- *     不是"插入自己那行"；
- *   · 上游没声明 dsh peer —— 我们不替上游**编**一个范围（编错会让 dsh 的准入检查**误拒**该插件 ✗）。
+ * 为什么要有这份例外（2026-10-14；2026-11-19 扩到四个包）：`dsh-plugins/` 原本只放我们自己的
+ * `@vssaros/*` 包 ⇒ 下面那几条断言（包名前缀 / patch 必须插入"自己" / 必须声明 dsh peer）当时写成
+ * **无条件**是合理的。archify、`dsh-ego-browser`、`dsh-vision-router`、`dsh-better-sidebar`
+ * 都是**产品要求随包预装**
+ * 的第三方包（2026-10-14 / 2026-11-19；理由与取舍见各自目录的 `VENDOR.md`），它们天然
+ * 不满足那三条中的若干条：
+ *   · 包名保留上游的 `@tt-a1i/archify-dsh` / `dsh-ego-browser` / `dsh-vision-router`（**故意不改**：
+ *     改成 `@vssaros/*` 就会与 npm 上那份变成"两个 provider 各报一套能力" ✗ —— 那正是
+ *     2026-10-13 消灭掉的重复交付，也是 2026-11-19 退役 `@vssaros/dsh-ego` 的原因）；
+ *   · archify 的 patch 插的是 `@deepseek-ai/dsh-skill-filesystem`（配置**别人的** provider 去扫本包
+ *     的 `skills/`），不是"插入自己那行"（另外两个插的是自己，但**没必要**为它们强行造一条
+ *     通用断言 ⇒ 统一豁免，判据仍要求"确实插了一行"）；
+ *   · 上游没声明 `peerDependencies["@deepseek-ai/dsh"]` —— 我们不替上游**编**一个范围
+ *     （编错会让 dsh 的准入检查**误拒**该插件 ✗）。
  * ⇒ 例外**只开这三条**（逐条在案）；包结构、文件存在性、`files` 覆盖这些**照样查** ✓，另外额外钉一条
  *   "vendored 目录里的版本 == 这里登记的版本"（防有人换了字节却忘了更新这份记录 ✓）。
  */
 const VENDORED_THIRD_PARTY: Record<string, { readonly upstream: string; readonly version: string; readonly why: string }> = {
+	'dsh-better-sidebar': {
+		upstream: 'dsh-better-sidebar',
+		version: '0.32.1',
+		why: '侧栏工作台随包内置（MIT，上游 omdsh-dev/DSH-better-sidebar；原生右栏 tab + 底部 workbench，文件树 / 编辑器 / Git / Tasks / 侧边对话，按会话隔离）。用户 2026-11-19 要求"像前两个插件一样内置到 VsSaros"。engines.dsh >=0.2.2-rc.2 与本仓 bundled 对齐；上游已移除工作区路径围栏，风险口径见该目录 VENDOR.md。',
+	},
 	'vssaros-archify': {
 		upstream: '@tt-a1i/archify-dsh',
 		version: '1.0.0',
 		why: 'archify 技能随包预装（MIT，上游 tt-a1i/archify）。用户 2026-10-14 要求"默认随包自动装"。',
 	},
+	'dsh-ego-browser': {
+		upstream: 'dsh-ego-browser',
+		version: '0.14.1',
+		why: 'agent 专属浏览器随包内置（MIT，上游 Fisfzy/dsh-ego-browser；34 个 ego_* 工具 + 自带运行时）。用户 2026-11-19 要求"vssaros 内置 dsh-ego-browser"，取代工具重名的 @vssaros/dsh-ego。provenance 见该目录 VENDOR.md。',
+	},
+	'dsh-vision-router': {
+		upstream: 'dsh-vision-router',
+		version: '3.4.0',
+		why: '视觉路由随包内置（MIT，上游 ysr666/dsh-vision-router；图片轮视觉模型路由 + 14 个 vision_* 像素工具）。用户 2026-11-19 要求"vssaros 内置 dsh-visison-router"（笔误，npm 真包是 dsh-vision-router）。与 vssaros-media 的 vision_analyze 不重名 ⇒ 并存。provenance 见该目录 VENDOR.md。',
+	},
+};
+
+/**
+ * 上游入口**只能由 dsh Host 解析**的 vendored 包 → 入口里必须仍在的形态标记。
+ * 与 `check-plugin-files.mjs` 的 `HOST_RESOLVED_ENTRIES` 同口径（两处都改才算换构建方式）。
+ */
+const VENDORED_HOST_ENTRIES: Readonly<Record<string, readonly string[]>> = {
+	'dsh-ego-browser': ['@deepseek-ai/dsh-tools', '@deepseek-ai/schemastery'],
+	'dsh-vision-router': ['./abort-signal-compat.js', '../entry.js'],
+	'dsh-better-sidebar': ['from "ws"', '@deepseek-ai/schemastery'],
+};
+
+/** 上游客户端自带宿主 slot 契约的 vendored 包 → `dsh.client.inject` 里必须仍有的前置包（豁免前提）。 */
+const VENDORED_SLOT_INJECTS: Readonly<Record<string, readonly string[]>> = {
+	'dsh-ego-browser': ['@deepseek-ai/dsh-client-ui-settings-plugins'],
+	'dsh-vision-router': ['@deepseek-ai/dsh-client-ui-settings', '@deepseek-ai/dsh-client-ui-primitives'],
+	'dsh-better-sidebar': ['@deepseek-ai/dsh-client-ui-slots', '@deepseek-ai/dsh-client-ui-sidebar-right'],
 };
 
 /** 读取 `dsh-plugins/` 下每个含 package.json 的目录（跳过 node_modules）。 */
@@ -305,11 +354,11 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			// 客户端半（README 4.65）：`./client` 导出与 `dsh.client` 声明必须**成对**——
 			// dsh 的 web 加载器只按 `dsh.client` 去找 `./client`，缺一边就是"文件躺在包里、永远不会被加载"
 			// （或者相反：声明了却没有文件）。platform 必须是 web（本仓库的客户端半都跑在 dsh 的页面里）。
-			const clientExport = asRecord(plugin.json['exports'])['./client'];
+			const clientExport = clientEntryOf(plugin.json);
 			const clientBlock = asRecord(asRecord(plugin.json['dsh'])['client']);
 			const hasClientBlock = Object.keys(clientBlock).length > 0;
-			assert.strictEqual(typeof clientExport === 'string', hasClientBlock,
-				`${plugin.dirName}: ./client 导出与 dsh.client 声明必须成对（导出=${typeof clientExport === 'string'}，声明=${hasClientBlock}）`);
+			assert.strictEqual(clientExport !== undefined, hasClientBlock,
+				`${plugin.dirName}: ./client 导出与 dsh.client 声明必须成对（导出=${clientExport !== undefined}，声明=${hasClientBlock}）`);
 			if (hasClientBlock) {
 				assert.strictEqual(clientBlock['platform'], 'web', `${plugin.dirName}: dsh.client.platform 必须是 web`);
 				assert.ok(Array.isArray(clientBlock['inject']), `${plugin.dirName}: dsh.client.inject 必须是前置包数组`);
@@ -323,6 +372,47 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			// 例外 2/3：vendored 的 patch 插的是**别人的** provider（`@deepseek-ai/dsh-skill-filesystem`，
 			// 配置它去扫本包 `skills/`）⇒ 上面那条"插入自己"不适用 ✓；但"确实插了一行"仍照查（上面那行 ✓）。
 		}
+	});
+
+	/**
+	 * ★ 2026-11-19：产品要求「vssaros 内置 dsh-ego-browser / dsh-vision-router /
+	 *   dsh-better-sidebar」。
+	 *
+	 * 它们是**伴生插件**（没有 `vssaros.module`）⇒ 模块自发现收不到，必须四处手工登记；
+	 * 漏一处就是"包在盘上但永远没进 profile"（首启没有那个能力，且全程静默）。
+	 * 这条把随包目录、常量、目录解析、启动安装清单、构建期种子串成一条可机器复核的链 ✓。
+	 */
+	test('★ 内置的无 scope vendored 第三方包：宿主/构建期四处登记逐一对齐', function () {
+		const root = repoRoot();
+		if (!root) {
+			this.skip();
+		}
+		const read = (rel: string) => fs.readFileSync(path.join(root!, rel), 'utf8');
+		const harness = read('src/vs/sessions/contrib/dshHarness/common/dshHarness.ts');
+		const channel = read('src/vs/sessions/contrib/dshHarness/electron-main/dshHarnessChannel.ts');
+		const supervisor = read('src/vs/sessions/contrib/dshHarness/electron-main/dshHostSupervisor.ts');
+		const prepack = read('build/prepack-dsh-runtime.mjs');
+		/** 目录名 → 常量名 / 选项名（四处登记都按这张表逐字核对）。 */
+		const wiring = [
+			{ dir: 'dsh-ego-browser', constant: 'DSH_EGO_BROWSER_PLUGIN_NAME', option: 'egoBrowserPluginDir' },
+			{ dir: 'dsh-vision-router', constant: 'DSH_VISION_ROUTER_PLUGIN_NAME', option: 'visionRouterPluginDir' },
+			{ dir: 'dsh-better-sidebar', constant: 'DSH_BETTER_SIDEBAR_PLUGIN_NAME', option: 'betterSidebarPluginDir' },
+		] as const;
+		for (const w of wiring) {
+			const expected = VENDORED_THIRD_PARTY[w.dir];
+			const pkg = JSON.parse(fs.readFileSync(path.join(root!, PLUGINS_REL, w.dir, 'package.json'), 'utf8')) as { name?: string; version?: string };
+			assert.strictEqual(pkg.name, expected.upstream, `${w.dir} 包名`);
+			assert.strictEqual(pkg.version, expected.version, `${w.dir} 版本`);
+			assert.ok(fs.existsSync(path.join(root!, PLUGINS_REL, w.dir, 'VENDOR.md')), `${w.dir} 的 provenance 必须在（升级流程与许可说明）`);
+			assert.ok(fs.existsSync(path.join(root!, PLUGINS_REL, w.dir, 'cordis.patch.yml')), `${w.dir} 没有 patch ⇒ 装上了也不会挂载`);
+			assert.match(harness, new RegExp(`export const ${w.constant} = '${w.dir}'`), `${w.dir} 缺伴生插件包名常量`);
+			assert.match(channel, new RegExp(`join\\(this\\._bundledPluginsRoot, '${w.dir}'\\)`), `${w.dir} 的 channel 没解析随包目录`);
+			assert.match(channel, new RegExp(`${w.option}:`), `${w.dir} 的 channel 没把目录传给 supervisor`);
+			assert.match(supervisor, new RegExp(`\\[${w.constant}, this\\._opts\\.${w.option}`), `${w.dir} 不在启动安装清单里`);
+			assert.match(prepack, new RegExp(`'${w.dir}'`), `${w.dir} 不在构建期种子的 UNSCOPED_VENDORED 里 ⇒ 首启要联网补装`);
+		}
+		assert.match(prepack, /UNSCOPED_VENDORED\.has\(name\)/, '构建期种子必须按显式白名单收无 scope 包（不能放宽成"什么包名都收"）');
+		assert.doesNotMatch(supervisor, /\[DSH_EGO_PLUGIN_NAME, this\._opts\./, '退役的旧薄接入不许再被安装（ego_status 重名）');
 	});
 
 	test('插件包不得把随 dsh 分发的包声明为依赖（只允许 peerDependencies 里的 @deepseek-ai/dsh）', function () {
@@ -671,7 +761,12 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			// 且它是**同步 API**（探针按同一读侧口径核对时直接调用 ✓）⇒ 保持同步合理 ✓。
 			// ⚠ 哪天它被用到**大图**上，这条必须删掉并把调用改成 `await` ✗。
 			'vssaros-codebase/indexer.js → gunzipSync',
-		]);
+			// ★ 2026-11-19：随包 vendored 的 `dsh-vision-router` 上游代码（不改字节）。
+			//   `legacy-session-repair.js` 只在**一次性遗留会话修复**里解一个 zstd 帧，
+			//   且 `decodeZstdFrame` 带 `maxOutputLength` 上限 ⇒ 不是 codebase 那种
+			//   "每个请求解 129MB 图谱"的重路径。真机若把它挪进热路径，须重新评估。
+			'dsh-vision-router/legacy-session-repair.js → zstdDecompressSync',
+			]);
 		const offenders = bad.filter(entry => !ALLOW.has(entry));
 		assert.deepStrictEqual(offenders, [],
 			`这些地方在用**同步**解压 ⇒ 大文件会把 Host 主线程卡住 ✗（改成 await promisify(gunzip)(…)）：\n  ${offenders.join('\n  ')}`);
@@ -788,8 +883,13 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			this.skip();
 		}
 		const pluginsDir = path.join(root!, 'dsh-plugins');
+		// ★ 2026-11-19：随包 vendored 的第三方 client 自带主题体系（better-sidebar 的终端卡沿用
+		//   xterm 的 `--vscode-*` 主题变量），我们承诺不改上游字节 ⇒ 按目录豁免；自研客户端卡
+		//   仍逐行受检。与 `check-theme-hardcodes.mjs` 的豁免同口径。
+		const VENDORED_CLIENT_THEME_EXEMPT = new Set(['dsh-ego-browser', 'dsh-vision-router', 'dsh-better-sidebar']);
 		let checked = 0;
 		for (const dir of fs.readdirSync(pluginsDir)) {
+			if (VENDORED_CLIENT_THEME_EXEMPT.has(dir)) { continue; }
 			const lib = path.join(pluginsDir, dir, 'lib');
 			if (!fs.existsSync(lib)) {
 				continue;
@@ -911,11 +1011,10 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 			//   地执行 ✗）⇒ 它自己发起 `approval.request` 并自己判结果 ✓ ⇒ 判据必须跟着换（不能只看
 			//   `kind: 'ask'` ✗，那是钩子那种挂法的形状 ✓）。动作类 op 藏在 `op` 值里 ⇒ 另由 p3-32 行为级钉住 ✓。
 			{ dir: 'vssaros-browser', gate: 'self' },
-			// ★ 2026-10-21：`vssaros-ego` 与 browser **同一档、同一套理由**：它的写面全在 `ego_run`
-			//   的一段脚本里（脚本能驱动用户已登录的站点），而钩子拿不到审批**结果** ⇒ 自己发起
-			//   `approval.request` 并自己判 `allowed-once`（拿不到审批服务就抛 ⇒ fail-closed ✓）。
-			//   另外三个工具（ego_status / ego_guide / ego_spaces）纯只读，不重复问。
-			{ dir: 'vssaros-ego', gate: 'self' },
+			// ★ 2026-11-19：`vssaros-ego`（4 个 ego_* 工具）已整包退役，改内置第三方
+			//   `dsh-ego-browser`。它的工具面由上游自带（bundled 构建产物，不适用本仓的
+			//   离线 fake ctx 抽取），且不进 tools-snapshot.json ⇒ 不在这张台账里。
+			//   两者不可并存的理由（ego_status 重名）见 dshHostSupervisor 的伴生清单注释。
 			// ── 不挂闸，理由写在下面（每条都要求"可被复核" ✓，不是"就不挂" ✗）
 			{
 				dir: 'vssaros-ide',
@@ -1143,6 +1242,21 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 		assert.ok(catalogue.size > 5, `运行时 slot 目录没扫出来（只 ${catalogue.size} 个名字）⇒ 这条守卫会变空转 ✗`);
 		let checked = 0;
 		for (const plugin of readPluginPackages(root!)) {
+			// ★ 2026-11-19：随包 vendored 的第三方 client 注入 `settings.plugin.item` /
+			//   `settings.section` / `tool.call.toolview` 等 slot，属于**上游自己的宿主契约**
+			//   （由 `dsh.client.inject` 列出的 `@deepseek-ai/dsh-client-*` peer 提供），
+			//   本仓运行时目录不一定带这些 slot ⇒ 拿它去判会假红。真机表现由各自 VENDOR.md
+			//   的升级流程核对 ✅，不静默跳过：断言 peer 仍在，否则上游契约变了要重新评估例外。
+			const slotInjects = VENDORED_SLOT_INJECTS[plugin.dirName];
+			if (slotInjects) {
+				const inject = asRecord(asRecord(plugin.json['dsh'])['client'])['inject'];
+				const listed = Array.isArray(inject) ? inject : [];
+				for (const pkg of slotInjects) {
+					assert.ok(listed.includes(pkg),
+						`${plugin.dirName} 的 dsh.client.inject 必须含 ${pkg}（否则这条例外的前提不存在）`);
+				}
+				continue;
+			}
 			const libDir = path.join(root!, 'dsh-plugins', plugin.dirName, 'lib');
 			const clientFile = path.join(libDir, 'client.js');
 			if (!fs.existsSync(clientFile)) {
@@ -1663,12 +1777,24 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 		for (const plugin of readPluginPackages(root!)) {
 			// **只查 Host 侧入口**：客户端条目（`exports["./client"]`，`dsh.client.platform === "web"`）跑在浏览器里，
 			// 顶层就是 `window`/`document`，在 Node 里 import 必然失败——那不是缺陷。
-			const clientExports = asRecord(plugin.json['exports'])['./client'];
-			const clientEntries = (typeof clientExports === 'string' ? [clientExports] : [])
+			const clientRel = clientEntryOf(plugin.json);
+			const clientEntries = (typeof clientRel === 'string' ? [clientRel] : [])
 				.map(p => path.resolve(plugin.dir, p));
 			for (const entry of plugin.entryFiles) {
 				if (!fs.existsSync(entry) || clientEntries.includes(entry)) {
 					continue; // 入口存在性由前面的用例负责
+				}
+				// ★ 2026-11-19：随包 vendored 的第三方包（ego-browser 是 tsdown 打包产物，
+				//   vision-router 是 200 个源码模块）入口链路静态 import `@deepseek-ai/*` / `sharp` 等，
+				//   只有 **dsh Host** 的 module loader / profile 的 node_modules 解析得到 ⇒
+				//   仓库里离线 import 必然 ERR_MODULE_NOT_FOUND。
+				//   ⇒ 不静默跳过：改判"入口确实仍是上游形态"，真机加载由各自 VENDOR.md 核对。
+				const markers = VENDORED_HOST_ENTRIES[plugin.dirName];
+				if (markers) {
+					const source = fs.readFileSync(entry, 'utf8');
+					assert.ok(markers.every(m => source.includes(m)),
+						`${plugin.dirName} 的入口应仍含上游形态标记 ${markers.join(' / ')}；换构建方式要重新评估这条例外`);
+					continue;
 				}
 				try {
 					// 动态 import 同时覆盖两件事：① 语法错误（一个未闭合的模板字符串就够毁掉整个插件，
@@ -2236,9 +2362,18 @@ suite('dshHarness / 打包链：内置 dsh 运行时（缺它 = 首启要用户�
 			'不许再按 vssaros.module 过滤 —— patch 型插件（foundation / kb-refs / browser / unreal / archify）会被漏掉 ✗✗');
 
 		// ② **真跑一遍**发现逻辑（不是 grep 源码），再和宿主安装清单逐名对齐
-		const discover = new Function('readdirSync', 'readFileSync', 'join', 'sep',
+		// ★ 2026-11-19：无 scope 的 vendored 包靠函数外的 `UNSCOPED_VENDORED` 白名单收 ⇒
+		//   `new Function` 必须把它也传进去；不传时函数内的 `try/catch` 会把 ReferenceError
+		//   **静默吞成"跳过这个包"**（正是这条守卫要防的形态 ✗）。白名单从源码解析，
+		//   不另存一份清单 ⇒ 与 prepack 保持单一真源。
+		const unscopedAt = prepack.indexOf('const UNSCOPED_VENDORED');
+		assert.ok(unscopedAt > 0, '找不到 UNSCOPED_VENDORED（无 scope 的随包第三方包会静默漏出种子）');
+		const unscopedLine = prepack.slice(unscopedAt, prepack.indexOf('\n', unscopedAt));
+		const unscopedNames = [...unscopedLine.matchAll(/'([^']+)'/g)].map(m => m[1]);
+		assert.ok(unscopedNames.length >= 2, `UNSCOPED_VENDORED 解析不到包名（实际 ${unscopedNames.length} 个）`);
+		const discover = new Function('readdirSync', 'readFileSync', 'join', 'sep', 'UNSCOPED_VENDORED',
 			`${fnBody}\nreturn discoverRepoPluginDirs;`)(
-			fs.readdirSync, fs.readFileSync, path.join, path.sep,
+			fs.readdirSync, fs.readFileSync, path.join, path.sep, new Set(unscopedNames),
 		) as (dir: string) => string[];
 		const repoDirs = discover(path.join(root!, 'dsh-plugins'));
 		assert.ok(repoDirs.length >= 20, `仓库随包插件应 >= 20 个（实际 ${repoDirs.length}）`);

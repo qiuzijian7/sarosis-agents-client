@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Ticket } from '../src/core/index.ts'
 import { Commands } from '../src/infra/commands.ts'
-import { REPORT_DIR, documentUrl, escapeHtml, renderTicketReport, reportDocXml, reportFileName,
+import { REPORT_DIR, documentUrl, escapeHtml, renderTicketReport, renderTicketDocXml, reportDocXml, reportFileName,
   reportNoticeText, ticketReportView } from '../src/app/ticket-report.ts'
 import { startRuntime, type Host } from './fixtures/host.ts'
 
@@ -31,12 +31,14 @@ const runtimeWithTicket = async (record = ticket()) => {
     store.db.prepare('INSERT INTO ticket (id, value) VALUES (?, ?)').run(record.id, JSON.stringify(record))
   })
   hosts.push(host)
+  const settings = host.runtime.store.settings()
+  host.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, feishuReportDocument: false } })
   host.runtime.effects.start()
   return host
 }
 
 /** `docs +create` returns a cloud-document address; every other lark call succeeds quietly. */
-const withDocument = () => vi.mocked(Commands.prototype.lark).mockImplementation(async (args: string[]) =>
+const withDocument = () => vi.mocked(Commands.prototype.lark).mockClear().mockImplementation(async (args: string[]) =>
   args[1] === '+create' ? { document: { url: DOC_URL, document_id: 'doc1' } } : {})
 
 describe('renderTicketReport', () => {
@@ -62,6 +64,17 @@ describe('renderTicketReport', () => {
     expect(reportFileName('../evil/../../x')).toBe('report-evilx.html')
   })
 
+  it('renders an editable escaped XML report without declaring skipped checks passed', () => {
+    const view = ticketReportView(ticket({ title: '<script>unsafe</script>', execution: { name: 'fix', directory: '/work', p4Delivery: 'pending' },
+      assignments: [{ id: 'a1', state: 'ended', createdAt: '', report: { state: 'ready', summary: 'CL 1298138 已 shelve\n未编译，未回归', at: '' } }] }), '原始需求 & 说明')!
+    const xml = renderTicketDocXml(view)
+    expect(xml).toContain('&lt;script&gt;unsafe&lt;/script&gt;')
+    expect(xml).not.toContain('<script>')
+    expect(xml).not.toContain('<figure')
+    expect(xml).toContain('已交付 pending CL（未提交，验证状态见报告）')
+    expect(xml).toContain('未编译，未回归')
+    expect(xml).toContain('<br/>')
+  })
   it('never imports the 100-word reply validator or the outbox, and sends no file attachment', () => {
     const source = readFileSync(new URL('../src/app/ticket-report.ts', import.meta.url), 'utf8')
     expect(source).not.toContain('checkedImText')
@@ -113,7 +126,7 @@ describe('TicketReports', () => {
     const dir = join(h.directory, REPORT_DIR)
     expect(readFileSync(join(dir, 'report-t1.html'), 'utf8')).toContain('修复按钮')
     const snapshot = h.runtime.reports.status(ticket()).path!
-    expect(readFileSync(snapshot.replace(/\.html$/, '.doc.xml'), 'utf8')).toContain('<figure view-type="Preview">')
+    expect(readFileSync(snapshot.replace(/\.html$/, '.doc.xml'), 'utf8')).toContain('<h1>结果与验证记录</h1>')
     const created = lark.mock.calls.filter(call => call[0]?.[1] === '+create')
     expect(created).toHaveLength(1)
     expect(created[0]![0]).toEqual(['docs', '+create', '--title', '修复按钮', '--doc-format', 'xml',
@@ -194,11 +207,11 @@ describe('TicketReports', () => {
     const lark = vi.mocked(Commands.prototype.lark).mockImplementation(async (args, cwd) => {
       if (args[1] !== '+create') return {}
       const xml = readFileSync(join(cwd!, args.at(-1)!.slice(3)), 'utf8')
-      const uploadFile = /path="@\.\/(.*?)"/.exec(xml)![1]!
       h.runtime.store.tickets.save(changed)
       h.runtime.reports.queue(changed)
       await h.runtime.effects.idle('reportLocal')
-      expect(readFileSync(join(cwd!, uploadFile), 'utf8')).toContain('按钮已改好')
+      expect(xml).toContain('按钮已改好')
+      expect(xml).not.toContain('new result')
       expect(h.runtime.reports.status(changed).docUrl).toBeUndefined()
       return { document: { url: DOC_URL, document_id: 'doc1' } }
     })
@@ -210,10 +223,81 @@ describe('TicketReports', () => {
     expect((await h.runtime.reports.content(changed)).html).toContain('new result')
   })
 
-  it('queues nothing when the ticket has no Feishu conversation', async () => {
-    const h = await runtimeWithTicket(ticket({ channels: [{ source: 'github', thread: '42', address: {} }] }))
-    const record = h.runtime.store.tickets.get('t1')!
-    expect(h.runtime.reports.sendNow(record)).toBe(false)
+  it('creates a document without guessing recipients when a non-Feishu ticket explicitly requests a report', async () => {
+    const h = await runtimeWithTicket(ticket({ channels: [{ source: 'tapd', thread: 'bug:1', address: {} }] }))
+    const lark = withDocument(), record = h.runtime.store.tickets.get('t1')!
+    expect(h.runtime.reports.sendNow(record)).toBe(true)
+    await h.runtime.effects.idle('reportCloud')
     expect(h.runtime.effects.pending('ticketReport')).toBe(false)
+    expect(h.runtime.reports.status(record)).toMatchObject({ docUrl: DOC_URL, cloudState: 'created', deliveryState: 'not-requested' })
+    expect(lark.mock.calls.filter(([args]) => args[0] === 'im')).toEqual([])
+  })
+
+  it('automatically queues documents for every ended source independently of the IM switch', async () => {
+    const h = await runtimeWithTicket(ticket({ channels: [] })), lark = withDocument()
+    const settings = h.runtime.store.settings()
+    h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, feishuReportDocument: true, feishuReport: false } })
+    const record = h.runtime.store.tickets.get('t1')!
+    expect(h.runtime.reports.queue(record)).toBe(true)
+    expect(h.runtime.reports.queue(record)).toBe(true)
+    await h.runtime.effects.idle('reportCloud')
+    expect(lark.mock.calls.filter(([args]) => args[1] === '+create')).toHaveLength(1)
+    expect(lark.mock.calls.filter(([args]) => args[0] === 'im')).toHaveLength(0)
+    expect(h.runtime.reports.status(record).cloudState).toBe('created')
+    expect(h.runtime.reports.queue(ticket({ ended: undefined, channels: [], assignments: [] }))).toBe(false)
+  })
+
+  it('shares one document across concurrent cloud generation and optional topic notification', async () => {
+    const h = await runtimeWithTicket(), lark = withDocument()
+    const settings = h.runtime.store.settings()
+    h.runtime.store.saveSettings({ ...settings, executor: { ...settings.executor, feishuReportDocument: true, feishuReport: true } })
+    h.runtime.reports.queue(ticket())
+    await Promise.all([h.runtime.effects.idle('reportCloud'), h.runtime.effects.idle('ticketReport')])
+    expect(lark.mock.calls.filter(([args]) => args[1] === '+create')).toHaveLength(1)
+    expect(lark.mock.calls.filter(([args]) => args[1] === '+messages-reply')).toHaveLength(1)
+  })
+
+  it('does not blindly create another document after a lost creation response, including after retry', async () => {
+    const h = await runtimeWithTicket(ticket({ channels: [] }))
+    const lark = vi.mocked(Commands.prototype.lark).mockClear().mockRejectedValue(new Error('network timeout'))
+    const record = h.runtime.store.tickets.get('t1')!
+    h.runtime.reports.queueDocument(record)
+    await h.runtime.effects.idle('reportCloud')
+    expect(h.runtime.reports.status(record)).toMatchObject({ generated: true, cloudState: 'creation-uncertain' })
+    h.runtime.store.db.prepare("UPDATE effect SET due=0 WHERE kind='reportCloud'").run()
+    h.runtime.reports.queueDocument(record)
+    await h.runtime.effects.idle('reportCloud')
+    expect(lark).toHaveBeenCalledOnce()
+    expect(h.runtime.effects.pending('reportCloud')).toBe(true)
+    expect(h.runtime.store.tickets.get('t1')).toEqual(record)
+  })
+
+  it('retries an unconfigured CLI safely without holding other report jobs', async () => {
+    const h = await runtimeWithTicket(ticket({ channels: [] }))
+    const record = h.runtime.store.tickets.get('t1')!
+    vi.mocked(Commands.prototype.lark).mockRejectedValue(new Error('The Feishu Source has no working bot CLI'))
+    h.runtime.reports.queueDocument(record)
+    await h.runtime.effects.idle('reportCloud')
+    expect(h.runtime.reports.status(record).cloudState).toBe('failed')
+    withDocument()
+    const next = ticket({ id: 't2', channels: [] })
+    h.runtime.store.tickets.save(next)
+    h.runtime.reports.queueDocument(next)
+    await h.runtime.effects.idle('reportCloud')
+    expect(h.runtime.reports.status(next).cloudState).toBe('created')
+    expect(h.runtime.reports.status(record).cloudState).toBe('failed')
+  })
+
+  it('retains each ended snapshot even if the ticket was resumed before uploading', async () => {
+    const h = await runtimeWithTicket(ticket({ channels: [] })), lark = withDocument()
+    const original = h.runtime.store.tickets.get('t1')!
+    h.runtime.reports.queueDocument(original)
+    const resumed = ticket({ ended: undefined, assignments: [], channels: [] })
+    h.runtime.store.tickets.save(resumed)
+    await h.runtime.effects.idle('reportCloud')
+    expect(lark.mock.calls.filter(([args]) => args[1] === '+create')).toHaveLength(1)
+    expect(h.runtime.reports.status(original).docUrl).toBe(DOC_URL)
+    expect(h.runtime.reports.status(resumed).docUrl).toBeUndefined()
+    expect(h.runtime.store.tickets.get('t1')).toEqual(resumed)
   })
 })

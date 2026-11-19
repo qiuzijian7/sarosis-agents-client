@@ -20,17 +20,13 @@
 // ⚠ 本机沙箱已降级为 `danger-full-access`（dshSandboxCompat.ts）⇒ 真机看不出差别，
 //   验收走**夹具 + in-process 断言**（见 check-host-config.mjs 的 A5 段），别指望真机现象。
 
-/** 词法同根判据（只用于跳过重复尝试，不作安全边界；真正的判定永远在官方 checkedTarget 里 ✓）。 */
-function sameRootPath(a, b) {
-	const norm = p => String(p ?? '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-	return norm(a) === norm(b);
-}
+import { sameWorkspaceRootPath } from './workspaceContext.js';
 
 /**
  * 把官方 `checkedTarget` 包成"多根逐个试"的版本。
  *
  * @param {Function} original 官方原方法（原型方法或自有方法均可，调用时 `this` 仍是 fs 实例）
- * @param {Function} getRoots 每次调用时取当前有序根集（`[{path,name,isPrimary}]`）——**不能快照**
+ * @param {Function} getRoots 用本次真实 policy 解析所属根集（`[{path,name,isPrimary}]`），不使用全局窗口值
  * @returns {Function} 替换用的 checkedTarget
  */
 export function withMultiRootCheckedTarget(original, getRoots) {
@@ -41,14 +37,13 @@ export function withMultiRootCheckedTarget(original, getRoots) {
 		} catch (e) {
 			primaryError = e;
 		}
-		// 只在工作区写模式下放宽；拿不到 policy（假 ctx / 服务缺席）⇒ 一律重抛原始错 ✓
-		let policy = sandboxPolicy;
-		if (!policy) {
-			try { policy = this?.ctx?.sandboxPolicy?.resolve?.(); } catch { policy = undefined; }
+		const policy = sandboxPolicy;
+		if (!policy || policy.mode !== 'workspace-write' || primaryError?.code !== 'FS_SANDBOX_DENIED') {
+			throw primaryError;
 		}
 		let roots = [];
-		try { roots = typeof getRoots === 'function' ? getRoots() : []; } catch { roots = []; }
-		if (!policy || policy.mode !== 'workspace-write' || !Array.isArray(roots) || roots.length === 0) {
+		try { roots = typeof getRoots === 'function' ? getRoots(policy) : []; } catch { roots = []; }
+		if (!Array.isArray(roots) || !roots.some(root => sameWorkspaceRootPath(root?.path, policy.workspaceRoot))) {
 			throw primaryError;
 		}
 		// ★ 每个根都交给**官方** containment 判定（resolve/realpath/8.3 回退一个不少）。
@@ -58,7 +53,7 @@ export function withMultiRootCheckedTarget(original, getRoots) {
 		const primaryRoot = policy.workspaceRoot;
 		for (const root of roots) {
 			if (!root || typeof root.path !== 'string' || !root.path.trim()) { continue; }
-			if (sameRootPath(root.path, primaryRoot)) { continue; }
+			if (sameWorkspaceRootPath(root.path, primaryRoot)) { continue; }
 			try {
 				return await original.call(this, target, { ...policy, workspaceRoot: root.path });
 			} catch {
@@ -75,7 +70,7 @@ export function withMultiRootCheckedTarget(original, getRoots) {
  * @returns {boolean} 是否发起了注入（真实生效还要看服务是否就绪、属性是否可写；守卫用假 ctx 断言）
  */
 export function installMultiRootFs(ctx, service) {
-	if (!ctx || typeof ctx.inject !== 'function' || !service || typeof service.workspaceRoots !== 'function') {
+	if (!ctx || typeof ctx.inject !== 'function' || !service || typeof service.workspaceRootsFor !== 'function') {
 		return false;
 	}
 	try {
@@ -87,8 +82,8 @@ export function installMultiRootFs(ctx, service) {
 			}
 			const original = fs.checkedTarget;
 			const own = Object.prototype.hasOwnProperty.call(fs, 'checkedTarget');
-			const patched = withMultiRootCheckedTarget(original, () => {
-				try { return service.workspaceRoots(); } catch { return []; }
+			const patched = withMultiRootCheckedTarget(original, policy => {
+				try { return service.workspaceRootsFor({ policy }); } catch { return []; }
 			});
 			try {
 				fs.checkedTarget = patched;

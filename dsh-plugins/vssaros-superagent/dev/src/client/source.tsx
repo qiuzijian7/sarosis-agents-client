@@ -8,8 +8,8 @@ import { sourceMark } from './marks.ts'
 import { useAction, usePanel, usePanelData } from './provider.tsx'
 import { FeishuAppForm } from './feishu-app-form.tsx'
 import { TapdCredentials } from './tapd-credentials.tsx'
-import { TapdFilterImport } from './tapd-filter-import.tsx'
-import type { TapdFilterSchedule } from '../sources/tapd-filters.ts'
+import { TapdFilterSchemes } from './tapd-filter-schemes.tsx'
+import type { TapdFilterPool, TapdFilterScheme } from '../sources/tapd-filter-schemes.ts'
 import type { TapdWatch } from '../sources/tapd-api.ts'
 import { setupPage, settingsRoute, type Route } from './route.ts'
 import { ConfigHistory, Fields, SourceField, useBlockDraft, useSettings } from './settings-kit.tsx'
@@ -130,10 +130,12 @@ export function SourceCard({ source, title }: { source: SourceView; title?: stri
           agent: String(value.config.agent ?? ''), workspace: String(value.config.workspace ?? '') }}
           onAddWatch={watches => draft.edit({ ...value, config: { ...value.config, watches } })} />}
       {source.installed && source.id === 'tapd' &&
-        <TapdFilterImport schedules={(value.config.filterSchedules ?? []) as TapdFilterSchedule[]}
-          watches={(value.config.watches ?? []) as TapdWatch[]}
-          onChange={({ schedules, watches }) => draft.edit({ ...value,
-            config: { ...value.config, filterSchedules: schedules, watches } })} />}
+        <TapdFilterSchemes schemes={(value.config.filterSchemes ?? []) as TapdFilterScheme[]}
+          pool={value.config.filterPool as TapdFilterPool | undefined}
+          site={String(value.config.site ?? 'https://www.tapd.cn')}
+          workspace={String(value.config.workspace ?? '68880148')}
+          onChange={({ schemes, pool }) => draft.edit({ ...value,
+            config: { ...value.config, filterSchemes: schemes, filterPool: pool } })} />}
       {source.installed && advanced.length > 0 && <DisclosureRow icon={<Icon name="settings" />} title={t('advanced')} open={advancedOpen}
         onToggle={() => setAdvancedOpen(!advancedOpen)}>
         <div className="dt-disclosure-body">{advancedGroups.map(group => <div key={group.title || 'default'}>

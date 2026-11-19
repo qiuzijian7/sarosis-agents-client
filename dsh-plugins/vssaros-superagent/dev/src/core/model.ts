@@ -366,7 +366,9 @@ export interface Follow { thread: string; own: boolean; closed?: { at: string; o
 export interface Execution { name: string; directory: string; assignment: string; project?: GitWorkspaceProject; toolMode?: 'ptc'; delivery?: 'p4';
   p4Workspace?: { client: string; root: string; port: string; user: string };
   /** Frozen at acceptance: `pending` delivers a named pending CL and never submits; `submit` keeps the review/submit flow. */
-  p4Delivery?: 'pending' | 'submit' }
+  p4Delivery?: 'pending' | 'submit';
+  /** Earlier delivered CL files that this shared-workspace task must never edit or adopt. */
+  protectedP4Files?: string[] }
 /** Operator-selected repository snapshot frozen at acceptance; retries never reselect a different project. */
 export interface GitWorkspaceProject { id: string; source: string; projectId: string; repository: string; ref: string; strategy: 'git-worktree' }
 

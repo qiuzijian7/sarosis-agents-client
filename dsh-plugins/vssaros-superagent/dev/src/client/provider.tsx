@@ -95,9 +95,10 @@ export function CardProvider({ t, openSession = noSession, children }: { t: T; o
     {toast && <Toast key={toast.id} text={toast.text} onDone={() => setToast(undefined)} />}
   </Panel.Provider>
 }
-export function PanelProvider({ t, interval = 5000, openSession = noSession, navigate = stay, back = stay, backLabel = '', children }: {
+export function PanelProvider({ t, interval = 5000, openSession = noSession, navigate = stay, back = stay, backLabel = '', onState, children }: {
   t: T; interval?: number; openSession?: (sessionId: string) => Promise<void>; navigate?: PanelContext['navigate']; back?: () => void
   backLabel?: string
+  onState?: ((state: StateView) => Promise<void>) | undefined
   children: ReactNode
 }) {
   // Read the current translator via ref so locale changes do not recreate `call` and restart polling.
@@ -110,7 +111,13 @@ export function PanelProvider({ t, interval = 5000, openSession = noSession, nav
   const [restarting, setRestarting] = useState<{ down: boolean }>()
   const [restarts, setRestarts] = useState(0)
   const restart = useCallback(() => setRestarting({ down: false }), [])
-  const { data: state, error, reload } = usePoll(() => call('GET state'), [call], restarting ? 1000 : interval)
+  const synchronize = useRef(onState)
+  synchronize.current = onState
+  const { data: state, error, reload } = usePoll(async () => {
+    const state = await call('GET state')
+    await synchronize.current?.(state)
+    return state
+  }, [call], restarting ? 1000 : interval)
   if (restarting && !!error !== restarting.down) {
     setRestarting(error ? { down: true } : undefined)
     if (!error) setRestarts(restarts + 1)

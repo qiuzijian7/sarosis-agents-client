@@ -6,6 +6,7 @@
  */
 import { z } from 'zod'
 import { TapdFilterScheduleSchema } from './tapd-filters.ts'
+import { TapdFilterPoolSchema, TapdFilterSchemeSchema } from './tapd-filter-schemes.ts'
 import { tapdCredential, tapdCredentialsHint, tapdEnvironment, tapdTimeoutMs, type TapdEnv } from './tapd-auth.ts'
 
 export const TAPD_SOURCE = 'tapd'
@@ -50,8 +51,12 @@ export const TapdConfigSchema = z.object({
     /** An imported daily-sweep watch is a filter container, not a change listener: `pollRound` skips it. */
     sweepOnly: z.boolean().optional(),
   }).strict()).default([]),
-  /** Daily sweeps imported from the Saroasis platform's bug filter JSON. Off until a person enables one. */
+  /** Legacy daily sweeps from the retired JSON import; kept so older saved settings still parse. */
   filterSchedules: z.array(TapdFilterScheduleSchema).default([]),
+  /** Story + bug filter schemes scraped from the Saroasis platform pages. */
+  filterSchemes: z.array(TapdFilterSchemeSchema).default([]),
+  /** The candidate pool: enabled items are the only ones an automatic daily run may fix. */
+  filterPool: TapdFilterPoolSchema.default(TapdFilterPoolSchema.parse({})),
   /** Owner group name -> TAPD person names, so an exported group can become `current_owner=USER_OR<...>`. */
   ownerGroups: z.array(z.object({ group: z.string().trim().min(1), members: z.string().trim().min(1) }).strict()).default([]),
   /** Optional TAPD Webhook ingress: a fast lane on top of polling, off by default. TAPD POSTs to
@@ -65,7 +70,7 @@ export const TapdConfigSchema = z.object({
 export type TapdConfig = z.infer<typeof TapdConfigSchema>
 export type TapdWatch = TapdConfig['watches'][number]
 /** A watch (project/type/filters) and the account credentials are enough; the identity name is optional. */
-export const tapdConfigured = (config: TapdConfig): boolean => config.watches.length > 0
+export const tapdConfigured = (config: TapdConfig): boolean => config.watches.length > 0 || config.filterSchemes.length > 0 || config.filterPool.items.length > 0
 /** A watch's own workspace ID, or the Source-level default (GR project) when the watch leaves it empty. */
 export const watchWorkspace = (config: Pick<TapdConfig, 'workspace'>, watch: TapdWatch): string => watch.workspace || config.workspace
 
@@ -73,7 +78,8 @@ export const watchWorkspace = (config: Pick<TapdConfig, 'workspace'>, watch: Tap
 export type TapdRecord = Record<string, string>
 export interface TapdItem { type: TapdType; workspace: string; id: string; title: string; description: string; status: string
   owners: string[]; creator: string; created: string; modified: string; iteration: string
-  /** Raw `label` for imported filters' local rules; absent on older records. */ label?: string }
+  /** Raw `label` for imported filters' local rules; absent on older records. */ label?: string
+  priority?: string }
 export interface TapdComment { id: string; author: string; text: string; created: string; modified: string }
 
 /** TAPD writes times as `YYYY-MM-DD HH:mm:ss` in China time; this is the same instant in ISO form. */
@@ -92,7 +98,7 @@ export function itemOf(type: TapdType, record: TapdRecord): TapdItem {
     description: plainText(record.description ?? ''), status: record.status ?? '',
     owners: names(type === 'bug' ? record.current_owner : record.owner), creator: record.creator ?? record.reporter ?? '',
     created: tapdInstant(record.created ?? ''), modified: tapdInstant(record.modified ?? record.created ?? ''), iteration: record.iteration_id ?? '',
-    label: record.label ?? '' }
+    label: record.label ?? '', priority: record.priority_label ?? record.priority ?? '' }
 }
 export const commentOf = (record: TapdRecord): TapdComment => ({ id: record.id ?? '', author: record.author ?? '', text: plainText(record.description ?? ''),
   created: tapdInstant(record.created ?? ''), modified: tapdInstant(record.modified ?? record.created ?? '') })
@@ -175,6 +181,8 @@ export interface TapdApi {
   /** Optional lookup lists for the settings dropdowns (projects / workflow statuses / iterations).
    * Stand-in APIs used by tests may omit it, so the settings refresh degrades to labels it can build locally. */
   choices?(kind: 'workspace' | 'status' | 'iteration', workspace: string, signal?: AbortSignal): Promise<TapdChoice[]>
+  /** Workspace directory used internally for exact identity matching; never projected to the panel. */
+  directoryMembers?(workspace: string, signal?: AbortSignal): Promise<import('./tapd-identity.ts').TapdDirectoryMember[]>
   /** Live Chinese-name -> API-field / status-code maps for importing a platform filter export. */
   filterMaps?(workspace: string, signal?: AbortSignal): Promise<{ fieldNames: Record<string, string>; statusCodes: Record<string, string> }>
   /** Read-only count used to preview how many bugs an imported filter matches. */
@@ -270,6 +278,16 @@ export class TapdOpenApi implements TapdApi {
       }
     }
     return out
+  }
+  async directoryMembers(workspace: string, signal?: AbortSignal): Promise<import('./tapd-identity.ts').TapdDirectoryMember[]> {
+    const rows = await paged(page => this.request('GET', 'workspaces/users',
+      { workspace_id: workspace, fields: 'user,name,email', limit: String(PAGE), page: String(page) }, signal))
+    return rows.map(row => ({ user: row.user ?? '', name: row.name ?? '', email: row.email ?? '',
+      ...row.staff_id ? { staffId: row.staff_id } : {}, ...row.login_name ? { loginName: row.login_name } : {} })).filter(row => row.user)
+  }
+  async releases(workspace: string, signal?: AbortSignal): Promise<TapdChoice[]> {
+    const rows = await paged(page => this.request('GET', 'releases', listArgs({ workspace_id: workspace }, page), signal))
+    return rows.map(row => ({ value: row.id ?? '', label: row.name ?? '' })).filter(row => row.value && row.label)
   }
   /** Chinese custom-field names and workflow status names, taken from this workspace's own configuration. */
   async filterMaps(workspace: string, signal?: AbortSignal) {

@@ -2,11 +2,12 @@
 import { realpath, stat } from 'node:fs/promises'
 import { isAbsolute, relative, sep } from 'node:path'
 import type { Ticket } from '../core/index.ts'
-import { changesOf, inPath, ticketClient, type P4Config } from '../sources/p4-change.ts'
+import { changesOf, filesOf, fingerprint, inPath, ticketClient, type P4Config } from '../sources/p4-change.ts'
 import type { GitRunner } from './git-workspace.ts'
 import { WorkspaceError } from './workspace.ts'
+import type { RetainedChange } from './p4-retained.ts'
 
-export async function verifyP4Workspace(ticket: Ticket, config: P4Config, run: GitRunner): Promise<string> {
+export async function verifyP4Workspace(ticket: Ticket, config: P4Config, run: GitRunner, retained: readonly RetainedChange[] = []): Promise<string> {
   const directory = ticket.execution?.directory
   if (!directory || !config.port || !config.user || !config.paths.length) throw new WorkspaceError('请配置 P4 服务器、执行账号和允许路径。')
   const base = [config.cli || 'p4', '-p', config.port, '-u', config.user, '-Mj', '-ztag']
@@ -37,7 +38,14 @@ export async function verifyP4Workspace(ticket: Ticket, config: P4Config, run: G
   if (shared) {
     const own = new Set(changesOf(ticket, true).map(String))
     const opened = await records(['-c', name, 'opened'], root)
-    if (opened.some(file => !own.has(file.change ?? ''))) throw new WorkspaceError('当前工作区已有未归属本单的 opened 文件；请先保存并人工处理，不会自动 revert 或接管。')
+    const preserved = new Map(retained.map(change => [String(change.change), change]))
+    if (opened.some(file => !own.has(file.change ?? '') && !preserved.get(file.change ?? '')?.files.some(known => known.depotFile === file.depotFile && known.action === file.action)))
+      throw new WorkspaceError('当前工作区已有未归属本单的 opened 文件；请先保存并人工处理，不会自动 revert 或接管。')
+    for (const previous of retained.filter(change => opened.some(file => file.change === String(change.change)))) {
+      const description = (await records(['-c', name, 'describe', '-s', '-S', String(previous.change)], root))[0]
+      if (!description || description.status !== 'pending' || description.client !== name || description.user !== config.user
+        || !description.desc?.split(/\s+/).includes(`[dsh-superagent:${previous.ticketId}]`) || fingerprint(filesOf(description)) !== previous.fingerprint) throw new WorkspaceError('前序pending交付已改变，不能接管其修改。')
+    }
     // Unopened differences are generated constantly by UE/Python tooling in an allwrite client; scanning every
     // launch blocked unrelated build artifacts. Strict mode is an explicit operator choice, off by default.
     if (config.checkUnopenedDiffs) {

@@ -1,11 +1,11 @@
 import { A as key, B as readUntil, C as templateLiteral, D as ZodError, F as isoTime, G as ticketExecutor, H as settled, I as latestAssignment, K as ticketOutcome, L as latestReport, M as awaitingAnswer, N as followupOwners, O as toJSONSchema, P as isGroupTicket, R as liveTicket, S as string$1, T as unknown, U as staffing, V as runningAssignment, W as threadKey, _ as literal, b as object, c as checkedImText, d as sameName, f as wordCount, g as boolean, h as array, j as assignmentRole, k as _coercedNumber, m as _enum, o as health, p as ZodNumber, q as waitsForPerson, w as union, x as record$1, y as number$1, z as reached } from "./poll-DRgTfbJS.js";
 import { C as resolveFeishuBot, M as LIMITS, S as resolveDeployment, _ as executable, a as verifyDirectory, c as workerBin, d as Commands, g as SETUP_FIELDS, i as runAsWorker, j as SetupError, l as writeEnvironment, n as agentVariables, o as verifyEnvironment, p as Config, r as applyEnvironment, s as withoutDirectory, t as WORKER_COMMANDS, v as githubConfigured, w as workerProbe, x as machineOf } from "./environment-CNbpiSF4.js";
-import { t as KV } from "./kv-DEhBtrT7.js";
-import { A as saveTapdCredential, C as TapdConfigSchema, D as tapdTime, E as tapdApi, M as tapdCredentialStatus, N as tapdEnvironment, O as watchWorkspace, P as importTapdFilter, S as TAPD_TYPES, T as itemAddress, a as itemTrigger, b as resolveTapdName, h as signatureOf, i as itemThread, j as tapdCredential, k as TapdCredentialError, p as resolvedConfig, w as TapdOpenApi, x as TAPD_SOURCE, y as cleanOwner } from "./tapd-Bx8rVFpw.js";
+import { t as KV } from "./kv-0d42zQlz.js";
+import { $ as tapdFilterRowsReady, A as tapdTime, B as TapdFilterPoolSchema, C as resolveTapdName, D as TapdOpenApi, E as TapdConfigSchema, F as tapdCredentialStatus, G as localDay, H as applyOwnerOverride, I as tapdEnvironment, J as parseScrapedConditions, K as mergeIntoPool, L as CDP_DOM_EXPRESSION, M as TapdCredentialError, N as saveTapdCredential, O as itemAddress, P as tapdCredential, Q as schemeHash, R as FILTER_SCHEME_SOURCES, S as cleanOwner, T as TAPD_TYPES, U as compileSchemeBranches, V as TapdFilterSchemeSchema, W as fallbackConditions, X as poolWithRuntime, Y as poolItemKey, Z as reconcilePoolState, a as itemThread, b as cachedTapdName, et as matchesLocal, g as signatureOf, j as watchWorkspace, k as tapdApi, m as resolvedConfig, o as itemTrigger, q as parseDomConditions, t as runPoolDaily, w as TAPD_SOURCE, x as resolveTapdIdentity, z as PoolItemSchema } from "./tapd-filter-pool-run-CYz8NhNU.js";
 import { i as pullOf, m as readRepositoryPath, o as readPull, p as readGithub, r as pullEndNotices, t as claimPull } from "./github-pull-BIKVutil.js";
-import { f as GongfengConfigSchema, n as claimGongfengMr, p as GongfengOpenApi } from "./gongfeng-C_hgFLYU.js";
-import { b as feishuTriggerId, d as feishuChatLink, f as feishuRead, g as feishuRef, m as readFeishuLink, p as feishuReferences, r as feishuSettings } from "./feishu-BlttmBWt.js";
-import { a as claimChangelist, d as p4Messages, f as readChange, g as unshelvedFiles, h as ticketClient, i as changesOf$1, l as p4, m as summarizeShelfDiffs, n as P4ConfigSchema, o as fingerprint, p as shelfDiffs, r as changeEndNotices, s as inPath } from "./p4-change-C_Ia-tq9.js";
+import { f as GongfengConfigSchema, n as claimGongfengMr, p as GongfengOpenApi } from "./gongfeng-dTGgJuUH.js";
+import { b as feishuTriggerId, d as feishuChatLink, f as feishuRead, g as feishuRef, m as readFeishuLink, p as feishuReferences, r as feishuSettings } from "./feishu-hTbo6nO0.js";
+import { _ as unshelvedFiles, a as claimChangelist, c as inPath, f as p4Messages, g as ticketClient, h as summarizeShelfDiffs, i as changesOf$1, m as shelfDiffs, n as P4ConfigSchema, o as filesOf, p as readChange, r as changeEndNotices, s as fingerprint, u as p4 } from "./p4-change-cDDNQSBm.js";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -3824,7 +3824,9 @@ const ExecutorConfigSchema = object({
 	staffing: boolean().default(true),
 	autoApprove: boolean().default(false),
 	sideCalls: boolean().default(true),
-	feishuReport: boolean().default(false)
+	feishuReport: boolean().default(false),
+	/** Every ended ticket gets a cloud document; IM notification remains separately opt-in. */
+	feishuReportDocument: boolean().default(true)
 }).strict();
 const SourceInstanceSchema = object({
 	enabled: boolean().default(true),
@@ -5093,7 +5095,7 @@ async function admissionContext(context, commands, maxPages) {
 function preview$1(text) {
 	return text.replace(/\s+/g, " ").slice(0, 160);
 }
-function triggerCard(trigger, disposition) {
+function triggerCard(trigger, disposition, authorization) {
 	return {
 		trigger_id: trigger.id,
 		source: trigger.source,
@@ -5105,6 +5107,7 @@ function triggerCard(trigger, disposition) {
 		preview: preview$1(trigger.text),
 		chars: trigger.text.length,
 		read: `trigger/${trigger.id}`,
+		...authorization ? { authorization } : {},
 		...disposition ? { disposition: {
 			...disposition.filtered ? { filtered: reasonText(disposition.filtered) } : {},
 			...disposition.decisionId ? { decision_id: disposition.decisionId } : {},
@@ -5194,7 +5197,7 @@ function ticketDetails(ticket, threads, batch, worker = false) {
 	return {
 		...card,
 		trigger_id: ticket.origin.triggerId,
-		...batch.length ? { batch: batch.map(batchLine) } : {},
+		...batch.length ? { batch: batch.map((trigger) => batchLine(trigger)) } : {},
 		...worker ? {} : { decision_id: ticket.decisionId },
 		threads,
 		directory: ticket.execution?.directory,
@@ -5737,6 +5740,52 @@ function decisionView(view, decision) {
 	};
 }
 //#endregion
+//#region src/sources/tapd-pool-authorization.ts
+const same$1 = (a, b) => cleanOwner(a).toLowerCase() === cleanOwner(b).toLowerCase();
+function dispatchRecord(state, config, trigger) {
+	const { workspace, type, id, filterPool, filterSweep, owners } = trigger.meta;
+	if (trigger.source !== "tapd" || trigger.addressed !== "direct" || !trigger.id.startsWith("tapd-pool:") || workspace !== config.workspace || filterPool !== config.filterPool.name || filterSweep !== filterPool || type !== "story" && type !== "bug" || typeof id !== "string") return void 0;
+	const record = state.get(KV.tapd.pool(config.filterPool.name))?.records?.[poolItemKey(config.workspace, config.filterPool.owner, {
+		kind: type,
+		id
+	})];
+	if (!record || record.triggerId !== trigger.id || !record.item?.enabled || record.item.id !== id || record.item.kind !== type) return void 0;
+	const current = config.filterPool.items.find((item) => item.kind === type && item.id === id);
+	const owner = cachedTapdName(config, state, config.filterPool.owner);
+	if (!owner || !Array.isArray(owners) || !owners.some((value) => typeof value === "string" && same$1(value, owner))) return void 0;
+	return {
+		record,
+		current,
+		owner,
+		type,
+		id
+	};
+}
+function poolAuthorization(state, config, trigger) {
+	const found = dispatchRecord(state, config, trigger), grant = found?.record.authorization;
+	if (!found || !grant || grant.authority !== "host_pool" || grant.action !== "repair" || !["manual", "daily"].includes(grant.invocation) || grant.workspace !== config.workspace || grant.pool !== config.filterPool.name || grant.itemType !== found.type || grant.itemId !== found.id || !same$1(grant.loginName, config.filterPool.owner) || !same$1(grant.tapdOwner, found.owner) || grant.runId !== found.record.runId || !Number.isFinite(Date.parse(grant.authorizedAt))) return void 0;
+	return grant;
+}
+/** A legacy ignore can be reconsidered only by another operator click, while the original item is still explicitly enabled. */
+function legacyPoolReauthorization(state, config, trigger) {
+	const found = dispatchRecord(state, config, trigger);
+	return !!found && !found.record.authorization && found.current?.enabled === true;
+}
+function hostLegacyPoolReauthorization(store, trigger) {
+	if (trigger.source !== "tapd" || typeof trigger.meta.filterPool !== "string") return false;
+	const source = store.settings().sources.tapd;
+	if (!source?.enabled) return false;
+	const parsed = TapdConfigSchema.safeParse(source.config);
+	return parsed.success && legacyPoolReauthorization(store, parsed.data, trigger);
+}
+function hostPoolAuthorization(store, trigger) {
+	if (trigger.source !== "tapd" || typeof trigger.meta.filterPool !== "string") return void 0;
+	const source = store.settings().sources.tapd;
+	if (!source?.enabled) return void 0;
+	const parsed = TapdConfigSchema.safeParse(source.config);
+	return parsed.success ? poolAuthorization(store, parsed.data, trigger) : void 0;
+}
+//#endregion
 //#region src/app/links.ts
 /** Resolves and caches a trigger's external message URL, falling back to a readable resource path when lookup fails. */
 async function sourceLink(host, trigger, signal) {
@@ -5781,16 +5830,17 @@ async function candidateCard(host, candidate) {
 		reason: item.reason
 	})));
 	const others = candidate.triggers.filter((trigger) => trigger.id !== primary.id);
+	const authorization = hostPoolAuthorization(host.store, primary);
 	return {
-		...triggerMessage(primary, await sourceLink(host, primary), void 0, repliedTo(host, primary)),
+		...triggerMessage(primary, await sourceLink(host, primary), void 0, repliedTo(host, primary), authorization),
 		strength: candidate.strength,
 		mode: settings.eval.mode,
-		...others.length ? { batch: others.map((trigger) => triggerCard(trigger)) } : {},
+		...others.length ? { batch: others.map((trigger) => triggerCard(trigger, void 0, hostPoolAuthorization(host.store, trigger))) } : {},
 		...handedBack.length ? { handed_back: handedBack } : {},
 		...relatedTickets(candidate.tickets),
 		...delivered.length ? { delivered_to: delivered } : {},
 		...referenced.length ? { referenced_tickets: referenced.map(ticketCard) } : {},
-		next_action: candidate.strength === "explicit" ? "Route it with orchestrator_route as dispatch says: accept, attach, stop or ignore." : "Ignore it with orchestrator_route if the card shows it touches no enabled rule; else assess it with orchestrator_eval, orchestrator_eval_read, then orchestrator_eval_decide."
+		next_action: authorization ? "Host-verified request to repair this specific item. Route with orchestrator_route under the existing Policy. An empty machine sender is not missing authorization; manual invocation does not require automatic scheduling. Workers investigate missing context and report concrete blockers." : candidate.strength === "explicit" ? "Route it with orchestrator_route as dispatch says: accept, attach, stop or ignore." : "Ignore it with orchestrator_route if the card shows it touches no enabled rule; else assess it with orchestrator_eval, orchestrator_eval_read, then orchestrator_eval_decide."
 	};
 }
 //#endregion
@@ -6766,7 +6816,7 @@ const ROUTES = [
 			...disposition,
 			decisionId: void 0,
 			fanout: disposition.fanout.filter((id) => id === ticket.id)
-		} : disposition);
+		} : disposition, hostPoolAuthorization(host.store, found));
 		const parent = found.source === "feishu" && typeof found.meta.parentId === "string" ? found.meta.parentId : void 0;
 		const repliedTo = shown(parent ? host.store.triggers.get(feishuTriggerId(parent)) : void 0);
 		const neighbours = host.store.read.neighbours(threadKey(found.threads[0]), found.at, found.id);
@@ -6824,7 +6874,7 @@ const ROUTES = [
 		if (section === "input" && part) {
 			const input = ticket.inputs.find((item) => key(item.id) === part || item.id === part);
 			const trigger = input?.kind === "trigger" ? host.store.triggers.get(input.triggerId) : void 0;
-			const card = trigger && input?.kind === "trigger" ? triggerMessage(trigger, await host.sourceLink(trigger, signal), input.note) : void 0;
+			const card = trigger && input?.kind === "trigger" ? triggerMessage(trigger, await host.sourceLink(trigger, signal), input.note, void 0, hostPoolAuthorization(host.store, trigger)) : void 0;
 			const message = input && inputMessage(input, card);
 			if (message === void 0) throw new Error("Unknown ticket input");
 			body = message;
@@ -6983,10 +7033,17 @@ var MasterAssessor = class {
 		host.effects.handle("assessment", async ({ triggerId }, evalId) => {
 			const candidate = this.host.engine.candidate(triggerId);
 			if (candidate?.evalId !== evalId) return;
-			await this.host.deliver(`candidate:${evalId}`, JSON.stringify({
+			const requestId = `candidate:${evalId}`;
+			const card = await this.host.candidateCard(candidate);
+			if (this.host.engine.candidate(triggerId)?.evalId !== evalId) return;
+			await this.host.deliver(requestId, JSON.stringify({
 				kind: "candidate",
-				...await this.host.candidateCard(candidate)
+				...card
 			}));
+			if (this.host.engine.candidate(triggerId)?.evalId !== evalId) return;
+			const recorded = await this.host.recorded(requestId);
+			if (this.host.engine.candidate(triggerId)?.evalId !== evalId) return;
+			if (!recorded) throw new Later("主管尚未消费候选；保留投递队列，未启动评估超时计时");
 			this.host.engine.candidateDelivered(evalId);
 		}, { limit: () => host.paused() ? 0 : 4 });
 	}
@@ -7313,11 +7370,54 @@ async function resolveRoleModel(ctx, model) {
 		model: model.model,
 		...model.reasoningEffort ? { reasoningEffort: ReasoningEffortId(model.reasoningEffort) } : {}
 	});
+	await ctx.llm.resolveModelInfo(value.provider, value.model);
 	return {
 		provider: value.provider,
 		model: value.model,
 		...value.reasoningEffort ? { reasoningEffort: value.reasoningEffort } : {}
 	};
+}
+/** Repair only a removed durable route, using the operator's configured role model; never overwrite a valid manual selection or the global default. */
+async function recoverRoleModel(ctx, agent, model) {
+	let pending;
+	let used;
+	const routeEvents = () => agent.session.snapshotEvents().filter((event) => event.type === "model/selection" || event.type === "request/header");
+	const events = routeEvents();
+	for (const event of events) {
+		if (event.type === "model/selection") pending = {
+			provider: event.data.provider,
+			model: event.data.model,
+			...event.data.reasoningEffort ? { reasoningEffort: ReasoningEffortId(event.data.reasoningEffort) } : {}
+		};
+		if (event.type === "request/header") {
+			const config = event.data.header.config;
+			used = {
+				provider: config.provider,
+				model: config.model,
+				...config.reasoningEffort ? { reasoningEffort: config.reasoningEffort } : {}
+			};
+			if (pending?.provider === used.provider && pending.model === used.model && pending.reasoningEffort === used.reasoningEffort) pending = void 0;
+		}
+	}
+	const current = pending ?? used;
+	if (!current) {
+		if (model) await resolveRoleModel(ctx, model);
+		return;
+	}
+	try {
+		await ctx.llm.resolveModelInfo(current.provider, current.model);
+		return;
+	} catch (error) {
+		const code = error.code;
+		if (!["UNKNOWN_MODEL", "UNKNOWN_PROVIDER"].includes(code ?? "") && !/no configured model|unknown provider/i.test(String(error))) throw error;
+		if (!model) throw new Error(`会话模型已失效：${current.provider}/${current.model}，请在设置中配置可用的主管或执行模型`);
+		const selected = await resolveRoleModel(ctx, model);
+		if (routeEvents().length !== events.length) return;
+		if (selected.provider === current.provider && selected.model === current.model) throw error;
+		agent.session.append("model/selection", selected);
+		await ctx.sessionPersistence.flush();
+		ctx.logger.warn("dsh-superagent: recovered unavailable session model %s/%s -> configured %s/%s for the next request; historical compaction routing advances only after a real request", current.provider, current.model, selected.provider, selected.model);
+	}
 }
 /** Seed a role's configured model onto a brand-new session before its first request, leaving later manual or durable selections intact. */
 async function initializeRoleModel(ctx, agent, model) {
@@ -7367,13 +7467,14 @@ async function initializeRoleModel(ctx, agent, model) {
 */
 function modelReportText(error) {
 	const text = error instanceof Error ? error.message : String(error);
-	if (/No API key for provider|MISSING_CREDENTIAL|INVALID_CREDENTIAL|unknown provider|No usable model|model not configured/i.test(text)) return `模型未配置：执行器没有设置模型，且 DSH 默认模型不可用（${text}）。请在「设置 → 执行」填写服务商与模型，或修正 DSH 默认模型的凭据。`;
+	if ((error && typeof error === "object" ? Reflect.get(error, "code") : void 0) === "MODEL_SWITCH_COMPACTION_FAILED" || /MODEL_SWITCH_COMPACTION_FAILED/i.test(text)) return `模型切换因历史上下文压缩失败而受阻（${text}）。保留原会话与任务，请确认可用的压缩模型或使用支持迁移的运行时；未修改全局模型，也未伪造历史请求。`;
+	if (/No API key for provider|MISSING_CREDENTIAL|INVALID_CREDENTIAL|unknown provider|No usable model|model not configured|UNKNOWN_MODEL|no configured model/i.test(text)) return `模型未配置或已不可用：当前会话无法使用其模型（${text}）。请检查主管模型配置，或在「设置 → 执行」修正执行模型及服务商凭据。`;
 	return text;
 }
 //#endregion
 //#region src/executor/p4-workspace.ts
 /** Read-only preflight for operator-prepared P4 ticket workspaces; never syncs, edits or changes a client. */
-async function verifyP4Workspace(ticket, config, run) {
+async function verifyP4Workspace(ticket, config, run, retained = []) {
 	const directory = ticket.execution?.directory;
 	if (!directory || !config.port || !config.user || !config.paths.length) throw new WorkspaceError("请配置 P4 服务器、执行账号和允许路径。");
 	const base = [
@@ -7423,11 +7524,24 @@ async function verifyP4Workspace(ticket, config, run) {
 	], root)).length) throw new WorkspaceError("P4 执行账号登录状态无法确认，请在 Host 用户环境登录。");
 	if (shared) {
 		const own = new Set(changesOf$1(ticket, true).map(String));
-		if ((await records([
+		const opened = await records([
 			"-c",
 			name,
 			"opened"
-		], root)).some((file) => !own.has(file.change ?? ""))) throw new WorkspaceError("当前工作区已有未归属本单的 opened 文件；请先保存并人工处理，不会自动 revert 或接管。");
+		], root);
+		const preserved = new Map(retained.map((change) => [String(change.change), change]));
+		if (opened.some((file) => !own.has(file.change ?? "") && !preserved.get(file.change ?? "")?.files.some((known) => known.depotFile === file.depotFile && known.action === file.action))) throw new WorkspaceError("当前工作区已有未归属本单的 opened 文件；请先保存并人工处理，不会自动 revert 或接管。");
+		for (const previous of retained.filter((change) => opened.some((file) => file.change === String(change.change)))) {
+			const description = (await records([
+				"-c",
+				name,
+				"describe",
+				"-s",
+				"-S",
+				String(previous.change)
+			], root))[0];
+			if (!description || description.status !== "pending" || description.client !== name || description.user !== config.user || !description.desc?.split(/\s+/).includes(`[dsh-superagent:${previous.ticketId}]`) || fingerprint(filesOf(description)) !== previous.fingerprint) throw new WorkspaceError("前序pending交付已改变，不能接管其修改。");
+		}
 		if (config.checkUnopenedDiffs) {
 			const dirty = [];
 			for (const allowed of config.paths) for (const file of await records([
@@ -7463,6 +7577,23 @@ async function verifyP4Workspace(ticket, config, run) {
 	const file = await realpath(have.clientFile), fileRel = relative(root, file);
 	if (fileRel === ".." || fileRel.startsWith(`..${sep}`) || isAbsolute(fileRel) || !(await stat(file)).isFile()) throw new WorkspaceError("P4 have 记录对应源码文件不存在或位于工作区外。");
 	return name;
+}
+//#endregion
+//#region src/executor/p4-retained.ts
+function retainedChanges(store, ticket) {
+	const workspace = ticket.execution?.p4Workspace;
+	if (!workspace) return [];
+	return store.keys(KV.reviews.review).flatMap((key) => {
+		const review = store.get(key), previous = review && store.tickets.get(review.ticketId);
+		const other = previous?.execution?.p4Workspace;
+		if (!review || review.state !== "delivered_pending" || previous?.ended?.outcome !== "completed" || previous.id === ticket.id || !other || other.root !== workspace.root || other.client !== workspace.client || other.port !== workspace.port || other.user !== workspace.user) return [];
+		return [{
+			ticketId: previous.id,
+			change: review.change,
+			files: review.files,
+			fingerprint: review.fingerprint
+		}];
+	});
 }
 //#endregion
 //#region src/executor/p4-pending.ts
@@ -7502,13 +7633,13 @@ const explicit = (path) => path.startsWith("//") && !path.includes("...") && !pa
 * Only when `reconcileFallback` is explicitly enabled does it run `reconcile -e -a -d -c` on the exact
 * (non-ignored, in-scope) files `p4 opened` reported, in batches; it never passes a wildcard path.
 */
-async function consolidatePending(config, target, records) {
+async function consolidatePending(config, target, records, ownOnly = false) {
 	const ignores = config.reconcileIgnore;
 	const opened = await records(["opened"]);
 	const pathOf = (record) => record.depotFile ?? record.clientFile ?? "";
 	const candidates = opened.map(pathOf).filter(Boolean);
 	const inScope = (record) => !record.depotFile || config.paths.some((allowed) => inPath(record.depotFile, allowed.path));
-	const allowed = opened.filter((record) => inScope(record) && !ignoredDepotFile(pathOf(record), ignores));
+	const allowed = opened.filter((record) => (!ownOnly || record.change === String(target)) && inScope(record) && !ignoredDepotFile(pathOf(record), ignores));
 	const kept = [...new Set(allowed.map(pathOf).filter(Boolean))];
 	const ignored = candidates.length - kept.length;
 	let reconciled = [];
@@ -7555,8 +7686,8 @@ function withPendingName(form, name) {
 	].join("\n");
 }
 /** Consolidates, names, and re-shelves the ticket's pending CL. Never submits or unshelves. */
-async function finalizePending(config, target, ticketId, title, host) {
-	const consolidated = await consolidatePending(config, target, host.records);
+async function finalizePending(config, target, ticketId, title, host, ownOnly = false) {
+	const consolidated = await consolidatePending(config, target, host.records, ownOnly);
 	const name = pendingName(config, ticketId, title);
 	const form = await host.form([
 		"change",
@@ -7943,7 +8074,7 @@ function mandateInstructions(mandate) {
 	return mandate.strength === "inferred" ? "This ticket has limited proactive authorization. Independently verify that it is a small change internal to one module within the accepted rule scope. If it requires public-interface or behavior changes, new interaction, product decisions or clarification, stop and report dropped; do not expand scope." : "";
 }
 /** Builds a newly accepted ticket's Execution metadata: its worktree name, workspace directory, and assignment text. */
-function ticketExecution(ticket, outcome, settings, stateDir, origin, canonicalRepository) {
+function ticketExecution(ticket, outcome, settings, stateDir, origin, canonicalRepository, pool = false) {
 	const name = ticketWorktreeName(outcome.name ?? "", ticket.id);
 	ticket.origin.triggerId;
 	const note = outcome.note ? `\nRouting note (not the source request): ${outcome.note}` : "";
@@ -7967,8 +8098,8 @@ function ticketExecution(ticket, outcome, settings, stateDir, origin, canonicalR
 		port: p4Config.port,
 		user: p4Config.user
 	} : void 0;
-	const pending = requiresP4 && p4Config?.submit === "pending";
-	const delivery = requiresP4 ? `\nP4 delivery required: use the authorized workspace, test and shelve a ticket-owned CL. ${pending ? "The Host will consolidate, name and re-shelve that CL; never submit, unshelve or revert it." : "Missing checkout or a CL owned elsewhere requires blocked, not ready/dropped."}` : "";
+	const pending = requiresP4 && (p4Config?.submit === "pending" || pool);
+	const delivery = requiresP4 ? `\nP4 delivery required: use the authorized workspace, ${pool ? "deliver a ticket-owned pending CL; do not wait for compilation, runtime regression or human review. Report those checks as skipped or incomplete, never passed. Shelf delivery ends this task so the next may run. " : "test and "}shelve a ticket-owned CL. ${pending ? "The Host will consolidate, name and re-shelve that CL; never submit, unshelve or revert it." : "Missing checkout or a CL owned elsewhere requires blocked, not ready/dropped."}` : "";
 	const sharedInstructions = shared ? `\nUse -c ${shared.client} on every P4 call. Create a new numbered CL with [dsh-superagent:${ticket.id}] in its description; never adopt existing/default CLs or alter unrelated edits. Do not sync, revert or submit the shared workspace.` : "";
 	return {
 		name,
@@ -7996,12 +8127,13 @@ const capped = (text, limit, read) => text.length <= limit ? { text } : {
 * Formats a Trigger for worker delivery: author, thread, timestamp, text up to `TRIGGER_CHARS`, source message link,
 * optional routing note, and a preview of the replied-to message when the worker has not yet seen it.
 */
-function triggerMessage(trigger, link, note, repliesTo) {
+function triggerMessage(trigger, link, note, repliesTo, authorization) {
 	return {
 		trigger_id: trigger.id,
 		from: trigger.actor.id,
 		thread: threadKey(trigger.threads[0]),
 		at: trigger.at,
+		...authorization ? { authorization } : {},
 		...capped(trigger.text, TRIGGER_CHARS, `trigger/${trigger.id}`),
 		...link,
 		...note ? { routing_note: note } : {},
@@ -8012,10 +8144,11 @@ function triggerMessage(trigger, link, note, repliesTo) {
 	};
 }
 /** Formats a peer trigger from the ticket's acceptance batch with author, timestamp, 160-character preview, and read resource path. */
-const batchLine = (trigger) => ({
+const batchLine = (trigger, authorization) => ({
 	trigger_id: trigger.id,
 	from: trigger.actor.id,
 	at: trigger.at,
+	...authorization ? { authorization } : {},
 	preview: trigger.text.replace(/\s+/g, " ").slice(0, 160),
 	read: `trigger/${trigger.id}`
 });
@@ -8140,7 +8273,7 @@ var DshExecutor = class {
 		this.slots = new WorkerSlots(() => host.store.tickets.open().filter((ticket) => this.running(ticket)).map((ticket) => ticket.id), () => host.store.settings().executor.maxWorkers, (id) => {
 			const workspace = host.store.tickets.get(id)?.execution?.p4Workspace;
 			return workspace ? workspace.root.toLowerCase().replace(/\\/g, "/").replace(/\/$/, "") : void 0;
-		}, () => host.store.tickets.open().filter((ticket) => this.running(ticket) || this.preparing.has(ticket.id) || this.stopping.has(ticket.id) || this.resuming.has(latestAssignment(ticket)?.id ?? "") || ticket.follows?.some((follow) => follow.own && !follow.closed && follow.thread.startsWith("p4:"))).map((ticket) => ticket.id));
+		}, () => host.store.tickets.list().filter((ticket) => this.stopping.has(ticket.id) || !ticket.ended && (this.running(ticket) || this.preparing.has(ticket.id) || this.resuming.has(latestAssignment(ticket)?.id ?? "") || ticket.follows?.some((follow) => follow.own && !follow.closed && follow.thread.startsWith("p4:")))).map((ticket) => ticket.id));
 		host.effects.handle("launch", (payload) => this.launchQueued(payload), {
 			limit: () => host.paused() ? 0 : this.slots.launches(),
 			retry: [5e3, 3e5]
@@ -8152,9 +8285,10 @@ var DshExecutor = class {
 	}
 	/** Populates a newly accepted ticket's `execution` attributes (worktree name, workspace directory, and assignment text). */
 	prepare(ticket, outcome) {
+		const origin = sourceTrigger(this.host, ticket);
 		return {
 			...ticket,
-			execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir, sourceTrigger(this.host, ticket), this.host.repository?.())
+			execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir, origin, this.host.repository?.(), !!origin && !!hostPoolAuthorization(this.host.store, origin))
 		};
 	}
 	/**
@@ -8182,6 +8316,18 @@ var DshExecutor = class {
 		await mkdir(directory, { recursive: true });
 	}
 	ensureWorkspace(ticket, allowPrepare = true) {
+		const origin = sourceTrigger(this.host, ticket);
+		if (ticket.execution?.delivery === "p4" && ticket.execution.p4Delivery !== "pending" && !ticket.assignments.some((assignment) => assignment.startedAt) && origin && hostPoolAuthorization(this.host.store, origin)) {
+			ticket = {
+				...ticket,
+				execution: {
+					...ticket.execution,
+					p4Delivery: "pending",
+					assignment: `${ticket.execution.assignment}\n池任务按用户要求：交付pending CL后结束，不等待编译、回归或审阅；不得提交，不宣称未执行的检查通过。`
+				}
+			};
+			this.host.store.tickets.save(ticket);
+		}
 		const directory = ticket.execution?.directory ?? "";
 		const project = ticket.execution?.project;
 		const entry = {
@@ -8220,8 +8366,41 @@ var DshExecutor = class {
 				const source = this.host.store.settings().sources.p4;
 				if (!source?.enabled) throw new WorkspaceError("P4 来源已关闭；请启用并核对本单工作区。");
 				const config = P4ConfigSchema.parse(source.config);
-				const client = await verifyP4Workspace(ticket, config, run);
-				if (config.syncBeforeWork) {
+				const retained = retainedChanges(this.host.store, ticket);
+				const client = await verifyP4Workspace(ticket, config, run, retained);
+				if (retained.length) {
+					const files = retained.flatMap((change) => change.files.map((file) => file.depotFile));
+					const protectedPaths = [...files];
+					for (const file of files) {
+						const output = await run([
+							config.cli || "p4",
+							"-p",
+							config.port,
+							"-u",
+							config.user,
+							"-c",
+							client,
+							"-Mj",
+							"-ztag",
+							"where",
+							file
+						], directory);
+						for (const line of output.split(/\r?\n/).filter(Boolean)) {
+							const row = JSON.parse(line);
+							if (row.path) protectedPaths.push(row.path);
+						}
+					}
+					ticket = {
+						...ticket,
+						execution: {
+							...ticket.execution,
+							protectedP4Files: protectedPaths,
+							assignment: `${ticket.execution.assignment}\n前序已交付CL保留：${retained.map((change) => change.change).join(", ")}。不得修改、reopen或归集其文件；如需重叠修改报告阻塞：${files.join(", ")}`
+						}
+					};
+					this.host.store.tickets.save(ticket);
+				}
+				if (config.syncBeforeWork && !retained.length) {
 					if (!this.host.p4Host) throw new WorkspaceError("Host 的 P4 同步通道不可用；不会在未更新的工作区启动任务。");
 					await syncP4Workspace(config, client, directory, (argv, cwd) => this.host.p4Host(argv, cwd, signal));
 				}
@@ -8328,7 +8507,7 @@ var DshExecutor = class {
 		if (!trigger) return void 0;
 		const parent = this.host.repliedTo(trigger);
 		const seen = parent && (parent.id === ticket.origin.triggerId || ticket.inputs.some((item) => item.kind === "trigger" && item.triggerId === parent.id));
-		return triggerMessage(trigger, await this.host.sourceLink(trigger), note, seen ? void 0 : parent);
+		return triggerMessage(trigger, await this.host.sourceLink(trigger), note, seen ? void 0 : parent, hostPoolAuthorization(this.host.store, trigger));
 	}
 	/**
 	* After the ending transaction commits (so a rollback leaves the worker working, and a launch the same transaction queued
@@ -8481,6 +8660,7 @@ var DshExecutor = class {
 		if (!current()) return;
 		await this.ensureWorkspace(ticket);
 		if (!current()) return;
+		ticket = this.host.store.tickets.get(ticket.id);
 		const sessionId = workerSessionId(ticket.id);
 		const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, "worker");
 		if (!current()) return;
@@ -8494,7 +8674,7 @@ var DshExecutor = class {
 		const { text: brief, chars, read } = capped(assignmentText, ASSIGNMENT_CHARS, `ticket/${ticket.id}/assignment`);
 		const card = told || !source ? void 0 : await this.triggerCard(ticket, source.id);
 		if (!current()) return;
-		const batch = told ? [] : batchOf(this.host, ticket).map(batchLine);
+		const batch = told ? [] : batchOf(this.host, ticket).map((trigger) => batchLine(trigger, hostPoolAuthorization(this.host.store, trigger)));
 		const text = told ? JSON.stringify({
 			ticket_id: ticket.id,
 			assignment: ticket.assignments.length,
@@ -10527,31 +10707,17 @@ var TextCache = class {
 //#endregion
 //#region src/app/ticket-report.ts
 /**
-* Self-contained HTML ticket reports, delivered to Feishu as a cloud-document address.
-*
-* Feishu IM does not render HTML inline. A report therefore becomes a Lark cloud document:
-* `docs +create --doc-format xml` with a `<figure view-type="Preview">` block makes lark-cli upload
-* the local `.html` artifact as a `text/html` file block that Feishu renders as a page preview.
-* The message sent back to the ticket's Feishu thread carries only that document's address, not
-* the file. In bot mode the CLI also grants the current CLI user `full_access` on the new document.
-*
-* `orchestrator_reply` stays capped at 100 words and the replies prompt still forbids forwarding a
-* worker's report; this is a separate delivery path. The existing short result notice
-* (`ticket-notices.ts`) remains the human-readable summary.
-*
-* Delivery is a durable `ticketReport` effect, not work inside the synchronous `ticket.ended`
-* emit callback: writing a file and calling lark-cli are I/O and must not run inside the Engine's
-* transaction. The effect key includes `ended.at`; the created document's URL is cached on disk so
-* a retry or a repeated manual request reuses it instead of creating a second cloud document, and
-* the lark idempotency key derives from the same key so the notice cannot appear twice.
-*
-* The automatic switch is off by default: sending content out to an IM conversation is a
-* high-risk external action, so a person turns it on (or calls `sendNow` from the panel) first.
+* Local HTML and native editable Feishu reports from immutable ticket-ending facts.
+* Cloud creation is a separate durable effect for all sources; IM delivery remains opt-in.
+* Both paths reuse one document cache and creation lock. Unconfirmed remote creation is
+* surfaced for reconciliation rather than blindly retried, so a crash cannot silently duplicate reports.
+* No file or CLI work runs inside ticket.ended, and report failures do not hold worker slots.
 */
 /** Directory under the state directory that holds generated report files and the document cache. */
 const REPORT_DIR = "reports";
 /** The effect kind that writes and sends one report. */
 const REPORT_EFFECT = "ticketReport";
+const CLOUD_REPORT_EFFECT = "reportCloud";
 /** Feishu rejects idempotency keys longer than 50 characters. */
 const idempotencyKey = (value) => `sa-${createHash("sha256").update(value).digest("hex").slice(0, 30)}`;
 /** Keeps the short IM notice well inside the 100-word transport limit. */
@@ -10594,7 +10760,7 @@ function ticketReportView(ticket, request) {
 	return {
 		id: ticket.id,
 		title: ticket.title,
-		outcome: OUTCOME_TEXT$1[result.outcome] ?? result.outcome,
+		outcome: ended?.outcome === "completed" && ticket.execution?.p4Delivery === "pending" ? "已交付 pending CL（未提交，验证状态见报告）" : OUTCOME_TEXT$1[result.outcome] ?? result.outcome,
 		summary: (report?.summary ?? "").trim() || (result.reason ?? "").trim(),
 		request: request.trim(),
 		reason: (result.reason ?? "").trim(),
@@ -10677,8 +10843,12 @@ function renderTicketReport(view) {
 }
 /** A safe ASCII file name; lark-cli only accepts cwd-relative paths without `..` for local resources. */
 const reportFileName = (ticketId) => `report-${ticketId.replace(/[^A-Za-z0-9_-]/g, "") || "ticket"}.html`;
-/** DocxXML whose file block makes Feishu render the local `.html` artifact as a page preview. */
-const reportDocXml = (file) => `<figure view-type="Preview"><source path="@./${file}" name="${file}"/></figure>\n`;
+/** Native editable document blocks; no executable HTML or external resources are imported. */
+function renderTicketDocXml(view) {
+	const text = (value) => escapeHtml(value).replace(/\r?\n/g, "<br/>");
+	const section = (title, value) => `<h1>${text(title)}</h1><p>${text(value) || "—"}</p>`;
+	return `<title>${text(view.title)} · 工单报告</title>\n<p><b>${text(view.outcome)}</b></p>\n` + section("工单信息", `工单：${view.id}\n创建：${view.createdAt}\n结束：${view.endedAt}\n结束者：${view.endedBy}`) + section("原始需求", view.request) + section("结果与验证记录", view.summary) + section("结束原因", view.reason) + section("执行环境", view.execution) + section("执行轨迹", view.assignments.map((item, i) => `${i + 1}. ${item.state} · ${item.at}\n${item.summary}`).join("\n\n")) + section("关联来源", view.channels.map((item) => `${item.source} · ${item.thread}`).join("\n")) + "<p>内容来自工单记录；未执行或未完成的检查仍为未验证，交付不等于已发布或已通过回归。请勿对外转发内部信息。</p>\n";
+}
 /** The cloud document's address from `docs +create` (`data.document.url` in lark-cli 1.0.98). */
 function documentUrl(data) {
 	const document = data?.document;
@@ -10697,10 +10867,12 @@ function feishuTargets(ticket) {
 /** Generates, stores and sends ticket reports; one durable effect per ticket ending. */
 var TicketReports = class {
 	host;
+	creating = /* @__PURE__ */ new Map();
 	constructor(host) {
 		this.host = host;
 		host.effects.handle(REPORT_EFFECT, (payload, key) => this.deliver(payload, key), { retry: [5e3, 3e5] });
 		host.effects.handle("reportLocal", (payload) => this.generate(payload), { retry: [5e3, 3e5] });
+		host.effects.handle(CLOUD_REPORT_EFFECT, (payload) => this.createCloud(payload), { retry: [5e3, 3e5] });
 	}
 	get directory() {
 		return join(this.host.stateDir, REPORT_DIR);
@@ -10717,11 +10889,24 @@ var TicketReports = class {
 			ticketId: ticket.id,
 			at: this.version(ticket)
 		});
-		return this.host.enabled() ? this.enqueue(ticket) : false;
+		const cloud = ticket.ended && this.host.documentsEnabled?.() ? this.queueDocument(ticket) : false;
+		const notify = this.host.enabled() ? this.enqueue(ticket) : false;
+		return cloud || notify;
 	}
-	/** A person's explicit request: queue the report even while the automatic switch is off. */
+	/** A person's explicit request creates a document even for tickets without a Feishu conversation. */
 	sendNow(ticket) {
-		return this.enqueue(ticket);
+		return feishuTargets(ticket).length ? this.enqueue(ticket) : this.queueDocument(ticket);
+	}
+	queueDocument(ticket) {
+		const view = ticketReportView(ticket, this.host.store.triggers.get(ticket.origin.triggerId)?.text ?? "");
+		if (!ticket.ended || !view) return false;
+		const key = this.key(ticket);
+		if (!this.host.effects.pending("reportCloud", key)) this.host.effects.enqueue(CLOUD_REPORT_EFFECT, key, {
+			ticketId: ticket.id,
+			at: this.version(ticket),
+			view
+		});
+		return true;
 	}
 	enqueue(ticket) {
 		if (!ticketReportView(ticket, "") || !feishuTargets(ticket).length) return false;
@@ -10754,8 +10939,16 @@ var TicketReports = class {
 				"partial"
 			].includes(saved.state ?? "")) deliveryState = saved.state;
 		} catch {}
+		const cloudQueued = this.host.effects.pending(CLOUD_REPORT_EFFECT, this.key(ticket));
+		let creation;
+		try {
+			creation = JSON.parse(readFileSync(path.replace(/\.html$/, ".creation.json"), "utf8"));
+		} catch {}
+		const uncertain = creation?.state === "creation-uncertain" || creation?.state === "creating" && !this.creating.has(this.key(ticket));
 		return {
 			file,
+			cloudState: docUrl ? "created" : uncertain ? "creation-uncertain" : creation?.state === "failed" ? "failed" : cloudQueued ? "queued" : "not-requested",
+			...!docUrl && creation?.error ? { cloudError: creation.error } : {},
 			...existsSync(path) ? { path } : {},
 			...docUrl ? { docUrl } : {},
 			generated: existsSync(path),
@@ -10808,6 +11001,80 @@ var TicketReports = class {
 		await this.writeAtomically(this.directory, this.snapshotFile(ticket.id, payload.at), html);
 		if (this.current(payload)) await this.writeAtomically(this.directory, reportFileName(ticket.id), html);
 	}
+	async createCloud(payload) {
+		const ticket = this.host.store.tickets.get(payload.ticketId);
+		const view = payload.view ?? (ticket && this.current(payload) ? ticketReportView(ticket, this.host.store.triggers.get(ticket.origin.triggerId)?.text ?? "") : void 0);
+		if (!view || view.id !== payload.ticketId || view.endedAt !== payload.at) return;
+		await this.ensureDocument(payload, view);
+	}
+	ensureDocument(payload, view) {
+		const key = `${payload.ticketId}:${payload.at}`, existing = this.creating.get(key);
+		if (existing) return existing;
+		const creating = this.createDocument(payload, view).finally(() => {
+			if (this.creating.get(key) === creating) this.creating.delete(key);
+		});
+		this.creating.set(key, creating);
+		return creating;
+	}
+	async createDocument(payload, view) {
+		const file = this.snapshotFile(payload.ticketId, payload.at), directory = this.directory;
+		const cacheFile = file.replace(/\.html$/, ".doc.json"), intentFile = file.replace(/\.html$/, ".creation.json");
+		await mkdir(directory, {
+			recursive: true,
+			mode: 448
+		});
+		const cached = await this.cachedDoc(cacheFile);
+		if (cached?.ticketId === payload.ticketId && cached.at === payload.at) return cached;
+		let previous;
+		if (existsSync(join(directory, intentFile))) previous = JSON.parse(await readFile(join(directory, intentFile), "utf8"));
+		if (previous && previous.state !== "failed") throw new Error("飞书文档创建结果待确认；请查回已有文档，未自动重复创建");
+		const html = renderTicketReport(view);
+		await this.writeAtomically(directory, file, html);
+		if (this.current(payload)) await this.writeAtomically(directory, reportFileName(payload.ticketId), html);
+		const xmlFile = file.replace(/\.html$/, ".doc.xml");
+		await this.writeAtomically(directory, xmlFile, renderTicketDocXml(view));
+		const intent = {
+			ticketId: payload.ticketId,
+			at: payload.at,
+			state: "creating"
+		};
+		await this.writeAtomically(directory, intentFile, JSON.stringify(intent));
+		try {
+			const created = await this.host.commands.lark([
+				"docs",
+				"+create",
+				"--title",
+				view.title.replace(/[\r\n\t]/g, " ").slice(0, 200),
+				"--doc-format",
+				"xml",
+				"--content",
+				`@./${xmlFile}`
+			], directory);
+			const url = documentUrl(created);
+			if (!url) throw new Error("Feishu returned no document address");
+			const doc = {
+				ticketId: payload.ticketId,
+				at: payload.at,
+				url,
+				documentId: typeof created.document?.document_id === "string" ? created.document.document_id : ""
+			};
+			await this.writeAtomically(directory, cacheFile, JSON.stringify(doc));
+			await this.writeAtomically(directory, intentFile, JSON.stringify({
+				...intent,
+				state: "created"
+			}));
+			return doc;
+		} catch (error) {
+			const localFailure = /The Feishu Source has no working bot CLI/.test(String(error));
+			const message = localFailure ? "飞书机器人CLI未配置，报告保留待重试；不影响下一条任务" : "文档创建响应未确认；请核对飞书权限及已创建文档，不会自动重复创建";
+			await this.writeAtomically(directory, intentFile, JSON.stringify({
+				...intent,
+				state: localFailure ? "failed" : "creation-uncertain",
+				error: message
+			}));
+			throw new Error(message, { cause: error });
+		}
+	}
 	async deliver(payload, key) {
 		const { store, commands, warn } = this.host;
 		const ticket = store.tickets.get(payload.ticketId);
@@ -10818,44 +11085,8 @@ var TicketReports = class {
 		if (!view) return;
 		const directory = this.directory;
 		const file = this.snapshotFile(ticket.id, payload.at);
-		const xmlFile = file.replace(/\.html$/, ".doc.xml");
-		const cacheFile = file.replace(/\.html$/, ".doc.json");
-		await mkdir(directory, {
-			recursive: true,
-			mode: 448
-		});
-		const html = renderTicketReport(view);
-		await this.writeAtomically(directory, file, html);
 		if (!this.current(payload)) return;
-		await this.writeAtomically(directory, reportFileName(ticket.id), html);
-		let doc = await this.cachedDoc(cacheFile);
-		if (doc?.at !== payload.at) doc = void 0;
-		if (!doc) {
-			await this.writeAtomically(directory, xmlFile, reportDocXml(file));
-			const title = view.title.replace(/[\r\n\t]/g, " ").slice(0, 200);
-			if (!this.current(payload)) return;
-			const created = await commands.lark([
-				"docs",
-				"+create",
-				"--title",
-				title,
-				"--doc-format",
-				"xml",
-				"--content",
-				`@./${xmlFile}`
-			], directory);
-			const url = documentUrl(created);
-			if (!url) throw new Error("Feishu cloud document was created without an address");
-			const documentId = typeof created?.document?.document_id === "string" ? created.document.document_id : "";
-			doc = {
-				ticketId: ticket.id,
-				at: payload.at,
-				url,
-				documentId
-			};
-			await this.writeAtomically(directory, cacheFile, JSON.stringify(doc));
-		}
-		const text = reportNoticeText(view, doc.url);
+		const text = reportNoticeText(view, (await this.ensureDocument(payload, view)).url);
 		let sent = 0, gone = 0;
 		for (const channel of targets) {
 			if (!this.current(payload)) return;
@@ -11204,7 +11435,7 @@ const BLOCKS = {
 			}
 		}),
 		guard: (current, candidate, origin) => {
-			if (origin !== "panel" && (setupChanged(current, candidate) || (current.sources.p4?.config.requireDelivery ?? true) !== (candidate.sources.p4?.config.requireDelivery ?? true) || (current.sources.p4?.config.checkUnopenedDiffs ?? false) !== (candidate.sources.p4?.config.checkUnopenedDiffs ?? false) || (current.sources.p4?.config.syncBeforeWork ?? false) !== (candidate.sources.p4?.config.syncBeforeWork ?? false) || (current.sources.p4?.config.reconcileFallback ?? false) !== (candidate.sources.p4?.config.reconcileFallback ?? false) || (current.sources.p4?.config.pendingName ?? "[dsh-superagent:{ticket}] {title}") !== (candidate.sources.p4?.config.pendingName ?? "[dsh-superagent:{ticket}] {title}") || JSON.stringify(current.sources.p4?.config.reconcileIgnore) !== JSON.stringify(candidate.sources.p4?.config.reconcileIgnore) || JSON.stringify(current.sources.tapd?.config.filterSchedules) !== JSON.stringify(candidate.sources.tapd?.config.filterSchedules) || JSON.stringify(current.sources.tapd?.config.ownerGroups) !== JSON.stringify(candidate.sources.tapd?.config.ownerGroups) || JSON.stringify(current.sources.gongfeng) !== JSON.stringify(candidate.sources.gongfeng))) throw new UserError("panelOnlyAccounts");
+			if (origin !== "panel" && (setupChanged(current, candidate) || (current.sources.p4?.config.requireDelivery ?? true) !== (candidate.sources.p4?.config.requireDelivery ?? true) || (current.sources.p4?.config.checkUnopenedDiffs ?? false) !== (candidate.sources.p4?.config.checkUnopenedDiffs ?? false) || (current.sources.p4?.config.syncBeforeWork ?? false) !== (candidate.sources.p4?.config.syncBeforeWork ?? false) || (current.sources.p4?.config.reconcileFallback ?? false) !== (candidate.sources.p4?.config.reconcileFallback ?? false) || (current.sources.p4?.config.pendingName ?? "[dsh-superagent:{ticket}] {title}") !== (candidate.sources.p4?.config.pendingName ?? "[dsh-superagent:{ticket}] {title}") || JSON.stringify(current.sources.p4?.config.reconcileIgnore) !== JSON.stringify(candidate.sources.p4?.config.reconcileIgnore) || JSON.stringify(current.sources.tapd?.config.filterSchedules) !== JSON.stringify(candidate.sources.tapd?.config.filterSchedules) || JSON.stringify(current.sources.tapd?.config.filterSchemes) !== JSON.stringify(candidate.sources.tapd?.config.filterSchemes) || JSON.stringify(current.sources.tapd?.config.filterPool) !== JSON.stringify(candidate.sources.tapd?.config.filterPool) || JSON.stringify(current.sources.tapd?.config.ownerGroups) !== JSON.stringify(candidate.sources.tapd?.config.ownerGroups) || JSON.stringify(current.sources.gongfeng) !== JSON.stringify(candidate.sources.gongfeng))) throw new UserError("panelOnlyAccounts");
 		}
 	}
 };
@@ -11925,6 +12156,77 @@ var Reviews = class {
 		this.log(review, "requested");
 		return review;
 	}
+	/** Records a verified pending delivery without requesting a submit review. */
+	deliveredPending(ticketId, change, comment) {
+		if (!change.shelved.length || unshelvedFiles(change).length) throw new ReviewRefused("Pending delivery requires the complete ticket shelf");
+		const at = (/* @__PURE__ */ new Date()).toISOString(), previous = this.get(ticketId);
+		const review = {
+			ticketId,
+			change: change.number,
+			fingerprint: fingerprint(change.shelved),
+			files: change.shelved,
+			description: change.description,
+			client: change.client,
+			state: "delivered_pending",
+			requestedAt: previous?.requestedAt ?? at,
+			decidedAt: at,
+			by: this.person(),
+			comment
+		};
+		this.save(review);
+		this.log(review, "delivered_pending", comment, review.by);
+		return review;
+	}
+	/** Operator accepts an already-ready pool delivery as pending; no submit, revert, compilation or review wait. */
+	async completePending(ticketId, read) {
+		const previous = this.get(ticketId), ticket = this.host.store.tickets.get(ticketId);
+		if (previous?.state === "delivered_pending" && ticket?.ended?.outcome === "completed" && previous.fingerprint === read) return previous;
+		const review = this.waitingReview(ticketId);
+		if (!ticket?.execution || latestReport(ticket)?.state !== "ready" || ticket.team) throw new ReviewRefused("Only a ready single-worker delivery may finish as pending");
+		const store = this.host.store;
+		const origin = store.triggers?.get(ticket.origin.triggerId);
+		if (!store.settings || !origin || !hostPoolAuthorization({
+			get: (key) => store.get(key),
+			settings: () => store.settings()
+		}, origin)) throw new ReviewRefused("Only a Host-authorized TAPD pool delivery may use this action");
+		if (!this.host.engine.report || !store.atomic || read !== review.fingerprint) throw new ReviewRefused("The delivery changed or completion support is unavailable");
+		const change = await readChange(this.commands, this.config, review.change);
+		if (!change || change.status !== "pending" || fingerprint(change.shelved) !== read) throw new ReviewRefused("The pending shelf changed; refresh before completing");
+		const comment = "按用户要求以 pending CL 交付结束；不等待编译、回归或审阅，未提交；验证状态保持原报告，不宣称验证通过。";
+		return store.atomic(() => {
+			const latest = this.host.store.tickets.get(ticketId);
+			if (this.get(ticketId)?.state !== "waiting" || this.get(ticketId)?.fingerprint !== read || !latest || !liveTicket(latest) || latest.updatedAt !== ticket.updatedAt) throw new ReviewRefused("Ticket or review changed during completion");
+			const refused = claimChangelist(this.host.p4, this.config, ticketId, change);
+			if (refused) throw new ReviewRefused(refused);
+			this.host.store.tickets.save({
+				...ticket,
+				execution: {
+					...ticket.execution,
+					p4Delivery: "pending"
+				}
+			});
+			const result = this.deliveredPending(ticketId, change, comment);
+			this.host.engine.report(ticketId, {
+				state: "ready",
+				summary: `${latestReport(ticket).summary}\n\n${comment}`,
+				question: null
+			});
+			return result;
+		});
+	}
+	/** Applies the pool's pending-only delivery policy to ready legacy tasks after an upgrade. */
+	async completeReadyPoolDeliveries() {
+		const store = this.host.store;
+		if (!store.settings || !store.triggers) return;
+		for (const review of this.waiting()) {
+			const ticket = store.tickets.get(review.ticketId), origin = ticket && store.triggers.get(ticket.origin.triggerId);
+			if (!ticket || ticket.team || latestReport(ticket)?.state !== "ready" || !origin || !hostPoolAuthorization({
+				get: (key) => store.get(key),
+				settings: () => store.settings()
+			}, origin)) continue;
+			await this.completePending(ticket.id, review.fingerprint);
+		}
+	}
 	/** The review with each shelved file's difference, read from the server now, and how an approval submits. */
 	async view(ticketId) {
 		const review = this.get(ticketId);
@@ -12167,6 +12469,246 @@ function withDescription(form, description) {
 }
 /** The form of a new, empty changelist of `client` and `user`. */
 const newChange = (client, user, description) => `Change:\tnew\n\nClient:\t${client}\n\nUser:\t${user}\n\nStatus:\tnew\n\nDescription:\n${description.split(/\r?\n/).map((line) => `\t${line}`).join("\n")}\n`;
+//#endregion
+//#region src/sources/tapd-cdp-scrape.ts
+/** Explicit loopback CDP override. Default discovery/launch is owned by the Host browser service. */
+async function scrapeConditionsViaCdp(base, url, timeoutMs = 25e3) {
+	const endpoint = new URL(base);
+	if (![
+		"127.0.0.1",
+		"localhost",
+		"[::1]"
+	].includes(endpoint.hostname) || !["http:", "https:"].includes(endpoint.protocol)) throw new Error("CDP endpoint must be a loopback HTTP address");
+	const root = base.replace(/\/$/, ""), deadline = Date.now() + timeoutMs;
+	const created = await fetch(`${root}/json/new?${encodeURIComponent(url)}`, {
+		method: "PUT",
+		signal: AbortSignal.timeout(timeoutMs)
+	});
+	if (!created.ok) throw new Error(`CDP /json/new: HTTP ${created.status}`);
+	const target = await created.json();
+	let ws;
+	const pending = /* @__PURE__ */ new Map();
+	try {
+		if (!target.webSocketDebuggerUrl) throw new Error("CDP target has no webSocketDebuggerUrl");
+		const WS = globalThis.WebSocket;
+		if (!WS) throw new Error("WebSocket is unavailable in this Host");
+		ws = new WS(target.webSocketDebuggerUrl);
+		await new Promise((resolve, reject) => {
+			const timer = setTimeout(() => reject(/* @__PURE__ */ new Error("CDP connect timeout")), Math.max(1, deadline - Date.now()));
+			ws.addEventListener("open", () => {
+				clearTimeout(timer);
+				resolve();
+			});
+			ws.addEventListener("error", () => {
+				clearTimeout(timer);
+				reject(/* @__PURE__ */ new Error("CDP connect failed"));
+			});
+		});
+		let nextId = 0;
+		ws.addEventListener("message", (event) => {
+			let reply;
+			try {
+				reply = JSON.parse(String(event.data ?? "{}"));
+			} catch {
+				return;
+			}
+			if (reply.id === void 0) return;
+			const task = pending.get(reply.id);
+			if (!task) return;
+			pending.delete(reply.id);
+			clearTimeout(task.timer);
+			if (reply.error) task.reject(new Error(reply.error.message ?? "CDP command failed"));
+			else task.resolve(reply);
+		});
+		const command = (method, params = {}) => new Promise((resolve, reject) => {
+			const id = ++nextId;
+			const timer = setTimeout(() => {
+				pending.delete(id);
+				reject(/* @__PURE__ */ new Error(`CDP ${method} timeout`));
+			}, Math.max(1, deadline - Date.now()));
+			pending.set(id, {
+				resolve,
+				reject,
+				timer
+			});
+			ws.send(JSON.stringify({
+				id,
+				method,
+				params
+			}));
+		});
+		await command("Page.enable");
+		do {
+			const reply = await command("Runtime.evaluate", {
+				expression: CDP_DOM_EXPRESSION,
+				returnByValue: true
+			});
+			if (reply.result?.exceptionDetails) throw new Error(reply.result.exceptionDetails.text ?? "CDP page read failed");
+			const raw = reply.result?.result?.value;
+			const rows = typeof raw === "string" ? JSON.parse(raw) : raw;
+			if (tapdFilterRowsReady(rows)) return rows;
+			await new Promise((resolve) => setTimeout(resolve, 200));
+		} while (Date.now() < deadline);
+		throw new Error("Platform filter values not ready before timeout");
+	} finally {
+		for (const task of pending.values()) {
+			clearTimeout(task.timer);
+			task.reject(/* @__PURE__ */ new Error("CDP collector closed"));
+		}
+		ws?.close();
+		if (target.id) await fetch(`${root}/json/close/${target.id}`, { signal: AbortSignal.timeout(3e3) }).catch(() => void 0);
+	}
+}
+//#endregion
+//#region src/sources/tapd-scheme-preview.ts
+async function previewScheme(api, config, scheme, cap, now = /* @__PURE__ */ new Date()) {
+	const ownerRow = scheme.conditions.find((row) => row.enabled && row.locked && /^(处理人|修复人)$/.test(row.field));
+	const login = Array.isArray(ownerRow?.value) ? ownerRow.value[0] ?? "" : "";
+	if (!login.trim()) throw new Error("当前用户条件未锁定，请重新同步身份");
+	const owner = resolveTapdName(login, config.members);
+	const conditions = scheme.conditions.map((row) => row.locked && /^(处理人|修复人)$/.test(row.field) ? {
+		...row,
+		value: [owner]
+	} : row);
+	let releaseIds = {};
+	if (conditions.some((row) => row.enabled && row.field === "发布计划" && Array.isArray(row.value) && row.value.some((value) => !/^\d+$/.test(value)))) {
+		const choices = await api.releases?.(config.workspace) ?? [];
+		releaseIds = Object.fromEntries(choices.map((choice) => [choice.label, choice.value]));
+		for (const row of conditions.filter((row) => row.enabled && row.field === "发布计划")) {
+			if (!Array.isArray(row.value)) continue;
+			for (const name of row.value) {
+				if (/^\d+$/.test(name) || Object.hasOwn(releaseIds, name)) continue;
+				const matches = choices.filter((choice) => choice.label.trim().toLowerCase() === name.trim().toLowerCase());
+				const ids = [...new Set(matches.map((choice) => choice.value))];
+				if (ids.length > 1) throw new Error(`发布计划名称匹配到多个 ID：${name}，请填写准确 ID`);
+				if (ids[0]) releaseIds[name] = ids[0];
+			}
+		}
+	}
+	let maps = {};
+	if (scheme.kind === "bug" && api.filterMaps) maps = await api.filterMaps(config.workspace);
+	const branches = compileSchemeBranches({
+		...scheme,
+		conditions
+	}, {
+		...maps,
+		releaseIds
+	});
+	const byId = /* @__PURE__ */ new Map();
+	for (const branch of branches) {
+		const records = await api.items(scheme.kind, config.workspace, branch.query);
+		if (records.length >= 2e3) throw new Error("筛选超过 2000 条，请收窄条件后重试；没有截断入池");
+		for (const item of records) if (item.workspace === config.workspace && item.type === scheme.kind && matchesLocal(item, branch.local) && item.owners.some((name) => cleanOwner(name).toLowerCase() === owner.toLowerCase())) byId.set(item.id, item);
+	}
+	const matched = [...byId.values()];
+	const recent = matched.filter((item) => Date.parse(item.modified) >= now.getTime() - 1728e5).length;
+	const items = matched.slice(0, cap).map((item) => PoolItemSchema.parse({
+		id: item.id,
+		kind: scheme.kind,
+		title: item.title,
+		priority: item.priority ?? "",
+		status: item.status,
+		scheme: scheme.name,
+		hit: scheme.conditions.filter((row) => row.enabled).map((row) => row.field).join(" · ")
+	}));
+	return {
+		total: matched.length,
+		recent,
+		items
+	};
+}
+//#endregion
+//#region src/app/tapd-pool-status.ts
+/** Reconcile pool intake with durable decisions and tickets, including failures before a ticket was created. */
+function poolIntakeStatus(store, triggerId, deliveryError) {
+	const ticket = store.tickets.list().find((row) => row.origin.triggerIds.includes(triggerId));
+	if (ticket) {
+		const stage = ticketStage(ticket);
+		const ended = ticket.ended;
+		if (ended) return {
+			state: ["completed", "merged"].includes(ended.outcome) ? "done" : "failed",
+			phase: "ended",
+			ticketId: ticket.id,
+			detail: ended.reason || (ended.outcome === "completed" && ticket.execution?.p4Delivery === "pending" ? "已交付 pending CL；任务已结束，未提交，不等待编译、回归或审阅" : `工单已结束：${ended.outcome}`),
+			retryable: false,
+			at: ended.at
+		};
+		return {
+			state: "processing",
+			phase: stage.stage === "person" ? "person" : "working",
+			ticketId: ticket.id,
+			retryable: false,
+			detail: stage.stage === "person" ? {
+				staffing: "等待批准组队方案",
+				delivery: "工单消息投递失败",
+				answer: "等待补充信息",
+				review: "等待结果审阅",
+				blocked: "执行受阻，请打开原工单处理",
+				failed: "执行失败，请重试原工单"
+			}[stage.action] : stage.stage === "working" && stage.action === "queued" ? "已建单，等待执行槽位" : "已建单，处理中",
+			at: ticket.updatedAt
+		};
+	}
+	const trigger = store.triggers.get(triggerId);
+	if (!trigger) return void 0;
+	for (const ref of trigger.threads) {
+		const thread = store.threads.get(threadKey(ref));
+		if (thread?.evaluating?.triggerIds.includes(triggerId)) {
+			const error = deliveryError?.(thread.evaluating.id);
+			return {
+				state: "queued",
+				phase: thread.evaluating.delivered ? "evaluation" : "delivery",
+				retryable: false,
+				detail: error ? modelReportText(error) : thread.evaluating.delivered ? "主管已收到候选，评估中" : "等待主管消费候选，尚未开始评估计时"
+			};
+		}
+		if (thread?.pending.includes(triggerId)) return {
+			state: "queued",
+			phase: "evaluation",
+			retryable: false,
+			detail: "等待重新评估"
+		};
+	}
+	const disposition = store.triggers.disposition(triggerId);
+	if (disposition?.filtered) return {
+		state: "failed",
+		phase: "rejected",
+		detail: reasonText([disposition.filtered]),
+		retryable: false,
+		at: disposition.at
+	};
+	const decision = disposition?.decisionId && store.decisions.get(disposition.decisionId);
+	if (!decision) return {
+		state: "queued",
+		phase: "evaluation",
+		retryable: false,
+		detail: "已接收，等待主管评估"
+	};
+	if (decision.kind === "unavailable") return {
+		state: "failed",
+		phase: "evaluation",
+		detail: `评估不可用：${reasonText(decision.reason)}；可重新执行以重评原任务`,
+		retryable: true,
+		at: decision.at
+	};
+	if (decision.kind === "ignore" && decision.strength === "explicit" && !disposition?.fanout.length && store.get && store.settings && hostLegacyPoolReauthorization({
+		get: (key) => store.get(key),
+		settings: () => store.settings()
+	}, trigger)) return {
+		state: "failed",
+		phase: "rejected",
+		retryable: true,
+		at: decision.at,
+		detail: "旧版候选缺少修复授权说明；可点击开始执行重新确认并重评原任务，不会自动重派"
+	};
+	return {
+		state: "failed",
+		phase: "rejected",
+		detail: decision.kind === "accept" ? "已接单但关联工单缺失，请检查状态一致性" : `未接单：${reasonText(decision.reason)}`,
+		retryable: false,
+		at: decision.at
+	};
+}
 /** Tool names whose draft needs a person's approval before the Bot is created. */
 const HIGH_RISK_TOOLS = /^(bash|pwsh|shell|exec|terminal|git|feishu|im|mail|email|webhook|http|fetch|network|credential|secret|write|deploy|publish|send)/i;
 /** Whether the team bus has contract revision `revision` or later. */
@@ -13661,6 +14203,8 @@ var Sessions = class {
 			result = await ctx.sessionController.resolveAgent(id);
 		}
 		if ("error" in result) throw result.error;
+		const workspace = await ctx.workspaceRegistry.create(result.agent.session.header?.cwd ?? cwd);
+		if (!workspace.sessionIds.includes(result.agent.session.id)) await workspace.attachSession(result.agent.session.id);
 		const settings = this.host.store.settings();
 		if (role !== "step") await initializeRoleModel(ctx, result.agent, role === "worker" ? settings.executor.model : settings.eval.model);
 		await this.decorate(result.agent);
@@ -13711,6 +14255,10 @@ var Sessions = class {
 		const result = await this.ctx.sessionController.resolveAgent(sessionId);
 		if ("error" in result) throw result.error;
 		const ticket = this.ticketOf(result.agent);
+		if (!this.host.step?.(sessionId)) {
+			const settings = this.host.store.settings();
+			await recoverRoleModel(this.ctx, result.agent, ticket ? settings.executor.model : settings.eval.model);
+		}
 		if (ticket?.execution?.toolMode === "ptc") {
 			const installing = this.bindings.get(result.agent)?.ptc;
 			if (installing) await installing;
@@ -13750,6 +14298,10 @@ var Sessions = class {
 		if ("error" in resolved) return;
 		const text = JSON.stringify(value);
 		await this.agentDelivery.send(resolved.agent, `notice:${name}:${key(text)}`, text, { inject: summary }, this.host.lifetime);
+	}
+	/** Root sessions managed by this workbench; never expose the internal router or inherited subagents as worker sessions. */
+	workbenchSessions() {
+		return [...this.bindings].filter(([agent, binding]) => !binding.subagent && agent.id !== this.host.masterId).map(([agent]) => agent.session.id);
 	}
 	/** Returns the current prompt revision, the active prompt revision of each loaded Session, and whether the main Session still has a pending `'prompts'` notice. */
 	status() {
@@ -13999,6 +14551,18 @@ var Sessions = class {
 				const assignment = runningAssignment(current), review = store.get(KV.reviews.review(current.id));
 				if (!assignment || assignment.report?.state === "blocked" || assignment.report?.state === "failed" || review?.state === "waiting" || review?.state === "submitting") return "Current P4 workspace is queued, blocked or under review; use the ticket controls";
 				if (store.tickets.open().some((other) => other.id !== ticketId && other.execution?.p4Workspace?.root === shared.root && (this.ctx.agents.get(`worker-${other.id}`)?.status === "running" || other.follows?.some((follow) => follow.own && !follow.closed && follow.thread.startsWith("p4:"))))) return "Current P4 workspace is occupied by another ticket";
+				const protectedFiles = current.execution?.protectedP4Files ?? [];
+				const args = execution.arguments ?? {};
+				const normalize = (value) => value.replace(/\\/g, "/").toLowerCase();
+				if (["edit", "write"].includes(execution.name)) {
+					const file = args.path ?? args.file_path ?? "";
+					if (protectedFiles.some((path) => normalize(path) === normalize(file) || normalize(path).endsWith("/" + normalize(file)))) return "This file belongs to an earlier delivered pending CL; do not modify it";
+				}
+				if (["pwsh", "bash"].includes(execution.name) && typeof args.command === "string" && /\b(?:reopen|edit|reconcile|revert|submit|Set-Content|Out-File|Remove-Item)\b|>>?/i.test(args.command)) {
+					const command = normalize(args.command);
+					if (protectedFiles.length && /\bp4\b/.test(command) && /\.\.\.|\*/.test(command)) return "Wildcard P4 writes may touch earlier delivered files; use explicit current-ticket paths";
+					if (protectedFiles.some((path) => command.includes(normalize(path)) || command.includes(normalize(path).split("/").at(-1)))) return "This command touches an earlier delivered pending CL; preserve it";
+				}
 			}
 			if (agent.id === `worker-${ticketId}` && current.execution?.toolMode === "ptc" && execution.name !== "run_code" && !execution.parent) return "This worker is PTC-only; native fallback is refused. Use SDK tools inside run_code after the Host runtime is available.";
 		})];
@@ -15794,6 +16358,39 @@ function feishuAppOf(runtime) {
 function tapdConfigOf(runtime) {
 	return TapdConfigSchema.parse(runtime.store.settings().sources.tapd?.config ?? {});
 }
+async function tapdUserOf(runtime) {
+	try {
+		const user = await runtime.readTapdUser?.();
+		return user ? {
+			...user,
+			loginName: typeof user.loginName === "string" ? user.loginName : ""
+		} : {
+			signedIn: false,
+			loginName: ""
+		};
+	} catch {
+		return {
+			signedIn: false,
+			loginName: "",
+			stale: true
+		};
+	}
+}
+async function tapdOwnerOf(runtime, options = {}) {
+	const config = tapdConfigOf(runtime), user = await tapdUserOf(runtime);
+	const identity = await resolveTapdIdentity(config, new TapdOpenApi({ api: config.api }), runtime.store, user, options);
+	return {
+		config: identity.status === "resolved" ? {
+			...config,
+			members: [...config.members.filter((row) => row.alias.toLowerCase() !== identity.loginName.toLowerCase()), {
+				alias: identity.loginName,
+				name: identity.tapdName
+			}]
+		} : config,
+		identity,
+		user
+	};
+}
 /**
 * Represents a client-facing 400 or 404 error raised during management route parsing or lookup.
 * Route handlers throw it when request bodies are malformed or target records are missing, and registerHttp serializes its status and message in the HTTP response.
@@ -15902,7 +16499,8 @@ function stateView(runtime) {
 		masterId: runtime.masterId,
 		deskId: runtime.deskId,
 		paused: settings.paused,
-		health: runtime.health
+		health: runtime.health,
+		...runtime.sessions.workbenchSessions ? { workbenchSessions: runtime.sessions.workbenchSessions() } : {}
 	};
 }
 const views = (runtime) => ({
@@ -16133,40 +16731,196 @@ function routes(runtime) {
 				};
 			}
 		},
-		"POST sources/tapd/filters/import": async ({ body }) => {
+		"GET sources/tapd/identity": async ({ query }) => {
+			const { fresh } = object({ fresh: _enum(["true", "false"]).optional() }).strict().parse(query);
+			return (await tapdOwnerOf(runtime, { fresh: fresh === "true" })).identity;
+		},
+		"POST sources/tapd/identity/confirm": async ({ body }) => {
 			const request = object({
-				text: string$1().trim().min(1).max(2e5),
-				name: string$1().trim().max(40).optional(),
-				at: string$1().trim().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
-				maxPerRun: number$1().int().min(1).max(200).optional(),
-				windowDays: number$1().int().min(1).max(30).optional()
-			}).strict().parse(await body(21e4));
-			let exported;
-			try {
-				exported = JSON.parse(request.text);
-			} catch {
-				throw new RouteError(400, "The pasted text is not valid JSON");
-			}
-			const config = tapdConfigOf(runtime);
-			let maps;
-			try {
-				maps = await new TapdOpenApi({ api: config.api }).filterMaps(config.workspace);
-			} catch {}
-			const ownerGroups = Object.fromEntries(config.ownerGroups.map((row) => [row.group, row.members.split(/[;,；|]/).map((name) => name.trim()).filter(Boolean)]));
-			const result = importTapdFilter(exported, {
-				...maps,
-				ownerGroups,
-				name: request.name,
-				at: request.at,
-				maxPerRun: request.maxPerRun,
-				windowDays: request.windowDays
+				loginName: string$1().trim().min(1).max(128),
+				workspace: string$1().regex(/^\d+$/),
+				name: string$1().trim().min(1).max(128)
+			}).strict().parse(await body(4096));
+			const config = tapdConfigOf(runtime), user = await tapdUserOf(runtime);
+			if (request.workspace !== config.workspace || request.loginName.toLowerCase() !== user.loginName.toLowerCase()) throw new RouteError(400, "当前账号或项目已切换，请重新读取身份后确认");
+			const identity = await resolveTapdIdentity(config, new TapdOpenApi({ api: config.api }), runtime.store, user, {
+				fresh: true,
+				confirmName: request.name
 			});
+			if (identity.status !== "resolved") throw new RouteError(400, identity.message);
+			return identity;
+		},
+		"POST sources/tapd/filter-schemes/sync": async ({ body }) => {
+			const request = object({
+				loginName: string$1().trim().max(128).optional(),
+				scope: _enum([
+					"all",
+					"story",
+					"bug"
+				]).default("all"),
+				schemes: array(TapdFilterSchemeSchema).optional(),
+				pool: TapdFilterPoolSchema.optional()
+			}).strict().parse(await body(2e6));
+			const { config, identity: ownerIdentity } = await tapdOwnerOf(runtime);
+			const loginName = ownerIdentity.signedIn ? ownerIdentity.loginName : config.filterPool.owner || "";
+			const warnings = [];
+			if (ownerIdentity.status !== "resolved") warnings.push(ownerIdentity.message);
+			const schemes = [];
+			for (const source of FILTER_SCHEME_SOURCES.filter((row) => request.scope === "all" || row.kind === request.scope)) {
+				let conditions = parseScrapedConditions("", source.kind);
+				let origin = "fallback";
+				const cdp = process.env.DSH_SUPERAGENT_TAPD_CDP?.trim();
+				let readError = "";
+				try {
+					const raw = cdp ? await scrapeConditionsViaCdp(cdp, source.url) : await runtime.readTapdFilterPage?.(source.kind);
+					const rendered = parseDomConditions(raw);
+					if (rendered.length) {
+						conditions = rendered;
+						origin = "live";
+					} else readError = "浏览器没有返回筛选条件";
+				} catch (error) {
+					readError = error instanceof Error ? error.message : String(error);
+				}
+				if (!conditions.length) try {
+					const response = await fetch(source.url, { signal: AbortSignal.timeout(1e4) });
+					if (!response.ok) throw new Error(`HTTP ${response.status}`);
+					let text = await response.text();
+					if (source.script) {
+						const script = await fetch(source.script, { signal: AbortSignal.timeout(1e4) });
+						if (script.ok) text += "\n" + await script.text();
+					}
+					const parsed = parseScrapedConditions(text, source.kind);
+					if (parsed.some((row) => Array.isArray(row.value) && row.value.length)) {
+						conditions = parsed;
+						origin = "live";
+					}
+				} catch {}
+				const previous = (request.schemes ?? config.filterSchemes).find((row) => row.kind === source.kind);
+				if (!conditions.length) {
+					conditions = previous?.conditions ?? fallbackConditions(source.kind);
+					warnings.push(`${source.kind === "story" ? "需求" : "缺陷"}同步失败：${readError || "页面未就绪"}。已保留原筛选条件，未标记为实时同步。`);
+				}
+				conditions = applyOwnerOverride(conditions, loginName);
+				schemes.push(TapdFilterSchemeSchema.parse({
+					name: source.name,
+					kind: source.kind,
+					url: source.url,
+					capturedAt: origin === "live" ? (/* @__PURE__ */ new Date()).toISOString() : previous?.capturedAt ?? "",
+					hash: schemeHash(conditions),
+					source: origin,
+					conditions
+				}));
+			}
+			let pool = TapdFilterPoolSchema.parse({
+				...request.pool ?? config.filterPool,
+				owner: loginName
+			});
+			const results = [];
+			const api = new TapdOpenApi({ api: config.api });
+			for (const scheme of schemes) {
+				if (scheme.source !== "live") continue;
+				try {
+					if (ownerIdentity.status !== "resolved") throw new Error(ownerIdentity.message);
+					const result = await previewScheme(api, config, scheme, 2e3);
+					const before = pool.items.length;
+					pool = mergeIntoPool(pool, result.items);
+					results.push({
+						kind: scheme.kind,
+						total: result.total,
+						recent: result.recent,
+						added: pool.items.length - before
+					});
+					if (!result.total && /^[a-z0-9._-]+$/i.test(loginName) && resolveTapdName(loginName, config.members) === cleanOwner(loginName)) warnings.push(`${scheme.kind === "story" ? "需求" : "缺陷"}命中 0 条；当前英文账号没有 TAPD 姓名映射，请检查 members 与筛选范围。`);
+				} catch (failure) {
+					const error = failure instanceof Error ? failure.message : String(failure);
+					results.push({
+						kind: scheme.kind,
+						total: 0,
+						recent: 0,
+						added: 0,
+						error
+					});
+					warnings.push(`${scheme.kind === "story" ? "需求" : "缺陷"}条件已同步，但自动入池失败：${error}。原池单据已保留。`);
+				}
+			}
 			return {
-				schedule: result.schedule,
-				watch: result.watch,
-				report: result.report,
-				warnings: result.warnings,
-				maps: maps ? "live" : "fallback"
+				schemes,
+				pool,
+				results,
+				ownerIdentity,
+				identity: {
+					loginName: ownerIdentity.loginName,
+					signedIn: ownerIdentity.signedIn
+				},
+				warnings
+			};
+		},
+		"POST sources/tapd/filter-schemes/preview": async ({ body }) => {
+			const request = object({
+				kind: _enum(["story", "bug"]),
+				scheme: TapdFilterSchemeSchema.optional(),
+				maxPerRun: number$1().int().min(1).max(200).optional()
+			}).strict().parse(await body(128e3));
+			const saved = tapdConfigOf(runtime);
+			const scheme = request.scheme ?? saved.filterSchemes.find((row) => row.kind === request.kind);
+			if (!scheme || scheme.kind !== request.kind) throw new RouteError(400, "请先同步相应过滤方案");
+			const { config, identity } = await tapdOwnerOf(runtime);
+			if (identity.status !== "resolved") throw new RouteError(400, identity.message);
+			const draft = {
+				...scheme,
+				conditions: applyOwnerOverride(scheme.conditions, identity.loginName)
+			};
+			try {
+				return await previewScheme(new TapdOpenApi({ api: config.api }), config, draft, request.maxPerRun ?? config.filterPool.maxPerRun);
+			} catch (error) {
+				throw new RouteError(400, error instanceof Error ? error.message : String(error));
+			}
+		},
+		"GET sources/tapd/filter-schemes/pool": () => {
+			const config = tapdConfigOf(runtime), key = KV.tapd.pool(config.filterPool.name);
+			let state = runtime.store.get(key);
+			if (state?.records) {
+				const inspect = (id) => poolIntakeStatus(runtime.store, id, (evalId) => {
+					const row = runtime.store.db.prepare("SELECT error FROM effect WHERE kind='assessment' AND key=?").get(evalId);
+					return row?.error ? String(row.error) : void 0;
+				});
+				state = reconcilePoolState(state, inspect);
+				runtime.store.set(key, state);
+			}
+			const items = new Map(poolWithRuntime(config.filterPool, config.workspace, state).items.map((item) => [`${item.kind}:${item.id}`, item]));
+			for (const record of Object.values(state?.records ?? {})) if (record.item) items.set(`${record.item.kind}:${record.item.id}`, {
+				...record.item,
+				state: record.state,
+				runId: record.runId,
+				lastRunAt: record.lastRunAt,
+				attempts: record.attempts,
+				detail: record.intake?.detail,
+				phase: record.intake?.phase,
+				ticketId: record.intake?.ticketId,
+				retryable: record.intake?.retryable
+			});
+			return { items: [...items.values()] };
+		},
+		"POST sources/tapd/filter-schemes/run": async ({ body }) => {
+			const request = object({ pool: TapdFilterPoolSchema }).strict().parse(await body(512e3));
+			if (!runtime.store.settings().sources.tapd?.enabled || !runtime.configured()) throw new RouteError(400, "请启用 TAPD 来源并完成接入检查后再执行");
+			const { config, identity } = await tapdOwnerOf(runtime);
+			if (identity.status !== "resolved") throw new RouteError(400, identity.message);
+			if (request.pool.owner.toLowerCase() !== identity.loginName.toLowerCase()) throw new RouteError(400, "池子处理人与当前账号不同，请重新同步后执行");
+			const now = /* @__PURE__ */ new Date(), ctx = runtime.context({
+				kind: TAPD_SOURCE,
+				health: [TAPD_SOURCE]
+			});
+			const result = await runPoolDaily(ctx, new TapdOpenApi({ api: config.api }), {
+				...config,
+				filterPool: request.pool
+			}, now, void 0, true);
+			const pool = poolWithRuntime(request.pool, config.workspace, runtime.store.get(KV.tapd.pool(request.pool.name)));
+			return {
+				...result,
+				pool,
+				day: localDay(now),
+				dispatchQueued: result.dispatched > 0
 			};
 		},
 		"POST sources/tapd/filters/preview": async ({ body }) => {
@@ -16207,6 +16961,15 @@ function routes(runtime) {
 		"POST tickets/:id/review/approve": async ({ params, body }) => runtime.reviews.approve(ticket(params.id), object({ fingerprint: string$1().regex(/^[0-9a-f]{16}$/) }).parse(await body()).fingerprint),
 		"POST tickets/:id/review/reject": async ({ params, body }) => runtime.reviews.reject(ticket(params.id), object({ comment: string$1().trim().min(1).max(4e3) }).parse(await body()).comment),
 		"POST tickets/:id/review/discard": ({ params }) => runtime.reviews.discard(ticket(params.id)),
+		"POST tickets/:id/review/complete-pending": async ({ params, body }) => {
+			const request = object({
+				confirm: literal(true),
+				fingerprint: string$1().regex(/^[0-9a-f]{16}$/)
+			}).strict().parse(await body());
+			const completed = await runtime.reviews.completePending(ticket(params.id), request.fingerprint);
+			runtime.requestPass();
+			return completed;
+		},
 		"GET team/plans": () => ({
 			available: runtime.team.available(),
 			archived: true,
@@ -18854,6 +19617,7 @@ function sourceContextOf(deps, kind) {
 			return instance?.enabled ? instance.config : void 0;
 		},
 		receive: (trigger) => deps.receive(trigger),
+		intake: deps.intake,
 		atomic: (work) => store.atomic(work),
 		state: {
 			get: (name) => store.get(name),
@@ -19687,7 +20451,8 @@ function executorTools(host, ticket) {
 				if (open.length) throw new Error(`Team steps still unfinished: ${open.map((step) => `${step.key} ${step.state}`).join(", ")}; wait for their reports`);
 				const gongfeng = host.gongfeng;
 				const iid = args.mr_iid === void 0 ? void 0 : number$1().int().positive().safe().parse(args.mr_iid);
-				const requiresMr = host.resources.store.triggers.get(current.origin.triggerId)?.source === "gongfeng" || current.execution?.project?.source === "gongfeng";
+				const origin = host.resources.store.triggers.get(current.origin.triggerId);
+				const requiresMr = origin?.source === "gongfeng" || current.execution?.project?.source === "gongfeng";
 				if (args.state === "ready" && requiresMr && iid === void 0) throw new Error("Gongfeng delivery requires mr_iid; report blocked when no verified MR is available");
 				const gfConfig = iid !== void 0 ? gongfeng?.config("gongfeng") : void 0;
 				if (iid !== void 0 && (!gongfeng || !gfConfig?.project || !gfConfig.agent)) throw new Error("Configure the Gongfeng project/account first");
@@ -19701,8 +20466,13 @@ function executorTools(host, ticket) {
 				if (p4$1 && !p4$1.paths.length) throw new Error("Configure allowed paths in P4 settings before reporting a changelist; report blocked, not ready without a CL");
 				let change = p4$1 && args.changelist != null ? await readChange(host.p4.commands.withSignal(signal), p4$1, args.changelist) : void 0;
 				if (args.changelist != null && !change) throw new Error(`Changelist ${args.changelist} does not exist on the P4 server`);
+				const poolDelivery = !!origin && !!hostPoolAuthorization(host.resources.store, origin);
+				const protectedFiles = current.execution?.protectedP4Files ?? [];
+				if (change && [...change.files, ...change.shelved].some((file) => protectedFiles.includes(file.depotFile))) throw new Error("Reported CL contains earlier delivered files; do not adopt another ticket modification");
 				let pending;
 				if (args.state === "ready" && p4$1 && change && current.execution?.p4Delivery === "pending") {
+					const refusal = claimChangelist(host.p4, p4$1, ticketId, change);
+					if (refusal) throw new Error(refusal);
 					const commands = host.p4.commands.withSignal(signal);
 					const { client, number } = change;
 					const globals = [
@@ -19715,7 +20485,7 @@ function executorTools(host, ticket) {
 					const finalized = await finalizePending(p4$1, number, ticketId, current.title ?? "", {
 						records: async (argv) => p4(commands, p4$1, argv, { client }),
 						form: (argv, input) => commands.run(p4$1.cli || "p4", [...globals, ...argv], void 0, input)
-					});
+					}, poolDelivery || protectedFiles.length > 0);
 					pending = {
 						change: change.number,
 						name: finalized.name,
@@ -19731,6 +20501,7 @@ function executorTools(host, ticket) {
 					const refused = pull && claimPull(host.github, ticketId, pull) || p4$1 && change && claimChangelist(host.p4, p4$1, ticketId, change) || gongfeng && gfConfig && mr && gfIdentity && claimGongfengMr(gongfeng, gfConfig, ticketId, mr, gfIdentity.path);
 					if (refused) throw new Error(refused);
 					const review = args.state === "ready" && change && !pending ? host.reviews.request(ticketId, change) : void 0;
+					if (pending && change) host.reviews.deliveredPending?.(ticketId, change, poolDelivery ? "池任务交付即结束，不等待编译、回归或审阅；未提交。" : "Pending CL delivered, not submitted.");
 					const summary = pending ? `${args.summary}\n\nP4 pending CL ${pending.change}：${pending.name}（归集 ${pending.files} 个文件，忽略 ${pending.ignored} 个）；未提交，请在 P4V 审阅后自行提交。` : args.summary;
 					const report = {
 						state: args.state,
@@ -20277,6 +21048,7 @@ var Runtime = class extends Service {
 				paused: () => this.paused(),
 				threadContext: (trigger) => sources.threadContext(trigger),
 				deliver: (id, text) => sessions.prompt(masterId, id, text, "steer"),
+				recorded: (id) => sessions.recorded(masterId, id),
 				candidateCard: (candidate) => candidateCard(links, candidate),
 				db: store.db
 			});
@@ -20293,6 +21065,7 @@ var Runtime = class extends Service {
 				commands,
 				stateDir: machine.stateDir,
 				enabled: () => store.settings().executor.feishuReport,
+				documentsEnabled: () => store.settings().executor.feishuReportDocument,
 				warn: (message) => {
 					ctx.logger.warn("dsh-superagent: %s", message);
 				}
@@ -20371,6 +21144,17 @@ var Runtime = class extends Service {
 				outbox,
 				commands,
 				sources,
+				intake: {
+					status: (id) => poolIntakeStatus(store, id, (evalId) => {
+						const row = store.db.prepare("SELECT error FROM effect WHERE kind='assessment' AND key=?").get(evalId);
+						return row?.error ? String(row.error) : void 0;
+					}),
+					requeue: (id) => {
+						const queued = engine.reevaluate(id);
+						if (queued) passes.request();
+						return queued;
+					}
+				},
 				get ready() {
 					return runtime.ready;
 				},
@@ -20831,6 +21615,13 @@ var Runtime = class extends Service {
 		});
 		for (const id of this.settings.syncable()) await this.settings.sync(id).catch(() => {});
 		if (this.closing()) return;
+		await this.reviews.completeReadyPoolDeliveries().catch((error) => {
+			this.ctx.logger.warn("dsh-superagent: pending pool handoff requires attention: %s", String(error));
+		});
+		if (this.store.settings().executor.feishuReportDocument) for (const ticket of this.store.tickets.list()) {
+			const origin = this.store.triggers.get(ticket.origin.triggerId);
+			if (ticket.ended && origin && hostPoolAuthorization(this.store, origin) && !this.reports.status(ticket).docUrl) this.reports.queueDocument(ticket);
+		}
 		this.executor.resume();
 		this.steps.resume();
 		this.passes.start();
@@ -20910,6 +21701,19 @@ var Runtime = class extends Service {
 			reports,
 			outbox: this.outbox,
 			archive: this.archive,
+			context: (kind) => runtime.context(kind),
+			readTapdUser: async () => {
+				const service = Reflect.get(this.ctx, "get")?.call(this.ctx, "vssarosTof");
+				return service ? await service.status({ fresh: true }) : {
+					signedIn: false,
+					loginName: ""
+				};
+			},
+			readTapdFilterPage: async (kind) => {
+				const service = Reflect.get(this.ctx, "get")?.call(this.ctx, "vssarosBrowser");
+				if (!service?.tapdFilters) throw new Error("Host 浏览器采集服务未加载，请更新浏览器插件");
+				return service.tapdFilters.read(kind);
+			},
 			coexist: () => this.coexistence(),
 			usage: this.usage,
 			steward: this.steward,

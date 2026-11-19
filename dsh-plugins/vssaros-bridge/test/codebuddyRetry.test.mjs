@@ -70,6 +70,27 @@ test('invalid, missing or truncated hints pass through, and existing valid provi
 	assert.equal((await drain(codebuddyRetryListener(options(), () => streamOf(success))))[0], success);
 });
 
+test('rate-limited failures wait for the upstream cooldown even when the relay forwards plain text', async () => {
+	const { codebuddyRetryListener } = await load();
+	const failure = (message, extra = {}) => ({ type: 'finish', reason: { kind: 'error', failure: {
+		message, code: 'RATE_LIMIT', ...extra,
+	} } });
+	const delayOf = async chunk => (await drain(codebuddyRetryListener(options(), () => streamOf(chunk))))[0]
+		.reason.failure.providerRetryAfterMs;
+	assert.equal(await delayOf(failure('429 Too Many Requests')), 30_000);
+	assert.equal(await delayOf(failure('relay error: too many requests')), 30_000);
+	assert.equal(await delayOf(failure('503 model busy', { code: 'SERVER', status: 429 })), 30_000);
+	assert.equal(await delayOf(failure(JSON.stringify({
+		code: 14003, msg: 'too many requests', retry_policy: { retry: true, retry_after: 45 },
+	}))), 45_000);
+	assert.equal(await delayOf(failure(JSON.stringify({
+		error: { message: '429 Too Many Requests', retry_policy: { retry_after: 12 } },
+	}))), 12_000);
+	assert.equal(await delayOf(failure('429 {"retry_policy":{"retry":false,"retry_after":20}}')), undefined);
+	assert.equal(await delayOf(failure('503 Service Unavailable', { code: 'SERVER' })), undefined);
+	assert.equal(await delayOf(failure('429 Too Many Requests', { providerRetryAfterMs: 25_000 })), 25_000);
+});
+
 test('middleware preserves failures and closes the upstream iterator on consumer cancellation', async () => {
 	const { codebuddyRetryListener } = await load();
 	const error = new Error('transport failed');
@@ -135,6 +156,15 @@ test('actual bundled retry plugin waits the upstream 20 seconds and aborts clean
 	await Promise.resolve();
 	assert.equal(events.at(-1).data.delayMs, 500, 'Without the middleware, the same server body still uses local backoff');
 	t.mock.timers.tick(500); assert.deepEqual(await withoutHint, { kind: 'retry' });
+	state = {};
+	const rateLimited = { type: 'finish', reason: { kind: 'error', failure: {
+		message: 'relay error: too many requests', code: 'RATE_LIMIT',
+	} } };
+	const [limitedChunk] = await drain(codebuddyRetryListener(options(), () => streamOf(rateLimited)));
+	const cooldown = recover({ ...payload, failure: limitedChunk.reason.failure, signal: new AbortController().signal }, async () => undefined);
+	await Promise.resolve();
+	assert.equal(events.at(-1).data.delayMs, 30_000, 'Plain-text 429 from the relay waits the upstream cooldown');
+	t.mock.timers.tick(30_000); assert.deepEqual(await cooldown, { kind: 'retry' });
 	const cancelled = recover(payload, async () => undefined);
 	await Promise.resolve(); controller.abort(); assert.equal(await cancelled, undefined);
 	for (const dispose of effects) await dispose?.();

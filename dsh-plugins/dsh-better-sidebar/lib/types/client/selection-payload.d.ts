@@ -1,0 +1,36 @@
+import type { PendingReference } from './conversation-draft.ts';
+/** Max inserted selection length (UTF-16 code units, i.e. JS `.length`). */
+export declare const SELECTION_LIMIT = 500;
+/** The source line span a selection maps to (1-based, inclusive). */
+export interface SelectionLines {
+    start: number;
+    end: number;
+}
+/**
+ * The fence info line: `rel[:start[-end]]` — lines are omitted entirely
+ * when unknown (the preview reverse-search missed).
+ */
+export declare function headerOf(path: string, cwd: string | undefined, lines?: SelectionLines): string;
+/**
+ * The chip label's identity: `file Lstart[-end]` — the file's basename plus
+ * the line span, mirroring the header's line variants (a single line keeps
+ * just `Lstart`; unknown lines drop the `L` part). Deliberately NO sequence
+ * number: file+lines IS the identity, so deleting a chip from the draft can
+ * never leave a numbering gap — the next quote simply names itself again.
+ */
+export declare function whereOf(path: string, lines?: SelectionLines): string;
+/**
+ * The composer payload for one selection: the chip label and the model text.
+ * Over the limit the content is dropped and both halves are the plain path
+ * line (an empty fenced block would just occupy the draft).
+ */
+export declare function buildSelectionInsert(path: string, cwd: string | undefined, lines: SelectionLines | undefined, selected: string): PendingReference;
+/**
+ * Reverse-map a rendered-DOM selection back to source line numbers. The
+ * preview selection is plain text (block boundaries come out as `\n`), so
+ * this is a best-effort substring search: a single trailing newline is
+ * stripped first (DOM block selections tend to carry one), and only an
+ * EXACTLY-ONE occurrence yields lines — an ambiguous or missing match
+ * returns null (the header then carries the path without line numbers).
+ */
+export declare function linesOfSelection(source: string, selected: string): SelectionLines | null;

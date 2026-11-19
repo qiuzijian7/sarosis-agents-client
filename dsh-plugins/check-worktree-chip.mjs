@@ -218,6 +218,78 @@ ck('会话页 checkbox 的 enable 态', headerRow.querySelector('[data-vssaros-w
 
 await act(async () => { root.unmount(); });
 ck('卸载信息 chip 清理会话快照订阅', sessionListeners.size === 0);
+
+const forgeDom = new JSDOM('<!doctype html><html><head></head><body><button data-vssaros-context-chip="1">工作区</button><div id="input-left"></div></body></html>', { pretendToBeVisual: true, url: 'http://localhost/' });
+const fw = forgeDom.window;
+globalThis.window = fw;
+globalThis.document = fw.document;
+fw.document.documentElement.dataset.vssarosOfficialForgeUi = '1';
+fw.__ModuleLoader__ = { load: (m) => { captured = m; } };
+new Function('window', 'document', src)(fw, fw.document);
+const forgeMod = captured.factory(requireFn);
+const streams = [];
+const resets = new Set();
+const writes = [];
+const remote = { follow(sid, signal) {
+	let waiting;
+	let closed = false;
+	const queue = [];
+	const stream = {
+		sid,
+		push(frame) { if (closed) { return; } if (waiting) { const resolve = waiting; waiting = null; resolve({ value: frame, done: false }); } else { queue.push(frame); } },
+		dispose() { closed = true; if (waiting) { waiting({ done: true }); waiting = null; } },
+		get closed() { return closed; },
+		[Symbol.asyncIterator]() { return this; },
+		next() { return closed ? Promise.resolve({ done: true }) : queue.length ? Promise.resolve({ value: queue.shift(), done: false }) : new Promise((resolve) => { waiting = resolve; }); },
+	};
+	signal.addEventListener('abort', () => stream.dispose(), { once: true });
+	streams.push(stream);
+	return stream;
+} };
+let forgeInfo;
+let forgeRegs = 0;
+const forgeCtx = {
+	get: (key) => key === 'remote.forgePanel' ? remote : key === 'sessions' ? sessions : undefined,
+	on: (_event, listener) => { resets.add(listener); return () => resets.delete(listener); },
+	slots: { inject: (_s, fn) => fn(), register: (_o, comp) => { forgeInfo = comp; forgeRegs++; } },
+};
+const forgeShell = { state: { sessionId: 's-forge' }, bridge: {
+	createWorktree: () => writes.push('create'), switchWorktree: () => writes.push('switch'), removeWorktree: () => writes.push('remove'),
+} };
+forgeMod.install(forgeCtx, forgeShell);
+ck('官方模式仍注册输入框只读 chip', typeof forgeInfo === 'function' && forgeShell.state.vssarosWtInfoChip);
+ck('官方模式不注入旧 checkbox 或菜单', !fw.document.querySelector('[data-vssaros-wt-checkbox]') && !fw.document.querySelector('.vssaros-wt-menu'));
+const forgeRoot = createRoot(fw.document.querySelector('#input-left'));
+await act(async () => { forgeRoot.render(React.createElement(forgeInfo)); await tick(10); });
+const frame = (branch, linked = true, directory = '/repo/.agents/worktrees/created') => ({
+	directory, checkout: { state: 'ready', checkout: { root: '/repo/.agents/worktrees/created', branch, linked } },
+	worktree: { created: { path: '/repo/.agents/worktrees/created', branch }, missing: null, editable: false },
+});
+ck('官方快照尚未到达不冒充工作树', !fw.document.querySelector('[data-vssaros-wt-info]'));
+await act(async () => { streams[0].push(frame('dsh-created')); await tick(10); });
+let fi = fw.document.querySelector('[data-vssaros-wt-info]');
+ck('没有 IDE 推送或预选状态也显示实际工作树', fi?.querySelector('.nm')?.textContent === 'dsh-created' && fi.title.includes('/repo/.agents/worktrees/created'));
+ck('官方创建结束 editable=false 仍显示只读工作树', fi?.getAttribute('data-vssaros-wt-readonly') === '1' && !fi.hasAttribute('role') && !fi.hasAttribute('tabindex') && !fi.querySelector('.eph'));
+await act(async () => { fi.click(); fw.dispatchEvent(new fw.Event('vssaros-wt-chip-commit')); await tick(10); });
+ck('只读 chip 不创建/切换/删除工作树', writes.length === 0);
+await act(async () => { streams[0].push(frame('new-branch', true, '/repo/.agents/worktrees/created/src')); await tick(10); });
+ck('切分支及进入工作树子目录即时更新', fw.document.querySelector('.nm')?.textContent === 'new-branch');
+await act(async () => { streams[0].push(frame('main', false)); await tick(10); });
+ck('官方快照切回主仓隐藏工作树 chip', !fw.document.querySelector('[data-vssaros-wt-info]'));
+await act(async () => { streams[0].push(frame('created')); await tick(10); });
+await act(async () => { fw.document.dispatchEvent(new fw.CustomEvent('vssaros-dsh-rebind', { detail: { sessionId: 's-next' } })); await tick(10); });
+ck('切会话释放旧流且不沿用旧工作树名称', streams[0].closed && streams[1].sid === 's-next' && !fw.document.querySelector('[data-vssaros-wt-info]'));
+await act(async () => { streams[1].push(frame('next-branch')); await tick(10); });
+ck('新会话官方快照到达后显示对应分支', fw.document.querySelector('.nm')?.textContent === 'next-branch');
+await act(async () => { for (const reset of resets) { reset(); } await tick(10); });
+ck('断线重连清掉旧快照并重新订阅', streams[1].closed && streams.length === 3 && !fw.document.querySelector('[data-vssaros-wt-info]'));
+await act(async () => { streams[2].push(frame('reconnected')); await tick(10); });
+ck('重连快照到达恢复只读 chip', fw.document.querySelector('.nm')?.textContent === 'reconnected');
+forgeMod.install(forgeCtx, forgeShell);
+ck('官方模式重复 install 复用组件且无第二套 checkbox', forgeRegs === 2 && forgeInfo === fw.__vssarosWtChipSingleton.infoComp && !fw.document.querySelector('[data-vssaros-wt-checkbox]'));
+await act(async () => { forgeRoot.unmount(); });
+ck('官方只读 chip 卸载清理流与订阅', streams.every((s) => s.closed) && resets.size === 0 && sessionListeners.size === 0);
+forgeDom.window.close();
 const failed = results.filter((r) => !r.ok);
 for (const r of results) { console.log((r.ok ? '  OK  ' : '  FAIL') + '  ' + r.name + (r.extra ? ' — ' + r.extra : '')); }
 console.log(failed.length ? `\n${failed.length} 项失败` : `\n全部 ${results.length} 项通过`);

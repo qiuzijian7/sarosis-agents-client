@@ -18,6 +18,7 @@ import { itemAddress, itemPage, TAPD_SOURCE, TAPD_TYPES, TapdConfigSchema, tapdC
 import { cleanOwner, resolveTapdName } from './tapd-members.ts'
 import { TapdFilterScheduleSchema } from './tapd-filters.ts'
 import { runFilterSweeps } from './tapd-sweep.ts'
+import { runPoolDaily } from './tapd-filter-pool-run.ts'
 
 const TapdPolicySchema = z.object({ allowed: z.array(z.object({ id: z.string().trim().min(1) }).strict()).default([]) }).strict()
 
@@ -218,9 +219,9 @@ export function makeTapdKind(options: TapdKindOptions): SourceKind<TapdConfig> {
         columns: [{ key: 'group', type: 'text', label: { zh: '组名', en: 'Group' } },
           { key: 'members', type: 'text', label: { zh: '成员（逗号分隔）', en: 'Members (comma separated)' } }] },
       { key: 'members', type: 'rows', advanced: true, group: { zh: '接收范围', en: 'Reception scope' },
-        label: { zh: '企微账号 → TAPD 中文名', en: 'WeCom alias → TAPD name' },
-        hint: { zh: '唯一的身份映射表（静态）。身份名和接收项的「处理人」都可以填企微账号，按这里换成 TAPD 中文名后再比较或查询；没配映射的别名会按原文匹配，容易漏单。已下线的内网成员表接口不再读取。',
-          en: 'The only identity mapping (static). The identity name and each watch owner may be a WeCom alias; it is turned into the TAPD Chinese name before comparing or querying. An unlisted alias is matched literally and can miss items. The retired intranet member endpoint is no longer read.' },
+        label: { zh: '手动身份映射（高级覆盖）', en: 'Manual identity mapping (advanced override)' },
+        hint: { zh: '筛选结果池优先使用此表；未配置时自动读取当前 TOF 身份与 TAPD 项目成员精确匹配，无法唯一匹配时在身份栏确认一次并记住。原有身份名/接收项仍使用此表；这里适合管理员预置或纠正映射，不需要每人维护全员表。',
+          en: 'Overrides automatic pool identity matching. Otherwise TOF is matched exactly to TAPD workspace members, with one confirmation if unresolved. Existing watches and agent identities still use this table. Administrators can preconfigure or correct entries.' },
         columns: [
           { key: 'alias', type: 'text', label: { zh: '企微账号', en: 'WeCom alias' } },
           { key: 'name', type: 'text', label: { zh: 'TAPD 中文名', en: 'TAPD name' } }] },
@@ -363,12 +364,13 @@ export async function watch(ctx: SourceContext, signal: AbortSignal, apiOf: (con
       if (!config) ctx.report(TAPD_SOURCE, health('paused', 'sourceOff'))
       else if (!tapdConfigured(config)) ctx.report(TAPD_SOURCE, health('paused', 'tapdUnset'))
       else {
-        await pollRound(ctx, apiOf(config), config, signal)
+        let pollError = ''
+        try { await pollRound(ctx, apiOf(config), config, signal) } catch (error) { pollError = String(error) }
         const sweeps = await runFilterSweeps(ctx, apiOf(config), config, new Date(), signal)
-        // Surface a failed or capped sweep instead of hiding it behind a green "ready".
+        const poolRun = await runPoolDaily(ctx, apiOf(config), config, new Date(), signal)
         const trouble = sweeps.find(item => item.error || item.capped)
-        const note = trouble?.error ? `TAPD 筛选扫描 ${trouble.name} 失败：${trouble.error}`
-          : trouble ? `TAPD 筛选扫描 ${trouble.name} 达到单次上限（扫描 ${trouble.scanned}、命中 ${trouble.matched}、派发 ${trouble.dispatched}），可能漏单` : ''
+        const note = poolRun.error || pollError || (trouble?.error ? `TAPD 筛选扫描 ${trouble.name} 失败：${trouble.error}`
+          : trouble ? `TAPD 筛选扫描 ${trouble.name} 达到单次上限（扫描 ${trouble.scanned}、命中 ${trouble.matched}、派发 ${trouble.dispatched}），可能漏单` : '')
         ctx.report(TAPD_SOURCE, config.webhook && !config.webhookSecret
           ? health('error', 'tapdWebhookUnset') : note ? health('error', 'pollFailures', { count: '1', error: note })
             : { state: 'ready', detail: '' })

@@ -263,6 +263,13 @@
           #   ⚠ 它是官方模块、不是我们的插件 ⇒ 不在 `tools-snapshot.json` 的覆盖范围内（快照只收 dsh-plugins/*）✓。
           - id: tool-working-directory
             name: '@deepseek-ai/dsh-tool-working-directory'
+          # ★ 2026-11-17 真机回归（「会话启动失败：tool-worktree … waiting for worktrees」）：
+          #   **不要**把 `@deepseek-ai/dsh-experimental-tool-worktree` 挂进 preset plane。
+          #   它的 `inject = ['tools', 'worktrees']`，而 `worktrees` 服务由 host plane 的
+          #   `worktree` runtime 行提供 ⇒ preset 作用域等不到它，整条 entry never started，
+          #   `session.create` 直接失败。官方 bundle 自带的 `cordis.patch.yml` 会在 host plane
+          #   一次插入 `worktree` + `tool-worktree` 两行；`ctx.tools.register` 注册的工具是
+          #   **全局可见**的，不需要 preset 行。装包/启用见 `dshHostSupervisor` 的伴生清单。
 
 - insert:
     - id: preset-vssaros-ptc
@@ -504,6 +511,13 @@
           #   ⚠ 它是官方模块、不是我们的插件 ⇒ 不在 `tools-snapshot.json` 的覆盖范围内（快照只收 dsh-plugins/*）✓。
           - id: tool-working-directory
             name: '@deepseek-ai/dsh-tool-working-directory'
+          # ★ 2026-11-17 真机回归（「会话启动失败：tool-worktree … waiting for worktrees」）：
+          #   **不要**把 `@deepseek-ai/dsh-experimental-tool-worktree` 挂进 preset plane。
+          #   它的 `inject = ['tools', 'worktrees']`，而 `worktrees` 服务由 host plane 的
+          #   `worktree` runtime 行提供 ⇒ preset 作用域等不到它，整条 entry never started，
+          #   `session.create` 直接失败。官方 bundle 自带的 `cordis.patch.yml` 会在 host plane
+          #   一次插入 `worktree` + `tool-worktree` 两行；`ctx.tools.register` 注册的工具是
+          #   **全局可见**的，不需要 preset 行。装包/启用见 `dshHostSupervisor` 的伴生清单。
           - id: tool-presentation
             name: '@deepseek-ai/dsh-agent-tool-presentation'
             config:
@@ -703,3 +717,10 @@
           #   ⚠ 它是官方模块、不是我们的插件 ⇒ 不在 `tools-snapshot.json` 的覆盖范围内（快照只收 dsh-plugins/*）✓。
           - id: tool-working-directory
             name: '@deepseek-ai/dsh-tool-working-directory'
+          # ★ 2026-11-17 真机回归（「会话启动失败：tool-worktree … waiting for worktrees」）：
+          #   **不要**把 `@deepseek-ai/dsh-experimental-tool-worktree` 挂进 preset plane。
+          #   它的 `inject = ['tools', 'worktrees']`，而 `worktrees` 服务由 host plane 的
+          #   `worktree` runtime 行提供 ⇒ preset 作用域等不到它，整条 entry never started，
+          #   `session.create` 直接失败。官方 bundle 自带的 `cordis.patch.yml` 会在 host plane
+          #   一次插入 `worktree` + `tool-worktree` 两行；`ctx.tools.register` 注册的工具是
+          #   **全局可见**的，不需要 preset 行。装包/启用见 `dshHostSupervisor` 的伴生清单。

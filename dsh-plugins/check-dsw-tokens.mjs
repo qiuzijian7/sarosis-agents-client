@@ -90,13 +90,27 @@ const KNOWN_BAD = [
 
 // ── 扫描插件源码 ───────────────────────────────────────────────────────
 const PLUGIN_DIR = path.join(ROOT, 'dsh-plugins');
+/**
+ * ★ 2026-11-19：随包 vendored 的第三方 client **整体豁免**本守卫。
+ *
+ * 这三个包自带主题体系，引用的 `--dsw-alias-accent*` / `--dsw-alias-label-*` 等是本仓
+ * 0.2.2-rc.2 主题白名单里没有的 alias（运行时会走各自的回退色）。我们承诺不改上游字节
+ * ⇒ 拿本仓白名单去判只会假红。与 `check-theme-hardcodes.mjs` /
+ * `check-spawn-hide.mjs` 的豁免同口径；自研插件仍逐个文件受检。
+ */
+const VENDORED_EXEMPT_DIRS = new Set(['dsh-ego-browser', 'dsh-vision-router', 'dsh-better-sidebar']);
 const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
 	const p = path.join(dir, e.name);
-	if (e.isDirectory()) { return e.name === 'node_modules' ? [] : walk(p); }
+	if (e.isDirectory()) {
+		return e.name === 'node_modules' || VENDORED_EXEMPT_DIRS.has(e.name) ? [] : walk(p);
+	}
 	return e.name.endsWith('.js') ? [p] : [];
 });
 
 const files = walk(PLUGIN_DIR);
+for (const dir of VENDORED_EXEMPT_DIRS) {
+	console.log(`[dsw-tokens] · ${dir}/：上游 vendored client 自带主题体系，整体豁免（理由见 VENDOR.md）`);
+}
 const usedBy = new Map();   // token → Set(相对文件)
 
 /** 剥注释：注释里写 `--dsw-alias-bg-layer-*` 这类通配不该算"使用了"（第一版就误报过）。 */

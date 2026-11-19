@@ -14,7 +14,7 @@ import type { TriggerContext } from '../sources/kind.ts'
 import { relatedTickets } from './cards.ts'
 import { textPage } from './context.ts'
 import { AcknowledgementSchema } from './tools/tool.ts'
-import type { Effects } from './effects.ts'
+import { Later, type Effects } from './effects.ts'
 
 /** Schema for a short lowercase kebab-case English ticket worktree name (1–4 words, at most 32 characters). */
 export const WorktreeNameSchema = z.string().max(32).regex(/^[a-z]+(?:-[a-z0-9]+){0,3}$/, 'Use 1–4 short English words in lowercase kebab-case, at most 32 characters').describe('Meaningful short English ticket name, e.g. fix-plan-color. Translate Chinese titles into English; no Chinese, pinyin or generic ticket names. 1–4 lowercase words in kebab-case, at most 32 characters.')
@@ -61,6 +61,7 @@ export interface AssessorHost {
   threadContext(trigger: Trigger): TriggerContext | undefined
   /** Delivers a candidate card to the main Session once per request ID, resolving after the Session receives it. */
   deliver(requestId: string, text: string): Promise<void>
+  recorded(requestId: string): Promise<boolean>
   candidateCard(candidate: Candidate): Promise<Record<string, unknown>>
   /**
    * VsSaros fix (2026-11-06): where an Eval's reads are kept (`eval_reads`), so after a restart the cursors, message and
@@ -107,7 +108,14 @@ export class MasterAssessor implements Assessor {
     host.effects.handle('assessment', async ({ triggerId }, evalId) => {
       const candidate = this.host.engine.candidate(triggerId)
       if (candidate?.evalId !== evalId) return
-      await this.host.deliver(`candidate:${evalId}`, JSON.stringify({ kind: 'candidate', ...await this.host.candidateCard(candidate) }))
+      const requestId = `candidate:${evalId}`
+      const card = await this.host.candidateCard(candidate)
+      if (this.host.engine.candidate(triggerId)?.evalId !== evalId) return
+      await this.host.deliver(requestId, JSON.stringify({ kind: 'candidate', ...card }))
+      if (this.host.engine.candidate(triggerId)?.evalId !== evalId) return
+      const recorded = await this.host.recorded(requestId)
+      if (this.host.engine.candidate(triggerId)?.evalId !== evalId) return
+      if (!recorded) throw new Later('主管尚未消费候选；保留投递队列，未启动评估超时计时')
       this.host.engine.candidateDelivered(evalId)
     }, { limit: () => host.paused() ? 0 : 4 })
   }

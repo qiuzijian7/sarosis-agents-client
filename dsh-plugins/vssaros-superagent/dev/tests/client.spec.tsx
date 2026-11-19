@@ -56,10 +56,10 @@ const openMaster = async (container: HTMLElement) => {
   await act(async () => { button.click() })
   for (let i = 0; i < 5; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
 }
-const serve = () => vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+const serve = (managed?: string[]) => vi.stubGlobal('fetch', vi.fn(async (url: string) => {
   const path = new URL(url, 'http://127.0.0.1').pathname.replace('/orchestrator/api/', '')
   if (path === 'overview') return Response.json({ problems: [], person: [], executor: { running: 0, queued: 0, maxWorkers: 3, idle: 0 }, flow: { triggers: 0, filtered: 0, judged: 0, accepted: 0, evaluating: 0 }, policyVersion: 'v' })
-  if (path === 'state') return Response.json({ masterId: 'master', deskId: 'desk-1', settings: SettingsSchema.parse({}), revisions: { policy: 0, eval: 0, executor: 0 }, sources: [], policy_version: 'v', health: {}, outgoing: [], load: { running: 0, queued: 0 },
+  if (path === 'state') return Response.json({ ...(managed ? { workbenchSessions: managed } : {}), masterId: 'master', deskId: 'desk-1', settings: SettingsSchema.parse({}), revisions: { policy: 0, eval: 0, executor: 0 }, sources: [], policy_version: 'v', health: {}, outgoing: [], load: { running: 0, queued: 0 },
     setup: { machine: { stateDir: '/srv/state', worktreeRoot: '/srv/state/worktrees', blockedCommands: [], promptMaxChars: 100000, admissionContextMaxPages: 10, admissionContextTimeoutMs: 15000 }, problem: null, feishuProblem: null, accounts: null } })
   if (path === 'desk/messages') return Response.json({ deskId: 'desk-1', messages: [] })
   return Response.json({ error: 'unavailable' }, { status: 503 })
@@ -125,6 +125,32 @@ it('shows the supervisor desk in DSH\'s own chat that the workbench host docks i
   expect(again.container.querySelector('.dt-error')?.textContent).toContain('主管对话没能在这里打开')
   expect(again.container.querySelector('.dt-composer')).not.toBeNull()
   again.dispose()
+})
+
+it('synchronizes backend execution sessions into workbench ownership without navigating or docking them', async () => {
+  const workbenches = { register: vi.fn(() => () => {}) }
+  const { ctx, dispose: stop } = fixture(['desk-1', 'worker-task', 'step-task-build'], workbenches)
+  serve(['desk-1', 'worker-task', 'step-task-build', 'not-yet-listed'])
+  const [, Panel] = workbenches.register.mock.calls[0] as unknown as [unknown, ComponentType<Record<string, unknown>>]
+  const bindSessions = vi.fn(async () => {})
+  const ensureSession = vi.fn(async ({ sessionId }: { sessionId: string }) => sessionId)
+  const view = await render({ options: { name: 'workbench' }, component: Panel }, { service: { bindSessions, ensureSession }, active: true })
+  expect(bindSessions).toHaveBeenCalledWith('vssaros/superagent', ['desk-1', 'worker-task', 'step-task-build'])
+  expect(ctx.sessions.refresh).toHaveBeenCalled()
+  expect(ctx.uiWorkspace.openSession).not.toHaveBeenCalled()
+  expect(ensureSession).not.toHaveBeenCalled()
+  view.dispose(); stop()
+})
+
+it('does not register sessions from an inactive workbench', async () => {
+  const workbenches = { register: vi.fn(() => () => {}) }
+  const { dispose: stop } = fixture(['worker-task'], workbenches)
+  serve(['worker-task'])
+  const [, Panel] = workbenches.register.mock.calls[0] as unknown as [unknown, ComponentType<Record<string, unknown>>]
+  const bindSessions = vi.fn(async () => {})
+  const view = await render({ options: { name: 'workbench' }, component: Panel }, { service: { bindSessions }, active: false })
+  expect(bindSessions).not.toHaveBeenCalled()
+  view.dispose(); stop()
 })
 
 it('★ no longer offers the main Session from the panel (side panel disabled)', async () => {

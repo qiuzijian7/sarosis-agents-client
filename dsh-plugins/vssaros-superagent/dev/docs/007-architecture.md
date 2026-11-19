@@ -514,6 +514,7 @@ spec that did not run, or a checkout without `dev/node_modules`. Runtime tests a
 | `tests/team.spec.ts` | VsSaros addition: the team bus against real temporary databases and a fake bus: its shape, one track (no plan tools, two `team_*` tables, an older subscription disposed), creating Bots (duplicate, high-risk approval, quota) and group chats |
 | `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations and assessment outcomes |
 | `tests/session-mention.spec.ts` | ★ 2026-11-11: `@SuperAgent` candidate registration, `sessionTrigger` reply address, the Source's session scope, and the runtime/client wiring |
+| `tests/session-visibility.spec.ts` | Execution session workspace membership on creation and recovery, and the workbench's managed session list excluding the internal router and subagents |
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
 | `tests/staffing.spec.ts` | VsSaros addition: team staffing on the fake Host: an accepted ticket waits in person/staffing with no worker, proposals as versions sent to the conversation, agreement only from a listed person's later message to the current version, refusal as dropped, the panel's agreement, drafted Bots created only once agreed, low-risk auto-approval off by default, and invalid proposals refused |

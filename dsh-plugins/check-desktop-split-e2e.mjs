@@ -118,17 +118,31 @@ async function main() {
 		if (!f.newwin) { throw new Error('缺「新窗格」入口 ✗'); }
 	});
 
-	check('hero 右上角有「新增窗口」，且不压住官方「打开侧边栏」', async () => {
-		const found = await evaluate(cdp, `JSON.stringify({
-			host: !!document.querySelector('[data-vssaros-hero-split-host]'),
-			btn: !!document.querySelector('[data-vssaros-hero-split]'),
-			clear: document.querySelector('[data-vssaros-hero-split]')?.getAttribute('data-vssaros-hero-split-clear')
-		})`);
+	check('Hero / 活跃会话共用唯一页头入口，与官方侧栏按钮正常并列', async () => {
+		const found = await evaluate(cdp, `JSON.stringify((() => {
+			const buttons = document.querySelectorAll('[data-vssaros-new-window]');
+			const button = buttons[0];
+			const actions = button?.closest('[data-vssaros-conversation-header-actions]');
+			const official = actions?.querySelector('[data-sidebar-right-expand]');
+			const a = button?.getBoundingClientRect();
+			const b = official?.getBoundingClientRect();
+			const bottom = actions?.querySelector('[data-dsh-bottom-toggle]')?.getBoundingClientRect();
+			return {
+				count: buttons.length,
+				inHeader: !!actions?.closest('header'),
+				flex: actions && getComputedStyle(actions).display === 'flex',
+				oldOverlay: !!document.querySelector('[data-vssaros-hero-split-host]'),
+				iconOnly: button?.textContent === '' && !!button.querySelector('svg'),
+				bottomAligned: !bottom || !!a && a.width > 0 && a.right <= bottom.left && Math.abs(a.top + a.height / 2 - bottom.top - bottom.height / 2) < 1,
+				clear: !b || !!a && a.width > 0 && a.right <= b.left && Math.abs(a.top + a.height / 2 - b.top - b.height / 2) < 1
+			};
+		})())`);
 		const f = JSON.parse(found);
-		if (!f.host) { throw new Error('hero 入口组件没挂载（chunk 没更新 / 注册被跳过）✗'); }
-		if (!f.btn) { throw new Error('当前不是 hero 屏（phase≠hero），或入口没显示 —— 这条需在空会话屏上跑'); }
-		if (f.clear !== '1') { throw new Error('入口压住了官方「打开侧边栏」✗'); }
-		await shot('hero-entry');
+		if (f.count !== 1 || !f.inHeader || !f.flex || f.oldOverlay) { throw new Error('分屏入口未统一到正常 Flex 页头动作区'); }
+		if (!f.iconOnly) { throw new Error('新增窗口必须为无文字图标'); }
+		if (!f.bottomAligned) { throw new Error('新增窗口图标必须位于底部面板按钮左侧并同行'); }
+		if (!f.clear) { throw new Error('入口必须与官方「打开侧边栏」同行且不重叠'); }
+		await shot('header-entry');
 	});
 
 	check('栏数：当前至少 1 栏（target 数），且加栏后 +1', async () => {

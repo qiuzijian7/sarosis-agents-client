@@ -72,7 +72,7 @@ it('delivers a named pending CL without any review or submit, and completes the 
   const ended = h.runtime.store.tickets.get(ticket.id)!
   expect(ended.ended).toMatchObject({ outcome: 'completed' })
   expect(ended.assignments.at(-1)?.report?.summary).toContain('P4 pending CL 501')
-  expect(h.runtime.reviews.get(ticket.id)).toBeUndefined()
+  expect(h.runtime.reviews.get(ticket.id)?.state).toBe('delivered_pending')
   expect(calls.some(args => args[0] === 'submit')).toBe(false)
   expect(calls.some(args => args[0] === 'unshelve')).toBe(false)
   // A UE tree makes wildcard reconcile time out; delivery must be a metadata-only opened/reopen path.
@@ -465,6 +465,38 @@ it('shows a candidate with its thread\'s tickets open first, the tickets it reac
   h.runtime.store.threads.save(thread)
   h.runtime.receive(feishu('4', '@bot 看看 #123 的进展')); await h.runtime.idle()
   expect(relaysOf('candidate').at(-1)).toMatchObject({ related_tickets: [], tickets_total: 0, referenced_tickets: [{ ticket_id: a.id }] })
+})
+
+it('carries a manual TAPD instruction through the supervisor and full resource, then reports real execution prerequisites without calling it missing authority', async () => {
+  const { TapdConfigSchema, itemOf } = await import('../src/sources/tapd-api.ts')
+  const { runPoolDaily } = await import('../src/sources/tapd-filter-pool-run.ts')
+  const { poolIntakeStatus } = await import('../src/app/tapd-pool-status.ts')
+  const { makeTapdKind } = await import('../src/sources/tapd.ts')
+  h.runtime.sources.register(makeTapdKind({ context: () => undefined }))
+  const config = TapdConfigSchema.parse({ members: [{ alias: 'alice', name: '甲' }], filterPool: { owner: 'alice', autoProcess: false,
+    items: [{ id: '1', kind: 'bug', enabled: true }] } })
+  const store = h.runtime.store, settings = store.settings()
+  store.saveSettings({ ...settings, sources: { ...settings.sources, tapd: { enabled: true, config } } })
+  const api: import('../src/sources/tapd-api.ts').TapdApi = { items: async () => [itemOf('bug', { id: '1', workspace_id: config.workspace, current_owner: '甲', title: '标题但无复现资料' })],
+    comments: async () => [], comment: async () => { throw new Error('Read-only test') } }
+  const ctx = { state: store, atomic: (fn: () => unknown) => store.atomic(fn), receive: (trigger: import('../src/core/index.ts').Trigger) => h.runtime.receive(trigger) } as unknown as import('../src/sources/host.ts').SourceContext
+  expect((await runPoolDaily(ctx, api, config, new Date(), undefined, true)).dispatched).toBe(1)
+  await h.runtime.pump(); await h.runtime.idle()
+  const triggerId = Object.values(store.get(KV.tapd.pool(config.filterPool.name))!.records!)[0]!.triggerId
+  const trigger = store.triggers.get(triggerId)!
+  expect(relaysOf('candidate').at(-1)).toMatchObject({ strength: 'explicit', authorization: { invocation: 'manual', itemId: '1' } })
+  const full = await read(`trigger/${trigger.id}`)
+  expect(full).toMatchObject({ human: false, authorization: { authority: 'host_pool', invocation: 'manual' } })
+  const routed = await h.route({ kind: 'accept', trigger_id: trigger.id, title: '修复单据1', worktree_name: 'fix-tapd-1', acknowledgement: '已接单，查证缺失资料。' })
+  await h.runtime.idle()
+  const ticket = (routed.ticket as { ticket_id: string }).ticket_id
+  expect(store.tickets.get(ticket)).toBeDefined()
+  expect(poolIntakeStatus(store, trigger.id)).toMatchObject({ state: 'processing', phase: 'working', retryable: false })
+  expect(h.relays(`worker-${ticket}`).some(input => (input.trigger as { authorization?: { invocation: string } } | undefined)?.authorization?.invocation === 'manual')).toBe(true)
+  await h.runTool(`worker-${ticket}`, 'orchestrator_report', { state: 'blocked', summary: '原始单据没有复现资料，无法确认修复结果。', human_action: '请提供复现步骤和对应日志。' })
+  expect(poolIntakeStatus(store, trigger.id)).toMatchObject({ state: 'processing', phase: 'person', retryable: false })
+  expect(store.tickets.get(ticket)?.attention?.question).toBe('请提供复现步骤和对应日志。')
+  expect(store.tickets.get(ticket)?.ended).toBeUndefined()
 })
 
 it('relays a worker\'s report with its ticket card and the start of its summary, and a question with the card alone', async () => {

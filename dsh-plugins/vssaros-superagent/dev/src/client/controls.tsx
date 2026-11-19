@@ -132,9 +132,9 @@ export function Input({ icon, className, ...rest }: { icon?: ReactNode; classNam
     className="dt-input-icon">{icon}</span>}<input {...rest} /></span>
 }
 
-export function Switch({ checked, onChange, label,
-  className }: { checked: boolean; onChange: (next: boolean) => void; label: string; className?: string }) {
-  return <button type="button" role="switch" aria-checked={checked} aria-label={label} className={cx('dt-switch', className)}
+export function Switch({ checked, onChange, label, disabled,
+  className }: { checked: boolean; onChange: (next: boolean) => void; label: string; className?: string; disabled?: boolean }) {
+  return <button type="button" role="switch" aria-checked={checked} aria-label={label} disabled={disabled} className={cx('dt-switch', className)}
     onClick={() => onChange(!checked)}>
     <span className="dt-switch-thumb" />
   </button>

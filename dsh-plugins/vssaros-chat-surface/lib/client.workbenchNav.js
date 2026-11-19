@@ -240,6 +240,18 @@ window.__ModuleLoader__.load({
 			return best ? best.id : null;
 		}
 
+		function pageWorkbenchIdOf(tab) {
+			if (tab.wbId) { return tab.wbId; }
+			if (!String(tab.id || '').startsWith('vssaros-wb-')) { return ''; }
+			const match = /^\/x\/([a-z][a-z0-9-]*)\/(?:\?.*)?$/.exec(String(tab.route || ''));
+			return match ? 'vssaros/' + match[1] : '';
+		}
+		function renderWorkbenchPage(service, tab, active, content) {
+			const id = pageWorkbenchIdOf(tab);
+			return id && service && typeof service.PageView === 'function'
+				? react.createElement(service.PageView, { id, title: tab.name, active }, content) : content;
+		}
+
 		function install(ctx, shell) {
 			// ★ 幂等（2026-10-21 真机取证）：同一个 chunk 可能被**装载两次** ——
 			//   `client.js` 的 `PART_CHUNKS`（chat 形态）与 `hasOfficialChrome` 分支都 require 了它；
@@ -254,6 +266,25 @@ window.__ModuleLoader__.load({
 			window.__vssarosWorkbenchNavInstalled = true;
 			const bridge = shell && shell.bridge;
 			const state = (shell && shell.state) || {};
+			/**
+			 * P3：新布局默认开启（中栏无页签）；只有 Host config / 跨 chunk 全局显式 false 才回退。
+			 * 保留旧布局源码形状，静态守卫可在 legacy 模式下继续逐条验证。
+			 */
+			function sidebarLayoutV1Enabled(ctx) {
+				let config = null;
+				try { config = ctx && ctx.fiber && ctx.fiber.entry && ctx.fiber.entry.options && ctx.fiber.entry.options.config; } catch { /* 老宿主没有 fiber */ }
+				const direct = ctx && typeof ctx.config === "function" ? ctx.config() : (ctx && ctx.config);
+				if ((config && config.sidebarLayoutV1 === false) || (direct && direct.sidebarLayoutV1 === false)) { return false; }
+				if ((config && config.sidebarLayoutV1 === true) || (direct && direct.sidebarLayoutV1 === true)) { return true; }
+				try { if (window.__vssarosSidebarLayoutV1 === false) { return false; } if (window.__vssarosSidebarLayoutV1 === true) { return true; } } catch { /* window 不可读 */ }
+				try {
+					if (typeof globalThis !== "undefined" && globalThis.__vssarosSidebarLayoutV1 === false) { return false; }
+					if (typeof globalThis !== "undefined" && globalThis.__vssarosSidebarLayoutV1 === true) { return true; }
+				} catch { /* 老环境没有 globalThis */ }
+				return true;
+			}
+			const LAYOUT_V1 = sidebarLayoutV1Enabled(ctx);
+			try { window.__vssarosSidebarLayoutV1 = LAYOUT_V1; } catch { /* window 不可写 */ }
 
 			// ★★ 2026-10-24（用户：「移除插件 item」）：把侧栏那行「插件」藏掉。
 			//   官方 `dsh-client-ui-plugin-manager` 是**无条件**往 `sidebar.panellist` 注册
@@ -381,40 +412,43 @@ window.__ModuleLoader__.load({
 			// 为什么必须排第一：这是用户**唯一看得见**的入口 ⇒ 后面任何一处注册抛错都不能带走它 ✓
 			//   （旧顺序它在最后 ⇒ 一处撞 key 就整行消失 ✗ —— 就是用户报的「主页丢失」）。
 			// ⚠ 官方 list 槽的硬要求：必须写 id + order（不写 ⇒ 顺序无保证，守卫会报红）✓。
-			safeInject("nav:主页行", SLOT_NAV, () => {
-				const reg = safeRegister(
-					"nav:主页行",
-					{ name: SLOT_NAV, id: ENTRY_ID, order: ENTRY_ORDER, label: "主页" },
-					EntryIcon,
-				);
-				if (reg) { REG.nav = true; }
-				// 固定行顺手同步（官方不允许多余 inject：守卫按 inject 记注册项 ⇒ 只能并在这一个里 ✓）。
-				try { syncPinnedRows(); } catch (e) { noteFail("nav:固定行", e); }
-				return reg;
-			});
+			// P3：新布局左侧无主页行；整段保留源码形状，legacy fallback 与既有守卫继续可用。
+			if (!LAYOUT_V1) {
+				safeInject("nav:主页行", SLOT_NAV, () => {
+					const reg = safeRegister(
+						"nav:主页行",
+						{ name: SLOT_NAV, id: ENTRY_ID, order: ENTRY_ORDER, label: "主页" },
+						EntryIcon,
+					);
+					if (reg) { REG.nav = true; }
+					// 固定行顺手同步（官方不允许多余 inject：守卫按 inject 记注册项 ⇒ 只能并在这一个里 ✓）。
+					try { syncPinnedRows(); } catch (e) { noteFail("nav:固定行", e); }
+					return reg;
+				});
 
-			// 兜底：万一这一行没落地（竞态 / 槽当时还没就绪）⇒ 稍后再试一次（safeRegister ⇒ 撞了忽略）✓
-			// ★ 2026-10-22（用户报障「重启 app 后左侧栏里固定的工作台图标消失」）：**这条兜底路径也必须
-			//   同步固定行** —— 原来只有第一次 inject 的回调里调了 `syncPinnedRows()` ⇒ 第一次 inject 抛了
-			//   （`safeInject` 记一笔就返回）时，固定行**永远不会被注册** ⇒ 清单还在、图标不在这 ✗。
-			//   （`syncPinnedRows` 幂等：已注册的跳过、清单里没有的收掉 ⇒ 多调一次无害 ✓。）
-			try {
-				window.setTimeout(() => {
-					if (REG.nav) { return; }
-					safeInject("nav:主页行(重试)", SLOT_NAV, () => {
-						const reg = safeRegister(
-							"nav:主页行(重试)",
-							{ name: SLOT_NAV, id: ENTRY_ID, order: ENTRY_ORDER, label: "主页" },
-							EntryIcon,
-						);
-						if (reg) { REG.nav = true; }
-						// 槽就绪时（inject 回调里）再同步一次 ⇒ 上面那次可能早于槽就绪而注册失败 ✗
+				// 兜底：万一这一行没落地（竞态 / 槽当时还没就绪）⇒ 稍后再试一次（safeRegister ⇒ 撞了忽略）✓
+				// ★ 2026-10-22（用户报障「重启 app 后左侧栏里固定的工作台图标消失」）：**这条兜底路径也必须
+				//   同步固定行** —— 原来只有第一次 inject 的回调里调了 `syncPinnedRows()` ⇒ 第一次 inject 抛了
+				//   （`safeInject` 记一笔就返回）时，固定行**永远不会被注册** ⇒ 清单还在、图标不在这 ✗。
+				//   （`syncPinnedRows` 幂等：已注册的跳过、清单里没有的收掉 ⇒ 多调一次无害 ✓。）
+				try {
+					window.setTimeout(() => {
+						if (REG.nav) { return; }
+						safeInject("nav:主页行(重试)", SLOT_NAV, () => {
+							const reg = safeRegister(
+								"nav:主页行(重试)",
+								{ name: SLOT_NAV, id: ENTRY_ID, order: ENTRY_ORDER, label: "主页" },
+								EntryIcon,
+							);
+							if (reg) { REG.nav = true; }
+							// 槽就绪时（inject 回调里）再同步一次 ⇒ 上面那次可能早于槽就绪而注册失败 ✗
+							try { syncPinnedRows(); } catch (e) { noteFail("nav:固定行(重试)", e); }
+							return reg;
+						});
 						try { syncPinnedRows(); } catch (e) { noteFail("nav:固定行(重试)", e); }
-						return reg;
-					});
-					try { syncPinnedRows(); } catch (e) { noteFail("nav:固定行(重试)", e); }
-				}, 1500);
-			} catch { /* 无 setTimeout */ }
+					}, 1500);
+				} catch { /* 无 setTimeout */ }
+			}
 
 			/** 「🗂 工作台」那行**固定开什么**：主页（见 `pickDashboardItem`）。 */
 			function dashboardItem() {
@@ -473,7 +507,7 @@ window.__ModuleLoader__.load({
 			//   "不能打字"永远是"没进会话"的症状。而 `bridge.sessionId` 非空**不代表那个会话开得出来**
 			//   （Host 侧已不存在 / roster 不认）——主包轮询 120s 后放弃，界面就停死在禁用的 hero ✗。
 			//   ⇒ 两种态都兜：无绑定 ⇒ 立刻救；有绑定但 15s 还没在屏 ⇒ 也救（挑最近更新的会话）。
-			if (typeof window.setInterval === "function" && typeof document !== "undefined") {
+			if (!LAYOUT_V1 && typeof window.setInterval === "function" && typeof document !== "undefined") {
 				const startedAt = Date.now();
 				const WAIT_FOR_BOUND_MS = 15000;   // 有绑定值时先给主包这些时间（正常几百 ms 就开出来 ✓）
 				const RESCUE_GIVE_UP_MS = 90000;
@@ -867,6 +901,7 @@ window.__ModuleLoader__.load({
 				const id = wbIdOf(t);
 				return id && wbService && typeof wbService.has === "function" && typeof wbService.View === "function" && wbService.has(id) ? id : "";
 			};
+			const framePage = (tab, on, content) => renderWorkbenchPage(wbService, tab, on, content);
 			try {
 				if (typeof ctx.inject === "function") {
 					ctx.inject(["desktopWorkbenches"], (c) => {
@@ -924,7 +959,25 @@ window.__ModuleLoader__.load({
 			 * 页签 id = `wb:<身份>`，内容 = 宿主 View；挂在「主页」那个中栏面板里（页签条与保活同一套）。
 			 * 返回 false = 宿主里没有它（未装 / 未重启 / 被停用）——调用方据此回落。
 			 */
+			/** P3：把旧 item 映射到统一目录的 catalogKey，再交给右栏适配器另开 tab。 */
+			function openCatalogPageFromItem(it) {
+				if (!it) { return false; }
+				const catalog = typeof window !== "undefined" && typeof window.__vssarosWorkbenchCatalog === "function"
+					? window.__vssarosWorkbenchCatalog() : null;
+				const pages = catalog && Array.isArray(catalog.pages) ? catalog.pages : [];
+				const page = pages.find(p => p && (
+					(it.id && p.pageId === it.id)
+					|| (it.wbId && p.workbenchId === it.wbId)
+					|| (it.route && p.route === it.route)
+				));
+				if (!page) { return false; }
+				const open = typeof window !== "undefined" ? window.__vssarosOpenWorkbenchCatalogPage : null;
+				return typeof open === "function" ? open(page.key) === true : false;
+			}
 			function openRegisteredWorkbench(id) {
+				if (LAYOUT_V1) {
+					return openCatalogPageFromItem({ wbId: String(id || "").toLowerCase() });
+				}
 				const wbId = String(id || "").toLowerCase();
 				if (!wbId || !wbService || typeof wbService.has !== "function" || !wbService.has(wbId)) { return false; }
 				const snap = typeof wbService.getSnapshot === "function" ? wbService.getSnapshot() : null;
@@ -974,9 +1027,15 @@ window.__ModuleLoader__.load({
 				const prefix = "/x/" + m[1] + "/";
 				return DEFAULT_ITEMS.some(it => it && typeof it.route === "string" && (it.route === prefix || it.route.indexOf(prefix) === 0));
 			}
+			/** 阶段 3：优先读取统一目录策略；探针缺席时保持空集，不改动旧 fallback。 */
+			function policyHiddenIds() {
+				const policy = typeof window !== "undefined" && typeof window.__vssarosWorkbenchPolicy === "function"
+					? window.__vssarosWorkbenchPolicy() : null;
+				return new Set(policy && Array.isArray(policy.hiddenWorkbenchIds) ? policy.hiddenWorkbenchIds : []);
+			}
 			function registeredExtras() {
 				const snap = wbService && typeof wbService.getSnapshot === "function" ? wbService.getSnapshot() : null;
-				return snap && Array.isArray(snap.workbenches) ? snap.workbenches.filter(w => w && w.id && !coveredByFixedEntry(w.id)) : [];
+				return snap && Array.isArray(snap.workbenches) ? snap.workbenches.filter(w => w && w.id && !coveredByFixedEntry(w.id) && !policyHiddenIds().has(w.id)) : [];
 			}
 			function closeTab(id) {
 				openTabs = openTabs.filter(t => t.id !== id);
@@ -997,6 +1056,12 @@ window.__ModuleLoader__.load({
 			/** 统一入口：开一个工作台（页签 + 中栏 + 右栏 catalog）✓ */
 			function openWorkbenchTab(it) {
 				if (!it) { return; }
+				if (LAYOUT_V1) {
+					if (!openCatalogPageFromItem(it)) {
+						notify("warn", "右侧工作台未就绪：请确认已启用新布局并有活动会话");
+					}
+					return;
+				}
 				ensureTab(it);
 				/*
 				 * ★ 2026-11-02（用户报「点总览开了个白页/被顶回 dashboard」）：
@@ -1044,199 +1109,6 @@ window.__ModuleLoader__.load({
 			 * 并给中栏加 `padding-top: STRIP_H` 让出高度 ⇒ 对话 / 工作台怎么切它都在 ✓。
 			 * ⚠ 面板里**不再**画第二条（同屏两条页签条 ✗）—— 守卫按"锚点只出现一次"钉住 ✓。
 			 */
-			/**
-			 * **hero（"探索未至之境"空会话屏）右上角的「新增窗口」入口**（2026-10-30，用户要求）。
-			 *
-			 * 为什么需要它：hero 屏里官方**没有会话动作组**（`conversation.session.header.utilities`
-			 *   整组不渲染）⇒ 那排的「新窗格」不存在 ⇒ 用户正想开一个新对话时开不了分屏 ✗。
-			 *
-			 * ⚠ **"是不是 hero"必须用官方会话绑定事实判断**：`[data-conversation-content]` 上的
-			 *   `data-conversation-session` 由 React 按 `sessionId` 渲染 ⇒ **hero 时该属性不存在**
-			 *   （React 不渲染 undefined 属性）✓。旧判据（三个"会话正在渲染"标记都不存在 ⇒ hero）
-			 *   在 hero 上**也成立不了**（hero 里那些标记照样有）⇒ 入口永远不显示 ✗✗（真机踩过）。
-			 * ⚠ 位置：overlay 层铺满整帧 ⇒ 用**相对坐标**贴到**中栏右上角**（侧栏折叠 / 窗口缩放都重算）✓。
-			 * ⚠ 只装在主栏（右侧独立格子由宿主标题栏负责，那里也不该出现"新增窗口"）；
-			 *   点击走桥 `splitChatPane`（桥 23）⇒ 同窗口内分屏一栏。
-			 */
-			function HeroSplitChip() {
-				const [show, setShow] = react.useState(false);
-				const [pos, setPos] = react.useState(null);
-				const hostRef = react.useRef(null);
-
-				// ① hero 判定（**事件驱动** + 400ms 兜底轮询；只在真正变化时 setState ⇒ 不刷渲染）
-				// ⚠⚠ 必须用官方自己的 **phase**：`ConversationRoot` 里有
-				//     `phase = settling ? "settling" : hero ? "hero" : "active"`
-				//   并渲染成根容器上的 `data-content-phase`；而
-				//     `hero = sessionId === void 0 || (shellPhase === "blank" && (openState === "open" || summaryBlank))`
-				//   ⇒ **新开的空会话**（桌面窗口开局就绑了一条空 session）也算 hero ✗ ——
-				//   所以"没有 data-conversation-session 属性"这个判据在**真机首屏**是不成立的
-				//   （会话 id 存在 ⇒ 属性存在 ⇒ 判成"有会话" ⇒ 入口永不显示，用户两次报"没显示"）✗✗。
-				react.useEffect(() => {
-					const read = () => {
-						let hero = false;
-						try {
-							/*
-							 * ★ 2026-10-31（用户报「切到知识库后，这颗按钮过一会才消失」）：
-							 *   先看**我们自己管着的事实** —— 中栏现在是不是我们的工作台面板
-							 *   （主页 / 知识库 / 仪表盘…，判据见 `workbenchPanelActive()`）。
-							 *   它的依据是**面板自己的根标记**（只在面板被显示时才挂载）⇒ 切页那一帧
-							 *   标记就在了 ⇒ 与切页**同帧**隐藏 ✓，也不必等 iframe 量出尺寸 ✓。
-							 *
-							 *   对比：官方那枚「打开右侧边栏」能立刻消失，就是因为它挂在**会被切走**的树里、
-							 *   由 store 状态驱动；我们这颗画在根帧 overlay（`inset: 0`）上，永远不被卸载，
-							 *   所以只能自己判断 —— 那就该用"存在性"判据，而不是"量几何"。
-							 *
-							 * ⚠ 单向收紧：本条**只**用来更快隐藏（绝不因此显示）⇒ 误判代价只是"少显示一次"；
-							 *   ⚠ 也不能用"最后激活的那个工作台页签 id"代替：它只在关闭页签时清空，
-							 *     点「💬 会话」走 `selectPanel(null)` **不会**清它 ⇒ 会永远判成
-							 *     "中栏是工作台页" ⇒ 这颗按钮**永不显示** ✗（比残影更糟）。
-							 *     （守卫按字面量匹配这项，所以注释里也刻意不写那个变量名。）
-							 */
-							if (workbenchPanelActive()) {
-								hero = false;
-							} else {
-								const el = document.querySelector("[data-conversation-content]");
-								if (el && el.getAttribute("data-content-phase") === "hero") {
-									/*
-									 * ★ 2026-10-31（真机：知识库面板打开时这颗按钮**跟着浮到知识库右上角**）：
-									 *   工作台面板接管中栏后，会话容器**还在文档里、但已塌成 0×0**（display:flex 却无尺寸）
-									 *   ⇒ 只看 phase 会误判成 hero。现场实测：
-									 *     · 工作台页（知识库/仪表盘）：phase=hero、rect 0×0、中栏里有工作台 iframe
-									 *     · 真正的空会话屏：      phase=hero、rect 1280×1250、中栏无 iframe
-									 *   ⇒ 追加两条判据：① 会话容器必须**真的可见**（rect>0）；
-									 *                  ② 中栏里不能有**可见的工作台 iframe**（双保险）。
-									 */
-									const b = el.getBoundingClientRect();
-									const visible = el.getClientRects().length > 0 && b.width > 0 && b.height > 0;
-									let covered = false;
-									try {
-										const rightbar = document.querySelector("[data-rightbar-col]");
-										const center = rightbar ? rightbar.previousElementSibling : null;
-										if (center) {
-											for (const f of center.querySelectorAll("iframe")) {
-												const fr = f.getBoundingClientRect();
-												if (fr.width > 200 && fr.height > 120) { covered = true; break; }
-											}
-										}
-									} catch { covered = false; }
-									hero = visible && !covered;
-								}
-							}
-						} catch { hero = false; }
-						setShow((prev) => (prev === hero ? prev : hero));
-					};
-					read();
-					// ★ 页签 / 工作台切换 ⇒ **立刻**重判（与 TabStrip 同一范式：事件驱动，不等轮询）✓。
-					//   轮询降到 400ms 只作兜底（官方绕过页签直接 `selectPanel` 的那些路径）。
-					const onTabs = () => read();
-					window.addEventListener(TAB_CHANGE_EVENT, onTabs);
-					const t = window.setInterval(read, 400);
-					return () => {
-						window.removeEventListener(TAB_CHANGE_EVENT, onTabs);
-						window.clearInterval(t);
-					};
-				}, []);
-
-				// ② 量中栏右上角（overlay 层铺满整帧 ⇒ 相对坐标）
-				react.useEffect(() => {
-					if (!show) { return undefined; }
-					let raf = 0;
-					const measure = () => {
-						const el = hostRef.current;
-						if (!el) { return; }
-						const host = (typeof el.closest === "function" ? el.closest("[data-shell-overlay]") : null)
-							|| document.querySelector("[data-shell-overlay]");
-						if (!host) { setPos(null); return; }
-						const hb = host.getBoundingClientRect();
-						const rightbar = document.querySelector("[data-rightbar-col]");
-						const center = rightbar ? rightbar.previousElementSibling : null;
-						const cb = center ? center.getBoundingClientRect() : null;
-						// ⚠ 让开页签条（它也是 overlay，压在聊天区顶部 32px）⇒ 落在它下面，免得盖住页签 ✓
-						const strip = document.querySelector("[data-vssaros-wb-tabstrip]");
-						const stripH = strip ? Math.round(strip.getBoundingClientRect().height) : 0;
-						// ⚠⚠ **不能压住官方的「打开侧边栏」**（2026-10-30 用户截图：右上角那个按钮被挡了）：
-						//   官方那枚带 `data-sidebar-right-expand`（收起时才有）/ `data-sidebar-right-toggle`（常驻）
-						//   ⇒ 我们的按钮贴到它**左边**，并在垂直方向与它居中对齐 ✓；
-						//   找不到官方按钮时退回"内容区右上角 + 让开页签条"。
-						const official = document.querySelector("[data-sidebar-right-expand]")
-							|| document.querySelector("[data-sidebar-right-toggle]");
-						const ob = official ? official.getBoundingClientRect() : null;
-						let next;
-						if (ob && ob.width > 0 && ob.height > 0) {
-							next = {
-								right: Math.max(8, Math.round(hb.right - ob.left) + 8),
-								top: Math.max(0, Math.round(ob.top - hb.top) + Math.round((ob.height - 28) / 2)),
-							};
-						} else if (cb && cb.width > 0) {
-							next = { right: Math.max(8, Math.round(hb.right - cb.right) + 12), top: Math.round(cb.top - hb.top) + stripH + 8 };
-						} else {
-							next = { right: 16, top: stripH + 8 };
-						}
-						setPos((prev) => (prev && prev.right === next.right && prev.top === next.top ? prev : next));
-						// ⚠ **几何自证**：把"有没有压住官方按钮"算出来写进属性 ⇒ 宿主探针可判定
-						//   （否则"没遮挡"只能靠肉眼，而我读不了截图 ✗）。
-						const chip = el.querySelector ? el.querySelector("[data-vssaros-hero-split]") : null;
-						if (chip && official) {
-							const cr = chip.getBoundingClientRect();
-							const or2 = official.getBoundingClientRect();
-							const clear = cr.width > 0 && (cr.right <= or2.left - 1 || cr.bottom <= or2.top - 1 || cr.top >= or2.bottom - 1);
-							chip.setAttribute("data-vssaros-hero-split-clear", clear ? "1" : "0");
-						}
-					};
-					measure();
-					const onResize = () => { window.cancelAnimationFrame(raf); raf = window.requestAnimationFrame(measure); };
-					window.addEventListener("resize", onResize);
-					const t = window.setInterval(measure, 1000);
-					return () => {
-						window.removeEventListener("resize", onResize);
-						window.clearInterval(t);
-						window.cancelAnimationFrame(raf);
-					};
-				}, [show]);
-
-				// ⚠ 外层容器**始终渲染**（`data-vssaros-hero-split-host`）⇒ 宿主/自测可以据此区分
-				//   "组件根本没挂载（注册/缓存问题）" 与 "挂载了但判据不成立（hero 判断错）" 两种坏法 ✓
-				return react.createElement("div", {
-					ref: hostRef,
-					"data-vssaros-hero-split-host": show ? "shown" : "hidden",
-					style: { position: "absolute", inset: 0, pointerEvents: "none", zIndex: 6 },
-				}, show ? react.createElement("button", {
-					type: "button",
-					// ⚠ 稳定锚点（e2e / 守卫按它找）：
-					"data-vssaros-hero-split": "1",
-					title: "新增一个聊天窗口（在当前窗口里分屏，不影响这个会话）",
-					"aria-label": "新增窗口",
-					onClick: () => {
-						const api = (typeof window !== "undefined" && window.vssarosDsh) || null;
-						if (api && typeof api.splitChatPane === "function") {
-							try {
-								const p = api.splitChatPane();
-								if (p && typeof p.catch === "function") { p.catch(() => undefined); }
-							} catch { /* IPC 失败只影响这一次点击 */ }
-							return;
-						}
-						try {
-							if (api && typeof api.notify === "function") {
-								api.notify("warn", "当前宿主不支持「分屏窗格」（需要页面桥 23）");
-							}
-						} catch { /* 通知失败不阻塞 */ }
-					},
-					style: {
-						position: "absolute",
-						right: (pos ? pos.right : 16) + "px",
-						top: (pos ? pos.top : 8) + "px",
-						pointerEvents: "auto",
-						display: "inline-flex", alignItems: "center", gap: 6,
-						height: 28, padding: "0 12px", borderRadius: 8,
-						cursor: "pointer", font: "inherit", fontSize: 12, lineHeight: "1",
-						whiteSpace: "nowrap",
-						color: "var(--dsw-alias-label-primary, #e7e8ea)",
-						background: "var(--dsw-alias-bg-layer-1, rgba(38,38,38,.9))",
-						border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.35))",
-					},
-				}, "＋ 新增窗口") : null);
-			}
-
 			function TabStrip() {
 				const [ver, setVer] = react.useState(0);
 				const hostRef = react.useRef(null);
@@ -1610,7 +1482,7 @@ window.__ModuleLoader__.load({
 											style: on
 												? { display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0, height: "100%", width: "100%" }
 												: { display: "none" },
-										}, react.createElement(Comp, Object.assign({}, t.props || {}, { active: on })));
+										}, framePage(t, on, react.createElement(Comp, Object.assign({}, t.props || {}, { active: on }))));
 									}
 								}
 								const wbId = wbFor(t);
@@ -1631,13 +1503,14 @@ window.__ModuleLoader__.load({
 											: { display: "none" },
 									}, "「" + (t.name || t.wbId) + "」当前不可用：它可能还在加载、已被卸载，或安装后还没重启 Harness。");
 								}
-								return react.createElement("iframe", {
-									key: t.id, src: withSurface(t.route, "editor"), title: t.name,
-									style: on
-										? { display: "block", flex: "1 1 auto", minHeight: 0, height: "100%", border: 0, width: "100%", background: "transparent" }
-										: { display: "none", width: "0", height: "0", border: 0 },
+								return react.createElement('div', {
+									key: t.id, 'data-vssaros-wb-page': pageWorkbenchIdOf(t) || undefined,
+									style: on ? { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0, minWidth: 0, height: '100%' } : { display: 'none' },
+								}, framePage(t, on, react.createElement("iframe", {
+									src: withSurface(t.route, "editor"), title: t.name,
+									style: { display: 'block', flex: '1 1 auto', minHeight: 0, height: '100%', border: 0, width: '100%', background: 'transparent' },
 									onLoad: (ev) => { probeCatalog(t, ev); },
-								});
+								})));
 							});
 							if (!active) {
 								return react.createElement("div", {
@@ -1657,21 +1530,19 @@ window.__ModuleLoader__.load({
 			//   （宿主 viewId 固定以 `dsh-desk-split-` 开头）只是一个聊天框 ⇒ 不画页签条 ✓；
 			//   主栏照旧有页签条。
 			const isDeskSplitPane = String((bridge && bridge.viewId) || "").indexOf("dsh-desk-split-") === 0;
-			state.wbTabStripSkipped = isDeskSplitPane;
+			state.wbTabStripSkipped = isDeskSplitPane || LAYOUT_V1;
 			if (!isDeskSplitPane) {
-				safeInject("overlay:页签条", SLOT_OVERLAY, () => safeRegister(
-					"overlay:页签条", { name: SLOT_OVERLAY, id: "vssaros-wb-tabstrip", order: 100 }, TabStrip));
-				// ★ 2026-10-30（用户："dsh 侧的聊天框初始页面中，右上角增加新增窗口按钮"）
-				//   hero（"探索未至之境"那一屏）**没有会话动作组** ⇒ 那排没有分屏入口 ⇒ 在聊天区
-				//   **右上角**补一枚；一旦进入会话就自动消失（与会话动作组那枚天然互补，不会重复）✓
-				safeInject("overlay:hero新窗格", SLOT_OVERLAY, () => safeRegister(
-					"overlay:hero新窗格", { name: SLOT_OVERLAY, id: "vssaros-hero-split", order: 101 }, HeroSplitChip));
+				const TABSTRIP_ID = "vssaros-wb-tabstrip";
+				if (!LAYOUT_V1) { safeInject("overlay:页签条", SLOT_OVERLAY, () => safeRegister(
+					"overlay:页签条", { name: SLOT_OVERLAY, id: TABSTRIP_ID, order: 100 }, TabStrip)); }
 			}
 
 
 			// 侧栏「主页」那一行 ⇒ 页签面板（首次挂载会激活「主页」页签；**不是唯一入口**，见下 ✓）
-			safeInject("main:主页", SLOT_MAIN, () => safeRegister(
-				"main:主页", { name: SLOT_MAIN, key: ENTRY_ID }, makeTabPanel(dashboardItem)));
+			if (!LAYOUT_V1) {
+				safeInject("main:主页", SLOT_MAIN, () => safeRegister(
+					"main:主页", { name: SLOT_MAIN, key: ENTRY_ID }, makeTabPanel(dashboardItem)));
+			}
 
 			// ── 侧栏「🏠 主页」行：**显式**激活主页页签（2026-11-11 用户报障）─────────────────
 			// 原话：「点击 左侧栏的主页按钮，无法切换到 对应 主页页签 页面」。
@@ -1698,7 +1569,7 @@ window.__ModuleLoader__.load({
 				} catch (e) { noteFail("nav:主页行点击", e); }
 			}
 			try { window.__vssarosActivateHomeTab = activateDashboardTab; } catch { /* window 不可写 */ }
-			if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+			if (!LAYOUT_V1 && typeof document !== "undefined" && typeof document.addEventListener === "function") {
 				document.addEventListener("click", (e) => {
 					try {
 						if (e && typeof e.button === "number" && e.button !== 0) { return; }
@@ -1713,10 +1584,12 @@ window.__ModuleLoader__.load({
 				}, true);
 			}
 			// 每个条目一个入口（主页「打开」/ 固定行 / 启动器 都走它）⇒ 打开即一个独立页签 ✓
-			for (const it of DEFAULT_ITEMS) {
-				const key = "vssaros-wb-" + it.id;
-				safeInject("main:" + key, SLOT_MAIN, () => safeRegister(
-					"main:" + key, { name: SLOT_MAIN, key: key }, makeTabPanel(() => it)));
+			if (!LAYOUT_V1) {
+				for (const it of DEFAULT_ITEMS) {
+					const key = "vssaros-wb-" + it.id;
+					safeInject("main:" + key, SLOT_MAIN, () => safeRegister(
+						"main:" + key, { name: SLOT_MAIN, key: key }, makeTabPanel(() => it)));
+				}
 			}
 
 			// ── 侧栏单行入口（list 槽；label 由官方侧栏投影）─────────────────────────
@@ -1796,6 +1669,7 @@ window.__ModuleLoader__.load({
 				notify("info", "已从侧栏移除：" + ((it && it.name) || route));
 			}
 			function syncPinnedRows() {
+				if (LAYOUT_V1) { return; }   // P3：左侧固定行属于旧中栏布局，新布局不再注册 nav/main 面板
 				const list = readPinned();
 				// ① 先收掉不再固定的
 				Array.from(pinnedDisposers.keys()).forEach((route) => {
@@ -2074,7 +1948,7 @@ window.__ModuleLoader__.load({
 
 		exports.install = install;
 		// 仅测试用：兜底进会话时"挑哪一条"（纯逻辑 ⇒ 守卫 ⑥ 钉住）
-		exports.__test = { pickLatestSessionId, pickDashboardItem, DASHBOARD_ID, reorderTabs };
+		exports.__test = { pickLatestSessionId, pickDashboardItem, DASHBOARD_ID, reorderTabs, pageWorkbenchIdOf, renderWorkbenchPage };
 		return module.exports;
 	}
 });

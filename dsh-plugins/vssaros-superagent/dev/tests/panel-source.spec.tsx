@@ -9,32 +9,20 @@ import { server, problemOf, droppedReply } from './fixtures/panel-server.ts'
 import { feishuKind } from '../src/sources/feishu.ts'
 
 usePanel()
-it('imports a TAPD filter JSON, shows the mapping report and adds a disabled daily bug watch', async () => {
+it('shows scraped TAPD schemes and the result pool instead of a JSON import', async () => {
   server.tapdCard = true
   await mount()
   await click(tab(zh['tab.settings']))
   const card = all('.dt-card').find(el => el.querySelector('[data-tapd-credentials]'))!
-  const row = [...card.querySelectorAll<HTMLElement>('[data-disclosure-row]')]
-    .find(el => el.textContent?.includes('从 JSON 导入 TAPD 筛选条件'))!
-  await click(row)
-  const panel = row.closest('.dt-disclosure')!
-  const area = panel.querySelector('textarea')!
-  await type(area, JSON.stringify({ source: 'TAPD筛选条件', conditions: [
-    { field: '优先级', op: '属于 (In)', enabled: true, value: ['紧急', '高'] }], state: {} }))
-  const parse = [...panel.querySelectorAll('button')].find(button => button.textContent?.includes('解析并预览映射'))!
-  await click(parse)
+  expect(card.textContent).toContain('过滤方案自动抓取')
+  expect(card.textContent).toContain('筛选结果池')
+  expect(card.textContent).toContain('开始执行')
+  expect(card.textContent).not.toContain('从 JSON 导入 TAPD 筛选条件')
+  expect(card.textContent).not.toContain('下推 API')
+  const sync = [...card.querySelectorAll('button')].find(button => button.textContent?.includes('立即同步'))!
+  await click(sync)
   await settle()
-  expect(panel.textContent).toContain('下推 API')
-  expect(panel.textContent).toContain('priority_label=紧急|高')
-  const add = [...panel.querySelectorAll('button')].find(button => button.textContent?.includes('新增一个 bug 接收项'))!
-  await click(add)
-  await settle()
-  expect(panel.textContent).toContain('已导入的每日筛选')
-  expect(panel.textContent).toContain('filter-bug-1')
-  const toggle = panel.querySelector('[role="switch"]')!
-  expect(toggle.getAttribute('aria-label')).toContain('每天自动执行')
-  expect(toggle.getAttribute('aria-checked')).toBe('false')
-  expect(server.requests.some(request => request.path === 'sources/tapd/filters/import')).toBe(true)
+  expect(server.requests.some(request => request.path === 'sources/tapd/filter-schemes/sync')).toBe(true)
 })
 
 it('shows the TAPD setup checklist and a working read-only connectivity probe', async () => {

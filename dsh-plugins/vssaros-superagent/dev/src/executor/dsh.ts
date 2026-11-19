@@ -21,8 +21,10 @@ import { WorktreeNameSchema } from '../app/assessment.ts'
 import { resultRelay } from '../app/notices.ts'
 import { modelReportText } from '../app/role-models.ts'
 import { itemAddress } from '../sources/tapd-api.ts'
+import { hostPoolAuthorization, type PoolAuthorization } from '../sources/tapd-pool-authorization.ts'
 import { P4ConfigSchema } from '../sources/p4-change.ts'
 import { verifyP4Workspace } from './p4-workspace.ts'
+import { retainedChanges } from './p4-retained.ts'
 import { P4ConflictError, syncP4Workspace } from './p4-sync.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { cancelled, collectJob, killJobs, runningJobs, stopBackground, stopSubagents, until, untilQuiet, workerErrorDetail } from './background.ts'
@@ -70,7 +72,7 @@ export interface ExecutorHost {
   /** Where the Executor reports what happened to Assignments and Inputs. */
   readonly engine: Pick<EngineForExecutor, 'assignmentStarted' | 'inputsDelivered' | 'inputsRead' | 'turnEnded' | 'deliveryFailed' | 'report'
     | 'assignmentInterrupted' | 'stopTicket'>
-  readonly store: Pick<Store, 'tickets' | 'triggers' | 'get' | 'set' | 'settings' | 'atomic' | 'afterCommit'>
+  readonly store: Pick<Store, 'tickets' | 'triggers' | 'get' | 'set' | 'keys' | 'settings' | 'atomic' | 'afterCommit'>
   /** Durable effect queue through which launches and input deliveries run. */
   readonly effects: Pick<Effects, 'enqueue' | 'handle'>
   /** The `worker` health entry, which reports whether background worker event handling failed. */
@@ -113,7 +115,7 @@ export function mandateInstructions(mandate: Pick<Mandate, 'strength'>): string 
 }
 /** Builds a newly accepted ticket's Execution metadata: its worktree name, workspace directory, and assignment text. */
 export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>, settings: Settings,
-  stateDir: string, origin?: Trigger, canonicalRepository?: string): Execution {
+  stateDir: string, origin?: Trigger, canonicalRepository?: string, pool = false): Execution {
   const name = ticketWorktreeName(outcome.name ?? '', ticket.id)
   const source = ticket.origin.triggerId
   const note = outcome.note ? `\nRouting note (not the source request): ${outcome.note}` : ''
@@ -150,8 +152,8 @@ export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutco
   const shared = requiresP4 && p4Config?.workspaceMode === 'current' ? {
     client: p4Config.executionClient, root: p4Config.workspaceRoot, port: p4Config.port, user: p4Config.user,
   } : undefined
-  const pending = requiresP4 && p4Config?.submit === 'pending'
-  const delivery = requiresP4 ? `\nP4 delivery required: use the authorized workspace, test and shelve a ticket-owned CL. ${pending ? 'The Host will consolidate, name and re-shelve that CL; never submit, unshelve or revert it.' : 'Missing checkout or a CL owned elsewhere requires blocked, not ready/dropped.'}` : ''
+  const pending = requiresP4 && (p4Config?.submit === 'pending' || pool)
+  const delivery = requiresP4 ? `\nP4 delivery required: use the authorized workspace, ${pool ? 'deliver a ticket-owned pending CL; do not wait for compilation, runtime regression or human review. Report those checks as skipped or incomplete, never passed. Shelf delivery ends this task so the next may run. ' : 'test and '}shelve a ticket-owned CL. ${pending ? 'The Host will consolidate, name and re-shelve that CL; never submit, unshelve or revert it.' : 'Missing checkout or a CL owned elsewhere requires blocked, not ready/dropped.'}` : ''
   const sharedInstructions = shared ? `\nUse -c ${shared.client} on every P4 call. Create a new numbered CL with [dsh-superagent:${ticket.id}] in its description; never adopt existing/default CLs or alter unrelated edits. Do not sync, revert or submit the shared workspace.` : ''
   return { name, directory: shared?.root || directory, assignment: assignment + precondition + delivery + sharedInstructions,
     ...(shared ? { p4Workspace: shared } : {}), ...(requiresP4 ? { delivery: 'p4' as const, p4Delivery: pending ? 'pending' as const : 'submit' as const } : {}), ...(project ? { project } : {}),
@@ -166,14 +168,15 @@ const capped = (text: string, limit: number, read: string) =>
  * Formats a Trigger for worker delivery: author, thread, timestamp, text up to `TRIGGER_CHARS`, source message link,
  * optional routing note, and a preview of the replied-to message when the worker has not yet seen it.
  */
-export function triggerMessage(trigger: Trigger, link: { source_url?: string; source_url_read?: string }, note?: string, repliesTo?: Trigger) {
+export function triggerMessage(trigger: Trigger, link: { source_url?: string; source_url_read?: string }, note?: string, repliesTo?: Trigger, authorization?: PoolAuthorization) {
   return { trigger_id: trigger.id, from: trigger.actor.id, thread: threadKey(trigger.threads[0]!), at: trigger.at,
+    ...(authorization ? { authorization } : {}),
     ...capped(trigger.text, TRIGGER_CHARS, `trigger/${trigger.id}`), ...link, ...(note ? { routing_note: note } : {}),
     ...(repliesTo ? { replies_to: { trigger_id: repliesTo.id, preview: repliesTo.text.replace(/\s+/g, ' ').slice(0, 160) } } : {}) }
 }
 /** Formats a peer trigger from the ticket's acceptance batch with author, timestamp, 160-character preview, and read resource path. */
-export const batchLine = (trigger: Trigger) => ({ trigger_id: trigger.id, from: trigger.actor.id, at: trigger.at,
-  preview: trigger.text.replace(/\s+/g, ' ').slice(0, 160), read: `trigger/${trigger.id}` })
+export const batchLine = (trigger: Trigger, authorization?: PoolAuthorization) => ({ trigger_id: trigger.id, from: trigger.actor.id, at: trigger.at,
+  ...(authorization ? { authorization } : {}), preview: trigger.text.replace(/\s+/g, ' ').slice(0, 160), read: `trigger/${trigger.id}` })
 /** Returns the other triggers in a ticket's origin batch (excluding the primary `origin.triggerId`), oldest first. */
 export const batchOf = (host: { store: Pick<Store, 'triggers'> }, ticket: Ticket): Trigger[] => ticket.origin.triggerIds
   .filter(id => id !== ticket.origin.triggerId).flatMap(id => host.store.triggers.get(id) ?? [])
@@ -287,8 +290,8 @@ export class DshExecutor implements Executor {
         const workspace = host.store.tickets.get(id)?.execution?.p4Workspace
         return workspace ? workspace.root.toLowerCase().replace(/\\/g, '/').replace(/\/$/, '') : undefined
       },
-      () => host.store.tickets.open().filter(ticket => this.running(ticket) || this.preparing.has(ticket.id) || this.stopping.has(ticket.id)
-        || this.resuming.has(latestAssignment(ticket)?.id ?? '') || ticket.follows?.some(follow => follow.own && !follow.closed && follow.thread.startsWith('p4:'))).map(ticket => ticket.id))
+      () => host.store.tickets.list().filter(ticket => this.stopping.has(ticket.id) || !ticket.ended && (this.running(ticket) || this.preparing.has(ticket.id)
+        || this.resuming.has(latestAssignment(ticket)?.id ?? '') || ticket.follows?.some(follow => follow.own && !follow.closed && follow.thread.startsWith('p4:')))).map(ticket => ticket.id))
     // Each launch reserves a worker slot so launches run concurrently while slots are free.
     host.effects.handle('launch', payload => this.launchQueued(payload), { limit: () => host.paused() ? 0 : this.slots.launches(),
       retry: [5000, 300_000] })
@@ -297,8 +300,9 @@ export class DshExecutor implements Executor {
   }
   /** Populates a newly accepted ticket's `execution` attributes (worktree name, workspace directory, and assignment text). */
   prepare(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>): Ticket {
+    const origin = sourceTrigger(this.host, ticket)
     return { ...ticket, execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir,
-      sourceTrigger(this.host, ticket), this.host.repository?.()) }
+      origin, this.host.repository?.(), !!origin && !!hostPoolAuthorization(this.host.store, origin)) }
   }
   /**
    * Runs the configured `executor.prepare` command for a new ticket workspace in its parent directory with the ticket's
@@ -323,6 +327,13 @@ export class DshExecutor implements Executor {
     await mkdir(directory, { recursive: true })
   }
   private ensureWorkspace(ticket: Ticket, allowPrepare = true): Promise<void> {
+    const origin = sourceTrigger(this.host, ticket)
+    if (ticket.execution?.delivery === 'p4' && ticket.execution.p4Delivery !== 'pending' && !ticket.assignments.some(assignment => assignment.startedAt)
+      && origin && hostPoolAuthorization(this.host.store, origin)) {
+      ticket = { ...ticket, execution: { ...ticket.execution, p4Delivery: 'pending',
+        assignment: `${ticket.execution.assignment}\n池任务按用户要求：交付pending CL后结束，不等待编译、回归或审阅；不得提交，不宣称未执行的检查通过。` } }
+      this.host.store.tickets.save(ticket)
+    }
     const directory = ticket.execution?.directory ?? ''
     const project = ticket.execution?.project
     const entry = { assignmentId: latestAssignment(ticket)?.id ?? '', cancel: new AbortController() }
@@ -351,8 +362,20 @@ export class DshExecutor implements Executor {
         const source = this.host.store.settings().sources.p4
         if (!source?.enabled) throw new WorkspaceError('P4 来源已关闭；请启用并核对本单工作区。')
         const config = P4ConfigSchema.parse(source.config)
-        const client = await verifyP4Workspace(ticket, config, run)
-        if (config.syncBeforeWork) {
+        const retained = retainedChanges(this.host.store, ticket)
+        const client = await verifyP4Workspace(ticket, config, run, retained)
+        if (retained.length) {
+          const files = retained.flatMap(change => change.files.map(file => file.depotFile))
+          const protectedPaths: string[] = [...files]
+          for (const file of files) {
+            const output = await run([config.cli || 'p4', '-p', config.port, '-u', config.user, '-c', client, '-Mj', '-ztag', 'where', file], directory)
+            for (const line of output.split(/\r?\n/).filter(Boolean)) { const row = JSON.parse(line); if (row.path) protectedPaths.push(row.path) }
+          }
+          ticket = { ...ticket, execution: { ...ticket.execution!, protectedP4Files: protectedPaths,
+            assignment: `${ticket.execution!.assignment}\n前序已交付CL保留：${retained.map(change => change.change).join(', ')}。不得修改、reopen或归集其文件；如需重叠修改报告阻塞：${files.join(', ')}` } }
+          this.host.store.tickets.save(ticket)
+        }
+        if (config.syncBeforeWork && !retained.length) {
           if (!this.host.p4Host) throw new WorkspaceError('Host 的 P4 同步通道不可用；不会在未更新的工作区启动任务。')
           await syncP4Workspace(config, client, directory, (argv, cwd) => this.host.p4Host!(argv, cwd, signal))
         }
@@ -460,7 +483,7 @@ export class DshExecutor implements Executor {
     if (!trigger) return undefined
     const parent = this.host.repliedTo(trigger)
     const seen = parent && (parent.id === ticket.origin.triggerId || ticket.inputs.some(item => item.kind === 'trigger' && item.triggerId === parent.id))
-    return triggerMessage(trigger, await this.host.sourceLink(trigger), note, seen ? undefined : parent)
+    return triggerMessage(trigger, await this.host.sourceLink(trigger), note, seen ? undefined : parent, hostPoolAuthorization(this.host.store, trigger))
   }
   /**
    * After the ending transaction commits (so a rollback leaves the worker working, and a launch the same transaction queued
@@ -598,6 +621,7 @@ export class DshExecutor implements Executor {
     if (!current()) return
     await this.ensureWorkspace(ticket)
     if (!current()) return
+    ticket = this.host.store.tickets.get(ticket.id)!
     const sessionId = workerSessionId(ticket.id)
     const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker')
     if (!current()) return
@@ -615,7 +639,7 @@ export class DshExecutor implements Executor {
     const { text: brief, chars, read } = capped(assignmentText, ASSIGNMENT_CHARS, `ticket/${ticket.id}/assignment`)
     const card = told || !source ? undefined : await this.triggerCard(ticket, source.id)
     if (!current()) return
-    const batch = told ? [] : batchOf(this.host, ticket).map(batchLine)
+    const batch = told ? [] : batchOf(this.host, ticket).map(trigger => batchLine(trigger, hostPoolAuthorization(this.host.store, trigger)))
     const text = told ? JSON.stringify({ ticket_id: ticket.id, assignment: ticket.assignments.length, ...retried })
       : JSON.stringify({ ticket_id: ticket.id, title: ticket.title, ...(brief ? { assignment: brief } : {}),
         ...(read ? { assignment_chars: chars, assignment_read: read } : {}), ...(card ? { trigger: card } : {}),

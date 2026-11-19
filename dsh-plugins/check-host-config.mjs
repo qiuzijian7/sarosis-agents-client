@@ -471,11 +471,11 @@ for (const target of TARGETS) {
 	F.clearWorkspaceContext();
 
 	push(step('没有上下文 ⇒ 不注入任何文本', F.renderWorkspaceRootsText(undefined), ''));
-	F.setWorkspaceContext({ workspaceRoot: 'R:/a', relatedRoots: [] });
+	F.setWorkspaceContext({ windowId: 1, workspaceRoot: 'R:/a', relatedRoots: [] });
 	push(step('单根 ⇒ 不注入任何文本（system prompt 逐字不变）', F.renderWorkspaceRootsText(F.workspaceContext()), ''));
 
 	F.setWorkspaceContext({
-		workspaceRoot: 'R:/a', relatedRoots: ['R:/a', 'R:/b'], roots: [
+		windowId: 1, workspaceRoot: 'R:/a', relatedRoots: ['R:/a', 'R:/b'], roots: [
 			{ path: 'R:/a', name: 'frontend', isPrimary: true },
 			{ path: 'R:/b', name: 'backend' },
 		],
@@ -485,8 +485,9 @@ for (const target of TARGETS) {
 	push(step('多根 ⇒ 有 heading', String(text.includes('## Workspace roots (multi-root)')), 'true'));
 	push(step('多根 ⇒ primary/additional + 根名 + 路径都在',
 		String(text.includes('- primary  frontend  R:/a') && text.includes('- additional  backend  R:/b')), 'true'));
-	push(step('多根 ⇒ 写明相对路径只基准主根',
-		String(text.includes('Relative paths resolve ONLY against the primary root')), 'true'));
+	push(step('多根 ⇒ 写明相对路径基准当前会话工作目录',
+		String(text.includes('Relative paths resolve against the current session working directory')), 'true'));
+	push(step('工作区根成员不是额外授权', String(text.includes('not an additional permission grant')), 'true'));
 	push(step('多根 ⇒ 提示绝对路径与同名消歧',
 		String(text.includes('always use its absolute path') && text.includes('disambiguate with the absolute path')), 'true'));
 	// ★ 文案纪律：工具还没接根限定语法 ⇒ 提示词不许提前宣传（否则模型用了会被当成普通路径 ✗）
@@ -496,30 +497,40 @@ for (const target of TARGETS) {
 	push(step('cwd 就是主根 ⇒ 不加多余提示',
 		String(!F.renderWorkspaceRootsText(F.workspaceContext(), { cwd: 'R:/a' }).includes('not the primary root')), 'true'));
 
-	// 动态性：接线拿到的 text 必须是函数，且切工作区后重新求值会变
+	// 动态性按真实会话policy/cwd归属，不读取最后推送的其他窗口。
 	let captured;
 	const fakeCtx = {
 		inject: (deps, cb) => {
-			if (Array.isArray(deps) && deps.includes('systemPrompt')) { cb(fakeCtx); }
+			if (Array.isArray(deps) && (deps.includes('systemPrompt') || deps.includes('sandboxPolicy'))) { cb(fakeCtx); }
 			return { dispose() { } };
 		},
 		effect: fn => { fn(); return () => { }; },
 		systemPrompt: { context: def => { captured = def; return () => { }; } },
+		sandboxPolicy: { resolve: ({ session }) => ({ mode: 'workspace-write', workspaceRoot: session.header.cwd, sessionId: session.id }) },
 	};
 	push(step('接线发起了注册', String(F.installWorkspaceRootsPrompt(fakeCtx, F)), 'true'));
 	push(step('段名/顺序正确',
 		String(captured?.name === F.WORKSPACE_ROOTS_SECTION_NAME && captured?.order === F.WORKSPACE_ROOTS_SECTION_ORDER), 'true'));
 	push(step('text 是函数（每次装配动态求值）', String(typeof captured?.text === 'function'), 'true'));
-	const beforeSwitch = captured?.text?.({}) ?? '';
+	const sessionContext = { agent: { session: { id: 'session-a', header: { cwd: 'R:/a' } } } };
+	const beforeSwitch = captured?.text?.(sessionContext) ?? '';
+	push(step('真实会话 ⇒ 显示所属多根', String(beforeSwitch.includes('R:/a') && beforeSwitch.includes('R:/b')), 'true'));
+	push(step('空装配上下文 ⇒ 不显示全局根', captured?.text?.({}) ?? '', ''));
+	push(step('无归属cwd ⇒ 不显示其他根', captured?.text?.({ agent: { session: { header: { cwd: 'R:/unknown' } } } }) ?? '', ''));
+	F.setWorkspaceContext({ windowId: 2, workspaceRoot: 'R:/other', relatedRoots: ['R:/other', 'R:/private'] });
+	push(step('另一窗口最后推送 ⇒ 本会话提示不变', captured?.text?.(sessionContext) ?? '', beforeSwitch));
 	F.setWorkspaceContext({
-		workspaceRoot: 'R:/a', relatedRoots: ['R:/a', 'R:/c'], roots: [
+		windowId: 1, workspaceRoot: 'R:/a', relatedRoots: ['R:/a', 'R:/c'], roots: [
 			{ path: 'R:/a', name: 'frontend', isPrimary: true },
 			{ path: 'R:/c', name: 'contracts' },
 		],
 	});
-	const afterSwitch = captured?.text?.({}) ?? '';
-	push(step('切工作区后 text() 跟着变（不烘焙旧根）',
-		String(!beforeSwitch.includes('R:/c') && afterSwitch.includes('R:/c') && !afterSwitch.includes('R:/b')), 'true'));
+	const afterSwitch = captured?.text?.(sessionContext) ?? '';
+	push(step('所属窗口根变化 ⇒ text() 动态更新',
+		String(!beforeSwitch.includes('R:/c') && afterSwitch.includes('R:/c') && !afterSwitch.includes('R:/b') && !afterSwitch.includes('R:/private')), 'true'));
+	F.setWorkspaceContext({ windowId: 3, workspaceRoot: 'R:/a', relatedRoots: ['R:/a', 'R:/secret'] });
+	push(step('共享根歧义 ⇒ 不宣传任一窗口附加根', captured?.text?.(sessionContext) ?? '', ''));
+	F.setWorkspaceContext({ windowId: 3 });
 	push(step('text() 能读会话 cwd',
 		String(captured?.text?.({ agent: { session: { header: { cwd: 'R:/c' } } } })?.includes('This session\'s cwd is R:/c')), 'true'));
 	push(step('老 Host（没有 inject）⇒ 不抛、不注册', String(F.installWorkspaceRootsPrompt({}, F)), 'false'));
@@ -558,11 +569,13 @@ for (const target of TARGETS) {
 	const F = foundationSvc;
 	F.clearWorkspaceContext();
 
-	const DENIED = { code: 'FS_SANDBOX_DENIED' };
+	const DENIED = Object.assign(new Error('original sandbox refusal'), { code: 'FS_SANDBOX_DENIED' });
 	let calls = 0;
+	const seenPolicies = [];
 	const fakeOriginal = async function (target, policy) {
 		calls++;
 		const p = policy ?? this.ctx.sandboxPolicy.resolve();
+		seenPolicies.push(p);
 		if (p.mode === 'danger-full-access') { return { target, checkedWith: 'unfenced' }; }
 		if (p.mode !== 'workspace-write') { throw DENIED; }
 		const root = String(p.workspaceRoot).toLowerCase().replace(/\\/g, '/');
@@ -571,9 +584,11 @@ for (const target of TARGETS) {
 		return { target, checkedWith: p.workspaceRoot };
 	};
 	const fakeFs = { ctx: { sandboxPolicy: { resolve: () => ({ mode: 'workspace-write', workspaceRoot: 'R:/a' }) } } };
-	const wrapped = F.withMultiRootCheckedTarget(fakeOriginal, () => F.workspaceRoots());
-	const attempt = async (displayPath, policy) => {
+	const sessionPolicy = { mode: 'workspace-write', workspaceRoot: 'R:/a', sessionId: 'session-a' };
+	const wrapped = F.withMultiRootCheckedTarget(fakeOriginal, policy => F.workspaceRootsFor({ policy }));
+	const attempt = async (displayPath, policy = sessionPolicy) => {
 		calls = 0;
+		seenPolicies.length = 0;
 		try {
 			const out = await wrapped.call(fakeFs, { displayPath }, policy);
 			return { ok: true, checkedWith: out.checkedWith, calls };
@@ -583,26 +598,42 @@ for (const target of TARGETS) {
 	};
 
 	// ① 单根 / 无上下文 ⇒ 与官方单根行为逐字一致（不放宽、不多调一次）
-	F.setWorkspaceContext({ workspaceRoot: 'R:/a', relatedRoots: [] });
+	F.setWorkspaceContext({ windowId: 1, workspaceRoot: 'R:/a', relatedRoots: [] });
 	let r = await attempt('R:/a/x.txt');
 	push(step('单根命中 ⇒ 一次调用即放行', String(r.ok && r.calls === 1 && r.checkedWith === 'R:/a'), 'true'));
 	r = await attempt('R:/b/x.txt');
 	push(step('单根 + 根外路径 ⇒ 拒且不额外试根', String(!r.ok && r.calls === 1 && r.sameError), 'true'));
 
-	// ② 多根 ⇒ 逐个把改写过的 policy 交给官方 containment
+	// ② 多根 ⇒ 仅将所属窗口根交给官方 containment，另一窗口不得混入
 	F.setWorkspaceContext({
-		workspaceRoot: 'R:/a', relatedRoots: ['R:/a', 'R:/b', 'R:/c'], roots: [
+		windowId: 1, workspaceRoot: 'R:/a', relatedRoots: ['R:/a', 'R:/b', 'R:/c'], roots: [
 			{ path: 'R:/a', name: 'a', isPrimary: true },
 			{ path: 'R:/b', name: 'b' },
 			{ path: 'R:/c', name: 'c' },
 		],
 	});
+	F.setWorkspaceContext({ windowId: 2, workspaceRoot: 'R:/other', relatedRoots: ['R:/other', 'R:/private'] });
 	r = await attempt('R:/b/src/App.tsx');
 	push(step('第二根命中 ⇒ 放行且记下该根', String(r.ok && r.checkedWith === 'R:/b' && r.calls === 2), 'true'));
 	r = await attempt('R:/c/pkg/x.ts');
 	push(step('第三根命中 ⇒ 放行且记下该根', String(r.ok && r.checkedWith === 'R:/c' && r.calls === 3), 'true'));
+	push(step('逐根重试 ⇒ 保持workspace-write与原sessionId',
+		String(seenPolicies.every(policy => policy.mode === 'workspace-write' && policy.sessionId === 'session-a')), 'true'));
+	r = await attempt('R:/private/x.txt');
+	push(step('其他窗口附加根 ⇒ 不混入本会话授权', String(!r.ok && r.sameError && r.calls === 3
+		&& seenPolicies.every(policy => !['R:/other', 'R:/private'].includes(policy.workspaceRoot))), 'true'));
 	r = await attempt('R:/outside/x.txt');
 	push(step('根外路径 ⇒ 全拒且重抛官方错对象', String(!r.ok && r.sameError && r.calls === 3), 'true'));
+	r = await attempt('R:/b/x.txt', null);
+	push(step('未传policy ⇒ 不借部署fallback扩根', String(!r.ok && r.calls === 1 && r.sameError), 'true'));
+	r = await attempt('R:/b/x.txt', { ...sessionPolicy, workspaceRoot: 'R:/unknown' });
+	push(step('policy根无归属 ⇒ 不附加任何窗口根', String(!r.ok && r.calls === 1 && r.sameError), 'true'));
+	r = await attempt('R:/b/x.txt', { ...sessionPolicy, workspaceRoot: 'R:/a/nested' });
+	push(step('policy子目录 ⇒ 不提升到父工作区根', String(!r.ok && r.calls === 1 && r.sameError), 'true'));
+	F.setWorkspaceContext({ windowId: 3, workspaceRoot: 'R:/a', relatedRoots: ['R:/a', 'R:/secret'] });
+	r = await attempt('R:/b/x.txt');
+	push(step('共享根归属歧义 ⇒ 不追加任一根集', String(!r.ok && r.calls === 1 && r.sameError), 'true'));
+	F.setWorkspaceContext({ windowId: 3 });
 
 	// ③ 模式闸门：read-only 绝不放宽；danger-full-access 原方法本就直接放行
 	r = await attempt('R:/b/x.txt', { mode: 'read-only', workspaceRoot: 'R:/a' });
@@ -610,8 +641,8 @@ for (const target of TARGETS) {
 	r = await attempt('R:/b/x.txt', { mode: 'danger-full-access', workspaceRoot: 'R:/a' });
 	push(step('danger-full-access ⇒ 不额外试根', String(r.ok && r.calls === 1), 'true'));
 
-	// ④ 动态根集：切工作区后立刻生效，不是快照
-	F.setWorkspaceContext({ workspaceRoot: 'R:/a', relatedRoots: [] });
+	// ④ 动态根集：所属窗口切工作区后立刻生效，不是快照
+	F.setWorkspaceContext({ windowId: 1, workspaceRoot: 'R:/a', relatedRoots: [] });
 	r = await attempt('R:/b/x.txt');
 	push(step('切到单根 ⇒ 立刻不再放宽', String(!r.ok && r.calls === 1), 'true'));
 
@@ -629,6 +660,9 @@ for (const target of TARGETS) {
 	};
 	push(step('接线发起了注入', String(F.installMultiRootFs(fakeCtx, F)), 'true'));
 	push(step('fs.checkedTarget 被替换', String(typeof fsInstance.checkedTarget === 'function' && fsInstance.checkedTarget !== fakeOriginal), 'true'));
+	F.setWorkspaceContext({ windowId: 1, workspaceRoot: 'R:/a', relatedRoots: ['R:/a', 'R:/b'] });
+	const installedResult = await fsInstance.checkedTarget({ displayPath: 'R:/b/x.txt' }, sessionPolicy);
+	push(step('已安装fs ⇒ 真正按传入会话policy解析附加根', String(installedResult.checkedWith === 'R:/b'), 'true'));
 	disposer();
 	push(step('卸载后恢复原型方法', String(!Object.prototype.hasOwnProperty.call(fsInstance, 'checkedTarget')), 'true'));
 	push(step('老 Host（没有 inject）⇒ false 且不抛', String(F.installMultiRootFs({}, F)), 'false'));

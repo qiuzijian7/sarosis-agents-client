@@ -1,0 +1,134 @@
+import { URL, domainToASCII } from 'node:url';
+function objectLike(value) {
+    return value !== null && (typeof value === 'object' || typeof value === 'function');
+}
+/** True only when the user explicitly configured a Vision Router proxy override. */
+export function visionProxyOverrideConfigured(config = {}) {
+    const value = objectLike(config)
+        ? config.proxy
+        : undefined;
+    return typeof value === 'string' && value.trim() !== '';
+}
+function canonicalIpv6Literal(value) {
+    if (!value.includes(':'))
+        return undefined;
+    try {
+        const serialized = new URL(`http://[${value}]/`).hostname;
+        if (!serialized.startsWith('[') || !serialized.endsWith(']'))
+            return undefined;
+        return serialized.slice(1, -1).toLowerCase();
+    }
+    catch {
+        // Invalid or URL-unrepresentable literals (for example zone-id spellings)
+        // keep the existing conservative string semantics instead of broadening admission.
+        return undefined;
+    }
+}
+/**
+ * Canonicalize a configured/request hostname for proxy admission only.
+ * Persisted settings stay untouched; this removes DNS presentation differences
+ * (case, one trailing dot and Unicode) without broadening the suffix policy.
+ */
+export function canonicalProxyHost(value) {
+    let host = String(value ?? '').trim();
+    if (host === '')
+        return '';
+    if (host.endsWith('.'))
+        host = host.slice(0, -1);
+    if (host === '')
+        return '';
+    // `*.host` and cookie-domain `.host` entries both mean "this host and its subdomains",
+    // which is exactly what the matcher already does for a bare hostname. Leaving either prefix
+    // in place makes the entry equal no real hostname: the configured host silently proxies nothing.
+    if (host.startsWith('*.'))
+        host = host.slice(2);
+    else if (host.startsWith('.'))
+        host = host.slice(1);
+    if (host === '')
+        return '';
+    // WHATWG URL.hostname serializes IPv6 literals to one compressed spelling.
+    // Re-serialize configured literals through the same parser before comparing so
+    // equivalent legal spellings (expanded/compressed, case, leading zeroes and
+    // IPv4-mapped forms) cannot silently bypass a proxy override. A bracketed
+    // non-literal keeps its spelling, and invalid/URL-unrepresentable colon forms
+    // retain the previous lowercase-only fallback rather than widening admission.
+    if (host.startsWith('[') && host.endsWith(']')) {
+        const literal = host.slice(1, -1).trim();
+        if (literal === '')
+            return '';
+        return canonicalIpv6Literal(literal)
+            ?? (literal.includes(':') ? literal.toLowerCase() : host.toLowerCase());
+    }
+    if (host.includes(':'))
+        return canonicalIpv6Literal(host) ?? host.toLowerCase();
+    const ascii = domainToASCII(host);
+    return (ascii || host).toLowerCase();
+}
+/** Exact host or subdomain match using one shared proxy-host interpretation. */
+export function proxyHostMatchesAny(hostname, hosts = []) {
+    const host = canonicalProxyHost(hostname);
+    if (host === '')
+        return false;
+    return hosts.some((raw) => {
+        const candidate = canonicalProxyHost(raw);
+        return candidate !== '' && (host === candidate || host.endsWith(`.${candidate}`));
+    });
+}
+export function proxyDispatcherLike(value) {
+    return objectLike(value)
+        && typeof value.dispatch === 'function';
+}
+function proxyDispatchOriginUrl(options) {
+    try {
+        const origin = objectLike(options)
+            ? options.origin
+            : undefined;
+        if (origin instanceof URL)
+            return origin;
+        if (origin !== undefined && origin !== null)
+            return new URL(String(origin));
+    }
+    catch {
+        // Unknown dispatcher shapes never authorize the plugin proxy.
+    }
+    return undefined;
+}
+/**
+ * Preserve Fetch/Undici redirect semantics while keeping proxyHosts an upper
+ * bound on every hop after a request has entered the DVR proxy override.
+ * The fallback dispatcher is borrowed, never owned or closed by this selector.
+ */
+export function createPerHopProxyDispatcher(proxyDispatcher, fallbackDispatcher, proxyHosts = []) {
+    if (!proxyDispatcherLike(proxyDispatcher) || !proxyDispatcherLike(fallbackDispatcher)) {
+        throw new TypeError('vision proxy hop selector requires proxy and fallback dispatchers');
+    }
+    const hosts = [...proxyHosts];
+    const proxy = proxyDispatcher;
+    const fallback = fallbackDispatcher;
+    // Fetch types model a full Undici Dispatcher, while fetch dispatch itself
+    // consumes the dispatch() seam. A Host dispatcher may expose dispatch as a
+    // frozen/non-configurable own property; using that borrowed object directly
+    // as a Proxy target would make an overriding get trap violate ECMAScript
+    // Proxy invariants. Use a neutral shell with the same prototype instead.
+    //
+    // Every non-dispatch read still resolves against and binds to the real
+    // fallback Dispatcher, so the wrapper does not become a second owner for
+    // close/destroy/event state and instanceof-style prototype checks remain
+    // compatible with the borrowed dispatcher.
+    const shell = Object.create(Object.getPrototypeOf(fallback));
+    return new Proxy(shell, {
+        get(_target, property) {
+            if (property === 'dispatch') {
+                return (options, handler) => {
+                    const url = proxyDispatchOriginUrl(options);
+                    const selected = url && proxyHostMatchesAny(url.hostname, hosts)
+                        ? proxy
+                        : fallback;
+                    return selected.dispatch(options, handler);
+                };
+            }
+            const value = Reflect.get(fallback, property, fallback);
+            return typeof value === 'function' ? value.bind(fallback) : value;
+        },
+    });
+}

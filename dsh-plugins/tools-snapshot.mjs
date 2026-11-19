@@ -119,6 +119,14 @@ export async function extractToolSnapshot(only = null) {
 	//   十几个服务再注册工具（会话级工具挂在它自己建的会话上，不在全局工具表）⇒ 假 ctx 跑不起来；
 	//   真机激活由 /orchestrator/api/state 与 host 日志的 dsh-superagent 行验证。
 	const OFFLINE_UNSUPPORTED = new Set(['vssaros-memory', 'vssaros-superagent']);
+	// ★ 2026-11-19：随包 vendored 的第三方目录 `dsh-plugins/dsh-ego-browser/`、
+	//   `dsh-plugins/dsh-vision-router/` 与 `dsh-plugins/dsh-better-sidebar/` 也不在这份快照里
+	//   —— 前两者分别是上游 tsdown 打包产物 / 200 个源码模块，第三个是 7 个打包 JS + 完整 src/；
+	//   它们都 import `@deepseek-ai/*` / `sharp` / `ws` 等 Host 服务，
+	//   离线 fake ctx 无法等价复现（与 memory / superagent 同一类）。目录名刻意不带
+	//   `vssaros-` 前缀 ⇒ 下面这个扫描不会误收它们；这不是"漏扫"：上游工具面以各自
+	//   自带的清单 / `VENDOR.md` 为准，真机激活由 `dshHostSupervisor` 的伴生安装清单
+	//   + Host 日志核对（见各自 `VENDOR.md` 的升级流程）。
 	const dirs = fs.readdirSync(HERE, { withFileTypes: true })
 		.filter(d => d.isDirectory() && d.name.startsWith('vssaros-') && !OFFLINE_UNSUPPORTED.has(d.name))
 		.map(d => d.name)

@@ -19,7 +19,7 @@
  * 用法：node dsh-plugins/check-spawn-hide.mjs [--root <dir>]
  *--------------------------------------------------------------------------------------------*/
 
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -30,6 +30,21 @@ const root = rootArg > 0 && process.argv[rootArg + 1] ? resolve(process.argv[roo
 // 2026-11-06：补 'tests' —— vssaros-memory 的测试目录叫 tests/（与 check-dsh-plugin-sync 的 test|tests 口径一致），
 //   测试由 node 直接跑、不在 dsh Host 里，不会闪窗；漏排除时 82 处全是它的测试文件。
 const EXCLUDE_DIRS = new Set(['node_modules', 'skills', 'assets', 'dist', 'test', 'tests', 'out']);
+/**
+ * ★ 2026-11-19：随包 vendored 的第三方目录 `dsh-ego-browser/`、`dsh-vision-router/`
+ *   与 `dsh-better-sidebar/` **整体豁免**本守卫。
+ *
+ * 理由不是"懒得改上游"：
+ *   · `dsh-ego-browser` 的核心职责就是**拉起一个有窗口的 Chrome**（观察窗 / 人工接管），
+ *     对浏览器 spawn 强制 `windowsHide: true` 反而会把用户要看到的窗口藏掉 ✗；
+ *   · `dsh-vision-router` 的 OCR supervisor / doctor / 桌面截图 / vtracer worker 会起外部进程，
+ *     是否隐藏由上游按平台决定（`lib/windows-desktop-capture.js` 等），不是本仓能改的契约。
+ *   · `dsh-better-sidebar` 的 `lib/index.js` 会起 git / zip / 外部程序（文件树、归档、
+ *     `open.external`），同样是上游按平台决定的契约。
+ *   两者我们都承诺不改上游字节（见各自 `VENDOR.md`）。
+ * ⇒ 豁免写在这里并打印一行，不是静默跳过；自研插件仍逐处受检。
+ */
+const VENDORED_EXEMPT_DIRS = new Set(['dsh-ego-browser', 'dsh-vision-router', 'dsh-better-sidebar']);
 const EXTS = new Set(['.js', '.mjs', '.cjs']);
 const CP_IMPORT = /(?:from\s+['"](?:node:)?child_process['"]|require\(\s*['"](?:node:)?child_process['"]\s*\))/;
 /** 调用名（含 promisify 别名）。前面不许紧跟标识符字符，避免 .exec( 之类的正则方法误伤。 */
@@ -90,7 +105,7 @@ function walk(dir, out = []) {
 		let st;
 		try { st = statSync(full); } catch { continue; }
 		if (st.isDirectory()) {
-			if (EXCLUDE_DIRS.has(name)) { continue; }
+			if (EXCLUDE_DIRS.has(name) || VENDORED_EXEMPT_DIRS.has(name)) { continue; }
 			walk(full, out);
 			continue;
 		}
@@ -141,6 +156,12 @@ if (candidates.length < 5 || callSites < 6) {
 	console.error(`[check-spawn-hide] 采集面异常：candidates=${candidates.length} callSites=${callSites}`
 		+ `（要求 >=5 / >=6）—— 检查 root=${root} 与排除规则，别把"没扫到"当通过。`);
 	process.exit(1);
+}
+
+for (const dir of VENDORED_EXEMPT_DIRS) {
+	if (existsSync(join(root, dir))) {
+		console.log(`[check-spawn-hide] · ${dir}/：上游 vendored 代码整体豁免（外部进程由上游按平台决定；理由见 VENDOR.md）`);
+	}
 }
 
 if (failures.length > 0) {

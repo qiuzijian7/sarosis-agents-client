@@ -354,40 +354,8 @@ export class WorktreeCheckpointService extends Disposable implements IWorktreeCh
 	}
 
 	private _execGitNodeFallback(cwd: string, args: string[], env?: Record<string, string>, timeoutMs?: number): Promise<string> {
-		return new Promise((resolve, reject) => {
-			try {
-				const cp = require('child_process') as typeof import('child_process');
-				const child = cp.spawn('git', args, {
-					cwd,
-					env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...(env ?? {}) },
-					windowsHide: true,
-				});
-				// 降级通道同样要有超时（与主进程侧默认值保持一致），否则网络 hang 会永久挂住。
-				const effectiveTimeoutMs = timeoutMs ?? 30_000;
-				const killer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* ignore */ } }, effectiveTimeoutMs);
-				child.on('close', () => clearTimeout(killer));
-				child.on('error', () => clearTimeout(killer));
-
-				let stdout = '';
-				let stderr = '';
-
-				child.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
-				child.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
-
-				child.on('error', (err: Error) => {
-					reject(new Error(`git spawn error: ${err.message}`));
-				});
-
-				child.on('close', (code: number) => {
-					if (code === 0) {
-						resolve(stdout);
-					} else {
-						reject(new Error(stderr || `git exited with code ${code}`));
-					}
-				});
-			} catch (err) {
-				reject(err);
-			}
-		});
+		// ★ P2：checkpoint 的 git 命令（含隔离索引 `GIT_INDEX_FILE`）同样统一走 dsh Host，
+		// renderer 不再 spawn git；这里只给 IPC 传输失败留一条明确的错误出口。
+		return Promise.reject(new Error(`[WorktreeCheckpoint] 本地 git 执行已禁用（唯一真源是 dsh Host）：git ${args.join(' ')} (cwd=${cwd}, env=${Object.keys(env ?? {}).join(',')}, timeout=${timeoutMs ?? 30_000})`));
 	}
 }

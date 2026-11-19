@@ -59,6 +59,39 @@ window.__ModuleLoader__.load({
 		const react = require("react");
 
 		const SLOT = "sidebar.workspaces";
+		const SESSION_ROW_SLOTS = Object.freeze({
+			"sidebar.workspaces.session.row.action": "vssaros.workspaces.session.row.action",
+			"sidebar.session.row.leading": "vssaros.workspaces.session.row.leading",
+			"sidebar.session.row.trailing": "vssaros.workspaces.session.row.trailing",
+			"sidebar.session.row.hover": "vssaros.workspaces.session.row.hover",
+		});
+		/** Preserve root-scoped row contributions under independently owned declarations. */
+		function mirrorSessionRowSlots(slots, report) {
+			const effects = [];
+			try {
+				for (const [source, name] of Object.entries(SESSION_ROW_SLOTS)) {
+					effects.push(slots.inject(name, () => {
+						if (typeof slots.entries !== "function" || typeof slots.subscribe !== "function") { return () => {}; }
+						let copies = [];
+						const clear = () => { for (const dispose of copies.splice(0).reverse()) { dispose(); } };
+						const refresh = () => {
+							clear();
+							try {
+								for (const entry of slots.entries(source)) {
+									if (entry.children) { throw new Error("Nested row contribution cannot be mirrored: " + source); }
+									copies.push(slots.register(Object.assign({}, entry.options, { name, inject: entry.inject, locale: entry.locale, store: entry.store }), entry.component));
+								}
+							} catch (error) { clear(); report(String((error && error.message) || error)); }
+						};
+						refresh();
+						let unsubscribe;
+						try { unsubscribe = slots.subscribe(source, refresh); } catch (error) { clear(); throw error; }
+						return () => { unsubscribe(); clear(); };
+					}));
+				}
+			} catch (error) { for (const dispose of effects.splice(0).reverse()) { dispose(); } throw error; }
+			return () => { for (const dispose of effects.splice(0).reverse()) { dispose(); } };
+		}
 		const WORKSPACE_EVENT = "vssaros-dsh-workspaces";
 		/**
 		 * ★ 2026-11-10（用户裁决）：工作区 item hover **不弹 tip** ⇒ 350ms 的工作区延迟与
@@ -1361,6 +1394,162 @@ window.__ModuleLoader__.load({
 
 		/** 手动顺序落盘键（localStorage；页面同 origin ⇒ 多窗口共享）。 */
 		const SESSION_ORDER_KEY = "vssaros.chatSurface.sessionOrder.v1";
+		const WORKSPACE_VIEW_KEY = "vssaros.chatSurface.workspaceView.v1";
+		const WORKSPACE_LOCALE = "vssaros-workspace-view";
+		const SEARCH_DELAY_MS = 250;
+		const SEARCH_QUERY_LIMIT = 500;
+		const SEARCH_RESULT_LIMIT = 100;
+		const WORKSPACE_MESSAGES = {
+			zh: {
+				statistics: "全部非空会话统计，不随搜索或视图过滤变化",
+				search: "搜索工作区 / 会话", searchPlaceholder: "搜索会话标题、工作区或内容…", clear: "清除搜索", searching: "正在搜索内容…",
+				noResults: "没有匹配的会话", searchError: "内容搜索失败：{message}（本地结果仍可用）", moreResults: "还有更多结果，请缩小搜索范围",
+				viewOptions: "视图选项", groupBy: "分组", workspace: "按工作区", workspaceTree: "按工作区树", flat: "单列表",
+				orderBy: "排序", manual: "手动排序", updated: "最近更新", filterBy: "过滤", hideArchived: "隐藏已归档", showArchived: "全部对话（显示已归档）", onlyArchived: "仅显示已归档",
+				archived: "已归档", restore: "恢复归档", restoreHint: "该会话已归档，请先恢复归档", restoreError: "恢复归档失败：{message}",
+				add: "添加工作区", addDirectory: "添加工作区（单个目录）", import: "从 .code-workspace 导入（多根）", adding: "正在添加工作区…",
+				pickerUnavailable: "宿主没有可用的目录选择器", workspaceUnavailable: "workspaces 服务不可用", canceled: "已取消选择目录（未添加工作区）",
+				addError: "添加工作区失败：{message}", opening: "工作区已添加，正在打开会话…", openError: "工作区已添加，会话打开失败：{message}", retryOpen: "重试打开会话", added: "已添加工作区：{path}",
+			},
+			en: {
+				statistics: "All Nonblank Sessions; Unaffected by Search or View Filters",
+				search: "Search Workspaces / Sessions", searchPlaceholder: "Search Session Titles, Workspaces or Content…", clear: "Clear Search", searching: "Searching Content…",
+				noResults: "No Matching Sessions", searchError: "Content Search Failed: {message} (Local Results Are Available)", moreResults: "More Results Available; Refine Your Search",
+				viewOptions: "View Options", groupBy: "Group By", workspace: "Workspace", workspaceTree: "Workspace Tree", flat: "Single List",
+				orderBy: "Sort By", manual: "Manual", updated: "Recently Updated", filterBy: "Filter", hideArchived: "Hide Archived", showArchived: "All Sessions (Including Archived)", onlyArchived: "Archived Only",
+				archived: "Archived", restore: "Unarchive", restoreHint: "Unarchive This Session Before Opening It", restoreError: "Unarchive Failed: {message}",
+				add: "Add Workspace", addDirectory: "Add Workspace (Directory)", import: "Import .code-workspace (Multiple Roots)", adding: "Adding Workspace…",
+				pickerUnavailable: "No Directory Picker Available", workspaceUnavailable: "Workspaces Service Is Unavailable", canceled: "Directory Selection Canceled (No Workspace Added)",
+				addError: "Add Workspace Failed: {message}", opening: "Workspace Added; Opening Session…", openError: "Workspace Added, but Opening Session Failed: {message}", retryOpen: "Retry Opening Session", added: "Workspace Added: {path}",
+			},
+		};
+
+		/** Validate persisted preferences without borrowing the official component's storage. */
+		function normalizeWorkspaceView(raw, orders) {
+			let value = raw;
+			if (typeof value === "string") { try { value = JSON.parse(value); } catch { value = null; } }
+			const v = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+			return {
+				groupBy: ["workspace", "workspace-tree", "flat"].includes(v.groupBy) ? v.groupBy : "workspace",
+				orderBy: ["manual", "updated"].includes(v.orderBy) ? v.orderBy : (Object.keys(normalizeOrderMap(orders)).length ? "manual" : "updated"),
+				archivedFilter: ["default", "show", "only"].includes(v.archivedFilter) ? v.archivedFilter : "default",
+			};
+		}
+
+		function sanitizeSearchQuery(value) {
+			const text = String(value || "").replace(/\0/g, "");
+			let end = SEARCH_QUERY_LIMIT;
+			if (text.length <= end) { return text; }
+			const last = text.charCodeAt(end - 1);
+			const next = text.charCodeAt(end);
+			if (last >= 0xD800 && last <= 0xDBFF && next >= 0xDC00 && next <= 0xDFFF) { end--; }
+			return text.slice(0, end);
+		}
+
+		function workspaceLabelOf(row) { return row.kind === "group" ? row.record.name : row.label; }
+		function workspacePathsOf(row) {
+			if (row.kind !== "group") { return [row.path]; }
+			const roots = row.record.roots;
+			const primary = roots.find((root) => root.isPrimary) || roots[0];
+			return primary ? [primary.path].concat(roots.filter((root) => root !== primary).map((root) => root.path)) : [];
+		}
+		function orderedSessionRows(list, orderBy, saved) {
+			const recent = list.slice().sort((a, b) => (b.at - a.at) || a.id.localeCompare(b.id));
+			return orderGroupSessions(recent, { saved: orderBy === "manual" ? saved : undefined, pinned: list.filter((s) => s.pinned).map((s) => s.id) });
+		}
+
+		/** Project layouts without changing workspace ownership or the multi-root records. */
+		function projectWorkspaceRows(rows, view, orders) {
+			if (view.groupBy === "flat") {
+				const seen = new Set();
+				const sessions = [];
+				for (const row of rows) {
+					for (const s of row.sessions) {
+						if (seen.has(s.id)) { continue; }
+						seen.add(s.id);
+						sessions.push(Object.assign({}, s, { sortKey: "list:all", workspaceLabel: workspaceLabelOf(row) }));
+					}
+				}
+				return [{ kind: "list", key: "list:all", sessions: orderedSessionRows(sessions, view.orderBy, orders["list:all"]) }];
+			}
+			const nodes = rows.map((row) => Object.assign({}, row, { children: [] }));
+			if (view.groupBy !== "workspace-tree") { return nodes; }
+			const normalize = (path) => String(path || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+			const pathOf = (row) => normalize(workspacePathsOf(row)[0]);
+			const roots = [];
+			for (const node of nodes) {
+				const child = pathOf(node);
+				let parent = null;
+				for (const candidate of nodes) {
+					const path = pathOf(candidate);
+					if (path && child.startsWith(path + "/") && (!parent || path.length > pathOf(parent).length)) { parent = candidate; }
+				}
+				if (parent) { parent.children.push(node); } else { roots.push(node); }
+			}
+			const flattened = [];
+			const visit = (node, ancestors) => {
+				flattened.push(Object.assign({}, node, { depth: ancestors.length, ancestors }));
+				const key = node.kind === "group" ? node.record.id : "flat:" + node.label;
+				for (const child of node.children) { visit(child, ancestors.concat(key)); }
+			};
+			for (const node of roots) { visit(node, []); }
+			return flattened;
+		}
+
+		/** Merge local metadata and Host snippets against the already-visible roster. */
+		function deriveWorkspaceSearch(rows, query, content, limit = SEARCH_RESULT_LIMIT) {
+			const q = sanitizeSearchQuery(query).trim().toLowerCase();
+			if (!q) { return { items: [], hasMore: false }; }
+			const byId = new Map();
+			for (const row of rows) {
+				for (const s of row.sessions) {
+					if (s.blank || byId.has(s.id)) { continue; }
+					byId.set(s.id, Object.assign({}, s, { workspaceLabel: workspaceLabelOf(row) }));
+				}
+			}
+			const remote = content && Array.isArray(content.items) ? content.items : [];
+			const snippets = new Map();
+			for (const item of remote) {
+				if (item && !snippets.has(item.sessionId)) { snippets.set(item.sessionId, item.snippet); }
+			}
+			const local = Array.from(byId.values()).filter((s) => [s.title, s.workspaceLabel, s.id].some((text) => String(text || "").toLowerCase().includes(q)))
+				.sort((a, b) => (b.at - a.at) || a.id.localeCompare(b.id));
+			const ids = new Set(local.map((s) => s.id));
+			for (const item of remote) {
+				if (ids.has(item.sessionId) || !byId.has(item.sessionId)) { continue; }
+				ids.add(item.sessionId);
+				local.push(byId.get(item.sessionId));
+			}
+			return {
+				items: local.slice(0, limit).map((s) => Object.assign({}, s, { snippet: snippets.get(s.id) })),
+				hasMore: !!(content && content.hasMore) || local.length > limit,
+			};
+		}
+
+		/** Directory adoption and session navigation have separate retry boundaries. */
+		async function adoptWorkspace(uw, workspaces, onPhase, retryId) {
+			if (!workspaces || typeof workspaces.create !== "function") { throw new Error("workspaceUnavailable"); }
+			if (!retryId && (!uw || typeof uw.pickDirectory !== "function")) { throw new Error("pickerUnavailable"); }
+			let id = retryId;
+			let path = "";
+			if (!id) {
+				onPhase("picking");
+				const picked = await uw.pickDirectory();
+				if (typeof picked !== "string" || !picked) { return { canceled: true }; }
+				path = picked;
+				onPhase("creating");
+				const created = await workspaces.create({ path: picked });
+				id = created && (created.workspaceId || (created.workspace && created.workspace.workspaceId));
+				if (!id) { throw new Error("Workspace creation returned no workspaceId"); }
+			}
+			onPhase("opening", id);
+			try {
+				if (typeof uw.startSession === "function") { await uw.startSession(id, { clearPreviousDraft: false }); }
+				else if (typeof uw.openWorkspaceSession === "function") { await uw.openWorkspaceSession(id, undefined, {}); }
+				else { throw new Error("No workspace session navigation available"); }
+				return { id, path };
+			} catch (error) { return { id, path, openError: String((error && error.message) || error) }; }
+		}
 
 		/** 把 pinnedIds（数组 / Set / 空）收敛成 Set（只收非空字符串）。 */
 		function toIdSet(ids) {
@@ -1449,7 +1638,7 @@ window.__ModuleLoader__.load({
 			if (q === 0 || q >= all.length) { return all.slice(); }
 			const out = all.slice(0, q);
 			for (const s of all) {
-				if (s && s.isCurrent && out.indexOf(s) < 0) { out.push(s); }
+				if (s && (s.isCurrent || s.status === 'running' || s.status === 'awaiting') && out.indexOf(s) < 0) { out.push(s); }
 			}
 			return out;
 		}
@@ -1481,8 +1670,16 @@ window.__ModuleLoader__.load({
 		}
 
 		function buildSidebar(options) {
-			const items = (options && options.workspaces) || [];
-			const records = (options && options.records) || [];
+			const scope = options && options.workbench;
+			const owner = scope && scope.active;
+			const bindings = scope && scope.state && scope.state.sessionBindings;
+			const hidden = owner && scope.state ? scope.state.hiddenWorkspaces[owner] || [] : [];
+			const sourceItems = (options && options.workspaces) || [];
+			const items = sourceItems.filter(w => !hidden.includes(w.workspaceId)).map(w => ({ ...w,
+				sessionIds: (w.sessionIds || []).filter(sid => !bindings || (owner ? bindings[sid] === owner : !bindings[sid])),
+			}));
+			const sourceRecords = (options && options.records) || [];
+			const records = owner ? sourceRecords.map(r => ({ ...r, roots: r.roots.filter(root => items.some(w => samePath(root.path, w.path))) })).filter(r => r.roots.length) : sourceRecords;
 			const byId = (options && options.sessionsById) || {};
 			const archived = (options && options.archivedIds) || [];
 			const currentId = (options && options.currentSessionId) || null;
@@ -1490,7 +1687,10 @@ window.__ModuleLoader__.load({
 			const deleted = toIdSet(options && options.deletedIds);
 			// ★ 2026-10-29：置顶（Host 状态）与手动顺序（本地）
 			const pins = toIdSet(options && options.pinnedIds);
-			const orderMap = (options && options.orderMap) || {};
+			const viewOptions = options && options.viewOptions;
+			const orderMap = viewOptions && viewOptions.orderBy === "updated" ? {} : ((options && options.orderMap) || {});
+			const archivedFilter = viewOptions && viewOptions.archivedFilter || "default";
+			const archiveVisible = (s) => archivedFilter === "show" || (archivedFilter === "only" ? s.archived : !s.archived);
 			const claimed = {};
 			const rows = [];
 			const mkSess = (sid, rootName, isPrimaryRoot, groupKey) => {
@@ -1547,15 +1747,16 @@ window.__ModuleLoader__.load({
 						if (s.isSubagent) { continue; }
 						// ★ 2026-11-05 群会话 / 成员影子会话只在 Bots 页签的群行里，同样不算"已隐藏"
 						if (s.isRoom) { continue; }
-						if (s.archived) { continue; }
+						if (!archiveVisible(s)) { continue; }
 						// ★ 空会话不显示（2026-10-26 用户报「工作区下有大量空会话」）：
 						//   这些会话一条消息都没有、标题只能回落到 id ⇒ 在列表里是纯噪音
 						//   （本机实测 1931 条会话里 1813 条是这种空壳）⇒ 隐藏并**计数**
 						//   （诚实披露，不装作没有）。★ 当前会话永远显示（哪怕它是空的）。
-						if (s.blank && !s.isCurrent) { hiddenBlanks += 1; continue; }
+						if (s.blank && !s.isCurrent && s.status !== 'running' && s.status !== 'awaiting') { hiddenBlanks += 1; continue; }
 						sessions.push(s);
 					}
 				}
+				if (owner && sessions.length === 0 && hiddenBlanks === 0) { continue; }
 				// ★ 2026-10-29：顺序 = 置顶前置 ⊕ 手动序（orderGroupSessions），基础序仍是时间倒序 ✓
 				rows.push({
 					kind: "group",
@@ -1575,10 +1776,11 @@ window.__ModuleLoader__.load({
 					const s = mkSess(sid, null, true, groupKey);
 					if (s.isSubagent) { continue; }
 					if (s.isRoom) { continue; }
-					if (s.archived) { continue; }
-					if (s.blank && !s.isCurrent) { hiddenBlanks += 1; continue; }
+					if (!archiveVisible(s)) { continue; }
+					if (s.blank && !s.isCurrent && s.status !== 'running' && s.status !== 'awaiting') { hiddenBlanks += 1; continue; }
 					sessions.push(s);
 				}
+				if (owner && sessions.length === 0 && hiddenBlanks === 0) { continue; }
 				rows.push({
 					kind: "flat",
 					key: groupKey,
@@ -1595,6 +1797,44 @@ window.__ModuleLoader__.load({
 		function install(ctx, shell) {
 			const bridge = shell && shell.bridge;
 			const state = shell && shell.state ? shell.state : {};
+			let workbenchService = null;
+			const scopeListeners = new Set();
+			const publishScope = () => { for (const listener of [...scopeListeners]) { listener(); } };
+			if (typeof ctx.inject === 'function') {
+				ctx.inject(['desktopWorkbenches'], scope => {
+					const service = scope.desktopWorkbenches;
+					if (!service) { return; }
+					scope.effect(() => {
+						workbenchService = service;
+						const unsubscribe = service.subscribe(publishScope);
+						publishScope();
+						return () => { unsubscribe(); if (workbenchService === service) { workbenchService = null; publishScope(); } };
+					});
+				});
+			}
+			function useWorkbenchScope() {
+				const [, refresh] = react.useState(0);
+				react.useEffect(() => {
+					const update = () => refresh(n => n + 1);
+					scopeListeners.add(update);
+					return () => scopeListeners.delete(update);
+				}, []);
+				return workbenchService?.getSnapshot() || null;
+			}
+			let locale;
+			try {
+				locale = typeof ctx.get === "function" ? ctx.get("locale") : ctx.locale;
+				if (locale && typeof locale.register === "function") { ctx.effect(() => locale.register(WORKSPACE_LOCALE, WORKSPACE_MESSAGES)); }
+			} catch { /* Optional locale access must not prevent sidebar installation. */ }
+			const translateWorkspace = (key, args = {}) => {
+				let text;
+				try { text = locale && locale.bind(WORKSPACE_LOCALE)(key, args); } catch { /* locale unavailable */ }
+				if (!text || text === key || text === WORKSPACE_LOCALE + "." + key) {
+					const language = typeof document !== "undefined" && document.documentElement.lang || (typeof navigator !== "undefined" ? navigator.language : "zh");
+					text = WORKSPACE_MESSAGES[/^en/i.test(language) ? "en" : "zh"][key] || key;
+				}
+				return Object.entries(args).reduce((value, [name, arg]) => value.replaceAll("{" + name + "}", String(arg)), text);
+			};
 
 			/* ★ 2026-11-12（用户：「切换 bot 会莫名新建工作区」）：
 			   根因 = openBot 的复用判据依赖 `bots.home` 名册缓存 + `workspaces.list` 快照，两者都是异步的；
@@ -1694,6 +1934,13 @@ window.__ModuleLoader__.load({
 					state.openSessionError = kind === "error" ? text : null;
 					try { if (typeof setMsg === "function") { setMsg(text ? { kind: kind || "note", text: text } : null); } } catch { /* 渲染失败不影响打开 */ }
 				};
+				const owner = workbenchService?.active;
+				if (owner && workbenchService.state?.sessionBindings[sid] === owner && workbenchService.docksConversation(owner)) {
+					Promise.resolve(workbenchService.openSessionFor(owner, sid)).then(() => {
+						if (workbenchService.active === owner) { setCurrent?.(sid); say(null); }
+					}, e => say('打开工作台会话失败：' + String(e && e.message || e), 'error'));
+					return;
+				}
 				// ★ 2026-10-28（高亮不同步）：**乐观高亮** —— 官方导航要几百毫秒才落地，
 				//   先把点的那条点亮（用户点哪条哪条立刻有反应）⇒ 官方 selection 落地后由它接管 ✓。
 				try { if (typeof setCurrent === "function") { setCurrent(sid); } } catch { /* 渲染失败不影响打开 */ }
@@ -2131,34 +2378,43 @@ window.__ModuleLoader__.load({
 			//   ③ 失败只写 `state.addWorkspaceError`，而它**从来没被渲染** ⇒ 100% 静默；
 			//      且窗口模式没有宿主桥（`window.vssarosDsh` 不存在）⇒ `bridge.notify` 也是空转。
 			//      ⇒ 现在错误**就地渲染**在区里（见 Browser 的 wsMsg），成功也写一行。
-			const addWorkspace = (setMsg) => {
+			let workspaceAddBusy = false;
+			const addWorkspace = async (setMsg, setAddState, retryId) => {
+				if (workspaceAddBusy) { return; }
+				workspaceAddBusy = true;
 				const say = makeSayer(setMsg);
 				try {
-					const uw = ctx.uiWorkspace;
-					const ws = typeof ctx.get === "function" ? ctx.get("workspaces") : undefined;
-					if (!uw || typeof uw.pickDirectory !== "function") {
-						say("添加工作区失败：宿主没有目录选择器（uiWorkspace.pickDirectory 不可用）", "error");
+					const service = workbenchService;
+					const owner = service?.active;
+					if (owner) {
+						setAddState({ phase: 'picking', id: retryId || null });
+						if (retryId) { await service.showWorkspace(retryId, owner); }
+						const sessionId = retryId ? await service.newSessionFor(owner, retryId) : await service.newWorkspaceSessionFor(owner);
+						const workspace = sessionId && service.workspaceFor(sessionId);
+						say(sessionId && service.active === owner && service.dockedSessionOf(owner) === sessionId
+							? '已在本工作台开始对话：' + (workspace?.path || workspace?.title || '') : '已取消或切换请求已过期', 'note');
+						setAddState({ phase: 'idle', id: null });
 						return;
 					}
-					if (!ws || typeof ws.create !== "function") {
-						say("添加工作区失败：workspaces 服务不可用", "error");
+					const result = await adoptWorkspace(ctx.uiWorkspace, ctx.get("workspaces"), (phase, id) => {
+						setAddState({ phase, id: id || null });
+						say(translateWorkspace(phase === "opening" ? "opening" : "adding"), "note");
+					}, retryId);
+					if (result.canceled) { say(translateWorkspace("canceled"), "note"); }
+					else if (result.openError) {
+						setAddState({ phase: "error", id: result.id });
+						say(translateWorkspace("openError", { message: result.openError }), "error");
 						return;
+					} else {
+						say(translateWorkspace("added", { path: result.path || result.id }), "note");
+						if (ctx.workspaces && typeof ctx.workspaces.refresh === "function") { void Promise.resolve(ctx.workspaces.refresh()).catch(() => undefined); }
 					}
-					void Promise.resolve(uw.pickDirectory()).then((picked) => {
-						// 取消 = 用户主动关闭 ⇒ 不算错误，但也**要说清**（否则像"点了没反应"）。
-						if (typeof picked !== "string" || !picked) {
-							say("已取消选择目录（未添加工作区）", "note");
-							return undefined;
-						}
-						return Promise.resolve(ws.create({ path: picked })).then(() => {
-							say("已添加工作区：" + picked, "note");
-						});
-					}).catch((e) => {
-						say("添加工作区失败：" + String((e && e.message) || e), "error");
-					});
+					setAddState({ phase: "idle", id: null });
 				} catch (e) {
-					say("添加工作区失败：" + String((e && e.message) || e), "error");
-				}
+					const message = String((e && e.message) || e);
+					say(translateWorkspace("addError", { message: WORKSPACE_MESSAGES.zh[message] ? translateWorkspace(message) : message }), "error");
+					setAddState({ phase: "idle", id: null });
+				} finally { workspaceAddBusy = false; }
 			};
 
 			/**
@@ -2601,11 +2857,6 @@ window.__ModuleLoader__.load({
 					const st = document.createElement("style");
 					st.setAttribute("data-vssaros-ws-row-style", "1");
 					st.textContent = ""
-						+ ".vssaros-ws-row{height:32px;gap:0;padding:0 8px;border-radius:var(--dsw-radius-md,6px);"
-						+ "display:flex;align-items:center;cursor:pointer;user-select:none;"
-						+ "color:var(--dsw-alias-label-primary,#e6e6e6)}"
-						+ ".vssaros-ws-row:hover,.vssaros-ws-row[data-current=\"1\"],.vssaros-ws-row[data-menu-open=\"1\"]"
-						+ "{background:var(--dsw-alias-interactive-bg-hover,rgba(255,255,255,.06))}"
 						// ★ 2026-11-13：键盘焦点行（鼠标点击 / ↑↓）用 2px **真品牌蓝**描边，
 						//   与「当前打开会话」的浅底分离 ⇒ 高亮 ≠ 已打开，一眼可分。
 						//   ⚠ 用 brand-primary-new-colorprimary-new-color：`--dsw-alias-brand-primary`
@@ -2623,31 +2874,7 @@ window.__ModuleLoader__.load({
 						+ "color:var(--dsw-alias-label-primary,#ffffff);font-weight:600;"
 						+ "box-shadow:inset 2px 0 0 var(--dsw-alias-brand-primary,#4d7cfe),inset 0 0 0 1px rgba(255,255,255,.12)}"
 						+ ".vssaros-ws-bots-row[data-selected='1']:hover{background:var(--dsw-alias-interactive-bg-active,#414346)}"
-						+ ".vssaros-ws-slot{width:16px;height:20px;flex:none;display:inline-flex;align-items:center;"
-						+ "justify-content:center;color:var(--dsw-alias-label-tertiary,#737373)}"
-						+ ".vssaros-ws-title{flex:1;min-width:0;font-size:14px;line-height:20px;margin:0 6px 0 4px;"
-						+ "overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
-						+ "@media (hover:hover){.vssaros-ws-row:hover .vssaros-ws-title{text-overflow:clip}}"
-						// ── 标题溢出：官方 `Rows.module.css` 的**两端淡出**（12px）──
-						//   `.title[data-scrolled]{mask-image:linear-gradient(90deg,#0000,#000 12px)}`
-						//   `.title[data-clipped]{mask-image:linear-gradient(270deg,#0000,#000 12px)}`
-						//   两者都有时左右各淡 12px ⇒ 一眼看出"还有内容"，比纯省略号更像官方 ✓
-						+ ".vssaros-ws-title[data-scrolled]{mask-image:linear-gradient(90deg,#0000,#000 12px)}"
-						+ ".vssaros-ws-title[data-clipped]{mask-image:linear-gradient(270deg,#0000,#000 12px)}"
-						+ ".vssaros-ws-title[data-scrolled][data-clipped]"
-						+ "{mask-image:linear-gradient(90deg,#0000,#000 12px calc(100% - 12px),#0000)}"
-						// 悬停时允许横向滚动（官方是 JS 跑马灯；我们用"淡出 + 原生滚动"，
-						// 不引定时器 —— 滚动条按 WebKit/Firefox 两套都藏掉）
-						+ "@media (hover:hover){.vssaros-ws-row:hover .vssaros-ws-title{overflow-x:auto;scrollbar-width:none}}"
-						+ ".vssaros-ws-title::-webkit-scrollbar{display:none}"
-						+ ".vssaros-ws-time{flex:none;font-size:10px;line-height:16px;color:var(--dsw-alias-label-tertiary,#737373)}"
-						+ ".vssaros-ws-pin{width:16px;height:20px;flex:none;margin-left:6px;display:inline-flex;"
-						+ "align-items:center;justify-content:center;color:var(--dsw-alias-label-caption,#8a8a8a)}"
-						+ ".vssaros-ws-actions{flex:none;display:none;align-items:center;gap:15px}"
-						+ ".vssaros-ws-row:hover .vssaros-ws-actions,.vssaros-ws-row[data-menu-open=\"1\"] .vssaros-ws-actions"
-						+ "{display:inline-flex}"
-						+ ".vssaros-ws-row:hover .vssaros-ws-time,.vssaros-ws-row[data-menu-open=\"1\"] .vssaros-ws-time,"
-						+ ".vssaros-ws-row:hover .vssaros-ws-pin,.vssaros-ws-row[data-menu-open=\"1\"] .vssaros-ws-pin{display:none}"
+						+ ".vssaros-ws-actions{flex:none;display:none;align-items:center;gap:6px}"
 						+ ".vssaros-ws-icon{width:16px;height:16px;flex:none;display:inline-flex;align-items:center;"
 						+ "justify-content:center;padding:0;border:none;background:0 0;border-radius:var(--dsw-radius-xs,4px);"
 						+ "cursor:pointer;color:var(--dsw-alias-label-tertiary,#737373)}"
@@ -2893,6 +3120,15 @@ window.__ModuleLoader__.load({
 
 			function Browser(props) {
 				const wide = !props || props.wide !== false;
+				const [OfficialSessionRow, setOfficialSessionRow] = react.useState(() => state.officialSessionRow || null);
+				const officialStatuses = props && typeof props.useSessionStatus === "function" ? props.useSessionStatus((value) => value) : new Map();
+				const officialMenuOpen = props && typeof props.useContextMenuTarget === "function" ? props.useContextMenuTarget((target) => target !== null && target !== undefined) : false;
+				react.useEffect(() => {
+					const update = () => setOfficialSessionRow(() => state.officialSessionRow || null);
+					window.addEventListener("vssaros-official-session-row-ready", update);
+					update();
+					return () => window.removeEventListener("vssaros-official-session-row-ready", update);
+				}, []);
 				// ★ 2026-11-02（诊断）：desktop 窗口里观察到「槽里只有官方 WorkspaceBrowser」——
 				//   靠这几个计数/日志就能分清是"没渲染进槽"（tick 恒 0）还是"渲染成 rail 分支"（wide=false）。
 				try {
@@ -2902,8 +3138,77 @@ window.__ModuleLoader__.load({
 					if (tick <= 3) { wsLog("render", { tick, wide, tickNote: "tick 恒 0 ⇒ 本组件从未被调用（注册没落槽）" }); }
 				} catch { /* 诊断失败不影响渲染 */ }
 				const { wsSnap, records } = useData();
+				const workbenchScope = useWorkbenchScope();
+				const activeWorkbench = workbenchScope && workbenchScope.active;
 				const [query, setQuery] = react.useState("");
 				const [searchOn, setSearchOn] = react.useState(false);
+				const searchInput = react.useRef(null);
+				const viewButton = react.useRef(null);
+				const [viewMenu, setViewMenu] = react.useState(null);
+				const [addState, setAddState] = react.useState({ phase: "idle", id: null });
+				const [remoteSearch, setRemoteSearch] = react.useState({ query: "", phase: "idle", items: [], hasMore: false, error: "" });
+				const [viewOptions, setViewOptions] = react.useState(() => {
+					try { return normalizeWorkspaceView(localStorage.getItem(WORKSPACE_VIEW_KEY), readOrderMap()); }
+					catch { return normalizeWorkspaceView(null, readOrderMap()); }
+				});
+				const vt = translateWorkspace;
+				const q = sanitizeSearchQuery(query).trim();
+				const closeSearch = () => { setQuery(""); setSearchOn(false); };
+				react.useEffect(() => {
+					if (searchOn && wide && searchInput.current) { searchInput.current.focus(); }
+				}, [searchOn, wide]);
+				react.useEffect(() => {
+					if (!q) { setRemoteSearch({ query: "", phase: "idle", items: [], hasMore: false, error: "" }); return undefined; }
+					const controller = new AbortController();
+					setRemoteSearch({ query: q, phase: "loading", items: [], hasMore: false, error: "" });
+					const timer = setTimeout(async () => {
+						try {
+							const sessions = ctx.sessions;
+							if (!sessions || typeof sessions.search !== "function") { throw new Error("sessions.search unavailable"); }
+							const response = await sessions.search(q, controller.signal);
+							if (controller.signal.aborted) { return; }
+							if (!response || response.ok === false) { throw new Error(response && response.error && response.error.message || "Invalid search response"); }
+							const result = response.value || response;
+							setRemoteSearch({ query: q, phase: "ready", items: result.items || [], hasMore: !!result.hasMore, error: "" });
+						} catch (e) {
+							if (!controller.signal.aborted) { setRemoteSearch({ query: q, phase: "error", items: [], hasMore: false, error: String((e && e.message) || e) }); }
+						}
+					}, SEARCH_DELAY_MS);
+					return () => { clearTimeout(timer); controller.abort(); };
+				}, [q]);
+				react.useEffect(() => {
+					const onStorage = (e) => {
+						if (e.key && e.key !== WORKSPACE_VIEW_KEY && e.key !== SESSION_ORDER_KEY) { return; }
+						try { setViewOptions(normalizeWorkspaceView(localStorage.getItem(WORKSPACE_VIEW_KEY), readOrderMap())); } catch { /* storage unavailable */ }
+						setOrderMap(readOrderMap());
+					};
+					window.addEventListener("storage", onStorage);
+					return () => window.removeEventListener("storage", onStorage);
+				}, []);
+				react.useEffect(() => {
+					if (!viewMenu) { return undefined; }
+					const menuElement = document.querySelector("[data-vssaros-view-menu]");
+					const first = menuElement && menuElement.querySelector("button");
+					if (first) { first.focus(); }
+					const onDown = (e) => {
+						if (!e.target.closest || !e.target.closest("[data-vssaros-view-menu],[data-vssaros-view-button]")) { setViewMenu(null); }
+					};
+					const onKey = (e) => {
+						if (e.key === "Escape") { e.preventDefault(); setViewMenu(null); if (viewButton.current) { viewButton.current.focus(); } }
+						if (!menuElement || !menuElement.contains(e.target)) { return; }
+						if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) { return; }
+						e.preventDefault();
+						const buttons = Array.from(menuElement.querySelectorAll("button"));
+						const index = buttons.indexOf(document.activeElement);
+						const next = e.key === "Home" ? 0 : e.key === "End" ? buttons.length - 1 : (index + (e.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+						if (buttons[next]) { buttons[next].focus(); }
+					};
+					const onLayout = () => setViewMenu(null);
+					document.addEventListener("mousedown", onDown, true);
+					window.addEventListener("keydown", onKey, true);
+					window.addEventListener("resize", onLayout);
+					return () => { document.removeEventListener("mousedown", onDown, true); window.removeEventListener("keydown", onKey, true); window.removeEventListener("resize", onLayout); };
+				}, [viewMenu]);
 				const [collapsed, setCollapsed] = react.useState({});
 				// ★ 2026-11-10（用户裁决）：工作区 item hover 不弹 tip ⇒ `hover` state 已删除。
 				// ⚠ 不要再加回来：多根信息由 chip 下拉承载；会话行 hover 卡用下面的 `sessHover`（独立 ✓）。
@@ -3138,7 +3443,7 @@ window.__ModuleLoader__.load({
 					} catch { return []; }
 				};
 				/** 有菜单 / 确认层 / 重命名时，行不抢键盘（Enter 归删除确认层）。 */
-				const keyNavBlocked = () => !!(menu || sessMenu || confirmDel || wsMenu || botsMenu
+				const keyNavBlocked = () => !!(officialMenuOpen || viewMenu || menu || sessMenu || confirmDel || wsMenu || botsMenu
 					|| roomMenu || roomDel || botMenu || botDel || botRename || roomRename);
 				/** 三类行共用的一组属性；open / del 注册进 ref 供 window 级监听调用。 */
 				const keyRowProps = (scope, id, open, del) => {
@@ -3197,12 +3502,15 @@ window.__ModuleLoader__.load({
 						}
 						const act = keyActionsRef.current[scope + ":" + id];
 						if (!act) { return; }
+						if (scope === "sessions" && k === "Enter" && t && typeof t.closest === "function" && t.closest('[data-row-key]')) { return; }
+						if (t && typeof t.closest === "function" && t.closest('button,a,[role="menuitem"]')) { return; }
+						if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) { return; }
 						if (k === "Enter") { e.preventDefault(); if (typeof act.open === "function") { act.open(); } }
 						else if (k === "Delete" || k === "Backspace") { e.preventDefault(); if (typeof act.del === "function") { act.del(); } }
 					};
 					window.addEventListener("keydown", onKeyNav, true);
 					return () => { try { window.removeEventListener("keydown", onKeyNav, true); } catch { /* 已卸载 */ } };
-				}, [keyFocus, menu, sessMenu, confirmDel, wsMenu, botsMenu, roomMenu, roomDel,
+				}, [keyFocus, officialMenuOpen, viewMenu, menu, sessMenu, confirmDel, wsMenu, botsMenu, roomMenu, roomDel,
 					botMenu, botDel, botRename, roomRename]);
 				// 点外面 ⇒ 关菜单（与官方菜单同口径；不关就会"菜单糊在侧栏上"✗）
 				// ★ 2026-10-29：工作区 ＋ 菜单与会话右键菜单**共用**这套关闭逻辑（两套并存会互相残留）。
@@ -3285,7 +3593,7 @@ window.__ModuleLoader__.load({
 				for (const sid of Object.keys((sessSnap && sessSnap.byId) || {})) { knownIds[sid] = true; }
 				// ★ 2026-10-30：加上官方口径的 current（`retainedBy.mainView > 0`）—— 空会话的例外条件要用它
 				const mainViewId = mainViewSessionId(sessSnap && sessSnap.byId);
-				const currentId = pickCurrentSessionId({
+				const currentId = activeWorkbench ? workbenchService.dockedSessionOf(activeWorkbench) : pickCurrentSessionId({
 					mainView: mainViewId,
 					official: readOfficialCurrent(),
 					local: localCurrent,
@@ -3294,6 +3602,7 @@ window.__ModuleLoader__.load({
 				});
 				const rows = react.useMemo(() => {
 					const all = buildSidebar({
+					workbench: workbenchScope,
 					workspaces: (wsSnap && wsSnap.items) || [],
 					records,
 					sessionsById: (sessSnap && sessSnap.byId) || {},
@@ -3306,15 +3615,15 @@ window.__ModuleLoader__.load({
 					currentSessionId: currentId,
 					// ★ 2026-10-29：置顶（Host 快照）+ 手动顺序（本地）
 					pinnedIds: (wsSnap && wsSnap.pinnedSessionIds) || [],
-					orderMap,
+					orderMap, viewOptions,
 					// ★★ 2026-11-13：已删除会话在建行时就过滤掉（两条分支都过），
 					//   不依赖宿主的 detachSession / archiveSession 是否可用 ✓
 					deletedIds,
 					});
 					// ★ 本地隐藏刚移除过的工作区行（IDE 记录还在，dsh 登记已摘 ⇒ 否则行会留着但变成 0 会话）
-					if (!wsRemoved.length) { return all; }
+					if (activeWorkbench || !wsRemoved.length) { return all; }
 					return all.filter((r) => !(r && r.kind === "group" && r.record && wsRemoved.indexOf(r.record.id) >= 0));
-					}, [wsSnap, records, sessSnap, currentId, officialTick, orderMap, wsRemoved, deletedIds]);
+					}, [wsSnap, records, sessSnap, currentId, officialTick, orderMap, wsRemoved, deletedIds, viewOptions, workbenchScope]);
 
 				// 当前会话 cwd 所在根的路径（详情卡绿框 + 会话根标签用）。
 				// ★ 2026-10-28（用户报「hover 卡片的"当前会话"根 ≠ 输入框 chip 的工作区」）：
@@ -3333,16 +3642,32 @@ window.__ModuleLoader__.load({
 					}
 				}
 
-				const q = query.trim().toLowerCase();
-				const matchRow = (row) => !q
-					|| (row.kind === "group" ? row.record.name : row.label).toLowerCase().indexOf(q) >= 0
-					|| row.sessions.some((s) => s.title.toLowerCase().indexOf(q) >= 0);
-				const shown = rows.filter(matchRow);
-				const totalRows = rows.reduce((n, r2) => n + 1 + r2.sessions.length, 0);
-				const withSearch = totalRows > 8;
-				// ★ 被隐藏的空会话总数（所有工作区，含折叠的）—— 诚实披露，不装作没有。
-				const hiddenBlanks = rows.reduce((n, r2) => n + (r2.hiddenBlanks || 0), 0);
-
+				const layoutRows = projectWorkspaceRows(rows, viewOptions, orderMap);
+				const searchSource = remoteSearch.query === q ? remoteSearch : { items: [], hasMore: false, phase: "loading" };
+				const currentSearch = workbenchScope?.state ? { ...searchSource, items: searchSource.items.filter(s => {
+					const sessionId = s.sessionId || s.id;
+					if (!workbenchService.sessionVisible(sessionId)) { return false; }
+					const workspace = workbenchService.workspaceFor(sessionId);
+					return !activeWorkbench || !!workspace && workbenchService.workspaceVisible(workspace.workspaceId);
+				}) } : searchSource;
+				const searchResults = deriveWorkspaceSearch(rows, q, currentSearch);
+				const shown = q ? [{ kind: "list", key: "search", sessions: searchResults.items }] : layoutRows.filter((row) => !row.ancestors || row.ancestors.every((key) => collapsed[key] !== true));
+				const pickViewOption = (field, value) => {
+					if (field === "orderBy" && value !== viewOptions.orderBy) {
+						const nextOrders = {};
+						if (value === "manual") {
+							for (const row of rows) { nextOrders[row.key] = row.sessions.map((s) => s.id); }
+							const flat = projectWorkspaceRows(rows, { groupBy: "flat", orderBy: "updated" }, {});
+							nextOrders["list:all"] = flat[0].sessions.map((s) => s.id);
+						}
+						persistOrderMap(nextOrders, setOrderMap);
+					}
+					const next = Object.assign({}, viewOptions, { [field]: value });
+					setViewOptions(next);
+					try { localStorage.setItem(WORKSPACE_VIEW_KEY, JSON.stringify(next)); } catch { /* persistence unavailable */ }
+					setViewMenu(null);
+					if (viewButton.current) { viewButton.current.focus(); }
+				};
 				// ⚠⚠⚠ 2026-11-02 **真凶修复**：这里原来直接 `if (!wide) return <button/>`，
 				//   而本组件**后面还有 hooks**（`react.useState` / `react.useEffect` 一直到 bots 那段）
 				//   ⇒ 侧栏在 rail(`wide=false`) 与展开(`wide=true`) 之间切换时，**两次渲染的 hook 数量不同**
@@ -3392,6 +3717,15 @@ window.__ModuleLoader__.load({
 					if (!row) { say("找不到这个工作区（列表可能已刷新）", "error"); return; }
 					const wsId = row.kind === "flat" ? String(row.workspaceId || "") : workspaceIdOf(row.record);
 					const name = row.kind === "flat" ? row.label : (row.record && row.record.name) || key;
+					if (activeWorkbench) {
+						const ids = row.kind === 'flat' ? [row.workspaceId] : ((wsSnap && wsSnap.items) || [])
+							.filter(w => row.record.roots.some(root => samePath(root.path, w.path))).map(w => w.workspaceId);
+						Promise.resolve(workbenchService.hideWorkspaces(ids, activeWorkbench)).then(
+							() => say('已从当前工作台隐藏「' + name + '」（其他工作台、会话和文件不变）', 'note'),
+							e => say('隐藏工作区失败：' + errText(e), 'error'),
+						);
+						return;
+					}
 					if (!wsId) {
 						// dsh 侧本来就没登记（比如之前已摘过），但 **IDE 记录还在** ⇒ 用户想要的
 						// 其实是"让这行消失" ⇒ 直接从列表隐藏（重载可恢复）。
@@ -3586,6 +3920,25 @@ window.__ModuleLoader__.load({
 					if (msgTimer.current) { clearTimeout(msgTimer.current); }
 					msgTimer.current = setTimeout(() => setSessMsg(null), 6000);
 				};
+				react.useEffect(() => {
+					const menus = typeof ctx.get === "function" ? ctx.get("contextMenus") : null;
+					if (!menus || typeof menus.register !== "function") { return undefined; }
+					const unread = menus.register({
+						id: "session.vssaros.unread", target: "session", order: 250,
+						resolve: ({ sessionId }) => [{
+							id: "unread", label: unreadIds.indexOf(sessionId) >= 0 ? "标为已读" : "标为未读",
+							run: () => { setSessionUnread(sessionId, unreadIds.indexOf(sessionId) < 0); },
+						}],
+					});
+					const remove = menus.register({
+						id: "session.vssaros.delete", target: "session", order: 700,
+						resolve: ({ sessionId, displayTitle }) => sessionId === currentId ? [] : [{
+							id: "delete", label: "删除会话…", danger: true, separatorBefore: true, afterContent: true,
+							run: () => { setConfirmDel({ sid: sessionId, title: displayTitle || sessionId }); },
+						}],
+					});
+					return () => { unread(); remove(); };
+				}, [currentId]);
 				/**
 				 * 在指定工作区根目录下**新建一个会话**（2026-11-02 用户要求：工作区行 hover 要有 `+`）。
 				 *
@@ -3600,6 +3953,13 @@ window.__ModuleLoader__.load({
 				const newSessionInWorkspace = (record, label) => {
 					const dir = primaryPathOf(record);
 					const wsId = workspaceIdOf(record);
+					if (activeWorkbench) {
+						if (!wsId) { say('这个根尚未登记为工作区，请先添加目录。', 'error'); return; }
+						Promise.resolve(workbenchService.newSessionFor(activeWorkbench, wsId)).then(
+							() => say(null), e => say('新建工作台会话失败：' + errText(e), 'error'),
+						);
+						return;
+					}
 					markUserNavGlobal();
 					// 点下去就开始盯焦点（不依赖任何 promise —— 真机上 `.then` 里的 focus 会被重渲染抢走）
 					watchComposerFocus(24);
@@ -3983,6 +4343,11 @@ window.__ModuleLoader__.load({
 				 * 用 **stroke 描边**的加号（与 folder 图标同一视觉语言），不要 emoji/text "+"
 				 * —— 文字加号在 14px 下基线会歪、和 ⋯ 也不成对。
 				 */
+				const workspaceActionIcon = (kind) => react.createElement("svg", {
+					width: 14, height: 14, viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: 1.4, strokeLinecap: "round", "aria-hidden": "true", style: { display: "block" },
+				}, kind === "search"
+					? [react.createElement("circle", { key: "circle", cx: 6.5, cy: 6.5, r: 4 }), react.createElement("path", { key: "handle", d: "m10 10 3.5 3.5" })]
+					: [react.createElement("path", { key: "lines", d: "M2 4h12M2 8h12M2 12h12" }), react.createElement("path", { key: "sliders", d: "M5 2v4M11 6v4M6 10v4", strokeWidth: 3 })]);
 				const plusIcon = () => react.createElement("svg", {
 					width: 14, height: 14, viewBox: "0 0 16 16", fill: "none",
 					stroke: "currentColor", strokeWidth: 1.4, strokeLinecap: "round",
@@ -3999,184 +4364,85 @@ window.__ModuleLoader__.load({
 				}));
 
 				const renderSessionRow = (s, setMsg, setLocal) => {
-					const isRenaming = !!(renaming && renaming.sid === s.id);
-					const isDragging = !!(drag && drag.sid === s.id);
-					const mark = dropAt && dropAt.sid === s.id ? dropAt : null;
-					// ★★ 2026-11-02（用户要求「复刻 dsh 官方原生的 item UI」）：
-					//   尺寸 / 间距 / 悬停规则**全部交给** `ensureRowStyle()` 注入的 `.vssaros-ws-row`
-					//   （数值逐条抄官方 `Rows.module.css`）⇒ 这里只留**逐行不同**的部分：
-					//   拖拽半透明、插入线、不可放提示。
-					//   ⚠ 不要再往这里加 height/padding/fontSize —— 内联样式会盖掉类，官方数值就失效了 ✗。
-					const style = Object.assign({},
-						isDragging ? { opacity: .45 } : null,
-						mark && mark.ok ? { boxShadow: (mark.after ? "inset 0 -2px 0 " : "inset 0 2px 0 ") + "var(--dsw-alias-state-business-primary, #5b8cff)" } : null,
-						mark && !mark.ok ? { outline: "1px dashed #f48771", outlineOffset: "-1px" } : null,
-					);
-					const kids = [];
-					const isUnread = unreadIds.indexOf(s.id) >= 0;
-					// ★★ leading 格（官方 `.slot` = **16×20**，只放**一个**标记）：
-					//   ① 非 idle 状态 ⇒ 状态点（官方 `showStatus = primaryStatus.state !== "idle"`；
-					//      我们额外把 `unknown` 也归入"不画"—— 不把未知画成空闲 ✗）；
-					//   ② 否则未读 ⇒ 未读点（dsh-desktop 那层语义，官方没有这一层）；
-					//   ③ 否则留空（官方 idle 时渲染 `sidebar.session.row.leading` 槽；我们无槽 ⇒ 空）。
-					const showStatus = s.status === "running" || s.status === "awaiting";
-					kids.push(react.createElement("span", { key: "slot", className: "vssaros-ws-slot" },
-						showStatus
-							? react.createElement("span", {
-								key: "ring",
-								style: Object.assign({}, S.ring, s.status === "running" ? S.ringRunning : S.ringAwaiting),
-								"data-ws-ring": s.status,
-								title: RING_LABEL[s.status] || "",
-							})
-							: isUnread
-								? react.createElement("span", {
-									key: "unread",
-									style: S.unreadDot,
-									"data-ws-unread": "1",
-									title: "未读",
-									"aria-label": "未读",
-								})
-								: null));
-					if (isRenaming) {
-						kids.push(react.createElement("input", {
-							key: "ren",
-							style: S.rename,
-							value: renaming.draft,
-							autoFocus: true,
-							"aria-label": "会话标题",
-							onClick: (e) => e.stopPropagation(),
-							onFocus: (e) => { try { e.currentTarget.select(); } catch { /* 忽略 */ } },
-							onChange: (e) => setRenaming({ sid: s.id, draft: e.target.value }),
-							onKeyDown: (e) => {
-								if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); commitRename(); }
-								else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setRenaming(null); }
-							},
-							// 失焦 = 取消（与 vssaros-sessions 页同口径：不偷偷提交）
-							onBlur: () => setRenaming(null),
-						}));
-					} else {
-						// ★★ 2026-11-02（复刻官方行）：标题 = `.vssaros-ws-title`
-						//   （14px/20px + ellipsis + `margin:0 6px 0 4px`，数值在注入的 CSS 里）；
-						//   未读加粗、双击就地重命名（官方 `onDoubleClick → onRenameRequest`）都保留。
-						kids.push(react.createElement("span", {
-							key: "lbl",
-							className: "vssaros-ws-title",
-							style: isUnread ? { fontWeight: 600 } : null,
-							// ★ 2026-11-02：官方 `useTitleMarquee` 只在**溢出**时给两端淡出（`data-clipped`），
-							//   我们按需在悬停时量一次（`scrollWidth > clientWidth`），不常驻定时器 ✓。
-							onMouseEnter: (e) => {
-								try {
-									const el = e.currentTarget;
-									if (el.scrollWidth > el.clientWidth + 1) { el.setAttribute("data-clipped", "1"); }
-								} catch { /* 量不到就不淡出 */ }
-							},
-							onMouseLeave: (e) => {
-								try {
-									const el = e.currentTarget;
-									el.removeAttribute("data-clipped");
-									el.scrollLeft = 0;
-								} catch { /* 忽略 */ }
-							},
-							onDoubleClick: (e) => {
-								try { e.stopPropagation(); } catch { /* 无事件对象也能进 */ }
-								setRenaming({ sid: s.id, draft: s.title });
-							},
-						}, s.title));
-						// 稿 1：只有**非主根**的会话才带根名标签 ✓（多根模型的补充，官方没有）
-						if (s.rootName && !s.isPrimaryRoot) {
-							kids.push(react.createElement("span", { key: "rt", style: S.rtag }, s.rootName));
-						}
-						// ★ 2026-11-14：当前会话选中 worktree 时，右侧加分支标志（稿面 ②）。
-						//   chip 状态来自 client.worktreeChip.js 写的 dataset；hover 让位规则由该 chunk
-						//   注入的 CSS 提供（.vssaros-ws-row:hover .vssaros-ws-wt-badge）。
-						const wtChip = s.isCurrent ? readWtChipBadge() : null;
-						if (wtChip) {
-							const agoLabel = timeLabel(s.at);
-							const agoText = agoLabel === "刚刚" ? "刚刚" : agoLabel.replace(/\s+/g, "") + "前";
-							kids.push(react.createElement("span", {
-								key: "wt", className: "vssaros-ws-wt-badge",
-								"data-vssaros-wt-row-badge": "1",
-								"data-ephemeral": wtChip.ephemeral ? "1" : undefined,
-								title: "worktree：" + wtChip.name + (wtChip.path ? " · " + wtChip.path : "")
-									+ (wtChip.ephemeral ? " · 临时，提交完毕自动删除" : ""),
-							},
-								react.createElement("span", { dangerouslySetInnerHTML: { __html: WT_BRANCH_SVG } }),
-								react.createElement("b", null, wtChip.name),
-								react.createElement("span", { className: "ago" }, agoText)));
-						}
-						// 时间（官方顺序 title → time → pin → actions；悬停时由 CSS 隐藏，让位给 ⋯）：
-						kids.push(react.createElement("span", {
-							key: "at",
-							className: "vssaros-ws-time",
-							title: absTimeLabel(s.at) ? ("创建于 " + absTimeLabel(s.at)) : "",
-						}, timeLabel(s.at)));
-						// 图钉（官方 `.pinIndicator` = 16×20 + **SVG 图标** + 悬停隐藏）：
-						//   原来用 📌 emoji —— 14px 下比官方矢量图标重一档，改成同款 pin 形状。
-						if (s.pinned) {
-							kids.push(react.createElement("span", {
-								key: "pin", className: "vssaros-ws-pin", "data-pinned": "1",
-								title: "已置顶", "aria-label": "已置顶", role: "img",
-							}, react.createElement("svg", { width: 14, height: 14, viewBox: "0 0 16 16", "aria-hidden": "true", style: { display: "block" } },
-								react.createElement("path", {
-									fill: "currentColor",
-									d: "M9.7 1.4a.9.9 0 0 1 1.3 0l3.6 3.6a.9.9 0 0 1-.6 1.5l-1.7.2-2.9 2.9.2 2.2a.7.7 0 0 1-1.2.6L6 11.2l-2.7 2.7-1.2-1.2L4.8 10 2.2 7.4a.7.7 0 0 1 .6-1.2l2.2.2 2.9-2.9.2-1.7a.9.9 0 0 1 .6-.6Z",
-								}))));
-						}
-						// 行尾 ⋯（**官方主入口**：`.rowActions` 默认隐藏、悬停 / 菜单打开才出现）：
-						//   右键菜单**保留**（我们原有的入口，官方没有）—— 两个入口开同一个菜单。
-						kids.push(react.createElement("span", { key: "acts", className: "vssaros-ws-actions" },
-							react.createElement("button", {
-								type: "button",
-								className: "vssaros-ws-icon",
-								title: "会话操作",
-								"aria-label": "会话操作（" + s.title + "）",
-								"aria-haspopup": "true",
-								onClick: (e) => {
-									try { e.stopPropagation(); } catch { /* 忽略 */ }
-									openSessMenu(s, e);
+					const onOpen = () => {
+						if (s.archived) { say(vt("restoreHint"), "note"); return; }
+						markSessionRead(s.id);
+						setSelectedRoom("");
+						if (q) { closeSearch(); }
+						openSession(s.id, setMsg, setLocal);
+					};
+					if (renaming && renaming.sid === s.id) {
+						return react.createElement("div", { key: s.id, className: "vssaros-ws-rename-row" },
+							react.createElement("input", {
+								style: S.rename, value: renaming.draft, autoFocus: true, "aria-label": "会话标题",
+								onFocus: (e) => e.currentTarget.select(),
+								onChange: (e) => setRenaming({ sid: s.id, draft: e.target.value }),
+								onKeyDown: (e) => {
+									if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); commitRename(); }
+									else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setRenaming(null); }
 								},
-							}, "⋯")));
+								onBlur: () => setRenaming(null),
+							}));
 					}
-					return react.createElement("div", {
-						key: s.id,
-						// 官方行的稳定锚点（`data-row-key="session:<id>"`）—— 对自动化/调试有用
-						"data-row-key": "session:" + s.id,
-						"data-session-item": s.id,
-						"data-pinned": s.pinned ? "1" : "0",
-						// ★ 2026-11-02（复刻官方行）：`selected` / `menuOpen` 两个视觉态 ——
-						//   官方是 CSS 类，我们用 `data-*` 让注入的样式表命中（React 内联表达不了 :hover）。
-						"data-current": s.isCurrent ? "1" : undefined,
-						"data-menu-open": (sessMenu && sessMenu.sid === s.id) ? "1" : undefined,
-						className: "vssaros-ws-row",
-						role: "treeitem",
-						"aria-selected": s.isCurrent === true,
-						// 重命名时禁用拖拽：否则输入框里选字会变成拖行 ✗
-						draggable: isRenaming ? "false" : "true",
-						style,
-						// ★ 2026-11-02：**去掉行上的原生 `title`** —— 官方行也没有（它靠 HoverCard）；
-						//   留着会和我们的 hover 卡片形成"两个浮层"（浏览器原生 tooltip 也 800ms 后弹）。
-						//   会话 id 改在 hover 卡片里给（信息不丢，且不占标题位）。
-						// ★ 2026-11-02：**打开即已读**（与 dsh-desktop 的 `view.markSessionRead` 同一时机，
-						//   也是官方 `openSession` 里的第一步）—— 不放在打开成功的回调里：那时用户已经看到了。
-						onClick: () => { if (!isRenaming) { markSessionRead(s.id); setSelectedRoom(""); openSession(s.id, setMsg, setLocal); } },
-						onContextMenu: (e) => openSessMenu(s, e),
-						// ★ 2026-11-02：hover 卡片（官方 `HoverCard openDelayMs=800`；菜单开着/拖拽中不弹）
-						onMouseEnter: (e) => openSessHover(s, e),
-						onMouseLeave: closeSessHover,
-						onDragStart: isRenaming ? undefined : onDragStartOf(s),
-						onDragOver: onDragOverOf(s),
-						onDragLeave: () => { if (dropAt && dropAt.sid === s.id) { setDropAt(null); } },
-						onDrop: onDropOf(s),
-						onDragEnd: () => { setDrag(null); setDropAt(null); },
-						// ★ 2026-11-13 键盘导航：tabIndex ⇒ 鼠标点行自动聚焦并设高亮；
-						//   ↑↓ 换高亮行、Enter 打开、Delete 弹删除确认（不改 onClick 的既有打开链）。
-						...keyRowProps("sessions", s.id,
-							() => { markSessionRead(s.id); setSelectedRoom(""); openSession(s.id, setMsg, setLocal); },
-							() => {
-								if (s.id === currentId) { say("这是当前打开的会话，先切到别的会话再删除", "error"); return; }
-								setConfirmDel({ sid: s.id, title: s.title || s.id });
-							}),
-					}, ...kids);
+					if (!OfficialSessionRow) {
+						return react.createElement("div", { key: s.id, role: "status" }, "正在加载官方会话行…");
+					}
+					const decorations = [];
+					if (s.archived) {
+						decorations.push(react.createElement("button", {
+							key: "restore", type: "button", style: S.iconBtn, title: vt("restore"), "aria-label": vt("restore"),
+							disabled: !ctx.uiWorkspace || typeof ctx.uiWorkspace.unarchiveSession !== "function",
+							onClick: async (e) => {
+								e.preventDefault(); e.stopPropagation();
+								try { await ctx.uiWorkspace.unarchiveSession(s.id); }
+								catch (error) { say(vt("restoreError", { message: String((error && error.message) || error) }), "error"); }
+							},
+						}, vt("restore")));
+					}
+					if (s.rootName && !s.isPrimaryRoot) {
+						decorations.push(react.createElement("span", { key: "rt", style: S.rtag }, s.rootName));
+					}
+					const wtChip = s.isCurrent ? readWtChipBadge() : null;
+					if (wtChip) {
+						decorations.push(react.createElement("span", {
+							key: "wt", className: "vssaros-ws-wt-badge", "data-vssaros-wt-row-badge": "1",
+							"data-ephemeral": wtChip.ephemeral ? "1" : undefined,
+							title: "worktree：" + wtChip.name + (wtChip.path ? " · " + wtChip.path : "")
+								+ (wtChip.ephemeral ? " · 临时，提交完毕自动删除" : ""),
+						}, react.createElement("span", { dangerouslySetInnerHTML: { __html: WT_BRANCH_SVG } }),
+							react.createElement("b", null, wtChip.name)));
+					}
+					const sortKey = s.sortKey || s.groupKey;
+					const compatible = !q && !s.archived && !!drag && canDrop(drag, { sid: s.id, groupKey: sortKey, pinned: s.pinned === true });
+					const marker = dropAt && dropAt.sid === s.id && dropAt.ok ? (dropAt.after ? "after" : "before") : null;
+					const rowSlotProps = Object.assign({}, props, { renderSlot: (name, owner, options) => props.renderSlot(SESSION_ROW_SLOTS[name] || name, owner, options) });
+					return react.createElement(OfficialSessionRow, {
+						key: s.id, row: s, list: sessSnap, statuses: officialStatuses, slotProps: rowSlotProps,
+						onOpen, onRenameRequest: (sid, title) => setRenaming({ sid, draft: title }),
+						unread: unreadIds.indexOf(s.id) >= 0, decorations,
+						acceptDrop: compatible, dragging: !!drag && drag.sid === s.id,
+						drag: q ? undefined : {
+							active: !!drag, marker,
+							start: () => { setDrag({ sid: s.id, groupKey: sortKey, pinned: s.pinned === true }); },
+							end: () => { setDrag(null); setDropAt(null); },
+							hover: (half) => { setDropAt({ sid: s.id, after: half === "after", ok: compatible }); },
+							drop: (half) => {
+								setDrag(null); setDropAt(null);
+								if (!compatible) { return; }
+								const row = rows.concat(layoutRows).find((r) => r.key === drag.groupKey);
+								const nextIds = row && moveWithin(row.sessions, drag.sid, s.id, half === "after");
+								if (nextIds) {
+									pickViewOption("orderBy", "manual");
+									const base = viewOptions.orderBy === "manual" ? orderMap : Object.fromEntries(rows.map((r) => [r.key, r.sessions.map((item) => item.id)]));
+									persistOrderMap(Object.assign({}, base, { [drag.groupKey]: nextIds }), setOrderMap);
+								}
+							},
+						},
+						keyProps: keyRowProps("sessions", s.id, onOpen, () => {
+							if (s.id === currentId) { say("这是当前打开的会话，先切到别的会话再删除", "error"); return; }
+							setConfirmDel({ sid: s.id, title: s.title || s.id });
+						}),
+					});
 				};
 
 				/**
@@ -4194,7 +4460,14 @@ window.__ModuleLoader__.load({
 					const searching = !!q;
 					const list = searching ? all : visibleSessions(all, SESSION_PAGE_SIZE + extra);
 					const rest = all.length - list.length;
-					const nodes = list.map((s) => renderSessionRow(s, setWsMsg, setLocalCurrent));
+					const nodes = list.map((s) => {
+						const node = renderSessionRow(s, setWsMsg, setLocalCurrent);
+						if (!searching && row.kind !== "list") { return node; }
+						return react.createElement("div", { key: s.id, "data-vssaros-search-result": searching ? s.id : undefined }, node,
+							react.createElement("div", { style: { padding: "0 12px 6px 30px", fontSize: 11, color: "var(--dsw-alias-label-tertiary, currentColor)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+								s.workspaceLabel, s.archived ? " · " + vt("archived") : ""),
+							typeof s.snippet === "string" && s.snippet ? react.createElement("div", { "data-vssaros-search-snippet": s.id, style: { padding: "0 12px 8px 30px", fontSize: 11, color: "var(--dsw-alias-label-secondary, currentColor)", whiteSpace: "pre-wrap", overflowWrap: "anywhere" } }, s.snippet) : null);
+					});
 					if (searching) { return nodes; }
 					if (rest > 0) {
 						nodes.push(react.createElement("button", {
@@ -5519,14 +5792,29 @@ window.__ModuleLoader__.load({
 						try { return "界面版本：" + String(window.__vssarosChatSurfaceBuild || "(未知)").slice(-30); } catch { return ""; }
 					})(),
 				}, "工作区"),
-						withSearch ? react.createElement("button", { style: S.iconBtn, title: "搜索工作区 / 会话", "aria-label": "搜索工作区 / 会话", onClick: () => setSearchOn(!searchOn) }, "🔍") : null,
+						react.createElement("button", {
+							type: "button", className: "vssaros-ws-icon", style: S.iconBtn, title: vt("search"), "aria-label": vt("search"), "aria-expanded": searchOn,
+							onClick: () => { setMenu(null); setViewMenu(null); if (searchOn) { closeSearch(); } else { setSearchOn(true); } },
+						}, workspaceActionIcon("search")),
+						react.createElement("button", {
+							ref: viewButton, type: "button", className: "vssaros-ws-icon", style: S.iconBtn, title: vt("viewOptions"), "aria-label": vt("viewOptions"),
+							"data-vssaros-view-button": "1", "aria-haspopup": "menu", "aria-expanded": !!viewMenu,
+							onClick: (e) => {
+								const rect = e.currentTarget.getBoundingClientRect();
+								setMenu(null);
+								setViewMenu(viewMenu ? null : { x: Math.max(8, Math.min(rect.right - 230, window.innerWidth - 238)), y: Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - 380)) });
+							},
+						}, workspaceActionIcon("view")),
 						// ★ 用 ASCII "+"：原来的全角「＋」(U+FF0B) 在某些渲染环境**没有字形**
 						//   ⇒ 界面上是一个豆腐块（用户截图里那个方框就是它）⇒ 点了像"没反应" ✓
 						// ★ 2026-10-26：它现在是一个**菜单**（两个动作：加单目录 / 从 .code-workspace 导入多根）。
 						react.createElement("button", {
 							style: Object.assign({}, S.iconBtn, { fontSize: 14, fontWeight: 600, minWidth: 18, textAlign: "center" }),
-							title: "添加工作区…", "aria-label": "添加工作区", "aria-haspopup": "true",
+							type: "button", className: "vssaros-ws-icon", title: vt("add"), "aria-label": vt("add"), "aria-haspopup": "menu", "aria-expanded": !!menu,
+							disabled: ["picking", "creating", "opening"].includes(addState.phase),
 							onClick: (e) => {
+								setViewMenu(null);
+								if (menu) { setMenu(null); return; }
 								try {
 									const rect = e.currentTarget.getBoundingClientRect();
 									// fixed 定位（不用 absolute）：侧栏列可能有 overflow ⇒ 绝对定位会被裁掉 ✗
@@ -5541,6 +5829,21 @@ window.__ModuleLoader__.load({
 							},
 						}, "+"),
 					),
+					viewMenu ? react.createElement("div", {
+						role: "menu", "aria-label": vt("viewOptions"), "data-vssaros-view-menu": "1",
+						style: Object.assign({}, S.sessMenu, { left: viewMenu.x, top: viewMenu.y, width: 230, maxHeight: "calc(100vh - 16px)", overflowY: "auto" }),
+					}, [
+						["groupBy", [["workspace", "workspace"], ["workspace-tree", "workspaceTree"], ["flat", "flat"]]],
+						["orderBy", [["manual", "manual"], ["updated", "updated"]]],
+						["archivedFilter", [["default", "hideArchived"], ["show", "showArchived"], ["only", "onlyArchived"]]],
+					].map(([field, choices]) => react.createElement("div", { key: field, role: "group", "aria-label": vt(field === "archivedFilter" ? "filterBy" : field) },
+						react.createElement("div", { style: { padding: "6px 8px 3px", fontSize: 10.5, color: "var(--dsw-alias-label-tertiary, currentColor)" } }, vt(field === "archivedFilter" ? "filterBy" : field)),
+						choices.map(([value, label]) => react.createElement("button", {
+							key: value, type: "button", role: "menuitemradio", "aria-checked": viewOptions[field] === value,
+							"data-vssaros-view-choice": value, style: Object.assign({}, S.menuItem, { background: viewOptions[field] === value ? "var(--dsw-alias-interactive-bg-active, transparent)" : "none" }),
+							onClick: () => pickViewOption(field, value),
+						}, react.createElement("span", { "aria-hidden": "true", style: { display: "inline-block", width: 18 } }, viewOptions[field] === value ? "✓" : ""), vt(label))),
+					))) : null,
 					// ＋ 菜单本体（fixed 定位 ⇒ 不被侧栏的 overflow 裁掉 ✓）
 					menu ? react.createElement("div", {
 						"data-vssaros-ws-menu": "1",
@@ -5552,14 +5855,15 @@ window.__ModuleLoader__.load({
 						},
 					},
 						react.createElement("button", {
-							style: S.menuItem,
-							onClick: () => { setMenu(null); addWorkspace(setWsMsg); },
-						}, "添加工作区（单个目录）"),
+							type: "button", role: "menuitem", style: S.menuItem, "data-vssaros-add-directory": "1",
+							onClick: () => { setMenu(null); void addWorkspace(setWsMsg, setAddState); },
+						}, vt("addDirectory")),
 						react.createElement("button", {
-							style: S.menuItem,
+							type: "button", role: "menuitem", style: S.menuItem,
+							disabled: !bridge || typeof bridge.importCodeWorkspace !== "function",
 							title: bridge && typeof bridge.importCodeWorkspace === "function" ? "" : "当前环境没有宿主桥，无法选 .code-workspace 文件",
 							onClick: () => { setMenu(null); importCodeWorkspace(setWsMsg); },
-						}, "从 .code-workspace 导入（多根）"),
+						}, vt("import")),
 					) : null,
 					// ★ 2026-10-26：＋ 的成败**就地可见**（窗口模式没有宿主桥 ⇒ notify 是空转）
 					wsMsg ? react.createElement("div", {
@@ -5568,23 +5872,43 @@ window.__ModuleLoader__.load({
 							color: wsMsg.kind === "error" ? "#f48771" : "var(--dsw-alias-label-tertiary, #737373)",
 						},
 					}, wsMsg.text) : null,
-					// 空会话已隐藏 ⇒ 说清数量（不装作没有）
-					hiddenBlanks > 0 ? react.createElement("div", {
-						style: { fontSize: 10.5, padding: "0 8px 3px", color: "var(--dsw-alias-label-tertiary, #737373)" },
-					}, "已隐藏 " + hiddenBlanks + " 条空会话") : null,
+					addState.phase === "error" && addState.id ? react.createElement("button", {
+						type: "button", style: S.menuItem, "data-vssaros-retry-workspace": "1",
+						onClick: () => { void addWorkspace(setWsMsg, setAddState, addState.id); },
+					}, vt("retryOpen")) : null,
 					// ★ 2026-10-29：会话行操作的**就地反馈**（窗口模式没有宿主桥 ⇒ 唯一可见通道）
 					sessMsg ? react.createElement("div", {
 						style: Object.assign({}, S.sessMsg, {
 							color: sessMsg.kind === "error" ? "#f48771" : "var(--dsw-alias-label-tertiary, #737373)",
 						}),
 					}, sessMsg.text) : null,
-					searchOn && withSearch ? react.createElement("input", {
-						style: S.search, placeholder: "搜索工作区 / 会话…", value: query,
-						onChange: (e) => setQuery(e.target.value),
-					}) : null,
-					react.createElement("div", { style: S.list },
-						shown.length === 0 ? react.createElement("div", { style: { padding: "10px 8px", fontSize: 12, color: "var(--dsw-alias-label-tertiary, #737373)" } }, "暂无工作区") : null,
+					searchOn ? react.createElement("div", { style: { display: "flex", alignItems: "center", padding: "0 8px", gap: 4 } },
+						react.createElement("input", {
+							ref: searchInput, style: Object.assign({}, S.search, { minWidth: 0, boxSizing: "border-box", outline: undefined }), placeholder: vt("searchPlaceholder"), value: query,
+							"aria-label": vt("search"), maxLength: SEARCH_QUERY_LIMIT,
+							onChange: (e) => setQuery(sanitizeSearchQuery(e.target.value)),
+							onKeyDown: (e) => { if (e.key === "Escape") { e.preventDefault(); closeSearch(); } },
+						}),
+						react.createElement("button", { type: "button", style: S.iconBtn, "aria-label": vt("clear"), title: vt("clear"), onClick: closeSearch }, "×"),
+					) : null,
+					q ? react.createElement("div", { role: "status", "aria-live": "polite", style: { padding: "3px 8px", fontSize: 11 } },
+						currentSearch.phase === "loading" ? vt("searching") : currentSearch.phase === "error" ? vt("searchError", { message: currentSearch.error }) : searchResults.items.length === 0 ? vt("noResults") : "",
+						searchResults.hasMore ? react.createElement("div", null, vt("moreResults")) : null) : null,
+					activeWorkbench ? react.createElement('div', {
+						role: 'status', 'data-vssaros-workbench-scope': activeWorkbench,
+						style: { padding: '4px 8px', fontSize: 11, color: 'var(--dsw-alias-label-secondary, currentColor)' },
+					}, (workbenchScope.workbenches.find(w => w.id === activeWorkbench)?.title || '当前工作台') + ' · 仅显示本工作台会话') : null,
+					activeWorkbench && workbenchScope.state?.hiddenWorkspaces[activeWorkbench]?.length ? react.createElement('details', {
+						'data-vssaros-hidden-workspaces': activeWorkbench, style: { padding: '4px 8px', fontSize: 11 },
+					}, react.createElement('summary', null, '已隐藏的工作区'),
+						...((wsSnap && wsSnap.items) || []).filter(w => !workbenchService.workspaceVisible(w.workspaceId, activeWorkbench)).map(w => react.createElement('button', {
+							key: w.workspaceId, type: 'button', style: S.menuItem,
+							onClick: () => Promise.resolve(workbenchService.showWorkspace(w.workspaceId, activeWorkbench)).catch(e => say('重新显示失败：' + errText(e), 'error')),
+						}, w.title || w.path || w.workspaceId))) : null,
+					react.createElement("div", { style: S.list, "data-vssaros-session-list": q ? "search" : viewOptions.groupBy },
+						shown.length === 0 ? react.createElement("div", { style: { padding: "10px 8px", fontSize: 12, color: "var(--dsw-alias-label-tertiary, #737373)" } }, activeWorkbench ? '尚无本工作台会话，可在 AI 助手中选择工作区开始。' : "暂无工作区") : null,
 						shown.map((row) => {
+							if (row.kind === "list") { return react.createElement("div", { key: row.key }, renderSessions(row)); }
 							if (row.kind === "group") {
 								// ⚠ 折叠键仍是 **record.id**（历史持久化键，改了用户折叠态全丢 ✗）；React key 用 row.key
 								const key = row.record.id;
@@ -5594,7 +5918,7 @@ window.__ModuleLoader__.load({
 								//   单根 ⇒ multi=false ⇒ chip 与下拉都不渲染（旧界面逐字不变 ✓）。
 								const rootsView = workspaceRootListOf(row.record, currentRootPath);
 								const rootsDropped = rootsOpenKey === key;
-								return react.createElement("div", { key: row.key || ("rec:" + key) },
+								return react.createElement("div", { key: row.key || ("rec:" + key), style: { marginLeft: Math.min(row.depth || 0, 5) * 12 }, "data-vssaros-workspace-depth": row.depth || 0 },
 									// ★ 2026-11-02 的「行上不加徽标、只放 hover 卡」已按用户 11-10 裁决调整：
 									//   行上恢复一枚**可点** chip（不是纯展示徽标），点击内联下拉列出各根。
 									//   folder 图标 / hover 换三角箭头仍对齐官方 `.projectRow` ✓。
@@ -5681,7 +6005,7 @@ window.__ModuleLoader__.load({
 												// 回落：未被 IDE 记录认领的 dsh 条目，平铺（与官方形态一致 ✓）
 							const key = "flat:" + row.label;
 							const isOpen = collapsed[key] !== true;
-							return react.createElement("div", { key: row.key || key },
+							return react.createElement("div", { key: row.key || key, style: { marginLeft: Math.min(row.depth || 0, 5) * 12 }, "data-vssaros-workspace-depth": row.depth || 0 },
 								// 回落分支（未被 IDE 记录认领的 dsh 条目）同样按官方 `.projectRow` 画
 								react.createElement("div", {
 									className: "vssaros-ws-project",
@@ -5750,13 +6074,13 @@ window.__ModuleLoader__.load({
 						react.createElement("button", {
 							type: "button", role: "menuitem", "data-act": "remove-ws",
 							style: S.menuItem,
-							title: "从 dsh 移除这个工作区（只摘登记；会话与磁盘文件都保留，可随时再加回来）",
+							title: activeWorkbench ? '只从当前工作台隐藏，不改变其他工作台、会话或文件' : "从 dsh 移除这个工作区（只摘登记；会话与磁盘文件都保留，可随时再加回来）",
 							onClick: () => {
 								const k = wsMenu.key;
 								setWsMenu(null);
 								removeWorkspace(k);
 							},
-						}, "移除工作区"),
+						}, activeWorkbench ? '从当前工作台隐藏' : "移除工作区"),
 						// 恢复入口：隐藏是**持久**的（localStorage），没有这个入口用户只能清缓存才找得回
 						wsRemoved.length ? react.createElement("button", {
 							type: "button", role: "menuitem", "data-act": "restore-ws", style: S.menuItem,
@@ -6106,11 +6430,21 @@ window.__ModuleLoader__.load({
 				//   用的是 -10 ⇒ 我们与"另一个遮蔽者"同档时会退化成"谁先注册谁赢"，
 				//   在 desktop 全窗（`chatOnly=0`）里实测出现过"官方 WorkspaceBrowser 仍然渲染"的现象
 				//   （`ourRows:0` 而 `projectRow` 有 6 条）。取 -1000 与所有官方/第三方错开。
+				ctx.effect(() => mirrorSessionRowSlots(ctx.slots, (message) => { state.rowSlotMirrorError = message; wsLog("row-slot-mirror-error", { message }); }));
 				ctx.slots.inject(SLOT, () => {
 					wsLog("register-call", { name: SLOT, id: "vssaros-workspaces", priority: -1000 });
 					let ret;
 					try {
-						ret = ctx.slots.register({ name: SLOT, id: "vssaros-workspaces", priority: -1000 }, Browser);
+						ret = ctx.slots.register({
+							name: SLOT, id: "vssaros-workspaces", priority: -1000, locale: "workspace",
+							children: {
+								"vssaros.workspaces.session.row.action": { kind: "list", scope: "root" },
+								"vssaros.workspaces.session.row.leading": { kind: "list", scope: "root", inline: true },
+								"vssaros.workspaces.session.row.trailing": { kind: "list", scope: "root", inline: true },
+								"vssaros.workspaces.session.row.hover": { kind: "list", scope: "root" },
+							},
+							inject: () => ({ hooks: { contextMenuTarget: ctx.get("contextMenus").active } }),
+						}, Browser);
 					} catch (e) {
 						wsLog("register-threw", { message: String((e && e.message) || e) });
 						throw e;
@@ -6139,6 +6473,8 @@ window.__ModuleLoader__.load({
 		// 仅测试用：分组收敛 / 路径比较 / 时间文案的纯逻辑（插件装载只读 install）。
 		exports.__test = {
 			samePath, baseName, parseRecords, timeLabel, buildSidebar, rootOfSession, nextCollapsed, pickCurrentSessionId,
+			WORKSPACE_VIEW_KEY, normalizeWorkspaceView, projectWorkspaceRows, deriveWorkspaceSearch, sanitizeSearchQuery, adoptWorkspace, SEARCH_DELAY_MS, SEARCH_QUERY_LIMIT, SEARCH_RESULT_LIMIT,
+			SESSION_ROW_SLOTS, mirrorSessionRowSlots,
 			// 2026-11-10 P1-C：组展开后常驻的多根列表（与 hover 卡同源，守卫 ⑤-m 直接断言）✓
 			workspaceRootListOf,
 			// 2026-11-10 P1-E：与 client.workspace.js 逐字同形的术语真源（守卫 ⑤-n 对账）✓

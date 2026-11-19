@@ -266,9 +266,16 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		// 随包 **vendored 第三方技能包**（archify，MIT）：与上面几个同一条"存在才装"路径 ✓。
 		// 它没有 `vssaros.module`（技能 bundle，不是我们的 UI 模块）⇒ 不进模块自发现，也不算进「随包」列表 ✓。
 		const bundledArchify = join(this._bundledPluginsRoot, 'vssaros-archify');
-		// ego lite（`ego-browser`）接入插件（2026-10-21）：与上面几个同一条"存在才装"路径。
-		// 它**不含浏览器本体**（第三方独立 app）⇒ 用户没装 app 时装上也无害：`ego_status` 会说清原因。
-		const bundledEgo = join(this._bundledPluginsRoot, 'vssaros-ego');
+		// 随包 vendored 的第三方 `dsh-ego-browser`（2026-11-19 起内置）：与上面几个同一条"存在才装"路径。
+		// 它自带 ego-lite 运行时 + Chrome/CDP ⇒ 不再依赖用户另装第三方 app；包名与目录名都是
+		// `dsh-ego-browser`（保留上游名），所以这里不能按 `vssaros-*` 前缀拼。
+		const bundledEgoBrowser = join(this._bundledPluginsRoot, 'dsh-ego-browser');
+		// 随包 vendored 的第三方 `dsh-vision-router`（2026-11-19 起内置）：同一条"存在才装"路径。
+		// 与 `vssaros-media` 的 `vision_analyze` 不重名 ⇒ 并存；隐私/依赖口径见该目录 VENDOR.md。
+		const bundledVisionRouter = join(this._bundledPluginsRoot, 'dsh-vision-router');
+		// 随包 vendored 的第三方 `dsh-better-sidebar`（2026-11-19 起内置）：同一条"存在才装"路径。
+		// 它会接管宿主原生右栏 tab / 起始页，冲突面与权限口径见该目录 VENDOR.md。
+		const bundledBetterSidebar = join(this._bundledPluginsRoot, 'dsh-better-sidebar');
 		// work item 内核（2026-10-31）+ 无人值守循环（2026-10-30）：与上面几个同一条"存在才装"路径
 		// （都没有 `vssaros.module` ⇒ 不进模块自发现，必须显式登记伴生）。
 		// 顺序由 supervisor 的伴生清单决定（workitem 先于 loop）；这里只负责把目录找出来。
@@ -308,7 +315,9 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				? join(this._bundledPluginsRoot, 'vssaros-office-template') : undefined,
 			unrealPluginDir: existsSync(join(bundledUnreal, 'package.json')) ? bundledUnreal : undefined,
 			archifyPluginDir: existsSync(join(bundledArchify, 'package.json')) ? bundledArchify : undefined,
-			egoPluginDir: existsSync(join(bundledEgo, 'package.json')) ? bundledEgo : undefined,
+			egoBrowserPluginDir: existsSync(join(bundledEgoBrowser, 'package.json')) ? bundledEgoBrowser : undefined,
+			visionRouterPluginDir: existsSync(join(bundledVisionRouter, 'package.json')) ? bundledVisionRouter : undefined,
+			betterSidebarPluginDir: existsSync(join(bundledBetterSidebar, 'package.json')) ? bundledBetterSidebar : undefined,
 			workItemPluginDir: existsSync(join(bundledWorkItem, 'package.json')) ? bundledWorkItem : undefined,
 			loopPluginDir: existsSync(join(bundledLoop, 'package.json')) ? bundledLoop : undefined,
 			modulePluginDirs,
@@ -429,6 +438,8 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 				profile: pick('sessions.dshHarness.profile', persisted.profile),
 				// 抢先启动发生在渲染进程之前，读不到配置服务 ⇒ 与其它几项一样直接读 `User/settings.json`。
 				skipPluginInstall: s['sessions.dshHarness.skipPluginInstall'] === true,
+				// P3 默认开启；只有用户显式 false 才让预热 Host 回退旧布局。
+				sidebarLayoutV1: s['sessions.dshHarness.sidebarLayoutV1'] !== false,
 			};
 			this._prewarmedWith = opts;
 			this._logService.info('[dshHarness] prewarming Host from the main process (parallel to workbench startup)');
@@ -547,6 +558,32 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 		} else {
 			this._logService.warn(`[dshHarness] media push 失败（IDE 侧已入库，dsh 稍后 sync 会收编）：status=${reply.status} ${reply.text.slice(0, 160)}`);
 		}
+	}
+
+	/**
+	 * ★ P2（方案 B「一套 git 源，以 dsh 侧为准」）：`vscode:execGit` → `/x/worktree/api/git`。
+	 *
+	 * Electron 主进程不再 spawn git；Host 插件在同一沙箱策略与同一授权根下执行并把
+	 * `{success, stdout, stderr, exitCode}` 放在回复的 `result` 里。绝不抛（Host 没起时
+	 * 返回 `status:0`，由 app.ts 回退本地并留痕）。
+	 */
+	async executeWorktreeGit(input: {
+		readonly cwd: string;
+		readonly args: readonly string[];
+		readonly env?: Record<string, string>;
+		readonly timeoutMs?: number;
+	}): Promise<{ ok: boolean; status: number; text: string }> {
+		if (!this._supervisor.connection) {
+			return { ok: false, status: 0, text: 'dsh Host 未运行' };
+		}
+		const timeoutMs = typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs)
+			? Math.min(600_000, Math.max(1_000, input.timeoutMs)) : 30_000;
+		return this._hostHttp.postJson('/x/worktree/api/git', {
+			cwd: input.cwd,
+			args: input.args,
+			env: input.env ?? {},
+			timeoutMs,
+		}, timeoutMs + 5_000);
 	}
 
 	/**
@@ -2049,6 +2086,42 @@ export class DshHarnessChannel<TContext> extends Disposable implements IServerCh
 					this._logService.info(`[dshHarness] reclaimed ${n} orphan view(s) of window ${(arg as { windowId: number }).windowId}`);
 				}
 				return;
+			}
+			// ── P1（方案 B）：worktree 唯一 git 源在 dsh Host；IDE 只拉快照 / 发意图 ──────
+			case DshHarnessChannelCommand.WorktreeHostSnapshot: {
+				const a = arg as { root?: unknown } | undefined;
+				if (typeof a?.root !== 'string' || a.root.length === 0 || a.root.length > 1024) {
+					return undefined;
+				}
+				const reply = await this._hostHttp.getJson(`/x/worktree/api/snapshot?root=${encodeURIComponent(a.root)}`, 15_000);
+				if (!reply.ok) {
+					// Host 没起 / 路由未加载 / cookie 失效：静默跳过（renderer 会回退旧列表），不刷日志。
+					return undefined;
+				}
+				try {
+					const parsed: unknown = JSON.parse(reply.text);
+					if (!parsed || typeof parsed !== 'object') { return undefined; }
+					const p = parsed as Record<string, unknown>;
+					if (typeof p['revision'] !== 'number' || !Array.isArray(p['worktrees'])) { return undefined; }
+					return p;
+				} catch {
+					return undefined;
+				}
+			}
+			case DshHarnessChannelCommand.WorktreeHostCall: {
+				const a = arg as { endpoint?: unknown; payload?: unknown } | undefined;
+				if (typeof a?.endpoint !== 'string' || !/^[a-z][a-z0-9]{0,31}$/.test(a.endpoint)) {
+					return { ok: false, error: 'INVALID_ENDPOINT' };
+				}
+				const reply = await this._hostHttp.postJson(`/x/worktree/api/${a.endpoint}`, a.payload ?? {}, 30_000);
+				if (!reply.ok) {
+					this._logService.warn(`[dshHarness] worktree ${a.endpoint} 失败：status=${reply.status} ${reply.text.slice(0, 160)}`);
+				}
+				try {
+					return { ok: reply.ok, status: reply.status, result: JSON.parse(reply.text) };
+				} catch {
+					return { ok: reply.ok, status: reply.status, text: reply.text.slice(0, 500) };
+				}
 			}
 			default:
 				throw new Error(`[dshHarness] unknown command: ${command}`);

@@ -128,6 +128,8 @@ function ReportArtifact({ id }: { id: string }) {
       <Hint>{report.path ? t('ticketArtifactGenerated') : report.generationQueued ? t('ticketArtifactGenerating') : t('ticketArtifactMissing')}</Hint>
       {report.path && <><span className="dt-mono">{report.path}</span><button type="button" className="dt-textlink" disabled={busy} onClick={() => { void download() }}>{t('ticketArtifactDownload')}</button></>}
       <Hint>{t('ticketArtifactDelivery', { state: report.deliveryState ?? (report.queued ? 'queued' : 'unknown') })}</Hint>
+      {report.cloudState && <Hint>{t('ticketCloudState', { state: t(`ticketCloud.${report.cloudState}`) })}</Hint>}
+      {report.cloudError && <p className="dt-error" role="status">{report.cloudError}</p>}
       {report.docUrl && <ExternalLink href={report.docUrl}>{t('ticketArtifactDocument')}</ExternalLink>}
     </>}
   </Section>

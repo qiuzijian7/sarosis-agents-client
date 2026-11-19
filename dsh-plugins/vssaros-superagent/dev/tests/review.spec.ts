@@ -108,6 +108,62 @@ async function shelvedTicket(shelved = SHELF) {
 const report = (sessionId: string) => h.runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'shelved CL 501', changelist: 501 })
 const writes = () => server.calls.filter(call => !['describe'].includes(call.args[0]!) && !(call.args[0] === 'change' && call.args[1] === '-o'))
 
+describe('pending pool handoff', () => {
+  async function readyPool() {
+    const result = await shelvedTicket()
+    const store = h.runtime.store
+    store.tickets.save({ ...store.tickets.get(result.ticket.id)!, execution: { ...store.tickets.get(result.ticket.id)!.execution!, p4Delivery: 'submit' } })
+    await report(result.sessionId)
+    const { TapdConfigSchema } = await import('../src/sources/tapd-api.ts')
+    const { poolItemKey, PoolItemSchema } = await import('../src/sources/tapd-filter-schemes.ts')
+    const { KV } = await import('../src/kv.ts')
+    const triggerId = 'tapd-pool:68880148:alice:bug:1:1', item = PoolItemSchema.parse({ kind: 'bug', id: '1', enabled: true })
+    const trigger = { id: triggerId, source: 'tapd', addressed: 'direct' as const, human: false, actor: { source: 'tapd', id: '' },
+      threads: [{ source: 'tapd', id: '68880148:bug:1' }], at: new Date().toISOString(), text: '症状',
+      meta: { workspace: '68880148', type: 'bug', id: '1', owners: ['甲'], filterPool: 'filter-pool-1', filterSweep: 'filter-pool-1' } }
+    store.triggers.save(trigger)
+    store.tickets.save({ ...store.tickets.get(result.ticket.id)!, origin: { triggerId, triggerIds: [triggerId] } })
+    const settings = store.settings(), config = TapdConfigSchema.parse({ members: [{ alias: 'alice', name: '甲' }], filterPool: { owner: 'alice', items: [item] } })
+    store.saveSettings({ ...settings, sources: { ...settings.sources, tapd: { enabled: true, config } } })
+    store.set(KV.tapd.pool('filter-pool-1'), { lastRun: '', runIds: [], dispatched: 1, at: '', records: {
+      [poolItemKey(config.workspace, 'alice', item)]: { state: 'processing', triggerId, runId: 'r', attempts: 1, lastRunAt: '', item,
+        authorization: { authority: 'host_pool', action: 'repair', invocation: 'manual', workspace: config.workspace,
+          pool: 'filter-pool-1', itemType: 'bug', itemId: '1', loginName: 'alice', tapdOwner: '甲', runId: 'r', authorizedAt: new Date().toISOString() } }
+    } })
+    server.calls.length = 0
+    return result
+  }
+  it('completes the ready pool delivery without compile, review or submit, preserves the CL and is idempotent', async () => {
+    const { ticket } = await readyPool()
+    const finger = h.runtime.reviews.get(ticket.id)!.fingerprint
+    await h.runtime.reviews.completeReadyPoolDeliveries()
+    const outcome = h.runtime.reviews.get(ticket.id)!
+    expect(outcome.state).toBe('delivered_pending')
+    expect(h.runtime.store.tickets.get(ticket.id)?.ended?.outcome).toBe('completed')
+    expect(h.runtime.store.tickets.get(ticket.id)?.execution?.p4Delivery).toBe('pending')
+    expect(h.runtime.reviews.held(ticket.id)).toBe(false)
+    expect(h.runtime.effects.pending('reportCloud')).toBe(true)
+    expect(server.changes.get(501)).toMatchObject({ status: 'pending', shelved: SHELF })
+    expect(writes()).toEqual([])
+    const entries = h.runtime.reviews.audit().length
+    await h.runtime.reviews.completePending(ticket.id, finger)
+    expect(h.runtime.reviews.audit()).toHaveLength(entries)
+  })
+  it('refuses non-pool tickets without P4 side effects', async () => {
+    const ordinary = await shelvedTicket(); await report(ordinary.sessionId)
+    await expect(h.runtime.reviews.completePending(ordinary.ticket.id, h.runtime.reviews.get(ordinary.ticket.id)!.fingerprint)).rejects.toThrow('TAPD pool')
+    expect(writes()).toEqual([])
+  })
+  it('refuses changed shelves without P4 side effects', async () => {
+    const { ticket } = await readyPool()
+    const finger = h.runtime.reviews.get(ticket.id)!.fingerprint
+    server.changes.get(501)!.shelved = [{ ...SHELF[0]!, digest: 'CHANGED' }]
+    await expect(h.runtime.reviews.completePending(ticket.id, finger)).rejects.toThrow('shelf changed')
+    expect(h.runtime.store.tickets.get(ticket.id)?.ended).toBeUndefined()
+    expect(writes()).toEqual([])
+  })
+})
+
 describe('requesting a review', () => {
   it.each([undefined, null])('keeps the P4 delivery gate after a refused CL, even when the next ready omits it (%s)', async changelist => {
     const { ticket, sessionId } = await shelvedTicket()

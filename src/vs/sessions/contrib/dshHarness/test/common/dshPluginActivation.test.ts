@@ -5,7 +5,7 @@
 
 import assert from 'assert';
 import {
-	DSH_UNDISABLABLE_BUNDLES, isBundleDisableForbidden, isBundleEnabled, parseHmrPatchState, parseProfileBundles, serializeProfilePackageJson, setBundleEnabled, setRowDisabledOverride,
+	DSH_UNDISABLABLE_BUNDLES, isBundleDisableForbidden, isBundleEnabled, migrateOfficialWorktreeBundles, migrateRetiredEgoBundles, parseHmrPatchState, parseProfileBundles, serializeProfilePackageJson, setBundleEnabled, setRowDisabledOverride,
 } from '../../common/dshPluginActivation.js';
 
 /** 真实 profile package.json 的形态（取自 poc/dsh-p0/.dsh-home/profiles/vssaros/package.json）。 */
@@ -69,6 +69,43 @@ suite('dshPluginActivation（启停 = profile 组合的 bundles 成员）', () =
 		assert.strictEqual(isBundleDisableForbidden('@vssaros/dsh-kanban'), false);
 		// 空名不产生变更
 		assert.strictEqual(setBundleEnabled(profile(['a']), '  ', false).changed, false);
+	});
+
+	test('★ 官方 Forge 组合迁移：与独立 tool-worktree 互斥（2026-11-17）', () => {
+		const forge = '@deepseek-ai/dsh-experimental-forge-bundle';
+		const standalone = '@deepseek-ai/dsh-experimental-tool-worktree';
+		// 旧 profile 两者都在 ⇒ 移除独立包，其他项与顺序不变；入参不被改写。
+		const both = ['@deepseek-ai/dsh-base', standalone, '@vssaros/dsh-worktree', forge];
+		const migrated = migrateOfficialWorktreeBundles(both);
+		assert.deepStrictEqual(migrated.next, ['@deepseek-ai/dsh-base', '@vssaros/dsh-worktree', forge]);
+		assert.deepStrictEqual(migrated.removed, [standalone]);
+		assert.deepStrictEqual(both, ['@deepseek-ai/dsh-base', standalone, '@vssaros/dsh-worktree', forge]);
+		// 幂等：迁移后重跑不再有变化。
+		assert.deepStrictEqual(migrateOfficialWorktreeBundles(migrated.next).removed, []);
+		// 尚未切到 Forge 的 profile：保留独立工具，不擅自改用户配置。
+		const independent = ['@deepseek-ai/dsh-base', standalone];
+		assert.deepStrictEqual(migrateOfficialWorktreeBundles(independent).next, independent);
+		assert.deepStrictEqual(migrateOfficialWorktreeBundles(independent).removed, []);
+		// Forge 已启用但独立包不在 ⇒ 无变化。
+		assert.deepStrictEqual(migrateOfficialWorktreeBundles([forge]).removed, []);
+	});
+
+	test('退役迁移：内置 dsh-ego-browser 后摘掉旧 @vssaros/dsh-ego（避免 ego_status 重名）', () => {
+		const retired = '@vssaros/dsh-ego';
+		const builtin = 'dsh-ego-browser';
+		const both = ['@deepseek-ai/dsh-base', retired, builtin, '@vssaros/dsh-bridge'];
+		const migrated = migrateRetiredEgoBundles(both);
+		assert.deepStrictEqual(migrated.next, ['@deepseek-ai/dsh-base', builtin, '@vssaros/dsh-bridge']);
+		assert.deepStrictEqual(migrated.removed, [retired]);
+		assert.deepStrictEqual(both, ['@deepseek-ai/dsh-base', retired, builtin, '@vssaros/dsh-bridge'], '入参不许被改写');
+		// 幂等：迁移后重跑不再有变化。
+		assert.deepStrictEqual(migrateRetiredEgoBundles(migrated.next).removed, []);
+		// 新插件还没启用时保留旧插件，不擅自改用户配置（能力不回退）。
+		const onlyOld = ['@deepseek-ai/dsh-base', retired];
+		assert.deepStrictEqual(migrateRetiredEgoBundles(onlyOld).next, onlyOld);
+		assert.deepStrictEqual(migrateRetiredEgoBundles(onlyOld).removed, []);
+		// 干净 profile（只有新插件）⇒ 无变化。
+		assert.deepStrictEqual(migrateRetiredEgoBundles([builtin]).removed, []);
 	});
 
 	test('缺失 dsh 结构时能补出来（不破坏其它字段）', () => {

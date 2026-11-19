@@ -58,6 +58,7 @@ import { coexistenceOf, type Coexistence } from './coexist.ts'
 import { Distiller } from './distill.ts'
 import { deliverReply, deskReceiptStream, deskRequestId, deskSessionId, deskTools, deskWithoutCatalog, latestPersonMessage, submitText, TICKET_ENDED_NOTICE, ticketEndedNotice } from './desk.ts'
 import { ticketResultNotices, ticketStatusNotices } from './ticket-notices.ts'
+import { hostPoolAuthorization } from '../sources/tapd-pool-authorization.ts'
 import { DeskChat } from './desk-chat.ts'
 import { DeskOutbox, wakesDesk } from './desk-outbox.ts'
 import { GROUP_REFERENCE_KIND, GROUP_REFERENCE_LATE_MS, GROUP_REFERENCE_WAIT_MS, handleDeskGroupCommand, handleDeskMessage, isGroupCreationRequest,
@@ -70,6 +71,7 @@ import { deskFlow, type DeskFlow } from './desk-flow.ts'
 import { botTrigger, DESK_PERSON, deskTrigger, makeSuperagentKind, sessionTrigger, SUPERAGENT_HOPS_MAX, SUPERAGENT_MENTION, SUPERAGENT_SOURCE } from '../sources/superagent.ts'
 import { TapdConfigSchema } from '../sources/tapd-api.ts'
 import { sourceContextOf, type SourceContextDeps } from './source-context.ts'
+import { poolIntakeStatus } from './tapd-pool-status.ts'
 import type { ResourceHost } from './resources.ts'
 import { mainTools, type MainToolsHost } from './tools/main.ts'
 import { executorTools, tapdItemTool, type ExecutorToolsHost } from './tools/executor.ts'
@@ -374,11 +376,13 @@ export class Runtime extends Service implements SourceHost {
         launched: ticketId => { void runtime.steps?.kick(ticketId) } })
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
         settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),
-        deliver: (id, text) => sessions.prompt(masterId, id, text, 'steer'), candidateCard: candidate => candidateCard(links, candidate), db: store.db })
+        deliver: (id, text) => sessions.prompt(masterId, id, text, 'steer'), recorded: id => sessions.recorded(masterId, id),
+        candidateCard: candidate => candidateCard(links, candidate), db: store.db })
       const outbox = this.outbox = new Outbox({ store, effects, sources, commands, paused: () => this.paused() })
       // VsSaros addition (2026-11-13): reports are a separate durable effect, not part of the 100-word reply outbox.
       const reports = this.reports = new TicketReports({ store, effects, commands, stateDir: machine.stateDir,
         enabled: () => store.settings().executor.feishuReport,
+        documentsEnabled: () => store.settings().executor.feishuReportDocument,
         warn: message => { ctx.logger.warn('dsh-superagent: %s', message) } })
       const { assessor, executor } = this
       const policy = () => settingsPolicy(store.settings(), sources)
@@ -455,7 +459,12 @@ export class Runtime extends Service implements SourceHost {
       const evaluateDue = () => { engine.evaluateDue(); evals.set(evalsHealth(store)) }
       const passes = this.passes = new Passes({ engine: { receive: trigger => engine.receive(trigger), evaluateDue }, effects,
         health: this.runtimeHealth, lifetime: this.lifetime, configured: () => setup.configured(), closing: () => this.closing() })
-      this.sourceDeps = { store, engine, outbox, commands, sources, get ready() { return runtime.ready },
+      this.sourceDeps = { store, engine, outbox, commands, sources,
+        intake: { status: id => poolIntakeStatus(store, id, evalId => {
+          const row = store.db.prepare("SELECT error FROM effect WHERE kind='assessment' AND key=?").get(evalId)
+          return row?.error ? String(row.error) : undefined
+        }), requeue: id => { const queued = engine.reevaluate(id); if (queued) passes.request(); return queued } },
+        get ready() { return runtime.ready },
         get deployment() { return setup.deployment }, configured: () => setup.configured(),
         get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, receive: trigger => passes.receive(trigger) }
       // VsSaros addition: the review gate in front of every P4 submit, reachable only from the panel's routes.
@@ -716,6 +725,15 @@ export class Runtime extends Service implements SourceHost {
     for (const id of this.settings.syncable()) await this.settings.sync(id).catch(() => { /* sync() records its failure in health. */ })
     // If stop() was called while awaiting setup, session creation, or policy sync, do not start background loops.
     if (this.closing()) return
+    await this.reviews.completeReadyPoolDeliveries().catch((error: unknown) => {
+      this.ctx.logger.warn('dsh-superagent: pending pool handoff requires attention: %s', String(error))
+    })
+    if (this.store.settings().executor.feishuReportDocument) {
+      for (const ticket of this.store.tickets.list()) {
+        const origin = this.store.triggers.get(ticket.origin.triggerId)
+        if (ticket.ended && origin && hostPoolAuthorization(this.store, origin) && !this.reports.status(ticket).docUrl) this.reports.queueDocument(ticket)
+      }
+    }
     this.executor.resume()
     void this.steps.resume()
     this.passes.start()
@@ -750,7 +768,18 @@ export class Runtime extends Service implements SourceHost {
     const runtime = this
     const { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, setup, passes, reviews, team, retro, staffing, distiller, steps, deskChat, deskId, stepApprovals, feed, reports } = this
     return { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, reviews, team, retro, staffing, distiller, steps, deskChat, deskId, stepApprovals, feed, reports,
-      outbox: this.outbox, archive: this.archive,
+      outbox: this.outbox, archive: this.archive, context: kind => runtime.context(kind),
+      readTapdUser: async () => {
+        const get = Reflect.get(this.ctx, 'get') as ((name: string) => unknown) | undefined
+        const service = get?.call(this.ctx, 'vssarosTof') as { status(options: { fresh: boolean }): Promise<import('../sources/tapd-identity.ts').TapdUserIdentity> } | undefined
+        return service ? await service.status({ fresh: true }) : { signedIn: false, loginName: '' }
+      },
+      readTapdFilterPage: async kind => {
+        const get = Reflect.get(this.ctx, 'get') as ((name: string) => unknown) | undefined
+        const service = get?.call(this.ctx, 'vssarosBrowser') as { tapdFilters?: { read(kind: 'story' | 'bug'): Promise<unknown> } } | undefined
+        if (!service?.tapdFilters) throw new Error('Host 浏览器采集服务未加载，请更新浏览器插件')
+        return service.tapdFilters.read(kind)
+      },
       coexist: () => this.coexistence(), usage: this.usage, steward: this.steward, toolTrace: this.toolTrace,
       deskFlow: (triggerId: string): DeskFlow => deskFlow({ store, proposal: ticketId => staffing.tables.latest(ticketId), team: ticketId => steps.view(ticketId),
         approvals: () => stepApprovals.list(), route: id => this.groupRoutes.get(id) }, triggerId),

@@ -195,20 +195,31 @@ export class AgentHostGitService implements IAgentHostGitService {
 			.map(line => URI.file(line.substring('worktree '.length)));
 	}
 
+	/**
+	 * ★ P2 收口（方案 B「一套 git 源，以 dsh 侧为准」）：上游 agentHost 的 worktree **写操作已下线**。
+	 *
+	 * 原因：这个服务运行在独立 agentHost 进程（`agentHostMain.ts` / `agentHostServerMain.ts`），
+	 * 拿不到 Electron main 的 dsh Host 转发器；继续在这里 `git worktree add/remove` 就会形成
+	 * 第二套 worktree 真源（路径池、沙箱策略、会话投影全都不一致）。
+	 *
+	 * ⇒ 三个写方法一律抛明确错误，不静默降级；worktree 的创建/删除统一走
+	 *   dsh Host `/x/worktree/api/create|remove`。`getWorktreeRoots` 等只读 git 命令保留
+	 *   （不产生 worktree 状态），由 agentHost 自己读仓库信息。
+	 */
+	private _rejectWorktreeWrite(op: string): never {
+		throw new Error(`[AgentHostGitService] ${op} 已收口到 dsh Host（/x/worktree/api/*，唯一 git 源）；上游 agentHost 不得再自行创建/删除 worktree`);
+	}
+
 	async addWorktree(repositoryRoot: URI, worktree: URI, branchName: string, startPoint: string): Promise<void> {
-		// Pass --no-track so the new agent branch never picks up upstream
-		// tracking from the start point (e.g. when starting from
-		// 'origin/main', without --no-track git would set the new branch's
-		// upstream to origin/main, which would mis-attribute pushes/pulls).
-		await this._runGit(repositoryRoot, ['worktree', 'add', '--no-track', '-b', branchName, worktree.fsPath, startPoint], { timeout: 30_000, throwOnError: true });
+		return this._rejectWorktreeWrite(`addWorktree(${repositoryRoot.fsPath} → ${worktree.fsPath}, ${branchName}@${startPoint})`);
 	}
 
 	async addExistingWorktree(repositoryRoot: URI, worktree: URI, branchName: string): Promise<void> {
-		await this._runGit(repositoryRoot, ['worktree', 'add', worktree.fsPath, branchName], { timeout: 30_000, throwOnError: true });
+		return this._rejectWorktreeWrite(`addExistingWorktree(${repositoryRoot.fsPath} → ${worktree.fsPath}, ${branchName})`);
 	}
 
 	async removeWorktree(repositoryRoot: URI, worktree: URI): Promise<void> {
-		await this._runGit(repositoryRoot, ['worktree', 'remove', '--force', worktree.fsPath], { timeout: 30_000, throwOnError: true });
+		return this._rejectWorktreeWrite(`removeWorktree(${repositoryRoot.fsPath} → ${worktree.fsPath})`);
 	}
 
 	async branchExists(repositoryRoot: URI, branchName: string): Promise<boolean> {

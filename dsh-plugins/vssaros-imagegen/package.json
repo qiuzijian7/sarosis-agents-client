@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-imagegen",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "VsSaros image-generation module for DeepSeek Harness: the `image_generate` tool (execution goes back to the IDE through the control bridge, so provider credentials and approvals stay in one place) plus the client-side tool card that renders the generated image right in the chat. The canvas workbench has two modes: free drawing (Excalidraw, lazily loaded) and a node workflow (nodes + edges, topological run, JSON Canvas 1.0 interop).",
   "private": true,
   "type": "module",

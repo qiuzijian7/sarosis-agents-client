@@ -13,7 +13,7 @@ import {
 } from '../../common/dshHostConfig.js';
 import {
 	renderAgentsOverlay, renderBridgeOverlay, renderCodebaseOverlay, renderDataRootOverlay,
-	renderKanbanOverlay, renderSandboxOverlay,
+	renderKanbanOverlay, renderOfficeOverlay, renderSandboxOverlay, renderSidebarLayoutOverlay,
 } from '../../common/dshCli.js';
 import { renderMcpOverlay } from '../../common/dshMcpConfig.js';
 import { renderSkillsOverlay } from '../../common/dshSkillDirs.js';
@@ -41,9 +41,9 @@ const SUPERVISOR = 'src/vs/sessions/contrib/dshHarness/electron-main/dshHostSupe
 const MCP_CONFIG = 'src/vs/sessions/contrib/dshHarness/common/dshMcpConfig.ts';
 
 /** 覆盖层的**固定顺序**（前者先落地；后者覆盖前者，故顺序即语义）。 */
-const ORDER: readonly DshHostOverlayKind[] = ['bridge', 'kanban', 'codebase', 'mcp', 'skills', 'agents', 'dataRoot', 'sandbox'];
+const ORDER: readonly DshHostOverlayKind[] = ['bridge', 'kanban', 'codebase', 'mcp', 'skills', 'agents', 'dataRoot', 'sandbox', 'office', 'sidebarLayout'];
 
-/** 一份"全字段"配置（各字段都非空，用来断言 9 条齐出）。 */
+/** 一份"全字段"配置（各字段都非空，用来断言 10 条齐出）。 */
 const fullConfig: IDshHostConfig = {
 	bridge: { pipe: '\\\\.\\pipe\\vssaros-1', token: 'tok-1', hideOfficialDeepseek: true, welcomeNoticeVersion: '1.2.3' },
 	dataRoot: 'C:/Users/x/.vssaros-dev',
@@ -51,13 +51,18 @@ const fullConfig: IDshHostConfig = {
 	workspaceRoot: 'C:/work/repo',
 	relatedRoots: ['C:/work/other'],
 	agentsRoot: 'C:/Users/x/.vssaros-dev/agents',
+	agentsBuiltinRoot: 'C:/builtin/agents',
 	// 内置**不在** `skillDirs` 里（2026-10-13 P2：它走 `bundledSkillDir` ⇒ rank 600 ✓）
 	skillDirs: ['C:/Users/x/.vssaros-dev/skills'],
 	bundledSkillDir: 'C:/builtin/skills',
 	mcpServers: [{ serverName: 'kb', transport: 'stdio', command: 'node', args: ['kb.js'] }],
 	mcpConfigPath: 'C:/Users/x/.vssaros-dev/mcp.json',
-	// 沙箱降级（2026-10-13）：探针探不通时才有值 ⇒ 这里给上，断言它排在**最后**一条 ✓
+	unrealBridgeUrl: 'http://127.0.0.1:9999',
+	browser: { port: 9333, launchDedicated: false, headless: true },
+	// 沙箱降级（2026-10-13）：探针探不通时才有值 ⇒ 这里给上，断言顺序固定 ✓
 	sandboxMode: 'danger-full-access',
+	office: { base: 'C:/office', node: 'C:/node.exe', cli: false },
+	sidebarLayoutV1: true,
 };
 
 suite('dshHostConfig（中立配置源：配置 → 覆盖层）', () => {
@@ -65,7 +70,7 @@ suite('dshHostConfig（中立配置源：配置 → 覆盖层）', () => {
 	test('文件名常量：与主进程 `bridge-<id>.yml` / `roots-<id>.yml` 等逐字同形', () => {
 		assert.strictEqual(hostOverlayFileName('bridge', 'abc123'), 'bridge-abc123.yml');
 		assert.strictEqual(hostOverlayFileName('dataRoot', 'abc123'), 'roots-abc123.yml', '数据根那条的文件名是 `roots-`（历史命名）');
-		assert.deepStrictEqual(Object.keys(DSH_HOST_OVERLAY_PREFIX).sort(), [...ORDER].sort(), '前缀表必须覆盖且仅覆盖这 8 类');
+		assert.deepStrictEqual(Object.keys(DSH_HOST_OVERLAY_PREFIX).sort(), [...ORDER].sort(), '前缀表必须覆盖且仅覆盖这 10 类');
 		assert.strictEqual(DSH_HOST_CONFIG_FILENAME, 'vssaros.config.json');
 	});
 
@@ -86,10 +91,15 @@ suite('dshHostConfig（中立配置源：配置 → 覆盖层）', () => {
 		assert.strictEqual(byKind.get('mcp'), renderMcpOverlay(fullConfig.mcpServers!));
 		assert.strictEqual(byKind.get('skills'), renderSkillsOverlay(fullConfig.skillDirs!, fullConfig.bundledSkillDir),
 			'内置也要原样转发（漏传 ⇒ 覆盖层里没有 bundled 那条 ⇒ 内置掉回 300 ✗）');
-		assert.strictEqual(byKind.get('agents'), renderAgentsOverlay('C:/Users/x/.vssaros-dev/agents'));
-		assert.strictEqual(byKind.get('dataRoot'), renderDataRootOverlay('C:/Users/x/.vssaros-dev', 'C:/Users/x/.vssaros-dev/mcp.json'));
+		assert.strictEqual(byKind.get('agents'), renderAgentsOverlay('C:/Users/x/.vssaros-dev/agents', 'C:/builtin/agents'));
+		assert.strictEqual(byKind.get('dataRoot'), renderDataRootOverlay(
+			'C:/Users/x/.vssaros-dev', 'C:/Users/x/.vssaros-dev/mcp.json',
+			{ unrealBridgeUrl: 'http://127.0.0.1:9999', browser: fullConfig.browser }),
+			'dataRoot 覆盖层必须把 unreal/browser 一起写进同一份 config');
 		assert.strictEqual(byKind.get('sandbox'), renderSandboxOverlay('danger-full-access', 'C:/work/repo'),
 			'沙箱降级那条打的是 base 的 `sandbox-policy` 行（探针探不通才会出现）');
+		assert.strictEqual(byKind.get('office'), renderOfficeOverlay(fullConfig.office!), 'Office 覆盖层必须与渲染器逐字一致');
+		assert.strictEqual(byKind.get('sidebarLayout'), renderSidebarLayoutOverlay(), 'P3 覆盖层必须与渲染器逐字一致');
 		assert.ok(!overlays.some(o => (o.kind as string) === 'memory'),
 			'记忆网关覆盖层已随 IDE 侧 AgentMemory 一并退役（11-03 不再生成，11-10 删净生产/消费方）');
 	});
@@ -135,9 +145,9 @@ suite('dshHostConfig（中立配置源：配置 → 覆盖层）', () => {
 		// JSON 往返：新字段必须参与 ✓ —— 否则**独立启动器**（没有 VsSaros 的入口）读同名配置时会把它们
 		// 静默丢掉 ✗（`parseDshHostConfig` 只认它列出的字段 ✓）。
 		// ★ 2026-11-10：`kbRoot` 已从中立配置删除（独立启动器同样读 dsh 侧 `.kb-root.json`）。
-		const roundTrip = parseDshHostConfig(serializeDshHostConfig({ dataRoot: '/d', unrealBridgeUrl: 'http://x' }));
-		assert.deepStrictEqual(roundTrip, { dataRoot: '/d', unrealBridgeUrl: 'http://x' },
-			'字段必须能无损往返（否则独立启动器丢字段，且丢得没声音 ✗）');
+		const roundTrip = parseDshHostConfig(serializeDshHostConfig({ dataRoot: '/d', unrealBridgeUrl: 'http://x', sidebarLayoutV1: false }));
+		assert.deepStrictEqual(roundTrip, { dataRoot: '/d', unrealBridgeUrl: 'http://x', sidebarLayoutV1: false },
+			'字段必须能无损往返（尤其显式 false 的 P3 回退开关，丢掉会静默变成默认新布局 ✗）');
 		// browser 单独一条（它含布尔 false ⇒ 走的是另一套解析，见 `parseDshHostConfig` 里那段注释 ✓）
 		const browserRoundTrip = parseDshHostConfig(serializeDshHostConfig({
 			dataRoot: '/d', browser: { port: 9333, launchDedicated: false, headless: false },
@@ -145,16 +155,19 @@ suite('dshHostConfig（中立配置源：配置 → 覆盖层）', () => {
 		assert.deepStrictEqual(browserRoundTrip?.browser, { port: 9333, launchDedicated: false, headless: false },
 			'browser 三键必须无损往返（尤其两个 `false`：丢掉任何一个都等于把用户的"关掉"变成"默认" ✗）');
 
-		assert.deepStrictEqual(renderHostOverlays({}), [], '空配置 ⇒ 一条都不渲染');
+		const defaultOverlays = renderHostOverlays({});
+		assert.deepStrictEqual(defaultOverlays.map(o => o.kind), ['sidebarLayout'], 'P3 默认开启 ⇒ 空配置也生成 sidebarLayout 覆盖层');
+		assert.strictEqual(defaultOverlays[0].text, renderSidebarLayoutOverlay(), '默认覆盖层必须与渲染器逐字一致');
+		assert.deepStrictEqual(renderHostOverlays({ sidebarLayoutV1: false }), [], '显式 false ⇒ 回退旧布局且不渲染覆盖层');
 		// 空白串与空数组一律当"没给"（主进程到处是 `.trim() || undefined` 与 `filter(...existsSync)`）
 		assert.deepStrictEqual(renderHostOverlays({
 			dataRoot: '   ', workspaceId: '', workspaceRoot: '\t', agentsRoot: ' ',
-			skillDirs: ['', '  '], relatedRoots: [], mcpServers: [], mcpConfigPath: ' ',
+			skillDirs: ['', '  '], relatedRoots: [], mcpServers: [], mcpConfigPath: ' ', sidebarLayoutV1: false,
 		}), []);
-		assert.deepStrictEqual(renderHostOverlays({ bridge: { pipe: 'p', token: '   ', hideOfficialDeepseek: false } }).map(o => o.kind), [],
+		assert.deepStrictEqual(renderHostOverlays({ bridge: { pipe: 'p', token: '   ', hideOfficialDeepseek: false }, sidebarLayoutV1: false }).map(o => o.kind), [],
 			'token 为空 ⇒ 不注入 bridge 覆盖层（否则伴生插件会拿空 token 起来）');
 		// 只给 workspaceId ⇒ 只出看板那条（数据根缺省时不给 `dataRoot` 参数）
-		const kanbanOnly = renderHostOverlays({ workspaceId: 'ws-2' });
+		const kanbanOnly = renderHostOverlays({ workspaceId: 'ws-2', sidebarLayoutV1: false });
 		assert.deepStrictEqual(kanbanOnly.map(o => o.kind), ['kanban']);
 		assert.strictEqual(kanbanOnly[0].text, renderKanbanOverlay('ws-2', undefined));
 	});

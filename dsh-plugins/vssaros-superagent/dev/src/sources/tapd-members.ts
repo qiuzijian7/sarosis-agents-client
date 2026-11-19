@@ -5,7 +5,8 @@
  * configure WeCom aliases instead. A query value must have the semicolons stripped, and an alias
  * must be resolved to the Chinese name before it is compared with an owner or sent as a filter.
  * The retired intranet platform's `/api/tapd/members` endpoint is gone (0.1.81): only the static
- * `members` mapping in the Source's settings is used, so this module has no network dependency.
+ * `members` mapping remains the explicit override, so this module has no network dependency.
+ * Pool auto matching and directory-validated confirmations are in `tapd-identity.ts`.
  */
 export interface TapdMember { alias: string; name: string }
 

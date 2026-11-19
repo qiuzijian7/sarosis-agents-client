@@ -81,6 +81,13 @@ interface ICuratedThirdPartyBundle {
  *     不需要也不应该再给一条安装入口。
  *   - 保留的两条在 rc.2 lockfile 与 node_modules 里都真实存在且声明了 `dsh.bundle.patch`。
  *   - 存在性由 `agentStudio/test/common/dshPluginRecommendations.test.ts` 动态守卫，别再把失效名加回来。
+ *
+ * ★ 2026-11-17（官方 Forge UI）：`@deepseek-ai/dsh-experimental-forge-bundle` 与独立包
+ *   `@deepseek-ai/dsh-experimental-tool-worktree` **都不列入本清单**。
+ *   Forge 组合是「一套 git 源，以 dsh 侧为准」的必需装配（工具 + GUI + `ctx.worktrees` 服务），
+ *   由运行时伴生安装链与构建期种子默认安装，并锁为不可停用（见 `dshPluginActivation.ts`）。
+ *   列进「可选安装」会变成两条安装路径，且与 forge-bundle 的 patch 插出重复 id ⇒ 装配异常。
+ *   本清单的纪律是「没随发行装上的可选组合包」，不适用必需组件。
  */
 const OFFICIAL_OPTIONAL_BUNDLES: readonly IOfficialOptionalBundle[] = [
 	{

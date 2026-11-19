@@ -1585,11 +1585,15 @@ export class DshFullWindowContribution extends Disposable {
 		const layoutTimer = win.setInterval(layout, 500);
 
 		// ★ 等我们的换皮装好再显示。
-		//   锚点选 **`data-vssaros-wb-tabstrip`**（页签条外壳）而不是里面的 `data-vssaros-wb-tabs`：
-		//   外壳是**常驻 overlay**（`client.workbenchNav` 一渲染就有节点，几何测不到时只是 `display:none`），
-		//   而里面那个只在"有页签"时才存在 ⇒ 拿它当锚点会在新会话首屏永远等不到（每次都白等满超时 ✗）。
-		//   超时（9s）也照常显示 —— 页面本身出问题时不许白屏 ✗。
-		const vssarosReady = await this._dsh.waitViewSelector(chatViewId, '[data-vssaros-wb-tabstrip]', 9_000).catch(() => false);
+		//   旧布局锚点选 **`data-vssaros-wb-tabstrip`**（常驻 overlay），新 P3 布局则等
+		//   `data-vssaros-guide-root`（自家 guide 根节点）。都不拿 `data-vssaros-wb-tabs` 当锚点：
+		//   那个只在"有页签"时才存在 ⇒ 拿它当锚点会在新会话首屏永远等不到（每次都白等满超时 ✗）。
+		//   总超时（9s）也照常显示 —— 页面本身出问题时不许白屏 ✗。
+		// P3 双锚点：旧布局等常驻页签条外壳；新布局（中栏不再有 TabStrip）等自家 guide 根节点。
+		// 先给旧锚点 1.5s，失败再等新锚点 7.5s ⇒ 总超时仍 9s，且新布局不会每次白等满 9s。
+		const legacyReady = await this._dsh.waitViewSelector(chatViewId, '[data-vssaros-wb-tabstrip]', 1_500).catch(() => false);
+		const vssarosReady = legacyReady
+			|| await this._dsh.waitViewSelector(chatViewId, '[data-vssaros-guide-root]', 7_500).catch(() => false);
 		if (!vssarosReady) {
 			this._log.warn('[dshHarness] desktop: 等换皮超时（9s）⇒ 仍然显示视图（可能是页面本身有问题）');
 		}
@@ -1721,7 +1725,7 @@ export class DshFullWindowContribution extends Disposable {
 		await has('入口按钮', '[data-vssaros-hero-split]');
 		await has('★ 入口没有压住官方按钮（几何自证）', '[data-vssaros-hero-split-clear="1"]');
 		await has('对照·官方「打开侧边栏」', '[data-sidebar-right-expand], [data-sidebar-right-toggle]');
-		await has('对照·页签条', '[data-vssaros-wb-tabstrip]');
+		await has('对照·页签条/新主页', '[data-vssaros-wb-tabstrip], [data-vssaros-guide-root]');
 		await has('对照·输入框', '[data-composer-card]');
 		// ★ 「布局 ▾」已按用户要求移除 ⇒ 这两行用来正反确认：
 		//   动作组那枚「新窗格」在（说明动作组真的渲染了，反证后面那条"没有"不是因整组不渲染）✓

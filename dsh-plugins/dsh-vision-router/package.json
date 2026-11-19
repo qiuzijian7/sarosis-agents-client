@@ -1,0 +1,93 @@
+{
+  "name": "dsh-vision-router",
+  "version": "3.4.0",
+  "description": "Eyes for text-only DeepSeek Harness agents: built-in free vision chain + pixel-level tools. Remote vision providers, including the default free fallback, receive image content unless strict local-only use is configured.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ysr666/dsh-vision-router.git"
+  },
+  "homepage": "https://github.com/ysr666/dsh-vision-router",
+  "type": "module",
+  "main": "lib/public-entry.js",
+  "icon": "./assets/icon.svg",
+  "bin": {
+    "dsh-vision-router": "./lib/doctor-cli-p0.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./lib/public-entry.d.ts",
+      "default": "./lib/public-entry.js"
+    },
+    "./client": "./lib/client.js",
+    "./icon": "./assets/icon.svg",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "README.md",
+    "README.zh.md",
+    "scripts/install-native-ocr.mjs",
+    "assets",
+    "cordis.patch.yml",
+    "docs",
+    "entry.js",
+    "index.js",
+    "lib"
+  ],
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": ">=24.9.0",
+    "dsh": ">=0.2.1-rc.5 <0.3.0-0"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "vision",
+    "vision-tools",
+    "multimodal",
+    "openrouter",
+    "image",
+    "ocr",
+    "screenshot",
+    "plugin"
+  ],
+  "dependencies": {
+    "@visioncortex/vtracer": "1.0.0-alpha.4",
+    "puppeteer-core": "^25.16.0",
+    "semver": "7.7.3",
+    "undici": "^7.30.1",
+    "zod": "^4.6.6"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm-deepseek": ">=0.2.1-rc.5 <0.3.0-0",
+    "@deepseek-ai/schemastery": ">=3.18.0",
+    "sharp": ">=0.35.3 <1"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-llm-deepseek": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    },
+    "sharp": {
+      "optional": true
+    }
+  }
+}

@@ -28,6 +28,26 @@ import { assertType } from '../../base/common/types.js';
 import { URI } from '../../base/common/uri.js';
 import { generateUuid } from '../../base/common/uuid.js';
 
+/**
+ * ★ P2（方案 B「一套 git 源，以 dsh 侧为准」）：`vscode:execGit` 的唯一转发出口。
+ *
+ * WorktreeService / WorktreeCheckpointServiceImpl / gitCommitService 的 git 命令全部经这个回调
+ * 送到 dsh Host 的 `/x/worktree/api/git` 执行 ⇒ Electron 主进程不再 spawn git。
+ * 未接线或 Host 未起时返回 `undefined` ⇒ `vscode:execGit` **硬失败**（绝不回退本地 spawn）。
+ */
+interface IWorktreeGitResult {
+	readonly success: boolean;
+	readonly stdout: string;
+	readonly stderr: string;
+	readonly exitCode: number;
+}
+let worktreeGitExecutor: ((input: {
+	readonly cwd: string;
+	readonly args: string[];
+	readonly env?: Record<string, string>;
+	readonly timeoutMs?: number;
+}) => Promise<IWorktreeGitResult | undefined>) | undefined;
+
 // 后台 execute_code 任务注册表（P0-2）：spawn 后常驻，供 poll/kill 控制面访问。
 // 模块级单例：app 主进程全程唯一，足以在多次 IPC 调用间持有子进程句柄。
 interface IBgExecHandle {
@@ -671,48 +691,22 @@ export class CodeApplication extends Disposable {
 				? Math.min(600_000, Math.max(1_000, timeoutMs))
 				: 30_000;
 
-			return new Promise<{ success: boolean; stdout: string; stderr: string; exitCode: number }>((resolve) => {
-				const child = spawn('git', args, {
-					cwd,
-					env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...extraEnv },
-					windowsHide: true,
-				});
-
-				let stdout = '';
-				let stderr = '';
-				let settled = false;
-
-				// Timeout: kill the process to prevent indefinite hanging
-				// (e.g. git waiting for auth, network issues with remote refs).
-				// 默认 30s；调用方可通过第 5 个参数放宽（见上方 `effectiveTimeoutMs`）。
-				const timeoutHandle = setTimeout(() => {
-					if (!settled) {
-						settled = true;
-						try { child.kill('SIGKILL'); } catch { /* ignore */ }
-						resolve({ success: false, stdout, stderr: stderr + `\n[timeout: git process killed after ${effectiveTimeoutMs}ms]`, exitCode: -1 });
-					}
-				}, effectiveTimeoutMs);
-
-				child.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
-				child.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
-
-				child.on('error', (err) => {
-					if (!settled) {
-						settled = true;
-						clearTimeout(timeoutHandle);
-						resolve({ success: false, stdout, stderr: err.message, exitCode: -1 });
-					}
-				});
-
-				child.on('close', (code) => {
-					if (!settled) {
-						settled = true;
-						clearTimeout(timeoutHandle);
-					resolve({ success: code === 0, stdout, stderr, exitCode: code ?? -1 });
+			// ★ P2 收口（方案 B「一套 git 源，以 dsh 侧为准」）：dsh Host 是**唯一**执行 git 的进程。
+			// Host 未接线 / 未起 / 转发失败 ⇒ **硬失败**，绝不回退本地 spawn（那会形成第二套真源）。
+			// 失败原因会原样回到 renderer 的 execGit，再由各调用方显示给用户，不静默降级。
+			if (!worktreeGitExecutor) {
+				return { success: false, stdout: '', stderr: 'dsh Host 未接线：git 执行的唯一真源是 dsh Host（请先启动 Harness）', exitCode: -1 };
+			}
+			try {
+				const forwarded = await worktreeGitExecutor({ cwd, args, env: extraEnv, timeoutMs: effectiveTimeoutMs });
+				if (forwarded) {
+					return forwarded;
 				}
-			});
+				return { success: false, stdout: '', stderr: 'dsh Host 未运行或未返回 git 结果（唯一真源不可用）', exitCode: -1 };
+			} catch (err) {
+				return { success: false, stdout: '', stderr: `dsh Host git 转发失败：${err instanceof Error ? err.message : String(err)}`, exitCode: -1 };
+			}
 		});
-	});
 
 	// Generic code/script execution handler: lets the renderer run shell commands
 	// (python3/node/shell, e.g. the anysearch CLI) via the main process child_process.
@@ -2047,6 +2041,21 @@ export class CodeApplication extends Disposable {
 		//   `originId` 用 IDE 资产 id ⇒ 与 dsh 的 `ideSync` 幂等（推成功过的不会被再插一条）；
 		//   Host 没起 / 认证失败 / 超时都只记日志，IDE 侧行为完全不变（失败的那批仍会被 sync 收编）。
 		mediaStoreChannel.setDshPush(input => { void dshHarnessChannel.pushMediaToHost(input); });
+
+		// ★ P2（方案 B）：把 `vscode:execGit` 接到 dsh Host ⇒ 所有 git 命令都在同一个 Host 进程、
+		// 同一套沙箱策略下执行；IDE 侧只在 Host 没起时回退本地 spawn。
+		worktreeGitExecutor = async input => {
+			const reply = await dshHarnessChannel.executeWorktreeGit(input);
+			if (!reply.ok) {
+				return undefined;
+			}
+			try {
+				const parsed = JSON.parse(reply.text) as { result?: IWorktreeGitResult };
+				return parsed?.result;
+			} catch {
+				return undefined;
+			}
+		};
 
 
 		// Logger

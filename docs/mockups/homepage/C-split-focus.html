@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>C · 分栏聚焦 | VsSaros 主页重设计</title>
+<link rel="stylesheet" href="./common.css">
+<style>
+  .split{display:grid;grid-template-columns:264px minmax(0,1fr);gap:12px;align-items:start}
+  .pane{position:sticky;top:58px;min-width:0;padding:14px;border:1px solid var(--dsw-alias-border-l1);
+    border-radius:var(--wb-r-md);background:var(--dsw-alias-bg-layer-1);box-shadow:var(--shadow-1)}
+  .pane .search{height:32px;border-radius:16px;margin-bottom:12px}
+  .nav-item{display:flex;align-items:center;gap:9px;width:100%;padding:7px 8px;border:0;border-radius:8px;
+    background:transparent;text-align:left;cursor:pointer;transition:background .15s,color .15s}
+  .nav-item:hover{background:var(--dsw-alias-bg-layer-2)}
+  .nav-item.is-active{background:var(--dsw-alias-brand-soft);color:var(--dsw-alias-brand-primary)}
+  .nav-item .ic{width:14px;height:14px}
+  .nav-item .grow{flex:1;min-width:0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .nav-item .n{font:10.5px var(--wb-mono);color:var(--dsw-alias-label-faint)}
+  .nav-item.is-active .n{color:var(--dsw-alias-brand-primary)}
+  .nav-group{margin:0 0 4px;padding:0 8px;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--dsw-alias-label-faint)}
+  .pane-sep{height:1px;background:var(--dsw-alias-border-l1);margin:12px 0}
+  .right{min-width:0;display:flex;flex-direction:column;gap:12px}
+  .detail-hd{display:flex;align-items:center;gap:13px;flex-wrap:wrap;padding:16px 18px}
+  .detail-hd .big{width:44px;height:44px;flex:none;border-radius:12px;display:grid;place-items:center;
+    background:var(--dsw-purple-soft);color:var(--dsw-purple)}
+  .detail-hd .big .ic{width:23px;height:23px}
+  .detail-hd h2{margin:0;font-size:17px;font-weight:650}
+  .detail-hd p{margin:3px 0 0;font-size:11.5px;color:var(--dsw-alias-label-secondary)}
+  .detail-hd .grow{flex:1;min-width:140px}
+  .mini-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+  .mini-kpi{padding:10px 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:11px;background:var(--dsw-alias-bg-layer-2)}
+  .mini-kpi b{display:block;font:600 19px/1.25 var(--wb-mono);letter-spacing:-.02em}
+  .mini-kpi span{font-size:10.5px;color:var(--dsw-alias-label-secondary)}
+  .two{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(210px,1fr);gap:12px}
+  .doc{display:flex;align-items:center;gap:9px;padding:8px 0;border-top:1px solid var(--dsw-alias-border-l1)}
+  .doc:first-child{border-top:0}
+  .doc .ic{width:14px;height:14px;color:var(--dsw-alias-label-faint)}
+  .doc .grow{flex:1;min-width:0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .doc .t{font:10.5px var(--wb-mono);color:var(--dsw-alias-label-faint)}
+  .shortcut{display:flex;flex-direction:column;gap:7px}
+  .shortcut .btn{justify-content:flex-start}
+  @container (max-width:900px){.two{grid-template-columns:1fr}.mini-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @container (max-width:760px){.split{grid-template-columns:1fr}.pane{position:static}.detail-hd{padding:13px}}
+  @container (max-width:420px){.mini-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="rail" aria-label="活动栏">
+    <div class="rail-logo" title="VsSaros">V</div>
+    <button class="rail-item is-active" title="主页" data-toast="主页 /x/dashboard/"><svg class="ic"><use href="#i-home"></use></svg></button>
+    <button class="rail-item" title="会话" data-toast="打开 /x/sessions/"><svg class="ic"><use href="#i-message"></use></svg></button>
+    <button class="rail-item" title="知识库" data-toast="打开 /x/kb/"><svg class="ic"><use href="#i-book"></use></svg></button>
+    <button class="rail-item" title="代码库" data-toast="打开 /x/codebase/"><svg class="ic"><use href="#i-code"></use></svg></button>
+    <button class="rail-item" title="媒体库" data-toast="打开 /x/media/"><svg class="ic"><use href="#i-image"></use></svg></button>
+    <div class="rail-sep"></div>
+    <button class="rail-item" title="商城" data-toast="打开 /x/marketplace/"><svg class="ic"><use href="#i-store"></use></svg></button>
+    <button class="rail-item" title="自动化任务" data-toast="打开 /x/scheduler/"><svg class="ic"><use href="#i-calendar"></use></svg></button>
+    <div class="rail-spacer"></div>
+    <button class="rail-item" title="工作台中心" data-toast="工作台中心：11 格启动器"><svg class="ic"><use href="#i-grid"></use></svg></button>
+    <button class="rail-item" title="设置" data-toast="打开设置"><svg class="ic"><use href="#i-settings"></use></svg></button>
+  </nav>
+
+  <div class="workbench">
+    <header class="topbar">
+      <div class="crumbs"><b>VsSaros</b><span class="sep">/</span><span>主页</span><span class="sep">/</span><span data-selected-crumb>知识库</span></div>
+      <div class="topbar-spacer"></div>
+      <button class="btn sm" data-narrow aria-pressed="false"><svg class="ic"><use href="#i-panel-left"></use></svg>预览 320px 侧栏</button>
+      <span class="status-live"><span class="dot"></span>2 个 Agent 在跑</span>
+      <button class="btn icon sm ghost" data-theme-toggle aria-label="切换主题" title="切换主题"><svg class="ic"><use href="#i-moon"></use></svg></button>
+      <div class="avatar" title="当前用户">Q</div>
+    </header>
+
+    <main class="stage">
+      <div class="stage-inner">
+        <a class="backlink" href="./index.html"><svg class="ic"><use href="#i-arrow-right"></use></svg>返回方案对比</a>
+
+        <div class="page-head">
+          <div class="grow">
+            <div class="eyebrow">Home / Split focus · Pane × Surface</div>
+            <h1 class="title">主页 · 分栏聚焦</h1>
+            <p class="subtitle">左栏是目录（catalog pane），右栏是核心区（core pane）。点左栏条目切换选中态；收窄到 320px 时按 <code>@container</code> 堆叠。</p>
+          </div>
+          <div class="head-actions">
+            <button class="btn" data-toast="编辑左栏分组与排序"><svg class="ic"><use href="#i-sliders"></use></svg>整理左栏</button>
+            <button class="btn" data-toast="添加组件：画廊"><svg class="ic"><use href="#i-plus"></use></svg>添加组件</button>
+          </div>
+        </div>
+
+        <div class="split">
+          <!-- 左 Pane：目录 -->
+          <aside class="pane" data-filter-scope aria-label="目录 Pane">
+            <label class="search"><svg class="ic"><use href="#i-search"></use></svg><input data-filter type="search" placeholder="筛选工作台 / 会话…" aria-label="筛选目录"></label>
+
+            <div class="nav-group">工作台 · 8</div>
+            <button class="nav-item" data-filter-item data-select data-name="主页" data-desc="会话遥测 / 用量与编排" data-route="/x/dashboard/" data-count="32 会话" data-icon="home" data-toast="选中：主页"><svg class="ic"><use href="#i-home"></use></svg><span class="grow">主页</span><span class="n">32</span></button>
+            <button class="nav-item is-active" data-filter-item data-select data-name="知识库" data-desc="知识库索引与检索" data-route="/x/kb/" data-count="42 个库" data-icon="book" data-toast="选中：知识库"><svg class="ic"><use href="#i-book"></use></svg><span class="grow">知识库</span><span class="n">42</span></button>
+            <button class="nav-item" data-filter-item data-select data-name="记忆" data-desc="分层记忆 / 待确认建议 / 工作区作用域（会话页记忆 Tab 同源）" data-route="/x/memory/" data-count="3 条待确认" data-icon="brain" data-toast="选中：记忆"><svg class="ic"><use href="#i-brain"></use></svg><span class="grow">记忆</span><span class="n">3</span></button>
+            <button class="nav-item" data-filter-item data-select data-name="代码库" data-desc="代码图谱与符号检索" data-route="/x/codebase/" data-count="12,480 符号" data-icon="code" data-toast="选中：代码库"><svg class="ic"><use href="#i-code"></use></svg><span class="grow">代码库</span><span class="n">12.4k</span></button>
+            <button class="nav-item" data-filter-item data-select data-name="媒体库" data-desc="只读 media.db 页面" data-route="/x/media/" data-count="214 素材" data-icon="image" data-toast="选中：媒体库"><svg class="ic"><use href="#i-image"></use></svg><span class="grow">媒体库</span><span class="n">214</span></button>
+            <button class="nav-item" data-filter-item data-select data-name="商城" data-desc="Agent / Skill / 工作台 / 工作流的安装与发布" data-route="/x/marketplace/" data-count="18 已安装" data-icon="store" data-toast="选中：商城"><svg class="ic"><use href="#i-store"></use></svg><span class="grow">商城</span><span class="n">18</span></button>
+            <button class="nav-item" data-filter-item data-select data-name="历史会话" data-desc="会话分组 / 人格标记 / 指示灯" data-route="/x/sessions/" data-count="32 会话" data-icon="history" data-toast="选中：历史会话"><svg class="ic"><use href="#i-history"></use></svg><span class="grow">历史会话</span><span class="n">32</span></button>
+            <button class="nav-item" data-filter-item data-select data-name="自动化任务" data-desc="按计划自动运行 Agent；原生任务页" data-route="/x/scheduler/" data-count="4 已启用" data-icon="calendar" data-toast="选中：自动化任务"><svg class="ic"><use href="#i-calendar"></use></svg><span class="grow">自动化任务</span><span class="n">4</span></button>
+
+            <div class="pane-sep"></div>
+            <div class="nav-group">最近会话</div>
+            <button class="nav-item" data-filter-item data-toast="恢复会话：重构 homepage 布局"><svg class="ic"><use href="#i-sparkles"></use></svg><span class="grow">重构 homepage 布局</span><span class="n">12m</span></button>
+            <button class="nav-item" data-filter-item data-toast="恢复会话：修复 dashboard 卡片拖拽"><svg class="ic"><use href="#i-git-branch"></use></svg><span class="grow">修复卡片拖拽</span><span class="n">18m</span></button>
+            <button class="nav-item" data-filter-item data-toast="恢复会话：MCP 工具注册排查"><svg class="ic"><use href="#i-terminal"></use></svg><span class="grow">MCP 工具注册排查</span><span class="n">1h</span></button>
+            <button class="nav-item" data-filter-item data-toast="恢复会话：知识库索引增量刷新"><svg class="ic"><use href="#i-book"></use></svg><span class="grow">知识库索引刷新</span><span class="n">3h</span></button>
+
+            <div class="pane-sep"></div>
+            <div class="nav-group">已固定</div>
+            <button class="nav-item" data-filter-item data-toast="主页恒为固定，不可取消"><svg class="ic"><use href="#i-pin"></use></svg><span class="grow">主页</span><span class="n">固定</span></button>
+            <button class="nav-item" data-filter-item data-toast="打开已固定的知识库"><svg class="ic"><use href="#i-pin"></use></svg><span class="grow">知识库</span><span class="n">固定</span></button>
+            <button class="nav-item" data-filter-item data-toast="打开已固定的历史会话"><svg class="ic"><use href="#i-pin"></use></svg><span class="grow">历史会话</span><span class="n">固定</span></button>
+          </aside>
+
+          <!-- 右 Pane：核心区 -->
+          <div class="right" data-tabs-scope>
+            <div class="card" style="padding:8px 12px">
+              <div class="tabs">
+                <button class="tab is-active" data-tab="overview">概览</button>
+                <button class="tab" data-tab="sessions">会话</button>
+                <button class="tab" data-tab="telemetry">遥测</button>
+              </div>
+            </div>
+
+            <div data-panel="overview" style="display:flex;flex-direction:column;gap:12px">
+              <section class="card detail-hd">
+                <span class="big"><svg class="ic" data-selected-icon><use href="#i-book"></use></svg></span>
+                <div class="grow"><h2 data-selected-name>知识库</h2><p><span data-selected-desc>知识库索引与检索</span> · <span class="mono" data-selected-route>/x/kb/</span></p></div>
+                <span class="pill brand" data-selected-count>42 个库</span>
+                <button class="btn primary" data-toast="打开 /x/kb/ 知识库"><svg class="ic"><use href="#i-external"></use></svg>打开工作台</button>
+                <button class="btn" data-toast="固定到活动栏 / dsh 侧栏"><svg class="ic"><use href="#i-pin"></use></svg>固定</button>
+              </section>
+
+              <section class="card">
+                <div class="card-hd"><div class="ico"><svg class="ic"><use href="#i-chart"></use></svg></div><h2>全局概览</h2><span class="grow"></span><span class="hint">跨模块 · 近 30 天</span></div>
+                <div class="mini-kpis">
+                  <div class="mini-kpi"><b>32</b><span>会话 · 4 活跃</span></div>
+                  <div class="mini-kpi"><b>1,284</b><span>turn · 3,907 step</span></div>
+                  <div class="mini-kpi"><b>2.65M</b><span>token</span></div>
+                  <div class="mini-kpi"><b>3</b><span>待办 · 待回答 1</span></div>
+                </div>
+              </section>
+
+              <div class="two">
+                <section class="card">
+                  <div class="card-hd"><div class="ico" style="background:var(--dsw-purple-soft);color:var(--dsw-purple)"><svg class="ic"><use href="#i-file-text"></use></svg></div><h2>最近文档</h2><span class="grow"></span><span class="link" data-toast="在知识库中打开全部">全部 →</span></div>
+                  <div class="doc"><svg class="ic"><use href="#i-file-text"></use></svg><span class="grow">工作台开发规范 2.4</span><span class="t">12m</span></div>
+                  <div class="doc"><svg class="ic"><use href="#i-file-text"></use></svg><span class="grow">dashboard 组件目录</span><span class="t">1h</span></div>
+                  <div class="doc"><svg class="ic"><use href="#i-file-text"></use></svg><span class="grow">主题令牌速查</span><span class="t">3h</span></div>
+                  <div class="doc"><svg class="ic"><use href="#i-file-text"></use></svg><span class="grow">插件发布清单</span><span class="t">昨天</span></div>
+                  <div class="doc"><svg class="ic"><use href="#i-file-text"></use></svg><span class="grow">会话投影缓存口径</span><span class="t">昨天</span></div>
+                </section>
+                <section class="card">
+                  <div class="card-hd"><div class="ico" style="background:var(--dsw-teal-soft);color:var(--dsw-teal)"><svg class="ic"><use href="#i-zap"></use></svg></div><h2>快捷操作</h2></div>
+                  <div class="shortcut">
+                    <button class="btn" data-toast="新建会话（桥 newChat）"><svg class="ic"><use href="#i-plus"></use></svg>新建会话</button>
+                    <button class="btn" data-toast="关联飞书文档"><svg class="ic"><use href="#i-external"></use></svg>关联文档</button>
+                    <button class="btn" data-toast="打开知识库树"><svg class="ic"><use href="#i-folder"></use></svg>打开目录树</button>
+                    <button class="btn" data-toast="刷新索引（增量）"><svg class="ic"><use href="#i-refresh"></use></svg>刷新索引</button>
+                  </div>
+                </section>
+              </div>
+            </div>
+
+            <div data-panel="sessions" hidden>
+              <section class="card">
+                <div class="card-hd"><div class="ico" style="background:var(--dsw-ok-soft);color:var(--dsw-ok)"><svg class="ic"><use href="#i-list"></use></svg></div><h2>会话明细</h2><span class="grow"></span><span class="hint">复用 sessions widget</span></div>
+                <div class="rows">
+                  <div class="row" data-toast="恢复会话：重构 homepage 布局"><span class="r-ico"><svg class="ic"><use href="#i-sparkles"></use></svg></span><div class="grow"><div class="row-title">重构 homepage 布局</div><div class="row-sub">sess_…a1 · live · turn 12</div></div><span class="pill brand">进行中</span><span class="row-meta">12m</span></div>
+                  <div class="row" data-toast="恢复会话：修复 dashboard 卡片拖拽"><span class="r-ico"><svg class="ic"><use href="#i-git-branch"></use></svg></span><div class="grow"><div class="row-title">修复 dashboard 卡片拖拽</div><div class="row-sub">sess_…b7 · cache · turn 8</div></div><span class="pill warn">待回答</span><span class="row-meta">18m</span></div>
+                  <div class="row" data-toast="恢复会话：MCP 工具注册排查"><span class="r-ico"><svg class="ic"><use href="#i-terminal"></use></svg></span><div class="grow"><div class="row-title">MCP 工具注册排查</div><div class="row-sub">sess_…c2 · cache · turn 21</div></div><span class="pill ok">已完成</span><span class="row-meta">1h</span></div>
+                  <div class="row" data-toast="恢复会话：知识库索引增量刷新"><span class="r-ico"><svg class="ic"><use href="#i-book"></use></svg></span><div class="grow"><div class="row-title">知识库索引增量刷新</div><div class="row-sub">sess_…d9 · cache · turn 6</div></div><span class="pill ok">已完成</span><span class="row-meta">3h</span></div>
+                </div>
+              </section>
+            </div>
+
+            <div data-panel="telemetry" hidden>
+              <div class="two">
+                <section class="card">
+                  <div class="card-hd"><div class="ico"><svg class="ic"><use href="#i-activity"></use></svg></div><h2>用量分布</h2></div>
+                  <div class="metric-line"><span class="lbl">输入</span><div class="bar"><span style="width:82%"></span></div><span class="val">1.20M</span></div>
+                  <div class="metric-line"><span class="lbl">输出</span><div class="bar green"><span style="width:27%"></span></div><span class="val">386K</span></div>
+                  <div class="metric-line"><span class="lbl">读缓存</span><div class="bar teal"><span style="width:56%"></span></div><span class="val">820K</span></div>
+                  <div class="metric-line"><span class="lbl">写缓存</span><div class="bar purple"><span style="width:17%"></span></div><span class="val">240K</span></div>
+                </section>
+                <section class="card">
+                  <div class="card-hd"><div class="ico" style="background:var(--dsw-amber-soft);color:var(--dsw-amber)"><svg class="ic"><use href="#i-terminal"></use></svg></div><h2>诊断行</h2></div>
+                  <dl class="dl">
+                    <div class="dl-row"><dt>数据目录</dt><dd><code>~/.dsh/storages/session_projcache</code></dd></div>
+                    <div class="dl-row"><dt>工具</dt><dd><code>24 个已注册</code></dd></div>
+                    <div class="dl-row"><dt>live</dt><dd><code>2 服务 · 覆盖 7 会话</code></dd></div>
+                  </dl>
+                </section>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="dash-foot">
+          <span>左栏 = catalog pane · 右栏 = core pane · 宿主 = dsh 中栏 / VsSaros <code>?surface=sideview</code></span>
+          <span class="grow"></span><span>vssaros-dashboard 0.4.79 · 布局预设 split</span>
+        </div>
+
+        <details class="notes">
+          <summary>设计说明 · C 分栏聚焦（与现有框架的对应关系）</summary>
+          <table>
+            <tr><th>项</th><th>说明</th></tr>
+            <tr><td>定位</td><td>把主页做成<b>桌面工具</b>：左目录 / 右详情。直接对齐 <code>doc/workbench-authoring-standard.md</code> 的 <b>Pane × Surface</b> 与 <code>wb-split / wb-pane-left / wb-pane-right</code> 骨架。</td></tr>
+            <tr><td>信息架构</td><td>左栏三段：工作台（8，可搜索）/ 最近会话 / 已固定；右栏三页签：概览（选中项详情 + 全局概览 + 最近文档 + 快捷操作）/ 会话 / 遥测。</td></tr>
+            <tr><td>复用 widget</td><td><code>workbench</code>（改成左栏列表）、<code>kpi</code>（缩小成全局概览 4 格）、<code>sessions</code>、<code>usage</code>、<code>diag</code>；<code>workspaces / clock / pomodoro</code> 收进画廊待加。</td></tr>
+            <tr><td>新增</td><td>① <b>选中态</b>（一次只选一项，刷新后保留需落盘，走现有 <code>layout.json</code> 的 <code>settings</code> 即可，不必扩桥）；② 每模块的「最近项 / 统计」—— 建议一期只做 <code>catalog.js</code> 已有的计数，别在这里开跨模块取数的口子。</td></tr>
+            <tr><td>侧栏兼容</td><td><b>最好</b>：点顶栏「预览 320px 侧栏」会把画布收成 330px，<code>@container (max-width:760px)</code> 立刻把两栏堆叠、KPI 降为 2 列。用容器查询而非 <code>@media</code>，因为侧栏与编辑区同窗不同宽。</td></tr>
+            <tr><td>落地代价 / 风险</td><td>中偏大：多一层选中态与一块详情区；宽屏且模块少时右区会显空，需要给「全局概览」留足内容。建议先只做「工作台 + 会话」两段的详情。</td></tr>
+          </table>
+          <p>原型里点左栏工作台会实时更新右栏的标题 / 描述 / 路由 / 计数与图标；左栏搜索框过滤所有条目。机器锚点仍应放在与布局无关的隐藏 meta 块里（<code>renderDashboardPage()</code> 里的 <code>metaBlock</code>），不要挂在选中项上。</p>
+        </details>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="./common.js"></script>
+<script>
+  // 选中态：只改展示，不取数（真实实现由服务端数据岛提供每个模块的摘要）
+  document.querySelectorAll('[data-select]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      document.querySelectorAll('[data-select]').forEach(function (b) { b.classList.remove('is-active'); });
+      btn.classList.add('is-active');
+      var name = btn.getAttribute('data-name');
+      document.querySelector('[data-selected-name]').textContent = name;
+      document.querySelector('[data-selected-desc]').textContent = btn.getAttribute('data-desc');
+      document.querySelector('[data-selected-route]').textContent = btn.getAttribute('data-route');
+      document.querySelector('[data-selected-count]').textContent = btn.getAttribute('data-count');
+      document.querySelector('[data-selected-crumb]').textContent = name;
+      document.querySelector('[data-selected-icon] use').setAttribute('href', '#i-' + btn.getAttribute('data-icon'));
+    });
+  });
+</script>
+</body>
+</html>

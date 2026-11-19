@@ -39,8 +39,11 @@ import { auditBundledPluginVersions, isVersionNewer, renderBundledVersionAudit }
 import { describeManualUpgrade, IThirdPartyPlugin, pickThirdPartyPlugins, upgradableSpecOf } from '../common/dshPluginUpgrade.js';
 import { DSH_HOST_IDLE_TTL_MS, DshHostOverlayKind, hostOverlayFileName, IDshHostConfig, renderHostOverlays } from '../common/dshHostConfig.js';
 import { HOST_RUN_OWNERSHIP_HEARTBEAT_MS, hostRunOwnershipFileName } from '../common/dshHostRunOwnership.js';
-import { DSH_ARCHIFY_PLUGIN_NAME, DSH_BRIDGE_PLUGIN_NAME, DSH_EGO_PLUGIN_NAME, DSH_BROWSER_PLUGIN_NAME, DSH_OFFICE_TEMPLATE_PLUGIN_NAME, DSH_CHAT_SURFACE_PLUGIN_NAME, DSH_DEFAULT_PROFILE, DSH_FOUNDATION_PLUGIN_NAME, DSH_KB_REFS_PLUGIN_NAME, DSH_LOOP_PLUGIN_NAME, DSH_PLUGIN_RESOURCES_PLUGIN_NAME, DSH_UNREAL_PLUGIN_NAME, DSH_VOICE_BUNDLE_PLUGIN_NAME, DSH_WEB_APP_BUNDLE_NAME, DSH_WORKBENCHES_PLUGIN_NAME, DSH_WORKITEM_PLUGIN_NAME, IDshBundledInstallResult, IDshHostStartOptions, IDshHostStatus, IDshPluginInfo, sameStartOptions } from '../common/dshHarness.js';
-import { mergeMissingBundles, parseProfileBundles } from '../common/dshPluginActivation.js';
+import { DSH_ARCHIFY_PLUGIN_NAME, DSH_BRIDGE_PLUGIN_NAME, DSH_EGO_BROWSER_PLUGIN_NAME, DSH_VISION_ROUTER_PLUGIN_NAME, DSH_BETTER_SIDEBAR_PLUGIN_NAME, DSH_BROWSER_PLUGIN_NAME, DSH_OFFICE_TEMPLATE_PLUGIN_NAME, DSH_CHAT_SURFACE_PLUGIN_NAME, DSH_DEFAULT_PROFILE, DSH_FOUNDATION_PLUGIN_NAME, DSH_KB_REFS_PLUGIN_NAME, DSH_LOOP_PLUGIN_NAME, DSH_PLUGIN_RESOURCES_PLUGIN_NAME, DSH_UNREAL_PLUGIN_NAME, DSH_FORGE_BUNDLE_PLUGIN_NAME, DSH_FORGE_CLIENT_UI_PLUGIN_NAME, DSH_FORGE_GITHUB_PLUGIN_NAME, DSH_FORGE_PLUGIN_NAME, DSH_FORGE_SESSION_PLUGIN_NAME, DSH_VOICE_BUNDLE_PLUGIN_NAME, DSH_WORKTREE_RUNTIME_PLUGIN_NAME, DSH_WEB_APP_BUNDLE_NAME, DSH_WORKBENCHES_PLUGIN_NAME, DSH_WORKITEM_PLUGIN_NAME, IDshBundledInstallResult, IDshHostStartOptions, IDshHostStatus, IDshPluginInfo, sameStartOptions } from '../common/dshHarness.js';
+import { mergeMissingBundles, migrateOfficialWorktreeBundles, migrateRetiredEgoBundles, parseProfileBundles } from '../common/dshPluginActivation.js';
+import { renderSessionIdentityPreload } from '../common/dshSessionIdentity.js';
+import { renderSessionSearchCompatPreload } from '../common/dshSessionSearchCompat.js';
+import { renderWorktreeLongPathsPreload } from '../common/dshWorktreeLongPaths.js';
 import { hostLeaseBlocker, IDshHostLease, staleHostByPluginFiles } from '../common/dshHostLease.js';
 import { SANDBOX_FALLBACK_MODE, SANDBOX_FALLBACK_ROOT } from '../common/dshSandboxCompat.js';
 import { probeLabelWriteOnce } from './dshSandboxProbe.js';
@@ -237,12 +240,23 @@ export interface IDshHostSupervisorOptions {
 	 */
 	readonly archifyPluginDir?: string;
 	/**
-	 * 随包 **ego lite（`ego-browser`）接入插件**目录（`dsh-plugins/vssaros-ego/`）。
+	 * 随包 **vendored 第三方 `dsh-ego-browser`** 目录（`dsh-plugins/dsh-ego-browser/`；上游 v0.14.1，MIT）。
 	 *
-	 * 与 archify 同一条"存在才装"的伴生路径（它也没有 `vssaros.module`：不是我们的 UI 模块）。
-	 * 装不上不影响启动 —— 用户没装 ego lite 应用时那 4 个工具本来就用不了，`ego_status` 会说明原因。
+	 * 与 archify 同一条"存在才装"的伴生路径（它没有 `vssaros.module`：不是我们的 UI 模块）。
+	 * 2026-11-19 起替代自研薄接入 `@vssaros/dsh-ego`（两者 `ego_status` 重名 ⇒ 不能并存）。
+	 * 装不上不影响启动：只是没有 agent 专属浏览器那套 `ego_*` 工具，`vssaros-browser` 照常可用。
 	 */
-	readonly egoPluginDir?: string;
+	readonly egoBrowserPluginDir?: string;
+	/**
+	 * 随包 **vendored 第三方 `dsh-vision-router`** 目录（`dsh-plugins/dsh-vision-router/`；上游 v3.4.0，MIT）。
+	 *
+	 * 与 archify / ego-browser 同一条"存在才装"的伴生路径（它没有 `vssaros.module`）。
+	 * 2026-11-19 起内置：图片轮视觉路由 + 14 个 `vision_*` 工具；与 `vssaros-media` 的
+	 * `vision_analyze` 不重名 ⇒ 并存。装不上不影响启动（只是没有像素工具链）。
+	 * ⚠ 它带 5 个真实运行时依赖：产品构建期由种子烘进去（装机后零网络），
+	 *   dev 全新 profile 的伴生安装需要一次网络 —— 口径见该目录 `VENDOR.md`。
+	 */
+	readonly visionRouterPluginDir?: string;
 	/**
 	 * **work item 内核**目录（`dsh-plugins/vssaros-workitem/`，2026-10-31）。
 	 *
@@ -252,6 +266,17 @@ export interface IDshHostSupervisorOptions {
 	 * ⚠ 顺序要求：排在 `loopPluginDir` 与模块插件**之前**（见伴生安装清单的先后）。
 	 */
 	readonly workItemPluginDir?: string;
+	/**
+	 * 随包 **vendored 第三方 `dsh-better-sidebar`** 目录
+	 * (`dsh-plugins/dsh-better-sidebar/`；上游 `omdsh-dev/DSH-better-sidebar` v0.32.1，MIT)。
+	 *
+	 * 与 archify / ego-browser / vision-router 同一条"存在才装"的伴生路径（没有 `vssaros.module`）。
+	 * 2026-11-19 起内置：宿主原生右栏 tab + 自绘底部工作台，文件树 / 编辑器 / Git / Tasks /
+	 * 侧边对话，按会话隔离。装不上不影响启动（只是没有那一套工作台）。
+	 * ⚠ 32 个真实运行时依赖：产品构建期由种子烘进去（装机后零网络），dev 全新 profile
+	 *   需要一次网络。⚠ 上游已移除工作区路径围栏、且会接管宿主起始页 —— 见 `VENDOR.md`。
+	 */
+	readonly betterSidebarPluginDir?: string;
 	/**
 	 * **无人值守循环**目录（`dsh-plugins/vssaros-loop/`，2026-10-30）。
 	 * 与 workitem 同一条伴生路径；必须在 workitem **之后**装（它 `ctx.inject(['vssarosWorkItems'])` 等内核）。
@@ -1087,13 +1112,22 @@ export class DshHostSupervisor extends Disposable {
 				// 与前两个同一条路（存在才装、装不上不影响启动 ⇒ 只是技能库里少一个 archify ✓）。
 				// 装的是**本地暂存目录**（零网络）⇒ 首启只多一次暂存拷贝，不像 npm 那条要等 30s+ ✓。
 				[DSH_ARCHIFY_PLUGIN_NAME, this._opts.archifyPluginDir, 'archify skill bundle'],
-				// **ego lite 的接入插件**（`ego_status` / `ego_guide` / `ego_spaces` / `ego_run` + 随包技能）：
+				// **随包内置的第三方 `dsh-ego-browser`**（34 个 `ego_*` 工具 + 受管 Chrome/CDP 运行时 + 观察窗）：
 				// 与 archify / browser 同一条"存在才装、装不上不影响启动"的路（本地暂存目录 ⇒ 零网络）。
-				// 它不提供浏览器本体（第三方 app 单独安装）⇒ 缺席只是少一个可选浏览器，不是能力回归。
-				[DSH_EGO_PLUGIN_NAME, this._opts.egoPluginDir, 'ego lite plugin'],
+				// 它自带运行时 ⇒ 用户不必另装 app；缺席只是少一个 agent 专属浏览器，不是能力回归。
+				// ⚠ 旧的 `@vssaros/dsh-ego` 已退役且不再列入这里：两者 `ego_status` 重名会让整条 entry 失效。
+				[DSH_EGO_BROWSER_PLUGIN_NAME, this._opts.egoBrowserPluginDir, 'ego browser plugin'],
+				// **随包内置的第三方 `dsh-vision-router`**（视觉路由 + 14 个 `vision_*` 工具）：
+				// 同一条"存在才装、装不上不影响启动"的路。本地暂存目录 ⇒ 产品构建期已把依赖烘进种子；
+				// dev 全新 profile 里 pnpm 解析那 5 个依赖需要一次网络（见 VENDOR.md）。
+				[DSH_VISION_ROUTER_PLUGIN_NAME, this._opts.visionRouterPluginDir, 'vision router plugin'],
 				// work item 内核（2026-10-31）：loop 与群聊共用的判据层 ⇒ 必须**先于**它们装
 				// （consume 方用 `ctx.inject(['vssarosWorkItems'], …)` 等服务就绪）。
-				[DSH_WORKITEM_PLUGIN_NAME, this._opts.workItemPluginDir, 'work item kernel'],
+				// **随包内置的第三方 `dsh-better-sidebar`**（宿主原生右栏 tab + 自绘底部工作台）：
+			// 同一条"存在才装、装不上不影响启动"的路。产品构建期已把 32 个运行时依赖烘进种子；
+			// dev 全新 profile 里 pnpm 解析它们需要一次网络（见 VENDOR.md）。
+			[DSH_BETTER_SIDEBAR_PLUGIN_NAME, this._opts.betterSidebarPluginDir, 'better sidebar plugin'],
+			[DSH_WORKITEM_PLUGIN_NAME, this._opts.workItemPluginDir, 'work item kernel'],
 				// 无人值守循环（2026-10-30）：同上一条伴生路径，排在工作项内核之后。
 				[DSH_LOOP_PLUGIN_NAME, this._opts.loopPluginDir, 'unattended loop module'],
 				// 模块插件（agents / skills / mcp / kb / memory / codebase / kanban / workflow / dashboard / ide）：
@@ -1104,6 +1138,18 @@ export class DshHostSupervisor extends Disposable {
 				// 语音输入（官方实验 bundle，随 dsh 运行时分发）：本地 SenseVoice 识别，麦克风按钮进 composer。
 				// 装不上不影响启动，聊天框只是没有语音入口。模型权重首次使用时下载到 DSH_HOME。
 				[DSH_VOICE_BUNDLE_PLUGIN_NAME, resolveSiblingPackage(dsh.bin, DSH_VOICE_BUNDLE_PLUGIN_NAME), 'voice-input bundle'],
+				// ★ 2026-11-17（官方 Forge UI）：worktree 的 **GUI + 模型工具**统一由 forge-bundle 装配。
+				//   `resolveSiblingPackage` 从当前 runtime 取本地 `file:` 包 ⇒ 零网络、版本与 dsh 对齐。
+				//   ⚠ 只有 forge-bundle 声明了 `dsh.bundle.patch` ⇒ `dsh plugin add` 只把它追加进
+				//     `dsh.profile.bundles`；其余 5 个只是 dependency。独立包 `tool-worktree`
+				//     **刻意不显式装**（它也有 patch，装了就会进 bundles 与 forge-bundle 撞 id），
+				//     由 forge-bundle 的 dependency 解析（profile 里已有上轮装好的那一份）。
+				[DSH_WORKTREE_RUNTIME_PLUGIN_NAME, resolveSiblingPackage(dsh.bin, DSH_WORKTREE_RUNTIME_PLUGIN_NAME), 'worktree runtime service'],
+				[DSH_FORGE_PLUGIN_NAME, resolveSiblingPackage(dsh.bin, DSH_FORGE_PLUGIN_NAME), 'forge registry'],
+				[DSH_FORGE_GITHUB_PLUGIN_NAME, resolveSiblingPackage(dsh.bin, DSH_FORGE_GITHUB_PLUGIN_NAME), 'forge github provider'],
+				[DSH_FORGE_SESSION_PLUGIN_NAME, resolveSiblingPackage(dsh.bin, DSH_FORGE_SESSION_PLUGIN_NAME), 'forge session binding'],
+				[DSH_FORGE_CLIENT_UI_PLUGIN_NAME, resolveSiblingPackage(dsh.bin, DSH_FORGE_CLIENT_UI_PLUGIN_NAME), 'forge client ui'],
+				[DSH_FORGE_BUNDLE_PLUGIN_NAME, resolveSiblingPackage(dsh.bin, DSH_FORGE_BUNDLE_PLUGIN_NAME), 'forge worktree bundle'],
 				// 调度（官方实验 bundle，重构 2.1；S3 已验证）：time-context / schedule 服务 / ui-schedule。
 				// 装不上不影响启动，只是没有定时任务能力（legacy 调度器本来就不执行 ⇒ 无回归）。
 				// ⚠ 2026-10-31：**不再安装** `@deepseek-ai/dsh-experimental-schedule-bundle`。
@@ -1298,6 +1344,14 @@ export class DshHostSupervisor extends Disposable {
 			//   ⇒ 这里**无条件**补登记：以随包种子（构建期校验过的权威清单）为准，
 			//     保留已有顺序、只追加缺的 ⇒ 幂等，不碰用户手工启停（停用=移出 bundles，我们只补**随包**那些）。
 			await this._ensureProfileBundles(profile, dsh, env, plugins, pluginProfileDir);
+			const sessionIdentityPreload = join(this._opts.runDir, `session-identity-${dsh.version}.mjs`);
+			const identitySource = renderSessionIdentityPreload(dsh.bin) + renderWorktreeLongPathsPreload(dsh.version, process.platform) + renderSessionSearchCompatPreload(dsh.version);
+			const previousIdentitySource = await fsp.readFile(sessionIdentityPreload, 'utf8').catch(() => undefined);
+			if (previousIdentitySource !== identitySource) {
+				await fsp.mkdir(this._opts.runDir, { recursive: true });
+				await fsp.writeFile(sessionIdentityPreload, identitySource, { mode: 0o600 });
+				this._pluginsStale = true;
+			}
 			this._progress('正在启动 Host…');
 			this._throwIfStale(generation);
 
@@ -1305,6 +1359,10 @@ export class DshHostSupervisor extends Disposable {
 			const leases = new DshHostLeaseStore(this.effectiveDshHome(options.dshHome), line => this._appendLog(line));
 			this._leaseStore = leases;
 			const existing = leases.read();
+			if (existing && (await fsp.stat(sessionIdentityPreload)).mtimeMs > existing.startedAt) {
+				this._pluginsStale = true;
+				this._appendLog('not reusing the running Host: Session identity compatibility was updated');
+			}
 			// ★★ 2026-11-02（真机：装完插件后重启 app，日志 `reusing the Host started by pid 115820`，
 			//   Host 21:02 起、插件文件 21:11 才落盘 ⇒ 新代码整轮没执行，且没有任何提示）：
 			//   `_pluginsStale` 只活在**做过安装的那个进程**的内存里 ⇒ app 一重启这个信号就丢了。
@@ -1517,6 +1575,8 @@ export class DshHostSupervisor extends Disposable {
 					// Office 运行时（2026-11-02）：node 必须是 **Host 自己的解释器**（不是 Electron 的
 					// process.execPath）—— 官方 office 技能用它跑 LibreOffice Kit CLI 与脚本。
 					...(officeBase ? { office: { base: officeBase, node: node.path, cli: officeCli } } : {}),
+					// P3 默认开启；只有显式 false 才不写该字段，让 Host 回退旧布局。
+					...(options.sidebarLayoutV1 !== false ? { sidebarLayoutV1: true } : {}),
 				};
 				/** 把各条覆盖层的 YAML 文本按顺序收起来，最后并成**一个** `--patch` 文件（2026-11-02）。 */
 				const mergedParts: string[] = [];
@@ -1634,7 +1694,7 @@ export class DshHostSupervisor extends Disposable {
 						}
 					}
 				}
-				const args = buildHostArgs(dsh.bin, profile, overlays, hostPort);
+				const args = ['--import', pathToFileURL(sessionIdentityPreload).href, ...buildHostArgs(dsh.bin, profile, overlays, hostPort)];
 				// ★★ 2026-10-29（真机：装完最新版本起不来 ⇒ 桌面窗口报「控制桥不可用（Host 未运行）」）：
 				//   Host 侧日志给出了真因：
 				//     dsh: startup failed: 3 required plugins did not activate
@@ -2448,6 +2508,17 @@ export class DshHostSupervisor extends Disposable {
 			}
 			const current = parseProfileBundles(json);
 			const merged = mergeMissingBundles(json, desired);
+			// ★ 2026-11-17：官方 Forge 组合与独立 tool-worktree 互斥 ⇒ 旧 profile 一次性迁移。
+			//   两份 patch 同时生效会插出重复的 `worktree` / `tool-worktree` id（官方升级指南）。
+			const worktreeMigrated = migrateOfficialWorktreeBundles(merged.next);
+			// ★ 2026-11-19：内置 `dsh-ego-browser` 后，旧 profile 里残留的 `@vssaros/dsh-ego` bundle
+			//   必须摘掉 —— 两个插件都注册 `ego_status`，dsh 里同名工具会让整条 entry 失效。
+			const egoMigrated = migrateRetiredEgoBundles(worktreeMigrated.next);
+			const migrated = {
+				next: egoMigrated.next,
+				removed: [...worktreeMigrated.removed, ...egoMigrated.removed],
+			};
+			const finalBundles = migrated.next;
 			// ★ 2026-10-30（用户要求「增加日志」）：**每次启动都打一行**（不只补登记时）——
 			//   现场诊断"界面是 dsh 原生形态"时，第一个要看的就是这三个数：现有 / 随包 / 缺几个。
 			//   以前只在"真的补了"时打一行，于是"bundles 已经是全的、问题在别处"这种情况完全看不出来 ✗。
@@ -2456,17 +2527,19 @@ export class DshHostSupervisor extends Disposable {
 				desired: desired.length,
 				added: merged.added.length,
 				source,
-				bridgeListed: merged.next.includes(DSH_BRIDGE_PLUGIN_NAME),
+				bridgeListed: finalBundles.includes(DSH_BRIDGE_PLUGIN_NAME),
 			};
 			this._appendLog(`profile bundles: 现有 ${current.length} 项 / 随包 ${desired.length} 项（清单来源：${source}）`
-				+ ` / 本次补 ${merged.added.length} 项；bridge ${this._profileBundlesStats.bridgeListed ? '已登记' : '**未登记**'}`
+				+ ` / 本次补 ${merged.added.length} 项`
+				+ (migrated.removed.length ? ` / 迁移移除 ${migrated.removed.join(', ')}` : '')
+				+ `；bridge ${this._profileBundlesStats.bridgeListed ? '已登记' : '**未登记**'}`
 				+ `（profile: ${pluginProfileDir}）`);
-			if (!merged.changed) {
+			if (!merged.changed && !migrated.removed.length) {
 				return;
 			}
 			json.dsh = json.dsh ?? {};
 			json.dsh.profile = json.dsh.profile ?? {};
-			json.dsh.profile.bundles = [...merged.next];
+			json.dsh.profile.bundles = [...finalBundles];
 			// 原子写：dsh 可能同时读这份 package.json（写一半被读到 ⇒ profile 解析失败）
 			const tmp = pkgFile + '.tmp-' + process.pid;
 			await fsp.writeFile(tmp, JSON.stringify(json, null, 2), 'utf8');

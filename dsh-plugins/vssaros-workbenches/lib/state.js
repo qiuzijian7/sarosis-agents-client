@@ -39,9 +39,15 @@ const REPO_ID_RE = /^[a-z0-9][a-z0-9_.-]*\/[a-z0-9][a-z0-9_.-]*$/;
 const LOCAL_ID_RE = /^local:(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 export const validWorkbenchId = value => typeof value === 'string' && value.length <= 255
 	&& (REPO_ID_RE.test(value) || LOCAL_ID_RE.test(value));
+/** 主页排序键：catalogKey / Better Sidebar tab type，允许斜杠、冒号与包名，但限长且去重。 */
+export const validHomeOrderKey = value => typeof value === 'string' && value.length > 0 && value.length <= 200;
 
 export function emptyState() {
-	return { version: 1, added: [], pinned: [], favorites: [], active: null, sessionBindings: {}, recentSessions: {}, notes: {}, hiddenWorkspaces: {} };
+	return {
+		version: 1, added: [], pinned: [], favorites: [], active: null,
+		sessionBindings: {}, recentSessions: {}, notes: {}, hiddenWorkspaces: {},
+		homeWorkbenchOrder: [], homeToolOrder: [],
+	};
 }
 
 export function validateState(value, previous) {
@@ -50,6 +56,13 @@ export function validateState(value, previous) {
 	for (const key of ['added', 'pinned', 'favorites']) {
 		if (!Array.isArray(value[key]) || !value[key].every(validWorkbenchId) || new Set(value[key]).size !== value[key].length) {
 			fail(`${key} 里的工作台身份不合法。`);
+		}
+	}
+	for (const key of ['homeWorkbenchOrder', 'homeToolOrder']) {
+		const order = value[key];
+		if (!Array.isArray(order) || order.length > 2000 || !order.every(validHomeOrderKey)
+			|| new Set(order).size !== order.length) {
+			fail(`${key} 里的主页排序键不合法。`);
 		}
 	}
 	if (value.pinned.some(id => !value.added.includes(id))) { fail('置顶的工作台必须已添加。'); }

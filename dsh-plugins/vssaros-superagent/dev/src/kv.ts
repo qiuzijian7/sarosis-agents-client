@@ -71,8 +71,12 @@ export const KV = {
   tapd: { watch: family<TapdWatchState, [watch: string]>('tapd-watch:'), comments: family<string, [thread: string]>('tapd-comments:'),
     /** Bounded list of the TAPD Webhook event/queue IDs already ingested, so a replay receives nothing twice. */
     webhookSeen: record<string[]>('tapd-webhook-seen'),
+    /** Identity cache is scoped by API, workspace and current account; no credentials or contact data. */
+    identity: family<import('./sources/tapd-identity.ts').TapdIdentityRecord, [scope: string]>('tapd-identity:'),
     /** Per daily imported-filter sweep: last local day it ran and the bounded item IDs already dispatched. */
-    sweep: family<TapdSweepState, [schedule: string]>('tapd-sweep:') },
+    sweep: family<TapdSweepState, [schedule: string]>('tapd-sweep:'),
+    /** Per filter result pool: last local day dispatched and bounded run IDs, so a restart replays nothing. */
+    pool: family<import('./sources/tapd-filter-schemes.ts').PoolRunState, [pool: string]>('tapd-pool:') },
   /** Gongfeng: per-project activation baseline and per-MR comment cursors, separate from GitHub. */
   gongfeng: { watch: family<GongfengWatch, [project: string]>('gongfeng-watch:'),
     notes: family<{ signature: string; at: string }, [project: string, iid: number]>('gongfeng-notes:'),

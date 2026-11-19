@@ -14,7 +14,7 @@ import { DESK_PROMPT } from './desk.ts'
 import type { Effects } from './effects.ts'
 import type { Variable } from './execution-environment.ts'
 import { RetryHealth } from './retry-health.ts'
-import { initializeRoleModel } from './role-models.ts'
+import { initializeRoleModel, recoverRoleModel } from './role-models.ts'
 import { bindPresetPtcRuntime, installWorkerPtc } from './worker-ptc.ts'
 import { bundledSkills } from './skill-files.ts'
 import { SKILL_PREFIX, type PromptVersion, type Prompts } from './prompts.ts'
@@ -195,6 +195,8 @@ export class Sessions {
       result = await ctx.sessionController.resolveAgent(id as SessionId)
     }
     if ('error' in result) throw result.error
+    const workspace = await ctx.workspaceRegistry.create(result.agent.session.header?.cwd ?? cwd)
+    if (!workspace.sessionIds.includes(result.agent.session.id)) await workspace.attachSession(result.agent.session.id)
     const settings = this.host.store.settings()
     if (role !== 'step') await initializeRoleModel(ctx, result.agent, role === 'worker' ? settings.executor.model : settings.eval.model)
     await this.decorate(result.agent)
@@ -233,6 +235,10 @@ export class Sessions {
     const result = await this.ctx.sessionController.resolveAgent(sessionId as SessionId)
     if ('error' in result) throw result.error
     const ticket = this.ticketOf(result.agent)
+    if (!this.host.step?.(sessionId)) {
+      const settings = this.host.store.settings()
+      await recoverRoleModel(this.ctx, result.agent, ticket ? settings.executor.model : settings.eval.model)
+    }
     if (ticket?.execution?.toolMode === 'ptc') {
       const installing = this.bindings.get(result.agent)?.ptc
       if (installing) await installing
@@ -264,6 +270,11 @@ export class Sessions {
     // Deduplicate by notice name and payload hash so retries are idempotent while updated payloads still deliver.
     const text = JSON.stringify(value)
     await this.agentDelivery.send(resolved.agent, `notice:${name}:${key(text)}`, text, { inject: summary }, this.host.lifetime)
+  }
+  /** Root sessions managed by this workbench; never expose the internal router or inherited subagents as worker sessions. */
+  workbenchSessions(): string[] {
+    return [...this.bindings].filter(([agent, binding]) => !binding.subagent && agent.id !== this.host.masterId)
+      .map(([agent]) => agent.session.id)
   }
   /** Returns the current prompt revision, the active prompt revision of each loaded Session, and whether the main Session still has a pending `'prompts'` notice. */
   status() {
@@ -462,6 +473,19 @@ export class Sessions {
         const occupied = store.tickets.open().some(other => other.id !== ticketId && other.execution?.p4Workspace?.root === shared.root
           && (this.ctx.agents.get(`worker-${other.id}` as SessionId)?.status === 'running' || other.follows?.some(follow => follow.own && !follow.closed && follow.thread.startsWith('p4:'))))
         if (occupied) return 'Current P4 workspace is occupied by another ticket'
+        const protectedFiles = current.execution?.protectedP4Files ?? []
+        const args = (execution.arguments ?? {}) as { path?: string; file_path?: string; command?: string }
+        const normalize = (value: string) => value.replace(/\\/g, '/').toLowerCase()
+        if (['edit', 'write'].includes(execution.name)) {
+          const file = args.path ?? args.file_path ?? ''
+          if (protectedFiles.some(path => normalize(path) === normalize(file) || normalize(path).endsWith('/' + normalize(file)))) return 'This file belongs to an earlier delivered pending CL; do not modify it'
+        }
+        if (['pwsh', 'bash'].includes(execution.name) && typeof args.command === 'string'
+          && /\b(?:reopen|edit|reconcile|revert|submit|Set-Content|Out-File|Remove-Item)\b|>>?/i.test(args.command)) {
+          const command = normalize(args.command)
+          if (protectedFiles.length && /\bp4\b/.test(command) && /\.\.\.|\*/.test(command)) return 'Wildcard P4 writes may touch earlier delivered files; use explicit current-ticket paths'
+          if (protectedFiles.some(path => command.includes(normalize(path)) || command.includes(normalize(path).split('/').at(-1)!))) return 'This command touches an earlier delivered pending CL; preserve it'
+        }
       }
       if (agent.id === `worker-${ticketId}` && current.execution?.toolMode === 'ptc' && execution.name !== 'run_code' && !execution.parent) {
         return 'This worker is PTC-only; native fallback is refused. Use SDK tools inside run_code after the Host runtime is available.'

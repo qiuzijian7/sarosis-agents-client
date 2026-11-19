@@ -26,6 +26,17 @@ const PROFILES = [
 	join(homedir(), '.vssaros', 'dsh-home', 'profiles', 'vssaros', 'node_modules', '@vssaros'),
 ];
 
+/**
+ * 上游入口**只能由 dsh Host 解析**的 vendored 第三方包 → 各自需要存在的形态标记。
+ * 见文件末尾「入口真的能 import」那段：这些包离线 import 必然失败，改用形态核对，
+ * 不静默跳过。provenance 与升级流程见各自目录的 `VENDOR.md`。
+ */
+const HOST_RESOLVED_ENTRIES = {
+	'dsh-ego-browser': ['@deepseek-ai/dsh-tools', '@deepseek-ai/schemastery'],
+	'dsh-vision-router': ['./abort-signal-compat.js', '../entry.js'],
+	'dsh-better-sidebar': ['from "ws"', '@deepseek-ai/schemastery'],
+};
+
 function pluginDirs() {
 	return readdirSync(PLUGINS_DIR, { withFileTypes: true })
 		.filter(e => e.isDirectory())
@@ -246,6 +257,21 @@ for (const name of names) {
 	check(`${name}：入口存在（${entryRel}）`, false, `package.json 的 main 指向不存在的文件：${entryRel}`);
 	continue;
 }
+		// ★ 2026-11-19：随包 vendored 的第三方包（`dsh-ego-browser` 是 tsdown 打包产物、
+		//   `dsh-vision-router` 是 200 个源码模块）入口链路里静态 import `@deepseek-ai/*`、
+		//   `sharp` / `puppeteer-core` / `zod` 等 —— 这些包由 **dsh Host** 的 module loader /
+		//   profile 的 node_modules 解析，仓库里没有（也不该有）⇒ 离线 `import()` 必然
+		//   ERR_MODULE_NOT_FOUND，而真机由 Host 加载是正常路径。这里**不静默跳过**：改判
+		//   "入口确实仍是上游形态"（每条都给可复核的字面量），真机激活由各自 VENDOR.md 核对。
+		//   同类先例：tools-snapshot.mjs 的 OFFLINE_UNSUPPORTED。
+		if (HOST_RESOLVED_ENTRIES[name]) {
+			const text = readFileSync(entry, 'utf8');
+			const markers = HOST_RESOLVED_ENTRIES[name];
+			check(`${name}：上游入口由 dsh Host 解析（离线 import 不适用，见 VENDOR.md）`,
+				markers.every(m => text.includes(m)),
+				`入口里应有上游形态标记 ${markers.join(' / ')}；换构建方式要重新评估这条例外`);
+			continue;
+		}
 		const spec = JSON.stringify(pathToFileURL(entry).href);
 		try {
 			execFileSync(process.execPath, ['-e', `import(${spec}).then(()=>{},e=>{console.error(e && e.message || e);process.exit(1)})`], { stdio: 'pipe' });

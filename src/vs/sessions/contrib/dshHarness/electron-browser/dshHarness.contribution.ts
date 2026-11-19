@@ -197,6 +197,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: false,
 			markdownDescription: localize('dshHarness.config.skipPluginInstall', "开发用：启动时跳过随包插件的**升级**安装（缺失的仍会安装）。默认关闭（每次启动把随包插件升到与仓库/产品一致）。打开后本次启动先用已装版本，省掉每次约 2 秒/个的安装等待——仓库里插件版本频繁变动时，启动会明显变慢，就是这个原因。"),
 		},
+		[DshHarnessSettings.SidebarLayoutV1]: {
+			type: 'boolean',
+			default: true,
+			markdownDescription: localize('dshHarness.config.sidebarLayoutV1', "P3 侧栏布局：中间栏顶部不再有工作台页签，只保留会话；左侧移除主页行，右侧「开始」按 v6 效果稿由 VsSaros 主页接管，工作台自动进入目录并另开右栏页签。默认开启；设为 false 可回退旧布局，改动后需重启 Harness。"),
+		},
 		[DshHarnessSettings.ChatEngine]: {
 			type: 'string',
 			// ★ P3（2026-11-07）：legacy 回退已下线 —— IDE 侧技能/工具逻辑正在删除，
@@ -1242,6 +1247,15 @@ class DshPageCommandContribution extends Disposable implements IWorkbenchContrib
 			}
 		}
 		switch (command.method) {
+			// ★ 桥 26→27（方案 B）：worktree 的唯一 git 源在 dsh Host，宿主只转意图。
+			// ⚠ 桥单向 ⇒ 不把「已发出」当成功；Host 完成后会递增快照 revision，
+			//   renderer 轮询到变化再经 PushWorktrees 把真实列表推回页面。
+			case 'createWorktree':
+				await this._dsh.worktreeHostCall('create', { name: command.name });
+				return;
+			case 'removeWorktree':
+				await this._dsh.worktreeHostCall('remove', { path: command.path });
+				return;
 			case 'rightbarBrowser':
 				await this._rightbarBrowser(command, viewId);
 				return;

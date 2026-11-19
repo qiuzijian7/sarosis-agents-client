@@ -68,7 +68,10 @@ export type DshModuleId =
 	// 2026-11-05：SuperAgent 主管（`@vssaros/dsh-superagent`）—— **注册式工作台**，形态同 loop：
 	//   在 DSH_BUILTIN_MODULES、不在容器表/页面表、清单 `view.kind='none'`，界面由 `desktopWorkbenches.register()` 渲染。
 	//   源码、测试与工具链在本插件的 `dev/` 开发工作区（不进包），`pnpm --dir dsh-plugins/vssaros-superagent/dev check` 构建出 `lib/`。
-	| 'superagent';
+	| 'superagent'
+	// 2026-11-17：worktree 权威门面（`@vssaros/dsh-worktree`）—— **纯服务、无界面**。
+	//   dsh Host 是唯一 git 状态真源；登记在 DSH_BUILTIN_MODULES 与页面表（none），不在容器表。
+	| 'worktree';
 	// 2026-10-31（用户要求「移除并行工作台」）：`'parallel'` 联合体成员已删除（原本
 	//   `@vssaros/dsh-parallel` 的并行 TUI 工作台，2026-10-22 加的）；下面四张表里的登记同步删掉
 	//   （联合体 / 内置模块表 / 容器表 / 页面表）—— 漏一处就是"入口还在但点不开"✗。
@@ -150,6 +153,10 @@ export const DSH_BUILTIN_MODULES: readonly IDshBuiltinModule[] = [
 	// `marketplace` = 我们自己的商城（独立页面 `/x/marketplace/`）⇒ 两条数据源、两条能力，互不覆盖 ✓。
 	// 无 ActivityBar 图标：入口走工作台中间栏 / 命令（页面自带 route ⇒ 不必占活动栏一格）。
 	{ module: 'marketplace', pluginName: '@vssaros/dsh-marketplace', summary: '自营商城工作台：agent/skill/工作台/工作流 的浏览、安装、升级、发布与管理（页面 /x/marketplace/）' },
+	// 2026-11-17：worktree 权威门面（方案 B「一套 git 源，以 dsh 侧为准」）。
+	// **无界面模块**：只有 Host 内的 `vssarosWorktree` 服务与 `/x/worktree/api/*`，
+	// IDE 侧 WorktreeService 退化为只读镜像 + 意图转发 ⇒ 不在容器表、页面表登记 `none`。
+	{ module: 'worktree', pluginName: '@vssaros/dsh-worktree', summary: 'worktree 唯一 git 状态真源（Host 侧 /x/worktree/api/* 只读快照与能力探测；写端点 P1 接官方运行时）' },
 	// 2026-10-31：并行工作台已移除 ⇒ 模块描述项一并删除（见上面联合体的注释）。
 	// ★ 2026-11-11：萨罗斯管理平台工作台已移除 ⇒ 模块描述项一并删除（漏一处就是「未登记的内置模块」✗）。
 	// 2026-10-30：萨罗斯中转站工作台已移除 ⇒ 它的模块描述项也一并删除。
@@ -349,6 +356,8 @@ export const DSH_MODULE_PAGES: readonly IDshModulePage[] = [
 	{ module: 'mcp', kind: 'section', route: '/x/mcp/section', host: 'skills' },
 	{ module: 'ide', kind: 'none' },
 	{ module: 'channels', kind: 'none' },
+	// 2026-11-17：worktree 门面只在 Host 侧提供 `/x/worktree/api/*`，没有页面/容器 ⇒ none。
+	{ module: 'worktree', kind: 'none' },
 	{ module: 'scheduler', kind: 'page', route: '/x/scheduler/' },
 	{ module: 'pocket', kind: 'none' },
 	// 2026-10-15：多平台内容导入（纯工具、无页面）⇒ kind='none'（与插件清单 view.kind 一致 ✓）。

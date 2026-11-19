@@ -158,6 +158,8 @@ export function ExecutionSettings() {
             onChange={teamEnabled => edit({ teamEnabled })} />
           <SwitchRow label={t('sideCalls')} hint={t('sideCallsHint')} checked={value.sideCalls} onChange={sideCalls => edit({ sideCalls })} />
           {/* ★ 2026-11-13（用户）：工单 HTML 报告外发到飞书，默认关闭；开启即表示人同意外发。 */}
+          <SwitchRow label={t('feishuReportDocument')} hint={t('feishuReportDocumentHint')} checked={value.feishuReportDocument}
+            onChange={feishuReportDocument => edit({ feishuReportDocument })} />
           <SwitchRow label={t('feishuReport')} hint={t('feishuReportHint')} checked={value.feishuReport}
             onChange={feishuReport => edit({ feishuReport })} />
         </div>

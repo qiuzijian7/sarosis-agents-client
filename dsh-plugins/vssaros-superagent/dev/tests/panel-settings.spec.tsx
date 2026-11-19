@@ -159,7 +159,7 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
   expect(find(zh.feishuReport, '[role="switch"]').getAttribute('aria-checked')).toBe('false')
   await click(zh.save)
   expect(server.settings.executor).toEqual({ maxWorkers: 5, directory: '/srv/work', teamEnabled: false, staffing: true, autoApprove: false, sideCalls: false,
-    feishuReport: false,
+    feishuReport: false, feishuReportDocument: true,
     prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"', projects: [], workerPtc: false, toolTrace: false, blockedCommands: ['gh-personal', 'gh.other'], model: { provider: 'worker-provider',
       model: 'worker-model', reasoningEffort: 'high' } })
   expect(server.requests.filter(request => request.method === 'PUT').map(request => request.path)).toEqual(['settings/eval',

@@ -108,7 +108,12 @@ window.__ModuleLoader__.load({
 					+ (blanks > 0 ? "（另有 " + blanks + " 条空会话已隐藏）" : "");
 				// ⚠ 这一行是**信息**（别再做成"可点的灰字"：用户看不出能点 ✗）。
 				//   「回到 IDE」按钮现在挂在品牌行右侧（`client.brand.js` 的 BrandName）✓。
-				return react.createElement("div", { style: S.row, title: text, "data-vssaros-footer": "1" },
+				let scope = "";
+				try {
+					const translated = ctx.locale.bind("vssaros-workspace-view")("statistics");
+					if (translated && translated !== "statistics" && translated !== "vssaros-workspace-view.statistics") { scope = translated; }
+				} catch { /* locale unavailable */ }
+				return react.createElement("div", { style: S.row, title: scope ? text + " · " + scope : text, "data-vssaros-footer": "1", "data-vssaros-count-scope": "all-nonblank" },
 					react.createElement("span", { style: S.dot }),
 					react.createElement("span", null, text),
 				);

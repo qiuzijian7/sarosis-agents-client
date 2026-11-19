@@ -7,6 +7,7 @@ import { claimGongfengMr } from '../../sources/gongfeng.ts'
 import { GongfengOpenApi, type GongfengConfig, type GongfengApi } from '../../sources/gongfeng-api.ts'
 import { claimChangelist, p4 as p4Records, P4ConfigSchema, P4_SOURCE, readChange, type P4Config } from '../../sources/p4-change.ts'
 import { finalizePending } from '../../executor/p4-pending.ts'
+import { hostPoolAuthorization } from '../../sources/tapd-pool-authorization.ts'
 import type { Settings } from '../../policy.ts'
 import { KV } from '../../kv.ts'
 import { itemAddress, tapdApi, type TapdApi, type TapdConfig } from '../../sources/tapd-api.ts'
@@ -31,7 +32,7 @@ export interface ExecutorToolsHost {
   readonly gongfeng?: SourceContext
   gongfengApi?(config: GongfengConfig): GongfengApi
   /** VsSaros addition: where a ready CL waits for a person's review. */
-  readonly reviews: Pick<Reviews, 'request' | 'requireChangelist' | 'requiredChangelist'>
+  readonly reviews: Pick<Reviews, 'request' | 'requireChangelist' | 'requiredChangelist'> & Partial<Pick<Reviews, 'deliveredPending'>>
   /** VsSaros addition (superagent v2, P3): the steps of a ticket's team, which its worker leads. */
   readonly steps?: Pick<TeamSteps, 'unfinished' | 'message'>
   sendReplies(): Promise<void>
@@ -216,15 +217,20 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
         if (args.changelist != null && !change) throw new Error(`Changelist ${args.changelist} does not exist on the P4 server`)
         // Pending delivery: the Host consolidates every changed file into ONE named pending CL, names it and
         // re-shelves it. No review, no submit, no unshelve; a person decides in P4V when to submit.
+        const poolDelivery = !!origin && !!hostPoolAuthorization(host.resources.store, origin)
+        const protectedFiles = current.execution?.protectedP4Files ?? []
+        if (change && [...change.files, ...change.shelved].some(file => protectedFiles.includes(file.depotFile))) throw new Error('Reported CL contains earlier delivered files; do not adopt another ticket modification')
         let pending: { change: number; name: string; files: number; ignored: number } | undefined
         if (args.state === 'ready' && p4 && change && current.execution?.p4Delivery === 'pending') {
+          const refusal = claimChangelist(host.p4, p4, ticketId, change)
+          if (refusal) throw new Error(refusal)
           const commands = host.p4.commands.withSignal(signal)
           const { client, number } = change
           const globals = [...p4.port ? ['-p', p4.port] : [], '-u', p4.user, '-c', client]
           const finalized = await finalizePending(p4, number, ticketId, current.title ?? '', {
             records: async argv => p4Records(commands, p4, argv, { client }),
             form: (argv, input) => commands.run(p4.cli || 'p4', [...globals, ...argv], undefined, input),
-          })
+          }, poolDelivery || protectedFiles.length > 0)
           pending = { change: change.number, name: finalized.name, files: finalized.files, ignored: finalized.ignored }
           // Re-read after rename/re-shelve so the delivery gate sees the final description and shelf.
           change = await readChange(commands, p4, change.number)
@@ -239,6 +245,7 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
           if (refused) throw new Error(refused)
           // Only the legacy submit flow needs a review; a pending CL is the delivery itself.
           const review = args.state === 'ready' && change && !pending ? host.reviews.request(ticketId, change) : undefined
+          if (pending && change) host.reviews.deliveredPending?.(ticketId, change, poolDelivery ? '池任务交付即结束，不等待编译、回归或审阅；未提交。' : 'Pending CL delivered, not submitted.')
           const summary = pending ? `${args.summary}\n\nP4 pending CL ${pending.change}：${pending.name}（归集 ${pending.files} 个文件，忽略 ${pending.ignored} 个）；未提交，请在 P4V 审阅后自行提交。` : args.summary
           const report = { state: args.state, summary, ...(args.human_action !== undefined ? { question: args.human_action } : {}),
             ...(args.question_for_trigger_id ? { askedBy: args.question_for_trigger_id } : {}),

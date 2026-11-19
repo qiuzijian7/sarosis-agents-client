@@ -735,11 +735,18 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 			 *
 			 * ⚠ 拿不到就返回空数组（**不编造**）—— 商城界面只显示目录里真有的东西。
 			 */
+			/** 阶段 3：统一目录策略里的离线 route；探针缺席时返回空数组，保留字面量 offline 过滤。 */
+			function policyOfflineRoutes() {
+				const policy = typeof window !== "undefined" && typeof window.__vssarosWorkbenchPolicy === "function"
+					? window.__vssarosWorkbenchPolicy() : null;
+				return policy && Array.isArray(policy.offlineRoutes) ? policy.offlineRoutes : [];
+			}
 			function readLocalItems() {
 				const raw = (typeof window !== "undefined" && window.__vssarosWorkbenchItems) || [];
 				if (!Array.isArray(raw)) { return []; }
+				const offlineRoutes = policyOfflineRoutes();
 				// ★ 2026-11-04：临时下线（offline）的工作台不进「已装」格，避免下线后仍能从商城点开。
-			return raw.filter(it => it && it.id && it.route && !it.offline).map(it => ({
+			return raw.filter(it => it && it.id && it.route && !it.offline && !offlineRoutes.includes(String(it.route))).map(it => ({
 					id: String(it.id),
 					/** 侧栏页签 id（打开时用它寻址）—— 目录条目用的是 workbenchId，这里是本机 id。 */
 					workbenchId: String(it.id),

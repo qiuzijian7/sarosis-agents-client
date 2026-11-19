@@ -18,6 +18,7 @@ import type { PromptVersion, Prompts } from './prompts.ts'
 import type { Sessions } from './sessions.ts'
 import type { Settings } from './settings.ts'
 import { KV } from '../kv.ts'
+import { hostPoolAuthorization } from '../sources/tapd-pool-authorization.ts'
 import type { Store } from './store.ts'
 import type { TextCache } from './cache.ts'
 
@@ -241,7 +242,7 @@ const ROUTES: readonly Route[] = [
     const visible = disposition && ticket ? { ...disposition, decisionId: undefined, fanout: disposition.fanout.filter(id => id === ticket.id) }
       : disposition
     // Omit card preview and self-reference because this resource returns the full text.
-    const { preview: _preview, chars: _chars, read: _read, ...card } = triggerCard(found, visible)
+    const { preview: _preview, chars: _chars, read: _read, ...card } = triggerCard(found, visible, hostPoolAuthorization(host.store, found))
     const parent = found.source === 'feishu' && typeof found.meta.parentId === 'string' ? found.meta.parentId : undefined
     const repliedTo = shown(parent ? host.store.triggers.get(feishuTriggerId(parent)) : undefined)
     const neighbours = host.store.read.neighbours(threadKey(found.threads[0]!), found.at, found.id)
@@ -286,7 +287,7 @@ const ROUTES: readonly Route[] = [
       // Render the input on demand with its resolved source link, matching either its short key or full input ID.
       const input = ticket.inputs.find(item => key(item.id) === part || item.id === part)
       const trigger = input?.kind === 'trigger' ? host.store.triggers.get(input.triggerId) : undefined
-      const card = trigger && input?.kind === 'trigger' ? triggerMessage(trigger, await host.sourceLink(trigger, signal), input.note) : undefined
+      const card = trigger && input?.kind === 'trigger' ? triggerMessage(trigger, await host.sourceLink(trigger, signal), input.note, undefined, hostPoolAuthorization(host.store, trigger)) : undefined
       const message = input && inputMessage(input, card)
       if (message === undefined) throw new Error('Unknown ticket input')
       body = message

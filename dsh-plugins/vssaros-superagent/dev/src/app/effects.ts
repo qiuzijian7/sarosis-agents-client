@@ -24,6 +24,8 @@ export interface EffectPayloads {
   /** Write a ticket's HTML report and attach it to its Feishu threads; the key is `ticketId:ended.at`. */
   ticketReport: { ticketId: string; at: string }
   reportLocal: { ticketId: string; at: string }
+  /** An immutable ending snapshot, uploaded independently of IM and worker execution. */
+  reportCloud: { ticketId: string; at: string; view?: import('./ticket-report.ts').TicketReportView }
 }
 export type EffectKind = keyof EffectPayloads
 interface Handler<K extends EffectKind> {

@@ -65,7 +65,7 @@ export function cookiePairOf(setCookieHeader: string): string {
 }
 
 /**
- * 带认证 cookie 缓存的 Host HTTP 客户端（目前只用到 POST JSON，够用就好）。
+ * 带认证 cookie 缓存的 Host HTTP 客户端（POST 推数据 / GET 拉只读快照）。
  *
  * 用法：`new DshHostHttp(() => this._supervisor.connection, log)`；连接是**每次现取**的
  * （Host 会重启换端口，缓存 connection 必然打到旧端口 ✗）。
@@ -113,6 +113,45 @@ export class DshHostHttp {
 				const text = await res.text();
 				if (res.status === 401 || res.status === 403) {
 					// cookie 提前失效（Host 重启 / 换 token）⇒ 清掉缓存，下一轮强制刷新后再打一次
+					this._cookie = '';
+					this._cookieDeadline = 0;
+					this._log.warn(`[dshHostHttp] ${path} 认证被拒（${res.status}），刷新 cookie 后重试一次`);
+					continue;
+				}
+				return { ok: res.ok, status: res.status, text };
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				return { ok: false, status: 0, text: `请求失败：${message}` };
+			}
+		}
+		return { ok: false, status: 401, text: 'dsh Host 认证失败（两次都 401/403）' };
+	}
+
+	/**
+	 * GET 一个 Host 插件路由（P1：worktree revision 化快照轮询）。
+	 *
+	 * 与 {@link postJson} 同认证 / 401-403 有界重试 / 「绝不抛」口径；单独实现是为了不改动
+	 * 媒体库推送那条已经在真机跑通的 POST 路径。
+	 * @param path 站内绝对路径（含查询串，如 `/x/worktree/api/snapshot?root=…&since=N`）
+	 */
+	async getJson(path: string, timeoutMs = 15_000): Promise<IDshHostHttpReply> {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const authed = await this._ensureCookie(attempt > 0);
+			if (!authed) {
+				return { ok: false, status: 0, text: 'dsh Host 未运行（没有连接信息）' };
+			}
+			const conn = this._connection();
+			if (!conn) {
+				return { ok: false, status: 0, text: 'dsh Host 未运行（连接已断开）' };
+			}
+			try {
+				const res = await fetch(`${conn.origin}${path}`, {
+					method: 'GET',
+					headers: { cookie: this._cookie },
+					signal: AbortSignal.timeout(timeoutMs),
+				});
+				const text = await res.text();
+				if (res.status === 401 || res.status === 403) {
 					this._cookie = '';
 					this._cookieDeadline = 0;
 					this._log.warn(`[dshHostHttp] ${path} 认证被拒（${res.status}），刷新 cookie 后重试一次`);

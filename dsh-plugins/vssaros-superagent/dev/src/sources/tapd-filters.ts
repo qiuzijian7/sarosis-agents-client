@@ -36,7 +36,8 @@ export const TapdFilterScheduleSchema = z.object({
   name: z.string().trim().regex(/^[\w.-]{1,40}$/),
   enabled: z.boolean().default(false),
   /** Local HH:MM; the poll loop dispatches once per calendar day at or after this time. */
-  at: z.string().trim().regex(/^([01]\d|2[0-3]):[0-5]\d$/).default('09:00'),
+  /** Local HH:MM; default is the small-hours low-traffic window (avoids the 00:00 day rollover and service warm-up). */
+  at: z.string().trim().regex(/^([01]\d|2[0-3]):[0-5]\d$/).default('02:00'),
   /** Hard cap of dispatched items per run, so a broad filter cannot create thousands of tickets. */
   maxPerRun: z.number().int().min(1).max(200).default(20),
   /** Only items modified within this many days are considered; the export's created range may span decades. */
@@ -185,7 +186,7 @@ export function importTapdFilter(input: unknown, options: CompileOptions = {}): 
   for (const item of report.filter(entry => entry.target === 'manual'))
     warnings.push(`${item.field}：${item.detail}`)
   const name = options.name ?? 'filter-bug-1'
-  const schedule = TapdFilterScheduleSchema.parse({ name, enabled: false, at: options.at ?? '09:00',
+  const schedule = TapdFilterScheduleSchema.parse({ name, enabled: false, at: options.at ?? '02:00',
     maxPerRun: options.maxPerRun ?? 20, windowDays: options.windowDays ?? 2,
     query, local, report, page: parsed.page ?? '', exportedAt: parsed.exportedAt ?? '' })
   // The watch is a container for the sweep: it must not also poll every change, or a broad filter

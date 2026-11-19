@@ -1,12 +1,9 @@
 // @vssaros/dsh-kb-refs — client half: 在聊天输入框里注册一个「知识库」`@` 引用源（2026-10-14，P1-1 ＋ P1-2）。
 //
 // 取舍写清楚（都是刻意的，不是省略）：
-//   ① **数据源 = 同源 HTTP 只读路由** —— 候选走 `/x/kb/api/search?q=`，"附正文"走 `/x/kb/api/doc?uri=`；
-//      两条都是 kb 插件**既有、只读**的路由 ⇒ 本包**不改 vssaros-kb** ✓，也不需要知道数据根 / vault 绝对路径
-//      （客户端够不到：`workspaceFiles` 的目录列举锁死 workspace ✗、`fileReferences` 只在工作区内 ✗）。
-//      ★ `doc` 那条**走与 `kb_read` 同一条围栏** ✓（kb 页自己的注释原话就是这么写的）⇒ 页面也读不到库外文件 ✓。
-//      ⚠ **空 query 该路由会 400**（"fulltext 需要非空的 query"）⇒ 空查询时我们**直接返回空候选**：
-//        不报错、不刷噪，菜单里只剩官方的「文件 / 会话」两组 ✓（"打开就列最近笔记"目前没有既有只读路由支撑 ✗）。
+//   ① 同源 HTTP：候选走 `/x/kb/api/references?q=`，附正文走 `/x/kb/api/doc?uri=`。
+//      空 `@` 按更新时间列真实文章，关键词复用正文检索；目录、隐藏项和非 Markdown 不成为文章候选。
+//      文章引用分组优先于文件与会话；原始 URI 由服务端提供，客户端不改写。
 //   ② **默认引用 = 指针**（D2 的口径）：`ref` 就是服务端返回的 `uri` **原样** ——
 //      `kb_read` 的参数注释原话是"文档 uri（kb_search 返回的那个）或 vault 内相对路径" ✓
 //      ⇒ 客户端**一点路径改写都不做** ✓（不做就不会错；kb 页那个 `normUri` 的坑也就绕开了 ✓）。
@@ -18,8 +15,8 @@
 //        （`Occurrence` 注释原话："insert-time cache"），而外面能做的插入只有
 //        `slash/input-insert-reference` 与 `-text`（**都按 span**）⇒ 改已有 chip 没有可用的口子 ✓。
 //        ⇒ 诚实的等价物是"**插入期选择**"：种类写进 `label`（chip 上就看得见「（附正文）」✓），
-//        入口 = 官方**面包屑**（`header()` 的 crumb；点它 = `onPick` 收到 `action:'drill'` ✓）＋ 查询前缀
-//        `@+关键词`（两种都认 ✓）。
+//        入口仅为 `@` / `@关键词` / `@+关键词`，不在输入工具栏挂独立知识库 chip。
+//        聚合 `@` 菜单不绘制知识库面包屑，以免被误认为文件列表的当前范围。
 //   ④ **失败策略分档**（不是一刀切）：候选失败一律静默 ✓（官方契约：某个域失败不影响其它域）；
 //      而 `codec.serialize` 里 —— 指针引用**永不 reject**（P1-1 ✓）；**附正文引用失败就 reject** ——
 //      契约原话是 "failure blocks the send — never a silent downgrade to the clipboard text" ✓。
@@ -34,13 +31,13 @@ window.__ModuleLoader__.load({
 		const NAME = "vssaros-kb-refs-client";
 		/** 菜单分组标题也是它；同时是 `codec` 的路由键（pipeline 按 `source` 找回本 source）✓。 */
 		const SOURCE_NAME = "知识库";
-		const SEARCH_ROUTE = "/x/kb/api/search";
+		const SEARCH_ROUTE = "/x/kb/api/references";
 		/** 只读取正文；**与 `kb_read` 同一条围栏** ✓（kb 侧同一个 `readDoc`）。 */
 		const DOC_ROUTE = "/x/kb/api/doc";
 		/** 候选行上限（菜单是"选一次"，不是搜索结果页 ✓）。 */
 		const MAX_ROWS = 12;
-		/** 分组顺序：官方 reference（0）之后 ⇒ 文件 / 会话在上，知识库在下 ✓。 */
-		const GROUP_ORDER = 50;
+		/** Articles precede the default file/session group so bare @ makes them discoverable. */
+		const GROUP_ORDER = -10;
 		/** "附正文"的种类标记：`ref` 的前缀（可逆 ✓，`file:///…` 不会撞 ✓）。 */
 		const ATTACH_PREFIX = "body:";
 		/**
@@ -82,59 +79,45 @@ window.__ModuleLoader__.load({
 			return { attach: true, query: text.slice(ATTACH_MARKER.length).trim() };
 		}
 
-		/**
-		 * 候选：每次拿到**实时 query** ⇒ 天然适合"边打边搜" ✓。
-		 * 任何异常 / 非 200 / 空查询都返回 `[]`（静默 ✓，官方契约如此）。
-		 */
+		const LOCALE_NS = "vssaros.kbRefs";
+		const zh = { title: "知识库", articles: "知识库文章", suffix: "（附正文）" };
+		const en = { title: "Knowledge Base", articles: "Knowledge Articles", suffix: " (body included)" };
+		let translate = key => zh[key];
+
+		/** Display paths never change the URI handed to the reference codec. */
+		function articlePath(item) {
+			try {
+				const parts = new URL(item.uri).pathname.split("/").filter(Boolean).map(part => decodeURIComponent(part));
+				const vaultIndex = parts.indexOf(String(item.vaultId || ""));
+				const sectionIndex = parts.findIndex(part => part === "知识库列表" || part === "数据源");
+				const start = vaultIndex >= 0 ? vaultIndex + 1 : (sectionIndex >= 0 ? sectionIndex : Math.max(0, parts.length - 2));
+				return parts.slice(start).join("/");
+			} catch { return String(item.title || ""); }
+		}
+		function articleCandidate(item, attach) {
+			const path = articlePath(item);
+			const vault = String(item.vaultName || item.vaultId || translate("title"));
+			return {
+				name: String(item.vaultId || vault) + "/" + path,
+				label: String(item.title || path) + (attach ? translate("suffix") : ""),
+				section: translate("articles"),
+				icon: "file",
+				description: [vault, path, String(item.snippet || "").replace(/\s+/g, " ").slice(0, 100)].filter(Boolean).join(" · "),
+				value: (attach ? ATTACH_PREFIX : "") + item.uri,
+			};
+		}
+		async function searchArticles(query, signal) {
+			const res = await fetch(SEARCH_ROUTE + "?q=" + encodeURIComponent(query.trim()) + "&limit=" + MAX_ROWS, { credentials: "same-origin", signal });
+			if (!res.ok) { throw new Error("HTTP " + res.status); }
+			const body = await res.json();
+			if (!body || body.ok === false || !Array.isArray(body.items)) { throw new Error("Invalid knowledge search response"); }
+			return body.items.filter(item => item && typeof item.uri === "string" && item.uri).slice(0, MAX_ROWS);
+		}
 		async function candidates(_session, req) {
 			const parsed = parseQuery(req && req.query);
-			if (!parsed.query) { return []; }
-			let items = [];
 			try {
-				const res = await fetch(SEARCH_ROUTE + "?q=" + encodeURIComponent(parsed.query), { credentials: "same-origin" });
-				if (!res.ok) { return []; }
-				const body = await res.json();
-				items = Array.isArray(body && body.items) ? body.items : [];
-			} catch (e) {
-				return [];
-			}
-			return items
-				.filter(item => item && typeof item.uri === "string" && item.uri)
-				.slice(0, MAX_ROWS)
-				.map(item => {
-					const hint = item.snippet ? String(item.snippet).slice(0, 80) : String(item.vaultId || "");
-					const row = {
-						name: String(item.uri),
-						// ⚠ chip 上的样子就是 `label`（`appearance` 只有 session|file|folder ✗ 表达不了种类）
-						//   ⇒ 种类必须在**插入期**就写进 label ✓（见文件头 ③）
-						label: String(item.title || item.uri) + (parsed.attach ? "（附正文）" : ""),
-						icon: "file",
-						// ★ 种类编进 `value`（"Opaque source-owned pick payload" ✓）：
-						//   `InputTriggerPick` 里**没有 `query`** ✗ ⇒ 到了 `onPick` 就再也问不到"当时是哪一档"，
-						//   必须在这里（唯一还拿得到 query 的地方）定下来 ✓。
-						value: parsed.attach ? ATTACH_PREFIX + String(item.uri) : String(item.uri),
-					};
-					if (hint) { row.description = hint; }
-					return row;
-				});
-		}
-
-		/**
-		 * 面包屑：把"现在是哪种种类"摆在菜单上，并且**可点**（点它 = drill ⇒ 换种类 ✓）。
-		 * 官方语义（`InputTriggerSource.header` 的注释）：crumb 的 `value` 原样回给 `onPick`、
-		 * 且走的是 `action:'drill'`（"refine the query in place"）✓ ⇒ 正好可以当模式开关用 ✓。
-		 *
-		 * ⚠ 取舍（刻意选的）：指针档也**常驻**显示这行面包屑（官方 file source 是下钻后才出 ✗）——
-		 *   因为"附正文"这个档**没有别的入口**（行本体不能既是引用又是开关，插入期也造不出附件 ✗），
-		 *   不摆出来就是**没人找得到的功能**。代价只是 `@` 菜单里多一行说明 `知识库 › + 附正文` ✓。
-		 */
-		function header(_session, req) {
-			const attach = parseQuery(req && req.query).attach;
-			if (attach) {
-				// `value: ''` ⇒ 回到指针模式（查询清空 ✓）；当前步不可点 ✓
-				return [{ label: SOURCE_NAME, value: "" }, { label: "附正文", current: true }];
-			}
-			return [{ label: SOURCE_NAME, current: true }, { label: ATTACH_MARKER + " 附正文", value: ATTACH_MARKER }];
+				return (await searchArticles(parsed.query, req && req.signal)).map(item => articleCandidate(item, parsed.attach));
+			} catch { return []; }
 		}
 
 		/**
@@ -217,25 +200,20 @@ window.__ModuleLoader__.load({
 		function apply(ctx) {
 			const inputTriggers = ctx.get("inputTriggers");
 			if (!inputTriggers) { mark("no-inputTriggers"); return; }
+			ctx.effect(() => ctx.locale.register(LOCALE_NS, { zh, en }), "kb-refs: dictionaries");
+			translate = ctx.locale.bind(LOCALE_NS);
 			try {
 				ctx.effect(() => inputTriggers.registerSource({
-					trigger: "@",
-					name: SOURCE_NAME,
-					order: GROUP_ORDER,
-					candidates: candidates,
-					header: header,
-					onPick: onPick,
-					codec: codec,
+					trigger: "@", name: SOURCE_NAME, order: GROUP_ORDER, candidates, onPick, codec,
 				}), "kb-refs: @ source");
 				mark("1");
 			} catch (e) {
-				// ⚠ "注册这一跳写错了**不报错**"（页面不崩、Host 不报）⇒ 失败必须留下可观测事实（否则就是静默 ✗）
 				mark("error:" + String((e && e.message) || e).slice(0, 80));
 			}
 		}
 
 		exports.apply = apply;
-		exports.inject = ["inputTriggers"];
+		exports.inject = ["inputTriggers", "locale"];
 		exports.name = NAME;
 		return module.exports;
 	}

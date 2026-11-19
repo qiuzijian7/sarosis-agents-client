@@ -91,14 +91,54 @@ export const DSH_UNREAL_PLUGIN_NAME = '@vssaros/dsh-unreal';
 export const DSH_ARCHIFY_PLUGIN_NAME = '@tt-a1i/archify-dsh';
 
 /**
- * **ego lite（`ego-browser`）接入插件**包名（源码位于仓库根 `dsh-plugins/vssaros-ego/`）。
+ * **随包 vendored 的第三方 `dsh-ego-browser` 插件**包名（源码位于 `dsh-plugins/dsh-ego-browser/`；
+ * 上游 `Fisfzy/dsh-ego-browser` v0.14.1，MIT，provenance 见该目录的 `VENDOR.md`）。
  *
- * 它是"**agent 的第二个浏览器**"那条线的 Host 侧落点：`vssaros-browser` 用 CDP 驱动用户**同一个**
- * Chrome（会跟人抢标签），ego lite 则是每个 agent 一个隔离 Space 的**独立浏览器**。
+ * 2026-11-19 起 VsSaros **内置**这个插件：它自带 ego-lite 运行时 + 受管 Chrome/CDP、34 个结构化
+ * `ego_*` 工具、实时观察窗与随包技能，用户不必再从插件中心装、也不必另装第三方 app。
+ * `vssaros-browser`（CDP 驱动用户本机 Chrome）与它**不是替代关系**，照旧并存。
  *
- * ⚠ 本包**不含**浏览器本体：ego lite 是第三方独立应用（不开源、单独下载），`globalThis.ego` 那份
- * 原生绑定由它注入。所以装不上/用户没装 app 都**不是**启动错误 —— 只是那 4 个工具用不了，
- * 且 `ego_status` 会把"没装 / 没运行 / PATH 陈旧"三种情况分开说清楚（`vssaros-ego/README.md`）。
+ * ⚠ 它**没有** `vssaros.module`（不是 VsSaros UI 模块）⇒ 与 archify 同属伴生插件，必须显式登记目录；
+ *   且包名保留上游的 `dsh-ego-browser`（不改成 `@vssaros/*`），否则用户另装一份会变成两个 provider。
+ */
+export const DSH_EGO_BROWSER_PLUGIN_NAME = 'dsh-ego-browser';
+
+/**
+ * **随包 vendored 的第三方 `dsh-vision-router` 插件**包名（源码位于
+ * `dsh-plugins/dsh-vision-router/`；上游 `ysr666/dsh-vision-router` v3.4.0，MIT，
+ * provenance 见该目录的 `VENDOR.md`）。
+ *
+ * 2026-11-19 起 VsSaros **内置**这个插件：图片轮自动路由视觉模型 + 14 个 `vision_*` 像素工具
+ * （`vision_describe` / `vision_ground` / `vision_crop` / `vision_pixel_diff` …）。
+ * 与 `vssaros-media` 的 `vision_analyze` **不重名**，两者并存、无需退役任何自研插件。
+ *
+ * ⚠ 同 ego-browser：没有 `vssaros.module` ⇒ 伴生插件、显式登记目录；包名保留上游名。
+ * ⚠ 默认 `localOnlyVision: false` + `freeFallback: true` ⇒ 会把图片发给匿名云端视觉端点；
+ *   内置即默认启用，隐私口径与收紧方法见 `VENDOR.md`。
+ */
+export const DSH_VISION_ROUTER_PLUGIN_NAME = 'dsh-vision-router';
+
+/**
+ * **随包 vendored 的第三方 `dsh-better-sidebar` 插件**包名（源码位于
+ * `dsh-plugins/dsh-better-sidebar/`；上游 `omdsh-dev/DSH-better-sidebar` v0.32.1，MIT，
+ * provenance 见该目录的 `VENDOR.md`）。
+ *
+ * 2026-11-19 起 VsSaros **内置**这个插件：宿主原生右栏 tab + 自绘底部工作台，文件树 /
+ * 可编辑 CodeMirror / Git Changes 与提交图 / Tasks 与 Agent Team / 侧边对话，
+ * 每个会话各自一套状态；并通过 `ctx.betterSidebar` 向其它插件开放 tab / 文件预览器注册。
+ *
+ * ⚠ 它同样没有 `vssaros.module` ⇒ 伴生插件、显式登记目录、包名保留上游名。
+ * ⚠ 上游**主动移除了工作区路径围栏**（任意可达路径读写、上传/下载无大小上限），且默认接管
+ *   宿主起始页与 `files` kind —— 内置即默认启用，风险与真机核对清单见 `VENDOR.md`。
+ */
+export const DSH_BETTER_SIDEBAR_PLUGIN_NAME = 'dsh-better-sidebar';
+
+/**
+ * **已退役**的 ego lite 薄接入包名（原 `dsh-plugins/vssaros-ego/`，4 个 `ego_*` 工具 + 随包技能）。
+ *
+ * 它被上面的上游插件取代：两者的 `ego_status` **重名**，dsh 里同名工具会让整条 entry 失效 ⇒ 不能并存。
+ * 源码目录已删除；常量**只**留给旧 profile 的一次性迁移（`dshPluginActivation.ts` 把残留的 bundle
+ * 从 `dsh.profile.bundles` 摘掉），不要再拿它去装插件。
  */
 export const DSH_EGO_PLUGIN_NAME = '@vssaros/dsh-ego';
 
@@ -123,6 +163,35 @@ export const DSH_LOOP_PLUGIN_NAME = '@vssaros/dsh-loop';
 
 /** 官方实验语音输入 bundle（随 dsh 运行时分发在其 node_modules 里；本地 SenseVoice 识别）。 */
 export const DSH_VOICE_BUNDLE_PLUGIN_NAME = '@deepseek-ai/dsh-experimental-voice-input-bundle';
+
+/**
+ * ★ 方案 B「一套 git 源，以 dsh 侧为准」：**官方 Forge 组合包**（worktree GUI + 工具的统一入口）。
+ *
+ * 它的 `cordis.patch.yml` 一次插入 6 行，其中：
+ *   · `worktree` → `@deepseek-ai/dsh-experimental-worktree`（`ctx.worktrees` 服务）
+ *   · `tool-worktree` → 模型工具 `create_worktree`
+ *   · `forge-panel` → `@deepseek-ai/dsh-experimental-client-ui-forge`（插件页卡片 / hero 工作树开关 / 变更面板）
+ * ⇒ 工具与面板共用同一个 `worktree` 服务，且这是**唯一带 UI 的装配路径**。
+ *
+ * ⚠ 与独立组合包 `dsh-experimental-tool-worktree` **互斥**（官方升级指南 v0.2.2-alpha.2）：
+ *   两者同时进 bundles 会插出重复的 `worktree` / `tool-worktree` id ⇒ 控件只读甚至装配失败。
+ *   ⇒ 独立包只保留为 dependency，不进 `dsh.profile.bundles`（迁移见 `dshPluginActivation.ts`）。
+ * ⚠ 也不要把 `tool-worktree` 挂进 agent preset：`inject=['tools','worktrees']`，preset 作用域
+ *   看不到 host plane 的 `worktrees` ⇒ 真机报 `waiting for worktrees` ⇒ `session.create` 失败。
+ */
+export const DSH_FORGE_BUNDLE_PLUGIN_NAME = '@deepseek-ai/dsh-experimental-forge-bundle';
+
+/** 独立组合包：现在只作为 forge-bundle 的 dependency 留在 profile，**不再进 bundles**。 */
+export const DSH_WORKTREE_BUNDLE_PLUGIN_NAME = '@deepseek-ai/dsh-experimental-tool-worktree';
+
+/** worktree runtime：`worktree` 行按包名解析，必须装进 profile（无 bundle.patch，不进 bundles）。 */
+export const DSH_WORKTREE_RUNTIME_PLUGIN_NAME = '@deepseek-ai/dsh-experimental-worktree';
+
+/** forge-bundle 的 4 个 peer 实现包（都无 `dsh.bundle.patch` ⇒ 用运行时 `file:` 本地装，零网络）。 */
+export const DSH_FORGE_CLIENT_UI_PLUGIN_NAME = '@deepseek-ai/dsh-experimental-client-ui-forge';
+export const DSH_FORGE_PLUGIN_NAME = '@deepseek-ai/dsh-experimental-forge';
+export const DSH_FORGE_GITHUB_PLUGIN_NAME = '@deepseek-ai/dsh-experimental-forge-github';
+export const DSH_FORGE_SESSION_PLUGIN_NAME = '@deepseek-ai/dsh-experimental-forge-session';
 
 /** 官方调度 bundle（重构 2.1）：time-context / schedule 服务 / ui-schedule 三行。S3 已验证可装可用。 */
 /**
@@ -384,6 +453,8 @@ export const enum DshHarnessSettings {
 	 * 打开后：本次启动用**已装版本**跑（新版本留给下次/或手动装），启动回到 ~0.3 s 量级。
 	 */
 	SkipPluginInstall = 'sessions.dshHarness.skipPluginInstall',
+	/** P3 侧栏布局开关（默认 true）：显式 false 回退旧布局；改动后需重启 Host 以重建覆盖层。 */
+	SidebarLayoutV1 = 'sessions.dshHarness.sidebarLayoutV1',
 	/**
 	 * 模块引擎（方案 6.8 / 9.2 的 `engine`）：legacy = 模块 ActivityBar 图标由静态注册负责（现状）；
 	 * dsh = 交给 `DshActivityBarContribution`，按「已激活的模块插件 + 容器聚合表」动态注册 / 注销
@@ -624,6 +695,12 @@ export interface IDshHostStartOptions {
 	 */
 	readonly keepAlive?: boolean;
 	/**
+	 * P3 侧栏布局开关：默认 true，Host 生成 `sidebar-layout-*.yml` 覆盖层，启用「中栏只有会话 +
+	 * 右栏开始页按 v6 效果稿由 VsSaros 主页接管」。只有显式 false 才回退旧布局；改动会参与
+	 * `sameStartOptions`，避免预热 Host 复用旧布局配置。
+	 */
+	readonly sidebarLayoutV1?: boolean;
+	/**
 	 * 启动时跳过随包插件的**升级**安装（缺失的仍会装）。
 	 *
 	 * 不影响 Host 组成（因此**不**参与 `sameStartOptions` 的比较）：它只决定"这一次启动要不要先等
@@ -678,7 +755,9 @@ export function sameStartOptions(a: IDshHostStartOptions, b: IDshHostStartOption
 		// ★ 2026-11-10：`kbRoot` 已从选项里删除（dsh 侧自持配置）⇒ 不再参与比较。
 		&& (a.unrealBridgeUrl ?? '') === (b.unrealBridgeUrl ?? '')
 		&& sameBrowserConfig(a.browser, b.browser)
-		&& (a.keepAlive === true) === (b.keepAlive === true);
+		&& (a.keepAlive === true) === (b.keepAlive === true)
+		// P3 默认开启：undefined 与 true 等价，只有显式 false 才回退旧布局；预热与渲染进程必须同口径。
+		&& (a.sidebarLayoutV1 !== false) === (b.sidebarLayoutV1 !== false);
 }
 
 /**
@@ -1179,6 +1258,32 @@ export const enum DshHarnessChannelCommand {
 	 * 返回新的 zoomFactor（供「实际大小（当前 N%）」刷新）；无可用视图时 undefined。
 	 */
 	DesktopMenuAction = 'desktopMenuAction',
+	/**
+	 * **P1（方案 B：一套 git 源，以 dsh 侧为准）**：向 dsh Host 的 `/x/worktree/api/snapshot` 拉一份
+	 * revision 化的 worktree 只读快照。renderer 定时轮询，revision 变化才重推给页面。
+	 * 入参 `{ root }`（IDE 仓库根，绝对路径）；返回 {@link IDshWorktreeHostSnapshot} 或 undefined。
+	 */
+	WorktreeHostSnapshot = 'worktreeHostSnapshot',
+	/**
+	 * 同上：把页面/IDE 的 worktree **意图**（create / enter / remove / restore / lock / unlock / prune）
+	 * POST 给 dsh Host。页面桥是单向的，结果只能由 `WorktreeHostSnapshot` 的 revision 变化回推。
+	 * 入参 `{ endpoint, payload }`；endpoint 必须命中 Host 插件的白名单。
+	 */
+	WorktreeHostCall = 'worktreeHostCall',
+}
+
+/** dsh Host 侧 `@vssaros/dsh-worktree` 返回的只读快照（IDE 侧只把它当镜像，不在这层执行 git）。 */
+export interface IDshWorktreeHostSnapshot {
+	readonly revision: number;
+	readonly ready: boolean;
+	readonly worktrees: readonly {
+		readonly path: string;
+		readonly name: string;
+		readonly branch?: string;
+		readonly isMain: boolean;
+	}[];
+	readonly currentDirectory?: string | null;
+	readonly error?: string;
 }
 
 /** 工作区同步的概览（渲染进程侧同步可读，用于界面显示）。 */

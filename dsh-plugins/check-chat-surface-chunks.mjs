@@ -162,6 +162,8 @@ function makeWindowStub(doc) {
 	return {
 		document: doc,
 		innerWidth: 1440, innerHeight: 900,
+		// 旧布局静态契约仍要逐条验证；新布局默认开启另在 ⑥-b 后单独断言零中栏页签。
+		__vssarosSidebarLayoutV1: false,
 		addEventListener() { }, removeEventListener() { }, dispatchEvent() { return true; },
 		setTimeout: (fn) => 0, clearTimeout() { }, getComputedStyle: () => ({ overflowY: 'visible' }),
 		location: { href: 'file:///check' },
@@ -178,8 +180,9 @@ function loadChunk(fileName, documentStub, windowStub) {
 	});
 	const requireFn = (spec) => {
 		if (spec === 'react') { return fakeReact; }
-		// ⚠ 本项目 chunk **只允许** require("react")（其他说明符不在 dsh 的 boot graph 里 ⇒ 运行时会抛）
-		throw new Error('chunk 只能 require("react")，但这里 require 了 ' + spec);
+		if (['client.sessionRow.js', 'client.conversationHeader.js'].includes(fileName) && spec === 'react/jsx-runtime') { return { jsx: fakeReact.createElement, jsxs: fakeReact.createElement }; }
+		if (['client.sessionRow.js', 'client.conversationHeader.js'].includes(fileName) && spec === '@deepseek-ai/dsh-client-ui-primitives') { return {}; }
+		throw new Error('未登记的共享模块 ' + spec);
 	};
 	// 用 Function 构造：把 window/document 作为**形参**传入（chunk 源码里用的是裸 `document` ✓）
 	const factoryFn = new Function('window', 'document', 'require', 'module', 'exports', src + '\nreturn module.exports;');
@@ -247,6 +250,46 @@ function makeShell() {
 		}
 	}
 	notes.push(`语法编译检查 ${targets.length} 个文件`);
+}
+
+// ── ⓪-b 独立 bundle 的 CSS Modules 不许生成互相污染的短类名 ──────────────────
+// esbuild 的 minifyIdentifiers/minify:true 会把两个独立 CSS Module 同时压成 .a/.b/.e；
+// header 的 `.e{position:absolute}` 会让官方会话行脱离文档流，表现为展开后会话与下一工作区重叠。
+{
+	const generatedCss = (fileName) => {
+		const doc = makeDocumentStub();
+		const style = makeElementStub();
+		let css = '';
+		Object.defineProperty(style, 'textContent', { get: () => css, set: value => { css = String(value); } });
+		doc.createElement = () => style;
+		doc.head.appendChild = () => {};
+		loadChunk(fileName, doc, makeWindowStub(doc));
+		return css;
+	};
+	const localClasses = css => new Set([...css.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, '').matchAll(/\.([A-Za-z_][A-Za-z0-9_-]*)/g)].map(match => match[1]));
+	const bundles = [
+		['client.sessionRow.js', generatedCss('client.sessionRow.js')],
+		['client.conversationHeader.js', generatedCss('client.conversationHeader.js')],
+	].map(([file, css]) => [file, localClasses(css)]);
+	const [rows, header] = bundles.map(([, classes]) => classes);
+	const overlap = [...rows].filter(name => header.has(name));
+	if (overlap.length) { problems.push(`会话行与页头 CSS 类名碰撞：${overlap.slice(0, 10).join(', ')}（会让会话行脱流重叠）✗`); }
+	for (const [file, classes] of bundles) {
+		const short = [...classes].filter(name => name.length <= 1);
+		if (short.length) { problems.push(`${file} 生成了跨 bundle 易碰撞的短 CSS 类名：${short.join(', ')} ✗`); }
+	}
+	for (const script of ['build-session-row.mjs', 'build-conversation-header.mjs']) {
+		const src = fs.readFileSync(path.join(PLUGIN_DIR, 'scripts', script), 'utf8');
+		for (const [needle, why] of [
+			[/minify:\s*false/, '必须关闭整体 minify'],
+			[/minifyWhitespace:\s*true/, '必须压缩空白'],
+			[/minifySyntax:\s*true/, '必须压缩语法'],
+			[/minifyIdentifiers:\s*false/, '禁止压缩 CSS Modules 局部类名'],
+		]) {
+			if (!needle.test(src)) { problems.push(`scripts/${script}: ${why}，否则会重新生成短类名导致侧栏重叠 ✗`); }
+		}
+	}
+	notes.push('会话行 / 页头 CSS Modules：命名空间隔离与构建配置断言通过');
 }
 
 // ── ① 接线守卫：磁盘上每个 client.*.js 都必须在 PART_CHUNKS 里（反之也要在） ────────────────
@@ -428,6 +471,8 @@ const knownSlots = new Set([...OFFICIAL_ENTRIES.map(o => o.slot), 'conversation.
 	// ⚠ 这两个槽由 dsh 官方 `ui-settings` 声明（`settings.section` 及其 children），
 	//   不是我们新造的槽；登记在此只是让 note 不再重复提示。
 	'settings.section', 'settings.vssaros.channel.item',
+	'vssaros.workspaces.session.row.action', 'vssaros.workspaces.session.row.leading',
+	'vssaros.workspaces.session.row.trailing', 'vssaros.workspaces.session.row.hover',
 	// `settings.launcher`：左下角账号行的官方槽（client.account.js 一直在用，之前没登记）
 	'settings.launcher']);
 for (const o of ourEntries) {
@@ -507,39 +552,20 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 	}
 }
 
-// ── ④-c hero「新增窗口」入口必须**事件驱动**（2026-10-31 用户报「切到知识库后过一会才消失」）──
-//   这颗按钮画在根帧 overlay（`inset: 0`）上 ⇒ 面板怎么切它都**不会被卸载**，可见性只能自己判断。
-//   若只用「量几何」（会话容器 rect / 中栏 iframe 尺寸）+ 800ms 轮询 ⇒ 切页后最长 800ms 的残影，
-//   且 iframe 首次加载时尺寸量不出来会更久 ✗（官方那枚「打开右侧边栏」能同帧消失，是因为它挂在
-//   会被切走的树里、由 store 状态驱动）。
-//   ⇒ 必须：① 先用 `workbenchPanelActive()`（面板根标记，**存在即算**，不等布局）做快速否；
-//          ② 订阅 `TAB_CHANGE_EVENT`（与 TabStrip 同一范式）⇒ 切页**同帧**重判；
-//          ③ 轮询只作兜底且不低于 400ms 的密度。
+// ── ④-c 分屏入口属于常驻会话页头，不再由导航浮层测量定位 ──────────────────
 {
 	const nav = fs.readFileSync(path.join(LIB, 'client.workbenchNav.js'), 'utf8');
-	const at = nav.indexOf('function HeroSplitChip(');
-	const nextFn = nav.indexOf('function TabStrip(', at);
-	if (at < 0 || nextFn < at) {
-		problems.push('client.workbenchNav.js 找不到 HeroSplitChip 的函数体 ✗（2026-10-31）');
-	} else {
-		const fn = nav.slice(at, nextFn);
-		// ⚠ 必须匹配**代码形态**（`if (workbenchPanelActive())`）而不是裸函数名：
-		//   注释里也会提到它 ⇒ `fn.includes('workbenchPanelActive()')` 在逻辑被删掉后
-		//   仍然成立 ⇒ 断言形同虚设（第一版就这么失效过：突变后守卫照样绿 ✗）。
-		if (!/if\s*\(\s*workbenchPanelActive\(\)\s*\)/.test(fn)) {
-			problems.push('hero「新增窗口」没有用 `workbenchPanelActive()` 做快速否 ⇒ 切到工作台页只能靠"量几何"推断，会残影 800ms+ ✗（2026-10-31）');
-		}
-		if (!/addEventListener\(\s*TAB_CHANGE_EVENT/.test(fn)) {
-			problems.push('hero「新增窗口」没有订阅 `TAB_CHANGE_EVENT` ⇒ 切页只能等下一次轮询才隐藏 ✗（2026-10-31）');
-		}
-		// ⚠ 反向：`activeTabId` 只在 closeTab 清空，点「💬 会话」走 selectPanel(null) 不清它
-		//   ⇒ 拿它判"在工作台页"会**永久隐藏**这颗按钮 ✗✗（比残影更糟）。
-		if (fn.includes('activeTabId')) {
-			problems.push('hero「新增窗口」不许用 `activeTabId` 判工作台页（切回会话不清空它 ⇒ 入口永不显示 ✗）（2026-10-31）');
-		}
-		if (/setInterval\(\s*read,\s*(?:[5-9]\d\d|[1-9]\d{3,})/.test(fn)) {
-			problems.push('hero「新增窗口」的兜底轮询超过 400ms ⇒ 官方绕过页签直接 selectPanel 时仍会有明显残影 ✗（2026-10-31）');
-		}
+	const sessions = fs.readFileSync(path.join(LIB, 'client.sessions.js'), 'utf8');
+	const header = fs.readFileSync(path.join(LIB, 'client.conversationHeader.js'), 'utf8');
+	if (/HeroSplitChip|data-vssaros-hero-split/.test(nav)) { problems.push('导航层不许保留 Hero 分屏浮层'); }
+	if (/data-vssaros-new-window/.test(sessions)) { problems.push('会话 utilities 不许重复注册分屏入口'); }
+	if (!header.includes('data-vssaros-conversation-header-actions') || !header.includes('vssaros.conversation.header.actions')) {
+		problems.push('缺少常驻页头分屏动作区');
+	}
+	const always = (/const ALWAYS_CHUNKS = \[([\s\S]*?)\];/.exec(clientSrc) || [])[1] || '';
+	const parts = (/const PART_CHUNKS = \[([\s\S]*?)\];/.exec(clientSrc) || [])[1] || '';
+	if (!always.includes('./client.conversationHeader.js') || parts.includes('./client.conversationHeader.js')) {
+		problems.push('常驻页头必须只走 ALWAYS_CHUNKS，覆盖空会话首屏且不重复加载');
 	}
 }
 
@@ -814,7 +840,18 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 			if (ids.indexOf('b1') < 0) { problems.push('buildSidebar: 当前会话即使是空壳也必须显示 ✗'); }
 			if (!bg || bg.hiddenBlanks !== 1) { problems.push(`buildSidebar: 隐藏的空会话数应被计数为 1，实际 ${bg ? bg.hiddenBlanks : '(无)'} ✗（不计数=装作没有）`); }
 			notes.push('client.workspaces.js: 空会话过滤（blank 位 + 当前会话例外 + 计数）断言通过');
+		}
+		// 用户要求：左侧栏工作区下方不再显示「已隐藏 N 条空会话」；过滤与 row.hiddenBlanks 仍保留。
+		{
+			const wsCode = fs.readFileSync(path.join(LIB, 'client.workspaces.js'), 'utf8')
+				.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+			if (/hiddenBlanks\s*>\s*0\s*\?\s*react\.createElement\(/.test(wsCode)
+				|| /["']已隐藏\s*["']\s*\+/.test(wsCode)
+				|| /const\s+hiddenBlanks\s*=\s*rows\.reduce/.test(wsCode)) {
+				problems.push('client.workspaces.js: 工作区下方不许再显示「已隐藏 N 条空会话」（过滤与各组计数仍需保留）✗');
 			}
+			notes.push('client.workspaces.js: 已隐藏空会话提示移除，过滤与计数数据仍保留');
+		}
 			// ── ⑤-b2 删除会话后本地摘行（★★ 2026-11-13 真机「删掉列表里另一条会话，行没消失」）──
 			// 病根：行来自 `workspaces.list` 的 `items[].sessionIds`；Host 的 delete-session 只删磁盘
 			//   （日志目录 + 投影缓存），**不碰 `storages/workspace.json` 账本** ⇒ 快照里 sid 还在。
@@ -932,6 +969,27 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 				if (code.indexOf(needle) >= 0) { problems.push(`client.workspaces.js: 出现「${needle}」—— ${why} ✗`); }
 			}
 			notes.push('client.workspaces.js: ＋按钮（取法 / 返回形状 / 失败可见）断言通过');
+		}
+		{
+			for (const name of ['normalizeWorkspaceView', 'projectWorkspaceRows', 'deriveWorkspaceSearch', 'adoptWorkspace']) {
+				if (typeof t[name] !== 'function') { problems.push(`工作区工具栏缺少可测逻辑：${name}`); }
+			}
+			if (typeof t.deriveWorkspaceSearch === 'function') {
+				const sample = [{ kind: 'flat', label: 'Project', key: 'ws:a', sessions: [
+					{ id: 'a', title: 'Needle', at: 2, groupKey: 'ws:a' }, { id: 'b', title: 'Other', at: 1, groupKey: 'ws:a' }, { id: 'blank', blank: true },
+				] }];
+				const found = t.deriveWorkspaceSearch(sample, 'needle', { items: [{ sessionId: 'b', snippet: 'body' }, { sessionId: 'b' }, { sessionId: 'blank' }] });
+				if (JSON.stringify(found.items.map(row => [row.id, row.snippet || ''])) !== JSON.stringify([['a', ''], ['b', 'body']])) {
+					problems.push('工作区搜索必须合并本地和正文结果、去重、保留首个摘要并排除空会话');
+				}
+				const flat = t.projectWorkspaceRows(sample, { groupBy: 'flat', orderBy: 'updated' }, {});
+				if (flat.length !== 1 || flat[0].sessions[0].groupKey !== 'ws:a') { problems.push('单列表不能改变会话工作区归属'); }
+			}
+			for (const marker of ['data-vssaros-view-menu', 'data-vssaros-view-choice', 'data-vssaros-retry-workspace', 'controller.abort()', 'closeSearch()', 'WORKSPACE_VIEW_KEY']) {
+				if (!src.includes(marker)) { problems.push(`工作区工具栏缺少交互契约：${marker}`); }
+			}
+			if (/withSearch\s*\?\s*react\.createElement/.test(src)) { problems.push('工作区搜索入口不能受行数阈值限制'); }
+			notes.push('工作区工具栏：视图独立存储 / 搜索合并与摘要去重 / 添加导航重试守卫通过');
 		}
 		// ── ⑤-d 页脚口径必须与侧栏一致（2026-10-26）────────────────────────────────────
 		// 侧栏隐藏了空会话 ⇒ 页脚若还报"1931 条会话" ⇒ 屏幕上同时出现两个互相矛盾的数字 ✗。
@@ -1665,7 +1723,7 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 				['session.rename(', '重命名必须走官方 binding.session.rename（与官方侧栏同一跳）'],
 				['uw.archiveSession', '归档必须走官方 uiWorkspace.archiveSession'],
 				['"data-vssaros-sess-menu"', '会话右键菜单必须有稳定 DOM 锚点（"点外面/Esc 关闭"也靠它）'],
-				['draggable:', '会话行必须可拖拽'],
+				['acceptDrop: compatible, dragging:', '会话行必须接入拖放兼容性与拖拽状态'],
 				['SESSION_ORDER_KEY', '手动顺序必须落盘（刷新后要能读回来）'],
 			]) {
 				if (code3.indexOf(needle) < 0) { problems.push(`client.workspaces.js: 缺「${needle}」—— ${why} ✗`); }
@@ -1896,7 +1954,7 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		// 静态面：行里必须真的画出那盏灯，且脉动样式表必须注入
 		const ringSrc = String(src).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 		for (const [needle, why] of [
-			['"data-ws-ring"', '会话行必须有状态灯的稳定 DOM 锚点（真机探针也靠它）'],
+			['statuses: officialStatuses, slotProps: rowSlotProps', '会话行必须使用官方状态快照'],
 			['S.ringRunning', '运行态必须着绿'],
 			['S.ringAwaiting', '等待态必须着黄'],
 			['vssaros-ws-ring-pulse', '运行态脉动动效必须存在（样式表注入）'],
@@ -1920,33 +1978,19 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 	const wsDoc = makeDocumentStub();
 	const wsLoaded = loadChunk('client.workspaces.js', wsDoc, makeWindowStub(wsDoc));
 	const tw = wsLoaded && wsLoaded.exports.__test;
+	try {
+		execFileSync(process.execPath, [path.join(LIB, '../scripts/build-session-row.mjs'), '--check'], { stdio: 'pipe' });
+	} catch (error) {
+		problems.push('官方会话行构建产物未同步：' + String(error.message));
+	}
 	const need = [
 		['Promise.resolve(entity.detachSession(sid))', '删除必须**真的调用** detachSession 摘账本（不再靠归档让行消失）'],
-		// ⚠ 钉完整键值（`"data-ws-unread": "1"`）而不是裸词：`data-ws-unread-x` 也含裸词 ⇒ 会假绿 ✗
-		['"data-ws-unread": "1"', '行上必须有未读点（对齐官方 StateDot）'],
 		['markSessionRead(s.id)', '打开会话必须即时标记已读'],
-		['"data-act": "unread"', '右键菜单必须有「标为未读 / 标为已读」'],
-		['"data-act": "fork"', '右键菜单必须有「分叉」（对齐官方 ForkSessionMenuItem）'],
-		['onDoubleClick', '标题必须支持双击就地重命名（对齐官方行）'],
-		['absTimeLabel', '时间戳 hover 必须给绝对时间'],
-		['borderRadius: "50%"', '状态灯必须是圆点（对齐官方视觉，不是 2px 竖条）'],
-		// ★ 2026-11-02（用户要求「复刻官方原生 item UI」）：以下钉**官方 Rows.module.css 的数值**
-		//   与结构 —— 这些是"样式被顺手改回内联"时最容易静默失真的地方（内联会盖掉类 ✗）。
-		// ⚠ 用**完整片段**而不是裸词/裸值：`vssaros-ws-row` 在文件里出现 15 次、`height:32px` 2 次
-		//   ⇒ 裸词断言在逻辑被改掉后仍然通过（本次反向突变连踩两次 ✗）。
-		['.vssaros-ws-row{height:32px;gap:0;padding:0 8px', '会话行必须走注入的官方数值（32px 行高 / gap 0 / padding 0 8px）'],
-		['className: "vssaros-ws-row"', '会话行必须真的挂上 `.vssaros-ws-row`（否则 32px/悬停规则全不生效）'],
-		['font-size:14px', '标题必须 14px / 20px（官方 `.title`）'],
-		['.vssaros-ws-slot{width:16px;height:20px', 'leading 必须是官方 16×20 格（`.slot`）'],
-		['vssaros-ws-time', '时间必须是官方 `.time`（10px/16px，悬停隐藏）'],
-		['vssaros-ws-actions', '行尾必须有官方 `.rowActions`（⋯ 按钮，悬停才出现）'],
-		['const showStatus =', '状态点必须按官方 `showStatus` 口径（idle 不画）'],
-		// 官方 `SessionNodeItem` 的 hover 卡片（2026-11-02 补）
-		['SESS_HOVER_DELAY_MS = 800', '会话行 hover 卡片必须 800ms 延迟（官方 openDelayMs=800；太快会划过一路弹卡）'],
-		['"data-vssaros-sess-hover": "1"', '会话 hover 卡片必须有稳定锚点'],
-		['"data-act": "copy-title"', '会话 hover 卡片必须有「复制标题」（官方 copyText/copyLabel）'],
-		// ⚠ 钉**挂载点**而不是裸函数名：`openSessHover` 的定义本身就在文件里 ⇒ 裸词断言删掉挂载也绿 ✗
-		['onMouseEnter: (e) => openSessHover(s, e)', '会话行必须真的挂上 hover 卡片入口（只定义不挂载 = 永远不弹）'],
+		['id: "session.vssaros.unread", target: "session", order: 250', '手动未读必须接入官方菜单贡献'],
+		['id: "session.vssaros.delete", target: "session", order: 700', '删除必须接入官方菜单贡献'],
+		['react.createElement(OfficialSessionRow, {', '会话行必须真正使用官方组件适配层'],
+		['statuses: officialStatuses, slotProps: rowSlotProps', '官方会话行必须收到状态及 renderer 提供的槽位 props'],
+		['onRenameRequest: (sid, title) => setRenaming({ sid, draft: title })', '官方双击重命名必须保留本地就地改名回调'],
 		// 工作区行按官方 `.projectRow`：folder 图标 + hover 换三角箭头
 		// ⚠ 必须钉 **JSX 挂载点**：这些类名在 `ensureRowStyle()` 的 CSS 字符串里也出现 ⇒
 		//   裸词断言把元素删掉仍然绿（本次反向突变实证 ✗）。
@@ -2020,7 +2064,7 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		['"data-act": "remove-ws"', '工作区 ⋯ 菜单必须有「移除工作区」这一项'],
 		// ⚠ 不做"再点一次确认"：真机实测菜单第一次点击后不重渲染（confirmRemove 写进去但文本不变）
 		//   ⇒ 反而像"点了没反应"。`workspaces.delete` 只摘登记、可逆，直接执行更符合预期。
-		['}, "移除工作区")', '「移除工作区」文案必须直白（不带省略号，表示点了就执行）'],
+		['}, activeWorkbench ? \'从当前工作台隐藏\' : "移除工作区")', '普通模式移除登记，工作台模式仅隐藏本工作台目录'],
 		['workspaces.delete 不可用', '宿主不支持时必须明确报错（不静默）'],
 		['wsLog("new-session"', '新建会话必须记一条日志（走了哪条路径、wsId、dir）'],
 		// ★ 2026-11-02 真机实测：新建出来的会话输入框是**可用**的（CDP focus + insertText 能打进字），
@@ -2031,13 +2075,9 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		['watchComposerFocus(24);', '点「+」当刻就要开始盯焦点（不能等 promise）'],
 		['new-session-ok', '新建成功必须记一条结果日志（便于区分"没触发"与"触发了但没打开"）'],
 		['"data-vssaros-ws-row-menu": "1"', '工作区 ⋯ 菜单必须有稳定锚点'],
-		// 标题溢出（2026-11-02 补齐官方 `useTitleMarquee` 的视觉契约）
-		// ⚠ 必须钉**完整声明**：`…{mask-image-x` 里仍含 `…{mask-image` ⇒ 截断式断言会假绿（本次踩过 ✗）
-		['.vssaros-ws-title[data-scrolled]{mask-image:linear-gradient(90deg,#0000,#000 12px)}', '标题溢出必须有官方同款左端淡出（`data-scrolled`）'],
-		['.vssaros-ws-title[data-clipped]{mask-image:linear-gradient(270deg,#0000,#000 12px)}', '标题溢出必须有官方同款右端淡出（`data-clipped`）'],
-		['scrollWidth > el.clientWidth', '溢出必须真的量宽度再淡出（不能无条件淡出）'],
-		// 官方行的稳定锚点
-		['"data-row-key": "session:"', '会话行必须带官方锚点 `data-row-key="session:<id>"`'],
+		['"vssaros.workspaces.session.row.trailing": { kind: "list", scope: "root", inline: true }', '行尾必须拥有独立根槽，不能与官方声明冲突'],
+		['props.renderSlot(SESSION_ROW_SLOTS[name] || name, owner, options)', '官方行渲染必须转译到本地合法拥有的行槽'],
+		['mirrorSessionRowSlots(ctx.slots', '官方行扩展必须按声明生命周期镜像，不能静默丢失'],
 		['"data-row-key": "workspace:"', '工作区行必须带官方锚点 `data-row-key="workspace:<key>"`'],
 		// ★ 2026-11-02：遮蔽优先级必须与官方（默认 0）/ 其它插件（-10）**错开**。
 		//   同档时退化成"谁先注册谁赢" ⇒ desktop 全窗里实测出现过官方 WorkspaceBrowser 仍渲染 ✗。
@@ -2191,7 +2231,11 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 			&& src.includes('const sid = forceNew ? "" : (freshSid || latestSessionIdOf(bots.home, id, usable))')
 			&& src.includes('newSession: (bot) => { openBot(bot, { forceNew: true }); return undefined; }');
 		if (!hasForceNew(ws)) { problems.push('P2 缺显式 New part：切换 bot 必须零创建，只有右键「新建会话」能走 create ✗'); }
-		if (/sessionBindings/.test(ws)) { problems.push('不许引入 sessionBindings 双写（官方 Workspace.sessionIds[] 是唯一归属真源）✗'); }
+		const writesWorkbenchOwnership = src => /\bsessionBindings\s*(?:\[[^\]]+\])?\s*(?:=(?!=|>)|\|\|=|\?\?=)|delete\s+[^;\n]*\bsessionBindings/.test(src);
+		if (writesWorkbenchOwnership(ws)) { problems.push('侧栏只能读取工作台归属，不许在 UI 中双写 sessionBindings ✗'); }
+		if (!writesWorkbenchOwnership('state.sessionBindings[id] = owner;') || writesWorkbenchOwnership('state.sessionBindings[id] === owner')) {
+			problems.push('工作台归属写入守卫必须区分读取与赋值 ✗');
+		}
 		const noForce = ws.replace('const forceNew = !!(opts && opts.forceNew)', 'const forceNew = false');
 		if (hasForceNew(noForce)) { problems.push('反向突变失效：显式 New part 判据抓不到 ✗'); }
 		// ★ 版本线登记：这两个能力来自 dsh 0.2.2-alpha.x 的 ui-workspace 补丁，
@@ -2258,13 +2302,25 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 	{
 		let sessSrc = '';
 		try { sessSrc = fs.readFileSync(path.join(LIB, 'client.sessions.js'), 'utf8'); } catch { sessSrc = ''; }
-		// 宿主失败只发 IDE 通知（桌面模式下不可见）⇒ `splitPane` 至少要把错误留痕
-		for (const [needle, why] of [
-			['[vssaros-ws] splitChatPane failed:', '「新窗格」失败必须 console.warn（不许静默吞掉）'],
-			['st.newWindowEntryError = why;', '「新窗格」失败必须写进 state（供「复制诊断信息」查）'],
-		]) {
-			if (sessSrc.indexOf(needle) < 0) { problems.push(`client.sessions.js: 缺「${needle}」—— ${why} ✗（2026-11-02）`); }
-		}
+		const splitDoc = makeDocumentStub();
+		const splitWin = makeWindowStub(splitDoc);
+		const splitState = {};
+		const splitNotes = [];
+		splitWin.__vssarosChatSurface = splitState;
+		splitWin.vssarosDsh = {
+			splitChatPane: () => ({ then: (_ok, fail) => fail(new Error('split guard failure')) }),
+			notify: (level, message) => splitNotes.push({ level, message }),
+		};
+		try {
+			const loaded = loadChunk('client.conversationHeader.js', splitDoc, splitWin);
+			loaded.exports.NewWindowChip().props.onClick();
+			if (splitState.newWindowEntry !== 'failed' || splitState.newWindowEntryError !== 'split guard failure' || splitNotes[0]?.level !== 'warn') {
+				problems.push('常驻页头分屏失败必须保存诊断并通知用户');
+			}
+			if (!fs.readFileSync(path.join(LIB, 'client.conversationHeader.js'), 'utf8').includes('[vssaros-ws] splitChatPane failed:')) {
+				problems.push('常驻页头分屏失败必须保留 console.warn 诊断');
+			}
+		} catch (error) { problems.push('常驻页头分屏失败检查异常：' + error.message); }
 		// ★ 2026-11-03 二次（用户要求「在下拉框中显示 VsSaros，而不是独立按钮」）：
 		//   负对照 —— 独立 chip 不许再回来
 		if (sessSrc.includes('data-vssaros-open-ide')) {
@@ -2705,6 +2761,35 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 			if (!t.pickDashboardItem([])) { problems.push('pickDashboardItem: 空列表也要给一个条目（不能 undefined）✗'); }
 		}
 		notes.push('client.workbenchNav.js: 侧栏单行「主页」（order -10）+ 中转面板 + 页签条落 shell.overlay 断言通过');
+	}
+}
+
+// ⑥-b′ P3 默认布局：中间栏顶部不再有页签、左侧不再有主页行、main 不再注册旧工作台面板。
+{
+	const doc = makeDocumentStub();
+	const win = makeWindowStub(doc);
+	win.__vssarosSidebarLayoutV1 = true;
+	let loaded = null;
+	try { loaded = loadChunk('client.workbenchNav.js', doc, win); }
+	catch (e) { problems.push(`client.workbenchNav.js: P3 默认布局装载失败 — ${String((e && e.message) || e)} ✗`); }
+	if (loaded) {
+		let regs = [];
+		try { regs = captureRegistration(loaded.exports, makeShell().shell); }
+		catch (e) { problems.push(`client.workbenchNav.js: P3 默认布局 install() 抛错 — ${String((e && e.message) || e)} ✗`); }
+		const flat = regs.map((r) => {
+			const e = (r.entry && r.entry.entry) ? r.entry.entry : r.entry;
+			return { slot: (e && e.name) || r.slot, id: e && e.id, key: e && e.key };
+		});
+		if (flat.some(r => r.slot === 'shell.overlay' && r.id === 'vssaros-wb-tabstrip')) {
+			problems.push('client.workbenchNav.js: P3 默认布局仍注册中栏页签条 ✗');
+		}
+		if (flat.some(r => r.slot === 'main' && r.key === 'vssaros-workbench')) {
+			problems.push('client.workbenchNav.js: P3 默认布局仍注册旧「主页」main 面板 ✗');
+		}
+		if (flat.some(r => r.slot === 'sidebar.panellist' && r.id === 'vssaros-workbench')) {
+			problems.push('client.workbenchNav.js: P3 默认布局仍注册左侧「主页」行 ✗');
+		}
+		notes.push('client.workbenchNav.js: P3 默认布局零中栏页签 / 零旧主页行 / 零旧 main 面板断言通过');
 	}
 }
 
@@ -3481,8 +3566,9 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 		//   `[^}]*` 会在内层 `}` 处停住 ⇒ 永远判不出"声明了子槽" ⇒ 这条守卫空转）
 		const declaresChild = /children\s*:\s*\{/.test(src);
 		if (!declaresChild) { continue; }
-		// 声明了子槽就必须有 renderSlot 调用（否则内容区必空）
-		if (!/renderSlot\s*\(/.test(src)) {
+		const delegatesOfficialRow = f === 'client.workspaces.js' && /slotProps:\s*props/.test(src)
+			&& /renderSlot\s*\(/.test(fs.readFileSync(path.join(LIB, '../src/sessionRow.js'), 'utf8'));
+		if (!/renderSlot\s*\(/.test(src) && !delegatesOfficialRow) {
 			problems.push(`${f}: 声明了 settings.section 的 children 但没有调用 \`props.renderSlot(...)\` `
 				+ '⇒ 设置页里会出现"导航项在、内容空白"（2026-10-27 真机踩过；参照 client.market.js 的 WorkbenchSection）');
 		}
@@ -4250,7 +4336,7 @@ for (const o of ourEntries) {
 	for (const [n, why] of [
 		['const keyRowProps = (scope, id, open, del) => {', '必须有三类行共用的键盘 helper'],
 		['const confirmKeyProps = (onConfirm) => {', '必须有三个确认层共用的 Enter helper'],
-		['...keyRowProps("sessions", s.id,', '会话行必须接键盘导航'],
+		['keyProps: keyRowProps("sessions", s.id,', '会话行适配层必须接键盘导航'],
 		['...confirmKeyProps(confirmSessionDelete)', '会话删除确认必须支持 Enter'],
 		['...confirmKeyProps(deleteRoom)', '群删除确认必须支持 Enter'],
 		['...confirmKeyProps(deleteBot)', 'Bot 删除确认必须支持 Enter'],

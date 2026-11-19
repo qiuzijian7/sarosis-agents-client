@@ -113,9 +113,9 @@ if (!existsSync(join(DEV, 'node_modules', 'tsdown'))) {
 
 const kept = mkdtempSync(join(tmpdir(), 'dsh-superagent-lib-'))
 cpSync(LIB, kept, { recursive: true })
-rmSync(LIB, { recursive: true, force: true })
 let restore = check
 try {
+  rmSync(LIB, { recursive: true, force: true })
   build()
   // The bundled entries load with nothing but Node built-ins (the repository's guards import them bare).
   const entries = filesOf(LIB).filter(file => file.endsWith('.js') && file !== 'client.js')
@@ -159,6 +159,9 @@ try {
   restore = true
   throw error
 } finally {
-  if (restore) { rmSync(LIB, { recursive: true, force: true }); cpSync(kept, LIB, { recursive: true }) }
+  if (restore) {
+    try { rmSync(LIB, { recursive: true, force: true }) }
+    finally { cpSync(kept, LIB, { recursive: true }) }
+  }
   rmSync(kept, { recursive: true, force: true })
 }

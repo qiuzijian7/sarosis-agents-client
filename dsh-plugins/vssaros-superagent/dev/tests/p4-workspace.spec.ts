@@ -67,6 +67,30 @@ it('accepts the explicitly configured current client without a ticket suffix, bu
   await expect(verifyP4Workspace(ticket, { ...config, executionClient: 'other' }, run)).rejects.toThrow('配置已改变')
 })
 
+it('permits only verified earlier pending delivery files without adopting or reverting them', async () => {
+  const { fingerprint } = await import('../src/sources/p4-change.ts')
+  directory = await mkdtemp(join(tmpdir(), 'p4-retained-'))
+  const file = join(directory, 'B.cpp'); await writeFile(file, 'source')
+  const config = P4ConfigSchema.parse({ port: 'ssl:p4.test:1666', user: 'bot', paths: [{ path: '//GR/main/...' }],
+    workspaceMode: 'current', executionClient: 'main', workspaceRoot: directory })
+  const ticket = { id: 'next', execution: { name: 'fix', directory, delivery: 'p4', p4Workspace: { client: 'main', root: directory, port: config.port, user: config.user } }, follows: [] } as unknown as Ticket
+  const files = [{ depotFile: '//GR/main/A.cpp', action: 'edit', rev: '1', type: 'text', digest: 'AB' }]
+  const retained = [{ ticketId: 'previous', change: 501, files, fingerprint: fingerprint(files) }]
+  let change = '501', digest = 'AB'
+  const run = vi.fn(async (args: string[]) => {
+    if (args.includes('client')) return JSON.stringify({ Client: 'main', Owner: 'bot', Root: directory })
+    if (args.includes('login')) return JSON.stringify({ User: 'bot' })
+    if (args.includes('opened')) return JSON.stringify({ depotFile: '//GR/main/A.cpp', change, action: 'edit' })
+    if (args.includes('describe')) return JSON.stringify({ status: 'pending', client: 'main', user: 'bot', desc: '[dsh-superagent:previous]', depotFile0: '//GR/main/A.cpp', action0: 'edit', rev0: '1', type0: 'text', digest0: digest })
+    if (args.includes('fstat')) return JSON.stringify({ depotFile: '//GR/main/B.cpp', clientFile: file, haveRev: '1' })
+    throw new Error('unexpected command')
+  })
+  await verifyP4Workspace(ticket, config, run, retained)
+  expect(run.mock.calls.some(([args]) => args.some(arg => ['revert', 'reopen', 'sync', 'submit'].includes(arg)))).toBe(false)
+  change = '777'; await expect(verifyP4Workspace(ticket, config, run, retained)).rejects.toThrow('未归属本单')
+  change = '501'; digest = 'CHANGED'; await expect(verifyP4Workspace(ticket, config, run, retained)).rejects.toThrow('前序pending交付已改变')
+})
+
 it('requires a unique own client, matching root/login and a real synchronized file without P4 writes', async () => {
   directory = await mkdtemp(join(tmpdir(), 'p4-preflight-'))
   const root = directory

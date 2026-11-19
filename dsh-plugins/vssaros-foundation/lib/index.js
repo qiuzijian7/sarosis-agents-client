@@ -19,7 +19,7 @@ import {
 } from './lock.js';
 import {
 	createWorkspaceContextStore, normalizeWorkspaceContext, sameWorkspaceContext,
-	deriveWorkspaceRoots, rootNameOf, MAX_WORKSPACE_ROOTS,
+	deriveWorkspaceRoots, rootNameOf, MAX_WORKSPACE_ROOTS, resolveSessionWorkspaceContext,
 } from './workspaceContext.js';
 import {
 	renderWorkspaceRootsText, parseRootQualifiedPath, installWorkspaceRootsPrompt,
@@ -57,6 +57,8 @@ export function createFoundationService() {
 		// `[workspaceRoot, ...relatedRoots]`（老载荷的 relatedRoots 全量含主根 ⇒ 会重复 ✗）。
 		// 同步、零 I/O；没有上下文 ⇒ `[]`（各自的 config 回落纪律不受影响 ✓）。
 		workspaceRoots: () => deriveWorkspaceRoots(workspaceContext.get()),
+		// Session-aware consumers must use this read contract, not the legacy last-window value.
+		workspaceRootsFor: options => deriveWorkspaceRoots(resolveSessionWorkspaceContext(workspaceContext.getAll(), options)),
 		// 纯函数（探针/守卫直接 import 用来造夹具、比对；不进运行时热路径 ✓）
 		normalizeWorkspaceContext, sameWorkspaceContext, deriveWorkspaceRoots, rootNameOf, MAX_WORKSPACE_ROOTS,
 		// P0-2（2026-11-10）：模型上下文段 / 根限定路径解析（纯函数，工具接入前的公共准备 ✓）

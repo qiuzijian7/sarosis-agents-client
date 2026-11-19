@@ -113,7 +113,7 @@ console.log('check-grbug-expert：GRBug 修复专家（流程 + 可执行脚本�
 		/dirs\.length === 174/.test(tierGuard) && /library\.size === 174/.test(scopeGuard)
 		&& /all\.total === 174/.test(capGuard))
 	const pkg = JSON.parse(read('dsh-plugins/vssaros-skill-bundle/package.json'))
-	ok('⑤ bundle 版本已 bump 且描述计数为 174', pkg.version >= '0.1.6'
+	ok('⑤ bundle 版本已 bump 且描述计数为 174', pkg.version.localeCompare('0.1.6', 'en', { numeric: true }) >= 0
 		&& pkg.description.includes('174 built-in SKILL.md directories'))
 	ok('⑤ 文档有流程梳理小节', read('doc/skill-authoring-standard.md').includes('10.x GRBug 修复专家'))
 	ok('⑤ 守卫已接入根链', read('package.json').includes('node dsh-plugins/check-grbug-expert.mjs'))

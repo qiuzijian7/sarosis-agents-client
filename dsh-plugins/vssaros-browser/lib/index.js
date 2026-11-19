@@ -53,7 +53,8 @@
  *   （主进程 CDP 中转，见 `core/rightbar.js`；所有会话共用、不按 Bot 隔离）；没开时用 Chrome（你的，或我们拉起的专属实例）。
  * · **IDE 侧 `ToolSet('browser')`**（`open_browser_page` / `read_page` / `run_playwright_code` …）：只服务 IDE 自己的聊天，
  *   不进 dsh 会话。IDE 侧旧的 12 个 `browser_*` 已退役（bundled 目录里只剩不可见的 stub，别再用这些名字）。
- * · **`vssaros-ego`（ego lite）**：独立的第三方浏览器与隔离 Space，适合后台长跑多页；与本插件互不相通（见它的 README）。
+ * · **随包内置的 `dsh-ego-browser`**（2026-11-19 起取代 `vssaros-ego`）：独立的第三方浏览器与隔离 Space，
+ *   适合后台长跑多页；与本插件互不相通（见 `dsh-plugins/dsh-ego-browser/VENDOR.md`）。
  *
  * ## 高危动作与生命周期（2026-11-07，见 `core/riskGate.js` / `core/host.js`）
  *
@@ -69,6 +70,7 @@ import { join } from 'node:path';
 import { createRuleReader, hostOf } from './core/allowRules.js';
 import { DEFAULT_CDP_PORT } from './core/chrome.js';
 import { BrowserCdpClient } from './core/client.js';
+import { createTapdFilterReader } from './core/tapdFilters.js';
 import {
 	cookieStoreEnvelope, cookieStorePath, formatCookieReport, isAllowedSiteUrl,
 	normalizeCookieAction, parseSiteUrl, sanitizeCookie, summarizeCookies,
@@ -450,6 +452,17 @@ export function apply(ctx, config = {}) {
 		log,
 	});
 
+	// TAPD settings reads use the existing Chrome discovery/launch configuration, never the shared rightbar.
+	// This service accepts only story/bug; arbitrary evaluate remains behind its original approval gates.
+	const filterHost = new CdpHost({ port, launchDedicated, headless, homeDir, profileDir: dedicatedProfile, logger, dedicatedOnly: true });
+	const filterClient = new BrowserCdpClient(createHostInvoker(filterHost), logger);
+	const tapdFilters = createTapdFilterReader(kind => filterClient.forSession(`vssaros-tapd-filter-${kind}`));
+	ctx.effect(() => {
+		const timer = setInterval(() => { void filterHost.reclaimIfIdle(IDLE_CLOSE_DEFAULT_MS).catch(() => false); }, 60_000);
+		timer.unref?.();
+		return () => { clearInterval(timer); filterHost.dispose(); };
+	});
+
 	// ★ **让路标记**：`vssaros-ide` 会检查这个服务在不在，在就跳过它自己那套 `browser`（见 README 4.69 Step 1）。
 	//   两个包同时注册同名工具会让**整条 entry 失效**（不是后者覆盖）⇒ 必须靠它保证任何时刻只有一个。
 	ctx.provide('vssarosBrowser', {
@@ -462,6 +475,7 @@ export function apply(ctx, config = {}) {
 		launchDedicated,
 		/** 默认**免问**的阅读类动作（诊断/守卫读；见文件头"确认的分档"②）。 */
 		readingOps: READING_OPS,
+		tapdFilters,
 		/** 登录会话（开登录页 / 读登记站点的会话 cookie / 关 tab）——见 `core/loginSession.js`。 */
 		loginSession,
 	});
@@ -1076,11 +1090,12 @@ export function apply(ctx, config = {}) {
 			+ '所有会话共用这一页，别随手把人正在看的页面导航走。VsSaros 没开时才用 Chrome —— 通常是本插件自己拉起的专属实例'
 			+ '（独立配置目录，**没有**用户日常 Chrome 的登录态）；`op: "status"` 的 `mode` 与 `note` 说明当前是哪个，照 `note` 如实转述'
 			+ '（右栏模式下 `page` 是右栏当前的地址与标题；空白页 = 右栏还没打开网页，要显示网页就 `navigate`）。'
-			// 【选谁】2026-10-21：装了 ego lite 之后**有两个浏览器入口**，这里只做"选哪个"的提示，
-			// 不改任何执行路径（`browser` 仍然只认 Chrome 的 CDP 端点 —— ego 是另一套，见 vssaros-ego/README）。
+			// 【选谁】2026-10-21；2026-11-19 改为随包内置的 `dsh-ego-browser`：仍有两个浏览器入口，
+			// 这里只做"选哪个"的提示，不改任何执行路径（`browser` 仍然只认 Chrome 的 CDP 端点 ——
+			// ego 是另一套，见 dsh-plugins/dsh-ego-browser/VENDOR.md）。
 			// 为什么这条必须写在描述里：模型看不到插件清单，它只看工具描述 ⇒ 不写就等于"它不知道还有另一个"。
-			+ '【选谁】若同时装了 ego lite（有 `ego_run` 工具）：让 agent **在后台连开很多页面 / 长时间跑**'
-			+ '（每个 agent 一个隔离 Space、与你并行）的任务优先用 `ego_run`；'
+			+ '【选谁】随包内置的 agent 浏览器（有 `ego_*` 工具）：让 agent **在后台连开很多页面 / 长时间跑**'
+			+ '（每个 agent 一个隔离 Space、与你并行）的任务优先用 `ego_script` / `ego_click`；'
 			+ '要**复用你当前这个 Chrome 的登录态 / 已打开的标签页**就用本工具 —— ego 是**另一个浏览器**，两边的登录态不共通。'
 			+ '【时序】动作类 op **完成后会自动等 DOM 稳定**（约 0.4s 内不抖了才回；`settleMs: 0` 关掉）⇒ 别再"点完立刻 snapshot"（那是拿旧帧 ✗）；'
 			+ '要等明确的条件用 `op: "waitFor"`（`text` / `textGone` / `selector` / `urlContains` / `delayMs` 至少一条，AND 语义，超时会如实报哪个没到）；'

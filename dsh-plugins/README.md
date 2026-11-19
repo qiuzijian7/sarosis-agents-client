@@ -20,6 +20,18 @@
 - ③ 的声明形式是 `file:<②的绝对路径>`（见 profile 的 `package.json`）。
 - 前端 chunk 由 `@deepseek-ai/dsh-client-modules` 提供，URL 形如
   `/plugins/@vssaros/<pkg>/client.*.js?rev=<12位>`。
+- **随包 vendored 的第三方包**也放在本目录，包名保留上游名：`vssaros-archify/`（`@tt-a1i/archify-dsh`）、
+  `dsh-ego-browser/`（2026-11-19 起内置）、`dsh-vision-router/` 与 `dsh-better-sidebar/`
+  （同为 2026-11-19 起内置）。
+  它们没有 `vssaros.module`，走 `dshHostSupervisor` 的**伴生插件**清单；
+  provenance / 升级流程见各自目录的 `VENDOR.md`。
+  ⚠ 后三个目录名不带 `vssaros-` 前缀 ⇒ 构建期种子在 `build/prepack-dsh-runtime.mjs` 的
+  `UNSCOPED_VENDORED` 里按名字显式放行，新增同类包必须同步那里，否则会静默缺席种子（首启要联网补装）。
+  ⚠ `dsh-vision-router` 带 5 个真实运行时依赖（产品构建期烘进种子 ⇒ 装机后零网络；dev 全新 profile
+  需要一次网络），且默认会把图片发给匿名云端视觉端点 —— 详见它的 `VENDOR.md`。
+  ⚠ `dsh-better-sidebar` 带 32 个真实运行时依赖；上游已移除工作区路径围栏（任意可达路径读写、
+  上传/下载无大小上限），并会接管宿主起始页与 `files` kind ⇒ 内置即默认启用，权限口径与真机
+  核对清单见它的 `VENDOR.md`。
 
 ## 2. 前端入口与 chunk 约定
 

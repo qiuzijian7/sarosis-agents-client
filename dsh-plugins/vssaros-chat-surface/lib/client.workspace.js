@@ -568,6 +568,25 @@ window.__ModuleLoader__.load({
 		function install(ctx, shell) {
 			const state = shell.state;
 			const bridge = shell.bridge;
+			let workbenchService = null;
+			const scopeListeners = new Set();
+			const publishScope = () => { for (const listener of [...scopeListeners]) { listener(); } };
+			if (typeof ctx.inject === 'function') {
+				ctx.inject(['desktopWorkbenches'], scope => {
+					const service = scope.desktopWorkbenches;
+					if (!service) { return; }
+					scope.effect(() => {
+						workbenchService = service;
+						const unsubscribe = service.subscribe(publishScope);
+						publishScope();
+						return () => { unsubscribe(); if (workbenchService === service) { workbenchService = null; publishScope(); } };
+					});
+				});
+			}
+			const assistantOwner = sessionId => {
+				const owner = workbenchService?.state?.sessionBindings[sessionId];
+				return owner && workbenchService.docksConversation(owner) && workbenchService.dockedSessionOf(owner) === sessionId ? owner : null;
+			};
 			// 槽位（2026-10-11 方案 B 定稿）：`actions` 是**左侧**那一簇（titleCluster 内），`utilities` 才是右侧。
 			// 头部布局 = 上下文在左 / 动作在右 ⇒ 本入口（上下文）占 actions。
 			const SLOT = "conversation.session.header.actions";
@@ -669,6 +688,11 @@ window.__ModuleLoader__.load({
 				// 会话快照订阅：换绑后重渲染（"当前目录"变了，当前项要跟着动 ✓）。用 tick 而不是改 pushed
 				// —— 从前那版调 `setList(readPushedWorktrees())` 只是借"新数组"骗一次重渲染 ✗（语义含糊）。
 				const [, setTick] = react.useState(0);
+				react.useEffect(() => {
+					const refresh = () => setTick(n => n + 1);
+					scopeListeners.add(refresh);
+					return () => scopeListeners.delete(refresh);
+				}, []);
 				react.useEffect(() => {
 					let sub = null;
 					try {
@@ -807,10 +831,13 @@ window.__ModuleLoader__.load({
 				}, [open, onRequestClose]);
 
 				if (!open) { return null; }
-				const items = (data.snapshot && data.snapshot.items) || [];
+				const owner = assistantOwner(sid);
+				const sourceItems = (data.snapshot && data.snapshot.items) || [];
+				const items = owner ? sourceItems.filter(w => workbenchService.workspaceVisible(w.workspaceId, owner)) : sourceItems;
 				const worktrees = data.worktrees || [];
-				// IDE 工作区记录（多根工作区）：**只用来分组**，条目来源仍严格是 dsh 快照 ✓（见 `buildTree`）。
-				const records = data.records || [];
+				// 工作台候选包含尚无历史会话的目录，但不包含已隐藏的根。
+				const sourceRecords = data.records || [];
+				const records = owner ? sourceRecords.map(r => ({ ...r, roots: r.roots.filter(root => items.some(w => samePath(root.path, w.path))) })).filter(r => r.roots.length) : sourceRecords;
 				// "当前工作区"的两条判据**不能混用**（合并入口最容易在这里出错 ✗）：
 				//   · header：会话归属（`workspaceIdOfSession`）—— 会话是宿主持有的事实 ✓
 				//   · hero：官方给的 `selectedId`（`pendingWorkspaceId ?? sessionWorkspace.workspaceId`）——
@@ -825,7 +852,9 @@ window.__ModuleLoader__.load({
 				 * "在本目录开会话"写，不再出现"切换工作区"这种会承诺窗口变化的说法（假话 ✗）。
 				 * 只判本面板真正依赖的那条能力：`switchWorktree`。
 				 */
-				const canSwitchSession = !!(bridge && typeof bridge.switchWorktree === "function");
+				const canSwitchSession = owner
+					? typeof workbenchService.switchWorkspaceForAssistant === 'function'
+					: !!(bridge && typeof bridge.switchWorktree === "function");
 				const tree = buildTree({ workspaces: items, records: records, worktrees: worktrees, query: query });
 				const shownGroups = tree.groups.filter((r) => r.matched);
 				// ★ 2026-11-14：面板已不渲染 worktree 行 ⇒ 不再派生 shownWorktrees；
@@ -884,6 +913,24 @@ window.__ModuleLoader__.load({
 				 * 并 rebind 回本视图 ⇒ 页面随后按 rebind 的会话重新渲染 ✓（两边不分叉 ✓）。
 				 */
 				const switchTo = (row) => {
+					if (owner) {
+						const workspace = row && items.find(w => samePath(w.path, row.path));
+						if (!workspace) { setNote('这个根尚未登记为可用工作区，请先添加目录。'); return; }
+						if (busy) { return; }
+						setBusy(true); setNote(null);
+						Promise.resolve().then(() => workbenchService.switchWorkspaceForAssistant(owner, workspace.workspaceId))
+							.then(sessionId => {
+								if (!sessionId || workbenchService.active !== owner || workbenchService.dockedSessionOf(owner) !== sessionId) {
+									throw new Error('切换请求已过期，未改变当前助手。');
+								}
+								if (switchTimerRef.current) { clearTimeout(switchTimerRef.current); switchTimerRef.current = null; }
+								setSwitchStatus(null); setSwitchingPath(null);
+								onRequestClose();
+							})
+							.catch(e => setNote('助手工作区切换失败：' + String(e && e.message || e)))
+							.finally(() => setBusy(false));
+						return;
+					}
 					// ★ 方案 A（2026-11-10）：hero 的**根行**没有可落地的动作（官方 onPick 只认
 					//   workspaceId、没有待发 cwd 通道）⇒ 即使有人绕过 `disabled` 直接调 onClick
 					//   （IDE 侧假 react 测试正是这样），也**不许**发 `switchWorktree` 造空会话 ✗。
@@ -1081,6 +1128,13 @@ window.__ModuleLoader__.load({
 							return Promise.resolve(workspaces.create({ path })).then((created) => {
 								setBusy(false);
 								state.contextAdds = (state.contextAdds || 0) + 1;
+								if (owner) {
+									const id = created && (created.workspaceId || created.workspace?.workspaceId);
+									if (!id) { throw new Error('没有取得新工作区身份。'); }
+									return workbenchService.showWorkspace(id, owner).then(() => {
+										setNote('已添加工作区：' + path + '（选择它可在本工作台开始新对话）');
+									});
+								}
 								if (mode === "hero" && typeof onPickWorkspace === "function") {
 									// hero：与官方 `adoptDirectory → onPick` 同语义（采纳即选中 ✓）
 									const id = created && (created.workspaceId
@@ -1090,7 +1144,7 @@ window.__ModuleLoader__.load({
 								}
 								// header：**不**自动切（那会让"添加"变成一个会换会话的动作 ✗）⇒ 就地提示
 								setNote("已添加工作区：" + path + "（在列表里选中它即可切过去）");
-							}, (e) => {
+							}).catch((e) => {
 								setBusy(false);
 								const msg = String((e && e.message) || e);
 								state.lastContextAddError = msg;
@@ -1289,6 +1343,7 @@ window.__ModuleLoader__.load({
 						//     「切换」是真按钮，自带可点外观与键盘可达性；整行点击仍兼容 IDE 侧用例。
 						const doSwitch = () => {
 							setChosenRoot((prev) => Object.assign({}, prev, { [g.key]: r.path }));
+							if (owner) { switchTo({ kind: 'root', path: r.path, userInitiated: true }); return; }
 							// ★★ 2026-11-14 第四轮真机「点不中 / 点了没反应」：
 							//   `switchTo` 一开头就 onRequestClose() 关面板 + setNote(null) ⇒ 宿主是**单向桥**，
 							//   promise 在主进程就 resolve、渲染侧成不败传不回页面；宿主还有幂等早退
@@ -1623,6 +1678,9 @@ window.__ModuleLoader__.load({
 				const requested = !!(props && props.open);
 				const data = useContextData();
 				const anchorRef = props && props.anchorRef;
+				const dock = anchorRef?.current?.closest?.('[data-vssaros-wb-docked-session]');
+				const sessionId = dock?.getAttribute('data-vssaros-wb-docked-session') || props?.sessionId || state.sessionId;
+				const owner = assistantOwner(sessionId);
 				const [rect, setRect] = react.useState(null);
 				// ── 2026-10-17 真机 bug：「点聊天框输入框会弹出工作区下拉框」──────────────────
 				// 官方语义（`dsh-client-ui-conversation/lib/client.js:17593-17603`）：hero 且
@@ -1710,8 +1768,8 @@ window.__ModuleLoader__.load({
 					//   那样关闭即卸载 ⇒ 面板内的 `note`（失败原因）/`query` 全丢，"重新点开看原因"就看不到 ✗
 					//   （header 那枚是常驻子组件，本来就没这个问题；两处口径必须一致 ✓）。
 				}, react.createElement(ContextPanel, {
-					open: open, mode: "hero", data: data, sessionId: state.sessionId,
-					selectedWorkspaceId: props && props.selectedId,
+					open: open, mode: "hero", data: data, sessionId,
+					selectedWorkspaceId: owner ? workbenchService.workspaceFor(sessionId)?.workspaceId : props && props.selectedId,
 					getAnchorEl: () => (anchorRef && anchorRef.current) || null,
 					// 关闭走官方（`pickerOpen` 由 conversation 包持有 ✓）；`onPick` 也是官方给的 ✓。
 					onRequestClose: () => { if (props && typeof props.onClose === "function") { props.onClose(); } },

@@ -31,6 +31,7 @@ export interface AppProps {
   deploymentForm: DeploymentForm
   /** VsSaros addition: DSH's own conversation, where the workbench host docks one; the Chat tab shows the desk in it. */
   native?: NativeConversation | undefined
+  onState?: ((state: import('./api.ts').StateView) => Promise<void>) | undefined
 }
 
 function Glossary({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -197,7 +198,7 @@ function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab
 }
 
 /** Root panel component managing route history and shared panel state. */
-export function App({ t, openSession, deploymentForm, native }: AppProps) {
+export function App({ t, openSession, deploymentForm, native, onState }: AppProps) {
   const [location, setLocation] = useState(initialLocation)
   useEffect(() => { remember(location) }, [location])
   // Preserve the last opened settings group across navigation so the Settings tab reopens at it.
@@ -209,7 +210,7 @@ export function App({ t, openSession, deploymentForm, native }: AppProps) {
   const back = useCallback(() => move(current => ({ route: current.stack.at(-1) ?? HOME, stack: current.stack.slice(0, -1) })), [move])
   const openTab = useCallback((tab: Tab) => move(current => ({ stack: [], route: tab === 'settings'
     ? settingsRoute(lastSettingsGroup(current)) : { page: tab, id: undefined } })), [move])
-  return <PanelProvider t={t} openSession={openSession} navigate={navigate} back={back} backLabel={routeLabel(t, location.stack.at(-1) ?? HOME)}>
+  return <PanelProvider t={t} openSession={openSession} onState={onState} navigate={navigate} back={back} backLabel={routeLabel(t, location.stack.at(-1) ?? HOME)}>
     <NativeContext.Provider value={native}><WorkProvider><SideProvider>
       <Pages route={location.route} openTab={openTab} deploymentForm={deploymentForm} />
     </SideProvider></WorkProvider></NativeContext.Provider>

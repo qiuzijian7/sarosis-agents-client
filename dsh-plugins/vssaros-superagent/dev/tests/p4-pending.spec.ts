@@ -52,6 +52,17 @@ describe('consolidating one pending CL without a tree walk', () => {
     expect(calls.find(args => args[0] === 'reopen')?.join(' ')).not.toMatch(/Binaries/)
   })
 
+  it('pool delivery leaves the previous and default changelists untouched, even with reconcile fallback', async () => {
+    const records = vi.fn(async (args: string[]) => args[0] === 'opened' ? [
+      { depotFile: '//GR/main/UE5EA/Engine/Source/Previous.cpp', change: '1298138' },
+      { depotFile: '//GR/main/UE5EA/Engine/Source/Current.cpp', change: '501' },
+      { depotFile: '//GR/main/UE5EA/Engine/Source/Unrelated.h', change: 'default' },
+    ] : [])
+    const result = await consolidatePending(config({ reconcileFallback: true }), 501, records, true)
+    expect(result.files).toBe(1); expect(result.reopened).toEqual([])
+    expect(records.mock.calls.some(([args]) => args.includes('reopen') || args.join(' ').includes('Previous') || args.join(' ').includes('Unrelated'))).toBe(false)
+    expect(records.mock.calls.find(([args]) => args[0] === 'reconcile')?.[0].slice(6)).toEqual(['//GR/main/UE5EA/Engine/Source/Current.cpp'])
+  })
   it('fallback reconciles only explicit opened files in batches, never a wildcard', async () => {
     const calls: string[][] = []
     const many = Array.from({ length: 205 }, (_, i) => ({ depotFile: `//GR/main/UE5EA/Engine/Source/F${i}.cpp`, change: 'default' }))

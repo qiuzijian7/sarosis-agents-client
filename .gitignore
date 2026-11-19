@@ -9,6 +9,12 @@ build/next/out/
 build/rspack/dist/
 build/vite/dist/
 
+# 随包 vendored 的 `dsh-plugins/dsh-ego-browser/` 把上游发布产物放在
+# `runtime/ego-browser/dist/` 下；那份是**自带运行时**（不是本仓构建产物），
+# 干净检出不能缺 ⇒ 对这一个目录解除上面的全局 `dist/` 忽略。
+!dsh-plugins/dsh-ego-browser/runtime/ego-browser/dist/
+!dsh-plugins/dsh-ego-browser/runtime/ego-browser/dist/**
+
 # Logs and temporary files
 *.log
 *.txt
@@ -17,6 +23,10 @@ build/vite/dist/
 !CONTRIBUTING.md
 !LICENSE.txt
 !ThirdPartyNotices.txt
+# 随包 vendored 的 `dsh-vision-router` 把第三方许可原文放在 `assets/licenses/*.txt`；
+# 上面的全局 `*.txt` 会把它们吃掉 ⇒ 干净检出会缺 `THIRD_PARTY_NOTICES.md` 指向的原文。
+!dsh-plugins/dsh-vision-router/assets/licenses/
+!dsh-plugins/dsh-vision-router/assets/licenses/**
 compile-*.log
 compile-*.txt
 tsc-*.txt

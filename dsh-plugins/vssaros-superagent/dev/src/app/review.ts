@@ -5,7 +5,7 @@
  * panel's management routes are the only callers (see `tests/review.spec.ts`).
  */
 import { userInfo } from 'node:os'
-import { liveTicket, type EngineForPeople, type Ticket } from '../core/index.ts'
+import { liveTicket, latestReport, type WorkerReport, type EngineForPeople, type Ticket } from '../core/index.ts'
 import type { Commands } from '../infra/commands.ts'
 import { KV } from '../kv.ts'
 import type { SourceContext } from '../sources/host.ts'
@@ -13,8 +13,9 @@ import { changesOf, claimChangelist, fingerprint, inPath, P4_SOURCE, p4, p4Messa
   type Change, type ChangeFile, type FileDiff, type P4Config, type ShelfDiffSummary }
   from '../sources/p4-change.ts'
 import type { Store } from './store.ts'
+import { hostPoolAuthorization } from '../sources/tapd-pool-authorization.ts'
 
-export type ReviewState = 'waiting' | 'submitting' | 'handed' | 'submitted' | 'rejected' | 'discarded' | 'failed'
+export type ReviewState = 'waiting' | 'submitting' | 'handed' | 'submitted' | 'rejected' | 'discarded' | 'failed' | 'delivered_pending'
 export interface Review {
   ticketId: string
   change: number
@@ -33,13 +34,13 @@ export interface Review {
   /** The submitted CL number, once submitted. */
   submittedAs?: number
 }
-export type AuditAction = 'requested' | 'approved' | 'refused' | 'rejected' | 'discarded' | 'handed' | 'submitted' | 'failed'
+export type AuditAction = 'requested' | 'approved' | 'refused' | 'rejected' | 'discarded' | 'handed' | 'submitted' | 'failed' | 'delivered_pending'
 export interface AuditEntry { at: string; action: AuditAction; ticketId: string; change: number; fingerprint: string; by?: string; detail?: string }
 const AUDIT_LIMIT = 500
 
 export interface ReviewHost {
-  readonly store: Pick<Store, 'get' | 'set' | 'keys' | 'tickets'>
-  readonly engine: Pick<EngineForPeople, 'stopTicket'> & { note(ticketId: string, text: string): Ticket }
+  readonly store: Pick<Store, 'get' | 'set' | 'keys' | 'tickets'> & Partial<Pick<Store, 'atomic' | 'settings' | 'triggers'>>
+  readonly engine: Pick<EngineForPeople, 'stopTicket'> & { note(ticketId: string, text: string): Ticket; report?(ticketId: string, report: WorkerReport): Ticket }
   /** The p4 Source's context, whose commands and thread rules the reviews use. */
   readonly p4: SourceContext
   /** The person acting in the panel; the Host's OS account, as the panel is reachable only from this machine. */
@@ -107,6 +108,53 @@ export class Reviews {
     this.save(review)
     this.log(review, 'requested')
     return review
+  }
+  /** Records a verified pending delivery without requesting a submit review. */
+  deliveredPending(ticketId: string, change: Change, comment: string): Review {
+    if (!change.shelved.length || unshelvedFiles(change).length) throw new ReviewRefused('Pending delivery requires the complete ticket shelf')
+    const at = new Date().toISOString(), previous = this.get(ticketId)
+    const review: Review = { ticketId, change: change.number, fingerprint: fingerprint(change.shelved), files: change.shelved,
+      description: change.description, client: change.client, state: 'delivered_pending', requestedAt: previous?.requestedAt ?? at,
+      decidedAt: at, by: this.person(), comment }
+    this.save(review); this.log(review, 'delivered_pending', comment, review.by)
+    return review
+  }
+  /** Operator accepts an already-ready pool delivery as pending; no submit, revert, compilation or review wait. */
+  async completePending(ticketId: string, read: string): Promise<Review> {
+    const previous = this.get(ticketId), ticket = this.host.store.tickets.get(ticketId)
+    if (previous?.state === 'delivered_pending' && ticket?.ended?.outcome === 'completed' && previous.fingerprint === read) return previous
+    const review = this.waitingReview(ticketId)
+    if (!ticket?.execution || latestReport(ticket)?.state !== 'ready' || ticket.team) throw new ReviewRefused('Only a ready single-worker delivery may finish as pending')
+    const store = this.host.store
+    const origin = store.triggers?.get(ticket.origin.triggerId)
+    if (!store.settings || !origin || !hostPoolAuthorization({ get: key => store.get(key), settings: () => store.settings!() }, origin))
+      throw new ReviewRefused('Only a Host-authorized TAPD pool delivery may use this action')
+    if (!this.host.engine.report || !store.atomic || read !== review.fingerprint) throw new ReviewRefused('The delivery changed or completion support is unavailable')
+    const change = await readChange(this.commands, this.config, review.change)
+    if (!change || change.status !== 'pending' || fingerprint(change.shelved) !== read) throw new ReviewRefused('The pending shelf changed; refresh before completing')
+    const comment = '按用户要求以 pending CL 交付结束；不等待编译、回归或审阅，未提交；验证状态保持原报告，不宣称验证通过。'
+    return store.atomic(() => {
+      const latest = this.host.store.tickets.get(ticketId)
+      if (this.get(ticketId)?.state !== 'waiting' || this.get(ticketId)?.fingerprint !== read || !latest || !liveTicket(latest)
+        || latest.updatedAt !== ticket.updatedAt) throw new ReviewRefused('Ticket or review changed during completion')
+      const refused = claimChangelist(this.host.p4, this.config, ticketId, change)
+      if (refused) throw new ReviewRefused(refused)
+      this.host.store.tickets.save({ ...ticket, execution: { ...ticket.execution!, p4Delivery: 'pending' } })
+      const result = this.deliveredPending(ticketId, change, comment)
+      this.host.engine.report!(ticketId, { state: 'ready', summary: `${latestReport(ticket)!.summary}\n\n${comment}`, question: null })
+      return result
+    })
+  }
+  /** Applies the pool's pending-only delivery policy to ready legacy tasks after an upgrade. */
+  async completeReadyPoolDeliveries(): Promise<void> {
+    const store = this.host.store
+    if (!store.settings || !store.triggers) return
+    for (const review of this.waiting()) {
+      const ticket = store.tickets.get(review.ticketId), origin = ticket && store.triggers.get(ticket.origin.triggerId)
+      if (!ticket || ticket.team || latestReport(ticket)?.state !== 'ready' || !origin
+        || !hostPoolAuthorization({ get: key => store.get(key), settings: () => store.settings!() }, origin)) continue
+      await this.completePending(ticket.id, review.fingerprint)
+    }
   }
   /** The review with each shelved file's difference, read from the server now, and how an approval submits. */
   async view(ticketId: string): Promise<{ review: Review; diffs: FileDiff[]; diffSummary: ShelfDiffSummary; submit: { mode: P4Config['submit']; tags: string } } | undefined> {

@@ -1000,43 +1000,10 @@ export class WorktreeService extends Disposable implements IWorktreeService {
 	}
 
 	private _execGitNodeFallback(cwd: string, args: string[]): Promise<string> {
-		return new Promise((resolve, reject) => {
-			try {
-				// In Electron renderer, we can require child_process through the node integration
-				// eslint-disable-next-line local/code-import-patterns
-				const cp = require('child_process') as typeof import('child_process');
-				this.logService.debug(`[WorktreeService] _execGitNodeFallback: spawning git ${args.join(' ')} in ${cwd}`);
-				const child = cp.spawn('git', args, {
-					cwd,
-					env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-					windowsHide: true,
-				});
-
-				let stdout = '';
-				let stderr = '';
-
-				child.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
-				child.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
-
-				child.on('error', (err) => {
-					this.logService.error(`[WorktreeService] _execGitNodeFallback: spawn error: ${err.message}`);
-					reject(new Error(`git spawn error: ${err.message}`));
-				});
-
-				child.on('close', (code) => {
-					if (code === 0) {
-						this.logService.debug(`[WorktreeService] _execGitNodeFallback: success, stdout length=${stdout.length}`);
-						resolve(stdout);
-					} else {
-						this.logService.error(`[WorktreeService] _execGitNodeFallback: failed, code=${code}, stderr="${stderr}"`);
-						reject(new Error(stderr || `git exited with code ${code}`));
-					}
-				});
-			} catch (err) {
-				this.logService.error('[WorktreeService] _execGitNodeFallback: exception:', err);
-				reject(err);
-			}
-		});
+		// ★ P2（方案 B「一套 git 源，以 dsh 侧为准」）：renderer 里直接 spawn git 已禁用。
+		// 所有 git 命令经 `vscode:execGit` → 主进程 → dsh Host `/x/worktree/api/git`。
+		// 保留签名是为了让「IPC 传输失败」有一条**明确的失败出口**，而不是静默分叉成第二套真源。
+		return Promise.reject(new Error(`[WorktreeService] 本地 git 执行已禁用（唯一真源是 dsh Host）：git ${args.join(' ')} (cwd=${cwd})`));
 	}
 
 	private parseWorktreeList(output: string, mainFolder: string): IWorktreeDetail[] {

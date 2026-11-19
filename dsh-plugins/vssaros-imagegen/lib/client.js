@@ -91,6 +91,16 @@ window.__ModuleLoader__.load({
 			const [note, setNote] = useState("");
 			const [lightbox, setLightbox] = useState(null);
 
+			/**
+			 * P4：官方 toolview owner 注入的 `loadImage` 是会话授权的图片加载器。
+			 * 发布到全局仅供右侧图片资源页复用；不调用模型、不重新执行生图工具。
+			 */
+			useEffect(() => {
+				if (typeof loadImage === "function") {
+					try { globalThis.__vssarosLoadImage = loadImage; } catch { /* 极端宿主不可写 */ }
+				}
+			}, [loadImage]);
+
 			/* ① 拉版本族（认附件 id ⇒ 客户端手里只有这个）。 */
 			useEffect(() => {
 				if (!firstId) { return undefined; }
@@ -220,6 +230,21 @@ window.__ModuleLoader__.load({
 			const meta = current
 				? [current.provider, current.model].filter(Boolean).join(" / ") + (current.width ? " · " + current.width + "×" + current.height : "")
 				: "";
+			/** P4：右侧打开只展示已有图片，不重新执行生图工具、不写文件。 */
+			const openInSidebar = () => {
+				const open = globalThis.__vssarosOpenImageReference;
+				if (typeof open !== "function") { setNote("右侧图片预览未启用（需启用新版侧栏布局）"); return; }
+				const token = /@image:([^\s]+)/.exec(caption || "");
+				const attachment = (current && current.attachment) || attachments[index] || attachments[0] || null;
+				const title = String((current && current.prompt) || caption || "图片资源");
+				let ref = null;
+				if (token) { ref = token[0]; }
+				else if (url) { ref = { title, url }; }
+				else if (attachment) { ref = { title, attachment }; }
+				if (!ref) { setNote("这张工具卡没有可预览的图片资源"); return; }
+				if (!open(ref)) { setNote("右侧图片预览未打开：没有可用会话或资源入口"); return; }
+				setNote("已请求在右侧打开图片预览，未重新执行工具");
+			};
 
 			return h("div", { className: "vssaros-imagegen-row", "data-vssaros-imagegen": "done" },
 				h("div", { className: "vssaros-imagegen-caption" },
@@ -269,6 +294,12 @@ window.__ModuleLoader__.load({
 						className: "vssaros-imagegen-btn",
 						onClick: () => { if (url) { setLightbox({ url, caption: (current && current.prompt) || "" }); } },
 					}, "打开大图"),
+					h("button", {
+						type: "button",
+						className: "vssaros-imagegen-btn",
+						"data-vssaros-imagegen-sidebar": "1",
+						onClick: openInSidebar,
+					}, "在右侧预览"),
 					h("button", { type: "button", className: "vssaros-imagegen-btn", onClick: saveToWorkspace }, "存入工作区"),
 					h("button", {
 						type: "button",

@@ -33,7 +33,7 @@ import { homedir, tmpdir } from 'node:os';
 
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 
 // ★ 复刻（§15.38）：分区改成「库」/「笔记」两节 ⇒ 两边的目录名都要（`NOTES_DIR` 是这轮补进 import 的 ✓，
@@ -3693,7 +3693,7 @@ export function renderFulltextResult(value) {
 	const lines = value.items.map((item, index) => {
 		const label = item.matchedBy === 'name' ? '标题命中' : (item.matchedBy === 'tag' ? '标签命中' : '内容命中');
 		const snippet = String(item.snippet ?? '').replace(/\s+/g, ' ').trim();
-		return `${index + 1}. [${item.vaultId}] ${item.title} (${item.score} · ${label})\n   ${snippet.length > 240 ? `${snippet.slice(0, 240)}…` : snippet}`;
+		return `${index + 1}. [${item.vaultId}] ${item.title} (${item.score} · ${label})\n   uri: ${item.uri}\n   ${snippet.length > 240 ? `${snippet.slice(0, 240)}…` : snippet}`;
 	});
 	const notes = [];
 	if (Number.isFinite(value.totalHits) && value.totalHits > value.count) {
@@ -4041,6 +4041,50 @@ function listAllVaults(rootValue, config, options = {}) {
 	} catch { /* 过滤失败不影响主体（宁可多列，不可白屏） */ }
 	return result;
 }
+
+/** Bounded article metadata for the @ menu; empty queries never read bodies or rebuild indexes. */
+async function referenceArticles(config, { query = '', wantedVault = '', limit = 12 } = {}) {
+	if (wantedVault && !isVaultId(wantedVault)) { throw new Error(`vaultId 形态不合法：${wantedVault}`); }
+	const root = kbRootOf(config);
+	const { vaults } = await listAllVaults(root, config, { withDocs: true });
+	const targets = wantedVault ? vaults.filter(vault => vault.id === wantedVault) : vaults;
+	if (wantedVault && !targets.length) { throw new Error(`找不到 vault：${wantedVault}`); }
+	const names = new Map(targets.map(vault => [vault.id, vault.name || vaultDisplayNameFrom(config, vault.id)]));
+	if (String(query).trim()) {
+		if (!targets.length) { return { count: 0, totalHits: 0, items: [] }; }
+		const result = await runFulltextSearch(root, { query, wantedVault: wantedVault || undefined, limit, config });
+		return { ...result, items: result.items.map(item => ({ ...item, vaultName: names.get(item.vaultId) || item.vaultId })) };
+	}
+	const items = [];
+	let truncated = false;
+	const pathKey = value => process.platform === 'win32' ? value.toLowerCase() : value;
+	for (const vault of targets) {
+		const metadata = new Map();
+		for (const doc of vault.docs ?? []) {
+			try { metadata.set(pathKey(fileURLToPath(doc.uri)), doc); } catch { /* invalid index records are not references */ }
+		}
+		for (const section of [NOTES_DIR, LIBRARY_DIR]) {
+			const tree = await listVaultTree(vault.dir, { section, maxDepth: 12, maxNodes: 1500 });
+			truncated ||= tree.truncated;
+			const collect = nodes => {
+				for (const node of nodes) {
+					if (node.isDirectory) { collect(node.children ?? []); continue; }
+					if (!/\.md$/i.test(node.name) || node.mtime === undefined) { continue; }
+					const path = join(vault.dir, section, ...node.rel.split('/'));
+					const doc = metadata.get(pathKey(path));
+					items.push({
+						vaultId: vault.id, vaultName: names.get(vault.id), uri: pathToFileURL(path).href,
+						title: doc?.title || node.name.replace(/\.md$/i, ''), mtime: node.mtime,
+					});
+				}
+			};
+			collect(tree.nodes);
+		}
+	}
+	items.sort((a, b) => b.mtime - a.mtime || a.title.localeCompare(b.title) || a.uri.localeCompare(b.uri));
+	return { count: Math.min(items.length, limit), totalHits: items.length, items: items.slice(0, limit), truncated };
+}
+
 function toolDefinitions(ctx, state, config) {
 	const root = () => kbRootOf(config);
 	return [{
@@ -4152,11 +4196,10 @@ function toolDefinitions(ctx, state, config) {
 			},
 			render: (_args, value) => [{
 				type: 'text',
-				// ⚠ index 模式的那句**一字不改**（既有探针 p3-08 与模型见过的文案都按它写 ✓）
 				text: value.mode === 'fulltext'
 					? renderFulltextResult(value)
 					: (value.count
-						? `${value.count} 条命中：\n${value.items.map((item, index) => `${index + 1}. [${item.vaultId}] ${item.title}${item.type ? ` · ${item.type}` : ''}`).join('\n')}`
+						? `${value.count} 条命中：\n${value.items.map((item, index) => `${index + 1}. [${item.vaultId}] ${item.title}${item.type ? ` · ${item.type}` : ''}\n   uri: ${item.uri}`).join('\n')}`
 						: '没有命中资料库条目。'),
 			}],
 		},
@@ -8217,6 +8260,22 @@ export function apply(ctx, config = {}) {
 						res.writeHead(500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
 						res.end(JSON.stringify({ ok: false, error: String(e?.message ?? e) }));
 					}
+					return;
+				}
+				if (url && url.pathname === `${ROUTE_PREFIX}/api/references`) {
+					const send = (code, payload) => {
+						res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+						res.end(JSON.stringify(payload));
+					};
+					if (req.method !== 'GET') { send(405, { ok: false, error: '仅支持 GET' }); return; }
+					try {
+						const rawLimit = Number(url.searchParams.get('limit') ?? 12);
+						const limit = Number.isFinite(rawLimit) ? Math.min(100, Math.max(1, Math.floor(rawLimit))) : 12;
+						const result = await referenceArticles(config, {
+							query: url.searchParams.get('q') ?? '', wantedVault: url.searchParams.get('vault') ?? '', limit,
+						});
+						send(200, { ok: true, ...result });
+					} catch (e) { send(400, { ok: false, error: String(e?.message ?? e) }); }
 					return;
 				}
 				if (url && url.pathname === `${ROUTE_PREFIX}/api/search`) {

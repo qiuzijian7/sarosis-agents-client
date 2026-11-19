@@ -454,12 +454,20 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     watches: 0, workspace: '68880148', agent: '', agentResolved: '', agentMapped: false, healthCode: null }) },
   'POST sources/tapd/test': { body: true, answer: () => ({ ok: true, method: 'Basic TAPD_CLIENT_ID/SECRET (API account)',
     at: '2026-11-09T00:00:00.000Z' }) },
-  'POST sources/tapd/filters/import': { body: true, answer: ({ body }) => ({ schedule: { name: 'filter-bug-1',
-    enabled: false, at: '09:00', maxPerRun: 20, windowDays: 2, query: {}, local: [], report: [], page: '', exportedAt: '' },
-  watch: { name: 'filter-bug-1', workspace: '', type: 'bug', item: '', status: '', owner: '', iteration: '', mode: 'assigned', sweepOnly: true },
-  report: [{ field: body.text ? '优先级' : '', op: '属于 (In)', enabled: true, target: 'api', detail: 'priority_label=紧急|高' }],
-  warnings: [], maps: 'fallback' as const }) },
+  'GET sources/tapd/identity': { query: ['fresh'], answer: () => ({ signedIn: true, loginName: 'qiuzijian', staffId: '123456',
+    workspace: '68880148', status: 'resolved' as const, tapdName: '邱子鉴', source: 'automatic' as const, cached: false, message: '已通过 TAPD 成员目录精确匹配' }) },
+  'POST sources/tapd/identity/confirm': { body: true, answer: ({ body }) => ({ signedIn: true, loginName: body.loginName,
+    staffId: '123456', workspace: body.workspace, status: 'resolved' as const, tapdName: body.name, source: 'confirmed' as const,
+    cached: false, message: '已确认，后续在当前项目自动复用' }) },
   'POST sources/tapd/filters/preview': { body: true, answer: () => ({ total: 18573, recent: 42 }) },
+  'POST sources/tapd/filter-schemes/sync': { body: true, answer: () => ({ schemes: [], pool: {
+    name: 'filter-pool-1', items: [], autoProcess: false, at: '02:00', maxPerRun: 20,
+    processedToday: 0, lastRun: '', owner: 'qiuzijian' },
+  identity: { loginName: 'qiuzijian', signedIn: true } }) },
+  'POST sources/tapd/filter-schemes/preview': { body: true, answer: () => ({ total: 18573, recent: 42, items: [] }) },
+  'GET sources/tapd/filter-schemes/pool': { answer: () => ({ items: [] }) },
+  'POST sources/tapd/filter-schemes/run': { body: true, answer: ({ body }) => ({ pool: body.pool, runId: 'mock-run',
+    planned: 0, dispatched: 0, day: '2026-11-17', dispatchQueued: false }) },
   'GET threads': { query: ['filter', 'offset', 'limit'], answer: () => page(server.threads) },
   'GET threads/:key': { query: ['limit', 'before', 'around'], answer: ({ params, query }) => {
     const found = server.threadPages(params.key, query)
@@ -575,6 +583,12 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     const view = server.reviews[params.id]
     if (view?.review.state !== 'waiting') return refuse(409, 'This ticket has no changelist to review')
     view.review = { ...view.review, state: 'discarded', by: 'qiuzijian' }
+    return view.review
+  } },
+  'POST tickets/:id/review/complete-pending': { body: true, answer: ({ params }) => {
+    const view = server.reviews[params.id]
+    if (!view) return refuse(409, 'No pending delivery')
+    view.review = { ...view.review, state: 'delivered_pending' }
     return view.review
   } },
   'GET team/plans': { answer: () => ({ available: server.teamAvailable, archived: true as const, plans: server.plans }) },
@@ -755,6 +769,13 @@ export function usePanelServer(cleanup: () => void) {
           }
         }
         return new Response(JSON.stringify({ feishuApps: server.feishuApps }),
+          { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      // VsSaros addition: the settings panel reads the TOF identity projection from the bridge.
+      // A plain Response keeps the request out of `server.pending` (the component reads .json()).
+      if (address.pathname === '/x/vssaros-bridge/api/tof/status') {
+        return new Response(JSON.stringify({ ok: true, status: {
+          signedIn: true, loginName: 'qiuzijian', staffId: '123456', source: 'local' } }),
           { status: 200, headers: { 'content-type': 'application/json' } })
       }
       const path = address.pathname.replace('/orchestrator/api/', '')

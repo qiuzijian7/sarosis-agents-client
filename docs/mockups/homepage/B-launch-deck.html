@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>B · 启动台 | VsSaros 主页重设计</title>
+<link rel="stylesheet" href="./common.css">
+<style>
+  .hero{position:relative;overflow:hidden;padding:24px 26px;margin-bottom:20px;border-radius:18px;
+    border:1px solid var(--dsw-alias-brand-soft);
+    background:linear-gradient(115deg,var(--dsw-alias-brand-soft),transparent 58%),var(--dsw-alias-bg-layer-1);
+    box-shadow:var(--shadow-1)}
+  .hero::after{content:"";position:absolute;right:-70px;top:-90px;width:260px;height:260px;border-radius:50%;
+    background:var(--dsw-alias-brand-soft);filter:blur(20px);pointer-events:none}
+  .hero h1{margin:0;font-size:22px;font-weight:650;letter-spacing:-.015em}
+  .hero .sub{margin:6px 0 16px;font-size:12.5px;color:var(--dsw-alias-label-secondary)}
+  .hero .search{position:relative;z-index:1;max-width:660px;height:46px;border-radius:23px;padding:0 16px;
+    background:var(--dsw-alias-bg-base)}
+  .hero .search .ic{width:18px;height:18px}
+  .hero .search input{font-size:13.5px}
+  .quick{position:relative;z-index:1;display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+  .resume{position:relative;z-index:1;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+    max-width:660px;margin-top:16px;padding:9px 12px;border:1px solid var(--dsw-alias-border-l1);
+    border-radius:10px;background:var(--dsw-alias-bg-base)}
+  .resume .grow{min-width:160px}
+  .sec-head{display:flex;align-items:center;gap:10px;margin:0 0 10px}
+  .sec-head h2{margin:0;font-size:13px;font-weight:600}
+  .sec-head .grow{flex:1}
+  .tiles.large{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .tiles.large .tile{padding:14px;gap:10px}
+  .tiles.large .tile-ico{width:38px;height:38px;border-radius:11px}
+  .tiles.large .tile-desc{min-height:0}
+  .deck{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(260px,1fr);gap:12px;margin-top:16px}
+  .stack{display:flex;flex-direction:column;gap:12px;min-width:0}
+  .spark .line{fill:none;stroke:var(--dsw-alias-brand-primary);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+  .spark .area{fill:var(--dsw-alias-brand-soft);stroke:none}
+  .agent{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--dsw-alias-border-l1)}
+  .agent:first-of-type{border-top:0}
+  .agent .grow{min-width:0}
+  .agent .bar{margin-top:6px}
+  .mini-stat{display:flex;align-items:baseline;gap:8px;font:600 22px/1.2 var(--wb-mono);letter-spacing:-.02em}
+  .mini-stat em{font:500 11px/1 system-ui,sans-serif;font-style:normal;color:var(--dsw-alias-label-secondary)}
+  @container (max-width:900px){.tiles.large{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @container (max-width:760px){.deck{grid-template-columns:1fr}.hero{padding:18px}}
+  @container (max-width:520px){.tiles.large{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="rail" aria-label="活动栏">
+    <div class="rail-logo" title="VsSaros">V</div>
+    <button class="rail-item is-active" title="主页" data-toast="主页 /x/dashboard/"><svg class="ic"><use href="#i-home"></use></svg></button>
+    <button class="rail-item" title="会话" data-toast="打开 /x/sessions/"><svg class="ic"><use href="#i-message"></use></svg></button>
+    <button class="rail-item" title="知识库" data-toast="打开 /x/kb/"><svg class="ic"><use href="#i-book"></use></svg></button>
+    <button class="rail-item" title="记忆" data-toast="打开会话页「记忆」Tab"><svg class="ic"><use href="#i-brain"></use></svg></button>
+    <button class="rail-item" title="代码库" data-toast="打开 /x/codebase/"><svg class="ic"><use href="#i-code"></use></svg></button>
+    <div class="rail-sep"></div>
+    <button class="rail-item" title="商城" data-toast="打开 /x/marketplace/"><svg class="ic"><use href="#i-store"></use></svg></button>
+    <button class="rail-item" title="自动化任务" data-toast="打开 /x/scheduler/"><svg class="ic"><use href="#i-calendar"></use></svg></button>
+    <div class="rail-spacer"></div>
+    <button class="rail-item" title="工作台中心" data-toast="工作台中心：11 格启动器"><svg class="ic"><use href="#i-grid"></use></svg></button>
+    <button class="rail-item" title="设置" data-toast="打开设置"><svg class="ic"><use href="#i-settings"></use></svg></button>
+  </nav>
+
+  <div class="workbench">
+    <header class="topbar">
+      <div class="crumbs"><b>VsSaros</b><span class="sep">/</span><span>主页</span><span class="sep">/</span><span>启动台</span></div>
+      <div class="topbar-spacer"></div>
+      <span class="status-live"><span class="dot"></span>2 个 Agent 在跑</span>
+      <button class="btn icon sm ghost" data-theme-toggle aria-label="切换主题" title="切换主题"><svg class="ic"><use href="#i-moon"></use></svg></button>
+      <div class="avatar" title="当前用户">Q</div>
+    </header>
+
+    <main class="stage">
+      <div class="stage-inner">
+        <a class="backlink" href="./index.html"><svg class="ic"><use href="#i-arrow-right"></use></svg>返回方案对比</a>
+
+        <!-- Hero：把主页从「看报表」改成「开始工作」 -->
+        <section class="hero">
+          <div class="eyebrow">Start here · 11 月 17 日 周二</div>
+          <h1>下午好，从这里继续</h1>
+          <p class="sub">一个入口通向会话、工作台与文件。遥测仍在右侧，但不再挡在你和下一步动作之间。</p>
+          <label class="search">
+            <svg class="ic"><use href="#i-command"></use></svg>
+            <input data-search-main type="search" placeholder="询问 Agent、搜索会话、打开工作台或文件…" aria-label="命令框">
+            <span class="kbd">⌘K</span>
+          </label>
+          <div class="quick">
+            <button class="btn primary" data-toast="继续上次会话：重构 homepage 布局（sess_…a1）"><svg class="ic"><use href="#i-play"></use></svg>继续上次会话</button>
+            <button class="btn" data-toast="新建会话（走桥 newChat / newSession）"><svg class="ic"><use href="#i-plus"></use></svg>新建会话</button>
+            <button class="btn" data-toast="打开工作区：sarosis-agents-client"><svg class="ic"><use href="#i-folder"></use></svg>打开工作区</button>
+            <button class="btn" data-toast="打开工作台中心（启动器 11 格）"><svg class="ic"><use href="#i-grid"></use></svg>工作台中心</button>
+          </div>
+          <div class="resume">
+            <span class="r-ico" style="width:28px;height:28px;border-radius:8px;display:grid;place-items:center;background:var(--dsw-alias-brand-soft);color:var(--dsw-alias-brand-primary)"><svg class="ic"><use href="#i-sparkles"></use></svg></span>
+            <div class="grow"><div class="row-title">重构 homepage 布局</div><div class="row-sub">sess_…a1 · 12 分钟前 · turn 12 · 待办 3 项</div></div>
+            <span class="pill brand">进行中</span>
+            <button class="btn sm primary" data-toast="继续上次会话：重构 homepage 布局">继续 <svg class="ic"><use href="#i-arrow-right"></use></svg></button>
+          </div>
+        </section>
+
+        <div class="sec-head"><h2>常用工作台</h2><span class="pill">6 / 8 个在册</span><span class="grow"></span><span class="link faint" style="cursor:pointer;font-size:11.5px" data-toast="打开工作台中心，可拖拽排序 / 固定">管理 →</span></div>
+        <div class="tiles large">
+          <button class="tile" data-toast="打开 /x/kb/ 知识库"><div class="tile-top"><span class="tile-ico purple"><svg class="ic"><use href="#i-book"></use></svg></span><div><div class="tile-name">知识库</div><div class="faint" style="font-size:10.5px">12 分钟前用过</div></div></div><div class="tile-desc">知识库索引与检索 · 42 个库 / 1,206 篇笔记</div><div class="tile-foot"><svg class="ic"><use href="#i-arrow-up-right"></use></svg>打开</div></button>
+          <button class="tile" data-toast="打开会话页「记忆」Tab"><div class="tile-top"><span class="tile-ico teal"><svg class="ic"><use href="#i-brain"></use></svg></span><div><div class="tile-name">记忆</div><div class="faint" style="font-size:10.5px">1 小时前用过</div></div></div><div class="tile-desc">分层记忆 / 待确认建议 · 3 条待确认</div><div class="tile-foot"><svg class="ic"><use href="#i-arrow-up-right"></use></svg>打开</div></button>
+          <button class="tile" data-toast="打开 /x/codebase/ 代码库"><div class="tile-top"><span class="tile-ico ok"><svg class="ic"><use href="#i-code"></use></svg></span><div><div class="tile-name">代码库</div><div class="faint" style="font-size:10.5px">昨天用过</div></div></div><div class="tile-desc">代码图谱与符号检索 · 12,480 个符号</div><div class="tile-foot"><svg class="ic"><use href="#i-arrow-up-right"></use></svg>打开</div></button>
+          <button class="tile" data-toast="打开 /x/sessions/ 历史会话"><div class="tile-top"><span class="tile-ico"><svg class="ic"><use href="#i-history"></use></svg></span><div><div class="tile-name">历史会话</div><div class="faint" style="font-size:10.5px">2 分钟前用过</div></div></div><div class="tile-desc">会话分组 / 人格标记 / 指示灯 · 32 条</div><div class="tile-foot"><svg class="ic"><use href="#i-arrow-up-right"></use></svg>打开</div></button>
+          <button class="tile" data-toast="打开 /x/media/ 媒体库"><div class="tile-top"><span class="tile-ico coral"><svg class="ic"><use href="#i-image"></use></svg></span><div><div class="tile-name">媒体库</div><div class="faint" style="font-size:10.5px">3 天前用过</div></div></div><div class="tile-desc">只读 media.db 页面 · 214 个素材</div><div class="tile-foot"><svg class="ic"><use href="#i-arrow-up-right"></use></svg>打开</div></button>
+          <button class="tile" data-toast="打开 /x/scheduler/ 自动化任务"><div class="tile-top"><span class="tile-ico amber"><svg class="ic"><use href="#i-calendar"></use></svg></span><div><div class="tile-name">自动化任务</div><div class="faint" style="font-size:10.5px">今天 08:00 已投递</div></div></div><div class="tile-desc">按计划自动运行 Agent · 4 个已启用</div><div class="tile-foot"><svg class="ic"><use href="#i-arrow-up-right"></use></svg>打开</div></button>
+        </div>
+
+        <div class="deck">
+          <section class="card" data-tabs-scope data-filter-scope aria-label="最近会话">
+            <div class="card-hd">
+              <div class="ico"><svg class="ic"><use href="#i-history"></use></svg></div>
+              <h2>最近会话</h2><span class="hint">按创建时间倒序</span><span class="grow"></span>
+              <div class="tabs"><button class="tab is-active" data-tab="all">全部</button><button class="tab" data-tab="active">进行中</button></div>
+            </div>
+            <label class="search" style="height:32px;border-radius:16px;margin-bottom:6px"><svg class="ic"><use href="#i-search"></use></svg><input data-filter type="search" placeholder="按标题过滤…" aria-label="过滤会话"></label>
+            <div data-panel="all">
+              <div class="rows">
+                <div class="row" data-filter-item data-toast="恢复会话：重构 homepage 布局"><span class="r-ico"><svg class="ic"><use href="#i-sparkles"></use></svg></span><div class="grow"><div class="row-title">重构 homepage 布局</div><div class="row-sub">sess_…a1 · live · sarosis-agents-client · 待办 3</div></div><span class="pill brand">进行中</span><span class="row-meta">12m</span></div>
+                <div class="row" data-filter-item data-toast="恢复会话：修复 dashboard 卡片拖拽"><span class="r-ico"><svg class="ic"><use href="#i-git-branch"></use></svg></span><div class="grow"><div class="row-title">修复 dashboard 卡片拖拽</div><div class="row-sub">sess_…b7 · cache · 待回答 1</div></div><span class="pill warn">待回答</span><span class="row-meta">18m</span></div>
+                <div class="row" data-filter-item data-toast="恢复会话：MCP 工具注册排查"><span class="r-ico"><svg class="ic"><use href="#i-terminal"></use></svg></span><div class="grow"><div class="row-title">MCP 工具注册排查</div><div class="row-sub">sess_…c2 · cache · 子代理 1</div></div><span class="pill ok">已完成</span><span class="row-meta">1h</span></div>
+                <div class="row" data-filter-item data-toast="恢复会话：知识库索引增量刷新"><span class="r-ico"><svg class="ic"><use href="#i-book"></use></svg></span><div class="grow"><div class="row-title">知识库索引增量刷新</div><div class="row-sub">sess_…d9 · cache · 42 个库</div></div><span class="pill ok">已完成</span><span class="row-meta">3h</span></div>
+                <div class="row" data-filter-item data-toast="恢复会话：生成工作台 A/B 方案"><span class="r-ico"><svg class="ic"><use href="#i-layers"></use></svg></span><div class="grow"><div class="row-title">生成工作台 A/B 方案</div><div class="row-sub">sess_…e4 · cache · 计划模式</div></div><span class="pill">计划模式</span><span class="row-meta">昨天</span></div>
+                <div class="row" data-filter-item data-toast="恢复会话：补齐 dsh 主题令牌守卫"><span class="r-ico"><svg class="ic"><use href="#i-check"></use></svg></span><div class="grow"><div class="row-title">补齐 dsh 主题令牌守卫</div><div class="row-sub">sess_…f3 · cache</div></div><span class="pill ok">已完成</span><span class="row-meta">昨天</span></div>
+              </div>
+            </div>
+            <div data-panel="active" hidden>
+              <div class="rows">
+                <div class="row" data-filter-item data-toast="恢复会话：重构 homepage 布局"><span class="r-ico"><svg class="ic"><use href="#i-sparkles"></use></svg></span><div class="grow"><div class="row-title">重构 homepage 布局</div><div class="row-sub">sess_…a1 · live · 待办 3</div></div><span class="pill brand">进行中</span><span class="row-meta">12m</span></div>
+                <div class="row" data-filter-item data-toast="恢复会话：修复 dashboard 卡片拖拽"><span class="r-ico"><svg class="ic"><use href="#i-git-branch"></use></svg></span><div class="grow"><div class="row-title">修复 dashboard 卡片拖拽</div><div class="row-sub">sess_…b7 · cache · 待回答 1</div></div><span class="pill warn">待回答</span><span class="row-meta">18m</span></div>
+              </div>
+            </div>
+            <div class="hr"></div>
+            <span class="link" style="font-size:11.5px;color:var(--dsw-alias-brand-primary);cursor:pointer" data-toast="打开 /x/sessions/ 查看全部 32 条会话">查看全部 32 条 →</span>
+          </section>
+
+          <div class="stack">
+            <section class="card" aria-label="今日概览">
+              <div class="card-hd"><div class="ico" style="background:var(--dsw-teal-soft);color:var(--dsw-teal)"><svg class="ic"><use href="#i-chart"></use></svg></div><h2>今日概览</h2><span class="grow"></span><span class="hint">遥测收成窄栏</span></div>
+              <div style="display:flex;gap:18px;flex-wrap:wrap">
+                <div><div class="mini-stat">32<em>会话</em></div><div class="faint" style="font-size:10.5px">4 个活跃</div></div>
+                <div><div class="mini-stat">1,284<em>turn</em></div><div class="faint" style="font-size:10.5px">3,907 step</div></div>
+                <div><div class="mini-stat">2.65M<em>token</em></div><div class="faint" style="font-size:10.5px">近 30 天</div></div>
+              </div>
+              <svg class="spark" viewBox="0 0 240 56" preserveAspectRatio="none" role="img" aria-label="近 7 天 token 用量趋势">
+                <polygon class="area" points="0,44 34,38 68,42 102,26 136,30 170,18 204,22 240,10 240,56 0,56"></polygon>
+                <polyline class="line" points="0,44 34,38 68,42 102,26 136,30 170,18 204,22 240,10"></polyline>
+              </svg>
+              <div class="faint" style="font-size:10.5px">近 7 天 token 用量 · 输入 / 输出 / 读缓存 / 写缓存</div>
+            </section>
+
+            <section class="card" aria-label="运行中 Agent">
+              <div class="card-hd"><div class="ico" style="background:var(--dsw-ok-soft);color:var(--dsw-ok)"><svg class="ic"><use href="#i-cpu"></use></svg></div><h2>运行中 Agent</h2><span class="grow"></span><span class="pill ok">2 live</span></div>
+              <div class="agent">
+                <span class="r-ico"><svg class="ic"><use href="#i-sparkles"></use></svg></span>
+                <div class="grow"><div class="row-title">重构 homepage 布局</div><div class="row-sub">正在写 mockup · turn 12 / 预计 18</div><div class="bar"><span style="width:66%"></span></div></div>
+                <button class="btn icon sm ghost" data-toast="打开该会话" aria-label="打开会话"><svg class="ic"><use href="#i-arrow-up-right"></use></svg></button>
+              </div>
+              <div class="agent">
+                <span class="r-ico"><svg class="ic"><use href="#i-message"></use></svg></span>
+                <div class="grow"><div class="row-title">MCP 工具注册排查</div><div class="row-sub">待回答 1 · 等你确认是否重试</div><div class="bar"><span style="width:35%"></span></div></div>
+                <button class="btn icon sm ghost" data-toast="打开该会话" aria-label="打开会话"><svg class="ic"><use href="#i-arrow-up-right"></use></svg></button>
+              </div>
+            </section>
+
+            <section class="card" aria-label="番茄钟与时钟">
+              <div class="card-hd"><div class="ico" style="background:var(--dsw-coral-soft);color:var(--dsw-coral)"><svg class="ic"><use href="#i-timer"></use></svg></div><h2>专注</h2><span class="grow"></span><span class="hint" data-clock="sec">14:32:08</span></div>
+              <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+                <div class="mini-stat">18:24</div>
+                <div class="grow faint" style="font-size:11px;min-width:110px">专注 25 / 休息 5 · 关掉页面即停</div>
+                <button class="btn sm" data-toast="番茄钟：开始 / 暂停"><svg class="ic"><use href="#i-play"></use></svg>开始</button>
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <div class="dash-foot">
+          <span>只读遥测仍在：诊断行 / 用量分布 / 工作区统计可在「自定义」里加回</span>
+          <span class="grow"></span><span>vssaros-dashboard 0.4.79 · 布局预设 launch</span>
+        </div>
+
+        <details class="notes">
+          <summary>设计说明 · B 启动台（与现有框架的对应关系）</summary>
+          <table>
+            <tr><th>项</th><th>说明</th></tr>
+            <tr><td>定位</td><td>把主页从<b>「会话遥测报表」改成「开工入口」</b>。第一屏必须能一步进入：继续上次会话 / 新建会话 / 打开工作区 / 打开工作台。</td></tr>
+            <tr><td>信息架构</td><td>Hero（命令框 + 4 个快捷动作 + 上次进度）→ 常用工作台大磁贴 → 左「最近会话」+ 右「今日概览 / 运行中 Agent / 专注」。</td></tr>
+            <tr><td>复用 widget</td><td><code>sessions</code>（改成最近会话）、<code>workbench</code>（大磁贴）、<code>kpi</code> / <code>usage</code>（收成右侧窄栏）、<code>pomodoro</code> / <code>clock</code>（合并成「专注」）。<code>diag</code> / <code>workspaces</code> 默认不放置，仍可从画廊加回。</td></tr>
+            <tr><td>新增 widget</td><td><b>2 个</b>：<code>quickstart</code>（命令框 + 快捷动作 + 上次会话）、<code>running</code>（运行中 Agent 状态）。前者需要桥命令 <code>newChat / newSession / openModulePage</code>（<code>DshPageCommand</code> 里已有），后者复用 <code>tally.running / waiting / retrying</code>，<b>不需要新数据口径</b>。</td></tr>
+            <tr><td>落地代价</td><td>中：<code>lib/catalog.js</code> 加 2 个 widget 声明 + <code>app.jsx</code> 加 2 个组件 + <code>layout.js</code> 加一套 <code>launch</code> 预设。不改服务端数据装配（<code>buildDashboardPayload()</code> 已下发全部字段）。</td></tr>
+            <tr><td>风险</td><td>遥测被弱化，排障时要把 <code>diag</code> 加回来；Hero 命令框需要明确<b>命令路由边界</b>，否则会变成一个「假搜索框」—— 落地时必须逐项接桥，不能只画 UI。</td></tr>
+          </table>
+          <p>原型里 ⌘K / Ctrl+K 可聚焦命令框，Esc 失焦；「常用工作台」只列未下线的 6 个高频入口，<code>offline: true</code> 的看板 / 生图 / 工具 / 流程不出卡（与 <code>VISIBLE_WORKBENCH_MODULES</code> 一致）。</p>
+        </details>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="./common.js"></script>
+</body>
+</html>

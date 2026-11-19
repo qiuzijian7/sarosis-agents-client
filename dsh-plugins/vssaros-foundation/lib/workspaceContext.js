@@ -13,8 +13,10 @@
 //      会把**旧工作区的值留着**，那正是"卡片静默写进旧工作区"的老病 ✗（比没有更糟：看起来正常 ✓）。
 //   ② **没有上下文 ⇒ 逐字回落到 `config.<key>`**：老 Host（不认识这条方法）、探针（假 ctx）、
 //      从未推过 —— 三种情形的行为都必须与"这条能力不存在"时**完全一致** ✓。
-//   ③ 单值、**最后推的胜出**（Host 是被多窗口共享的；与从前"重启后那份 config 来自触发者"同语义 ✓）。
-//      推的是谁记在 `windowId` / `at` 里，只作诊断展示，不参与解析 ✓。
+//   ③ 按窗口保存最新值；无参数 legacy 读口仍为最后推送值，兼容已有业务。
+//      会话消费必须经 resolveSessionWorkspaceContext，不能使用全 Host 的最后窗口值。
+
+import path from 'node:path';
 //
 // ⚠ 本文件**不 import cordis**（纯内存 + 一个回调集合）⇒ 探针/单测可以直接
 // `createWorkspaceContextStore()` 建一个来验，不必起 Host ✓。
@@ -232,15 +234,70 @@ export function rootNameOf(context, rootPath) {
 	return deriveWorkspaceRoots(context).find(r => r.path === rootPath)?.name;
 }
 
+/** Absolute-path identity for context selection, not filesystem containment. */
+function workspacePathKey(value) {
+	if (typeof value !== 'string' || !value || value.trim() !== value || value.includes('\0')) {
+		return undefined;
+	}
+	const windows = /^[a-z]:[\\/]/i.test(value) || /^[\\/]{2}[^\\/]/.test(value);
+	const dialect = windows ? path.win32 : path.posix;
+	const segments = value.split(windows ? /[\\/]/ : /\//);
+	if (!dialect.isAbsolute(value) || segments.some(segment => segment === '.' || segment === '..')) {
+		return undefined;
+	}
+	const normalized = dialect.normalize(value);
+	const root = dialect.parse(value).root;
+	const key = normalized.length > root.length
+		? normalized.replace(windows ? /[\\/]+$/ : /\/+$/, '') : normalized;
+	return windows ? key.replace(/\\/g, '/').toLowerCase() : key;
+}
+
+/** Compare only explicit absolute roots; never promote a descendant to its parent. */
+export function sameWorkspaceRootPath(left, right) {
+	const key = workspacePathKey(left);
+	return key !== undefined && key === workspacePathKey(right);
+}
+
 /**
- * 上下文仓库：内存单值 + 变更通知。
+ * Select exactly one window context using trusted per-call policy and/or session cwd.
+ * Window IDs, workspace IDs and target paths are not authorization anchors.
+ * Missing, malformed, conflicting or multiply-owned anchors fail closed.
+ */
+export function resolveSessionWorkspaceContext(contexts, options = {}) {
+	if (!options || typeof options !== 'object' || Array.isArray(options)) { return undefined; }
+	const anchors = [];
+	if (options.policy !== undefined) {
+		const key = workspacePathKey(options.policy?.workspaceRoot);
+		if (key === undefined) { return undefined; }
+		anchors.push(key);
+	}
+	if (options.cwd !== undefined) {
+		const key = workspacePathKey(options.cwd);
+		if (key === undefined) { return undefined; }
+		anchors.push(key);
+	}
+	if (!anchors.length || anchors.some(key => key !== anchors[0]) || !Array.isArray(contexts)) {
+		return undefined;
+	}
+	const matches = contexts.filter(context => deriveWorkspaceRoots(context)
+		.some(root => workspacePathKey(root.path) === anchors[0]));
+	if (matches.length !== 1 || deriveWorkspaceRoots(matches[0])
+		.some(root => workspacePathKey(root.path) === undefined)) {
+		return undefined;
+	}
+	return matches[0];
+}
+
+/**
+ * 上下文仓库：各窗口最新值 + legacy 最后值 + 变更通知。
  *
- * 读侧：`get()` —— 消费插件每次解析时调（同步、零 I/O ✓，所以放进工具/页面的热路径没问题 ✓）。
+ * 读侧：`get()` 为兼容读口，`getAll()` 供会话归属解析（同步、零 I/O）。
  * 写侧：`set()` —— 由 `@vssaros/dsh-bridge` 收到 `workspace.context` 时调；探针也可以直接调 ✓。
  * 通知：`onDidChange(fn)` —— 需要在值变化时重算的东西用（例：看板 runner 的 cwd 解析）。
  */
 export function createWorkspaceContextStore() {
 	let current;
+	const windows = new Map();
 	const listeners = new Set();
 	const notify = () => {
 		for (const fn of [...listeners]) {
@@ -256,6 +313,9 @@ export function createWorkspaceContextStore() {
 		get() {
 			return current;
 		},
+		getAll() {
+			return [...windows.values()];
+		},
 		/**
 		 * 收一份新上下文。
 		 * @returns 生效后的上下文；载荷畸形时返回 `undefined` 且**保留旧值**（不静默清空 ✓）。
@@ -265,6 +325,7 @@ export function createWorkspaceContextStore() {
 			if (!next) {
 				return undefined;
 			}
+			windows.set(next.windowId, next);
 			// 值没变就**不广播**（IDE 每次连上都推一份 ⇒ 否则 runner 之类会白重算一轮 ✗）；
 			// 但来源标签照更新（"最后推的是谁"要如实 ✓）。
 			if (current && sameWorkspaceContext(current, next)) {
@@ -278,6 +339,7 @@ export function createWorkspaceContextStore() {
 		/** 清空（测试/诊断用；生产路径上没人调 —— 切"没有活动工作区"是推一份空值走 `set()` ✓）。 */
 		clear() {
 			if (!current) { return; }
+			windows.clear();
 			current = undefined;
 			notify();
 		},

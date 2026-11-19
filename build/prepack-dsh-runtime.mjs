@@ -239,8 +239,9 @@ console.log(`[prepack-dsh] done: dsh ${actual} ready at ${target} (${Math.round(
 await safeBuildProfileSeed(target, bin, actual);
 
 /**
- * `dsh-plugins/` 下的**全部随包插件目录**（数量不硬编码：凡包名 `@vssaros/*` 或 `@tt-a1i/*` 的目录全收。
- * 2026-10-28 实测仓库 33 个，而旧种子里只有 26 个 —— 这类偏差现在会被 `seedPluginGaps` 点名）。
+ * `dsh-plugins/` 下的**全部随包插件目录**（数量不硬编码：凡包名 `@vssaros/*` 或 `@tt-a1i/*` 的目录全收，
+ * 外加下面 `UNSCOPED_VENDORED` 显式登记的无 scope 第三方包；2026-10-28 实测仓库 33 个，
+ * 而旧种子里只有 26 个 —— 这类偏差现在会被 `seedPluginGaps` 点名）。
  *
  * ⚠ 判据不能只看 `vssaros.module`（2026-10-19 现场）：patch 型插件（`cordis.patch.yml` 插一行，
  *   **没有** `vssaros.module`）同样必须进种子 —— 尤其 `vssaros-foundation`：它是所有模块插件的
@@ -253,7 +254,17 @@ await safeBuildProfileSeed(target, bin, actual);
  * import TS ⇒ 这里按"仓库里自称 `@vssaros/*` / `@tt-a1i/*`（vendored）的插件目录"全收，
  * 宁可多带（装着但不被 patch 插入 ⇒ 不激活，无副作用）也**不许漏**。
  * `dshPluginPackages.test.ts` 有一条守卫把两边清单逐名对齐（漂移即红）。
+ *
+ * ★ 2026-11-19：产品要求**内置 `dsh-ego-browser`**（上游 `Fisfzy/dsh-ego-browser` v0.14.1，MIT）
+ *   与 **`dsh-vision-router`**（上游 `ysr666/dsh-vision-router` v3.4.0，MIT）、
+ *   **`dsh-better-sidebar`**（上游 `omdsh-dev/DSH-better-sidebar` v0.32.1，MIT）。
+ *   三者都**不带 scope** 且包名必须保留上游名（用户另装一份不会变成两个 provider）
+ *   ⇒ 按名字**显式放行**，
+ *   不是放宽成"任何包名都收"（那会让漏命名静默进种子）。新增同类包必须同步这张表。
  */
+// 2026-11-19 第三个：dsh-better-sidebar（上游 omdsh-dev/DSH-better-sidebar v0.32.1，MIT）。
+const UNSCOPED_VENDORED = new Set(['dsh-ego-browser', 'dsh-vision-router', 'dsh-better-sidebar']);
+
 function discoverRepoPluginDirs(baseDir) {
 	const out = [];
 	let entries;
@@ -271,8 +282,9 @@ function discoverRepoPluginDirs(baseDir) {
 		try {
 			const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
 			const name = typeof pkg?.name === 'string' ? pkg.name : '';
-			// `@vssaros/*` = 自家插件；`@tt-a1i/archify-dsh` = vendored 第三方技能包（宿主也随包装）
-			if (name.startsWith('@vssaros/') || name.startsWith('@tt-a1i/')) {
+			// `@vssaros/*` = 自家插件；`@tt-a1i/archify-dsh` 与 `UNSCOPED_VENDORED` = 随包 vendored 的
+			// 第三方包（宿主也随包装；provenance 见各自目录的 VENDOR.md）。
+			if (name.startsWith('@vssaros/') || name.startsWith('@tt-a1i/') || UNSCOPED_VENDORED.has(name)) {
 				out.push(dir);
 			} else {
 				// ★ 2026-10-28：有 package.json 却没被收 ⇒ **点名**。新增插件若忘了用 `@vssaros/*`
@@ -282,7 +294,7 @@ function discoverRepoPluginDirs(baseDir) {
 		} catch { /* 不是包 / 读不动 ⇒ 跳过（与宿主侧同口径） */ }
 	}
 	if (skipped.length) {
-		console.log(`[prepack-dsh] ⚠ dsh-plugins 下这些目录有 package.json 但没进种子（包名须是 @vssaros/* 或 @tt-a1i/*）：${skipped.join(', ')}`);
+		console.log(`[prepack-dsh] ⚠ dsh-plugins 下这些目录有 package.json 但没进种子（包名须是 @vssaros/* / @tt-a1i/* / ${[...UNSCOPED_VENDORED].join(' / ')}）：${skipped.join(', ')}`);
 	}
 	// 确定性顺序（marker 比对用 JSON.stringify，必须稳定）。foundation 排第一：它是所有消费者的
 	// 依赖（宿主安装清单里也刻意放在模块插件之前，见 `dshHostSupervisor` 的注释）。
@@ -338,6 +350,19 @@ async function buildProfileSeed(runtimeDir, dshBin, dshVersion) {
 		join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-web-app'),
 		join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-experimental-voice-input-bundle'),
 		join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-experimental-schedule-bundle'),
+		// ★ 2026-11-17（官方 Forge UI）：worktree 的 **GUI + 模型工具**统一由 forge-bundle 装配。
+		//   它的 `cordis.patch.yml` 一次插入 6 行（worktree runtime / tool-worktree / forge /
+		//   forge-github / forge-session / forge-panel=client-ui-forge），是唯一带 UI 的入口。
+		//   ⚠ 独立组合包 `dsh-experimental-tool-worktree` 也声明了 `dsh.bundle.patch` ⇒
+		//     **绝不能放进 pluginSources**（会被 `dsh plugin add` 追加进 bundles，与 forge-bundle
+		//     插出重复的 worktree / tool-worktree id）；它只作为 dependency 由 pnpm 解析。
+		//   ⚠ 下面 5 个本地包都没有 `dsh.bundle.patch` ⇒ 只进 dependencies，不进 bundles。
+		join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-experimental-forge-bundle'),
+		join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-experimental-forge'),
+		join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-experimental-forge-github'),
+		join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-experimental-forge-session'),
+		join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-experimental-client-ui-forge'),
+		join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-experimental-worktree'),
 	].filter(p => existsSync(join(p, 'package.json')));
 	const wantPlugins = {};
 	for (const src of pluginSources) {

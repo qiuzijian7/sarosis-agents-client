@@ -37,10 +37,11 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
   const sources = new SourceRegistry(() => SettingsSchema.parse({}))
   sources.register(githubKind)
   let engine!: Engine
+  let deliverEffect!: (payload: { triggerId: string }, id: string) => Promise<void>
   const host: AssessorHost = {
     get engine() { return engine }, commands, deployment: testDeployment(), settings: () => SettingsSchema.parse({}),
     threadContext: threadContext ?? (trigger => sources.threadContext(trigger)),
-    effects: { enqueue: () => {}, handle: () => {} }, paused: () => false, deliver: async () => {}, candidateCard: async candidate => ({ eval_id: candidate.evalId }),
+    effects: { enqueue: () => {}, handle: (_kind, run) => { deliverEffect = run as typeof deliverEffect } }, paused: () => false, deliver: async () => {}, recorded: async () => true, candidateCard: async candidate => ({ eval_id: candidate.evalId }),
     ...db ? { db } : {},
   }
   const assessor = new MasterAssessor(host)
@@ -59,12 +60,39 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
   // Per-Eval state retained by the assessor and released when the Eval ends.
   const kept = assessor as unknown as { evals: Map<string, unknown> }
   const size = () => kept.evals.size
-  return { repo, engine, assessor, tools, size, gate, host }
+  return { repo, engine, assessor, tools, size, gate, host, deliverEffect: (payload: { triggerId: string }, id: string) => deliverEffect(payload, id) }
 }
 const issue = (n: number): Trigger => ({ id: `issue-${n}`, source: 'github', threads: [{ source: 'github', id: String(n) }], actor: { source: 'github', id: 'bob' }, human: true,
   at: new Date(Date.UTC(2026, 8, 9, 0, 0, n)).toISOString(), text: `issue ${n}`, url: `https://github.com/acme/widgets/issues/${n}`, meta: { number: n } })
 const signal = new AbortController().signal
 
+it('keeps the delivery effect pending until the candidate is recorded, then starts the evaluation clock once', async () => {
+  const s = setup('explicit')
+  s.engine.receive(issue(1)); s.engine.evaluateDue()
+  const thread = s.repo.threads.get('github:1')!, id = thread.evaluating!.id
+  s.repo.threads.save({ ...thread, evaluating: { ...thread.evaluating!, deadline: '2000-01-01T00:00:00Z' } })
+  s.host.recorded = vi.fn(async () => false)
+  await expect(s.deliverEffect({ triggerId: 'issue-1' }, id)).rejects.toThrow('主管尚未消费')
+  s.engine.evaluateDue()
+  expect(s.repo.threads.get('github:1')!.evaluating?.id).toBe(id)
+  expect(s.repo.threads.get('github:1')!.evaluating?.delivered).toBeUndefined()
+  s.host.recorded = vi.fn(async () => true)
+  await s.deliverEffect({ triggerId: 'issue-1' }, id)
+  const delivered = s.repo.threads.get('github:1')!.evaluating!.delivered
+  const deadline = s.repo.threads.get('github:1')!.evaluating!.deadline
+  expect(delivered).toBeTruthy()
+  await s.deliverEffect({ triggerId: 'issue-1' }, id)
+  expect(s.repo.threads.get('github:1')!.evaluating!.deadline).toBe(deadline)
+})
+it('does not acknowledge a stale candidate after it was decided during asynchronous delivery', async () => {
+  const s = setup('explicit')
+  s.engine.receive(issue(1)); s.engine.evaluateDue()
+  const id = s.repo.threads.get('github:1')!.evaluating!.id
+  s.host.deliver = async () => { s.engine.decide('issue-1', { kind: 'ignore', reason: 'already decided' }) }
+  s.host.recorded = vi.fn(async () => true)
+  await s.deliverEffect({ triggerId: 'issue-1' }, id)
+  expect(s.host.recorded).not.toHaveBeenCalled()
+})
 it('keeps nothing for an Eval once it is decided, as for one that timed out', async () => {
   const s = setup()
   for (let n = 1; n <= 3; n++) {

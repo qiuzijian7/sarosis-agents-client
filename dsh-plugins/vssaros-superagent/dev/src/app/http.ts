@@ -35,7 +35,15 @@ import { TAPD_SOURCE, TapdConfigSchema, TapdOpenApi, type TapdTestResult } from 
 import { saveTapdCredential, TapdCredentialError, tapdCredentialStatus, tapdCredential, tapdEnvironment,
   type TapdSetupStatus } from '../sources/tapd-auth.ts'
 import { cleanOwner, resolveTapdName } from '../sources/tapd-members.ts'
-import { importTapdFilter } from '../sources/tapd-filters.ts'
+import { resolveTapdIdentity, type TapdUserIdentity } from '../sources/tapd-identity.ts'
+import { FILTER_SCHEME_SOURCES, TapdFilterPoolSchema, TapdFilterSchemeSchema, applyOwnerOverride,
+  fallbackConditions, localDay, mergeIntoPool, parseDomConditions, parseScrapedConditions, poolWithRuntime, reconcilePoolState, schemeHash } from '../sources/tapd-filter-schemes.ts'
+import { scrapeConditionsViaCdp } from '../sources/tapd-cdp-scrape.ts'
+import { previewScheme } from '../sources/tapd-scheme-preview.ts'
+import { runPoolDaily } from '../sources/tapd-filter-pool-run.ts'
+import { poolIntakeStatus } from './tapd-pool-status.ts'
+import { KV } from '../kv.ts'
+import type { SourceContext } from '../sources/host.ts'
 import { tapdTime } from '../sources/tapd-api.ts'
 import { TEAM_BOTS_GLOBAL, TEAM_BOTS_PER_PLAN, TeamError, type Team } from './team.ts'
 import type { TeamArchive } from './team-archive.ts'
@@ -54,17 +62,20 @@ import type { DeskChat } from './desk-chat.ts'
 import { handleTapdWebhook, TAPD_WEBHOOK_PATH, type TapdWebhookResult } from './tapd-webhook.ts'
 
 export interface HttpHost {
+  readTapdUser?(): Promise<TapdUserIdentity>
+  readTapdFilterPage?(kind: 'story' | 'bug'): Promise<unknown>
+  context(kind: { kind: string; health: readonly string[] }): SourceContext
   readonly store: Store
   /** Feishu message links resolved since startup, used by search to match AppLink URLs. */
   readonly sourceLinks: Pick<TextCache, 'entries'>
   readonly sources: SourceRegistry
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'history' | 'preview' | 'save' | 'defaultChanged'>
-  readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery'>
+  readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery'> & Partial<Pick<Sessions, 'workbenchSessions'>>
   readonly settings: Pick<Settings, 'view' | 'save' | 'pause' | 'sync' | 'refreshLabels'>
   readonly engine: EngineForPeople
   readonly executor: Pick<DshExecutor, 'activeCount' | 'inventory'>
   /** VsSaros addition. */
-  readonly reviews: Pick<Reviews, 'waiting' | 'audit' | 'view' | 'approve' | 'reject' | 'discard'>
+  readonly reviews: Pick<Reviews, 'waiting' | 'audit' | 'view' | 'approve' | 'reject' | 'discard' | 'completePending'>
   readonly health: Record<string, Health>
   readonly machine: Machine
   readonly masterId: string
@@ -122,6 +133,20 @@ function feishuAppOf(runtime: Pick<HttpHost, 'store'>): string {
 function tapdConfigOf(runtime: Pick<HttpHost, 'store'>) {
   return TapdConfigSchema.parse(runtime.store.settings().sources.tapd?.config ?? {})
 }
+async function tapdUserOf(runtime: HttpHost): Promise<TapdUserIdentity> {
+  try {
+    const user = await runtime.readTapdUser?.()
+    return user ? { ...user, loginName: typeof user.loginName === 'string' ? user.loginName : '' } : { signedIn: false, loginName: '' }
+  }
+  catch { return { signedIn: false, loginName: '', stale: true } }
+}
+async function tapdOwnerOf(runtime: HttpHost, options: { fresh?: boolean; confirmName?: string } = {}) {
+  const config = tapdConfigOf(runtime), user = await tapdUserOf(runtime)
+  const identity = await resolveTapdIdentity(config, new TapdOpenApi({ api: config.api }), runtime.store, user, options)
+  const resolved = identity.status === 'resolved' ? { ...config, members: [...config.members.filter(row => row.alias.toLowerCase() !== identity.loginName.toLowerCase()),
+    { alias: identity.loginName, name: identity.tapdName }] } : config
+  return { config: resolved, identity, user }
+}
 /**
  * Represents a client-facing 400 or 404 error raised during management route parsing or lookup.
  * Route handlers throw it when request bodies are malformed or target records are missing, and registerHttp serializes its status and message in the HTTP response.
@@ -178,7 +203,8 @@ export function stateView(runtime: HttpHost) {
   const settings = runtime.store.settings()
   return { setup: setupView(runtime), load: { ...executorLoad(runtime.store, runtime.executor.activeCount()),
     maxWorkers: settings.executor.maxWorkers },
-    masterId: runtime.masterId, deskId: runtime.deskId, paused: settings.paused, health: runtime.health }
+    masterId: runtime.masterId, deskId: runtime.deskId, paused: settings.paused, health: runtime.health,
+    ...(runtime.sessions.workbenchSessions ? { workbenchSessions: runtime.sessions.workbenchSessions() } : {}) }
 }
 const views = (runtime: HttpHost): ViewHost => ({ store: runtime.store, sources: runtime.sources, links: runtime.links() })
 const setupState = (runtime: HttpHost): SetupState => ({ deployment: runtime.configured() ? runtime.deployment : undefined,
@@ -331,24 +357,125 @@ function routes(runtime: HttpHost): Routes {
         return { ok: false, error: error instanceof Error ? error.message : String(error), at }
       }
     },
-    'POST sources/tapd/filters/import': async ({ body }) => {
-      const request = z.object({ text: z.string().trim().min(1).max(200_000), name: z.string().trim().max(40).optional(),
-        at: z.string().trim().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
-        maxPerRun: z.number().int().min(1).max(200).optional(), windowDays: z.number().int().min(1).max(30).optional() })
-        .strict().parse(await body(210_000))
-      let exported: unknown
-      try { exported = JSON.parse(request.text) }
-      catch { throw new RouteError(400, 'The pasted text is not valid JSON') }
-      const config = tapdConfigOf(runtime)
-      let maps: { fieldNames: Record<string, string>; statusCodes: Record<string, string> } | undefined
-      try { maps = await new TapdOpenApi({ api: config.api }).filterMaps(config.workspace) }
-      catch { /* Fall back to the verified built-in maps when TAPD is offline. */ }
-      const ownerGroups = Object.fromEntries(config.ownerGroups.map(row => [row.group,
-        row.members.split(/[;,；|]/).map(name => name.trim()).filter(Boolean)]))
-      const result = importTapdFilter(exported, { ...maps, ownerGroups, name: request.name, at: request.at,
-        maxPerRun: request.maxPerRun, windowDays: request.windowDays })
-      return { schedule: result.schedule, watch: result.watch, report: result.report,
-        warnings: result.warnings, maps: maps ? 'live' as const : 'fallback' as const }
+    'GET sources/tapd/identity': async ({ query }) => {
+      const { fresh } = z.object({ fresh: z.enum(['true', 'false']).optional() }).strict().parse(query)
+      return (await tapdOwnerOf(runtime, { fresh: fresh === 'true' })).identity
+    },
+    'POST sources/tapd/identity/confirm': async ({ body }) => {
+      const request = z.object({ loginName: z.string().trim().min(1).max(128), workspace: z.string().regex(/^\d+$/),
+        name: z.string().trim().min(1).max(128) }).strict().parse(await body(4096))
+      const config = tapdConfigOf(runtime), user = await tapdUserOf(runtime)
+      if (request.workspace !== config.workspace || request.loginName.toLowerCase() !== user.loginName.toLowerCase())
+        throw new RouteError(400, '当前账号或项目已切换，请重新读取身份后确认')
+      const identity = await resolveTapdIdentity(config, new TapdOpenApi({ api: config.api }), runtime.store, user,
+        { fresh: true, confirmName: request.name })
+      if (identity.status !== 'resolved') throw new RouteError(400, identity.message)
+      return identity
+    },
+    // Style A: scrape the two platform pages into story/bug schemes and merge their matches into a pool draft.
+    'POST sources/tapd/filter-schemes/sync': async ({ body }) => {
+      const request = z.object({ loginName: z.string().trim().max(128).optional(), scope: z.enum(['all', 'story', 'bug']).default('all'),
+        schemes: z.array(TapdFilterSchemeSchema).optional(), pool: TapdFilterPoolSchema.optional() }).strict().parse(await body(2_000_000))
+      const { config, identity: ownerIdentity } = await tapdOwnerOf(runtime)
+      const loginName = ownerIdentity.signedIn ? ownerIdentity.loginName : config.filterPool.owner || ''
+      const warnings: string[] = []
+      if (ownerIdentity.status !== 'resolved') warnings.push(ownerIdentity.message)
+      const schemes: z.infer<typeof TapdFilterSchemeSchema>[] = []
+      for (const source of FILTER_SCHEME_SOURCES.filter(row => request.scope === 'all' || row.kind === request.scope)) {
+        let conditions = parseScrapedConditions('', source.kind)
+        let origin: 'live' | 'fallback' = 'fallback'
+        const cdp = process.env.DSH_SUPERAGENT_TAPD_CDP?.trim()
+        let readError = ''
+        try {
+          const raw = cdp ? await scrapeConditionsViaCdp(cdp, source.url) : await runtime.readTapdFilterPage?.(source.kind)
+          const rendered = parseDomConditions(raw)
+          if (rendered.length) { conditions = rendered; origin = 'live' }
+          else readError = '浏览器没有返回筛选条件'
+        } catch (error) { readError = error instanceof Error ? error.message : String(error) }
+        if (!conditions.length) {
+          try {
+            const response = await fetch(source.url, { signal: AbortSignal.timeout(10_000) })
+            if (!response.ok) throw new Error(`HTTP ${response.status}`)
+            let text = await response.text()
+            if (source.script) {
+              const script = await fetch(source.script, { signal: AbortSignal.timeout(10_000) })
+              if (script.ok) text += '\n' + await script.text()
+            }
+            const parsed = parseScrapedConditions(text, source.kind)
+            if (parsed.some(row => Array.isArray(row.value) && row.value.length)) { conditions = parsed; origin = 'live' }
+          } catch { /* The previous snapshot is retained on a failed scrape. */ }
+        }
+        const previous = (request.schemes ?? config.filterSchemes).find(row => row.kind === source.kind)
+        if (!conditions.length) {
+          conditions = previous?.conditions ?? fallbackConditions(source.kind)
+          warnings.push(`${source.kind === 'story' ? '需求' : '缺陷'}同步失败：${readError || '页面未就绪'}。已保留原筛选条件，未标记为实时同步。`)
+        }
+        conditions = applyOwnerOverride(conditions, loginName)
+        schemes.push(TapdFilterSchemeSchema.parse({ name: source.name, kind: source.kind, url: source.url,
+          capturedAt: origin === 'live' ? new Date().toISOString() : previous?.capturedAt ?? '',
+          hash: schemeHash(conditions), source: origin, conditions }))
+      }
+      let pool = TapdFilterPoolSchema.parse({ ...(request.pool ?? config.filterPool), owner: loginName })
+      const results: { kind: 'story' | 'bug'; total: number; recent: number; added: number; error?: string }[] = []
+      const api = new TapdOpenApi({ api: config.api })
+      for (const scheme of schemes) {
+        if (scheme.source !== 'live') continue
+        try {
+          if (ownerIdentity.status !== 'resolved') throw new Error(ownerIdentity.message)
+          const result = await previewScheme(api, config, scheme, 2000)
+          const before = pool.items.length
+          pool = mergeIntoPool(pool, result.items)
+          results.push({ kind: scheme.kind, total: result.total, recent: result.recent, added: pool.items.length - before })
+          if (!result.total && /^[a-z0-9._-]+$/i.test(loginName) && resolveTapdName(loginName, config.members) === cleanOwner(loginName))
+            warnings.push(`${scheme.kind === 'story' ? '需求' : '缺陷'}命中 0 条；当前英文账号没有 TAPD 姓名映射，请检查 members 与筛选范围。`)
+        } catch (failure) {
+          const error = failure instanceof Error ? failure.message : String(failure)
+          results.push({ kind: scheme.kind, total: 0, recent: 0, added: 0, error })
+          warnings.push(`${scheme.kind === 'story' ? '需求' : '缺陷'}条件已同步，但自动入池失败：${error}。原池单据已保留。`)
+        }
+      }
+      return { schemes, pool, results, ownerIdentity, identity: { loginName: ownerIdentity.loginName, signedIn: ownerIdentity.signedIn }, warnings }
+    },
+    'POST sources/tapd/filter-schemes/preview': async ({ body }) => {
+      const request = z.object({ kind: z.enum(['story', 'bug']), scheme: TapdFilterSchemeSchema.optional(),
+        maxPerRun: z.number().int().min(1).max(200).optional() }).strict().parse(await body(128_000))
+      const saved = tapdConfigOf(runtime)
+      const scheme = request.scheme ?? saved.filterSchemes.find(row => row.kind === request.kind)
+      if (!scheme || scheme.kind !== request.kind) throw new RouteError(400, '请先同步相应过滤方案')
+      const { config, identity } = await tapdOwnerOf(runtime)
+      if (identity.status !== 'resolved') throw new RouteError(400, identity.message)
+      const draft = { ...scheme, conditions: applyOwnerOverride(scheme.conditions, identity.loginName) }
+      try { return await previewScheme(new TapdOpenApi({ api: config.api }), config, draft, request.maxPerRun ?? config.filterPool.maxPerRun) }
+      catch (error) { throw new RouteError(400, error instanceof Error ? error.message : String(error)) }
+    },
+    'GET sources/tapd/filter-schemes/pool': () => {
+      const config = tapdConfigOf(runtime), key = KV.tapd.pool(config.filterPool.name)
+      let state = runtime.store.get(key)
+      if (state?.records) {
+        const inspect = (id: string) => poolIntakeStatus(runtime.store, id, evalId => {
+          const row = runtime.store.db.prepare("SELECT error FROM effect WHERE kind='assessment' AND key=?").get(evalId)
+          return row?.error ? String(row.error) : undefined
+        })
+        state = reconcilePoolState(state, inspect)
+        runtime.store.set(key, state)
+      }
+      const items = new Map(poolWithRuntime(config.filterPool, config.workspace, state).items.map(item => [`${item.kind}:${item.id}`, item]))
+      for (const record of Object.values(state?.records ?? {})) if (record.item) items.set(`${record.item.kind}:${record.item.id}`,
+        { ...record.item, state: record.state, runId: record.runId, lastRunAt: record.lastRunAt, attempts: record.attempts,
+          detail: record.intake?.detail, phase: record.intake?.phase, ticketId: record.intake?.ticketId, retryable: record.intake?.retryable })
+      return { items: [...items.values()] }
+    },
+    'POST sources/tapd/filter-schemes/run': async ({ body }) => {
+      const request = z.object({ pool: TapdFilterPoolSchema }).strict().parse(await body(512_000))
+      const source = runtime.store.settings().sources.tapd
+      if (!source?.enabled || !runtime.configured()) throw new RouteError(400, '请启用 TAPD 来源并完成接入检查后再执行')
+      const { config, identity } = await tapdOwnerOf(runtime)
+      if (identity.status !== 'resolved') throw new RouteError(400, identity.message)
+      if (request.pool.owner.toLowerCase() !== identity.loginName.toLowerCase()) throw new RouteError(400, '池子处理人与当前账号不同，请重新同步后执行')
+      const now = new Date(), ctx = runtime.context({ kind: TAPD_SOURCE, health: [TAPD_SOURCE] })
+      const result = await runPoolDaily(ctx, new TapdOpenApi({ api: config.api }), { ...config, filterPool: request.pool }, now, undefined, true)
+      const pool = poolWithRuntime(request.pool, config.workspace, runtime.store.get(KV.tapd.pool(request.pool.name)))
+      return { ...result, pool, day: localDay(now), dispatchQueued: result.dispatched > 0 }
     },
     'POST sources/tapd/filters/preview': async ({ body }) => {
       const request = z.object({ query: z.record(z.string(), z.string()), windowDays: z.number().int().min(1).max(30) })
@@ -376,6 +503,12 @@ function routes(runtime: HttpHost): Routes {
     'POST tickets/:id/review/reject': async ({ params, body }) =>
       runtime.reviews.reject(ticket(params.id), z.object({ comment: z.string().trim().min(1).max(4000) }).parse(await body()).comment),
     'POST tickets/:id/review/discard': ({ params }) => runtime.reviews.discard(ticket(params.id)),
+    'POST tickets/:id/review/complete-pending': async ({ params, body }) => {
+      const request = z.object({ confirm: z.literal(true), fingerprint: z.string().regex(/^[0-9a-f]{16}$/) }).strict().parse(await body())
+      const completed = await runtime.reviews.completePending(ticket(params.id), request.fingerprint)
+      runtime.requestPass()
+      return completed
+    },
     // VsSaros change (2026-11-06, P1 · one track): the retired team plans, read-only.
     'GET team/plans': () => ({ available: runtime.team.available(), archived: true as const, plans: runtime.archive.plans(20) }),
     'GET team/bots': async () => ({ available: runtime.team.available(), bots: await runtime.team.bots() }),

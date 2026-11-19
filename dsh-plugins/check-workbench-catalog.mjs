@@ -237,7 +237,7 @@ for (const p of regWb) {
 	}
 }
 const launcherUsesCoverage = /function coveredByFixedEntry\(/.test(navSrc)
-	&& /filter\(w => w && w\.id && !coveredByFixedEntry\(w\.id\)\)/.test(navSrc);
+	&& /filter\(w => w && w\.id && !coveredByFixedEntry\(w\.id\)(?: && !policyHiddenIds\(\)\.has\(w\.id\))?\)/.test(navSrc);
 const launcherOldBlanket = /registeredExtras[\s\S]{0,400}!String\(w\.id\)\.startsWith\("vssaros\/"\)/.test(navSrc);
 if (regWb.length > 0 && (!launcherUsesCoverage || launcherOldBlanket)) {
 	bProblems.push('client.workbenchNav.js 的 registeredExtras 必须按 coveredByFixedEntry 过滤；'
@@ -402,19 +402,24 @@ if (ghosts.length === 0) {
 // 为什么单列一段、不复用 ⑥：「循环任务」是**注册式**工作台（`vssaros/loop`，`view.kind='none'`），
 //   没有 `/x/loop/` 页面路由 ⇒ 套不上 ⑥ 那份 route 驱动的 `OFFLINE_WORKBENCH_ROUTES`；
 //   硬造一条 `/x/loop/` 白名单只会得到一个点了 404 的假入口。
-// 真源 = 宿主快照出口 `vssaros-workbenches/lib/client.js::RETIRED_WORKBENCH_IDS`（按**身份 id**）。
-//   主页卡片的 registeredCardItems() 与启动器的 registeredExtras() 都读 getSnapshot().workbenches
-//   ⇒ 一处过滤、两处生效，不会「主页没了、启动器还在」。
+// 真源 = 阶段 2 `vssaros-workbenches/lib/client.js::WORKBENCH_MANIFEST` 生成的
+//   `RETIRED_WORKBENCH_IDS`（按**身份 id**）。主页卡片的 registeredCardItems() 与启动器的
+//   registeredExtras() 都读 getSnapshot().workbenches ⇒ 一处过滤、两处生效，不会「主页没了、启动器还在」。
 // ⚠ 只摘列表：providers 仍在 ⇒ open() / has() / 深链 / 5 个工具 / Host 路由都不受影响；
-//   恢复上线 = 清空名单即可，不必重新接插件 ⇒ 下面同步钉住「插件本体一件没少」。
+//   恢复上线 = 调整 manifest 行即可，不必重新接插件 ⇒ 下面同步钉住「插件本体一件没少」。
 {
 	const before = problems;
 	const hostSrc = read(path.join(HERE, 'vssaros-workbenches', 'lib', 'client.js'));
-	const retiredDecl = /const RETIRED_WORKBENCH_IDS = \[([^\]]*)\];/.exec(hostSrc);
-	if (!retiredDecl) {
-		fail('⑧ 宿主快照缺 RETIRED_WORKBENCH_IDS（下线真源丢失 ⇒ 本段会空跑）');
+	const manifestMatch = /const WORKBENCH_MANIFEST = Object\.freeze\(\[([\s\S]*?)\n\t\t\]\);/.exec(hostSrc);
+	const manifestBlock = manifestMatch ? manifestMatch[1] : '';
+	const manifestRows = manifestBlock ? [...manifestBlock.matchAll(/Object\.freeze\(\{([\s\S]*?)\}\)/g)].map(m => m[1]) : [];
+	const fieldOf = (row, name) => { const r = new RegExp(name + ":\\s*'([^']*)'").exec(row); return r ? r[1] : ''; };
+	const retired = manifestRows.map(row => ({ state: fieldOf(row, 'state'), workbenchId: fieldOf(row, 'workbenchId') }))
+		.filter(row => row.state === 'retired').map(row => row.workbenchId);
+	const retiredDerived = /const RETIRED_WORKBENCH_IDS = WORKBENCH_MANIFEST\.filter\(row => row\.state === 'retired'\)\.map\(row => row\.workbenchId\);/.test(hostSrc);
+	if (!manifestBlock || !manifestRows.length || !retiredDerived) {
+		fail('⑧ 宿主快照缺 WORKBENCH_MANIFEST 生成的 RETIRED_WORKBENCH_IDS（下线真源丢失 ⇒ 本段会空跑）');
 	} else {
-		const retired = [...retiredDecl[1].matchAll(/'([^']+)'/g)].map(m => m[1]);
 		ok(`⑧ 注册式工作台下线名单：${retired.length} 个（${retired.join('、') || '空 = 全部上线'}）`);
 		if (!retired.includes('vssaros/loop')) {
 			fail('⑧ 用户要求移除工作台中的「循环任务」item：vssaros/loop 必须在下线真源里');
@@ -466,6 +471,94 @@ if (ghosts.length === 0) {
 		}
 		if (problems === before) { ok('⑧ 「循环任务」item：快照出口下线 + 两处入口同源 + 插件本体保留 ✓'); }
 	}
+}
+
+// ── ⑨ 阶段 2：单一目录清单生成四份视图（2026-11-19）────────────────
+// 不替换其它包的字面量 fallback：dashboard/catalog.js 是 Node 侧 ESM，nav DEFAULT_ITEMS
+// 又承担 route 白名单并被源码守卫逐字读取。这里只钉住 workbenches 客户端的单一真源。
+{
+	const before = problems;
+	const hostSrc = read(path.join(HERE, 'vssaros-workbenches', 'lib', 'client.js'));
+	const manifestMatch = /const WORKBENCH_MANIFEST = Object\.freeze\(\[([\s\S]*?)\n\t\t\]\);/.exec(hostSrc);
+	const manifestBlock = manifestMatch ? manifestMatch[1] : '';
+	const manifestRows = manifestBlock ? [...manifestBlock.matchAll(/Object\.freeze\(\{([\s\S]*?)\}\)/g)].map(m => m[1]) : [];
+	const fieldOf = (row, name) => { const r = new RegExp(name + ":\\s*'([^']*)'").exec(row); return r ? r[1] : ''; };
+	const keys = manifestRows.map(row => fieldOf(row, 'key'));
+	const states = manifestRows.map(row => fieldOf(row, 'state'));
+	if (!manifestBlock || manifestRows.length === 0) { fail('⑨ 缺 WORKBENCH_MANIFEST 冻结行'); }
+	if (new Set(keys).size !== keys.length) { fail('⑨ WORKBENCH_MANIFEST 的 key 必须唯一'); }
+	const allowedStates = new Set(['active', 'alias', 'deprecated', 'offline', 'retired', 'hidden', 'disabled']);
+	if (states.some(state => !allowedStates.has(state))) { fail('⑨ WORKBENCH_MANIFEST 含未声明的 state'); }
+	if (!/const HOME_HIDDEN_PAGE_KEYS = new Set\(hiddenRows\.map\(row => row\.key\)\);/.test(hostSrc)) {
+		fail('⑨ HOME_HIDDEN_PAGE_KEYS 未从 WORKBENCH_MANIFEST 生成');
+	}
+	if (!/const HOME_HIDDEN_WORKBENCH_IDS = new Set\(hiddenRows\.map\(row => row\.workbenchId\)\);/.test(hostSrc)) {
+		fail('⑨ HOME_HIDDEN_WORKBENCH_IDS 未从 WORKBENCH_MANIFEST 生成');
+	}
+	if (!/const RETIRED_WORKBENCH_IDS = WORKBENCH_MANIFEST\.filter\(row => row\.state === 'retired'\)\.map\(row => row\.workbenchId\);/.test(hostSrc)) {
+		fail('⑨ RETIRED_WORKBENCH_IDS 未从 WORKBENCH_MANIFEST 生成');
+	}
+	if (!/const OFFLINE_WORKBENCH_ROUTES = WORKBENCH_MANIFEST\.filter\(row => row\.state === 'offline'\)\.map\(row => row\.route\);/.test(hostSrc)) {
+		fail('⑨ OFFLINE_WORKBENCH_ROUTES 未从 WORKBENCH_MANIFEST 生成');
+	}
+	if (!/globalThis\.__vssarosWorkbenchManifest = \(\) => WORKBENCH_MANIFEST;/.test(hostSrc)) {
+		fail('⑨ 缺只读 WORKBENCH_MANIFEST 探针');
+	}
+	if (!/module\.exports\.workbenchManifest = workbenchManifest;/.test(hostSrc)
+		|| !/module\.exports\.manifestViewsOf = manifestViewsOf;/.test(hostSrc)) {
+		fail('⑨ 缺 manifest / 生成视图导出');
+	}
+	if (problems === before) { ok('⑨ 阶段 2：单一清单生成隐藏/退役/离线视图 + 只读探针 ✓'); }
+}
+
+// ── ⑩ 阶段 3/4：策略消费方收敛 + legacy 桥硬退役（2026-11-19）────────
+// workbenches 不再读 `window.__vssarosWorkbenchItems`；其它包字面量仍保留作为 route/SSR fallback。
+{
+	const before = problems;
+	const hostSrc = read(path.join(HERE, 'vssaros-workbenches', 'lib', 'client.js'));
+	const navPolicySrc = read(path.join(HERE, 'vssaros-chat-surface', 'lib', 'client.workbenchNav.js'));
+	const marketPolicySrc = read(path.join(HERE, 'vssaros-chat-surface', 'lib', 'client.market.js'));
+	const dashboardCatalogSrc = read(path.join(HERE, 'vssaros-dashboard', 'lib', 'catalog.js'));
+	if (!/globalThis\.__vssarosWorkbenchPolicy = \(\) => catalogPolicyProbeOf\(service\.getCatalogSnapshot\(\)\.pages\);/.test(hostSrc)) {
+		fail('⑩ 缺统一目录策略探针 __vssarosWorkbenchPolicy');
+	}
+	if (!/globalThis\.__vssarosWorkbenchLegacyBridgeMode = \(\) => legacyBridgeModeOf\(globalThis\);/.test(hostSrc)) {
+		fail('⑩ 缺 legacy 桥模式探针');
+	}
+	if (!/service\.registerManifestPages\(\)/.test(hostSrc)) {
+		fail('⑩ 缺 manifest active route 页注册');
+	}
+	if (!/globalThis\.__vssarosWorkbenchManifestPagesRegistered = true/.test(hostSrc)) {
+		fail('⑩ 缺 manifest 注册完成标记');
+	}
+	if (/vssaros-wb-tabs-change/.test(hostSrc)) {
+		fail('⑩ 仍监听旧 tabs-change ⇒ workbenches 过渡桥未硬退役');
+	}
+	if (/legacy catalog bridge/.test(hostSrc)) {
+		fail('⑩ 仍存在 legacy catalog bridge effect');
+	}
+	if (!/delete globalThis\.__vssarosWorkbenchPolicy/.test(hostSrc)
+		|| !/delete globalThis\.__vssarosWorkbenchLegacyBridgeMode/.test(hostSrc)
+		|| !/delete globalThis\.__vssarosWorkbenchManifestPagesRegistered/.test(hostSrc)) {
+		fail('⑩ 卸载时未清理阶段 3/4 探针与注册标记');
+	}
+	if (!/module\.exports\.catalogPolicyProbeOf = catalogPolicyProbeOf;/.test(hostSrc)
+		|| !/module\.exports\.legacyBridgeModeOf = legacyBridgeModeOf;/.test(hostSrc)
+		|| !/module\.exports\.__registerManifestPages/.test(hostSrc)) {
+		fail('⑩ 阶段 3/4 纯函数与 manifest 注册入口未导出');
+	}
+	if (!/__vssarosWorkbenchPolicy/.test(navPolicySrc) || !/policyHiddenIds\(\)/.test(navPolicySrc)) {
+		fail('⑩ 启动器 registeredExtras 未收敛到统一策略');
+	}
+	if (!/__vssarosWorkbenchPolicy/.test(marketPolicySrc) || !/policyOfflineRoutes\(\)/.test(marketPolicySrc)) {
+		fail('⑩ 商城 readLocalItems 未收敛到统一策略');
+	}
+	if (!/const DEFAULT_ITEMS = \[/.test(navPolicySrc)
+		|| !/export const WORKBENCH_MODULES = \[/.test(dashboardCatalogSrc)
+		|| !/ingestLegacyCatalog\(\) \{/.test(hostSrc)) {
+		fail('⑩ 硬退役必须保留其它包 route 白名单 / SSR 清单与兼容 API');
+	}
+	if (problems === before) { ok('⑩ 阶段 3/4：策略消费方收敛 + workbenches legacy 桥硬退役，跨包 fallback 保留 ✓'); }
 }
 
 console.log(problems === 0

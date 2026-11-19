@@ -74,7 +74,7 @@ import { IAgentStudioDashboardService } from '../../agentStudio/browser/agentStu
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
-import { DSH_HARNESS_CHANNEL, DshColorScheme, DshHarnessChannelCommand, DshHarnessChannelEvent, DshHarnessSettings, DshPageSurface, DshViewSurface, IDshBootstrapArgs, IDshBundledInstallResult, IDshBundledPluginRow, IDshHostStartOptions, IDshHostStatus, IDshIdeClaimReply, IDshIdeRequest, IDshPluginActivationSnapshot, IDshPluginInfo, IDshPluginRowSetResult, IDshPluginSetResult, IDshRuntimeInfo, IDshUpdatePolicy, IDshViewBounds, IDshViewInfo, IDshWorkspaceSyncState, IDshWorkspaceSyncSummary, shouldRestartForWorkspaceChange, surfaceTakesRoute } from '../common/dshHarness.js';
+import { DSH_HARNESS_CHANNEL, DshColorScheme, DshHarnessChannelCommand, DshHarnessChannelEvent, DshHarnessSettings, DshPageSurface, DshViewSurface, IDshBootstrapArgs, IDshBundledInstallResult, IDshBundledPluginRow, IDshHostStartOptions, IDshHostStatus, IDshIdeClaimReply, IDshIdeRequest, IDshPluginActivationSnapshot, IDshPluginInfo, IDshPluginRowSetResult, IDshPluginSetResult, IDshRuntimeInfo, IDshUpdatePolicy, IDshViewBounds, IDshViewInfo, IDshWorkspaceSyncState, IDshWorkspaceSyncSummary, IDshWorktreeHostSnapshot, shouldRestartForWorkspaceChange, surfaceTakesRoute } from '../common/dshHarness.js';
 import type { DshDesktopMenuAction } from '../common/dshDesktopMenu.js';
 // dsh 侧会话摘要（侧栏合并用；解析规则与测试见 common/dshSessionIndex.ts）
 import type { IDshSessionSummary } from '../common/dshSessionIndex.js';
@@ -143,6 +143,13 @@ export interface IDshHarnessService {
 	 * 上一轮"切换失败却零报错"就是这么来的）。
 	 */
 	readonly onDidDshSessionRenamed: Event<IDshSessionRenamedResult>;
+
+	/**
+	 * **P1（方案 B：一套 git 源，以 dsh 侧为准）**：把页面/IDE 的 worktree 意图转发给 dsh Host。
+	 * ⚠ 页面桥是单向的（只回 true）⇒ 调用方**不得**把「已发出」当成「创建成功」；
+	 * 真正的结果由 Host 快照 revision 变化回推（`WorktreeHostSnapshot` → `PushWorktrees`）。
+	 */
+	worktreeHostCall(endpoint: string, payload: Record<string, unknown>): Promise<unknown>;
 
 	ensureStarted(): Promise<IDshHostStatus>;
 	/**
@@ -491,6 +498,9 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	/** 上次观测到的活动工作区 id（`noteActiveWorkspace` 用它判断"这次是不是真的换了"）。 */
 	private _observedWorkspaceId: string | undefined;
 	private _status: IDshHostStatus = { state: 'stopped', bridge: 'none' };
+	/** P1：dsh Host 的 worktree 只读快照镜像（Host 可用时，IDE 不再自己跑 `git worktree list`）。 */
+	private _worktreeHostSnapshot: IDshWorktreeHostSnapshot | undefined;
+	private _worktreeHostPollTimer: ReturnType<typeof setInterval> | undefined;
 	/**
 	 * 最近一次**真正交给 Host** 的技能根（由 `_skillDirs()` 记）。
 	 *
@@ -601,6 +611,13 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 		//   ⇒ 每 3s 用 listViews 的 focused 快照校准"活动聊天视图"（否则焦点移走后位置停在旧视图 ✗）
 		this._focusCalibrationTimer = setInterval(() => { void this._calibrateActiveChatView(); }, 3_000);
 		this._register(toDisposable(() => clearInterval(this._focusCalibrationTimer)));
+		// ★ P1（方案 B）：worktree 唯一 git 源在 dsh Host。5s 拉一次 revision 化快照，
+		//   **只有 revision 变化才重推页面**（Host 未起 / 路由未加载时静默 ⇒ 回退 IDE 本地列表）。
+		//   这条轮询也覆盖了「模型自己调 create_worktree」的场景：官方服务会发
+		//   `working-directory/change`，Host 插件收到后递增 revision。
+		this._worktreeHostPollTimer = setInterval(() => { void this._pollWorktreeHostSnapshot(); }, 5_000);
+		this._register(toDisposable(() => { if (this._worktreeHostPollTimer) { clearInterval(this._worktreeHostPollTimer); } }));
+		void this._pollWorktreeHostSnapshot();
 
 		this._register(this._channel.listen<DshPageEvent>(DshHarnessChannelEvent.OnDidPageEvent)(e => {
 			if (this._ownViews.has(e.viewId)) {
@@ -1194,6 +1211,8 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 			// 迭代期开关：启动时跳过随包插件的"升级"安装（缺失的仍装）。仓库里插件版本一 bump，
 			// 启动前就要串行等 N×~2 s 的 `dsh plugin add`——开发期把它关掉，启动回到 ~0.3 s 量级。
 			skipPluginInstall: this._configurationService.getValue<boolean>(DshHarnessSettings.SkipPluginInstall) === true,
+			// P3 默认开启；只有用户显式设为 false 才回退旧布局并停止生成 sidebar-layout 覆盖层。
+			sidebarLayoutV1: this._configurationService.getValue<boolean>(DshHarnessSettings.SidebarLayoutV1) !== false,
 		};
 	}
 
@@ -2404,6 +2423,18 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	 * `listWorktrees` 走 git（异步、可能慢），所以这里不 await、失败只留 trace。
 	 */
 	private async _currentWorktreeOptions(): Promise<IDshWorktreeOption[]> {
+		// ★ P1（方案 B）：优先用 **dsh Host 的权威快照** —— 它才是唯一 git 真源。
+		//   Host 没起 / 路由未加载时 `_worktreeHostSnapshot` 为空 ⇒ 才回退到 IDE 本地只读列举，
+		//   且这条回退会在 P2 收口后删除（届时 IDE 侧完全不执行 git worktree 命令）。
+		const snap = this._worktreeHostSnapshot;
+		if (snap && Array.isArray(snap.worktrees) && snap.worktrees.length > 0) {
+			return snap.worktrees.slice(0, DSH_WORKTREE_OPTION_LIMIT).map(w => ({
+				path: w.path,
+				name: w.name,
+				...(w.branch ? { branch: w.branch } : {}),
+				isMain: w.isMain === true,
+			}));
+		}
 		// ⚠ 2026-10-13 加固：原来只看 `folders[0]` —— 而**多根工作区**里第一个根未必是 git 仓库
 		// （实测启动时要 ensure 7 个路径），那时 `listWorktrees` 会抛或返回空 ⇒ 这里推 0 条 ⇒
 		// 页面那枚 chip（`list.length === 0` 时按设计 `return null`）**永远不出现**，
@@ -2487,6 +2518,28 @@ export class DshHarnessService extends Disposable implements IDshHarnessService 
 	private _pushWorktreesToAll(): void {
 		for (const viewId of this._ownViews) {
 			this._pushWorktrees(viewId);
+		}
+	}
+
+	/** 页面桥命令的宿主执行端：把 worktree 意图交给 dsh Host（唯一 git 源）。 */
+	worktreeHostCall(endpoint: string, payload: Record<string, unknown>): Promise<unknown> {
+		return this._channel.call(DshHarnessChannelCommand.WorktreeHostCall, { endpoint, payload });
+	}
+
+	private async _pollWorktreeHostSnapshot(): Promise<void> {
+		const root = this._workspaceContextService.getWorkspace().folders[0]?.uri.fsPath;
+		if (!root) { return; }
+		try {
+			const snap = await this._channel.call<IDshWorktreeHostSnapshot | undefined>(DshHarnessChannelCommand.WorktreeHostSnapshot, { root });
+			if (!snap || !Array.isArray(snap.worktrees) || typeof snap.revision !== 'number') { return; }
+			// Host 端 git 读失败时不要把空列表当真源覆盖页面（旧列表更可信）。
+			if (snap.error && snap.worktrees.length === 0) { return; }
+			if (this._worktreeHostSnapshot?.revision === snap.revision) { return; }
+			this._worktreeHostSnapshot = snap;
+			this._logService.info(`[dshHarness] worktree host snapshot rev=${snap.revision}: ${snap.worktrees.length} item(s)`);
+			this._pushWorktreesToAll();
+		} catch {
+			// Host 没起 / 通道未就绪：静默，下一次轮询再试；页面列表回退 IDE 本地只读。
 		}
 	}
 

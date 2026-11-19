@@ -1,0 +1,114 @@
+# Compatibility seam inventory
+
+P0 records why each major compatibility seam exists and the condition that permits its removal. This inventory is normative for DVR 2.3 convergence: a shim without an exit criterion is architectural debt that cannot silently become permanent.
+
+## `lib/dsh-contract-compat.js`
+
+- **2.3 state:** `retain-host-gap`.
+- **Reason:** keep supported settings/provider-ownership contracts and durable attachment-policy migrations centralized without reviving pre-floor Host ownership.
+- **Host gap:** the DVR 2.3 window spans multiple Settings/Config generations, while persisted historical `attachment-local` profile overlays can still shadow current image-limit/normalization defaults after the Host is upgraded.
+- **First needed for:** supported Settings lifecycle convergence plus durable profile migration. The pre-`0.1.5` single-attachment / DeepSeek-provider reconstruction path is retired in R2.3.
+- **Feature detection:** attachment `imageLimits` / normalization shape, settings registration/scope functions, and LLM registration ownership. `attachments.saveImages` remains a diagnostic/ownership fact; it no longer authorizes DVR to synthesize an official DeepSeek provider.
+- **Removal condition:** the supported Settings lifecycle has one native contract and durable profiles containing the historical attachment policy overlay are migrated or explicitly outside the data-compatibility window.
+- **Tests:** `dsh-host-compat` (retained durable/current cases), `minimum-host-settings-persistence`, `attachment-admission-policy`, `dsh-host-capabilities`, minimum/current/rc2 contract CI.
+
+## `lib/adapter-update-coalescer.js`
+
+- **2.3 state:** `retain-host-gap`.
+- **Reason:** keep Vision Router-owned duck-typed adapters compatible with Host `prepareCall` dispatch and prevent synchronous adapter-topology events from recursively reconciling forever.
+- **Host gap:** Vision Router intentionally owns several plain/duck-typed adapters instead of inheriting the Host adapter base class; supported Host generations call base-class contracts and can emit adapter updates synchronously during registration.
+- **First needed for:** Host adapter-contract evolution (`prepareCall`, later image-request pricing) and synchronous registration reconciliation. The original version labels are historical origin only, not a current support dependency.
+- **Feature detection:** adapter-local `prepareCall` presence; actual `llm/adapters-updated` event path. No version inference.
+- **Removal condition:** every supported Vision Router adapter directly satisfies the Host adapter contract and supported Host event semantics no longer require the bounded coalescer.
+- **Tests:** `adapter-prepare-call-compat`, `runtime-boundary-fixes`, current-contract Host smoke.
+
+## `lib/replay-envelope-v2-compat.js`
+
+- **2.3 state:** `product-compat`.
+- **Reason:** preserve delegated replay identity when producer provider/model moved into durable pi-ai replay envelope v2.
+- **Host gap:** older Vision Router replay code expected producer identity at the top level.
+- **First needed for:** rc.7 replay-envelope v2 histories.
+- **Feature detection:** exact durable producer proof: `response.kind === 'pi-ai'`, `response.version === 2`, provider and model match.
+- **Removal condition:** the supported runtime/history window no longer includes envelopes requiring source rebinding, or the Host exposes an equivalent native replay identity seam consumed directly by Vision Router.
+- **Tests:** `replay-delegation`, session/cold-resume regression coverage.
+
+## `lib/pi-ai-bridge-wire-compat.js`
+
+- **2.3 state:** `retain-host-gap`.
+- **Reason:** keep the legacy direct image bridge transport-equivalent to pi-ai declared wire compatibility and, while upstream lacks the OpenCode-specific carrier, project Vision Router-owned session affinity onto the final Go wire without taking ownership of ordinary Host traffic. `lib/session-affinity-runtime.js` is the scoped AsyncLocalStorage companion; it carries affinity only while a Router-owned lazy stream is executing.
+- **Host gap:** the direct bridge predates route/model wire metadata such as max-token fields and route-owned headers; current DSH/pi-ai accepts `GenerateOptions.sessionId` but emits generic affinity carriers rather than OpenCode Go's required `x-opencode-session`.
+- **First needed for:** DSH 0.1.1 pi-ai declared provider/wire compatibility; OpenCode Go's September 2026 required session header.
+- **Feature detection:** legacy wire recovery still requires the exact non-streaming OpenAI-compatible image bridge fingerprint plus resolved route/model facts. OpenCode affinity requires an active Vision Router AsyncLocalStorage scope, the exact official HTTPS `opencode.ai/zen/go...` endpoint, and absence of an upstream-native `x-opencode-session`; unrelated Host/plugin traffic is inert.
+- **Removal condition:** remove legacy bridge recovery when every supported Host executes that image path through native pi-ai wire facts; remove the scoped OpenCode projection independently once every supported DSH/pi-ai path emits `x-opencode-session` from `GenerateOptions.sessionId`. The native header must win before deletion so the compatibility rule self-retires.
+- **Tests:** `pi-ai-bridge-wire-compat`, real `opencode-session-wire-contract`, native process-restart/cold-resume contract.
+
+## `lib/settings-client-loader-lifecycle.js`
+
+- **2.3 state:** `retain-host-gap`.
+- **Reason:** keep current Settings permission/risk capability owners attached when the Host module system switches registrations from queue to live loading. The legacy in-page `settings-rc8-lifecycle` marker/sentinel is intentionally retained only for mixed-generation/HMR idempotency; source/API ownership is capability-named.
+- **Host gap:** immutable supported sources from 0.1.5-rc.1 through 0.2.0-rc.2 still replace the live module `load` function during `create()`, so one boot-time wrapper is not stable across the complete client lifecycle.
+- **First needed for:** the older Settings UI coexistence work; retained now because the same loader replacement remains present on supported Hosts, not because rc.8 itself is supported.
+- **Feature detection:** actual `__ModuleLoader__.create/load` lifecycle and current Settings surfaces; never the Host version label.
+- **Removal condition:** supported Hosts expose one stable Settings client attachment lifecycle (or the shared carrier gives DVR a native post-create hook) and current product permission/risk wrappers no longer require reattachment.
+- **Tests:** settings IA, client lifecycle, remote-settings and Web acceptance regressions.
+
+## `lib/http-compat.js`
+
+- **2.3 state:** `product-compat`.
+- **Reason:** isolate evidenced provider/model wire quirks from generic visual HTTP execution.
+- **Host gap:** this is provider compatibility rather than a DSH Host gap; some OpenAI-compatible endpoints reject otherwise valid generic payload shapes.
+- **First needed for:** model-family quirks such as GLM-4V-Flash output limits and image-only message handling.
+- **Feature detection:** provider/model/url rule predicates backed by known wire behavior.
+- **Removal condition:** upstream endpoint behavior becomes generic-compatible for a rule and regression evidence confirms the preset is no longer needed.
+- **Tests:** `http-compat`, provider HTTP regression tests.
+
+## `lib/legacy-global-proxy-boundary.js`
+
+- **2.3 state:** `retain-host-gap`.
+- **Reason:** preserve the explicit Vision Router proxy override for Host-owned/raw-fetch visual providers without granting that configuration process-wide routing authority. Router-owned HTTP already uses `VisionProviderTransport`; blank `proxy` leaves the compatibility wrapper fully transparent.
+- **Host gap:** DSH 0.1.5 owns ordinary process egress, but a Host adapter invoked through `ctx.llm.stream()` still exposes no DVR-owned request/dispatcher parameter for a vision-only SOCKS/selective override. A separate legacy direct whole-turn mode (`routing=true` plus blank `chainRoute`) also hands control to the Host after the DVR hook returns, leaving no adapter-iteration scope to authorize.
+- **First needed for:** legacy/custom Host-owned visual provider compatibility when users configure a Vision Router-specific proxy override.
+- **Feature detection:** live explicit proxy + exact configured Host-owned provider/model + AsyncLocalStorage visual-call scope. Router-owned routes, blank proxy, different pairs and concurrent ordinary Host traffic are pass-through. Only the explicit direct whole-turn blank-`chainRoute` configuration retains unscoped compatibility.
+- **H3 product decision:** KEEP `proxy` / `proxyHosts` supported and non-deprecated as a local-only Advanced override; do not add a second legacy-proxy toggle. Explicit blank `chainRoute` is legacy persisted/manual compatibility, not a current Settings workflow.
+- **Removal condition:** Host-owned adapter requests can receive the explicit DVR override through a scoped Host transport (or the override is intentionally retired under an announced product policy), and the direct whole-turn explicit-empty `chainRoute` state is migrated/retired by support-window policy.
+- **Tests:** `legacy-global-proxy-boundary`, `vision-provider-transport`, exact Host proxy egress contract, Benchmark/Exact Check coverage, P2 Data Boundary Node 22/24.
+
+## `lib/legacy-core-vision-policy-bridge.js`
+
+- **2.3 state:** `retain-host-gap`.
+- **Reason:** preserve the two remaining pre-step compatibility behaviors after Core policy ownership moved to explicit session/Core surfaces: reuse the exact `SessionMemoryView` for text-only image-history rewrite, and expose exact current-turn durable attachment IDs as read-only model context for Vision Router-owned wrappers.
+- **Host gap:** the supported Host pre-step path does not natively provide both an exact session-scoped visual-memory rewrite seam for text-only fallback and a model-readable durable attachment-reference seam for Router-owned image turns.
+- **First needed for:** the Core/session ownership migration that removed Settings/config impersonation while retaining these two real pre-step behaviors.
+- **Feature detection:** live `SessionSurfacePolicy` (`rewriteCurrentImages` and ownership), exact known session visual memory, and actual current-turn image attachment IDs. No Host version-string branch and no Settings/config projection.
+- **Removal condition:** the minimum supported Host exposes native pre-step/session-memory and durable attachment-reference capabilities that make both behaviors redundant, and contract/parity tests prove the bridge can be removed without reintroducing Settings impersonation or degrading text-only/native image turns.
+- **Tests:** `settings-impersonation-closure`, `session-surface-policy`, session/runtime parity and native cold-resume coverage.
+
+## `lib/tesseract-exec-compat.js`
+
+- **2.3 state:** `product-compat`.
+- **Reason:** own the single process-wide `promisify(execFile)` compatibility boundary for the two narrow child-process cases Vision Router still needs: materializing Tesseract stdin image bytes, and replacing only Core's exact legacy Windows `VirtualScreen`/`CopyFromScreen` desktop-capture command with a per-monitor-DPI-safe equivalent. One owner prevents cleanup-order bugs from independently stacked `execFile` wrappers.
+- **Host gap:** these are runtime/platform gaps rather than DSH semantic ownership: Node's async `execFile` path does not consume the historical OCR `options.input`, while non-DPI-aware Windows PowerShell virtualizes desktop metrics and can disagree with physical screen-copy coordinates on scaled/mixed-DPI displays.
+- **First needed for:** Node 24/local Tesseract process execution reliability; Windows scaled/mixed-DPI `vision_screenshot` correctness (#340).
+- **Feature detection:** exact executable/call fingerprints only. Tesseract handling requires `tesseract[.exe]` + stdin input; Windows screenshot handling requires `win32`, `powershell[.exe]`, `-Command`, and the exact legacy `SystemInformation.VirtualScreen` + `Graphics.CopyFromScreen` script shape. No Host/Node version persona and unrelated child processes delegate unchanged.
+- **Removal condition:** local OCR no longer needs an `execFile` stdin shim **and** Core/Host exposes a native DPI-correct desktop-capture seam (or the legacy PowerShell command is removed), with Node 22/24 and Windows platform matrices proving the shared wrapper is unreachable before deletion.
+- **Tests:** `tesseract-node24-boot`, `qa-screenshot-runtime` (PMv2/PMv1 ordering, context restoration, exact-match passthrough, Windows PowerShell compile smoke), cross-platform Host tests.
+
+## `lib/abort-signal-compat.js`
+
+- **2.3 state:** `product-compat`.
+- **Reason:** keep Vision Router cancellation/deadline composition working when a supported DSH Host or bridge exposes `AbortSignal`/`AbortController` but omits the standard static `AbortSignal.any()` or `AbortSignal.timeout()` helpers used by the Router's runtime boundaries.
+- **Host gap:** some real Host/bridge environments can surface a partial AbortSignal runtime even though the declared Node support window normally provides both helpers, producing `AbortSignal.any is not a function` inside visual work.
+- **First needed for:** partial Host/bridge AbortSignal runtimes observed during Vision Router image execution and exact capability checks.
+- **Feature detection:** only the actual static helper presence is inspected. Existing native `AbortSignal.any` and `AbortSignal.timeout` functions are never replaced; only a missing helper is installed. No Node or DSH version persona is inferred.
+- **Removal condition:** every supported Host/runtime contract guarantees both static helpers in the actual realm used by plugin execution, and a cross-Host regression proves no supported bridge can present the partial runtime anymore.
+- **Tests:** `qa-turn-budget-cancellation` legacy-realm fallback/validation/non-intervention coverage plus Node 22/24 and DSH contract CI.
+
+## Removal protocol
+
+A compatibility seam may be deleted only when all of the following are true:
+
+1. its **Removal condition** is satisfied by the declared support window;
+2. the relevant capability is proved by a gating Host contract fixture or direct feature test;
+3. deleting the seam leaves Node 22/24, minimum/current/mid-train/rc.2 Host evidence and relevant platform tests green;
+4. no Authority, Session, Storage or native-multimodal invariant changes as a side effect;
+5. the deletion is a focused change, not bundled into an unrelated routing/data-boundary refactor.

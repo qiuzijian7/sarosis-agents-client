@@ -1,0 +1,34 @@
+{
+  "name": "@vssaros/dsh-worktree",
+  "version": "0.1.0",
+  "description": "VsSaros worktree authority in the dsh Host: the single source of truth for git worktree state, exposed to the IDE over /x/worktree/api/*. P0 skeleton: read-only revision snapshot + capability probe; write endpoints fail loudly until P1 wires the official worktree runtime.",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "cordis.patch.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.7-0 <0.3.0-0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
+  "vssaros": {
+    "manifestVersion": 1,
+    "module": "worktree",
+    "view": {
+      "kind": "none"
+    }
+  },
+  "license": "MIT"
+}

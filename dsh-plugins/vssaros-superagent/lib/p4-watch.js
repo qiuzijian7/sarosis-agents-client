@@ -1,5 +1,5 @@
 import { R as liveTicket, o as health, r as pause, s as sourceContext } from "./poll-DRgTfbJS.js";
-import { c as observeChange, f as readChange, i as changesOf, n as P4ConfigSchema, t as DEFAULT_RECONCILE_IGNORE, u as p4Configured } from "./p4-change-C_Ia-tq9.js";
+import { d as p4Configured, i as changesOf, l as observeChange, n as P4ConfigSchema, p as readChange, t as DEFAULT_RECONCILE_IGNORE } from "./p4-change-cDDNQSBm.js";
 //#region src/sources/p4.ts
 /** An error health once `failures` consecutive checks fail, as the GitHub Source does, so one network blip stays quiet. */
 const pollFailure = (failures, threshold, error) => failures >= threshold ? health("error", "pollFailures", {

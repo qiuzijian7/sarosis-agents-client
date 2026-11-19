@@ -1,0 +1,16 @@
+# @vssaros/dsh-worktree bundle patch: insert the Host-side worktree authority row.
+#
+# 挂载形态：**无界面模块**（清单 `view.kind=none`）——不占容器、不开页面、不注册 ActivityBar。
+# 它只提供 Host 进程内的 `vssarosWorktree` 服务与 `/x/worktree/api/*` 只读快照 / 能力探测。
+#
+# 依赖方向（重要）：官方 `@deepseek-ai/dsh-experimental-tool-worktree` 的 `cordis.patch.yml` 会插入
+#   `worktree`（runtime 服务）与 `tool-worktree`（模型工具）两行；本插件**不自己执行 git**，
+#   而是在 P1 通过 `ctx.inject(['worktrees', 'workingDirectory', …])` 复用官方运行时。
+#   ⇒ 这里的 `id` 用 `vssaros-worktree`，与官方两行的 id 不冲突 ✓。
+#
+# 「一套 git 源，以 dsh 侧为准」的约束：IDE 侧 `IWorktreeService` 在 P1 退化为只读镜像 + 意图转发，
+#   不得再经 `vscode:execGit` 执行任何 `git worktree *` / checkpoint ref 写操作。
+- insert:
+    - id: vssaros-worktree
+      name: '@vssaros/dsh-worktree'
+      config: {}

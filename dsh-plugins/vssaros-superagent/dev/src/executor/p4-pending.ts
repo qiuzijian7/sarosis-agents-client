@@ -53,7 +53,7 @@ export interface Consolidated {
  * Only when `reconcileFallback` is explicitly enabled does it run `reconcile -e -a -d -c` on the exact
  * (non-ignored, in-scope) files `p4 opened` reported, in batches; it never passes a wildcard path.
  */
-export async function consolidatePending(config: P4Config, target: number, records: P4Records): Promise<Consolidated> {
+export async function consolidatePending(config: P4Config, target: number, records: P4Records, ownOnly = false): Promise<Consolidated> {
   const ignores = config.reconcileIgnore
   const opened = await records(['opened'])
   const pathOf = (record: Record<string, string>) => record.depotFile ?? record.clientFile ?? ''
@@ -62,7 +62,7 @@ export async function consolidatePending(config: P4Config, target: number, recor
   // a clientFile-only record has no depot path yet, so only the ignore list applies to it.
   const inScope = (record: Record<string, string>) => !record.depotFile
     || config.paths.some(allowed => inPath(record.depotFile!, allowed.path))
-  const allowed = opened.filter(record => inScope(record) && !ignoredDepotFile(pathOf(record), ignores))
+  const allowed = opened.filter(record => (!ownOnly || record.change === String(target)) && inScope(record) && !ignoredDepotFile(pathOf(record), ignores))
   const kept = [...new Set(allowed.map(pathOf).filter(Boolean))]
   const ignored = candidates.length - kept.length
 
@@ -102,8 +102,8 @@ export interface PendingHost {
 
 /** Consolidates, names, and re-shelves the ticket's pending CL. Never submits or unshelves. */
 export async function finalizePending(config: P4Config, target: number, ticketId: string, title: string,
-  host: PendingHost): Promise<Consolidated & { name: string }> {
-  const consolidated = await consolidatePending(config, target, host.records)
+  host: PendingHost, ownOnly = false): Promise<Consolidated & { name: string }> {
+  const consolidated = await consolidatePending(config, target, host.records, ownOnly)
   const name = pendingName(config, ticketId, title)
   const form = await host.form(['change', '-o', String(target)])
   await host.form(['change', '-i'], withPendingName(form, name))

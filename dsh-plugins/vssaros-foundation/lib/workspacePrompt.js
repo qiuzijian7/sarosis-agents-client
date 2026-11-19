@@ -14,19 +14,13 @@
 //   击穿 prompt 缓存 ✗ ⇒ 本刀只给路径/根名/主根，VCS 元数据留到有异步装配面时再说。
 
 import path from 'node:path';
-import { deriveWorkspaceRoots, MAX_WORKSPACE_ROOTS } from './workspaceContext.js';
+import { deriveWorkspaceRoots, sameWorkspaceRootPath, MAX_WORKSPACE_ROOTS } from './workspaceContext.js';
 
 /** 提示段总长度上限（畸形工作区不许把 system prompt 撑爆 ✓）。 */
 export const MAX_WORKSPACE_PROMPT_TEXT = 8192;
 /** 段名 / 顺序：排在 memory:snapshot(500) 之前 ⇒ 环境信息先于记忆快照。 */
 export const WORKSPACE_ROOTS_SECTION_NAME = 'vssaros:workspace-roots';
 export const WORKSPACE_ROOTS_SECTION_ORDER = 480;
-
-/** Windows/Posix 的词法同路径判据（**只用于提示文案**，不是安全边界 ✓）。 */
-function samePath(a, b) {
-	const norm = p => String(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-	return norm(a) === norm(b);
-}
 
 /**
  * 渲染多根工作区的模型上下文段。
@@ -42,15 +36,16 @@ export function renderWorkspaceRootsText(context, options = {}) {
 	}
 	const lines = [
 		'## Workspace roots (multi-root)',
-		'This workspace has ' + roots.length + ' roots. Relative paths resolve ONLY against the primary root; '
-			+ 'for a file under another root, always use its absolute path.',
+		'This workspace has ' + roots.length + ' roots. Relative paths resolve against the current session working directory, '
+			+ 'not automatically against every root; for a file under another root, always use its absolute path.',
+		'Workspace membership is context, not an additional permission grant; the current sandbox policy still applies.',
 	];
 	for (const r of roots.slice(0, MAX_WORKSPACE_ROOTS)) {
 		lines.push('- ' + (r.isPrimary ? 'primary' : 'additional') + '  ' + r.name + '  ' + r.path);
 	}
 	lines.push('If several roots contain files with the same name, disambiguate with the absolute path.');
 	const cwd = typeof options.cwd === 'string' ? options.cwd.trim() : '';
-	if (cwd && !samePath(cwd, roots[0].path)) {
+	if (cwd && !sameWorkspaceRootPath(cwd, roots[0].path)) {
 		lines.push('This session\'s cwd is ' + cwd + ' (not the primary root) — pass an explicit cwd when the repository matters.');
 	}
 	const text = lines.join('\n');
@@ -105,10 +100,18 @@ export function parseRootQualifiedPath(input, roots) {
 	return { root, absolutePath, relativePath: rel };
 }
 
-/** 从 systemPrompt 的装配上下文里尽力取会话 cwd（拿不到就不写，绝不猜 ✓）。 */
-function cwdOf(promptContext) {
-	const h = promptContext?.agent?.session?.header ?? promptContext?.session?.header;
-	return typeof h?.cwd === 'string' ? h.cwd : undefined;
+/** Resolve the same session policy/cwd anchors used by the fs fence. */
+function workspaceTextFor(promptContext, resolvePolicy, service) {
+	const session = promptContext?.agent?.session ?? promptContext?.session;
+	const cwd = session?.header?.cwd;
+	if (typeof cwd !== 'string' || !cwd.trim()) { return ''; }
+	try {
+		const policy = resolvePolicy?.(session);
+		const roots = service.workspaceRootsFor({ cwd, ...(policy === undefined ? {} : { policy }) });
+		return renderWorkspaceRootsText({ roots }, { cwd });
+	} catch {
+		return '';
+	}
 }
 
 /**
@@ -122,8 +125,22 @@ function cwdOf(promptContext) {
  * @returns {boolean} 是否发起了注册（守卫据此断言接线，不表示 Host 一定接受）。
  */
 export function installWorkspaceRootsPrompt(ctx, service) {
-	if (!ctx || typeof ctx.inject !== 'function' || !service || typeof service.workspaceContext !== 'function') {
+	if (!ctx || typeof ctx.inject !== 'function' || !service || typeof service.workspaceRootsFor !== 'function') {
 		return false;
+	}
+	let resolvePolicy;
+	try {
+		ctx.inject(['sandboxPolicy'], child => child.effect(() => {
+			const policy = child.sandboxPolicy;
+			if (typeof policy?.resolve !== 'function') { return () => {}; }
+			const resolve = session => policy.resolve({ session });
+			resolvePolicy = resolve;
+			return () => {
+				if (resolvePolicy === resolve) { resolvePolicy = undefined; }
+			};
+		}));
+	} catch {
+		resolvePolicy = undefined;
 	}
 	try {
 		ctx.inject(['systemPrompt'], child => child.effect(() => {
@@ -131,9 +148,7 @@ export function installWorkspaceRootsPrompt(ctx, service) {
 				return child.systemPrompt.context({
 					name: WORKSPACE_ROOTS_SECTION_NAME,
 					order: WORKSPACE_ROOTS_SECTION_ORDER,
-					text: promptContext => renderWorkspaceRootsText(
-						service.workspaceContext(), { cwd: cwdOf(promptContext) },
-					),
+					text: promptContext => workspaceTextFor(promptContext, resolvePolicy, service),
 				});
 			} catch (e) {
 				// 幂等保护：Host 重复装配时同名段会抛 already registered（vssaros-memory 的先例）。

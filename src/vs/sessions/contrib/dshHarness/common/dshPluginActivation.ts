@@ -22,12 +22,59 @@
  * 本文件是纯逻辑（不改入参、无 I/O）；文件读写见 `electron-main/dshPluginActivationStore.ts`。
  */
 
-/** 不可停用的 bundle：基础组合 / Web 应用 / VsSaros 控制桥（缺任一，Host 不可用或其控制权丢失）。 */
+import { DSH_EGO_BROWSER_PLUGIN_NAME, DSH_EGO_PLUGIN_NAME } from './dshHarness.js';
+
+/**
+ * 不可停用的 bundle：基础组合 / Web 应用 / VsSaros 控制桥 / Forge worktree 组合 / 门面插件。
+ *
+ * ★ 2026-11-17（官方 Forge UI）：`@deepseek-ai/dsh-experimental-forge-bundle` 是 worktree
+ *   **工具 + GUI + `ctx.worktrees` 服务**的唯一装配入口；`@vssaros/dsh-worktree` 是 IDE 侧
+ *   唯一 git 执行门面。停用任一，IDE 侧（已摘掉本地 `git worktree *` 执行）会静默失去能力。
+ *
+ * ⚠ 独立组合包 `@deepseek-ai/dsh-experimental-tool-worktree` **刻意不在此列**：它与 forge-bundle
+ *   互斥，旧 profile 里残留的那一条由 {@link migrateOfficialWorktreeBundles} 移除。
+ */
 export const DSH_UNDISABLABLE_BUNDLES: readonly string[] = [
 	'@deepseek-ai/dsh-base',
 	'@deepseek-ai/dsh-web-app',
 	'@vssaros/dsh-bridge',
+	'@deepseek-ai/dsh-experimental-forge-bundle',
+	'@vssaros/dsh-worktree',
 ];
+
+/**
+ * **一次性组合迁移**（官方升级指南 v0.2.2-alpha.2 / forge-worktree-entry）：
+ * forge-bundle 与独立 `tool-worktree` 同时进 bundles 时，两份 `cordis.patch.yml` 会插出重复的
+ * `worktree` / `tool-worktree` id ⇒ 组件控件只读、装配异常。
+ *
+ * 只在 forge-bundle **已启用**时移除独立包：用户尚未切到 Forge 的 profile 仍可继续用独立工具，
+ * 不会被强行改配置。纯函数、不改入参。
+ */
+export function migrateOfficialWorktreeBundles(bundles: readonly string[]): { readonly next: readonly string[]; readonly removed: readonly string[] } {
+	const standalone = '@deepseek-ai/dsh-experimental-tool-worktree';
+	const forge = '@deepseek-ai/dsh-experimental-forge-bundle';
+	if (!bundles.includes(forge)) {
+		return { next: [...bundles], removed: [] };
+	}
+	const next = bundles.filter(b => b !== standalone);
+	return { next, removed: next.length === bundles.length ? [] : [standalone] };
+}
+
+/**
+ * **旧 ego 薄接入的一次性退役迁移**（2026-11-19）。
+ *
+ * VsSaros 改为内置第三方 `dsh-ego-browser` 后，旧 profile 的 `dsh.profile.bundles` 里可能还留着
+ * `@vssaros/dsh-ego`。两者都注册 `ego_status` —— dsh 里同名工具不是"后者覆盖"，而是**整条 entry 失效**
+ * ⇒ 必须摘掉旧行。与 {@link migrateOfficialWorktreeBundles} 同口径：**只有新插件已启用时才摘**，
+ * 用户尚未切到新插件的 profile 不会被强行改配置。纯函数、不改入参。
+ */
+export function migrateRetiredEgoBundles(bundles: readonly string[]): { readonly next: readonly string[]; readonly removed: readonly string[] } {
+	if (!bundles.includes(DSH_EGO_BROWSER_PLUGIN_NAME)) {
+		return { next: [...bundles], removed: [] };
+	}
+	const next = bundles.filter(b => b !== DSH_EGO_PLUGIN_NAME);
+	return { next, removed: next.length === bundles.length ? [] : [DSH_EGO_PLUGIN_NAME] };
+}
 
 export function isBundleDisableForbidden(pluginName: string): boolean {
 	return DSH_UNDISABLABLE_BUNDLES.includes(pluginName.trim());

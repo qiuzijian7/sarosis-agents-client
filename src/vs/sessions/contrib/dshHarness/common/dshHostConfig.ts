@@ -16,7 +16,7 @@
 
 import {
 	renderAgentsOverlay, renderBridgeOverlay, renderCodebaseOverlay, renderDataRootOverlay,
-	renderKanbanOverlay, renderOfficeOverlay, renderSandboxOverlay,
+	renderKanbanOverlay, renderOfficeOverlay, renderSandboxOverlay, renderSidebarLayoutOverlay,
 	type IDshBrowserOverlayConfig,
 } from './dshCli.js';
 import { IDshMcpServerSpec, renderMcpOverlay } from './dshMcpConfig.js';
@@ -155,15 +155,22 @@ export interface IDshHostConfig {
 	readonly sandboxWorkspaceRoot?: string;
 	/** Office 运行时装配参数（见 {@link IDshOfficeConfig}）；缺失 ⇒ 不挂 7 个 Office 技能。 */
 	readonly office?: IDshOfficeConfig;
+	/**
+	 * P3 侧栏布局开关（默认 true）：缺省即生成 `sidebar-layout-*.yml`，同时释放 vendored guide、
+	 * 让 chat-surface 退役旧中栏 TabStrip，并让 workbenches 按 v6 效果稿接管右侧「开始」页；
+	 * 显式 false 才回退旧布局。
+	 */
+	readonly sidebarLayoutV1?: boolean;
 }
 
 /** 覆盖层种类（也是落盘文件名的前缀，见 {@link hostOverlayFileName}）。 */
-export type DshHostOverlayKind = 'bridge' | 'kanban' | 'codebase' | 'mcp' | 'skills' | 'agents' | 'dataRoot' | 'sandbox' | 'office';
+export type DshHostOverlayKind = 'bridge' | 'kanban' | 'codebase' | 'mcp' | 'skills' | 'agents' | 'dataRoot' | 'sandbox' | 'office' | 'sidebarLayout';
 
 /** 覆盖层文件名的前缀：与主进程 `bridge-<id>.yml` / `roots-<id>.yml` 等**逐字一致**。 */
 export const DSH_HOST_OVERLAY_PREFIX: Readonly<Record<DshHostOverlayKind, string>> = {
 	bridge: 'bridge', kanban: 'kanban', codebase: 'codebase', mcp: 'mcp',
 	skills: 'skills', agents: 'agents', dataRoot: 'roots', sandbox: 'sandbox', office: 'office',
+	sidebarLayout: 'sidebar-layout',
 };
 
 /** 覆盖层的文件名（主进程与独立启动器共用同一套命名，便于人工比对 run 目录）。 */
@@ -282,6 +289,10 @@ export function renderHostOverlays(config: IDshHostConfig): readonly IDshHostOve
 			out.push({ kind: 'office', text: renderOfficeOverlay({ base: officeBase, node: officeNode, cli: officeCli }) });
 		}
 	}
+	// P3 放最后：默认生成并按 id 覆盖上面那几行里的其中三行；只有显式 false 才回退旧布局。
+	if (config.sidebarLayoutV1 !== false) {
+		out.push({ kind: 'sidebarLayout', text: renderSidebarLayoutOverlay() });
+	}
 	return out;
 }
 
@@ -367,6 +378,7 @@ export function parseDshHostConfig(text: unknown): IDshHostConfig | undefined {
 		// 不能把它丢掉（丢了就回到"本机每个工具都 grant 失败"✗）。
 		...optional('sandboxMode', trimmed(src.sandboxMode)),
 		...optional('sandboxWorkspaceRoot', trimmed(src.sandboxWorkspaceRoot)),
+		...optional('sidebarLayoutV1', typeof src.sidebarLayoutV1 === 'boolean' ? src.sidebarLayoutV1 : undefined),
 	};
 	return config;
 }
@@ -386,7 +398,7 @@ function optional<K extends keyof IDshHostConfig>(key: K, value: IDshHostConfig[
 export function serializeDshHostConfig(config: IDshHostConfig): string {
 	const ordered: Record<string, unknown> = {};
 	if (config.bridge) { ordered.bridge = config.bridge; }
-	for (const key of ['dataRoot', 'workspaceId', 'workspaceRoot', 'relatedRoots', 'agentsRoot', 'agentsBuiltinRoot', 'skillDirs', 'bundledSkillDir', 'mcpServers', 'mcpConfigPath', 'unrealBridgeUrl', 'browser', 'sandboxMode', 'sandboxWorkspaceRoot', 'office'] as const) {
+	for (const key of ['dataRoot', 'workspaceId', 'workspaceRoot', 'relatedRoots', 'agentsRoot', 'agentsBuiltinRoot', 'skillDirs', 'bundledSkillDir', 'mcpServers', 'mcpConfigPath', 'unrealBridgeUrl', 'browser', 'sandboxMode', 'sandboxWorkspaceRoot', 'office', 'sidebarLayoutV1'] as const) {
 		const value = config[key];
 		if (value === undefined) { continue; }
 		if (Array.isArray(value) && value.length === 0) { continue; }

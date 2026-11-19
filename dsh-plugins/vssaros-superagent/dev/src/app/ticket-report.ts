@@ -1,24 +1,9 @@
 /**
- * Self-contained HTML ticket reports, delivered to Feishu as a cloud-document address.
- *
- * Feishu IM does not render HTML inline. A report therefore becomes a Lark cloud document:
- * `docs +create --doc-format xml` with a `<figure view-type="Preview">` block makes lark-cli upload
- * the local `.html` artifact as a `text/html` file block that Feishu renders as a page preview.
- * The message sent back to the ticket's Feishu thread carries only that document's address, not
- * the file. In bot mode the CLI also grants the current CLI user `full_access` on the new document.
- *
- * `orchestrator_reply` stays capped at 100 words and the replies prompt still forbids forwarding a
- * worker's report; this is a separate delivery path. The existing short result notice
- * (`ticket-notices.ts`) remains the human-readable summary.
- *
- * Delivery is a durable `ticketReport` effect, not work inside the synchronous `ticket.ended`
- * emit callback: writing a file and calling lark-cli are I/O and must not run inside the Engine's
- * transaction. The effect key includes `ended.at`; the created document's URL is cached on disk so
- * a retry or a repeated manual request reuses it instead of creating a second cloud document, and
- * the lark idempotency key derives from the same key so the notice cannot appear twice.
- *
- * The automatic switch is off by default: sending content out to an IM conversation is a
- * high-risk external action, so a person turns it on (or calls `sendNow` from the panel) first.
+ * Local HTML and native editable Feishu reports from immutable ticket-ending facts.
+ * Cloud creation is a separate durable effect for all sources; IM delivery remains opt-in.
+ * Both paths reuse one document cache and creation lock. Unconfirmed remote creation is
+ * surfaced for reconciliation rather than blindly retried, so a crash cannot silently duplicate reports.
+ * No file or CLI work runs inside ticket.ended, and report failures do not hold worker slots.
  */
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
@@ -33,6 +18,10 @@ import type { Store } from './store.ts'
 export const REPORT_DIR = 'reports'
 /** The effect kind that writes and sends one report. */
 export const REPORT_EFFECT = 'ticketReport'
+export const CLOUD_REPORT_EFFECT = 'reportCloud'
+type CloudState = 'not-requested' | 'queued' | 'created' | 'creation-uncertain' | 'failed'
+interface ReportPayload { ticketId: string; at: string; view?: TicketReportView }
+interface CreationRecord { ticketId: string; at: string; state: 'creating' | 'created' | 'creation-uncertain' | 'failed'; error?: string }
 /** Feishu rejects idempotency keys longer than 50 characters. */
 const idempotencyKey = (value: string): string => `sa-${createHash('sha256').update(value).digest('hex').slice(0, 30)}`
 /** Keeps the short IM notice well inside the 100-word transport limit. */
@@ -72,7 +61,7 @@ export function ticketReportView(ticket: Ticket, request: string): TicketReportV
   const result = ended ?? { outcome: report!.state, reason: ticket.attention?.question ?? '', at: report!.at, by: 'executor' }
   return {
     id: ticket.id, title: ticket.title,
-    outcome: OUTCOME_TEXT[result.outcome] ?? result.outcome,
+    outcome: ended?.outcome === 'completed' && ticket.execution?.p4Delivery === 'pending' ? '已交付 pending CL（未提交，验证状态见报告）' : OUTCOME_TEXT[result.outcome] ?? result.outcome,
     summary: (report?.summary ?? '').trim() || (result.reason ?? '').trim(),
     request: request.trim(), reason: (result.reason ?? '').trim(),
     createdAt: ticket.createdAt, endedAt: result.at, endedBy: result.by,
@@ -152,6 +141,19 @@ export const reportFileName = (ticketId: string): string => `report-${ticketId.r
 /** DocxXML whose file block makes Feishu render the local `.html` artifact as a page preview. */
 export const reportDocXml = (file: string): string => `<figure view-type="Preview"><source path="@./${file}" name="${file}"/></figure>\n`
 
+/** Native editable document blocks; no executable HTML or external resources are imported. */
+export function renderTicketDocXml(view: TicketReportView): string {
+  const text = (value: string) => escapeHtml(value).replace(/\r?\n/g, '<br/>')
+  const section = (title: string, value: string) => `<h1>${text(title)}</h1><p>${text(value) || '—'}</p>`
+  return `<title>${text(view.title)} · 工单报告</title>\n<p><b>${text(view.outcome)}</b></p>\n`
+    + section('工单信息', `工单：${view.id}\n创建：${view.createdAt}\n结束：${view.endedAt}\n结束者：${view.endedBy}`)
+    + section('原始需求', view.request) + section('结果与验证记录', view.summary)
+    + section('结束原因', view.reason) + section('执行环境', view.execution)
+    + section('执行轨迹', view.assignments.map((item, i) => `${i + 1}. ${item.state} · ${item.at}\n${item.summary}`).join('\n\n'))
+    + section('关联来源', view.channels.map(item => `${item.source} · ${item.thread}`).join('\n'))
+    + '<p>内容来自工单记录；未执行或未完成的检查仍为未验证，交付不等于已发布或已通过回归。请勿对外转发内部信息。</p>\n'
+}
+
 /** The cloud document's address from `docs +create` (`data.document.url` in lark-cli 1.0.98). */
 export function documentUrl(data: unknown): string {
   const document = (data as { document?: { url?: unknown; document_id?: unknown } } | null)?.document
@@ -182,15 +184,19 @@ export interface TicketReportsHost {
   readonly stateDir: string
   /** Automatic delivery is off unless a person enabled it; a manual send bypasses this. */
   enabled(): boolean
+  /** Document creation is independent of IM notification and applies to every ended ticket. */
+  documentsEnabled?(): boolean
   warn(message: string): void
 }
 
 /** Generates, stores and sends ticket reports; one durable effect per ticket ending. */
 export class TicketReports {
+  private readonly creating = new Map<string, Promise<ReportDocument>>()
   constructor(private readonly host: TicketReportsHost) {
     host.effects.handle(REPORT_EFFECT, (payload: { ticketId: string; at: string }, key) => this.deliver(payload, key),
       { retry: [5000, 300_000] })
     host.effects.handle('reportLocal', payload => this.generate(payload), { retry: [5000, 300_000] })
+    host.effects.handle(CLOUD_REPORT_EFFECT, (payload: ReportPayload) => this.createCloud(payload), { retry: [5000, 300_000] })
   }
   private get directory(): string { return join(this.host.stateDir, REPORT_DIR) }
   private version(ticket: Ticket): string { return ticket.ended?.at ?? latestAssignment(ticket)?.report?.at ?? '' }
@@ -198,17 +204,28 @@ export class TicketReports {
   /** Local generation is unconditional for a recorded outcome; external sending remains opt-in. */
   queue(ticket: Ticket): boolean {
     if (ticketReportView(ticket, '')) this.host.effects.enqueue('reportLocal', ticket.id, { ticketId: ticket.id, at: this.version(ticket) })
-    return this.host.enabled() ? this.enqueue(ticket) : false
+    const cloud = ticket.ended && this.host.documentsEnabled?.() ? this.queueDocument(ticket) : false
+    const notify = this.host.enabled() ? this.enqueue(ticket) : false
+    return cloud || notify
   }
-  /** A person's explicit request: queue the report even while the automatic switch is off. */
-  sendNow(ticket: Ticket): boolean { return this.enqueue(ticket) }
+  /** A person's explicit request creates a document even for tickets without a Feishu conversation. */
+  sendNow(ticket: Ticket): boolean { return feishuTargets(ticket).length ? this.enqueue(ticket) : this.queueDocument(ticket) }
+  queueDocument(ticket: Ticket): boolean {
+    const view = ticketReportView(ticket, this.host.store.triggers.get(ticket.origin.triggerId)?.text ?? '')
+    if (!ticket.ended || !view) return false
+    const key = this.key(ticket)
+    if (!this.host.effects.pending(CLOUD_REPORT_EFFECT, key)) this.host.effects.enqueue(CLOUD_REPORT_EFFECT, key, {
+      ticketId: ticket.id, at: this.version(ticket), view,
+    })
+    return true
+  }
   private enqueue(ticket: Ticket): boolean {
     if (!ticketReportView(ticket, '') || !feishuTargets(ticket).length) return false
     this.host.effects.enqueue(REPORT_EFFECT, this.key(ticket), { ticketId: ticket.id, at: this.version(ticket) })
     return true
   }
   /** The artifact, the cached cloud-document address, and whether a delivery is still waiting. */
-  status(ticket: Ticket): { file: string; path?: string; docUrl?: string; queued: boolean; generated: boolean; generationQueued: boolean; deliveryState: 'not-requested' | 'queued' | 'sent' | 'target-gone' | 'partial' } {
+  status(ticket: Ticket): { file: string; path?: string; docUrl?: string; queued: boolean; generated: boolean; generationQueued: boolean; cloudState: CloudState; cloudError?: string; deliveryState: 'not-requested' | 'queued' | 'sent' | 'target-gone' | 'partial' } {
     const file = reportFileName(ticket.id)
     const path = join(this.directory, this.snapshotFile(ticket.id, this.version(ticket)))
     const cache = path.replace(/\.html$/, '.doc.json')
@@ -226,7 +243,12 @@ export class TicketReports {
       const saved = JSON.parse(readFileSync(receipt, 'utf8')) as { at?: string; state?: typeof deliveryState }
       if (saved.at === this.version(ticket) && ['sent', 'target-gone', 'partial'].includes(saved.state ?? '')) deliveryState = saved.state
     } catch { /* No verified receipt. */ }
-    return { file, ...existsSync(path) ? { path } : {}, ...docUrl ? { docUrl } : {}, generated: existsSync(path),
+    const cloudQueued = this.host.effects.pending(CLOUD_REPORT_EFFECT, this.key(ticket))
+    let creation: CreationRecord | undefined
+    try { creation = JSON.parse(readFileSync(path.replace(/\.html$/, '.creation.json'), 'utf8')) } catch { /* No creation record. */ }
+    const uncertain = creation?.state === 'creation-uncertain' || creation?.state === 'creating' && !this.creating.has(this.key(ticket))
+    const cloudState: CloudState = docUrl ? 'created' : uncertain ? 'creation-uncertain' : creation?.state === 'failed' ? 'failed' : cloudQueued ? 'queued' : 'not-requested'
+    return { file, cloudState, ...(!docUrl && creation?.error ? { cloudError: creation.error } : {}), ...existsSync(path) ? { path } : {}, ...docUrl ? { docUrl } : {}, generated: existsSync(path),
       generationQueued: this.host.effects.pending('reportLocal', ticket.id), queued,
       deliveryState: queued ? 'queued' : deliveryState ?? 'not-requested' }
   }
@@ -266,6 +288,52 @@ export class TicketReports {
     await this.writeAtomically(this.directory, this.snapshotFile(ticket.id, payload.at), html)
     if (this.current(payload)) await this.writeAtomically(this.directory, reportFileName(ticket.id), html)
   }
+  private async createCloud(payload: ReportPayload): Promise<void> {
+    const ticket = this.host.store.tickets.get(payload.ticketId)
+    const view = payload.view ?? (ticket && this.current(payload) ? ticketReportView(ticket, this.host.store.triggers.get(ticket.origin.triggerId)?.text ?? '') : undefined)
+    if (!view || view.id !== payload.ticketId || view.endedAt !== payload.at) return
+    await this.ensureDocument(payload, view)
+  }
+  private ensureDocument(payload: ReportPayload, view: TicketReportView): Promise<ReportDocument> {
+    const key = `${payload.ticketId}:${payload.at}`, existing = this.creating.get(key)
+    if (existing) return existing
+    const creating = this.createDocument(payload, view).finally(() => { if (this.creating.get(key) === creating) this.creating.delete(key) })
+    this.creating.set(key, creating)
+    return creating
+  }
+  private async createDocument(payload: ReportPayload, view: TicketReportView): Promise<ReportDocument> {
+    const file = this.snapshotFile(payload.ticketId, payload.at), directory = this.directory
+    const cacheFile = file.replace(/\.html$/, '.doc.json'), intentFile = file.replace(/\.html$/, '.creation.json')
+    await mkdir(directory, { recursive: true, mode: 0o700 })
+    const cached = await this.cachedDoc(cacheFile)
+    if (cached?.ticketId === payload.ticketId && cached.at === payload.at) return cached
+    let previous: CreationRecord | undefined
+    if (existsSync(join(directory, intentFile))) previous = JSON.parse(await readFile(join(directory, intentFile), 'utf8'))
+    if (previous && previous.state !== 'failed') throw new Error('飞书文档创建结果待确认；请查回已有文档，未自动重复创建')
+    const html = renderTicketReport(view)
+    await this.writeAtomically(directory, file, html)
+    if (this.current(payload)) await this.writeAtomically(directory, reportFileName(payload.ticketId), html)
+    const xmlFile = file.replace(/\.html$/, '.doc.xml')
+    await this.writeAtomically(directory, xmlFile, renderTicketDocXml(view))
+    const intent: CreationRecord = { ticketId: payload.ticketId, at: payload.at, state: 'creating' }
+    await this.writeAtomically(directory, intentFile, JSON.stringify(intent))
+    try {
+      const created = await this.host.commands.lark<{ document?: { url?: unknown; document_id?: unknown } }>(
+        ['docs', '+create', '--title', view.title.replace(/[\r\n\t]/g, ' ').slice(0, 200), '--doc-format', 'xml', '--content', `@./${xmlFile}`], directory)
+      const url = documentUrl(created)
+      if (!url) throw new Error('Feishu returned no document address')
+      const doc: ReportDocument = { ticketId: payload.ticketId, at: payload.at, url,
+        documentId: typeof created.document?.document_id === 'string' ? created.document.document_id : '' }
+      await this.writeAtomically(directory, cacheFile, JSON.stringify(doc))
+      await this.writeAtomically(directory, intentFile, JSON.stringify({ ...intent, state: 'created' }))
+      return doc
+    } catch (error) {
+      const localFailure = /The Feishu Source has no working bot CLI/.test(String(error))
+      const message = localFailure ? '飞书机器人CLI未配置，报告保留待重试；不影响下一条任务' : '文档创建响应未确认；请核对飞书权限及已创建文档，不会自动重复创建'
+      await this.writeAtomically(directory, intentFile, JSON.stringify({ ...intent, state: localFailure ? 'failed' : 'creation-uncertain', error: message }))
+      throw new Error(message, { cause: error })
+    }
+  }
   private async deliver(payload: { ticketId: string; at: string }, key: string): Promise<void> {
     const { store, commands, warn } = this.host
     const ticket = store.tickets.get(payload.ticketId)
@@ -276,28 +344,8 @@ export class TicketReports {
     if (!view) return
     const directory = this.directory
     const file = this.snapshotFile(ticket.id, payload.at)
-    const xmlFile = file.replace(/\.html$/, '.doc.xml')
-    const cacheFile = file.replace(/\.html$/, '.doc.json')
-    await mkdir(directory, { recursive: true, mode: 0o700 })
-    const html = renderTicketReport(view)
-    await this.writeAtomically(directory, file, html)
     if (!this.current(payload)) return
-    await this.writeAtomically(directory, reportFileName(ticket.id), html)
-    // Reuse the document an earlier attempt created: a retried effect must not create a second one.
-    let doc = await this.cachedDoc(cacheFile)
-    if (doc?.at !== payload.at) doc = undefined
-    if (!doc) {
-      await this.writeAtomically(directory, xmlFile, reportDocXml(file))
-      const title = view.title.replace(/[\r\n\t]/g, ' ').slice(0, 200)
-      if (!this.current(payload)) return
-      const created = await commands.lark<{ document?: { url?: unknown; document_id?: unknown } }>(
-        ['docs', '+create', '--title', title, '--doc-format', 'xml', '--content', `@./${xmlFile}`], directory)
-      const url = documentUrl(created)
-      if (!url) throw new Error('Feishu cloud document was created without an address')
-      const documentId = typeof created?.document?.document_id === 'string' ? created.document.document_id : ''
-      doc = { ticketId: ticket.id, at: payload.at, url, documentId }
-      await this.writeAtomically(directory, cacheFile, JSON.stringify(doc))
-    }
+    const doc = await this.ensureDocument(payload, view)
     const text = reportNoticeText(view, doc.url)
     let sent = 0, gone = 0
     for (const channel of targets) {

@@ -819,20 +819,24 @@ export class CopilotAgent extends Disposable implements IAgent {
 	async resolveSessionConfig(params: IAgentResolveSessionConfigParams): Promise<ResolveSessionConfigResult> {
 		const gitInfo = params.workingDirectory ? await this._getGitInfo(params.workingDirectory) : undefined;
 
+		// ★ P2 收口（方案 B「一套 git 源，以 dsh 侧为准」）：上游 agentHost 不再自己创建
+		//   worktree（那会形成第二套 worktree 体系、也绕开 dsh Host 的沙箱与目录池）。
+		//   worktree 隔离统一由 dsh Host 的 `@vssaros/dsh-worktree`（`/x/worktree/api/*`）提供。
+		//   ⇒ 会话配置只保留 `folder`；旧配置里显式传 `isolation:'worktree'` 会被 validate 挡回 folder。
 		const isolationProperty = schemaProperty<'folder' | 'worktree'>({
 			type: 'string',
 			title: localize('agentHost.sessionConfig.isolation', "Isolation"),
 			description: localize('agentHost.sessionConfig.isolationDescription', "Where the agent should make changes"),
-			enum: gitInfo ? ['folder', 'worktree'] : ['folder'],
-			enumLabels: gitInfo ? [localize('agentHost.sessionConfig.isolation.folder', "Folder"), localize('agentHost.sessionConfig.isolation.worktree', "Worktree")] : [localize('agentHost.sessionConfig.isolation.folder', "Folder")],
-			enumDescriptions: gitInfo ? [localize('agentHost.sessionConfig.isolation.folderDescription', "Work directly in the folder"), localize('agentHost.sessionConfig.isolation.worktreeDescription', "Create a Git worktree for isolation")] : [localize('agentHost.sessionConfig.isolation.folderDescription', "Work directly in the folder")],
-			default: gitInfo ? 'worktree' : 'folder',
+			enum: ['folder'],
+			enumLabels: [localize('agentHost.sessionConfig.isolation.folder', "Folder")],
+			enumDescriptions: [localize('agentHost.sessionConfig.isolation.folderDescription', "Work directly in the folder")],
+			default: 'folder',
 			readOnly: !gitInfo,
 		});
 
 		// Resolve isolation first — downstream schema shapes (branch's
 		// read-only mode + enum restriction) depend on the effective value.
-		const isolationDefault: 'folder' | 'worktree' = gitInfo ? 'worktree' : 'folder';
+		const isolationDefault: 'folder' | 'worktree' = 'folder';
 		const isolationValue = isolationProperty.validate(params.config?.[SessionConfigKey.Isolation])
 			? params.config[SessionConfigKey.Isolation] as 'folder' | 'worktree'
 			: isolationDefault;

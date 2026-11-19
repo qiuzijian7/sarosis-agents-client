@@ -1,6 +1,6 @@
 {
   "note": "由 dsh-plugins/tools-snapshot.mjs 生成；被 dshHarness/test/common/dshToolSnapshot.test.ts 钉住。不要手改，跑 --write。",
-  "total": 154,
+  "total": 150,
   "plugins": {
     "vssaros-agents": [
       {
@@ -125,7 +125,7 @@
           "url",
           "urlContains"
         ],
-        "descriptionHash": "0c832603fd56"
+        "descriptionHash": "f97d06a7dc45"
       }
     ],
     "vssaros-codebase": [
@@ -381,41 +381,6 @@
           "limit"
         ],
         "descriptionHash": "7df577c2666b"
-      }
-    ],
-    "vssaros-ego": [
-      {
-        "name": "ego_guide",
-        "required": [],
-        "params": [],
-        "descriptionHash": "65a092c45194"
-      },
-      {
-        "name": "ego_run",
-        "required": [
-          "script"
-        ],
-        "params": [
-          "describe",
-          "script",
-          "taskSpace",
-          "timeoutMs"
-        ],
-        "descriptionHash": "b15612b58862"
-      },
-      {
-        "name": "ego_spaces",
-        "required": [],
-        "params": [],
-        "descriptionHash": "5ec541329002"
-      },
-      {
-        "name": "ego_status",
-        "required": [],
-        "params": [
-          "probe"
-        ],
-        "descriptionHash": "da90c03b3c47"
       }
     ],
     "vssaros-ide": [

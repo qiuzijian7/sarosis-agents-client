@@ -22,8 +22,8 @@
 //   · 标准分栏（customFrame=false）P1 暂按整页渲染（右栏承载在 P2 做，方案 §4.3）。
 // 构建标记：在页面 console 里输入 __vssarosWorkbenchBuild 即可知道窗口加载的是哪个版本
 // ⚠ bump package.json 版本时必须同步本行 —— check-assistant-collapse.mjs 会判红（2026-11-10 收口）。
-// 0.3.31（2026-11-13）：工作台列表下线名单（循环任务 item）⇒ 见下面 RETIRED_WORKBENCH_IDS。
-globalThis.__vssarosWorkbenchBuild = '0.3.33';
+// 0.3.53（2026-11-19）：阶段4 硬退役，manifest active route 页替代旧全局清单收编。
+globalThis.__vssarosWorkbenchBuild = '0.3.53';
 window.__ModuleLoader__.load({
 	id: '@vssaros/dsh-workbenches',
 	factory: (require) => {
@@ -31,6 +31,7 @@ window.__ModuleLoader__.load({
 		const React = require('react');
 		const ReactDOM = require('react-dom');
 		const h = React.createElement;
+		const InlineAssistantContext = React.createContext(null);
 
 		const STATE_URL = '/api/vssaros-workbenches/state';
 		/** 服务端现签的「带 token 深链」；外开必须用它（另一个浏览器没有当前 Cookie）。 */
@@ -42,6 +43,1399 @@ window.__ModuleLoader__.load({
 		const MODULE_RE = /^[a-z][a-z0-9-]{0,31}$/;
 		/** npm 包名（官方本地身份用 `local:<包名>`，scoped 包为 `local:@scope/name`）。 */
 		const PACKAGE_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+		/** 工作台子页的稳定 id：小写开头，避免用显示标题/数组序号当主键。 */
+		const PAGE_ID_RE = /^[a-z][a-z0-9._-]{0,63}$/;
+		const CATALOG_STATES = new Set(['active', 'alias', 'deprecated', 'offline', 'retired', 'hidden', 'disabled']);
+		function catalogKey(workbenchId, pageId) { return workbenchId + '/' + pageId; }
+		function catalogPageStateOf(page, fallback) {
+			const explicit = typeof page.state === 'string' && page.state.trim()
+				? page.state.trim()
+				: (fallback && typeof fallback.state === 'string' && fallback.state.trim() ? fallback.state.trim() : '');
+			if (CATALOG_STATES.has(explicit)) { return explicit; }
+			if (page.retired || (fallback && fallback.retired)) { return 'retired'; }
+			if (page.hidden || (fallback && fallback.hidden)) { return 'hidden'; }
+			if (page.enabled === false || (fallback && fallback.enabled === false)) { return 'disabled'; }
+			if (page.availability && page.availability !== 'ready') { return page.availability; }
+			return 'active';
+		}
+		function canonicalIdOf(page, fallback, workbenchId) {
+			const explicit = typeof page.canonicalId === 'string' && page.canonicalId.trim()
+				? page.canonicalId.trim()
+				: (fallback && typeof fallback.canonicalId === 'string' && fallback.canonicalId.trim() ? fallback.canonicalId.trim() : '');
+			return explicit || workbenchId;
+		}
+		function aliasesOf(page, fallback) {
+			const raw = Array.isArray(page.aliases) ? page.aliases
+				: (fallback && Array.isArray(fallback.aliases) ? fallback.aliases : []);
+			return Object.freeze([...new Set(raw.filter(value => typeof value === 'string' && value.trim())
+				.map(value => value.trim()))]);
+		}
+		function replacedByOf(page, fallback) {
+			const value = typeof page.replacedBy === 'string' ? page.replacedBy
+				: (fallback && typeof fallback.replacedBy === 'string' ? fallback.replacedBy : '');
+			return value.trim();
+		}
+		function catalogVisibilityOf(page, fallback, state, route, key) {
+			const custom = page.visibility && typeof page.visibility === 'object' ? page.visibility
+				: (fallback && fallback.visibility && typeof fallback.visibility === 'object' ? fallback.visibility : null);
+			const bool = (value, defaultValue) => typeof value === 'boolean' ? value : defaultValue;
+			const ready = state === 'active';
+			return Object.freeze({
+				start: bool(custom && custom.start, ready),
+				launcher: bool(custom && custom.launcher, ready),
+				nativeTab: bool(custom && custom.nativeTab, true),
+				routeWhitelist: bool(custom && custom.routeWhitelist, !!route),
+				deepLink: bool(custom && custom.deepLink, !!route || !!key),
+			});
+		}
+		/** P1 统一目录条目：快照只暴露可序列化字段，Component 留在内部 renderer Map。 */
+		function normalizeCatalogPage(page, workbenchId, fallback) {
+			if (!page || typeof page !== 'object') { throw new Error('Invalid workbench page descriptor'); }
+			const pageId = typeof page.id === 'string' ? page.id.trim() : '';
+			if (!PAGE_ID_RE.test(pageId)) { throw new Error('Invalid workbench page id: ' + pageId); }
+			const title = typeof page.title === 'string' && page.title.trim() ? page.title.trim() : fallback.title;
+			if (!title) { throw new Error('Invalid workbench page title'); }
+			const description = typeof page.description === 'string' ? page.description : fallback.description;
+			const icon = typeof page.icon === 'string' ? page.icon : fallback.icon;
+			const sourcePackage = typeof page.sourcePackage === 'string' ? page.sourcePackage : fallback.sourcePackage;
+			const route = typeof page.route === 'string' ? page.route.trim() : '';
+			const explicitComponent = typeof page.component === 'function' ? page.component
+				: (typeof page.Component === 'function' ? page.Component : null);
+			const Component = explicitComponent || (route ? null : fallback.Component);
+			const kind = typeof Component === 'function' ? 'component' : (route ? 'route' : 'external');
+			const hidden = page.hidden === true || fallback.hidden === true;
+			const retired = page.retired === true || fallback.retired === true;
+			const enabled = page.enabled !== false && fallback.enabled !== false;
+			const availability = retired ? 'retired' : hidden ? 'hidden' : enabled ? 'ready' : 'disabled';
+			const state = catalogPageStateOf({ ...page, hidden, retired, enabled, availability }, fallback);
+			const sourceKind = typeof page.sourceKind === 'string' && page.sourceKind ? page.sourceKind : fallback.sourceKind;
+			const key = catalogKey(workbenchId, pageId);
+			const canonicalId = canonicalIdOf(page, fallback, workbenchId);
+			const canonicalKey = canonicalId + '/' + pageId;
+			const visibility = catalogVisibilityOf(page, fallback, state, route, key);
+			return Object.freeze({
+				key, workbenchId, pageId, title, description: description || '', icon: icon || '',
+				sourcePackage: sourcePackage || '', sourceKind: sourceKind || '', kind, route,
+				hidden, retired, enabled, availability, state,
+				canonicalId, canonicalKey, visibility, aliases: aliasesOf(page, fallback), replacedBy: replacedByOf(page, fallback),
+				renderHandle: kind === 'route' ? 'route:' + route : 'component:' + key,
+				Component,
+			});
+		}
+		function catalogPageSnapshot(page) {
+			return Object.freeze({
+				key: page.key, workbenchId: page.workbenchId, pageId: page.pageId,
+				title: page.title, description: page.description, icon: page.icon,
+				sourcePackage: page.sourcePackage, sourceKind: page.sourceKind, kind: page.kind, route: page.route,
+				hidden: page.hidden, retired: page.retired, enabled: page.enabled,
+				availability: page.availability, state: page.state,
+				canonicalId: page.canonicalId, canonicalKey: page.canonicalKey,
+				visibility: page.visibility, aliases: page.aliases, replacedBy: page.replacedBy,
+				renderHandle: page.renderHandle,
+			});
+		}
+		/** FNV-1a 32-bit：给 Better Sidebar 的 tab type 生成稳定、短且无歧义的后缀。 */
+		function stableHash8(text) {
+			let hash = 0x811c9dc5;
+			for (let i = 0; i < text.length; i += 1) {
+				hash ^= text.charCodeAt(i);
+				hash = Math.imul(hash, 0x01000193) >>> 0;
+			}
+			return hash.toString(16).padStart(8, '0');
+		}
+		/** v6 开始页：每张工作台 item 的稳定 DOM 锚点与常显拖拽锚点身份。 */
+		function homeWorkbenchCardIdOf(key) {
+			return 'vssaros-home-workbench-' + stableHash8(String(key || ''));
+		}
+		function homeWorkbenchAnchorIdOf(key) {
+			return 'vssaros-home-workbench-anchor-' + stableHash8(String(key || ''));
+		}
+		function sidebarTabTypeOf(page) {
+			const safe = String(page.pageId).toLowerCase().replace(/[^a-z0-9._-]+/g, '-').slice(0, 40) || 'page';
+			return 'vssaros-wb:' + safe + ':' + stableHash8(page.key);
+		}
+		/** `ctx.inject(['betterSidebar'])` 的回调参数可能是 scoped ctx，也可能直接挂属性。 */
+		function optionalService(scope, name) {
+			if (!scope) { return null; }
+			if (typeof scope.get === 'function') {
+				try { const got = scope.get(name); if (got) { return got; } } catch { /* 未声明的服务会抛 */ }
+			}
+			try { return scope[name] || null; } catch { return null; }
+		}
+		let sidebarLayoutV1Enabled = true;
+		let activeSidebarAdapter = null;
+		globalThis.__vssarosSidebarLayoutV1 = true;
+		function setSidebarLayoutV1(enabled) {
+			sidebarLayoutV1Enabled = enabled !== false;
+			globalThis.__vssarosSidebarLayoutV1 = sidebarLayoutV1Enabled;
+			if (activeSidebarAdapter && typeof activeSidebarAdapter.setEnabled === 'function') {
+				activeSidebarAdapter.setEnabled(sidebarLayoutV1Enabled);
+			}
+		}
+		globalThis.__vssarosSetSidebarLayoutV1 = setSidebarLayoutV1;
+		/** P3 默认开启；Host config / 跨 chunk 全局显式 false 优先回退旧布局。 */
+		function readSidebarLayoutV1Config(ctx) {
+			try {
+				const direct = ctx && typeof ctx.config === 'function' ? ctx.config() : (ctx && ctx.config);
+				if (direct && direct.sidebarLayoutV1 === false) { return false; }
+				if (direct && direct.sidebarLayoutV1 === true) { return true; }
+				const config = ctx && ctx.fiber && ctx.fiber.entry && ctx.fiber.entry.options && ctx.fiber.entry.options.config;
+				if (config && config.sidebarLayoutV1 === false) { return false; }
+				if (config && config.sidebarLayoutV1 === true) { return true; }
+			} catch { /* 老宿主没有 fiber/config */ }
+			return globalThis.__vssarosSidebarLayoutV1 !== false;
+		}
+		function sidebarGuideReleased(betterSidebar) {
+			try {
+				const snapshot = betterSidebar && typeof betterSidebar.getSnapshot === 'function' ? betterSidebar.getSnapshot() : null;
+				return !!(snapshot && snapshot.prefs && snapshot.prefs.guideTakeover === false);
+			} catch { return false; }
+		}
+		function disposerOf(value) {
+			if (typeof value === 'function') { return value; }
+			if (value && typeof value.dispose === 'function') { return () => value.dispose(); }
+			return null;
+		}
+		const HOME_WB_ORDER_FIELD = 'homeWorkbenchOrder';
+		const HOME_TOOL_ORDER_FIELD = 'homeToolOrder';
+		const HOME_IMAGE_TAB_TYPE = 'vssaros:image-reference';
+		const CREATE_PLUGIN_PROMPT = '创建一个带右侧栏入口的 DSH 插件。';
+		const INSTALL_STATUS_URL = '/api/vssaros-workbenches/install-status';
+		const INSTALL_STATUS_POLL_MS = 30000;
+		/**
+		 * 阶段 2/4：单一声明式目录清单。hidden/offline/retired 生成下线视图；
+		 * active manifest route 行替代旧 `window.__vssarosWorkbenchItems` 收编，
+		 * 因此不再依赖旧 chunk 的 10 秒轮询，也不复活隐藏入口。
+		 */
+		const HIDDEN_VISIBILITY = Object.freeze({ start: false, launcher: false, nativeTab: true, routeWhitelist: true, deepLink: true });
+		const OFFLINE_VISIBILITY = Object.freeze({ start: false, launcher: false, nativeTab: false, routeWhitelist: true, deepLink: true });
+		const RETIRED_VISIBILITY = Object.freeze({ start: false, launcher: false, nativeTab: false, routeWhitelist: false, deepLink: false });
+		const ACTIVE_VISIBILITY = Object.freeze({ start: true, launcher: true, nativeTab: true, routeWhitelist: true, deepLink: true });
+		const WORKBENCH_MANIFEST = Object.freeze([
+			Object.freeze({ key: 'vssaros/marketplace/default', workbenchId: 'vssaros/marketplace', pageId: 'default', canonicalId: 'vssaros/marketplace', state: 'hidden', visibility: HIDDEN_VISIBILITY, aliases: Object.freeze(['vssaros-wb-marketplace']), replacedBy: 'legacy:/x/marketplace//vssaros-wb-marketplace', route: '/x/marketplace/', title: '商城工作台', sourceKind: 'registered' }),
+			Object.freeze({ key: 'vssaros/sessions/default', workbenchId: 'vssaros/sessions', pageId: 'default', canonicalId: 'vssaros/sessions', state: 'hidden', visibility: HIDDEN_VISIBILITY, aliases: Object.freeze(['vssaros-wb-sessions']), replacedBy: '', route: '/x/sessions/', title: '历史会话', sourceKind: 'registered' }),
+			Object.freeze({ key: 'vssaros/workflow/default', workbenchId: 'vssaros/workflow', pageId: 'default', canonicalId: 'vssaros/workflow', state: 'hidden', visibility: HIDDEN_VISIBILITY, aliases: Object.freeze(['vssaros-wb-workflow']), replacedBy: '', route: '/x/workflow/', title: 'Workflow', sourceKind: 'registered' }),
+			Object.freeze({ key: 'vssaros/kanban/default', workbenchId: 'vssaros/kanban', pageId: 'default', canonicalId: 'vssaros/kanban', state: 'hidden', visibility: HIDDEN_VISIBILITY, aliases: Object.freeze(['vssaros-wb-kanban']), replacedBy: '', route: '/x/kanban/', title: 'Tasks', sourceKind: 'registered' }),
+			Object.freeze({ key: 'legacy:/x/sessions//vssaros-wb-sessions', workbenchId: 'legacy:/x/sessions/', pageId: 'vssaros-wb-sessions', canonicalId: 'vssaros/sessions', state: 'hidden', visibility: HIDDEN_VISIBILITY, aliases: Object.freeze(['vssaros-wb-sessions']), replacedBy: '', route: '/x/sessions/', title: '会话', sourceKind: 'legacy' }),
+			Object.freeze({ key: 'legacy:/x/sessions/?view=tiles/vssaros-wb-session-tiles', workbenchId: 'legacy:/x/sessions/?view=tiles', pageId: 'vssaros-wb-session-tiles', canonicalId: 'vssaros/sessions', state: 'hidden', visibility: HIDDEN_VISIBILITY, aliases: Object.freeze(['vssaros-wb-session-tiles']), replacedBy: '', route: '/x/sessions/?view=tiles', title: '会话磁贴', sourceKind: 'legacy' }),
+			Object.freeze({ key: 'legacy:/x/media//vssaros-wb-media', workbenchId: 'legacy:/x/media/', pageId: 'vssaros-wb-media', canonicalId: 'vssaros/media', state: 'hidden', visibility: HIDDEN_VISIBILITY, aliases: Object.freeze(['vssaros-wb-media']), replacedBy: 'vssaros/media/default', route: '/x/media/', title: '媒体库', sourceKind: 'legacy' }),
+			Object.freeze({ key: 'legacy:/x/codebase//vssaros-wb-codebase', workbenchId: 'legacy:/x/codebase/', pageId: 'vssaros-wb-codebase', canonicalId: 'vssaros/codebase', state: 'hidden', visibility: HIDDEN_VISIBILITY, aliases: Object.freeze(['vssaros-wb-codebase']), replacedBy: 'vssaros/codebase/default', route: '/x/codebase/', title: '代码库', sourceKind: 'legacy' }),
+			Object.freeze({ key: 'legacy:/x/workflow//vssaros-wb-workflow', workbenchId: 'legacy:/x/workflow/', pageId: 'vssaros-wb-workflow', canonicalId: 'vssaros/workflow', state: 'hidden', visibility: HIDDEN_VISIBILITY, aliases: Object.freeze(['vssaros-wb-workflow']), replacedBy: 'vssaros/workflow/default', route: '/x/workflow/', title: '工作流', sourceKind: 'legacy' }),
+			Object.freeze({ key: 'legacy:/x/kanban//vssaros-wb-kanban', workbenchId: 'legacy:/x/kanban/', pageId: 'vssaros-wb-kanban', canonicalId: 'vssaros/kanban', state: 'hidden', visibility: HIDDEN_VISIBILITY, aliases: Object.freeze(['vssaros-wb-kanban']), replacedBy: 'vssaros/kanban/default', route: '/x/kanban/', title: '看板', sourceKind: 'legacy' }),
+			Object.freeze({ key: 'offline:/x/kanban/', workbenchId: 'offline:/x/kanban/', pageId: 'default', canonicalId: 'vssaros/kanban', state: 'offline', visibility: OFFLINE_VISIBILITY, aliases: Object.freeze(['vssaros-wb-kanban']), replacedBy: 'vssaros/kanban/default', route: '/x/kanban/', title: '看板', sourceKind: 'legacy' }),
+			Object.freeze({ key: 'offline:/x/workflow/', workbenchId: 'offline:/x/workflow/', pageId: 'default', canonicalId: 'vssaros/workflow', state: 'offline', visibility: OFFLINE_VISIBILITY, aliases: Object.freeze(['vssaros-wb-workflow']), replacedBy: 'vssaros/workflow/default', route: '/x/workflow/', title: '工作流', sourceKind: 'legacy' }),
+			Object.freeze({ key: 'offline:/x/imagegen/', workbenchId: 'offline:/x/imagegen/', pageId: 'default', canonicalId: 'vssaros/imagegen', state: 'offline', visibility: OFFLINE_VISIBILITY, aliases: Object.freeze(['vssaros-wb-imagegen']), replacedBy: '', route: '/x/imagegen/', title: '生图', sourceKind: 'legacy' }),
+			Object.freeze({ key: 'offline:/x/skills/', workbenchId: 'offline:/x/skills/', pageId: 'default', canonicalId: 'vssaros/skills', state: 'offline', visibility: OFFLINE_VISIBILITY, aliases: Object.freeze(['vssaros-wb-skills']), replacedBy: '', route: '/x/skills/', title: '技能', sourceKind: 'legacy' }),
+			Object.freeze({ key: 'vssaros/loop/default', workbenchId: 'vssaros/loop', pageId: 'default', canonicalId: 'vssaros/loop', state: 'retired', visibility: RETIRED_VISIBILITY, aliases: Object.freeze(['vssaros-wb-loop']), replacedBy: '', route: '', title: '循环任务', sourceKind: 'registered' }),
+			Object.freeze({ key: 'manifest:/x/kb//vssaros-wb-kb', workbenchId: 'manifest:/x/kb/', pageId: 'vssaros-wb-kb', canonicalId: 'vssaros/kb', state: 'active', visibility: ACTIVE_VISIBILITY, aliases: Object.freeze(['legacy:/x/kb//vssaros-wb-kb', 'vssaros-wb-kb', '/x/kb/']), replacedBy: '', route: '/x/kb/', title: '知识库', sourceKind: 'manifest' }),
+			Object.freeze({ key: 'manifest:/x/memory//vssaros-wb-memory-tab', workbenchId: 'manifest:/x/memory/', pageId: 'vssaros-wb-memory-tab', canonicalId: 'vssaros/memory', state: 'active', visibility: ACTIVE_VISIBILITY, aliases: Object.freeze(['legacy:/x/memory//vssaros-wb-memory-tab', 'vssaros-wb-memory-tab', 'memory', '/x/memory/']), replacedBy: '', route: '/x/memory/', title: '记忆', sourceKind: 'manifest', component: 'memory' }),
+			Object.freeze({ key: 'manifest:/x/marketplace//vssaros-wb-marketplace', workbenchId: 'manifest:/x/marketplace/', pageId: 'vssaros-wb-marketplace', canonicalId: 'vssaros/marketplace', state: 'active', visibility: ACTIVE_VISIBILITY, aliases: Object.freeze(['legacy:/x/marketplace//vssaros-wb-marketplace', 'vssaros-wb-marketplace', '/x/marketplace/']), replacedBy: '', route: '/x/marketplace/', title: '商城', sourceKind: 'manifest' }),
+		]);
+		const hiddenRows = WORKBENCH_MANIFEST.filter(row => row.state === 'hidden');
+		const HOME_HIDDEN_PAGE_KEYS = new Set(hiddenRows.map(row => row.key));
+		const HOME_HIDDEN_WORKBENCH_IDS = new Set(hiddenRows.map(row => row.workbenchId));
+		const RETIRED_WORKBENCH_IDS = WORKBENCH_MANIFEST.filter(row => row.state === 'retired').map(row => row.workbenchId);
+		const OFFLINE_WORKBENCH_ROUTES = WORKBENCH_MANIFEST.filter(row => row.state === 'offline').map(row => row.route);
+		function workbenchManifest() { return WORKBENCH_MANIFEST; }
+		function manifestViewsOf() {
+			return Object.freeze({
+				hiddenPageKeys: Object.freeze([...HOME_HIDDEN_PAGE_KEYS]),
+				hiddenWorkbenchIds: Object.freeze([...HOME_HIDDEN_WORKBENCH_IDS]),
+				retiredWorkbenchIds: Object.freeze([...RETIRED_WORKBENCH_IDS]),
+				offlineRoutes: Object.freeze([...OFFLINE_WORKBENCH_ROUTES]),
+			});
+		}
+		/** 阶段 3：给其它 chunk 的统一策略视图；全部为只读 key/route 数组。 */
+		function catalogPolicyProbeOf(pages) {
+			const list = Array.isArray(pages) ? pages : [];
+			return Object.freeze({
+				startPages: Object.freeze(selectStartPages(list).map(page => page.key)),
+				launcherPages: Object.freeze(selectLauncherPages(list).map(page => page.key)),
+				nativeTabPages: Object.freeze(selectNativeTabPages(list).map(page => page.key)),
+				routeWhitelist: Object.freeze(selectRouteWhitelist(list).map(page => page.route)),
+				hiddenWorkbenchIds: Object.freeze([...HOME_HIDDEN_WORKBENCH_IDS]),
+				retiredWorkbenchIds: Object.freeze([...RETIRED_WORKBENCH_IDS]),
+				offlineRoutes: Object.freeze([...OFFLINE_WORKBENCH_ROUTES]),
+			});
+		}
+		/** 阶段 4：软退役为 manifest，硬退役为 retired；pending/legacy 只用于旧版本诊断。 */
+		function legacyBridgeModeOf(scope) {
+			const policyReady = !!(scope && typeof scope.__vssarosWorkbenchPolicy === 'function');
+			const manifestRegistered = !!(scope && scope.__vssarosWorkbenchManifestPagesRegistered === true);
+			const itemsReady = !!(scope && Array.isArray(scope.__vssarosWorkbenchItems));
+			if (policyReady && manifestRegistered) { return 'retired'; }
+			if (policyReady && itemsReady) { return 'manifest'; }
+			return itemsReady ? 'legacy' : 'pending';
+		}
+		function catalogPolicyViewOf(page) {
+			const source = page || {};
+			const key = String(source.key || '');
+			const canonicalId = String(source.canonicalId || source.workbenchId || '');
+			const canonicalKey = canonicalId + '/' + String(source.pageId || 'default');
+			const state = typeof source.state === 'string' && source.state.trim()
+				? source.state.trim() : catalogPageStateOf(source);
+			const route = String(source.route || '');
+			const visibility = source.visibility
+				? source.visibility : catalogVisibilityOf(source, null, state, route, key);
+			return Object.freeze({ key, canonicalId, canonicalKey, state, route, visibility });
+		}
+		/** 阶段 1：开始页投影。行为与旧 visibleHomePagesOf 一致，额外尊重显式 state/visibility。 */
+		function selectStartPages(pages) {
+			const seen = new Set();
+			return (Array.isArray(pages) ? pages : []).filter(page => {
+				if (!page || !page.enabled || page.hidden || page.retired) { return false; }
+				if (page.availability && page.availability !== 'ready') { return false; }
+				const view = catalogPolicyViewOf(page);
+				if (view.state !== 'active' || view.visibility.start === false) { return false; }
+				const workbenchId = String(page.workbenchId || '');
+				if (!view.key || HOME_HIDDEN_PAGE_KEYS.has(view.key) || HOME_HIDDEN_WORKBENCH_IDS.has(workbenchId)) { return false; }
+				if (seen.has(view.key)) { return false; }
+				seen.add(view.key);
+				return true;
+			});
+		}
+		function visibleHomePagesOf(pages) { return selectStartPages(pages); }
+		/** 阶段 1：native tab 投影。默认保持旧适配器行为；显式 visibility.nativeTab=false 才排除。 */
+		function selectNativeTabPages(pages) {
+			return (Array.isArray(pages) ? pages : []).filter(page => {
+				if (!page) { return false; }
+				const view = catalogPolicyViewOf(page);
+				return !!view.key && view.visibility.nativeTab !== false;
+			});
+		}
+		function selectLauncherPages(pages) {
+			return (Array.isArray(pages) ? pages : []).filter(page => {
+				if (!page) { return false; }
+				const view = catalogPolicyViewOf(page);
+				return view.state === 'active' && view.visibility.launcher !== false;
+			});
+		}
+		function selectRouteWhitelist(pages) {
+			const seen = new Set();
+			return (Array.isArray(pages) ? pages : []).filter(page => {
+				const route = String(page && page.route || '');
+				if (!route || seen.has(route)) { return false; }
+				seen.add(route);
+				return true;
+			});
+		}
+		function resolveLegacyTabKey(tab, pages) {
+			if (!tab || typeof tab !== 'object') { return ''; }
+			const id = String(tab.id || ''), route = String(tab.route || '');
+			const wbId = String(tab.wbId || ''), comp = String(tab.comp || '');
+			const candidates = Array.isArray(pages) ? pages : [];
+			const aliasMatches = alias => alias === id || alias === route || alias === wbId || alias === comp;
+			const page = candidates.find(candidate => candidate && (
+				candidate.key === id || candidate.pageId === id
+				|| (route && candidate.route === route)
+				|| (wbId && candidate.workbenchId === wbId)
+				|| (comp && candidate.pageId === comp)
+				|| (Array.isArray(candidate.aliases) && candidate.aliases.some(alias => aliasMatches(String(alias))))
+			));
+			if (!page) { return ''; }
+			const replacedBy = String(page.replacedBy || '');
+			const target = replacedBy && candidates.find(candidate => candidate
+				&& (candidate.key === replacedBy || candidate.canonicalKey === replacedBy || candidate.canonicalId === replacedBy));
+			return target ? String(target.key || '') : String(page.key || '');
+		}
+		function catalogDiagnosticsOf(pages) {
+			return Object.freeze((Array.isArray(pages) ? pages : []).map(page => {
+				const view = catalogPolicyViewOf(page || {});
+				return Object.freeze({
+					key: view.key, canonicalId: view.canonicalId, canonicalKey: view.canonicalKey,
+					title: String(page.title || ''), workbenchId: String(page.workbenchId || ''),
+					pageId: String(page.pageId || ''), sourceKind: String(page.sourceKind || ''),
+					sourcePackage: String(page.sourcePackage || ''), kind: String(page.kind || ''),
+					route: view.route, state: view.state, availability: String(page.availability || ''),
+					visibility: view.visibility,
+					aliases: Object.freeze([...(Array.isArray(page.aliases) ? page.aliases : [])]),
+					replacedBy: String(page.replacedBy || ''),
+				});
+			}));
+		}
+		/** 同一 canonicalId + pageId 只允许一个 active 可见项；alias/deprecated/offline 不算冲突。 */
+		function canonicalConflictsOf(pages) {
+			const active = new Map();
+			const conflicts = [];
+			for (const page of Array.isArray(pages) ? pages : []) {
+				if (!page) { continue; }
+				const view = catalogPolicyViewOf(page);
+				if (view.state !== 'active') { continue; }
+				if (!view.visibility.start && !view.visibility.launcher && !view.visibility.nativeTab) { continue; }
+				const previous = active.get(view.canonicalKey);
+				if (previous) {
+					conflicts.push(Object.freeze({
+						canonicalId: view.canonicalId, canonicalKey: view.canonicalKey,
+						keys: Object.freeze([previous, view.key]),
+					}));
+				} else {
+					active.set(view.canonicalKey, view.key);
+				}
+			}
+			return Object.freeze(conflicts);
+		}
+		/** `install-status` 的 pending 形状归一化；老 Host 404 / 脏数据一律当作「没有」。 */
+		function pendingInstallsOf(body) {
+			const rows = body && Array.isArray(body.pending) ? body.pending : [];
+			return rows.filter(row => row && typeof row.name === 'string' && row.name.trim())
+				.slice(0, 10)
+				.map(row => ({
+					name: row.name.trim(),
+					version: typeof row.version === 'string' ? row.version.trim() : '',
+				}));
+		}
+		let imageReferenceSidebar = null;
+		let disposeImageReferenceTab = null;
+		let keyboardDrag = null;
+		let pointerDrag = null;
+		let suppressHomeOpenUntil = 0;
+		let htmlDragKey = '';
+		function validOrderKey(value) { return typeof value === 'string' && value.length > 0 && value.length <= 200; }
+		function normalizeHomeOrder(saved, available) {
+			const order = Array.isArray(saved) ? [...new Set(saved.filter(validOrderKey))].slice(0, 2000) : [];
+			for (const id of available) { if (!order.includes(id)) { order.push(id); } }
+			return order.slice(0, 2000);
+		}
+		function moveHomeOrder(order, id, targetId) {
+			if (id === targetId || !order.includes(id) || !order.includes(targetId)) { return [...order]; }
+			const next = order.filter(x => x !== id);
+			next.splice(next.indexOf(targetId), 0, id);
+			return next;
+		}
+		/** 统一线性图标：不依赖外部 icon 包，也不使用 emoji。 */
+		const GUIDE_ICON_SHAPES = {
+			search: () => [h('circle', { key: 'c', cx: 10, cy: 10, r: 6 }), h('path', { key: 'p', d: 'm15 15 5 5' })],
+			folder: () => [h('path', { key: 'p', d: 'M3 7V5h7l2 2h9v13H3V7Zm0 3h18' })],
+			git: () => [h('circle', { key: 'a', cx: 6, cy: 5, r: 2 }), h('circle', { key: 'b', cx: 18, cy: 6, r: 2 }), h('circle', { key: 'c', cx: 6, cy: 19, r: 2 }), h('path', { key: 'p', d: 'M6 7v10m12-9c0 6-12 2-12 7' })],
+			terminal: () => [h('path', { key: 'p', d: 'm4 6 6 6-6 6m9 0h7' })],
+			globe: () => [h('circle', { key: 'c', cx: 12, cy: 12, r: 9 }), h('ellipse', { key: 'e', cx: 12, cy: 12, rx: 4, ry: 9 }), h('path', { key: 'p', d: 'M3 12h18' })],
+			bot: () => [h('rect', { key: 'r', x: 3, y: 7, width: 18, height: 13, rx: 3 }), h('path', { key: 'p', d: 'M12 3v4m-5 6h1m8 0h1m-9 4h8' })],
+			chat: () => [h('path', { key: 'p', d: 'M3 4h18v13H8l-5 4V4Zm4 5h10m-10 4h6' })],
+			book: () => [h('path', { key: 'p', d: 'M12 6C7 3 3 5 3 5v15s5-2 9 0c4-2 9 0 9 0V5s-4-2-9 1v14' })],
+			brain: () => [h('path', { key: 'p', d: 'M12 4c-5-4-9 2-6 5-5 1-3 7 0 7-1 5 6 6 6 1V4Zm0 0c5-4 9 2 6 5 5 1 3 7 0 7 1 5-6 6-6 1M6 9l3 2m9-2-3 2M6 16l3-2m9 2-3-2' })],
+			code: () => [h('path', { key: 'p', d: 'm7 5-6 7 6 7m10-14 6 7-6 7m-3-16-4 18' })],
+			media: () => [h('rect', { key: 'r', x: 3, y: 4, width: 18, height: 16, rx: 2 }), h('path', { key: 'p', d: 'm9 8 7 4-7 4Z' })],
+			shop: () => [h('path', { key: 'p', d: 'M4 8h16l-1 13H5L4 8Zm4 0V6a4 4 0 0 1 8 0v2' })],
+			clock: () => [h('circle', { key: 'c', cx: 12, cy: 12, r: 9 }), h('path', { key: 'p', d: 'M12 6v6l4 2' })],
+			grid: () => [h('rect', { key: 'a', x: 3, y: 3, width: 7, height: 7, rx: 1 }), h('rect', { key: 'b', x: 14, y: 3, width: 7, height: 7, rx: 1 }), h('rect', { key: 'c', x: 3, y: 14, width: 7, height: 7, rx: 1 }), h('rect', { key: 'd', x: 14, y: 14, width: 7, height: 7, rx: 1 })],
+			file: () => [h('path', { key: 'p', d: 'M5 2h9l5 5v15H5V2Zm9 0v6h5M8 13h8m-8 4h5' })],
+			home: () => [h('path', { key: 'p', d: 'm3 10 9-7 9 7v10h-6v-7H9v7H3Z' })],
+			plus: () => [h('path', { key: 'p', d: 'M12 5v14M5 12h14' })],
+			chevron: () => [h('path', { key: 'p', d: 'm6 9 6 6 6-6' })],
+			more: () => [h('circle', { key: 'a', cx: 4, cy: 12, r: 1 }), h('circle', { key: 'b', cx: 12, cy: 12, r: 1 }), h('circle', { key: 'c', cx: 20, cy: 12, r: 1 })],
+			plugin: () => [h('path', { key: 'p', d: 'M4 4h5V2a3 3 0 0 1 6 0v2h5v5h2a3 3 0 0 1 0 6h-2v5h-5v-2a3 3 0 0 0-6 0v2H4v-5H2a3 3 0 0 1 0-6h2Z' })],
+			settings: () => [h('path', { key: 'p', d: 'm8 3-1 3-3 1 1 4-1 3 3 1 1 5h7l1-5 4-1-1-3 1-4-4-1-1-3H8Z' }), h('circle', { key: 'c', cx: 12, cy: 11, r: 3 })],
+			grip: () => [h('circle', { key: 'a', cx: 8, cy: 5, r: 1 }), h('circle', { key: 'b', cx: 16, cy: 5, r: 1 }), h('circle', { key: 'c', cx: 8, cy: 12, r: 1 }), h('circle', { key: 'd', cx: 16, cy: 12, r: 1 }), h('circle', { key: 'e', cx: 8, cy: 19, r: 1 }), h('circle', { key: 'f', cx: 16, cy: 19, r: 1 })],
+			arrow: () => [h('path', { key: 'p', d: 'M12 19V5m-6 6 6-6 6 6' })],
+			x: () => [h('path', { key: 'p', d: 'm6 6 12 12M6 18 18 6' })],
+		};
+		function guideIcon(name, extraClass) {
+			const shape = GUIDE_ICON_SHAPES[name] || GUIDE_ICON_SHAPES.grid;
+			return h('svg', {
+				className: 'vssaros-home-icon' + (extraClass ? ' ' + extraClass : ''),
+				viewBox: '0 0 24 24', 'aria-hidden': 'true', focusable: 'false',
+				fill: 'none', stroke: 'currentColor', strokeWidth: 1.65,
+				strokeLinecap: 'round', strokeLinejoin: 'round',
+			}, shape());
+		}
+		const TOOL_META = {
+			files: { icon: 'folder', title: '工作区文件', description: '浏览会话工作区中的文件', key: 'Ctrl + Alt + P' },
+			git: { icon: 'git', title: '代码审查和变更', description: '查看代码变更与本会话的变更请求' },
+			changes: { icon: 'git', title: '代码审查和变更', description: '查看代码变更与本会话的变更请求' },
+			terminal: { icon: 'terminal', title: '新建终端', description: '在会话工作区运行命令', key: 'Ctrl + `' },
+			browser: { icon: 'globe', title: '浏览器', description: '右侧打开网页，与 Agent 查看同一页面' },
+			'subagent-tool': { icon: 'bot', title: '任务管理', description: '查看子代理拓扑与后台任务', moreOnly: true },
+			subagent: { icon: 'bot', title: '任务管理', description: '查看子代理拓扑与后台任务', moreOnly: true },
+			'sidechat-tool': { icon: 'chat', title: '侧边对话', description: '在主会话旁打开独立讨论线程', moreOnly: true },
+			sidechat: { icon: 'chat', title: '侧边对话', description: '在主会话旁打开独立讨论线程', moreOnly: true },
+		};
+		function iconNameOf(page) {
+			const raw = String(page && page.icon || '').trim();
+			if (GUIDE_ICON_SHAPES[raw]) { return raw; }
+			const hay = [page && page.pageId, page && page.title, page && page.workbenchId, page && page.route]
+				.filter(Boolean).join(' ').toLowerCase();
+			if (/kb|知识/.test(hay)) { return 'book'; }
+			if (/memory|记忆/.test(hay)) { return 'brain'; }
+			if (/code|代码/.test(hay)) { return 'code'; }
+			if (/media|媒体|image|图片/.test(hay)) { return 'media'; }
+			if (/market|商城/.test(hay)) { return 'shop'; }
+			if (/session|history|历史|scheduler|任务|自动化/.test(hay)) { return 'clock'; }
+			if (/superagent|agent|bot|团队/.test(hay)) { return 'bot'; }
+			if (/analysis|数据|records|数据表/.test(hay)) { return 'grid'; }
+			return 'grid';
+		}
+		function sourceLabelOf(page) {
+			const labels = { registered: '注册式', legacy: '内置清单', external: '外部插件', route: '路由式', component: '组件式' };
+			const kind = labels[page.sourceKind] || (page.kind === 'route' ? '路由式' : page.kind === 'component' ? '组件式' : '注册式');
+			return (page.sourcePackage ? page.sourcePackage + ' · ' : '内置 · ') + kind;
+		}
+		function isNewPage(page) {
+			return page.pageId !== 'default' && ['registered', 'external'].includes(page.sourceKind);
+		}
+		function toolEntriesOf(betterSidebar) {
+			const tabs = betterSidebar && typeof betterSidebar.getTabs === 'function' ? betterSidebar.getTabs() : [];
+			return tabs.filter(descriptor => descriptor && typeof descriptor.id === 'string'
+				&& descriptor.hidden !== true && descriptor.bottomOnly !== true
+				&& !descriptor.id.startsWith('vssaros-wb:') && descriptor.id !== HOME_IMAGE_TAB_TYPE)
+				.map(descriptor => {
+					const meta = TOOL_META[descriptor.id] || {};
+					const title = typeof descriptor.title === 'function' ? descriptor.title() : String(descriptor.title || meta.title || descriptor.id);
+					const description = typeof descriptor.description === 'function'
+						? descriptor.description() : String(descriptor.description || meta.description || '');
+					return {
+						id: descriptor.id, kind: 'tool', title, description,
+						icon: meta.icon || (typeof descriptor.icon === 'string' && GUIDE_ICON_SHAPES[descriptor.icon] ? descriptor.icon : 'grid'),
+						key: String(descriptor.key || descriptor.shortcut || meta.key || ''),
+						moreOnly: descriptor.moreOnly === true || meta.moreOnly === true,
+					};
+				});
+		}
+		/** P4 基础：识别 `@image:name` 标记；不猜附件 id、不读任意本地路径。 */
+		function parseImageToken(text) {
+			const match = /@image:([^\s]+)/.exec(String(text || ''));
+			return match ? Object.freeze({ raw: match[0], name: match[1] }) : null;
+		}
+		const LEGACY_TABS_KEY = 'vssaros.wb.tabs';
+		const LEGACY_TABS_MIGRATED_KEY = 'vssaros.wb.tabs.migrated.v1';
+		const IMAGE_VERSIONS_ROUTE = 'x/imagegen/api/versions';
+		/** P5：旧中栏页签 → 新目录主键；解析 aliases/replacedBy，只认能映射到的条目。 */
+		function legacyTabKeysOf(tabs, pages) {
+			const keys = [];
+			for (const tab of Array.isArray(tabs) ? tabs : []) {
+				const key = resolveLegacyTabKey(tab, pages);
+				if (key && !keys.includes(key)) { keys.push(key); }
+			}
+			return keys;
+		}
+		/** P4：`@image:name` 只经同源 Host 图片账本解析，不接受任意文件路径。 */
+		function imageVersionsUrl(name, base) {
+			return new URL(IMAGE_VERSIONS_ROUTE + '?attachment=' + encodeURIComponent(String(name || '')), base).href;
+		}
+		function pickImageVersion(payload, name) {
+			if (!payload || payload.ok !== true || !Array.isArray(payload.versions) || !payload.versions.length) { return null; }
+			const versions = payload.versions;
+			const current = versions.find(item => item && item.id === payload.current) || versions[versions.length - 1];
+			if (!current) { return null; }
+			return Object.freeze({
+				name: String(name || ''),
+				title: String(current.prompt || name || '图片资源'),
+				url: typeof current.url === 'string' ? current.url : '',
+				attachment: current.attachment && typeof current.attachment === 'object' ? current.attachment : null,
+			});
+		}
+		async function resolveImageToken(name) {
+			const token = String(name || '').trim();
+			if (!token || typeof fetch !== 'function') { return null; }
+			let base = '';
+			try {
+				base = (typeof document !== 'undefined' && document.baseURI)
+					|| (globalThis.location && globalThis.location.href) || '';
+			} catch { base = ''; }
+			if (!base) { return null; }
+			try {
+				const res = await fetch(imageVersionsUrl(token, base), { cache: 'no-store' });
+				const data = await res.json();
+				return res.ok ? pickImageVersion(data, token) : null;
+			} catch (error) {
+				console.warn('[vssaros-workbenches] 解析 @image 资源失败：' + String(error && error.message || error));
+				return null;
+			}
+		}
+		function saveHomeOrder(service, field, order, setNotice) {
+			if (!service || typeof service.commit !== 'function') {
+				setNotice('工作台状态未加载，顺序未保存。'); return;
+			}
+			service.commit(state => { state[field] = [...order]; })
+				.then(() => setNotice('顺序已保存。'))
+				.catch(error => setNotice('保存失败：' + String(error && error.message || error) + '（已重新加载，不覆盖其他窗口的顺序）'));
+		}
+		function ImageReferenceView(props) {
+			const tab = (props && props.tab) || {};
+			const meta = tab.meta || {};
+			const [url, setUrl] = React.useState(typeof meta.url === 'string' ? meta.url : '');
+			const [error, setError] = React.useState(typeof meta.error === 'string' ? meta.error : '');
+			React.useEffect(() => {
+				if (url || error) { return undefined; }
+				const loader = globalThis.__vssarosLoadImage;
+				if (typeof loader !== 'function' || !meta.attachment) {
+					setError('没有会话授权的图片加载器或图片地址，无法展示该资源。');
+					return undefined;
+				}
+				let alive = true;
+				Promise.resolve().then(() => loader(meta.attachment))
+					.then(value => { if (alive) { if (value) { setUrl(String(value)); } else { setError('图片附件没有返回可用地址。'); } } })
+					.catch(e => { if (alive) { setError('图片资源加载失败：' + String(e && e.message || e)); } });
+				return () => { alive = false; };
+			}, [url, error]);
+			if (error) {
+				return h('div', { 'data-vssaros-image-reference': 'error', style: { padding: '16px', color: 'var(--dsw-alias-label-secondary)' } }, error);
+			}
+			if (!url) {
+				return h('div', { 'data-vssaros-image-reference': 'loading', style: { padding: '16px', color: 'var(--dsw-alias-label-secondary)' } }, '正在解析图片资源…');
+			}
+			return h('img', {
+				'data-vssaros-image-reference': 'ready', src: url,
+				alt: String(meta.title || meta.name || '图片资源'),
+				style: { maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' },
+			});
+		}
+		function openImageReference(ref) {
+			const parsed = typeof ref === 'string' ? parseImageToken(ref) : (ref && typeof ref === 'object' ? ref : null);
+			if (!sidebarLayoutV1Enabled || !parsed || !imageReferenceSidebar
+				|| typeof imageReferenceSidebar.openTab !== 'function') { return false; }
+			let session;
+			try { session = imageReferenceSidebar.getSnapshot && imageReferenceSidebar.getSnapshot().sessionId; }
+			catch { session = undefined; }
+			if (!session) { console.warn('[vssaros-workbenches] 没有活动会话，图片资源未打开。'); return false; }
+			const doOpen = payload => {
+				try {
+					imageReferenceSidebar.openTab({
+						type: HOME_IMAGE_TAB_TYPE,
+						meta: {
+							name: String(payload.name || payload.raw || ''),
+							title: String(payload.title || payload.name || '图片资源'),
+							url: typeof payload.url === 'string' ? payload.url : '',
+							attachment: payload.attachment || null,
+							error: typeof payload.error === 'string' ? payload.error : '',
+						},
+					});
+					return true;
+				} catch (error) {
+					console.warn('[vssaros-workbenches] 打开图片资源失败：' + String(error && error.message || error));
+					return false;
+				}
+			};
+			if (parsed.url || parsed.attachment || parsed.error) { return doOpen(parsed); }
+			const tokenName = String(parsed.name || '').trim();
+			let base = '';
+			try {
+				base = (typeof document !== 'undefined' && document.baseURI)
+					|| (globalThis.location && globalThis.location.href) || '';
+			} catch { base = ''; }
+			if (tokenName && base && typeof fetch === 'function') {
+				resolveImageToken(tokenName).then(resolved => {
+					if (resolved) { doOpen(resolved); return; }
+					doOpen({ ...parsed, error: '找不到 @image:' + tokenName + ' 对应的图片附件。' });
+				}).catch(error => {
+					doOpen({ ...parsed, error: '图片附件解析失败：' + String(error && error.message || error) });
+				});
+				return true;
+			}
+			return doOpen({ ...parsed, error: '没有会话授权的图片加载器或图片地址，无法展示该资源。' });
+		}
+		function registerImageReferenceTab(betterSidebar) {
+			if (!betterSidebar || typeof betterSidebar.registerTab !== 'function') { return () => { }; }
+			if (disposeImageReferenceTab) { disposeImageReferenceTab(); }
+			let disposed = false;
+			const dispose = betterSidebar.registerTab({
+				id: HOME_IMAGE_TAB_TYPE, title: '图片资源', hidden: true,
+				available: () => false,
+				component: ImageReferenceView,
+				createTab: () => {
+					const id = 'vssaros-image-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+					return { tab: { id, type: HOME_IMAGE_TAB_TYPE, title: '图片资源', meta: {} } };
+				},
+			});
+			imageReferenceSidebar = betterSidebar;
+			disposeImageReferenceTab = () => {
+				if (disposed) { return; }
+				disposed = true;
+				if (typeof dispose === 'function') { dispose(); }
+				if (imageReferenceSidebar === betterSidebar) { imageReferenceSidebar = null; }
+				disposeImageReferenceTab = null;
+				delete globalThis.__vssarosOpenImageReference;
+				delete globalThis.__vssarosParseImageToken;
+				delete globalThis.__vssarosResolveImageToken;
+			};
+			globalThis.__vssarosOpenImageReference = openImageReference;
+			globalThis.__vssarosParseImageToken = parseImageToken;
+			globalThis.__vssarosResolveImageToken = resolveImageToken;
+			return disposeImageReferenceTab;
+		}
+		function beginWorkbenchPointerDrag(ev, key, onTarget, onDrop) {
+			if (typeof document === 'undefined' || typeof document.addEventListener !== 'function'
+				|| typeof document.elementFromPoint !== 'function') { return; }
+			if (ev.pointerType && ev.pointerType !== 'touch' && ev.pointerType !== 'pen') { return; }
+			ev.preventDefault();
+			const startX = ev.clientX, startY = ev.clientY;
+			const state = { key, pointerId: ev.pointerId, moved: false, target: null };
+			const source = typeof document.querySelector === 'function'
+				? document.querySelector('[data-vssaros-home-workbench="' + key + '"]') : null;
+			const rect = source && typeof source.getBoundingClientRect === 'function' ? source.getBoundingClientRect() : null;
+			const scroller = source && typeof source.closest === 'function'
+				? (source.closest('[role=tabpanel]') || source.closest('.vssaros-home')) : null;
+			let ghost = null;
+			const makeGhost = () => {
+				if (!source || typeof source.cloneNode !== 'function' || !document.body
+					|| typeof document.body.appendChild !== 'function') { return; }
+				ghost = source.cloneNode(true);
+				if (ghost.removeAttribute) { ghost.removeAttribute('data-vssaros-home-workbench'); }
+				if (ghost.setAttribute) { ghost.setAttribute('data-vssaros-home-drag-preview', '1'); }
+				if (ghost.classList && ghost.classList.add) { ghost.classList.add('vssaros-home-drag-preview'); }
+				else { ghost.className = String(ghost.className || '') + ' vssaros-home-drag-preview'; }
+				if (ghost.style) {
+					ghost.style.position = 'fixed';
+					ghost.style.zIndex = '90';
+					ghost.style.pointerEvents = 'none';
+					ghost.style.opacity = '.95';
+					ghost.style.transform = 'rotate(-2deg)';
+					ghost.style.margin = '0';
+					if (rect) { ghost.style.width = rect.width + 'px'; ghost.style.height = rect.height + 'px'; }
+				}
+				document.body.appendChild(ghost);
+				if (source.classList && source.classList.add) { source.classList.add('is-dragging'); }
+			};
+			const positionGhost = e => {
+				if (!ghost || !ghost.style) { return; }
+				const width = rect ? rect.width : 160, height = rect ? rect.height : 84;
+				ghost.style.left = Math.max(0, e.clientX - width / 2) + 'px';
+				ghost.style.top = Math.max(0, e.clientY - height / 2) + 'px';
+			};
+			const autoScroll = e => {
+				if (!scroller || typeof scroller.getBoundingClientRect !== 'function') { return; }
+				const box = scroller.getBoundingClientRect();
+				if (e.clientY < box.top + 24) { scroller.scrollTop -= 12; }
+				else if (e.clientY > box.bottom - 24) { scroller.scrollTop += 12; }
+			};
+			const removeGhost = () => {
+				if (source && source.classList && source.classList.remove) { source.classList.remove('is-dragging'); }
+				if (!ghost) { return; }
+				if (typeof ghost.remove === 'function') { ghost.remove(); }
+				else if (ghost.parentNode && ghost.parentNode.removeChild) { ghost.parentNode.removeChild(ghost); }
+				ghost = null;
+			};
+			const cleanup = () => {
+				if (typeof document.removeEventListener === 'function') {
+					document.removeEventListener('pointermove', move);
+					document.removeEventListener('pointerup', up);
+					document.removeEventListener('pointercancel', cancel);
+				}
+				removeGhost();
+				pointerDrag = null;
+			};
+			const move = e => {
+				if (e.pointerId !== state.pointerId) { return; }
+				if (!state.moved && Math.hypot(e.clientX - startX, e.clientY - startY) < 6) { return; }
+				if (!state.moved) { makeGhost(); }
+				state.moved = true;
+				positionGhost(e);
+				autoScroll(e);
+				const node = document.elementFromPoint(e.clientX, e.clientY);
+				const card = node && typeof node.closest === 'function'
+					? node.closest('[data-vssaros-home-workbench]') : null;
+				state.target = card && card.dataset ? card.dataset.vssarosHomeWorkbench : null;
+				onTarget(state.target);
+			};
+			const up = e => {
+				if (e.pointerId !== state.pointerId) { return; }
+				cleanup();
+				if (state.moved) { suppressHomeOpenUntil = Date.now() + 400; }
+				if (state.moved && state.target && state.target !== key) { onDrop(state.target); }
+				else { onTarget(''); }
+			};
+			const cancel = () => { cleanup(); onTarget(''); };
+			pointerDrag = { cancel };
+			document.addEventListener('pointermove', move);
+			document.addEventListener('pointerup', up);
+			document.addEventListener('pointercancel', cancel);
+		}
+		/** 自家右侧「开始」页：搜索/分类 + 常用工具 + 工作台目录；无欢迎、统计或最近资源。 */
+		function makeVsSarosHomeGuide(service, ctx, betterSidebar) {
+			return function VsSarosHomeGuide() {
+				const [, forceRevision] = React.useState(0);
+				const [query, setQuery] = React.useState('');
+				const [category, setCategory] = React.useState('all');
+				const [menuOpen, setMenuOpen] = React.useState(false);
+				const [menuPos, setMenuPos] = React.useState({ left: 0, top: 0, width: 216, ready: false });
+				const [allToolsOpen, setAllToolsOpen] = React.useState(false);
+				const [toolQuery, setToolQuery] = React.useState('');
+				const [notice, setNotice] = React.useState('');
+				const [toolOrderDraft, setToolOrderDraft] = React.useState(null);
+				const [keyboardDraft, setKeyboardDraft] = React.useState(null);
+				const [keyboardKey, setKeyboardKey] = React.useState('');
+				const [dragOverKey, setDragOverKey] = React.useState('');
+				const [restartPending, setRestartPending] = React.useState([]);
+				React.useEffect(() => {
+					const offCatalog = service.subscribeCatalog(() => forceRevision(n => n + 1));
+					const offState = service.subscribe(() => forceRevision(n => n + 1));
+					const offTabs = betterSidebar && typeof betterSidebar.subscribe === 'function'
+						? betterSidebar.subscribe(() => forceRevision(n => n + 1)) : () => { };
+					return () => { offCatalog(); offState(); offTabs(); };
+				}, []);
+				/** 已安装但当前 Host 未加载的包：短轮询现有 install-status，不改动 Host，也不写回用户设置。 */
+				React.useEffect(() => {
+					if (typeof fetch !== 'function') { return undefined; }
+					let alive = true;
+					let inFlight = false;
+					let timer = null;
+					const refresh = () => {
+						if (!alive || inFlight) { return; }
+						inFlight = true;
+						try {
+							Promise.resolve(fetch(INSTALL_STATUS_URL, { cache: 'no-store' }))
+								.then(res => res && res.ok ? res.json() : null)
+								.then(body => {
+									inFlight = false;
+									if (alive) { setRestartPending(pendingInstallsOf(body)); }
+								})
+								.catch(() => {
+									inFlight = false;
+									if (alive) { setRestartPending([]); }
+								});
+						} catch {
+							inFlight = false;
+							if (alive) { setRestartPending([]); }
+						}
+					};
+					const onFocus = () => refresh();
+					const onVisibility = () => {
+						if (typeof document === 'undefined' || document.visibilityState !== 'hidden') { refresh(); }
+					};
+					refresh();
+					if (typeof globalThis !== 'undefined' && typeof globalThis.setInterval === 'function') {
+						timer = globalThis.setInterval(refresh, INSTALL_STATUS_POLL_MS);
+					}
+					if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+						window.addEventListener('focus', onFocus);
+					}
+					if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+						document.addEventListener('visibilitychange', onVisibility);
+					}
+					return () => {
+						alive = false;
+						if (timer != null && typeof globalThis !== 'undefined' && typeof globalThis.clearInterval === 'function') {
+							globalThis.clearInterval(timer);
+						}
+						if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+							window.removeEventListener('focus', onFocus);
+						}
+						if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+							document.removeEventListener('visibilitychange', onVisibility);
+						}
+					};
+				}, []);
+				React.useEffect(() => {
+					if (!menuOpen || typeof document === 'undefined' || typeof document.querySelector !== 'function') { return; }
+					const positionMenu = () => {
+						const trigger = document.querySelector('[data-vssaros-more-trigger]');
+						const menu = document.querySelector('[data-vssaros-more-menu]');
+						if (!trigger || !menu || typeof trigger.getBoundingClientRect !== 'function'
+							|| typeof menu.getBoundingClientRect !== 'function') { return; }
+						const viewportW = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 1024;
+						const viewportH = typeof window !== 'undefined' && window.innerHeight ? window.innerHeight : 768;
+						const t = trigger.getBoundingClientRect();
+						if (t.bottom <= 0 || t.top >= viewportH) { closeMenu(); return; }
+						const width = Math.max(180, Math.min(216, viewportW - 24));
+						const height = menu.getBoundingClientRect().height || 132;
+						const left = Math.max(12, Math.min(t.right - width, viewportW - width - 12));
+						const below = t.bottom + 6;
+						const top = Math.max(12, Math.min(
+							below + height <= viewportH - 36 ? below : t.top - height - 6,
+							viewportH - height - 12,
+						));
+						setMenuPos({ left, top, width, ready: true });
+					};
+					positionMenu();
+					const first = document.querySelector('[data-vssaros-more-menu] [role=menuitem]');
+					if (first && typeof first.focus === 'function') { first.focus({ preventScroll: true }); }
+					const onKey = ev => {
+						if (ev.key === 'Escape') { ev.preventDefault(); ev.stopImmediatePropagation(); closeMenu(true); }
+					};
+					const onOutside = ev => {
+						const target = ev.target;
+						if (target && typeof target.closest === 'function'
+							&& target.closest('[data-vssaros-more-menu], [data-vssaros-more-trigger]')) { return; }
+						closeMenu();
+					};
+					const onScroll = () => positionMenu();
+					const onBlur = () => closeMenu();
+					if (typeof document.addEventListener === 'function') {
+						document.addEventListener('keydown', onKey, true);
+						document.addEventListener('pointerdown', onOutside, true);
+						document.addEventListener('click', onOutside, true);
+						document.addEventListener('scroll', onScroll, true);
+					}
+					if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+						window.addEventListener('resize', onScroll);
+						window.addEventListener('blur', onBlur);
+					}
+					return () => {
+						if (typeof document.removeEventListener === 'function') {
+							document.removeEventListener('keydown', onKey, true);
+							document.removeEventListener('pointerdown', onOutside, true);
+							document.removeEventListener('click', onOutside, true);
+							document.removeEventListener('scroll', onScroll, true);
+						}
+						if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+							window.removeEventListener('resize', onScroll);
+							window.removeEventListener('blur', onBlur);
+						}
+					};
+				}, [menuOpen]);
+				const pages = selectStartPages(service.getCatalogSnapshot().pages);
+				const tools = toolEntriesOf(betterSidebar);
+				const saved = service.state || {};
+				const wbIds = pages.map(page => page.key);
+				const toolIds = tools.map(tool => tool.id);
+				const wbOrder = normalizeHomeOrder(saved[HOME_WB_ORDER_FIELD], wbIds);
+				const toolOrder = normalizeHomeOrder(saved[HOME_TOOL_ORDER_FIELD], toolIds);
+				const activeToolOrder = toolOrderDraft || toolOrder;
+				const activeWbOrder = keyboardDraft || wbOrder;
+				const rank = order => {
+					const map = new Map(order.map((id, index) => [id, index]));
+					return (a, b) => (map.get(a) ?? 0) - (map.get(b) ?? 0);
+				};
+				const orderedWb = [...pages].sort((a, b) => rank(activeWbOrder)(a.key, b.key));
+				const orderedTools = [...tools].sort((a, b) => rank(activeToolOrder)(a.id, b.id));
+				const needle = String(query || '').trim().toLowerCase();
+				const matches = item => !needle || (item.title + ' ' + item.description).toLowerCase().includes(needle);
+				const shownWb = orderedWb.filter(matches);
+				const shownTools = orderedTools.filter(tool => (!tool.moreOnly || needle) && matches(tool));
+				const toolNeedle = String(toolQuery || '').trim().toLowerCase();
+				const allTools = orderedTools.filter(tool => !toolNeedle
+					|| (tool.title + ' ' + tool.description).toLowerCase().includes(toolNeedle));
+				const closeMenu = (restoreFocus = false) => {
+					setMenuOpen(false);
+					setMenuPos(prev => ({ ...prev, ready: false }));
+					if (restoreFocus && typeof document !== 'undefined' && typeof document.querySelector === 'function') {
+						const trigger = document.querySelector('[data-vssaros-more-trigger]');
+						if (trigger && typeof trigger.focus === 'function') { trigger.focus({ preventScroll: true }); }
+					}
+				};
+				const openCatalogPage = key => {
+					if (Date.now() < suppressHomeOpenUntil) { return; }
+					const open = globalThis.__vssarosOpenWorkbenchCatalogPage;
+					if (typeof open !== 'function' || !open(key)) {
+						setNotice('当前没有活动会话或右栏目录未就绪，工作台未打开。');
+					}
+				};
+				const openTool = id => {
+					let session;
+					try {
+						session = betterSidebar && typeof betterSidebar.getSnapshot === 'function'
+							? betterSidebar.getSnapshot().sessionId : undefined;
+					} catch { session = undefined; }
+					if (!session || !betterSidebar || typeof betterSidebar.openTab !== 'function') {
+						setNotice('当前没有活动会话或右栏工具服务不可用，工具未打开。'); return;
+					}
+					try { betterSidebar.openTab({ type: id }); }
+					catch (e) { setNotice('打开工具失败：' + String(e && e.message || e)); }
+				};
+				const persistWbOrder = (order, save) => {
+					if (!save) { setNotice('顺序调整中，确认后保存。'); forceRevision(n => n + 1); return; }
+					saveHomeOrder(service, HOME_WB_ORDER_FIELD, order, setNotice);
+				};
+				const persistToolOrder = draft => {
+					saveHomeOrder(service, HOME_TOOL_ORDER_FIELD, draft, setNotice);
+					setToolOrderDraft(null);
+				};
+				const browsePlugins = () => {
+					closeMenu();
+					let nav = null;
+					try { nav = ctx && typeof ctx.get === 'function' ? ctx.get('pluginNavigation') : null; } catch { /* 未声明 */ }
+					if (nav && typeof nav.openList === 'function') { nav.openList(); return; }
+					const market = pages.find(page => /market/i.test(page.key) || /market/i.test(page.pageId));
+					if (market) { openCatalogPage(market.key); return; }
+					setNotice('当前宿主没有插件目录入口。');
+				};
+				const createPlugin = () => {
+					closeMenu();
+					let workspace = null;
+					try { workspace = ctx && typeof ctx.get === 'function' ? ctx.get('uiWorkspace') : null; } catch { /* 未声明 */ }
+					if (!workspace || typeof workspace.startSession !== 'function') {
+						setNotice('当前宿主没有 uiWorkspace.startSession，创建入口不可用。'); return;
+					}
+					try {
+						workspace.startSession(undefined, {
+							agentPreset: 'cordis', prompt: CREATE_PLUGIN_PROMPT, whenDraftExists: 'append',
+						});
+					} catch (e) { setNotice('进入创造模式失败：' + String(e && e.message || e)); }
+				};
+				const startToolOrdering = () => {
+					closeMenu(); setQuery(''); setCategory('all');
+					setToolOrderDraft(normalizeHomeOrder(toolOrder, toolIds));
+					setKeyboardDraft(null); setKeyboardKey('');
+					setNotice('调整常用工具顺序：使用上移/下移，完成后保存。');
+				};
+				const moveToolDraft = (id, direction) => {
+					const current = toolOrderDraft || toolOrder;
+					const at = current.indexOf(id), target = current[at + direction];
+					if (!target) { return; }
+					setToolOrderDraft(moveHomeOrder(current, id, target));
+					setNotice('工具顺序草稿已更新，完成才保存。');
+				};
+				const onWorkbenchKeyDown = (ev, key) => {
+					if (![' ', 'Enter', 'Escape', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(ev.key)) { return; }
+					ev.preventDefault(); ev.stopPropagation();
+					const current = keyboardDraft || wbOrder;
+					if (!keyboardDraft) {
+						if (ev.key === ' ' || ev.key === 'Enter') {
+							setKeyboardDraft([...current]); setKeyboardKey(key);
+							setNotice('已拿起工作台卡片：方向键移动，Enter 保存，Esc 取消。');
+							forceRevision(n => n + 1);
+						}
+						return;
+					}
+					if (ev.key === 'Escape') {
+						setKeyboardDraft(null); setKeyboardKey(''); setNotice('已取消排序，原顺序保留。');
+						forceRevision(n => n + 1); return;
+					}
+					if (ev.key === ' ' || ev.key === 'Enter') {
+						persistWbOrder(keyboardDraft, true);
+						setKeyboardDraft(null); setKeyboardKey(''); return;
+					}
+					const at = current.indexOf(keyboardKey);
+					const delta = ev.key === 'ArrowLeft' ? -1 : ev.key === 'ArrowRight' ? 1
+						: ev.key === 'ArrowUp' ? -2 : 2;
+					const target = current[at + delta];
+					if (target && target !== keyboardKey) {
+						setKeyboardDraft(moveHomeOrder(current, keyboardKey, target));
+						setNotice('顺序调整中，按 Enter 保存或 Esc 取消。');
+						forceRevision(n => n + 1);
+					}
+				};
+				const onWorkbenchDrop = (from, to) => {
+					if (!from || from === to) { setDragOverKey(''); return; }
+					persistWbOrder(moveHomeOrder(activeWbOrder, from, to), true);
+					setDragOverKey('');
+				};
+				const filterButton = (id, label) => h('button', {
+					type: 'button', className: 'vssaros-home-filter' + (category === id ? ' active' : ''),
+					'data-vssaros-home-filter': id, 'aria-pressed': category === id ? 'true' : 'false',
+					onClick: () => { setCategory(id); setToolOrderDraft(null); setKeyboardDraft(null); setKeyboardKey(''); },
+				}, label);
+				const toolCard = (tool, index, count, ordering, onOpen) => h('button', {
+					type: 'button', className: 'vssaros-home-entry-card',
+					'data-vssaros-home-tool': tool.id, 'data-vssaros-home-open-tool': tool.id,
+					'aria-label': '打开 ' + tool.title, disabled: ordering,
+					onClick: () => { if (!ordering) { (onOpen || openTool)(tool.id); } },
+				},
+					h('span', { className: 'vssaros-home-entry-icon' }, guideIcon(tool.icon || 'grid')),
+					h('span', { className: 'vssaros-home-entry-body' },
+						h('b', null, tool.title),
+						tool.description ? h('p', null, tool.description) : null),
+					tool.key ? h('span', { className: 'vssaros-home-entry-key' }, tool.key) : null);
+				const toolOrderCard = (tool, index, count) => h('div', { className: 'vssaros-home-tool-order-row' },
+					toolCard(tool, index, count, true),
+					h('span', { className: 'vssaros-home-tool-order-controls' },
+						h('button', {
+							type: 'button', className: 'vssaros-home-icon-button',
+							'data-vssaros-tool-move': tool.id, 'data-direction': '-1',
+							'aria-label': '上移 ' + tool.title, disabled: index === 0,
+							onClick: () => moveToolDraft(tool.id, -1),
+						}, guideIcon('arrow')),
+						h('button', {
+							type: 'button', className: 'vssaros-home-icon-button',
+							'data-vssaros-tool-move': tool.id, 'data-direction': '1',
+							'aria-label': '下移 ' + tool.title, disabled: index === count - 1,
+							onClick: () => moveToolDraft(tool.id, 1),
+						}, guideIcon('arrow', 'down'))));
+				const workbenchCard = page => {
+					const isKeyboard = keyboardDraft && keyboardKey === page.key;
+					const isDrop = dragOverKey === page.key;
+					const cardId = homeWorkbenchCardIdOf(page.key);
+					const anchorId = homeWorkbenchAnchorIdOf(page.key);
+					const className = 'vssaros-home-workbench-card'
+						+ (isKeyboard ? ' is-keyboard-dragging' : '') + (isDrop ? ' is-drop-target' : '');
+					return h('div', {
+						className, id: cardId,
+						'data-vssaros-home-workbench': page.key,
+						'data-vssaros-home-anchor-card': anchorId,
+						'data-vssaros-home-drop-target': isDrop ? '1' : undefined,
+					},
+						h('button', {
+							type: 'button', className: 'vssaros-home-workbench-open',
+							'data-vssaros-home-open': page.key, 'aria-label': '打开 ' + page.title,
+							onClick: () => openCatalogPage(page.key),
+						},
+							h('header', null,
+								guideIcon(iconNameOf(page)),
+								h('strong', null, page.title),
+								isNewPage(page) ? h('span', { className: 'vssaros-home-new-badge' }, '新') : null),
+							h('p', null, page.description || '工作台页面'),
+							h('div', { className: 'vssaros-home-source' }, sourceLabelOf(page))),
+						h('button', {
+							type: 'button', className: 'vssaros-home-drag-handle vssaros-home-anchor',
+							id: anchorId,
+							'data-vssaros-home-anchor': page.key,
+							'data-vssaros-home-drag': page.key,
+							'aria-roledescription': '拖拽锚点',
+							'aria-label': '工作台锚点：拖动 ' + page.title + ' 调整顺序',
+							'aria-describedby': 'vssaros-home-drag-help',
+							'aria-pressed': isKeyboard ? 'true' : 'false',
+							title: '拖拽锚点；空格拿起，方向键移动，Enter 放下，Esc 取消',
+							disabled: !!needle, draggable: !needle,
+							onDragStart: ev => { htmlDragKey = page.key; if (ev.dataTransfer) { ev.dataTransfer.setData('text/plain', page.key); } },
+							onDragOver: ev => { ev.preventDefault(); setDragOverKey(page.key); },
+							onDrop: ev => {
+								ev.preventDefault();
+								onWorkbenchDrop(htmlDragKey || (ev.dataTransfer && ev.dataTransfer.getData('text/plain')), page.key);
+								htmlDragKey = '';
+							},
+							onDragEnd: () => { htmlDragKey = ''; setDragOverKey(''); },
+							onPointerDown: ev => beginWorkbenchPointerDrag(ev, page.key, setDragOverKey, target => onWorkbenchDrop(page.key, target)),
+							onKeyDown: ev => onWorkbenchKeyDown(ev, page.key),
+						}, guideIcon('grip')));
+				};
+				const menu = menuOpen ? h('div', {
+					id: 'vssaros-home-tools-menu', className: 'vssaros-home-menu',
+					'data-vssaros-more-menu': '1', role: 'menu', 'aria-label': '更多工具操作',
+					style: {
+						position: 'fixed', left: menuPos.left, top: menuPos.top, width: menuPos.width,
+						visibility: menuPos.ready ? 'visible' : 'hidden', zIndex: 80,
+						maxHeight: 'calc(100dvh - 24px)', overflow: 'auto',
+					},
+					onKeyDown: ev => {
+						if (ev.key === 'Escape') { ev.preventDefault(); closeMenu(true); return; }
+						if (!['ArrowDown', 'ArrowUp'].includes(ev.key)) { return; }
+						const buttons = ev.currentTarget && typeof ev.currentTarget.querySelectorAll === 'function'
+							? [...ev.currentTarget.querySelectorAll('[role=menuitem]')] : [];
+						if (!buttons.length) { return; }
+						const active = typeof document !== 'undefined' ? document.activeElement : null;
+						const at = buttons.indexOf(active);
+						const next = ev.key === 'ArrowDown' ? (at + 1) % buttons.length : (at - 1 + buttons.length) % buttons.length;
+						if (buttons[next]) { ev.preventDefault(); buttons[next].focus(); }
+					},
+					onBlur: ev => {
+						const current = ev.currentTarget;
+						if (current && typeof current.contains === 'function' && !current.contains(ev.relatedTarget)) { closeMenu(); }
+					},
+				},
+					h('button', {
+						type: 'button', role: 'menuitem', 'data-vssaros-browse-plugins': '1', onClick: browsePlugins,
+					}, guideIcon('plugin'), h('span', null, '浏览更多插件')),
+					h('button', {
+						type: 'button', role: 'menuitem', 'data-vssaros-create-plugin': '1', onClick: createPlugin,
+					}, guideIcon('plus'), h('span', null, '创建你的插件')),
+					h('div', { className: 'vssaros-home-menu-separator', role: 'separator' }),
+					h('button', {
+						type: 'button', role: 'menuitem', 'data-vssaros-order-tools': '1', onClick: startToolOrdering,
+					}, guideIcon('settings'), h('span', null, '调整顺序'))) : null;
+				const toolFooter = toolOrderDraft
+					? h('div', { className: 'vssaros-home-tool-order-actions' },
+						h('span', { className: 'vssaros-home-small' }, '使用箭头调整位置'),
+						h('button', {
+							type: 'button', className: 'vssaros-home-button', 'data-vssaros-cancel-tool-order': '1',
+							onClick: () => { setToolOrderDraft(null); setNotice('已取消调整，原顺序保留。'); },
+						}, '取消'),
+						h('button', {
+							type: 'button', className: 'vssaros-home-button', 'data-vssaros-save-tool-order': '1',
+							onClick: () => persistToolOrder(toolOrderDraft),
+						}, '完成'))
+					: h('div', { className: 'vssaros-home-more-wrap' },
+						h('button', {
+							type: 'button', className: 'vssaros-home-more-card',
+							'data-vssaros-more-trigger': '1', 'aria-label': '更多工具操作',
+							'aria-haspopup': 'menu', 'aria-expanded': menuOpen ? 'true' : 'false',
+							'aria-controls': 'vssaros-home-tools-menu',
+							onClick: () => { if (pointerDrag) { pointerDrag.cancel(); } setMenuOpen(!menuOpen); },
+						}, guideIcon('more'), h('b', null, '更多'), guideIcon('chevron', 'vssaros-home-chevron')),
+						menu);
+				const toolSection = category !== 'workbench' && (!needle || shownTools.length)
+					? h('div', { className: 'vssaros-home-tools-section' },
+						h('div', { className: 'vssaros-home-section-head vssaros-home-tools-heading' },
+							h('h2', { id: 'vssaros-home-tool-order-title' }, toolOrderDraft ? '调整工具顺序' : '常用工具'),
+							h('button', {
+								type: 'button', className: 'vssaros-home-view-tools',
+								'data-vssaros-all-tools-trigger': '1', 'aria-haspopup': 'dialog',
+								onClick: () => { closeMenu(); setAllToolsOpen(true); },
+							}, '全部工具', guideIcon('chevron', 'vssaros-home-chevron'))),
+						h('div', { className: 'vssaros-home-tool-grid' },
+							shownTools.map((tool, index) => toolOrderDraft
+								? toolOrderCard(tool, index, shownTools.length)
+								: toolCard(tool, index, shownTools.length, false)),
+							toolFooter))
+					: null;
+				const workbenchSection = category !== 'tool' && (!needle || shownWb.length)
+					? h('div', { className: 'vssaros-home-workbench-section' },
+						h('div', { className: 'vssaros-home-section-head' },
+							h('h2', null, '工作台'),
+							h('span', { className: 'vssaros-home-pill' }, '目录自动发现'),
+							h('span', { className: 'vssaros-home-small' }, pages.length + ' 个页面')),
+						h('p', { className: 'vssaros-home-drag-help', id: 'vssaros-home-drag-help' },
+							'拖动卡片右上角锚点，调整任意行列位置；顺序自动保存。'),
+						h('div', { className: 'vssaros-home-workbench-grid' }, shownWb.map(workbenchCard)),
+						h('p', { className: 'vssaros-home-keyboard-help' },
+							'键盘：聚焦锚点后按空格拿起，方向键移动，Enter 放下，Esc 取消。搜索时暂不可排序。'))
+					: null;
+				const emptyState = !toolSection && !workbenchSection
+					? h('div', { className: 'vssaros-home-empty' }, '没有匹配结果',
+						h('br'), h('span', { className: 'vssaros-home-small' }, '换个关键词，或切回「全部」。'))
+					: null;
+				const allToolsDialog = allToolsOpen ? h('div', {
+					className: 'vssaros-home-dialog-backdrop',
+					onClick: ev => { if (ev.target === ev.currentTarget) { setAllToolsOpen(false); } },
+				}, h('div', {
+					className: 'vssaros-home-dialog', 'data-vssaros-all-tools': '1',
+					role: 'dialog', 'aria-modal': 'true', 'aria-label': '更多工具',
+					onKeyDown: ev => { if (ev.key === 'Escape') { setAllToolsOpen(false); } },
+				},
+					h('header', null,
+						h('h2', null, '更多工具'),
+						h('button', {
+							type: 'button', className: 'vssaros-home-icon-button',
+							'data-vssaros-close-all-tools': '1', 'aria-label': '关闭更多工具',
+							onClick: () => setAllToolsOpen(false),
+						}, guideIcon('x'))),
+					h('p', null, '按需打开工具，在右侧展示，保留开始页和当前聊天。'),
+					h('label', { className: 'vssaros-home-search' },
+						guideIcon('search'),
+						h('input', {
+							'aria-label': '搜索更多工具', placeholder: '搜索工具…', value: toolQuery,
+							onChange: e => setToolQuery(e && e.target ? e.target.value : ''),
+						})),
+					h('div', { className: 'vssaros-home-dialog-tools' }, allTools.length
+						? allTools.map((tool, index) => toolCard(tool, index, allTools.length, false, id => {
+							setAllToolsOpen(false); openTool(id);
+						}))
+						: h('div', { className: 'vssaros-home-empty' }, '没有匹配工具，换个关键词试试。')),
+					h('p', { className: 'vssaros-home-dialog-note' },
+						'列表来自宿主工具注册表；打开不会替换开始页与中栏会话。'))) : null;
+				return h('section', {
+					className: 'vssaros-home', 'data-vssaros-guide-root': '1',
+					'data-vssaros-home-view': 'workbenches', 'data-vssaros-surface': 'workbench',
+					'aria-label': '开始主页',
+				},
+					h('label', { className: 'vssaros-home-search' },
+						guideIcon('search'),
+						h('input', {
+							'aria-label': '搜索工作台或工具', placeholder: '搜索工作台、工具或页面…', value: query,
+							onChange: e => {
+								setQuery(e && e.target ? e.target.value : '');
+								setToolOrderDraft(null); setKeyboardDraft(null); setKeyboardKey('');
+							},
+						}),
+						h('span', { className: 'vssaros-home-small' }, '/')),
+					h('div', { className: 'vssaros-home-filters', role: 'group', 'aria-label': '目录分类' },
+						[['all', '全部'], ['workbench', '工作台'], ['tool', '工具']]
+							.map(([id, label]) => filterButton(id, label))),
+					restartPending.length ? h('div', {
+						className: 'vssaros-home-install-notice', role: 'status', 'aria-live': 'polite',
+						'data-vssaros-restart-pending': String(restartPending.length),
+					}, restartPending.map(item => '「' + item.name + (item.version ? ' ' + item.version : '') + '」').join('、')
+						+ '已安装，重启 Harness 后出现') : null,
+					toolSection, workbenchSection, emptyState,
+					notice ? h('div', { className: 'vssaros-home-notice', role: 'status', 'aria-live': 'polite' }, notice) : null,
+					allToolsDialog);
+			};
+		}
+		/**
+		 * P3 开启即注册 VsSaros 唯一主页链。`sidebar.right.tab.guide` 是 chain 槽，按 priority
+		 * 升序选举；shipped `NativeGuide` 默认 priority 0，这里用 -10 稳定胜出，不再依赖 live
+		 * `guideTakeover:false` 是否生效，也不写回用户设置。
+		 */
+		function installVsSarosHomeGuide(ctx, service, betterSidebar) {
+			if (!ctx || !ctx.slots || typeof ctx.slots.inject !== 'function' || typeof ctx.slots.register !== 'function') { return null; }
+			let disposeRegistration = null;
+			const HomeGuide = makeVsSarosHomeGuide(service, ctx, betterSidebar);
+			try {
+				const disposeInjection = ctx.slots.inject('sidebar.right.tab.guide', () => {
+					disposeRegistration = ctx.slots.register({
+						name: 'sidebar.right.tab.guide',
+						priority: -10,
+						select: () => ({}),
+						inject: sessionId => ({ sessionId, service, betterSidebar, ctx }),
+					}, HomeGuide);
+					return disposeRegistration;
+				});
+				const a = disposerOf(disposeInjection);
+				const b = disposerOf(disposeRegistration);
+				globalThis.__vssarosHomeGuideOwner = 'vssaros-workbenches';
+				return () => {
+					if (a) { a(); }
+					if (b && b !== a) { b(); }
+					if (globalThis.__vssarosHomeGuideOwner === 'vssaros-workbenches') {
+						delete globalThis.__vssarosHomeGuideOwner;
+					}
+				};
+			} catch (error) {
+				console.warn('[vssaros-workbenches] 自家开始页注册失败：' + String(error && error.message || error));
+				return null;
+			}
+		}
+		/** P2 右栏业务视图：不套 Frame、不渲染 ConversationMount，中栏主会话保持唯一。 */
+		function makeSidebarWorkbenchView(service, page) {
+			const fallback = page;
+			return function VssarosSidebarWorkbenchView(props) {
+				const safeProps = props || {};
+				const [, forceRevision] = React.useState(service.getCatalogSnapshot().revision);
+				React.useEffect(() => service.subscribeCatalog(() => forceRevision(service.getCatalogSnapshot().revision)), []);
+				const key = String((safeProps.tab && safeProps.tab.meta && safeProps.tab.meta.catalogKey)
+					|| (safeProps.tab && safeProps.tab.path) || fallback.key);
+				const live = service.getCatalogSnapshot().pages.find(item => item.key === key) || fallback;
+				if (live.retired || !live.enabled) {
+					return h('div', { 'data-vssaros-wb-sidebar-page': key }, '工作台已停用或卸载');
+				}
+				const renderer = service.getCatalogRenderer(key);
+				if (typeof renderer === 'function') {
+					const entry = {
+						id: live.workbenchId, title: live.title, description: live.description, icon: live.icon,
+						resourcePackage: live.sourcePackage, sourceKind: live.sourceKind,
+						panel: 'vssaros-wb:' + live.workbenchId, customFrame: false,
+						headerLayout: 'default', floatingActions: false, splitConversation: false,
+						layout: { businessSide: 'right', businessWidth: 0.36 },
+					};
+					return h('div', { 'data-vssaros-wb-sidebar-page': key, 'data-vssaros-surface': 'workbench' },
+						h(renderer, {
+							ctx: safeProps.ctx, service, entry, page: live, tab: safeProps.tab,
+							scope: safeProps.scope, visible: safeProps.visible === true,
+							instanceId: safeProps.tab && safeProps.tab.meta && safeProps.tab.meta.instanceId,
+						}));
+				}
+				if (live.route) {
+					const src = live.route + (live.route.includes('?') ? '&' : '?') + 'surface=sidebar';
+					return h('div', { 'data-vssaros-wb-sidebar-page': key, 'data-vssaros-surface': 'workbench' },
+						h('iframe', {
+							src, title: live.title, loading: 'lazy',
+							'data-vssaros-wb-sidebar-route': key,
+							style: { width: '100%', height: '100%', border: '0' },
+						}));
+				}
+				return h('div', { 'data-vssaros-wb-sidebar-page': key }, '此工作台没有可用的右侧承载');
+			};
+		}
+		/**
+		 * P2：把统一目录 diff 成 Better Sidebar 的 tab descriptors。默认由
+		 * `globalThis.__vssarosSetSidebarLayoutV1(true)` 激活，P3 完成 guide 接管后再打开；
+		 * 关闭时不注册任何 native type，避免与当前中栏 TabStrip / 默认 guide 争抢。
+		 */
+		function installSidebarWorkbenchAdapter(ctx, service, betterSidebar) {
+			const noop = { sync() { }, openPage() { return false; }, setEnabled() { }, dispose() { } };
+			if (!betterSidebar || typeof betterSidebar.registerTab !== 'function') { return noop; }
+			if (activeSidebarAdapter && typeof activeSidebarAdapter.dispose === 'function') { activeSidebarAdapter.dispose(); }
+			const registrations = new Map();
+			let disposed = false;
+			let instanceSerial = 0;
+			const signatureOf = page => JSON.stringify([
+				sidebarLayoutV1Enabled, page.title, page.description, page.hidden, page.retired,
+				page.enabled, page.availability, page.state, page.canonicalId, page.canonicalKey,
+				page.visibility, page.aliases, page.replacedBy,
+				page.kind, page.route, page.renderHandle,
+			]);
+			const sync = () => {
+				if (disposed) { return; }
+				const pages = sidebarLayoutV1Enabled
+					? selectNativeTabPages(service.getCatalogSnapshot().pages) : [];
+				const live = new Set(pages.map(page => page.key));
+				for (const [key, record] of [...registrations]) {
+					if (!live.has(key)) {
+						try { record.dispose(); } catch (e) { console.warn('[vssaros-workbenches] 注销右栏 tab 失败：' + String(e && e.message || e)); }
+						registrations.delete(key);
+					}
+				}
+				if (!sidebarLayoutV1Enabled) { return; }
+				pages.forEach((page, index) => {
+					const signature = signatureOf(page);
+					const previous = registrations.get(page.key);
+					if (previous && previous.signature === signature) { return; }
+					if (previous) { try { previous.dispose(); } catch { /* 已失效的旧注册 */ } }
+					const typeId = sidebarTabTypeOf(page);
+					const hidden = page.hidden || page.retired || !page.enabled || page.availability !== 'ready';
+					const descriptor = {
+						id: typeId,
+						title: page.title,
+						description: page.description || page.title,
+						order: 200 + index,
+						hidden,
+						available: () => !hidden && sidebarLayoutV1Enabled,
+						component: makeSidebarWorkbenchView(service, page),
+						createTab: () => {
+							instanceSerial += 1;
+							const instanceId = 'vssaros-wb-instance-' + instanceSerial + '-' + stableHash8(page.key);
+							return {
+								tab: {
+									id: instanceId, type: typeId, title: page.title,
+									meta: {
+										catalogKey: page.key, workbenchId: page.workbenchId,
+										pageId: page.pageId, instanceId,
+									},
+								},
+							};
+						},
+					};
+					try {
+						const dispose = betterSidebar.registerTab(descriptor);
+						registrations.set(page.key, { signature, typeId, dispose: typeof dispose === 'function' ? dispose : () => { } });
+					} catch (error) {
+						console.warn('[vssaros-workbenches] 注册右栏 tab 失败：' + String(error && error.message || error));
+					}
+				});
+			};
+			const openPage = (key, scope) => {
+				if (disposed || !sidebarLayoutV1Enabled || typeof betterSidebar.openTab !== 'function') { return false; }
+				const record = registrations.get(key);
+				if (!record) { return false; }
+				try {
+					betterSidebar.openTab({ type: record.typeId, meta: { catalogKey: key } }, scope);
+					return true;
+				} catch (error) {
+					console.warn('[vssaros-workbenches] 打开右栏工作台失败：' + String(error && error.message || error));
+					return false;
+				}
+			};
+			const adapter = {
+				sync,
+				openPage,
+				setEnabled(enabled) { sidebarLayoutV1Enabled = enabled === true; sync(); },
+				dispose() {
+					if (disposed) { return; }
+					disposed = true;
+					try { unsubscribe(); } catch { /* 订阅可能已被父 ctx 回收 */ }
+					for (const record of registrations.values()) {
+						try { record.dispose(); } catch { /* HMR 时服务可能已卸载 */ }
+					}
+					registrations.clear();
+					if (activeSidebarAdapter === adapter) {
+						activeSidebarAdapter = null;
+						delete globalThis.__vssarosOpenWorkbenchCatalogPage;
+					}
+				},
+			};
+			const unsubscribe = service.subscribeCatalog(sync);
+			activeSidebarAdapter = adapter;
+			globalThis.__vssarosOpenWorkbenchCatalogPage = (key, scope) => adapter.openPage(key, scope);
+			sync();
+			return adapter;
+		}
+		/**
+		 * P3：把「Host 开关 + 自家主页链已注册 + P2 右栏目录」串成一条所有权链。
+		 * live `guideTakeover` 只作诊断：VsSaros 主页通过 chain 的负 priority 接管 shipped guide，
+		 * 不再因为用户 live 设置或覆盖层时序把整个新布局短路；也不写回用户设置。
+		 */
+		function installSidebarLayoutOwnership(ctx, service, betterSidebar) {
+			if (!betterSidebar || typeof betterSidebar.registerTab !== 'function') { return () => { }; }
+			const adapter = installSidebarWorkbenchAdapter(ctx, service, betterSidebar);
+			const disposeImage = registerImageReferenceTab(betterSidebar);
+			let disposeGuide = null;
+			let overrideLogged = false;
+			const syncOwnership = () => {
+				const configured = readSidebarLayoutV1Config(ctx);
+				const released = sidebarGuideReleased(betterSidebar);
+				if (!configured || released) { overrideLogged = false; }
+				if (configured && !released && !overrideLogged) {
+					overrideLogged = true;
+					console.info('[vssaros-workbenches] dsh-better-sidebar 的 live guideTakeover 仍为 true；VsSaros 主页以 priority -10 接管开始页，不写回用户设置。');
+				}
+				if (configured) {
+					if (!disposeGuide) { disposeGuide = installVsSarosHomeGuide(ctx, service, betterSidebar); }
+					void service.migrateLegacyTabs();
+				} else if (disposeGuide) {
+					disposeGuide();
+					disposeGuide = null;
+				}
+				setSidebarLayoutV1(configured && !!disposeGuide);
+			};
+			const unsubscribeState = typeof betterSidebar.subscribeState === 'function'
+				? betterSidebar.subscribeState(syncOwnership) : () => { };
+			syncOwnership();
+			return () => {
+				try { unsubscribeState(); } catch { /* 父 ctx 可能已回收订阅 */ }
+				if (disposeGuide) { disposeGuide(); disposeGuide = null; }
+				adapter.dispose();
+				disposeImage();
+				setSidebarLayoutV1(false);
+			};
+		}
 
 		/**
 		 * ★ 2026-11-13（用户：「移除 dsh 侧，工作台中的 循环任务 item」）：**工作台列表下线名单**（唯一真源）。
@@ -59,8 +1453,9 @@ window.__ModuleLoader__.load({
 		 * `open(id)` / `has(id)` / 深链 / 工具照旧可用 ⇒ 页面本体没有被删。
 		 *
 		 * 守卫 `dsh-plugins/check-workbench-catalog.mjs` ⑧ 盯着这条链路（含反向突变）。
+		 * 阶段 2：`RETIRED_WORKBENCH_IDS` 已由文件顶部 `WORKBENCH_MANIFEST` 统一生成，此处不再重复声明。
 		 */
-		const RETIRED_WORKBENCH_IDS = ['vssaros/loop'];
+		/* RETIRED_WORKBENCH_IDS / WORKBENCH_MANIFEST：见文件顶部统一目录清单。 */
 
 		/**
 		 * 与 `vssarosPluginManifest.ts` 的 `workbenchIdentityOf` 同口径（小写 owner/repo）。
@@ -99,26 +1494,50 @@ window.__ModuleLoader__.load({
 			return LOCAL_SCHEME + name;
 		}
 
-		/** 校验逐条照官方 register()（client.js:856-869）；失败一律抛。返回规范化后的条目（不含 Component）。 */
+		/** 校验逐条照官方 register()（client.js:856-869）；失败一律抛。返回规范化条目，内部 pages 持有 renderer，快照不暴露它。 */
 		function normalize(descriptor, Component, packageName) {
 			if (!descriptor || !descriptor.title || typeof Component !== 'function') { throw new Error('Invalid workbench registration'); }
 			const id = identityOf(descriptor.repository, descriptor.package || packageName);
 			if (descriptor.customFrame !== undefined && typeof descriptor.customFrame !== 'boolean') { throw new Error('Invalid custom frame flag'); }
 			if (descriptor.headerLayout !== undefined && descriptor.headerLayout !== 'default' && descriptor.headerLayout !== 'compact') { throw new Error('Invalid workbench header layout'); }
+			if (descriptor.sessionNavigation !== undefined && descriptor.sessionNavigation !== 'native' && descriptor.sessionNavigation !== 'dock') { throw new Error('Invalid workbench session navigation'); }
 			const layout = descriptor.layout || {};
 			if (layout.businessSide !== undefined && layout.businessSide !== 'left' && layout.businessSide !== 'right') { throw new Error('Invalid workbench business side'); }
 			if (layout.businessWidth !== undefined && (!Number.isFinite(layout.businessWidth) || layout.businessWidth < 0.25 || layout.businessWidth > 0.7)) {
 				throw new Error('Workbench business width must be between 0.25 and 0.7');
 			}
+			const sourcePackage = descriptor.package || packageName || '';
+			const pageFallback = {
+				title: descriptor.title,
+				description: typeof descriptor.description === 'string' ? descriptor.description : '',
+				icon: typeof descriptor.icon === 'string' ? descriptor.icon : '',
+				sourcePackage,
+				sourceKind: 'registered',
+				Component,
+				hidden: descriptor.hidden === true,
+				retired: RETIRED_WORKBENCH_IDS.includes(id),
+				enabled: descriptor.enabled !== false,
+			};
+			const declaredPages = Array.isArray(descriptor.pages) ? descriptor.pages : [];
+			const pages = declaredPages.map(page => normalizeCatalogPage(page, id, pageFallback));
+			if (!pages.some(page => page.pageId === 'default')) {
+				pages.unshift(normalizeCatalogPage({
+					id: 'default', title: descriptor.title, description: pageFallback.description,
+					icon: pageFallback.icon, component: Component, sourceKind: 'registered',
+				}, id, pageFallback));
+			}
+			const seenPageIds = new Set();
+			for (const page of pages) {
+				if (seenPageIds.has(page.pageId)) { throw new Error('Duplicate workbench page id: ' + page.pageId); }
+				seenPageIds.add(page.pageId);
+			}
 			return Object.assign({}, descriptor, {
 				id,
-				resourcePackage: descriptor.package || packageName || '',
+				resourcePackage: sourcePackage,
 				panel: PANEL_PREFIX + id,
 				customFrame: descriptor.customFrame === true,
 				headerLayout: descriptor.headerLayout || 'default',
-				// ★ 2026-10-31（用户：「自动化任务 工作台中，不要有 浮动工具栏」）：
-				//   工作台可声明 `floatingActions: false` 关掉那条 S2 浮动胶囊（AI 助手 + 外开）。
-				//   默认 true —— 现有工作台一个都不变。
+				// 助手浮动工具栏始终由宿主提供；旧标志仅控制外部浏览器入口。
 				floatingActions: descriptor.floatingActions !== false,
 				// ★ 2026-11-02（对齐 dsh-desktop §4.1 标准分栏）：未声明 customFrame 的工作台
 				//   默认由宿主渲染「左对话 / 右业务」分栏，会话停靠在左栏（不再切走工作台）。
@@ -126,6 +1545,7 @@ window.__ModuleLoader__.load({
 				//   给"业务面板必须占满整页、不接受常驻会话区"的老工作台留逃生门。
 				splitConversation: descriptor.customFrame === true ? false : descriptor.splitConversation !== false,
 				layout: { businessSide: layout.businessSide || 'right', businessWidth: layout.businessWidth !== undefined ? layout.businessWidth : 0.36 },
+				pages,
 			});
 		}
 
@@ -133,8 +1553,19 @@ window.__ModuleLoader__.load({
 			constructor(ctx) {
 				this.ctx = ctx;
 				this.providers = new Map();
+				this.pageFrames = [];
+				this.assistantCollapsed = new Map();
 				this.listeners = new Set();
 				this.active = null;
+				this.navigation = 0;
+				this.disposed = false;
+				this.workspaceSelections = new Map();
+				try {
+					const saved = JSON.parse(window.sessionStorage.getItem('vssaros.workbench.workspaces') || '{}');
+					for (const [owner, workspaceId] of Object.entries(saved)) {
+						if (typeof workspaceId === 'string') { this.workspaceSelections.set(owner, workspaceId); }
+					}
+				} catch { /* Session storage can be unavailable. */ }
 				this.revision = 0;
 				this.state = null;
 				this.stateError = null;
@@ -157,6 +1588,22 @@ window.__ModuleLoader__.load({
 				 * key = 来源标识（包名 / 身份），同一个来源后来注册成功就删掉（不留过期结论）。
 				 */
 				this.registrationFailures = new Map();
+				/**
+				 * P1 统一目录（2026-11-19）：注册式 / 路由式 / 组件式工作台都汇到 `catalogPages`。
+				 * 快照只给可序列化字段；React Component 或自定义 renderer 放在 `catalogRenderers`，
+				 * 避免把组件塞进快照导致 HMR / 结构化订阅出错。
+				 */
+				this.catalogPages = new Map();
+				this.catalogRenderers = new Map();
+				this.catalogListeners = new Set();
+				this.catalogRevision = 0;
+				/** P2 过渡桥：旧 `window.__vssarosWorkbenchItems` 条目登记后的注销函数（硬退役后仅测试/兼容 API 使用）。 */
+				this.legacyCatalogDisposers = new Map();
+				/** 阶段 4：manifest active route 行登记后的注销函数。 */
+				this.manifestCatalogDisposers = new Map();
+				/** P5：旧中栏页签存档只读一次，写入 state.json 的 homeWorkbenchOrder 后不重复迁移。 */
+				this.legacyTabsMigrated = false;
+				this.legacyTabsMigrating = false;
 				/** 已经套过默认 agent 的「工作台|会话」（每条只套一次，见 applyDefaultPreset）。 */
 				this.presetApplied = new Set();
 				/** 工作台 id → 已确认**真实存在**的 preset id（见 readyPreset；只缓存命中，不缓存"没有"）。 */
@@ -177,17 +1624,204 @@ window.__ModuleLoader__.load({
 				/** `remote.agentPresets` 服务（apply 里可选注入；没有就不套默认 agent，其它功能照常）。 */
 				this.agentPresets = null;
 				this.snapshot = this.buildSnapshot();
-			}
-			subscribe(listener) {
+				this.catalogSnapshot = this.buildCatalogSnapshot();
+				}
+				subscribe(listener) {
 				this.listeners.add(listener);
 				return () => this.listeners.delete(listener);
 			}
 			getSnapshot() { return this.snapshot; }
+			/** P1：目录单独订阅，注册/注销/启停变化不要求消费方轮询。 */
+			subscribeCatalog(listener) {
+				this.catalogListeners.add(listener);
+				return () => this.catalogListeners.delete(listener);
+			}
+			getCatalogSnapshot() { return this.catalogSnapshot; }
+			getCatalogRenderer(key) { return this.catalogRenderers.get(key) || null; }
+			buildCatalogSnapshot() {
+				return Object.freeze({
+					revision: this.catalogRevision,
+					pages: Object.freeze([...this.catalogPages.values()].map(catalogPageSnapshot)),
+				});
+			}
+			publishCatalog() {
+				this.catalogSnapshot = this.buildCatalogSnapshot();
+				const conflicts = canonicalConflictsOf(this.catalogSnapshot.pages);
+				if (conflicts.length) {
+					console.warn('[vssaros-workbenches] 目录存在 active canonical 冲突：' + JSON.stringify(conflicts));
+				}
+				for (const l of [...this.catalogListeners]) {
+					try { l(); } catch (e) { console.error('[vssaros-workbenches] catalog listener', e); }
+				}
+				// P5：新布局启用后，目录一到齐就尝试把旧中栏页签顺序读旧写新（只跑一次）。
+				if (sidebarLayoutV1Enabled && this.catalogSnapshot.pages.length
+					&& !this.legacyTabsMigrated && !this.legacyTabsMigrating) {
+					void this.migrateLegacyTabs();
+				}
+			}
+			/** P5：旧 `vssaros.wb.tabs` → `state.homeWorkbenchOrder`，不改旧存档、不复活下线项。 */
+			async migrateLegacyTabs() {
+				if (this.disposed || this.legacyTabsMigrated || this.legacyTabsMigrating || !sidebarLayoutV1Enabled) { return false; }
+				if (!this.state || !this.getCatalogSnapshot().pages.length) { return false; }
+				this.legacyTabsMigrating = true;
+				try {
+					const storage = typeof window !== 'undefined' ? window.localStorage : null;
+					if (!storage) { this.legacyTabsMigrated = true; return false; }
+					if (storage.getItem(LEGACY_TABS_MIGRATED_KEY)) { this.legacyTabsMigrated = true; return false; }
+					if (Array.isArray(this.state.homeWorkbenchOrder) && this.state.homeWorkbenchOrder.length) {
+						this.legacyTabsMigrated = true;
+						storage.setItem(LEGACY_TABS_MIGRATED_KEY, '1');
+						return false;
+					}
+					let tabs = [];
+					try { tabs = JSON.parse(storage.getItem(LEGACY_TABS_KEY) || '[]'); } catch { tabs = []; }
+					const pages = this.getCatalogSnapshot().pages;
+					const keys = legacyTabKeysOf(tabs, pages);
+					if (!keys.length) {
+						this.legacyTabsMigrated = true;
+						storage.setItem(LEGACY_TABS_MIGRATED_KEY, '1');
+						return false;
+					}
+					await this.commit(state => {
+						state.homeWorkbenchOrder = normalizeHomeOrder(keys, pages.map(page => page.key));
+					});
+					this.legacyTabsMigrated = true;
+					storage.setItem(LEGACY_TABS_MIGRATED_KEY, '1');
+					return true;
+				} catch (error) {
+					console.warn('[vssaros-workbenches] 旧页签顺序迁移失败：' + String(error && error.message || error));
+					return false;
+				} finally {
+					this.legacyTabsMigrating = false;
+				}
+			}
+			/**
+			 * 登记一个非 `register()` 形态的可导航工作台页（SSR route / 组件式）。
+			 * 它不占 `providers`、不注册 `main` 面板，只进入统一目录，供 P2 右栏适配器和主页读取。
+			 */
+			registerPage(descriptor, renderer) {
+				if (!descriptor || typeof descriptor !== 'object') { throw new Error('Invalid workbench page registration'); }
+				const workbenchId = typeof descriptor.workbenchId === 'string' && descriptor.workbenchId.trim()
+					? descriptor.workbenchId.trim()
+					: identityOf(descriptor.repository, descriptor.package);
+				const pageId = typeof descriptor.pageId === 'string' && descriptor.pageId.trim() ? descriptor.pageId.trim() : 'default';
+				const sourcePackage = descriptor.package || '';
+				const pageFallback = {
+					title: descriptor.title || '未命名工作台',
+					description: typeof descriptor.description === 'string' ? descriptor.description : '',
+					icon: typeof descriptor.icon === 'string' ? descriptor.icon : '',
+					sourcePackage,
+					sourceKind: descriptor.sourceKind || 'external',
+					Component: typeof renderer === 'function' ? renderer : null,
+					hidden: descriptor.hidden === true,
+					retired: descriptor.retired === true,
+					enabled: descriptor.enabled !== false,
+				};
+				const page = normalizeCatalogPage({
+					...descriptor,
+					id: pageId,
+					component: renderer,
+					sourcePackage,
+				}, workbenchId, pageFallback);
+				if (this.catalogPages.has(page.key)) { throw new Error('Duplicate workbench catalog page: ' + page.key); }
+				this.catalogPages.set(page.key, page);
+				if (typeof renderer === 'function') { this.catalogRenderers.set(page.key, renderer); }
+				this.catalogRevision += 1;
+				this.publish();
+				return () => {
+					if (this.catalogPages.get(page.key) !== page) { return; }
+					this.catalogPages.delete(page.key);
+					this.catalogRenderers.delete(page.key);
+					this.catalogRevision += 1;
+					this.publish();
+				};
+			}
+			/**
+			 * P2 过渡桥：把旧的 `window.__vssarosWorkbenchItems`（route / 组件式）
+			 * 收编到统一目录。P3 退役旧 TabStrip 后可删除这份全局读取；
+			 * 现在保留它，现有工作台与后续 `register()` 工作台才能进同一份 catalog。
+			 */
+			ingestLegacyCatalog() {
+				const items = Array.isArray(globalThis.__vssarosWorkbenchItems) ? globalThis.__vssarosWorkbenchItems : [];
+				const components = globalThis.__vssarosPageComponents && typeof globalThis.__vssarosPageComponents === 'object'
+					? globalThis.__vssarosPageComponents : {};
+				const desired = new Map();
+				for (const item of items) {
+					if (!item || typeof item !== 'object') { continue; }
+					const pageId = typeof item.id === 'string' ? item.id.trim() : '';
+					if (!PAGE_ID_RE.test(pageId) || pageId === 'vssaros-wb-dashboard') { continue; }
+					const route = typeof item.route === 'string' ? item.route.trim() : '';
+					const comp = typeof item.comp === 'string' ? item.comp.trim() : '';
+					const renderer = comp && typeof components[comp] === 'function' ? components[comp] : null;
+					if (!route && !renderer) { continue; }
+					const workbenchId = 'legacy:' + (route || comp || pageId);
+					const key = catalogKey(workbenchId, pageId);
+					desired.set(key, {
+						renderer,
+						descriptor: {
+							workbenchId, pageId, title: item.name || item.title || pageId,
+							description: typeof item.description === 'string' ? item.description : '',
+							icon: typeof item.ico === 'string' ? item.ico : '',
+							route, hidden: item.hidden === true || item.offline === true,
+							enabled: item.offline !== true, sourceKind: 'legacy',
+							package: typeof item.package === 'string' ? item.package : '',
+						},
+					});
+				}
+				for (const [key, dispose] of [...this.legacyCatalogDisposers]) {
+					if (!desired.has(key)) {
+						try { dispose(); } catch { /* HMR 时旧条目可能已回收 */ }
+						this.legacyCatalogDisposers.delete(key);
+					}
+				}
+				for (const [key, { descriptor, renderer }] of desired) {
+					if (this.legacyCatalogDisposers.has(key)) { continue; }
+					try {
+						this.legacyCatalogDisposers.set(key, this.registerPage(descriptor, renderer));
+					} catch (error) {
+						console.warn('[vssaros-workbenches] 旧目录项登记失败：' + String(error && error.message || error));
+					}
+				}
+			}
+			/**
+			 * 阶段 4 硬退役：manifest 中的 active route 行直接进统一目录，
+			 * 不再读取 `window.__vssarosWorkbenchItems` 或启动 10 秒轮询。
+			 * `component` 行优先复用 `__vssarosPageComponents` 里的组件 renderer。
+			 */
+			registerManifestPages() {
+				const components = globalThis.__vssarosPageComponents && typeof globalThis.__vssarosPageComponents === 'object'
+					? globalThis.__vssarosPageComponents : {};
+				let changed = false;
+				for (const row of WORKBENCH_MANIFEST) {
+					if (!row || row.state !== 'active' || row.sourceKind !== 'manifest' || !row.route) { continue; }
+					if (this.catalogPages.has(row.key) || this.manifestCatalogDisposers.has(row.key)) { continue; }
+					const renderer = row.component && typeof components[row.component] === 'function'
+						? components[row.component] : null;
+					const descriptor = {
+						workbenchId: row.workbenchId, pageId: row.pageId, title: row.title,
+						description: '', icon: '', route: row.route,
+						hidden: false, retired: false, enabled: true,
+						sourceKind: 'manifest', sourcePackage: '', package: '',
+						canonicalId: row.canonicalId, state: row.state, visibility: row.visibility,
+						aliases: [...row.aliases], replacedBy: row.replacedBy,
+						component: renderer,
+					};
+					try {
+						this.manifestCatalogDisposers.set(row.key, this.registerPage(descriptor, renderer));
+						changed = true;
+					} catch (error) {
+						console.warn('[vssaros-workbenches] manifest 目录项登记失败：' + String(error && error.message || error));
+					}
+				}
+				globalThis.__vssarosWorkbenchManifestPagesRegistered = true;
+				return changed;
+			}
 			buildSnapshot() {
 				return Object.freeze({
 					active: this.active,
 					stateError: this.stateError,
 					state: this.state,
+					selectedWorkspaceId: this.workspaceSelections.get(this.active) || null,
 					// ★ 2026-11-13：列表出口按下线名单过滤（只摘 UI item，不动 providers ⇒ 页面本体/深链仍在）。
 					workbenches: [...this.providers.values()]
 						.filter(e => !RETIRED_WORKBENCH_IDS.includes(e.id))
@@ -228,6 +1862,7 @@ window.__ModuleLoader__.load({
 			}
 			publish() {
 				this.snapshot = this.buildSnapshot();
+				this.publishCatalog();
 				for (const l of [...this.listeners]) { try { l(); } catch (e) { console.error('[vssaros-workbenches] listener', e); } }
 			}
 
@@ -253,6 +1888,9 @@ window.__ModuleLoader__.load({
 				try {
 					entry = normalize(descriptor, Component, caller);
 					if (this.providers.has(entry.id)) { throw new Error('Duplicate workbench provider: ' + entry.id); }
+					for (const page of entry.pages) {
+						if (this.catalogPages.has(page.key)) { throw new Error('Duplicate workbench catalog page: ' + page.key); }
+					}
 				} catch (error) {
 					// 记录（含阶段与原因）后**原样抛**：调用方的 ctx.effect 仍要看到失败，
 					// 我们不能把"注册失败"变成"静默跳过"（那样插件会以为自己注册成功了）。
@@ -263,7 +1901,10 @@ window.__ModuleLoader__.load({
 				entry.Component = Component;
 				this.providers.set(entry.id, entry);
 				const service = this;
-				const Panel = function VssarosWorkbenchPanel() { return h(Frame, { service, entry }); };
+				const Panel = function VssarosWorkbenchPanel() {
+					React.useEffect(() => { service.activate(entry.id); return () => service.deactivate(entry.id); }, []);
+					return h(Frame, { service, entry });
+				};
 				let disposeSlot = null;
 				try {
 					disposeSlot = this.ctx.slots.register({ name: 'main', key: entry.panel }, Panel);
@@ -272,18 +1913,43 @@ window.__ModuleLoader__.load({
 					this.recordRegistrationFailure(sourceLabel, 'slot', error);
 					throw error;
 				}
+				// P1：register() 的所有页面（默认页 + 可选声明子页）进入统一目录；
+				// renderer 只放内部 Map，catalog 快照不含 React Component。
+				entry.catalogKeys = entry.pages.map(page => page.key);
+				for (const page of entry.pages) {
+					this.catalogPages.set(page.key, page);
+					if (typeof page.Component === 'function') { this.catalogRenderers.set(page.key, page.Component); }
+				}
+				this.catalogRevision += 1;
 				// 同一个来源这次成功了 ⇒ 清掉它之前的失败记录（不留过期结论）
 				this.clearRegistrationFailure(sourceLabel);
 				this.publish();
 				return () => {
 					if (this.providers.get(entry.id) !== entry) { return; }
 					this.providers.delete(entry.id);
+					for (const key of entry.catalogKeys) {
+						this.catalogPages.delete(key);
+						this.catalogRenderers.delete(key);
+					}
+					this.catalogRevision += 1;
 					if (this.active === entry.id) { this.leave(); }
 					if (typeof disposeSlot === 'function') { disposeSlot(); }
 					this.publish();
 				};
 			}
 			has(id) { return this.providers.has(id); }
+			entryOf(id) { return this.providers.get(id) || [...this.pageFrames].reverse().find(entry => entry.id === id); }
+			available(id) { return !!this.entryOf(id); }
+			registerPageFrame(entry) {
+				this.pageFrames.push(entry);
+				this.publish();
+				return () => {
+					const index = this.pageFrames.indexOf(entry);
+					if (index >= 0) { this.pageFrames.splice(index, 1); }
+					if (!this.available(entry.id)) { this.deactivate(entry.id); }
+					this.publish();
+				};
+			}
 
 			// ── 会话接口（2026-10-22，与官方宿主同名同语义；client.js:884-1243）────────────────
 			// 归属写 `sessionBindings`（不可改不可删）。显示位置分两种：
@@ -296,10 +1962,10 @@ window.__ModuleLoader__.load({
 			/** 调用方的工作台身份：只认**前台**那个（第三方 API 都是在自己的组件里调的，前台 = 自己）。 */
 			ownerId() {
 				const id = this.active;
-				if (!id || !this.providers.has(id)) { throw new Error('请先打开可用的工作台。'); }
+				if (!id || !this.available(id)) { throw new Error('请先打开可用的工作台。'); }
 				return id;
 			}
-			isActive() { return this.active !== null && this.providers.has(this.active); }
+			isActive() { return this.active !== null && this.available(this.active); }
 			/**
 			 * 这个工作台的对话**怎么显示**（2026-11-02 对齐 dsh-desktop §4.1）：
 			 *   · `inline` —— customFrame：对话嵌在工作台自己页面里（`props.conversation`）；
@@ -307,8 +1973,9 @@ window.__ModuleLoader__.load({
 			 *   · `detach` —— `splitConversation: false`：点会话就切到原生会话页（旧行为，逃生门）。
 			 */
 			conversationMode(id) {
-				const entry = id ? this.providers.get(id) : null;
+				const entry = id ? this.entryOf(id) : null;
 				if (!entry) { return 'detach'; }
+				if (this.docks.some(dock => dock.id === id && dock.fallback)) { return 'inline'; }
 				if (entry.customFrame) { return 'inline'; }
 				return entry.splitConversation === false ? 'detach' : 'split';
 			}
@@ -335,8 +2002,8 @@ window.__ModuleLoader__.load({
 				return sid;
 			}
 			/** 工作台页面里的停靠点（`conversation` 节点挂载时登记；后登记的优先）。返回注销函数。 */
-			registerDock(id, element) {
-				const record = { id, element };
+			registerDock(id, element, fallback = false) {
+				const record = { id, element, fallback };
 				this.docks.push(record);
 				this.publish();
 				return () => {
@@ -362,8 +2029,9 @@ window.__ModuleLoader__.load({
 				if (!id) { return null; }
 				const mode = this.conversationMode(id);
 				if (mode === 'detach') { return null; }
+				const docks = [...this.docks].reverse();
 				const element = mode === 'inline'
-					? (([...this.docks].reverse().find(d => d.id === id) || {}).element)
+					? (docks.find(d => d.id === id && !d.fallback) || docks.find(d => d.id === id))?.element
 					: this.splitDocks.get(id);
 				const sessionId = mode === 'inline' ? this.dockedSessionOf(id) : this.splitSessionOf(id);
 				return element && sessionId ? { id, element, sessionId, mode } : null;
@@ -410,16 +2078,16 @@ window.__ModuleLoader__.load({
 				try { if (ref && typeof ref.release === 'function') { ref.release(); } } catch (e) { /* 忽略 */ }
 				return true;
 			}
-			/** 自愈：清掉指向**已失效会话**的绑定/最近会话（否则每次打开工作台都卡在同一条死会话上）。 */
-				clearStaleBinding(owner, sessionId) {
-				if (!owner || !sessionId) { return; }
-				try {
-					Promise.resolve(this.commit((state) => {
-						if (state.recentSessions && state.recentSessions[owner] === sessionId) { state.recentSessions[owner] = null; }
-						if (state.sessionBindings && state.sessionBindings[sessionId] === owner) { delete state.sessionBindings[sessionId]; }
-					})).catch(() => { /* 忽略 */ });
-				} catch { /* 忽略 */ }
-				}
+			/** 清理失效的最近会话指针，保留不可变的历史归属。 */
+			clearStaleBinding(owner, sessionId) {
+				if (!owner || !sessionId) { return Promise.resolve(); }
+				if (this.docked.get(owner) === sessionId) { this.docked.delete(owner); }
+				return this.commit(state => {
+					if (state.recentSessions[owner] === sessionId) { delete state.recentSessions[owner]; }
+				}).catch(error => {
+					console.warn('[vssaros-workbenches] 清理最近会话失败（' + owner + '）：' + String(error && error.message || error));
+				});
+			}
 			/** 当前会话：整页工作台 ⇒ 它停靠的会话；否则主视图里的会话（官方判据：retainedBy.mainView > 0）。 */
 			currentSession() {
 				if (this.docksConversation(this.active)) {
@@ -448,28 +2116,64 @@ window.__ModuleLoader__.load({
 			 *   Saros-agents-pocket、而界面别处写的是当前会话 cwd=…\sarosis-agents-client，看起来"名字对不上目录"。
 			 *   现在优先跟随用户当前工作区 —— 这也符合直觉：助手默认在你正在做的事里。
 			 */
-			defaultWorkspace() {
-				let items = [];
-				try { items = this.ctx.workspaces.list.getSnapshot().items || []; } catch { items = []; }
+			/** 左栏会话按工作台归属派生，普通会话模式不混入工作台历史。 */
+			sessionVisible(sessionId, owner = this.active) {
+				if (!this.state) { return true; }
+				const binding = this.state.sessionBindings[sessionId];
+				return owner ? binding === owner : !binding;
+			}
+			workspaceVisible(workspaceId, owner = this.active) {
+				return !owner || !(this.state && this.state.hiddenWorkspaces[owner] || []).includes(workspaceId);
+			}
+			visibleWorkspaces(owner = this.active) {
+				try { return this.ctx.workspaces.list.getSnapshot().items.filter(w => this.workspaceVisible(w.workspaceId, owner)); }
+				catch { return []; }
+			}
+			workspaceFor(sessionId) {
+				try {
+					return this.ctx.workspaces.list.getSnapshot().items.find(w => Array.isArray(w.sessionIds) && w.sessionIds.includes(sessionId)) || null;
+				} catch { return null; }
+			}
+			selectWorkspace(owner, workspaceId) {
+				if (!this.available(owner) || !this.visibleWorkspaces(owner).some(w => w.workspaceId === workspaceId)) {
+					throw new Error('这个工作区当前不可用，请重新选择。');
+				}
+				this.workspaceSelections.set(owner, workspaceId);
+				try { window.sessionStorage.setItem('vssaros.workbench.workspaces', JSON.stringify(Object.fromEntries(this.workspaceSelections))); }
+				catch { /* Session storage can be unavailable. */ }
+				this.publish();
+			}
+			hideWorkspace(workspaceId, owner = this.active) { return this.hideWorkspaces([workspaceId], owner); }
+			async hideWorkspaces(workspaceIds, owner = this.active) {
+				if (!owner) { return false; }
+				if (!this.available(owner)) { throw new Error('工作台当前不可用。'); }
+				const available = this.ctx.workspaces.list.getSnapshot().items;
+				if (!workspaceIds.length || !workspaceIds.every(id => available.some(w => w.workspaceId === id))) { throw new Error('工作区当前不可用。'); }
+				await this.commit(state => {
+					if (!state.added.includes(owner)) { throw new Error('请先打开工作台。'); }
+					state.hiddenWorkspaces[owner] = [...new Set([...(state.hiddenWorkspaces[owner] || []), ...workspaceIds])];
+				});
+				return true;
+			}
+			async showWorkspace(workspaceId, owner = this.active) {
+				if (!owner || !this.available(owner)) { throw new Error('工作台当前不可用。'); }
+				if (this.workspaceVisible(workspaceId, owner)) { return; }
+				await this.commit(state => {
+					state.hiddenWorkspaces[owner] = (state.hiddenWorkspaces[owner] || []).filter(id => id !== workspaceId);
+				});
+			}
+			defaultWorkspace(owner = this.active) {
+				const items = this.visibleWorkspaces(owner);
 				if (!items.length) { return null; }
-				const bySession = (sessionId) => (sessionId
-					? items.find(w => Array.isArray(w.sessionIds) && w.sessionIds.includes(sessionId))
-					: null);
-				// ① 当前主视图会话（**不是** workbench 自己停靠的那条，避免"跟着工作台自己的旧会话走"）
+				const selected = items.find(w => w.workspaceId === this.workspaceSelections.get(owner));
+				if (selected) { return selected; }
+				const bySession = sessionId => sessionId ? items.find(w => Array.isArray(w.sessionIds) && w.sessionIds.includes(sessionId)) : null;
 				let main;
 				try {
 					const { byId } = this.ctx.sessions.list.getSnapshot();
 					main = Object.keys(byId || {}).find(id => (((byId[id] || {}).retainedBy || {}).mainView || 0) > 0);
 				} catch { main = undefined; }
-				const fromMain = bySession(main);
-				if (fromMain) { return fromMain; }
-				// ② 本工作台最近会话
-				const id = this.active;
-				const recent = id && this.state ? this.state.recentSessions[id] : null;
-				const fromRecent = bySession(recent);
-				if (fromRecent) { return fromRecent; }
-				// ③ 兜底
-				return items[0] || null;
+				return bySession(main) || bySession(owner && this.state && this.state.recentSessions[owner]) || items[0];
 			}
 			/** 把某条会话停靠到该工作台并广播（内部用；调用方已确认归属） */
 			dockTo(id, sessionId) {
@@ -495,8 +2199,8 @@ window.__ModuleLoader__.load({
 			 *   · 标准分栏（split）⇒ 同样停靠（进左栏），不再切走 —— 2026-11-02 对齐官方 §4.1
 			 *   · `splitConversation: false` ⇒ 保持旧行为（切原生对话）
 			 */
-			showSession(sessionId) {
-				const id = this.active;
+			showSession(sessionId, id = this.active, ticket = ++this.navigation) {
+				if (this.disposed || id !== this.active || ticket !== this.navigation) { return; }
 				// ⚠ 2026-10-28：这里**不做** sessionExists 前置 —— 新建会话在这一刻往往还没进
 				//   sessions.list 快照，前置检查会把它误判成"已不存在"⇒「＋ 新建会话」没反应。
 				//   真失效的会话交给停靠区的 retain 判定（失败 ⇒ markDead + 清绑定 ⇒ 回到「开始对话」）。
@@ -505,9 +2209,11 @@ window.__ModuleLoader__.load({
 					if (owner === id) { this.dockTo(id, sessionId); return; }
 					if (!owner) {
 						// 自动绑定：抢不到（并发下被别人先绑）⇒ 报错但**不**跳出
-						Promise.resolve(this.bindSession(id, sessionId))
-							.then(() => this.dockTo(id, sessionId))
-							.catch((e) => { this.dockError = String((e && e.message) || e || '会话绑定失败'); this.publish(); });
+						Promise.resolve(this.bindSession(id, sessionId, () => this.navigationCurrent(id, ticket), true))
+							.then(() => { if (this.navigationCurrent(id, ticket)) { this.dockTo(id, sessionId); } })
+							.catch(e => {
+								if (this.navigationCurrent(id, ticket)) { this.dockError = String(e && e.message || e || '会话绑定失败'); this.publish(); }
+							});
 						return;
 					}
 					this.dockError = '这个会话属于另一个工作台（' + owner + '），不能在这里显示。';
@@ -517,29 +2223,70 @@ window.__ModuleLoader__.load({
 				this.ctx.uiWorkspace.openSession(sessionId);
 				try { this.ctx.layout.selectPanel(null); } catch { /* 布局服务已卸载 */ }
 			}
-			async bindSession(owner, sessionId) {
+			async bindSession(owner, sessionId, remember = () => true, requireAdded = false) {
 				await this.commit(state => {
+					if (requireAdded && (!this.available(owner) || !state.added.includes(owner))) { return; }
 					const prev = state.sessionBindings[sessionId];
 					// ⚠ 归属**不能改**：服务端 `validateState` 会拒（"不能改变或删除已有会话的工作台归属"）。
 					//   每个工作台都建**自己的**会话（见 createOwnSession），根本不需要共用别人的。
 					if (prev && prev !== owner) { throw new Error('此会话已属于另一个工作台，不能重新绑定。'); }
 					if (!state.added.includes(owner)) { state.added.push(owner); }
 					state.sessionBindings[sessionId] = owner;
-					state.recentSessions[owner] = sessionId;
+					if (remember()) { state.recentSessions[owner] = sessionId; }
 				});
 			}
-			/** 在工作区里新建一条归属本工作台的会话，并切到对话。 */
-			async newSession(workspaceId) {
-				const owner = this.ownerId();
-				const workspace = workspaceId || (this.defaultWorkspace() && this.defaultWorkspace().workspaceId);
-				if (!workspace) { return this.newWorkspaceSession(); }
-				// 不等：preset 已注册就出生即带；还没注册（开机 lazy 窗口）⇒ 先建出来，注册好再补（applyDefaultPreset）
+			/** Batch ownership registration for backend-created sessions; never moves navigation or the recent conversation. */
+			async bindSessions(owner, sessionIds) {
+				await this.queue;
+				if (!this.state) { await this.load(); }
+				if (this.disposed || this.active !== owner || !this.available(owner) || !this.state?.added.includes(owner)) { return; }
+				const ids = [...new Set(sessionIds)];
+				if (!ids.some(id => this.state.sessionBindings[id] !== owner)) { return; }
+				await this.commit(state => {
+					if (this.active !== owner || !this.available(owner) || !state.added.includes(owner)) { return; }
+					for (const id of ids) {
+						const previous = state.sessionBindings[id];
+						if (previous && previous !== owner) { throw new Error('此会话已属于另一个工作台，不能重新绑定。'); }
+						state.sessionBindings[id] = owner;
+					}
+				});
+			}
+			/** 兼容旧入口；异步流程只使用发起时确定的工作台身份。 */
+			async newSession(workspaceId) { return this.newSessionFor(this.ownerId(), workspaceId); }
+			navigationCurrent(owner, ticket) {
+				return !this.disposed && this.active === owner && this.navigation === ticket && this.available(owner);
+			}
+			async newSessionFor(owner, workspaceId) {
+				if (!this.available(owner) || this.active !== owner) { throw new Error('请先打开可用的工作台。'); }
+				const workspace = workspaceId || this.defaultWorkspace(owner)?.workspaceId;
+				if (!workspace) { return this.newWorkspaceSessionFor(owner); }
+				this.selectWorkspace(owner, workspace);
+				const ticket = ++this.navigation;
 				const preset = await this.readyPreset(owner);
+				if (!this.navigationCurrent(owner, ticket)) { return undefined; }
 				const sessionId = await this.createOwnSession(workspace, preset);
-				await this.bindSession(owner, sessionId);
-				if (preset) { this.presetApplied.add(owner + '|' + sessionId); }   // 出生就带 ⇒ 不用事后 select
-				this.showSession(sessionId);
+				if (this.disposed || !this.available(owner)) { return sessionId; }
+				await this.bindSession(owner, sessionId, () => this.navigationCurrent(owner, ticket), true);
+				if (preset) { this.presetApplied.add(owner + '|' + sessionId); }
+				if (!this.navigationCurrent(owner, ticket)) { return sessionId; }
+				this.showSession(sessionId, owner, ticket);
 				if (!preset) { this.applyDefaultPreset(owner, sessionId); }
+				return sessionId;
+			}
+			/** 内嵌助手切区不换绑主视图，也不修改已有会话 cwd。 */
+			switchWorkspaceForAssistant(owner, workspaceId) {
+				return this.newSessionFor(owner, workspaceId);
+			}
+			async openSessionFor(owner, sessionId) {
+				if (this.active !== owner || !this.available(owner) || this.state?.sessionBindings[sessionId] !== owner) {
+					throw new Error('会话不属于当前工作台。');
+				}
+				const ticket = ++this.navigation;
+				await this.bindSession(owner, sessionId, () => this.navigationCurrent(owner, ticket), true);
+				if (this.navigationCurrent(owner, ticket)) {
+					if (this.entryOf(owner).sessionNavigation === 'native') { this.ctx.uiWorkspace.openSession(sessionId); }
+					else { this.showSession(sessionId, owner, ticket); }
+				}
 				return sessionId;
 			}
 			/**
@@ -611,21 +2358,28 @@ window.__ModuleLoader__.load({
 			 *   多页签同时挂载时前台不一定是它，读错了就会把新会话建给别的工作台。
 			 */
 			healDock(owner, summary) {
-				if (!owner || !this.providers.has(owner)) { return; }
+				if (!owner || !this.available(owner)) { return; }
 				if (!summary || summary.blank !== true) { return; }
 				if (this.dockHealed.has(owner)) { return; }
-				const workspace = this.defaultWorkspace();
+				const workspace = this.defaultWorkspace(owner);
 				if (!workspace || !workspace.workspaceId) { return; }
+				const stillCurrent = () => !this.disposed && this.available(owner) && this.state?.added.includes(owner)
+					&& this.dockedSessionOf(owner) === summary.id;
+				if (!stillCurrent()) { return; }
 				this.dockHealed.add(owner);
 				console.warn('[vssaros-workbenches] 停靠的是一条没被工作区收录的空会话，给它换一条自己的新会话：'
 					+ String(summary.id || '') + ' @ ' + owner);
 				Promise.resolve()
 					.then(async () => {
 						const preset = await this.readyPreset(owner);
+						if (!stillCurrent()) { return; }
 						const sessionId = await this.createOwnSession(workspace.workspaceId, preset);
-						if (!sessionId || sessionId === summary.id) { return; }
-						await this.bindSession(owner, sessionId);
+						if (!sessionId || sessionId === summary.id || !stillCurrent()) { return; }
+						await this.bindSession(owner, sessionId, stillCurrent, true);
 						if (preset) { this.presetApplied.add(owner + '|' + sessionId); }
+						if (this.state?.sessionBindings[sessionId] !== owner || this.disposed || !this.available(owner)) { return; }
+						const current = this.dockedSessionOf(owner);
+						if (current !== summary.id && current !== sessionId) { return; }
 						this.dockTo(owner, sessionId);
 						if (!preset) { this.applyDefaultPreset(owner, sessionId); }
 					})
@@ -645,7 +2399,7 @@ window.__ModuleLoader__.load({
 			 * 绝不猜：只认 agentPresets.list() 里真实存在的 id（select 失败返回 {ok:false} 而非抛）。
 			 */
 			presetCandidatesOf(id) {
-				const entry = id ? this.providers.get(id) : null;
+				const entry = id ? this.entryOf(id) : null;
 				const own = entry && typeof entry.assistantPreset === 'string' ? entry.assistantPreset.trim() : '';
 				const table = ASSIST_PRESET_BY_WB[String(id || '')];
 				const list = [own].concat(Array.isArray(table) ? table : (table ? [table] : []));
@@ -663,7 +2417,7 @@ window.__ModuleLoader__.load({
 			 * 只缓存**命中**（不缓存"没有"）：没有的那次可能只是还没注册好。
 			 */
 			async readyPreset(id, { waitMs = 0 } = {}) {
-				const entry = this.providers.get(id);
+				const entry = this.entryOf(id);
 				if (entry && !entry.assistantPreset && !String(id).startsWith('vssaros/') && (entry.resourcePackage || String(id).startsWith('local:'))) {
 					try {
 						const response = await fetch('/api/vssaros-workbenches/plugin-resources', { cache: 'no-store' });
@@ -721,7 +2475,7 @@ window.__ModuleLoader__.load({
 			 *   · 只用 list() 里**真实存在**的 id（见 readyPreset），被拒必须看 `ok` 并告警。
 			 */
 			applyDefaultPreset(owner, sessionId) {
-				if (!owner || !sessionId || (this.presetCandidatesOf(owner).length === 0 && !String(owner).startsWith('local:') && !this.providers.get(owner)?.resourcePackage)) { return; }
+				if (!owner || !sessionId || (this.presetCandidatesOf(owner).length === 0 && !String(owner).startsWith('local:') && !this.entryOf(owner)?.resourcePackage)) { return; }
 				const key = owner + '|' + sessionId;
 				if (this.presetApplied.has(key)) { return; }
 				this.presetApplied.add(key);
@@ -754,13 +2508,18 @@ window.__ModuleLoader__.load({
 					}
 				})().catch((error) => console.warn('[vssaros-workbenches] 套用默认 agent 失败（' + owner + '）：' + String((error && error.message) || error)));
 			}
-			/** 让用户选一个文件夹 ⇒ 建工作区 ⇒ 新会话（用户取消 ⇒ undefined）。 */
-			async newWorkspaceSession() {
-				this.ownerId();
+			/** 目录选择过期或取消时不创建工作区或会话。 */
+			async newWorkspaceSession() { return this.newWorkspaceSessionFor(this.ownerId()); }
+			async newWorkspaceSessionFor(owner) {
+				if (!this.available(owner) || this.active !== owner) { throw new Error('请先打开可用的工作台。'); }
+				const ticket = ++this.navigation;
 				const path = await this.ctx.uiWorkspace.pickDirectory();
-				if (!path) { return undefined; }
+				if (!path || !this.navigationCurrent(owner, ticket)) { return undefined; }
 				const workspace = await this.ctx.workspaces.create({ path });
-				return this.newSession(workspace.workspaceId);
+				if (!this.navigationCurrent(owner, ticket)) { return undefined; }
+				await this.showWorkspace(workspace.workspaceId, owner);
+				if (!this.navigationCurrent(owner, ticket)) { return undefined; }
+				return this.newSessionFor(owner, workspace.workspaceId);
 			}
 			/**
 			 * 确保有一条归属本工作台的会话（官方 1167-1208）：给了已存在的 sessionId ⇒ 校验归属后复用；
@@ -768,27 +2527,34 @@ window.__ModuleLoader__.load({
 			 */
 			async ensureSession({ folder, sessionId: saved } = {}) {
 				const owner = this.ownerId();
+				const ticket = ++this.navigation;
 				let byId = {};
 				try { if (typeof this.ctx.sessions.refresh === 'function') { await this.ctx.sessions.refresh(); } byId = this.ctx.sessions.list.getSnapshot().byId || {}; } catch { byId = {}; }
+				if (!this.navigationCurrent(owner, ticket)) { return undefined; }
 				if (saved && byId[saved]) {
 					const prev = this.state && this.state.sessionBindings[saved];
 					if (prev && prev !== owner) { throw new Error('此会话已属于另一个工作台，不能重新绑定。'); }
-					await this.bindSession(owner, saved);
-					this.showSession(saved);
+					await this.bindSession(owner, saved, () => this.navigationCurrent(owner, ticket), true);
+					if (this.navigationCurrent(owner, ticket)) { this.showSession(saved, owner, ticket); }
 					return saved;
 				}
 				if (typeof folder !== 'string' || !folder.trim()) { throw new Error('创建会话需要业务项目文件夹。'); }
 				const workspace = await this.ctx.workspaces.create({ path: folder });
-				return this.newSession(workspace.workspaceId);
+				if (!this.navigationCurrent(owner, ticket)) { return undefined; }
+				await this.showWorkspace(workspace.workspaceId, owner);
+				if (!this.navigationCurrent(owner, ticket)) { return undefined; }
+				return this.newSessionFor(owner, workspace.workspaceId);
 			}
 			/**
 			 * 记为前台工作台（不切面板）：嵌入式承载（`View`，如 chat-surface 的页签条）用它记账，
 			 * 与 `open()` 共用"首次打开即登记 added"的语义。
 			 */
 			activate(id) {
-				if (!this.providers.has(id)) { return false; }
-				if (this.active !== id) { this.active = id; this.publish(); }
-				if (this.state && !this.state.added.includes(id)) { void this.add(id).catch(() => { }); }
+				if (!this.available(id)) { return false; }
+				if (this.active !== id) { ++this.navigation; this.active = id; this.dockError = null; this.publish(); }
+				if (this.state && !this.state.added.includes(id)) {
+					void this.add(id).catch(error => console.warn('[vssaros-workbenches] 添加工作台失败：' + String(error && error.message || error)));
+				}
 				return true;
 			}
 			/** 打开工作台：业务面板立即可用，不依赖会话（官方 §5）。返回 true = 已打开。 */
@@ -800,12 +2566,16 @@ window.__ModuleLoader__.load({
 				return true;
 			}
 			home(id) { return this.open(id); }
+			deactivate(owner = this.active) {
+				if (this.active === null || this.active !== owner) { return false; }
+				++this.navigation;
+				this.active = null;
+				this.dockError = null;
+				this.publish();
+				return true;
+			}
 			leave() {
-				if (this.active !== null) {
-					this.active = null;
-					try { this.ctx.layout.selectPanel(null); } catch { /* 布局服务已卸载 */ }
-					this.publish();
-				}
+				if (this.deactivate()) { try { this.ctx.layout.selectPanel(null); } catch { /* 布局服务已卸载 */ } }
 			}
 			current() { return this.active; }
 
@@ -813,6 +2583,7 @@ window.__ModuleLoader__.load({
 				try {
 					const res = await fetch(STATE_URL, { cache: 'no-store' });
 					const data = await res.json();
+					if (this.disposed) { return; }
 					if (!res.ok) { throw new Error(data && data.error || 'HTTP ' + res.status); }
 					this.revision = data.revision;
 					this.state = data.state;
@@ -825,6 +2596,7 @@ window.__ModuleLoader__.load({
 			/** 带 revision 写入；409 ⇒ 重新加载一次再报错（不自动重放，避免覆盖别处的更新）。 */
 			commit(mutate) {
 				const task = this.queue.then(async () => {
+					if (this.disposed) { throw new Error('工作台服务已卸载。'); }
 					if (!this.state) { throw new Error(this.stateError || '工作台状态未加载'); }
 					const next = JSON.parse(JSON.stringify(this.state));
 					mutate(next);
@@ -846,18 +2618,43 @@ window.__ModuleLoader__.load({
 				return task;
 			}
 			add(id) {
-				if (!this.providers.has(id)) { return Promise.reject(new Error('工作台当前不可用。')); }
+				if (!this.available(id)) { return Promise.reject(new Error('工作台当前不可用。')); }
 				return this.commit(state => {
 					if (!state.added.includes(id)) { state.added.push(id); }
 					if (!state.pinned.includes(id)) { state.pinned.push(id); }
 				});
 			}
 			remove(id) {
+				if (this.active === id) { ++this.navigation; }
 				return this.commit(state => {
 					state.added = state.added.filter(x => x !== id);
 					state.pinned = state.pinned.filter(x => x !== id);
 					if (state.active === id) { state.active = null; }
-				});
+				}).then(result => { if (this.active === id) { this.leave(); } return result; });
+			}
+			dispose() {
+				this.disposed = true;
+				++this.navigation;
+				/* 先发布一次空目录：HMR/卸载时订阅者据此撤掉开始页卡片与 native tab，再清监听器。 */
+				this.catalogPages.clear();
+				this.catalogRenderers.clear();
+				this.catalogRevision += 1;
+				this.publishCatalog();
+				this.listeners.clear();
+				this.catalogListeners.clear();
+				for (const disposeLegacy of this.legacyCatalogDisposers.values()) {
+					try { disposeLegacy(); } catch { /* HMR 时旧条目可能已回收 */ }
+				}
+				this.legacyCatalogDisposers.clear();
+				for (const disposeManifest of this.manifestCatalogDisposers.values()) {
+					try { disposeManifest(); } catch { /* HMR 时旧条目可能已回收 */ }
+				}
+				this.manifestCatalogDisposers.clear();
+				if (typeof globalThis !== 'undefined') { delete globalThis.__vssarosWorkbenchManifestPagesRegistered; }
+				this.pageFrames = [];
+				this.assistantCollapsed.clear();
+				this.docks = [];
+				this.splitDocks.clear();
 			}
 		}
 
@@ -919,14 +2716,19 @@ window.__ModuleLoader__.load({
 		 * 结构：外层由 React 管；里面一个**空的** `div[data-vssaros-wb-dock]` 作为 portal 目标（React 从不往里渲染子节点，
 		 * 内容由根覆盖层 `ConversationDock` portal 进来）。还没有会话 ⇒ 显示「开始对话」。
 		 */
-		function ConversationMount({ service, entry }) {
+		function ConversationMount({ service, entry, fallback = false }) {
 			useService(service);
+			const claim = React.useContext(InlineAssistantContext);
+			React.useLayoutEffect(() => claim ? claim() : undefined, [claim]);
 			const [element, setElement] = React.useState(null);
-			React.useEffect(() => (element ? service.registerDock(entry.id, element) : undefined), [element, entry.id]);
+			React.useEffect(() => (element ? service.registerDock(entry.id, element, fallback) : undefined), [service, element, entry.id, fallback]);
 			const docked = service.dockedSessionOf(entry.id);
-			return h('div', { className: 'vssWbDockHost', 'data-vssaros-wb-conversation': entry.id },
+			const collapsed = !fallback && service.assistantCollapsed.get(entry.id) === true;
+			return h('div', { className: 'vssWbDockHost', 'data-vssaros-wb-conversation': entry.id,
+				id: fallback ? undefined : 'vssaros-assistant-' + entry.id, hidden: collapsed,
+				'data-vssaros-assist-collapsed': fallback ? undefined : collapsed ? '1' : '0' },
 				h(NewSessionButton, { service, entry }),
-				docked ? null : h(ConversationStart, { service }),
+				docked ? null : h(ConversationStart, { service, entry }),
 				h('div', { ref: setElement, className: 'vssWbDock', 'data-vssaros-wb-dock': entry.id, hidden: !docked }));
 		}
 		/**
@@ -951,27 +2753,53 @@ window.__ModuleLoader__.load({
 					// 按钮所在的工作台就是用户眼前的这个 ⇒ 先把它记为前台（newSession 认的是前台工作台）
 					if (service.active !== entry.id) { service.activate(entry.id); }
 					setBusy(true);
-					Promise.resolve().then(() => service.newSession())
-						.catch((error) => {
-							service.dockError = String((error && error.message) || error || '新建会话失败');
-							service.publish();
+					Promise.resolve().then(() => service.newSessionFor(entry.id))
+						.catch(error => {
+							if (service.active === entry.id) {
+								service.dockError = String(error && error.message || error || '新建会话失败');
+								service.publish();
+							}
 						})
 						.finally(() => setBusy(false));
 				},
 			}, '＋ 新会话');
 		}
 		/** 停靠点里的"开始对话"（默认工作区新建；没有工作区 ⇒ 让用户选文件夹）。 */
-		function ConversationStart({ service }) {
+		function ConversationStart({ service, entry }) {
+			useService(service);
 			const [busy, setBusy] = React.useState(false);
 			const [error, setError] = React.useState('');
-			const run = (fn) => { setBusy(true); setError(''); Promise.resolve().then(fn).catch(e => setError(String(e && e.message || e))).finally(() => setBusy(false)); };
-			const lastError = service.dockError;
-			return h('div', { className: 'vssWbConversation', 'data-vssaros-wb-conversation-start': '' },
-				h('p', null, '需要 AI 协助时，开始一段对话；会话会关联到这个工作台，并显示在这里。'),
-				lastError ? h('p', { className: 'vssWbConversationError', role: 'alert' }, '上一段对话打不开：' + lastError) : null,
+			const [, refresh] = React.useState(0);
+			React.useEffect(() => service.ctx.workspaces.list?.subscribe?.(() => refresh(v => v + 1)), [service]);
+			const owner = entry.id;
+			const workspaces = service.visibleWorkspaces(owner);
+			const chosen = service.defaultWorkspace(owner);
+			const hidden = (service.state?.hiddenWorkspaces[owner] || []);
+			let all = [];
+			try { all = service.ctx.workspaces.list.getSnapshot().items; } catch { /* Workspace list is not ready. */ }
+			const disabled = busy || !service.state || service.active !== owner;
+			const run = fn => {
+				setBusy(true); setError('');
+				Promise.resolve().then(fn).catch(e => setError(String(e && e.message || e))).finally(() => setBusy(false));
+			};
+			const selectorId = 'vssaros-wb-workspace-' + owner;
+			return h('div', { className: 'vssWbConversation', 'data-vssaros-wb-conversation-start': owner },
+				h('p', null, '业务面板可先使用。需要 AI 协助时，选择项目目录开始对话；只关联到这个工作台。'),
+				service.dockError ? h('p', { className: 'vssWbConversationError', role: 'alert' }, '上一段对话打不开：' + service.dockError) : null,
+				chosen ? h('label', { htmlFor: selectorId }, '使用已有工作区',
+					h('select', {
+						id: selectorId, className: 'vssWbWorkspaceSelect', 'data-vssaros-wb-workspace-picker': owner,
+						value: chosen.workspaceId, disabled,
+						onChange: event => service.selectWorkspace(owner, event.target.value),
+					}, ...workspaces.map(w => h('option', { key: w.workspaceId, value: w.workspaceId }, w.title || w.path || w.workspaceId))),
+					h('small', { className: 'vssWbWorkspacePath' }, chosen.path)) : h('p', null, '尚无可用工作区，请选择项目文件夹。'),
 				h('div', { className: 'vssWbConversationActions' },
-					h('button', { type: 'button', disabled: busy, onClick: () => run(() => service.newSession()) }, busy ? '正在打开…' : '开始对话'),
-					h('button', { type: 'button', disabled: busy, onClick: () => run(() => service.newWorkspaceSession()) }, '选择文件夹…')),
+					chosen ? h('button', { type: 'button', disabled, onClick: () => run(() => service.newSessionFor(owner, chosen.workspaceId)) }, busy ? '正在打开…' : '开始对话') : null,
+					h('button', { type: 'button', disabled, onClick: () => run(() => service.newWorkspaceSessionFor(owner)) }, '新建工作区并开始对话…')),
+				hidden.length ? h('details', null, h('summary', null, '已隐藏的工作区'),
+					...all.filter(w => hidden.includes(w.workspaceId)).map(w => h('button', {
+						key: w.workspaceId, type: 'button', disabled, onClick: () => run(() => service.showWorkspace(w.workspaceId, owner)),
+					}, '重新显示 · ' + (w.title || w.path)))) : null,
 				error ? h('p', { className: 'vssWbConversationError', role: 'alert' }, error) : null);
 		}
 		/**
@@ -984,9 +2812,12 @@ window.__ModuleLoader__.load({
 			const [element, setElement] = React.useState(null);
 			React.useEffect(() => (element ? service.registerSplitDock(entry.id, element) : undefined), [element, entry.id]);
 			const docked = service.splitSessionOf(entry.id);
-			return h('div', { className: 'vssWbSplitConversation', 'data-vssaros-wb-split-conversation': entry.id },
+			const collapsed = service.assistantCollapsed.get(entry.id) === true;
+			return h('div', { className: 'vssWbSplitConversation', 'data-vssaros-wb-split-conversation': entry.id,
+				id: 'vssaros-assistant-' + entry.id, 'aria-label': 'AI 助手', hidden: collapsed,
+				'data-vssaros-assist-collapsed': collapsed ? '1' : '0' },
 				h(NewSessionButton, { service, entry }),
-				docked ? null : h(ConversationStart, { service }),
+				docked ? null : h(ConversationStart, { service, entry }),
 				h('div', { ref: setElement, className: 'vssWbDock', 'data-vssaros-wb-split-dock': entry.id, hidden: !docked }));
 		}
 		/**
@@ -1137,8 +2968,13 @@ window.__ModuleLoader__.load({
 		 */
 		function attachActionsDrag(el, frameEl) {
 			let drag = null;
+			const disposers = [];
+			const listen = (target, name, listener, capture) => {
+				target.addEventListener(name, listener, capture);
+				disposers.push(() => target.removeEventListener(name, listener, capture));
+			};
 
-			el.addEventListener('pointerdown', (ev) => {
+			listen(el, 'pointerdown', (ev) => {
 				if (ev.button !== 0 && ev.pointerType === 'mouse') { return; }
 				const fr = frameEl.getBoundingClientRect();
 				const br = el.getBoundingClientRect();
@@ -1150,13 +2986,13 @@ window.__ModuleLoader__.load({
 				};
 			});
 
-			el.addEventListener('contextmenu', (ev) => {
+			listen(el, 'contextmenu', (ev) => {
 				ev.preventDefault();
 				applyActionsPos(el, null);
 				try { localStorage.removeItem(ACTIONS_POS_KEY); } catch (e) { /* ignore */ }
 			});
 
-			window.addEventListener('pointermove', (ev) => {
+			listen(window, 'pointermove', (ev) => {
 				if (!drag || ev.pointerId !== drag.pointerId) { return; }
 				if (!el.isConnected) { drag = null; return; }
 				const dx = ev.clientX - drag.startX;
@@ -1193,8 +3029,9 @@ window.__ModuleLoader__.load({
 				// 位置变了 ⇒ 标签方向可能也要翻（贴左边就改到右侧）
 				if (el.__vssSyncLabel) { el.__vssSyncLabel(); }
 			};
-			window.addEventListener('pointerup', finish, true);
-			window.addEventListener('pointercancel', finish, true);
+			listen(window, 'pointerup', finish, true);
+			listen(window, 'pointercancel', finish, true);
+			return () => { drag = null; disposers.forEach(dispose => dispose()); };
 		}
 
 		/**
@@ -1302,6 +3139,7 @@ window.__ModuleLoader__.load({
 		function restoreActionsPos(el, frameEl) {
 			mountedActions.add(el);
 			let restored = false;
+			let diagnoseTimer;
 			const tryRestore = () => {
 				if (restored || !el.isConnected) { return; }
 				const fr = frameEl.getBoundingClientRect();
@@ -1314,11 +3152,11 @@ window.__ModuleLoader__.load({
 					}
 				} catch { /* localStorage 不可用 ⇒ 用默认位置 */ }
 				// 外框第一次有尺寸 ⇒ 等布局稳定（0.8s）再量一次
-				setTimeout(() => diagnoseActions(el, frameEl, ''), 800);
+				diagnoseTimer = setTimeout(() => diagnoseActions(el, frameEl, ''), 800);
 			};
 			tryRestore();
 			// 兜底：6 秒后外框还是没尺寸 ⇒ 它一直是隐藏的（页签没显示 / display:none），照样上报一次
-			setTimeout(() => { if (!restored) { diagnoseActions(el, frameEl, '外框 6 秒内始终没有尺寸（隐藏 / 未显示）'); } }, 6000);
+			const fallbackTimer = setTimeout(() => { if (!restored) { diagnoseActions(el, frameEl, '外框 6 秒内始终没有尺寸（隐藏 / 未显示）'); } }, 6000);
 			try {
 				// 面板出现 / 窗口缩放 / 分栏比例变化都会触发 ⇒ 既补"挂载时还没显示"，也补"拖过之后尺寸变了"
 				const ro = new ResizeObserver(() => {
@@ -1328,6 +3166,11 @@ window.__ModuleLoader__.load({
 				ro.observe(frameEl);
 				el.__vssActionsResize = ro;
 			} catch { /* 老运行时没有 ResizeObserver ⇒ 至少还有挂载时那一次 */ }
+			return () => {
+				clearTimeout(diagnoseTimer); clearTimeout(fallbackTimer);
+				el.__vssActionsResize?.disconnect();
+				mountedActions.delete(el);
+			};
 		}
 
 		/**
@@ -1353,8 +3196,8 @@ window.__ModuleLoader__.load({
 			el.addEventListener('pointerenter', syncLabelSide);
 			syncLabelSide();
 
-			attachActionsDrag(el, frameEl);
-			restoreActionsPos(el, frameEl);
+			const disposeDrag = attachActionsDrag(el, frameEl);
+			const disposePosition = restoreActionsPos(el, frameEl);
 
 			const syncAssist = () => {
 				const host = frameEl.querySelector('[data-vssaros-assist-collapsed]');
@@ -1375,6 +3218,8 @@ window.__ModuleLoader__.load({
 					const icon = state === '1' ? '«' : '»';
 					if (btn.textContent !== icon) { btn.textContent = icon; }
 					if (btn.title !== text) { btn.title = text; }
+					btn.setAttribute('aria-label', text);
+					btn.setAttribute('aria-expanded', String(state === '0'));
 					const label = btn.parentElement ? btn.parentElement.querySelector('.wbLabel') : null;
 					if (label && label.textContent !== text) { label.textContent = text; }
 				}
@@ -1390,6 +3235,13 @@ window.__ModuleLoader__.load({
 				el.__vssAssistObserver = mo;
 			} catch (e) { /* ignore */ }
 			syncAssist();
+			return () => {
+				disposeDrag(); disposePosition();
+				el.__vssAssistObserver?.disconnect();
+				el.removeEventListener('pointerenter', syncLabelSide);
+				el.__vssMounted = false;
+				delete el.__vssSyncLabel;
+			};
 		}
 
 		/**
@@ -1515,32 +3367,50 @@ window.__ModuleLoader__.load({
 		}
 		function Frame({ service, entry }) {
 			useService(service);
+			const [inlineMounts, setInlineMounts] = React.useState(0);
+			const [ready, setReady] = React.useState(false);
+			const claim = React.useCallback(() => {
+				setInlineMounts(count => count + 1);
+				return () => setInlineMounts(count => count - 1);
+			}, []);
+			React.useLayoutEffect(() => { setReady(true); }, []);
+			const hasFallback = ready && inlineMounts === 0;
+			const collapsed = service.assistantCollapsed.get(entry.id) === true;
+			const actionsRef = React.useRef(null);
+			React.useEffect(() => {
+				const element = actionsRef.current;
+				return element ? mountActions(element, element.closest('.vssWbFrame') || element.parentElement) : undefined;
+			}, [entry.id]);
 			const props = { service, entry };
 			if (entry.customFrame) { props.active = service.active === entry.id; props.conversation = h(ConversationMount, { service, entry }); }
 			// ★ 外开链接**不再挂载时预取**：token 属于当前进程，宿主一重启旧链接就 401。
 			//   改为每次点击现取（`openWorkbenchInBrowser` 里同步开窗 + 异步导航）。
-			// ★ 2026-10-31（用户：「自动化任务 工作台中，不要有 浮动工具栏」）：
-			//   工作台可用 `floatingActions: false` 退出 S2 浮动胶囊（scheduler 已声明）。
-			const actions = entry.floatingActions === false ? [] : [h('div', {
+			const actions = [h('div', {
 					className: 'vssWbActions',
 					'data-vssaros-wb-actions': entry.id,
-					'data-assist': 'none',
-					ref: (el) => {
-						if (!el) { return; }
-						mountActions(el, el.closest('.vssWbFrame') || el.parentElement);
-					},
+					'data-assist': '1',
+					role: 'toolbar', 'aria-label': 'AI 助手工具栏', 'aria-orientation': 'vertical',
+					ref: actionsRef,
 				},
 					h('div', { className: 'wbWrap wbWrapAssist' },
 						h('button', {
 							type: 'button',
 							className: 'wbAct wbActAssist',
 							'data-vssaros-wb-assist': entry.id,
+							'aria-label': '展开 AI 助手', 'aria-expanded': false,
+							'aria-controls': 'vssaros-assistant-' + entry.id,
 							title: '展开 AI 助手',
 							onClick: (ev) => {
 								ev.preventDefault();
 								ev.stopPropagation();
 								const frameEl = ev.currentTarget.closest('.vssWbFrame');
 								if (!frameEl) { return; }
+								const assistant = frameEl.querySelector('[data-vssaros-assist-collapsed]');
+								if (frameEl.querySelector('[data-vssaros-wb-hosted-assistant], [data-vssaros-wb-split-conversation]')
+									|| assistant?.hasAttribute('data-vssaros-wb-conversation')) {
+									service.assistantCollapsed.set(entry.id, !collapsed); service.publish(); return;
+								}
+								const navigation = service.navigation;
 								/* ★ 一个按钮两种动作（2026-10-26 用户要求）：
 								   已收起 ⇒ 派发 `assist-expand`；已展开 ⇒ 派发 `assist-collapse`。
 								   状态取外壳自己维护的 `data-assist`（syncAssist 同步的，比再查 DOM 稳）。
@@ -1570,6 +3440,7 @@ window.__ModuleLoader__.load({
 								const willFallback = type === 'vssaros:assist-expand' && after !== '0';
 								if (willFallback) {
 									setTimeout(() => {
+										if (!service.navigationCurrent(entry.id, navigation) || !frameEl.isConnected) { return; }
 										try {
 											const host = frameEl.querySelector('[data-vssaros-assist-collapsed]');
 											const cur = host && host.getAttribute('data-vssaros-assist-collapsed');
@@ -1592,7 +3463,7 @@ window.__ModuleLoader__.load({
 										// preset 只用 agentPresets.list() 里真实存在的（不存在的 id 会把会话弄坏）
 										Promise.resolve(service.readyPreset(entry.id))
 											.catch(() => '')
-											.then((preset) => { startAssist(preset); });
+											.then(preset => { if (service.navigationCurrent(entry.id, navigation) && frameEl.isConnected) { startAssist(preset); } });
 									}, 200);
 								}
 							},
@@ -1600,12 +3471,13 @@ window.__ModuleLoader__.load({
 						// S4：hover 时在左侧滑出文字（面板右边缘 ⇒ 左侧才有空间）
 						h('span', { className: 'wbLabel' }, '展开 AI 助手'),
 					),
-					h('div', { className: 'wbDivider' }),
-					h('div', { className: 'wbWrap wbWrapOpen' },
+					entry.floatingActions === false ? null : h('div', { className: 'wbDivider' }),
+					entry.floatingActions === false ? null : h('div', { className: 'wbWrap wbWrapOpen' },
 						h('button', {
 							type: 'button',
 							className: 'wbAct wbActOpen',
 							'data-vssaros-wb-open-external': entry.id,
+							'aria-label': '在浏览器中打开工作台',
 							title: '在浏览器中打开这个工作台（含右侧 AI 助手；被拦截时按钮会变橙，再点一次即可）',
 							onClick: (ev) => {
 								ev.preventDefault();
@@ -1629,6 +3501,7 @@ window.__ModuleLoader__.load({
 					h(PanelLoadingGate, { entry },
 						h('div', {
 							className: 'vssWbSplit', 'data-vssaros-wb-split': entry.id,
+							'data-assist-collapsed': collapsed ? '1' : '0',
 							'data-business-side': (entry.layout && entry.layout.businessSide) || 'right',
 							style: { '--vssaros-wb-business-width': ((Number.isFinite(width) ? width : 0.36) * 100) + '%' },
 						},
@@ -1636,8 +3509,17 @@ window.__ModuleLoader__.load({
 							h('div', { className: 'vssWbSplitBusiness' }, h(PanelBoundary, { entry }, h(entry.Component, props))))));
 			}
 			return h(HeaderHost, { entry }, ...actions,
-				h(PanelLoadingGate, { entry },
-					h(PanelBoundary, { entry }, h(entry.Component, props))));
+				h('div', { className: 'vssWbHostedLayout', 'data-vssaros-wb-hosted-layout': entry.id },
+					h('div', { className: 'vssWbHostedBusiness' },
+						h(InlineAssistantContext.Provider, { value: claim },
+							h(PanelLoadingGate, { entry }, h(PanelBoundary, { entry }, h(entry.Component, props))))),
+					hasFallback ? h('aside', {
+						className: 'vssWbHostedAssistant', 'data-vssaros-wb-hosted-assistant': entry.id,
+						'aria-label': 'AI 助手', 'data-collapsed': collapsed ? '1' : '0',
+						'data-vssaros-assist-collapsed': collapsed ? '1' : '0',
+					},
+						h('div', { id: 'vssaros-assistant-' + entry.id, className: 'vssWbHostedContent', hidden: collapsed },
+							h(ConversationMount, { service, entry, fallback: true }))) : null));
 		}
 
 		// ── 会话停靠：根覆盖层条目（声明 session 作用域子槽）+ 子槽里的对话面板 ─────────────────
@@ -1655,19 +3537,19 @@ window.__ModuleLoader__.load({
 				React.useEffect(() => {
 					if (!sessionId) { setReference(null); return undefined; }
 					let ref = null;
+					let canceled = false;
+					const owner = target.id;
+					const failed = error => {
+						if (canceled) { return; }
+						service.markDead(sessionId, error);
+						void service.clearStaleBinding(owner, sessionId);
+					};
 					try {
 						ref = service.ctx.sessions.retain(sessionId, { source: 'workbench' });
-					} catch (error) {
-						service.markDead(sessionId, error);
-						// 自愈：清掉指向这条失效会话的绑定 ⇒ 下次打开工作台不再卡在它上面
-						service.clearStaleBinding(service.active, sessionId);
-						return undefined;
-					}
+					} catch (error) { failed(error); return undefined; }
 					setReference({ sessionId, ref });
-					if (ref && ref.ready && typeof ref.ready.then === 'function') {
-						ref.ready.then(undefined, error => service.markDead(sessionId, error));
-					}
-					return () => { setReference(null); try { ref.release(); } catch { /* 已释放 */ } };
+					if (ref && ref.ready && typeof ref.ready.then === 'function') { ref.ready.then(undefined, failed); }
+					return () => { canceled = true; setReference(null); try { ref.release(); } catch { /* 已释放 */ } };
 				}, [sessionId]);
 				// ★ 2026-11-02：停靠的会话若还没开聊（hero 空态），套上**这个工作台**的默认 agent。
 				//   目标只有一个：覆盖层此刻正在渲染的 `target.id` 的 `target.sessionId`（不碰全局当前会话）。
@@ -1709,15 +3591,47 @@ window.__ModuleLoader__.load({
 			return function VssarosWorkbenchView({ id, active }) {
 				const [, bump] = React.useState(0);
 				React.useEffect(() => service.subscribe(() => bump(v => v + 1)), []);
-				React.useEffect(() => { if (active) { service.activate(id); } }, [id, active]);
+				React.useEffect(() => {
+					if (!active) { return undefined; }
+					service.activate(id);
+					return () => service.deactivate(id);
+				}, [id, active]);
 				const entry = service.providers.get(id);
 				return entry ? h(Frame, { service, entry }) : null;
+			};
+		}
+
+		function makePageView(service) {
+			return function WorkbenchPageView({ id, title, active, children }) {
+				useService(service);
+				const content = React.useRef(children);
+				content.current = children;
+				const entry = React.useMemo(() => {
+					const Component = () => content.current;
+					const repository = String(id).startsWith('vssaros/') ? 'vssaros:' + id.slice(8)
+						: String(id).startsWith('local:') ? id : 'https://github.com/' + id;
+					return { ...normalize({ title: title || id, repository, customFrame: true, floatingActions: false }, Component), Component };
+				}, [id, title]);
+				React.useLayoutEffect(() => service.registerPageFrame(entry), [entry]);
+				React.useEffect(() => {
+					if (!active) { return undefined; }
+					service.activate(id);
+					return () => service.deactivate(id);
+				}, [id, active, !!service.state]);
+				return h(Frame, { service, entry });
 			};
 		}
 
 		const STYLE_ID = 'vssaros-workbenches-style';
 		const CSS = `
 .vssWbFrame { position:relative; display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; height:100%; overflow:auto; container-type:inline-size; container-name:vss-workbench; }
+.vssWbHostedLayout { display:flex; flex:1; width:100%; min-width:0; min-height:0; overflow:hidden; }
+.vssWbHostedBusiness { display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; overflow:hidden; }
+.vssWbHostedAssistant { display:flex; flex-direction:column; flex:0 0 clamp(280px, 36%, 440px); min-width:0; min-height:0; border-left:1px solid var(--dsw-alias-border-l2); background:var(--dsw-alias-bg-base); }
+.vssWbHostedAssistant[data-collapsed="1"] { flex-basis:0; border-left:0; overflow:hidden; }
+.vssWbHostedContent { display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; overflow:auto; }
+.vssWbHostedContent[hidden] { display:none; }
+@container vss-workbench (max-width:600px) { .vssWbHostedAssistant:not([data-collapsed="1"]) { flex-basis:52%; } }
 .vssWbFailure { margin:48px auto; max-width:520px; padding:24px; border-radius:12px; border:1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3)); }
 .vssWbFailure h2 { margin:0 0 8px; font-size:16px; }
 .vssWbFailure p { margin:0 0 12px; opacity:.8; font-size:13px; line-height:1.6; }
@@ -1727,6 +3641,9 @@ window.__ModuleLoader__.load({
 .vssWbConversation p { margin:0; opacity:.85; }
 .vssWbConversationActions { display:flex; gap:8px; flex-wrap:wrap; }
 .vssWbConversationActions button { padding:6px 14px; border-radius:999px; cursor:pointer; border:1px solid var(--dsw-alias-border-l2, #3e3e3e); background: var(--dsw-alias-bg-layer-1, #262626); color: inherit; font: inherit; }
+.vssWbWorkspaceSelect { display:block; width:100%; min-width:0; margin-top:8px; padding:8px; border-radius:6px; border:1px solid var(--dsw-alias-border-l2, #3e3e3e); background:var(--dsw-alias-bg-layer-1, #262626); color:var(--dsw-alias-label-primary, #e6e6ea); font:inherit; }
+.vssWbWorkspacePath { display:block; margin-top:6px; overflow-wrap:anywhere; color:var(--dsw-alias-label-secondary, currentColor); }
+.vssWbWorkspaceSelect:focus-visible, .vssWbConversation button:focus-visible { outline:2px solid var(--dsw-alias-label-primary, currentColor); outline-offset:2px; }
 .vssWbConversationError { color: var(--dsw-alias-state-error-primary, #e5484d); }
 .vssWbDockHost { position:relative; display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; height:100%; }
 /* AI 助手栏右上角「＋ 新会话」：所有工作台共用一份（2026-11-02）。z-index 低于浮动工具栏，但高于对话内容。 */
@@ -1741,6 +3658,12 @@ window.__ModuleLoader__.load({
    中间插一层如果用了横向 flex，子面板的宽度就变成"内容宽度"⇒ 记忆库被压成一条窄栏、文字竖排（2026-11-02 真机）。 */
 .vssWbPanelContent { display:flex; flex-direction:column; flex:1 1 auto; min-height:0; min-width:0; }
 .vssWbPanelContent > * { flex:1 1 auto; min-width:0; min-height:0; }
+/* ★ 2026-11-19 右侧栏工作台 tab：根必须有确定高度，否则 .wb/iframe 的 100% 在 auto 父级上失效，
+   只剩工具条高度，被 .paneContent 的 overflow:hidden 裁成截图里的「内容被截断」。
+   与 client.workbenchNav.js 的中栏修复同口径：flex:1 1 auto + height:100% + min-height:0 双保险。 */
+[data-vssaros-wb-sidebar-page] { display:flex; flex-direction:column; flex:1 1 auto; min-width:0; min-height:0; width:100%; height:100%; overflow:hidden; }
+[data-vssaros-wb-sidebar-page] > * { flex:1 1 auto; min-width:0; min-height:0; }
+[data-vssaros-wb-sidebar-page] > iframe { display:block; flex:1 1 auto; width:100%; height:100%; min-height:0; border:0; }
 .vssWbLoading { position:absolute; inset:0; z-index:6; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;
   background:var(--dsw-alias-bg-base, #1b1b1f); opacity:1; transition:opacity .18s ease; }
 .vssWbLoading.is-out { opacity:0; pointer-events:none; }
@@ -1749,13 +3672,15 @@ window.__ModuleLoader__.load({
 .vssWbLoadingCap { font-size:11px; letter-spacing:.4px; color:var(--dsw-alias-label-tertiary, rgba(230,230,234,.45)); }
 .vssWbLoadingHint { font-size:10.5px; color:var(--dsw-alias-label-caption, rgba(230,230,234,.30)); }
 @keyframes vssWbPulse { 0%,100% { opacity:.55; transform:scale(.985); } 50% { opacity:1; transform:scale(1); } }
-.vssWbDock[hidden] { display:none; }
+.vssWbDock[hidden], .vssWbDockHost[hidden] { display:none; }
 /* ★ 2026-11-02 标准分栏：左对话 / 右业务（业务宽度走 --vssaros-wb-business-width，0.25–0.7）。
    窄容器（<720px）自动叠成上下：先业务、后对话，避免把业务面板压成一条缝。 */
 .vssWbSplit { display:flex; flex:1; min-height:0; min-width:0; flex-direction:row; }
 .vssWbSplit[data-business-side="left"] { flex-direction:row-reverse; }
 .vssWbSplitConversation { position:relative; display:flex; flex-direction:column; flex:1 1 auto; min-width:0; min-height:0; border-right:1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.18)); }
 .vssWbSplitBusiness { display:flex; flex-direction:column; flex:0 0 var(--vssaros-wb-business-width, 36%); min-width:0; min-height:0; }
+.vssWbSplitConversation[hidden] { display:none; }
+.vssWbSplit[data-assist-collapsed="1"] .vssWbSplitBusiness { flex:1 1 auto; }
 /* ★ 2026-11-02：业务在左（row-reverse）时，对话列视觉上跑到**右边** ⇒ 它原来的 border-right 会落到
    窗口最右边缘（看着像少了一条分栏线）⇒ 改画在对话列的**左**边（业务与对话之间）。 */
 .vssWbSplit[data-business-side="left"] .vssWbSplitConversation {
@@ -1780,6 +3705,8 @@ window.__ModuleLoader__.load({
 .vssWbActions .wbWrap { position:relative; display:flex; }
 .vssWbActions .wbAct { width:26px; height:25px; padding:0; display:inline-flex; align-items:center; justify-content:center; border:0; border-radius:7px; background:transparent; color:var(--dsw-alias-label-secondary, #9d9da7); font:13px/1 -apple-system, Segoe UI, sans-serif; cursor:pointer; transition:color .14s, background .14s, box-shadow .14s; }
 .vssWbActions .wbAct:hover { background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.16)); color:var(--dsw-alias-label-primary, #e6e6ea); }
+.vssWbActions .wbAct:focus-visible { outline:2px solid var(--dsw-alias-label-primary, currentColor); outline-offset:2px; }
+.vssWbActions .wbWrap:focus-within .wbLabel { opacity:1; transform:translateY(-50%) translateX(0); }
 .vssWbActions .wbActAssist { color:#6cb0ff; }
 .vssWbActions .wbActAssist:hover { color:#a8d2ff; box-shadow:0 0 12px rgba(47,129,247,.55) inset; }
 .vssWbActions .wbDivider { height:1px; margin:1px 3px; background:linear-gradient(90deg, transparent, rgba(47,129,247,.75), transparent); }
@@ -1790,6 +3717,105 @@ window.__ModuleLoader__.load({
 .vssWbActions[data-label="right"] .wbLabel { right:auto; left:34px; transform:translateY(-50%) translateX(-4px); }
 .vssWbActions[data-label="right"] .wbWrap:hover .wbLabel { transform:translateY(-50%) translateX(0); }
 .vssWbDockedConversation { display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; height:100%; }
+/* P3 右侧「开始」页：按 dsh-sidebar-layout.html?v=6 的视觉契约实现。只使用主题令牌，不写死表面色。 */
+.vssaros-home { display:block; flex:1 1 auto; width:100%; height:100%; min-width:0; max-width:100%; min-height:0; box-sizing:border-box; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; scrollbar-width:thin; padding:27px 24px 20px; color:var(--dsw-alias-label-primary); background:var(--dsw-alias-bg-base); container-type:inline-size; font:13px/1.6 -apple-system, BlinkMacSystemFont, Segoe UI, Microsoft YaHei, sans-serif; }
+.vssaros-home, .vssaros-home * { box-sizing:border-box; }
+.vssaros-home button, .vssaros-home input { font:inherit; color:inherit; }
+.vssaros-home button { cursor:pointer; border:0; background:none; }
+.vssaros-home button:disabled { cursor:not-allowed; opacity:.5; }
+.vssaros-home :focus-visible { outline:2px solid var(--dsw-alias-brand-primary); outline-offset:2px; }
+.vssaros-home-icon { width:18px; height:18px; flex-shrink:0; fill:none; stroke:currentColor; stroke-width:1.65; stroke-linecap:round; stroke-linejoin:round; }
+.vssaros-home-small { font-size:11px; color:var(--dsw-alias-label-tertiary); }
+.vssaros-home-search { display:flex; align-items:center; gap:7px; background:var(--dsw-alias-bg-layer-1); border:1px solid var(--dsw-alias-border-l2); border-radius:9px; padding:8px 10px; margin-bottom:14px; }
+.vssaros-home-search:focus-within { border-color:var(--dsw-alias-brand-primary); }
+.vssaros-home-search svg { width:15px; height:15px; color:var(--dsw-alias-label-tertiary); }
+.vssaros-home-search input { width:100%; min-width:0; border:0; background:none; outline:none; font-size:12px; }
+.vssaros-home-filters { display:flex; gap:5px; margin-bottom:19px; }
+.vssaros-home-filter { border-radius:6px; font-size:11px; padding:4px 10px; color:var(--dsw-alias-label-secondary); }
+.vssaros-home-filter.active { background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); }
+.vssaros-home-filter:hover:not(:disabled) { background:var(--dsw-alias-bg-layer-3); }
+.vssaros-home-section-head { display:flex; align-items:center; gap:6px; margin:19px 0 10px; }
+.vssaros-home-tools-heading { margin-top:19px; }
+.vssaros-home-section-head h2 { font-size:12px; font-weight:600; margin:0; }
+.vssaros-home-section-head .vssaros-home-small { margin-left:auto; }
+.vssaros-home-pill { display:inline-flex; align-items:center; padding:2px 7px; border:1px solid var(--dsw-alias-border-l2); border-radius:6px; font-size:10px; color:var(--dsw-alias-label-secondary); }
+.vssaros-home-view-tools { margin-left:auto; display:flex; align-items:center; gap:4px; color:var(--dsw-alias-label-secondary); font-size:10px; padding:4px 7px; border-radius:6px; }
+.vssaros-home-view-tools:hover:not(:disabled) { background:var(--dsw-alias-bg-layer-2); }
+.vssaros-home-view-tools .vssaros-home-chevron { width:13px; height:13px; }
+.vssaros-home-tool-grid, .vssaros-home-workbench-grid { display:grid; gap:9px; min-width:0; max-width:100%; }
+.vssaros-home-tool-grid { grid-template-columns:minmax(0,1fr); }
+.vssaros-home-workbench-grid { grid-template-columns:repeat(2,minmax(0,1fr)); min-width:0; max-width:100%; }
+.vssaros-home-entry-card { display:flex; align-items:center; gap:13px; text-align:left; width:100%; min-width:0; border:1px solid var(--dsw-alias-border-l3); border-radius:13px; background:var(--dsw-alias-card-fill); padding:12px 14px; min-height:61px; transition:background .16s,border-color .16s; }
+.vssaros-home-entry-card:hover:not(:disabled) { background:var(--dsw-alias-card-fill-hover); border-color:var(--dsw-alias-label-tertiary); }
+.vssaros-home-entry-icon { display:grid; place-items:center; color:var(--dsw-alias-label-secondary); }
+.vssaros-home-entry-icon svg { width:20px; height:20px; }
+.vssaros-home-entry-body { flex:1; min-width:0; }
+.vssaros-home-entry-card b { display:block; font-size:12px; font-weight:600; }
+.vssaros-home-entry-card p { margin:2px 0 0; color:var(--dsw-alias-label-secondary); font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vssaros-home-entry-key { font-size:9px; white-space:nowrap; color:var(--dsw-alias-label-secondary); margin-left:auto; }
+.vssaros-home-more-wrap { grid-column:1/-1; position:relative; }
+.vssaros-home-more-card { grid-column:1/-1; display:flex; align-items:center; gap:8px; min-height:40px; width:100%; border:1px dashed var(--dsw-alias-border-l2); border-radius:9px; background:var(--dsw-alias-bg-layer-1); padding:7px 12px; }
+.vssaros-home-more-card svg { width:16px; height:16px; color:var(--dsw-alias-label-secondary); }
+.vssaros-home-more-card b { font-weight:500; font-size:11px; }
+.vssaros-home-more-card[aria-expanded="true"] { border-color:var(--dsw-alias-label-tertiary); background:var(--dsw-alias-bg-layer-2); }
+.vssaros-home-chevron { margin-left:auto; width:13px; height:13px; transition:transform .15s; }
+.vssaros-home-more-card[aria-expanded="true"] .vssaros-home-chevron { transform:rotate(180deg); }
+.vssaros-home-menu { padding:5px; border:1px solid var(--dsw-alias-border-l3); border-radius:10px; background:var(--dsw-alias-bg-layer-3); font-size:12px; }
+.vssaros-home-menu button { display:flex; align-items:center; gap:9px; min-height:37px; text-align:left; width:100%; padding:8px 10px; border-radius:6px; white-space:nowrap; }
+.vssaros-home-menu button:hover, .vssaros-home-menu button:focus-visible { background:var(--dsw-alias-bg-layer-2); }
+.vssaros-home-menu svg { width:15px; height:15px; color:var(--dsw-alias-label-secondary); }
+.vssaros-home-menu-separator { height:1px; background:var(--dsw-alias-border-l3); margin:4px 7px; }
+.vssaros-home-workbench-card { position:relative; min-width:0; max-width:100%; min-height:84px; border:1px solid var(--dsw-alias-border-l2); border-radius:11px; background:var(--dsw-alias-bg-layer-1); overflow:visible; scroll-margin-top:16px; transition:background .16s,border-color .16s; }
+.vssaros-home-workbench-card:hover:not(:disabled) { border-color:var(--dsw-alias-border-l3); }
+.vssaros-home-workbench-card:target { border-color:var(--dsw-alias-brand-primary); box-shadow:inset 0 0 0 1px var(--dsw-alias-brand-primary); }
+.vssaros-home-workbench-card:target .vssaros-home-anchor { color:var(--dsw-alias-brand-primary); }
+.vssaros-home-workbench-card.is-dragging { opacity:.35; }
+.vssaros-home-workbench-card.is-drop-target { box-shadow:inset 0 0 0 2px var(--dsw-alias-brand-primary); }
+.vssaros-home-workbench-card.is-keyboard-dragging { outline:2px solid var(--dsw-alias-brand-primary); outline-offset:2px; }
+.vssaros-home-workbench-open { display:block; width:100%; height:100%; min-height:100px; text-align:left; padding:13px 12px 11px; border:0; border-radius:10px; background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-primary); }
+.vssaros-home-workbench-open header { display:flex; align-items:center; gap:7px; margin-bottom:5px; padding-right:27px; }
+.vssaros-home-workbench-open header svg { width:15px; height:15px; color:var(--dsw-alias-label-secondary); }
+.vssaros-home-workbench-open header strong { font-size:12px; font-weight:500; min-width:0; white-space:nowrap; text-overflow:ellipsis; overflow:hidden; }
+.vssaros-home-workbench-open p { margin:0; color:var(--dsw-alias-label-secondary); font-size:10px; white-space:nowrap; text-overflow:ellipsis; overflow:hidden; }
+.vssaros-home-new-badge { margin-left:auto; font-size:9px; color:var(--dsw-alias-state-success-primary); }
+.vssaros-home-workbench-open .vssaros-home-new-badge { position:absolute; right:13px; bottom:10px; }
+.vssaros-home-source { color:var(--dsw-alias-label-tertiary); font-size:9px; margin-top:5px; padding-right:20px; white-space:nowrap; text-overflow:ellipsis; overflow:hidden; }
+.vssaros-home-drag-handle { position:absolute; right:4px; top:4px; display:grid; place-items:center; width:32px; height:32px; border:1px solid var(--dsw-alias-border-l2); border-radius:6px; color:var(--dsw-alias-label-tertiary); background:var(--dsw-alias-bg-layer-1); cursor:grab; touch-action:none; }
+.vssaros-home-anchor { z-index:1; }
+.vssaros-home-drag-handle svg { width:15px; height:15px; }
+.vssaros-home-drag-handle:active { cursor:grabbing; }
+.vssaros-home-drag-handle:hover:not(:disabled) { background:var(--dsw-alias-bg-layer-2); }
+.vssaros-home-drag-preview { border:1px solid var(--dsw-alias-border-l3); border-radius:11px; background:var(--dsw-alias-bg-layer-2); }
+.vssaros-home-drag-preview [data-vssaros-home-drag] { display:none; }
+.vssaros-home-drag-help, .vssaros-home-keyboard-help { font-size:10px; color:var(--dsw-alias-label-tertiary); margin:0 0 10px; }
+.vssaros-home-keyboard-help { margin-top:10px; }
+.vssaros-home-tool-order-row { display:flex; align-items:center; gap:4px; border:1px solid var(--dsw-alias-border-l3); border-radius:11px; background:var(--dsw-alias-card-fill); padding-right:6px; min-width:0; }
+.vssaros-home-tool-order-row .vssaros-home-entry-card { border:0; background:none; padding:11px 9px; flex:1; }
+.vssaros-home-tool-order-row .vssaros-home-entry-key { display:none; }
+.vssaros-home-tool-order-controls { display:flex; flex-shrink:0; gap:2px; }
+.vssaros-home-icon-button { display:grid; place-items:center; width:27px; height:30px; border:1px solid var(--dsw-alias-border-l3); border-radius:7px; background:var(--dsw-alias-bg-layer-1); }
+.vssaros-home-icon-button svg { width:13px; height:13px; }
+.vssaros-home-icon.down { transform:rotate(180deg); }
+.vssaros-home-tool-order-actions { grid-column:1/-1; display:flex; align-items:center; gap:6px; padding:7px 0; }
+.vssaros-home-tool-order-actions .vssaros-home-small { flex:1; }
+.vssaros-home-button { font-size:11px; padding:5px 9px; border:1px solid var(--dsw-alias-border-l3); border-radius:8px; }
+.vssaros-home-button:hover:not(:disabled) { background:var(--dsw-alias-bg-layer-2); }
+.vssaros-home-empty { padding:25px; text-align:center; color:var(--dsw-alias-label-secondary); }
+.vssaros-home-notice { font-size:11px; color:var(--dsw-alias-label-secondary); margin-top:10px; }
+.vssaros-home-install-notice { margin:0 0 14px; padding:8px 10px; border:1px solid var(--dsw-alias-border-l3); border-radius:8px; background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-secondary); font-size:11px; line-height:1.6; overflow-wrap:anywhere; }
+.vssaros-home-dialog-backdrop { position:fixed; inset:0; z-index:100; display:grid; place-items:center; background:var(--dsw-alias-bg-base); }
+.vssaros-home-dialog { width:min(470px,92vw); max-height:86dvh; overflow:auto; border:1px solid var(--dsw-alias-border-l3); border-radius:16px; padding:24px; background:var(--dsw-alias-bg-layer-1); }
+.vssaros-home-dialog header { display:flex; align-items:center; justify-content:space-between; }
+.vssaros-home-dialog h2 { font-size:20px; margin:0 0 10px; }
+.vssaros-home-dialog p { font-size:13px; color:var(--dsw-alias-label-secondary); }
+.vssaros-home-dialog .vssaros-home-search { margin-top:12px; }
+.vssaros-home-dialog-tools { display:grid; gap:8px; max-height:55dvh; overflow:auto; padding:4px; }
+.vssaros-home-dialog-tools .vssaros-home-entry-card { flex-shrink:0; }
+.vssaros-home-dialog-note { font-size:10px; color:var(--dsw-alias-label-tertiary); }
+@container (min-width:376px) { .vssaros-home-tool-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .vssaros-home-tool-grid .vssaros-home-entry-key { display:none; } .vssaros-home-tool-grid .vssaros-home-entry-card { padding:11px 10px; gap:8px; } .vssaros-home-tool-grid .vssaros-home-entry-icon svg { width:17px; height:17px; } }
+@container (max-width:375px) { .vssaros-home { padding:22px 16px; } .vssaros-home-workbench-grid { grid-template-columns:1fr; } .vssaros-home-entry-key { display:none; } }
+@media(pointer:coarse) { .vssaros-home-menu button { min-height:44px; } .vssaros-home-drag-handle { width:44px; height:44px; right:0; top:0; } .vssaros-home-workbench-open header { padding-right:34px; } }
+@media(prefers-reduced-motion:reduce) { .vssaros-home * { transition:none!important; } }
 `;
 		/**
 		 * 注入样式（幂等 + **会更新**）。
@@ -1815,6 +3841,7 @@ window.__ModuleLoader__.load({
 		function apply(ctx) {
 			const service = new Workbenches(ctx);
 			service.View = makeView(service);
+			service.PageView = makePageView(service);
 			ctx.effect(maintainStyles, 'vssaros-workbenches: styles');
 			// ★ 2026-11-02：默认 agent 要用 `remote.agentPresets.select`（官方：`select(sessionId, presetId)`）。
 			//   ⚠ 必须 `ctx.inject`：未声明 inject 的包里 `ctx.get` 返回 undefined（kb / studio 都踩过）。
@@ -1827,6 +3854,27 @@ window.__ModuleLoader__.load({
 				}
 			} catch (error) { console.warn('[vssaros-workbenches] 注入 remote.agentPresets 失败（不套默认 agent）：' + String((error && error.message) || error)); }
 			ctx.effect(() => ctx.reflect.provide('desktopWorkbenches', service), 'vssaros-workbenches: service');
+			// 阶段 3：策略探针在 runtime effect 之前就绪，其它 chunk 共用同一份投影。
+			globalThis.__vssarosWorkbenchPolicy = () => catalogPolicyProbeOf(service.getCatalogSnapshot().pages);
+			globalThis.__vssarosWorkbenchLegacyBridgeMode = () => legacyBridgeModeOf(globalThis);
+			// 阶段 4 硬退役：manifest active route 行直接进统一目录；不再读取旧全局清单、轮询或监听 tabs-change。
+			ctx.effect(() => {
+				if (!ctx.fiber || !ctx.fiber.entry) { return undefined; }
+				service.registerManifestPages();
+				return () => { delete globalThis.__vssarosWorkbenchManifestPagesRegistered; };
+			}, 'vssaros-workbenches: manifest catalog');
+			// P2/P3：软等待 `betterSidebar`，不放进 module.exports.inject（独立 dsh 组合没装插件也能启动）。
+			try {
+				if (typeof ctx.inject === 'function') {
+					ctx.inject(['betterSidebar'], (scoped) => {
+						const sidebar = optionalService(scoped, 'betterSidebar');
+						if (!sidebar) { return; }
+						return installSidebarLayoutOwnership(ctx, service, sidebar);
+					});
+				}
+			} catch (error) {
+				console.warn('[vssaros-workbenches] 注入 betterSidebar 失败（右栏目录/新主页不启用）：' + String((error && error.message) || error));
+			}
 
 			/* ★ 2026-10-26 深链：`?wb=vssaros/agents`（也接受 `vssaros:agents`）⇒ 注册后自动打开该工作台。
 			   为什么加：IDE 的 **Bots 页签目前承载的是插件 SSR 页**（`/x/agents/`，内容是旧的），
@@ -2118,7 +4166,7 @@ window.__ModuleLoader__.load({
 				return () => { try { ws.startSession = originalStart; } catch (e) { /* 卸载时尽力还原 */ } };
 			}, 'vssaros-workbenches: startSession nav');
 
-			ctx.effect(() => { void service.load(); return undefined; }, 'vssaros-workbenches: state');
+			ctx.effect(() => { void service.load(); return () => service.dispose(); }, 'vssaros-workbenches: state');
 			// 会话停靠（整页工作台的 AI 对话显示在工作台自己页面里，不切走）：根覆盖层条目声明 session 子槽，
 			// 子槽里放对话面板。覆盖层由根布局常驻渲染 ⇒ 不论工作台开在页签里还是整页面板里都能停靠。
 			ctx.effect(() => ctx.slots.inject('shell.overlay', () => ctx.slots.register({
@@ -2143,6 +4191,23 @@ window.__ModuleLoader__.load({
 			}
 			// 探针钩子（只读快照；不暴露可写方法）
 			globalThis.__vssarosWorkbenchesSnapshot = () => service.getSnapshot();
+			ctx.effect(() => {
+				globalThis.__vssarosWorkbenchCatalog = () => service.getCatalogSnapshot();
+				globalThis.__vssarosWorkbenchCatalogDiagnostics = () => catalogDiagnosticsOf(service.getCatalogSnapshot().pages);
+				globalThis.__vssarosWorkbenchCatalogConflicts = () => canonicalConflictsOf(service.getCatalogSnapshot().pages);
+				globalThis.__vssarosWorkbenchManifest = () => WORKBENCH_MANIFEST;
+				globalThis.__vssarosWorkbenchManifestViews = () => manifestViewsOf();
+				return () => {
+					delete globalThis.__vssarosWorkbenchCatalog;
+					delete globalThis.__vssarosWorkbenchCatalogDiagnostics;
+					delete globalThis.__vssarosWorkbenchCatalogConflicts;
+					delete globalThis.__vssarosWorkbenchManifest;
+					delete globalThis.__vssarosWorkbenchManifestViews;
+					delete globalThis.__vssarosWorkbenchPolicy;
+					delete globalThis.__vssarosWorkbenchLegacyBridgeMode;
+					delete globalThis.__vssarosWorkbenchManifestPagesRegistered;
+				};
+			}, 'vssaros-workbenches: catalog probe');
 			return undefined;
 		}
 
@@ -2150,6 +4215,45 @@ window.__ModuleLoader__.load({
 		module.exports.inject = ['slots', 'layout', 'sessions', 'workspaces', 'uiWorkspace'];
 		module.exports.identityOf = identityOf;
 		module.exports.normalize = normalize;
+		module.exports.catalogKey = catalogKey;
+		module.exports.normalizeCatalogPage = normalizeCatalogPage;
+		module.exports.sidebarTabTypeOf = sidebarTabTypeOf;
+		module.exports.__installSidebarWorkbenchAdapter = installSidebarWorkbenchAdapter;
+		module.exports.readSidebarLayoutV1Config = readSidebarLayoutV1Config;
+		module.exports.sidebarGuideReleased = sidebarGuideReleased;
+		module.exports.makeVsSarosHomeGuide = makeVsSarosHomeGuide;
+		module.exports.__installVsSarosHomeGuide = installVsSarosHomeGuide;
+		module.exports.__installSidebarLayoutOwnership = installSidebarLayoutOwnership;
+		module.exports.normalizeHomeOrder = normalizeHomeOrder;
+		module.exports.moveHomeOrder = moveHomeOrder;
+		module.exports.toolEntriesOf = toolEntriesOf;
+		module.exports.parseImageToken = parseImageToken;
+		module.exports.pendingInstallsOf = pendingInstallsOf;
+		module.exports.selectStartPages = selectStartPages;
+		module.exports.selectNativeTabPages = selectNativeTabPages;
+		module.exports.selectLauncherPages = selectLauncherPages;
+		module.exports.selectRouteWhitelist = selectRouteWhitelist;
+		module.exports.resolveLegacyTabKey = resolveLegacyTabKey;
+		module.exports.catalogDiagnosticsOf = catalogDiagnosticsOf;
+		module.exports.canonicalConflictsOf = canonicalConflictsOf;
+		module.exports.workbenchManifest = workbenchManifest;
+		module.exports.manifestViewsOf = manifestViewsOf;
+		module.exports.catalogPolicyProbeOf = catalogPolicyProbeOf;
+		module.exports.legacyBridgeModeOf = legacyBridgeModeOf;
+		module.exports.__registerManifestPages = service => service.registerManifestPages();
+		module.exports.visibleHomePagesOf = visibleHomePagesOf;
+		module.exports.homeWorkbenchCardIdOf = homeWorkbenchCardIdOf;
+		module.exports.homeWorkbenchAnchorIdOf = homeWorkbenchAnchorIdOf;
+		module.exports.legacyTabKeysOf = legacyTabKeysOf;
+		module.exports.imageVersionsUrl = imageVersionsUrl;
+		module.exports.pickImageVersion = pickImageVersion;
+		module.exports.__registerImageReferenceTab = registerImageReferenceTab;
+		module.exports.__openImageReference = openImageReference;
+		module.exports.__setSidebarLayoutV1 = setSidebarLayoutV1;
+		module.exports.__sidebarLayoutV1Enabled = () => sidebarLayoutV1Enabled;
+		module.exports.__openSidebarWorkbenchPage = (key, scope) => activeSidebarAdapter ? activeSidebarAdapter.openPage(key, scope) : false;
+		module.exports.__testSetGlobal = (name, value) => { globalThis[name] = value; };
+		module.exports.__testDeleteGlobal = name => { delete globalThis[name]; };
 		module.exports.__Frame = Frame;
 		return module.exports;
 	},

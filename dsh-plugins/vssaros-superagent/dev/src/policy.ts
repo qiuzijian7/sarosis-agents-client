@@ -127,6 +127,8 @@ export const ExecutorConfigSchema = z.object({
   // ★ 2026-11-13（用户）：工单结束时把自包含 HTML 报告作为文件附件发回飞书话题。
   //   默认关闭 —— 外发是高风险动作，要人显式打开；新字段 parse 补 false，无需 DB 迁移。
   feishuReport: z.boolean().default(false),
+  /** Every ended ticket gets a cloud document; IM notification remains separately opt-in. */
+  feishuReportDocument: z.boolean().default(true),
 }).strict()
 export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
 export const SettingsSchema = z.object({

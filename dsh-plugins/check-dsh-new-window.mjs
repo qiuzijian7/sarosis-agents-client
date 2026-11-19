@@ -19,11 +19,12 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PLUGIN = path.join(ROOT, 'dsh-plugins', 'vssaros-chat-surface');
+const HEADER = path.join(PLUGIN, 'lib', 'client.conversationHeader.js');
 const SESSIONS = path.join(PLUGIN, 'lib', 'client.sessions.js');
 const BRAND = path.join(PLUGIN, 'lib', 'client.brand.js');
-const SLOT = 'conversation.session.header.utilities';
+const SLOT = 'vssaros.conversation.header.actions';
 const ENTRY_ID = 'vssaros-new-window';
-const ENTRY_ORDER = -4;
+const ENTRY_ORDER = 0;
 const PROTOCOL = path.join(ROOT, 'src/vs/sessions/contrib/dshHarness/common/dshPageBridgeProtocol.ts');
 const PRELOAD = path.join(ROOT, 'src/vs/sessions/contrib/dshHarness/electron-browser/preload-dshView.ts');
 const HOST = path.join(ROOT, 'src/vs/sessions/contrib/dshHarness/electron-browser/dshHarness.contribution.ts');
@@ -52,6 +53,9 @@ function loadBrandChunk(win) {
 			//   在外面另建一个 `m.exports` 只会拿到空对象（本仓踩过：守卫"没导出 __test"✗）。
 			const moduleExports = spec.factory((name) => {
 				if (name === 'react') { return fakeReact(); }
+				if (name === 'react/jsx-runtime') {
+					return { jsx: (type, props) => fakeReact().createElement(type, props, props?.children), jsxs: (type, props) => fakeReact().createElement(type, props, props?.children) };
+				}
 				throw new Error(`unexpected require: ${name}`);
 			});
 			exports = moduleExports;
@@ -60,12 +64,12 @@ function loadBrandChunk(win) {
 	};
 	const sandbox = {
 		window: win,
-		document: { title: '' },
+		document: { title: '', createElement: () => ({ dataset: {}, setAttribute() {} }), head: { querySelector: () => null, appendChild() {} } },
 		console, Promise, Object, Array, Math, String, Number, Boolean, Error, JSON,
 	};
 	sandbox.globalThis = sandbox;
 	vm.createContext(sandbox);
-	vm.runInContext(read(SESSIONS), sandbox, { filename: SESSIONS });
+	vm.runInContext(read(HEADER), sandbox, { filename: HEADER });
 	assert.ok(exports && typeof exports.install === 'function', 'chunk 必须导出 install ✗');
 	return exports;
 }
@@ -76,8 +80,10 @@ function installAndCapture(win, bridge) {
 	const captured = [];
 	const ctx = {
 		slots: {
-			inject: (slot, fn) => { fn(); },
-			register: (opts, comp) => { captured.push({ opts, comp }); return { id: opts.id }; },
+			inject: (slot, fn) => fn(),
+			register: (opts, comp) => { captured.push({ opts, comp }); return () => {}; },
+			entries: () => [],
+			subscribe: () => () => {},
 		},
 	};
 	const shell = { state: {}, bridge: bridge || { surface: 'chat', chatOnly: false } };
@@ -237,50 +243,25 @@ check('★ 聚焦校准：必须定期用 focused 快照校准"活动聊天位"�
 	assert.ok(/v\.focused && v\.viewSurface === 'chat'/.test(svc), '校准只认"聚焦的聊天视图"（插件页不许占位）✗');
 });
 
-check('★ hero（空会话屏）右上角必须有「新增窗口」入口，且只在主栏、只在 hero 显示', () => {
+check('★ Hero / active 统一常驻页头入口，空会话首屏装载、无重复浮层', () => {
 	const nav = stripComments(read(path.join(PLUGIN, 'lib', 'client.workbenchNav.js')));
-	assert.ok(/data-vssaros-hero-split/.test(nav), 'hero 入口必须有稳定锚点 ✗');
-	assert.ok(/api\.splitChatPane\(\)/.test(nav), 'hero 入口必须调 bridge.splitChatPane ✗');
-	// ⚠ 判据必须是官方的 **phase**：`data-content-phase="hero"`。
-	//   为什么不能用"有没有 data-conversation-session"：桌面窗口开局就绑一条**空会话** ⇒
-	//   属性存在、但界面仍是 hero（官方 `hero = sessionId===void 0 || (blank && …)`）✗
-	assert.ok(/data-content-phase/.test(nav) && /=== "hero"/.test(nav),
-		'hero 判据必须是 [data-conversation-content] 的 data-content-phase === "hero" ✗');
-	assert.ok(!/hasAttribute\("data-conversation-session"\)/.test(nav),
-		'不许再用"没有 data-conversation-session"判 hero（空会话首屏会判错 ⇒ 入口永不显示 ✗）');
-	// ★ 2026-10-31（真机：打开**知识库**面板时，这颗按钮浮到了知识库右上角）：
-	//   工作台面板接管中栏后，会话容器**还在文档里、但已塌成 0×0** ⇒ 只看 phase 会误判 hero。
-	//   现场实测：工作台页 = phase:hero / rect 0×0 / 中栏有工作台 iframe；
-	//             真空会话屏 = phase:hero / rect 1280×1250 / 中栏无 iframe。
-	assert.ok(/const visible = el\.getClientRects\(\)\.length > 0 && b\.width > 0 && b\.height > 0/.test(nav),
-		'hero 判据必须要求会话容器**真的可见**（否则工作台页会塌成 0×0 ⇒ 按钮浮到知识库右上角 ✗）');
-	assert.ok(/hero = visible && !covered/.test(nav),
-		'hero 判据必须是 visible && !covered（可见 且 中栏没有可见工作台 iframe）✗');
-	assert.ok(/center\.querySelectorAll\("iframe"\)/.test(nav),
-		'必须有"中栏里有可见工作台 iframe ⇒ 不算 hero"的双保险 ✗');
-	// ⚠ 不许压住官方「打开侧边栏」（2026-10-30 用户截图：右上角按钮被挡）
-	assert.ok(/data-sidebar-right-expand/.test(nav) && /data-sidebar-right-toggle/.test(nav),
-		'入口必须贴到官方「打开侧边栏」按钮左边（否则会盖住它 ✗）');
-	// ★ 2026-10-31（用户截图）：右侧独立格子（`dsh-desk-split-`）**不许装更新入口**
-	//   （更新是全应用状态 ⇒ 主栏一份就够；格子里再出一份就是"多出一个更新 UI"✗）
-	const upgrade = stripComments(read(path.join(PLUGIN, 'lib', 'client.upgrade.js')));
-	assert.ok(/indexOf\("dsh-desk-split-"\) === 0[\s\S]{0,120}return;/.test(upgrade),
-		'client.upgrade.js 必须在 dsh-desk-split- 格子里直接退出（不注册更新入口）✗');
-	// ⚠ 只在 HeroSplitChip 函数体（到下一个 function 定义为止）内做负对照（本文件别处合法地用了那些标记）
-	const heroAt = nav.indexOf('function HeroSplitChip(');
-	const nextFn = nav.indexOf('function TabStrip(', heroAt);
-	assert.ok(heroAt > 0 && nextFn > heroAt, '找不到 HeroSplitChip 的函数体 ✗');
-	const heroFn = nav.slice(heroAt, nextFn);
-	assert.ok(!/data-sidebar-right-session/.test(heroFn), '不许再用旧的三个标记判 hero（在 hero 上也不成立 ✗）');
-	// 只在主栏注册：右侧独立格子不该出现「新增窗口」
-	assert.ok(/if \(!isDeskSplitPane\)[\s\S]{0,900}overlay:hero新窗格/.test(nav), 'hero 入口只许装在主栏（右侧格子不装）✗');
-	// 品牌行不许再有第二枚（两处入口 = 重复）
-	assert.ok(!/data-vssaros-split-entry/.test(stripComments(read(BRAND))), '品牌行不许再有 hero 分屏入口（已搬到右上角）✗');
-	// ⚠ hero 态只装 BLANK_SESSION_PARTS ⇒ 入口必须落在**那些** chunk 里，否则 hero 时根本没有它
+	const sessions = stripComments(read(path.join(PLUGIN, 'lib', 'client.sessions.js')));
+	assert.ok(!/HeroSplitChip|data-vssaros-hero-split/.test(nav), '不许保留 Hero 浮层');
+	assert.ok(!/data-vssaros-new-window/.test(sessions), 'utilities 不许保留重复入口');
+	assert.ok(!/data-vssaros-split-entry/.test(stripComments(read(BRAND))), '品牌行不许重复分屏入口');
+	const { captured } = installAndCapture({}, { surface: 'full' });
+	const header = captured.find(c => c.opts.name === 'conversation.header');
+	assert.ok(header && header.opts.children[SLOT]?.scope === 'session-maybe', '页头动作必须覆盖无会话 Hero');
+	assert.strictEqual(captured.filter(c => c.opts.id === ENTRY_ID).length, 1, '只允许一枚分屏入口');
+	const split = installAndCapture({}, { surface: 'full', viewId: 'dsh-desk-split-1' });
+	assert.strictEqual(split.captured.length, 0, '独立格子不许安装页头入口');
 	const clientSrc = stripComments(read(path.join(PLUGIN, 'lib', 'client.js')));
-	const blankParts = /const BLANK_SESSION_PARTS = \[([\s\S]*?)\];/.exec(clientSrc);
-	assert.ok(blankParts && blankParts[1].includes('./client.workbenchNav.js'),
-		'client.workbenchNav.js 必须在 BLANK_SESSION_PARTS 里（hero 态才装得到入口）✗');
+	const always = /const ALWAYS_CHUNKS = \[([\s\S]*?)\];/.exec(clientSrc);
+	const parts = /const PART_CHUNKS = \[([\s\S]*?)\];/.exec(clientSrc);
+	assert.ok(always?.[1].includes('./client.conversationHeader.js'), '页头必须在 ALWAYS_CHUNKS 首屏加载');
+	assert.ok(!parts?.[1].includes('./client.conversationHeader.js'), '重绑不许重复加载页头');
+	const upgrade = stripComments(read(path.join(PLUGIN, 'lib', 'client.upgrade.js')));
+	assert.ok(/indexOf\("dsh-desk-split-"\) === 0[\s\S]{0,120}return;/.test(upgrade), '独立格子继续排除更新入口');
 });
 
 const CHROME = path.join(ROOT, 'src/vs/sessions/contrib/dshHarness/electron-browser/dshDesktopSplitChrome.ts');
@@ -337,8 +318,8 @@ check('★ 页面：会话动作组里**不许有**「布局 ▾」（用户要�
 	assert.ok(!/api\.paneAction\(/.test(sessions), '页面不许再调 bridge.paneAction（菜单已移除）✗');
 	assert.ok(!/data-vssaros-pane-grip/.test(sessions), '页面里的「⇔」把手必须去掉（拖动在宿主标题栏）✗');
 	assert.ok(!/dsh-desk-split-/.test(sessions), '右侧格子页面里不许再装格子按钮（两套入口会打架）✗');
-	// 「新窗格」那枚仍在（用户没让删，且它是主栏唯一的加栏入口）
-	assert.ok(/data-vssaros-new-window/.test(sessions), '「新窗格」入口必须保留 ✗');
+	assert.ok(/data-vssaros-new-window/.test(read(HEADER)), '常驻页头必须保留统一分屏入口');
+	assert.ok(!/data-vssaros-new-window/.test(sessions), '会话 utilities 不许重复分屏入口');
 	// ★ 2026-10-30（用户）：独立格子不显示会话页签条（主栏照旧显示）
 	const nav = stripComments(read(path.join(PLUGIN, 'lib', 'client.workbenchNav.js')));
 	assert.ok(/indexOf\("dsh-desk-split-"\) === 0/.test(nav) && /if \(!isDeskSplitPane\)[\s\S]{0,200}vssaros-wb-tabstrip/.test(nav),

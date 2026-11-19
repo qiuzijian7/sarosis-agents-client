@@ -34,6 +34,12 @@
 		const mark = () => { try { document.documentElement.dataset.vssarosChatOnly = chatOnly ? '1' : '0'; } catch { /* 文档还没就绪 */ } };
 		if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', mark, { once: true }); } else { mark(); }
 	} catch { /* 诊断位不影响任何功能 */ }
+	// 官方 Forge 接管创建控件；输入框只读工作树信息仍挂在 conversation.input.left，
+	// 直接读取 remote.forgePanel 的当前会话快照，不恢复旧的创建/切换/自动删除逻辑。
+	try {
+		const markForgeUi = () => { try { document.documentElement.dataset.vssarosOfficialForgeUi = '1'; } catch { /* 文档还没就绪 */ } };
+		if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', markForgeUi, { once: true }); } else { markForgeUi(); }
+	} catch { /* 诊断位不影响任何功能 */ }
 	// 本视图绑定的 dsh 会话 id（chatId → vssaros-chat-<chatId>，方案 7.x）；前端插件据此切会话。
 	const sessionArg = process.argv.find(a => a.startsWith(SESSION_ARG));
 	const sessionId = sessionArg ? sessionArg.slice(SESSION_ARG.length) : '';
@@ -132,7 +138,8 @@
 		// ★ 2026-10-23：`18 → 19`（新增 `upgradeRefresh` / `upgradeBundled` / `upgradeApp` —— desktop 窗口的「更新」入口）。
 		// ★ 2026-10-26：`19 → 20`（新增 `importCodeWorkspace` —— 从 .code-workspace 导入多根工作区）。
 		// ★ 2026-11-05：`25 → 26`（新增 `rightbarBrowser` —— 右侧栏内嵌浏览器）。
-		bridgeVersion: 26,
+		// ★ 2026-11-17：`26 → 27`（新增 `createWorktree` / `removeWorktree` —— worktree 意图转发给 dsh Host）。
+		bridgeVersion: 27,
 		surface,
 		// ★ 2026-10-18：`chatOnly` 也放进 bridge（**同步可知**）。
 		//   为什么不能只靠 `data-vssaros-chat-only`：那个 DOM 标记要等 DOMContentLoaded 才写，
@@ -323,6 +330,10 @@
 		// 本会话人格上报（历史会话 sideview 的标记）：`personaId: null` = 跟随 Agent 自带人设；
 		// `applicable: false` = 本 preset 无人设段（切了也没有可观测变化）。会话 id 同样由 preload 注入。
 		sessionPersona: (personaId: string | null, name?: string | null, applicable?: boolean) => invoke({ method: 'sessionPersona', sessionId: sessionId || null, personaId, name: name ?? undefined, applicable }),
+		// ★ 桥 26→27：worktree 新建 / 删除。**单向桥**：invoke 的返回值只是「命令已发出」，
+		//   不是创建结果；真实路径由宿主推送的 `vssaros-dsh-worktrees` 快照回页面。
+		createWorktree: (name: string) => invoke({ method: 'createWorktree', name }),
+		removeWorktree: (path: string) => invoke({ method: 'removeWorktree', path }),
 	};
 
 	try {

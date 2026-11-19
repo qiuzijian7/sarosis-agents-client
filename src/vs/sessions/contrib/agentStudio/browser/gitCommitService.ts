@@ -381,33 +381,12 @@ export class GitCommitService extends Disposable implements IGitCommitService {
 	}
 
 	private _execGitNodeFallback(args: string[]): Promise<IGitOperationResult> {
-		return new Promise((resolve) => {
-			try {
-				// In Electron renderer, we can require child_process through the node integration
-				// eslint-disable-next-line local/code-import-patterns
-				const cp = require('child_process') as typeof import('child_process');
-				const child = cp.spawn('git', args, {
-					cwd: this._cwd,
-					env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-					windowsHide: true,
-				});
-
-				let stdout = '';
-				let stderr = '';
-
-				child.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
-				child.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
-
-				child.on('error', (err) => {
-					resolve({ success: false, stdout, stderr: err.message, exitCode: -1 });
-				});
-
-				child.on('close', (code) => {
-					resolve({ success: code === 0, stdout, stderr, exitCode: code ?? -1 });
-				});
-			} catch (err) {
-				resolve({ success: false, stdout: '', stderr: String(err), exitCode: -1 });
-			}
+		// ★ P2：IDE 提交 UI 的 git 命令也统一走 `vscode:execGit` → dsh Host；renderer 不再 spawn git。
+		return Promise.resolve({
+			success: false,
+			stdout: '',
+			stderr: `[GitCommitService] 本地 git 执行已禁用（唯一真源是 dsh Host）：git ${args.join(' ')} (cwd=${this._cwd})`,
+			exitCode: -1,
 		});
 	}
 }

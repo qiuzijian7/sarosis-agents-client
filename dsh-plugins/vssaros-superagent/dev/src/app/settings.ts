@@ -57,6 +57,8 @@ const BLOCKS: Record<'policy' | 'eval' | 'executor' | 'source', Block> = {
         || (current.sources.p4?.config.pendingName ?? '[dsh-superagent:{ticket}] {title}') !== (candidate.sources.p4?.config.pendingName ?? '[dsh-superagent:{ticket}] {title}')
         || JSON.stringify(current.sources.p4?.config.reconcileIgnore) !== JSON.stringify(candidate.sources.p4?.config.reconcileIgnore)
         || JSON.stringify(current.sources.tapd?.config.filterSchedules) !== JSON.stringify(candidate.sources.tapd?.config.filterSchedules)
+        || JSON.stringify(current.sources.tapd?.config.filterSchemes) !== JSON.stringify(candidate.sources.tapd?.config.filterSchemes)
+        || JSON.stringify(current.sources.tapd?.config.filterPool) !== JSON.stringify(candidate.sources.tapd?.config.filterPool)
         || JSON.stringify(current.sources.tapd?.config.ownerGroups) !== JSON.stringify(candidate.sources.tapd?.config.ownerGroups)
         || JSON.stringify(current.sources.gongfeng) !== JSON.stringify(candidate.sources.gongfeng))) throw new UserError('panelOnlyAccounts')
     },

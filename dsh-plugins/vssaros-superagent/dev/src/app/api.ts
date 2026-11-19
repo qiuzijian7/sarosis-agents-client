@@ -4,6 +4,8 @@ import type { PromptConfig, Prompts } from './prompts.ts'
 import type { CliApplyAction, CliApplyResult, CliCheckResult } from './cli-check.ts'
 import type { TapdCredentialKind, TapdCredentialStatus, TapdSetupStatus } from '../sources/tapd-auth.ts'
 import type { TapdTestResult } from '../sources/tapd-api.ts'
+import type { TapdIdentityView } from '../sources/tapd-identity.ts'
+import type { PoolItem, TapdFilterPool, TapdFilterScheme } from '../sources/tapd-filter-schemes.ts'
 import type { PromptsView, StateView, TicketPageView } from './http.ts'
 import type { HistoryView } from './settings-history.ts'
 import type { OverviewView } from './views/overview.ts'
@@ -45,12 +47,22 @@ export interface Api {
   'GET sources': { response: SourceStatusView[] }
   'GET settings': { response: SettingsView }
   'POST sources/:id/labels': { response: { added: string[] } }
-  /** Import a Saroasis platform bug-filter JSON into the TAPD Source draft; never saves settings itself. */
-  'POST sources/tapd/filters/import': { body: { text: string; name?: string; at?: string; maxPerRun?: number; windowDays?: number };
-    response: { schedule: unknown; watch: unknown; report: unknown[]; warnings: string[]; maps: 'live' | 'fallback' } }
   /** Read-only preview: how many bugs the compiled query matches, and how many a recent window contains. */
   'POST sources/tapd/filters/preview': { body: { query: Record<string, string>; windowDays: number };
     response: { total: number; recent: number } }
+  'GET sources/tapd/identity': { query?: { fresh?: string }; response: TapdIdentityView }
+  'POST sources/tapd/identity/confirm': { body: { loginName: string; workspace: string; name: string }; response: TapdIdentityView }
+  /** Scrape schemes and automatically merge matching items into the supplied pool draft; never dispatches or saves settings. */
+  'POST sources/tapd/filter-schemes/sync': { body: { loginName?: string; scope?: 'all' | 'story' | 'bug'; schemes?: TapdFilterScheme[]; pool?: TapdFilterPool };
+    response: { schemes: TapdFilterScheme[]; pool: TapdFilterPool; identity: { loginName: string; signedIn: boolean }; ownerIdentity?: TapdIdentityView; warnings?: string[];
+      results?: { kind: 'story' | 'bug'; total: number; recent: number; added: number; error?: string }[] } }
+  /** Preview the current draft, preserving all AND/OR and local exclusion conditions. */
+  'POST sources/tapd/filter-schemes/preview': { body: { kind: 'story' | 'bug'; scheme?: TapdFilterScheme; maxPerRun?: number };
+    response: { total: number; recent: number; items: PoolItem[] } }
+  'GET sources/tapd/filter-schemes/pool': { response: { items: PoolItem[] } }
+  /** Dispatch enabled items immediately, independently of automatic scheduling. */
+  'POST sources/tapd/filter-schemes/run': { body: { pool: TapdFilterPool };
+    response: { pool: TapdFilterPool; runId: string; planned: number; dispatched: number; day: string; dispatchQueued: boolean; error?: string } }
   'GET threads': { query?: Paged & { filter?: ThreadFilter }; response: ThreadListView }
   'GET threads/:key': { query?: { limit?: number; before?: string; around?: string }; response: ThreadDetailView }
   'POST threads/:key/unsubscribe': { response: { removed: boolean; thread: string; context_delivery: Delivery } }
@@ -62,7 +74,7 @@ export interface Api {
   'POST tickets/:id/retry': { response: { retried: true } }
   'POST tickets/:id/stop': { response: { stopped: true } }
   /** VsSaros addition (2026-11-13): the ticket's HTML report artifact, and a person's explicit (re)send to Feishu. */
-  'GET tickets/:id/report': { response: { file: string; path?: string; docUrl?: string; queued: boolean; generated?: boolean; generationQueued?: boolean; deliveryState?: 'not-requested' | 'queued' | 'sent' | 'target-gone' | 'partial' } }
+  'GET tickets/:id/report': { response: { file: string; path?: string; docUrl?: string; queued: boolean; generated?: boolean; generationQueued?: boolean; cloudState?: 'not-requested' | 'queued' | 'created' | 'creation-uncertain' | 'failed'; cloudError?: string; deliveryState?: 'not-requested' | 'queued' | 'sent' | 'target-gone' | 'partial' } }
   'GET tickets/:id/report/content': { response: { file: string; html: string } }
   'POST tickets/:id/report': { response: { queued: boolean } }
   'POST executor/pause': { body: { paused: boolean }; response: { paused: boolean } }
@@ -92,6 +104,7 @@ export interface Api {
   'POST tickets/:id/review/approve': { body: { fingerprint: string }; response: Review }
   'POST tickets/:id/review/reject': { body: { comment: string }; response: Review }
   'POST tickets/:id/review/discard': { response: Review }
+  'POST tickets/:id/review/complete-pending': { body: { confirm: true; fingerprint: string }; response: Review }
   // VsSaros change (2026-11-06, P1 · one track): the retired team plans, read-only; nothing starts or stops one any more.
   'GET team/plans': { response: { available: boolean; archived: true; plans: PlanView[] } }
   'GET team/bots': { response: { available: boolean; bots: BotCard[] } }

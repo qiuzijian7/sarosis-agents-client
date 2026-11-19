@@ -185,6 +185,13 @@ describe('the Open API', () => {
     }) as unknown as typeof globalThis.fetch
     return { calls, api: new TapdOpenApi({ api: 'https://api.tapd.cn', fetch, environment: { DSH_SUPERAGENT_TAPD_USER: 'u', DSH_SUPERAGENT_TAPD_PASSWORD: 'p' } }) }
   }
+  it('reads the bounded workspace directory for identity matching without modified-order arguments', async () => {
+    const { calls, api } = stand([[{ UserWorkspace: { user: 'TAPD甲', name: '甲', email: 'alice@example.test' } }]])
+    expect(await api.directoryMembers('68880148')).toEqual([{ user: 'TAPD甲', name: '甲', email: 'alice@example.test' }])
+    const url = new URL(calls[0]!.url)
+    expect(url.pathname).toBe('/workspaces/users')
+    expect(Object.fromEntries(url.searchParams)).toEqual({ workspace_id: '68880148', fields: 'user,name,email', limit: '200', page: '1' })
+  })
   it('reads every page with the account, oldest change first, and posts a comment as a form', async () => {
     const full = Array.from({ length: 200 }, (_, index) => ({ Bug: { id: String(index), title: 't' } }))
     const { calls, api } = stand([full, [{ Bug: { id: '200', title: 'last' } }]])

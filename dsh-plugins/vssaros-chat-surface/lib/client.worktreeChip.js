@@ -92,17 +92,26 @@ window.__ModuleLoader__.load({
 			} catch { /* 无 DOM：离线探针 */ }
 		}
 
+		function normalizeWorktreePath(path) {
+			if (typeof path !== "string" || !path) { return ""; }
+			const value = path.replace(/\\/g, "/").replace(/\/+$/, "");
+			return /^[A-Za-z]:\//.test(value) || value.startsWith("//") ? value.toLowerCase() : value;
+		}
+		function activeForgeWorktreeOf(panel) {
+			const checkout = panel && panel.checkout && panel.checkout.state === "ready" ? panel.checkout.checkout : null;
+			if (!checkout || checkout.linked !== true || (panel.worktree && panel.worktree.missing)) { return null; }
+			const root = normalizeWorktreePath(checkout.root);
+			const cwd = normalizeWorktreePath(panel.directory);
+			if (!root || !cwd || (cwd !== root && !cwd.startsWith(root + "/"))) { return null; }
+			const name = checkout.branch || checkout.root.split(/[\\/]/).filter(Boolean).pop();
+			return name ? { name, path: checkout.root, ephemeral: false } : null;
+		}
 		function activeWorktreeOf(cwd, pushed, selection) {
 			if (typeof cwd !== "string" || !cwd) { return null; }
-			const normalize = (path) => {
-				if (typeof path !== "string" || !path) { return ""; }
-				const value = path.replace(/\\/g, "/").replace(/\/+$/, "");
-				return /^[A-Za-z]:\//.test(value) || value.startsWith("//") ? value.toLowerCase() : value;
-			};
-			const path = normalize(cwd);
-			const match = (Array.isArray(pushed) ? pushed : []).find((w) => w && normalize(w.path) === path);
+			const path = normalizeWorktreePath(cwd);
+			const match = (Array.isArray(pushed) ? pushed : []).find((w) => w && normalizeWorktreePath(w.path) === path);
 			if (match && match.isMain === true) { return null; }
-			const selected = selection && selection.path && normalize(selection.path) === path ? selection : null;
+			const selected = selection && selection.path && normalizeWorktreePath(selection.path) === path ? selection : null;
 			if (!match && !selected) { return null; }
 			const name = (match && typeof match.name === "string" && match.name.trim())
 				|| (selected && selected.name) || cwd.split(/[\\/]/).filter(Boolean).pop();
@@ -175,6 +184,11 @@ window.__ModuleLoader__.load({
 		}
 
 		function install(ctx, shell) {
+			let officialForgeUi = false;
+			try {
+				officialForgeUi = typeof document !== "undefined" && !!document.documentElement
+					&& document.documentElement.dataset.vssarosOfficialForgeUi === "1";
+			} catch { /* 无 DOM：离线探针 */ }
 			const singletonKey = "__vssarosWtChipSingleton";
 			const state = shell.state;
 			const bridge = shell.bridge;
@@ -207,6 +221,9 @@ window.__ModuleLoader__.load({
 			let hostEl = null;
 			let observer = null;
 			let menuEl = null;
+			// ★ 桥 26→27：页面桥是**单向**的，`createWorktree` 的返回值只是「命令已发出」。
+			//   记下待创建的分支名，等宿主推送的快照料表里出现它再选中 + 切换（绝不假装成功）。
+			let pendingCreate = null;
 
 			const notify = (text) => {
 				try {
@@ -238,16 +255,20 @@ window.__ModuleLoader__.load({
 						notify("当前宿主不支持新建 worktree（页面桥缺 createWorktree）：请选择一个已有 worktree。");
 						return false;
 					}
+					pendingCreate = opt.name;
 					let created;
-					try { created = bridge.createWorktree(opt.name); } catch (e) { notify("新建 worktree 失败：" + String(e && e.message || e)); return false; }
+					try { created = bridge.createWorktree(opt.name); } catch (e) { pendingCreate = null; notify("新建 worktree 失败：" + String(e && e.message || e)); return false; }
 					Promise.resolve(created).then((w) => {
+						// 兼容「旧宿主 / 探针」确实返回路径的形态；单向桥返回 true ⇒ 不报错，
+						// 交给 onPush（宿主快照推送）完成选中与切换。
 						const path = w && (w.path || (w.detail && w.detail.path));
-						if (!path) { notify("新建 worktree 未返回路径，已取消切换"); return; }
+						if (!path) { return; }
+						pendingCreate = null;
 						selected = { id: opt.id, label: opt.label, name: opt.name, path: path, ephemeral: true, isNew: true };
 						checked = true;
 						if (typeof bridge.switchWorktree === "function") { void Promise.resolve(bridge.switchWorktree(path)).catch(() => {}); }
 						publish(); renderHost();
-					}, (e) => notify("新建 worktree 失败：" + String(e && e.message || e)));
+					}, (e) => { pendingCreate = null; notify("新建 worktree 失败：" + String(e && e.message || e)); });
 					return true;
 				}
 				if (!bridge || typeof bridge.switchWorktree !== "function") {
@@ -266,6 +287,7 @@ window.__ModuleLoader__.load({
 				} else if (selected && selected.ephemeral && reason === "commit") {
 					notify("临时 worktree 需由宿主删除（页面桥缺 removeWorktree）；本地状态已清除。");
 				}
+				pendingCreate = null;
 				selected = null;
 				checked = false;
 				publish(); renderHost();
@@ -418,6 +440,38 @@ window.__ModuleLoader__.load({
 				const currentState = (inst && inst.state) || state;
 				let sessions = null;
 				try { sessions = typeof currentCtx.get === "function" ? currentCtx.get("sessions") : null; } catch { /* 服务尚未就绪 */ }
+				const sid = boundSid || currentState.sessionId || (inst && inst.bridge && inst.bridge.sessionId) || (bridge && bridge.sessionId);
+				const [panel, setPanel] = react.useState(null);
+				let forge = null;
+				try { forge = officialForgeUi && typeof currentCtx.get === "function" ? currentCtx.get("remote.forgePanel") : null; } catch { /* 服务尚未就绪 */ }
+				react.useEffect(() => {
+					if (!officialForgeUi || hero || !sid || !forge || typeof forge.follow !== "function") { return; }
+					let disposed = false;
+					let stop = null;
+					const follow = () => {
+						if (stop) { stop(); }
+						const controller = new AbortController();
+						let stream = null;
+						stop = () => { controller.abort(); if (stream && typeof stream.dispose === "function") { stream.dispose(); } };
+						setPanel(null);
+						void (async () => {
+							try {
+								stream = forge.follow(sid, controller.signal);
+								for await (const frame of stream) {
+									if (disposed || controller.signal.aborted) { break; }
+									setPanel({ sessionId: sid, state: frame });
+								}
+							} catch (e) {
+								if (!disposed && !controller.signal.aborted) { currentState.vssarosWtInfoChipError = String((e && e.message) || e); }
+							} finally {
+								if (!disposed && !controller.signal.aborted) { setPanel(null); }
+							}
+						})();
+					};
+					const reset = typeof currentCtx.on === "function" ? currentCtx.on("connection/reset", follow) : null;
+					follow();
+					return () => { disposed = true; if (typeof reset === "function") { reset(); } if (stop) { stop(); } };
+				}, [sid, hero, forge, currentCtx]);
 				react.useEffect(() => { setBoundSid(propSid || null); }, [propSid]);
 				react.useEffect(() => {
 					const on = () => refresh((n) => n + 1);
@@ -447,11 +501,12 @@ window.__ModuleLoader__.load({
 				if (hero) { return null; }
 				let cwd = null;
 				try {
-					const sid = boundSid || currentState.sessionId || (inst && inst.bridge && inst.bridge.sessionId) || (bridge && bridge.sessionId);
 					const snapshot = sessions && sessions.list ? sessions.list.getSnapshot() : null;
 					cwd = snapshot && snapshot.byId && snapshot.byId[sid] && snapshot.byId[sid].cwd;
 				} catch { /* 只展示已确认的会话目录 */ }
-				const active = activeWorktreeOf(cwd, pushedOptions(), readChip());
+				const active = officialForgeUi
+					? activeForgeWorktreeOf(panel && panel.sessionId === sid ? panel.state : null)
+					: activeWorktreeOf(cwd, pushedOptions(), readChip());
 				if (!active) { return null; }
 				return react.createElement("span", {
 					className: "vssaros-wt-info", "data-vssaros-wt-info": "1",
@@ -473,12 +528,32 @@ window.__ModuleLoader__.load({
 			}
 
 			injectStyle();
+			if (officialForgeUi) {
+				state.vssarosWtChip = { slot: SLOT_INPUT, id: ENTRY_ID, order: ENTRY_ORDER, readonly: true, source: "forgePanel" };
+				window[singletonKey] = { bridge, state, ctx, infoComp: InfoChip, diag: state.vssarosWtChip, reinstalls: 0 };
+				return;
+			}
 			ensureHost();
 			renderHost();
 			ensureObserver();
 
-			// 宿主推送更新 ⇒ enable 态实时刷新
-			const onPush = () => { renderHost(); if (!gitEnabled() && checked) { clearSelection("no-git"); closeMenu(); } };
+			// 宿主推送更新 ⇒ enable 态实时刷新；并认领单向桥的创建结果。
+			const onPush = () => {
+				if (pendingCreate) {
+					const hit = pushedOptions().find((w) => w && w.isMain !== true
+						&& (w.name === pendingCreate || w.branch === pendingCreate));
+					if (hit && typeof hit.path === "string" && hit.path) {
+						const name = pendingCreate;
+						pendingCreate = null;
+						selected = { id: "wt:" + hit.path, label: name, name: name, path: hit.path, ephemeral: true, isNew: true };
+						checked = true;
+						if (typeof bridge.switchWorktree === "function") { void Promise.resolve(bridge.switchWorktree(hit.path)).catch(() => {}); }
+						publish();
+					}
+				}
+				renderHost();
+				if (!gitEnabled() && checked) { clearSelection("no-git"); closeMenu(); }
+			};
 			if (typeof document !== "undefined") { document.addEventListener(WORKTREE_EVENT, onPush); }
 			const onOutside = (e) => {
 				if (menuEl && !menuEl.hidden && !menuEl.contains(e.target) && hostEl && !hostEl.contains(e.target)) { closeMenu(); }
@@ -506,7 +581,7 @@ window.__ModuleLoader__.load({
 		exports.install = install;
 		exports.__test = {
 			makeWorktreeName, parseWorktreeOptions, isGitEnabled, optionLabel,
-			parseChip, readChip, writeChip, buildOptions, activeWorktreeOf,
+			parseChip, readChip, writeChip, buildOptions, activeWorktreeOf, activeForgeWorktreeOf,
 			SLOT_INPUT, ENTRY_ID, ENTRY_ORDER, CHIP_EVENT, HERO_ANCHOR, HEADER_ANCHOR, ROOT_ATTR
 		};
 		return module.exports;

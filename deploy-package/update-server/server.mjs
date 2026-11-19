@@ -63,6 +63,180 @@ const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || '';
 // 上传文件大小上限（默认 512MB）
 const MAX_UPLOAD_SIZE = Number(process.env.MAX_UPLOAD_SIZE) || 512 * 1024 * 1024;
 
+// ---- 历史版本归档（供官网「历史版本下载」）----------------------------------
+// 归档形状：DOWNLOADS_DIR/archive/<版本标识>/<安装包文件名>
+//   · /admin/upload 每次除覆盖最新版固定文件名外，另存一份带版本标识的副本
+//   · versions.json 记录副本的 commit / sha256 / size；缺失时扫描 archive/ 目录
+//   · GET /api/versions 只返回「磁盘上确实存在」的副本，不编造历史版本
+const VERSIONS_PATH = process.env.VERSIONS_PATH || path.join(path.dirname(MANIFEST_PATH), 'versions.json');
+const ARCHIVE_DIR = process.env.ARCHIVE_DIR || path.join(DOWNLOADS_DIR, 'archive');
+const ARCHIVE_ENABLED = process.env.ARCHIVE_ENABLED !== '0';
+// 官网静态页跨域读 /api/versions 用；生产可收紧为具体 origin
+const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
+
+/** 版本号 / commit → 安全目录名，禁止路径穿越 */
+function safeVersionKey(v, commit) {
+	const raw = String(v || '').trim() || String(commit || '').slice(0, 12);
+	return raw.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '') || 'unknown';
+}
+
+/** 由归档文件名反推 platform（兼容新旧两种 exe 命名） */
+function platformOfFile(fileName) {
+	const n = String(fileName);
+	if (/^VsSarosUserSetup/i.test(n)) return 'win32-x64-user';
+	if (/^VsSarosSetup/i.test(n)) return 'win32-x64';
+	if (/^VsSarosisSetup/i.test(n)) return 'win32-x64';
+	if (/^VsSarosis\.apk$/i.test(n)) return 'android-arm64';
+	if (/^VsSaros-darwin/i.test(n)) return n.includes('arm64') ? 'darwin-arm64' : 'darwin';
+	for (const [p, base] of Object.entries(ASSET_NAME_BY_PLATFORM)) {
+		if (n.startsWith(base)) return p;
+	}
+	return null;
+}
+
+/** 读 versions.json；不存在 / 损坏一律返回空数组 */
+function readVersionsFile() {
+	try {
+		const data = JSON.parse(fs.readFileSync(VERSIONS_PATH, 'utf8'));
+		return Array.isArray(data.versions) ? data.versions : [];
+	} catch { return []; }
+}
+
+/** 原子写 versions.json，避免并发读到半截文件 */
+function writeVersionsFile(versions) {
+	const tmp = VERSIONS_PATH + '.tmp';
+	fs.writeFileSync(tmp, JSON.stringify({ schema: 1, updatedAt: Date.now(), versions }, null, 2) + '\n', 'utf8');
+	fs.renameSync(tmp, VERSIONS_PATH);
+}
+
+/** 登记归档副本：同 key + platform 覆盖 */
+function upsertArchiveEntry(entry) {
+	const list = readVersionsFile().filter(v => !(v && v.key === entry.key && v.platform === entry.platform));
+	list.push(entry);
+	list.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+	writeVersionsFile(list);
+}
+
+/**
+ * 列出真实存在的归档条目。
+ * 先读 versions.json 元数据，再扫描 archive/ 目录（运维直接放包也可被官网读到）。
+ * 每条都 statSync 校验，避免再次出现「API 指向 404 文件」。
+ */
+function listArchiveEntries(baseUrl) {
+	const out = [];
+	const seen = new Set();
+	const push = (key, fileName, platform, meta) => {
+		if (!/^[A-Za-z0-9._-]+$/.test(key) || key === '.' || key === '..' ||
+			!fileName || fileName === '.' || fileName === '..' || /[/\\]/.test(fileName)) return;
+		let stat;
+		try {
+			if (!fs.lstatSync(path.join(ARCHIVE_DIR, key)).isDirectory()) return;
+			stat = fs.lstatSync(path.join(ARCHIVE_DIR, key, fileName));
+		} catch { return; }
+		if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_DOWNLOAD_SIZE) return;
+		if (meta?.size != null && meta.size !== stat.size) return;
+		const rel = path.relative(DOWNLOADS_DIR, path.join(ARCHIVE_DIR, key, fileName)).split(path.sep).join('/');
+		if (rel.startsWith('..') || path.isAbsolute(rel)) return;
+		const id = key + '/' + fileName;
+		if (seen.has(id)) return;
+		seen.add(id);
+		out.push({
+			key,
+			productVersion: meta?.productVersion || key,
+			commit: meta?.commit || null,
+			platform: platform || null,
+			fileName,
+			url: `${baseUrl}/downloads/${rel}`,
+			sha256hash: meta?.sha256hash || null,
+			size: stat.size,
+			timestamp: meta?.timestamp || null,
+			verified: true
+		});
+	};
+	for (const e of readVersionsFile()) {
+		if (e && e.key && e.fileName) push(String(e.key), String(e.fileName), e.platform, e);
+	}
+	if (fs.existsSync(ARCHIVE_DIR)) {
+		for (const key of fs.readdirSync(ARCHIVE_DIR)) {
+			let dirStat;
+			try { dirStat = fs.statSync(path.join(ARCHIVE_DIR, key)); } catch { continue; }
+			if (!dirStat.isDirectory()) continue;
+			for (const fileName of fs.readdirSync(path.join(ARCHIVE_DIR, key))) {
+				if (!/\.(exe|zip|apk)$/i.test(fileName)) continue;
+				push(key, fileName, platformOfFile(fileName), null);
+			}
+		}
+	}
+	return out.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+}
+
+/** 上传完成后保留历史副本并登记元数据；失败不影响最新版上传 */
+async function hashArchiveFile(file) {
+	const hash = crypto.createHash('sha256');
+	for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
+	return hash.digest('hex');
+}
+
+async function archiveUpload({ platform, commit, productVersion, fileName, sha256hash, size, baseUrl }) {
+	if (!ARCHIVE_ENABLED) return null;
+	if (!/^[a-f0-9]{64}$/i.test(sha256hash) || !platform || !size || /[/\\]/.test(fileName)) {
+		throw new Error('invalid archive metadata');
+	}
+	const key = safeVersionKey(productVersion, commit) + '--' + safeVersionKey(platform) + '--' + sha256hash;
+	const dir = path.join(ARCHIVE_DIR, key);
+	fs.mkdirSync(dir, { recursive: true });
+	const dest = path.join(dir, fileName);
+	const temp = path.join(dir, '.partial-' + crypto.randomUUID());
+	try {
+		await fs.promises.copyFile(path.join(DOWNLOADS_DIR, fileName), temp, fs.constants.COPYFILE_EXCL);
+		if (fs.statSync(temp).size !== size || await hashArchiveFile(temp) !== sha256hash.toLowerCase()) {
+			throw new Error('archive content changed during upload');
+		}
+		try { fs.linkSync(temp, dest); }
+		catch (e) {
+			if (e.code !== 'EEXIST' || await hashArchiveFile(dest) !== sha256hash.toLowerCase()) throw e;
+		}
+	} finally {
+		try { fs.unlinkSync(temp); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+	}
+	const entry = {
+		key, productVersion: productVersion || null, commit,
+		platform, fileName,
+		url: `${baseUrl}/downloads/archive/${key}/${fileName}`,
+		sha256hash: sha256hash.toLowerCase(), size, timestamp: Date.now()
+	};
+	upsertArchiveEntry(entry);
+	console.log(`[archive] 历史副本 ${key}/${fileName} size=${size}`);
+	return entry;
+}
+
+/** GET /api/versions —— 官网历史版本下载的数据源 */
+function serveVersionsApi(req, res, url) {
+	const baseUrl = PUBLIC_BASE_URL || `http://${req.headers.host}`;
+	const all = listArchiveEntries(baseUrl);
+	const platform = url.searchParams.get('platform');
+	const versions = platform ? all.filter(v => v.platform === platform) : all;
+	res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+	res.end(JSON.stringify({
+		ok: true,
+		service: 'vssaros-update-server',
+		schema: 1,
+		generatedAt: new Date().toISOString(),
+		archiveReady: versions.length > 0,
+		baseUrl,
+		archiveLayout: 'downloads/archive/<版本标识>/<安装包文件名>',
+		count: versions.length,
+		versions
+	}));
+}
+
+function setCors(res) {
+	res.setHeader('Access-Control-Allow-Origin', CORS_ORIGIN);
+	res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+	res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+	res.setHeader('Access-Control-Max-Age', '600');
+}
+
 // ---- manifest 内存缓存（按 mtime 失效，避免每请求读磁盘）----
 /** @type {{ mtimeMs: number, manifest: Record<string, any> | null }} */
 let _manifestCache = { mtimeMs: -1, manifest: null };
@@ -257,7 +431,7 @@ function handleUpload(req, res, url) {
 
 	req.pipe(hashTransform).pipe(writeStream);
 
-	writeStream.on('finish', () => {
+	writeStream.on('finish', async () => {
 		if (aborted) { return; }
 		const sha256hash = hash.digest('hex');
 		const baseUrl = PUBLIC_BASE_URL || `http://${req.headers.host}`;
@@ -278,9 +452,18 @@ function handleUpload(req, res, url) {
 			return;
 		}
 
+		// 保留一份带版本标识的历史副本（失败不影响最新版固定文件与 manifest）
+		let archiveUrl = null;
+		try {
+			const archived = await archiveUpload({ platform, commit, productVersion, fileName, sha256hash, size: received, baseUrl });
+			archiveUrl = archived ? archived.url : null;
+		} catch (e) {
+			console.error('[archive] 保存历史副本失败（不影响最新版）:', e);
+		}
+
 		console.log(`[upload] 完成 ${fileName} sha256=${sha256hash.substring(0, 12)}... size=${received}`);
 		res.writeHead(200, { 'Content-Type': 'application/json' });
-		res.end(JSON.stringify({ ok: true, platform, version: commit, productVersion, url: downloadUrl, sha256hash, size: received }));
+		res.end(JSON.stringify({ ok: true, platform, version: commit, productVersion, url: downloadUrl, sha256hash, size: received, archive: archiveUrl }));
 	});
 
 	writeStream.on('error', (e) => {
@@ -343,6 +526,29 @@ async function readFromGitHub(platform) {
 
 const server = http.createServer(async (req, res) => {
 	const url = new URL(req.url || '/', `http://localhost:${PORT}`);
+
+	// 官网静态页跨域读取 /api/versions（不影响 VS Code 客户端的更新协议）
+	setCors(res);
+	if (req.method === 'OPTIONS') {
+		res.writeHead(204);
+		res.end();
+		return;
+	}
+
+	// 历史版本归档清单：官网「历史版本下载」的数据源
+	if (url.pathname === '/api/versions') {
+		if (req.method !== 'GET' && req.method !== 'HEAD') {
+			res.writeHead(405, { Allow: 'GET, HEAD, OPTIONS' }); res.end(); return;
+		}
+		res.setHeader('Cache-Control', 'no-store');
+		try { serveVersionsApi(req, res, url); }
+		catch (e) {
+			console.error('[archive] 清单读取失败:', e);
+			res.writeHead(503, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'archive unavailable' }));
+		}
+		return;
+	}
 
 	// 健康检查
 	if (url.pathname === '/' || url.pathname === '/health') {
@@ -452,6 +658,8 @@ server.listen(PORT, () => {
 	console.log(`VsSarosis update server 已启动: http://localhost:${PORT}`);
 	console.log(`模式: ${GH_REPO ? `GitHub Releases (${GH_REPO})` : `本地清单 (${MANIFEST_PATH})`}`);
 	console.log(`下载目录: ${DOWNLOADS_DIR}`);
+	console.log(`归档目录: ${ARCHIVE_DIR}（${ARCHIVE_ENABLED ? '已启用' : '已关闭 ARCHIVE_ENABLED=0'}）· 清单 ${VERSIONS_PATH}`);
+	console.log(`历史版本: GET /api/versions（CORS origin=${CORS_ORIGIN}）`);
 	console.log(`上传端点: POST /admin/upload（鉴权: ${UPLOAD_TOKEN ? '已启用 X-Upload-Token' : '未启用（UPLOAD_TOKEN 未设置）'}）`);
 	console.log(`测试: curl http://localhost:${PORT}/api/update/win32-x64-user/saros/0000000000000000000000000000000000000000`);
 });

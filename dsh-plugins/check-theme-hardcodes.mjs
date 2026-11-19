@@ -34,6 +34,17 @@ const PLUGINS = path.join(ROOT, 'dsh-plugins');
 /** 中性叠加：明暗主题下都是"同一层灰"，不算写死表面色。 */
 const NEUTRAL = [/\brgba?\(\s*127\s*,\s*127\s*,\s*127\b/i, /\brgba?\(\s*128\s*,\s*128\s*,\s*128\b/i];
 
+/**
+ * ★ 2026-11-19：随包 vendored 的第三方包整体豁免本守卫。
+ *
+ * 这条守的是**我们自己**的在页模块必须跟 `--dsw-alias-*` 令牌走；上游 client 有自己的
+ * 调色/主题体系（vision-router 的 `client-presentation-boundary-main.js`、better-sidebar 的
+ * `lib/client*.js` 都自带配色），
+ * 我们承诺不改上游字节（见各自 `VENDOR.md`）⇒ 拿本仓的令牌口径去判只会假红。
+ * 不静默跳过：扫描时打印一行。自研插件仍逐个文件受检。
+ */
+const VENDORED_EXEMPT_DIRS = new Set(['dsh-ego-browser', 'dsh-vision-router', 'dsh-better-sidebar']);
+
 /** 只看这些样式键（`color` 是强调色，刻意不看）。 */
 const STYLE_KEY = /\b(background|backgroundColor|border|borderTop|borderBottom|borderLeft|borderRight|borderColor)\s*:\s*/g;
 
@@ -136,7 +147,8 @@ function walk(dir, out) {
 	for (const e of entries) {
 		const p = path.join(dir, e.name);
 		if (e.isDirectory()) {
-			if (e.name === 'node_modules' || e.name === 'mockups' || e.name === 'test' || e.name === 'vendor') { continue; }
+			if (e.name === 'node_modules' || e.name === 'mockups' || e.name === 'test' || e.name === 'vendor'
+				|| VENDORED_EXEMPT_DIRS.has(e.name)) { continue; }
 			walk(p, out);
 			continue;
 		}
@@ -194,6 +206,11 @@ if (process.argv.includes('--self-test')) {
 
 const files = [];
 walk(PLUGINS, files);
+for (const dir of VENDORED_EXEMPT_DIRS) {
+	if (fs.existsSync(path.join(PLUGINS, dir))) {
+		console.log(`[check-theme-hardcodes] · ${dir}/：上游 vendored client 整体豁免（理由见 VENDOR.md）`);
+	}
+}
 
 let problems = 0;
 console.log(`[check-theme-hardcodes] 扫描 ${files.length} 个在页脚本：内联样式里不许写死表面色`);

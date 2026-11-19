@@ -85,7 +85,7 @@ import { clampPercent, isAppUpdatePhase, type AppUpdatePhase, type AppUpdateSour
  * 2026-10-26：`19 → 20`，新增 `importCodeWorkspace` —— 请 IDE 侧导入一个 `.code-workspace` 文件
  *   （选文件 → 解析 folders → 落一条多根工作区记录 → 各根注册进 dsh）。**只导入，不切窗口** ✓。
  */
-export const DSH_PAGE_BRIDGE_VERSION = 26;   // 2026-11-05：`25 → 26`，新增 `rightbarBrowser`（右侧栏内嵌浏览器：占位矩形 / 导航 / 显隐）
+export const DSH_PAGE_BRIDGE_VERSION = 27;   // 2026-11-17：`26 → 27`，新增 `createWorktree` / `removeWorktree`（意图转发给 dsh Host 唯一 git 源；结果靠列表推送回页面）
 
 /** preload → 主进程的 IPC 通道（经 webContents.ipc，作用域限于该视图）。 */
 export const DSH_PAGE_IPC_INVOKE = 'vssaros:dsh:page';
@@ -1080,7 +1080,17 @@ export type DshPageCommand =
 	 *   这里也不替它们兜底（宁可少一个按钮，也不要"点了报错" ✗）。
 	 */
 	| { readonly method: 'upgradeAsset'; readonly kind: string; readonly slug: string }
-	| { readonly method: 'rightbarBrowser'; readonly action: DshPageBrowserAction; readonly rect?: IDshPageBrowserRect; readonly url?: string };
+	| { readonly method: 'rightbarBrowser'; readonly action: DshPageBrowserAction; readonly rect?: IDshPageBrowserRect; readonly url?: string }
+	/**
+	 * **新建 worktree**（P1，方案 B「一套 git 源，以 dsh 侧为准」）。
+	 *
+	 * `name` 是分支名（同时作为官方目录池里的检出目录名，如 `feat/quick-followup-a1b2`）。
+	 * ⚠ 桥是**单向**的：这条命令只把意图转给 dsh Host；创建结果（真实路径）由
+	 * {@link DSH_PAGE_IPC_WORKTREES} 的快照推送回页面 ⇒ 页面不得把「已发出」当成功。
+	 */
+	| { readonly method: 'createWorktree'; readonly name: string }
+	/** 删除一个已存在的 worktree（`path` 为绝对路径，且必须落在官方目录池内，由 Host 复核）。 */
+	| { readonly method: 'removeWorktree'; readonly path: string };
 
 /**
  * **不需要 IDE 主窗口露面**的页面桥命令（2026-10-21 新增；原先是 `dshHarness.contribution.ts` 里的私有静态集，
@@ -1117,6 +1127,8 @@ export const DSH_PAGE_COMMANDS_WITHOUT_IDE_UI: ReadonlySet<Exclude<DshPageComman
 	'sessionTitle', 'sessionPersona',   // 页面 → 工作台的上报
 	'switchPreset', 'newSession',       // 聊天宿主自己换绑 / 本页新会话
 	'switchWorktree', 'switchWorkspace', // 宿主侧起会话 / 换工作区（无 IDE 界面变化）
+	// ★ 桥 26→27：动的是 dsh Host 的 git 工作树，不需要把 IDE 主窗口拉到前台。
+	'createWorktree', 'removeWorktree',
 	'kbFeishuSync', 'kbAddVault', 'kbRemoveVault', // 数据动作（原生对话框自带前台）
 	// ★ 2026-10-26（桥 `19 → 20`）：导入 .code-workspace 用的是**原生文件对话框**（自带前台）
 	//   ⇒ 不许因为"点了导入"就把 IDE 主窗口拉到前台（desktop 模式下那正是用户要避免的形态 ✗）。
@@ -1619,6 +1631,23 @@ export function validatePageCommand(raw: unknown): DshPageCommand | undefined {
 				? /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(r.id)
 				: /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,127}$/.test(r.id);
 			return ok ? { method: 'openResourceSettings', kind, id: r.id } : undefined;
+		}
+		case 'createWorktree': {
+			// 分支名：字母数字开头，允许 `/ - . _`（chip 生成 `feat/<slug>-<4hex>`），
+			// 拒绝 `..` / 控制字符 / 过长；权威校验在 Host（git check-ref-format 同口径）。
+			if (typeof r.name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._\/-]{0,127}$/.test(r.name)
+				|| r.name.includes('..') || /[\u0000-\u001f]/.test(r.name)) {
+				return undefined;
+			}
+			return { method: 'createWorktree', name: r.name };
+		}
+		case 'removeWorktree': {
+			// 与 switchWorktree 同口径：只收绝对路径；Host 会再复核它落在官方目录池内。
+			if (typeof r.path !== 'string' || !isAbsoluteFsPath(r.path) || r.path.length > 1024
+				|| /[\u0000-\u001f]/.test(r.path)) {
+				return undefined;
+			}
+			return { method: 'removeWorktree', path: r.path };
 		}
 		default:
 		return undefined;

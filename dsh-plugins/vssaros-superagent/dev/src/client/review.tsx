@@ -34,6 +34,7 @@ function Outcome({ review }: { review: Review }) {
     case 'rejected': return <Hint>{t('review.state.rejected', { by, comment: review.comment ?? '' })}</Hint>
     case 'discarded': return <Hint>{t('review.state.discarded', { by })}</Hint>
     case 'submitting': return <Hint>{t('review.state.submitting')}</Hint>
+    case 'delivered_pending': return <Hint>{review.comment || '已交付 pending CL，任务已结束；未提交，不等待编译、回归或审阅。'}</Hint>
     default: return null
   }
 }

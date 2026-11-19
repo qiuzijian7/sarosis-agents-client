@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VsSaros 主页重设计 · 5 个方向（选一个）</title>
+<link rel="stylesheet" href="./common.css">
+<style>
+  .wrap{max-width:1180px;margin:0 auto;padding:30px 22px 80px}
+  .top{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+  .top .grow{min-width:280px}
+  h1{margin:0;font-size:23px;font-weight:650;letter-spacing:-.015em}
+  .lede{margin:7px 0 0;color:var(--dsw-alias-label-secondary);font-size:12.5px;line-height:1.8}
+  .lede code{font:11.5px var(--wb-mono);background:var(--dsw-alias-bg-layer-2);padding:1px 5px;border-radius:4px}
+  .now{display:grid;grid-template-columns:210px minmax(0,1fr);gap:16px;align-items:center;
+    padding:14px 16px;margin:0 0 26px;border:1px solid var(--dsw-alias-border-l1);border-radius:14px;
+    background:var(--dsw-alias-bg-layer-1)}
+  .now h2{margin:0 0 6px;font-size:12.5px}
+  .now ul{margin:0;padding-left:17px;font-size:11.5px;color:var(--dsw-alias-label-secondary);line-height:1.85}
+  .now .tagline{font-size:11px;color:var(--dsw-alias-label-faint);margin-top:7px}
+  .wire{height:104px;padding:10px;border:1px dashed var(--dsw-alias-border-l2);border-radius:9px;
+    background:var(--dsw-alias-bg-base);display:flex;flex-direction:column;gap:6px}
+  .wire .ln{display:flex;gap:6px}
+  .bx{flex:1;border-radius:5px;background:var(--dsw-alias-brand-soft);border:1px solid var(--dsw-alias-brand-primary);opacity:.85}
+  .bx.s{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l2);opacity:1}
+  .cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+  @media (max-width:1000px){.cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media (max-width:680px){.cards{grid-template-columns:1fr}.now{grid-template-columns:1fr}}
+  .c{display:flex;flex-direction:column;min-width:0;border:1px solid var(--dsw-alias-border-l1);border-radius:14px;
+    background:var(--dsw-alias-bg-layer-1);overflow:hidden;transition:border-color .18s,box-shadow .18s,transform .18s}
+  .c:hover{border-color:var(--dsw-alias-brand-primary);box-shadow:var(--shadow-2);transform:translateY(-2px)}
+  .c .thumb{height:146px;padding:14px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base)}
+  .c .thumb .wire{height:100%}
+  .c .body{display:flex;flex-direction:column;gap:9px;flex:1;padding:14px 15px 16px}
+  .c .t{font-size:14.5px;font-weight:650}
+  .c .t em{font-style:normal;color:var(--dsw-alias-brand-primary);margin-right:7px}
+  .c .d{font-size:12px;color:var(--dsw-alias-label-secondary);line-height:1.7}
+  .c .kv{display:flex;gap:6px;flex-wrap:wrap;margin-top:auto;padding-top:4px}
+  .open{display:flex;align-items:center;justify-content:center;gap:6px;height:32px;margin-top:10px;
+    border-radius:9px;background:var(--dsw-alias-brand-primary);color:#fff;font-size:12.5px;font-weight:600}
+  .open .ic{width:14px;height:14px}
+  .block{margin-top:30px;padding:16px 18px;border:1px solid var(--dsw-alias-border-l1);border-radius:14px;background:var(--dsw-alias-bg-layer-1)}
+  .block h2{margin:0 0 10px;font-size:13.5px}
+  table{width:100%;border-collapse:collapse;font-size:11.5px}
+  th,td{border:1px solid var(--dsw-alias-border-l1);padding:7px 9px;text-align:left;vertical-align:top;color:var(--dsw-alias-label-secondary)}
+  th{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-weight:600}
+  td b{color:var(--dsw-alias-label-primary)}
+  .rec{margin-top:12px;padding:11px 13px;border-radius:10px;background:var(--dsw-alias-brand-soft);
+    border:1px solid var(--dsw-alias-brand-soft);font-size:12px;color:var(--dsw-alias-label-secondary);line-height:1.8}
+  .rec b{color:var(--dsw-alias-label-primary)}
+  .constraints{columns:2;column-gap:26px;font-size:11.5px;color:var(--dsw-alias-label-secondary);line-height:1.9}
+  .constraints li{break-inside:avoid;margin-bottom:4px}
+  code{font:11px var(--wb-mono);background:var(--dsw-alias-bg-layer-2);padding:1px 5px;border-radius:4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="grow">
+      <div class="eyebrow">VSSAROS / HOMEPAGE REDESIGN / MOCKUPS</div>
+      <h1>主页重设计 · 5 个方向</h1>
+      <p class="lede">
+        基于当前 <b>@vssaros/dsh-dashboard</b>（路由 <code>/x/dashboard/</code>，活动栏「主页」）重设计。
+        五个方案共用<b>同一份假数据</b>：8 个在册工作台、4 组 KPI、会话明细、用量分布、诊断行 —— 只改<b>信息架构与视觉组织</b>，方便横向比较。<br>
+        点卡片打开可交互原型（每个原型右上角可切深色 / 浅色，底部「设计说明」写了与现有框架的对应关系）。
+      </p>
+    </div>
+    <div class="head-actions">
+      <button class="btn icon" data-theme-toggle aria-label="切换主题" title="切换主题"><svg class="ic"><use href="#i-moon"></use></svg></button>
+    </div>
+  </div>
+
+  <div class="now">
+    <div class="wire" aria-hidden="true">
+      <div class="ln"><span class="bx s" style="flex:2"></span><span class="bx s" style="flex:1"></span></div>
+      <div class="ln" style="flex:1"><span class="bx"></span><span class="bx"></span><span class="bx"></span><span class="bx"></span></div>
+      <div class="ln" style="flex:1"><span class="bx s"></span></div>
+      <div class="ln" style="flex:1"><span class="bx s"></span></div>
+    </div>
+    <div>
+      <h2>现状（本次要改的东西）</h2>
+      <ul>
+        <li>一行 <code>主页 · dsh 会话遥测 / 用量（只读）</code> 标题，下面是工具条 + 12 列卡片网格。</li>
+        <li>出厂顺序：<b>工作台磁贴 → 关键指标 → 诊断行 → 会话明细</b>；画廊另有工作区统计 / 用量 / 时钟 / 番茄钟。</li>
+        <li>痛点：① 没有「开始工作」的入口，进来只能<b>看报表</b>；② 缺导航与上下文，工作台和会话混在一张长页；③ 遥测与操作等权，主次不清；④ 侧栏紧凑版只是摘要，全宽时留白浪费。</li>
+      </ul>
+      <div class="tagline">保留：12 列可编排网格 / 8 个 widget 契约 / <code>--dsw-alias-*</code> 令牌 / <code>data-vssaros-dashboard-*</code> 隐藏锚点 / <code>?surface=sideview</code>。</div>
+    </div>
+  </div>
+
+  <div class="cards">
+    <a class="c" href="./A-command-center.html">
+      <div class="thumb"><div class="wire">
+        <div class="ln" style="flex:.7"><span class="bx s" style="flex:2"></span><span class="bx s"></span><span class="bx s"></span></div>
+        <div class="ln" style="flex:1"><span class="bx"></span><span class="bx"></span><span class="bx"></span><span class="bx"></span></div>
+        <div class="ln" style="flex:1.4"><span class="bx" style="flex:2"></span><span class="bx s"></span></div>
+      </div></div>
+      <div class="body">
+        <div class="t"><em>A</em>指挥中心 · Command Center</div>
+        <div class="d">保留 12 列可编排网格，<b>加页头、全局搜索、大 KPI 带与分区标题</b>，把「工作台 / 会话 / 用量 / 诊断」排成有主次的仪表盘。现有 8 张卡全部复用，只是重新编排与放大重点。</div>
+        <div class="kv"><span class="pill ok">落地最快</span><span class="pill">信息密度高</span><span class="pill">最贴近现状</span></div>
+        <div class="open">打开 A <svg class="ic"><use href="#i-arrow-up-right"></use></svg></div>
+      </div>
+    </a>
+
+    <a class="c" href="./B-launch-deck.html">
+      <div class="thumb"><div class="wire">
+        <div class="ln" style="flex:1.2"><span class="bx" style="flex:3"></span><span class="bx s"></span></div>
+        <div class="ln" style="flex:1"><span class="bx"></span><span class="bx"></span><span class="bx"></span><span class="bx s"></span></div>
+        <div class="ln" style="flex:1.2"><span class="bx s" style="flex:2"></span><span class="bx s"></span></div>
+      </div></div>
+      <div class="body">
+        <div class="t"><em>B</em>启动台 · Launch Deck</div>
+        <div class="d">把主页从「报表」改成<b>「开工入口」</b>：Hero 命令框 + 继续上次会话 / 新建会话 / 打开工作区 + 常用工作台大磁贴；遥测收进右侧窄栏的小指标。</div>
+        <div class="kv"><span class="pill ok">最想让人用</span><span class="pill">信息密度中</span><span class="pill warn">需 2 个新 widget</span></div>
+        <div class="open">打开 B <svg class="ic"><use href="#i-arrow-up-right"></use></svg></div>
+      </div>
+    </a>
+
+    <a class="c" href="./C-split-focus.html">
+      <div class="thumb"><div class="wire" style="flex-direction:row">
+        <div style="width:32%;display:flex;flex-direction:column;gap:6px"><span class="bx s" style="flex:1"></span><span class="bx s" style="flex:1"></span><span class="bx s" style="flex:1"></span><span class="bx s" style="flex:1"></span></div>
+        <div style="flex:1;display:flex;flex-direction:column;gap:6px"><span class="bx" style="flex:.7"></span><span class="bx s" style="flex:1.6"></span></div>
+      </div></div>
+      <div class="body">
+        <div class="t"><em>C</em>分栏聚焦 · Split Focus</div>
+        <div class="d">左固定导航（工作台 / 最近会话 / 已固定）+ 右详情，对齐框架的 <b>Pane × Surface</b> 与 <code>wb-split</code> 骨架。内置 <b>320px 侧栏预览</b>，可直接验证容器查询。</div>
+        <div class="kv"><span class="pill ok">模块多也不乱</span><span class="pill">桌面工具感</span><span class="pill warn">改动中等偏大</span></div>
+        <div class="open">打开 C <svg class="ic"><use href="#i-arrow-up-right"></use></svg></div>
+      </div>
+    </a>
+
+    <a class="c" href="./D-activity-stream.html">
+      <div class="thumb"><div class="wire">
+        <div class="ln" style="flex:.8"><span class="bx"></span><span class="bx"></span><span class="bx"></span></div>
+        <div class="ln" style="flex:1.8"><span class="bx s" style="flex:2"></span><span class="bx s"></span></div>
+        <div class="ln" style="flex:.6"><span class="bx s"></span><span class="bx s"></span><span class="bx s"></span><span class="bx s"></span></div>
+      </div></div>
+      <div class="body">
+        <div class="t"><em>D</em>活动流 · Activity Stream</div>
+        <div class="d">以「<b>现在正在发生什么</b>」为主线：运行中 Agent 状态卡 + 近 7 天活动时间线 + 用量趋势 + 待处理清单，工作台收成底部一条紧凑入口。</div>
+        <div class="kv"><span class="pill ok">最有「活着」的感觉</span><span class="pill warn">依赖 live 状态</span><span class="pill warn">落地最重</span></div>
+        <div class="open">打开 D <svg class="ic"><use href="#i-arrow-up-right"></use></svg></div>
+      </div>
+    </a>
+
+    <a class="c" href="./E-zen-focus.html">
+      <div class="thumb"><div class="wire" style="align-items:center;justify-content:center">
+        <div style="width:78%;display:flex;flex-direction:column;gap:9px">
+          <span class="bx s" style="height:16px;flex:none"></span>
+          <span class="bx" style="height:26px;flex:none"></span>
+          <span class="bx s" style="height:12px;flex:none"></span>
+          <span class="bx s" style="height:12px;flex:none"></span>
+          <span class="bx s" style="height:12px;flex:none"></span>
+        </div>
+      </div></div>
+      <div class="body">
+        <div class="t"><em>E</em>极简聚焦 · Zen Focus</div>
+        <div class="d">大留白 + 一个大命令框 + 3 条最近会话 + 一行常用工作台 + 一条安静的状态栏；<b>拿掉全部遥测</b>。带「专注模式」开关，可隐藏 IDE 活动栏与标题栏。</div>
+        <div class="kv"><span class="pill ok">最不打扰</span><span class="pill">信息密度低</span><span class="pill warn">要放下报表诉求</span></div>
+        <div class="open">打开 E <svg class="ic"><use href="#i-arrow-up-right"></use></svg></div>
+      </div>
+    </a>
+
+    <div class="c" style="justify-content:center">
+      <div class="body" style="gap:10px">
+        <div class="t">怎么选？</div>
+        <div class="d">
+          <b>想一步到位、不折腾</b> → A。<br>
+          <b>想让主页真正被用起来</b> → B（或 A + B 的 Hero）。<br>
+          <b>工作台会越来越多 / 侧栏常驻</b> → C。<br>
+          <b>把 VsSaros 当 Agent 运行监控</b> → D。<br>
+          <b>嫌现在太吵</b> → E。
+        </div>
+        <div class="kv"><span class="pill brand">5 个方案</span><span class="pill">同一份数据</span><span class="pill">同一套令牌</span></div>
+        <div class="d" style="margin-top:6px;color:var(--dsw-alias-label-faint)">也可以组合：A 的骨架 + B 的 Hero + C 的左栏，是最常见的一条路线。</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="block">
+    <h2>五个方向的取舍</h2>
+    <table>
+      <tr>
+        <th>维度</th><th>A 指挥中心</th><th>B 启动台</th><th>C 分栏聚焦</th><th>D 活动流</th><th>E 极简聚焦</th>
+      </tr>
+      <tr>
+        <td>回答的问题</td><td>「整体状况如何」</td><td>「我接下来做什么」</td><td>「那个模块里有什么」</td><td>「现在正在发生什么」</td><td>「我要开始」</td>
+      </tr>
+      <tr>
+        <td>信息密度</td><td>高</td><td>中</td><td>中高</td><td>高</td><td>低</td>
+      </tr>
+      <tr>
+        <td>复用现有 8 卡</td><td><b>全部</b></td><td>6 个（缩为侧栏指标）</td><td>5 个（详情区重组）</td><td>4 个</td><td>2 个</td>
+      </tr>
+      <tr>
+        <td>新增 widget / 数据</td><td>0</td><td><code>quickstart</code> + <code>recents</code></td><td>选中态 + 每模块最近项</td><td><b>live 状态 + 近 7 天变更</b></td><td>命令路由 + 最近项</td>
+      </tr>
+      <tr>
+        <td>落地代价</td><td><b>最小</b>（重排 + 页头）</td><td>中</td><td>中偏大</td><td><b>最大</b></td><td>中</td>
+      </tr>
+      <tr>
+        <td>侧栏 <code>?surface=sideview</code></td><td>需另做摘要版</td><td>需另做摘要版</td><td><b>天然兼容</b>（320px 容器查询）</td><td>需另做摘要版</td><td>天然兼容</td>
+      </tr>
+      <tr>
+        <td>主要风险</td><td>仍是「报表」，入口感弱</td><td>遥测被弱化，排障要靠诊断卡</td><td>宽屏右区可能空、多一层选中态</td><td>live/mtime 口径未稳定前易显示错</td><td>老用户会找不到 KPI</td>
+      </tr>
+    </table>
+    <div class="rec">
+      <b>建议</b>：先落 <b>A</b>（现有 8 张卡零新增，一天内可上，<code>p3-09</code> 探针不受影响）；确认视觉方向后，把 <b>B 的 Hero 命令区</b>作为第 9 个可选 widget 加进画廊，让「开工入口」与「遥测」共存。若后续工作台超过 15 个，再切 <b>C</b> 的左栏。<b>D</b> 的活动流先只做「最近更新 Top N」，等索引快照稳了再上时间线；<b>E</b> 更适合做成一个可切换的「专注预设」，而不是替换默认主页。
+    </div>
+  </div>
+
+  <div class="block">
+    <h2>五个方案共同遵守的框架约束（不是随便画的）</h2>
+    <ul class="constraints">
+      <li>颜色只走 <code>--dsw-alias-*</code>（写成 <code>var(--dsw-alias-x, 兜底)</code>），间距/圆角/字号走 <code>--wb-*</code> 刻度。</li>
+      <li>网格按 <code>lib/layout.js</code> 的 12 列设计，并按<b>容器宽度</b>降列 12→8→4（<code>@container</code>，不用 <code>@media</code>）—— 断点 320 / 520 / 760。</li>
+      <li>卡片一一对应 <code>lib/catalog.js</code> 的 8 个 widget：<code>kpi / diag / sessions / workbench / workspaces / usage / clock / pomodoro</code>。</li>
+      <li>工作台磁贴只列 <code>VISIBLE_WORKBENCH_MODULES</code> 里 <b>未下线</b>的 8 个路由；<code>offline: true</code> 的不出卡。</li>
+      <li>机器可断言的 <code>data-vssaros-dashboard-*</code> 继续由<b>隐藏 meta 块</b>无条件渲染，与用户编排解耦。</li>
+      <li>图标用内联 SVG（落地可换 <code>wbIconEmoji()</code> 的 emoji 映射）；不用 codicon 字体。</li>
+      <li>交互：焦点环、<code>cursor:pointer</code>、150–300ms 过渡、<code>prefers-reduced-motion</code>、深浅两色对比 ≥ 4.5:1。</li>
+      <li>纯静态单页、零外部 CDN（IDE webview 常离线）；本次<b>只做设计评审，不改任何生产代码</b>。</li>
+    </ul>
+  </div>
+</div>
+<script src="./common.js"></script>
+</body>
+</html>

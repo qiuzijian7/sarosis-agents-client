@@ -31,6 +31,13 @@ const base = () => Object.assign(emptyState(), { added: [A, B] });
 // ── ① state ──────────────────────────────────────────────────────────────
 await t('合法状态通过；空状态通过', () => { validateState(emptyState()); validateState(base()); });
 await t('未知字段 ⇒ 抛', () => assert.throws(() => validateState({ ...emptyState(), extra: 1 }), /未知字段/));
+await t('P3 主页排序字段：合法数组通过，重复/非字符串/超长拒绝', () => {
+	const good = { ...emptyState(), homeWorkbenchOrder: ['vssaros/kb/default', 'files'], homeToolOrder: ['terminal'] };
+	validateState(good);
+	assert.throws(() => validateState({ ...emptyState(), homeWorkbenchOrder: ['a', 'a'] }), /排序键/);
+	assert.throws(() => validateState({ ...emptyState(), homeToolOrder: [1] }), /排序键/);
+	assert.throws(() => validateState({ ...emptyState(), homeToolOrder: ['x'.repeat(201)] }), /排序键/);
+});
 await t('身份必须是 owner/repo（大写/缺斜杠 ⇒ 抛）', () => {
 	assert.throws(() => validateState({ ...emptyState(), added: ['Acme/Board'] }));
 	assert.throws(() => validateState({ ...emptyState(), added: ['scheduler'] }));
@@ -103,7 +110,7 @@ function loadClient(fetchImpl) {
 		__ModuleLoader__: { load: ({ factory }) => { mod = factory(require); } },
 		location: { search: '', hash: '', origin: 'http://127.0.0.1:1' },
 	};
-	const fakeReact = { createElement: (...a) => a, Component: class { }, Fragment: 'F', useRef: () => ({}), useLayoutEffect: () => { }, useState: init => [typeof init === 'function' ? init() : init, () => { }], useEffect: () => { } };
+	const fakeReact = { createElement: (...a) => a, createContext: () => ({ Provider: 'Provider' }), useCallback: fn => fn, Component: class { }, Fragment: 'F', useRef: () => ({}), useLayoutEffect: () => { }, useState: init => [typeof init === 'function' ? init() : init, () => { }], useEffect: () => { } };
 	const fakeReactDom = { createPortal: (node, el, key) => ['portal', { el, key }, node] };
 	const require = name => {
 		if (name === 'react') { return fakeReact; }
@@ -197,6 +204,723 @@ await t('register → 注册 main keyed 面板；重复注册抛；注销函数�
 	dispose(); // 二次调用无副作用
 	assert.equal(ctx.calls.disposed, 1);
 });
+await t('P1 统一目录：默认页 + 声明子页有稳定主键，非法/重复 pageId 抛', () => {
+	const base = { title: '数据分析', repository: 'vssaros:analysis' };
+	assert.equal(client.catalogKey('vssaros/analysis', 'overview'), 'vssaros/analysis/overview');
+	const entry = client.normalize({ ...base, pages: [{ id: 'overview', title: '概览' }, { id: 'records', title: '数据表', route: '/x/analysis/records/' }] }, Comp);
+	assert.deepEqual(entry.pages.map(p => p.pageId), ['default', 'overview', 'records']);
+	assert.equal(entry.pages[0].key, 'vssaros/analysis/default');
+	assert.equal(entry.pages[1].kind, 'component');
+	assert.equal(entry.pages[2].kind, 'route');
+	assert.equal(entry.pages[0].Component, Comp, 'renderer 留在内部条目，供 P2 取用');
+	assert.throws(() => client.normalize({ ...base, pages: [{ id: 'Bad Name', title: '非法' }] }, Comp), /Invalid workbench page id/);
+	assert.throws(() => client.normalize({ ...base, pages: [{ id: 'dup', title: '1' }, { id: 'dup', title: '2' }] }, Comp), /Duplicate workbench page id/);
+});
+await t('P1 统一目录：注册/注销订阅同步、快照不暴露 Component、路由页可单独登记', () => {
+	const { service } = serviceOf();
+	let notified = 0;
+	const unsubscribe = service.subscribeCatalog(() => { notified += 1; });
+	const empty = service.getCatalogSnapshot();
+	assert.ok(Object.isFrozen(empty) && Object.isFrozen(empty.pages), '目录快照必须冻结');
+	assert.equal(empty.pages.length, 0);
+	const dispose = service.register({
+		title: '定时任务', repository: 'vssaros:scheduler',
+		pages: [{ id: 'overview', title: '概览' }],
+	}, Comp);
+	const registered = service.getCatalogSnapshot();
+	assert.deepEqual(registered.pages.map(p => p.pageId), ['default', 'overview']);
+	assert.ok(registered.pages.every(p => !Object.prototype.hasOwnProperty.call(p, 'Component')), '快照不能带 React Component');
+	assert.equal(service.getCatalogRenderer('vssaros/scheduler/default'), Comp);
+	assert.equal(service.getCatalogRenderer('vssaros/scheduler/overview'), Comp);
+	assert.ok(notified > 0, '注册必须通知目录订阅者');
+	const page = { workbenchId: 'route/x-kb', pageId: 'default', title: '知识库', route: '/x/kb/' };
+	const disposePage = service.registerPage(page, null);
+	const withRoute = service.getCatalogSnapshot();
+	assert.equal(withRoute.pages.length, 3);
+	assert.equal(withRoute.pages.find(p => p.key === 'route/x-kb/default').kind, 'route');
+	assert.equal(service.getCatalogRenderer('route/x-kb/default'), null, '纯路由页没有 React renderer');
+	assert.throws(() => service.registerPage(page, null), /Duplicate workbench catalog page/);
+	disposePage();
+	assert.equal(service.getCatalogSnapshot().pages.length, 2);
+	dispose();
+	assert.equal(service.getCatalogSnapshot().pages.length, 0, '注销必须移除所有页面');
+	assert.equal(service.getCatalogRenderer('vssaros/scheduler/default'), null, '注销必须清掉 renderer');
+	const before = notified;
+	unsubscribe();
+	service.register({ title: '临时', repository: 'vssaros:temp' }, Comp);
+	assert.equal(notified, before, '退订后不再收到目录通知');
+});
+await t('P2 兼容桥：旧全局清单进入统一目录，组件式优先于 route，下线项不生成可用入口', () => {
+	client.__setSidebarLayoutV1(false);
+	client.__testDeleteGlobal('__vssarosWorkbenchItems');
+	client.__testDeleteGlobal('__vssarosPageComponents');
+	const { service } = serviceOf();
+	const Memory = () => null;
+	client.__testSetGlobal('__vssarosWorkbenchItems', [
+		{ id: 'vssaros-wb-dashboard', name: '主页', route: '/x/dashboard/' },
+		{ id: 'vssaros-wb-kb', name: '知识库', ico: '📚', route: '/x/kb/' },
+		{ id: 'vssaros-wb-memory-tab', name: '记忆', ico: '🧠', route: '/x/memory/', comp: 'memory' },
+		{ id: 'vssaros-wb-kanban', name: '看板', route: '/x/kanban/', offline: true },
+	]);
+	client.__testSetGlobal('__vssarosPageComponents', { memory: Memory });
+	service.ingestLegacyCatalog();
+	const pages = service.getCatalogSnapshot().pages;
+	assert.equal(pages.length, 3, '主页不能递归列自己；其余三项进入目录');
+	const kb = pages.find(p => p.pageId === 'vssaros-wb-kb');
+	const memory = pages.find(p => p.pageId === 'vssaros-wb-memory-tab');
+	const kanban = pages.find(p => p.pageId === 'vssaros-wb-kanban');
+	assert.equal(kb.kind, 'route');
+	assert.equal(kb.sourceKind, 'legacy');
+	assert.equal(memory.kind, 'component', '组件式记忆不能被不存在的 /x/memory/ route 覆盖');
+	assert.equal(service.getCatalogRenderer(memory.key), Memory);
+	assert.equal(kanban.hidden, true);
+	assert.equal(kanban.enabled, false);
+	service.ingestLegacyCatalog();
+	assert.equal(service.getCatalogSnapshot().pages.length, 3, '重复读取旧清单必须幂等');
+	client.__testSetGlobal('__vssarosWorkbenchItems', [{ id: 'vssaros-wb-kb', name: '知识库', route: '/x/kb/' }]);
+	service.ingestLegacyCatalog();
+	assert.equal(service.getCatalogSnapshot().pages.length, 1, '旧清单移除的条目必须注销');
+	client.__testDeleteGlobal('__vssarosWorkbenchItems');
+	client.__testDeleteGlobal('__vssarosPageComponents');
+	client.__setSidebarLayoutV1(false);
+});
+await t('P2 Better Sidebar 适配器：目录 diff、多实例 createTab、打开不替换、开关与注销', () => {
+	client.__setSidebarLayoutV1(false);
+	client.__testDeleteGlobal('__vssarosWorkbenchItems');
+	client.__testDeleteGlobal('__vssarosPageComponents');
+	const { service } = serviceOf();
+	service.register({ title: '定时任务', repository: 'vssaros:scheduler' }, Comp);
+	const registered = [];
+	const disposed = [];
+	const opened = [];
+	const sidebar = {
+		registerTab(descriptor) {
+			registered.push(descriptor);
+			return () => { disposed.push(descriptor.id); };
+		},
+		openTab(seed, scope) { opened.push({ seed, scope }); },
+	};
+	const adapter = client.__installSidebarWorkbenchAdapter(fakeCtx(), service, sidebar);
+	assert.equal(registered.length, 0, '显式关闭 P3 时不得抢占 native guide');
+	client.__setSidebarLayoutV1(true);
+	assert.equal(registered.length, 1, '开关打开后按目录注册 tab type');
+	const descriptor = registered[0];
+	assert.match(descriptor.id, /^vssaros-wb:/);
+	assert.equal(descriptor.hidden, false);
+	assert.equal(typeof descriptor.component, 'function');
+	assert.equal(typeof descriptor.createTab, 'function');
+	const first = descriptor.createTab({});
+	const second = descriptor.createTab({});
+	assert.notEqual(first.tab.id, second.tab.id, 'createTab 必须每次铸造新实例 id');
+	assert.equal(first.tab.type, descriptor.id);
+	assert.equal(first.tab.meta.catalogKey, 'vssaros/scheduler/default');
+	assert.equal(client.__openSidebarWorkbenchPage('vssaros/scheduler/default', { sessionId: 's1' }), true);
+	assert.equal(opened.length, 1);
+	assert.equal(opened[0].seed.type, descriptor.id);
+	assert.equal(opened[0].seed.replaceTab, undefined, '打开工作台不能替换开始页');
+	assert.equal(opened[0].scope.sessionId, 's1');
+	const disposePage = service.registerPage({
+		workbenchId: 'route/x-media', pageId: 'default', title: '媒体库', route: '/x/media/',
+	}, null);
+	assert.equal(registered.length, 2, '后续新增目录项应自动注册');
+	disposePage();
+	assert.equal(disposed.length, 1, '目录项注销应撤对应 tab type');
+	client.__setSidebarLayoutV1(false);
+	assert.equal(disposed.length, 2, '关闭开关应撤掉全部 native type');
+	assert.equal(client.__sidebarLayoutV1Enabled(), false);
+	adapter.dispose();
+});
+await t('P2 右栏工作台承载：根节点与 iframe 必须有 flex/height 双保险', () => {
+	const source = readFileSync(join(here, '../lib/client.js'), 'utf8');
+	const wrapperRule = (source.match(/\[data-vssaros-wb-sidebar-page\]\s*\{[^}]*\}/) || [''])[0];
+	assert.match(wrapperRule, /display:flex/, '右栏工作台根必须是 flex 容器');
+	assert.match(wrapperRule, /flex:1 1 auto/, '右栏工作台根必须占据剩余空间');
+	assert.match(wrapperRule, /min-height:0/, '右栏工作台根必须允许内部滚动区收缩');
+	assert.match(wrapperRule, /height:100%/, '右栏工作台根必须有确定高度');
+	assert.match(wrapperRule, /overflow:hidden/, '右栏工作台根不得把内层滚动区撑破');
+	assert.match(source, /\[data-vssaros-wb-sidebar-page\]\s*>\s*\*\s*\{[^}]*flex:1 1 auto[^}]*min-height:0/,
+		'renderer 根节点必须继承弹性高度');
+	assert.match(source, /\[data-vssaros-wb-sidebar-page\]\s*>\s*iframe\s*\{[^}]*display:block[^}]*flex:1 1 auto[^}]*height:100%/,
+		'route iframe 必须按块级弹性元素铺满，不再回落默认 150px');
+	assert.match(source, /data-vssaros-wb-sidebar-route/, 'route 工作台必须带可诊断的 iframe 锚点');
+});
+await t('P3 所有权链：配置开启即接管开始页，live guideTakeover 不再短路工作台区', () => {
+	client.__testDeleteGlobal('__vssarosWorkbenchItems');
+	client.__testDeleteGlobal('__vssarosPageComponents');
+	const { service } = serviceOf();
+	service.register({ title: '知识库', repository: 'vssaros:kb' }, Comp);
+	client.__setSidebarLayoutV1(true);
+	assert.equal(client.readSidebarLayoutV1Config({}), true, '无配置时 P3 默认开启');
+	client.__setSidebarLayoutV1(false);
+	assert.equal(client.readSidebarLayoutV1Config({}), false, '跨 chunk 全局显式 false 必须回退旧布局');
+	assert.equal(client.readSidebarLayoutV1Config({ fiber: { entry: { options: { config: { sidebarLayoutV1: true } } } } }), true);
+	assert.equal(client.readSidebarLayoutV1Config({ config: { sidebarLayoutV1: false } }), false);
+	assert.equal(client.sidebarGuideReleased({ getSnapshot: () => ({ prefs: { guideTakeover: false } }) }), true);
+	assert.equal(client.sidebarGuideReleased({ getSnapshot: () => ({ prefs: { guideTakeover: true } }) }), false);
+	const guideRegs = [];
+	const tabRegs = [];
+	const disposedTabs = [];
+	let guideDisposed = 0;
+	let stateListener = null;
+	const layoutConfig = { sidebarLayoutV1: true };
+	const ctx = {
+		fiber: { entry: { options: { config: layoutConfig } } },
+		get: () => undefined,
+		slots: {
+			inject: (name, factory) => {
+				if (name !== 'sidebar.right.tab.guide') { throw new Error('unexpected slot ' + name); }
+				return factory();
+			},
+			register: (opts, component) => {
+				guideRegs.push({ opts, component });
+				return () => { guideDisposed += 1; };
+			},
+		},
+	};
+	// 复现用户截图：better-sidebar live prefs 仍为 true，shipped NativeGuide 常驻。
+	const sidebar = {
+		prefs: { guideTakeover: true },
+		getSnapshot() { return { sessionId: 's1', prefs: this.prefs }; },
+		subscribeState(listener) { stateListener = listener; return () => { stateListener = null; }; },
+		subscribe() { return () => { }; },
+		getTabs() { return [{ id: 'terminal', title: '终端' }, { id: 'vssaros-wb:hidden', hidden: true }]; },
+		registerTab(descriptor) { tabRegs.push(descriptor); return () => { disposedTabs.push(descriptor.id); }; },
+		openTab() { },
+	};
+	const HomeGuide = client.makeVsSarosHomeGuide(service, ctx, sidebar);
+	const homeMarkup = JSON.stringify(HomeGuide({}));
+	assert.match(homeMarkup, /data-vssaros-guide-root/, '自家开始页必须有常驻根锚点');
+	assert.match(homeMarkup, /data-vssaros-surface/, '开始页必须声明工作台承载面');
+	assert.match(homeMarkup, /vssaros-home-search/, 'v6 搜索框必须使用统一样式类');
+	assert.match(homeMarkup, /vssaros-home-tool-grid/, 'v6 常用工具必须使用工具网格');
+	assert.match(homeMarkup, /vssaros-home-entry-card/, '工具卡必须渲染为 v6 entry-card');
+	assert.match(homeMarkup, /viewBox/, '工具/工作台卡必须使用 SVG 图标而非 emoji');
+	assert.match(homeMarkup, /data-vssaros-home-workbench/, '工作台目录必须渲染');
+	assert.match(homeMarkup, /vssaros-home-workbench-grid/, '工作台必须渲染为双列卡片网格');
+	assert.match(homeMarkup, /vssaros-home-drag-handle/, '工作台卡片必须有独立拖拽锚点');
+	assert.match(homeMarkup, /data-vssaros-home-drag/, '工作台卡片必须有独立拖拽锚点');
+	assert.match(homeMarkup, /data-vssaros-home-anchor/, '工作台卡片必须标记显式拖拽锚点');
+	assert.match(homeMarkup, /aria-roledescription":"拖拽锚点/, '拖拽锚点必须有无障碍角色说明');
+	assert.match(homeMarkup, /vssaros-home-workbench-anchor-/, '每张工作台卡片必须有稳定锚点 id');
+	assert.match(homeMarkup, /data-vssaros-more-trigger/, '常用工具末尾必须有紧凑更多入口');
+	assert.match(homeMarkup, /data-vssaros-all-tools-trigger/, '工具区必须有全部工具入口');
+	assert.match(homeMarkup, /目录自动发现/, '工作台区必须展示目录自动发现标记');
+	assert.match(homeMarkup, /拖动卡片右上角锚点/, '必须展示拖拽说明');
+	assert.match(homeMarkup, /键盘：/, '必须展示键盘排序说明');
+	assert.doesNotMatch(homeMarkup, /欢迎|今日会话|运行中|可用业务页|最近资源/, '开始页不得有欢迎/统计/最近资源');
+
+	const disposeOwnership = client.__installSidebarLayoutOwnership(ctx, service, sidebar);
+	assert.equal(client.__sidebarLayoutV1Enabled(), true, 'P3 配置开启且自有链注册成功即启用新布局');
+	assert.equal(guideRegs.length, 1, '只能挂一条自有 guide 链');
+	assert.equal(guideRegs[0].opts.priority, -10, '自有 guide 必须用负 priority 压过 shipped NativeGuide');
+	assert.deepStrictEqual(guideRegs[0].opts.select(), {}, '自家 guide 必须总是当选，压过 shipped fallback');
+	assert.equal(guideRegs[0].opts.inject('s1').sessionId, 's1');
+	assert.equal(tabRegs.filter(d => d.id.startsWith('vssaros-wb:')).length, 1, '启用后目录页自动注册 native tab type');
+	assert.equal(tabRegs.some(d => d.id === 'vssaros:image-reference'), true, '图片资源 tab 类型必须注册');
+	assert.equal(client.__openSidebarWorkbenchPage('vssaros/kb/default'), true);
+	assert.equal(client.__openImageReference('@image:image.png'), true, '图片 token 可另开右栏资源页');
+
+	// live guideTakeover 翻转不得再次注册/注销，也不得让工作台区消失。
+	sidebar.prefs.guideTakeover = false;
+	stateListener();
+	assert.equal(client.__sidebarLayoutV1Enabled(), true, 'live pref 变化不得短路 P3');
+	assert.equal(guideRegs.length, 1, 'live pref 变化不得重复挂自有 guide');
+	assert.equal(tabRegs.filter(d => d.id.startsWith('vssaros-wb:')).length, 1, 'live pref 变化不得重复注册目录 tab');
+	assert.equal(disposedTabs.filter(id => id.startsWith('vssaros-wb:')).length, 0, 'live pref 变化不得注销目录 tab');
+
+	// 只有显式把 sidebarLayoutV1 设为 false 才回退旧布局。
+	layoutConfig.sidebarLayoutV1 = false;
+	stateListener();
+	assert.equal(client.__sidebarLayoutV1Enabled(), false, '显式 false 才回退旧布局');
+	assert.equal(guideDisposed, 1, '回退时自有 guide 链必须注销');
+	assert.equal(disposedTabs.filter(id => id.startsWith('vssaros-wb:')).length, 1, '回退时右栏目录 type 必须注销');
+	layoutConfig.sidebarLayoutV1 = true;
+	stateListener();
+	assert.equal(client.__sidebarLayoutV1Enabled(), true);
+	assert.equal(guideRegs.length, 2);
+	assert.equal(tabRegs.filter(d => d.id.startsWith('vssaros-wb:')).length, 2);
+	disposeOwnership();
+	assert.equal(client.__sidebarLayoutV1Enabled(), false, '卸载后必须恢复默认旧布局');
+	assert.equal(client.__openSidebarWorkbenchPage('vssaros/kb/default'), false);
+	assert.equal(client.__openImageReference('@image:image.png'), false, '卸载后图片资源入口必须关闭');
+});
+await t('开始页：install-status 短轮询、目录自动发现文案与 key/身份下线', () => {
+	const source = readFileSync(join(here, '../lib/client.js'), 'utf8');
+	assert.match(source, /const pages = selectStartPages\(service\.getCatalogSnapshot\(\)\.pages\);/,
+		'开始页必须使用统一目录策略投影，而不是直接渲染完整 catalog');
+	assert.match(source, /module\.exports\.catalogDiagnosticsOf = catalogDiagnosticsOf;/,
+		'目录策略诊断纯函数必须导出');
+	assert.match(source, /globalThis\.__vssarosWorkbenchCatalogDiagnostics/,
+		'必须提供只读目录诊断探针');
+	assert.match(source, /INSTALL_STATUS_URL = '\/api\/vssaros-workbenches\/install-status'/,
+		'开始页必须复用现有 install-status 端点');
+	assert.match(source, /fetch\(INSTALL_STATUS_URL, \{ cache: 'no-store' \}\)/,
+		'开始页必须读取 install-status 且不取缓存');
+	assert.match(source, /setInterval\(refresh, INSTALL_STATUS_POLL_MS\)/,
+		'开始页必须短轮询 install-status');
+	assert.match(source, /window\.addEventListener\('focus', onFocus\)/,
+		'窗口聚焦时必须补刷 install-status');
+	assert.match(source, /document\.addEventListener\('visibilitychange', onVisibility\)/,
+		'页面重新可见时必须补刷 install-status');
+	assert.match(source, /globalThis\.clearInterval\(timer\)/, '卸载时必须清理轮询计时器');
+	assert.match(source, /data-vssaros-restart-pending/, '待重启安装提示必须有可诊断锚点');
+	assert.match(source, /已安装，重启 Harness 后出现/, '必须明确提示重启后才会出现');
+	assert.match(source, /\.vssaros-home-install-notice/, '待重启安装提示必须有生产样式类');
+	assert.match(source, /目录自动发现/, '自动发现文案必须限定为目录自动发现');
+	assert.match(source, /module\.exports\.pendingInstallsOf = pendingInstallsOf;/,
+		'pending 归一化纯函数必须可测');
+	assert.match(source, /HOME_HIDDEN_WORKBENCH_IDS/, '下线必须支持稳定工作台身份');
+	assert.match(source, /seen\.has\((?:view\.)?key\)/, '去重必须按 page.key，不按标题');
+	assert.doesNotMatch(source, /HOME_HIDDEN_TITLES/, '不得再按标题黑名单吞掉新工作台');
+	assert.match(source, /this\.catalogRevision \+= 1;\s*this\.publishCatalog\(\);\s*this\.listeners\.clear\(\);\s*this\.catalogListeners\.clear\(\);/,
+		'dispose 必须在清监听器前发布空目录');
+	assert.deepStrictEqual(client.pendingInstallsOf({
+		pending: [
+			{ name: ' @me/hello ', version: '1.2.3' },
+			null, { version: 'x' }, { name: '   ' },
+			{ name: '@me/world' },
+		],
+	}), [
+		{ name: '@me/hello', version: '1.2.3' },
+		{ name: '@me/world', version: '' },
+	]);
+	assert.deepStrictEqual(client.pendingInstallsOf(null), []);
+	assert.deepStrictEqual(client.pendingInstallsOf({ pending: 'bad' }), []);
+	const mk = (key, title, extra = {}) => ({
+		key, title, description: '', icon: '', sourceKind: 'registered', sourcePackage: '',
+		kind: 'component', route: '', hidden: false, retired: false, enabled: true,
+		availability: 'ready', renderHandle: 'component:' + key,
+		workbenchId: key.replace(/\/[^/]*$/, ''), ...extra,
+	});
+	const visible = client.visibleHomePagesOf([
+		mk('legacy:/x/marketplace//vssaros-wb-marketplace', '商城'),
+		mk('vssaros/marketplace/default', '商城工作台'),
+		mk('custom/marketplace/default', '商城工作台', { workbenchId: 'vssaros/marketplace' }),
+		mk('acme/market/default', '商城工作台'),
+		mk('legacy:/x/sessions//vssaros-wb-sessions', '会话'),
+		mk('legacy:/x/sessions/?view=tiles/vssaros-wb-session-tiles', '会话磁贴'),
+		mk('vssaros/sessions/default', '历史会话'),
+		mk('vssaros/media/default', '媒体库'),
+		mk('legacy:/x/media//vssaros-wb-media', '媒体库'),
+		mk('third/media/default', '媒体库'),
+		mk('vssaros/codebase/default', '代码库'),
+		mk('legacy:/x/codebase//vssaros-wb-codebase', '代码库'),
+		mk('third/codebase/default', '代码库'),
+		mk('vssaros/kanban/default', 'Tasks'),
+		mk('third/task/default', 'task'),
+		mk('acme/tasks/default', 'Tasks'),
+		mk('acme/tasks/overview', 'Tasks'),
+		mk('acme/chat/default', '会话'),
+		mk('acme/history/default', '历史会话'),
+		mk('vssaros/workflow/default', 'Workflow'),
+		mk('acme/workflow/default', 'Workflow'),
+		mk('legacy:/x/kb//vssaros-wb-kb', '知识库'),
+		mk('vssaros/scheduler/default', '自动化任务'),
+		mk('dup/key', '重复键 A'),
+		mk('dup/key', '重复键 B'),
+	]);
+	const keys = visible.map(page => page.key);
+	const titles = visible.map(page => page.title);
+	assert.ok(keys.includes('legacy:/x/marketplace//vssaros-wb-marketplace'), '必须保留商城');
+	for (const hiddenKey of [
+		'vssaros/marketplace/default', 'custom/marketplace/default',
+		'vssaros/sessions/default', 'vssaros/kanban/default', 'vssaros/workflow/default',
+		'legacy:/x/sessions//vssaros-wb-sessions',
+		'legacy:/x/sessions/?view=tiles/vssaros-wb-session-tiles',
+		'legacy:/x/media//vssaros-wb-media', 'legacy:/x/codebase//vssaros-wb-codebase',
+	]) {
+		assert.ok(!keys.includes(hiddenKey), '已知旧 key/身份必须下线：' + hiddenKey);
+	}
+	for (const retained of ['Tasks', 'task', 'Workflow', '会话', '历史会话', '商城工作台']) {
+		assert.ok(titles.includes(retained), '新 key 的同名工作台不得被标题吞掉：' + retained);
+	}
+	assert.equal(titles.filter(title => title === 'Tasks').length, 2, '同名但不同 key 的新工作台都应保留');
+	assert.equal(keys.filter(key => key === 'dup/key').length, 1, '重复 key 必须只保留一次');
+	assert.ok(keys.includes('vssaros/media/default') && keys.includes('third/media/default'),
+		'媒体库同标题不同 key 不应互相吞掉');
+	assert.ok(keys.includes('vssaros/codebase/default') && keys.includes('third/codebase/default'),
+		'代码库同标题不同 key 不应互相吞掉');
+	assert.ok(keys.includes('legacy:/x/kb//vssaros-wb-kb'), '未在下线名单的工作台必须保留');
+	assert.ok(keys.includes('vssaros/scheduler/default'), '未在下线名单的工作台必须保留');
+});
+await t('HMR：dispose 先发布空目录并通知订阅者', () => {
+	const { service } = serviceOf();
+	let notified = 0;
+	service.subscribeCatalog(() => { notified += 1; });
+	service.registerPage({
+		workbenchId: 'acme/dispose', pageId: 'default', title: '待卸载', route: '/x/dispose/',
+	}, null);
+	assert.equal(service.getCatalogSnapshot().pages.length, 1);
+	const beforeDispose = notified;
+	service.dispose();
+	assert.ok(notified > beforeDispose, 'dispose 必须通知目录订阅者');
+	assert.equal(service.getCatalogSnapshot().pages.length, 0, 'dispose 后目录必须为空');
+});
+await t('端到端：新 registerPage() 同时产出开始页卡片与 native tab', () => {
+	client.__setSidebarLayoutV1(false);
+	client.__testDeleteGlobal('__vssarosWorkbenchItems');
+	client.__testDeleteGlobal('__vssarosPageComponents');
+	const { service, ctx } = serviceOf();
+	const registered = [], disposed = [], opened = [];
+	const sidebar = {
+		getTabs: () => [],
+		getSnapshot: () => ({ sessionId: 's1', prefs: { guideTakeover: false } }),
+		subscribeState: () => () => { },
+		subscribe: () => () => { },
+		registerTab: descriptor => { registered.push(descriptor); return () => { disposed.push(descriptor.id); }; },
+		openTab: (seed, scope) => { opened.push({ seed, scope }); },
+	};
+	const adapter = client.__installSidebarWorkbenchAdapter(fakeCtx(), service, sidebar);
+	client.__setSidebarLayoutV1(true);
+	const key = 'acme/new/default';
+	const disposePage = service.registerPage({
+		workbenchId: 'acme/new', pageId: 'default', title: 'Tasks',
+		description: '新建工作台', route: '/x/new/',
+	}, null);
+	assert.ok(service.getCatalogSnapshot().pages.some(page => page.key === key));
+	assert.ok(client.visibleHomePagesOf(service.getCatalogSnapshot().pages).some(page => page.title === 'Tasks'),
+		'旧标题黑名单不得吞掉新工作台');
+	const markup = JSON.stringify(client.makeVsSarosHomeGuide(service, ctx, sidebar)({}));
+	assert.match(markup, /Tasks/, '开始页必须渲染新工作台卡片');
+	assert.match(markup, /data-vssaros-home-workbench/, '开始页必须有工作台卡片锚点');
+	assert.match(markup, /目录自动发现/, '开始页必须展示目录自动发现标记');
+	const descriptor = registered.find(item => item.title === 'Tasks' && item.id.startsWith('vssaros-wb:'));
+	assert.ok(descriptor, '新目录项必须自动注册 native tab type');
+	assert.equal(descriptor.createTab({}).tab.meta.catalogKey, key);
+	assert.equal(client.__openSidebarWorkbenchPage(key, { sessionId: 's1' }), true);
+	assert.equal(opened[0].seed.type, descriptor.id);
+	disposePage();
+	assert.ok(disposed.includes(descriptor.id), '注销目录项应撤 native tab');
+	adapter.dispose();
+	client.__setSidebarLayoutV1(false);
+});
+await t('开始页工作台锚点：每个 item 都有稳定 DOM id 与一一对应的拖拽锚点', () => {
+	client.__setSidebarLayoutV1(false);
+	client.__testDeleteGlobal('__vssarosWorkbenchItems');
+	client.__testDeleteGlobal('__vssarosPageComponents');
+	const { service, ctx } = serviceOf();
+	const keys = ['acme/alpha/default', 'acme/beta/default', 'acme/gamma/default'];
+	for (const [index, key] of keys.entries()) {
+		const workbenchId = 'acme/' + key.split('/')[1];
+		service.registerPage({
+			workbenchId, pageId: 'default', title: '工作台 ' + index,
+			description: '锚点回归', route: '/x/' + key.split('/')[1] + '/',
+		}, null);
+	}
+	const sidebar = {
+		getTabs: () => [],
+		getSnapshot: () => ({ sessionId: 's1', prefs: { guideTakeover: false } }),
+		subscribe: () => () => { },
+		openTab: () => { },
+	};
+	const markup = JSON.stringify(client.makeVsSarosHomeGuide(service, ctx, sidebar)({}));
+	const cards = [...markup.matchAll(/"data-vssaros-home-workbench":"([^"]+)"/g)].map(match => match[1]);
+	const anchors = [...markup.matchAll(/"data-vssaros-home-anchor":"([^"]+)"/g)].map(match => match[1]);
+	const drags = [...markup.matchAll(/"data-vssaros-home-drag":"([^"]+)"/g)].map(match => match[1]);
+	const cardIds = [...markup.matchAll(/"id":"(vssaros-home-workbench-[0-9a-f]{8})"/g)].map(match => match[1]);
+	const anchorIds = [...markup.matchAll(/"id":"(vssaros-home-workbench-anchor-[0-9a-f]{8})"/g)].map(match => match[1]);
+	assert.equal(cards.length, keys.length, '每个工作台目录项都必须渲染成卡片');
+	assert.deepStrictEqual([...cards].sort(), [...keys].sort(), '卡片 key 必须完整且无额外隐藏项');
+	assert.deepStrictEqual([...anchors].sort(), [...cards].sort(), '每张卡片必须有一个显式拖拽锚点');
+	assert.deepStrictEqual([...drags].sort(), [...cards].sort(), '拖拽锚点必须保持原有 data-vssaros-home-drag 契约');
+	assert.equal(cardIds.length, keys.length, '每张卡片必须有稳定 DOM 锚点 id');
+	assert.equal(anchorIds.length, keys.length, '每个拖拽锚点必须有稳定 id');
+	assert.equal(new Set(cardIds).size, keys.length, '卡片 id 不得重复');
+	assert.equal(new Set(anchorIds).size, keys.length, '拖拽锚点 id 不得重复');
+	for (const key of keys) {
+		const cardId = client.homeWorkbenchCardIdOf(key);
+		const anchorId = client.homeWorkbenchAnchorIdOf(key);
+		assert.ok(markup.includes('"id":"' + cardId + '"'), '必须渲染稳定卡片 id：' + key);
+		assert.ok(markup.includes('"id":"' + anchorId + '"'), '必须渲染稳定锚点 id：' + key);
+		assert.ok(markup.includes('"data-vssaros-home-anchor-card":"' + anchorId + '"'),
+			'卡片必须关联自己的拖拽锚点：' + key);
+	}
+	const source = readFileSync(join(here, '../lib/client.js'), 'utf8');
+	assert.match(source, /\.vssaros-home-workbench-card:target/, '稳定 DOM 锚点必须支持 hash 定位高亮');
+	assert.match(source, /scroll-margin-top:16px/, 'hash 定位必须留出顶部滚动间距');
+	assert.match(source, /\.vssaros-home-anchor \{ z-index:1; \}/, '拖拽锚点必须保持在卡片最上层');
+});
+await t('阶段0/1 统一目录策略：canonical/state/visibility/aliases 与投影纯函数', () => {
+	const source = readFileSync(join(here, '../lib/client.js'), 'utf8');
+	assert.match(source, /selectNativeTabPages\(service\.getCatalogSnapshot\(\)\.pages\)/,
+		'右栏适配器必须使用统一 native tab 投影');
+	assert.match(source, /canonicalConflictsOf\(this\.catalogSnapshot\.pages\)/,
+		'目录发布必须检测 active canonical 冲突');
+	client.__setSidebarLayoutV1(false);
+	client.__testDeleteGlobal('__vssarosWorkbenchItems');
+	client.__testDeleteGlobal('__vssarosPageComponents');
+	const { service } = serviceOf();
+	const disposePage = service.registerPage({
+		workbenchId: 'acme/policy', pageId: 'default', title: '策略页',
+		description: '目录策略回归', route: '/x/policy/',
+		canonicalId: 'acme/canonical', state: 'alias',
+		aliases: ['legacy-policy-tab'], replacedBy: 'acme/target/default',
+		visibility: { start: false, launcher: false, nativeTab: false, routeWhitelist: true, deepLink: true },
+	}, null);
+	const snapshot = service.getCatalogSnapshot().pages[0];
+	assert.equal(snapshot.canonicalId, 'acme/canonical');
+	assert.equal(snapshot.canonicalKey, 'acme/canonical/default');
+	assert.equal(snapshot.state, 'alias');
+	assert.equal(snapshot.visibility.start, false);
+	assert.equal(snapshot.visibility.nativeTab, false);
+	assert.deepStrictEqual(snapshot.aliases, ['legacy-policy-tab']);
+	assert.equal(snapshot.replacedBy, 'acme/target/default');
+	assert.equal(client.selectStartPages(service.getCatalogSnapshot().pages).length, 0, 'alias 且 start=false 不得进入开始页');
+	assert.equal(client.selectNativeTabPages(service.getCatalogSnapshot().pages).length, 0, 'nativeTab=false 不得注册 tab type');
+	assert.equal(client.selectLauncherPages(service.getCatalogSnapshot().pages).length, 0, 'alias 且 launcher=false 不得进入启动器');
+	assert.deepStrictEqual(client.selectRouteWhitelist(service.getCatalogSnapshot().pages).map(page => page.route), ['/x/policy/'],
+		'route 白名单与可见性必须分离');
+	const diagnostics = client.catalogDiagnosticsOf(service.getCatalogSnapshot().pages);
+	assert.ok(Object.isFrozen(diagnostics) && Object.isFrozen(diagnostics[0]));
+	assert.equal(diagnostics[0].state, 'alias');
+	assert.equal(diagnostics[0].replacedBy, 'acme/target/default');
+	disposePage();
+
+	const base = {
+		key: 'acme/base/default', workbenchId: 'acme/base', pageId: 'default',
+		canonicalId: 'acme/base', canonicalKey: 'acme/base/default',
+		title: '基线', enabled: true, hidden: false, retired: false, availability: 'ready', state: 'active',
+		visibility: { start: true, launcher: true, nativeTab: true, routeWhitelist: false, deepLink: true },
+		aliases: [], replacedBy: '', route: '',
+	};
+	assert.deepStrictEqual(client.selectStartPages([base, { ...base }]).map(page => page.key), [base.key],
+		'重复 key 必须去重');
+	assert.equal(client.selectStartPages([{ ...base, state: 'alias' }]).length, 0, 'alias 不得进入开始页');
+	assert.equal(client.selectStartPages([{ ...base, visibility: { ...base.visibility, start: false } }]).length, 0,
+		'显式 visibility.start=false 必须生效');
+	assert.deepStrictEqual(client.visibleHomePagesOf([base]).map(page => page.key), [base.key],
+		'兼容别名必须保持旧行为');
+	assert.deepStrictEqual(client.selectNativeTabPages([base, { ...base, key: 'acme/no-tab/default', visibility: { ...base.visibility, nativeTab: false } }]).map(page => page.key), [base.key],
+		'nativeTab=false 必须被排除');
+	assert.deepStrictEqual(client.selectLauncherPages([base, { ...base, key: 'acme/no-launcher/default', visibility: { ...base.visibility, launcher: false } }]).map(page => page.key), [base.key],
+		'launcher=false 必须被排除');
+	assert.deepStrictEqual(client.selectRouteWhitelist([
+		{ route: '/x/a/' }, { route: '/x/a/' }, { route: '/x/b/' }, { route: '' },
+	]).map(page => page.route), ['/x/a/', '/x/b/']);
+
+	const activeA = { ...base, key: 'a/default', canonicalId: 'acme/same', canonicalKey: 'acme/same/default' };
+	const activeB = { ...activeA, key: 'b/default' };
+	const alias = { ...activeA, key: 'c/default', state: 'alias' };
+	const otherPage = { ...activeA, key: 'd/overview', pageId: 'overview', canonicalKey: 'acme/same/overview' };
+	const conflicts = client.canonicalConflictsOf([activeA, activeB, alias, otherPage]);
+	assert.equal(conflicts.length, 1, '同一 canonicalId+pageId 只能有一个 active 可见项');
+	assert.deepStrictEqual(conflicts[0].keys, [activeA.key, activeB.key]);
+	const target = { key: 'acme/target/default', canonicalId: 'acme/target', canonicalKey: 'acme/target/default', aliases: [], replacedBy: '' };
+	const aliasPage = {
+		key: 'legacy:/x/old//old-tab', pageId: 'old-tab', aliases: ['old-tab', '/x/old/'],
+		replacedBy: 'acme/target/default',
+	};
+	assert.equal(client.resolveLegacyTabKey({ id: 'old-tab', route: '/x/old/' }, [aliasPage, target]), target.key,
+		'旧页签必须经 aliases/replacedBy 映射到 canonical 目标');
+	assert.deepStrictEqual(client.legacyTabKeysOf([{ id: 'old-tab' }], [aliasPage, target]), [target.key]);
+});
+await t('阶段2 统一目录清单：单一 manifest 生成隐藏/退役/离线视图', () => {
+	const source = readFileSync(join(here, '../lib/client.js'), 'utf8');
+	assert.match(source, /const WORKBENCH_MANIFEST = Object\.freeze\(\[/, '必须存在单一声明式清单');
+	assert.match(source, /const HOME_HIDDEN_PAGE_KEYS = new Set\(hiddenRows\.map\(row => row\.key\)\);/,
+		'HOME_HIDDEN_PAGE_KEYS 必须由 manifest 生成');
+	assert.match(source, /const HOME_HIDDEN_WORKBENCH_IDS = new Set\(hiddenRows\.map\(row => row\.workbenchId\)\);/,
+		'HOME_HIDDEN_WORKBENCH_IDS 必须由 manifest 生成');
+	assert.match(source, /const RETIRED_WORKBENCH_IDS = WORKBENCH_MANIFEST\.filter\(row => row\.state === 'retired'\)\.map\(row => row\.workbenchId\);/,
+		'RETIRED_WORKBENCH_IDS 必须由 manifest 生成');
+	assert.match(source, /const OFFLINE_WORKBENCH_ROUTES = WORKBENCH_MANIFEST\.filter\(row => row\.state === 'offline'\)\.map\(row => row\.route\);/,
+		'OFFLINE_WORKBENCH_ROUTES 必须由 manifest 生成');
+	assert.match(source, /globalThis\.__vssarosWorkbenchManifest = \(\) => WORKBENCH_MANIFEST;/,
+		'必须提供只读 manifest 探针');
+	assert.match(source, /globalThis\.__vssarosWorkbenchManifestViews = \(\) => manifestViewsOf\(\);/,
+		'必须提供只读生成视图探针');
+	assert.match(source, /module\.exports\.workbenchManifest = workbenchManifest;/,
+		'manifest 必须导出供自检');
+	assert.match(source, /module\.exports\.manifestViewsOf = manifestViewsOf;/,
+		'生成视图必须导出供自检');
+	const manifest = client.workbenchManifest();
+	assert.ok(Object.isFrozen(manifest), 'manifest 必须冻结');
+	assert.equal(manifest.length, 18, '10 个 hidden + 4 个 offline + 1 个 retired + 3 个 active manifest route');
+	assert.equal(manifest.filter(row => row.state === 'active' && row.sourceKind === 'manifest').length, 3,
+		'active manifest route 行必须恰好 3 条');
+	const requiredFields = ['key', 'workbenchId', 'pageId', 'canonicalId', 'state', 'visibility', 'aliases', 'replacedBy', 'route', 'title', 'sourceKind'];
+	for (const row of manifest) {
+		assert.ok(Object.isFrozen(row), 'manifest 行必须冻结：' + row.key);
+		for (const field of requiredFields) { assert.ok(field in row, 'manifest 行缺字段 ' + field + '：' + row.key); }
+		assert.ok(Object.isFrozen(row.visibility), 'visibility 必须冻结：' + row.key);
+		assert.ok(Object.isFrozen(row.aliases), 'aliases 必须冻结：' + row.key);
+	}
+	assert.equal(new Set(manifest.map(row => row.key)).size, manifest.length, 'manifest key 不得重复');
+	const hiddenKeys = [
+		'vssaros/marketplace/default', 'vssaros/sessions/default', 'vssaros/workflow/default', 'vssaros/kanban/default',
+		'legacy:/x/sessions//vssaros-wb-sessions', 'legacy:/x/sessions/?view=tiles/vssaros-wb-session-tiles',
+		'legacy:/x/media//vssaros-wb-media', 'legacy:/x/codebase//vssaros-wb-codebase',
+		'legacy:/x/workflow//vssaros-wb-workflow', 'legacy:/x/kanban//vssaros-wb-kanban',
+	];
+	const hiddenIds = [
+		'vssaros/marketplace', 'vssaros/sessions', 'vssaros/workflow', 'vssaros/kanban',
+		'legacy:/x/sessions/', 'legacy:/x/sessions/?view=tiles',
+		'legacy:/x/media/', 'legacy:/x/codebase/', 'legacy:/x/workflow/', 'legacy:/x/kanban/',
+	];
+	const views = client.manifestViewsOf();
+	assert.ok(Object.isFrozen(views) && Object.isFrozen(views.hiddenPageKeys)
+		&& Object.isFrozen(views.hiddenWorkbenchIds) && Object.isFrozen(views.retiredWorkbenchIds)
+		&& Object.isFrozen(views.offlineRoutes), '生成视图必须全部冻结');
+	assert.deepStrictEqual([...views.hiddenPageKeys].sort(), [...hiddenKeys].sort());
+	assert.deepStrictEqual([...views.hiddenWorkbenchIds].sort(), [...hiddenIds].sort());
+	assert.deepStrictEqual([...views.retiredWorkbenchIds], ['vssaros/loop']);
+	assert.deepStrictEqual([...views.offlineRoutes], ['/x/kanban/', '/x/workflow/', '/x/imagegen/', '/x/skills/']);
+	const mk = (key, title) => ({
+		key, title, workbenchId: key.replace(/\/[^/]*$/, ''), pageId: 'default',
+		enabled: true, hidden: false, retired: false, availability: 'ready', state: 'active',
+		visibility: { start: true, launcher: true, nativeTab: true, routeWhitelist: true, deepLink: true },
+		aliases: [], replacedBy: '', route: '',
+	});
+	assert.equal(client.selectStartPages(hiddenKeys.map(key => mk(key, '同名'))).length, 0,
+		'生成视图必须保持旧 hidden key 全部下线');
+	assert.equal(client.selectStartPages([mk('acme/tasks/default', 'Tasks')]).length, 1,
+		'新 key 的同名工作台不得被误吞');
+});
+await t('阶段3/4 统一策略消费方与 legacy 桥硬退役', () => {
+	const source = readFileSync(join(here, '../lib/client.js'), 'utf8');
+	assert.match(source, /globalThis\.__vssarosWorkbenchPolicy = \(\) => catalogPolicyProbeOf\(service\.getCatalogSnapshot\(\)\.pages\);/,
+		'统一策略探针必须在运行时可用');
+	assert.match(source, /globalThis\.__vssarosWorkbenchLegacyBridgeMode = \(\) => legacyBridgeModeOf\(globalThis\);/,
+		'必须暴露 legacy 桥模式诊断');
+	assert.match(source, /service\.registerManifestPages\(\)/, '必须由 manifest 注册 active route 页');
+	assert.match(source, /globalThis\.__vssarosWorkbenchManifestPagesRegistered = true/, '必须标记 manifest 注册完成');
+	assert.doesNotMatch(source, /vssaros-wb-tabs-change/, '硬退役后不得再监听旧 tabs-change');
+	assert.doesNotMatch(source, /legacy catalog bridge/, '硬退役后不得再存在 legacy catalog bridge effect');
+	assert.match(source, /delete globalThis\.__vssarosWorkbenchPolicy/,
+		'卸载时必须清理策略探针');
+	assert.match(source, /delete globalThis\.__vssarosWorkbenchManifestPagesRegistered/,
+		'卸载时必须清理注册标记');
+	assert.match(source, /module\.exports\.catalogPolicyProbeOf = catalogPolicyProbeOf;/,
+		'策略视图纯函数必须导出');
+	assert.match(source, /module\.exports\.legacyBridgeModeOf = legacyBridgeModeOf;/,
+		'硬退役模式纯函数必须导出');
+	assert.match(source, /module\.exports\.__registerManifestPages/, 'manifest 注册入口必须导出');
+	assert.match(source, /ingestLegacyCatalog\(\) \{/, '兼容 API 仍需保留，避免真机前破坏其它包 fallback');
+	const navSrc = readFileSync(join(here, '../../vssaros-chat-surface/lib/client.workbenchNav.js'), 'utf8');
+	assert.match(navSrc, /__vssarosWorkbenchPolicy/, '启动器必须读取统一策略');
+	assert.match(navSrc, /policyHiddenIds\(\)/, '启动器必须使用策略隐藏身份');
+	assert.match(navSrc, /const DEFAULT_ITEMS = \[/, 'route 白名单字面量必须保留 fallback');
+	const marketSrc = readFileSync(join(here, '../../vssaros-chat-surface/lib/client.market.js'), 'utf8');
+	assert.match(marketSrc, /__vssarosWorkbenchPolicy/, '商城必须读取统一策略');
+	assert.match(marketSrc, /policyOfflineRoutes\(\)/, '商城必须使用策略离线 route');
+	assert.match(marketSrc, /!it\.offline/, '商城字面量 offline 过滤必须保留');
+	const mk = (key, route, extra = {}) => ({
+		key, title: key, workbenchId: key.replace(/\/[^/]*$/, ''), pageId: 'default',
+		enabled: true, hidden: false, retired: false, availability: 'ready', state: 'active',
+		visibility: { start: true, launcher: true, nativeTab: true, routeWhitelist: true, deepLink: true },
+		aliases: [], replacedBy: '', route, ...extra,
+	});
+	const pages = [
+		mk('acme/active/default', '/x/a/'),
+		mk('vssaros/marketplace/default', '/x/marketplace/', {
+			visibility: { start: false, launcher: false, nativeTab: true, routeWhitelist: true, deepLink: true },
+		}),
+	];
+	const probe = client.catalogPolicyProbeOf(pages);
+	assert.ok(Object.isFrozen(probe), '策略视图必须冻结');
+	assert.deepStrictEqual([...probe.startPages], ['acme/active/default']);
+	assert.deepStrictEqual([...probe.launcherPages], ['acme/active/default']);
+	assert.deepStrictEqual([...probe.nativeTabPages], ['acme/active/default', 'vssaros/marketplace/default']);
+	assert.deepStrictEqual([...probe.routeWhitelist], ['/x/a/', '/x/marketplace/']);
+	assert.equal(probe.hiddenWorkbenchIds.length, 10, '策略视图必须带 10 个隐藏身份');
+	assert.deepStrictEqual([...probe.retiredWorkbenchIds], ['vssaros/loop']);
+	assert.deepStrictEqual([...probe.offlineRoutes], ['/x/kanban/', '/x/workflow/', '/x/imagegen/', '/x/skills/']);
+	assert.equal(client.legacyBridgeModeOf({}), 'pending');
+	assert.equal(client.legacyBridgeModeOf({ __vssarosWorkbenchItems: [] }), 'legacy');
+	assert.equal(client.legacyBridgeModeOf({
+		__vssarosWorkbenchItems: [], __vssarosWorkbenchPolicy: () => ({ hiddenWorkbenchIds: [] }),
+	}), 'manifest');
+	assert.equal(client.legacyBridgeModeOf({
+		__vssarosWorkbenchPolicy: () => ({ hiddenWorkbenchIds: [] }),
+		__vssarosWorkbenchManifestPagesRegistered: true,
+	}), 'retired');
+});
+await t('阶段4 硬退役：manifest active route 页替代旧全局清单收编', () => {
+	client.__setSidebarLayoutV1(false);
+	client.__testDeleteGlobal('__vssarosWorkbenchItems');
+	client.__testDeleteGlobal('__vssarosPageComponents');
+	client.__testDeleteGlobal('__vssarosWorkbenchManifestPagesRegistered');
+	const { service } = serviceOf();
+	assert.equal(service.getCatalogSnapshot().pages.length, 0,
+		'测试桩没有 fiber，不得在 apply 时自动注册 manifest 页');
+	assert.equal(client.__registerManifestPages(service), true, 'manifest active route 页必须注册成功');
+	const pages = service.getCatalogSnapshot().pages;
+	assert.equal(pages.length, 3);
+	assert.deepStrictEqual(pages.map(page => page.title), ['知识库', '记忆', '商城']);
+	assert.deepStrictEqual(pages.map(page => page.key), [
+		'manifest:/x/kb//vssaros-wb-kb',
+		'manifest:/x/memory//vssaros-wb-memory-tab',
+		'manifest:/x/marketplace//vssaros-wb-marketplace',
+	]);
+	assert.ok(pages.every(page => page.sourceKind === 'manifest' && page.state === 'active' && page.availability === 'ready'),
+		'manifest route 页必须进入统一目录且可导航');
+	assert.equal(client.selectStartPages(pages).length, 3, 'manifest route 页必须出现在开始页投影');
+	assert.equal(client.__registerManifestPages(service), false, '重复注册必须幂等');
+	assert.equal(service.getCatalogSnapshot().pages.length, 3);
+	service.dispose();
+});
+await t('P4 基础：图片 token、主页顺序纯函数、工具目录过滤与资源 tab', () => {
+	client.__setSidebarLayoutV1(false);
+	assert.deepStrictEqual(client.parseImageToken('看图 @image:image.png 这里'), { raw: '@image:image.png', name: 'image.png' });
+	assert.equal(client.parseImageToken('没有图片'), null);
+	assert.equal(client.imageVersionsUrl('my image.png', 'http://host/dir/'), 'http://host/dir/x/imagegen/api/versions?attachment=my%20image.png');
+	assert.deepStrictEqual(client.pickImageVersion({
+		ok: true, current: 'v2', versions: [
+			{ id: 'v1', url: '/img/1', prompt: '第一版', attachment: { attachmentId: 'a1' } },
+			{ id: 'v2', url: '/img/2', prompt: '第二版', attachment: { attachmentId: 'a2' } },
+		],
+	}, 'image.png'), { name: 'image.png', title: '第二版', url: '/img/2', attachment: { attachmentId: 'a2' } });
+	assert.equal(client.pickImageVersion({ ok: false, versions: [] }, 'image.png'), null);
+	assert.deepStrictEqual(client.normalizeHomeOrder(['b', 'b', 'a'], ['a', 'c']), ['b', 'a', 'c']);
+	assert.deepStrictEqual(client.moveHomeOrder(['a', 'b', 'c'], 'a', 'c'), ['b', 'a', 'c']);
+	assert.deepStrictEqual(client.toolEntriesOf({ getTabs: () => [
+		{ id: 'files', title: () => '文件' },
+		{ id: 'hidden', hidden: true, title: '隐藏' },
+		{ id: 'bottom', bottomOnly: true, title: '底部' },
+		{ id: 'vssaros-wb:page', title: '工作台' },
+	] }).map(e => [e.id, e.title]), [['files', '文件']]);
+	const opened = [];
+	const registered = [];
+	const sidebar = {
+		getSnapshot: () => ({ sessionId: 's1', prefs: {} }),
+		openTab(seed) { opened.push(seed); },
+		registerTab(descriptor) { registered.push(descriptor); return () => { }; },
+	};
+	const dispose = client.__registerImageReferenceTab(sidebar);
+	client.__setSidebarLayoutV1(true);
+	assert.equal(registered.length, 1);
+	assert.equal(registered[0].id, 'vssaros:image-reference');
+	assert.equal(registered[0].hidden, true, '图片资源页不占开始页菜单');
+	assert.equal(typeof registered[0].createTab, 'function');
+	assert.notEqual(registered[0].createTab({}).tab.id, registered[0].createTab({}).tab.id);
+	assert.equal(client.__openImageReference('@image:image.png'), true);
+	assert.equal(opened.length, 1);
+	assert.equal(opened[0].type, 'vssaros:image-reference');
+	assert.equal(opened[0].meta.name, 'image.png');
+	dispose();
+	client.__setSidebarLayoutV1(false);
+	assert.equal(client.__openImageReference('@image:image.png'), false);
+});
+await t('P4 接线：生图工具卡发布 loadImage 并提供右侧预览按钮，不再次执行工具', () => {
+	const source = readFileSync(join(here, '..', '..', 'vssaros-imagegen', 'lib', 'client.js'), 'utf8');
+	assert.match(source, /__vssarosLoadImage\s*=\s*loadImage/, '生图卡必须发布会话授权的图片加载器');
+	assert.match(source, /__vssarosOpenImageReference/, '生图卡必须接右侧图片资源入口');
+	assert.match(source, /在右侧预览/, '工具卡必须有右侧预览按钮');
+	assert.match(source, /未重新执行工具/, '右侧预览必须明确不重跑工具');
+});
+await t('P5 旧页签存档：纯映射只认可映射项，不复活未知或下线项', () => {
+	const pages = [
+		{ key: 'legacy:/x/kb//vssaros-wb-kb', pageId: 'vssaros-wb-kb', route: '/x/kb/', workbenchId: 'legacy:/x/kb/' },
+		{ key: 'vssaros/workflow/default', pageId: 'default', route: '', workbenchId: 'vssaros/workflow' },
+	];
+	const tabs = [
+		{ id: 'vssaros-wb-kb', route: '/x/kb/' },
+		{ id: 'wb:vssaros/workflow', wbId: 'vssaros/workflow' },
+		{ id: 'vssaros-wb-retired', route: '/x/retired/' },
+	];
+	assert.deepStrictEqual(client.legacyTabKeysOf(tabs, pages), [pages[0].key, pages[1].key]);
+	assert.deepStrictEqual(client.legacyTabKeysOf([null, {}, { id: 'unknown' }], pages), []);
+});
 // ── 注册失败可见（2026-11-02，对齐 dsh-desktop 的 registrationFailures）────────────────
 // 为什么必须守：register 失败只抛给调用方的 `ctx.effect` ⇒ 异常进控制台，**界面上什么都没有**，
 // 用户看到的是「装了、重启了、启动器里还是没有」——"装了没出现"的头号原因。
@@ -246,12 +970,27 @@ function sessionHarness() {
 	const { service, ctx } = serviceOf();
 	const writes = [];
 	const sessions = { s1: { retainedBy: { mainView: 0 } } };
+	const workspaceItems = [{ workspaceId: 'w1', path: 'C:/p', title: 'p', sessionIds: ['s1'] }];
 	ctx.sessions = {
 		list: { getSnapshot: () => ({ byId: sessions }) },
 		refresh: async () => { },
-		create: async ({ workspaceId }) => { const id = 'new-' + String(workspaceId).replace(/[^A-Za-z0-9-]/g, '-'); sessions[id] = { retainedBy: { mainView: 0 } }; return id; },
+		create: async ({ workspaceId }) => {
+			const workspace = workspaceItems.find(w => w.workspaceId === workspaceId);
+			assert.ok(workspace, 'session creation requires a registered workspace');
+			const id = 'new-' + String(workspaceId).replace(/[^A-Za-z0-9-]/g, '-');
+			sessions[id] = { cwd: workspace.path, retainedBy: { mainView: 0 } };
+			workspace.sessionIds.push(id);
+			return id;
+		},
 	};
-	ctx.workspaces = { list: { getSnapshot: () => ({ items: [{ workspaceId: 'w1', path: 'C:/p', title: 'p', sessionIds: ['s1'] }] }) }, create: async ({ path }) => ({ workspaceId: 'w:' + path }) };
+	ctx.workspaces = {
+		list: { getSnapshot: () => ({ items: workspaceItems }) },
+		create: async ({ path }) => {
+			const workspace = { workspaceId: 'w:' + path, path, title: path, sessionIds: [] };
+			workspaceItems.push(workspace);
+			return workspace;
+		},
+	};
 	const opened = [];
 	ctx.uiWorkspace = { openSession: id => { opened.push(id); sessions[id] = { retainedBy: { mainView: 1 } }; }, pickDirectory: async () => 'C:/picked' };
 	service.state = emptyState();

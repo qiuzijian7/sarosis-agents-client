@@ -317,15 +317,19 @@ suite('AgentHostGitService - worktree helpers (real git)', () => {
 		assert.strictEqual(await svc!.hasUncommittedChanges(URI.file(dir)), false);
 	});
 
-	(hasGit ? test : test.skip)('addExistingWorktree attaches a worktree for an existing branch (no -b)', async () => {
+	// ★ P2 收口：worktree 写操作已下线到 dsh Host（唯一 git 源）⇒ 这里断言「明确拒绝」，
+	//   而不是继续在 agentHost 进程里创建第二套 worktree。
+	(hasGit ? test : test.skip)('addExistingWorktree 已收口到 dsh Host（不再本地创建 worktree）', async () => {
 		const dir = initRepo();
 		cp.execFileSync('git', ['branch', 'feature'], { cwd: dir, env, stdio: 'pipe' });
 		const wtPath = join(dir, '..', `wt-${Date.now()}`);
 		try {
-			await svc!.addExistingWorktree(URI.file(dir), URI.file(wtPath), 'feature');
+			await assert.rejects(
+				() => svc!.addExistingWorktree(URI.file(dir), URI.file(wtPath), 'feature'),
+				/dsh Host/,
+			);
 			const fs = await import('fs/promises');
-			const stat = await fs.stat(wtPath);
-			assert.ok(stat.isDirectory(), 'worktree directory should exist');
+			await assert.rejects(() => fs.stat(wtPath), '不应在 agentHost 侧留下 worktree 目录');
 		} finally {
 			rmSync(wtPath, { recursive: true, force: true });
 		}

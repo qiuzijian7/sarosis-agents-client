@@ -138,14 +138,16 @@ const q = (c, s) => c.querySelector(s);
 	} finally { env.restore(); }
 }
 
-// ── ③ 只有显式 floatingActions:false 才关；默认值与其它字段都不能把它关掉 ─────────────────────
+// ── ③ 助手浮动入口始终存在；floatingActions:false 只隐藏外开按钮 ─────────────────────
 {
 	const env = makeEnv();
 	try {
 		const C = () => h('div', null, 'x');
 		env.service.register({ title: '关', repository: 'vssaros:off', floatingActions: false }, C);
 		const off = await mount(h(env.service.View, { id: 'vssaros/off', active: false }));
-		eq('③ floatingActions:false ⇒ 没有胶囊（scheduler / loop 就是这样关的）', off.container.querySelectorAll('[data-vssaros-wb-actions]').length, 0);
+		eq('③ floatingActions:false ⇒ 仍有统一助手胶囊', off.container.querySelectorAll('[data-vssaros-wb-actions]').length, 1);
+		eq('③ floatingActions:false ⇒ 只隐藏外开入口', off.container.querySelectorAll('[data-vssaros-wb-open-external]').length, 0);
+		eq('③ 每个工作台恰好一个浮动助手按钮', off.container.querySelectorAll('[data-vssaros-wb-assist]').length, 1);
 		await off.unmount();
 		// 各种"看起来无关"的写法都不应误关：undefined / true / 缺省 / 非布尔真值
 		for (const [label, extra] of [['缺省', {}], ['undefined', { floatingActions: undefined }], ['true', { floatingActions: true }], ['字符串 "false"（非布尔）', { floatingActions: 'false' }], ['0', { floatingActions: 0 }]]) {
@@ -153,7 +155,7 @@ const q = (c, s) => c.querySelector(s);
 			env.service.register({ title: label, repository: 'vssaros:' + id.toLowerCase().replace(/[^a-z0-9]/g, '') + 'z', ...extra }, C);
 			const wbId = 'vssaros/' + id.toLowerCase().replace(/[^a-z0-9]/g, '') + 'z';
 			const m = await mount(h(env.service.View, { id: wbId, active: false }));
-			eq('③ floatingActions ' + label + ' ⇒ 仍有胶囊（只有严格 === false 才关）', m.container.querySelectorAll('[data-vssaros-wb-actions]').length, 1);
+			eq('③ floatingActions ' + label + ' ⇒ 仍有统一助手胶囊', m.container.querySelectorAll('[data-vssaros-wb-actions]').length, 1);
 			await m.unmount();
 		}
 	} finally { env.restore(); }
