@@ -164,6 +164,24 @@ describe('pending pool handoff', () => {
   })
 })
 
+describe('ended ticket review reconciliation', () => {
+  it('archives a waiting review of an ended ticket without P4 writes and skips it in the startup handoff', async () => {
+    const { ticket, sessionId } = await shelvedTicket()
+    await report(sessionId)
+    const current = h.runtime.store.tickets.get(ticket.id)!
+    h.runtime.store.tickets.save({ ...current, ended: { at: '2026-11-19T08:16:05.912Z', by: 'executor', outcome: 'closed' } })
+    const lark = vi.mocked(Commands.prototype.lark).mockClear()
+    expect(h.runtime.reviews.settleEndedReviews()).toBe(1)
+    expect(h.runtime.reviews.get(ticket.id)).toMatchObject({ state: 'stale', change: 501 })
+    expect(h.runtime.reviews.held(ticket.id)).toBe(false)
+    expect(h.runtime.reviews.waiting()).toEqual([])
+    expect(h.runtime.reviews.audit()[0]).toMatchObject({ action: 'settled', ticketId: ticket.id, change: 501 })
+    await expect(h.runtime.reviews.completeReadyPoolDeliveries()).resolves.toBeUndefined()
+    expect(lark).not.toHaveBeenCalled()
+    expect(writes()).toEqual([])
+  })
+})
+
 describe('requesting a review', () => {
   it.each([undefined, null])('keeps the P4 delivery gate after a refused CL, even when the next ready omits it (%s)', async changelist => {
     const { ticket, sessionId } = await shelvedTicket()

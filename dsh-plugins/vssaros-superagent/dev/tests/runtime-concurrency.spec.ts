@@ -7,6 +7,7 @@ import { Later } from '../src/app/effects.ts'
 import { reportRelay } from '../src/app/notices.ts'
 import { WorkerSlots, inputMessage, mandateInstructions, ticketExecution, transient, triggerMessage } from '../src/executor/dsh.ts'
 import { SettingsSchema } from '../src/policy.ts'
+import { KV } from '../src/kv.ts'
 import { Commands } from '../src/infra/commands.ts'
 import { deferred, waitUntil } from './fixtures/async.ts'
 import { CHAT, MEMBER, feishu, startRuntime, type Host } from './fixtures/host.ts'
@@ -93,6 +94,28 @@ it('freezes the operator-selected current P4 root without appending ticket direc
   expect(execution.delivery).toBe('p4')
   settings.sources.p4!.config.workspaceRoot = '/untrusted-new'
   expect(execution.directory).toBe(h.directory)
+})
+
+it('ignores an ended ticket waiting review but still holds a live review on the same shared P4 root', async () => {
+  const p4workspace = await import('../src/executor/p4-workspace.ts')
+  vi.spyOn(p4workspace, 'verifyP4Workspace').mockResolvedValue('main')
+  const saved = h.runtime.store.settings()
+  h.runtime.store.saveSettings({ ...saved, sources: { ...saved.sources, p4: { enabled: true, config: {
+    port: 'ssl:test:1666', user: 'bot', paths: [{ path: '//GR/main/...' }], workspaceMode: 'current', executionClient: 'main', workspaceRoot: h.directory,
+  } } } })
+  const first = await h.acceptedTicket(feishu('p4-first', '@bot fix https://www.tapd.cn/68880148/bugtrace/bugs/view/5001'))
+  h.runtime.store.set(KV.reviews.review(first.ticket.id), { ticketId: first.ticket.id, change: 501, fingerprint: 'a'.repeat(16),
+    files: [], description: '', client: 'main', state: 'waiting', requestedAt: new Date().toISOString() })
+  h.runtime.store.tickets.save({ ...h.runtime.store.tickets.get(first.ticket.id)!,
+    ended: { at: new Date().toISOString(), by: 'executor', outcome: 'closed' } })
+  const second = await h.acceptedTicket(feishu('p4-second', '@bot fix https://www.tapd.cn/68880148/bugtrace/bugs/view/5002'))
+  const guards = (h.agents.get(second.sessionId) as unknown as { ctx: { tools: { guard: { mock: { calls: [(execution: { name: string; arguments: unknown }) => string | undefined][] } } } } })
+    .ctx.tools.guard.mock.calls.map(([guard]) => guard)
+  const guarded = (name: string) => guards.map(guard => guard({ name, arguments: {} })).find(Boolean)
+  expect(guarded('read')).toBeUndefined()
+  h.runtime.store.set(KV.reviews.review(second.ticket.id), { ticketId: second.ticket.id, change: 502, fingerprint: 'b'.repeat(16),
+    files: [], description: '', client: 'main', state: 'waiting', requestedAt: new Date().toISOString() })
+  expect(guarded('read')).toMatch(/queued, blocked or under review/)
 })
 
 const lark = { users: [{ member_id: MEMBER, name: 'Alice' }], has_more: false }

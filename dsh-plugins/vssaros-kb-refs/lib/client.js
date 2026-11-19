@@ -197,6 +197,20 @@ window.__ModuleLoader__.load({
 			},
 		};
 
+		function header(_session, ctx) {
+			const query = String((ctx && ctx.query) || "");
+			const attach = query.charAt(0) === ATTACH_MARKER;
+			const drilled = !!(ctx && ctx.drilled);
+			return Object.freeze([
+				Object.freeze({ label: translate("title"), value: "", current: !attach && !drilled }),
+				Object.freeze({
+					label: attach ? translate("articles") + translate("suffix") : ATTACH_MARKER + " " + translate("suffix"),
+					value: attach ? "" : ATTACH_MARKER,
+					current: attach && drilled,
+				}),
+			]);
+		}
+
 		function apply(ctx) {
 			const inputTriggers = ctx.get("inputTriggers");
 			if (!inputTriggers) { mark("no-inputTriggers"); return; }
@@ -204,7 +218,7 @@ window.__ModuleLoader__.load({
 			translate = ctx.locale.bind(LOCALE_NS);
 			try {
 				ctx.effect(() => inputTriggers.registerSource({
-					trigger: "@", name: SOURCE_NAME, order: GROUP_ORDER, candidates, onPick, codec,
+					trigger: "@", name: SOURCE_NAME, order: GROUP_ORDER, candidates, onPick, codec, header,
 				}), "kb-refs: @ source");
 				mark("1");
 			} catch (e) {

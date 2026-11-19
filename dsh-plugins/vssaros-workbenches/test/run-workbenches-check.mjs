@@ -250,40 +250,6 @@ await t('P1 统一目录：注册/注销订阅同步、快照不暴露 Component
 	service.register({ title: '临时', repository: 'vssaros:temp' }, Comp);
 	assert.equal(notified, before, '退订后不再收到目录通知');
 });
-await t('P2 兼容桥：旧全局清单进入统一目录，组件式优先于 route，下线项不生成可用入口', () => {
-	client.__setSidebarLayoutV1(false);
-	client.__testDeleteGlobal('__vssarosWorkbenchItems');
-	client.__testDeleteGlobal('__vssarosPageComponents');
-	const { service } = serviceOf();
-	const Memory = () => null;
-	client.__testSetGlobal('__vssarosWorkbenchItems', [
-		{ id: 'vssaros-wb-dashboard', name: '主页', route: '/x/dashboard/' },
-		{ id: 'vssaros-wb-kb', name: '知识库', ico: '📚', route: '/x/kb/' },
-		{ id: 'vssaros-wb-memory-tab', name: '记忆', ico: '🧠', route: '/x/memory/', comp: 'memory' },
-		{ id: 'vssaros-wb-kanban', name: '看板', route: '/x/kanban/', offline: true },
-	]);
-	client.__testSetGlobal('__vssarosPageComponents', { memory: Memory });
-	service.ingestLegacyCatalog();
-	const pages = service.getCatalogSnapshot().pages;
-	assert.equal(pages.length, 3, '主页不能递归列自己；其余三项进入目录');
-	const kb = pages.find(p => p.pageId === 'vssaros-wb-kb');
-	const memory = pages.find(p => p.pageId === 'vssaros-wb-memory-tab');
-	const kanban = pages.find(p => p.pageId === 'vssaros-wb-kanban');
-	assert.equal(kb.kind, 'route');
-	assert.equal(kb.sourceKind, 'legacy');
-	assert.equal(memory.kind, 'component', '组件式记忆不能被不存在的 /x/memory/ route 覆盖');
-	assert.equal(service.getCatalogRenderer(memory.key), Memory);
-	assert.equal(kanban.hidden, true);
-	assert.equal(kanban.enabled, false);
-	service.ingestLegacyCatalog();
-	assert.equal(service.getCatalogSnapshot().pages.length, 3, '重复读取旧清单必须幂等');
-	client.__testSetGlobal('__vssarosWorkbenchItems', [{ id: 'vssaros-wb-kb', name: '知识库', route: '/x/kb/' }]);
-	service.ingestLegacyCatalog();
-	assert.equal(service.getCatalogSnapshot().pages.length, 1, '旧清单移除的条目必须注销');
-	client.__testDeleteGlobal('__vssarosWorkbenchItems');
-	client.__testDeleteGlobal('__vssarosPageComponents');
-	client.__setSidebarLayoutV1(false);
-});
 await t('P2 Better Sidebar 适配器：目录 diff、多实例 createTab、打开不替换、开关与注销', () => {
 	client.__setSidebarLayoutV1(false);
 	client.__testDeleteGlobal('__vssarosWorkbenchItems');
@@ -349,6 +315,14 @@ await t('P3 所有权链：配置开启即接管开始页，live guideTakeover �
 	client.__testDeleteGlobal('__vssarosPageComponents');
 	const { service } = serviceOf();
 	service.register({ title: '知识库', repository: 'vssaros:kb' }, Comp);
+	service.registerPage({
+		workbenchId: 'vssaros/acme', pageId: 'default', canonicalId: 'vssaros/acme',
+		title: '示例工作台', description: 'P3 回归用工作台', icon: 'grid', route: '/x/acme/',
+		hidden: false, retired: false, enabled: true, availability: 'ready', state: 'active',
+		sourceKind: 'registered', sourcePackage: 'test', package: 'test',
+		visibility: { start: true, launcher: false, nativeTab: false, routeWhitelist: false, deepLink: false },
+		aliases: [], replacedBy: '',
+	}, null);
 	client.__setSidebarLayoutV1(true);
 	assert.equal(client.readSidebarLayoutV1Config({}), true, '无配置时 P3 默认开启');
 	client.__setSidebarLayoutV1(false);
@@ -735,7 +709,7 @@ await t('阶段2 统一目录清单：单一 manifest 生成隐藏/退役/离线
 		'生成视图必须导出供自检');
 	const manifest = client.workbenchManifest();
 	assert.ok(Object.isFrozen(manifest), 'manifest 必须冻结');
-	assert.equal(manifest.length, 18, '10 个 hidden + 4 个 offline + 1 个 retired + 3 个 active manifest route');
+	assert.equal(manifest.length, 19, '11 个 hidden + 4 个 offline + 1 个 retired + 3 个 active manifest route');
 	assert.equal(manifest.filter(row => row.state === 'active' && row.sourceKind === 'manifest').length, 3,
 		'active manifest route 行必须恰好 3 条');
 	const requiredFields = ['key', 'workbenchId', 'pageId', 'canonicalId', 'state', 'visibility', 'aliases', 'replacedBy', 'route', 'title', 'sourceKind'];
@@ -748,12 +722,13 @@ await t('阶段2 统一目录清单：单一 manifest 生成隐藏/退役/离线
 	assert.equal(new Set(manifest.map(row => row.key)).size, manifest.length, 'manifest key 不得重复');
 	const hiddenKeys = [
 		'vssaros/marketplace/default', 'vssaros/sessions/default', 'vssaros/workflow/default', 'vssaros/kanban/default',
+		'vssaros/kb/default',
 		'legacy:/x/sessions//vssaros-wb-sessions', 'legacy:/x/sessions/?view=tiles/vssaros-wb-session-tiles',
 		'legacy:/x/media//vssaros-wb-media', 'legacy:/x/codebase//vssaros-wb-codebase',
 		'legacy:/x/workflow//vssaros-wb-workflow', 'legacy:/x/kanban//vssaros-wb-kanban',
 	];
 	const hiddenIds = [
-		'vssaros/marketplace', 'vssaros/sessions', 'vssaros/workflow', 'vssaros/kanban',
+		'vssaros/marketplace', 'vssaros/sessions', 'vssaros/workflow', 'vssaros/kanban', 'vssaros/kb',
 		'legacy:/x/sessions/', 'legacy:/x/sessions/?view=tiles',
 		'legacy:/x/media/', 'legacy:/x/codebase/', 'legacy:/x/workflow/', 'legacy:/x/kanban/',
 	];
@@ -773,37 +748,47 @@ await t('阶段2 统一目录清单：单一 manifest 生成隐藏/退役/离线
 	});
 	assert.equal(client.selectStartPages(hiddenKeys.map(key => mk(key, '同名'))).length, 0,
 		'生成视图必须保持旧 hidden key 全部下线');
+	assert.equal(client.selectStartPages([mk('vssaros/kb/default', '知识库')]).length, 0,
+		'注册式知识库默认页必须被稳定 key/身份下线');
 	assert.equal(client.selectStartPages([mk('acme/tasks/default', 'Tasks')]).length, 1,
 		'新 key 的同名工作台不得被误吞');
 });
-await t('阶段3/4 统一策略消费方与 legacy 桥硬退役', () => {
+await t('阶段3/4 单一目录生成视图与 legacy 桥硬退役', () => {
 	const source = readFileSync(join(here, '../lib/client.js'), 'utf8');
-	assert.match(source, /globalThis\.__vssarosWorkbenchPolicy = \(\) => catalogPolicyProbeOf\(service\.getCatalogSnapshot\(\)\.pages\);/,
-		'统一策略探针必须在运行时可用');
-	assert.match(source, /globalThis\.__vssarosWorkbenchLegacyBridgeMode = \(\) => legacyBridgeModeOf\(globalThis\);/,
-		'必须暴露 legacy 桥模式诊断');
+	assert.match(source, /@generated-workbench-directory:start workbenches-client/, 'workbenches 必须内嵌单一目录生成区块');
+	assert.match(source, /globalThis\.__vssarosWorkbenchCatalogEntries = \(\) => catalogEntriesOf\(service\.getCatalogSnapshot\(\)\.pages\);/,
+		'必须发布统一目录 entries 探针');
+	assert.match(source, /globalThis\.__vssarosWorkbenchCatalogSubscribe = listener => service\.subscribeCatalog\(listener\);/,
+		'必须发布目录订阅探针');
+	assert.match(source, /vssaros-wb-catalog-change/, 'publishCatalog 必须派发目录变更事件');
+	assert.match(source, /module\.exports\.catalogEntriesOf = catalogEntriesOf;/, 'entries 纯函数必须导出');
+	assert.match(source, /delete globalThis\.__vssarosWorkbenchCatalogEntries/, '卸载必须清理 entries 探针');
+	assert.match(source, /delete globalThis\.__vssarosWorkbenchCatalogSubscribe/, '卸载必须清理订阅探针');
 	assert.match(source, /service\.registerManifestPages\(\)/, '必须由 manifest 注册 active route 页');
 	assert.match(source, /globalThis\.__vssarosWorkbenchManifestPagesRegistered = true/, '必须标记 manifest 注册完成');
+	assert.match(source, /module\.exports\.__registerManifestPages/, 'manifest 注册入口必须导出');
+	assert.doesNotMatch(source, /__vssarosWorkbenchItems/, 'workbenches 不得再提旧全局清单');
+	assert.doesNotMatch(source, /ingestLegacyCatalog/, '兼容 API 必须物理删除');
+	assert.doesNotMatch(source, /legacyCatalogDisposers/, 'legacy 注销器必须物理删除');
 	assert.doesNotMatch(source, /vssaros-wb-tabs-change/, '硬退役后不得再监听旧 tabs-change');
 	assert.doesNotMatch(source, /legacy catalog bridge/, '硬退役后不得再存在 legacy catalog bridge effect');
-	assert.match(source, /delete globalThis\.__vssarosWorkbenchPolicy/,
-		'卸载时必须清理策略探针');
-	assert.match(source, /delete globalThis\.__vssarosWorkbenchManifestPagesRegistered/,
-		'卸载时必须清理注册标记');
-	assert.match(source, /module\.exports\.catalogPolicyProbeOf = catalogPolicyProbeOf;/,
-		'策略视图纯函数必须导出');
-	assert.match(source, /module\.exports\.legacyBridgeModeOf = legacyBridgeModeOf;/,
-		'硬退役模式纯函数必须导出');
-	assert.match(source, /module\.exports\.__registerManifestPages/, 'manifest 注册入口必须导出');
-	assert.match(source, /ingestLegacyCatalog\(\) \{/, '兼容 API 仍需保留，避免真机前破坏其它包 fallback');
 	const navSrc = readFileSync(join(here, '../../vssaros-chat-surface/lib/client.workbenchNav.js'), 'utf8');
-	assert.match(navSrc, /__vssarosWorkbenchPolicy/, '启动器必须读取统一策略');
+	assert.match(navSrc, /@generated-workbench-directory:start chat-surface-nav/, 'nav 必须由单一目录生成');
 	assert.match(navSrc, /policyHiddenIds\(\)/, '启动器必须使用策略隐藏身份');
-	assert.match(navSrc, /const DEFAULT_ITEMS = \[/, 'route 白名单字面量必须保留 fallback');
+	assert.doesNotMatch(navSrc, /__vssarosWorkbenchItems/, 'nav 不得再发布旧全局清单');
 	const marketSrc = readFileSync(join(here, '../../vssaros-chat-surface/lib/client.market.js'), 'utf8');
-	assert.match(marketSrc, /__vssarosWorkbenchPolicy/, '商城必须读取统一策略');
-	assert.match(marketSrc, /policyOfflineRoutes\(\)/, '商城必须使用策略离线 route');
-	assert.match(marketSrc, /!it\.offline/, '商城字面量 offline 过滤必须保留');
+	assert.match(marketSrc, /GENERATED_INSTALLED_ITEMS/, '商城已装项必须来自生成投影');
+	assert.match(marketSrc, /!it\.offline/, '商城 offline 过滤必须保留');
+	assert.doesNotMatch(marketSrc, /__vssarosWorkbenchItems/, 'market 不得再读取旧全局清单');
+	const appSrc = readFileSync(join(here, '../../vssaros-dashboard/lib/app/src/app.jsx'), 'utf8');
+	assert.match(appSrc, /GENERATED_FIXED_ENTRIES/, 'dashboard app 固定入口必须来自生成投影');
+	assert.doesNotMatch(appSrc, /__vssarosWorkbenchItems/, 'dashboard app 不得再读取旧全局清单');
+	const catalogSrc = readFileSync(join(here, '../../vssaros-dashboard/lib/catalog.js'), 'utf8');
+	assert.match(catalogSrc, /workbench-directory\.generated\.js/, 'dashboard catalog 必须引用生成文件');
+	assert.doesNotMatch(catalogSrc, /export const WORKBENCH_MODULES = \[/, 'dashboard 不得再手写卡片清单');
+	const skillsSrc = readFileSync(join(here, '../../vssaros-skills/lib/index.js'), 'utf8');
+	assert.match(skillsSrc, /workbench-directory\.generated\.js/, 'skills 只读镜像必须引用生成文件');
+	assert.doesNotMatch(skillsSrc, /const TOOLS_WORKBENCHES = \[/, 'skills 不得再手写工具镜像');
 	const mk = (key, route, extra = {}) => ({
 		key, title: key, workbenchId: key.replace(/\/[^/]*$/, ''), pageId: 'default',
 		enabled: true, hidden: false, retired: false, availability: 'ready', state: 'active',
@@ -822,17 +807,18 @@ await t('阶段3/4 统一策略消费方与 legacy 桥硬退役', () => {
 	assert.deepStrictEqual([...probe.launcherPages], ['acme/active/default']);
 	assert.deepStrictEqual([...probe.nativeTabPages], ['acme/active/default', 'vssaros/marketplace/default']);
 	assert.deepStrictEqual([...probe.routeWhitelist], ['/x/a/', '/x/marketplace/']);
-	assert.equal(probe.hiddenWorkbenchIds.length, 10, '策略视图必须带 10 个隐藏身份');
+	assert.equal(probe.hiddenWorkbenchIds.length, 11, '策略视图必须带 11 个隐藏身份');
 	assert.deepStrictEqual([...probe.retiredWorkbenchIds], ['vssaros/loop']);
 	assert.deepStrictEqual([...probe.offlineRoutes], ['/x/kanban/', '/x/workflow/', '/x/imagegen/', '/x/skills/']);
+	const entries = client.catalogEntriesOf([]);
+	assert.ok(Object.isFrozen(entries), 'entries 投影必须冻结');
+	assert.ok(entries.length >= 13, 'entries 必须覆盖全部 nav 路线');
+	assert.ok(entries.some(entry => entry.route === '/x/dashboard/'), 'entries 必须包含主页深链');
+	assert.ok(entries.some(entry => entry.comp === 'memory'), 'entries 必须保留记忆组件页签');
 	assert.equal(client.legacyBridgeModeOf({}), 'pending');
-	assert.equal(client.legacyBridgeModeOf({ __vssarosWorkbenchItems: [] }), 'legacy');
-	assert.equal(client.legacyBridgeModeOf({
-		__vssarosWorkbenchItems: [], __vssarosWorkbenchPolicy: () => ({ hiddenWorkbenchIds: [] }),
-	}), 'manifest');
 	assert.equal(client.legacyBridgeModeOf({
 		__vssarosWorkbenchPolicy: () => ({ hiddenWorkbenchIds: [] }),
-		__vssarosWorkbenchManifestPagesRegistered: true,
+		__vssarosWorkbenchCatalogEntries: () => [],
 	}), 'retired');
 });
 await t('阶段4 硬退役：manifest active route 页替代旧全局清单收编', () => {
@@ -852,9 +838,20 @@ await t('阶段4 硬退役：manifest active route 页替代旧全局清单收�
 		'manifest:/x/memory//vssaros-wb-memory-tab',
 		'manifest:/x/marketplace//vssaros-wb-marketplace',
 	]);
+	assert.equal(pages[0].description, '知识库索引与检索', 'manifest 知识库卡必须使用目录行描述');
+	assert.equal(pages[0].icon, '📚', 'manifest 知识库卡必须使用目录行图标');
+	assert.equal(pages[0].sourcePackage, 'vssaros-kb', 'manifest 知识库卡必须使用目录行来源');
 	assert.ok(pages.every(page => page.sourceKind === 'manifest' && page.state === 'active' && page.availability === 'ready'),
 		'manifest route 页必须进入统一目录且可导航');
 	assert.equal(client.selectStartPages(pages).length, 3, 'manifest route 页必须出现在开始页投影');
+	const registeredKbDuplicate = {
+		key: 'vssaros/kb/default', title: '知识库', workbenchId: 'vssaros/kb', pageId: 'default',
+		enabled: true, hidden: false, retired: false, availability: 'ready', state: 'active',
+		visibility: { start: true, launcher: true, nativeTab: true, routeWhitelist: true, deepLink: true },
+		aliases: [], replacedBy: '', route: '/x/kb/',
+	};
+	assert.equal(client.selectStartPages([...pages, registeredKbDuplicate]).length, 3,
+		'注册式知识库默认页必须被隐藏，开始页只保留一张知识库卡');
 	assert.equal(client.__registerManifestPages(service), false, '重复注册必须幂等');
 	assert.equal(service.getCatalogSnapshot().pages.length, 3);
 	service.dispose();

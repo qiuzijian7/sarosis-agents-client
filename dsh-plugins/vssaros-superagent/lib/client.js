@@ -3364,6 +3364,7 @@ window.__ModuleLoader__.load({
 				case "discarded": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.discarded", { by }) });
 				case "submitting": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: t("review.state.submitting") });
 				case "delivered_pending": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: review.comment || "已交付 pending CL，任务已结束；未提交，不等待编译、回归或审阅。" });
+				case "stale": return /* @__PURE__ */ (0, react_jsx_runtime.jsx)(Hint, { children: review.comment || "工单已结束，审阅已归档；未改动 CL 或 shelf。" });
 				default: return null;
 			}
 		}

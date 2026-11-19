@@ -15,7 +15,7 @@ import { changesOf, claimChangelist, fingerprint, inPath, P4_SOURCE, p4, p4Messa
 import type { Store } from './store.ts'
 import { hostPoolAuthorization } from '../sources/tapd-pool-authorization.ts'
 
-export type ReviewState = 'waiting' | 'submitting' | 'handed' | 'submitted' | 'rejected' | 'discarded' | 'failed' | 'delivered_pending'
+export type ReviewState = 'waiting' | 'submitting' | 'handed' | 'submitted' | 'rejected' | 'discarded' | 'failed' | 'delivered_pending' | 'stale'
 export interface Review {
   ticketId: string
   change: number
@@ -34,7 +34,7 @@ export interface Review {
   /** The submitted CL number, once submitted. */
   submittedAs?: number
 }
-export type AuditAction = 'requested' | 'approved' | 'refused' | 'rejected' | 'discarded' | 'handed' | 'submitted' | 'failed' | 'delivered_pending'
+export type AuditAction = 'requested' | 'approved' | 'refused' | 'rejected' | 'discarded' | 'handed' | 'submitted' | 'failed' | 'delivered_pending' | 'settled'
 export interface AuditEntry { at: string; action: AuditAction; ticketId: string; change: number; fingerprint: string; by?: string; detail?: string }
 const AUDIT_LIMIT = 500
 
@@ -85,6 +85,23 @@ export class Reviews {
   waiting(): Review[] {
     return this.host.store.keys(KV.reviews.review).flatMap(key => this.host.store.get(key) ?? [])
       .filter(review => review.state === 'waiting').sort((a, b) => a.requestedAt.localeCompare(b.requestedAt))
+  }
+  /** Archives reviews of ended tickets without touching P4, so they cannot hold a shared workspace or startup migration. */
+  settleEndedReviews(): number {
+    let settled = 0
+    for (const key of this.host.store.keys(KV.reviews.review)) {
+      const review = this.host.store.get(key)
+      if (!review || !['waiting', 'submitting', 'failed'].includes(review.state)) continue
+      const ticket = this.host.store.tickets.get(review.ticketId)
+      if (ticket && liveTicket(ticket)) continue
+      const at = new Date().toISOString()
+      const archived: Review = { ...review, state: 'stale', decidedAt: at, by: this.person(),
+        comment: '工单已结束，审阅状态归档；未改动 P4 CL、shelf 或 opened 文件。' }
+      this.save(archived)
+      this.log(archived, 'settled', 'Ended ticket review archived; P4 state unchanged', archived.by)
+      settled++
+    }
+    return settled
   }
   audit(limit = 100): AuditEntry[] { return (this.host.store.get(KV.reviews.audit) ?? []).slice(-limit).reverse() }
   private save(review: Review): void { this.host.store.set(KV.reviews.review(review.ticketId), review) }
@@ -149,9 +166,10 @@ export class Reviews {
   async completeReadyPoolDeliveries(): Promise<void> {
     const store = this.host.store
     if (!store.settings || !store.triggers) return
+    this.settleEndedReviews()
     for (const review of this.waiting()) {
       const ticket = store.tickets.get(review.ticketId), origin = ticket && store.triggers.get(ticket.origin.triggerId)
-      if (!ticket || ticket.team || latestReport(ticket)?.state !== 'ready' || !origin
+      if (!ticket || !liveTicket(ticket) || ticket.team || latestReport(ticket)?.state !== 'ready' || !origin
         || !hostPoolAuthorization({ get: key => store.get(key), settings: () => store.settings!() }, origin)) continue
       await this.completePending(ticket.id, review.fingerprint)
     }

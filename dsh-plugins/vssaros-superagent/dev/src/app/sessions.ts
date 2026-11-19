@@ -468,8 +468,13 @@ export class Sessions {
         const config = store.settings().sources.p4
         if (!config?.enabled || config.config.workspaceMode !== 'current' || config.config.executionClient !== shared.client
           || config.config.workspaceRoot !== shared.root || config.config.port !== shared.port || config.config.user !== shared.user) return 'Current P4 authorization changed; wait for operator repair'
-        const assignment = runningAssignment(current), review = store.get(KV.reviews.review(current.id))
-        if (!assignment || assignment.report?.state === 'blocked' || assignment.report?.state === 'failed' || review?.state === 'waiting' || review?.state === 'submitting') return 'Current P4 workspace is queued, blocked or under review; use the ticket controls'
+        const assignment = runningAssignment(current)
+        const held = store.keys(KV.reviews.review).some(key => {
+          const review = store.get(key), owner = review && store.tickets.get(review.ticketId)
+          return !!review && (review.state === 'waiting' || review.state === 'submitting') && !!owner && !owner.ended
+            && owner.execution?.p4Workspace?.root === shared.root
+        })
+        if (!assignment || assignment.report?.state === 'blocked' || assignment.report?.state === 'failed' || held) return 'Current P4 workspace is queued, blocked or under review; use the ticket controls'
         const occupied = store.tickets.open().some(other => other.id !== ticketId && other.execution?.p4Workspace?.root === shared.root
           && (this.ctx.agents.get(`worker-${other.id}` as SessionId)?.status === 'running' || other.follows?.some(follow => follow.own && !follow.closed && follow.thread.startsWith('p4:'))))
         if (occupied) return 'Current P4 workspace is occupied by another ticket'

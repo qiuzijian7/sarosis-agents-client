@@ -476,13 +476,28 @@ function parentWorkbenches() {
 	} catch { return null; }
 }
 
-/** 父窗口的侧栏固定入口表（含 hidden / offline 项 ⇒ 覆盖比「可见卡片」完整）。 */
+/* @generated-workbench-directory:start dashboard-app-fixed-entries hash=3eef1f2238cf */
+const GENERATED_FIXED_ENTRIES = [
+	{ id: "vssaros-wb-dashboard", route: "/x/dashboard/", hidden: false, offline: false },
+	{ id: "vssaros-wb-sessions", route: "/x/sessions/", hidden: false, offline: false },
+	{ id: "vssaros-wb-session-tiles", route: "/x/sessions/?view=tiles", hidden: false, offline: false },
+	{ id: "vssaros-wb-kanban", route: "/x/kanban/", hidden: true, offline: true },
+	{ id: "vssaros-wb-workflow", route: "/x/workflow/", hidden: true, offline: true },
+	{ id: "vssaros-wb-kb", route: "/x/kb/", hidden: false, offline: false },
+	{ id: "vssaros-wb-memory-tab", route: "/x/memory/", hidden: false, offline: false },
+	{ id: "vssaros-wb-codebase", route: "/x/codebase/", hidden: false, offline: false },
+	{ id: "vssaros-wb-media", route: "/x/media/", hidden: false, offline: false },
+	{ id: "vssaros-wb-imagegen", route: "/x/imagegen/", hidden: true, offline: true },
+	{ id: "vssaros-wb-skills", route: "/x/skills/", hidden: true, offline: true },
+	{ id: "vssaros-wb-scheduler", route: "/x/scheduler/", hidden: true, offline: false },
+	{ id: "vssaros-wb-marketplace", route: "/x/marketplace/", hidden: false, offline: false },
+];
+
 function parentFixedEntries() {
-	try {
-		if (!inDshWindow()) { return null; }
-		return Array.isArray(window.parent.__vssarosWorkbenchItems) ? window.parent.__vssarosWorkbenchItems : null;
-	} catch { return null; }
+	return GENERATED_FIXED_ENTRIES;
 }
+/* @generated-workbench-directory:end dashboard-app-fixed-entries */
+
 
 /**
  * 内置注册式工作台是否已有固定入口（`/x/<module>/`）⇒ 有就别再补一张重复卡片。

@@ -6,7 +6,7 @@
 # 工作台开发规范（VsSaros / dsh）
 
 > 文档状态：**【规范·唯一流程源】**（2026-11-02）
-> 版本：2026-11-02 · 面向 **Agent 与第三方开发者**。本文是"把一块业务界面做成工作台"的**唯一流程源**；
+> 版本：2026-11-19 · 面向 **Agent 与第三方开发者**。本文是"把一块业务界面做成工作台"的**唯一流程源**；
 > 界面架构细节见 [`workbench-authoring-standard.md`](./workbench-authoring-standard.md)（Pane × 承载容器），
 > Agent 执行细则见内置技能 `dsh-plugins/vssaros-skill-bundle/skills/workbench-authoring/SKILL.md`。
 > 机器可读版本：响应头 `x-workbench-guide-version`（`<插件版本>/<内容 sha256 前 8 位>`）；
@@ -76,7 +76,7 @@
 | 归属 | 身份 | 宿主改动 | 入口 |
 |---|---|---|---|
 | **外部包**（第三方 / 个人自用） | `local:<npm 包名>`（描述符写 `package`，不写 `repository`） | **0 处**，不写 `vssaros` 清单块 | 装包并重启后，自动出现在工作台启动器 |
-| **内置包**（随 VsSaros 发布） | `vssaros:<module>` | 整页模块要登记几张表；**注册式**只登记模块联合体 + `DSH_BUILTIN_MODULES` | 整页：侧栏 / 主页卡片；注册式：启动器自动列出 |
+| **内置包**（随 VsSaros 发布） | `vssaros:<module>` | 只在 `dsh-plugins/workbench-directory.mjs` **一次注册**一行目录元数据；跑 `generate-workbench-directory.mjs` 生成各消费方投影 | 整页：侧栏 / 主页卡片；注册式：启动器自动列出 |
 
 外部包用脚手架一条命令生成并自检：
 `node scaffold_workbench.mjs <module> --mode external --package @scope/name`（技能目录 `scripts/` 下）。
@@ -157,6 +157,19 @@ function apply(ctx) {
 - 三者都拿不到 ⇒ 注册失败（没有稳定身份就无法做会话归属，**不允许猜**）。
 - 同一身份重复注册会抛错；`register()` 返回注销函数，必须交给 `ctx.effect`。
 - 校验失败一律抛（`businessWidth` 只接受 0.25–0.7，`headerLayout` 只接受 `default`/`compact`）。
+
+## 4.1 单一目录与一次注册
+
+工作台入口只在 `dsh-plugins/workbench-directory.mjs` **一次注册**一行目录元数据；该文件是唯一真源。每行至少声明：
+
+- 稳定身份：`key`、`workbenchId`、`pageId`；
+- 归并身份：`canonicalId`；
+- 兼容关系：`aliases[]`、`replacedBy`；
+- 状态：`state`（`active / alias / deprecated / offline / retired / hidden / disabled`）；
+- 可见策略：`visibility`（`start / launcher / nativeTab / routeWhitelist / deepLink`）；
+- 承载与展示：`route`、renderer、`title`、`description`、`icon`、来源包。
+
+改动真源后必须运行 `node dsh-plugins/scripts/generate-workbench-directory.mjs`，由 `generate-workbench-directory.mjs` 生成 nav、dashboard、skills、market、app 与 workbenches 客户端投影。`dsh-plugins/check-workbench-catalog.mjs` 校验生成区块 hash 与**投影一致性**：禁止在其它包再抄一份业务清单，也禁止回退到旧全局数组。route 白名单和深链由 `visibility.routeWhitelist` / `visibility.deepLink` 单独投影；「不显示卡片」不等于「删除页面本体」。
 
 ## 5. 界面边界
 
@@ -256,7 +269,7 @@ install_local_workbench({ path: "<本机 .tgz 绝对路径>", replace: false })
 **包与注册**
 
 - [ ] 【插件】`node dsh-plugins/check-plugin-files.mjs`：`files` 与目录实际文件一致
-- [ ] 【插件】`node dsh-plugins/check-workbench-catalog.mjs`：包清单声明的工作台都可达（整页：侧栏白名单 + 主页卡片；注册式：真的 `register` 且描述符与清单一致）
+- [ ] 【插件】`node dsh-plugins/check-workbench-catalog.mjs`：单一目录 + 投影一致性通过（生成区块 hash 一致，包清单声明的工作台都可达，跨包无第二份手写清单）
 - [ ] 【插件】`node dsh-plugins/check-workbench-style.mjs`：视觉 6 条（`wb-*` 用量、令牌、锚点、容器查询、工具栏）
 - [ ] 【插件】`node dsh-plugins/check-chat-surface-chunks.mjs`：入口比子块新（否则吃旧缓存）
 

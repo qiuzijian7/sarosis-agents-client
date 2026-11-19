@@ -75,7 +75,7 @@ export interface HttpHost {
   readonly engine: EngineForPeople
   readonly executor: Pick<DshExecutor, 'activeCount' | 'inventory'>
   /** VsSaros addition. */
-  readonly reviews: Pick<Reviews, 'waiting' | 'audit' | 'view' | 'approve' | 'reject' | 'discard' | 'completePending'>
+  readonly reviews: Pick<Reviews, 'waiting' | 'audit' | 'view' | 'approve' | 'reject' | 'discard' | 'completePending' | 'settleEndedReviews'>
   readonly health: Record<string, Health>
   readonly machine: Machine
   readonly masterId: string
@@ -497,6 +497,7 @@ function routes(runtime: HttpHost): Routes {
     },
     'POST prompts/preview': async input => runtime.prompts.preview(await promptBody(input)),
     'GET reviews': () => ({ waiting: runtime.reviews.waiting(), audit: runtime.reviews.audit() }),
+    'POST reviews/settle-ended': () => ({ settled: runtime.reviews.settleEndedReviews() }),
     'GET tickets/:id/review': async ({ params }) => (await runtime.reviews.view(ticket(params.id))) ?? { review: null },
     'POST tickets/:id/review/approve': async ({ params, body }) =>
       runtime.reviews.approve(ticket(params.id), z.object({ fingerprint: z.string().regex(/^[0-9a-f]{16}$/) }).parse(await body()).fingerprint),

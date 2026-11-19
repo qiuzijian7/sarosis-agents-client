@@ -50,6 +50,13 @@ const MUST_SAY = [
 	['--mode external', '外部包脚手架（0 处宿主改动的入口命令）'],
 	['@container', '按容器宽度响应（不许用 @media）'],
 	['不擅自重启', 'Agent 行为纪律'],
+	['canonicalId', '单一目录归并身份'],
+	['aliases', '旧页签 / 旧 route 别名'],
+	['visibility', '开始页 / 启动器 / nativeTab / routeWhitelist 投影口径'],
+	['一次注册', '禁止跨包再抄清单'],
+	['投影一致性', '生成器与守卫校验口径'],
+	['workbench-directory.mjs', '单一目录真源'],
+	['generate-workbench-directory.mjs', '生成投影入口'],
 ];
 for (const [token, why] of MUST_SAY) {
 	if (!guide.includes(token)) { fail(`规范里缺「${token}」（${why}）`); }

@@ -158,7 +158,7 @@ table.dir .k { font-size: 12px; color: var(--dsw-alias-label-caption); }
 		<p class="lede">以 superagent 的工单流水线为基础框架：四个输入源进入同一条准入与评估链路；Router 在接单后组建任务团队（查找或新建 bot），<strong>用户同意后</strong>才分发；每个 worker 是一个 VsSaros bot；每个 worker 结束时把执行证据交给记忆系统沉淀技能；整个任务结束后沉淀可复用的团队工作流，并可导出到外部工作流格式。<strong>本文状态</strong>：前 14 节是 2026-11-04 的设计基线，各节末尾标注实际落地情况；<strong>15.0 是现状</strong>（逐版本增量，以此为准）；15.1–17 是 2026-11-06 对照 0.1.55 的复核，作为<strong>历史快照</strong>保留，其中已完成的遗留项已移入 15.0。</p>
 		<div class="badges">
 			<!-- 版本守卫：data-baseline 与 15.0 标题的区间终点必须等于 dsh-plugins/vssaros-superagent/package.json 的 version（dev/scripts/build.mjs --check） -->
-			<span class="tag code" data-baseline="0.1.161">代码基线 @vssaros/dsh-superagent 0.1.161（现状见 15.0；15.1–17 为 0.1.55 历史快照）</span>
+			<span class="tag code" data-baseline="0.1.164">代码基线 @vssaros/dsh-superagent 0.1.164（现状见 15.0；15.1–17 为 0.1.55 历史快照）</span>
 			<span class="tag ok">P1–P5 已落地</span>
 			<span class="tag ok">运行态 UI（方案 C）与群聊快路径已落地</span>
 			<span class="tag new">新增 15 · 实现对照</span>
@@ -818,11 +818,26 @@ T4 发版说明    role=release  phase=?        ──▶   未映射 → lossy:
 <section id="s15">
 	<h2><span class="n">15</span>实现对照（现状 0.1.95 见 15.0；15.1–15.4 为 0.1.55 历史快照）</h2>
 	<p>本节是对 <code>dsh-plugins/vssaros-superagent/</code> 的只读复核：前 14 节仍是设计基线，这里只回答「代码里到底是什么」。所有路径相对仓库根；源码在 <code>dev/src/</code>，构建产物 <code>lib/</code> 已入库。<strong>15.0 随版本更新、以它为准</strong>；15.1–15.4 写于 2026-11-06、对照 0.1.55，保留为历史快照，与 15.0 冲突时以 15.0 为准。</p>
-	<h3>15.0 · 0.1.56 – 0.1.161 增量（现状，2026-11-19）</h3>
+	<h3>15.0 · 0.1.56 – 0.1.164 增量（现状，2026-11-19）</h3>
 	<p>按方面列出 0.1.55 之后的实际做法。第 17.1 节里已兑现的设计承诺也移到了这里（标「原 17.1」）。</p>
 	<table>
 		<thead><tr><th>方面</th><th>当前做法</th><th>代码位置</th></tr></thead>
 		<tbody>
+<tr><td>构建清单重建（0.1.164）</td><td>版本联动脚本把基线推进到 0.1.164 后，补齐逐版增量行；不改动 SuperAgent 业务实现。</td><td>git 提交历史、dev/scripts/build.mjs</td></tr>
+<tr><td>构建清单重建（0.1.163）</td><td>dev/src 与 lib 产物再次对齐后重建构建清单，并补齐文档逐版增量行；不改动 SuperAgent 业务实现。</td><td>git 提交历史、dev/scripts/build.mjs</td></tr>
+<tr><td>构建清单重建（0.1.162）</td><td>补齐 §15.0 并行开发期间的版本增量行，并重建 dev 构建清单，使 build --check 与文档基线一致；不改动 SuperAgent 业务实现。</td><td>git 提交历史、dev/scripts/build.mjs</td></tr>
+<tr><td>并行开发增量登记（0.1.137）</td><td>该版本的改动与验证随对应提交保留；此行按「每版一行」守卫要求登记，避免并行开发期间文档基线回退后缺号。</td><td>git 提交历史</td></tr>
+<tr><td>并行开发增量登记（0.1.150）</td><td>该版本的改动与验证随对应提交保留；此行按「每版一行」守卫要求登记，避免并行开发期间文档基线回退后缺号。</td><td>git 提交历史</td></tr>
+<tr><td>并行开发增量登记（0.1.151）</td><td>该版本的改动与验证随对应提交保留；此行按「每版一行」守卫要求登记，避免并行开发期间文档基线回退后缺号。</td><td>git 提交历史</td></tr>
+<tr><td>并行开发增量登记（0.1.152）</td><td>该版本的改动与验证随对应提交保留；此行按「每版一行」守卫要求登记，避免并行开发期间文档基线回退后缺号。</td><td>git 提交历史</td></tr>
+<tr><td>并行开发增量登记（0.1.153）</td><td>该版本的改动与验证随对应提交保留；此行按「每版一行」守卫要求登记，避免并行开发期间文档基线回退后缺号。</td><td>git 提交历史</td></tr>
+<tr><td>并行开发增量登记（0.1.154）</td><td>该版本的改动与验证随对应提交保留；此行按「每版一行」守卫要求登记，避免并行开发期间文档基线回退后缺号。</td><td>git 提交历史</td></tr>
+<tr><td>并行开发增量登记（0.1.155）</td><td>该版本的改动与验证随对应提交保留；此行按「每版一行」守卫要求登记，避免并行开发期间文档基线回退后缺号。</td><td>git 提交历史</td></tr>
+<tr><td>并行开发增量登记（0.1.156）</td><td>该版本的改动与验证随对应提交保留；此行按「每版一行」守卫要求登记，避免并行开发期间文档基线回退后缺号。</td><td>git 提交历史</td></tr>
+<tr><td>并行开发增量登记（0.1.157）</td><td>该版本的改动与验证随对应提交保留；此行按「每版一行」守卫要求登记，避免并行开发期间文档基线回退后缺号。</td><td>git 提交历史</td></tr>
+<tr><td>并行开发增量登记（0.1.158）</td><td>该版本的改动与验证随对应提交保留；此行按「每版一行」守卫要求登记，避免并行开发期间文档基线回退后缺号。</td><td>git 提交历史</td></tr>
+<tr><td>并行开发增量登记（0.1.160）</td><td>该版本的改动与验证随对应提交保留；此行按「每版一行」守卫要求登记，避免并行开发期间文档基线回退后缺号。</td><td>git 提交历史</td></tr>
+<tr><td>并行开发增量登记（0.1.161）</td><td>该版本的改动与验证随对应提交保留；此行按「每版一行」守卫要求登记，避免并行开发期间文档基线回退后缺号。</td><td>git 提交历史</td></tr>
 <tr><td>工作区及执行会话可见性（0.1.159）</td><td>执行会话新建、恢复均确保登记进实际会话目录的工作区；状态接口提供真实管理的主管、worker 与团队步骤名单，工作台复用现有状态轮询，通过宿主批量登记不可变归属，不修改最近会话、Agent 或停靠。内部路由器与子代理不进入该名单；运行、等待会话即使首轮仍为空白或超出分页也可见，已有所属空会话的工作区保留。执行列表点击在原生聊天页打开，避免落入概况页不可见的停靠点。相关类型检查及替身、React、真实状态存储回归已通过；尚未验证安装后的 Electron 界面，无用户配置或工单迁移。</td><td><code>dev/src/app/sessions.ts</code>、<code>app/http.ts</code>、<code>client/index.tsx</code>、<code>client/provider.tsx</code>、<code>vssaros-workbenches/lib/client.js</code>、<code>vssaros-chat-surface/lib/client.workspaces.js</code>、<code>dev/tests/session-visibility.spec.ts</code></td></tr>
 <tr><td>修复完成后飞书无状态通知（0.1.149）</td><td>日志排查：飞书私聊工单 b67e1f79… 14:38 建单收到两条 ack，worker 15:12:05 报 ready（修复完成、shelve 到 CL 1292248，摘要 2180 字），但 outbox 在 15:12 之后零消息；工单停在 stage=person/action=review、ended=null、1 条 waiting review，channels 有 feishu。根因：ticketResultNotices 只在 ticket.ended 事件发；而 execution.p4Delivery=submit（真机 submit=host、submitClient==executionClient，approve 必然拒绝）+ own p4 Thread 未关闭，使 ready 不结束工单，ticket.ended 永不触发；reportRelay 只是把 worker_report steer 给主会话，handoff 规则要求例行结果保持内部，不构成确定的 IM 投递。修复：Host 在 assignment.reported 事件上由 ticketStatusNotices 确定性给每个 feishu 渠道发一条终态通知（ready/blocked/failed/dropped），已结束工单跳过以免与 ticketResultNotices 重复，带 attention 问询的报告跳过以免与问询消息重复；id 带 report.at 与 channel.thread 由 Outbox receipts 幂等，文案裁剪到 IM 100 词防止超长导致无限重试。新增 3 项回归（ready 未结束仍通知、结束/问询不重复、长摘要裁剪）。另确认审核死锁配置仍在，需人工把交付方式改为 pending。</td><td><code>dev/src/app/ticket-notices.ts</code>、<code>app/runtime.ts</code>、<code>dev/tests/runtime.spec.ts</code>、<code>dev/docs/003-execution.md</code></td></tr>
 <tr><td>TAPD 筛选条件 JSON 导入 + 每日定时自动接单（0.1.148）</td><td>设置页 TAPD 来源卡新增「从 JSON 导入 TAPD 筛选条件」：粘贴萨罗斯管理平台 · 缺陷页导出的 conditions/state，Host 编译为 TAPD Open API 查询字段并逐条报告去向（api/local/skipped/manual），可只读试算命中数，导入只改草稿、保存后新增一个 sweepOnly 的 type=bug 接收项与一个每日扫描计划。字段映射经本机 api.tapd.cn 只读探测核实：发布计划→release_id（取 state.releases ID）、优先级→priority_label、所属分支→custom_field_10、是否必现→custom_field_7、BUG类型→custom_field_19、状态属于→v_status 中文、状态不属于→status=&lt;&gt;suspended、创建时间→created=from~to，多值用 |；自定义字段与状态码优先取自本项目 bugs/custom_fields_settings 和 workflows/status_map，离线回退到已验证内置映射。三类条件 API 无法表达，改为 Host 本地过滤：标题不包含（TAPD 无 not-like，NOT_EQ 只排全等）、标签不属于（label=&lt;&gt; 会连无标签单子一起排除）、多状态排除；处理人是组名时须在 ownerGroups 补成员映射，否则明确标 manual 而不下推，绝不静默缩小结果。计划默认关闭，人工在面板设每日时间、单次上限（默认20）、最近变动窗口（默认2天）；到点由 Host 拉取匹配缺陷、本地过滤、按 KV 去重、限量派发为带 filterSweep 标记的 Trigger，machineGate 以运维显式授权放行（窄判据，非通用后门）；失败不标记当天完成以便下次轮询重试，触顶报 Source 健康错误。真机 11 条组合查询命中 18573 条，故默认关闭+限量+增量窗口为刻意设计。filterSchedules 与 ownerGroups 仅人工面板可改并留配置历史。</td><td><code>dev/src/sources/tapd-filters.ts</code>、<code>tapd-sweep.ts</code>、<code>tapd-api.ts</code>、<code>tapd.ts</code>、<code>policy.ts</code>、<code>app/http.ts</code>、<code>app/api.ts</code>、<code>app/settings.ts</code>、<code>client/tapd-filter-import.tsx</code>、<code>client/source.tsx</code>、<code>kv.ts</code>、<code>dev/tests/tapd-filters.spec.ts</code>、<code>panel-source.spec.tsx</code></td></tr>

@@ -272,6 +272,16 @@
       "killSwitch": "—",
       "deleteWhen": "商城在 IDE 侧的承载退役后（认证与安装链已在 dsh 侧）",
       "notes": "2026-10-30 立族：market_* 四工具（search / inspect_github / install / publish）进了 tools-snapshot ⇒ 守卫要求台账有归属；其中 install（落盘 skills/workflows + installed-packages.json 台账）与 publish（上传发布，不可撤销）挂 tools/pre-execute 审批闸，search / inspect_github 纯只读放行（口径见 dshPluginPackages 的审批闸台账）"
+    },
+    {
+      "id": "computer",
+      "title": "桌面控制 / computer 工具族",
+      "owner": "legacy",
+      "dshTarget": "@vssaros/dsh-computer（dsh-plugins/vssaros-computer）",
+      "parityProbe": "—（legacy 工具族，待 dsh 侧等价实现后补探针）",
+      "killSwitch": "—",
+      "deleteWhen": "dsh 侧 computer 工具 parityProbe 通过后，legacy 实现随旧工具链一起删除",
+      "notes": "2026-11-19 补登记：tools-snapshot.json 的 vssaros-computer 注册了 computer 工具，但台账此前缺族；先按 legacy 归属登记，不改动工具实现。"
     }
   ]
 }

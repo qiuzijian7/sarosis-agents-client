@@ -564,6 +564,7 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   } },
   // VsSaros addition: the review routes, over `server.reviews`, as the host's Reviews decides them.
   'GET reviews': { answer: () => ({ waiting: Object.values(server.reviews).map(view => view.review).filter(review => review.state === 'waiting'), audit: [] }) },
+  'POST reviews/settle-ended': { answer: () => ({ settled: 0 }) },
   'GET tickets/:id/review': { answer: ({ params }) => server.reviews[params.id] ?? { review: null } },
   'POST tickets/:id/review/approve': { body: true, answer: ({ params, body }) => {
     const view = server.reviews[params.id]

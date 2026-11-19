@@ -116,6 +116,11 @@
 // 2026-11-04 touch㉒: 反向突变复核后重刷入口（守卫要求入口 mtime 必须晚于改过的 chunk）。
 // 2026-11-04 touch㉑: 上面三个 chunk 全部改完后重刷入口（守卫要求入口 mtime 必须晚于改过的 chunk）。
 // 2026-11-04 touch⑳: 看板 / 流程 / 生图三个工作台暂时下线（DEFAULT_ITEMS 打 hidden+offline、固定行与残留页签过滤）⇒ 动入口刷新 chunk rev。
+// CLIENT_BUILD_STAMP 2026-11-19 知识库去重生成投影终刷（入口 mtime 必须晚于 nav/market chunk） @ 2026-11-19
+// CLIENT_BUILD_STAMP 2026-11-19 单一目录知识库去重（vssaros/kb/default hidden 行，刷新全部生成投影） @ 2026-11-19
+// CLIENT_BUILD_STAMP 2026-11-19 单一目录生成投影 + P4 @image 文本 chip（client.imageTokens.js） @ 2026-11-19
+// CLIENT_BUILD_STAMP 2026-11-19 生成投影二次刷新（nav/market/app/skills/catalog 全量重刷后动入口） @ 2026-11-19
+// CLIENT_BUILD_STAMP 2026-11-19 模式下拉框 UI 位置修复（无壳 fitMenu 只给尺寸 / 位置由 box 拍板 + 首帧不闪） @ 2026-11-19
 // CLIENT_BUILD_STAMP 2026-11-19 阶段3 统一目录策略消费方 + 阶段4 legacy 桥软退役（nav/market 读 __vssarosWorkbenchPolicy） @ 2026-11-19
 // CLIENT_BUILD_STAMP 2026-11-19 P3 默认开启：中间栏顶部不再有工作台页签，左侧主页行 / main 面板退役，右侧 v6 开始页接管 @ 2026-11-19
 // CLIENT_BUILD_STAMP 2026-11-19 P3 侧栏布局开关（中栏旧 TabStrip / 左主页行 / main 面板按 config 退役，右栏目录接管） @ 2026-11-19
@@ -205,7 +210,7 @@ window.__ModuleLoader__.load({
 		//     · 切换走**官方 remote API**（`ctx.remote.agentPresets.select`）⇒ 没有宿主桥也能切 ✓
 		//   ⚠ 第五轮：它**不在** PART_CHUNKS 里（那儿有"无桥就整批不装"的早退 ⇒ desktop 里不生效 ✗）
 		//   ⇒ 走上面那条**独立装载路径**（ALWAYS 部件）✓ ⇒ 这里不再列它。
-		const PART_CHUNKS = ["./client.hero.js", "./client.skin.js", "./client.usage.js", "./client.tools.js", "./client.approval.js", "./client.openInApp.js", "./client.settings.js", "./client.sessionLabel.js", "./client.workspace.js", "./client.sessions.js", "./client.agents.js", "./client.persona.js", "./client.fileCards.js", "./client.cardActions.js", "./client.todos.js", "./client.subagents.js", "./client.delegate.js", "./client.welcome.js", "./client.capsule.js", "./client.workbenchNav.js", "./client.sessionRow.js", "./client.workspaces.js", "./client.worktreeChip.js", "./client.market.js", "./client.scheduleCard.js",
+		const PART_CHUNKS = ["./client.hero.js", "./client.skin.js", "./client.usage.js", "./client.tools.js", "./client.approval.js", "./client.openInApp.js", "./client.settings.js", "./client.sessionLabel.js", "./client.workspace.js", "./client.sessions.js", "./client.agents.js", "./client.persona.js", "./client.fileCards.js", "./client.cardActions.js", "./client.imageTokens.js", "./client.todos.js", "./client.subagents.js", "./client.delegate.js", "./client.welcome.js", "./client.capsule.js", "./client.workbenchNav.js", "./client.sessionRow.js", "./client.workspaces.js", "./client.worktreeChip.js", "./client.market.js", "./client.scheduleCard.js",
 			// 侧栏页脚（品牌 + 工作区/会话规模，2026-10-18 差异清单第 ③ 项）：
 			// ⚠ 本块注释里**禁止出现 ASCII 双引号**（连正则字面量也不行）：`PART_CHUNKS` 的提取正则
 			//   是「引号 + 至少一个非引号字符 + 引号」，chunk 守卫与 dshPluginPackages 测试都用它 ⇒
@@ -770,6 +775,9 @@ window.__ModuleLoader__.load({
 		//   新 chunk 只在 Bot 会话渲染，且 `client.sessions.js` 在 Bot 会话让位 ⇒ 永远只有一枚。
 		// ⚠ 2026-11-11 touch②：改了 chunk（client.botHistory.js / client.sessions.js）就必须再动入口，
 		//   rev 只跟入口的 mtime/ctime/size 走 ⇒ 否则浏览器一直吃旧 chunk，看起来像"功能没做"。
+		// ★ 2026-11-19（用户报障「模式下拉框 UI 位置错误」）：`client.preset.js` 的无壳 `fitMenu`
+		//   兜底仍返回旧 absolute 口径 `left: 0` ⇒ 覆盖 `position: fixed` 菜单的视口坐标 ⇒ 菜单
+		//   被钉在视口最左缘（跑到 chip 左边、盖住会话列表）✗。改了 chunk 就必须再 touch 本入口 ✓。
 		const ALWAYS_CHUNKS = ["./client.preset.js", "./client.botEntry.js", "./client.modelAccounts.js", "./client.creative.js", "./client.upgrade.js", "./client.appUpdate.js", "./client.account.js", "./client.channel.js", "./client.openInAppMenu.js", "./client.hideBridgePing.js", "./client.botHistory.js", "./client.conversationHeader.js"];
 			// ★ 2026-11-03（用户要求）：右上角「Bot ⚙」（client.botSettingsBtn.js）已删 —— bot 配置统一进
 			//   会话视图的「设置」页签（client.conversationViews.js，order 60，与记忆设置合并）。

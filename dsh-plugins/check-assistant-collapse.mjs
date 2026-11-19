@@ -236,7 +236,8 @@ for (const wb of [MARKETS]) {
 		&& !/healDock\([^)]*\) \{\s*const owner = this\.active/.test(shell));
 	// 真机截图：商城 chip 写 Saros-agents-pocket，用户当前工作区是 sarosis-agents-client ⇒ 名字与根目录对不上
 	ck('新会话默认建在**用户当前工作区**（主视图会话所在工作区优先）',
-		/\.mainView \|\| 0\) > 0/.test(shell) && /fromMain/.test(shell) && /if \(fromMain\) \{ return fromMain; \}/.test(shell));
+		/\.mainView \|\| 0\) > 0/.test(shell) && /bySession\(main\)/.test(shell)
+		&& /return bySession\(main\) \|\| bySession\(owner/.test(shell));
 	// 默认 agent
 	ck('新会话出生就带 agentPreset（比事后 select 可靠）', /sessions\.create\(\{ workspaceId: workspace, agentPreset: preset \}\)/.test(shell));
 	ck('preset 被拒时退回不带 preset 的建法（不能因此建不出会话）', /退回默认/.test(shellSrc) && /sessions\.create\(\{ workspaceId: workspace \}\)/.test(shell));

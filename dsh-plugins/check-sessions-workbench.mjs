@@ -332,12 +332,15 @@ async function boot({ payload = PAYLOAD(), apiStatus = 200, openImpl, live = { n
 		eq('⑩ `/x/sessions/?groupBy=bot` 同样不被识别', re.exec('/x/sessions/?groupBy=bot'), null);
 	}
 	truthy('⑩ 没注册时回落 iframe（`wbFor` 空 ⇒ 走 route 的 iframe，不留死页签）',
-		/const wbId = wbFor\(t\);\s*if \(wbId\) \{/.test(nav) && /return react\.createElement\("iframe", \{\s*key: t\.id, src: withSurface\(t\.route/.test(nav));
+		/const wbId = wbFor\(t\);\s*if \(wbId\) \{/.test(nav)
+		&& /framePage\(t, on, react\.createElement\("iframe", \{\s*src: withSurface\(t\.route, "editor"\)/.test(nav));
+	truthy('⑩ 工作台入口来自单一目录生成视图',
+		/@generated-workbench-directory:start chat-surface-nav/.test(nav));
 	const items = (() => {
 		const a = nav.indexOf('const DEFAULT_ITEMS = ['); const b = nav.indexOf('\n\t\t];', a);
 		return nav.slice(a, b < 0 ? undefined : b);
 	})();
-	truthy('⑩ DEFAULT_ITEMS 仍保留 `/x/sessions/` 与 `/x/sessions/?view=tiles` 两条（route 白名单：删了 ⇒ 点「打开」被静默拒掉）',
+	truthy('⑩ 生成视图仍保留 `/x/sessions/` 与 `/x/sessions/?view=tiles` 两条（route 白名单：删了 ⇒ 点「打开」被静默拒掉）',
 		/route: "\/x\/sessions\/"/.test(items) && /route: "\/x\/sessions\/\?view=tiles"/.test(items));
 }
 

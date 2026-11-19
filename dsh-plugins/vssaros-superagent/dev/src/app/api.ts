@@ -99,6 +99,7 @@ export interface Api {
   'POST prompts/preview': { body: PromptConfig; response: ReturnType<Prompts['preview']> }
   // VsSaros addition: changelist reviews. These routes are the only way to submit to P4; no agent tool reaches them.
   'GET reviews': { response: { waiting: Review[]; audit: AuditEntry[] } }
+  'POST reviews/settle-ended': { response: { settled: number } }
   'GET tickets/:id/review': { response: { review: Review; diffs: FileDiff[]; diffSummary?: ShelfDiffSummary;
     submit: { mode: 'pending' | 'pipeline' | 'host'; tags: string } } | { review: null } }
   'POST tickets/:id/review/approve': { body: { fingerprint: string }; response: Review }

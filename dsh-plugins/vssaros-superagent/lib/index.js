@@ -12114,6 +12114,32 @@ var Reviews = class {
 	waiting() {
 		return this.host.store.keys(KV.reviews.review).flatMap((key) => this.host.store.get(key) ?? []).filter((review) => review.state === "waiting").sort((a, b) => a.requestedAt.localeCompare(b.requestedAt));
 	}
+	/** Archives reviews of ended tickets without touching P4, so they cannot hold a shared workspace or startup migration. */
+	settleEndedReviews() {
+		let settled = 0;
+		for (const key of this.host.store.keys(KV.reviews.review)) {
+			const review = this.host.store.get(key);
+			if (!review || ![
+				"waiting",
+				"submitting",
+				"failed"
+			].includes(review.state)) continue;
+			const ticket = this.host.store.tickets.get(review.ticketId);
+			if (ticket && liveTicket(ticket)) continue;
+			const at = (/* @__PURE__ */ new Date()).toISOString();
+			const archived = {
+				...review,
+				state: "stale",
+				decidedAt: at,
+				by: this.person(),
+				comment: "工单已结束，审阅状态归档；未改动 P4 CL、shelf 或 opened 文件。"
+			};
+			this.save(archived);
+			this.log(archived, "settled", "Ended ticket review archived; P4 state unchanged", archived.by);
+			settled++;
+		}
+		return settled;
+	}
 	audit(limit = 100) {
 		return (this.host.store.get(KV.reviews.audit) ?? []).slice(-limit).reverse();
 	}
@@ -12218,9 +12244,10 @@ var Reviews = class {
 	async completeReadyPoolDeliveries() {
 		const store = this.host.store;
 		if (!store.settings || !store.triggers) return;
+		this.settleEndedReviews();
 		for (const review of this.waiting()) {
 			const ticket = store.tickets.get(review.ticketId), origin = ticket && store.triggers.get(ticket.origin.triggerId);
-			if (!ticket || ticket.team || latestReport(ticket)?.state !== "ready" || !origin || !hostPoolAuthorization({
+			if (!ticket || !liveTicket(ticket) || ticket.team || latestReport(ticket)?.state !== "ready" || !origin || !hostPoolAuthorization({
 				get: (key) => store.get(key),
 				settings: () => store.settings()
 			}, origin)) continue;
@@ -14548,8 +14575,12 @@ var Sessions = class {
 			if (shared) {
 				const config = store.settings().sources.p4;
 				if (!config?.enabled || config.config.workspaceMode !== "current" || config.config.executionClient !== shared.client || config.config.workspaceRoot !== shared.root || config.config.port !== shared.port || config.config.user !== shared.user) return "Current P4 authorization changed; wait for operator repair";
-				const assignment = runningAssignment(current), review = store.get(KV.reviews.review(current.id));
-				if (!assignment || assignment.report?.state === "blocked" || assignment.report?.state === "failed" || review?.state === "waiting" || review?.state === "submitting") return "Current P4 workspace is queued, blocked or under review; use the ticket controls";
+				const assignment = runningAssignment(current);
+				const held = store.keys(KV.reviews.review).some((key) => {
+					const review = store.get(key), owner = review && store.tickets.get(review.ticketId);
+					return !!review && (review.state === "waiting" || review.state === "submitting") && !!owner && !owner.ended && owner.execution?.p4Workspace?.root === shared.root;
+				});
+				if (!assignment || assignment.report?.state === "blocked" || assignment.report?.state === "failed" || held) return "Current P4 workspace is queued, blocked or under review; use the ticket controls";
 				if (store.tickets.open().some((other) => other.id !== ticketId && other.execution?.p4Workspace?.root === shared.root && (this.ctx.agents.get(`worker-${other.id}`)?.status === "running" || other.follows?.some((follow) => follow.own && !follow.closed && follow.thread.startsWith("p4:"))))) return "Current P4 workspace is occupied by another ticket";
 				const protectedFiles = current.execution?.protectedP4Files ?? [];
 				const args = execution.arguments ?? {};
@@ -16957,6 +16988,7 @@ function routes(runtime) {
 			waiting: runtime.reviews.waiting(),
 			audit: runtime.reviews.audit()
 		}),
+		"POST reviews/settle-ended": () => ({ settled: runtime.reviews.settleEndedReviews() }),
 		"GET tickets/:id/review": async ({ params }) => await runtime.reviews.view(ticket(params.id)) ?? { review: null },
 		"POST tickets/:id/review/approve": async ({ params, body }) => runtime.reviews.approve(ticket(params.id), object({ fingerprint: string$1().regex(/^[0-9a-f]{16}$/) }).parse(await body()).fingerprint),
 		"POST tickets/:id/review/reject": async ({ params, body }) => runtime.reviews.reject(ticket(params.id), object({ comment: string$1().trim().min(1).max(4e3) }).parse(await body()).comment),
@@ -21615,6 +21647,7 @@ var Runtime = class extends Service {
 		});
 		for (const id of this.settings.syncable()) await this.settings.sync(id).catch(() => {});
 		if (this.closing()) return;
+		this.reviews.settleEndedReviews();
 		await this.reviews.completeReadyPoolDeliveries().catch((error) => {
 			this.ctx.logger.warn("dsh-superagent: pending pool handoff requires attention: %s", String(error));
 		});

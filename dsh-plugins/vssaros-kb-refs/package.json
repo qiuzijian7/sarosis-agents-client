@@ -1,6 +1,6 @@
 {
   "name": "@vssaros/dsh-kb-refs",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "VsSaros knowledge-base reference source for DeepSeek Harness (2026-10-14, P1-1): registers a `@知识库` source in the chat composer so a note can be referenced as an **atomic pointer** (the `uri` returned by /x/kb/api/search, which kb_read accepts verbatim). Client-only; the host half is inert. Candidates come from kb's own read-only route over same-origin HTTP — this package does NOT modify vssaros-kb.",
   "private": true,
   "type": "module",

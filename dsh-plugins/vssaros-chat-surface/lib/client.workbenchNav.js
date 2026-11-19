@@ -102,56 +102,26 @@ window.__ModuleLoader__.load({
 		 *   ⚠ 条目**不能删**：`itemByRoute()` 与 `coveredByFixedEntry()` 都靠这份全表 ⇒ 删了会让
 		 *     深链失效、宿主注册快照里又冒出同名入口。下线清单真源在 dashboard/lib/catalog.js。
 		 */
-		const DEFAULT_ITEMS = [
+		/* @generated-workbench-directory:start chat-surface-nav hash=3eef1f2238cf */
+const DEFAULT_ITEMS = [
 			{ id: "vssaros-wb-dashboard", name: "主页", ico: "🏠", route: "/x/dashboard/" },
 			{ id: "vssaros-wb-sessions", name: "会话", ico: "💬", route: "/x/sessions/" },
-			// ★ 稿 C（2026-10-21 用户拍板）：会话磁贴矩阵 = dsh desktop 的「多会话窗口」形态
-			//   （一眼看到一批会话的状态，点一块换到那条会话）。与「会话」条目同源路由，只是 view 不同 ✓
 			{ id: "vssaros-wb-session-tiles", name: "会话磁贴", ico: "🧲", route: "/x/sessions/?view=tiles" },
-					{ id: "vssaros-wb-kanban", name: "看板", ico: "🗂️", route: "/x/kanban/", hidden: true, offline: true },
+			{ id: "vssaros-wb-kanban", name: "看板", ico: "🗂️", route: "/x/kanban/", hidden: true, offline: true },
 			{ id: "vssaros-wb-workflow", name: "工作流", ico: "🔀", route: "/x/workflow/", hidden: true, offline: true },
 			{ id: "vssaros-wb-kb", name: "知识库", ico: "📚", route: "/x/kb/" },
-			// ★ 2026-11-11（用户：「主页中，工作台中缺少 记忆 item」）：与主页卡片同 route 登记。
-			//   `comp` = 组件页签键 ⇒ `makeTabPanel` 从 window.__vssarosPageComponents 取回
-			//   vssaros-memory 登记的 MemoryTabView，**不**加载并不存在的 /x/memory/ 整页（404 ✗）。
-			//   ⚠ id 刻意不复用旧的 `vssaros-wb-memory`：那个 id 在下面 retired 里仍要负责清掉
-			//     11-03 下线前残留的旧页签（旧存档没有 comp，复活就是一张 404 iframe）✓。
 			{ id: "vssaros-wb-memory-tab", name: "记忆", ico: "🧠", route: "/x/memory/", comp: "memory" },
 			{ id: "vssaros-wb-codebase", name: "代码库", ico: "🕸️", route: "/x/codebase/" },
 			{ id: "vssaros-wb-media", name: "媒体库", ico: "🖼️", route: "/x/media/" },
 			{ id: "vssaros-wb-imagegen", name: "生图", ico: "🎨", route: "/x/imagegen/", hidden: true, offline: true },
 			{ id: "vssaros-wb-skills", name: "工具", ico: "🧰", route: "/x/skills/", hidden: true, offline: true },
-			// ★ 2026-10-24（用户：「移除自动化任务 item，将自动化任务包装成一个 自动化任务工作台」）：
-			//   侧栏那条官方「自动化任务」面板被隐藏（见下面 HIDDEN_LABELS）⇒ 能力全部收到这个工作台里
-			//   ⇒ 名字也跟着改成「自动化任务」（与工作台标题、插槽描述符三处同值）。
-			// ★★ 2026-11-03（用户报「为什么会有两个自动化任务页签」）：**入口去重**。
-			//   这一行是 2026-10-24「把官方面板收成一个工作台」时的老入口；现在插件清单
-			//   （`vssaros-scheduler` 的 `vssaros.workbench`）自己就注册了同名工作台 + 图标
-			//   ⇒ 两处并存 = 侧栏/启动器里两个「自动化任务」，点不同入口会开出**两个 IDE 页签**
-			//   （route 差一个尾斜杠就是两个 resource，见 `DshPluginPageEditorInput.normalizeRoute`）。
-			//   `hidden: true` 而不是直接删：这份表**同时是 route 白名单**（`itemByRoute()`），
-			//   删了会让主页卡片/深链「打开」被静默拒掉；也用于「已注册工作台」的去重判据（见 :937）。
 			{ id: "vssaros-wb-scheduler", name: "自动化任务", ico: "🕒", route: "/x/scheduler/", hidden: true },
-			// ★ 2026-10-22（修 bug：主页没有「商城」卡片）：自营商城工作台。
-			//   这份 DEFAULT_ITEMS 同时是 **route 白名单**（`itemByRoute()` 只认这里的 route）⇒
-			//   不登记 ⇒ 从主页/侧栏点「打开」会被静默拒掉（"点了没反应"）✗ ⇒ 必须登记 ✓。
 			{ id: "vssaros-wb-marketplace", name: "商城", ico: "🛒", route: "/x/marketplace/" },
-			// ★ 2026-11-11（用户要求「移除萨罗斯管理工作台」）：`@vssaros/dsh-studio` 已下线 ⇒
-			//   这条 DEFAULT_ITEMS（同时是 route 白名单）与主页卡片同批删除。
-			// ★ 2026-10-24：小红书笔记（创作型工作台样板，`@vssaros/dsh-xhs-note`）。
-			//   这份表同时是 **route 白名单** ⇒ 不登记 ⇒ 从主页/侧栏点「打开」会被静默拒掉（"点了没反应"）。
-			//   ⚠ 与 `vssaros-dashboard/lib/catalog.js` 的 `WORKBENCH_MODULES` 必须两处同时登记。
-			// ★ 2026-10-30（用户要求「删除小红书工作台」）：`@vssaros/dsh-xhs-note` 已卸载 ⇒ 它的条目一并删除。
-			// ★ 2026-10-31（用户要求「移除并行工作台」）：`@vssaros/dsh-parallel` 的条目删除（原本
-			//   `vssaros-wb-parallel` / `并行工作台` / `/x/parallel/`，2026-10-22 加的）。
-			//   ⚠ 这份表同时是 **route 白名单** ⇒ 只删 `catalog.js` 的卡片不删这里 = "卡片在、点不开" ✗
-			//   ⇒ 与 `vssaros-dashboard/lib/catalog.js` 的卡片**必须同时删**（守卫 check-workbench-catalog 盯着）。
-			];
-		// ★ 暴露给同插件的其它 chunk（`client.market.js` 的「已安装」要用它）：
-		//   本机内置的工作台**不是市场条目**（市场的目录里只有别人上架的工作台），
-		//   但它们属于「本机已装」那一格 ⇒ 商城界面得知道它们存在。
-		//   两个 chunk 不能互相 import（各自独立装载）⇒ 只能经 window 共享（同源同页 ✓）。
-		window.__vssarosWorkbenchItems = DEFAULT_ITEMS;
+		];
+/* @generated-workbench-directory:end chat-surface-nav */
+
+		// DEFAULT_ITEMS 由单一目录生成器写入；不再发布旧全局清单。
+		// market / dashboard app / skills 的已装、固定入口、只读镜像均来自同一份生成投影。
 
 		function loadOrder() {
 		try {

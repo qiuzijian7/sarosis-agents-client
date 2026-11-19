@@ -73,7 +73,7 @@ note(CDP_SMOKE.length >= 5 && CDP_SMOKE.every(step => step.startsWith('CDP ')), 
 if (process.argv.includes('--run')) {
 	console.log('── 真跑 9 项回归 ──');
 	for (const target of TARGETS) {
-		const r = spawnSync(process.execPath, [target.file], { cwd: ROOT, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
+		const r = spawnSync(process.execPath, [target.file], { cwd: ROOT, encoding: 'utf8', windowsHide: true, env: { ...process.env, NODE_OPTIONS: '' } });
 		const tail = String(r.stdout || '').trim().split('\n').filter(Boolean).pop()
 			|| String(r.stderr || '').trim().slice(0, 160);
 		note(r.status === 0, `${target.name} — ${tail}`);

@@ -310,69 +310,10 @@ export function metaBlock({ data, summary, tally, toolsRegistered = '', liveServ
  * ⚠ 条目**不能从 WORKBENCH_MODULES 里删**：本清单是 `check-workbench-catalog.mjs` 的登记真源，
  *   且 `client.workbenchNav.js::DEFAULT_ITEMS` 同时是 route 白名单 ⇒ 只删一边会变红 / 点了没反应。
  */
-export const OFFLINE_WORKBENCH_ROUTES = ['/x/kanban/', '/x/workflow/', '/x/imagegen/', '/x/skills/'];
+/* @generated-workbench-directory:start dashboard-catalog hash=3eef1f2238cf */
+export { WORKBENCH_MODULES, VISIBLE_WORKBENCH_MODULES, OFFLINE_WORKBENCH_ROUTES } from './workbench-directory.generated.js';
+/* @generated-workbench-directory:end dashboard-catalog */
 
-export const WORKBENCH_MODULES = [
-	// ★ 2026-10-21（用户：「主页item ui中的固定，应该默认固定状态，且不可以取消固定」）：
-	//   主页是 dsh 侧栏的**常驻入口**（那一行永远在）⇒ 活动栏里它也**恒为固定** ⇒ 卡片上
-	//   直接显示「📌 已固定」且**不给取消的入口**（按钮 disabled）✓。
-	{ route: '/x/dashboard/', name: '主页', desc: '会话遥测 / 用量与编排', icon: '🏠', alwaysPinned: true },
-	{ route: '/x/kanban/', name: '看板', desc: '看板存储与卡片工具', icon: '🗂', offline: true },
-	{ route: '/x/kb/', name: '知识库', desc: '知识库索引与检索', icon: '📚' },
-	// ★ 2026-11-11（用户：「主页中，工作台中缺少 记忆 item」）：补回「记忆」。
-	//   ⚠ 11-03 起记忆**没有独立整页**（`vssaros.view.kind='none'`，记忆管理 UI 在会话页
-	//     「记忆」Tab）⇒ 这张卡片不能按别的模块那样开 iframe `/x/memory/?surface=editor`（404 ✗）。
-	//   改走 chat-surface 的**组件页签**：`DEFAULT_ITEMS` 里同 route 的条目带 `comp: "memory"`，
-	//   由 vssaros-memory 把会话页那份 `MemoryTabView` 登记到 `window.__vssarosPageComponents`
-	//   ⇒ 点「打开」在中栏页签里直接渲染完整记忆管理界面（同源、零新通道）✓。
-	//   ⚠ 三处必须同时登记（守卫 check-workbench-catalog.mjs ⑤-D 盯着）：只加卡片 = 假入口。
-	{ route: '/x/memory/', name: '记忆', desc: '分层记忆 / 待确认建议 / 工作区作用域（会话页记忆 Tab 同源）', icon: '🧠' },
-	{ route: '/x/codebase/', name: '代码库', desc: '代码图谱与符号检索', icon: '🕸' },
-	{ route: '/x/media/', name: '媒体库', desc: '只读 media.db 页面', icon: '🎬' },
-	{ route: '/x/imagegen/', name: '生图', desc: '生图工作台 / 最近出图画廊', icon: '🎨', offline: true },
-	// ★ 2026-11-10（用户：「移除工具工作台入口：主页中，移除工具 item ui」）：
-	//   走仓库内建的临时下线机制（offline + hidden），**条目保留** ⇒ 登记守卫仍绿、
-	//   `DEFAULT_ITEMS` 的 route 白名单不丢 ⇒ `/x/skills/` 深链与页面本体仍可访问。
-	//   恢复上线 = 从 OFFLINE_WORKBENCH_ROUTES 摘掉它 + 摘掉四处 offline/hidden 标记。
-	{ route: '/x/skills/', name: '工具', desc: '技能、工具、mcp、agent、工作流、工作台', icon: '🧩', offline: true },
-	// ★ 2026-10-23（用户：「移除 mcp 工作台」）：MCP **不是整页模块**（`DSH_MODULE_PAGES` 里没有它，
-	//   服务器挂载在 VsSaros 启动时用 `--patch` 做）⇒ 它既不在侧栏 `DEFAULT_ITEMS`、也不在 route 白名单里
-	//   ⇒ 这张卡片点「打开」本来就会被**静默拒掉**（表现为"点了没反应"）。移除卡片正好把这个假入口清掉 ✓。
-	//   （MCP 服务器本身仍在「工具」页的 MCP 页签里管理 ✓）
-	{ route: '/x/workflow/', name: '流程', desc: '工作流引擎与画布', icon: '⚙', offline: true },
-	// ★ 2026-10-22（修 bug：主页没有「商城」卡片）：自营商城工作台（`@vssaros/dsh-marketplace`）。
-	//   ⚠ 漏登记的后果不止"卡片不显示"：`client.workbenchNav.js` 的 `itemByRoute()` 只认
-	//   `DEFAULT_ITEMS` 里的 route ⇒ 卡片就算加进来，点「打开」也会被 route 白名单静默拒掉
-	//   （表现为"点了没反应"）✗ ⇒ **两处必须同时登记**（守卫 `check-workbench-catalog.mjs` 盯着 ✓）。
-	{ route: '/x/marketplace/', name: '商城', desc: 'Agent / Skill / 工作台 / 工作流的安装与发布', icon: '🛒' },
-	// ★ 2026-11-11（用户要求「移除萨罗斯管理工作台」）：`@vssaros/dsh-studio` 已下线 ⇒ 主页卡片删除
-	//   （与 `client.workbenchNav.js` 的 `DEFAULT_ITEMS` 同批；守卫 `check-workbench-catalog.mjs` 盯着三处一致）。
-	// ★ 2026-10-24：小红书笔记（创作型工作台样板 `@vssaros/dsh-xhs-note`）。
-	//   ⚠ 与 `client.workbenchNav.js` 的 `DEFAULT_ITEMS` 必须两处同时登记（那边同时是 route 白名单）。
-	// ★ 2026-10-30（用户要求「删除小红书工作台」）：`@vssaros/dsh-xhs-note` 已卸载 ⇒ 它的卡片一并删除。
-
-	{ route: '/x/sessions/', name: '历史会话', desc: '会话分组 / 人格标记 / 指示灯', icon: '🕘' },
-	// ★ 2026-10-31（用户要求「移除并行工作台」）：`@vssaros/dsh-parallel` 的卡片删除（原本
-	//   `/x/parallel/`「并行 TUI 工作台」，2026-10-22 加的）。
-	//   ⚠ 与 `client.workbenchNav.js` 的 `DEFAULT_ITEMS` **必须同时删**（漏删条目 ⇒ 卡片在、
-	//   点「打开」被 route 白名单静默拒掉 = 点了没反应 ✗），守卫 `check-workbench-catalog.mjs` 盯着。
-	// ★ 2026-10-30（用户要求「移除萨罗斯中转站工作台」）：`@vssaros/dsh-relay` 已卸载 ⇒
-	//   这里同步删掉它的卡片（与 `client.workbenchNav.js` 的条目必须同时改）。
-	// ★ 2026-10-28（用户：「dsh 侧增加定时任务工作台，复用原生的定时任务 UI」）：
-	//   scheduler 0.3.0 起工作台内容 = 官方原生任务管理页（`@deepseek-ai/dsh-client-ui-schedule` 的
-	//   `TaskManagerPage`），它已经是**正经工作台**（页签 + 满页渲染）⇒ 主页必须给入口。
-	//   ⚠ 原先这里**故意豁免**了它（当时的理由是"自动化任务不是工作台"，见
-	//   `check-workbench-catalog.mjs` 的 HOST_EXEMPT）—— 那个理由现在不成立了 ⇒ 豁免已删。
-	//   ⚠ 与 `client.workbenchNav.js` 的 `DEFAULT_ITEMS` 必须两处同时登记（那边同时是 route 白名单
-	//   ⇒ 漏登记 = 卡片在、点「打开」被静默拒掉 = "点了没反应"）。
-	{ route: '/x/scheduler/', name: '自动化任务', desc: '按计划自动运行 Agent；原生任务页（搜索 / 筛选 / 详情 / 投递历史）', icon: '⏰' },
-];
-
-/**
- * 真正交给前端渲染的那份（SSR 数据岛与 `?format=json` 都走 `buildDashboardPayload`）⇒
- *   临时下线的模块**不出卡片**。全表 `WORKBENCH_MODULES` 保留 ⇒ 守卫的 route 登记对账不漂移 ✓。
- */
-export const VISIBLE_WORKBENCH_MODULES = WORKBENCH_MODULES.filter(m => !m.offline);
 
 /** 按 cwd 分组（工作区 = cwd，worktree 目录天然就是另一个 cwd ⇒ 自动分开 ✓）。未知 cwd 单列、不伪造 ✓。 */
 export function groupByCwd(sessions, limit) {

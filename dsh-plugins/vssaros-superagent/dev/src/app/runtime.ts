@@ -725,6 +725,7 @@ export class Runtime extends Service implements SourceHost {
     for (const id of this.settings.syncable()) await this.settings.sync(id).catch(() => { /* sync() records its failure in health. */ })
     // If stop() was called while awaiting setup, session creation, or policy sync, do not start background loops.
     if (this.closing()) return
+    this.reviews.settleEndedReviews()
     await this.reviews.completeReadyPoolDeliveries().catch((error: unknown) => {
       this.ctx.logger.warn('dsh-superagent: pending pool handoff requires attention: %s', String(error))
     })

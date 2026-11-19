@@ -143,22 +143,59 @@ window.__ModuleLoader__.load({
 		return { left: Math.round(left), top: Math.round(top) };
 	}
 
+	/**
+	 * 菜单 style 的**位置部分**（纯函数 ⇒ 可单测）。
+	 *
+	 * ★ 2026-11-19（用户报障「模式下拉框 UI 位置错误」）：模式 chip 走 `ALWAYS_CHUNKS`，
+	 *   `install(ctx, { bridge, state })` **没有 shell.fitMenu** ⇒ 走本文件的兜底，而兜底仍返回
+	 *   旧 `absolute` 口径的 `left: 0`；它写在 `Object.assign` 最后 ⇒ **覆盖**了 `box.left`
+	 *   （`position: fixed` 的**视口坐标**）⇒ 菜单被钉在视口最左缘（截图里菜单跑到 chip 左边、
+	 *   盖住会话列表），`top` 却还是 chip 下方 ⇒ 看着就是"整体错位"✗✗。
+	 *
+	 * ⇒ `fitMenu` 只准给**尺寸 / 溢出**；位置字段一律剥掉，再由 `box` 最后拍板 ✓。
+	 * @param box `{left, top}` 视口坐标（fitMenuBox 的输出）；null / 零值 = 还没量到
+	 * @param fit `fitMenu(...)` 的结果（maxWidth / maxHeight / overflow…）
+	 */
+	function menuPositionStyle(box, fit) {
+		const s = Object.assign({}, fit || {});
+		// 位置字段一律不认（含宿主 fitMenu 万一哪天也返回 left）⇒ 不许覆盖视口坐标 ✗
+		delete s.left; delete s.right; delete s.top; delete s.bottom;
+		if (box && (box.left || box.top)) {
+			s.left = box.left; s.top = box.top; s.marginTop = 0; s.visibility = "visible";
+		} else {
+			// 首帧还没量到：先藏一帧（不许用 left:0 / top:"100%" ⇒ fixed 下会闪到视口左下角 ✗）
+			s.left = 0; s.top = 0; s.marginTop = 0; s.visibility = "hidden";
+		}
+		return s;
+	}
+
 	function install(ctx, shell) {
 			// ⚠ 无桥环境（dsh desktop / dsh 全窗）：`install(ctx, { bridge, state })` 里 **没有 fitMenu / menus**
 			//   ⇒ 状态与夹视口都得自己兜底（否则菜单会溢出视口 ⇒ 下半截点不到 ✗）。
 			const state = (shell && shell.state) || {};
 			/**
 			 * 夹视口：**优先用宿主给的 fitMenu**（与官方/其它 chunk 同一语义）。
-			 * ⚠ 无壳时的兜底**必须返回"相对容器"的偏移**（菜单是 `position:absolute`，容器是
-			 *   `position:relative`）—— 之前这里返回了**视口坐标** ⇒ 与容器偏移叠加 ⇒ 菜单飞到
-			 *   **右下角**（2026-10-21 用户截图）✗✗。
+			 * ⚠ 无壳时（模式 chip 走 ALWAYS_CHUNKS，`install(ctx, { bridge, state })` 没有 shell）
+			 *   兜底只给**尺寸 / 溢出**：菜单现在是 `position: fixed` + **视口坐标**，位置统一由
+			 *   `menuPositionStyle(box, …)` 拍板。旧口径在这里返回过「相对容器偏移」(2026-10-21)
+			 *   和 `left: 0` (2026-11-19)，两代都把菜单甩到了错误位置 ✗✗。
 			 */
 			const fitMenu = (shell && typeof shell.fitMenu === "function")
 				? shell.fitMenu
-				: () => {
+				: (anchor) => {
+					const vw = (typeof window !== "undefined" && window.innerWidth) || 0;
 					const vh = (typeof window !== "undefined" && window.innerHeight) || 800;
-					// 菜单在容器**下方**（CSS top:100%）⇒ 只夹高度；宽度固定由内容决定。
-					return { left: 0, maxHeight: Math.max(160, Math.min(360, vh - 220)) };
+					// ⚠ 只给**尺寸 / 溢出**，绝不给 left/top：菜单已改 `position: fixed` + 视口坐标，
+					//   旧兜底那句 left 是 absolute 口径 ⇒ 会把菜单钉到视口最左缘 ✗✗
+					//   （2026-11-19 用户报障「模式下拉框 UI 位置错误」）。
+					const bottom = anchor && typeof anchor.bottom === "number" ? anchor.bottom : 220;
+					const s = {
+						overflowY: "auto", overflowX: "hidden",
+						maxHeight: Math.max(160, Math.min(360, vh - bottom - 16)),
+					};
+					// 菜单比视口还宽时，只夹 left 也没用 ⇒ 宽度也夹住（描述行自带 ellipsis ✓）
+					if (vw > 0) { s.maxWidth = Math.max(160, vw - 24) + "px"; }
+					return s;
 				};
 
 			/** 花名册（官方同源；失败如实记，不假装"没有模式"）。 */
@@ -264,10 +301,13 @@ window.__ModuleLoader__.load({
 				//   `left: 0`（贴着 chip 左缘向右展开）⇒ **没有夹视口** ⇒ chip 靠右时菜单越出右缘被裁 ✗
 				//   （用户报的"弹出框 UI 位置错误"就是这一族：菜单被视口裁掉一半）。
 				//   ⇒ 量一次菜单真实尺寸，把位置**夹进视口**（左右都不许越界）✓。
-				//   ⚠ 位置是**相对 chip 容器**的偏移（容器 position: relative）⇒ 不用 fixed ✓。
+				//   ⚠ 位置是**视口坐标**（菜单 `position: fixed`）⇒ 不是相对 chip 容器的偏移 ✓。
+				// ★ 2026-11-19：定位改走 layout effect（浏览器绘制前算完）⇒ 首帧不会先闪到别处 ✗；
+				//   合并样式时也不许让 fitMenu 的旧 `left: 0` 盖掉这份坐标（见 menuPositionStyle）。
 				const menuRef = react.useRef(null);
-				const [box, setBox] = react.useState(null); // {left, top} 相对 chip 容器
-				react.useEffect(() => {
+				const [box, setBox] = react.useState(null); // {left, top} 视口坐标
+				const usePlaceEffect = react.useLayoutEffect || react.useEffect;
+				usePlaceEffect(() => {
 					if (!open) { setBox(null); return undefined; }
 					const place = () => {
 						try {
@@ -277,6 +317,7 @@ window.__ModuleLoader__.load({
 							const mr = typeof menu.getBoundingClientRect === "function" ? menu.getBoundingClientRect() : null;
 							const vw = typeof window !== "undefined" ? window.innerWidth : 0;
 							const vh = typeof window !== "undefined" ? window.innerHeight : 0;
+							if (!vw) { return; }   // 量不到视口 ⇒ 保持隐藏，不猜位置 ✗
 							const mw = mr && mr.width ? mr.width : 300;
 							const mh = mr && mr.height ? mr.height : 240;
 							// ★ 夹进视口（纯函数口径，与 client.capsule.js 同一份逻辑 ✓）
@@ -437,23 +478,22 @@ window.__ModuleLoader__.load({
 						key: "m",
 						role: "menu",
 						ref: menuRef,
-						// ⚠ 锚点方向：本 chip 在输入框上方、页面中部 ⇒ 菜单**向右**展开（写 right:0 会越过左边缘被裁 ✗）。
+						// ⚠ 锚点方向：本 chip 在输入框上方、页面中部 ⇒ 菜单**向右**展开（写右对齐会越过左边缘被裁 ✗）。
 						// ⚠ 夹视口时必须把**触发器矩形**交出去（只按整页高算 ⇒ 面板底部溢出、滚不到 ✗）。
 						// ★ 2026-10-28：位置改由「夹进视口」的效果算（`box`，**视口坐标**）⇒ 不再只写 `left: 0`
 						//   （那样 chip 靠右时菜单越出右缘、被裁一半 ✗ —— 与 capsule 菜单同一族坑）。
 						// ⚠ **`position: fixed`**：absolute + zIndex 只在**祖先层叠上下文**内比较 ⇒ 菜单会被
 						//   dsh 自己的浮层/页签条压住 ⇒ 看起来"层级错误"✗（与工作区菜单同口径 ✓）。
+						// ★ 2026-11-19：`fitMenu` 的结果只当**尺寸**用，位置由 menuPositionStyle(box) 最后拍板
+						//   （旧兜底返回 `left: 0` ⇒ 覆盖 fixed 的视口坐标 ⇒ 菜单飞到视口最左缘 ✗✗）。
 						style: Object.assign({
 							position: "fixed",
-							left: box ? box.left : 0,
-							top: box ? box.top : "100%",
-							marginTop: box ? 0 : 4,
 							zIndex: 1000,
 							padding: 5, borderRadius: 10,
 							border: "1px solid var(--dsw-alias-border-l1, transparent)",
 							background: "linear-gradient(var(--dsw-alias-bg-layer-1, transparent), var(--dsw-alias-bg-layer-1, transparent)), var(--dsw-alias-bg-base, #1e1e1e)",
 							boxShadow: "0 8px 24px rgba(0,0,0,.35)",
-						}, fitMenu(rootRef.current ? rootRef.current.getBoundingClientRect() : null)),
+						}, menuPositionStyle(box, fitMenu(rootRef.current ? rootRef.current.getBoundingClientRect() : null))),
 					}, ...rows));				}
 
 				return react.createElement("span", { ref: rootRef, style: { position: "relative", display: "inline-flex", alignItems: "center", gap: 6 } }, ...children);
@@ -474,7 +514,7 @@ window.__ModuleLoader__.load({
 		}
 		exports.install = install;
 		// 仅测试用：纯逻辑（模式白名单 / 过滤 / 名称）。
-		exports.__test = { MODE_IDS, BUILTIN_MODES, OUR_MODES, modesOf, resolveCurrent, fitMenuBox };
+		exports.__test = { MODE_IDS, BUILTIN_MODES, OUR_MODES, modesOf, resolveCurrent, fitMenuBox, menuPositionStyle };
 		return module.exports;
 	}
 });

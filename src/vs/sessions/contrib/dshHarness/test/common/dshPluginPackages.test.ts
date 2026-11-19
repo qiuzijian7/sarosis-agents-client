@@ -2063,6 +2063,12 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 		let source: any;
 		mod.apply({
 			get: (id: string) => (id === 'inputTriggers' ? { registerSource: (s: any) => { source = s; return () => { }; } } : undefined),
+			locale: {
+				register: () => () => { },
+				bind: () => (key: string) => ({
+					title: '知识库', articles: '知识库文章', suffix: '（附正文）',
+				} as Record<string, string>)[key] ?? key,
+			},
 			effect: (fn: () => () => void) => fn(),
 		});
 		assert.equal(fakeDocument.documentElement.dataset.vssarosKbRefs, '1',
@@ -2075,7 +2081,11 @@ suite('dsh 插件包结构守卫（package.json / patch / 清单 三处一致）
 		const realFetch = (globalThis as any).fetch;
 		try {
 			// ① 候选：指针档 vs 附正文档（`@+关键词`）—— 种类必须编进 `value`（`onPick` 拿不到 query ✓）
-			(globalThis as any).fetch = async () => ({ ok: true, json: async () => ({ ok: true, items: [{ uri: 'file:///kb/笔记/a.md', title: 'A', snippet: 'snip' }] }) });
+			(globalThis as any).fetch = async (url: string) => {
+				const q = new URL(String(url), 'http://127.0.0.1').searchParams.get('q') || '';
+				if (!q) { return { ok: false, status: 400, json: async () => ({ ok: false }) }; }
+				return { ok: true, json: async () => ({ ok: true, items: [{ uri: 'file:///kb/笔记/a.md', title: 'A', snippet: 'snip' }] }) };
+			};
 			const ptr = await source.candidates(sess, req('A'));
 			assert.equal(ptr.length, 1);
 			assert.equal(ptr[0].value, 'file:///kb/笔记/a.md', '指针档：value 就是服务端 uri **原样**（零改写 ✓）');

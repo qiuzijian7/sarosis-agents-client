@@ -1113,8 +1113,55 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 				}
 			}
 			notes.push('client.capsule.js / client.preset.js: 弹层夹视口（左右都不越界 + 下方不够上收）断言通过');
-		}
-		// ── ⑤-f 启动时**不得**自动展开右栏（2026-10-28 用户报障）──────────────────────
+			}
+			// ── ⑤-h 模式菜单：位置不许被 fitMenu 的旧坐标覆盖（2026-11-19 用户报障「模式下拉框 UI 位置错误」）──
+			// 病根：`client.preset.js` 走 ALWAYS_CHUNKS ⇒ `install(ctx, {bridge,state})` 没有 shell.fitMenu
+			// ⇒ 走无壳兜底，而兜底返回旧 absolute 口径 `{ left: 0, maxHeight }`，写在 Object.assign 最后
+			// ⇒ 覆盖 `position: fixed` 菜单的视口坐标 box.left ⇒ 菜单钉在视口最左缘（截图：菜单跑到 chip
+			//   左边、盖住会话列表），top 却仍在 chip 下方 ⇒ 看起来就是"整体错位"✗✗。
+			{
+			const src = String(fs.readFileSync(path.join(LIB, 'client.preset.js'), 'utf8'));
+			const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+			// ⚠ 只查 **fitMenu 定义**这一片：`fitMenuBox` 量不到锚点时合法地返回 `{left:0,top:0}`
+			//   （那是给调用方的"不猜位置"信号）⇒ 全文件正则会误伤 ✗。
+			const fitCode = code.slice(code.indexOf('const fitMenu ='), code.indexOf('const loadRoster'));
+			if (!fitCode || fitCode.indexOf('const fitMenu =') !== 0) {
+				problems.push('client.preset.js: 找不到 fitMenu 定义片段（守卫会空跑）✗');
+			} else {
+				if (/left\s*:/.test(fitCode)) {
+					problems.push('client.preset.js: 无壳 fitMenu 兜底不许再返回 `left: 0`（旧 absolute 口径 ⇒ 覆盖 fixed 视口坐标，2026-11-19 用户报障）✗');
+				}
+				if (!/maxHeight/.test(fitCode)) {
+					problems.push('client.preset.js: 无壳 fitMenu 兜底仍须给 maxHeight（菜单过高要能滚）✗');
+				}
+			}
+			if (code.indexOf('menuPositionStyle(box') < 0) {
+				problems.push('client.preset.js: 菜单样式必须由 menuPositionStyle(box, …) 最后写位置（不许被 fitMenu 覆盖）✗');
+			}
+			const loaded = loadChunk('client.preset.js', makeDocumentStub(), makeWindowStub(makeDocumentStub()));
+			const t = loaded && loaded.exports.__test;
+			if (!t || typeof t.menuPositionStyle !== 'function') {
+				problems.push('client.preset.js: 缺 __test.menuPositionStyle（位置合并口径必须可单测 ✗）');
+			} else {
+				// fit 里故意带上旧口径的 left:0 / top:0 与 right/bottom ⇒ 全部不许盖掉 box 的视口坐标
+				const merged = t.menuPositionStyle({ left: 400, top: 120 }, { left: 0, top: 0, right: 8, bottom: 8, maxHeight: 360, overflowY: 'auto' });
+				if (merged.left !== 400 || merged.top !== 120 || merged.marginTop !== 0 || merged.visibility !== 'visible') {
+					problems.push(`client.preset.js: 位置必须取 box 的视口坐标（left=400/top=120 且可见），实际 ${JSON.stringify(merged)} ✗`);
+				}
+				if (merged.maxHeight !== 360 || merged.overflowY !== 'auto') {
+					problems.push('client.preset.js: fitMenu 的尺寸/溢出必须保留（只剥位置字段）✗');
+				}
+				if ('right' in merged || 'bottom' in merged) {
+					problems.push('client.preset.js: fitMenu 里的 right/bottom 必须剥掉（不许与 fixed 的 left/top 打架）✗');
+				}
+				const first = t.menuPositionStyle(null, { maxHeight: 360 });
+				if (first.visibility !== 'hidden' || first.left !== 0 || first.top !== 0) {
+					problems.push(`client.preset.js: 还没量到坐标时首帧必须隐藏（不许用 top:"100%" 闪到视口底部），实际 ${JSON.stringify(first)} ✗`);
+				}
+			}
+			notes.push('client.preset.js: 菜单位置由 box 拍板（fitMenu 只给尺寸 / 首帧不闪）断言通过');
+			}
+			// ── ⑤-f 启动时**不得**自动展开右栏（2026-10-28 用户报障）──────────────────────
 		// 病根：入口（client.js）里有一段"启动时自动点官方 expand 按钮"的逻辑（2026-10-18 加的，
 		//   目的是复刻官方 desktop"一进来右栏就是「开始」面板"）⇒ 官方 settle rule 在"空栏被展开"
 		//   那一刻才播种「开始」页 ⇒ 我们一自动展开，右栏里就凭空多一个「开始」页 ✗；而且展开态
@@ -1979,7 +2026,7 @@ if (!Array.isArray(pkg.files) || !pkg.files.some(f => String(f).includes('client
 	const wsLoaded = loadChunk('client.workspaces.js', wsDoc, makeWindowStub(wsDoc));
 	const tw = wsLoaded && wsLoaded.exports.__test;
 	try {
-		execFileSync(process.execPath, [path.join(LIB, '../scripts/build-session-row.mjs'), '--check'], { stdio: 'pipe' });
+		execFileSync(process.execPath, [path.join(LIB, '../scripts/build-session-row.mjs'), '--check'], { stdio: 'pipe', windowsHide: true });
 	} catch (error) {
 		problems.push('官方会话行构建产物未同步：' + String(error.message));
 	}
@@ -4612,6 +4659,31 @@ for (const o of ourEntries) {
 	if (!problems.some((p) => p.startsWith('工作区下拉A′：'))) {
 		notes.push('工作区下拉A′：添加置顶 / 点行展开 tip / tip 内选当前根 / 主命令切会话 / 说明折叠 / 双 pane 锚点，断言通过');
 	}
+}
+
+// P4：聊天正文 @image token chip —— 只装饰 TEXT_NODE，不碰官方 toolview / openResource。
+{
+	const chip = fs.readFileSync(path.join(LIB, 'client.imageTokens.js'), 'utf8');
+	const entry = fs.readFileSync(path.join(LIB, 'client.js'), 'utf8');
+	const partArr = (/const PART_CHUNKS = \[([\s\S]*?)\];/.exec(entry) || [])[1] || '';
+	if (!partArr.includes('"./client.imageTokens.js"')) {
+		problems.push('P4：client.imageTokens.js 未接进 PART_CHUNKS ✗');
+	}
+	if (!/CLIENT_BUILD_STAMP[^\n]*client\.imageTokens\.js/.test(entry)) {
+		problems.push('P4：入口 STAMP 未记录 client.imageTokens.js ✗');
+	}
+	for (const [re, why] of [
+		[/data-vssaros-image-token/, 'chip 标记'],
+		[/__vssarosOpenImageReference/, '点击必须调右侧图片资源入口'],
+		[/function splitImageTokenText\(/, '纯函数 splitImageTokenText'],
+		[/createTreeWalker/, 'TreeWalker'],
+		[/SHOW_TEXT/, 'SHOW_TEXT 文本节点过滤'],
+		[/data-chat-flow-kind="tool-call"/, '排除官方 tool-call 子树'],
+	]) {
+		if (!re.test(chip)) { problems.push('P4：缺 ' + why + ' ✗'); }
+	}
+	if (/\.innerHTML\s*=|innerHTML\s*=/.test(chip)) { problems.push('P4：不许 HTML 字符串注入（会碰官方 React 树）✗'); }
+	if (/openResource|toolview/.test(chip)) { problems.push('P4：不许碰官方 toolview / openResource ✗'); }
 }
 
 for (const n of notes) { console.log('  · ' + n); }

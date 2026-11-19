@@ -735,36 +735,42 @@ a.vssWbTitleText:hover { text-decoration:underline; }
 			 *
 			 * ⚠ 拿不到就返回空数组（**不编造**）—— 商城界面只显示目录里真有的东西。
 			 */
-			/** 阶段 3：统一目录策略里的离线 route；探针缺席时返回空数组，保留字面量 offline 过滤。 */
-			function policyOfflineRoutes() {
-				const policy = typeof window !== "undefined" && typeof window.__vssarosWorkbenchPolicy === "function"
-					? window.__vssarosWorkbenchPolicy() : null;
-				return policy && Array.isArray(policy.offlineRoutes) ? policy.offlineRoutes : [];
-			}
-			function readLocalItems() {
-				const raw = (typeof window !== "undefined" && window.__vssarosWorkbenchItems) || [];
-				if (!Array.isArray(raw)) { return []; }
-				const offlineRoutes = policyOfflineRoutes();
-				// ★ 2026-11-04：临时下线（offline）的工作台不进「已装」格，避免下线后仍能从商城点开。
-			return raw.filter(it => it && it.id && it.route && !it.offline && !offlineRoutes.includes(String(it.route))).map(it => ({
-					id: String(it.id),
-					/** 侧栏页签 id（打开时用它寻址）—— 目录条目用的是 workbenchId，这里是本机 id。 */
-					workbenchId: String(it.id),
-					name: String(it.name || it.id),
-					icon: wbIconEmoji(it.ico),
-					route: String(it.route),
-					category: "local",
-					local: true,
-					listed: false,
-					installed: true,
-					installable: false,
-					description: "本机随产品分发的工作台。",
-					author: "VsSaros（本机）",
-					screenshots: [],
-					owner: "",
-					version: "",
-				}));
-			}
+			/* @generated-workbench-directory:start market-installed-items hash=3eef1f2238cf */
+const GENERATED_INSTALLED_ITEMS = [
+			{ id: "vssaros-wb-dashboard", name: "主页", ico: "🏠", route: "/x/dashboard/", offline: false },
+			{ id: "vssaros-wb-sessions", name: "会话", ico: "💬", route: "/x/sessions/", offline: false },
+			{ id: "vssaros-wb-session-tiles", name: "会话磁贴", ico: "🧲", route: "/x/sessions/?view=tiles", offline: false },
+			{ id: "vssaros-wb-kanban", name: "看板", ico: "🗂️", route: "/x/kanban/", offline: true },
+			{ id: "vssaros-wb-workflow", name: "工作流", ico: "🔀", route: "/x/workflow/", offline: true },
+			{ id: "vssaros-wb-kb", name: "知识库", ico: "📚", route: "/x/kb/", offline: false },
+			{ id: "vssaros-wb-memory-tab", name: "记忆", ico: "🧠", route: "/x/memory/", offline: false },
+			{ id: "vssaros-wb-codebase", name: "代码库", ico: "🕸️", route: "/x/codebase/", offline: false },
+			{ id: "vssaros-wb-media", name: "媒体库", ico: "🖼️", route: "/x/media/", offline: false },
+			{ id: "vssaros-wb-imagegen", name: "生图", ico: "🎨", route: "/x/imagegen/", offline: true },
+			{ id: "vssaros-wb-skills", name: "工具", ico: "🧰", route: "/x/skills/", offline: true },
+			{ id: "vssaros-wb-scheduler", name: "自动化任务", ico: "🕒", route: "/x/scheduler/", offline: false },
+			{ id: "vssaros-wb-marketplace", name: "商城", ico: "🛒", route: "/x/marketplace/", offline: false },
+		];
+function readLocalItems() {
+	return GENERATED_INSTALLED_ITEMS.filter(it => it && it.id && it.route && !it.offline).map(it => ({
+		id: String(it.id),
+		workbenchId: String(it.id),
+		name: String(it.name || it.id),
+		icon: wbIconEmoji(it.ico),
+		route: String(it.route),
+		category: "local",
+		local: true,
+		listed: false,
+		installed: true,
+		installable: false,
+		description: "本机随产品分发的工作台。",
+		author: "VsSaros（本机）",
+		screenshots: [],
+		owner: "",
+		version: "",
+	}));
+}
+/* @generated-workbench-directory:end market-installed-items */
 
 			/** 复制文本（失败时把内容显示出来让人手动复制 ✗ 不静默失败）。 */
 			function copyText(text) {
