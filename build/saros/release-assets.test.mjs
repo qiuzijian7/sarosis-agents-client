@@ -183,12 +183,22 @@ test('real update server archives upload once and immutable URL survives latest 
 			MANIFEST_PATH: path.join(root, 'manifest.json'), VERSIONS_PATH: path.join(root, 'versions.json'), DOWNLOADS_DIR: path.join(root, 'downloads'),
 			ARCHIVE_DIR: path.join(root, 'downloads/archive'), ARCHIVE_ENABLED: '1', UPLOAD_TOKEN: 'test-only', MAX_DOWNLOAD_SIZE: '2147483648', MAX_UPLOAD_SIZE: '2147483648' }, stdio: ['ignore', 'pipe', 'pipe'],
 	});
-	child.stdout?.resume();
-	child.stderr?.resume();
-	child.on('error', () => {});
-	const closed = new Promise(resolve => child.once('close', resolve));
+	const serverLogs = [];
+	const capture = chunk => {
+		serverLogs.push(String(chunk));
+		if (serverLogs.length > 80) { serverLogs.shift(); }
+	};
+	child.stdout?.on('data', capture);
+	child.stderr?.on('data', capture);
+	child.on('error', error => serverLogs.push(`spawn error: ${error.message}`));
+	const closed = new Promise(resolve => {
+		let timer;
+		const finish = () => { if (timer) { clearTimeout(timer); } resolve(); };
+		timer = setTimeout(() => { child.kill('SIGKILL'); finish(); }, 5000);
+		if (child.exitCode !== null) { finish(); } else { child.once('close', finish); }
+	});
 	t.after(async () => {
-		if (child.exitCode === null) { child.kill(); }
+		if (child.exitCode === null) { child.kill('SIGKILL'); }
 		child.stdout?.destroy();
 		child.stderr?.destroy();
 		await closed;
@@ -204,13 +214,13 @@ test('real update server archives upload once and immutable URL survives latest 
 	const single = { ...installer, target: 'user', artifacts: [artifact] };
 	const uploadUrl = base + `/admin/upload?platform=${artifact.platform}&commit=${single.commit}&productVersion=${single.productVersion}`;
 	const uploaded = await fetch(uploadUrl, { method: 'POST', headers: { 'X-Upload-Token': 'test-only', 'Content-Type': 'application/octet-stream' }, body: payload, signal: AbortSignal.timeout(30000) });
-	assert.equal(uploaded.status, 200);
+	assert.equal(uploaded.status, 200, `upload failed; server:\n${serverLogs.join('')}`);
 	const result = await uploaded.json();
 	const download = validateUploadResponse(result, single, artifact.platform, base);
 	recordUpload(root, single, artifact.platform, result, base);
 	await completeUpload(root, single, base);
 	const replacement = await fetch(uploadUrl, { method: 'POST', headers: { 'X-Upload-Token': 'test-only' }, body: Buffer.from('new-latest'), signal: AbortSignal.timeout(30000) });
-	assert.equal(replacement.status, 200);
+	assert.equal(replacement.status, 200, `replacement failed; server:\n${serverLogs.join('')}`);
 	const firstByte = await fetch(download.url, { headers: { Range: 'bytes=0-0' }, signal: AbortSignal.timeout(30000) });
 	assert.equal(firstByte.status, 206);
 	assert.equal(Buffer.from(await firstByte.arrayBuffer())[0], 1);

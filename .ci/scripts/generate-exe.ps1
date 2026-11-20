@@ -17,6 +17,16 @@ node build/saros/pack-optimization.mjs --check-staging $vsOutRoot
 if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Staging build identity preflight failed; EXE generation aborted" -ForegroundColor Red; exit 1 }
 node build/saros/pack-optimization.mjs --check-model $vsOutRoot
 if ($LASTEXITCODE -ne 0) { Write-Host "[ERROR] Whisper model policy preflight failed; EXE generation aborted" -ForegroundColor Red; exit 1 }
+$verifyReceipt = '.build/pack-reports/staging-verified.json'
+if (-not (Test-Path -LiteralPath $verifyReceipt)) { Write-Host "[ERROR] verify-staging did not complete; EXE generation aborted" -ForegroundColor Red; exit 1 }
+try { $verified = Get-Content -LiteralPath $verifyReceipt -Raw -Encoding utf8 | ConvertFrom-Json } catch { Write-Host "[ERROR] Invalid staging verification receipt" -ForegroundColor Red; exit 1 }
+$currentCommit = (git rev-parse HEAD).Trim()
+$currentVersion = (Get-Content product.json -Raw -Encoding utf8 | ConvertFrom-Json).version
+$currentMode = (node build/saros/pack-optimization.mjs --mode).Trim()
+if ($LASTEXITCODE -ne 0 -or $verified.schemaVersion -ne 1 -or $verified.commit -ne $currentCommit -or $verified.productVersion -ne $currentVersion -or $verified.packMode -ne $currentMode) {
+  Write-Host "[ERROR] Staging verification receipt is stale or for another build" -ForegroundColor Red
+  exit 1
+}
 
 # 直接调本地 gulp，绕开 npx（npx 找不到本地包时会交互式询问 "Ok to proceed?"，
 # CI 无 stdin 导致无限挂起）。

@@ -413,12 +413,13 @@ function handleUpload(req, res, url) {
 	const fileName = `${baseName}.exe`;
 	fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
 	const filePath = path.join(DOWNLOADS_DIR, fileName);
+	const tempPath = path.join(DOWNLOADS_DIR, `.upload-${crypto.randomUUID()}`);
 
 	console.log(`[upload] 开始接收 platform=${platform} commit=${commit.substring(0, 10)} → ${fileName}`);
 
-	// 流式写文件 + 同步算 sha256（单一数据路径，避免 on('data') 与 pipe 冲突）
+	// 先写同目录临时文件，完成后原子替换；避免覆盖正在被防病毒/下载读句柄占用的旧包时 EPERM。
 	const hash = crypto.createHash('sha256');
-	const writeStream = fs.createWriteStream(filePath);
+	const writeStream = fs.createWriteStream(tempPath);
 	let received = 0;
 	let aborted = false;
 
@@ -437,7 +438,7 @@ function handleUpload(req, res, url) {
 				req.unpipe(hashTransform);
 				req.resume();
 				writeStream.destroy();
-				try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+				try { fs.unlinkSync(tempPath); } catch { /* ignore */ }
 				callback();
 				return;
 			}
@@ -450,6 +451,17 @@ function handleUpload(req, res, url) {
 	writeStream.on('finish', async () => {
 		if (aborted) { return; }
 		const sha256hash = hash.digest('hex');
+		try {
+			fs.renameSync(tempPath, filePath);
+		} catch (e) {
+			console.error('[upload] 发布最新包失败:', e);
+			try { fs.unlinkSync(tempPath); } catch { /* ignore */ }
+			if (!res.headersSent) {
+				res.writeHead(500, { 'Content-Type': 'application/json' });
+				res.end(JSON.stringify({ error: 'publish failed', detail: String(e) }));
+			}
+			return;
+		}
 		const baseUrl = PUBLIC_BASE_URL || `http://${req.headers.host}`;
 		const downloadUrl = `${baseUrl}/downloads/${fileName}`;
 		const entry = {
@@ -485,7 +497,7 @@ function handleUpload(req, res, url) {
 	writeStream.on('error', (e) => {
 		if (aborted) { return; }
 		console.error('[upload] 写文件失败:', e);
-		try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+		try { fs.unlinkSync(tempPath); } catch { /* ignore */ }
 		if (!res.headersSent) {
 			res.writeHead(500, { 'Content-Type': 'application/json' });
 			res.end(JSON.stringify({ error: 'write failed', detail: String(e) }));
@@ -495,7 +507,7 @@ function handleUpload(req, res, url) {
 	req.on('error', (e) => {
 		if (aborted) { return; }
 		console.error('[upload] 接收失败:', e);
-		try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+		try { fs.unlinkSync(tempPath); } catch { /* ignore */ }
 		if (!res.headersSent) {
 			res.writeHead(500, { 'Content-Type': 'application/json' });
 			res.end(JSON.stringify({ error: 'receive failed', detail: String(e) }));

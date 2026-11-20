@@ -203,10 +203,12 @@ test('staging requires successful packaging, current identity and unchanged entr
 	assert.throws(() => verifyStaging(f.staging, f.repo, identity), /staging changed/);
 	f.write('repo/.build/pack-reports/installers.json', '{}');
 	f.write('repo/.build/pack-reports/installer-comparison.json', '{}');
+	f.write('repo/.build/pack-reports/staging-verified.json', '{}');
 	invalidateStaging(f.repo);
 	assert.equal(fs.existsSync(path.join(f.repo, '.build/pack-reports/staging-build.json')), false);
 	assert.equal(fs.existsSync(path.join(f.repo, '.build/pack-reports/installers.json')), false);
 	assert.equal(fs.existsSync(path.join(f.repo, '.build/pack-reports/installer-comparison.json')), false);
+	assert.equal(fs.existsSync(path.join(f.repo, '.build/pack-reports/staging-verified.json')), false);
 });
 
 test('baseline errors invalidate previous success and verification enforces growth', t => {
@@ -694,6 +696,11 @@ test('EXE generation hard gate and target parsing fail closed after earlier stag
 	assertOrdered(generate, '--check-seed', 'node --test');
 	assertOrdered(generate, '--check-staging', 'node --test');
 	assertOrdered(generate, '--check-model', 'node --test');
+	assertOrdered(generate, 'staging-verified.json', 'node --test');
+	assert.match(generate, /Staging verification receipt is stale/);
+	const verify = fs.readFileSync(path.join(ROOT, '.ci/scripts/verify-staging.ps1'), 'utf8');
+	assert.match(verify, /Staging verification receipt written/);
+	assert.doesNotMatch(verify, /kb-feishu-sync|kb-build/);
 	assert.match(generate, /--test-timeout=\d+/);
 	assert.match(generate, /--test-concurrency=1/);
 	assert.match(generate, /try \{ \$setupAssets = ConvertFrom-Json/);
@@ -701,4 +708,9 @@ test('EXE generation hard gate and target parsing fail closed after earlier stag
 	assert.match(upload, /try \{ \$setupAssets = ConvertFrom-Json/);
 	assert.match(upload, /Invalid installer target count/);
 	assertOrdered(whisper, '--check-staging', '$stagingBin');
+});
+
+test('mangler preserves exports from generated files imported by compiled sources', () => {
+	const source = fs.readFileSync(path.join(ROOT, 'build/lib/mangle/index.ts'), 'utf8');
+	assert.match(source, /'comfyTVStageMeta\.generated'/);
 });

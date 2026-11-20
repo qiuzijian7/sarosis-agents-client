@@ -305,6 +305,9 @@ const skippedExportMangledFiles = [
 
 	// Generated
 	'extensionsApiProposals',
+	// Imported by compiled agentStudio code but produced by the webview data generator.
+	// Mangle would rename the consumer import while the excluded producer keeps the original export.
+	'comfyTVStageMeta.generated',
 
 	// Module passed around as type
 	'pfs',

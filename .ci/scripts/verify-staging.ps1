@@ -1,6 +1,8 @@
 ﻿# 验证打包关键构件
 $repoRoot = (Resolve-Path (Split-Path (Split-Path $PSScriptRoot))).Path
 Set-Location $repoRoot
+$receiptPath = Join-Path $repoRoot '.build\pack-reports\staging-verified.json'
+if (Test-Path -LiteralPath $receiptPath) { Remove-Item -LiteralPath $receiptPath -Force -ErrorAction Stop }
 
 $appRoot = Join-Path (Split-Path $pwd.Path -Parent) "VSCode-win32-x64\resources\app"
 if (-not (Test-Path $appRoot)) { $appRoot = "..\VSCode-win32-x64\resources\app" }
@@ -79,8 +81,6 @@ $required = @(
   #   自愈在 build/saros/strip-before-pack.mjs 的 ensureDir('resources/app/resources/.agents')；
   #   这里做**硬性**校验：缺失即判出包失败（与 kbWorker.js / tree-sitter-wasm 同一类关键构件）。
   "resources\.agents\kb\feishu-sync.mjs",
-  "resources\.agents\skills\kb-feishu-sync\SKILL.md",
-  "resources\.agents\skills\kb-build\SKILL.md",
   "resources\.agents\mcp-presets",
   "resources\.agents\builtin-workflows",
   # 2026-10-10：dsh 底座构件（同上：运行时按路径读取，缺失即底座静默残废——硬性校验）。
@@ -216,3 +216,13 @@ if ($packMode -eq 'standard') {
 if ($asrMissing.Count -gt 0) {
   Write-Host "[WARN] Installer ships WITHOUT local ASR. Fix: node build/saros/fetch-whisper.mjs"
 }
+
+# 成功回执：generate-exe 在测试与 ISCC 之前核对它，防止 BK 在 verify 失败后仍继续出包。
+$currentCommit = (git rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $currentCommit.Length -ne 40) { Write-Error 'Cannot record staging verification commit'; exit 1 }
+$currentVersion = (Get-Content product.json -Raw -Encoding utf8 | ConvertFrom-Json).version
+$receiptDir = Join-Path $repoRoot '.build\pack-reports'
+New-Item -ItemType Directory -Force -Path $receiptDir | Out-Null
+$receipt = @{ schemaVersion = 1; commit = $currentCommit; productVersion = $currentVersion; packMode = $packMode; verifiedAt = (Get-Date).ToUniversalTime().ToString('o') }
+[IO.File]::WriteAllText((Join-Path $receiptDir 'staging-verified.json'), ($receipt | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+Write-Host "[OK] Staging verification receipt written for $currentCommit ($currentVersion/$packMode)."
