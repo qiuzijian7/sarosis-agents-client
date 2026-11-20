@@ -81,77 +81,95 @@ stages:
       steps:
       - checkout:
           repo-id: yWNpX
-        name: 拉取源码
+        name: Checkout source
         with:
           refName: main
-      - name: 设置版本号
+      - name: Set version
         id: ZXb4BJ
         with:
           charsetType: UTF_8
         run: ' powershell -ExecutionPolicy Bypass -File deploy-package/scripts/bk-set-version.ps1'
         shell: powershell
-      - name: 安装依赖 (npm ci)
+      - name: Install dependencies (npm ci)
         with:
           charsetType: UTF_8
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/install-deps.ps1'
         shell: powershell
       - 
         # ---------- 3.5 构建 KB markdown webview bundle (kbblocks.js) ----------
-        name: 构建 KB 渲染 bundle (kbblocks)
+        name: Build KB renderer (kbblocks)
+        with:
+          charsetType: UTF_8
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/build-kbblocks.ps1'
         shell: powershell
       - 
-        name: 生产编译 compile-build-with-mangling
+        name: Compile build with mangling
         with:
           charsetType: UTF_8
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/compile-build.ps1'
         shell: powershell
       - 
         # ---------- 4.5 复制 kbblocks webview 资源到 out-build ----------
-        name: 复制 kbblocks webview 资源到 out-build
+        name: Copy KB webview resources to out-build
+        with:
+          charsetType: UTF_8
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/copy-kbblocks.ps1'
         shell: powershell
       - 
         # ---------- 5.0 构建能力插件（dist/extension.js） ----------
-        name: 构建能力插件 transpile-plugins
+        name: Transpile plugins
+        with:
+          charsetType: UTF_8
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/transpile-plugins.ps1'
         shell: powershell
       - 
-        name: 编译扩展 compile-extensions-build
+        name: Compile extensions
+        with:
+          charsetType: UTF_8
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/compile-extensions.ps1'
         shell: powershell
       - 
-        name: 打包 vscode-win32-x64
+        name: Package vscode-win32-x64
+        with:
+          charsetType: UTF_8
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/package-vscode.ps1'
         shell: powershell
       - 
         # ---------- 6.4 下载并内置 ffmpeg（vox 口播视频可选依赖，失败不阻断） ----------
-        name: 下载并内置 ffmpeg (bundle-ffmpeg)
+        name: Bundle ffmpeg
+        with:
+          charsetType: UTF_8
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/bundle-ffmpeg.ps1'
         shell: powershell
       - 
         # ---------- 6.4b 下载并内置 whisper.cpp（本地 ASR：video_analyze 口播转写，可选依赖，失败不阻断） ----------
         # 与 ffmpeg 同级策略；CI 无法访问 GitHub/HuggingFace 时用 SAROS_WHISPER_URL /
         # SAROS_WHISPER_MODEL_URL 指向内网镜像。
-        name: 下载并内置 whisper (bundle-whisper)
+        name: Bundle whisper
+        with:
+          charsetType: UTF_8
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/bundle-whisper.ps1'
         shell: powershell
       - 
         # ---------- 6.5 打包产物关键构件验证 ----------
-        name: 验证打包关键构件
+        name: Verify staging contents
+        with:
+          charsetType: UTF_8
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/verify-staging.ps1'
         shell: powershell
       - 
-        name: 生成 EXE 安装包 (user & system setup)
+        name: Generate EXE installers (selected targets)
+        with:
+          charsetType: UTF_8
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/generate-exe.ps1'
         shell: powershell
-      - name: 归档构件
+      - name: Archive installers
         id: Rz97AF
         uses: UploadArtifactory@8.*
         with:
           filePath: .build/win32-x64/**/*.exe
           downloadFiles: "[{\"path\":\"\",\"param\":\"\"}]"
-      - name: 上传 exe 到升级服务器
+      - name: Upload installers to update server
         id: hgg5hu
         with:
           charsetType: UTF_8
@@ -159,12 +177,12 @@ stages:
         shell: powershell
       - 
         # ---------- 7.0 创建 Release：changelog + git tag + woa.git/GitHub 双端 ----------
-        name: 创建 Release (tag + changelog + woa.git/GitHub)
+        name: Create release (tag + changelog + woa.git/GitHub)
         with:
           charsetType: UTF_8
         run: ' powershell -ExecutionPolicy Bypass -File .ci/scripts/create-release.ps1'
         shell: powershell
-      - name: 归档包体审计与发布回执
+      - name: Archive size reports and upload receipts
         uses: UploadArtifactory@8.*
         with:
           filePath: .build/pack-reports/**/*.json

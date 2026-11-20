@@ -31,6 +31,7 @@ import { PRUNE_LIST, VIRTUAL_STORE_HEAVY_RE } from './saros/prune-list.mjs';
 import { SEED_GENERATOR_REVISION, archiveSeedPlugin, relativizeSeedPaths } from './saros/seed-package.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const UNSCOPED_VENDORED = new Set(['dsh-ego-browser', 'dsh-vision-router', 'dsh-better-sidebar']);
 const manifestPath = join(root, 'dsh-plugins', 'dsh-compat.json');
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 
@@ -263,9 +264,6 @@ await safeBuildProfileSeed(target, bin, actual);
  *   ⇒ 按名字**显式放行**，
  *   不是放宽成"任何包名都收"（那会让漏命名静默进种子）。新增同类包必须同步这张表。
  */
-// 2026-11-19 第三个：dsh-better-sidebar（上游 omdsh-dev/DSH-better-sidebar v0.32.1，MIT）。
-const UNSCOPED_VENDORED = new Set(['dsh-ego-browser', 'dsh-vision-router', 'dsh-better-sidebar']);
-
 function discoverRepoPluginDirs(baseDir) {
 	const out = [];
 	let entries;
@@ -280,19 +278,15 @@ function discoverRepoPluginDirs(baseDir) {
 			continue;
 		}
 		const dir = join(baseDir, entry.name);
-		try {
-			const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
-			const name = typeof pkg?.name === 'string' ? pkg.name : '';
-			// `@vssaros/*` = 自家插件；`@tt-a1i/archify-dsh` 与 `UNSCOPED_VENDORED` = 随包 vendored 的
-			// 第三方包（宿主也随包装；provenance 见各自目录的 VENDOR.md）。
-			if (name.startsWith('@vssaros/') || name.startsWith('@tt-a1i/') || UNSCOPED_VENDORED.has(name)) {
-				out.push(dir);
-			} else {
-				// ★ 2026-10-28：有 package.json 却没被收 ⇒ **点名**。新增插件若忘了用 `@vssaros/*`
-				//   命名，它会静默缺席种子（首启再补装需要 pnpm，用户机器上不一定有 ✗）。
-				skipped.push(`${entry.name}（包名 ${name || '空'}）`);
-			}
-		} catch { /* 不是包 / 读不动 ⇒ 跳过（与宿主侧同口径） */ }
+		const packagePath = join(dir, 'package.json');
+		if (!existsSync(packagePath)) { continue; }
+		const pkg = JSON.parse(readFileSync(packagePath, 'utf8'));
+		const name = typeof pkg?.name === 'string' ? pkg.name : '';
+		if (name.startsWith('@vssaros/') || name.startsWith('@tt-a1i/') || UNSCOPED_VENDORED.has(name)) {
+			out.push(dir);
+		} else {
+			skipped.push(`${entry.name}（包名 ${name || '空'}）`);
+		}
 	}
 	if (skipped.length) {
 		console.log(`[prepack-dsh] ⚠ dsh-plugins 下这些目录有 package.json 但没进种子（包名须是 @vssaros/* / @tt-a1i/* / ${[...UNSCOPED_VENDORED].join(' / ')}）：${skipped.join(', ')}`);

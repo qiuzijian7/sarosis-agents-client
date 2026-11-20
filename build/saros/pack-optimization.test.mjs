@@ -552,3 +552,56 @@ test('seed path rewrite synchronizes wanted/current lockfiles and is idempotent'
 	}
 	assert.equal(relativizeSeedPaths(profile), 0);
 });
+
+test('fresh and reused runtime entry paths discover every unscoped vendored plugin before seed work', async t => {
+	const f = fixture(t);
+	const source = fs.readFileSync(path.join(ROOT, 'build/prepack-dsh-runtime.mjs'), 'utf8');
+	const discoveryStart = source.indexOf('function discoverRepoPluginDirs(');
+	const discoveryEnd = source.indexOf('\n}', discoveryStart) + 2;
+	assert.ok(discoveryStart > 0 && discoveryEnd > discoveryStart);
+	const calls = [...source.slice(0, discoveryEnd).matchAll(/await safeBuildProfileSeed\([^;]+;/g)];
+	assert.equal(calls.length, 2, 'must cover existing-runtime and clean-install entry paths');
+	assert.ok(source.indexOf('const UNSCOPED_VENDORED =') < calls[0].index);
+	const program = source.slice(0, discoveryEnd)
+		.replace(/^#![^\n]*\n/, '')
+		.replace(/^import .+;\r?$/gm, '')
+		.replaceAll('import.meta.url', "'probe'")
+		.replace(/await safeBuildProfileSeed\([^;]+;/g, "return discoverRepoPluginDirs(join(root, 'dsh-plugins'));");
+	f.write('repo/dsh-plugins/dsh-compat.json', JSON.stringify({ bundled: '0.2.2-rc.2', versions: [{ version: '0.2.2-rc.2' }] }));
+	const names = ['@vssaros/dsh-foundation', '@tt-a1i/archify-dsh', 'dsh-ego-browser', 'dsh-vision-router', 'dsh-better-sidebar'];
+	const directories = ['vssaros-foundation', 'vssaros-archify', 'dsh-ego-browser', 'dsh-vision-router', 'dsh-better-sidebar'];
+	for (let i = 0; i < names.length; i++) { f.write(`repo/dsh-plugins/${directories[i]}/package.json`, JSON.stringify({ name: names[i], version: '1.0.0' })); }
+	f.write('repo/dsh-plugins/not-shipped/package.json', JSON.stringify({ name: 'unapproved-package', version: '1.0.0' }));
+	for (const reused of [false, true]) {
+		let installed = reused;
+		const discover = () => runInNewContext(`(async () => {\n${program}\n})()`, {
+			join: path.join, dirname: path.dirname, sep: path.sep, delimiter: path.delimiter,
+			fileURLToPath: () => path.join(f.repo, 'build/prepack-dsh-runtime.mjs'),
+			readFileSync: fs.readFileSync, readdirSync: fs.readdirSync,
+			existsSync: candidate => candidate.endsWith(`${path.sep}dsh${path.sep}lib${path.sep}bin.js`) ? installed : fs.existsSync(candidate),
+			execFileSync: (_file, args) => { if (args.includes('--version')) { return '0.2.2-rc.2\n'; } installed = true; return ''; },
+			prune() {}, dirSize: () => 0,
+			process: { argv: [], platform: 'win32', execPath: 'node.exe', exit: () => { throw new Error('unexpected early exit'); } },
+			console: { log() {}, error() {} },
+		});
+		const result = await discover();
+		assert.equal(result.length, names.length);
+		assert.equal(path.basename(result[0]), 'vssaros-foundation');
+		assert.deepEqual(Array.from(result, directory => JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf8')).name).sort(), [...names].sort());
+		const broken = f.write('repo/dsh-plugins/broken/package.json', '{invalid-json');
+		await assert.rejects(discover(), { name: 'SyntaxError' });
+		fs.unlinkSync(broken);
+	}
+});
+
+test('Windows CI executable steps use ASCII names and explicit UTF8 charset', () => {
+	const source = fs.readFileSync(path.join(ROOT, '.ci/package-win-exe.yml'), 'utf8');
+	const steps = source.split(/\n\s{6}-\s/).slice(1).filter(block => /\n\s+run:/.test(block));
+	assert.equal(steps.length, 14);
+	for (const step of steps) {
+		const name = /(?:^|\n)\s*name: ([^\r\n]+)/.exec(step)?.[1];
+		assert.ok(name && /^[\x00-\x7f]+$/.test(name), 'step name must not inject GBK-sensitive bytes');
+		assert.match(step, /charsetType: UTF_8/);
+		assert.match(step, /shell: powershell/);
+	}
+});

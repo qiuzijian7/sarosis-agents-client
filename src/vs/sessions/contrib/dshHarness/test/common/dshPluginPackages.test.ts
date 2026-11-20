@@ -2378,12 +2378,13 @@ suite('dshHarness / 打包链：内置 dsh 运行时（缺它 = 首启要用户�
 		//   不另存一份清单 ⇒ 与 prepack 保持单一真源。
 		const unscopedAt = prepack.indexOf('const UNSCOPED_VENDORED');
 		assert.ok(unscopedAt > 0, '找不到 UNSCOPED_VENDORED（无 scope 的随包第三方包会静默漏出种子）');
+		assert.ok(unscopedAt < prepack.indexOf('await safeBuildProfileSeed('), '白名单必须在首次种子构建调用前初始化（顶层 await 之前）');
 		const unscopedLine = prepack.slice(unscopedAt, prepack.indexOf('\n', unscopedAt));
 		const unscopedNames = [...unscopedLine.matchAll(/'([^']+)'/g)].map(m => m[1]);
 		assert.ok(unscopedNames.length >= 2, `UNSCOPED_VENDORED 解析不到包名（实际 ${unscopedNames.length} 个）`);
-		const discover = new Function('readdirSync', 'readFileSync', 'join', 'sep', 'UNSCOPED_VENDORED',
+		const discover = new Function('readdirSync', 'readFileSync', 'existsSync', 'join', 'sep', 'UNSCOPED_VENDORED',
 			`${fnBody}\nreturn discoverRepoPluginDirs;`)(
-			fs.readdirSync, fs.readFileSync, path.join, path.sep, new Set(unscopedNames),
+			fs.readdirSync, fs.readFileSync, fs.existsSync, path.join, path.sep, new Set(unscopedNames),
 		) as (dir: string) => string[];
 		const repoDirs = discover(path.join(root!, 'dsh-plugins'));
 		assert.ok(repoDirs.length >= 20, `仓库随包插件应 >= 20 个（实际 ${repoDirs.length}）`);
